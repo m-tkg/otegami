@@ -1,4 +1,6 @@
 import SwiftUI
+import MailTransport
+import OtegamiStore
 
 @main
 struct OtegamiApp: App {
@@ -17,6 +19,8 @@ struct OtegamiApp: App {
 /// Sidebar and message list are both backed by live GRDB
 /// `ValueObservation`s via `AppEnvironment`/`AppDatabase`.
 struct RootView: View {
+    @Environment(AppEnvironment.self) private var environment
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selection: MailboxSelection?
     // By id, not the whole `MessageRecord` — `MessageRecord` isn't
     // `Hashable`, which `List(selection:)` requires.
@@ -84,6 +88,60 @@ struct RootView: View {
             preferredColumn = .detail
         }
         .task(id: selection) { restoreLastOpenedMessageIfNeeded() }
+        // Foreground IDLE (M3, plan: "アプリ active 中、INBOX を IDLE"):
+        // start every account's IDLE loop (plus one immediate opQueue
+        // replay + incremental sync, since becoming active is exactly
+        // when queued offline operations should get a chance to flush)
+        // on `.active`, and stop them all on `.background`/`.inactive` —
+        // there is no IMAP connection to keep alive while the app can't
+        // run code.
+        .onChange(of: scenePhase, initial: true) { _, newPhase in
+            Task { await handleScenePhaseChange(newPhase) }
+        }
+        // A newly-added account (mid-session, via AccountSetupView) should
+        // also get an IDLE loop without waiting for the next background/
+        // foreground transition.
+        .onChange(of: environment.accounts) { _, newAccounts in
+            guard scenePhase == .active else { return }
+            Task { await startIdleLoops(for: newAccounts) }
+        }
+    }
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) async {
+        switch phase {
+        case .active:
+            await startIdleLoops(for: environment.accounts)
+            await syncAllAccountsOnce()
+        case .background, .inactive:
+            await environment.syncCoordinator.stopAllIdleLoops()
+        @unknown default:
+            break
+        }
+    }
+
+    private func startIdleLoops(for accounts: [AccountRecord]) async {
+        for account in accounts {
+            guard let auth = authForAccount(account) else { continue }
+            await environment.syncCoordinator.startIdleLoop(for: account, auth: auth)
+        }
+    }
+
+    /// One opQueue replay + incremental sync per account right as the app
+    /// becomes active — an IDLE loop only wakes on the *next* server push,
+    /// so without this a device that went offline, had changes queued,
+    /// and came back online wouldn't flush/pick anything up until the next
+    /// unrelated server event.
+    private func syncAllAccountsOnce() async {
+        for account in environment.accounts {
+            guard let auth = authForAccount(account) else { continue }
+            _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+            _ = try? await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth)
+        }
+    }
+
+    private func authForAccount(_ account: AccountRecord) -> MailAuth? {
+        guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { return nil }
+        return .password(username: account.imapUsername, password: password)
     }
 
     private func restoreLastOpenedMessageIfNeeded() {

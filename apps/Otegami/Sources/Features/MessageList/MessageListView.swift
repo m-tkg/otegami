@@ -32,6 +32,27 @@ struct MessageListView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("messageList.row.\(messageId)")
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            deleteMessage(message)
+                        } label: {
+                            Label("削除", systemImage: "trash")
+                        }
+                        .accessibilityIdentifier("messageList.row.\(messageId).delete")
+                    }
+                    .swipeActions(edge: .leading) {
+                        Button {
+                            toggleRead(message)
+                        } label: {
+                            if message.flags.contains(.seen) {
+                                Label("未読にする", systemImage: "envelope.badge")
+                            } else {
+                                Label("既読にする", systemImage: "envelope.open")
+                            }
+                        }
+                        .tint(.accentColor)
+                        .accessibilityIdentifier("messageList.row.\(messageId).toggleRead")
+                    }
                 }
             }
         }
@@ -97,6 +118,12 @@ struct MessageListView: View {
         }
     }
 
+    /// Pull-to-refresh / the toolbar refresh button: differential sync
+    /// (M3), not `syncAccount`'s full initial-sync window — this is called
+    /// repeatedly over an account's lifetime, so it should only fetch
+    /// what's actually changed. Replays any queued offline operations
+    /// first, since "the user explicitly asked to reconnect" is exactly
+    /// the moment those should get a chance to flush too.
     private func refresh() async {
         guard let account = environment.accounts.first(where: { $0.id == selection.accountId }) else { return }
         isSyncing = true
@@ -106,13 +133,76 @@ struct MessageListView: View {
                 syncErrorMessage = "保存された資格情報が見つかりません。アカウントを再追加してください。"
                 return
             }
-            _ = try await environment.syncCoordinator.syncAccount(
-                account,
-                auth: .password(username: account.imapUsername, password: password)
-            )
+            let auth = MailAuth.password(username: account.imapUsername, password: password)
+            _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+            _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth)
         } catch {
             syncErrorMessage = "\(error)"
         }
+    }
+
+    // MARK: - Swipe actions (M3: opQueue-backed read/unread + delete)
+
+    /// Toggles `\Seen` locally (instant UI feedback) and enqueues the
+    /// resulting absolute flag state for `OpQueueProcessor` to mirror to
+    /// the server, then makes a best-effort replay attempt right away
+    /// (harmless no-op if offline — the queued op just waits for the next
+    /// successful connection).
+    private func toggleRead(_ message: MessageRecord) {
+        guard let messageId = message.id else { return }
+        let accountId = selection.accountId
+        let mailboxId = selection.mailboxId
+        Task {
+            do {
+                try await environment.database.dbWriter.write { db in
+                    guard var record = try MessageRecord.fetchOne(db, key: messageId) else { return }
+                    guard let mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return }
+                    record.flags.formSymmetricDifference(.seen)
+                    record.updatedAt = Date()
+                    try record.update(db)
+                    try OpQueue.enqueueSetFlags(
+                        accountId: accountId, mailboxId: mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [UInt32(record.uid)], flags: record.flags, db: db
+                    )
+                }
+                await replayOpQueueSoon()
+            } catch {
+                // Best-effort: the row simply doesn't update if this fails.
+            }
+        }
+    }
+
+    /// Removes the message from the local list immediately (optimistic —
+    /// this mailbox's `ValueObservation` picks up the deletion right away)
+    /// and enqueues a `delete` op (opQueue resolves the account's Trash
+    /// mailbox and issues the actual `MOVE` at replay time).
+    private func deleteMessage(_ message: MessageRecord) {
+        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { return }
+        let accountId = selection.accountId
+        let mailboxId = selection.mailboxId
+        Task {
+            do {
+                try await environment.database.dbWriter.write { db in
+                    guard let mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return }
+                    try OpQueue.enqueueDelete(
+                        accountId: accountId, sourceMailboxId: mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [uid], db: db
+                    )
+                    try MessageRecord.deleteOne(db, key: messageId)
+                }
+                await replayOpQueueSoon()
+            } catch {
+                // Best-effort: the row stays if this fails; the swipe can
+                // be retried.
+            }
+        }
+    }
+
+    private func replayOpQueueSoon() async {
+        guard let account = environment.accounts.first(where: { $0.id == selection.accountId }) else { return }
+        guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { return }
+        let auth = MailAuth.password(username: account.imapUsername, password: password)
+        _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
     }
 }
 

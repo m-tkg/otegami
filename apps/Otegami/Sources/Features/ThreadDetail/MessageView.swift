@@ -188,19 +188,37 @@ struct MessageView: View {
         )
     }
 
-    /// Reflects `\Seen` in the local database only — IMAP-side `STORE` is
-    /// `opQueue`'s job (M3). TODO(M3): enqueue a `.setSeen` opQueue entry
-    /// here so the flag also propagates back to the server.
+    /// Reflects `\Seen` in the local database immediately, then enqueues
+    /// the absolute flag state for `OpQueueProcessor` to mirror to the
+    /// server (M3) and makes a best-effort replay attempt right away —
+    /// harmless if offline, the op just waits for the next successful
+    /// connection (foreground IDLE reconnect, pull-to-refresh, ...).
     private func markAsReadIfNeeded() {
         guard let message, !message.flags.contains(.seen) else { return }
         let messageId = messageId
+        let accountId = selection.accountId
+        let mailboxId = selection.mailboxId
         Task {
-            try? await environment.database.dbWriter.write { db in
-                guard var record = try MessageRecord.fetchOne(db, key: messageId) else { return }
-                guard !record.flags.contains(.seen) else { return }
-                record.flags.insert(.seen)
-                record.updatedAt = Date()
-                try record.update(db)
+            do {
+                try await environment.database.dbWriter.write { db in
+                    guard var record = try MessageRecord.fetchOne(db, key: messageId) else { return }
+                    guard !record.flags.contains(.seen) else { return }
+                    record.flags.insert(.seen)
+                    record.updatedAt = Date()
+                    try record.update(db)
+                    guard let mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return }
+                    try OpQueue.enqueueSetFlags(
+                        accountId: accountId, mailboxId: mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [UInt32(record.uid)], flags: record.flags, db: db
+                    )
+                }
+                guard let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
+                guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { return }
+                let auth = MailAuth.password(username: account.imapUsername, password: password)
+                _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+            } catch {
+                // Best-effort: the local flag update simply doesn't happen
+                // if this fails.
             }
         }
     }
