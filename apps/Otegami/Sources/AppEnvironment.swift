@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import MailTransport
 import MailTransportMailCore
 import OtegamiStore
 import SyncEngine
@@ -59,11 +60,39 @@ final class AppEnvironment {
                 for try await accounts in observation.values(in: database.dbWriter) {
                     guard !Task.isCancelled else { return }
                     self.accounts = accounts
+                    // Backfill (M4): thread every not-yet-threaded message
+                    // for each known account. Covers both a brand new
+                    // account (belt-and-suspenders — `AccountSyncer`
+                    // already threads as part of its own sync passes) and,
+                    // more importantly, accounts synced before M4 shipped,
+                    // whose `message.threadId` is still `nil` for every
+                    // row. Cheap to re-run on every account-list tick: once
+                    // an account's messages are threaded, the query this
+                    // backs (`threadId IS NULL`) simply returns nothing.
+                    for account in accounts {
+                        try? await database.dbWriter.write { db in
+                            try ThreadAssigner.assignAllUnthreaded(accountId: account.id, db: db)
+                        }
+                    }
                 }
             } catch {
                 // A failing account-list observation shouldn't be fatal —
                 // the sidebar just won't update further until relaunch.
             }
+        }
+    }
+
+    /// Removes an account entirely (Settings → account list → delete):
+    /// stops its `IDLE` loop, deletes the Keychain password, then deletes
+    /// its `account` row — every `mailbox`/`message`/`thread`/`opQueue` row
+    /// referencing it cascades via the schema's `onDelete: .cascade`
+    /// foreign keys (`AppDatabase`'s migrator), so this one delete is
+    /// enough to fully remove the account's local data too.
+    func deleteAccount(_ account: AccountRecord) async {
+        await syncCoordinator.stopIdleLoop(for: account)
+        try? credentialStore.deletePassword(forAccountId: account.id)
+        try? await database.dbWriter.write { db in
+            _ = try account.delete(db)
         }
     }
 }

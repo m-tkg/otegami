@@ -21,10 +21,10 @@ struct OtegamiApp: App {
 struct RootView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.scenePhase) private var scenePhase
-    @State private var selection: MailboxSelection?
-    // By id, not the whole `MessageRecord` — `MessageRecord` isn't
+    @State private var selection: SidebarSelection?
+    // By id, not the whole `ThreadRecord` — `ThreadRecord` isn't
     // `Hashable`, which `List(selection:)` requires.
-    @State private var selectedMessageId: Int64?
+    @State private var selectedThreadId: Int64?
 
     // Drives which column a compact-width device (iPhone) shows.
     // `NavigationSplitView` does *not* automatically push from `content`
@@ -38,21 +38,25 @@ struct RootView: View {
     // without this.
     @State private var preferredColumn: NavigationSplitViewColumn = .sidebar
 
-    // Remembers the last message opened per mailbox, so a cold relaunch
-    // (verified by `scripts/verify-ios-m2.sh`'s offline checkpoint) can
-    // show it again without another tap — `MessageView` reads an already-
-    // fetched body straight from GRDB, so this alone is enough to prove
-    // "read once, still readable with the mail server unreachable" without
-    // needing any UI-automation step after the restart.
-    @AppStorage("lastOpenedMessage.mailboxId") private var lastOpenedMailboxId: Int = 0
-    @AppStorage("lastOpenedMessage.messageId") private var lastOpenedMessageId: Int = 0
+    // Remembers the last thread opened per sidebar selection, so a cold
+    // relaunch (verified by `scripts/verify-ios-m2.sh`'s offline checkpoint,
+    // and `scripts/verify-ios-m4.sh`'s thread-view checkpoint) can show it
+    // again without another tap — `ThreadDetailView`/`MessageView` read an
+    // already-fetched body straight from GRDB, so this alone is enough to
+    // prove "read once, still readable with the mail server unreachable"
+    // without needing any UI-automation step after the restart. Keyed by
+    // a serialized `SidebarSelection` (M4: either "unified" or a mailbox
+    // id) rather than just a mailbox id, since the unified inbox has no
+    // single mailbox to key on.
+    @AppStorage("lastOpenedThread.selectionKey") private var lastOpenedSelectionKey: String = ""
+    @AppStorage("lastOpenedThread.threadId") private var lastOpenedThreadId: Int = 0
 
     var body: some View {
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
             SidebarView(selection: $selection)
         } content: {
             if let selection {
-                MessageListView(selection: selection, selectedMessageId: $selectedMessageId)
+                MessageListView(selection: selection, selectedThreadId: $selectedThreadId)
             } else {
                 ContentUnavailableView(
                     "メールボックスを選択してください",
@@ -62,8 +66,8 @@ struct RootView: View {
                 .navigationTitle("Inbox")
             }
         } detail: {
-            if let selection, let selectedMessageId {
-                MessageView(selection: selection, messageId: selectedMessageId)
+            if let selectedThreadId {
+                ThreadDetailView(threadId: selectedThreadId)
             } else {
                 ContentUnavailableView(
                     "No Message Selected",
@@ -72,22 +76,22 @@ struct RootView: View {
                 .accessibilityIdentifier("messageDetail.emptyState")
             }
         }
-        // A newly-selected mailbox invalidates whatever message was shown
-        // from the previous one — otherwise the detail pane would keep
-        // rendering a message that no longer belongs to the visible list.
-        // Restoration (below) re-populates it if there's a remembered
-        // message for the *new* selection.
+        // A newly-selected sidebar item invalidates whatever thread was
+        // shown from the previous one — otherwise the detail pane would
+        // keep rendering a thread that no longer belongs to the visible
+        // list. Restoration (below) re-populates it if there's a
+        // remembered thread for the *new* selection.
         .onChange(of: selection) { _, newValue in
-            selectedMessageId = nil
+            selectedThreadId = nil
             preferredColumn = newValue == nil ? .sidebar : .content
         }
-        .onChange(of: selectedMessageId) { _, newValue in
+        .onChange(of: selectedThreadId) { _, newValue in
             guard let newValue, let selection else { return }
-            lastOpenedMailboxId = Int(selection.mailboxId)
-            lastOpenedMessageId = Int(newValue)
+            lastOpenedSelectionKey = selectionKey(for: selection)
+            lastOpenedThreadId = Int(newValue)
             preferredColumn = .detail
         }
-        .task(id: selection) { restoreLastOpenedMessageIfNeeded() }
+        .task(id: selection) { restoreLastOpenedThreadIfNeeded() }
         // Foreground IDLE (M3, plan: "アプリ active 中、INBOX を IDLE"):
         // start every account's IDLE loop (plus one immediate opQueue
         // replay + incremental sync, since becoming active is exactly
@@ -144,14 +148,21 @@ struct RootView: View {
         return .password(username: account.imapUsername, password: password)
     }
 
-    private func restoreLastOpenedMessageIfNeeded() {
-        guard selectedMessageId == nil,
+    private func restoreLastOpenedThreadIfNeeded() {
+        guard selectedThreadId == nil,
               let selection,
-              lastOpenedMessageId != 0,
-              Int64(lastOpenedMailboxId) == selection.mailboxId
+              lastOpenedThreadId != 0,
+              lastOpenedSelectionKey == selectionKey(for: selection)
         else { return }
-        selectedMessageId = Int64(lastOpenedMessageId)
+        selectedThreadId = Int64(lastOpenedThreadId)
         preferredColumn = .detail
+    }
+
+    private func selectionKey(for selection: SidebarSelection) -> String {
+        switch selection {
+        case .unifiedInbox: "unified"
+        case .mailbox(let mailboxSelection): "mailbox:\(mailboxSelection.mailboxId)"
+        }
     }
 }
 

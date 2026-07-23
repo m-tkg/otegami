@@ -20,7 +20,13 @@ import GRDB
 /// in at selection time.
 struct MessageView: View {
     @Environment(AppEnvironment.self) private var environment
-    let selection: MailboxSelection
+    /// Which account to authenticate against for a lazy body fetch —
+    /// derived from `message.mailboxId` for everything else (M4: a message
+    /// embedded in `ThreadDetailView` doesn't necessarily belong to
+    /// whichever mailbox the sidebar has selected, e.g. the unified inbox
+    /// or a thread that spans mailboxes), so this is the one piece of
+    /// context a caller must still supply.
+    let accountId: String
     let messageId: Int64
 
     @State private var message: MessageRecord?
@@ -169,14 +175,14 @@ struct MessageView: View {
     }
 
     private func fetchBodyOverNetwork(message: MessageRecord) async throws {
-        guard let account = environment.accounts.first(where: { $0.id == selection.accountId }) else {
+        guard let account = environment.accounts.first(where: { $0.id == accountId }) else {
             throw MailTransportError.notConnected
         }
         guard let password = try environment.credentialStore.password(forAccountId: account.id) else {
             throw MailTransportError.authenticationFailed(underlyingDescription: "資格情報が見つかりません")
         }
         guard let mailbox = try await environment.database.dbWriter.read({ db in
-            try MailboxRecord.fetchOne(db, key: selection.mailboxId)
+            try MailboxRecord.fetchOne(db, key: message.mailboxId)
         }) else {
             throw MailTransportError.mailboxNotFound(path: "")
         }
@@ -196,8 +202,8 @@ struct MessageView: View {
     private func markAsReadIfNeeded() {
         guard let message, !message.flags.contains(.seen) else { return }
         let messageId = messageId
-        let accountId = selection.accountId
-        let mailboxId = selection.mailboxId
+        let accountId = accountId
+        let mailboxId = message.mailboxId
         Task {
             do {
                 try await environment.database.dbWriter.write { db in
@@ -211,6 +217,9 @@ struct MessageView: View {
                         accountId: accountId, mailboxId: mailboxId, uidValidity: mailbox.uidValidity,
                         uids: [UInt32(record.uid)], flags: record.flags, db: db
                     )
+                    if let threadId = record.threadId {
+                        try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                    }
                 }
                 guard let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
                 guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { return }

@@ -1,65 +1,82 @@
 import SwiftUI
+import OtegamiCore
 import OtegamiStore
 import SyncEngine
 import MailTransport
 
-/// The selected mailbox's messages, newest first, live via
-/// `MessageQuery.observation`. Works fully offline: it only ever reads
-/// from `AppDatabase` — refreshing (pull-to-refresh or the toolbar button)
-/// is what triggers `SyncCoordinator` to talk to the server, but with no
-/// network the list still renders whatever's already stored.
+/// The selected sidebar item's threads, newest-first (M4: thread rows, not
+/// individual messages — plan: "MessageListView をスレッド単位表示に変更").
+/// Works fully offline: it only ever reads from `AppDatabase`, either one
+/// mailbox's threads (`SidebarSelection.mailbox`) or the cross-account
+/// "すべての受信トレイ" unified inbox (`SidebarSelection.unifiedInbox`, plan:
+/// "アカウント境界を跨いだスレッド結合はしない" — each row is still one
+/// account's thread, just interleaved by date across accounts). Refreshing
+/// (pull-to-refresh or the toolbar button) is what triggers `SyncCoordinator`
+/// to talk to the server; with no network the list still renders whatever's
+/// already stored.
 struct MessageListView: View {
     @Environment(AppEnvironment.self) private var environment
-    let selection: MailboxSelection
-    // By id (`MessageRecord` isn't `Hashable`). Set directly from a
-    // `Button` action per row — the compact-width column push to
-    // `MessageView` once this changes is driven by `RootView`'s
-    // `preferredCompactColumn`; see its doc comment.
-    @Binding var selectedMessageId: Int64?
+    let selection: SidebarSelection
+    // By id (`ThreadRecord` isn't `Hashable` in the `List(selection:)`
+    // sense this project uses — see M2's doc note on why rows are plain
+    // `Button`s instead). Set directly from a `Button` action per row; the
+    // compact-width column push to `ThreadDetailView` once this changes is
+    // driven by `RootView`'s `preferredCompactColumn`.
+    @Binding var selectedThreadId: Int64?
 
-    @State private var messages: [MessageRecord] = []
+    @State private var summaries: [ThreadSummary] = []
     @State private var isSyncing = false
     @State private var syncErrorMessage: String?
 
+    /// Restarts the thread observation whenever the selection changes *or*
+    /// the account list changes — the latter matters for the unified inbox:
+    /// adding a second account (M4 verification scenario (c)) should widen
+    /// which accounts' inbox threads it observes without needing a manual
+    /// refresh or relaunch.
+    private struct ObservationKey: Hashable {
+        var selection: SidebarSelection
+        var accountIds: [String]
+    }
+
     var body: some View {
         List {
-            ForEach(messages) { message in
-                if let messageId = message.id {
+            ForEach(summaries) { summary in
+                if let threadId = summary.thread.id {
                     Button {
-                        selectedMessageId = messageId
+                        selectedThreadId = threadId
                     } label: {
-                        MessageRow(message: message)
+                        ThreadRow(summary: summary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityIdentifier("messageList.row.\(messageId)")
+                    .accessibilityIdentifier("messageList.row.\(threadId)")
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
-                            deleteMessage(message)
+                            deleteThread(summary)
                         } label: {
                             Label("削除", systemImage: "trash")
                         }
-                        .accessibilityIdentifier("messageList.row.\(messageId).delete")
+                        .accessibilityIdentifier("messageList.row.\(threadId).delete")
                     }
                     .swipeActions(edge: .leading) {
                         Button {
-                            toggleRead(message)
+                            toggleRead(summary)
                         } label: {
-                            if message.flags.contains(.seen) {
-                                Label("未読にする", systemImage: "envelope.badge")
-                            } else {
+                            if summary.thread.unreadCount > 0 {
                                 Label("既読にする", systemImage: "envelope.open")
+                            } else {
+                                Label("未読にする", systemImage: "envelope.badge")
                             }
                         }
                         .tint(.accentColor)
-                        .accessibilityIdentifier("messageList.row.\(messageId).toggleRead")
+                        .accessibilityIdentifier("messageList.row.\(threadId).toggleRead")
                     }
                 }
             }
         }
         .accessibilityIdentifier("messageList.list")
-        .navigationTitle(mailboxTitle)
+        .navigationTitle(title)
         .overlay {
-            if messages.isEmpty {
+            if summaries.isEmpty {
                 ContentUnavailableView(
                     "メッセージがありません",
                     systemImage: "envelope",
@@ -86,7 +103,9 @@ struct MessageListView: View {
         #if os(iOS)
         .refreshable { await refresh() }
         #endif
-        .task(id: selection) { await observeMessages() }
+        .task(id: ObservationKey(selection: selection, accountIds: environment.accounts.map(\.id))) {
+            await observeThreads()
+        }
         .alert(
             "同期エラー",
             isPresented: Binding(
@@ -100,119 +119,169 @@ struct MessageListView: View {
         }
     }
 
-    private var mailboxTitle: String {
-        environment.accounts
-            .first { $0.id == selection.accountId }
-            .map { $0.displayName } ?? "Inbox"
+    private var title: String {
+        switch selection {
+        case .unifiedInbox:
+            "すべての受信トレイ"
+        case .mailbox(let mailboxSelection):
+            environment.accounts.first { $0.id == mailboxSelection.accountId }.map { $0.displayName } ?? "Inbox"
+        }
     }
 
-    private func observeMessages() async {
-        let observation = MessageQuery.observation(mailboxId: selection.mailboxId)
-        do {
-            for try await fetched in observation.values(in: environment.database.dbWriter) {
-                messages = fetched
+    private func observeThreads() async {
+        switch selection {
+        case .mailbox(let mailboxSelection):
+            let observation = ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId)
+            do {
+                for try await fetched in observation.values(in: environment.database.dbWriter) {
+                    summaries = fetched
+                }
+            } catch {
+                // A failing observation just stops the list from updating
+                // further; it doesn't clear what's already shown.
             }
-        } catch {
-            // A failing observation just stops the list from updating
-            // further; it doesn't clear what's already shown.
+        case .unifiedInbox:
+            let accountIds = environment.accounts.map(\.id)
+            let observation = ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds)
+            do {
+                for try await fetched in observation.values(in: environment.database.dbWriter) {
+                    summaries = fetched
+                }
+            } catch {
+                // Same as above.
+            }
         }
     }
 
     /// Pull-to-refresh / the toolbar refresh button: differential sync
-    /// (M3), not `syncAccount`'s full initial-sync window — this is called
-    /// repeatedly over an account's lifetime, so it should only fetch
-    /// what's actually changed. Replays any queued offline operations
-    /// first, since "the user explicitly asked to reconnect" is exactly
-    /// the moment those should get a chance to flush too.
+    /// (M3), scoped (M4) to whichever mailbox is actually being viewed —
+    /// a single mailbox for `.mailbox`, or every account's INBOX for the
+    /// unified inbox (plan: "サイドバー選択時 + 手動更新"). Replays any
+    /// queued offline operations first, since "the user explicitly asked
+    /// to reconnect" is exactly the moment those should get a chance to
+    /// flush too.
     private func refresh() async {
-        guard let account = environment.accounts.first(where: { $0.id == selection.accountId }) else { return }
         isSyncing = true
         defer { isSyncing = false }
-        do {
-            guard let password = try environment.credentialStore.password(forAccountId: account.id) else {
-                syncErrorMessage = "保存された資格情報が見つかりません。アカウントを再追加してください。"
-                return
+
+        switch selection {
+        case .mailbox(let mailboxSelection):
+            guard let account = environment.accounts.first(where: { $0.id == mailboxSelection.accountId }) else { return }
+            do {
+                guard let password = try environment.credentialStore.password(forAccountId: account.id) else {
+                    syncErrorMessage = "保存された資格情報が見つかりません。アカウントを再追加してください。"
+                    return
+                }
+                let auth = MailAuth.password(username: account.imapUsername, password: password)
+                let mailboxPath = try await environment.database.dbWriter.read { db in
+                    try MailboxRecord.fetchOne(db, key: mailboxSelection.mailboxId)?.path
+                }
+                _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+                if let mailboxPath {
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .mailbox(path: mailboxPath))
+                } else {
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth)
+                }
+            } catch {
+                syncErrorMessage = "\(error)"
             }
-            let auth = MailAuth.password(username: account.imapUsername, password: password)
-            _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-            _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth)
-        } catch {
-            syncErrorMessage = "\(error)"
+        case .unifiedInbox:
+            for account in environment.accounts {
+                guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { continue }
+                let auth = MailAuth.password(username: account.imapUsername, password: password)
+                _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+                _ = try? await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly)
+            }
         }
     }
 
-    // MARK: - Swipe actions (M3: opQueue-backed read/unread + delete)
+    // MARK: - Swipe actions (M4: thread-wide, applied to every message)
 
-    /// Toggles `\Seen` locally (instant UI feedback) and enqueues the
-    /// resulting absolute flag state for `OpQueueProcessor` to mirror to
-    /// the server, then makes a best-effort replay attempt right away
-    /// (harmless no-op if offline — the queued op just waits for the next
-    /// successful connection).
-    private func toggleRead(_ message: MessageRecord) {
-        guard let messageId = message.id else { return }
-        let accountId = selection.accountId
-        let mailboxId = selection.mailboxId
+    /// Toggles every message in the thread to the opposite of the thread's
+    /// current unread state (any unread → mark the whole thread read;
+    /// fully read → mark it all unread again), enqueuing an absolute
+    /// `setFlags` op per affected message (plan: "全メッセージへ適用、opQueue
+    /// 経由") and making a best-effort replay attempt right away.
+    private func toggleRead(_ summary: ThreadSummary) {
+        guard let threadId = summary.thread.id else { return }
+        let accountId = summary.thread.accountId
+        let markingRead = summary.thread.unreadCount > 0
         Task {
             do {
                 try await environment.database.dbWriter.write { db in
-                    guard var record = try MessageRecord.fetchOne(db, key: messageId) else { return }
-                    guard let mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return }
-                    record.flags.formSymmetricDifference(.seen)
-                    record.updatedAt = Date()
-                    try record.update(db)
-                    try OpQueue.enqueueSetFlags(
-                        accountId: accountId, mailboxId: mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [UInt32(record.uid)], flags: record.flags, db: db
-                    )
+                    let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                    for var message in messages {
+                        if markingRead {
+                            guard !message.flags.contains(.seen) else { continue }
+                            message.flags.insert(.seen)
+                        } else {
+                            guard message.flags.contains(.seen) else { continue }
+                            message.flags.remove(.seen)
+                        }
+                        message.updatedAt = Date()
+                        try message.update(db)
+                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                        try OpQueue.enqueueSetFlags(
+                            accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                            uids: [UInt32(message.uid)], flags: message.flags, db: db
+                        )
+                    }
+                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
                 }
-                await replayOpQueueSoon()
+                await replayOpQueueSoon(accountId: accountId)
             } catch {
                 // Best-effort: the row simply doesn't update if this fails.
             }
         }
     }
 
-    /// Removes the message from the local list immediately (optimistic —
-    /// this mailbox's `ValueObservation` picks up the deletion right away)
-    /// and enqueues a `delete` op (opQueue resolves the account's Trash
+    /// Removes every message in the thread from the local list immediately
+    /// (optimistic — the mailbox's/unified inbox's `ValueObservation` picks
+    /// up the deletion right away, and `ThreadAssigner.recomputeAggregates`
+    /// deletes the now-empty `thread` row) and enqueues one `delete` op per
+    /// message (opQueue resolves each message's own account's Trash
     /// mailbox and issues the actual `MOVE` at replay time).
-    private func deleteMessage(_ message: MessageRecord) {
-        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { return }
-        let accountId = selection.accountId
-        let mailboxId = selection.mailboxId
+    private func deleteThread(_ summary: ThreadSummary) {
+        guard let threadId = summary.thread.id else { return }
+        let accountId = summary.thread.accountId
         Task {
             do {
                 try await environment.database.dbWriter.write { db in
-                    guard let mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return }
-                    try OpQueue.enqueueDelete(
-                        accountId: accountId, sourceMailboxId: mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [uid], db: db
-                    )
-                    try MessageRecord.deleteOne(db, key: messageId)
+                    let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                    for message in messages {
+                        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
+                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                        try OpQueue.enqueueDelete(
+                            accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                            uids: [uid], db: db
+                        )
+                        try MessageRecord.deleteOne(db, key: messageId)
+                    }
+                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
                 }
-                await replayOpQueueSoon()
+                await replayOpQueueSoon(accountId: accountId)
             } catch {
-                // Best-effort: the row stays if this fails; the swipe can
-                // be retried.
+                // Best-effort: whatever's left stays if this fails; the
+                // swipe can be retried.
             }
         }
     }
 
-    private func replayOpQueueSoon() async {
-        guard let account = environment.accounts.first(where: { $0.id == selection.accountId }) else { return }
+    private func replayOpQueueSoon(accountId: String) async {
+        guard let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
         guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { return }
         let auth = MailAuth.password(username: account.imapUsername, password: password)
         _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
     }
 }
 
-private struct MessageRow: View {
-    let message: MessageRecord
+private struct ThreadRow: View {
+    let summary: ThreadSummary
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Circle()
-                .fill(message.flags.contains(.seen) ? Color.clear : Color.accentColor)
+                .fill(summary.thread.unreadCount > 0 ? Color.accentColor : Color.clear)
                 .frame(width: 8, height: 8)
                 .padding(.top, 6)
                 .accessibilityHidden(true)
@@ -220,22 +289,45 @@ private struct MessageRow: View {
                 Text(senderText)
                     .font(.headline)
                     .lineLimit(1)
-                Text(message.subject?.isEmpty == false ? message.subject! : "(件名なし)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(subjectText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if summary.thread.messageCount > 1 {
+                        Text("\(summary.thread.messageCount)")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.secondary.opacity(0.2)))
+                            .accessibilityIdentifier("messageList.row.\(summary.id).countBadge")
+                    }
+                }
+                if let snippet = summary.latestMessage?.snippet, !snippet.isEmpty {
+                    Text(snippet)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 8)
-            Text(message.internalDate, style: .date)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let date = summary.thread.lastMessageDate {
+                Text(date, style: .date)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
     }
 
     private var senderText: String {
-        guard let from = message.fromAddresses.first else { return "(unknown)" }
+        guard let from = summary.latestMessage?.fromAddresses.first else { return "(unknown)" }
         return from.name?.isEmpty == false ? from.name! : from.address
+    }
+
+    private var subjectText: String {
+        let subject = summary.latestMessage?.subject ?? summary.thread.normalizedSubject
+        return subject?.isEmpty == false ? subject! : "(件名なし)"
     }
 }
