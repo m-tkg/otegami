@@ -218,6 +218,16 @@ extension AppDatabase {
             }
         }
 
+        // v3 (M3): exponential backoff between `opQueue` replay attempts
+        // needs a "not eligible again until" timestamp per row —
+        // `attempts` alone can't express *when* the next retry is allowed,
+        // only how many have happened so far.
+        migrator.registerMigration("v3") { db in
+            try db.alter(table: "opQueue") { t in
+                t.add(column: "nextRetryAt", .datetime)
+            }
+        }
+
         return migrator
     }
 }

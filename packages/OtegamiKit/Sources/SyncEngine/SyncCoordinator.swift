@@ -15,6 +15,7 @@ public actor SyncCoordinator {
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     private var syncers: [String: AccountSyncer] = [:]
     private let bodyFetcher: BodyFetcher
+    private let opQueueProcessor: OpQueueProcessor
 
     public init(
         database: AppDatabase,
@@ -23,6 +24,7 @@ public actor SyncCoordinator {
         self.database = database
         self.sessionFactory = sessionFactory
         self.bodyFetcher = BodyFetcher(database: database)
+        self.opQueueProcessor = OpQueueProcessor(database: database, sessionFactory: sessionFactory)
     }
 
     /// Runs initial sync for `account` (creating its `AccountSyncer` if
@@ -62,6 +64,57 @@ public actor SyncCoordinator {
         }
         _ = try await session.select(mailboxPath)
         try await bodyFetcher.fetchBody(message: message, mailboxPath: mailboxPath, session: session)
+    }
+
+    /// Differential sync (M3): only fetches what changed since the last
+    /// sync (new mail, flag changes, uidValidity-triggered resync) rather
+    /// than re-walking the whole initial-sync window. What pull-to-refresh,
+    /// foreground-resume, and IDLE wake-ups all call — see
+    /// `AccountSyncer.performIncrementalSync`'s doc comment for the exact
+    /// per-mailbox behavior.
+    @discardableResult
+    public func syncAccountIncrementally(_ account: AccountRecord, auth: MailAuth) async throws -> MailboxSyncer.Progress {
+        let syncer = syncer(for: account)
+        return try await syncer.performIncrementalSync(auth: auth)
+    }
+
+    /// Replays `account`'s queued offline operations (flag changes,
+    /// moves/deletes) against the server. Cheap to call opportunistically
+    /// — a no-op (no connection opened) when the queue is empty or
+    /// nothing is due yet; see `OpQueueProcessor.replay`.
+    @discardableResult
+    public func replayOpQueue(for account: AccountRecord, auth: MailAuth) async throws -> OpQueueProcessor.ReplayResult {
+        try await opQueueProcessor.replay(account: account, auth: auth)
+    }
+
+    /// Starts `account`'s foreground `IDLE` loop: on each server push,
+    /// runs an incremental sync followed by an opQueue replay (a
+    /// newly-online connection is exactly when queued offline operations
+    /// should get their chance to flush). Meant to be called once when the
+    /// app becomes active per M3's "フォアグラウンド IDLE" requirement — see
+    /// `AccountSyncer.startIdleLoop`'s doc comment for the reconnect/backoff
+    /// behavior underneath.
+    public func startIdleLoop(for account: AccountRecord, auth: MailAuth) async {
+        let syncer = syncer(for: account)
+        await syncer.startIdleLoop(auth: auth) { [weak self] in
+            guard let self else { return }
+            _ = try? await self.syncAccountIncrementally(account, auth: auth)
+            _ = try? await self.replayOpQueue(for: account, auth: auth)
+        }
+    }
+
+    /// Stops `account`'s foreground `IDLE` loop (app entering background).
+    public func stopIdleLoop(for account: AccountRecord) async {
+        guard let syncer = syncers[account.id] else { return }
+        await syncer.stopIdleLoop()
+    }
+
+    /// Stops every account's `IDLE` loop in one call, for `RootView`'s
+    /// `scenePhase` handling (`.active` → `.background`/`.inactive`).
+    public func stopAllIdleLoops() async {
+        for syncer in syncers.values {
+            await syncer.stopIdleLoop()
+        }
     }
 
     private func syncer(for account: AccountRecord) -> AccountSyncer {

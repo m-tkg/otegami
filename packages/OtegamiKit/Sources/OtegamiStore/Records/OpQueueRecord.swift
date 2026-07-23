@@ -16,6 +16,11 @@ public struct OpQueueRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     public var createdAt: Date
     public var attempts: Int
     public var lastError: String?
+    /// When this op becomes eligible for another replay attempt after a
+    /// failure (exponential backoff, M3's `OpQueueProcessor`). `nil` means
+    /// "eligible now" — the state for a never-yet-attempted op, or a v1/v2
+    /// row from before this column existed.
+    public var nextRetryAt: Date?
 
     public init(
         id: Int64? = nil,
@@ -24,7 +29,8 @@ public struct OpQueueRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         payload: Data,
         createdAt: Date = Date(),
         attempts: Int = 0,
-        lastError: String? = nil
+        lastError: String? = nil,
+        nextRetryAt: Date? = nil
     ) {
         self.id = id
         self.accountId = accountId
@@ -33,6 +39,7 @@ public struct OpQueueRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.createdAt = createdAt
         self.attempts = attempts
         self.lastError = lastError
+        self.nextRetryAt = nextRetryAt
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

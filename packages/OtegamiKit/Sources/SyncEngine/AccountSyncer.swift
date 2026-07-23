@@ -33,6 +33,13 @@ public actor AccountSyncer {
     private let database: AppDatabase
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     private let bodyFetcher: BodyFetcher
+    private let mailboxSyncer: MailboxSyncer
+
+    /// The long-lived foreground `IDLE` loop's `Task` (M3), started by
+    /// ``startIdleLoop(auth:onWake:)`` and stopped by ``stopIdleLoop()``.
+    /// One `AccountSyncer` runs at most one of these at a time — starting
+    /// a new one cancels whatever was already running first.
+    private var idleTask: Task<Void, Never>?
 
     public init(
         account: AccountRecord,
@@ -43,6 +50,11 @@ public actor AccountSyncer {
         self.database = database
         self.sessionFactory = sessionFactory
         self.bodyFetcher = BodyFetcher(database: database)
+        self.mailboxSyncer = MailboxSyncer(database: database)
+    }
+
+    deinit {
+        idleTask?.cancel()
     }
 
     /// Connects, lists mailboxes (upserting all of them), then selects
@@ -73,22 +85,7 @@ public actor AccountSyncer {
         progress.mailboxesDiscovered = mailboxInfos.count
         onProgress?(progress)
 
-        let mailboxRecordsByPath = try await database.dbWriter.write { [account] db -> [String: MailboxRecord] in
-            var records: [String: MailboxRecord] = [:]
-            for info in mailboxInfos {
-                var record = MailboxRecord(
-                    accountId: account.id,
-                    path: info.path,
-                    displayPath: info.displayPath,
-                    delimiter: info.delimiter,
-                    role: MailboxRoleRecord(info.role),
-                    attributesRaw: info.attributes.rawValue
-                )
-                record = try record.upsertAndFetch(db, onConflict: ["accountId", "path"])
-                records[info.path] = record
-            }
-            return records
-        }
+        let mailboxRecordsByPath = try await upsertMailboxes(mailboxInfos)
 
         guard let inboxInfo = Self.inbox(among: mailboxInfos),
               let inboxRecord = mailboxRecordsByPath[inboxInfo.path],
@@ -155,6 +152,121 @@ public actor AccountSyncer {
         }
 
         return progress
+    }
+
+    /// Upserts every mailbox `listMailboxes()` reported (keyed by
+    /// `(accountId, path)`), returning the resulting records by path.
+    /// Shared by ``performInitialSync(auth:onProgress:)`` and
+    /// ``performIncrementalSync(auth:)`` — both need "every known mailbox,
+    /// freshly upserted" before doing anything mailbox-specific.
+    private func upsertMailboxes(_ mailboxInfos: [MailboxInfo]) async throws -> [String: MailboxRecord] {
+        try await database.dbWriter.write { [account] db -> [String: MailboxRecord] in
+            var records: [String: MailboxRecord] = [:]
+            for info in mailboxInfos {
+                var record = MailboxRecord(
+                    accountId: account.id,
+                    path: info.path,
+                    displayPath: info.displayPath,
+                    delimiter: info.delimiter,
+                    role: MailboxRoleRecord(info.role),
+                    attributesRaw: info.attributes.rawValue
+                )
+                record = try record.upsertAndFetch(db, onConflict: ["accountId", "path"])
+                records[info.path] = record
+            }
+            return records
+        }
+    }
+
+    /// Differential sync (M3): re-lists mailboxes (so a newly-created
+    /// server-side mailbox — e.g. Trash appearing for the first time —
+    /// is picked up for `OpQueueProcessor`'s delete-to-Trash resolution),
+    /// then runs `MailboxSyncer.incrementalSync` for INBOX. Scoped to
+    /// INBOX only, matching `performInitialSync`'s scope — other
+    /// mailboxes are upserted (so the sidebar/opQueue can reference them)
+    /// but not differentially synced until multi-mailbox sync lands.
+    @discardableResult
+    public func performIncrementalSync(auth: MailAuth) async throws -> MailboxSyncer.Progress {
+        let session = sessionFactory(account.imapConfig)
+        try await session.connect(auth: auth)
+        defer {
+            let session = session
+            Task { await session.disconnect() }
+        }
+
+        let capabilities = try await session.capabilities()
+        let mailboxInfos = try await session.listMailboxes()
+        let mailboxRecordsByPath = try await upsertMailboxes(mailboxInfos)
+
+        guard let inboxInfo = Self.inbox(among: mailboxInfos),
+              let inboxRecord = mailboxRecordsByPath[inboxInfo.path]
+        else {
+            return MailboxSyncer.Progress()
+        }
+
+        let (_, progress) = try await mailboxSyncer.incrementalSync(
+            mailboxRecord: inboxRecord,
+            mailboxPath: inboxInfo.path,
+            session: session,
+            capabilities: capabilities
+        )
+        return progress
+    }
+
+    // MARK: - Foreground IDLE (M3)
+
+    /// Starts (or restarts, if already running) a long-lived `IDLE` loop
+    /// against INBOX: connects, `IDLE`s continuously (see
+    /// `MailCoreIMAPSession.idle`'s doc comment for the reissue/backoff
+    /// details it handles internally), and calls `onWake` once per
+    /// `.newData` event. On any error (dropped connection, auth failure,
+    /// ...) it reconnects with its own exponential backoff rather than
+    /// giving up — this is meant to run for as long as the app is in the
+    /// foreground. Cancelled by ``stopIdleLoop()`` or by this
+    /// `AccountSyncer` being deallocated.
+    public func startIdleLoop(auth: MailAuth, onWake: @escaping @Sendable () async -> Void) {
+        stopIdleLoop()
+        idleTask = Task { [weak self] in
+            await self?.runIdleLoop(auth: auth, onWake: onWake)
+        }
+    }
+
+    public func stopIdleLoop() {
+        idleTask?.cancel()
+        idleTask = nil
+    }
+
+    private func runIdleLoop(auth: MailAuth, onWake: @Sendable () async -> Void) async {
+        var backoffSeconds: TimeInterval = 5
+        while !Task.isCancelled {
+            do {
+                let session = sessionFactory(account.imapConfig)
+                try await session.connect(auth: auth)
+                let mailboxInfos = try await session.listMailboxes()
+                guard let inboxInfo = Self.inbox(among: mailboxInfos) else {
+                    await session.disconnect()
+                    return
+                }
+                _ = try await session.select(inboxInfo.path)
+                backoffSeconds = 5 // a clean connect resets the backoff
+
+                for try await event in session.idle(mailboxPath: inboxInfo.path) {
+                    guard !Task.isCancelled else { break }
+                    if case .newData = event {
+                        await onWake()
+                    }
+                }
+                await session.disconnect()
+            } catch {
+                // Connection/auth error, or the idle stream itself threw —
+                // fall through to the backoff-and-retry below rather than
+                // giving up on IDLE for the rest of the foreground session.
+            }
+
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .seconds(backoffSeconds))
+            backoffSeconds = min(backoffSeconds * 2, 300)
+        }
     }
 
     /// The lower UID bound that yields (at most) `window` messages,
