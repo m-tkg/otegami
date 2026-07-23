@@ -17,6 +17,13 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
+
+        // MailCore2, source-built via Swift Package Manager. See
+        // docs/build-mailcore2.md for why this fork/branch was chosen over
+        // hand-rolling an XCFramework build script. Pinned to an exact
+        // revision (rather than tracking the branch) for reproducibility;
+        // bump deliberately and re-verify against dev/mailstack.
+        .package(url: "https://github.com/readdle/mailcore2.git", revision: "44c63329df67e9a0d597627edbebe65002d3fcd8"),
     ],
     targets: [
         // Linux-compatible model & pure-logic layer. No dependencies.
@@ -52,16 +59,32 @@ let package = Package(
             dependencies: ["OtegamiCore"]
         ),
 
-        // MailCore2-backed adapter for MailTransport. Apple-only. MailCore2 is
-        // not wired in yet (M0 placeholder); see scripts/build-mailcore2.sh.
+        // MailCore2-backed adapter for MailTransport. Apple-only; MailCore2
+        // itself (and its C/C++ dependencies) are only ever pulled in via
+        // this target, so building any *other* single target/product (e.g.
+        // `swift build --target OtegamiCore`) doesn't need it. A bare
+        // `swift test` still builds every test target including
+        // MailTransportMailCoreTests, so it remains macOS/iOS-only; see
+        // docs/build-mailcore2.md for the current CI implications.
         .target(
             name: "MailTransportMailCore",
-            dependencies: ["MailTransport"]
+            dependencies: [
+                "MailTransport",
+                .product(name: "MailCore", package: "mailcore2"),
+            ]
         ),
 
         .testTarget(
             name: "OtegamiCoreTests",
             dependencies: ["OtegamiCore"]
+        ),
+
+        // Integration tests against a real IMAP server (the dev mailstack's
+        // Dovecot by default). Opt-in: skipped unless
+        // OTEGAMI_TEST_IMAP_HOST is set. See Tests/MailTransportMailCoreTests.
+        .testTarget(
+            name: "MailTransportMailCoreTests",
+            dependencies: ["MailTransportMailCore"]
         ),
     ]
 )

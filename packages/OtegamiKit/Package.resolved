@@ -1,6 +1,15 @@
 {
-  "originHash" : "dec0c99011c636cdbe0d27ba3e98ee9d81c84cbe9a9ed0cc250aead6f7e530b1",
+  "originHash" : "31ab275b8f13b98e226ab27932de5ff5bbf957c1257fb66010ad45f82e05ff9d",
   "pins" : [
+    {
+      "identity" : "ctemplate",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/ctemplate.git",
+      "state" : {
+        "revision" : "a56e2d43eb57dc1e132a96f0fd9e4df198d1c35b",
+        "version" : "2.2.3-readdle.4"
+      }
+    },
     {
       "identity" : "grdb.swift",
       "kind" : "remoteSourceControl",
@@ -8,6 +17,41 @@
       "state" : {
         "revision" : "b83108d10f42680d78f23fe4d4d80fc88dab3212",
         "version" : "7.11.1"
+      }
+    },
+    {
+      "identity" : "libetpan",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/libetpan.git",
+      "state" : {
+        "revision" : "68a9583bb8022f75992e7ebb7956e8bd7197e867",
+        "version" : "1.9.3-readdle.5"
+      }
+    },
+    {
+      "identity" : "mailcore2",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/mailcore2.git",
+      "state" : {
+        "revision" : "44c63329df67e9a0d597627edbebe65002d3fcd8"
+      }
+    },
+    {
+      "identity" : "swift-unicode",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/swift-unicode",
+      "state" : {
+        "revision" : "fb8aac372834ccb8fab0a5c1742df862d47c4156",
+        "version" : "68.2.0"
+      }
+    },
+    {
+      "identity" : "tidy-html5",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/tidy-html5.git",
+      "state" : {
+        "revision" : "fa68a7e0ebdc4deab6de668c85a8d8ccf2fb5b19",
+        "version" : "5.4.0-readdle.28"
       }
     }
   ],
