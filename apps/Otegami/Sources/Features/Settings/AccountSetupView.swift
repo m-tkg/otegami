@@ -56,6 +56,11 @@ struct AccountSetupView: View {
                         Text("STARTTLS").tag(ConnectionSecurityRecord.startTLS)
                         Text("TLS").tag(ConnectionSecurityRecord.tls)
                     }
+                    // `.menu` (rather than the Form default, which pushes a
+                    // navigation-style picker screen) keeps the interaction
+                    // deterministic for XCUITest: tap the row, tap the
+                    // option label, done — no extra "back" navigation step.
+                    .pickerStyle(.menu)
                     .accessibilityIdentifier("accountSetup.imapSecurity")
                     TextField("ユーザー名", text: $imapUsername)
                         .textFieldAutocapitalizationNone()
@@ -75,6 +80,7 @@ struct AccountSetupView: View {
                         Text("STARTTLS").tag(ConnectionSecurityRecord.startTLS)
                         Text("TLS").tag(ConnectionSecurityRecord.tls)
                     }
+                    .pickerStyle(.menu)
                     .accessibilityIdentifier("accountSetup.smtpSecurity")
                     TextField("ユーザー名", text: $smtpUsername)
                         .textFieldAutocapitalizationNone()

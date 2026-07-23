@@ -74,12 +74,33 @@ targets:
       - package: OtegamiKit
         product: MailTransportMailCore
 
+  # iOS-only: drives the real app (XCUIApplication) against the dev
+  # mailstack for M1's automated simulator verification. See
+  # Scripts/verify-ios-m1.sh and docs/verify.md.
+  OtegamiUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: UITests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.m-tkg.otegami.uitests
+    dependencies:
+      - target: Otegami
+
 schemes:
   Otegami:
     build:
       targets:
         Otegami: all
+        OtegamiUITests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - OtegamiUITests
     archive:
       config: Release
