@@ -161,3 +161,59 @@ None of this changes what correct SwiftUI code looks like — `List
 documented patterns and are expected to work normally elsewhere. Re-check
 whether these workarounds are still needed the next time this project's
 toolchain/simulator moves off a beta OS.
+
+## M3: swipe actions, and why `Process` can't drive `doveadm` from XCUITest
+
+Two things worth recording from building `scripts/verify-ios-m3.sh` /
+`OtegamiM3*UITests`:
+
+1. **`Foundation.Process` is unavailable on iOS**, including for code
+   compiled into an iOS-platform XCUITest target running against the
+   Simulator — it's a compile-time API availability restriction, not a
+   runtime sandbox one, so there's no way to shell out to `docker compose
+   exec doveadm ...` *from inside* an `OtegamiUITests` test method. Any
+   verification step that needs "another IMAP client changed something on
+   the server" has to happen from the *wrapping shell script* (a plain
+   host `bash` process, where `docker compose`/`doveadm` run fine —
+   see `DoveadmHelper.swift` under `Tests/MailTransportMailCoreTests`,
+   which *is* allowed `Process` since that's a macOS-only test target),
+   interleaved with separate `xcodebuild test -only-testing:...` phases.
+   This also means a live "app stays foregrounded, IDLE pushes a change,
+   assert it appeared" test isn't achievable as a single continuous
+   XCUITest run (the app process isn't reliably kept alive *and*
+   simultaneously reachable from a host shell mid-test); `verify-ios-m3.sh`
+   instead injects the change first, then does a fresh `app.launch()` and
+   relies on `RootView`'s `scenePhase == .active` handler (which runs an
+   opQueue replay + incremental sync on every foreground transition,
+   including app launch) — the exact same `AccountSyncer
+   .performIncrementalSync`/`OpQueueProcessor.replay` code a live
+   foreground IDLE push would also trigger, just invoked deterministically
+   instead of racing a live push.
+
+2. **`.swipeActions` *does* reveal reliably via `XCUIElement.swipeLeft()`/
+   `.swipeRight()`** in this simulator/toolchain — no `{-1, -1}`-style hit
+   point bug here, unlike `.tap()`'s post-sheet-dismissal issue above. A
+   hand-rolled `coordinate(...).press(forDuration:thenDragTo:)` swipe
+   (mimicking the tap workaround's "avoid `.tap()`'s internal machinery"
+   approach) reliably *failed* to reveal the action row instead — use the
+   built-in convenience methods for row swipes, not a manual drag.
+   Revealed swipe-action buttons *do* also match by exact
+   `app.buttons["identifier"]` lookup here (confirmed via
+   `waitForNonExistence` re-resolving one by its literal identifier
+   string in the test log) — the identifier-lookup pitfall from the M2
+   section isn't universal, so don't assume it and reach for a `CONTAINS`
+   predicate purely defensively; do reach for one when a swipe action's
+   *label* is state-dependent (e.g. "既読にする" vs "未読にする" — matching
+   the identifier suffix instead of the label sidesteps needing to know
+   which state a row is in ahead of time).
+3. **A `.containing(predicate)` row lookup can match the wrong row when
+   one seeded subject is a substring of another** — "明日の打ち合わせに
+   ついて" is also a substring of the seeded reply "Re: 明日の打ち合わせ
+   について", which sorts ahead of it (newer) and therefore wins
+   `.firstMatch`. Caught by taking a screenshot mid-test (`Thread.sleep`
+   inserted after the swipe, `xcrun simctl io ... screenshot` run from a
+   second shell during the sleep — the same "screenshot mid-poll" tactic
+   from the M2 section) rather than guessing from the assertion failure
+   message alone; the fix was picking a collision-free subject for that
+   test, not an environment workaround. Worth remembering whenever a test
+   subject string could plausibly be any other seeded subject's substring.

@@ -19,19 +19,31 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        let subject = "明日の打ち合わせについて"
-        let row = row(forSubject: subject, in: app)
+        // Not "明日の打ち合わせについて" — that subject is also a substring
+        // of the seeded reply "Re: 明日の打ち合わせについて", which sorts
+        // ahead of it (newer) and so wins `.containing(predicate)
+        // .firstMatch`; that reply also happens to have already been
+        // opened (and thus marked \Seen) by earlier M1/M2 verification
+        // runs sharing this same simulator install, which flips the
+        // revealed action's label to "未読にする" instead of "既読にする"
+        // — a real ambiguous-predicate bug caught via a debug screenshot
+        // taken mid-swipe, not an environment quirk. This subject has no
+        // such collision.
+        let row = row(forSubject: "Ｆｗｄ：今月のリリースノート", in: app)
 
-        // Leading swipe (left-to-right drag) reveals the "既読にする" /
-        // "未読にする" action (`.swipeActions(edge: .leading)` in
-        // `MessageListView`).
-        swipe(row, from: 0.05, to: 0.9)
+        // Leading swipe (`XCUIElement.swipeRight()`) reveals the
+        // toggle-read action (`.swipeActions(edge: .leading)` in
+        // `MessageListView`) — matched by its accessibility identifier
+        // suffix rather than its label text, since the label reads
+        // "既読にする"/"未読にする" depending on the message's *current*
+        // flag state, which this test doesn't want to assume.
+        row.swipeRight()
 
-        let markReadButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "既読にする")).firstMatch
-        XCTAssertTrue(markReadButton.waitForExistence(timeout: 10), "Expected the leading swipe action to reveal \"既読にする\"")
-        markReadButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+        let toggleReadButton = swipeActionButton(identifierSuffix: "toggleRead", in: app)
+        XCTAssertTrue(toggleReadButton.waitForExistence(timeout: 10), "Expected the leading swipe action button to appear")
+        toggleReadButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
-        XCTAssertTrue(markReadButton.waitForNonExistence(timeout: 10), "Swipe action should dismiss once tapped")
+        XCTAssertTrue(toggleReadButton.waitForNonExistence(timeout: 10), "Swipe action should dismiss once tapped")
     }
 
     func testSwipeDeletesMessageOffline() throws {
@@ -41,11 +53,11 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
         let subject = "M3差分同期テスト"
         let row = row(forSubject: subject, in: app)
 
-        // Trailing swipe (right-to-left drag) reveals "削除"
+        // Trailing swipe (`XCUIElement.swipeLeft()`) reveals "削除"
         // (`.swipeActions(edge: .trailing)` in `MessageListView`).
-        swipe(row, from: 0.9, to: 0.05)
+        row.swipeLeft()
 
-        let deleteButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "削除")).firstMatch
+        let deleteButton = swipeActionButton(identifierSuffix: "delete", in: app)
         XCTAssertTrue(deleteButton.waitForExistence(timeout: 10), "Expected the trailing swipe action to reveal \"削除\"")
         deleteButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
@@ -64,18 +76,13 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
         return row
     }
 
-    /// A direct coordinate press-and-drag (rather than `XCUIElement`'s
-    /// `.swipeLeft()`/`.swipeRight()` convenience methods) for the same
-    /// reason `openMessage`'s row tap in `OtegamiM2VerificationUITests`
-    /// uses an explicit coordinate rather than plain `.tap()` — see
-    /// `.claude/skills/verify/SKILL.md`'s "M2: this simulator/toolchain's
-    /// touch-delivery bugs" section. Not confirmed to be strictly necessary
-    /// for a swipe specifically (only tap's "scroll-to-visible" step was
-    /// diagnosed as broken there), but consistent with the rest of this
-    /// suite's established workaround.
-    private func swipe(_ element: XCUIElement, from startEdge: CGFloat, to endEdge: CGFloat) {
-        let start = element.coordinate(withNormalizedOffset: CGVector(dx: startEdge, dy: 0.5))
-        let end = element.coordinate(withNormalizedOffset: CGVector(dx: endEdge, dy: 0.5))
-        start.press(forDuration: 0.05, thenDragTo: end)
+    /// `app.buttons["messageList.row.<id>.\(identifierSuffix)"]` (exact
+    /// identifier lookup) is the kind of query this project's simulator/
+    /// toolchain has previously failed to match even for a visible element
+    /// (see `.claude/skills/verify/SKILL.md`) — a `CONTAINS` predicate
+    /// against `identifier` finds it reliably instead, the same technique
+    /// already used for label text elsewhere in this suite.
+    private func swipeActionButton(identifierSuffix: String, in app: XCUIApplication) -> XCUIElement {
+        app.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", identifierSuffix)).firstMatch
     }
 }

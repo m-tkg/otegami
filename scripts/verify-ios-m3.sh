@@ -116,7 +116,12 @@ run_test "OtegamiM3SwipeActionsUITests/testSwipeMarksMessageRead"
 echo "==> Phase 5/9: confirm \\Seen reached the server via doveadm"
 seen_ok=0
 for _ in $(seq 1 10); do
-  if doveadm fetch -u "$MAILSTACK_USER" flags "HEADER Subject 明日の打ち合わせについて" 2>/dev/null | grep -q '\\Seen'; then
+  # doveadm's search query tokens must be separate argv entries (HEADER /
+  # Subject / the value) — passing them pre-joined as one shell string
+  # makes doveadm's own arg parser reject the whole query ("Unknown
+  # argument"), which `grep` would otherwise just silently see as "no
+  # \Seen found" and keep retrying for no reason.
+  if doveadm fetch -u "$MAILSTACK_USER" flags HEADER Subject "Ｆｗｄ：今月のリリースノート" 2>/dev/null | grep -q '\\Seen'; then
     seen_ok=1
     break
   fi
@@ -158,7 +163,12 @@ sleep 5
 echo "==> Phase 9/9: confirm the deleted message replayed into Trash via doveadm"
 trash_ok=0
 for _ in $(seq 1 15); do
-  if doveadm fetch -u "$MAILSTACK_USER" mailbox.name mailbox Trash all 2>/dev/null | grep -q '^mailbox.name: Trash$'; then
+  # `doveadm mailbox status ... messages Trash` prints "Trash messages=N" —
+  # simpler and less fragile than a fetch/search query (whose tokens must
+  # be separate argv entries, see phase 5's comment above) for "is there
+  # at least one message in Trash now".
+  count="$(doveadm mailbox status -u "$MAILSTACK_USER" messages Trash 2>/dev/null | awk -F= '{print $2}')"
+  if [[ -n "$count" && "$count" -ge 1 ]]; then
     trash_ok=1
     break
   fi

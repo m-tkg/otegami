@@ -114,3 +114,95 @@ M1 では macOS 側の UI 検証は必須ではない (計画書参照) が、�
 ことは毎回確認する。M2 の HTML 表示 (`HTMLMessageView`) も iOS/macOS 両方の
 `#if os(...)` 分岐を実装しているが、自動 UI 検証は iOS シミュレータのみで
 macOS 側はビルド確認 (`make mac`) までとしている (計画書のテスト戦略に準拠)。
+
+## 統合テスト (opt-in, dev/mailstack 対象)
+
+```sh
+make mailstack-up
+OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter MailTransportMailCoreTests
+make mailstack-down
+```
+
+`packages/OtegamiKit` の `MailTransportMailCoreTests` ターゲット
+(`OTEGAMI_TEST_IMAP_HOST` 未設定時はスキップされ、`make test`/CI には影響しない)。
+M1/M2 由来の `MailCoreIMAPSessionIntegrationTests` に加え、M3 では
+`SyncEngineIntegrationTests` が `AccountSyncer.performIncrementalSync` を実
+Dovecot に対して実行する。他クライアントの操作は `DoveadmHelper`
+(`docker compose exec dovecot doveadm ...`) でシミュレートする: INBOX を
+既知の1通に初期化 → 初期同期 → `doveadm flags add \Seen` でフラグ変更、
+`doveadm save` で新着メールを投入 → `performIncrementalSync` がその両方を
+拾うことを assert。テスト自身が INBOX を書き換えるため、終了時に
+`DoveadmHelper.restoreStandardFixtures()` (`seed.sh` の再実行) で
+`MailCoreIMAPSessionIntegrationTests` が前提とする標準 seed 状態に戻す
+(実行順に依存しないことを確認済み)。
+
+## iOS シミュレータ検証 (M3)
+
+```sh
+scripts/verify-ios-m3.sh
+```
+
+差分同期・フラグ同期・オフライン操作キュー・フォアグラウンド IDLE の
+チェックポイントを、XCUITest 4 フェーズとホスト側 `doveadm` 操作を交互に
+実行して確認する。XCUITest (iOS ターゲット) からは `Foundation.Process`
+が使えないため、「他クライアントが何かした」側は必ずラッパースクリプト
+(ホストの bash) から `doveadm`/`docker compose exec` で行う。
+
+1. `OtegamiM3SetupUITests` — Dovecot アカウントを追加し、M1 と同じ
+   ベースライン (seed 済み4通) が一覧に出ることを確認。
+2. (ホスト) `doveadm save` で `08-m3-new-mail.eml`
+   (「M3差分同期テスト」) を INBOX に投入 — 他クライアントの新着配信を模す。
+3. `OtegamiM3NewMailUITests` — アプリを再起動し、新着件名が
+   `waitForExistence(timeout: 30)` のポーリングで一覧に現れることを確認。
+   **フォアグラウンド IDLE そのものではなく**、`RootView` の
+   `scenePhase == .active` ハンドラが起動直後に必ず1回実行する
+   opQueue replay + `performIncrementalSync` を経由させている
+   (IDLE が push する先と全く同じコード)。理由: XCUITest は
+   `xcodebuild test` の呼び出しごとに別プロセスなので、ホスト側の
+   `doveadm` 呼び出しと同一 IMAP 接続を維持したままアプリを生かし続ける
+   ことを前提にできない。起動トリガの同期で同じパスを確定的に検証する。
+4. `OtegamiM3SwipeActionsUITests/testSwipeMarksMessageRead` (mailstack
+   稼働中) — 座標ベースの press-and-drag ( `.swipeLeft()`/`.swipeRight()`
+   ではなく、M2 の既知タップ不具合と同じ理由で明示座標を使用) で行のリーディ
+   ングスワイプを行い、「既読にする」ボタンをタップ。
+5. (ホスト) `doveadm fetch -u ... flags HEADER Subject "..."` を最大10秒
+   ポーリングし、`\Seen` がサーバ側に反映されたことを assert (opQueue の
+   即時 best-effort replay がネットワーク越しに完了するのを待つ)。
+   `doveadm` の検索クエリは `HEADER`/`Subject`/値をシェル上で1つの
+   文字列に結合してはいけない (`doveadm` 自身の引数パーサが
+   `Unknown argument` で落ち、`grep` 側は単に「\Seen が見つからない」
+   として何度もリトライし続けてしまう) — 必ず別々の引数として渡す。
+6. (ホスト) `make mailstack-down` でオフラインを再現
+   (シミュレータの機内モード切替は不可能なため)。
+7. `OtegamiM3SwipeActionsUITests/testSwipeDeletesMessageOffline` —
+   トレイリングスワイプで「削除」をタップ。ローカルの楽観的削除 (行が
+   即座に消える) のみをこの時点でアサート — replay はまだ起きない。
+8. (ホスト) `make mailstack-up` → アプリを再起動 (`scenePhase == .active`
+   が opQueue replay を起動) → 数秒待機。
+9. (ホスト) `doveadm mailbox status -u ... messages Trash` (`"Trash
+   messages=N"` を出力) を最大15秒ポーリングし、`N >= 1` になっている
+   ことで削除したメールが Trash に移動していることを assert。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`m3-01-new-mail-synced.png` / `m3-02-swiped-read.png` /
+`m3-03-offline-deleted.png` / `m3-04-replayed-to-trash.png` として出力
+される。
+
+### 既知の制約
+
+- フォアグラウンド `IDLE` ループ自体 (サーバの push を待って即座に
+  incrementalSync を起こす経路) は、XCUITest からは `Process` 制約により
+  ライブ検証できない。`performIncrementalSync`/`OpQueueProcessor.replay`
+  という同じコードパスを起動トリガで確定的に検証することで代替している。
+  `AccountSyncer.startIdleLoop`/`MailCoreIMAPSession.idle` 自体は
+  `SyncEngineTests`/`MailTransportMailCoreTests` の unit/integration
+  テストではなく、目視 (`make mailstack-down` した状態で長時間起動した
+  ままにし、その後 `doveadm save` → 数秒以内に一覧へ反映されるか) での
+  確認が今後望ましい。
+- dev/mailstack の Dovecot はデフォルト設定のまま (SPECIAL-USE で
+  Trash/Sent/Drafts/Junk を自動的にアドバタイズする) ため、Trash
+  role 解決に追加のサーバ設定は不要だった。実運用でこの
+  SPECIAL-USE 情報を返さないサーバ (Trash という名前のメールボックス
+  すら存在しない) に対しては `OpQueueProcessor` の delete
+  op はいつまでも `mailboxNotFound` で保留され続ける — Trash
+  自動作成やユーザーへのバナー表示は M4 以降の課題として残る。
