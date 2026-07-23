@@ -228,6 +228,23 @@ extension AppDatabase {
             }
         }
 
+        // v4 (M4): threading. `thread.unreadCount` is maintained by
+        // `ThreadAssigner.recomputeAggregates` (app logic, not a trigger —
+        // see the plan's "トリガでなくアプリロジックで" note) so `ThreadRow`
+        // can show a badge without a live join. The two new indexes back
+        // `ThreadAssigner`'s incremental lookups: `gmailThreadId` for the
+        // Gmail-priority pass (M6, but implemented now per the plan), and
+        // `normalizedSubject` for the subject-fallback candidate query —
+        // both filter the whole `message` table via `mailbox.accountId`
+        // otherwise.
+        migrator.registerMigration("v4") { db in
+            try db.alter(table: "thread") { t in
+                t.add(column: "unreadCount", .integer).notNull().defaults(to: 0)
+            }
+            try db.create(index: "message_on_normalizedSubject", on: "message", columns: ["normalizedSubject"])
+            try db.create(index: "message_on_gmailThreadId", on: "message", columns: ["gmailThreadId"])
+        }
+
         return migrator
     }
 }
