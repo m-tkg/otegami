@@ -21,7 +21,13 @@ struct ThreadDetailView: View {
 
     @State private var accountId: String?
     @State private var messages: [MessageRecord] = []
-    @State private var expandedMessageId: Int64?
+    // A `Set`, not a single optional id: each header toggles its own
+    // message independently (the usual thread-view UX — think Gmail/Apple
+    // Mail, where expanding an older message doesn't collapse the one you
+    // were already reading), not an accordion where only one can be open
+    // at a time.
+    @State private var expandedMessageIds: Set<Int64> = []
+    @State private var hasPinnedInitialExpansion = false
 
     var body: some View {
         ScrollView {
@@ -31,15 +37,19 @@ struct ThreadDetailView: View {
                         VStack(alignment: .leading, spacing: 0) {
                             Button {
                                 withAnimation(.default) {
-                                    expandedMessageId = (expandedMessageId == messageId) ? nil : messageId
+                                    if expandedMessageIds.contains(messageId) {
+                                        expandedMessageIds.remove(messageId)
+                                    } else {
+                                        expandedMessageIds.insert(messageId)
+                                    }
                                 }
                             } label: {
-                                ThreadMessageSummaryRow(message: message, isExpanded: expandedMessageId == messageId)
+                                ThreadMessageSummaryRow(message: message, isExpanded: expandedMessageIds.contains(messageId))
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("threadDetail.message.\(messageId).header")
 
-                            if expandedMessageId == messageId, let accountId {
+                            if expandedMessageIds.contains(messageId), let accountId {
                                 MessageView(accountId: accountId, messageId: messageId)
                                     .frame(minHeight: 240)
                                     .accessibilityIdentifier("threadDetail.message.\(messageId).body")
@@ -69,7 +79,8 @@ struct ThreadDetailView: View {
     private func load() async {
         accountId = nil
         messages = []
-        expandedMessageId = nil
+        expandedMessageIds = []
+        hasPinnedInitialExpansion = false
 
         accountId = try? await environment.database.dbWriter.read { db in
             try ThreadRecord.fetchOne(db, key: threadId)?.accountId
@@ -79,13 +90,14 @@ struct ThreadDetailView: View {
         do {
             for try await fetched in observation.values(in: environment.database.dbWriter) {
                 messages = fetched
-                // Keep the newest message expanded by default, and re-pin
-                // to it whenever the currently-expanded message stops
-                // existing in this thread (e.g. it was just merged
-                // elsewhere — shouldn't normally happen mid-view, but keeps
-                // the view from getting stuck showing nothing).
-                if expandedMessageId == nil || !fetched.contains(where: { $0.id == expandedMessageId }) {
-                    expandedMessageId = fetched.last?.id
+                // Pin the newest message expanded exactly once, the first
+                // time this thread's messages load — after that, expansion
+                // is entirely up to the user's own header taps, even as
+                // the live observation keeps delivering updates (e.g. a
+                // flag change from opQueue replay).
+                if !hasPinnedInitialExpansion, let newestId = fetched.last?.id {
+                    expandedMessageIds.insert(newestId)
+                    hasPinnedInitialExpansion = true
                 }
             }
         } catch {
