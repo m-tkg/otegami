@@ -1,0 +1,21 @@
+name: ci-server
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: server/otegami-relay
+        run: swift build
+
+      - name: Test
+        working-directory: server/otegami-relay
+        run: swift test

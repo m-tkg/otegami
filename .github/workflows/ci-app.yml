@@ -1,0 +1,32 @@
+name: ci-app
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  app:
+    # macos-26 (arm64) ships Xcode 27, which supports the iOS/macOS 26 SDKs
+    # this app targets. Falls back to macos-latest if macos-26 is ever
+    # retired before macos-latest catches up.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: cd apps/Otegami && xcodegen generate
+
+      - name: Build macOS app
+        run: |
+          xcodebuild \
+            -project apps/Otegami/Otegami.xcodeproj \
+            -scheme Otegami \
+            -destination 'platform=macOS' \
+            build
+
+      - name: Test OtegamiKit
+        run: cd packages/OtegamiKit && swift test
