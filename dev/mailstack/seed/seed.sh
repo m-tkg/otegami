@@ -42,4 +42,19 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/06-html-external-image.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/07-html-only-japanese.eml"
 seed_message "test2@otegami.test" "$FIXTURES_DIR/05-test2-welcome.eml"
 
+# M4: a References-linked test1<->test2 back-and-forth thread (3 messages,
+# all delivered into test1's INBOX — this exercises the *threading* of a
+# multi-party References chain, not real cross-account delivery; test2's
+# own INBOX doesn't need a copy for that).
+seed_message "test1@otegami.test" "$FIXTURES_DIR/09-thread-b-original.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/10-thread-b-reply.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/11-thread-b-reply2.eml"
+
+# M4: a same-subject reply with no In-Reply-To/References at all, to
+# exercise Threader's subject-fallback path (normalizedSubject match +
+# participant overlap + 7-day window) independently of the References
+# union-find path above.
+seed_message "test1@otegami.test" "$FIXTURES_DIR/12-subject-fallback-original.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/13-subject-fallback-reply.eml"
+
 echo "==> done"
