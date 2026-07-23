@@ -100,9 +100,13 @@ let package = Package(
         // Integration tests against a real IMAP server (the dev mailstack's
         // Dovecot by default). Opt-in: skipped unless
         // OTEGAMI_TEST_IMAP_HOST is set. See Tests/MailTransportMailCoreTests.
+        // Depends on SyncEngine too (M3): SyncEngineIntegrationTests drives
+        // AccountSyncer.performIncrementalSync against the real
+        // MailCoreIMAPSession, with `doveadm` (via `docker compose exec`)
+        // standing in for another client's concurrent changes.
         .testTarget(
             name: "MailTransportMailCoreTests",
-            dependencies: ["MailTransportMailCore"]
+            dependencies: ["MailTransportMailCore", "SyncEngine", "OtegamiStore"]
         ),
     ]
 )
