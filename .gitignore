@@ -1,0 +1,12 @@
+.DS_Store
+.claude/settings.local.json
+.build/
+dist/
+*.xcodeproj
+xcuserdata/
+DerivedData/
+**/Config/Local.xcconfig
+*.p8
+dev/mailstack/data/
+# xcodegen-generated Info.plist (from the `info:` key in project.yml)
+apps/Otegami/Generated/
