@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Testing
 @testable import MailTransportMailCore
 import MailTransport
@@ -21,9 +22,15 @@ import SyncEngine
 /// OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter SyncEngineIntegrationTests
 /// make mailstack-down
 /// ```
+// `.serialized`: every test in this suite drives the *same* real INBOX
+// (test1@otegami.test) via destructive doveadm operations
+// (expunge/save/restoreStandardFixtures) — Swift Testing runs a suite's
+// tests concurrently by default, which would otherwise race two tests'
+// doveadm calls against the same mailbox.
 @Suite(
     "SyncEngine incremental sync against dev mailstack",
-    .enabled(if: TestIMAPEnvironment.primary != nil, "set OTEGAMI_TEST_IMAP_HOST to run")
+    .enabled(if: TestIMAPEnvironment.primary != nil, "set OTEGAMI_TEST_IMAP_HOST to run"),
+    .serialized
 )
 struct SyncEngineIntegrationTests {
     @Test("incrementalSync picks up new mail and a flag change made by another client (doveadm)")
@@ -79,6 +86,47 @@ struct SyncEngineIntegrationTests {
 
         let original = try #require(messages.first { $0.subject == "integration seed" })
         #expect(original.flags.contains(.seen))
+    }
+
+    @Test("performInitialSync threads the seeded References pair into one thread against a real IMAP server")
+    func initialSyncThreadsSeededReferencesPair() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let user = "test1@otegami.test"
+
+        // The standard fixtures (`make mailstack-seed`) include
+        // 02-thread-original.eml / 03-thread-reply.eml, a References-linked
+        // pair — restore them explicitly so this test doesn't depend on
+        // whatever another test in this run left INBOX in.
+        try DoveadmHelper.restoreStandardFixtures()
+
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Integration",
+            email: user,
+            authType: .password,
+            imapHost: env.host,
+            imapPort: env.port,
+            imapSecurity: ConnectionSecurityRecord(env.imapConfig.security),
+            imapAllowsInsecureTLS: env.imapConfig.allowsInsecureTLS,
+            imapUsername: user
+        )
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            MailCoreIMAPSession(config: config)
+        }
+        _ = try await syncer.performInitialSync(auth: env.auth)
+
+        let (threads, replyMessage) = try await database.dbWriter.read { db in
+            (
+                try ThreadRecord.filter(Column("accountId") == account.id).fetchAll(db),
+                try MessageRecord.filter(Column("subject") == "Re: 明日の打ち合わせについて").fetchOne(db)
+            )
+        }
+        let reply = try #require(replyMessage)
+        let thread = try #require(threads.first { $0.id == reply.threadId })
+        #expect(thread.messageCount == 2)
+        #expect(thread.unreadCount >= 1)
     }
 
     private static func sampleMessage(uid: String, subject: String) -> String {

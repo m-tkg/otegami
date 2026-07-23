@@ -52,6 +52,7 @@ public actor MailboxSyncer {
     public func incrementalSync(
         mailboxRecord: MailboxRecord,
         mailboxPath: String,
+        accountId: String,
         session: any IMAPSessionProtocol,
         capabilities: Set<IMAPCapability>
     ) async throws -> (mailbox: MailboxRecord, progress: Progress) {
@@ -74,14 +75,21 @@ public actor MailboxSyncer {
             if mailboxRecord.uidValidity != 0 {
                 // A real uidValidity change: every previously-stored UID in
                 // this mailbox now refers to a different (or no) message,
-                // so nothing about the old rows is safe to keep.
+                // so nothing about the old rows is safe to keep. Any thread
+                // aggregates those messages contributed to need settling
+                // too (M4) — a thread that only had messages in this
+                // mailbox is now empty and should be deleted, not left
+                // stale.
                 _ = try await database.dbWriter.write { db in
+                    let doomed = try MessageRecord.filter(Column("mailboxId") == mailboxId).fetchAll(db)
                     try MessageRecord.filter(Column("mailboxId") == mailboxId).deleteAll(db)
+                    try ThreadAssigner.recomputeAggregates(forThreadsAmong: doomed, db: db)
                 }
             }
             let updated = try await performWindowedResync(
                 mailboxId: mailboxId,
                 mailboxPath: mailboxPath,
+                accountId: accountId,
                 session: session,
                 status: status,
                 mailboxRecord: mailboxRecord
@@ -103,7 +111,7 @@ public actor MailboxSyncer {
             if !newEnvelopes.isEmpty {
                 try await database.dbWriter.write { db in
                     for envelope in newEnvelopes {
-                        try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, db: db)
+                        try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
                     }
                 }
                 progress.newMessages = newEnvelopes.count
@@ -127,7 +135,7 @@ public actor MailboxSyncer {
                 if !changed.isEmpty {
                     try await database.dbWriter.write { db in
                         for envelope in changed {
-                            try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, db: db)
+                            try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
                         }
                     }
                     progress.flagChanges = changed.count
@@ -137,6 +145,7 @@ public actor MailboxSyncer {
             progress.deletedMessages = try await refetchAndDiffFlags(
                 mailboxId: mailboxId,
                 mailboxPath: mailboxPath,
+                accountId: accountId,
                 session: session
             )
         }
@@ -172,6 +181,7 @@ public actor MailboxSyncer {
     private func performWindowedResync(
         mailboxId: Int64,
         mailboxPath: String,
+        accountId: String,
         session: any IMAPSessionProtocol,
         status: MailboxStatus,
         mailboxRecord: MailboxRecord
@@ -185,7 +195,7 @@ public actor MailboxSyncer {
             )
             try await database.dbWriter.write { db in
                 for envelope in envelopes {
-                    try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, db: db)
+                    try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
                 }
             }
         }
@@ -212,6 +222,7 @@ public actor MailboxSyncer {
     private func refetchAndDiffFlags(
         mailboxId: Int64,
         mailboxPath: String,
+        accountId: String,
         session: any IMAPSessionProtocol
     ) async throws -> Int {
         let localUIDs = try await database.dbWriter.read { db in
@@ -226,7 +237,7 @@ public actor MailboxSyncer {
         )
         try await database.dbWriter.write { db in
             for envelope in refetched {
-                try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, db: db)
+                try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
             }
         }
 
@@ -235,10 +246,15 @@ public actor MailboxSyncer {
         guard !deletedUIDs.isEmpty else { return 0 }
 
         _ = try await database.dbWriter.write { db in
+            let doomed = try MessageRecord
+                .filter(Column("mailboxId") == mailboxId)
+                .filter(deletedUIDs.contains(Column("uid")))
+                .fetchAll(db)
             try MessageRecord
                 .filter(Column("mailboxId") == mailboxId)
                 .filter(deletedUIDs.contains(Column("uid")))
                 .deleteAll(db)
+            try ThreadAssigner.recomputeAggregates(forThreadsAmong: doomed, db: db)
         }
         return deletedUIDs.count
     }

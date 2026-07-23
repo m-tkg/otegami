@@ -73,9 +73,13 @@ public actor SyncCoordinator {
     /// `AccountSyncer.performIncrementalSync`'s doc comment for the exact
     /// per-mailbox behavior.
     @discardableResult
-    public func syncAccountIncrementally(_ account: AccountRecord, auth: MailAuth) async throws -> MailboxSyncer.Progress {
+    public func syncAccountIncrementally(
+        _ account: AccountRecord,
+        auth: MailAuth,
+        scope: SyncScope = .inboxOnly
+    ) async throws -> MailboxSyncer.Progress {
         let syncer = syncer(for: account)
-        return try await syncer.performIncrementalSync(auth: auth)
+        return try await syncer.performIncrementalSync(auth: auth, scope: scope)
     }
 
     /// Replays `account`'s queued offline operations (flag changes,
