@@ -12,11 +12,11 @@ import OtegamiCore
 /// concurrent commands.
 ///
 /// M1 implements `connect`, `listMailboxes`, `select`, and `fetchEnvelopes`.
-/// The remaining methods are part of the stable protocol surface for M2+
-/// (body fetch), M3 (`store`, `changedSince`, `idle`), and M5
-/// (`append`, `move`) so `SyncEngine` can be written against the full shape
-/// now; `MailCoreIMAPSession` throws `MailTransportError.notImplemented`
-/// for anything not yet wired up.
+/// M2 adds `fetchBody`. The remaining methods are part of the stable
+/// protocol surface for M3 (`store`, `changedSince`, `idle`), M5
+/// (`append`, `move`), and M8 (`fetchMessageBody`'s raw per-part fetch) so
+/// `SyncEngine` can be written against the full shape now; `MailCoreIMAPSession`
+/// throws `MailTransportError.notImplemented` for anything not yet wired up.
 public protocol IMAPSessionProtocol: Sendable {
     init(config: IMAPConfig)
 
@@ -59,8 +59,25 @@ public protocol IMAPSessionProtocol: Sendable {
     /// `IMAPCapability.condstore`. M3.
     func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope]
 
-    /// Downloads raw content for one MIME part (or the whole message when
-    /// `partId` is `nil`). M2.
+    /// Downloads and parses the full message body (M2): fetches the raw
+    /// RFC 822 content and hands it to the backend's own MIME parser,
+    /// returning already-decoded plain text / HTML plus a flattened list
+    /// of attachment/inline parts. `SyncEngine`'s `BodyFetcher` calls this
+    /// once per message rather than driving `BODYSTRUCTURE` + per-part
+    /// `fetchMessageBody` fetches itself — simpler, and it means MIME
+    /// parsing (charset conversion, transfer-encoding, `multipart/
+    /// alternative` selection, ...) only ever happens inside
+    /// `MailTransportMailCore`, never in transport-agnostic `SyncEngine`.
+    /// The mailbox must already be `select`ed.
+    func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent
+
+    /// Downloads raw, undecoded content for one specific MIME part (by the
+    /// `BODYSTRUCTURE` part specifier, e.g. `"1.2"`) or the whole message
+    /// when `partId` is `nil`. Used for on-demand attachment *data*
+    /// download once a part's existence is already known (from
+    /// `fetchBody`'s parts list, or `FetchedEnvelope.parts`) — M8, not M2:
+    /// M2 only needs `fetchBody`'s already-parsed plain text/HTML to
+    /// render a message and enumerate attachment metadata.
     func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data
 
     /// Applies a flag mutation to a set of UIDs (`STORE`). M3.

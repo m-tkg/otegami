@@ -77,6 +77,42 @@ struct MailCoreIMAPSessionIntegrationTests {
         #expect(welcome.subject == "test2 アカウントへようこそ")
     }
 
+    @Test("fetches and parses the HTML-only Japanese seed message's body")
+    func fetchesHTMLOnlyJapaneseBody() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+
+        _ = try await session.select("INBOX")
+        let envelopes = try await session.fetchEnvelopes(mailboxPath: "INBOX", uids: .all, batchSize: 50)
+        let message = try #require(envelopes.first { $0.messageId == "<seed-0007@otegami.test>" })
+
+        let body = try await session.fetchBody(mailboxPath: "INBOX", uid: message.uid)
+        #expect(body.html?.contains("こんにちは、otegami です。") == true)
+        // 07-html-only-japanese.eml has no text/plain part at all — MailCore2
+        // either synthesizes a plain-text rendering from the HTML itself, or
+        // returns nil and leaves the HTML→text fallback to `SyncEngine
+        // .BodyFetcher`; either way this integration test only needs to
+        // confirm the HTML itself decoded correctly (asserted above).
+    }
+
+    @Test("fetches and parses the external-image HTML seed message's body")
+    func fetchesExternalImageHTMLBody() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+
+        _ = try await session.select("INBOX")
+        let envelopes = try await session.fetchEnvelopes(mailboxPath: "INBOX", uids: .all, batchSize: 50)
+        let message = try #require(envelopes.first { $0.messageId == "<seed-0006@otegami.test>" })
+
+        let body = try await session.fetchBody(mailboxPath: "INBOX", uid: message.uid)
+        #expect(body.plainText?.contains("otegami の新機能") == true)
+        #expect(body.html?.contains("http://example.com/banner.png") == true)
+    }
+
     @Test("reports server capabilities without throwing")
     func capabilities() async throws {
         let env = try #require(TestIMAPEnvironment.primary)

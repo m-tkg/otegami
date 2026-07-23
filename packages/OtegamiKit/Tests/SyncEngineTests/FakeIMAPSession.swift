@@ -20,6 +20,13 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         public var mailboxes: [MailboxInfo]
         public var envelopesByPath: [String: [FetchedEnvelope]]
         public var statusByPath: [String: MailboxStatus]
+        /// Scripted `fetchBody` results, keyed by mailbox path then UID —
+        /// `BodyFetcher` tests script per-message plain/html/attachment
+        /// content here rather than raw MIME bytes (see `fetchBody`'s doc
+        /// comment: decoding is `MailTransportMailCore`'s job, so a Fake
+        /// exercising `SyncEngine` in isolation is expected to hand back
+        /// already-decoded content, same as the real backend would).
+        public var bodiesByPath: [String: [UInt32: MessageBodyContent]]
         /// When set, `connect(auth:)` throws this instead of succeeding.
         public var failConnection: MailTransportError?
 
@@ -27,11 +34,13 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             mailboxes: [MailboxInfo] = [],
             envelopesByPath: [String: [FetchedEnvelope]] = [:],
             statusByPath: [String: MailboxStatus] = [:],
+            bodiesByPath: [String: [UInt32: MessageBodyContent]] = [:],
             failConnection: MailTransportError? = nil
         ) {
             self.mailboxes = mailboxes
             self.envelopesByPath = envelopesByPath
             self.statusByPath = statusByPath
+            self.bodiesByPath = bodiesByPath
             self.failConnection = failConnection
         }
     }
@@ -101,8 +110,17 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         throw MailTransportError.notImplemented("FakeIMAPSession doesn't script CONDSTORE (M3) behavior")
     }
 
+    public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {
+        guard let content = script.bodiesByPath[mailboxPath]?[uid] else {
+            throw MailTransportError.malformedResponse(
+                underlyingDescription: "FakeIMAPSession has no scripted body for uid \(uid) in \(mailboxPath)"
+            )
+        }
+        return content
+    }
+
     public func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data {
-        throw MailTransportError.notImplemented("FakeIMAPSession doesn't script body fetch (M2) behavior")
+        throw MailTransportError.notImplemented("FakeIMAPSession doesn't script raw per-part fetch (M8) behavior")
     }
 
     public func store(mailboxPath: String, change: FlagChange) async throws {

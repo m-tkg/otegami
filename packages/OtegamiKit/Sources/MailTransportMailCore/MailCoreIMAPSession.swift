@@ -158,10 +158,39 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         throw MailTransportError.notImplemented("fetchEnvelopes(changedSince:) — CONDSTORE support lands in M3")
     }
 
-    // MARK: - Not yet implemented (M2+)
+    // MARK: - Body (M2)
+
+    /// Downloads the message's full RFC 822 content and parses it with
+    /// MailCore2's `MCOMessageParser` in one operation
+    /// (`fetchParsedMessageOperation`) — the "RFC822 全体 fetch → parse"
+    /// approach the M2 plan explicitly allows in place of driving
+    /// `BODYSTRUCTURE` + per-part fetches by hand: `MCOMessageParser`
+    /// already handles charset conversion (including ISO-2022-JP and
+    /// friends), `Content-Transfer-Encoding`, and `multipart/alternative`
+    /// part selection, so re-deriving any of that here would just be a
+    /// worse copy of what the library already does well.
+    public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {
+        try await withCheckedThrowingContinuation { continuation in
+            session.fetchParsedMessageOperation(folder: mailboxPath, uid: uid).start { error, parser in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                guard let parser else {
+                    continuation.resume(throwing: MailTransportError.malformedResponse(
+                        underlyingDescription: "fetchParsedMessageOperation returned no parser and no error"
+                    ))
+                    return
+                }
+                continuation.resume(returning: Self.bodyContent(from: parser))
+            }
+        }
+    }
+
+    // MARK: - Not yet implemented (M3+)
 
     public func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data {
-        throw MailTransportError.notImplemented("fetchMessageBody — body fetch lands in M2")
+        throw MailTransportError.notImplemented("fetchMessageBody — raw per-part attachment fetch lands in M8")
     }
 
     public func store(mailboxPath: String, change: FlagChange) async throws {

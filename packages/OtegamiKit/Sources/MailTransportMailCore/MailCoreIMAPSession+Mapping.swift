@@ -242,6 +242,63 @@ extension MailCoreIMAPSession {
         )]
     }
 
+    // MARK: - Body (M2)
+
+    /// `MCOMessageParser.attachments()`/`.htmlInlineAttachments()` return
+    /// `MCOAttachment` (a leaf `MCOAbstractPart` subclass) rather than the
+    /// `MCOIMAPPart` that `flattenParts(_:)` above works with —
+    /// `MCOMessageParser` re-parses the whole RFC822 blob locally rather
+    /// than walking the server's `BODYSTRUCTURE`, so its parts have no IMAP
+    /// part specifier at all. `uniqueID` (a stable identifier the parser
+    /// assigns while walking the MIME tree) stands in as `MIMEPartInfo
+    /// .partId` instead; it isn't a `BODY[<partId>]` fetch key, so M8's
+    /// attachment *data* download will need its own lookup (`partForUniqueID`
+    /// on a freshly-parsed message), not `fetchMessageBody(partId:)`.
+    static func bodyContent(from parser: MCOMessageParser) -> MessageBodyContent {
+        MessageBodyContent(
+            plainText: nonEmpty(parser.plainTextBodyRendering()),
+            html: nonEmpty(parser.htmlBodyRendering()),
+            parts: parts(from: parser)
+        )
+    }
+
+    private static func nonEmpty(_ string: String?) -> String? {
+        guard let string, !string.isEmpty else { return nil }
+        return string
+    }
+
+    /// Attachments and inline (`cid:`-referenced) parts, de-duplicated by
+    /// `uniqueID` — `attachments()` and `htmlInlineAttachments()` can both
+    /// report the same part in some multipart layouts.
+    private static func parts(from parser: MCOMessageParser) -> [MIMEPartInfo] {
+        var seenUniqueIDs: Set<String> = []
+        var result: [MIMEPartInfo] = []
+        for part in (parser.attachments() ?? []) + (parser.htmlInlineAttachments() ?? []) {
+            let uniqueID = part.uniqueID ?? ""
+            guard seenUniqueIDs.insert(uniqueID).inserted else { continue }
+            result.append(mimePartInfo(from: part))
+        }
+        return result
+    }
+
+    private static func mimePartInfo(from part: MCOAbstractPart) -> MIMEPartInfo {
+        let mimeType = part.mimeType ?? "application/octet-stream"
+        let components = mimeType.split(separator: "/", maxSplits: 1)
+        let type = components.first.map(String.init) ?? mimeType
+        let subtype = components.count > 1 ? String(components[1]) : ""
+        let size = (part as? MCOAttachment)?.data?.count ?? 0
+
+        return MIMEPartInfo(
+            partId: part.uniqueID ?? "",
+            mimeType: type,
+            mimeSubtype: subtype,
+            filename: part.filename,
+            contentId: part.contentID,
+            isAttachment: part.isAttachment,
+            size: size
+        )
+    }
+
     // MARK: - UID ranges
 
     static func indexSet(for range: UIDRange) -> MCOIndexSet {
