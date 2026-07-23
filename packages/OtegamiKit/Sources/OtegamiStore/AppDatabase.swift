@@ -207,6 +207,17 @@ extension AppDatabase {
             }
         }
 
+        // v2 (M2): a short plain-text preview for the message list row,
+        // populated by `SyncEngine.BodyFetcher` alongside the body itself
+        // (`SnippetBuilder`) — kept on `message` rather than derived from
+        // `messageBody` at read time so `MessageQuery`'s list observation
+        // doesn't need to join against `messageBody` just to render a row.
+        migrator.registerMigration("v2") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "snippet", .text)
+            }
+        }
+
         return migrator
     }
 }

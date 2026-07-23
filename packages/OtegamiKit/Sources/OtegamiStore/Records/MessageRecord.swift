@@ -56,6 +56,12 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     public var threadId: Int64?
     public var bodyState: MessageBodyState
 
+    /// A short, whitespace-normalized preview of the plain-text body
+    /// (`SnippetBuilder`, ~120 characters), populated by `SyncEngine
+    /// .BodyFetcher` alongside the body itself (M2). `nil` until the body
+    /// has been fetched at least once.
+    public var snippet: String?
+
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -86,6 +92,7 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         hasAttachments: Bool = false,
         threadId: Int64? = nil,
         bodyState: MessageBodyState = .notFetched,
+        snippet: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -110,6 +117,7 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.hasAttachments = hasAttachments
         self.threadId = threadId
         self.bodyState = bodyState
+        self.snippet = snippet
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
