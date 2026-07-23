@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#87c4ff"/>
+      <stop offset="1" stop-color="#c5e3ff"/>
+    </linearGradient>
+    <linearGradient id="env" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eef3ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- sky -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- soft drop shadow -->
+  <ellipse cx="512" cy="812" rx="220" ry="40" fill="#5e9fdc" opacity="0.35"/>
+
+  <!-- floating envelope -->
+  <g transform="rotate(-12 512 480)">
+    <!-- body -->
+    <rect x="252" y="330" width="520" height="360" rx="56" fill="url(#env)"/>
+    <!-- flap -->
+    <path d="M252 396 Q 252 330 318 330 L 706 330 Q 772 330 772 396 L 772 402 L 512 560 L 252 402 Z" fill="#d7e3fb"/>
+    <path d="M252 402 L 512 560 L 772 402" fill="none" stroke="#a9c3ef" stroke-width="12" stroke-linecap="round"/>
+    <!-- star seal -->
+    <path d="M512 496 l 22 46 l 50 7 q 8 1 2 8 l -36 34 l 9 49 q 1 8 -7 4 l -40 -24 l -40 24 q -8 4 -7 -4 l 9 -49 l -36 -34 q -6 -7 2 -8 l 50 -7 Z"
+          fill="#ffc93c" stroke="#ffc93c" stroke-width="22" stroke-linejoin="round"/>
+    <!-- wings -->
+    <path d="M244 430 Q 170 400 150 330 Q 214 356 252 396 Z" fill="#ffffff" opacity="0.95"/>
+    <path d="M780 430 Q 854 400 874 330 Q 810 356 772 396 Z" fill="#ffffff" opacity="0.95"/>
+  </g>
+
+  <!-- motion dashes -->
+  <g stroke="#ffffff" stroke-width="16" stroke-linecap="round" opacity="0.8">
+    <line x1="240" y1="700" x2="320" y2="680"/>
+    <line x1="300" y1="760" x2="356" y2="746"/>
+  </g>
+</svg>

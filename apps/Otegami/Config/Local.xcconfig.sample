@@ -1,0 +1,10 @@
+// Copy this file to Local.xcconfig (git-ignored) to override signing and
+// per-developer secrets without touching Signing.xcconfig.
+//
+//   cp Config/Local.xcconfig.sample Config/Local.xcconfig
+//
+// DEVELOPMENT_TEAM = YOUR_TEAM_ID
+// OTEGAMI_BUNDLE_ID = com.example.otegami
+//
+// See PENDING.md for the Google OAuth Client ID needed starting at M6.
+// GOOGLE_OAUTH_CLIENT_ID = your-client-id.apps.googleusercontent.com

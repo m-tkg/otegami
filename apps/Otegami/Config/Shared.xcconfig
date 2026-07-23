@@ -1,0 +1,8 @@
+// Settings shared by both platform targets. Signing-related settings live in
+// Signing.xcconfig instead, so they can be overridden independently via
+// Config/Local.xcconfig.
+
+SWIFT_VERSION = 6.0
+SWIFT_STRICT_CONCURRENCY = complete
+MARKETING_VERSION = 1.0
+CURRENT_PROJECT_VERSION = 1

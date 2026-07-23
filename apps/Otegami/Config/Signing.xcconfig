@@ -1,0 +1,15 @@
+// 署名まわりの既定値。
+// 自分のアカウントでビルドする場合はこのファイルを編集せず、
+// Config/Local.xcconfig を作って上書きする（Config/Local.xcconfig.sample 参照）。
+
+#include "Shared.xcconfig"
+
+DEVELOPMENT_TEAM = G72M73C546
+// Bundle ID の実体はここに置く。上書きするときも PRODUCT_BUNDLE_IDENTIFIER
+// ではなくこちらを設定する（将来 Extension 等の ID もここから導出する）。
+OTEGAMI_BUNDLE_ID = com.m-tkg.otegami
+PRODUCT_BUNDLE_IDENTIFIER = $(OTEGAMI_BUNDLE_ID)
+
+// 末尾の "?" は「ファイルが無ければ無視する」の意味。
+// これにより Local.xcconfig が無い環境（CI 等）でもそのままビルドできる。
+#include? "Local.xcconfig"
