@@ -71,6 +71,8 @@ targets:
         product: SyncEngine
       - package: OtegamiKit
         product: OtegamiRelayAPI
+      - package: OtegamiKit
+        product: MailTransportMailCore
 
 schemes:
   Otegami:

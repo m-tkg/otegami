@@ -12,30 +12,26 @@ struct OtegamiApp: App {
     }
 }
 
-/// Three-pane scaffold (sidebar / message list / detail). Content is all
-/// placeholder until the sync engine and store land (M1+).
+/// Three-pane scaffold: account/mailbox sidebar, the selected mailbox's
+/// message list, and a still-placeholder detail pane (message body reading
+/// lands in M2). Sidebar and message list are both backed by live GRDB
+/// `ValueObservation`s via `AppEnvironment`/`AppDatabase`.
 struct RootView: View {
-    @State private var selectedMailbox: String? = "unifiedInbox"
+    @State private var selection: MailboxSelection?
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedMailbox) {
-                Label("統合受信トレイ", systemImage: "tray.full")
-                    .tag("unifiedInbox")
-            }
-            .navigationTitle("Otegami")
+            SidebarView(selection: $selection)
         } content: {
-            List {
-                // Message list is populated once SyncEngine/OtegamiStore
-                // exist (M1+).
-            }
-            .navigationTitle("Inbox")
-            .overlay {
+            if let selection {
+                MessageListView(selection: selection)
+            } else {
                 ContentUnavailableView(
-                    "No Messages",
-                    systemImage: "envelope",
-                    description: Text("Add an account to get started.")
+                    "メールボックスを選択してください",
+                    systemImage: "tray",
+                    description: Text("左のサイドバーからアカウントを追加、またはメールボックスを選択してください。")
                 )
+                .navigationTitle("Inbox")
             }
         } detail: {
             ContentUnavailableView(
