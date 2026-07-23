@@ -46,10 +46,28 @@ make mailstack-seed
 ```
 
 `dev/mailstack/seed/fixtures/*.eml` を `test1`/`test2` の INBOX に投入します。
-日本語件名のメールと、スレッド往復 (質問 → 返信) の 2 通を含みます。
-内部的には `docker compose exec dovecot doveadm save` でメッセージを直接
-Dovecot に保存しています (dovecot/dovecot イメージにはシェルが入っていないため、
-Maildir への直接配置ではなくこの方式を採っています)。
+日本語件名のメールと、スレッド往復 (質問 → 返信)、HTML メール (外部画像入り・
+HTML 専用の日本語本文) を含みます。内部的には `docker compose exec dovecot
+doveadm save` でメッセージを直接 Dovecot に保存しています (dovecot/dovecot
+イメージにはシェルが入っていないため、Maildir への直接配置ではなくこの方式を
+採っています)。
+
+**冪等**: 投入前に対象ユーザーの INBOX を `doveadm expunge ... all` で空にして
+から投入するため、`make mailstack-seed` を何度実行しても同じ内容になります
+(重複しません)。
+
+投入されるメッセージ (`test1@otegami.test`):
+
+| ファイル | 内容 |
+|---|---|
+| `01-welcome.eml` | ようこそメール (plain) |
+| `02-thread-original.eml` | スレッド元メール (plain) |
+| `03-thread-reply.eml` | `02` への返信 (plain, In-Reply-To/References あり) |
+| `04-newsletter.eml` | ニュースレター (plain, 全角 "Ｆｗｄ：" 件名) |
+| `06-html-external-image.eml` | `multipart/alternative` (plain + HTML)、HTML 側に `http://example.com/...` の外部画像を含む — M2 の「画像を表示」バナー検証用 |
+| `07-html-only-japanese.eml` | `text/html` のみ (plain パート無し) の日本語本文 — M2 の HTML→テキスト抽出/表示検証用 |
+
+`test2@otegami.test` には `05-test2-welcome.eml` (plain) のみ投入されます。
 
 ## 停止
 

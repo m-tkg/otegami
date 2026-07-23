@@ -1,0 +1,15 @@
+From: Otegami Team <team@otegami.test>
+To: test1@otegami.test
+Subject: HTML版だより
+Message-ID: <seed-0007@otegami.test>
+Date: Fri, 10 Jan 2026 11:00:00 +0900
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+
+<html>
+<body>
+<p>こんにちは、otegami です。</p>
+<p>このメールは HTML 専用（プレーンテキストパートなし）の日本語メールです。文字化けせずに表示されることを確認してください。</p>
+</body>
+</html>

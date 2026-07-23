@@ -1,0 +1,28 @@
+From: Otegami News <news@otegami.test>
+To: test1@otegami.test
+Subject: 【otegami】新機能のお知らせ
+Message-ID: <seed-0006@otegami.test>
+Date: Thu, 9 Jan 2026 10:00:00 +0900
+Content-Type: multipart/alternative; boundary="otegami-boundary-06"
+MIME-Version: 1.0
+
+--otegami-boundary-06
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+(プレーンテキスト版)
+otegami の新機能についてお知らせします。詳細は HTML 版をご覧ください。
+
+--otegami-boundary-06
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<html>
+<body>
+<p>otegami の新機能についてお知らせします。</p>
+<img src="http://example.com/banner.png" alt="お知らせバナー">
+<p>ご利用ありがとうございます。</p>
+</body>
+</html>
+
+--otegami-boundary-06--
