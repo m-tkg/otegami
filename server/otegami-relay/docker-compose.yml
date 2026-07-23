@@ -1,0 +1,11 @@
+# Scaffold compose file for self-hosting the otegami push relay (M9).
+# Not yet exercised — see Dockerfile for status.
+services:
+  otegami-relay:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Set in a local .env (git-ignored) rather than committing secrets here.
+      - RELAY_MASTER_KEY=${RELAY_MASTER_KEY}
+    restart: unless-stopped
