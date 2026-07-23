@@ -1,0 +1,24 @@
+# Local dev mail stack: Dovecot (IMAP, for the sync engine) + Mailpit
+# (SMTP + web UI, for send verification). See ../../docs/dev-mailstack.md.
+services:
+  dovecot:
+    image: dovecot/dovecot:latest
+    ports:
+      - "1143:31143"   # IMAP
+      - "1993:31993"   # IMAPS
+    volumes:
+      - ./dovecot/conf.d/auth.conf:/etc/dovecot/conf.d/auth.conf:ro
+      - ./dovecot/users:/etc/dovecot/users:ro
+      - ./data/dovecot:/srv/vmail
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"    # SMTP
+      - "8025:8025"    # Web UI + REST API
+    environment:
+      - MP_DATABASE=/data/mailpit.db
+    volumes:
+      - ./data/mailpit:/data
+    restart: unless-stopped

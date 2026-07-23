@@ -1,0 +1,6 @@
+# Static test accounts for the dev mail stack (Dovecot passwd-file passdb).
+# Format: user:password[:uid:gid:gecos:home:shell:extra_fields]
+# Password scheme {PLAIN} is fine here — this is throwaway dev/test data,
+# never exposed outside localhost.
+test1@otegami.test:{PLAIN}test1234
+test2@otegami.test:{PLAIN}test1234
