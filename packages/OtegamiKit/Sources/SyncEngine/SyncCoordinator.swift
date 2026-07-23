@@ -14,6 +14,7 @@ public actor SyncCoordinator {
     private let database: AppDatabase
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     private var syncers: [String: AccountSyncer] = [:]
+    private let bodyFetcher: BodyFetcher
 
     public init(
         database: AppDatabase,
@@ -21,6 +22,7 @@ public actor SyncCoordinator {
     ) {
         self.database = database
         self.sessionFactory = sessionFactory
+        self.bodyFetcher = BodyFetcher(database: database)
     }
 
     /// Runs initial sync for `account` (creating its `AccountSyncer` if
@@ -36,6 +38,30 @@ public actor SyncCoordinator {
     ) async throws -> AccountSyncer.Progress {
         let syncer = syncer(for: account)
         return try await syncer.performInitialSync(auth: auth, onProgress: onProgress)
+    }
+
+    /// Fetches (and persists) one message's body on demand — the "開封時は
+    /// 該当メッセージを最優先で取得" path: the app calls this when a message
+    /// is opened and its `bodyState` isn't already `.fetched`. Opens its
+    /// own short-lived session (connect → select → fetch → disconnect)
+    /// rather than reusing a syncer's connection, since this can happen at
+    /// any time independent of any sync pass in progress. A no-op if
+    /// `message` has no `id` (shouldn't happen for a message read back out
+    /// of the database).
+    public func fetchBody(
+        for message: MessageRecord,
+        mailboxPath: String,
+        account: AccountRecord,
+        auth: MailAuth
+    ) async throws {
+        let session = sessionFactory(account.imapConfig)
+        try await session.connect(auth: auth)
+        defer {
+            let session = session
+            Task { await session.disconnect() }
+        }
+        _ = try await session.select(mailboxPath)
+        try await bodyFetcher.fetchBody(message: message, mailboxPath: mailboxPath, session: session)
     }
 
     private func syncer(for account: AccountRecord) -> AccountSyncer {

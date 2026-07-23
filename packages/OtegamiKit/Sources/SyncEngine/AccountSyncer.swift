@@ -25,11 +25,14 @@ public actor AccountSyncer {
         public var mailboxesDiscovered: Int = 0
         public var selectedMailboxPath: String?
         public var envelopesFetched: Int = 0
+        /// How many of the recent-message body prefetch (M2) succeeded.
+        public var bodiesFetched: Int = 0
     }
 
     private let account: AccountRecord
     private let database: AppDatabase
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+    private let bodyFetcher: BodyFetcher
 
     public init(
         account: AccountRecord,
@@ -39,6 +42,7 @@ public actor AccountSyncer {
         self.account = account
         self.database = database
         self.sessionFactory = sessionFactory
+        self.bodyFetcher = BodyFetcher(database: database)
     }
 
     /// Connects, lists mailboxes (upserting all of them), then selects
@@ -131,6 +135,23 @@ public actor AccountSyncer {
             record.messageCount = status.messageCount
             record.lastSyncedAt = Date()
             try record.update(db)
+        }
+
+        // Prefetch bodies for the most recent messages (plan: "初期同期後に
+        // 直近50件を優先度順に先読み") while `session` is still open — this
+        // reuses the same connection rather than paying a fresh IMAP
+        // handshake per message. Best-effort: `prefetchRecent` already
+        // swallows individual message failures, and initial sync itself
+        // shouldn't fail just because prefetch couldn't run at all (e.g. a
+        // mid-sync disconnect) — the message list still renders fine with
+        // bodies fetched lazily on open instead.
+        if let inboxId = inboxRecord.id {
+            progress.bodiesFetched = (try? await bodyFetcher.prefetchRecent(
+                mailboxId: inboxId,
+                mailboxPath: inboxInfo.path,
+                session: session
+            )) ?? 0
+            onProgress?(progress)
         }
 
         return progress
