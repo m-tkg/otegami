@@ -1,3 +1,4 @@
+import CMailCore
 import Foundation
 import MailCore
 import MailTransport
@@ -78,7 +79,7 @@ extension MailCoreIMAPSession {
     /// what keeps these indices safe to hardcode. `SPECIAL-USE` isn't part
     /// of this enum; mailboxes report it via `MCOIMAPFolderFlag` on
     /// `listMailboxes()` instead, which `mailboxInfo(from:)` reads directly.
-    private static let capabilityIndex: [(UInt64, IMAPCapability)] = [
+    private static let capabilityIndex: [(UInt64, MailTransport.IMAPCapability)] = [
         (5, .condstore),
         (7, .idle),
         (10, .move),
@@ -89,9 +90,9 @@ extension MailCoreIMAPSession {
         (36, .gmailExtensions),
     ]
 
-    static func capabilities(from indexSet: MCOIndexSet?) -> Set<IMAPCapability> {
+    static func capabilities(from indexSet: MCOIndexSet?) -> Set<MailTransport.IMAPCapability> {
         guard let indexSet else { return [] }
-        var result: Set<IMAPCapability> = []
+        var result: Set<MailTransport.IMAPCapability> = []
         for (index, capability) in capabilityIndex where indexSet.contains(index) {
             result.insert(capability)
         }
@@ -206,6 +207,31 @@ extension MailCoreIMAPSession {
         return result
     }
 
+    /// The reverse of `messageFlags(from:)`, for `store(mailboxPath:change:)`
+    /// (M3): our `MessageFlags` → MailCore2's `MCOMessageFlag`.
+    static func mcoMessageFlag(from flags: MessageFlags) -> MCOMessageFlag {
+        var result: MCOMessageFlag = []
+        if flags.contains(.seen) { result.insert(.seen) }
+        if flags.contains(.answered) { result.insert(.answered) }
+        if flags.contains(.flagged) { result.insert(.flagged) }
+        if flags.contains(.draft) { result.insert(.draft) }
+        if flags.contains(.deleted) { result.insert(.deleted) }
+        return result
+    }
+
+    /// `IMAPStoreFlagsRequestKind` is a plain (non-`NS_ENUM`) C enum from
+    /// `CMessageConstants.h`, so — like `ConnectionType` above — MailCore2's
+    /// Swift port only gives it `init(rawValue:)`, not named cases; raw
+    /// values are the C declaration order (`Add = 0`, `Remove = 1`,
+    /// `Set = 2`).
+    static func storeFlagsRequestKind(for op: FlagOp) -> IMAPStoreFlagsRequestKind {
+        switch op {
+        case .add: IMAPStoreFlagsRequestKind(rawValue: 0)
+        case .remove: IMAPStoreFlagsRequestKind(rawValue: 1)
+        case .replace: IMAPStoreFlagsRequestKind(rawValue: 2)
+        }
+    }
+
     private static func emailAddress(from address: MCOAddress) -> EmailAddress? {
         guard let mailbox = address.mailbox, !mailbox.isEmpty else { return nil }
         return EmailAddress(name: address.displayName, address: mailbox)
@@ -315,6 +341,16 @@ extension MailCoreIMAPSession {
             length = UInt64.max
         }
         return MCOIndexSet(range: MailCoreRange(location: UInt64(range.lowerBound), length: length))
+    }
+
+    /// A discrete, possibly non-contiguous `UIDSet` (M3's `store`/`move`
+    /// targets), rather than the closed-range `UIDRange` above.
+    static func indexSet(for uids: UIDSet) -> MCOIndexSet {
+        let indexSet = MCOIndexSet()
+        for uid in uids.uids {
+            indexSet.add(UInt64(uid))
+        }
+        return indexSet
     }
 
     /// Splits `range` into consecutive sub-ranges of at most `size` UIDs,

@@ -29,6 +29,13 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// asked for them.
     private var gmailExtensionsSupported = false
 
+    /// The server's advertised capabilities, captured once at `connect`
+    /// time (M3) — `capabilities()` returns this cached snapshot rather
+    /// than issuing a fresh `CAPABILITY` round trip on every call, and
+    /// `move`/`fetchEnvelopes(changedSince:)` consult it directly to decide
+    /// between `MOVE`/`COPY`+`STORE`+`EXPUNGE` and CONDSTORE/full-refetch.
+    private var cachedCapabilities: Set<IMAPCapability> = []
+
     public init(config: IMAPConfig) {
         let session = MCOIMAPSession()
         session.hostname = config.host
@@ -44,7 +51,8 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         Self.apply(auth, to: session)
         try await runVoid(session.checkAccountOperation())
         connected = true
-        gmailExtensionsSupported = try await capabilities().contains(.gmailExtensions)
+        cachedCapabilities = try await fetchCapabilities()
+        gmailExtensionsSupported = cachedCapabilities.contains(.gmailExtensions)
     }
 
     public func disconnect() async {
@@ -74,6 +82,10 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     }
 
     public func capabilities() async throws -> Set<IMAPCapability> {
+        cachedCapabilities
+    }
+
+    private func fetchCapabilities() async throws -> Set<IMAPCapability> {
         try await withCheckedThrowingContinuation { continuation in
             session.capabilityOperation().start { error, capabilities in
                 if let error {
@@ -154,8 +166,36 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
     }
 
+    /// `CONDSTORE`-based flag-change fetch (RFC 7162 §3.1, `syncMessages`
+    /// bridging `session.syncMessagesByUIDOperation`): messages whose
+    /// metadata changed since `modSeq`, covering the whole mailbox
+    /// (`UIDRange.all`) since CONDSTORE reports changes irrespective of
+    /// UID — the caller (`MailboxSyncer`) is expected to have already
+    /// checked `capabilities()` contains `.condstore` before calling this;
+    /// a non-CONDSTORE server rejects the underlying `FETCH ... (CHANGEDSINCE
+    /// ...)` with a tagged `BAD`/`NO`, surfaced here as `.serverError`.
+    /// Vanished (expunged) UIDs are not reported even when the server also
+    /// supports QRESYNC — `MailboxSyncer`'s CONDSTORE path only tracks new
+    /// mail and flag changes; deletion detection is the non-CONDSTORE
+    /// full-window-refetch path's job (see its doc comment).
     public func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope] {
-        throw MailTransportError.notImplemented("fetchEnvelopes(changedSince:) — CONDSTORE support lands in M3")
+        guard cachedCapabilities.contains(.condstore) else {
+            throw MailTransportError.serverError(underlyingDescription: "Server does not support CONDSTORE")
+        }
+        var kind: MCOIMAPMessagesRequestKind = [.headers, .flags, .structure, .internalDate, .size]
+        if gmailExtensionsSupported {
+            kind.formUnion([.gmailThreadID, .gmailMessageID])
+        }
+        let indexSet = Self.indexSet(for: .all)
+        return try await withCheckedThrowingContinuation { continuation in
+            session.syncMessages(folder: mailboxPath, kind: kind, uids: indexSet, modSeq: modSeq).start { error, messages, _ in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                continuation.resume(returning: (messages ?? []).map(Self.envelope(from:)))
+            }
+        }
     }
 
     // MARK: - Body (M2)
@@ -187,31 +227,187 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
     }
 
-    // MARK: - Not yet implemented (M3+)
+    // MARK: - Not yet implemented (M8/M5)
 
     public func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data {
         throw MailTransportError.notImplemented("fetchMessageBody — raw per-part attachment fetch lands in M8")
-    }
-
-    public func store(mailboxPath: String, change: FlagChange) async throws {
-        throw MailTransportError.notImplemented("store — flag sync lands in M3")
     }
 
     public func append(mailboxPath: String, messageData: Data, flags: MessageFlags) async throws -> UInt32? {
         throw MailTransportError.notImplemented("append — Sent APPEND lands in M5")
     }
 
+    // MARK: - Flags / move / expunge (M3)
+
+    /// `STORE`s `change.flags` onto `change.uids` (RFC 3501 §6.4.6).
+    /// `change.uidValidity` is not consulted here — staleness checking
+    /// against a mailbox's *current* `uidValidity` is `OpQueueProcessor`'s
+    /// job (it has the local `MailboxRecord` to compare against), not
+    /// something this transport-only method can evaluate on its own.
+    public func store(mailboxPath: String, change: FlagChange) async throws {
+        guard !change.uids.uids.isEmpty else { return }
+        let indexSet = Self.indexSet(for: change.uids)
+        let kind = Self.storeFlagsRequestKind(for: change.op)
+        let flags = Self.mcoMessageFlag(from: change.flags)
+        try await runVoid(session.storeFlagsOperation(folder: mailboxPath, uids: indexSet, kind: kind, flags: flags))
+    }
+
+    /// Moves `uids` from `mailboxPath` to `destinationPath`: `MOVE`
+    /// (RFC 6851) when the server advertised the `MOVE` capability at
+    /// connect time, else the classic `COPY` + `STORE +FLAGS \Deleted` +
+    /// `EXPUNGE` sequence every IMAP server supports.
     public func move(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {
-        throw MailTransportError.notImplemented("move — lands in M5")
+        guard !uids.uids.isEmpty else { return }
+        let indexSet = Self.indexSet(for: uids)
+
+        if cachedCapabilities.contains(.move) {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                session.moveMessagesOperation(folder: mailboxPath, uids: indexSet, destFolder: destinationPath).start { error, _ in
+                    if let error {
+                        continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    } else {
+                        continuation.resume()
+                    }
+                }
+            }
+            return
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            session.copyMessagesOperation(folder: mailboxPath, uids: indexSet, destFolder: destinationPath).start { error, _ in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+        try await store(
+            mailboxPath: mailboxPath,
+            change: FlagChange(uids: uids, op: .add, flags: .deleted, uidValidity: 0)
+        )
+        try await expunge(mailboxPath: mailboxPath)
     }
 
     public func expunge(mailboxPath: String) async throws {
-        throw MailTransportError.notImplemented("expunge — lands in M3")
+        try await runVoid(session.expungeOperation(folder: mailboxPath))
     }
 
+    // MARK: - IDLE (M3)
+
+    /// How long a single `IDLE` round is allowed to run before this session
+    /// proactively sends `DONE` and reissues it, per RFC 2177's
+    /// recommendation to re-issue within 29 minutes (many servers drop the
+    /// connection at the 30-minute `IMAPIDLETIMEOUT` mark).
+    static let idleReissueInterval: Duration = .seconds(29 * 60)
+
+    /// Runs `IDLE` on `mailboxPath` continuously: each round is one
+    /// `MCOIMAPIdleOperation`, reissued immediately after it completes
+    /// (whether that's because the server pushed an update, the
+    /// `idleReissueInterval` proactive-reissue timer fired, or the
+    /// stream's consuming `Task` was cancelled) until that `Task`
+    /// cancellation is observed, at which point the stream finishes
+    /// cleanly. A genuine connection/protocol error finishes the stream by
+    /// throwing instead.
+    ///
+    /// MailCore2's completion signature (`(Error?) -> Void`) does not
+    /// distinguish "the server pushed new data" from "we ourselves called
+    /// `interruptIdle()`" — both complete with a `nil` error at the
+    /// libetpan level (`IMAPSession::idle`'s timeout/interrupt branch still
+    /// sets `ErrorNone`). This method tracks whether *it* requested the
+    /// interrupt (proactive reissue timer, or external cancellation) via
+    /// `InterruptFlag`, and only yields `.interrupted` for those; any
+    /// completion the operation reaches on its own is reported as
+    /// `.newData` — safe even if what completed it was actually libetpan's
+    /// own internal socket-level timeout handling (a spurious `.newData`
+    /// just costs `MailboxSyncer` one incremental sync pass that finds
+    /// nothing new).
     public nonisolated func idle(mailboxPath: String) -> AsyncThrowingStream<IdleEvent, Error> {
         AsyncThrowingStream { continuation in
-            continuation.finish(throwing: MailTransportError.notImplemented("idle — IDLE support lands in M3"))
+            let task = Task {
+                await self.runIdleLoop(mailboxPath: mailboxPath, continuation: continuation)
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func runIdleLoop(
+        mailboxPath: String,
+        continuation: AsyncThrowingStream<IdleEvent, Error>.Continuation
+    ) async {
+        while !Task.isCancelled {
+            do {
+                let event = try await performOneIdleRound(mailboxPath: mailboxPath)
+                guard !Task.isCancelled else { break }
+                continuation.yield(event)
+            } catch {
+                continuation.finish(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                return
+            }
+        }
+        continuation.finish()
+    }
+
+    private func performOneIdleRound(mailboxPath: String) async throws -> IdleEvent {
+        let operationBox = IdleOperationBox(session.idleOperation(folder: mailboxPath, lastKnownUID: 0))
+        let interruptFlag = InterruptFlag()
+
+        let timeoutTask = Task {
+            try? await Task.sleep(for: Self.idleReissueInterval)
+            guard !Task.isCancelled else { return }
+            interruptFlag.set()
+            operationBox.operation.interruptIdle()
+        }
+        defer { timeoutTask.cancel() }
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                operationBox.operation.start { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
+                }
+            }
+        } onCancel: {
+            interruptFlag.set()
+            operationBox.operation.interruptIdle()
+        }
+
+        return interruptFlag.get() ? .interrupted : .newData
+    }
+
+    /// Wraps a non-`Sendable` `MCOIMAPIdleOperation` so it can be captured
+    /// by the `@Sendable` closures `Task { ... }`/`withTaskCancellationHandler`
+    /// require: MailCore2's own internal locking (see `IMAPSession
+    /// ::interruptIdle()`'s `LOCK()`/`UNLOCK()`) already makes calling
+    /// `interruptIdle()`/`start(completionBlock:)` from different threads
+    /// safe in practice, which Swift's checker just can't see through a
+    /// non-`Sendable` Objective-C-bridged class.
+    private final class IdleOperationBox: @unchecked Sendable {
+        let operation: MCOIMAPIdleOperation
+        init(_ operation: MCOIMAPIdleOperation) { self.operation = operation }
+    }
+
+    /// Thread-safe one-shot flag: `MCOIMAPOperation` completion blocks fire
+    /// on MailCore2's own internal thread, and `withTaskCancellationHandler`'s
+    /// `onCancel` closure can run concurrently with that from an arbitrary
+    /// thread too, so a plain `var` isn't safe here.
+    private final class InterruptFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var flagged = false
+
+        func set() {
+            lock.lock()
+            flagged = true
+            lock.unlock()
+        }
+
+        func get() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return flagged
         }
     }
 }
