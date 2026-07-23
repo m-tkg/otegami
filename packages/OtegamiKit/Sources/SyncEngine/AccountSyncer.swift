@@ -159,6 +159,20 @@ public actor AccountSyncer {
     /// Shared by ``performInitialSync(auth:onProgress:)`` and
     /// ``performIncrementalSync(auth:)`` — both need "every known mailbox,
     /// freshly upserted" before doing anything mailbox-specific.
+    ///
+    /// `MailboxInfo` (what `listMailboxes()` returns) has no notion of
+    /// sync-progress state — `uidValidity`/`uidNext`/`highestModSeq`/
+    /// `messageCount`/`lastSyncedAt` only ever come from a `select`/
+    /// `incrementalSync` pass — so a re-upsert must not clobber whatever a
+    /// *previous* sync already stored in those columns back to their
+    /// zero/`nil` defaults; only the listing-derived columns (path
+    /// metadata, role, attributes) are safe to overwrite unconditionally
+    /// here. (`performInitialSync` immediately overwrites the sync-state
+    /// columns with fresh values right after this call anyway, so this
+    /// mattered less there; `performIncrementalSync`/`MailboxSyncer`
+    /// depend on the *previous* pass's `uidValidity`/`highestModSeq`
+    /// surviving through this call so they have something to diff
+    /// against.)
     private func upsertMailboxes(_ mailboxInfos: [MailboxInfo]) async throws -> [String: MailboxRecord] {
         try await database.dbWriter.write { [account] db -> [String: MailboxRecord] in
             var records: [String: MailboxRecord] = [:]
@@ -171,7 +185,15 @@ public actor AccountSyncer {
                     role: MailboxRoleRecord(info.role),
                     attributesRaw: info.attributes.rawValue
                 )
-                record = try record.upsertAndFetch(db, onConflict: ["accountId", "path"])
+                record = try record.upsertAndFetch(db, onConflict: ["accountId", "path"]) { _ in
+                    [
+                        Column("uidValidity").noOverwrite,
+                        Column("uidNext").noOverwrite,
+                        Column("highestModSeq").noOverwrite,
+                        Column("messageCount").noOverwrite,
+                        Column("lastSyncedAt").noOverwrite,
+                    ]
+                }
                 records[info.path] = record
             }
             return records

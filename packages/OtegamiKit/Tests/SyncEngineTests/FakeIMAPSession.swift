@@ -29,24 +29,107 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         public var bodiesByPath: [String: [UInt32: MessageBodyContent]]
         /// When set, `connect(auth:)` throws this instead of succeeding.
         public var failConnection: MailTransportError?
+        /// What `capabilities()` reports — `MailboxSyncer`'s CONDSTORE
+        /// branch only tests as `true` when a script sets `.condstore`
+        /// here (M3).
+        public var capabilitiesToReport: Set<IMAPCapability>
+        /// `fetchEnvelopes(mailboxPath:changedSince:)`'s scripted result
+        /// per mailbox path (M3) — the modSeq argument itself isn't
+        /// consulted, since a test only ever needs one "what's changed"
+        /// answer per `MailboxSyncer.incrementalSync` call.
+        public var changedSinceEnvelopesByPath: [String: [FetchedEnvelope]]
+        /// When set, `fetchEnvelopes(changedSince:)` throws this instead —
+        /// scripts a non-CONDSTORE server for a test even if
+        /// `capabilitiesToReport` doesn't already omit `.condstore`.
+        public var failChangedSince: MailTransportError?
+        /// Scripted `idle(mailboxPath:)` events (M3), yielded in order and
+        /// then the stream finishes; empty means the stream finishes
+        /// immediately with no events.
+        public var idleEvents: [IdleEvent]
+        /// When set, the idle stream throws this after yielding
+        /// `idleEvents` (or immediately, if `idleEvents` is empty).
+        public var failIdle: MailTransportError?
 
         public init(
             mailboxes: [MailboxInfo] = [],
             envelopesByPath: [String: [FetchedEnvelope]] = [:],
             statusByPath: [String: MailboxStatus] = [:],
             bodiesByPath: [String: [UInt32: MessageBodyContent]] = [:],
-            failConnection: MailTransportError? = nil
+            failConnection: MailTransportError? = nil,
+            capabilitiesToReport: Set<IMAPCapability> = [],
+            changedSinceEnvelopesByPath: [String: [FetchedEnvelope]] = [:],
+            failChangedSince: MailTransportError? = nil,
+            idleEvents: [IdleEvent] = [],
+            failIdle: MailTransportError? = nil
         ) {
             self.mailboxes = mailboxes
             self.envelopesByPath = envelopesByPath
             self.statusByPath = statusByPath
             self.bodiesByPath = bodiesByPath
             self.failConnection = failConnection
+            self.capabilitiesToReport = capabilitiesToReport
+            self.changedSinceEnvelopesByPath = changedSinceEnvelopesByPath
+            self.failChangedSince = failChangedSince
+            self.idleEvents = idleEvents
+            self.failIdle = failIdle
+        }
+    }
+
+    /// Thread-safe recorder for `store`/`move`/`expunge` calls (M3),
+    /// shared across however many `FakeIMAPSession` instances a test's
+    /// session factory creates (e.g. `OpQueueProcessor.replay` opens its
+    /// own connection separately from whatever `MailboxSyncer` used) —
+    /// pass the same instance to every `FakeIMAPSession(config:script:
+    /// recorder:)` a test's session factory constructs to see every call
+    /// made across all of them, in call order.
+    public final class CallRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _storeCalls: [(path: String, change: FlagChange)] = []
+        private var _moveCalls: [(path: String, uids: [UInt32], destination: String)] = []
+        private var _expungeCalls: [String] = []
+
+        public init() {}
+
+        func recordStore(path: String, change: FlagChange) {
+            lock.lock()
+            _storeCalls.append((path, change))
+            lock.unlock()
+        }
+
+        func recordMove(path: String, uids: [UInt32], destination: String) {
+            lock.lock()
+            _moveCalls.append((path, uids, destination))
+            lock.unlock()
+        }
+
+        func recordExpunge(path: String) {
+            lock.lock()
+            _expungeCalls.append(path)
+            lock.unlock()
+        }
+
+        public var storeCalls: [(path: String, change: FlagChange)] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _storeCalls
+        }
+
+        public var moveCalls: [(path: String, uids: [UInt32], destination: String)] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _moveCalls
+        }
+
+        public var expungeCalls: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _expungeCalls
         }
     }
 
     public let config: IMAPConfig
     private let script: Script
+    private let recorder: CallRecorder?
     public private(set) var connected = false
     public private(set) var selectedPaths: [String] = []
     /// Every `fetchEnvelopes(mailboxPath:uids:batchSize:)` call's requested
@@ -55,16 +138,18 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     public private(set) var fetchedRanges: [(path: String, lowerBound: UInt32, upperBound: UInt32?)] = []
 
     /// Satisfies `IMAPSessionProtocol`'s required initializer with an empty
-    /// script. Tests should use ``init(config:script:)`` instead so the
-    /// session actually has data to serve.
+    /// script. Tests should use ``init(config:script:recorder:)`` instead
+    /// so the session actually has data to serve.
     public init(config: IMAPConfig) {
         self.config = config
         self.script = Script()
+        self.recorder = nil
     }
 
-    public init(config: IMAPConfig, script: Script) {
+    public init(config: IMAPConfig, script: Script, recorder: CallRecorder? = nil) {
         self.config = config
         self.script = script
+        self.recorder = recorder
     }
 
     public func connect(auth: MailAuth) async throws {
@@ -79,7 +164,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func capabilities() async throws -> Set<IMAPCapability> {
-        []
+        script.capabilitiesToReport
     }
 
     public func listMailboxes() async throws -> [MailboxInfo] {
@@ -107,7 +192,10 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope] {
-        throw MailTransportError.notImplemented("FakeIMAPSession doesn't script CONDSTORE (M3) behavior")
+        if let failChangedSince = script.failChangedSince {
+            throw failChangedSince
+        }
+        return script.changedSinceEnvelopesByPath[mailboxPath] ?? []
     }
 
     public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {
@@ -124,7 +212,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func store(mailboxPath: String, change: FlagChange) async throws {
-        throw MailTransportError.notImplemented("FakeIMAPSession doesn't script STORE (M3) behavior")
+        recorder?.recordStore(path: mailboxPath, change: change)
     }
 
     public func append(mailboxPath: String, messageData: Data, flags: MessageFlags) async throws -> UInt32? {
@@ -132,16 +220,25 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func move(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {
-        throw MailTransportError.notImplemented("FakeIMAPSession doesn't script MOVE (M5) behavior")
+        recorder?.recordMove(path: mailboxPath, uids: uids.uids, destination: destinationPath)
     }
 
     public func expunge(mailboxPath: String) async throws {
-        throw MailTransportError.notImplemented("FakeIMAPSession doesn't script EXPUNGE (M3) behavior")
+        recorder?.recordExpunge(path: mailboxPath)
     }
 
     public nonisolated func idle(mailboxPath: String) -> AsyncThrowingStream<IdleEvent, Error> {
-        AsyncThrowingStream { continuation in
-            continuation.finish(throwing: MailTransportError.notImplemented("FakeIMAPSession doesn't script IDLE (M3) behavior"))
+        let events = script.idleEvents
+        let failIdle = script.failIdle
+        return AsyncThrowingStream { continuation in
+            for event in events {
+                continuation.yield(event)
+            }
+            if let failIdle {
+                continuation.finish(throwing: failIdle)
+            } else {
+                continuation.finish()
+            }
         }
     }
 }
