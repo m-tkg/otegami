@@ -50,7 +50,12 @@ let package = Package(
         // Sync orchestration: SyncCoordinator / AccountSyncer / MailboxSyncer / opQueue.
         .target(
             name: "SyncEngine",
-            dependencies: ["MailTransport", "OtegamiStore"]
+            dependencies: [
+                "OtegamiCore",
+                "MailTransport",
+                "OtegamiStore",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
         ),
 
         // DTOs shared between the app and the push relay server. Linux-compatible.
@@ -77,6 +82,19 @@ let package = Package(
         .testTarget(
             name: "OtegamiCoreTests",
             dependencies: ["OtegamiCore"]
+        ),
+
+        // In-memory GRDB migration + envelope-persistence + query tests.
+        .testTarget(
+            name: "OtegamiStoreTests",
+            dependencies: ["OtegamiStore"]
+        ),
+
+        // FakeIMAPSession-driven SyncEngine scenario tests (initial sync,
+        // idempotent resync, >500-message windowing).
+        .testTarget(
+            name: "SyncEngineTests",
+            dependencies: ["SyncEngine", "MailTransport", "OtegamiStore"]
         ),
 
         // Integration tests against a real IMAP server (the dev mailstack's
