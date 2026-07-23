@@ -55,6 +55,41 @@ extension XCTestCase {
         app.launch()
     }
 
+    /// M4: adds the dev mailstack's second seeded account (`test2
+    /// @otegami.test`) — used by the unified-inbox verification, which
+    /// needs a second account already present. Assumes `test1` (or no
+    /// account at all) is already the sidebar's state, so `openAccountSetup`
+    /// finds whichever of the empty-state/toolbar "add account" buttons is
+    /// currently showing.
+    func addDovecotTest2Account(in app: XCUIApplication) {
+        openAccountSetup(in: app)
+        fillDovecotAccountForm(
+            in: app,
+            displayName: "Dovecot Test2",
+            email: "test2@otegami.test",
+            username: "test2@otegami.test",
+            password: "test1234"
+        )
+        runConnectionTest(in: app)
+        saveAccount(in: app)
+        dismissSavePasswordPromptIfNeeded()
+    }
+
+    /// Generalized form of `fillDovecotAccountForm(in:)` (below) for any of
+    /// the dev mailstack's seeded users, not just `test1`.
+    func fillDovecotAccountForm(in app: XCUIApplication, displayName: String, email: String, username: String, password: String) {
+        type(displayName, into: app.textFields["accountSetup.displayName"])
+        type(email, into: app.textFields["accountSetup.email"])
+        type("localhost", into: app.textFields["accountSetup.imapHost"])
+        type("1143", into: app.textFields["accountSetup.imapPort"], clearingExisting: true)
+
+        app.buttons["accountSetup.imapSecurity"].tap()
+        app.buttons["なし (平文)"].tap()
+
+        type(username, into: app.textFields["accountSetup.imapUsername"], clearingExisting: true)
+        type(password, into: app.secureTextFields["accountSetup.password"])
+    }
+
     func openAccountSetup(in app: XCUIApplication) {
         // Empty-state button (first launch) or the toolbar "+" (already has
         // accounts, e.g. re-running this test without resetting the

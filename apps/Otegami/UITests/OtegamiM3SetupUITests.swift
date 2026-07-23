@@ -20,7 +20,9 @@ final class OtegamiM3SetupUITests: XCTestCase {
         addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
-        for subject in ["ようこそ otegami へ", "明日の打ち合わせについて", "Ｆｗｄ：今月のリリースノート"] {
+        // 「明日の打ち合わせについて」 collapses into its "Re:" thread row under
+        // M4 threading — see OtegamiM1VerificationUITests's matching note.
+        for subject in ["ようこそ otegami へ", "Re: 明日の打ち合わせについて", "Ｆｗｄ：今月のリリースノート"] {
             XCTAssertTrue(
                 app.staticTexts[subject].waitForExistence(timeout: 30),
                 "Expected seeded message \"\(subject)\" to appear in the INBOX list before M3 phases run"

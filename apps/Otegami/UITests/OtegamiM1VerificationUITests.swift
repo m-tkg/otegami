@@ -32,9 +32,15 @@ final class OtegamiM1VerificationUITests: XCTestCase {
         // not asserted here, see OtegamiM2VerificationUITests). Generous
         // timeout: this covers connect + LIST + SELECT + envelope fetch
         // for the initial sync kicked off right after saving.
+        //
+        // 02/03 (「明日の打ち合わせについて」/「Re: 明日の打ち合わせについて」) are a
+        // References-linked pair (M4): they now collapse into one thread
+        // row showing only the latest message's subject
+        // ("Re: 明日の打ち合わせについて") plus a count badge, so the bare
+        // "明日の打ち合わせについて" text is no longer its own row — only the
+        // "Re:" one is asserted here.
         let expectedSubjects = [
             "ようこそ otegami へ",
-            "明日の打ち合わせについて",
             "Re: 明日の打ち合わせについて",
             "Ｆｗｄ：今月のリリースノート",
         ]

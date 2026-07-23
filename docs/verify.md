@@ -206,3 +206,71 @@ scripts/verify-ios-m3.sh
   すら存在しない) に対しては `OpQueueProcessor` の delete
   op はいつまでも `mailboxNotFound` で保留され続ける — Trash
   自動作成やユーザーへのバナー表示は M4 以降の課題として残る。
+
+## iOS シミュレータ検証 (M4)
+
+```sh
+scripts/verify-ios-m4.sh
+```
+
+スレッディング・複数アカウント・統合受信トレイのチェックポイントを、
+M3 と同様 XCUITest 4 フェーズ + ホスト側 `doveadm` 操作で確認する。
+
+1. `OtegamiM4SetupUITests` — test1 の Dovecot アカウントを追加し、
+   `09/10/11-thread-b-*.eml` (References 付き test1↔test2 往復3通) が
+   1 行に畳まれ件数バッジ「3」を表示すること、`12/13-subject-fallback-*.eml`
+   (References/In-Reply-To 無し・件名 "Re:" 一致のみ) も 1 行に畳まれ
+   件数バッジ「2」を表示すること (Threader の 2 経路 — References
+   union-find と subject フォールバック — の両方を実機同期で確認) を
+   assert する。件数バッジは `messageList.row.<threadId>.countBadge`
+   識別子の `CONTAINS` ルックアップで探す (日付表示に数字が混ざるため、
+   行ラベル全体への `label CONTAINS "3"` のような素朴な述語は誤検知
+   しうる)。
+2. `OtegamiM4ThreadDetailUITests` — 3 通スレッドを開き、
+   `threadDetail.message.<id>.header` が 3 件存在すること、最新メッセージ
+   (test2 からの2通目の返信) の本文だけが初期状態で展開されていること、
+   最も古いメッセージの本文はまだ画面上に無いこと、そのヘッダーをタップ
+   すると展開されて本文が現れることを確認する。
+3. `OtegamiM4SwipeReadUITests` — 02/03 (References 付き2通スレッド)
+   の行をリーディングスワイプし「既読にする」をタップ。スレッド一括
+   既読化 (`MessageListView.toggleRead`) がスレッド内の**両方**の
+   メッセージへ `OpQueue.enqueueSetFlags` することを、ホスト側の
+   `doveadm fetch ... flags` を2つの件名それぞれについてポーリングし
+   `\Seen` を確認することで検証する。
+4. `OtegamiM4UnifiedInboxUITests` — test2 の Dovecot アカウントを追加し
+   (`addDovecotTest2Account`)、既定選択の「すべての受信トレイ」に
+   test1 のスレッドと test2 自身の受信メールが両方とも表示されることを
+   確認する。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`m4-01-unified-inbox-threads.png` (統合 Inbox、スレッド畳み+バッジ) /
+`m4-02-thread-detail.png` (スレッドビュー、`lastOpenedThread`
+`@AppStorage` 復元経由でリランチ後に再現) / `m4-03-swiped-read.png`
+(スレッド一括既読後) / `m4-04-unified-inbox-two-accounts.png`
+(2アカウント統合) として出力される。
+
+### M1/M3 XCUITest への影響 (件名の畳み込み)
+
+M4 でスレッド化した結果、`OtegamiM1VerificationUITests`/
+`OtegamiM3SetupUITests` が assert していた「明日の打ち合わせについて」
+(02, References の元メッセージ) は、その返信 (03) と1行に畳まれ、
+スレッド行には最新メッセージの件名「Re: 明日の打ち合わせについて」
+だけが表示されるようになった。両テストとも `明日の打ち合わせについて`
+への assert を `Re: 明日の打ち合わせについて` に差し替え済み — これは
+バグ修正ではなく、スレッド一覧という新しい表示仕様に合わせた意図的な
+変更。
+
+### 既知の制約
+
+- スレッドは口座 (account) 内で閉じる設計 (`thread.accountId`)。同じ
+  会話が異なるメールボックス (例: INBOX と Sent) に跨る場合、初期同期の
+  `AccountSyncer.performInitialSync` はすべてのメールボックスを処理し
+  終えてから `ThreadAssigner.assignAllUnthreaded` を1回走らせて解決する
+  設計だが、差分同期側は 1 パス内でメールボックスを日付昇順に処理する
+  保証がないため、極端に到着順が入れ替わるケースでは一時的に別スレッド
+  になり、後続のブリッジメッセージ到着時にマージされる (自己修復)。
+- `ThreadAssigner` の各ルックアップクエリ (References/gmThreadId/subject
+  候補) はメッセージ単位で都度発行しており、`assignAllUnthreaded` は
+  O(未スレッド化メッセージ数) 回のトランザクション内クエリになる —
+  M4 のデータ規模では問題にならないが、10万通規模の性能検証は計画上
+  M10 の課題として残されている。
