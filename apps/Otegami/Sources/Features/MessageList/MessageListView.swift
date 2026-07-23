@@ -11,15 +11,29 @@ import MailTransport
 struct MessageListView: View {
     @Environment(AppEnvironment.self) private var environment
     let selection: MailboxSelection
+    // By id (`MessageRecord` isn't `Hashable`). Set directly from a
+    // `Button` action per row — the compact-width column push to
+    // `MessageView` once this changes is driven by `RootView`'s
+    // `preferredCompactColumn`; see its doc comment.
+    @Binding var selectedMessageId: Int64?
 
     @State private var messages: [MessageRecord] = []
     @State private var isSyncing = false
     @State private var syncErrorMessage: String?
 
     var body: some View {
-        List(messages) { message in
-            MessageRow(message: message)
-                .accessibilityIdentifier("messageList.row.\(message.id.map(String.init) ?? "?")")
+        List {
+            ForEach(messages) { message in
+                if let messageId = message.id {
+                    Button {
+                        selectedMessageId = messageId
+                    } label: {
+                        MessageRow(message: message)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("messageList.row.\(messageId)")
+                }
+            }
         }
         .accessibilityIdentifier("messageList.list")
         .navigationTitle(mailboxTitle)
@@ -127,6 +141,7 @@ private struct MessageRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
     }
 
     private var senderText: String {
