@@ -1,5 +1,6 @@
 import SwiftUI
 import OtegamiStore
+import SyncEngine
 
 @main
 struct OtegamiApp: App {
@@ -16,6 +17,17 @@ struct OtegamiApp: App {
                 .environment(environment)
         }
         #if os(macOS)
+        // M10: menu bar (⌘N/⌘R/⌘⌫/⌘⇧F/⌘]/⌘[) — `OtegamiCommands` reads its
+        // actions via `@FocusedValue` (`AppFocusedValues.swift`), published
+        // by `RootView`/`MessageListView` below. Attached to this scene
+        // (not the "composer" `WindowGroup`) since Commands apply
+        // app-wide regardless of which scene declares them; a composer
+        // window intentionally doesn't publish any of these focused values
+        // itself, so e.g. ⌘R inside a composer window just stays disabled
+        // rather than trying to "reply to a reply."
+        .commands { OtegamiCommands() }
+        #endif
+        #if os(macOS)
         // M5 (plan: "macOS は別ウィンドウ (WindowGroup id \"composer\")"):
         // each compose/reply action opens its own window rather than a
         // sheet — `ComposerLaunchPayload` is `Codable`/`Hashable` so
@@ -26,6 +38,15 @@ struct OtegamiApp: App {
                 .environment(environment)
         }
         .defaultSize(width: 560, height: 520)
+        #endif
+        #if os(macOS)
+        // M10: the native Settings scene (⌘,/App menu → Settings…) —
+        // `OtegamiSettingsView`'s doc comment explains why it wraps rather
+        // than replaces the existing gear-icon sheet.
+        Settings {
+            OtegamiSettingsView()
+                .environment(environment)
+        }
         #endif
     }
 }
@@ -76,7 +97,11 @@ struct RootView: View {
 
     var body: some View {
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
-            SidebarView(selection: $selection, onCompose: { presentComposer(.new) })
+            SidebarView(
+                selection: $selection,
+                onCompose: { presentComposer(.new) },
+                onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) }
+            )
         } content: {
             if let selection {
                 MessageListView(selection: selection, selectedThreadId: $selectedThreadId)
@@ -117,6 +142,20 @@ struct RootView: View {
             preferredColumn = .detail
         }
         .task(id: selection) { restoreLastOpenedThreadIfNeeded() }
+        #if os(macOS)
+        // M10: publishes the actions `OtegamiCommands`' menu items invoke —
+        // `AppFocusedValues.swift`'s doc comment on why `FocusedSceneValue`
+        // rather than passing closures some other way. `replyAction`/
+        // `deleteAction` are only published while a thread is actually
+        // open, so ⌘R/⌘⌫ disable themselves automatically otherwise (no
+        // extra bookkeeping needed here beyond the `nil`-vs-non-`nil`
+        // ternary).
+        .focusedSceneValue(\.newMessageAction, environment.accounts.isEmpty ? nil : { presentComposer(.new) })
+        .focusedSceneValue(\.replyAction, selectedThreadId == nil ? nil : { replyToSelectedThread() })
+        .focusedSceneValue(\.deleteAction, selectedThreadId == nil ? nil : { deleteSelectedThread() })
+        .focusedSceneValue(\.nextMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: 1) })
+        .focusedSceneValue(\.previousMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: -1) })
+        #endif
         #if os(iOS)
         .sheet(item: $composerPayload) { payload in
             ComposerView(payload: payload)
@@ -210,6 +249,94 @@ struct RootView: View {
         case .mailbox(let mailboxSelection): "mailbox:\(mailboxSelection.mailboxId)"
         }
     }
+
+    #if os(macOS)
+    // MARK: - Menu commands (M10)
+
+    /// ⌘R: replies to `selectedThreadId`'s newest message — the same
+    /// message `ThreadDetailView` expands by default, so this matches
+    /// "reply to whatever's currently showing expanded", not an arbitrary
+    /// message within the thread.
+    private func replyToSelectedThread() {
+        guard let selectedThreadId else { return }
+        Task {
+            let messages = (try? await environment.database.dbWriter.read { db in
+                try ThreadQuery.messages(threadId: selectedThreadId, db: db)
+            }) ?? []
+            guard let newestMessageId = messages.last?.id else { return }
+            presentComposer(.reply(originalMessageId: newestMessageId, replyAll: false))
+        }
+    }
+
+    /// ⌘⌫: moves every message in `selectedThreadId` to Trash — the same
+    /// opQueue-enqueuing path `MessageListView.deleteThread(_:)` uses for
+    /// its trailing swipe action, reimplemented here rather than shared
+    /// because `MessageListView` doesn't currently expose that logic to a
+    /// sibling view; both read from `ThreadQuery`/write through `OpQueue`
+    /// the same way, so they can't drift in behavior even though the code
+    /// isn't literally shared. Clears the selection afterward, same as a
+    /// swipe-deleted row disappearing from the list would.
+    private func deleteSelectedThread() {
+        guard let selectedThreadId else { return }
+        Task {
+            do {
+                let accountId: String? = try await environment.database.dbWriter.write { db -> String? in
+                    let messages = try ThreadQuery.messages(threadId: selectedThreadId, db: db)
+                    guard let thread = try ThreadRecord.fetchOne(db, key: selectedThreadId) else { return nil }
+                    for message in messages {
+                        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
+                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                        try OpQueue.enqueueDelete(
+                            accountId: thread.accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                            uids: [uid], db: db
+                        )
+                        try FTSIndexer.delete(messageId: messageId, db: db)
+                        try MessageRecord.deleteOne(db, key: messageId)
+                    }
+                    try ThreadAssigner.recomputeAggregates(threadId: selectedThreadId, db: db)
+                    return thread.accountId
+                }
+                self.selectedThreadId = nil
+                guard let accountId, let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
+                guard let auth = try? await environment.auth(for: account) else { return }
+                _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+            } catch {
+                // Best-effort, matching every other opQueue-enqueuing path
+                // in this app — a failure here just means the thread stays.
+            }
+        }
+    }
+
+    /// ⌘]/⌘[: cycles `selection` through "すべての受信トレイ" followed by
+    /// every account's mailboxes in the sidebar's own display order
+    /// (`MailboxQuery.request`'s ordering — inbox-role first, then
+    /// alphabetical), across every account in `environment.accounts` order.
+    /// Wraps around at either end rather than stopping, matching what a
+    /// "next/previous" pair of menu items conventionally does.
+    private func cycleMailboxSelection(by direction: Int) {
+        Task {
+            var flattened: [SidebarSelection] = [.unifiedInbox]
+            for account in environment.accounts {
+                let mailboxes = (try? await environment.database.dbWriter.read { db in
+                    try MailboxQuery.request(accountId: account.id).fetchAll(db)
+                }) ?? []
+                for mailbox in mailboxes {
+                    guard let mailboxId = mailbox.id else { continue }
+                    flattened.append(.mailbox(MailboxSelection(accountId: account.id, mailboxId: mailboxId)))
+                }
+            }
+            guard !flattened.isEmpty else { return }
+            let currentIndex = selection.flatMap { flattened.firstIndex(of: $0) }
+            let nextIndex: Int
+            if let currentIndex {
+                nextIndex = (currentIndex + direction + flattened.count) % flattened.count
+            } else {
+                nextIndex = 0
+            }
+            selection = flattened[nextIndex]
+        }
+    }
+    #endif
 }
 
 #Preview {

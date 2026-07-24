@@ -90,6 +90,21 @@ struct AccountsSettingsView: View {
                     .accessibilityIdentifier("settings.pushNotificationsLink")
                 }
 
+                // M10: reachable on both platforms, even though macOS also
+                // gets a dedicated "情報" tab in the native Settings scene
+                // (`OtegamiSettingsView`) — this sheet is still how the
+                // app's own gear-icon entry point works on macOS too (it
+                // wasn't replaced, only supplemented), and it's the *only*
+                // route to it on iOS (no Settings scene there at all).
+                Section {
+                    NavigationLink {
+                        AboutView()
+                    } label: {
+                        Label("このアプリについて", systemImage: "info.circle")
+                    }
+                    .accessibilityIdentifier("settings.aboutLink")
+                }
+
                 if let reauthErrorMessage {
                     Section {
                         Text(reauthErrorMessage)
