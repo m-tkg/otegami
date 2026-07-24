@@ -77,6 +77,25 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]: AppIcon-macOS
         ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]: AppIcon
         ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]: AppIcon
+        # M10 fix: XcodeGen's default LD_RUNPATH_SEARCH_PATHS for a
+        # multiplatform target is a single "@executable_path/Frameworks",
+        # correct for iOS (flat bundle: MyApp.app/Frameworks/ sits right
+        # next to MyApp.app/MyApp) but wrong for macOS, where the executable
+        # lives a level deeper at MyApp.app/Contents/MacOS/MyApp and the
+        # embedded frameworks are copied to MyApp.app/Contents/Frameworks/
+        # — one directory up from Frameworks, not a sibling. Without this,
+        # `make mac`'s Debug builds happened to still launch (an *extra*,
+        # DerivedData-build-specific absolute rpath Xcode also adds for
+        # local "run" builds papered over it), but `make mac-app`'s
+        # Release build — a standalone bundle meant to be copied out of
+        # DerivedData into dist/ — crashed at launch with "Library not
+        # loaded: @rpath/MailCore.framework/.../MailCore" the moment it
+        # was run from anywhere else. Confirmed with `otool -l`: the
+        # Debug build's *only* rpath that actually resolves once moved is
+        # this same wrong one, so this would have broken on-device too had
+        # it ever been tested standalone. Adding the correct macOS-specific
+        # rpath alongside (not replacing) the existing one keeps iOS as-is.
+        LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]: "$(inherited) @executable_path/../Frameworks"
     dependencies:
       - package: OtegamiKit
         product: OtegamiCore
