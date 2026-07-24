@@ -60,11 +60,23 @@ xcodebuild \
   build-for-testing
 
 echo "==> Running M1 verification UI test (add account, connection test, INBOX sync)"
+# M10 fix: this used to be a blanket `-only-testing:OtegamiUITests` (the
+# whole target), which only ever meant "just M1's test class" back when M1
+# was the only one in the target. Every milestone since has added its own
+# UITest class to the same `OtegamiUITests` target/scheme, so this blanket
+# filter silently started running *every* milestone's tests back-to-back in
+# one xcodebuild invocation — none of which (besides M1's own) get the
+# per-phase mailstack up/down toggling or `simctl uninstall` reset their own
+# dedicated verify-ios-mN.sh scripts give them, so most of them fail from
+# state pollution, not from any real app regression. Confirmed while
+# building M10: scoping this to just OtegamiM1VerificationUITests (matching
+# every later script's `-only-testing:OtegamiUITests/ClassName` pattern)
+# is what this script always meant to do.
 xcodebuild \
   -project apps/Otegami/Otegami.xcodeproj \
   -scheme Otegami \
   -destination "platform=iOS Simulator,id=$UDID" \
-  -only-testing:OtegamiUITests \
+  -only-testing:OtegamiUITests/OtegamiM1VerificationUITests \
   test-without-building
 
 echo "==> Capturing online screenshot"

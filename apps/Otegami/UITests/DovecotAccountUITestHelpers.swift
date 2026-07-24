@@ -19,11 +19,39 @@ extension XCTestCase {
     /// unreliable for the Password AutoFill sheet specifically in this
     /// simulator/OS combination; querying `com.apple.springboard` directly
     /// is slower to write but deterministic.
-    func dismissSavePasswordPromptIfNeeded() {
+    /// M10: `timeout` is now a parameter (was a hardcoded 3s) — the prompt
+    /// doesn't always appear within a fixed window right after saving the
+    /// account (its trigger is the password's first real *network* use,
+    /// which can land anywhere from immediately to well into the initial
+    /// sync depending on how much else is happening), so a caller that's
+    /// polling for it repeatedly during some other wait (e.g. between
+    /// scroll attempts, `OtegamiM1VerificationUITests`) should pass a much
+    /// shorter timeout than the original one-shot post-save check — each
+    /// call blocks for the full `timeout` when the prompt *isn't* up, so a
+    /// tight polling loop needs this to stay cheap.
+    ///
+    /// M10: also now checks the app under test's *own* element tree first,
+    /// not just `com.apple.springboard` — confirmed via `app.debugDescription`
+    /// that on this iOS 26 toolchain the "Save Password?" prompt is hosted
+    /// as an in-process `Sheet` attached to the app's own window (not a
+    /// cross-process SpringBoard-presented alert the way it evidently was
+    /// when this helper was first written), so querying springboard alone
+    /// never found it — the `notNow.waitForExistence` timeout always just
+    /// ran out, silently leaving the real prompt up to swallow whatever
+    /// touch came next. Both queries stay (belt-and-suspenders) since which
+    /// process actually hosts this system UI isn't something app code
+    /// should have to keep re-diagnosing every OS revision.
+    func dismissSavePasswordPromptIfNeeded(timeout: TimeInterval = 3) {
+        let app = XCUIApplication()
+        let inAppNotNow = app.buttons["Not Now"]
+        if inAppNotNow.waitForExistence(timeout: timeout) {
+            inAppNotNow.tap()
+            return
+        }
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let notNow = springboard.buttons["Not Now"]
-        if notNow.waitForExistence(timeout: 3) {
-            notNow.tap()
+        let springboardNotNow = springboard.buttons["Not Now"]
+        if springboardNotNow.waitForExistence(timeout: timeout) {
+            springboardNotNow.tap()
         }
     }
 
