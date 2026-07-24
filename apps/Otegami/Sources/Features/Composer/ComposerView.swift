@@ -4,6 +4,10 @@ import MailTransport
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
+import UniformTypeIdentifiers
+#if os(iOS)
+import PhotosUI
+#endif
 
 /// Compose/reply UI (M5, plan: "作成・返信"). iOS presents this as a sheet;
 /// macOS opens it in its own window (`WindowGroup(id: "composer")` in
@@ -35,6 +39,19 @@ struct ComposerView: View {
     @State private var isSending = false
     @State private var isLoadingReplyContext = false
     @State private var errorMessage: String?
+
+    // M8: attachments picked but not yet sent — held as plain `Data` in
+    // memory (not yet copied anywhere on disk) until `send()`, which is
+    // where they're staged into Application Support/Outbox (plan: "送信前に
+    // ... へコピーして安定パス化"). Fine for the small attachments this app's
+    // own test fixtures and everyday mail-client use exercise; a much
+    // larger file would be a reason to stream straight to a temp file at
+    // pick time instead, but that's not a case M8 needs to solve.
+    @State private var pendingAttachments: [PendingAttachment] = []
+    @State private var isImportingFile = false
+    #if os(iOS)
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    #endif
 
     var body: some View {
         NavigationStack {
@@ -70,6 +87,41 @@ struct ComposerView: View {
                         .accessibilityIdentifier("composer.body")
                 }
 
+                Section("添付ファイル") {
+                    ForEach(pendingAttachments) { attachment in
+                        HStack {
+                            Image(systemName: "paperclip")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(attachment.filename)
+                                    .font(.subheadline)
+                                    .lineLimit(1)
+                                Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.data.count), countStyle: .file))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityIdentifier("composer.attachment.\(attachment.id)")
+                    }
+                    .onDelete { offsets in
+                        pendingAttachments.remove(atOffsets: offsets)
+                    }
+
+                    Button {
+                        isImportingFile = true
+                    } label: {
+                        Label("ファイルを追加", systemImage: "paperclip")
+                    }
+                    .accessibilityIdentifier("composer.addFileButton")
+
+                    #if os(iOS)
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                        Label("写真を追加", systemImage: "photo")
+                    }
+                    .accessibilityIdentifier("composer.addPhotoButton")
+                    #endif
+                }
+
                 if let errorMessage {
                     Section {
                         Text(errorMessage)
@@ -101,6 +153,23 @@ struct ComposerView: View {
         }
         .accessibilityIdentifier("composer.sheet")
         .task { await prepare() }
+        .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                for url in urls { addAttachment(fromSecurityScopedURL: url) }
+            case .failure:
+                break // User cancelled, or the picker itself failed — nothing to attach either way.
+            }
+        }
+        #if os(iOS)
+        .onChange(of: selectedPhotoItem) { _, newItem in
+            guard let newItem else { return }
+            Task {
+                await addAttachment(fromPhotoPickerItem: newItem)
+                selectedPhotoItem = nil
+            }
+        }
+        #endif
     }
 
     private var navigationTitle: String {
@@ -120,10 +189,69 @@ struct ComposerView: View {
         if selectedAccountId == nil {
             selectedAccountId = environment.accounts.first?.id
         }
+        attachUITestFixtureIfRequested()
         guard case .reply(let originalMessageId, let replyAll) = payload.kind else { return }
         isLoadingReplyContext = true
         defer { isLoadingReplyContext = false }
         await prefillReply(toOriginalMessageId: originalMessageId, replyAll: replyAll)
+    }
+
+    // MARK: - Attachments (M8)
+
+    /// Reads `url`'s bytes immediately (inside the picker's security-scoped
+    /// access window — the URL `fileImporter` hands back isn't guaranteed
+    /// readable once that window closes) rather than holding onto the URL
+    /// itself for later.
+    private func addAttachment(fromSecurityScopedURL url: URL) {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else { return }
+        let filename = url.lastPathComponent
+        pendingAttachments.append(PendingAttachment(filename: filename, mimeType: Self.mimeType(forFilename: filename), data: data))
+    }
+
+    #if os(iOS)
+    private func addAttachment(fromPhotoPickerItem item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+        // `PhotosPickerItem` doesn't reliably expose an original filename
+        // (it's a photo library asset, not a file), so a generated one is
+        // used — `.jpg` since `matching: .images` plus `loadTransferable
+        // (type: Data.self)` is what `PhotosUI` documents as producing a
+        // JPEG-transcoded representation for photo assets in the common
+        // case.
+        let filename = "photo-\(UUID().uuidString.prefix(8)).jpg"
+        pendingAttachments.append(PendingAttachment(filename: filename, mimeType: "image/jpeg", data: data))
+    }
+    #endif
+
+    private static func mimeType(forFilename filename: String) -> String {
+        let ext = (filename as NSString).pathExtension
+        guard !ext.isEmpty, let type = UTType(filenameExtension: ext), let mime = type.preferredMIMEType else {
+            return "application/octet-stream"
+        }
+        return mime
+    }
+
+    /// XCUITest cannot reliably drive the system file-picker/PhotosPicker
+    /// UI (it lives outside this app's own accessibility tree) — plan:
+    /// "XCUITest でのファイル選択が困難なら、UITest 用 launch argument でテストファイルを
+    /// 直接添付する内部フックを用意し、その旨 docs に記録". When the
+    /// `OTEGAMI_UITEST_ATTACH_FIXTURE` launch environment variable is set
+    /// to `"1"` (`OtegamiM8ComposeAttachmentUITests` — see `docs/verify.md`'s
+    /// M8 section), a small fixed fixture is attached automatically as soon
+    /// as the Composer appears, bypassing the picker entirely. The fixture
+    /// is embedded in-process (not read from a host-written file path) so
+    /// this hook has no dependency on whatever filesystem visibility the
+    /// simulator's app-process sandbox happens to allow across processes —
+    /// only a boolean flag crosses the process boundary, via
+    /// `XCUIApplication.launchEnvironment` (well-supported, unlike
+    /// `Foundation.Process`; see `verify.md`'s M3 note on what does and
+    /// doesn't work from an XCUITest target). Unset in every normal
+    /// launch, so this is a no-op outside of that one verification flow.
+    private func attachUITestFixtureIfRequested() {
+        guard ProcessInfo.processInfo.environment["OTEGAMI_UITEST_ATTACH_FIXTURE"] == "1" else { return }
+        let content = Data("otegami M8 UITest attachment fixture\n".utf8)
+        pendingAttachments.append(PendingAttachment(filename: "m8-uitest-attachment.txt", mimeType: "text/plain", data: content))
     }
 
     private func prefillReply(toOriginalMessageId originalMessageId: Int64, replyAll: Bool) async {
@@ -211,6 +339,16 @@ struct ComposerView: View {
         defer { isSending = false }
 
         do {
+            // M8: stage each pending attachment's bytes onto disk *before*
+            // the DB transaction below — `OutboxAttachmentRecord.localPath`
+            // is `NOT NULL` (unlike the received-side `attachment.localPath`,
+            // which starts `nil`), so a row for it should never exist
+            // without a file already backing it. A staging failure here
+            // (out of disk space, ...) surfaces as this whole send failing
+            // up front, rather than an inconsistent partially-attached
+            // outbox row.
+            let stagedAttachments = try Self.stageAttachments(pendingAttachments)
+
             try await environment.database.dbWriter.write { db in
                 var outbox = OutboxMessageRecord(
                     accountId: accountId,
@@ -223,6 +361,13 @@ struct ComposerView: View {
                 )
                 try outbox.insert(db)
                 guard let outboxId = outbox.id else { return }
+                for staged in stagedAttachments {
+                    var attachmentRecord = OutboxAttachmentRecord(
+                        outboxMessageId: outboxId, filename: staged.filename,
+                        mimeType: staged.mimeType, localPath: staged.url.path, size: staged.size
+                    )
+                    try attachmentRecord.insert(db)
+                }
                 try OpQueue.enqueueSend(accountId: accountId, outboxMessageId: outboxId, db: db)
             }
             dismiss()
@@ -257,6 +402,49 @@ struct ComposerView: View {
             return EmailAddress(address: trimmed)
         }
     }
+
+    /// Copies each pending attachment's in-memory bytes to
+    /// `<Application Support>/otegami/Outbox/<UUID>/<filename>` — one
+    /// fresh, randomly-named directory per attachment (rather than nesting
+    /// under the not-yet-known `outboxMessageId`, since these files are
+    /// written *before* that row's `db.write` transaction even starts;
+    /// `OutboxAttachmentRecord.localPath` is what associates the file back
+    /// to its outbox message afterward, not its position in this
+    /// directory tree). Mirrors `AttachmentFetcher.storageURL`'s "everything
+    /// under one `otegami/` folder in Application Support" convention on
+    /// the received side.
+    private static func stageAttachments(_ pending: [PendingAttachment]) throws -> [StagedAttachment] {
+        guard !pending.isEmpty else { return [] }
+        let base = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        )
+        let outboxRoot = base.appendingPathComponent("otegami/Outbox", isDirectory: true)
+
+        return try pending.map { attachment in
+            let directory = outboxRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent(attachment.filename)
+            try attachment.data.write(to: url, options: .atomic)
+            return StagedAttachment(filename: attachment.filename, mimeType: attachment.mimeType, url: url, size: attachment.data.count)
+        }
+    }
+
+    private struct StagedAttachment {
+        var filename: String
+        var mimeType: String
+        var url: URL
+        var size: Int
+    }
+}
+
+/// One file the user has picked in this Composer session but not yet sent
+/// — see `ComposerView.pendingAttachments`'s doc comment for why this
+/// holds raw `Data` rather than a URL.
+private struct PendingAttachment: Identifiable, Equatable {
+    let id = UUID()
+    var filename: String
+    var mimeType: String
+    var data: Data
 }
 
 private extension View {
