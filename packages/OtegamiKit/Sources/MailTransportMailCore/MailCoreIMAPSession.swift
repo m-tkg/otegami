@@ -42,6 +42,12 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         session.port = UInt32(config.port)
         session.connectionType = Self.connectionType(for: config.security)
         session.isCheckCertificateEnabled = !config.allowsInsecureTLS
+        // MailCore2 defaults to the legacy CFStream "VoIP socket" mode
+        // (mVoIPEnabled = true in MCIMAPSession.cpp), a pre-PushKit background
+        // hack. On physical iOS 26 devices CFNetwork traps (EXC_BREAKPOINT in
+        // spd_checkin_socket via SocketStream::checkInVoIPSocket) the moment
+        // such a socket connects; the simulator never exercises this path.
+        session.isVoIPEnabled = false
         self.session = session
     }
 
