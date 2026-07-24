@@ -51,8 +51,28 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
         app.launch()
 
         let subject = "M3差分同期テスト"
-        let row = row(forSubject: subject, in: app)
 
+        // M10: `08-m3-new-mail.eml`'s own `Date:` header (Jan 7, 2026) is
+        // now old enough, relative to the fixture set that grew across
+        // M2-M8, that this row sits right at the *bottom edge* of the
+        // list's viewport rather than comfortably on screen — confirmed
+        // via `app.debugDescription` (its frame ended 4.7pt short of the
+        // CollectionView's own bottom bound). A `swipeLeft()` starting
+        // that close to the edge doesn't reliably reveal the swipe
+        // action (plausibly clipped by, or too close to, whatever system
+        // chrome/the search pill sits at the very bottom). One scroll
+        // down first — using the same drag helper `waitForElementScrollingIfNeeded`
+        // uses — brings it clear of the edge; the row was already
+        // confirmed to exist without any scroll, so this isn't the
+        // "row isn't mounted yet" case that helper handles, just "row
+        // exists but is positioned somewhere `swipeLeft()` can't act on."
+        let list = app.collectionViews["messageList.list"]
+        _ = row(forSubject: subject, in: app) // exists-check only; re-queried below post-scroll since a scroll can invalidate element references
+        let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+        let end = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+        start.press(forDuration: 0.05, thenDragTo: end)
+
+        let row = row(forSubject: subject, in: app)
         // Trailing swipe (`XCUIElement.swipeLeft()`) reveals "削除"
         // (`.swipeActions(edge: .trailing)` in `MessageListView`).
         row.swipeLeft()
