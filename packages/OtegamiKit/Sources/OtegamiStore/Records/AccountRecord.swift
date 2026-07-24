@@ -81,6 +81,16 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
 
     public var createdAt: Date
 
+    /// M11 (iCloud account sync): when this row's synced metadata last
+    /// changed. Used purely as `AccountCloudSync`'s last-writer-wins
+    /// tiebreaker when the same account id has diverged copies on two
+    /// devices — never read for anything else, so a coarse "set at
+    /// creation, otherwise whenever a sync-relevant field changes" is
+    /// precise enough (no need for per-field change tracking). Defaults to
+    /// `createdAt`'s value for rows written before this column existed
+    /// (`AppDatabase`'s v11 migration backfill).
+    public var updatedAt: Date
+
     public init(
         id: String = UUID().uuidString,
         displayName: String,
@@ -98,7 +108,8 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         smtpSecurity: ConnectionSecurityRecord? = nil,
         smtpAllowsInsecureTLS: Bool = false,
         smtpUsername: String? = nil,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        updatedAt: Date? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -117,5 +128,6 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         self.smtpAllowsInsecureTLS = smtpAllowsInsecureTLS
         self.smtpUsername = smtpUsername
         self.createdAt = createdAt
+        self.updatedAt = updatedAt ?? createdAt
     }
 }

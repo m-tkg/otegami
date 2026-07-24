@@ -423,6 +423,18 @@ extension AppDatabase {
             }
         }
 
+        // v11 (iCloud account sync): `account.updatedAt` — see
+        // `AccountRecord.updatedAt`'s doc comment. Added nullable (SQLite
+        // `ALTER TABLE ADD COLUMN` can't express "default to another
+        // column's value") and immediately backfilled from `createdAt`,
+        // the same two-step pattern v7 used for `message.fromText`.
+        migrator.registerMigration("v11") { db in
+            try db.alter(table: "account") { t in
+                t.add(column: "updatedAt", .datetime)
+            }
+            try db.execute(sql: "UPDATE account SET updatedAt = createdAt WHERE updatedAt IS NULL")
+        }
+
         return migrator
     }
 }
