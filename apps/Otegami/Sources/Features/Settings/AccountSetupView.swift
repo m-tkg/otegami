@@ -4,10 +4,11 @@ import MailTransportMailCore
 import OtegamiStore
 import SyncEngine
 
-/// Generic IMAP account setup form (plan: "汎用 IMAP 手入力フォーム"). Gmail/
-/// iCloud presets land in M6; M1 is host/port/security/username/password
-/// only. SMTP fields are collected but unused until M5 — kept optional so
-/// leaving them blank doesn't block saving.
+/// Generic IMAP account setup form (plan: "汎用 IMAP 手入力フォーム") — the "その他
+/// (IMAP)" option on `AccountTypeSelectionView` (M6; before M6 this was the
+/// only account-creation flow, reached directly). Host/port/security/
+/// username/password entered by hand; SMTP fields are collected but unused
+/// until M5 — kept optional so leaving them blank doesn't block saving.
 struct AccountSetupView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss

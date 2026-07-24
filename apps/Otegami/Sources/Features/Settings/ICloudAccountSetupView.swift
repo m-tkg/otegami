@@ -1,0 +1,197 @@
+import SwiftUI
+import MailTransport
+import MailTransportMailCore
+import OtegamiStore
+
+/// iCloud's account-creation form (M6, plan step "iCloud: メールアドレス +
+/// App 用パスワード入力フォーム ... imap.mail.me.com:993 / smtp.mail.me.com:587
+/// プリセット、kind=icloud"). Host/port/security are fixed (shown as static
+/// info, not editable fields — unlike `AccountSetupView`'s "その他" form,
+/// there's nothing provider-specific to type beyond the address and an
+/// app-specific password), matching Gmail's form being "nothing to type but
+/// the OAuth button" in spirit: only what's actually per-account varies.
+///
+/// **Username = full email address** (plan: "ユーザー名はメールアドレスの @ 前 or
+/// フル — 実 iCloud で要確認事項として PENDING に記載し、実装はフルアドレスで").
+/// iCloud's IMAP/SMTP historically accept the full `user@icloud.com` (and
+/// reportedly also the bare `user` short-name) as the login — full address
+/// was chosen since it's unambiguous and is what Apple's own account-setup
+/// documentation shows; see `PENDING.md` for the real-account confirmation
+/// this still needs. If a real account turns out to need the bare
+/// short-name instead, the fix is confined to `imapUsername`/`smtpUsername`
+/// below — everything else in this form is provider-agnostic.
+struct ICloudAccountSetupView: View {
+    @Environment(AppEnvironment.self) private var environment
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var displayName = ""
+    @State private var email = ""
+    @State private var appPassword = ""
+
+    @State private var isTesting = false
+    @State private var testSucceeded = false
+    @State private var testResultMessage: String?
+    @State private var isSaving = false
+    @State private var saveErrorMessage: String?
+
+    private static let imapHost = "imap.mail.me.com"
+    private static let imapPort = 993
+    private static let smtpHost = "smtp.mail.me.com"
+    private static let smtpPort = 587
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("appleid.apple.com で発行した「App 用パスワード」が必要です。iCloud のパスワードそのものではログインできません。")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Link("appleid.apple.com で App 用パスワードを発行", destination: URL(string: "https://appleid.apple.com/account/manage")!)
+                        .accessibilityIdentifier("icloudAccountSetup.appPasswordLink")
+                }
+
+                Section("アカウント") {
+                    TextField("表示名 (省略時はメールアドレス)", text: $displayName)
+                        .accessibilityIdentifier("icloudAccountSetup.displayName")
+                    TextField("iCloud メールアドレス", text: $email)
+                        .textFieldAutocapitalizationNone()
+                        .accessibilityIdentifier("icloudAccountSetup.email")
+                    SecureField("App 用パスワード", text: $appPassword)
+                        .accessibilityIdentifier("icloudAccountSetup.appPassword")
+                }
+
+                Section("接続先 (自動設定)") {
+                    LabeledContent("IMAP", value: "\(Self.imapHost):\(Self.imapPort) (TLS)")
+                        .accessibilityIdentifier("icloudAccountSetup.imapPreset")
+                    LabeledContent("SMTP", value: "\(Self.smtpHost):\(Self.smtpPort) (STARTTLS)")
+                        .accessibilityIdentifier("icloudAccountSetup.smtpPreset")
+                }
+
+                if let testResultMessage {
+                    Section {
+                        Label(testResultMessage, systemImage: testSucceeded ? "checkmark.circle" : "xmark.octagon")
+                            .foregroundStyle(testSucceeded ? .green : .red)
+                            .accessibilityIdentifier("icloudAccountSetup.testResult")
+                    }
+                }
+
+                Section {
+                    Button {
+                        Task { await testConnection() }
+                    } label: {
+                        HStack {
+                            Text("接続テスト")
+                            if isTesting { Spacer(); ProgressView() }
+                        }
+                    }
+                    .accessibilityIdentifier("icloudAccountSetup.testConnectionButton")
+                    .disabled(isTesting || !isFormValid)
+
+                    Button {
+                        Task { await saveAccount() }
+                    } label: {
+                        HStack {
+                            Text("保存して同期開始")
+                            if isSaving { Spacer(); ProgressView() }
+                        }
+                    }
+                    .accessibilityIdentifier("icloudAccountSetup.saveButton")
+                    .disabled(!testSucceeded || isSaving)
+
+                    if let saveErrorMessage {
+                        Text(saveErrorMessage)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("iCloud アカウントを追加")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("キャンセル") { dismiss() }
+                        .accessibilityIdentifier("icloudAccountSetup.cancelButton")
+                }
+            }
+        }
+        .accessibilityIdentifier("icloudAccountSetup.sheet")
+    }
+
+    private var isFormValid: Bool {
+        !email.isEmpty && !appPassword.isEmpty
+    }
+
+    /// **Not exercised by `scripts/verify-ios-m6.sh`**: unlike the "その他"
+    /// form's connection test (which points at the dev mailstack's Dovecot,
+    /// always reachable from CI), this always dials the real
+    /// `imap.mail.me.com` — there's no throwaway iCloud account to test
+    /// against yet (see `PENDING.md`). The verify script only asserts the
+    /// form itself renders with the right preset values; a human with a
+    /// real iCloud App 用パスワード is expected to exercise this button
+    /// once, per `PENDING.md`'s follow-up instructions.
+    private func testConnection() async {
+        isTesting = true
+        testResultMessage = nil
+        defer { isTesting = false }
+
+        let config = IMAPConfig(host: Self.imapHost, port: Self.imapPort, security: .tls)
+        let session = MailCoreIMAPSession(config: config)
+        do {
+            try await session.connect(auth: .password(username: email, password: appPassword))
+            await session.disconnect()
+            testSucceeded = true
+            testResultMessage = "接続に成功しました。"
+        } catch {
+            testSucceeded = false
+            testResultMessage = "接続に失敗しました: \(error)"
+        }
+    }
+
+    private func saveAccount() async {
+        guard testSucceeded else { return }
+        isSaving = true
+        defer { isSaving = false }
+
+        let account = AccountRecord(
+            displayName: displayName.isEmpty ? email : displayName,
+            email: email,
+            authType: .password,
+            kind: .icloud,
+            imapHost: Self.imapHost,
+            imapPort: Self.imapPort,
+            imapSecurity: .tls,
+            imapUsername: email,
+            smtpHost: Self.smtpHost,
+            smtpPort: Self.smtpPort,
+            smtpSecurity: .startTLS,
+            smtpUsername: email
+        )
+
+        do {
+            // Keychain-before-DB-row, same ordering rationale as
+            // `AccountSetupView.saveAccount`.
+            try environment.credentialStore.setPassword(appPassword, forAccountId: account.id)
+            try await environment.database.dbWriter.write { db in
+                try account.insert(db)
+            }
+            dismiss()
+
+            let auth = MailAuth.password(username: email, password: appPassword)
+            Task {
+                _ = try? await environment.syncCoordinator.syncAccount(account, auth: auth)
+            }
+        } catch {
+            testSucceeded = false
+            saveErrorMessage = "保存に失敗しました: \(error)"
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func textFieldAutocapitalizationNone() -> some View {
+        #if os(iOS)
+        self.textInputAutocapitalization(.never).autocorrectionDisabled()
+        #else
+        self
+        #endif
+    }
+}

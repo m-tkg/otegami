@@ -16,7 +16,10 @@ struct SidebarView: View {
     /// button and `ThreadDetailView`'s "返信"/"全員に返信" buttons.
     var onCompose: () -> Void = {}
 
-    @State private var showingAccountSetup = false
+    /// M6: drives the whole add-account flow (type picker → the chosen
+    /// form) as a single `.sheet(item:)` — see `AccountEntryRoute`'s doc
+    /// comment for why a route enum rather than a `Bool`.
+    @State private var accountEntryRoute: AccountEntryRoute?
     @State private var showingSettings = false
     @State private var showingOutbox = false
     @State private var mailboxesByAccountId: [String: [MailboxRecord]] = [:]
@@ -30,7 +33,7 @@ struct SidebarView: View {
                 } description: {
                     Text("メールアカウントを追加してください。")
                 } actions: {
-                    Button("アカウントを追加") { showingAccountSetup = true }
+                    Button("アカウントを追加") { accountEntryRoute = .typeSelection }
                         .accessibilityIdentifier("sidebar.addAccountButton")
                 }
             } else {
@@ -79,7 +82,7 @@ struct SidebarView: View {
             }
             ToolbarItem {
                 Button {
-                    showingAccountSetup = true
+                    accountEntryRoute = .typeSelection
                 } label: {
                     Label("アカウントを追加", systemImage: "plus")
                 }
@@ -94,8 +97,8 @@ struct SidebarView: View {
                 .accessibilityIdentifier("sidebar.settingsButton")
             }
         }
-        .sheet(isPresented: $showingAccountSetup) {
-            AccountSetupView()
+        .sheet(item: $accountEntryRoute) { route in
+            accountEntryDestination(for: route, binding: $accountEntryRoute)
         }
         .sheet(isPresented: $showingSettings) {
             AccountsSettingsView()

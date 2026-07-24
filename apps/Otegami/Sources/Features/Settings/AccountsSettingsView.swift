@@ -11,8 +11,11 @@ struct AccountsSettingsView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
 
-    @State private var showingAccountSetup = false
+    /// M6: see `AccountEntryRoute`'s doc comment.
+    @State private var accountEntryRoute: AccountEntryRoute?
     @State private var pendingDeletion: AccountRecord?
+    @State private var reauthenticatingAccountId: String?
+    @State private var reauthErrorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -29,6 +32,27 @@ struct AccountsSettingsView: View {
                                 Text(account.email)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+
+                                // M6: a Gmail account whose refresh token
+                                // was rejected (see `AccountRecord
+                                // .needsReauth`'s doc comment) — the banner
+                                // the plan calls for ("リフレッシュ失敗
+                                // (invalid_grant) → ... UI バナー").
+                                if account.needsReauth {
+                                    HStack {
+                                        Label("再認証が必要です", systemImage: "exclamationmark.triangle")
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                            .accessibilityIdentifier("settings.account.\(account.id).needsReauthBanner")
+                                        Spacer()
+                                        Button("再認証") {
+                                            Task { await reauthenticate(account) }
+                                        }
+                                        .font(.caption)
+                                        .disabled(reauthenticatingAccountId == account.id)
+                                        .accessibilityIdentifier("settings.account.\(account.id).reauthButton")
+                                    }
+                                }
                             }
                             .accessibilityIdentifier("settings.account.\(account.id)")
                             .swipeActions(edge: .trailing) {
@@ -45,11 +69,19 @@ struct AccountsSettingsView: View {
 
                 Section {
                     Button {
-                        showingAccountSetup = true
+                        accountEntryRoute = .typeSelection
                     } label: {
                         Label("アカウントを追加", systemImage: "plus")
                     }
                     .accessibilityIdentifier("settings.addAccountButton")
+                }
+
+                if let reauthErrorMessage {
+                    Section {
+                        Text(reauthErrorMessage)
+                            .foregroundStyle(.red)
+                            .accessibilityIdentifier("settings.reauthErrorMessage")
+                    }
                 }
             }
             .navigationTitle("設定")
@@ -77,8 +109,23 @@ struct AccountsSettingsView: View {
             }
         }
         .accessibilityIdentifier("settings.sheet")
-        .sheet(isPresented: $showingAccountSetup) {
-            AccountSetupView()
+        .sheet(item: $accountEntryRoute) { route in
+            accountEntryDestination(for: route, binding: $accountEntryRoute)
+        }
+    }
+
+    /// Re-runs the OAuth flow for a `.gmail` account whose refresh token
+    /// went stale (`AccountRecord.needsReauth`) — see `AppEnvironment
+    /// .reauthenticateGmailAccount(_:)`'s doc comment.
+    private func reauthenticate(_ account: AccountRecord) async {
+        reauthenticatingAccountId = account.id
+        reauthErrorMessage = nil
+        defer { reauthenticatingAccountId = nil }
+
+        do {
+            try await environment.reauthenticateGmailAccount(account)
+        } catch {
+            reauthErrorMessage = "再認証に失敗しました: \(error)"
         }
     }
 }
