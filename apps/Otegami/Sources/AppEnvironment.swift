@@ -71,6 +71,18 @@ final class AppEnvironment {
         }
 
         startObservingAccounts()
+
+        // M7: defensive self-heal, in addition to the v7 migration's own
+        // one-time backfill (`AppDatabase`) — cheap once caught up (a
+        // single `NOT EXISTS` scan that finds nothing), so running it again
+        // on every launch costs effectively nothing but guards against any
+        // future code path that ever inserts a `message` row without going
+        // through `AccountSyncer.upsert`/`BodyFetcher.fetchBody`.
+        Task { [database] in
+            try? await database.dbWriter.write { db in
+                try FTSIndexer.backfillIfNeeded(db: db)
+            }
+        }
     }
 
     deinit {
@@ -121,6 +133,21 @@ final class AppEnvironment {
             try? await tokenStore.clearTokens(for: account.id)
         }
         try? await database.dbWriter.write { db in
+            // M7: `account`→`mailbox`→`message` cascades via `onDelete:
+            // .cascade` foreign keys, but `messageSearchIndex` is a virtual
+            // table with no FK support — its rows for this account's
+            // messages have to be removed explicitly, before the cascade
+            // wipes the `message` rows that would otherwise identify them.
+            let messageIds = try Int64.fetchAll(
+                db,
+                sql: """
+                    SELECT message.id FROM message
+                    JOIN mailbox ON mailbox.id = message.mailboxId
+                    WHERE mailbox.accountId = ?
+                    """,
+                arguments: [account.id]
+            )
+            try FTSIndexer.deleteAll(messageIds: messageIds, db: db)
             _ = try account.delete(db)
         }
     }

@@ -15,6 +15,12 @@ import MailTransport
 /// (pull-to-refresh or the toolbar button) is what triggers `SyncCoordinator`
 /// to talk to the server; with no network the list still renders whatever's
 /// already stored.
+///
+/// Also hosts M7's search bar: `.searchable` on this same `List` rather than
+/// a separate `SearchView`/screen, since a search-bar-over-a-list is exactly
+/// this view's existing shape, right down to reusing `ThreadRow` and the
+/// swipe actions for search results — SwiftUI's `.searchable` is designed to
+/// attach to the view it filters, not to replace it with another one.
 struct MessageListView: View {
     @Environment(AppEnvironment.self) private var environment
     let selection: SidebarSelection
@@ -29,6 +35,14 @@ struct MessageListView: View {
     @State private var isSyncing = false
     @State private var syncErrorMessage: String?
 
+    // MARK: - Search (M7)
+
+    @State private var searchText = ""
+    @State private var searchScope: SearchScopeOption = .all
+    @State private var searchResults: [ThreadSummary] = []
+    @State private var isSearching = false
+    @State private var searchTask: Task<Void, Never>?
+
     /// Restarts the thread observation whenever the selection changes *or*
     /// the account list changes — the latter matters for the unified inbox:
     /// adding a second account (M4 verification scenario (c)) should widen
@@ -39,9 +53,35 @@ struct MessageListView: View {
         var accountIds: [String]
     }
 
+    /// Whitespace-only input (including the empty string right after
+    /// `.searchable` clears) is "not searching" — the normal `summaries`
+    /// list shows, exactly like before M7.
+    private var isSearchActive: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// What the `List` actually renders: search results while a query is
+    /// active, the live `ThreadQuery` observation otherwise. Rows,
+    /// `ThreadRow`, and both swipe actions are shared between the two —
+    /// marking a search hit read or deleting it works exactly like it does
+    /// from the normal list.
+    private var displayedSummaries: [ThreadSummary] {
+        isSearchActive ? searchResults : summaries
+    }
+
+    /// "現在のメールボックス" only means something with one specific mailbox
+    /// selected; the unified inbox has no single mailbox to narrow to, so
+    /// its scope picker only ever offers "すべて".
+    private var availableScopes: [SearchScopeOption] {
+        switch selection {
+        case .mailbox: [.all, .currentMailbox]
+        case .unifiedInbox: [.all]
+        }
+    }
+
     var body: some View {
         List {
-            ForEach(summaries) { summary in
+            ForEach(displayedSummaries) { summary in
                 if let threadId = summary.thread.id {
                     Button {
                         selectedThreadId = threadId
@@ -77,7 +117,15 @@ struct MessageListView: View {
         .accessibilityIdentifier("messageList.list")
         .navigationTitle(title)
         .overlay {
-            if summaries.isEmpty {
+            if isSearchActive {
+                if isSearching {
+                    ProgressView("検索中…")
+                        .accessibilityIdentifier("messageList.search.loading")
+                } else if searchResults.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
+                        .accessibilityIdentifier("messageList.search.emptyState")
+                }
+            } else if summaries.isEmpty {
                 ContentUnavailableView(
                     "メッセージがありません",
                     systemImage: "envelope",
@@ -85,6 +133,20 @@ struct MessageListView: View {
                 )
                 .accessibilityIdentifier("messageList.emptyState")
             }
+        }
+        .searchable(text: $searchText, prompt: "検索")
+        .accessibilityIdentifier("messageList.search.field")
+        .searchScopes($searchScope) {
+            ForEach(availableScopes) { scope in
+                Text(scope.title)
+                    .tag(scope)
+                    .accessibilityIdentifier("messageList.search.scope.\(scope.rawValue)")
+            }
+        }
+        .onChange(of: searchText) { _, _ in scheduleSearch() }
+        .onChange(of: searchScope) { _, _ in scheduleSearch() }
+        .onChange(of: selection) { _, _ in
+            if !availableScopes.contains(searchScope) { searchScope = .all }
         }
         .toolbar {
             ToolbarItem {
@@ -152,6 +214,53 @@ struct MessageListView: View {
                 // Same as above.
             }
         }
+    }
+
+    // MARK: - Search (M7)
+
+    /// Debounces `searchText`/`searchScope` changes by 300ms (plan: "入力
+    /// 300ms デバウンス") before actually querying — cancels whatever search
+    /// was already in flight so a fast typist never races two queries
+    /// against the same `searchResults` state. Clearing the field (`
+    /// isSearchActive == false`) skips the debounce and the query
+    /// entirely: there's nothing to search, and the normal list should
+    /// reappear immediately rather than after a delay.
+    private func scheduleSearch() {
+        searchTask?.cancel()
+        guard isSearchActive else {
+            isSearching = false
+            searchResults = []
+            return
+        }
+        let query = searchText
+        let scope = searchScope
+        isSearching = true
+        searchTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            await performSearch(query: query, scope: scope)
+        }
+    }
+
+    private func performSearch(query: String, scope: SearchScopeOption) async {
+        let storeScope: OtegamiStore.SearchScope
+        switch (selection, scope) {
+        case (.mailbox(let mailboxSelection), .currentMailbox):
+            storeScope = .mailbox(mailboxId: mailboxSelection.mailboxId)
+        default:
+            storeScope = .allAccounts(accountIds: environment.accounts.map(\.id))
+        }
+        do {
+            let results = try await environment.database.dbWriter.read { db in
+                try SearchQuery.threadSummaries(query: query, scope: storeScope, db: db)
+            }
+            guard !Task.isCancelled else { return }
+            searchResults = results
+        } catch {
+            guard !Task.isCancelled else { return }
+            searchResults = []
+        }
+        isSearching = false
     }
 
     /// Pull-to-refresh / the toolbar refresh button: differential sync
@@ -260,9 +369,21 @@ struct MessageListView: View {
                             accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
                             uids: [uid], db: db
                         )
+                        // M7: `messageSearchIndex` isn't a real foreign-keyed
+                        // table, so this deletion needs its own explicit
+                        // index cleanup alongside the `message` row's.
+                        try FTSIndexer.delete(messageId: messageId, db: db)
                         try MessageRecord.deleteOne(db, key: messageId)
                     }
                     try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                }
+                // `searchResults` is a one-shot array, not a live
+                // `ValueObservation` like `summaries` — the normal list
+                // picks up a deletion automatically, but a search-mode row
+                // needs this explicit nudge or the just-deleted thread
+                // would keep showing until the next debounced re-search.
+                if isSearchActive {
+                    searchResults.removeAll { $0.id == summary.id }
                 }
                 await replayOpQueueSoon(accountId: accountId)
             } catch {
