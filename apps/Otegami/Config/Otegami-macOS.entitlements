@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	M11 (iCloud account sync, docs/icloud-sync.md): the macOS side of the
+	same NSUbiquitousKeyValueStore entitlement Otegami-iOS.entitlements
+	carries. Deliberately its *own*, separate, minimal entitlements file
+	rather than reusing Otegami-iOS.entitlements for both SDKs — see the
+	M9 lesson recorded on Otegami-iOS.entitlements' doc comment and
+	project.yml's CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: the App Group +
+	Keychain Access Group entitlements iOS carries are deliberately
+	*not* here (NotificationService, the only thing that shares those, is
+	iOS-only), so macOS's automatic-signing provisioning profile only
+	ever needs to satisfy this one iCloud capability, not App Groups too
+	— keeping the surface this repo's macOS automatic signing depends on
+	as small as the M9 postmortem already established it needs to be.
+
+	aps-environment is likewise omitted: it's a push-specific capability
+	(iOS-only, PushSettingsStore/AppEnvironment.PushError.unsupportedPlatform's
+	doc comments) that macOS never registers for.
+	-->
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
+</dict>
+</plist>

@@ -66,10 +66,18 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_PREVIEWS: YES
         # iOS-only (Config/Otegami-iOS.entitlements' own doc comment
-        # explains why macOS intentionally gets no entitlements file at
-        # all here, rather than one lacking these two keys).
+        # explains why macOS intentionally gets no App Group/Keychain
+        # Access Group/aps-environment here).
         CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]: Config/Otegami-iOS.entitlements
         CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]: Config/Otegami-iOS.entitlements
+        # M11: macOS *does* get an entitlements file now (unlike M9's App
+        # Group/Keychain Access Group, which stayed iOS-only per the doc
+        # comment above) — iCloud account sync needs to reach both
+        # platforms for its whole point ("iOS で追加したアカウントが Mac にも
+        # 出現する") to hold. Otegami-macOS.entitlements is its own,
+        # deliberately minimal file (just the one KVS key) rather than
+        # reusing Otegami-iOS.entitlements — see that file's doc comment.
+        CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: Config/Otegami-macOS.entitlements
         # The asset catalog carries a separate appiconset per platform
         # (iOS wants a single 1024x1024 "universal" image; macOS wants the
         # full 16–512pt @1x/@2x set), so the compiler needs to be told which
@@ -113,6 +121,8 @@ targets:
         product: GoogleOAuth
       - package: OtegamiKit
         product: PushRelayClient
+      - package: OtegamiKit
+        product: AccountCloudSync
       - target: NotificationService
         embed: true
         platformFilter: iOS

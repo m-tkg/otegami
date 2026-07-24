@@ -40,5 +40,19 @@
 	-->
 	<key>aps-environment</key>
 	<string>development</string>
+	<!--
+	M11 (iCloud account sync, docs/icloud-sync.md): lets this app read/write
+	its own private NSUbiquitousKeyValueStore key-value pairs, synced by
+	iCloud to every device signed into the same Apple ID — the transport
+	AccountCloudSyncEngine uses for the "accounts.v1" payload. Unlike the
+	App Group above, this doesn't require a separately-registered
+	container id (KVS rides on the app's own iCloud entitlement, not a
+	CloudKit container) — see project.yml's doc comment on why this key
+	*is* applied to both iOS and macOS (unlike App Group/Keychain Access
+	Group above), and Otegami-macOS.entitlements for the macOS copy of
+	just this one key.
+	-->
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
 </dict>
 </plist>
