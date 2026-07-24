@@ -24,6 +24,20 @@ public enum ConnectionSecurityRecord: String, Codable, Sendable {
     case startTLS
 }
 
+/// Which mail provider this account is (M5 forward-compat for M6's Gmail
+/// OAuth + iCloud presets): today every account is `.generic` (the only
+/// kind M1–M5 create), but `OpQueueProcessor`'s `.send` replay already
+/// needs to branch on it (plan: "Sent へ IMAP APPEND ... Gmail kind ならスキップ,
+/// 判定は account.kind") — Gmail auto-saves a sent copy itself via SMTP
+/// submission, so an explicit client-side APPEND would double it. Adding
+/// the column now (default `"generic"`, migration v5) means M6 only needs
+/// to start writing `.gmail`/`.icloud`, not retrofit a schema change.
+public enum AccountKind: String, Codable, Sendable {
+    case generic
+    case gmail
+    case icloud
+}
+
 /// A configured mail account. Credentials are never stored here: passwords
 /// live in Keychain (keyed by `id`), OAuth tokens in `TokenStore` (M6). Only
 /// `authType` — which kind of credential to look up — is persisted.
@@ -34,6 +48,10 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
     public var displayName: String
     public var email: String
     public var authType: AccountAuthType
+    /// Defaults to `.generic` — see `AccountKind`'s doc comment. Not user-
+    /// editable in M1–M5's plain IMAP/SMTP setup form; M6's Gmail/iCloud
+    /// preset flows are what set this to anything else.
+    public var kind: AccountKind
 
     public var imapHost: String
     public var imapPort: Int
@@ -57,6 +75,7 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         displayName: String,
         email: String,
         authType: AccountAuthType,
+        kind: AccountKind = .generic,
         imapHost: String,
         imapPort: Int,
         imapSecurity: ConnectionSecurityRecord,
@@ -73,6 +92,7 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         self.displayName = displayName
         self.email = email
         self.authType = authType
+        self.kind = kind
         self.imapHost = imapHost
         self.imapPort = imapPort
         self.imapSecurity = imapSecurity

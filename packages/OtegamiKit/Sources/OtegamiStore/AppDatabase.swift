@@ -245,6 +245,32 @@ extension AppDatabase {
             try db.create(index: "message_on_gmailThreadId", on: "message", columns: ["gmailThreadId"])
         }
 
+        // v5 (M5): Compose/Reply/SMTP + Outbox. `account.kind` lets
+        // `OpQueueProcessor`'s `.send` replay branch on Gmail (M6) without a
+        // later migration; `outboxMessage` is the Composer's local
+        // "still sending" record (see its doc comment) that `OpQueueKind
+        // .send`'s payload references by id.
+        migrator.registerMigration("v5") { db in
+            try db.alter(table: "account") { t in
+                t.add(column: "kind", .text).notNull().defaults(to: AccountKind.generic.rawValue)
+            }
+
+            try db.create(table: "outboxMessage") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("accountId", .text).notNull()
+                    .indexed()
+                    .references("account", onDelete: .cascade)
+                t.column("toAddresses", .blob).notNull()
+                t.column("ccAddresses", .blob).notNull()
+                t.column("bccAddresses", .blob).notNull()
+                t.column("subject", .text).notNull()
+                t.column("plainTextBody", .text).notNull()
+                t.column("inReplyToMessageId", .text)
+                t.column("references", .blob).notNull()
+                t.column("createdAt", .datetime).notNull()
+            }
+        }
+
         return migrator
     }
 }
