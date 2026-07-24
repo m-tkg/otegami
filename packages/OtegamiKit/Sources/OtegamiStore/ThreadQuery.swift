@@ -33,13 +33,32 @@ public enum ThreadQuery {
     /// account-wide (a thread can span mailboxes, e.g. Inbox + Sent), which
     /// is also what this sorts by — matching how a label-based mail client
     /// like Gmail orders a folder's thread list.
-    public static func request(mailboxId: Int64) -> SQLRequest<ThreadRecord> {
-        SQLRequest(sql: """
-            SELECT DISTINCT thread.* FROM thread
-            JOIN message ON message.threadId = thread.id
-            WHERE message.mailboxId = ?
+    ///
+    /// M10 rewrite (docs/performance.md): the original `SELECT DISTINCT
+    /// thread.* ... JOIN message ...` had to join and de-duplicate every
+    /// matching *message* row before it could sort/limit — at 100k-message
+    /// scale that meant sorting effectively the whole mailbox even for a
+    /// 50-row first page. An `EXISTS` membership check instead lets SQLite
+    /// walk `thread` directly in `lastMessageDate` order (via
+    /// `thread_on_lastMessageDate`, added in v9) and stop as soon as
+    /// `limit` threads have passed the check — the per-thread `EXISTS`
+    /// probe itself is an index lookup against `message_on_threadId_mailboxId`
+    /// (also v9), not a scan. `limit` is `nil` (unlimited, matching the
+    /// pre-M10 behavior) unless the caller opts into paging.
+    public static func request(mailboxId: Int64, limit: Int? = nil) -> SQLRequest<ThreadRecord> {
+        var sql = """
+            SELECT thread.* FROM thread
+            WHERE EXISTS (
+                SELECT 1 FROM message WHERE message.threadId = thread.id AND message.mailboxId = ?
+            )
             ORDER BY thread.lastMessageDate DESC, thread.id DESC
-            """, arguments: [mailboxId])
+            """
+        var arguments: [(any DatabaseValueConvertible)?] = [mailboxId]
+        if let limit {
+            sql += " LIMIT ?"
+            arguments.append(limit)
+        }
+        return SQLRequest(sql: sql, arguments: StatementArguments(arguments))
     }
 
     /// Threads with at least one message in an inbox-role mailbox across
@@ -47,21 +66,30 @@ public enum ThreadQuery {
     /// thread still belongs to exactly one account (`thread.accountId`);
     /// this unions across accounts at query time rather than merging
     /// threads across account boundaries (plan: "アカウント境界を跨いだスレッド
-    /// 結合はしない").
-    public static func unifiedInboxRequest(accountIds: [String]) -> SQLRequest<ThreadRecord> {
+    /// 結合はしない"). Same `EXISTS`-based rewrite as ``request(mailboxId:limit:)``
+    /// and for the same reason — see its doc comment.
+    public static func unifiedInboxRequest(accountIds: [String], limit: Int? = nil) -> SQLRequest<ThreadRecord> {
         guard !accountIds.isEmpty else {
             return SQLRequest(sql: "SELECT * FROM thread WHERE 0")
         }
         let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
-        var arguments: [(any DatabaseValueConvertible)?] = [MailboxRoleRecord.inbox.rawValue]
-        arguments.append(contentsOf: accountIds)
-        return SQLRequest(sql: """
-            SELECT DISTINCT thread.* FROM thread
-            JOIN message ON message.threadId = thread.id
-            JOIN mailbox ON mailbox.id = message.mailboxId
-            WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders))
+        var sql = """
+            SELECT thread.* FROM thread
+            WHERE thread.accountId IN (\(placeholders))
+              AND EXISTS (
+                  SELECT 1 FROM message
+                  JOIN mailbox ON mailbox.id = message.mailboxId
+                  WHERE message.threadId = thread.id AND mailbox.role = ? AND mailbox.accountId = thread.accountId
+              )
             ORDER BY thread.lastMessageDate DESC, thread.id DESC
-            """, arguments: StatementArguments(arguments))
+            """
+        var arguments: [(any DatabaseValueConvertible)?] = accountIds
+        arguments.append(MailboxRoleRecord.inbox.rawValue)
+        if let limit {
+            sql += " LIMIT ?"
+            arguments.append(limit)
+        }
+        return SQLRequest(sql: sql, arguments: StatementArguments(arguments))
     }
 
     /// Attaches each thread's newest message, for `ThreadSummary`-driven
@@ -79,15 +107,18 @@ public enum ThreadQuery {
         }
     }
 
-    public static func summariesObservation(mailboxId: Int64) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+    /// `limit` (M10 pagination — `MessageListView`'s "load more on scroll",
+    /// docs/performance.md): `nil` keeps the pre-M10 "fetch everything"
+    /// behavior for any caller that still wants it.
+    public static func summariesObservation(mailboxId: Int64, limit: Int? = nil) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
         ValueObservation.tracking { db in
-            try summaries(forThreads: request(mailboxId: mailboxId).fetchAll(db), db: db)
+            try summaries(forThreads: request(mailboxId: mailboxId, limit: limit).fetchAll(db), db: db)
         }
     }
 
-    public static func unifiedInboxSummariesObservation(accountIds: [String]) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+    public static func unifiedInboxSummariesObservation(accountIds: [String], limit: Int? = nil) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
         ValueObservation.tracking { db in
-            try summaries(forThreads: unifiedInboxRequest(accountIds: accountIds).fetchAll(db), db: db)
+            try summaries(forThreads: unifiedInboxRequest(accountIds: accountIds, limit: limit).fetchAll(db), db: db)
         }
     }
 

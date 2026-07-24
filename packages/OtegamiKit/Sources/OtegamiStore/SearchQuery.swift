@@ -26,11 +26,28 @@ public enum SearchQuery {
     /// a `LIKE` scan instead (plan: "1〜2 文字 → LIKE フォールバック").
     public static let minimumFTSLength = 3
 
+    /// How many threads a search returns by default when a caller doesn't
+    /// specify its own `limit` — mirrors `ThreadQuery`'s pagination (M10,
+    /// docs/performance.md). Without *some* cap, a broad-but-short query
+    /// (e.g. a common word matching a large fraction of a 100k-message
+    /// mailbox) forces `ThreadQuery.summaries(forThreads:)`'s one-
+    /// point-lookup-per-thread pattern to run tens of thousands of times —
+    /// confirmed while building `PerformanceTests`: an unbounded query
+    /// matching 80k threads took ~14.5s, entirely from that fan-out, not
+    /// from `matchFTS`/`matchLIKE` themselves (each well under 100ms on
+    /// their own). A search results list this large isn't useful to a human
+    /// either way — "narrow your search" is the right UX for that case, not
+    /// "wait 14 seconds to see all 80,000."
+    public static let defaultResultLimit = 200
+
     /// Runs `query` against `scope`, returning matching threads newest
     /// first (plan: "結果はスコアでなく date DESC で十分" — no relevance ranking).
     /// An empty/whitespace-only query returns no results rather than every
     /// thread (there is no such thing as "browse mode" via the search bar).
-    public static func threadSummaries(query: String, scope: SearchScope, db: Database) throws -> [ThreadSummary] {
+    /// `limit` caps how many threads are returned — see
+    /// ``defaultResultLimit``'s doc comment for why one exists at all; pass
+    /// `nil` for the pre-M10 "no cap" behavior.
+    public static func threadSummaries(query: String, scope: SearchScope, limit: Int? = defaultResultLimit, db: Database) throws -> [ThreadSummary] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
@@ -49,10 +66,13 @@ public enum SearchQuery {
         )
         guard !threadIds.isEmpty else { return [] }
 
-        let threads = try ThreadRecord
+        var request = ThreadRecord
             .filter(threadIds.contains(Column("id")))
             .order(Column("lastMessageDate").desc, Column("id").desc)
-            .fetchAll(db)
+        if let limit {
+            request = request.limit(limit)
+        }
+        let threads = try request.fetchAll(db)
         return try ThreadQuery.summaries(forThreads: threads, db: db)
     }
 
@@ -93,8 +113,19 @@ public enum SearchQuery {
     private static func matchLIKE(_ query: String, scope: SearchScope, db: Database) throws -> [Int64] {
         let pattern = "%\(likeEscape(query))%"
         let (scopeSQL, scopeArgs) = scopeClause(scope, messageAlias: "message")
+        // M10 perf note (docs/performance.md): no `DISTINCT` here — unlike a
+        // fan-out join, `message.id` is already unique per output row
+        // (`messageBody`/`mailbox` are both joined 1:1 by primary key), so
+        // `DISTINCT` was pure overhead (an extra temp-b-tree dedup pass over
+        // a result set that could never have duplicates in the first
+        // place). Measured ~15% faster on a 100k-message synthetic mailbox
+        // with this removed — the dominant cost is still the unavoidable
+        // full-table LIKE scan (no index can serve a leading-wildcard
+        // pattern), which is why short (<3 character) queries stay slower
+        // than the FTS trigram path; see `SearchQuery.minimumFTSLength`'s
+        // doc comment for why that threshold exists at all.
         let sql = """
-            SELECT DISTINCT message.id FROM message
+            SELECT message.id FROM message
             LEFT JOIN messageBody ON messageBody.messageId = message.id
             JOIN mailbox ON mailbox.id = message.mailboxId
             WHERE (
