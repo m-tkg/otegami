@@ -35,6 +35,20 @@ struct MessageListView: View {
     @State private var isSyncing = false
     @State private var syncErrorMessage: String?
 
+    // MARK: - Pagination (M10, docs/performance.md)
+
+    /// How many threads `observeThreads()` currently requests — starts at
+    /// `Self.pageStep` and grows by the same amount each time the last row
+    /// scrolls into view (`loadMoreIfNeeded(currentItem:)`). Without this,
+    /// a 100k-message mailbox's `ValueObservation` would fetch (and
+    /// `ThreadQuery.summaries(forThreads:)` would N+1-query) every thread
+    /// up front — see docs/performance.md's "改善1"/"改善3" for the
+    /// measured cost of that. Reset to `Self.pageStep` whenever `selection`
+    /// changes so switching mailboxes doesn't keep whatever page depth the
+    /// previous mailbox had scrolled to.
+    @State private var pageLimit = MessageListView.pageStep
+    private static let pageStep = 200
+
     // MARK: - Search (M7)
 
     @State private var searchText = ""
@@ -42,6 +56,9 @@ struct MessageListView: View {
     @State private var searchResults: [ThreadSummary] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
+    /// M10: bound to `.searchFocused` — see the modifier's usage site below
+    /// for why (⌘⇧F's target).
+    @FocusState private var isSearchFieldFocused: Bool
 
     /// Restarts the thread observation whenever the selection changes *or*
     /// the account list changes — the latter matters for the unified inbox:
@@ -51,6 +68,7 @@ struct MessageListView: View {
     private struct ObservationKey: Hashable {
         var selection: SidebarSelection
         var accountIds: [String]
+        var pageLimit: Int
     }
 
     /// Whitespace-only input (including the empty string right after
@@ -111,6 +129,9 @@ struct MessageListView: View {
                         .tint(.accentColor)
                         .accessibilityIdentifier("messageList.row.\(threadId).toggleRead")
                     }
+                    .onAppear {
+                        loadMoreIfNeeded(currentItem: summary)
+                    }
                 }
             }
         }
@@ -145,6 +166,16 @@ struct MessageListView: View {
         // `app.searchFields.firstMatch` instead (`SearchUITestHelpers
         // .typeSearchQuery`).
         .searchable(text: $searchText, prompt: "検索")
+        // M10: ⌘⇧F (`OtegamiCommands`) — `.searchFocused` is the modifier
+        // SwiftUI documents specifically for programmatically focusing the
+        // field `.searchable` creates (there's no view identity to target
+        // it with `@FocusState` the normal way, since `.searchable` doesn't
+        // expose one). Published unconditionally (not just on macOS): a
+        // no-op cost on iOS, where nothing currently reads
+        // `focusSearchAction` since `OtegamiCommands` is macOS-only, but
+        // no reason to special-case it out.
+        .searchFocused($isSearchFieldFocused)
+        .focusedSceneValue(\.focusSearchAction, { isSearchFieldFocused = true })
         .searchScopes($searchScope) {
             ForEach(availableScopes) { scope in
                 Text(scope.title)
@@ -156,6 +187,11 @@ struct MessageListView: View {
         .onChange(of: searchScope) { _, _ in scheduleSearch() }
         .onChange(of: selection) { _, _ in
             if !availableScopes.contains(searchScope) { searchScope = .all }
+            // M10 pagination: a fresh mailbox/unified-inbox selection
+            // starts back at the first page — otherwise switching from a
+            // mailbox someone had scrolled deep into to a brand-new one
+            // would request (and wait on) that same deep page size again.
+            pageLimit = Self.pageStep
         }
         .toolbar {
             ToolbarItem {
@@ -175,7 +211,7 @@ struct MessageListView: View {
         #if os(iOS)
         .refreshable { await refresh() }
         #endif
-        .task(id: ObservationKey(selection: selection, accountIds: environment.accounts.map(\.id))) {
+        .task(id: ObservationKey(selection: selection, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit)) {
             await observeThreads()
         }
         .alert(
@@ -203,7 +239,7 @@ struct MessageListView: View {
     private func observeThreads() async {
         switch selection {
         case .mailbox(let mailboxSelection):
-            let observation = ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId)
+            let observation = ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     summaries = fetched
@@ -214,7 +250,7 @@ struct MessageListView: View {
             }
         case .unifiedInbox:
             let accountIds = environment.accounts.map(\.id)
-            let observation = ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds)
+            let observation = ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     summaries = fetched
@@ -223,6 +259,21 @@ struct MessageListView: View {
                 // Same as above.
             }
         }
+    }
+
+    /// M10 pagination: called from every row's `.onAppear` — cheap even
+    /// though that fires often (a `!=` comparison against the last item's
+    /// id most of the time), and simpler than threading a "last visible
+    /// index" through `List`. Only grows `pageLimit` when `currentItem` is
+    /// the *last* row currently loaded **and** the page came back full
+    /// (`summaries.count == pageLimit`) — a short page means the query
+    /// already returned everything there is, so growing the limit further
+    /// would just re-run the same observation for no new rows.
+    private func loadMoreIfNeeded(currentItem: ThreadSummary) {
+        guard !isSearchActive else { return } // search results aren't paginated this way; see SearchQuery.defaultResultLimit
+        guard currentItem.id == summaries.last?.id else { return }
+        guard summaries.count == pageLimit else { return }
+        pageLimit += Self.pageStep
     }
 
     // MARK: - Search (M7)
