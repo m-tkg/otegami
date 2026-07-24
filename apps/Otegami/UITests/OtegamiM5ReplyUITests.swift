@@ -27,7 +27,11 @@ final class OtegamiM5ReplyUITests: XCTestCase {
         // re-selects the first INBOX automatically" note in verify.md.
         let list = app.collectionViews["messageList.list"]
         let row = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "ようこそ otegami へ")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 30), "Expected the seeded baseline thread to appear")
+        // M10: `waitForElementScrollingIfNeeded` — see its doc comment
+        // (dev/mailstack's seed fixture set grew enough across M2-M8 that
+        // this, the oldest-dated fixture, no longer fits on the first
+        // screen without scrolling).
+        XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected the seeded baseline thread to appear")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         // Identifier-based lookup doesn't work here: `ThreadDetailView`
