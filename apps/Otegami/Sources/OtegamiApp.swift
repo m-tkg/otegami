@@ -4,6 +4,11 @@ import OtegamiStore
 @main
 struct OtegamiApp: App {
     @State private var environment = AppEnvironment()
+    #if os(iOS)
+    // M9: only reason this app has a UIApplicationDelegate at all — see
+    // PushTokenCenter.swift.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    #endif
 
     var body: some Scene {
         WindowGroup {

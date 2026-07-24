@@ -252,6 +252,9 @@ struct AccountSetupView: View {
             Task {
                 _ = try? await environment.syncCoordinator.syncAccount(account, auth: auth)
             }
+            // M9: if push is already enabled, this new account should get
+            // watched too, not just accounts that existed at enable-time.
+            Task { await environment.registerWatchIfNeeded(for: account) }
         } catch {
             testSucceeded = false
             testResultMessage = "保存に失敗しました: \(error)"

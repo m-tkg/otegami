@@ -3,7 +3,9 @@ import GoogleOAuth
 import GRDB
 import MailTransport
 import MailTransportMailCore
+import OtegamiRelayAPI
 import OtegamiStore
+import PushRelayClient
 import SyncEngine
 
 /// Root dependency-injection container for the app: the shared database,
@@ -19,6 +21,15 @@ final class AppEnvironment {
     let database: AppDatabase
     let syncCoordinator: SyncCoordinator
     let credentialStore: KeychainCredentialStore
+    /// M9: push opt-in. `pushSettings` is the persistence layer
+    /// (`PushSettingsStore`'s doc comment); `isPushEnabled`/
+    /// `pushRelayURLString` mirror it into `@Observable` state so
+    /// `PushNotificationSettingsView` doesn't read `UserDefaults`
+    /// directly.
+    let pushRelayClient = PushRelayClient()
+    @ObservationIgnored let pushSettings: PushSettingsStore
+    private(set) var isPushEnabled: Bool
+    private(set) var pushRelayURLString: String
     /// `nil` when `GOOGLE_OAUTH_CLIENT_ID` isn't configured for this build
     /// (see `GoogleOAuthConfig`'s doc comment) — every Gmail-entry point
     /// checks this (directly or via `isGmailOAuthConfigured`) before
@@ -57,6 +68,11 @@ final class AppEnvironment {
             messageBuilder: { draft in MailCoreMessageBuilder.build(draft) }
         )
         self.credentialStore = KeychainCredentialStore(accessGroup: OtegamiAppGroup.keychainAccessGroup)
+
+        let pushSettings = PushSettingsStore(accessGroup: OtegamiAppGroup.keychainAccessGroup)
+        self.pushSettings = pushSettings
+        self.isPushEnabled = pushSettings.isEnabled
+        self.pushRelayURLString = pushSettings.relayURLString ?? ""
 
         if let endpoints = GoogleOAuthConfig.endpoints {
             let client = GoogleOAuthClient(
@@ -132,6 +148,11 @@ final class AppEnvironment {
         if let tokenStore {
             try? await tokenStore.clearTokens(for: account.id)
         }
+        // M9: an account's watch (if push is enabled and one exists for
+        // it) has to go too — otherwise the relay would keep IDLE-ing an
+        // IMAP credential for an account this app no longer even knows
+        // about.
+        await unregisterWatch(forAccountId: account.id)
         try? await database.dbWriter.write { db in
             // M7: `account`→`mailbox`→`message` cascades via `onDelete:
             // .cascade` foreign keys, but `messageSearchIndex` is a virtual
@@ -284,5 +305,152 @@ final class AppEnvironment {
         let (_, tokens) = try await requestGmailAuthorization()
         try await tokenStore.storeInitialTokens(tokens, accountId: account.id)
         await setNeedsReauth(false, for: account)
+    }
+
+    // MARK: - Push notifications (M9)
+
+    enum PushError: Error, Equatable {
+        /// Relay URL failed `PushNotificationSettingsView`'s "https
+        /// required (http://localhost exempted for local dev)" check.
+        case invalidRelayURL
+        /// `PushTokenCenter` never got a device token — always the case on
+        /// the iOS Simulator (`PushTokenCenter`'s doc comment), and on a
+        /// real device whenever notification authorization was denied.
+        case noDeviceToken
+        /// This build has no `UIApplication` to register with at all
+        /// (macOS) — push isn't implemented there yet (M9 scope: iOS-only
+        /// `NotificationService`, plan/PENDING.md).
+        case unsupportedPlatform
+    }
+
+    /// Validates `relayURLString`, requests notification authorization +
+    /// an APNs device token, registers this device with the relay, and
+    /// creates a watch for every currently-configured `.password`-auth
+    /// account (Gmail/`.oauth2` accounts are skipped — the relay only
+    /// supports password auth in v1, `OtegamiRelayAPI.WatchAuth.Kind`'s
+    /// doc comment). Persists everything via `pushSettings` as it goes, so
+    /// a failure partway through (e.g. the device registers fine but one
+    /// account's watch creation fails) still leaves whatever succeeded in
+    /// place rather than needing to be redone from scratch.
+    func enablePushNotifications(relayURLString: String) async throws {
+        guard let baseURL = Self.validatedRelayURL(relayURLString) else {
+            throw PushError.invalidRelayURL
+        }
+
+        let apnsToken = try await requestAPNsToken()
+
+        let deviceId: String
+        let deviceSecret: String
+        if let existingId = pushSettings.deviceId, let existingSecret = try pushSettings.deviceSecret() {
+            // Already registered (re-enabling after a previous disable, or
+            // recovering from a partial failure) — just refresh the token
+            // rather than minting a brand new device registration.
+            try await pushRelayClient.updateDeviceToken(
+                baseURL: baseURL,
+                deviceId: existingId,
+                deviceSecret: existingSecret,
+                apnsToken: apnsToken,
+                environment: .sandbox
+            )
+            deviceId = existingId
+            deviceSecret = existingSecret
+        } else {
+            let response = try await pushRelayClient.registerDevice(baseURL: baseURL, apnsToken: apnsToken, environment: .sandbox)
+            deviceId = response.deviceId
+            deviceSecret = response.deviceSecret
+            try pushSettings.setDeviceSecret(deviceSecret)
+        }
+
+        pushSettings.relayURLString = relayURLString
+        pushSettings.deviceId = deviceId
+        pushRelayURLString = relayURLString
+
+        for account in accounts where account.authType == .password {
+            await registerWatch(for: account, baseURL: baseURL, deviceSecret: deviceSecret)
+        }
+
+        pushSettings.isEnabled = true
+        isPushEnabled = true
+    }
+
+    /// Deletes every watch this device has registered (best-effort — a
+    /// relay that's unreachable at the moment shouldn't leave the user
+    /// stuck unable to turn push back off locally) and clears all local
+    /// push state.
+    func disablePushNotifications() async {
+        if let baseURL = Self.validatedRelayURL(pushSettings.relayURLString ?? ""),
+           let deviceSecret = try? pushSettings.deviceSecret() {
+            for (_, watchId) in pushSettings.accountWatchMap {
+                try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: watchId)
+            }
+        }
+        pushSettings.reset()
+        isPushEnabled = false
+        pushRelayURLString = ""
+    }
+
+    /// Registers a watch for `account` if push is enabled and it doesn't
+    /// already have one — called both from `enablePushNotifications` (for
+    /// every existing account) and should be called again whenever a new
+    /// `.password` account is added while push is already enabled.
+    func registerWatchIfNeeded(for account: AccountRecord) async {
+        guard isPushEnabled, account.authType == .password else { return }
+        guard pushSettings.accountWatchMap[account.id] == nil else { return }
+        guard let baseURL = Self.validatedRelayURL(pushSettings.relayURLString ?? ""),
+              let deviceSecret = try? pushSettings.deviceSecret()
+        else { return }
+        await registerWatch(for: account, baseURL: baseURL, deviceSecret: deviceSecret)
+    }
+
+    private func registerWatch(for account: AccountRecord, baseURL: URL, deviceSecret: String) async {
+        guard let password = try? credentialStore.password(forAccountId: account.id) else { return }
+        let request = CreateWatchRequest(
+            accountId: account.id,
+            imapHost: account.imapHost,
+            imapPort: account.imapPort,
+            imapUseTLS: account.imapSecurity != .plain,
+            imapUsername: account.imapUsername,
+            auth: WatchAuth(secret: password),
+            mailbox: "INBOX"
+        )
+        guard let response = try? await pushRelayClient.createWatch(baseURL: baseURL, deviceSecret: deviceSecret, request: request) else {
+            return
+        }
+        pushSettings.setWatchId(response.watchId, forAccountId: account.id)
+    }
+
+    private func unregisterWatch(forAccountId accountId: String) async {
+        guard let watchId = pushSettings.accountWatchMap[accountId] else { return }
+        defer { pushSettings.setWatchId(nil, forAccountId: accountId) }
+        guard let baseURL = Self.validatedRelayURL(pushSettings.relayURLString ?? ""),
+              let deviceSecret = try? pushSettings.deviceSecret()
+        else { return }
+        try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: watchId)
+    }
+
+    private func requestAPNsToken() async throws -> String {
+        #if os(iOS)
+        do {
+            return try await PushTokenCenter.shared.requestToken()
+        } catch {
+            throw PushError.noDeviceToken
+        }
+        #else
+        throw PushError.unsupportedPlatform
+        #endif
+    }
+
+    /// `https://` required; `http://localhost`/`http://127.0.0.1` (any
+    /// port) exempted for local dev against a relay run with `swift run`
+    /// on the same machine (plan: "リレー URL 入力 (https 必須、ローカル開発時
+    /// のみ http://localhost 許可)"). Returns `nil` for anything else,
+    /// including a URL that fails to parse at all.
+    static func validatedRelayURL(_ string: String) -> URL? {
+        guard let components = URLComponents(string: string), let url = components.url else { return nil }
+        if components.scheme == "https" { return url }
+        if components.scheme == "http", let host = components.host, host == "localhost" || host == "127.0.0.1" {
+            return url
+        }
+        return nil
     }
 }

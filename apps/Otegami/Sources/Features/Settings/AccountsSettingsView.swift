@@ -76,6 +76,20 @@ struct AccountsSettingsView: View {
                     .accessibilityIdentifier("settings.addAccountButton")
                 }
 
+                // M9: iOS-only in practice (macOS has no
+                // NotificationService yet — PushNotificationSettingsView's
+                // doc comment), but always reachable so a builder can see
+                // why it's unavailable there rather than the entry point
+                // silently vanishing.
+                Section {
+                    NavigationLink {
+                        PushNotificationSettingsView()
+                    } label: {
+                        Label("プッシュ通知", systemImage: "bell.badge")
+                    }
+                    .accessibilityIdentifier("settings.pushNotificationsLink")
+                }
+
                 if let reauthErrorMessage {
                     Section {
                         Text(reauthErrorMessage)

@@ -178,6 +178,8 @@ struct ICloudAccountSetupView: View {
             Task {
                 _ = try? await environment.syncCoordinator.syncAccount(account, auth: auth)
             }
+            // M9: see AccountSetupView.saveAccount's identical call.
+            Task { await environment.registerWatchIfNeeded(for: account) }
         } catch {
             testSucceeded = false
             saveErrorMessage = "保存に失敗しました: \(error)"
