@@ -11,9 +11,13 @@ make test
 ```
 
 `packages/OtegamiKit` の `swift test`。`OtegamiCoreTests` / `OtegamiStoreTests`
-(in-memory GRDB) / `SyncEngineTests` (`FakeIMAPSession` によるシナリオテスト) は
-常時実行。`MailTransportMailCoreTests` は `OTEGAMI_TEST_IMAP_HOST` 環境変数が
-設定されている場合のみ実行される opt-in の統合テスト。
+(in-memory GRDB) / `SyncEngineTests` (`FakeIMAPSession` によるシナリオテスト) /
+`GoogleOAuthTests` (M6: PKCE 既知ベクタ、`URLProtocol` スタブによる token
+交換/refresh/`invalid_grant`、`FakeAuthorizationFlow` による認可コード
+受領〜token 交換の全体フロー、時計注入による `TokenStore` の期限管理 — 実
+Google サーバにも実 Keychain にも触れない) は常時実行。`MailTransportMailCoreTests`
+は `OTEGAMI_TEST_IMAP_HOST` 環境変数が設定されている場合のみ実行される
+opt-in の統合テスト。
 
 ## iOS シミュレータ検証 (M1)
 
@@ -419,3 +423,60 @@ M1〜M4 の落とし穴 (上記) に加え、`OtegamiM5ReplyUITests` を実際�
    各要素がどんな identifier/label/type で報告されているか」を直接
    見せてくれるため、上記 1. のような「見えてはいるが identifier が
    期待と違う」系の不一致はこちらでないと確定できない。
+
+## iOS シミュレータ検証 (M6)
+
+```sh
+scripts/verify-ios-m6.sh
+```
+
+Gmail OAuth (PKCE) + iCloud プリセットのチェックポイントを検証する。M6 は
+実 Google/iCloud アカウントが無いままの実装なので (`PENDING.md` 参照)、
+自動検証できるのは「アカウント種別選択 UI」「Client ID 未設定時の Gmail
+ボタン無効化」「iCloud フォームのプリセット表示」「『その他』経路が
+従来通り動くこと」に限られる。実ブラウザでの OAuth ラウンドトリップと
+実 iCloud 接続は対象外 (`docs/oauth-setup.md` の「実機での最終確認手順」、
+`PENDING.md` の該当エントリ参照)。
+
+1. `OtegamiM6TypeSelectionUITests` — 「アカウントを追加」が
+   `AccountTypeSelectionView` (Gmail/iCloud/その他) を表示すること、
+   `GOOGLE_OAUTH_CLIENT_ID` 未設定 (この検証ビルドの既定状態) では Gmail
+   ボタンが無効化され `docs/oauth-setup.md` を指す案内文が表示されること、
+   iCloud/その他ボタンは常に有効であること、キャンセルでシート全体が
+   閉じることを確認する。
+2. `OtegamiM6ICloudFormUITests` — iCloud を選ぶと `imap.mail.me.com:993
+   (TLS)` / `smtp.mail.me.com:587 (STARTTLS)` のプリセットが表示され、
+   メールアドレス/App 用パスワードを入力するまで「接続テスト」ボタンが
+   無効のままであること、appleid.apple.com へのリンクが表示されることを
+   確認する。実 iCloud サーバへの接続は行わない (下記「未検証事項」参照)。
+3. `OtegamiM6OtherAccountFlowUITests` — 「その他 (IMAP)」を選んで Dovecot
+   アカウントを追加するフロー (M1 相当) が、新しい種別選択画面を挟んでも
+   従来通り動くことを回帰確認する。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`m6-01-account-type-selection.png` / `m6-02-icloud-form.png` /
+`m6-03-other-imap-inbox.png` として出力される。
+
+### スクリーンショットのタイミングについて (このマイルストーン固有)
+
+M1–M5 の検証はすべて「XCUITest 完了後にホストから撮る」パターン
+(このファイル冒頭の「Screenshots (after the UITest, not during it)」節)
+だったが、それは GRDB に永続化された状態 (アカウント一覧・メッセージ一覧)
+を撮っていたから安全だった。M6 のアカウント種別選択シート/iCloud フォーム
+はどちらも非永続 (画面遷移状態でしかない) なので、テスト完了後に撮ると
+シートは既に閉じてしまっている。そのため
+`OtegamiM6TypeSelectionUITests`/`OtegamiM6ICloudFormUITests` は対象画面に
+到達した直後に `Thread.sleep(forTimeInterval: 4)` で数秒間その画面を
+保持し、`verify-ios-m6.sh` 側はテスト実行と並行するバックグラウンド
+サブシェルから同じファイルパスに 1 秒間隔で複数回スクリーンショットを
+上書きする (単発の固定 `sleep` は xcodebuild/シミュレータ起動の揺らぎで
+対象画面の表示ウィンドウを外すことがあると実際に確認したため、複数回
+上書きする方式にした — 詳細はスクリプト内のコメント参照)。
+
+### 未検証事項 (人間が実アカウントで行う)
+
+- Gmail: `docs/oauth-setup.md` の「実機での最終確認手順」(Client ID 発行→
+  実ログイン→送受信→トークン自動リフレッシュ→取り消し後の再認証バナー)。
+- iCloud: `PENDING.md` の「iCloud App 用パスワードでの実アカウント確認」
+  (実 App 用パスワードでの接続テスト・送受信、ユーザー名がフルアドレスで
+  良いかの確認)。
