@@ -260,6 +260,9 @@ struct AccountSetupView: View {
             // M9: if push is already enabled, this new account should get
             // watched too, not just accounts that existed at enable-time.
             Task { await environment.registerWatchIfNeeded(for: account) }
+            // M11: push this account's metadata to iCloud so it appears on
+            // this Apple ID's other devices too.
+            Task { await environment.pushAccountToCloud(account) }
         } catch {
             testSucceeded = false
             testResultMessage = "保存に失敗しました: \(error)"

@@ -71,12 +71,12 @@ struct AccountsListContent: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
 
-                            // M6: a Gmail account whose refresh token
-                            // was rejected (see `AccountRecord
-                            // .needsReauth`'s doc comment) — the banner
-                            // the plan calls for ("リフレッシュ失敗
-                            // (invalid_grant) → ... UI バナー").
-                            if account.needsReauth {
+                            // M6: a Gmail account whose refresh token was
+                            // rejected (see `AccountRecord.needsReauth`'s
+                            // doc comment) — the banner the plan calls for
+                            // ("リフレッシュ失敗 (invalid_grant) → ... UI
+                            // バナー").
+                            if account.needsReauth, account.authType == .oauth2 {
                                 HStack {
                                     Label("再認証が必要です", systemImage: "exclamationmark.triangle")
                                         .font(.caption)
@@ -89,6 +89,32 @@ struct AccountsListContent: View {
                                     .font(.caption)
                                     .disabled(reauthenticatingAccountId == account.id)
                                     .accessibilityIdentifier("settings.account.\(account.id).reauthButton")
+                                }
+                            }
+
+                            // M11: an account `CloudAccountDirectory
+                            // .insertFromCloud` created from this Apple
+                            // ID's iCloud sync payload, but with no
+                            // Keychain password found yet on this device
+                            // (iCloud Keychain hadn't caught up — same
+                            // `needsReauth` flag, different meaning and
+                            // banner text than the Gmail case above, per
+                            // the plan: "バナー文言だけ分岐"). "再接続" re-checks
+                            // Keychain immediately rather than waiting for
+                            // the next launch/accounts-list tick.
+                            if account.needsReauth, account.authType == .password {
+                                HStack {
+                                    Label("資格情報を待っています", systemImage: "icloud.and.arrow.down")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                        .accessibilityIdentifier("settings.account.\(account.id).pendingCredentialBanner")
+                                    Spacer()
+                                    Button("再接続") {
+                                        Task { await retryPendingCredential(account) }
+                                    }
+                                    .font(.caption)
+                                    .disabled(reauthenticatingAccountId == account.id)
+                                    .accessibilityIdentifier("settings.account.\(account.id).retryPendingCredentialButton")
                                 }
                             }
                         }
@@ -112,6 +138,23 @@ struct AccountsListContent: View {
                     Label("アカウントを追加", systemImage: "plus")
                 }
                 .accessibilityIdentifier("settings.addAccountButton")
+            }
+
+            // M11: iCloud account-definition sync (docs/icloud-sync.md).
+            // Default on (`CloudSyncSettingsStore`'s doc comment); turning
+            // it off only stops pushing local changes/reconciling — it
+            // never touches any account already synced locally.
+            Section {
+                Toggle(
+                    "iCloud でアカウントを同期",
+                    isOn: Binding(
+                        get: { environment.isCloudSyncEnabled },
+                        set: { newValue in Task { await environment.setCloudSyncEnabled(newValue) } }
+                    )
+                )
+                .accessibilityIdentifier("settings.cloudSyncToggle")
+            } footer: {
+                Text("同じ Apple ID の他の iOS/Mac デバイスとアカウントの接続設定を同期します。パスワードは iCloud キーチェーンが別途同期します。")
             }
 
             // M9: iOS-only in practice (macOS has no
@@ -184,6 +227,27 @@ struct AccountsListContent: View {
             try await environment.reauthenticateGmailAccount(account)
         } catch {
             reauthErrorMessage = "再認証に失敗しました: \(error)"
+        }
+    }
+
+    /// M11: the "再接続" button on a cloud-inserted `.password` account
+    /// that's still waiting for its Keychain credential to sync in — see
+    /// `AppEnvironment.retryPendingCredential(for:)`'s doc comment. Shares
+    /// `reauthenticatingAccountId`/`reauthErrorMessage` with
+    /// `reauthenticate(_:)` above (both buttons are mutually exclusive per
+    /// account — an account is never both an `.oauth2` reauth candidate and
+    /// a `.password` pending-credential candidate at once) rather than
+    /// duplicating a second pair of `@State` properties for the same
+    /// "in-flight action, show an error if it fails" shape.
+    private func retryPendingCredential(_ account: AccountRecord) async {
+        reauthenticatingAccountId = account.id
+        reauthErrorMessage = nil
+        defer { reauthenticatingAccountId = nil }
+
+        do {
+            try await environment.retryPendingCredential(for: account)
+        } catch {
+            reauthErrorMessage = "まだ資格情報が見つかりません。iCloud キーチェーンの同期状況を確認してください。"
         }
     }
 }

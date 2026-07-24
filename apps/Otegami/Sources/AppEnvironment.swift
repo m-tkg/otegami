@@ -1,3 +1,4 @@
+import AccountCloudSync
 import Foundation
 import GoogleOAuth
 import GRDB
@@ -30,6 +31,21 @@ final class AppEnvironment {
     @ObservationIgnored let pushSettings: PushSettingsStore
     private(set) var isPushEnabled: Bool
     private(set) var pushRelayURLString: String
+
+    /// M11: iCloud account-definition sync. `accountCloudSync` reconciles
+    /// the local `account` table against the `"accounts.v1"` iCloud KVS key
+    /// (`docs/icloud-sync.md`); `cloudSyncSettings` is the "iCloud でアカウン
+    /// トを同期" toggle's persistence (`AccountsSettingsView`),
+    /// `isCloudSyncEnabled` its `@Observable` mirror for the UI, matching
+    /// the `pushSettings`/`isPushEnabled` split above.
+    @ObservationIgnored let cloudSyncSettings: CloudSyncSettingsStore
+    @ObservationIgnored let accountCloudSync: AccountCloudSyncEngine
+    private(set) var isCloudSyncEnabled: Bool
+    // `nonisolated(unsafe)`: only ever written once, from `init()` (already
+    // `@MainActor`), and read once, from `deinit` — which Swift requires to
+    // be `nonisolated` even on a `@MainActor` class, so this property can't
+    // itself be actor-isolated if `deinit` is going to read it at all.
+    @ObservationIgnored nonisolated(unsafe) private var cloudSyncNotificationObserver: NSObjectProtocol?
     /// `nil` when `GOOGLE_OAUTH_CLIENT_ID` isn't configured for this build
     /// (see `GoogleOAuthConfig`'s doc comment) — every Gmail-entry point
     /// checks this (directly or via `isGmailOAuthConfigured`) before
@@ -86,6 +102,28 @@ final class AppEnvironment {
             self.tokenStore = nil
         }
 
+        // M11: iCloud account sync. `directory` bundles everything
+        // `AccountCloudSyncEngine` needs to actually apply a reconcile
+        // decision locally — see `CloudAccountDirectory`'s doc comment for
+        // why it holds these references directly instead of AppEnvironment
+        // passing itself in via callback closures.
+        let cloudSyncSettings = CloudSyncSettingsStore()
+        self.cloudSyncSettings = cloudSyncSettings
+        self.isCloudSyncEnabled = cloudSyncSettings.isEnabled
+        let directory = CloudAccountDirectory(
+            database: database,
+            credentialStore: credentialStore,
+            tokenStore: tokenStore,
+            syncCoordinator: syncCoordinator,
+            pushSettings: pushSettings,
+            pushRelayClient: pushRelayClient
+        )
+        self.accountCloudSync = AccountCloudSyncEngine(
+            store: SystemUbiquitousStore(),
+            local: directory,
+            isEnabled: { [cloudSyncSettings] in cloudSyncSettings.isEnabled }
+        )
+
         startObservingAccounts()
 
         // M7: defensive self-heal, in addition to the v7 migration's own
@@ -99,10 +137,36 @@ final class AppEnvironment {
                 try FTSIndexer.backfillIfNeeded(db: db)
             }
         }
+
+        // M11: reconcile once at launch, then again every time iCloud
+        // reports the KVS payload changed externally (another device
+        // pushed while this one wasn't running, or just now). Every actual
+        // side effect (inserting/updating/deleting an `AccountRecord`,
+        // starting a first sync, registering/tearing down a push watch)
+        // happens inside `accountCloudSync`/`directory` themselves — see
+        // `CloudAccountDirectory`'s doc comment — so the observer here only
+        // ever needs to call `reconcile()` and can capture the engine
+        // itself (an actor, `Sendable`) rather than `self`.
+        let cloudSync = accountCloudSync
+        Task {
+            await cloudSync.reconcile()
+        }
+        cloudSyncNotificationObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: NSUbiquitousKeyValueStore.default,
+            queue: nil
+        ) { _ in
+            Task {
+                await cloudSync.reconcile()
+            }
+        }
     }
 
     deinit {
         accountsObservationTask?.cancel()
+        if let cloudSyncNotificationObserver {
+            NotificationCenter.default.removeObserver(cloudSyncNotificationObserver)
+        }
     }
 
     private func startObservingAccounts() {
@@ -127,6 +191,10 @@ final class AppEnvironment {
                         try? await database.dbWriter.write { db in
                             try ThreadAssigner.assignAllUnthreaded(accountId: account.id, db: db)
                         }
+                        // M11: see `retryPendingCredentialIfAvailable`'s doc
+                        // comment — the "起動時再チェック" half of that
+                        // method's two retry paths.
+                        await retryPendingCredentialIfAvailable(account)
                     }
                 }
             } catch {
@@ -171,6 +239,82 @@ final class AppEnvironment {
             try FTSIndexer.deleteAll(messageIds: messageIds, db: db)
             _ = try account.delete(db)
         }
+        // M11: this deletion is user-initiated here (as opposed to one
+        // `CloudAccountDirectory.deleteLocally` runs in response to a
+        // tombstone that already exists) — push a fresh tombstone so every
+        // other device syncing this Apple ID's iCloud account picks up the
+        // deletion too.
+        await accountCloudSync.pushLocalDeletion(accountId: account.id)
+    }
+
+    // MARK: - iCloud account sync (M11)
+
+    /// `AccountsSettingsView`'s "iCloud でアカウントを同期" toggle. Flipping it
+    /// on runs a full `reconcile()` immediately (plan: "OFF→ON で full
+    /// reconcile") rather than waiting for the next launch/external-change
+    /// notification; flipping it off just persists the flag — every
+    /// in-flight `accountCloudSync` call already no-ops once
+    /// `cloudSyncSettings.isEnabled` reads `false` (`AccountCloudSyncEngine`
+    /// reads it fresh on every call, not just at construction time), so
+    /// there's nothing further to tear down.
+    func setCloudSyncEnabled(_ enabled: Bool) async {
+        let wasEnabled = cloudSyncSettings.isEnabled
+        cloudSyncSettings.isEnabled = enabled
+        isCloudSyncEnabled = enabled
+        if enabled, !wasEnabled {
+            await accountCloudSync.reconcile()
+        }
+    }
+
+    /// Pushes a locally-added or locally-changed account to iCloud right
+    /// away — called after every account-creation flow's local DB insert
+    /// (`AccountSetupView`/`ICloudAccountSetupView`/`createGmailAccount`
+    /// below) instead of waiting for the next full `reconcile()`.
+    func pushAccountToCloud(_ account: AccountRecord) async {
+        await accountCloudSync.pushLocalChange(CloudAccountSnapshot(account: account))
+    }
+
+    /// A `.password`-kind account `CloudAccountDirectory.insertFromCloud`
+    /// created without a credential (iCloud Keychain hadn't synced the
+    /// password yet — see `AccountRecord.needsReauth`'s doc comment) can
+    /// have Keychain re-checked at any later point: either automatically,
+    /// on every accounts-list tick (`startObservingAccounts`, cheap once
+    /// resolved since this whole method becomes a no-op the moment
+    /// `needsReauth` flips to `false`), or explicitly from
+    /// `AccountsSettingsView`'s "再接続" button
+    /// (`retryPendingCredential(for:)` below, which surfaces a failure
+    /// instead of silently ignoring it). A `.gmail`/`.oauth2` account's
+    /// `needsReauth` means something different (a rejected refresh token —
+    /// `AppEnvironment.reauthenticateGmailAccount`'s interactive OAuth flow
+    /// is the only way to clear that one), so this only ever touches
+    /// `.password` accounts.
+    private func retryPendingCredentialIfAvailable(_ account: AccountRecord) async {
+        guard account.needsReauth, account.authType == .password else { return }
+        guard let password = try? credentialStore.password(forAccountId: account.id) else { return }
+        await setNeedsReauth(false, for: account)
+        let auth = MailAuth.password(username: account.imapUsername, password: password)
+        Task {
+            _ = try? await self.syncCoordinator.syncAccount(account, auth: auth)
+        }
+        await registerWatchIfNeeded(for: account)
+    }
+
+    enum RetryPendingCredentialError: Error {
+        /// Still no Keychain password for this account — either iCloud
+        /// Keychain hasn't finished syncing yet, or it's turned off
+        /// entirely on this device.
+        case stillMissing
+    }
+
+    /// `AccountsSettingsView`'s "再接続" button — the explicit-retry sibling
+    /// of `retryPendingCredentialIfAvailable`'s automatic one, throwing
+    /// `.stillMissing` instead of silently doing nothing so the button can
+    /// show an error rather than just appearing to do nothing.
+    func retryPendingCredential(for account: AccountRecord) async throws {
+        guard account.authType == .password, try credentialStore.password(forAccountId: account.id) != nil else {
+            throw RetryPendingCredentialError.stillMissing
+        }
+        await retryPendingCredentialIfAvailable(account)
     }
 
     // MARK: - Auth resolution (M6: "SyncCoordinator のセッション構築経路に auth
@@ -289,6 +433,8 @@ final class AppEnvironment {
             guard let auth = try? await self.auth(for: account) else { return }
             _ = try? await self.syncCoordinator.syncAccount(account, auth: auth)
         }
+        // M11: see AccountSetupView.saveAccount's identical call.
+        Task { await pushAccountToCloud(account) }
     }
 
     /// Re-runs the OAuth flow for an already-existing `.gmail` account
@@ -445,7 +591,10 @@ final class AppEnvironment {
     /// on the same machine (plan: "リレー URL 入力 (https 必須、ローカル開発時
     /// のみ http://localhost 許可)"). Returns `nil` for anything else,
     /// including a URL that fails to parse at all.
-    static func validatedRelayURL(_ string: String) -> URL? {
+    /// `nonisolated`: pure string parsing, no `AppEnvironment` state —
+    /// called both from `@MainActor` call sites in this file and from
+    /// `CloudAccountDirectory` (M11), which isn't `@MainActor`.
+    nonisolated static func validatedRelayURL(_ string: String) -> URL? {
         guard let components = URLComponents(string: string), let url = components.url else { return nil }
         if components.scheme == "https" { return url }
         if components.scheme == "http", let host = components.host, host == "localhost" || host == "127.0.0.1" {
