@@ -581,3 +581,107 @@ CONTAINS` 述語で探す方式に切り替えたところ確実に見つかっ�
 - FTS5 trigram の case folding は ASCII のみ (SQLite の仕様)。全角/半角
   や日本語の異体字を同一視するような正規化は行っていない
   (計画書の既知の制約として記録済み)。
+
+## iOS シミュレータ検証 (M8)
+
+```sh
+scripts/verify-ios-m8.sh
+```
+
+添付の受信表示・保存・送信 + cid インライン画像のチェックポイントを検証する。
+
+1. `OtegamiM8SetupUITests` — test1 の Dovecot アカウントを SMTP フィールド
+   込みで追加し (フェーズ4のComposer送信で使う)、`dev/mailstack/seed/fixtures/
+   14-attachment-png.eml` / `15-attachment-japanese-pdf.eml` /
+   `16-cid-inline-image.eml` (`seed.sh` に M8 として追加済み) の3件が
+   メッセージ一覧に表示されることを確認する。
+2. `OtegamiM8AttachmentUITests` — PNG 添付メールを開き、添付セクションの
+   `logo.png` 行をタップ (未取得 → `AttachmentFetcher` 経由でスピナー付き
+   取得 → `.quickLookPreview` でプレビュー表示、の経路を実際に踏む)。
+   QuickLook 自体はシステム UI (`.quickLookPreview` が提供する) なので、
+   XCUITest からはボタンラベルの厳密な検証ではなく「新しいナビゲーション
+   バーが出現したか」で「何らかのプレビュー画面が開いたか」だけを確認し、
+   実際の表示内容はスクリーンショットで Claude が目視判定する。
+3. `OtegamiM8CIDImageUITests` — cid インライン画像入り HTML メール
+   (`16-cid-inline-image.eml`、`multipart/related`、`Content-ID:
+   <otegami-logo@otegami.test>` の PNG を `<img src="cid:...">` で参照) を
+   開き、本文テキストが表示されること、かつ「画像を表示」(外部画像ブロック)
+   バナーが**表示されない**こと (このメールには `http(s)://` 参照が一切
+   無く `cid:` のみなので、バナーが出ないこと自体が cid 経路が外部画像
+   ブロックと独立に動いている証拠) を確認する。画像そのものの描画は
+   `WKWebView` 内部なので XCUITest からは検証できず、スクリーンショットで
+   目視判定する。
+4. `OtegamiM8ComposeAttachmentUITests` — Composer で新規作成し、
+   `OTEGAMI_UITEST_ATTACH_FIXTURE=1` launch environment 経由の内部フック
+   (`ComposerView.attachUITestFixtureIfRequested`) でテスト添付ファイル
+   (`m8-uitest-attachment.txt`) を自動添付、添付一覧にその行が表示される
+   ことを確認してから送信する。
+5. (ホスト) Mailpit REST API (`GET /api/v1/message/{id}`) で、送信された
+   メールの `Attachments` に `m8-uitest-attachment.txt` が含まれることを
+   assert する。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`m8-01-attachment-quicklook.png` / `m8-02-cid-inline-image.png` /
+`m8-03-compose-attachment-sent.png` として出力される。
+
+### なぜ内部フック (`OTEGAMI_UITEST_ATTACH_FIXTURE`) なのか
+
+システムのファイルピッカー (`fileImporter`)/`PhotosPicker` は本アプリの
+アクセシビリティツリーの外で動くシステム UI であり、XCUITest から安定して
+操作する方法がない (M2/M3 の落とし穴と同種の「アプリの外の UI は driveでき
+ない」制約)。`ComposerView.attachUITestFixtureIfRequested` は
+`ProcessInfo.processInfo.environment["OTEGAMI_UITEST_ATTACH_FIXTURE"] ==
+"1"` のときだけ、プロセス内に埋め込んだ小さな固定データ (ファイルパスを
+経由しない — シミュレータのアプリプロセスがホスト側で書いたファイルを
+実際に読めるかというサンドボックス依存の前提を避けるため) を
+`pendingAttachments` に追加する、通常起動時は完全に no-op の内部フック。
+`XCUIApplication.launchEnvironment` (`Foundation.Process` と違い iOS
+ターゲットからも問題なく使える — M3 の「`Process` は iOS で使えない」注記
+とは別の話) 経由でこのフラグを立てるだけで、ピッカー UI を一切操作せずに
+「添付ファイルが選ばれた後の状態」を確定的に再現できる。
+
+### `Content-Disposition` の日本語ファイル名: RFC 2231 ではなく RFC 2047
+
+`15-attachment-japanese-pdf.eml` (日本語ファイル名 `請求書.pdf` の PDF 添付)
+は当初 RFC 2231 の拡張パラメータ (`filename*=UTF-8''%E8%AB%8B...`) で
+書いていたが、この環境にピン留めされた mailcore2 リビジョンの
+`MCOMessageParser` はこれを一切パースせず `filename` が `nil` になることを
+`MailCoreIMAPSessionIntegrationTests`(実 Dovecot 相手の統合テスト) で発見
+した。RFC 2047 の encoded-word をそのまま `filename="..."` パラメータの値に
+埋め込む形 (`filename="=?UTF-8?B?...?="`) に切り替えたところ正しく
+`"請求書.pdf"` にデコードされた — 送信側 (`MailCoreMessageBuilder`/
+`MCOMessageBuilder`) は日本語ファイル名を正しく encoded-word 化して書き出す
+ことを `MessageBuilderTests` で確認済みなので、これは受信パーサ側だけの
+制限。他のメールクライアント/サーバが RFC 2231 のみで日本語ファイル名を
+送ってくるケースは、この mailcore2 リビジョンでは `filename` が拾えず
+「ファイル名なし」の添付として届く可能性がある点は既知の制約として残る。
+
+### 統合テスト (opt-in) の並列実行について
+
+`MailTransportMailCoreTests` ターゲットに `AttachmentFetcherIntegrationTests`
+(新規) と `MailCoreIMAPSessionIntegrationTests` への追加テスト (PNG/日本語
+PDF/cid 添付のバイト一致 assert) を M8 で加えたところ、`OTEGAMI_TEST_IMAP_HOST`
+を設定してターゲット全体を**フィルタなしで**並列実行すると、`SyncEngine
+IntegrationTests` (同じ実 Dovecot の INBOX を `doveadm expunge`/`save` で
+破壊的に書き換える) が他スイートの同時読み取りとレースし、
+`seeded.count == 1` のはずが `5` になるなど間欠的に失敗することを確認した
+(`--no-parallel` を付けると常に成功することで裏付け済み)。個々のスイートを
+`--filter` で単独実行する分には (各スイート自身のドキュメントコメントが
+元々推奨している運用) 問題ない。ターゲット全体を一括で回したい場合は
+`OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter MailTransportMailCoreTests
+--no-parallel` を使うこと。`make test`/CI には一切影響しない
+(`OTEGAMI_TEST_IMAP_HOST` 未設定時はこれらのスイート自体が丸ごとスキップ
+されるため)。
+
+### `MessageBuilderTests` を `.serialized` にした理由
+
+M8 で `MCOAttachment`/`MCOMessageParser` を組み合わせるテストを追加した
+ところ、Swift Testing のデフォルトの並列実行下で `Japanese subject and
+body round-trip through the RFC 822 encoding` (M5 からある既存テスト、
+M8での変更なし) が間欠的に失敗するようになった — `MCOMessageParser
+.plainTextBodyRendering()` の戻り値が破損する形で再現し、`--no-parallel`
+では常に成功することを確認済み。M8 以前のテスト数では顕在化していなかった
+だけで、mailcore2 側の (この suite の並列度がある閾値を超えると表面化する)
+スレッド安全性の限界と見られる。`swift test` 全体を `--no-parallel` にする
+のではなく、この 1 suite だけを `@Suite(..., .serialized)` にする最小限の
+修正で対応した (`make test` は変更後、複数回連続実行して安定を確認済み)。
