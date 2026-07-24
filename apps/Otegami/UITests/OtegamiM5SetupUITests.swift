@@ -17,8 +17,12 @@ final class OtegamiM5SetupUITests: XCTestCase {
         addDovecotTest1AccountWithSMTP(in: app)
         restartAppToRecoverTouchDelivery(app)
 
+        // M10: `waitForSeededSubjectScrollingIfNeeded` — see its doc
+        // comment (dev/mailstack's seed fixture set grew enough across
+        // M2-M8 that this, the oldest-dated fixture, no longer fits on
+        // the first screen without scrolling).
         XCTAssertTrue(
-            app.staticTexts["ようこそ otegami へ"].waitForExistence(timeout: 30),
+            waitForSeededSubjectScrollingIfNeeded("ようこそ otegami へ", in: app),
             "Expected the seeded baseline message to appear after account setup"
         )
     }

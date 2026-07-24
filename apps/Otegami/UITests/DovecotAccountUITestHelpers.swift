@@ -41,6 +41,62 @@ extension XCTestCase {
     /// touch came next. Both queries stay (belt-and-suspenders) since which
     /// process actually hosts this system UI isn't something app code
     /// should have to keep re-diagnosing every OS revision.
+    /// M10: waits for `subject` to appear in `messageList.list`, scrolling
+    /// down (retrying) if it isn't found immediately, and defensively
+    /// dismissing the "Save Password?" prompt before every attempt.
+    ///
+    /// Needed because `dev/mailstack/seed/fixtures/` grew from 4 files at
+    /// M1 to 16 by M8, all seeded into the same INBOX together — the
+    /// oldest-dated fixtures (like "ようこそ otegami へ", 01-welcome.eml)
+    /// now sort to the *bottom* of the newest-first unified-inbox thread
+    /// list, off the initial screen. `messageList.list`'s SwiftUI `List`
+    /// only materializes visible rows, so a bare `waitForExistence` can't
+    /// find a row that was never off-screen (not the "exact lookup fails
+    /// on visible content" pitfall documented elsewhere in this file — the
+    /// row genuinely isn't mounted yet). Every UITest that asserts one of
+    /// these older seeded subjects appears (`OtegamiM1VerificationUITests`,
+    /// `OtegamiM3SetupUITests`, `OtegamiM4SetupUITests`,
+    /// `OtegamiM5SetupUITests`, `OtegamiM6OtherAccountFlowUITests`) should
+    /// go through this instead of a bare `app.staticTexts[subject]
+    /// .waitForExistence(...)` — harmless/near-instant when the subject is
+    /// already on screen (checked before any scroll), so this is a safe
+    /// drop-in replacement regardless of how far down a given subject
+    /// happens to sit.
+    ///
+    /// Also folds in the "Save Password?" dismiss because that AutoFill
+    /// prompt (an in-process sheet on this iOS 26 toolchain, not a
+    /// cross-process SpringBoard alert — see `dismissSavePasswordPromptIfNeeded`'s
+    /// doc comment) can appear *after* the one-shot post-save dismiss call
+    /// already ran (its trigger is the password's first real network use,
+    /// which can land well into the initial sync), and once it's up it
+    /// swallows every touch including a scroll drag — so scrolling alone,
+    /// without this, still doesn't reliably reach a subject further down.
+    @discardableResult
+    func waitForSeededSubjectScrollingIfNeeded(_ subject: String, in app: XCUIApplication, maxScrollAttempts: Int = 10) -> Bool {
+        waitForElementScrollingIfNeeded(app.staticTexts[subject], in: app, maxScrollAttempts: maxScrollAttempts)
+    }
+
+    /// General form of `waitForSeededSubjectScrollingIfNeeded(_:in:)` for
+    /// any element query, not just an exact-subject `staticTexts` lookup —
+    /// e.g. `OtegamiM4SetupUITests`'s `list.cells.containing(...)`
+    /// thread-row lookups, which need the exact same "scroll down,
+    /// dismissing the Save Password prompt along the way" treatment.
+    @discardableResult
+    func waitForElementScrollingIfNeeded(_ element: XCUIElement, in app: XCUIApplication, maxScrollAttempts: Int = 10) -> Bool {
+        var found = element.waitForExistence(timeout: 10)
+        let list = app.collectionViews["messageList.list"]
+        var scrollAttempts = 0
+        while !found && scrollAttempts < maxScrollAttempts {
+            dismissSavePasswordPromptIfNeeded(timeout: 0.5)
+            let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+            let end = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+            start.press(forDuration: 0.05, thenDragTo: end)
+            found = element.waitForExistence(timeout: 2)
+            scrollAttempts += 1
+        }
+        return found
+    }
+
     func dismissSavePasswordPromptIfNeeded(timeout: TimeInterval = 3) {
         let app = XCUIApplication()
         let inAppNotNow = app.buttons["Not Now"]

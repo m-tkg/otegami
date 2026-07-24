@@ -22,9 +22,13 @@ final class OtegamiM3SetupUITests: XCTestCase {
 
         // 「明日の打ち合わせについて」 collapses into its "Re:" thread row under
         // M4 threading — see OtegamiM1VerificationUITests's matching note.
-        for subject in ["ようこそ otegami へ", "Re: 明日の打ち合わせについて", "Ｆｗｄ：今月のリリースノート"] {
+        // M10: checked newest-sorting-first (Ｆｗｄ) to oldest
+        // (ようこそ) so `waitForSeededSubjectScrollingIfNeeded`'s scrolling
+        // is monotonic — see its doc comment for why a scroll is needed at
+        // all now.
+        for subject in ["Ｆｗｄ：今月のリリースノート", "Re: 明日の打ち合わせについて", "ようこそ otegami へ"] {
             XCTAssertTrue(
-                app.staticTexts[subject].waitForExistence(timeout: 30),
+                waitForSeededSubjectScrollingIfNeeded(subject, in: app),
                 "Expected seeded message \"\(subject)\" to appear in the INBOX list before M3 phases run"
             )
         }

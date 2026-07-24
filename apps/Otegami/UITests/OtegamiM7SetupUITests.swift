@@ -26,10 +26,14 @@ final class OtegamiM7SetupUITests: XCTestCase {
         // `RootView` has nothing restored to pop back *from* — the restart
         // lands directly on the message list, same as
         // `OtegamiM4SetupUITests`'s first restart.
+        // M10: `waitForElementScrollingIfNeeded`/`waitForSeededSubjectScrollingIfNeeded`
+        // — see their doc comments (dev/mailstack's seed fixture set grew
+        // enough across M2-M8 that these no longer all fit on the first
+        // screen without scrolling).
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 30))
+        let test1Welcome = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ようこそ otegami へ")).firstMatch
         XCTAssertTrue(
-            app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ようこそ otegami へ")).firstMatch
-                .waitForExistence(timeout: 20),
+            waitForElementScrollingIfNeeded(test1Welcome, in: app),
             "Expected test1's seeded welcome message to appear"
         )
 
@@ -39,7 +43,7 @@ final class OtegamiM7SetupUITests: XCTestCase {
 
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 30))
         XCTAssertTrue(
-            app.staticTexts["test2 アカウントへようこそ"].waitForExistence(timeout: 20),
+            waitForSeededSubjectScrollingIfNeeded("test2 アカウントへようこそ", in: app),
             "Expected test2's seeded welcome message to appear in the unified inbox"
         )
     }

@@ -61,44 +61,11 @@ final class OtegamiM1VerificationUITests: XCTestCase {
             "Re: 明日の打ち合わせについて",
             "ようこそ otegami へ",
         ]
-        let list = app.collectionViews["messageList.list"]
-        // Explicit coordinate-based drag (not `list.swipeUp()`) anchored in
-        // the list's top 40% — `.searchable`'s search field renders as a
-        // floating pill lower on screen on this iOS 26 toolchain, and a
-        // drag starting at/below it risks being read as a tap on the pill
-        // instead of a list scroll. In practice the real blocker turned out
-        // to be the "Save Password?" prompt below, not this — but staying
-        // clear of the search pill is still the right anchor regardless.
-        func scrollListDown() {
-            let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
-            let end = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
-            start.press(forDuration: 0.05, thenDragTo: end)
-        }
         for subject in expectedSubjects {
-            var found = app.staticTexts[subject].waitForExistence(timeout: 10)
-            var scrollAttempts = 0
-            while !found && scrollAttempts < 10 {
-                // M10: the real culprit behind this row not being reachable
-                // wasn't a scroll-gesture problem at all (confirmed via
-                // `app.debugDescription` mid-failure) — iOS's system
-                // "Save Password?" AutoFill prompt (Keychain) can pop up
-                // *after* `dismissSavePasswordPromptIfNeeded()`'s one-shot
-                // 3s window right after saving the account, apparently
-                // whenever the password's first real network use (the
-                // initial IMAP sync, not the earlier "接続テスト") lands
-                // late enough — and once it's up, it sits on top of
-                // everything and swallows every subsequent touch,
-                // including this scroll drag, so the list never actually
-                // moved no matter how the gesture coordinates were tuned.
-                // Defensively re-checking for it before every scroll
-                // attempt (not just once after save) is the fix; a no-op
-                // dismiss if it isn't showing.
-                dismissSavePasswordPromptIfNeeded(timeout: 0.5)
-                scrollListDown()
-                found = app.staticTexts[subject].waitForExistence(timeout: 2)
-                scrollAttempts += 1
-            }
-            XCTAssertTrue(found, "Expected seeded message \"\(subject)\" to appear in the INBOX list")
+            XCTAssertTrue(
+                waitForSeededSubjectScrollingIfNeeded(subject, in: app),
+                "Expected seeded message \"\(subject)\" to appear in the INBOX list"
+            )
         }
     }
 }
