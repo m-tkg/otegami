@@ -338,6 +338,32 @@ extension AppDatabase {
             }
         }
 
+        // v8 (M8): attachment send support. `outboxAttachment` mirrors
+        // `attachment`'s shape loosely, but for the *outgoing* side: rows
+        // here always have data on disk already (`localPath` is `NOT NULL`,
+        // unlike `attachment.localPath` which starts `NULL` until fetched)
+        // — `ComposerView.send` copies each picked file into
+        // `<Application Support>/otegami/Outbox/<outboxMessageId>/<filename>`
+        // (plan: "送信前に Application Support/Outbox/ へコピーして安定パス化")
+        // before ever inserting a row, precisely so a security-scoped
+        // picker URL going stale after the picker session ends can't orphan
+        // a queued send. `OpQueueProcessor`'s `.send` replay reads these
+        // rows (and the bytes at `localPath`) at replay time, the same
+        // "rebuild from the row, not a pre-built snapshot" pattern
+        // `outboxMessage` itself already uses for the rest of the draft.
+        migrator.registerMigration("v8") { db in
+            try db.create(table: "outboxAttachment") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("outboxMessageId", .integer).notNull()
+                    .indexed()
+                    .references("outboxMessage", onDelete: .cascade)
+                t.column("filename", .text).notNull()
+                t.column("mimeType", .text).notNull()
+                t.column("localPath", .text).notNull()
+                t.column("size", .integer).notNull().defaults(to: 0)
+            }
+        }
+
         return migrator
     }
 }
