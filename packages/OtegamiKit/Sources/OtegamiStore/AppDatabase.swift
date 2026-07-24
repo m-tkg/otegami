@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import OtegamiCore
 
 /// The app's local GRDB database: schema migrations, and the single
 /// `DatabaseWriter` every DAO/query in `OtegamiStore` (and `SyncEngine`
@@ -281,6 +282,59 @@ extension AppDatabase {
         migrator.registerMigration("v6") { db in
             try db.alter(table: "account") { t in
                 t.add(column: "needsReauth", .boolean).notNull().defaults(to: false)
+            }
+        }
+
+        // v7 (M7): full-text search. `message.fromText` is a plain-text
+        // "Name <address> ..." rendering of `fromAddresses`
+        // (`FTSIndexer.composeFromText`) kept as its own column —
+        // `fromAddresses` itself is JSON in a `.blob` column, which SQLite's
+        // `LIKE` can't usefully match against — so both the FTS index and
+        // `SearchQuery`'s short-query (<3 characters) `LIKE` fallback have
+        // plain text to search.
+        //
+        // `messageSearchIndex` is dropped and recreated rather than altered
+        // in place because v1's definition is missing two things GRDB's
+        // `FTS5TableDefinition` has no property for, so they have to be
+        // written as raw SQL: `content=''` (contentless — nothing stored
+        // outside the index itself, keeping the table small) and
+        // `contentless_delete=1` (SQLite 3.43+; makes a plain `DELETE FROM
+        // messageSearchIndex WHERE rowid = ?` legal, instead of requiring
+        // every column's *old* value just to remove one row — see
+        // `FTSIndexer`'s doc comment for the upsert-via-delete-then-insert
+        // this enables). Dropping unconditionally is safe: v1's table was
+        // schema-only and never populated (M7 is the milestone that starts
+        // writing to it), so there's no existing index data to lose.
+        migrator.registerMigration("v7") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "fromText", .text)
+            }
+
+            try db.execute(sql: "DROP TABLE messageSearchIndex")
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE messageSearchIndex USING fts5(
+                    subject,
+                    plainText,
+                    fromText,
+                    tokenize = '\(FTSIndexer.tokenizerName)',
+                    content = '',
+                    contentless_delete = 1
+                )
+                """)
+
+            // Backfill (plan: "既存 DB の backfill"): populates
+            // `message.fromText` for rows that predate this migration, then
+            // indexes every message that existed before M7. New rows after
+            // this point are indexed live by `AccountSyncer.upsert`/
+            // `BodyFetcher.fetchBody` (both call `FTSIndexer.reindex`), so
+            // this loop only ever does real work once — the moment a
+            // pre-M7 database migrates through this step.
+            let messages = try MessageRecord.fetchAll(db)
+            for var message in messages {
+                guard let messageId = message.id else { continue }
+                message.fromText = FTSIndexer.composeFromText(message.fromAddresses)
+                try message.update(db, columns: [Column("fromText")])
+                try FTSIndexer.reindex(messageId: messageId, db: db)
             }
         }
 

@@ -82,6 +82,11 @@ public actor MailboxSyncer {
                 // stale.
                 _ = try await database.dbWriter.write { db in
                     let doomed = try MessageRecord.filter(Column("mailboxId") == mailboxId).fetchAll(db)
+                    // M7: the FTS index has no foreign key to `message` (it's
+                    // a virtual table), so a wholesale wipe like this one
+                    // needs its own explicit cleanup — otherwise these rows'
+                    // rowids would keep matching stale text forever.
+                    try FTSIndexer.deleteAll(messageIds: doomed.compactMap(\.id), db: db)
                     try MessageRecord.filter(Column("mailboxId") == mailboxId).deleteAll(db)
                     try ThreadAssigner.recomputeAggregates(forThreadsAmong: doomed, db: db)
                 }
@@ -250,6 +255,10 @@ public actor MailboxSyncer {
                 .filter(Column("mailboxId") == mailboxId)
                 .filter(deletedUIDs.contains(Column("uid")))
                 .fetchAll(db)
+            // M7: see the doc comment on the equivalent call above (full
+            // uidValidity-change resync) — same reasoning for this
+            // server-side-expunge diff.
+            try FTSIndexer.deleteAll(messageIds: doomed.compactMap(\.id), db: db)
             try MessageRecord
                 .filter(Column("mailboxId") == mailboxId)
                 .filter(deletedUIDs.contains(Column("uid")))

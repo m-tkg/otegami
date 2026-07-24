@@ -83,6 +83,12 @@ public actor BodyFetcher {
                 record.hasAttachments = record.hasAttachments || content.parts.contains { $0.isAttachment }
                 record.updatedAt = Date()
                 try record.update(db)
+
+                // M7: the body just arrived, so this is exactly when
+                // `messageSearchIndex.plainText` needs to catch up —
+                // `AccountSyncer.upsert`'s envelope-time index write ran
+                // with no body yet (subject/fromText only).
+                try FTSIndexer.reindex(messageId: messageId, db: db)
             }
         } catch {
             try? await database.dbWriter.write { db in

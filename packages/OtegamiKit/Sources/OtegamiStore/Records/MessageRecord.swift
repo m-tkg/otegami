@@ -38,6 +38,15 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     public var bccAddresses: [EmailAddress]
     public var replyToAddresses: [EmailAddress]
 
+    /// Plain-text rendering of `fromAddresses` ("Name <address> ...",
+    /// `FTSIndexer.composeFromText`), added in v7 (M7) as its own column
+    /// because `fromAddresses` is JSON in a `.blob` column — not something
+    /// `SearchQuery`'s `LIKE` fallback (or a human reading the row in a DB
+    /// browser) can match against directly. Kept in sync with
+    /// `fromAddresses` by `AccountSyncer.upsert`; `nil` only for rows
+    /// inserted directly by a test that doesn't set it.
+    public var fromText: String?
+
     public var date: Date?
     public var internalDate: Date
 
@@ -83,6 +92,7 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         ccAddresses: [EmailAddress] = [],
         bccAddresses: [EmailAddress] = [],
         replyToAddresses: [EmailAddress] = [],
+        fromText: String? = nil,
         date: Date? = nil,
         internalDate: Date,
         flagsRaw: Int = 0,
@@ -108,6 +118,7 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.ccAddresses = ccAddresses
         self.bccAddresses = bccAddresses
         self.replyToAddresses = replyToAddresses
+        self.fromText = fromText
         self.date = date
         self.internalDate = internalDate
         self.flagsRaw = flagsRaw

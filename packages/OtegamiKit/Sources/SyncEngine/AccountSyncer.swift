@@ -377,6 +377,11 @@ public actor AccountSyncer {
             ccAddresses: envelope.cc,
             bccAddresses: envelope.bcc,
             replyToAddresses: envelope.replyTo,
+            // M7: plain-text mirror of `fromAddresses` for
+            // `FTSIndexer`/`SearchQuery` — see `MessageRecord.fromText`'s
+            // doc comment for why `fromAddresses` itself (JSON in a `.blob`
+            // column) can't serve that purpose directly.
+            fromText: FTSIndexer.composeFromText(envelope.from),
             date: envelope.date,
             internalDate: envelope.internalDate,
             flagsRaw: envelope.flags.rawValue,
@@ -409,5 +414,13 @@ public actor AccountSyncer {
         } else if let threadId = record.threadId {
             try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
         }
+
+        // M7: keeps `messageSearchIndex` current with the just-upserted
+        // subject/fromText (and, on a resync of an already-body-fetched
+        // message, whatever `messageBody.plainText` already has —
+        // `FTSIndexer.reindex` reads it back rather than this call site
+        // threading it through, so a flag-only resync can't accidentally
+        // blow away a previously-indexed body).
+        try FTSIndexer.reindex(messageId: messageId, db: db)
     }
 }
