@@ -32,7 +32,7 @@ import SyncEngine
     .enabled(if: TestIMAPEnvironment.primary != nil, "set OTEGAMI_TEST_IMAP_HOST to run")
 )
 struct AttachmentFetcherIntegrationTests {
-    private static let expectedPNGBytes = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
+    private static let expectedPNGBytes = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMGjRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg==")!
 
     /// Deletes whatever `AttachmentFetcher.fetchAndStore` wrote for
     /// `accountId`, so a repeated test run doesn't accumulate files under

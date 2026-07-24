@@ -115,7 +115,7 @@ struct MailCoreIMAPSessionIntegrationTests {
 
     // MARK: M8 — attachment data fetch
 
-    private static let expectedPNGBytes = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
+    private static let expectedPNGBytes = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMGjRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg==")!
 
     @Test("fetches a PNG attachment's raw bytes by partId, matching the fixture byte-for-byte")
     func fetchesPNGAttachmentData() async throws {
