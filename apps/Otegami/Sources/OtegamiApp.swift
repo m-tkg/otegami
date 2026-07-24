@@ -11,6 +11,18 @@ struct OtegamiApp: App {
             RootView()
                 .environment(environment)
         }
+        #if os(macOS)
+        // M5 (plan: "macOS は別ウィンドウ (WindowGroup id \"composer\")"):
+        // each compose/reply action opens its own window rather than a
+        // sheet — `ComposerLaunchPayload` is `Codable`/`Hashable` so
+        // `openWindow(id:value:)` (called from `RootView`) can pass it
+        // straight through as this scene's launch value.
+        WindowGroup("作成", id: "composer", for: ComposerLaunchPayload.self) { $payload in
+            ComposerView(payload: payload ?? .new)
+                .environment(environment)
+        }
+        .defaultSize(width: 560, height: 520)
+        #endif
     }
 }
 
@@ -21,7 +33,14 @@ struct OtegamiApp: App {
 struct RootView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.scenePhase) private var scenePhase
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
     @State private var selection: SidebarSelection?
+    // M5: which composer to show. Only actually drives a `.sheet` on iOS
+    // (macOS opens `openWindow(id: "composer", ...)` instead and never sets
+    // this) — see `presentComposer(_:)`.
+    @State private var composerPayload: ComposerLaunchPayload?
     // By id, not the whole `ThreadRecord` — `ThreadRecord` isn't
     // `Hashable`, which `List(selection:)` requires.
     @State private var selectedThreadId: Int64?
@@ -53,7 +72,7 @@ struct RootView: View {
 
     var body: some View {
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
-            SidebarView(selection: $selection)
+            SidebarView(selection: $selection, onCompose: { presentComposer(.new) })
         } content: {
             if let selection {
                 MessageListView(selection: selection, selectedThreadId: $selectedThreadId)
@@ -67,7 +86,9 @@ struct RootView: View {
             }
         } detail: {
             if let selectedThreadId {
-                ThreadDetailView(threadId: selectedThreadId)
+                ThreadDetailView(threadId: selectedThreadId, onReply: { messageId, replyAll in
+                    presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll))
+                })
             } else {
                 ContentUnavailableView(
                     "No Message Selected",
@@ -92,6 +113,11 @@ struct RootView: View {
             preferredColumn = .detail
         }
         .task(id: selection) { restoreLastOpenedThreadIfNeeded() }
+        #if os(iOS)
+        .sheet(item: $composerPayload) { payload in
+            ComposerView(payload: payload)
+        }
+        #endif
         // Foreground IDLE (M3, plan: "アプリ active 中、INBOX を IDLE"):
         // start every account's IDLE loop (plus one immediate opQueue
         // replay + incremental sync, since becoming active is exactly
@@ -164,6 +190,19 @@ struct RootView: View {
         else { return }
         selectedThreadId = Int64(lastOpenedThreadId)
         preferredColumn = .detail
+    }
+
+    /// Presents `ComposerView` for `payload` — a sheet on iOS
+    /// (`composerPayload` drives `.sheet(item:)` above), a fresh window on
+    /// macOS (`WindowGroup(id: "composer")` in `OtegamiApp`'s `Scene`
+    /// body). Called from `SidebarView`'s "作成" button and
+    /// `ThreadDetailView`'s "返信"/"全員に返信" buttons.
+    private func presentComposer(_ payload: ComposerLaunchPayload) {
+        #if os(macOS)
+        openWindow(id: "composer", value: payload)
+        #else
+        composerPayload = payload
+        #endif
     }
 
     private func selectionKey(for selection: SidebarSelection) -> String {

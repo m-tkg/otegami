@@ -28,6 +28,11 @@ struct MessageView: View {
     /// context a caller must still supply.
     let accountId: String
     let messageId: Int64
+    /// M5: invoked with `(messageId, replyAll)` when the reply/reply-all
+    /// buttons in this message's header are tapped. Presentation itself
+    /// (sheet on iOS, a separate window on macOS) is `RootView`'s job — see
+    /// `SidebarView.onCompose`'s doc comment for the same pattern.
+    var onReply: (Int64, Bool) -> Void = { _, _ in }
 
     @State private var message: MessageRecord?
     @State private var bodyRecord: MessageBodyRecord?
@@ -79,6 +84,23 @@ struct MessageView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("messageDetail.date")
+            HStack {
+                Button {
+                    onReply(messageId, false)
+                } label: {
+                    Label("返信", systemImage: "arrowshape.turn.up.left")
+                }
+                .accessibilityIdentifier("messageDetail.replyButton")
+                Button {
+                    onReply(messageId, true)
+                } label: {
+                    Label("全員に返信", systemImage: "arrowshape.turn.up.left.2")
+                }
+                .accessibilityIdentifier("messageDetail.replyAllButton")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .padding(.top, 4)
         }
     }
 

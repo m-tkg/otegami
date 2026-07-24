@@ -10,10 +10,17 @@ import OtegamiStore
 struct SidebarView: View {
     @Environment(AppEnvironment.self) private var environment
     @Binding var selection: SidebarSelection?
+    /// M5: opens `ComposerView` for a brand-new message — presentation
+    /// itself (sheet on iOS, a separate window on macOS) is `RootView`'s
+    /// job, since it's the common ancestor of both the sidebar's "作成"
+    /// button and `ThreadDetailView`'s "返信"/"全員に返信" buttons.
+    var onCompose: () -> Void = {}
 
     @State private var showingAccountSetup = false
     @State private var showingSettings = false
+    @State private var showingOutbox = false
     @State private var mailboxesByAccountId: [String: [MailboxRecord]] = [:]
+    @State private var outboxCount = 0
 
     var body: some View {
         List(selection: $selection) {
@@ -31,6 +38,15 @@ struct SidebarView: View {
                     Label("すべての受信トレイ", systemImage: "tray.2")
                         .tag(SidebarSelection.unifiedInbox)
                         .accessibilityIdentifier("sidebar.unifiedInbox")
+
+                    if outboxCount > 0 {
+                        Button {
+                            showingOutbox = true
+                        } label: {
+                            Label("送信待ち (\(outboxCount))", systemImage: "tray.and.arrow.up")
+                        }
+                        .accessibilityIdentifier("sidebar.outbox")
+                    }
                 }
 
                 ForEach(environment.accounts) { account in
@@ -54,6 +70,15 @@ struct SidebarView: View {
         .toolbar {
             ToolbarItem {
                 Button {
+                    onCompose()
+                } label: {
+                    Label("作成", systemImage: "square.and.pencil")
+                }
+                .accessibilityIdentifier("sidebar.composeButton")
+                .disabled(environment.accounts.isEmpty)
+            }
+            ToolbarItem {
+                Button {
                     showingAccountSetup = true
                 } label: {
                     Label("アカウントを追加", systemImage: "plus")
@@ -74,6 +99,22 @@ struct SidebarView: View {
         }
         .sheet(isPresented: $showingSettings) {
             AccountsSettingsView()
+        }
+        .sheet(isPresented: $showingOutbox) {
+            OutboxView()
+        }
+        .task(id: environment.accounts.map(\.id)) { await observeOutbox() }
+    }
+
+    private func observeOutbox() async {
+        let accountIds = environment.accounts.map(\.id)
+        let observation = OutboxQuery.observation(accountIds: accountIds)
+        do {
+            for try await pending in observation.values(in: environment.database.dbWriter) {
+                outboxCount = pending.count
+            }
+        } catch {
+            // A failing observation just stops the badge from updating.
         }
     }
 

@@ -18,6 +18,9 @@ import OtegamiStore
 struct ThreadDetailView: View {
     @Environment(AppEnvironment.self) private var environment
     let threadId: Int64
+    /// M5: forwarded to each expanded `MessageView` — see its `onReply`
+    /// doc comment.
+    var onReply: (Int64, Bool) -> Void = { _, _ in }
 
     @State private var accountId: String?
     @State private var messages: [MessageRecord] = []
@@ -50,7 +53,7 @@ struct ThreadDetailView: View {
                             .accessibilityIdentifier("threadDetail.message.\(messageId).header")
 
                             if expandedMessageIds.contains(messageId), let accountId {
-                                MessageView(accountId: accountId, messageId: messageId)
+                                MessageView(accountId: accountId, messageId: messageId, onReply: onReply)
                                     .frame(minHeight: 240)
                                     .accessibilityIdentifier("threadDetail.message.\(messageId).body")
                             }

@@ -31,6 +31,14 @@ struct AccountSetupView: View {
     @State private var testResultMessage: String?
     @State private var isSaving = false
 
+    // M5: a separate connection test for SMTP (plan: "IMAP と別に") — IMAP
+    // and SMTP are frequently different hosts/ports even for the same
+    // account, so a single combined test button couldn't tell the user
+    // which side actually failed.
+    @State private var isTestingSMTP = false
+    @State private var smtpTestSucceeded = false
+    @State private var smtpTestResultMessage: String?
+
     var body: some View {
         NavigationStack {
             Form {
@@ -69,7 +77,7 @@ struct AccountSetupView: View {
                         .accessibilityIdentifier("accountSetup.password")
                 }
 
-                Section("SMTP (任意。M1では未使用)") {
+                Section("SMTP (送信用。任意 — 未設定の場合は送信できません)") {
                     TextField("ホスト", text: $smtpHost)
                         .textFieldAutocapitalizationNone()
                         .accessibilityIdentifier("accountSetup.smtpHost")
@@ -85,6 +93,23 @@ struct AccountSetupView: View {
                     TextField("ユーザー名", text: $smtpUsername)
                         .textFieldAutocapitalizationNone()
                         .accessibilityIdentifier("accountSetup.smtpUsername")
+
+                    Button {
+                        Task { await testSMTPConnection() }
+                    } label: {
+                        HStack {
+                            Text("SMTP接続テスト")
+                            if isTestingSMTP { Spacer(); ProgressView() }
+                        }
+                    }
+                    .accessibilityIdentifier("accountSetup.testSMTPConnectionButton")
+                    .disabled(isTestingSMTP || smtpHost.isEmpty || Int(smtpPortText) == nil)
+
+                    if let smtpTestResultMessage {
+                        Label(smtpTestResultMessage, systemImage: smtpTestSucceeded ? "checkmark.circle" : "xmark.octagon")
+                            .foregroundStyle(smtpTestSucceeded ? .green : .red)
+                            .accessibilityIdentifier("accountSetup.smtpTestResult")
+                    }
                 }
 
                 if let testResultMessage {
@@ -157,6 +182,36 @@ struct AccountSetupView: View {
         } catch {
             testSucceeded = false
             testResultMessage = "接続に失敗しました: \(error)"
+        }
+    }
+
+    /// M5: SMTP's own connection test (plan: "IMAP と別に"), separate from
+    /// `testConnection()` above and not gating `saveAccount()` — SMTP stays
+    /// optional to *save* an account (M1's original design), just required
+    /// to actually send.
+    private func testSMTPConnection() async {
+        guard let smtpPort = Int(smtpPortText) else { return }
+        isTestingSMTP = true
+        smtpTestResultMessage = nil
+        defer { isTestingSMTP = false }
+
+        let config = SMTPConfig(host: smtpHost, port: smtpPort, security: smtpSecurity.mailTransportSecurity)
+        let session = MailCoreSMTPSession(config: config)
+        // Falls back to the account's own IMAP username/password when the
+        // SMTP username field was left blank — the common case where the
+        // same credentials authenticate both. An empty *password* still
+        // reaches `connect(auth:)` as a non-empty username with an empty
+        // password for a relay that ignores it, or a real auth failure for
+        // one that doesn't — either way surfaces as a clear pass/fail here.
+        let username = smtpUsername.isEmpty ? imapUsername : smtpUsername
+        do {
+            try await session.connect(auth: .password(username: username, password: password))
+            await session.disconnect()
+            smtpTestSucceeded = true
+            smtpTestResultMessage = "SMTP接続に成功しました。"
+        } catch {
+            smtpTestSucceeded = false
+            smtpTestResultMessage = "SMTP接続に失敗しました: \(error)"
         }
     }
 
