@@ -60,6 +60,13 @@ struct ThreadDetailView: View {
                 }
             }
         }
+        // The newest message (last in `messages`, expanded by default) is
+        // what a thread view should open showing — without this, a long
+        // thread's `ScrollView` starts pinned to the top (the *oldest*,
+        // collapsed message) and `LazyVStack` doesn't even materialize the
+        // expanded row (and its `MessageView`/`messageDetail.subject`)
+        // until it scrolls into view.
+        .defaultScrollAnchor(.bottom)
         .accessibilityIdentifier("threadDetail.scrollView")
         .navigationTitle(navigationTitle)
         .overlay {

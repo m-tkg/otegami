@@ -149,6 +149,14 @@ struct RootView: View {
     }
 
     private func restoreLastOpenedThreadIfNeeded() {
+        // Verification-only escape hatch: `scripts/verify-ios-m4.sh` needs
+        // a way to bring the app to the foreground for a screenshot
+        // *without* re-opening whatever thread an earlier XCUITest phase
+        // left as "last opened" — `xcrun simctl launch <device> <bundle-id>
+        // -uiTestsSkipThreadRestoration` passes this as a launch argument
+        // for exactly that. Never set by the app itself; harmless in
+        // production since nothing else ever passes launch arguments.
+        guard !ProcessInfo.processInfo.arguments.contains("-uiTestsSkipThreadRestoration") else { return }
         guard selectedThreadId == nil,
               let selection,
               lastOpenedThreadId != 0,
