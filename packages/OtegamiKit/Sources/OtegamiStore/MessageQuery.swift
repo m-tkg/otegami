@@ -34,6 +34,68 @@ public enum MessageQuery {
         guard let value else { return nil }
         return UInt32(value)
     }
+
+    // MARK: - Unread counts (M10: sidebar badges)
+
+    /// `\Seen` bit of `MessageFlags`, inlined as a raw SQL literal — matches
+    /// `OtegamiCore.MessageFlags.seen.rawValue` (`1 << 0`). Kept here (not a
+    /// dependency on `OtegamiCore.MessageFlags` from inside a SQL string)
+    /// since a bitmask literal in SQL needs to be a compile-time constant
+    /// either way; a unit test (`MessageQueryTests`) pins this value against
+    /// the real `MessageFlags.seen.rawValue` so the two can't silently drift.
+    static let seenFlagBit = 1
+
+    /// Unread message counts per mailbox, for every mailbox belonging to
+    /// `accountId` — one grouped query instead of one `COUNT(*)` per mailbox
+    /// row, backed by `message_on_mailboxId_flagsRaw` (v9). Mailboxes with
+    /// zero unread messages are simply absent from the result (not present
+    /// with a `0`); callers should treat a missing key as zero.
+    public static func unreadCounts(accountId: String, db: Database) throws -> [Int64: Int] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT message.mailboxId AS mailboxId, COUNT(*) AS unreadCount
+                FROM message
+                JOIN mailbox ON mailbox.id = message.mailboxId
+                WHERE mailbox.accountId = ? AND message.flagsRaw & \(seenFlagBit) = 0
+                GROUP BY message.mailboxId
+                """,
+            arguments: [accountId]
+        )
+        var counts: [Int64: Int] = [:]
+        for row in rows {
+            counts[row["mailboxId"] as Int64] = row["unreadCount"] as Int
+        }
+        return counts
+    }
+
+    public static func unreadCountsObservation(accountId: String) -> ValueObservation<ValueReducers.Fetch<[Int64: Int]>> {
+        ValueObservation.tracking { db in try unreadCounts(accountId: accountId, db: db) }
+    }
+
+    /// Total unread count across every inbox-role mailbox of `accountIds` —
+    /// the badge for "すべての受信トレイ" (the unified inbox sidebar row),
+    /// scoped the same way `ThreadQuery.unifiedInboxRequest` scopes its
+    /// thread list (inbox-role mailboxes only, not every mailbox).
+    public static func unifiedInboxUnreadCount(accountIds: [String], db: Database) throws -> Int {
+        guard !accountIds.isEmpty else { return 0 }
+        let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
+        var arguments: [(any DatabaseValueConvertible)?] = [MailboxRoleRecord.inbox.rawValue]
+        arguments.append(contentsOf: accountIds)
+        return try Int.fetchOne(
+            db,
+            sql: """
+                SELECT COUNT(*) FROM message
+                JOIN mailbox ON mailbox.id = message.mailboxId
+                WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders)) AND message.flagsRaw & \(seenFlagBit) = 0
+                """,
+            arguments: StatementArguments(arguments)
+        ) ?? 0
+    }
+
+    public static func unifiedInboxUnreadCountObservation(accountIds: [String]) -> ValueObservation<ValueReducers.Fetch<Int>> {
+        ValueObservation.tracking { db in try unifiedInboxUnreadCount(accountIds: accountIds, db: db) }
+    }
 }
 
 /// Query helpers for `MailboxRecord`.
