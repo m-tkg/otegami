@@ -60,6 +60,11 @@ struct GmailAccountSetupView: View {
             }
         }
         .accessibilityIdentifier("gmailAccountSetup.sheet")
+        #if os(macOS)
+        // M10 fix: see AccountTypeSelectionView's doc comment on why every
+        // NavigationStack{...}-shaped sheet in this app needs this.
+        .frame(minWidth: 420, minHeight: 320)
+        #endif
     }
 
     private func signIn() async {

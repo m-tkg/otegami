@@ -66,6 +66,20 @@ struct AccountTypeSelectionView: View {
             }
         }
         .accessibilityIdentifier("accountTypeSelection.sheet")
+        #if os(macOS)
+        // M10 fix: unlike iOS, macOS doesn't size a `.sheet` from its
+        // `NavigationStack { List { ... } }` content's intrinsic size — a
+        // freshly-presented sheet built this way (confirmed by launching
+        // the real macOS app, not just `make mac` build-checking it, which
+        // is all M6–M9 ever did per docs/verify.md) renders as basically
+        // just its title bar and toolbar, with the `List` collapsed to
+        // near-zero height. An explicit minimum frame is the fix every
+        // sheet in this app built the same way needs (see
+        // `AccountSetupView`/`GmailAccountSetupView`/`ICloudAccountSetupView`/
+        // `AccountsSettingsView`/`OutboxView`/`DraftsView`/
+        // `FailedOperationsView`, all patched alongside this one).
+        .frame(minWidth: 480, minHeight: 420)
+        #endif
     }
 }
 

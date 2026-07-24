@@ -84,6 +84,11 @@ struct DraftsView: View {
             }
         }
         .accessibilityIdentifier("drafts.sheet")
+        #if os(macOS)
+        // M10 fix: see AccountTypeSelectionView's doc comment on why every
+        // NavigationStack{List{...}}-shaped sheet in this app needs this.
+        .frame(minWidth: 480, minHeight: 420)
+        #endif
         .task(id: environment.accounts.map(\.id)) { await observe() }
     }
 

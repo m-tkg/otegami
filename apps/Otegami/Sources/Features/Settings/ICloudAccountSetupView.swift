@@ -113,6 +113,11 @@ struct ICloudAccountSetupView: View {
             }
         }
         .accessibilityIdentifier("icloudAccountSetup.sheet")
+        #if os(macOS)
+        // M10 fix: see AccountTypeSelectionView's doc comment on why every
+        // NavigationStack{Form{...}}-shaped sheet in this app needs this.
+        .frame(minWidth: 480, minHeight: 480)
+        #endif
     }
 
     private var isFormValid: Bool {
