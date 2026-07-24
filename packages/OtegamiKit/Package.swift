@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "MailTransportMailCore", targets: ["MailTransportMailCore"]),
         .library(name: "GoogleOAuth", targets: ["GoogleOAuth"]),
         .library(name: "PushRelayClient", targets: ["PushRelayClient"]),
+        .library(name: "AccountCloudSync", targets: ["AccountCloudSync"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
@@ -148,6 +149,27 @@ let package = Package(
         .testTarget(
             name: "GoogleOAuthTests",
             dependencies: ["GoogleOAuth"]
+        ),
+
+        // iCloud account-definition sync (iCloud Keychain already syncs
+        // credentials on its own — see KeychainCredentialStore's doc
+        // comment; this is the metadata half). Apple-only
+        // (`NSUbiquitousKeyValueStore`), like GoogleOAuth/PushRelayClient.
+        // Depends on OtegamiStore only for `AccountRecord`/its enums
+        // (`CloudAccountSnapshot` mirrors it) — no GRDB access happens in
+        // this target itself, only in the app-layer `LocalAccountDirectory`
+        // conformer.
+        .target(
+            name: "AccountCloudSync",
+            dependencies: ["OtegamiStore"]
+        ),
+
+        // FakeUbiquitousStore/FakeLocalAccountDirectory-driven reconcile
+        // scenario tests — no real iCloud KVS or GRDB touched (mirrors
+        // GoogleOAuthTests' TokenStoreTests approach).
+        .testTarget(
+            name: "AccountCloudSyncTests",
+            dependencies: ["AccountCloudSync"]
         ),
     ]
 )
