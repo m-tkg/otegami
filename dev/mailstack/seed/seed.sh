@@ -57,4 +57,12 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/11-thread-b-reply2.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/12-subject-fallback-original.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/13-subject-fallback-reply.eml"
 
+# M8: attachment send/receive + cid inline images. A small PNG attachment,
+# a Japanese-filename PDF attachment (RFC 2231 filename*=), and an HTML
+# message with a cid:-referenced inline image — see docs/verify.md's M8
+# section for what each backs.
+seed_message "test1@otegami.test" "$FIXTURES_DIR/14-attachment-png.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/15-attachment-japanese-pdf.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/16-cid-inline-image.eml"
+
 echo "==> done"

@@ -1,0 +1,31 @@
+From: Otegami Team <team@otegami.test>
+To: test1@otegami.test
+Subject: インライン画像つきHTMLメール
+Message-ID: <seed-0016@otegami.test>
+Date: Sat, 17 Jan 2026 09:10:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="otegami-m8-cid-boundary"
+
+--otegami-m8-cid-boundary
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<html>
+<body>
+<p>こんにちは、otegami です。</p>
+<p>このメールには cid: 参照のインライン画像が含まれています。</p>
+<img src="cid:otegami-logo@otegami.test" alt="otegami logo">
+<p>画像がここに表示されていれば cid 解決は成功です。</p>
+</body>
+</html>
+
+--otegami-m8-cid-boundary
+Content-Type: image/png; name="inline-logo.png"
+Content-Transfer-Encoding: base64
+Content-ID: <otegami-logo@otegami.test>
+Content-Disposition: inline; filename="inline-logo.png"
+
+iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMG
+jRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg==
+
+--otegami-m8-cid-boundary--

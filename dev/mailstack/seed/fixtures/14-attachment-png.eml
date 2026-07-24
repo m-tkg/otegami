@@ -1,0 +1,23 @@
+From: Otegami Team <team@otegami.test>
+To: test1@otegami.test
+Subject: 添付ファイルつきメール（PNG）
+Message-ID: <seed-0014@otegami.test>
+Date: Sat, 17 Jan 2026 09:00:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="otegami-m8-png-boundary"
+
+--otegami-m8-png-boundary
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+小さな画像ファイルを添付しています。M8の添付受信テスト用メールです。
+
+--otegami-m8-png-boundary
+Content-Type: image/png; name="logo.png"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="logo.png"
+
+iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMG
+jRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg==
+
+--otegami-m8-png-boundary--
