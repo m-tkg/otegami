@@ -71,7 +71,16 @@ if [[ -z "$UDID" ]]; then
 fi
 echo "    UDID: $UDID"
 
-echo "==> Booting simulator (if needed)"
+echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
+# M11: see verify-ios-m1.sh's identical step for why a plain `simctl
+# uninstall` no longer gives this script's account-type-selection/empty-
+# state assertions a truly-empty starting account list — an account
+# another verify run pushed to iCloud KVS (with its Keychain password also
+# surviving the app's own uninstall) resurrects itself on next launch.
+xcrun simctl shutdown "$UDID" 2>/dev/null || true
+xcrun simctl erase "$UDID"
+
+echo "==> Booting simulator"
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
 
@@ -79,9 +88,6 @@ echo "==> Starting dev mailstack and seeding fixtures (idempotent reseed)"
 make mailstack-up
 sleep 3
 make mailstack-seed
-
-echo "==> Uninstalling any previous build (fresh local DB for this run)"
-xcrun simctl uninstall "$UDID" "$BUNDLE_ID" 2>/dev/null || true
 
 echo "==> Regenerating Xcode project and building for testing"
 (cd apps/Otegami && xcodegen generate)

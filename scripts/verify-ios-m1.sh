@@ -37,7 +37,23 @@ if [[ -z "$UDID" ]]; then
 fi
 echo "    UDID: $UDID"
 
-echo "==> Booting simulator (if needed)"
+echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
+# M11: a plain `xcrun simctl uninstall` (what this step used to be) removes
+# the app's own container — which resets the GRDB database — but does
+# *not* reset Keychain or NSUbiquitousKeyValueStore, both of which live
+# outside the per-app container on this simulator/toolchain. Since M11's
+# `AccountCloudSyncEngine` reconciles from iCloud KVS at every launch, an
+# account a *previous* verify run pushed to the KVS payload (and whose
+# Keychain password also survived) would otherwise resurrect itself right
+# after "uninstall for a fresh local DB", defeating the point of this step
+# — confirmed while adding M11 (see docs/icloud-sync.md's verify note). A
+# full erase clears all three, giving every run of this script the same
+# truly-empty starting state `simctl uninstall` alone used to provide
+# before M11.
+xcrun simctl shutdown "$UDID" 2>/dev/null || true
+xcrun simctl erase "$UDID"
+
+echo "==> Booting simulator"
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
 
@@ -47,9 +63,6 @@ if [[ "${SKIP_MAILSTACK_RESET:-0}" != "1" ]]; then
   sleep 3
   make mailstack-seed
 fi
-
-echo "==> Uninstalling any previous build (fresh local DB for this run)"
-xcrun simctl uninstall "$UDID" "$BUNDLE_ID" 2>/dev/null || true
 
 echo "==> Regenerating Xcode project and building for testing"
 (cd apps/Otegami && xcodegen generate)
