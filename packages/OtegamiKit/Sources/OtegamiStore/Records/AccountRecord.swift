@@ -53,6 +53,17 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
     /// preset flows are what set this to anything else.
     public var kind: AccountKind
 
+    /// M6: set when `GoogleOAuth.TokenStore.accessToken(for:)` throws
+    /// `.reauthenticationRequired` (the stored refresh token was rejected —
+    /// revoked, expired, or the user changed their Google password).
+    /// `AppEnvironment.auth(for:)` sets this; `AccountsSettingsView` reads
+    /// it to show a "再認証が必要です" banner + button that re-runs
+    /// `GoogleOAuthClient.requestAuthorization()` and clears it again. Only
+    /// ever meaningful for `.gmail`-kind accounts — a `.password` account
+    /// has no refresh token to go stale, so this simply never gets set for
+    /// one.
+    public var needsReauth: Bool
+
     public var imapHost: String
     public var imapPort: Int
     public var imapSecurity: ConnectionSecurityRecord
@@ -76,6 +87,7 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         email: String,
         authType: AccountAuthType,
         kind: AccountKind = .generic,
+        needsReauth: Bool = false,
         imapHost: String,
         imapPort: Int,
         imapSecurity: ConnectionSecurityRecord,
@@ -93,6 +105,7 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         self.email = email
         self.authType = authType
         self.kind = kind
+        self.needsReauth = needsReauth
         self.imapHost = imapHost
         self.imapPort = imapPort
         self.imapSecurity = imapSecurity

@@ -271,6 +271,19 @@ extension AppDatabase {
             }
         }
 
+        // v6 (M6): Gmail OAuth. `needsReauth` is the persisted form of
+        // `GoogleOAuth.TokenStoreError.reauthenticationRequired` — see
+        // `AccountRecord.needsReauth`'s doc comment. A plain boolean
+        // column (not, say, a richer "auth status" enum) since it's the
+        // only OAuth-specific state that needs to survive a relaunch;
+        // everything else (cached access token, refresh token) lives in
+        // `TokenStore`/Keychain, not this table.
+        migrator.registerMigration("v6") { db in
+            try db.alter(table: "account") { t in
+                t.add(column: "needsReauth", .boolean).notNull().defaults(to: false)
+            }
+        }
+
         return migrator
     }
 }
