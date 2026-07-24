@@ -94,6 +94,17 @@ struct AccountSetupView: View {
                     TextField("ユーザー名", text: $smtpUsername)
                         .textFieldAutocapitalizationNone()
                         .accessibilityIdentifier("accountSetup.smtpUsername")
+                    // UX fix: a filled-in username used to always trigger
+                    // AUTH, which a non-authenticating SMTP server (e.g. the
+                    // dev mailstack's Mailpit) would then reject outright —
+                    // "leave it blank" wasn't discoverable. Since
+                    // `MailCoreSMTPSession.connect` now falls back to no
+                    // auth on that specific rejection, this hint documents
+                    // the new behavior instead of instructing users to
+                    // clear the field.
+                    Text("空欄の場合は認証なしで接続します。サーバーが認証に対応していない場合は、ユーザー名を入力していても自動的に認証を省略します。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     Button {
                         Task { await testSMTPConnection() }
@@ -187,7 +198,7 @@ struct AccountSetupView: View {
             testResultMessage = "接続に成功しました。"
         } catch {
             testSucceeded = false
-            testResultMessage = "接続に失敗しました: \(error)"
+            testResultMessage = mailTransportUserFacingMessage(for: error, prefix: "接続に失敗しました")
         }
     }
 
@@ -208,8 +219,11 @@ struct AccountSetupView: View {
         // send-time behavior (see its doc comment), so this test reflects
         // what sending will really do. An intentionally blank SMTP
         // username makes `MailCoreSMTPSession.connect` skip authentication
-        // entirely, for relays that require none (e.g. the dev mailstack's
-        // Mailpit).
+        // entirely, for relays that require none; a *non-blank* username
+        // against a relay that turns out not to support AUTH at all now
+        // also connects, via `connect(auth:)`'s automatic no-auth retry —
+        // see its doc comment. Either way, this test still reflects
+        // whatever sending will actually do.
         do {
             try await session.connect(auth: .password(username: smtpUsername, password: password))
             await session.disconnect()
@@ -217,7 +231,7 @@ struct AccountSetupView: View {
             smtpTestResultMessage = "SMTP接続に成功しました。"
         } catch {
             smtpTestSucceeded = false
-            smtpTestResultMessage = "SMTP接続に失敗しました: \(error)"
+            smtpTestResultMessage = mailTransportUserFacingMessage(for: error, prefix: "SMTP接続に失敗しました")
         }
     }
 
