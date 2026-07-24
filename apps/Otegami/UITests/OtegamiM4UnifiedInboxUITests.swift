@@ -35,10 +35,15 @@ final class OtegamiM4UnifiedInboxUITests: XCTestCase {
 
         // test1's thread (survives from OtegamiM4SetupUITests).
         let test1Thread = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "来週のランチ")).firstMatch
-        XCTAssertTrue(test1Thread.waitForExistence(timeout: 20), "Expected test1's thread to still appear in the unified inbox")
+        XCTAssertTrue(waitForElementScrollingIfNeeded(test1Thread, in: app), "Expected test1's thread to still appear in the unified inbox")
 
-        // test2's own single seeded message (05-test2-welcome.eml).
-        let test2Message = app.staticTexts["test2 アカウントへようこそ"]
-        XCTAssertTrue(test2Message.waitForExistence(timeout: 20), "Expected test2's seeded message to appear in the unified inbox")
+        // test2's own single seeded message (05-test2-welcome.eml). M10:
+        // `waitForSeededSubjectScrollingIfNeeded` — see its doc comment
+        // (dev/mailstack's seed fixture set grew enough across M2-M8 that
+        // this doesn't necessarily fit on the first screen anymore either).
+        XCTAssertTrue(
+            waitForSeededSubjectScrollingIfNeeded("test2 アカウントへようこそ", in: app),
+            "Expected test2's seeded message to appear in the unified inbox"
+        )
     }
 }
