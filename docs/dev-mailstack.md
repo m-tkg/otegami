@@ -39,6 +39,26 @@ Mailpit の SMTP 送信先 (アプリの SMTP 設定をここに向ける):
 | Web UI | http://localhost:8025 |
 | REST API | http://localhost:8025/api/v1/ (自動検証に使用) |
 
+### 認証必須の第2 Mailpit (`mailpit-auth`)
+
+`MailCoreSMTPSession.connect` の AUTH 非対応サーバー自動フォールバック
+(空でない SMTP ユーザー名でも、サーバーが `AUTH` コマンド自体を拒否
+[502/503/504系] した場合は認証なしで再接続する) を検証するには、AUTH を
+要求しない上の `mailpit` だけでは不十分 — 「AUTH に対応しているサーバー
+では今まで通り認証が効く」ことを実サーバーで確認するための、認証必須の
+2つ目の Mailpit インスタンスも `compose.yml` に含まれています。
+
+| プロトコル | ホスト:ポート |
+|---|---|
+| SMTP (AUTH 必須) | `localhost:1026` |
+| Web UI | http://localhost:8026 |
+| REST API | http://localhost:8026/api/v1/ |
+
+認証情報は `dev/mailstack/mailpit-auth/users.txt` (htpasswd bcrypt 形式)
+に平文コメントで記載: ユーザー名 `smtpauth` / パスワード `smtpauth1234`
+(使い捨ての開発用ダミー資格情報、localhost 外には出ません — 上の Dovecot
+テストユーザーと同じ位置づけ)。
+
 ## サンプルメールの投入
 
 ```sh

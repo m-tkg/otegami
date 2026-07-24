@@ -31,6 +31,43 @@ struct SMTPIntegrationTests {
     /// exercising the dev mailstack.
     private static let mailpitAuth = MailAuth.password(username: "", password: "")
 
+    /// UX-bug regression (a real user hit this against this exact server):
+    /// a *non-blank* SMTP username used to always trigger a real `AUTH`
+    /// attempt, which the dev mailstack's no-auth `mailpit` rejects
+    /// outright (`502 5.5.1 Command not implemented`) — failing the
+    /// connection test/send even though this server works fine
+    /// unauthenticated. `MailCoreSMTPSession.connect`'s AUTH-not-supported
+    /// fallback (see its doc comment) now retries without auth on exactly
+    /// that rejection, so this must now succeed instead of throwing —
+    /// unlike `mailpitAuth` above (blank username), this exercises the new
+    /// fallback path itself, not the pre-existing blank-username skip.
+    @Test("a non-blank SMTP username against Mailpit (no AUTH support) still connects, via the AUTH-not-supported fallback")
+    func nonBlankUsernameAgainstNoAuthServerStillConnects() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let smtpConfig = SMTPConfig(host: env.host, port: 1025, security: .plain)
+        let session = MailCoreSMTPSession(config: smtpConfig)
+        // A real-looking username/password, deliberately not blank —
+        // Mailpit has no concept of a matching credential, so any
+        // rejection it produces has to come from "I don't do AUTH at
+        // all", not "these credentials are wrong".
+        try await session.connect(auth: .password(username: "test1@otegami.test", password: "test1234"))
+        defer { Task { await session.disconnect() } }
+
+        let uniqueMarker = UUID().uuidString.prefix(8)
+        let subject = "otegami SMTP AUTH フォールバック統合テスト \(uniqueMarker)"
+        let draft = ComposeDraft(
+            from: EmailAddress(address: "test1@otegami.test"),
+            to: [EmailAddress(address: "recipient@otegami.test")],
+            subject: subject,
+            plainTextBody: "AUTH 非対応サーバーへの、ユーザー名入りでの送信フォールバックテストです。"
+        )
+        let built = MailCoreMessageBuilder.build(draft)
+        try await session.sendMessage(messageData: built.data, from: draft.from, recipients: draft.to)
+
+        let found = try await MailpitClient.pollForMessage(withSubjectContaining: String(uniqueMarker), timeout: 15)
+        #expect(found?.subject == subject)
+    }
+
     @Test("sends a Japanese-subject message via Mailpit SMTP, visible over Mailpit's REST API")
     func sendsMessageVisibleInMailpit() async throws {
         let env = try #require(TestIMAPEnvironment.primary)

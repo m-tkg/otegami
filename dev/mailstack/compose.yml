@@ -22,3 +22,27 @@ services:
     volumes:
       - ./data/mailpit:/data
     restart: unless-stopped
+
+  # Second Mailpit instance, AUTH-required (unlike `mailpit` above, which
+  # accepts unauthenticated SMTP) — exercises MailCoreSMTPSession.connect's
+  # real-credentials path (SMTPIntegrationTests.SMTPAuthIntegrationTests):
+  # correct creds succeed, no/wrong creds fail with a clear error, and a
+  # server that *does* support AUTH never takes the no-auth fallback path
+  # meant for `mailpit`'s kind of server. See mailpit-auth/users.txt for the
+  # test credential.
+  mailpit-auth:
+    image: axllent/mailpit:latest
+    ports:
+      - "1026:1025"    # SMTP
+      - "8026:8025"    # Web UI + REST API
+    environment:
+      - MP_DATABASE=/data/mailpit.db
+      - MP_SMTP_AUTH_FILE=/mailpit-auth/users.txt
+      # No TLS in this dev stack (matches the plain `mailpit`/Dovecot
+      # setup above) — Mailpit refuses PLAIN/LOGIN AUTH over a cleartext
+      # connection unless explicitly told this is acceptable.
+      - MP_SMTP_AUTH_ALLOW_INSECURE=1
+    volumes:
+      - ./data/mailpit-auth:/data
+      - ./mailpit-auth:/mailpit-auth:ro
+    restart: unless-stopped

@@ -1,0 +1,11 @@
+# Static test credential for the auth-enabled second Mailpit instance
+# (`mailpit-auth` in compose.yml) — verifies MailCoreSMTPSession.connect
+# against a real server that *does* require AUTH, as opposed to the
+# default `mailpit` service (no auth at all), which is what
+# MailCoreSMTPSession's AUTH-not-supported fallback exists for in the
+# first place. htpasswd bcrypt format (`--smtp-auth-file`'s expected
+# shape). Throwaway dev/test data, never exposed outside localhost —
+# same posture as ../dovecot/users' plaintext test passwords.
+#
+# username: smtpauth   password: smtpauth1234
+smtpauth:$2y$05$BMwKysrxzy2yBrTMzevCkuOkyBEba9rCkpHBFJhUfEbQIHWefLRpe
