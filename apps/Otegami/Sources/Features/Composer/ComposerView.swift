@@ -231,8 +231,7 @@ struct ComposerView: View {
             // MessageView.markAsReadIfNeeded/MessageListView's swipe
             // actions — harmless if offline, the op just waits for the
             // next successful connection.
-            if let password = try? environment.credentialStore.password(forAccountId: account.id) {
-                let auth = MailAuth.password(username: account.imapUsername, password: password)
+            if let auth = try? await environment.auth(for: account) {
                 Task { _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth) }
             }
         } catch {

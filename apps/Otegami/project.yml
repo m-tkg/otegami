@@ -36,6 +36,13 @@ targets:
       path: Generated/Info.plist
       properties:
         CFBundleDisplayName: Otegami
+        # M6: Gmail OAuth Client ID, sourced from the `GOOGLE_OAUTH_CLIENT_ID`
+        # xcconfig build setting (`Config/Shared.xcconfig` defines it empty;
+        # `Config/Local.xcconfig`, git-ignored, is where a builder sets
+        # their own — see docs/oauth-setup.md). `GoogleOAuthConfig` reads
+        # this key at runtime and treats empty/unset as "Gmail unavailable
+        # in this build".
+        GOOGLE_OAUTH_CLIENT_ID: $(GOOGLE_OAUTH_CLIENT_ID)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -73,6 +80,8 @@ targets:
         product: OtegamiRelayAPI
       - package: OtegamiKit
         product: MailTransportMailCore
+      - package: OtegamiKit
+        product: GoogleOAuth
 
   # iOS-only: drives the real app (XCUIApplication) against the dev
   # mailstack for M1's automated simulator verification. See

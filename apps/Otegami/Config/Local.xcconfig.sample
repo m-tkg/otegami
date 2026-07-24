@@ -6,5 +6,8 @@
 // DEVELOPMENT_TEAM = YOUR_TEAM_ID
 // OTEGAMI_BUNDLE_ID = com.example.otegami
 //
-// See PENDING.md for the Google OAuth Client ID needed starting at M6.
+// Google OAuth Client ID (M6, Gmail account support). See
+// docs/oauth-setup.md for how to obtain one (GCP project → OAuth consent
+// screen → iOS-type OAuth client) and PENDING.md for the current status.
+// Without this set, the app's "Gmail" add-account button stays disabled.
 // GOOGLE_OAUTH_CLIENT_ID = your-client-id.apps.googleusercontent.com

@@ -1,5 +1,4 @@
 import SwiftUI
-import MailTransport
 import OtegamiStore
 
 @main
@@ -151,7 +150,7 @@ struct RootView: View {
 
     private func startIdleLoops(for accounts: [AccountRecord]) async {
         for account in accounts {
-            guard let auth = authForAccount(account) else { continue }
+            guard let auth = try? await environment.auth(for: account) else { continue }
             await environment.syncCoordinator.startIdleLoop(for: account, auth: auth)
         }
     }
@@ -163,15 +162,10 @@ struct RootView: View {
     /// unrelated server event.
     private func syncAllAccountsOnce() async {
         for account in environment.accounts {
-            guard let auth = authForAccount(account) else { continue }
+            guard let auth = try? await environment.auth(for: account) else { continue }
             _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
             _ = try? await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth)
         }
-    }
-
-    private func authForAccount(_ account: AccountRecord) -> MailAuth? {
-        guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { return nil }
-        return .password(username: account.imapUsername, password: password)
     }
 
     private func restoreLastOpenedThreadIfNeeded() {

@@ -1,4 +1,5 @@
 import SwiftUI
+import GoogleOAuth
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
@@ -168,11 +169,16 @@ struct MessageListView: View {
         case .mailbox(let mailboxSelection):
             guard let account = environment.accounts.first(where: { $0.id == mailboxSelection.accountId }) else { return }
             do {
-                guard let password = try environment.credentialStore.password(forAccountId: account.id) else {
+                let auth: MailAuth
+                do {
+                    auth = try await environment.auth(for: account)
+                } catch TokenStoreError.reauthenticationRequired {
+                    syncErrorMessage = "再認証が必要です。設定からアカウントを再認証してください。"
+                    return
+                } catch {
                     syncErrorMessage = "保存された資格情報が見つかりません。アカウントを再追加してください。"
                     return
                 }
-                let auth = MailAuth.password(username: account.imapUsername, password: password)
                 let mailboxPath = try await environment.database.dbWriter.read { db in
                     try MailboxRecord.fetchOne(db, key: mailboxSelection.mailboxId)?.path
                 }
@@ -187,8 +193,7 @@ struct MessageListView: View {
             }
         case .unifiedInbox:
             for account in environment.accounts {
-                guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { continue }
-                let auth = MailAuth.password(username: account.imapUsername, password: password)
+                guard let auth = try? await environment.auth(for: account) else { continue }
                 _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
                 _ = try? await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly)
             }
@@ -269,8 +274,7 @@ struct MessageListView: View {
 
     private func replayOpQueueSoon(accountId: String) async {
         guard let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
-        guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { return }
-        let auth = MailAuth.password(username: account.imapUsername, password: password)
+        guard let auth = try? await environment.auth(for: account) else { return }
         _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
     }
 }

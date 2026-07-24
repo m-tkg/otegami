@@ -200,7 +200,10 @@ struct MessageView: View {
         guard let account = environment.accounts.first(where: { $0.id == accountId }) else {
             throw MailTransportError.notConnected
         }
-        guard let password = try environment.credentialStore.password(forAccountId: account.id) else {
+        let auth: MailAuth
+        do {
+            auth = try await environment.auth(for: account)
+        } catch {
             throw MailTransportError.authenticationFailed(underlyingDescription: "資格情報が見つかりません")
         }
         guard let mailbox = try await environment.database.dbWriter.read({ db in
@@ -212,7 +215,7 @@ struct MessageView: View {
             for: message,
             mailboxPath: mailbox.path,
             account: account,
-            auth: .password(username: account.imapUsername, password: password)
+            auth: auth
         )
     }
 
@@ -244,8 +247,7 @@ struct MessageView: View {
                     }
                 }
                 guard let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
-                guard let password = try? environment.credentialStore.password(forAccountId: account.id) else { return }
-                let auth = MailAuth.password(username: account.imapUsername, password: password)
+                guard let auth = try? await environment.auth(for: account) else { return }
                 _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
             } catch {
                 // Best-effort: the local flag update simply doesn't happen

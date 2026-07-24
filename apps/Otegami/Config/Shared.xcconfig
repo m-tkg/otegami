@@ -6,3 +6,11 @@ SWIFT_VERSION = 6.0
 SWIFT_STRICT_CONCURRENCY = complete
 MARKETING_VERSION = 1.0
 CURRENT_PROJECT_VERSION = 1
+
+// M6: Gmail OAuth Client ID. Empty by default (OSS: never checked into the
+// repo — see PENDING.md/docs/oauth-setup.md); a builder who wants Gmail
+// support sets this in the git-ignored Config/Local.xcconfig, which
+// Signing.xcconfig #includes *after* this file, so their value overrides
+// this empty default. `GoogleOAuthConfig` (app code) treats an empty/unset
+// value as "Gmail unavailable in this build" and disables the Gmail button.
+GOOGLE_OAUTH_CLIENT_ID =
