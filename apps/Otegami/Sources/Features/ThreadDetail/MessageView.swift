@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import QuickLook
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
@@ -36,14 +37,35 @@ struct MessageView: View {
 
     @State private var message: MessageRecord?
     @State private var bodyRecord: MessageBodyRecord?
+    /// M8: the mailbox path `message` lives in — resolved once during
+    /// `load()` (same `MailboxRecord` lookup `fetchBodyOverNetwork` already
+    /// does for the body itself) and kept around so the attachment section
+    /// and `HTMLMessageView`'s cid image resolver don't each need to
+    /// re-derive it.
+    @State private var mailboxPath: String?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var attachments: [AttachmentRecord] = []
+    /// M8: which attachment (by id) is currently being downloaded on-demand
+    /// — drives that row's spinner. A `Set` rather than a single optional
+    /// id since a user could plausibly tap two attachment rows in quick
+    /// succession.
+    @State private var fetchingAttachmentIds: Set<Int64> = []
+    @State private var attachmentErrorMessage: String?
+    /// M8: the attachment currently shown in the `.quickLookPreview` sheet
+    /// — `nil` means no preview is presented.
+    @State private var previewURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let message {
                 header(for: message)
                     .padding()
+                if !attachments.isEmpty {
+                    attachmentSection
+                        .padding(.horizontal)
+                        .padding(.bottom, 8)
+                }
                 Divider()
             }
             // HTML bodies scroll internally (inside `HTMLMessageView`'s own
@@ -58,6 +80,10 @@ struct MessageView: View {
         .accessibilityIdentifier("messageDetail.scrollView")
         .navigationTitle(displaySubject)
         .task(id: messageId) { await load() }
+        // M8: QuickLook, shared across platforms via SwiftUI's own
+        // modifier rather than a `QLPreviewController`/`QLPreviewPanel`
+        // wrapper per platform — see `openAttachment(_:)`'s doc comment.
+        .quickLookPreview($previewURL)
     }
 
     private var displaySubject: String {
@@ -104,6 +130,141 @@ struct MessageView: View {
         }
     }
 
+    // MARK: - Attachments (M8)
+
+    /// Inline (`cid:`-referenced) parts are excluded — those render inside
+    /// `HTMLMessageView`'s body itself (via the `otegami-cid://` scheme
+    /// handler), so listing them again here as a separate downloadable row
+    /// would be confusing/redundant. Only genuine "here's a file" parts
+    /// show up in this list.
+    private var listableAttachments: [AttachmentRecord] {
+        attachments.filter { !$0.isInline }
+    }
+
+    private var attachmentSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(listableAttachments) { attachment in
+                attachmentRow(attachment)
+            }
+            if let attachmentErrorMessage {
+                Text(attachmentErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("messageDetail.attachmentError")
+            }
+        }
+        .accessibilityIdentifier("messageDetail.attachments")
+    }
+
+    private func attachmentRow(_ attachment: AttachmentRecord) -> some View {
+        let attachmentId = attachment.id ?? 0
+        return Button {
+            Task { await openAttachment(attachment) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: Self.iconName(for: attachment))
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(attachment.filename?.isEmpty == false ? attachment.filename! : "添付ファイル")
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    Text(Self.formattedSize(attachment.size))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if fetchingAttachmentIds.contains(attachmentId) {
+                    ProgressView()
+                        .accessibilityIdentifier("messageDetail.attachment.\(attachmentId).loading")
+                } else if let localPath = attachment.localPath {
+                    // 保存 (plan: "iOS: ShareLink / fileExporter、macOS: 保存
+                    // パネル") — `ShareLink` works on both platforms (a
+                    // share sheet on iOS, `NSSharingServicePicker` — which
+                    // includes "Save to Downloads"/"Save As…" style services
+                    // — on macOS), so one cross-platform control covers
+                    // both rather than diverging per platform here.
+                    ShareLink(item: URL(fileURLWithPath: localPath)) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("messageDetail.attachment.\(attachmentId).shareButton")
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 4)
+        .accessibilityIdentifier("messageDetail.attachment.\(attachmentId)")
+    }
+
+    private static func iconName(for attachment: AttachmentRecord) -> String {
+        switch attachment.mimeType.lowercased() {
+        case "image": "photo"
+        case "video": "film"
+        case "audio": "waveform"
+        case "application" where attachment.mimeSubtype.lowercased() == "pdf": "doc.richtext"
+        default: "doc"
+        }
+    }
+
+    private static func formattedSize(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    /// Tapping an attachment row: already-downloaded (`localPath` points at
+    /// a file that still exists) opens QuickLook immediately; otherwise
+    /// fetches it first (with `fetchingAttachmentIds` driving that row's
+    /// spinner — plan: "タップ → 未取得ならスピナー付き取得 → QuickLook プレビュー"),
+    /// then opens it. `.quickLookPreview($previewURL)` (SwiftUI's own
+    /// modifier, available on both iOS and macOS since it was introduced)
+    /// is used over a hand-rolled `QLPreviewController`/`QLPreviewPanel`
+    /// wrapper per platform — simpler, and it's exactly the single-URL case
+    /// this view needs (one attachment previewed at a time, no "next/
+    /// previous" browsing across the whole attachment list).
+    private func openAttachment(_ attachment: AttachmentRecord) async {
+        guard let attachmentId = attachment.id else { return }
+        attachmentErrorMessage = nil
+
+        if let localPath = attachment.localPath, FileManager.default.fileExists(atPath: localPath) {
+            previewURL = URL(fileURLWithPath: localPath)
+            return
+        }
+        guard !fetchingAttachmentIds.contains(attachmentId) else { return }
+
+        fetchingAttachmentIds.insert(attachmentId)
+        defer { fetchingAttachmentIds.remove(attachmentId) }
+
+        do {
+            let updated = try await fetchAttachmentOverNetwork(attachment)
+            if let index = attachments.firstIndex(where: { $0.id == attachmentId }) {
+                attachments[index] = updated
+            }
+            if let localPath = updated.localPath {
+                previewURL = URL(fileURLWithPath: localPath)
+            } else {
+                attachmentErrorMessage = "添付ファイルの取得に失敗しました。"
+            }
+        } catch {
+            attachmentErrorMessage = "添付ファイルの取得に失敗しました: \(error)"
+        }
+    }
+
+    private func fetchAttachmentOverNetwork(_ attachment: AttachmentRecord) async throws -> AttachmentRecord {
+        guard let message, let mailboxPath else { throw MailTransportError.notConnected }
+        guard let account = environment.accounts.first(where: { $0.id == accountId }) else {
+            throw MailTransportError.notConnected
+        }
+        let auth: MailAuth
+        do {
+            auth = try await environment.auth(for: account)
+        } catch {
+            throw MailTransportError.authenticationFailed(underlyingDescription: "資格情報が見つかりません")
+        }
+        return try await environment.syncCoordinator.fetchAttachment(
+            attachment, messageUID: message.uid, mailboxPath: mailboxPath, account: account, auth: auth
+        )
+    }
+
     private func addressListText(_ addresses: [EmailAddress], prefix: String) -> String {
         let formatted = addresses.map { $0.name?.isEmpty == false ? "\($0.name!) <\($0.address)>" : $0.address }
         return "\(prefix): \(formatted.joined(separator: ", "))"
@@ -124,7 +285,7 @@ struct MessageView: View {
             }
         } else if let bodyRecord {
             if let html = bodyRecord.html, !html.isEmpty {
-                HTMLMessageView(html: html)
+                HTMLMessageView(html: html, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath)
                     .accessibilityIdentifier("messageDetail.htmlBody")
             } else if let plainText = bodyRecord.plainText, !plainText.isEmpty {
                 ScrollView {
@@ -154,6 +315,10 @@ struct MessageView: View {
         errorMessage = nil
         bodyRecord = nil
         message = nil
+        mailboxPath = nil
+        attachments = []
+        attachmentErrorMessage = nil
+        previewURL = nil
 
         guard let loadedMessage = try? await environment.database.dbWriter.read({ db in
             try MessageRecord.fetchOne(db, key: messageId)
@@ -162,6 +327,10 @@ struct MessageView: View {
             return
         }
         message = loadedMessage
+        mailboxPath = try? await environment.database.dbWriter.read { db in
+            try MailboxRecord.fetchOne(db, key: loadedMessage.mailboxId)?.path
+        }
+        attachments = (try? await fetchAttachmentRecords(messageId: messageId)) ?? []
 
         if loadedMessage.bodyState == .fetched, let existing = try? await fetchBodyRecord(messageId: messageId) {
             bodyRecord = existing
@@ -175,6 +344,11 @@ struct MessageView: View {
         do {
             try await fetchBodyOverNetwork(message: loadedMessage)
             bodyRecord = try await fetchBodyRecord(messageId: messageId)
+            // M2's body fetch also replaces `attachment` rows for this
+            // message (`BodyFetcher.fetchBody`) — re-read so a message
+            // opened for the first time shows its attachment list too, not
+            // just the (empty, pre-fetch) snapshot read above.
+            attachments = (try? await fetchAttachmentRecords(messageId: messageId)) ?? []
             markAsReadIfNeeded()
         } catch {
             // Offline (or any other network failure): fall back to
@@ -196,6 +370,12 @@ struct MessageView: View {
         }
     }
 
+    private func fetchAttachmentRecords(messageId: Int64) async throws -> [AttachmentRecord] {
+        try await environment.database.dbWriter.read { db in
+            try AttachmentRecord.filter(Column("messageId") == messageId).order(Column("id")).fetchAll(db)
+        }
+    }
+
     private func fetchBodyOverNetwork(message: MessageRecord) async throws {
         guard let account = environment.accounts.first(where: { $0.id == accountId }) else {
             throw MailTransportError.notConnected
@@ -206,14 +386,12 @@ struct MessageView: View {
         } catch {
             throw MailTransportError.authenticationFailed(underlyingDescription: "資格情報が見つかりません")
         }
-        guard let mailbox = try await environment.database.dbWriter.read({ db in
-            try MailboxRecord.fetchOne(db, key: message.mailboxId)
-        }) else {
+        guard let mailboxPath else {
             throw MailTransportError.mailboxNotFound(path: "")
         }
         try await environment.syncCoordinator.fetchBody(
             for: message,
-            mailboxPath: mailbox.path,
+            mailboxPath: mailboxPath,
             account: account,
             auth: auth
         )

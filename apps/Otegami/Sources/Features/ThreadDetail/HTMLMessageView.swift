@@ -1,6 +1,10 @@
 import SwiftUI
 import WebKit
+import GRDB
+import MailTransport
 import OtegamiCore
+import OtegamiStore
+import SyncEngine
 
 /// Renders an HTML message body: a `WKWebView` with page JavaScript
 /// disabled and external (`http`/`https`) resources blocked by default via
@@ -16,9 +20,21 @@ import OtegamiCore
 /// enabled just to answer "how tall is this content". `MessageView` gives
 /// this view the remaining space below its (non-scrolling) header instead
 /// of nesting it inside its own `ScrollView`.
+///
+/// M8: `accountId`/`messageId`/`mailboxPath` back a `WKURLSchemeHandler`
+/// for `cid:` inline images (`CIDSchemeHandler`, registered on the web
+/// view's configuration below) — kept entirely independent of
+/// `allowsExternalContent`/the `WKContentRuleList` (which only ever
+/// matches `^https?://`), so an inline image always renders regardless of
+/// whether the external-image banner has been dismissed, per the plan's
+/// "外部画像ブロックとは独立に動くこと".
 struct HTMLMessageView: View {
     let html: String
+    let accountId: String
+    let messageId: Int64
+    let mailboxPath: String?
 
+    @Environment(AppEnvironment.self) private var environment
     @State private var allowsExternalContent = false
 
     private var hasExternalContent: Bool {
@@ -39,11 +55,31 @@ struct HTMLMessageView: View {
                 .accessibilityIdentifier("messageDetail.showImagesBanner")
             }
 
-            HTMLWebViewRepresentable(html: html, allowsExternalContent: allowsExternalContent)
-                .accessibilityIdentifier("messageDetail.htmlWebView")
+            HTMLWebViewRepresentable(
+                html: html,
+                allowsExternalContent: allowsExternalContent,
+                cidContext: CIDResolutionContext(
+                    environment: environment, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath
+                )
+            )
+            .accessibilityIdentifier("messageDetail.htmlWebView")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
+
+/// Everything `CIDSchemeHandler` needs to resolve a `cid:` reference to
+/// bytes: which message's `attachment` rows to search, and how to fetch one
+/// on demand if it isn't downloaded yet. A plain struct (not passed as
+/// separate parameters down through the representable/coordinator/handler
+/// chain) purely to keep those signatures short — `AppEnvironment` itself
+/// is a `@MainActor` reference type, so capturing it here doesn't change
+/// its isolation.
+struct CIDResolutionContext {
+    let environment: AppEnvironment
+    let accountId: String
+    let messageId: Int64
+    let mailboxPath: String?
 }
 
 /// The full HTML document loaded into the web view: wraps the message's
@@ -85,15 +121,20 @@ enum HTMLDocumentBuilder {
 }
 
 /// A `WKWebViewConfiguration` with page-authored JavaScript disabled
-/// (plan: "JS 無効"). Set once at configuration time — rather than per
-/// navigation via the delegate's `decidePolicyFor:preferences:` — since
-/// every load this view ever does should be equally restricted; there's
-/// no case where a message body should be allowed to run script.
-private func makeWebViewConfiguration() -> WKWebViewConfiguration {
+/// (plan: "JS 無効") and, when `cidHandler` is provided, the
+/// `otegami-cid://` scheme registered for inline `cid:` image resolution
+/// (M8). Set once at configuration time — rather than per navigation via
+/// the delegate's `decidePolicyFor:preferences:` — since every load this
+/// view ever does should be equally restricted; there's no case where a
+/// message body should be allowed to run script.
+private func makeWebViewConfiguration(cidHandler: CIDSchemeHandler?) -> WKWebViewConfiguration {
     let configuration = WKWebViewConfiguration()
     let preferences = WKWebpagePreferences()
     preferences.allowsContentJavaScript = false
     configuration.defaultWebpagePreferences = preferences
+    if let cidHandler {
+        configuration.setURLSchemeHandler(cidHandler, forURLScheme: CIDURLRewriter.scheme)
+    }
     return configuration
 }
 
@@ -103,11 +144,12 @@ import UIKit
 struct HTMLWebViewRepresentable: UIViewRepresentable {
     let html: String
     let allowsExternalContent: Bool
+    let cidContext: CIDResolutionContext
 
-    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator() }
+    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext) }
 
     func makeUIView(context: Context) -> WKWebView {
-        let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration())
+        let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
         webView.navigationDelegate = context.coordinator
         webView.isOpaque = false
         webView.backgroundColor = .clear
@@ -117,7 +159,7 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        context.coordinator.reloadIfNeeded(html: html, allowsExternalContent: allowsExternalContent, into: webView)
+        context.coordinator.reloadIfNeeded(html: html, allowsExternalContent: allowsExternalContent, cidContext: cidContext, into: webView)
     }
 }
 #elseif os(macOS)
@@ -126,11 +168,12 @@ import AppKit
 struct HTMLWebViewRepresentable: NSViewRepresentable {
     let html: String
     let allowsExternalContent: Bool
+    let cidContext: CIDResolutionContext
 
-    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator() }
+    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext) }
 
     func makeNSView(context: Context) -> WKWebView {
-        let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration())
+        let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
         webView.navigationDelegate = context.coordinator
         webView.underPageBackgroundColor = .clear
         context.coordinator.load(html: html, allowsExternalContent: allowsExternalContent, into: webView)
@@ -138,7 +181,7 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        context.coordinator.reloadIfNeeded(html: html, allowsExternalContent: allowsExternalContent, into: webView)
+        context.coordinator.reloadIfNeeded(html: html, allowsExternalContent: allowsExternalContent, cidContext: cidContext, into: webView)
     }
 }
 #endif
@@ -158,10 +201,27 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
 
     private static let ruleListIdentifier = "otegami.blockAllRemoteResources"
 
+    /// M8: the `WKURLSchemeHandler` for `otegami-cid://`, created once
+    /// (`WKWebViewConfiguration.setURLSchemeHandler` can only be called
+    /// before the web view's first load — it isn't something `load(html:
+    /// allowsExternalContent:into:)` could re-register per navigation the
+    /// way the content rule list is re-applied). `mailboxPath` in
+    /// particular can still be `nil` on the coordinator's very first
+    /// `init` in principle (see `HTMLMessageView`'s doc comment for why
+    /// that shouldn't actually happen given how `MessageView.load()`
+    /// sequences its state), so `updateContext` keeps it current on every
+    /// `reloadIfNeeded` regardless.
+    let cidHandler: CIDSchemeHandler?
+
+    init(cidContext: CIDResolutionContext) {
+        self.cidHandler = CIDSchemeHandler(context: cidContext)
+    }
+
     private var lastLoadedHTML: String?
     private var lastAllowsExternalContent: Bool?
 
-    func reloadIfNeeded(html: String, allowsExternalContent: Bool, into webView: WKWebView) {
+    func reloadIfNeeded(html: String, allowsExternalContent: Bool, cidContext: CIDResolutionContext, into webView: WKWebView) {
+        cidHandler?.updateContext(cidContext)
         guard html != lastLoadedHTML || allowsExternalContent != lastAllowsExternalContent else { return }
         load(html: html, allowsExternalContent: allowsExternalContent, into: webView)
     }
@@ -170,7 +230,13 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         lastLoadedHTML = html
         lastAllowsExternalContent = allowsExternalContent
 
-        let document = HTMLDocumentBuilder.wrap(bodyHTML: html)
+        // M8: rewrite cid: references to the otegami-cid:// scheme *before*
+        // wrapping — independent of `allowsExternalContent`/the content
+        // rule list below, which only ever matches `^https?://` and so
+        // never touches this custom scheme either way (plan: "外部画像
+        // ブロックとは独立に動くこと").
+        let cidRewrittenHTML = CIDURLRewriter.rewrite(html: html)
+        let document = HTMLDocumentBuilder.wrap(bodyHTML: cidRewrittenHTML)
 
         applyContentRuleList(blocked: !allowsExternalContent, to: webView) { [weak webView] in
             guard let webView else { return }
