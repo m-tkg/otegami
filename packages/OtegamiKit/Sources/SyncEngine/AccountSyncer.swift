@@ -118,59 +118,87 @@ public actor AccountSyncer {
         for info in syncableInfos {
             guard let record = mailboxRecordsByPath[info.path], let mailboxId = record.id else { continue }
 
-            progress.selectedMailboxPath = info.path
-            onProgress?(progress)
+            // One mailbox's `select`/`fetchEnvelopes`/write failing (a
+            // transient network hiccup, a server-side quirk on a mailbox
+            // this account happens to have — much more likely over a real
+            // network path than the dev mailstack's loopback connection)
+            // must not abort every *other* mailbox's sync, nor skip the
+            // `ThreadAssigner` pass below for whatever *did* sync
+            // successfully. Before this `do`/`catch`, any single mailbox
+            // throwing partway through this loop propagated all the way
+            // out of `performInitialSync` — silently, since callers invoke
+            // this via `try?` (`AccountSetupView.saveAccount`,
+            // `AppEnvironment`) — leaving every envelope already upserted
+            // by an *earlier* mailbox in this same loop permanently
+            // invisible: `message.threadId` stays `nil` forever (the final
+            // `ThreadAssigner.assignAllUnthreaded` call was never reached),
+            // and `ThreadQuery`'s `EXISTS (... message.threadId = thread.id
+            // ...)` join never matches a null `threadId`, so both the
+            // unified inbox and the account's own mailbox view show
+            // "メッセージがありません" even though the messages are durably in
+            // the database and the mailbox's own `uidNext`/`uidValidity`
+            // (persisted per-mailbox, *inside* this loop, before this
+            // point) already looks fully synced on every later resync.
+            do {
+                progress.selectedMailboxPath = info.path
+                onProgress?(progress)
 
-            let status = try await session.select(info.path)
+                let status = try await session.select(info.path)
 
-            if status.messageCount > 0, status.uidNext > 1 {
-                let lowerBound = Self.initialSyncLowerBound(uidNext: status.uidNext, window: Self.initialSyncWindow)
-                let range = UIDRange(lowerBound: lowerBound, upperBound: nil)
-                let envelopes = try await session.fetchEnvelopes(
-                    mailboxPath: info.path,
-                    uids: range,
-                    batchSize: Self.fetchBatchSize
-                )
+                if status.messageCount > 0, status.uidNext > 1 {
+                    let lowerBound = Self.initialSyncLowerBound(uidNext: status.uidNext, window: Self.initialSyncWindow)
+                    let range = UIDRange(lowerBound: lowerBound, upperBound: nil)
+                    let envelopes = try await session.fetchEnvelopes(
+                        mailboxPath: info.path,
+                        uids: range,
+                        batchSize: Self.fetchBatchSize
+                    )
 
-                try await database.dbWriter.write { [account] db in
-                    for envelope in envelopes {
-                        try Self.upsert(envelope: envelope, mailboxId: mailboxId, accountId: account.id, db: db)
+                    try await database.dbWriter.write { [account] db in
+                        for envelope in envelopes {
+                            try Self.upsert(envelope: envelope, mailboxId: mailboxId, accountId: account.id, db: db)
+                        }
                     }
+
+                    progress.envelopesFetched += envelopes.count
+                    onProgress?(progress)
                 }
 
-                progress.envelopesFetched += envelopes.count
-                onProgress?(progress)
-            }
+                // Captured as a `let` snapshot rather than mutated directly
+                // inside the closure: `DatabaseWriter.write`'s closure is
+                // `@Sendable`, and mutating a captured `var` across a Sendable
+                // closure boundary is rejected under Swift 6 strict
+                // concurrency even though `AccountSyncer` itself is
+                // actor-isolated.
+                let syncedRecord = record
+                try await database.dbWriter.write { db in
+                    var updated = syncedRecord
+                    updated.uidValidity = Int64(status.uidValidity)
+                    updated.uidNext = Int64(status.uidNext)
+                    updated.highestModSeq = Int64(status.highestModSeq)
+                    updated.messageCount = status.messageCount
+                    updated.lastSyncedAt = Date()
+                    try updated.update(db)
+                }
 
-            // Captured as a `let` snapshot rather than mutated directly
-            // inside the closure: `DatabaseWriter.write`'s closure is
-            // `@Sendable`, and mutating a captured `var` across a Sendable
-            // closure boundary is rejected under Swift 6 strict
-            // concurrency even though `AccountSyncer` itself is
-            // actor-isolated.
-            let syncedRecord = record
-            try await database.dbWriter.write { db in
-                var updated = syncedRecord
-                updated.uidValidity = Int64(status.uidValidity)
-                updated.uidNext = Int64(status.uidNext)
-                updated.highestModSeq = Int64(status.highestModSeq)
-                updated.messageCount = status.messageCount
-                updated.lastSyncedAt = Date()
-                try updated.update(db)
-            }
-
-            if info.role == .inbox {
-                // Best-effort: `prefetchRecent` already swallows individual
-                // message failures, and initial sync itself shouldn't fail
-                // just because prefetch couldn't run at all (e.g. a
-                // mid-sync disconnect) — the message list still renders
-                // fine with bodies fetched lazily on open instead.
-                progress.bodiesFetched = (try? await bodyFetcher.prefetchRecent(
-                    mailboxId: mailboxId,
-                    mailboxPath: info.path,
-                    session: session
-                )) ?? 0
-                onProgress?(progress)
+                if info.role == .inbox {
+                    // Best-effort: `prefetchRecent` already swallows individual
+                    // message failures, and initial sync itself shouldn't fail
+                    // just because prefetch couldn't run at all (e.g. a
+                    // mid-sync disconnect) — the message list still renders
+                    // fine with bodies fetched lazily on open instead.
+                    progress.bodiesFetched = (try? await bodyFetcher.prefetchRecent(
+                        mailboxId: mailboxId,
+                        mailboxPath: info.path,
+                        session: session
+                    )) ?? 0
+                    onProgress?(progress)
+                }
+            } catch {
+                // Move on to the next mailbox; see the doc comment above
+                // this `do` for why one mailbox's failure shouldn't cost
+                // every other mailbox its threading pass.
+                continue
             }
         }
 
@@ -262,17 +290,29 @@ public actor AccountSyncer {
         var combined = MailboxSyncer.Progress()
         for info in targets {
             guard let record = mailboxRecordsByPath[info.path] else { continue }
-            let (_, progress) = try await mailboxSyncer.incrementalSync(
-                mailboxRecord: record,
-                mailboxPath: info.path,
-                accountId: account.id,
-                session: session,
-                capabilities: capabilities
-            )
-            combined.newMessages += progress.newMessages
-            combined.flagChanges += progress.flagChanges
-            combined.deletedMessages += progress.deletedMessages
-            combined.didFullResync = combined.didFullResync || progress.didFullResync
+            // Same reasoning as `performInitialSync`'s per-mailbox `do`/
+            // `catch`: one mailbox failing to differentially sync
+            // shouldn't abort every other mailbox in `targets`, nor skip
+            // the `ThreadAssigner` pass below — this loop is exactly the
+            // self-heal path a message stuck with `threadId == nil` (e.g.
+            // from a `performInitialSync` that hit this same situation)
+            // relies on, so it needs to keep reaching that final call even
+            // when one mailbox in `targets` errors out.
+            do {
+                let (_, progress) = try await mailboxSyncer.incrementalSync(
+                    mailboxRecord: record,
+                    mailboxPath: info.path,
+                    accountId: account.id,
+                    session: session,
+                    capabilities: capabilities
+                )
+                combined.newMessages += progress.newMessages
+                combined.flagChanges += progress.flagChanges
+                combined.deletedMessages += progress.deletedMessages
+                combined.didFullResync = combined.didFullResync || progress.didFullResync
+            } catch {
+                continue
+            }
         }
 
         if !targets.isEmpty {

@@ -160,6 +160,67 @@ struct AccountSyncerTests {
         #expect(uids.last == Int64(totalMessages))
     }
 
+    @Test("a later mailbox failing to select doesn't leave an earlier mailbox's messages unthreaded")
+    func laterMailboxFailureDoesNotBlockEarlierMailboxThreading() async throws {
+        // Regression test for a real-device bug: `performInitialSync`
+        // iterates every selectable mailbox in one loop and only calls
+        // `ThreadAssigner.assignAllUnthreaded` once, at the very end. If a
+        // *later* mailbox's `select` throws (a transient network error —
+        // far more likely on a real Wi-Fi path than the dev mailstack's
+        // loopback, which is why this didn't reproduce in simulator
+        // testing), the whole function used to throw before ever reaching
+        // that final call, silently (callers use `try?`) leaving every
+        // envelope an *earlier* mailbox (INBOX here) already fetched
+        // permanently unthreaded — invisible in both the unified inbox and
+        // the account's own mailbox view, even though the mailbox's own
+        // `uidNext` already looks fully synced.
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        // No SPECIAL-USE role required for the repro — any second
+        // selectable mailbox the fake server "fails" to SELECT works.
+        let junk = MailboxInfo(path: "Junk", displayPath: "Junk", role: .junk, attributes: [])
+        let envelopes = [makeInbox(uid: 1, subject: "ようこそ otegami へ")]
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inbox, junk],
+            envelopesByPath: ["INBOX": envelopes],
+            // Deliberately omits "Junk" from `statusByPath`: FakeIMAPSession
+            // .status(_:) throws `.mailboxNotFound` for any path not in this
+            // map, which `select(_:)` calls through to — scripting exactly
+            // a mid-loop SELECT failure without needing a dedicated
+            // failure-injection field.
+            statusByPath: [
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1),
+            ]
+        )
+
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: script)
+        }
+
+        // Must not throw: a mailbox's own sync error is swallowed per-
+        // mailbox now, not propagated out of the whole initial sync.
+        let progress = try await syncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+        #expect(progress.envelopesFetched == 1)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.count == 1)
+        let message = try #require(messages.first)
+        #expect(message.threadId != nil)
+
+        let inboxMailboxId = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "INBOX").fetchOne(db)?.id
+            }
+        )
+        let threads = try await database.dbWriter.read { db in
+            try ThreadQuery.request(mailboxId: inboxMailboxId).fetchAll(db)
+        }
+        #expect(threads.count == 1)
+    }
+
     @Test("initialSyncLowerBound math")
     func initialSyncLowerBoundMath() {
         // Fewer messages than the window: start from UID 1.
