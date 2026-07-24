@@ -151,7 +151,8 @@ public actor MailboxSyncer {
                 mailboxId: mailboxId,
                 mailboxPath: mailboxPath,
                 accountId: accountId,
-                session: session
+                session: session,
+                status: status
             )
         }
 
@@ -224,11 +225,33 @@ public actor MailboxSyncer {
     /// upserts the results, then treats any locally-stored UID that
     /// *didn't* come back as server-side expunged and deletes it. Returns
     /// the number of messages deleted this way.
+    ///
+    /// Real-device follow-up investigation (docs/verify.md, "実機バグ:
+    /// メッセージ一覧が起動ごとに出たり出なかったりする"): this diff is only as
+    /// trustworthy as `refetched` — a single dropped-mid-batch network error
+    /// already throws (`fetchEnvelopesBatch` propagates it, and this whole
+    /// function's caller-side `do`/`catch` in `AccountSyncer
+    /// .performIncrementalSync` skips the mailbox without deleting
+    /// anything), but a FETCH round trip that comes back *empty* without
+    /// throwing — plausible on a flaky real-world connection where the
+    /// underlying transport surfaces "no error, no data" instead of a
+    /// clean failure — would otherwise read as "every locally-known UID was
+    /// expunged" and mass-delete a mailbox's entire synced window (cascading
+    /// to `thread` rows too) even though nothing was actually deleted
+    /// server-side. `status` (this pass's own fresh `SELECT`) is the guard:
+    /// if it reports the mailbox still has messages but this refetch came
+    /// back with none at all, that combination is far more likely a
+    /// degraded/partial round trip than a real "expunge everything" event,
+    /// so this bails out (no deletion, `progress.deletedMessages == 0`) the
+    /// same non-destructive way an outright thrown error already would —
+    /// the next incremental sync gets another chance once the connection
+    /// recovers.
     private func refetchAndDiffFlags(
         mailboxId: Int64,
         mailboxPath: String,
         accountId: String,
-        session: any IMAPSessionProtocol
+        session: any IMAPSessionProtocol,
+        status: MailboxStatus
     ) async throws -> Int {
         let localUIDs = try await database.dbWriter.read { db in
             try Int64.fetchAll(db, sql: "SELECT uid FROM message WHERE mailboxId = ?", arguments: [mailboxId])
@@ -240,6 +263,8 @@ public actor MailboxSyncer {
             uids: UIDRange(lowerBound: UInt32(minUID), upperBound: nil),
             batchSize: AccountSyncer.fetchBatchSize
         )
+        guard !(refetched.isEmpty && status.messageCount > 0) else { return 0 }
+
         try await database.dbWriter.write { db in
             for envelope in refetched {
                 try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)

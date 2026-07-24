@@ -182,6 +182,56 @@ struct MailboxSyncerTests {
         #expect(messages[0].flags.contains(.seen))
     }
 
+    @Test("non-CONDSTORE flag sync does not mass-delete when the refetch comes back empty but the mailbox still reports messages")
+    func nonCondstoreFlagSyncDoesNotMassDeleteOnEmptyRefetch() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [
+                    makeEnvelope(uid: 1, subject: "1通目"),
+                    makeEnvelope(uid: 2, subject: "2通目"),
+                    makeEnvelope(uid: 3, subject: "3通目"),
+                ]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 4, highestModSeq: 0, messageCount: 3)]
+            )
+        )
+
+        // Real-device follow-up (docs/verify.md's "実機バグ: メッセージ一覧が
+        // 起動ごとに出たり出なかったりする"): a degraded/partial round trip on
+        // a flaky connection can come back with zero envelopes without
+        // throwing, even though the mailbox is plainly not empty (STATUS
+        // still reports 3 messages) — this must not be read as "every
+        // locally-known UID was expunged".
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": []],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 4, highestModSeq: 0, messageCount: 3)],
+            capabilitiesToReport: []
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.deletedMessages == 0)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db).sorted { $0.uid < $1.uid } }
+        #expect(messages.map(\.uid) == [1, 2, 3])
+
+        // The still-threaded messages must still be reachable via
+        // `ThreadQuery` too, not just present as orphaned `message` rows —
+        // this is exactly the "data is in the DB but the list renders
+        // empty" symptom the bug report describes.
+        let threadedCount = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("threadId") != nil).fetchCount(db)
+        }
+        #expect(threadedCount == 3)
+    }
+
     // MARK: (c) uidValidity change
 
     @Test("a uidValidity change discards local messages and re-syncs the recent window from scratch")
