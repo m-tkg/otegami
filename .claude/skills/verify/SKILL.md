@@ -293,3 +293,26 @@ detail view:
    to scroll to it), not a simulator quirk. Worth checking for on *any*
    `LazyVStack`/`LazyVGrid` where the row a test (or a user) cares about
    isn't necessarily the first one in list order.
+
+## M6: screenshotting non-persisted UI (sheets that aren't in GRDB)
+
+`scripts/verify-ios-m5.sh` and earlier all screenshot *after* the XCUITest
+process exits — safe because what they're capturing (an account list, a
+message list) is GRDB-persisted, so a fresh `app.launch()` shows the same
+thing the test just drove the app into. `scripts/verify-ios-m6.sh` needed
+to screenshot `AccountTypeSelectionView`/`ICloudAccountSetupView`, neither
+of which is persisted (they're pure navigation/sheet state) — capturing
+after the test process exits just shows whatever's underneath (the empty
+sidebar) instead. Fix: the target test method itself holds the screen up
+with `Thread.sleep(forTimeInterval: 4)` right before returning, and the
+wrapping shell script screenshots *during* that window from a background
+subshell running concurrently with `xcodebuild test`. A single fixed-delay
+screenshot (`sleep 10 && screenshot`) proved too timing-sensitive in
+practice — confirmed by a manual debug run that took one screenshot per
+second for 20s and inspected which frames actually showed the sheet: the
+visible window landed anywhere from roughly t=6s to t=15s depending on
+xcodebuild/simulator startup variance run to run, so a single guess could
+miss it entirely (and did, on one otherwise-passing run). The robust
+version repeatedly overwrites the same output file every second across a
+window wide enough to almost certainly land inside the target screen's
+visible time, rather than trying to predict one exact moment.
