@@ -1032,3 +1032,119 @@ mailstack インスタンス固有の既存の不具合/汚れた状態である
 も拾われるなど、調査中に紛らわしい挙動もあった)。今回のタスクでは
 深追いしていない — 次にこのテストを触る際の既知の注意点として記録
 しておく。
+
+## 実機バグ: 初期同期は成功しているのにメッセージ一覧が空のまま
+
+実機 (iPhone, iOS 26/27) でアカウント登録直後、統合受信トレイ・アカウント
+直下の INBOX のどちらも「メッセージがありません 再同期を試してください」
+のまま — にもかかわらず Dovecot 側ログでは UID FETCH が完了しており、
+以降の再同期も INBOX を SELECT して「新着なし」と正しく判断していた
+(= `mailbox.uidNext` は DB に永続化されている) というユーザー報告への対応。
+
+### 調査で切り分けたこと
+
+- **iCloud KVS reconcile (M11) の DELETE→INSERT 仮説は棄却**:
+  `AccountCloudSyncEngine.reconcile()`/`CloudAccountDirectory.updateFromCloud`
+  を読むと、既存アカウントとの last-writer-wins 上書きは `AccountRecord`
+  の各カラムに対する `UPDATE` のみで `id` には触れず、`mailbox`/`message`
+  の外部キーが指す `accountId` はどのパスでも変化しない。`insertFromCloud`
+  はローカルに存在しない `accountId` の場合にしか発火しない。ローカル→
+  cloud への push (`pushLocalChange`) 直後に自分自身の書き込みが
+  `didChangeExternallyNotification` としてエコーバックされても、
+  再度の `reconcile()` は同じ `accountId` を突き合わせて no-op か
+  `UPDATE` になるだけで、`mailbox`/`message` のカスケード削除は
+  発生し得ない。
+- **XCUITest でユーザーの手順 (SMTP ユーザー名欄に値を入力した状態での
+  SMTP接続テスト含む) をシミュレータ上で忠実に再現したが再現しなかった**
+  — dev mailstack 相手の初期同期後、メッセージは正常に一覧表示された。
+- 実機 (`xcrun devicectl`、`masakiPhone17`) が本セッション中つながって
+  いたため、`devicectl device copy from --domain-type
+  appGroupDataContainer` でアプリの共有コンテナ (`AppDatabase.makeShared`
+  が DB を置く場所) を覗こうとしたが、`otegami.sqlite` は App Group
+  コンテナの**ルート直下**に置かれており (`Library`/`Documents`/`tmp`
+  以外)、`devicectl` の remote file サービスの許可範囲外で直接は読めな
+  かった (`Access restricted: ... is outside the allowed container
+  directories (Library, Documents, tmp)` — ファイルが存在しないのでは
+  なく、アクセスが制限されているというエラー)。
+- 代わりに、実機に対して `xcodebuild test` (`platform=iOS,id=<UDID>`)
+  で診断用 XCUITest を実行し、`app.debugDescription` でサイドバーの
+  現在状態をダンプしたところ、**既存のアカウントは統合受信トレイ/
+  INBOX ともに「27」件のメッセージを正しく表示していた** —
+  この時点では症状が再現しなかった (ユーザー報告後、何らかの理由で
+  自己修復していたか、直前の `build-for-testing` によるアプリ再起動
+  が回復のトリガーになった可能性がある)。
+
+### 有力な根本原因: 複数メールボックスを回すループの途中失敗が
+`ThreadAssigner` を握りつぶす
+
+`AccountSyncer.performInitialSync`/`performIncrementalSync` はどちらも
+「同期対象の全メールボックスを1つのループで処理し、ループを抜けた後に
+1回だけ `ThreadAssigner.assignAllUnthreaded` を呼ぶ」という構造だった。
+このアプリの dev mailstack アカウントは INBOX 以外に Drafts/Junk/Sent/
+Trash も持つ (SPECIAL-USE 経由で自動アドバタイズされる) ため、初期同期は
+5つのメールボックスを順番に SELECT/FETCH する。**ループ内の *どれか1つ*
+のメールボックスで `select`/`fetchEnvelopes`/書き込みが例外を投げると、
+関数全体がそこで中断し、`ThreadAssigner.assignAllUnthreaded` に到達しない
+まま return (実際には throw) してしまう。** この呼び出しは
+`AccountSetupView.saveAccount`/`AppEnvironment` のどちらからも
+`Task { try? await ... }` という fire-and-forget + `try?` 経由なので、
+失敗はユーザーに一切通知されない。
+
+結果: **ループの中で先に処理された INBOX の envelope は正常に DB へ
+upsert 済み (`mailbox.uidNext` もその時点で永続化済み) なのに、
+`message.threadId` が最後まで `nil` のまま残る** — `ThreadQuery`
+(`request(mailboxId:)`/`unifiedInboxRequest(accountIds:)`) はどちらも
+`EXISTS (... message.threadId = thread.id ...)` で `thread` 側から
+`message` を辿るため、`threadId` が `nil` のメッセージは統合受信トレイ・
+アカウント個別 INBOX のどちらからも一生見えない。一方 INBOX 自身の
+`mailbox.uidNext` は正しく更新済みなので、次回以降の差分同期は
+SELECT だけで「新着なし」と正しく判断し続ける — ユーザーの報告と
+完全に一致する。
+
+dev mailstack はシミュレータからは `localhost`、実機からは Mac の LAN IP
+(`192.168.0.163`) 経由の Wi-Fi 越しで到達するため、後者の方が
+タイムアウト/瞬断が起きやすく、この経路依存のバグがシミュレータでは
+再現せず実機だけで踏まれたと考えるのが最も辻褄が合う (ループの後半
+(Junk/Sent/Trash 側) のどこかで一過性のエラーが起き、それ以降
+`performIncrementalSync` 側の同じ構造の「1つでも失敗すると
+`ThreadAssigner` に届かない」バグにより、次の起動時 foreground sync
+でも自己修復されない状態が何度かの再起動をまたいで続いた、という説明が
+成り立つ)。
+
+### 修正
+
+`AccountSyncer.performInitialSync`/`performIncrementalSync` の
+メールボックスループ本体を `do`/`catch` で包み、1つのメールボックスの
+失敗を `continue` で握りつぶして次のメールボックスに進むよう変更した
+(`packages/OtegamiKit/Sources/SyncEngine/AccountSyncer.swift`)。これにより
+ループを抜けた後の `ThreadAssigner.assignAllUnthreaded` は、途中で
+何が失敗していても必ず実行される — 一部のメールボックスが同期できな
+かった場合でも、成功した分は必ずスレッド化されて一覧に現れる。
+
+回帰テスト: `AccountSyncerTests
+.laterMailboxFailureDoesNotBlockEarlierMailboxThreading`
+(`packages/OtegamiKit/Tests/SyncEngineTests/AccountSyncerTests.swift`) —
+`FakeIMAPSession.Script` で INBOX の `statusByPath` だけを用意し (Junk を
+意図的に省略、`FakeIMAPSession.status(_:)` が未知パスに対して自然に
+`mailboxNotFound` を投げる既存の挙動を利用)、`performInitialSync` が
+例外を投げずに完了すること・INBOX のメッセージがちゃんとスレッド化
+(`message.threadId != nil`、`ThreadQuery.request(mailboxId:)` が1件返す)
+されていることを assert する。修正前のコードに対して実行すると
+このテストは `performInitialSync` が `mailboxNotFound` を投げて失敗する
+ことを確認済み。
+
+### 実機で残る確認事項
+
+- このセッションで実機の既存アカウントは既に (原因不明のタイミングで)
+  自己修復しており、`AccountSyncer` の修正を実機でリアルタイムに再現
+  →修正確認するところまではできていない。ユーザー側で改めて
+  「その他」アカウント追加 → 実機の Wi-Fi 経由での初期同期、を試し、
+  今回のビルドで空一覧が発生しないことを確認してほしい。
+  発生した場合は `dev/mailstack` の Dovecot ログ (`docker compose logs
+  dovecot`) にどのメールボックスの SELECT/FETCH 付近でエラー/切断が
+  起きているかが残っているはずなので、それが次の手がかりになる。
+- 今回の修正は「一部メールボックスの失敗を握りつぶして継続する」
+  もので、失敗そのものをユーザーに可視化する変更ではない
+  (`AccountSetupView.saveAccount`/`AppEnvironment` 側の `try?` は
+  そのまま)。今後、部分的な同期失敗を `AccountsSettingsView` などで
+  可視化するかどうかは別課題として残る。
