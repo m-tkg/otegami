@@ -24,6 +24,7 @@ public actor FakeSMTPSession: SMTPSessionProtocol {
     public final class CallRecorder: @unchecked Sendable {
         private let lock = NSLock()
         private var _sendCalls: [(messageData: Data, from: EmailAddress, recipients: [EmailAddress])] = []
+        private var _connectAuths: [MailAuth] = []
 
         public init() {}
 
@@ -33,10 +34,26 @@ public actor FakeSMTPSession: SMTPSessionProtocol {
             lock.unlock()
         }
 
+        func recordConnect(auth: MailAuth) {
+            lock.lock()
+            _connectAuths.append(auth)
+            lock.unlock()
+        }
+
         public var sendCalls: [(messageData: Data, from: EmailAddress, recipients: [EmailAddress])] {
             lock.lock()
             defer { lock.unlock() }
             return _sendCalls
+        }
+
+        /// Every `connect(auth:)` call, in order — `OpQueueProcessorTests`
+        /// uses this to assert `OpQueueProcessor.smtpAuth` actually derives
+        /// SMTP-specific credentials from `account.smtpUsername` rather
+        /// than reusing the IMAP auth verbatim.
+        public var connectAuths: [MailAuth] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _connectAuths
         }
     }
 
@@ -61,6 +78,7 @@ public actor FakeSMTPSession: SMTPSessionProtocol {
     }
 
     public func connect(auth: MailAuth) async throws {
+        recorder?.recordConnect(auth: auth)
         if let failConnection = script.failConnection {
             throw failConnection
         }

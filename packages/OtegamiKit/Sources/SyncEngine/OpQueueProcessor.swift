@@ -215,7 +215,7 @@ public actor OpQueueProcessor {
             // リトライ残る" behavior the plan calls for.
             do {
                 let smtpSession = smtpSessionFactory(smtpConfig)
-                try await smtpSession.connect(auth: auth)
+                try await smtpSession.connect(auth: Self.smtpAuth(imapAuth: auth, account: account))
                 defer {
                     let smtpSession = smtpSession
                     Task { await smtpSession.disconnect() }
@@ -258,6 +258,28 @@ public actor OpQueueProcessor {
                 .filter(Column("accountId") == accountId)
                 .filter(Column("role") == MailboxRoleRecord.trash.rawValue)
                 .fetchOne(db)
+        }
+    }
+
+    /// Builds SMTP-specific credentials from `account.smtpUsername` (the
+    /// account setup form's own SMTP username field) rather than reusing
+    /// `imapAuth` verbatim — the IMAP and SMTP username can legitimately
+    /// differ, and reusing the IMAP username unconditionally would also
+    /// mean an account with an intentionally-blank SMTP username (some
+    /// relays require none — the dev mailstack's Mailpit among them; a
+    /// blank username there makes `MailCoreSMTPSession.connect` skip
+    /// `AUTH` entirely) would still attempt to authenticate. The password
+    /// is the one already resolved for `imapAuth`, since the schema only
+    /// stores a single Keychain-backed password per account (`AccountRecord`'s
+    /// doc comment) — real providers needing genuinely distinct IMAP/SMTP
+    /// passwords are out of scope until an account form actually collects
+    /// a second one.
+    private static func smtpAuth(imapAuth: MailAuth, account: AccountRecord) -> MailAuth {
+        switch imapAuth {
+        case .password(_, let password):
+            .password(username: account.smtpUsername ?? "", password: password)
+        case .xoauth2(let username, let accessToken):
+            .xoauth2(username: account.smtpUsername ?? username, accessToken: accessToken)
         }
     }
 

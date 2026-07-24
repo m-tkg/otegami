@@ -274,3 +274,101 @@ M4 でスレッド化した結果、`OtegamiM1VerificationUITests`/
   O(未スレッド化メッセージ数) 回のトランザクション内クエリになる —
   M4 のデータ規模では問題にならないが、10万通規模の性能検証は計画上
   M10 の課題として残されている。
+
+## iOS シミュレータ検証 (M5)
+
+```sh
+scripts/verify-ios-m5.sh
+```
+
+作成・返信・SMTP送信・Outbox・Sent APPEND のチェックポイントを、M3/M4 と
+同様 XCUITest フェーズ + ホスト側 (Mailpit REST API・doveadm) 操作を交互に
+実行して確認する。
+
+1. `OtegamiM5SetupUITests` — test1 の Dovecot アカウントを IMAP に加えて
+   SMTP フィールド (`localhost:1025`、平文 — dev mailstack の Mailpit)
+   も入力し、「SMTP接続テスト」の成功を確認してから保存。既存のシード
+   メッセージ一覧が表示されることも確認する。
+2. `OtegamiM5ComposeSendUITests` — サイドバーの「作成」ボタンから新規
+   メッセージを作成 (`To: recipient@otegami.test`、日本語件名・本文)
+   して送信、Composer シートが閉じることを確認。
+3. (ホスト) Mailpit REST API (`GET /api/v1/messages`) をポーリングし、
+   送信した日本語件名のメールが実際に届いたことを assert。
+   (ホスト) `doveadm fetch ... mailbox Sent` で、SMTP 送信成功後の
+   ベストエフォート IMAP APPEND により Sent メールボックスにもコピーが
+   残っていることを assert。
+4. `OtegamiM5ReplyUITests` — シード済みの単一メッセージ「ようこそ
+   otegami へ」を開き「返信」をタップ。Composer の To/件名/本文が
+   非同期に (原文を GRDB から読んで) プリフィルされるのを
+   `XCTNSPredicateExpectation` でポーリングして確認 (件名が
+   `SubjectNormalizer` で正規化された上で `Re: ` が一度だけ付与される
+   こと、本文が `> ` で引用されること) してから送信。
+5. (ホスト) Mailpit REST API (`GET /api/v1/message/{id}/headers`) で、
+   送信された返信の `In-Reply-To`/`References` ヘッダが元メッセージ
+   (`seed-0001@otegami.test`) を指していることを assert — スレッド
+   接続に必要なヘッダが実際に SMTP 経路に乗ったことを確認する
+   (ローカル DB の `Threader` ロジック自体は M4 で既に単体/結合テスト
+   済みなので、ここでは「送信されたバイト列に正しいヘッダが載るか」
+   だけを見ればよい)。
+6. (ホスト) `make mailstack-down` でオフラインを再現。
+7. `OtegamiM5OfflineComposeUITests` — オフライン状態で新規作成→送信。
+   ローカルの enqueue 自体は即座に成功 (Composer シートは閉じる) が、
+   `OpQueueProcessor.replay` の冒頭の IMAP `connect()` が失敗するため
+   バッチ全体が中断され、`.send` op も `outboxMessage` 行もキューに
+   残る — サイドバーの「送信待ち」インジケーター (`sidebar.outbox`) が
+   表示されることを確認する。
+8. (ホスト) `make mailstack-up` でメールスタックを復元。
+9. `OtegamiM5OfflineReplayUITests` — アプリを再起動 (`RootView` の
+   `scenePhase == .active` ハンドラが opQueue replay を起動 — M3 の
+   フォアグラウンド復帰と同じ経路)。「送信待ち」インジケーターが消える
+   までポーリングして確認。
+10. (ホスト) Mailpit REST API をポーリングし、オフライン中に作成した
+    メッセージが復帰後の replay で最終的に届いたことを assert。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`m5-01-compose-sent.png` / `m5-02-reply-sent.png` /
+`m5-03-offline-queued.png` / `m5-04-offline-replayed.png` として出力
+される。
+
+### SMTP 送受信の設計上の注意点 (実装中に発見)
+
+- `MCOSMTPSession.checkAccountOperationWithFrom:` (「SMTP接続テスト」の
+  素朴な実装として最初に採用したもの) は内部で `MAIL FROM` +
+  `RCPT TO:<bogus>` を送るが、対応する `RSET` を送らない。同一セッション
+  上でこの直後に実際の送信 (`sendOperationWithData`) を行うと、2 回目の
+  `MAIL FROM` が `RSET`/`EHLO` を挟まない状態で送られ、多くのサーバ
+  (dev mailstack の Mailpit で実際に確認済み) から `503 Bad sequence of
+  commands` を返される。`OpQueueProcessor.send` は `connect()` の直後に
+  同じセッションで送信するため、これは実運用でも起きうる実バグだった。
+  `MailCoreSMTPSession.connect(auth:)` は `checkAccountOperation` ではなく
+  `session.loginOperation()` (EHLO/AUTH のみ、MAIL/RCPT に一切触れない)
+  を使うよう修正済み — 「SMTP接続テスト」ボタンの検証用途にも十分な
+  強度 (実際に EHLO+AUTH のラウンドトリップを行う) を保ちつつ、送信前の
+  トランザクション状態を汚さない。ワイヤレベルの実挙動は
+  `MCOConnectionLogger` (`session.setConnectionLogger(...)`) で直接観測
+  して切り分けた — MailCore2 の Swift バインディングはメソッド名が
+  ObjC ヘッダの見た目通りには自動変換されない箇所がいくつかあり
+  (`sendOperationWithData(messageData:from:recipients:)` のように引数
+  ラベルとして温存される、`checkAccountOperation(from:)` は素直に
+  変換される、など)、コンパイラのエラーメッセージを頼りに1つずつ確定
+  させた。
+- MailCore2 の `MCOAddress`/`MCOMessageBuilder` の各種ファクトリ
+  イニシャライザ (`MCOAddress(mailbox:)` 等) は Swift 側で failable
+  (`MCOAddress?`) として bridge される — ヘッダのコメントには書かれて
+  いない実装依存の挙動なので、force-unwrap の妥当性 (空文字列を渡さない
+  限り実質的に失敗しない) をコード中にコメントで明記している。
+- Mailpit はデフォルトで SMTP 認証を要求しない。`MCOSMTPSession` は
+  `username`/`password` が「空文字列」であっても (`nil` でない限り)
+  `AUTH` を試みてしまう実装になっているため、`MailCoreSMTPSession
+  .connect` は `MailAuth.password` の `username` が空文字列の場合に
+  限り `session.username`/`.password` への代入自体をスキップする
+  (dev mailstack 向けの意図的な特例。実アカウントの空ユーザー名は想定
+  していない)。
+- Mailpit・Dovecot は互いに無関係な別サーバであり (実運用の「送信も
+  受信も同じプロバイダ」という前提が dev mailstack には無い)、SMTP
+  送信だけでは Sent メールボックスへの反映は一切起きない —
+  `OpQueueProcessor.send` が SMTP 成功後に明示的に IMAP `APPEND` する
+  実装になっているのはこのため。この APPEND はベストエフォート (失敗
+  してもメールの再送はしない — 既に送信済みのメールを再送するのは
+  APPEND 失敗より遥かに悪い) なので、`m5-01`/`m5-02` 相当の doveadm
+  チェックは複数秒のリトライで確認している。

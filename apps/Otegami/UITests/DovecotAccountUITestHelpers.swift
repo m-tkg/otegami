@@ -153,6 +153,47 @@ extension XCTestCase {
         type("test1234", into: app.secureTextFields["accountSetup.password"])
     }
 
+    /// M5: adds the `test1` Dovecot account with SMTP fields also filled in
+    /// (pointing at the dev mailstack's Mailpit, `localhost:1025`, plain —
+    /// see `dev/mailstack/compose.yml`) and runs the SMTP connection test
+    /// too, so the saved account can actually send. `addDovecotTest1Account`
+    /// (above) intentionally leaves SMTP blank — M1–M4's tests don't need
+    /// it, and M1's account form documents SMTP as optional-to-save.
+    func addDovecotTest1AccountWithSMTP(in app: XCUIApplication) {
+        openAccountSetup(in: app)
+        fillDovecotAccountForm(in: app)
+        runConnectionTest(in: app)
+        fillMailpitSMTPFields(in: app)
+        runSMTPConnectionTest(in: app)
+        saveAccount(in: app)
+        dismissSavePasswordPromptIfNeeded()
+    }
+
+    /// Fills the SMTP section with the dev mailstack's Mailpit
+    /// (`localhost:1025`, plain). Deliberately leaves `smtpUsername`
+    /// blank: Mailpit's EHLO doesn't advertise `AUTH` at all and rejects
+    /// an attempt outright, and `OpQueueProcessor.smtpAuth`/
+    /// `MailCoreSMTPSession.connect` both treat a blank SMTP username as
+    /// "this relay needs no authentication" — see their doc comments.
+    func fillMailpitSMTPFields(in app: XCUIApplication) {
+        type("localhost", into: app.textFields["accountSetup.smtpHost"])
+        type("1025", into: app.textFields["accountSetup.smtpPort"], clearingExisting: true)
+
+        app.buttons["accountSetup.smtpSecurity"].tap()
+        app.buttons["なし (平文)"].tap()
+    }
+
+    func runSMTPConnectionTest(in app: XCUIApplication) {
+        let testButton = app.buttons["accountSetup.testSMTPConnectionButton"]
+        XCTAssertTrue(testButton.waitForExistence(timeout: 5), "SMTP test button should exist")
+        XCTAssertTrue(testButton.isEnabled, "SMTP test button should be enabled once host/port are filled")
+        testButton.tap()
+
+        let result = app.staticTexts["accountSetup.smtpTestResult"]
+        XCTAssertTrue(result.waitForExistence(timeout: 15), "SMTP connection test result did not appear")
+        XCTAssertTrue(result.label.contains("成功"), "Expected an SMTP success message, got: \(result.label)")
+    }
+
     func runConnectionTest(in app: XCUIApplication) {
         let testButton = app.buttons["accountSetup.testConnectionButton"]
         XCTAssertTrue(testButton.isEnabled, "Test-connection button should be enabled once the form is filled")

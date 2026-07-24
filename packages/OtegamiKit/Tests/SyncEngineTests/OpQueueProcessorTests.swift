@@ -398,6 +398,45 @@ struct OpQueueProcessorTests {
         #expect(sendOp.attempts == 1)
     }
 
+    @Test("send derives SMTP auth from account.smtpUsername, not the IMAP auth's username — blank means no auth")
+    func sendUsesSMTPSpecificAuthNotIMAPAuth() async throws {
+        let database = try AppDatabase.makeInMemory()
+        // smtpUsername left nil (blank in the form) — imapUsername stays
+        // "test1@otegami.test" from makeAccountWithSMTP()'s IMAP fields,
+        // deliberately different so a bug that reused the IMAP auth
+        // verbatim would be caught by asserting an *empty* SMTP username
+        // below, not just a matching one.
+        var blankSMTPUsernameAccount = makeAccountWithSMTP()
+        blankSMTPUsernameAccount.smtpUsername = nil
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database, account: blankSMTPUsernameAccount)
+        let outbox = try await insertOutboxMessage(accountId: account.id, database: database)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: outbox.id!, db: db)
+        }
+
+        let smtpRecorder = FakeSMTPSession.CallRecorder()
+        let processor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script(), recorder: nil) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: FakeSMTPSession.Script(), recorder: smtpRecorder) },
+            messageBuilder: fakeMessageBuilder
+        )
+
+        // `auth` here (what replay() opens the IMAP session with) carries
+        // the non-blank IMAP username — the whole point of this test is
+        // that it must NOT leak into the SMTP connect call below.
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+
+        let connectAuth = try #require(smtpRecorder.connectAuths.first)
+        guard case .password(let username, _) = connectAuth else {
+            Issue.record("Expected a .password SMTP auth")
+            return
+        }
+        #expect(username.isEmpty, "Expected a blank SMTP username (no smtpUsername configured), not the IMAP auth's username")
+    }
+
     @Test("a send op whose outbox row is already gone is discarded as stale rather than resent")
     func sendDiscardsWhenOutboxRowAlreadyGone() async throws {
         let database = try AppDatabase.makeInMemory()

@@ -197,15 +197,15 @@ struct AccountSetupView: View {
 
         let config = SMTPConfig(host: smtpHost, port: smtpPort, security: smtpSecurity.mailTransportSecurity)
         let session = MailCoreSMTPSession(config: config)
-        // Falls back to the account's own IMAP username/password when the
-        // SMTP username field was left blank — the common case where the
-        // same credentials authenticate both. An empty *password* still
-        // reaches `connect(auth:)` as a non-empty username with an empty
-        // password for a relay that ignores it, or a real auth failure for
-        // one that doesn't — either way surfaces as a clear pass/fail here.
-        let username = smtpUsername.isEmpty ? imapUsername : smtpUsername
+        // Uses the SMTP username field verbatim (not a fallback to the
+        // IMAP username) — matches `OpQueueProcessor.smtpAuth`'s actual
+        // send-time behavior (see its doc comment), so this test reflects
+        // what sending will really do. An intentionally blank SMTP
+        // username makes `MailCoreSMTPSession.connect` skip authentication
+        // entirely, for relays that require none (e.g. the dev mailstack's
+        // Mailpit).
         do {
-            try await session.connect(auth: .password(username: username, password: password))
+            try await session.connect(auth: .password(username: smtpUsername, password: password))
             await session.disconnect()
             smtpTestSucceeded = true
             smtpTestResultMessage = "SMTP接続に成功しました。"
