@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "SyncEngine", targets: ["SyncEngine"]),
         .library(name: "OtegamiRelayAPI", targets: ["OtegamiRelayAPI"]),
         .library(name: "MailTransportMailCore", targets: ["MailTransportMailCore"]),
+        .library(name: "GoogleOAuth", targets: ["GoogleOAuth"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
@@ -107,6 +108,29 @@ let package = Package(
         .testTarget(
             name: "MailTransportMailCoreTests",
             dependencies: ["MailTransportMailCore", "SyncEngine", "OtegamiStore"]
+        ),
+
+        // Gmail OAuth2 (Authorization Code + PKCE) client + `TokenStore`
+        // (M6). Apple-only (AuthenticationServices, CryptoKit, Security) —
+        // like MailTransportMailCore, this is never pulled into any
+        // Linux-compatible target. Has no dependency on any other target in
+        // this package (not even `MailTransport`): it only ever produces
+        // `MailAuth.xoauth2`'s two raw associated values (username, access
+        // token) as plain strings, letting the app layer construct the
+        // actual `MailAuth` — keeps this package's own dependency graph
+        // acyclic and this target trivially unit-testable in isolation.
+        .target(
+            name: "GoogleOAuth"
+        ),
+
+        // PKCE known-vector tests, `GoogleOAuthClient` token-exchange/
+        // refresh tests (`URLProtocol` HTTP stub + `FakeAuthorizationFlow`),
+        // and `TokenStore` expiry/refresh/invalid_grant tests (clock +
+        // `RefreshTokenStoring` both injected — no real Keychain or network
+        // touched).
+        .testTarget(
+            name: "GoogleOAuthTests",
+            dependencies: ["GoogleOAuth"]
         ),
     ]
 )
