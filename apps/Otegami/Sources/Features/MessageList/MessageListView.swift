@@ -428,6 +428,18 @@ private struct ThreadRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    // M8: a cheap "this thread's latest message has
+                    // attachments" hint (`MessageRecord.hasAttachments`,
+                    // set by `BodyFetcher`/`AccountSyncer.upsert` from the
+                    // envelope's `BODYSTRUCTURE`) — read-only glance, no
+                    // interaction of its own; opening the message itself
+                    // is what shows the real attachment list.
+                    if summary.latestMessage?.hasAttachments == true {
+                        Image(systemName: "paperclip")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                    }
                     if summary.thread.messageCount > 1 {
                         Text("\(summary.thread.messageCount)")
                             .font(.caption2.bold())
