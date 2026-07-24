@@ -48,6 +48,13 @@ targets:
         # are composed from xcconfig variables instead of hardcoded.
         OtegamiAppGroupIdentifier: $(OTEGAMI_APP_GROUP)
         OtegamiKeychainAccessGroup: $(OTEGAMI_KEYCHAIN_GROUP)
+        # Required on physical iOS devices for any local-network connection
+        # (e.g. the dev mailstack on the Mac's LAN IP, or a self-hosted relay
+        # on the LAN). Without this key iOS terminates the app on the first
+        # local-network socket instead of showing the permission prompt —
+        # the simulator does not enforce this, which is why every simulator
+        # verification passed while a real device crashed on 接続テスト.
+        NSLocalNetworkUsageDescription: ローカルネットワーク上のメールサーバー (開発用サーバーや自宅サーバーなど) に接続するために使用します。
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
