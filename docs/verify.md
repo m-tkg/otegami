@@ -1148,3 +1148,152 @@ dev mailstack はシミュレータからは `localhost`、実機からは Mac �
   (`AccountSetupView.saveAccount`/`AppEnvironment` 側の `try?` は
   そのまま)。今後、部分的な同期失敗を `AccountsSettingsView` などで
   可視化するかどうかは別課題として残る。
+
+## 実機バグ (続報): 006983a の後も、メッセージ一覧が起動ごとに出たり出なかったりする
+
+`006983a`(上記節)の後、実機で「DB には正しくスレッド化されたメッセージが
+入っているのに、アプリを起動すると一覧が出る場合と出ない場合がある」という
+再発報告への追加調査。
+
+### 却下した仮説: 統合受信トレイ observation の accountIds 固定キャプチャ
+
+有力視されていた仮説 ——`MessageListView` が `environment.accounts` の
+非同期ロード完了前に `ThreadQuery.unifiedInboxRequest(accountIds:)` の
+observation を空 `accountIds` で張り付けてしまい、後からアカウントが届いても
+再構築されない —— は、実際のコード (`apps/Otegami/Sources/Features/MessageList/
+MessageListView.swift`) を読むと成立しない:
+
+```swift
+.task(id: ObservationKey(selection: selection, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit)) {
+    await observeThreads()
+}
+```
+
+`ObservationKey` は `selection`/`accountIds`/`pageLimit` の3つ組で、
+`environment.accounts` (`@Observable`) が変化するたびにこのキーも変わり、
+SwiftUI が `.task(id:)` を確実にキャンセル→再起動する。さらに
+`SidebarView.observeMailboxes(accountId:)` が「`selection == nil` の時だけ
+`.unifiedInbox` を初期選択する」設計になっており、`selection` が
+non-nil になった時点で `environment.accounts` は既にそのアカウントを
+含んでいることが構造的に保証される(`RootView` の `content` は
+`selection != nil` の時しか `MessageListView` を生成しない)。つまり
+`MessageListView` が初めて観測を始める瞬間、`accountIds` が空になることは
+起こり得ない。
+
+シミュレータでの実証: 既に2アカウント・27件相当のスレッド化済みメッセージが
+ローカル DB (かつ iCloud KVS にも) 揃っている状態から、`app.terminate()`/
+`app.launch()` を20回連続で行い、毎回 `messageList.list` の1行目が
+6秒以内に現れることを確認 (0/20 で失敗)。この観測配線そのものは壊れていない。
+
+### 発見した実際のバグ: 非 CONDSTORE 差分同期の「消えたUID判定」がフェイルオープンでマスデリートする
+
+`packages/OtegamiKit/Sources/SyncEngine/MailboxSyncer.swift` の
+`refetchAndDiffFlags(mailboxId:mailboxPath:accountId:session:)`
+(`CONDSTORE` 非対応サーバー向けの差分同期パス — 新着 + フラグ変更 +
+サーバー側削除検知を1回の全ウィンドウ再取得で兼ねる) は、
+
+```swift
+let refetched = try await session.fetchEnvelopes(
+    mailboxPath: mailboxPath,
+    uids: UIDRange(lowerBound: UInt32(minUID), upperBound: nil),
+    batchSize: AccountSyncer.fetchBatchSize
+)
+...
+let serverUIDs = Set(refetched.map { Int64($0.uid) })
+let deletedUIDs = Set(localUIDs).subtracting(serverUIDs)
+```
+
+という形で「再取得した範囲に含まれていないローカル UID = サーバー側で
+expunge された」と判定し、該当 `message`/`thread` をまるごと削除する。
+この判定は `fetchEnvelopes` が**例外を投げずに空(または不完全)な結果を
+返した場合**にフェイルオープンする——ネットワーク接続が完全に切れた場合は
+`MailCoreIMAPSession.fetchEnvelopesBatch` がバッチ単位で確実に `throw` する
+(`AccountSyncer.performIncrementalSync` 側の per-mailbox `do`/`catch` が
+そのメールボックスをまるごとスキップして安全に倒れる)ので大丈夫だが、
+「サーバー往復自体は成功したが結果が空/一部欠落」という、真の expunge とは
+見分けがつかない失敗モード (不安定な実機 Wi-Fi 経由の接続で libetpan/
+MailCore2 側が起こしうる) には無防備だった。この経路を踏むと、まだサーバー
+に実在するメッセージ・スレッドがまるごとローカルから削除される。
+
+これは「同じ DB 状態で起動ごとに UI の見え方が変わる」というより、
+「起動のたびに `RootView.syncAllAccountsOnce()` が呼ぶ
+`syncAccountIncrementally` (既定 `.inboxOnly`) がこの経路を踏むたびに、
+ネットワーク状態次第で **DB の中身そのものが非決定的に壊れうる**」という話
+——ただし全滅した直後の**次の**起動では、ローカルの最大 UID が失われたことで
+「UID 1 からの新着」として扱われ、次のインクリメンタル同期が成功すれば
+自然に復元されうる(自己修復)。この「消える→(ネットワークが持ち直せば)
+次の起動で復元される→また消えうる」というサイクルが、ユーザー報告の
+「アプリを起動すると一覧が出る場合と出ない場合がある」に一致する。
+
+dev mailstack の Dovecot は標準で CONDSTORE をサポートするため、この経路は
+通常の verify スクリプトでは踏まれない(シミュレータでの20回連続コールド
+ローンチ試験がクリーンだったのはこのため)。CONDSTORE 非対応の実プロバイダ、
+または実機 Wi-Fi 越しの接続が不安定な場面でのみ顕在化する——前節の
+「実機のみ・シミュレータでは未再現」というパターンと整合する。
+
+### 修正
+
+`refetchAndDiffFlags` に `status`(この差分同期パス自身が直前に取得した
+`SELECT` の結果)を渡し、「再取得結果が空なのに、サーバーの `STATUS` は
+このメールボックスにまだメッセージがあると言っている」という矛盾した
+組み合わせのときは削除処理そのものをスキップするガードを追加した:
+
+```swift
+guard !(refetched.isEmpty && status.messageCount > 0) else { return 0 }
+```
+
+`AccountSyncer` の per-mailbox `do`/`catch` (前節の修正) と同じ「疑わしい
+ときは何もしない」方針——例外を投げる代わりに `deletedMessages == 0` を
+返して黙って次回に賭ける、既存の非破壊的フォールバックと同じ思想。
+
+回帰テスト: `MailboxSyncerTests
+.nonCondstoreFlagSyncDoesNotMassDeleteOnEmptyRefetch`
+(`packages/OtegamiKit/Tests/SyncEngineTests/MailboxSyncerTests.swift`) ——
+既存の3通スレッド化済みメッセージがある状態で、`FakeIMAPSession` の
+非 CONDSTORE 差分同期スクリプトが空の `envelopesByPath`(かつ
+`statusByPath.messageCount == 3`)を返すシナリオを再現し、
+`deletedMessages == 0`・3通とも `message`/`threadId` が残ることを assert。
+修正前のコードに対して実行すると `deletedMessages == 3`・
+`ThreadQuery` 経由でも0件になる(= まさに「データはあるのに一覧が空」の
+逆——データそのものが消える)ことを確認済み。
+
+### テスト結果
+
+- `swift test`(`packages/OtegamiKit`、フィルタなし全体)/ `make test`:
+  green。
+- `make mac` / `make ios`: build succeeded。
+- `scripts/verify-ios-m1.sh`(`BUNDLE_ID=com.mtkg.otegami` —
+  `Config/Local.xcconfig` がこの開発機では `OTEGAMI_BUNDLE_ID` を上書き
+  している): 回帰実行、green(seed 4通が INBOX に表示、オフライン
+  再起動でもローカル DB からそのまま表示され続けることを確認)。
+
+### 実機で残る確認事項
+
+- この修正は「再取得結果が完全に空」という最悪ケース(全滅)だけを防ぐ
+  もの。一部の UID だけが欠落した不完全な再取得(真の部分 expunge との
+  区別がつかない)まではカバーしていない——`VANISHED`(QRESYNC)による
+  サーバー明示の削除通知を使う、または `serverUIDs.count` と
+  `status.messageCount` の整合性をより厳密にチェックするなど、更なる
+  堅牢化の余地が残る。
+- dev mailstack の Dovecot は CONDSTORE 対応のため、このセッションでは
+  `refetchAndDiffFlags` 経路自体を実機のような不安定な接続で再現・確認
+  できていない(unit test でのみ検証)。ユーザー側で、CONDSTORE 非対応
+  ないし不安定な実プロバイダに対して実機で再度確認してほしい——
+  改善後も再発する場合は、その時点の Dovecot/実サーバーのログと
+  `MailCoreIMAPSession` の `MCOConnectionLogger` 出力(前々節「SMTP AUTH」
+  の調査で使ったのと同じ手法)が次の手がかりになる。
+- 調査の過程で、`simctl erase` 直後の初回コールドローンチ時に、サイドバー
+  が「アカウントがありません」空状態にもツールバー付きの通常表示にも
+  20秒以上到達しない(XCUITest の `waitForExistence` が両方ともタイムアウト
+  する)という別の現象を1回観測した。この開発機では `NSUbiquitousKeyValueStore`
+  が(シミュレータ内蔵ではなく)実 iCloud 経由で永続化されており、
+  `simctl erase` 後もこのマシンの Apple ID に紐づいた過去の verify
+  実行分のアカウントが `AccountCloudSyncEngine.reconcile()` 経由で
+  再度差し込まれる(=真の「ゼロアカウント状態」を `simctl erase` だけでは
+  作れないケースがある)ことを確認したが、20秒という数字がスクリーンショット
+  等で裏付けた「本当に固まっている」ことの証拠ではなく、2アカウント×5
+  メールボックスの初回同期という重い処理と XCUITest 自体のオーバーヘッドが
+  重なっただけの可能性も残るため、今回は深追いせず記録のみに留めた。次に
+  この現象に遭遇したら、`xcrun simctl io booted screenshot` をポーリング中の
+  シェルから並行して撮る (M6/M7 節の手法) ことで「本当に空白のまま固まって
+  いるのか、単に遅いだけなのか」を切り分けられるはずである。
