@@ -40,6 +40,40 @@ struct ComposerView: View {
     @State private var isLoadingReplyContext = false
     @State private var errorMessage: String?
 
+    // MARK: - Draft saving (M10)
+
+    /// Captured at the end of `prepare()` (after any reply-quote/draft
+    /// prefill has already run) — comparing the live fields against this
+    /// baseline is what decides whether closing the Composer should offer
+    /// "save as draft" at all. Without a baseline, opening a reply (whose
+    /// body starts pre-filled with quoted text) and immediately cancelling
+    /// without typing anything would look identical to "user wrote a
+    /// reply and then changed their mind", prompting a save-or-discard
+    /// dialog for a message with genuinely nothing new in it.
+    @State private var initialSnapshot: ComposerSnapshot?
+    @State private var showingCloseConfirmation = false
+
+    private struct ComposerSnapshot: Equatable {
+        var to: String
+        var cc: String
+        var subject: String
+        var body: String
+    }
+
+    private var currentSnapshot: ComposerSnapshot {
+        ComposerSnapshot(to: toText, cc: ccText, subject: subject, body: bodyText)
+    }
+
+    /// Whether closing now would silently lose something the user typed.
+    /// `false` until `prepare()` finishes (`initialSnapshot == nil` — no
+    /// baseline yet means nothing to compare against, so cancelling during
+    /// that brief window just closes immediately rather than blocking on a
+    /// dialog for a Composer that isn't even done loading).
+    private var hasUnsavedChanges: Bool {
+        guard let initialSnapshot else { return false }
+        return currentSnapshot != initialSnapshot
+    }
+
     // M8: attachments picked but not yet sent — held as plain `Data` in
     // memory (not yet copied anywhere on disk) until `send()`, which is
     // where they're staged into Application Support/Outbox (plan: "送信前に
@@ -133,7 +167,7 @@ struct ComposerView: View {
             .navigationTitle(navigationTitle)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("キャンセル") { dismiss() }
+                    Button("キャンセル") { handleCloseRequested() }
                         .accessibilityIdentifier("composer.cancelButton")
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -152,6 +186,32 @@ struct ComposerView: View {
             }
         }
         .accessibilityIdentifier("composer.sheet")
+        // M10: block the iOS sheet's swipe-down dismissal whenever there's
+        // something unsaved — the toolbar "キャンセル" button (routed through
+        // `handleCloseRequested()`) becomes the one path that can actually
+        // close the Composer in that state, so the save-or-discard prompt
+        // below can never be bypassed by a gesture. A no-op on macOS (this
+        // Composer is its own `WindowGroup` there, not a sheet); closing the
+        // window via its titlebar button still bypasses the prompt on
+        // macOS — a known gap, see docs/roadmap.md.
+        .interactiveDismissDisabled(hasUnsavedChanges)
+        .confirmationDialog(
+            "このメッセージを保存しますか？",
+            isPresented: $showingCloseConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("下書きとして保存") {
+                Task {
+                    await saveDraft()
+                    dismiss()
+                }
+            }
+            .accessibilityIdentifier("composer.saveDraftButton")
+            Button("保存せずに破棄", role: .destructive) { dismiss() }
+                .accessibilityIdentifier("composer.discardButton")
+            Button("キャンセル", role: .cancel) {}
+                .accessibilityIdentifier("composer.keepEditingButton")
+        }
         .task { await prepare() }
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
@@ -176,6 +236,7 @@ struct ComposerView: View {
         switch payload.kind {
         case .new: "新規作成"
         case .reply(_, let replyAll): replyAll ? "全員に返信" : "返信"
+        case .draft: "下書き"
         }
     }
 
@@ -190,10 +251,96 @@ struct ComposerView: View {
             selectedAccountId = environment.accounts.first?.id
         }
         attachUITestFixtureIfRequested()
-        guard case .reply(let originalMessageId, let replyAll) = payload.kind else { return }
-        isLoadingReplyContext = true
-        defer { isLoadingReplyContext = false }
-        await prefillReply(toOriginalMessageId: originalMessageId, replyAll: replyAll)
+        switch payload.kind {
+        case .new:
+            break
+        case .reply(let originalMessageId, let replyAll):
+            isLoadingReplyContext = true
+            defer { isLoadingReplyContext = false }
+            await prefillReply(toOriginalMessageId: originalMessageId, replyAll: replyAll)
+        case .draft(let draftId):
+            isLoadingReplyContext = true
+            defer { isLoadingReplyContext = false }
+            await loadDraft(draftId: draftId)
+        }
+        // Baseline for `hasUnsavedChanges` — captured last, after whatever
+        // prefill above (reply quoting, or a resumed draft's saved text)
+        // has already landed in the `@State` fields. See its doc comment.
+        initialSnapshot = currentSnapshot
+    }
+
+    /// Resuming a saved draft (M10): loads its fields, then deletes the row
+    /// immediately — `ComposerLaunchPayload.Kind.draft`'s doc comment
+    /// explains why ("load transfers ownership" avoids needing
+    /// update-vs-insert branching in `saveDraft()`). Best-effort: if the
+    /// row is already gone (e.g. deleted from `DraftsView` in another
+    /// window right as this one opened), the Composer just opens blank
+    /// rather than erroring.
+    private func loadDraft(draftId: Int64) async {
+        let draft: DraftMessageRecord? = try? await environment.database.dbWriter.write { db in
+            guard let draft = try DraftMessageRecord.fetchOne(db, key: draftId) else { return nil }
+            try draft.delete(db)
+            return draft
+        }
+        guard let draft else { return }
+        selectedAccountId = draft.accountId
+        toText = draft.toAddresses.map(\.description).joined(separator: ", ")
+        ccText = draft.ccAddresses.map(\.description).joined(separator: ", ")
+        subject = draft.subject
+        bodyText = draft.plainTextBody
+        inReplyToMessageId = draft.inReplyToMessageId
+        references = draft.references
+    }
+
+    // MARK: - Closing (M10: save-as-draft / discard)
+
+    private func handleCloseRequested() {
+        guard hasUnsavedChanges else {
+            dismiss()
+            return
+        }
+        showingCloseConfirmation = true
+    }
+
+    /// Persists the current fields as a new `DraftMessageRecord` row.
+    /// Attachments are intentionally dropped — see `DraftMessageRecord`'s
+    /// doc comment ("シンプル優先"): staging them to disk the way `send()`
+    /// does would be straightforward, but restoring them into a resumed
+    /// Composer's `pendingAttachments` (currently in-memory `Data`, not a
+    /// stable on-disk reference the way `outboxAttachment` rows are) would
+    /// mean re-reading arbitrarily large files back into memory just to
+    /// populate a draft the user might not even resume — a real feature,
+    /// left for a future milestone rather than half-implemented here.
+    private func saveDraft() async {
+        guard let accountId = selectedAccountId else { return }
+        let toAddresses = Self.parseAddresses(toText)
+        let ccAddresses = Self.parseAddresses(ccText)
+        // Nothing at all to save (a blank "新規作成" opened and immediately
+        // cancelled without `hasUnsavedChanges` ever going true reaches
+        // `dismiss()` directly in `handleCloseRequested()`, so this handles
+        // the rarer case of unsaved *whitespace-only* edits) — skip writing
+        // an empty row.
+        guard !toAddresses.isEmpty || !ccAddresses.isEmpty || !subject.isEmpty || !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        do {
+            try await environment.database.dbWriter.write { db in
+                var draft = DraftMessageRecord(
+                    accountId: accountId,
+                    toAddresses: toAddresses,
+                    ccAddresses: ccAddresses,
+                    subject: subject,
+                    plainTextBody: bodyText,
+                    inReplyToMessageId: inReplyToMessageId,
+                    references: references
+                )
+                try draft.insert(db)
+            }
+        } catch {
+            // Best-effort, matching every other Composer persistence path
+            // in this file (`send()`'s doc comment) — a failure here means
+            // the draft is simply lost, same as tapping "破棄" would have.
+        }
     }
 
     // MARK: - Attachments (M8)

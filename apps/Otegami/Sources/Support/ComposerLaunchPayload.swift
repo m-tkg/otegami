@@ -12,6 +12,12 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
     enum Kind: Codable, Hashable, Sendable {
         case new
         case reply(originalMessageId: Int64, replyAll: Bool)
+        /// M10: resume a saved `DraftMessageRecord`. `ComposerView.prepare()`
+        /// loads the row's fields, then deletes it immediately (see
+        /// `ComposerView`'s doc comment on why "load transfers ownership" —
+        /// a fresh "下書きとして保存" while editing writes a new row rather
+        /// than needing update-vs-insert branching).
+        case draft(draftId: Int64)
     }
 
     var id = UUID()
@@ -21,5 +27,9 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
 
     static func reply(originalMessageId: Int64, replyAll: Bool) -> ComposerLaunchPayload {
         ComposerLaunchPayload(kind: .reply(originalMessageId: originalMessageId, replyAll: replyAll))
+    }
+
+    static func draft(draftId: Int64) -> ComposerLaunchPayload {
+        ComposerLaunchPayload(kind: .draft(draftId: draftId))
     }
 }
