@@ -17,6 +17,29 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
   アカウントでの確認 (`PENDING.md`) の結果次第で短縮形への切替が必要になる
   可能性がある。
 
+## iCloud アカウント同期 (M11)
+
+- **アカウント編集 UI**: `AccountRecord.updatedAt` は last-writer-wins の
+  ためだけに存在するが、現状アカウント設定を後から編集する UI が無いため
+  実質「作成時刻」からほぼ変化しない。編集 UI ができた際は保存のたびに
+  `updatedAt` を更新して `AppEnvironment.pushAccountToCloud` を呼ぶ必要が
+  ある (`docs/icloud-sync.md` 参照)。
+- **verify スクリプトの iCloud KVS/Keychain 汚染**: M11 で
+  `scripts/verify-ios-m1.sh`/`verify-ios-m6.sh`/`verify-ios-icloud.sh` は
+  `xcrun simctl uninstall` を `simctl erase` に置き換えた (この開発環境の
+  シミュレータでは KVS/Keychain がアプリのアンインストールでは消えず、
+  以前の verify 実行で cloud へ push されたアカウントが「フレッシュ
+  インストール」のはずの状態に復活してしまうため —
+  `.claude/skills/verify/SKILL.md` の M11 節参照)。M2-M5/M7-M9 の
+  verify スクリプトはまだ旧来の `simctl uninstall` のままなので、将来
+  これらを実行する際に同じ現象で account 一覧の前提が崩れる可能性が残って
+  いる。実際に踏んだら同じ `simctl erase` パターンに揃えること。
+- **Gmail アカウントの cloud 挿入パスの実機確認**: `.oauth2` kind の
+  アカウントが cloud から新規挿入された場合の自動同期開始
+  (`GoogleOAuth.TokenStore.hasStoredRefreshToken`/`.accessToken(for:)`
+  経由) は実 Google アカウントでの 2 台間確認をしていない
+  (`PENDING.md`)。
+
 ## 同期・データモデル
 
 - **Drafts の IMAP 同期**: M10 で追加したローカル下書き保存

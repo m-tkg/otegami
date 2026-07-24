@@ -354,6 +354,44 @@ Neither is an app bug: `.searchable`/`ContentUnavailableView.search` behave
 exactly as documented, this is purely about how XCUITest can (and can't)
 address the elements they produce.
 
+## M11: `simctl uninstall` no longer means "zero accounts" once iCloud sync exists
+
+Once an app persists *anything* outside its own container — iCloud
+Keychain-synced items, `NSUbiquitousKeyValueStore` — `xcrun simctl
+uninstall` stops being equivalent to "fresh app, empty state" for whatever
+that persisted data can reconstruct on next launch. Concretely for this
+project: M11 added `AccountCloudSyncEngine`, which reconciles from iCloud
+KVS at every launch: an account a *previous* verify run pushed to KVS (and
+whose Keychain password also survived, both outside the app's own
+container on this simulator/toolchain) resurrects itself immediately after
+a plain uninstall+reinstall, defeating any verify script step whose whole
+point was "start from zero accounts." Confirmed concretely: running
+`verify-ios-m1.sh` then `verify-ios-m6.sh` back to back left the M6 script
+staring at M1's Dovecot account instead of an empty sidebar. Fix: replace
+the "uninstall for a fresh local DB" step with `xcrun simctl shutdown` +
+`xcrun simctl erase` (+ reboot) wherever a script's assertions depend on a
+truly-empty starting account list — erase resets Keychain/KVS too, unlike
+uninstall. Worth checking for in *any* project that later adds a
+Keychain-synced or iCloud-KVS-backed feature, not just this one: the
+"clean slate" verify-script idiom that was correct before such a feature
+existed silently stops being correct the moment one ships, and the
+failure mode (assertions timing out looking for an "empty state" element
+that's plainly not what's on screen) doesn't obviously point at the real
+cause without checking what actually resurrected the stale state.
+
+A related, narrower gotcha hit building `OtegamiM11ICloudSyncUITests`:
+reading a `Toggle`'s `Switch.value` ("0"/"1") immediately after `.tap()` —
+even with a few seconds of polling — sometimes never observed the flip,
+despite the tap being real and the underlying state genuinely changing
+(confirmed via the app staying fully responsive and the change taking
+effect). Another instance of the M2/M4/M7-documented "the tap registers,
+XCUITest's own state read doesn't keep up" class of issue, not a real bug
+— the fix here was to stop asserting the exact post-tap value at all and
+assert on something more load-bearing instead (the app stays alive and
+responsive), reserving an exact `Switch.value` read for a *first*,
+untapped check (`testCloudSyncToggleIsShownAndOnByDefault`'s default-on
+assertion), which was reliable.
+
 ## dev/mailstack: state persists across milestones, not just across a run
 
 `make mailstack-seed` only resets `INBOX` (`doveadm expunge ... mailbox

@@ -131,6 +131,56 @@ Extension は実装済み・大部分を自動検証済み (詳細は `docs/rela
   無効な URL の拒否・シミュレータでの `.noDeviceToken` グレースフル
   デグレードを確認)。
 
+## M11: iCloud アカウント同期の実機 2 台間確認
+
+**実装状況**: 資格情報 (Keychain) の iCloud キーチェーン同期対応、
+アカウント定義 (`NSUbiquitousKeyValueStore`) の同期・突き合わせエンジン
+(`AccountCloudSyncEngine`)、設定画面のトグル、entitlement (iOS/macOS 両方)
+は実装済み・単体テスト済み (`AccountCloudSyncTests`、15 件、`make test` に
+含まれる)。iOS シミュレータでの起動確認・トグル表示・トグル操作の
+非クラッシュ確認・既存アカウント追加フローの回帰確認は
+`scripts/verify-ios-icloud.sh` で自動検証済み。**残っているのは実
+2 台のデバイス (同一 Apple ID) 間で本当に iCloud KVS/Keychain 経由の
+同期が起きることの確認のみ。**
+
+- **理由**: `NSUbiquitousKeyValueStore`/iCloud キーチェーンは実 iCloud
+  アカウント + 複数の実デバイス (または実デバイス数台) がないと本物の
+  往復を検証できない。シミュレータは Apple のドキュメント上、KVS が
+  ローカルフォールバック動作をする場合があると明記されており、実際
+  この開発環境では「1 台のシミュレータの中で uninstall しても KVS/
+  Keychain が残る」という形で観測された (`docs/verify.md`/
+  `.claude/skills/verify/SKILL.md` の M11 節) — これは「1 台の中での
+  永続化」の確認にはなるが、「2 台の異なるデバイス間で本当に iCloud
+  サーバ経由で伝播するか」の確認にはならない。
+- **ブロックしている機能**: 実際の「iPhone でアカウントを追加したら Mac
+  に自動的に出現する」体験そのものの確認。
+- **対応手順** (実機 iPhone + Mac、同一 Apple ID、両方でその Apple ID の
+  iCloud キーチェーンが有効になっていること):
+  1. 両方の実機に `make ios-device` / `make mac`(または `make mac-app`)
+     でビルド・インストールする (`DEVELOPMENT_TEAM`/Bundle ID が同じ
+     チームで署名されていること — 異なる Team ID/Bundle ID では
+     entitlement の `$(TeamIdentifierPrefix)$(CFBundleIdentifier)` が
+     一致せず別々の KVS/Keychain スコープになるため、必ず同じ
+     `Config/Local.xcconfig` 設定でビルドすること)。
+  2. iPhone 側でアカウントを 1 つ追加する (dev/mailstack の Dovecot でも、
+     実 Gmail/iCloud アカウントでも可)。
+  3. 数秒〜数十秒待ってから Mac 側のアプリを起動 (またはフォアグラウンド
+     復帰) し、設定のアカウント一覧に iPhone で追加したアカウントが
+     自動的に出現することを確認する。
+     - 資格情報 (パスワード/Gmail リフレッシュトークン) も iCloud
+       キーチェーン経由で届いていれば、そのまま初期同期が始まる。
+     - まだ届いていなければ「資格情報を待っています」バナー + 「再接続」
+       ボタンが出る。Mac 側でキーチェーンアクセス.app を開き iCloud
+       キーチェーンの同期状況を確認するか、数分待ってアプリを再起動
+       (自動再チェックが走る) するか、「再接続」ボタンを手動で押す。
+  4. 逆方向 (Mac で追加 → iPhone に出現) も確認する。
+  5. 一方のデバイスでアカウントを削除し、もう一方でも消えることを確認
+     する (tombstone 経由の削除伝播)。
+  6. 設定の「iCloud でアカウントを同期」トグルを一方のデバイスだけ OFF
+     にし、そのデバイスでは新規アカウント追加が cloud に反映されない
+     (もう一方には出現しない) こと、OFF のデバイス自身のローカル動作は
+     変わらないことを確認する。
+
 ## 公開時に必要な対応 (まとめ)
 
 以下は「今すぐ開発を止める理由」ではなく、実際に公開・配布する段になったら

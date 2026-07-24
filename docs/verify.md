@@ -836,3 +836,85 @@ otegami へ") が統合受信トレイの新着順リストの**最後尾**ま�
 タイミング、保存前の「接続テスト」ではない) に出るため、一度きりの
 チェックでは間に合わないことがある — スクロールのリトライループの
 たびに毎回チェックし直す設計にした。
+
+## iOS シミュレータ検証 (M11: iCloud アカウント同期)
+
+```sh
+scripts/verify-ios-icloud.sh
+```
+
+実 2 台のデバイス間の iCloud KVS 往復は 1 台のシミュレータ/この開発環境
+からは検証できない (`PENDING.md` に人間向けの実機確認手順あり)。自動検証
+できるのは以下:
+
+1. `OtegamiM11ICloudSyncUITests.testCloudSyncToggleIsShownAndOnByDefault` —
+   `com.apple.developer.ubiquity-kvstore-identifier` entitlement 付きで
+   アプリがクラッシュせず起動すること (M10 の「App Group entitlement
+   missing → 起動時クラッシュ」の再発防止に相当)、設定に「iCloud で
+   アカウントを同期」トグルが表示されデフォルト ON であることを確認する。
+2. `OtegamiM11ICloudSyncUITests
+   .testTogglingCloudSyncOffAndBackOnDoesNotCrashOrLoseTheAccountList` —
+   Dovecot アカウントを追加 (M1 相当の回帰確認を兼ねる) →
+   トグルを OFF→ON → アプリ再起動 → アカウント・メッセージ一覧が
+   トグル操作前とまったく同じまま残っていることを確認する
+   (`AppEnvironment.setCloudSyncEnabled` の OFF→ON full reconcile が
+   既存アカウントを複製も欠落もさせないことの検証)。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`icloud-01-settings-toggle.png` / `icloud-02-inbox-after-toggle-roundtrip.png`
+として出力される。
+
+### この開発環境で発見した重要な副作用: iCloud KVS/Keychain はシミュレータの `simctl uninstall` では消えない
+
+M11 実装中、`scripts/verify-ios-m1.sh` を実行した直後に
+`scripts/verify-ios-m6.sh` を実行したところ、`simctl uninstall` 後の
+「フレッシュインストール」のはずのアプリが、**M1 のテストで追加した
+Dovecot アカウントを最初から表示した状態で起動する**という現象が起きた。
+
+原因: `simctl uninstall` はアプリ自身のコンテナ (GRDB データベースを含む)
+を削除するが、Keychain と `NSUbiquitousKeyValueStore` の内容はこの
+シミュレータ/toolchain ではアプリのコンテナ外に保存されており消えない。
+M11 の `AccountCloudSyncEngine` は起動のたびに iCloud KVS を reconcile
+するため、前回の verify 実行が cloud に push したアカウント (かつ
+Keychain にパスワードも残っている) を「フレッシュな」はずの起動で
+そのまま復元してしまう — この機能が実装通りに動いている証拠ではあるが、
+「`simctl uninstall` = クリーンな状態」という M1〜M10 の verify スクリプト
+群の前提を M11 が壊した形になる。
+
+対処: `scripts/verify-ios-m1.sh`/`verify-ios-m6.sh`/`verify-ios-icloud.sh`
+の「フレッシュインストール」ステップを `simctl uninstall` から
+`simctl shutdown` + `simctl erase` (+ 再 boot) に置き換えた。erase は
+Keychain/KVS を含むシミュレータの全状態をリセットするため、M11 より前と
+同じ「本当にアカウント 0 件の起動」が得られる。他の verify スクリプト
+(M2-M5, M7-M9) はまだ旧来の `simctl uninstall` のままなので、将来これらを
+実行して同じ現象に遭遇したら同じパターンに揃えること
+(`docs/roadmap.md` にも記録済み)。
+
+### `Toggle` の `Switch.value` をタップ直後に読むのは信頼できない
+
+`settings.cloudSyncToggle` (`Toggle`) をタップした直後に
+`XCUIElement.value` (`"0"`/`"1"`) を読むと、実際には値が反映されている
+にもかかわらず短時間 (数秒のポーリングでも) 変化を検出できないことが
+あった。M2/M4/M7 で記録済みの「タップ自体は成立しているのに XCUITest 側の
+状態読み取りが追いつかない」系の問題の再発と見られる。最終的には
+`Switch.value` の厳密な値チェックをやめ、「タップ後もアプリが応答し続けて
+いること」(= クラッシュ/ハングしていないこと) を確認するだけに弱めた —
+このテストの本来の目的 (entitlement 追加がトグル操作でクラッシュを
+起こさないことの確認) にはそれで十分だったため。デフォルト値そのものの
+確認 (`testCloudSyncToggleIsShownAndOnByDefault`) は `Switch.value` の
+単発読み取りで問題なく動く (タップ直後の再読み取りだけが不安定)。
+
+### `List(selection:)` の行から Settings を閉じた後にメッセージ一覧へ戻る
+
+Settings シートを閉じると、それを開く前にいた画面 (この場合はサイドバー
+自体、`returnToSidebarRootIfNeeded` で明示的に戻ってから Settings を
+開いたため) に戻る。`sidebar.unifiedInbox` は `Button` ではなく
+`List(selection:)` の行なので、M2 の落とし穴 #2 (`List(selection:)` は
+タップでバインディングが更新されないことがある) がここでも当てはまる
+可能性がある。タップで安定して再入力する代わりに、`restartAppToRecoverTouchDelivery`
+(`app.terminate()` + `app.launch()`) で丸ごと再起動する方式にした —
+M1 以来の全スクリプトが依拠している「コールドリランチはユニファイド
+受信トレイを自動選択する」という `RootView` の挙動 (`docs/verify.md`
+「Offline verification pattern」節) にそのまま乗るだけで済み、GRDB から
+直接読み直すのでトグル操作が何かをおかしくしていないかの検証としても
+より確実だった。

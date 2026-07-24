@@ -40,6 +40,11 @@ search, and can optionally run its own self-hosted push notification relay.
 - **macOS**: native menu bar commands (⌘N new message, ⌘R reply, ⌘⌫
   delete, ⌘⇧F focus search, ⌘]/⌘[ switch mailboxes), a native Settings
   scene, and its own compose windows.
+- **iCloud account sync**: add an account on one device (iOS/macOS, same
+  Apple ID) and it appears ready-to-sync on the others — credentials ride
+  iCloud Keychain, account metadata syncs via `NSUbiquitousKeyValueStore`;
+  see [docs/icloud-sync.md](docs/icloud-sync.md). Opt-out toggle in
+  Settings.
 - **Performance**: tested against a 100k-message synthetic mailbox — see
   [docs/performance.md](docs/performance.md).
 
