@@ -49,11 +49,13 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
 - **下書きの添付ファイル**: `ComposerView.saveDraft()` は添付ファイルを
   保存しない (テキストフィールドのみ)。`outboxAttachment` と同様の仕組みで
   `draftAttachment` テーブルを持たせれば実現できるはず。
-- **Trash メールボックスが存在しないサーバへの対応**: SPECIAL-USE を返さず
-  `Trash` という名前のメールボックスも存在しないサーバに対しては、削除
-  opQueue がいつまでも `mailboxNotFound` で保留され続ける。Trash の自動
-  作成、またはユーザーへの「削除できません」バナー表示が必要
-  (`docs/verify.md` M3 節)。
+- **Trash メールボックスが存在しないサーバでの Trash 自動作成**: SPECIAL-USE
+  を返さず `Trash` という名前のメールボックスも存在しないサーバでは、削除
+  opQueue が `mailboxNotFound` で失敗する。失敗した op は 5 回試行後に
+  failed となり、M10 で追加した `FailedOperationsView` バナーから再試行/破棄
+  できる (可視化は対応済み)。残る課題は削除を成功させる側 — Trash の自動作成
+  (CREATE + SUBSCRIBE) または「Trash なしサーバでは完全削除にフォールバック」
+  の選択肢の実装 (`docs/verify.md` M3 節)。
 - **`ThreadAssigner.assignAllUnthreaded` のバッチ化**: 2万通の未スレッド化
   メッセージの一括スレッド化に約14秒かかる (`docs/performance.md`)。UI を
   ブロックしないため実害は小さいが、将来 10万通超のバックログや同期的な
