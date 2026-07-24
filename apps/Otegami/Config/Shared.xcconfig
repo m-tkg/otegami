@@ -14,3 +14,20 @@ CURRENT_PROJECT_VERSION = 1
 // this empty default. `GoogleOAuthConfig` (app code) treats an empty/unset
 // value as "Gmail unavailable in this build" and disables the Gmail button.
 GOOGLE_OAUTH_CLIENT_ID =
+
+// M9: App Group (shared GRDB database container) + Keychain Access Group
+// (shared account-password items), so the NotificationService Extension
+// can look up an account's IMAP settings + password without the push
+// payload ever carrying anything beyond accountId/uidNext (plan §7's
+// privacy design). Derived from OTEGAMI_BUNDLE_ID/DEVELOPMENT_TEAM
+// (Signing.xcconfig) rather than hardcoded, so a builder overriding either
+// via Local.xcconfig automatically gets a consistent, non-colliding group
+// id/keychain group without editing this file. `$(AppIdentifierPrefix)` is
+// deliberately not used for the keychain group — it's an entitlements-only
+// magic variable Swift code has no equivalent way to read at runtime, so
+// composing the team id ourselves (available as a plain xcconfig variable)
+// lets the same value be embedded in both the entitlements and Info.plist
+// (see AppEnvironment/KeychainCredentialStore/NotificationService, which
+// all read it from Info.plist).
+OTEGAMI_APP_GROUP = group.$(OTEGAMI_BUNDLE_ID)
+OTEGAMI_KEYCHAIN_GROUP = $(DEVELOPMENT_TEAM).$(OTEGAMI_BUNDLE_ID).shared

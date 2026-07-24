@@ -28,9 +28,21 @@ struct KeychainCredentialStore: Sendable {
     }
 
     private let service: String
+    /// M9: shares these Keychain items with the `NotificationService`
+    /// Extension (`OTEGAMI_KEYCHAIN_GROUP`, `Config/Shared.xcconfig`) so it
+    /// can look up a `.password`-auth account's IMAP password without the
+    /// push payload ever carrying it. `nil` (the pre-M9 default) omits
+    /// `kSecAttrAccessGroup` from every query entirely — that's not "no
+    /// group", it's "whichever group SecItemAdd chooses by default for
+    /// this process" (the app's own primary group when unspecified),
+    /// functionally identical to before this existed for callers that
+    /// never opt in (`swift test`, previews, or a build with no App Group
+    /// entitlement configured).
+    private let accessGroup: String?
 
-    init(service: String = "com.m-tkg.otegami.account-password") {
+    init(service: String = "com.m-tkg.otegami.account-password", accessGroup: String? = nil) {
         self.service = service
+        self.accessGroup = accessGroup
     }
 
     func setPassword(_ password: String, forAccountId accountId: String) throws {
@@ -75,10 +87,14 @@ struct KeychainCredentialStore: Sendable {
     }
 
     private func baseQuery(accountId: String) -> [String: Any] {
-        [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: accountId,
         ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return query
     }
 }

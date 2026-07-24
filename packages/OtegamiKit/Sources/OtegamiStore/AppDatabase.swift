@@ -24,14 +24,34 @@ public final class AppDatabase: Sendable {
     }
 
     /// The shared on-disk database, at
-    /// `<Application Support>/otegami/otegami.sqlite`. Creates the
-    /// directory if needed.
-    public static func makeShared() throws -> AppDatabase {
-        let directory = try applicationSupportDirectory()
+    /// `<container>/otegami/otegami.sqlite`.
+    ///
+    /// `appGroupIdentifier`, when non-`nil` and a container for it actually
+    /// exists, places the database in that App Group's shared container
+    /// instead of this process's own Application Support directory (M9:
+    /// lets the `NotificationService` Extension open the same database —
+    /// read-only in practice, since it only ever looks up an
+    /// `AccountRecord` — as a concurrent `DatabasePool`/WAL reader; SQLite's
+    /// WAL mode supports exactly this multi-process read pattern). Falls
+    /// back to the pre-M9 Application Support location when `nil` or the
+    /// container can't be resolved (no App Group entitlement configured —
+    /// true for `swift test`, previews, and any target that never opted
+    /// in), so this stays backward compatible for every caller that
+    /// doesn't pass one.
+    public static func makeShared(appGroupIdentifier: String? = nil) throws -> AppDatabase {
+        let directory = try sharedDirectory(appGroupIdentifier: appGroupIdentifier)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("otegami.sqlite")
         let dbPool = try DatabasePool(path: url.path, configuration: makeConfiguration())
         return try AppDatabase(dbPool)
+    }
+
+    private static func sharedDirectory(appGroupIdentifier: String?) throws -> URL {
+        if let appGroupIdentifier, !appGroupIdentifier.isEmpty,
+           let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) {
+            return container.appendingPathComponent("otegami", isDirectory: true)
+        }
+        return try applicationSupportDirectory()
     }
 
     /// An in-memory database (no file on disk), for tests and previews.

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	M9: iOS-only entitlements (App Group + Keychain Access Group, shared
+	with the NotificationService Extension — see Config/Shared.xcconfig's
+	doc comment on OTEGAMI_APP_GROUP/OTEGAMI_KEYCHAIN_GROUP). Applied only
+	to the iOS/iOS Simulator SDKs (project.yml:
+	CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]/[sdk=iphonesimulator*]), *not*
+	macOS: NotificationService is iOS-only (its own doc comment explains
+	why), and requesting an App Group capability macOS never uses would
+	require it to be portal-registered before `make mac`'s automatic
+	signing can produce a valid provisioning profile — unnecessary friction
+	for a capability nothing on that platform reads. `AppDatabase`/
+	`KeychainCredentialStore` already degrade gracefully (fall back to the
+	pre-M9 per-app storage) when an App Group/Keychain Access Group is
+	named but not actually entitled, so macOS simply keeps behaving as it
+	did before M9.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(OTEGAMI_APP_GROUP)</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(OTEGAMI_KEYCHAIN_GROUP)</string>
+	</array>
+</dict>
+</plist>

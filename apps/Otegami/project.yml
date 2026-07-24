@@ -43,6 +43,11 @@ targets:
         # this key at runtime and treats empty/unset as "Gmail unavailable
         # in this build".
         GOOGLE_OAUTH_CLIENT_ID: $(GOOGLE_OAUTH_CLIENT_ID)
+        # M9: read by AppEnvironment/KeychainCredentialStore/AppDatabase at
+        # runtime — see Config/Shared.xcconfig's doc comment on why these
+        # are composed from xcconfig variables instead of hardcoded.
+        OtegamiAppGroupIdentifier: $(OTEGAMI_APP_GROUP)
+        OtegamiKeychainAccessGroup: $(OTEGAMI_KEYCHAIN_GROUP)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -60,6 +65,11 @@ targets:
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_PREVIEWS: YES
+        # iOS-only (Config/Otegami-iOS.entitlements' own doc comment
+        # explains why macOS intentionally gets no entitlements file at
+        # all here, rather than one lacking these two keys).
+        CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]: Config/Otegami-iOS.entitlements
+        CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]: Config/Otegami-iOS.entitlements
         # The asset catalog carries a separate appiconset per platform
         # (iOS wants a single 1024x1024 "universal" image; macOS wants the
         # full 16–512pt @1x/@2x set), so the compiler needs to be told which
@@ -82,6 +92,65 @@ targets:
         product: MailTransportMailCore
       - package: OtegamiKit
         product: GoogleOAuth
+      - package: OtegamiKit
+        product: PushRelayClient
+      - target: NotificationService
+        embed: true
+        platformFilter: iOS
+
+  # M9: push-received extension. iOS only (`platform:` below, and embedded
+  # into the Otegami target only for the iOS destination via
+  # `platformFilter` above) — macOS's notification model doesn't route
+  # through a Notification Service Extension the same way, and the plan's
+  # push relay is scoped to keeping a phone's badge/banner useful while the
+  # app isn't foregrounded, which is an iOS-specific concern here. Receives
+  # the minimal `accountId`/`uidNext` push payload (`OtegamiRelayAPI
+  # .PushNotificationPayload`) and re-fetches just the newest envelope over
+  # IMAP to fill in sender/subject before the notification is shown — see
+  # NotificationService/NotificationService.swift's doc comment for the
+  # full flow and the App Group/Keychain Access Group sharing this depends
+  # on.
+  NotificationService:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: NotificationService
+    info:
+      path: Generated/NotificationService-Info.plist
+      properties:
+        CFBundleDisplayName: Otegami
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+        OtegamiAppGroupIdentifier: $(OTEGAMI_APP_GROUP)
+        OtegamiKeychainAccessGroup: $(OTEGAMI_KEYCHAIN_GROUP)
+    entitlements:
+      path: Generated/NotificationService.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - $(OTEGAMI_APP_GROUP)
+        keychain-access-groups:
+          - $(OTEGAMI_KEYCHAIN_GROUP)
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        # Bundle id is derived from the app's, per Signing.xcconfig's doc
+        # comment ("将来 Extension 等の ID もここから導出する").
+        PRODUCT_BUNDLE_IDENTIFIER: $(OTEGAMI_BUNDLE_ID).NotificationService
+    dependencies:
+      - package: OtegamiKit
+        product: OtegamiCore
+      - package: OtegamiKit
+        product: MailTransport
+      - package: OtegamiKit
+        product: MailTransportMailCore
+      - package: OtegamiKit
+        product: OtegamiStore
+      - package: OtegamiKit
+        product: OtegamiRelayAPI
+      - package: OtegamiKit
+        product: SyncEngine
 
   # iOS-only: drives the real app (XCUIApplication) against the dev
   # mailstack for M1's automated simulator verification. See

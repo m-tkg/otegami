@@ -36,7 +36,7 @@ final class AppEnvironment {
     init() {
         let database: AppDatabase
         do {
-            database = try AppDatabase.makeShared()
+            database = try AppDatabase.makeShared(appGroupIdentifier: OtegamiAppGroup.identifier)
         } catch {
             // The on-disk database couldn't be opened (corrupt file, out of
             // disk space, ...). Falling back to in-memory keeps the app
@@ -56,7 +56,7 @@ final class AppEnvironment {
             smtpSessionFactory: { config in MailCoreSMTPSession(config: config) },
             messageBuilder: { draft in MailCoreMessageBuilder.build(draft) }
         )
-        self.credentialStore = KeychainCredentialStore()
+        self.credentialStore = KeychainCredentialStore(accessGroup: OtegamiAppGroup.keychainAccessGroup)
 
         if let endpoints = GoogleOAuthConfig.endpoints {
             let client = GoogleOAuthClient(
