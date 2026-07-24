@@ -16,6 +16,13 @@ final class OtegamiM4SwipeReadUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
+        // `RootView`'s "last opened thread" restoration means a fresh
+        // launch after `OtegamiM4ThreadDetailUITests` opened a thread comes
+        // up showing that thread's detail pane directly (this simulator/
+        // device's `NavigationSplitView` is compact-width, a real push
+        // stack) — pop back to the message list first.
+        popBackOnceIfNeeded(in: app)
+
         let list = app.collectionViews["messageList.list"]
         let row = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "Re: 明日の打ち合わせについて")).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 30), "Expected the 2-message thread row to be present")

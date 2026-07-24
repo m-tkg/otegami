@@ -90,6 +90,41 @@ extension XCTestCase {
         type(password, into: app.secureTextFields["accountSetup.password"])
     }
 
+    /// M4: pops back one level (detail → content, i.e. `ThreadDetailView`
+    /// → `MessageListView`) via the navigation bar's leading button, for
+    /// any test that might launch straight into a restored
+    /// `ThreadDetailView` (`RootView`'s "last opened thread" `@AppStorage`
+    /// restoration, the same mechanism M2 relies on for its offline
+    /// checkpoint) rather than the message list. On this simulator/device
+    /// ("iPhone 17 Pro Max") `NavigationSplitView` is compact-width —
+    /// sidebar → content → detail is a real push stack with a back button
+    /// at each level, not a side-by-side layout. A no-op if no back button
+    /// is present (already at the message list, or nothing was ever
+    /// opened).
+    func popBackOnceIfNeeded(in app: XCUIApplication) {
+        let backButton = app.navigationBars.buttons.element(boundBy: 0)
+        if backButton.waitForExistence(timeout: 5) {
+            backButton.tap()
+        }
+    }
+
+    /// Like `popBackOnceIfNeeded`, but keeps popping (up to 3 times, the
+    /// deepest this app's navigation stack ever gets — sidebar → content →
+    /// detail) until the sidebar's "add account" entry point (either the
+    /// empty-state button or the toolbar one) is reachable — for a test
+    /// that needs the sidebar itself (e.g. adding a second account) and
+    /// can't assume how many levels deep a restored launch left off at.
+    func returnToSidebarRootIfNeeded(in app: XCUIApplication) {
+        for _ in 0..<3 {
+            if app.buttons["sidebar.addAccountButton"].exists || app.buttons["sidebar.addAccountToolbarButton"].exists {
+                return
+            }
+            let backButton = app.navigationBars.buttons.element(boundBy: 0)
+            guard backButton.waitForExistence(timeout: 3) else { return }
+            backButton.tap()
+        }
+    }
+
     func openAccountSetup(in app: XCUIApplication) {
         // Empty-state button (first launch) or the toolbar "+" (already has
         // accounts, e.g. re-running this test without resetting the

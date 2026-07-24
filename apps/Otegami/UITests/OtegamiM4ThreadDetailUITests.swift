@@ -17,9 +17,19 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
         XCTAssertTrue(threadRow.waitForExistence(timeout: 30), "Expected the 3-message thread row to be present")
         threadRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
+        // Scoped to the thread detail pane specifically, not `app` at
+        // large: on this simulator/device size ("iPhone 17 Pro Max"),
+        // `NavigationSplitView` renders content and detail side by side
+        // rather than collapsing to compact width, so `messageList.list`'s
+        // own row for this same thread (also showing "来週のランチ" in its
+        // subject) stays on screen right next to the detail pane —
+        // querying `app.staticTexts` unscoped double-counts it.
+        let detail = app.scrollViews["threadDetail.scrollView"]
+        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected the thread detail pane to appear after tapping the thread row")
+
         // Every message in the thread gets its own collapsed/expanded
         // header row, regardless of expansion state.
-        let headers = app.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message.") )
+        let headers = detail.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message."))
             .matching(NSPredicate(format: "identifier CONTAINS %@", ".header"))
         XCTAssertTrue(
             waitForCount(headers, atLeast: 3, timeout: 20),
@@ -29,19 +39,26 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
         // Only the newest message (seed-0011, "駅前のカフェはどうでしょう")
         // starts expanded — its body should be visible without tapping
         // anything.
-        let latestBody = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "駅前のカフェ")).firstMatch
+        let latestBody = detail.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "駅前のカフェ")).firstMatch
         XCTAssertTrue(latestBody.waitForExistence(timeout: 20), "Expected the newest message's body to be expanded by default")
 
-        // Exactly one message's full `MessageView` (identified by its
-        // `threadDetail.message.<id>.body` container) should be mounted at
-        // a time — checking for *specific body text* being absent isn't
-        // reliable here, since these seed messages are short enough that a
-        // collapsed row's own snippet preview (`ThreadMessageSummaryRow`)
-        // can already contain most/all of the same text the full body
-        // would; counting mounted body containers sidesteps that.
-        let bodies = app.descendants(matching: .any).matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message."))
-            .matching(NSPredicate(format: "identifier CONTAINS %@", ".body"))
-        XCTAssertEqual(bodies.count, 1, "Expected exactly one expanded message body before tapping any other header")
+        // Exactly one `MessageView` should be mounted at a time — counted
+        // by its subject header text ("来週のランチ", shared by all 3
+        // messages' subjects: the original and both "Re:" replies), which
+        // only ever appears inside an *expanded* `MessageView`
+        // (`ThreadMessageSummaryRow`, the collapsed header, never renders
+        // the subject — only sender/snippet/date), never any collapsed
+        // header row. Neither an identifier-based query
+        // (`messageDetail.subject`, exact *or* `CONTAINS` — this
+        // simulator/toolchain's accessibility bridging didn't expose it to
+        // either form) nor a container-level `...body` identifier query
+        // (over-counted to 5 for one mounted instance — nested elements
+        // apparently inherit/re-report an ancestor's identifier here) held
+        // up; a label-text `CONTAINS` search restricted to text that only
+        // exists in the expanded state, scoped to `detail` (see above),
+        // does.
+        let subjects = detail.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "来週のランチ"))
+        XCTAssertEqual(subjects.count, 1, "Expected exactly one expanded message body before tapping any other header")
 
         // Tapping the oldest message's collapsed header expands it too
         // (plan: "ヘッダタップで展開") — now two bodies should be mounted.
@@ -50,8 +67,8 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
         oldestHeader.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         XCTAssertTrue(
-            waitForCount(bodies, atLeast: 2, timeout: 20),
-            "Expected tapping the oldest header to expand a second message body, found \(bodies.count)"
+            waitForCount(subjects, atLeast: 2, timeout: 20),
+            "Expected tapping the oldest header to expand a second message body, found \(subjects.count)"
         )
     }
 

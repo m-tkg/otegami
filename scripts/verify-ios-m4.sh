@@ -62,6 +62,24 @@ screenshot() {
   xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 }
 
+# Like `screenshot`, but for a phase whose XCUITest already left the app on
+# the message list (not a thread detail) — relevant because `xcodebuild
+# test-without-building` doesn't leave the AUT process alive once the test
+# run exits (confirmed empirically: a plain `simctl launch` here still cold-
+# starts a fresh process, same as `--terminate-running-process`), so *any*
+# relaunch triggers `RootView`'s "last opened thread" `@AppStorage`
+# restoration — which would reopen whatever thread an *earlier* phase last
+# viewed, not reflect what this phase's test actually left on screen.
+# `-uiTestsSkipThreadRestoration` (a launch argument `RootView` checks for)
+# suppresses that restoration for this one relaunch.
+screenshotForeground() {
+  local name="$1"
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsSkipThreadRestoration >/dev/null
+  sleep 3
+  xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/$name"
+  xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+}
+
 doveadm() {
   docker compose -f "$ROOT_DIR/dev/mailstack/compose.yml" exec -T dovecot doveadm "$@"
 }
@@ -132,13 +150,13 @@ for subject in "明日の打ち合わせについて" "Re: 明日の打ち合わ
 done
 
 echo "==> Capturing screenshot: after thread-wide swipe-to-read"
-screenshot "m4-03-swiped-read.png"
+screenshotForeground "m4-03-swiped-read.png"
 
 echo "==> Phase 4/4: add test2 account, confirm both accounts' threads in the unified inbox"
 run_test "OtegamiM4UnifiedInboxUITests"
 
 echo "==> Capturing screenshot: unified inbox with both accounts' threads"
-screenshot "m4-04-unified-inbox-two-accounts.png"
+screenshotForeground "m4-04-unified-inbox-two-accounts.png"
 
 cat <<EOF
 

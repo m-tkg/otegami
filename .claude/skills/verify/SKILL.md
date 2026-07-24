@@ -217,3 +217,79 @@ Two things worth recording from building `scripts/verify-ios-m3.sh` /
    message alone; the fix was picking a collision-free subject for that
    test, not an environment workaround. Worth remembering whenever a test
    subject string could plausibly be any other seeded subject's substring.
+
+## M4: thread-view-specific pitfalls (counting elements, exact identifier lookups, LazyVStack)
+
+Building `OtegamiM4ThreadDetailUITests` (opening a thread and asserting
+"only the newest message is expanded") surfaced three more issues, on top
+of the ones already logged above — worth checking this list again before
+writing any test that counts elements or opens a `LazyVStack`-backed
+detail view:
+
+1. **Counting elements via a *container*-level `identifier CONTAINS`
+   query over-counts** — querying `app.descendants(matching: .any)
+   .matching(identifier CONTAINS "threadDetail.message.")
+   .matching(identifier CONTAINS ".body")` to count how many
+   `MessageView`s were mounted returned **5** for a single mounted
+   instance, not 1. SwiftUI's accessibility bridging exposes several
+   nested elements for one `.accessibilityIdentifier(...)`-tagged
+   container (each internal layout wrapper seems to inherit/re-report it),
+   so a descendant count is not "one identifier = one element". Count a
+   single known-unique *leaf* element instead (e.g. one specific `Text`'s
+   identifier, like `messageDetail.subject`, that's only ever set in one
+   place) — that reliably reports 1 per instance.
+2. **The `messageDetail.subject` `Text` — a plainly-rendered, already-
+   loaded element — didn't match via `XCUIElementQuery.matching
+   (identifier:)`** (an *exact* identifier match), the same failure mode
+   M2's pitfall #4 already documented for `app.buttons["id"]`/
+   `app.staticTexts["id"]` subscript lookups. It's not limited to the
+   subscript form specifically — any exact-identifier query can hit it in
+   this simulator/toolchain. `.matching(NSPredicate(format: "identifier
+   CONTAINS %@", "messageDetail.subject"))` found it immediately. Default
+   to `CONTAINS` for *any* identifier-based query here, not just the
+   subscript form.
+3. **Right after tapping a thread row, an unscoped `app.staticTexts` query
+   can still double-count `messageList.list`'s own (about-to-be-pushed-
+   away) row alongside `ThreadDetailView`'s copy of the same subject text**
+   — `NavigationSplitView` on this simulator/device ("iPhone 17 Pro Max")
+   *is* compact-width (confirmed via screenshot: a single column with a
+   navigation-bar back button, not sidebar+content+detail side by side),
+   but the outgoing content column's row apparently isn't torn out of the
+   accessibility tree instantaneously when the detail push transition
+   starts, so a query issued immediately after the tap can catch both for
+   a moment. Scoping to the specific pane under test (e.g.
+   `app.scrollViews["threadDetail.scrollView"].staticTexts.matching(...)`)
+   rather than querying `app` at large sidesteps it regardless of the
+   exact cause, and is worth doing on principle whenever more than one
+   *could* plausibly contain matching text.
+4. **Because this app is compact-width, `RootView`'s "last opened thread"
+   restoration means a fresh `app.launch()` can start the app already
+   pushed onto `ThreadDetailView` — with the sidebar (and its toolbar
+   buttons, e.g. "add account") and even `messageList.list` itself
+   unreachable until the navigation-bar back button is tapped.** Confirmed
+   by a debug screenshot taken immediately after a test failed trying to
+   find a `messageList.list` cell that, per the screenshot, simply wasn't
+   on screen — the app had launched straight into the thread detail pane
+   restored from the *previous* test's `OtegamiM4ThreadDetailUITests` run
+   in the same simulator install. Any M4 test after the first one to open
+   a thread must pop back first: `popBackOnceIfNeeded(in:)` (one level,
+   detail → content) or `returnToSidebarRootIfNeeded(in:)` (up to three
+   levels, polling for the sidebar's add-account entry point) in
+   `DovecotAccountUITestHelpers.swift`. Don't assume a "fresh" launch
+   means "fresh UI state" once a previous test in the same run has ever
+   opened something `@AppStorage` remembers.
+5. **A `ScrollView`/`LazyVStack` detail view that opens with its "primary"
+   content off-screen never materializes that content's elements at all**
+   — `ThreadDetailView` expands the *newest* message by default, but
+   `messages` lists oldest-first, so the expanded `MessageView` sits at
+   the *bottom* of the `LazyVStack`. Without an explicit scroll anchor,
+   the `ScrollView` opens pinned to the top (the oldest, collapsed
+   message), and `LazyVStack` — true to its name — doesn't render
+   (or attach accessibility identifiers to) rows outside the current
+   viewport, so `messageDetail.subject` simply doesn't exist yet no matter
+   how long a test waits. Fixed with `.defaultScrollAnchor(.bottom)` on
+   the `ScrollView`, not a test-side workaround — this was a real UX bug
+   (a user opening a long thread should see the newest message, not have
+   to scroll to it), not a simulator quirk. Worth checking for on *any*
+   `LazyVStack`/`LazyVGrid` where the row a test (or a user) cares about
+   isn't necessarily the first one in list order.
