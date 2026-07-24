@@ -60,15 +60,71 @@
   4. もしログインに失敗する場合、上記の「未確定事項」(ユーザー名の形式) を
      疑い、必要なら実装を短縮形に切り替えて再確認する。
 
-## M9: APNs .p8 キー発行
+## M9: APNs .p8 キー発行 + 実機での最終確認
 
-- **理由**: プッシュ通知リレーサーバーは token-based (.p8) 認証で APNs に接続する。
-  self-host 前提のため、リレーを立てる人が自分の Apple Developer アカウントで発行する必要がある。
-- **ブロックしている機能**: プッシュリレーによる新着通知 (M9 で実装予定)。
-- **対応手順** (M9 実装時に `docs/relay-deployment.md` として詳細化予定):
+**実装状況**: M9 のリレーサーバー・アプリ側オプトイン UI・NotificationService
+Extension は実装済み・大部分を自動検証済み (詳細は `docs/relay-deployment.md`
+と本セッションの最終報告を参照)。**残っているのは `.p8` キー発行と、それを
+使った実機での「実際に通知が届く」確認のみ。**
+
+- **理由**: プッシュ通知リレーサーバーは token-based (.p8) 認証で APNs に
+  接続する。self-host 前提のため、リレーを立てる人が自分の Apple
+  Developer アカウントで発行する必要がある。また iOS シミュレータは
+  APNs デバイストークンを発行しないため、「実際に端末に通知が届く」
+  確認はシミュレータでは原理的に不可能 (`PushTokenCenter` はシミュレータ
+  上では `.noDeviceToken` を返し、`PushNotificationSettingsView` がその旨
+  を表示する — ここまでは自動検証済み)。
+- **ブロックしている機能**: 実 APNs 経由でのプッシュ通知 (アプリ kill 状態
+  での新着通知)。ConsolePushSender へのフォールバック経路・IDLE 監視・
+  push 発火判定・API・アプリ側登録 UI はすべて `.p8` なしで自動検証済み
+  (`server/otegami-relay/Tests/OtegamiRelayTests/`、
+  `scripts/verify-relay.sh` — 実 Dovecot に対する IDLE→新着→push 発火の
+  E2E)。
+- **対応手順** (`docs/relay-deployment.md` に詳細版あり):
   1. [Apple Developer](https://developer.apple.com/account/) の
      「証明書、識別子とプロファイル」→「キー」で APNs 用キーを新規作成する。
   2. ダウンロードした `.p8` ファイル (一度しかダウンロードできない点に注意) と、
-     Key ID・Team ID・Bundle ID を控える。
-  3. リレーサーバーの環境変数 (`APNS_KEY_PATH` 等、M9 で定義) に `.p8` のパスと ID 類を設定する。
-  4. `.p8` ファイルはリポジトリに含めない (`.gitignore` で除外済み)。
+     Key ID・Team ID を控える (Bundle ID は `com.m-tkg.otegami`、
+     `Config/Signing.xcconfig`/`Local.xcconfig` で変更可)。
+  3. リレーサーバーの環境変数 `APNS_KEY_PATH`/`APNS_KEY_ID`/`APNS_TEAM_ID`/
+     `APNS_BUNDLE_ID` (4 つ全て設定して初めて `APNsSender` が有効になる。
+     1 つでも欠けると `ConsolePushSender` にフォールバックする) を設定する。
+     `docker-compose.yml`/`.env.sample` 参照。
+  4. `.p8` ファイルはリポジトリに含めない (`.gitignore` で
+     `server/otegami-relay/secrets/` ごと除外済み)。
+  5. 実機に `make ios-device` でビルド・インストールし、DEVELOPMENT_TEAM
+     が実際に登録済みの Apple Developer アカウントであることを確認する
+     (現状 `G72M73C546` — mytty と共有のチーム。別アカウントを使う場合は
+     `Local.xcconfig` で上書き)。
+  6. 実機上でアプリの「設定」→「プッシュ通知」からリレー URL (https 必須。
+     手前に reverse proxy を立てて TLS 終端すること —
+     `docs/relay-deployment.md` の「6. HTTPS の終端」参照) を入力し
+     「有効にする」→ 通知の許可 → デバイストークン取得 → 登録、まで進む
+     ことを確認する。
+  7. アプリをバックグラウンド/kill した状態で該当 IMAP アカウントに新着
+     メールを送り、数秒〜十数秒 (IDLE の反応速度次第) で通知が届くこと、
+     差出人・件名が正しく表示されること (`NotificationService` が
+     `mutable-content` を書き換えている証拠) を確認する。
+  8. `DELETE /v1/watches/:id` (アプリの「無効にする」、またはアカウント
+     削除) 後、同じ操作で通知が届かなくなることを確認する。
+
+### 既知の未検証事項 (実機がないと検証できない/優先度を下げた項目)
+
+- 上記の実機 E2E そのもの。
+- Gmail (`.oauth2`) アカウントのプッシュ通知: v1 のリレーは
+  `WatchAuth.Kind.password` のみ対応 (プラン: "LOGIN/XOAUTH2 なし可:
+  password のみ v1")。`AppEnvironment.enablePushNotifications` は
+  `.password` アカウントのみ watch を作成し、Gmail アカウントは黙って
+  スキップする — UI 上に「Gmail は現バージョン未対応」という文言は
+  `PushNotificationSettingsView` の同意ダイアログに含めたが、Gmail
+  アカウント一覧上で個別に無効化理由を出す UI までは実装していない。
+  XOAUTH2 対応 (refresh token を預かる形) は M10 以降の課題。
+- macOS 版のプッシュ通知: `NotificationService` Extension は iOS のみ
+  (理由は `NotificationService.swift`/`Config/Otegami-iOS.entitlements`
+  のコメント参照)。`AppEnvironment.enablePushNotifications` は macOS では
+  `PushError.unsupportedPlatform` を返し、UI がその旨を表示する — ここ
+  までは自動検証済みだが、macOS 版プッシュ通知の実装自体は範囲外。
+- `xcrun simctl push` によるシミュレータへのペイロード注入テスト、
+  `NotificationService` のユニットテスト単体は本セッションでは未実施
+  (時間の都合。`scripts/verify-ios-m9.sh` として今後追加する余地あり —
+  「M10 への引き継ぎ」参照)。

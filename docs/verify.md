@@ -699,3 +699,40 @@ M8での変更なし) が間欠的に失敗するようになった — `MCOMess
   `AttachmentFetcher` を経由する同じ経路であり、`m8-01-attachment-quicklook
   .png` (QuickLook プレビューに実際に見える形の PNG が表示されている) で
   同じダウンロード〜表示パイプラインの動作は視覚的に確認済み。
+
+## iOS シミュレータ検証 (M9)
+
+```sh
+scripts/verify-ios-m9.sh
+```
+
+プッシュリレーのオプトイン UI (設定 → 「プッシュ通知」) を検証する。
+M1–M8 と異なり dev/mailstack への依存もアカウント追加も不要 (有効化フロー
+の「`.password` アカウントごとに watch を作成する」ステップはアカウント
+0件なら単に no-op)。
+
+1. `testEnableButtonDisabledForInvalidRelayURL` — `http://relay.example.com`
+   (https でも localhost でもない) を入力すると「有効にする」ボタンが
+   無効のままであることを確認 (`AppEnvironment.validatedRelayURL`)。
+2. `testEnablingPushOnSimulatorShowsGracefulDegradationMessage` —
+   `https://relay.example.com` を入力するとボタンが有効化 → タップで
+   資格情報送信に関する同意アラートが表示 → 同意すると
+   `AppEnvironment.enablePushNotifications` が呼ばれる → シミュレータは
+   実 APNs デバイストークンを発行しないため必ず `.noDeviceToken` で失敗し
+   → それがクラッシュや無反応ではなく `settings.push.errorMessage` の
+   可視エラーメッセージとして表示されること、かつ
+   `settings.push.enabledLabel` (有効化成功状態) が出ないことを確認する。
+
+screenshot は `SCREENSHOT_DIR/m9-01-app-relaunch.png` (テスト完了後に
+アプリを再起動しての状態確認用 — SwiftUI の `.alert` は dismiss 後は
+何も残らないため、テスト実行中ではなく完了後のスクリーンショットにして
+いる)。
+
+### 既知の制約 (このスクリプトが検証しない範囲)
+
+実 APNs 配信・`NotificationService` による通知書き換え・実機でのエンド
+ツーエンド確認は対象外 (`.p8` キー未発行 — `PENDING.md` の M9 節参照)。
+otegami-relay サーバー自体の IDLE→push 発火パイプラインは
+`scripts/verify-relay.sh` (実 Dovecot に対する統合検証) と
+`server/otegami-relay/Tests/OtegamiRelayTests/WatcherPoolTests.swift`
+(`FakeIMAPServer` 相手のユニット検証) で別途カバーしている。
