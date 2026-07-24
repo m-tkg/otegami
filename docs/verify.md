@@ -736,3 +736,103 @@ otegami-relay サーバー自体の IDLE→push 発火パイプラインは
 `scripts/verify-relay.sh` (実 Dovecot に対する統合検証) と
 `server/otegami-relay/Tests/OtegamiRelayTests/WatcherPoolTests.swift`
 (`FakeIMAPServer` 相手のユニット検証) で別途カバーしている。
+
+## macOS 検証 (M10)
+
+M1–M9 の macOS 検証は `make mac` (ビルド確認のみ) に留まっていた。M10 で
+初めて実際に起動して操作した結果、**ビルドは通っていたのに実行時に3つの
+実バグ**が見つかった — いずれも「実際に起動する」ことでしか見つからない
+類のバグで、この節はその手順と知見を記録する。
+
+### 手順 (mytty の verify スキル方式を踏襲)
+
+```sh
+make mac   # Debug ビルド
+open -n -a /Users/masaki/Library/Developer/Xcode/DerivedData/Otegami-*/Build/Products/Debug/Otegami.app
+```
+
+- `screencapture -x` でスクリーンショット。ウィンドウ位置・サイズは
+  `osascript`(`System Events`) で固定してからキャプチャすると、以降の
+  クロップ座標計算が安定する。
+- クリック/ドラッグ/キー入力は mytty と同じ CGEvent ベースの
+  `driver.swift`(scratchpad にビルド) で駆動。`AXUIElementCreateApplication`
+  でウィンドウの実座標を取得できるので、`sips --cropOffset` の計算に使う
+  (物理ピクセル = 論理座標 × 2、Retina 前提)。
+- macOS の座標系は「論理点 (CGEvent/AX 双方この単位)」⇔「物理ピクセル
+  (screencapture の出力)」の変換を毎回丁寧に行うこと — このセッションで
+  実際に何度か変換を誤り (crop 座標をそのまま論理クリック座標として使って
+  しまう等)、無関係な場所をクリックし続けるという遠回りをした。
+
+### 見つかった3つの実行時バグ (ビルドは通っていた)
+
+1. **起動直後に必ずクラッシュ**: `AppEnvironment.init()` が
+   `OtegamiAppGroupIdentifier` を Info.plist から読んで App Group
+   コンテナを開こうとするが、macOS ターゲットには (意図的に)
+   entitlements ファイルが無いため `com.apple.security.application-groups`
+   権限が無く、コンテナ作成が `Operation not permitted` で失敗 →
+   `assertionFailure` がそのままクラッシュに直結。`OtegamiAppGroup
+   .identifier`/`.keychainAccessGroup` を macOS では `nil` を返すように
+   修正 (M9 以前の「App Group 未設定時のフォールバック」経路にそのまま
+   乗る)。
+2. **`.sheet` の中身が空で表示される**: `NavigationStack { List/Form {...} }`
+   形の sheet (アカウント種別選択、各アカウント設定フォーム、設定/送信待ち
+   /下書き/同期エラー一覧) が、タイトルバーとツールバーだけの高さ数十pt
+   の帯として表示され、List/Form の中身が一切描画されない。iOS と違い
+   macOS は sheet を内容物の intrinsic size から自動サイズしないため —
+   すべての該当 View に `#if os(macOS) .frame(minWidth:minHeight:) #endif`
+   を追加して解決。
+3. **macOS Settings シーンの TabView でタブ切替してもコンテンツが変わらない**:
+   タブアイコンはハイライトが移動するのに、表示中の内容は前のタブのまま
+   固定される。各タブの内容に `.id(...)` を明示的に付けて View の identity
+   を切替のたびに変えることで解決 (SwiftUI が「同じ View」と判断して
+   再描画をスキップしていたと見られる)。
+
+いずれも `.claude/skills/verify/SKILL.md` に一般的な作業手順として、
+この節にはプロジェクト固有の詳細を記録している。
+
+## iOS シミュレータ検証: dev/mailstack のシードデータ増加による回帰 (M10)
+
+M10 の最終回帰チェックで `scripts/verify-ios-m1.sh` 〜 `m7.sh` を実行した
+ところ、複数のスクリプトで「以前は通っていたはずのアサーションが失敗する」
+という回帰が見つかった。**M10 のアプリ側コード変更が原因ではなく**、
+`dev/mailstack/seed/fixtures/` が M1 時点の4ファイルから M8 までに16
+ファイルまで増え、すべて同じ test1 の INBOX に投入されるようになった
+ことが原因 — 日付が最も古いフィクスチャ (`01-welcome.eml`, "ようこそ
+otegami へ") が統合受信トレイの新着順リストの**最後尾**まで押し下げられ、
+初期表示の画面に収まらなくなっていた。
+
+- `messageList.list` は SwiftUI の `List` (内部的に `LazyVStack` 相当) な
+  ので、画面外の行は `waitForExistence` で待っても見つからない (表示は
+  されているのに識別子/テキストが一致しない、という M2/M4/M7 で既出の
+  「見えているのに見つからない」系の話ではなく、本当にまだマウントされて
+  いない)。
+- `DovecotAccountUITestHelpers.swift` に
+  `waitForSeededSubjectScrollingIfNeeded(_:in:)`/
+  `waitForElementScrollingIfNeeded(_:in:)` を追加し、見つかるまで
+  (Save Password プロンプトの解除を挟みつつ) スクロールを繰り返す形に
+  変更した。`OtegamiM1VerificationUITests`/`OtegamiM3SetupUITests`/
+  `OtegamiM4SetupUITests`/`OtegamiM4UnifiedInboxUITests`/
+  `OtegamiM5ReplyUITests`/`OtegamiM6OtherAccountFlowUITests`/
+  `OtegamiM7SetupUITests`/`OtegamiM3SwipeActionsUITests` をこのパターンに
+  更新済み。
+- 複数件チェックする場合は **新しい→古いの順** (スクロールは前進のみ、
+  後戻りしない) に並べること。`OtegamiM4SetupUITests` はこの並び順を
+  間違えて一度ハマった (先に一番下まで見に行ってしまい、それより上の行
+  チェックが画面外に出て失敗した) — 各フィクスチャの `Date:` ヘッダを
+  確認してから順序を決めること。
+
+### 追加で見つかった「Save Password?」プロンプトの仕様変化
+
+`dismissSavePasswordPromptIfNeeded()` は当初
+`XCUIApplication(bundleIdentifier: "com.apple.springboard")` からのみ
+"Not Now" ボタンを探していたが、この iOS 26 ツールチェーンでは
+"Save Password?" は**アプリ自身のプロセス内 sheet** として出る
+(`app.debugDescription` で確認: `Sheet, label: 'Save Password?'` が
+`Application, label: 'Otegami'` の子として現れる) ため、springboard だけ
+見ていた実装は常にタイムアウトして見逃していた。アプリ自身の
+`XCUIApplication()` から先に探すよう修正 (springboard 側のチェックも
+保険として残す)。このプロンプトは「アカウント保存直後」ではなく
+「パスワードが実際にネットワーク認証で使われた瞬間」(= 初回同期の
+タイミング、保存前の「接続テスト」ではない) に出るため、一度きりの
+チェックでは間に合わないことがある — スクロールのリトライループの
+たびに毎回チェックし直す設計にした。
