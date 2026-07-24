@@ -125,6 +125,15 @@ extension XCTestCase {
         }
     }
 
+    /// M6: "add account" now opens `AccountTypeSelectionView` first (plan:
+    /// "種別選択: Gmail / iCloud / その他 (IMAP)") rather than jumping straight
+    /// into `AccountSetupView` — this taps through to "その他 (IMAP)" so
+    /// every M1–M5 test that calls this (via `fillDovecotAccountForm`/
+    /// `addDovecotTest1Account`/etc.) keeps working unchanged from here on.
+    /// `AccountTypeSelectionView` and `AccountSetupView` are presented as a
+    /// single continuous `.sheet(item:)` (see `AccountEntryRoute`'s doc
+    /// comment), so there's no intermediate sheet-dismiss animation to wait
+    /// out between the two taps below.
     func openAccountSetup(in app: XCUIApplication) {
         // Empty-state button (first launch) or the toolbar "+" (already has
         // accounts, e.g. re-running this test without resetting the
@@ -136,6 +145,10 @@ extension XCTestCase {
             "Neither the empty-state nor toolbar \"add account\" button appeared"
         )
         (emptyStateButton.exists ? emptyStateButton : toolbarButton).tap()
+
+        let otherButton = app.buttons["accountTypeSelection.otherButton"]
+        XCTAssertTrue(otherButton.waitForExistence(timeout: 5), "Account type selection sheet did not appear")
+        otherButton.tap()
 
         XCTAssertTrue(app.textFields["accountSetup.displayName"].waitForExistence(timeout: 5), "Account setup sheet did not appear")
     }
