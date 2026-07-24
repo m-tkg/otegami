@@ -19,12 +19,21 @@ public actor SyncCoordinator {
 
     public init(
         database: AppDatabase,
-        sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+        sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol,
+        smtpSessionFactory: @escaping @Sendable (SMTPConfig) -> any SMTPSessionProtocol = { config in NotImplementedSMTPSession(config: config) },
+        messageBuilder: @escaping @Sendable (ComposeDraft) -> BuiltMessage = { _ in
+            BuiltMessage(data: Data(), messageId: "<unbuilt@otegami.local>")
+        }
     ) {
         self.database = database
         self.sessionFactory = sessionFactory
         self.bodyFetcher = BodyFetcher(database: database)
-        self.opQueueProcessor = OpQueueProcessor(database: database, sessionFactory: sessionFactory)
+        self.opQueueProcessor = OpQueueProcessor(
+            database: database,
+            sessionFactory: sessionFactory,
+            smtpSessionFactory: smtpSessionFactory,
+            messageBuilder: messageBuilder
+        )
     }
 
     /// Runs initial sync for `account` (creating its `AccountSyncer` if

@@ -17,6 +17,11 @@ public enum OpQueueKind: String, Sendable {
     case setFlags
     case move
     case delete
+    /// M5: send a composed/replied message. Payload is `SendOpPayload`, a
+    /// reference to the `outboxMessage` row carrying the actual draft —
+    /// see `SendOpPayload`'s doc comment for why the payload itself stays
+    /// this small.
+    case send
 }
 
 /// `setFlags`'s payload carries the **absolute** desired `MessageFlags`
@@ -78,6 +83,22 @@ public struct DeleteOpPayload: Codable, Sendable, Equatable {
     }
 }
 
+/// `send`'s payload: just a reference to the `OutboxMessageRecord` carrying
+/// the actual draft (recipients, subject, body, reply headers) — not a
+/// duplicate copy of it. Building the RFC 822 message at *replay* time from
+/// this row (rather than pre-building it at enqueue time and embedding the
+/// bytes here) keeps this payload small and means `OpQueueProcessor` always
+/// works from a single source of truth for "what's still queued to send"
+/// (`outboxMessage`, which is also what the sidebar's "送信待ち" indicator
+/// reads).
+public struct SendOpPayload: Codable, Sendable, Equatable {
+    public var outboxMessageId: Int64
+
+    public init(outboxMessageId: Int64) {
+        self.outboxMessageId = outboxMessageId
+    }
+}
+
 /// Encoding/decoding + insertion helpers for `opQueue` rows. Kept as plain
 /// functions (not a type UI code needs to instantiate) so a view's
 /// `db.write { ... }` block can enqueue an op in the same transaction as
@@ -127,6 +148,15 @@ public enum OpQueue {
         guard !uids.isEmpty else { return }
         let payload = DeleteOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
         try enqueue(kind: .delete, accountId: accountId, payload: payload, db: db)
+    }
+
+    public static func enqueueSend(
+        accountId: String,
+        outboxMessageId: Int64,
+        db: Database
+    ) throws {
+        let payload = SendOpPayload(outboxMessageId: outboxMessageId)
+        try enqueue(kind: .send, accountId: accountId, payload: payload, db: db)
     }
 
     private static func enqueue(kind: OpQueueKind, accountId: String, payload: some Encodable, db: Database) throws {

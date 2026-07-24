@@ -38,13 +38,32 @@ public actor OpQueueProcessor {
 
     private let database: AppDatabase
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+    /// M5: opens the SMTP connection a `.send` op replays over. Separate
+    /// from `sessionFactory` (IMAP) since a `.send` op needs both — the
+    /// shared IMAP `session` this actor already holds open for the whole
+    /// batch (for the best-effort Sent-mailbox `APPEND`) plus its own
+    /// independent SMTP connection.
+    private let smtpSessionFactory: @Sendable (SMTPConfig) -> any SMTPSessionProtocol
+    /// M5: renders a `ComposeDraft` (an `outboxMessage` row's fields) to
+    /// RFC 822 bytes. Injected rather than hardcoded to
+    /// `MailTransportMailCore.MailCoreMessageBuilder` for the same reason
+    /// `sessionFactory`/`smtpSessionFactory` are injected: `SyncEngine`
+    /// stays independent of any specific MIME-building backend (the app
+    /// wires the real one; tests inject a trivial pure-Swift stand-in).
+    private let messageBuilder: @Sendable (ComposeDraft) -> BuiltMessage
 
     public init(
         database: AppDatabase,
-        sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+        sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol,
+        smtpSessionFactory: @escaping @Sendable (SMTPConfig) -> any SMTPSessionProtocol = { config in NotImplementedSMTPSession(config: config) },
+        messageBuilder: @escaping @Sendable (ComposeDraft) -> BuiltMessage = { _ in
+            BuiltMessage(data: Data(), messageId: "<unbuilt@otegami.local>")
+        }
     ) {
         self.database = database
         self.sessionFactory = sessionFactory
+        self.smtpSessionFactory = smtpSessionFactory
+        self.messageBuilder = messageBuilder
     }
 
     /// Replays every due (`attempts < maxAttempts`, backoff window elapsed)
@@ -82,7 +101,7 @@ public actor OpQueueProcessor {
 
         for op in dueOps {
             do {
-                switch try await apply(op: op, account: account, session: session) {
+                switch try await apply(op: op, account: account, session: session, auth: auth) {
                 case .applied:
                     try await delete(op: op)
                     result.succeeded += 1
@@ -112,7 +131,8 @@ public actor OpQueueProcessor {
     private func apply(
         op: OpQueueRecord,
         account: AccountRecord,
-        session: any IMAPSessionProtocol
+        session: any IMAPSessionProtocol,
+        auth: MailAuth
     ) async throws -> ApplyOutcome {
         switch OpQueueKind(rawValue: op.kind) {
         case .setFlags:
@@ -156,6 +176,71 @@ public actor OpQueueProcessor {
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: trash.path)
             return .applied
 
+        case .send:
+            let payload = try JSONDecoder().decode(SendOpPayload.self, from: op.payload)
+            guard let outbox = try await outboxMessage(id: payload.outboxMessageId) else {
+                // Already sent (a previous replay pass succeeded and
+                // deleted the row) or never existed — nothing to send.
+                return .staleDiscarded
+            }
+            guard let smtpConfig = account.smtpConfig else {
+                // No SMTP configured for this account — nothing sensible to
+                // retry towards until the user fixes that; surfaced as a
+                // per-op failure (not a connection-level batch-abort) so it
+                // keeps counting toward maxAttempts/backoff like any other
+                // misconfigured op, while unrelated setFlags/move/delete
+                // ops in the same batch still proceed.
+                throw MailTransportError.serverError(underlyingDescription: "Account \(account.id) has no SMTP configuration")
+            }
+
+            let draft = ComposeDraft(
+                from: EmailAddress(name: account.displayName, address: account.email),
+                to: outbox.toAddresses,
+                cc: outbox.ccAddresses,
+                bcc: outbox.bccAddresses,
+                subject: outbox.subject,
+                plainTextBody: outbox.plainTextBody,
+                inReplyTo: outbox.inReplyToMessageId,
+                references: outbox.references
+            )
+            let built = messageBuilder(draft)
+            let recipients = outbox.toAddresses + outbox.ccAddresses + outbox.bccAddresses
+
+            // SMTP failures here must never be reclassified as
+            // connection-level (which would abort the *whole* replay batch,
+            // including unrelated setFlags/move/delete ops that still have
+            // a perfectly good IMAP `session`) — wrapping as `.serverError`
+            // routes them through `replay()`'s ordinary per-op
+            // recordFailure/backoff path instead, exactly the "SMTP失敗→
+            // リトライ残る" behavior the plan calls for.
+            do {
+                let smtpSession = smtpSessionFactory(smtpConfig)
+                try await smtpSession.connect(auth: auth)
+                defer {
+                    let smtpSession = smtpSession
+                    Task { await smtpSession.disconnect() }
+                }
+                try await smtpSession.sendMessage(messageData: built.data, from: draft.from, recipients: recipients)
+            } catch {
+                throw MailTransportError.serverError(underlyingDescription: "SMTP send failed: \(error)")
+            }
+
+            // The message has now genuinely been sent — from here on,
+            // *nothing* is allowed to cause this op to be retried (a retry
+            // would resend it). Saving a copy to Sent is therefore
+            // best-effort only (`try?`): Gmail-kind accounts skip it
+            // entirely (Gmail's own SMTP submission already saves a Sent
+            // copy; a client-side APPEND would double it), and any other
+            // failure here (no Sent mailbox known yet, IMAP hiccup) just
+            // means the local Sent mailbox doesn't show a copy until the
+            // next differential sync notices it — not a reason to fail
+            // this op.
+            if account.kind != .gmail, let sent = try await sentMailbox(accountId: account.id) {
+                _ = try? await session.append(mailboxPath: sent.path, messageData: built.data, flags: .seen)
+            }
+            try await deleteOutboxMessage(id: payload.outboxMessageId)
+            return .applied
+
         case nil:
             // An unrecognized kind (e.g. a newer app version's op being
             // replayed after a downgrade) — nothing sensible to retry.
@@ -174,6 +259,23 @@ public actor OpQueueProcessor {
                 .filter(Column("role") == MailboxRoleRecord.trash.rawValue)
                 .fetchOne(db)
         }
+    }
+
+    private func sentMailbox(accountId: String) async throws -> MailboxRecord? {
+        try await database.dbWriter.read { db in
+            try MailboxRecord
+                .filter(Column("accountId") == accountId)
+                .filter(Column("role") == MailboxRoleRecord.sent.rawValue)
+                .fetchOne(db)
+        }
+    }
+
+    private func outboxMessage(id: Int64) async throws -> OutboxMessageRecord? {
+        try await database.dbWriter.read { db in try OutboxMessageRecord.fetchOne(db, key: id) }
+    }
+
+    private func deleteOutboxMessage(id: Int64) async throws {
+        _ = try await database.dbWriter.write { db in try OutboxMessageRecord.deleteOne(db, key: id) }
     }
 
     private func delete(op: OpQueueRecord) async throws {
@@ -210,5 +312,20 @@ public actor OpQueueProcessor {
         case .serverError, .malformedResponse, .mailboxNotFound, .notImplemented:
             false
         }
+    }
+}
+
+/// The default `smtpSessionFactory` for callers that never queue a `.send`
+/// op (every M1–M4 test/call site) — throws `.notImplemented` rather than
+/// requiring every existing `OpQueueProcessor(database:sessionFactory:)`
+/// call to start naming an SMTP factory it doesn't use.
+public actor NotImplementedSMTPSession: SMTPSessionProtocol {
+    public init(config: SMTPConfig) {}
+    public func connect(auth: MailAuth) async throws {
+        throw MailTransportError.notImplemented("No smtpSessionFactory configured for this OpQueueProcessor")
+    }
+    public func disconnect() async {}
+    public func sendMessage(messageData: Data, from: EmailAddress, recipients: [EmailAddress]) async throws {
+        throw MailTransportError.notImplemented("No smtpSessionFactory configured for this OpQueueProcessor")
     }
 }

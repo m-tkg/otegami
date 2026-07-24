@@ -15,6 +15,18 @@ struct OpQueueProcessorTests {
         )
     }
 
+    /// M5: a `makeAccount()`-equivalent with SMTP fields filled in — `.send`
+    /// replay discards the op outright (no SMTP to retry toward) when
+    /// `AccountRecord.smtpConfig` is `nil`, so send-specific tests need this
+    /// instead of the bare `makeAccount()`.
+    private func makeAccountWithSMTP() -> AccountRecord {
+        AccountRecord(
+            displayName: "Test", email: "test1@otegami.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "test1@otegami.test",
+            smtpHost: "localhost", smtpPort: 1025, smtpSecurity: .plain, smtpUsername: "test1@otegami.test"
+        )
+    }
+
     /// Inserts an account plus an INBOX (and, unless `withTrash` is
     /// `false`, a Trash-role mailbox) directly — `OpQueueProcessor` only
     /// ever reads mailbox rows to resolve a path/uidValidity, so tests
@@ -22,12 +34,14 @@ struct OpQueueProcessorTests {
     private func makeAccountWithMailboxes(
         database: AppDatabase,
         inboxUidValidity: Int64 = 1,
-        withTrash: Bool = true
-    ) async throws -> (account: AccountRecord, inbox: MailboxRecord, trash: MailboxRecord?) {
-        let account = makeAccount()
+        withTrash: Bool = true,
+        account: AccountRecord? = nil,
+        withSent: Bool = false
+    ) async throws -> (account: AccountRecord, inbox: MailboxRecord, trash: MailboxRecord?, sent: MailboxRecord?) {
+        let account = account ?? makeAccount()
         try await database.dbWriter.write { db in try account.insert(db) }
 
-        let (inbox, trash) = try await database.dbWriter.write { db -> (MailboxRecord, MailboxRecord?) in
+        let (inbox, trash, sent) = try await database.dbWriter.write { db -> (MailboxRecord, MailboxRecord?, MailboxRecord?) in
             var inboxRecord = MailboxRecord(
                 accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox,
                 uidValidity: inboxUidValidity
@@ -40,9 +54,16 @@ struct OpQueueProcessorTests {
                 try record.insert(db)
                 trashRecord = record
             }
-            return (inboxRecord, trashRecord)
+
+            var sentRecord: MailboxRecord?
+            if withSent {
+                var record = MailboxRecord(accountId: account.id, path: "Sent", displayPath: "Sent", role: .sent)
+                try record.insert(db)
+                sentRecord = record
+            }
+            return (inboxRecord, trashRecord, sentRecord)
         }
-        return (account, inbox, trash)
+        return (account, inbox, trash, sent)
     }
 
     /// Inserts a bare `message` row so a test can assert on local state
@@ -65,7 +86,7 @@ struct OpQueueProcessorTests {
     @Test("replay applies a queued setFlags op to the server and removes it from the queue")
     func replayAppliesSetFlags() async throws {
         let database = try AppDatabase.makeInMemory()
-        let (account, inbox, _) = try await makeAccountWithMailboxes(database: database)
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
         let messageId = try await insertMessage(mailboxId: inbox.id!, uid: 42, flags: [], database: database).id!
 
         // Simulate the offline UI flow: local flag update + enqueue,
@@ -106,7 +127,7 @@ struct OpQueueProcessorTests {
     @Test("replaying the same absolute-flags op twice issues the same STORE each time (idempotent)")
     func replayIsIdempotent() async throws {
         let database = try AppDatabase.makeInMemory()
-        let (account, inbox, _) = try await makeAccountWithMailboxes(database: database)
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
 
         let recorder = FakeIMAPSession.CallRecorder()
         let script = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
@@ -140,7 +161,7 @@ struct OpQueueProcessorTests {
     @Test("replay discards an op whose uidValidity no longer matches the mailbox")
     func replayDiscardsStaleGeneration() async throws {
         let database = try AppDatabase.makeInMemory()
-        let (account, inbox, _) = try await makeAccountWithMailboxes(database: database, inboxUidValidity: 5)
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database, inboxUidValidity: 5)
 
         try await database.dbWriter.write { db in
             // Enqueued against uidValidity 1 (an older generation than the
@@ -172,7 +193,7 @@ struct OpQueueProcessorTests {
     @Test("replay resolves a delete op to the account's current Trash mailbox and issues a move")
     func replayResolvesDeleteToTrash() async throws {
         let database = try AppDatabase.makeInMemory()
-        let (account, inbox, trash) = try await makeAccountWithMailboxes(database: database)
+        let (account, inbox, trash, _) = try await makeAccountWithMailboxes(database: database)
 
         try await database.dbWriter.write { db in
             try OpQueue.enqueueDelete(
@@ -201,7 +222,7 @@ struct OpQueueProcessorTests {
     @Test("an op that keeps failing stops being retried once it reaches maxAttempts")
     func opStopsRetryingAfterMaxAttempts() async throws {
         let database = try AppDatabase.makeInMemory()
-        let (account, inbox, _) = try await makeAccountWithMailboxes(database: database)
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
 
         try await database.dbWriter.write { db in
             try OpQueue.enqueueSetFlags(
@@ -240,6 +261,167 @@ struct OpQueueProcessorTests {
         #expect(finalResult.succeeded == 0)
         #expect(finalResult.retrying == 0)
         #expect(finalResult.permanentlyFailed == 0)
+    }
+
+    // MARK: M5 — send
+
+    private let fakeMessageBuilder: @Sendable (ComposeDraft) -> BuiltMessage = { draft in
+        BuiltMessage(data: Data("fake rfc822 for \(draft.subject)".utf8), messageId: "<fake-\(draft.subject)@otegami.local>")
+    }
+
+    @discardableResult
+    private func insertOutboxMessage(accountId: String, database: AppDatabase) async throws -> OutboxMessageRecord {
+        try await database.dbWriter.write { db in
+            var outbox = OutboxMessageRecord(
+                accountId: accountId,
+                toAddresses: [EmailAddress(address: "bob@otegami.test")],
+                subject: "Hello from the test",
+                plainTextBody: "Hi Bob."
+            )
+            try outbox.insert(db)
+            return outbox
+        }
+    }
+
+    @Test("replay sends a queued message via SMTP, appends a copy to Sent, and removes the outbox row + op")
+    func replaySendsMessageAndAppendsToSent() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _, _, sent) = try await makeAccountWithMailboxes(
+            database: database, account: makeAccountWithSMTP(), withSent: true
+        )
+        let outbox = try await insertOutboxMessage(accountId: account.id, database: database)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: outbox.id!, db: db)
+        }
+
+        let imapRecorder = FakeIMAPSession.CallRecorder()
+        let imapScript = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
+        let smtpRecorder = FakeSMTPSession.CallRecorder()
+        let smtpScript = FakeSMTPSession.Script()
+        let processor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: imapScript, recorder: imapRecorder) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: smtpScript, recorder: smtpRecorder) },
+            messageBuilder: fakeMessageBuilder
+        )
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+
+        let sendCall = try #require(smtpRecorder.sendCalls.first)
+        #expect(sendCall.from.address == account.email)
+        #expect(sendCall.recipients.map(\.address) == ["bob@otegami.test"])
+
+        let appendCall = try #require(imapRecorder.appendCalls.first)
+        #expect(appendCall.path == sent?.path)
+        #expect(appendCall.flags == .seen)
+
+        let remainingOutbox = try await database.dbWriter.read { db in try OutboxMessageRecord.fetchAll(db) }
+        #expect(remainingOutbox.isEmpty)
+        let remainingOps = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
+        #expect(remainingOps.isEmpty)
+    }
+
+    @Test("replay skips the Sent APPEND for a Gmail-kind account")
+    func replaySkipsSentAppendForGmailAccount() async throws {
+        let database = try AppDatabase.makeInMemory()
+        var gmailAccount = makeAccountWithSMTP()
+        gmailAccount.kind = .gmail
+        let (account, _, _, _) = try await makeAccountWithMailboxes(
+            database: database, account: gmailAccount, withSent: true
+        )
+        let outbox = try await insertOutboxMessage(accountId: account.id, database: database)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: outbox.id!, db: db)
+        }
+
+        let imapRecorder = FakeIMAPSession.CallRecorder()
+        let smtpRecorder = FakeSMTPSession.CallRecorder()
+        let processor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script(), recorder: imapRecorder) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: FakeSMTPSession.Script(), recorder: smtpRecorder) },
+            messageBuilder: fakeMessageBuilder
+        )
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(smtpRecorder.sendCalls.count == 1)
+        #expect(imapRecorder.appendCalls.isEmpty)
+
+        let remainingOutbox = try await database.dbWriter.read { db in try OutboxMessageRecord.fetchAll(db) }
+        #expect(remainingOutbox.isEmpty)
+    }
+
+    @Test("an SMTP send failure leaves the send op queued for retry rather than aborting the whole replay batch")
+    func sendFailureRetriesWithoutAbortingBatch() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(
+            database: database, account: makeAccountWithSMTP(), withSent: true
+        )
+        let outbox = try await insertOutboxMessage(accountId: account.id, database: database)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: outbox.id!, db: db)
+            // An unrelated setFlags op in the same batch, sharing the IMAP
+            // session — must still succeed even though the SMTP send below
+            // fails, proving the SMTP failure doesn't get reclassified as
+            // connection-level (which would abort the whole batch).
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [1], flags: .seen, db: db
+            )
+        }
+
+        let imapRecorder = FakeIMAPSession.CallRecorder()
+        let smtpScript = FakeSMTPSession.Script(failSend: .serverError(underlyingDescription: "550 simulated rejection"))
+        let processor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script(), recorder: imapRecorder) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: smtpScript) },
+            messageBuilder: fakeMessageBuilder
+        )
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1) // the unrelated setFlags op
+        #expect(result.retrying == 1) // the failed send op
+
+        #expect(imapRecorder.storeCalls.count == 1) // setFlags still went through
+
+        let remainingOutbox = try await database.dbWriter.read { db in try OutboxMessageRecord.fetchAll(db) }
+        #expect(remainingOutbox.count == 1) // never deleted — still "送信待ち"
+
+        let remainingOps = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
+        let sendOp = try #require(remainingOps.first { $0.kind == OpQueueKind.send.rawValue })
+        #expect(sendOp.attempts == 1)
+    }
+
+    @Test("a send op whose outbox row is already gone is discarded as stale rather than resent")
+    func sendDiscardsWhenOutboxRowAlreadyGone() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database, account: makeAccountWithSMTP())
+
+        // Enqueue a send op referencing an outbox id that was never
+        // inserted (or already deleted by an earlier successful replay) —
+        // simulates a crash between the SMTP send succeeding and the
+        // outbox-row delete committing.
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: 999, db: db)
+        }
+
+        let smtpRecorder = FakeSMTPSession.CallRecorder()
+        let processor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script(), recorder: nil) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: FakeSMTPSession.Script(), recorder: smtpRecorder) },
+            messageBuilder: fakeMessageBuilder
+        )
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.discardedStale == 1)
+        #expect(smtpRecorder.sendCalls.isEmpty)
     }
 }
 

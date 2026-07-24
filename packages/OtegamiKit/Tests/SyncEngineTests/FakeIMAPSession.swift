@@ -87,6 +87,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         private var _storeCalls: [(path: String, change: FlagChange)] = []
         private var _moveCalls: [(path: String, uids: [UInt32], destination: String)] = []
         private var _expungeCalls: [String] = []
+        /// M5: `append(mailboxPath:messageData:flags:)` calls (`OpQueueProcessor
+        /// .send`'s best-effort Sent-mailbox copy), in call order.
+        private var _appendCalls: [(path: String, messageData: Data, flags: MessageFlags)] = []
 
         public init() {}
 
@@ -108,6 +111,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             lock.unlock()
         }
 
+        func recordAppend(path: String, messageData: Data, flags: MessageFlags) {
+            lock.lock()
+            _appendCalls.append((path, messageData, flags))
+            lock.unlock()
+        }
+
         public var storeCalls: [(path: String, change: FlagChange)] {
             lock.lock()
             defer { lock.unlock() }
@@ -124,6 +133,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             lock.lock()
             defer { lock.unlock() }
             return _expungeCalls
+        }
+
+        public var appendCalls: [(path: String, messageData: Data, flags: MessageFlags)] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _appendCalls
         }
     }
 
@@ -216,7 +231,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func append(mailboxPath: String, messageData: Data, flags: MessageFlags) async throws -> UInt32? {
-        throw MailTransportError.notImplemented("FakeIMAPSession doesn't script APPEND (M5) behavior")
+        recorder?.recordAppend(path: mailboxPath, messageData: messageData, flags: flags)
+        return nil
     }
 
     public func move(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {

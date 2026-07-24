@@ -42,4 +42,19 @@ extension AccountRecord {
             allowsInsecureTLS: imapAllowsInsecureTLS
         )
     }
+
+    /// The `SMTPConfig` to send with (M5), or `nil` if this account's SMTP
+    /// fields were left blank (`AccountRecord.smtpHost`'s doc comment — M1
+    /// collected them but didn't require them; M5's Composer disables
+    /// sending until they're filled in, but existing accounts saved before
+    /// M5 shouldn't crash on this, just be unable to send).
+    public var smtpConfig: SMTPConfig? {
+        guard let smtpHost, let smtpPort else { return nil }
+        return SMTPConfig(
+            host: smtpHost,
+            port: smtpPort,
+            security: (smtpSecurity ?? .startTLS).mailTransportSecurity,
+            allowsInsecureTLS: smtpAllowsInsecureTLS
+        )
+    }
 }
