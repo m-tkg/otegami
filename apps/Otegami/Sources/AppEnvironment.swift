@@ -39,9 +39,12 @@ final class AppEnvironment {
             database = inMemory
         }
         self.database = database
-        self.syncCoordinator = SyncCoordinator(database: database) { config in
-            MailCoreIMAPSession(config: config)
-        }
+        self.syncCoordinator = SyncCoordinator(
+            database: database,
+            sessionFactory: { config in MailCoreIMAPSession(config: config) },
+            smtpSessionFactory: { config in MailCoreSMTPSession(config: config) },
+            messageBuilder: { draft in MailCoreMessageBuilder.build(draft) }
+        )
         self.credentialStore = KeychainCredentialStore()
 
         startObservingAccounts()
