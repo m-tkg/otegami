@@ -26,6 +26,12 @@ public struct ComposeDraft: Sendable, Equatable {
     /// message's own `References` with its `Message-ID` appended (RFC 5322
     /// §3.6.4). Empty for a new message.
     public var references: [String]
+    /// M8: file attachments to embed. Empty for a plain-text-only message
+    /// (every M1–M7 draft). A reply never carries the original message's
+    /// own attachments forward (plan: "返信時の元添付は引き継がない" — standard
+    /// mail-client behavior) — only whatever the user newly attaches in
+    /// `ComposerView` for *this* draft.
+    public var attachments: [ComposeAttachment]
 
     public init(
         from: EmailAddress,
@@ -35,7 +41,8 @@ public struct ComposeDraft: Sendable, Equatable {
         subject: String,
         plainTextBody: String,
         inReplyTo: String? = nil,
-        references: [String] = []
+        references: [String] = [],
+        attachments: [ComposeAttachment] = []
     ) {
         self.from = from
         self.to = to
@@ -45,6 +52,25 @@ public struct ComposeDraft: Sendable, Equatable {
         self.plainTextBody = plainTextBody
         self.inReplyTo = inReplyTo
         self.references = references
+        self.attachments = attachments
+    }
+}
+
+/// One file to embed as a MIME attachment when building a `ComposeDraft`
+/// into RFC 822 bytes (M8). `filename` carries Japanese/non-ASCII text
+/// verbatim as a plain Swift `String` — encoding it for the wire (RFC 2231/
+/// 2047) is `MailCoreMessageBuilder`'s job, the same "backend owns MIME
+/// encoding" split `ComposeDraft.subject`/`.plainTextBody` already follow.
+public struct ComposeAttachment: Sendable, Equatable {
+    public var filename: String
+    /// Full `"type/subtype"` (e.g. `"image/png"`, `"application/pdf"`).
+    public var mimeType: String
+    public var data: Data
+
+    public init(filename: String, mimeType: String, data: Data) {
+        self.filename = filename
+        self.mimeType = mimeType
+        self.data = data
     }
 }
 
