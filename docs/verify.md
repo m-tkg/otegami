@@ -918,3 +918,117 @@ M1 以来の全スクリプトが依拠している「コールドリランチ�
 「Offline verification pattern」節) にそのまま乗るだけで済み、GRDB から
 直接読み直すのでトグル操作が何かをおかしくしていないかの検証としても
 より確実だった。
+
+## SMTP AUTH: AUTH 非対応サーバーへの自動フォールバック (M11 後の改善)
+
+実機検証で発覚した UX 問題への対応: `MailCoreSMTPSession.connect` は
+従来「SMTP ユーザー名が空なら認証スキップ、入っていれば AUTH」という
+仕様だった。ユーザーが SMTP ユーザー名欄にメールアドレスを入れると、
+認証機能の無い dev mailstack の Mailpit が `502 5.5.1 Command not
+implemented` を返し、接続テストが失敗する — 「空欄にすれば通る」は
+発見しにくい。ユーザー名が入っていても、サーバーが `AUTH` コマンド
+自体を受け付けない場合 (502/503/504系の応答) は認証なしで1回だけ
+リトライして接続を成立させるようにした。本物の認証失敗 (535系、
+ユーザー名/パスワード違い) は今まで通りエラーのまま。
+
+### 判別方法の調査結果
+
+MailCore2 (`44c63329`固定) の `SMTPSession::login()`
+(`MCSMTPSession.cpp`) は、`AUTH` の SASL 交換が失敗した場合のサーバー
+応答コードに関わらず、すべて同じ `ErrorAuthentication` という
+`MCOErrorCode` に潰してしまう — EHLO capabilities を公開する Swift 向け
+公開 API も無い。したがって「AUTH 非対応」と「認証拒否」を安全に
+判別できる唯一の手がかりは、`MCOSMTPOperation
+._errorFromNativeOperation` (`MCOSMTPOperation.mm`) が `NSError.userInfo`
+に生のまま詰めている `MCOSMTPResponseCodeKey` (実際に届いた3桁の SMTP
+応答コード) だけだった — mailcore2 のソース (SPM 経由でローカルに
+checkout 済みの `libetpan`/`mailcore2` チェックアウト) を直接読んで
+確認した。`MailCoreSMTPSession.isAuthCommandRejectedAsUnsupported(_:)`
+がこのキーを読み、500/502/503/504 (「コマンド未実装」「シーケンス
+異常」「パラメータ未実装」寄りの応答) の場合だけ「AUTH 非対応」と
+判定し、認証なしでの再ログインを1回だけ試みる。530/534/535/550/553
+などの「資格情報自体が拒否された」応答や、応答コードが取得できない
+曖昧なケースは安全側 (=これまで通りエラー) に倒す。
+
+**実装上の落とし穴**: `MCOSMTPResponseCodeKey` の値は Swift 側で
+`[String: Any]` として届くと `Int` ではなく `Int32` として動的型付け
+される (mailcore2 の ObjC 側が生の C `int` を `@()` で `NSNumber` 化して
+詰めているため) — `as? Int` は実サーバーに対して常に `nil` を返し、
+フォールバック判定が一切効かないという回帰を一度作り込んだ。dev
+mailstack の実 Mailpit に対する統合テスト
+(`SMTPIntegrationTests.nonBlankUsernameAgainstNoAuthServerStillConnects`)
+で発見・修正済み — `SMTPAuthFallbackTests`(単体, NSError 注入)側の
+最初のバージョンは `responseCode` を素の `Int` で組み立てていたため
+この不一致を検出できなかった。修正後は `NSNumber(value: Int32)` で
+箱詰めして同じ動的型を再現するようにしてあるので、同じ回帰が単体
+テストだけで再発検出できる。`(userInfo[...] as? NSNumber)?.intValue`
+に直してある。
+
+### 統合テスト: 認証必須の第2 Mailpit
+
+`dev/mailstack/compose.yml` に AUTH 必須の `mailpit-auth` サービス
+(ポート 1026、資格情報は `dev/mailstack/mailpit-auth/users.txt`) を
+追加した。詳細は `docs/dev-mailstack.md` 参照。
+
+- `SMTPIntegrationTests.nonBlankUsernameAgainstNoAuthServerStillConnects`
+  — 既存の無認証 Mailpit に対し、ユーザー名を入れても接続・送信が
+  成功することを確認 (今回のフォールバック本体)。
+- `SMTPAuthIntegrationTests` (新規スイート、`mailpit-auth` 対象):
+  - `correctCredentialsSucceed` — 正しい資格情報で接続・送信成功。
+  - `wrongPasswordFailsAtConnect` — 間違ったパスワードは `connect()`
+    で明確に失敗し、フォールバックには絶対に入らない (535 系)。
+  - `blankUsernameConnectsButFailsToSend` — 空ユーザー名は
+    `connect()`(EHLO/AUTH だけの往復) 自体は成功してしまう
+    (`MailCoreSMTPSession.connect` の実装上、`loginOperation()` は
+    `MAIL`/`RCPT` に一切触れないため) が、実際の送信
+    (`sendMessage`、`mailesmtp_send` が `MAIL FROM` を送る) で
+    `530 5.7.0 Authentication required` を受けて明確に失敗する
+    (`MailCoreError.errorAuthenticationRequired` →
+    `MailTransportError.authenticationFailed`)。「接続テストは通るが
+    送信は失敗する」という非対称性は今回のフォールバックが原因では
+    なく元からの設計 (`MailCoreSMTPSession`冒頭のコメント参照) —
+    ここではそれが AUTH 必須サーバーに対しても同じ挙動になることを
+    確認しているだけ。
+
+### 単体テスト
+
+`SMTPAuthFallbackTests` (`packages/OtegamiKit/Tests/MailTransportMailCoreTests/`,
+ネットワーク不要、`make test` で常時実行) が
+`MailCoreSMTPSession.isRetriableWithoutAuth(auth:error:)` を NSError
+注入で検証: 500/502/503/504 → リトライ対象、530/534/535/550/553 →
+リトライしない、応答コード欠落 → リトライしない (安全側)、
+非authenticationエラー種別 → リトライしない、他ドメインの NSError →
+リトライしない、空ユーザー名/XOAuth2 → リトライ対象外 (そもそも
+この分岐に到達しない設計であることの確認)。
+
+### 既知の制約
+
+- このフォールバックはあくまで `MailAuth.password` かつユーザー名が
+  非空の場合のみ有効。XOAuth2 (Gmail) には適用されない — Gmail は
+  常に認証が必要な前提であり、「AUTH 非対応」という状況が意味を
+  なさないため。
+- `connect()` はログインの EHLO/AUTH 往復だけを見るため、「AUTH
+  必須サーバーにユーザー名を空で接続した場合」は接続テスト自体は
+  成功してしまい、実際の失敗は送信時 (`sendMessage`) まで顕在化
+  しない。これは今回の変更が生んだものではなく、`checkAccountOperation`
+  ではなく `loginOperation` を使う既存の設計 (M5 由来、上の
+  「SMTP 送受信の設計上の注意点」節参照) からくる既存の非対称性。
+- `dev/mailstack` に第2 Mailpit を追加したことで、`docker compose
+  up`/`down` が起動・停止するコンテナが1つ増えた。`make
+  mailstack-up`/`down` はそのままで両方カバーする (`compose.yml`の
+  全サービスを対象にするため、呼び出し側の変更は不要)。
+
+### この検証中に見つかった、本タスクと無関係な既存の flake
+
+`SyncEngineIntegrationTests.incrementalSyncPicksUpExternalChanges`
+(M3 由来) が、この開発環境の現在の dev mailstack 状態に対しては
+単体実行しても `seeded.count == 1` の assertion で毎回失敗する
+(`doveadm expunge` 直後に `doveadm save` で1通だけ投入しているはずが、
+`performInitialSync` 後に2通観測される) ことを、本タスクの変更を
+まるごと `git stash` した素の `main` ブランチでも再現することを確認
+した — 今回の SMTP AUTH 変更・新規テストとは無関係の、この dev
+mailstack インスタンス固有の既存の不具合/汚れた状態である。原因は
+未特定 (`doveadm fetch ... all`を素朴に叩くとINBOX以外のメールボックス
+も拾われるなど、調査中に紛らわしい挙動もあった)。今回のタスクでは
+深追いしていない — 次にこのテストを触る際の既知の注意点として記録
+しておく。
