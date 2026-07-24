@@ -1,5 +1,5 @@
 {
-  "originHash" : "718e2d3a1a2ced75f75b99fa02a246826f8e00e1c749b861217181901e23ff8e",
+  "originHash" : "74ef01c5e48c2121fbfc7280dbdfde8e5380ee5d643bb49ce7acc810423ec786",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -11,12 +11,56 @@
       }
     },
     {
+      "identity" : "ctemplate",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/ctemplate.git",
+      "state" : {
+        "revision" : "a56e2d43eb57dc1e132a96f0fd9e4df198d1c35b",
+        "version" : "2.2.3-readdle.4"
+      }
+    },
+    {
+      "identity" : "grdb.swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/groue/GRDB.swift.git",
+      "state" : {
+        "revision" : "b83108d10f42680d78f23fe4d4d80fc88dab3212",
+        "version" : "7.11.1"
+      }
+    },
+    {
       "identity" : "hummingbird",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/hummingbird-project/hummingbird.git",
       "state" : {
         "revision" : "db50d7b5da7709d245120ccc25e094cbf9365260",
         "version" : "2.25.1"
+      }
+    },
+    {
+      "identity" : "libetpan",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/libetpan.git",
+      "state" : {
+        "revision" : "68a9583bb8022f75992e7ebb7956e8bd7197e867",
+        "version" : "1.9.3-readdle.5"
+      }
+    },
+    {
+      "identity" : "mailcore2",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/mailcore2.git",
+      "state" : {
+        "revision" : "44c63329df67e9a0d597627edbebe65002d3fcd8"
+      }
+    },
+    {
+      "identity" : "sqlite-nio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/vapor/sqlite-nio.git",
+      "state" : {
+        "revision" : "3b408939e5b3e84e5ea74e8dd6aa96d4f9705023",
+        "version" : "1.12.9"
       }
     },
     {
@@ -87,8 +131,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-crypto.git",
       "state" : {
-        "revision" : "47d3869a7291f085c1fb9fb1e6d3b97a793f45c6",
-        "version" : "4.5.1"
+        "revision" : "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
+        "version" : "3.15.1"
       }
     },
     {
@@ -215,6 +259,24 @@
       "state" : {
         "revision" : "50688cacbd41d547e9eb9f7a213542340b7c442b",
         "version" : "1.7.5"
+      }
+    },
+    {
+      "identity" : "swift-unicode",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/swift-unicode",
+      "state" : {
+        "revision" : "fb8aac372834ccb8fab0a5c1742df862d47c4156",
+        "version" : "68.2.0"
+      }
+    },
+    {
+      "identity" : "tidy-html5",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/tidy-html5.git",
+      "state" : {
+        "revision" : "fa68a7e0ebdc4deab6de668c85a8d8ccf2fb5b19",
+        "version" : "5.4.0-readdle.28"
       }
     }
   ],
