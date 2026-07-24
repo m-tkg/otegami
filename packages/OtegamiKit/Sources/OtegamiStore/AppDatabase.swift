@@ -384,6 +384,45 @@ extension AppDatabase {
             }
         }
 
+        // v9 (M10): performance indexes, added after seeding a 100k-message
+        // synthetic mailstack showed the unified inbox / unread-count
+        // queries doing full scans without them (docs/performance.md has
+        // the before/after numbers). `thread_on_lastMessageDate` lets
+        // `ThreadQuery`'s EXISTS-based rewrite walk `thread` in
+        // already-sorted order and stop at `LIMIT` instead of sorting every
+        // matching row; `message_on_threadId_mailboxId` backs that query's
+        // per-thread `EXISTS (... message.threadId = ? AND message.mailboxId
+        // = ?)` probe; `message_on_mailboxId_flagsRaw` backs the new
+        // per-mailbox/unified-inbox unread-count queries (`MessageQuery
+        // .unreadCounts`/`unifiedInboxUnreadCount`), which filter on both
+        // columns together.
+        migrator.registerMigration("v9") { db in
+            try db.create(index: "thread_on_lastMessageDate", on: "thread", columns: ["lastMessageDate"])
+            try db.create(index: "message_on_threadId_mailboxId", on: "message", columns: ["threadId", "mailboxId"])
+            try db.create(index: "message_on_mailboxId_flagsRaw", on: "message", columns: ["mailboxId", "flagsRaw"])
+        }
+
+        // v10 (M10): local draft saving. `draftMessage` deliberately mirrors
+        // `outboxMessage`'s shape but stays a separate table — see
+        // `DraftMessageRecord`'s doc comment for why ("a draft must never
+        // accidentally be picked up and sent").
+        migrator.registerMigration("v10") { db in
+            try db.create(table: "draftMessage") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("accountId", .text).notNull()
+                    .indexed()
+                    .references("account", onDelete: .cascade)
+                t.column("toAddresses", .blob).notNull()
+                t.column("ccAddresses", .blob).notNull()
+                t.column("subject", .text).notNull()
+                t.column("plainTextBody", .text).notNull()
+                t.column("inReplyToMessageId", .text)
+                t.column("references", .blob).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+            }
+        }
+
         return migrator
     }
 }
