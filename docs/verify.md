@@ -372,3 +372,50 @@ scripts/verify-ios-m5.sh
   してもメールの再送はしない — 既に送信済みのメールを再送するのは
   APPEND 失敗より遥かに悪い) なので、`m5-01`/`m5-02` 相当の doveadm
   チェックは複数秒のリトライで確認している。
+
+## M5: 実機検証で踏んだ XCUITest の落とし穴 (追加分)
+
+M1〜M4 の落とし穴 (上記) に加え、`OtegamiM5ReplyUITests` を実際に
+シミュレータへ通す過程で新たに踏んだもの。
+
+1. **`ThreadDetailView` が `MessageView` に外側から付与する
+   `.accessibilityIdentifier("threadDetail.message.<id>.body")` は、
+   内側の子要素が自分自身に付けた identifier (`messageDetail
+   .replyButton` など) を「追加」ではなく「上書き」してしまう** —
+   `app.debugDescription` で実際のアクセシビリティツリーを確認すると、
+   返信ボタンの要素は `identifier: 'threadDetail.message.2.body'` と
+   報告され、`messageDetail.replyButton` はどこにも現れない。M4 の
+   落とし穴 #1 (「1つの identifier に対し複数要素が同じ identifier を
+   報告する over-count」) の類似だが、こちらは over-count ではなく
+   完全な上書きで、`identifier CONTAINS` 述語ですら救えない。
+   ラベルによる検索 (`NSPredicate(format: "label == %@", "返信")`)
+   に切り替えることで確実に見つかる — M2 の「画像を表示」バナーと
+   同じ回避策。同じ問題は `MessageView` を外側からラップして
+   identifier を付け直しているコード全般 (`ThreadDetailView` の
+   埋め込み) に当てはまるはずなので、その配下の要素を identifier で
+   探す新しいテストを書く際は要注意。
+2. **同一 XCUITest 実行内で一度でもスレッドを開くと `lastOpenedThread`
+   `@AppStorage` が永続化され、以降の *どの* フェーズの `app.launch()`
+   も (たとえ無関係なテストであっても) 自動的にそのスレッド詳細画面
+   まで push された状態で起動する** — M4 の落とし穴 #4 で
+   `OtegamiM4ThreadDetailUITests` 特有の注意として記録されていたが、
+   M5 でも同じ理由で複数回踏んだ (ある意味「一度でもスレッドを開く
+   フェーズより後の全フェーズ」に波及する、より広い注意点)。
+   `messageList.list`/`sidebar.*` など「一覧」や「サイドバー」の要素を
+   探すテストは、先行フェーズで一度でもメッセージ詳細を開いていないか
+   を疑い、`returnToSidebarRootIfNeeded`/`popBackOnceIfNeeded` を使うか
+   ("戻る" 操作が必要な場合)、逆に「このフェーズが実行順で最初に
+   メッセージを開く」と分かっている場合はそれらの関数を **呼ばない**
+   (呼ぶとサイドバーへ余計に戻ってしまい、まだ存在しないはずの
+   `messageList.list` を探しに行ってしまう) — どちらが正しいかは
+   「このテストの直前までに何かメッセージを開いたことがあるか」で
+   機械的に決まる。
+3. **原因切り分けは `app.launch()` 直後に `xcrun simctl io booted
+   screenshot` を「もう一つの」シェルから撮る (M2 の手法) だけでなく、
+   `waitForExistence` が失敗した箇所で `print(app.debugDescription)`
+   してテストログに実際のアクセシビリティツリー全体を書き出す方が
+   決定的だった** — スクリーンショットは「何が画面に見えているか」
+   しか教えてくれないが、`debugDescription` は「XCUITest から見て
+   各要素がどんな identifier/label/type で報告されているか」を直接
+   見せてくれるため、上記 1. のような「見えてはいるが identifier が
+   期待と違う」系の不一致はこちらでないと確定できない。

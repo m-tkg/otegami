@@ -18,14 +18,32 @@ final class OtegamiM5ReplyUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        returnToSidebarRootIfNeeded(in: app)
-
+        // Deliberately *not* `returnToSidebarRootIfNeeded` — no thread has
+        // been opened yet this run (the earlier compose-only phase never
+        // views a message), so a cold launch already lands on the message
+        // list (content column, unified inbox auto-selected) with nothing
+        // to navigate back from; popping to the sidebar here would leave
+        // `messageList.list` unreachable instead. See M2's "cold relaunch
+        // re-selects the first INBOX automatically" note in verify.md.
         let list = app.collectionViews["messageList.list"]
         let row = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "ようこそ otegami へ")).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 30), "Expected the seeded baseline thread to appear")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
-        let replyButton = app.buttons["messageDetail.replyButton"]
+        // Identifier-based lookup doesn't work here: `ThreadDetailView`
+        // applies its own `.accessibilityIdentifier("threadDetail.message
+        // .<id>.body")` to the whole embedded `MessageView`, and every
+        // descendant accessibility element inside — including the reply
+        // button's own `.accessibilityIdentifier("messageDetail
+        // .replyButton")` — reports that *outer* container's identifier
+        // instead of its own (confirmed via `app.debugDescription`: the
+        // button element shows `identifier: 'threadDetail.message.2.body'`,
+        // not `'messageDetail.replyButton'`) — the same "container identifier
+        // leaks onto descendants" behavior verify.md's M4 pitfall #1
+        // already documented, just total override here rather than
+        // over-counting. A label match sidesteps it entirely (same
+        // workaround as M2's "画像を表示" banner button).
+        let replyButton = app.buttons.matching(NSPredicate(format: "label == %@", "返信")).firstMatch
         XCTAssertTrue(replyButton.waitForExistence(timeout: 15), "Expected a 返信 button on the opened message")
         replyButton.tap()
 
