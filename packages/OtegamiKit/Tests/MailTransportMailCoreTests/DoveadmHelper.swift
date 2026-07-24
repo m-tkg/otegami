@@ -73,6 +73,19 @@ enum DoveadmHelper {
         _ = try? run(["doveadm", "expunge", "-u", user, "mailbox", mailboxPath, "all"])
     }
 
+    /// `doveadm fetch -u <user> flags mailbox <mailboxPath> HEADER Subject
+    /// <subject>` — used by `SMTPIntegrationTests` to confirm a
+    /// client-side `IMAPSessionProtocol.append` (M5's best-effort Sent
+    /// copy) actually landed server-side, by exact subject rather than
+    /// UID (the APPEND response's returned UID isn't always available —
+    /// see `append`'s doc comment on `UIDPLUS` support). Returns an empty
+    /// string (not a thrown error) when nothing matches, so callers can
+    /// poll it in a retry loop the same way `restoreStandardFixtures`'s
+    /// callers already do for other doveadm queries.
+    static func fetchFlagsBySubject(user: String, mailboxPath: String, subject: String) -> String {
+        (try? run(["doveadm", "fetch", "-u", user, "flags", "mailbox", mailboxPath, "HEADER", "Subject", subject])) ?? ""
+    }
+
     /// Re-runs `dev/mailstack/seed/seed.sh` (the canonical fixture set),
     /// restoring the INBOX state `MailCoreIMAPSessionIntegrationTests`
     /// assumes. Any test that mutates INBOX contents beyond that fixed set

@@ -233,8 +233,23 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         throw MailTransportError.notImplemented("fetchMessageBody — raw per-part attachment fetch lands in M8")
     }
 
+    /// `APPEND`s `messageData` to `mailboxPath` (M5: `OpQueueProcessor`'s
+    /// `.send` op replay uses this to leave a copy in the account's Sent
+    /// mailbox after a successful SMTP send). Returns the new message's UID
+    /// when the server supports `UIDPLUS` (reports a non-zero `createdUID`),
+    /// `nil` otherwise — a `MailboxSyncer` differential sync of Sent will
+    /// still pick the message up either way.
     public func append(mailboxPath: String, messageData: Data, flags: MessageFlags) async throws -> UInt32? {
-        throw MailTransportError.notImplemented("append — Sent APPEND lands in M5")
+        let mcoFlags = Self.mcoMessageFlag(from: flags)
+        return try await withCheckedThrowingContinuation { continuation in
+            session.appendMessageOperation(folder: mailboxPath, messageData: messageData, flags: mcoFlags).start { error, createdUID in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                continuation.resume(returning: createdUID == 0 ? nil : createdUID)
+            }
+        }
     }
 
     // MARK: - Flags / move / expunge (M3)
