@@ -307,6 +307,31 @@ extension MailCoreIMAPSession {
         return result
     }
 
+    // MARK: - Attachment data (M8)
+
+    /// Looks up `uniqueID` (an `AttachmentRecord.partId` value, as stamped
+    /// by `parts(from:)` above at body-fetch time) among `parser`'s parts
+    /// and returns its raw, decoded bytes — `MCOAbstractPart.getData(_:)`
+    /// handles the `Content-Transfer-Encoding` decoding itself, the same
+    /// division of labor `bodyContent(from:)` already relies on for the
+    /// text parts. `applyUniquePartID` (mailcore2's own uniqueID assignment,
+    /// a deterministic breadth-first walk of the MIME tree keyed only by
+    /// structural position) reruns identically every time the same RFC 822
+    /// bytes are reparsed, which is what makes re-fetching+reparsing the
+    /// whole message here — rather than trying to map back to a real IMAP
+    /// `BODY[<partId>]` specifier the parser never captured in the first
+    /// place — a safe way to resolve this uniqueID back to data on a fresh
+    /// `MCOMessageParser` instance (see `MailCoreIMAPSession.fetchMessageBody`'s
+    /// doc comment for the full rationale, and `parts(from:)`'s doc comment
+    /// above for why `partId` is a uniqueID and not a `BODYSTRUCTURE` path
+    /// to begin with). Runs inside a MailCore2 completion closure (MailCore2's
+    /// own internal thread), like every other `private static` helper in
+    /// this file — never touches actor state.
+    static func partData(from parser: MCOMessageParser, uniqueID: String) -> Data? {
+        guard let part = parser.partForUniqueID(uniqueID: uniqueID) else { return nil }
+        return MCOAbstractPart.getData(part)
+    }
+
     private static func mimePartInfo(from part: MCOAbstractPart) -> MIMEPartInfo {
         let mimeType = part.mimeType ?? "application/octet-stream"
         let components = mimeType.split(separator: "/", maxSplits: 1)

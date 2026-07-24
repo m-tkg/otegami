@@ -227,10 +227,63 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
     }
 
-    // MARK: - Not yet implemented (M8/M5)
+    // MARK: - Attachment data (M8)
 
+    /// Downloads one attachment/inline part's raw bytes, or the whole
+    /// message's raw RFC 822 bytes when `partId` is `nil`.
+    ///
+    /// `partId` here is always an `AttachmentRecord.partId` — the
+    /// `MCOMessageParser` `uniqueID` `MailCoreIMAPSession+Mapping.parts(from:)`
+    /// stamped onto it when the message's body was first fetched (M2's
+    /// `fetchBody`, which parses via `MCOMessageParser` rather than driving
+    /// `BODYSTRUCTURE` + per-part IMAP fetches by hand — see that method's
+    /// doc comment). It is *not* a `BODY[<partId>]` IMAP part specifier, so
+    /// `session.fetchMessageAttachmentOperation(folder:uid:partId:...)`
+    /// (which does expect a real IMAP part specifier) isn't usable here.
+    /// Instead this re-fetches+re-parses the whole message exactly like
+    /// `fetchBody` does (`fetchParsedMessageOperation`), then resolves
+    /// `partId` back to a part on the fresh parser via `partForUniqueID` —
+    /// safe because mailcore2's uniqueID assignment is a deterministic,
+    /// structure-only walk of the MIME tree (see `partData(from:uniqueID:)`'s
+    /// doc comment), so the same bytes reparsed always yield the same
+    /// uniqueIDs. This is the "全体 fetch 済みなら MCOMessageParser から part
+    /// データ取り出し" approach the M8 plan explicitly allows over a real
+    /// per-part IMAP round trip — simpler, and it reuses `MCOMessageParser`'s
+    /// own `Content-Transfer-Encoding` decoding rather than re-deriving it.
     public func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data {
-        throw MailTransportError.notImplemented("fetchMessageBody — raw per-part attachment fetch lands in M8")
+        guard let partId else {
+            return try await withCheckedThrowingContinuation { continuation in
+                session.fetchMessageOperation(folder: mailboxPath, uid: uid).start { error, data in
+                    if let error {
+                        continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                        return
+                    }
+                    continuation.resume(returning: data ?? Data())
+                }
+            }
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            session.fetchParsedMessageOperation(folder: mailboxPath, uid: uid).start { error, parser in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                guard let parser else {
+                    continuation.resume(throwing: MailTransportError.malformedResponse(
+                        underlyingDescription: "fetchParsedMessageOperation returned no parser and no error"
+                    ))
+                    return
+                }
+                guard let data = Self.partData(from: parser, uniqueID: partId) else {
+                    continuation.resume(throwing: MailTransportError.malformedResponse(
+                        underlyingDescription: "No MIME part with uniqueID \(partId) found in message uid \(uid)"
+                    ))
+                    return
+                }
+                continuation.resume(returning: data)
+            }
+        }
     }
 
     /// `APPEND`s `messageData` to `mailboxPath` (M5: `OpQueueProcessor`'s

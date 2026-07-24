@@ -113,6 +113,73 @@ struct MailCoreIMAPSessionIntegrationTests {
         #expect(body.html?.contains("http://example.com/banner.png") == true)
     }
 
+    // MARK: M8 — attachment data fetch
+
+    private static let expectedPNGBytes = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
+
+    @Test("fetches a PNG attachment's raw bytes by partId, matching the fixture byte-for-byte")
+    func fetchesPNGAttachmentData() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+
+        _ = try await session.select("INBOX")
+        let envelopes = try await session.fetchEnvelopes(mailboxPath: "INBOX", uids: .all, batchSize: 50)
+        let message = try #require(envelopes.first { $0.messageId == "<seed-0014@otegami.test>" })
+
+        let body = try await session.fetchBody(mailboxPath: "INBOX", uid: message.uid)
+        let attachmentPart = try #require(body.parts.first { $0.filename == "logo.png" })
+        #expect(attachmentPart.isAttachment)
+        #expect(attachmentPart.mimeType == "image")
+        #expect(attachmentPart.mimeSubtype == "png")
+
+        let data = try await session.fetchMessageBody(mailboxPath: "INBOX", uid: message.uid, partId: attachmentPart.partId)
+        #expect(data == Self.expectedPNGBytes)
+    }
+
+    @Test("fetches a Japanese-filename PDF attachment's bytes, with the filename decoded correctly")
+    func fetchesJapaneseFilenamePDFAttachmentData() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+
+        _ = try await session.select("INBOX")
+        let envelopes = try await session.fetchEnvelopes(mailboxPath: "INBOX", uids: .all, batchSize: 50)
+        let message = try #require(envelopes.first { $0.messageId == "<seed-0015@otegami.test>" })
+
+        let body = try await session.fetchBody(mailboxPath: "INBOX", uid: message.uid)
+        let attachmentPart = try #require(body.parts.first { $0.filename == "請求書.pdf" })
+        #expect(attachmentPart.mimeType == "application")
+        #expect(attachmentPart.mimeSubtype == "pdf")
+
+        let data = try await session.fetchMessageBody(mailboxPath: "INBOX", uid: message.uid, partId: attachmentPart.partId)
+        #expect(data.starts(with: Data("%PDF-1.4".utf8)))
+        #expect(!data.isEmpty)
+    }
+
+    @Test("the cid inline-image seed message's part is detected as inline with a matching contentId")
+    func detectsCIDInlineImage() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+
+        _ = try await session.select("INBOX")
+        let envelopes = try await session.fetchEnvelopes(mailboxPath: "INBOX", uids: .all, batchSize: 50)
+        let message = try #require(envelopes.first { $0.messageId == "<seed-0016@otegami.test>" })
+
+        let body = try await session.fetchBody(mailboxPath: "INBOX", uid: message.uid)
+        #expect(body.html?.contains(#"src="cid:otegami-logo@otegami.test""#) == true)
+
+        let inlinePart = try #require(body.parts.first { $0.contentId == "otegami-logo@otegami.test" })
+        #expect(!inlinePart.isAttachment)
+
+        let data = try await session.fetchMessageBody(mailboxPath: "INBOX", uid: message.uid, partId: inlinePart.partId)
+        #expect(data == Self.expectedPNGBytes)
+    }
+
     @Test("reports server capabilities without throwing")
     func capabilities() async throws {
         let env = try #require(TestIMAPEnvironment.primary)
