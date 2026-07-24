@@ -480,3 +480,104 @@ M1–M5 の検証はすべて「XCUITest 完了後にホストから撮る」パ
 - iCloud: `PENDING.md` の「iCloud App 用パスワードでの実アカウント確認」
   (実 App 用パスワードでの接続テスト・送受信、ユーザー名がフルアドレスで
   良いかの確認)。
+
+## iOS シミュレータ検証 (M7)
+
+```sh
+scripts/verify-ios-m7.sh
+```
+
+全文検索 (FTS5 trigram MATCH + 短いクエリの LIKE フォールバック) と検索 UI
+のチェックポイントを検証する。
+
+1. `OtegamiM7SetupUITests` — `test1`/`test2` の Dovecot アカウントを両方
+   追加し、それぞれの seed メッセージが表示されることを確認する (以降の
+   検索フェーズが読む GRDB 状態のベースライン)。
+2. `OtegamiM7SearchUITests` — 5 つの独立したシナリオ、それぞれ別々の
+   `xcodebuild test -only-testing:` 呼び出し (フェーズ1が永続化した GRDB
+   状態を、新しい `app.launch()` のたびに再利用する):
+   - (a) 2 文字の日本語クエリ (`打ち`) — `SearchQuery` の `LIKE`
+     フォールバックでヒット
+   - (b) 3 文字以上の日本語クエリ (`打ち合わせ`) — FTS5 trigram `MATCH`
+     でヒット
+   - (c) 英語クエリ (`html`、小文字) — ASCII の大文字小文字を trigram が
+     フォールドすることも同時に確認
+   - (d) 統合受信トレイの既定スコープ「すべて」で、test1/test2 両方の
+     結果が返る (`ようこそ`、両アカウントの seed メッセージ件名に共通)
+   - (e) ヒットしようがないクエリで 0 件の空状態
+     (`ContentUnavailableView.search`) が表示される
+
+   5 つのクエリはすべて `message.subject` だけでヒットするよう意図的に
+   選んである (`messageBody.plainText` には依存しない) — `BodyFetcher
+   .prefetchRecent` のバックグラウンド本文取得パスが完了しているかという
+   タイミング競合を避けるため。件名は `AccountSyncer.upsert` の
+   envelope 同期時点で `FTSIndexer.reindex` により即座にインデックスされ
+   るので、`OtegamiM7SetupUITests` が seed 件名の表示を確認できた時点で
+   もう検索可能になっている。
+
+検索結果は `@AppStorage` ではなく素の `@State` なので (M1-M5 のメッセージ
+一覧と違って) XCUITest プロセス終了後にスクリーンショットを撮っても何も
+映らない。各シナリオの test メソッドは `Thread.sleep(forTimeInterval: 4)`
+で結果画面を数秒保持し、`verify-ios-m7.sh` はテスト実行と並行する
+バックグラウンドサブシェルからその間にスクリーンショットを撮る — M6 で
+確立した「テスト実行中に撮る」手法と同じ。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`m7-01-two-char-japanese.png` / `m7-02-three-char-japanese-fts.png` /
+`m7-03-english-query.png` / `m7-04-cross-account.png` /
+`m7-05-empty-state.png` として出力される。
+
+### `.searchable` の後に `.accessibilityIdentifier` を連結してはいけない
+
+`MessageListView` の `List` にはもともと `.accessibilityIdentifier
+("messageList.list")` が付いていた。検索フィールドにも識別子を、と
+`.searchable(...)` の直後に `.accessibilityIdentifier("messageList.search
+.field")` を追加したところ、`messageList.list` がまるごと見つからなく
+なった (`OtegamiM7SetupUITests` を実行して発見) — `.searchable` は検索
+バー用に別の子ビューを生やすわけではなく、同じ `List` の変更子チェーンに
+機能を追加するだけなので、後から呼んだ `.accessibilityIdentifier` は
+検索バー専用の識別子を新設するのではなく、その `List` 自身の識別子を
+**上書き**してしまう。`.searchable` はどの画面でも検索バーを1つしか
+生成しないので、識別子を諦めて `app.searchFields.firstMatch` で探す方が
+安全 (`SearchUITestHelpers.typeSearchQuery`)。`messageList.search.loading`
+/`.emptyState` や `.searchScopes` の各選択肢のように、`List` とは別の
+ビューに付ける識別子は問題なく機能する。
+
+### `ContentUnavailableView.search(text:)` の識別子より本文テキストの方が確実
+
+`ContentUnavailableView.search(text: searchText)` に
+`.accessibilityIdentifier("messageList.search.emptyState")` を付けても、
+`app.otherElements["messageList.search.emptyState"]` では見つからなかった
+(実行時にタイムアウト)。M2/M4 で記録済みの「厳密一致の識別子ルックアップ
+が、画面には明らかに存在する要素を見つけられないことがある」パターンの
+再発と見られる。代わりに、システムが生成する説明文 (`"No Results for
+\"zzzznotfound\""`、検索語そのものを含む) を `app.staticTexts` の `label
+CONTAINS` 述語で探す方式に切り替えたところ確実に見つかった —
+`ContentUnavailableView.search` はクエリ文字列をそのまま説明文に含める
+ので、この方式は今後どのクエリ文字列に対しても流用できる。
+
+### 開発用メールスタックはマイルストーンをまたいで状態が残る
+
+`m7-04-cross-account.png` には、seed フィクスチャに存在しない
+「Dovecot Test1 / Re: ようこそ otegami へ」という行が写っている —
+これは過去に `verify-ios-m5.sh` を実行した際、実際に SMTP 送信 + Sent
+への IMAP APPEND を行った結果が、dev mailstack の永続ボリューム
+(`dev/mailstack/data/`) にそのまま残っていたもの。`make mailstack-seed`
+は INBOX だけを `doveadm expunge` してから re-seed する (`seed.sh` 参照)
+ので、Sent 配下のデータはマイルストーンをまたいで蓄積し続ける。M7 の
+アサーションは特定の件名の**存在**だけを確認しており、他の行が追加で
+表示されても失敗しないため実害はないが、`verify-ios-m*.sh` を跨いで
+繰り返し実行する開発環境では、検索結果に無関係な過去データが混ざり
+うることは覚えておく価値がある (`dev/mailstack/data/` を消せば完全に
+リセットされるが、それは通常の権限の外にある破壊的操作)。
+
+### 既知の制約
+
+- 検索スコープ「現在のメールボックス」への切替 (`.searchScopes` の
+  もう一方の選択肢) は `SearchQueryTests`(単体、`SearchScope.mailbox`
+  を直接検証) でカバーしているが、XCUITest からスコープピッカーを操作
+  する自動検証は行っていない — `.searchScopes` のセグメント/ピッカー
+  UI 要素を安定して操作する方法の調査は今後の課題として残す。
+- FTS5 trigram の case folding は ASCII のみ (SQLite の仕様)。全角/半角
+  や日本語の異体字を同一視するような正規化は行っていない
+  (計画書の既知の制約として記録済み)。

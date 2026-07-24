@@ -316,3 +316,57 @@ miss it entirely (and did, on one otherwise-passing run). The robust
 version repeatedly overwrites the same output file every second across a
 window wide enough to almost certainly land inside the target screen's
 visible time, rather than trying to predict one exact moment.
+
+## M7: `.searchable`'s identifier trap, and `ContentUnavailableView.search`
+
+Building `scripts/verify-ios-m7.sh`/`OtegamiM7*UITests` (search bar over
+`MessageListView`) surfaced two more issues, on top of everything logged
+above:
+
+1. **Chaining `.accessibilityIdentifier` after `.searchable(...)` doesn't
+   tag the search field — it *replaces* whatever identifier the view it's
+   attached to already had.** `MessageListView`'s `List` already carried
+   `.accessibilityIdentifier("messageList.list")`; adding `.searchable(text:
+   ...)` then `.accessibilityIdentifier("messageList.search.field")` right
+   after it made `"messageList.list"` disappear entirely (`OtegamiM7SetupUITests`
+   timed out waiting for it, confirmed the identifier had silently become
+   `"messageList.search.field"` instead). `.searchable` doesn't create a
+   separate addressable child view to hang a second identifier off of —
+   it's still the same modifier chain on the same `List`. Since `.searchable`
+   only ever produces one search bar per screen, the fix is to just not give
+   it a custom identifier at all: find it via `app.searchFields.firstMatch`.
+   Identifiers on views `.searchable` *doesn't* touch directly (a
+   `.searchScopes` option's `Text`, an `.overlay`'s `ProgressView`/
+   `ContentUnavailableView`) are unaffected and work normally.
+2. **`ContentUnavailableView.search(text:)` with a custom
+   `.accessibilityIdentifier` didn't resolve via exact-identifier lookup**
+   (`app.otherElements["messageList.search.emptyState"]` timed out) — the
+   same "exact identifier lookup fails on a plainly-visible element" class
+   of issue M2/M4 already documented for other controls, now confirmed for
+   this SwiftUI type too. `ContentUnavailableView.search(text:)`'s
+   system-provided description includes the query string itself (e.g. `No
+   Results for "zzzznotfound"`), so `app.staticTexts.matching(NSPredicate
+   (format: "label CONTAINS %@", query))` finds it reliably instead — no
+   identifier needed, and it doubles as a check that the *right* query is
+   what produced the empty state.
+
+Neither is an app bug: `.searchable`/`ContentUnavailableView.search` behave
+exactly as documented, this is purely about how XCUITest can (and can't)
+address the elements they produce.
+
+## dev/mailstack: state persists across milestones, not just across a run
+
+`make mailstack-seed` only resets `INBOX` (`doveadm expunge ... mailbox
+INBOX all` then re-`doveadm save`s the fixtures — see `seed.sh`); anything
+written to *other* mailboxes (e.g. `Sent`, via a real SMTP send + IMAP
+`APPEND` from a past `verify-ios-m5.sh` run) is untouched and persists in
+`dev/mailstack/data/` indefinitely, across every later milestone's
+verification runs too — not just within one. Seen concretely: an M7 search
+for `ようこそ` (M7 verification, scope "すべて") turned up an extra row,
+"Dovecot Test1 / Re: ようこそ otegami へ", left over from an M5 run days
+earlier that isn't in any seed fixture. Harmless for an assertion that only
+checks a specific subject's *presence* (M7's tests do), but worth expecting
+if a test ever needs to assert an *exact* result count or the *absence* of
+extra rows — `dev/mailstack/data/` would need to be deleted first (a
+destructive operation outside normal permissions, so not something a verify
+script does automatically).

@@ -134,8 +134,17 @@ struct MessageListView: View {
                 .accessibilityIdentifier("messageList.emptyState")
             }
         }
+        // No `.accessibilityIdentifier` chained after `.searchable` here —
+        // doing so doesn't tag the search field with its own identifier
+        // the way it would for a plain child view; it *replaces* whatever
+        // identifier the preceding modifier chain already set on this same
+        // `List` ("messageList.list", set above), which broke XCUITest's
+        // ability to find the list at all (discovered running
+        // `OtegamiM7SetupUITests`). `.searchable`'s system search bar is
+        // reliably the only one on screen, so XCUITest locates it via
+        // `app.searchFields.firstMatch` instead (`SearchUITestHelpers
+        // .typeSearchQuery`).
         .searchable(text: $searchText, prompt: "検索")
-        .accessibilityIdentifier("messageList.search.field")
         .searchScopes($searchScope) {
             ForEach(availableScopes) { scope in
                 Text(scope.title)
