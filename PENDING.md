@@ -126,5 +126,22 @@ Extension は実装済み・大部分を自動検証済み (詳細は `docs/rela
   までは自動検証済みだが、macOS 版プッシュ通知の実装自体は範囲外。
 - `xcrun simctl push` によるシミュレータへのペイロード注入テスト、
   `NotificationService` のユニットテスト単体は本セッションでは未実施
-  (時間の都合。`scripts/verify-ios-m9.sh` として今後追加する余地あり —
-  「M10 への引き継ぎ」参照)。
+  (時間の都合)。`scripts/verify-ios-m9.sh` 自体は M9 で追加済みで、M10 の
+  最終回帰チェックでも引き続き green (プッシュ設定 UI の opt-in フロー・
+  無効な URL の拒否・シミュレータでの `.noDeviceToken` グレースフル
+  デグレードを確認)。
+
+## 公開時に必要な対応 (まとめ)
+
+以下は「今すぐ開発を止める理由」ではなく、実際に公開・配布する段になったら
+対応が必要な項目 (計画書の合意事項)。
+
+- **リポジトリの public 化**: 現状 private。公開時にリポジトリ名を
+  `mailapp` から `otegami` に変更する。
+- **Google OAuth の審査**: 各自の Client ID でのテスト利用には審査不要だが、
+  作者本人が配布ビルド (App Store/TestFlight) を出す場合は Google の OAuth
+  審査が必要になる (`docs/oauth-setup.md`)。
+- **macOS ビルドの配布**: `make mac-app` で `dist/Otegami.app` を生成できる
+  ようになった (M10) が、現状は開発チームでのアドホック署名のまま。
+  Developer ID 署名 + notarization (Gatekeeper 対応) は未実施 — 自分の
+  Mac 以外に配る場合はこの対応が必要。
