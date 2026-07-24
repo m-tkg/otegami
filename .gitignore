@@ -8,5 +8,8 @@ DerivedData/
 **/Config/Local.xcconfig
 *.p8
 dev/mailstack/data/
+# otegami-relay (M9): local secrets, never committed.
+server/otegami-relay/.env
+server/otegami-relay/secrets/
 # xcodegen-generated Info.plist (from the `info:` key in project.yml)
 apps/Otegami/Generated/

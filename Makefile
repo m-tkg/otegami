@@ -6,6 +6,7 @@
 #   make test             OtegamiKit `swift test`
 #   make server           build the otegami-relay server
 #   make server-test      run the otegami-relay server test suite
+#   make relay-docker     build the otegami-relay Docker image
 #   make mailstack-up     start the dev IMAP/SMTP mail stack (Dovecot + Mailpit)
 #   make mailstack-down   stop the dev mail stack
 #   make mailstack-seed   load sample messages into the dev mail stack
@@ -20,7 +21,7 @@ KIT_DIR := packages/OtegamiKit
 SERVER_DIR := server/otegami-relay
 MAILSTACK_DIR := dev/mailstack
 
-.PHONY: all mac ios ios-device app-project test server server-test \
+.PHONY: all mac ios ios-device app-project test server server-test relay-docker \
 	mailstack-up mailstack-down mailstack-seed clean
 
 all: mac ios test
@@ -60,6 +61,11 @@ server:
 
 server-test:
 	cd $(SERVER_DIR) && swift test
+
+# Build context is the repo root (not $(SERVER_DIR)) — see Dockerfile's
+# doc comment for why (Package.swift depends on ../../packages/OtegamiKit).
+relay-docker:
+	docker build -f $(SERVER_DIR)/Dockerfile -t otegami-relay .
 
 mailstack-up:
 	cd $(MAILSTACK_DIR) && docker compose up -d
