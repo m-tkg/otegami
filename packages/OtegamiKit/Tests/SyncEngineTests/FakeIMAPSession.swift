@@ -27,6 +27,17 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// exercising `SyncEngine` in isolation is expected to hand back
         /// already-decoded content, same as the real backend would).
         public var bodiesByPath: [String: [UInt32: MessageBodyContent]]
+        /// M8: scripted `fetchMessageBody(mailboxPath:uid:partId:)` results
+        /// — mailbox path, then UID, then `partId` (`nil`-partId results
+        /// keyed by the empty string, since `[String: Data]`'s key can't be
+        /// optional; `AttachmentFetcherTests`/`AttachmentFetcher` itself
+        /// never actually requests a `nil` partId, only real
+        /// `AttachmentRecord.partId` values, so this is unused in practice
+        /// but keeps the map's shape uniform).
+        public var attachmentDataByPath: [String: [UInt32: [String: Data]]]
+        /// When set, `fetchMessageBody(mailboxPath:uid:partId:)` throws
+        /// this instead of consulting `attachmentDataByPath`.
+        public var failAttachmentFetch: MailTransportError?
         /// When set, `connect(auth:)` throws this instead of succeeding.
         public var failConnection: MailTransportError?
         /// What `capabilities()` reports — `MailboxSyncer`'s CONDSTORE
@@ -55,6 +66,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             envelopesByPath: [String: [FetchedEnvelope]] = [:],
             statusByPath: [String: MailboxStatus] = [:],
             bodiesByPath: [String: [UInt32: MessageBodyContent]] = [:],
+            attachmentDataByPath: [String: [UInt32: [String: Data]]] = [:],
+            failAttachmentFetch: MailTransportError? = nil,
             failConnection: MailTransportError? = nil,
             capabilitiesToReport: Set<IMAPCapability> = [],
             changedSinceEnvelopesByPath: [String: [FetchedEnvelope]] = [:],
@@ -66,6 +79,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.envelopesByPath = envelopesByPath
             self.statusByPath = statusByPath
             self.bodiesByPath = bodiesByPath
+            self.attachmentDataByPath = attachmentDataByPath
+            self.failAttachmentFetch = failAttachmentFetch
             self.failConnection = failConnection
             self.capabilitiesToReport = capabilitiesToReport
             self.changedSinceEnvelopesByPath = changedSinceEnvelopesByPath
@@ -223,7 +238,15 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data {
-        throw MailTransportError.notImplemented("FakeIMAPSession doesn't script raw per-part fetch (M8) behavior")
+        if let failAttachmentFetch = script.failAttachmentFetch {
+            throw failAttachmentFetch
+        }
+        guard let data = script.attachmentDataByPath[mailboxPath]?[uid]?[partId ?? ""] else {
+            throw MailTransportError.malformedResponse(
+                underlyingDescription: "FakeIMAPSession has no scripted attachment data for uid \(uid), partId \(partId ?? "nil") in \(mailboxPath)"
+            )
+        }
+        return data
     }
 
     public func store(mailboxPath: String, change: FlagChange) async throws {

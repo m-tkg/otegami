@@ -15,6 +15,7 @@ public actor SyncCoordinator {
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     private var syncers: [String: AccountSyncer] = [:]
     private let bodyFetcher: BodyFetcher
+    private let attachmentFetcher: AttachmentFetcher
     private let opQueueProcessor: OpQueueProcessor
 
     public init(
@@ -28,6 +29,7 @@ public actor SyncCoordinator {
         self.database = database
         self.sessionFactory = sessionFactory
         self.bodyFetcher = BodyFetcher(database: database)
+        self.attachmentFetcher = AttachmentFetcher(database: database)
         self.opQueueProcessor = OpQueueProcessor(
             database: database,
             sessionFactory: sessionFactory,
@@ -73,6 +75,36 @@ public actor SyncCoordinator {
         }
         _ = try await session.select(mailboxPath)
         try await bodyFetcher.fetchBody(message: message, mailboxPath: mailboxPath, session: session)
+    }
+
+    /// Fetches (and persists) one attachment's data on demand (M8) — the
+    /// "受信側: タップ→未取得ならスピナー付き取得" and cid-inline-image paths both
+    /// go through this. Opens its own short-lived session, same rationale
+    /// as `fetchBody(for:mailboxPath:account:auth:)` above (this can happen
+    /// at any time, independent of any sync pass, e.g. mid-scroll through a
+    /// `WKWebView`'s inline images).
+    @discardableResult
+    public func fetchAttachment(
+        _ attachment: AttachmentRecord,
+        messageUID: Int64,
+        mailboxPath: String,
+        account: AccountRecord,
+        auth: MailAuth
+    ) async throws -> AttachmentRecord {
+        let session = sessionFactory(account.imapConfig)
+        try await session.connect(auth: auth)
+        defer {
+            let session = session
+            Task { await session.disconnect() }
+        }
+        _ = try await session.select(mailboxPath)
+        return try await attachmentFetcher.fetchAndStore(
+            attachment: attachment,
+            accountId: account.id,
+            messageUID: messageUID,
+            mailboxPath: mailboxPath,
+            session: session
+        )
     }
 
     /// Differential sync (M3): only fetches what changed since the last

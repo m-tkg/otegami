@@ -193,6 +193,20 @@ public actor OpQueueProcessor {
                 throw MailTransportError.serverError(underlyingDescription: "Account \(account.id) has no SMTP configuration")
             }
 
+            // M8: rebuilt from the `outboxAttachment` rows' bytes on disk at
+            // replay time, same "rebuild from the row, not a pre-built
+            // snapshot" pattern the rest of this draft already follows —
+            // see `OutboxAttachmentRecord`'s doc comment. A row whose file
+            // has gone missing (should not normally happen; best-effort
+            // defensive skip rather than failing the whole send) is simply
+            // left out rather than aborting the send over one bad
+            // attachment.
+            let attachmentRecords = try await outboxAttachments(outboxMessageId: payload.outboxMessageId)
+            let composeAttachments: [ComposeAttachment] = attachmentRecords.compactMap { record in
+                guard let data = FileManager.default.contents(atPath: record.localPath) else { return nil }
+                return ComposeAttachment(filename: record.filename, mimeType: record.mimeType, data: data)
+            }
+
             let draft = ComposeDraft(
                 from: EmailAddress(name: account.displayName, address: account.email),
                 to: outbox.toAddresses,
@@ -201,7 +215,8 @@ public actor OpQueueProcessor {
                 subject: outbox.subject,
                 plainTextBody: outbox.plainTextBody,
                 inReplyTo: outbox.inReplyToMessageId,
-                references: outbox.references
+                references: outbox.references,
+                attachments: composeAttachments
             )
             let built = messageBuilder(draft)
             let recipients = outbox.toAddresses + outbox.ccAddresses + outbox.bccAddresses
@@ -296,8 +311,27 @@ public actor OpQueueProcessor {
         try await database.dbWriter.read { db in try OutboxMessageRecord.fetchOne(db, key: id) }
     }
 
+    private func outboxAttachments(outboxMessageId: Int64) async throws -> [OutboxAttachmentRecord] {
+        try await database.dbWriter.read { db in
+            try OutboxAttachmentRecord.filter(Column("outboxMessageId") == outboxMessageId).fetchAll(db)
+        }
+    }
+
+    /// Deletes the `outboxMessage` row (its `outboxAttachment` rows cascade
+    /// via the schema's `onDelete: .cascade` FK) and, best-effort, the
+    /// staged files under `<Application Support>/otegami/Outbox/...` those
+    /// rows pointed at — read *before* the row delete since the FK cascade
+    /// would otherwise remove the very rows this needs to find the paths.
+    /// A failed unlink (already gone, permissions) is silently ignored:
+    /// the message has already been sent successfully by this point, so
+    /// nothing about the send itself should be allowed to fail here — see
+    /// this case's caller for why nothing past the SMTP send may retry.
     private func deleteOutboxMessage(id: Int64) async throws {
+        let attachmentPaths = try await outboxAttachments(outboxMessageId: id).map(\.localPath)
         _ = try await database.dbWriter.write { db in try OutboxMessageRecord.deleteOne(db, key: id) }
+        for path in attachmentPaths {
+            try? FileManager.default.removeItem(atPath: path)
+        }
     }
 
     private func delete(op: OpQueueRecord) async throws {
