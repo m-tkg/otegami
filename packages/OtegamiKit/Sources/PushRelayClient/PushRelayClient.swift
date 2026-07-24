@@ -1,0 +1,205 @@
+import Foundation
+import OtegamiRelayAPI
+
+/// Thin HTTP client for the app<->otegami-relay wire format
+/// (`OtegamiRelayAPI`'s DTOs) — everything `Support/PushSettingsStore.swift`
+/// (the app layer) needs to drive the opt-in push flow: register a device,
+/// rotate its APNs token, create/delete watches. `URLSession` is injected
+/// (default `.shared`) so `PushRelayClientTests` can point every call at a
+/// `URLProtocol` stub instead of a real server — same pattern as
+/// `GoogleOAuthClient`.
+///
+/// Deliberately Apple-only (this target isn't in `OtegamiRelayAPI`'s
+/// Linux-compatible dependency chain) even though `URLSession` itself would
+/// build on Linux too — there's no reason for the *relay server* to ever
+/// call its own HTTP API as a client, so keeping this a separate target
+/// avoids the app's networking concerns leaking into the server's build
+/// graph.
+public actor PushRelayClient {
+    public enum PushRelayClientError: Error, Equatable, CustomStringConvertible {
+        case invalidBaseURL
+        /// A non-2xx response. `body` is the decoded `RelayErrorResponse`
+        /// when the server returned one (it always should, for every route
+        /// this client calls), `nil` if the body couldn't be decoded as
+        /// that shape.
+        case http(status: Int, body: RelayErrorResponse?)
+        case invalidResponse
+        case network(String)
+
+        public var description: String {
+            switch self {
+            case .invalidBaseURL:
+                "invalid relay URL"
+            case .http(let status, let body):
+                if let body {
+                    "relay returned \(status): \(body.message)"
+                } else {
+                    "relay returned \(status)"
+                }
+            case .invalidResponse:
+                "relay returned a response that couldn't be decoded"
+            case .network(let description):
+                "network error: \(description)"
+            }
+        }
+    }
+
+    private let urlSession: URLSession
+
+    public init(urlSession: URLSession = .shared) {
+        self.urlSession = urlSession
+    }
+
+    public func registerDevice(
+        baseURL: URL,
+        apnsToken: String,
+        environment: RegisterDeviceRequest.Environment
+    ) async throws -> RegisterDeviceResponse {
+        try await send(
+            baseURL: baseURL,
+            path: "v1/devices",
+            method: "POST",
+            body: RegisterDeviceRequest(apnsToken: apnsToken, environment: environment),
+            bearerToken: nil,
+            expectedStatus: 201
+        )
+    }
+
+    public func updateDeviceToken(
+        baseURL: URL,
+        deviceId: String,
+        deviceSecret: String,
+        apnsToken: String,
+        environment: RegisterDeviceRequest.Environment
+    ) async throws {
+        try await sendNoContent(
+            baseURL: baseURL,
+            path: "v1/devices/\(deviceId)/token",
+            method: "PUT",
+            body: UpdateDeviceTokenRequest(apnsToken: apnsToken, environment: environment),
+            bearerToken: deviceSecret,
+            expectedStatus: 204
+        )
+    }
+
+    public func createWatch(
+        baseURL: URL,
+        deviceSecret: String,
+        request: CreateWatchRequest
+    ) async throws -> WatchResponse {
+        try await send(
+            baseURL: baseURL,
+            path: "v1/watches",
+            method: "POST",
+            body: request,
+            bearerToken: deviceSecret,
+            expectedStatus: 201
+        )
+    }
+
+    public func deleteWatch(baseURL: URL, deviceSecret: String, watchId: String) async throws {
+        try await sendNoContent(
+            baseURL: baseURL,
+            path: "v1/watches/\(watchId)",
+            method: "DELETE",
+            body: Optional<String>.none,
+            bearerToken: deviceSecret,
+            expectedStatus: 204
+        )
+    }
+
+    // MARK: - Plumbing
+
+    private static var jsonDecoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+
+    private func send<Body: Encodable, Response: Decodable>(
+        baseURL: URL,
+        path: String,
+        method: String,
+        body: Body?,
+        bearerToken: String?,
+        expectedStatus: Int
+    ) async throws -> Response {
+        let (data, _) = try await performRequest(
+            baseURL: baseURL,
+            path: path,
+            method: method,
+            body: body,
+            bearerToken: bearerToken,
+            expectedStatus: expectedStatus
+        )
+        guard let decoded = try? Self.jsonDecoder.decode(Response.self, from: data) else {
+            throw PushRelayClientError.invalidResponse
+        }
+        return decoded
+    }
+
+    /// For routes that respond 204 No Content — no response body to decode.
+    private func sendNoContent<Body: Encodable>(
+        baseURL: URL,
+        path: String,
+        method: String,
+        body: Body?,
+        bearerToken: String?,
+        expectedStatus: Int
+    ) async throws {
+        _ = try await performRequest(
+            baseURL: baseURL,
+            path: path,
+            method: method,
+            body: body,
+            bearerToken: bearerToken,
+            expectedStatus: expectedStatus
+        )
+    }
+
+    private func performRequest<Body: Encodable>(
+        baseURL: URL,
+        path: String,
+        method: String,
+        body: Body?,
+        bearerToken: String?,
+        expectedStatus: Int
+    ) async throws -> (Data, HTTPURLResponse) {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw PushRelayClientError.invalidBaseURL
+        }
+        let basePath = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
+        components.path = "\(basePath)/\(path)"
+        guard let url = components.url else {
+            throw PushRelayClientError.invalidBaseURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        if let bearerToken {
+            request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(body)
+        }
+
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await urlSession.data(for: request)
+        } catch let error as PushRelayClientError {
+            throw error
+        } catch {
+            throw PushRelayClientError.network("\(error)")
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw PushRelayClientError.invalidResponse
+        }
+        guard http.statusCode == expectedStatus else {
+            let errorBody = try? Self.jsonDecoder.decode(RelayErrorResponse.self, from: data)
+            throw PushRelayClientError.http(status: http.statusCode, body: errorBody)
+        }
+        return (data, http)
+    }
+}

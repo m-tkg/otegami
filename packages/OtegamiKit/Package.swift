@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "OtegamiRelayAPI", targets: ["OtegamiRelayAPI"]),
         .library(name: "MailTransportMailCore", targets: ["MailTransportMailCore"]),
         .library(name: "GoogleOAuth", targets: ["GoogleOAuth"]),
+        .library(name: "PushRelayClient", targets: ["PushRelayClient"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
@@ -108,6 +109,22 @@ let package = Package(
         .testTarget(
             name: "MailTransportMailCoreTests",
             dependencies: ["MailTransportMailCore", "SyncEngine", "OtegamiStore"]
+        ),
+
+        // M9: HTTP client for the app<->otegami-relay push relay API.
+        // Apple-only by convention (see the target's own doc comment) —
+        // depends only on OtegamiRelayAPI.
+        .target(
+            name: "PushRelayClient",
+            dependencies: ["OtegamiRelayAPI"]
+        ),
+
+        // `URLProtocol`-stubbed request/response and error-mapping tests —
+        // no real relay server touched. Mirrors GoogleOAuthClientTests'
+        // approach.
+        .testTarget(
+            name: "PushRelayClientTests",
+            dependencies: ["PushRelayClient", "OtegamiRelayAPI"]
         ),
 
         // Gmail OAuth2 (Authorization Code + PKCE) client + `TokenStore`
