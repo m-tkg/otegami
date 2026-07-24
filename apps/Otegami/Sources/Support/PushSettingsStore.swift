@@ -88,6 +88,10 @@ struct PushSettingsStore: @unchecked Sendable {
         return String(data: data, encoding: .utf8)
     }
 
+    // M11: deliberately *not* `kSecAttrSynchronizable` — this secret is
+    // paired 1:1 with this device's own APNs device token (never itself
+    // synced), so syncing just the secret to another device would leave it
+    // holding a bearer credential with no matching token to actually use it.
     func setDeviceSecret(_ secret: String) throws {
         let data = Data(secret.utf8)
         let query = baseQuery()

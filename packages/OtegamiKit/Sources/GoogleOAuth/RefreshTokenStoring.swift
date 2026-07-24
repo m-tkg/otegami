@@ -22,6 +22,14 @@ public protocol RefreshTokenStoring: Sendable {
 /// for the same reason: a background sync or a future push-relay wake
 /// (M9) needs to read this while the device is locked but has been
 /// unlocked at least once since boot.
+///
+/// iCloud sync (M11): marked `kSecAttrSynchronizable` on write, and
+/// queried/deleted with `kSecAttrSynchronizableAny` plus the same lazy
+/// delete-then-recreate migration for a pre-M11, non-synchronizable item —
+/// see `KeychainCredentialStore`'s doc comment for the full rationale
+/// (identical here; refresh tokens are exactly as sensitive/portable as an
+/// IMAP password, and Gmail accounts benefit from the same "add on iOS,
+/// appear ready-to-sync on macOS" experience).
 public struct KeychainRefreshTokenStore: RefreshTokenStoring {
     public enum KeychainError: Error, CustomStringConvertible {
         case unexpectedStatus(OSStatus)
@@ -46,27 +54,48 @@ public struct KeychainRefreshTokenStore: RefreshTokenStoring {
 
     public func write(_ refreshToken: String, accountId: String) throws {
         let data = Data(refreshToken.utf8)
-        let query = baseQuery(accountId: accountId)
+        let lookupQuery = Self.anySynchronizableQuery(baseQuery(accountId: accountId))
 
-        let existsStatus = SecItemCopyMatching(query as CFDictionary, nil)
+        var existingAttributes: AnyObject?
+        let existsStatus = SecItemCopyMatching(
+            Self.returningAttributes(lookupQuery) as CFDictionary,
+            &existingAttributes
+        )
+
         switch existsStatus {
         case errSecSuccess:
-            let update = [kSecValueData as String: data]
-            let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
-            guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+            let isSynchronizable = (existingAttributes as? [String: Any])?[kSecAttrSynchronizable as String] as? Bool ?? false
+            if isSynchronizable {
+                let status = SecItemUpdate(lookupQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+                guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+            } else {
+                try migrateToSynchronizableAndWrite(data, accountId: accountId)
+            }
         case errSecItemNotFound:
-            var attributes = query
-            attributes[kSecValueData as String] = data
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            let status = SecItemAdd(attributes as CFDictionary, nil)
-            guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+            try addSynchronizable(data, accountId: accountId)
         default:
             throw KeychainError.unexpectedStatus(existsStatus)
         }
     }
 
+    /// See `KeychainCredentialStore.migrateToSynchronizableAndWrite`'s doc
+    /// comment — identical delete-then-recreate rationale.
+    private func migrateToSynchronizableAndWrite(_ data: Data, accountId: String) throws {
+        _ = SecItemDelete(baseQuery(accountId: accountId) as CFDictionary)
+        try addSynchronizable(data, accountId: accountId)
+    }
+
+    private func addSynchronizable(_ data: Data, accountId: String) throws {
+        var attributes = baseQuery(accountId: accountId)
+        attributes[kSecValueData as String] = data
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        attributes[kSecAttrSynchronizable as String] = true
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+    }
+
     public func read(accountId: String) throws -> String? {
-        var query = baseQuery(accountId: accountId)
+        var query = Self.anySynchronizableQuery(baseQuery(accountId: accountId))
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -79,7 +108,7 @@ public struct KeychainRefreshTokenStore: RefreshTokenStoring {
     }
 
     public func delete(accountId: String) throws {
-        let status = SecItemDelete(baseQuery(accountId: accountId) as CFDictionary)
+        let status = SecItemDelete(Self.anySynchronizableQuery(baseQuery(accountId: accountId)) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unexpectedStatus(status)
         }
@@ -91,5 +120,18 @@ public struct KeychainRefreshTokenStore: RefreshTokenStoring {
             kSecAttrService as String: service,
             kSecAttrAccount as String: accountId,
         ]
+    }
+
+    /// See `KeychainCredentialStore.anySynchronizableQuery`'s doc comment.
+    private static func anySynchronizableQuery(_ query: [String: Any]) -> [String: Any] {
+        var query = query
+        query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        return query
+    }
+
+    private static func returningAttributes(_ query: [String: Any]) -> [String: Any] {
+        var query = query
+        query[kSecReturnAttributes as String] = true
+        return query
     }
 }

@@ -114,4 +114,25 @@ public actor TokenStore {
         cache[accountId] = nil
         try refreshTokenStore.delete(accountId: accountId)
     }
+
+    /// M11 (iCloud account sync): whether a refresh token is currently
+    /// stored for `accountId`, without attempting to use or refresh it.
+    /// `AccountCloudSync.LocalAccountDirectory.hasCredential` uses this for
+    /// a cloud-discovered `.gmail`-kind account — deliberately doesn't go
+    /// through `accessToken(for:)` (which would try a network refresh and
+    /// throw on failure) since all this needs to answer is "does *some*
+    /// credential already exist on this device to start syncing with",
+    /// not "is it still valid".
+    public func hasStoredRefreshToken(for accountId: String) -> Bool {
+        (try? refreshTokenStore.read(accountId: accountId))?.isEmptyOrNil == false
+    }
+}
+
+private extension Optional where Wrapped == String {
+    var isEmptyOrNil: Bool {
+        switch self {
+        case .none: return true
+        case .some(let value): return value.isEmpty
+        }
+    }
 }
