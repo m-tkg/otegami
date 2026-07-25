@@ -1870,3 +1870,170 @@ mailcore2 リビジョンは RFC 2231 拡張パラメータ (`filename*=UTF-8''.
   問題なく取得できることを確認済み
   (`OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter
   MailCoreIMAPSessionIntegrationTests`)。
+
+## アカウント編集 UI
+
+```sh
+scripts/verify-ios-account-edit.sh
+```
+
+`docs/roadmap.md` に記録されていた「アカウント編集 UI」(パスワード変更・
+サーバー設定の修正・表示名変更ができず、変更したければ削除して再追加する
+しかなかった) に対応した。`AccountsSettingsView` の各アカウント行がタップ
+可能になり (`AccountEditView`)、メールアドレスと種類 (generic/gmail/icloud)
+以外のフィールドを編集できる。保存時は `AccountRecord.updatedAt` を更新し
+`AppEnvironment.pushAccountToCloud` で iCloud にも反映する (`docs/icloud-sync.md`)。
+
+M3-M5 と異なり、このマイルストーンの検証シナリオ (パスワードを間違ったもの
+に変更 → 同期失敗が見える → 正しいパスワードに戻す → 同期が復活) はホスト側
+の `doveadm`/`Process` 操作が一切不要 (dev mailstack 自体を操作するのではな
+く、アプリが持つ資格情報を書き換えるだけで再現できる) なので、
+`OtegamiAccountEditUITests` は 3 フェーズとも純粋な XCUITest
+(`-only-testing:` で個別実行、`xcodebuild test-without-building`) で完結する:
+
+1. `testAddAccountAndRenameDisplayName` — `test1` の Dovecot アカウントを
+   追加し、設定画面でその行をタップして編集画面を開く (`NavigationLink` によるプッシュ — 後述の実装メモ参照)。メールアドレス・
+   種類が (`LabeledContent`、編集不可) 表示されること、フォームが既存値で
+   プリフィルされていることを確認したうえで、追加フォームと共有している
+   接続テストヘルパー (`AccountConnectionTesting.swift` の
+   `testIMAPConnection`/`testSMTPConnection` — `AccountSetupView`/
+   `ICloudAccountSetupView`/`AccountEditView` の3フォームがすべて同じ実装を
+   呼ぶ) 経由で「接続テスト」が成功することを確認。表示名を変更して保存し、
+   アカウント一覧に新しい表示名が反映されることを確認する。
+2. `testSavingWrongPasswordSurfacesASyncError` — 同じアカウントの編集
+   画面でパスワードだけをわざと間違ったものに変更して保存する。**追加
+   フォームと異なり、アカウント編集の保存は「接続テスト」の成功を条件に
+   していない** (`AccountEditView` のドキュメントコメント参照) — 保存自体
+   は常に成功し、その後の同期試行が失敗として可視化されることを検証する
+   のがこのフェーズの本題。保存後、リランチ不要でそのまま
+   `settings.account.<id>.syncErrorBanner` (identifier の `CONTAINS` 検索
+   — id は UUID なので厳密一致はそもそも書けない) が最大30秒のポーリングで
+   出現することを確認する。リランチが要らない理由:
+   `AppEnvironment.updateAccount` が保存時に
+   `SyncCoordinator.invalidateSyncer(for:)` でキャッシュ済み
+   `AccountSyncer` を破棄し、`OtegamiApp` が既に持っていた
+   `.onChange(of: environment.accounts)`(新規アカウント追加用に M3 から
+   存在する仕組み) がアカウント一覧の変化を検知して同じプロセス内で
+   IDLE ループを新しい (間違った) パスワードで張り直すため。
+3. `testFixingThePasswordRecoversSync` — 再度編集画面を開き、正しい
+   パスワード (`test1234`) に戻して保存。`syncErrorBanner` が最大30秒の
+   ポーリングで消える (`waitForNonExistence`) ことを確認する。
+
+いずれの画面も (M6 のアカウント種別選択シートと同様) GRDB に永続化されない
+純粋なナビゲーション状態なので、`verify-ios-account-edit.sh` は各フェーズの
+`xcodebuild test` 実行と並行するバックグラウンドサブシェルで対象画面を
+1秒おきに上書き撮影する。M6/M7 の「固定時間 sleep 後に1回だけ撮る」方式
+ではなく (フェーズ1つあたりの所要時間がアカウント追加・初期同期・接続テスト
+を含むため実行のたびに大きくばらつく)、`run_test` が返るまでバック
+グラウンドループを回し続け、返った瞬間に `kill` してその時点の最後の
+フレーム (テストメソッド末尾の `Thread.sleep(forTimeInterval: 4)` の間に
+撮られたもの) をそのまま残す方式にしている。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`account-edit-01-renamed.png` (表示名変更後のアカウント一覧) /
+`account-edit-02-sync-error.png` (誤ったパスワード保存後の同期失敗バナー) /
+`account-edit-03-recovered.png` (正しいパスワードに戻した後、バナーが消えた
+状態) として出力される。
+
+### アカウント編集の実装メモ
+
+- **`SyncCoordinator.syncer(for:)` はアカウント id ごとに `AccountSyncer` を
+  キャッシュし、一度作られた後は呼び出し側が渡す `AccountRecord` 引数を
+  無視する** — 編集 UI 実装前はこれが問題にならなかった (アカウントの
+  host/port/資格情報は作成後不変だったため) が、編集を許可すると「保存した
+  のに古い host/port/パスワードを使い続ける」バグになる。
+  `SyncCoordinator.invalidateSyncer(for:)` (キャッシュを破棄し、既存の
+  IDLE ループを止める) を追加し、`AppEnvironment.updateAccount` が保存の
+  たびに呼ぶことで解決した。`packages/OtegamiKit/Tests/SyncEngineTests/
+  SyncCoordinatorTests.swift` に、invalidate しない場合は本当に古い host が
+  使われ続けること・invalidate すれば次の同期から新しい host が使われる
+  ことを対比させる単体テストがある。
+- **接続レベル (認証失敗など、`session.connect()` 自体の失敗) の同期エラーは
+  従来どこにも可視化されていなかった** — `MailboxRecord.lastSyncError`
+  (M8 前後で追加済み) は `connect()` が成功したあと、個別メールボックスの
+  同期が失敗した場合にしか記録されない。`AccountRecord.lastSyncError`/
+  `lastSyncErrorAt` (migration v13) を追加し、`AccountSyncer` の
+  `connect()` 呼び出し (`performInitialSync`/`performIncrementalSync`/
+  `IDLE` ループの再接続) をすべてこの記録・クリアを行う共通ヘルパー経由に
+  した。`AccountSyncerTests` に、接続失敗が記録されること・次の接続成功で
+  クリアされることを確認する単体テストを追加した。
+- **`AccountCloudSyncEngine.reconcile()`/`CloudAccountSnapshot.apply(to:)`
+  は編集 UI 実装前から編集後の全フィールド (host/port/security/SMTP
+  ユーザー名など) を正しく反映できる実装になっていた** — 既存の
+  last-writer-wins テストを見る限り、これは (M11 の設計時点で) 意図的に
+  実装済みだった模様。編集シナリオに特化した単体テスト
+  (`reconcileAppliesAnEditedAccountFromANewerCloudSnapshotOnAnotherDevice`/
+  `reconcileKeepsANewerLocalEditRatherThanAnOlderCloudCopy`,
+  `AccountCloudSyncEngineTests.swift`) を追加で書いたが、いずれも既存実装
+  への変更なしに green だった。
+- **macOS でもアカウント編集画面を Settings シーン経由で開けることを
+  `make mac` の実操作 (screencapture) で確認済み** — `AccountsListContent`
+  (macOS の「アカウント」タブが直接埋め込んでいる、M10 の doc comment 参照)
+  が iOS の設定画面と共通なので、追加のプラットフォーム分岐は不要だった。
+
+### 実装中に踏んだ XCUITest の落とし穴 (この機能固有)
+
+このセッションで実際に `OtegamiAccountEditUITests` を通す過程で3つ踏んだ
+(いずれも実装のバグではなく、この simulator/toolchain での XCUITest の
+振る舞いに起因するもの — `.claude/skills/verify/SKILL.md` の既存の落とし穴
+リストと同種):
+
+1. **`AccountEditView` を当初 `.sheet(item:)` で (`AccountSetupView` などと
+   同様に) 提示したところ、行タップ自体は成功する (ログ上も正しい行の
+   Button を検出・タップしている) のに、編集画面の識別子が
+   `waitForExistence(timeout: 10)` を10回リトライしても一切現れなかった**
+   — `AccountsListContent` は既に `AccountsSettingsView` 自身のシートの
+   *中* にいるため、そこからもう1段 `.sheet` を開くのは「シートの中から
+   さらにシートを開く」という、このアプリではまだ誰も自動検証していない
+   ネスト深度だった (`SidebarView` の6つの `.sheet` はすべて同じ階層に
+   並んでいるだけで、シートの中からさらにシートを開く例ではない)。
+   `app.debugDescription` で実際のアクセシビリティツリーを確認したところ
+   `settings.sheet` 自体は存在するのに、そこからのタップ後に画面遷移が
+   一切起きていないことを確認 — 原因の特定までは至らなかったが、代わりに
+   「設定画面のリストから `NavigationLink` で同じ `NavigationStack` に
+   プッシュする」形 (`プッシュ通知`/`このアプリについて` の行と同じ、
+   `OtegamiM9PushSettingsUITests` で実証済みの経路) に設計変更したところ
+   問題なく動作した。**ネストしたシート提示はこのアプリでは避け、可能な
+   限り既存の `NavigationStack` へのプッシュを使うこと。**
+2. **`AccountEditView` の識別子 (`accountEdit.screen`) を `Form` に直接
+   付けたところ、`app.otherElements["accountEdit.screen"]` では一切
+   見つからなかった** — 上記1の原因調査で取得した
+   `app.debugDescription` から、実際の要素種別が `CollectionView` である
+   ことが判明 (iOS の `Form`/`List` は `UICollectionView` としてブリッジ
+   される)。`AccountSetupView` の `.sheet` ルート識別子
+   (`accountSetup.sheet`) が `.otherElements` で見つかるのは、それが
+   `Form` ではなく1段上の `NavigationStack` 自体に付いているため —
+   `NavigationStack` でラップせず `Form` に直接識別子を付けると要素種別が
+   変わる、という組み合わせがこの落とし穴の本体。`app.collectionViews[...]`
+   に変えたら即座に解決した。
+3. **フォーム下部の「接続テスト」ボタンが `waitForExistence` に一切
+   引っかからなかった** — M4 の `LazyVStack` の落とし穴と同種:
+   `Form` (`UICollectionView`) は画面外の行をアクセシビリティツリーに
+   マウントしない。`messageList.list` 用の
+   `DovecotAccountUITestHelpers.waitForElementScrollingIfNeeded` は
+   識別子がハードコードされているため使えず、同種のスクロールヘルパーを
+   `accountEdit.screen` 用に自作したが、**最初に書いた
+   `coordinate(...).press(forDuration:thenDragTo:)` (`messageList.list`
+   のスクロールで実績のある手法) はこの `Form` に対しては何回試しても
+   画面を一切動かさなかった** (10回・約2分リトライしても要素が現れない)。
+   `.swipeUp()` (組み込みのジェスチャー) に変えたところ確実にスクロール
+   した。M3 の落とし穴 (`.swipeActions` は組み込みの `.swipeLeft()`/
+   `.swipeRight()` では動くが手組みドラッグでは動かない) の逆パターンが
+   ここでも成立する形で再現した — **「あるビュー種別でどちらのジェス
+   チャー手法が効くか」は種別ごとに実際に試すまで分からない**、という
+   教訓が両方向で裏付けられた。
+
+### スクリーンショットのタイミングについて (既知の制約)
+
+`account-edit-03-recovered.png` は `run_test` が返った瞬間にバック
+グラウンドの撮影ループを `kill` する方式 (前述) のため、フェーズ3の
+テストメソッド自身の `Thread.sleep(forTimeInterval: 4)` の間に撮った
+はずの最後のフレームが、実際にはテストランナーの `Tear Down` (アプリ
+終了) が先に走った後のホーム画面になってしまうことがある — このセッション
+で実際に1回確認した (アプリが確実に正しい状態に到達したことはテストの
+アサーション自体が保証しているので実害はないが、目視用のスクリーンショット
+としては不正確になる)。再現したときは、同じ画面へ遷移して
+`Thread.sleep` で止まるだけの使い捨てテストメソッドを一時的に追加し、
+同じシミュレータ (状態は保持されたまま) に対して単体で再実行して撮り
+直すのが手っ取り早い。恒久的な修正 (例えばテストの最終フレームの直前で
+確実に撮る仕組み) は今後の課題として残る。
