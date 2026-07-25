@@ -54,23 +54,39 @@ if you're touching account setup, sync, or the push notification flow.
 ### A note on SwiftUI views and CI
 
 `make mac`/`make ios` passing locally is not a guarantee that `ci-app`
-will pass: this project's local dev machines are fast enough that the
-Swift type-checker can chew through a large SwiftUI expression without
-anyone noticing, while the same expression times out (or trips
-`error: the compiler is unable to type-check this expression in
-reasonable time`) on CI's slower runner. This has actually happened —
-see [docs/ci.md](docs/ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト-2026-07-25)
-for the incident. A `ForEach`/`Button`/`HStack`/conditional/modifier-chain
-combo folded into one giant expression is the classic trigger. Keep
-SwiftUI views small: split a repeated row into its own `View` struct
-(e.g. a list row), and split a long modifier chain or a multi-column
-container like `NavigationSplitView` into computed properties rather than
-one continuous expression. `ci-app.yml` builds with
-`-Xfrontend -warn-long-expression-type-checking=300 -Xfrontend
+will pass, and — this is the sharper version of the lesson — **neither is
+a clean run of the diagnostic flags below on your own machine**. This
+project hit both: `ci-app` failed with `error: the compiler is unable to
+type-check this expression in reasonable time` on a SwiftUI expression
+that built cleanly locally even with `-warn-long-expression-type-checking`
+turned down to a strict threshold, because the local dev machine ran a
+newer Xcode/Swift toolchain than `ci-app`'s runner — the type-checker
+itself behaves differently across versions, not just at different speeds.
+See [docs/ci.md](docs/ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト-2026-07-25)
+for the full incident, including why the first fix attempt (extracting a
+row into its own `View`) wasn't enough on its own and what the second
+pass had to do differently.
+
+A `ForEach`/`Button`/`HStack`/conditional/modifier-chain combo folded
+into one giant expression is the classic trigger. Keep SwiftUI views
+small, and go one step further than "extract a row into its own `View`":
+also make sure the `ForEach`/`List` closure that *builds* that row is
+itself a single trivial function call (hoist an `if let` plus a
+multi-argument initializer into a `@ViewBuilder` method), and prefer a
+named method reference over an inline closure literal for tap handlers
+(`onTap: handleFoo`, not `onTap: { x in ... }`) — closure-literal type
+inference at the call site is part of what the type-checker has to solve
+jointly with everything else in the same expression. Split a long
+modifier chain or a multi-column container like `NavigationSplitView`
+into computed properties rather than one continuous expression, too.
+`ci-app.yml` builds with `-Xfrontend
+-warn-long-expression-type-checking=300 -Xfrontend
 -warn-long-function-bodies=300` so slow expressions show up as build
-warnings before they become a hard failure; if you see one of those
-warnings on a PR, treat it as worth splitting up even though it doesn't
-fail the build.
+warnings before they become a hard failure — useful for finding
+*candidates* worth a look, but (per the incident above) a clean result
+locally doesn't prove a matching shape is safe on CI's own toolchain.
+When in doubt, apply the split anyway if the code matches the risky
+shape, rather than trusting a local zero-warning result.
 
 ## Commit messages
 

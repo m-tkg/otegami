@@ -109,35 +109,85 @@ CI ランナー (このワークフローでは `macos-26`) は同じ Xcode/Swif
 ツールチェーンでもローカルより低速で、同じ式の型チェックが「reasonable
 time」の閾値を超えて実際にコンパイルエラーになる。
 
-対処は `SidebarView.swift` の `MailboxRow`
-(1 行分を独立した `View` 構造体に切り出す) と、同じパターンで
-`OtegamiApp.swift`'s `RootView.body` (`NavigationSplitView` の 3 カラム閉包 +
-長い modifier チェーンを `splitView`/`sidebarColumn`/`contentColumn`/
-`detailColumn`/`navigationView`/`navigationViewWithFocusedValues` という
-複数の computed property に分割) — 後者は実際にコンパイルエラーには
-なっていなかったが、`-warn-long-expression-type-checking=50` で計測すると
-335ms かかっており (300ms の CI 閾値を超える)、`SidebarView` と同じ崖っぷちに
-立っていた。分割後は 300ms 閾値で警告ゼロになった (`SidebarView` 側は
-分割前の所要時間を計測する前にハードエラーになっていたため、正確な ms 値は
-不明 — 少なくとも数百ms〜数秒オーダーだったとみられる)。
+最初の対処 (第1弾) は `SidebarView.swift` に `MailboxRow` (1 行分を独立した
+`View` 構造体に切り出す) を作るだけだった。ローカルでは `make mac`/`make
+ios` が通り、`-warn-long-expression-type-checking=300`/`=50` のどちらでも
+警告ゼロになったので、これで直ったと判断して push した。**それでも
+`ci-app` は同じ行・同じエラーで落ち続けた。**
+
+原因を突き止めると、この開発機のローカル Xcode は 27.0 (beta) だったのに
+対し、`ci-app` (macos-26 ランナー) は Xcode 26.5 を使っていた ——
+**単に「ローカルは速いマシン」なのではなく、型チェッカーの実装そのものが
+バージョンによって違う** ため、ローカルで ms 単位の計測がどれだけ小さくても
+CI の (おそらくより古い/オーバーロード解決アルゴリズムが違う) コンパイラで
+同じ結論になる保証がない、という一段厳しい教訓だった。`MailboxRow` に
+切り出しても、それを呼び出す `body` の `ForEach` クロージャ自体が
+「`if let` 束縛 + 複数引数の initializer 呼び出し + 2 文からなるインライン
+trailing closure」を1つの式のまま抱えていて、それだけで CI 側には
+まだ重すぎた。
+
+第2弾の対処 (`mailboxRow(for:in:)`) は `ForEach` クロージャの中身を
+`@ViewBuilder` メソッドに丸ごと追い出し、タップハンドラのインライン
+クロージャも `handleMailboxSelected(_:)` という named メソッド参照に
+置き換えた — `ForEach` のクロージャ自体を「ただの関数呼び出し1つ」まで
+削ぎ落とすことで、クロージャリテラルの型推論すら発生しない形にした。
+これで実際に `ci-app` が緑になった。
+
+このバージョン差に気づいた時点で、「ローカルでの ms 計測は当てにならない
+可能性がある」という前提に切り替え、同じ形 (`ForEach` の中に `if let` +
+複数引数の view initializer + 複数の trailing-closure modifier が
+1 つの式として積み重なっている) を持つ他のビューも予防的に洗い出して
+分割した:
+
+- `MessageListView.body` の `ForEach` (`Button` + `ThreadRow` + 2 つの
+  `.swipeActions` + macOS 限定の `.contextMenu` + `.onAppear` — 元の
+  `SidebarView` の行より大きかった): `threadRow(for:)` + 新設
+  `MessageListRow` に分割。
+- `ThreadDetailView.body` の `ForEach` (`if let` + ネストした2つ目の
+  条件束縛 + 3引数の `MessageView` initializer + modifier チェーン):
+  `messageRow(for:containerSize:)` + 新設 `ThreadMessageRow` に分割。
+- `OtegamiApp.swift`'s `RootView.body` (`NavigationSplitView` の3カラム
+  閉包 + 長い modifier チェーン) も同じ形だったので
+  `splitView`/`sidebarColumn`/`contentColumn`/`detailColumn`/
+  `navigationView`/`navigationViewWithFocusedValues` という複数の
+  computed property に分割済み。
+- `MailboxSyncFailuresView` の `ForEach` 行も確認したが、複数引数の
+  カスタム view initializer も trailing-closure の modifier チェーンも
+  無く、他の3つより明確に小さいため、今回は分割せず残した (危険度が低いと
+  判断)。
 
 **教訓 (今後 SwiftUI ビューを書く/レビューするときに思い出すこと)**:
 
-- ローカルで `make mac`/`make ios` が通っても、CI の遅いランナーで型
-  チェックがタイムアウトすることがある。「ローカルで緑 = 安全」ではない。
+- ローカルで `make mac`/`make ios` が通っても、CI の遅いランナー/古い
+  ツールチェーンで型チェックがタイムアウトすることがある。「ローカルで
+  緑 = 安全」ではない。**「ローカルで診断フラグの警告がゼロ」ですら
+  安全の証明にはならない** — ローカルとCIでXcode/Swiftのバージョンが
+  違えば、型チェッカーの挙動自体が違いうる (`xcodebuild -version` で
+  ローカルと `.github/workflows/ci-app.yml` が動く `macos-26` ランナーの
+  バージョンを見比べる習慣をつけること)。
 - ネストした `ForEach`/`Button`/`HStack`/条件分岐/長い modifier チェーンが
   1 つの式に積み重なっている SwiftUI ビューは、型チェッカーへの負荷が
-  非線形に増える。**行/セルの単位で `View` 構造体に切り出す** (今回の
-  `MailboxRow` のように) のが最も確実な対処。`NavigationSplitView` の
-  各カラム閉包や長い modifier チェーンも、computed property (`some View`)
-  に分割すると効果がある。
+  非線形に増える。**行/セルの単位で `View` 構造体に切り出す**だけでは
+  不十分なことがある — その `View` を呼び出す `ForEach`/`List` 側の
+  クロージャ自体も、`if let` 束縛や複数引数の initializer 呼び出しを
+  抱えたままなら再び同じ崖に立つ。**呼び出し側のクロージャも
+  `@ViewBuilder` メソッドに追い出し、タップハンドラ等のインライン
+  クロージャは named メソッド参照 (`onTap: handleFoo` であって
+  `onTap: { x in ... }` ではない) に置き換える**のが最も確実。
+  `NavigationSplitView` の各カラム閉包や長い modifier チェーンも、
+  computed property (`some View`) に分割すると効果がある。
 - 見た目やアクセシビリティ識別子を変えずに構造だけ変える場合、既存の
   XCUITest (`scripts/verify-ios-m*.sh`) をローカルで回して回帰がないか
   必ず確認する。
-- 危険な箇所を洗い出すには、診断フラグを使う:
+- 危険な箇所を洗い出すには、診断フラグを使う (ただし上記の通り、これは
+  「怪しい箇所の当たりをつける」補助であって、ローカルで警告ゼロ =
+  CI で安全、を保証するものではない):
   ```
   xcodebuild ... OTHER_SWIFT_FLAGS="-Xfrontend -warn-long-expression-type-checking=300 -Xfrontend -warn-long-function-bodies=300"
   ```
+  同じ形 (ネストした `ForEach` + 条件分岐 + 複数引数 initializer +
+  trailing closure) を持つコードは、診断フラグが何も引っかからなくても
+  構造的にレビューして分割を検討する価値がある。
   ローカルの速いマシンでは閾値を下げないと何も引っかからないことがある
   (今回は 50ms まで下げて洗い出した)。`ci-app.yml` には 300ms 閾値の
   診断フラグを恒常的に有効化してあり、危険な式が増えたら PR のビルドログに
