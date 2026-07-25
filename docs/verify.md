@@ -1297,6 +1297,15 @@ dev mailstack はシミュレータからは `localhost`、実機からは Mac �
   (`AccountSetupView.saveAccount`/`AppEnvironment` 側の `try?` は
   そのまま)。今後、部分的な同期失敗を `AccountsSettingsView` などで
   可視化するかどうかは別課題として残る。
+  - **解決済み (後続セッション)**: `AccountSyncer` の per-mailbox
+    `catch` に `MailboxRecord.lastSyncError`/`lastSyncErrorAt` への
+    記録を追加し (成功時は自動クリア)、`MailboxSyncFailuresView` (M10
+    の `FailedOperationsView` と同じ流儀) をサイドバーのバナーから開ける
+    ようにした。`FakeIMAPSession` によるユニットテストに加え、実
+    Dovecot 相手の `SyncEngineIntegrationTests
+    .mailboxSyncFailureRecordsAgainstRealServerAndClearsOnRecovery`
+    (`\Noselect` な中間メールボックスを使い、LIST には出るが SELECT が
+    失敗する状態を再現) で確認済み。
 
 ## 実機バグ (続報): 006983a の後も、メッセージ一覧が起動ごとに出たり出なかったりする
 

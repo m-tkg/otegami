@@ -262,6 +262,22 @@ SKILL.md` の手法 (`screencapture` + `sips` クロップ + CGEvent ベース�
     必要がある。修正後は M8 の cid テストを「実際に画像が描画された
     ピクセルを検証する」形に強化する価値もある (現状は「壊れていないか」
     を目視でしか確認できていない)。
+  - **解決済み (後続セッション)**: `CIDURLRewriter.rewrite(html:)` で
+    `contentId` を `CharacterSet.urlHostAllowed` でパーセントエンコード
+    してから `otegami-cid://` の host 部分に積むよう修正 (commit
+    `cf7b8b0`)。この deployment target の `URL.host` は読み出し時に
+    パーセントデコードを行う (`otegami-cid://logo%40otegami.test`
+    → `host == "logo@otegami.test"`) ことを `swift` の対話実行で確認済み
+    のため、`CIDSchemeHandler` 側の変更は不要だった。iOS シミュレータ
+    (iPhone 17e) と macOS 実行バイナリの両方で実際に `16-cid-inline-
+    image.eml` を開き、オレンジ色の単色ロゴ画像がスクロール後の本文中に
+    実際に描画されていることをスクリーンショットで目視確認済み (このタスク
+    実行時の `docs/verify.md` 未追記分、スクリーンショットはセッションの
+    scratchpad に保存)。回帰テストとして `CIDURLRewriterTests` に `@`
+    を含む Content-ID のケースを追加し、`OtegamiM8CIDImageUITests` も
+    「画面をスクロールしてから、フィクスチャの単色ロゴ画像のピクセルが
+    実際に検出できること」を検証する形に強化した (推奨対応の後半も
+    含めて対応済み)。
 
 ### その他の所見 (真バグではない/対応不要)
 

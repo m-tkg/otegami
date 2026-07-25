@@ -49,13 +49,6 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
 - **下書きの添付ファイル**: `ComposerView.saveDraft()` は添付ファイルを
   保存しない (テキストフィールドのみ)。`outboxAttachment` と同様の仕組みで
   `draftAttachment` テーブルを持たせれば実現できるはず。
-- **Trash メールボックスが存在しないサーバでの Trash 自動作成**: SPECIAL-USE
-  を返さず `Trash` という名前のメールボックスも存在しないサーバでは、削除
-  opQueue が `mailboxNotFound` で失敗する。失敗した op は 5 回試行後に
-  failed となり、M10 で追加した `FailedOperationsView` バナーから再試行/破棄
-  できる (可視化は対応済み)。残る課題は削除を成功させる側 — Trash の自動作成
-  (CREATE + SUBSCRIBE) または「Trash なしサーバでは完全削除にフォールバック」
-  の選択肢の実装 (`docs/verify.md` M3 節)。
 - **`ThreadAssigner.assignAllUnthreaded` のバッチ化**: 2万通の未スレッド化
   メッセージの一括スレッド化に約14秒かかる (`docs/performance.md`)。UI を
   ブロックしないため実害は小さいが、将来 10万通超のバックログや同期的な
@@ -67,7 +60,34 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
   テキストフィールド (plan: "トークン化は later")。宛先ごとのチップ表示・
   連絡先補完は未実装。
 - **HTML 引用返信**: 返信の本文引用は常にプレーンテキスト (`> ` 引用)。
-  元メールが HTML の場合の HTML 引用 (`<blockquote>`) は未対応。
+  元メールが HTML の場合の HTML 引用 (`<blockquote>`) は未対応
+  (`ComposerView.quotedBody(from:)` — HTML 本文があっても
+  `HTMLTextExtractor.plainText(fromHTML:)` でプレーンテキスト化してから
+  `> ` を行頭に付けるだけ)。設計メモ (実装未着手、スコープが
+  Composer 全体の HTML 対応に及ぶため一旦記録に留める):
+  - 前提として `ComposerView` の `bodyText: String` (プレーンテキスト
+    専用の `@State`) を HTML 本文にも対応させる必要がある。単純に
+    `TextEditor` を `WKWebView` ベースのリッチエディタに差し替えるのは
+    範囲が大きい — 現実的な最小実装は「ユーザー入力は従来通りプレーン
+    テキストのまま、送信時に元メールが HTML だった場合だけ本文の末尾に
+    `<blockquote>` で HTML 引用を追記する」という非対称なアプローチ
+    (ユーザーが打った本文はプレーンテキストの `TextEditor` のまま、
+    引用部分だけ HTML)。
+  - 送信側 (`OpQueueProcessor.apply(op:)` の `.send` ケース /
+    `MailCoreMessageBuilder`) は現状プレーンテキストの `text/plain`
+    単一パートしか組み立てていない。HTML 引用を送るには
+    `multipart/alternative` (text/plain フォールバック + text/html) の
+    構築に対応する必要があり、`BuiltMessage`/`ComposeDraft` のデータ
+    モデルにも HTML 本文フィールドを追加する必要がある。
+  - 元メールの HTML をそのまま `<blockquote>` に埋め込むと、外部画像/
+    スクリプトなど `HTMLExternalResourceScanner`/`WKContentRuleList` が
+    受信時にブロックしている要素がそのまま送信メールに乗ってしまう
+    リスクがある — サニタイズ (許可タグのホワイトリスト化など) が別途
+    必要になりそうで、この点も実装コストを押し上げている。
+  - 優先度: 実用上はプレーンテキスト引用でも支障は小さく (多くの
+    メールクライアントはプレーンテキスト引用を許容する)、上記のスコープ
+    の大きさに見合う優先度ではないと判断し、このセッションでは実装を
+    見送った。
 - **検索スコープピッカーの XCUITest 操作**: `.searchScopes` の UI 要素
   (「すべて」/「現在のメールボックス」の切替) を安定して XCUITest から
   操作する方法が未確立。単体テスト (`SearchQueryTests`) では
@@ -94,10 +114,23 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
   日本語ファイル名を送ってくる他クライアント/サーバのメールでファイル名を
   拾えない (`docs/verify.md` M8 節)。RFC 2047 encoded-word へのフォール
   バックパースを自前で足すか、mailcore2 側の対応を待つ必要がある。
-- **cid インライン画像のスクリーンショット検証**: `m8-02-cid-inline-image.png`
-  は本文冒頭までしか写っておらず、実際の `<img src="cid:...">` 部分は
-  スクロールしないと画面に入らない。事前スクロールしてから撮る改善が
-  今後の課題として残る。
+  設計メモ (実装未着手、調査した範囲を記録): `MCOAbstractPart.filename`
+  はこの mailcore2 リビジョンの `BODYSTRUCTURE`/`fetchBody` 経由のパース
+  結果を素通しするだけで、`filename` が `nil` の場合に元の生ヘッダへ
+  フォールバックする手段が `IMAPSessionProtocol` に無い (`fetchBody`/
+  `fetchMessageBody` はどちらも「既に解析済み」または「MIME part の生
+  データ」のどちらかで、パート単位の生ヘッダを返す API が存在しない)。
+  自前フォールバックを実装するなら、`fetchMessageBody(partId: nil)` で
+  メッセージ全体の生バイト列を取得してから、対象パートの
+  `Content-Disposition` ヘッダを自前でスキャンし
+  `filename*=UTF-8''...` (および `filename*0*=`/`filename*1*=` の
+  continuation 形式) をデコードする経路が現実的 — メッセージ全体を
+  余分に1回フェッチするコストと実装量を考えると、`filename` が `nil`
+  かつ添付が存在する場合のみのフォールバックに限定するのが妥当。
+  テスト用に RFC 2231 のみでエンコードした日本語ファイル名の `.eml`
+  フィクスチャ (`15-attachment-japanese-pdf.eml` は RFC 2047 に切替済み
+  なので、それとは別に追加が必要) も要る。スコープが膨らむため、この
+  セッションでは実装を見送り記録に留めた。
 
 ## パフォーマンス
 
