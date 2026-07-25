@@ -20,6 +20,13 @@
    `OTEGAMI_TEST_IMAP_HOST` 環境変数が無いと自動的に skip されるので、CI
    では実行されない)。
 
+macOS/iOS 両方のビルドステップには
+`OTHER_SWIFT_FLAGS="-Xfrontend -warn-long-expression-type-checking=300
+-Xfrontend -warn-long-function-bodies=300"` を渡している —
+「SwiftUI ビューの型チェックタイムアウト」節参照。300ms を超えた式/関数本体は
+ビルドを失敗させずビルドログに warning として出るだけなので、通常の PR
+ワークフローには影響しない。
+
 ### ci-app が検証しないこと
 
 - **実 Xcode 署名・配布可能性**: CI ランナーには配布用の証明書/
@@ -80,3 +87,61 @@ CI は M0 でワークフローを作って以来、一度も緑になってい�
   CI のコンテナタグもそれに合わせて `swift:6.2-jammy` に上げて解決した。
 
 修正後、`gh run watch` で ci-app / ci-server 双方が緑になることを確認済み。
+
+## 既知の落とし穴: SwiftUI ビューの型チェックタイムアウト (2026-07-25)
+
+上記の修正で緑になった後も、`ci-app` が 5 回連続で以下のエラーで落ち続けた:
+
+```
+apps/Otegami/Sources/Features/Sidebar/SidebarView.swift:160:37: error: the
+compiler is unable to type-check this expression in reasonable time; try
+breaking up the expression into distinct sub-expressions
+```
+
+原因はソース側にあった (ワークフロー定義は無関係): `SidebarView` のアカウント
+別メールボックス一覧を描画する `ForEach` の中身 — ネストした `ForEach` +
+`Button` + `HStack` + 条件分岐 (`if let`) + `.buttonStyle`/
+`.listRowBackground`/`.accessibilityIdentifier` という modifier チェーンが
+1 つの巨大な式になっていて、Swift の型推論がオーバーロード解決の組み合わせ
+爆発を起こしていた。**この開発チームのローカルマシンは高速で `make mac`/
+`make ios` が普通に通ってしまうため、ローカルでは一切気づけない** —
+CI ランナー (このワークフローでは `macos-26`) は同じ Xcode/Swift
+ツールチェーンでもローカルより低速で、同じ式の型チェックが「reasonable
+time」の閾値を超えて実際にコンパイルエラーになる。
+
+対処は `SidebarView.swift` の `MailboxRow`
+(1 行分を独立した `View` 構造体に切り出す) と、同じパターンで
+`OtegamiApp.swift`'s `RootView.body` (`NavigationSplitView` の 3 カラム閉包 +
+長い modifier チェーンを `splitView`/`sidebarColumn`/`contentColumn`/
+`detailColumn`/`navigationView`/`navigationViewWithFocusedValues` という
+複数の computed property に分割) — 後者は実際にコンパイルエラーには
+なっていなかったが、`-warn-long-expression-type-checking=50` で計測すると
+335ms かかっており (300ms の CI 閾値を超える)、`SidebarView` と同じ崖っぷちに
+立っていた。分割後は 300ms 閾値で警告ゼロになった (`SidebarView` 側は
+分割前の所要時間を計測する前にハードエラーになっていたため、正確な ms 値は
+不明 — 少なくとも数百ms〜数秒オーダーだったとみられる)。
+
+**教訓 (今後 SwiftUI ビューを書く/レビューするときに思い出すこと)**:
+
+- ローカルで `make mac`/`make ios` が通っても、CI の遅いランナーで型
+  チェックがタイムアウトすることがある。「ローカルで緑 = 安全」ではない。
+- ネストした `ForEach`/`Button`/`HStack`/条件分岐/長い modifier チェーンが
+  1 つの式に積み重なっている SwiftUI ビューは、型チェッカーへの負荷が
+  非線形に増える。**行/セルの単位で `View` 構造体に切り出す** (今回の
+  `MailboxRow` のように) のが最も確実な対処。`NavigationSplitView` の
+  各カラム閉包や長い modifier チェーンも、computed property (`some View`)
+  に分割すると効果がある。
+- 見た目やアクセシビリティ識別子を変えずに構造だけ変える場合、既存の
+  XCUITest (`scripts/verify-ios-m*.sh`) をローカルで回して回帰がないか
+  必ず確認する。
+- 危険な箇所を洗い出すには、診断フラグを使う:
+  ```
+  xcodebuild ... OTHER_SWIFT_FLAGS="-Xfrontend -warn-long-expression-type-checking=300 -Xfrontend -warn-long-function-bodies=300"
+  ```
+  ローカルの速いマシンでは閾値を下げないと何も引っかからないことがある
+  (今回は 50ms まで下げて洗い出した)。`ci-app.yml` には 300ms 閾値の
+  診断フラグを恒常的に有効化してあり、危険な式が増えたら PR のビルドログに
+  warning として現れる (ビルド自体は失敗させない — `-warnings-as-errors`
+  にすると無関係な既存 warning まで全部ビルド失敗にしてしまうため、まずは
+  可視化のみ。CI ランナーごとの速度ばらつきに対してこの閾値がどれくらい
+  安全か実績が積めたら、error 化を再検討する)。

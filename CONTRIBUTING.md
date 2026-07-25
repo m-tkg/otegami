@@ -51,6 +51,27 @@ integration test suite — see [docs/verify.md](docs/verify.md) for what
 each one covers. They're not required for every PR, but are worth running
 if you're touching account setup, sync, or the push notification flow.
 
+### A note on SwiftUI views and CI
+
+`make mac`/`make ios` passing locally is not a guarantee that `ci-app`
+will pass: this project's local dev machines are fast enough that the
+Swift type-checker can chew through a large SwiftUI expression without
+anyone noticing, while the same expression times out (or trips
+`error: the compiler is unable to type-check this expression in
+reasonable time`) on CI's slower runner. This has actually happened —
+see [docs/ci.md](docs/ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト-2026-07-25)
+for the incident. A `ForEach`/`Button`/`HStack`/conditional/modifier-chain
+combo folded into one giant expression is the classic trigger. Keep
+SwiftUI views small: split a repeated row into its own `View` struct
+(e.g. a list row), and split a long modifier chain or a multi-column
+container like `NavigationSplitView` into computed properties rather than
+one continuous expression. `ci-app.yml` builds with
+`-Xfrontend -warn-long-expression-type-checking=300 -Xfrontend
+-warn-long-function-bodies=300` so slow expressions show up as build
+warnings before they become a hard failure; if you see one of those
+warnings on a PR, treat it as worth splitting up even though it doesn't
+fail the build.
+
 ## Commit messages
 
 This repo uses [Conventional Commits](https://www.conventionalcommits.org/)
