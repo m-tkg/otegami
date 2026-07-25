@@ -37,7 +37,10 @@ final class OtegamiM2OfflineVerificationUITests: XCTestCase {
         // down.
         let predicate = NSPredicate(format: "label CONTAINS %@", "【otegami】新機能のお知らせ")
         let row = list.cells.containing(predicate).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 20), "Expected the previously-opened seeded message to still be listed offline")
+        // QA sweep: newer seed fixtures (17/18) can push this one off the
+        // initial screen — see `waitForElementScrollingIfNeeded`'s doc
+        // comment.
+        XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected the previously-opened seeded message to still be listed offline")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         // Its plain-text alternative part contains this line. Matches

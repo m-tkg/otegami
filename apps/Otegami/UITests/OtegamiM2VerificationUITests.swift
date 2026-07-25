@@ -76,7 +76,10 @@ final class OtegamiM2VerificationUITests: XCTestCase {
         let list = app.collectionViews["messageList.list"]
         let predicate = NSPredicate(format: "label CONTAINS %@", subject)
         let row = list.cells.containing(predicate).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 30), "Expected seeded message \"\(subject)\" to appear in the INBOX list")
+        // QA sweep: newer seed fixtures (17/18) can push an older subject
+        // off the initial screen — see `waitForElementScrollingIfNeeded`'s
+        // doc comment.
+        XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected seeded message \"\(subject)\" to appear in the INBOX list")
         // A brief press (rather than an instantaneous `tap()`/coordinate
         // tap) gives the List's scroll-view-based tap-vs-scroll gesture
         // disambiguation time to actually recognize it as a tap.

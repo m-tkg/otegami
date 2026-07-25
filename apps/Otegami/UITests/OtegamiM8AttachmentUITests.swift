@@ -23,7 +23,10 @@ final class OtegamiM8AttachmentUITests: XCTestCase {
 
         let list = app.collectionViews["messageList.list"]
         let row = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "添付ファイルつきメール（PNG）")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 30), "Expected the PNG-attachment seed message to appear")
+        // QA sweep: newer seed fixtures (17/18) can push this one off the
+        // initial screen — see `waitForElementScrollingIfNeeded`'s doc
+        // comment.
+        XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected the PNG-attachment seed message to appear")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         // The attachment row's identifier is stable (`messageDetail

@@ -94,7 +94,12 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
     private func row(forSubject subject: String, in app: XCUIApplication) -> XCUIElement {
         let list = app.collectionViews["messageList.list"]
         let row = list.cells.containing(NSPredicate(format: "label CONTAINS %@", subject)).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 20), "Expected message \"\(subject)\" to be in the list")
+        // QA sweep: `dev/mailstack/seed/fixtures/` grew again (17/18, both
+        // sorting ahead of this older fixture) — same "row pushed off the
+        // initial screen" regression M10 already documented and fixed
+        // elsewhere via this scrolling helper; this call site had been
+        // missed until a QA-sweep regression pass caught it.
+        XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected message \"\(subject)\" to be in the list")
         return row
     }
 

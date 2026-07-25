@@ -120,8 +120,23 @@ echo "==> Clearing Mailpit's message store and Dovecot's Sent mailbox (clean sla
 curl -s -X DELETE "$MAILPIT_API/messages" -H "Content-Type: application/json" -d '{"IDs":[]}' >/dev/null
 doveadm expunge -u "$MAILSTACK_USER" mailbox Sent all || true
 
-echo "==> Uninstalling any previous build (fresh local DB for this run)"
-xcrun simctl uninstall "$UDID" "$BUNDLE_ID" 2>/dev/null || true
+echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
+# M11: a plain `xcrun simctl uninstall` (what this step used to be) removes
+# the app's own container but not Keychain/NSUbiquitousKeyValueStore, both
+# of which live outside the per-app container on this simulator/toolchain —
+# an account a *previous* verify run pushed to iCloud KVS (and whose
+# Keychain password also survived) otherwise resurrects itself right after
+# "uninstall for a fresh local DB", defeating this step's whole point (the
+# same fix `verify-ios-m1.sh`/`verify-ios-m2.sh`/`verify-ios-m4.sh` already
+# made, applied here after hitting the identical failure running this
+# script during a QA regression pass: "Neither the empty-state nor toolbar
+# \"add account\" button appeared"). A full erase clears all three; the
+# simulator needs a shutdown first (erase fails on a booted device) and a
+# reboot after (later steps assume it's already up).
+xcrun simctl shutdown "$UDID" 2>/dev/null || true
+xcrun simctl erase "$UDID"
+xcrun simctl boot "$UDID" 2>/dev/null || true
+xcrun simctl bootstatus "$UDID" -b
 
 echo "==> Regenerating Xcode project and building for testing"
 (cd apps/Otegami && xcodegen generate)

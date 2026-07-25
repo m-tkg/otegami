@@ -28,8 +28,15 @@ final class OtegamiM3NewMailUITests: XCTestCase {
         app.launch()
 
         let subject = "M3差分同期テスト"
+        // M10/QA-sweep: `dev/mailstack/seed/fixtures/` has grown since this
+        // test was written (most recently with the QA sweep's boundary-data
+        // fixtures, 17/18, both dated *after* this message) — a bare
+        // `waitForExistence` can no longer find a subject that's been
+        // pushed off the initial screen by newer mail sorting ahead of it.
+        // See `waitForSeededSubjectScrollingIfNeeded`'s doc comment
+        // (`DovecotAccountUITestHelpers.swift`) for the established fix.
         XCTAssertTrue(
-            app.staticTexts[subject].waitForExistence(timeout: 30),
+            waitForSeededSubjectScrollingIfNeeded(subject, in: app),
             "Expected the doveadm-injected message \"\(subject)\" to appear via the launch-triggered incremental sync"
         )
     }
