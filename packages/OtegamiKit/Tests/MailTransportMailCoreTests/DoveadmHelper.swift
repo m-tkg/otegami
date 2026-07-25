@@ -86,6 +86,21 @@ enum DoveadmHelper {
         (try? run(["doveadm", "fetch", "-u", user, "flags", "mailbox", mailboxPath, "HEADER", "Subject", subject])) ?? ""
     }
 
+    /// `doveadm mailbox status -u <user> messages <mailboxPath>` — parses
+    /// Dovecot's `"<mailboxPath> messages=N"` response into `N`. Used by
+    /// Drafts-sync integration tests to assert "replaced, not duplicated"
+    /// (exactly one message in Drafts after an edit-and-resave) without
+    /// needing to know any particular message's exact subject/UID. Returns
+    /// `0` (not a thrown error) for a mailbox that doesn't exist yet or is
+    /// genuinely empty — both report the same "nothing there" outcome a
+    /// caller cares about.
+    static func messageCount(user: String, mailboxPath: String) -> Int {
+        guard let output = try? run(["doveadm", "mailbox", "status", "-u", user, "messages", mailboxPath]) else { return 0 }
+        guard let equalsIndex = output.firstIndex(of: "=") else { return 0 }
+        let digits = output[output.index(after: equalsIndex)...].prefix { $0.isNumber }
+        return Int(digits) ?? 0
+    }
+
     /// `doveadm mailbox create -u <user> <mailboxPath>` — used by
     /// integration tests that need a real (non-`SPECIAL-USE`) mailbox to
     /// exist, then stop existing, against an actual Dovecot server (see
