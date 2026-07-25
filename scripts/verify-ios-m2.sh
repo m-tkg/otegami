@@ -40,7 +40,23 @@ if [[ -z "$UDID" ]]; then
 fi
 echo "    UDID: $UDID"
 
-echo "==> Booting simulator (if needed)"
+echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
+# M11: a plain `xcrun simctl uninstall` (what this step used to be) removes
+# the app's own container — which resets the GRDB database — but does
+# *not* reset Keychain or NSUbiquitousKeyValueStore, both of which live
+# outside the per-app container on this simulator/toolchain. Since M11's
+# `AccountCloudSyncEngine` reconciles from iCloud KVS at every launch, an
+# account a *previous* verify run pushed to the KVS payload (and whose
+# Keychain password also survived) would otherwise resurrect itself right
+# after "uninstall for a fresh local DB", defeating the point of this step
+# — `verify-ios-m1.sh`/`verify-ios-m4.sh` already made this same switch for
+# the identical reason. A full erase clears all three, giving every run of
+# this script the same truly-empty starting state `simctl uninstall` alone
+# used to provide before M11.
+xcrun simctl shutdown "$UDID" 2>/dev/null || true
+xcrun simctl erase "$UDID"
+
+echo "==> Booting simulator"
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
 
@@ -51,9 +67,6 @@ if [[ "${SKIP_MAILSTACK_RESET:-0}" != "1" ]]; then
   make mailstack-seed
 fi
 
-echo "==> Uninstalling any previous build (fresh local DB for this run)"
-xcrun simctl uninstall "$UDID" "$BUNDLE_ID" 2>/dev/null || true
-
 echo "==> Regenerating Xcode project and building for testing"
 (cd apps/Otegami && xcodegen generate)
 xcodebuild \
@@ -62,35 +75,43 @@ xcodebuild \
   -destination "platform=iOS Simulator,id=$UDID" \
   build-for-testing
 
-echo "==> Running M2 verification UI test (open HTML body, image-block banner)"
-xcodebuild \
-  -project apps/Otegami/Otegami.xcodeproj \
-  -scheme Otegami \
-  -destination "platform=iOS Simulator,id=$UDID" \
-  -only-testing:OtegamiUITests/OtegamiM2VerificationUITests \
-  test-without-building
+# Repeatedly overwrites the same output file across a window wide enough to
+# almost certainly land inside the target test method's `Thread.sleep`
+# hold — see docs/verify.md's M6/M8 sections for why a single fixed-delay
+# screenshot is too timing-sensitive in this environment. Needed here (as
+# of the cold-launch-restoration removal — docs/verify.md) since neither
+# UI test's target screen is reachable anymore via a post-test-exit
+# `simctl launch` relaunch; the message has to be screenshotted while the
+# test itself is still holding it open.
+screenshot_mid_test() {
+  local test_id="$1"
+  local out_name="$2"
+  (
+    sleep 4
+    for _ in $(seq 1 10); do
+      xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/$out_name" >/dev/null 2>&1 || true
+      sleep 1
+    done
+  ) &
+  local screenshot_pid=$!
+  xcodebuild \
+    -project apps/Otegami/Otegami.xcodeproj \
+    -scheme Otegami \
+    -destination "platform=iOS Simulator,id=$UDID" \
+    -only-testing:"OtegamiUITests/$test_id" \
+    test-without-building
+  wait "$screenshot_pid" 2>/dev/null || true
+}
 
-echo "==> Capturing online screenshot (last-opened message, from the test run above)"
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
-sleep 3
-xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/m2-01-online-message.png"
+echo "==> Running M2 verification UI test (open HTML body, image-block banner)"
+screenshot_mid_test "OtegamiM2VerificationUITests" "m2-01-online-message.png"
 
 echo "==> Stopping mailstack"
 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 make mailstack-down
 
-echo "==> Running offline verification UI test (restart, confirm cached body still renders)"
-xcodebuild \
-  -project apps/Otegami/Otegami.xcodeproj \
-  -scheme Otegami \
-  -destination "platform=iOS Simulator,id=$UDID" \
-  -only-testing:OtegamiUITests/OtegamiM2OfflineVerificationUITests \
-  test-without-building
-
-echo "==> Capturing offline screenshot"
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
-sleep 3
-xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/m2-02-offline-message.png"
+echo "==> Running offline verification UI test (restart, tap the cached thread, confirm the body still renders)"
+screenshot_mid_test "OtegamiM2OfflineVerificationUITests" "m2-02-offline-message.png"
 
 echo "==> Restoring mailstack"
 make mailstack-up

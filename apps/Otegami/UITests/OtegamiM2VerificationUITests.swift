@@ -49,6 +49,16 @@ final class OtegamiM2VerificationUITests: XCTestCase {
         XCTAssertTrue(banner.waitForExistence(timeout: 30), "Expected the \"画像を表示\" banner for a message with an external image")
         banner.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
         XCTAssertTrue(banner.waitForNonExistence(timeout: 10), "Banner should disappear once external content is allowed")
+
+        // Hold the message open for the wrapping shell script's mid-test
+        // screenshot (same technique as `OtegamiM8AttachmentUITests`/
+        // `OtegamiM8CIDImageUITests`) — a *cold relaunch* no longer shows
+        // this message automatically (`RootView`'s "last opened thread"
+        // restoration is now same-session-only, not cross-launch; see
+        // `OtegamiApp.swift`'s `hasSkippedInitialRestoration` doc comment),
+        // so `scripts/verify-ios-m2.sh` can't screenshot this after the
+        // test process exits the way it used to.
+        Thread.sleep(forTimeInterval: 4)
     }
 
     // MARK: - Steps
