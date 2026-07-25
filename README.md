@@ -1,5 +1,16 @@
 # otegami
 
+[![ci-app](https://github.com/m-tkg/otegami/actions/workflows/ci-app.yml/badge.svg)](https://github.com/m-tkg/otegami/actions/workflows/ci-app.yml)
+[![ci-server](https://github.com/m-tkg/otegami/actions/workflows/ci-server.yml/badge.svg)](https://github.com/m-tkg/otegami/actions/workflows/ci-server.yml)
+
+<!--
+  otegami is a private repository, so these badges won't render for anyone
+  without repo access (GitHub's badge endpoint 404s for private repos to
+  non-collaborators) — kept anyway since they work fine for collaborators
+  viewing the README on GitHub, and cost nothing if the repo ever goes
+  public. See docs/ci.md for what these workflows actually check.
+-->
+
 An open-source, offline-first mail client for iOS and macOS. Connects to
 your existing Gmail, iCloud, or generic IMAP/SMTP account with a single
 sync engine, stores everything locally in SQLite (GRDB) with full-text
