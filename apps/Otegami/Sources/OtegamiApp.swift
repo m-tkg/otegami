@@ -130,7 +130,7 @@ struct RootView: View {
         // (rather than only extracting the column closures) cuts the
         // remainder further, since a long `View` modifier chain is itself
         // one expression the type-checker must solve as a whole.
-        navigationViewWithFocusedValues
+        rootContent
             #if os(iOS)
             .sheet(item: $composerPayload) { payload in
                 ComposerView(payload: payload)
@@ -154,6 +154,29 @@ struct RootView: View {
                 Task { await startIdleLoops(for: newAccounts) }
             }
     }
+
+    /// design-phase-2 (1a): the actual top-level content, split by
+    /// platform. iOS renders `OtegamiTabRootView`'s three-tab structure
+    /// instead of `NavigationSplitView` entirely (`CLAUDE.md`'s adopted 1a
+    /// decision — iOS-only, macOS keeps its three-pane layout unchanged);
+    /// `presentComposer(_:)` is the one piece of behavior both platforms'
+    /// root content still shares (a sheet on iOS, a separate window on
+    /// macOS — see that method's doc comment), so it's passed straight
+    /// through as a handful of closures rather than duplicated.
+    #if os(iOS)
+    private var rootContent: some View {
+        OtegamiTabRootView(
+            onCompose: { presentComposer(.new) },
+            onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) },
+            onOpenServerDraft: { messageId in presentComposer(.serverDraft(messageId: messageId)) },
+            onReply: { messageId, replyAll in presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll)) }
+        )
+    }
+    #else
+    private var rootContent: some View {
+        navigationViewWithFocusedValues
+    }
+    #endif
 
     /// `navigationView` plus (macOS only) the five `focusedSceneValue`
     /// calls that publish `OtegamiCommands`' menu actions — kept as its own
