@@ -154,24 +154,16 @@ struct SidebarView: View {
                     Section(account.displayName) {
                         ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
                             if let mailboxId = mailbox.id {
-                                let mailboxSelection = SidebarSelection.mailbox(MailboxSelection(accountId: account.id, mailboxId: mailboxId))
-                                Button {
+                                MailboxRow(
+                                    accountId: account.id,
+                                    mailbox: mailbox,
+                                    mailboxId: mailboxId,
+                                    isSelected: selection == .mailbox(MailboxSelection(accountId: account.id, mailboxId: mailboxId)),
+                                    unreadCount: unreadByMailboxId[mailboxId]
+                                ) { mailboxSelection in
                                     selection = mailboxSelection
                                     onSelected(mailboxSelection)
-                                } label: {
-                                    HStack {
-                                        Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
-                                        Spacer()
-                                        if let unread = unreadByMailboxId[mailboxId], unread > 0 {
-                                            UnreadCountBadge(count: unread)
-                                                .accessibilityIdentifier("sidebar.mailbox.\(account.id).\(mailbox.path).unreadBadge")
-                                        }
-                                    }
-                                    .contentShape(Rectangle())
                                 }
-                                .buttonStyle(.plain)
-                                .listRowBackground(selection == mailboxSelection ? Color.accentColor.opacity(0.15) : nil)
-                                .accessibilityIdentifier("sidebar.mailbox.\(account.id).\(mailbox.path)")
                             }
                         }
                     }
@@ -373,6 +365,54 @@ struct SidebarView: View {
             // A failing mailbox observation for one account shouldn't take
             // down the sidebar; that account's section just stops updating.
         }
+    }
+
+}
+
+/// One mailbox row inside an account's `Section` in `SidebarView`. Pulled
+/// out of `SidebarView.body`'s `ForEach` (which used to build this inline)
+/// specifically to keep the type-checker's job small: the inline version —
+/// nested `ForEach` + `Button` + `HStack` + a conditional badge + a chain of
+/// modifiers, all as one expression — compiled fine on a fast local Mac but
+/// exceeded the type-checker's time budget on CI's slower runner
+/// (`docs/ci.md`'s troubleshooting notes; the actual failure was `error:
+/// the compiler is unable to type-check this expression in reasonable
+/// time`). Splitting it into its own `View` gives each piece (this row,
+/// `SidebarView.body`) a small expression to check independently instead of
+/// one combinatorially large one. Visual output, accessibility identifiers,
+/// and tap behavior are unchanged from the inline version.
+private struct MailboxRow: View {
+    let accountId: String
+    let mailbox: MailboxRecord
+    let mailboxId: Int64
+    let isSelected: Bool
+    let unreadCount: Int?
+    /// Called with the row's own `SidebarSelection` on tap; `SidebarView`
+    /// both writes `selection` and invokes its `onSelected` callback from
+    /// here, mirroring what the inline `Button` action used to do directly.
+    let onTap: (SidebarSelection) -> Void
+
+    private var mailboxSelection: SidebarSelection {
+        .mailbox(MailboxSelection(accountId: accountId, mailboxId: mailboxId))
+    }
+
+    var body: some View {
+        Button {
+            onTap(mailboxSelection)
+        } label: {
+            HStack {
+                Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
+                Spacer()
+                if let unreadCount, unreadCount > 0 {
+                    UnreadCountBadge(count: unreadCount)
+                        .accessibilityIdentifier("sidebar.mailbox.\(accountId).\(mailbox.path).unreadBadge")
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(isSelected ? Color.accentColor.opacity(0.15) : nil)
+        .accessibilityIdentifier("sidebar.mailbox.\(accountId).\(mailbox.path)")
     }
 
     private func icon(for role: MailboxRoleRecord) -> String {
