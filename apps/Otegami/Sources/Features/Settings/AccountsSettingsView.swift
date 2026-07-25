@@ -31,13 +31,14 @@ struct AccountsSettingsView: View {
 
 /// The account list itself: lists every configured account, lets the user
 /// add another (reusing `AccountSetupView`, the same sheet the sidebar's
-/// "+" button opens) or delete one — deletion cascades every local row for
-/// that account (DB foreign keys) and wipes its Keychain password
-/// (`AppEnvironment.deleteAccount`).
+/// "+" button opens), edit one (`AccountEditView` — account edit UI), or
+/// delete one — deletion cascades every local row for that account (DB
+/// foreign keys) and wipes its Keychain password (`AppEnvironment
+/// .deleteAccount`).
 ///
 /// Extracted out of `AccountsSettingsView` in M10 (previously that type
 /// *was* this content, wrapped directly in its own `NavigationStack`) so
-/// `OtegamiSettingsView`'s macOS Settings-scene "アカウント" tab can embed it
+/// `OtegamiSettingsView`'s macOS Settings-scene "アカウント" タブ can embed it
 /// without nesting a second `NavigationStack` inside a `TabView` tab — doing
 /// that was a real, confirmed-by-actually-launching-the-app bug: the nested
 /// `NavigationStack`'s own toolbar conflicted with the surrounding
@@ -55,7 +56,7 @@ struct AccountsListContent: View {
     @State private var pendingDeletion: AccountRecord?
     @State private var reauthenticatingAccountId: String?
     @State private var reauthErrorMessage: String?
-
+    /// Account edit UI: which account's edit sheet is open, `nil` when
     var body: some View {
         List {
             Section("アカウント") {
@@ -64,61 +65,54 @@ struct AccountsListContent: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(environment.accounts) { account in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(account.displayName)
-                                .font(.headline)
-                            Text(account.email)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            // M6: a Gmail account whose refresh token was
-                            // rejected (see `AccountRecord.needsReauth`'s
-                            // doc comment) — the banner the plan calls for
-                            // ("リフレッシュ失敗 (invalid_grant) → ... UI
-                            // バナー").
-                            if account.needsReauth, account.authType == .oauth2 {
-                                HStack {
-                                    Label("再認証が必要です", systemImage: "exclamationmark.triangle")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                        .accessibilityIdentifier("settings.account.\(account.id).needsReauthBanner")
-                                    Spacer()
-                                    Button("再認証") {
-                                        Task { await reauthenticate(account) }
-                                    }
-                                    .font(.caption)
-                                    .disabled(reauthenticatingAccountId == account.id)
-                                    .accessibilityIdentifier("settings.account.\(account.id).reauthButton")
-                                }
-                            }
-
-                            // M11: an account `CloudAccountDirectory
-                            // .insertFromCloud` created from this Apple
-                            // ID's iCloud sync payload, but with no
-                            // Keychain password found yet on this device
-                            // (iCloud Keychain hadn't caught up — same
-                            // `needsReauth` flag, different meaning and
-                            // banner text than the Gmail case above, per
-                            // the plan: "バナー文言だけ分岐"). "再接続" re-checks
-                            // Keychain immediately rather than waiting for
-                            // the next launch/accounts-list tick.
-                            if account.needsReauth, account.authType == .password {
-                                HStack {
-                                    Label("資格情報を待っています", systemImage: "icloud.and.arrow.down")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                        .accessibilityIdentifier("settings.account.\(account.id).pendingCredentialBanner")
-                                    Spacer()
-                                    Button("再接続") {
-                                        Task { await retryPendingCredential(account) }
-                                    }
-                                    .font(.caption)
-                                    .disabled(reauthenticatingAccountId == account.id)
-                                    .accessibilityIdentifier("settings.account.\(account.id).retryPendingCredentialButton")
-                                }
-                            }
+                        // Account edit UI: tapping a row pushes
+                        // `AccountEditView` onto this same `NavigationStack`
+                        // (`AccountsSettingsView`'s, or the macOS "アカウント"
+                        // タブ's — `AccountsListContent`'s doc comment).
+                        // Deliberately a `NavigationLink` push, **not**
+                        // another `.sheet(item:)` (what this looked like
+                        // originally) — a sheet presented from a view
+                        // that's already inside `AccountsSettingsView`'s own
+                        // sheet is an untested nesting depth in this app
+                        // (confirmed broken by running the XCUITest suite:
+                        // the tap registered but the second-level sheet
+                        // never appeared, `accountEdit.sheet` timing out).
+                        // `NavigationLink`, by contrast, stays inside the
+                        // *same* `NavigationStack` the "プッシュ通知"/
+                        // "このアプリについて" rows below already push onto
+                        // successfully — a route proven by
+                        // `OtegamiM9PushSettingsUITests`, which navigates
+                        // through exactly this list to reach
+                        // `PushNotificationSettingsView`. `AccountEditView`
+                        // itself no longer wraps its content in its own
+                        // `NavigationStack` (a pushed destination composes
+                        // into the surrounding one; nesting a second
+                        // `NavigationStack` is the exact anti-pattern this
+                        // file's own doc comment already warns about for a
+                        // different reason — the macOS `TabView` bug).
+                        //
+                        // The reauth/pending-credential `Button`s nested
+                        // inside this row's label need `.buttonStyle
+                        // (.borderless)` (see `accountRow(for:)`) so
+                        // `NavigationLink`'s own tap gesture — which,
+                        // unlike a plain `Button`'s, can otherwise swallow
+                        // an inner control's tap and navigate instead —
+                        // doesn't intercept them; this is the standard
+                        // SwiftUI fix for "a List row that's both a
+                        // NavigationLink and hosts its own inline action
+                        // button".
+                        NavigationLink {
+                            AccountEditView(account: account)
+                        } label: {
+                            accountRow(for: account)
                         }
-                        .accessibilityIdentifier("settings.account.\(account.id)")
+                        // `.row` suffix (not bare "settings.account.<id>")
+                        // so an XCUITest lookup for *this* tappable row
+                        // can't be confused with the sync-error/reauth/
+                        // pending-credential banner `Label`s nested inside
+                        // it, which also carry a "settings.account.<id>."
+                        // prefix — see `accountRow(for:)`.
+                        .accessibilityIdentifier("settings.account.\(account.id).row")
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) {
                                 pendingDeletion = account
@@ -213,6 +207,93 @@ struct AccountsListContent: View {
         .sheet(item: $accountEntryRoute) { route in
             accountEntryDestination(for: route, binding: $accountEntryRoute)
         }
+    }
+
+    /// One account row's content — extracted out of `body` so the `Button`
+    /// wrapping it (above) doesn't have to inline this much view code
+    /// itself. Not a `View`-conforming type of its own (just a
+    /// `@ViewBuilder` function) since it needs no state of its own beyond
+    /// what's already in scope.
+    @ViewBuilder
+    private func accountRow(for account: AccountRecord) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(account.displayName)
+                .font(.headline)
+                .foregroundStyle(.primary)
+            Text(account.email)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            // Account edit UI: a connect-level sync failure (most
+            // commonly: the account was just edited with a wrong
+            // password) surfaced via `AccountRecord.lastSyncError` — see
+            // that field's doc comment for why this needed its own
+            // account-level record rather than reusing
+            // `MailboxRecord.lastSyncError`. Clears itself the next time
+            // `AccountSyncer` manages to connect (a fixed password, the
+            // IDLE loop's own reconnect retries, ...), same as the
+            // `needsReauth`/pending-credential banners below already do
+            // for their own conditions.
+            if let lastSyncError = account.lastSyncError {
+                Label(lastSyncError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .accessibilityIdentifier("settings.account.\(account.id).syncErrorBanner")
+            }
+
+            // M6: a Gmail account whose refresh token was
+            // rejected (see `AccountRecord.needsReauth`'s
+            // doc comment) — the banner the plan calls for
+            // ("リフレッシュ失敗 (invalid_grant) → ... UI
+            // バナー"). `.buttonStyle(.borderless)` (see `body`'s doc
+            // comment) keeps this tappable on its own now that the row
+            // itself is a `NavigationLink`, not a plain `Button`.
+            if account.needsReauth, account.authType == .oauth2 {
+                HStack {
+                    Label("再認証が必要です", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("settings.account.\(account.id).needsReauthBanner")
+                    Spacer()
+                    Button("再認証") {
+                        Task { await reauthenticate(account) }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .disabled(reauthenticatingAccountId == account.id)
+                    .accessibilityIdentifier("settings.account.\(account.id).reauthButton")
+                }
+            }
+
+            // M11: an account `CloudAccountDirectory
+            // .insertFromCloud` created from this Apple
+            // ID's iCloud sync payload, but with no
+            // Keychain password found yet on this device
+            // (iCloud Keychain hadn't caught up — same
+            // `needsReauth` flag, different meaning and
+            // banner text than the Gmail case above, per
+            // the plan: "バナー文言だけ分岐"). "再接続" re-checks
+            // Keychain immediately rather than waiting for
+            // the next launch/accounts-list tick.
+            if account.needsReauth, account.authType == .password {
+                HStack {
+                    Label("資格情報を待っています", systemImage: "icloud.and.arrow.down")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("settings.account.\(account.id).pendingCredentialBanner")
+                    Spacer()
+                    Button("再接続") {
+                        Task { await retryPendingCredential(account) }
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .disabled(reauthenticatingAccountId == account.id)
+                    .accessibilityIdentifier("settings.account.\(account.id).retryPendingCredentialButton")
+                }
+            }
+        }
+        .contentShape(Rectangle())
     }
 
     /// Re-runs the OAuth flow for a `.gmail` account whose refresh token

@@ -247,6 +247,77 @@ final class AppEnvironment {
         await accountCloudSync.pushLocalDeletion(accountId: account.id)
     }
 
+    // MARK: - Account editing
+
+    /// Saves an edit to an existing account (`AccountEditView`) — display
+    /// name, IMAP/SMTP host/port/security, SMTP username, and (only when
+    /// `newPassword` is non-`nil`/non-empty) a new Keychain password. Fixed
+    /// per `AccountRecord.kind`/identity fields (`email`, `kind`,
+    /// `imapUsername`) are deliberately **not** parameters here — the plan
+    /// this implements is explicit that email/kind aren't editable (they're
+    /// the account's identity; changing either means "a different
+    /// account"), and `imapUsername` specifically is left out of the edit
+    /// form too (only ever set at creation, alongside `email`).
+    ///
+    /// Bumps `updatedAt` (so `AccountCloudSyncEngine`'s last-writer-wins
+    /// reconcile actually has something to compare — see
+    /// `AccountRecord.updatedAt`'s doc comment on why this was previously
+    /// dead weight) and pushes the result to iCloud, mirroring every other
+    /// account-mutating call site's `pushAccountToCloud` tail.
+    ///
+    /// Also invalidates the account's cached `AccountSyncer` (see
+    /// `SyncCoordinator.invalidateSyncer(for:)`'s doc comment for why this
+    /// is necessary at all: without it, a syncer built before this edit
+    /// keeps using the pre-edit host/port/credentials indefinitely) and
+    /// stops its `IDLE` loop — `OtegamiApp`'s `.onChange(of:
+    /// environment.accounts)` (already fires for any change to this
+    /// `AccountRecord`, not just a brand-new one, since `AccountRecord` is
+    /// `Equatable` and the array changed) restarts the `IDLE` loop and
+    /// kicks an incremental sync with the fresh `AccountRecord`, the exact
+    /// same path a newly-added account already goes through — no
+    /// duplicate "restart sync" logic needed here.
+    func updateAccount(
+        _ account: AccountRecord,
+        displayName: String,
+        imapHost: String,
+        imapPort: Int,
+        imapSecurity: ConnectionSecurityRecord,
+        smtpHost: String?,
+        smtpPort: Int?,
+        smtpSecurity: ConnectionSecurityRecord?,
+        smtpUsername: String?,
+        newPassword: String?
+    ) async throws {
+        var updated = account
+        updated.displayName = displayName
+        updated.imapHost = imapHost
+        updated.imapPort = imapPort
+        updated.imapSecurity = imapSecurity
+        updated.smtpHost = smtpHost
+        updated.smtpPort = smtpPort
+        updated.smtpSecurity = smtpSecurity
+        updated.smtpUsername = smtpUsername
+        updated.updatedAt = Date()
+
+        if let newPassword, !newPassword.isEmpty {
+            try credentialStore.setPassword(newPassword, forAccountId: updated.id)
+        }
+
+        // Snapshotted as a `let` before the closure: `DatabaseWriter.write`'s
+        // closure is `@Sendable`, and capturing a mutated `var` across that
+        // boundary is rejected under Swift 6 strict concurrency (same
+        // pattern `AccountSyncer.performInitialSync`'s `syncedRecord` uses).
+        let toWrite = updated
+        try await database.dbWriter.write { db in
+            try toWrite.update(db)
+        }
+
+        await syncCoordinator.stopIdleLoop(for: updated)
+        await syncCoordinator.invalidateSyncer(for: updated.id)
+
+        await pushAccountToCloud(updated)
+    }
+
     // MARK: - iCloud account sync (M11)
 
     /// `AccountsSettingsView`'s "iCloud でアカウントを同期" toggle. Flipping it

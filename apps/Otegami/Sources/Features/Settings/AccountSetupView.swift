@@ -107,7 +107,7 @@ struct AccountSetupView: View {
                         .foregroundStyle(.secondary)
 
                     Button {
-                        Task { await testSMTPConnection() }
+                        Task { await testSMTPConnectionTapped() }
                     } label: {
                         HStack {
                             Text("SMTP接続テスト")
@@ -189,31 +189,21 @@ struct AccountSetupView: View {
         testResultMessage = nil
         defer { isTesting = false }
 
-        let config = IMAPConfig(host: imapHost, port: imapPort, security: imapSecurity.mailTransportSecurity)
-        let session = MailCoreIMAPSession(config: config)
-        do {
-            try await session.connect(auth: .password(username: imapUsername, password: password))
-            await session.disconnect()
-            testSucceeded = true
-            testResultMessage = "接続に成功しました。"
-        } catch {
-            testSucceeded = false
-            testResultMessage = mailTransportUserFacingMessage(for: error, prefix: "接続に失敗しました")
-        }
+        let result = await testIMAPConnection(host: imapHost, port: imapPort, security: imapSecurity, username: imapUsername, password: password)
+        testSucceeded = result.succeeded
+        testResultMessage = result.message
     }
 
     /// M5: SMTP's own connection test (plan: "IMAP と別に"), separate from
     /// `testConnection()` above and not gating `saveAccount()` — SMTP stays
     /// optional to *save* an account (M1's original design), just required
     /// to actually send.
-    private func testSMTPConnection() async {
+    private func testSMTPConnectionTapped() async {
         guard let smtpPort = Int(smtpPortText) else { return }
         isTestingSMTP = true
         smtpTestResultMessage = nil
         defer { isTestingSMTP = false }
 
-        let config = SMTPConfig(host: smtpHost, port: smtpPort, security: smtpSecurity.mailTransportSecurity)
-        let session = MailCoreSMTPSession(config: config)
         // Uses the SMTP username field verbatim (not a fallback to the
         // IMAP username) — matches `OpQueueProcessor.smtpAuth`'s actual
         // send-time behavior (see its doc comment), so this test reflects
@@ -224,15 +214,9 @@ struct AccountSetupView: View {
         // also connects, via `connect(auth:)`'s automatic no-auth retry —
         // see its doc comment. Either way, this test still reflects
         // whatever sending will actually do.
-        do {
-            try await session.connect(auth: .password(username: smtpUsername, password: password))
-            await session.disconnect()
-            smtpTestSucceeded = true
-            smtpTestResultMessage = "SMTP接続に成功しました。"
-        } catch {
-            smtpTestSucceeded = false
-            smtpTestResultMessage = mailTransportUserFacingMessage(for: error, prefix: "SMTP接続に失敗しました")
-        }
+        let result = await testSMTPConnection(host: smtpHost, port: smtpPort, security: smtpSecurity, username: smtpUsername, password: password)
+        smtpTestSucceeded = result.succeeded
+        smtpTestResultMessage = result.message
     }
 
     private func saveAccount() async {

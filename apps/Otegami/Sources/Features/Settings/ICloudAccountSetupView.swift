@@ -34,10 +34,13 @@ struct ICloudAccountSetupView: View {
     @State private var isSaving = false
     @State private var saveErrorMessage: String?
 
-    private static let imapHost = "imap.mail.me.com"
-    private static let imapPort = 993
-    private static let smtpHost = "smtp.mail.me.com"
-    private static let smtpPort = 587
+    // Not `private`: `AccountEditView` (account edit UI) reuses these same
+    // presets for an existing `.icloud`-kind account, whose IMAP/SMTP
+    // fields aren't user-editable — see that view's doc comment.
+    static let imapHost = "imap.mail.me.com"
+    static let imapPort = 993
+    static let smtpHost = "smtp.mail.me.com"
+    static let smtpPort = 587
 
     var body: some View {
         NavigationStack {
@@ -137,17 +140,9 @@ struct ICloudAccountSetupView: View {
         testResultMessage = nil
         defer { isTesting = false }
 
-        let config = IMAPConfig(host: Self.imapHost, port: Self.imapPort, security: .tls)
-        let session = MailCoreIMAPSession(config: config)
-        do {
-            try await session.connect(auth: .password(username: email, password: appPassword))
-            await session.disconnect()
-            testSucceeded = true
-            testResultMessage = "接続に成功しました。"
-        } catch {
-            testSucceeded = false
-            testResultMessage = "接続に失敗しました: \(error)"
-        }
+        let result = await testIMAPConnection(host: Self.imapHost, port: Self.imapPort, security: .tls, username: email, password: appPassword)
+        testSucceeded = result.succeeded
+        testResultMessage = result.message
     }
 
     private func saveAccount() async {
