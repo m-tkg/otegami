@@ -268,6 +268,47 @@ extension MailCoreIMAPSession {
         )]
     }
 
+    // MARK: - RFC 2231 filename fallback
+
+    /// Patches `content.parts` with RFC 2231-decoded filenames recovered
+    /// from `rawMessage`'s raw `Content-Disposition` headers, for whichever
+    /// attachment part(s) mailcore2 left with `filename == nil`
+    /// (`docs/roadmap.md`'s "RFC 2231 ファイル名のみのメール" note).
+    ///
+    /// Matches positionally: the n-th part needing a filename (in `parts`'
+    /// order) gets the n-th filename `RFC2231FilenameDecoder
+    /// .extendedFilenames` found in `rawMessage` (in document order). This
+    /// is safe rather than approximate because `extendedFilenames` only
+    /// ever surfaces `Content-Disposition` headers using the *extended*
+    /// (`filename*=`) form in the first place — exactly the set mailcore2
+    /// fails to parse a `filename` out of — so a plain `filename="..."`
+    /// header (which mailcore2 already resolved, leaving that part's
+    /// `filename` non-nil) never contributes an entry and never occupies a
+    /// slot in either list. The two orderings only need to agree among
+    /// *this* subset, and both walk the message's MIME parts in the same
+    /// (wire/structural) order.
+    ///
+    /// If `rawMessage` contains fewer RFC 2231 filenames than there are
+    /// parts missing one (e.g. one attachment's header was malformed enough
+    /// that `extendedFilenames` skipped it — see its own doc comment), the
+    /// remaining part(s) are left with `filename == nil`, same as before
+    /// this fallback ran; this never removes information, only adds it.
+    static func applyRFC2231FilenameFallback(to content: MessageBodyContent, rawMessage: Data) -> MessageBodyContent {
+        let missingIndices = content.parts.indices.filter {
+            content.parts[$0].isAttachment && content.parts[$0].filename == nil
+        }
+        guard !missingIndices.isEmpty else { return content }
+
+        let filenames = RFC2231FilenameDecoder.extendedFilenames(inRawMessage: rawMessage)
+        guard !filenames.isEmpty else { return content }
+
+        var patched = content
+        for (offset, index) in missingIndices.enumerated() where offset < filenames.count {
+            patched.parts[index].filename = filenames[offset]
+        }
+        return patched
+    }
+
     // MARK: - Body (M2)
 
     /// `MCOMessageParser.attachments()`/`.htmlInlineAttachments()` return

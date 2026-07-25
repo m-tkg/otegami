@@ -65,6 +65,13 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/14-attachment-png.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/15-attachment-japanese-pdf.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/16-cid-inline-image.eml"
 
+# RFC 2231 filename fallback: unlike 15-attachment-japanese-pdf.eml (RFC
+# 2047 encoded-word filename, which the pinned mailcore2 revision parses
+# natively), this attachment's Content-Disposition uses only RFC 2231's
+# filename*0*=/filename*1*= continuation form — the gap
+# MailCoreIMAPSession's raw-scan fallback (docs/roadmap.md) exists to cover.
+seed_message "test1@otegami.test" "$FIXTURES_DIR/19-attachment-rfc2231-japanese.eml"
+
 # QA sweep boundary-data scenario: a message with no Subject header at all
 # (ThreadRow/MessageView's "(件名なし)" fallback) and one with a Subject but
 # an empty body, both real edge cases a mail server can legitimately deliver.

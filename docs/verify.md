@@ -1825,3 +1825,48 @@ nohup "$APP/Contents/MacOS/Otegami" > /tmp/otegami-verify/mac-stdout.log 2>&1 &
 .test")?.host` が `"otegami.test"` になることを確認済み)、今回のタスクの
 「macOS 固有コードのみ」というスコープの外だったため修正していない。
 詳細な原因・再現手順・推奨対応は `docs/qa-findings.md` に記録した。
+
+## 添付ファイル名: RFC 2231 (`filename*=`) フォールバックの追加
+
+`docs/roadmap.md` に記録されていた既知の制約 (M8 節参照: ピン留めした
+mailcore2 リビジョンは RFC 2231 拡張パラメータ (`filename*=UTF-8''...`、
+および `filename*0*=`/`filename*1*=` の continuation 形式) のみでファイル名を
+送ってくるメールから `filename` を拾えない) に対応した。
+
+- デコーダ本体 (`RFC2231FilenameDecoder`, `packages/OtegamiKit/Sources/
+  OtegamiCore/RFC2231FilenameDecoder.swift`) は純粋関数として実装し、
+  `OtegamiCoreTests/RFC2231FilenameDecoderTests.swift` で UTF-8/ISO-2022-JP
+  charset、continuation あり/なし (パーセントエンコードされたセグメントが
+  マルチバイト文字の途中で分割されるケース含む — バイト列レベルで連結して
+  から charset デコードする必要があり、セグメントごとに独立デコードすると
+  壊れる)、パーセントエンコードされていない末尾セグメント、RFC 2047
+  encoded-word との併用 (このデコーダは `filename*` パラメータが無い
+  ヘッダには一切手を出さないことを確認)、壊れた入力 (charset 不明、
+  パーセントエンコードの途中切れ、不正な16進数) を網羅している。
+- 実際にフォールバックを発火させる側 (`MailCoreIMAPSession.fetchBody` +
+  `MailCoreIMAPSession+Mapping.applyRFC2231FilenameFallback`) は、
+  `bodyContent(from:)` が返したパートのうち `isAttachment == true` かつ
+  `filename == nil` のものが1つでもある場合に**限り**、
+  `fetchMessageBody(partId: nil)` でメッセージ全体の生バイト列を追加で
+  1回フェッチして `RFC2231FilenameDecoder.extendedFilenames(inRawMessage:)`
+  でスキャンし、位置合わせ (`filename` が無いパートの出現順序と、
+  RFC 2231 形式の `Content-Disposition` ヘッダの出現順序が一致する前提 —
+  デコーダが RFC 2231 形式のヘッダしか拾わない設計なので、mailcore2 が
+  既に正しく解決したパートとは競合しない) で `filename` を埋め戻す。
+  余分なフェッチは添付が無い/ファイル名が既に解決済みの通常ケースでは
+  一切発生しない (roadmap の指摘どおり)。
+- テスト用フィクスチャ `19-attachment-rfc2231-japanese.eml`
+  (`dev/mailstack/seed/fixtures/`) を追加: `filename*0*=`/`filename*1*=`
+  の continuation 形式のみでエンコードした日本語ファイル名
+  (`領収書.pdf`、意図的にマルチバイト文字の途中でセグメントを分割) の
+  PDF添付。RFC 2047 は一切使っていない点が既存の
+  `15-attachment-japanese-pdf.eml` (RFC 2047 encoded-word) との違い。
+  `seed.sh` に追加済み。
+- 実 Dovecot に対する統合テスト
+  (`MailCoreIMAPSessionIntegrationTests.fetchesRFC2231OnlyFilenamePDFAttachmentData`)
+  で、`fetchBody` が実際に `filename == "領収書.pdf"` を返すこと (マルチ
+  バイト文字またぎの continuation を含む実際のワイヤ経由で正しくデコード
+  されること) と、`fetchMessageBody(partId:)` で添付本体のバイト列も
+  問題なく取得できることを確認済み
+  (`OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter
+  MailCoreIMAPSessionIntegrationTests`)。

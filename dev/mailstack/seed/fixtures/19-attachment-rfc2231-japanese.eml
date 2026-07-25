@@ -1,0 +1,32 @@
+From: Otegami Team <team@otegami.test>
+To: test1@otegami.test
+Subject: 添付ファイルつきメール（RFC 2231ファイル名のみ）
+Message-ID: <seed-0019@otegami.test>
+Date: Sat, 17 Jan 2026 09:10:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="otegami-rfc2231-boundary"
+
+--otegami-rfc2231-boundary
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+領収書を添付します。RFC 2231 (filename*=) のみでファイル名をエンコードした
+添付受信テスト用メールです（RFC 2047 の encoded-word は使っていません）。
+
+--otegami-rfc2231-boundary
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment;
+ filename*0*=UTF-8''%E9%A0%98%E5%8F%8E;
+ filename*1*=%E6%9B%B8.pdf
+
+JVBERi0xLjQKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+ZW5kb2JqCjIgMCBv
+Ymo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iagozIDAgb2JqPDwvVHlw
+ZS9QYWdlL1BhcmVudCAyIDAgUi9NZWRpYUJveFswIDAgMjAwIDIwMF0vUmVzb3VyY2VzPDwvRm9u
+dDw8L0YxIDQgMCBSPj4+Pi9Db250ZW50cyA1IDAgUj4+ZW5kb2JqCjQgMCBvYmo8PC9UeXBlL0Zv
+bnQvU3VidHlwZS9UeXBlMS9CYXNlRm9udC9IZWx2ZXRpY2E+PmVuZG9iago1IDAgb2JqPDwvTGVu
+Z3RoIDU4Pj5zdHJlYW0KQlQgL0YxIDEyIFRmIDIwIDEwMCBUZCAob3RlZ2FtaSB0ZXN0IHJlY2Vp
+cHQpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAp0
+cmFpbGVyPDwvU2l6ZSA2L1Jvb3QgMSAwIFI+PgpzdGFydHhyZWYKMAolJUVPRgo=
+
+--otegami-rfc2231-boundary--

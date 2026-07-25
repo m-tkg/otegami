@@ -227,7 +227,7 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// part selection, so re-deriving any of that here would just be a
     /// worse copy of what the library already does well.
     public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {
-        try await withCheckedThrowingContinuation { continuation in
+        let content: MessageBodyContent = try await withCheckedThrowingContinuation { continuation in
             session.fetchParsedMessageOperation(folder: mailboxPath, uid: uid).start { error, parser in
                 if let error {
                     continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
@@ -242,6 +242,27 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
                 continuation.resume(returning: Self.bodyContent(from: parser))
             }
         }
+
+        // RFC 2231 fallback (docs/roadmap.md): the pinned mailcore2
+        // revision's `MCOMessageParser` only understands RFC 2047
+        // encoded-word filenames, never RFC 2231's `filename*=`/
+        // `filename*0*=` extended-parameter form, so an attachment sent
+        // that way comes back with `filename == nil`. Only pay for the
+        // extra "fetch the whole raw message again" round trip when that
+        // gap is actually observed on *this* message — the overwhelmingly
+        // common case (no attachments, or attachments mailcore2 already
+        // named) never takes it.
+        guard content.parts.contains(where: { $0.isAttachment && $0.filename == nil }) else {
+            return content
+        }
+        guard let rawMessage = try? await fetchMessageBody(mailboxPath: mailboxPath, uid: uid, partId: nil) else {
+            // Best-effort: if the extra fetch itself fails, the message
+            // still has a body — just without a recovered filename for
+            // whichever attachment(s) triggered the fallback. Don't turn a
+            // filename-decoding gap into a body-fetch failure.
+            return content
+        }
+        return Self.applyRFC2231FilenameFallback(to: content, rawMessage: rawMessage)
     }
 
     // MARK: - Attachment data (M8)

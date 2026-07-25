@@ -107,31 +107,6 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
   相当のフック (SwiftUI では `.onExitCommand`/window close 監視) を使った
   対応が必要。
 
-## 添付・パーサ
-
-- **RFC 2231 ファイル名のみのメール**: 現在ピン留めしている mailcore2
-  リビジョンは RFC 2231 拡張パラメータ (`filename*=UTF-8''...`) のみで
-  日本語ファイル名を送ってくる他クライアント/サーバのメールでファイル名を
-  拾えない (`docs/verify.md` M8 節)。RFC 2047 encoded-word へのフォール
-  バックパースを自前で足すか、mailcore2 側の対応を待つ必要がある。
-  設計メモ (実装未着手、調査した範囲を記録): `MCOAbstractPart.filename`
-  はこの mailcore2 リビジョンの `BODYSTRUCTURE`/`fetchBody` 経由のパース
-  結果を素通しするだけで、`filename` が `nil` の場合に元の生ヘッダへ
-  フォールバックする手段が `IMAPSessionProtocol` に無い (`fetchBody`/
-  `fetchMessageBody` はどちらも「既に解析済み」または「MIME part の生
-  データ」のどちらかで、パート単位の生ヘッダを返す API が存在しない)。
-  自前フォールバックを実装するなら、`fetchMessageBody(partId: nil)` で
-  メッセージ全体の生バイト列を取得してから、対象パートの
-  `Content-Disposition` ヘッダを自前でスキャンし
-  `filename*=UTF-8''...` (および `filename*0*=`/`filename*1*=` の
-  continuation 形式) をデコードする経路が現実的 — メッセージ全体を
-  余分に1回フェッチするコストと実装量を考えると、`filename` が `nil`
-  かつ添付が存在する場合のみのフォールバックに限定するのが妥当。
-  テスト用に RFC 2231 のみでエンコードした日本語ファイル名の `.eml`
-  フィクスチャ (`15-attachment-japanese-pdf.eml` は RFC 2047 に切替済み
-  なので、それとは別に追加が必要) も要る。スコープが膨らむため、この
-  セッションでは実装を見送り記録に留めた。
-
 ## パフォーマンス
 
 - 100k メッセージでの検証は otegami-relay の watch 対象アカウントや

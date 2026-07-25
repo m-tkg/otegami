@@ -159,6 +159,36 @@ struct MailCoreIMAPSessionIntegrationTests {
         #expect(!data.isEmpty)
     }
 
+    @Test("fetches an RFC-2231-only-filename PDF attachment's bytes, with the filename decoded via the raw-scan fallback")
+    func fetchesRFC2231OnlyFilenamePDFAttachmentData() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+
+        _ = try await session.select("INBOX")
+        let envelopes = try await session.fetchEnvelopes(mailboxPath: "INBOX", uids: .all, batchSize: 50)
+        let message = try #require(envelopes.first { $0.messageId == "<seed-0019@otegami.test>" })
+
+        let body = try await session.fetchBody(mailboxPath: "INBOX", uid: message.uid)
+        // 19-attachment-rfc2231-japanese.eml's Content-Disposition uses only
+        // RFC 2231's filename*0*=/filename*1*= continuation form (no RFC
+        // 2047 encoded-word at all), which the pinned mailcore2 revision's
+        // own parser leaves as `filename == nil` — this asserts
+        // `MailCoreIMAPSession.fetchBody`'s raw-scan fallback
+        // (`docs/roadmap.md`) recovers the correct decoded filename against
+        // a real Dovecot round trip, not just the OtegamiCoreTests unit
+        // coverage of the decoder itself.
+        let attachmentPart = try #require(body.parts.first { $0.filename == "領収書.pdf" })
+        #expect(attachmentPart.isAttachment)
+        #expect(attachmentPart.mimeType == "application")
+        #expect(attachmentPart.mimeSubtype == "pdf")
+
+        let data = try await session.fetchMessageBody(mailboxPath: "INBOX", uid: message.uid, partId: attachmentPart.partId)
+        #expect(data.starts(with: Data("%PDF-1.4".utf8)))
+        #expect(!data.isEmpty)
+    }
+
     @Test("the cid inline-image seed message's part is detected as inline with a matching contentId")
     func detectsCIDInlineImage() async throws {
         let env = try #require(TestIMAPEnvironment.primary)
