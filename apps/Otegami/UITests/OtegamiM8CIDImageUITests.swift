@@ -21,18 +21,17 @@ final class OtegamiM8CIDImageUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        // Phase 2 (`OtegamiM8AttachmentUITests`) already opened a message
-        // in this simulator install, so a fresh launch restores straight
-        // into that `ThreadDetailView`/`MessageView` (`lastOpenedThread`
-        // `@AppStorage`, M4's pitfall #2/#4) rather than the message list —
-        // pop back exactly one level (detail → content) to reach
-        // `messageList.list` again. `returnToSidebarRootIfNeeded` would
-        // overshoot to the sidebar itself, one level too far.
-        popBackOnceIfNeeded(in: app)
-
+        // No `popBackOnceIfNeeded` here — `RootView`'s "last opened
+        // thread" restoration is same-session-only now (docs/verify.md),
+        // so a fresh launch with an existing account always starts
+        // *already on* the message list. Popping here would overshoot
+        // past the list to the sidebar instead.
         let list = app.collectionViews["messageList.list"]
         let row = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "インライン画像つきHTMLメール")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 30), "Expected the cid-inline-image seed message to appear")
+        XCTAssertTrue(
+            waitForElementScrollingIfNeeded(row, in: app),
+            "Expected the cid-inline-image seed message to appear"
+        )
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         // `HTMLMessageView`'s WKWebView content surfaces as static text in
