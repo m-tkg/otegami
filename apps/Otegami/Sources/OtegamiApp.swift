@@ -257,7 +257,8 @@ struct RootView: View {
             selection: $selection,
             onSelected: { _ in preferredColumn = .content },
             onCompose: { presentComposer(.new) },
-            onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) }
+            onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) },
+            onOpenServerDraft: { messageId in presentComposer(.serverDraft(messageId: messageId)) }
         )
     }
 

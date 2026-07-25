@@ -35,6 +35,9 @@ struct SidebarView: View {
     /// this is a callback owned by `RootView` rather than something
     /// `DraftsView` presents itself.
     var onOpenDraft: (Int64) -> Void = { _ in }
+    /// Drafts IMAP sync: resumes a server-origin draft (`DraftQuery
+    /// .UnifiedRow.server`) — same rationale as `onOpenDraft`.
+    var onOpenServerDraft: (Int64) -> Void = { _ in }
 
     /// M6: drives the whole add-account flow (type picker → the chosen
     /// form) as a single `.sheet(item:)` — see `AccountEntryRoute`'s doc
@@ -204,7 +207,7 @@ struct SidebarView: View {
             OutboxView()
         }
         .sheet(isPresented: $showingDrafts) {
-            DraftsView(onOpenDraft: onOpenDraft)
+            DraftsView(onOpenDraft: onOpenDraft, onOpenServerDraft: onOpenServerDraft)
         }
         .sheet(isPresented: $showingFailedOps) {
             FailedOperationsView()
@@ -294,9 +297,14 @@ struct SidebarView: View {
         }
     }
 
+    /// Drafts IMAP sync: counts the same unified list `DraftsView` shows
+    /// (local + server-origin, deduplicated) — `DraftQuery.observation`'s
+    /// local-only count would otherwise undercount whenever a
+    /// server-origin draft (written by another client) hasn't been opened/
+    /// saved in this app yet.
     private func observeDraftCount() async {
         let accountIds = environment.accounts.map(\.id)
-        let observation = DraftQuery.observation(accountIds: accountIds)
+        let observation = DraftQuery.unifiedObservation(accountIds: accountIds)
         do {
             for try await drafts in observation.values(in: environment.database.dbWriter) {
                 draftCount = drafts.count

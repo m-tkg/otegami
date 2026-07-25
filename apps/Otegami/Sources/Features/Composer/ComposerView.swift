@@ -36,6 +36,23 @@ struct ComposerView: View {
     @State private var inReplyToMessageId: String?
     @State private var references: [String] = []
 
+    // MARK: - Drafts IMAP sync
+
+    /// The server-side Drafts copy this Composer session is resuming from,
+    /// if any — set by `loadDraft(draftId:)` (a local draft that itself
+    /// already has a known server copy from a previous save) or
+    /// `loadServerDraft(messageId:)` (a server-origin draft opened
+    /// directly). `saveDraft()` carries these forward as "the old copy to
+    /// replace" on the new `DraftMessageRecord` row it writes; `send()`
+    /// carries them onto the new `OutboxMessageRecord` row so
+    /// `OpQueueProcessor`'s `.send` replay can best-effort delete the
+    /// now-redundant Drafts copy once the message is actually sent. All
+    /// three stay `nil` for `.new`/`.reply` and for a local draft that was
+    /// never uploaded.
+    @State private var draftServerMailboxId: Int64?
+    @State private var draftServerUid: Int64?
+    @State private var draftServerUidValidity: Int64?
+
     @State private var isSending = false
     @State private var isLoadingReplyContext = false
     @State private var errorMessage: String?
@@ -252,7 +269,7 @@ struct ComposerView: View {
         switch payload.kind {
         case .new: "新規作成"
         case .reply(_, let replyAll): replyAll ? "全員に返信" : "返信"
-        case .draft: "下書き"
+        case .draft, .serverDraft: "下書き"
         }
     }
 
@@ -278,6 +295,10 @@ struct ComposerView: View {
             isLoadingReplyContext = true
             defer { isLoadingReplyContext = false }
             await loadDraft(draftId: draftId)
+        case .serverDraft(let messageId):
+            isLoadingReplyContext = true
+            defer { isLoadingReplyContext = false }
+            await loadServerDraft(messageId: messageId)
         }
         // Baseline for `hasUnsavedChanges` — captured last, after whatever
         // prefill above (reply quoting, or a resumed draft's saved text)
@@ -285,20 +306,38 @@ struct ComposerView: View {
         initialSnapshot = currentSnapshot
     }
 
-    /// Resuming a saved draft (M10): loads its fields, then deletes the row
-    /// immediately — `ComposerLaunchPayload.Kind.draft`'s doc comment
-    /// explains why ("load transfers ownership" avoids needing
+    /// Resuming a saved local draft (M10): loads its fields, then deletes
+    /// the row immediately — `ComposerLaunchPayload.Kind.draft`'s doc
+    /// comment explains why ("load transfers ownership" avoids needing
     /// update-vs-insert branching in `saveDraft()`). Best-effort: if the
     /// row is already gone (e.g. deleted from `DraftsView` in another
     /// window right as this one opened), the Composer just opens blank
     /// rather than erroring.
+    ///
+    /// Drafts IMAP sync: also carries forward `serverMailboxId`/`serverUid`/
+    /// `serverUidValidity` (this row may itself be a mirror of a previous
+    /// save's server copy) into `draftServerMailboxId`/etc. for
+    /// `saveDraft()`'s replace flow, and restores any `draftAttachment`
+    /// rows into `pendingAttachments` by reading their bytes back off disk
+    /// — read *before* the row delete (which cascades them away), then the
+    /// now-orphaned files are removed once their bytes are safely in memory
+    /// (mirrors `OpQueueProcessor.deleteOutboxMessage`'s "read paths,
+    /// delete row, then unlink" order). A fresh `saveDraft()` re-stages
+    /// whatever's still in `pendingAttachments` to new files, so nothing
+    /// keeps pointing at the removed ones.
     private func loadDraft(draftId: Int64) async {
-        let draft: DraftMessageRecord? = try? await environment.database.dbWriter.write { db in
-            guard let draft = try DraftMessageRecord.fetchOne(db, key: draftId) else { return nil }
-            try draft.delete(db)
-            return draft
+        struct Loaded {
+            var draft: DraftMessageRecord
+            var attachments: [DraftAttachmentRecord]
         }
-        guard let draft else { return }
+        let loaded: Loaded? = try? await environment.database.dbWriter.write { db in
+            guard let draft = try DraftMessageRecord.fetchOne(db, key: draftId) else { return nil }
+            let attachments = try DraftAttachmentRecord.filter(Column("draftMessageId") == draftId).fetchAll(db)
+            try draft.delete(db)
+            return Loaded(draft: draft, attachments: attachments)
+        }
+        guard let loaded else { return }
+        let draft = loaded.draft
         selectedAccountId = draft.accountId
         toText = draft.toAddresses.map(\.description).joined(separator: ", ")
         ccText = draft.ccAddresses.map(\.description).joined(separator: ", ")
@@ -306,6 +345,112 @@ struct ComposerView: View {
         bodyText = draft.plainTextBody
         inReplyToMessageId = draft.inReplyToMessageId
         references = draft.references
+        draftServerMailboxId = draft.serverMailboxId
+        draftServerUid = draft.serverUid
+        draftServerUidValidity = draft.serverUidValidity
+
+        for attachment in loaded.attachments {
+            guard let data = FileManager.default.contents(atPath: attachment.localPath) else { continue }
+            pendingAttachments.append(PendingAttachment(filename: attachment.filename, mimeType: attachment.mimeType, data: data))
+        }
+        for attachment in loaded.attachments {
+            try? FileManager.default.removeItem(atPath: attachment.localPath)
+        }
+    }
+
+    /// Resuming a server-origin draft (Drafts IMAP sync): a `message` row
+    /// living in a `MailboxRoleRecord.drafts` mailbox that no local
+    /// `draftMessage` row has claimed (`DraftQuery.UnifiedRow.server`).
+    /// Unlike `loadDraft(draftId:)`, this deletes/consumes nothing — the
+    /// server remains the sole source of truth until (and unless) the user
+    /// actually saves an edit, at which point `saveDraft()` creates a new
+    /// `draftMessage` row carrying `draftServerMailboxId`/`draftServerUid`/
+    /// `draftServerUidValidity` (captured here) forward as "the old copy to
+    /// replace". Fetches the body over the network first if it hasn't been
+    /// fetched yet (same on-demand pattern `MessageView.load()` uses for
+    /// any message) and downloads every attachment's bytes into
+    /// `pendingAttachments` the same way (`AttachmentFetcher`, via
+    /// `SyncCoordinator.fetchAttachment`) — best-effort throughout: a
+    /// network failure here just leaves the Composer with whatever text/
+    /// attachments it already had (from local `message`/`messageBody`/
+    /// `attachment` rows if any), never an error blocking the open.
+    private func loadServerDraft(messageId: Int64) async {
+        struct Context {
+            var message: MessageRecord
+            var accountId: String
+            var mailboxPath: String
+            var mailboxId: Int64
+            var mailboxUidValidity: Int64
+            var referenceValues: [String]
+            var bodyRecord: MessageBodyRecord?
+            var attachments: [AttachmentRecord]
+        }
+
+        let context: Context? = try? await environment.database.dbWriter.read { db -> Context? in
+            guard let message = try MessageRecord.fetchOne(db, key: messageId) else { return nil }
+            guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId), let mailboxId = mailbox.id else { return nil }
+            let referenceValues = try MessageReferenceRecord
+                .filter(Column("messageId") == messageId)
+                .order(Column("position"))
+                .fetchAll(db)
+                .map(\.referenceValue)
+            let bodyRecord = try MessageBodyRecord.fetchOne(db, key: messageId)
+            let attachments = try AttachmentRecord.filter(Column("messageId") == messageId).order(Column("id")).fetchAll(db)
+            return Context(
+                message: message, accountId: mailbox.accountId, mailboxPath: mailbox.path,
+                mailboxId: mailboxId, mailboxUidValidity: mailbox.uidValidity,
+                referenceValues: referenceValues, bodyRecord: bodyRecord, attachments: attachments
+            )
+        }
+        guard var context else { return }
+
+        selectedAccountId = context.accountId
+        toText = context.message.toAddresses.map(\.description).joined(separator: ", ")
+        ccText = context.message.ccAddresses.map(\.description).joined(separator: ", ")
+        subject = context.message.subject ?? ""
+        inReplyToMessageId = context.message.inReplyTo
+        references = context.referenceValues
+
+        draftServerMailboxId = context.mailboxId
+        draftServerUid = context.message.uid
+        draftServerUidValidity = context.mailboxUidValidity
+
+        let account = environment.accounts.first { $0.id == context.accountId }
+        var auth: MailAuth?
+        if let account {
+            auth = try? await environment.auth(for: account)
+        }
+
+        if context.message.bodyState != .fetched, let account, let auth {
+            try? await environment.syncCoordinator.fetchBody(for: context.message, mailboxPath: context.mailboxPath, account: account, auth: auth)
+            context.bodyRecord = try? await environment.database.dbWriter.read { db in try MessageBodyRecord.fetchOne(db, key: messageId) }
+            context.attachments = (try? await environment.database.dbWriter.read { db in
+                try AttachmentRecord.filter(Column("messageId") == messageId).order(Column("id")).fetchAll(db)
+            }) ?? context.attachments
+        }
+
+        if let plainText = context.bodyRecord?.plainText, !plainText.isEmpty {
+            bodyText = plainText
+        } else if let html = context.bodyRecord?.html, !html.isEmpty {
+            bodyText = HTMLTextExtractor.plainText(fromHTML: html)
+        } else {
+            bodyText = ""
+        }
+
+        if let account, let auth {
+            for attachment in context.attachments {
+                guard let fetched = try? await environment.syncCoordinator.fetchAttachment(
+                    attachment, messageUID: context.message.uid, mailboxPath: context.mailboxPath, account: account, auth: auth
+                ), let localPath = fetched.localPath, let data = FileManager.default.contents(atPath: localPath) else { continue }
+                pendingAttachments.append(
+                    PendingAttachment(
+                        filename: fetched.filename ?? "attachment",
+                        mimeType: "\(fetched.mimeType)/\(fetched.mimeSubtype)",
+                        data: data
+                    )
+                )
+            }
+        }
     }
 
     // MARK: - Closing (M10: save-as-draft / discard)
@@ -352,15 +497,18 @@ struct ComposerView: View {
         dismiss()
     }
 
-    /// Persists the current fields as a new `DraftMessageRecord` row.
-    /// Attachments are intentionally dropped — see `DraftMessageRecord`'s
-    /// doc comment ("シンプル優先"): staging them to disk the way `send()`
-    /// does would be straightforward, but restoring them into a resumed
-    /// Composer's `pendingAttachments` (currently in-memory `Data`, not a
-    /// stable on-disk reference the way `outboxAttachment` rows are) would
-    /// mean re-reading arbitrarily large files back into memory just to
-    /// populate a draft the user might not even resume — a real feature,
-    /// left for a future milestone rather than half-implemented here.
+    /// Persists the current fields as a new `DraftMessageRecord` row, stages
+    /// any `pendingAttachments` to disk as `draftAttachment` rows, and
+    /// enqueues `OpQueueKind.saveDraft` to `APPEND` it to the account's
+    /// Drafts mailbox (Drafts IMAP sync milestone — the M10-era
+    /// local-only/attachment-dropping behavior this doc comment used to
+    /// describe is superseded; see `DraftMessageRecord`'s doc comment for
+    /// the full replace-flow design). `draftServerMailboxId`/`draftServerUid`/
+    /// `draftServerUidValidity` — populated by `loadDraft(draftId:)`/
+    /// `loadServerDraft(messageId:)` when this Composer session resumed an
+    /// already-uploaded-or-downloaded draft — are carried onto the new row
+    /// as "the old server copy to replace"; `OpQueueProcessor`'s
+    /// `.saveDraft` replay reads them back off that row at replay time.
     private func saveDraft() async {
         guard let accountId = selectedAccountId else { return }
         let toAddresses = Self.parseAddresses(toText)
@@ -369,11 +517,18 @@ struct ComposerView: View {
         // cancelled without `hasUnsavedChanges` ever going true reaches
         // `dismiss()` directly in `handleCloseRequested()`, so this handles
         // the rarer case of unsaved *whitespace-only* edits) — skip writing
-        // an empty row.
-        guard !toAddresses.isEmpty || !ccAddresses.isEmpty || !subject.isEmpty || !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        // an empty row. Attachments alone (no text at all) still count as
+        // "something to save" — `pendingAttachments` reaching here nonempty
+        // only happens via an explicit user action (picker/photo/loaded
+        // from an existing draft), never as a side effect of doing nothing.
+        guard !toAddresses.isEmpty || !ccAddresses.isEmpty || !subject.isEmpty
+            || !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty
+        else {
             return
         }
         do {
+            let stagedAttachments = try Self.stageAttachments(pendingAttachments, subdirectory: "Drafts")
+
             try await environment.database.dbWriter.write { db in
                 var draft = DraftMessageRecord(
                     accountId: accountId,
@@ -382,9 +537,28 @@ struct ComposerView: View {
                     subject: subject,
                     plainTextBody: bodyText,
                     inReplyToMessageId: inReplyToMessageId,
-                    references: references
+                    references: references,
+                    serverMailboxId: draftServerMailboxId,
+                    serverUid: draftServerUid,
+                    serverUidValidity: draftServerUidValidity
                 )
                 try draft.insert(db)
+                guard let draftId = draft.id else { return }
+                for staged in stagedAttachments {
+                    var attachmentRecord = DraftAttachmentRecord(
+                        draftMessageId: draftId, filename: staged.filename,
+                        mimeType: staged.mimeType, localPath: staged.url.path, size: staged.size
+                    )
+                    try attachmentRecord.insert(db)
+                }
+                try OpQueue.enqueueSaveDraft(accountId: accountId, draftMessageId: draftId, db: db)
+            }
+
+            // Best-effort immediate replay, same pattern as `send()` below
+            // — harmless if offline, the op just waits for the next
+            // successful connection.
+            if let account = environment.accounts.first(where: { $0.id == accountId }), let auth = try? await environment.auth(for: account) {
+                Task { _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth) }
             }
         } catch {
             // Best-effort, matching every other Composer persistence path
@@ -544,7 +718,7 @@ struct ComposerView: View {
             // (out of disk space, ...) surfaces as this whole send failing
             // up front, rather than an inconsistent partially-attached
             // outbox row.
-            let stagedAttachments = try Self.stageAttachments(pendingAttachments)
+            let stagedAttachments = try Self.stageAttachments(pendingAttachments, subdirectory: "Outbox")
 
             try await environment.database.dbWriter.write { db in
                 var outbox = OutboxMessageRecord(
@@ -554,7 +728,10 @@ struct ComposerView: View {
                     subject: subject,
                     plainTextBody: bodyText,
                     inReplyToMessageId: inReplyToMessageId,
-                    references: references
+                    references: references,
+                    draftServerMailboxId: draftServerMailboxId,
+                    draftServerUid: draftServerUid,
+                    draftServerUidValidity: draftServerUidValidity
                 )
                 try outbox.insert(db)
                 guard let outboxId = outbox.id else { return }
@@ -601,24 +778,27 @@ struct ComposerView: View {
     }
 
     /// Copies each pending attachment's in-memory bytes to
-    /// `<Application Support>/otegami/Outbox/<UUID>/<filename>` — one
-    /// fresh, randomly-named directory per attachment (rather than nesting
-    /// under the not-yet-known `outboxMessageId`, since these files are
-    /// written *before* that row's `db.write` transaction even starts;
-    /// `OutboxAttachmentRecord.localPath` is what associates the file back
-    /// to its outbox message afterward, not its position in this
-    /// directory tree). Mirrors `AttachmentFetcher.storageURL`'s "everything
-    /// under one `otegami/` folder in Application Support" convention on
-    /// the received side.
-    private static func stageAttachments(_ pending: [PendingAttachment]) throws -> [StagedAttachment] {
+    /// `<Application Support>/otegami/<subdirectory>/<UUID>/<filename>` —
+    /// one fresh, randomly-named directory per attachment (rather than
+    /// nesting under the not-yet-known outbox/draft message id, since these
+    /// files are written *before* that row's `db.write` transaction even
+    /// starts; `OutboxAttachmentRecord`/`DraftAttachmentRecord.localPath` is
+    /// what associates the file back to its message afterward, not its
+    /// position in this directory tree). `subdirectory` is `"Outbox"` for
+    /// `send()`, `"Drafts"` for `saveDraft()` — two separate trees under one
+    /// `otegami/` folder (mirrors `AttachmentFetcher.storageURL`'s "everything
+    /// under one `otegami/` folder in Application Support" convention on the
+    /// received side) so a draft's staged files are never mistaken for (or
+    /// cleaned up alongside) an outbox message's.
+    private static func stageAttachments(_ pending: [PendingAttachment], subdirectory: String) throws -> [StagedAttachment] {
         guard !pending.isEmpty else { return [] }
         let base = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         )
-        let outboxRoot = base.appendingPathComponent("otegami/Outbox", isDirectory: true)
+        let root = base.appendingPathComponent("otegami/\(subdirectory)", isDirectory: true)
 
         return try pending.map { attachment in
-            let directory = outboxRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = directory.appendingPathComponent(attachment.filename)
             try attachment.data.write(to: url, options: .atomic)

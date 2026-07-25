@@ -18,6 +18,14 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
         /// a fresh "下書きとして保存" while editing writes a new row rather
         /// than needing update-vs-insert branching).
         case draft(draftId: Int64)
+        /// Drafts IMAP sync: resume a server-origin draft — a `message` row
+        /// living in a `MailboxRoleRecord.drafts` mailbox that no local
+        /// `draftMessage` row has claimed yet (`DraftQuery.UnifiedRow
+        /// .server`). Unlike `.draft`, `ComposerView.prepare()` does
+        /// **not** delete or otherwise consume anything on load — see
+        /// `DraftMessageRecord`'s doc comment for why closing/discarding a
+        /// freshly-opened server draft without saving must be a true no-op.
+        case serverDraft(messageId: Int64)
     }
 
     var id = UUID()
@@ -47,5 +55,9 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
 
     static func draft(draftId: Int64) -> ComposerLaunchPayload {
         ComposerLaunchPayload(kind: .draft(draftId: draftId))
+    }
+
+    static func serverDraft(messageId: Int64) -> ComposerLaunchPayload {
+        ComposerLaunchPayload(kind: .serverDraft(messageId: messageId))
     }
 }
