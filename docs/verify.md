@@ -1490,3 +1490,99 @@ nil)` で手動再現している。修正後、同じシナリオで
   (`List(selection:)` がキーボード操作や見た目の面でより重要な環境) で
   違和感がないか、実際の見た目を確認してほしい (`make mac` でのビルド・
   起動は成功しているが、このセッションでは自動検証していない)。
+
+## 実機バグ (続報2): コールドランチが統合受信トレイから始まる/「直前の行」だけタップ不能
+
+上の節の修正後、実機からさらに2件のバグ報告があり、シミュレータ
+(`simctl erase` 直後、iPhone 17 Pro Max、compact 幅) で両方とも再現・修正した。
+探索的 QA スイープ (`OtegamiQASweepUITests`) の一環として見つかったもので、
+どちらも `RootView` の `preferredCompactColumn` の駆動方法に起因する、根っこは
+同じ問題の2つの現れだった。
+
+### バグ A: コールドランチがサイドバー最上位ではなく統合受信トレイから始まる
+
+上の節の修正で「kill 直後に勝手にスレッド詳細へ遷移する」症状は直ったが、
+まだ1段深い画面 (`messageList.list`) から起動するようになっていた —
+`SidebarView.observeMailboxes(accountId:)` はアカウントのメールボックスが
+初めてロードされた瞬間に `selection = .unifiedInbox` を直接代入する
+(M4 由来の「アカウントがあれば即座に一覧が使える」設計) が、`RootView` 側の
+`onChange(of: selection)` は `newValue == nil ? .sidebar : .content` という
+判定で `selection` が `nil` から非 `nil` になるたび無条件に
+`preferredColumn` を `.content` へ押し出していた。この2つが組み合わさると、
+既存アカウントがある状態でのアプリ起動は**必ず**サイドバー最上位を素通り
+してメッセージ一覧まで進んでしまう — ユーザーがどの画面から始めたいか
+選ぶ余地が構造的に無かった。
+
+### バグ B: 「直前に選択していた行」だけタップ不能
+
+- 統合受信トレイを開く → 戻る → 「すべての受信トレイ」行を再タップ →
+  一覧に遷移しない。
+- スレッドを開く → 戻る → 同じ行を再タップ → 詳細に遷移しない。
+
+`selection`/`selectedThreadId` の値は戻る操作をしても変わっていない
+(同じ行を再タップしているだけなので当然同じ値) ため、`RootView` の
+`onChange(of: selection)`/`onChange(of: selectedThreadId)` はそもそも
+発火しない — 値の変化を検知して `preferredColumn` を押し出す設計だった
+ため、「値は同じだが画面上の列は戻っている」という状態を検知する手段が
+無かった。
+
+### 修正
+
+「データとしての選択が変わったか」と「ユーザーが実際にタップしたか」を
+分離した。`SidebarView`/`MessageListView` の行 `Button` に、選択値の代入と
+は別に `onSelected`/`onThreadSelected` コールバックを追加し、`RootView` は
+このコールバック経由で**タップのたびに無条件で** `preferredColumn` を
+押し出す (値が変化したかどうかのチェックを介さない)。バックグラウンドの
+自動選択 (`observeMailboxes` の `selection = .unifiedInbox`) はデータの
+代入のみ行い、この特別なコールバックを一切呼ばないため、コールドランチでは
+サイドバー最上位に留まる (`RootView.onChange(of: selection)` は
+`selection == nil` に戻す/場合分けする用途のみに縮小)。
+
+macOS/iPad の常設3ペインレイアウトでは `preferredCompactColumn` 自体が
+無視される (columns が横並びで常に全部見えているため) ので、この変更は
+iPhone などの compact 幅の挙動にしか影響しない。
+
+既存の XCUITest 群 (M1–M11、`OtegamiColdLaunchAndSidebarSelectionUITests`
+の既存2ケース含む) はどれもこの「起動直後に一覧までノータップで行ける」
+挙動を前提にしていた (このバグそのものを検証する意図では書かれていない)
+ため、新しい起動時引数 `-uiTestsAutoAdvanceToContent` を追加し、旧来の
+「アカウントが揃った瞬間に `preferredColumn` を `.content` へ押し出す」
+挙動をこのフラグ付きの起動でだけ復元するようにした。`OtegamiApp
+.uiTestsShouldAutoAdvanceToContent` が起動時引数を見て分岐する。
+`DovecotAccountUITestHelpers.restartAppToRecoverTouchDelivery(_:
+legacyAutoAdvanceToContent:)` の第2引数 (既定 `true`) がこのフラグを
+自動付与し、`scripts/verify-ios-*.sh` の `screenshot`/`screenshotForeground`
+(ホスト側 `xcrun simctl launch` — XCUITest 経由ではないのでタップできない)
+にも同じ引数を追加した。実際にこのナビゲーション挙動そのものを検証する
+`OtegamiColdLaunchAndSidebarSelectionUITests`/`OtegamiQASweepUITests` は
+このフラグを一切使わず、常に本物のタップで遷移する。
+
+**この修正作業中に踏んだ XCUITest 特有の落とし穴**: `XCUIApplication
+.launchArguments` は同一インスタンスの `.launch()` 呼び出しをまたいで
+**持ち越される** — 1回の `.launch()` にしか効かないという直感に反する。
+`ensureDovecotTest1AccountExists` ヘルパーがアカウント新規作成のために
+`restartAppToRecoverTouchDelivery(app)` (既定でフラグ付与) を呼んだ後、
+同じ `app` インスタンスに対してテスト本体が素の `app.terminate();
+app.launch()` を呼んでも、以前 `+=` で追加したフラグが残ったままになり、
+「本物のコールドランチ」のつもりが実は毎回フラグ付き起動になっていた —
+`simctl erase` 直後でアカウントがまだ無く、このヘルパーの分岐が実際に
+実行された場合にのみ再現する (アカウントが既に存在する2回目以降の実行では
+分岐がスキップされるため問題が表面化しない) ため、最初は間欠的な失敗に
+見えた。`ensureDovecotTest1AccountExists` の最後で明示的に
+`app.launchArguments.removeAll { $0 == "-uiTestsAutoAdvanceToContent" }`
+して除去することで解決した。
+
+### テスト結果
+
+- `swift test` (`packages/OtegamiKit`) は今回コード変更対象外 (`apps/Otegami`
+  配下のみ変更) だが回帰確認のため実行、green。
+- `make mac` / `make ios`: build succeeded。
+- `OtegamiColdLaunchAndSidebarSelectionUITests` (新規3ケース追加、既存2
+  ケースを新しい遷移挙動に合わせて更新、計5ケース): `simctl erase` 直後の
+  クリーンな状態から green (Dovecot 認証がこの開発機の負荷で1回だけ
+  タイムアウトしたが、再実行で再現せず — 本修正と無関係)。
+- `OtegamiQASweepUITests` (新規、探索的シナリオ7本): green
+  (`testRapidSidebarMailboxSwitching` はテスト自身の設計ミス — compact 幅
+  では push で画面が切り替わった後、以前キャッシュしたサイドバー行の
+  座標解決が失敗する — を1度発見・修正、`testAddSecondAccountImmediatelyAfterFirst`
+  も上と同じ Dovecot 認証タイムアウトを1回踏んだが再実行で再現せず)。
