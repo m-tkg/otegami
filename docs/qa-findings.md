@@ -159,7 +159,7 @@
 (ビルド確認のみ) に留まっていた。このセッションで初めて実際に
 `open -n -a Otegami.app`/`nohup .../Otegami` で起動し、`.claude/skills/verify/
 SKILL.md` の手法 (`screencapture` + `sips` クロップ + CGEvent ベースの
-`driver.swift`、mytty の verify スキルを踏襲) で実操作した。
+`driver.swift`、別プロジェクトで確立した verify 手法を踏襲) で実操作した。
 
 ### 確認して問題なかった項目
 
@@ -294,10 +294,10 @@ SKILL.md` の手法 (`screencapture` + `sips` クロップ + CGEvent ベース�
   外乱に弱い一点がある**: Composer の「保存せずに破棄」ボタンを座標
   クリックで押す自動チェックが、このセッションの開発機では間欠的に
   失敗した。原因を追ったところ、(a) このマシンには他の自動化ツール
-  (mytty のフローティングターミナルパネルなど、同一 tmux/Claude セッション
+  (他の自動化ツールのフローティングターミナルパネルなど、同一 tmux/Claude セッション
   内の並行エージェントを含む) が同じデスクトップ上で同時に動作しており、
   `screencapture` のクロップ範囲に無関係な他アプリのウィンドウが写り込む
-  ことを実際に確認 (mytty のパネル内容がそのままキャプチャに写った)、
+  ことを実際に確認 (他ツールのパネル内容がそのままキャプチャに写った)、
   (b) 過去のテスト実行中に `osascript ... tell process "Otegami" to ...
   window 1` (インデックス指定、フロントの window を指す) が、たまたま
   Composer ウィンドウがフロントにあるタイミングで実行されてしまい、

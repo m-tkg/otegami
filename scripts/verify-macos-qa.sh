@@ -2,7 +2,8 @@
 # macOS QA sweep — screencapture + CGEvent driven, since this project has no
 # macOS XCUITest target (`OtegamiUITests` is iOS-only, see `project.yml`).
 # Follows the technique documented in `.claude/skills/verify/SKILL.md`
-# ("macOS 検証 (M10)" section) and mytty's verify skill it was adapted from:
+# ("macOS 検証 (M10)" section), adapted from a macOS GUI automation approach
+# established in another project:
 # a small `driver.swift` (built here, on the fly, into $WORK_DIR) synthesizes
 # clicks/keys via CGEvent, `screencapture`/`sips` capture and crop the
 # window, and `AXUIElementCreateApplication`-backed window queries give a
@@ -393,7 +394,7 @@ else
         # part of this script that proved genuinely flaky on the machine
         # this was authored on — not because of app behavior, but because
         # the desktop is *shared* with other automated tools (this session
-        # caught a `mytty` floating-terminal-panel window landing in a
+        # caught another tool's floating-terminal-panel window landing in a
         # `screencapture` crop mid-run, i.e. actual external interference,
         # not a coordinate math bug — see docs/qa-findings.md's macOS QA
         # entry for the full investigation). The dialog-appears check above

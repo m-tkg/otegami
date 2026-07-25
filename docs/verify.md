@@ -893,17 +893,17 @@ M1–M9 の macOS 検証は `make mac` (ビルド確認のみ) に留まって�
 実バグ**が見つかった — いずれも「実際に起動する」ことでしか見つからない
 類のバグで、この節はその手順と知見を記録する。
 
-### 手順 (mytty の verify スキル方式を踏襲)
+### 手順 (別プロジェクトで確立した macOS GUI 自動操作手法を踏襲)
 
 ```sh
 make mac   # Debug ビルド
-open -n -a /Users/masaki/Library/Developer/Xcode/DerivedData/Otegami-*/Build/Products/Debug/Otegami.app
+open -n -a ~/Library/Developer/Xcode/DerivedData/Otegami-*/Build/Products/Debug/Otegami.app
 ```
 
 - `screencapture -x` でスクリーンショット。ウィンドウ位置・サイズは
   `osascript`(`System Events`) で固定してからキャプチャすると、以降の
   クロップ座標計算が安定する。
-- クリック/ドラッグ/キー入力は mytty と同じ CGEvent ベースの
+- クリック/ドラッグ/キー入力は別プロジェクトで確立した手法と同じ CGEvent ベースの
   `driver.swift`(scratchpad にビルド) で駆動。`AXUIElementCreateApplication`
   でウィンドウの実座標を取得できるので、`sips --cropOffset` の計算に使う
   (物理ピクセル = 論理座標 × 2、Retina 前提)。
@@ -1206,7 +1206,7 @@ mailstack インスタンス固有の既存の不具合/汚れた状態である
 - **XCUITest でユーザーの手順 (SMTP ユーザー名欄に値を入力した状態での
   SMTP接続テスト含む) をシミュレータ上で忠実に再現したが再現しなかった**
   — dev mailstack 相手の初期同期後、メッセージは正常に一覧表示された。
-- 実機 (`xcrun devicectl`、`masakiPhone17`) が本セッション中つながって
+- 実機 (`xcrun devicectl`、`<あなたの iPhone>`) が本セッション中つながって
   いたため、`devicectl device copy from --domain-type
   appGroupDataContainer` でアプリの共有コンテナ (`AppDatabase.makeShared`
   が DB を置く場所) を覗こうとしたが、`otegami.sqlite` は App Group
@@ -1251,7 +1251,7 @@ SELECT だけで「新着なし」と正しく判断し続ける — ユーザ�
 完全に一致する。
 
 dev mailstack はシミュレータからは `localhost`、実機からは Mac の LAN IP
-(`192.168.0.163`) 経由の Wi-Fi 越しで到達するため、後者の方が
+(`<Mac の LAN IP>`) 経由の Wi-Fi 越しで到達するため、後者の方が
 タイムアウト/瞬断が起きやすく、この経路依存のバグがシミュレータでは
 再現せず実機だけで踏まれたと考えるのが最も辻褄が合う (ループの後半
 (Junk/Sent/Trash 側) のどこかで一過性のエラーが起き、それ以降
@@ -1625,15 +1625,15 @@ nil)` で手動再現している。修正後、同じシナリオで
 
 ### 実機で残る確認事項
 
-- このセッション中、実機 (`masakiPhone17`, UDID
-  `620080DD-019A-5477-8F2D-96E9E0C8C538`) は当初 `devicectl` から
+- このセッション中、実機 (`<あなたの iPhone>`, UDID
+  `<device-udid>`) は当初 `devicectl` から
   `connected` だったが、作業の途中で `unavailable` になった (USB/ネット
   ワーク接続が物理的に切れた模様で、こちらからは再接続できない)。
   `make ios-device` によるビルド・署名は成功しており、`dist` 相当の
   `.app` は用意できているが、`devicectl device install app` での実機への
   インストールはできていない。ユーザー側で実機を再接続した後、
   `xcodebuild -project apps/Otegami/Otegami.xcodeproj -scheme Otegami
-  -destination 'platform=iOS,id=620080DD-019A-5477-8F2D-96E9E0C8C538'
+  -destination 'platform=iOS,id=<device-udid>'
   build` (または Xcode から直接) でインストールし、以下を確認してほしい:
   1. アカウント登録済みの状態でスレッドを開き、アプリを kill → 再起動
      して、一覧から始まること (詳細へ勝手に遷移しないこと)。
@@ -1753,7 +1753,7 @@ M10 macOS 検証以降、iOS compact 幅を主眼にした大量の修正 (状�
 `make mac`(ビルド確認のみ) に留まっていた。このセッションで初めて
 `.claude/skills/verify/SKILL.md`(M10 節) の手法 — `open -n -a`/`nohup` で
 起動、`screencapture -x` + `sips --cropOffset` でスクリーンショット、
-mytty の verify スキルに倣った CGEvent ベースの `driver.swift` (scratchpad
+別プロジェクトで確立した verify 手法に倣った CGEvent ベースの `driver.swift` (scratchpad
 にビルド) でクリック/キー入力を駆動 — を使って実操作した。
 
 ### 手順の要点 (次回の参考用)
@@ -1785,10 +1785,10 @@ nohup "$APP/Contents/MacOS/Otegami" > /tmp/otegami-verify/mac-stdout.log 2>&1 &
   実際の原点を読み直すこと。固定座標を仮定すると、上記のフレーム破損
   以外の理由でも簡単にずれる。
 - **このセッションの開発機は、同じデスクトップ上で他の自動化ツール
-  (mytty のフローティングターミナルパネル、同一セッション内の並行
+  (他のターミナルパネル、同一セッション内の並行
   エージェントの操作) が同時に動いていることがあり、`screencapture` の
   クロップ範囲に無関係な他アプリのウィンドウが写り込むことを実際に
-  確認した** (mytty のターミナル内容がそのままキャプチャに写った回が
+  確認した** (他ツールのターミナル内容がそのままキャプチャに写った回が
   あった)。座標ベースのクリック自動化はこの手の外乱に弱いため、
   重要な操作 (特に確認ダイアログのボタンクリック) は失敗を非致命な
   `warn` として扱い、スクリーンショットでの目視確認と併用するのが
