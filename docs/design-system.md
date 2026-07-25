@@ -263,3 +263,40 @@ OFL は再配布・改変・同梱を無償で許可するライセンスで、�
 - 「移動」の汎用フォルダピッカー化 (現状はアーカイブ固定)。
 - 1a の `AccountFilterChip` 横スクロール行が実際にアカウント5つ以上でど
   う見えるかは、まだ実機の多アカウント環境で確認していない。
+
+## design-phase-3: 目視レイアウト修正・翻訳UI・残り画面
+
+design-phase-2 の実機スクリーンショットを目視で確認したところ、2点の
+レイアウト崩れが見つかった。原因調査と修正の記録。
+
+### チップ列と一覧の間の不自然な余白
+
+1アカウントのみの状態で `MailTabView` を実機スクリーンショットで確認す
+ると、`AccountFilterChipRow` と `MessageListView` の `List` の間に、どち
+らの View にも属さない空白帯が見えた。原因は `List` 側: `Section` を明示
+していない `List { ForEach { ... } }` も暗黙に1つのセクションとして扱わ
+れ、iOS 17+ の `List` はセクション間 (先頭セクションの上も含む) に既定の
+`ListSectionSpacing.default` (見出し付きの複数セクションを視覚的に区切
+る前提の、それなりに大きい固定値) を入れる。`AccountFilterChipRow` が
+`List` の直前に同じ `VStack` で並ぶ 1a 特有のレイアウトでこれが単なる
+「意図しない空白」として露出した。`.listSectionSpacing(.compact)` を
+`MessageListView` の `List` に追加して解決 (`MessageListRow` が個々の行
+で `.otegamiRowDivider()` を使っている密度に合わせた値)。
+
+### 右端のアカウント名ラベル・左罫線の1アカウント時の出し分け
+
+`ThreadRowView.showsAccountAccent` (アカウント色の左罫線＋右端のアカウン
+ト名ラベル) は design-phase-2 で「統合受信トレイの『全部』フィルタ時だけ
+表示」という条件だったが、**アカウント数を見ていなかった**ため、アカウ
+ントが1つしかない状態でも統合受信トレイでは常に表示されてしまっていた
+(実機スクリーンショットで発覚 — 1アカウントしかないのに全行に同じアカ
+ウント名が付き、件名の表示幅を無意味に圧迫していた)。`MessageListView.
+showsAccountAccent`/`SearchTabView.showsAccountAccent` の両方に
+`environment.accounts.count > 1` の条件を追加。1アカウント → 2アカウント
+に増やしたときに罫線・ラベルが正しく現れることも実機スクリーンショット
+で確認済み (`docs/verify.md` の該当箇所参照)。
+
+### 翻訳UI (1i) の実装
+
+(翻訳UI・検索・作成・設定の実装詳細は本ドキュメントの追記が続く — 作業
+の区切りごとに追記する。)

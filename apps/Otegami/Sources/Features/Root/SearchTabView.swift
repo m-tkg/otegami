@@ -77,11 +77,19 @@ struct SearchTabView: View {
         }
     }
 
+    /// 1d/design-phase-3: same "more than one account" gate as
+    /// `MessageListView.showsAccountAccent` — a search result can come from
+    /// any account in principle, but with exactly one account configured
+    /// the label/rail would always name that same single account, which is
+    /// redundant noise rather than useful disambiguation (see that
+    /// property's doc comment for the full reasoning).
+    private var showsAccountAccent: Bool {
+        environment.accounts.count > 1
+    }
+
     /// One row — a plain `Button` + `ThreadRowView`, not the fuller
     /// `MessageListRow` (no swipe/selection chrome here, see this type's
-    /// doc comment). `showsAccountAccent: true` unconditionally: a search
-    /// result can come from any account, so the rail/trailing label always
-    /// earn their place here, unlike a single already-selected mailbox.
+    /// doc comment).
     @ViewBuilder
     private func searchRow(for summary: ThreadSummary) -> some View {
         if let threadId = summary.thread.id {
@@ -91,7 +99,7 @@ struct SearchTabView: View {
                 ThreadRowView(
                     summary: summary,
                     accountDisplayName: accountDisplayNames[summary.thread.accountId],
-                    showsAccountAccent: true
+                    showsAccountAccent: showsAccountAccent
                 )
             }
             .buttonStyle(.plain)

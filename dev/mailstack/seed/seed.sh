@@ -78,4 +78,11 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/19-attachment-rfc2231-japanese.
 seed_message "test1@otegami.test" "$FIXTURES_DIR/17-no-subject.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/18-empty-body.eml"
 
+# design-phase-3: an English-language message (multi-paragraph, no Japanese
+# at all) to exercise the translation bar (1i) end-to-end against the dev
+# mailstack — `MessageLanguageDetector` should tag this `detectedLanguage ==
+# "en"` on body fetch, which is what the translation bar's visibility check
+# gates on.
+seed_message "test1@otegami.test" "$FIXTURES_DIR/20-english-quarterly-report.eml"
+
 echo "==> done"

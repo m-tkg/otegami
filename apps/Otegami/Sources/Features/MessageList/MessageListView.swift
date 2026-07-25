@@ -185,9 +185,20 @@ struct MessageListView: View {
     /// guarantees every visible row shares one account, so the accent would
     /// be redundant color noise (`docs/design-system.md` records this
     /// refinement over the handoff's plainer "統合受信トレイでは...").
+    ///
+    /// design-phase-3: also requires more than one account to exist at all.
+    /// With exactly one account, "全部"/unified inbox and that account's own
+    /// mailbox show the identical set of messages, so a rail/label naming
+    /// the only account that could possibly appear is pure noise — and,
+    /// worse, it eats into the subject's available width on every single
+    /// row for a piece of information that's always the same value. Caught
+    /// by actually looking at a single-account screenshot (`docs/design-
+    /// system.md`'s design-phase-3 section) rather than in the handoff,
+    /// which didn't consider the one-account case explicitly.
     private var showsAccountAccent: Bool {
         guard case .unifiedInbox = selection else { return false }
-        return unifiedInboxAccountFilter == nil
+        guard unifiedInboxAccountFilter == nil else { return false }
+        return environment.accounts.count > 1
     }
 
     private var accountDisplayNames: [String: String] {
@@ -203,6 +214,21 @@ struct MessageListView: View {
         .accessibilityIdentifier("messageList.list")
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
+        // design-phase-3: a `List` with no explicit `Section`s still gets
+        // treated as one implicit section, and iOS 17+'s default
+        // inter-section spacing (`ListSectionSpacing.default`, a fixed
+        // ~20-30pt-plus gap meant to separate *visually distinct* grouped
+        // sections) applies above it regardless — with nothing else above
+        // the list on macOS/most iOS screens this is invisible (it just
+        // reads as ordinary top padding), but on iOS's 1a mail tab, where
+        // `AccountFilterChipRow` sits directly above this `List` in the
+        // same `VStack`, it showed up as a conspicuous unstyled empty band
+        // between the chips and the first row (caught by actually looking
+        // at a screenshot, not by reading the modifier list — see
+        // `docs/design-system.md`'s design-phase-3 section). `.compact`
+        // collapses it to the same tight spacing this app's own row
+        // dividers already use.
+        .listSectionSpacing(.compact)
         .overlay {
             if isSearchActive {
                 if isSearching {
