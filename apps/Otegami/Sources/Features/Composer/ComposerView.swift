@@ -52,6 +52,16 @@ struct ComposerView: View {
     /// dialog for a message with genuinely nothing new in it.
     @State private var initialSnapshot: ComposerSnapshot?
     @State private var showingCloseConfirmation = false
+    #if os(macOS)
+    // Set right before this Composer's confirmation dialog closes the
+    // window itself (`closeWindowAfterConfirmation()`) — lets
+    // `handleWindowShouldClose()` tell "the user just confirmed save/
+    // discard, let this one specific close through" apart from "the
+    // titlebar button was clicked fresh, still need to ask." See
+    // `WindowCloseInterceptor`'s doc comment for why this needs an
+    // `NSWindowDelegate` hook at all.
+    @State private var allowNextWindowClose = false
+    #endif
 
     private struct ComposerSnapshot: Equatable {
         var to: String
@@ -191,10 +201,16 @@ struct ComposerView: View {
         // `handleCloseRequested()`) becomes the one path that can actually
         // close the Composer in that state, so the save-or-discard prompt
         // below can never be bypassed by a gesture. A no-op on macOS (this
-        // Composer is its own `WindowGroup` there, not a sheet); closing the
-        // window via its titlebar button still bypasses the prompt on
-        // macOS — a known gap, see docs/roadmap.md.
+        // Composer is its own `WindowGroup` there, not a sheet) — macOS's
+        // equivalent bypass (the titlebar close button) is handled by
+        // `WindowCloseInterceptor` below instead.
         .interactiveDismissDisabled(hasUnsavedChanges)
+        #if os(macOS)
+        // Routes the native titlebar close button through the same
+        // save-or-discard confirmation as the toolbar "キャンセル" button —
+        // see `WindowCloseInterceptor`'s doc comment.
+        .background(WindowCloseInterceptor(shouldClose: handleWindowShouldClose))
+        #endif
         .confirmationDialog(
             "このメッセージを保存しますか？",
             isPresented: $showingCloseConfirmation,
@@ -203,11 +219,11 @@ struct ComposerView: View {
             Button("下書きとして保存") {
                 Task {
                     await saveDraft()
-                    dismiss()
+                    closeAfterConfirmation()
                 }
             }
             .accessibilityIdentifier("composer.saveDraftButton")
-            Button("保存せずに破棄", role: .destructive) { dismiss() }
+            Button("保存せずに破棄", role: .destructive) { closeAfterConfirmation() }
                 .accessibilityIdentifier("composer.discardButton")
             Button("キャンセル", role: .cancel) {}
                 .accessibilityIdentifier("composer.keepEditingButton")
@@ -300,6 +316,40 @@ struct ComposerView: View {
             return
         }
         showingCloseConfirmation = true
+    }
+
+    #if os(macOS)
+    /// `WindowCloseInterceptor`'s `NSWindowDelegate` callback — invoked
+    /// synchronously whenever the user clicks the titlebar's red close
+    /// button (or otherwise asks AppKit to close this window), *before*
+    /// the window actually closes. Returning `false` blocks the close and
+    /// (as a side effect) opens the same confirmation dialog the toolbar
+    /// "キャンセル" button uses; returning `true` lets it through.
+    private func handleWindowShouldClose() -> Bool {
+        guard hasUnsavedChanges else { return true }
+        if allowNextWindowClose {
+            allowNextWindowClose = false
+            return true
+        }
+        showingCloseConfirmation = true
+        return false
+    }
+    #endif
+
+    /// Both confirmation-dialog actions that actually close the Composer
+    /// (save-then-close, discard-then-close) call this instead of
+    /// `dismiss()` directly. On iOS it's just `dismiss()`. On macOS,
+    /// `dismiss()` closes this scene's `NSWindow`, which re-invokes
+    /// `handleWindowShouldClose()` via the same delegate hook that opened
+    /// this dialog in the first place — without the one-shot
+    /// `allowNextWindowClose` flag set first, that second call would see
+    /// `hasUnsavedChanges` still `true` and re-block the close, reopening
+    /// the dialog in a loop instead of ever actually closing.
+    private func closeAfterConfirmation() {
+        #if os(macOS)
+        allowNextWindowClose = true
+        #endif
+        dismiss()
     }
 
     /// Persists the current fields as a new `DraftMessageRecord` row.
@@ -604,3 +654,55 @@ private extension View {
         #endif
     }
 }
+
+#if os(macOS)
+/// Reaches AppKit's `NSWindowDelegate.windowShouldClose(_:)` — the only way
+/// to intercept the titlebar's native close button — from pure SwiftUI.
+/// `WindowGroup`/`Settings` scenes don't expose a delegate hook directly,
+/// so this is the standard workaround: a zero-size `NSViewRepresentable`
+/// that, once AppKit has actually placed it into a window's view hierarchy,
+/// swaps in a delegate that forwards the one question this Composer cares
+/// about (`shouldClose`) back into SwiftUI state. Fixes the gap noted in
+/// `docs/roadmap.md`'s "既知の制約" list: closing the Composer via the
+/// titlebar red button used to bypass the save-draft/discard confirmation
+/// entirely, silently losing unsaved text — only the toolbar "キャンセル"
+/// button (and, on iOS, the sheet's own swipe-to-dismiss block) went
+/// through `handleCloseRequested()`/`hasUnsavedChanges`.
+private struct WindowCloseInterceptor: NSViewRepresentable {
+    /// Forwarded to `Coordinator.shouldClose` on every `updateNSView` call
+    /// (cheap — a closure property assignment) so it always reflects the
+    /// current SwiftUI-side handler, even though the delegate itself is
+    /// only ever assigned once per window (see `updateNSView`).
+    var shouldClose: () -> Bool
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.shouldClose = shouldClose
+        // `nsView.window` is `nil` until AppKit actually places this view
+        // into a window's hierarchy; `updateNSView` re-runs on every
+        // SwiftUI body re-evaluation, so the first call after the window
+        // exists is what wires this up. Guarding on `!==` avoids fighting
+        // any other code that might reassign the delegate later, and
+        // avoids redundantly reassigning it on every re-render once set.
+        guard let window = nsView.window, window.delegate !== context.coordinator else { return }
+        window.delegate = context.coordinator
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(shouldClose: shouldClose)
+    }
+
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var shouldClose: () -> Bool
+        init(shouldClose: @escaping () -> Bool) {
+            self.shouldClose = shouldClose
+        }
+        func windowShouldClose(_ sender: NSWindow) -> Bool {
+            shouldClose()
+        }
+    }
+}
+#endif
