@@ -33,52 +33,99 @@ struct ThreadDetailView: View {
     @State private var hasPinnedInitialExpansion = false
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(messages) { message in
-                    if let messageId = message.id {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Button {
-                                withAnimation(.default) {
-                                    if expandedMessageIds.contains(messageId) {
-                                        expandedMessageIds.remove(messageId)
-                                    } else {
-                                        expandedMessageIds.insert(messageId)
+        // `GeometryReader` here purely to hand `expandedMessageHeight(in:)`
+        // a concrete size to compute off of — see its doc comment for why
+        // an expanded row can't just say "fill available space" the way
+        // `MessageView`/`HTMLMessageView` were originally designed to (M2,
+        // before this view nested them inside a `ScrollView`).
+        GeometryReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(messages) { message in
+                        if let messageId = message.id {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Button {
+                                    withAnimation(.default) {
+                                        if expandedMessageIds.contains(messageId) {
+                                            expandedMessageIds.remove(messageId)
+                                        } else {
+                                            expandedMessageIds.insert(messageId)
+                                        }
                                     }
+                                } label: {
+                                    ThreadMessageSummaryRow(message: message, isExpanded: expandedMessageIds.contains(messageId))
                                 }
-                            } label: {
-                                ThreadMessageSummaryRow(message: message, isExpanded: expandedMessageIds.contains(messageId))
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("threadDetail.message.\(messageId).header")
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("threadDetail.message.\(messageId).header")
 
-                            if expandedMessageIds.contains(messageId), let accountId {
-                                MessageView(accountId: accountId, messageId: messageId, onReply: onReply)
-                                    .frame(minHeight: 240)
-                                    .accessibilityIdentifier("threadDetail.message.\(messageId).body")
+                                if expandedMessageIds.contains(messageId), let accountId {
+                                    MessageView(accountId: accountId, messageId: messageId, onReply: onReply)
+                                        .frame(height: expandedMessageHeight(in: proxy.size))
+                                        .accessibilityIdentifier("threadDetail.message.\(messageId).body")
+                                }
                             }
+                            Divider()
                         }
-                        Divider()
                     }
                 }
             }
-        }
-        // The newest message (last in `messages`, expanded by default) is
-        // what a thread view should open showing — without this, a long
-        // thread's `ScrollView` starts pinned to the top (the *oldest*,
-        // collapsed message) and `LazyVStack` doesn't even materialize the
-        // expanded row (and its `MessageView`/`messageDetail.subject`)
-        // until it scrolls into view.
-        .defaultScrollAnchor(.bottom)
-        .accessibilityIdentifier("threadDetail.scrollView")
-        .navigationTitle(navigationTitle)
-        .overlay {
-            if messages.isEmpty, accountId != nil {
-                ContentUnavailableView("メッセージが見つかりません", systemImage: "envelope.open")
-                    .accessibilityIdentifier("threadDetail.emptyState")
+            // The newest message (last in `messages`, expanded by default)
+            // is what a thread view should open showing — without this, a
+            // long thread's `ScrollView` starts pinned to the top (the
+            // *oldest*, collapsed message) and `LazyVStack` doesn't even
+            // materialize the expanded row (and its `MessageView`/
+            // `messageDetail.subject`) until it scrolls into view.
+            .defaultScrollAnchor(.bottom)
+            .accessibilityIdentifier("threadDetail.scrollView")
+            .overlay {
+                if messages.isEmpty, accountId != nil {
+                    ContentUnavailableView("メッセージが見つかりません", systemImage: "envelope.open")
+                        .accessibilityIdentifier("threadDetail.emptyState")
+                }
             }
         }
+        .navigationTitle(navigationTitle)
         .task(id: threadId) { await load() }
+    }
+
+    /// A real-device layout bug (observed on iPhone 17 Pro/iOS 26: the top
+    /// ~2/3 of the screen rendering as empty background with every message
+    /// row pressed to the bottom, the expanded message's body cut off at
+    /// the bottom edge) traced back to `HTMLMessageView` giving its
+    /// `WKWebView` `.frame(maxWidth: .infinity, maxHeight: .infinity)` — a
+    /// request to "fill available space" that only means something when the
+    /// immediate parent actually proposes a bounded height, which was true
+    /// in M2 (this view alone filling `NavigationSplitView`'s `detail`
+    /// column) but stopped being true once M4 nested `MessageView` inside
+    /// this view's own `ScrollView`/`LazyVStack`: a `ScrollView` proposes a
+    /// *nil* height along its scroll axis by design, so "fill available
+    /// space" resolves to the child's own ideal size instead — and a
+    /// `WKWebView` configured to scroll internally (this view's own doc
+    /// comment explains why: simpler/more robust than measuring rendered
+    /// HTML height via injected JavaScript) has no meaningful intrinsic
+    /// content size of its own, so it collapsed to close to zero. The
+    /// previous `.frame(minHeight: 240)` around the whole `MessageView`
+    /// masked this just enough to be easy to miss in a quick look (240pt
+    /// total budget, header eating most of it) while still leaving the
+    /// HTML body a sliver too short to show more than its first couple of
+    /// lines, and the *thread's* total content height far shorter than the
+    /// screen — which is exactly what turned into "empty space above,
+    /// everything pinned to the bottom" once combined with
+    /// `.defaultScrollAnchor(.bottom)` above.
+    ///
+    /// Sizing directly off the container's own measured height (from the
+    /// enclosing `GeometryReader`) fixes both symptoms at once: the web
+    /// view gets a real, concrete budget to render and internally scroll
+    /// within, and an expanded message reliably takes up most of the
+    /// visible screen — the normal "current message dominates, tap an
+    /// older header to read more" thread-reading layout, not a special
+    /// case to keep tuning. `360` is a floor for pathologically short
+    /// containers (e.g. a narrow macOS split); the `- 160` leaves room for
+    /// the collapsed summary rows above an expanded message without the
+    /// expanded row overflowing past the visible area on typical phone
+    /// screens.
+    private func expandedMessageHeight(in containerSize: CGSize) -> CGFloat {
+        max(360, containerSize.height - 160)
     }
 
     private var navigationTitle: String {
