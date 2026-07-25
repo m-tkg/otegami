@@ -114,6 +114,29 @@
   ではないが、実装コード自体に手を入れる根拠 (実機/低負荷環境での再現)
   はこのセッションでは得られなかった。
 
+- **`OtegamiQASweepUITests.testAddSecondAccountImmediatelyAfterFirst` が
+  `simctl erase` 直後の実行で1回、間欠的に失敗**: test1/test2 を間を置かず
+  連続追加 → 2回連続の即時リランチ (`restartAppToRecoverTouchDelivery` を
+  settle 待ちなしで2回) の直後、`sidebar.list` 自体は存在するのに Cell が
+  1つも無い (=`environment.accounts` が空扱い) 状態を10秒以上観測した。
+  ただし数秒後に同じシミュレータで手動確認したところ両アカウントとも
+  正しく GRDB に存在しており (`sqlite3` で直接確認)、データ消失ではなく
+  一時的な表示不整合だった。さらに気になる手がかりとして、その時
+  `test1@otegami.test` の `displayName` が本セッションのテストコードが
+  一貫して使っている `"Dovecot Test1"` ではなく `"Dovecot Test"` (末尾の
+  "1" が無い) になっていた — 本セッションのどのテストコードもこの表記は
+  使っていないため、`AccountCloudSyncEngine.reconcile()` が実 iCloud KVS
+  経由で本セッションより**前**の (異なる命名規則だった頃の) verify 実行分の
+  アカウントレコードと衝突/マージした可能性が高い。同条件で即座に再実行
+  したところ再現せず (green)。`docs/verify.md`/本ファイル既出の「この
+  開発機は実 iCloud アカウントに紐づいているため `simctl erase` だけでは
+  真にゼロアカウントの状態を作れない」問題の、より踏み込んだ一側面
+  (古い異名アカウントとの reconcile 競合) と見られる — 実装を追うだけの
+  価値はあるが、この開発機固有の実 iCloud データ汚染に依存する再現性の
+  低い事象を追いかけるより、根本的には「この開発機のテスト用 Apple ID の
+  iCloud データを一度整理する」something がより効果的な対処と考えられる
+  ため、深追いはせずここに記録するに留めた。
+
 ## 未実施・今後の課題
 
 - スレッド境界を跨ぐ「宛先だけのメール」(本文どころか宛先以外の情報が
