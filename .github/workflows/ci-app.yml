@@ -20,12 +20,37 @@ jobs:
       - name: Generate Xcode project
         run: cd apps/Otegami && xcodegen generate
 
-      - name: Build macOS app
+      # CI has no signing identity/provisioning profile available, and
+      # shouldn't need one — this job only verifies the app *builds*, not
+      # that it's distributable. CODE_SIGNING_ALLOWED=NO (plus REQUIRED=NO
+      # and a blank identity, belt-and-braces) skips codesigning entirely
+      # instead of xcodebuild failing with "No profiles for ... were
+      # found" under CODE_SIGN_STYLE: Automatic.
+      - name: Build macOS app (unsigned)
         run: |
           xcodebuild \
             -project apps/Otegami/Otegami.xcodeproj \
             -scheme Otegami \
             -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      # iOS build-only check (generic Simulator destination — no need to
+      # boot/select a concrete simulator just to compile). Actually running
+      # OtegamiUITests needs the dev mailstack (Docker) and a booted
+      # simulator; that's covered by scripts/verify-ios-m*.sh locally (see
+      # docs/verify.md / docs/ci.md), not CI.
+      - name: Build iOS app (Simulator, unsigned)
+        run: |
+          xcodebuild \
+            -project apps/Otegami/Otegami.xcodeproj \
+            -scheme Otegami \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
             build
 
       - name: Test OtegamiKit

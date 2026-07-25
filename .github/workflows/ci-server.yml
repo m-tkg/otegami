@@ -8,7 +8,18 @@ on:
 jobs:
   server:
     runs-on: ubuntu-latest
-    container: swift:6.0-jammy
+    # otegami-relay's own Package.swift declares swift-tools-version:6.0,
+    # but its dependency graph transitively includes packages (GRDB.swift,
+    # Hummingbird, swift-nio, ...) whose manifests declare tools-version
+    # 6.1+ — SwiftPM has to *parse* every dependency's manifest to resolve
+    # the graph, even for products this server never actually builds (see
+    # Dockerfile's comment on OtegamiKit's manifest being resolved-but-not-
+    # built). A 6.0 toolchain can't parse a 6.1 manifest at all, so
+    # `swift build`/`swift test` fail during dependency resolution before
+    # compiling a single line of this repo's code. Match the Dockerfile's
+    # production image tag (swift:6.2-jammy) so CI and the shipped
+    # container use the same toolchain.
+    container: swift:6.2-jammy
     steps:
       - uses: actions/checkout@v4
 
