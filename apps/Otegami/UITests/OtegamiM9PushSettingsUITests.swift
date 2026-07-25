@@ -18,6 +18,17 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
+        // This test's own doc comment says it doesn't need an account —
+        // true for the flow under test, but `sidebar.settingsButton` only
+        // lives on the sidebar's own toolbar. If this dev machine's real-
+        // iCloud-backed simulator (M11's documented resurrection issue)
+        // has an account from an earlier verify run resurrect despite the
+        // fresh `simctl erase` this script did, `-uiTestsAutoAdvanceToContent`
+        // sends a cold launch straight to the message list instead,
+        // leaving no `sidebar.settingsButton` to tap. Popping back first
+        // is a no-op when already on the sidebar root (the common case),
+        // and recovers it otherwise.
+        returnToSidebarRootIfNeeded(in: app)
         app.buttons["sidebar.settingsButton"].tap()
         XCTAssertTrue(app.otherElements["settings.sheet"].waitForExistence(timeout: 10))
 
@@ -53,7 +64,7 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
         // or silently doing nothing.
         let errorMessage = app.staticTexts["settings.push.errorMessage"]
         XCTAssertTrue(
-            errorMessage.waitForExistence(timeout: 20),
+            errorMessage.waitForExistence(timeout: 40),
             "expected a graceful-degradation error message on the simulator (no APNs token available)"
         )
         XCTAssertFalse(app.staticTexts["settings.push.enabledLabel"].exists, "push should not report itself enabled on the simulator")
@@ -64,6 +75,17 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
+        // This test's own doc comment says it doesn't need an account —
+        // true for the flow under test, but `sidebar.settingsButton` only
+        // lives on the sidebar's own toolbar. If this dev machine's real-
+        // iCloud-backed simulator (M11's documented resurrection issue)
+        // has an account from an earlier verify run resurrect despite the
+        // fresh `simctl erase` this script did, `-uiTestsAutoAdvanceToContent`
+        // sends a cold launch straight to the message list instead,
+        // leaving no `sidebar.settingsButton` to tap. Popping back first
+        // is a no-op when already on the sidebar root (the common case),
+        // and recovers it otherwise.
+        returnToSidebarRootIfNeeded(in: app)
         app.buttons["sidebar.settingsButton"].tap()
         XCTAssertTrue(app.otherElements["settings.sheet"].waitForExistence(timeout: 10))
         app.staticTexts["プッシュ通知"].tap()

@@ -81,6 +81,39 @@
   いない — 今後 `LIKE` エスケープの単体テストを追加する価値はあるかもしれ
   ない。
 
+## 総回帰で見つかった、この開発機固有の既存の不整合 (QA スイープと無関係)
+
+- **`OtegamiM6TypeSelectionUITests.testAllThreeAccountTypesAreOfferedAndGmailIsDisabledWithoutAClientId`
+  がこの開発機では失敗する**: `apps/Otegami/Config/Local.xcconfig` に実の
+  `GOOGLE_OAUTH_CLIENT_ID` が設定されているため (この開発機で Gmail OAuth
+  の実機能を検証する目的と見られる)、Gmail ボタンは実際には有効になる —
+  「Client ID 未設定なら無効化される」というテストの前提とこの開発機の
+  ビルド設定が根本的に食い違っている。QA スイープの変更とは無関係な
+  pre-existing の環境依存 (このテストは `GOOGLE_OAUTH_CLIENT_ID` が空の
+  ビルドでのみ通る設計)。`scripts/verify-ios-m6.sh` の他フェーズ
+  (`OtegamiM6ICloudFormUITests`/`OtegamiM6OtherAccountFlowUITests`/
+  `OtegamiM6TypeSelectionUITests.testCancelDismissesTheTypeSelectionSheet`)
+  は個別実行では正常に green (`set -euo pipefail` により、このテストの
+  失敗でスクリプト全体が早期終了していただけ)。対応不要 — このテストを
+  「常に green」にするには `GOOGLE_OAUTH_CLIENT_ID` を空にしたビルドで
+  別途実行する仕組みが要るが、それは今回のタスクの範囲外と判断した。
+
+- **`OtegamiM9PushSettingsUITests.testEnablingPushOnSimulatorShowsGracefulDegradationMessage`
+  が `simctl erase` 直後の初回実行でのみ間欠的に失敗する**: consent alert
+  タップ後、`settings.push.errorMessage` が最大40秒待っても現れないことが
+  数回に1回発生した。同じシミュレータを erase せず使い回す再実行では毎回
+  再現せず (`sidebar.settingsButton` 到達性の別問題は
+  `returnToSidebarRootIfNeeded` 追加で修正済み — こちらは別件)。この
+  セッション中ずっと `load average` が 264 前後という高負荷状態だったこと
+  (`uptime`/`docker stats` で確認済み) と、`simctl erase` 直後の初回起動は
+  Keychain access group のプロビジョニングや GRDB 初期化などの一度きりの
+  セットアップコストが乗ることを踏まえると、機体負荷起因の一過性遅延と
+  判断 (`registerForRemoteNotifications()` 自体は権限プロンプトを出さない
+  ため、システムダイアログが割り込んでいる可能性は低い)。タイムアウトを
+  20秒→40秒に伸ばした上でなお時々失敗するため、真の意味での確定的な修正
+  ではないが、実装コード自体に手を入れる根拠 (実機/低負荷環境での再現)
+  はこのセッションでは得られなかった。
+
 ## 未実施・今後の課題
 
 - スレッド境界を跨ぐ「宛先だけのメール」(本文どころか宛先以外の情報が
