@@ -3,22 +3,20 @@
 [![ci-app](https://github.com/m-tkg/otegami/actions/workflows/ci-app.yml/badge.svg)](https://github.com/m-tkg/otegami/actions/workflows/ci-app.yml)
 [![ci-server](https://github.com/m-tkg/otegami/actions/workflows/ci-server.yml/badge.svg)](https://github.com/m-tkg/otegami/actions/workflows/ci-server.yml)
 
-<!--
-  otegami is a private repository, so these badges won't render for anyone
-  without repo access (GitHub's badge endpoint 404s for private repos to
-  non-collaborators) — kept anyway since they work fine for collaborators
-  viewing the README on GitHub, and cost nothing if the repo ever goes
-  public. See docs/ci.md for what these workflows actually check.
--->
-
 An open-source, offline-first mail client for iOS and macOS. Connects to
 your existing Gmail, iCloud, or generic IMAP/SMTP account with a single
 sync engine, stores everything locally in SQLite (GRDB) with full-text
 search, and can optionally run its own self-hosted push notification relay.
 
+> **Status: work in progress / experimental.** See the [Status](#status)
+> section below before relying on this for real mail.
+
 <p align="center">
   <img src="docs/assets/screenshot-mac-inbox.png" width="49%" alt="Unified inbox with unread badges (macOS)">
   <img src="docs/assets/screenshot-mac-thread.png" width="49%" alt="Thread view with reply (macOS)">
+</p>
+<p align="center">
+  <img src="docs/assets/screenshot-ios-inbox.png" width="33%" alt="Unified inbox across two accounts (iOS)">
 </p>
 
 ## Features
@@ -62,11 +60,20 @@ search, and can optionally run its own self-hosted push notification relay.
 ## Status
 
 Feature-complete through milestone M10 (accounts, sync, threading, search,
-attachments, compose/reply, push relay, macOS polish, performance work).
-Not yet published to the App Store; see [PENDING.md](PENDING.md) for the
-handful of steps that require a builder's own credentials (Google OAuth
-Client ID, APNs key, etc.) and [docs/roadmap.md](docs/roadmap.md) for
-future work.
+attachments, compose/reply, push relay, macOS polish, performance work),
+with an automated test/verification suite (`make test`, the
+`scripts/verify-*.sh` checkpoints) that's green. That said, this is a
+solo, AI-assisted side project, not yet published to the App Store or
+used as anyone's daily driver for an extended period — treat it as
+experimental:
+
+- A handful of things are only verified against unit tests, mocks, or the
+  local dev mail stack so far, not a real account: real-account Gmail and
+  iCloud sign-in end to end, a real two-physical-device iCloud account
+  sync round trip, and real APNs push delivery to a physical device. See
+  [PENDING.md](PENDING.md) for exactly what's unverified, why, and the
+  steps to verify it with your own credentials/devices.
+- [docs/roadmap.md](docs/roadmap.md) covers planned future work.
 
 ## Platforms
 
@@ -175,6 +182,16 @@ See [docs/build-mailcore2.md](docs/build-mailcore2.md) for how the
 MailCore2 dependency is vendored, and [docs/performance.md](docs/performance.md)
 for the 100k-message performance pass (query indexes, pagination, measured
 numbers).
+
+## Contributing
+
+This is currently a solo side project without a formal contribution
+process, but issues and pull requests are welcome — bug reports,
+questions, and small fixes especially. For anything larger, opening an
+issue to discuss the approach first is appreciated. `make test` (and
+`make ios`/`make mac` where relevant) should stay green; see
+[Testing / verification](#testing--verification) above for how changes
+get checked in practice.
 
 ## License
 
