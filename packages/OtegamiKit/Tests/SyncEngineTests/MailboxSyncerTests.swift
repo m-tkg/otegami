@@ -274,4 +274,44 @@ struct MailboxSyncerTests {
         })
         #expect(mailbox.uidValidity == 2)
     }
+
+    // MARK: Drafts IMAP sync — SyncScope.inboxOnly also covers Drafts
+
+    @Test("the default .inboxOnly scope also differentially syncs the account's Drafts mailbox")
+    func inboxOnlyScopeAlsoSyncsDrafts() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let drafts = MailboxInfo(path: "Drafts", displayPath: "Drafts", role: .drafts, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox, drafts],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Drafts": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                ]
+            )
+        )
+
+        // A draft appears in Drafts server-side (another client saved one)
+        // between the initial sync above and this incremental pass — no
+        // explicit `scope:` argument, exercising `performIncrementalSync`'s
+        // default (`.inboxOnly`).
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox, drafts],
+            envelopesByPath: ["Drafts": [makeEnvelope(uid: 1, subject: "他クライアントの下書き")]],
+            statusByPath: [
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                "Drafts": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1),
+            ]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.contains { $0.subject == "他クライアントの下書き" })
+    }
 }

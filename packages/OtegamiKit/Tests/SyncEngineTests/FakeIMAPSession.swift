@@ -72,6 +72,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// mailbox appearing" — a test that doesn't care about the
         /// subsequent re-list can leave it unset.
         public var mailboxRevealedAfterCreate: MailboxInfo?
+        /// What `append(mailboxPath:messageData:flags:)` returns as the new
+        /// message's UID — `nil` (the default) models a server without
+        /// `UIDPLUS`; Drafts-sync tests set this to model one that has it,
+        /// so `OpQueueProcessor`'s `.saveDraft` replay can capture
+        /// `DraftMessageRecord.serverUid`.
+        public var appendReturnsUID: UInt32?
 
         public init(
             mailboxes: [MailboxInfo] = [],
@@ -87,7 +93,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             idleEvents: [IdleEvent] = [],
             failIdle: MailTransportError? = nil,
             failCreateMailbox: MailTransportError? = nil,
-            mailboxRevealedAfterCreate: MailboxInfo? = nil
+            mailboxRevealedAfterCreate: MailboxInfo? = nil,
+            appendReturnsUID: UInt32? = nil
         ) {
             self.mailboxes = mailboxes
             self.envelopesByPath = envelopesByPath
@@ -103,6 +110,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.failIdle = failIdle
             self.failCreateMailbox = failCreateMailbox
             self.mailboxRevealedAfterCreate = mailboxRevealedAfterCreate
+            self.appendReturnsUID = appendReturnsUID
         }
     }
 
@@ -305,7 +313,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
 
     public func append(mailboxPath: String, messageData: Data, flags: MessageFlags) async throws -> UInt32? {
         recorder?.recordAppend(path: mailboxPath, messageData: messageData, flags: flags)
-        return nil
+        return script.appendReturnsUID
     }
 
     public func move(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {
