@@ -60,6 +60,18 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// When set, the idle stream throws this after yielding
         /// `idleEvents` (or immediately, if `idleEvents` is empty).
         public var failIdle: MailTransportError?
+        /// When set, `createMailbox(path:)` throws this instead of
+        /// succeeding — scripts a server that rejects `CREATE` (e.g. no
+        /// permission), for `OpQueueProcessorTests`' Trash-auto-create
+        /// fallback-to-`mailboxNotFound` case.
+        public var failCreateMailbox: MailTransportError?
+        /// The `MailboxInfo` a successful `createMailbox(path:)` should make
+        /// visible on the *next* `listMailboxes()` call (mimicking a real
+        /// server: the new mailbox doesn't exist until `CREATE` succeeds,
+        /// but does from then on). `nil` means "script doesn't model this
+        /// mailbox appearing" — a test that doesn't care about the
+        /// subsequent re-list can leave it unset.
+        public var mailboxRevealedAfterCreate: MailboxInfo?
 
         public init(
             mailboxes: [MailboxInfo] = [],
@@ -73,7 +85,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             changedSinceEnvelopesByPath: [String: [FetchedEnvelope]] = [:],
             failChangedSince: MailTransportError? = nil,
             idleEvents: [IdleEvent] = [],
-            failIdle: MailTransportError? = nil
+            failIdle: MailTransportError? = nil,
+            failCreateMailbox: MailTransportError? = nil,
+            mailboxRevealedAfterCreate: MailboxInfo? = nil
         ) {
             self.mailboxes = mailboxes
             self.envelopesByPath = envelopesByPath
@@ -87,6 +101,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.failChangedSince = failChangedSince
             self.idleEvents = idleEvents
             self.failIdle = failIdle
+            self.failCreateMailbox = failCreateMailbox
+            self.mailboxRevealedAfterCreate = mailboxRevealedAfterCreate
         }
     }
 
@@ -105,6 +121,10 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// M5: `append(mailboxPath:messageData:flags:)` calls (`OpQueueProcessor
         /// .send`'s best-effort Sent-mailbox copy), in call order.
         private var _appendCalls: [(path: String, messageData: Data, flags: MessageFlags)] = []
+        /// `createMailbox(path:)` calls, in call order — lets a test assert
+        /// the Trash auto-create fallback actually asked the server to
+        /// create the mailbox it then retried the move against.
+        private var _createMailboxCalls: [String] = []
 
         public init() {}
 
@@ -132,6 +152,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             lock.unlock()
         }
 
+        func recordCreateMailbox(path: String) {
+            lock.lock()
+            _createMailboxCalls.append(path)
+            lock.unlock()
+        }
+
         public var storeCalls: [(path: String, change: FlagChange)] {
             lock.lock()
             defer { lock.unlock() }
@@ -155,6 +181,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             defer { lock.unlock() }
             return _appendCalls
         }
+
+        public var createMailboxCalls: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _createMailboxCalls
+        }
     }
 
     public let config: IMAPConfig
@@ -166,6 +198,11 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     /// range, in call order — lets a test assert exactly which UID window
     /// `AccountSyncer` asked for, not just what came back.
     public private(set) var fetchedRanges: [(path: String, lowerBound: UInt32, upperBound: UInt32?)] = []
+    /// Set once `createMailbox(path:)` succeeds and `script
+    /// .mailboxRevealedAfterCreate` is non-nil — merged into
+    /// `listMailboxes()`'s result from then on, modeling a real server
+    /// where the newly created mailbox now exists.
+    private var revealedMailbox: MailboxInfo?
 
     /// Satisfies `IMAPSessionProtocol`'s required initializer with an empty
     /// script. Tests should use ``init(config:script:recorder:)`` instead
@@ -198,12 +235,25 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func listMailboxes() async throws -> [MailboxInfo] {
-        script.mailboxes
+        if let revealedMailbox {
+            return script.mailboxes + [revealedMailbox]
+        }
+        return script.mailboxes
     }
 
     public func select(_ mailboxPath: String) async throws -> MailboxStatus {
         selectedPaths.append(mailboxPath)
         return try await status(mailboxPath)
+    }
+
+    public func createMailbox(path: String) async throws {
+        recorder?.recordCreateMailbox(path: path)
+        if let failCreateMailbox = script.failCreateMailbox {
+            throw failCreateMailbox
+        }
+        if let mailboxRevealedAfterCreate = script.mailboxRevealedAfterCreate {
+            revealedMailbox = mailboxRevealedAfterCreate
+        }
     }
 
     public func status(_ mailboxPath: String) async throws -> MailboxStatus {

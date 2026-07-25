@@ -121,6 +121,17 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         try await status(mailboxPath)
     }
 
+    /// `CREATE` then a best-effort `SUBSCRIBE` — a server that rejects the
+    /// `SUBSCRIBE` (already auto-subscribed, or simply doesn't require one)
+    /// must not fail the whole operation, since the `CREATE` — the part
+    /// that actually matters for `OpQueueProcessor`'s delete-op replay to
+    /// find a destination mailbox on the next `listMailboxes()` — already
+    /// succeeded.
+    public func createMailbox(path: String) async throws {
+        try await runVoid(session.createFolderOperation(folder: path))
+        try? await runVoid(session.subscribeFolderOperation(folder: path))
+    }
+
     public func status(_ mailboxPath: String) async throws -> MailboxStatus {
         try await withCheckedThrowingContinuation { continuation in
             session.folderInfoOperation(folder: mailboxPath).start { error, info in

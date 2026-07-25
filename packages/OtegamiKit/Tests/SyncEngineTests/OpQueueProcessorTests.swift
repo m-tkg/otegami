@@ -217,6 +217,91 @@ struct OpQueueProcessorTests {
         #expect(call.destination == trash?.path)
     }
 
+    @Test("replay self-heals a missing Trash mailbox: CREATE + SUBSCRIBE, then completes the delete against it")
+    func replayCreatesTrashWhenNoneExistsAndCompletesTheDelete() async throws {
+        // docs/roadmap.md: "Trash メールボックスが存在しないサーバでの Trash
+        // 自動作成" — a server that never advertised SPECIAL-USE and has no
+        // mailbox literally named Trash used to leave every delete op
+        // permanently `mailboxNotFound`; `OpQueueProcessor` now
+        // self-heals by creating one before giving up.
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, trash, _) = try await makeAccountWithMailboxes(database: database, withTrash: false)
+        #expect(trash == nil)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueDelete(
+                accountId: account.id, sourceMailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [9], db: db
+            )
+        }
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(
+            mailboxes: [],
+            statusByPath: [:],
+            mailboxRevealedAfterCreate: MailboxInfo(
+                path: "Trash", displayPath: "Trash", role: .trash, attributes: []
+            )
+        )
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(recorder.createMailboxCalls == ["Trash"])
+
+        let call = try #require(recorder.moveCalls.first)
+        #expect(call.path == "INBOX")
+        #expect(call.uids == [9])
+        #expect(call.destination == "Trash")
+
+        // The newly created mailbox is now durably known locally too — a
+        // *later* delete (or `FailedOperationsView`'s retry) doesn't need
+        // to repeat the CREATE.
+        let mailboxes = try await database.dbWriter.read { db in
+            try MailboxRecord.filter(Column("accountId") == account.id).fetchAll(db)
+        }
+        #expect(mailboxes.contains { $0.path == "Trash" && $0.role == .trash })
+    }
+
+    @Test("replay leaves a delete op pending (not discarded) when Trash auto-create itself fails")
+    func replayLeavesDeletePendingWhenTrashCreateFails() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, trash, _) = try await makeAccountWithMailboxes(database: database, withTrash: false)
+        #expect(trash == nil)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueDelete(
+                accountId: account.id, sourceMailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [9], db: db
+            )
+        }
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(
+            mailboxes: [],
+            statusByPath: [:],
+            failCreateMailbox: .serverError(underlyingDescription: "NO permission denied")
+        )
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 0)
+        #expect(result.discardedStale == 0)
+        #expect(result.retrying == 1)
+        #expect(recorder.createMailboxCalls == ["Trash"])
+        #expect(recorder.moveCalls.isEmpty)
+
+        // Still queued (not silently dropped) — the existing
+        // `FailedOperationsView` path (or a future replay, once whatever
+        // blocked CREATE is fixed) can still complete it.
+        let remaining = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
+        #expect(remaining.count == 1)
+    }
+
     // MARK: attempts ceiling
 
     @Test("an op that keeps failing stops being retried once it reaches maxAttempts")
@@ -600,6 +685,7 @@ private actor FailingStoreSession: IMAPSessionProtocol {
     func listMailboxes() async throws -> [MailboxInfo] { [] }
     func select(_ mailboxPath: String) async throws -> MailboxStatus { MailboxStatus(uidValidity: 0, uidNext: 0, highestModSeq: 0, messageCount: 0) }
     func status(_ mailboxPath: String) async throws -> MailboxStatus { MailboxStatus(uidValidity: 0, uidNext: 0, highestModSeq: 0, messageCount: 0) }
+    func createMailbox(path: String) async throws {}
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope] { [] }
     func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope] { [] }
     func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent { MessageBodyContent() }

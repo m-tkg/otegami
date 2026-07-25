@@ -42,6 +42,16 @@ public protocol IMAPSessionProtocol: Sendable {
     /// Required before `fetchEnvelopes`/`store`/`expunge` on that mailbox.
     func select(_ mailboxPath: String) async throws -> MailboxStatus
 
+    /// Creates a new mailbox (`CREATE`) and subscribes to it (`SUBSCRIBE`,
+    /// best-effort — some servers auto-subscribe on `CREATE` and treat a
+    /// redundant `SUBSCRIBE` as a no-op, others require it before the new
+    /// mailbox shows up in a subscribed-only listing). Used by
+    /// `OpQueueProcessor`'s delete-op replay to self-heal a server that
+    /// never advertised a `Trash`-role mailbox (no `SPECIAL-USE`, and no
+    /// mailbox literally named `Trash`) rather than leaving every delete
+    /// permanently stuck on `mailboxNotFound`.
+    func createMailbox(path: String) async throws
+
     /// `STATUS`es the given mailbox without changing which mailbox is
     /// currently selected. Used to cheaply poll for new mail on mailboxes
     /// other than the one currently open.

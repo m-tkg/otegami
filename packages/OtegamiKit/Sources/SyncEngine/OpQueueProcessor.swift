@@ -165,12 +165,15 @@ public actor OpQueueProcessor {
             guard let source = try await mailbox(id: payload.sourceMailboxId), source.uidValidity == payload.uidValidity else {
                 return .staleDiscarded
             }
-            guard let trash = try await trashMailbox(accountId: account.id) else {
-                // No Trash-role mailbox known for this account yet (e.g.
-                // `listMailboxes` hasn't run since the account was added).
-                // Leave the op pending — a future replay, after a sync has
-                // discovered Trash, can still complete it — rather than
-                // silently dropping a user-intended delete.
+            guard let trash = try await resolveOrCreateTrashMailbox(accountId: account.id, session: session) else {
+                // No Trash-role mailbox known for this account, and either
+                // there was nothing to self-heal towards (see
+                // `resolveOrCreateTrashMailbox`'s doc comment) or the
+                // self-heal attempt itself failed. Leave the op pending — a
+                // future replay (after a sync discovers Trash, or after
+                // whatever blocked `CREATE` is fixed server-side) can still
+                // complete it — rather than silently dropping a
+                // user-intended delete.
                 throw MailTransportError.mailboxNotFound(path: "(no Trash-role mailbox known)")
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: trash.path)
@@ -273,6 +276,83 @@ public actor OpQueueProcessor {
                 .filter(Column("accountId") == accountId)
                 .filter(Column("role") == MailboxRoleRecord.trash.rawValue)
                 .fetchOne(db)
+        }
+    }
+
+    /// The mailbox name `resolveOrCreateTrashMailbox` asks the server to
+    /// `CREATE` when no Trash-role mailbox is known (`docs/roadmap.md`:
+    /// "Trash メールボックスが存在しないサーバでの Trash 自動作成"). Plain
+    /// `"Trash"`, no parent — the same flat name a server without
+    /// `SPECIAL-USE`/an existing `Trash` mailbox would already be missing;
+    /// there's no reliable way to infer a provider-specific hierarchy
+    /// (e.g. Gmail's `[Gmail]/Trash`) from IMAP alone for an account this
+    /// code path has, by construction, never seen a Trash-role mailbox
+    /// from.
+    static let trashMailboxNameToCreate = "Trash"
+
+    /// Resolves this account's Trash-role mailbox, self-healing by
+    /// `CREATE`+`SUBSCRIBE`-ing one named ``trashMailboxNameToCreate`` when
+    /// none is known yet. Returns `nil` when there's still no usable Trash
+    /// mailbox after that attempt (the `CREATE` itself failed — permission
+    /// denied, a naming conflict, offline, ...) — the caller's existing
+    /// `mailboxNotFound` retry path is unchanged in that case, so this is
+    /// purely additive: an account whose server already advertises Trash
+    /// never reaches the `CREATE` attempt at all (`trashMailbox` above
+    /// already found it).
+    private func resolveOrCreateTrashMailbox(accountId: String, session: any IMAPSessionProtocol) async throws -> MailboxRecord? {
+        if let existing = try await trashMailbox(accountId: accountId) {
+            return existing
+        }
+
+        do {
+            try await session.createMailbox(path: Self.trashMailboxNameToCreate)
+        } catch {
+            return nil
+        }
+
+        // Re-list rather than assuming the just-created path/role: some
+        // servers report a different `SPECIAL-USE` attribute or display
+        // name for a freshly created mailbox than the literal string this
+        // code asked to `CREATE`, and `MailboxInfo.role` (not the raw path)
+        // is the source of truth `trashMailbox(accountId:)`'s query above
+        // also relies on.
+        let mailboxInfos = try await session.listMailboxes()
+        guard let created = mailboxInfos.first(where: { info in
+            info.role == .trash || info.path.caseInsensitiveCompare(Self.trashMailboxNameToCreate) == .orderedSame
+        }) else {
+            return nil
+        }
+
+        return try await upsertCreatedMailbox(accountId: accountId, info: created)
+    }
+
+    /// Inserts (or, on a name collision with something already upserted by
+    /// a concurrent sync pass, updates) the mailbox `resolveOrCreateTrashMailbox`
+    /// just created — the on-conflict column list mirrors `AccountSyncer
+    /// .upsertMailboxes`'s (sync-state columns like `uidValidity` must
+    /// survive if a race means a row already exists here), duplicated
+    /// rather than shared since it's a two-line list and pulling in
+    /// `AccountSyncer` from `OpQueueProcessor` for it isn't worth the
+    /// coupling.
+    private func upsertCreatedMailbox(accountId: String, info: MailboxInfo) async throws -> MailboxRecord {
+        try await database.dbWriter.write { db in
+            var record = MailboxRecord(
+                accountId: accountId,
+                path: info.path,
+                displayPath: info.displayPath,
+                delimiter: info.delimiter,
+                role: MailboxRoleRecord(info.role),
+                attributesRaw: info.attributes.rawValue
+            )
+            return try record.upsertAndFetch(db, onConflict: ["accountId", "path"]) { _ in
+                [
+                    Column("uidValidity").noOverwrite,
+                    Column("uidNext").noOverwrite,
+                    Column("highestModSeq").noOverwrite,
+                    Column("messageCount").noOverwrite,
+                    Column("lastSyncedAt").noOverwrite,
+                ]
+            }
         }
     }
 
