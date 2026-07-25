@@ -94,8 +94,9 @@ Extension は実装済み・大部分を自動検証済み (詳細は `docs/rela
      `server/otegami-relay/secrets/` ごと除外済み)。
   5. 実機に `make ios-device` でビルド・インストールし、DEVELOPMENT_TEAM
      が実際に登録済みの Apple Developer アカウントであることを確認する
-     (現状 `G72M73C546`。別アカウントを使う場合は
-     `Local.xcconfig` で上書き)。
+     (`Config/Signing.xcconfig` に既定値は無く、`Local.xcconfig` で
+     各自設定する方式 — 現状このマシンでは `Local.xcconfig` に設定済み。
+     別アカウントを使う場合はそちらを書き換える)。
   6. 実機上でアプリの「設定」→「プッシュ通知」からリレー URL (https 必須。
      手前に reverse proxy を立てて TLS 終端すること —
      `docs/relay-deployment.md` の「6. HTTPS の終端」参照) を入力し

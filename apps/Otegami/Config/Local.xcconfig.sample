@@ -3,7 +3,24 @@
 //
 //   cp Config/Local.xcconfig.sample Config/Local.xcconfig
 //
+// Required for `make ios-device` (real-device iOS builds) and for a
+// properly-signed `make mac`/`make mac-app` (with the App Group/Keychain
+// Sharing/iCloud entitlements actually working, not just building). Find
+// your Team ID at https://developer.apple.com/account/#/membership.
+// `make ios` (iOS Simulator) and `make mac` build fine without this set —
+// Simulator doesn't enforce provisioning, and the Makefile falls back to an
+// unsigned macOS build when Local.xcconfig doesn't exist — so you only need
+// this once you're ready to run on a real device or want a fully signed
+// local Mac build.
+//
 // DEVELOPMENT_TEAM = YOUR_TEAM_ID
+//
+// Only needed if you also want to change the bundle id (e.g. because
+// com.m-tkg.otegami is already registered as an App ID under a different
+// Apple Developer team than yours — Apple doesn't allow two teams to
+// register the same explicit App ID, which App Group/Keychain Sharing
+// require). If you set this, also update it in Google Cloud Console's
+// OAuth client (below) to match.
 // OTEGAMI_BUNDLE_ID = com.example.otegami
 //
 // Google OAuth Client ID (M6, Gmail account support). See

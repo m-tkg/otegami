@@ -23,6 +23,25 @@ SERVER_DIR := server/otegami-relay
 MAILSTACK_DIR := dev/mailstack
 DIST_DIR := dist
 
+# Config/Signing.xcconfig ships with no DEVELOPMENT_TEAM (public OSS default —
+# see its own doc comment); a developer sets one in the git-ignored
+# Config/Local.xcconfig (Config/Local.xcconfig.sample). Without it, Automatic
+# signing can't produce a provisioning profile for the macOS target's iCloud
+# KVS entitlement (Config/Otegami-macOS.entitlements) and `xcodebuild` hard
+# -fails with "requires a development team" even for a local, non-distributed
+# build — iOS Simulator builds don't hit this (Simulator doesn't enforce
+# provisioning), but macOS ones do. So `mac`/`mac-app` fall back to an
+# unsigned build (same flags ci-app.yml uses, for the same reason) whenever
+# there's no Local.xcconfig, so a fresh clone always builds; once a developer
+# creates Local.xcconfig with their own team, these targets go back to a
+# normal signed build using it.
+LOCAL_XCCONFIG := $(APP_DIR)/Config/Local.xcconfig
+ifeq (,$(wildcard $(LOCAL_XCCONFIG)))
+MAC_SIGNING_FLAGS := CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+else
+MAC_SIGNING_FLAGS :=
+endif
+
 .PHONY: all mac mac-app ios ios-device app-project test server server-test relay-docker \
 	mailstack-up mailstack-down mailstack-seed clean
 
@@ -38,6 +57,7 @@ mac: app-project
 		-project $(APP_PROJECT) \
 		-scheme $(APP_SCHEME) \
 		-destination 'platform=macOS' \
+		$(MAC_SIGNING_FLAGS) \
 		build
 
 # M10 (plan: "make mac-app (App bundle を dist/ に生成)"): a Release build,
@@ -59,6 +79,7 @@ mac-app: app-project
 		-configuration Release \
 		-destination 'platform=macOS' \
 		-derivedDataPath $(DIST_DIR)/.mac-app-build \
+		$(MAC_SIGNING_FLAGS) \
 		build
 	mkdir -p $(DIST_DIR)
 	cp -R $(DIST_DIR)/.mac-app-build/Build/Products/Release/Otegami.app $(DIST_DIR)/Otegami.app

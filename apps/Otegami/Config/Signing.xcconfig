@@ -4,9 +4,22 @@
 
 #include "Shared.xcconfig"
 
-DEVELOPMENT_TEAM = G72M73C546
+// 空が既定値 (OSS: 作者の Team ID をコミットしない — 各自 Local.xcconfig で
+// 設定する)。`make ios`（Simulator）は空のままでもビルドできる（Simulator は
+// provisioning を検証しない）。`make mac`/`make mac-app` は Team ID が無い間
+// Makefile 側が自動的に署名なしビルドにフォールバックする（macOS ターゲットの
+// iCloud KVS entitlement は Automatic 署名に有効な Team を要求するため）。
+// 実機ビルド (`make ios-device`) や、macOS ビルドを実際に entitlement 付きで
+// 署名したい場合は、Local.xcconfig に自分の Team ID を設定すること。
+DEVELOPMENT_TEAM =
 // Bundle ID の実体はここに置く。上書きするときも PRODUCT_BUNDLE_IDENTIFIER
 // ではなくこちらを設定する（将来 Extension 等の ID もここから導出する）。
+// 既定値は公開してよい情報（Bundle ID 自体はそれだけで何かを操作できる秘密
+// ではない）だが、Apple の App ID は同一の Bundle ID を複数の Team が別々に
+// 登録することはできないため、実機ビルドで App Group/Keychain Sharing 付きの
+// App ID を新規登録する場合は、DEVELOPMENT_TEAM とあわせて自分の Bundle ID
+// も Local.xcconfig で設定すること（既に他の Team が登録済みの Bundle ID は
+// 使えない）。
 OTEGAMI_BUNDLE_ID = com.m-tkg.otegami
 PRODUCT_BUNDLE_IDENTIFIER = $(OTEGAMI_BUNDLE_ID)
 

@@ -82,8 +82,9 @@ multiplatform Xcode target). Swift 6, strict concurrency throughout.
 
 ## Building
 
-This repo uses [XcodeGen](https://github.com/yonaskolb/XcodeGen) to
-generate the Xcode project — install it first:
+Requires Xcode with the iOS 26 / macOS 26 SDKs (Xcode 26 or later), and
+[XcodeGen](https://github.com/yonaskolb/XcodeGen) to generate the Xcode
+project — install the latter first:
 
 ```sh
 brew install xcodegen
@@ -103,11 +104,18 @@ development.
 
 ### Signing
 
-`apps/Otegami/Config/Signing.xcconfig` has a default `DEVELOPMENT_TEAM`.
-To build with your own team/bundle ID (required for `make ios-device`,
-push notifications, or App Group/Keychain sharing with the Notification
-Service Extension), copy `Config/Local.xcconfig.sample` to the untracked
-`Config/Local.xcconfig` and override the values there.
+`apps/Otegami/Config/Signing.xcconfig` ships with no `DEVELOPMENT_TEAM` (an
+OSS repo can't commit the author's). `make ios` (Simulator) and `make mac`
+build fine as-is — Simulator doesn't enforce provisioning, and `make mac`
+falls back to an unsigned build when there's no `Local.xcconfig`, same as
+CI. For `make ios-device` (a real device), a fully signed `make mac` (App
+Group/Keychain sharing with the Notification Service Extension actually
+working), or push notifications, copy `Config/Local.xcconfig.sample` to the
+untracked `Config/Local.xcconfig` and set your own `DEVELOPMENT_TEAM`
+there. You only need to also override `OTEGAMI_BUNDLE_ID` if the default
+`com.m-tkg.otegami` is already registered as an App ID under someone
+else's team (Apple doesn't allow two teams to register the same explicit
+App ID) — see the comments in `Config/Local.xcconfig.sample`.
 
 ### Gmail OAuth
 
@@ -118,8 +126,10 @@ issue your own (no Google review needed for personal/dev use).
 
 ## Development mail stack
 
-A local Dovecot (IMAP) + Mailpit (SMTP + web UI) stack is included, so you
-don't need a real mail account to work on sync/send code:
+A local Dovecot (IMAP) + Mailpit (SMTP + web UI) stack is included (via
+Docker Compose — install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+or another Docker Compose-compatible runtime first), so you don't need a
+real mail account to work on sync/send code:
 
 ```sh
 make mailstack-up     # start Dovecot + Mailpit
