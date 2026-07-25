@@ -26,6 +26,20 @@ jobs:
       # and a blank identity, belt-and-braces) skips codesigning entirely
       # instead of xcodebuild failing with "No profiles for ... were
       # found" under CODE_SIGN_STYLE: Automatic.
+      #
+      # OTHER_SWIFT_FLAGS below surfaces slow-to-type-check SwiftUI
+      # expressions as build warnings (300ms is deliberately low — this
+      # repo's local dev machines are fast enough that nothing trips it
+      # even at that threshold, but this CI runner is slower, so it's the
+      # earliest warning of a view getting dangerously close to the "the
+      # compiler is unable to type-check this expression in reasonable
+      # time" hard failure that took ci-app down for 5 consecutive runs
+      # before `SidebarView`'s per-mailbox row was split into its own
+      # `View`, docs/ci.md's troubleshooting notes). Deliberately *not*
+      # `-warnings-as-errors`: that would also turn every other pre-
+      # existing Swift warning in the codebase into a build failure, and
+      # this threshold hasn't been proven safe across CI runner variance
+      # yet — see docs/ci.md for the plan to tighten this once it has.
       - name: Build macOS app (unsigned)
         run: |
           xcodebuild \
@@ -35,6 +49,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            OTHER_SWIFT_FLAGS="-Xfrontend -warn-long-expression-type-checking=300 -Xfrontend -warn-long-function-bodies=300" \
             build
 
       # iOS build-only check (generic Simulator destination — no need to
@@ -51,6 +66,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            OTHER_SWIFT_FLAGS="-Xfrontend -warn-long-expression-type-checking=300 -Xfrontend -warn-long-function-bodies=300" \
             build
 
       - name: Test OtegamiKit
