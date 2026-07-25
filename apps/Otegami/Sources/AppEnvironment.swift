@@ -61,6 +61,17 @@ final class AppEnvironment {
     @ObservationIgnored private var accountsObservationTask: Task<Void, Never>?
 
     init() {
+        // Design system: registers the bundled Archivo variable font with
+        // CoreText before any view can render — see `OtegamiFont
+        // .registerCustomFontsIfNeeded()`'s doc comment. Was previously
+        // never called at all (`docs/design-system.md`'s "次フェーズへの
+        // 申し送り"), so every `Font.custom("ArchivoRoman-...", ...)` token
+        // silently fell back to the system font; harmless but not what the
+        // design system intends. `AppEnvironment.init()` runs exactly once,
+        // synchronously, before `RootView` first renders, and is already
+        // `@MainActor`, matching this call's own `@MainActor` requirement.
+        OtegamiFont.registerCustomFontsIfNeeded()
+
         let database: AppDatabase
         do {
             database = try AppDatabase.makeShared(appGroupIdentifier: OtegamiAppGroup.identifier)

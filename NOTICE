@@ -115,3 +115,20 @@ Other permissive licenses
     MIT-style license).
     https://github.com/readdle/icu4darwin
     https://github.com/readdle/swift-unicode
+
+===============================================================================
+Bundled assets
+===============================================================================
+
+Unlike the dependencies above (fetched by SwiftPM at build time), the
+following is vendored directly into this repository.
+
+  * Archivo (variable font) — Copyright 2020 The Archivo Project Authors.
+    Licensed under the SIL Open Font License, Version 1.1. Bundled at
+    apps/Otegami/Resources/Fonts/Archivo/Archivo-Variable.ttf, sourced from
+    the google/fonts repository (ofl/archivo/); full license text at
+    apps/Otegami/Resources/Fonts/Archivo/OFL.txt. Used as this app's
+    DesignSystem body/headline typeface (`OtegamiFont.swift`); Japanese and
+    any other script Archivo doesn't cover falls back to the system font
+    automatically via normal CoreText font-cascade behavior.
+    https://github.com/google/fonts/tree/main/ofl/archivo

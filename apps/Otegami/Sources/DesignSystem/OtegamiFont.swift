@@ -55,17 +55,17 @@ public enum OtegamiFont {
     /// reports "already registered" on repeat calls, which this treats as
     /// success, not an error).
     ///
-    /// Not called automatically anywhere yet — wiring this into the app's
-    /// actual startup path (`OtegamiApp.swift`/`AppEnvironment`) is next
-    /// phase's job alongside applying `DesignSystem` to real screens; see
-    /// `docs/design-system.md`. Until that wiring lands, `Font.custom`
-    /// calls above silently fall back to the system font rather than
-    /// crashing (standard SwiftUI behavior for an unresolved font name),
-    /// so nothing here is unsafe to ship as-is in the meantime. The debug
+    /// Called once from `AppEnvironment.init()` (the design-phase-2 UI
+    /// restructuring pass) — `docs/design-system.md`'s earlier "次フェーズへ
+    /// の申し送り" note is resolved. Until that wiring landed, `Font.custom`
+    /// calls above silently fell back to the system font rather than
+    /// crashing (standard SwiftUI behavior for an unresolved font name), so
+    /// nothing here was ever unsafe to ship in the meantime. The debug
     /// catalog (`Catalog/DesignSystemCatalogView.swift`) and the
-    /// screenshot renderer (`DesignSystemCatalog/`) both call this
-    /// themselves so they can verify the *actual* Archivo glyphs, not the
-    /// fallback.
+    /// screenshot renderer (`DesignSystemCatalog/`) also call this
+    /// themselves (independently of `AppEnvironment`, since neither runs
+    /// the real app target) so they can verify the *actual* Archivo
+    /// glyphs, not the fallback.
     @MainActor
     public static func registerCustomFontsIfNeeded() {
         guard !hasRegistered else { return }
