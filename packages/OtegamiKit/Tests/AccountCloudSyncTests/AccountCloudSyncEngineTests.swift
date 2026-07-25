@@ -222,6 +222,72 @@ struct AccountCloudSyncEngineTests {
         #expect(store.currentPayload()?.tombstones.isEmpty == true)
     }
 
+    // MARK: - Actor-reentrancy race (docs/qa-findings.md: intermittent
+    // "just-added account briefly reverts" during back-to-back account
+    // adds)
+
+    /// Reproduces, deterministically, the lost-update race
+    /// `AccountCloudSyncEngine`'s payload lock (see its doc comment) fixes:
+    /// a `pushLocalChange` that lands on the actor *while* a `reconcile()`
+    /// call is suspended mid-flight (after `reconcile()` already loaded the
+    /// cloud payload, but before it's done recomputing/saving it) must not
+    /// have its write silently clobbered when `reconcile()` resumes and
+    /// saves its own, now-stale, view of the payload.
+    ///
+    /// Without the fix, this fails: `reconcile()`'s final `savePayload`
+    /// overwrites `pushLocalChange`'s write with a payload that never saw
+    /// "concurrent-push", because `reconcile()` loaded the payload *before*
+    /// the concurrent push happened and never re-reads it before saving.
+    @Test
+    func concurrentPushDuringReconcileDoesNotLoseTheUpdate() async {
+        let store = FakeUbiquitousStore()
+        let local = FakeLocalAccountDirectory()
+        // A local-only account with no cloud counterpart guarantees
+        // reconcile()'s phase 3 marks the payload changed and actually
+        // calls savePayload at the end (see reconcileDoesNothingWhenBothCopiesAgree
+        // above for the case where it doesn't) — that final save is what
+        // needs to observe the concurrent push rather than clobber it.
+        local.seedLocalAccount(.fixture(accountId: "existing", updatedAt: epoch))
+
+        let reachedPauseGate = AsyncGate()
+        let releaseGate = AsyncGate()
+        local.onAllAccountSnapshots = {
+            await reachedPauseGate.open()
+            await releaseGate.wait()
+        }
+
+        let engine = makeEngine(store: store, local: local)
+
+        let reconcileTask = Task { await engine.reconcile() }
+        // Wait until reconcile() has loaded the payload and is genuinely
+        // suspended inside allAccountSnapshots() — not a fixed sleep, so
+        // this half of the sequencing is exact.
+        await reachedPauseGate.wait()
+
+        let pushTask = Task {
+            await engine.pushLocalChange(.fixture(accountId: "concurrent-push", updatedAt: epoch))
+        }
+        // No signal exists for "pushTask's call has reached the actor's
+        // queue" without instrumenting production code further, so this
+        // bridges that one gap with a bounded sleep — 200ms is orders of
+        // magnitude more than Swift's cooperative thread pool needs to
+        // dequeue a Task onto an idle actor, and long enough for the
+        // unfixed code's pushLocalChange (no internal suspension points at
+        // all) to run to completion before the gate opens, which is what
+        // makes this test actually exercise the race instead of vacuously
+        // passing.
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        await releaseGate.open()
+        _ = await reconcileTask.value
+        await pushTask.value
+
+        let payload = store.currentPayload()
+        let ids = Set(payload?.accounts.map(\.accountId) ?? [])
+        #expect(ids.contains("concurrent-push"), "pushLocalChange's write must survive a reconcile() that was mid-flight when it landed")
+        #expect(ids.contains("existing"), "reconcile()'s own migration of the local-only account must still take effect")
+    }
+
     // MARK: - Tombstone retention
 
     @Test

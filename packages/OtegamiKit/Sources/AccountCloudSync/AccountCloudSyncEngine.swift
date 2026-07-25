@@ -78,6 +78,67 @@ public actor AccountCloudSyncEngine {
     private let now: @Sendable () -> Date
     private let isEnabled: @Sendable () -> Bool
 
+    /// Guards the "load the `accounts.v1` payload, mutate it, save it back"
+    /// critical section shared by `reconcile()`/`pushLocalChange`/
+    /// `pushLocalDeletion` against Swift's **actor reentrancy**: an `actor`
+    /// only serializes its methods *between* suspension points, not across
+    /// one. `reconcile()` in particular awaits `local.allAccountSnapshots()`
+    /// (a real suspension point — it reads GRDB) *after* already calling
+    /// `loadPayload()`, so without this lock a `pushLocalChange`/
+    /// `pushLocalDeletion` call that arrives at this same actor while
+    /// `reconcile()` is suspended there is free to run to completion
+    /// (load-mutate-save its own payload) *before* `reconcile()` resumes —
+    /// `reconcile()` then finishes its own diffing against the `payload` it
+    /// already loaded (now stale) and overwrites the store with it,
+    /// silently discarding the concurrent push. Confirmed as the root cause
+    /// of the intermittent "just-added account briefly reverts to a stale
+    /// cloud copy" failures QA sweeping surfaced (`docs/qa-findings.md`) —
+    /// reproduced deterministically in
+    /// `AccountCloudSyncEngineTests.concurrentPushDuringReconcileDoesNotLoseTheUpdate`
+    /// by pausing a fake `local.allAccountSnapshots()` mid-`reconcile()` and
+    /// firing a `pushLocalChange` into the gap. This is a real hazard for
+    /// actual users too (not just this dev machine's stale iCloud KVS test
+    /// data) — e.g. `AppEnvironment.init()`'s launch-time `reconcile()`
+    /// racing a user adding an account within the same moment, or racing
+    /// the `didChangeExternallyNotification`-triggered `reconcile()` from
+    /// another device's concurrent push — so this is a production fix, not
+    /// a test-only workaround.
+    ///
+    /// A plain `NSLock`/`DispatchSemaphore` wouldn't work here (blocking a
+    /// thread across an `await` on an actor can deadlock the cooperative
+    /// thread pool); this is the standard actor-safe async mutex shape
+    /// instead — `acquirePayloadLock()`/`releasePayloadLock()` — built from
+    /// first principles rather than a library so `AccountCloudSync` keeps
+    /// its zero-dependency footprint.
+    private var isPayloadLocked = false
+    private var payloadLockWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func acquirePayloadLock() async {
+        if isPayloadLocked {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                payloadLockWaiters.append(continuation)
+            }
+            // Resumed by `releasePayloadLock()`, which transfers ownership
+            // directly to us (leaves `isPayloadLocked` `true`) — nothing
+            // more to do here.
+            return
+        }
+        isPayloadLocked = true
+    }
+
+    private func releasePayloadLock() {
+        guard isPayloadLocked else { return }
+        if payloadLockWaiters.isEmpty {
+            isPayloadLocked = false
+        } else {
+            // Hand the lock straight to the next waiter (FIFO) without ever
+            // observing `isPayloadLocked == false` in between, so a brand
+            // new `acquirePayloadLock()` call arriving right now can't cut
+            // the line ahead of whoever's been waiting.
+            payloadLockWaiters.removeFirst().resume()
+        }
+    }
+
     public init(
         store: any UbiquitousStoring,
         local: any LocalAccountDirectory,
@@ -101,6 +162,8 @@ public actor AccountCloudSyncEngine {
     @discardableResult
     public func reconcile() async -> ReconcileSummary {
         guard isEnabled() else { return .disabled }
+        await acquirePayloadLock()
+        defer { releasePayloadLock() }
 
         var summary = ReconcileSummary()
         var payload = loadPayload()
@@ -185,6 +248,8 @@ public actor AccountCloudSyncEngine {
     /// after a local insert/update. A no-op while sync is toggled off.
     public func pushLocalChange(_ snapshot: CloudAccountSnapshot) async {
         guard isEnabled() else { return }
+        await acquirePayloadLock()
+        defer { releasePayloadLock() }
         var payload = loadPayload()
         payload.tombstones.removeAll { $0.accountId == snapshot.accountId }
         payload.accounts.removeAll { $0.accountId == snapshot.accountId }
@@ -200,6 +265,8 @@ public actor AccountCloudSyncEngine {
     /// a redundant new one). A no-op while sync is toggled off.
     public func pushLocalDeletion(accountId: String) async {
         guard isEnabled() else { return }
+        await acquirePayloadLock()
+        defer { releasePayloadLock() }
         var payload = loadPayload()
         payload.accounts.removeAll { $0.accountId == accountId }
         payload.tombstones.removeAll { $0.accountId == accountId }

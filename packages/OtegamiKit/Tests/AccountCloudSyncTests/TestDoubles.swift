@@ -69,6 +69,18 @@ final class FakeLocalAccountDirectory: LocalAccountDirectory, @unchecked Sendabl
     private(set) var updatedAccounts: [CloudAccountSnapshot] = []
     private(set) var deletedAccountIds: [String] = []
 
+    /// Test-only hook, awaited at the very start of `allAccountSnapshots()`
+    /// before it reads `accounts` — lets a test suspend `reconcile()` at a
+    /// controlled point (this is `reconcile()`'s one real suspension point
+    /// that happens *after* it has already loaded the cloud payload) to
+    /// deterministically exercise `AccountCloudSyncEngine`'s actor-
+    /// reentrancy race against a concurrent `pushLocalChange`/
+    /// `pushLocalDeletion` call — see `AccountCloudSyncEngineTests
+    /// .concurrentPushDuringReconcileDoesNotLoseTheUpdate`. `nil` (the
+    /// default) makes this method suspend nowhere, exactly as before this
+    /// hook existed, so every other test in this file is unaffected.
+    var onAllAccountSnapshots: (@Sendable () async -> Void)?
+
     func seedLocalAccount(_ snapshot: CloudAccountSnapshot, hasCredential: Bool = true) {
         lock.withLock {
             accounts[snapshot.accountId] = snapshot
@@ -93,7 +105,10 @@ final class FakeLocalAccountDirectory: LocalAccountDirectory, @unchecked Sendabl
     }
 
     func allAccountSnapshots() async -> [CloudAccountSnapshot] {
-        lock.withLock { Array(accounts.values) }
+        if let onAllAccountSnapshots {
+            await onAllAccountSnapshots()
+        }
+        return lock.withLock { Array(accounts.values) }
     }
 
     func hasCredential(accountId: String, authType: AccountAuthType) async -> Bool {
@@ -119,6 +134,31 @@ final class FakeLocalAccountDirectory: LocalAccountDirectory, @unchecked Sendabl
             accounts.removeValue(forKey: accountId)
             deletedAccountIds.append(accountId)
         }
+    }
+}
+
+/// A single-fire async gate — `wait()` suspends until `open()` is called
+/// (from anywhere), or returns immediately if `open()` already happened.
+/// Used in pairs by `AccountCloudSyncEngineTests
+/// .concurrentPushDuringReconcileDoesNotLoseTheUpdate` to deterministically
+/// sequence "pause `reconcile()` mid-flight" / "the test now knows
+/// `reconcile()` is paused there" / "let `reconcile()` resume" without any
+/// timing-sensitive `Task.sleep`.
+actor AsyncGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waiters.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
     }
 }
 
