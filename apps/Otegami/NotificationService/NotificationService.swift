@@ -105,10 +105,10 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
             if let envelope = envelopes.first {
                 if let sender = envelope.from.first {
-                    bestAttemptContent?.title = sender.name?.isEmpty == false ? sender.name! : sender.address
+                    bestAttemptContent?.title = NotificationEnrichment.title(senderName: sender.name, senderAddress: sender.address)
                 }
-                if let subject = envelope.subject, !subject.isEmpty {
-                    bestAttemptContent?.body = subject
+                if let body = NotificationEnrichment.body(subject: envelope.subject) {
+                    bestAttemptContent?.body = body
                 }
             }
         } catch {
@@ -165,5 +165,27 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
     private static var keychainAccessGroup: String? {
         Bundle.main.object(forInfoDictionaryKey: "OtegamiKeychainAccessGroup") as? String
+    }
+}
+
+/// Mirrored copy of `PushRelayClient.NotificationEnrichment`
+/// (`packages/OtegamiKit/Sources/PushRelayClient/NotificationEnrichment
+/// .swift`) — see that type's doc comment for why this target has its own
+/// separately-compiled copy instead of an `import PushRelayClient` (same
+/// reasoning as `OtegamiAppGroup.swift`'s existing duplication). The
+/// algorithm is unit-tested there (`NotificationEnrichmentTests`); this
+/// copy is intentionally kept tiny and byte-for-byte identical so it needs
+/// no independent test coverage of its own.
+private enum NotificationEnrichment {
+    static func title(senderName: String?, senderAddress: String) -> String {
+        if let senderName, !senderName.isEmpty {
+            return senderName
+        }
+        return senderAddress
+    }
+
+    static func body(subject: String?) -> String? {
+        guard let subject, !subject.isEmpty else { return nil }
+        return subject
     }
 }
