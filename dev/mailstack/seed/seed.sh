@@ -65,4 +65,10 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/14-attachment-png.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/15-attachment-japanese-pdf.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/16-cid-inline-image.eml"
 
+# QA sweep boundary-data scenario: a message with no Subject header at all
+# (ThreadRow/MessageView's "(件名なし)" fallback) and one with a Subject but
+# an empty body, both real edge cases a mail server can legitimately deliver.
+seed_message "test1@otegami.test" "$FIXTURES_DIR/17-no-subject.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/18-empty-body.eml"
+
 echo "==> done"

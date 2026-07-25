@@ -408,3 +408,38 @@ if a test ever needs to assert an *exact* result count or the *absence* of
 extra rows — `dev/mailstack/data/` would need to be deleted first (a
 destructive operation outside normal permissions, so not something a verify
 script does automatically).
+
+## QA sweep: `.confirmationDialog`/`Alert` action buttons over-count too
+
+M4's pitfall #1 documented over-counting for a *container*-level identifier
+query; the same thing happens for a single button *inside* a SwiftUI
+`.confirmationDialog`/`Alert` — `app.buttons["composer.saveDraftButton"]`/
+`app.buttons["settings.confirmDeleteButton"]` (exact-identifier subscript
+lookups) both failed with "Multiple matching elements found", and
+`debugDescription` showed the identifier reported twice, once as a plain
+`Button` and once nested inside another element carrying the *same*
+identifier — SwiftUI's accessibility bridging for these presentation types
+apparently re-exposes the action as more than one node, same underlying
+cause as M4's over-count, just for an alert/dialog action rather than a
+list-row container. `.firstMatch` on the query resolves it immediately;
+seen for three different action buttons across two different presentation
+types (`.confirmationDialog`'s save/discard actions, a plain `Alert`'s
+destructive confirm action) in the same session, so treat any
+`.confirmationDialog`/`Alert` button lookup as needing `.firstMatch` by
+default rather than debugging each one individually as it comes up.
+
+## QA sweep: an emptied `TextField`'s `.value` echoes its placeholder, not `""`/nil
+
+Clearing a SwiftUI `TextField` (⌘A + delete, confirmed working via
+`app.debugDescription()`: the live tree showed the field with no `value:`
+at all and the dependent Send button already carrying the `Disabled`
+trait) still left `XCUIElement.value as? String` reading back as the
+field's *placeholder* text (`"To (カンマ区切り)"`), not `""` or `nil` —
+confirmed by asserting `(field.value as? String ?? "").isEmpty` and
+watching it fail even though every other signal (debug tree, dependent
+button state) agreed the field was genuinely empty. Don't infer "is this
+field empty" from `.value` on this simulator/toolchain; assert on a
+*dependent* UI signal instead (a disabled Send button, a hidden/shown
+empty-state view) — the same "trust a load-bearing side effect over a
+value accessor" approach M2's SecureField pitfalls already lean on
+elsewhere in this file.

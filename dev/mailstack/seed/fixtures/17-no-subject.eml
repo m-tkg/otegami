@@ -1,0 +1,10 @@
+From: Otegami Team <team@otegami.test>
+To: test1@otegami.test
+Message-ID: <seed-0017@otegami.test>
+Date: Fri, 23 Jan 2026 09:00:00 +0900
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+件名の無いメールです。
+一覧・詳細どちらでも "(件名なし)" のようなフォールバック表示になることを
+確認するための境界データです。
