@@ -1,0 +1,117 @@
+Otegami
+Copyright (c) 2026 Masaki Takagi
+
+This product is licensed under the MIT License — see LICENSE.
+
+Otegami depends on the third-party open source software listed below,
+pulled in via Swift Package Manager (either directly by
+packages/OtegamiKit/Package.swift and server/otegami-relay/Package.swift,
+or transitively). None of it is vendored into this repository; SwiftPM
+fetches and builds it from source at the pinned revisions recorded in the
+Package.resolved files. This file exists for attribution, and to satisfy
+the notice-reproduction requirement of the Apache License, Version 2.0
+(section 4(d)) for the dependencies below that use it.
+
+===============================================================================
+Apache License, Version 2.0
+===============================================================================
+
+Full license text: https://www.apache.org/licenses/LICENSE-2.0
+
+The following dependencies (used by server/otegami-relay, the optional
+self-hosted push relay) are licensed under the Apache License 2.0. Each
+project's own NOTICE file — linked below — additionally lists further
+third-party code it incorporates (SwiftNIO's NOTICE, for example, credits
+derivations of Netty, llhttp, and other projects); those upstream notices
+are not duplicated here.
+
+  * Hummingbird — Copyright 2024 The Hummingbird Project
+    https://github.com/hummingbird-project/hummingbird
+  * AsyncHTTPClient — Copyright 2017-2021 The AsyncHTTPClient Project
+    https://github.com/swift-server/async-http-client
+  * SwiftNIO — Copyright 2017, 2018 The SwiftNIO Project
+    https://github.com/apple/swift-nio
+  * SwiftNIO SSL — Copyright 2017, 2018 The SwiftNIO Project
+    https://github.com/apple/swift-nio-ssl
+  * SwiftNIO Extras — Copyright 2017, 2018 The SwiftNIO Project
+    https://github.com/apple/swift-nio-extras
+  * SwiftNIO HTTP/2 — Copyright 2017, 2018 The SwiftNIO Project
+    https://github.com/apple/swift-nio-http2
+  * SwiftNIO Transport Services — Copyright 2017, 2018 The SwiftNIO Project
+    https://github.com/apple/swift-nio-transport-services
+  * SwiftCrypto — Copyright 2019 The SwiftCrypto Project
+    https://github.com/apple/swift-crypto
+  * SwiftASN1 — Copyright 2022 The SwiftASN1 Project
+    https://github.com/apple/swift-asn1
+  * SwiftCertificates — Copyright 2022 The SwiftCertificates Project
+    https://github.com/apple/swift-certificates
+  * SwiftLog — Copyright 2018, 2019 The SwiftLog Project
+    https://github.com/apple/swift-log
+  * SwiftMetrics — Copyright 2018, 2019 The SwiftMetrics Project
+    https://github.com/apple/swift-metrics
+  * swift-algorithms — Copyright The Swift Algorithms Project
+    https://github.com/apple/swift-algorithms
+  * swift-async-algorithms — Copyright The Swift Async Algorithms Project
+    https://github.com/apple/swift-async-algorithms
+  * swift-atomics — Copyright The Swift Atomics Project
+    https://github.com/apple/swift-atomics
+  * swift-collections — Copyright The Swift Collections Project
+    https://github.com/apple/swift-collections
+  * swift-numerics — Copyright The Swift Numerics Project
+    https://github.com/apple/swift-numerics
+  * SwiftConfiguration — Copyright 2025 The SwiftConfiguration Project
+    https://github.com/apple/swift-configuration
+  * Swift Distributed Tracing — Copyright The Swift Distributed Tracing Project
+    https://github.com/apple/swift-distributed-tracing
+  * Swift HTTP Types — Copyright 2023 The Swift HTTP Types Project
+    https://github.com/apple/swift-http-types
+  * swift-http-structured-headers — Copyright The Swift HTTP Structured Headers Project
+    https://github.com/apple/swift-http-structured-headers
+  * Swift Service Context — Copyright 2024 The Swift Service Context Project
+    https://github.com/apple/swift-service-context
+  * Swift System — Copyright The Swift System Project
+    https://github.com/apple/swift-system
+  * ServiceLifecycle — Copyright 2019-2023 The ServiceLifecycle Project
+    https://github.com/swift-server/swift-service-lifecycle
+
+===============================================================================
+MIT License
+===============================================================================
+
+  * GRDB.swift — Copyright (C) 2015-2025 Gwendal Roué
+    https://github.com/groue/GRDB.swift
+  * SQLiteNIO — Copyright (c) 2020 Qutheory, LLC (the Vapor project)
+    https://github.com/vapor/sqlite-nio
+
+===============================================================================
+BSD 3-Clause License
+===============================================================================
+
+Built from source as part of the MailCore2 dependency
+(packages/OtegamiKit/Package.swift's MailTransportMailCore target); see
+docs/build-mailcore2.md.
+
+  * MailCore2 (readdle/mailcore2, a fork of MailCore/mailcore2) —
+    Copyright (C) 2001-2013 MailCore team
+    https://github.com/readdle/mailcore2
+  * libEtPan! (readdle/libetpan) —
+    Copyright (C) 2001-2005 DINH Viet Hoa
+    https://github.com/readdle/libetpan
+  * ctemplate (readdle/ctemplate, a fork of Google's ctemplate) —
+    Copyright (c) 2005, Google Inc.
+    https://github.com/readdle/ctemplate
+
+===============================================================================
+Other permissive licenses
+===============================================================================
+
+  * HTML Tidy (readdle/tidy-html5) — a BSD/MIT-style permissive license
+    (see the upstream LICENSE.md); Copyright (c) 1998-2016 World Wide Web
+    Consortium (MIT, ERCIM, Keio University), additional contributions
+    (c) 2001-2016 University of Toronto, Terry Teague, HTACG, and others.
+    https://github.com/readdle/tidy-html5
+  * ICU, via readdle/icu4darwin (wrapped as a Swift binary target by
+    readdle/swift-unicode) — Unicode/ICU License (a permissive,
+    MIT-style license).
+    https://github.com/readdle/icu4darwin
+    https://github.com/readdle/swift-unicode

@@ -15,6 +15,7 @@ struct AboutView: View {
     }
 
     private static let repositoryURL = URL(string: "https://github.com/m-tkg/otegami")!
+    private static let noticeURL = URL(string: "https://github.com/m-tkg/otegami/blob/main/NOTICE")!
 
     var body: some View {
         VStack(spacing: 16) {
@@ -45,6 +46,10 @@ struct AboutView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("about.license")
+
+                Link("サードパーティライセンス", destination: Self.noticeURL)
+                    .font(.caption)
+                    .accessibilityIdentifier("about.thirdPartyLicensesLink")
             }
         }
         .padding(32)

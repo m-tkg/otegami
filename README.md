@@ -179,3 +179,11 @@ numbers).
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+### Third-party licenses
+
+Otegami depends on several third-party open source packages via Swift
+Package Manager (GRDB.swift, a MailCore2 fork and its own C dependencies,
+Hummingbird, SwiftNIO, swift-crypto, and others) — see
+[NOTICE](NOTICE) for the full list, license types, and copyright
+attributions.
