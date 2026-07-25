@@ -119,41 +119,77 @@ struct RootView: View {
     @State private var lastOpenedThreadIdBySelectionKey: [String: Int64] = [:]
 
     var body: some View {
-        NavigationSplitView(preferredCompactColumn: $preferredColumn) {
-            SidebarView(
-                selection: $selection,
-                onSelected: { _ in preferredColumn = .content },
-                onCompose: { presentComposer(.new) },
-                onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) }
-            )
-        } content: {
-            if let selection {
-                MessageListView(
-                    selection: selection,
-                    selectedThreadId: $selectedThreadId,
-                    onThreadSelected: { threadId in selectThread(threadId, under: selection) }
-                )
-            } else {
-                ContentUnavailableView(
-                    "メールボックスを選択してください",
-                    systemImage: "tray",
-                    description: Text("左のサイドバーからアカウントを追加、またはメールボックスを選択してください。")
-                )
-                .navigationTitle("Inbox")
+        // Split into `navigationViewWithFocusedValues` (see its own doc
+        // comment) plus this remaining modifier chain, rather than one
+        // single expression running from `NavigationSplitView(...)` all the
+        // way through every modifier below — the combined form measured at
+        // 335ms to type-check on a fast local Mac under
+        // `-warn-long-expression-type-checking` (`docs/ci.md`'s
+        // troubleshooting notes), well above what's safe headroom for a
+        // much slower CI runner. Splitting the chain into pieces here
+        // (rather than only extracting the column closures) cuts the
+        // remainder further, since a long `View` modifier chain is itself
+        // one expression the type-checker must solve as a whole.
+        navigationViewWithFocusedValues
+            #if os(iOS)
+            .sheet(item: $composerPayload) { payload in
+                ComposerView(payload: payload)
             }
-        } detail: {
-            if let selectedThreadId {
-                ThreadDetailView(threadId: selectedThreadId, onReply: { messageId, replyAll in
-                    presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll))
-                })
-            } else {
-                ContentUnavailableView(
-                    "No Message Selected",
-                    systemImage: "envelope.open"
-                )
-                .accessibilityIdentifier("messageDetail.emptyState")
+            #endif
+            // Foreground IDLE (M3, plan: "アプリ active 中、INBOX を IDLE"):
+            // start every account's IDLE loop (plus one immediate opQueue
+            // replay + incremental sync, since becoming active is exactly
+            // when queued offline operations should get a chance to flush)
+            // on `.active`, and stop them all on `.background`/`.inactive`
+            // — there is no IMAP connection to keep alive while the app
+            // can't run code.
+            .onChange(of: scenePhase, initial: true) { _, newPhase in
+                Task { await handleScenePhaseChange(newPhase) }
             }
-        }
+            // A newly-added account (mid-session, via AccountSetupView)
+            // should also get an IDLE loop without waiting for the next
+            // background/foreground transition.
+            .onChange(of: environment.accounts) { _, newAccounts in
+                guard scenePhase == .active else { return }
+                Task { await startIdleLoops(for: newAccounts) }
+            }
+    }
+
+    /// `navigationView` plus (macOS only) the five `focusedSceneValue`
+    /// calls that publish `OtegamiCommands`' menu actions — kept as its own
+    /// expression, separate from `body`'s `.sheet`/`.onChange` tail, since
+    /// this chain of five ternary-typed `focusedSceneValue` calls turned
+    /// out to be the single most expensive piece of the original combined
+    /// expression to type-check (measured independently while narrowing
+    /// down `body`'s 335ms total, `docs/ci.md`'s troubleshooting notes).
+    #if os(macOS)
+    private var navigationViewWithFocusedValues: some View {
+        navigationView
+            // M10: publishes the actions `OtegamiCommands`' menu items
+            // invoke — `AppFocusedValues.swift`'s doc comment on why
+            // `FocusedSceneValue` rather than passing closures some other
+            // way. `replyAction`/`deleteAction` are only published while a
+            // thread is actually open, so ⌘R/⌘⌫ disable themselves
+            // automatically otherwise (no extra bookkeeping needed here
+            // beyond the `nil`-vs-non-`nil` ternary).
+            .focusedSceneValue(\.newMessageAction, environment.accounts.isEmpty ? nil : { presentComposer(.new) })
+            .focusedSceneValue(\.replyAction, selectedThreadId == nil ? nil : { replyToSelectedThread() })
+            .focusedSceneValue(\.deleteAction, selectedThreadId == nil ? nil : { deleteSelectedThread() })
+            .focusedSceneValue(\.nextMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: 1) })
+            .focusedSceneValue(\.previousMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: -1) })
+    }
+    #else
+    private var navigationViewWithFocusedValues: some View {
+        navigationView
+    }
+    #endif
+
+    /// `splitView` plus the two modifiers most tightly coupled to
+    /// `selection` itself — split out of `body` (see its doc comment) so
+    /// this and the rest of `body`'s modifier chain are separate
+    /// expressions for the type-checker.
+    private var navigationView: some View {
+        splitView
         // A newly-selected sidebar item invalidates whatever thread was
         // shown from the previous one — otherwise the detail pane would
         // keep rendering a thread that no longer belongs to the visible
@@ -199,41 +235,64 @@ struct RootView: View {
             }
         }
         .task(id: selection) { restoreLastOpenedThreadIfNeeded() }
-        #if os(macOS)
-        // M10: publishes the actions `OtegamiCommands`' menu items invoke —
-        // `AppFocusedValues.swift`'s doc comment on why `FocusedSceneValue`
-        // rather than passing closures some other way. `replyAction`/
-        // `deleteAction` are only published while a thread is actually
-        // open, so ⌘R/⌘⌫ disable themselves automatically otherwise (no
-        // extra bookkeeping needed here beyond the `nil`-vs-non-`nil`
-        // ternary).
-        .focusedSceneValue(\.newMessageAction, environment.accounts.isEmpty ? nil : { presentComposer(.new) })
-        .focusedSceneValue(\.replyAction, selectedThreadId == nil ? nil : { replyToSelectedThread() })
-        .focusedSceneValue(\.deleteAction, selectedThreadId == nil ? nil : { deleteSelectedThread() })
-        .focusedSceneValue(\.nextMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: 1) })
-        .focusedSceneValue(\.previousMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: -1) })
-        #endif
-        #if os(iOS)
-        .sheet(item: $composerPayload) { payload in
-            ComposerView(payload: payload)
+    }
+
+    /// The bare three-column `NavigationSplitView`, with no modifiers
+    /// attached — split out of `body` (see its doc comment) so this and
+    /// each column closure below are their own expressions for the
+    /// type-checker rather than one combined with `body`'s whole modifier
+    /// chain.
+    private var splitView: some View {
+        NavigationSplitView(preferredCompactColumn: $preferredColumn) {
+            sidebarColumn
+        } content: {
+            contentColumn
+        } detail: {
+            detailColumn
         }
-        #endif
-        // Foreground IDLE (M3, plan: "アプリ active 中、INBOX を IDLE"):
-        // start every account's IDLE loop (plus one immediate opQueue
-        // replay + incremental sync, since becoming active is exactly
-        // when queued offline operations should get a chance to flush)
-        // on `.active`, and stop them all on `.background`/`.inactive` —
-        // there is no IMAP connection to keep alive while the app can't
-        // run code.
-        .onChange(of: scenePhase, initial: true) { _, newPhase in
-            Task { await handleScenePhaseChange(newPhase) }
+    }
+
+    private var sidebarColumn: some View {
+        SidebarView(
+            selection: $selection,
+            onSelected: { _ in preferredColumn = .content },
+            onCompose: { presentComposer(.new) },
+            onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) }
+        )
+    }
+
+    private var contentColumn: some View {
+        Group {
+            if let selection {
+                MessageListView(
+                    selection: selection,
+                    selectedThreadId: $selectedThreadId,
+                    onThreadSelected: { threadId in selectThread(threadId, under: selection) }
+                )
+            } else {
+                ContentUnavailableView(
+                    "メールボックスを選択してください",
+                    systemImage: "tray",
+                    description: Text("左のサイドバーからアカウントを追加、またはメールボックスを選択してください。")
+                )
+                .navigationTitle("Inbox")
+            }
         }
-        // A newly-added account (mid-session, via AccountSetupView) should
-        // also get an IDLE loop without waiting for the next background/
-        // foreground transition.
-        .onChange(of: environment.accounts) { _, newAccounts in
-            guard scenePhase == .active else { return }
-            Task { await startIdleLoops(for: newAccounts) }
+    }
+
+    private var detailColumn: some View {
+        Group {
+            if let selectedThreadId {
+                ThreadDetailView(threadId: selectedThreadId, onReply: { messageId, replyAll in
+                    presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll))
+                })
+            } else {
+                ContentUnavailableView(
+                    "No Message Selected",
+                    systemImage: "envelope.open"
+                )
+                .accessibilityIdentifier("messageDetail.emptyState")
+            }
         }
     }
 
