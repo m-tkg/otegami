@@ -798,7 +798,32 @@ Keychain 読み取り → 実 IMAP ラウンドトリップ → 通知内容の�
    xcodebuild のログに `PUSH-VERIFY-NOTIFICATION-LABEL: ...` として出力
    する) で実際に配信された文字列を機械的にも確認する試み。
 
-### 現状のブロッカー (この開発機で確認済み、本セッションでは未解消)
+### 追記 (後続セッション): 通知許可バグを修正、旧ブロッカーは解消。新たな Simulator 制約を発見
+
+以下の「現状のブロッカー」節はこのセッション時点の記録として残すが、
+後続セッションで `PushTokenCenter.requestToken()` に
+`UNUserNotificationCenter.requestAuthorization(options:)` を追加する
+修正を実装し (`docs/qa-findings.md`「M9 追補2」節に詳細)、
+`OtegamiPushSimulatedSetupUITests` にも許可プロンプトを accept する
+ステップ (`grantNotificationPermissionViaPushSettings`) を追加した。
+`scripts/verify-ios-push-simulated.sh` を再実行した結果、**この
+「Source is not authorized」ブロッカー自体は解消を確認した**
+(3シナリオとも `simctl push` が受理された)。
+
+ただし、その先で**この開発機の iOS 27 ベータ Simulator ランタイム固有と
+見られる別の制約**に突き当たった: `NotificationService`
+(`UNNotificationServiceExtension`) 自体が `launchd_sim` から一切
+spawn されず、通知内容が (汎用フォールバックにすら) 書き換わらない。
+アプリ側の設定 (`NSExtensionPointIdentifier`/entitlements/`.appex` の
+埋め込み) は確認した範囲で正しく、Extension 起動要求そのものが OS 側
+から発行されていないことをログ (`log show`/`launchd_sim` ジョブログ)
+で確認済み。技術的な詳細・再現手順・確認したログの抜粋は
+`docs/qa-findings.md`「M9 追補2」節を参照。結果として、「差出人/件名の
+書き換え」までのシミュレータ上でのエンドツーエンド確認は、この開発機
+では依然として不可能なまま残っている — 実機での最終確認
+(PENDING.md M9 節) が引き続き唯一の手段。
+
+### 現状のブロッカー (この開発機で確認済み、本セッションでは未解消) [解消済み — 上の追記参照]
 
 この開発機・この iOS 26/27 ベータ toolchain では、`aps.alert` を含む
 ペイロード (`mutable-content` 配信には `alert` か `sound` が必須 — `alert`

@@ -111,6 +111,24 @@ Extension は実装済み・大部分を自動検証済み (詳細は `docs/rela
 ### 既知の未検証事項 (実機がないと検証できない/優先度を下げた項目)
 
 - 上記の実機 E2E そのもの。
+- **(解消) 通知の許可を一度も要求していなかった実バグ**: 後続セッションで
+  修正済み。`PushTokenCenter.requestToken()` がデバイストークン登録の
+  前に `UNUserNotificationCenter.requestAuthorization(options:)` を
+  待つようになった (`.authorized`/`.denied`/`.notDetermined` の3状態を
+  `NotificationPermissionResolver` で判定・単体テスト済み —
+  `packages/OtegamiKit/Sources/PushRelayClient/NotificationPermission.swift`)。
+  拒否時は `PushNotificationSettingsView` が「通知が許可されていません。
+  設定アプリから許可してください。」+ 設定アプリへのリンクを表示する。
+  これにより `xcrun simctl push` の `UNErrorDomain code=2003 "Source is
+  not authorized"` ブロッカーは解消したことを実際に確認した
+  (`scripts/verify-ios-push-simulated.sh` の3シナリオとも `push
+  accepted`)。ただし、その先で**別の、この開発機の iOS 27 ベータ
+  Simulator ランタイム固有と見られる制約** (`NotificationService`
+  Extension 自体が `launchd_sim` から一切 spawn されない — アプリ側の
+  設定は確認済みで問題なし) に突き当たり、「差出人/件名の書き換え」
+  までのシミュレータ上での確認は依然としてできていない。詳細は
+  `docs/qa-findings.md`「M9 追補2」節、`docs/verify.md`の該当追記を
+  参照。**実機での最終確認 (下記) が引き続き唯一の完全な検証手段。**
 - Gmail (`.oauth2`) アカウントのプッシュ通知: v1 のリレーは
   `WatchAuth.Kind.password` のみ対応 (プラン: "LOGIN/XOAUTH2 なし可:
   password のみ v1")。`AppEnvironment.enablePushNotifications` は
@@ -124,9 +142,13 @@ Extension は実装済み・大部分を自動検証済み (詳細は `docs/rela
   のコメント参照)。`AppEnvironment.enablePushNotifications` は macOS では
   `PushError.unsupportedPlatform` を返し、UI がその旨を表示する — ここ
   までは自動検証済みだが、macOS 版プッシュ通知の実装自体は範囲外。
-- `xcrun simctl push` によるシミュレータへのペイロード注入テスト、
-  `NotificationService` のユニットテスト単体は本セッションでは未実施
-  (時間の都合)。`scripts/verify-ios-m9.sh` 自体は M9 で追加済みで、M10 の
+- `xcrun simctl push` によるシミュレータへのペイロード注入テストは
+  後続セッションで `scripts/verify-ios-push-simulated.sh` として実施
+  済み (上記「(解消) 通知の許可を一度も要求していなかった実バグ」参照)。
+  `NotificationService` の書き換えロジック自体は
+  `NotificationEnrichmentTests`、許可判定は
+  `NotificationPermissionResolverTests` で単体テスト済み。
+  `scripts/verify-ios-m9.sh` 自体は M9 で追加済みで、M10 の
   最終回帰チェックでも引き続き green (プッシュ設定 UI の opt-in フロー・
   無効な URL の拒否・シミュレータでの `.noDeviceToken` グレースフル
   デグレードを確認)。

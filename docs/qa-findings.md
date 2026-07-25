@@ -367,7 +367,105 @@ reentrancy という根本原因そのものを塞いでいる (単体テスト�
 再現・修正確認済み) ことと合わせて、この5/5という実測は十分な傍証と
 判断した。
 
-## M9 追補: `xcrun simctl push` シミュレータ注入テストの現状 (未完了)
+## M9 追補2: 通知許可の未実装バグを修正、`simctl push` の旧ブロッカーは解消——ただし新たなシミュレータ制約を発見
+
+前回のセッション (「M9 追補」節、以下に再掲) で、`xcrun simctl push` が
+`UNErrorDomain code=2003 "Source is not authorized"` で常に拒否される
+原因を「アプリが `UNUserNotificationCenter.requestAuthorization(options:)`
+を一度も呼んでいないこと」と特定していた。これは検証環境固有の問題では
+なく**プロダクションの実バグ**だった: `PushTokenCenter.requestToken()`
+は `UIApplication.registerForRemoteNotifications()` (APNs デバイス
+トークン登録) だけを呼んでおり、`UNUserNotificationCenter` 側の表示許可
+(iOS 10 以降、`registerForRemoteNotifications()` とは別 API) を一度も
+要求していなかった。実機で本物の APNs 経由の push が届いても、通知
+バナー自体が表示されない状態だった。
+
+**修正内容**:
+1. `PushTokenCenter.requestToken()` が、デバイストークン登録の前に
+   `UNUserNotificationCenter.current().requestAuthorization(options: [.alert,
+   .badge, .sound])` を待つようにした。許可判定は
+   `NotificationPermissionResolver.resolve(using:)`
+   (`packages/OtegamiKit/Sources/PushRelayClient/NotificationPermission.swift`)
+   に切り出し、`.authorized`/`.denied`/`.notDetermined` の3状態を正しく
+   扱う (`.denied` なら再プロンプトせず即座に停止、`.notDetermined` のみ
+   実際にダイアログを出す — 実装は `UNUserNotificationCenter` 側の仕様に
+   合わせた設計。詳細はそのファイルのドキュメントコメント参照)。
+   `NotificationPermissionResolverTests` (5件) で3状態の分岐を単体
+   テスト済み — `PushTokenCenter` 自体は Otegami アプリターゲットに
+   ユニットテストターゲットが無いため、`NotificationEnrichment` と同じ
+   「純粋ロジックを OtegamiKit 側に切り出してテストする」パターンを踏襲。
+2. 拒否時は `AppEnvironment.PushError.notificationPermissionDenied` を
+   新設し、`PushNotificationSettingsView` が「通知が許可されていません。
+   設定アプリから許可してください。」+「設定アプリを開く」ボタン
+   (`UIApplication.openSettingsURLString`) を表示するようにした。
+3. `OtegamiPushSimulatedSetupUITests` に
+   `grantNotificationPermissionViaPushSettings(in:)`
+   (`UITests/DovecotAccountUITestHelpers.swift`) を追加し、`simctl push`
+   の前に一度「設定 → プッシュ通知 → 有効にする」を実行して許可
+   プロンプトを `allowNotificationPermissionIfNeeded()` で accept する
+   ようにした。
+
+**検証結果 (`scripts/verify-ios-push-simulated.sh` を実行)**: 旧
+ブロッカーは確認どおり解消した — `xcrun simctl push` はもう
+`UNErrorDomain code=2003` で拒否されず、3シナリオとも `push accepted`
+で受理された。ログでも `authorizationStatus: Authorized` を確認済み
+(`usernotificationsd` の `NotificationsPipeline` ログ)。
+
+**しかし、この開発機の iOS 27 ベータ Simulator では別の制約に突き当たった:
+`NotificationService` (UNNotificationServiceExtension) 自体が一切
+起動されない。** 3シナリオすべてで、通知バナーが `NotificationService
+.didReceive(_:withContentHandler:)` の生成する内容 (最低でも汎用
+フォールバックの「新着メールがあります」) にすら書き換わらず、payload の
+生の `aps.alert.loc-key` 文字列 "NEW_MAIL" がそのまま表示され続けた
+(push 直後の3秒後だけでなく、10秒待ってからの再確認でも同じ)。技術的な
+特定:
+- `xcrun simctl spawn <udid> log show --predicate 'process ==
+  "NotificationService"'` が該当期間について**1件もヒットしない**。
+- `launchd_sim` のログを同期間で確認しても、`com.mtkg.otegami
+  .NotificationService` の spawn イベント自体が存在しない
+  (`WILL_SPAWN`/`xpcproxy_sim spawned`/`service state: running` の
+  いずれも無し) — 同じログに `OtegamiUITests-Runner` の spawn は明確に
+  記録されているので、ログ収集自体は機能している。
+- アプリ側の設定は確認した範囲で正しい: `project.yml` の
+  `NotificationService` ターゲットの `NSExtensionPointIdentifier:
+  com.apple.usernotifications.service`、App Group/Keychain Access Group
+  entitlement、メインアプリの `aps-environment: development`
+  entitlement、`.appex` が実際に `Otegami.app/PlugIns/` に埋め込まれて
+  いること (`xcrun simctl get_app_container` で確認) — いずれも問題なし。
+- クラッシュログ (`~/Library/Logs/DiagnosticReports`、シミュレータの
+  `CrashReporter` ディレクトリ) にも `NotificationService` 関連のものは
+  無い — 起動して落ちたのではなく、そもそも起動要求自体が発行されて
+  いない。
+
+以上から、**`simctl push` が payload をシミュレータに注入すること自体は
+成功する (これが旧ブロッカーだった) が、この開発機のこの iOS 27 ベータ
+Simulator ランタイムでは `mutable-content` payload に対して
+`UNNotificationServiceExtension` を起動する OS 側のパイプライン
+(`usernotificationsd`/`launchd_sim`) が機能していない**、という結論に
+至った。アプリ側のコード (`PushTokenCenter.swift`/
+`NotificationService.swift`/entitlements/`project.yml`) にこれ以上
+手を入れる余地は見当たらない — 起動要求そのものが発行されていない以上、
+Extension 側のロジックを直しても検証できない。この制約はベータ OS の
+既知の不安定要素の一つと見られる (`docs/verify.md`/本ファイルの他の節で
+既に記録している「この開発機は Xcode-beta.app + iOS 27.0 ベータ
+シミュレータを使っている」という前提の、また別の一面)。安定版 Xcode/iOS
+の実機・実 Simulator ランタイムでは再現しない可能性が高いが、この開発機
+上ではこれ以上 `simctl push` 経由でのエンリッチメント確認を進める手段が
+ない。
+
+**結論**: 通知許可の実装バグ修正そのものは完了・単体テスト済みで
+プロダクション上正しい (実機で許可プロンプトが正しく出るようになる)。
+`simctl push` の第一のブロッカー (許可未実装) は解消したことをこの
+開発機で実証したが、「差出人・件末が書き換わる」ところまでの
+エンドツーエンド確認は、この開発機のベータ Simulator では新たに発見
+した別の制約により依然として不可能——実機での最終確認
+(`.p8` キー要、PENDING.md M9 節) が引き続き唯一の手段として残る。
+`NotificationEnrichment` (書き換えロジック自体の単体テスト) と
+`NotificationPermissionResolver` (許可判定の単体テスト) でカバーされて
+いない範囲は、「OS が Extension を実際に起動し、そこから IMAP に到達
+できるか」という、この開発機では検証しようがない部分のみに絞り込めた。
+
+## M9 追補 (旧): `xcrun simctl push` シミュレータ注入テストの現状 (このセッションで解消した旧ブロッカー、参照用に残す)
 
 `.p8` キーなしで `NotificationService` Extension を実プロセスとして検証
 する試み (`scripts/verify-ios-push-simulated.sh`) を追加したが、この
