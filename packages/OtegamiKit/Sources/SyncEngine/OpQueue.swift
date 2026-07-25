@@ -22,6 +22,18 @@ public enum OpQueueKind: String, Sendable {
     /// see `SendOpPayload`'s doc comment for why the payload itself stays
     /// this small.
     case send
+    /// Drafts IMAP sync: `APPEND` a `draftMessage` row to the account's
+    /// Drafts mailbox, replacing (best-effort `\Deleted`+`EXPUNGE`) whatever
+    /// server copy that row already knew about. Payload is
+    /// `SaveDraftOpPayload`, a reference to the row — same "rebuild from the
+    /// row at replay time" pattern `SendOpPayload` already uses.
+    case saveDraft
+    /// Drafts IMAP sync: delete one message from a Drafts mailbox by UID
+    /// (best-effort `\Deleted`+`EXPUNGE`, discarded on a `uidValidity`
+    /// mismatch like every other UID-addressed op). Used both for
+    /// `DraftsView`'s explicit delete and, via `.send`'s replay, for
+    /// cleaning up a sent message's now-redundant Drafts copy.
+    case deleteDraft
 }
 
 /// `setFlags`'s payload carries the **absolute** desired `MessageFlags`
@@ -99,6 +111,35 @@ public struct SendOpPayload: Codable, Sendable, Equatable {
     }
 }
 
+/// `saveDraft`'s payload: just a reference to the `DraftMessageRecord` row,
+/// for the same "single source of truth, rebuilt at replay time" reason
+/// `SendOpPayload` stays this small — see its doc comment.
+public struct SaveDraftOpPayload: Codable, Sendable, Equatable {
+    public var draftMessageId: Int64
+
+    public init(draftMessageId: Int64) {
+        self.draftMessageId = draftMessageId
+    }
+}
+
+/// `deleteDraft`'s payload: a single UID-addressed delete, the same
+/// `uidValidity` staleness-check shape `SetFlagsOpPayload`/`MoveOpPayload`/
+/// `DeleteOpPayload` all use. Deliberately not "delete this `draftMessage`
+/// row" — a server-origin draft (`DraftQuery`'s unified query) has no local
+/// row to reference at all, only a `message`/`mailbox` pair; see
+/// `DraftMessageRecord`'s doc comment.
+public struct DeleteDraftOpPayload: Codable, Sendable, Equatable {
+    public var mailboxId: Int64
+    public var uidValidity: Int64
+    public var uid: UInt32
+
+    public init(mailboxId: Int64, uidValidity: Int64, uid: UInt32) {
+        self.mailboxId = mailboxId
+        self.uidValidity = uidValidity
+        self.uid = uid
+    }
+}
+
 /// Encoding/decoding + insertion helpers for `opQueue` rows. Kept as plain
 /// functions (not a type UI code needs to instantiate) so a view's
 /// `db.write { ... }` block can enqueue an op in the same transaction as
@@ -157,6 +198,26 @@ public enum OpQueue {
     ) throws {
         let payload = SendOpPayload(outboxMessageId: outboxMessageId)
         try enqueue(kind: .send, accountId: accountId, payload: payload, db: db)
+    }
+
+    public static func enqueueSaveDraft(
+        accountId: String,
+        draftMessageId: Int64,
+        db: Database
+    ) throws {
+        let payload = SaveDraftOpPayload(draftMessageId: draftMessageId)
+        try enqueue(kind: .saveDraft, accountId: accountId, payload: payload, db: db)
+    }
+
+    public static func enqueueDeleteDraft(
+        accountId: String,
+        mailboxId: Int64,
+        uidValidity: Int64,
+        uid: UInt32,
+        db: Database
+    ) throws {
+        let payload = DeleteDraftOpPayload(mailboxId: mailboxId, uidValidity: uidValidity, uid: uid)
+        try enqueue(kind: .deleteDraft, accountId: accountId, payload: payload, db: db)
     }
 
     private static func enqueue(kind: OpQueueKind, accountId: String, payload: some Encodable, db: Database) throws {

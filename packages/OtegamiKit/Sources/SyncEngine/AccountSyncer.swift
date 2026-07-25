@@ -15,7 +15,16 @@ import OtegamiStore
 /// existing IDLE-wake/foreground-active call sites keep M3's behavior
 /// without needing to pass anything.
 public enum SyncScope: Sendable, Equatable {
-    /// INBOX only — the frequent path (IDLE wake, app-active).
+    /// INBOX **and** the account's Drafts-role mailbox (if any) — the
+    /// frequent path (IDLE wake, app-active). Drafts IMAP sync milestone:
+    /// folded into the existing `.inboxOnly` case (rather than adding a new
+    /// `.inboxAndDrafts` case every call site would need to opt into)
+    /// because a Drafts mailbox is typically tiny and every one of
+    /// `.inboxOnly`'s existing call sites (`OtegamiApp`'s foreground/IDLE
+    /// handler, `MessageListView`'s manual-refresh-elsewhere fallback) is
+    /// exactly where picking up another client's draft edit promptly
+    /// matters too — see `AccountSyncer.performIncrementalSync`'s `targets`
+    /// computation.
     case inboxOnly
     /// One specific mailbox, by its raw IMAP path — a sidebar selection or
     /// that mailbox's own manual-refresh button.
@@ -357,7 +366,12 @@ public actor AccountSyncer {
         let targets: [MailboxInfo]
         switch scope {
         case .inboxOnly:
-            targets = Self.inbox(among: mailboxInfos).map { [$0] } ?? []
+            // See `SyncScope.inboxOnly`'s doc comment: INBOX plus Drafts
+            // (if this account has a Drafts-role mailbox at all — most
+            // don't get created until the first `.saveDraft` replay
+            // self-heals one, so `nil` here is the common case for a fresh
+            // account and simply means "nothing to add").
+            targets = [Self.inbox(among: mailboxInfos), Self.drafts(among: mailboxInfos)].compactMap { $0 }
         case .mailbox(let path):
             targets = mailboxInfos.filter { $0.path == path }
         case .all:
@@ -482,6 +496,16 @@ public actor AccountSyncer {
     private static func inbox(among mailboxes: [MailboxInfo]) -> MailboxInfo? {
         mailboxes.first { $0.role == .inbox }
             ?? mailboxes.first { $0.path.caseInsensitiveCompare("INBOX") == .orderedSame }
+    }
+
+    /// Drafts IMAP sync: the account's Drafts-role mailbox, if the server
+    /// advertised one (`SPECIAL-USE`) or has a mailbox literally named
+    /// `"Drafts"` — same fallback shape as `inbox(among:)`, and the same
+    /// name `OpQueueProcessor.resolveOrCreateDraftsMailbox` self-heals
+    /// towards when neither is true yet.
+    static func drafts(among mailboxes: [MailboxInfo]) -> MailboxInfo? {
+        mailboxes.first { $0.role == .drafts }
+            ?? mailboxes.first { $0.path.caseInsensitiveCompare(OpQueueProcessor.draftsMailboxNameToCreate) == .orderedSame }
     }
 
     /// Upserts one envelope's `message` row (keyed by `(mailboxId, uid)`)

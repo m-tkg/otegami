@@ -256,7 +256,122 @@ public actor OpQueueProcessor {
             if account.kind != .gmail, let sent = try await sentMailbox(accountId: account.id) {
                 _ = try? await session.append(mailboxPath: sent.path, messageData: built.data, flags: .seen)
             }
+
+            // Drafts IMAP sync: if this send was composed by resuming a
+            // draft with a known server-side Drafts copy, that copy is now
+            // redundant — best-effort delete it (`docs/roadmap.md`:
+            // "送信完了時に...下書きがそのまま残るのは典型的なバグ"). Best-effort for
+            // the same reason the Sent APPEND above is: the message has
+            // already been irreversibly sent, so nothing past that point
+            // may cause this op to retry.
+            if let draftMailboxId = outbox.draftServerMailboxId,
+               let draftUid = outbox.draftServerUid,
+               let draftUidValidity = outbox.draftServerUidValidity,
+               let draftMailbox = try? await mailboxIfCurrent(id: draftMailboxId, expectedUidValidity: draftUidValidity) {
+                try? await deleteMessage(
+                    mailboxPath: draftMailbox.path,
+                    uid: UInt32(truncatingIfNeeded: draftUid),
+                    uidValidity: draftUidValidity,
+                    session: session
+                )
+            }
+
             try await deleteOutboxMessage(id: payload.outboxMessageId)
+            return .applied
+
+        case .saveDraft:
+            let payload = try JSONDecoder().decode(SaveDraftOpPayload.self, from: op.payload)
+            guard let draft = try await draftMessage(id: payload.draftMessageId) else {
+                // Already replaced by a previous replay pass and since
+                // resumed (e.g. the user reopened this draft in Composer
+                // before this op got its turn — `ComposerView`'s "load
+                // transfers ownership" deletes the row immediately) or
+                // deleted, or never existed. Nothing left to build.
+                return .staleDiscarded
+            }
+            guard let drafts = try await resolveOrCreateDraftsMailbox(accountId: account.id, session: session) else {
+                // See the `.delete` case's identical shape: leave the op
+                // pending rather than silently dropping a save.
+                throw MailTransportError.mailboxNotFound(path: "(no Drafts-role mailbox known)")
+            }
+
+            // Same "rebuild attachments from disk at replay time" pattern
+            // as `.send`'s outboxAttachment handling above — a row whose
+            // file has gone missing is best-effort skipped, not a reason
+            // to fail the whole save.
+            let attachmentRecords = try await draftAttachments(draftMessageId: payload.draftMessageId)
+            let composeAttachments: [ComposeAttachment] = attachmentRecords.compactMap { record in
+                guard let data = FileManager.default.contents(atPath: record.localPath) else { return nil }
+                return ComposeAttachment(filename: record.filename, mimeType: record.mimeType, data: data)
+            }
+
+            let composeDraft = ComposeDraft(
+                from: EmailAddress(name: account.displayName, address: account.email),
+                to: draft.toAddresses,
+                cc: draft.ccAddresses,
+                subject: draft.subject,
+                plainTextBody: draft.plainTextBody,
+                inReplyTo: draft.inReplyToMessageId,
+                references: draft.references,
+                attachments: composeAttachments
+            )
+            let built = messageBuilder(composeDraft)
+
+            // IMAP has no "update a message" — a draft edit is always
+            // APPEND-the-new-copy-first, delete-the-old-copy-second (never
+            // the other order): if the delete happened first and the
+            // APPEND then failed (offline, server rejects it), the draft
+            // would vanish from the server entirely — an unacceptable data
+            // loss this app's design explicitly rules out (plan: "曖昧な
+            // 場合は消さずに両方残す"). A duplicate briefly existing (or,
+            // if the best-effort delete below itself fails, permanently)
+            // is the strictly safer failure mode.
+            let newUid = try await session.append(mailboxPath: drafts.path, messageData: built.data, flags: .draft)
+
+            // Best-effort replace of whatever server copy this row already
+            // knew about (a previous save, or the server-origin draft this
+            // save started from — see `DraftMessageRecord`'s doc comment).
+            // Skipped outright (not even attempted) when `uidValidity`
+            // no longer matches — the UID it names may not even refer to
+            // this draft anymore. A failure here just leaves a stray
+            // duplicate on the server rather than losing anything; nothing
+            // past this point retries it, since this row's `serverUid` is
+            // about to be overwritten to point at the *new* copy below —
+            // documented as a known limitation (`docs/verify.md`).
+            if let oldMailboxId = draft.serverMailboxId,
+               let oldUid = draft.serverUid,
+               let oldUidValidity = draft.serverUidValidity,
+               let oldMailbox = try? await mailboxIfCurrent(id: oldMailboxId, expectedUidValidity: oldUidValidity) {
+                try? await deleteMessage(
+                    mailboxPath: oldMailbox.path,
+                    uid: UInt32(truncatingIfNeeded: oldUid),
+                    uidValidity: oldUidValidity,
+                    session: session
+                )
+            }
+
+            try await database.dbWriter.write { db in
+                var updated = draft
+                updated.serverMailboxId = drafts.id
+                // `nil` when the server doesn't support UIDPLUS (no UID
+                // returned from APPEND) — the row still records
+                // `serverMailboxId`/`serverUidValidity`, but without a UID
+                // there's nothing a later replace/delete/send-cleanup can
+                // target; a documented known limitation on such servers
+                // (`docs/verify.md`), not a crash or data-loss risk.
+                updated.serverUid = newUid.map { Int64($0) }
+                updated.serverUidValidity = drafts.uidValidity
+                updated.updatedAt = Date()
+                try updated.update(db)
+            }
+            return .applied
+
+        case .deleteDraft:
+            let payload = try JSONDecoder().decode(DeleteDraftOpPayload.self, from: op.payload)
+            guard let mailbox = try await mailboxIfCurrent(id: payload.mailboxId, expectedUidValidity: payload.uidValidity) else {
+                return .staleDiscarded
+            }
+            try await deleteMessage(mailboxPath: mailbox.path, uid: payload.uid, uidValidity: payload.uidValidity, session: session)
             return .applied
 
         case nil:
@@ -384,6 +499,88 @@ public actor OpQueueProcessor {
                 .filter(Column("accountId") == accountId)
                 .filter(Column("role") == MailboxRoleRecord.sent.rawValue)
                 .fetchOne(db)
+        }
+    }
+
+    private func draftsMailbox(accountId: String) async throws -> MailboxRecord? {
+        try await database.dbWriter.read { db in
+            try MailboxRecord
+                .filter(Column("accountId") == accountId)
+                .filter(Column("role") == MailboxRoleRecord.drafts.rawValue)
+                .fetchOne(db)
+        }
+    }
+
+    /// The mailbox name `resolveOrCreateDraftsMailbox` asks the server to
+    /// `CREATE` when no Drafts-role mailbox is known — same rationale as
+    /// ``trashMailboxNameToCreate``.
+    static let draftsMailboxNameToCreate = "Drafts"
+
+    /// Resolves this account's Drafts-role mailbox, self-healing by
+    /// `CREATE`+`SUBSCRIBE`-ing one named ``draftsMailboxNameToCreate`` when
+    /// none is known yet — the same self-heal `resolveOrCreateTrashMailbox`
+    /// already does for Trash, reused here via ``upsertCreatedMailbox(accountId:info:)``.
+    /// Returns `nil` when there's still no usable Drafts mailbox after that
+    /// attempt.
+    private func resolveOrCreateDraftsMailbox(accountId: String, session: any IMAPSessionProtocol) async throws -> MailboxRecord? {
+        if let existing = try await draftsMailbox(accountId: accountId) {
+            return existing
+        }
+
+        do {
+            try await session.createMailbox(path: Self.draftsMailboxNameToCreate)
+        } catch {
+            return nil
+        }
+
+        let mailboxInfos = try await session.listMailboxes()
+        guard let created = mailboxInfos.first(where: { info in
+            info.role == .drafts || info.path.caseInsensitiveCompare(Self.draftsMailboxNameToCreate) == .orderedSame
+        }) else {
+            return nil
+        }
+
+        return try await upsertCreatedMailbox(accountId: accountId, info: created)
+    }
+
+    /// Returns `mailboxId`'s current `MailboxRecord` only if it still
+    /// exists *and* its `uidValidity` still matches `expectedUidValidity`
+    /// — `nil` otherwise (mailbox gone, or recreated with a different
+    /// uidValidity since `expectedUidValidity` was captured). The same
+    /// staleness contract `SetFlagsOpPayload`/`MoveOpPayload`/`DeleteOpPayload`
+    /// already encode inline at each of their call sites; factored out here
+    /// since `.saveDraft`'s old-copy cleanup, `.deleteDraft`, and `.send`'s
+    /// linked-draft cleanup all need the identical check.
+    private func mailboxIfCurrent(id: Int64, expectedUidValidity: Int64) async throws -> MailboxRecord? {
+        guard let candidate = try await mailbox(id: id), candidate.uidValidity == expectedUidValidity else { return nil }
+        return candidate
+    }
+
+    /// Marks `uid` `\Deleted` and expunges it — the replace/delete
+    /// primitive `.saveDraft`'s old-copy cleanup, `.deleteDraft`, and
+    /// `.send`'s linked-draft cleanup all share. No staleness check here;
+    /// callers are expected to have already done theirs via
+    /// ``mailboxIfCurrent(id:expectedUidValidity:)``. `uidValidity` is
+    /// carried through purely as `FlagChange`'s required field — the real
+    /// `MailCoreIMAPSession.store` implementation doesn't actually consult
+    /// it (a mailbox is already addressed by path, already `SELECT`-free
+    /// per-command over IMAP), only `FakeIMAPSession`'s test recorder does.
+    private func deleteMessage(mailboxPath: String, uid: UInt32, uidValidity: Int64, session: any IMAPSessionProtocol) async throws {
+        let change = FlagChange(
+            uids: UIDSet([uid]), op: .add, flags: .deleted,
+            uidValidity: UInt32(truncatingIfNeeded: uidValidity)
+        )
+        try await session.store(mailboxPath: mailboxPath, change: change)
+        try await session.expunge(mailboxPath: mailboxPath)
+    }
+
+    private func draftMessage(id: Int64) async throws -> DraftMessageRecord? {
+        try await database.dbWriter.read { db in try DraftMessageRecord.fetchOne(db, key: id) }
+    }
+
+    private func draftAttachments(draftMessageId: Int64) async throws -> [DraftAttachmentRecord] {
+        try await database.dbWriter.read { db in
+            try DraftAttachmentRecord.filter(Column("draftMessageId") == draftMessageId).fetchAll(db)
         }
     }
 
