@@ -105,7 +105,7 @@ echo "==> Phase 3/9: relaunch; confirm the new mail appears via foreground incre
 run_test "OtegamiM3NewMailUITests"
 
 echo "==> Capturing screenshot: new mail visible after differential sync"
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
+xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null
 sleep 3
 xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/m3-01-new-mail-synced.png"
 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
@@ -134,7 +134,7 @@ fi
 echo "    OK: \\Seen confirmed via doveadm fetch"
 
 echo "==> Capturing screenshot: after swipe-to-read"
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
+xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null
 sleep 3
 xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/m3-02-swiped-read.png"
 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
@@ -146,7 +146,7 @@ echo "==> Phase 7/9: swipe-delete offline; confirm local optimistic removal"
 run_test "OtegamiM3SwipeActionsUITests/testSwipeDeletesMessageOffline"
 
 echo "==> Capturing screenshot: after offline swipe-delete"
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
+xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null
 sleep 3
 xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/m3-03-offline-deleted.png"
 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
@@ -154,7 +154,7 @@ xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 echo "==> Phase 8/9: restoring mailstack, relaunching to let opQueue replay run"
 make mailstack-up
 sleep 3
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
+xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null
 # The queued delete replays as part of RootView's scenePhase-.active
 # handler, which runs opQueue replay + incremental sync right on launch —
 # give it a few seconds over the (localhost) network before checking.

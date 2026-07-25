@@ -18,6 +18,7 @@ final class OtegamiM11ICloudSyncUITests: XCTestCase {
 
     func testCloudSyncToggleIsShownAndOnByDefault() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         app.buttons["sidebar.settingsButton"].tap()
@@ -44,6 +45,7 @@ final class OtegamiM11ICloudSyncUITests: XCTestCase {
 
     func testTogglingCloudSyncOffAndBackOnDoesNotCrashOrLoseTheAccountList() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         addDovecotTest1Account(in: app)

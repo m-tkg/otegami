@@ -39,6 +39,7 @@ final class OtegamiM7SearchUITests: XCTestCase {
     /// from the very screen this helper needs to land on.
     private func launchOnUnifiedInbox() -> XCUIApplication {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 30))
         return app

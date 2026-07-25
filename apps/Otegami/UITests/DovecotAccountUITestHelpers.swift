@@ -134,9 +134,39 @@ extension XCTestCase {
     /// taps after that point, which is why it never hit this). The
     /// account/mailbox are already persisted in GRDB, so relaunching
     /// resumes on the same INBOX list with nothing to re-enter.
-    func restartAppToRecoverTouchDelivery(_ app: XCUIApplication) {
+    /// `legacyAutoAdvanceToContent` (default `true`) passes
+    /// `-uiTestsAutoAdvanceToContent` on the relaunch, restoring the
+    /// pre-fix "cold launch with an existing account jumps straight to the
+    /// message list" shortcut (`OtegamiApp.uiTestsShouldAutoAdvanceToContent`'s
+    /// doc comment) — every *existing* caller of this helper wants exactly
+    /// that (they're testing something else entirely and just want the
+    /// message list reachable without an extra tap), so the default keeps
+    /// them all working unchanged. Pass `false` for a test that's
+    /// specifically exercising the real cold-launch navigation behavior
+    /// itself (`OtegamiColdLaunchAndSidebarSelectionUITests`).
+    func restartAppToRecoverTouchDelivery(_ app: XCUIApplication, legacyAutoAdvanceToContent: Bool = true) {
         app.terminate()
+        if legacyAutoAdvanceToContent {
+            app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        }
         app.launch()
+    }
+
+    /// Taps the sidebar's "すべての受信トレイ" row and waits for the message
+    /// list to appear — the explicit, real-tap equivalent of what
+    /// `-uiTestsAutoAdvanceToContent` shortcuts past. No-ops (after a short
+    /// existence check) if the message list is already showing, so it's
+    /// safe to call defensively regardless of which screen a launch
+    /// happened to land on.
+    @discardableResult
+    func navigateToUnifiedInboxIfNeeded(in app: XCUIApplication, timeout: TimeInterval = 20) -> Bool {
+        let list = app.collectionViews["messageList.list"]
+        if list.waitForExistence(timeout: 2) { return true }
+        let unifiedRow = app.collectionViews["sidebar.list"].cells
+            .containing(NSPredicate(format: "label CONTAINS %@", "すべての受信トレイ")).firstMatch
+        guard unifiedRow.waitForExistence(timeout: timeout) else { return false }
+        unifiedRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+        return list.waitForExistence(timeout: timeout)
     }
 
     /// M4: adds the dev mailstack's second seeded account (`test2

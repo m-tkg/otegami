@@ -14,6 +14,7 @@ final class OtegamiM6ICloudFormUITests: XCTestCase {
 
     func testICloudFormShowsThePresetHostsAndAcceptsInput() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         let emptyStateButton = app.buttons["sidebar.addAccountButton"]

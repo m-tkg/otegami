@@ -16,6 +16,7 @@ final class OtegamiM7SetupUITests: XCTestCase {
 
     func testAddingBothAccountsShowsSeededMessages() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         addDovecotTest1Account(in: app)

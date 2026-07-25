@@ -25,6 +25,7 @@ final class OtegamiM5OfflineComposeUITests: XCTestCase {
 
     func testComposeWhileOfflineShowsPendingOutbox() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         returnToSidebarRootIfNeeded(in: app)
@@ -66,6 +67,7 @@ final class OtegamiM5OfflineReplayUITests: XCTestCase {
 
     func testReplayClearsThePendingOutboxIndicator() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         returnToSidebarRootIfNeeded(in: app)

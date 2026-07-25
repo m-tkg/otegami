@@ -56,7 +56,7 @@ run_test() {
 
 screenshot() {
   local name="$1"
-  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null
   sleep 3
   xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/$name"
   xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
@@ -74,7 +74,7 @@ screenshot() {
 # suppresses that restoration for this one relaunch.
 screenshotForeground() {
   local name="$1"
-  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsSkipThreadRestoration >/dev/null
+  xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsSkipThreadRestoration -uiTestsAutoAdvanceToContent >/dev/null
   sleep 3
   xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/$name"
   xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true

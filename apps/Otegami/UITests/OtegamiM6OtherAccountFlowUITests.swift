@@ -16,6 +16,7 @@ final class OtegamiM6OtherAccountFlowUITests: XCTestCase {
 
     func testOtherIMAPFlowStillReachesTheSeededInbox() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         addDovecotTest1Account(in: app)

@@ -19,6 +19,7 @@ final class OtegamiM8CIDImageUITests: XCTestCase {
 
     func testCIDInlineImageMessageRendersWithoutExternalImageBanner() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         // No `popBackOnceIfNeeded` here — `RootView`'s "last opened

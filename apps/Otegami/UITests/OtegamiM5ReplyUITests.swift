@@ -16,6 +16,7 @@ final class OtegamiM5ReplyUITests: XCTestCase {
 
     func testReplyPrefillsAndSends() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         // Deliberately *not* `returnToSidebarRootIfNeeded` — no thread has

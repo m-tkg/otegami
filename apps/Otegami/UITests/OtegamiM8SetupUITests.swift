@@ -13,6 +13,7 @@ final class OtegamiM8SetupUITests: XCTestCase {
 
     func testAddAccountShowsAttachmentSeedMessages() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         addDovecotTest1AccountWithSMTP(in: app)

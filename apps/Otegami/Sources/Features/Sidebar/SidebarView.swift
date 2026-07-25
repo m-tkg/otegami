@@ -11,6 +11,21 @@ import SyncEngine
 struct SidebarView: View {
     @Environment(AppEnvironment.self) private var environment
     @Binding var selection: SidebarSelection?
+    /// Called whenever a row's own `Button` action is tapped (unified inbox
+    /// or a specific mailbox) — *in addition to* writing `selection`
+    /// directly, not instead of it. `RootView` uses this to unconditionally
+    /// push `preferredCompactColumn` forward to `.content` on every tap,
+    /// deliberately not gated on whether `selection`'s value actually
+    /// changed. That distinction matters for a real bug (docs/verify.md,
+    /// "「直前に選択していた行」だけタップ不能"): re-tapping the *same* row
+    /// after popping back via the system back button (e.g. unified inbox →
+    /// back → unified inbox again) leaves `selection` unchanged, so an
+    /// `onChange(of: selection)`-driven push never fires a second time —
+    /// this callback fires on every tap regardless, so `RootView` can
+    /// always force the column forward. See also `MessageListView
+    /// .onThreadSelected`, which needs the identical treatment for its own
+    /// selection.
+    var onSelected: (SidebarSelection) -> Void = { _ in }
     /// M5: opens `ComposerView` for a brand-new message — presentation
     /// itself (sheet on iOS, a separate window on macOS) is `RootView`'s
     /// job, since it's the common ancestor of both the sidebar's "作成"
@@ -78,6 +93,7 @@ struct SidebarView: View {
                 Section {
                     Button {
                         selection = .unifiedInbox
+                        onSelected(.unifiedInbox)
                     } label: {
                         HStack {
                             Label("すべての受信トレイ", systemImage: "tray.2")
@@ -129,6 +145,7 @@ struct SidebarView: View {
                                 let mailboxSelection = SidebarSelection.mailbox(MailboxSelection(accountId: account.id, mailboxId: mailboxId))
                                 Button {
                                     selection = mailboxSelection
+                                    onSelected(mailboxSelection)
                                 } label: {
                                     HStack {
                                         Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
@@ -289,9 +306,24 @@ struct SidebarView: View {
     /// Runs for as long as `SidebarView` shows `accountId`'s section
     /// (cancelled automatically by `.task(id:)` when the account
     /// disappears from the list). Also claims "すべての受信トレイ" as the
-    /// initial selection the first time any account's mailboxes appear
-    /// (M4) — launching the app with one or more accounts goes straight to
-    /// a populated, threaded list without an extra tap.
+    /// *data* selection the first time any account's mailboxes appear (M4)
+    /// — so the content column is ready to show a populated, threaded list
+    /// the instant the user does navigate into it.
+    ///
+    /// Deliberately does **not** also navigate there (i.e. does not push
+    /// `preferredCompactColumn` forward) — that used to happen implicitly
+    /// via `RootView`'s `onChange(of: selection)`, and on a compact-width
+    /// device (iPhone) that meant a *cold launch* jumped straight past the
+    /// sidebar into the message list with no tap at all (docs/verify.md,
+    /// "コールドランチが統合受信トレイから始まる"): this same background
+    /// data-load path fires on every launch once an account exists, so
+    /// there was structurally no way to land on the sidebar root first.
+    /// `RootView.onSelected`/`SidebarView.onSelected` is the only path that
+    /// pushes the column forward now, and it only fires from a real row
+    /// tap — this auto-select stays data-only so macOS/iPadOS's
+    /// always-three-column layout (where there is no "column" to push,
+    /// `preferredCompactColumn` is simply ignored) is unaffected either
+    /// way.
     private func observeMailboxes(accountId: String) async {
         let observation = MailboxQuery.observation(accountId: accountId)
         do {

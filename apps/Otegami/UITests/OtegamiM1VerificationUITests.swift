@@ -19,6 +19,7 @@ final class OtegamiM1VerificationUITests: XCTestCase {
 
     func testAddDovecotAccountAndSyncINBOX() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         addDovecotTest1Account(in: app)

@@ -17,6 +17,7 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
 
     func testSwipeMarksMessageRead() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         // Not "明日の打ち合わせについて" — that subject is also a substring
@@ -48,6 +49,7 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
 
     func testSwipeDeletesMessageOffline() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         let subject = "M3差分同期テスト"

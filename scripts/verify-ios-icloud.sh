@@ -103,7 +103,7 @@ echo "==> Phase 2/2: toggle off/on round trip + Dovecot account-add regression"
 run_test OtegamiM11ICloudSyncUITests/testTogglingCloudSyncOffAndBackOnDoesNotCrashOrLoseTheAccountList
 
 echo "==> Capturing final inbox screenshot"
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
+xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null
 sleep 3
 xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/icloud-02-inbox-after-toggle-roundtrip.png"
 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true

@@ -24,6 +24,7 @@ final class OtegamiM3NewMailUITests: XCTestCase {
 
     func testNewMailAppearsAfterForegroundIncrementalSync() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         let subject = "M3差分同期テスト"

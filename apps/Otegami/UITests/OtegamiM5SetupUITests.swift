@@ -12,6 +12,7 @@ final class OtegamiM5SetupUITests: XCTestCase {
 
     func testAddAccountWithSMTPAndBaselineAppears() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         addDovecotTest1AccountWithSMTP(in: app)

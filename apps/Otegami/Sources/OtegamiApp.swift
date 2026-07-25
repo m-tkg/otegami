@@ -122,12 +122,17 @@ struct RootView: View {
         NavigationSplitView(preferredCompactColumn: $preferredColumn) {
             SidebarView(
                 selection: $selection,
+                onSelected: { _ in preferredColumn = .content },
                 onCompose: { presentComposer(.new) },
                 onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) }
             )
         } content: {
             if let selection {
-                MessageListView(selection: selection, selectedThreadId: $selectedThreadId)
+                MessageListView(
+                    selection: selection,
+                    selectedThreadId: $selectedThreadId,
+                    onThreadSelected: { threadId in selectThread(threadId, under: selection) }
+                )
             } else {
                 ContentUnavailableView(
                     "メールボックスを選択してください",
@@ -154,14 +159,44 @@ struct RootView: View {
         // keep rendering a thread that no longer belongs to the visible
         // list. Restoration (below) re-populates it if there's a
         // remembered thread for the *new* selection.
-        .onChange(of: selection) { _, newValue in
+        //
+        // Deliberately does *not* push `preferredColumn` forward here
+        // anymore (it used to: `preferredColumn = newValue == nil ?
+        // .sidebar : .content`) — two real bugs traced back to deriving
+        // navigation from this value *changing* rather than from the
+        // user's tap itself (docs/verify.md's cold-launch/sidebar-selection
+        // investigation, the follow-up "コールドランチが統合受信トレイから
+        // 始まる"/「直前に選択していた行」タップ不能 reports):
+        //   1. `SidebarView.observeMailboxes(accountId:)`'s auto-select of
+        //      `.unifiedInbox` on the very first mailbox load (below, via
+        //      the `environment.accounts` `onChange`) also flows through
+        //      this same `selection`, so pushing forward here meant *every*
+        //      app launch with an existing account jumped straight past
+        //      the sidebar into the message list — there was no way to
+        //      land on the sidebar root first on a compact-width device.
+        //   2. Re-tapping the row for the *already-selected* mailbox (e.g.
+        //      after popping back to the sidebar via the system back
+        //      button) doesn't change `selection`'s value, so this
+        //      `onChange` simply never fires a second time — the column
+        //      never gets pushed back forward, and the row looks broken.
+        // `SidebarView.onSelected`/`MessageListView.onThreadSelected`
+        // (wired above) are the only paths that push a column forward now,
+        // and they do so unconditionally on every real tap regardless of
+        // whether the underlying value actually changed — see their doc
+        // comments. Falling back to `.sidebar` when a selection is cleared
+        // (e.g. the account it pointed at was just deleted) is still a
+        // safe, non-forward-pushing thing to do here.
+        .onChange(of: selection) { oldValue, newValue in
             selectedThreadId = nil
-            preferredColumn = newValue == nil ? .sidebar : .content
-        }
-        .onChange(of: selectedThreadId) { _, newValue in
-            guard let newValue, let selection else { return }
-            lastOpenedThreadIdBySelectionKey[selectionKey(for: selection)] = newValue
-            preferredColumn = .detail
+            if newValue == nil {
+                preferredColumn = .sidebar
+            } else if oldValue == nil, uiTestsShouldAutoAdvanceToContent {
+                // Legacy test-only shortcut — see `uiTestsShouldAutoAdvanceToContent`'s
+                // doc comment. Only fires on the nil→non-nil transition
+                // (the initial auto-select), matching exactly what the
+                // pre-fix code did unconditionally for every transition.
+                preferredColumn = .content
+            }
         }
         .task(id: selection) { restoreLastOpenedThreadIfNeeded() }
         #if os(macOS)
@@ -200,6 +235,21 @@ struct RootView: View {
             guard scenePhase == .active else { return }
             Task { await startIdleLoops(for: newAccounts) }
         }
+    }
+
+    /// Set only by this project's own XCUITest/verify-script infrastructure
+    /// (`scripts/verify-ios-*.sh`'s `screenshot`/`screenshotForeground`
+    /// helpers, and the handful of existing `OtegamiUITests` suites that
+    /// aren't specifically testing cold-launch navigation) — never passed
+    /// by a real launch. Restores the pre-fix "cold launch with an
+    /// existing account jumps straight to the message list" shortcut for
+    /// exactly those callers, most of which drive the app from a *host*
+    /// shell (`xcrun simctl launch`) with no way to synthesize a tap
+    /// afterward and were never testing this specific navigation timing in
+    /// the first place — see `SidebarView.observeMailboxes(accountId:)`'s
+    /// doc comment for why this shortcut is otherwise gone by default.
+    private var uiTestsShouldAutoAdvanceToContent: Bool {
+        ProcessInfo.processInfo.arguments.contains("-uiTestsAutoAdvanceToContent")
     }
 
     private func handleScenePhaseChange(_ phase: ScenePhase) async {
@@ -252,6 +302,19 @@ struct RootView: View {
               let remembered = lastOpenedThreadIdBySelectionKey[selectionKey(for: selection)]
         else { return }
         selectedThreadId = remembered
+        preferredColumn = .detail
+    }
+
+    /// `MessageListView.onThreadSelected`'s callback: records `threadId` as
+    /// both the current detail selection and (keyed by `selectionUnder`)
+    /// the "last opened thread" for same-session restoration, then
+    /// unconditionally pushes `preferredColumn` forward to `.detail` — see
+    /// `MessageListView.onThreadSelected`'s doc comment for why this must
+    /// happen on *every* tap rather than only when `selectedThreadId`'s
+    /// value actually changes.
+    private func selectThread(_ threadId: Int64, under selectionUnder: SidebarSelection) {
+        selectedThreadId = threadId
+        lastOpenedThreadIdBySelectionKey[selectionKey(for: selectionUnder)] = threadId
         preferredColumn = .detail
     }
 

@@ -15,6 +15,7 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
 
     func testEnablingPushOnSimulatorShowsGracefulDegradationMessage() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         app.buttons["sidebar.settingsButton"].tap()
@@ -60,6 +61,7 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
 
     func testEnableButtonDisabledForInvalidRelayURL() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         app.buttons["sidebar.settingsButton"].tap()

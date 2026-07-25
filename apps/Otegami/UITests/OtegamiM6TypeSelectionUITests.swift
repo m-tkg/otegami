@@ -13,6 +13,7 @@ final class OtegamiM6TypeSelectionUITests: XCTestCase {
 
     func testAllThreeAccountTypesAreOfferedAndGmailIsDisabledWithoutAClientId() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         let emptyStateButton = app.buttons["sidebar.addAccountButton"]
@@ -51,6 +52,7 @@ final class OtegamiM6TypeSelectionUITests: XCTestCase {
 
     func testCancelDismissesTheTypeSelectionSheet() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         let emptyStateButton = app.buttons["sidebar.addAccountButton"]

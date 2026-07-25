@@ -23,6 +23,7 @@ final class OtegamiM2OfflineVerificationUITests: XCTestCase {
 
     func testPreviouslyOpenedMessageBodyRendersOffline() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         // The list itself is a pure GRDB read — renders with no network

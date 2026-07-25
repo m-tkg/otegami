@@ -13,6 +13,7 @@ final class OtegamiM4UnifiedInboxUITests: XCTestCase {
 
     func testAddingSecondAccountShowsBothAccountsInUnifiedInbox() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         // `RootView`'s "last opened thread" restoration is same-session-

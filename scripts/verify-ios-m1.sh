@@ -93,14 +93,14 @@ xcodebuild \
   test-without-building
 
 echo "==> Capturing online screenshot"
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
+xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null
 sleep 3
 xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/01-online-inbox.png"
 
 echo "==> Stopping mailstack and capturing offline screenshot"
 xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 make mailstack-down
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
+xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null
 sleep 3
 xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/02-offline-inbox.png"
 

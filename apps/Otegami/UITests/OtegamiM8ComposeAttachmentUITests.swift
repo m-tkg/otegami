@@ -22,6 +22,7 @@ final class OtegamiM8ComposeAttachmentUITests: XCTestCase {
     func testComposeWithAttachmentAndSend() throws {
         let app = XCUIApplication()
         app.launchEnvironment["OTEGAMI_UITEST_ATTACH_FIXTURE"] = "1"
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         returnToSidebarRootIfNeeded(in: app)

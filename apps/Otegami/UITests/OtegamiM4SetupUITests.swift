@@ -18,6 +18,7 @@ final class OtegamiM4SetupUITests: XCTestCase {
 
     func testAddAccountAndThreadedBaselineAppears() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         addDovecotTest1Account(in: app)

@@ -19,6 +19,7 @@ final class OtegamiM5ComposeSendUITests: XCTestCase {
 
     func testComposeAndSendNewMessage() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         // A fresh launch (no prior thread ever opened in this run) already

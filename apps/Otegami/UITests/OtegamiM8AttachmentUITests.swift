@@ -18,6 +18,7 @@ final class OtegamiM8AttachmentUITests: XCTestCase {
 
     func testTappingAttachmentRowOpensQuickLookPreview() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         let list = app.collectionViews["messageList.list"]

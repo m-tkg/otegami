@@ -77,7 +77,7 @@ xcodebuild \
   test-without-building
 
 echo "==> Screenshotting the app post-run (state check, not mid-alert — SwiftUI .alert content isn't screenshot-worthy after dismissal)"
-xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || xcrun simctl launch "$UDID" "$BUNDLE_ID"
+xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null 2>&1 || xcrun simctl launch "$UDID" "$BUNDLE_ID"
 sleep 3
 xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/m9-01-app-relaunch.png"
 

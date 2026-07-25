@@ -19,6 +19,7 @@ final class OtegamiM2VerificationUITests: XCTestCase {
 
     func testHTMLBodyRendersAndExternalImagesAreBlockedByDefault() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
         addDovecotTest1Account(in: app)

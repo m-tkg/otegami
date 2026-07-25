@@ -30,6 +30,17 @@ struct MessageListView: View {
     // compact-width column push to `ThreadDetailView` once this changes is
     // driven by `RootView`'s `preferredCompactColumn`.
     @Binding var selectedThreadId: Int64?
+    /// Called on *every* row tap, in addition to writing `selectedThreadId`
+    /// directly — mirrors `SidebarView.onSelected`'s doc comment: a
+    /// re-tap of the row for the thread that's already `selectedThreadId`
+    /// (e.g. after popping back from `ThreadDetailView` via the system
+    /// back button, then reopening the same thread) doesn't change the
+    /// binding's value, so an `onChange(of: selectedThreadId)`-driven push
+    /// of `preferredCompactColumn` never fires a second time
+    /// (docs/verify.md, "メール本文 → 戻る → 一覧の「さっき見ていたスレッド」
+    /// 行だけタップ不能"). `RootView` uses this unconditional callback to
+    /// force the column forward every time instead.
+    var onThreadSelected: (Int64) -> Void = { _ in }
 
     @State private var summaries: [ThreadSummary] = []
     @State private var isSyncing = false
@@ -103,6 +114,7 @@ struct MessageListView: View {
                 if let threadId = summary.thread.id {
                     Button {
                         selectedThreadId = threadId
+                        onThreadSelected(threadId)
                     } label: {
                         ThreadRow(summary: summary)
                     }
