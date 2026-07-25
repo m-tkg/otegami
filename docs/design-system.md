@@ -166,14 +166,100 @@ OFL は再配布・改変・同梱を無償で許可するライセンスで、�
 の著作権表示・OFL 参照・同梱先パス (`NOTICE` の他セクションと同じ体裁
 で、"Bundled assets" のような区分を新設するのが自然)。
 
-## 次フェーズへの申し送り
+## design-phase-2: 実際の画面への適用 (2026-07-26)
 
-- `OtegamiFont.registerCustomFontsIfNeeded()` をアプリ起動時に呼ぶ配線
-  (`OtegamiApp.swift`/`AppEnvironment`)。
-- `NOTICE` に Archivo の帰属表示を追記。
-- 実際の画面 (Sidebar/MessageList/ThreadDetail/Composer など) への適用。
-  このタスクではトークン・コンポーネントの用意のみで、既存 View は一切
-  変更していない。
-- 1a (統合受信トレイ) の実装時、`AccountFilterChip` の横スクロール行が
-  アカウント5つ以上でどう振る舞うかの検討 (ハンドオフ側もリスクとして
-  明記)。
+上記のトークン・コンポーネントを実際の画面に適用し、1a/1d/1g/1h の構造
+を実装したフェーズの記録。`OtegamiFont.registerCustomFontsIfNeeded()` の
+起動時呼び出し (`AppEnvironment.init()`) と `NOTICE` への Archivo 帰属表
+示も、このフェーズで完了した (前フェーズの申し送り事項)。
+
+### 実装した構造
+
+- **1a (iOS のみ)**: `OtegamiTabRootView` (下部タブ: メール/検索/設定)。
+  `MailTabView` がタップ可能なフォルダタイトル (`FolderListSheet` を開
+  く) + `AccountFilterChipRow` (「全部」/各アカウント/「＋」) +
+  `MessageListView` を束ねる。`FolderListSheet` は旧サイドバー相当の内
+  容 (アカウント別メールボックスツリー、下書き・送信待ち・同期エラーの
+  バナー) を集約する。macOS は `NavigationSplitView` 3ペイン (`SidebarView`)
+  のまま変更していない。
+- **1d**: `ThreadRowView` (`AccountColorRail` + `UnreadDot` + 3行 + 右端
+  アカウント名ラベル)。統合受信トレイをアカウントフィルタなしで見てい
+  るときだけ罫線/ラベルを出す (`showsAccountAccent`) — 単一メールボック
+  ス表示や1アカウントに絞ったときは冗長なので出さない、ハンドオフより
+  踏み込んだ調整。
+- **1g**: 左スワイプ (リーディングエッジ) = 既読/未読 (フルスワイプ可) +
+  アーカイブ、右スワイプ (トレイリングエッジ) = 削除のみ。
+- **1h**: 長押しで一括選択モード (チェックボックス行、キャンセル/N件選
+  択中/全選択ナビ、既読に・移動・削除の下部バー)。macOS は長押しジェス
+  チャーを追加せず、既存の右クリックコンテキストメニューのまま (アーカ
+  イブ項目のみ追加)。
+
+### ハンドオフからの意図的な逸脱 (理由付き)
+
+- **翻訳/後で (1g)**: 翻訳機能は別フェーズで実装するため、スワイプ行の
+  該当スロットは非表示のまま (フェイクの非機能ボタンを見せない) —
+  `MessageListRow.trailingSwipeActions` のコメントに挿入位置を記録。
+  「後で」(スヌーズ) も同様の理由 (専用の永続化層がなく、この UI 改修
+  タスクの範囲外) でプレースホルダに留めた。
+- **削除の「ハードスワイプ必須」→「常にタップ必須」**: SwiftUI の
+  `.swipeActions` はグループ内の *どれか1つ* だけをフルスワイプで自動発
+  火できる仕組みで、「距離に応じて別々のアクションが発火する」ことはで
+  きない。削除をフルスワイプ対象にする代わりに `allowsFullSwipe: false`
+  にして、削除はスワイプ距離だけでは絶対に発火しない (必ず明示タップが
+  要る) 形にした — ハンドオフの意図 (誤爆防止) をより強く満たす代替案。
+- **一括操作の「移動」→ アーカイブのみ**: 汎用フォルダピッカーはこのタ
+  スクの範囲外と判断し、1g のアーカイブと同じ宛先 (各スレッドの所属ア
+  カウントの Archive メールボックス) に固定した。
+- **警告色トークンが未定義**: `.orange` の同期エラーバナーは既存のシス
+  テムセマンティックカラーのまま残した (新規のブランド色ではないので
+  「その場で新しい色を足す」規約には抵触しないと判断)。`OtegamiColor` に
+  `warning` 系トークンを正式に追加するかどうかは未検討 — 次フェーズの
+  課題。
+
+### 開発中に見つかった実装上の落とし穴
+
+- **`.onLongPressGesture` と `.swipeActions` の競合**: 1h の長押しジェス
+  チャーに `.onLongPressGesture`/`.gesture` を使うと、同じタッチダウン
+  イベントを取り合って `List` 標準のリーディングエッジ swipeActions が
+  一切反応しなくなる実機バグを確認 (`OtegamiM3SwipeActionsUITests
+  .testSwipeMarksMessageRead` の回帰で発覚)。`.simultaneousGesture
+  (LongPressGesture(...))` に切り替えて解決 — 詳細は
+  `MessageListRow.swift` のコメント参照。
+- **Undo トーストの遅延コミット設計の欠陥**: 最初の実装は削除/アーカイ
+  ブの実際の DB 書き込み・opQueue enqueue 自体を Undo ウィンドウ (5秒)
+  分だけ `Task.sleep` で遅延させていた。`scripts/verify-ios-m3.sh` のオ
+  フライン削除フェーズがこれを壊れた状態で検出: ウィンドウの途中でアプ
+  リが再起動すると、遅延中だった書き込みがプロセスと一緒に消え、削除が
+  サーバーへ一切 replay されなかった (サイレントなデータロス)。修正: ロ
+  ーカル書き込みは即座にコミットし (再起動しても disk 上に残るので次回
+  起動時の通常の opQueue replay が拾う)、Undo は「削除前の `MessageRecord`/
+  `ThreadRecord` を再挿入し、まだ replay されていない opQueue 行を消す」
+  という真の巻き戻しにした — `MessageListView.RemovedMessagesSnapshot`/
+  `undoRemoval(_:)` 参照。
+- **1a の下部タブバーが既存スワイプテストを壊した**: `OtegamiM3SwipeActionsUITests
+  .testSwipeMarksMessageRead` が対象にしていた seeded 行が、新しいタブ
+  バー (design-phase-2 以前は存在しなかった) の分だけ狭くなったビュー
+  ポートの下端に近づき、`swipeRight()` が確実に反応しなくなっていた —
+  コードの不具合ではなく、`testSwipeDeletesMessageOffline` が別の行です
+  でに使っていた「スクロールでエッジから離す」パターンをこのテストにも
+  追加して解決。
+
+### 検証済み
+
+`scripts/verify-ios-m1/m2/m3/m4/m5/m6*/m7/m8.sh`、
+`verify-ios-account-edit.sh`、`verify-ios-drafts-sync.sh`、
+`verify-macos-qa.sh` を実行 (m6 は `GOOGLE_OAUTH_CLIENT_ID` がこの開発機
+の `Config/Local.xcconfig` に設定済みという、このタスクと無関係な既存の
+環境差で1件失敗 — アプリ側のコードは変更していない)。ライト/ダークの
+実機スクリーンショットと `DesignSystemCatalogRenderer` の両方で見た目を
+確認済み。`make test` / `make ios` / `make mac` すべて green。
+
+### 次フェーズへの申し送り
+
+- `OtegamiColor` への `warning` 系トークン追加の検討。
+- 翻訳機能実装時: `MessageListRow.trailingSwipeActions`/
+  `selectionBottomBar` の「翻訳」「後で」「まとめて翻訳」スロットへの実
+  装差し込み。
+- 「移動」の汎用フォルダピッカー化 (現状はアーカイブ固定)。
+- 1a の `AccountFilterChip` 横スクロール行が実際にアカウント5つ以上でど
+  う見えるかは、まだ実機の多アカウント環境で確認していない。

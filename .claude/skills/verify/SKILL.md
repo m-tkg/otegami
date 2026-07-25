@@ -443,3 +443,51 @@ field empty" from `.value` on this simulator/toolchain; assert on a
 empty-state view) — the same "trust a load-bearing side effect over a
 value accessor" approach M2's SecureField pitfalls already lean on
 elsewhere in this file.
+
+## design-phase-2: `.onLongPressGesture` starves `List`'s own swipeActions recognizer
+
+Adding 1h's long-press-to-select gesture to the same row `MessageListRow`
+already gave `.swipeActions(edge: .leading)` broke leading-edge swipe
+reveals entirely — `row.swipeRight()` stopped finding the toggle-read
+button no matter what else changed about the row (button count,
+`allowsFullSwipe`, declaration order, row insets — all ruled out one at a
+time via `-only-testing:` reruns before landing on the actual cause).
+`.onLongPressGesture`/`.gesture` *exclusively* claim their touch, which
+starves `List`'s own leading-edge pan-gesture recognizer of the same
+touch-down event. Fix: `.simultaneousGesture(LongPressGesture(...))`
+instead — lets both recognizers race normally. Worth remembering for any
+future gesture added to a row that also has `.swipeActions`.
+
+## design-phase-2: a new bottom tab bar can push an existing seeded row too close to the viewport edge
+
+`OtegamiTabRootView`'s bottom tab bar (1a) didn't exist before this pass
+and shrinks `MessageListView`'s usable height. `OtegamiM3SwipeActionsUITests
+.testSwipeMarksMessageRead` targets an older seeded row that used to sit
+comfortably on screen and, with the tab bar now eating extra vertical
+space, ended up too close to the (now closer) bottom edge for
+`swipeRight()` to reveal reliably — the exact "row too close to a
+viewport edge" class of issue `testSwipeDeletesMessageOffline` had
+already documented for a *different* row before this pass. Same fix:
+one extra scroll-and-nudge step (drag from `dy: 0.4` to `dy: 0.05` on the
+list) before swiping. Worth checking any swipe/tap test against a row
+positioned near the bottom of the screen whenever chrome height changes.
+
+## design-phase-2: delaying a destructive action's *entire* local commit for an undo window loses data on an app kill mid-window
+
+The first version of 1h/1g's undo toast delayed the actual database
+write (message deletion + opQueue enqueue) behind a `Task.sleep` for the
+whole undo window, only committing once it elapsed uninterrupted.
+`scripts/verify-ios-m3.sh`'s offline swipe-delete phase relaunches the
+app shortly after the swipe — well inside that window — and the pending
+commit `Task` died with the process before ever running: the delete was
+silently never enqueued, so `doveadm`'s later Trash-mailbox check found
+nothing. Fix: commit the local write (and enqueue the opQueue op)
+*immediately*, durable to disk before the swipe/bulk action even
+returns; delay only the *network* replay attempt, and make undo a true
+reversal (re-insert the removed rows, delete the not-yet-replayed
+opQueue rows) instead of "don't commit yet." See
+`MessageListView.RemovedMessagesSnapshot`/`undoRemoval(_:)`. General
+lesson: never make "can this be undone" gate whether a local write
+happens at all if the process could die during the window — only ever
+delay the *network* side of an action, and make the local commit
+reversible instead of postponed.

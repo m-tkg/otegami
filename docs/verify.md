@@ -2198,3 +2198,40 @@ make mailstack-down
   (Drafts sync の変更とは独立に元から存在した脆さのため、スコープ外と
   判断)。実行順序によっては同じ理由で `SyncEngineIntegrationTests` 単体が
   再現することがある点を記録しておく。
+
+## design-phase-2: iOS UI 再構成 (1a タブバー/1d/1g/1h) の検証
+
+`apps/Otegami/Sources/Features/Root/`(新設) + `MessageListView`/
+`MessageListRow`/`ThreadRowView` の再設計後、`scripts/verify-ios-m1.sh`
+〜`m5.sh`、`m7.sh`、`m8.sh`、`verify-ios-account-edit.sh`、
+`verify-ios-drafts-sync.sh`、`verify-macos-qa.sh` を実行し、すべて green
+であることを確認した (`m6.sh` は後述の通り既存の環境差で1件失敗 — この
+タスクのコード変更とは無関係)。見た目もライト/ダーク双方で実機
+スクリーンショットと `DesignSystemCatalogRenderer` の両方で確認済み
+(`docs/design-system.md`の「design-phase-2」節に詳細)。
+
+iOS はサイドバーが無くなった (`SidebarView` は macOS 専用) ため、XCUITest
+のアカウント追加導線などが変わっている:
+
+- 「アカウントを追加」: アカウントが0件なら Mail タブの空状態ボタン
+  (`mail.addAccountButton`)、1件以上あるならアカウントフィルタチップ列
+  末尾の「＋」(`mail.chip.addAccount`) — `DovecotAccountUITestHelpers
+  .openAccountSetup(in:)` が両方を見て判定する。
+- 「フォルダ/メールボックスツリー・下書き・送信待ち・同期エラー」:
+  すべて `FolderListSheet` に集約 (Mail タブのタップ可能なタイトルから
+  開く)。`openDraftsList(in:)`/`openOutboxList(in:)`/
+  `folderSheetShowsOutboxRow(in:timeout:)` が新設のヘルパー。
+- 「設定」: 常設タブ (`app.tabBars.buttons["設定"]` で操作)。以前のような
+  `settings.sheet`/`settings.closeButton` は
+  iOS 側にはもう存在しない (macOS の `AccountsSettingsView` ではまだ
+  健在)。
+- 検索: `MessageListView` の `.searchable` ではなく、専用の `SearchTabView`
+  (`app.tabBars.buttons["検索"]` → `search.list`/`search.field` 相当)。
+  macOS は変更なし (引き続き `MessageListView` 自身の `.searchable`)。
+
+`m6.sh` の `testAllThreeAccountTypesAreOfferedAndGmailIsDisabledWithoutAClientId`
+がこの開発機で失敗する: `apps/Otegami/Config/Local.xcconfig` に実際の
+`GOOGLE_OAUTH_CLIENT_ID` が設定されており、テストが前提とする「Client ID
+未設定」状態と食い違う (この dev マシン固有の設定であり、
+design-phase-2 のコード変更とは無関係 — `AccountTypeSelectionView` 自体
+は DesignSystem のスタイリング以外、機能面は変更していない)。
