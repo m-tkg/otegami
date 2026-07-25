@@ -72,10 +72,14 @@ final class CIDSchemeHandler: NSObject, WKURLSchemeHandler {
         inFlightTasks.removeValue(forKey: key)
     }
 
-    /// `otegami-cid://<contentId>` — `URL.host` is what `CIDURLRewriter`'s
-    /// `otegami-cid://$3` template lands `contentId` in (the part right
-    /// after `scheme://`), so a plain host read is enough; no path/query
-    /// parsing needed.
+    /// `otegami-cid://<contentId>` — `URL.host` is what `CIDURLRewriter`
+    /// lands the (percent-encoded) `contentId` in, so a plain host read is
+    /// enough; no path/query parsing needed. `URL.host` on this deployment
+    /// target percent-*decodes* on read, so this already yields the original
+    /// content id (e.g. `"logo@otegami.test"`, `@` and all) without any
+    /// extra `removingPercentEncoding` step — see `CIDURLRewriter.rewrite`'s
+    /// doc comment for why the encoding step is needed at all (an unencoded
+    /// `@` gets misparsed as the userinfo separator, truncating `host`).
     private static func contentId(from url: URL?) -> String? {
         url?.host
     }
