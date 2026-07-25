@@ -97,6 +97,42 @@ extension XCTestCase {
         return found
     }
 
+    /// M9 bug fix follow-up: accepts the `UNUserNotificationCenter`
+    /// alert/badge/sound authorization prompt (`"“Otegami” Would Like to
+    /// Send You Notifications"` / "Allow" — "許可" if the simulator's
+    /// system language happens to be Japanese) that now appears the first
+    /// time `PushTokenCenter.requestToken()` runs (`NotificationPermissionResolver`
+    /// resolving a `.notDetermined` status — see that type's doc comment).
+    /// Same "check the app's own tree first, then springboard" pattern as
+    /// `dismissSavePasswordPromptIfNeeded` above, since which process hosts
+    /// a given system alert isn't consistent across OS/toolchain versions
+    /// on this dev machine (that helper's own doc comment already found
+    /// this out for the Keychain AutoFill prompt) — belt-and-suspenders
+    /// rather than a guess. A no-op (not a failure) if the prompt never
+    /// shows within `timeout`, e.g. a re-run against a simulator install
+    /// that's already `.authorized`/`.denied` from an earlier, not-yet-erased
+    /// run (iOS never re-prompts once a decision is recorded).
+    @discardableResult
+    func allowNotificationPermissionIfNeeded(timeout: TimeInterval = 10) -> Bool {
+        let app = XCUIApplication()
+        let inAppAllow = app.buttons.matching(
+            NSPredicate(format: "label == %@ OR label == %@", "Allow", "許可")
+        ).firstMatch
+        if inAppAllow.waitForExistence(timeout: timeout) {
+            inAppAllow.tap()
+            return true
+        }
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let springboardAllow = springboard.buttons.matching(
+            NSPredicate(format: "label == %@ OR label == %@", "Allow", "許可")
+        ).firstMatch
+        if springboardAllow.waitForExistence(timeout: timeout) {
+            springboardAllow.tap()
+            return true
+        }
+        return false
+    }
+
     func dismissSavePasswordPromptIfNeeded(timeout: TimeInterval = 3) {
         let app = XCUIApplication()
         let inAppNotNow = app.buttons["Not Now"]
@@ -120,6 +156,63 @@ extension XCTestCase {
         runConnectionTest(in: app)
         saveAccount(in: app)
         dismissSavePasswordPromptIfNeeded()
+    }
+
+    /// M9 bug fix follow-up (`docs/verify.md`'s "M9 追補" section,
+    /// `PENDING.md`): drives "設定 → プッシュ通知 → 有効にする" far enough to
+    /// trigger `PushTokenCenter.requestToken()`'s new
+    /// `UNUserNotificationCenter.requestAuthorization(...)` call and accept
+    /// the resulting system prompt (`allowNotificationPermissionIfNeeded`) —
+    /// the goal is the *side effect* (this simulator install's notification
+    /// authorization status becomes `.authorized`, which `xcrun simctl
+    /// push` requires — see this repo's `scripts/verify-ios-push-simulated.sh`),
+    /// not a successful relay registration. The relay URL doesn't need to
+    /// be reachable: `AppEnvironment.enablePushNotifications` requests
+    /// notification authorization *before* ever making a network call to
+    /// the relay, and the simulator's inherent inability to produce a real
+    /// APNs device token means the flow always ends in
+    /// `AppEnvironment.PushError.noDeviceToken` (a visible, non-crashing
+    /// `settings.push.errorMessage`) regardless — expected, and not what
+    /// this helper's callers care about.
+    ///
+    /// A no-op past the URL/enable-button check if push is already enabled
+    /// (`settings.push.enableButton` doesn't exist because
+    /// `settings.push.disableButton` is showing instead) — e.g. a re-run
+    /// against a simulator install this test suite already granted
+    /// permission on without an intervening `simctl erase`.
+    func grantNotificationPermissionViaPushSettings(in app: XCUIApplication) {
+        returnToSidebarRootIfNeeded(in: app)
+        app.buttons["sidebar.settingsButton"].tap()
+        XCTAssertTrue(app.otherElements["settings.sheet"].waitForExistence(timeout: 10), "settings sheet did not appear")
+        app.staticTexts["プッシュ通知"].tap()
+
+        let relayURLField = app.textFields["settings.push.relayURLField"]
+        XCTAssertTrue(relayURLField.waitForExistence(timeout: 10), "push settings screen did not appear")
+
+        guard !app.staticTexts["settings.push.enabledLabel"].exists else {
+            // Already enabled from an earlier, not-yet-erased run — the
+            // permission prompt was already answered then too.
+            return
+        }
+
+        type("http://localhost:9", into: relayURLField)
+
+        let enableButton = app.buttons["settings.push.enableButton"]
+        XCTAssertTrue(enableButton.waitForExistence(timeout: 5))
+        XCTAssertTrue(enableButton.isEnabled, "enable button should be enabled once a valid URL is entered")
+        enableButton.tap()
+
+        let consentConfirm = app.buttons["settings.push.consentConfirmButton"].firstMatch
+        XCTAssertTrue(consentConfirm.waitForExistence(timeout: 10), "expected the credential-sharing consent alert")
+        consentConfirm.tap()
+
+        allowNotificationPermissionIfNeeded(timeout: 15)
+
+        // Simulator can't produce a real device token, so this always ends
+        // in a visible error message (`.noDeviceToken`) — what matters for
+        // this helper's callers is that the OS-level authorization prompt
+        // above was answered, not this outcome.
+        _ = app.staticTexts["settings.push.errorMessage"].waitForExistence(timeout: 40)
     }
 
     /// Works around a confirmed simulator/OS defect (found while building

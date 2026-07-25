@@ -40,6 +40,17 @@ final class OtegamiPushSimulatedSetupUITests: XCTestCase {
             "test1's seeded baseline message never appeared — the account isn't usable, injecting a push against it would be meaningless"
         )
 
+        // M9 bug fix follow-up: `xcrun simctl push` refuses to deliver any
+        // `aps.alert` payload to an app that has never been granted
+        // `UNUserNotificationCenter` authorization (`UNErrorDomain
+        // code=2003 "Source is not authorized"` — see this suite's
+        // companion `scripts/verify-ios-push-simulated.sh` and
+        // `docs/verify.md`'s "M9 追補" section for the full writeup of this
+        // blocker and its fix). Drive the push-settings "有効にする" flow
+        // once here, purely to trigger and accept that OS-level permission
+        // prompt, before the wrapping script's first `simctl push`.
+        grantNotificationPermissionViaPushSettings(in: app)
+
         // Leave the app terminated: `NotificationService` is a *separate*
         // process from the containing app (the entire point of M9's
         // extension design — it must enrich a push whether or not the app
