@@ -737,6 +737,130 @@ otegami-relay サーバー自体の IDLE→push 発火パイプラインは
 `server/otegami-relay/Tests/OtegamiRelayTests/WatcherPoolTests.swift`
 (`FakeIMAPServer` 相手のユニット検証) で別途カバーしている。
 
+## iOS シミュレータ検証 (M9 追補: `simctl push` 注入テスト)
+
+```sh
+scripts/verify-ios-push-simulated.sh
+```
+
+`.p8` キーなし・実機なしでも、`xcrun simctl push <udid> <bundleid>
+payload.json` でシミュレータに直接ペイロードを注入できる。これを使い、実
+APNs を経由せずに `NotificationService` Extension (`apps/Otegami
+/NotificationService/NotificationService.swift`) を実プロセスとして起動させ、
+「OS 配信 → Extension 起動 → App Group 経由の GRDB 読み取り → 共有
+Keychain 読み取り → 実 IMAP ラウンドトリップ → 通知内容の書き換え」という
+経路をエンドツーエンドで検証する (PENDING.md の M9 節に残っていた
+「`xcrun simctl push` によるペイロード注入テスト・・・本セッションでは未実施」
+の後続)。
+
+1. `OtegamiPushSimulatedSetupUITests` — test1 の Dovecot アカウントを追加し、
+   seed 済みメッセージが表示されることを確認してからアプリを `terminate()`
+   する (`NotificationService` は本体アプリのプロセスとは独立して起動する
+   ことを確認する意図で、あえてキルした状態から注入する)。
+2. (ホスト) `xcrun simctl listapps` の JSON 変換 (`plutil -convert json`)
+   から、インストール済みアプリの実際の bundle id と App Group コンテナの
+   パスを**動的に**解決する — この開発機の `apps/Otegami/Config
+   /Local.xcconfig` は `OTEGAMI_BUNDLE_ID` を `com.mtkg.otegami` (ハイフン
+   無し) に上書きしており、他の `verify-ios-m*.sh` が使う固定デフォルト
+   (`com.m-tkg.otegami`) とは実際に食い違う。`CFBundleDisplayName ==
+   "Otegami"` でフィルタする必要があった点に注意 — `GroupContainers` を持つ
+   かどうかだけで絞ると Reminders など App Group を使う標準アプリを誤って
+   拾ってしまう (実際にこの開発機で `com.apple.reminders` を誤検出して
+   確認済み)。
+3. (ホスト) App Group コンテナ内の `otegami/otegami.sqlite`
+   (`OtegamiStore.AppDatabase` のパス規約) を `sqlite3` で直接読み、
+   `test1@otegami.test` の `AccountRecord.id` を取得する。
+4. (ホスト) `doveadm save` で `dev/mailstack/seed/fixtures
+   /08-m3-new-mail.eml` (`From: Aiko <aiko@otegami.test>`, `Subject: M3差分
+   同期テスト` — M3 で使っている既存フィクスチャを転用) を INBOX に投入し、
+   `doveadm mailbox status ... uidnext INBOX` で投入後の IMAP UIDNEXT を
+   取得する — `server/otegami-relay/.../WatcherPool.swift` が実際に
+   `PushNotificationPayload.uidNext` として送る値と同じもの。
+5. ペイロードは実リレー (`APNsSender.swift`) が組み立てる形と同一
+   (`mutable-content: 1`、`loc-key: NEW_MAIL`、`accountId`/`uidNext` を
+   `aps` の外側に平置き — 件名/本文は一切含めない、というプランの
+   プライバシー設計をそのまま反映) を 3 パターン用意する想定:
+   - シナリオ1 (正常系): 実在の `accountId` + 投入直後の `uidNext` →
+     通知の差出人/件名が "Aiko" / "M3差分同期テスト" に書き換わることを
+     期待。
+   - シナリオ2 (異常系): `make mailstack-down` で IMAP を到達不能にした
+     状態で同じ `accountId` に注入 → `NotificationService.enrich(payload:)`
+     の IMAP `connect()` が失敗し、汎用文言 ("新着メールがあります") の
+     フォールバックのまま `serviceExtensionTimeWillExpire()` の ~30 秒
+     予算内に配信されることを期待。
+   - シナリオ3 (異常系): 存在しない `accountId` (ダミー UUID) を注入 →
+     `lookupAccount` が `nil` を返し、IMAP に触れることすらなく即座に
+     同じ汎用フォールバックになることを期待。
+   各シナリオ後、`xcrun simctl io ... screenshot` で通知バナーを撮影し、
+   `OtegamiPushSimulatedNotificationReadUITests` (`com.apple.springboard`
+   に `XCUIApplication(bundleIdentifier:)` でアタッチし、通知センターを
+   下スワイプで開いて "Otegami" を含む通知のラベル文字列を読み取り、
+   xcodebuild のログに `PUSH-VERIFY-NOTIFICATION-LABEL: ...` として出力
+   する) で実際に配信された文字列を機械的にも確認する試み。
+
+### 現状のブロッカー (この開発機で確認済み、本セッションでは未解消)
+
+この開発機・この iOS 26/27 ベータ toolchain では、`aps.alert` を含む
+ペイロード (`mutable-content` 配信には `alert` か `sound` が必須 — `alert`
+無しの `content-available` のみのペイロードは `UNErrorDomain code=1401
+"Notification has no user visible content"` で別途拒否されることを確認
+済み) に対する `xcrun simctl push` が**常に**次のエラーで失敗する:
+
+```
+UNErrorDomain code=2003: "Repository could not save notification.
+Source is not authorized."
+```
+
+原因を切り分けた結果、**アプリが `UNUserNotificationCenter.current()
+.requestAuthorization(options:)` を一度も呼んでいない**ことに行き着いた。
+`Support/PushTokenCenter.swift` の `requestToken()` は
+`UIApplication.shared.registerForRemoteNotifications()` (APNs デバイス
+トークン登録) だけを呼んでおり、これは iOS 10 以降
+`UNUserNotificationCenter` 側の通知許可 (バナー/サウンド/バッジの表示許可)
+とは別の API なので、`registerForRemoteNotifications()` だけでは許可
+ダイアログは一切出ない。以下の2通りで確認済み:
+
+- `OtegamiM9PushSettingsUITests` の有効化フロー
+  (`registerForRemoteNotifications()` を実際に呼ぶ) を先に実行してから
+  同じインストール状態に対して `simctl push` してみても、同じエラーで
+  拒否される。
+- 設定 → Apps → Otegami の詳細画面には Siri/検索/モバイルデータ通信は
+  出るが、**「通知」の項目自体が無い** — この iOS の設定アプリは
+  `usernoted` に一度も登録されていないアプリには通知トグルを一切表示
+  しない模様 (`xcrun simctl privacy --help` にも通知許可を付与する
+  service は存在しない。`App-prefs:` deep link もこの iOS では無効化
+  されており使えない)。
+
+修正には `PushTokenCenter.requestToken()` に
+`UNUserNotificationCenter.current().requestAuthorization(options: [.alert,
+.sound, .badge])` を追加し (`registerForRemoteNotifications()` と並行して
+呼ぶ)、それに伴うシステム許可ダイアログを XCUITest 側で accept する処理
+(`dismissSavePasswordPromptIfNeeded` と同種の springboard "許可" タップ)
+を足す必要がある。**この一行は `Support/PushTokenCenter.swift` — 今回の
+タスクで編集を許可された範囲の外 — への変更が要るため、このセッションでは
+あえて加えていない。** 対応方針は決まっているので、範囲を広げて良ければ
+次のセッションで数分の作業。
+
+現状 `scripts/verify-ios-push-simulated.sh` は、アカウント追加・
+`accountId`/`uidNext` の解決・ペイロード構築までは実行して確認し (bundle
+id 誤検出バグも含め、実際に動かして直した)、最初の `simctl push` で
+上記の原因を名指しした診断メッセージを出して明示的に失敗するようにして
+ある — 生の `UNErrorDomain` ダンプだけを残して黙って止まるより、次に
+このスクリプトを触る人(自分自身を含む)が原因調査からやり直さずに済む
+ようにするため。
+
+このブロッカーとは独立に、`NotificationService.enrich(payload:)` の
+「差出人/件名をどう書き換えるか」というロジック自体
+(`title(senderName:senderAddress:)`/`body(subject:)`) は
+`packages/OtegamiKit/Sources/PushRelayClient/NotificationEnrichment.swift`
+に切り出し、`NotificationEnrichmentTests` (`swift test` で毎回実行される
+`make test` に含まれる) で単体検証済み — 名前が空文字列/`nil` の場合の
+アドレスへのフォールバック、件名が空文字列/`nil` の場合に汎用フォール
+バックを上書きしないこと、を確認している。`NotificationService.swift`
+自体は `OtegamiAppGroup.swift` の既存の前例 (Extension 側は project.yml の
+依存関係の都合で別ターゲットの型を直接 import できないため、同一内容の
+コピーを持つ) に倣い、同じロジックのミラーコピーを private に持つ形にした。
+
 ## macOS 検証 (M10)
 
 M1–M9 の macOS 検証は `make mac` (ビルド確認のみ) に留まっていた。M10 で
@@ -1586,3 +1710,84 @@ app.launch()` を呼んでも、以前 `+=` で追加したフラグが残った
   では push で画面が切り替わった後、以前キャッシュしたサイドバー行の
   座標解決が失敗する — を1度発見・修正、`testAddSecondAccountImmediatelyAfterFirst`
   も上と同じ Dovecot 認証タイムアウトを1回踏んだが再実行で再現せず)。
+
+## macOS QA スイープ: 実際に起動・操作しての検証 (M10 以降の変更の macOS 影響確認)
+
+M10 macOS 検証以降、iOS compact 幅を主眼にした大量の修正 (状態復元まわり、
+`SidebarView`/`MessageListView` の `List(selection:)` → Button 駆動化、
+`ThreadDetailView` の `GeometryReader` 高さ制御) が入ったが、macOS 側は
+`make mac`(ビルド確認のみ) に留まっていた。このセッションで初めて
+`.claude/skills/verify/SKILL.md`(M10 節) の手法 — `open -n -a`/`nohup` で
+起動、`screencapture -x` + `sips --cropOffset` でスクリーンショット、
+mytty の verify スキルに倣った CGEvent ベースの `driver.swift` (scratchpad
+にビルド) でクリック/キー入力を駆動 — を使って実操作した。
+
+### 手順の要点 (次回の参考用)
+
+```sh
+make mac
+APP=$(ls -d ~/Library/Developer/Xcode/DerivedData/Otegami-*/Build/Products/Debug/Otegami.app | head -1)
+nohup "$APP/Contents/MacOS/Otegami" > /tmp/otegami-verify/mac-stdout.log 2>&1 &
+# driver windows <pid> で AXUIElement 経由のウィンドウ座標一覧
+# driver click/key/type で CGEvent 合成
+# screencapture -x → sips -c <H> <W> --cropOffset <Y*2> <X*2> (retina は物理ピクセルなので論理座標を2倍)
+```
+
+- ウィンドウ位置は `osascript`(`System Events`) で固定してから座標計算する
+  のは M10 節と同じだが、**`window 1`(インデックス指定) は使わないこと** —
+  Composer など複数ウィンドウが同時に存在しうる状態で `window 1` を使うと
+  「その時点でフロントの window」を指してしまい、意図しないウィンドウの
+  位置/サイズを書き換えてしまう (実際に踏んだ: Composer がフロントの
+  タイミングで `tell process "Otegami" to set size of window 1 to {1200,
+  800}` を実行してしまい、Composer の永続化ウィンドウフレーム
+  (`~/Library/Preferences/com.mtkg.otegami.plist` の `NSWindow Frame
+  composer-AppWindow-1`) がメインウィンドウと同じ 1200x800 に書き換わって
+  以降のすべての Composer 起動がその壊れたフレームを継承し続けた)。
+  `tell process "Otegami" to set size of window "すべての受信トレイ" to
+  {...}` のようにウィンドウ名を明示すること。
+- Composer ウィンドウは `.defaultSize(560, 520)` だが、起動位置は環境依存
+  (前回終了位置の復元など) で必ずしも固定ではない — ボタン座標はウィンドウ
+  原点からの相対オフセットとして計算し、`driver windows <pid>` で毎回
+  実際の原点を読み直すこと。固定座標を仮定すると、上記のフレーム破損
+  以外の理由でも簡単にずれる。
+- **このセッションの開発機は、同じデスクトップ上で他の自動化ツール
+  (mytty のフローティングターミナルパネル、同一セッション内の並行
+  エージェントの操作) が同時に動いていることがあり、`screencapture` の
+  クロップ範囲に無関係な他アプリのウィンドウが写り込むことを実際に
+  確認した** (mytty のターミナル内容がそのままキャプチャに写った回が
+  あった)。座標ベースのクリック自動化はこの手の外乱に弱いため、
+  重要な操作 (特に確認ダイアログのボタンクリック) は失敗を非致命な
+  `warn` として扱い、スクリーンショットでの目視確認と併用するのが
+  現実的 (`scripts/verify-macos-qa.sh` のコメント参照)。
+
+### 見つけて修正したバグ (macOS 固有コード)
+
+1. **Composer をタイトルバーの赤信号ボタンで閉じると、未保存の内容が
+   確認なしに失われる** (`docs/roadmap.md` 記載の既知の制約だった) —
+   `ComposerView.swift` に `WindowCloseInterceptor`(`NSViewRepresentable`
+   + `NSWindowDelegate.windowShouldClose(_:)`) を追加し、titlebar close
+   も iOS の「キャンセル」ボタンと同じ保存/破棄確認を通るようにした。
+2. **`ComposerLaunchPayload.new` が `static let` で UUID を使い回しており、
+   macOS の `WindowGroup(for:)` の同一性判定に使われる結果、直前に破棄
+   した Composer の入力内容が次の「新規作成」に漏れて残っていた** —
+   `static var`(呼び出しごとに新しい `UUID`) に変更。
+3. **macOS にはメッセージ一覧の右クリックメニューが無く、`.swipeActions`
+   (iOS 専用、macOS では何もレンダリングしない) 頼みだった既読切替/削除が
+   一覧から一切できなかった** — `MessageListView` に `#if os(macOS)
+   .contextMenu` を追加し、既存の `toggleRead(_:)`/`deleteThread(_:)` を
+   再利用。
+
+3件とも実操作 (クリック→スクリーンショット→目視) で修正前の再現と修正後の
+解消を確認済み。詳細・コード上のコメントは各ファイル参照。
+
+### 見つけたが直さなかったバグ (macOS 固有コードの範囲外)
+
+インライン `cid:` 画像 (`16-cid-inline-image.eml`) が macOS で解決に失敗し、
+壊れた画像アイコンのまま表示される件を発見・原因特定まで行ったが、原因は
+`CIDURLRewriter`/`CIDSchemeHandler` という iOS/macOS 共有コード側にあり
+(`otegami-cid://<contentId>` の `contentId` に `@` を含む Content-ID を
+そのまま `host` として使うと `URL` パーサが `@` を userinfo 区切りと解釈
+して `host` が壊れる — `URL(string: "otegami-cid://otegami-logo@otegami
+.test")?.host` が `"otegami.test"` になることを確認済み)、今回のタスクの
+「macOS 固有コードのみ」というスコープの外だったため修正していない。
+詳細な原因・再現手順・推奨対応は `docs/qa-findings.md` に記録した。
