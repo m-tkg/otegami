@@ -1297,3 +1297,196 @@ guard !(refetched.isEmpty && status.messageCount > 0) else { return 0 }
   この現象に遭遇したら、`xcrun simctl io booted screenshot` をポーリング中の
   シェルから並行して撮る (M6/M7 節の手法) ことで「本当に空白のまま固まって
   いるのか、単に遅いだけなのか」を切り分けられるはずである。
+
+## 実機バグ: kill→起動直後にスレッド詳細へ勝手に遷移し、レイアウトが崩壊する
+
+ユーザー報告 (iPhone 17 Pro, iOS 26): アプリを kill → 起動すると、
+
+1. 何もタップしていないのにスレッド詳細画面 (`ThreadDetailView`) へ勝手に
+   遷移する。
+2. その詳細画面のレイアウトが崩壊する — 画面上 2/3 が空白、メッセージ行が
+   画面最下部に押し付けられ、展開メッセージの本文が下端で見切れる。
+3. 戻ってメッセージ一覧に戻ると、一番上のスレッド行だけタップが効かない。
+4. さらにサイドバー → (アカウント個別の) INBOX をタップすると一覧に何も
+   出ない。
+
+4 つとも見た目は別々の症状だが、調査の結果 **2 つの根本原因** に帰着した
+(3・4 は 1 と同じ `List(selection:)` 不安定性の別の現れ)。シミュレータ
+(`simctl erase` 直後の真っさらな状態、iPhone 17 Pro Max) で全て再現し、
+修正後は同じ手順で再現しなくなったことを XCUITest
+(`OtegamiColdLaunchAndSidebarSelectionUITests`) で確認した。
+
+### 原因1 (症状 1・2): 復元機能が `List(selection:)` の不安定さと組み合わさり、
+コールドランチのたびに壊れた状態から始まる
+
+`RootView` は M2/M4 で「最後に開いていたスレッドを `@AppStorage` に憶えて
+おき、次の起動でも再現する」設計だった (`scripts/verify-ios-m2.sh`/
+`verify-ios-m4.sh` の元々の検証項目そのもの)。まず素朴に「起動後最初の
+1回だけ復元をスキップする」ガード (`hasSkippedInitialRestoration` という
+one-shot フラグ) を試したが、実機バグは直らなかった —
+`OtegamiColdLaunchAndSidebarSelectionUITests` で `simctl erase` 直後の
+クリーンな状態から再現するテストを書き、以下を突き止めた:
+
+- `SidebarView` は M4 以降唯一 `List(selection: $selection)` を使い続けて
+  いた箇所だった (`MessageListView` は `List(selection:)` がこの環境の
+  シミュレータ/実機トールチェーンで不安定という理由で、既に M2 の時点で
+  行ごとの `Button` 直書きに切り替えていた — `.claude/skills/verify/
+  SKILL.md` の M2 節「pitfall #2」)。
+- アカウント/メールボックス一覧が非同期にロードされてくる間、
+  `SidebarView.observeMailboxes(accountId:)` が `selection == nil` の
+  たびに `selection = .unifiedInbox` を再代入するが、`List(selection:)`
+  自体が `selection` を `nil` に巻き戻すことがある — 1回だけではなく、
+  起動直後の短い間に複数回。`RootView` 側の `.task(id: selection) {
+  restoreLastOpenedThreadIfNeeded() }` は `selection` が変わるたびに
+  再実行されるため、"最初の1回だけスキップ" では 2 回目以降の巻き戻し→
+  再設定サイクルで復元が発火してしまう — これが「skip の1回目は正しく
+  スキップしたのに、後続の巻き戻しでやっぱり復元される」という, 実機で
+  ユーザーが見た挙動そのものだった。
+
+修正: `@AppStorage` によるプロセスをまたいだ永続化そのものをやめ、
+プレーンな `@State`(プロセス内メモリのみ、`[String: Int64]`)に置き換えた
+(`OtegamiApp.swift`, `lastOpenedThreadIdBySelectionKey`)。コールドランチは
+常にこの辞書が空の状態から始まるため、`selection` がどれだけ起動直後に
+振動しても "復元元になるデータがそもそも存在しない" — 呼び出し回数を数える
+ヒューリスティックではなく構造的に不可能にした。同一セッション内で
+サイドバーの選択を行き来する分の「前回開いていたスレッドを覚えておく」
+利便性自体は維持している。
+
+症状 2 (レイアウト崩壊) は症状 1 の直接の結果ではなく、`ThreadDetailView`
+自体の独立したバグだった: `HTMLMessageView`/`MessageView` の `content` は
+`.frame(maxWidth: .infinity, maxHeight: .infinity)` で「親が提案する高さを
+埋める」設計 (M2 時点、`detail:` カラムに直接収まっていた頃は正しかった)
+だが、M4 で `ThreadDetailView` 自身の `ScrollView`/`LazyVStack` の中に
+`MessageView` をネストするようになった結果、`ScrollView` はスクロール軸に
+沿って `nil` (無制限) の高さしか提案しない。`WKWebView` には意味のある
+intrinsic content size がなく (このビュー自身のコメント通り、内部で
+スクロールさせる設計を選んだ理由)、無制限提案の下ではほぼ 0 に潰れる。
+以前あった `.frame(minHeight: 240)` は「MessageView 全体に最低 240pt」
+しか保証せず、ヘッダがその大半を食うため HTML 本文にはほんの数十 pt しか
+残らない — 本文が数行で見切れる原因。かつスレッド全体の実高さが画面より
+大幅に短くなり、`.defaultScrollAnchor(.bottom)` と組み合わさって上部に
+大きな空白が生まれる (実機でユーザーが見た「上 2/3 が真っ黒」)。
+
+修正: `ThreadDetailView` を `GeometryReader` で包み、展開中の行の高さを
+コンテナ自身の実測サイズから直接計算するようにした
+(`expandedMessageHeight(in:)`、`max(360, containerSize.height - 160)`)。
+`WKWebView` に具体的で十分な高さ予算を渡すことで内部スクロールが正しく
+機能し、スレッド全体の実高さも画面をほぼ埋めるようになるため、上部の
+空白も自然に解消する。
+
+### 原因2 (症状 3・4): `SidebarView` の `List(selection:)` はタップ後も
+不安定 — livelock で `MessageListView` の初回フェッチが永遠に完了しない
+
+原因1の調査で使った一時的なデバッグカウンタ (`MessageListView` に
+`observeThreads()` の呼び出し回数・yield 回数・エラーを表示する
+`navigationTitle` を仕込んだもの) で、サイドバーのメールボックス行を
+タップした後の状態を直接観察したところ:
+
+```
+calls=1 yields=0 err=nil
+```
+
+90 秒待っても変化しない。`ThreadQuery.request(mailboxId:)` が生成する
+SQL をアプリ外から `sqlite3` CLI で直接実行すると即座に正しい結果 (10
+スレッド) が返り、アプリの GRDB `DatabasePool` を並行してポーリングしても
+`message`/`thread` テーブルの中身は終始一定 — データ層・SQL は無罪。
+`observeThreads()` の中で `ThreadQuery.summariesObservation(...)` を
+呼ぶ*前*に素の `dbWriter.read { ... }` を1回追加したところ、その
+一発読み込み自体が `CancellationError()` を投げていた: つまり
+`observeThreads()` を実行している `Task` (`MessageListView`'s
+`.task(id: ObservationKey(...))`) が、初回の DB アクセスすら終わらない
+うちに毎回キャンセルされていた。
+
+原因1と同じ `List(selection:)` の不安定性がここでも起きている:
+サイドバーの行をタップして `selection` が変わると `RootView` の
+`content:` クロージャは `if let selection { MessageListView(...) } else {
+ContentUnavailableView(...) }` なので、`selection` が (タップ後の巻き
+戻しで) 一瞬 `nil` に振動するたびに `MessageListView` そのものが
+アンマウント→リマウントされる。新しくマウントされたインスタンスは
+`@State` がまっさらなので `.task(id:)` が新たに1回だけ発火するが、それも
+また `selection` の次の巻き戻しでアンマウントされる — この
+アンマウント→リマウントのサイクルが収束しない限り、`observeThreads()` は
+一度も最初のデータベース読み込みを完了できない (livelock)。90 秒待っても
+直らなかったのはこのため — 「遅い」のではなく「終わらない」。
+
+修正: `SidebarView` の `List(selection: $selection)` を廃止し、
+`MessageListView` が既に採用していたのと同じパターン (行ごとの `Button`
+で `selection` を直接更新) に変更した。選択中の行のハイライトは
+`.listRowBackground(selection == ... ? Color.accentColor.opacity(0.15) :
+nil)` で手動再現している。修正後、同じシナリオで
+`observeThreads()` は 1 秒程度で正常に完了するようになった
+(`RESOLVED_AFTER=1.08` — 修正前は 90 秒待っても `CancellationError` の
+まま)。
+
+### テスト結果
+
+- `swift test` (`packages/OtegamiKit`、フィルタなし全体) / `make test`:
+  green (15 tests, 1 suite — 変更した Swift アプリ側コードは
+  `apps/Otegami` にあり `OtegamiKit` の単体テスト対象外だが、回帰確認の
+  ため実行)。
+- `make mac` / `make ios` / `make ios-device`: build succeeded。
+- `OtegamiColdLaunchAndSidebarSelectionUITests` (新規、両テストとも
+  green): `simctl erase` 直後のクリーンな状態から、アカウント登録 →
+  インライン画像つき HTML メールのスレッドを開く → kill → 起動、で
+  (a) 一覧から始まる (`threadDetail.scrollView` が存在しない)、
+  (b) 一覧の一番上の行がタップで開く、(c) 展開メッセージのヘッダが画面
+  上半分に収まる (レイアウト崩壊していない) ことを確認。もう1つのテスト
+  では、サイドバーの (統合受信トレイではなく) アカウント個別 INBOX 行を
+  タップして一覧が実際にそのメールボックスのスレッドで埋まることを確認。
+- `scripts/verify-ios-m1.sh`: green (regression, `BUNDLE_ID=com.mtkg.otegami`
+  — この開発機では `Config/Local.xcconfig` が `OTEGAMI_BUNDLE_ID` を
+  上書きしている)。
+- `scripts/verify-ios-m4.sh`: 4 フェーズ全て green
+  (regression)。このスクリプトと `verify-ios-m2.sh` はどちらも
+  `xcrun simctl uninstall` (アプリコンテナのみ削除) でクリーンな状態を
+  作っていたが、M11 で判明した「iCloud KVS/Keychain はコンテナ外なので
+  uninstall では消えない」問題によりこのセッション中に実際に
+  `OtegamiM4SetupUITests`/`OtegamiM2VerificationUITests` が「空アカウント
+  状態を期待したのにアカウントが復活していた」で落ちた — `verify-ios-m1.sh`
+  が既に採用していた `simctl shutdown` + `simctl erase` に両スクリプトとも
+  揃えた。また `OtegamiM4ThreadDetailUITests`/`OtegamiM4SwipeReadUITests`
+  が対象のスレッド行をスクロールなしの `waitForExistence` だけで探して
+  いたため、`dev/mailstack/seed/fixtures/` が M2-M8 で増えた影響で行が
+  画面外に出て見つからない/タップしても反応しない失敗も出た —
+  `waitForElementScrollingIfNeeded` を使うよう修正 (`OtegamiM4SwipeReadUITests`
+  はさらに、スクロール直後に行が画面端に来て `swipeRight()` が反応しない
+  という `OtegamiM3SwipeActionsUITests` 既知のパターンにも遭遇したため、
+  同じ「もう一段スクロールして端から離す」対処を追加)。いずれも本タスクの
+  コード修正 (原因1・2) 自体とは無関係な、この開発機特有の環境要因/
+  蓄積したシード件数に起因する事前からの脆さで、`popBackOnceIfNeeded`
+  呼び出しが (復元廃止により) 意味が変わった (「detail→content の1段
+  ポップ」ではなく「content→sidebar への1段ポップ」に変わり、呼ぶと
+  1段行き過ぎるようになった) 箇所も合わせて `OtegamiM4SwipeReadUITests`/
+  `OtegamiM4UnifiedInboxUITests`/`OtegamiM8CIDImageUITests` から取り除いた。
+- `scripts/verify-ios-m2.sh`: green (regression — 上記と同じ `simctl erase`
+  対応に加え、オフライン確認テスト自体を「コールドランチでの復元」から
+  「一覧をタップして開く」に書き換えた。1回だけ Dovecot 認証がタイム
+  アウトして失敗したが、`docker compose restart dovecot` 後の再実行で
+  再現せず — 本タスクの変更と無関係な dev mailstack 側の一過性の問題と
+  判断)。
+
+### 実機で残る確認事項
+
+- このセッション中、実機 (`masakiPhone17`, UDID
+  `620080DD-019A-5477-8F2D-96E9E0C8C538`) は当初 `devicectl` から
+  `connected` だったが、作業の途中で `unavailable` になった (USB/ネット
+  ワーク接続が物理的に切れた模様で、こちらからは再接続できない)。
+  `make ios-device` によるビルド・署名は成功しており、`dist` 相当の
+  `.app` は用意できているが、`devicectl device install app` での実機への
+  インストールはできていない。ユーザー側で実機を再接続した後、
+  `xcodebuild -project apps/Otegami/Otegami.xcodeproj -scheme Otegami
+  -destination 'platform=iOS,id=620080DD-019A-5477-8F2D-96E9E0C8C538'
+  build` (または Xcode から直接) でインストールし、以下を確認してほしい:
+  1. アカウント登録済みの状態でスレッドを開き、アプリを kill → 再起動
+     して、一覧から始まること (詳細へ勝手に遷移しないこと)。
+  2. HTML メール (特にインライン画像つきのもの) のスレッド詳細を開いた
+     ときに、画面上部に大きな空白ができず、本文が正しく表示されること。
+  3. 一覧の一番上の行を含め、どの行もタップで開けること。
+  4. サイドバーでアカウント個別の INBOX やその他のメールボックスに
+     切り替えたときに、一覧がそのメールボックスの内容で埋まること
+     (空のままにならないこと)。
+- `SidebarView` の選択行ハイライトは `List(selection:)` のネイティブな
+  見た目を手動の `.listRowBackground` で近似したもの — macOS
+  (`List(selection:)` がキーボード操作や見た目の面でより重要な環境) で
+  違和感がないか、実際の見た目を確認してほしい (`make mac` でのビルド・
+  起動は成功しているが、このセッションでは自動検証していない)。
