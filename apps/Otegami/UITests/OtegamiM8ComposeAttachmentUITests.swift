@@ -25,9 +25,9 @@ final class OtegamiM8ComposeAttachmentUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        returnToSidebarRootIfNeeded(in: app)
+        returnToMailTabRootIfNeeded(in: app)
 
-        let composeButton = app.buttons["sidebar.composeButton"]
+        let composeButton = app.buttons["mail.composeButton"]
         XCTAssertTrue(composeButton.waitForExistence(timeout: 10), "Compose toolbar button should exist")
         composeButton.tap()
 

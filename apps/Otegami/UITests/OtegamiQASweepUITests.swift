@@ -16,9 +16,12 @@ import XCTest
 /// None of these tests use `-uiTestsAutoAdvanceToContent` — every relaunch
 /// below is a genuine, unflagged cold launch, so each one also doubles as
 /// extra churn-testing of the real (fixed) navigation behavior documented
-/// in `OtegamiColdLaunchAndSidebarSelectionUITests`: a cold relaunch lands
-/// on the sidebar root, and `navigateToUnifiedInboxIfNeeded(in:)` is the
-/// explicit, real tap that gets from there to the message list.
+/// in `OtegamiColdLaunchAndSidebarSelectionUITests`. Design-phase-2: a cold
+/// relaunch now lands directly on the Mail tab's message list (there is no
+/// separate "sidebar root" screen to tap through anymore — see that file's
+/// doc comment), so `navigateToUnifiedInboxIfNeeded(in:)` below is mostly a
+/// defensive existence check rather than the real navigating tap it used to
+/// be.
 final class OtegamiQASweepUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -26,12 +29,11 @@ final class OtegamiQASweepUITests: XCTestCase {
 
     /// Ensures the `test1` account exists (adding it, with the legacy
     /// auto-advance shortcut, only if genuinely starting from zero) and
-    /// leaves the app on the message list — via a real tap through the
-    /// sidebar root if that's where this process's own `app.launch()`
-    /// landed (the normal case once an account already exists from an
-    /// earlier test in this run).
+    /// leaves the app on the Mail tab's message list — reachable directly
+    /// once an account exists (design-phase-2: no sidebar root to tap
+    /// through anymore).
     private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
-        let emptyStateButton = app.buttons["sidebar.addAccountButton"]
+        let emptyStateButton = app.buttons["mail.addAccountButton"]
         if emptyStateButton.waitForExistence(timeout: 5) {
             addDovecotTest1Account(in: app)
             restartAppToRecoverTouchDelivery(app)
@@ -41,8 +43,9 @@ final class OtegamiQASweepUITests: XCTestCase {
         // persists across every `.launch()` on the same instance, so the
         // legacy `-uiTestsAutoAdvanceToContent` flag `restartAppToRecoverTouchDelivery`
         // sets above would otherwise leak into this test's own later *real*
-        // kill/relaunch cycles, silently defeating the "must land on the
-        // sidebar root, not auto-navigate" assertions those cycles make.
+        // kill/relaunch cycles — harmless for iOS's Mail-tab-first structure
+        // specifically, but still worth clearing so these tests exercise the
+        // actual unflagged cold-launch path.
         app.launchArguments.removeAll { $0 == "-uiTestsAutoAdvanceToContent" }
         navigateToUnifiedInboxIfNeeded(in: app)
     }
@@ -50,11 +53,11 @@ final class OtegamiQASweepUITests: XCTestCase {
     // MARK: - Scenario 1: messy kill/relaunch cycles from various screens
 
     /// Kills and relaunches the app 3x in a row from the plain message
-    /// list, asserting each time that the sidebar root is reachable (the
-    /// fixed cold-launch behavior — no auto-navigation into content) and,
-    /// after tapping into the unified inbox, that its first row is
-    /// tappable (not the "top row untappable" symptom from the cold-launch/
-    /// livelock bug this project already found once).
+    /// list, asserting each time that the Mail tab's message list is
+    /// reachable directly (the fixed cold-launch behavior — no stuck
+    /// loading/empty state) and that its first row is tappable (not the
+    /// "top row untappable" symptom from the cold-launch/livelock bug this
+    /// project already found once).
     func testKillRestartCycleFromMessageList() throws {
         let app = XCUIApplication()
         app.launch()
@@ -65,9 +68,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         for cycle in 1...3 {
             app.terminate()
             app.launch()
-            let sidebarList = app.collectionViews["sidebar.list"]
-            XCTAssertTrue(sidebarList.waitForExistence(timeout: 20), "cycle \(cycle): sidebar root did not reappear after cold relaunch")
-            XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "cycle \(cycle): message list not reachable after tapping the unified inbox row")
+            XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "cycle \(cycle): message list did not reappear after cold relaunch")
             let firstRow = list.cells.firstMatch
             XCTAssertTrue(firstRow.waitForExistence(timeout: 20), "cycle \(cycle): no rows in message list")
             // Confirm the top row is actually tappable (not just present) —
@@ -87,8 +88,10 @@ final class OtegamiQASweepUITests: XCTestCase {
     /// Same kill/relaunch churn, but from inside an open thread detail
     /// each time (the exact screen the cold-launch restoration bug was
     /// triggered from) — confirms the fix holds up over repeated cycles,
-    /// not just once, and that each relaunch lands on the sidebar root
-    /// rather than resuming any pushed column.
+    /// not just once. Design-phase-2: there's no `@AppStorage`-restored
+    /// selection left at all for iOS (`MailTabView.selectedThreadId` is a
+    /// plain `@State`), so this now asserts the message list reappears
+    /// directly and the detail pane is never resumed.
     func testKillRestartCycleFromThreadDetail() throws {
         let app = XCUIApplication()
         app.launch()
@@ -106,22 +109,21 @@ final class OtegamiQASweepUITests: XCTestCase {
             app.terminate()
             app.launch()
 
-            // Cold relaunch must always land on the sidebar root, never
-            // resume the detail pane (the originally-fixed bug) nor
-            // auto-navigate into the message list (the follow-up bug).
-            let sidebarList = app.collectionViews["sidebar.list"]
-            XCTAssertTrue(sidebarList.waitForExistence(timeout: 20), "cycle \(cycle): relaunch did not land on the sidebar root")
+            // Cold relaunch must always land on the message list directly,
+            // never resume the detail pane (the originally-fixed bug).
+            XCTAssertTrue(list.waitForExistence(timeout: 20), "cycle \(cycle): relaunch did not show the message list")
             XCTAssertFalse(app.scrollViews["threadDetail.scrollView"].exists, "cycle \(cycle): relaunch incorrectly restored the thread detail pane")
-            XCTAssertFalse(list.exists, "cycle \(cycle): relaunch incorrectly auto-navigated into the message list")
-
-            XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "cycle \(cycle): could not navigate back into the message list for the next cycle")
         }
     }
 
-    /// Kills and relaunches while the search field has text entered (but no
-    /// submitted query) and while a search's empty-results state is
-    /// showing — screens with transient, non-GRDB-backed state that a
-    /// relaunch should just discard cleanly rather than getting stuck on.
+    /// Kills and relaunches while the Search tab has text entered (but no
+    /// submitted query) — design-phase-2 moved search into its own tab
+    /// (`SearchTabView`, no longer `.searchable` on the Mail tab's list),
+    /// so "mid-search" now means "on the Search tab with in-flight text",
+    /// not a state on the message list screen itself. Transient,
+    /// non-GRDB-backed state either way — a relaunch should discard it
+    /// cleanly (back to the Mail tab, per `TabView`'s own default
+    /// first-tab-on-launch behavior) rather than getting stuck.
     func testKillRestartCycleFromSearchInProgress() throws {
         let app = XCUIApplication()
         app.launch()
@@ -129,6 +131,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
+        app.tabBars.buttons["検索"].tap()
         let searchField = app.searchFields.firstMatch
         XCTAssertTrue(searchField.waitForExistence(timeout: 10))
         searchField.tap()
@@ -141,9 +144,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         app.terminate()
         app.launch()
 
-        let sidebarList = app.collectionViews["sidebar.list"]
-        XCTAssertTrue(sidebarList.waitForExistence(timeout: 20), "relaunch after killing mid-search did not land on the sidebar root")
-        XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "relaunch after killing mid-search did not lead to a usable message list")
+        XCTAssertTrue(list.waitForExistence(timeout: 20), "relaunch after killing mid-search did not land on the Mail tab's message list")
         let firstRow = list.cells.firstMatch
         XCTAssertTrue(firstRow.waitForExistence(timeout: 20), "relaunch after killing mid-search left the message list empty")
     }
@@ -182,51 +183,46 @@ final class OtegamiQASweepUITests: XCTestCase {
     }
 
     /// Rapidly switches between the unified inbox and an account's own
-    /// INBOX in the sidebar, several times without waiting — the
+    /// INBOX via `FolderListSheet`, several times without waiting — the
     /// "統合トレイ⇄各 mailbox 高速切替" scenario, looking for a livelock
-    /// variant of the already-fixed SidebarView List(selection:) bug.
-    ///
-    /// On this compact-width device, sidebar and content are never
-    /// simultaneously on screen (a single-column push stack, not a
-    /// side-by-side layout) — so "switching" necessarily means popping
-    /// back to the sidebar and tapping the other row each time, re-querying
-    /// the row fresh after every pop rather than reusing a cached
-    /// `XCUIElement`/coordinate from before the previous forward push: a
-    /// pushed-away sidebar row's coordinate can fail to resolve entirely
-    /// ("Failed to get matching snapshot") once it's no longer the front-
-    /// most screen, which is a fact about this navigation style, not
-    /// itself the bug being tested for here.
-    func testRapidSidebarMailboxSwitching() throws {
+    /// variant of the already-fixed `SidebarView` `List(selection:)` bug
+    /// (design-phase-2: the folder picker moved into a sheet, but the same
+    /// underlying "does rapidly re-driving the selection ever get the list
+    /// stuck" risk still applies to `MailTabView.mailSelection`).
+    func testRapidMailboxSwitchingViaFolderSheet() throws {
         let app = XCUIApplication()
         app.launch()
         ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
-        let sidebarList = app.collectionViews["sidebar.list"]
+        let folderTitleButton = app.buttons["mail.folderTitleButton"]
+        let folderList = app.collectionViews["folderSheet.list"]
 
         for i in 1...5 {
-            returnToSidebarRootIfNeeded(in: app)
-            XCTAssertTrue(sidebarList.waitForExistence(timeout: 10), "iteration \(i): sidebar not reachable")
-            let inboxRow = sidebarList.cells.containing(NSPredicate(format: "label CONTAINS %@", "INBOX")).firstMatch
+            folderTitleButton.tap()
+            XCTAssertTrue(folderList.waitForExistence(timeout: 10), "iteration \(i): folder sheet not reachable")
+            let inboxRow = folderList.cells.containing(NSPredicate(format: "label CONTAINS %@", "INBOX")).firstMatch
             XCTAssertTrue(inboxRow.waitForExistence(timeout: 10), "iteration \(i): INBOX row not found")
             inboxRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.05)
-            // No settle wait — immediately pop back and switch again.
-            returnToSidebarRootIfNeeded(in: app)
-            let unifiedRow = sidebarList.cells.containing(NSPredicate(format: "label CONTAINS %@", "すべての受信トレイ")).firstMatch
+            // No settle wait — immediately reopen the sheet and switch back.
+            folderTitleButton.tap()
+            XCTAssertTrue(folderList.waitForExistence(timeout: 10), "iteration \(i): folder sheet not reachable (second open)")
+            let unifiedRow = folderList.cells.containing(NSPredicate(format: "label CONTAINS %@", "すべての受信トレイ")).firstMatch
             XCTAssertTrue(unifiedRow.waitForExistence(timeout: 10), "iteration \(i): unified inbox row not found")
             unifiedRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.05)
         }
 
         // After the mashing settles, the list must show real content, not
         // be stuck empty/loading forever (the livelock symptom).
-        XCTAssertTrue(list.waitForExistence(timeout: 20), "message list pane did not reappear after rapid sidebar mailbox switching")
+        XCTAssertTrue(list.waitForExistence(timeout: 20), "message list pane did not reappear after rapid mailbox switching")
         let firstRow = list.cells.firstMatch
-        XCTAssertTrue(firstRow.waitForExistence(timeout: 25), "message list stayed empty after rapid sidebar mailbox switching (possible livelock)")
+        XCTAssertTrue(firstRow.waitForExistence(timeout: 25), "message list stayed empty after rapid mailbox switching (possible livelock)")
     }
 
     /// Types a search query, cancels immediately, types a different query —
-    /// the "検索入力→即キャンセル→再入力" scenario.
+    /// the "検索入力→即キャンセル→再入力" scenario. Design-phase-2: exercised
+    /// on the Search tab now (`SearchTabView`), not the Mail tab's list.
     func testSearchTypeCancelRetype() throws {
         let app = XCUIApplication()
         app.launch()
@@ -234,6 +230,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
+        app.tabBars.buttons["検索"].tap()
         let searchField = app.searchFields.firstMatch
         XCTAssertTrue(searchField.waitForExistence(timeout: 10))
         searchField.tap()
@@ -250,7 +247,8 @@ final class OtegamiQASweepUITests: XCTestCase {
             app.swipeDown()
         }
 
-        XCTAssertTrue(list.waitForExistence(timeout: 10), "list did not reappear after cancelling search")
+        let searchList = app.collectionViews["search.list"]
+        XCTAssertTrue(searchList.waitForExistence(timeout: 10), "search list did not reappear after cancelling search")
 
         searchField.tap()
         searchField.typeText("打ち")
@@ -274,7 +272,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        let emptyStateButton = app.buttons["sidebar.addAccountButton"]
+        let emptyStateButton = app.buttons["mail.addAccountButton"]
         if emptyStateButton.waitForExistence(timeout: 5) {
             openAccountSetup(in: app)
             fillDovecotAccountForm(in: app)
@@ -305,12 +303,15 @@ final class OtegamiQASweepUITests: XCTestCase {
         list.swipeUp()
         list.swipeDown()
 
+        // Design-phase-2: search lives on its own tab now.
+        app.tabBars.buttons["検索"].tap()
         let searchField = app.searchFields.firstMatch
         if searchField.waitForExistence(timeout: 5) {
             searchField.tap()
             searchField.typeText("a")
             app.swipeDown()
         }
+        app.tabBars.buttons["メール"].tap()
 
         // The app must still be responsive and eventually show the seeded
         // baseline once sync actually completes.
@@ -328,7 +329,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        let emptyStateButton = app.buttons["sidebar.addAccountButton"]
+        let emptyStateButton = app.buttons["mail.addAccountButton"]
         guard emptyStateButton.waitForExistence(timeout: 5) else {
             throw XCTSkip("An account already exists from a previous test in this run; this scenario needs a clean zero-account start.")
         }
@@ -337,26 +338,30 @@ final class OtegamiQASweepUITests: XCTestCase {
         // No settle wait — add the second account immediately while the
         // first's initial sync is presumably still running.
         restartAppToRecoverTouchDelivery(app)
-        returnToSidebarRootIfNeeded(in: app)
+        returnToMailTabRootIfNeeded(in: app)
         addDovecotTest2Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
-        returnToSidebarRootIfNeeded(in: app)
-        let sidebarList = app.collectionViews["sidebar.list"]
-        XCTAssertTrue(sidebarList.waitForExistence(timeout: 20))
+        // Both accounts should be present — design-phase-2: checked via
+        // `FolderListSheet` (each account gets its own `Section`) rather
+        // than the old always-visible sidebar.
+        returnToMailTabRootIfNeeded(in: app)
+        app.buttons["mail.folderTitleButton"].tap()
+        let folderList = app.collectionViews["folderSheet.list"]
+        XCTAssertTrue(folderList.waitForExistence(timeout: 20))
         XCTAssertTrue(
-            sidebarList.cells.containing(NSPredicate(format: "label CONTAINS %@", "Dovecot Test1")).firstMatch.waitForExistence(timeout: 10),
-            "test1 account missing from sidebar after adding test2 immediately afterward"
+            folderList.cells.containing(NSPredicate(format: "label CONTAINS %@", "Dovecot Test1")).firstMatch.waitForExistence(timeout: 10),
+            "test1 account missing from the folder sheet after adding test2 immediately afterward"
         )
         XCTAssertTrue(
-            sidebarList.cells.containing(NSPredicate(format: "label CONTAINS %@", "Dovecot Test2")).firstMatch.waitForExistence(timeout: 10),
-            "test2 account missing from sidebar after being added immediately after test1"
+            folderList.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Dovecot Test2")).firstMatch.waitForExistence(timeout: 10),
+            "test2 account missing from the folder sheet after being added immediately after test1"
         )
 
         // Both accounts' unified inbox should show real content, not an
         // empty list (the failure mode a corrupted partial sync would
         // produce, per docs/verify.md's thread-unassignment bug).
-        let unifiedRow = sidebarList.cells.containing(NSPredicate(format: "label CONTAINS %@", "すべての受信トレイ")).firstMatch
+        let unifiedRow = folderList.cells.containing(NSPredicate(format: "label CONTAINS %@", "すべての受信トレイ")).firstMatch
         XCTAssertTrue(unifiedRow.waitForExistence(timeout: 10))
         unifiedRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
         let list = app.collectionViews["messageList.list"]

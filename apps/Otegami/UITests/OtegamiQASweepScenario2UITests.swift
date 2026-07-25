@@ -11,7 +11,7 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
     }
 
     private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
-        let emptyStateButton = app.buttons["sidebar.addAccountButton"]
+        let emptyStateButton = app.buttons["mail.addAccountButton"]
         if emptyStateButton.waitForExistence(timeout: 5) {
             addDovecotTest1AccountWithSMTP(in: app)
             restartAppToRecoverTouchDelivery(app)
@@ -90,15 +90,15 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
     }
 
     /// "下書き保存→再編集→送信": compose something, dismiss (triggering the
-    /// save-or-discard prompt), save as a draft, reopen it from the
-    /// sidebar's "下書き" entry, and send it for real.
+    /// save-or-discard prompt), save as a draft, reopen it from
+    /// `FolderListSheet`'s "下書き" entry, and send it for real.
     func testDraftSaveReopenAndSend() throws {
         let app = XCUIApplication()
         app.launch()
         ensureDovecotTest1AccountExists(in: app)
-        returnToSidebarRootIfNeeded(in: app)
+        returnToMailTabRootIfNeeded(in: app)
 
-        let composeButton = app.buttons["sidebar.composeButton"]
+        let composeButton = app.buttons["mail.composeButton"]
         XCTAssertTrue(composeButton.waitForExistence(timeout: 20))
         composeButton.tap()
 
@@ -128,15 +128,10 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
 
         XCTAssertTrue(composerSheet.waitForNonExistence(timeout: 10), "Expected the composer to dismiss after saving as a draft")
 
-        // Reopen from the sidebar's "下書き" entry (only shown once at
+        // Reopen from `FolderListSheet`'s "下書き" entry (only shown once at
         // least one draft exists).
-        returnToSidebarRootIfNeeded(in: app)
-        let draftsRow = app.buttons.matching(NSPredicate(format: "identifier == %@", "sidebar.drafts")).firstMatch
-        XCTAssertTrue(draftsRow.waitForExistence(timeout: 20), "Expected a \"下書き\" entry to appear in the sidebar after saving a draft")
-        draftsRow.tap()
+        XCTAssertTrue(openDraftsList(in: app), "Expected a \"下書き\" entry to appear in the folder sheet after saving a draft")
 
-        let draftsSheet = app.otherElements["drafts.sheet"]
-        XCTAssertTrue(draftsSheet.waitForExistence(timeout: 10))
         let draftRow = app.collectionViews.cells.containing(NSPredicate(format: "label CONTAINS %@", "QAスイープ下書きテスト")).firstMatch
         XCTAssertTrue(draftRow.waitForExistence(timeout: 10), "Expected the saved draft to appear in the drafts list")
         draftRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
@@ -242,14 +237,11 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
         ensureDovecotTest1AccountExists(in: app)
-        returnToSidebarRootIfNeeded(in: app)
 
-        let settingsButton = app.buttons["sidebar.settingsButton"]
-        XCTAssertTrue(settingsButton.waitForExistence(timeout: 20))
-        settingsButton.tap()
-
-        let settingsSheet = app.otherElements["settings.sheet"]
-        XCTAssertTrue(settingsSheet.waitForExistence(timeout: 10))
+        // Design-phase-2: "設定" is its own tab now, not a gear-icon sheet.
+        let settingsTab = app.tabBars.buttons["設定"]
+        XCTAssertTrue(settingsTab.waitForExistence(timeout: 20))
+        settingsTab.tap()
 
         let accountRow = app.collectionViews.cells.containing(NSPredicate(format: "label CONTAINS %@", "Dovecot Test1")).firstMatch
         XCTAssertTrue(accountRow.waitForExistence(timeout: 10), "Expected the test1 account row in Settings")
@@ -272,13 +264,10 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
             "Expected the account row to disappear from Settings after deletion"
         )
 
-        let closeButton = app.buttons["settings.closeButton"]
-        if closeButton.waitForExistence(timeout: 5) { closeButton.tap() }
-
-        // Sidebar should now be back to the empty-account state (or at
-        // least no longer show test1's mailboxes) — confirm re-adding works
-        // cleanly.
-        returnToSidebarRootIfNeeded(in: app)
+        // "設定" is a permanent tab now — no sheet to close. Mail tab should
+        // now be back to the empty-account state (or at least no longer
+        // show test1's mailboxes) — confirm re-adding works cleanly.
+        returnToMailTabRootIfNeeded(in: app)
         addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
@@ -286,11 +275,14 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
         XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "Expected the message list reachable after re-adding the account")
         XCTAssertTrue(list.cells.firstMatch.waitForExistence(timeout: 20), "Expected the re-added account's mailbox to populate normally, not stay empty")
 
-        // No duplicate account section in the sidebar.
-        returnToSidebarRootIfNeeded(in: app)
-        let sidebarList = app.collectionViews["sidebar.list"]
-        XCTAssertTrue(sidebarList.waitForExistence(timeout: 20))
-        let test1Sections = sidebarList.staticTexts.matching(NSPredicate(format: "label == %@", "Dovecot Test1"))
+        // No duplicate account section — checked via `FolderListSheet`,
+        // which sections mailboxes by account exactly like the old sidebar
+        // did.
+        returnToMailTabRootIfNeeded(in: app)
+        app.buttons["mail.folderTitleButton"].tap()
+        let folderList = app.collectionViews["folderSheet.list"]
+        XCTAssertTrue(folderList.waitForExistence(timeout: 20))
+        let test1Sections = folderList.staticTexts.matching(NSPredicate(format: "label == %@", "Dovecot Test1"))
         XCTAssertEqual(test1Sections.count, 1, "Expected exactly one \"Dovecot Test1\" section header after delete+re-add, found \(test1Sections.count)")
     }
 }

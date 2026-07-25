@@ -25,7 +25,7 @@ final class OtegamiPushSimulatedSetupUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        let emptyStateButton = app.buttons["sidebar.addAccountButton"]
+        let emptyStateButton = app.buttons["mail.addAccountButton"]
         if emptyStateButton.waitForExistence(timeout: 5) {
             addDovecotTest1Account(in: app)
             restartAppToRecoverTouchDelivery(app)

@@ -66,6 +66,14 @@ struct MessageListView: View {
     /// to trigger it in the first place).
     var onSelectionModeChanged: (Bool) -> Void = { _ in }
 
+    /// Backstop for `scheduleUndo`'s delayed commit — see that method's doc
+    /// comment on why a background/terminate transition has to flush any
+    /// pending delete/archive immediately rather than letting the undo
+    /// window's `Task.sleep` run its course. Read via `.onChange` in `body`
+    /// (declaring `@Environment(\.scenePhase)` directly is enough; no
+    /// binding needed since this view never itself drives scene phase).
+    @Environment(\.scenePhase) private var scenePhase
+
     @State private var summaries: [ThreadSummary] = []
     @State private var isSyncing = false
     @State private var syncErrorMessage: String?
@@ -103,27 +111,26 @@ struct MessageListView: View {
 
     // MARK: - Undo (1h/1g: "即時反映＋Undo（トースト）")
 
-    /// A destructive action (delete/archive, single-row swipe or bulk) that
-    /// has already been applied to *this view's own displayed list*
-    /// (`pendingRemovalThreadIds`, below) but not yet committed to the
-    /// database/opQueue — see `scheduleUndo(threadIds:message:commit:)`'s
-    /// doc comment for the full design.
+    /// A destructive action (delete/archive, single-row swipe or bulk)
+    /// whose local database write has **already happened** — see
+    /// `commitDelete`/`commitArchive`'s doc comment for why this design
+    /// commits immediately rather than delaying the write itself (a real
+    /// data-loss bug the first version of this feature had). What
+    /// `scheduleUndo` actually delays is the *network* replay attempt;
+    /// `undo` reverses the local write and cancels the not-yet-replayed
+    /// opQueue rows if the user taps "元に戻す" before that.
     private struct PendingUndo {
         var threadIds: Set<Int64>
         var message: String
-        var commit: () async -> Void
+        var accountIds: Set<String>
+        var undo: () async -> Void
     }
     @State private var pendingUndo: PendingUndo?
     @State private var pendingUndoTask: Task<Void, Never>?
-    /// Threads hidden from `displayedSummaries` while a delete/archive is
-    /// "pending undo" — the underlying `message`/`thread` rows are still
-    /// fully intact in the database until `pendingUndo`'s `commit` actually
-    /// runs, so this is a *view-local* filter, not a real deletion.
-    @State private var pendingRemovalThreadIds: Set<Int64> = []
-    /// How long an undo toast stays up before its action actually commits.
-    /// 5s matches the common "Gmail-style" undo window long enough to
-    /// react to, short enough not to leave a destructive action feeling
-    /// unfinished.
+    /// How long an undo toast stays up before its queued opQueue rows are
+    /// allowed to actually replay to the server. 5s matches the common
+    /// "Gmail-style" undo window long enough to react to, short enough not
+    /// to leave a destructive action feeling unfinished.
     private static let undoWindow: Duration = .seconds(5)
 
     /// Restarts the thread observation whenever the selection changes *or*
@@ -148,18 +155,17 @@ struct MessageListView: View {
     /// What the `List` actually renders: search results while a query is
     /// active (macOS only — iOS never populates `searchText`, this view no
     /// longer hosts a search field there), the live `ThreadQuery`
-    /// observation otherwise, with any thread still inside its undo window
-    /// (`pendingRemovalThreadIds`) filtered out. Rows, `MessageListRow`,
-    /// and every swipe/bulk action are shared between the search-results
-    /// and normal-list cases — marking a search hit read or deleting it
-    /// works exactly like it does from the normal list.
+    /// observation otherwise. No separate "pending removal" filter needed —
+    /// `commitDelete`/`commitArchive` write to the database immediately, so
+    /// a deleted/archived thread is already gone from `summaries` via the
+    /// live observation by the time this is read (see those methods' doc
+    /// comment for why the undo window no longer delays the local write
+    /// itself). Rows, `MessageListRow`, and every swipe/bulk action are
+    /// shared between the search-results and normal-list cases — marking a
+    /// search hit read or deleting it works exactly like it does from the
+    /// normal list.
     private var displayedSummaries: [ThreadSummary] {
-        let base = isSearchActive ? searchResults : summaries
-        guard !pendingRemovalThreadIds.isEmpty else { return base }
-        return base.filter { summary in
-            guard let threadId = summary.thread.id else { return true }
-            return !pendingRemovalThreadIds.contains(threadId)
-        }
+        isSearchActive ? searchResults : summaries
     }
 
     /// "現在のメールボックス" only means something with one specific mailbox
@@ -275,6 +281,18 @@ struct MessageListView: View {
         }
         .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit)) {
             await observeThreads()
+        }
+        // Not required for correctness anymore (the local write already
+        // happened by the time a `PendingUndo` exists — see `commitDelete`/
+        // `commitArchive`'s doc comment), but backgrounding is also the
+        // natural point to give up on "undo" and let the already-queued
+        // opQueue rows replay right away instead of waiting out the rest of
+        // the window for no one to see.
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase != .active, let pendingUndo else { return }
+            pendingUndoTask?.cancel()
+            self.pendingUndo = nil
+            Task { await replayOpQueueSoon(accountIds: pendingUndo.accountIds) }
         }
         .alert(
             "同期エラー",
@@ -476,62 +494,82 @@ struct MessageListView: View {
 
     /// Bulk "移動" — see `selectionBottomBar`'s doc comment for why this is
     /// scoped to "アーカイブへ移動" rather than an arbitrary destination
-    /// picker.
+    /// picker. Each target thread's messages are moved (deleted locally,
+    /// `move` op enqueued) immediately, same as the swipe row's own
+    /// `archiveThread(_:)` — see `commitArchive`'s doc comment for why this
+    /// commits right away rather than waiting out the undo window first.
     private func archiveSelected() {
         let targets = selectedTargets()
         let ids = selectedThreadIds
+        let accountIds = Set(targets.map(\.thread.accountId))
         exitSelectionMode()
-        scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドをアーカイブしました") {
-            for summary in targets { await commitArchive(summary) }
+        Task {
+            var snapshots: [RemovedMessagesSnapshot] = []
+            for summary in targets {
+                if let snapshot = await commitArchive(summary) { snapshots.append(snapshot) }
+            }
+            guard !snapshots.isEmpty else { return }
+            scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドをアーカイブしました", accountIds: accountIds) {
+                for snapshot in snapshots { await undoRemoval(snapshot) }
+            }
         }
     }
 
     private func deleteSelected() {
         let targets = selectedTargets()
         let ids = selectedThreadIds
+        let accountIds = Set(targets.map(\.thread.accountId))
         exitSelectionMode()
-        scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドを削除しました") {
-            for summary in targets { await commitDelete(summary) }
+        Task {
+            var snapshots: [RemovedMessagesSnapshot] = []
+            for summary in targets {
+                if let snapshot = await commitDelete(summary) { snapshots.append(snapshot) }
+            }
+            guard !snapshots.isEmpty else { return }
+            scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドを削除しました", accountIds: accountIds) {
+                for snapshot in snapshots { await undoRemoval(snapshot) }
+            }
         }
     }
 
     // MARK: - Undo (1g/1h)
 
-    /// Optimistically hides `threadIds` from `displayedSummaries`
-    /// (`pendingRemovalThreadIds`) and shows an `UndoToast` for
-    /// `Self.undoWindow`; `commit` — the actual database mutation/opQueue
-    /// enqueue — only runs once that window elapses without the user
-    /// tapping "元に戻す" (`undoPending()`). Deliberately does *not* touch
-    /// the database at all until then: unlike a "delete then restore on
-    /// undo" design (which would need to reverse an opQueue entry that may
-    /// already have replayed to the server), this can never race a real
-    /// server commit — there's nothing to race until `commit` itself runs.
-    /// Only one undo toast is shown at a time; scheduling a new one while
-    /// an earlier one is still pending commits the earlier one immediately
-    /// rather than silently dropping it (a second destructive action while
-    /// the first's toast is still up shouldn't cancel the first's own
-    /// eventual effect).
-    private func scheduleUndo(threadIds: Set<Int64>, message: String, commit: @escaping () async -> Void) {
+    /// Shows an `UndoToast` for `Self.undoWindow`, after which the already-
+    /// queued opQueue rows are allowed to actually replay to the server
+    /// (`replayOpQueueSoon`) — see `commitDelete`/`commitArchive`'s doc
+    /// comment for why the local write driving what's actually visible on
+    /// screen has *already happened* by the time this is called, and only
+    /// the network side is what this delays. `undo` reverses that local
+    /// write and deletes the not-yet-replayed opQueue rows if the user taps
+    /// "元に戻す" (`undoPending()`) before the window elapses; if replay
+    /// already won the race (e.g. the account's IDLE loop or a manual
+    /// refresh replayed it independently), `undo`'s opQueue-row deletion is
+    /// simply a no-op (the rows are already gone) and only the local
+    /// restore applies — a rare, acceptable edge case, not silent data
+    /// corruption either way. Only one undo toast is shown at a time;
+    /// scheduling a new one while an earlier one is still pending lets the
+    /// earlier one's replay proceed immediately instead of waiting out its
+    /// own window unseen.
+    private func scheduleUndo(threadIds: Set<Int64>, message: String, accountIds: Set<String>, undo: @escaping () async -> Void) {
         pendingUndoTask?.cancel()
         if let previous = pendingUndo {
-            Task { await previous.commit() }
+            Task { await replayOpQueueSoon(accountIds: previous.accountIds) }
         }
-        pendingRemovalThreadIds.formUnion(threadIds)
-        pendingUndo = PendingUndo(threadIds: threadIds, message: message, commit: commit)
+        pendingUndo = PendingUndo(threadIds: threadIds, message: message, accountIds: accountIds, undo: undo)
         pendingUndoTask = Task {
             try? await Task.sleep(for: Self.undoWindow)
             guard !Task.isCancelled else { return }
-            await commit()
-            pendingRemovalThreadIds.subtract(threadIds)
             pendingUndo = nil
+            await replayOpQueueSoon(accountIds: accountIds)
         }
     }
 
     private func undoPending() {
         pendingUndoTask?.cancel()
         guard let pendingUndo else { return }
-        pendingRemovalThreadIds.subtract(pendingUndo.threadIds)
+        let undo = pendingUndo.undo
         self.pendingUndo = nil
+        Task { await undo() }
     }
 
     private var title: String {
@@ -730,10 +768,17 @@ struct MessageListView: View {
     /// The swipe row's single-thread archive action — schedules an undo
     /// window (see `scheduleUndo`'s doc comment) before actually running
     /// `commitArchive(_:)`.
+    /// The swipe row's single-thread archive action — commits immediately
+    /// (see `commitArchive`'s doc comment), then hands the resulting
+    /// snapshot to `scheduleUndo`.
     private func archiveThread(_ summary: ThreadSummary) {
         guard let threadId = summary.thread.id else { return }
-        scheduleUndo(threadIds: [threadId], message: "スレッドをアーカイブしました") {
-            await commitArchive(summary)
+        let accountId = summary.thread.accountId
+        Task {
+            guard let snapshot = await commitArchive(summary) else { return }
+            scheduleUndo(threadIds: [threadId], message: "スレッドをアーカイブしました", accountIds: [accountId]) {
+                await undoRemoval(snapshot)
+            }
         }
     }
 
@@ -746,18 +791,37 @@ struct MessageListView: View {
     /// resolved up front since `MoveOpPayload` requires one. Best-effort: if
     /// this account's Archive mailbox hasn't synced down locally yet (a
     /// freshly-added account, or a provider with no Archive folder), this
-    /// silently does nothing rather than erroring — same fallback shape as
-    /// every other opQueue-enqueuing path in this file.
-    private func commitArchive(_ summary: ThreadSummary) async {
-        guard let threadId = summary.thread.id else { return }
+    /// silently does nothing (returns `nil`, so the caller never shows an
+    /// undo toast for an action that didn't actually happen) rather than
+    /// erroring — same fallback shape as every other opQueue-enqueuing path
+    /// in this file.
+    ///
+    /// Commits the local database write (and enqueues the `move` op)
+    /// *immediately*, unlike this feature's first version — see
+    /// `RemovedMessagesSnapshot`/`undoRemoval(_:)`'s doc comment for why:
+    /// delaying the local write itself (so "undo" could just... not commit
+    /// it) turned out to have a real data-loss bug, caught by
+    /// `scripts/verify-ios-m3.sh`'s offline swipe-delete phase — an app
+    /// relaunch inside the old delayed-commit window silently lost the
+    /// action entirely, since the pending `Task.sleep` driving the eventual
+    /// write died with the process before ever running. Committing
+    /// immediately (durable to disk before this method even returns) and
+    /// instead making *undo itself* fully reversible closes that gap: the
+    /// opQueue row this enqueues survives any kill regardless of timing,
+    /// and a normal relaunch's existing foreground-sync replay picks it up
+    /// exactly like any other queued op.
+    private func commitArchive(_ summary: ThreadSummary) async -> RemovedMessagesSnapshot? {
+        guard let threadId = summary.thread.id else { return nil }
         let accountId = summary.thread.accountId
         do {
-            try await environment.database.dbWriter.write { db in
+            let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
                 guard let archiveMailboxId = try MailboxRecord
                     .filter(Column("accountId") == accountId && Column("role") == MailboxRoleRecord.archive.rawValue)
                     .fetchOne(db)?.id
-                else { return }
+                else { return nil }
+                guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
                 let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
                 for message in messages {
                     guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
                     guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
@@ -770,23 +834,32 @@ struct MessageListView: View {
                     try MessageRecord.deleteOne(db, key: messageId)
                 }
                 try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                let opQueueIds = try Int64.fetchAll(db, sql: "SELECT id FROM opQueue WHERE id > ? ORDER BY id", arguments: [beforeMaxOpId])
+                return RemovedMessagesSnapshot(thread: thread, messages: messages, opQueueIds: opQueueIds)
             }
+            guard let snapshot else { return nil }
             if isSearchActive {
                 searchResults.removeAll { $0.id == summary.id }
             }
-            await replayOpQueueSoon(accountId: accountId)
+            return snapshot
         } catch {
             // Best-effort, matching every other opQueue-enqueuing path in
             // this file.
+            return nil
         }
     }
 
-    /// The swipe row's single-thread delete action — schedules an undo
-    /// window before actually running `commitDelete(_:)`.
+    /// The swipe row's single-thread delete action — commits immediately
+    /// (see `commitDelete`'s doc comment), then hands the resulting
+    /// snapshot to `scheduleUndo`.
     private func deleteThread(_ summary: ThreadSummary) {
         guard let threadId = summary.thread.id else { return }
-        scheduleUndo(threadIds: [threadId], message: "スレッドを削除しました") {
-            await commitDelete(summary)
+        let accountId = summary.thread.accountId
+        Task {
+            guard let snapshot = await commitDelete(summary) else { return }
+            scheduleUndo(threadIds: [threadId], message: "スレッドを削除しました", accountIds: [accountId]) {
+                await undoRemoval(snapshot)
+            }
         }
     }
 
@@ -795,13 +868,18 @@ struct MessageListView: View {
     /// up the deletion right away, and `ThreadAssigner.recomputeAggregates`
     /// deletes the now-empty `thread` row) and enqueues one `delete` op per
     /// message (opQueue resolves each message's own account's Trash
-    /// mailbox and issues the actual `MOVE` at replay time).
-    private func commitDelete(_ summary: ThreadSummary) async {
-        guard let threadId = summary.thread.id else { return }
+    /// mailbox and issues the actual `MOVE` at replay time) — immediately,
+    /// same as `commitArchive(_:)`; see its doc comment for why "immediately,
+    /// with a fully-reversible undo" replaced this feature's first
+    /// "delay the whole write" design.
+    private func commitDelete(_ summary: ThreadSummary) async -> RemovedMessagesSnapshot? {
+        guard let threadId = summary.thread.id else { return nil }
         let accountId = summary.thread.accountId
         do {
-            try await environment.database.dbWriter.write { db in
+            let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
+                guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
                 let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
                 for message in messages {
                     guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
                     guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
@@ -816,7 +894,10 @@ struct MessageListView: View {
                     try MessageRecord.deleteOne(db, key: messageId)
                 }
                 try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                let opQueueIds = try Int64.fetchAll(db, sql: "SELECT id FROM opQueue WHERE id > ? ORDER BY id", arguments: [beforeMaxOpId])
+                return RemovedMessagesSnapshot(thread: thread, messages: messages, opQueueIds: opQueueIds)
             }
+            guard let snapshot else { return nil }
             // `searchResults` is a one-shot array, not a live
             // `ValueObservation` like `summaries` — the normal list
             // picks up a deletion automatically, but a search-mode row
@@ -825,10 +906,67 @@ struct MessageListView: View {
             if isSearchActive {
                 searchResults.removeAll { $0.id == summary.id }
             }
-            await replayOpQueueSoon(accountId: accountId)
+            return snapshot
         } catch {
             // Best-effort: whatever's left stays if this fails; the
             // swipe can be retried.
+            return nil
+        }
+    }
+
+    /// Everything `undoRemoval(_:)` needs to reverse one `commitDelete`/
+    /// `commitArchive` call: the thread's aggregate row and every message
+    /// row it removed (captured *before* removal, full field data —
+    /// re-inserting them restores the exact same `id`s, so nothing else in
+    /// the app needs to know a delete/archive was ever reversed), plus the
+    /// opQueue row ids that call enqueued (captured via a before/after
+    /// max-`id` diff within the same transaction — `OpQueue.enqueueDelete`/
+    /// `enqueueMove` don't themselves return the id they just inserted).
+    private struct RemovedMessagesSnapshot {
+        var thread: ThreadRecord
+        var messages: [MessageRecord]
+        var opQueueIds: [Int64]
+    }
+
+    /// Reverses one `commitDelete`/`commitArchive` call: deletes the
+    /// opQueue rows it enqueued (a no-op for any that already replayed —
+    /// see `scheduleUndo`'s doc comment on that race) and re-inserts every
+    /// removed message plus the thread aggregate row, each with its
+    /// original `id` (GRDB's default `insert` includes an already-set
+    /// primary key value in the `INSERT` statement, and the row it
+    /// occupied was just deleted, so there's no conflict to resolve).
+    /// `FTSIndexer.reindex` restores each message's search-index row the
+    /// same way `FTSIndexer.delete` removed it. Best-effort, matching every
+    /// other opQueue-enqueuing/db-mutating path in this file — a failure
+    /// here just leaves the delete/archive applied, same as if "元に戻す"
+    /// had never been tapped.
+    private func undoRemoval(_ snapshot: RemovedMessagesSnapshot) async {
+        do {
+            try await environment.database.dbWriter.write { db in
+                try OpQueueRecord.deleteAll(db, keys: snapshot.opQueueIds)
+                for message in snapshot.messages {
+                    var restored = message
+                    try restored.insert(db)
+                    if let messageId = restored.id {
+                        try FTSIndexer.reindex(messageId: messageId, db: db)
+                    }
+                }
+                guard let threadId = snapshot.thread.id else { return }
+                if try ThreadRecord.fetchOne(db, key: threadId) == nil {
+                    var restoredThread = snapshot.thread
+                    try restoredThread.insert(db)
+                } else {
+                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                }
+            }
+        } catch {
+            // Best-effort — see doc comment above.
+        }
+    }
+
+    private func replayOpQueueSoon(accountIds: Set<String>) async {
+        for accountId in accountIds {
+            await replayOpQueueSoon(accountId: accountId)
         }
     }
 

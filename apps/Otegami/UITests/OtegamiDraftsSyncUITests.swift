@@ -45,9 +45,9 @@ final class OtegamiDraftsSyncSaveUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        returnToSidebarRootIfNeeded(in: app)
+        returnToMailTabRootIfNeeded(in: app)
 
-        let composeButton = app.buttons["sidebar.composeButton"]
+        let composeButton = app.buttons["mail.composeButton"]
         XCTAssertTrue(composeButton.waitForExistence(timeout: 10))
         composeButton.tap()
 
@@ -88,11 +88,7 @@ final class OtegamiDraftsSyncEditUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        returnToSidebarRootIfNeeded(in: app)
-
-        let draftsButton = app.buttons["sidebar.drafts"]
-        XCTAssertTrue(draftsButton.waitForExistence(timeout: 10), "Drafts sidebar entry should exist once a draft has been saved")
-        draftsButton.tap()
+        XCTAssertTrue(openDraftsList(in: app), "Drafts entry should exist (folder sheet -> 下書き) once a draft has been saved")
 
         let subjectPredicate = NSPredicate(format: "label CONTAINS %@", OtegamiDraftsSyncSaveUITests.subject)
         let draftRow = app.buttons.matching(subjectPredicate).firstMatch
@@ -130,11 +126,7 @@ final class OtegamiDraftsSyncSendUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        returnToSidebarRootIfNeeded(in: app)
-
-        let draftsButton = app.buttons["sidebar.drafts"]
-        XCTAssertTrue(draftsButton.waitForExistence(timeout: 10))
-        draftsButton.tap()
+        XCTAssertTrue(openDraftsList(in: app), "Drafts entry should exist")
 
         let subjectPredicate = NSPredicate(format: "label CONTAINS %@", OtegamiDraftsSyncSaveUITests.subject)
         let draftRow = app.buttons.matching(subjectPredicate).firstMatch
@@ -175,11 +167,7 @@ final class OtegamiDraftsSyncExternalDraftUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        returnToSidebarRootIfNeeded(in: app)
-
-        let draftsButton = app.buttons["sidebar.drafts"]
-        XCTAssertTrue(draftsButton.waitForExistence(timeout: 10))
-        draftsButton.tap()
+        XCTAssertTrue(openDraftsList(in: app), "Drafts entry should exist")
 
         let subjectPredicate = NSPredicate(format: "label CONTAINS %@", Self.externalSubject)
         let draftRow = app.buttons.matching(subjectPredicate).firstMatch

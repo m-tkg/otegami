@@ -22,13 +22,13 @@ final class OtegamiM5ComposeSendUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        // A fresh launch (no prior thread ever opened in this run) already
-        // starts at the sidebar/unified-inbox; belt-and-suspenders in case
-        // a previous phase in the same simulator install left a thread
-        // restored.
-        returnToSidebarRootIfNeeded(in: app)
+        // A fresh launch already starts on the Mail tab's message list
+        // (design-phase-2: no sidebar/unified-inbox row tap needed);
+        // belt-and-suspenders in case a previous phase in the same
+        // simulator install left a thread open or a different tab active.
+        returnToMailTabRootIfNeeded(in: app)
 
-        let composeButton = app.buttons["sidebar.composeButton"]
+        let composeButton = app.buttons["mail.composeButton"]
         XCTAssertTrue(composeButton.waitForExistence(timeout: 10), "Compose toolbar button should exist")
         XCTAssertTrue(composeButton.isEnabled, "Compose button should be enabled once an account exists")
         composeButton.tap()

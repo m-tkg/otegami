@@ -17,13 +17,13 @@ final class OtegamiM6ICloudFormUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        let emptyStateButton = app.buttons["sidebar.addAccountButton"]
-        let toolbarButton = app.buttons["sidebar.addAccountToolbarButton"]
+        let emptyStateButton = app.buttons["mail.addAccountButton"]
+        let addAccountChip = app.buttons["mail.chip.addAccount"]
         XCTAssertTrue(
-            emptyStateButton.waitForExistence(timeout: 10) || toolbarButton.waitForExistence(timeout: 10),
-            "Neither the empty-state nor toolbar \"add account\" button appeared"
+            emptyStateButton.waitForExistence(timeout: 10) || addAccountChip.waitForExistence(timeout: 10),
+            "Neither the empty-state nor chip-row \"add account\" button appeared"
         )
-        (emptyStateButton.exists ? emptyStateButton : toolbarButton).tap()
+        (emptyStateButton.exists ? emptyStateButton : addAccountChip).tap()
 
         let icloudButton = app.buttons["accountTypeSelection.icloudButton"]
         XCTAssertTrue(icloudButton.waitForExistence(timeout: 5), "iCloud button did not appear")

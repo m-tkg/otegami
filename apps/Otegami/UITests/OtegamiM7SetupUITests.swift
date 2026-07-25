@@ -38,7 +38,7 @@ final class OtegamiM7SetupUITests: XCTestCase {
             "Expected test1's seeded welcome message to appear"
         )
 
-        returnToSidebarRootIfNeeded(in: app)
+        returnToMailTabRootIfNeeded(in: app)
         addDovecotTest2Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 

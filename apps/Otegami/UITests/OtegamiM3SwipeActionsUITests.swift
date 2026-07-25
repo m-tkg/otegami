@@ -30,6 +30,23 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
         // — a real ambiguous-predicate bug caught via a debug screenshot
         // taken mid-swipe, not an environment quirk. This subject has no
         // such collision.
+        // Design-phase-2: 1a's bottom tab bar (`OtegamiTabRootView`) didn't
+        // exist when this test was first written and shrinks the message
+        // list's usable viewport height versus before — this seeded row
+        // (older, so it sorts low in the newest-first list) now lands close
+        // enough to that closer bottom edge that `swipeRight()` doesn't
+        // reliably reveal the leading swipe action there, the same "row too
+        // close to a viewport edge" issue `testSwipeDeletesMessageOffline`
+        // (below) already had to nudge around for a different row — see its
+        // doc comment for the full diagnosis. One extra scroll step, using
+        // the same drag `waitForElementScrollingIfNeeded` uses, brings it
+        // clear before swiping; re-queried after scrolling since a scroll
+        // can invalidate the previous element reference.
+        let list = app.collectionViews["messageList.list"]
+        _ = row(forSubject: "Ｆｗｄ：今月のリリースノート", in: app) // exists-check only; re-queried below post-scroll
+        let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+        let end = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+        start.press(forDuration: 0.05, thenDragTo: end)
         let row = row(forSubject: "Ｆｗｄ：今月のリリースノート", in: app)
 
         // Leading swipe (`XCUIElement.swipeRight()`) reveals the

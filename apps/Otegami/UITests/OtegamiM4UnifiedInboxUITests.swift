@@ -16,13 +16,12 @@ final class OtegamiM4UnifiedInboxUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        // `RootView`'s "last opened thread" restoration is same-session-
-        // only now (docs/verify.md) — a fresh launch with an existing
-        // account always starts already on the message list, never a
-        // restored thread detail. `returnToSidebarRootIfNeeded` still pops
-        // the one level (list → sidebar) needed to reach the "add account"
-        // entry point.
-        returnToSidebarRootIfNeeded(in: app)
+        // A fresh launch with an existing account always starts already on
+        // the Mail tab's message list (design-phase-2: no restored/
+        // intermediate screen to skip past). `returnToMailTabRootIfNeeded`
+        // still pops back to the Mail tab root to reach the account filter
+        // chip row's "＋" entry point.
+        returnToMailTabRootIfNeeded(in: app)
 
         addDovecotTest2Account(in: app)
         restartAppToRecoverTouchDelivery(app)

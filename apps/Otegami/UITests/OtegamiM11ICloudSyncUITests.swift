@@ -21,8 +21,9 @@ final class OtegamiM11ICloudSyncUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        app.buttons["sidebar.settingsButton"].tap()
-        XCTAssertTrue(app.otherElements["settings.sheet"].waitForExistence(timeout: 10))
+        // Design-phase-2: "設定" is its own tab (`SettingsTabView`) now, not
+        // a gear-icon sheet off the old sidebar.
+        app.tabBars.buttons["設定"].tap()
 
         let toggle = app.switches["settings.cloudSyncToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
@@ -56,13 +57,10 @@ final class OtegamiM11ICloudSyncUITests: XCTestCase {
             "Expected the seeded baseline message to still appear after adding an account with the iCloud sync entitlement present"
         )
 
-        // Compact width: adding an account leaves the message list (the
-        // "content" column) on screen, not the sidebar — pop back to reach
-        // `sidebar.settingsButton` (M4's `returnToSidebarRootIfNeeded`
-        // pattern, `.claude/skills/verify/SKILL.md`'s M4 section).
-        returnToSidebarRootIfNeeded(in: app)
-        app.buttons["sidebar.settingsButton"].tap()
-        XCTAssertTrue(app.otherElements["settings.sheet"].waitForExistence(timeout: 10))
+        // Design-phase-2: "設定" is its own tab now — switch to it directly
+        // (no sidebar/pop-back dance needed, unlike the old
+        // `NavigationSplitView` structure this test predates).
+        app.tabBars.buttons["設定"].tap()
 
         let toggle = app.switches["settings.cloudSyncToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
@@ -84,21 +82,11 @@ final class OtegamiM11ICloudSyncUITests: XCTestCase {
         // Toggling off then back on runs a full reconcile
         // (`AppEnvironment.setCloudSyncEnabled`) — this should be a no-op
         // for an account that's already pushed to the cloud and matches,
-        // not something that duplicates or drops it. Close Settings and
-        // confirm the account (and its messages) is still exactly there.
-        app.buttons["settings.closeButton"].tap()
-        // Closing Settings returns to the sidebar (this test popped there
-        // via `returnToSidebarRootIfNeeded` before opening Settings), not
-        // the message list — and `sidebar.unifiedInbox` is a `List
-        // (selection:)` row, not a `Button`, which this simulator/
-        // toolchain has a standing issue tapping reliably (M2's pitfall
-        // #2, `.claude/skills/verify/SKILL.md`). A full relaunch
-        // sidesteps it the same way every other script in this project
-        // does: `RootView` auto-selects the unified inbox on a cold
-        // launch (`docs/verify.md`'s "Offline verification pattern"
-        // section), which is also exactly what re-confirms the account
-        // survived by reading straight from GRDB rather than any
-        // in-memory state a toggle round trip could have disturbed.
+        // not something that duplicates or drops it. "設定" is a permanent
+        // tab now (no sheet to close) — a full relaunch is still the most
+        // reliable way to confirm the account survived, reading straight
+        // from GRDB on a cold launch rather than trusting any in-memory
+        // state a toggle round trip could have disturbed.
         restartAppToRecoverTouchDelivery(app)
         XCTAssertTrue(
             waitForSeededSubjectScrollingIfNeeded("ようこそ otegami へ", in: app),

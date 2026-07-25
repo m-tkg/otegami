@@ -12,8 +12,10 @@ import XCTest
 /// `OtegamiM5OfflineComposeUITests` composes and sends while the mailstack
 /// is down: `OpQueueProcessor.replay`'s own IMAP `connect()` fails before
 /// touching any op, so the `.send` op (and its `outboxMessage` row) stays
-/// queued — the sidebar's "送信待ち" row is what proves that queuing
-/// happened, entirely from local state, no network involved.
+/// queued — `FolderListSheet`'s "送信待ち" row (design-phase-2: the old
+/// sidebar's equivalent row, now inside the folder-picker sheet) is what
+/// proves that queuing happened, entirely from local state, no network
+/// involved.
 final class OtegamiM5OfflineComposeUITests: XCTestCase {
     /// Shared with `scripts/verify-ios-m5.sh` — see `OtegamiM5ComposeSendUITests
     /// .subject`'s doc comment.
@@ -28,9 +30,9 @@ final class OtegamiM5OfflineComposeUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        returnToSidebarRootIfNeeded(in: app)
+        returnToMailTabRootIfNeeded(in: app)
 
-        let composeButton = app.buttons["sidebar.composeButton"]
+        let composeButton = app.buttons["mail.composeButton"]
         XCTAssertTrue(composeButton.waitForExistence(timeout: 10))
         composeButton.tap()
 
@@ -48,9 +50,8 @@ final class OtegamiM5OfflineComposeUITests: XCTestCase {
 
         // The best-effort immediate replay attempt fails silently (mailstack
         // down) — the outboxMessage row it couldn't flush is exactly what
-        // drives this indicator.
-        let outboxRow = app.buttons["sidebar.outbox"]
-        XCTAssertTrue(outboxRow.waitForExistence(timeout: 15), "Expected a \"送信待ち\" indicator while offline")
+        // drives this indicator, now inside the folder-picker sheet.
+        XCTAssertTrue(folderSheetShowsOutboxRow(in: app, timeout: 15), "Expected a \"送信待ち\" indicator while offline")
     }
 }
 
@@ -70,17 +71,20 @@ final class OtegamiM5OfflineReplayUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        returnToSidebarRootIfNeeded(in: app)
+        returnToMailTabRootIfNeeded(in: app)
 
         // Polls rather than a single snapshot: the replay itself is
         // asynchronous (kicked off from `RootView.syncAllAccountsOnce()`),
         // and the mailstack having just come back up can still take a
-        // moment to accept the connection.
-        let outboxRow = app.buttons["sidebar.outbox"]
+        // moment to accept the connection. Each poll opens/closes
+        // `FolderListSheet` since that's the only place "送信待ち" is shown
+        // now (design-phase-2) — checked as a fresh open every iteration
+        // rather than leaving the sheet up throughout, so this doesn't rely
+        // on the sheet re-observing `OutboxQuery` while backgrounded/idle.
         let deadline = Date().addingTimeInterval(20)
-        while outboxRow.exists, Date() < deadline {
+        while folderSheetShowsOutboxRow(in: app, timeout: 3), Date() < deadline {
             Thread.sleep(forTimeInterval: 1)
         }
-        XCTAssertFalse(outboxRow.exists, "Expected the \"送信待ち\" indicator to clear once the queued send replayed successfully")
+        XCTAssertFalse(folderSheetShowsOutboxRow(in: app, timeout: 3), "Expected the \"送信待ち\" indicator to clear once the queued send replayed successfully")
     }
 }

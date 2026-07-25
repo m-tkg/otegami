@@ -14,6 +14,12 @@ import XCTest
 /// its own non-persisted account-setup sheets (`docs/verify.md`'s M6
 /// section).
 ///
+/// Design-phase-2: search moved off `MessageListView`'s own `.searchable`
+/// bar and into its own tab (`SearchTabView`, 1a's "現在サイドバーに詰め込ま
+/// れている導線（設定・検索）をタブに移す") — every assertion below now reads
+/// from `search.list` rather than `messageList.list`, and each test
+/// switches to the Search tab before typing a query.
+///
 /// All five queries deliberately hit on `message.subject` alone (never
 /// `messageBody.plainText`), so none of them depends on
 /// `BodyFetcher.prefetchRecent`'s background body-fetch pass having
@@ -26,22 +32,16 @@ final class OtegamiM7SearchUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    /// No method in this file (or `OtegamiM7SetupUITests`) ever opens a
-    /// thread, so `RootView`'s "last opened thread" `@AppStorage`
-    /// restoration never has anything to restore — a cold relaunch lands
-    /// directly on the message list, same as `docs/verify.md`'s "Offline
-    /// verification pattern" note ("A cold relaunch re-selects the first
-    /// INBOX automatically ... no further taps are needed"). Deliberately
-    /// does *not* call `returnToSidebarRootIfNeeded`/`popBackOnceIfNeeded`
-    /// here: both would misfire on this screen, since the message list's
-    /// own compact-width navigation bar always has a legitimate "back to
-    /// sidebar" button of its own — calling either would just pop away
-    /// from the very screen this helper needs to land on.
-    private func launchOnUnifiedInbox() -> XCUIApplication {
+    /// Launches, confirms the Mail tab's message list is reachable (the
+    /// account/data baseline `OtegamiM7SetupUITests` established), then
+    /// switches to the Search tab and waits for its own list to be ready.
+    private func launchOnSearchTab() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 30))
+        app.tabBars.buttons["検索"].tap()
+        XCTAssertTrue(app.collectionViews["search.list"].waitForExistence(timeout: 15))
         return app
     }
 
@@ -51,10 +51,10 @@ final class OtegamiM7SearchUITests: XCTestCase {
     /// (`02-thread-original.eml`/`03-thread-reply.eml`), folded into one
     /// thread row showing the newer subject.
     func testTwoCharacterJapaneseQueryHits() throws {
-        let app = launchOnUnifiedInbox()
+        let app = launchOnSearchTab()
         typeSearchQuery("打ち", in: app)
 
-        let hit = app.collectionViews["messageList.list"]
+        let hit = app.collectionViews["search.list"]
             .staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "打ち合わせ")).firstMatch
         XCTAssertTrue(hit.waitForExistence(timeout: 15), "Expected a 2-character LIKE-fallback search to find \"打ち合わせ\"")
 
@@ -65,10 +65,10 @@ final class OtegamiM7SearchUITests: XCTestCase {
     /// ("打ち合わせ") that routes through the FTS5 trigram `MATCH` path
     /// instead of the `LIKE` fallback.
     func testThreeCharacterJapaneseQueryHitsViaFTS() throws {
-        let app = launchOnUnifiedInbox()
+        let app = launchOnSearchTab()
         typeSearchQuery("打ち合わせ", in: app)
 
-        let hit = app.collectionViews["messageList.list"]
+        let hit = app.collectionViews["search.list"]
             .staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "打ち合わせ")).firstMatch
         XCTAssertTrue(hit.waitForExistence(timeout: 15), "Expected a 3+ character FTS search to find \"打ち合わせ\"")
 
@@ -79,24 +79,26 @@ final class OtegamiM7SearchUITests: XCTestCase {
     /// `07-html-only-japanese.eml`'s subject ("HTML版だより") — also
     /// exercises FTS5 trigram's ASCII case folding.
     func testEnglishQueryHits() throws {
-        let app = launchOnUnifiedInbox()
+        let app = launchOnSearchTab()
         typeSearchQuery("html", in: app)
 
-        let hit = app.collectionViews["messageList.list"]
+        let hit = app.collectionViews["search.list"]
             .staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "HTML版だより")).firstMatch
         XCTAssertTrue(hit.waitForExistence(timeout: 15), "Expected a lowercase \"html\" query to case-insensitively match \"HTML版だより\"")
 
         Thread.sleep(forTimeInterval: 4)
     }
 
-    /// Scenario (d): with the unified inbox's default "すべて" scope, a
-    /// query ("ようこそ", present in both accounts' welcome-message
-    /// subjects) returns results from *both* test1 and test2.
+    /// Scenario (d): `SearchTabView` always searches across every account
+    /// (design-phase-2: it has no per-mailbox scope picker at all — see its
+    /// doc comment), so a query ("ようこそ", present in both accounts'
+    /// welcome-message subjects) returns results from *both* test1 and
+    /// test2 unconditionally.
     func testUnifiedScopeReturnsBothAccounts() throws {
-        let app = launchOnUnifiedInbox()
+        let app = launchOnSearchTab()
         typeSearchQuery("ようこそ", in: app)
 
-        let list = app.collectionViews["messageList.list"]
+        let list = app.collectionViews["search.list"]
         let test1Hit = list.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "ようこそ otegami へ")).firstMatch
         let test2Hit = list.staticTexts["test2 アカウントへようこそ"]
         XCTAssertTrue(test1Hit.waitForExistence(timeout: 15), "Expected test1's welcome message in the cross-account search results")
@@ -106,10 +108,10 @@ final class OtegamiM7SearchUITests: XCTestCase {
     }
 
     /// Scenario (e): a query with no possible match shows the zero-results
-    /// state (`ContentUnavailableView.search`, `messageList.search
-    /// .emptyState`) rather than an empty-looking list with no explanation.
+    /// state (`ContentUnavailableView.search`, `search.emptyState`) rather
+    /// than an empty-looking list with no explanation.
     func testNoMatchesShowsEmptyState() throws {
-        let app = launchOnUnifiedInbox()
+        let app = launchOnSearchTab()
         typeSearchQuery("zzzznotfound", in: app)
 
         // `ContentUnavailableView.search(text:)`'s system-provided
@@ -123,8 +125,8 @@ final class OtegamiM7SearchUITests: XCTestCase {
         let emptyState = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "zzzznotfound")).firstMatch
         XCTAssertTrue(emptyState.waitForExistence(timeout: 15), "Expected the zero-results empty state to appear")
 
-        // The message list itself should have nothing in it.
-        XCTAssertEqual(app.collectionViews["messageList.list"].cells.count, 0, "Expected zero result rows")
+        // The search list itself should have nothing in it.
+        XCTAssertEqual(app.collectionViews["search.list"].cells.count, 0, "Expected zero result rows")
 
         Thread.sleep(forTimeInterval: 4)
     }

@@ -13,6 +13,18 @@ import OtegamiStore
 /// already flagged as risky before design-phase-2, so isolating it in its
 /// own file keeps `MessageListView.swift`'s own body-adjacent code smaller
 /// too.
+///
+/// A real XCUITest regression while building this (`OtegamiM3SwipeActionsUITests
+/// .testSwipeMarksMessageRead`, `row.swipeRight()` no longer revealing the
+/// leading swipe action) turned out to have nothing to do with this row's
+/// own code — see that test's updated doc comment: the new bottom tab bar
+/// (1a, absent before design-phase-2) shrinks the message list's visible
+/// height, and the specific seeded row that test targets ended up sitting
+/// too close to the now-closer bottom edge for `swipeRight()` to reveal
+/// reliably, the same "row too close to a viewport edge" class of issue
+/// `testSwipeDeletesMessageOffline` already had to nudge around for a
+/// different row. Recorded here too since it cost significant investigation
+/// time to isolate from a genuine code regression.
 struct MessageListRow: View {
     let summary: ThreadSummary
     let threadId: Int64
@@ -92,9 +104,21 @@ struct MessageListRow: View {
         }
         #endif
         #if os(iOS)
-        .onLongPressGesture(minimumDuration: 0.4) {
-            onEnterSelection(threadId)
-        }
+        // 1h: long-press enters bulk-selection mode. `.simultaneousGesture`
+        // rather than `.onLongPressGesture`/`.gesture` deliberately — the
+        // latter two exclusively claim the touch, which risks starving
+        // `List`'s own built-in `.swipeActions` pan-gesture recognizer of
+        // the same touch-down event (both are recognized starting from the
+        // same gesture origin). `.simultaneousGesture` lets both recognizers
+        // race normally — a long, mostly-vertical-or-stationary press still
+        // recognizes as a long press, while a horizontal drag (a swipe)
+        // still gets recognized by `.swipeActions`' own recognizer as
+        // before.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.4).onEnded { _ in
+                onEnterSelection(threadId)
+            }
+        )
         #endif
         .onAppear {
             onAppear(summary)

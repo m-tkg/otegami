@@ -1,14 +1,17 @@
 import XCTest
 
-/// M7: shared steps for driving `MessageListView`'s `.searchable` search
-/// bar. On iOS, `.searchable` renders as a system search field —
-/// `app.searchFields`, a distinct `XCUIElementTypeSearchField`, not
-/// `app.textFields`. Located via `.firstMatch` rather than a custom
-/// `accessibilityIdentifier`: chaining `.accessibilityIdentifier` after
-/// `.searchable(...)` doesn't tag the search field itself, it *replaces*
-/// whatever identifier the `List` it's attached to already had (see
-/// `MessageListView`'s doc comment on that modifier chain) — `.searchable`
-/// only ever produces one search bar per screen, so `.firstMatch` is
+/// M7: shared steps for driving a `.searchable` search bar — originally
+/// `MessageListView`'s own (M7), now iOS's dedicated `SearchTabView`
+/// (design-phase-2: 1a moved search to its own tab; macOS still searches
+/// in place on `MessageListView`, unchanged). On iOS, `.searchable` renders
+/// as a system search field — `app.searchFields`, a distinct
+/// `XCUIElementTypeSearchField`, not `app.textFields`. Located via
+/// `.firstMatch` rather than a custom `accessibilityIdentifier`: chaining
+/// `.accessibilityIdentifier` after `.searchable(...)` doesn't tag the
+/// search field itself, it *replaces* whatever identifier the `List` it's
+/// attached to already had (see `MessageListView`'s doc comment on that
+/// modifier chain, still true for `SearchTabView`) — `.searchable` only
+/// ever produces one search bar per screen, so `.firstMatch` is
 /// unambiguous without needing an identifier at all.
 extension XCTestCase {
     func typeSearchQuery(_ query: String, in app: XCUIApplication) {

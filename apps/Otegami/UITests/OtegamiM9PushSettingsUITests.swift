@@ -18,19 +18,12 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        // This test's own doc comment says it doesn't need an account —
-        // true for the flow under test, but `sidebar.settingsButton` only
-        // lives on the sidebar's own toolbar. If this dev machine's real-
-        // iCloud-backed simulator (M11's documented resurrection issue)
-        // has an account from an earlier verify run resurrect despite the
-        // fresh `simctl erase` this script did, `-uiTestsAutoAdvanceToContent`
-        // sends a cold launch straight to the message list instead,
-        // leaving no `sidebar.settingsButton` to tap. Popping back first
-        // is a no-op when already on the sidebar root (the common case),
-        // and recovers it otherwise.
-        returnToSidebarRootIfNeeded(in: app)
-        app.buttons["sidebar.settingsButton"].tap()
-        XCTAssertTrue(app.otherElements["settings.sheet"].waitForExistence(timeout: 10))
+        // Design-phase-2: "設定" is its own tab now (`SettingsTabView`), not
+        // a gear-icon sheet off the old sidebar — no analogous "which tab is
+        // active" ambiguity to guard against (a fresh launch always starts
+        // on the Mail tab, and tapping the Settings tab bar button works
+        // regardless of what's currently showing there).
+        app.tabBars.buttons["設定"].tap()
 
         app.staticTexts["プッシュ通知"].tap()
 
@@ -75,19 +68,9 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        // This test's own doc comment says it doesn't need an account —
-        // true for the flow under test, but `sidebar.settingsButton` only
-        // lives on the sidebar's own toolbar. If this dev machine's real-
-        // iCloud-backed simulator (M11's documented resurrection issue)
-        // has an account from an earlier verify run resurrect despite the
-        // fresh `simctl erase` this script did, `-uiTestsAutoAdvanceToContent`
-        // sends a cold launch straight to the message list instead,
-        // leaving no `sidebar.settingsButton` to tap. Popping back first
-        // is a no-op when already on the sidebar root (the common case),
-        // and recovers it otherwise.
-        returnToSidebarRootIfNeeded(in: app)
-        app.buttons["sidebar.settingsButton"].tap()
-        XCTAssertTrue(app.otherElements["settings.sheet"].waitForExistence(timeout: 10))
+        // Design-phase-2: "設定" is its own tab now — see the previous test
+        // method's comment.
+        app.tabBars.buttons["設定"].tap()
         app.staticTexts["プッシュ通知"].tap()
 
         let relayURLField = app.textFields["settings.push.relayURLField"]
