@@ -46,12 +46,15 @@ struct GmailAccountSetupView: View {
 
                     if let errorMessage {
                         Label(errorMessage, systemImage: "xmark.octagon")
-                            .foregroundStyle(.red)
+                            .foregroundStyle(OtegamiColor.destructive)
                             .accessibilityIdentifier("gmailAccountSetup.errorMessage")
                     }
                 }
             }
             .navigationTitle("Gmail アカウントを追加")
+            .scrollContentBackground(.hidden)
+            .background(OtegamiColor.background)
+            .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("キャンセル") { dismiss() }

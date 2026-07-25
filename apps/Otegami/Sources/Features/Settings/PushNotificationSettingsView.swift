@@ -92,7 +92,7 @@ struct PushNotificationSettingsView: View {
             if let errorMessage {
                 Section {
                     Text(errorMessage)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(OtegamiColor.destructive)
                         .accessibilityIdentifier("settings.push.errorMessage")
                     if showsOpenSettingsButton {
                         #if os(iOS)
@@ -106,6 +106,9 @@ struct PushNotificationSettingsView: View {
             }
         }
         .navigationTitle("プッシュ通知")
+        .scrollContentBackground(.hidden)
+        .background(OtegamiColor.background)
+        .tint(OtegamiColor.accent)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif

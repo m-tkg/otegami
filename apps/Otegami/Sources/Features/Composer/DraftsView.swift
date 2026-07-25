@@ -67,6 +67,9 @@ struct DraftsView: View {
                 }
             }
             .navigationTitle("下書き")
+            .scrollContentBackground(.hidden)
+            .background(OtegamiColor.background)
+            .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("閉じる") { dismiss() }

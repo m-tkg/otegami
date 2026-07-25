@@ -103,11 +103,14 @@ struct ICloudAccountSetupView: View {
 
                     if let saveErrorMessage {
                         Text(saveErrorMessage)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(OtegamiColor.destructive)
                     }
                 }
             }
             .navigationTitle("iCloud アカウントを追加")
+            .scrollContentBackground(.hidden)
+            .background(OtegamiColor.background)
+            .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("キャンセル") { dismiss() }

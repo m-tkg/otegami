@@ -119,7 +119,7 @@ struct AccountEditView: View {
             if let saveErrorMessage {
                 Section {
                     Text(saveErrorMessage)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(OtegamiColor.destructive)
                         .accessibilityIdentifier("accountEdit.saveError")
                 }
             }
@@ -138,6 +138,9 @@ struct AccountEditView: View {
             }
         }
         .navigationTitle("アカウントを編集")
+        .scrollContentBackground(.hidden)
+        .background(OtegamiColor.background)
+        .tint(OtegamiColor.accent)
         .accessibilityIdentifier("accountEdit.screen")
     }
 
@@ -283,7 +286,7 @@ struct AccountEditView: View {
 
             if let reauthErrorMessage {
                 Label(reauthErrorMessage, systemImage: "xmark.octagon")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(OtegamiColor.destructive)
                     .accessibilityIdentifier("accountEdit.reauthError")
             }
         }

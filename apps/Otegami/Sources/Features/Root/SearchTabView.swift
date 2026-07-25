@@ -43,6 +43,8 @@ struct SearchTabView: View {
                 }
             }
             .accessibilityIdentifier("search.list")
+            .scrollContentBackground(.hidden)
+            .background(OtegamiColor.background)
             .overlay { overlayContent }
             .navigationTitle("検索")
             #if os(iOS)
@@ -54,6 +56,7 @@ struct SearchTabView: View {
                 ThreadDetailView(threadId: threadId, onReply: onReply)
             }
         }
+        .tint(OtegamiColor.accent)
     }
 
     @ViewBuilder
@@ -93,6 +96,10 @@ struct SearchTabView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("search.row.\(threadId)")
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .otegamiRowDivider()
         }
     }
 

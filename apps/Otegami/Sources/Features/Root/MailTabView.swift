@@ -60,6 +60,7 @@ struct MailTabView: View {
                 .sheet(isPresented: $showingFailedOps) { FailedOperationsView() }
                 .sheet(isPresented: $showingMailboxSyncFailures) { MailboxSyncFailuresView() }
         }
+        .tint(OtegamiColor.accent)
     }
 
     private var content: some View {

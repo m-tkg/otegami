@@ -186,12 +186,15 @@ struct ComposerView: View {
                 if let errorMessage {
                     Section {
                         Text(errorMessage)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(OtegamiColor.destructive)
                             .accessibilityIdentifier("composer.errorMessage")
                     }
                 }
             }
             .navigationTitle(navigationTitle)
+            .scrollContentBackground(.hidden)
+            .background(OtegamiColor.background)
+            .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("キャンセル") { handleCloseRequested() }

@@ -111,7 +111,7 @@ struct SidebarView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .listRowBackground(selection == .unifiedInbox ? Color.accentColor.opacity(0.15) : nil)
+                    .listRowBackground(selection == .unifiedInbox ? OtegamiColor.paleBase : nil)
                     .accessibilityIdentifier("sidebar.unifiedInbox")
 
                     if outboxCount > 0 {
@@ -170,6 +170,9 @@ struct SidebarView: View {
         }
         .accessibilityIdentifier("sidebar.list")
         .navigationTitle("Otegami")
+        .scrollContentBackground(.hidden)
+        .background(OtegamiColor.background)
+        .tint(OtegamiColor.accent)
         .toolbar {
             ToolbarItem {
                 Button {
@@ -451,7 +454,7 @@ private struct MailboxRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(isSelected ? Color.accentColor.opacity(0.15) : nil)
+        .listRowBackground(isSelected ? OtegamiColor.paleBase : nil)
         .accessibilityIdentifier("sidebar.mailbox.\(accountId).\(mailbox.path)")
     }
 
@@ -489,6 +492,6 @@ private struct UnreadCountBadge: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
-            .background(Capsule().fill(Color.accentColor))
+            .background(Capsule().fill(OtegamiColor.accent))
     }
 }

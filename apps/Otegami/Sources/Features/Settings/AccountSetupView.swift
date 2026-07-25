@@ -157,6 +157,9 @@ struct AccountSetupView: View {
                 }
             }
             .navigationTitle("アカウントを追加")
+            .scrollContentBackground(.hidden)
+            .background(OtegamiColor.background)
+            .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("キャンセル") { dismiss() }

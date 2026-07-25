@@ -75,6 +75,8 @@ struct FolderListSheet: View {
                 }
             }
             .accessibilityIdentifier("folderSheet.list")
+            .scrollContentBackground(.hidden)
+            .background(OtegamiColor.background)
             .navigationTitle("フォルダ")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -94,6 +96,7 @@ struct FolderListSheet: View {
                 }
             }
         }
+        .tint(OtegamiColor.accent)
         .accessibilityIdentifier("folderSheet.sheet")
         .task(id: environment.accounts.map(\.id)) { await observeOutbox() }
         .task(id: environment.accounts.map(\.id)) { await observeDraftCount() }

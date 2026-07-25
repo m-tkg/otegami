@@ -37,6 +37,9 @@ struct OutboxView: View {
                 }
             }
             .navigationTitle("送信待ち")
+            .scrollContentBackground(.hidden)
+            .background(OtegamiColor.background)
+            .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("閉じる") { dismiss() }

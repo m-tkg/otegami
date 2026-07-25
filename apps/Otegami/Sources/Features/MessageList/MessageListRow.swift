@@ -49,6 +49,17 @@ struct MessageListRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("messageList.row.\(threadId)")
+        // Design system: `List` draws its own default (system-styled)
+        // separators and gives each row standard insets/background — both
+        // fight `ThreadRowView`'s own flat/full-bleed styling (its
+        // background already spans the row, and `.otegamiRowDivider()`
+        // below draws the handoff's 1pt dashed row rule instead of the
+        // system's thin solid one), so this row opts out of all three and
+        // lets `ThreadRowView` own its full visual bounds.
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .otegamiRowDivider()
         // 1g: "右へ短く=既読/未読、右へ長く=アーカイブ". SwiftUI's
         // `.swipeActions` can only make *one* action (always the first
         // declared, per Apple's documentation) auto-fire on a full swipe —

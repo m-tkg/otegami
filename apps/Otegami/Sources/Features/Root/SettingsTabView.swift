@@ -15,6 +15,7 @@ struct SettingsTabView: View {
             AccountsListContent()
                 .navigationTitle("設定")
         }
+        .tint(OtegamiColor.accent)
         .accessibilityIdentifier("settingsTab.navigationStack")
     }
 }

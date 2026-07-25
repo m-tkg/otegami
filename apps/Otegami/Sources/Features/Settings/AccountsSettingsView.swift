@@ -183,7 +183,7 @@ struct AccountsListContent: View {
             if let reauthErrorMessage {
                 Section {
                     Text(reauthErrorMessage)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(OtegamiColor.destructive)
                         .accessibilityIdentifier("settings.reauthErrorMessage")
                 }
             }
@@ -207,6 +207,9 @@ struct AccountsListContent: View {
         .sheet(item: $accountEntryRoute) { route in
             accountEntryDestination(for: route, binding: $accountEntryRoute)
         }
+        .scrollContentBackground(.hidden)
+        .background(OtegamiColor.background)
+        .tint(OtegamiColor.accent)
     }
 
     /// One account row's content — extracted out of `body` so the `Button`

@@ -54,6 +54,7 @@ struct ThreadDetailView: View {
             // `messageDetail.subject`) until it scrolls into view.
             .defaultScrollAnchor(.bottom)
             .accessibilityIdentifier("threadDetail.scrollView")
+            .background(OtegamiColor.background)
             .overlay {
                 if messages.isEmpty, accountId != nil {
                     ContentUnavailableView("メッセージが見つかりません", systemImage: "envelope.open")
@@ -129,7 +130,18 @@ struct ThreadDetailView: View {
                 onReply: onReply,
                 onToggleExpanded: toggleExpanded
             )
-            Divider()
+            // Design system: a 1pt dashed row separator (`OtegamiStroke
+            // .secondary`/`OtegamiColor.dividerSubtle`), matching the
+            // handoff's "行間 1px dashed" spacing spec — a standalone
+            // sibling view here rather than `.otegamiRowDivider()`'s
+            // overlay form, since that modifier is meant for a *single*
+            // row's own bottom edge and this divider needs to sit below
+            // whichever content this row currently shows (a collapsed
+            // header alone, or the header plus its expanded `MessageView`).
+            Rectangle()
+                .fill(OtegamiColor.dividerSubtle)
+                .frame(height: OtegamiStroke.secondary)
+                .accessibilityHidden(true)
         }
     }
 
@@ -225,35 +237,33 @@ private struct ThreadMessageSummaryRow: View {
     let isExpanded: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(message.flags.contains(.seen) ? Color.clear : Color.accentColor)
-                .frame(width: 8, height: 8)
+        HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
+            UnreadDot(isUnread: !message.flags.contains(.seen))
                 .padding(.top, 6)
-                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(senderText)
-                    .font(.subheadline)
-                    .bold()
+                    .font(OtegamiFont.headline())
+                    .foregroundStyle(OtegamiColor.ink)
                     .lineLimit(1)
                 if !isExpanded, let snippet = message.snippet, !snippet.isEmpty {
                     Text(snippet)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(OtegamiFont.caption())
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                         .lineLimit(1)
                 }
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: OtegamiSpacing.sm)
             Text(message.date ?? message.internalDate, format: .dateTime.month().day().hour().minute())
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkTertiary)
             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(OtegamiColor.inkTertiary)
                 .accessibilityHidden(true)
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal)
+        .padding(.vertical, OtegamiSpacing.sm)
+        .padding(.horizontal, OtegamiSpacing.md)
+        .background(OtegamiColor.surface)
         .contentShape(Rectangle())
     }
 

@@ -195,6 +195,8 @@ struct MessageListView: View {
             }
         }
         .accessibilityIdentifier("messageList.list")
+        .scrollContentBackground(.hidden)
+        .background(OtegamiColor.background)
         .overlay {
             if isSearchActive {
                 if isSearching {
