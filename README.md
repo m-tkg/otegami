@@ -195,13 +195,11 @@ numbers).
 
 ## Contributing
 
-This is currently a solo side project without a formal contribution
-process, but issues and pull requests are welcome — bug reports,
-questions, and small fixes especially. For anything larger, opening an
-issue to discuss the approach first is appreciated. `make test` (and
-`make ios`/`make mac` where relevant) should stay green; see
-[Testing / verification](#testing--verification) above for how changes
-get checked in practice.
+Issues and pull requests are welcome — bug reports, questions, and small
+fixes especially. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development setup, how to run tests, and commit/PR conventions. For
+security vulnerabilities, see [SECURITY.md](SECURITY.md) instead of
+opening a public issue.
 
 ## License
 
