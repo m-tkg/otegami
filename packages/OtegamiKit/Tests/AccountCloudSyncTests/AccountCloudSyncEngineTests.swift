@@ -179,6 +179,125 @@ struct AccountCloudSyncEngineTests {
         #expect(store.setCallCount == 0)
     }
 
+    // MARK: - Account edit propagation (account edit UI:
+    // "編集 → cloud push → 別デバイス相当の reconcile で反映される、逆に古い
+    // updatedAt の cloud データでローカルの新しい編集が上書きされない")
+
+    /// Simulates device A editing an account (host/port/SMTP username all
+    /// change, `updatedAt` bumped) and pushing it, then device B's next
+    /// `reconcile()` picking up that edit — the exact mechanism
+    /// `AppEnvironment.updateAccount`/`pushAccountToCloud` and this engine's
+    /// `reconcile()` phase 3 already implement; this test just exercises it
+    /// with every editable field changed at once; `apply(to:)`'s own
+    /// completeness is separately guaranteed by
+    /// `OtegamiStore`'s round-trip, this test is about the sync mechanism.
+    @Test
+    func reconcileAppliesAnEditedAccountFromANewerCloudSnapshotOnAnotherDevice() async {
+        let store = FakeUbiquitousStore()
+        let local = FakeLocalAccountDirectory()
+        // Device A's pre-edit copy, still what device B has locally.
+        local.seedLocalAccount(
+            CloudAccountSnapshot(
+                accountId: "edited-1",
+                displayName: "Old Name",
+                email: "user@example.com",
+                authType: .password,
+                kind: .generic,
+                imapHost: "old-imap.example.com",
+                imapPort: 993,
+                imapSecurity: .tls,
+                imapAllowsInsecureTLS: false,
+                imapUsername: "user@example.com",
+                smtpHost: "old-smtp.example.com",
+                smtpPort: 465,
+                smtpSecurity: .tls,
+                smtpAllowsInsecureTLS: false,
+                smtpUsername: "user@example.com",
+                createdAt: epoch,
+                updatedAt: epoch
+            )
+        )
+        // Device A's edit, already pushed to the cloud with a newer
+        // `updatedAt` — every editable field (per the account-edit plan:
+        // display name, IMAP/SMTP host/port/security, SMTP username)
+        // changed at once.
+        let editedSnapshot = CloudAccountSnapshot(
+            accountId: "edited-1",
+            displayName: "New Name",
+            email: "user@example.com",
+            authType: .password,
+            kind: .generic,
+            imapHost: "new-imap.example.com",
+            imapPort: 143,
+            imapSecurity: .startTLS,
+            imapAllowsInsecureTLS: false,
+            imapUsername: "user@example.com",
+            smtpHost: "new-smtp.example.com",
+            smtpPort: 587,
+            smtpSecurity: .startTLS,
+            smtpAllowsInsecureTLS: false,
+            smtpUsername: "new-smtp-user@example.com",
+            createdAt: epoch,
+            updatedAt: epoch.addingTimeInterval(100)
+        )
+        store.seed(AccountCloudPayload(accounts: [editedSnapshot]))
+        let engine = makeEngine(store: store, local: local)
+
+        let summary = await engine.reconcile()
+
+        #expect(summary.updatedAccountIds == ["edited-1"])
+        let updated = local.currentAccount("edited-1")
+        #expect(updated?.displayName == "New Name")
+        #expect(updated?.imapHost == "new-imap.example.com")
+        #expect(updated?.imapPort == 143)
+        #expect(updated?.imapSecurity == .startTLS)
+        #expect(updated?.smtpHost == "new-smtp.example.com")
+        #expect(updated?.smtpPort == 587)
+        #expect(updated?.smtpSecurity == .startTLS)
+        #expect(updated?.smtpUsername == "new-smtp-user@example.com")
+    }
+
+    /// The reverse of the test above: a *stale* cloud copy (edited on some
+    /// other device a while ago, or just never caught up) must not clobber
+    /// a local edit that happened more recently — `reconcile()` should push
+    /// the newer local edit up instead.
+    @Test
+    func reconcileKeepsANewerLocalEditRatherThanAnOlderCloudCopy() async {
+        let store = FakeUbiquitousStore()
+        let staleCloud = CloudAccountSnapshot.fixture(
+            accountId: "edited-2",
+            displayName: "Stale Cloud Name",
+            imapHost: "stale.example.com",
+            updatedAt: epoch
+        )
+        store.seed(AccountCloudPayload(accounts: [staleCloud]))
+        let local = FakeLocalAccountDirectory()
+        // Local was just edited (e.g. a password/host fix) after the stale
+        // cloud snapshot above was written.
+        local.seedLocalAccount(
+            CloudAccountSnapshot.fixture(
+                accountId: "edited-2",
+                displayName: "Freshly Edited Name",
+                imapHost: "fresh.example.com",
+                updatedAt: epoch.addingTimeInterval(100)
+            )
+        )
+        let engine = makeEngine(store: store, local: local)
+
+        let summary = await engine.reconcile()
+
+        #expect(summary.pushedAccountIds == ["edited-2"])
+        #expect(summary.updatedAccountIds.isEmpty)
+        // Local's edit must survive untouched...
+        #expect(local.currentAccount("edited-2")?.displayName == "Freshly Edited Name")
+        #expect(local.currentAccount("edited-2")?.imapHost == "fresh.example.com")
+        // ...and the cloud payload must now reflect it too, not the stale
+        // copy it started with.
+        let pushedAccount = store.currentPayload()?.accounts.first { $0.accountId == "edited-2" }
+        #expect(pushedAccount?.displayName == "Freshly Edited Name")
+        #expect(pushedAccount?.imapHost == "fresh.example.com")
+    }
+
     // MARK: - Toggle off
 
     @Test
