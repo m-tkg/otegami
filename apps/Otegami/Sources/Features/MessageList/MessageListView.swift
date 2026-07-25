@@ -141,6 +141,35 @@ struct MessageListView: View {
                         .tint(.accentColor)
                         .accessibilityIdentifier("messageList.row.\(threadId).toggleRead")
                     }
+                    #if os(macOS)
+                    // `.swipeActions` above is an iOS-only affordance — it
+                    // never renders anything on macOS (no swipe gesture on
+                    // a `List` row there), so without this, macOS QA sweep
+                    // found there was *no* way at all to mark a thread
+                    // read/unread or delete it from the list short of
+                    // opening it and using ⌘⌫ (which only covers delete).
+                    // A right-click context menu is the native macOS
+                    // equivalent, and reuses the exact same `toggleRead`/
+                    // `deleteThread` this file already defines for the
+                    // swipe actions above — same opQueue-enqueuing logic,
+                    // just a different trigger.
+                    .contextMenu {
+                        Button {
+                            toggleRead(summary)
+                        } label: {
+                            if summary.thread.unreadCount > 0 {
+                                Label("既読にする", systemImage: "envelope.open")
+                            } else {
+                                Label("未読にする", systemImage: "envelope.badge")
+                            }
+                        }
+                        Button(role: .destructive) {
+                            deleteThread(summary)
+                        } label: {
+                            Label("削除", systemImage: "trash")
+                        }
+                    }
+                    #endif
                     .onAppear {
                         loadMoreIfNeeded(currentItem: summary)
                     }
