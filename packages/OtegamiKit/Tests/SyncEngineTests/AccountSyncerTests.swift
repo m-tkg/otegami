@@ -296,6 +296,76 @@ struct AccountSyncerTests {
         #expect(junkAfterRecovery.lastSyncErrorAt == nil)
     }
 
+    // MARK: - Account-level connect failure (account edit UI)
+
+    /// `AccountRecord.lastSyncError`'s doc comment: a wrong password (the
+    /// account-edit "save a bad password, see it fail visibly" flow) fails
+    /// at `connect()`, before any mailbox is even selected — this must
+    /// surface on the `account` row itself, not just (as
+    /// `MailboxRecord.lastSyncError` alone would give) silently nowhere.
+    @Test("a connect failure records itself on the account row")
+    func connectFailureRecordsAccountLevelSyncError() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let script = FakeIMAPSession.Script(failConnection: .authenticationFailed(underlyingDescription: "bad password"))
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: script)
+        }
+
+        await #expect(throws: (any Error).self) {
+            try await syncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "wrong"))
+        }
+
+        let row = try #require(
+            try await database.dbWriter.read { db in try AccountRecord.fetchOne(db, key: account.id) }
+        )
+        #expect(row.lastSyncError != nil)
+        #expect(row.lastSyncErrorAt != nil)
+    }
+
+    @Test("an account-level connect failure clears itself once a later sync connects successfully")
+    func connectFailureClearsOnNextSuccess() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        let auth = MailAuth.password(username: "test1@otegami.test", password: "test1234")
+
+        let failingScript = FakeIMAPSession.Script(failConnection: .authenticationFailed(underlyingDescription: "bad password"))
+        let firstSyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: failingScript)
+        }
+        await #expect(throws: (any Error).self) {
+            try await firstSyncer.performInitialSync(auth: auth)
+        }
+        let afterFailure = try #require(
+            try await database.dbWriter.read { db in try AccountRecord.fetchOne(db, key: account.id) }
+        )
+        #expect(afterFailure.lastSyncError != nil)
+
+        // A fresh `AccountSyncer` isn't required for the fix to take
+        // effect (in the real app it wouldn't be reused either — see
+        // `SyncCoordinator.invalidateSyncer(for:)`'s doc comment — but this
+        // test only cares about `AccountSyncer`'s own recover-on-success
+        // behavior, independent of that).
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let succeedingScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0)]
+        )
+        let secondSyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: succeedingScript)
+        }
+        _ = try await secondSyncer.performInitialSync(auth: auth)
+
+        let afterRecovery = try #require(
+            try await database.dbWriter.read { db in try AccountRecord.fetchOne(db, key: account.id) }
+        )
+        #expect(afterRecovery.lastSyncError == nil)
+        #expect(afterRecovery.lastSyncErrorAt == nil)
+    }
+
     @Test("initialSyncLowerBound math")
     func initialSyncLowerBoundMath() {
         // Fewer messages than the window: start from UID 1.

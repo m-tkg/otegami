@@ -79,6 +79,23 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
     public var smtpAllowsInsecureTLS: Bool
     public var smtpUsername: String?
 
+    /// Account-level sync failure visibility (account edit UI): set when
+    /// `SyncEngine.AccountSyncer` fails to even `connect()` (wrong
+    /// password, unreachable host, ...) — as opposed to
+    /// `MailboxRecord.lastSyncError`, which only ever gets a chance to be
+    /// set *after* a successful connect, for a failure scoped to one
+    /// mailbox. The account-edit flow's "change the password, save, see a
+    /// visible failure, fix it, see it recover" verification loop
+    /// (`docs/verify.md`) depends on a connect-level auth failure being
+    /// visible somewhere — before this field existed, `AccountSyncer
+    /// .performInitialSync`/`.performIncrementalSync` propagated it, but
+    /// every real call site swallows that via `try?`
+    /// (`OtegamiApp.syncAllAccountsOnce`, `AccountSetupView.saveAccount`,
+    /// ...), so it never reached any UI. Mirrors `MailboxRecord
+    /// .lastSyncError`'s "record it, clear it on the next success" shape.
+    public var lastSyncError: String?
+    public var lastSyncErrorAt: Date?
+
     public var createdAt: Date
 
     /// M11 (iCloud account sync): when this row's synced metadata last
@@ -108,6 +125,8 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         smtpSecurity: ConnectionSecurityRecord? = nil,
         smtpAllowsInsecureTLS: Bool = false,
         smtpUsername: String? = nil,
+        lastSyncError: String? = nil,
+        lastSyncErrorAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date? = nil
     ) {
@@ -127,6 +146,8 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         self.smtpSecurity = smtpSecurity
         self.smtpAllowsInsecureTLS = smtpAllowsInsecureTLS
         self.smtpUsername = smtpUsername
+        self.lastSyncError = lastSyncError
+        self.lastSyncErrorAt = lastSyncErrorAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
     }

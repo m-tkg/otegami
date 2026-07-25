@@ -450,6 +450,18 @@ extension AppDatabase {
             }
         }
 
+        // v13 (account edit UI): account-level sync failure visibility —
+        // see `AccountRecord.lastSyncError`'s doc comment for why this is a
+        // separate column from v12's mailbox-scoped one (a connect-level
+        // failure, e.g. a wrong password after editing an account, happens
+        // *before* any mailbox is even selected).
+        migrator.registerMigration("v13") { db in
+            try db.alter(table: "account") { t in
+                t.add(column: "lastSyncError", .text)
+                t.add(column: "lastSyncErrorAt", .datetime)
+            }
+        }
+
         return migrator
     }
 }

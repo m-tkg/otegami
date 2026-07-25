@@ -102,7 +102,7 @@ public actor AccountSyncer {
         var progress = Progress()
 
         let session = sessionFactory(account.imapConfig)
-        try await session.connect(auth: auth)
+        try await connect(session, auth: auth)
         defer {
             let session = session
             Task { await session.disconnect() }
@@ -297,6 +297,41 @@ public actor AccountSyncer {
         }
     }
 
+    /// Connects `session`, recording (account edit UI) or clearing
+    /// `AccountRecord.lastSyncError` around it — see that field's doc
+    /// comment for why a connect-level failure (as opposed to one scoped to
+    /// a single mailbox, `recordMailboxSyncFailure` above) needs its own
+    /// account-level record. Rethrows on failure so every existing caller's
+    /// control flow (abort the rest of this sync pass) is unchanged; this
+    /// only adds a side effect, not a new error path.
+    private func connect(_ session: any IMAPSessionProtocol, auth: MailAuth) async throws {
+        do {
+            try await session.connect(auth: auth)
+        } catch {
+            await recordAccountSyncFailure(error: error)
+            throw error
+        }
+        await clearAccountSyncFailureIfNeeded()
+    }
+
+    private func recordAccountSyncFailure(error: Error) async {
+        try? await database.dbWriter.write { [account] db in
+            guard var row = try AccountRecord.fetchOne(db, key: account.id) else { return }
+            row.lastSyncError = String(describing: error)
+            row.lastSyncErrorAt = Date()
+            try row.update(db)
+        }
+    }
+
+    private func clearAccountSyncFailureIfNeeded() async {
+        try? await database.dbWriter.write { [account] db in
+            guard var row = try AccountRecord.fetchOne(db, key: account.id), row.lastSyncError != nil else { return }
+            row.lastSyncError = nil
+            row.lastSyncErrorAt = nil
+            try row.update(db)
+        }
+    }
+
     /// Differential sync (M3, mailbox scope extended in M4): re-lists
     /// mailboxes (so a newly-created server-side mailbox — e.g. Trash
     /// appearing for the first time — is picked up for `OpQueueProcessor`'s
@@ -309,7 +344,7 @@ public actor AccountSyncer {
     @discardableResult
     public func performIncrementalSync(auth: MailAuth, scope: SyncScope = .inboxOnly) async throws -> MailboxSyncer.Progress {
         let session = sessionFactory(account.imapConfig)
-        try await session.connect(auth: auth)
+        try await connect(session, auth: auth)
         defer {
             let session = session
             Task { await session.disconnect() }
@@ -406,7 +441,7 @@ public actor AccountSyncer {
         while !Task.isCancelled {
             do {
                 let session = sessionFactory(account.imapConfig)
-                try await session.connect(auth: auth)
+                try await connect(session, auth: auth)
                 let mailboxInfos = try await session.listMailboxes()
                 guard let inboxInfo = Self.inbox(among: mailboxInfos) else {
                     await session.disconnect()

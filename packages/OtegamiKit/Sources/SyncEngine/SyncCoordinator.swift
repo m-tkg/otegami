@@ -162,6 +162,25 @@ public actor SyncCoordinator {
         }
     }
 
+    /// Drops the cached `AccountSyncer` for `accountId`, if one exists —
+    /// called after an account edit (host/port/credentials changed) so the
+    /// *next* `syncAccount`/`syncAccountIncrementally`/`startIdleLoop` call
+    /// builds a fresh `AccountSyncer` from the freshly-saved `AccountRecord`
+    /// instead of reusing a syncer that's still holding the pre-edit
+    /// host/port in its own `let account` (see `syncer(for:)` below — it
+    /// only ever builds a *new* `AccountSyncer` for an id it hasn't seen
+    /// before; every other call site's `account` parameter is otherwise
+    /// silently ignored once a syncer for that id already exists). Stops
+    /// the syncer's `IDLE` loop first — dropping the dictionary's only
+    /// strong reference would otherwise leave a still-running `idleTask`
+    /// racing this method's own caller, relying on `AccountSyncer.deinit`
+    /// to cancel it only if nothing else happens to be racing a retain in
+    /// the meantime.
+    public func invalidateSyncer(for accountId: String) async {
+        guard let syncer = syncers.removeValue(forKey: accountId) else { return }
+        await syncer.stopIdleLoop()
+    }
+
     private func syncer(for account: AccountRecord) -> AccountSyncer {
         if let existing = syncers[account.id] {
             return existing
