@@ -42,59 +42,67 @@
 #   straight out of Notification Center's accessibility tree.
 #
 # ============================================================================
-# KNOWN BLOCKER on this dev machine/toolchain (confirmed empirically while
-# building this script — not a NotificationService bug):
+# FORMER BLOCKER on this dev machine/toolchain, now fixed (kept here for the
+# next person who hits `UNErrorDomain code=2003 "Source is not authorized"`
+# on a *different* machine/toolchain and lands on this comment while
+# debugging it):
 #
-#   `xcrun simctl push` fails outright, for *every* payload carrying an
-#   `aps.alert` (required for `mutable-content` — a payload with only
+#   `xcrun simctl push` used to fail outright, for *every* payload carrying
+#   an `aps.alert` (required for `mutable-content` — a payload with only
 #   `content-available` is rejected too, with `UNErrorDomain code=1401
-#   "Notification has no user visible content"`):
+#   "Notification has no user visible content"`), with:
 #
 #     UNErrorDomain code=2003: "Repository could not save notification.
 #     Source is not authorized."
 #
-#   Root cause: the app has never called `UNUserNotificationCenter.current()
-#   .requestAuthorization(options:)` anywhere in its production code.
-#   `Support/PushTokenCenter.swift`'s `requestToken()` only calls
+#   Root cause: the app never called `UNUserNotificationCenter.current()
+#   .requestAuthorization(options:)` anywhere in its production code —
+#   `Support/PushTokenCenter.swift`'s `requestToken()` used to call only
 #   `UIApplication.shared.registerForRemoteNotifications()` (APNs device-
-#   token registration) — on this iOS 26/27 toolchain that does *not*
-#   implicitly request alert/banner authorization the way it did pre-iOS 10;
-#   the two have been separate APIs for a decade. Confirmed two ways:
-#     - `xcrun simctl push` itself rejects with the error above even *after*
-#       driving `OtegamiM9PushSettingsUITests`' full enable flow (which does
-#       call `registerForRemoteNotifications()`) on this same install.
-#     - Settings -> Apps -> Otegami shows no "Notifications" row at all
-#       (only Siri/Search/Cellular Data) — this OS's Settings only lists a
-#       per-app Notifications toggle once *something* has registered the
-#       app with `usernoted`, which a bare `registerForRemoteNotifications()`
-#       apparently doesn't do here. There is no `xcrun simctl privacy ...
-#       notifications` grant (unlike camera/contacts/location — `xcrun simctl
-#       privacy --help` doesn't list a notifications service at all), and no
-#       working Settings deep-link on this OS (`App-prefs:` URLs no-op).
+#   token registration), which does *not* implicitly request alert/banner
+#   authorization (the two have been separate APIs since iOS 10). Fixed by
+#   adding a `NotificationPermissionResolver.resolve(using:)` call (backed
+#   by `UNUserNotificationCenter.current()`, `packages/OtegamiKit/Sources
+#   /PushRelayClient/NotificationPermission.swift`, unit-tested as
+#   `NotificationPermissionResolverTests`) to the front of `PushTokenCenter
+#   .requestToken()`, throwing `PushTokenError.notificationPermissionDenied`
+#   (surfaced by `PushNotificationSettingsView` as "通知が許可されていません。
+#   設定アプリから許可してください。" + a Settings-app shortcut) before ever
+#   attempting device-token registration if declined.
 #
-#   The fix is a one-line addition — `UNUserNotificationCenter.current()
-#   .requestAuthorization(options: [.alert, .sound, .badge])` alongside the
-#   existing `registerForRemoteNotifications()` call in `PushTokenCenter
-#   .requestToken()` — plus a UITest step that accepts the resulting system
-#   permission prompt (`addUIInterruptionMonitor`/springboard "Allow" tap,
-#   the same class of system-alert handling `dismissSavePasswordPromptIfNeeded`
-#   already does for the Keychain AutoFill prompt). **Deliberately not made
-#   here**: `Support/PushTokenCenter.swift` is outside this task's permitted
-#   file scope (`apps/Otegami/NotificationService/`, `packages/OtegamiKit
-#   /Sources/{PushRelayClient,AccountCloudSync}/`, and *new* files under
-#   `apps/Otegami/UITests/`/`scripts/verify-*` only) — see this script's
-#   companion investigation in `docs/verify.md` for the full writeup and
-#   next steps.
+#   `OtegamiPushSimulatedSetupUITests` now drives the "設定 → プッシュ通知 →
+#   有効にする" flow once (`grantNotificationPermissionViaPushSettings(in:)`,
+#   `UITests/DovecotAccountUITestHelpers.swift`) and accepts the resulting
+#   system permission prompt (`allowNotificationPermissionIfNeeded`) before
+#   this script's first `simctl push` — that's what actually grants this
+#   simulator install's notification authorization. The relay URL used
+#   there doesn't need to be reachable (authorization is requested *before*
+#   any relay network call), and the flow still ends in a visible
+#   `.noDeviceToken` error same as before (simulators never produce a real
+#   APNs device token) — expected, unrelated to this fix.
+# ============================================================================
 #
-#   Until that line lands, this script runs phases 1-2 (account setup,
-#   accountId/uidnext discovery, payload construction) successfully, then
-#   fails loudly and specifically at the first `simctl push` with a message
-#   pointing back at this comment block, rather than a bare, confusing
-#   `UNErrorDomain` dump. `NotificationEnrichment` (the title/body rewrite
-#   policy itself) is unit-tested independently of this whole pipeline —
-#   see `packages/OtegamiKit/Tests/PushRelayClientTests
-#   /NotificationEnrichmentTests.swift` — so that part of NotificationService
-#   *is* covered today regardless of this blocker.
+# NEW BLOCKER found once the above was fixed (this dev machine's iOS 27 beta
+# Simulator runtime specifically — see `docs/qa-findings.md`'s "M9 追補2"
+# for the full writeup): `simctl push` is now *accepted* (no more
+# `UNErrorDomain code=2003`), but `NotificationService`
+# (`UNNotificationServiceExtension`) is never actually spawned by
+# `launchd_sim` in response — confirmed via `xcrun simctl spawn <udid> log
+# show --predicate 'process == "NotificationService"'` returning zero
+# results, and the `launchd_sim` job log showing no spawn attempt at all for
+# `com.mtkg.otegami.NotificationService` (while other job spawns in the same
+# window, e.g. `OtegamiUITests-Runner`, are clearly logged). App-side config
+# (NSExtensionPointIdentifier, entitlements, aps-environment, the `.appex`
+# actually being embedded in `PlugIns/`) was all re-verified correct. All
+# three scenarios below will therefore show the *raw, un-enriched* payload
+# text ("Otegami" / "NEW_MAIL") in their screenshots on this machine — that
+# does **not** mean `NotificationEnrichment` or the IMAP-fetch logic is
+# broken (both are still covered by `NotificationEnrichmentTests` and this
+# script's own account/payload-construction phases); it means this specific
+# Simulator runtime's OS-level extension-dispatch pipeline isn't invoking
+# the extension at all, which is outside what any app-side code change can
+# fix. Real-device verification (`.p8` key, PENDING.md's M9 section) remains
+# the only way to confirm the enrichment end-to-end.
 # ============================================================================
 #
 # Usage: scripts/verify-ios-push-simulated.sh
@@ -253,14 +261,21 @@ push_and_capture() {
     if [[ "$push_output" == *"Source is not authorized"* ]]; then
       cat >&2 << 'EOF'
 
-error: simctl push rejected — the app has never been granted notification
-authorization on this simulator install. This is a known, documented
-blocker (see this script's header comment block above) requiring a
-one-line UNUserNotificationCenter.requestAuthorization(...) addition to
-apps/Otegami/Sources/Support/PushTokenCenter.swift, which is outside this
-task's permitted file scope. Everything up to this point (account setup,
-accountId/uidnext discovery, payload construction) succeeded — only the
-actual push delivery is blocked.
+error: simctl push rejected — this simulator install has never been
+granted notification authorization. Phase 1 (OtegamiPushSimulatedSetupUITests)
+is supposed to grant it via grantNotificationPermissionViaPushSettings(in:)
+(UITests/DovecotAccountUITestHelpers.swift) before this script ever calls
+simctl push — see this script's header comment block above for the fix
+this used to be blocked on. If you're seeing this now, check:
+  - Did phase 1 actually run (not skipped by an early exit)?
+  - Did allowNotificationPermissionIfNeeded() find and tap the system
+    permission prompt? (it silently no-ops if the prompt never appeared
+    within its timeout — check the phase 1 xcodebuild log)
+  - Was this simulator erased, then this script's own phase 1 skipped or
+    interrupted before it reached grantNotificationPermissionViaPushSettings?
+    `simctl erase` wipes notification-authorization state along with
+    everything else, so every fresh erase needs phase 1 to run again in
+    full — there's no way to grant it once and have it survive an erase.
 EOF
     fi
     exit "$push_status"
