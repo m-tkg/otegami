@@ -141,7 +141,7 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
 
 ## リリース・配布
 
-- **GitHub リポジトリの public 化**: 現状 private。公開時にリポジトリ名を
-  `mailapp` から `otegami` に変更する (計画書の当初合意)。
+- **GitHub リポジトリの public 化**: 現状 private (リポジトリ名は既に
+  `otegami` — 当初の `mailapp` からの改名は完了済み)。
 - **App Store / TestFlight 配布**: 未着手。Google OAuth 審査 (作者配布
   ビルドのみ必要) もこのタイミングで対応する。

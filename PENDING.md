@@ -209,8 +209,10 @@ Extension は実装済み・大部分を自動検証済み (詳細は `docs/rela
 以下は「今すぐ開発を止める理由」ではなく、実際に公開・配布する段になったら
 対応が必要な項目 (計画書の合意事項)。
 
-- **リポジトリの public 化**: 現状 private。公開時にリポジトリ名を
-  `mailapp` から `otegami` に変更する。
+- **リポジトリの public 化**: 現状 private (GitHub 上のリポジトリ名は既に
+  `otegami` — README/バッジ/クローン URL は一貫してこれを指している。
+  ローカルの作業ディレクトリ名 `mailapp` は単なる clone 先ディレクトリ名
+  でリポジトリ名とは無関係なので揃える必要はない)。
 - **Google OAuth の審査**: 各自の Client ID でのテスト利用には審査不要だが、
   作者本人が配布ビルド (App Store/TestFlight) を出す場合は Google の OAuth
   審査が必要になる (`docs/oauth-setup.md`)。
