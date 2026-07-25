@@ -2037,3 +2037,164 @@ M3-M5 と異なり、このマイルストーンの検証シナリオ (パスワ
 同じシミュレータ (状態は保持されたまま) に対して単体で再実行して撮り
 直すのが手っ取り早い。恒久的な修正 (例えばテストの最終フレームの直前で
 確実に撮る仕組み) は今後の課題として残る。
+
+## Drafts の IMAP 同期
+
+```sh
+scripts/verify-ios-drafts-sync.sh
+```
+
+`docs/roadmap.md` に記録されていた「Drafts の IMAP 同期」「下書きの添付
+ファイル」に対応した。設計の要点 (詳細は `DraftMessageRecord`/
+`OpQueueProcessor` の doc comment参照):
+
+- **アップロード/置換は APPEND-first, delete-second**: `OpQueueKind
+  .saveDraft` の replay は、新しい版をまず `APPEND` し、成功した後にだけ
+  古い版を best-effort で `\Deleted` + `EXPUNGE` する。逆順 (先に削除) だと
+  APPEND 失敗時に下書きが跡形もなく消える — このアプリの「曖昧な場合は
+  消さずに両方残す」方針に反するため、意図的にこの順序にした。
+- **サーバ由来の下書きは開いただけでは何も消費しない**:
+  `DraftMessageRecord` はローカルで作成/編集された下書きの「アップロード
+  待ち・置換待ち」状態だけを表す。他クライアントが書いた下書き
+  (`DraftQuery.unifiedRequest` が `message`/`mailbox` テーブルから直接
+  拾う `.server` 行) は、ローカル行に一切ミラーしない — 開いて何も編集
+  せず閉じれば、サーバー側の実体には一切触れない。ローカル下書き
+  (`ComposerLaunchPayload.draft`) の「開いた時点で行を消費する」既存
+  M10 挙動とは意図的に非対称。
+- **送信完了時の下書き削除もベストエフォート**: `outboxMessage` に
+  `draftServerMailboxId`/`draftServerUid`/`draftServerUidValidity` を
+  追加し、`.send` replay が SMTP 送信成功後に best-effort でその下書きを
+  削除する。
+- **Drafts メールボックスの自動作成**: 既存の Trash 自動作成
+  (`resolveOrCreateTrashMailbox`) と同じパターンで
+  `resolveOrCreateDraftsMailbox` を追加。
+- **既知の制限 (統合テストで発見)**: `OpQueueProcessor` の自動作成
+  ロジックは「ローカル DB にまだ mailbox 行が無い」ことだけを「サーバに
+  存在しない」の代理指標にしている。実運用では account 追加時に必ず
+  `AccountSyncer.performInitialSync` が一度走ってから
+  `OpQueueProcessor` の出番が来るので問題にならないが、
+  `DraftsSyncIntegrationTests` を書く過程で「一度も同期していない
+  アカウントに対していきなり `.saveDraft` を replay する」という非現実的な
+  テストを書いたところ、dev mailstack の Dovecot が最初から `SPECIAL-USE`
+  で `Drafts` を持っているため `CREATE` が「既に存在する」エラーで失敗し、
+  下書きの保存が永久にリトライし続けるケースを実際に踏んだ (Trash 側にも
+  同じ潜在的な形が既にある)。テスト側を「まず `performInitialSync` する」
+  という現実的な手順に直したことで解消したが、コード側の恒久対策
+  (CREATE 前に一度 `listMailboxes()` する等) は行っていない — 発生条件が
+  非現実的 (同期が一度も走っていないアカウントへの操作) なため優先度は
+  低いと判断した。
+
+### 単体テスト (`FakeIMAPSession`)
+
+`OpQueueProcessorTests.swift` に Drafts 専用のセクションを追加 (計8件):
+新規保存の APPEND + serverUid 記録、置換時の `\Deleted`+`EXPUNGE`、
+`serverUidValidity` が古い場合は置換をスキップ (新規 APPEND 自体は継続)、
+行が既に無い場合の stale discard、添付ファイルの同梱、Drafts メールボックス
+自動作成の自己修復、`deleteDraft` op の `\Deleted`+`EXPUNGE`、
+`uidValidity` 不一致での discard、送信成功後の下書き削除。
+`MailboxSyncerTests.swift` に `.inboxOnly` スコープが Drafts メールボックス
+も差分同期することを確認するテストを追加。`OtegamiStoreTests
+/DraftQueryTests.swift` (新規) で `DraftQuery.unifiedRequest` のマージ/
+重複排除ロジック (ローカル行がサーバ側の同一 UID を「占有」している場合に
+サーバ由来行を除外する) を検証。`make test` はこれらを含めて green。
+
+### 統合テスト (opt-in, dev/mailstack の実 Dovecot + Mailpit)
+
+```sh
+make mailstack-up
+OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter DraftsSyncIntegrationTests
+make mailstack-down
+```
+
+`DraftsSyncIntegrationTests.swift` (新規, `MailTransportMailCoreTests`
+ターゲット) — 実 Dovecot に対して `OpQueueProcessor`/`AccountSyncer` を
+直接動かす (UI 層は経由しない) 5件、すべて green:
+
+1. ローカル下書きの保存が実際に Dovecot の Drafts へ `\Draft` フラグ付きで
+   `APPEND` されること (`doveadm fetch ... flags`)。
+2. 編集して再保存すると、Drafts 内のメッセージ数が常に 1 のまま (置換、
+   重複しない) であること (`doveadm mailbox status ... messages`)。
+3. 下書きから再開して送信すると、Mailpit に実際に届き、かつ Drafts の
+   コピーが削除されること。
+4. `deleteDraft` op が Drafts のメッセージを実際に削除すること。
+5. 他クライアントが `doveadm save` で直接 Drafts に書いた下書きが、
+   `AccountSyncer.performInitialSync` (通常の mailbox 同期経路、Drafts
+   固有のコードパスなし) で取り込まれ、`DraftQuery.unifiedRequest` が
+   `.server` 行として返すこと。
+
+### iOS シミュレータ検証 (XCUITest, 実機で確認済み)
+
+`scripts/verify-ios-drafts-sync.sh` の10フェーズをすべて実行し、green を
+確認した (`OtegamiDraftsSyncSetupUITests`/`SaveUITests`/`EditUITests`/
+`SendUITests`/`ExternalDraftUITests`)。M3/M4/M5 と同じ「XCUITest フェーズ
+と host 側 `doveadm`/Mailpit REST API 確認を交互に実行する」パターン。
+
+実施内容 (host 側の確認結果込み):
+
+1. `test1` を SMTP 込みで追加し、シード済みメッセージが表示されることを
+   確認。
+2. Composer で新規メッセージを作成し「キャンセル」→「下書きとして保存」。
+   host 側で Drafts に 1 通、`\Draft` フラグ付きで着地したことを確認
+   (`doveadm mailbox status`/`doveadm fetch ... flags`)。
+3. サイドバー「下書き」から件名の label CONTAINS 述語で行を見つけてタップ
+   → Composer が同じ件名でプリフィルされることを確認 (`composer.subject`
+   の `.value`) → 本文に追記して再度「下書きとして保存」。host 側で
+   Drafts のメッセージ数が引き続き 1 のまま (置換、重複しない) であること
+   を確認。
+4. 下書きを再度開いて「送信」。host 側で Mailpit に届いたこと、Drafts の
+   コピーが削除された (メッセージ数が 0 になった) ことを確認。
+5. host 側で `doveadm save` により別 subject の `.eml` を Drafts へ直接
+   投入し、アプリを再起動 (`scenePhase == .active` の差分同期 — 今回の
+   変更で `.inboxOnly` が Drafts も対象に含むようになったパス)。
+   サイドバー「下書き」を開くと、`drafts.row.server-<messageId>`
+   (`DraftQuery.UnifiedRow.server` 由来の id) としてこの外部下書きが
+   現れ、タップすると Composer に件名・本文がプリフィルされることを
+   確認。**編集せずに「キャンセル」で閉じても保存/破棄の確認ダイアログが
+   一切出ない**ことを assert (`composer.saveDraftButton` が
+   `waitForExistence` しない) — 開いただけでは何も消費されない設計の
+   核心部分。host 側で、この下書きが閉じた後も Drafts に変わらず 1 通
+   存在し続けることを確認 (`doveadm mailbox status`/`doveadm fetch`)。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`drafts-01-saved.png`/`drafts-02-edited.png`/`drafts-03-sent.png`/
+`drafts-04-external.png` として出力される。
+
+### 実行時の環境ノート
+
+- **`xcrun simctl erase` 直後の1回目のテストはネットワーク/IMAP 認証が
+  不安定なことがある**: フルパイプライン (`erase` → `boot` →
+  `build-for-testing` → Phase 1) を初回実行した際、`test1@otegami.test`
+  への IMAP/SMTP 接続がそれぞれ別の実行で `authenticationFailed`/
+  `connectionFailed` になったことを2回確認した — `doveadm auth test`/
+  `curl telnet://localhost:1143` など host 側からの直接確認では同時点で
+  問題は再現せず、実際に Phase 1 単体だけを直後に再実行すると成功した
+  (このセッションの Drafts sync 固有の問題ではなく、erase 直後の
+  simulator ネットワークスタックの初期化タイミングに起因すると見られる —
+  M1〜M11 の他スクリプトが `erase` 後すぐ `boot` → `bootstatus -b` で
+  ブート完了を待っている点は同じだが、ブート完了と simulator 内蔵ネット
+  ワークスタックの準備完了は別のタイミングらしい)。再現したら
+  該当フェーズだけを単体で再実行すれば通る。恒久対策 (ブート後に一定時間
+  待つ、またはネットワーク到達性を明示的にポーリングする) は今後の課題
+  として残す。
+- **`BUNDLE_ID` はこの開発機では `com.mtkg.otegami`** — `apps/Otegami
+  /Config/Local.xcconfig` の上書き (M9 追補の節で既出) により、
+  `scripts/verify-ios-*.sh` の既定値 `com.m-tkg.otegami` のままだと
+  スクリーンショット用の `xcrun simctl launch` が失敗する。この開発機で
+  実行する際は `BUNDLE_ID=com.mtkg.otegami scripts/verify-ios-drafts-sync.sh`
+  のように明示的に上書きすること。
+- **`SyncEngineIntegrationTests` の `seeded.count == 1` アサーションは
+  Trash に古いメッセージが残っていると壊れる (今回の変更とは無関係の
+  既存の脆さ)**: `DraftsSyncIntegrationTests` の作業中に
+  `SyncEngineIntegrationTests.incrementalSyncPicksUpExternalChanges` が
+  `seeded.count == 4`/`messages.count == 5` で失敗するのを踏んだ。
+  `performInitialSync` は account の全メールボックス (INBOX だけでなく
+  Sent/Drafts/Trash/Junk も) を同期し、このテストの `seeded =
+  MessageRecord.fetchAll(db)` はアカウント全体のメッセージ数を数えて
+  いるため、過去の `verify-ios-m3.sh` 実行が Trash に残していた3通
+  (`docs/verify.md` の「dev/mailstack: state persists across
+  milestones」節が既に文書化している現象と同根) がそのままカウントに
+  混入していた。`doveadm mailbox status ... messages Trash` で実際に
+  3通確認した上で、このテストのコード自体に変更は加えていない
+  (Drafts sync の変更とは独立に元から存在した脆さのため、スコープ外と
+  判断)。実行順序によっては同じ理由で `SyncEngineIntegrationTests` 単体が
+  再現することがある点を記録しておく。
