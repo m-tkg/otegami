@@ -45,7 +45,26 @@ struct SidebarView: View {
     @State private var unifiedInboxUnread = 0
 
     var body: some View {
-        List(selection: $selection) {
+        // A plain `List`, not `List(selection:)` — selection is driven
+        // explicitly by each row's own `Button` action below, the same
+        // pattern `MessageListView` already uses (its own doc comment: "By
+        // id... Set directly from a `Button` action per row"). This isn't
+        // stylistic parity for its own sake: `List(selection:)`'s binding
+        // is independently documented as flaky in this project's
+        // simulator/toolchain (M2's pitfall #2, `.claude/skills/verify/
+        // SKILL.md`) — a real-device investigation (docs/verify.md) traced
+        // an "sidebar → INBOX をタップすると一覧に何も出ない" bug all the way
+        // down to this: tapping a `List(selection:)`-tagged row here made
+        // `selection` oscillate through `nil` and back rather than
+        // settling once, which tore `MessageListView` down and rebuilt it
+        // (confirmed via a `CancellationError` on an in-flight database
+        // read, mid-rebuild) faster than its very first `ValueObservation`
+        // fetch could ever complete — a livelock, not a one-time glitch,
+        // that never resolved on its own. `List(selection:)` was
+        // previously *this* view's only remaining use of the pattern
+        // `MessageListView` had already worked around for the exact same
+        // reason.
+        List {
             if environment.accounts.isEmpty {
                 ContentUnavailableView {
                     Label("アカウントがありません", systemImage: "envelope.badge")
@@ -57,15 +76,21 @@ struct SidebarView: View {
                 }
             } else {
                 Section {
-                    HStack {
-                        Label("すべての受信トレイ", systemImage: "tray.2")
-                        Spacer()
-                        if unifiedInboxUnread > 0 {
-                            UnreadCountBadge(count: unifiedInboxUnread)
-                                .accessibilityIdentifier("sidebar.unifiedInbox.unreadBadge")
+                    Button {
+                        selection = .unifiedInbox
+                    } label: {
+                        HStack {
+                            Label("すべての受信トレイ", systemImage: "tray.2")
+                            Spacer()
+                            if unifiedInboxUnread > 0 {
+                                UnreadCountBadge(count: unifiedInboxUnread)
+                                    .accessibilityIdentifier("sidebar.unifiedInbox.unreadBadge")
+                            }
                         }
+                        .contentShape(Rectangle())
                     }
-                    .tag(SidebarSelection.unifiedInbox)
+                    .buttonStyle(.plain)
+                    .listRowBackground(selection == .unifiedInbox ? Color.accentColor.opacity(0.15) : nil)
                     .accessibilityIdentifier("sidebar.unifiedInbox")
 
                     if outboxCount > 0 {
@@ -101,15 +126,22 @@ struct SidebarView: View {
                     Section(account.displayName) {
                         ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
                             if let mailboxId = mailbox.id {
-                                HStack {
-                                    Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
-                                    Spacer()
-                                    if let unread = unreadByMailboxId[mailboxId], unread > 0 {
-                                        UnreadCountBadge(count: unread)
-                                            .accessibilityIdentifier("sidebar.mailbox.\(account.id).\(mailbox.path).unreadBadge")
+                                let mailboxSelection = SidebarSelection.mailbox(MailboxSelection(accountId: account.id, mailboxId: mailboxId))
+                                Button {
+                                    selection = mailboxSelection
+                                } label: {
+                                    HStack {
+                                        Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
+                                        Spacer()
+                                        if let unread = unreadByMailboxId[mailboxId], unread > 0 {
+                                            UnreadCountBadge(count: unread)
+                                                .accessibilityIdentifier("sidebar.mailbox.\(account.id).\(mailbox.path).unreadBadge")
+                                        }
                                     }
+                                    .contentShape(Rectangle())
                                 }
-                                .tag(SidebarSelection.mailbox(MailboxSelection(accountId: account.id, mailboxId: mailboxId)))
+                                .buttonStyle(.plain)
+                                .listRowBackground(selection == mailboxSelection ? Color.accentColor.opacity(0.15) : nil)
                                 .accessibilityIdentifier("sidebar.mailbox.\(account.id).\(mailbox.path)")
                             }
                         }
