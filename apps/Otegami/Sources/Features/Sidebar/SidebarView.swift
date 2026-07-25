@@ -153,18 +153,7 @@ struct SidebarView: View {
                 ForEach(environment.accounts) { account in
                     Section(account.displayName) {
                         ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
-                            if let mailboxId = mailbox.id {
-                                MailboxRow(
-                                    accountId: account.id,
-                                    mailbox: mailbox,
-                                    mailboxId: mailboxId,
-                                    isSelected: selection == .mailbox(MailboxSelection(accountId: account.id, mailboxId: mailboxId)),
-                                    unreadCount: unreadByMailboxId[mailboxId]
-                                ) { mailboxSelection in
-                                    selection = mailboxSelection
-                                    onSelected(mailboxSelection)
-                                }
-                            }
+                            mailboxRow(for: mailbox, in: account)
                         }
                     }
                     .task(id: account.id) {
@@ -228,6 +217,49 @@ struct SidebarView: View {
         .task(id: environment.accounts.map(\.id)) { await observeFailedOpCount() }
         .task(id: environment.accounts.map(\.id)) { await observeMailboxSyncFailureCount() }
         .task(id: environment.accounts.map(\.id)) { await observeUnifiedInboxUnreadCount() }
+    }
+
+    /// Builds one `MailboxRow` for the inner `ForEach` in `body` — pulled
+    /// out into its own `@ViewBuilder` method (not just an inline closure
+    /// body) so the `ForEach(mailboxesByAccountId[account.id] ?? []) {
+    /// mailbox in ... }` closure in `body` is a single trivial function
+    /// call rather than an `if let` binding plus a multi-argument
+    /// initializer call with an inline trailing closure. Splitting
+    /// `SidebarView`/`MailboxRow` alone (this file's earlier fix) still
+    /// left `body`'s `ForEach` closure itself too large to type-check in
+    /// reasonable time on CI's toolchain (`docs/ci.md`'s troubleshooting
+    /// notes: this reproduced even after that first fix, and even though
+    /// it type-checked in well under CI's diagnostic threshold on a local
+    /// machine — CI's older Xcode/Swift toolchain hit the same expression
+    /// harder than a newer local one did, so "fast machine, low ms
+    /// locally" wasn't sufficient signal on its own here). `onTap` binds
+    /// `handleMailboxSelected` by reference instead of an inline closure
+    /// literal for the same reason: a named function reference needs no
+    /// closure-literal type inference at the call site.
+    @ViewBuilder
+    private func mailboxRow(for mailbox: MailboxRecord, in account: AccountRecord) -> some View {
+        if let mailboxId = mailbox.id {
+            let mailboxSelection = SidebarSelection.mailbox(MailboxSelection(accountId: account.id, mailboxId: mailboxId))
+            let isSelected = selection == mailboxSelection
+            let unreadCount = unreadByMailboxId[mailboxId]
+            MailboxRow(
+                accountId: account.id,
+                mailbox: mailbox,
+                mailboxId: mailboxId,
+                isSelected: isSelected,
+                unreadCount: unreadCount,
+                onTap: handleMailboxSelected
+            )
+        }
+    }
+
+    /// `MailboxRow.onTap`'s target — writes `selection` and forwards to
+    /// `onSelected`, the same two steps the inline closure this replaced
+    /// used to do directly (`mailboxRow(for:in:)`'s doc comment for why a
+    /// named method rather than a closure literal).
+    private func handleMailboxSelected(_ newSelection: SidebarSelection) {
+        selection = newSelection
+        onSelected(newSelection)
     }
 
     private func observeFailedOpCount() async {
