@@ -86,6 +86,37 @@ enum DoveadmHelper {
         (try? run(["doveadm", "fetch", "-u", user, "flags", "mailbox", mailboxPath, "HEADER", "Subject", subject])) ?? ""
     }
 
+    /// `doveadm mailbox create -u <user> <mailboxPath>` — used by
+    /// integration tests that need a real (non-`SPECIAL-USE`) mailbox to
+    /// exist, then stop existing, against an actual Dovecot server (see
+    /// `deleteMailbox`'s doc comment for why `SPECIAL-USE` mailboxes like
+    /// `Trash`/`Junk` don't work for that purpose on this dev mailstack).
+    static func createMailbox(user: String, mailboxPath: String) throws {
+        try run(["doveadm", "mailbox", "create", "-u", user, mailboxPath])
+    }
+
+    /// `doveadm mailbox delete -u <user> <mailboxPath>`. Note: this dev
+    /// mailstack's Dovecot config auto-creates/auto-subscribes the standard
+    /// `SPECIAL-USE` mailboxes (`Sent`/`Drafts`/`Junk`/`Trash`) on the next
+    /// listing, so deleting one of *those* doesn't durably reproduce "no
+    /// such mailbox" the way a plain user-created mailbox does (confirmed
+    /// manually: `doveadm mailbox delete ... Junk` followed immediately by
+    /// `doveadm mailbox list` still shows `Junk`). Use a mailbox created via
+    /// `createMailbox` first for any test that needs the deletion to stick.
+    static func deleteMailbox(user: String, mailboxPath: String) throws {
+        try run(["doveadm", "mailbox", "delete", "-u", user, mailboxPath])
+    }
+
+    /// `doveadm mailbox list -u <user>`, one mailbox name per line —
+    /// lets a test assert a mailbox does/doesn't currently exist
+    /// server-side without going through `MailCoreIMAPSession` (which is
+    /// exactly what's under test).
+    static func listMailboxes(user: String) throws -> [String] {
+        try run(["doveadm", "mailbox", "list", "-u", user])
+            .split(separator: "\n")
+            .map(String.init)
+    }
+
     /// Re-runs `dev/mailstack/seed/seed.sh` (the canonical fixture set),
     /// restoring the INBOX state `MailCoreIMAPSessionIntegrationTests`
     /// assumes. Any test that mutates INBOX contents beyond that fixed set

@@ -43,6 +43,22 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     public var highestModSeq: Int64
     public var messageCount: Int
     public var lastSyncedAt: Date?
+    /// Set by `AccountSyncer` when this mailbox's most recent sync attempt
+    /// (initial or incremental) threw — a human-readable `String(describing:)`
+    /// of the error, mirroring `OpQueueRecord.lastError`'s shape. Both `nil`
+    /// together mean "last attempt succeeded" (or this mailbox has never
+    /// been synced); `AccountSyncer` clears both back to `nil` the moment a
+    /// later sync of this mailbox succeeds, so a lingering non-`nil` value
+    /// always reflects the *current* state, not just history. Previously,
+    /// per-mailbox sync failures were swallowed entirely (`AccountSyncer`'s
+    /// per-mailbox `do`/`catch` just `continue`d) — see `docs/qa-findings.md`
+    /// and `docs/verify.md` on why that made a real-device partial-sync bug
+    /// hard to diagnose. Surfaced to the user via `MailboxSyncFailuresView`
+    /// (sidebar banner), the same "record it, don't silently continue"
+    /// pattern `opQueue.lastError`/`FailedOperationsView` already established
+    /// for queued-operation failures.
+    public var lastSyncError: String?
+    public var lastSyncErrorAt: Date?
 
     public init(
         id: Int64? = nil,
@@ -56,7 +72,9 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         uidNext: Int64 = 0,
         highestModSeq: Int64 = 0,
         messageCount: Int = 0,
-        lastSyncedAt: Date? = nil
+        lastSyncedAt: Date? = nil,
+        lastSyncError: String? = nil,
+        lastSyncErrorAt: Date? = nil
     ) {
         self.id = id
         self.accountId = accountId
@@ -70,6 +88,8 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.highestModSeq = highestModSeq
         self.messageCount = messageCount
         self.lastSyncedAt = lastSyncedAt
+        self.lastSyncError = lastSyncError
+        self.lastSyncErrorAt = lastSyncErrorAt
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

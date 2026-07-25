@@ -44,10 +44,12 @@ struct SidebarView: View {
     @State private var showingOutbox = false
     @State private var showingDrafts = false
     @State private var showingFailedOps = false
+    @State private var showingMailboxSyncFailures = false
     @State private var mailboxesByAccountId: [String: [MailboxRecord]] = [:]
     @State private var outboxCount = 0
     @State private var draftCount = 0
     @State private var failedOpCount = 0
+    @State private var mailboxSyncFailureCount = 0
     // M10: unread badges. `unreadByMailboxId` groups by mailbox id (spans
     // every account — a plain `[Int64: Int]` is enough since `MailboxRecord
     // .id` is a global autoincrement primary key, not scoped per account).
@@ -136,6 +138,16 @@ struct SidebarView: View {
                         }
                         .accessibilityIdentifier("sidebar.failedOps")
                     }
+
+                    if mailboxSyncFailureCount > 0 {
+                        Button {
+                            showingMailboxSyncFailures = true
+                        } label: {
+                            Label("メールボックス同期エラー (\(mailboxSyncFailureCount))", systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                        }
+                        .accessibilityIdentifier("sidebar.mailboxSyncFailures")
+                    }
                 }
 
                 ForEach(environment.accounts) { account in
@@ -216,9 +228,13 @@ struct SidebarView: View {
         .sheet(isPresented: $showingFailedOps) {
             FailedOperationsView()
         }
+        .sheet(isPresented: $showingMailboxSyncFailures) {
+            MailboxSyncFailuresView()
+        }
         .task(id: environment.accounts.map(\.id)) { await observeOutbox() }
         .task(id: environment.accounts.map(\.id)) { await observeDraftCount() }
         .task(id: environment.accounts.map(\.id)) { await observeFailedOpCount() }
+        .task(id: environment.accounts.map(\.id)) { await observeMailboxSyncFailureCount() }
         .task(id: environment.accounts.map(\.id)) { await observeUnifiedInboxUnreadCount() }
     }
 
@@ -228,6 +244,26 @@ struct SidebarView: View {
         do {
             for try await ops in observation.values(in: environment.database.dbWriter) {
                 failedOpCount = ops.count
+            }
+        } catch {
+            // A failing observation just stops the badge from updating.
+        }
+    }
+
+    /// `docs/qa-findings.md`'s partial-sync-failure visibility — see
+    /// `MailboxSyncFailuresView`'s doc comment for the full rationale.
+    /// Separate `Section` row from `sidebar.failedOps` deliberately: an
+    /// `opQueue` failure (a *user action* like a delete/flag-change that
+    /// couldn't be applied) and a mailbox sync failure (the *background
+    /// list-refresh itself* not working for that mailbox) are different
+    /// problems with different retry semantics, so collapsing them into one
+    /// counter/sheet would blur what's actually wrong.
+    private func observeMailboxSyncFailureCount() async {
+        let accountIds = environment.accounts.map(\.id)
+        let observation = MailboxQuery.syncFailuresObservation(accountIds: accountIds)
+        do {
+            for try await mailboxes in observation.values(in: environment.database.dbWriter) {
+                mailboxSyncFailureCount = mailboxes.count
             }
         } catch {
             // A failing observation just stops the badge from updating.

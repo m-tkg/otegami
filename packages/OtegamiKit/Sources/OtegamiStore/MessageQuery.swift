@@ -117,4 +117,23 @@ public enum MailboxQuery {
             try request(accountId: accountId).fetchAll(db)
         }
     }
+
+    /// Every mailbox (across `accountIds`) currently recording a sync
+    /// failure (`MailboxRecord.lastSyncError` non-`nil`) — the query
+    /// `MailboxSyncFailuresView`'s sidebar banner and the sidebar's own
+    /// failure-count badge both observe. Ordered oldest-failure-first, the
+    /// same convention `OpQueueQuery.failedOps` uses for its `createdAt`
+    /// ordering (oldest problem surfaces first, rather than reshuffling
+    /// every time a new failure is recorded).
+    public static func syncFailures(accountIds: [String], db: Database) throws -> [MailboxRecord] {
+        try MailboxRecord
+            .filter(accountIds.contains(Column("accountId")))
+            .filter(Column("lastSyncError") != nil)
+            .order(Column("lastSyncErrorAt"))
+            .fetchAll(db)
+    }
+
+    public static func syncFailuresObservation(accountIds: [String]) -> ValueObservation<ValueReducers.Fetch<[MailboxRecord]>> {
+        ValueObservation.tracking { db in try syncFailures(accountIds: accountIds, db: db) }
+    }
 }

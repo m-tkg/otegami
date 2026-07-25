@@ -194,10 +194,22 @@ public actor AccountSyncer {
                     )) ?? 0
                     onProgress?(progress)
                 }
+
+                // This mailbox's sync just succeeded — clear any failure a
+                // *previous* pass recorded (see `MailboxRecord
+                // .lastSyncError`'s doc comment) so `MailboxSyncFailuresView`'s
+                // banner disappears on its own rather than requiring a
+                // manual dismissal for a problem that's since resolved
+                // itself.
+                await clearMailboxSyncFailureIfNeeded(mailboxId: mailboxId)
             } catch {
                 // Move on to the next mailbox; see the doc comment above
                 // this `do` for why one mailbox's failure shouldn't cost
-                // every other mailbox its threading pass.
+                // every other mailbox its threading pass. Record *what*
+                // failed (`docs/qa-findings.md`'s "部分同期失敗の UI可視化")
+                // rather than the previous silent `continue` — this is the
+                // only place that failure is ever visible to the user.
+                await recordMailboxSyncFailure(mailboxId: mailboxId, error: error)
                 continue
             }
         }
@@ -247,11 +259,41 @@ public actor AccountSyncer {
                         Column("highestModSeq").noOverwrite,
                         Column("messageCount").noOverwrite,
                         Column("lastSyncedAt").noOverwrite,
+                        Column("lastSyncError").noOverwrite,
+                        Column("lastSyncErrorAt").noOverwrite,
                     ]
                 }
                 records[info.path] = record
             }
             return records
+        }
+    }
+
+    /// Records that this mailbox's most recent sync attempt failed — see
+    /// `MailboxRecord.lastSyncError`'s doc comment. `try?`: a failure to
+    /// write the failure record itself must not throw out of the per-mailbox
+    /// `catch` blocks that call this (which already have their own error to
+    /// deal with, and a `continue` to reach regardless).
+    private func recordMailboxSyncFailure(mailboxId: Int64, error: Error) async {
+        try? await database.dbWriter.write { db in
+            guard var mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return }
+            mailbox.lastSyncError = String(describing: error)
+            mailbox.lastSyncErrorAt = Date()
+            try mailbox.update(db)
+        }
+    }
+
+    /// Clears a previously-recorded sync failure once this mailbox syncs
+    /// successfully again. A no-op write when there was nothing to clear
+    /// (the common case — most mailboxes never fail), rather than an
+    /// unconditional `UPDATE`, only to keep `mailbox`'s `ValueObservation`
+    /// from firing for every successful sync of every mailbox.
+    private func clearMailboxSyncFailureIfNeeded(mailboxId: Int64) async {
+        try? await database.dbWriter.write { db in
+            guard var mailbox = try MailboxRecord.fetchOne(db, key: mailboxId), mailbox.lastSyncError != nil else { return }
+            mailbox.lastSyncError = nil
+            mailbox.lastSyncErrorAt = nil
+            try mailbox.update(db)
         }
     }
 
@@ -310,7 +352,19 @@ public actor AccountSyncer {
                 combined.flagChanges += progress.flagChanges
                 combined.deletedMessages += progress.deletedMessages
                 combined.didFullResync = combined.didFullResync || progress.didFullResync
+
+                // See `performInitialSync`'s identical call for why: clears
+                // a previously-recorded failure now that this pass
+                // succeeded.
+                if let mailboxId = record.id {
+                    await clearMailboxSyncFailureIfNeeded(mailboxId: mailboxId)
+                }
             } catch {
+                // See `performInitialSync`'s identical call for why this
+                // records rather than silently `continue`s.
+                if let mailboxId = record.id {
+                    await recordMailboxSyncFailure(mailboxId: mailboxId, error: error)
+                }
                 continue
             }
         }

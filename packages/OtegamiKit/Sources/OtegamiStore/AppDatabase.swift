@@ -435,6 +435,21 @@ extension AppDatabase {
             try db.execute(sql: "UPDATE account SET updatedAt = createdAt WHERE updatedAt IS NULL")
         }
 
+        // v12: per-mailbox sync failure visibility (`docs/qa-findings.md`'s
+        // "部分同期失敗の UI 可視化" follow-up). `AccountSyncer`'s per-mailbox
+        // `do`/`catch` used to swallow one mailbox's sync failure entirely
+        // (`continue`, no record anywhere) so the rest of the account's
+        // mailboxes weren't blocked — see `MailboxRecord.lastSyncError`'s
+        // doc comment for the full rationale. Both columns nullable, same
+        // "record it, clear it on success" shape `opQueue.lastError` already
+        // uses.
+        migrator.registerMigration("v12") { db in
+            try db.alter(table: "mailbox") { t in
+                t.add(column: "lastSyncError", .text)
+                t.add(column: "lastSyncErrorAt", .datetime)
+            }
+        }
+
         return migrator
     }
 }

@@ -129,6 +129,111 @@ struct SyncEngineIntegrationTests {
         #expect(thread.unreadCount >= 1)
     }
 
+    @Test("a mailbox's sync failure is recorded against a real server SELECT failure and clears on the next successful sync")
+    func mailboxSyncFailureRecordsAgainstRealServerAndClearsOnRecovery() async throws {
+        // docs/qa-findings.md's partial-sync-failure visibility follow-up,
+        // exercised against the real dev Dovecot rather than
+        // `FakeIMAPSession` (`AccountSyncerTests` already covers the same
+        // behavior against the fake — this is the "does MailCoreIMAPSession's
+        // real SELECT-failure error actually get caught and recorded"
+        // confirmation, the one thing the fake can't prove).
+        //
+        // Getting a mailbox that's *listed* but fails to *SELECT* against a
+        // real server took some trial and error: simply `doveadm mailbox
+        // delete`-ing a mailbox removes it from `LIST` entirely, so
+        // `performIncrementalSync`'s `.mailbox(path:)` scope (which
+        // re-`listMailboxes()`s and filters `targets` from that fresh list
+        // every call) finds nothing to even attempt — no error, just a
+        // silent no-op, since a target that isn't there isn't a target.
+        // A `\Noselect` intermediate mailbox reproduces the real failure
+        // mode instead: `doveadm mailbox create -u <user> "Parent/Child"`
+        // without ever creating "Parent" itself makes Dovecot report
+        // "Parent" as an implicit hierarchy placeholder — it *is* listed
+        // (confirmed via `doveadm mailbox list`), but `SELECT`/`STATUS`
+        // against it fails ("Mailbox doesn't exist") until `doveadm mailbox
+        // create -u <user> Parent` turns it into a real, selectable
+        // mailbox — exactly the create/still-there/now-selectable sequence
+        // this test needs, and a real class of a mailbox that's visible in
+        // a folder listing but not currently usable (the scenario this
+        // feature exists for).
+        let env = try #require(TestIMAPEnvironment.primary)
+        let user = "test1@otegami.test"
+        let parentPath = "IntegrationNoSelectParent"
+        let childPath = "\(parentPath)/Child"
+
+        try? DoveadmHelper.deleteMailbox(user: user, mailboxPath: childPath) // clean slate if a previous run left it
+        try? DoveadmHelper.deleteMailbox(user: user, mailboxPath: parentPath)
+        defer {
+            try? DoveadmHelper.deleteMailbox(user: user, mailboxPath: childPath)
+            try? DoveadmHelper.deleteMailbox(user: user, mailboxPath: parentPath)
+        }
+        // Creates `parentPath` as an implicit, \Noselect-only placeholder —
+        // see the doc comment above.
+        try DoveadmHelper.createMailbox(user: user, mailboxPath: childPath)
+        #expect(try DoveadmHelper.listMailboxes(user: user).contains(parentPath))
+
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Integration",
+            email: user,
+            authType: .password,
+            imapHost: env.host,
+            imapPort: env.port,
+            imapSecurity: ConnectionSecurityRecord(env.imapConfig.security),
+            imapAllowsInsecureTLS: env.imapConfig.allowsInsecureTLS,
+            imapUsername: user
+        )
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            MailCoreIMAPSession(config: config)
+        }
+
+        // Pass 1: performInitialSync discovers/upserts every mailbox
+        // (including the \Noselect placeholder), but its per-mailbox sync
+        // loop *skips* `\Noselect` entries entirely (`syncableInfos`'s
+        // filter) — so the placeholder's row exists with no failure
+        // recorded yet (never attempted), which is the correct starting
+        // point for pass 2 below.
+        _ = try await syncer.performInitialSync(auth: env.auth)
+
+        let mailboxAfterInitialSync = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == parentPath).fetchOne(db)
+            }
+        )
+        #expect(mailboxAfterInitialSync.lastSyncError == nil)
+
+        // Pass 2: a scoped incremental sync explicitly targeting the
+        // \Noselect placeholder (`.mailbox(path:)` doesn't filter out
+        // `\Noselect` the way `.all`/`performInitialSync` do) must fail its
+        // SELECT and record that failure without throwing out of
+        // performIncrementalSync itself.
+        _ = try await syncer.performIncrementalSync(auth: env.auth, scope: .mailbox(path: parentPath))
+
+        let mailboxAfterFailure = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == parentPath).fetchOne(db)
+            }
+        )
+        #expect(mailboxAfterFailure.lastSyncError != nil)
+        #expect(mailboxAfterFailure.lastSyncErrorAt != nil)
+
+        // Pass 3: turn the placeholder into a real, selectable mailbox — a
+        // later successful sync of it must clear the recorded failure on
+        // its own (the sidebar banner's "成功したら自動的に消える" requirement).
+        try DoveadmHelper.createMailbox(user: user, mailboxPath: parentPath)
+        _ = try await syncer.performIncrementalSync(auth: env.auth, scope: .mailbox(path: parentPath))
+
+        let mailboxAfterRecovery = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == parentPath).fetchOne(db)
+            }
+        )
+        #expect(mailboxAfterRecovery.lastSyncError == nil)
+        #expect(mailboxAfterRecovery.lastSyncErrorAt == nil)
+    }
+
     private static func sampleMessage(uid: String, subject: String) -> String {
         "From: Aiko <aiko@otegami.test>\r\n" +
             "To: test1@otegami.test\r\n" +

@@ -219,6 +219,81 @@ struct AccountSyncerTests {
             try ThreadQuery.request(mailboxId: inboxMailboxId).fetchAll(db)
         }
         #expect(threads.count == 1)
+
+        // docs/qa-findings.md's partial-sync-failure visibility follow-up:
+        // the Junk mailbox's SELECT failure above is no longer *silently*
+        // swallowed (bare `continue`) — it's recorded onto that mailbox's
+        // own row so `MailboxSyncFailuresView`'s sidebar banner can surface
+        // it. INBOX, which synced fine, must have neither field set.
+        let junkRecord = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "Junk").fetchOne(db)
+            }
+        )
+        #expect(junkRecord.lastSyncError != nil)
+        #expect(junkRecord.lastSyncErrorAt != nil)
+
+        let inboxRecord = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "INBOX").fetchOne(db)
+            }
+        )
+        #expect(inboxRecord.lastSyncError == nil)
+        #expect(inboxRecord.lastSyncErrorAt == nil)
+    }
+
+    @Test("a mailbox's recorded sync failure clears itself once a later sync of that mailbox succeeds")
+    func mailboxSyncFailureClearsOnNextSuccess() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let junk = MailboxInfo(path: "Junk", displayPath: "Junk", role: .junk, attributes: [])
+
+        // Pass 1: Junk fails to SELECT (omitted from statusByPath, same
+        // technique as the sibling test above) — should record a failure.
+        let firstScript = FakeIMAPSession.Script(
+            mailboxes: [inbox, junk],
+            envelopesByPath: ["INBOX": [makeInbox(uid: 1, subject: "ようこそ otegami へ")]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: firstScript)
+        }
+        let auth = MailAuth.password(username: "test1@otegami.test", password: "test1234")
+        _ = try await syncer.performInitialSync(auth: auth)
+
+        let junkAfterFailure = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "Junk").fetchOne(db)
+            }
+        )
+        #expect(junkAfterFailure.lastSyncError != nil)
+
+        // Pass 2: same syncer (a fresh `AccountSyncer` isn't required —
+        // `performInitialSync` is safe to call again, its own doc comment),
+        // now with Junk's status scripted so its SELECT succeeds.
+        let secondScript = FakeIMAPSession.Script(
+            mailboxes: [inbox, junk],
+            envelopesByPath: ["INBOX": [makeInbox(uid: 1, subject: "ようこそ otegami へ")]],
+            statusByPath: [
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1),
+                "Junk": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+            ]
+        )
+        let secondSyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: secondScript)
+        }
+        _ = try await secondSyncer.performInitialSync(auth: auth)
+
+        let junkAfterRecovery = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "Junk").fetchOne(db)
+            }
+        )
+        #expect(junkAfterRecovery.lastSyncError == nil)
+        #expect(junkAfterRecovery.lastSyncErrorAt == nil)
     }
 
     @Test("initialSyncLowerBound math")
