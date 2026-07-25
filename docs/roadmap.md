@@ -19,11 +19,6 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
 
 ## iCloud アカウント同期 (M11)
 
-- **アカウント編集 UI**: `AccountRecord.updatedAt` は last-writer-wins の
-  ためだけに存在するが、現状アカウント設定を後から編集する UI が無いため
-  実質「作成時刻」からほぼ変化しない。編集 UI ができた際は保存のたびに
-  `updatedAt` を更新して `AppEnvironment.pushAccountToCloud` を呼ぶ必要が
-  ある (`docs/icloud-sync.md` 参照)。
 - **verify スクリプトの iCloud KVS/Keychain 汚染**: M11 で
   `scripts/verify-ios-m1.sh`/`verify-ios-m6.sh`/`verify-ios-icloud.sh` は
   `xcrun simctl uninstall` を `simctl erase` に置き換えた (この開発環境の
@@ -49,10 +44,6 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
 - **下書きの添付ファイル**: `ComposerView.saveDraft()` は添付ファイルを
   保存しない (テキストフィールドのみ)。`outboxAttachment` と同様の仕組みで
   `draftAttachment` テーブルを持たせれば実現できるはず。
-- **`ThreadAssigner.assignAllUnthreaded` のバッチ化**: 2万通の未スレッド化
-  メッセージの一括スレッド化に約14秒かかる (`docs/performance.md`)。UI を
-  ブロックしないため実害は小さいが、将来 10万通超のバックログや同期的な
-  実行が必要になる場面ではスレッド作成・集計をバッチ化する最適化が要る。
 
 ## UI/UX
 

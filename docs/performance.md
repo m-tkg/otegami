@@ -36,7 +36,7 @@ OTEGAMI_PERF_TEST=1 swift test --filter PerformanceTests
 | 検索 (FTS5 trigram, "perf message") | <500ms | **399.5ms** (200件でキャップ) |
 | 検索 (LIKE フォールバック, "42") | <500ms | **87.0ms** (200件でキャップ) |
 | ValueObservation 初回発火 (統合Inbox, limit 50) | 目安 | 80.6ms |
-| `ThreadAssigner.assignAllUnthreaded` (2万通) | 目安 (ハード目標なし) | 13.7秒 |
+| `ThreadAssigner.assignAllUnthreaded` (2万通) | 目安3秒以内 | **1.37秒** (バッチ化後。旧実装は13.7秒 — 詳細は「改善5」参照) |
 
 一覧・検索とも目標を達成。以下、達成までに行った改善と、その根拠になった
 具体的な計測値。
@@ -121,22 +121,75 @@ M10 で追加した「サイドバー未読数バッジ」(`MessageQuery.unreadC
 サイドバー描画のたびに(mailbox一覧の`ValueObservation`ごとに)呼ばれるため
 このインデックスは体感速度に直結する。
 
-## 既知の制約: `ThreadAssigner.assignAllUnthreaded` は依然として遅い
+## 改善5: `ThreadAssigner.assignAllUnthreaded` のバッチ化
 
-2万通の未スレッド化メッセージを一括スレッド化するのに **13.7秒**
-かかっている(目標値なし、計測のみ)。原因は
-`ThreadAssigner.buildContext` がメッセージ1件ごとに
-References/gmailThreadId/件名候補の複数クエリを発行し、さらに
+**改善前**: 2万通の未スレッド化メッセージを一括スレッド化するのに
+**13.7秒** かかっていた。原因は `ThreadAssigner.buildContext` がメッセージ
+1件ごとに References/gmailThreadId/件名候補の複数クエリを発行し、さらに
 `assignThread`→`recomputeAggregates` がスレッド作成・メッセージ更新・
-集計の複数ラウンドトリップを伴うため(1メッセージあたり実測で
-概算 7〜8 ステートメント、2万通で 14万〜16万ステートメント)。
+集計の複数ラウンドトリップを伴うため(1メッセージあたり実測で概算
+7〜8 ステートメント、2万通で 14万〜16万ステートメント)。
+
+**改善後**: `assignAllUnthreaded` を「メッセージ1件ごとに DB を読み書き」
+から「バッチ全体を一度に計算してから一括反映」という形に書き換えた。
+
+1. 未スレッド化メッセージ全件と、そのバッチが参照しうる既存スレッド済み
+   メッセージ (References/gmailThreadId/件名の一致候補のみに絞った
+   ターゲット付きクエリ — アカウント全履歴を毎回スキャンするわけではない)
+   を、それぞれ数回のクエリ (`IN` 句をチャンク化) でまとめてロードする。
+2. 純粋関数 `OtegamiCore.BatchThreader.plan(...)` が、DB に一切触れずメモリ
+   上の辞書 + union-find だけで `Threader.decide` を日付順に1回ずつ呼び出し
+   (`Threader` のドキュメントコメントが元々想定していた「育っていく
+   context」を DB クエリではなく辞書で表現するだけで、呼び出し順・入力は
+   旧実装と完全に同一)、最終的な「メッセージ → スレッド」割当と「マージで
+   消えるスレッド」の計画を組み立てる。スレッド合体のタイブレーク
+   (`Threader.decide` の「件数が多い方、同数ならID小さい方」)を壊さない
+   ため、バッチ内で新規作成するスレッドには DB の実 ID より確実に大きい
+   仮 ID を振り、既存スレッドとの比較で常に「既存が勝つ」順序性を保つ工夫
+   をしている。
+3. 計画を DB に反映する段は、新規スレッドの `INSERT` (スレッドごとに1件、
+   ただし途中の読み取りなし)、マージで消えるスレッドの
+   `UPDATE message SET threadId = ? WHERE threadId IN (...)` + 削除、
+   新規スレッド化メッセージの `threadId` 一括更新 (`CASE id WHEN ... END`
+   を使い数百件単位でチャンク化)、影響を受けたスレッドの
+   `messageCount`/`unreadCount`/`lastMessageDate` を SQL の集約サブクエリで
+   まとめて再計算 — の4種類の一括ステートメントだけで完結する。
+
+**正しさの検証**: `Threader.decide` 自体は一切変更していない (呼び出し方
+だけを変えた) ことに加え、`ThreadAssignerBatchEquivalenceTests`
+(`packages/OtegamiKit/Tests/OtegamiStoreTests/`) で「同一の乱数シードから
+生成した未スレッド化メッセージ集合 (References チェーン・複数スレッドを
+橋渡しするマージメッセージ・件名フォールバックのみのペア・gmailThreadId
+共有ペア・無関係な単発メッセージを含む) を、旧実装 (`assignThread` を
+日付順にループ — バッチ化前の `assignAllUnthreaded` と同じ処理) と新実装
+それぞれ独立した DB に適用し、スレッドの grouping (どのメッセージ同士が
+同じスレッドになるか) と各スレッドの `messageCount`/`unreadCount`/
+`lastMessageDate` が完全一致すること」を 5 つの乱数シードで確認、加えて
+「再実行しても結果が変わらない (冪等)」「既にスレッド化済みの履歴の上に
+2回目のバッチを重ねても正しくマージされる」ケースも確認した
+(`ThreadAssignerTests` の既存6ケースも無変更で全通過)。
+
+**実測**:
+
+| データ規模 | 改善前 | 改善後 |
+|---|---|---|
+| 2万通 (全件が新規スレッド化、既存スレッド0件のアカウント) | 13.7秒 | **1.37秒** (90%削減、目標の3秒以内を達成) |
+| 10万通 (同上、全件が同一アカウントの未スレッド化backlog) | 未計測 | **9.9秒** |
+
+10万通の計測は `PerformanceTests.backfillMessageCount` を一時的に
+100,000 (かつ `threadedMessageCount` を0) に変えて単発計測したもの
+(コミットした `PerformanceTests.swift` 自体は 2万通の計測設定のまま —
+このファイルの計測環境節にある「account1: 8万通・事前スレッド化済み /
+account2: 2万通・`assignAllUnthreaded` で一括スレッド化」という構成が
+既存の回帰計測として妥当なため)。10万通ケースでの `swift test`
+プロセス全体 (xctest 込み) のピークメモリは `/usr/bin/time -l` 実測で
+約280MB (peak memory footprint) — 10万通規模でも現実的な範囲に収まって
+いることを確認した。
 
 このパスは UI をブロックしない(`AppEnvironment.startObservingAccounts`
-内の `Task` からバックグラウンドで実行される)ため、体感上の問題は
-「アカウント一覧の初回反映が少し遅れる」程度に留まる。ただし将来
-100万通規模を扱う、あるいはこのパスをフォアグラウンドで待たせる設計に
-変える場合は、バッチ化(スレッド作成・集計をまとめて行う)が必要になる
-— `docs/roadmap.md` の将来項目として記録した。
+内の `Task` からバックグラウンドで実行される)ため改善前も体感上の実害は
+小さかったが、将来 100万通規模を扱う場合や、このパスをフォアグラウンドで
+待たせる設計に変える場合の余地が大きく広がった。
 
 ## アプリ側のページング (`MessageListView`)
 

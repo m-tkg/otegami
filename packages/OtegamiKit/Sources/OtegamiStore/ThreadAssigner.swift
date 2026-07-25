@@ -95,10 +95,27 @@ public enum ThreadAssigner {
     /// *later* bulk pass (or a later `assignThread` call once the original
     /// arrives) merges them via `Threader`'s bridging-message case.
     ///
-    /// Called after `AccountSyncer.performInitialSync` finishes every
-    /// mailbox, and once at app startup per existing account (`AppEnvironment`)
-    /// to backfill accounts synced before M4 shipped, whose `message.threadId`
-    /// is still `nil` for every row.
+    /// Called after `AccountSyncer.performInitialSync`/`.performIncrementalSync`
+    /// finish every mailbox, and once at app startup per existing account
+    /// (`AppEnvironment`) to backfill accounts synced before M4 shipped,
+    /// whose `message.threadId` is still `nil` for every row.
+    ///
+    /// This used to loop `assignThread` once per unthreaded message — clear,
+    /// but ~7-8 SQL statements per message (`docs/performance.md`: 14
+    /// seconds for a 20k-message backfill), since `Threader.decide`'s
+    /// context and `recomputeAggregates`'s membership re-fetch both hit the
+    /// database fresh every time. The batched version below computes the
+    /// *entire* pass in memory first (`BatchThreader.plan`, calling
+    /// `Threader.decide` in the exact same date order against a context
+    /// that grows the same way, just backed by dictionaries instead of
+    /// queries — see that type's doc comment for why the results are
+    /// identical) and then applies it in a handful of bulk statements: one
+    /// targeted preload query, one insert per new thread (grouping every
+    /// new thread into a single multi-row statement isn't worth the
+    /// complexity at this scale — see the type's tests for the count this
+    /// was measured against), a couple of chunked bulk `UPDATE`s for
+    /// reparenting/assigning `message.threadId`, and one chunked bulk
+    /// aggregate recompute — instead of thousands of round trips.
     public static func assignAllUnthreaded(accountId: String, db: Database) throws {
         let unthreaded = try MessageRecord.fetchAll(
             db,
@@ -110,13 +127,241 @@ public enum ThreadAssigner {
             """,
             arguments: [accountId]
         )
-        for message in unthreaded {
-            guard let messageId = message.id else { continue }
-            // Re-fetch is unnecessary (we already have the row), but
-            // `assignThread` is the single source of truth for the
-            // decide-and-apply sequence, so route through it rather than
-            // duplicating that logic here.
-            _ = try assignThread(messageId: messageId, accountId: accountId, db: db)
+        guard !unthreaded.isEmpty else { return }
+
+        let messageRowIds = unthreaded.compactMap(\.id)
+        let referencesByMessageId = try referenceTokens(forMessageIds: messageRowIds, db: db)
+
+        let facts: [Threader.MessageFacts] = unthreaded.compactMap { message in
+            guard let id = message.id else { return nil }
+            return Threader.MessageFacts(
+                id: id,
+                messageId: message.messageId,
+                inReplyTo: message.inReplyTo,
+                references: referencesByMessageId[id] ?? [],
+                normalizedSubject: message.normalizedSubject,
+                participants: participants(of: message),
+                date: message.date ?? message.internalDate,
+                gmailThreadId: message.gmailThreadId
+            )
+        }
+
+        var candidateMessageIds: Set<String> = []
+        var candidateGmailThreadIds: Set<Int64> = []
+        var candidateSubjects: Set<String> = []
+        for message in facts {
+            candidateMessageIds.formUnion(message.references)
+            if let inReplyTo = message.inReplyTo { candidateMessageIds.insert(inReplyTo) }
+            if let gmailThreadId = message.gmailThreadId { candidateGmailThreadIds.insert(gmailThreadId) }
+            if let subject = message.normalizedSubject, !subject.isEmpty { candidateSubjects.insert(subject) }
+        }
+
+        let existingThreadedRows = try existingThreadedMatches(
+            accountId: accountId,
+            candidateMessageIds: candidateMessageIds,
+            candidateGmailThreadIds: candidateGmailThreadIds,
+            candidateSubjects: candidateSubjects,
+            db: db
+        )
+        let existingThreadIds = Set(existingThreadedRows.compactMap(\.threadId))
+        let existingCounts = try messageCounts(forThreadIds: existingThreadIds, db: db)
+        let maxExistingThreadId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM thread") ?? 0
+
+        let existingMessages = existingThreadedRows.compactMap { message -> BatchThreader.ExistingMessage? in
+            guard let threadId = message.threadId else { return nil }
+            return BatchThreader.ExistingMessage(
+                threadId: threadId,
+                messageId: message.messageId,
+                gmailThreadId: message.gmailThreadId,
+                normalizedSubject: message.normalizedSubject,
+                participants: participants(of: message),
+                date: message.date ?? message.internalDate
+            )
+        }
+
+        let plan = BatchThreader.plan(
+            unthreadedMessages: facts,
+            existingMessages: existingMessages,
+            existingThreadMessageCounts: existingCounts,
+            maxExistingThreadId: maxExistingThreadId
+        )
+
+        try apply(plan, accountId: accountId, db: db)
+    }
+
+    // MARK: - Batched assignAllUnthreaded: DB glue
+
+    private static func referenceTokens(forMessageIds messageIds: [Int64], db: Database) throws -> [Int64: [String]] {
+        guard !messageIds.isEmpty else { return [:] }
+        var result: [Int64: [String]] = [:]
+        for chunk in messageIds.chunked(into: 400) {
+            let rows = try MessageReferenceRecord
+                .filter(chunk.contains(Column("messageId")))
+                .order(Column("messageId"), Column("position"))
+                .fetchAll(db)
+            for row in rows {
+                result[row.messageId, default: []].append(row.referenceValue)
+            }
+        }
+        return result
+    }
+
+    /// Already-threaded messages that some message in this batch could
+    /// plausibly match against — narrowed to exactly the union of what
+    /// every individual `Threader.decide` call in this batch would have
+    /// looked up on its own (via `References`/`In-Reply-To` token,
+    /// `gmailThreadId`, or `normalizedSubject`), so this stays proportional
+    /// to *this batch's* fan-out rather than the account's whole history
+    /// (`assignAllUnthreaded` runs after every incremental sync, almost
+    /// always against a small-or-empty batch on top of a much larger
+    /// already-threaded account — scanning the full history every time
+    /// would trade one bottleneck for another).
+    private static func existingThreadedMatches(
+        accountId: String,
+        candidateMessageIds: Set<String>,
+        candidateGmailThreadIds: Set<Int64>,
+        candidateSubjects: Set<String>,
+        db: Database
+    ) throws -> [MessageRecord] {
+        guard !candidateMessageIds.isEmpty || !candidateGmailThreadIds.isEmpty || !candidateSubjects.isEmpty else {
+            return []
+        }
+
+        var seenIds: Set<Int64> = []
+        var result: [MessageRecord] = []
+
+        func append(_ rows: [MessageRecord]) {
+            for row in rows {
+                guard let id = row.id, seenIds.insert(id).inserted else { continue }
+                result.append(row)
+            }
+        }
+
+        for chunk in Array(candidateMessageIds).chunked(into: 400) {
+            let rows = try MessageRecord.fetchAll(
+                db,
+                sql: """
+                SELECT message.* FROM message
+                JOIN mailbox ON mailbox.id = message.mailboxId
+                WHERE mailbox.accountId = ? AND message.threadId IS NOT NULL AND message.messageId IN (\(chunk.map { _ in "?" }.joined(separator: ",")))
+                """,
+                arguments: StatementArguments([accountId] + chunk)
+            )
+            append(rows)
+        }
+
+        for chunk in Array(candidateGmailThreadIds).chunked(into: 400) {
+            let rows = try MessageRecord.fetchAll(
+                db,
+                sql: """
+                SELECT message.* FROM message
+                JOIN mailbox ON mailbox.id = message.mailboxId
+                WHERE mailbox.accountId = ? AND message.threadId IS NOT NULL AND message.gmailThreadId IN (\(chunk.map { _ in "?" }.joined(separator: ",")))
+                """,
+                arguments: StatementArguments([accountId] + chunk)
+            )
+            append(rows)
+        }
+
+        for chunk in Array(candidateSubjects).chunked(into: 400) {
+            let rows = try MessageRecord.fetchAll(
+                db,
+                sql: """
+                SELECT message.* FROM message
+                JOIN mailbox ON mailbox.id = message.mailboxId
+                WHERE mailbox.accountId = ? AND message.threadId IS NOT NULL AND message.normalizedSubject IN (\(chunk.map { _ in "?" }.joined(separator: ",")))
+                """,
+                arguments: StatementArguments([accountId] + chunk)
+            )
+            append(rows)
+        }
+
+        return result
+    }
+
+    private static func messageCounts(forThreadIds threadIds: Set<Int64>, db: Database) throws -> [Int64: Int] {
+        guard !threadIds.isEmpty else { return [:] }
+        var result: [Int64: Int] = [:]
+        for chunk in Array(threadIds).chunked(into: 400) {
+            let threads = try ThreadRecord.filter(chunk.contains(Column("id"))).fetchAll(db)
+            for thread in threads {
+                guard let id = thread.id else { continue }
+                result[id] = thread.messageCount
+            }
+        }
+        return result
+    }
+
+    /// Applies a computed `BatchThreader.Plan` to the database: inserts new
+    /// threads, reparents/deletes merged-away existing threads, bulk-writes
+    /// every previously-unthreaded message's new `threadId`, and recomputes
+    /// aggregates for every thread this batch touched — all in a small,
+    /// fixed-ish number of statements rather than one per message.
+    private static func apply(_ plan: BatchThreader.Plan, accountId: String, db: Database) throws {
+        var realIdForNewIndex: [Int64] = []
+        realIdForNewIndex.reserveCapacity(plan.newThreadSubjects.count)
+        for subject in plan.newThreadSubjects {
+            var thread = ThreadRecord(accountId: accountId, normalizedSubject: subject)
+            try thread.insert(db)
+            realIdForNewIndex.append(thread.id!)
+        }
+
+        func resolve(_ target: BatchThreader.ThreadTarget) -> Int64 {
+            switch target {
+            case .existing(let id): return id
+            case .new(let index): return realIdForNewIndex[index]
+            }
+        }
+
+        if !plan.reparentedThreadIds.isEmpty {
+            var losersByTarget: [Int64: [Int64]] = [:]
+            for (loser, target) in plan.reparentedThreadIds {
+                losersByTarget[resolve(target), default: []].append(loser)
+            }
+            for (target, losers) in losersByTarget {
+                for chunk in losers.chunked(into: 400) {
+                    try db.execute(
+                        sql: "UPDATE message SET threadId = ? WHERE threadId IN (\(chunk.map { _ in "?" }.joined(separator: ",")))",
+                        arguments: StatementArguments([target] + chunk)
+                    )
+                }
+            }
+            for chunk in Array(plan.reparentedThreadIds.keys).chunked(into: 400) {
+                try ThreadRecord.filter(chunk.contains(Column("id"))).deleteAll(db)
+            }
+        }
+
+        var touchedThreadIds: Set<Int64> = []
+        for chunk in plan.assignments.map({ (messageId: $0.key, threadId: resolve($0.value)) }).chunked(into: 400) {
+            touchedThreadIds.formUnion(chunk.map(\.threadId))
+            let whenClauses = chunk.map { _ in "WHEN ? THEN ?" }.joined(separator: " ")
+            let idPlaceholders = chunk.map { _ in "?" }.joined(separator: ",")
+            var arguments: [DatabaseValueConvertible] = []
+            for pair in chunk {
+                arguments.append(pair.messageId)
+                arguments.append(pair.threadId)
+            }
+            for pair in chunk {
+                arguments.append(pair.messageId)
+            }
+            try db.execute(
+                sql: "UPDATE message SET threadId = CASE id \(whenClauses) END WHERE id IN (\(idPlaceholders))",
+                arguments: StatementArguments(arguments)
+            )
+        }
+
+        for chunk in Array(touchedThreadIds).chunked(into: 400) {
+            let idPlaceholders = chunk.map { _ in "?" }.joined(separator: ",")
+            try db.execute(
+                sql: """
+                UPDATE thread SET
+                    messageCount = (SELECT COUNT(*) FROM message WHERE message.threadId = thread.id),
+                    unreadCount = (SELECT COUNT(*) FROM message WHERE message.threadId = thread.id AND (message.flagsRaw & \(MessageFlags.seen.rawValue)) = 0),
+                    lastMessageDate = (SELECT MAX(COALESCE(message.date, message.internalDate)) FROM message WHERE message.threadId = thread.id)
+                WHERE thread.id IN (\(idPlaceholders))
+                """,
+                arguments: StatementArguments(chunk)
+            )
         }
     }
 
@@ -257,5 +502,19 @@ public enum ThreadAssigner {
             threadMessageCounts: threadMessageCounts,
             subjectCandidatesByNormalizedSubject: subjectCandidatesByNormalizedSubject
         )
+    }
+}
+
+/// Splits `self` into consecutive slices of at most `size` elements — used
+/// by `ThreadAssigner`'s batched `assignAllUnthreaded` to keep every bulk
+/// `IN (...)`/`CASE ... WHEN` statement's parameter count comfortably under
+/// SQLite's bound-parameter limit, regardless of how large a single batch
+/// (or its candidate-key fan-out) gets.
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0, !isEmpty else { return isEmpty ? [] : [self] }
+        return stride(from: 0, to: count, by: size).map {
+            Array(self[$0..<Swift.min($0 + size, count)])
+        }
     }
 }
