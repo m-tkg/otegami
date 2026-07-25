@@ -1,5 +1,8 @@
 import SwiftUI
 import OtegamiStore
+#if os(iOS)
+import UIKit
+#endif
 
 /// Settings → プッシュ通知 (M9, plan §7): opt-in flow for the self-hosted
 /// push relay. Collects the relay's URL (https required — `http://
@@ -25,6 +28,12 @@ struct PushNotificationSettingsView: View {
     @State private var isProcessing = false
     @State private var errorMessage: String?
     @State private var showingConsent = false
+    /// `true` only while `errorMessage` reflects
+    /// `AppEnvironment.PushError.notificationPermissionDenied` — the one
+    /// error where a "設定アプリを開く" shortcut
+    /// (`UIApplication.openSettingsURLString`) actually helps, since iOS
+    /// never re-shows the system permission prompt once denied.
+    @State private var showsOpenSettingsButton = false
 
     var body: some View {
         Form {
@@ -85,6 +94,14 @@ struct PushNotificationSettingsView: View {
                     Text(errorMessage)
                         .foregroundStyle(.red)
                         .accessibilityIdentifier("settings.push.errorMessage")
+                    if showsOpenSettingsButton {
+                        #if os(iOS)
+                        Button("設定アプリを開く") {
+                            openSystemSettings()
+                        }
+                        .accessibilityIdentifier("settings.push.openSystemSettingsButton")
+                        #endif
+                    }
                 }
             }
         }
@@ -118,11 +135,15 @@ struct PushNotificationSettingsView: View {
     private func enable() async {
         isProcessing = true
         errorMessage = nil
+        showsOpenSettingsButton = false
         defer { isProcessing = false }
         do {
             try await environment.enablePushNotifications(relayURLString: relayURLText)
         } catch AppEnvironment.PushError.invalidRelayURL {
             errorMessage = "リレー URL が不正です。https:// から始まる URL を入力してください。"
+        } catch AppEnvironment.PushError.notificationPermissionDenied {
+            errorMessage = "通知が許可されていません。設定アプリから許可してください。"
+            showsOpenSettingsButton = true
         } catch AppEnvironment.PushError.noDeviceToken {
             errorMessage = "この環境では有効化できません。シミュレータは APNs デバイストークンを取得できないため、" +
                 "実機で通知の許可を確認してください。"
@@ -139,6 +160,13 @@ struct PushNotificationSettingsView: View {
         await environment.disablePushNotifications()
         relayURLText = ""
     }
+
+    #if os(iOS)
+    private func openSystemSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+    #endif
 }
 
 #Preview {

@@ -460,9 +460,24 @@ final class AppEnvironment {
         /// required (http://localhost exempted for local dev)" check.
         case invalidRelayURL
         /// `PushTokenCenter` never got a device token — always the case on
-        /// the iOS Simulator (`PushTokenCenter`'s doc comment), and on a
-        /// real device whenever notification authorization was denied.
+        /// the iOS Simulator (`PushTokenCenter`'s doc comment). No longer
+        /// used for a denied notification-authorization prompt on a real
+        /// device — that's `.notificationPermissionDenied` now, so the UI
+        /// can tell the two apart and point at Settings only for the
+        /// latter.
         case noDeviceToken
+        /// The user declined (or had previously declined) the
+        /// `UNUserNotificationCenter` alert/badge/sound authorization
+        /// prompt — `PushTokenCenter.requestToken()` throws
+        /// `.notificationPermissionDenied` *before* attempting APNs
+        /// device-token registration at all (M9 bug fix: the app
+        /// previously never requested this permission, so push
+        /// notifications silently never displayed — see
+        /// `docs/verify.md`'s "M9 追補" section). `PushNotificationSettingsView`
+        /// surfaces this with a link to the Settings app
+        /// (`UIApplication.openSettingsURLString`), since iOS never
+        /// re-shows the system prompt once denied.
+        case notificationPermissionDenied
         /// This build has no `UIApplication` to register with at all
         /// (macOS) — push isn't implemented there yet (M9 scope: iOS-only
         /// `NotificationService`, plan/PENDING.md).
@@ -578,6 +593,8 @@ final class AppEnvironment {
         #if os(iOS)
         do {
             return try await PushTokenCenter.shared.requestToken()
+        } catch PushTokenCenter.PushTokenError.notificationPermissionDenied {
+            throw PushError.notificationPermissionDenied
         } catch {
             throw PushError.noDeviceToken
         }
