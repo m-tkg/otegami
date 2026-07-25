@@ -111,69 +111,7 @@ struct MessageListView: View {
     var body: some View {
         List {
             ForEach(displayedSummaries) { summary in
-                if let threadId = summary.thread.id {
-                    Button {
-                        selectedThreadId = threadId
-                        onThreadSelected(threadId)
-                    } label: {
-                        ThreadRow(summary: summary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("messageList.row.\(threadId)")
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            deleteThread(summary)
-                        } label: {
-                            Label("削除", systemImage: "trash")
-                        }
-                        .accessibilityIdentifier("messageList.row.\(threadId).delete")
-                    }
-                    .swipeActions(edge: .leading) {
-                        Button {
-                            toggleRead(summary)
-                        } label: {
-                            if summary.thread.unreadCount > 0 {
-                                Label("既読にする", systemImage: "envelope.open")
-                            } else {
-                                Label("未読にする", systemImage: "envelope.badge")
-                            }
-                        }
-                        .tint(.accentColor)
-                        .accessibilityIdentifier("messageList.row.\(threadId).toggleRead")
-                    }
-                    #if os(macOS)
-                    // `.swipeActions` above is an iOS-only affordance — it
-                    // never renders anything on macOS (no swipe gesture on
-                    // a `List` row there), so without this, macOS QA sweep
-                    // found there was *no* way at all to mark a thread
-                    // read/unread or delete it from the list short of
-                    // opening it and using ⌘⌫ (which only covers delete).
-                    // A right-click context menu is the native macOS
-                    // equivalent, and reuses the exact same `toggleRead`/
-                    // `deleteThread` this file already defines for the
-                    // swipe actions above — same opQueue-enqueuing logic,
-                    // just a different trigger.
-                    .contextMenu {
-                        Button {
-                            toggleRead(summary)
-                        } label: {
-                            if summary.thread.unreadCount > 0 {
-                                Label("既読にする", systemImage: "envelope.open")
-                            } else {
-                                Label("未読にする", systemImage: "envelope.badge")
-                            }
-                        }
-                        Button(role: .destructive) {
-                            deleteThread(summary)
-                        } label: {
-                            Label("削除", systemImage: "trash")
-                        }
-                    }
-                    #endif
-                    .onAppear {
-                        loadMoreIfNeeded(currentItem: summary)
-                    }
-                }
+                threadRow(for: summary)
             }
         }
         .accessibilityIdentifier("messageList.list")
@@ -266,6 +204,42 @@ struct MessageListView: View {
         } message: {
             Text(syncErrorMessage ?? "")
         }
+    }
+
+    /// Builds one row for the `ForEach` in `body` — pulled into its own
+    /// `@ViewBuilder` method, and the row's `Button`/`ThreadRow`/swipe-
+    /// actions/context-menu content into `MessageListRow` below, for the
+    /// same reason `SidebarView`'s `mailboxRow(for:in:)`/`MailboxRow` split
+    /// exists (see that pair's doc comments and docs/ci.md's
+    /// troubleshooting notes): an `if let` binding plus a multi-argument
+    /// view initializer plus several chained trailing-closure modifiers
+    /// (`.swipeActions` × 2, a macOS-only `.contextMenu`, `.onAppear`), all
+    /// inline inside one `ForEach` row closure, is exactly the shape that
+    /// hit `error: the compiler is unable to type-check this expression in
+    /// reasonable time` on CI's toolchain for `SidebarView` — and this row
+    /// was actually *larger* than that one. Splitting it here preemptively
+    /// rather than waiting for the same failure to reproduce on this file.
+    @ViewBuilder
+    private func threadRow(for summary: ThreadSummary) -> some View {
+        if let threadId = summary.thread.id {
+            MessageListRow(
+                summary: summary,
+                threadId: threadId,
+                onSelect: handleThreadSelected,
+                onToggleRead: toggleRead,
+                onDelete: deleteThread,
+                onAppear: loadMoreIfNeeded
+            )
+        }
+    }
+
+    /// `MessageListRow.onSelect`'s target — writes `selectedThreadId` and
+    /// forwards to `onThreadSelected`, the same two steps the inline
+    /// `Button` action this replaced used to do directly (see this type's
+    /// own doc comment on why a re-tap of the same row needs both).
+    private func handleThreadSelected(_ threadId: Int64) {
+        selectedThreadId = threadId
+        onThreadSelected(threadId)
     }
 
     private var title: String {
@@ -499,6 +473,100 @@ struct MessageListView: View {
         guard let auth = try? await environment.auth(for: account) else { return }
         _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
     }
+}
+
+/// One row in `MessageListView`'s `List` — the `Button`/`ThreadRow`/swipe-
+/// actions/context-menu content pulled out of `MessageListView.body`'s
+/// `ForEach` closure (`threadRow(for:)`'s doc comment for why). Each piece
+/// (`trailingSwipeActions`, `leadingSwipeActions`, `toggleReadLabel`,
+/// `contextMenuContent`) is its own small computed property rather than
+/// all inlined into `body`, for the same reason: keep every individual
+/// expression small enough for the type-checker regardless of how many
+/// pieces this row ends up needing.
+private struct MessageListRow: View {
+    let summary: ThreadSummary
+    let threadId: Int64
+    let onSelect: (Int64) -> Void
+    let onToggleRead: (ThreadSummary) -> Void
+    let onDelete: (ThreadSummary) -> Void
+    let onAppear: (ThreadSummary) -> Void
+
+    var body: some View {
+        Button {
+            onSelect(threadId)
+        } label: {
+            ThreadRow(summary: summary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("messageList.row.\(threadId)")
+        .swipeActions(edge: .trailing) {
+            trailingSwipeActions
+        }
+        .swipeActions(edge: .leading) {
+            leadingSwipeActions
+        }
+        #if os(macOS)
+        // `.swipeActions` above is an iOS-only affordance — it never
+        // renders anything on macOS (no swipe gesture on a `List` row
+        // there), so without this, macOS QA sweep found there was *no* way
+        // at all to mark a thread read/unread or delete it from the list
+        // short of opening it and using ⌘⌫ (which only covers delete). A
+        // right-click context menu is the native macOS equivalent, and
+        // reuses the exact same `onToggleRead`/`onDelete` callbacks as the
+        // swipe actions above — same opQueue-enqueuing logic in
+        // `MessageListView`, just a different trigger.
+        .contextMenu {
+            contextMenuContent
+        }
+        #endif
+        .onAppear {
+            onAppear(summary)
+        }
+    }
+
+    private var trailingSwipeActions: some View {
+        Button(role: .destructive) {
+            onDelete(summary)
+        } label: {
+            Label("削除", systemImage: "trash")
+        }
+        .accessibilityIdentifier("messageList.row.\(threadId).delete")
+    }
+
+    private var leadingSwipeActions: some View {
+        Button {
+            onToggleRead(summary)
+        } label: {
+            toggleReadLabel
+        }
+        .tint(.accentColor)
+        .accessibilityIdentifier("messageList.row.\(threadId).toggleRead")
+    }
+
+    @ViewBuilder
+    private var toggleReadLabel: some View {
+        if summary.thread.unreadCount > 0 {
+            Label("既読にする", systemImage: "envelope.open")
+        } else {
+            Label("未読にする", systemImage: "envelope.badge")
+        }
+    }
+
+    #if os(macOS)
+    @ViewBuilder
+    private var contextMenuContent: some View {
+        Button {
+            onToggleRead(summary)
+        } label: {
+            toggleReadLabel
+        }
+        Button(role: .destructive) {
+            onDelete(summary)
+        } label: {
+            Label("削除", systemImage: "trash")
+        }
+    }
+    #endif
 }
 
 private struct ThreadRow: View {

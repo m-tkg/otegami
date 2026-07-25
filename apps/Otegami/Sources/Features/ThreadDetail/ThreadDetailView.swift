@@ -42,30 +42,7 @@ struct ThreadDetailView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(messages) { message in
-                        if let messageId = message.id {
-                            VStack(alignment: .leading, spacing: 0) {
-                                Button {
-                                    withAnimation(.default) {
-                                        if expandedMessageIds.contains(messageId) {
-                                            expandedMessageIds.remove(messageId)
-                                        } else {
-                                            expandedMessageIds.insert(messageId)
-                                        }
-                                    }
-                                } label: {
-                                    ThreadMessageSummaryRow(message: message, isExpanded: expandedMessageIds.contains(messageId))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityIdentifier("threadDetail.message.\(messageId).header")
-
-                                if expandedMessageIds.contains(messageId), let accountId {
-                                    MessageView(accountId: accountId, messageId: messageId, onReply: onReply)
-                                        .frame(height: expandedMessageHeight(in: proxy.size))
-                                        .accessibilityIdentifier("threadDetail.message.\(messageId).body")
-                                }
-                            }
-                            Divider()
-                        }
+                        messageRow(for: message, containerSize: proxy.size)
                     }
                 }
             }
@@ -128,6 +105,47 @@ struct ThreadDetailView: View {
         max(360, containerSize.height - 160)
     }
 
+    /// Builds one row for the `ForEach` in `body` — pulled into its own
+    /// `@ViewBuilder` method, and the row's `Button`/summary/conditional
+    /// `MessageView` content into `ThreadMessageRow` below, for the same
+    /// reason `SidebarView`'s `mailboxRow(for:in:)`/`MailboxRow` split
+    /// exists (see that pair's doc comments and docs/ci.md's
+    /// troubleshooting notes): an `if let` binding, a second nested
+    /// conditional binding, a multi-argument view initializer, and chained
+    /// modifiers all inline inside one `ForEach` row closure is the same
+    /// shape that hit `error: the compiler is unable to type-check this
+    /// expression in reasonable time` on CI's toolchain for `SidebarView`.
+    /// Splitting it here preemptively rather than waiting for the same
+    /// failure to reproduce on this file.
+    @ViewBuilder
+    private func messageRow(for message: MessageRecord, containerSize: CGSize) -> some View {
+        if let messageId = message.id {
+            ThreadMessageRow(
+                message: message,
+                messageId: messageId,
+                isExpanded: expandedMessageIds.contains(messageId),
+                accountId: accountId,
+                expandedHeight: expandedMessageHeight(in: containerSize),
+                onReply: onReply,
+                onToggleExpanded: toggleExpanded
+            )
+            Divider()
+        }
+    }
+
+    /// `ThreadMessageRow.onToggleExpanded`'s target — the same
+    /// insert-or-remove-from-`expandedMessageIds` toggle the inline
+    /// `Button` action this replaced used to do directly.
+    private func toggleExpanded(_ messageId: Int64) {
+        withAnimation(.default) {
+            if expandedMessageIds.contains(messageId) {
+                expandedMessageIds.remove(messageId)
+            } else {
+                expandedMessageIds.insert(messageId)
+            }
+        }
+    }
+
     private var navigationTitle: String {
         let subject = messages.last?.subject
         return subject?.isEmpty == false ? subject! : "(件名なし)"
@@ -160,6 +178,40 @@ struct ThreadDetailView: View {
         } catch {
             // A failing observation just stops the view from updating
             // further; it doesn't clear what's already shown.
+        }
+    }
+}
+
+/// One message's row inside `ThreadDetailView`'s `LazyVStack` — the
+/// `Button`/summary/conditional `MessageView` content pulled out of
+/// `ThreadDetailView.body`'s `ForEach` closure (`messageRow(for:
+/// containerSize:)`'s doc comment for why).
+private struct ThreadMessageRow: View {
+    let message: MessageRecord
+    let messageId: Int64
+    let isExpanded: Bool
+    let accountId: String?
+    let expandedHeight: CGFloat
+    /// M5: forwarded straight through to the expanded `MessageView` — see
+    /// its `onReply` doc comment.
+    let onReply: (Int64, Bool) -> Void
+    let onToggleExpanded: (Int64) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                onToggleExpanded(messageId)
+            } label: {
+                ThreadMessageSummaryRow(message: message, isExpanded: isExpanded)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("threadDetail.message.\(messageId).header")
+
+            if isExpanded, let accountId {
+                MessageView(accountId: accountId, messageId: messageId, onReply: onReply)
+                    .frame(height: expandedHeight)
+                    .accessibilityIdentifier("threadDetail.message.\(messageId).body")
+            }
         }
     }
 }
