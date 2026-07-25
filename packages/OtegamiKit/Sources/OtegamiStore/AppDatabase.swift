@@ -462,6 +462,56 @@ extension AppDatabase {
             }
         }
 
+        // v14: Drafts IMAP sync + draft attachments. `draftMessage` gains a
+        // "known server copy" reference (`serverMailboxId`/`serverUid`/
+        // `serverUidValidity`) — set once a local draft has been `APPEND`ed
+        // to the account's Drafts mailbox (`OpQueueKind.saveDraft`'s replay),
+        // and carried forward as "the old copy to replace" when a
+        // server-origin draft is edited and re-saved (`ComposerView`'s
+        // `.serverDraft` load path). `serverMailboxId` references `mailbox`
+        // with `onDelete: .setNull` (not `.cascade`) — losing the account's
+        // Drafts mailbox record (e.g. re-synced with a new `MailboxRecord`
+        // id after some server-side reshuffle) shouldn't take the draft's
+        // text down with it, only its "this is where the server copy lives"
+        // pointer.
+        //
+        // `draftAttachment` mirrors `outboxAttachment`'s shape exactly (same
+        // "bytes already staged on disk before the row exists" contract —
+        // see `OutboxAttachmentRecord`'s doc comment) for the `ComposerView
+        // .saveDraft()` / `OpQueueProcessor`'s `.saveDraft` replay path.
+        //
+        // `outboxMessage` gains the same three-column "known server Drafts
+        // copy" reference as `draftMessage`, populated when `ComposerView
+        // .send()` is invoked from a Composer that was resumed from a draft
+        // (local or server-origin) — `OpQueueProcessor`'s `.send` replay
+        // reads these to best-effort delete the now-redundant Drafts copy
+        // once the message has actually been sent (`docs/roadmap.md`'s
+        // "送信完了時に...下書きが残るのは典型的なバグ").
+        migrator.registerMigration("v14") { db in
+            try db.alter(table: "draftMessage") { t in
+                t.add(column: "serverMailboxId", .integer).references("mailbox", onDelete: .setNull)
+                t.add(column: "serverUid", .integer)
+                t.add(column: "serverUidValidity", .integer)
+            }
+
+            try db.create(table: "draftAttachment") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("draftMessageId", .integer).notNull()
+                    .indexed()
+                    .references("draftMessage", onDelete: .cascade)
+                t.column("filename", .text).notNull()
+                t.column("mimeType", .text).notNull()
+                t.column("localPath", .text).notNull()
+                t.column("size", .integer).notNull().defaults(to: 0)
+            }
+
+            try db.alter(table: "outboxMessage") { t in
+                t.add(column: "draftServerMailboxId", .integer).references("mailbox", onDelete: .setNull)
+                t.add(column: "draftServerUid", .integer)
+                t.add(column: "draftServerUidValidity", .integer)
+            }
+        }
+
         return migrator
     }
 }

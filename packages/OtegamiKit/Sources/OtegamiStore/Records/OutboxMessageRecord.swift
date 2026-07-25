@@ -38,6 +38,18 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
     /// its own Message-ID), not recomputed here.
     public var references: [String]
 
+    /// Set when this send was composed by resuming a draft (local or
+    /// server-origin) that has a known server-side Drafts copy — the same
+    /// three-column shape as `DraftMessageRecord.serverMailboxId`/
+    /// `.serverUid`/`.serverUidValidity`. `OpQueueProcessor`'s `.send`
+    /// replay reads these to best-effort delete that now-redundant Drafts
+    /// copy once the message has actually been sent (`docs/roadmap.md`:
+    /// "送信完了時に...下書きがそのまま残るのは典型的なバグ"). All three `nil` for a
+    /// send that never went through a draft (every M1–M10 send).
+    public var draftServerMailboxId: Int64?
+    public var draftServerUid: Int64?
+    public var draftServerUidValidity: Int64?
+
     public var createdAt: Date
 
     public init(
@@ -50,6 +62,9 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
         plainTextBody: String,
         inReplyToMessageId: String? = nil,
         references: [String] = [],
+        draftServerMailboxId: Int64? = nil,
+        draftServerUid: Int64? = nil,
+        draftServerUidValidity: Int64? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -61,6 +76,9 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
         self.plainTextBody = plainTextBody
         self.inReplyToMessageId = inReplyToMessageId
         self.references = references
+        self.draftServerMailboxId = draftServerMailboxId
+        self.draftServerUid = draftServerUid
+        self.draftServerUidValidity = draftServerUidValidity
         self.createdAt = createdAt
     }
 
