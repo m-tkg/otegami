@@ -18,6 +18,8 @@ struct AppDatabaseTests {
             try #expect(db.tableExists("attachment"))
             try #expect(db.tableExists("thread"))
             try #expect(db.tableExists("opQueue"))
+            try #expect(db.tableExists("messageTranslation"))
+            try #expect(db.columns(in: "message").contains { $0.name == "detectedLanguage" })
         }
 
         // Re-running the migrator against an already-migrated database
@@ -109,5 +111,53 @@ struct AppDatabaseTests {
         #expect(fetched?.fromAddresses.first?.name == "愛子")
         #expect(fetched?.fromAddresses.first?.address == "aiko@otegami.test")
         #expect(fetched?.toAddresses.first?.address == "test1@otegami.test")
+    }
+
+    @Test("round-trips a messageTranslation row, including its JSON-encoded paragraphs")
+    func roundTripsMessageTranslation() throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Test", email: "t@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "t@x.test"
+        )
+        try database.dbWriter.write { db in try account.insert(db) }
+
+        let messageId = try database.dbWriter.write { db -> Int64 in
+            var mailbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var message = MessageRecord(mailboxId: mailbox.id!, uid: 1, internalDate: Date(timeIntervalSince1970: 1_700_000_000))
+            try message.insert(db)
+            return message.id!
+        }
+
+        let translation = MessageTranslationRecord(
+            messageId: messageId,
+            sourceLanguage: "en",
+            targetLanguage: "ja",
+            translatedText: "こんにちは\n\nよろしくお願いします",
+            paragraphs: [
+                TranslatedParagraph(original: "Hello", translated: "こんにちは"),
+                TranslatedParagraph(original: "Best regards", translated: "よろしくお願いします"),
+            ],
+            engineIdentifier: "foundation-models",
+            translatedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        try database.dbWriter.write { db in try translation.insert(db) }
+
+        let fetched = try database.dbWriter.read { db in
+            try MessageTranslationRecord.fetchOne(db, key: messageId)
+        }
+        #expect(fetched == translation)
+
+        // `save(db)` (used by `MessageTranslator`) upserts on the
+        // `messageId` primary key rather than throwing a unique-constraint
+        // error the second time.
+        var replacement = translation
+        replacement.translatedText = "更新後の翻訳"
+        try database.dbWriter.write { db in try replacement.save(db) }
+        let refetched = try database.dbWriter.read { db in
+            try MessageTranslationRecord.fetchOne(db, key: messageId)
+        }
+        #expect(refetched?.translatedText == "更新後の翻訳")
     }
 }

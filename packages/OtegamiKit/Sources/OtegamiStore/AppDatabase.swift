@@ -512,6 +512,51 @@ extension AppDatabase {
             }
         }
 
+        // v15 (on-device translation engine, docs/translation.md):
+        // `message.detectedLanguage` is a BCP-47 code (e.g. `"en"`, `"ja"`)
+        // written by `SyncEngine.BodyFetcher` right after a body fetch, via
+        // `MessageLanguageDetector` (`NLLanguageRecognizer` — no LLM
+        // involved, see that type's doc comment for why). Nullable: `nil`
+        // until the body has been fetched at least once (like `snippet`),
+        // and also `nil` when the recognizer isn't confident enough to
+        // commit to a language for very short/ambiguous text.
+        //
+        // `messageTranslation` is `MessageTranslator`'s cache — one row per
+        // *message*, not per (message, targetLanguage) pair, since this
+        // app only ever translates a message in one direction (its
+        // detected language, into whichever language the reply-drafting
+        // flow needs, is never simultaneously cached both ways for the
+        // same message). `paragraphs` is a JSON-encoded
+        // `[TranslatedParagraph]` (GRDB's usual "`Codable` array property
+        // stored as JSON in a `.blob` column" pattern — see
+        // `MessageRecord.fromAddresses`), aligned 1:1 with
+        // `ParagraphSplitter.split(_:)`'s output over the source text, so
+        // 1i's "段落長押しでその段落だけ原文表示" can look up paragraph
+        // *N*'s original text by index. `engineIdentifier` records which
+        // `TranslationService` implementation produced this row (e.g.
+        // `"foundation-models"`, `"fake"`) — `MessageTranslator` treats a
+        // cached row from a different engine identifier as stale and
+        // re-translates, so swapping engines (or, per the on-device
+        // model's own versioning, a future "the model changed enough that
+        // old translations should be invalidated" event tracked via this
+        // same field) doesn't silently keep serving pre-change output.
+        migrator.registerMigration("v15") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "detectedLanguage", .text)
+            }
+
+            try db.create(table: "messageTranslation") { t in
+                t.column("messageId", .integer).notNull().primaryKey()
+                    .references("message", onDelete: .cascade)
+                t.column("sourceLanguage", .text).notNull()
+                t.column("targetLanguage", .text).notNull()
+                t.column("translatedText", .text).notNull()
+                t.column("paragraphs", .blob).notNull()
+                t.column("engineIdentifier", .text).notNull()
+                t.column("translatedAt", .datetime).notNull()
+            }
+        }
+
         return migrator
     }
 }

@@ -71,6 +71,13 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     /// has been fetched at least once.
     public var snippet: String?
 
+    /// BCP-47 language code (e.g. `"en"`, `"ja"`) of the message body, set
+    /// by `SyncEngine.BodyFetcher` via `MessageLanguageDetector` right
+    /// after the body is fetched (v15, `docs/translation.md`). `nil` until
+    /// then, and also `nil` when the detector isn't confident enough about
+    /// very short/ambiguous text to commit to a language.
+    public var detectedLanguage: String?
+
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -103,6 +110,7 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         threadId: Int64? = nil,
         bodyState: MessageBodyState = .notFetched,
         snippet: String? = nil,
+        detectedLanguage: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -129,6 +137,7 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.threadId = threadId
         self.bodyState = bodyState
         self.snippet = snippet
+        self.detectedLanguage = detectedLanguage
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }

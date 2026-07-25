@@ -59,6 +59,36 @@ struct BodyFetcherTests {
         #expect(updated?.snippet == "test1 さん ようこそ otegami へ。 よろしくお願いします。")
     }
 
+    #if canImport(NaturalLanguage)
+    @Test("fetching an English body sets message.detectedLanguage to \"en\"")
+    func detectsEnglishLanguage() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let message = try await makeSyncedMessage(database: database, subject: "Welcome")
+        let content = MessageBodyContent(plainText: "Hi team, the quarterly report is attached. Please review it by Friday and send me your comments. Thanks!")
+        let script = FakeIMAPSession.Script(bodiesByPath: ["INBOX": [UInt32(message.uid): content]])
+        let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: script)
+
+        try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: session)
+
+        let updated = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: message.id) }
+        #expect(updated?.detectedLanguage == "en")
+    }
+
+    @Test("fetching a Japanese body sets message.detectedLanguage to \"ja\"")
+    func detectsJapaneseLanguage() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let message = try await makeSyncedMessage(database: database)
+        let content = MessageBodyContent(plainText: "test1 さん\n\nようこそ otegami へ。\n\nよろしくお願いします。")
+        let script = FakeIMAPSession.Script(bodiesByPath: ["INBOX": [UInt32(message.uid): content]])
+        let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: script)
+
+        try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: session)
+
+        let updated = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: message.id) }
+        #expect(updated?.detectedLanguage == "ja")
+    }
+    #endif
+
     @Test("HTML-only body: plainText backfilled by extracting text from the HTML")
     func htmlOnlyBody() async throws {
         let database = try AppDatabase.makeInMemory()

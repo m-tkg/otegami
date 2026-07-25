@@ -17,6 +17,9 @@ let package = Package(
         .library(name: "GoogleOAuth", targets: ["GoogleOAuth"]),
         .library(name: "PushRelayClient", targets: ["PushRelayClient"]),
         .library(name: "AccountCloudSync", targets: ["AccountCloudSync"]),
+        .library(name: "OtegamiTranslation", targets: ["OtegamiTranslation"]),
+        .library(name: "OtegamiTranslationFoundationModels", targets: ["OtegamiTranslationFoundationModels"]),
+        .library(name: "TranslationEngine", targets: ["TranslationEngine"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
@@ -51,12 +54,19 @@ let package = Package(
         ),
 
         // Sync orchestration: SyncCoordinator / AccountSyncer / MailboxSyncer / opQueue.
+        // Depends on OtegamiTranslation (not the FoundationModels-backed
+        // target) only for `MessageLanguageDetector` — `BodyFetcher` runs it
+        // synchronously right after a body is fetched, so a message's
+        // English/Japanese-ness is known before any UI ever asks (see
+        // `MessageLanguageDetector`'s doc comment for why this needs no LLM
+        // and stays cheap enough to run inline).
         .target(
             name: "SyncEngine",
             dependencies: [
                 "OtegamiCore",
                 "MailTransport",
                 "OtegamiStore",
+                "OtegamiTranslation",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
@@ -170,6 +180,78 @@ let package = Package(
         .testTarget(
             name: "AccountCloudSyncTests",
             dependencies: ["AccountCloudSync"]
+        ),
+
+        // On-device translation, protocol-only (M12: docs/translation.md).
+        // Linux-compatible like `MailTransport` — the `TranslationService`
+        // protocol, its plain-data types, and `FakeTranslationService` (a
+        // deterministic in-memory implementation used by tests and, later,
+        // previews) have no Apple-only dependency. `MessageLanguageDetector`
+        // is the one exception: it needs `NaturalLanguage`, so its whole
+        // file is wrapped in `#if canImport(NaturalLanguage)` rather than
+        // splitting it into its own target — `NaturalLanguage` has shipped
+        // on every Apple OS version this package targets (unlike
+        // `FoundationModels`, which is iOS/macOS 26+ only and gets its own
+        // target below), so gating at the file level is enough to keep a
+        // Linux `swift build` of this target a no-op-but-successful compile
+        // rather than a hard failure.
+        .target(
+            name: "OtegamiTranslation",
+            dependencies: ["OtegamiCore"]
+        ),
+
+        .testTarget(
+            name: "OtegamiTranslationTests",
+            dependencies: ["OtegamiTranslation"]
+        ),
+
+        // `FoundationModelsTranslationService`: the real on-device LLM
+        // translator, behind the same `TranslationService` protocol.
+        // Apple-only (iOS/macOS 26+), like `MailTransportMailCore`/
+        // `GoogleOAuth` — never pulled into any Linux-compatible product,
+        // and never imported by `OtegamiTranslation` itself (only the other
+        // way around), so a `FoundationModels`-less SDK (or a future Linux
+        // build) never needs to resolve this target at all.
+        .target(
+            name: "OtegamiTranslationFoundationModels",
+            dependencies: ["OtegamiTranslation"]
+        ),
+
+        // Opt-in like `MailTransportMailCoreTests`: exercises the real
+        // on-device model when `SystemLanguageModel.default.isAvailable`,
+        // skips (not fails) otherwise — see the test file's doc comment and
+        // docs/translation.md for what "available" requires (Apple
+        // Intelligence-eligible hardware, the feature turned on, and the
+        // on-device model already downloaded).
+        .testTarget(
+            name: "OtegamiTranslationFoundationModelsTests",
+            dependencies: ["OtegamiTranslationFoundationModels", "OtegamiTranslation"]
+        ),
+
+        // Cache-aware orchestration that ties `TranslationService` to
+        // persistence: `MessageTranslator` (checks `messageTranslation`
+        // before calling the engine, writes the result back) and
+        // `MessageTranslationState` (the `translationState[messageID]`
+        // model the design handoff describes — owned here, not in the app
+        // target, so the eventual UI phase only has to observe it). Mirrors
+        // `SyncEngine`'s role of gluing a protocol-only target
+        // (`MailTransport`) to `OtegamiStore`.
+        .target(
+            name: "TranslationEngine",
+            dependencies: [
+                "OtegamiCore",
+                "OtegamiStore",
+                "OtegamiTranslation",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
+        ),
+
+        // `FakeTranslationService`-driven cache/state-transition tests —
+        // mirrors `SyncEngineTests`' FakeIMAPSession approach, no real
+        // model touched.
+        .testTarget(
+            name: "TranslationEngineTests",
+            dependencies: ["TranslationEngine", "OtegamiStore", "OtegamiTranslation"]
         ),
     ]
 )

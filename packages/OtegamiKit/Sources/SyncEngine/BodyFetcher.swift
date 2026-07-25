@@ -3,6 +3,7 @@ import GRDB
 import MailTransport
 import OtegamiCore
 import OtegamiStore
+import OtegamiTranslation
 
 /// Lazy body fetch (M2): downloads and persists one message's body via an
 /// already-connected `IMAPSessionProtocol` session, and prioritizes which
@@ -51,6 +52,14 @@ public actor BodyFetcher {
             let content = try await session.fetchBody(mailboxPath: mailboxPath, uid: UInt32(message.uid))
             let plainText = Self.resolvePlainText(from: content)
             let snippet = SnippetBuilder.make(from: plainText)
+            // M12 (docs/translation.md): detected once, right here, rather
+            // than lazily when a list row or detail view first asks —
+            // `MessageLanguageDetector` is cheap (`NLLanguageRecognizer`,
+            // no LLM) so doing it inline with the body fetch that already
+            // just happened doesn't meaningfully slow this down, and means
+            // "is this an English message" is always already known by the
+            // time any UI needs it.
+            let detectedLanguage = plainText.flatMap(Self.detectLanguage)
 
             try await database.dbWriter.write { db in
                 try MessageBodyRecord.deleteOne(db, key: messageId)
@@ -80,6 +89,7 @@ public actor BodyFetcher {
                 var record = message
                 record.bodyState = .fetched
                 record.snippet = snippet
+                record.detectedLanguage = detectedLanguage
                 record.hasAttachments = record.hasAttachments || content.parts.contains { $0.isAttachment }
                 record.updatedAt = Date()
                 try record.update(db)
@@ -146,5 +156,18 @@ public actor BodyFetcher {
             return extracted.isEmpty ? nil : extracted
         }
         return nil
+    }
+
+    /// `MessageLanguageDetector.detect`, wrapped: that type's whole API is
+    /// itself `#if canImport(NaturalLanguage)`-gated (see its doc comment),
+    /// so this call site needs the same guard to keep compiling on a
+    /// hypothetical `NaturalLanguage`-less platform — `nil` there, same as
+    /// "the recognizer wasn't confident enough to commit to a language".
+    static func detectLanguage(_ plainText: String) -> String? {
+        #if canImport(NaturalLanguage)
+        MessageLanguageDetector.detect(plainText)
+        #else
+        nil
+        #endif
     }
 }
