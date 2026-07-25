@@ -14,7 +14,17 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
 
         let list = app.collectionViews["messageList.list"]
         let threadRow = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "来週のランチ")).firstMatch
-        XCTAssertTrue(threadRow.waitForExistence(timeout: 30), "Expected the 3-message thread row to be present")
+        // Scrolling (not just existence) matters here: `dev/mailstack/
+        // seed/fixtures/` grew well past one screen's worth of rows since
+        // this test was written (M10's doc note on
+        // `waitForElementScrollingIfNeeded`'s other call sites) — this
+        // thread now sorts below several newer M8 fixtures, so a bare
+        // `waitForExistence` can find the (off-screen, not-yet-laid-out)
+        // cell while a `.coordinate(...)` press on it still taps nothing.
+        XCTAssertTrue(
+            waitForElementScrollingIfNeeded(threadRow, in: app),
+            "Expected the 3-message thread row to be present"
+        )
         threadRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         // Scoped to the thread detail pane specifically, not `app` at
@@ -70,6 +80,14 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
             waitForCount(subjects, atLeast: 2, timeout: 20),
             "Expected tapping the oldest header to expand a second message body, found \(subjects.count)"
         )
+
+        // Hold the thread open for the wrapping shell script's mid-test
+        // screenshot (same technique as M6/M8) — `RootView`'s "last opened
+        // thread" restoration is same-session-only now, not cross-launch
+        // (`OtegamiApp.swift`'s `hasSkippedInitialRestoration` doc
+        // comment), so `scripts/verify-ios-m4.sh` can no longer screenshot
+        // this thread by relaunching after the test process exits.
+        Thread.sleep(forTimeInterval: 4)
     }
 
     /// Polls `collection.count` until it reaches at least `minimum` or

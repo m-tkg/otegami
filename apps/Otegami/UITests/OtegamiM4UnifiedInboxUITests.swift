@@ -15,22 +15,20 @@ final class OtegamiM4UnifiedInboxUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        // `RootView`'s "last opened thread" restoration means this launch
-        // (state carried over from `OtegamiM4ThreadDetailUITests`) starts
-        // on the restored thread detail pane, not the sidebar — pop back
-        // (compact-width `NavigationSplitView`, a real push stack) before
-        // looking for the sidebar's "add account" entry point.
+        // `RootView`'s "last opened thread" restoration is same-session-
+        // only now (docs/verify.md) — a fresh launch with an existing
+        // account always starts already on the message list, never a
+        // restored thread detail. `returnToSidebarRootIfNeeded` still pops
+        // the one level (list → sidebar) needed to reach the "add account"
+        // entry point.
         returnToSidebarRootIfNeeded(in: app)
 
         addDovecotTest2Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
-        // The restart above is itself a fresh `app.launch()`, which — same
-        // restoration mechanism as above — comes back up on the restored
-        // thread detail pane rather than the message list. Pop back once
-        // more.
-        popBackOnceIfNeeded(in: app)
-
+        // No pop needed here — the restart above is itself a fresh
+        // `app.launch()`, which (same reasoning) comes back up already on
+        // the message list.
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15))
 
         // test1's thread (survives from OtegamiM4SetupUITests).

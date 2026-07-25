@@ -94,7 +94,27 @@ if [[ -z "$UDID" ]]; then
 fi
 echo "    UDID: $UDID"
 
-echo "==> Booting simulator (if needed)"
+echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
+# M11: a plain `xcrun simctl uninstall` (what this step used to be) removes
+# the app's own container — which resets the GRDB database — but does
+# *not* reset Keychain or NSUbiquitousKeyValueStore, both of which live
+# outside the per-app container on this simulator/toolchain. Since M11's
+# `AccountCloudSyncEngine` reconciles from iCloud KVS at every launch, an
+# account a *previous* verify run pushed to the KVS payload (and whose
+# Keychain password also survived) would otherwise resurrect itself right
+# after "uninstall for a fresh local DB", defeating the point of Phase 1
+# (`OtegamiM4SetupUITests` expects to start from the empty-account
+# sidebar) — confirmed via a real failure ("Neither the empty-state nor
+# toolbar \"add account\" button appeared") while regression-testing the
+# cold-launch/sidebar-selection fixes in docs/verify.md. `verify-ios-m1.sh`
+# already made this same switch for the identical reason; M4 hadn't been
+# updated to match until now. A full erase clears all three, giving every
+# run of this script the same truly-empty starting state `simctl
+# uninstall` alone used to provide before M11.
+xcrun simctl shutdown "$UDID" 2>/dev/null || true
+xcrun simctl erase "$UDID"
+
+echo "==> Booting simulator"
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
 
@@ -102,9 +122,6 @@ echo "==> Starting dev mailstack and seeding fixtures (idempotent reseed)"
 make mailstack-up
 sleep 3
 make mailstack-seed
-
-echo "==> Uninstalling any previous build (fresh local DB for this run)"
-xcrun simctl uninstall "$UDID" "$BUNDLE_ID" 2>/dev/null || true
 
 echo "==> Regenerating Xcode project and building for testing"
 (cd apps/Otegami && xcodegen generate)
@@ -121,10 +138,21 @@ echo "==> Capturing screenshot: unified inbox with collapsed threads + count bad
 screenshot "m4-01-unified-inbox-threads.png"
 
 echo "==> Phase 2/4: open the 3-message thread, confirm only the newest is expanded"
+# Screenshotted *during* the test run (mid-test, same technique as M6/M8's
+# `screenshot_mid_test`), not via a post-test relaunch — `RootView`'s "last
+# opened thread" restoration is same-session-only now, not cross-launch
+# (docs/verify.md), so a relaunch after this test exits would land on the
+# message list, not the thread it just opened.
+(
+  sleep 4
+  for _ in $(seq 1 10); do
+    xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/m4-02-thread-detail.png" >/dev/null 2>&1 || true
+    sleep 1
+  done
+) &
+screenshot_pid=$!
 run_test "OtegamiM4ThreadDetailUITests"
-
-echo "==> Capturing screenshot: thread detail view (restored on relaunch via lastOpenedThread)"
-screenshot "m4-02-thread-detail.png"
+wait "$screenshot_pid" 2>/dev/null || true
 
 echo "==> Phase 3/4: swipe the 2-message thread to 既読にする"
 run_test "OtegamiM4SwipeReadUITests"

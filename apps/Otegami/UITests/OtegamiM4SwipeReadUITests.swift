@@ -16,16 +16,39 @@ final class OtegamiM4SwipeReadUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        // `RootView`'s "last opened thread" restoration means a fresh
-        // launch after `OtegamiM4ThreadDetailUITests` opened a thread comes
-        // up showing that thread's detail pane directly (this simulator/
-        // device's `NavigationSplitView` is compact-width, a real push
-        // stack) — pop back to the message list first.
-        popBackOnceIfNeeded(in: app)
-
+        // No `popBackOnceIfNeeded` here — `RootView`'s "last opened
+        // thread" restoration is same-session-only now (docs/verify.md),
+        // so a fresh launch with an existing account always starts
+        // *already on* the message list (one push level under the
+        // sidebar, not two). Popping here would overshoot past the list
+        // to the sidebar instead.
         let list = app.collectionViews["messageList.list"]
-        let row = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "Re: 明日の打ち合わせについて")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 30), "Expected the 2-message thread row to be present")
+        func subjectRow() -> XCUIElement {
+            list.cells.containing(NSPredicate(format: "label CONTAINS %@", "Re: 明日の打ち合わせについて")).firstMatch
+        }
+        // Scrolling (not just existence) matters here: `dev/mailstack/
+        // seed/fixtures/` grew well past one screen's worth of rows since
+        // this test was written — see `OtegamiM4ThreadDetailUITests`'s
+        // matching fix for the same reason.
+        XCTAssertTrue(
+            waitForElementScrollingIfNeeded(subjectRow(), in: app),
+            "Expected the 2-message thread row to be present"
+        )
+
+        // One more scroll step past "exists" — `waitForElementScrollingIfNeeded`
+        // stops the instant the row becomes findable, which (scrolling
+        // *down* through a newest-first list to reveal an older row) can
+        // land it right at the bottom edge of the viewport. A swipe that
+        // close to the edge doesn't reliably reveal the action — the exact
+        // gotcha `OtegamiM3SwipeActionsUITests.testSwipeDeletesMessageOffline`
+        // already documents for the same drag helper — so nudge it clear
+        // before swiping. Re-queried after scrolling since a scroll can
+        // invalidate the previous element reference.
+        let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+        let end = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        let row = subjectRow()
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "Expected the 2-message thread row to still be present after nudging it clear of the edge")
 
         // Leading swipe reveals the toggle-read action
         // (`.swipeActions(edge: .leading)` in `MessageListView`).
