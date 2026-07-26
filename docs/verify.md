@@ -2522,3 +2522,23 @@ push が一切発火しない。つまり「IDLE がタイムアウトする」�
   ルされたはずなのに動いてしまう」経路が生まれ、今回のように**別の、
   無関係な呼び出しを巻き込む**バグになりうる。キャンセルされたら
   `return`/`throw` で早期に抜けることを明示する。
+
+### 実地検証で踏んだ運用上の注意: `dev/mailstack` は本番リレーの実監視対象でもありうる
+
+本修正の実機検証中、`dev/mailstack` の `test1@otegami.test` に検証メールを
+1通投函して本番リレーでの検知を確認した**直後**、`make mailstack-seed`
+で開発用フィクスチャを再投入したところ、本番リレーに登録済みの watch
+(実機 iPhone に紐づく `watchId=cQKuNrI9DMGcwxedC2GXlg` を含む) がこの
+再投入 (`doveadm expunge` + 標準フィクスチャ約8通の `doveadm save`) を
+すべて新着として検知し、**実機に対して短時間に約16件の APNs push が追
+加で送られてしまった**(本来の検証用1通分は意図通りだったが、その後の
+「後片付け」のつもりだった `make mailstack-seed` が同じ実害を持つ操作
+だと認識していなかった)。`dev/mailstack` は通常「使い捨てのローカル開
+発環境」だが、**本番リレーの watch がそれを実際に監視対象にしている間
+は、`doveadm save`/`make mailstack-seed`/`make mailstack-down` 等
+`INBOX` を変更するあらゆる操作が実機への push を引き起こしうる本番相
+当の操作になる**。今後この構成 (実機の watch が dev mailstack を指した
+まま) が残っている間は、動作検証で `dev/mailstack` の INBOX に触れる前
+に本番リレーが現在それを watch していないか (`docker compose logs
+otegami-relay` で `watch connected` の対象を確認する、または一時的に
+`docker compose stop otegami-relay` する) を必ず確認すること。
