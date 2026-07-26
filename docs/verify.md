@@ -2826,3 +2826,112 @@ Keychain 読み取り失敗も OAuth トークンのリフレッシュ失敗も
 ロゴ) が実際に本文内にレンダリングされていることも目視確認済み —
 `allowsEmbeddedImages` が `CIDURLRewriter.rewrite` の呼び出しを実際に
 左右していることの直接証拠になっている。
+
+## 実機バグ: iCloud アカウント同期の重複挿入 (`docs/icloud-sync.md` 参照)
+
+実機の設定 → アカウント一覧に、同じメールアドレスのアカウントが2つ表示
+され、メールによって「本文の取得に失敗しました: authenticationFailed」が
+出たり出なかったりするという報告を受けて調査・修正した。原因・修正の設計
+判断・単体テストは `docs/icloud-sync.md`「重複挿入バグとその修正」節に
+まとめてある。ここには、この節がシミュレータでどう検証されたかと、その
+過程で踏んだ環境固有の落とし穴を記録する。
+
+### 実 2 台のデバイスを使わない再現方法
+
+`AccountCloudSyncEngine` の重複挿入バグは本来「2台のデバイスが同じ
+メールアカウントを独立に追加し、iCloud KVS 経由で互いの存在を知る」という
+経路でしか自然には発生しない。この開発環境ではシミュレータ1台からは実
+iCloud KVS の2台間同期を検証できない (`docs/icloud-sync.md`「制限」節)。
+
+そこで採用したのは、バグが**実際に残す DB の終着状態** — 同じメール
+アドレス/IMAP設定で `accountId` だけが異なる `account` 行が2つ、片方は
+`needsReauth = 1` — を、`sqlite3` でホスト側から直接作る方法
+(`apps/Otegami/UITests/OtegamiDuplicateAccountUITests.swift` の3フェーズ):
+
+1. `testPhase1AddRealAccount` — 通常の UI 操作で `test1@otegami.test` の
+   Dovecot アカウントを追加する (本物の Keychain 資格情報を持つ「生き残る
+   べき」アカウント)。
+2. アプリを `terminate` した状態で、ホストの `sqlite3` から `account`
+   テーブルに、同じ `email`/`imapHost`/`imapUsername` で `accountId` だけ
+   別の (`needsReauth = 1` の) 行を直接 `INSERT` する。DB のパスは
+   App Group 共有コンテナ配下 (`xcrun simctl get_app_container <udid>
+   <bundle_id> data` ではなく、`~/Library/Developer/CoreSimulator/Devices
+   /<udid>/data/Containers/Shared/AppGroup/<group-uuid>/otegami
+   /otegami.sqlite` — M9 追補節が書いている通り、この開発機の
+   `OTEGAMI_BUNDLE_ID` オーバーライドと同じ理由で App Group コンテナ側を
+   見る必要がある)。
+3. `testPhase2ShowsTheDuplicateBeforeTheFix` — アプリ起動時の重複統合
+   処理 (`AccountDuplicateMerger`) を1回だけスキップするテスト専用の
+   launch environment フラグ `OTEGAMI_UITEST_SKIP_DUPLICATE_ACCOUNT_MERGE`
+   付きで起動し、「設定 → アカウント」に同じメールアドレスが2行、2行目に
+   「資格情報を待っています」バナーが出ることを確認する (修正前の実機と
+   同じ状態の再現)。
+4. `testPhase3TheDuplicateIsGoneAfterTheFix` — 同じ DB のまま、フラグ無し
+   の通常起動 (`AppEnvironment.init()` が同期的に統合処理を実行) で、
+   1行に統合されバナーが消えること、かつ INBOX のメールが失われていない
+   ことを確認する。
+
+この `OTEGAMI_UITEST_SKIP_DUPLICATE_ACCOUNT_MERGE` フラグは、修正の
+副作用として生まれた「デモ用の一時的な迂回コード」ではなく、
+`AppEnvironment.init()` に恒久的に残る小さな test-only hook
+(`ComposerView.attachUITestFixtureIfRequested`/`MessageView
+.deleteCredentialIfUITestRequested` と同じパターン) — 通常起動では
+一切参照されない。**なぜ必要か**: 修正後の統合処理は `startObservingAccounts()`
+より前に同期的に走るため、重複状態は設計上どのフレームでも UI に一度も
+現れない (これ自体は正しい挙動)。しかし「修正前の状態」を UI 上で実際に
+見て検証するには、そのタイミングを一時的に止める手段がどうしても要る —
+このフラグがそれを担う。
+
+### 実際に踏んだ落とし穴: `xcodebuild test` と並行する `simctl io screenshot` が
+### 「起動直後のホーム画面」で固まって見えることがある
+
+M6/M7/M9 で確立した「バックグラウンドサブシェルが `xcrun simctl io booted
+screenshot` を1秒間隔で同じファイルに上書きし続け、`xcodebuild test` と
+並行して実行する」パターン (このファイル冒頭・M6 節参照) を素直に踏襲した
+ところ、`testPhase2ShowsTheDuplicateBeforeTheFix` (テスト自体は
+`XCTAssert` も全て成功していた) の間に撮ったスクリーンショットが**毎回
+判で押したようにホーム画面**になった — テストは「設定」タブをタップし
+アカウント2行を見つけるところまで実際に成功しているので、アプリは
+確実にフォアグラウンドで正しく描画されていたはずである。
+
+固定ファイル名への1秒間隔の上書きループでは全滅したが、**同じ捕り方を
+毎秒別ファイルに書き出す** (`f01.png`, `f02.png`, ...) ように変えたところ、
+一部のフレーム (ファイルサイズがホーム画面の壁紙由来の約4MBではなく、
+UI の白背景中心の約80〜340KB に落ちるフレーム) には実際にアプリの
+「設定」画面が写っていた — 前半・後半の大半のフレームは依然ホーム画面
+のままだった。つまり `simctl io screenshot` 自体は正しく動いているが、
+アプリがフォアグラウンドで実際に描画されている一瞬の窓は、この環境の
+`xcodebuild test` 実行全体 (十数秒) の中でもごく短い一部分に限られる
+(自動化セッションの接続/切断や、ホーム画面への遷移を伴う何らかの内部的な
+オーバーヘッドがあると見られる) — 固定ファイル名上書きは、その一瞬を
+たまたま外すとホーム画面のフレームで永久に上書きされたまま気づけない、
+という新しい落とし穴だった。**対策: このクラスの「同期完了後のスクリー
+ンショット1枚だけを当てにできない」テストでは、固定ファイル名の上書き
+ではなく毎秒別ファイルに書き出し、テスト完了後にファイルサイズ (または
+実際に開いて中身) を見て「本当にアプリ画面が写っているフレーム」を
+選び出す方が確実。**
+
+### 検証結果
+
+- Phase 2 (修正前の再現): 「設定 → アカウント」に `Dovecot Test1 /
+  test1@otegami.test` が2行、2行目に「資格情報を待っています」「再接続」
+  が表示される screenshot を確認 (`duplicate-01-before-fix-settings.png`)。
+- Phase 3 (修正後): 同じ画面が1行に統合され、バナーが消えている
+  screenshot (`duplicate-02-after-fix-settings.png`)、および「メール」
+  タブの INBOX が Phase 1 で同期した内容のまま (メール一覧の中身が
+  1件も失われていない) ことを示す screenshot
+  (`duplicate-03-after-fix-inbox-no-data-loss.png`) を確認。DB を
+  `sqlite3` で直接確認しても、統合後は `account` テーブルに生存側の
+  行 (`needsReauth = 0`) のみが残っていることを確認済み。
+- 既存の `OtegamiMissingCredentialUITests` (「バグ修正: 実機で
+  『本文の取得に失敗しました』」節) を、新しいメッセージ文言 (「この端末
+  にはこのアカウントの資格情報がありません。設定 → アカウントの
+  『再接続』から...」) に合わせて更新し、再実行して成功を確認 —
+  この節の「資格情報が無い状態でメールを開いたときのエラー文言」修正の
+  回帰確認を兼ねる。
+- `scripts/verify-ios-icloud.sh`・`scripts/verify-ios-m1.sh` を再実行し
+  回帰なしを確認 (`verify-ios-m1.sh` は1回目に `mail.addAccountButton` の
+  `{-1, -1}` ヒットポイント (M2 節に記録済みの既知のシミュレータ/toolchain
+  フレーク) で失敗したが、2回目の再実行で成功 — この変更が原因ではないと
+  判断した根拠は、今回の変更が `AccountSetupView`/`AccountTypeSelectionView`
+  を一切触っていないこと)。

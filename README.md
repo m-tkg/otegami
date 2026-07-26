@@ -131,6 +131,11 @@ Two things this app is built around, more than any single feature list:
   iCloud Keychain, account metadata (including edits) syncs via
   `NSUbiquitousKeyValueStore`; see
   [docs/icloud-sync.md](docs/icloud-sync.md). Opt-out toggle in Settings.
+  Accounts are matched by email/IMAP host/username, not just their internal
+  id, so two devices adding "the same" mailbox never produce a duplicate —
+  and a device that already has a stale duplicate from before this fix
+  self-heals it automatically on next launch, without losing any local
+  mail, drafts, or templates.
 - **Performance**: tested against a 100k-message synthetic mailbox — see
   [docs/performance.md](docs/performance.md).
 
