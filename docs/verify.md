@@ -731,7 +731,9 @@ screenshot は `SCREENSHOT_DIR/m9-01-app-relaunch.png` (テスト完了後に
 ### 既知の制約 (このスクリプトが検証しない範囲)
 
 実 APNs 配信・`NotificationService` による通知書き換え・実機でのエンド
-ツーエンド確認は対象外 (`.p8` キー未発行 — `PENDING.md` の M9 節参照)。
+ツーエンド確認はこの自動スクリプトの対象外 (このスクリプトは `.p8` 無し
+でも回る範囲に留めている) — 実機での確認は別途手動で完了済み
+(`PENDING.md` の M9 節参照)。
 otegami-relay サーバー自体の IDLE→push 発火パイプラインは
 `scripts/verify-relay.sh` (実 Dovecot に対する統合検証) と
 `server/otegami-relay/Tests/OtegamiRelayTests/WatcherPoolTests.swift`
@@ -2329,7 +2331,7 @@ light のみ) を保存し、目視で確認した:
 
 ## otegami-relay: IDLE がタイムアウトで接続を壊す実バグ (M9 後の本番障害調査)
 
-本番リレー (Raspberry Pi、`otegami.mtkg`) が IMAP の新着をまったく検知
+自宅サーバーにデプロイした本番リレーが IMAP の新着をまったく検知
 しなくなる障害が実環境で報告された。ログは `watch connected idle=true
 uidNext=NNNN` の直後で止まったまま、それ以降新着を投函しても一切反応
 しない。Dovecot 側は正常であることを手動 IMAP セッション (`LOGIN` →

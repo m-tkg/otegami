@@ -118,6 +118,7 @@ iCloud 経由では同期されない (片方のデバイスだけ切りたい�
   `GoogleOAuth.TokenStore.hasStoredRefreshToken`/`.accessToken(for:)`
   経由でのみ検証しており、実 Google アカウントでの 2 台間確認は未実施
   (`PENDING.md`)。
-- アカウント設定を後から編集する UI が (M11 時点で) 存在しないため、
-  `updatedAt` は実質「作成時刻」からほぼ変化しない。編集 UI ができた際は
-  保存のたびに `updatedAt` を更新し `pushAccountToCloud` を呼ぶ必要がある。
+- アカウント編集 UI (`AccountEditView`) は実装済み。保存のたびに
+  `AppEnvironment` が `updatedAt` を更新してから `pushAccountToCloud` を
+  呼ぶため、編集も上記の reconcile ルール (`updatedAt` が新しい方が勝つ)
+  にそのまま乗る。
