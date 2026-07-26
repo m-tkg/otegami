@@ -3012,3 +3012,121 @@ scripts/verify-ios-credential-recovery.sh
   状態 (検索履歴、メール一覧) を捉え続けていた。この手法自体がタイミング
   に脆弱であることは M6 時点から既知の制約であり、今後も画面遷移の重さが
   変わるたびに再調整が必要になりうる。
+
+## 実機バグ調査: 「過去メールが1通も入らない」報告と、疎な UID 帯での初期同期漏れ
+
+実 Gmail + 実 iCloud アカウントで「アカウント追加・接続テストは成功する
+が、過去のメールが1通も INBOX に入らない (新着は Refresh で届く)」と
+いう報告があった。調査の結論は二段構え:
+
+### 実機報告そのものの真因: バグではなく空状態の文言が誤解を招いた
+
+実際には INBOX を空にする運用 (受信したメールを即アーカイブ) をして
+いるアカウントで、アーカイブ先のメールボックスには過去メールが正しく
+同期されていた — つまり初期同期は動いていた。原因は
+`MessageListView` の空状態が、同期が成功して本当に空なのか、同期に
+失敗して空に見えているだけなのかを区別せず、常に「メッセージが
+ありません / 再同期を試してください。」と表示していたこと。「再同期を
+試してください」という文言が「同期が失敗している」という誤読を誘発した。
+
+修正 (`apps/Otegami/Sources/Features/MessageList/MessageListView.swift`
+の `emptyStateTitle`/`emptyStateDescription`/
+`currentAccountLastSyncError`): 選択中のアカウント (`.unifiedInbox` で
+アカウント絞り込みチップが無い場合はどれか1アカウントでも失敗して
+いれば) の `AccountRecord.lastSyncError` を見て分岐する。
+
+- 同期中: 「メッセージがありません」+「同期中…」(従来通り)
+- 直近同期がエラー: 「メッセージがありません」+「再同期を試してください。」
+  (従来通り)
+- 直近同期が成功 (エラーなし): 「メールはありません」のみ、
+  「再同期してください」のような行動喚起は出さない
+
+`apps/Otegami/Resources/Localizable.xcstrings` に新規キー
+「メールはありません」(en: "No Mail") を追加。
+
+### 副次的に見つけた実在のバグ: 初期同期の「直近500件」窓が UID ベースだった
+
+上記の実機報告の調査中、`AccountSyncer.performInitialSync`/
+`MailboxSyncer.performWindowedResync` の「直近 `initialSyncWindow`
+(500) 件」実装が UID の**範囲** (`uidNext - 500 ... uidNext - 1` 相当)
+で組まれていることに気づいた。実アカウントの IMAP `UID` 空間は
+密ではない — `uidNext` は「そのメールボックスにこれまで置かれた
+メッセージの総数」を反映するので、アーカイブ/削除を繰り返した
+メールボックスでは、現存するメッセージの UID が `uidNext` から
+大きく離れた古い帯に集中しうる。現存メッセージが1通も直近500 UID の
+範囲に入らなければ、エラーにならないまま0通が返り、`uidNext` だけが
+「同期済み」として永続化される。開発用 Dovecot は seed 直後の UID が
+1から密に詰まっているため、この形のテストをすり抜けていた。
+
+**実測での再現** (`packages/OtegamiKit/Tests/SyncEngineTests/AccountSyncerTests.swift`
+の `fetchesSparseOldUIDBand`、修正前のコードに対して実行して確認):
+`FakeIMAPSession` で `uidNext=4000`・現存5通が UID `1990...1994`
+(1にも `uidNext` にも近くない古い帯) という状態を作り、修正前の
+`AccountSyncer.performInitialSync` を実行したところ
+`progress.envelopesFetched == 0` (期待5) で失敗することを確認した —
+仮説通り、疎な UID 帯では初期同期が0通になることを本物のプロダクション
+コードパス (`initialSyncLowerBound` を含む) で実測した。
+`MailboxSyncer.performWindowedResync` (uidValidity 変化時のフル再同期
+経路、同じ窓ロジックを共有) 側も
+`MailboxSyncerTests.uidValidityChangeResyncFindsSparseOldUIDBand` で
+同じ形の再現を確認済み。
+
+**修正**: 「直近 N 件」を UID 範囲ではなく IMAP **シーケンス番号**
+(RFC 3501 §2.3.1.2: 1 が現存する最古のメッセージ、`messageCount` が
+最新) で取得するよう変更した。シーケンス番号は「現存するメッセージの
+末尾から数えて N 番目」を常に正しく指すため、UID 側にどれだけ穴が
+あっても影響されない。
+
+- `MailTransport.IMAPSessionProtocol` に
+  `fetchRecentEnvelopes(mailboxPath:count:batchSize:)` を追加
+  (UID ベースの既存 `fetchEnvelopes(mailboxPath:uids:batchSize:)` とは
+  別メソッド — 呼び分けが必要なのは意味が違う2つの「窓」があるため)。
+- `MailTransportMailCore.MailCoreIMAPSession` の実装は MailCore2 の
+  `fetchMessagesByNumberOperationWithFolder:requestKind:numbers:`
+  (Swift 側では `session.fetchMessagesByNumber(folder:kind:numbers:)`)
+  を使用。ヘッダのコメントに載っている「直近50件」の使用例そのままの
+  API で、フェッチ1往復で済む (案(a): シーケンス番号 FETCH。
+  「`UID SEARCH ALL` して末尾500個を UID FETCH」という2往復案(b)は
+  不採用)。メッセージ数は呼び出し元の `select` 結果を信頼せず、この
+  メソッド自身が `STATUS` で取り直す (呼び出し元の前提が将来変わっても
+  自己完結して正しく動くようにするための、安い追加往復1回)。
+- `FakeIMAPSession` にも同メソッドを実装 (`envelopesByPath` を UID 昇順
+  ソートして末尾 N 件、という「UID 順 = 到着順」という既存の割り切りに
+  合わせた)。
+- `AccountSyncer.initialSyncLowerBound` (UID 範囲を計算していた純粋
+  関数) は削除。呼び出し側は `count: Int(AccountSyncer.initialSyncWindow)`
+  を渡すだけになった。
+- 差分同期 (`MailboxSyncer.incrementalSync`) の他の経路は影響なし:
+  「新着」(`maxUID+1 ... *`) も CONDSTORE フラグ同期
+  (`changedSince:`, 全体を対象) も、非CONDSTORE フラグ同期
+  (`refetchAndDiffFlags`, ローカルに存在する最小UIDから `*` まで
+  open-ended) も、いずれも「`uidNext` から逆算した固定長窓」を仮定
+  しておらず、疎な UID でも元から正しく動く設計だったことをコードを
+  読んで確認した (`refetchAndDiffFlags` は既存のローカル UID を起点に
+  するので、そもそも今回のバグの影響を受けない)。
+
+**実サーバーでの検証**: `MailTransportMailCoreTests`
+(`OTEGAMI_TEST_IMAP_HOST=localhost`) で実 Dovecot に対して新しい
+`fetchMessagesByNumber` 経路が実際に動くことを確認 — Swift 側の
+メソッド名 (Objective-C の "Omit Needless Words" 変換で
+`fetchMessagesByNumber(folder:kind:numbers:)` になると予想したもの)
+はビルド・実行とも問題なかった。この過程で
+`SyncEngineIntegrationTests.incrementalSyncPicksUpExternalChanges`
+が既存のアサーション (`MessageRecord.fetchAll` をアカウント全体に
+対して行い、件数を直値で比較) 前提で失敗することも見つけた —
+原因はこのバグ修正そのものではなく、この dev mailstack の Sent
+メールボックスに他の統合テスト (SMTP 送信テストなど) の残留メッセージ
+が残っていたこと。**皮肉なことに、修正前の UID 窓バグが (Sent の
+UID 履歴も疎になりがちなため) この残留物をこれまで偶然隠していた
+可能性が高い** — 修正によって Sent も正しく同期されるようになった
+結果、隠れていたテスト間の残留物が可視化された。このテストのアサー
+ションを INBOX の `mailboxId` でスコープするよう修正し (アカウント
+全体ではなく INBOX だけを見る、という元々の意図に合わせた)、
+`doveadm expunge` で Sent の残留物も掃除した。
+
+**救済処理 (「メールボックス行はあるが過去メール0通」の起動時検出)
+は実装しなかった**: 根本原因 (UID 窓の非密仮定) をシーケンス番号
+ベースに直したことで、この形の「初期同期済みなのに0通」は原理上
+発生しなくなる — 空のメールボックスと区別がつかなくなる残留状態を
+別途検出する仕組みは、直すべき実バグが残っていない以上、複雑さに
+見合わないと判断した。

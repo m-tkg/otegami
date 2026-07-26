@@ -275,6 +275,46 @@ struct MailboxSyncerTests {
         #expect(mailbox.uidValidity == 2)
     }
 
+    /// Same shape as `AccountSyncerTests.fetchesSparseOldUIDBand`, but for
+    /// `performWindowedResync` — the uidValidity-changed/never-synced path
+    /// this method also drives, and which shares the exact "most recent
+    /// window" fetch this bug affected (docs/verify.md, "実機バグ調査: 疎な
+    /// UID 帯を持つメールボックスで初期同期が0通になる").
+    @Test("a uidValidity-changed resync still finds a mailbox's current messages in a sparse, far-from-uidNext UID band")
+    func uidValidityChangeResyncFindsSparseOldUIDBand() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "旧世代1")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+            )
+        )
+
+        // uidValidity bumped (recreated mailbox), and under the new epoch
+        // the server has processed thousands of messages historically but
+        // currently holds only 3, at old UIDs far from both `1` and
+        // `uidNext`.
+        let survivingUIDs: [UInt32] = [1990, 1991, 1992]
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": survivingUIDs.map { makeEnvelope(uid: $0, subject: "新世代-\($0)") }],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 2, uidNext: 4000, highestModSeq: 0, messageCount: survivingUIDs.count)]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.didFullResync == true)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.count == survivingUIDs.count)
+    }
+
     // MARK: Drafts IMAP sync — SyncScope.inboxOnly also covers Drafts
 
     @Test("the default .inboxOnly scope also differentially syncs the account's Drafts mailbox")

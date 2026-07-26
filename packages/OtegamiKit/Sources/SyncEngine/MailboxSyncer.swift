@@ -192,11 +192,10 @@ public actor MailboxSyncer {
         status: MailboxStatus,
         mailboxRecord: MailboxRecord
     ) async throws -> MailboxRecord {
-        if status.messageCount > 0, status.uidNext > 1 {
-            let lowerBound = AccountSyncer.initialSyncLowerBound(uidNext: status.uidNext, window: AccountSyncer.initialSyncWindow)
-            let envelopes = try await session.fetchEnvelopes(
+        if status.messageCount > 0 {
+            let envelopes = try await session.fetchRecentEnvelopes(
                 mailboxPath: mailboxPath,
-                uids: UIDRange(lowerBound: lowerBound, upperBound: nil),
+                count: Int(AccountSyncer.initialSyncWindow),
                 batchSize: AccountSyncer.fetchBatchSize
             )
             try await database.dbWriter.write { db in

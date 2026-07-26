@@ -35,8 +35,12 @@ public enum SyncScope: Sendable, Equatable {
 
 public actor AccountSyncer {
     /// How many of a mailbox's most recent messages the initial sync
-    /// fetches (plan: "直近500件"). A ceiling, not a guarantee: mailboxes
-    /// with fewer messages, or gaps from expunged UIDs, yield fewer.
+    /// fetches (plan: "直近500件"), by IMAP *sequence* number via
+    /// `IMAPSessionProtocol.fetchRecentEnvelopes` — see that method's doc
+    /// comment for why sequence number rather than a UID range (a real
+    /// mailbox's UID space is not dense; see docs/verify.md's "実機バグ調査:
+    /// 疎な UID 帯を持つメールボックスで初期同期が0通になる"). A ceiling, not a
+    /// guarantee: a mailbox with fewer messages yields fewer.
     public static let initialSyncWindow: UInt32 = 500
 
     /// How many UIDs `fetchEnvelopes` requests per underlying FETCH
@@ -154,12 +158,10 @@ public actor AccountSyncer {
 
                 let status = try await session.select(info.path)
 
-                if status.messageCount > 0, status.uidNext > 1 {
-                    let lowerBound = Self.initialSyncLowerBound(uidNext: status.uidNext, window: Self.initialSyncWindow)
-                    let range = UIDRange(lowerBound: lowerBound, upperBound: nil)
-                    let envelopes = try await session.fetchEnvelopes(
+                if status.messageCount > 0 {
+                    let envelopes = try await session.fetchRecentEnvelopes(
                         mailboxPath: info.path,
-                        uids: range,
+                        count: Int(Self.initialSyncWindow),
                         batchSize: Self.fetchBatchSize
                     )
 
@@ -481,16 +483,6 @@ public actor AccountSyncer {
             try? await Task.sleep(for: .seconds(backoffSeconds))
             backoffSeconds = min(backoffSeconds * 2, 300)
         }
-    }
-
-    /// The lower UID bound that yields (at most) `window` messages,
-    /// assuming a dense (gap-free) UID space: everything from
-    /// `uidNext - window` onward. Servers with expunged messages (gaps)
-    /// will simply return fewer than `window` envelopes for this range,
-    /// which callers treat as fine.
-    static func initialSyncLowerBound(uidNext: UInt32, window: UInt32) -> UInt32 {
-        let highestPossibleUID = uidNext - 1
-        return highestPossibleUID > window ? highestPossibleUID - window + 1 : 1
     }
 
     private static func inbox(among mailboxes: [MailboxInfo]) -> MailboxInfo? {

@@ -160,6 +160,48 @@ struct AccountSyncerTests {
         #expect(uids.last == Int64(totalMessages))
     }
 
+    /// Real-device repro (docs/verify.md, "実機バグ調査: 疎な UID 帯を持つ
+    /// メールボックスで初期同期が0通になる"): a real Gmail/iCloud account's
+    /// `uidNext` reflects every message ever placed in this mailbox
+    /// (including ones since archived/deleted), not how many are currently
+    /// present. A mailbox that has processed thousands of messages over its
+    /// history but currently holds only a handful of *old* survivors (never
+    /// archived, everything newer already was) has a huge gap between
+    /// `uidNext` and those survivors' UIDs — exactly the shape
+    /// `IMAPSessionProtocol.fetchRecentEnvelopes`'s doc comment warns
+    /// against (a UID-range window assumes the UID space is dense). This
+    /// models that: `uidNext` is 4000
+    /// (thousands of historical messages), but only 5 messages currently
+    /// exist, at UIDs 1990...1994 — an "old band" nowhere near `1`
+    /// (ruling out the function's `else 1` branch accidentally saving it)
+    /// and nowhere near `uidNext` either.
+    @Test("initial sync still finds a mailbox's current messages when they sit in an old, sparse UID band far from uidNext")
+    func fetchesSparseOldUIDBand() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let survivingUIDs: [UInt32] = [1990, 1991, 1992, 1993, 1994]
+        let envelopes = survivingUIDs.map { makeInbox(uid: $0, subject: "msg-\($0)") }
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": envelopes],
+            statusByPath: [
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 4000, highestModSeq: 0, messageCount: survivingUIDs.count),
+            ]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: script)
+        }
+
+        let progress = try await syncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+        #expect(progress.envelopesFetched == survivingUIDs.count)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.count == survivingUIDs.count)
+    }
+
     @Test("a later mailbox failing to select doesn't leave an earlier mailbox's messages unthreaded")
     func laterMailboxFailureDoesNotBlockEarlierMailboxThreading() async throws {
         // Regression test for a real-device bug: `performInitialSync`
@@ -364,15 +406,5 @@ struct AccountSyncerTests {
         )
         #expect(afterRecovery.lastSyncError == nil)
         #expect(afterRecovery.lastSyncErrorAt == nil)
-    }
-
-    @Test("initialSyncLowerBound math")
-    func initialSyncLowerBoundMath() {
-        // Fewer messages than the window: start from UID 1.
-        #expect(AccountSyncer.initialSyncLowerBound(uidNext: 10, window: 500) == 1)
-        // Exactly the window: start from UID 1.
-        #expect(AccountSyncer.initialSyncLowerBound(uidNext: 501, window: 500) == 1)
-        // More than the window: keep only the most recent `window`.
-        #expect(AccountSyncer.initialSyncLowerBound(uidNext: 601, window: 500) == 101)
     }
 }

@@ -64,6 +64,28 @@ public protocol IMAPSessionProtocol: Sendable {
     /// The mailbox must be selected via `select(_:)` first.
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope]
 
+    /// Fetches `ENVELOPE` + `FLAGS` + a `BODYSTRUCTURE` summary for the most
+    /// recent `count` messages in `mailboxPath`, addressed by IMAP
+    /// *sequence* number (RFC 3501 §2.3.1.2: 1 is the oldest message
+    /// currently present, the mailbox's message count the newest) rather
+    /// than UID. `AccountSyncer.performInitialSync`/`MailboxSyncer
+    /// .performWindowedResync` use this — not the UID-range overload above —
+    /// for the "most recent N messages" initial-sync window specifically
+    /// *because* it's immune to the gaps a real mailbox's UID space
+    /// accumulates from archived/expunged messages: a UID-range window
+    /// assumes the UID space is dense (docs/verify.md, "実機バグ調査: 疎な
+    /// UID 帯を持つメールボックスで初期同期が0通になる" — a real Gmail/iCloud
+    /// mailbox's `uidNext` reflects every message *ever* placed there, so a
+    /// mailbox that currently holds only old survivors far from `uidNext`
+    /// can make a UID-range window miss every one of them), while sequence
+    /// numbers always mean "the Nth-from-the-end message that currently
+    /// exists" regardless of how sparse the underlying UIDs are. `count` is
+    /// a ceiling, not a guarantee — a mailbox with fewer than `count`
+    /// messages simply returns all of them. `batchSize` behaves like the
+    /// UID-based overload's parameter. The mailbox must be selected via
+    /// `select(_:)` first.
+    func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope]
+
     /// `CONDSTORE`-based incremental fetch: envelopes for messages whose
     /// metadata changed since `modSeq` (RFC 7162). Requires
     /// `IMAPCapability.condstore`. M3.

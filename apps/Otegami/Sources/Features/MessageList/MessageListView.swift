@@ -247,6 +247,52 @@ struct MessageListView: View {
         Dictionary(uniqueKeysWithValues: environment.accounts.map { ($0.id, $0.displayName) })
     }
 
+    // MARK: - Empty state (実機バグ調査: 「アーカイブ運用で INBOX が本当に空」を
+    // 「同期が失敗している」と誤読させないための分岐, docs/verify.md)
+
+    /// `AccountRecord.lastSyncError` for whichever account(s) this view's
+    /// `selection` could plausibly be empty *because of* a failed sync —
+    /// `nil` means "as far as we know, the relevant account(s) last synced
+    /// cleanly", which is also true before the first sync ever runs (that's
+    /// fine: the empty state then falls back to the same "同期中…" as any
+    /// other pre-sync moment via `isSyncing`, not a spurious error message).
+    /// `.unifiedInbox` with no `unifiedInboxAccountFilter` (1a's "全部" chip)
+    /// has no single account to check, so it reports an error if *any*
+    /// account last failed — an empty unified inbox while even one account
+    /// is in a known-bad state is exactly the ambiguous case this exists to
+    /// resolve in favor of "re-sync", not silently "no mail".
+    private var currentAccountLastSyncError: String? {
+        switch selection {
+        case .mailbox(let mailboxSelection):
+            return environment.accounts.first { $0.id == mailboxSelection.accountId }?.lastSyncError
+        case .unifiedInbox:
+            let accountId = unifiedInboxAccountFilter
+            if let accountId {
+                return environment.accounts.first { $0.id == accountId }?.lastSyncError
+            }
+            return environment.accounts.compactMap(\.lastSyncError).first
+        }
+    }
+
+    /// "メッセージがありません" (something might be missing — check again) only
+    /// once there's a reason to doubt the sync, i.e. mid-sync or after a
+    /// recorded failure; a *known-clean* empty mailbox (the common case for
+    /// an inbox-zero workflow — this is the exact real-device report that
+    /// prompted this split, see docs/verify.md) instead says "メールはあり
+    /// ません", which doesn't imply anything went wrong.
+    private var emptyStateTitle: LocalizedStringKey {
+        (isSyncing || currentAccountLastSyncError != nil) ? "メッセージがありません" : "メールはありません"
+    }
+
+    /// No description at all for the known-clean empty case — "メールはあり
+    /// ません" alone doesn't need a "here's what to do about it" line the
+    /// way the syncing/error cases do.
+    private var emptyStateDescription: Text? {
+        if isSyncing { return Text("同期中…") }
+        if currentAccountLastSyncError != nil { return Text("再同期を試してください。") }
+        return nil
+    }
+
     var body: some View {
         List {
             ForEach(displayedSummaries) { summary in
@@ -289,9 +335,9 @@ struct MessageListView: View {
                 }
             } else if summaries.isEmpty {
                 ContentUnavailableView(
-                    "メッセージがありません",
+                    emptyStateTitle,
                     systemImage: "envelope",
-                    description: Text(isSyncing ? "同期中…" : "再同期を試してください。")
+                    description: emptyStateDescription
                 )
                 .accessibilityIdentifier("messageList.emptyState")
             }

@@ -67,7 +67,25 @@ struct SyncEngineIntegrationTests {
         }
         _ = try await syncer.performInitialSync(auth: env.auth)
 
-        let seeded = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        // Scoped to INBOX's own mailboxId, not the whole account: this dev
+        // mailstack's Dovecot is a shared, persistent server across every
+        // opt-in integration test in this target, and `performInitialSync`
+        // now correctly syncs *every* selectable mailbox including Sent
+        // (docs/verify.md, "実機バグ調査: 疎な UID 帯を持つメールボックスで初期同期が
+        // 0通になる" — before that fix, a UID-window initial sync of a
+        // mailbox like Sent with a sparse/gappy UID history from unrelated
+        // prior test runs could silently fetch 0 and mask exactly this kind
+        // of cross-test leftover; scoping this assertion to INBOX is the
+        // correct fix now that Sent/Drafts/etc. are reliably synced too,
+        // not something to special-case away).
+        let inboxMailboxId = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "INBOX").fetchOne(db)?.id
+            }
+        )
+        let seeded = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == inboxMailboxId).fetchAll(db)
+        }
         #expect(seeded.count == 1)
         #expect(seeded.first?.flags.contains(.seen) == false)
 
@@ -80,7 +98,9 @@ struct SyncEngineIntegrationTests {
         #expect(progress.newMessages == 1)
         #expect(progress.didFullResync == false)
 
-        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        let messages = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == inboxMailboxId).fetchAll(db)
+        }
         #expect(messages.count == 2)
         #expect(messages.contains { $0.subject == "integration new mail" })
 

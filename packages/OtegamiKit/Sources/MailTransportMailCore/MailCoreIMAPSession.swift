@@ -183,6 +183,54 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
     }
 
+    /// Sequence-number counterpart of `fetchEnvelopes(mailboxPath:uids:
+    /// batchSize:)` — see `IMAPSessionProtocol.fetchRecentEnvelopes`'s doc
+    /// comment for why `AccountSyncer`/`MailboxSyncer` use this one for the
+    /// initial-sync window instead.
+    public func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope] {
+        guard count > 0 else { return [] }
+        // A fresh STATUS rather than trusting a caller-supplied message
+        // count: `AccountSyncer`/`MailboxSyncer` always call this right
+        // after their own `select`, so this costs one cheap extra round
+        // trip in exchange for this method being correct on its own even if
+        // that assumption ever stops holding.
+        let currentStatus = try await status(mailboxPath)
+        guard currentStatus.messageCount > 0 else { return [] }
+        let upper = UInt32(currentStatus.messageCount)
+        let lower = upper > UInt32(count) ? upper - UInt32(count) + 1 : 1
+        // Reuses `UIDRange`'s chunking/`MCOIndexSet` conversion for what are
+        // semantically *sequence* numbers here, not UIDs — `MCOIndexSet`
+        // itself has no notion of which one a given index set represents;
+        // that's purely which `fetchMessages...Operation` variant it's
+        // handed to (`fetchMessagesByNumber` below vs. `fetchMessagesByUid`
+        // above).
+        let sequenceRange = UIDRange(lowerBound: lower, upperBound: upper)
+
+        var result: [FetchedEnvelope] = []
+        for chunk in Self.chunk(sequenceRange, size: max(1, batchSize)) {
+            let batch = try await fetchEnvelopesByNumberBatch(mailboxPath: mailboxPath, numbers: chunk)
+            result.append(contentsOf: batch)
+        }
+        return result
+    }
+
+    private func fetchEnvelopesByNumberBatch(mailboxPath: String, numbers: UIDRange) async throws -> [FetchedEnvelope] {
+        var kind: MCOIMAPMessagesRequestKind = [.headers, .flags, .structure, .internalDate, .size]
+        if gmailExtensionsSupported {
+            kind.formUnion([.gmailThreadID, .gmailMessageID])
+        }
+        let indexSet = Self.indexSet(for: numbers)
+        return try await withCheckedThrowingContinuation { continuation in
+            session.fetchMessagesByNumber(folder: mailboxPath, kind: kind, numbers: indexSet).start { error, messages, _ in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                continuation.resume(returning: (messages ?? []).map(Self.envelope(from:)))
+            }
+        }
+    }
+
     /// `CONDSTORE`-based flag-change fetch (RFC 7162 §3.1, `syncMessages`
     /// bridging `session.syncMessagesByUIDOperation`): messages whose
     /// metadata changed since `modSeq`, covering the whole mailbox

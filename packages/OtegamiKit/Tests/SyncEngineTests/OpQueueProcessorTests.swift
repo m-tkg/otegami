@@ -1034,6 +1034,7 @@ private actor FailingStoreSession: IMAPSessionProtocol {
     func status(_ mailboxPath: String) async throws -> MailboxStatus { MailboxStatus(uidValidity: 0, uidNext: 0, highestModSeq: 0, messageCount: 0) }
     func createMailbox(path: String) async throws {}
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope] { [] }
+    func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope] { [] }
     func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope] { [] }
     func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent { MessageBodyContent() }
     func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data { Data() }

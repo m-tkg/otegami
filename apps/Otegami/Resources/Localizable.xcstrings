@@ -131,6 +131,16 @@
         }
       }
     },
+    "メールはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Mail"
+          }
+        }
+      }
+    },
     "既読に": {
       "localizations": {
         "en": {

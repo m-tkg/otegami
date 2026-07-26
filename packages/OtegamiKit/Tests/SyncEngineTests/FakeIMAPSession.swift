@@ -279,6 +279,21 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             .sorted { $0.uid < $1.uid }
     }
 
+    /// Sequence-number counterpart of `fetchEnvelopes(mailboxPath:uids:
+    /// batchSize:)` above: `script.envelopesByPath[mailboxPath]` already
+    /// models "every message currently in this mailbox" (like a real
+    /// server's contents), so the most recent `count` by *sequence* number
+    /// is just its last `count` entries sorted by UID ascending — same
+    /// "arrival order == UID order" assumption `FakeIMAPSession` makes
+    /// throughout, and deliberately UID-gap-agnostic (unlike the UID-range
+    /// overload above) to match what the real `MailCoreIMAPSession`
+    /// implementation guarantees.
+    public func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope] {
+        guard count > 0 else { return [] }
+        let all = (script.envelopesByPath[mailboxPath] ?? []).sorted { $0.uid < $1.uid }
+        return Array(all.suffix(count))
+    }
+
     public func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope] {
         if let failChangedSince = script.failChangedSince {
             throw failChangedSince
