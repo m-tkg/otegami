@@ -2,10 +2,12 @@ import XCTest
 
 /// C7: confirms the "リンクを開く方法" picker itself renders correctly in
 /// Settings — independent of `OtegamiLinkBrowserUITests` (which drives an
-/// actual link tap against a seeded message and hit an unresolved
-/// environment issue; see `docs/verify.md`'s C7 section). No dev-mailstack
-/// account is needed for this check, since the Settings tab renders
-/// regardless of the account list's contents.
+/// actual link tap against a seeded message; both are green now that
+/// `HTMLWebViewCoordinator`'s KVO-based stray-navigation fallback fixed the
+/// underlying environment issue documented in that type's doc comment and
+/// `docs/verify.md`'s C7 section). No dev-mailstack account is needed for
+/// this check, since the Settings tab renders regardless of the account
+/// list's contents.
 final class OtegamiLinkBrowserSettingsUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false

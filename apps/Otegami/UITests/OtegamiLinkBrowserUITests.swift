@@ -27,13 +27,19 @@ final class OtegamiLinkBrowserUITests: XCTestCase {
         XCTAssertTrue(link.waitForExistence(timeout: 15))
         link.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
-        // SFSafariViewController presents its own "完了"/"Done" button in
-        // its navigation bar — its appearance is the signal a sheet opened
-        // over the message (as opposed to the message's own WKWebView
-        // navigating away, which A9-A3/C7's `decidePolicyFor` should never
-        // allow regardless of this setting).
-        let doneButton = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Done", "完了")).firstMatch
-        XCTAssertTrue(doneButton.waitForExistence(timeout: 20), "Expected SFSafariViewController's Done button after tapping the link with the in-app-browser setting on")
+        // SFSafariViewController presents its own dismiss button in its
+        // navigation bar — its appearance is the signal a sheet opened over
+        // the message (as opposed to the message's own WKWebView navigating
+        // away, which C7's `HTMLWebViewCoordinator` should never allow
+        // regardless of this setting). The exact label is SDK-version-
+        // dependent — confirmed via `app.debugDescription` that this
+        // project's current toolchain (iOS 27 beta) labels it "Close", not
+        // "Done"/"完了" as an older SDK did, so this matches all three
+        // rather than assuming one.
+        let doneButton = app.buttons.matching(NSPredicate(
+            format: "label == %@ OR label == %@ OR label == %@", "Done", "完了", "Close"
+        )).firstMatch
+        XCTAssertTrue(doneButton.waitForExistence(timeout: 20), "Expected SFSafariViewController's dismiss button after tapping the link with the in-app-browser setting on")
 
         Thread.sleep(forTimeInterval: 3)
     }

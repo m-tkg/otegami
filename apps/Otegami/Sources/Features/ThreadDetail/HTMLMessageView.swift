@@ -137,13 +137,19 @@ struct HTMLMessageView: View {
         #endif
     }
 
-    /// C7: the only place a tap on an `http(s)://` link inside message HTML
-    /// ends up — `HTMLWebViewCoordinator.decidePolicyFor` always cancels
-    /// the in-place navigation first (mail HTML never gets to actually
-    /// browse away from itself, per that method's own doc comment) and
-    /// calls this instead. `javascript:`/other schemes never reach here at
-    /// all (see that method), so this only ever has to decide *how* to open
-    /// a legitimate web link, never whether to.
+    /// C7: where a tap on an `http(s)://` link inside message HTML ends up
+    /// — normally via `HTMLWebViewCoordinator.decidePolicyFor`/
+    /// `createWebViewWith`, which cancel the in-place navigation first (mail
+    /// HTML never gets to actually browse away from itself) and call this
+    /// instead; on this project's current toolchain those two delegate
+    /// methods don't actually fire for a plain link tap (a confirmed
+    /// platform anomaly, not an app bug — see `HTMLWebViewCoordinator
+    /// .strayNavigationObservation`'s doc comment), so
+    /// `recoverFromStrayNavigation` calls this too, as a delegate-
+    /// independent fallback that reaches the same outcome. `javascript:`/
+    /// other schemes never reach here at all (see `decidePolicyFor`), so
+    /// this only ever has to decide *how* to open a legitimate web link,
+    /// never whether to.
     private func handleLinkTap(_ url: URL) {
         #if os(iOS)
         if openInAppBrowser {
@@ -372,6 +378,63 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     private var lastAllowsExternalContent: Bool?
     private var lastAllowsEmbeddedImages: Bool?
 
+    /// C7 real-device/real-simulator bug fix. Extensive diagnostic
+    /// instrumentation (temporary `UserDefaults`-marker tracing —
+    /// `docs/verify.md`'s C7 section — from before this fix) proved, on
+    /// this project's current toolchain, all of the following at once:
+    ///  1. A tap on a plain `<a href="https://...">` link *does* reach the
+    ///     `WKWebView`'s native UIKit view hierarchy (confirmed with a
+    ///     bare `UITapGestureRecognizer` added directly to the web view —
+    ///     it fires at the correct on-screen coordinate).
+    ///  2. WebKit *does* act on that tap as a real navigation — a second
+    ///     `didFinish` fires after the tap, for content this app never
+    ///     asked to load.
+    ///  3. Despite (1) and (2), **neither `decidePolicyFor` (this type's
+    ///     `WKNavigationDelegate` conformance below) nor
+    ///     `createWebViewWith` (`WKUIDelegate`, further below) is ever
+    ///     invoked for that navigation** — confirmed by instrumenting both
+    ///     with the same tracer and seeing neither log a single call, for
+    ///     the entire lifetime of the view including the tap.
+    /// In other words: on this toolchain, WKWebView silently navigates a
+    /// tapped link in place *without* ever consulting either delegate this
+    /// app relies on to intercept it — a genuine platform-level anomaly
+    /// (standard `WKNavigationDelegate` usage, not a bug in this app's
+    /// delegate implementation), not something fixable by changing what
+    /// those delegate methods themselves do. `WKWebView.url` is a plain
+    /// KVO-observable property that WebKit updates as part of any
+    /// navigation, entirely independent of delegate dispatch — this
+    /// observer is a delegate-independent fallback that watches for that
+    /// URL becoming an `http(s)://` address (the tell-tale sign of exactly
+    /// this stray in-place navigation, since this app never itself loads
+    /// anything but `loadHTMLString(_:baseURL: nil)`, whose `url` is never
+    /// `http(s)`) and, when it does, immediately stops that navigation and
+    /// reloads this message's own content to undo it, then forwards the
+    /// tapped URL to `onOpenLink` exactly as `decidePolicyFor` would have.
+    /// Harmless on a toolchain where `decidePolicyFor` *does* fire
+    /// normally: a properly cancelled navigation never updates `url` to
+    /// the external address in the first place, so this observer simply
+    /// never has anything to act on there.
+    private var strayNavigationObservation: NSKeyValueObservation?
+
+    private func observeStrayNavigations(on webView: WKWebView) {
+        guard strayNavigationObservation == nil else { return }
+        strayNavigationObservation = webView.observe(\.url, options: [.new]) { [weak self, weak webView] _, change in
+            guard let self, let webView, let url = change.newValue ?? nil else { return }
+            guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return }
+            Task { @MainActor in
+                self.recoverFromStrayNavigation(to: url, on: webView)
+            }
+        }
+    }
+
+    private func recoverFromStrayNavigation(to url: URL, on webView: WKWebView) {
+        webView.stopLoading()
+        if let html = lastLoadedHTML, let allowsExternalContent = lastAllowsExternalContent, let allowsEmbeddedImages = lastAllowsEmbeddedImages {
+            load(html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages, into: webView)
+        }
+        onOpenLink(url)
+    }
+
     func reloadIfNeeded(
         html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool,
         cidContext: CIDResolutionContext, into webView: WKWebView
@@ -385,6 +448,7 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     }
 
     func load(html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, into webView: WKWebView) {
+        observeStrayNavigations(on: webView)
         lastLoadedHTML = html
         lastAllowsExternalContent = allowsExternalContent
         lastAllowsEmbeddedImages = allowsEmbeddedImages

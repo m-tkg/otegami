@@ -107,12 +107,12 @@ HTML メールの詳細画面には、件名の隣に控えめな "HTML" バッ�
 | --- | --- | --- | --- |
 | リンクを開く方法 | `links.openInAppBrowser` | アプリ内ブラウザ | 「アプリ内ブラウザ」(`SFSafariViewController` を sheet 表示) か「デフォルトブラウザ」(`UIApplication.shared.open`) を選べる。HTML 本文・テキスト本文どちらのリンクにも適用される。 |
 
-既知の制約: この開発機のシミュレータ/ツールチェーン (Xcode-beta.app,
-iOS 27 beta) では、実リンクタップ時に `WKNavigationDelegate
-.decidePolicyFor` が呼ばれないという未解決の環境依存の問題があり、
-自動検証・目視確認とも green にできなかった (詳細は `docs/verify.md`
-の C7 節)。JavaScript は引き続き無効なままなので実害は無いと判断して
-いるが、Xcode 安定版での再検証が今後の課題。
+この開発機のシミュレータ/ツールチェーン (Xcode-beta.app, iOS 27 beta) では
+実リンクタップ時に `WKNavigationDelegate.decidePolicyFor`/`WKUIDelegate
+.createWebViewWith` が一切呼ばれないというプラットフォーム側の異常が
+あったが (実機でも再現確認済み)、`WKWebView.url` の KVO 監視による委譲
+非依存のフォールバック (`HTMLWebViewCoordinator.strayNavigationObservation`)
+で解決済み。詳細・検証結果は `docs/verify.md` の C7 節参照。
 
 ## テンプレート (C8)
 

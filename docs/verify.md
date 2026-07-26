@@ -2644,58 +2644,78 @@ fixtures/21〜24-security-*.eml`、`docs/design-system.md` には無い今回
 での iframe 内 JS 無効化 (上記3参照、設計上は無効化されるはずだが実機の
 目視確認はしていない)。
 
-## iOS シミュレータ検証 (C7: メール内リンクを開くブラウザ) — 既知の未解決事項
+## iOS シミュレータ検証 (C7: メール内リンクを開くブラウザ) — 解決済み
 
 `OtegamiLinkBrowserUITests`。`25-link-browser-test.eml` (実在する
 `https://example.com/` へのリンクを1つ含む通常の HTML メール) を開き、
 リンクをタップして `SFSafariViewController` (既定の「アプリ内ブラウザ」)
-が sheet として提示されることを確認しようとしたテスト。
+が sheet として提示されることを確認する。
 
-**この開発機のシミュレータ/ツールチェーン (Xcode-beta.app,
-iPhoneSimulator27.0 SDK) では自動検証・目視確認とも green にできなかった**
-— 詳しい原因調査の記録:
+### 根本原因 (実機報告を受けた再調査で特定)
 
-- `HTMLWebViewCoordinator.webView(_:decidePolicyFor:decisionHandler:)`
-  (`HTMLMessageView.swift`) は、メールの初回レンダリング
-  (`loadHTMLString`) はもちろん、実際にリンクをタップしたときの
-  ナビゲーションでも**一度も呼ばれない**ことを、`xcodebuild test` のログ
-  でも `xcrun simctl spawn <udid> log stream` でも捕捉できず、最終的に
-  アプリ自身のプロセスから `UserDefaults` に直接書き込んだマーカーを
-  シミュレータ上の実ファイル (`~/Library/Preferences/com.mtkg.otegami
-  .plist`) を直接 `plutil -p` で読んで確認した (`webView.navigationDelegate
-  === self` は `true` — delegate 自体は正しく設定されている)。
-- 対策として async 版の `decidePolicyFor` と `WKUIDelegate
-  .createWebViewWith` を追加で実装してみたところ、**別の退行が発生し
-  メール本文が一切描画されなくなった** (真新しいシミュレータデバイスを
-  作成しても再現したため、環境の汚染ではなくこの2つの追加実装自体が
-  原因と判断)。両方とも削除し、元のシンプルな同期版
-  `decidePolicyFor` のみに戻して本文描画は復旧させた
-  (`git log` のこのコミット周辺を参照)。
-- 結果、**現在の実装 (同期版 `decidePolicyFor` のみ) はメール本文の
-  描画は正しく行うが、実リンクタップ時に `decidePolicyFor` が呼ばれない
-  という当初の問題自体は残ったまま** — タップしたリンクは
-  `HTMLMessageView` 自身の `WKWebView` 内でそのまま (in-place) ナビゲート
-  してしまい、`onOpenLink`/`SFSafariViewController`/デフォルトブラウザの
-  どれも起動しない。実機スクリーンショットで再現を確認済み。
+直前の修正 (`WKUIDelegate.createWebViewWith` の実装 + `allowsLinkPreview =
+false`) の後も、実機で「HTML メール内のリンクだけ反応しない」という報告が
+続いた (プレーンテキストのリンクはブラウザ設定通りに開く)。以前は
+「この開発機のシミュレータ/ツールチェーン固有の未解決事項」として記録
+されていたが、詳細な計装 (`WKWebView.url`/`decidePolicyFor`/
+`createWebViewWith` それぞれに `UserDefaults` マーカー、`WKWebView`
+そのものに素の `UITapGestureRecognizer` を追加) で以下を確定できた:
 
-**セキュリティ上の実害は無いと判断している**: `WKWebpagePreferences
-.allowsContentJavaScript = false` は `WKWebViewConfiguration
-.defaultWebpagePreferences` としてこの `WKWebView` インスタンス全体に
-効く設定であり、`decidePolicyFor` が呼ばれるかどうかとは独立している
-— A9-A3 の再検証 (このファイル内) がこの状態のままでも green だったこと
-で確認済み。つまり最悪のケースでも「タップしたリンク先が、JavaScript
-実行不可のまま同じ `WKWebView` 内に表示される」だけで、スクリプト実行
-やアプリ外への意図しない離脱は起きない。C7 の設定・
-`SFSafariViewController`/デフォルトブラウザの選択ロジック自体
-(`HTMLMessageView.handleLinkTap`) はコードレビュー上正しく、標準的な
-`WKNavigationDelegate` の使い方に従っている — Xcode の安定版
-(非 beta) ツールチェーンでの再検証が今後の課題として残る。
+1. リンクへのタップは `WKWebView` 自身のネイティブ UIKit ビュー階層まで
+   きちんと届いている (直付けした `UITapGestureRecognizer` が正しい画面
+   座標で発火することを確認済み)。
+2. WebKit はそのタップを実際のナビゲーションとして処理している (タップの
+   直後にもう一度 `didFinish` が発火する — このアプリが要求していない
+   コンテンツの読み込みが起きている証拠)。
+3. **にもかかわらず、そのナビゲーションに対して `decidePolicyFor`
+   (`WKNavigationDelegate`) も `createWebViewWith` (`WKUIDelegate`) も
+   一度も呼ばれない** — 両メソッドに計装した状態でメール表示からタップ
+   まで全区間ログを取っても1件もヒットしない。
+
+つまりこの toolchain では、WKWebView がタップされたリンクをそのまま
+in-place でナビゲートしてしまうにもかかわらず、そのナビゲーションを
+本来必ず経由するはずの委譲メソッドが一切呼ばれない、という
+プラットフォーム側の実測済みの異常があった (このアプリの委譲実装自体の
+誤りではない — 標準的な `WKNavigationDelegate`/`WKUIDelegate` の使い方)。
+
+### 修正: `WKWebView.url` の KVO による委譲非依存のフォールバック
+
+`decidePolicyFor`/`createWebViewWith` に一切頼らない検知経路として、
+`WKWebView.url` (KVO 監視可能なプロパティで、委譲メソッドの呼び出しとは
+独立して WebKit が確実に更新する) を `HTMLWebViewCoordinator
+.strayNavigationObservation` で監視するようにした。このアプリが
+`loadHTMLString(_:baseURL: nil)` 以外の読み込みを一切行わない前提から、
+`url` が `http(s)://` になった時点で「委譲を経由せずにナビゲートして
+しまった」ことが確実に分かる — その瞬間に `webView.stopLoading()` +
+メッセージ自身の内容を再読み込みして迷入したナビゲーションを取り消し、
+そのURLを `decidePolicyFor` が呼ばれていれば渡していたはずの
+`onOpenLink` (C7 のブラウザ選択ロジック) にそのまま渡す。
+
+`decidePolicyFor`/`createWebViewWith` が正しく発火する toolchain では
+無害 (正しくキャンセルされたナビゲーションは `url` を外部アドレスに
+更新すること自体がないため、このオブザーバーには何も起きない) — 委譲
+メソッド自体は削除せず、標準的な実装のまま残してある。
+
+### 検証結果
+
+`OtegamiLinkBrowserUITests`/`OtegamiLinkBrowserSettingsUITests`/
+`OtegamiSecurityJavaScriptUITests` (script/onerror/iframe/javascript: リンク
+の4件) がいずれも green。`SFSafariViewController` が実際に sheet として
+提示され、内部の `WebView` が `example.com` を読み込んでいることを
+`app.debugDescription` のアクセシビリティツリーで確認した (`OpenInSafari
+Button`/`Close`/`ReloadButton` 等、実際に機能する SFSafariViewController
+の UI 一式が現れている)。
+
+**副次的に判明した既知の環境差異**: この toolchain (iOS 27 beta) の
+`SFSafariViewController` は dismiss ボタンのラベルが `"Close"` であり、
+以前のテストが期待していた `"Done"`/`"完了"` ではなかった —
+`OtegamiLinkBrowserUITests` は3つのラベルいずれにもマッチするよう修正
+済み。
 
 **確認できたこと**: 設定画面の「リンクを開く方法」ピッカー
 (`settings.links.openInAppBrowserPicker`、iOS のみ) 自体は正しく表示・
-選択できる (別途スクリーンショットで確認済み)。macOS はこの設定を出さず
-常にデフォルトブラウザを開く設計 (`LinkBrowserSettingsStore` のコメント
-参照)。
+選択できる。macOS はこの設定を出さず常にデフォルトブラウザを開く設計
+(`LinkBrowserSettingsStore` のコメント参照)。
 
 ## バグ修正: 実機で「本文の取得に失敗しました: authenticationFailed: 資格情報が見つかりません」
 
