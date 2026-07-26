@@ -3130,3 +3130,80 @@ UID 履歴も疎になりがちなため) この残留物をこれまで偶然�
 発生しなくなる — 空のメールボックスと区別がつかなくなる残留状態を
 別途検出する仕組みは、直すべき実バグが残っていない以上、複雑さに
 見合わないと判断した。
+
+## 実機バグ: Gmail フォルダ名の文字化け (modified UTF-7 未デコード)
+
+**症状** (実機 Gmail、スクリーンショットで確認): ハンバーガーメニューの
+フォルダ一覧で Gmail のフォルダが `[Gmail]/&MFkweTBmMG4w4TD8MOs-` の
+ように生の modified UTF-7 (RFC 3501 §5.1.3) のまま表示されていた
+(`&MFkweTBmMG4w4TD8MOs-` = 「すべてのメール」)。
+
+**原因**: `MailTransport.MailboxInfo.displayPath` はドキュメント上
+「(modified UTF-7) デコード済みの表示用パス」という契約だったが、
+`MailCoreIMAPSession.mailboxInfo(from:)` はデリミタの正規化
+(`,`/`.` → `/`) しかしておらず、デコード自体が未実装だった。
+dev/mailstack の Dovecot フィクスチャが ASCII のみのフォルダ名しか
+使っていなかったため (ASCII のみの modified UTF-7 は恒等変換なので
+バグが顕在化しない)、実機の Gmail アカウントに接続するまで発覚し
+なかった。
+
+**修正**:
+- `OtegamiCore` (Linux 互換の純ロジック層 — `server/otegami-relay` が
+  Linux 上でこのターゲットをリンクするため、Foundation 以上の依存
+  ゼロを維持) に `ModifiedUTF7.decode(_:)`/`.encode(_:)` を実装
+  (`packages/OtegamiKit/Sources/OtegamiCore/ModifiedUTF7.swift`)。
+  MailCore2 (ピン留めリビジョン `44c63329df67e9a0d597627edbebe65002d3fcd8`)
+  自身にも同等実装 (`mailcore::String::mUTF7DecodedString()`、
+  CoreFoundation の `kCFStringEncodingUTF7_IMAP` — Apple のヘッダに
+  「RFC3501 の IMAP フォルダ変種」と明記された公開定数 — を利用)
+  があることを確認し、mailcore2 自身のユニットテスト fixture
+  (`"~peter/mail/&U,BTFw-/&ZeVnLIqe-"` → `"~peter/mail/台北/日本語"`)
+  を独立したオラクルとしてこちらの実装の正しさの裏取りに使ったが、
+  採用は見送った: (1) その C++ メソッドは mailcore2 の Objective-C/
+  Swift ラッパー層 (このパッケージが実際にリンクする `MailCore`
+  プロダクト) には一切re-exportされておらず、mailcore2 自身の内部
+  テストターゲットからしか呼べない、(2) `kCFStringEncodingUTF7_IMAP`
+  は CoreFoundation = Apple 専用であり、`OtegamiCore` の Linux 互換性
+  制約と矛盾する。この2点から、依存ゼロの自前実装を選んだ。
+- `MailCoreIMAPSession+Mapping.mailboxInfo(from:)` で `displayPath` を
+  `ModifiedUTF7.decode(path)` してからデリミタを `/` に正規化する
+  よう変更 (`path` — IMAP コマンドに使う raw パス — は無変更)。
+- `AppDatabase` に `v21` マイグレーションを追加し、既存の `mailbox`
+  行の `displayPath` を `path`/`delimiter` から再デコードして修復。
+  実際には `AccountSyncer.upsertMailboxes` が毎回の `listMailboxes()`
+  で `displayPath` を無条件に上書きするため次回同期で自己修復は
+  されるが、次回同期完了までユーザーが文字化けを見続けずに済むよう
+  即時修復も入れた。
+- UI 側 (`FolderListSheet`/`SidebarView`/`MailboxSyncFailuresView`) は
+  調査の結果すでに全箇所 `displayPath` を使っており (`path` の直接
+  表示は無かった)、変更不要だった。
+
+**テスト**:
+- `OtegamiCoreTests.ModifiedUTF7Tests`: 実際の Gmail アカウントで
+  確認された7つのシステムフォルダ名 (すべてのメール/ゴミ箱/
+  スター付き/送信済みメール/迷惑メール/下書き/重要) の実エンコード値
+  での decode、`&-` リテラル、ASCII 素通し、不正入力 (不正文字/
+  UTF-16 奇数バイト数/未終端シーケンス/末尾の裸の `&`) が
+  クラッシュせず安全にフォールバックすること、encode→decode の
+  ラウンドトリップ、encode が実測値と完全一致すること、mailcore2
+  自身のテスト fixture、サロゲートペア (絵文字) を検証。
+- `OtegamiStoreTests.AppDatabaseTests.v21RepairsDisplayPath`:
+  マイグレーションを `v20` まで適用した DB に修正前の壊れた
+  `displayPath` を直接 INSERT し、残りのマイグレーション (`v21`) を
+  流して正しくデコードされることを確認。
+- `MailTransportMailCoreTests.MailCoreIMAPSessionIntegrationTests
+  .listsJapaneseNamedMailboxDecoded` (opt-in, `OTEGAMI_TEST_IMAP_HOST`
+  必要): `doveadm mailbox create` で日本語名フォルダ「テスト用
+  フォルダ」を実際の dev mailstack Dovecot に作成し、
+  `MailCoreIMAPSession.listMailboxes()` が返す `displayPath` が
+  正しくデコードされていること (`path` は生の modified UTF-7 のまま
+  で `displayPath` と異なること) を実サーバー相手に確認。
+- `make test`: green。同一実行内で `FoundationModelsTranslationService`
+  の統合テスト (オンデバイスモデル呼び出し) が `LanguageModelError
+  error -1` で5件失敗していたが、これは翻訳機能を並行編集していた
+  別セッションのスコープであり、このタスクの変更 (`OtegamiCore`/
+  `MailTransportMailCore`/`OtegamiStore`) とは無関係なファイルの
+  問題 — 対象範囲外として扱った。
+- `make mac` / `make ios` / `make ios-device`: いずれも green。
+  `make ios-device` のビルド成果物を `xcrun devicectl device install
+  app` で実機 (iPad、ペア済み) に転送し、インストール成功を確認した。

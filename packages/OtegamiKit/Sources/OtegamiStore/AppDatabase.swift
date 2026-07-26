@@ -661,6 +661,46 @@ extension AppDatabase {
             try db.create(index: "searchHistory_on_updatedAt", on: "searchHistory", columns: ["updatedAt"])
         }
 
+        // v21 (Gmail フォルダ名文字化け修正): `mailbox.displayPath` was meant
+        // to hold RFC 3501 modified-UTF-7-decoded text (`MailboxInfo
+        // .displayPath`'s doc comment always documented this), but the
+        // decode step was never implemented until `ModifiedUTF7`/this
+        // migration — every `displayPath` written before now is actually
+        // the raw encoded path (e.g. Gmail's "[Gmail]/&MFkweTBmMG4w4TD8MOs-"
+        // instead of "[Gmail]/すべてのメール"). Undetected during
+        // development because dev/mailstack's Dovecot fixtures only ever
+        // used plain-ASCII folder names — modified UTF-7 of pure ASCII text
+        // is the identity transform, so `ModifiedUTF7.decode` silently
+        // no-opped there and the bug only showed up against real Gmail
+        // accounts (`docs/verify.md`'s Gmail フォルダ名文字化け entry).
+        //
+        // `path` (the raw IMAP identifier used in SELECT/FETCH) was never
+        // wrong and needs no repair — only `displayPath` is recomputed
+        // here, from `path`/`delimiter`, using the exact same logic
+        // `MailCoreIMAPSession.mailboxInfo(from:)` now applies on every
+        // future `listMailboxes()` pass (which would otherwise
+        // self-heal this on the next successful sync anyway — see
+        // `AccountSyncer.upsertMailboxes`'s unconditional `displayPath`
+        // overwrite — but repairing it immediately means a user isn't
+        // staring at mojibake folder names until their next sync
+        // completes).
+        migrator.registerMigration("v21") { db in
+            let mailboxes = try MailboxRecord.fetchAll(db)
+            for var mailbox in mailboxes {
+                let decodedPath = ModifiedUTF7.decode(mailbox.path)
+                let delimiter = mailbox.delimiter
+                let displayPath: String
+                if let delimiter, delimiter != "/" {
+                    displayPath = decodedPath.replacingOccurrences(of: delimiter, with: "/")
+                } else {
+                    displayPath = decodedPath
+                }
+                guard displayPath != mailbox.displayPath else { continue }
+                mailbox.displayPath = displayPath
+                try mailbox.update(db, columns: [Column("displayPath")])
+            }
+        }
+
         return migrator
     }
 }

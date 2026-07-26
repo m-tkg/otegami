@@ -113,6 +113,47 @@ struct AppDatabaseTests {
         #expect(fetched?.toAddresses.first?.address == "test1@otegami.test")
     }
 
+    @Test("v21 migration repairs displayPath values written before ModifiedUTF7 decoding existed")
+    func v21RepairsDisplayPath() throws {
+        // Migrates only up to v20 first, then hand-inserts a `mailbox` row
+        // shaped like what pre-fix `AccountSyncer.upsertMailboxes` actually
+        // wrote — `displayPath` holding the *raw* modified-UTF-7 path,
+        // exactly like `MailCoreIMAPSession.mailboxInfo(from:)` produced
+        // before it started calling `ModifiedUTF7.decode` — so this test
+        // exercises the migration's repair logic against genuinely
+        // pre-migration data, not just a record built with today's
+        // (already-correct) `MailboxRecord` initializer.
+        let dbQueue = try DatabaseQueue()
+        let migrator = AppDatabase.migrator
+        try migrator.migrate(dbQueue, upTo: "v20")
+
+        let account = AccountRecord(
+            displayName: "Test", email: "t@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "t@x.test"
+        )
+        try dbQueue.write { db in
+            try account.insert(db)
+            try db.execute(
+                sql: """
+                    INSERT INTO mailbox
+                        (accountId, path, displayPath, delimiter, role, attributesRaw,
+                         uidValidity, uidNext, highestModSeq, messageCount)
+                    VALUES (?, ?, ?, ?, 'all', 0, 0, 0, 0, 0)
+                    """,
+                arguments: [
+                    account.id, "[Gmail]/&MFkweTBmMG4w4TD8MOs-", "[Gmail]/&MFkweTBmMG4w4TD8MOs-", "/",
+                ]
+            )
+        }
+
+        try migrator.migrate(dbQueue)
+
+        let displayPath = try dbQueue.read { db in
+            try String.fetchOne(db, sql: "SELECT displayPath FROM mailbox WHERE accountId = ?", arguments: [account.id])
+        }
+        #expect(displayPath == "[Gmail]/すべてのメール")
+    }
+
     @Test("round-trips a messageTranslation row, including its JSON-encoded paragraphs")
     func roundTripsMessageTranslation() throws {
         let database = try AppDatabase.makeInMemory()

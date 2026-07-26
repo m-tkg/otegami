@@ -210,6 +210,39 @@ struct MailCoreIMAPSessionIntegrationTests {
         #expect(data == Self.expectedPNGBytes)
     }
 
+    @Test("lists a Japanese-named mailbox with a correctly decoded displayPath")
+    func listsJapaneseNamedMailboxDecoded() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+
+        // `doveadm mailbox create` takes the mailbox name as plain UTF-8 on
+        // the command line and is responsible for whatever on-disk/on-wire
+        // encoding Dovecot uses internally — this test doesn't pre-encode
+        // anything, so a correctly-decoded `displayPath` here demonstrates
+        // the full round trip: Dovecot encodes "テスト用フォルダ" to
+        // modified UTF-7 for the real `LIST` response, and
+        // `MailCoreIMAPSession.listMailboxes()` (via `ModifiedUTF7.decode`
+        // in `mailboxInfo(from:)`) decodes it back — not just that this
+        // decoder agrees with itself on a hand-picked fixture (see
+        // `OtegamiCoreTests.ModifiedUTF7Tests` for those).
+        let mailboxName = "テスト用フォルダ"
+        try DoveadmHelper.createMailbox(user: env.username, mailboxPath: mailboxName)
+        defer { try? DoveadmHelper.deleteMailbox(user: env.username, mailboxPath: mailboxName) }
+
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+
+        let mailboxes = try await session.listMailboxes()
+        let mailbox = try #require(mailboxes.first { $0.displayPath == mailboxName })
+        // The raw `path` is whatever modified-UTF-7 Dovecot actually put on
+        // the wire — asserting it's neither empty nor already equal to the
+        // decoded name confirms this fixture is exercising the encode/
+        // decode round trip rather than accidentally matching a mailbox
+        // whose name happened to be pure ASCII.
+        #expect(!mailbox.path.isEmpty)
+        #expect(mailbox.path != mailboxName)
+    }
+
     @Test("reports server capabilities without throwing")
     func capabilities() async throws {
         let env = try #require(TestIMAPEnvironment.primary)

@@ -108,11 +108,19 @@ extension MailCoreIMAPSession {
             ? nil
             : String(UnicodeScalar(UInt8(bitPattern: delimiterScalar)))
 
+        // RFC 3501 mailbox paths are modified-UTF-7 encoded (e.g. Gmail's
+        // "&MFkweTBmMG4w4TD8MOs-" for "すべてのメール") — decode before
+        // normalizing the hierarchy delimiter to "/". The delimiter itself
+        // is always plain printable ASCII (never part of an encoded shift
+        // run), so decoding first and replacing the delimiter after
+        // produces the same segmentation as decoding each path component
+        // individually, with less code.
+        let decodedPath = ModifiedUTF7.decode(path)
         let displayPath: String
         if let delimiter, delimiter != "/" {
-            displayPath = path.replacingOccurrences(of: delimiter, with: "/")
+            displayPath = decodedPath.replacingOccurrences(of: delimiter, with: "/")
         } else {
-            displayPath = path
+            displayPath = decodedPath
         }
 
         let flags = folder.flags
