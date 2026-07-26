@@ -254,6 +254,46 @@ DB ファイルを直接読むと INSERT した行を含めて正しい内容が
   自動検証スクリプト (単一 `xcodebuild test` 呼び出し内で完結するもの)
   には影響しない。
 
+## 開発環境: `xcodebuild test` 実行中にアプリがバックグラウンドへ遷移し、
+## C7 送信キャンセルの opQueue リプレイが取り残されることがある (原因未特定)
+
+**症状**: 新画面構成バッチの `scripts/verify-ios-m5.sh` 回帰実行中に発見。
+Phase 2 (`OtegamiM5ComposeSendUITests` — 作成→送信、Composer シートの
+dismiss を確認して即座にテストメソッドが返る) が完了した直後、
+Simulator のホーム画面が表示される (アプリがバックグラウンドへ遷移した)
+ことをスクリーンショットで確認した。C7 送信キャンセル
+(`SendCancelSettingsStore` 既定5秒のカウントダウン) の途中でこれが
+起きると、`RootView.handleScenePhaseChange` の `.background` 分岐が
+`PendingSendCoordinator.finalizeNow()` を呼び `beginBackgroundTask` 付きで
+即座に `replayOpQueue` を試みるはずだが、実際には `opQueue` の `send` 行が
+`attempts=0` のまま (＝一度もリトライされずに) 何分も残り続けることを、
+App Group コンテナ内の `otegami.sqlite` を `sqlite3` で直接読んで確認した
+(DB ファイル自体は正しく開けており、上記の「App Group DB が読めなくなる」
+節とは別の症状)。**次にアプリをフォアグラウンドへ戻した瞬間
+(`.active` 経由の `syncAllAccountsOnce()`) に初めて実際に送信され、
+数秒で Mailpit に届くことも確認済み** — データ消失はなく、あくまで
+「バックグラウンドで止まったまま次のフォアグラウンド化を待つ」状態。
+
+- **このバッチのコード変更が原因ではない**: `PendingSendCoordinator`/
+  `OpQueueProcessor`/`RootView` のシーンフェーズ処理は一切変更していない
+  (今回のバッチはハンバーガーメニュー/検索/フッターツールバーの UI 層の
+  変更のみ)。C7 自体はこのバッチ以前から存在する機能で、`docs/verify.md`
+  には C7 導入後に `verify-ios-m5.sh` を通し直した記録が見当たらず、
+  このバッチの回帰実行が (偶然にも) この経路を最初に踏んだ可能性がある。
+  Simulator のバックグラウンド実行タイムアウトが実機より短い/不安定と
+  いう既知の一般的な制限 (M9「シミュレータは実 APNs デバイストークンを
+  発行しない」と同種) の一種と見ているが未確証。
+- **対応手順 (次にこの手順を検証する人向け)**: 実機での再現有無の確認
+  (Simulator 固有かどうかの切り分け)。再現するなら、
+  `beginBackgroundTask` の猶予時間内に `OpQueueProcessor.replay` の
+  IMAP/SMTP 接続が実際に開始されているか (`MCOConnectionLogger` 等で
+  ワイヤレベルの挙動を見る、`docs/verify.md` の M5 節が使った手法) から
+  切り分けるとよい。影響は「送信直後にアプリが素早くバックグラウンドへ
+  回るタイミング」に限られ、通常の利用 (送信後もアプリを見ている、5秒の
+  カウントダウンが終わるまで待つ) では踏まない。詳細は
+  `docs/design-system.md`「新画面構成」節の「検証で見つかった既存の
+  環境依存の落とし穴」参照。
+
 ## 公開時に必要な対応 (まとめ)
 
 以下は「今すぐ開発を止める理由」ではなく、実際に公開・配布する段になったら

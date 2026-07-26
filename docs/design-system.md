@@ -505,3 +505,197 @@ ForEach { 複数行の HStack/VStack } } }` が1つの `body` 式に積み上が
 - シミュレータの `.app` プロセスから `FoundationModels` を呼んだ際の
   `LanguageModelError -1` の原因調査 (実機での再検証、または Apple の
   リリースノート/フォーラムでの既知の制限の有無確認)。
+
+## 新画面構成: 下部タブバー廃止・ハンバーガーメニュー・検索強化・
+メール本文フッターツールバー
+
+design-phase-2/3 で確定した 1a (下部タブバー3つ) を、ユーザー要望により
+ハンバーガーメニュー＋ヘッダ検索ボタン＋メール本文画面のフッターツール
+バーへ置き換えたバッチの記録。iOS のみ (macOS の3ペインは無変更)。
+
+### 1. ハンバーガーメニュー
+
+`OtegamiTabRootView`/`MailTabView`/`SettingsTabView`/`SearchTabView` を
+`OtegamiRootView`/`MailScreenView`/`SettingsSheetView`/`SearchScreenView`
+に再編した。iOS の唯一の常設画面は `MailScreenView` で、
+`HamburgerMenuContainer` (leading-edge のサイドドロワー、スクリム tap
+またはドラッグで閉じる) が `FolderListSheet` の中身 (統合受信トレイ／
+アカウント別ツリー／下書き／送信待ち／同期エラー) を包む。設定は
+`FolderListSheet` の一番下のセクション (`settingsSection`) から
+`SettingsSheetView` をシート表示する。
+
+- **シートではなくドロワーにした理由**: Gmail 等の主要メールアプリの
+  ハンバーガーメニューは leading-edge のドロワーが通例。加えて、
+  `FolderListSheet` の各行が「別のシートを開く」導線を持つため、この
+  メニュー自体がシートのままだと「シートからシートを開く」というこの
+  アプリで既知の壊れ方 (design-phase-2 以前から) を踏む — ドロワー化した
+  ことで `MailScreenView.presentAfterClosingMenu(_:)` はドロワーを閉じて
+  即座に次のシートを立てるだけの単純な実装で済むようになった
+  (旧 `pendingPostFolderAction` + `onDismiss` の間接呼び出しが不要に)。
+- **エッジスワイプで「開く」ジェスチャーは実装していない**: この
+  アプリの `NavigationStack` の戻るジェスチャー (画面端からのスワイプ)
+  との競合リスクがあり、ハンバーガーボタン自体が確実な開閉手段として
+  常にあるため、「閉じる」方向のスワイプ (ドラッグ追従 + 閾値) だけを
+  実装した。開くのは常にボタンタップ。
+
+### 2. 検索の移設と強化
+
+`SearchScreenView` (旧 `SearchTabView`) はヘッダの検索ボタン
+(`mail.searchButton`) からシート表示する。追加した要素:
+
+- **アカウントの絞り込み** (`SearchAccountFilterChipRow`、2アカウント
+  以上のときだけ表示 — 1アカウントのみなら「全部」チップが常に同じ
+  1件を指すだけで冗長、という 1d/`showsAccountAccent` と同じ判断)。
+- **検索演算子** `from:`/`to:`/`cc:`/`subject:` —
+  `SearchQuery.parse(_:)` がトークンを演算子とフリーテキストに分割し、
+  `SearchQuery.threadSummaries(parsed:scope:limit:db:)` が両者を
+  `Set<Int64>` の積集合として組み合わせる (AND 条件)。`message.toText`/
+  `.ccText` (v18 migration) は `fromText` (v7) と同じ理由でプレーン
+  テキストミラーとして追加した — JSON `.blob` 列を直接 `LIKE` できない
+  ため。発見可能性は検索フィールドのプレースホルダ
+  ("差出人・件名・本文 (from:/to:/subject: も使えます)") で担保した。
+- **検索履歴** (`SearchHistoryQuery`/`SearchHistoryRecord`, v20
+  migration) — 直近 `SearchHistoryQuery.maxEntries` (20) 件を新しい順に
+  表示、タップで再検索、スワイプで個別削除、「履歴をすべて削除」で
+  一括削除。同じクエリ文字列を再検索すると (`UNIQUE` 制約 +
+  delete-then-reinsert) 重複を作らず先頭に戻る — `updatedAt` だけの
+  `UPDATE` ではなく削除→再挿入にしたのは、`id DESC` を `updatedAt DESC`
+  の次点タイブレークにして「同じ `Date()` tick に収まった2回の記録」でも
+  決定的な順序になるようにするため (`SearchHistoryQuery.record(_:db:)`
+  のドキュメントコメント参照 — テストで実際に踏んだ)。
+
+macOS の `MessageListView` 自身の `.searchable` インライン検索は
+変更していない (`SearchQuery.threadSummaries(query:...)` を経由するため
+演算子は自動的に使えるようになっているが、アカウントチップ・履歴 UI は
+iOS の `SearchScreenView` 専用のまま)。
+
+### 3. メール本文画面のフッターツールバー
+
+`ThreadDetailView` に `MessageDetailFooterToolbar`
+(`.safeAreaInset(edge: .bottom)`) を新設し、`MessageView` にあった
+旧「返信/全員に返信/英語で返信を下書き」ボタン行を撤去した。対象は
+常にスレッド内の**最新メッセージ** (`ThreadDetailView.newestMessage`) —
+macOS の ⌘R (`RootView.replyToSelectedThread()`) が既に使っていた
+「展開されている最新メッセージに返信する」という規則をそのまま踏襲した。
+
+- **返信**: `Menu` (返信/全員に返信の2択)。
+- **転送**: 新規実装。`ComposerLaunchPayload.Kind.forward` →
+  `ComposerView.prefillForward(originalMessageId:)`。件名に `Fwd: ` を
+  付与、`> ` 引用 (返信と同じ `quotedBody(from:)`) の前に
+  「---------- 転送されたメッセージ ----------」ヘッダーブロックを挿入。
+  宛先 (To/Cc) は空のまま — 転送は「誰に送るか」をユーザーが必ず選び
+  直す操作という判断。`inReplyToMessageId`/`references` は設定しない
+  (転送は新しい会話として扱う)。**添付ファイルは引き継ぐ** —
+  `loadServerDraft(messageId:)` と同じ `syncCoordinator.fetchAttachment`
+  経路で、本文同様ネットワーク越しに取得してから引き継ぐ。一部だけ
+  取得できなかった場合は本文末尾にその旨を追記する (「全く引き継がない」
+  ではなく「引き継げなかった分だけ明示する」形を選んだ — 指示の
+  「引き継がないなら本文にその旨表示」を実用性寄りに解釈した判断)。
+- **検索**: `from:<最新メッセージの差出人アドレス>` をプリセットした
+  `SearchScreenView` を開く。**iOS のみ配線** — macOS の
+  `detailColumn` (`OtegamiApp.swift`) には渡していない。理由: macOS の
+  検索は `MessageListView` 自身の `.searchable` (`contentColumn` 側の
+  状態) であり、`detailColumn` から直接書き換える手段が今のところ無い
+  ため。`onSearchFromSender` が `nil` のときツールバーは検索アイコン
+  自体を出さない。
+- **情報**: `MessageHeaderInfoView` — Message-ID/In-Reply-To/References/
+  From/To/Cc/Bcc/Reply-To/件名/日時/Content-Type/メールボックスパス/UID/
+  サイズを表示。**生ヘッダ (RFC822 の `HEADER` パート全体、Received
+  チェーンを含む) は表示しない** — このアプリは受信メールの生ヘッダを
+  一度も保存しておらず (`MessageBodyRecord` は本文のみ)、
+  `MailTransport`/`MailCoreIMAPSession` にも生ヘッダだけを取得する API
+  が無い。新設するには IMAP `FETCH BODY[HEADER]` の新しい往復を
+  transport 層から通す必要があり、このバッチの他の作業に対して
+  不釣り合いなコストと判断し見送った。ローカル DB に既にある envelope
+  情報の表示に留め、画面内にその旨の注記を出す。次フェーズの課題として
+  ここに記録する。
+- **「…」メニュー**: ミュート/ミュート解除、ピン留め/解除、未読にする、
+  アーカイブ、迷惑メールにする、英語で返信を下書き (翻訳が使える端末の
+  み)、ツールバーをカスタマイズ、削除。これらのスレッド操作
+  (`ThreadDetailView` の "MARK: - 新画面構成 (3): スレッド操作" 節) は
+  `MessageListView` の同等のスワイプ/コンテキストメニュー実装
+  (`toggleRead`/`archiveThread`/`junkThread`/`togglePin`/`deleteThread`)
+  を再利用せず、**独立した実装**にした — `MessageListView` 側は
+  undo トースト (`scheduleUndo`)・検索結果配列 (`searchResults`) という
+  そのビュー固有の状態と密結合しており、無理に共有するとこの画面が
+  それらの状態を持つ理由のない依存関係を抱えることになる。
+  `ThreadQuery`/`OpQueue` を直接読み書きする同じパターンを独立に実装する
+  のは、macOS の ⌘⌫ (`RootView.deleteSelectedThread()`) が design-phase-2
+  以前から既に採用している「コードは共有しないが振る舞いはブレない」
+  という前例に倣った判断。**このバッチではアーカイブ/迷惑メール/削除に
+  undo トーストを出さない** — 実行後 `dismiss()` で一覧へ戻ること自体が
+  即座のフィードバックになる、という簡略化。
+- **ミュート**: `ThreadRecord.isMuted` (v19 migration) +
+  `ThreadQuery.setMuted(threadId:muted:db:)`。**ローカル限定の表示意図
+  フラグであり、プッシュ通知は抑制しない** — `NotificationService`
+  Extension は otegami-relay からの `mutable-content` プッシュを受けて
+  *その場で IMAP 経由の envelope 取得* をトリガに動くだけで、relay
+  自体はスレッドという概念もミュートという概念も持たない (メールボックス
+  単位で「新着があるか」しか watch しない)。ローカル専用のミュート状態を
+  relay に伝える経路 (クライアント→relay の同期チャネル) はこのアプリに
+  存在せず、新設するのはこのバッチの範囲を大きく超える。一覧側の
+  控えめ表示 (ダイム表示) は本バッチの範囲内で実装したが、通知抑制は
+  次フェーズの課題として残す。
+- **ツールバーのカスタマイズ**: `MessageToolbarSettingsStore`
+  (`UserDefaults` にカンマ区切りで永続化、`SwipeActionSettingsStore` と
+  同じ「素の `UserDefaults` キーの集まり」方針) + `MessageToolbarSettingsView`
+  (常時編集モードの `List`/`.onMove`)。5アクション
+  (`MessageToolbarAction.allCases`) は常にすべて表示、並び順だけを
+  変更できる — 有効/無効の概念は無い (「その他」を含めた自由な並び替え
+  も許可している。オーバーフローとして固定位置にする強制はしていない)。
+
+### 検証で見つかった既存の環境依存の落とし穴 (このバッチで新たに確認)
+
+- **`xcodebuild test -only-testing:` の1つのテストクラスが終わった後、
+  アプリがバックグラウンドへ遷移することがある** —
+  `scripts/verify-ios-m5.sh` の Phase 2/3 間 (compose→send の直後に
+  Mailpit へ届くのを host 側でポーリングする) でこれを実機で確認した。
+  C7 送信キャンセル (`SendCancelSettingsStore` 既定5秒) のカウントダウン
+  中にこの背景遷移が起きると、`PendingSendCoordinator.finalizeNow()` が
+  `beginBackgroundTask` 付きで即座に `replayOpQueue` を試みるはずだが、
+  実際には `opQueue` の `send` op が `attempts=0` のまま (＝一度も
+  リトライされずに) 何分も溜まり続け、**次にアプリをフォアグラウンドへ
+  戻したとき (`RootView.handleScenePhaseChange` の `.active` 経由の
+  `syncAllAccountsOnce()`) に初めて実際に送信された**ことを、
+  App Group 内の `otegami.sqlite` を直接 `sqlite3` で確認して裏付けた
+  (`opQueue`/`outboxMessage` の行が残っていること、フォアグラウンド化後
+  数秒で Mailpit に届くことの両方を確認)。**このバッチの UI 変更が原因
+  ではない** — `PendingSendCoordinator`/`OpQueueProcessor`/
+  `RootView` のシーンフェーズ処理は一切変更していない。Simulator の
+  バックグラウンド実行タイムアウトが実機より短い/不安定という既知の
+  制限 (M9 の「シミュレータは実 APNs デバイストークンを発行しない」と
+  同種の Simulator 固有の限界) の一種と見られるが、確証は得られていない
+  ため次フェーズの調査課題として記録する。**この不具合は本バッチの
+  コード変更を一切必要としない** — `docs/verify.md` へも記録した。
+- **`screenshot_mid_test` 方式のタイミング window が構造変更でずれる**:
+  検索/設定がタブの瞬時切り替えからシート表示 (アニメーション込み) に
+  変わったことで、`verify-ios-m7.sh`/`verify-ios-m4.sh` の固定 `sleep N`
+  ウィンドウが軒並み早すぎ、目的の画面 (検索結果、スレッド詳細) では
+  なく直前の状態 (検索履歴、メール一覧) を捉え続けた。両スクリプトの
+  ウィンドウを実測ベースで調整し、`docs/verify.md`/このファイルに記録
+  した — この手法自体がタイミングに脆弱であることは M6 時点から
+  既知の制約 (`docs/verify.md`) であり、今後も画面遷移の重さが変わる
+  たびに再調整が必要になりうる。
+
+### 検証済み
+
+`make test`/`make ios`/`make mac` すべて green。
+`scripts/verify-ios-m1.sh`/`verify-ios-m4.sh`/`verify-ios-m7.sh` を
+実際の dev mailstack に対して実行し green (`verify-ios-m5.sh` は
+Phase 1/2 の UI フロー — SMTP アカウント追加・作成・送信操作自体 — は
+green、Phase 3 以降の Mailpit 到達確認は上記の背景遷移タイミング問題で
+不安定)。ハンバーガーメニュー・アカウント絞り込みチップ・検索演算子の
+プレースホルダ・検索履歴・スレッド詳細のフッターツールバーは実機
+スクリーンショットで目視確認済み。新規 XCUITest は追加せず、既存の
+壊れたテスト (`tabBars`/`mail.folderTitleButton`/`messageDetail
+.replyButton` 等に依存していたもの) を新構成に合わせて更新した
+(`apps/Otegami/UITests/` 配下、詳細は該当コミット参照)。
+
+### 次フェーズへの申し送り
+
+- メール本文画面「情報」の生ヘッダ表示 (要 IMAP `FETCH BODY[HEADER]`
+  API の新設)。
+- スレッドミュートによるプッシュ通知抑制 (要 relay 側のミュート対応、
+  クライアント→relay 同期チャネルの新設)。
+- `PendingSendCoordinator`/`OpQueueProcessor` の Simulator 固有と見られる
+  バックグラウンド送信タイミング不具合の原因調査 (実機での再検証)。

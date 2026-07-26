@@ -9,10 +9,14 @@
 iOS UI の構造・情報設計は [`design_handoff_ios_mail/README.md`](design_handoff_ios_mail/README.md)
 (Claude Design 作成のハンドオフ) を参照すること。**採用済みの選択**:
 
-- **情報設計: 1a** (統合受信トレイ＋アカウント絞り込みチップ＋下部タブ
-  バー3つ)。iOS のみ。**macOS は現状の `NavigationSplitView` 3ペインを
-  維持する** — 1a はコンパクト幅向けの設計であり、Mac の広い画面には
-  適用しない。
+- **情報設計: 1a** (統合受信トレイ＋アカウント絞り込みチップ)。iOS のみ。
+  **macOS は現状の `NavigationSplitView` 3ペインを維持する** — 1a は
+  コンパクト幅向けの設計であり、Mac の広い画面には適用しない。
+  **下部タブバー3つ (メール/検索/設定) は新画面構成で廃止済み** — 左上の
+  ハンバーガーメニュー (`OtegamiRootView`/`MailScreenView`/
+  `HamburgerMenuContainer`) がフォルダ切替＋設定を、ヘッダの検索ボタン
+  (`SearchScreenView`) が検索を担う。詳細・経緯は `docs/design-system.md`
+  の「新画面構成」節参照。
 - **一覧レイアウト: 1d** (標準3行＋アカウント色の左罫線3px)
 - **操作モデル: 1g + 1h + 1i** (スワイプ割り当て／長押し一括選択／詳細
   画面の翻訳インタラクション)

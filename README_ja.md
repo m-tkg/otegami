@@ -144,15 +144,20 @@ UI は一から見直した独自のデザインを採用しています（元�
 結果として確定したトークン体系は
 [`docs/design-system.md`](docs/design-system.md) を参照）: フラット・
 角丸0・2pt の罫線、英字は Archivo・日本語はシステムフォント、薄い水色
-基調のライトテーマとそれに対応するダークテーマ。iOS は下部タブバー
-（メール/検索/設定）＋統合受信トレイ＋アカウント絞り込みチップ＋ナビ
-タイトルから開くフォルダシートという構成、macOS は画面の広さに対して
-コンパクト向けレイアウトが合わないため、従来通りの3ペイン
-`NavigationSplitView` を維持しています。コンポーネント/トークンの全体像
-は [`docs/design-system.md`](docs/design-system.md) にまとめてあります。
+基調のライトテーマとそれに対応するダークテーマ。iOS は統合受信トレイ＋
+アカウント絞り込みチップの常設1画面＋左上のハンバーガーメニュー
+（フォルダ切替と設定）＋ヘッダの検索ボタン（アカウント絞り込みチップ・
+`from:`/`to:`/`cc:`/`subject:` 検索演算子・検索履歴を備えた検索画面）＋
+メール本文画面下部の固定ツールバー（返信/転送/差出人で絞り込む検索/
+メール情報/その他 — ミュート・ピン留め・アーカイブ・迷惑メール・削除・
+ツールバーの並び替え）という構成、macOS は画面の広さに対してコンパクト
+向けレイアウトが合わないため、従来通りの3ペイン `NavigationSplitView`
+を維持しています。コンポーネント/トークンの全体像は
+[`docs/design-system.md`](docs/design-system.md) にまとめてあります。
 
 <p align="center">
-  <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="アカウント横断検索とフィルタチップ（iOS）">
+  <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="アカウント横断検索・フィルタチップ・検索演算子（iOS）">
+  <img src="docs/assets/screenshot-ios-thread-toolbar.png" width="32%" alt="メール本文画面のフッターツールバー: 返信・転送・検索・情報・その他（iOS）">
   <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="設定: アカウント・スワイプ操作・翻訳（iOS）">
 </p>
 

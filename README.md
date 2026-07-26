@@ -151,14 +151,19 @@ for the original wireframe options and
 [`docs/design-system.md`](docs/design-system.md) for the resulting token
 system): flat, zero-corner-radius, 2pt rules, Archivo for Latin text with
 system fonts for Japanese, a pale-blue-on-white palette with a matching
-dark theme. iOS uses a bottom tab bar (Mail / Search / Settings) with a
-unified inbox, account filter chips, and a folder sheet reached from the
-nav title; macOS keeps its three-pane `NavigationSplitView` — the compact
-layout doesn't fit the wider screen. Full component/token reference in
-[`docs/design-system.md`](docs/design-system.md).
+dark theme. iOS has a single always-visible mail screen (unified inbox +
+account filter chips) with a hamburger-menu drawer for folder navigation
+and settings, a header search button that opens a dedicated search screen
+(account chips, `from:`/`to:`/`cc:`/`subject:` search operators, search
+history), and a fixed footer toolbar on the message screen (reply/forward/
+search-from-sender/message info/more — mute, pin, archive, junk, delete,
+toolbar reordering); macOS keeps its three-pane `NavigationSplitView` — the
+compact layout doesn't fit the wider screen. Full component/token
+reference in [`docs/design-system.md`](docs/design-system.md).
 
 <p align="center">
-  <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="Cross-account search with filter chips (iOS)">
+  <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="Cross-account search with account filter chips and search operators (iOS)">
+  <img src="docs/assets/screenshot-ios-thread-toolbar.png" width="32%" alt="Message screen with the footer toolbar: reply, forward, search, info, more (iOS)">
   <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="Settings: accounts, swipe actions, translation (iOS)">
 </p>
 

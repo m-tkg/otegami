@@ -216,3 +216,18 @@ iOS 27 beta) では、実リンクタップ時に `WKNavigationDelegate
 `PushSettingsStore.swift` (Keychain 併用、`push.*` キー群)。設定 →
 「プッシュ通知」から有効化。詳細は
 [docs/relay-deployment.md](relay-deployment.md)。
+
+## メール本文フッターツールバーの並び順 (新画面構成) — iOS のみ
+
+`MessageToolbarSettingsStore.swift`。メール本文画面 (`ThreadDetailView`)
+下部のフッターツールバーに並ぶ5アイコン (返信/転送/検索/情報/その他) の
+順序。メール本文画面の「…」メニュー →「ツールバーをカスタマイズ」
+(`MessageToolbarSettingsView`、常時編集モードの並び替えリスト) から
+変更できる。
+
+| キー | 既定値 |
+| --- | --- |
+| `messageToolbar.order` | `reply,forward,search,info,more` (カンマ区切り) |
+
+有効/無効の概念は無く (5つとも常に表示)、並び順だけを変更できる。詳細・
+各アイコンの動作は `docs/design-system.md`「新画面構成」節を参照。
