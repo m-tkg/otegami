@@ -1,8 +1,9 @@
 # ロードマップ (将来項目)
 
-M0〜M10 で実装しなかった/意図的にスコープ外にした項目、または実装中に
-見つかった既知の制約のうち、いつか手を付ける価値があるものをまとめる。
-優先順位は付けていない。各項目の背景・詳細は該当する参照先を見ること。
+M0〜M11、および design-phase-2/3 (デザイン刷新・端末内翻訳の実装) で
+実装しなかった/意図的にスコープ外にした項目、または実装中に見つかった
+既知の制約のうち、いつか手を付ける価値があるものをまとめる。優先順位は
+付けていない。各項目の背景・詳細は該当する参照先を見ること。
 
 ## 認証・プッシュ通知
 
@@ -80,13 +81,42 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
   `AccountsSettingsView` 自体は依然としてシート専用の「閉じる」ボタン付き
   `NavigationStack` ラッパーのまま。将来的にアカウント一覧・設定全体を
   もう少し整理してもよい。
-- **Composer を macOS のタイトルバー閉じるボタンで閉じた場合**: M10 で
-  追加した「下書きとして保存/破棄」の確認ダイアログは、iOS の sheet
-  スワイプ dismiss は `.interactiveDismissDisabled` でブロックしているが、
-  macOS の Composer ウィンドウをタイトルバーの赤信号ボタンで閉じる操作は
-  素通りしてしまう (未保存の変更が確認なしに失われる)。`NSWindowDelegate`
-  相当のフック (SwiftUI では `.onExitCommand`/window close 監視) を使った
-  対応が必要。
+- **`OtegamiColor` への `warning` 系トークン追加**: 同期エラーバナー等が
+  今も標準の `.orange` (システムセマンティックカラー) のまま。デザイン
+  システムに正式な警告色トークンを追加するかどうかは未検討
+  (`docs/design-system.md` design-phase-2 節)。
+- **一括操作の「移動」の汎用フォルダピッカー化**: 現状はアーカイブ固定
+  (スワイプの 1g と同じ宛先)。任意フォルダへの移動 UI は未実装
+  (`docs/design-system.md` design-phase-2 節)。
+- **スワイプの「操作」設定の汎用化**: 設定の「スワイプのクイック操作」は
+  現状「既読/未読 と アーカイブ、どちらが先か」の1軸のみ。翻訳/後で の
+  スワイプスロットが実装された時点で、任意のアクションを任意のスロット
+  に割り当てる汎用レジストリへの拡張を再検討する (`docs/design-system.md`
+  design-phase-3 節)。
+- **`AccountFilterChip` 横スクロール行の多アカウント時の見た目**: アカウント
+  5つ以上でチップ列がどう見えるか、実機の多アカウント環境ではまだ確認
+  していない (`docs/design-system.md` design-phase-2 節)。
+
+## 翻訳
+
+- **一覧に要約を出す設定 (1l) の実装**: 設定のトグル自体はあり永続化も
+  するが、一覧行への反映は未実装。スクロール中の英文メール全件に対して
+  いつ・どのタイミングで背景翻訳/要約を走らせるか (トリガー・キャッシュ
+  戦略) の設計が必要 (`docs/design-system.md` design-phase-3 節)。
+- **翻訳のストリーミング表示**: `TranslationService.translateStream` は
+  エンジン層に実装・実機検証済みだが、UI 側 (`TranslationBar`) は現状
+  非ストリーミング版のみを呼んでいる。段落ごとの逐次更新表示は見送った
+  (`docs/translation.md`/`docs/design-system.md` design-phase-3 節)。
+- **返信の引用部分を除いた英訳**: 「英語に翻訳して送る」は `> ` 引用も
+  含めて本文全体を丸ごと翻訳する。引用と新規入力を区別して新規入力分
+  だけを翻訳するには本文の構造化が必要で見送った
+  (`docs/design-system.md` design-phase-3 節)。
+- **iOS Simulator の `.app` プロセスから呼んだ場合の
+  `FoundationModels.LanguageModelError -1`**: エンジン層は同一マシンの
+  `swift test` からは毎回成功するため、コード側の不具合ではなく
+  Simulator/toolchain 固有の制限と見ているが、根本原因の調査（実機での
+  再検証、または Apple 側の既知の制限の有無確認）はまだ済んでいない
+  (`docs/translation.md`/`PENDING.md`)。
 
 ## パフォーマンス
 
@@ -97,7 +127,9 @@ M0〜M10 で実装しなかった/意図的にスコープ外にした項目、�
 
 ## リリース・配布
 
-- **GitHub リポジトリの public 化**: 現状 private (リポジトリ名は既に
-  `otegami` — 当初の `mailapp` からの改名は完了済み)。
 - **App Store / TestFlight 配布**: 未着手。Google OAuth 審査 (作者配布
   ビルドのみ必要) もこのタイミングで対応する。
+- **macOS ビルドの Developer ID 署名 + notarization**: `make mac-app` で
+  `dist/Otegami.app` を生成できるが、現状はアドホック署名のまま。自分の
+  Mac 以外に配る場合は Gatekeeper 対応が必要 (`PENDING.md`「公開時に
+  必要な対応」参照)。
