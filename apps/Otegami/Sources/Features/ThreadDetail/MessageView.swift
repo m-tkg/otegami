@@ -450,7 +450,20 @@ struct MessageView: View {
         do {
             auth = try await environment.auth(for: account)
         } catch {
-            throw MailTransportError.authenticationFailed(underlyingDescription: "資格情報が見つかりません")
+            // Bug fix: this used to discard whatever `auth(for:)` actually
+            // threw and replace it with a fixed "資格情報が見つかりません",
+            // which meant a Keychain read failure, an expired OAuth
+            // refresh token, and "no GOOGLE_OAUTH_CLIENT_ID configured"
+            // all showed the exact same message — indistinguishable from
+            // the user-visible side, and useless for diagnosing a real
+            // report against it. Preserving `error`'s own description
+            // (`AuthResolutionError`/`TokenStoreError` are both named
+            // enums, and `KeychainCredentialStore.KeychainError` already
+            // has a real `CustomStringConvertible` description) keeps this
+            // still wrapped as a `MailTransportError.authenticationFailed`
+            // (so existing call sites that only branch on the error *case*
+            // keep working) while no longer hiding *why*.
+            throw MailTransportError.authenticationFailed(underlyingDescription: "\(error)")
         }
         return try await environment.syncCoordinator.fetchAttachment(
             attachment, messageUID: message.uid, mailboxPath: mailboxPath, account: account, auth: auth
@@ -527,6 +540,44 @@ struct MessageView: View {
 
     // MARK: - Loading
 
+    /// UITest-only reproduction hook for a real-device bug report: a
+    /// `.password` account whose Keychain item genuinely goes missing (not
+    /// the M11 "just synced from iCloud, hasn't caught up yet" case) used
+    /// to fail body-fetch with an opaque, hardcoded error message and no
+    /// account-level banner anywhere — see `AppEnvironment.auth(for:)`'s
+    /// `.password` branch and this file's `fetchBodyOverNetwork`/
+    /// `fetchAttachmentOverNetwork` doc comments for the actual fixes.
+    /// XCUITest can't otherwise force this precondition (there's no UI
+    /// action that deletes a Keychain item out from under a working
+    /// account), so this mirrors `ComposerView
+    /// .attachUITestFixtureIfRequested`'s pattern: a no-op unless a
+    /// specific launch-environment flag is set, in which case it deletes
+    /// this message's own account's stored password right before `load()`
+    /// would otherwise use it — reproducing the exact failure a real
+    /// device hit, deterministically, on demand.
+    ///
+    /// Also resets *this* message's `bodyState`/cached `messageBody` row —
+    /// confirmed by an actual test run necessary: `SyncEngine.BodyFetcher
+    /// .prefetchRecent` already caches recently-synced messages' bodies in
+    /// the background, so a message opened soon after account setup can
+    /// already have `bodyState == .fetched` by the time this test taps it,
+    /// which makes `load()` take the "read straight from the local
+    /// `messageBody` row" branch and never call `fetchBodyOverNetwork`/
+    /// `auth(for:)` again at all — the credential deletion above would
+    /// otherwise go unnoticed, not because the bug is fixed but because
+    /// this particular message never re-authenticates in the first place.
+    private func deleteCredentialIfUITestRequested() async {
+        guard ProcessInfo.processInfo.environment["OTEGAMI_UITEST_DELETE_CREDENTIAL"] == "1" else { return }
+        try? environment.credentialStore.deletePassword(forAccountId: accountId)
+        let messageId = messageId
+        try? await environment.database.dbWriter.write { db in
+            guard var record = try MessageRecord.fetchOne(db, key: messageId) else { return }
+            record.bodyState = .notFetched
+            try record.update(db)
+            try MessageBodyRecord.deleteOne(db, key: messageId)
+        }
+    }
+
     private func load() async {
         errorMessage = nil
         bodyRecord = nil
@@ -537,6 +588,7 @@ struct MessageView: View {
         previewURL = nil
         manualPreferPlainText = nil
         resetTranslationState()
+        await deleteCredentialIfUITestRequested()
 
         guard let loadedMessage = try? await environment.database.dbWriter.read({ db in
             try MessageRecord.fetchOne(db, key: messageId)
@@ -618,7 +670,20 @@ struct MessageView: View {
         do {
             auth = try await environment.auth(for: account)
         } catch {
-            throw MailTransportError.authenticationFailed(underlyingDescription: "資格情報が見つかりません")
+            // Bug fix: this used to discard whatever `auth(for:)` actually
+            // threw and replace it with a fixed "資格情報が見つかりません",
+            // which meant a Keychain read failure, an expired OAuth
+            // refresh token, and "no GOOGLE_OAUTH_CLIENT_ID configured"
+            // all showed the exact same message — indistinguishable from
+            // the user-visible side, and useless for diagnosing a real
+            // report against it. Preserving `error`'s own description
+            // (`AuthResolutionError`/`TokenStoreError` are both named
+            // enums, and `KeychainCredentialStore.KeychainError` already
+            // has a real `CustomStringConvertible` description) keeps this
+            // still wrapped as a `MailTransportError.authenticationFailed`
+            // (so existing call sites that only branch on the error *case*
+            // keep working) while no longer hiding *why*.
+            throw MailTransportError.authenticationFailed(underlyingDescription: "\(error)")
         }
         guard let mailboxPath else {
             throw MailTransportError.mailboxNotFound(path: "")

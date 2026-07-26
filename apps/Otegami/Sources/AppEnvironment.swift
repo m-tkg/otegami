@@ -486,7 +486,34 @@ final class AppEnvironment {
         switch account.authType {
         case .password:
             guard let password = try credentialStore.password(forAccountId: account.id) else {
+                // Bug fix: previously this branch never touched
+                // `needsReauth` at all, unlike the `.oauth2` branch below —
+                // a `.password` account whose Keychain item genuinely goes
+                // missing (not just the M11 "cloud-inserted, iCloud
+                // Keychain hasn't caught up yet" case, which already sets
+                // this at insert time via `CloudAccountDirectory
+                // .insertFromCloud`) had no visible symptom anywhere in the
+                // UI: every call site that needs a body/attachment/send
+                // just failed with whatever error message *that* call site
+                // happened to show, with no account-level banner and no
+                // "再接続" affordance pointing at the actual cause. Setting
+                // it here means `AccountsListContent`'s existing
+                // "資格情報を待っています"/"再接続" UI (built for the M11 case)
+                // now also covers this one "for free" — same flag, same
+                // banner, same automatic retry-on-tick
+                // (`retryPendingCredentialIfAvailable`, which only fires
+                // when `needsReauth` is already `true`) — instead of this
+                // being a second, undiscoverable failure mode.
+                await setNeedsReauth(true, for: account)
                 throw AuthResolutionError.missingCredential
+            }
+            // Mirrors `retryPendingCredentialIfAvailable`'s clearing: any
+            // successful resolution — not just the automatic per-tick
+            // retry — means the credential is available again, so a stale
+            // `needsReauth` (set by a previous failure, here or in
+            // `retryPendingCredentialIfAvailable`) should stop being shown.
+            if account.needsReauth {
+                await setNeedsReauth(false, for: account)
             }
             return .password(username: account.imapUsername, password: password)
 

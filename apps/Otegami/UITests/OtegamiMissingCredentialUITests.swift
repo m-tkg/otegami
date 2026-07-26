@@ -1,0 +1,82 @@
+import XCTest
+
+/// Reproduces a real-device bug report: a `.password` account whose
+/// Keychain item goes missing used to fail message body fetch with an
+/// opaque, hardcoded "資格情報が見つかりません" error and no visible
+/// account-level indicator anywhere. Fixed in `AppEnvironment.auth(for:)`
+/// (now sets `needsReauth`, reusing the existing M11 "資格情報を待っています"/
+/// "再接続" banner machinery) and `MessageView.fetchBodyOverNetwork`/
+/// `fetchAttachmentOverNetwork` (now preserve the real underlying error
+/// instead of replacing it with a fixed string). See
+/// `MessageView.deleteCredentialIfUITestRequested`'s doc comment for why
+/// this needs an internal launch-environment hook rather than driving it
+/// through the UI (there's no user action that deletes a Keychain item).
+final class OtegamiMissingCredentialUITests: XCTestCase {
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+    }
+
+    func testMissingCredentialShowsRealErrorAndAccountBanner() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        app.launchEnvironment["OTEGAMI_UITEST_DELETE_CREDENTIAL"] = "1"
+        app.launch()
+
+        addDovecotTest1Account(in: app)
+        restartAppToRecoverTouchDelivery(app)
+        XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15))
+
+        // A message never opened before this point, so `load()` actually
+        // has to hit `fetchBodyOverNetwork` (a message whose body is
+        // already cached locally would short-circuit before ever needing
+        // `auth(for:)` again) — the credential gets deleted by the hook
+        // right as this open starts. Picks the most-recently-dated seed
+        // fixture (sorts first, no scrolling needed) rather than an older
+        // one — this suite now shares the INBOX with every other feature's
+        // fixtures added this session, so a message dated further back can
+        // require scrolling past two dozen rows.
+        openMessage(subject: "リンクを開くブラウザのテスト", in: app)
+
+        // The real underlying error ("missingCredential", from
+        // AppEnvironment.AuthResolutionError) should now be visible — not
+        // the old fixed "資格情報が見つかりません" string.
+        let errorText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "missingCredential")).firstMatch
+        XCTAssertTrue(errorText.waitForExistence(timeout: 20), "Expected the real underlying error (missingCredential) to be visible, not a generic message")
+
+        // The account should now show the "資格情報を待っています" banner in
+        // Settings — the same M11 UI a cloud-synced-but-not-yet-keychain-
+        // synced account already used, now also covering this case.
+        let settingsTab = app.tabBars.buttons["設定"]
+        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
+        settingsTab.tap()
+
+        let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
+        XCTAssertTrue(scrollSettingsUntilVisible(pendingCredentialBanner, in: app), "Expected the 資格情報を待っています banner for the account whose Keychain item was deleted")
+
+        Thread.sleep(forTimeInterval: 3)
+    }
+
+    // MARK: - Steps
+
+    private func openMessage(subject: String, in app: XCUIApplication) {
+        let list = app.collectionViews["messageList.list"]
+        let predicate = NSPredicate(format: "label CONTAINS %@", subject)
+        let row = list.cells.containing(predicate).firstMatch
+        XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected seeded message \"\(subject)\" to appear in the INBOX list")
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+    }
+
+    private func scrollSettingsUntilVisible(_ element: XCUIElement, in app: XCUIApplication, maxAttempts: Int = 10) -> Bool {
+        var found = element.waitForExistence(timeout: 3)
+        let list = app.collectionViews.firstMatch
+        var attempts = 0
+        while !found, attempts < maxAttempts {
+            let start = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6))
+            let end = list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1))
+            start.press(forDuration: 0.05, thenDragTo: end)
+            found = element.waitForExistence(timeout: 2)
+            attempts += 1
+        }
+        return found
+    }
+}

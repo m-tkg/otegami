@@ -2697,6 +2697,85 @@ iPhoneSimulator27.0 SDK) では自動検証・目視確認とも green にでき
 常にデフォルトブラウザを開く設計 (`LinkBrowserSettingsStore` のコメント
 参照)。
 
+## バグ修正: 実機で「本文の取得に失敗しました: authenticationFailed: 資格情報が見つかりません」
+
+実機での報告を受けて調査・修正。2つの独立した問題があった。
+
+### 1. エラーの握りつぶし (即座に判明・修正)
+
+`MessageView.fetchBodyOverNetwork`/`fetchAttachmentOverNetwork` が
+`environment.auth(for:)` の失敗を `catch` した際、**実際のエラーを
+捨てて固定文言 `"資格情報が見つかりません"` に置き換えていた**。
+Keychain 読み取り失敗も OAuth トークンのリフレッシュ失敗も
+`oauthUnavailable` も、すべて同じ文言に潰れて区別できなかった。
+`catch { throw MailTransportError.authenticationFailed(underlyingDescription: "\(error)") }`
+に変更し、実際のエラー内容 (`AuthResolutionError`/`TokenStoreError`/
+`KeychainCredentialStore.KeychainError` いずれも意味のある説明を持つ)
+をそのまま表示するようにした。コードベース全体を調査したが、この
+2箇所以外に同じ「エラーを握りつぶして固定文言に置き換える」パターンは
+見つからなかった (`AppEnvironment.requestAPNsToken()` に近い形の
+`catch { throw PushError.noDeviceToken }` があるが、文字列リテラルでは
+なく既存の設計判断があるため今回は対象外とした)。
+
+### 2. `.password` アカウントが `needsReauth` を一切使っていなかった (真因)
+
+`AppEnvironment.auth(for:)` は `.oauth2` アカウントの
+`reauthenticationRequired` では `needsReauth = true` をセットし
+(`AccountsListContent` の「再認証が必要です」バナー)、M11 で
+`.password` アカウントにも同じ `needsReauth` を使う「資格情報を待って
+います」/「再接続」の仕組みが用意されていた — が、それは
+`CloudAccountDirectory.insertFromCloud` が**アカウント作成時**にだけ
+セットするもので、**すでに動いているアカウントの Keychain 項目が後から
+何らかの理由で消えた場合には一切発火しなかった**。`auth(for:)` の
+`.password` 分岐が `credentialStore.password(forAccountId:)` の `nil` を
+そのまま `throw` するだけで `needsReauth` に触れていなかったため —
+結果、症状はメッセージを開くたびに個別の「本文の取得に失敗しました」
+としてしか現れず、アカウント一覧にはどんな兆候も出ない、という
+報告どおりの状態になっていた。
+
+`auth(for:)` の `.password` 分岐に `.oauth2` 分岐と対称な
+`await setNeedsReauth(true, for: account)` を追加 (失敗時)、および
+成功時に `needsReauth` が立っていればクリアする処理を追加した。
+これにより、原因が M11 の「iCloud Keychain 未同期」であれ、今回のような
+「後から消えた」であれ、同じ「資格情報を待っています」バナー・
+「再接続」ボタンが自動的に出るようになった
+(`retryPendingCredentialIfAvailable` が accounts-list の tick ごとに
+自動再チェックする既存の仕組みにもそのまま乗る)。
+
+### 実機での本当の原因は未特定
+
+上記2つは「症状を隠さず・アカウント単位で見えるようにする」という
+設計上のバグで、これ自体は確実に直すべきものとして修正したが、
+**この実機で Keychain 項目が実際に消えた/読めなくなった根本原因**
+(iCloud Keychain の同期コンフリクト、OS 側の問題、など) は未特定の
+まま。この修正により、次に実機で同じ症状が出たときは
+(a) メッセージ詳細画面に実際のエラー文言 (`missingCredential` /
+`KeychainError` の具体的な `OSStatus` など) が表示され、
+(b) 設定画面のアカウント一覧に「資格情報を待っています」バナーが出る
+ようになるため、根本原因の特定に必要な情報が揃うようになった。
+
+### シミュレータでの再現方法
+
+`OtegamiMissingCredentialUITests`。XCUITest からは「動いているアカウ
+ントの Keychain 項目を後から削除する」というユーザー操作が存在しない
+ため、`MessageView.deleteCredentialIfUITestRequested()` という内部
+フック (`OTEGAMI_UITEST_DELETE_CREDENTIAL` launch environment 変数、
+`ComposerView.attachUITestFixtureIfRequested` と同じパターン) を追加し、
+`load()` の先頭でこのアカウントの Keychain パスワードを削除し、対象
+メッセージの `messageBody`/`bodyState` もリセットする。**後者が必要な
+理由も実機バグとは別に実際に踏んだ落とし穴**: `SyncEngine.BodyFetcher
+.prefetchRecent` が最近同期したメッセージの本文をバックグラウンドで
+先読みしてしまうため、`bodyState == .fetched` のまま `load()` が
+ローカルキャッシュ読み取り分岐に入ってしまい、`fetchBodyOverNetwork`/
+`auth(for:)` が一切呼ばれない (= バグが再現しない) ケースがあることを
+実際のテスト実行で確認した。
+
+実際に green を確認: メッセージ詳細画面に
+「本文の取得に失敗しました: authenticationFailed: missingCredential」
+(修正後の実際のエラー文言) が表示され、設定画面のアカウント一覧に
+「資格情報を待っています」バナーと「再接続」ボタンが表示されることを
+スクリーンショットで確認済み。
+
 ## iOS シミュレータ検証 (B: 画像の自動表示設定)
 
 `OtegamiImageSettingsUITests`。`ImageSettingsStore` の2設定
