@@ -1,0 +1,14 @@
+From: Malicious Sender <attacker@otegami.test>
+To: test1@otegami.test
+Subject: セキュリティ検証: javascript: リンク
+Message-ID: <seed-0024@otegami.test>
+Date: Sat, 24 Jan 2026 10:15:00 +0900
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<html>
+<body>
+<p id="marker">リンクをタップしても改ざんされないはずです。</p>
+<a id="evil-link" href="javascript:document.getElementById('marker').innerText='JS が実行されました（改ざん成功）';document.body.style.backgroundColor='red';">ここをタップ（悪意あるリンク）</a>
+</body>
+</html>

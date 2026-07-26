@@ -2590,3 +2590,56 @@ otegami-relay` で `watch connected` の対象を確認する、または一時�
 スクリーンショットで正しい表示を直接確認済み**であり、この節は
 「アサーションが時々タイムアウトする」という自動テストの既知の弱さを
 記録するためのもの。原因調査は今後の課題として残す。
+
+## iOS シミュレータ検証 (A9-A3: JavaScript 無効化のセキュリティ再検証)
+
+`OtegamiSecurityJavaScriptUITests`。M2 で実装済みの JS 無効化
+(`WKWebpagePreferences.allowsContentJavaScript = false`) が実際に効いて
+いるかを、**悪意あるスクリプトを含む実際の `.eml` を4種類実機シミュレータ
+で開いて**目視・自動アサートの両方で再検証した (`dev/mailstack/seed/
+fixtures/21〜24-security-*.eml`、`docs/design-system.md` には無い今回
+追加の観点)。各フィクスチャは「改ざんされていません」という marker
+段落を持ち、スクリプトが実行されればその marker が書き換わる/背景色が
+変わる設計にしてある。
+
+1. `21-security-script-dom-rewrite.eml` — `<script>` タグで
+   `document.getElementById('marker').innerText` を書き換え、
+   `document.title` も変更しようとする。**結果: marker は書き換わらず
+   元のテキストのまま** (スクリーンショットで確認済み)。
+2. `22-security-onerror-bgcolor.eml` — 存在しない画像の `onerror` ハンド
+   ラで `document.body.style.backgroundColor = 'red'` と marker 書き換え
+   を試みる。**結果: 背景は変わらず、marker も元のまま**
+   (スクリーンショットで確認済み — 赤くなっていないことを目視)。
+3. `23-security-iframe.eml` — `<iframe src="https://example.com/">` を
+   埋め込む。**結果: 外部画像と同じ「画像を表示」バナーが出て (`WKContentRuleList`
+   は `^https?://` を resource-type 問わず全ブロックするため、iframe の
+   読み込みリクエストも画像と同じ扱いになる)、バナーを押さない既定状態
+   では iframe の枠だけが空のまま表示される** (スクリーンショットで確認
+   済み)。バナーを押して外部コンテンツを許可した場合に iframe 内で
+   `example.com` の実コンテンツが読み込まれること自体は起こりうるが、
+   `WKWebpagePreferences.allowsContentJavaScript = false` は
+   `WKWebViewConfiguration.defaultWebpagePreferences` としてこの
+   `WKWebView` インスタンス全体に効くため、その中でロードされる
+   iframe の中身も含めて JavaScript は実行されない設計になっている
+   (今回は banner を押さないデフォルト状態のみ実機確認、押した場合の
+   iframe 内 JS 無効化は設定の仕組み上そうなるはずという設計上の裏付け
+   に留まる — 完全な実機再現は今後の課題)。
+4. `24-security-javascript-link.eml` — `<a href="javascript:...">` の
+   リンクをタップする。**結果: リンクは通常のリンクとして表示され、
+   タップしても marker は書き換わらない** (`HTMLWebViewCoordinator
+   .webView(_:decidePolicyFor:decisionHandler:)` が初回の
+   `loadHTMLString` 以外の全ナビゲーションを `.cancel` するため —
+   スクリーンショットで確認済み)。
+
+**確認した経路**: `WKWebpagePreferences.allowsContentJavaScript = false`
+(ページ自身の `<script>`/インラインイベントハンドラ双方をブロック)、
+`WKContentRuleList` (既定で全 `http(s)://` サブリソースをブロック — 画像
+だけでなく iframe/CSS 背景等も含む)、`WKNavigationDelegate` の
+`decidePolicyFor` (`javascript:` リンクのタップを含む、初回ロード以外の
+全ナビゲーションを拒否)。`WKUserContentController` にメッセージハンドラ
+やユーザースクリプトは一切登録していない (コードレビューでも確認 —
+`HTMLMessageView.swift` 参照)。
+
+**未検証事項**: 「画像を表示」バナーを押して外部コンテンツを許可した状態
+での iframe 内 JS 無効化 (上記3参照、設計上は無効化されるはずだが実機の
+目視確認はしていない)。

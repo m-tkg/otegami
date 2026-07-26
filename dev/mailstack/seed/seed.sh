@@ -85,4 +85,14 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/18-empty-body.eml"
 # gates on.
 seed_message "test1@otegami.test" "$FIXTURES_DIR/20-english-quarterly-report.eml"
 
+# A9-A3 セキュリティ検証: WKWebView 側の JavaScript 無効化が実際に効いているかを
+# 目視確認するための、悪意あるスクリプトを含む HTML メール4種
+# (docs/verify.md の A9 節参照)。<script> による DOM 書き換え、
+# onerror ハンドラでの背景色変更、iframe による外部コンテンツ埋め込み、
+# javascript: スキームリンク。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/21-security-script-dom-rewrite.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/22-security-onerror-bgcolor.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/23-security-iframe.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/24-security-javascript-link.eml"
+
 echo "==> done"

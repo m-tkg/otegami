@@ -1,0 +1,14 @@
+From: Malicious Sender <attacker@otegami.test>
+To: test1@otegami.test
+Subject: セキュリティ検証: onerror による背景色変更
+Message-ID: <seed-0022@otegami.test>
+Date: Sat, 24 Jan 2026 10:05:00 +0900
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<html>
+<body>
+<p id="marker">背景色は変わっていないはずです（改ざんされていません）。</p>
+<img src="does-not-exist.png" onerror="document.body.style.backgroundColor='red'; document.getElementById('marker').innerText='JS が実行されました（改ざん成功）';">
+</body>
+</html>

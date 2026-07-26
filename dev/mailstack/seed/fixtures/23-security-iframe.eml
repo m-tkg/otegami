@@ -1,0 +1,14 @@
+From: Malicious Sender <attacker@otegami.test>
+To: test1@otegami.test
+Subject: セキュリティ検証: iframe による外部コンテンツ埋め込み
+Message-ID: <seed-0023@otegami.test>
+Date: Sat, 24 Jan 2026 10:10:00 +0900
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<html>
+<body>
+<p id="marker">iframe は読み込まれていないはずです（改ざんされていません）。</p>
+<iframe src="https://example.com/" width="300" height="150" id="evil-frame"></iframe>
+</body>
+</html>
