@@ -62,6 +62,14 @@
 
 ## M9: APNs .p8 キー発行 + 実機での最終確認
 
+**2026-07-26 追記**: `.p8` ファイルが `~/Downloads/AuthKey_FCZMK9Z9S2.p8`
+に用意済みとの申し送りあり (design-phase-3 セッション中にユーザーから)。
+このファイルはリポジトリ外・Apple の秘密鍵そのものなので、design-phase-3
+(UI 刷新タスク) の中では触れていない — 下記「対応手順」の 2〜6 を実施する
+専用のセッション/タスクで扱うのが適切 (`.gitignore` 済みの
+`server/otegami-relay/secrets/` へ配置し、環境変数を設定してリレーを再起動
+する作業。誤って `git add`/ログ出力に混入させないよう注意)。
+
 **実装状況**: M9 のリレーサーバー・アプリ側オプトイン UI・NotificationService
 Extension は実装済み・大部分を自動検証済み (詳細は `docs/relay-deployment.md`
 と本セッションの最終報告を参照)。**残っているのは `.p8` キー発行と、それを
