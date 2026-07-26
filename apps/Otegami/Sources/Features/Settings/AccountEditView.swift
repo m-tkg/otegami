@@ -153,6 +153,7 @@ struct AccountEditView: View {
                 .textFieldAutocapitalizationNone()
                 .accessibilityIdentifier("accountEdit.imapHost")
             TextField("ポート", text: $imapPortText)
+                .otegamiNumberPadKeyboard()
                 .accessibilityIdentifier("accountEdit.imapPort")
             Picker("接続方式", selection: $imapSecurity) {
                 Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
@@ -170,6 +171,7 @@ struct AccountEditView: View {
                 .textFieldAutocapitalizationNone()
                 .accessibilityIdentifier("accountEdit.smtpHost")
             TextField("ポート", text: $smtpPortText)
+                .otegamiNumberPadKeyboard()
                 .accessibilityIdentifier("accountEdit.smtpPort")
             Picker("接続方式", selection: $smtpSecurity) {
                 Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
@@ -446,6 +448,16 @@ private extension View {
     func textFieldAutocapitalizationNone() -> some View {
         #if os(iOS)
         self.textInputAutocapitalization(.never).autocorrectionDisabled()
+        #else
+        self
+        #endif
+    }
+
+    /// See `AccountSetupView`'s identical helper's doc comment.
+    @ViewBuilder
+    func otegamiNumberPadKeyboard() -> some View {
+        #if os(iOS)
+        self.keyboardType(.numberPad)
         #else
         self
         #endif

@@ -58,6 +58,7 @@ struct ICloudAccountSetupView: View {
                         .accessibilityIdentifier("icloudAccountSetup.displayName")
                     TextField("iCloud メールアドレス", text: $email)
                         .textFieldAutocapitalizationNone()
+                        .otegamiEmailKeyboard()
                         .accessibilityIdentifier("icloudAccountSetup.email")
                     SecureField("App 用パスワード", text: $appPassword)
                         .accessibilityIdentifier("icloudAccountSetup.appPassword")
@@ -197,6 +198,16 @@ private extension View {
     func textFieldAutocapitalizationNone() -> some View {
         #if os(iOS)
         self.textInputAutocapitalization(.never).autocorrectionDisabled()
+        #else
+        self
+        #endif
+    }
+
+    /// See `AccountSetupView`'s identical helper's doc comment.
+    @ViewBuilder
+    func otegamiEmailKeyboard() -> some View {
+        #if os(iOS)
+        self.keyboardType(.emailAddress)
         #else
         self
         #endif

@@ -48,9 +48,15 @@ struct AccountSetupView: View {
                         .accessibilityIdentifier("accountSetup.displayName")
                     TextField("メールアドレス", text: $email)
                         .textFieldAutocapitalizationNone()
+                        .otegamiEmailKeyboard()
                         .accessibilityIdentifier("accountSetup.email")
                         .onChange(of: email) { _, newValue in
+                            // D「メールアドレス入力時、SMTP ユーザー名にも自動反映」
+                            // — IMAP 側の既存の挙動 (「まだ手入力されていなければ」
+                            // 上書き) にそろえた。どちらか一方だけ手入力済みでも
+                            // もう片方はそのまま追従する。
                             if imapUsername.isEmpty { imapUsername = newValue }
+                            if smtpUsername.isEmpty { smtpUsername = newValue }
                         }
                 }
 
@@ -59,6 +65,7 @@ struct AccountSetupView: View {
                         .textFieldAutocapitalizationNone()
                         .accessibilityIdentifier("accountSetup.imapHost")
                     TextField("ポート", text: $imapPortText)
+                        .otegamiNumberPadKeyboard()
                         .accessibilityIdentifier("accountSetup.imapPort")
                     Picker("接続方式", selection: $imapSecurity) {
                         Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
@@ -83,6 +90,7 @@ struct AccountSetupView: View {
                         .textFieldAutocapitalizationNone()
                         .accessibilityIdentifier("accountSetup.smtpHost")
                     TextField("ポート", text: $smtpPortText)
+                        .otegamiNumberPadKeyboard()
                         .accessibilityIdentifier("accountSetup.smtpPort")
                     Picker("接続方式", selection: $smtpSecurity) {
                         Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
@@ -280,6 +288,27 @@ private extension View {
     func textFieldAutocapitalizationNone() -> some View {
         #if os(iOS)
         self.textInputAutocapitalization(.never).autocorrectionDisabled()
+        #else
+        self
+        #endif
+    }
+
+    /// 表示・操作改善バッチ: メールアドレス欄用のソフトウェアキーボード —
+    /// `@`/`.`が押しやすいレイアウトになる。`.keyboardType`はiOS/tvOSのみ。
+    @ViewBuilder
+    func otegamiEmailKeyboard() -> some View {
+        #if os(iOS)
+        self.keyboardType(.emailAddress)
+        #else
+        self
+        #endif
+    }
+
+    /// 表示・操作改善バッチ: ポート番号欄用の数字専用キーボード。
+    @ViewBuilder
+    func otegamiNumberPadKeyboard() -> some View {
+        #if os(iOS)
+        self.keyboardType(.numberPad)
         #else
         self
         #endif
