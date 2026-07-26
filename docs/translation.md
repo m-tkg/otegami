@@ -212,8 +212,62 @@ OS バージョンは iOS/macOS 26 以降が前提（本アプリの最低対応
   （`FakeTranslationService` と異なり真の意味で決定的ではない）。これが
   キャッシュを永続化するもう一つの理由です — 一度保存した訳文は再翻訳するまで
   変わりません。
-- **UI 未実装**: このドキュメントの時点ではエンジン層のみで、翻訳バー・
-  段落長押し・「英語で返信を下書き」等の実際の画面操作は次フェーズです。
+- **UI 未実装 (このドキュメントを最初に書いた時点)**: design-phase-3
+  で実装済み。`apps/Otegami/Sources/Features/ThreadDetail/TranslationBar.swift`/
+  `TranslatedBodyView.swift` と `AppEnvironment.translationService`/
+  `messageTranslator`、`ComposerView` の「英語に翻訳して送る」トグルが
+  該当。UI 層の設計判断 (既定は訳文、自動翻訳の ON/OFF 設定、HTML メー
+  ルは訳文表示時にプレーンテキスト化される、等) は
+  `docs/design-system.md` の design-phase-3 節にまとめてある。
+
+## design-phase-3: iOS Simulator の `.app` プロセスから呼んだときの既知の制限
+
+UI 組み込み後、実機シミュレータ上で `OtegamiTranslationBarUITests`
+(XCUITest) を通して実際に英文メールを翻訳させたところ、
+`FoundationModelsTranslationService.translateParagraphs` の呼び出しが
+**一貫して** 以下のエラーで失敗した:
+
+```
+FoundationModels.LanguageModelError error -1.
+```
+
+6回連続でリトライ (`TranslationBar` の「再試行」ボタンを毎回タップ) し
+ても同じエラーで失敗し続けた — 単発の warm-up 失敗ではなく、再現性のあ
+る失敗だった。
+
+**同じホスト機・同じタイミングで、`swift test --filter
+FoundationModelsTranslationServiceTests` (サンドボックス化されていない
+プレーンな macOS プロセス) を実行すると、6件のテストすべてが 2〜5 秒で
+正しく翻訳/要約/ストリーミングに成功した。** つまり:
+
+- `SystemLanguageModel.default.availability` は両方の実行方式で
+  `.available` を返す (`TranslationBar` の見出しが「利用できません」に
+  ならず、通常の「英語 → 日本語（端末内で翻訳）」を表示していたことか
+  らも確認済み) — 可用性チェック自体は誤っていない。
+- `FoundationModelsTranslationService`/`MessageTranslator`/
+  `TranslationBar` のコード自体に不具合はない — 呼び出しコード・プロン
+  プト・オプションは両方の実行方式で完全に同一。
+- 違いは **呼び出し元プロセスの種類** だけ: サンドボックス化された iOS
+  Simulator の `.app` プロセス経由だと失敗し、素の macOS プロセス
+  (`swift test` バイナリ) 経由だと成功する。
+
+原因はおそらく、Apple の on-device 推論ブローカー (Simulator 上での
+Foundation Models 推論は実際にはホスト Mac 側で行われる —
+`docs/translation.md` 冒頭の「シミュレータでの Foundation Models」参照)
+との通信が、サンドボックス化された Simulator アプリプロセスからは何ら
+かの権限/セッション要件を満たせていないという、この開発機のツールチェ
+ーン (Xcode 27 beta + iOS 27 beta シミュレータ) 固有の制限とみられる。
+`docs/verify.md`/`docs/ci.md` がこれまでに記録してきた「この
+simulator/toolchain 固有の不具合」と同じ性質のものと判断し、UI 実装側
+の不具合とは切り離して記録する。
+
+**この制限が UI に与える影響**: 翻訳バーは失敗時、赤いエラーメッセージ
+と「再試行」ボタンを正しく表示する (実機スクリーンショットで確認済み
+— `docs/verify.md` 参照) — フォールバック UI 自体は意図通り動作してい
+る。翻訳が実際に成功した状態の画面は、この開発機のシミュレータ環境で
+は確認できなかった。**実機 (Simulator ではなく実際の iPhone/iPad) での
+確認、または非 beta の Xcode/シミュレータでの再確認が今後の課題として
+残る** (`PENDING.md` 参照)。
 
 ## テスト
 

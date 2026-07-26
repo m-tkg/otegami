@@ -2235,3 +2235,94 @@ iOS はサイドバーが無くなった (`SidebarView` は macOS 専用) ため
 未設定」状態と食い違う (この dev マシン固有の設定であり、
 design-phase-2 のコード変更とは無関係 — `AccountTypeSelectionView` 自体
 は DesignSystem のスタイリング以外、機能面は変更していない)。
+
+## design-phase-3: 翻訳UI・検索フィルタ・レイアウト修正の検証
+
+新規テストファイル3つ (`apps/Otegami/UITests/`):
+
+- `OtegamiTranslationUITests.swift` — `OtegamiTranslationSetupUITests`
+  (test1 アカウント追加 + 新規追加した英文 seed
+  `20-english-quarterly-report.eml` が一覧に出ることを確認) /
+  `OtegamiTranslationBarUITests` (英文メールを開き、翻訳バーが
+  出現し、`.translated`/`.failed` いずれかの終端状態に到達することを
+  確認) / `OtegamiTranslationDraftEnglishReplyUITests` (「英語で返信を
+  下書き」→ Composer の「英語に翻訳して送る」トグルが最初から ON に
+  なっていることを確認)。
+- `OtegamiSearchFilterUITests.swift` — 送信者名一致が「人」セクション
+  に出ること、「英語」フィルタチップが日本語のみの一致を除外すること。
+- `OtegamiDesignPhase3ScreenshotUITests.swift` — 検索/設定/作成の各画面
+  を数秒間保持し、host 側からのスクリーンショット取得を可能にする
+  (M6/M7/M8 と同じ「テスト実行中に撮る」技法)。
+
+いずれも `dev/mailstack` 起動済み・test1 アカウント追加済みの状態を前提
+に、既存の M4/M7 等のフェーズの上に積む形で書かれている (`docs/verify.md`
+冒頭の運用方針と同じ)。専用の `verify-ios-design-phase3.sh` は今回は
+作成していない (個々の `-only-testing:` 呼び出しを手動で連結して検証し
+た) — 次にこの領域へ手を入れる際は、他の `verify-ios-mN.sh` に倣って
+ラッパースクリプト化する価値がある。
+
+### 翻訳バーの XCUITest 特有の注意点
+
+- **`messageDetail.translationBar`/`app.navigationBars["設定"]` のよう
+  な exact-identifier/exact-title lookup がここでも失敗した** — M2/M4/M7
+  で確立済みの「厳密一致ルックアップが、画面に明らかに存在する要素を
+  見つけられないことがある」パターンの再発。翻訳バーの見出しテキスト
+  (`"端末内で翻訳"` を含む `label CONTAINS` 述語) や `settings
+  .addAccountButton` のような、実在が確認しやすい別の手がかりに切り替
+  えて解決した。
+- **オンデバイス翻訳の失敗/成功を待つポーリングは、`xcodebuild test` プ
+  ロセス全体を異常に長くフリーズさせることがあった** — 失敗を検出した
+  直後 (`XCTAssertTrue` 失敗、`Tear Down` ログまでは正常に進む) に
+  `xcodebuild` 自体が数分単位で応答しなくなり、`BUILD INTERRUPTED` す
+  るまで戻ってこない現象を複数回確認した (この開発機の Xcode 27 beta
+  ツールチェーン固有の xcresult 書き出し周りの問題とみられる — コード側
+  の無限ループ等ではない: 同じアサーションが速やかに成功する場合は
+  `xcodebuild` も正常に終了する)。対策: 翻訳の成否を厳密にポーリングで
+  待つのではなく、`Thread.sleep` の固定待機 + 「終端状態のどちらかに到
+  達していること」を1回だけ確認する形に倒し、それでも失敗する場合の
+  ためにテスト自体の実行に十分長いタイムアウトを外側 (シェル) からも
+  与えるようにした。
+- **Composer の Form 内の要素を `waitForElementScrollingIfNeeded` で探
+  してはいけない** — このヘルパーはスクロール対象を
+  `messageList.list` に固定しているため (`DovecotAccountUITestHelpers
+  .swift`)、Mail タブの一覧以外の画面 (Composer など) で使うと存在しな
+  い要素を探し続けて確実に失敗する。Composer 内の要素は素の
+  `app.swipeUp()` でスクロールしてから探すこと。
+- **`.searchable` の検索フィールドにフォーカスがある間、下部タブバーは
+  キーボードの下に完全に隠れてタップできない** — 検索して結果を確認し
+  た後に他のタブへ切り替えるテストでは、`searchField.typeText("\n")`
+  などでキーボードを閉じてからタブバーを操作する必要がある。
+
+### 実機 (シミュレータ) スクリーンショットでの目視確認
+
+`/tmp/otegami-verify/design-phase3-*.png` に light/dark 双方 (一部は
+light のみ) を保存し、目視で確認した:
+
+- `design-phase3-search-light.png`: 検索結果画面。フィルタチップ (全部
+  /添付/未読/英語) が横並びで表示され、選択中の「全部」だけ塗り+枠線の
+  両方で強調されている。結果行は既存の `ThreadRowView` と同じ見た目。
+- `design-phase3-settings-light.png`: 設定タブ。アカウント一覧 → iCloud
+  同期トグル → プッシュ通知 → 「操作」(スワイプのクイック操作ピッカー、
+  現在値「既読/未読」) → 「翻訳」(英文を自動で翻訳 ON、一覧に要約を出
+  す OFF) の順に並び、3ブロック構成であることを確認。
+- `design-phase3-composer-light-2.png`: Composer 最上段に「差出人:
+  Dovecot Test1 <test1@otegami.test>」が常時表示されていることを確認。
+- `design-phase3-translation-bar-en.png`: 英文メール詳細画面。件名 →
+  送信者行 → 翻訳バー (失敗状態: 「英語 → 日本語（端末内で翻訳）」+
+  「再試行」ボタン + 赤いエラーメッセージ) → 本文 → 下部に「返信」/
+  「英語で返信を下書き」/「全員に返信」の順。翻訳が実際に成功した状態
+  はこの環境では確認できなかった (`docs/translation.md` 参照)。
+- `design-phase3-inbox-dark.png`: ダークモードの統合受信トレイ。1アカ
+  ウントのみの状態でアカウント色罫線・ラベルが出ないことを確認。
+- macOS の3ペイン (`NavigationSplitView`) は `make mac` のビルド成功に
+  加え、design-phase-3 の変更が macOS 側のコードパスに一切触れていない
+  こと (`MessageListView.swift` の `.listSectionSpacing` 呼び出しのみが
+  唯一の共有コード変更で、`#if os(iOS)` で囲ってある) をコードレビュー
+  で確認した。実機 macOS アプリのウィンドウスクリーンショットは、この
+  開発機がユーザーの対話的デスクトップ環境を共有しているため
+  (`screencapture` がユーザーの他のウィンドウ/ブラウザタブを写し込むリ
+  スクがあると判明し、実際に一度誤って撮影してしまった — 直ちに削除
+  済み)、今回は取得を見送った。次にこの環境で macOS のスクリーンショッ
+  トが必要になった場合は、`osascript` で対象ウィンドウの正確な位置/サ
+  イズを取得した上で `screencapture -R<x,y,w,h>` を使い、フルスクリー
+  ンキャプチャは避けること。

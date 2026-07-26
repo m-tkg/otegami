@@ -204,6 +204,36 @@ Extension は実装済み・大部分を自動検証済み (詳細は `docs/rela
      (もう一方には出現しない) こと、OFF のデバイス自身のローカル動作は
      変わらないことを確認する。
 
+## design-phase-3: 翻訳の実機 (Simulator でない) 確認
+
+**実装状況**: 翻訳バー (1i)・「英語に翻訳して送る」(1k) の UI 実装・
+設定 (1l) は完了。エンジン層 (`FoundationModelsTranslationService`) は
+`swift test` (サンドボックス化されていない macOS プロセス) からは実機
+上で確認済み — 実際に英文↔和文の翻訳に毎回 2〜5 秒で成功している。
+
+**未確認**: この UI を通した実際の翻訳成功が、iOS Simulator の `.app`
+プロセス内では確認できなかった。`OtegamiTranslationBarUITests` を通し
+て6回連続でリトライしても `FoundationModels.LanguageModelError error
+-1` で失敗し続けた (詳細と切り分けの過程は `docs/translation.md`
+「design-phase-3: iOS Simulator の `.app` プロセスから呼んだときの既知
+の制限」参照)。UI 実装・呼び出しコード自体に不具合がある証拠はなく
+(同一コードが素の macOS プロセスからは毎回成功する)、この開発機の
+ツールチェーン (Xcode 27 beta + iOS 27 beta シミュレータ) か、iOS
+Simulator アプリプロセスから on-device 推論ブローカーを呼ぶ経路自体の
+制限とみられる。
+
+- **対応手順**:
+  1. 実機 (iPhone/iPad、Apple Intelligence 対応・有効) に
+     `make ios-device` でインストールする。
+  2. Apple Intelligence が有効になっていることを確認する (設定 →
+     Apple Intelligence)。
+  3. 英文メール (`dev/mailstack` の `20-english-quarterly-report.eml`
+     を seed 済み) を開き、翻訳バーが実際に訳文を表示するか確認する。
+  4. 実機でも同じ `LanguageModelError -1` が出る場合はコード側の不具合
+     の可能性が高まるので調査を再開する。実機では成功する場合は
+     Simulator 固有の制限として `docs/translation.md` に確定情報を追記
+     し、この節を消す。
+
 ## 公開時に必要な対応 (まとめ)
 
 以下は「今すぐ開発を止める理由」ではなく、実際に公開・配布する段になったら
