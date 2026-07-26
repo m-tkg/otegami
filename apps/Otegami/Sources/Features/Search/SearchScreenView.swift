@@ -236,10 +236,11 @@ struct SearchScreenView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("search.row.\(threadId)")
-            .listRowInsets(EdgeInsets())
+            // 表示・操作改善バッチ「カード状表示」: same margin-as-gap treatment
+            // as `MessageListRow` — see its doc comment.
+            .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: OtegamiSpacing.sm, bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.sm))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
-            .otegamiRowDivider()
         }
     }
 

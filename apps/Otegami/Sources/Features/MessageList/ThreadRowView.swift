@@ -69,6 +69,13 @@ struct ThreadRowView: View {
             .padding(.vertical, OtegamiSpacing.sm)
         }
         .background(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface)
+        // 表示・操作改善バッチ「カード状表示」: each row now reads as its own
+        // bordered "面" (card) rather than a plain background between
+        // dashed rules — the gap between cards is `MessageListRow`/
+        // `SearchScreenView`'s `.listRowInsets` (the card border alone
+        // can't create visual separation from its neighbor without a real
+        // gap around it).
+        .otegamiCardBorder()
         .contentShape(Rectangle())
     }
 
@@ -155,7 +162,7 @@ private struct ThreadRowTrailing: View {
                     .accessibilityIdentifier("messageList.row.\(summary.id).pinnedIndicator")
             }
             if let date = summary.thread.lastMessageDate {
-                Text(date, style: .date)
+                OtegamiDateFormat.listRowText(for: date)
                     .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.inkTertiary)
             }

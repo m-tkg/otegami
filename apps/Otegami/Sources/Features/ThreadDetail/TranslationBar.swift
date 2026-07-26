@@ -49,7 +49,9 @@ struct TranslationBar: View {
     }
 
     private var headline: String {
-        isAvailable ? "英語 → 日本語（端末内で翻訳）" : "この端末では翻訳を利用できません"
+        // `Text(headline)`はverbatim呼び出しなので`String(localized:)`で
+        // 明示的にローカライズする (`MessageListView.title`と同じ理由)。
+        isAvailable ? String(localized: "英語 → 日本語（端末内で翻訳）") : String(localized: "この端末では翻訳を利用できません")
     }
 
     @ViewBuilder

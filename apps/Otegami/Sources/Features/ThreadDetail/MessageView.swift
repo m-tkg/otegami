@@ -87,6 +87,11 @@ struct MessageView: View {
 
     @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = true
     @State private var translationState: MessageTranslationState = .none
+
+    // MARK: - AI要約 (表示・操作改善バッチ)
+
+    @State private var summaryState: MessageSummaryState = .none
+    @State private var summaryTask: Task<Void, Never>?
     /// The bar's 訳文/原文 segment — `false` (訳文) is the handoff's
     /// explicit default ("既定は訳文").
     @State private var translationShowOriginal = false
@@ -104,14 +109,34 @@ struct MessageView: View {
         message?.detectedLanguage == "en"
     }
 
+    /// 表示・操作改善バッチ「翻訳ボタン: メールの言語 ≠ アプリの表示言語の
+    /// 場合のみ表示」— この翻訳機能自体が英語→日本語の一方向にしか対応して
+    /// いない (`requestTranslation`が常に`.english`→`.japanese`) ため、
+    /// 「メールの言語」は事実上 `isEnglishMessage` のまま、「アプリの表示
+    /// 言語」を `LocalizationSettingsStore.effectiveLanguageCode` と比較する
+    /// 形で一般化した: アプリの表示言語が英語なら (メールも自分も英語なので)
+    /// 翻訳の必要がなく、バー自体を出さない。日本語 (またはシステムが日本語)
+    /// の場合は従来どおり出す。
+    private var shouldShowTranslationBar: Bool {
+        isEnglishMessage && LocalizationSettingsStore.effectiveLanguageCode != "en"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let message {
                 header(for: message)
                     .padding()
+                // 表示・操作改善バッチ「AI要約ボタン」: 言語を問わずどの
+                // メッセージにも出す — `TranslationBar`(翻訳) のすぐ上に
+                // 置き、「本文画面に生えたAI機能」として並べる。
+                AISummaryBar(
+                    state: summaryState,
+                    isAvailable: environment.isTranslationAvailable,
+                    onSummarize: { requestSummary(message: message) }
+                )
                 // 1i: "件名 → 送信者行 → 翻訳バー → 本文" — right after the
                 // header (subject/from/to/date), before attachments/body.
-                if isEnglishMessage {
+                if shouldShowTranslationBar {
                     TranslationBar(
                         state: translationState,
                         showOriginal: $translationShowOriginal,
@@ -136,7 +161,13 @@ struct MessageView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .accessibilityIdentifier("messageDetail.scrollView")
-        .navigationTitle(displaySubject)
+        // 表示・操作改善バッチ「ヘッダにメール件名を表示しない」: this view is
+        // always embedded inside `ThreadDetailView` (never pushed on its
+        // own), and `displaySubject` already renders in `header(for:)`
+        // above — a `.navigationTitle` here would just repeat it in the
+        // nav bar and, being the more deeply nested view, would win over
+        // `ThreadDetailView`'s own generic title. See that view's doc
+        // comment on the same change.
         .task(id: messageId) { await load() }
         // M8: QuickLook, shared across platforms via SwiftUI's own
         // modifier rather than a `QLPreviewController`/`QLPreviewPanel`
@@ -429,7 +460,7 @@ struct MessageView: View {
         // original rendering untouched below — the translation feature
         // never changes what a non-English or not-yet-translated message
         // looks like.
-        if isEnglishMessage, !translationShowOriginal, case .translated(let record) = translationState {
+        if shouldShowTranslationBar, !translationShowOriginal, case .translated(let record) = translationState {
             TranslatedBodyView(paragraphs: record.paragraphs, originalOverrides: $translationParagraphOverrides)
         } else if isLoading {
             VStack {
@@ -533,6 +564,7 @@ struct MessageView: View {
         previewURL = nil
         manualPreferPlainText = nil
         resetTranslationState()
+        resetSummaryState()
         await deleteCredentialIfUITestRequested()
 
         guard let loadedMessage = try? await environment.database.dbWriter.read({ db in
@@ -762,7 +794,11 @@ struct MessageView: View {
     /// off or a previous attempt failed) goes through the same
     /// `requestTranslation(message:)` this calls into.
     private func kickoffTranslationIfNeeded(message: MessageRecord) {
+        // 表示・操作改善バッチ: `shouldShowTranslationBar`と同じ条件 (アプリの
+        // 表示言語が既に英語なら自動翻訳もしない) — バーを出さない状況で
+        // 裏でだけ翻訳が走る非一貫な状態を避ける。
         guard message.detectedLanguage == "en" else { return }
+        guard LocalizationSettingsStore.effectiveLanguageCode != "en" else { return }
         guard environment.isTranslationAvailable else { return }
         guard autoTranslateEnglish else { return }
         requestTranslation(message: message)
@@ -790,6 +826,42 @@ struct MessageView: View {
             guard !Task.isCancelled else { return }
             translationState = result
             translateTask = nil
+        }
+    }
+
+    // MARK: - AI要約 (表示・操作改善バッチ)
+
+    private func resetSummaryState() {
+        summaryTask?.cancel()
+        summaryTask = nil
+        summaryState = .none
+    }
+
+    /// `AISummaryBar`の「要約」/「再生成」ボタンの行き先 — `sourceTextForTranslation()`
+    /// をそのまま再利用する (要約も翻訳と同じく、エンジンはプレーンテキスト
+    /// しか受け付けないため、HTML本文はここでも`HTMLTextExtractor`で平文化
+    /// する)。翻訳と違って結果を永続キャッシュしない (`MessageTranslator`の
+    /// ような専用のキャッシュ層を要約のためだけに新設するのは、このバッチの
+    /// 範囲に対して過大と判断した — 同じメッセージを開き直すたびに再生成に
+    /// なるが、要約はボタンを押した時だけ動く手動機能なので許容範囲) — 出力
+    /// 言語は `LocalizationSettingsStore.effectiveLanguageCode` に合わせる
+    /// (英語表示なら英語要約、それ以外は日本語要約)。
+    private func requestSummary(message: MessageRecord) {
+        guard summaryTask == nil else { return }
+        guard let sourceText = sourceTextForTranslation() else { return }
+        summaryState = .summarizing
+        let translator = environment.translationService
+        let targetLanguage: TranslationLanguage = LocalizationSettingsStore.effectiveLanguageCode == "en" ? .english : .japanese
+        summaryTask = Task {
+            do {
+                let result = try await translator.summarize(sourceText, targetLanguage: targetLanguage)
+                guard !Task.isCancelled else { return }
+                summaryState = .summarized(result)
+            } catch {
+                guard !Task.isCancelled else { return }
+                summaryState = .failed("\(error)")
+            }
+            summaryTask = nil
         }
     }
 }

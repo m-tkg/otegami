@@ -91,15 +91,17 @@ struct MessageListRow: View {
         .accessibilityIdentifier("messageList.row.\(threadId)")
         // Design system: `List` draws its own default (system-styled)
         // separators and gives each row standard insets/background — both
-        // fight `ThreadRowView`'s own flat/full-bleed styling (its
-        // background already spans the row, and `.otegamiRowDivider()`
-        // below draws the handoff's 1pt dashed row rule instead of the
-        // system's thin solid one), so this row opts out of all three and
-        // lets `ThreadRowView` own its full visual bounds.
-        .listRowInsets(EdgeInsets())
+        // fight `ThreadRowView`'s own flat/full-bleed styling, so this row
+        // opts out of both and lets `ThreadRowView` own its full visual
+        // bounds. 表示・操作改善バッチ「カード状表示」: `.listRowInsets` now
+        // carries real horizontal/vertical margin instead of `.zero` — that
+        // margin *is* the gap between cards (and from the screen edge),
+        // replacing the previous full-bleed-row + dashed-divider look
+        // (`.otegamiRowDivider()`) with `ThreadRowView.otegamiCardBorder()`'s
+        // bordered "面" per row.
+        .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: OtegamiSpacing.sm, bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.sm))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
-        .otegamiRowDivider()
         // D8 「スワイプの割り当て」— see `SwipeActionSettingsStore`'s doc
         // comment for the "short=first declared, long=second declared,
         // guarded actions never auto-fire" design this implements.

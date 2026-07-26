@@ -97,7 +97,12 @@ struct ThreadDetailView: View {
                 }
             }
         }
-        .navigationTitle(navigationTitle)
+        // 表示・操作改善バッチ「ヘッダにメール件名を表示しない」: the subject
+        // already renders inside each message's own header
+        // (`ThreadMessageSummaryRow`/`MessageView.header(for:)`), so
+        // repeating it in the navigation bar was pure duplication —
+        // replaced with a generic screen title.
+        .navigationTitle("メール")
         .task(id: threadId) { await load() }
         .safeAreaInset(edge: .bottom) { footerToolbar }
         .sheet(isPresented: $showingInfo) { infoSheet }
@@ -165,11 +170,6 @@ struct ThreadDetailView: View {
                 expandedMessageIds.insert(messageId)
             }
         }
-    }
-
-    private var navigationTitle: String {
-        let subject = messages.last?.subject
-        return subject?.isEmpty == false ? subject! : "(件名なし)"
     }
 
     /// 新画面構成 (3): "返信"/"転送"/"検索" が対象にするメッセージ — スレッド内
@@ -497,7 +497,7 @@ private struct ThreadMessageRow: View {
             Button {
                 onToggleExpanded(messageId)
             } label: {
-                ThreadMessageSummaryRow(message: message, isExpanded: isExpanded)
+                ThreadMessageSummaryRow(message: message, isExpanded: isExpanded, accountId: accountId)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("threadDetail.message.\(messageId).header")
@@ -512,17 +512,42 @@ private struct ThreadMessageRow: View {
 }
 
 /// The collapsed (or about-to-collapse) one-line summary for a single
-/// message within `ThreadDetailView`: sender, a snippet when collapsed,
-/// date, and a disclosure chevron. Tapping it (the enclosing `Button` in
-/// `ThreadDetailView`) toggles expansion.
+/// message within `ThreadDetailView`: sender (+ avatar), a snippet when
+/// collapsed, date, and a disclosure chevron. Tapping it (the enclosing
+/// `Button` in `ThreadDetailView`) toggles expansion.
+///
+/// 表示・操作改善バッチ「スレッド詳細の行にもプレビュー/アイコン」: this row
+/// already showed a one-line snippet when collapsed; it now also shows
+/// `SenderAvatar` (gated by the same `ListDisplaySettingsStore
+/// .showAvatarInDetailKey` setting `MessageView`'s own expanded header
+/// already reads — this row and that header are the same "detail screen"
+/// surface from the user's point of view). Styled to read as visually
+/// distinct from the top-level message list rather than identical to it —
+/// per `CLAUDE.md`'s explicit requirement — via a softer `paleBase` tint
+/// (vs. the list row's `surface`) and extra leading indent, rather than the
+/// list row's bordered card look (`ThreadRowView.otegamiCardBorder()`):
+/// these rows already sit inside one continuous thread rather than being
+/// separately-scannable inbox entries, so a card border here would read as
+/// a contradictory "these are independent items" signal.
 private struct ThreadMessageSummaryRow: View {
     let message: MessageRecord
     let isExpanded: Bool
+    let accountId: String?
+
+    @AppStorage(ListDisplaySettingsStore.showAvatarInDetailKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatarInDetail
 
     var body: some View {
         HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
             UnreadDot(isUnread: !message.flags.contains(.seen))
                 .padding(.top, 6)
+            if showAvatar, let accountId {
+                SenderAvatar(
+                    displayName: message.fromAddresses.first?.name,
+                    address: message.fromAddresses.first?.address ?? "",
+                    accountId: accountId,
+                    diameter: 24
+                )
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(senderText)
                     .font(OtegamiFont.headline())
@@ -536,7 +561,7 @@ private struct ThreadMessageSummaryRow: View {
                 }
             }
             Spacer(minLength: OtegamiSpacing.sm)
-            Text(message.date ?? message.internalDate, format: .dateTime.month().day().hour().minute())
+            OtegamiDateFormat.listRowText(for: message.date ?? message.internalDate)
                 .font(OtegamiFont.caption())
                 .foregroundStyle(OtegamiColor.inkTertiary)
             Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
@@ -545,8 +570,9 @@ private struct ThreadMessageSummaryRow: View {
                 .accessibilityHidden(true)
         }
         .padding(.vertical, OtegamiSpacing.sm)
-        .padding(.horizontal, OtegamiSpacing.md)
-        .background(OtegamiColor.surface)
+        .padding(.leading, OtegamiSpacing.lg)
+        .padding(.trailing, OtegamiSpacing.md)
+        .background(OtegamiColor.paleBase)
         .contentShape(Rectangle())
     }
 
