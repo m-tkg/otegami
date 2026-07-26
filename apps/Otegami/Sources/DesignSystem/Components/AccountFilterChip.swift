@@ -27,7 +27,13 @@ public struct AccountFilterChip: View {
     }
 
     private var label: some View {
-        Text(title)
+        // `title`はアカウント表示名 (動的、ローカライズ対象外) と「全部」
+        // 「＋」のような固定ラベル (ローカライズ対象) の両方に使われる —
+        // `LocalizedStringKey(title)`でラップしておけば、`Localizable
+        // .xcstrings`に該当エントリがある固定ラベルだけが翻訳され、
+        // アカウント名はエントリが無いのでそのままキー (=元の文字列) が
+        // 表示されるだけで安全 (`MessageHeaderInfoView.infoRow`と同じ手法)。
+        Text(LocalizedStringKey(title))
             .font(OtegamiFont.caption())
             .foregroundStyle(isSelected ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
             .padding(.horizontal, OtegamiSpacing.md)

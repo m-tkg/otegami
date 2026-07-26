@@ -231,3 +231,20 @@ iOS 27 beta) では、実リンクタップ時に `WKNavigationDelegate
 
 有効/無効の概念は無く (5つとも常に表示)、並び順だけを変更できる。詳細・
 各アイコンの動作は `docs/design-system.md`「新画面構成」節を参照。
+
+## 表示言語 (表示・操作改善バッチ)
+
+`LocalizationSettingsStore.swift`。設定 →「表示言語」セクションの
+Picker (`.pickerStyle(.menu)`) から「システムに従う」「日本語」
+「English」を選ぶ。
+
+| キー | 既定値 |
+| --- | --- |
+| `app.languageOption` | `system` (`AppLanguageOption.system`) |
+
+選択は `AppleLanguages`(`UserDefaults`標準キー) の上書きも兼ねる —
+`.system`なら`AppleLanguages`を削除してOS本来の言語解決に戻し、`.ja`/
+`.en`ならその1言語だけの配列を書き込む。**変更の反映にはアプリの再起動
+が必要** (設定画面にもその旨のfooterを表示) — `Bundle.main`のローカライズ
+解決はプロセス起動時に一度だけ行われるため。詳細な仕組み・ローカライズ
+のカバレッジ範囲は [docs/localization.md](localization.md) 参照。

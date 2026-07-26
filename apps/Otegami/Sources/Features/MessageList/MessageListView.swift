@@ -454,7 +454,11 @@ struct MessageListView: View {
         .disabled(selectedThreadIds.isEmpty)
     }
 
-    private func selectionBarButton(title: String, systemImage: String, identifier: String, action: @escaping () -> Void, tint: Color = OtegamiColor.accent) -> some View {
+    // 表示・操作改善バッチ「表示言語の設定」: `title: String`のままだと
+    // `Text(title)`がverbatim (非ローカライズ) 呼び出しになる —
+    // `LocalizedStringKey`に変えるだけで、呼び出し側の文字列リテラルは
+    // そのまま`Localizable.xcstrings`のキーとして解決されるようになる。
+    private func selectionBarButton(title: LocalizedStringKey, systemImage: String, identifier: String, action: @escaping () -> Void, tint: Color = OtegamiColor.accent) -> some View {
         Button(action: action) {
             VStack(spacing: OtegamiSpacing.xs) {
                 Image(systemName: systemImage)
@@ -652,7 +656,11 @@ struct MessageListView: View {
     private var title: String {
         switch selection {
         case .unifiedInbox:
-            "すべての受信トレイ"
+            // 表示・操作改善バッチ「表示言語の設定」: `Text(title)`は
+            // `Text(String)`(verbatim)なので、リテラルを直接書くだけでは
+            // ローカライズされない — `String(localized:)`で明示的に
+            // `Localizable.xcstrings`を引く。
+            String(localized: "すべての受信トレイ")
         case .mailbox(let mailboxSelection):
             environment.accounts.first { $0.id == mailboxSelection.accountId }.map { $0.displayName } ?? "Inbox"
         }

@@ -82,7 +82,13 @@ struct MessageHeaderInfoView: View {
     private func infoRow(_ label: String, _ value: String?) -> some View {
         if let value, !value.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
-                Text(label)
+                // `label`は英字のフィールド名 ("Message-ID"等) と日本語の
+                // ラベル ("件名"等) が混在する — `label`自体は
+                // `.accessibilityIdentifier`の組み立てにも使うので`String`の
+                // ままにし、表示だけ`LocalizedStringKey(label)`でラップして
+                // `Localizable.xcstrings`を引かせる (該当エントリがない
+                // 英字ラベルはそのままキー自体が表示されるだけで安全)。
+                Text(LocalizedStringKey(label))
                     .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.inkSecondary)
                 Text(value)

@@ -19,11 +19,13 @@ enum SearchFilterOption: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var title: String {
+        // `AccountFilterChip(title:)`が`Text(title)`(verbatim)で描画するため
+        // `String(localized:)`で明示的にローカライズする。
         switch self {
-        case .all: "全部"
-        case .attachments: "添付"
-        case .unread: "未読"
-        case .english: "英語"
+        case .all: String(localized: "全部")
+        case .attachments: String(localized: "添付")
+        case .unread: String(localized: "未読")
+        case .english: String(localized: "英語")
         }
     }
 

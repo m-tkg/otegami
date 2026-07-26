@@ -103,6 +103,10 @@ struct AccountsListContent: View {
     // C7「メール内リンクを開くブラウザ」— see `LinkBrowserSettingsStore`'s doc
     // comment for why this is iOS-only.
     @AppStorage(LinkBrowserSettingsStore.openInAppBrowserKey) private var openInAppBrowser = LinkBrowserSettingsStore.defaultOpenInAppBrowser
+    // 表示・操作改善バッチ「表示言語の設定」— `LocalizationSettingsStore`'s
+    // doc comment on why this is a plain `@State` seeded from `.current`
+    // rather than `@AppStorage`.
+    @State private var languageOption: AppLanguageOption = LocalizationSettingsStore.current
 
     /// Account edit UI: which account's edit sheet is open, `nil` when
     var body: some View {
@@ -332,6 +336,31 @@ struct AccountsListContent: View {
                 Text("ピン留め")
             } footer: {
                 Text("既定ではピン留めはこの端末・このアプリだけのローカルな印です。ONにすると、ピン留め/解除のたびに IMAP の \\Flagged フラグも更新し、他のメールクライアントでのフラグ操作も読み取ってピン留めに反映します。")
+            }
+
+            // 表示・操作改善バッチ「表示言語の設定」— see
+            // `LocalizationSettingsStore`'s doc comment. `@State`(`@AppStorage`
+            // ではない) で持つ理由: `LocalizationSettingsStore.current`は
+            // "system"/"ja"/"en" の生文字列ではなく `AppLanguageOption` を
+            // 返す解決済みの値で、書き込み側も (`AppleLanguages`キーへの反映を
+            // 伴う) 専用の`setLanguageOption(_:)`を経由する必要があるため、
+            // 単純な `UserDefaults` キー1つへの読み書きで完結する
+            // `@AppStorage` の形にそのまま乗らない。
+            Section {
+                Picker("表示言語", selection: $languageOption) {
+                    ForEach(AppLanguageOption.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("settings.languageOptionPicker")
+                .onChange(of: languageOption) { _, newValue in
+                    LocalizationSettingsStore.setLanguageOption(newValue)
+                }
+            } header: {
+                Text("表示言語")
+            } footer: {
+                Text("アプリの表示言語を切り替えます。変更を反映するには、アプリを再起動してください。")
             }
 
             // design-phase-3, 1l "翻訳".

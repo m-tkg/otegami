@@ -14,9 +14,11 @@ enum SearchScopeOption: String, CaseIterable, Identifiable, Hashable {
     var id: String { rawValue }
 
     var title: String {
+        // `Text(scope.title)`がverbatim呼び出しになるため`String(localized:)`
+        // で明示的にローカライズする。
         switch self {
-        case .all: "すべて"
-        case .currentMailbox: "このメールボックス"
+        case .all: String(localized: "すべて")
+        case .currentMailbox: String(localized: "このメールボックス")
         }
     }
 }

@@ -30,7 +30,10 @@ struct MailScreenView: View {
 
     @State private var mailSelection: SidebarSelection = .unifiedInbox
     @State private var accountFilter: String?
-    @State private var selectionTitle = "すべての受信"
+    // `Text(selectionTitle)`はverbatim呼び出しになるため、代入箇所すべてで
+    // `String(localized:)`を使う (このプロパティの唯一の消費者である
+    // `Text(selectionTitle)`呼び出し自体はそのまま)。
+    @State private var selectionTitle = String(localized: "すべての受信")
     @State private var selectedThreadId: Int64?
     @State private var isSelecting = false
 
@@ -192,7 +195,7 @@ struct MailScreenView: View {
 
     private func selectUnifiedInbox() {
         mailSelection = .unifiedInbox
-        selectionTitle = "すべての受信"
+        selectionTitle = String(localized: "すべての受信")
         accountFilter = nil
         isMenuOpen = false
     }
