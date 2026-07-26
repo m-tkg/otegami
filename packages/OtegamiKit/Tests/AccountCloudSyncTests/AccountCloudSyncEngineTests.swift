@@ -93,6 +93,103 @@ struct AccountCloudSyncEngineTests {
         #expect(local.insertedAccounts[0].hasCredential == false)
     }
 
+    // MARK: - Identity-based duplicate prevention (docs/icloud-sync.md
+    // "重複挿入バグ": two devices independently adding "the same" mail
+    // account each mint their own `accountId` UUID, so matching on
+    // `accountId` alone used to insert both as unrelated accounts).
+
+    /// The core repro from the real device report: this device already has
+    /// the account locally (its own UUID); the cloud payload separately
+    /// carries a second copy of the *same* mailbox (same email/imapHost/
+    /// imapUsername) under a different UUID, pushed by another device.
+    /// `reconcile()` must not insert that second copy as a new account.
+    @Test
+    func reconcileDoesNotInsertACloudDuplicateOfAnAccountAlreadyLocal() async {
+        let store = FakeUbiquitousStore()
+        let local = FakeLocalAccountDirectory()
+        local.seedLocalAccount(.fixture(accountId: "device-a-uuid", email: "test1@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch))
+        // Another device's copy of the exact same mailbox, different UUID,
+        // not yet known to this device and not tombstoned.
+        store.seed(AccountCloudPayload(accounts: [
+            .fixture(accountId: "device-b-uuid", email: "test1@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch)
+        ]))
+        let engine = makeEngine(store: store, local: local)
+
+        let summary = await engine.reconcile()
+
+        #expect(summary.insertedAccounts.isEmpty)
+        #expect(summary.duplicateCloudAccountIds == ["device-b-uuid"])
+        #expect(local.insertedAccounts.isEmpty)
+        // Only the original local account exists afterward — no duplicate
+        // row, no duplicate mail source.
+        #expect(await local.allAccountSnapshots().map(\.accountId) == ["device-a-uuid"])
+    }
+
+    /// A brand-new third device (no local copy of either) reconciling a
+    /// payload that already carries two duplicate UUIDs for the same
+    /// mailbox (left over from before this fix, or from two devices racing
+    /// to add the account before either saw the other's push) must insert
+    /// exactly one of them — never both — and every device reconciling the
+    /// same payload must agree on *which* one, hence the `accountId`-sorted
+    /// iteration order.
+    @Test
+    func reconcileInsertsOnlyOneOfTwoDuplicateCloudAccountsWithNoLocalCopyAtAll() async {
+        let store = FakeUbiquitousStore()
+        store.seed(AccountCloudPayload(accounts: [
+            .fixture(accountId: "zzz-later", email: "test1@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch),
+            .fixture(accountId: "aaa-earlier", email: "test1@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch)
+        ]))
+        let local = FakeLocalAccountDirectory()
+        let engine = makeEngine(store: store, local: local)
+
+        let summary = await engine.reconcile()
+
+        #expect(summary.insertedAccounts.map(\.accountId) == ["aaa-earlier"])
+        #expect(summary.duplicateCloudAccountIds == ["zzz-later"])
+        #expect(local.insertedAccounts.count == 1)
+    }
+
+    /// Different email/host/username entirely — not a duplicate, both must
+    /// still insert normally. Guards against the identity check being too
+    /// aggressive.
+    @Test
+    func reconcileStillInsertsGenuinelyDifferentCloudAccounts() async {
+        let store = FakeUbiquitousStore()
+        let local = FakeLocalAccountDirectory()
+        local.seedLocalAccount(.fixture(accountId: "local-work", email: "work@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch))
+        store.seed(AccountCloudPayload(accounts: [
+            .fixture(accountId: "cloud-personal", email: "personal@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch)
+        ]))
+        let engine = makeEngine(store: store, local: local)
+
+        let summary = await engine.reconcile()
+
+        #expect(summary.insertedAccounts.map(\.accountId) == ["cloud-personal"])
+        #expect(summary.duplicateCloudAccountIds.isEmpty)
+    }
+
+    /// Same email/host but a different `authType` (e.g. a `.password`
+    /// account that coincidentally shares an address with an `.oauth2`
+    /// one) must never be merged — see `identityKey`'s doc comment on why
+    /// `authType` is part of the guard.
+    @Test
+    func reconcileDoesNotTreatDifferentAuthTypesAsDuplicatesEvenWithMatchingEmailAndHost() async {
+        let store = FakeUbiquitousStore()
+        let local = FakeLocalAccountDirectory()
+        local.seedLocalAccount(
+            .fixture(accountId: "local-password", email: "same@otegami.test", authType: .password, imapHost: "imap.otegami.test", updatedAt: epoch)
+        )
+        store.seed(AccountCloudPayload(accounts: [
+            .fixture(accountId: "cloud-oauth2", email: "same@otegami.test", authType: .oauth2, imapHost: "imap.otegami.test", updatedAt: epoch)
+        ]))
+        let engine = makeEngine(store: store, local: local)
+
+        let summary = await engine.reconcile()
+
+        #expect(summary.insertedAccounts.map(\.accountId) == ["cloud-oauth2"])
+        #expect(summary.duplicateCloudAccountIds.isEmpty)
+    }
+
     // MARK: - Tombstone deletion propagation
 
     @Test

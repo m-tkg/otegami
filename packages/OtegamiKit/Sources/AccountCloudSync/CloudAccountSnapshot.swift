@@ -75,6 +75,34 @@ public struct CloudAccountSnapshot: Codable, Equatable, Sendable {
 }
 
 extension CloudAccountSnapshot {
+    /// A case-insensitive "is this actually the same mailbox" key, used by
+    /// `AccountCloudSyncEngine.reconcile()`'s phase 4 to recognize a cloud
+    /// account as a duplicate of one this device already knows about under
+    /// a *different* `accountId` — see that method's doc comment for the
+    /// bug this fixes (`docs/icloud-sync.md`'s "重複挿入バグ"): two devices
+    /// each adding "the same" mail account independently generate two
+    /// different UUIDs for `AccountRecord.id`, so matching on `accountId`
+    /// alone treats them as unrelated and inserts both, producing a visible
+    /// duplicate in the account list plus duplicate mail in the unified
+    /// inbox (one copy per duplicate account).
+    ///
+    /// `authType` is included as a safety guard, not part of the literal
+    /// "same mailbox" definition — it prevents ever merging a `.password`
+    /// account into an `.oauth2` one (or vice versa) purely because their
+    /// email/host/username happen to coincide; the two use entirely
+    /// different credential machinery (Keychain password vs. `TokenStore`
+    /// refresh token), so treating them as interchangeable would be a
+    /// correctness bug of its own, not a fix. `email`/`imapHost`/
+    /// `imapUsername` are lowercased before comparing (domains and email
+    /// local parts are conventionally case-insensitive, and this errs
+    /// toward *catching* a duplicate rather than missing one over a casing
+    /// difference); `smtpHost`/display name are deliberately excluded — a
+    /// user could plausibly reconfigure SMTP or rename an account on one
+    /// device without that meaning it's now a "different" mailbox.
+    var identityKey: String {
+        "\(authType.rawValue)|\(email.lowercased())|\(imapHost.lowercased())|\(imapUsername.lowercased())"
+    }
+
     /// Captures every synced field of `account` as it stands right now —
     /// called both when pushing a locally-created/changed account to the
     /// cloud and when `AccountCloudSyncEngine.reconcile()` asks

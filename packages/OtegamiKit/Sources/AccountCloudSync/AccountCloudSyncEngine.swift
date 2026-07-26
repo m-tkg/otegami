@@ -21,6 +21,15 @@ public struct ReconcileSummary: Equatable, Sendable {
     public var updatedAccountIds: [String] = []
     public var deletedAccountIds: [String] = []
     public var pushedAccountIds: [String] = []
+    /// Cloud-only accounts (phase 4) that were *not* inserted because their
+    /// `CloudAccountSnapshot.identityKey` already matched an account this
+    /// device knows about (locally, or another cloud account already
+    /// claimed by this same pass) under a different `accountId` — see
+    /// `identityKey`'s doc comment for the duplicate-insertion bug this
+    /// prevents. Exposed mainly for tests to assert the dedup actually
+    /// fired; app code has no separate action to take for these (unlike
+    /// `insertedAccounts`) since by definition nothing changed locally.
+    public var duplicateCloudAccountIds: [String] = []
     /// `true` when `reconcile()` short-circuited because iCloud account sync
     /// is toggled off (`AccountCloudSyncEngine.isEnabled`) — every other
     /// field is empty in that case, since nothing was looked at at all.
@@ -31,12 +40,14 @@ public struct ReconcileSummary: Equatable, Sendable {
         updatedAccountIds: [String] = [],
         deletedAccountIds: [String] = [],
         pushedAccountIds: [String] = [],
+        duplicateCloudAccountIds: [String] = [],
         disabled: Bool = false
     ) {
         self.insertedAccounts = insertedAccounts
         self.updatedAccountIds = updatedAccountIds
         self.deletedAccountIds = deletedAccountIds
         self.pushedAccountIds = pushedAccountIds
+        self.duplicateCloudAccountIds = duplicateCloudAccountIds
         self.disabled = disabled
     }
 
@@ -229,8 +240,35 @@ public actor AccountCloudSyncEngine {
         }
 
         // Phase 4: whatever's left in the cloud payload that this device
-        // has neither a local copy nor a tombstone for is new — insert it.
-        for (id, cloudSnapshot) in cloudById where localById[id] == nil && !tombstoneIds.contains(id) {
+        // has neither a local copy nor a tombstone for is new — insert it,
+        // *unless* it's actually a duplicate of an account this device
+        // already has under a different `accountId` (`identityKey`'s doc
+        // comment) — two devices independently adding "the same" mail
+        // account each generate their own UUID, so id-only matching used to
+        // insert both, producing a visible duplicate row in the account
+        // list plus duplicate mail (one copy synced per duplicate account)
+        // in the unified inbox — the exact bug reported against a real
+        // device (`docs/icloud-sync.md`).
+        //
+        // `claimedIdentities` starts with every surviving local account's
+        // identity, then grows as this loop inserts — so a *second* cloud
+        // duplicate (e.g. a brand-new device that has neither original
+        // locally, reconciling a payload that already carries both UUIDs)
+        // only ever inserts the first one it processes, not both. Iterating
+        // `cloudById` in a fixed (`accountId`-sorted) order rather than
+        // Swift's unspecified `Dictionary` order matters here: without it,
+        // two different devices reconciling the exact same payload could
+        // each end up "winning" a different duplicate, permanently
+        // diverging on which `accountId` is the survivor instead of
+        // converging on the same one.
+        var claimedIdentities = Set(localById.values.map(\.identityKey))
+        for (id, cloudSnapshot) in cloudById.sorted(by: { $0.key < $1.key })
+        where localById[id] == nil && !tombstoneIds.contains(id) {
+            guard !claimedIdentities.contains(cloudSnapshot.identityKey) else {
+                summary.duplicateCloudAccountIds.append(id)
+                continue
+            }
+            claimedIdentities.insert(cloudSnapshot.identityKey)
             let hasCredential = await local.hasCredential(accountId: id, authType: cloudSnapshot.authType)
             await local.insertFromCloud(cloudSnapshot, hasCredential: hasCredential)
             summary.insertedAccounts.append(.init(accountId: id, hasCredential: hasCredential))
