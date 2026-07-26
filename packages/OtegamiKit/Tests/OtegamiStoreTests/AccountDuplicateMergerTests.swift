@@ -222,6 +222,62 @@ struct AccountDuplicateMergerTests {
         #expect(opQueueCount == 1)
     }
 
+    /// Real-device investigation (`KeychainCredentialStore.legacyServices`'s
+    /// doc comment): `AccountRecord.needsReauth` is not a live Keychain
+    /// read — it's whatever the *previous* app session last observed, and a
+    /// Keychain `service`-string rename left it stale for a real account.
+    /// Without an injected live check, `mergeDuplicateAccounts` falls back
+    /// to trusting that stale column exactly as it did before this
+    /// parameter existed — which, in this scenario, throws away the account
+    /// that actually still has a working credential just because its
+    /// `needsReauth` flag hadn't caught up yet. This pins down the bug the
+    /// next test's `hasCredential` closure exists to fix.
+    @Test("without a live credential check, a stale needsReauth column can pick the wrong survivor")
+    func staleNeedsReauthColumnPicksWrongSurvivorWithoutLiveCheck() throws {
+        let database = try AppDatabase.makeInMemory()
+        // "looksFine": `needsReauth == false` (last known good state), but
+        // no real credential right now. "looksBad": `needsReauth == true`
+        // (stale), but a real, currently-working credential.
+        let looksFine = makeAccount(id: "stale-looks-fine", needsReauth: false)
+        let looksBad = makeAccount(id: "stale-looks-bad", needsReauth: true)
+        try database.dbWriter.write { db in
+            try looksFine.insert(db)
+            try looksBad.insert(db)
+        }
+
+        let results = try database.dbWriter.write { db in try AccountDuplicateMerger.mergeDuplicateAccounts(db: db) }
+
+        // The credential-less account wins just because its `needsReauth`
+        // flag hadn't been refreshed yet — the actual real-device failure
+        // mode this whole investigation traced.
+        #expect(results == [.init(survivorAccountId: "stale-looks-fine", mergedAccountIds: ["stale-looks-bad"])])
+    }
+
+    /// The fix: `AppEnvironment.init()` injects a synchronous, live
+    /// Keychain check as `hasCredential` — when it disagrees with the
+    /// (possibly stale) `needsReauth` column, the live check wins.
+    @Test("a live credential check overrides a stale needsReauth column when provided")
+    func liveCredentialCheckOverridesStaleNeedsReauthColumn() throws {
+        let database = try AppDatabase.makeInMemory()
+        let looksFine = makeAccount(id: "stale-looks-fine", needsReauth: false)
+        let looksBad = makeAccount(id: "stale-looks-bad", needsReauth: true)
+        try database.dbWriter.write { db in
+            try looksFine.insert(db)
+            try looksBad.insert(db)
+        }
+
+        // Reports the opposite of what `needsReauth` says — exactly what a
+        // live Keychain check returns once a `service`-string rename has
+        // made the persisted column wrong.
+        let results = try database.dbWriter.write { db in
+            try AccountDuplicateMerger.mergeDuplicateAccounts(db: db) { account in
+                account.id == "stale-looks-bad"
+            }
+        }
+
+        #expect(results == [.init(survivorAccountId: "stale-looks-bad", mergedAccountIds: ["stale-looks-fine"])])
+    }
+
     @Test("running the merge twice is idempotent")
     func idempotentAcrossRepeatedRuns() throws {
         let database = try AppDatabase.makeInMemory()

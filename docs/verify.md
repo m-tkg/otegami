@@ -2935,3 +2935,51 @@ UI の白背景中心の約80〜340KB に落ちるフレーム) には実際に�
   フレーク) で失敗したが、2回目の再実行で成功 — この変更が原因ではないと
   判断した根拠は、今回の変更が `AccountSetupView`/`AccountTypeSelectionView`
   を一切触っていないこと)。
+
+## iOS シミュレータ検証: 資格情報回復 (レガシー Keychain service / 孤児
+## エントリの自動吸着)
+
+```sh
+scripts/verify-ios-credential-recovery.sh
+```
+
+`docs/icloud-sync.md`「続報: 上記の修正自体が未完了のままコミットされて
+いたバグ、および孤児 Keychain エントリの救済」節の2つの独立した回復経路
+を検証する。
+
+1. Phase 1: `OtegamiCredentialRecoveryUITests
+   .testPasswordRecoversFromLegacyKeychainServiceOnRelaunch` —
+   実アカウントを追加 → `OTEGAMI_UITEST_MOVE_CREDENTIALS_TO_LEGACY_KEYCHAIN_SERVICE`
+   フラグでパスワードをレガシー `service` へ退避 (`52df393` 以前の端末の
+   状態を再現) → 通常起動だけで「資格情報を待っています」バナーが出ず、
+   本文が取得できることを確認。
+2. Phase 2: `OtegamiCredentialRecoveryUITests
+   .testOrphanedCredentialIsAdoptedOnNextOrdinaryLaunch` —
+   実アカウントを追加 → `OTEGAMI_UITEST_RELOCATE_CREDENTIAL_TO_ORPHAN_ACCOUNT_ID`
+   フラグでパスワードを合成の孤児 `accountId` へ退避 (悪い方向への重複
+   統合が既に完了し、負け側の資格情報だけ Keychain に取り残された状態を
+   再現) → 通常起動だけで同様にバナーが出ず本文が取得できることを確認。
+
+スクリーンショットは `SCREENSHOT_DIR` (既定 `/tmp/otegami-verify/`) に
+`credential-recovery-01-legacy-service-inbox.png` /
+`credential-recovery-02-orphan-adoption-inbox.png` として出力される。
+
+このスクリプトを実行する際は、2フェーズの間でシミュレータを
+`erase`/`mailstack-seed` し直す (前フェーズのアカウント状態が後フェーズの
+判定に混ざらないようにするため) — 2回の `erase` を挟むぶん、他の
+`verify-ios-*.sh` より実行時間が長い (合計 10 分弱)。
+
+### 既知の制約
+
+`OtegamiDuplicateAccountUITests` (重複アカウント統合バグ自体の回帰
+テスト) を本セッションで再実行しようとしたところ、フェーズを跨いで
+別々の `xcodebuild test` 呼び出しを行う手順 (フェーズ間でホストの
+`sqlite3` を使って DB に重複行を注入する既存の設計) で、アプリが
+実際には2行ある DB を0件として観測する現象を確認した。この修正セッション
+のコード変更を無効化しても同一症状が再現することを確認済みで、今回の
+変更が原因ではない (`PENDING.md`「開発環境: 連続する `xcodebuild test`
+単体実行の間でシミュレータの App Group DB が読めなくなることがある」
+節に詳細を記録)。上記の資格情報回復2フェーズは、`app.terminate()`/
+`app.launch()` を単一の `xcodebuild test` 呼び出し内で完結させる設計
+(`OtegamiCredentialRecoveryUITests` の既存パターン) のため、この制約の
+影響を受けず問題なく実行できた。

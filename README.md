@@ -135,7 +135,11 @@ Two things this app is built around, more than any single feature list:
   id, so two devices adding "the same" mailbox never produce a duplicate —
   and a device that already has a stale duplicate from before this fix
   self-heals it automatically on next launch, without losing any local
-  mail, drafts, or templates.
+  mail, drafts, or templates. If that merge ever picks a survivor with no
+  working credential (e.g. its password ended up orphaned in the Keychain
+  under the merged-away account), the app detects and re-attaches it
+  automatically too, whenever it's unambiguous which credential belongs to
+  which account.
 - **Performance**: tested against a 100k-message synthetic mailbox — see
   [docs/performance.md](docs/performance.md).
 

@@ -22,6 +22,12 @@ struct PushSettingsStore: @unchecked Sendable {
     private static let enabledKey = "push.enabled"
     private static let watchMapKey = "push.accountWatchMap"
     private static let keychainService = "com.mtkg.otegami.push-device-secret"
+    /// Same rename hazard as `KeychainCredentialStore.legacyServices`
+    /// (`52df393` changed this hardcoded default too) — kept here for
+    /// symmetry/consistency even though a stale device secret is much
+    /// lower-stakes than a lost mail password (`enablePushNotifications`
+    /// just re-registers a fresh one; this only saves that one round trip).
+    private static let legacyKeychainServices = ["com.m-tkg.otegami.push-device-secret"]
     private static let keychainAccount = "device"
 
     private let defaults: UserDefaults
@@ -76,7 +82,20 @@ struct PushSettingsStore: @unchecked Sendable {
     // MARK: - Device secret (Keychain)
 
     func deviceSecret() throws -> String? {
-        var query = baseQuery()
+        if let data = try deviceSecretData(service: Self.keychainService) {
+            return String(data: data, encoding: .utf8)
+        }
+        for legacyService in Self.legacyKeychainServices {
+            guard let data = try deviceSecretData(service: legacyService) else { continue }
+            try? setDeviceSecret(String(data: data, encoding: .utf8) ?? "")
+            _ = SecItemDelete(baseQuery(service: legacyService) as CFDictionary)
+            return String(data: data, encoding: .utf8)
+        }
+        return nil
+    }
+
+    private func deviceSecretData(service: String) throws -> Data? {
+        var query = baseQuery(service: service)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -84,8 +103,7 @@ struct PushSettingsStore: @unchecked Sendable {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
-        guard let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        return result as? Data
     }
 
     // M11: deliberately *not* `kSecAttrSynchronizable` — this secret is
@@ -112,10 +130,15 @@ struct PushSettingsStore: @unchecked Sendable {
     }
 
     func deleteDeviceSecret() throws {
-        let status = SecItemDelete(baseQuery() as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainError.unexpectedStatus(status)
+        var lastError: KeychainError?
+        for candidateService in [Self.keychainService] + Self.legacyKeychainServices {
+            let status = SecItemDelete(baseQuery(service: candidateService) as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                lastError = .unexpectedStatus(status)
+                continue
+            }
         }
+        if let lastError { throw lastError }
     }
 
     /// Clears every bit of local push state — relay URL, device id/secret,
@@ -132,9 +155,13 @@ struct PushSettingsStore: @unchecked Sendable {
     }
 
     private func baseQuery() -> [String: Any] {
+        baseQuery(service: Self.keychainService)
+    }
+
+    private func baseQuery(service: String) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: Self.keychainAccount,
         ]
         if let accessGroup {

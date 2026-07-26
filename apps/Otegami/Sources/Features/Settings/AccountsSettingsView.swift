@@ -56,6 +56,28 @@ struct AccountsListContent: View {
     @State private var pendingDeletion: AccountRecord?
     @State private var reauthenticatingAccountId: String?
     @State private var reauthErrorMessage: String?
+    /// Real-device bug report: the "資格情報を待っています" banner's "再接続"
+    /// button used to just re-check the Keychain (`retryPendingCredential`,
+    /// still used for `.oauth2`'s "再認証") — for a `.password` account whose
+    /// credential is genuinely gone (not just "iCloud Keychain hasn't
+    /// synced it in yet"), that check can never succeed no matter how many
+    /// times it's tapped, and it has no way to *tell* the user that; from
+    /// their side, the button visibly does nothing. `AppEnvironment
+    /// .startObservingAccounts` already re-runs the same Keychain check
+    /// automatically on every account-list tick, so a manual button whose
+    /// only job was to trigger that same check is redundant on top of being
+    /// a dead end — the actual fix for a `.password` account is to type the
+    /// password in, which only `AccountEditView` can do. Pushing straight
+    /// there (via this `navigationDestination(item:)`, independent of each
+    /// row's own `NavigationLink` push to the same destination) is what the
+    /// button does now instead — see `accountRow(for:)`. Holds just the
+    /// `accountId` (not the `AccountRecord` itself) because
+    /// `navigationDestination(item:)` requires its item type be
+    /// `Hashable`, which `AccountRecord` isn't (it's `Equatable`, not
+    /// `Hashable` — GRDB's `FetchableRecord` types in this codebase
+    /// generally aren't) — the destination closure below looks the account
+    /// back up from `environment.accounts` by id instead.
+    @State private var passwordEntryAccountId: String?
 
     // design-phase-3, 1l "操作"/"翻訳" blocks, D8/B3/B4/E9 の追加設定 — see
     // `SwipeActionSettingsStore`/`TranslationSettingsStore`/
@@ -366,6 +388,19 @@ struct AccountsListContent: View {
         .sheet(item: $accountEntryRoute) { route in
             accountEntryDestination(for: route, binding: $accountEntryRoute)
         }
+        // Real-device bug fix: the pending-credential banner's "パスワードを
+        // 入力" button (`passwordEntryAccountId`'s doc comment) pushes here —
+        // a second, programmatic route to the exact same `AccountEditView`
+        // destination each row's own `NavigationLink` already pushes to on
+        // tap. Both coexist on this `NavigationStack` without conflict:
+        // SwiftUI's implicit-path (`NavigationLink(destination:)`) and
+        // item-driven (`navigationDestination(item:)`) push mechanisms are
+        // independent triggers onto the same stack.
+        .navigationDestination(item: $passwordEntryAccountId) { accountId in
+            if let account = environment.accounts.first(where: { $0.id == accountId }) {
+                AccountEditView(account: account)
+            }
+        }
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
@@ -435,9 +470,20 @@ struct AccountsListContent: View {
             // (iCloud Keychain hadn't caught up — same
             // `needsReauth` flag, different meaning and
             // banner text than the Gmail case above, per
-            // the plan: "バナー文言だけ分岐"). "再接続" re-checks
-            // Keychain immediately rather than waiting for
-            // the next launch/accounts-list tick.
+            // the plan: "バナー文言だけ分岐"). Real-device bug fix:
+            // this used to be a "再接続" button that only
+            // re-checked the Keychain — useless (and
+            // indistinguishable from broken) once the
+            // credential is actually gone, since nothing
+            // ever makes that check start succeeding on its
+            // own. `AppEnvironment
+            // .retryPendingCredentialIfAvailable` already
+            // performs that same check automatically on
+            // every account-list tick, so tapping here now
+            // goes straight to the one thing that can
+            // actually fix a `.password` account:
+            // `AccountEditView`'s password field (see
+            // `passwordEntryAccountId`'s doc comment).
             if account.needsReauth, account.authType == .password {
                 HStack {
                     Label("資格情報を待っています", systemImage: "icloud.and.arrow.down")
@@ -445,12 +491,11 @@ struct AccountsListContent: View {
                         .foregroundStyle(.orange)
                         .accessibilityIdentifier("settings.account.\(account.id).pendingCredentialBanner")
                     Spacer()
-                    Button("再接続") {
-                        Task { await retryPendingCredential(account) }
+                    Button("パスワードを入力") {
+                        passwordEntryAccountId = account.id
                     }
                     .font(.caption)
                     .buttonStyle(.borderless)
-                    .disabled(reauthenticatingAccountId == account.id)
                     .accessibilityIdentifier("settings.account.\(account.id).retryPendingCredentialButton")
                 }
             }
@@ -473,24 +518,4 @@ struct AccountsListContent: View {
         }
     }
 
-    /// M11: the "再接続" button on a cloud-inserted `.password` account
-    /// that's still waiting for its Keychain credential to sync in — see
-    /// `AppEnvironment.retryPendingCredential(for:)`'s doc comment. Shares
-    /// `reauthenticatingAccountId`/`reauthErrorMessage` with
-    /// `reauthenticate(_:)` above (both buttons are mutually exclusive per
-    /// account — an account is never both an `.oauth2` reauth candidate and
-    /// a `.password` pending-credential candidate at once) rather than
-    /// duplicating a second pair of `@State` properties for the same
-    /// "in-flight action, show an error if it fails" shape.
-    private func retryPendingCredential(_ account: AccountRecord) async {
-        reauthenticatingAccountId = account.id
-        reauthErrorMessage = nil
-        defer { reauthenticatingAccountId = nil }
-
-        do {
-            try await environment.retryPendingCredential(for: account)
-        } catch {
-            reauthErrorMessage = "まだ資格情報が見つかりません。iCloud キーチェーンの同期状況を確認してください。"
-        }
-    }
 }

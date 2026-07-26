@@ -72,8 +72,42 @@ public enum AccountDuplicateMerger {
     /// Callers are expected to invoke this from inside `dbWriter.write { }`
     /// (matching every other batch operation in this package —
     /// `FTSIndexer.backfillIfNeeded`, `ThreadAssigner.assignAllUnthreaded`).
+    ///
+    /// - Parameter hasCredential: a **live** check of whether a usable
+    ///   credential (Keychain password / OAuth refresh token) currently
+    ///   exists for an account — used as the survivor tie-break's primary
+    ///   signal in place of `AccountRecord.needsReauth` (see the type's doc
+    ///   comment: "Which side survives?"). `OtegamiStore` has no Keychain/
+    ///   `TokenStore` dependency by design, so this can't be looked up in
+    ///   here directly; the app layer (`AppEnvironment.init()`) is expected
+    ///   to snapshot every candidate account's real credential state
+    ///   *before* calling this (a synchronous closure over that snapshot,
+    ///   not a live re-query mid-transaction — `TokenStore.
+    ///   hasStoredRefreshToken` is `async`, which a `Database` write
+    ///   transaction can't await into anyway). `nil` (the default) falls
+    ///   back to the previous `!needsReauth` heuristic unchanged — the
+    ///   "注入されなかった場合は資格情報の有無を無視しない" safety net: every existing
+    ///   caller (and every test below that predates this parameter) keeps
+    ///   its exact prior behavior rather than silently losing the ability
+    ///   to distinguish credentialed accounts at all.
+    ///
+    ///   Why this matters: `needsReauth` is a column written by whatever
+    ///   the *previous* app session last observed (`AppEnvironment
+    ///   .auth(for:)`/`retryPendingCredentialIfAvailable`), not a live
+    ///   Keychain read — a real-device investigation
+    ///   (`KeychainCredentialStore.legacyServices`'s doc comment) found a
+    ///   case where that column had gone stale for *every* account in a
+    ///   duplicate group at once (a Keychain `service`-string rename
+    ///   orphaned every password lookup for one launch), which made the
+    ///   old `needsReauth`-only tie-break fall through to the message-count/
+    ///   `createdAt` tie-breaks and pick a survivor with no real credential
+    ///   — exactly the "統合はされたのに資格情報が無い" report this parameter exists
+    ///   to prevent from recurring.
     @discardableResult
-    public static func mergeDuplicateAccounts(db: Database) throws -> [MergeResult] {
+    public static func mergeDuplicateAccounts(
+        db: Database,
+        hasCredential: (@Sendable (AccountRecord) -> Bool)? = nil
+    ) throws -> [MergeResult] {
         let accounts = try AccountRecord.fetchAll(db)
         guard accounts.count > 1 else { return [] }
 
@@ -84,7 +118,7 @@ public enum AccountDuplicateMerger {
 
         var results: [MergeResult] = []
         for (_, group) in groups.sorted(by: { $0.key < $1.key }) where group.count > 1 {
-            let ordered = try order(group, db: db)
+            let ordered = try order(group, db: db, hasCredential: hasCredential)
             guard let survivor = ordered.first else { continue }
             var mergedIds: [String] = []
             for loser in ordered.dropFirst() {
@@ -97,8 +131,14 @@ public enum AccountDuplicateMerger {
     }
 
     /// Survivor-first ordering — see the type's doc comment for the
-    /// three-step tie-break.
-    private static func order(_ group: [AccountRecord], db: Database) throws -> [AccountRecord] {
+    /// three-step tie-break, and `mergeDuplicateAccounts`'s `hasCredential`
+    /// parameter doc comment for why the first step prefers a live
+    /// credential check over the persisted `needsReauth` column when one is
+    /// available.
+    private static func order(
+        _ group: [AccountRecord], db: Database,
+        hasCredential: (@Sendable (AccountRecord) -> Bool)?
+    ) throws -> [AccountRecord] {
         var messageCounts: [String: Int] = [:]
         for account in group {
             let count = try Int.fetchOne(
@@ -112,8 +152,16 @@ public enum AccountDuplicateMerger {
             ) ?? 0
             messageCounts[account.id] = count
         }
+        // "Looks like it has a working credential" — the live check when
+        // the caller provided one, else the same `!needsReauth` proxy this
+        // used before `hasCredential` existed.
+        func looksCredentialed(_ account: AccountRecord) -> Bool {
+            hasCredential?(account) ?? !account.needsReauth
+        }
         return group.sorted { lhs, rhs in
-            if lhs.needsReauth != rhs.needsReauth { return !lhs.needsReauth }
+            let lhsCredentialed = looksCredentialed(lhs)
+            let rhsCredentialed = looksCredentialed(rhs)
+            if lhsCredentialed != rhsCredentialed { return lhsCredentialed }
             let lhsCount = messageCounts[lhs.id] ?? 0
             let rhsCount = messageCounts[rhs.id] ?? 0
             if lhsCount != rhsCount { return lhsCount > rhsCount }

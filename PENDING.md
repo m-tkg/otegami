@@ -214,6 +214,46 @@ Simulator アプリプロセスから on-device 推論ブローカーを呼ぶ�
      Simulator 固有の制限として `docs/translation.md` に確定情報を追記
      し、この節を消す。
 
+## 開発環境: 連続する `xcodebuild test` 単体実行の間でシミュレータの App
+## Group DB が読めなくなることがある (原因未特定)
+
+**症状**: `OtegamiDuplicateAccountUITests` の3フェーズ再現手順
+(`docs/icloud-sync.md`「重複挿入バグとその修正」節) — フェーズ1を
+`xcodebuild test -only-testing:...` で単体実行 → アプリを terminate →
+ホストの `sqlite3` で App Group コンテナ内の DB に重複行を直接 INSERT →
+フェーズ2を別の `xcodebuild test -only-testing:...` 呼び出しで単体実行 —
+という、別々の `xcodebuild test` 呼び出しをまたぐ手順を実行すると、
+フェーズ2 (時にはフェーズ1) が「設定 → アカウント」を0件 (「アカウント
+がありません」) として表示することを複数回確認した。`sqlite3` で当該
+DB ファイルを直接読むと INSERT した行を含めて正しい内容が残っており
+(アプリが消したのではない)、`xcrun simctl get_app_container ... groups`
+で確認した App Group コンテナの UUID もその DB ファイルと一致している
+ため、アプリ自身の `DatabasePool` オープンが何らかの理由で失敗し
+`AppEnvironment.init()` の `catch` 節 (インメモリ DB へのフォールバック)
+を静かに踏んでいる可能性が高いと見ている。
+
+- シミュレータを `erase` した直後の1回だけの実行でも同一症状が再現した
+  (`docs/verify.md` が既に記録している「erase 直後は不安定」パターンとは
+  別 — 今回は複数回連続で発生し、時間を置いても再現し続けた)。
+- コードの変更 (`AppEnvironment.adoptOrphanedCredentialIfUnambiguous`
+  など、この修正セッションで追加した処理) を一時的に無効化しても同じ
+  症状が再現することを確認済みなので、この修正セッションのコード変更が
+  原因ではない。`AccountDuplicateMerger`/`AppDatabase` 自体は今回無変更。
+- 単一の `xcodebuild test` 呼び出し内で `app.terminate()`/`app.launch()`
+  を繰り返すテスト (`OtegamiCredentialRecoveryUITests` など) では一度も
+  再現していない — 症状が出るのは常に「別プロセスの `xcodebuild test`
+  呼び出しがアプリを再インストールした直後」のパターンのみ。
+- **対応手順 (次にこの手順を検証する人向け)**: `xcodebuild test` の
+  ログに `AppDatabase.makeShared` 失敗時の `assertionFailure` メッセージ
+  が出ているか (この Debug/Test 構成でアサーションが有効かどうか自体も
+  未確認)、`log stream` でアプリプロセスの `os_log` を尻尾追いする、
+  DatabasePool のオープンにタイムアウト/リトライを入れて切り分ける、
+  などから始めるとよい。再現待ちのため保留 — 影響は
+  `OtegamiDuplicateAccountUITests` のような複数 `xcodebuild test` 呼び出し
+  をまたぐ検証手順に限られ、通常のアプリ実行やこのリポジトリの他の
+  自動検証スクリプト (単一 `xcodebuild test` 呼び出し内で完結するもの)
+  には影響しない。
+
 ## 公開時に必要な対応 (まとめ)
 
 以下は「今すぐ開発を止める理由」ではなく、実際に公開・配布する段になったら

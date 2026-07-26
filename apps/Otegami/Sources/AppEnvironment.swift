@@ -130,6 +130,63 @@ final class AppEnvironment {
         }
         self.database = database
 
+        // Moved ahead of the duplicate-account merge below (it used to be
+        // constructed much further down, alongside `syncCoordinator`) so
+        // the merge's survivor pick can do a *live* Keychain check instead
+        // of trusting the persisted `AccountRecord.needsReauth` column —
+        // see `AccountDuplicateMerger.mergeDuplicateAccounts`'s
+        // `hasCredential` parameter doc comment for the real-device bug
+        // (`KeychainCredentialStore.legacyServices`'s doc comment) that
+        // made the column-only check pick a credential-less survivor.
+        // `KeychainCredentialStore` itself has no dependency on anything
+        // constructed later in this initializer, so moving it earlier is
+        // safe.
+        self.credentialStore = KeychainCredentialStore(accessGroup: OtegamiAppGroup.keychainAccessGroup)
+
+        // UITest-only escape hatch (mirrors `MessageView
+        // .deleteCredentialIfUITestRequested`'s `OTEGAMI_UITEST_*`
+        // pattern) — see `KeychainCredentialStore
+        // .relocateToLegacyServiceForUITesting`'s doc comment.
+        // `OtegamiCredentialRecoveryUITests` sets this on a *second* launch
+        // (after a first, ordinary launch already added a real account, so
+        // its password already exists under the current `service`) to
+        // reproduce the exact state a device that predates the `52df393`
+        // Keychain-service rename was left in, then lets the rest of this
+        // very same `init()` — the duplicate-merge live credential check
+        // right below, `startObservingAccounts`'s automatic retry, any
+        // message body fetch — exercise `KeychainCredentialStore`'s own
+        // legacy-service fallback for real, end to end.
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_MOVE_CREDENTIALS_TO_LEGACY_KEYCHAIN_SERVICE"] == "1" {
+            let passwordAccountIds = (try? database.dbWriter.read { db in
+                try AccountRecord.filter(Column("authType") == AccountAuthType.password.rawValue).fetchAll(db)
+            })?.map(\.id) ?? []
+            for accountId in passwordAccountIds {
+                credentialStore.relocateToLegacyServiceForUITesting(accountId: accountId)
+            }
+        }
+
+        // UITest-only escape hatch, the other shape of credential loss this
+        // app now recovers from (see `KeychainCredentialStore
+        // .relocateToOrphanAccountIdForUITesting`'s doc comment) — moves
+        // every `.password` account's Keychain password onto a synthetic id
+        // that matches no real `AccountRecord`, reproducing a device that
+        // already went through a bad duplicate-account merge before this
+        // fix shipped and was left with the real password stranded under
+        // the merged-away account's now-nonexistent id.
+        // `OtegamiCredentialRecoveryUITests` sets this on a *second* launch,
+        // then lets the very next, ordinary launch (no flag) exercise
+        // `adoptOrphanedCredentialIfUnambiguous` below for real.
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_RELOCATE_CREDENTIAL_TO_ORPHAN_ACCOUNT_ID"] == "1" {
+            let passwordAccountIds = (try? database.dbWriter.read { db in
+                try AccountRecord.filter(Column("authType") == AccountAuthType.password.rawValue).fetchAll(db)
+            })?.map(\.id) ?? []
+            for accountId in passwordAccountIds {
+                credentialStore.relocateToOrphanAccountIdForUITesting(
+                    accountId: accountId, orphanAccountId: "\(accountId)-orphaned-uitest"
+                )
+            }
+        }
+
         // M11 bug fix: consolidate already-local duplicate `account` rows
         // for the same real mailbox — see `AccountDuplicateMerger`'s doc
         // comment for the bug this is the migration side of
@@ -168,10 +225,75 @@ final class AppEnvironment {
         if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_SKIP_DUPLICATE_ACCOUNT_MERGE"] == "1" {
             duplicateMerges = []
         } else {
+            // `.password`-kind credential check is a synchronous Keychain
+            // read (`KeychainCredentialStore.password` never suspends), so
+            // it can run live, right here, inside this still-synchronous
+            // `init()` — unlike `.oauth2`'s `TokenStore.hasStoredRefreshToken`
+            // (an actor method, genuinely `async`, and `init()` can't await
+            // into it without breaking the "no duplicate-row flash" ordering
+            // this whole block's doc comment above depends on). A `.oauth2`
+            // duplicate group therefore still falls back to `order()`'s
+            // `!needsReauth` heuristic, same as before this parameter
+            // existed — only the `.password` path (the one the real-device
+            // report was actually about) gets the live check.
+            let credentialStore = self.credentialStore
             duplicateMerges = (try? database.dbWriter.write { db in
-                try AccountDuplicateMerger.mergeDuplicateAccounts(db: db)
+                try AccountDuplicateMerger.mergeDuplicateAccounts(db: db) { account in
+                    guard account.authType == .password else { return !account.needsReauth }
+                    return ((try? credentialStore.password(forAccountId: account.id)) ?? nil) != nil
+                }
             }) ?? []
         }
+
+        // Immediate rescue, part 1 — this merge's own aftermath: even with
+        // the live `hasCredential` check above, a `.oauth2` duplicate group
+        // still falls back to the (possibly stale) `!needsReauth` heuristic
+        // (see the closure's own comment), so it's still possible for a
+        // merge picked *this very launch* to leave a `.password` survivor
+        // with no working credential while one of the accounts it just
+        // merged away genuinely had one. Adopt that credential onto the
+        // survivor's accountId right now, synchronously, *before*
+        // `cleanupAfterDuplicateMerge` below gets a chance to delete it as
+        // this device's own stray leftover — this is what makes that
+        // deletion safe to keep unconditional rather than needing to know
+        // which ids were "rescued" and which weren't.
+        for merge in duplicateMerges {
+            guard let survivorAccount = (try? database.dbWriter.read { db in
+                try AccountRecord.fetchOne(db, key: merge.survivorAccountId)
+            }) ?? nil,
+                survivorAccount.authType == .password,
+                ((try? credentialStore.password(forAccountId: merge.survivorAccountId)) ?? nil) == nil
+            else { continue }
+            for loserAccountId in merge.mergedAccountIds {
+                guard (try? credentialStore.adoptOrphanedPassword(
+                    fromAccountId: loserAccountId, toAccountId: merge.survivorAccountId
+                )) == true else { continue }
+                try? database.dbWriter.write { db in
+                    guard var row = try AccountRecord.fetchOne(db, key: merge.survivorAccountId) else { return }
+                    row.needsReauth = false
+                    try row.update(db)
+                }
+                break
+            }
+        }
+
+        // Immediate rescue, part 2 — a device that already went through a
+        // bad merge in a *previous* launch, before this fix shipped: the
+        // duplicate `account` rows are long gone by now (so `duplicateMerges`
+        // above is empty and part 1 never runs), but the real password can
+        // still be sitting in the Keychain, orphaned, under the merged-away
+        // account's id — `CloudAccountDirectory.cleanupAfterDuplicateMerge`'s
+        // own credential delete is a `Task` that races the very next app
+        // termination, so it isn't guaranteed to have run to completion.
+        // Only acts when completely unambiguous (exactly one `.password`
+        // account missing a credential, exactly one orphaned Keychain item)
+        // — see `KeychainCredentialStore.adoptOrphanedPassword`'s doc
+        // comment for why guessing between multiple candidates is
+        // deliberately not attempted. Also a no-op if the user already
+        // recovered by hand via `AccountEditView`'s "パスワードを入力" flow
+        // before this fix shipped (`adoptOrphanedPassword` refuses to
+        // clobber an existing credential).
+        Self.adoptOrphanedCredentialIfUnambiguous(database: database, credentialStore: credentialStore)
 
         self.syncCoordinator = SyncCoordinator(
             database: database,
@@ -179,7 +301,8 @@ final class AppEnvironment {
             smtpSessionFactory: { config in MailCoreSMTPSession(config: config) },
             messageBuilder: { draft in MailCoreMessageBuilder.build(draft) }
         )
-        self.credentialStore = KeychainCredentialStore(accessGroup: OtegamiAppGroup.keychainAccessGroup)
+        // `credentialStore` itself was constructed further up — see the
+        // duplicate-account-merge block's comment on why.
 
         // design-phase-3: see `translationService`/`messageTranslator`'s
         // doc comments.
@@ -297,6 +420,53 @@ final class AppEnvironment {
         if let cloudSyncNotificationObserver {
             NotificationCenter.default.removeObserver(cloudSyncNotificationObserver)
         }
+    }
+
+    /// The launch-time rescue for a device already left with an orphaned
+    /// Keychain credential by a *previous* bad duplicate-account merge —
+    /// see the two call sites in `init()` for the full picture (this is
+    /// "part 2", the one that still helps on a later launch after the
+    /// duplicate `account` rows themselves are long gone). `static` (not an
+    /// instance method) and takes `database`/`credentialStore` as
+    /// parameters rather than reading `self.database`/`self.credentialStore`
+    /// because it runs from inside `init()` before `self` exists as a fully
+    /// formed value — the exact same constraint the duplicate-merge block
+    /// right above it in `init()` is already under.
+    ///
+    /// Deliberately conservative: only acts when there is exactly one
+    /// `.password` account missing a working credential *and* exactly one
+    /// Keychain item whose accountId matches no live account at all. Either
+    /// count being 0 or ≥2 means this can't tell which orphan (if any)
+    /// belongs to which account without guessing, so it does nothing and
+    /// leaves the existing "パスワードを入力" flow (`AccountsSettingsView`) as
+    /// the way out — silently reassigning the wrong password to the wrong
+    /// account would be a far worse failure mode than leaving the banner up.
+    @discardableResult
+    private static func adoptOrphanedCredentialIfUnambiguous(
+        database: AppDatabase, credentialStore: KeychainCredentialStore
+    ) -> String? {
+        guard let accounts = try? database.dbWriter.read({ db in try AccountRecord.fetchAll(db) }) else { return nil }
+        let knownAccountIds = Set(accounts.map(\.id))
+
+        let needyAccounts = accounts.filter { account in
+            account.authType == .password
+                && ((try? credentialStore.password(forAccountId: account.id)) ?? nil) == nil
+        }
+        guard needyAccounts.count == 1, let needyAccount = needyAccounts.first else { return nil }
+
+        let orphanAccountIds = credentialStore.allStoredAccountIds().subtracting(knownAccountIds)
+        guard orphanAccountIds.count == 1, let orphanAccountId = orphanAccountIds.first else { return nil }
+
+        guard (try? credentialStore.adoptOrphanedPassword(
+            fromAccountId: orphanAccountId, toAccountId: needyAccount.id
+        )) == true else { return nil }
+
+        try? database.dbWriter.write { db in
+            guard var row = try AccountRecord.fetchOne(db, key: needyAccount.id) else { return }
+            row.needsReauth = false
+            try row.update(db)
+        }
+        return needyAccount.id
     }
 
     private func startObservingAccounts() {
@@ -477,18 +647,24 @@ final class AppEnvironment {
 
     /// A `.password`-kind account `CloudAccountDirectory.insertFromCloud`
     /// created without a credential (iCloud Keychain hadn't synced the
-    /// password yet — see `AccountRecord.needsReauth`'s doc comment) can
-    /// have Keychain re-checked at any later point: either automatically,
-    /// on every accounts-list tick (`startObservingAccounts`, cheap once
-    /// resolved since this whole method becomes a no-op the moment
-    /// `needsReauth` flips to `false`), or explicitly from
-    /// `AccountsSettingsView`'s "再接続" button
-    /// (`retryPendingCredential(for:)` below, which surfaces a failure
-    /// instead of silently ignoring it). A `.gmail`/`.oauth2` account's
-    /// `needsReauth` means something different (a rejected refresh token —
-    /// `AppEnvironment.reauthenticateGmailAccount`'s interactive OAuth flow
-    /// is the only way to clear that one), so this only ever touches
-    /// `.password` accounts.
+    /// password yet — see `AccountRecord.needsReauth`'s doc comment) gets
+    /// Keychain re-checked automatically on every accounts-list tick
+    /// (`startObservingAccounts`, cheap once resolved since this whole
+    /// method becomes a no-op the moment `needsReauth` flips to `false`).
+    /// Real-device bug fix: this used to also be reachable from
+    /// `AccountsSettingsView`'s "再接続" button as an explicit-retry sibling
+    /// (`retryPendingCredential(for:)`, since removed) — but a button whose
+    /// only job is "run this same automatic check one time, right now" is
+    /// useless once the credential is actually gone rather than merely not
+    /// synced yet, and gives the user no way to tell the two apart. The
+    /// button now pushes straight to `AccountEditView`'s password field
+    /// instead (`AccountsSettingsView.passwordEntryAccount`'s doc comment)
+    /// — a `.password` account's only real recovery path — leaving this
+    /// automatic tick-based check as the sole caller. A `.gmail`/`.oauth2`
+    /// account's `needsReauth` means something different (a rejected
+    /// refresh token — `AppEnvironment.reauthenticateGmailAccount`'s
+    /// interactive OAuth flow is the only way to clear that one), so this
+    /// only ever touches `.password` accounts.
     private func retryPendingCredentialIfAvailable(_ account: AccountRecord) async {
         guard account.needsReauth, account.authType == .password else { return }
         guard let password = try? credentialStore.password(forAccountId: account.id) else { return }
@@ -498,24 +674,6 @@ final class AppEnvironment {
             _ = try? await self.syncCoordinator.syncAccount(account, auth: auth)
         }
         await registerWatchIfNeeded(for: account)
-    }
-
-    enum RetryPendingCredentialError: Error {
-        /// Still no Keychain password for this account — either iCloud
-        /// Keychain hasn't finished syncing yet, or it's turned off
-        /// entirely on this device.
-        case stillMissing
-    }
-
-    /// `AccountsSettingsView`'s "再接続" button — the explicit-retry sibling
-    /// of `retryPendingCredentialIfAvailable`'s automatic one, throwing
-    /// `.stillMissing` instead of silently doing nothing so the button can
-    /// show an error rather than just appearing to do nothing.
-    func retryPendingCredential(for account: AccountRecord) async throws {
-        guard account.authType == .password, try credentialStore.password(forAccountId: account.id) != nil else {
-            throw RetryPendingCredentialError.stillMissing
-        }
-        await retryPendingCredentialIfAvailable(account)
     }
 
     // MARK: - Auth resolution (M6: "SyncCoordinator のセッション構築経路に auth

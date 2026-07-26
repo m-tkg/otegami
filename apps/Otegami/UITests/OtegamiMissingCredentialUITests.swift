@@ -61,6 +61,20 @@ final class OtegamiMissingCredentialUITests: XCTestCase {
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
         XCTAssertTrue(scrollSettingsUntilVisible(pendingCredentialBanner, in: app), "Expected the 資格情報を待っています banner for the account whose Keychain item was deleted")
 
+        // Real-device bug fix (`docs/icloud-sync.md`): the banner's button
+        // used to be labeled "再接続" and just silently re-ran the same
+        // automatic Keychain check every launch already performs — for a
+        // `.password` account whose credential is genuinely gone (not just
+        // "not synced yet"), tapping it did nothing visible at all. It now
+        // reads "パスワードを入力" and pushes straight to `AccountEditView`'s
+        // password field (`AccountsSettingsView.passwordEntryAccountId`).
+        let passwordEntryButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "パスワードを入力")).firstMatch
+        XCTAssertTrue(scrollSettingsUntilVisible(passwordEntryButton, in: app), "Expected the pending-credential banner's button to read パスワードを入力, not the old dead-end 再接続")
+        passwordEntryButton.tap()
+
+        let passwordField = app.secureTextFields["accountEdit.password"]
+        XCTAssertTrue(passwordField.waitForExistence(timeout: 10), "Expected パスワードを入力 to push straight to AccountEditView's password field")
+
         Thread.sleep(forTimeInterval: 3)
     }
 

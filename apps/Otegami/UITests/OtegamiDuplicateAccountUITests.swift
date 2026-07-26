@@ -66,8 +66,14 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         let list = app.collectionViews.firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 10))
 
-        let matches = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "test1@otegami.test"))
-        XCTAssertEqual(matches.count, 2, "Expected the real device bug: two account rows for the same email address")
+        // `list.waitForExistence` only proves the (possibly still-empty)
+        // List container exists, not that `AppEnvironment.accounts`' async
+        // `ValueObservation` has delivered its first snapshot into it yet —
+        // an immediate, non-retrying `matches.count` check right after can
+        // race ahead of that and see 0 rows. Poll instead of trusting the
+        // first snapshot.
+        let matchCount = waitForAccountRowCount(2, emailText: "test1@otegami.test", in: app)
+        XCTAssertEqual(matchCount, 2, "Expected the real device bug: two account rows for the same email address")
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
         XCTAssertTrue(scrollSettingsUntilVisible(pendingCredentialBanner, in: app), "Expected the duplicate's needsReauth banner to be visible")
@@ -95,8 +101,8 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         let list = app.collectionViews.firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 10))
 
-        let matches = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "test1@otegami.test"))
-        XCTAssertEqual(matches.count, 1, "Expected the duplicate account merge to have collapsed both rows into one")
+        let matchCount = waitForAccountRowCount(1, emailText: "test1@otegami.test", in: app)
+        XCTAssertEqual(matchCount, 1, "Expected the duplicate account merge to have collapsed both rows into one")
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
         XCTAssertFalse(pendingCredentialBanner.waitForExistence(timeout: 3), "The surviving account must be the one with a working credential, not the needsReauth duplicate")
@@ -109,6 +115,26 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
             waitForSeededSubjectScrollingIfNeeded("ようこそ otegami へ", in: app),
             "Expected the surviving account's INBOX to still show its synced mail after the merge"
         )
+    }
+
+    /// Polls `staticTexts` matching `emailText` until the count stops
+    /// changing (or `expected` is reached) — see the two call sites' doc
+    /// comments for why a single, non-retrying `matches.count` right after
+    /// `list.waitForExistence` is racy: the List container existing proves
+    /// nothing about whether `AppEnvironment.accounts`' async
+    /// `ValueObservation` has delivered a snapshot into it yet.
+    private func waitForAccountRowCount(_ expected: Int, emailText: String, in app: XCUIApplication, maxAttempts: Int = 15) -> Int {
+        func currentCount() -> Int {
+            app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", emailText)).count
+        }
+        var count = currentCount()
+        var attempts = 0
+        while count != expected, attempts < maxAttempts {
+            Thread.sleep(forTimeInterval: 0.5)
+            count = currentCount()
+            attempts += 1
+        }
+        return count
     }
 
     private func scrollSettingsUntilVisible(_ element: XCUIElement, in app: XCUIApplication, maxAttempts: Int = 10) -> Bool {

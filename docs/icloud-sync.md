@@ -266,3 +266,253 @@ iCloud 経由では同期されない (片方のデバイスだけ切りたい�
   (`AccountCloudSyncEngine.reconcile()` の同一性チェックが、どのデバイス
   でもそのエントリを新規のローカル行として挿入させない) だが、KVS payload
   のサイズをわずかに消費し続ける点は既知の制約として残す。
+
+## 重複統合バグの修正後も資格情報が消えていたバグとその根本原因 (実機で確認)
+
+上記の重複統合修正 (`8d4969c`〜`afc25f0`) を入れた実機で、新たな報告が
+あった:「重複アカウントは1つに統合されたが、残ったアカウントに資格情報が
+無い。設定 → アカウントに『資格情報を待っています』バナーが出続け、
+『再接続』ボタンを押しても何も変化しない」。
+
+### 根本原因: Keychain `service` 文字列のリネームによる資格情報の孤立化
+
+調査の結果、重複統合ロジック自体のバグではなく、**その少し前に入っていた
+別のコミットが Keychain 項目を事実上「行方不明」にしていた**ことが分かった。
+
+`52df393` ("use com.mtkg as the bundle identifier prefix everywhere") は
+`KeychainCredentialStore.init(service:)` の**デフォルト引数**を
+`"com.m-tkg.otegami.account-password"` から
+`"com.mtkg.otegami.account-password"` へ変更した。このデフォルト値は
+xcconfig 由来ではなく、ソースコードに直接書かれた Swift の文字列リテラル
+であり、`PRODUCT_BUNDLE_IDENTIFIER`/`Local.xcconfig` の `com.mtkg.*`
+オーバーライド (このコミット自体のメッセージが「実際の signed build は
+元々 com.mtkg.* を使っていた」と書いている、まさにそれ) とは完全に独立
+している。つまり **実機の bundle id が何であったかに関係なく**、この
+コミット以前にビルドされたアプリは全員 `"com.m-tkg.otegami.account-password"`
+という service で Keychain にパスワードを保存していた。
+
+`kSecAttrService` は Generic Password 項目の「識別子の一部」であり、
+`SecItemCopyMatching` は service が一致しない項目を返さない (自由に
+付け替えられるラベルではない)。したがって、このコミット以降にビルドした
+アプリは、コミット前に保存されたパスワードを**すべて** `errSecItemNotFound`
+として扱う — Keychain には項目が実在するのに、「一度も保存されていない」
+のと区別がつかない。これがまさに「資格情報がありません」という症状であり、
+`AppEnvironment.auth(for:)` がこの `nil` を見て `needsReauth = true` を
+立てるため、`AccountDuplicateMerger` が (次の起動で) その直後に生存者を
+選ぶ際、本来資格情報を持っているはずのアカウントまで「資格情報が無い」と
+誤判定してしまう連鎖も引き起こしていた (次節参照)。`PushSettingsStore`
+の `deviceSecret` (push のデバイス秘密) にも同じ形のハードコード
+デフォルト文字列があり、同じ理由で同じ影響を受けていた。
+
+**教訓**: Keychain の `kSecAttrService`/`kSecAttrAccount` のようなクエリ
+識別子に使う文字列は、たとえ見た目が bundle id と同じパターンでも、
+xcconfig 変数からではなく完全に独立したハードコード文字列でありうる。
+「bundle id を揃えるだけの無害な rename」のつもりのコミットが、無関係な
+文字列リテラルを一緒に変えてしまうと、Keychain 項目のようにストレージの
+識別子そのものになっている文字列は容赦なく壊れる — レビュー時に `service`/
+`account`/`kSecAttrService` 引数のデフォルト値の diff は要注意。
+
+### 副次的なバグ: `AccountDuplicateMerger` が Keychain を直接見ていなかった
+
+`AccountDuplicateMerger.order()` (生存者選定) は `AccountRecord
+.needsReauth` という**永続化された DB カラム**だけを見ており、実際の
+Keychain を都度読み直してはいなかった。`needsReauth` は「前回のアプリ
+セッションが最後に観測した状態」でしかなく、上記の `service` リネームの
+ように **グループ内の全アカウントについて同時に**古い/誤った状態のまま
+になりうる。この場合、`!needsReauth` による一次判定が引き分けになり、
+メッセージ件数/`createdAt` によるタイブレークにフォールバックしてしまう
+ため、実際に資格情報を持つはずのアカウントが生存者に選ばれない可能性が
+あった。
+
+修正: `AccountDuplicateMerger.mergeDuplicateAccounts(db:hasCredential:)`
+に、生存者選定用の**同期的なライブチェック** `hasCredential` 引数を追加
+した。`OtegamiStore` パッケージは Keychain/`TokenStore` に依存しない設計
+のため、実際のチェックはアプリ層 (`AppEnvironment.init()`) が注入する —
+`.password` アカウントは `KeychainCredentialStore.password(forAccountId:)`
+が同期 API なのでそのまま呼べる (`.oauth2` は `TokenStore` が `actor` の
+`async` メソッドのみのため、この統合処理自体が同期的に実行される制約上
+ライブチェックはできず、従来通り `!needsReauth` にフォールバックする —
+実機報告は `.password` アカウントのものだったため、この制約は許容した)。
+`hasCredential` を渡さなかった場合は元の `!needsReauth` の挙動に完全に
+フォールバックする (「注入されなかった場合は資格情報の有無を無視しない」
+という安全側設計)。回帰テスト:
+`AccountDuplicateMergerTests.staleNeedsReauthColumnPicksWrongSurvivorWithoutLiveCheck`
+(ライブチェック無しでは誤った生存者が選ばれることを確認) /
+`.liveCredentialCheckOverridesStaleNeedsReauthColumn` (ライブチェックを
+渡すと正しい生存者が選ばれることを確認)。
+
+### 修正: Keychain のレガシー `service` 文字列からの自動回復
+
+`KeychainCredentialStore`/`PushSettingsStore` に、現在の `service` で
+見つからなかった場合に旧 `service` 文字列 (`legacyServices`) でも探す
+フォールバックを追加し、見つかったら現在の `service` へ書き戻し
+(delete-then-add、`kSecAttrSynchronizable = true` で保存) つつ旧項目を
+削除する遅延マイグレーションを実装した (`kSecAttrSynchronizable` 未設定
+の項目を M11 で移行した既存の `migrateToSynchronizableAndWrite` と同じ
+パターン)。これにより、**既にこのバグで資格情報を見失っていた端末も、
+パスワードの再入力なしに次回起動で自動的に回復する** — アプリ内で
+ユーザーが何かする必要は無い。
+
+`setPassword`/`deletePassword`/`deviceSecret` もレガシー `service` の
+項目を洗い出して整理するので、一度パスワードを再保存する操作 (アカウント
+編集画面での保存など) を経れば、レガシー項目は残らず現在の `service` に
+一本化される。
+
+### UI: 「再接続」ボタンが `.password` アカウントで機能しなかった問題
+
+上記の Keychain 修正とは別に、`AccountsSettingsView` の「資格情報を
+待っています」バナーの「再接続」ボタンは、実は `.password` アカウントに
+対しては Keychain を再チェックするだけで、資格情報が実際に消えている
+場合は何度押しても永久に無反応だった (M6 で Gmail の OAuth 再認証用に
+作られたボタンを流用していたための設計ミス)。`AppEnvironment
+.startObservingAccounts` が同じチェックを毎ティック自動実行しているため、
+このボタンは「もう一度同じ自動チェックを手動で走らせるだけ」であり、
+資格情報が本当に無くなっているケースでは実質的に意味の無いボタンだった。
+
+修正: `.password` アカウントの場合、ボタンを「パスワードを入力」に変更
+し、押すと `AccountEditView` (パスワード欄がある編集画面) へ直接遷移する
+ようにした (`AccountsSettingsView.passwordEntryAccountId` 経由の
+`navigationDestination(item:)`)。`.oauth2` アカウントの「再認証」ボタン
+(Google の OAuth フローを起動) は変更していない — 認証方式によって
+ボタンの文言と動作を分ける、という方針。使われなくなった
+`AppEnvironment.retryPendingCredential(for:)`/`RetryPendingCredentialError`
+は削除した (自動リトライ側の `retryPendingCredentialIfAvailable` だけが
+残る)。
+
+### 検証
+
+- `KeychainCredentialStore` は `apps/Otegami/Sources` 側にあり
+  `swift test` から到達できないため (Security framework の実 Keychain
+  が必要)、既存のパターン通りシミュレータでの XCUITest で検証した:
+  `OtegamiCredentialRecoveryUITests` — 実アカウントを追加した後、
+  `OTEGAMI_UITEST_MOVE_CREDENTIALS_TO_LEGACY_KEYCHAIN_SERVICE` フラグ
+  付きで再起動し (`KeychainCredentialStore
+  .relocateToLegacyServiceForUITesting` で、保存済みパスワードを
+  レガシー `service` へ実際に移動させて `52df393` 以前の端末の状態を
+  再現する)、通常起動の自動同期 (`OtegamiApp.startIdleLoops` →
+  `AppEnvironment.auth(for:)`) だけで資格情報が回復し、「資格情報を
+  待っています」バナーが出ないこと、メール本文が「資格情報がありません」
+  エラーにならず取得できることを確認した。
+- `AccountDuplicateMergerTests` に上記の回帰テスト2件を追加し、
+  `swift test` で確認 (`make test`)。
+- `make mac` / `make ios` のビルドが通ることを確認。
+
+## 続報: 上記の修正自体が未完了のままコミットされていたバグ、および孤児 Keychain エントリの救済
+
+上記「Keychain のレガシー `service` 文字列からの自動回復」を追加した
+コミット時点のワーキングツリーには、**検証用に一時的に入れた早期
+`return nil` が revert されないまま残っていた**
+(`KeychainCredentialStore.password(forAccountId:)` に
+`// TEMPORARY-FOR-REPRO-ONLY: ... Revert immediately after.` という
+コメント付きで残存)。このため、直前の節で説明したレガシー `service`
+フォールバックは実際には**一度も実行されない死んだコードだった** —
+`password(forAccountId:)` は常に最初の `if let data = ...` 節の直後で
+`return nil` していたため、`AccountDuplicateMerger` に注入される
+`hasCredential` クロージャ (`AppEnvironment.init()` 内、
+`credentialStore.password(forAccountId:)` を呼ぶ) も含め、レガシー
+`service` に残っている実在のパスワードは常に「無い」ものとして扱われ
+続けていた。これが実機で「重複統合の生存者選定が資格情報ありを選べない」
+「『再接続』を押しても何も起きない」の直接的な原因だった (レガシー
+service 自動回復の"実装"自体は正しかったが、有効化されていなかった)。
+`return nil` と直前のコメントを削除して復活させた
+(`KeychainCredentialStore.swift`)。
+
+### 追加の救済: 資格情報が「孤児」化した Keychain エントリの自動吸着
+
+上記の修正だけでは、**すでにこのバグを踏んで悪い方向に統合されてしまった
+端末**は救えない — 統合済みなら重複 `account` 行自体はもう存在せず、
+`AccountDuplicateMerger` の生存者選定コードはそもそも実行されない。実際に
+残るのは「生存アカウントに資格情報が無い」かつ「削除された側の
+`accountId` を鍵とする実パスワードが、どのアカウント行にも紐付かない
+まま Keychain に取り残されている」という状態 (`CloudAccountDirectory
+.cleanupAfterDuplicateMerge` の資格情報削除は `Task` のため、アプリ終了
+と競合して実行し切らないことがある)。
+
+`AppEnvironment.init()` に2段構えの即時救済を追加した:
+
+1. **統合直後 (同一起動内)**: `AccountDuplicateMerger` の返り値
+   (`survivorAccountId`/`mergedAccountIds`) を使い、生存者に資格情報が
+   無く、負け側のいずれかに資格情報があれば、`cleanupAfterDuplicateMerge`
+   が削除する前に生存者の `accountId` へ付け替える
+   (`KeychainCredentialStore.adoptOrphanedPassword`)。`.oauth2` 側の
+   `hasCredential` は依然として `!needsReauth` フォールバックのままな
+   ので (`TokenStore` が `async` のため同期処理内でライブチェックできない
+   制約は変わらず)、この経路が万一悪い生存者を選んでしまっても資格情報
+   自体は失われない安全網になる。
+2. **過去の起動で既に悪い統合が終わっている場合**:
+   `AppEnvironment.adoptOrphanedCredentialIfUnambiguous` が毎起動時、
+   「`.password` アカウントで資格情報が無いものがちょうど1件」かつ
+   「どの `AccountRecord` にも対応しない Keychain エントリ (孤児) が
+   ちょうど1件」のときに限り、その孤児エントリをそのアカウントへ
+   付け替える。件数が0件・2件以上のどちらでも「どれがどれに対応するか
+   分からない」として何もしない (誤って別アカウントへ資格情報を付け替える
+   方が、バナーを出し続けるより悪いため)。**ユーザーがすでに手動で
+   `AccountEditView` からパスワードを再入力していた場合は no-op**
+   (`adoptOrphanedPassword` は宛先に既に資格情報がある場合は上書きしない)。
+
+孤児 Keychain エントリの「掃除」については、上記の吸着処理自体が
+唯一の安全な当てはめ先を見つけた場合にのみ移動 (実質的に掃除) する設計
+とし、それ以外の曖昧なケースでの削除は行わないことにした — 使われて
+いない Keychain エントリが多少残り続けるコストは、間違った資格情報を
+消してしまうリスクより小さいと判断した。
+
+### 検証 (このセッション)
+
+- `KeychainCredentialStore` の `allStoredAccountIds()`/
+  `adoptOrphanedPassword(fromAccountId:toAccountId:)`、
+  `AppEnvironment.adoptOrphanedCredentialIfUnambiguous` は Keychain 実体
+  に依存するため、既存パターン通りシミュレータの XCUITest で検証した。
+  `OtegamiCredentialRecoveryUITests` に
+  `testOrphanedCredentialIsAdoptedOnNextOrdinaryLaunch` を追加:
+  実アカウントを追加 → `OTEGAMI_UITEST_RELOCATE_CREDENTIAL_TO_ORPHAN_ACCOUNT_ID`
+  フラグで資格情報を合成の孤児 `accountId` へ退避 (「悪い統合が既に
+  完了した後」の終着状態を再現) → 通常起動 (フラグ無し) だけで
+  「資格情報を待っています」バナーが出ないこと、本文が取得できることを
+  確認 (パス済み、スクリーンショット `credential-recovery-02-orphan-
+  adoption-inbox.png`)。
+- `testPasswordRecoversFromLegacyKeychainServiceOnRelaunch` (上記の
+  `return nil` を戻したことで初めて実際に意味のある検証になった) も
+  再実行しパスを確認 (スクリーンショット `credential-recovery-01-legacy-
+  service-inbox.png`)。
+- `OtegamiMissingCredentialUITests` に、バナーの「パスワードを入力」
+  ボタンをタップして `AccountEditView` のパスワード欄まで実際に到達
+  できることを確認するステップを追加し、パスを確認 (この節の後半
+  「再接続ボタンの UI 修正」は今回のセッション開始時点で既に実装済み
+  だったが、実際に押下して遷移することまでは自動検証されていなかった)。
+- `AccountDuplicateMergerTests`・`swift test`・`make mac`・`make ios`
+  は全てグリーン。
+- `scripts/verify-ios-credential-recovery.sh` を新規作成し、上記2つの
+  XCUITest をシミュレータ erase → dev mailstack seed → ビルド → 実行
+  の一連の流れとしてまとめた (既存の `verify-ios-icloud.sh` と同じ形)。
+
+### このセッションで見つかった既知の制約 (このセッションの変更が原因では
+### ないことを切り分け済み)
+
+`OtegamiDuplicateAccountUITests` (前節の重複統合バグ自体の回帰テスト、
+3フェーズ構成) を、ホストの `sqlite3` で重複行を注入しながら
+フェーズ2・3を再実行しようとしたところ、erase 直後のシミュレータでも
+「フェーズ1 (`xcodebuild test` 単体実行) → 端末 terminate → sqlite3 で
+重複行 INSERT → フェーズ2 (別の `xcodebuild test` 単体実行)」という
+複数回に分けた `xcodebuild test` 呼び出しの組み合わせで、フェーズ2が
+`sqlite3` で直接読めば確かに2行ある App Group コンテナ内の DB を、
+アプリ自身は「アカウントがありません」(0件) として観測する現象を再現
+した。この API 呼び出し順序自体は今回何も変更していない
+(`AppDatabase`/`AppEnvironment` のこのセッションでの変更を一時的に
+無効化した状態でも同一の症状が再現することを確認済み — 原因はこの
+セッションの変更ではない)。App Group コンテナの UUID 自体は
+`xcrun simctl get_app_container ... groups` で確認する限り
+`sqlite3` で編集した DB ファイルと一致しており、DB ファイルは編集直後
+も編集後の内容のまま残っていた (アプリが消したわけでもない) ため、
+`AppDatabase.makeShared` が `DatabasePool` のオープンに失敗し
+`AppEnvironment.init()` の catch 節 (アサーション失敗 + インメモリ
+DB へのフォールバック) を静かに踏んでいる可能性が高いと見ている
+(この Xcode-beta / iOS 27 beta シミュレータで、直前の
+`xcodebuild test` 呼び出しがインストールした直後のプロセスに対して
+別の `xcodebuild test` 呼び出しが立て続けにインストール・起動する
+という、通常の単発検証では起きない操作順序に起因する可能性が高い)。
+`PENDING.md` に恒久調査の課題として記録した。この制約により、
+`OtegamiDuplicateAccountUITests` のフェーズ2/3 は本セッションでは
+自動実行での再確認ができなかったが、フェーズ1 (実アカウント追加) は
+複数回パス済みで、かつ本セッションの変更 (`AccountDuplicateMerger`
+自体は無変更、`AppEnvironment` の新規コードは上記の通り分離検証済み)
+がこの挙動の原因でないことは切り分け済み。
