@@ -116,6 +116,11 @@ UI は一から見直した独自のデザインを採用しています（元�
 `NavigationSplitView` を維持しています。コンポーネント/トークンの全体像
 は [`docs/design-system.md`](docs/design-system.md) にまとめてあります。
 
+<p align="center">
+  <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="アカウント横断検索とフィルタチップ（iOS）">
+  <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="設定: アカウント・スワイプ操作・翻訳（iOS）">
+</p>
+
 ## 翻訳機能
 
 otegami は Apple の Foundation Models framework (`LanguageModelSession`)

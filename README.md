@@ -118,6 +118,11 @@ nav title; macOS keeps its three-pane `NavigationSplitView` — the compact
 layout doesn't fit the wider screen. Full component/token reference in
 [`docs/design-system.md`](docs/design-system.md).
 
+<p align="center">
+  <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="Cross-account search with filter chips (iOS)">
+  <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="Settings: accounts, swipe actions, translation (iOS)">
+</p>
+
 ## Translation
 
 otegami translates English mail to Japanese entirely on-device using
