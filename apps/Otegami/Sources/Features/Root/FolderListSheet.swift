@@ -3,33 +3,37 @@ import GRDB
 import OtegamiStore
 import SyncEngine
 
-/// iOS-only (1a): "フォルダ切替はナビタイトルのタップでシート表示" — the sheet
-/// `MailTabView` presents when its tappable title button is tapped. Content
-/// mirrors what `SidebarView` (macOS's permanently-visible left column)
-/// shows — unified inbox row, outbox/drafts/sync-error banners, each
-/// account's mailbox tree — per this task's brief: "現在のサイドバー相当の
-/// 内容...をこのシートに集約する". Deliberately a *separate* type from
+/// iOS-only (新画面構成 (1)): the content of `MailScreenView`'s hamburger-
+/// menu drawer (`HamburgerMenuContainer`) — formerly a modal `.sheet`
+/// (design-phase-2's 1a), now permanently mounted inside the drawer and
+/// slid in/out instead of presented/dismissed. Content mirrors what
+/// `SidebarView` (macOS's permanently-visible left column) shows — unified
+/// inbox row, outbox/drafts/sync-error banners, each account's mailbox
+/// tree — plus 設定 pinned at the bottom (`settingsSection`, 新画面構成 (1):
+/// "設定はそのメニューの一番下に配置"). Deliberately a *separate* type from
 /// `SidebarView` rather than a shared extraction: this view owns its own
 /// `ValueObservation`s (mailboxes, unread counts, outbox/draft/error
 /// counts) with the same shape as `SidebarView`'s, but the two are
 /// presented completely differently (an always-visible `NavigationSplitView`
-/// column vs. a `.sheet`) and `SidebarView` is macOS-only from here on —
-/// keeping them independent avoids coupling two screens that no longer
+/// column vs. a sliding drawer) and `SidebarView` is macOS-only from here
+/// on — keeping them independent avoids coupling two screens that no longer
 /// share a rendering context, at the cost of the observation logic living
 /// in two places. See `docs/design-system.md` for the tradeoff this task
 /// recorded.
 ///
-/// Rows that would need a *second* sheet (送信待ち/下書き/同期エラー) don't
-/// present one directly from here — this view is itself already a sheet,
-/// and a sheet-presented-from-a-sheet is a confirmed-broken nesting depth
-/// in this app (`AccountsListContent`'s doc comment on why `AccountEditView`
-/// is a `NavigationLink` push, not a nested sheet). Each row instead calls
-/// an `onOpen*` closure that asks `MailTabView` (the common ancestor, and
-/// itself not inside any sheet) to present that sheet *after* this one
-/// finishes dismissing — see `MailTabView`'s `handleFolderSheetDismiss()`.
+/// Rows that need to present something (送信待ち/下書き/同期エラー/設定/
+/// アカウント追加) don't do so directly from here — they call an `onOpen*`
+/// closure that asks `MailScreenView` (the common ancestor) to close the
+/// drawer and present that sheet. Historically (design-phase-2) this
+/// indirection existed because this view itself used to be a `.sheet`, and
+/// a sheet-presented-from-a-sheet was a confirmed-broken nesting depth in
+/// this app; now that this view is a drawer rather than a sheet, that
+/// specific hazard is gone, but the `onOpen*` closures remain the simplest
+/// way for a common ancestor that already owns every target `@State` flag
+/// to coordinate "close the drawer, then open the next thing" in one place
+/// (`MailScreenView.presentAfterClosingMenu(_:)`).
 struct FolderListSheet: View {
     @Environment(AppEnvironment.self) private var environment
-    @Environment(\.dismiss) private var dismiss
 
     let selectedMailboxId: Int64?
     let isUnifiedInboxSelected: Bool
@@ -40,6 +44,13 @@ struct FolderListSheet: View {
     var onOpenFailedOps: () -> Void
     var onOpenMailboxSyncFailures: () -> Void
     var onAddAccount: () -> Void
+    /// 新画面構成 (1): メニュー最下部の「設定」行。
+    var onOpenSettings: () -> Void
+    /// 新画面構成 (1): "閉じる" ツールバーボタン — このビューはもう `.sheet`
+    /// ではなくドロワーとして常設マウントされているため、`@Environment
+    /// (\.dismiss)` は使えない (呼び出しても何も起きない、提示コンテキストが
+    /// 無いため)。`MailScreenView` が `isMenuOpen` を渡してドロワーを閉じる。
+    var onClose: () -> Void
 
     @State private var mailboxesByAccountId: [String: [MailboxRecord]] = [:]
     @State private var outboxCount = 0
@@ -61,6 +72,7 @@ struct FolderListSheet: View {
                         Button("アカウントを追加") { onAddAccount() }
                             .accessibilityIdentifier("folderSheet.addAccountButton")
                     }
+                    settingsSection
                 } else {
                     statusSection
                     ForEach(environment.accounts) { account in
@@ -72,6 +84,7 @@ struct FolderListSheet: View {
                         .task(id: account.id) { await observeMailboxes(accountId: account.id) }
                         .task(id: account.id) { await observeUnreadCounts(accountId: account.id) }
                     }
+                    settingsSection
                 }
             }
             .accessibilityIdentifier("folderSheet.list")
@@ -83,7 +96,7 @@ struct FolderListSheet: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("閉じる") { dismiss() }
+                    Button("閉じる") { onClose() }
                         .accessibilityIdentifier("folderSheet.closeButton")
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -160,6 +173,20 @@ struct FolderListSheet: View {
                 }
                 .accessibilityIdentifier("folderSheet.mailboxSyncFailures")
             }
+        }
+    }
+
+    /// 新画面構成 (1): "設定はそのメニューの一番下に配置" — its own trailing
+    /// `Section` so it always renders last regardless of how many account
+    /// sections/mailboxes precede it.
+    private var settingsSection: some View {
+        Section {
+            Button {
+                onOpenSettings()
+            } label: {
+                Label("設定", systemImage: "gearshape")
+            }
+            .accessibilityIdentifier("folderSheet.settings")
         }
     }
 

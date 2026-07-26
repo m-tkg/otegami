@@ -1,19 +1,29 @@
 import SwiftUI
 import OtegamiStore
 
-/// iOS's "メール" tab (1a): タイトル「すべての受信」(tappable → `FolderListSheet`)
-/// → `AccountFilterChipRow` (only meaningful while the unified inbox is
-/// selected) → `MessageListView`. Owns the one piece of navigation state
-/// `MessageListView` itself no longer does on iOS (`navigationTitle`/
-/// `.searchable` moved out — see that view's doc comment): which mailbox is
-/// selected, which account the filter chips narrow to, and which thread (if
-/// any) is pushed.
-struct MailTabView: View {
+/// iOS's sole always-visible screen (新画面構成 (1)): a plain title (「すべての
+/// 受信」等 — no longer tappable, see below) → `AccountFilterChipRow` (only
+/// meaningful while the unified inbox is selected) → `MessageListView`,
+/// wrapped in `HamburgerMenuContainer` so `FolderListSheet`'s folder-
+/// navigation content (統合受信トレイ／アカウント別ツリー／下書き等／設定) can
+/// slide in from the leading edge instead of presenting as a modal sheet.
+/// Owns the one piece of navigation state `MessageListView` itself no
+/// longer does on iOS (`navigationTitle`/`.searchable` moved out — see that
+/// view's doc comment): which mailbox is selected, which account the filter
+/// chips narrow to, and which thread (if any) is pushed.
+///
+/// 旧「ナビタイトルのタップでフォルダシートを開く」動線はハンバーガーボタンに
+/// 置き換えた (`CLAUDE.md`) — タイトル自体は素の `Text` に戻り、フォルダ切替は
+/// 常に左上のハンバーガーアイコンから。検索はヘッダの虫眼鏡ボタンから
+/// `SearchScreenView` をシート表示する。
+struct MailScreenView: View {
     @Environment(AppEnvironment.self) private var environment
     var onCompose: () -> Void
     var onOpenDraft: (Int64) -> Void
     var onOpenServerDraft: (Int64) -> Void
     var onReply: (Int64, Bool, Bool) -> Void
+    /// 新画面構成 (3): メール本文画面フッターツールバーの「転送」。
+    var onForward: (Int64) -> Void
     /// C7: reopens the Composer with a just-cancelled pending send's fields
     /// — see `handleCancelPendingSend()`.
     var onOpenCancelledSend: (PendingSendDraftSnapshot) -> Void
@@ -24,23 +34,31 @@ struct MailTabView: View {
     @State private var selectedThreadId: Int64?
     @State private var isSelecting = false
 
-    @State private var showingFolderSheet = false
+    /// ハンバーガーメニュー (フォルダ／設定) の開閉。
+    @State private var isMenuOpen = false
     @State private var accountEntryRoute: AccountEntryRoute?
     @State private var showingOutbox = false
     @State private var showingDrafts = false
     @State private var showingFailedOps = false
     @State private var showingMailboxSyncFailures = false
-    /// What to present once `FolderListSheet` finishes dismissing — see
-    /// `FolderListSheet`'s doc comment on why its own outbox/drafts/error
-    /// rows can't present a second sheet directly (sheet-from-a-sheet is a
-    /// confirmed-broken nesting depth in this app).
-    @State private var pendingPostFolderAction: PostFolderSheetAction?
+    @State private var showingSettings = false
 
-    private enum PostFolderSheetAction {
-        case outbox, drafts, failedOps, mailboxSyncFailures, addAccount
-    }
+    /// 新画面構成 (2): ヘッダの検索ボタン、またはメール本文画面フッターツール
+    /// バーの「検索」(差出人でプリセット) から開く。`searchPresetQuery` が
+    /// non-nil のときだけ `SearchScreenView` に初期値として渡す — 通常の検索
+    /// ボタンは常に `nil` (空の状態で開く)。
+    @State private var showingSearch = false
+    @State private var searchPresetQuery: String?
 
     var body: some View {
+        HamburgerMenuContainer(isOpen: $isMenuOpen) {
+            menuContent
+        } content: {
+            mailNavigationStack
+        }
+    }
+
+    private var mailNavigationStack: some View {
         NavigationStack {
             content
                 .toolbar { toolbarContent }
@@ -48,10 +66,10 @@ struct MailTabView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
                 .navigationDestination(item: $selectedThreadId) { threadId in
-                    ThreadDetailView(threadId: threadId, onReply: onReply)
-                }
-                .sheet(isPresented: $showingFolderSheet, onDismiss: handleFolderSheetDismiss) {
-                    folderSheet
+                    ThreadDetailView(
+                        threadId: threadId, onReply: onReply, onForward: onForward,
+                        onSearchFromSender: { query in openSearch(presetQuery: query) }
+                    )
                 }
                 .sheet(item: $accountEntryRoute) { route in
                     accountEntryDestination(for: route, binding: $accountEntryRoute)
@@ -62,6 +80,10 @@ struct MailTabView: View {
                 }
                 .sheet(isPresented: $showingFailedOps) { FailedOperationsView() }
                 .sheet(isPresented: $showingMailboxSyncFailures) { MailboxSyncFailuresView() }
+                .sheet(isPresented: $showingSettings) { SettingsSheetView() }
+                .sheet(isPresented: $showingSearch, onDismiss: { searchPresetQuery = nil }) {
+                    SearchScreenView(onReply: onReply, presetQuery: searchPresetQuery)
+                }
         }
         .tint(OtegamiColor.accent)
     }
@@ -111,10 +133,21 @@ struct MailTabView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if !isSelecting {
-            ToolbarItem(placement: .principal) {
-                folderTitleButton
+            ToolbarItem(placement: .navigation) {
+                hamburgerButton
             }
-            ToolbarItem(placement: .confirmationAction) {
+            ToolbarItem(placement: .principal) {
+                Text(selectionTitle)
+                    .font(OtegamiFont.headline())
+                    .foregroundStyle(OtegamiColor.ink)
+                    .accessibilityIdentifier("mail.title")
+            }
+            ToolbarItemGroup(placement: .confirmationAction) {
+                Button { openSearch() } label: {
+                    Label("検索", systemImage: "magnifyingglass")
+                }
+                .accessibilityIdentifier("mail.searchButton")
+
                 Button(action: onCompose) {
                     Label("作成", systemImage: "square.and.pencil")
                 }
@@ -124,38 +157,31 @@ struct MailTabView: View {
         }
     }
 
-    /// The tappable nav title (1a: "フォルダ切替はナビタイトルのタップでシート
-    /// 表示") — a `Button` standing in for the native (non-interactive)
-    /// large title, styled to still read as a title (headline weight) with
-    /// a trailing chevron hinting it opens something, the same convention
-    /// Apple's own Mail app uses for its mailbox-picker title.
-    private var folderTitleButton: some View {
+    /// 新画面構成 (1): 旧「ナビタイトルのタップでフォルダシートを開く」動線の
+    /// 置き換え — 左上のハンバーガーアイコンが常にフォルダ／設定メニューを
+    /// 開閉する。
+    private var hamburgerButton: some View {
         Button {
-            showingFolderSheet = true
+            isMenuOpen.toggle()
         } label: {
-            HStack(spacing: OtegamiSpacing.xs) {
-                Text(selectionTitle)
-                    .font(OtegamiFont.headline())
-                    .foregroundStyle(OtegamiColor.ink)
-                Image(systemName: "chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(OtegamiColor.inkSecondary)
-            }
+            Label("メニュー", systemImage: "line.3.horizontal")
         }
-        .accessibilityIdentifier("mail.folderTitleButton")
+        .accessibilityIdentifier("mail.hamburgerButton")
     }
 
-    private var folderSheet: some View {
+    private var menuContent: some View {
         FolderListSheet(
             selectedMailboxId: selectedMailboxId,
             isUnifiedInboxSelected: isUnifiedInboxSelected,
             onSelectUnified: selectUnifiedInbox,
             onSelectMailbox: selectMailbox,
-            onOpenOutbox: { requestPostFolderAction(.outbox) },
-            onOpenDrafts: { requestPostFolderAction(.drafts) },
-            onOpenFailedOps: { requestPostFolderAction(.failedOps) },
-            onOpenMailboxSyncFailures: { requestPostFolderAction(.mailboxSyncFailures) },
-            onAddAccount: { requestPostFolderAction(.addAccount) }
+            onOpenOutbox: { presentAfterClosingMenu { showingOutbox = true } },
+            onOpenDrafts: { presentAfterClosingMenu { showingDrafts = true } },
+            onOpenFailedOps: { presentAfterClosingMenu { showingFailedOps = true } },
+            onOpenMailboxSyncFailures: { presentAfterClosingMenu { showingMailboxSyncFailures = true } },
+            onAddAccount: { presentAfterClosingMenu { accountEntryRoute = .typeSelection } },
+            onOpenSettings: { presentAfterClosingMenu { showingSettings = true } },
+            onClose: { isMenuOpen = false }
         )
     }
 
@@ -168,18 +194,23 @@ struct MailTabView: View {
         mailSelection = .unifiedInbox
         selectionTitle = "すべての受信"
         accountFilter = nil
-        showingFolderSheet = false
+        isMenuOpen = false
     }
 
     private func selectMailbox(_ mailboxSelection: MailboxSelection, _ displayName: String) {
         mailSelection = .mailbox(mailboxSelection)
         selectionTitle = displayName
         accountFilter = nil
-        showingFolderSheet = false
+        isMenuOpen = false
     }
 
     private func presentAddAccount() {
         accountEntryRoute = .typeSelection
+    }
+
+    private func openSearch(presetQuery: String? = nil) {
+        searchPresetQuery = presetQuery
+        showingSearch = true
     }
 
     /// "送信を取り消す" tapped on `SendCountdownBar`: undoes the durable local
@@ -195,24 +226,15 @@ struct MailTabView: View {
         }
     }
 
-    private func requestPostFolderAction(_ action: PostFolderSheetAction) {
-        pendingPostFolderAction = action
-        showingFolderSheet = false
-    }
-
-    /// `FolderListSheet`'s `.sheet(isPresented:onDismiss:)` callback — runs
-    /// once the folder sheet has fully dismissed, so whichever sheet a row
-    /// tap requested (`requestPostFolderAction(_:)`) presents at a sibling
-    /// level instead of nested inside the just-closed one.
-    private func handleFolderSheetDismiss() {
-        switch pendingPostFolderAction {
-        case .outbox: showingOutbox = true
-        case .drafts: showingDrafts = true
-        case .failedOps: showingFailedOps = true
-        case .mailboxSyncFailures: showingMailboxSyncFailures = true
-        case .addAccount: accountEntryRoute = .typeSelection
-        case nil: break
-        }
-        pendingPostFolderAction = nil
+    /// `FolderListSheet`'s rows all present *another* sheet — since the
+    /// menu itself is now a drawer (not a `.sheet`), there's no "sheet from
+    /// a sheet" nesting problem here (`HamburgerMenuContainer`'s doc
+    /// comment), so this just closes the drawer and flips the target flag
+    /// in the same call, rather than the old `pendingPostFolderAction` +
+    /// `onDismiss` indirection design-phase-2's `.sheet`-based folder list
+    /// needed.
+    private func presentAfterClosingMenu(_ present: () -> Void) {
+        isMenuOpen = false
+        present()
     }
 }

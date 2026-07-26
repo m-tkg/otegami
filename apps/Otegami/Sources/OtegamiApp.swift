@@ -165,13 +165,14 @@ struct RootView: View {
     /// through as a handful of closures rather than duplicated.
     #if os(iOS)
     private var rootContent: some View {
-        OtegamiTabRootView(
+        OtegamiRootView(
             onCompose: { presentComposer(.new) },
             onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) },
             onOpenServerDraft: { messageId in presentComposer(.serverDraft(messageId: messageId)) },
             onReply: { messageId, replyAll, translateToEnglish in
                 presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
             },
+            onForward: { messageId in presentComposer(.forward(originalMessageId: messageId)) },
             onOpenCancelledSend: { snapshot in presentComposer(.cancelledSend(snapshot)) }
         )
     }
@@ -310,9 +311,21 @@ struct RootView: View {
     private var detailColumn: some View {
         Group {
             if let selectedThreadId {
-                ThreadDetailView(threadId: selectedThreadId, onReply: { messageId, replyAll, translateToEnglish in
-                    presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
-                })
+                ThreadDetailView(
+                    threadId: selectedThreadId,
+                    onReply: { messageId, replyAll, translateToEnglish in
+                        presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
+                    },
+                    onForward: { messageId in presentComposer(.forward(originalMessageId: messageId)) }
+                    // onSearchFromSender: macOS ではまだ配線していない — 新しい
+                    // 検索画面 (`SearchScreenView`) は iOS 専用のインフラ
+                    // (`MessageDetailFooterToolbar`'s doc comment)。macOS は
+                    // 既存の `MessageListView` インライン `.searchable` を持つ
+                    // が、それは `contentColumn` (このビューの兄弟) の状態で
+                    // あり、この `detailColumn` から直接書き換える手段が
+                    // まだ無い。`nil` のときフッターツールバーは検索アイコン
+                    // 自体を出さない。
+                )
             } else {
                 ContentUnavailableView(
                     "No Message Selected",

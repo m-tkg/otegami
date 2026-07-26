@@ -31,15 +31,6 @@ struct MessageView: View {
     /// context a caller must still supply.
     let accountId: String
     let messageId: Int64
-    /// M5/design-phase-3: invoked with `(messageId, replyAll,
-    /// translateToEnglish)` when the reply/reply-all/"英語で返信を下書き"
-    /// buttons at the bottom of this message are tapped. Presentation
-    /// itself (sheet on iOS, a separate window on macOS) is `RootView`'s
-    /// job — see `SidebarView.onCompose`'s doc comment for the same
-    /// pattern. `translateToEnglish` is always `false` for 返信/全員に返信;
-    /// see `ComposerLaunchPayload.Kind.reply`'s doc comment for what it
-    /// does downstream.
-    var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
 
     /// B5 — see `ListDisplaySettingsStore.showAvatarInDetailKey`'s doc
     /// comment on why this is read directly via `@AppStorage`.
@@ -143,11 +134,6 @@ struct MessageView: View {
             // scrollers.
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            if let message {
-                Divider()
-                replyBar(for: message)
-                    .padding()
-            }
         }
         .accessibilityIdentifier("messageDetail.scrollView")
         .navigationTitle(displaySubject)
@@ -279,47 +265,6 @@ struct MessageView: View {
             return extracted.isEmpty ? nil : extracted
         }
         return nil
-    }
-
-    /// 1i: "下部: 「返信」と「英語で返信を下書き」を対で置く（翻訳を読み専用機能にしない）"
-    /// — moved out of the header (M2–design-phase-2 had 返信/全員に返信 there)
-    /// to the bottom, below the body, with 返信 and 英語で返信を下書き placed
-    /// directly adjacent per that instruction; 全員に返信 stays reachable but
-    /// visually separated (`Spacer()`) rather than a three-way tie, since
-    /// the handoff only calls out the first pair explicitly.
-    /// "英語で返信を下書き" only appears when translation is actually usable on
-    /// this device (`AppEnvironment.isTranslationAvailable`) — there's no
-    /// point offering an entry point that can only fail once tapped.
-    private func replyBar(for message: MessageRecord) -> some View {
-        HStack {
-            Button {
-                onReply(messageId, false, false)
-            } label: {
-                Label("返信", systemImage: "arrowshape.turn.up.left")
-            }
-            .accessibilityIdentifier("messageDetail.replyButton")
-
-            if environment.isTranslationAvailable {
-                Button {
-                    onReply(messageId, false, true)
-                } label: {
-                    Label("英語で返信を下書き", systemImage: "globe")
-                }
-                .accessibilityIdentifier("messageDetail.draftEnglishReplyButton")
-            }
-
-            Spacer(minLength: OtegamiSpacing.sm)
-
-            Button {
-                onReply(messageId, true, false)
-            } label: {
-                Label("全員に返信", systemImage: "arrowshape.turn.up.left.2")
-            }
-            .accessibilityIdentifier("messageDetail.replyAllButton")
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .tint(OtegamiColor.accent)
     }
 
     // MARK: - Attachments (M8)

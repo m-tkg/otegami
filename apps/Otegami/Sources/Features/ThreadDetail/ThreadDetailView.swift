@@ -2,6 +2,7 @@ import SwiftUI
 import GRDB
 import OtegamiCore
 import OtegamiStore
+import SyncEngine
 
 /// M4's thread reading view: every message in the thread laid out
 /// vertically, newest expanded, everything older collapsed to a one-line
@@ -15,12 +16,28 @@ import OtegamiStore
 /// is what triggers a read, and it's only ever instantiated for the
 /// currently-expanded message id, so a collapsed row's body is never even
 /// fetched, let alone marked read.
+///
+/// 新画面構成 (3): owns the screen-level footer toolbar
+/// (`MessageDetailFooterToolbar`, `.safeAreaInset(edge: .bottom)`) that
+/// replaced `MessageView`'s old per-message 返信/全員に返信/英語で返信を
+/// 下書き row. "返信"/"転送"/"検索" all act on the **newest** message in the
+/// thread (`newestMessage`) — the same one `RootView`'s macOS ⌘R shortcut
+/// already targets ("reply to whatever's currently showing expanded, not
+/// an arbitrary message within the thread").
 struct ThreadDetailView: View {
     @Environment(AppEnvironment.self) private var environment
+    @Environment(\.dismiss) private var dismiss
     let threadId: Int64
     /// M5/design-phase-3: forwarded to each expanded `MessageView` — see
     /// its `onReply` doc comment.
     var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
+    /// 新画面構成 (3): フッターツールバーの「転送」— see
+    /// `ComposerLaunchPayload.Kind.forward`'s doc comment.
+    var onForward: (Int64) -> Void = { _ in }
+    /// 新画面構成 (3): フッターツールバーの「検索」— "そのメールの from で
+    /// 絞り込まれた状態で開く"。`nil` だとアイコン自体を出さない
+    /// (`MessageDetailFooterToolbar`'s doc comment — macOS では未配線)。
+    var onSearchFromSender: ((String) -> Void)?
 
     @State private var accountId: String?
     @State private var messages: [MessageRecord] = []
@@ -31,6 +48,10 @@ struct ThreadDetailView: View {
     // at a time.
     @State private var expandedMessageIds: Set<Int64> = []
     @State private var hasPinnedInitialExpansion = false
+    @State private var isThreadPinned = false
+    @State private var isThreadMuted = false
+    @State private var showingInfo = false
+    @State private var showingToolbarSettings = false
 
     var body: some View {
         // `GeometryReader` here purely to hand `expandedMessageHeight(in:)`
@@ -54,24 +75,14 @@ struct ThreadDetailView: View {
                 // *initial* layout — SwiftUI re-applies it every time the
                 // scrollable content's size changes, so it kept forcing the
                 // view back to the bottom on every resize, not just once at
-                // open. That produced two real, reported bugs: (1)
-                // collapsing every message (shrinking the content well
-                // below the viewport height) re-pinned the now-short
-                // content to the bottom edge, leaving a large blank band
-                // at the top instead of a natural top-aligned layout; (2)
-                // opening any thread whose content taller than the
-                // viewport (the common case — `expandedMessageHeight(in:)`
-                // reserves most of the screen for the expanded row) always
-                // started already scrolled past the top, hiding the first
-                // message's header/the navigation title's expanded state
-                // before the user ever touched the screen. A plain
-                // (default top-anchored) `ScrollView` fixes both — content
-                // shorter than the viewport now naturally sits at the top
-                // — while `scrollProxy.scrollTo(newestId, anchor: .top)`
-                // (fired exactly once per thread load, from `.onChange(of:
-                // hasPinnedInitialExpansion)` below) still brings a long
-                // thread's newest expanded message into view on open
-                // without permanently pinning the view to the bottom.
+                // open. A plain (default top-anchored) `ScrollView` fixes
+                // both — content shorter than the viewport now naturally
+                // sits at the top — while `scrollProxy.scrollTo(newestId,
+                // anchor: .top)` (fired exactly once per thread load, from
+                // `.onChange(of: hasPinnedInitialExpansion)` below) still
+                // brings a long thread's newest expanded message into view
+                // on open without permanently pinning the view to the
+                // bottom.
                 .onChange(of: hasPinnedInitialExpansion) { _, pinned in
                     guard pinned, let newestId = messages.last?.id else { return }
                     scrollProxy.scrollTo(newestId, anchor: .top)
@@ -88,6 +99,12 @@ struct ThreadDetailView: View {
         }
         .navigationTitle(navigationTitle)
         .task(id: threadId) { await load() }
+        .safeAreaInset(edge: .bottom) { footerToolbar }
+        .sheet(isPresented: $showingInfo) { infoSheet }
+        .sheet(isPresented: $showingToolbarSettings) {
+            NavigationStack { MessageToolbarSettingsView() }
+                .tint(OtegamiColor.accent)
+        }
     }
 
     /// A real-device layout bug (observed on iPhone 17 Pro/iOS 26: the top
@@ -96,38 +113,17 @@ struct ThreadDetailView: View {
     /// the bottom edge) traced back to `HTMLMessageView` giving its
     /// `WKWebView` `.frame(maxWidth: .infinity, maxHeight: .infinity)` — a
     /// request to "fill available space" that only means something when the
-    /// immediate parent actually proposes a bounded height, which was true
-    /// in M2 (this view alone filling `NavigationSplitView`'s `detail`
-    /// column) but stopped being true once M4 nested `MessageView` inside
-    /// this view's own `ScrollView`/`LazyVStack`: a `ScrollView` proposes a
-    /// *nil* height along its scroll axis by design, so "fill available
-    /// space" resolves to the child's own ideal size instead — and a
-    /// `WKWebView` configured to scroll internally (this view's own doc
-    /// comment explains why: simpler/more robust than measuring rendered
-    /// HTML height via injected JavaScript) has no meaningful intrinsic
-    /// content size of its own, so it collapsed to close to zero. The
-    /// previous `.frame(minHeight: 240)` around the whole `MessageView`
-    /// masked this just enough to be easy to miss in a quick look (240pt
-    /// total budget, header eating most of it) while still leaving the
-    /// HTML body a sliver too short to show more than its first couple of
-    /// lines, and the *thread's* total content height far shorter than the
-    /// screen — which is exactly what turned into "empty space above,
-    /// everything pinned to the bottom" once combined with the
-    /// bottom-anchored scroll behavior this view used at the time (since
-    /// replaced — see `body`'s doc comment on `.onChange(of:
-    /// hasPinnedInitialExpansion)`).
-    ///
-    /// Sizing directly off the container's own measured height (from the
-    /// enclosing `GeometryReader`) fixes both symptoms at once: the web
-    /// view gets a real, concrete budget to render and internally scroll
-    /// within, and an expanded message reliably takes up most of the
-    /// visible screen — the normal "current message dominates, tap an
-    /// older header to read more" thread-reading layout, not a special
-    /// case to keep tuning. `360` is a floor for pathologically short
-    /// containers (e.g. a narrow macOS split); the `- 160` leaves room for
-    /// the collapsed summary rows above an expanded message without the
-    /// expanded row overflowing past the visible area on typical phone
-    /// screens.
+    /// immediate parent actually proposes a bounded height. Sizing directly
+    /// off the container's own measured height (from the enclosing
+    /// `GeometryReader`) fixes that: the web view gets a real, concrete
+    /// budget to render and internally scroll within, and an expanded
+    /// message reliably takes up most of the visible screen. `360` is a
+    /// floor for pathologically short containers (e.g. a narrow macOS
+    /// split); the `- 160` leaves room for the collapsed summary rows above
+    /// an expanded message (and, 新画面構成 (3) 以降, the footer toolbar's
+    /// `.safeAreaInset`, which is comfortably inside that existing margin)
+    /// without the expanded row overflowing past the visible area on
+    /// typical phone screens.
     private func expandedMessageHeight(in containerSize: CGSize) -> CGFloat {
         max(360, containerSize.height - 160)
     }
@@ -136,14 +132,7 @@ struct ThreadDetailView: View {
     /// `@ViewBuilder` method, and the row's `Button`/summary/conditional
     /// `MessageView` content into `ThreadMessageRow` below, for the same
     /// reason `SidebarView`'s `mailboxRow(for:in:)`/`MailboxRow` split
-    /// exists (see that pair's doc comments and docs/ci.md's
-    /// troubleshooting notes): an `if let` binding, a second nested
-    /// conditional binding, a multi-argument view initializer, and chained
-    /// modifiers all inline inside one `ForEach` row closure is the same
-    /// shape that hit `error: the compiler is unable to type-check this
-    /// expression in reasonable time` on CI's toolchain for `SidebarView`.
-    /// Splitting it here preemptively rather than waiting for the same
-    /// failure to reproduce on this file.
+    /// exists (`docs/ci.md`'s troubleshooting notes).
     @ViewBuilder
     private func messageRow(for message: MessageRecord, containerSize: CGSize) -> some View {
         if let messageId = message.id {
@@ -153,17 +142,11 @@ struct ThreadDetailView: View {
                 isExpanded: expandedMessageIds.contains(messageId),
                 accountId: accountId,
                 expandedHeight: expandedMessageHeight(in: containerSize),
-                onReply: onReply,
                 onToggleExpanded: toggleExpanded
             )
             // Design system: a 1pt dashed row separator (`OtegamiStroke
             // .secondary`/`OtegamiColor.dividerSubtle`), matching the
-            // handoff's "行間 1px dashed" spacing spec — a standalone
-            // sibling view here rather than `.otegamiRowDivider()`'s
-            // overlay form, since that modifier is meant for a *single*
-            // row's own bottom edge and this divider needs to sit below
-            // whichever content this row currently shows (a collapsed
-            // header alone, or the header plus its expanded `MessageView`).
+            // handoff's "行間 1px dashed" spacing spec.
             Rectangle()
                 .fill(OtegamiColor.dividerSubtle)
                 .frame(height: OtegamiStroke.secondary)
@@ -189,15 +172,27 @@ struct ThreadDetailView: View {
         return subject?.isEmpty == false ? subject! : "(件名なし)"
     }
 
+    /// 新画面構成 (3): "返信"/"転送"/"検索" が対象にするメッセージ — スレッド内
+    /// 最新 (`messages` は oldest-first なので `.last`)。`RootView`'s macOS
+    /// ⌘R が同じ規則を使っている (その doc comment 参照)。
+    private var newestMessage: MessageRecord? {
+        messages.last
+    }
+
     private func load() async {
         accountId = nil
         messages = []
         expandedMessageIds = []
         hasPinnedInitialExpansion = false
+        isThreadPinned = false
+        isThreadMuted = false
 
-        accountId = try? await environment.database.dbWriter.read { db in
-            try ThreadRecord.fetchOne(db, key: threadId)?.accountId
+        let thread = try? await environment.database.dbWriter.read { db in
+            try ThreadRecord.fetchOne(db, key: threadId)
         }
+        accountId = thread?.accountId
+        isThreadPinned = thread?.isPinned ?? false
+        isThreadMuted = thread?.isMuted ?? false
 
         let observation = ThreadQuery.messagesObservation(threadId: threadId)
         do {
@@ -218,6 +213,271 @@ struct ThreadDetailView: View {
             // further; it doesn't clear what's already shown.
         }
     }
+
+    // MARK: - 新画面構成 (3): フッターツールバー
+
+    private var footerToolbar: some View {
+        MessageDetailFooterToolbar(
+            onReply: { replyToNewest(replyAll: false) },
+            onReplyAll: { replyToNewest(replyAll: true) },
+            onForward: forwardNewest,
+            onSearch: onSearchFromSender.map { callback in { openSearchFromNewestSender(callback) } },
+            onInfo: { showingInfo = true },
+            onDraftEnglishReply: environment.isTranslationAvailable ? { draftEnglishReplyToNewest() } : nil,
+            isMuted: isThreadMuted,
+            onToggleMute: toggleMute,
+            onMarkUnread: markUnread,
+            onArchive: archiveThread,
+            onJunk: junkThread,
+            isPinned: isThreadPinned,
+            onTogglePin: togglePin,
+            onDelete: deleteThread,
+            onCustomizeToolbar: { showingToolbarSettings = true }
+        )
+    }
+
+    @ViewBuilder
+    private var infoSheet: some View {
+        if let message = newestMessage {
+            MessageHeaderInfoView(
+                message: message, references: infoReferences, mailboxPath: infoMailboxPath,
+                contentType: infoContentType
+            )
+            .task { await loadInfoDetails(for: message) }
+        }
+    }
+
+    private func replyToNewest(replyAll: Bool) {
+        guard let id = newestMessage?.id else { return }
+        onReply(id, replyAll, false)
+    }
+
+    private func draftEnglishReplyToNewest() {
+        guard let id = newestMessage?.id else { return }
+        onReply(id, false, true)
+    }
+
+    private func forwardNewest() {
+        guard let id = newestMessage?.id else { return }
+        onForward(id)
+    }
+
+    private func openSearchFromNewestSender(_ callback: (String) -> Void) {
+        guard let address = newestMessage?.fromAddresses.first?.address else { return }
+        callback("from:\(address)")
+    }
+
+    // MARK: - 新画面構成 (3): スレッド操作 ("…" メニュー)
+    //
+    // `MessageListView`'s equivalent row actions (`toggleRead`/
+    // `archiveThread`/`junkThread`/`togglePin`/`deleteThread`) are tightly
+    // coupled to that view's own undo-toast/search-results state
+    // (`scheduleUndo`, `searchResults`), which this screen doesn't have —
+    // rather than force this view to depend on that state just to reuse
+    // the logic, these are independent, standalone implementations that
+    // read `ThreadQuery`/write through `OpQueue` the exact same way, the
+    // same "can't drift in behavior even though the code isn't literally
+    // shared" tradeoff `RootView.deleteSelectedThread()` (macOS ⌘⌫) already
+    // makes for the identical reason. Unlike `MessageListView`'s swipe
+    // actions, none of these show an undo toast here — this screen instead
+    // pops back to the list (`dismiss()`) once the thread's messages are
+    // gone, which is itself an obvious, immediate confirmation the action
+    // happened.
+
+    private func toggleMute() {
+        let muted = !isThreadMuted
+        isThreadMuted = muted
+        Task {
+            try? await environment.database.dbWriter.write { db in
+                try ThreadQuery.setMuted(threadId: threadId, muted: muted, db: db)
+            }
+        }
+    }
+
+    private func togglePin() {
+        let pinning = !isThreadPinned
+        isThreadPinned = pinning
+        Task { await applyPinState(pinning: pinning) }
+    }
+
+    private func applyPinState(pinning: Bool) async {
+        guard let accountId else { return }
+        let syncEnabled = PinSettingsStore.isSyncWithFlaggedEnabled
+        do {
+            try await environment.database.dbWriter.write { db in
+                let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                for var message in msgs {
+                    guard message.isPinnedLocal != pinning else { continue }
+                    message.isPinnedLocal = pinning
+                    if syncEnabled {
+                        if pinning { message.flags.insert(.flagged) } else { message.flags.remove(.flagged) }
+                    }
+                    message.updatedAt = Date()
+                    try message.update(db)
+                    guard syncEnabled, let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                    try OpQueue.enqueueSetFlags(
+                        accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [UInt32(message.uid)], flags: message.flags, db: db
+                    )
+                }
+                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+            }
+            if syncEnabled { await replaySoon() }
+        } catch {
+            // Best-effort — the toolbar's pin state just doesn't flip.
+        }
+    }
+
+    private func markUnread() {
+        Task { await applyReadState(markingRead: false) }
+    }
+
+    private func applyReadState(markingRead: Bool) async {
+        guard let accountId else { return }
+        do {
+            try await environment.database.dbWriter.write { db in
+                let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                for var message in msgs {
+                    if markingRead {
+                        guard !message.flags.contains(.seen) else { continue }
+                        message.flags.insert(.seen)
+                    } else {
+                        guard message.flags.contains(.seen) else { continue }
+                        message.flags.remove(.seen)
+                    }
+                    message.updatedAt = Date()
+                    try message.update(db)
+                    guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                    try OpQueue.enqueueSetFlags(
+                        accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [UInt32(message.uid)], flags: message.flags, db: db
+                    )
+                }
+                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+            }
+            await replaySoon()
+        } catch {
+            // Best-effort, matching every other opQueue-enqueuing path.
+        }
+    }
+
+    private func archiveThread() {
+        guard let accountId else { return }
+        Task {
+            do {
+                let archived = try await environment.database.dbWriter.write { db -> Bool in
+                    guard let archiveMailboxId = try MailboxRecord
+                        .filter(Column("accountId") == accountId && Column("role") == MailboxRoleRecord.archive.rawValue)
+                        .fetchOne(db)?.id
+                    else { return false }
+                    let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                    for message in msgs {
+                        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
+                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId), mailbox.id != archiveMailboxId else { continue }
+                        try OpQueue.enqueueMove(
+                            accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                            uids: [uid], destinationMailboxId: archiveMailboxId, db: db
+                        )
+                        try FTSIndexer.delete(messageId: messageId, db: db)
+                        try MessageRecord.deleteOne(db, key: messageId)
+                    }
+                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                    return true
+                }
+                guard archived else { return }
+                await replaySoon()
+                dismiss()
+            } catch {
+                // Best-effort — the thread just stays if this fails.
+            }
+        }
+    }
+
+    private func junkThread() {
+        guard let accountId else { return }
+        Task {
+            do {
+                try await environment.database.dbWriter.write { db in
+                    let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                    for message in msgs {
+                        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
+                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                        try OpQueue.enqueueJunk(
+                            accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                            uids: [uid], db: db
+                        )
+                        try FTSIndexer.delete(messageId: messageId, db: db)
+                        try MessageRecord.deleteOne(db, key: messageId)
+                    }
+                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                }
+                await replaySoon()
+                dismiss()
+            } catch {
+                // Best-effort.
+            }
+        }
+    }
+
+    private func deleteThread() {
+        guard let accountId else { return }
+        Task {
+            do {
+                try await environment.database.dbWriter.write { db in
+                    let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                    for message in msgs {
+                        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
+                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                        try OpQueue.enqueueDelete(
+                            accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                            uids: [uid], db: db
+                        )
+                        try FTSIndexer.delete(messageId: messageId, db: db)
+                        try MessageRecord.deleteOne(db, key: messageId)
+                    }
+                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                }
+                await replaySoon()
+                dismiss()
+            } catch {
+                // Best-effort.
+            }
+        }
+    }
+
+    private func replaySoon() async {
+        guard let accountId, let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
+        guard let auth = try? await environment.auth(for: account) else { return }
+        _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+    }
+
+    // MARK: - 新画面構成 (3): 情報シート
+
+    /// `MessageHeaderInfoView` の `references`/`contentType` を非同期で埋める
+    /// — `infoSheet` は即座に (ネットワーク非依存の) `MessageRecord` だけで
+    /// 描画してから、この `.task` で残りを補う。
+    private func loadInfoDetails(for message: MessageRecord) async {
+        guard let messageId = message.id else { return }
+        let details = try? await environment.database.dbWriter.read { db -> (references: [String], mailboxPath: String?, isHTML: Bool) in
+            let references = try MessageReferenceRecord
+                .filter(Column("messageId") == messageId)
+                .order(Column("position"))
+                .fetchAll(db)
+                .map(\.referenceValue)
+            let mailboxPath = try MailboxRecord.fetchOne(db, key: message.mailboxId)?.path
+            let bodyRecord = try MessageBodyRecord.fetchOne(db, key: messageId)
+            let isHTML = bodyRecord?.html?.isEmpty == false
+            return (references, mailboxPath, isHTML)
+        }
+        guard let details else { return }
+        infoReferences = details.references
+        infoMailboxPath = details.mailboxPath
+        infoContentType = details.isHTML ? "text/html" : "text/plain"
+    }
+
+    @State private var infoReferences: [String] = []
+    @State private var infoMailboxPath: String?
+    @State private var infoContentType = "text/plain"
 }
 
 /// One message's row inside `ThreadDetailView`'s `LazyVStack` — the
@@ -230,9 +490,6 @@ private struct ThreadMessageRow: View {
     let isExpanded: Bool
     let accountId: String?
     let expandedHeight: CGFloat
-    /// M5/design-phase-3: forwarded straight through to the expanded
-    /// `MessageView` — see its `onReply` doc comment.
-    let onReply: (Int64, Bool, Bool) -> Void
     let onToggleExpanded: (Int64) -> Void
 
     var body: some View {
@@ -246,7 +503,7 @@ private struct ThreadMessageRow: View {
             .accessibilityIdentifier("threadDetail.message.\(messageId).header")
 
             if isExpanded, let accountId {
-                MessageView(accountId: accountId, messageId: messageId, onReply: onReply)
+                MessageView(accountId: accountId, messageId: messageId)
                     .frame(height: expandedHeight)
                     .accessibilityIdentifier("threadDetail.message.\(messageId).body")
             }

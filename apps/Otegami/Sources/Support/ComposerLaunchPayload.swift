@@ -20,6 +20,16 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
         /// translate-on-send logic. `false` for every other call site
         /// (plain "返信"/"全員に返信", ⌘R, ...).
         case reply(originalMessageId: Int64, replyAll: Bool, translateToEnglish: Bool)
+        /// 新画面構成 (3): メール本文画面フッターツールバーの「転送」—
+        /// `ComposerView.prepare()` prefixes the subject with `Fwd: `,
+        /// quotes the original body (same `> ` quoting `.reply` uses), and
+        /// carries the original's attachments over when they can be
+        /// fetched (`ComposerView.prefillForward(originalMessageId:)`'s
+        /// doc comment covers the attachment-carryover fallback).
+        /// Deliberately does **not** set `inReplyToMessageId`/`references`
+        /// — forwarding starts a fresh conversation rather than threading
+        /// onto the original, unlike `.reply`.
+        case forward(originalMessageId: Int64)
         /// M10: resume a saved `DraftMessageRecord`. `ComposerView.prepare()`
         /// loads the row's fields, then deletes it immediately (see
         /// `ComposerView`'s doc comment on why "load transfers ownership" —
@@ -68,6 +78,10 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
 
     static func reply(originalMessageId: Int64, replyAll: Bool, translateToEnglish: Bool = false) -> ComposerLaunchPayload {
         ComposerLaunchPayload(kind: .reply(originalMessageId: originalMessageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
+    }
+
+    static func forward(originalMessageId: Int64) -> ComposerLaunchPayload {
+        ComposerLaunchPayload(kind: .forward(originalMessageId: originalMessageId))
     }
 
     static func draft(draftId: Int64) -> ComposerLaunchPayload {
