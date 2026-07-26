@@ -2326,3 +2326,199 @@ light のみ) を保存し、目視で確認した:
   トが必要になった場合は、`osascript` で対象ウィンドウの正確な位置/サ
   イズを取得した上で `screencapture -R<x,y,w,h>` を使い、フルスクリー
   ンキャプチャは避けること。
+
+## otegami-relay: IDLE がタイムアウトで接続を壊す実バグ (M9 後の本番障害調査)
+
+本番リレー (Raspberry Pi、`otegami.mtkg`) が IMAP の新着をまったく検知
+しなくなる障害が実環境で報告された。ログは `watch connected idle=true
+uidNext=NNNN` の直後で止まったまま、それ以降新着を投函しても一切反応
+しない。Dovecot 側は正常であることを手動 IMAP セッション (`LOGIN` →
+`SELECT INBOX` → `IDLE` の状態で別セッションから `doveadm save`) で確
+認済みだったため、原因は `server/otegami-relay/Sources/OtegamiRelay/
+Watcher/MinimalIMAPClient.swift`(自前の最小 IMAP クライアント) か
+`WatcherPool.swift` 側にあると分かっていた。以下はその特定と修正の記録。
+
+### 調査手法: 実装を読んで疑うのではなく、実際に動かして観測する
+
+最初にコードを読んだだけでは「`nextLine` の `withThrowingTaskGroup` に
+よるタイムアウト競合が怪しい」という仮説はいくつも立ったが、憶測で直
+さず、以下の手順ですべて実測で検証した:
+
+1. `dev/mailstack` の Dovecot に対して `MinimalIMAPClient` を直接呼ぶ
+   使い捨ての `@Test` を書き、`idle()` の中身に一時的な `FileHandle
+   .standardError.write` の行ログを仕込んで、ワイヤレベルで何が届いて
+   何が起きているかを1行ずつ確認した。
+2. 最初の単発シナリオ (IDLE 開始 → 3秒後に外部から `doveadm save` →
+   即座に検知) は **問題なく成功した**。ここで「単発では再現しない、
+   何かもっと長時間/複数サイクル動かさないと出ない不具合では」という
+   仮説に切り替えた。
+3. `idleMaxWaitSeconds` を意図的に短く (3秒) 設定し、「新着が一切ない
+   まま IDLE がタイムアウトする」ケースを単体で再現させたところ、
+   `idle()` 自体は正しく3秒でタイムアウトを返す (ハングしない) のに、
+   その直後の `DONE` の応答待ち (`readUntilTagged`) が
+   `IMAPClientError.connectionClosed`(「IMAP connection closed
+   unexpectedly」) で失敗することを発見した。**IDLE のタイムアウトが
+   正常系であるにもかかわらず、その直後の読み取りで接続が死んでいる**
+   というのが最初の具体的な手がかりだった。
+4. なぜ接続が死ぬのかを切り分けるため、`AsyncStream` のみを使った最小
+   の再現ケース (`withThrowingTaskGroup` で「行を読むタスク」と「タイ
+   ムアウトで投げるタスク」を競合させ、タイムアウト側が勝ったときに
+   *負けた側 (読み取りタスク) が実際にどうなるか* だけを見る) を書いて
+   単体で検証し、根本原因を確定させた (次節)。
+5. `WatcherPool` 全体を使った統合テストで、「タイムアウト後に再接続は
+   起きるが、再接続後の `SELECT` が UIDNEXT を新しい値で再ベースライン
+   化してしまうため、再接続の隙間に届いたメールは二度と push されな
+   い」という、本番症状 (「ずっと沈黙したまま」) を完全に説明する挙動
+   まで実測で確認した。
+6. macOS/Swift 6.4 での再現に加えて、**本番と同じ `swift:6.2-jammy`
+   (Linux/aarch64) コンテナ + 本物の Dovecot (`host.docker.internal`
+   経由)** でも同じ手順を踏み、修正後に同じシナリオが通ることまで確認
+   した — 本番と開発機でツールチェーン・OS が異なる (本番は Docker
+   上の Linux/Swift 6.2、開発機は macOS/Swift 6.4) ため、Swift の並行
+   処理まわりの挙動がツールチェーン間で食い違っていないことをこの手順
+   で担保した。
+
+### 根本原因
+
+`MinimalIMAPClient.nextLine(timeoutSeconds:)`(修正前) は「行を読むタス
+ク」と「タイムアウトで例外を投げるタスク」を `withThrowingTaskGroup` で
+競合させ、勝った方の結果を返し `group.cancelAll()` で負けた方を「キャ
+ンセルして捨てる」という、一見ふつうの「タイムアウト付き待受」の実装
+だった。これは2つの独立した理由で誤りだった:
+
+1. `withThrowingTaskGroup` は**構造化並行性**であり、body が (タイムア
+   ウト側の throw によって) 例外で終了する場合でも、他の子タスクが実際
+   に完了するまで暗黙に待ってからでないとその呼び出し自体が返らない
+   ([Swift の `TaskGroup` の仕様どおりの挙動](https://developer.apple.com/documentation/swift/taskgroup) —
+   `group.cancelAll()` を呼んでも、キャンセルされた子タスクが「自発的
+   に」速やかに終了してくれない限り、この暗黙の待ちはブロックし続け
+   る)。これは `Task.value` を competing task に挟んでも変わらないこと
+   を、5秒スリープするだけの無関係なバックグラウンド `Task` を
+   `TaskGroup` の子として競合させる最小テストで確認した (キャンセルし
+   ても呼び出し全体が5秒ブロックした)。
+2. `AsyncStream.AsyncIterator.next()` は、それを呼んでいる `Task` 自身
+   がキャンセルされると `nil` を返して抜けはするが、`AsyncStream` は
+   (このクライアントの使い方のように) 単一の継続的な読者しか想定してい
+   ないため、その `nil` 化はストリーム全体を「終了した」状態に**恒久的
+   に**遷移させる。以後、どのタスクからその `next()` を呼んでも `nil`
+   が返り続ける。これも最小の `AsyncStream` 単体テストで実測確認した。
+
+2つを組み合わせると: `idle()` が `maxWaitSeconds` に達して正常にタイム
+アウトする (RFC 2177 が要求する「新着がなくても定期的に IDLE を再発行
+する」という、**エラーではなく通常運用時に必ず起きるケース**) たびに、
+負けた「行を読むタスク」がキャンセルされ、それによって接続の読み取り
+側 (`AsyncStream`) が丸ごと恒久的に終了してしまう。次に送る `DONE` 自
+体は成功するが、その応答を読もうとした瞬間に `connectionClosed` で失
+敗し、`WatcherPool` は例外的な接続断とみなして再接続する。再接続時の
+`SELECT` は UIDNEXT を**そのときの実際の値**で再ベースライン化するた
+め、直前の切断〜再接続の間に届いたメールは「差分」として認識されず、
+push が一切発火しない。つまり「IDLE がタイムアウトする」という完全に
+正常な運用イベントが起きるたびに、実質的に「次にメールが届いても気づ
+けない」状態へと縮退していく設計になっていた。
+
+### 修正
+
+`MinimalIMAPClient` に `LineBuffer` という専用のアクターを導入し、「ワ
+イヤから行を読み続ける」処理と「N秒待ってタイムアウトする」処理を完全
+に分離した:
+
+- 接続確立時に開始する `pumpTask` という1本の長寿命タスクだけが
+  `AsyncStream` を消費し、読んだ行を `LineBuffer` に積み続ける。この
+  タスクは `close()` 以外では一切キャンセルされない。
+- `nextLine` は `LineBuffer.next(timeoutSeconds:)` を呼ぶだけになり、
+  タイムアウトのキャンセルは `LineBuffer` 自身が管理する「待ち手
+  (`CheckedContinuation`)」のローカルな登録を解除するだけで、ワイヤの
+  読み取り (`pumpTask`) には一切触れない。
+
+実装時にもう1つ実バグを踏んだ (これも実測で発見): タイムアウト用の内
+部 `Task` を単純にキャンセルするだけだと、キャンセル後もそのタスクの
+残りのコード (`try?` でキャンセル例外を握りつぶした直後の行) が実行さ
+れ続けて「もう一度 wake する」呼び出しが漏れ、**別の・まだ本当に待って
+いる呼び出し**を意図せず早期に起こしてしまう (`nextLine` が本来の締切
+よりずっと早くタイムアウトする)、という回帰を作り込んだ。`swift test`
+の並列実行下で低頻度に再現し (`FakeIMAPServer` 相手の新規回帰テストが
+実際に検出した)、`do { try await Task.sleep(...) } catch { return }` と
+明示的にキャンセル経路を早期 return させることで解消した。
+
+さらに、`idle()` が `DONE` を送ってからタグ付き応答を待つ間に届いた
+`EXISTS` (RFC 3501 上、その到着タイミングをサーバに禁止する規定はな
+い) を黙って捨てていた点も合わせて直した — 直さないと「IDLE のタイム
+アウトと再 IDLE の間の一瞬の隙間」に新着が来た場合だけ見逃す、確率は
+低いが実在するレースが残ってしまう。
+
+### テストの改善: なぜ `FakeIMAPServer` は今回の不具合を見逃したか
+
+このバグが仕込まれた期間、`WatcherPoolTests`(`FakeIMAPServer` 相手) は
+3シナリオとも常に緑だった。理由は2つ:
+
+1. 既存の3シナリオはどれも「IDLE 開始後、タイムアウトが来る**前**に新
+   着が届く」パターンしか検証していなかった。`idle()` が実際に
+   `maxWaitSeconds` の締切に到達し、その後も接続が生き続けることを検
+   証するシナリオが存在しなかった。
+2. `FakeIMAPServer.deliverNewMail()` は `* N EXISTS` しか送っておらず、
+   実 Dovecot が新着時に送る `* N EXISTS` + 別行の `* 0 RECENT` という
+   2行構成を再現していなかった (手動 IMAP セッションでの確認スクリプ
+   トで実測済み)。
+
+対応として:
+
+- `FakeIMAPServer.deliverNewMail()` を、実 Dovecot と同じ2行 (`EXISTS`
+  → `RECENT`) を送るように修正した。
+- `WatcherPoolTests` に「IDLE が (新着なしで) 正しくタイムアウトした
+  後、後から届いたメールが検知されること」を検証する回帰テストを追加
+  した (`idleTimeoutThenLaterMailStillFiresPush`) — このバグの再発を
+  `make server-test` (常時実行、`FakeIMAPServer` のみ・実インフラ不要)
+  だけで検出できるようにした。
+- 実 Dovecot に対する新しい opt-in 統合テストスイート
+  `WatcherPoolRealDovecotIntegrationTests`(`server/otegami-relay/Tests/
+  OtegamiRelayTests/WatcherPoolRealDovecotIntegrationTests.swift`) を追
+  加した。既存の `OTEGAMI_TEST_IMAP_HOST` 方式 (`packages/OtegamiKit`)
+  に倣い、`OTEGAMI_TEST_IMAP_HOST` 未設定時はスキップされ
+  `make server-test`/CI に影響しない:
+
+  ```sh
+  make mailstack-up
+  OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter WatcherPoolRealDovecotIntegrationTests
+  make mailstack-down
+  ```
+
+  2シナリオを検証する: (a) IDLE 中に他クライアント (`doveadm save`) が
+  投函した新着が実際に検知され push が1回だけ発火すること、(b) 新着な
+  しで IDLE が一度タイムアウトした**後**に届いたメールも検知されるこ
+  と (今回の本番障害そのものの再現)。どちらも実 Dovecot の INBOX を共
+  有するため `.serialized` で直列実行し、`DoveadmHelper
+  .restoreStandardFixtures()` を `defer` で呼んで他の統合テストが前提
+  とする seed 状態に戻す。
+
+### 教訓
+
+- **フェイクサーバのテストが緑でも、実サーバに対する統合テストがなけ
+  れば「フェイクが実サーバの挙動を正しく模倣できているか」自体は検証
+  されない。** 今回はフェイクが (a) タイムアウトに実際に到達するシナ
+  リオを一度も踏んでおらず、(b) 新着時に実サーバが送る行の構成 (複数
+  行に分かれる) を再現していなかった、という2つの独立した理由でこの
+  バグをすり抜けさせた。フェイクサーバを書く/使うときは「実サーバの
+  挙動のどの部分を模倣できていて、どの部分を模倣できていないか」を
+  ドキュメント化し、模倣できていない部分は実サーバに対する opt-in 統
+  合テストで別途カバーする、という二段構えが要る。
+- **Swift の構造化並行性 (`TaskGroup`) で「タイムアウト付き競合、負け
+  た方は捨てる」を実装するときは要注意**: `group.cancelAll()` は「負け
+  た子タスクを直ちに終わらせる」ことを保証しない。負けた子タスクが自
+  発的にキャンセルへ応答して速やかに完了しない限り (`Task.sleep` はそ
+  うだが、多くの独自実装や `AsyncStream.next()` はそうとは限らない)、
+  呼び出し全体が暗黙にブロックし続ける。この「タスクグループは全ての
+  子の完了を待ってから返る」という保証自体は正しい構造化並行性の設計
+  だが、「タイムアウトで諦めて先に進みたい」という意図とは相性が悪い。
+- **`AsyncStream` は単一の読者しか想定しておらず、その読者がキャンセ
+  ルされるとストリーム全体が終了する。** レースやリトライのために同じ
+  `AsyncStream` へ複数のタスクから (同時にではなくとも、入れ替わり立
+  ち替わり) `next()` を呼ぶ設計は避け、「読み続ける専用の1本の長寿命
+  タスク」+「その結果を待ち合わせる専用のバッファ/アクター」という形
+  に分離するのが安全。
+- **カスタムの `CheckedContinuation` ベースの待受を書くときは、タイム
+  アウト用の内部 `Task` が「キャンセルされた後に自分自身の残りの処理
+  を実行してしまう」ことを必ず考慮する。** `try?`/`try await` でキャン
+  セル例外を握りつぶした直後に副作用のあるコードを置くと、「キャンセ
+  ルされたはずなのに動いてしまう」経路が生まれ、今回のように**別の、
+  無関係な呼び出しを巻き込む**バグになりうる。キャンセルされたら
+  `return`/`throw` で早期に抜けることを明示する。

@@ -54,6 +54,15 @@ final class FakeIMAPServer: @unchecked Sendable {
 
     /// Simulates new mail arriving: bumps the mailbox state and, if a
     /// client is mid-`IDLE` right now, wakes it immediately.
+    ///
+    /// Sends `* N EXISTS` followed by a separate `* 0 RECENT` line — real
+    /// Dovecot sends both as distinct untagged lines on new mail (confirmed
+    /// by manually IDLE-ing against `dev/mailstack` and running
+    /// `doveadm save` from another session; see docs/verify.md). An earlier
+    /// version of this fake only ever sent the `EXISTS` line, which masked
+    /// a real bug in `MinimalIMAPClient.idle`'s read loop for servers that
+    /// send extra untagged chatter around the line the client actually
+    /// cares about.
     func deliverNewMail() {
         let (newExists, channel) = lock.withLock { () -> (Int, (any Channel)?) in
             exists += 1
@@ -62,6 +71,7 @@ final class FakeIMAPServer: @unchecked Sendable {
         }
         guard let channel else { return }
         Self.writeLine("* \(newExists) EXISTS", to: channel)
+        Self.writeLine("* 0 RECENT", to: channel)
     }
 
     fileprivate func currentState() -> (exists: Int, uidNext: Int) {

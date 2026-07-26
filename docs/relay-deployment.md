@@ -173,10 +173,13 @@ Tunnel 等) を置いて TLS を終端すること。IMAP 資格情報を平文�
 ## モニタリング / ログ
 
 `ConsolePushSender`/`APNsSender` はどちらも push 送信のたびに構造化ログ
-を出す (`docker compose logs -f otegami-relay`)。`WatcherPool` は各 watch
-の接続確立・切断・再接続・認証失敗停止をログに残す。件名・本文・IMAP
-パスワードはログに一切出力しない (`ConsolePushSender` はデバイストークン
-も先頭/末尾 4 文字以外を伏せる)。
+を出す (`docker compose logs -f otegami-relay`)。`APNsSender` は成功時
+("APNs push accepted")・失敗時 ("APNs push rejected"、APNs が返す JSON
+エラーボディ付き) の両方をログに残す — 以前は失敗時のみで、実 APNs 配
+信が実際に成功したかどうかをログだけでは確認できなかった。`WatcherPool`
+は各 watch の接続確立・切断・再接続・認証失敗停止をログに残す。件名・
+本文・IMAP パスワードはログに一切出力しない (`ConsolePushSender`/
+`APNsSender` はどちらもデバイストークンを先頭/末尾 4 文字以外は伏せる)。
 
 ## 既知の制約 / 今後
 
@@ -186,6 +189,10 @@ Tunnel 等) を置いて TLS を終端すること。IMAP 資格情報を平文�
 - IMAP 実装は最小限の自前クライアント (`MinimalIMAPClient`) — LOGIN/
   SELECT/STATUS/IDLE/LOGOUT のみ対応。採否の理由は
   `server/otegami-relay/Sources/OtegamiRelay/Watcher/MinimalIMAPClient.swift`
-  のドキュメントコメント、および本 M9 の最終報告を参照。
+  のドキュメントコメント、および本 M9 の最終報告を参照。M9 リリース後、
+  IDLE が正常にタイムアウトするたびに接続が壊れて新着を検知できなく
+  なる実バグが本番で発生し修正済み — 原因・修正・追加した実 Dovecot
+  向け統合テストの詳細は `docs/verify.md`「otegami-relay: IDLE がタイ
+  ムアウトで接続を壊す実バグ」参照。
 - 実 APNs 配信・実機での通知受信確認は `PENDING.md` の手順に従い、`.p8`
   発行後に別途行うこと。

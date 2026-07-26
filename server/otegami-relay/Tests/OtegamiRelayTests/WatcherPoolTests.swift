@@ -117,6 +117,74 @@ struct WatcherPoolTests {
         try await store.close()
     }
 
+    @Test("a legitimate IDLE timeout (no mail within the window) doesn't break the connection - mail delivered afterwards is still detected")
+    func idleTimeoutThenLaterMailStillFiresPush() async throws {
+        // Regression test for a real bug (see docs/verify.md's "otegami-relay:
+        // IDLE がタイムアウトで接続を壊す" entry): `MinimalIMAPClient.idle`
+        // hitting its own `maxWaitSeconds` deadline with no mail delivered
+        // (the ordinary, expected RFC 2177 "reissue IDLE" case) used to
+        // permanently break the connection's read side, turning every
+        // subsequent read into a hard "connection closed unexpectedly" and
+        // forcing a reconnect whose fresh `SELECT` silently re-baselined
+        // UIDNEXT — swallowing any mail that arrived in the gap instead of
+        // firing a push for it. This test deliberately lets at least one
+        // IDLE cycle time out with *no* mail delivered before delivering
+        // any, so it fails if that regresses.
+        let eventLoopGroup = MultiThreadedEventLoopGroup.singleton
+        let store = try await TestSupport.makeStore(eventLoopGroup: eventLoopGroup)
+        let fakeServer = FakeIMAPServer(eventLoopGroup: eventLoopGroup, initialExists: 5, initialUidNext: 6, supportsIdle: true)
+        let port = try await fakeServer.start()
+        let pushSender = FakePushSender()
+        let watcherPool = WatcherPool(
+            store: store,
+            pushSender: pushSender,
+            eventLoopGroup: eventLoopGroup,
+            logger: Logger(label: "test"),
+            idleMaxWaitSeconds: 1,
+            pollInterval: .milliseconds(200)
+        )
+
+        let device = try await store.createDevice(apnsToken: "timeout-device-token", environment: .sandbox)
+        let watch = try await store.createWatch(
+            deviceId: device.deviceId,
+            request: CreateWatchRequest(
+                accountId: "account-timeout",
+                imapHost: "127.0.0.1",
+                imapPort: port,
+                imapUseTLS: false,
+                imapUsername: "user@example.com",
+                auth: WatchAuth(secret: "password"),
+                mailbox: "INBOX"
+            )
+        )
+        await watcherPool.addWatch(id: watch.watchId)
+
+        // Let at least one full IDLE cycle time out (idleMaxWaitSeconds=1)
+        // with no mail delivered at all - this is what used to poison the
+        // connection. A generous margin here (well beyond the 1s deadline)
+        // keeps this robust under the CPU contention of `swift test`'s
+        // default parallel execution, which otherwise made this flaky.
+        try await Task.sleep(for: .seconds(4))
+        #expect(pushSender.calls.isEmpty, "no mail was delivered yet, so no push should have fired")
+
+        fakeServer.deliverNewMail()
+
+        var calls: [FakePushSender.Call] = []
+        for _ in 0..<100 {
+            calls = pushSender.calls
+            if !calls.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        #expect(calls.count == 1)
+        #expect(calls.first?.payload.accountId == "account-timeout")
+        #expect(calls.first?.payload.uidNext == 7)
+
+        await watcherPool.removeWatch(id: watch.watchId)
+        await fakeServer.stop()
+        try await store.close()
+    }
+
     @Test("deleting a watch stops its loop: further mail doesn't fire a push")
     func removingWatchStopsFurtherPushes() async throws {
         let eventLoopGroup = MultiThreadedEventLoopGroup.singleton

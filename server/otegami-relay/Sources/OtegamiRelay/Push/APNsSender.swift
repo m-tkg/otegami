@@ -81,15 +81,40 @@ struct APNsSender: PushSending {
 
         let response = try await httpClient.execute(request, timeout: .seconds(10))
         guard response.status == .ok else {
+            // Collect the JSON error body APNs sends on failure (e.g.
+            // `{"reason":"BadDeviceToken"}`) — the status code alone doesn't
+            // distinguish "token is stale, re-register" from "our JWT/topic
+            // is misconfigured", and this send-attempt otherwise wouldn't be
+            // logged at all (previously it wasn't, on any outcome).
+            let bodyText = (try? await response.body.collect(upTo: 1024)).flatMap { String(buffer: $0) } ?? "<no body>"
             logger.warning(
                 "APNs push rejected",
                 metadata: [
                     "status": .stringConvertible(response.status.code),
                     "accountId": .string(payload.accountId),
+                    "deviceToken": .string(Self.redact(deviceToken)),
+                    "body": .string(bodyText),
                 ]
             )
             return
         }
+        logger.info(
+            "APNs push accepted",
+            metadata: [
+                "accountId": .string(payload.accountId),
+                "uidNext": .stringConvertible(payload.uidNext),
+                "deviceToken": .string(Self.redact(deviceToken)),
+                "environment": .string(environment.rawValue),
+            ]
+        )
+    }
+
+    /// Never logs a full device token — only enough to eyeball "yes, this
+    /// looks like the token I registered" in `docker compose logs`, same
+    /// redaction `ConsolePushSender` uses.
+    private static func redact(_ token: String) -> String {
+        guard token.count > 8 else { return String(repeating: "*", count: token.count) }
+        return "\(token.prefix(4))…\(token.suffix(4))"
     }
 
     /// Minimal payload shape (plan §7: "ペイロードは最小(mutable-content, loc-key

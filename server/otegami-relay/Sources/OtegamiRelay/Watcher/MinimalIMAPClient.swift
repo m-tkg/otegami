@@ -49,7 +49,14 @@ final class MinimalIMAPClient: @unchecked Sendable {
 
     private let eventLoopGroup: any EventLoopGroup
     private var channel: (any Channel)?
-    private var iterator: AsyncStream<String>.AsyncIterator?
+    private let lineBuffer = LineBuffer()
+    /// Persistently pumps decoded lines from the NIO channel into
+    /// `lineBuffer`, for the whole lifetime of the connection. Deliberately
+    /// never cancelled by a per-command timeout — see `LineBuffer`'s doc
+    /// comment for why racing this pump directly against a timeout (the
+    /// previous design) silently killed the connection on every ordinary
+    /// IDLE timeout.
+    private var pumpTask: Task<Void, Never>?
     private var tagCounter = 0
 
     init(eventLoopGroup: any EventLoopGroup) {
@@ -89,7 +96,21 @@ final class MinimalIMAPClient: @unchecked Sendable {
 
         let channel = try await bootstrap.connect(host: host, port: port).get()
         self.channel = channel
-        self.iterator = stream.makeAsyncIterator()
+
+        // The pump is the *only* consumer of `stream`, ever, for the whole
+        // connection lifetime, and is never cancelled by a timeout race
+        // (only by `close()`, where the connection is being torn down
+        // anyway). It just forwards each line into `lineBuffer`, which is
+        // what `nextLine` actually waits on with a real, safely-cancellable
+        // timeout.
+        let lineBuffer = self.lineBuffer
+        pumpTask = Task {
+            var iterator = stream.makeAsyncIterator()
+            while let line = await iterator.next() {
+                await lineBuffer.push(line)
+            }
+            await lineBuffer.finish()
+        }
 
         // Consume the server's untagged greeting ("* OK ... ready").
         _ = try await nextLine(timeoutSeconds: timeoutSeconds)
@@ -98,6 +119,8 @@ final class MinimalIMAPClient: @unchecked Sendable {
     func close() async {
         try? await channel?.close().get()
         channel = nil
+        pumpTask?.cancel()
+        pumpTask = nil
     }
 
     // MARK: - Commands
@@ -116,23 +139,17 @@ final class MinimalIMAPClient: @unchecked Sendable {
         try await channel.writeAndFlush(buffer).get()
     }
 
+    /// Waits up to `timeoutSeconds` for the next already-decoded line.
+    ///
+    /// This delegates entirely to `lineBuffer`, which is fed by the single
+    /// long-lived `pumpTask` — `nextLine` itself never touches the
+    /// underlying `AsyncStream` or cancels anything that reads from the
+    /// wire, so a losing timeout race here can never disrupt the
+    /// connection (see `LineBuffer`'s doc comment for the bug this
+    /// replaced).
     private func nextLine(timeoutSeconds: Int64) async throws -> String {
-        guard iterator != nil else { throw IMAPClientError.notConnected }
-        return try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask { [self] in
-                guard var iter = self.iterator else { throw IMAPClientError.notConnected }
-                guard let line = await iter.next() else { throw IMAPClientError.connectionClosed }
-                self.iterator = iter
-                return line
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds) * 1_000_000_000)
-                throw IMAPClientError.timedOut
-            }
-            guard let result = try await group.next() else { throw IMAPClientError.timedOut }
-            group.cancelAll()
-            return result
-        }
+        guard channel != nil else { throw IMAPClientError.notConnected }
+        return try await lineBuffer.next(timeoutSeconds: timeoutSeconds)
     }
 
     /// Reads lines until a tagged response for `tag` arrives, collecting
@@ -206,6 +223,12 @@ final class MinimalIMAPClient: @unchecked Sendable {
     /// at least every 29 minutes; the caller passes that as the cap).
     /// Always sends `DONE` before returning, whichever way it exits, so the
     /// connection is left ready for the next command.
+    ///
+    /// Timing out here (no new mail within `maxWaitSeconds`) is the
+    /// *normal*, expected outcome for a quiet mailbox — RFC 2177 requires
+    /// reissuing `IDLE` periodically regardless of whether anything
+    /// happened. It must not disrupt the connection; see `LineBuffer`'s doc
+    /// comment for a bug where an earlier implementation got this wrong.
     func idle(mailbox: String, maxWaitSeconds: Int64) async throws -> Bool {
         let tag = nextTag()
         try await write("\(tag) IDLE")
@@ -226,16 +249,32 @@ final class MinimalIMAPClient: @unchecked Sendable {
                     sawExists = true
                     break
                 }
-                // Other untagged chatter (EXPUNGE, FETCH flag updates, ...)
-                // during IDLE is ignored — this watcher only cares about
-                // new-mail arrival.
+                // Other untagged chatter (EXPUNGE, FETCH flag updates,
+                // "* 0 RECENT", ...) during IDLE is ignored — this watcher
+                // only cares about new-mail arrival. Real Dovecot sends
+                // `* N EXISTS` and `* 0 RECENT` as two separate untagged
+                // lines on new mail (`FakeIMAPServer` only ever sends the
+                // former — see docs/verify.md); looping back around to read
+                // the next line here is what makes either order work.
             } catch IMAPClientError.timedOut {
                 break
             }
         }
 
         try await write("DONE")
-        _ = try await readUntilTagged(tag)
+        // If an `EXISTS` slips in right around the `DONE`/tagged-completion
+        // handshake (the server is free to send it at any point before the
+        // tagged response - RFC 3501 doesn't reserve that window), it must
+        // still count: the wait loop above only watches for `EXISTS` while
+        // it's still actively looping, and the caller only re-checks
+        // `STATUS` when `idle()` reports `sawExists == true` (see
+        // `WatcherPool.runWatchLoop`'s `guard gotExists else { continue }`)
+        // — so silently dropping it here would mean this specific new-mail
+        // event is never checked for at all, not even on the next cycle.
+        let doneUntagged = try await readUntilTagged(tag)
+        if !sawExists {
+            sawExists = doneUntagged.contains { Self.firstMatch(in: $0, pattern: #"^\* (\d+) EXISTS"#) != nil }
+        }
         return sawExists
     }
 
@@ -266,7 +305,8 @@ final class MinimalIMAPClient: @unchecked Sendable {
 
 /// Forwards every decoded line (CRLF already stripped by
 /// `LineBasedFrameDecoder`) to an `AsyncStream` continuation, bridging
-/// NIO's callback world into `MinimalIMAPClient`'s async/await API.
+/// NIO's callback world into `MinimalIMAPClient`'s async/await API. The
+/// stream's sole consumer is `MinimalIMAPClient`'s long-lived `pumpTask`.
 private final class LineCollectorHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
 
@@ -289,5 +329,131 @@ private final class LineCollectorHandler: ChannelInboundHandler, @unchecked Send
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         continuation.finish()
         context.close(promise: nil)
+    }
+}
+
+/// Buffers lines pumped in from the wire (in order, via `push`) and lets
+/// callers wait for the next one with a real, safely-cancellable timeout
+/// (`next(timeoutSeconds:)`).
+///
+/// This replaces an earlier `MinimalIMAPClient.nextLine` implementation
+/// that raced `AsyncStream.AsyncIterator.next()` directly against a
+/// `Task.sleep` timeout inside a `withThrowingTaskGroup`, cancelling
+/// whichever lost. That looked like a standard "race with timeout"
+/// pattern, but was silently wrong for two independent reasons, both
+/// confirmed against a real Dovecot server (`FakeIMAPServer` never
+/// exercised either — see docs/verify.md):
+///
+/// 1. `withThrowingTaskGroup` is *structured* concurrency: when its body
+///    throws (the timeout task winning), the group must still await every
+///    other child task to actually finish before the throwing call can
+///    return to its caller — cancellation alone doesn't exempt a child
+///    from this wait. So "cancel the loser and move on" does not hold for
+///    a task-group race in general; it only works if the loser reliably
+///    unblocks *itself* promptly once cancelled.
+/// 2. `AsyncStream.AsyncIterator.next()` doesn't unblock quietly on its own
+///    task's cancellation the way e.g. `Task.sleep` does: cancelling a task
+///    suspended inside it makes the call return `nil`, but because the
+///    stream is a single shared reference (`AsyncStream` only supports one
+///    logical reader), that also permanently finishes the *whole* stream —
+///    every future `next()` call, from any task, returns `nil` from then
+///    on.
+///
+/// Combined, every ordinary IDLE timeout (RFC 2177's "no new mail within
+/// the window, reissue IDLE" — the *expected* outcome for a quiet mailbox,
+/// not an error) permanently killed the connection's read side. The very
+/// next read (waiting for `DONE`'s tagged response) then failed with
+/// `.connectionClosed`, forcing `WatcherPool` into a full reconnect. Worse,
+/// a reconnect re-baselines `UIDNEXT` from a fresh `SELECT`, so any mail
+/// that arrived during the reconnect gap was silently folded into the new
+/// baseline instead of firing a push — in practice this meant a watch
+/// could go from "connected" to "never notices new mail again" the first
+/// time its mailbox went quiet for a full IDLE window.
+///
+/// `LineBuffer` fixes this by fully decoupling "read from the wire" (the
+/// single, persistent, never-cancelled `pumpTask` that only ever calls
+/// `push`) from "wait up to N seconds for the next line" (`next`, whose
+/// cancellation-on-timeout only ever touches its own local waiter
+/// registration below — never the underlying feed).
+private actor LineBuffer {
+    private var buffered: [String] = []
+    private var finished = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var waiterTimeoutTask: Task<Void, Never>?
+
+    func push(_ line: String) {
+        buffered.append(line)
+        wake()
+    }
+
+    func finish() {
+        finished = true
+        wake()
+    }
+
+    /// Returns the next buffered line, waiting for one to arrive (or the
+    /// stream to finish) if none is buffered yet, up to `timeoutSeconds`.
+    func next(timeoutSeconds: Int64) async throws -> String {
+        while true {
+            if !buffered.isEmpty {
+                return buffered.removeFirst()
+            }
+            if finished {
+                throw MinimalIMAPClient.IMAPClientError.connectionClosed
+            }
+            let sawActivity = await waitForActivity(timeoutSeconds: timeoutSeconds)
+            if !sawActivity {
+                throw MinimalIMAPClient.IMAPClientError.timedOut
+            }
+            // Otherwise loop back around and re-check `buffered`/`finished`
+            // — `waitForActivity` returning `true` just means "something
+            // happened, go look", not specifically "a line is ready".
+        }
+    }
+
+    /// Suspends until `push`/`finish` is called or `timeoutSeconds`
+    /// elapses, returning whether it was the former. Cancelling the
+    /// *caller's* task (e.g. the caller itself being torn down) also
+    /// resolves this promptly via `withTaskCancellationHandler` — safely,
+    /// since all it does is clear this actor's own `waiter`/timer state.
+    private func waitForActivity(timeoutSeconds: Int64) async -> Bool {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if !buffered.isEmpty || finished {
+                    continuation.resume()
+                    return
+                }
+                waiter = continuation
+                waiterTimeoutTask = Task { [weak self] in
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(timeoutSeconds) * 1_000_000_000)
+                    } catch {
+                        // Cancelled by `wake()` (real activity arrived, or the
+                        // caller's task was itself cancelled) - that call
+                        // already resumed the waiter. Returning here without
+                        // also calling `wake()` again is required, not just
+                        // an optimization: this task's identity isn't tied to
+                        // any particular `next(timeoutSeconds:)` call, so a
+                        // stray post-cancellation `wake()` here would
+                        // spuriously resume a *later*, unrelated wait that
+                        // had genuinely started waiting again in the
+                        // meantime - observed as `nextLine` timing out almost
+                        // immediately, well before its real deadline.
+                        return
+                    }
+                    await self?.wake()
+                }
+            }
+        } onCancel: {
+            Task { await self.wake() }
+        }
+        return !buffered.isEmpty || finished
+    }
+
+    private func wake() {
+        waiterTimeoutTask?.cancel()
+        waiterTimeoutTask = nil
+        waiter?.resume()
+        waiter = nil
     }
 }
