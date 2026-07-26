@@ -699,3 +699,218 @@ green、Phase 3 以降の Mailpit 到達確認は上記の背景遷移タイミ�
   クライアント→relay 同期チャネルの新設)。
 - `PendingSendCoordinator`/`OpQueueProcessor` の Simulator 固有と見られる
   バックグラウンド送信タイミング不具合の原因調査 (実機での再検証)。
+
+## 表示・操作改善バッチ: カード状一覧・翻訳/AI要約・作成画面の添付統合・
+アカウントフォーム・表示言語
+
+ユーザー要望の表示・操作改善10項目 + リンクブラウザバグ調査をまとめた
+バッチの記録。
+
+### 1. 一覧のカード状表示
+
+`ThreadRowView`(統合トレイ・メールボックス別・検索結果すべてで共有) の
+背景に `.otegamiCardBorder()`(新規、`SectionDivider.swift`) — 2pt
+`OtegamiColor.divider`の全周罫線 — を追加し、`MessageListRow`/
+`SearchScreenView.searchRow`の`.listRowInsets`を`.zero`から実マージン
+(`OtegamiSpacing.xs`縦・`OtegamiSpacing.sm`横) に変更した。このマージン
+自体が隣接カード間の隙間になる — 罫線だけでは`List`の行同士が密着した
+ままなので、隙間はマージン、区切りは罫線、の二段構えで「面で区切られた
+カード」を表現している。角丸は無し (`OtegamiRadius.none`、Modernist ベ
+ースの既存方針どおり)。旧来の1pt dashedの行間罫線 (`.otegamiRowDivider()`)
+はこの2箇所での使用をやめた (関数自体は汎用ユーティリティとして残置)。
+
+### 2. 一覧の時刻表示
+
+`OtegamiDateFormat.listRowText(for:)`(新規、`DesignSystem/`) — 今日の
+メールは時刻のみ、当年内は月日+時刻、それ以前は年+月日+時刻、という
+一般的なメールアプリの慣習に沿ったフォーマットを1箇所に集約した。
+`ThreadRowTrailing`(一覧の右端日付) と `ThreadMessageSummaryRow`(スレッ
+ド詳細の折りたたみ行、後述) の両方から参照する。
+
+### 3. スレッド詳細の折りたたみ行にプレビュー/アイコン
+
+`ThreadMessageSummaryRow`(`ThreadDetailView.swift`) はもともと折りたたみ
+時に1行スニペットを出していた (プレビュー自体は既存) — このバッチで
+`SenderAvatar`(24pt、`ListDisplaySettingsStore.showAvatarInDetailKey`で
+出し分け、`MessageView`本文ヘッダの既存アバターと同じ設定を共有) を追加
+した。トップの一覧行 (`ThreadRowView`) と見分けがつくよう、意図的に
+**カード罫線は使わず**、代わりに `OtegamiColor.paleBase`の淡いトーンと
+余分な左インデント (`OtegamiSpacing.lg`) で「同じスレッド内で連続する
+行」であることを表現している — カード罫線を使うと「独立した項目の集合」
+という一覧と同じ信号になってしまい、スレッド内メッセージの連続性という
+意味と矛盾するため。
+
+### 4. 本文画面ヘッダから件名を除去
+
+`ThreadDetailView.navigationTitle`を件名から固定の「メール」に変更し、
+`MessageView`の`.navigationTitle(displaySubject)`は完全に削除した (件名
+は`MessageView.header(for:)`内に既に表示されている — ネストされた
+`MessageView`側にも`.navigationTitle`が残っていると、より深い階層にある
+方がナビゲーションバーの表示を勝ち取ってしまい、「メール」固定化が効か
+なくなるため、両方から取り除く必要があった)。
+
+### 5. AI要約ボタン + 翻訳ボタンの表示条件
+
+`AISummaryBar.swift`(新規) — `TranslationBar`と同じ「状態は親
+(`MessageView`) が持ち、このビューは表示専用」という分担。言語を問わず
+どのメッセージにも表示し (要約は原文が日本語でも英語でも意味がある)、
+`TranslationService.summarize(_:targetLanguage:)`を呼ぶ。結果は
+永続キャッシュしない (`MessageTranslator`のような専用キャッシュ層を
+要約のためだけに新設するのはこのバッチの範囲に対して過大と判断 — 手動
+ボタンでしか動かない機能なので、開き直すたびに再生成になる程度は許容)。
+出力言語は`LocalizationSettingsStore.effectiveLanguageCode`に従う。
+
+翻訳バー (既存の`TranslationBar`) 自体は変更していないが、**表示条件**
+を「英語メールなら常に表示」から「英語メール **かつ** アプリの表示言語が
+英語でない」(`MessageView.shouldShowTranslationBar`) に一般化した —
+翻訳エンジンが英→日の一方向にしか対応していないため、「メールの言語 ≠
+アプリの表示言語」を額面通り一般化することはできず、この一方向対応の
+範囲で意味のある形に絞った。自動翻訳のキックオフ
+(`kickoffTranslationIfNeeded`) も同じ条件に揃えている — バーを出さない
+状況で裏でだけ翻訳が走る非一貫な状態を避けるため。
+
+### 6. 「英語に翻訳して送る」の削除
+
+`ComposerView`の`translationSection`(Toggle + Section、あらゆる新規/
+返信作成で使えた汎用機能) を削除した。**内部の状態
+(`translateToEnglishBeforeSend`) と`send()`の翻訳ロジック自体は残した**
+— 翻訳バー側の「英語で返信を下書き」(`MessageDetailFooterToolbar`の
+「…」メニュー、指示により維持) がこの同じ仕組みを使って動いている
+(`ComposerLaunchPayload.Kind.reply`の`translateToEnglish`フラグ経由)。
+つまり削除したのは「あらゆる作成画面から手動でON/OFFできる汎用トグル」
+であって、「英語で返信を下書き」という特定の入口から起動する機能自体
+ではない。
+
+### 7. 添付ボタンの統合 + カメラ
+
+`ComposerView.attachmentsMenu` — 「ファイルを追加」「写真を追加」の
+2つの独立ボタンを、1つの「添付」`Menu`ボタン (ファイルを選択/写真を選択/
+写真を撮る) に統合した。「写真を撮る」は`CameraPicker.swift`(新規、
+`UIImagePickerController`の`sourceType == .camera`ラッパー) を別シート
+で開く。シミュレータにはカメラハードウェアが無いため
+`UIImagePickerController.isSourceTypeAvailable(.camera)`は常に`false`
+— 項目自体は隠さず`.disabled`でグレーアウトする形にした (指示の
+「シミュレータではグレーアウトか非表示」のうちグレーアウトを選択)。
+`NSCameraUsageDescription`を`project.yml`に追加 (無いと権限ダイアログを
+出さず即クラッシュする)。macOS には対応するカメラ/フォトピッカー API が
+無いため、macOS 側は従来の「ファイルを追加」(`fileImporter`のみ) のまま。
+
+**実装中に踏んだ実機さながらのシミュレータバグ**: `.sheet(isPresented:
+$isShowingCamera)`を`attachmentsMenu`(`Form`/`Section`の奥、`Menu`本体)
+に直接付けていたところ、「添付」メニューをタップした瞬間 (`isShowingCamera`
+がまだ`false`のまま、何も選ぶ前) に`ComposerView`自身の`.sheet`
+(`composer.sheet`) がまるごと閉じてしまう不具合をUITestで確認した —
+`.fileImporter(isPresented: $isImportingFile)`が既に`body`のトップレベル
+に付いている、というこのファイルの既存の配置規約に揃えて `.sheet`も
+`body`直下へ移動して解決した。`PhotosPicker`をトリガービューとして
+`Menu`の項目に直接埋め込む版も同時に試したが改善せず、状態駆動の
+`.photosPicker(isPresented:selection:matching:)`(同じく`body`直下) に
+切り替えた。
+
+**この`Menu`をタップして開いた状態そのものをXCUITestで自動検証するのは
+断念した** — 掘り下げた結果、この`Menu`固有の問題ではなく、このシミュ
+レータ/Xcodeベータ環境全体の問題であることを突き止めたため:
+このバッチで一切変更していない既存の`OtegamiTemplatesUITests`
+(design-phase-3からある「テンプレートを挿入」`Menu`) と
+`OtegamiLinkBrowserUITests`(C7、後述) の両方が、**このバッチの変更を
+git stashで完全に取り除いた baseline のコードに対しても**同じ症状
+(タップ後にpresentedされていたシート/画面が消え、裏のハンバーガー
+ドロワー状態が見えてしまう) で失敗することを確認した。「開いた状態を
+自動テストで検証する」ことそのものがこの環境では信頼できないと判断し、
+`OtegamiDisplayBatchScreenshotUITests`(新規) では「添付」ボタンが単一の
+統合ボタンとしてレンダリングされていること (閉じた状態) の構造確認まで
+に留めている。閉じた状態の見た目・カード一覧・スレッド詳細は実機さなが
+らのスクリーンショットで確認済み — 開いた状態のメニュー自体の見た目は
+実機での確認が必要 (最終報告のPENDING参照)。
+
+### 8〜10. アカウントフォーム
+
+`AccountSetupView`/`AccountEditView`/`ICloudAccountSetupView`共通の
+`otegamiEmailKeyboard()`/`otegamiNumberPadKeyboard()`(各ファイルに同じ
+実装を複製 — 既存の`textFieldAutocapitalizationNone()`と同じ「ファイル
+ごとに小さく複製する」既存方針を踏襲) を追加し、メールアドレス欄に
+`.keyboardType(.emailAddress)`、IMAP/SMTPポート欄に`.keyboardType
+(.numberPad)`を適用した。`AccountSetupView`のメールアドレス`onChange`
+は、既存の「IMAPユーザー名が空ならメールアドレスを反映」に加えて
+「SMTPユーザー名が空なら同様に反映」も行うようにした (どちらか一方だけ
+手入力済みでも、もう片方はそのまま追従を続ける)。`AccountEditView`は
+メールアドレス自体が編集不可 (既存方針、`AccountEditView`のdoc comment
+参照) なため、ポート欄の数字キーボードのみ対象。
+
+### リンクのブラウザオープン修正 (C7)
+
+実機で「メール内リンクをタップしてもブラウザが開かない」報告を受けて
+`HTMLWebViewCoordinator`(`HTMLMessageView.swift`) を調査した。ヒントに
+沿って調べた結果、2点、実際のWKWebViewの既知の落とし穴に合致する未対応
+箇所を発見し、修正した:
+
+1. **`WKUIDelegate`が一切未実装だった** (`webView.uiDelegate`が`nil`の
+   まま)。`target="_blank"`のようなリンクは`navigationAction.targetFrame`
+   が`nil`になる — 既存の`decidePolicyFor`の`isMainFrame`判定
+   (`targetFrame?.isMainFrame ?? true`) は理屈の上ではこのケースも
+   フォールバックでカバーするはずだが、`decidePolicyFor`自体がこの
+   ファイルの別の実測 (`loadHTMLString`が`decidePolicyFor`に一切現れない
+   という、doc commentに記録済みの驚き) が示すとおり文書化された仕様と
+   食い違う挙動をするWebKitバージョンがあり得る。`WKUIDelegate`の
+   `webView(_:createWebViewWith:for:windowFeatures:)`を実装し (新しい
+   `WKWebView`は一切作らず、対象URLを`decidePolicyFor`と同じ
+   `onOpenLink`経路に渡すだけ)、`uiDelegate`をiOS/macOS両方の
+   representableで設定した。
+2. **`allowsLinkPreview`(既定`true`) を無効化していなかった**。実機の
+   3D/Haptic Touchがリンクの長押しピーク・プレビューを認識しようとする
+   ジェスチャー認識器と、単純なタップの認識が競合し得る — Simulatorには
+   このハードウェアが無いため、design-phase-3時点のシミュレータ検証では
+   この経路の不具合を再現できなかった、という説明と整合する。ピーク・
+   プレビュー自体はこのアプリで使っていない機能なので、iOS側の
+   `HTMLWebViewRepresentable.makeUIView`で明示的に`false`にした
+   (`allowsLinkPreview`はiOS専用プロパティで、macOSには無い)。
+
+**実機で直ったことを確認できていない**: シミュレータでの検証を試みた
+が、上記「添付ボタンの統合」節に記録したのと**同じ環境要因**にぶつかった
+— 既存の`OtegamiLinkBrowserUITests`(design-phase-3からある、C7のリンク
+タップを検証するテスト) が、この修正を適用した状態でも、**この修正を
+適用する前の baseline (git stash で完全に除去して再ビルド) でも**、
+全く同じ症状 (リンクタップ後に`SFSafariViewController`が現れず、代わり
+に本文画面自体がハンバーガードロワーの背後に消える) で失敗することを
+確認した — つまりこの特定のXCUITestによる自動検証は、この修正の有無に
+かかわらずこの環境では成立しない。コード自体は業界で広く知られた
+WKWebViewの実際の落とし穴 (`WKUIDelegate`未設定、`allowsLinkPreview`との
+ジェスチャー競合) に基づく妥当な修正だが、シミュレータ上でも実機上でも
+「直ったこと」を確認できていない。実機での確認をユーザーに依頼する形で
+`PENDING.md`に記録した。
+
+### 表示言語
+
+[docs/localization.md](localization.md) に分離して記録 (String Catalog
+のセットアップ・ローカライズ手法・到達範囲)。
+
+### このバッチで新たに確認した環境要因: シミュレータでの「開いた状態」
+系操作の信頼性
+
+design-phase-2の「`.onLongPressGesture`が`.swipeActions`を阻害する」、
+M2の「`.tap()`後の`{-1,-1}`ヒットポイント」等、この環境固有の癖は既に
+多数`docs/verify.md`に蓄積されているが、このバッチで新たに踏んだのは
+**それらとは異なる系統の症状**: `Menu`のポップオーバー、`WKWebView`内の
+リンクタップ後の`SFSafariViewController`シート提示、といった「タップの
+結果、何か (シート/ポップオーバー) が追加で現れることを期待する」操作
+が、この Xcode 27 beta / iOS 27 beta シミュレータでは、**タップの合成
+自体は成功しているにもかかわらず**期待した提示が起こらず、代わりに
+現在の画面 (シート/プッシュされた画面) 自体が消えて背後の画面が見える、
+という形で失敗する。このバッチで変更していない既存コード
+(`OtegamiTemplatesUITests`の対象、design-phase-3から存在) でも再現する
+ことを確認済みなので、アプリのコード側の問題ではなく、環境側の何らかの
+不安定性 (ベータ版シミュレータ/Xcodeの既知でない制限、またはXCUITestの
+合成タッチとSwiftUIのpresentation機構の相性) と見られる。次にこの
+シミュレータ/Xcodeが安定版に切り替わったタイミングで再検証する価値が
+ある。
+
+### 検証済み
+
+`make test`/`make ios`/`make mac`すべて green。カード一覧・時刻表示・
+スレッド詳細のプレビュー/アイコン・本文ヘッダの件名除去・添付ボタンの
+統合 (閉じた状態) を実機さながらのスクリーンショットで確認
+(`OtegamiDisplayBatchScreenshotUITests`、新規)。表示言語の英語切り替えは
+一覧画面・検索画面のスクリーンショットで確認 (`docs/localization.md`)。
+「開いた状態」系の目視確認 (添付メニュー展開・リンクタップ後のブラウザ
+表示) は上記の環境要因により自動化できず、実機での確認をユーザーに依頼
+する形で`PENDING.md`に記録した。

@@ -159,11 +159,29 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         let threadingToggle = app.switches["settings.list.threadingToggle"]
         XCTAssertTrue(scrollSettingsUntilVisible(threadingToggle, in: app))
         threadingToggle.tap()
+        // 回帰確認時に発見: このトグルのタップ直後に閉じると、`@AppStorage`
+        // の書き込みが一覧側の`.task(id:)`再評価に間に合わないことがあり、
+        // 一覧が古い (スレッド表示のままの) 状態で再描画されてしまうことが
+        // ある — `docs/verify.md`のM11節が`Switch.value`の読み取りについて
+        // 記録している「タップ自体は効いているのに読み取りが追いつかない」
+        // 系の癖と同種とみられる。一呼吸置いてから閉じる。
+        Thread.sleep(forTimeInterval: 1)
 
         closeSettingsSheet(in: app)
 
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 10))
+        // 表示・操作改善バッチでの回帰確認時に発見: `dev/mailstack/seed/
+        // fixtures/`が増え続けているため (`docs/verify.md`のM4節が同じ
+        // 「来週のランチ」行について既に記録している注意)、この行はもう
+        // 一覧の初期表示範囲に収まらないことがある — `List`は画面外の行を
+        // アクセシビリティツリーに一切残さない (`LazyVStack`と同様) ので、
+        // スクロールせずに`cells.containing(...)`だけで数えると、行が
+        // 実際には (フラットモードで複数行として) 存在していても0件と
+        // 判定されてしまう。数える前に対象の行を一度スクロールして画面内
+        // に入れる。
+        let firstMatch = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "来週のランチ")).firstMatch
+        XCTAssertTrue(waitForElementScrollingIfNeeded(firstMatch, in: app), "Expected at least one row for the multi-message thread to be present")
         // In flat mode the 3-message "来週のランチ" thread should contribute 3
         // separate rows (no ">1" count badge on any of them) rather than 1.
         let rows = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "来週のランチ"))

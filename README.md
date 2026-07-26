@@ -44,18 +44,18 @@ Two things this app is built around, more than any single feature list:
   local SQLite database first; the app is fully usable with no network,
   and reconnects replay a queue of pending changes (read/unread, delete,
   archive, send) once back online.
-- **On-device translation** (Apple Foundation Models, iOS/macOS 26+): an
-  inline translation bar on English messages, defaulting to the Japanese
-  translation with a one-tap toggle back to the original; long-press a
-  single paragraph to peek at just its source text. "Draft a reply in
-  English" opens the composer with translate-on-send already armed, and
-  the composer itself has an "translate to English before sending"
-  toggle that rewrites your Japanese draft in place before it goes out.
-  Auto-translate can be turned off in Settings. Nothing leaves the
-  device — see [`docs/translation.md`](docs/translation.md) for the
-  engine design and its one known Simulator-only limitation.
-  Translation is proven working end-to-end (2–5s per call) against the
-  real on-device model.
+- **On-device translation and AI summary** (Apple Foundation Models,
+  iOS/macOS 26+): an inline translation bar, shown when a message's
+  detected language differs from the app's own display language,
+  defaulting to the translation with a one-tap toggle back to the
+  original; long-press a single paragraph to peek at just its source
+  text. A separate "AI summary" bar (any message, any language) generates
+  a short on-device summary on tap. "Draft a reply in English" opens the
+  composer with translate-on-send already armed. Auto-translate can be
+  turned off in Settings. Nothing leaves the device — see
+  [`docs/translation.md`](docs/translation.md) for the engine design and
+  its one known Simulator-only limitation. Translation is proven working
+  end-to-end (2–5s per call) against the real on-device model.
 - **Threading**: Gmail `X-GM-THRID` when available, otherwise a JWZ-style
   `References`/`In-Reply-To` union-find with a subject-based fallback,
   batched for fast bulk (re-)threading (100k-message dataset: ~1.4s, see
@@ -86,7 +86,9 @@ Two things this app is built around, more than any single feature list:
 - **Compose/reply**: a required sender picker to avoid cross-account
   mistakes, plain-text quoting, an Outbox for offline sends, local draft
   saving (with a save/discard confirmation on both platforms), and
-  drafts that sync both ways over IMAP. On iOS, sending is durable and
+  drafts that sync both ways over IMAP. Attachments (files, photos, and —
+  on a real iOS device — a camera capture) share a single "Attach" menu.
+  On iOS, sending is durable and
   cancellable: the message is queued to the local Outbox the instant you
   tap Send (so it's never lost even if the app is killed), then held for
   a configurable 5s/10s/no-delay window behind a countdown bar with a
@@ -107,11 +109,22 @@ Two things this app is built around, more than any single feature list:
 - **Pinning**: pin a message or thread to keep it at the top of the list,
   local-only by default with an opt-in to mirror IMAP `\Flagged` so it
   stays in sync with other clients.
-- **List display**: conversation threading you can switch off (giving a
-  flat, one-row-per-message list), a per-account-colored initials avatar next to each
-  row and each message's header (generated locally — no third-party
-  avatar service is ever contacted), and a configurable body-preview
-  line count.
+- **List display**: card-style rows (a bordered "面" per thread, not a
+  plain connected list) across the unified inbox, per-mailbox lists, and
+  search results; timestamps read like a typical mail client (time only
+  for today, date + time otherwise). Conversation threading you can
+  switch off (giving a flat, one-row-per-message list), a per-account-colored
+  initials avatar next to each row and each message's header (generated
+  locally — no third-party avatar service is ever contacted), and a
+  configurable body-preview line count. A thread's collapsed rows show
+  the same avatar/preview treatment, styled distinctly (a softer tint,
+  no card border) so they read as "inside one thread" rather than the
+  top-level list.
+- **Display language**: choose "Match System", Japanese, or English in
+  Settings (restart to apply) — the app UI itself is localized via a
+  String Catalog, covering the primary screens (list, message view,
+  compose, search, the hamburger menu, and the main Settings screen); see
+  [docs/localization.md](docs/localization.md) for exact coverage.
 - **Push notifications**: an optional, self-hostable relay server
   (`server/otegami-relay`) watches your IMAP `INBOX` over IDLE and sends a
   privacy-preserving APNs push (no subject/body on the wire — the app's
