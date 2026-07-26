@@ -39,20 +39,44 @@ struct ThreadDetailView: View {
         // `MessageView`/`HTMLMessageView` were originally designed to (M2,
         // before this view nested them inside a `ScrollView`).
         GeometryReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(messages) { message in
-                        messageRow(for: message, containerSize: proxy.size)
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(messages) { message in
+                            messageRow(for: message, containerSize: proxy.size)
+                        }
                     }
                 }
+                // Bug fix: this view used to carry `.defaultScrollAnchor
+                // (.bottom)` here instead of a normal top-anchored
+                // `ScrollView` plus the one-shot `scrollProxy.scrollTo`
+                // below. `.defaultScrollAnchor` doesn't only affect the
+                // *initial* layout — SwiftUI re-applies it every time the
+                // scrollable content's size changes, so it kept forcing the
+                // view back to the bottom on every resize, not just once at
+                // open. That produced two real, reported bugs: (1)
+                // collapsing every message (shrinking the content well
+                // below the viewport height) re-pinned the now-short
+                // content to the bottom edge, leaving a large blank band
+                // at the top instead of a natural top-aligned layout; (2)
+                // opening any thread whose content taller than the
+                // viewport (the common case — `expandedMessageHeight(in:)`
+                // reserves most of the screen for the expanded row) always
+                // started already scrolled past the top, hiding the first
+                // message's header/the navigation title's expanded state
+                // before the user ever touched the screen. A plain
+                // (default top-anchored) `ScrollView` fixes both — content
+                // shorter than the viewport now naturally sits at the top
+                // — while `scrollProxy.scrollTo(newestId, anchor: .top)`
+                // (fired exactly once per thread load, from `.onChange(of:
+                // hasPinnedInitialExpansion)` below) still brings a long
+                // thread's newest expanded message into view on open
+                // without permanently pinning the view to the bottom.
+                .onChange(of: hasPinnedInitialExpansion) { _, pinned in
+                    guard pinned, let newestId = messages.last?.id else { return }
+                    scrollProxy.scrollTo(newestId, anchor: .top)
+                }
             }
-            // The newest message (last in `messages`, expanded by default)
-            // is what a thread view should open showing — without this, a
-            // long thread's `ScrollView` starts pinned to the top (the
-            // *oldest*, collapsed message) and `LazyVStack` doesn't even
-            // materialize the expanded row (and its `MessageView`/
-            // `messageDetail.subject`) until it scrolls into view.
-            .defaultScrollAnchor(.bottom)
             .accessibilityIdentifier("threadDetail.scrollView")
             .background(OtegamiColor.background)
             .overlay {
@@ -88,8 +112,10 @@ struct ThreadDetailView: View {
     /// HTML body a sliver too short to show more than its first couple of
     /// lines, and the *thread's* total content height far shorter than the
     /// screen — which is exactly what turned into "empty space above,
-    /// everything pinned to the bottom" once combined with
-    /// `.defaultScrollAnchor(.bottom)` above.
+    /// everything pinned to the bottom" once combined with the
+    /// bottom-anchored scroll behavior this view used at the time (since
+    /// replaced — see `body`'s doc comment on `.onChange(of:
+    /// hasPinnedInitialExpansion)`).
     ///
     /// Sizing directly off the container's own measured height (from the
     /// enclosing `GeometryReader`) fixes both symptoms at once: the web

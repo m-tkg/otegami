@@ -91,6 +91,66 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 4)
     }
 
+    /// Bug-fix verification (2026-07-26, "スレッド表示で全メッセージを折りたたむと
+    /// 表示が画面下部に寄ってしまう" / "一番上のスレッドを開くとタイトルバーが見えない
+    /// 状態で表示される"): opens the same 3-message thread this suite's
+    /// other test already exercises, then collapses every message
+    /// (including the newest, expanded-by-default one) and screenshots the
+    /// result for a human/agent to visually confirm the content sits
+    /// top-aligned rather than pinned to the bottom of the screen with a
+    /// blank band above it — `ThreadDetailView.body`'s
+    /// `.defaultScrollAnchor(.bottom)` (since replaced by a one-shot
+    /// `ScrollViewReader.scrollTo`) used to re-apply on every content-size
+    /// change, including a collapse shrinking the content well below the
+    /// viewport height.
+    func testCollapsingEveryMessageStaysTopAligned() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        app.launch()
+
+        let list = app.collectionViews["messageList.list"]
+        let threadRow = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "来週のランチ")).firstMatch
+        XCTAssertTrue(waitForElementScrollingIfNeeded(threadRow, in: app), "Expected the 3-message thread row to be present")
+        threadRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+
+        let detail = app.scrollViews["threadDetail.scrollView"]
+        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected the thread detail pane to appear after tapping the thread row")
+
+        let headers = detail.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message."))
+            .matching(NSPredicate(format: "identifier CONTAINS %@", ".header"))
+        XCTAssertTrue(waitForCount(headers, atLeast: 3, timeout: 20), "Expected 3 message header rows")
+
+        // Right after opening (nothing tapped yet), the newest message is
+        // expanded by default — this is also the bug-2 repro point
+        // ("開いた直後は先頭が見えるようにする"): hold it up for a screenshot
+        // before touching anything else.
+        Thread.sleep(forTimeInterval: 2)
+
+        // Only the newest message starts expanded (per
+        // `testOpeningThreadShowsAllMessagesWithOnlyLatestExpanded`); every
+        // other header is already collapsed. Collapsing that one newest
+        // header alone is enough to reach "every message collapsed" —
+        // tapping every header by index in a loop instead proved flaky here
+        // (a collapse changes row heights/scroll position out from under a
+        // later index's on-screen coordinate mid-loop).
+        headers.element(boundBy: headers.count - 1).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+
+        // No message body should remain mounted once every header is
+        // collapsed — same "来週のランチ" text-based body detector the sibling
+        // test above uses (only an *expanded* `MessageView` ever renders
+        // its own subject text).
+        let subjects = detail.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "来週のランチ"))
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, subjects.count > 0 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(subjects.count, 0, "Expected every message body to be collapsed")
+
+        // Hold the fully-collapsed state up for the wrapping shell script's
+        // mid-test screenshot.
+        Thread.sleep(forTimeInterval: 4)
+    }
+
     /// Polls `collection.count` until it reaches at least `minimum` or
     /// `timeout` elapses — `XCUIElementQuery.count` doesn't have a
     /// built-in "wait for N to exist" the way `waitForExistence` does for
