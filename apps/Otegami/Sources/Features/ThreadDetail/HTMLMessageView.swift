@@ -272,6 +272,17 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
         webView.navigationDelegate = context.coordinator
+        // C7 バグ修正 (リンクがブラウザで開かない) — `HTMLWebViewCoordinator`
+        // のdoc comment参照。real-device 固有と報告された不具合の有力な原因
+        // の1つが `allowsLinkPreview`(既定 true): 実機の 3D/Haptic Touch が
+        // リンクの長押しピーク・プレビューを認識しようとするジェスチャー
+        // 認識器と、単純なタップの認識が競合し、タップが `decidePolicyFor`
+        // まで届かないことがある — Simulator にはこのハードウェアがないため
+        // design-phase-3 時点のシミュレータ検証では再現しなかった、という
+        // 説明と整合する。ピーク・プレビュー自体もこのアプリでは使っていな
+        // い機能なので、明示的に無効化する。
+        webView.allowsLinkPreview = false
+        webView.uiDelegate = context.coordinator
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
@@ -301,6 +312,11 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
         webView.navigationDelegate = context.coordinator
+        // C7 バグ修正 — `allowsLinkPreview`はiOS専用のプロパティなので
+        // macOSにはない。`target="_blank"`リンクの取りこぼし対策の
+        // `uiDelegate`はプラットフォーム共通で必要なので、iOS側と同じく
+        // ここでも設定する。
+        webView.uiDelegate = context.coordinator
         webView.underPageBackgroundColor = .clear
         context.coordinator.load(html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages, into: webView)
         return webView
@@ -465,5 +481,34 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
            let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
             onOpenLink(url)
         }
+    }
+}
+
+extension HTMLWebViewCoordinator: WKUIDelegate {
+    /// C7 バグ修正 (リンクがブラウザで開かない):
+    /// `target="_blank"`／`rel="noopener"`のような「新しいウィンドウ/タブで
+    /// 開く」リンクは、`navigationAction.targetFrame`が`nil`になる —
+    /// `decidePolicyFor`の`isMainFrame`判定は`navigationAction.targetFrame?
+    /// .isMainFrame ?? true`なので理屈の上ではこの`nil`ケースも「メイン
+    /// フレーム扱い」でキャンセルされ`onOpenLink`に回るはずだが、この
+    /// WebKitバージョン/実機でその通りに動く保証はない —
+    /// `loadHTMLString`が`decidePolicyFor`に一切現れないという、この
+    /// ファイルの別の実測済みの驚き (同メソッドのdoc comment) が示すとおり、
+    /// このAPIの実際の挙動は文書化された仕様と食い違うことがある。
+    /// `WKUIDelegate`を一切実装していなかった (=`webView.uiDelegate`が
+    /// `nil`のまま) 場合、新しいウィンドウを要求するナビゲーションが
+    /// `decidePolicyFor`を素通りしてここへ来ると、行き先がなく黙って
+    /// 何も起きない — メールの「アプリで見る」「配信停止はこちら」等、
+    /// 実際のメールに頻出する`target="_blank"`リンクがまさにこのパターン。
+    /// このメソッド自体は新しい`WKWebView`を一切作らず (常に`nil`を返す)、
+    /// 対象URLを`decidePolicyFor`と全く同じ経路 (`onOpenLink`) に渡すだけ —
+    /// 「新しいウィンドウでHTMLを表示する」ためのUI自体をこのアプリは持たない
+    /// (リンクは常にブラウザ側で開く) ので、これで十分。
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = navigationAction.request.url,
+           let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            onOpenLink(url)
+        }
+        return nil
     }
 }
