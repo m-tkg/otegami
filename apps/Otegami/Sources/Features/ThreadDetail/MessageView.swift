@@ -437,7 +437,7 @@ struct MessageView: View {
                 attachmentErrorMessage = "添付ファイルの取得に失敗しました。"
             }
         } catch {
-            attachmentErrorMessage = "添付ファイルの取得に失敗しました: \(error)"
+            attachmentErrorMessage = await missingCredentialAwareErrorMessage(prefix: "添付ファイルの取得に失敗しました", underlyingError: error)
         }
     }
 
@@ -645,9 +645,37 @@ struct MessageView: View {
                 markAsReadIfNeeded()
                 kickoffTranslationIfNeeded(message: loadedMessage)
             } else {
-                errorMessage = "本文の取得に失敗しました: \(error)"
+                errorMessage = await missingCredentialAwareErrorMessage(prefix: "本文の取得に失敗しました", underlyingError: error)
             }
         }
+    }
+
+    /// Real-device bug report (`docs/icloud-sync.md`'s "重複挿入バグ"):
+    /// opening a message on a cloud-inserted `.password` account with no
+    /// Keychain credential on this device yet used to fail with an opaque
+    /// `"本文の取得に失敗しました: authenticationFailed: missingCredential"` — every
+    /// word of which is either meaningless to a non-technical user or, in
+    /// the case of "authenticationFailed", actively misleading (it reads
+    /// like a wrong password, not "this device doesn't have a password to
+    /// try at all"). `AppEnvironment.auth(for:)` already flips
+    /// `AccountRecord.needsReauth` the moment this happens (both for this
+    /// M11 case and for a `.password` account whose Keychain item genuinely
+    /// went missing), so this re-reads the account row fresh (not the
+    /// `environment.accounts` cache, whose `ValueObservation` update isn't
+    /// guaranteed to have landed by the instant this catch block runs) and
+    /// swaps in an actionable message — the same "資格情報を待っています" /
+    /// "再接続" condition `AccountsSettingsView` already shows a banner and
+    /// button for — instead of leaking the raw error. Falls back to the raw
+    /// error for every other failure (offline, server error, ...), where
+    /// there's no single fix to point at.
+    private func missingCredentialAwareErrorMessage(prefix: String, underlyingError: Error) async -> String {
+        let refreshedAccount = try? await environment.database.dbWriter.read { db in
+            try AccountRecord.fetchOne(db, key: accountId)
+        }
+        guard refreshedAccount?.needsReauth == true, refreshedAccount?.authType == .password else {
+            return "\(prefix): \(underlyingError)"
+        }
+        return "\(prefix): この端末にはこのアカウントの資格情報がありません。設定 → アカウントの「再接続」からパスワードを確認してください。"
     }
 
     private func fetchBodyRecord(messageId: Int64) async throws -> MessageBodyRecord? {

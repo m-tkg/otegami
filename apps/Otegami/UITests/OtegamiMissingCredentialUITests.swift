@@ -5,9 +5,15 @@ import XCTest
 /// opaque, hardcoded "資格情報が見つかりません" error and no visible
 /// account-level indicator anywhere. Fixed in `AppEnvironment.auth(for:)`
 /// (now sets `needsReauth`, reusing the existing M11 "資格情報を待っています"/
-/// "再接続" banner machinery) and `MessageView.fetchBodyOverNetwork`/
-/// `fetchAttachmentOverNetwork` (now preserve the real underlying error
-/// instead of replacing it with a fixed string). See
+/// "再接続" banner machinery) and, as of the iCloud-sync duplicate-account
+/// fix (`docs/icloud-sync.md`), `MessageView
+/// .missingCredentialAwareErrorMessage` — rather than leaking the raw
+/// `"authenticationFailed: missingCredential"` error text (a second real-
+/// device report against the *same* underlying condition, this time
+/// reached via a cloud-inserted duplicate account with no local Keychain
+/// item), it now shows an actionable Japanese message pointing at the
+/// exact Settings banner/button (`AccountsSettingsView`'s "資格情報を待っています"/
+/// "再接続") that already exists for this condition. See
 /// `MessageView.deleteCredentialIfUITestRequested`'s doc comment for why
 /// this needs an internal launch-environment hook rather than driving it
 /// through the UI (there's no user action that deletes a Keychain item).
@@ -37,11 +43,13 @@ final class OtegamiMissingCredentialUITests: XCTestCase {
         // require scrolling past two dozen rows.
         openMessage(subject: "リンクを開くブラウザのテスト", in: app)
 
-        // The real underlying error ("missingCredential", from
-        // AppEnvironment.AuthResolutionError) should now be visible — not
-        // the old fixed "資格情報が見つかりません" string.
-        let errorText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "missingCredential")).firstMatch
-        XCTAssertTrue(errorText.waitForExistence(timeout: 20), "Expected the real underlying error (missingCredential) to be visible, not a generic message")
+        // The actionable "no credential on this device" message should now
+        // be visible — not the old fixed "資格情報が見つかりません" string, and
+        // not a raw "authenticationFailed: missingCredential" leak either
+        // (see `MessageView.missingCredentialAwareErrorMessage`'s doc
+        // comment).
+        let errorText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "この端末にはこのアカウントの資格情報がありません")).firstMatch
+        XCTAssertTrue(errorText.waitForExistence(timeout: 20), "Expected the actionable missing-credential message to be visible, not a generic/raw error")
 
         // The account should now show the "資格情報を待っています" banner in
         // Settings — the same M11 UI a cloud-synced-but-not-yet-keychain-
