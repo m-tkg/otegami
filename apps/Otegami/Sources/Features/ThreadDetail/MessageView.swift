@@ -426,8 +426,21 @@ struct MessageView: View {
             // opened for the first time shows its attachment list too, not
             // just the (empty, pre-fetch) snapshot read above.
             attachments = (try? await fetchAttachmentRecords(messageId: messageId)) ?? []
+            // design-phase-3: `SyncEngine.BodyFetcher` also sets
+            // `detectedLanguage` as part of this same fetch — `loadedMessage`
+            // predates it (read *before* the fetch even started), so the
+            // translation bar's `isEnglishMessage` check needs the freshly
+            // re-read row, not the stale one, or a message opened for the
+            // first time (the common case: body not fetched yet) would
+            // never show a translation bar on its first open. Caught by a
+            // real XCUITest run, not by inspection — `docs/verify.md`'s
+            // translation section.
+            let refreshed = (try? await environment.database.dbWriter.read { db in
+                try MessageRecord.fetchOne(db, key: messageId)
+            }) ?? loadedMessage
+            message = refreshed
             markAsReadIfNeeded()
-            kickoffTranslationIfNeeded(message: loadedMessage)
+            kickoffTranslationIfNeeded(message: refreshed)
         } catch {
             // Offline (or any other network failure): fall back to
             // whatever's already in the local database — a `.fetching`
