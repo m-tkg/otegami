@@ -798,10 +798,26 @@ struct MessageListView: View {
             let accountsToRefresh = unifiedInboxAccountFilter
                 .flatMap { filterId in environment.accounts.first { $0.id == filterId } }
                 .map { [$0] } ?? environment.accounts
+            // One account failing must not stop the others from refreshing,
+            // but the failures must not vanish either — an earlier version
+            // `try?`'d everything here, which meant a unified-inbox refresh
+            // could fail for *every* account (e.g. a real Gmail/iCloud
+            // account whose sync path is broken) with no visible symptom
+            // beyond the empty-state's "再同期を試してください". Collect
+            // per-account failures and surface them through the same alert
+            // the single-mailbox path already uses.
+            var failures: [String] = []
             for account in accountsToRefresh {
-                guard let auth = try? await environment.auth(for: account) else { continue }
-                _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-                _ = try? await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly)
+                do {
+                    let auth = try await environment.auth(for: account)
+                    _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly)
+                } catch {
+                    failures.append("\(account.email): \(error)")
+                }
+            }
+            if !failures.isEmpty {
+                syncErrorMessage = failures.joined(separator: "\n")
             }
         }
     }
