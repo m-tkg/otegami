@@ -129,6 +129,50 @@ final class AppEnvironment {
             database = inMemory
         }
         self.database = database
+
+        // M11 bug fix: consolidate already-local duplicate `account` rows
+        // for the same real mailbox — see `AccountDuplicateMerger`'s doc
+        // comment for the bug this is the migration side of
+        // (`docs/icloud-sync.md`'s "重複挿入バグ"): a device that hit the
+        // pre-fix `AccountCloudSyncEngine.reconcile()` duplicate-insertion
+        // bug ends up with two account rows for the same mailbox — one
+        // live, one perpetually `needsReauth` (no Keychain credential for
+        // its UUID ever synced to this device) — which showed up as two
+        // identical entries in Settings → アカウント and, because the
+        // unified inbox merges both accounts' independently-synced mail,
+        // duplicate messages that failed to open unpredictably depending on
+        // which duplicate's copy a given message came from. Run
+        // synchronously (unlike the FTS backfill/cloud reconcile `Task`s
+        // below) so `startObservingAccounts()`'s very first read of the
+        // account list already reflects the merged state — nobody should
+        // ever see the duplicate flash by in Settings, even for one frame.
+        // Idempotent (`AccountDuplicateMerger`'s doc comment) — safe to
+        // leave unconditional on every launch rather than gating it behind
+        // a one-shot flag.
+        //
+        // `OTEGAMI_UITEST_SKIP_DUPLICATE_ACCOUNT_MERGE`: a UITest-only
+        // escape hatch (mirrors `ComposerView
+        // .attachUITestFixtureIfRequested`'s/`MessageView
+        // .deleteCredentialIfUITestRequested`'s `OTEGAMI_UITEST_*` launch-
+        // environment pattern), no-op unless explicitly set — lets
+        // `OtegamiDuplicateAccountUITests` inject a duplicate `account` row
+        // via `sqlite3` between two launches of the *same* build and
+        // actually capture the pre-merge "two accounts" bug state on
+        // screen for one launch, before letting the very next launch (flag
+        // unset) run the real merge. Without this, the synchronous merge
+        // above makes the bug state unobservable in the UI even for a
+        // single frame by design — which is the correct behavior for real
+        // users, but means an automated screenshot-based "before" repro
+        // needs some way to hold that state still for one launch.
+        let duplicateMerges: [AccountDuplicateMerger.MergeResult]
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_SKIP_DUPLICATE_ACCOUNT_MERGE"] == "1" {
+            duplicateMerges = []
+        } else {
+            duplicateMerges = (try? database.dbWriter.write { db in
+                try AccountDuplicateMerger.mergeDuplicateAccounts(db: db)
+            }) ?? []
+        }
+
         self.syncCoordinator = SyncCoordinator(
             database: database,
             sessionFactory: { config in MailCoreIMAPSession(config: config) },
@@ -185,6 +229,25 @@ final class AppEnvironment {
             local: directory,
             isEnabled: { [cloudSyncSettings] in cloudSyncSettings.isEnabled }
         )
+
+        // Tear down whatever per-device state (cached `AccountSyncer`/
+        // `IDLE` loop, Keychain password, OAuth tokens, registered push
+        // watch) the duplicate-merge pass above left behind for each
+        // merged-away account id — the DB row is already gone by this
+        // point (deleted inside the synchronous merge above), so this only
+        // ever needs the id, never the full `AccountRecord`
+        // (`CloudAccountDirectory.cleanupAfterDuplicateMerge`'s doc
+        // comment). Captures `directory` (a `Sendable` struct), not
+        // `self`, matching the `cloudSync`-only capture the reconcile
+        // `Task` right below already uses.
+        if !duplicateMerges.isEmpty {
+            let mergedAwayAccountIds = duplicateMerges.flatMap(\.mergedAccountIds)
+            Task {
+                for accountId in mergedAwayAccountIds {
+                    await directory.cleanupAfterDuplicateMerge(accountId: accountId)
+                }
+            }
+        }
 
         // C6/C7: wired last, once every other stored property has a value
         // (Swift's two-phase init rule — `self` can't be handed to

@@ -118,6 +118,30 @@ struct CloudAccountDirectory: LocalAccountDirectory, @unchecked Sendable {
         }
     }
 
+    /// Post-merge cleanup for an account id `AccountDuplicateMerger` already
+    /// removed from the database (`AppEnvironment.init()`'s duplicate-
+    /// account migration, `docs/icloud-sync.md`'s "重複挿入バグ"). Unlike
+    /// `deleteLocally`, this doesn't require the `account` row to still
+    /// exist — it doesn't, the merger already deleted it after repointing/
+    /// merging everything it owned into the surviving account — so it only
+    /// tears down the per-*device* state a since-deleted id might still be
+    /// holding: a cached `AccountSyncer`/`IDLE` loop, a Keychain password,
+    /// stored OAuth tokens, and a registered push watch. Deliberately never
+    /// pushes a tombstone (unlike `AppEnvironment.deleteAccount`, and
+    /// unlike `deleteLocally` reacting to one) — this isn't a user-initiated
+    /// deletion that should propagate to other devices, it's this device
+    /// privately tidying up after a merge it alone decided to make; another
+    /// device may still legitimately have this exact id as its own live,
+    /// unmerged account.
+    func cleanupAfterDuplicateMerge(accountId: String) async {
+        await syncCoordinator.invalidateSyncer(for: accountId)
+        try? credentialStore.deletePassword(forAccountId: accountId)
+        if let tokenStore {
+            try? await tokenStore.clearTokens(for: accountId)
+        }
+        await unregisterWatch(forAccountId: accountId)
+    }
+
     /// A minimal echo of `AppEnvironment.auth(for:)` — doesn't set
     /// `needsReauth` on a `.reauthenticationRequired` failure (unlike that
     /// method) since this only ever runs immediately after

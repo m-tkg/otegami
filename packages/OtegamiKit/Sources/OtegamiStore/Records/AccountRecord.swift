@@ -152,3 +152,19 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         self.updatedAt = updatedAt ?? createdAt
     }
 }
+
+extension AccountRecord {
+    /// A case-insensitive "is this actually the same mailbox" key —
+    /// mirrors `AccountCloudSync.CloudAccountSnapshot.identityKey` field for
+    /// field (kept in sync by hand: `OtegamiStore` can't depend on
+    /// `AccountCloudSync`, since the dependency direction runs the other
+    /// way — `AccountCloudSync` already imports `OtegamiStore`). Used by
+    /// `AccountDuplicateMerger` to find *already-local* duplicate account
+    /// rows for the same real mailbox — the one-time migration side of
+    /// `docs/icloud-sync.md`'s "重複挿入バグ" fix, for devices that hit the
+    /// bug before `AccountCloudSyncEngine.reconcile()`'s phase 4 started
+    /// preventing new duplicates from being inserted.
+    public var identityKey: String {
+        "\(authType.rawValue)|\(email.lowercased())|\(imapHost.lowercased())|\(imapUsername.lowercased())"
+    }
+}
