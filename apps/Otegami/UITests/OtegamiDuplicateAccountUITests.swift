@@ -62,7 +62,7 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         app.launchEnvironment["OTEGAMI_UITEST_SKIP_DUPLICATE_ACCOUNT_MERGE"] = "1"
         app.launch()
 
-        app.tabBars.buttons["設定"].tap()
+        openSettingsFromHamburgerMenu(in: app)
         let list = app.collectionViews.firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 10))
 
@@ -97,7 +97,7 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        app.tabBars.buttons["設定"].tap()
+        openSettingsFromHamburgerMenu(in: app)
         let list = app.collectionViews.firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 10))
 
@@ -110,7 +110,7 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 2)
 
         // No data loss: the survivor's synced mail must still be there.
-        app.tabBars.buttons["メール"].tap()
+        closeSettingsSheet(in: app)
         XCTAssertTrue(
             waitForSeededSubjectScrollingIfNeeded("ようこそ otegami へ", in: app),
             "Expected the surviving account's INBOX to still show its synced mail after the merge"

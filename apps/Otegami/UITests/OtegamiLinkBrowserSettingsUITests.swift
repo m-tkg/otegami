@@ -16,9 +16,7 @@ final class OtegamiLinkBrowserSettingsUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 15))
-        settingsTab.tap()
+        openSettingsFromHamburgerMenu(in: app)
 
         let picker = app.buttons["settings.links.openInAppBrowserPicker"]
         XCTAssertTrue(scrollSettingsUntilVisible(picker, in: app), "Expected the link-browser picker to appear in Settings")

@@ -239,9 +239,7 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
         ensureDovecotTest1AccountExists(in: app)
 
         // Design-phase-2: "設定" is its own tab now, not a gear-icon sheet.
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 20))
-        settingsTab.tap()
+        openSettingsFromHamburgerMenu(in: app)
 
         let accountRow = app.collectionViews.cells.containing(NSPredicate(format: "label CONTAINS %@", "Dovecot Test1")).firstMatch
         XCTAssertTrue(accountRow.waitForExistence(timeout: 10), "Expected the test1 account row in Settings")
@@ -279,7 +277,7 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
         // which sections mailboxes by account exactly like the old sidebar
         // did.
         returnToMailTabRootIfNeeded(in: app)
-        app.buttons["mail.folderTitleButton"].tap()
+        app.buttons["mail.hamburgerButton"].tap()
         let folderList = app.collectionViews["folderSheet.list"]
         XCTAssertTrue(folderList.waitForExistence(timeout: 20))
         let test1Sections = folderList.staticTexts.matching(NSPredicate(format: "label == %@", "Dovecot Test1"))

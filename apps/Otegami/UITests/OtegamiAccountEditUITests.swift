@@ -193,15 +193,15 @@ final class OtegamiAccountEditUITests: XCTestCase {
     /// Navigates from wherever the app just launched to the renamed (or
     /// still-original, in phase 1 before the rename) account's edit screen
     /// — a `NavigationLink` push, not a sheet (see `AccountsSettingsView`'s
-    /// doc comment on why a nested `.sheet` doesn't work here): design-
-    /// phase-2, "設定" is its own tab (`SettingsTabView`) rather than a
-    /// gear-icon sheet, so this just switches tabs and taps the account row
-    /// (found via its `.row`-suffixed identifier — see `AccountsSettingsView`'s
-    /// doc comment on why that suffix exists — with a `CONTAINS` match since
-    /// only one account is ever present in this suite), then waits for
-    /// `AccountEditView`'s screen to appear.
+    /// doc comment on why a nested `.sheet` doesn't work here): 新画面構成,
+    /// "設定" is reached via the hamburger menu's bottom row rather than a
+    /// tab or a gear-icon sheet, so this opens that first and taps the
+    /// account row (found via its `.row`-suffixed identifier — see
+    /// `AccountsSettingsView`'s doc comment on why that suffix exists — with
+    /// a `CONTAINS` match since only one account is ever present in this
+    /// suite), then waits for `AccountEditView`'s screen to appear.
     private func openAccountEditScreen(in app: XCUIApplication) {
-        app.tabBars.buttons["設定"].tap()
+        openSettingsFromHamburgerMenu(in: app)
 
         // `.any` (not `.buttons`): a `NavigationLink` row's exposed
         // accessibility type isn't guaranteed to be `.button` the way a

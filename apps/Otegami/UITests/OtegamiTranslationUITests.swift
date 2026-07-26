@@ -102,12 +102,13 @@ final class OtegamiTranslationDraftEnglishReplyUITests: XCTestCase {
         XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected the English seed message row to appear")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
-        // Label-text lookup, not the exact identifier — `ThreadDetailView`'s
-        // per-message identifier-overwriting quirk (docs/verify.md's M5
-        // pitfall #1) applies to every button `MessageView` renders once
-        // it's embedded in a thread, not just "返信".
-        let draftEnglishReplyButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "英語で返信を下書き")).firstMatch
-        XCTAssertTrue(draftEnglishReplyButton.waitForExistence(timeout: 20), "Expected the 英語で返信を下書き button")
+        // 新画面構成: "英語で返信を下書き" moved into `ThreadDetailView`'s footer
+        // toolbar "…" menu (指示どおり — 返信/全員に返信 とは別の場所).
+        let moreMenuButton = app.buttons["messageDetail.toolbar.more"]
+        XCTAssertTrue(moreMenuButton.waitForExistence(timeout: 20), "Expected the footer toolbar's … button")
+        moreMenuButton.tap()
+        let draftEnglishReplyButton = app.buttons["messageDetail.toolbar.more.draftEnglishReply"]
+        XCTAssertTrue(draftEnglishReplyButton.waitForExistence(timeout: 5), "Expected the 英語で返信を下書き menu item")
         draftEnglishReplyButton.tap()
 
         let composerSheet = app.otherElements["composer.sheet"]

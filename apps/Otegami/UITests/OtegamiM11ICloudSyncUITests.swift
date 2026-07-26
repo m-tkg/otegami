@@ -21,9 +21,9 @@ final class OtegamiM11ICloudSyncUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        // Design-phase-2: "設定" is its own tab (`SettingsTabView`) now, not
-        // a gear-icon sheet off the old sidebar.
-        app.tabBars.buttons["設定"].tap()
+        // 新画面構成: "設定" is reached via the hamburger menu's bottom row
+        // now, not a tab bar or a gear-icon sheet off the old sidebar.
+        openSettingsFromHamburgerMenu(in: app)
 
         let toggle = app.switches["settings.cloudSyncToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
@@ -57,10 +57,8 @@ final class OtegamiM11ICloudSyncUITests: XCTestCase {
             "Expected the seeded baseline message to still appear after adding an account with the iCloud sync entitlement present"
         )
 
-        // Design-phase-2: "設定" is its own tab now — switch to it directly
-        // (no sidebar/pop-back dance needed, unlike the old
-        // `NavigationSplitView` structure this test predates).
-        app.tabBars.buttons["設定"].tap()
+        // 新画面構成: "設定" is reached via the hamburger menu's bottom row.
+        openSettingsFromHamburgerMenu(in: app)
 
         let toggle = app.switches["settings.cloudSyncToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))

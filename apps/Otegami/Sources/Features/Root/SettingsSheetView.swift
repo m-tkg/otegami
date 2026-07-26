@@ -12,10 +12,18 @@ import SwiftUI
 /// `TabView` tab pane (design-phase-2's now-removed tab), or a `Settings`
 /// scene pane (macOS).
 struct SettingsSheetView: View {
+    @Environment(\.dismiss) private var dismiss
+
     var body: some View {
         NavigationStack {
             AccountsListContent()
                 .navigationTitle("設定")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("閉じる") { dismiss() }
+                            .accessibilityIdentifier("settingsSheet.closeButton")
+                    }
+                }
         }
         .tint(OtegamiColor.accent)
         .accessibilityIdentifier("settingsSheet.navigationStack")

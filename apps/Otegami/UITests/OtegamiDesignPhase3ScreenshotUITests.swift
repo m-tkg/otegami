@@ -19,24 +19,25 @@ final class OtegamiDesignPhase3ScreenshotUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 30))
 
-        // Phase 1: Search tab (1j) with a query active (filter chips +
-        // results visible).
-        app.tabBars.buttons["検索"].tap()
+        // Phase 1: 検索画面 (1j), opened as a sheet from the header search
+        // button (新画面構成 — no tab bar anymore), with a query active
+        // (filter chips + results visible).
+        openSearchScreen(in: app)
         XCTAssertTrue(app.collectionViews["search.list"].waitForExistence(timeout: 15))
         typeSearchQuery("ようこそ", in: app)
         Thread.sleep(forTimeInterval: 3)
-        // Dismiss the keyboard (submit via Return) before anything below
-        // tries to tap the bottom tab bar — the keyboard fully covers it
-        // while up, so a tab-bar tap silently does nothing until this
-        // happens first.
+        // Dismiss the keyboard (submit via Return) before closing the
+        // sheet — the keyboard fully covers the close button while up.
         app.searchFields.firstMatch.typeText("\n")
         Thread.sleep(forTimeInterval: 3)
+        closeSearchScreen(in: app)
 
-        // Phase 2: Settings tab (1l) — アカウント/操作/翻訳 sections. Label
-        // text, not the exact `navigationBars` subscript — this simulator/
-        // toolchain's well-documented exact-identifier-lookup pitfall
-        // applies to navigation bar titles too (`docs/verify.md`).
-        app.tabBars.buttons["設定"].tap()
+        // Phase 2: 設定 (1l), opened via the hamburger menu's bottom row —
+        // アカウント/操作/翻訳 sections. Label text, not the exact
+        // `navigationBars` subscript — this simulator/toolchain's
+        // well-documented exact-identifier-lookup pitfall applies to
+        // navigation bar titles too (`docs/verify.md`).
+        openSettingsFromHamburgerMenu(in: app)
         let addAccountButton = app.buttons["settings.addAccountButton"]
         XCTAssertTrue(addAccountButton.waitForExistence(timeout: 15))
         // 操作/翻訳 (1l's new sections) sit below アカウント/iCloud/プッシュ通知
@@ -44,11 +45,11 @@ final class OtegamiDesignPhase3ScreenshotUITests: XCTestCase {
         // not just the account list at the top.
         app.swipeUp()
         Thread.sleep(forTimeInterval: 6)
+        closeSettingsSheet(in: app)
 
-        // Phase 3: Composer (1k), reached via the Mail tab's toolbar
-        // "作成" button — 差出人 always visible at the top, 翻訳 section
-        // near the bottom.
-        app.tabBars.buttons["メール"].tap()
+        // Phase 3: Composer (1k), reached via the header toolbar's "作成"
+        // button — 差出人 always visible at the top, 翻訳 section near the
+        // bottom.
         let composeButton = app.buttons["mail.composeButton"]
         XCTAssertTrue(composeButton.waitForExistence(timeout: 15))
         composeButton.tap()

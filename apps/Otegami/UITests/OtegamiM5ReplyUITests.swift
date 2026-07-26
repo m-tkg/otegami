@@ -35,22 +35,21 @@ final class OtegamiM5ReplyUITests: XCTestCase {
         XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected the seeded baseline thread to appear")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
-        // Identifier-based lookup doesn't work here: `ThreadDetailView`
-        // applies its own `.accessibilityIdentifier("threadDetail.message
-        // .<id>.body")` to the whole embedded `MessageView`, and every
-        // descendant accessibility element inside — including the reply
-        // button's own `.accessibilityIdentifier("messageDetail
-        // .replyButton")` — reports that *outer* container's identifier
-        // instead of its own (confirmed via `app.debugDescription`: the
-        // button element shows `identifier: 'threadDetail.message.2.body'`,
-        // not `'messageDetail.replyButton'`) — the same "container identifier
-        // leaks onto descendants" behavior verify.md's M4 pitfall #1
-        // already documented, just total override here rather than
-        // over-counting. A label match sidesteps it entirely (same
-        // workaround as M2's "画像を表示" banner button).
-        let replyButton = app.buttons.matching(NSPredicate(format: "label == %@", "返信")).firstMatch
-        XCTAssertTrue(replyButton.waitForExistence(timeout: 15), "Expected a 返信 button on the opened message")
-        replyButton.tap()
+        // 新画面構成: 返信/全員に返信 moved out of the per-message `MessageView`
+        // (which used to sit inside `ThreadDetailView`'s own
+        // `.accessibilityIdentifier("threadDetail.message.<id>.body")`
+        // container — the source of the old identifier-override workaround
+        // this replaced) into `ThreadDetailView`'s own screen-level footer
+        // toolbar (`MessageDetailFooterToolbar`), a sibling of that
+        // container rather than nested inside it. Its "返信" icon is now a
+        // `Menu` (返信/全員に返信) — tap the toolbar trigger, then the "返信"
+        // item within it.
+        let replyMenuButton = app.buttons["messageDetail.toolbar.reply"]
+        XCTAssertTrue(replyMenuButton.waitForExistence(timeout: 15), "Expected the footer toolbar's 返信 button on the opened message")
+        replyMenuButton.tap()
+        let replyItem = app.buttons["messageDetail.toolbar.reply.single"]
+        XCTAssertTrue(replyItem.waitForExistence(timeout: 5), "Expected a 返信 menu item")
+        replyItem.tap()
 
         let subjectField = app.textFields["composer.subject"]
         XCTAssertTrue(subjectField.waitForExistence(timeout: 10), "Composer sheet did not appear")

@@ -143,9 +143,19 @@ echo "==> Phase 2/4: open the 3-message thread, confirm only the newest is expan
 # opened thread" restoration is same-session-only now, not cross-launch
 # (docs/verify.md), so a relaunch after this test exits would land on the
 # message list, not the thread it just opened.
+#
+# 新画面構成: this phase's test class runs `testCollapsingEveryMessageStaysTopAligned`
+# first (alphabetical XCTest ordering), whose own designed screenshot
+# moment is a `Thread.sleep(4)` right at the *end* of that ~29s method
+# (after opening the thread, waiting for 3 headers, collapsing the newest,
+# and polling for every body to unmount) — confirmed via `sleep 4` +
+# 10x1s (t=4..14s) landing on the plain message list every time (the row
+# tap/navigation hadn't even happened yet that early), not the thread
+# detail this screenshot is meant to show. Widened to start well past that
+# method's own setup + polling.
 (
-  sleep 4
-  for _ in $(seq 1 10); do
+  sleep 17
+  for _ in $(seq 1 8); do
     xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/m4-02-thread-detail.png" >/dev/null 2>&1 || true
     sleep 1
   done

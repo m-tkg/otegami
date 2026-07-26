@@ -66,12 +66,23 @@ run_test() {
 # hold — see this script's header comment and docs/verify.md's M6 section
 # for why a single fixed-delay screenshot is too timing-sensitive in this
 # environment.
+#
+# 新画面構成: `sleep 6`/8 iterations (window t=6..14s) used to reliably land
+# on the results state, but search moved from an instant `TabView` tab
+# switch to `SearchScreenView` presented as a `.sheet` (`openSearchScreen`)
+# — the sheet-presentation animation plus this test target's larger binary
+# (more source files) pushed a cold `app.launch()`'s "search field ready,
+# query typed, debounced results rendered" moment later than before,
+# confirmed by every one of this script's mid-test screenshots landing on
+# the still-showing 検索履歴 (history) state instead of results when this
+# window was left unchanged. Widened to t=9..21s (13 iterations) to give
+# enough margin again.
 screenshot_mid_test() {
   local test_id="$1"
   local out_name="$2"
   (
-    sleep 6
-    for _ in $(seq 1 8); do
+    sleep 9
+    for _ in $(seq 1 13); do
       xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/$out_name" >/dev/null 2>&1 || true
       sleep 1
     done

@@ -144,13 +144,6 @@ struct SearchScreenView: View {
                     }
                 }
             }
-            if isActive, filteredResults.isEmpty, !isSearching {
-                Section {
-                    ContentUnavailableView.search(text: searchText)
-                        .accessibilityIdentifier("search.emptyState")
-                        .listRowSeparator(.hidden)
-                }
-            }
         }
         .accessibilityIdentifier("search.list")
         .scrollContentBackground(.hidden)
@@ -158,6 +151,10 @@ struct SearchScreenView: View {
         .overlay { overlayContent }
     }
 
+    /// Kept as an `.overlay` on top of (not a row *inside*) `search.list` —
+    /// matching M7's original design — so `search.list.cells.count` stays a
+    /// reliable "how many real result rows" signal for both the loading
+    /// state and the zero-results state, not just the search history list.
     @ViewBuilder
     private var overlayContent: some View {
         if !isActive {
@@ -165,6 +162,9 @@ struct SearchScreenView: View {
         } else if isSearching {
             ProgressView("検索中…")
                 .accessibilityIdentifier("search.loading")
+        } else if filteredResults.isEmpty {
+            ContentUnavailableView.search(text: searchText)
+                .accessibilityIdentifier("search.emptyState")
         }
     }
 

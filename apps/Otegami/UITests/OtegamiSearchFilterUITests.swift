@@ -11,12 +11,14 @@ final class OtegamiSearchFilterUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// 新画面構成: 検索 has no tab bar entry anymore — opens `SearchScreenView`
+    /// via `MailScreenView`'s header search button instead.
     private func launchOnSearchTab() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 30))
-        app.tabBars.buttons["検索"].tap()
+        openSearchScreen(in: app)
         XCTAssertTrue(app.collectionViews["search.list"].waitForExistence(timeout: 15))
         return app
     }

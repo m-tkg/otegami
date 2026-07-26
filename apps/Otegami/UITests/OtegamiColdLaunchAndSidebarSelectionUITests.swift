@@ -6,7 +6,7 @@ import XCTest
 /// against the pre-design-phase-2 `NavigationSplitView`/`SidebarView`
 /// structure (see this file's git history for the original doc comment).
 /// Design-phase-2 replaced that whole navigation model on iOS with
-/// `OtegamiTabRootView`'s tab bar + `MailTabView`'s own `NavigationStack`
+/// `OtegamiRootView`'s tab bar + `MailScreenView`'s own `NavigationStack`
 /// (`FolderListSheet` for mailbox selection, `.navigationDestination(item:)`
 /// for thread detail) — several of the original bug *classes* this suite
 /// existed to catch are now structurally impossible rather than merely
@@ -42,9 +42,9 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
     /// collapsed to near-zero height inside its own `ScrollView` (fixed by
     /// `ThreadDetailView.expandedMessageHeight(in:)`, unrelated to design-
     /// phase-2). The restoration half is now structurally impossible for
-    /// iOS: `MailTabView.selectedThreadId` is a plain `@State`, not
+    /// iOS: `MailScreenView.selectedThreadId` is a plain `@State`, not
     /// `@AppStorage`, and there is no code path left that persists it
-    /// across a process relaunch at all (`MailTabView`'s doc comment). This
+    /// across a process relaunch at all (`MailScreenView`'s doc comment). This
     /// test keeps the *layout* half as a live regression check (still a
     /// real risk, orthogonal to design-phase-2) and asserts the
     /// restoration half directly: after a real, unflagged cold relaunch,
@@ -129,7 +129,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
         XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "Expected the message list to be reachable")
         let list = app.collectionViews["messageList.list"]
 
-        app.buttons["mail.folderTitleButton"].tap()
+        app.buttons["mail.hamburgerButton"].tap()
         let folderList = app.collectionViews["folderSheet.list"]
         XCTAssertTrue(folderList.waitForExistence(timeout: 20), "Expected the folder sheet to appear")
 
@@ -173,7 +173,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
     /// already-selected value never re-fired the compact-width column push,
     /// since `List(selection:)`'s value hadn't changed) doesn't have a
     /// direct iOS equivalent either: `FolderListSheet`'s rows call
-    /// `MailTabView.selectUnifiedInbox()`/`selectMailbox(_:_:)` directly,
+    /// `MailScreenView.selectUnifiedInbox()`/`selectMailbox(_:_:)` directly,
     /// which unconditionally dismiss the sheet regardless of whether the
     /// selection's *value* actually changed — there's no diff-based
     /// `onChange` left in this path to fail to fire. This test instead
@@ -187,7 +187,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
         XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "Expected the message list to be reachable")
         let list = app.collectionViews["messageList.list"]
 
-        app.buttons["mail.folderTitleButton"].tap()
+        app.buttons["mail.hamburgerButton"].tap()
         let folderList = app.collectionViews["folderSheet.list"]
         XCTAssertTrue(folderList.waitForExistence(timeout: 20))
 
@@ -204,7 +204,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
 
     /// Bug 4's thread variant, still fully applicable: open a thread → back
     /// → tap the *same* row again → the detail pane must reopen, not stay
-    /// stuck on the list. `MailTabView` drives this via
+    /// stuck on the list. `MailScreenView` drives this via
     /// `.navigationDestination(item: $selectedThreadId)`; popping back via
     /// the system back button resets that binding to `nil` (SwiftUI's own
     /// `NavigationStack` behavior), so re-tapping the same row is a genuine

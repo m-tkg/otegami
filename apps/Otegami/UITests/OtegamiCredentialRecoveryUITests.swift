@@ -60,9 +60,7 @@ final class OtegamiCredentialRecoveryUITests: XCTestCase {
         // Without the fix, this launch's `auth(for:)` call would find
         // nothing under the current service, set `needsReauth = true`, and
         // this banner would appear instead.
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
-        settingsTab.tap()
+        openSettingsFromHamburgerMenu(in: app)
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
         XCTAssertFalse(
@@ -118,9 +116,7 @@ final class OtegamiCredentialRecoveryUITests: XCTestCase {
 
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15), "The message list should still appear normally after the orphan-adoption launch")
 
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
-        settingsTab.tap()
+        openSettingsFromHamburgerMenu(in: app)
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
         XCTAssertFalse(

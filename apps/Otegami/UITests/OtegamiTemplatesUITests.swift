@@ -20,9 +20,7 @@ final class OtegamiTemplatesUITests: XCTestCase {
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15))
 
         // --- Add a template in Settings ---
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
-        settingsTab.tap()
+        openSettingsFromHamburgerMenu(in: app)
 
         let templatesLink = app.buttons["settings.templatesLink"]
         XCTAssertTrue(scrollUntilVisible(templatesLink, in: app), "Expected the テンプレート settings entry point")
@@ -53,10 +51,8 @@ final class OtegamiTemplatesUITests: XCTestCase {
         XCTAssertTrue(templateRow.waitForExistence(timeout: 10), "Expected the newly added template to appear in the list")
         Thread.sleep(forTimeInterval: 2)
 
-        // --- Back to Mail, open a blank Composer, insert the template ---
-        let mailTab = app.tabBars.buttons["メール"]
-        XCTAssertTrue(mailTab.waitForExistence(timeout: 5))
-        mailTab.tap()
+        // --- Close 設定, open a blank Composer, insert the template ---
+        closeSettingsSheet(in: app)
 
         let composeButton = app.buttons["mail.composeButton"]
         XCTAssertTrue(composeButton.waitForExistence(timeout: 10))

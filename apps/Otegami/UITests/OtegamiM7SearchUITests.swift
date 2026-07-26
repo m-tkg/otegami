@@ -14,11 +14,12 @@ import XCTest
 /// its own non-persisted account-setup sheets (`docs/verify.md`'s M6
 /// section).
 ///
-/// Design-phase-2: search moved off `MessageListView`'s own `.searchable`
-/// bar and into its own tab (`SearchTabView`, 1a's "現在サイドバーに詰め込ま
-/// れている導線（設定・検索）をタブに移す") — every assertion below now reads
-/// from `search.list` rather than `messageList.list`, and each test
-/// switches to the Search tab before typing a query.
+/// Design-phase-2 moved search off `MessageListView`'s own `.searchable`
+/// bar and into its own tab (`SearchTabView`); 新画面構成 replaced that tab
+/// with `SearchScreenView`, opened as a sheet from `MailScreenView`'s
+/// header search button — every assertion below still reads from
+/// `search.list` rather than `messageList.list`, and each test opens the
+/// search sheet before typing a query.
 ///
 /// All five queries deliberately hit on `message.subject` alone (never
 /// `messageBody.plainText`), so none of them depends on
@@ -32,15 +33,16 @@ final class OtegamiM7SearchUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    /// Launches, confirms the Mail tab's message list is reachable (the
-    /// account/data baseline `OtegamiM7SetupUITests` established), then
-    /// switches to the Search tab and waits for its own list to be ready.
+    /// Launches, confirms the message list is reachable (the account/data
+    /// baseline `OtegamiM7SetupUITests` established), then opens
+    /// `SearchScreenView` (新画面構成: a header search button, no tab bar
+    /// anymore) and waits for its own list to be ready.
     private func launchOnSearchTab() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 30))
-        app.tabBars.buttons["検索"].tap()
+        openSearchScreen(in: app)
         XCTAssertTrue(app.collectionViews["search.list"].waitForExistence(timeout: 15))
         return app
     }
@@ -58,7 +60,7 @@ final class OtegamiM7SearchUITests: XCTestCase {
             .staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "打ち合わせ")).firstMatch
         XCTAssertTrue(hit.waitForExistence(timeout: 15), "Expected a 2-character LIKE-fallback search to find \"打ち合わせ\"")
 
-        Thread.sleep(forTimeInterval: 4)
+        Thread.sleep(forTimeInterval: 7)
     }
 
     /// Scenario (b): the same thread, found via a 3+ character query
@@ -72,7 +74,7 @@ final class OtegamiM7SearchUITests: XCTestCase {
             .staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "打ち合わせ")).firstMatch
         XCTAssertTrue(hit.waitForExistence(timeout: 15), "Expected a 3+ character FTS search to find \"打ち合わせ\"")
 
-        Thread.sleep(forTimeInterval: 4)
+        Thread.sleep(forTimeInterval: 7)
     }
 
     /// Scenario (c): an English query ("html", lowercase) hits
@@ -86,10 +88,10 @@ final class OtegamiM7SearchUITests: XCTestCase {
             .staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "HTML版だより")).firstMatch
         XCTAssertTrue(hit.waitForExistence(timeout: 15), "Expected a lowercase \"html\" query to case-insensitively match \"HTML版だより\"")
 
-        Thread.sleep(forTimeInterval: 4)
+        Thread.sleep(forTimeInterval: 7)
     }
 
-    /// Scenario (d): `SearchTabView` always searches across every account
+    /// Scenario (d): `SearchScreenView` always searches across every account
     /// (design-phase-2: it has no per-mailbox scope picker at all — see its
     /// doc comment), so a query ("ようこそ", present in both accounts'
     /// welcome-message subjects) returns results from *both* test1 and
@@ -104,7 +106,7 @@ final class OtegamiM7SearchUITests: XCTestCase {
         XCTAssertTrue(test1Hit.waitForExistence(timeout: 15), "Expected test1's welcome message in the cross-account search results")
         XCTAssertTrue(test2Hit.waitForExistence(timeout: 15), "Expected test2's welcome message in the cross-account search results")
 
-        Thread.sleep(forTimeInterval: 4)
+        Thread.sleep(forTimeInterval: 7)
     }
 
     /// Scenario (e): a query with no possible match shows the zero-results
@@ -128,6 +130,6 @@ final class OtegamiM7SearchUITests: XCTestCase {
         // The search list itself should have nothing in it.
         XCTAssertEqual(app.collectionViews["search.list"].cells.count, 0, "Expected zero result rows")
 
-        Thread.sleep(forTimeInterval: 4)
+        Thread.sleep(forTimeInterval: 7)
     }
 }

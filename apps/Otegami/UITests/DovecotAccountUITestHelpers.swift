@@ -181,13 +181,12 @@ extension XCTestCase {
     /// against a simulator install this test suite already granted
     /// permission on without an intervening `simctl erase`.
     func grantNotificationPermissionViaPushSettings(in app: XCUIApplication) {
-        // Design-phase-2: "設定" is now its own tab (`SettingsTabView`),
-        // not a gear-icon sheet off the old sidebar.
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10), "settings tab did not appear")
-        settingsTab.tap()
+        // 新画面構成: "設定" is reached via the hamburger menu (bottom row,
+        // `FolderListSheet.settingsSection`), not a tab bar or a gear-icon
+        // sheet off the old sidebar.
+        openSettingsFromHamburgerMenu(in: app)
         let pushLinkText = app.staticTexts["プッシュ通知"]
-        XCTAssertTrue(pushLinkText.waitForExistence(timeout: 10), "settings tab did not appear")
+        XCTAssertTrue(pushLinkText.waitForExistence(timeout: 10), "settings screen did not appear")
         pushLinkText.tap()
 
         let relayURLField = app.textFields["settings.push.relayURLField"]
@@ -243,7 +242,7 @@ extension XCTestCase {
     /// itself (`OtegamiColdLaunchAndSidebarSelectionUITests`).
     /// `legacyAutoAdvanceToContent` (and the `-uiTestsAutoAdvanceToContent`
     /// launch argument it passes) predates design-phase-2's iOS tab-bar
-    /// restructuring (`OtegamiTabRootView`) — iOS no longer has a
+    /// restructuring (`OtegamiRootView`) — iOS no longer has a
     /// `NavigationSplitView`/sidebar "column" to auto-advance past at all
     /// (the Mail tab's `MessageListView` is reachable directly, no tap
     /// needed), so this parameter is a no-op on iOS now. Left in place
@@ -259,25 +258,47 @@ extension XCTestCase {
         app.launch()
     }
 
-    /// Waits for the Mail tab's message list to appear, switching to that
-    /// tab first if some earlier step in the same test left a different
-    /// tab active. Design-phase-2: iOS's Mail tab shows `MessageListView`
-    /// directly (no sidebar row tap needed to reach it, unlike the old
-    /// `NavigationSplitView` structure this helper predates), so the only
-    /// thing that can actually keep it off-screen within a single running
-    /// process is the tab bar's own selection — a fresh `app.launch()`
-    /// always starts on the Mail tab (`OtegamiTabRootView`'s declaration
-    /// order), so this is mostly a defensive no-op after a cold launch and
-    /// only does real work after an in-test tab switch.
+    /// Waits for the message list to appear. 新画面構成: iOS no longer has a
+    /// bottom tab bar at all — `MailScreenView` (`OtegamiRootView`'s only
+    /// child) shows `MessageListView` directly, so there's no "switch back
+    /// to the Mail tab" step anymore. The only thing that can keep the list
+    /// out of the accessibility tree within an already-running process is
+    /// the hamburger drawer being open (`HamburgerMenuContainer` hides the
+    /// main content from the accessibility tree while `isOpen`) — closing
+    /// it via the drawer's own "閉じる" button covers that case; otherwise
+    /// this is a plain wait.
     @discardableResult
     func navigateToUnifiedInboxIfNeeded(in app: XCUIApplication, timeout: TimeInterval = 20) -> Bool {
         let list = app.collectionViews["messageList.list"]
         if list.waitForExistence(timeout: 2) { return true }
-        let mailTab = app.tabBars.buttons["メール"]
-        if mailTab.waitForExistence(timeout: 3) {
-            mailTab.tap()
+        let closeMenuButton = app.buttons["folderSheet.closeButton"]
+        if closeMenuButton.waitForExistence(timeout: 3) {
+            closeMenuButton.tap()
         }
         return list.waitForExistence(timeout: timeout)
+    }
+
+    /// 新画面構成: opens the hamburger menu (`mail.hamburgerButton`) and taps
+    /// its bottom "設定" row (`folderSheet.settings`), waiting for
+    /// `SettingsSheetView`'s sheet to be up.
+    @discardableResult
+    func openSettingsFromHamburgerMenu(in app: XCUIApplication) -> Bool {
+        app.buttons["mail.hamburgerButton"].tap()
+        let settingsRow = app.buttons["folderSheet.settings"]
+        guard settingsRow.waitForExistence(timeout: 10) else { return false }
+        settingsRow.tap()
+        return app.otherElements["settingsSheet.navigationStack"].waitForExistence(timeout: 10)
+    }
+
+    /// 新画面構成: closes `SettingsSheetView`'s sheet (`settingsSheet
+    /// .closeButton`) — replaces the design-phase-2 "switch back to the
+    /// Mail tab" step now that 設定 is a sheet, not a tab.
+    @discardableResult
+    func closeSettingsSheet(in app: XCUIApplication) -> Bool {
+        let closeButton = app.buttons["settingsSheet.closeButton"]
+        guard closeButton.waitForExistence(timeout: 5) else { return false }
+        closeButton.tap()
+        return true
     }
 
     /// M4: adds the dev mailstack's second seeded account (`test2
@@ -334,19 +355,15 @@ extension XCTestCase {
     }
 
     /// Like `popBackOnceIfNeeded`, but keeps popping (up to 3 times — the
-    /// deepest the Mail tab's own `NavigationStack` gets) and switches to
-    /// the Mail tab, until its "add account" entry point (either the
-    /// empty-state button or the chip-row "＋") is reachable — for a test
-    /// that needs to add another account and can't assume how many levels
-    /// deep a restored launch left off at, or which tab was last active.
-    /// Design-phase-2 rename of the old `returnToSidebarRootIfNeeded` — no
-    /// sidebar exists on iOS to return to anymore (`CLAUDE.md`'s adopted 1a
-    /// structure).
+    /// deepest `MailScreenView`'s own `NavigationStack` gets) until its "add
+    /// account" entry point (either the empty-state button or the chip-row
+    /// "＋") is reachable — for a test that needs to add another account
+    /// and can't assume how many levels deep a restored launch left off at.
+    /// 新画面構成: no tab bar to switch back to anymore (design-phase-2's
+    /// `returnToSidebarRootIfNeeded` rename already dropped the sidebar
+    /// equivalent; this drops the Mail-tab-switch step design-phase-2 itself
+    /// added, now that there's only ever one always-visible screen).
     func returnToMailTabRootIfNeeded(in app: XCUIApplication) {
-        let mailTab = app.tabBars.buttons["メール"]
-        if mailTab.waitForExistence(timeout: 3) {
-            mailTab.tap()
-        }
         for _ in 0..<3 {
             if app.buttons["mail.addAccountButton"].exists || app.buttons["mail.chip.addAccount"].exists {
                 return
@@ -466,15 +483,15 @@ extension XCTestCase {
         )
     }
 
-    /// Design-phase-2: 下書き moved off the old sidebar's toolbar and into
-    /// `FolderListSheet` (opened via the Mail tab's tappable title) — this
-    /// walks both steps (open the folder sheet, tap "下書き") and waits for
+    /// 下書き lives in `FolderListSheet`'s content, now the hamburger menu's
+    /// drawer (`mail.hamburgerButton`) rather than a tappable nav title —
+    /// this walks both steps (open the drawer, tap "下書き") and waits for
     /// `DraftsView`'s sheet to be up, so callers can then look for their own
     /// draft rows exactly as before.
     @discardableResult
     func openDraftsList(in app: XCUIApplication) -> Bool {
         returnToMailTabRootIfNeeded(in: app)
-        app.buttons["mail.folderTitleButton"].tap()
+        app.buttons["mail.hamburgerButton"].tap()
         let draftsRow = app.buttons["folderSheet.drafts"]
         guard draftsRow.waitForExistence(timeout: 10) else { return false }
         draftsRow.tap()
@@ -485,7 +502,7 @@ extension XCTestCase {
     @discardableResult
     func openOutboxList(in app: XCUIApplication) -> Bool {
         returnToMailTabRootIfNeeded(in: app)
-        app.buttons["mail.folderTitleButton"].tap()
+        app.buttons["mail.hamburgerButton"].tap()
         let outboxRow = app.buttons["folderSheet.outbox"]
         guard outboxRow.waitForExistence(timeout: 10) else { return false }
         outboxRow.tap()
@@ -500,7 +517,7 @@ extension XCTestCase {
     @discardableResult
     func folderSheetShowsOutboxRow(in app: XCUIApplication, timeout: TimeInterval) -> Bool {
         returnToMailTabRootIfNeeded(in: app)
-        app.buttons["mail.folderTitleButton"].tap()
+        app.buttons["mail.hamburgerButton"].tap()
         guard app.collectionViews["folderSheet.list"].waitForExistence(timeout: 10) else { return false }
         let found = app.buttons["folderSheet.outbox"].waitForExistence(timeout: timeout)
         app.buttons["folderSheet.closeButton"].tap()

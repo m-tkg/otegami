@@ -18,12 +18,8 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        // Design-phase-2: "設定" is its own tab now (`SettingsTabView`), not
-        // a gear-icon sheet off the old sidebar — no analogous "which tab is
-        // active" ambiguity to guard against (a fresh launch always starts
-        // on the Mail tab, and tapping the Settings tab bar button works
-        // regardless of what's currently showing there).
-        app.tabBars.buttons["設定"].tap()
+        // 新画面構成: "設定" is reached via the hamburger menu's bottom row.
+        openSettingsFromHamburgerMenu(in: app)
 
         app.staticTexts["プッシュ通知"].tap()
 
@@ -68,9 +64,9 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        // Design-phase-2: "設定" is its own tab now — see the previous test
-        // method's comment.
-        app.tabBars.buttons["設定"].tap()
+        // 新画面構成: "設定" is reached via the hamburger menu's bottom row —
+        // see the previous test method's comment.
+        openSettingsFromHamburgerMenu(in: app)
         app.staticTexts["プッシュ通知"].tap()
 
         let relayURLField = app.textFields["settings.push.relayURLField"]

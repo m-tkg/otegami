@@ -57,9 +57,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
 
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
-        settingsTab.tap()
+        openSettingsFromHamburgerMenu(in: app)
 
         // Identifier-based lookups only (not the section header `Text`s) —
         // this settings screen has grown enough sections that the later
@@ -90,9 +88,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
 
         // Assign trailing-long to ピン留め so a revealed (tap-only) button is
         // reachable without touching the always-tap-only-guarded delete slot.
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
-        settingsTab.tap()
+        openSettingsFromHamburgerMenu(in: app)
         let trailingLongPicker = app.buttons["settings.swipe.trailingLongPicker"]
         XCTAssertTrue(trailingLongPicker.waitForExistence(timeout: 10))
         trailingLongPicker.tap()
@@ -100,9 +96,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         XCTAssertTrue(pinMenuItem.waitForExistence(timeout: 5))
         pinMenuItem.tap()
 
-        let mailTab = app.tabBars.buttons["メール"]
-        XCTAssertTrue(mailTab.waitForExistence(timeout: 10))
-        mailTab.tap()
+        closeSettingsSheet(in: app)
 
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 10))
@@ -148,9 +142,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
 
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
-        settingsTab.tap()
+        openSettingsFromHamburgerMenu(in: app)
         // Reads `Switch.value` unreliably right after a tap on this
         // simulator/toolchain (the same class of pitfall `docs/verify.md`
         // documents for `SecureField`/emptied `TextField`s) — rather than
@@ -168,9 +160,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         XCTAssertTrue(scrollSettingsUntilVisible(threadingToggle, in: app))
         threadingToggle.tap()
 
-        let mailTab = app.tabBars.buttons["メール"]
-        XCTAssertTrue(mailTab.waitForExistence(timeout: 10))
-        mailTab.tap()
+        closeSettingsSheet(in: app)
 
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 10))

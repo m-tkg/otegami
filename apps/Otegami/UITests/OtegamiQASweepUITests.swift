@@ -89,7 +89,7 @@ final class OtegamiQASweepUITests: XCTestCase {
     /// each time (the exact screen the cold-launch restoration bug was
     /// triggered from) — confirms the fix holds up over repeated cycles,
     /// not just once. Design-phase-2: there's no `@AppStorage`-restored
-    /// selection left at all for iOS (`MailTabView.selectedThreadId` is a
+    /// selection left at all for iOS (`MailScreenView.selectedThreadId` is a
     /// plain `@State`), so this now asserts the message list reappears
     /// directly and the detail pane is never resumed.
     func testKillRestartCycleFromThreadDetail() throws {
@@ -116,14 +116,14 @@ final class OtegamiQASweepUITests: XCTestCase {
         }
     }
 
-    /// Kills and relaunches while the Search tab has text entered (but no
-    /// submitted query) — design-phase-2 moved search into its own tab
-    /// (`SearchTabView`, no longer `.searchable` on the Mail tab's list),
-    /// so "mid-search" now means "on the Search tab with in-flight text",
-    /// not a state on the message list screen itself. Transient,
-    /// non-GRDB-backed state either way — a relaunch should discard it
-    /// cleanly (back to the Mail tab, per `TabView`'s own default
-    /// first-tab-on-launch behavior) rather than getting stuck.
+    /// Kills and relaunches while `SearchScreenView`'s sheet has text
+    /// entered (but no submitted query) — 新画面構成: search is a sheet
+    /// opened from `MailScreenView`'s header button now, not its own tab, so
+    /// "mid-search" means "the search sheet open with in-flight text," not a
+    /// state on the message list screen itself. Transient, non-GRDB-backed
+    /// state either way — a relaunch should discard it cleanly (the sheet
+    /// isn't restored, back to the plain message list) rather than getting
+    /// stuck.
     func testKillRestartCycleFromSearchInProgress() throws {
         let app = XCUIApplication()
         app.launch()
@@ -131,7 +131,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
-        app.tabBars.buttons["検索"].tap()
+        openSearchScreen(in: app)
         let searchField = app.searchFields.firstMatch
         XCTAssertTrue(searchField.waitForExistence(timeout: 10))
         searchField.tap()
@@ -188,7 +188,7 @@ final class OtegamiQASweepUITests: XCTestCase {
     /// variant of the already-fixed `SidebarView` `List(selection:)` bug
     /// (design-phase-2: the folder picker moved into a sheet, but the same
     /// underlying "does rapidly re-driving the selection ever get the list
-    /// stuck" risk still applies to `MailTabView.mailSelection`).
+    /// stuck" risk still applies to `MailScreenView.mailSelection`).
     func testRapidMailboxSwitchingViaFolderSheet() throws {
         let app = XCUIApplication()
         app.launch()
@@ -196,7 +196,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
-        let folderTitleButton = app.buttons["mail.folderTitleButton"]
+        let folderTitleButton = app.buttons["mail.hamburgerButton"]
         let folderList = app.collectionViews["folderSheet.list"]
 
         for i in 1...5 {
@@ -221,8 +221,8 @@ final class OtegamiQASweepUITests: XCTestCase {
     }
 
     /// Types a search query, cancels immediately, types a different query —
-    /// the "検索入力→即キャンセル→再入力" scenario. Design-phase-2: exercised
-    /// on the Search tab now (`SearchTabView`), not the Mail tab's list.
+    /// the "検索入力→即キャンセル→再入力" scenario. 新画面構成: exercised inside
+    /// `SearchScreenView`'s sheet now, not the Mail tab's list.
     func testSearchTypeCancelRetype() throws {
         let app = XCUIApplication()
         app.launch()
@@ -230,7 +230,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
-        app.tabBars.buttons["検索"].tap()
+        openSearchScreen(in: app)
         let searchField = app.searchFields.firstMatch
         XCTAssertTrue(searchField.waitForExistence(timeout: 10))
         searchField.tap()
@@ -303,15 +303,15 @@ final class OtegamiQASweepUITests: XCTestCase {
         list.swipeUp()
         list.swipeDown()
 
-        // Design-phase-2: search lives on its own tab now.
-        app.tabBars.buttons["検索"].tap()
+        // 新画面構成: search opens as a sheet from the header button now.
+        openSearchScreen(in: app)
         let searchField = app.searchFields.firstMatch
         if searchField.waitForExistence(timeout: 5) {
             searchField.tap()
             searchField.typeText("a")
             app.swipeDown()
         }
-        app.tabBars.buttons["メール"].tap()
+        closeSearchScreen(in: app)
 
         // The app must still be responsive and eventually show the seeded
         // baseline once sync actually completes.
@@ -346,7 +346,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         // `FolderListSheet` (each account gets its own `Section`) rather
         // than the old always-visible sidebar.
         returnToMailTabRootIfNeeded(in: app)
-        app.buttons["mail.folderTitleButton"].tap()
+        app.buttons["mail.hamburgerButton"].tap()
         let folderList = app.collectionViews["folderSheet.list"]
         XCTAssertTrue(folderList.waitForExistence(timeout: 20))
         XCTAssertTrue(

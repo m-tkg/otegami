@@ -54,9 +54,7 @@ final class OtegamiMissingCredentialUITests: XCTestCase {
         // The account should now show the "資格情報を待っています" banner in
         // Settings — the same M11 UI a cloud-synced-but-not-yet-keychain-
         // synced account already used, now also covering this case.
-        let settingsTab = app.tabBars.buttons["設定"]
-        XCTAssertTrue(settingsTab.waitForExistence(timeout: 10))
-        settingsTab.tap()
+        openSettingsFromHamburgerMenu(in: app)
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
         XCTAssertTrue(scrollSettingsUntilVisible(pendingCredentialBanner, in: app), "Expected the 資格情報を待っています banner for the account whose Keychain item was deleted")

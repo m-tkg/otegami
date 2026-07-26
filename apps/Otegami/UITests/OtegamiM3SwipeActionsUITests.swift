@@ -30,7 +30,7 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
         // — a real ambiguous-predicate bug caught via a debug screenshot
         // taken mid-swipe, not an environment quirk. This subject has no
         // such collision.
-        // Design-phase-2: 1a's bottom tab bar (`OtegamiTabRootView`) didn't
+        // Design-phase-2: 1a's bottom tab bar (`OtegamiRootView`) didn't
         // exist when this test was first written and shrinks the message
         // list's usable viewport height versus before — this seeded row
         // (older, so it sorts low in the newest-first list) now lands close
