@@ -174,6 +174,15 @@ iPhone 実機側でのプライベート CA ルート証明書の信頼設定 (�
      にし、そのデバイスでは新規アカウント追加が cloud に反映されない
      (もう一方には出現しない) こと、OFF のデバイス自身のローカル動作は
      変わらないことを確認する。
+  7. **(追加, 重複挿入バグの修正後)** 両方のデバイスで**独立に**同じ
+     メールアカウント (同じメールアドレス・同じ IMAP 設定) を追加してから
+     iCloud 同期させ、`AccountCloudSyncEngine.reconcile()` の同一性
+     チェック (`CloudAccountSnapshot.identityKey`, `docs/icloud-sync.md`
+     「重複挿入バグとその修正」節) が実際の cloud KVS 経由の往復でも
+     効いて、どちらのデバイスにもアカウントが2行重複しないことを確認する
+     — この修正自体はシミュレータ1台への直接 DB 注入
+     (`OtegamiDuplicateAccountUITests`) と単体テストでのみ検証済みで、
+     実 2 台間の cloud 往復を通した確認はまだ行っていない。
 
 ## design-phase-3: 翻訳の実機 (Simulator でない) 確認
 
