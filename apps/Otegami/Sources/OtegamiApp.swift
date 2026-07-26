@@ -171,7 +171,8 @@ struct RootView: View {
             onOpenServerDraft: { messageId in presentComposer(.serverDraft(messageId: messageId)) },
             onReply: { messageId, replyAll, translateToEnglish in
                 presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
-            }
+            },
+            onOpenCancelledSend: { snapshot in presentComposer(.cancelledSend(snapshot)) }
         )
     }
     #else
@@ -344,6 +345,13 @@ struct RootView: View {
             await syncAllAccountsOnce()
         case .background, .inactive:
             await environment.syncCoordinator.stopAllIdleLoops()
+            // C7 「アプリを離脱したら即座に送信を確定」— cuts short whatever's
+            // left of the countdown the instant the app leaves the
+            // foreground, rather than letting it keep counting down
+            // unobserved in the background (see `PendingSendCoordinator
+            // .finalizeNow()`'s doc comment for why). A no-op if nothing is
+            // currently pending.
+            await environment.pendingSendCoordinator.finalizeNow()
         @unknown default:
             break
         }

@@ -25,6 +25,8 @@ final class AppEnvironment {
     let database: AppDatabase
     let syncCoordinator: SyncCoordinator
     let credentialStore: KeychainCredentialStore
+    /// C6/C7 送信キャンセル — see `PendingSendCoordinator`'s doc comment.
+    let pendingSendCoordinator = PendingSendCoordinator()
     /// M9: push opt-in. `pushSettings` is the persistence layer
     /// (`PushSettingsStore`'s doc comment); `isPushEnabled`/
     /// `pushRelayURLString` mirror it into `@Observable` state so
@@ -179,6 +181,11 @@ final class AppEnvironment {
             local: directory,
             isEnabled: { [cloudSyncSettings] in cloudSyncSettings.isEnabled }
         )
+
+        // C6/C7: wired last, once every other stored property has a value
+        // (Swift's two-phase init rule — `self` can't be handed to
+        // anything, even just to store a `weak` back-reference, until then).
+        pendingSendCoordinator.configure(environment: self)
 
         startObservingAccounts()
 

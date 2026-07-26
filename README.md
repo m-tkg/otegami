@@ -77,11 +77,27 @@ Two things this app is built around, more than any single feature list:
 - **Compose/reply**: a required sender picker to avoid cross-account
   mistakes, plain-text quoting, an Outbox for offline sends, local draft
   saving (with a save/discard confirmation on both platforms), and
-  drafts that sync both ways over IMAP.
-- **Swipe actions & bulk select**: configurable leading-swipe quick action
-  (read/unread vs. archive first), a deliberately tap-only delete to
-  avoid accidental swipes, long-press multi-select with a bottom action
-  bar, and Undo toasts on delete/archive.
+  drafts that sync both ways over IMAP. On iOS, sending is durable and
+  cancellable: the message is queued to the local Outbox the instant you
+  tap Send (so it's never lost even if the app is killed), then held for
+  a configurable 5s/10s/no-delay window behind a countdown bar with a
+  "送信を取り消す" (undo send) button — leaving the app finalizes the send
+  immediately instead of continuing to count down in the background. See
+  [docs/settings.md](docs/settings.md).
+- **Swipe actions & bulk select**: both left and right swipes have
+  independently configurable short/long actions (read/unread toggle,
+  archive, mark as junk, pin, delete), a deliberately tap-only delete/junk
+  to avoid accidental swipes, long-press multi-select with a bottom
+  action bar, and Undo toasts on delete/archive/junk. macOS (no swipe
+  gesture) exposes every action via the row's context menu instead.
+- **Pinning**: pin a message or thread to keep it at the top of the list,
+  local-only by default with an opt-in to mirror IMAP `\Flagged` so it
+  stays in sync with other clients.
+- **List display**: an optional flat (one row per message, not per
+  thread) list mode, a per-account-colored initials avatar next to each
+  row and each message's header (generated locally — no third-party
+  avatar service is ever contacted), and a configurable body-preview
+  line count.
 - **Push notifications**: an optional, self-hostable relay server
   (`server/otegami-relay`) watches your IMAP `INBOX` over IDLE and sends a
   privacy-preserving APNs push (no subject/body on the wire — the app's

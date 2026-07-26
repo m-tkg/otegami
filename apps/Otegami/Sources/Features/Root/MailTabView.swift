@@ -14,6 +14,9 @@ struct MailTabView: View {
     var onOpenDraft: (Int64) -> Void
     var onOpenServerDraft: (Int64) -> Void
     var onReply: (Int64, Bool, Bool) -> Void
+    /// C7: reopens the Composer with a just-cancelled pending send's fields
+    /// — see `handleCancelPendingSend()`.
+    var onOpenCancelledSend: (PendingSendDraftSnapshot) -> Void
 
     @State private var mailSelection: SidebarSelection = .unifiedInbox
     @State private var accountFilter: String?
@@ -65,6 +68,13 @@ struct MailTabView: View {
 
     private var content: some View {
         VStack(spacing: 0) {
+            // C7 送信キャンセル: "ヘッダのすぐ下に青いカウントダウンバー" — the
+            // toolbar/nav title is chrome above this `NavigationStack`
+            // content, so the first row of this `VStack` reads as directly
+            // below it.
+            if let pending = environment.pendingSendCoordinator.pendingSend {
+                SendCountdownBar(pending: pending, onCancel: handleCancelPendingSend)
+            }
             if isUnifiedInboxSelected, !environment.accounts.isEmpty {
                 AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter, onAddAccount: presentAddAccount)
             }
@@ -170,6 +180,19 @@ struct MailTabView: View {
 
     private func presentAddAccount() {
         accountEntryRoute = .typeSelection
+    }
+
+    /// "送信を取り消す" tapped on `SendCountdownBar`: undoes the durable local
+    /// write and reopens the Composer with the exact same fields — see
+    /// `PendingSendCoordinator.cancelPendingSend()`'s doc comment. `nil`
+    /// (nothing pending after all, e.g. a race with the countdown finalizing
+    /// right as the tap landed) is a silent no-op; the bar disappearing on
+    /// its own the moment `pendingSend` goes `nil` is feedback enough.
+    private func handleCancelPendingSend() {
+        Task {
+            guard let snapshot = await environment.pendingSendCoordinator.cancelPendingSend() else { return }
+            onOpenCancelledSend(snapshot)
+        }
     }
 
     private func requestPostFolderAction(_ action: PostFolderSheetAction) {

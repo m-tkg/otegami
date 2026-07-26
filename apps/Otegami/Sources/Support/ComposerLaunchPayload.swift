@@ -34,6 +34,15 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
         /// `DraftMessageRecord`'s doc comment for why closing/discarding a
         /// freshly-opened server draft without saving must be a true no-op.
         case serverDraft(messageId: Int64)
+        /// C7 送信キャンセル: reopens the Composer with exactly the fields a
+        /// just-cancelled pending send had, restored from
+        /// `PendingSendDraftSnapshot` — the local outbox row/opQueue op the
+        /// send had already durably written were deleted by
+        /// `PendingSendCoordinator.cancelPendingSend()` before this payload
+        /// is presented, so (unlike `.draft`/`.serverDraft`) there's no
+        /// database row left to load from; every field the Composer needs
+        /// travels in the payload itself.
+        case cancelledSend(PendingSendDraftSnapshot)
     }
 
     var id = UUID()
@@ -68,4 +77,29 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
     static func serverDraft(messageId: Int64) -> ComposerLaunchPayload {
         ComposerLaunchPayload(kind: .serverDraft(messageId: messageId))
     }
+
+    static func cancelledSend(_ snapshot: PendingSendDraftSnapshot) -> ComposerLaunchPayload {
+        ComposerLaunchPayload(kind: .cancelledSend(snapshot))
+    }
+}
+
+/// C7: everything `ComposerView` needs to restore a just-cancelled pending
+/// send's fields — captured by `ComposerView.send()` right before staging
+/// attachments/writing the durable outbox row, so cancelling never needs to
+/// re-read anything off disk or out of GRDB (the outbox row is deleted by
+/// the time this is presented — see `ComposerLaunchPayload.Kind
+/// .cancelledSend`'s doc comment).
+struct PendingSendDraftSnapshot: Codable, Hashable, Sendable {
+    var accountId: String
+    var toText: String
+    var ccText: String
+    var subject: String
+    var bodyText: String
+    var inReplyToMessageId: String?
+    var references: [String]
+    var translateToEnglishBeforeSend: Bool
+    var attachments: [PendingAttachment]
+    var draftServerMailboxId: Int64?
+    var draftServerUid: Int64?
+    var draftServerUidValidity: Int64?
 }

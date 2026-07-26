@@ -58,6 +58,9 @@ struct ComposerView: View {
     @State private var isLoadingReplyContext = false
     @State private var errorMessage: String?
 
+    /// C7 「送信取り消し」猶予 — see `SendCancelSettingsStore`'s doc comment.
+    @AppStorage(SendCancelSettingsStore.windowKey) private var sendCancelWindowRaw = SendCancelSettingsStore.defaultWindow.rawValue
+
     // MARK: - Translation (design-phase-3, 1k)
 
     /// "英語に翻訳して送る" — set from `payload.kind`'s `translateToEnglish`
@@ -333,6 +336,7 @@ struct ComposerView: View {
         case .new: "新規作成"
         case .reply(_, let replyAll, _): replyAll ? "全員に返信" : "返信"
         case .draft, .serverDraft: "下書き"
+        case .cancelledSend: "新規作成"
         }
     }
 
@@ -363,6 +367,12 @@ struct ComposerView: View {
             isLoadingReplyContext = true
             defer { isLoadingReplyContext = false }
             await loadServerDraft(messageId: messageId)
+        case .cancelledSend(let snapshot):
+            // C7: everything needed travels in the payload itself — no
+            // database/network round trip, unlike `.draft`/`.serverDraft`
+            // (see `ComposerLaunchPayload.Kind.cancelledSend`'s doc
+            // comment for why).
+            loadCancelledSend(snapshot)
         }
         // Baseline for `hasUnsavedChanges` — captured last, after whatever
         // prefill above (reply quoting, or a resumed draft's saved text)
@@ -420,6 +430,24 @@ struct ComposerView: View {
         for attachment in loaded.attachments {
             try? FileManager.default.removeItem(atPath: attachment.localPath)
         }
+    }
+
+    /// C7 送信キャンセル: restores every field a cancelled pending send had,
+    /// synchronously — see `ComposerLaunchPayload.Kind.cancelledSend`'s doc
+    /// comment.
+    private func loadCancelledSend(_ snapshot: PendingSendDraftSnapshot) {
+        selectedAccountId = snapshot.accountId
+        toText = snapshot.toText
+        ccText = snapshot.ccText
+        subject = snapshot.subject
+        bodyText = snapshot.bodyText
+        inReplyToMessageId = snapshot.inReplyToMessageId
+        references = snapshot.references
+        translateToEnglishBeforeSend = snapshot.translateToEnglishBeforeSend
+        pendingAttachments = snapshot.attachments
+        draftServerMailboxId = snapshot.draftServerMailboxId
+        draftServerUid = snapshot.draftServerUid
+        draftServerUidValidity = snapshot.draftServerUidValidity
     }
 
     /// Resuming a server-origin draft (Drafts IMAP sync): a `message` row
@@ -786,6 +814,15 @@ struct ComposerView: View {
                 // after the user explicitly asked for English would be
                 // worse than making them retry.
                 bodyText = try await environment.translationService.translate(bodyText, from: .japanese, to: .english)
+                // The toggle's job (translate the draft once, so the
+                // result is visible/editable before sending) is done —
+                // `bodyText` is now the English output, not the Japanese
+                // input. Clearing this here (not just leaving it `true`)
+                // matters for C7: if this send ends up cancelled and the
+                // Composer reopens from `PendingSendDraftSnapshot`, leaving
+                // it `true` would re-translate the *already-English* body
+                // as if it were still Japanese input on the next send.
+                translateToEnglishBeforeSend = false
             } catch {
                 translateErrorMessage = "本文の翻訳に失敗しました: \(error)"
                 return
@@ -803,7 +840,7 @@ struct ComposerView: View {
             // outbox row.
             let stagedAttachments = try Self.stageAttachments(pendingAttachments, subdirectory: "Outbox")
 
-            try await environment.database.dbWriter.write { db in
+            let outboxId: Int64? = try await environment.database.dbWriter.write { db in
                 var outbox = OutboxMessageRecord(
                     accountId: accountId,
                     toAddresses: toAddresses,
@@ -817,7 +854,7 @@ struct ComposerView: View {
                     draftServerUidValidity: draftServerUidValidity
                 )
                 try outbox.insert(db)
-                guard let outboxId = outbox.id else { return }
+                guard let outboxId = outbox.id else { return nil }
                 for staged in stagedAttachments {
                     var attachmentRecord = OutboxAttachmentRecord(
                         outboxMessageId: outboxId, filename: staged.filename,
@@ -826,10 +863,39 @@ struct ComposerView: View {
                     try attachmentRecord.insert(db)
                 }
                 try OpQueue.enqueueSend(accountId: accountId, outboxMessageId: outboxId, db: db)
+                return outboxId
             }
-            dismiss()
 
-            // Best-effort immediate replay, same pattern as
+            // C6/C7: the message is already durably queued at this point
+            // (the transaction above committed) — everything from here on
+            // only decides *when* it's allowed to actually leave, never
+            // whether it's lost. `dismiss()` happens unconditionally
+            // either way, matching the pre-C7 behavior of closing the
+            // Composer the instant the local write succeeds.
+            dismiss()
+            guard let outboxId else { return }
+
+            #if os(iOS)
+            // iOS only (`SendCancelWindow`'s doc comment covers the "why
+            // not 30s/60s" reasoning; macOS's Composer is its own window
+            // rather than a sheet over a persistent tab bar, so there's no
+            // natural home for `SendCountdownBar` there — send stays
+            // immediate on that platform, matching every prior milestone's
+            // behavior).
+            if let duration = SendCancelWindow(rawValue: sendCancelWindowRaw)?.duration ?? SendCancelSettingsStore.defaultWindow.duration {
+                let snapshot = PendingSendDraftSnapshot(
+                    accountId: accountId, toText: toText, ccText: ccText, subject: subject, bodyText: bodyText,
+                    inReplyToMessageId: inReplyToMessageId, references: references,
+                    translateToEnglishBeforeSend: translateToEnglishBeforeSend, attachments: pendingAttachments,
+                    draftServerMailboxId: draftServerMailboxId, draftServerUid: draftServerUid, draftServerUidValidity: draftServerUidValidity
+                )
+                environment.pendingSendCoordinator.schedule(outboxMessageId: outboxId, accountId: accountId, duration: duration, snapshot: snapshot)
+                return
+            }
+            #endif
+
+            // Cancel window is "なし" (or this is macOS): best-effort
+            // immediate replay, same pattern as
             // MessageView.markAsReadIfNeeded/MessageListView's swipe
             // actions — harmless if offline, the op just waits for the
             // next successful connection.
@@ -899,9 +965,13 @@ struct ComposerView: View {
 
 /// One file the user has picked in this Composer session but not yet sent
 /// — see `ComposerView.pendingAttachments`'s doc comment for why this
-/// holds raw `Data` rather than a URL.
-private struct PendingAttachment: Identifiable, Equatable {
-    let id = UUID()
+/// holds raw `Data` rather than a URL. Not `private` (unlike this file's
+/// other small helper types): C7's `PendingSendCoordinator` also needs this
+/// shape to carry a cancelled send's attachments back into a freshly
+/// reopened `ComposerView` without re-reading them from disk — see
+/// `PendingSendDraftSnapshot.attachments`.
+struct PendingAttachment: Identifiable, Equatable, Hashable, Codable, Sendable {
+    var id = UUID()
     var filename: String
     var mimeType: String
     var data: Data

@@ -12,10 +12,15 @@ struct OtegamiTabRootView: View {
     var onOpenDraft: (Int64) -> Void
     var onOpenServerDraft: (Int64) -> Void
     var onReply: (Int64, Bool, Bool) -> Void
+    /// C7 — see `MailTabView.onOpenCancelledSend`'s doc comment.
+    var onOpenCancelledSend: (PendingSendDraftSnapshot) -> Void
 
     var body: some View {
         TabView {
-            MailTabView(onCompose: onCompose, onOpenDraft: onOpenDraft, onOpenServerDraft: onOpenServerDraft, onReply: onReply)
+            MailTabView(
+                onCompose: onCompose, onOpenDraft: onOpenDraft, onOpenServerDraft: onOpenServerDraft, onReply: onReply,
+                onOpenCancelledSend: onOpenCancelledSend
+            )
                 .tabItem {
                     Label("メール", systemImage: "envelope")
                         .accessibilityIdentifier("tabBar.mail")
