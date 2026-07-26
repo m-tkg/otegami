@@ -17,7 +17,7 @@ final class OtegamiM2VerificationUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testHTMLBodyRendersAndExternalImagesAreBlockedByDefault() throws {
+    func testHTMLBodyRendersAndExternalImagesAutoDisplayByDefault() throws {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
@@ -37,19 +37,16 @@ final class OtegamiM2VerificationUITests: XCTestCase {
         returnToMessageList(in: app)
 
         // 06-html-external-image.eml: multipart/alternative with an
-        // <img src="http://example.com/..."> — the "画像を表示" banner
-        // should appear (blocked by default) and disappear once tapped.
+        // <img src="http://example.com/..."> — remote images now auto-load
+        // by default (`ImageSettingsStore.defaultAutoShowRemote == true`,
+        // see docs/settings.md "画像 (B)"), so the "画像を表示" banner
+        // should *not* appear. (The banner remains as a manual per-message
+        // override for anyone who flips the setting off — not covered by
+        // this default-behavior checkpoint.)
         openMessage(subject: "【otegami】新機能のお知らせ", in: app)
-        // Identifier-based lookup (`app.buttons["messageDetail
-        // .showImagesBanner"]`) never matches here even while the banner
-        // is plainly visible on screen (confirmed via screenshot taken
-        // mid-poll) — the same kind of accessibility-identifier lookup
-        // quirk `openMessage` above already works around for row cells.
-        // A label-text predicate finds it reliably instead.
+        assertBodyContains(text: "新機能についてお知らせします", in: app)
         let banner = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "画像を表示")).firstMatch
-        XCTAssertTrue(banner.waitForExistence(timeout: 30), "Expected the \"画像を表示\" banner for a message with an external image")
-        banner.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-        XCTAssertTrue(banner.waitForNonExistence(timeout: 10), "Banner should disappear once external content is allowed")
+        XCTAssertFalse(banner.waitForExistence(timeout: 10), "Remote images auto-display by default now, so the \"画像を表示\" banner should not appear")
 
         // Hold the message open for the wrapping shell script's mid-test
         // screenshot (same technique as `OtegamiM8AttachmentUITests`/
