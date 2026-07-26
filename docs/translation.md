@@ -215,7 +215,11 @@ OS バージョンは iOS/macOS 26 以降が前提（本アプリの最低対応
 - **UI 未実装 (このドキュメントを最初に書いた時点)**: design-phase-3
   で実装済み。`apps/Otegami/Sources/Features/ThreadDetail/TranslationBar.swift`/
   `TranslatedBodyView.swift` と `AppEnvironment.translationService`/
-  `messageTranslator`、`ComposerView` の「英語に翻訳して送る」トグルが
+  `messageTranslator`、当時の `ComposerView` の「英語に翻訳して送る」
+  トグル (どの作成画面からも手動でON/OFFできる汎用トグルだったが、後の
+  表示・操作改善バッチで「英語で返信を下書き」という単一の入口に一本化
+  する形で UI としては削除された — 内部の翻訳ロジック自体は残っている。
+  `docs/design-system.md`「6. 「英語に翻訳して送る」の削除」節参照) が
   該当。UI 層の設計判断 (既定は訳文、自動翻訳の ON/OFF 設定、HTML メー
   ルは訳文表示時にプレーンテキスト化される、等) は
   `docs/design-system.md` の design-phase-3 節にまとめてある。

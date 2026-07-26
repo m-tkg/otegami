@@ -4,6 +4,11 @@
 実装は各項目をモック/スキップ/dev mailstack 代替で進めており、開発の手を止めていない。
 都合の良いときに対応し、必要であれば `Config/Local.xcconfig` 等の git 管理外ファイルに値を設定すること。
 
+同じ内容を「今日やることリスト」の形に行動単位で並べ替えたものが
+[`HUMAN_TASKS.md`](HUMAN_TASKS.md) にある。背景・理由・切り分けの経緯を
+知りたい場合はこのファイル、次に何をやればいいかだけ知りたい場合は
+`HUMAN_TASKS.md` を見ること。
+
 ## M6: Google OAuth Client ID の発行
 
 **実装状況**: M6 のロジック・UI は実装済み・単体テスト済み (PKCE 生成/token
@@ -130,7 +135,7 @@ iPhone 実機側でのプライベート CA ルート証明書の信頼設定 (�
 **実装状況**: 資格情報 (Keychain) の iCloud キーチェーン同期対応、
 アカウント定義 (`NSUbiquitousKeyValueStore`) の同期・突き合わせエンジン
 (`AccountCloudSyncEngine`)、設定画面のトグル、entitlement (iOS/macOS 両方)
-は実装済み・単体テスト済み (`AccountCloudSyncTests`、15 件、`make test` に
+は実装済み・単体テスト済み (`AccountCloudSyncTests`、22 件、`make test` に
 含まれる)。iOS シミュレータでの起動確認・トグル表示・トグル操作の
 非クラッシュ確認・既存アカウント追加フローの回帰確認は
 `scripts/verify-ios-icloud.sh` で自動検証済み。**残っているのは実

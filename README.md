@@ -190,10 +190,13 @@ sent to a translation API or any server. Highlights:
 - Per-message translation bar, defaulting to the translated text, with a
   segmented control back to the original and per-paragraph long-press to
   peek at just that paragraph's source.
-- "Draft a reply in English" and a composer-side "translate to English
-  before sending" toggle that translates your own draft in place (so you
-  can see and edit the result before sending, never a silent background
-  translation).
+- "Draft a reply in English" opens the composer with translate-on-send
+  already armed, translating your own reply draft in place (so you can
+  see and edit the English result before it's sent, never a silent
+  background translation). This is the only entry point for it — an
+  earlier, more general "translate to English before sending" toggle that
+  any compose screen exposed was removed in favor of this single,
+  intentional entry point.
 - Paragraph-level caching keyed by an engine identifier, so re-opening a
   translated message doesn't re-run the model.
 - Requires iOS/macOS 26+ with Apple Intelligence enabled. On unsupported
@@ -229,7 +232,10 @@ anyone's daily driver for an extended period — treat it as experimental:
   translation driven through the iOS Simulator's app UI (works from a
   plain process on the same machine; see [Translation](#translation)
   above). See [PENDING.md](PENDING.md) for exactly what's unverified,
-  why, and the steps to verify it with your own credentials/devices.
+  why, and the steps to verify it with your own credentials/devices —
+  or [HUMAN_TASKS.md](HUMAN_TASKS.md) for the same list reorganized as a
+  plain action checklist (real-device checks, real-account sign-ins,
+  infra upkeep, release prerequisites).
 - [docs/roadmap.md](docs/roadmap.md) covers planned future work.
 
 ## Platforms

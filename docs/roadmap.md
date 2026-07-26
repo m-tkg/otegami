@@ -13,6 +13,12 @@ M0〜M11、および design-phase-2/3 (デザイン刷新・端末内翻訳の�
 - **macOS 版のプッシュ通知**: `NotificationService` Extension は iOS のみ。
   macOS 側の通知配信の仕組み (例: `UNUserNotificationCenter` + 独自の
   ローカル通知、またはmacOS 版 push 拡張の設計) は未着手。
+- **スレッドミュートとプッシュ通知の連携**: `ThreadRecord.isMuted` は
+  ローカル限定の表示意図フラグで、プッシュ通知は抑制しない
+  (`docs/design-system.md`「新画面構成」節)。relay 自体はスレッド/ミュート
+  という概念を持たずメールボックス単位で「新着があるか」しか watch しない
+  ため、ミュート状態をクライアント→relay に伝える同期チャネルを新設する
+  必要がある。
 - **iCloud のユーザー名短縮形**: `ICloudAccountSetupView` はフルアドレス
   (`user@icloud.com`) を IMAP/SMTP ユーザー名として使う実装。実 iCloud
   アカウントでの確認 (`PENDING.md`) の結果次第で短縮形への切替が必要になる
@@ -35,6 +41,26 @@ M0〜M11、および design-phase-2/3 (デザイン刷新・端末内翻訳の�
   (`GoogleOAuth.TokenStore.hasStoredRefreshToken`/`.accessToken(for:)`
   経由) は実 Google アカウントでの 2 台間確認をしていない
   (`PENDING.md`)。
+
+## 同期・信頼性
+
+- **IMAP `VANISHED` (QRESYNC) による明示的な削除通知への対応**:
+  `refetchAndDiffFlags` の全滅防止 (再取得結果が完全に空のケース) は
+  対応済みだが、一部の UID だけが欠落した不完全な再取得 (真の部分
+  expunge との区別がつかないケース) までは防げていない。`VANISHED`
+  (QRESYNC) によるサーバー明示の削除通知を使う、または
+  `serverUIDs.count` と `status.messageCount` の整合性をより厳密に
+  チェックするなどの堅牢化の余地が残る (`docs/verify.md`「実機で残る
+  確認事項」節)。dev mailstack の Dovecot は CONDSTORE 対応のため、
+  CONDSTORE 非対応/不安定な実プロバイダでの実機再確認もあわせて必要。
+- **`AccountSyncer` のメールボックスループ例外処理の実機再確認**:
+  複数メールボックスを順に同期する途中で1つが失敗しても
+  `ThreadAssigner.assignAllUnthreaded` に必ず到達するよう修正済み
+  (回帰テスト `AccountSyncerTests
+  .laterMailboxFailureDoesNotBlockEarlierMailboxThreading` で検証)。
+  ただし発覚時の実機 (Wi-Fi 経由でタイムアウト/瞬断が起きやすい経路)
+  でこの修正がリアルタイムに効いているかは、その場では既に自己修復
+  していたため確認できていない (`docs/verify.md`「有力な根本原因」節)。
 
 ## UI/UX
 

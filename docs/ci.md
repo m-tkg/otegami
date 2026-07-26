@@ -15,7 +15,7 @@
    が同じく署名なしで通ること (どの実機/シミュレータにもインストールしない
    ビルドのみの検証 — `generic` destination なのでシミュレータを起動する
    必要すらない)。
-4. `packages/OtegamiKit` の `swift test` (`make test` と同じ内容 — 196件
+4. `packages/OtegamiKit` の `swift test` (`make test` と同じ内容 — 340件
    ほどのユニット/シナリオテスト。`MailTransportMailCoreTests` は
    `OTEGAMI_TEST_IMAP_HOST` 環境変数が無いと自動的に skip されるので、CI
    では実行されない)。

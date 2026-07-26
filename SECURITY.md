@@ -45,11 +45,14 @@ already been considered:
   self-hosting it should still treat it as a service holding live mail
   credentials and deploy it behind HTTPS, per the deployment doc.
 - **HTML mail rendering**: HTML messages render in a sandboxed
-  `WKWebView` with JavaScript disabled and remote images blocked behind a
-  one-tap "show images" banner, specifically to reduce the attack surface
-  of rendering untrusted HTML from arbitrary senders. A bug that let mail
-  content execute script, exfiltrate data, or otherwise escape that
-  sandbox is a high-priority report.
+  `WKWebView` with JavaScript disabled, specifically to reduce the attack
+  surface of rendering untrusted HTML from arbitrary senders. Embedded
+  images (inline `cid:`/image attachments) default off; remote images
+  default on (with an in-Settings note about the read-receipt tradeoff) —
+  both are configurable in Settings and have a one-tap "show images"
+  banner as a per-message override. A bug that let mail content execute
+  script, exfiltrate data, or otherwise escape the `WKWebView` sandbox is
+  a high-priority report.
 - **OAuth (Gmail)**: uses Authorization Code + PKCE via
   `ASWebAuthenticationSession`, no client secret embedded in the app (see
   [docs/oauth-setup.md](docs/oauth-setup.md)). Issues with token storage,
