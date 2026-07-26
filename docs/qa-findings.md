@@ -12,6 +12,50 @@
 「修正不能級/設計判断が要る」項目、および「軽微な見た目の違和感 (真バグで
 ないもの)」を記録する。
 
+## 実機フィードバック第2弾: Gmail でアーカイブが効かない実バグの原因と修正
+
+**症状**: 実 Gmail アカウントでスレッド/メールをアーカイブしても、サーバー
+側に何も反映されない (INBOX から消えない)。
+
+**原因**: `MessageListView.commitArchive(_:)`/`ThreadDetailView
+.archiveThread()` は「アカウントの `MailboxRole.archive` メールボックスへ
+`OpQueue.enqueueMove`」という実装だったが、**Gmail には `\Archive`
+special-use のメールボックスが存在しない** — Gmail の「すべてのメール」は
+IMAP の `SPECIAL-USE` 拡張で `\All` を返し、このアプリは `\All` を
+`MailboxRole.all` (`.archive` とは別の値) にマッピングしている
+(`MailCoreIMAPSession+Mapping.role(for:path:)`)。結果、Gmail アカウントでは
+ローカルの Archive-role ルックアップが常に `nil` を返し、`commitArchive`
+自身が「アーカイブ先が無い」と判断してアーカイブ操作全体を**サイレントに
+何もしない**まま終わっていた (opQueue に一切 enqueue されない — ローカル
+DB からの削除すら起きない実装だったので、UI 上も何も変化しないまま失敗
+していたことになる)。
+
+**修正**: `OpQueueKind.archive` (`ArchiveOpPayload`) を新設し、宛先の解決を
+「enqueue 時に UI 側で決める」から「`.delete`/`.junk` と同じく replay 時に
+`OpQueueProcessor` が決める」方式に変更した。
+
+- **Gmail アカウント (`account.kind == .gmail`)**: 宛先メールボックスの
+  解決を一切試みず、ソースメールボックス (例: INBOX) に対して
+  `STORE +FLAGS \Deleted` → `EXPUNGE` のみを行う (COPY はしない)。これは
+  Gmail の「アーカイブ = INBOX ラベルを外すだけ」という実際の意味論に
+  対応する IMAP 操作で、「すべてのメール」には Gmail 側が自動的にメール
+  を残し続ける (Spam/Trash に入っていない限り) ため、明示的な COPY は不要。
+- **それ以外のアカウント (generic IMAP・iCloud)**: 従来どおり
+  `MailboxRole.archive` のメールボックスへ `MOVE`。ローカルに未同期の
+  場合は `resolveOrCreateArchiveMailbox` (`Trash`/`Junk` と同じ
+  CREATE+再list による自動作成パターン) で解決し、それでも失敗する場合は
+  op を pending のまま残す (ユーザーの意図した操作を無言で消さない、
+  既存の `.delete`/`.junk` と同じ方針)。
+
+`packages/OtegamiKit/Tests/SyncEngineTests/OpQueueProcessorTests.swift` に
+4件のテストを追加: 通常アカウントでの Archive 解決+move、Archive
+メールボックス自動作成、自動作成失敗時に pending のまま残ること、Gmail
+アカウントでの in-place unlabel (STORE+EXPUNGE のみ、move は一切試みない
+こと) を `FakeIMAPSession`/`CallRecorder` で検証済み。
+
+**未検証事項**: 実 Gmail アカウントでの動作確認 (`FakeIMAPSession` による
+契約テストのみ)。`PENDING.md` に記録した。
+
 ## 修正した実バグ (再掲・参照)
 
 - コールドランチが (サイドバー最上位ではなく) 統合受信トレイ/メッセージ一覧

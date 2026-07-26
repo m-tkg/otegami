@@ -71,6 +71,7 @@ struct FailedOperationsView: View {
         case .move: "メールの移動に失敗しました"
         case .delete: "メールの削除に失敗しました"
         case .junk: "迷惑メールへの移動に失敗しました"
+        case .archive: "アーカイブに失敗しました"
         case .send: "メールの送信に失敗しました"
         case .saveDraft: "下書きの保存に失敗しました"
         case .deleteDraft: "下書きの削除に失敗しました"

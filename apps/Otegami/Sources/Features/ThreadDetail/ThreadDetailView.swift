@@ -361,28 +361,33 @@ struct ThreadDetailView: View {
         }
     }
 
+    /// Enqueues one `archive` op per message, resolved at *replay* time (not
+    /// here) by `OpQueueProcessor` — same "self-heal against current server
+    /// state, and branch on `account.kind` for Gmail" behavior
+    /// `MessageListView.commitArchive(_:)` uses; see `OpQueueKind.archive`'s
+    /// doc comment for why a pre-resolved local Archive-role mailbox lookup
+    /// (this method's previous implementation) silently did nothing on a
+    /// real Gmail account.
     private func archiveThread() {
         guard let accountId else { return }
         Task {
             do {
                 let archived = try await environment.database.dbWriter.write { db -> Bool in
-                    guard let archiveMailboxId = try MailboxRecord
-                        .filter(Column("accountId") == accountId && Column("role") == MailboxRoleRecord.archive.rawValue)
-                        .fetchOne(db)?.id
-                    else { return false }
                     let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                    var didArchiveAny = false
                     for message in msgs {
                         guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
-                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId), mailbox.id != archiveMailboxId else { continue }
-                        try OpQueue.enqueueMove(
+                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId), mailbox.role != .archive else { continue }
+                        try OpQueue.enqueueArchive(
                             accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                            uids: [uid], destinationMailboxId: archiveMailboxId, db: db
+                            uids: [uid], db: db
                         )
                         try FTSIndexer.delete(messageId: messageId, db: db)
                         try MessageRecord.deleteOne(db, key: messageId)
+                        didArchiveAny = true
                     }
                     try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-                    return true
+                    return didArchiveAny
                 }
                 guard archived else { return }
                 await replaySoon()

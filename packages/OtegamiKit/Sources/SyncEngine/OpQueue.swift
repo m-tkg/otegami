@@ -45,6 +45,26 @@ public enum OpQueueKind: String, Sendable {
     /// `DraftsView`'s explicit delete and, via `.send`'s replay, for
     /// cleaning up a sent message's now-redundant Drafts copy.
     case deleteDraft
+    /// "アーカイブ": resolved at *replay* time, not enqueue time — same
+    /// "self-heal against current server state" shape as `.delete`/`.junk`,
+    /// but with an extra branch on `account.kind`. A pre-resolved `move` to
+    /// a locally-known `MailboxRole.archive` mailbox (the original
+    /// implementation) is wrong for Gmail specifically: Gmail has no
+    /// `\Archive`-flagged folder at all (its "All Mail" advertises `\All`,
+    /// which this app maps to `MailboxRole.all`, not `.archive` — see
+    /// `MailCoreIMAPSession+Mapping.role(for:path:)`), so that lookup always
+    /// came back `nil` and archiving silently did nothing on a real Gmail
+    /// account. Gmail's own archive semantics are "remove the label", not
+    /// "move the message": `OpQueueProcessor` branches on `account.kind ==
+    /// .gmail` and, for Gmail, just `STORE +FLAGS \Deleted` +`EXPUNGE`s the
+    /// *source* mailbox (no COPY) — Gmail auto-keeps every non-Spam/Trash
+    /// message in All Mail regardless, so this un-labels it from the source
+    /// without deleting it. Every other provider keeps the original
+    /// resolve-or-create-then-move behavior (mirrors `resolveOrCreateTrash
+    /// Mailbox`/`resolveOrCreateJunkMailbox`, now `resolveOrCreateArchive
+    /// Mailbox`). Payload is `ArchiveOpPayload`, structurally identical to
+    /// `DeleteOpPayload`/`JunkOpPayload`.
+    case archive
 }
 
 /// `setFlags`'s payload carries the **absolute** desired `MessageFlags`
@@ -109,6 +129,23 @@ public struct DeleteOpPayload: Codable, Sendable, Equatable {
 /// `junk`'s payload — see `OpQueueKind.junk`'s doc comment; shape is
 /// identical to `DeleteOpPayload`.
 public struct JunkOpPayload: Codable, Sendable, Equatable {
+    public var sourceMailboxId: Int64
+    public var uidValidity: Int64
+    public var uids: [UInt32]
+
+    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+        self.sourceMailboxId = sourceMailboxId
+        self.uidValidity = uidValidity
+        self.uids = uids
+    }
+}
+
+/// `archive`'s payload — see `OpQueueKind.archive`'s doc comment; shape is
+/// identical to `DeleteOpPayload`/`JunkOpPayload`. No `destinationMailboxId`
+/// here on purpose, for the same reason `DeleteOpPayload` has none: the
+/// destination (or, for Gmail, "no destination at all — just unlabel") is
+/// resolved at replay time, not enqueue time.
+public struct ArchiveOpPayload: Codable, Sendable, Equatable {
     public var sourceMailboxId: Int64
     public var uidValidity: Int64
     public var uids: [UInt32]
@@ -226,6 +263,18 @@ public enum OpQueue {
         guard !uids.isEmpty else { return }
         let payload = JunkOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
         try enqueue(kind: .junk, accountId: accountId, payload: payload, db: db)
+    }
+
+    public static func enqueueArchive(
+        accountId: String,
+        sourceMailboxId: Int64,
+        uidValidity: Int64,
+        uids: [UInt32],
+        db: Database
+    ) throws {
+        guard !uids.isEmpty else { return }
+        let payload = ArchiveOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
+        try enqueue(kind: .archive, accountId: accountId, payload: payload, db: db)
     }
 
     public static func enqueueSend(

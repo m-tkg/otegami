@@ -193,6 +193,36 @@ public actor OpQueueProcessor {
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: junk.path)
             return .applied
 
+        case .archive:
+            let payload = try JSONDecoder().decode(ArchiveOpPayload.self, from: op.payload)
+            guard let source = try await mailbox(id: payload.sourceMailboxId), source.uidValidity == payload.uidValidity else {
+                return .staleDiscarded
+            }
+            if account.kind == .gmail {
+                // Gmail has no `\Archive`-flagged folder (see
+                // `OpQueueKind.archive`'s doc comment) — "archiving" is
+                // un-labeling the source mailbox, not moving anywhere.
+                // Gmail auto-retains every non-Spam/Trash message in "All
+                // Mail" regardless of label state, so `\Deleted`+`EXPUNGE`
+                // on the *source* mailbox only (never Trash, never a COPY)
+                // removes it from that label without deleting it.
+                let change = FlagChange(
+                    uids: UIDSet(payload.uids), op: .add, flags: .deleted,
+                    uidValidity: UInt32(truncatingIfNeeded: payload.uidValidity)
+                )
+                try await session.store(mailboxPath: source.path, change: change)
+                try await session.expunge(mailboxPath: source.path)
+                return .applied
+            }
+            guard let archive = try await resolveOrCreateArchiveMailbox(accountId: account.id, session: session) else {
+                // Same "leave the op pending rather than silently dropping
+                // a user-intended action" shape as `.delete`/`.junk`'s
+                // identical resolution failure.
+                throw MailTransportError.mailboxNotFound(path: "(no Archive-role mailbox known)")
+            }
+            try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: archive.path)
+            return .applied
+
         case .send:
             let payload = try JSONDecoder().decode(SendOpPayload.self, from: op.payload)
             guard let outbox = try await outboxMessage(id: payload.outboxMessageId) else {
@@ -518,6 +548,49 @@ public actor OpQueueProcessor {
         let mailboxInfos = try await session.listMailboxes()
         guard let created = mailboxInfos.first(where: { info in
             info.role == .junk || info.path.caseInsensitiveCompare(Self.junkMailboxNameToCreate) == .orderedSame
+        }) else {
+            return nil
+        }
+
+        return try await upsertCreatedMailbox(accountId: accountId, info: created)
+    }
+
+    private func archiveMailbox(accountId: String) async throws -> MailboxRecord? {
+        try await database.dbWriter.read { db in
+            try MailboxRecord
+                .filter(Column("accountId") == accountId)
+                .filter(Column("role") == MailboxRoleRecord.archive.rawValue)
+                .fetchOne(db)
+        }
+    }
+
+    /// The mailbox name `resolveOrCreateArchiveMailbox` asks the server to
+    /// `CREATE` when no Archive-role mailbox is known — same rationale as
+    /// ``trashMailboxNameToCreate``/``junkMailboxNameToCreate``. Only
+    /// reached for non-Gmail accounts (`OpQueueKind.archive`'s doc comment:
+    /// Gmail never takes this path at all, so there's no risk of this
+    /// clashing with Gmail's own folder naming).
+    static let archiveMailboxNameToCreate = "Archive"
+
+    /// Resolves this account's Archive-role mailbox, self-healing by
+    /// `CREATE`-ing one named ``archiveMailboxNameToCreate`` when none is
+    /// known yet — mirrors `resolveOrCreateTrashMailbox`/
+    /// `resolveOrCreateJunkMailbox` exactly, reusing
+    /// `upsertCreatedMailbox(accountId:info:)` the same way.
+    private func resolveOrCreateArchiveMailbox(accountId: String, session: any IMAPSessionProtocol) async throws -> MailboxRecord? {
+        if let existing = try await archiveMailbox(accountId: accountId) {
+            return existing
+        }
+
+        do {
+            try await session.createMailbox(path: Self.archiveMailboxNameToCreate)
+        } catch {
+            return nil
+        }
+
+        let mailboxInfos = try await session.listMailboxes()
+        guard let created = mailboxInfos.first(where: { info in
+            info.role == .archive || info.path.caseInsensitiveCompare(Self.archiveMailboxNameToCreate) == .orderedSame
         }) else {
             return nil
         }

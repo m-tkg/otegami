@@ -1041,19 +1041,16 @@ struct MessageListView: View {
         }
     }
 
-    /// Moves every message in the thread to its account's Archive-role
-    /// mailbox (`MailboxRoleRecord.archive`) — mirrors `commitDelete(_:)`'s
-    /// shape exactly, just with `OpQueue.enqueueMove(destinationMailboxId:)`
-    /// in place of `enqueueDelete` (which instead resolves the account's
-    /// Trash mailbox at *replay* time, not enqueue time — delete's payload
-    /// carries no destination at all). A move needs the destination
-    /// resolved up front since `MoveOpPayload` requires one. Best-effort: if
-    /// this account's Archive mailbox hasn't synced down locally yet (a
-    /// freshly-added account, or a provider with no Archive folder), this
-    /// silently does nothing (returns `nil`, so the caller never shows an
-    /// undo toast for an action that didn't actually happen) rather than
-    /// erroring — same fallback shape as every other opQueue-enqueuing path
-    /// in this file.
+    /// Removes every message in the thread from its current mailbox and
+    /// enqueues one `archive` op per message — mirrors `commitDelete(_:)`'s
+    /// shape exactly, just with `OpQueue.enqueueArchive` in place of
+    /// `enqueueDelete`. Like `.delete`, `.archive`'s destination (or, for a
+    /// Gmail account, "no destination — just unlabel the source") is
+    /// resolved by `OpQueueProcessor` at *replay* time, not here at enqueue
+    /// time — see `OpQueueKind.archive`'s doc comment for why a
+    /// pre-resolved local Archive-role mailbox lookup used to make
+    /// archiving silently do nothing on a real Gmail account (Gmail has no
+    /// `\Archive` folder at all).
     ///
     /// Commits the local database write (and enqueues the `move` op)
     /// *immediately*, unlike this feature's first version — see
@@ -1074,20 +1071,16 @@ struct MessageListView: View {
         let accountId = summary.thread.accountId
         do {
             let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
-                guard let archiveMailboxId = try MailboxRecord
-                    .filter(Column("accountId") == accountId && Column("role") == MailboxRoleRecord.archive.rawValue)
-                    .fetchOne(db)?.id
-                else { return nil }
                 guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
                 let messages = try ThreadQuery.messages(threadId: threadId, db: db)
                 let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
                 for message in messages {
                     guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
                     guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
-                    guard mailbox.id != archiveMailboxId else { continue }
-                    try OpQueue.enqueueMove(
+                    guard mailbox.role != .archive else { continue }
+                    try OpQueue.enqueueArchive(
                         accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [uid], destinationMailboxId: archiveMailboxId, db: db
+                        uids: [uid], db: db
                     )
                     try FTSIndexer.delete(messageId: messageId, db: db)
                     try MessageRecord.deleteOne(db, key: messageId)

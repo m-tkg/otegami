@@ -40,6 +40,41 @@
      確認する (`docs/oauth-setup.md` の「実機での最終確認手順」に詳細チェック
      リストあり)。
 
+## 実機フィードバック第2弾: Gmail アーカイブ修正の実アカウント確認
+
+**実装状況**: 「Gmail でアーカイブが効かない」実機報告を受け、原因
+(`\Archive` special-use メールボックスが Gmail に存在しないため、既存の
+ローカル Archive-role ルックアップが常に失敗していた) を特定して修正した。
+Gmail アカウントはアーカイブ時に宛先メールボックスへの MOVE を試みず、
+ソースメールボックスへの `STORE \Deleted` + `EXPUNGE` のみを行う (INBOX
+ラベルだけを外し、「すべてのメール」には残す) 実装に変更した。
+`FakeIMAPSession`/`CallRecorder` によるユニットテスト4件で契約 (発行される
+IMAP コマンドの種類・宛先) は検証済み。詳細は
+`docs/qa-findings.md`「実機フィードバック第2弾: Gmail でアーカイブが効かない
+実バグの原因と修正」。
+
+- **理由**: 実 Gmail サーバーへの接続が必要で、dev/mailstack (Dovecot) では
+  代替できない (Dovecot は素の IMAP special-use のみで Gmail 固有の挙動は
+  再現できない)。
+- **ブロックしている機能**: 実 Gmail アカウントでの「アーカイブしたメールが
+  INBOX から消え、Gmail の Web UI 上の『すべてのメール』には残っている」
+  ことの実地確認。
+- **対応手順**:
+  1. `docs/oauth-setup.md`/上記「M6: Google OAuth Client ID の発行」の手順で
+     実 Gmail アカウントを追加する (Client ID 発行がまだの場合は先にそちら
+     を完了させる)。
+  2. INBOX の適当なメール (またはスレッド) を1件アーカイブする。
+  3. アプリの一覧から即座に消えることを確認する (ローカルの楽観的削除は
+     オフラインでも即座に効くので、ここまでは Gmail 固有の検証にならない)。
+  4. Gmail の Web UI (mail.google.com) を開き、同じメールが INBOX から
+     消えていて、「すべてのメール」/検索では見つかることを確認する —
+     これが今回の修正の本質的な検証ポイント。
+  5. 併せて、iCloud アカウント (`MailboxRole.archive` へ実際に MOVE する
+     経路) でもアーカイブしたメールが iCloud 側の "Archive" メールボックス
+     に実際に移動することを確認する (こちらは実装自体は変更していないが、
+     このバッチで `commitArchive`/`archiveThread` の実装を書き換えたため、
+     回帰確認として一緒に行うと安全)。
+
 ## M6: iCloud App 用パスワードでの実アカウント確認
 
 - **理由**: iCloud (`ICloudAccountSetupView`) は `imap.mail.me.com`/
