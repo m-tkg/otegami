@@ -56,6 +56,15 @@ struct AccountsListContent: View {
     @State private var pendingDeletion: AccountRecord?
     @State private var reauthenticatingAccountId: String?
     @State private var reauthErrorMessage: String?
+
+    // design-phase-3, 1l "操作"/"翻訳" blocks — see `SwipeActionSettingsStore`/
+    // `TranslationSettingsStore`'s doc comments for why these read
+    // `UserDefaults` directly via `@AppStorage` rather than through
+    // `AppEnvironment`.
+    @AppStorage(SwipeActionSettingsStore.leadingQuickActionKey) private var leadingQuickActionRaw = LeadingSwipeQuickAction.toggleRead.rawValue
+    @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = true
+    @AppStorage(TranslationSettingsStore.showListSummaryKey) private var showListSummary = false
+
     /// Account edit UI: which account's edit sheet is open, `nil` when
     var body: some View {
         List {
@@ -163,6 +172,34 @@ struct AccountsListContent: View {
                     Label("プッシュ通知", systemImage: "bell.badge")
                 }
                 .accessibilityIdentifier("settings.pushNotificationsLink")
+            }
+
+            // design-phase-3, 1l "操作": see `SwipeActionSettingsStore`'s
+            // doc comment on why this is the one customizable axis rather
+            // than a full per-slot action picker.
+            Section {
+                Picker("スワイプのクイック操作", selection: $leadingQuickActionRaw) {
+                    ForEach(LeadingSwipeQuickAction.allCases) { action in
+                        Text(action.title).tag(action.rawValue)
+                    }
+                }
+                .accessibilityIdentifier("settings.swipeQuickActionPicker")
+            } header: {
+                Text("操作")
+            } footer: {
+                Text("右スワイプでまず表示される操作を選べます。削除は誤操作防止のため、常にタップでの確定操作です。")
+            }
+
+            // design-phase-3, 1l "翻訳".
+            Section {
+                Toggle("英文を自動で翻訳", isOn: $autoTranslateEnglish)
+                    .accessibilityIdentifier("settings.autoTranslateToggle")
+                Toggle("一覧に要約を出す", isOn: $showListSummary)
+                    .accessibilityIdentifier("settings.listSummaryToggle")
+            } header: {
+                Text("翻訳")
+            } footer: {
+                Text("翻訳は Apple Intelligence により端末内で行われ、外部に送信されません。")
             }
 
             // M10: reachable on both platforms, even though macOS also

@@ -11,7 +11,15 @@ import Foundation
 struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
     enum Kind: Codable, Hashable, Sendable {
         case new
-        case reply(originalMessageId: Int64, replyAll: Bool)
+        /// `translateToEnglish`: design-phase-3's 1i "英語で返信を下書き" button
+        /// (`MessageView`) sets this `true` instead of routing through the
+        /// ordinary "返信" — `ComposerView.prepare()` reads it once to
+        /// pre-enable the same "英語に翻訳して送る" toggle its own 1k bottom
+        /// toolbar exposes (see that view's doc comment), so the two entry
+        /// points share one underlying mechanism rather than duplicating
+        /// translate-on-send logic. `false` for every other call site
+        /// (plain "返信"/"全員に返信", ⌘R, ...).
+        case reply(originalMessageId: Int64, replyAll: Bool, translateToEnglish: Bool)
         /// M10: resume a saved `DraftMessageRecord`. `ComposerView.prepare()`
         /// loads the row's fields, then deletes it immediately (see
         /// `ComposerView`'s doc comment on why "load transfers ownership" —
@@ -49,8 +57,8 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
     // identity.
     static var new: ComposerLaunchPayload { ComposerLaunchPayload(kind: .new) }
 
-    static func reply(originalMessageId: Int64, replyAll: Bool) -> ComposerLaunchPayload {
-        ComposerLaunchPayload(kind: .reply(originalMessageId: originalMessageId, replyAll: replyAll))
+    static func reply(originalMessageId: Int64, replyAll: Bool, translateToEnglish: Bool = false) -> ComposerLaunchPayload {
+        ComposerLaunchPayload(kind: .reply(originalMessageId: originalMessageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
     }
 
     static func draft(draftId: Int64) -> ComposerLaunchPayload {

@@ -130,6 +130,12 @@ targets:
         product: PushRelayClient
       - package: OtegamiKit
         product: AccountCloudSync
+      - package: OtegamiKit
+        product: OtegamiTranslation
+      - package: OtegamiKit
+        product: OtegamiTranslationFoundationModels
+      - package: OtegamiKit
+        product: TranslationEngine
       - target: NotificationService
         embed: true
         platformFilter: iOS

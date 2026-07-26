@@ -13,7 +13,7 @@ struct MailTabView: View {
     var onCompose: () -> Void
     var onOpenDraft: (Int64) -> Void
     var onOpenServerDraft: (Int64) -> Void
-    var onReply: (Int64, Bool) -> Void
+    var onReply: (Int64, Bool, Bool) -> Void
 
     @State private var mailSelection: SidebarSelection = .unifiedInbox
     @State private var accountFilter: String?

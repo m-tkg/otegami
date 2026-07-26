@@ -11,7 +11,7 @@ struct OtegamiTabRootView: View {
     var onCompose: () -> Void
     var onOpenDraft: (Int64) -> Void
     var onOpenServerDraft: (Int64) -> Void
-    var onReply: (Int64, Bool) -> Void
+    var onReply: (Int64, Bool, Bool) -> Void
 
     var body: some View {
         TabView {

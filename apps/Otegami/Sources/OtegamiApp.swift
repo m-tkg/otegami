@@ -169,7 +169,9 @@ struct RootView: View {
             onCompose: { presentComposer(.new) },
             onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) },
             onOpenServerDraft: { messageId in presentComposer(.serverDraft(messageId: messageId)) },
-            onReply: { messageId, replyAll in presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll)) }
+            onReply: { messageId, replyAll, translateToEnglish in
+                presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
+            }
         )
     }
     #else
@@ -307,8 +309,8 @@ struct RootView: View {
     private var detailColumn: some View {
         Group {
             if let selectedThreadId {
-                ThreadDetailView(threadId: selectedThreadId, onReply: { messageId, replyAll in
-                    presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll))
+                ThreadDetailView(threadId: selectedThreadId, onReply: { messageId, replyAll, translateToEnglish in
+                    presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
                 })
             } else {
                 ContentUnavailableView(

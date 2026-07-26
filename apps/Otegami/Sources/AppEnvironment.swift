@@ -6,8 +6,11 @@ import MailTransport
 import MailTransportMailCore
 import OtegamiRelayAPI
 import OtegamiStore
+import OtegamiTranslation
+import OtegamiTranslationFoundationModels
 import PushRelayClient
 import SyncEngine
+import TranslationEngine
 
 /// Root dependency-injection container for the app: the shared database,
 /// the sync coordinator (wired to the real `MailCoreIMAPSession` — tests
@@ -60,6 +63,34 @@ final class AppEnvironment {
     private(set) var accounts: [AccountRecord] = []
     @ObservationIgnored private var accountsObservationTask: Task<Void, Never>?
 
+    /// design-phase-3 (1i/1k, `docs/translation.md`): the raw engine, for
+    /// one-off translations not tied to a stored message (`ComposerView`'s
+    /// "英語に翻訳して送る" — there's no `messageId` for a draft still being
+    /// typed, so `MessageTranslator`'s per-message cache doesn't apply).
+    /// Always `FoundationModelsTranslationService` — this app's deployment
+    /// target is already iOS/macOS 26 (`project.yml`), so the type itself
+    /// is unconditionally available at compile time; whether it can
+    /// actually translate on *this* device/Apple Intelligence
+    /// configuration is a runtime question `isTranslationAvailable`
+    /// answers by reading `availability`, not something that needs a
+    /// separate `FakeTranslationService` fallback in the shipping app (that
+    /// fake exists for tests/previews — `OtegamiTranslation`'s own doc
+    /// comment).
+    @ObservationIgnored let translationService: any TranslationService
+    /// The cached, per-message-persisted counterpart (`docs/translation.md`'s
+    /// "キャッシュ方針") — what `MessageView`'s translation bar (1i) actually
+    /// calls, so opening the same English message twice doesn't re-run the
+    /// on-device model twice.
+    @ObservationIgnored let messageTranslator: MessageTranslator
+
+    /// Drives the translation bar's visibility/enabled state and the
+    /// Composer's "英語に翻訳して送る" toggle — `false` covers every
+    /// `TranslationUnavailableReason` (device not eligible, Apple
+    /// Intelligence off, model not ready) with one check, matching how
+    /// `isGmailOAuthConfigured` above collapses its own availability
+    /// question to a single `Bool` for view code.
+    var isTranslationAvailable: Bool { translationService.availability.isAvailable }
+
     init() {
         // Design system: registers the bundled Archivo variable font with
         // CoreText before any view can render — see `OtegamiFont
@@ -71,6 +102,10 @@ final class AppEnvironment {
         // synchronously, before `RootView` first renders, and is already
         // `@MainActor`, matching this call's own `@MainActor` requirement.
         OtegamiFont.registerCustomFontsIfNeeded()
+        // design-phase-3: registers the 1l "翻訳" defaults (auto-translate
+        // on, list summary off) before any `@AppStorage` reader — see
+        // `UserDefaults.registerOtegamiTranslationDefaults()`'s doc comment.
+        UserDefaults.registerOtegamiTranslationDefaults()
 
         let database: AppDatabase
         do {
@@ -95,6 +130,16 @@ final class AppEnvironment {
             messageBuilder: { draft in MailCoreMessageBuilder.build(draft) }
         )
         self.credentialStore = KeychainCredentialStore(accessGroup: OtegamiAppGroup.keychainAccessGroup)
+
+        // design-phase-3: see `translationService`/`messageTranslator`'s
+        // doc comments.
+        let translationService = FoundationModelsTranslationService()
+        self.translationService = translationService
+        self.messageTranslator = MessageTranslator(
+            database: database,
+            service: translationService,
+            engineIdentifier: MessageTranslator.EngineIdentifier.foundationModels
+        )
 
         let pushSettings = PushSettingsStore(accessGroup: OtegamiAppGroup.keychainAccessGroup)
         self.pushSettings = pushSettings

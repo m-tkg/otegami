@@ -18,9 +18,9 @@ import OtegamiStore
 struct ThreadDetailView: View {
     @Environment(AppEnvironment.self) private var environment
     let threadId: Int64
-    /// M5: forwarded to each expanded `MessageView` — see its `onReply`
-    /// doc comment.
-    var onReply: (Int64, Bool) -> Void = { _, _ in }
+    /// M5/design-phase-3: forwarded to each expanded `MessageView` — see
+    /// its `onReply` doc comment.
+    var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
 
     @State private var accountId: String?
     @State private var messages: [MessageRecord] = []
@@ -204,9 +204,9 @@ private struct ThreadMessageRow: View {
     let isExpanded: Bool
     let accountId: String?
     let expandedHeight: CGFloat
-    /// M5: forwarded straight through to the expanded `MessageView` — see
-    /// its `onReply` doc comment.
-    let onReply: (Int64, Bool) -> Void
+    /// M5/design-phase-3: forwarded straight through to the expanded
+    /// `MessageView` — see its `onReply` doc comment.
+    let onReply: (Int64, Bool, Bool) -> Void
     let onToggleExpanded: (Int64) -> Void
 
     var body: some View {

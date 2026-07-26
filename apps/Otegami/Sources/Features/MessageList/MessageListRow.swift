@@ -26,6 +26,15 @@ import OtegamiStore
 /// different row. Recorded here too since it cost significant investigation
 /// time to isolate from a genuine code regression.
 struct MessageListRow: View {
+    /// 1l "操作" setting — see `SwipeActionSettingsStore`'s doc comment on
+    /// why this is the one customizable axis. Read directly via
+    /// `@AppStorage` rather than threaded in as a parameter (same
+    /// reasoning as that type's doc comment).
+    @AppStorage(SwipeActionSettingsStore.leadingQuickActionKey) private var leadingQuickActionRaw = LeadingSwipeQuickAction.toggleRead.rawValue
+    private var leadingQuickAction: LeadingSwipeQuickAction {
+        LeadingSwipeQuickAction(rawValue: leadingQuickActionRaw) ?? .toggleRead
+    }
+
     let summary: ThreadSummary
     let threadId: Int64
     /// Forwarded straight to `ThreadRowView` — see its own doc comment on
@@ -133,8 +142,23 @@ struct MessageListRow: View {
         }
     }
 
+    /// 1g/1l: declaration order here decides which of the two leading
+    /// actions SwiftUI auto-fires on a full swipe (always the first one —
+    /// see this type's own doc comment) — `leadingQuickAction` (1l's
+    /// customizable setting) picks which that is.
     @ViewBuilder
     private var leadingSwipeActions: some View {
+        switch leadingQuickAction {
+        case .toggleRead:
+            toggleReadButton
+            archiveButton
+        case .archive:
+            archiveButton
+            toggleReadButton
+        }
+    }
+
+    private var toggleReadButton: some View {
         Button {
             onToggleRead(summary)
         } label: {
@@ -142,7 +166,9 @@ struct MessageListRow: View {
         }
         .tint(OtegamiColor.accent)
         .accessibilityIdentifier("messageList.row.\(threadId).toggleRead")
+    }
 
+    private var archiveButton: some View {
         Button {
             onArchive(summary)
         } label: {

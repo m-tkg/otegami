@@ -3,6 +3,7 @@ import GRDB
 import MailTransport
 import OtegamiCore
 import OtegamiStore
+import OtegamiTranslation
 import SyncEngine
 import UniformTypeIdentifiers
 #if os(iOS)
@@ -56,6 +57,20 @@ struct ComposerView: View {
     @State private var isSending = false
     @State private var isLoadingReplyContext = false
     @State private var errorMessage: String?
+
+    // MARK: - Translation (design-phase-3, 1k)
+
+    /// "英語に翻訳して送る" — set from `payload.kind`'s `translateToEnglish`
+    /// when this Composer opened via `MessageView`'s "英語で返信を下書き"
+    /// (`ComposerLaunchPayload.Kind.reply`'s doc comment), otherwise toggled
+    /// directly by the user. When on, `send()` translates `bodyText`
+    /// (assumed Japanese — the common case for this app's userbase, per
+    /// the handoff's own JA↔EN framing) to English before building the
+    /// outgoing message, replacing `bodyText` itself so what's actually
+    /// sent stays visible/reviewable rather than translating invisibly
+    /// behind the send button.
+    @State private var translateToEnglishBeforeSend = false
+    @State private var translateErrorMessage: String?
 
     // MARK: - Draft saving (M10)
 
@@ -117,72 +132,19 @@ struct ComposerView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("差出人") {
-                    Picker("From", selection: $selectedAccountId) {
-                        ForEach(environment.accounts) { account in
-                            Text("\(account.displayName) <\(account.email)>")
-                                .tag(Optional(account.id))
-                        }
+                fromSection
+                addressSection
+                subjectSection
+                bodySection
+                attachmentsSection
+                translationSection
+                if let translateErrorMessage {
+                    Section {
+                        Text(translateErrorMessage)
+                            .foregroundStyle(OtegamiColor.destructive)
+                            .accessibilityIdentifier("composer.translateErrorMessage")
                     }
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("composer.fromPicker")
                 }
-
-                Section("宛先") {
-                    TextField("To (カンマ区切り)", text: $toText)
-                        .textFieldAutocapitalizationNone()
-                        .accessibilityIdentifier("composer.to")
-                    TextField("Cc (カンマ区切り)", text: $ccText)
-                        .textFieldAutocapitalizationNone()
-                        .accessibilityIdentifier("composer.cc")
-                }
-
-                Section("件名") {
-                    TextField("件名", text: $subject)
-                        .accessibilityIdentifier("composer.subject")
-                }
-
-                Section("本文") {
-                    TextEditor(text: $bodyText)
-                        .frame(minHeight: 240)
-                        .accessibilityIdentifier("composer.body")
-                }
-
-                Section("添付ファイル") {
-                    ForEach(pendingAttachments) { attachment in
-                        HStack {
-                            Image(systemName: "paperclip")
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(attachment.filename)
-                                    .font(.subheadline)
-                                    .lineLimit(1)
-                                Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.data.count), countStyle: .file))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .accessibilityIdentifier("composer.attachment.\(attachment.id)")
-                    }
-                    .onDelete { offsets in
-                        pendingAttachments.remove(atOffsets: offsets)
-                    }
-
-                    Button {
-                        isImportingFile = true
-                    } label: {
-                        Label("ファイルを追加", systemImage: "paperclip")
-                    }
-                    .accessibilityIdentifier("composer.addFileButton")
-
-                    #if os(iOS)
-                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                        Label("写真を追加", systemImage: "photo")
-                    }
-                    .accessibilityIdentifier("composer.addPhotoButton")
-                    #endif
-                }
-
                 if let errorMessage {
                     Section {
                         Text(errorMessage)
@@ -268,10 +230,108 @@ struct ComposerView: View {
         #endif
     }
 
+    // MARK: - Form sections
+    //
+    // `docs/ci.md`'s SwiftUI type-check-timeout pitfall, hit for real
+    // building this: a `Form { Section { ForEach { multi-line HStack } } }`
+    // all inline inside one `body` expression is exactly the "nested
+    // container + multi-argument view content + several modifier chains"
+    // shape that blew CI's type-checker budget (confirmed locally with
+    // `OTHER_SWIFT_FLAGS="-Xfrontend -warn-long-expression-type-checking=300"`
+    // — `body` itself was the flagged expression). Splitting each `Section`
+    // out into its own `@ViewBuilder`/computed property (mirroring
+    // `MessageListView`/`ThreadDetailView`'s row-splitting precedent) fixed
+    // it; `attachmentsSection`'s `ForEach` row further needed its own
+    // `AttachmentRow` type below, not just a smaller closure, since the row
+    // itself still had a multi-line `HStack`/`VStack`/two-`Text` shape.
+
+    private var fromSection: some View {
+        Section("差出人") {
+            Picker("From", selection: $selectedAccountId) {
+                ForEach(environment.accounts) { account in
+                    Text("\(account.displayName) <\(account.email)>")
+                        .tag(Optional(account.id))
+                }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("composer.fromPicker")
+        }
+    }
+
+    private var addressSection: some View {
+        Section("宛先") {
+            TextField("To (カンマ区切り)", text: $toText)
+                .textFieldAutocapitalizationNone()
+                .accessibilityIdentifier("composer.to")
+            TextField("Cc (カンマ区切り)", text: $ccText)
+                .textFieldAutocapitalizationNone()
+                .accessibilityIdentifier("composer.cc")
+        }
+    }
+
+    private var subjectSection: some View {
+        Section("件名") {
+            TextField("件名", text: $subject)
+                .accessibilityIdentifier("composer.subject")
+        }
+    }
+
+    private var bodySection: some View {
+        Section("本文") {
+            TextEditor(text: $bodyText)
+                .frame(minHeight: 240)
+                .accessibilityIdentifier("composer.body")
+        }
+    }
+
+    private var attachmentsSection: some View {
+        Section("添付ファイル") {
+            ForEach(pendingAttachments) { attachment in
+                AttachmentRow(attachment: attachment)
+            }
+            .onDelete { offsets in
+                pendingAttachments.remove(atOffsets: offsets)
+            }
+
+            Button {
+                isImportingFile = true
+            } label: {
+                Label("ファイルを追加", systemImage: "paperclip")
+            }
+            .accessibilityIdentifier("composer.addFileButton")
+
+            #if os(iOS)
+            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                Label("写真を追加", systemImage: "photo")
+            }
+            .accessibilityIdentifier("composer.addPhotoButton")
+            #endif
+        }
+    }
+
+    /// 1k: "下部ツールバーに 📎 と『英語に翻訳して送る』" — this app's Composer is a
+    /// `Form`, so 📎 (`attachmentsSection`'s "ファイルを追加") and this both
+    /// live as ordinary rows rather than a floating bottom toolbar; see
+    /// `translateToEnglishBeforeSend`'s doc comment for what toggling it
+    /// actually does at send time.
+    @ViewBuilder
+    private var translationSection: some View {
+        if environment.isTranslationAvailable {
+            Section {
+                Toggle("英語に翻訳して送る", isOn: $translateToEnglishBeforeSend)
+                    .accessibilityIdentifier("composer.translateToEnglishToggle")
+            } header: {
+                Text("翻訳")
+            } footer: {
+                Text("送信時に本文を日本語から英語へ、この端末上で翻訳します。")
+            }
+        }
+    }
+
     private var navigationTitle: String {
         switch payload.kind {
         case .new: "新規作成"
-        case .reply(_, let replyAll): replyAll ? "全員に返信" : "返信"
+        case .reply(_, let replyAll, _): replyAll ? "全員に返信" : "返信"
         case .draft, .serverDraft: "下書き"
         }
     }
@@ -290,7 +350,8 @@ struct ComposerView: View {
         switch payload.kind {
         case .new:
             break
-        case .reply(let originalMessageId, let replyAll):
+        case .reply(let originalMessageId, let replyAll, let translateToEnglish):
+            translateToEnglishBeforeSend = translateToEnglish
             isLoadingReplyContext = true
             defer { isLoadingReplyContext = false }
             await prefillReply(toOriginalMessageId: originalMessageId, replyAll: replyAll)
@@ -712,6 +773,25 @@ struct ComposerView: View {
         isSending = true
         defer { isSending = false }
 
+        translateErrorMessage = nil
+        if translateToEnglishBeforeSend, environment.isTranslationAvailable,
+           !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do {
+                // Replaces `bodyText` itself (not a hidden local copy) —
+                // see this property's doc comment on why: what gets sent
+                // should stay visible/editable, not translated invisibly
+                // behind the send button. A failure here aborts the send
+                // entirely (`return`, not "fall back to the untranslated
+                // Japanese text") since silently sending the wrong language
+                // after the user explicitly asked for English would be
+                // worse than making them retry.
+                bodyText = try await environment.translationService.translate(bodyText, from: .japanese, to: .english)
+            } catch {
+                translateErrorMessage = "本文の翻訳に失敗しました: \(error)"
+                return
+            }
+        }
+
         do {
             // M8: stage each pending attachment's bytes onto disk *before*
             // the DB transaction below — `OutboxAttachmentRecord.localPath`
@@ -825,6 +905,30 @@ private struct PendingAttachment: Identifiable, Equatable {
     var filename: String
     var mimeType: String
     var data: Data
+}
+
+/// One row inside `ComposerView.attachmentsSection`'s `ForEach` — pulled out
+/// into its own `View` type (not just a smaller closure) since it still has
+/// a multi-line `HStack`/`VStack`/two-`Text` shape; see `ComposerView`'s
+/// "MARK: - Form sections" doc comment for why this split was necessary.
+private struct AttachmentRow: View {
+    let attachment: PendingAttachment
+
+    var body: some View {
+        HStack {
+            Image(systemName: "paperclip")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(attachment.filename)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.data.count), countStyle: .file))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityIdentifier("composer.attachment.\(attachment.id)")
+    }
 }
 
 private extension View {

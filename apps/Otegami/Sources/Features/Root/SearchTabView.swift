@@ -19,7 +19,7 @@ import OtegamiStore
 /// no mailbox selection of its own to scope to.
 struct SearchTabView: View {
     @Environment(AppEnvironment.self) private var environment
-    var onReply: (Int64, Bool) -> Void
+    var onReply: (Int64, Bool, Bool) -> Void
 
     @State private var searchText = ""
     @State private var results: [ThreadSummary] = []

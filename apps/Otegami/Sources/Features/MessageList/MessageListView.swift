@@ -227,8 +227,15 @@ struct MessageListView: View {
         // at a screenshot, not by reading the modifier list — see
         // `docs/design-system.md`'s design-phase-3 section). `.compact`
         // collapses it to the same tight spacing this app's own row
-        // dividers already use.
+        // dividers already use. iOS-only: `.listSectionSpacing` isn't
+        // available on macOS in this SDK at all (this app's
+        // `NavigationSplitView` 3-pane layout has nothing above this list
+        // in the same `VStack` in the first place — `CLAUDE.md`'s "macOS
+        // は現状の `NavigationSplitView` 3ペインを維持する" — so there was
+        // never a gap to fix there).
+        #if os(iOS)
         .listSectionSpacing(.compact)
+        #endif
         .overlay {
             if isSearchActive {
                 if isSearching {

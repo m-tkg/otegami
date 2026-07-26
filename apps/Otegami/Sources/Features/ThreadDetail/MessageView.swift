@@ -6,6 +6,8 @@ import OtegamiStore
 import SyncEngine
 import MailTransport
 import GRDB
+import OtegamiTranslation
+import TranslationEngine
 
 /// Single-message reading view (M2's "ThreadDetail"; real multi-message
 /// thread collapsing lands in M4). Shows the header, then the body: if
@@ -29,11 +31,15 @@ struct MessageView: View {
     /// context a caller must still supply.
     let accountId: String
     let messageId: Int64
-    /// M5: invoked with `(messageId, replyAll)` when the reply/reply-all
-    /// buttons in this message's header are tapped. Presentation itself
-    /// (sheet on iOS, a separate window on macOS) is `RootView`'s job — see
-    /// `SidebarView.onCompose`'s doc comment for the same pattern.
-    var onReply: (Int64, Bool) -> Void = { _, _ in }
+    /// M5/design-phase-3: invoked with `(messageId, replyAll,
+    /// translateToEnglish)` when the reply/reply-all/"英語で返信を下書き"
+    /// buttons at the bottom of this message are tapped. Presentation
+    /// itself (sheet on iOS, a separate window on macOS) is `RootView`'s
+    /// job — see `SidebarView.onCompose`'s doc comment for the same
+    /// pattern. `translateToEnglish` is always `false` for 返信/全員に返信;
+    /// see `ComposerLaunchPayload.Kind.reply`'s doc comment for what it
+    /// does downstream.
+    var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
 
     @State private var message: MessageRecord?
     @State private var bodyRecord: MessageBodyRecord?
@@ -56,11 +62,42 @@ struct MessageView: View {
     /// — `nil` means no preview is presented.
     @State private var previewURL: URL?
 
+    // MARK: - Translation (design-phase-3, 1i)
+
+    @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = true
+    @State private var translationState: MessageTranslationState = .none
+    /// The bar's 訳文/原文 segment — `false` (訳文) is the handoff's
+    /// explicit default ("既定は訳文").
+    @State private var translationShowOriginal = false
+    /// `TranslatedBodyView.originalOverrides` — per-paragraph long-press
+    /// state, reset alongside everything else in `load()`.
+    @State private var translationParagraphOverrides: Set<Int> = []
+    @State private var translateTask: Task<Void, Never>?
+
+    /// Only a message `SyncEngine.BodyFetcher` tagged English gets a bar at
+    /// all (plan: "英文メールのみ翻訳バーを出す") — `nil`/any other BCP-47 code
+    /// (including "ja", or a message whose body hasn't been fetched/
+    /// detected yet) shows nothing rather than an always-disabled bar for
+    /// every message.
+    private var isEnglishMessage: Bool {
+        message?.detectedLanguage == "en"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let message {
                 header(for: message)
                     .padding()
+                // 1i: "件名 → 送信者行 → 翻訳バー → 本文" — right after the
+                // header (subject/from/to/date), before attachments/body.
+                if isEnglishMessage {
+                    TranslationBar(
+                        state: translationState,
+                        showOriginal: $translationShowOriginal,
+                        isAvailable: environment.isTranslationAvailable,
+                        onTranslate: { requestTranslation(message: message) }
+                    )
+                }
                 if !attachments.isEmpty {
                     attachmentSection
                         .padding(.horizontal)
@@ -76,6 +113,11 @@ struct MessageView: View {
             // scrollers.
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            if let message {
+                Divider()
+                replyBar(for: message)
+                    .padding()
+            }
         }
         .accessibilityIdentifier("messageDetail.scrollView")
         .navigationTitle(displaySubject)
@@ -110,24 +152,48 @@ struct MessageView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("messageDetail.date")
-            HStack {
-                Button {
-                    onReply(messageId, false)
-                } label: {
-                    Label("返信", systemImage: "arrowshape.turn.up.left")
-                }
-                .accessibilityIdentifier("messageDetail.replyButton")
-                Button {
-                    onReply(messageId, true)
-                } label: {
-                    Label("全員に返信", systemImage: "arrowshape.turn.up.left.2")
-                }
-                .accessibilityIdentifier("messageDetail.replyAllButton")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .padding(.top, 4)
         }
+    }
+
+    /// 1i: "下部: 「返信」と「英語で返信を下書き」を対で置く（翻訳を読み専用機能にしない）"
+    /// — moved out of the header (M2–design-phase-2 had 返信/全員に返信 there)
+    /// to the bottom, below the body, with 返信 and 英語で返信を下書き placed
+    /// directly adjacent per that instruction; 全員に返信 stays reachable but
+    /// visually separated (`Spacer()`) rather than a three-way tie, since
+    /// the handoff only calls out the first pair explicitly.
+    /// "英語で返信を下書き" only appears when translation is actually usable on
+    /// this device (`AppEnvironment.isTranslationAvailable`) — there's no
+    /// point offering an entry point that can only fail once tapped.
+    private func replyBar(for message: MessageRecord) -> some View {
+        HStack {
+            Button {
+                onReply(messageId, false, false)
+            } label: {
+                Label("返信", systemImage: "arrowshape.turn.up.left")
+            }
+            .accessibilityIdentifier("messageDetail.replyButton")
+
+            if environment.isTranslationAvailable {
+                Button {
+                    onReply(messageId, false, true)
+                } label: {
+                    Label("英語で返信を下書き", systemImage: "globe")
+                }
+                .accessibilityIdentifier("messageDetail.draftEnglishReplyButton")
+            }
+
+            Spacer(minLength: OtegamiSpacing.sm)
+
+            Button {
+                onReply(messageId, true, false)
+            } label: {
+                Label("全員に返信", systemImage: "arrowshape.turn.up.left.2")
+            }
+            .accessibilityIdentifier("messageDetail.replyAllButton")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(OtegamiColor.accent)
     }
 
     // MARK: - Attachments (M8)
@@ -272,7 +338,16 @@ struct MessageView: View {
 
     @ViewBuilder
     private var content: some View {
-        if isLoading {
+        // 1i: "訳文" showing and a translation actually cached — render the
+        // per-paragraph translated view instead of the normal HTML/plain-
+        // text body. Every other state (still translating, failed, "原文"
+        // selected, or not an English message at all) falls through to the
+        // original rendering untouched below — the translation feature
+        // never changes what a non-English or not-yet-translated message
+        // looks like.
+        if isEnglishMessage, !translationShowOriginal, case .translated(let record) = translationState {
+            TranslatedBodyView(paragraphs: record.paragraphs, originalOverrides: $translationParagraphOverrides)
+        } else if isLoading {
             VStack {
                 Spacer()
                 HStack {
@@ -319,6 +394,7 @@ struct MessageView: View {
         attachments = []
         attachmentErrorMessage = nil
         previewURL = nil
+        resetTranslationState()
 
         guard let loadedMessage = try? await environment.database.dbWriter.read({ db in
             try MessageRecord.fetchOne(db, key: messageId)
@@ -335,6 +411,7 @@ struct MessageView: View {
         if loadedMessage.bodyState == .fetched, let existing = try? await fetchBodyRecord(messageId: messageId) {
             bodyRecord = existing
             markAsReadIfNeeded()
+            kickoffTranslationIfNeeded(message: loadedMessage)
             return
         }
 
@@ -350,6 +427,7 @@ struct MessageView: View {
             // just the (empty, pre-fetch) snapshot read above.
             attachments = (try? await fetchAttachmentRecords(messageId: messageId)) ?? []
             markAsReadIfNeeded()
+            kickoffTranslationIfNeeded(message: loadedMessage)
         } catch {
             // Offline (or any other network failure): fall back to
             // whatever's already in the local database — a `.fetching`
@@ -358,6 +436,7 @@ struct MessageView: View {
             if let existing = try? await fetchBodyRecord(messageId: messageId) {
                 bodyRecord = existing
                 markAsReadIfNeeded()
+                kickoffTranslationIfNeeded(message: loadedMessage)
             } else {
                 errorMessage = "本文の取得に失敗しました: \(error)"
             }
@@ -454,5 +533,70 @@ struct MessageView: View {
             attributed[attributedRange].underlineStyle = .single
         }
         return Text(attributed)
+    }
+
+    // MARK: - Translation (design-phase-3, 1i)
+
+    private func resetTranslationState() {
+        translateTask?.cancel()
+        translateTask = nil
+        translationState = .none
+        translationShowOriginal = false
+        translationParagraphOverrides = []
+    }
+
+    /// Plain text handed to `MessageTranslator` regardless of body kind —
+    /// the engine only ever translates plain strings (`docs/translation.md`),
+    /// so an HTML body is flattened the same way `ComposerView`'s reply
+    /// quoting already does (`HTMLTextExtractor`, no `WKWebView` needed just
+    /// to extract text).
+    private func sourceTextForTranslation() -> String? {
+        guard let bodyRecord else { return nil }
+        if let plainText = bodyRecord.plainText, !plainText.isEmpty { return plainText }
+        if let html = bodyRecord.html, !html.isEmpty {
+            let extracted = HTMLTextExtractor.plainText(fromHTML: html)
+            return extracted.isEmpty ? nil : extracted
+        }
+        return nil
+    }
+
+    /// Called once per `load()`, after `bodyRecord` is populated (every
+    /// exit path in `load()` calls this) — only actually starts a
+    /// translation when every precondition holds: an English message, the
+    /// device can translate at all, the "英文を自動で翻訳" setting is on
+    /// (1l), and there's a non-empty cache-key-eligible `messageId`. Manual
+    /// translation (the bar's "翻訳"/"再試行" button, when auto-translate is
+    /// off or a previous attempt failed) goes through the same
+    /// `requestTranslation(message:)` this calls into.
+    private func kickoffTranslationIfNeeded(message: MessageRecord) {
+        guard message.detectedLanguage == "en" else { return }
+        guard environment.isTranslationAvailable else { return }
+        guard autoTranslateEnglish else { return }
+        requestTranslation(message: message)
+    }
+
+    /// Shared by the automatic kickoff above and the translation bar's
+    /// manual "翻訳"/"再試行" button — `MessageTranslator.translate` already
+    /// checks its own persisted cache first (`docs/translation.md`'s
+    /// キャッシュ方針), so calling this again after a previous success (e.g.
+    /// re-opening the same message) is cheap rather than re-running the
+    /// on-device model.
+    private func requestTranslation(message: MessageRecord) {
+        guard translateTask == nil else { return }
+        guard let sourceText = sourceTextForTranslation() else { return }
+        translationState = .translating
+        let messageId = messageId
+        let translator = environment.messageTranslator
+        translateTask = Task {
+            let result = await translator.translate(
+                messageId: messageId,
+                sourceText: sourceText,
+                sourceLanguage: .english,
+                targetLanguage: .japanese
+            )
+            guard !Task.isCancelled else { return }
+            translationState = result
+            translateTask = nil
+        }
     }
 }
