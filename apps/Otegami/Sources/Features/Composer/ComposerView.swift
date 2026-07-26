@@ -8,6 +8,7 @@ import SyncEngine
 import UniformTypeIdentifiers
 #if os(iOS)
 import PhotosUI
+import UIKit
 #endif
 
 /// Compose/reply UI (M5, plan: "作成・返信"). iOS presents this as a sheet;
@@ -63,15 +64,16 @@ struct ComposerView: View {
 
     // MARK: - Translation (design-phase-3, 1k)
 
-    /// "英語に翻訳して送る" — set from `payload.kind`'s `translateToEnglish`
-    /// when this Composer opened via `MessageView`'s "英語で返信を下書き"
-    /// (`ComposerLaunchPayload.Kind.reply`'s doc comment), otherwise toggled
-    /// directly by the user. When on, `send()` translates `bodyText`
-    /// (assumed Japanese — the common case for this app's userbase, per
-    /// the handoff's own JA↔EN framing) to English before building the
-    /// outgoing message, replacing `bodyText` itself so what's actually
-    /// sent stays visible/reviewable rather than translating invisibly
-    /// behind the send button.
+    /// 表示・操作改善バッチ「『英語に翻訳して送る』を削除」: the *generic*,
+    /// user-facing "英語に翻訳して送る" toggle (available on every
+    /// composition, new mail or reply alike) is gone — see this file's
+    /// removed `translationSection`. This flag itself, and the `send()`
+    /// logic that reads it, stay: they're what "英語で返信を下書き"
+    /// (`MessageDetailFooterToolbar`'s "…" menu, kept per this task's
+    /// instructions) still relies on — that entry point sets
+    /// `payload.kind`'s `translateToEnglish` (`prepare()`'s `.reply` case
+    /// below), which is the only remaining way this ever becomes `true`;
+    /// there's no longer a UI control that flips it directly.
     @State private var translateToEnglishBeforeSend = false
     @State private var translateErrorMessage: String?
 
@@ -130,6 +132,12 @@ struct ComposerView: View {
     @State private var isImportingFile = false
     #if os(iOS)
     @State private var selectedPhotoItem: PhotosPickerItem?
+    /// 表示・操作改善バッチ「添付ボタンの統合」— `.photosPicker(isPresented:)`'s
+    /// flag (`attachmentsMenu`'s doc comment on why this isn't a
+    /// `PhotosPicker` trigger view embedded directly in the `Menu`).
+    @State private var isShowingPhotoPicker = false
+    /// 表示・操作改善バッチ「添付ボタンの統合」— `CameraPicker`'s sheet flag.
+    @State private var isShowingCamera = false
     #endif
 
     // MARK: - C8 テンプレート
@@ -151,7 +159,6 @@ struct ComposerView: View {
                 bodySection
                 attachmentsSection
                 templateSection
-                translationSection
                 if let translateErrorMessage {
                     Section {
                         Text(translateErrorMessage)
@@ -242,6 +249,21 @@ struct ComposerView: View {
                 selectedPhotoItem = nil
             }
         }
+        // バグ修正: `.sheet(isPresented: $isShowingCamera)` を最初
+        // `attachmentsMenu`（`Form`/`Section`の奥深く、`Menu`本体）に直接付けて
+        // いたところ、「添付」メニューをタップした瞬間 (`isShowingCamera`が
+        // まだ`false`のまま、カメラを選ぶ前) にこの `ComposerView` 自身の
+        // `.sheet` (`composer.sheet`) がまるごと閉じてしまう実機さながらの
+        // シミュレータ挙動を UITest で確認した — `docs/design-system.md`の
+        // 「シートからシートを開く」で既知の壊れ方そのもの (`Menu`のポップ
+        // オーバー表示と、同じ view に付いた`.sheet`修飾子が競合したとみられる)。
+        // `isImportingFile`の`.fileImporter`が既にそうしているのと同じく、
+        // 深い子ビューではなくこの`body`トップレベルへ付け替えて解決した。
+        .sheet(isPresented: $isShowingCamera) {
+            CameraPicker(onCapture: handleCameraCapture)
+                .ignoresSafeArea()
+        }
+        .photosPicker(isPresented: $isShowingPhotoPicker, selection: $selectedPhotoItem, matching: .images)
         #endif
     }
 
@@ -299,6 +321,12 @@ struct ComposerView: View {
         }
     }
 
+    /// 表示・操作改善バッチ「添付ボタンの統合」: 従来はファイル/写真それぞれ独立
+    /// したボタンだったものを、1つの「添付」ボタン + メニュー ("ファイルを選択" /
+    /// "写真を選択" / "写真を撮る") にまとめた。「写真を撮る」は `CameraPicker`
+    /// （`UIImagePickerController`ラッパー、実機のみ）を別シートで開く。iOS
+    /// のみ (macOS にはカメラ/フォトピッカーの同等 API がない — 従来の
+    /// 「ファイルを追加」的な `fileImporter` のみ)。
     private var attachmentsSection: some View {
         Section("添付ファイル") {
             ForEach(pendingAttachments) { attachment in
@@ -308,21 +336,68 @@ struct ComposerView: View {
                 pendingAttachments.remove(atOffsets: offsets)
             }
 
+            attachmentsMenu
+        }
+    }
+
+    @ViewBuilder
+    private var attachmentsMenu: some View {
+        #if os(iOS)
+        Menu {
             Button {
                 isImportingFile = true
             } label: {
-                Label("ファイルを追加", systemImage: "paperclip")
+                Label("ファイルを選択", systemImage: "doc")
             }
             .accessibilityIdentifier("composer.addFileButton")
 
-            #if os(iOS)
-            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                Label("写真を追加", systemImage: "photo")
+            // `PhotosPicker`をトリガービューとしてメニュー項目に直接埋め込む
+            // 代わりに、状態駆動の `.photosPicker(isPresented:selection:
+            // matching:)` (`body` トップレベルに付与、`.sheet`/`.fileImporter`
+            // と同じ置き場所) を使っている — こちらの方がこのアプリの他の
+            // ピッカー系モディファイアの配置規約 (深い子ビューではなく`body`
+            // 直下) に揃う。
+            Button {
+                isShowingPhotoPicker = true
+            } label: {
+                Label("写真を選択", systemImage: "photo")
             }
             .accessibilityIdentifier("composer.addPhotoButton")
-            #endif
+
+            Button {
+                isShowingCamera = true
+            } label: {
+                Label("写真を撮る", systemImage: "camera")
+            }
+            // カメラはシミュレータにハードウェアがなく常に利用不可 —
+            // 「実機のみ動作、シミュレータではグレーアウト」の指示どおり、
+            // 項目自体は残しつつ非活性にする（存在を隠さない）。
+            .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
+            .accessibilityIdentifier("composer.addCameraButton")
+        } label: {
+            Label("添付", systemImage: "paperclip")
         }
+        .accessibilityIdentifier("composer.attachMenu")
+        // `.sheet(isPresented: $isShowingCamera)` はここではなく `body` の
+        // トップレベルに付けている — 理由はそちら側のコメント参照。
+        #else
+        Button {
+            isImportingFile = true
+        } label: {
+            Label("ファイルを追加", systemImage: "paperclip")
+        }
+        .accessibilityIdentifier("composer.addFileButton")
+        #endif
     }
+
+    #if os(iOS)
+    private func handleCameraCapture(_ data: Data?) {
+        isShowingCamera = false
+        guard let data else { return }
+        let filename = "camera-\(UUID().uuidString.prefix(8)).jpg"
+        pendingAttachments.append(PendingAttachment(filename: filename, mimeType: "image/jpeg", data: data))
+    }
+    #endif
 
     /// C8: only shown when at least one template is available to the
     /// currently-selected `From` account (`availableTemplates`, kept in
@@ -383,32 +458,16 @@ struct ComposerView: View {
         }) ?? []
     }
 
-    /// 1k: "下部ツールバーに 📎 と『英語に翻訳して送る』" — this app's Composer is a
-    /// `Form`, so 📎 (`attachmentsSection`'s "ファイルを追加") and this both
-    /// live as ordinary rows rather than a floating bottom toolbar; see
-    /// `translateToEnglishBeforeSend`'s doc comment for what toggling it
-    /// actually does at send time.
-    @ViewBuilder
-    private var translationSection: some View {
-        if environment.isTranslationAvailable {
-            Section {
-                Toggle("英語に翻訳して送る", isOn: $translateToEnglishBeforeSend)
-                    .accessibilityIdentifier("composer.translateToEnglishToggle")
-            } header: {
-                Text("翻訳")
-            } footer: {
-                Text("送信時に本文を日本語から英語へ、この端末上で翻訳します。")
-            }
-        }
-    }
-
     private var navigationTitle: String {
+        // `.navigationTitle(navigationTitle)`は`String`版のオーバーロードに
+        // 解決されるため (verbatim)、`String(localized:)`で明示的に
+        // ローカライズする。
         switch payload.kind {
-        case .new: "新規作成"
-        case .reply(_, let replyAll, _): replyAll ? "全員に返信" : "返信"
-        case .forward: "転送"
-        case .draft, .serverDraft: "下書き"
-        case .cancelledSend: "新規作成"
+        case .new: String(localized: "新規作成")
+        case .reply(_, let replyAll, _): replyAll ? String(localized: "全員に返信") : String(localized: "返信")
+        case .forward: String(localized: "転送")
+        case .draft, .serverDraft: String(localized: "下書き")
+        case .cancelledSend: String(localized: "新規作成")
         }
     }
 

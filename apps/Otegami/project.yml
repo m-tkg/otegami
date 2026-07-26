@@ -4,6 +4,13 @@ options:
   # Otegami.xcodeproj is a generated artifact (see .gitignore); `xcodegen
   # generate` must be run after checkout/pull and before opening in Xcode.
   bundleIdPrefix: com.mtkg
+  # 表示・操作改善バッチ「表示言語の設定」: 開発言語 (String Catalog の
+  # sourceLanguage、`Resources/Localizable.xcstrings`) は日本語 — このアプリ
+  # の既存 UI コードが最初から日本語の文字列リテラルを直接
+  # `Text`/`Button`/`Label` に書いている (`docs/localization.md`参照) ため、
+  # ソース言語を日本語にすることで既存コードの変更なしにそれらがそのまま
+  # String Catalog のキーとして機能する。
+  developmentLanguage: ja
 
 # Signing (DEVELOPMENT_TEAM / PRODUCT_BUNDLE_IDENTIFIER) lives in
 # Config/Signing.xcconfig, which itself #includes Config/Shared.xcconfig, so
@@ -36,6 +43,11 @@ targets:
       path: Generated/Info.plist
       properties:
         CFBundleDisplayName: Otegami
+        # 表示・操作改善バッチ「表示言語の設定」— どの言語をこのバンドルが
+        # 提供するか。`LocalizationSettingsStore`が`AppleLanguages`を
+        # ["ja"]/["en"]に上書きしたとき、`Bundle.main`が実際にその
+        # ローカライズを見つけられるのはこのリストに含まれているときだけ。
+        CFBundleLocalizations: [ja, en]
         # M6: Gmail OAuth Client ID, sourced from the `GOOGLE_OAUTH_CLIENT_ID`
         # xcconfig build setting (`Config/Shared.xcconfig` defines it empty;
         # `Config/Local.xcconfig`, git-ignored, is where a builder sets
@@ -55,6 +67,10 @@ targets:
         # the simulator does not enforce this, which is why every simulator
         # verification passed while a real device crashed on 接続テスト.
         NSLocalNetworkUsageDescription: ローカルネットワーク上のメールサーバー (開発用サーバーや自宅サーバーなど) に接続するために使用します。
+        # 表示・操作改善バッチ「添付ボタンの統合」の「写真を撮る」
+        # (`CameraPicker`, `UIImagePickerController.sourceType == .camera`) —
+        # このキーがないと権限ダイアログを出さずに即クラッシュする。
+        NSCameraUsageDescription: メール作成時に写真を撮って添付するために使用します。
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
