@@ -100,13 +100,25 @@ struct MessageView: View {
     @State private var translationParagraphOverrides: Set<Int> = []
     @State private var translateTask: Task<Void, Never>?
 
-    /// Only a message `SyncEngine.BodyFetcher` tagged English gets a bar at
-    /// all (plan: "英文メールのみ翻訳バーを出す") — `nil`/any other BCP-47 code
-    /// (including "ja", or a message whose body hasn't been fetched/
-    /// detected yet) shows nothing rather than an always-disabled bar for
-    /// every message.
+    /// A message `SyncEngine.BodyFetcher` tagged English gets a bar (plan:
+    /// "英文メールのみ翻訳バーを出す"). `detectedLanguage == nil` — a
+    /// message whose language couldn't be confidently determined
+    /// (`MessageLanguageDetector.detect`'s doc comment: too short/
+    /// ambiguous text) *or*, in practice on real devices, a message whose
+    /// body was fetched by a build that predates this field — also counts
+    /// as "maybe English" here rather than "hide the bar": real-device
+    /// report (design-phase-3 follow-up) was that the translation button
+    /// never appeared even for genuinely English mail, traced to exactly
+    /// this — a strict `== "en"` silently hid the button for every message
+    /// whose language was merely *unknown*, which turned out to be most of
+    /// a real inbox's already-fetched history. Only a message confidently
+    /// detected as something *other* than English (`"ja"`, `"fr"`, ...)
+    /// hides the bar — `load()`'s `backfillDetectedLanguageIfNeeded` also
+    /// opportunistically fills in the unknown case from already-downloaded
+    /// body text so it stops being "unknown" the next time this message is
+    /// opened.
     private var isEnglishMessage: Bool {
-        message?.detectedLanguage == "en"
+        message?.detectedLanguage == "en" || message?.detectedLanguage == nil
     }
 
     /// 表示・操作改善バッチ「翻訳ボタン: メールの言語 ≠ アプリの表示言語の
@@ -581,8 +593,9 @@ struct MessageView: View {
 
         if loadedMessage.bodyState == .fetched, let existing = try? await fetchBodyRecord(messageId: messageId) {
             bodyRecord = existing
+            let backfilledMessage = await backfillDetectedLanguageIfNeeded(message: loadedMessage, body: existing)
             markAsReadIfNeeded()
-            kickoffTranslationIfNeeded(message: loadedMessage)
+            kickoffTranslationIfNeeded(message: backfilledMessage)
             return
         }
 
@@ -770,19 +783,93 @@ struct MessageView: View {
         translationParagraphOverrides = []
     }
 
-    /// Plain text handed to `MessageTranslator` regardless of body kind —
-    /// the engine only ever translates plain strings (`docs/translation.md`),
-    /// so an HTML body is flattened the same way `ComposerView`'s reply
-    /// quoting already does (`HTMLTextExtractor`, no `WKWebView` needed just
-    /// to extract text).
+    /// Plain text handed to `MessageTranslator`/`summarizeLongText`
+    /// regardless of body kind — the engine only ever translates/
+    /// summarizes plain strings (`docs/translation.md`), so an HTML body is
+    /// flattened the same way `ComposerView`'s reply quoting already does
+    /// (`HTMLTextExtractor`, no `WKWebView` needed just to extract text).
+    ///
+    /// Real-device report (design-phase-3 follow-up): summarizing an HTML
+    /// mail sometimes returned the raw markup verbatim instead of a
+    /// summary. This method already ran HTML through `HTMLTextExtractor`
+    /// whenever `bodyRecord.plainText` was empty — the gap was messages
+    /// whose server-reported `text/plain` part is itself non-empty but
+    /// (some real-world senders duplicate/mislabel content this way) still
+    /// contains literal markup. Every candidate string, not just the HTML
+    /// fallback, now goes through `HTMLTextExtractor.plainText` before
+    /// being returned — a no-op for genuinely plain text (nothing matching
+    /// `<...>` to strip), and a safety net for the mislabeled case either
+    /// way.
     private func sourceTextForTranslation() -> String? {
         guard let bodyRecord else { return nil }
-        if let plainText = bodyRecord.plainText, !plainText.isEmpty { return plainText }
-        if let html = bodyRecord.html, !html.isEmpty {
-            let extracted = HTMLTextExtractor.plainText(fromHTML: html)
-            return extracted.isEmpty ? nil : extracted
+        let candidate: String?
+        if let plainText = bodyRecord.plainText, !plainText.isEmpty {
+            candidate = plainText
+        } else if let html = bodyRecord.html, !html.isEmpty {
+            candidate = html
+        } else {
+            candidate = nil
         }
-        return nil
+        guard let candidate else { return nil }
+        let normalized = HTMLTextExtractor.plainText(fromHTML: candidate)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    /// Opportunistically fills in `message.detectedLanguage` for a message
+    /// whose body was already fetched (so no network call needed here —
+    /// just local text already in `body`) but whose language was never
+    /// detected, or was detected before this field existed. Real-device
+    /// report (design-phase-3 follow-up): the translation bar/button never
+    /// appeared for genuinely English mail, traced to exactly this —
+    /// `SyncEngine.BodyFetcher` only sets `detectedLanguage` at the moment
+    /// a body is *first* fetched, and never re-runs for a message whose
+    /// `bodyState` is already `.fetched` (`prefetchRecent`'s `notFetched`
+    /// filter), so any message fetched before this field was added (or
+    /// whose short/ambiguous body legitimately didn't yield a confident
+    /// guess at the time) stayed `nil` forever. This runs once per message
+    /// open, using the same `MessageLanguageDetector`
+    /// `SyncEngine.BodyFetcher` itself uses, and persists the result so
+    /// later opens (and list-level features keyed on `detectedLanguage`,
+    /// e.g. `SearchFilterOption`) see the same backfilled value. A no-op
+    /// (returns `message` unchanged) when `detectedLanguage` is already
+    /// set — including to something other than English — since a
+    /// confidently-non-English message shouldn't be re-guessed every time
+    /// it's opened.
+    private func backfillDetectedLanguageIfNeeded(message: MessageRecord, body: MessageBodyRecord) async -> MessageRecord {
+        guard message.detectedLanguage == nil, message.id != nil else { return message }
+
+        let sample: String?
+        if let plainText = body.plainText, !plainText.isEmpty {
+            sample = plainText
+        } else if let html = body.html, !html.isEmpty {
+            let extracted = HTMLTextExtractor.plainText(fromHTML: html)
+            sample = extracted.isEmpty ? nil : extracted
+        } else {
+            sample = nil
+        }
+        guard let sample, let detected = Self.detectLanguageLocally(sample) else { return message }
+
+        var updated = message
+        updated.detectedLanguage = detected
+        let toPersist = updated
+        try? await environment.database.dbWriter.write { db in
+            try toPersist.update(db)
+        }
+        self.message = updated
+        return updated
+    }
+
+    /// See `SyncEngine.BodyFetcher.detectLanguage`'s identical helper —
+    /// duplicated rather than shared across the `SyncEngine`/app module
+    /// boundary purely to avoid a new cross-target dependency for one
+    /// `#if canImport(NaturalLanguage)` wrapper; both call the same
+    /// `MessageLanguageDetector.detect` underneath.
+    private static func detectLanguageLocally(_ text: String) -> String? {
+        #if canImport(NaturalLanguage)
+        MessageLanguageDetector.detect(text)
+        #else
+        nil
+        #endif
     }
 
     /// Called once per `load()`, after `bodyRecord` is populated (every
@@ -794,9 +881,14 @@ struct MessageView: View {
     /// off or a previous attempt failed) goes through the same
     /// `requestTranslation(message:)` this calls into.
     private func kickoffTranslationIfNeeded(message: MessageRecord) {
-        // 表示・操作改善バッチ: `shouldShowTranslationBar`と同じ条件 (アプリの
-        // 表示言語が既に英語なら自動翻訳もしない) — バーを出さない状況で
-        // 裏でだけ翻訳が走る非一貫な状態を避ける。
+        // design-phase-3: deliberately *stricter* than `isEnglishMessage`
+        // (which now also shows the bar for `nil`/undetectable — see its
+        // doc comment). Auto-translating on a mere "maybe English, couldn't
+        // tell" guess would silently run the on-device model against
+        // possibly-non-English text with no way for the user to have opted
+        // out first; showing the bar and letting them tap "翻訳" themselves
+        // for that ambiguous case is the safer default, while a *confirmed*
+        // English message still auto-translates exactly as before.
         guard message.detectedLanguage == "en" else { return }
         guard LocalizationSettingsStore.effectiveLanguageCode != "en" else { return }
         guard environment.isTranslationAvailable else { return }
@@ -845,7 +937,11 @@ struct MessageView: View {
     /// 範囲に対して過大と判断した — 同じメッセージを開き直すたびに再生成に
     /// なるが、要約はボタンを押した時だけ動く手動機能なので許容範囲) — 出力
     /// 言語は `LocalizationSettingsStore.effectiveLanguageCode` に合わせる
-    /// (英語表示なら英語要約、それ以外は日本語要約)。
+    /// (英語表示なら英語要約、それ以外は日本語要約)。`summarize`ではなく
+    /// `summarizeLongText`を呼ぶ — 長文メールが8192トークンのコンテキスト
+    /// 上限を超えて失敗する翻訳と同じ問題を要約も踏みうるため
+    /// (`TranslationChunker`のdoc comment参照)、事前分割+map-reduceで
+    /// 安全な長さに保つ。
     private func requestSummary(message: MessageRecord) {
         guard summaryTask == nil else { return }
         guard let sourceText = sourceTextForTranslation() else { return }
@@ -854,12 +950,20 @@ struct MessageView: View {
         let targetLanguage: TranslationLanguage = LocalizationSettingsStore.effectiveLanguageCode == "en" ? .english : .japanese
         summaryTask = Task {
             do {
-                let result = try await translator.summarize(sourceText, targetLanguage: targetLanguage)
+                let result = try await translator.summarizeLongText(sourceText, targetLanguage: targetLanguage)
                 guard !Task.isCancelled else { return }
                 summaryState = .summarized(result)
             } catch {
                 guard !Task.isCancelled else { return }
-                summaryState = .failed("\(error)")
+                // `.userFacingMessage`（`TranslationServiceError`のケースが
+                // 判別できる時のみ）— 生の`"\(error)"`(Swiftのenum dump、
+                // 例: `failed(message: "...")`)をそのまま表示していたのを
+                // 修正 (実機での「AI要約が壊れている」報告の一因)。
+                if let serviceError = error as? TranslationServiceError {
+                    summaryState = .failed(serviceError.userFacingMessage)
+                } else {
+                    summaryState = .failed(error.localizedDescription)
+                }
             }
             summaryTask = nil
         }

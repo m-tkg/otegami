@@ -71,6 +71,51 @@ struct MessageTranslatorTests {
         #expect(persisted?.engineIdentifier == record.engineIdentifier)
     }
 
+    @Test("a paragraph longer than the chunk limit is split, translated in pieces, and rejoined into one TranslatedParagraph")
+    func longParagraphIsChunkedAndRejoined() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        // Three sentences that individually fit `TranslationChunker
+        // .defaultMaxChunkLength` but together comfortably exceed it, so
+        // this paragraph is guaranteed to be split into multiple chunks —
+        // real-device motivation in `TranslationChunker`'s doc comment.
+        let sentence = "This is a moderately long sentence about the quarterly report. "
+        let longParagraph = String(repeating: sentence, count: 60).trimmingCharacters(in: .whitespaces)
+        #expect(longParagraph.count > TranslationChunker.defaultMaxChunkLength)
+
+        let sourceText = "Short intro.\n\n\(longParagraph)"
+        let state = await translator.translate(
+            messageId: messageId, sourceText: sourceText, sourceLanguage: .english, targetLanguage: .japanese
+        )
+
+        guard case .translated(let record) = state else {
+            Issue.record("expected .translated, got \(state)")
+            return
+        }
+        // Still exactly one `TranslatedParagraph` per original paragraph
+        // (two: the short intro and the long one) — chunking is an
+        // implementation detail the engine call sees, not something that
+        // should fragment 1i's per-paragraph original/translated toggle.
+        #expect(record.paragraphs.count == 2)
+        #expect(record.paragraphs[0].original == "Short intro.")
+        #expect(record.paragraphs[1].original == longParagraph)
+        // `FakeTranslationService.deterministicTranslation` prefixes every
+        // *piece* it's handed with "[ja] " independently — if the long
+        // paragraph had gone through as one over-limit request it would
+        // carry exactly one "[ja] " prefix; more than one proves the
+        // engine actually received several chunks for this one paragraph,
+        // which then got rejoined into a single `TranslatedParagraph`.
+        #expect(record.paragraphs[1].translated.components(separatedBy: "[ja] ").count - 1 > 1)
+        // `MessageTranslator.translate` still only calls
+        // `translateParagraphs` once overall (all chunks from every
+        // paragraph batched into one call) — chunking doesn't turn one
+        // `translate` into multiple round trips to the engine.
+        #expect(await service.translateParagraphsCallCount == 1)
+    }
+
     @Test("a second call for the same message is served from cache, not the engine")
     func cacheHitSkipsEngine() async throws {
         let database = try AppDatabase.makeInMemory()
@@ -121,7 +166,11 @@ struct MessageTranslatorTests {
         let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
 
         let state = await translator.translate(messageId: messageId, sourceText: "Hello.", sourceLanguage: .english, targetLanguage: .japanese)
-        #expect(state == .failed(message: TranslationServiceError.failed(message: "model unavailable").errorDescription!))
+        // `.userFacingMessage` (not `.errorDescription`, which stays
+        // English/log-oriented) — see `MessageTranslator.translate`'s catch
+        // block and `TranslationServiceError.userFacingMessage`'s doc
+        // comment for why the mapping happens here.
+        #expect(state == .failed(message: TranslationServiceError.failed(message: "model unavailable").userFacingMessage))
 
         let persisted = try await database.dbWriter.read { db in
             try MessageTranslationRecord.fetchOne(db, key: messageId)

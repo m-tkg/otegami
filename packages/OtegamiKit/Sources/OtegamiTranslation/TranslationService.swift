@@ -82,4 +82,44 @@ extension TranslationService {
     public func summarize(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
         try await summarize(text, targetLanguage: targetLanguage, sentenceCount: 2)
     }
+
+    /// A `summarize` that stays safe for arbitrarily long mail bodies —
+    /// design-phase-3's real-device finding: `summarize` on a long English
+    /// mail could hit the same context-window overflow `translate` did
+    /// (`TranslationChunker`'s doc comment), and `MessageView`'s "AI要約"
+    /// button has no paragraph-alignment requirement forcing it through
+    /// `MessageTranslator`'s cache the way message translation does, so
+    /// this lives here as a plain protocol extension any conformer gets for
+    /// free. Map-reduce for oversized input: summarize each
+    /// `TranslationChunker` piece to about one sentence, then (if the
+    /// combined partial summaries are themselves still long) summarize
+    /// that combination down to `sentenceCount`. Short input (the common
+    /// case) is a single, un-chunked `summarize` call, unchanged from
+    /// before this existed.
+    public func summarizeLongText(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int = 2) async throws -> String {
+        guard text.count > TranslationChunker.defaultMaxChunkLength else {
+            return try await summarize(text, targetLanguage: targetLanguage, sentenceCount: sentenceCount)
+        }
+
+        let chunks = TranslationChunker.chunk(text)
+        var partialSummaries: [String] = []
+        partialSummaries.reserveCapacity(chunks.count)
+        for chunk in chunks {
+            partialSummaries.append(try await summarize(chunk, targetLanguage: targetLanguage, sentenceCount: 1))
+        }
+        let combined = partialSummaries.joined(separator: " ")
+        guard partialSummaries.count > 1 else {
+            // Only one chunk came back (an input just over the threshold,
+            // split into a single "unit") — it's already one summarize
+            // call's worth of output, no second pass needed.
+            return combined
+        }
+        // Multiple chunks: compress their concatenated one-sentence
+        // summaries down to what the caller actually asked for, rather
+        // than returning an unbounded wall of per-chunk summaries. This
+        // combined text is itself short (a handful of sentences) even for
+        // a huge source email, so it's always safely under the chunk
+        // threshold — no risk of *this* call recursing into another split.
+        return try await summarize(combined, targetLanguage: targetLanguage, sentenceCount: sentenceCount)
+    }
 }

@@ -193,14 +193,25 @@ OS バージョンは iOS/macOS 26 以降が前提（本アプリの最低対応
 
 ## 既知の制限
 
-- **コンテキストサイズ**: オンデバイスモデルのコンテキストは実測 8192 トークン。
-  `ParagraphSplitter` は空行区切りで段落分割しますが、改行のない非常に長い
-  1段落（例: 改行なしで貼り付けられた長大なログやコード）は理論上これを
-  超える可能性があります。現状のエンジン層はこのケースを明示的にはハンドリング
-  しておらず、`LanguageModelSession` 側のエラー（`GenerationError` 系）が
-  `TranslationServiceError.failed` として呼び出し側に伝わるのみです。
-  UI フェーズで「長すぎる段落はスキップ/切り詰め」等の扱いを検討する必要が
-  あります。
+- **コンテキストサイズ (実機報告を受けて対応済み)**: オンデバイスモデルの
+  コンテキストは実測 8192 トークン。実機で「翻訳が、メールによって成功
+  したり失敗したりする」という報告があり、原因は長文の英文メール (段落数
+  の多いニュースレターや引用の多い返信) がこの上限を超えていたこと —
+  `translateParagraphs` は元々1回のエンジン呼び出しが失敗すると
+  メッセージ全体の翻訳が失敗する実装だったため、長い段落が1つでもあると
+  メール全体が翻訳できなくなっていた。`TranslationChunker`
+  (`OtegamiTranslation`) を追加し、`MessageTranslator.translate` が
+  各段落をさらに安全な長さのチャンクに事前分割してからエンジンへ渡し、
+  結果をチャンク単位から段落単位へ再結合するようにした (段落境界自体は
+  1i の原文/訳文対応のため変えない)。要約 (`AISummaryBar`) にも同じ
+  問題があり得るため、`TranslationService.summarizeLongText` (map-reduce:
+  チャンクごとに1文要約→まとめて再要約) を追加し `MessageView
+  .requestSummary` から使うようにした。それでもエンジン側が
+  `LanguageModelError.contextSizeExceeded` を返した場合は
+  `TranslationServiceError.tooLong` として区別し、`.userFacingMessage`
+  で「本文が長すぎるため処理できませんでした」という具体的な理由を
+  表示する (`.failed`/`.unavailable` と合わせて「なぜ失敗したか」を
+  常に区別して表示)。
 - **1セッション=1リクエストのオーバーヘッド**: 段落ごとに新しい
   `LanguageModelSession` を作る設計のため、段落数が多いメールほど
   セッション初期化コストが積み重なります（実測ではモデルのウォームアップ
@@ -223,6 +234,68 @@ OS バージョンは iOS/macOS 26 以降が前提（本アプリの最低対応
   該当。UI 層の設計判断 (既定は訳文、自動翻訳の ON/OFF 設定、HTML メー
   ルは訳文表示時にプレーンテキスト化される、等) は
   `docs/design-system.md` の design-phase-3 節にまとめてある。
+
+## バグ修正: 実機で「翻訳ボタンが出ない」「AI要約が壊れている」
+
+実機報告を受けて調査・修正。上記の長文コンテキスト超過とは別の、翻訳・
+要約 UI 側の問題。
+
+### 1. 翻訳ボタンが英文メールでも出ない
+
+`MessageView.isEnglishMessage`/`shouldShowTranslationBar` は元々
+`message.detectedLanguage == "en"` という厳密一致だった。
+`detectedLanguage` は `SyncEngine.BodyFetcher.fetchBody` が本文を**初めて**
+取得した瞬間にしか設定されない (`prefetchRecent` は `bodyState ==
+.notFetched` のメッセージだけが対象) ため、この項目が追加される前に
+本文取得済みだったメッセージ (実機の実際の受信箱の大半) は永久に `nil`
+のままになり、英文であってもバーが出なかった。
+
+`isEnglishMessage` を「`"en"` または `nil` (未判定)」に緩和し (確信を
+持って英語以外と判定されたメッセージだけ非表示のまま)、`MessageView
+.backfillDetectedLanguageIfNeeded` を追加してメッセージを開いたタイミング
+で (ネットワーク不要、ローカルの本文テキストから) 検出し直し、
+`message.detectedLanguage` を永続化するようにした。自動翻訳
+(`kickoffTranslationIfNeeded`) の方は未判定メッセージまでは広げず、
+確信を持って英語と判定された場合のみ従来通り自動実行する — 「バーは
+出すが、判定不能なものを黙って翻訳し始めない」という安全側の設計。
+
+### 2. AI要約が壊れている
+
+- **エラーメッセージが生の Swift enum ダンプだった**: `MessageView
+  .requestSummary` の `catch` が `summaryState = .failed("\(error)")` と
+  していたため、`TranslationServiceError` を投げた場合に
+  `failed(message: "...")` のようなデバッグ表記がそのままユーザーに
+  見えていた。`(error as? TranslationServiceError)?.userFacingMessage`
+  を使うよう修正 (`TranslationBar`/`MessageTranslator.translate` と同じ
+  経路)。
+- **HTML メールの要約に HTML タグが混ざる可能性**: `sourceTextForTranslation()`
+  は `bodyRecord.plainText` が空でない場合はそれをそのまま返しており、
+  実在するメールの一部は `text/plain` パート自体に HTML マークアップが
+  混入している (送信側の誤ラベリング) ことがある。渡す文字列がどちらの
+  由来であっても必ず `HTMLTextExtractor.plainText` を通すようにし
+  (通常のプレーンテキストには何もしない no-op、HTML 混入時のみ保険として
+  機能する)、翻訳・要約どちらもこの一本化した経路を通るようにした。
+- 長文でのエラーは上記のコンテキスト分割で対応済み。
+
+**実機修正の確認**: シミュレータでは design-phase-3 節に記録済みの
+`FoundationModels.LanguageModelError エラー -1` (サンドボックス化された
+`.app` プロセスからの制限、実機/`swift test` では発生しない) が引き続き
+再現するため「タグなしの日本語要約」自体は表示できなかったが、これが
+逆に上記1点目のエラーメッセージ修正を実地で確認する結果になった:
+`07-html-only-japanese.eml` (`text/plain` パート無し、`HTMLTextExtractor`
+経由必須) を開いて「要約」をタップしたところ、`messageDetail.summaryBar
+.footnote` は修正前の生の enum ダンプ (`failed(message: "...")`) ではなく
+「要約に失敗しました: 操作を完了できませんでした。（FoundationModels
+.LanguageModelError エラー -1）」という自然な日本語メッセージになって
+いることを `app.debugDescription` で確認した — HTML からの抽出
+(`sourceTextForTranslation()`) も例外を出さず完走しており、クラッシュ・
+無限ローディングいずれも発生しない。
+
+いずれも `packages/OtegamiKit` 側にユニットテストがある
+(`TranslationChunkerTests`/`MessageTranslatorTests` の新規ケース)。UI
+側の判定ロジック自体 (nil 緩和・バックフィル) はシミュレータの
+`OtegamiM2VerificationUITests` 等、実際に英文メールを表示する既存の
+検証フローで回帰確認する。
 
 ## design-phase-3: iOS Simulator の `.app` プロセスから呼んだときの既知の制限
 
@@ -277,9 +350,13 @@ simulator/toolchain 固有の不具合」と同じ性質のものと判断し、
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、
   `ParagraphSplitter`（空行分割・空白トリム・空入力等）、
-  `MessageLanguageDetector`（英文/和文/混在/短文/記号のみ）。
+  `MessageLanguageDetector`（英文/和文/混在/短文/記号のみ）、
+  `TranslationChunker`（上限内はそのまま・文境界優先分割・句読点の無い
+  長文の強制分割・日本語の句点対応）。
 - `TranslationEngineTests`: `MessageTranslator` のキャッシュヒット/ミス、
-  エンジン識別子が変わった場合の再翻訳、失敗時の状態、`invalidate()`。
+  エンジン識別子が変わった場合の再翻訳、失敗時の状態、`invalidate()`、
+  上限を超える段落がチャンク分割されたうえで1つの `TranslatedParagraph`
+  に再結合されること。
 - `OtegamiTranslationFoundationModelsTests`: 実機のオンデバイスモデルに対する
   結合テスト（可用性に応じて自動スキップ）。
 - `SyncEngineTests`（`BodyFetcherTests`）: 本文取得時に

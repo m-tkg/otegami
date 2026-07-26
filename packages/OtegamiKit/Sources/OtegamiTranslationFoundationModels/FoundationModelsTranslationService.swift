@@ -187,14 +187,36 @@ public struct FoundationModelsTranslationService: TranslationService {
         }
     }
 
-    /// Every `LanguageModelSession` failure (guardrail violation, exceeded
-    /// context window, decoding failure, ...) collapses to `.failed` —
+    /// Most `LanguageModelSession` failures (guardrail violation, decoding
+    /// failure, transient engine error, ...) collapse to `.failed` —
     /// `TranslationServiceError`'s whole point is not leaking
     /// `FoundationModels`-specific error cases through the protocol
     /// boundary. `error.localizedDescription` is preserved as the message
     /// for logging/debugging.
+    ///
+    /// `LanguageModelError.contextSizeExceeded` is the one case pulled out
+    /// separately, into `.tooLong` — design-phase-3's real-device finding
+    /// (a long English mail's translation failing with an opaque error) is
+    /// exactly this case, and `TranslationChunker`'s pre-splitting should
+    /// make it rare in practice, but not impossible (its character-based
+    /// budget is a heuristic, not an exact token count) — when it does
+    /// still happen, the caller should be able to say "本文が長すぎます"
+    /// specifically rather than a generic "翻訳に失敗しました", which is
+    /// what `.failed` alone can't distinguish.
     private static func mapEngineError(_ error: Error) -> TranslationServiceError {
-        .failed(message: error.localizedDescription)
+        // `LanguageModelError` itself is iOS/macOS 27+ (a stricter minimum
+        // than this type's own 26+) — this package's deployment target is
+        // still 26 (`docs/translation.md`), so this whole type has to be
+        // reachable on a 26-only device too; the `#available` check just
+        // means a 26-only device never gets the `.tooLong` special case
+        // (falls through to the generic `.failed` below, exactly like
+        // before this mapping existed) rather than failing to compile.
+        if #available(iOS 27.0, macOS 27.0, *),
+           let languageModelError = error as? LanguageModelError,
+           case .contextSizeExceeded(let details) = languageModelError {
+            return .tooLong(message: "\(details.tokenCount)/\(details.contextSize) tokens")
+        }
+        return .failed(message: error.localizedDescription)
     }
 }
 

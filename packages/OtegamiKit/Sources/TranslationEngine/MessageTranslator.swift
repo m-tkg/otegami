@@ -84,7 +84,39 @@ public actor MessageTranslator {
             }
 
             let paragraphs = ParagraphSplitter.split(sourceText)
-            let translatedParagraphs = try await service.translateParagraphs(paragraphs, from: sourceLanguage, to: targetLanguage)
+            // design-phase-3: a paragraph that's itself longer than the
+            // engine's context window (`TranslationChunker`'s doc comment —
+            // the real-device "translation works for some mail, not
+            // others" report) used to make `translateParagraphs` throw and
+            // fail the whole message. Explode any oversized paragraph into
+            // safe-sized chunks *before* calling the engine, then regroup
+            // the per-chunk results back into one translated string per
+            // original paragraph — `chunkCounts[i]` chunks belong to
+            // `paragraphs[i]`, in order, so `translatedParagraphs` still
+            // lines up 1:1 with `paragraphs` for `TranslatedParagraph`
+            // (1i's per-paragraph original/translated toggle needs that
+            // alignment; a paragraph split into 3 chunks must still collapse
+            // back into a single translated paragraph, not 3).
+            var chunks: [String] = []
+            var chunkCounts: [Int] = []
+            chunkCounts.reserveCapacity(paragraphs.count)
+            for paragraph in paragraphs {
+                let pieces = TranslationChunker.chunk(paragraph)
+                chunks.append(contentsOf: pieces)
+                chunkCounts.append(pieces.count)
+            }
+
+            let translatedChunks = try await service.translateParagraphs(chunks, from: sourceLanguage, to: targetLanguage)
+
+            var translatedParagraphs: [String] = []
+            translatedParagraphs.reserveCapacity(paragraphs.count)
+            var cursor = 0
+            for count in chunkCounts {
+                let pieceTranslations = translatedChunks[cursor..<(cursor + count)]
+                translatedParagraphs.append(pieceTranslations.joined(separator: " "))
+                cursor += count
+            }
+
             let aligned = zip(paragraphs, translatedParagraphs).map { TranslatedParagraph(original: $0, translated: $1) }
 
             let record = MessageTranslationRecord(
@@ -98,7 +130,12 @@ public actor MessageTranslator {
             try await persist(record)
             return .translated(record)
         } catch let error as TranslationServiceError {
-            return .failed(message: error.errorDescription ?? String(describing: error))
+            // design-phase-3: `.userFacingMessage` (not `.errorDescription`,
+            // which stays English/log-oriented) so "本文が長すぎます" reaches
+            // the user instead of a generic failure — see that property's
+            // doc comment for why the mapping has to happen here rather
+            // than in the UI layer.
+            return .failed(message: error.userFacingMessage)
         } catch {
             return .failed(message: error.localizedDescription)
         }

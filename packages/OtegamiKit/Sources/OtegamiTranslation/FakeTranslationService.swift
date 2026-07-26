@@ -20,6 +20,10 @@ public actor FakeTranslationService: TranslationService {
         case success
         case failure(message: String)
         case unavailable(TranslationUnavailableReason)
+        /// Simulates `TranslationServiceError.tooLong` — for tests covering
+        /// the "本文が長すぎます" UI path without needing a real engine's
+        /// context-window limit.
+        case tooLong(message: String)
     }
 
     private var behavior: Behavior
@@ -74,6 +78,8 @@ public actor FakeTranslationService: TranslationService {
                     continuation.finish(throwing: TranslationServiceError.failed(message: message))
                 case .unavailable(let reason):
                     continuation.finish(throwing: TranslationServiceError.unavailable(reason))
+                case .tooLong(let message):
+                    continuation.finish(throwing: TranslationServiceError.tooLong(message: message))
                 case .success:
                     // Cumulative word-by-word chunks, matching
                     // `LanguageModelSession.streamResponse`'s own
@@ -111,6 +117,8 @@ public actor FakeTranslationService: TranslationService {
             throw TranslationServiceError.failed(message: message)
         case .unavailable(let reason):
             throw TranslationServiceError.unavailable(reason)
+        case .tooLong(let message):
+            throw TranslationServiceError.tooLong(message: message)
         }
     }
 
