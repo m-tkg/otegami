@@ -60,82 +60,27 @@
   4. もしログインに失敗する場合、上記の「未確定事項」(ユーザー名の形式) を
      疑い、必要なら実装を短縮形に切り替えて再確認する。
 
-## M9: APNs .p8 キー発行 + 実機での最終確認
+## M9: APNs プッシュ通知 — 完了
 
-**実装状況**: M9 のリレーサーバー・アプリ側オプトイン UI・NotificationService
-Extension は実装済み・大部分を自動検証済み (詳細は `docs/relay-deployment.md`
-と本セッションの最終報告を参照)。**残っているのは `.p8` キー発行と、それを
-使った実機での「実際に通知が届く」確認のみ。**
+**実機の iPhone でエンドツーエンドの動作確認まで完了した。** `.p8` キーを
+発行し、リレーサーバーをユーザーの自宅サーバー (reverse proxy + プライ
+ベート CA 構成) にデプロイし、実機に通知が実際に届くこと・差出人/件名が
+正しく書き換えられること・`DELETE /v1/watches/:id` 後に通知が届かなく
+なることまで確認済み。途中で見つかった「IDLE がタイムアウトで接続を壊す」
+実バグも修正済み (詳細は `docs/verify.md`「otegami-relay: IDLE がタイム
+アウトで接続を壊す実バグ」)。これから otegami-relay を自分でセルフホスト
+する人向けの手順 (`.p8` の発行、環境変数、Docker Compose での起動、HTTPS
+終端、プライベート CA を使う宅内運用の例) は
+[`docs/relay-deployment.md`](docs/relay-deployment.md) にまとめてある
+— このファイル自身にはもう自分用の手順を残していない。
 
-- **理由**: プッシュ通知リレーサーバーは token-based (.p8) 認証で APNs に
-  接続する。self-host 前提のため、リレーを立てる人が自分の Apple
-  Developer アカウントで発行する必要がある。また iOS シミュレータは
-  APNs デバイストークンを発行しないため、「実際に端末に通知が届く」
-  確認はシミュレータでは原理的に不可能 (`PushTokenCenter` はシミュレータ
-  上では `.noDeviceToken` を返し、`PushNotificationSettingsView` がその旨
-  を表示する — ここまでは自動検証済み)。
-- **ブロックしている機能**: 実 APNs 経由でのプッシュ通知 (アプリ kill 状態
-  での新着通知)。ConsolePushSender へのフォールバック経路・IDLE 監視・
-  push 発火判定・API・アプリ側登録 UI はすべて `.p8` なしで自動検証済み
-  (`server/otegami-relay/Tests/OtegamiRelayTests/`、
-  `scripts/verify-relay.sh` — 実 Dovecot に対する IDLE→新着→push 発火の
-  E2E)。
-- **対応手順** (`docs/relay-deployment.md` に詳細版あり):
-  1. [Apple Developer](https://developer.apple.com/account/) の
-     「証明書、識別子とプロファイル」→「キー」で APNs 用キーを新規作成する。
-  2. ダウンロードした `.p8` ファイル (一度しかダウンロードできない点に注意) と、
-     Key ID・Team ID を控える (Bundle ID は `com.m-tkg.otegami`、
-     `Config/Signing.xcconfig`/`Local.xcconfig` で変更可)。
-  3. リレーサーバーの環境変数 `APNS_KEY_PATH`/`APNS_KEY_ID`/`APNS_TEAM_ID`/
-     `APNS_BUNDLE_ID` (4 つ全て設定して初めて `APNsSender` が有効になる。
-     1 つでも欠けると `ConsolePushSender` にフォールバックする) を設定する。
-     `docker-compose.yml`/`.env.sample` 参照。
-  4. `.p8` ファイルはリポジトリに含めない (`.gitignore` で
-     `server/otegami-relay/secrets/` ごと除外済み)。
-  5. 実機に `make ios-device` でビルド・インストールし、DEVELOPMENT_TEAM
-     が実際に登録済みの Apple Developer アカウントであることを確認する
-     (`Config/Signing.xcconfig` に既定値は無く、`Local.xcconfig` で
-     各自設定する方式 — 現状このマシンでは `Local.xcconfig` に設定済み。
-     別アカウントを使う場合はそちらを書き換える)。
-  6. 実機上でアプリの「設定」→「プッシュ通知」からリレー URL (https 必須。
-     手前に reverse proxy を立てて TLS 終端すること —
-     `docs/relay-deployment.md` の「6. HTTPS の終端」参照) を入力し
-     「有効にする」→ 通知の許可 → デバイストークン取得 → 登録、まで進む
-     ことを確認する。
-  7. アプリをバックグラウンド/kill した状態で該当 IMAP アカウントに新着
-     メールを送り、数秒〜十数秒 (IDLE の反応速度次第) で通知が届くこと、
-     差出人・件名が正しく表示されること (`NotificationService` が
-     `mutable-content` を書き換えている証拠) を確認する。
-  8. `DELETE /v1/watches/:id` (アプリの「無効にする」、またはアカウント
-     削除) 後、同じ操作で通知が届かなくなることを確認する。
+iPhone 実機側でのプライベート CA ルート証明書の信頼設定 (プロファイルの
+インストール + 証明書信頼設定での明示的な有効化) も完了済み。同じ構成
+（宅内サーバー + プライベート CA）でセルフホストする場合の一般化した
+手順は `docs/relay-deployment.md`「運用例: 宅内サーバー」を参照。
 
-### M9 追加: 宅内サーバー (プライベート CA) デプロイでの iPhone 側の作業
+### 既知の未検証事項 (優先度を下げた項目)
 
-リレーサーバーを自宅ホームサーバーの reverse proxy (プライベート CA で
-署名した TLS 証明書) にデプロイした。iOS はこのプライベート CA をデフォルトで
-信頼しないため、実機側で以下の手順を行わないと、アプリからリレー URL への
-HTTPS 接続が (証明書エラーで) 失敗する。上記「対応手順」の 6. (リレー URL を
-アプリに入力する) より**前**に済ませておくこと。
-
-1. ルート CA 証明書ファイル (`rootCA.cer`) を Mac から iPhone に転送する
-   (AirDrop が簡単。他に自分宛メールへの添付や Files.app 経由でも可)。
-2. iPhone で受け取った `rootCA.cer` を開く →「プロファイルがダウンロード
-   済み」の通知が出るので、設定アプリ →「プロファイルがダウンロード済み」
-   (または 設定 → 一般 → VPN とデバイス管理) を開き、プロファイルを
-   インストールする (パスコード入力が必要)。
-3. **重要**: プロファイルのインストールだけでは iOS はこの CA を
-   まだ信用しない。設定 → 一般 → 情報 → 証明書信頼設定
-   (Certificate Trust Settings) を開き、インストールしたルート証明書の
-   スイッチを ON にして「有効化」する。**この操作を忘れると、プロファイルは
-   入っているのに TLS ハンドシェイクが失敗し続ける** (症状: アプリの
-   「接続テスト」やリレー URL 有効化が原因不明のまま失敗する)。
-4. Safari 等で `https://<リレーのホスト名>/health` を開き、証明書エラーが
-   出ずに `ok` が表示されることを確認してから、アプリの「設定」→
-   「プッシュ通知」でリレー URL を入力する。
-
-### 既知の未検証事項 (実機がないと検証できない/優先度を下げた項目)
-
-- 上記の実機 E2E そのもの。
 - **(解消) 通知の許可を一度も要求していなかった実バグ**: 後続セッションで
   修正済み。`PushTokenCenter.requestToken()` がデバイストークン登録の
   前に `UNUserNotificationCenter.requestAuthorization(options:)` を
@@ -151,9 +96,11 @@ HTTPS 接続が (証明書エラーで) 失敗する。上記「対応手順」�
   Simulator ランタイム固有と見られる制約** (`NotificationService`
   Extension 自体が `launchd_sim` から一切 spawn されない — アプリ側の
   設定は確認済みで問題なし) に突き当たり、「差出人/件名の書き換え」
-  までのシミュレータ上での確認は依然としてできていない。詳細は
+  までのシミュレータ上での確認はできなかった。詳細は
   `docs/qa-findings.md`「M9 追補2」節、`docs/verify.md`の該当追記を
-  参照。**実機での最終確認 (下記) が引き続き唯一の完全な検証手段。**
+  参照。このシミュレータ固有の制約は結局解消せず、**実機での確認が
+  唯一の完全な検証手段のままだった** — 上記の通り、その実機確認は
+  完了済み。
 - Gmail (`.oauth2`) アカウントのプッシュ通知: v1 のリレーは
   `WatchAuth.Kind.password` のみ対応 (プラン: "LOGIN/XOAUTH2 なし可:
   password のみ v1")。`AppEnvironment.enablePushNotifications` は
@@ -263,10 +210,11 @@ Simulator アプリプロセスから on-device 推論ブローカーを呼ぶ�
 以下は「今すぐ開発を止める理由」ではなく、実際に公開・配布する段になったら
 対応が必要な項目 (計画書の合意事項)。
 
-- **リポジトリの public 化**: 現状 private (GitHub 上のリポジトリ名は既に
-  `otegami` — README/バッジ/クローン URL は一貫してこれを指している。
-  ローカルの作業ディレクトリ名 `mailapp` は単なる clone 先ディレクトリ名
-  でリポジトリ名とは無関係なので揃える必要はない)。
+- **(完了) リポジトリの public 化**: `github.com/m-tkg/otegami` は既に
+  public リポジトリになっている (ローカルの作業ディレクトリ名 `mailapp`
+  は単なる clone 先ディレクトリ名でリポジトリ名とは無関係)。個人の
+  ホスト名・IP・実機の UDID・自宅サーバーの構成詳細をドキュメントに
+  書き込まないことは public 化後も引き続き徹底すること。
 - **Google OAuth の審査**: 各自の Client ID でのテスト利用には審査不要だが、
   作者本人が配布ビルド (App Store/TestFlight) を出す場合は Google の OAuth
   審査が必要になる (`docs/oauth-setup.md`)。
