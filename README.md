@@ -70,7 +70,10 @@ Two things this app is built around, more than any single feature list:
   (attachments / unread / English) and People vs. Mail result sections.
 - **HTML mail**: rendered in a sandboxed `WKWebView` (JavaScript disabled,
   external images blocked behind a one-tap "show images" banner, inline
-  `cid:` images resolved locally).
+  `cid:` images resolved locally). A subtle "HTML" badge marks HTML
+  messages, with a one-tap switch to a plain-text rendering (or "always
+  show as text" in Settings). Messages with no content at all show a
+  subtle "no content" placeholder instead of a blank pane.
 - **Attachments**: send and receive, with QuickLook preview, inline
   `cid:` image support, and RFC 2047/2231-aware filename decoding
   (including Japanese filenames).

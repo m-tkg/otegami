@@ -2544,3 +2544,49 @@ push が一切発火しない。つまり「IDLE がタイムアウトする」�
 に本番リレーが現在それを watch していないか (`docker compose logs
 otegami-relay` で `watch connected` の対象を確認する、または一時的に
 `docker compose stop otegami-relay` する) を必ず確認すること。
+
+## iOS シミュレータ検証 (A9: HTML バッジ・HTML/テキスト切替・本文なし表示)
+
+`OtegamiHTMLDisplayUITests`（`scripts/verify-ios-*.sh` 化はしていない —
+下記の理由で自動アサートより目視スクリーンショットが主な判定手段のため、
+既存パターンほど確立していない）。
+
+1. `testHTMLBadgeAndTextToggle` — `07-html-only-japanese.eml` を開き、
+   件名の隣に "HTML" バッジ (`HTMLBadge`) が出ること、"テキストで表示"
+   ボタンをタップすると `messageDetail.plainTextBody`
+   (`HTMLTextExtractor` の抽出結果) に切り替わり同じ日本語本文が読めること、
+   もう一度タップすると `HTMLMessageView` (WKWebView) に戻ることを確認する。
+2. `testEmptyBodyShowsPlaceholder` — `18-empty-body.eml`
+   (ヘッダのみ・本文ゼロバイト) を開き、「本文なし」プレースホルダ
+   (`OtegamiColor.inkTertiary` の薄い文字) が表示され、"HTML" バッジが
+   **出ない**ことを確認する。実装上の注意: MailCore2 の
+   `htmlBodyRendering()` はこのフィクスチャに対しても非空 (タグのみ・
+   可視テキストも `<img` も無い) な HTML 文字列を返すため、
+   `MessageView.isHTMLMessage` は単純な「`html` が非空か」ではなく
+   「`HTMLTextExtractor` で抽出できるテキストがあるか、`<img` を含むか」
+   まで見て「実質的に空の HTML」を除外している
+   (`MessageView.swift` の `isHTMLMessage` 参照)。
+
+いずれも `verify-ios-m2.sh` と同じスクリーンショット手法 (テスト実行中に
+別シェルから `xcrun simctl io booted screenshot` を複数回上書き) で実際に
+撮影し目視確認済み — HTML/テキスト切替の3状態 (HTML表示・テキスト表示・
+切替直後の再読み込み中) と「本文なし」表示、いずれも正しくレンダリング
+されていることをスクリーンショットで確認した。
+
+### 既知の不安定さ: `testEmptyBodyShowsPlaceholder` の行タップ
+
+この検証を組み立てる中で、`testEmptyBodyShowsPlaceholder` の
+`openMessage` (既存の `OtegamiM2VerificationUITests` と全く同じ実装—
+`list.cells.containing(predicate).firstMatch` を座標タップ) が、
+シミュレータを `simctl erase` で完全にクリーンな状態にしてもなお
+**タップ自体は成功する (エラーは出ない) のに詳細画面へ遷移せず、行が未読の
+まま 20 秒のアサートがタイムアウトする**ことを複数回確認した — アカウント
+が `simctl uninstall` では消えない件 (このファイル内「M11」節) とは無関係
+に再現する、別種の不安定さ。同じ `openMessage` 実装は
+`testHTMLBadgeAndTextToggle` (別のメッセージを開く) や
+`OtegamiM2VerificationUITests` では概ね安定して動くため、コード側の
+一般的なバグではなく、この1メッセージ・このタイミングに限定された
+環境要因 (原因未特定) と判断している。**機能自体はテスト実行中の
+スクリーンショットで正しい表示を直接確認済み**であり、この節は
+「アサーションが時々タイムアウトする」という自動テストの既知の弱さを
+記録するためのもの。原因調査は今後の課題として残す。

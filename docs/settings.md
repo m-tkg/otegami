@@ -56,6 +56,22 @@ Settings/AccountsSettingsView.swift`）の UI。
 | 本文プレビューの行数 | `listDisplay.previewLineCount` | 1行 | なし / 1行 / 2行 / 3行 から選択。 |
 | メール本文にも送信者アイコンを表示 | `listDisplay.showAvatarInDetail` | ON | 詳細画面 (スレッド内の各メッセージのヘッダ) にも同じ `SenderAvatar` を表示する。 |
 
+## メールの表示 (A9)
+
+`HTMLDisplaySettingsStore.swift`。iOS・macOS 共通。
+
+| 項目 | キー | 既定値 | 説明 |
+| --- | --- | --- | --- |
+| 常にテキストで表示 | `htmlDisplay.alwaysShowPlainText` | OFF | ON にすると、HTML メールを開いたときの既定表示がテキスト (`text/plain` パートがあればそれ、無ければ `HTMLTextExtractor` の抽出結果) になる。メール詳細画面の切替ボタン (件名の下、"テキストで表示"/"HTMLで表示") でメールごとに一時的に上書きできる — この上書きはそのメールを開いている間だけで、別のメールを開くとこの設定の既定に戻る。 |
+
+HTML メールの詳細画面には、件名の隣に控えめな "HTML" バッジ (`HTMLBadge`、
+`ENBadge` と同じトークンを使った兄弟コンポーネント) が付く。実質的に
+空の HTML (可視テキストも `<img>` も無い、`MessageView.isHTMLMessage`
+参照) にはバッジも切替ボタンも出ない — 本文なしの表示 (下記) に譲る。
+
+本文が完全に空 (HTML・テキストいずれも実質的な内容が無い) の場合は、
+本文の位置に薄い文字 ("本文なし"、`OtegamiColor.inkTertiary`) を表示する。
+
 ## ピン留め
 
 `PinSettingsStore.swift`。iOS・macOS 共通。

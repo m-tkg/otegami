@@ -45,6 +45,18 @@ struct MessageView: View {
     /// comment on why this is read directly via `@AppStorage`.
     @AppStorage(ListDisplaySettingsStore.showAvatarInDetailKey) private var showAvatarInDetail = ListDisplaySettingsStore.defaultShowAvatarInDetail
 
+    // MARK: - HTML/text display (A9)
+
+    /// A9-2 「常にテキストで表示」 — see `HTMLDisplaySettingsStore`'s doc comment.
+    /// This is only the *default*; `manualPreferPlainText` (below) lets a
+    /// single open message override it in either direction via the toggle
+    /// button next to `HTMLBadge`.
+    @AppStorage(HTMLDisplaySettingsStore.alwaysShowPlainTextKey) private var alwaysShowPlainText = HTMLDisplaySettingsStore.defaultAlwaysShowPlainText
+    /// `nil` until the toggle button (`toggleHTMLTextButton`) is tapped for
+    /// *this* message — reset in `load()` so switching to a different
+    /// message never carries a previous message's manual choice forward.
+    @State private var manualPreferPlainText: Bool?
+
     @State private var message: MessageRecord?
     @State private var bodyRecord: MessageBodyRecord?
     /// M8: the mailbox path `message` lives in — resolved once during
@@ -149,10 +161,19 @@ struct MessageView: View {
                 )
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(displaySubject)
-                    .font(.title2)
-                    .bold()
-                    .accessibilityIdentifier("messageDetail.subject")
+                HStack(spacing: OtegamiSpacing.xs) {
+                    Text(displaySubject)
+                        .font(.title2)
+                        .bold()
+                        .accessibilityIdentifier("messageDetail.subject")
+                    // A9-1: a subdued flag that this message *is* HTML —
+                    // independent of `isShowingHTML` below (still shown even
+                    // while the toggle has switched this message to its
+                    // text rendering).
+                    if isHTMLMessage {
+                        HTMLBadge()
+                    }
+                }
                 Text(addressListText(message.fromAddresses, prefix: "From"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -167,8 +188,68 @@ struct MessageView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("messageDetail.date")
+                // A9-2: only offered for messages that actually have an
+                // HTML body to switch away from/back to — see
+                // `isShowingHTML`'s doc comment for what toggling flips.
+                if isHTMLMessage {
+                    Button(isShowingHTML ? "テキストで表示" : "HTMLで表示") {
+                        manualPreferPlainText = isShowingHTML
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .tint(OtegamiColor.accent)
+                    .accessibilityIdentifier("messageDetail.toggleHTMLTextButton")
+                }
             }
         }
+    }
+
+    /// A9-1/A9-4: whether `bodyRecord` has an HTML part with genuinely
+    /// visible content — the badge and the HTML/text toggle button both
+    /// gate on this, regardless of which rendering is currently chosen.
+    ///
+    /// Not just "is `html` a non-empty string": a message with no real body
+    /// at all (`18-empty-body.eml`'s fixture, confirmed by an actual
+    /// simulator run) still comes back from MailCore2's `htmlBodyRendering()`
+    /// as a non-empty (but tag-only, no visible text or media) HTML
+    /// document — treating that as "an HTML message" would show the "HTML"
+    /// badge and a genuinely blank `WKWebView` instead of A9-4's "本文なし"
+    /// placeholder. `HTMLTextExtractor` finding no text is *not* enough on
+    /// its own to call the HTML empty, though — an image-only HTML message
+    /// (no text, but a real `<img>` to show) is legitimate HTML content, so
+    /// this only treats HTML as empty when it has neither extractable text
+    /// nor any `<img` tag.
+    private var isHTMLMessage: Bool {
+        guard let html = bodyRecord?.html, !html.isEmpty else { return false }
+        if HTMLTextExtractor.plainText(fromHTML: html).isEmpty, !html.localizedCaseInsensitiveContains("<img") {
+            return false
+        }
+        return true
+    }
+
+    /// A9-2: the effective choice between the HTML (`WKWebView`) and
+    /// text rendering for *this* message right now — `manualPreferPlainText`
+    /// (set by the toggle button) wins when present, otherwise falls back to
+    /// the "常にテキストで表示" setting's default. Always `true` (irrelevant)
+    /// for a non-HTML message; callers only consult this after already
+    /// checking `isHTMLMessage`/`bodyRecord.html`.
+    private var isShowingHTML: Bool {
+        !(manualPreferPlainText ?? alwaysShowPlainText)
+    }
+
+    /// A9-2: the text rendering an HTML message falls back to when
+    /// `isShowingHTML` is `false` — the message's own `text/plain` part if
+    /// it has one (a real author-provided plain-text alternative), otherwise
+    /// `HTMLTextExtractor`'s output from the HTML (same extractor
+    /// `ComposerView`'s reply-quoting and the translation source already
+    /// use, so this doesn't introduce a second HTML-to-text implementation).
+    private func plainTextFallback(for bodyRecord: MessageBodyRecord) -> String? {
+        if let plainText = bodyRecord.plainText, !plainText.isEmpty { return plainText }
+        if let html = bodyRecord.html, !html.isEmpty {
+            let extracted = HTMLTextExtractor.plainText(fromHTML: html)
+            return extracted.isEmpty ? nil : extracted
+        }
+        return nil
     }
 
     /// 1i: "下部: 「返信」と「英語で返信を下書き」を対で置く（翻訳を読み専用機能にしない）"
@@ -375,10 +456,17 @@ struct MessageView: View {
                 Spacer()
             }
         } else if let bodyRecord {
-            if let html = bodyRecord.html, !html.isEmpty {
+            // A9-2: an HTML message only actually renders `HTMLMessageView`
+            // when `isShowingHTML` — the "常にテキストで表示" setting or this
+            // message's own toggle button can route it through the plain-
+            // text branch below instead, using `plainTextFallback(for:)`
+            // (the message's real `text/plain` part if it has one, else
+            // `HTMLTextExtractor`'s output) exactly the way a message with
+            // no HTML part at all already does.
+            if isHTMLMessage, isShowingHTML, let html = bodyRecord.html {
                 HTMLMessageView(html: html, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath)
                     .accessibilityIdentifier("messageDetail.htmlBody")
-            } else if let plainText = bodyRecord.plainText, !plainText.isEmpty {
+            } else if let plainText = plainTextFallback(for: bodyRecord) {
                 ScrollView {
                     linkifiedText(plainText)
                         .font(.body)
@@ -388,9 +476,17 @@ struct MessageView: View {
                         .accessibilityIdentifier("messageDetail.plainTextBody")
                 }
             } else {
-                Text("本文はありません。")
-                    .foregroundStyle(.secondary)
+                // A9-4: shown whenever there is genuinely no body content at
+                // all (no HTML, no `text/plain`, and — for an HTML message
+                // switched to text — no extractable text either) — a light,
+                // clearly-secondary label rather than leaving the space
+                // blank, per the design system's `inkTertiary` token
+                // ("薄いテキスト（無効/キャプション寄り）").
+                Text("本文なし")
+                    .font(OtegamiFont.body())
+                    .foregroundStyle(OtegamiColor.inkTertiary)
                     .padding()
+                    .accessibilityIdentifier("messageDetail.emptyBody")
             }
         } else if let errorMessage {
             Text(errorMessage)
@@ -410,6 +506,7 @@ struct MessageView: View {
         attachments = []
         attachmentErrorMessage = nil
         previewURL = nil
+        manualPreferPlainText = nil
         resetTranslationState()
 
         guard let loadedMessage = try? await environment.database.dbWriter.read({ db in

@@ -73,6 +73,8 @@ struct AccountsListContent: View {
     @AppStorage(ListDisplaySettingsStore.previewLineCountKey) private var previewLineCountRaw = ListDisplaySettingsStore.defaultPreviewLineCount.rawValue
     @AppStorage(ListDisplaySettingsStore.showAvatarInDetailKey) private var showAvatarInDetail = ListDisplaySettingsStore.defaultShowAvatarInDetail
     @AppStorage(PinSettingsStore.syncWithFlaggedKey) private var pinSyncWithFlagged = false
+    // A9「メールの表示」— see `HTMLDisplaySettingsStore`'s doc comment.
+    @AppStorage(HTMLDisplaySettingsStore.alwaysShowPlainTextKey) private var alwaysShowPlainText = HTMLDisplaySettingsStore.defaultAlwaysShowPlainText
 
     /// Account edit UI: which account's edit sheet is open, `nil` when
     var body: some View {
@@ -242,6 +244,16 @@ struct AccountsListContent: View {
                 Text("一覧・表示")
             } footer: {
                 Text("プロフィールアイコンは差出人のイニシャルとアカウント色から生成され、外部サービスへの問い合わせは一切行いません。")
+            }
+
+            // A9「メールの表示」.
+            Section {
+                Toggle("常にテキストで表示", isOn: $alwaysShowPlainText)
+                    .accessibilityIdentifier("settings.html.alwaysShowPlainTextToggle")
+            } header: {
+                Text("メールの表示")
+            } footer: {
+                Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。")
             }
 
             // E9「ピン留め」.
