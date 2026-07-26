@@ -139,7 +139,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         let query: [String: Any] = {
             var query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: "com.m-tkg.otegami.account-password",
+                kSecAttrService as String: "com.mtkg.otegami.account-password",
                 kSecAttrAccount as String: accountId,
                 kSecReturnData as String: true,
                 kSecMatchLimit as String: kSecMatchLimitOne,

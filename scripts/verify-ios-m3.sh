@@ -34,7 +34,7 @@
 # Env:
 #   IOS_SIMULATOR        Simulator name (default: iPhone 17 Pro Max)
 #   SCREENSHOT_DIR        Where to write PNGs (default: /tmp/otegami-verify)
-#   BUNDLE_ID             App bundle id (default: com.m-tkg.otegami)
+#   BUNDLE_ID             App bundle id (default: com.mtkg.otegami)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,7 +42,7 @@ cd "$ROOT_DIR"
 
 IOS_SIMULATOR="${IOS_SIMULATOR:-iPhone 17 Pro Max}"
 SCREENSHOT_DIR="${SCREENSHOT_DIR:-/tmp/otegami-verify}"
-BUNDLE_ID="${BUNDLE_ID:-com.m-tkg.otegami}"
+BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
 MAILSTACK_USER="test1@otegami.test"
 
 mkdir -p "$SCREENSHOT_DIR"

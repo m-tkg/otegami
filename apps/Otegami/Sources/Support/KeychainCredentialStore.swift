@@ -54,7 +54,7 @@ struct KeychainCredentialStore: Sendable {
     /// entitlement configured).
     private let accessGroup: String?
 
-    init(service: String = "com.m-tkg.otegami.account-password", accessGroup: String? = nil) {
+    init(service: String = "com.mtkg.otegami.account-password", accessGroup: String? = nil) {
         self.service = service
         self.accessGroup = accessGroup
     }

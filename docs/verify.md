@@ -764,7 +764,7 @@ Keychain 読み取り → 実 IMAP ラウンドトリップ → 通知内容の�
    パスを**動的に**解決する — この開発機の `apps/Otegami/Config
    /Local.xcconfig` は `OTEGAMI_BUNDLE_ID` を `com.mtkg.otegami` (ハイフン
    無し) に上書きしており、他の `verify-ios-m*.sh` が使う固定デフォルト
-   (`com.m-tkg.otegami`) とは実際に食い違う。`CFBundleDisplayName ==
+   (`com.mtkg.otegami`) とは実際に食い違う。`CFBundleDisplayName ==
    "Otegami"` でフィルタする必要があった点に注意 — `GroupContainers` を持つ
    かどうかだけで絞ると Reminders など App Group を使う標準アプリを誤って
    拾ってしまう (実際にこの開発機で `com.apple.reminders` を誤検出して
@@ -2180,7 +2180,7 @@ make mailstack-down
   として残す。
 - **`BUNDLE_ID` はこの開発機では `com.mtkg.otegami`** — `apps/Otegami
   /Config/Local.xcconfig` の上書き (M9 追補の節で既出) により、
-  `scripts/verify-ios-*.sh` の既定値 `com.m-tkg.otegami` のままだと
+  `scripts/verify-ios-*.sh` の既定値 `com.mtkg.otegami` のままだと
   スクリーンショット用の `xcrun simctl launch` が失敗する。この開発機で
   実行する際は `BUNDLE_ID=com.mtkg.otegami scripts/verify-ios-drafts-sync.sh`
   のように明示的に上書きすること。

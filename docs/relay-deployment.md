@@ -21,7 +21,7 @@ otegami のプッシュ通知は、セルフホストする「リレーサーバ
 `PENDING.md` の手順を参照。[Apple Developer](https://developer.apple.com/account/)
 の「証明書、識別子とプロファイル」→「キー」で APNs 用キーを新規作成し、
 `.p8` ファイル・Key ID・Team ID を控える。アプリの Bundle ID
-(既定 `com.m-tkg.otegami`、`Config/Signing.xcconfig` で変更可) も控える。
+(既定 `com.mtkg.otegami`、`Config/Signing.xcconfig` で変更可) も控える。
 
 ### 2. `RELAY_MASTER_KEY` の生成
 

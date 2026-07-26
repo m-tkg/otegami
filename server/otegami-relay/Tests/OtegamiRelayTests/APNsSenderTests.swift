@@ -18,7 +18,7 @@ struct APNsSenderTests {
             privateKeyPEM: privateKey.pemRepresentation,
             keyId: "ABC123DEFG",
             teamId: "TEAM7654321",
-            bundleId: "com.m-tkg.otegami"
+            bundleId: "com.mtkg.otegami"
         )
     }
 

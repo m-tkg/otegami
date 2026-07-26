@@ -229,7 +229,7 @@ Group/Keychain sharing with the Notification Service Extension actually
 working), or push notifications, copy `Config/Local.xcconfig.sample` to the
 untracked `Config/Local.xcconfig` and set your own `DEVELOPMENT_TEAM`
 there. You only need to also override `OTEGAMI_BUNDLE_ID` if the default
-`com.m-tkg.otegami` is already registered as an App ID under someone
+`com.mtkg.otegami` is already registered as an App ID under someone
 else's team (Apple doesn't allow two teams to register the same explicit
 App ID) — see the comments in `Config/Local.xcconfig.sample`.
 

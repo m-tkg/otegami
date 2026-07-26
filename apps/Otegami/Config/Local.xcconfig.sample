@@ -16,7 +16,7 @@
 // DEVELOPMENT_TEAM = YOUR_TEAM_ID
 //
 // Only needed if you also want to change the bundle id (e.g. because
-// com.m-tkg.otegami is already registered as an App ID under a different
+// com.mtkg.otegami is already registered as an App ID under a different
 // Apple Developer team than yours — Apple doesn't allow two teams to
 // register the same explicit App ID, which App Group/Keychain Sharing
 // require). If you set this, also update it in Google Cloud Console's

@@ -3,7 +3,7 @@ options:
   createIntermediateGroups: true
   # Otegami.xcodeproj is a generated artifact (see .gitignore); `xcodegen
   # generate` must be run after checkout/pull and before opening in Xcode.
-  bundleIdPrefix: com.m-tkg
+  bundleIdPrefix: com.mtkg
 
 # Signing (DEVELOPMENT_TEAM / PRODUCT_BUNDLE_IDENTIFIER) lives in
 # Config/Signing.xcconfig, which itself #includes Config/Shared.xcconfig, so
@@ -206,7 +206,7 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: com.m-tkg.otegami.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: com.mtkg.otegami.uitests
     dependencies:
       - target: Otegami
 

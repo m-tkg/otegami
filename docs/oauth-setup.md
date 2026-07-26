@@ -41,7 +41,7 @@ Google アカウントを「テストユーザー」に追加しておけば動�
    (シークレットが発行されない種類 — otegami は PKCE のみでシークレット不要な
    iOS クライアントタイプを前提にしている。「ウェブ アプリケーション」等
    *シークレットが必要な*種類を選んでしまうと動作しない)。
-4. バンドル ID に `com.m-tkg.otegami` を入力する
+4. バンドル ID に `com.mtkg.otegami` を入力する
    (`Config/Signing.xcconfig` の `OTEGAMI_BUNDLE_ID` を上書きしている場合は
    その値に合わせること)。
 5. 作成すると `1234567890-abcdefg.apps.googleusercontent.com` のような

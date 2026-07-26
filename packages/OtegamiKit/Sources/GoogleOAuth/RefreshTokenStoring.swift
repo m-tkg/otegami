@@ -48,7 +48,7 @@ public struct KeychainRefreshTokenStore: RefreshTokenStoring {
 
     private let service: String
 
-    public init(service: String = "com.m-tkg.otegami.oauth-refresh-token") {
+    public init(service: String = "com.mtkg.otegami.oauth-refresh-token") {
         self.service = service
     }
 

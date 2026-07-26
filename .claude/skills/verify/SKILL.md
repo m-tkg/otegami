@@ -69,7 +69,7 @@ whether the app process is still alive), drive screenshots from the host
 shell:
 
 ```bash
-xcrun simctl launch --terminate-running-process booted com.m-tkg.otegami
+xcrun simctl launch --terminate-running-process booted com.mtkg.otegami
 sleep 3   # give the ValueObservation-backed views a moment to render
 xcrun simctl io booted screenshot /tmp/otegami-verify/out.png
 ```

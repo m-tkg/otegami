@@ -27,14 +27,14 @@
 # Usage: scripts/verify-qa-sweep-offline.sh
 # Env:
 #   IOS_SIMULATOR   Simulator name (default: iPhone 17 Pro Max)
-#   BUNDLE_ID       App bundle id (default: com.m-tkg.otegami)
+#   BUNDLE_ID       App bundle id (default: com.mtkg.otegami)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 IOS_SIMULATOR="${IOS_SIMULATOR:-iPhone 17 Pro Max}"
-BUNDLE_ID="${BUNDLE_ID:-com.m-tkg.otegami}"
+BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
 MAILSTACK_USER="test1@otegami.test"
 
 run_test() {

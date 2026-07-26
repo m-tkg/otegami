@@ -22,7 +22,7 @@
   2. 「OAuth 同意画面」を設定する (テストモードで良い。自分の Google アカウントを
      テストユーザーに追加すれば審査不要。審査は作者配布ビルドのみ必要)。
   3. 「認証情報」→「OAuth クライアント ID」で **iOS アプリ**タイプ (シークレット不要) を作成し、
-     Bundle ID (`com.m-tkg.otegami`) を指定する。リダイレクト URI は Google Cloud
+     Bundle ID (`com.mtkg.otegami`) を指定する。リダイレクト URI は Google Cloud
      Console 側への個別登録が不要 (`docs/oauth-setup.md` の該当節参照)。
   4. 発行された Client ID を `apps/Otegami/Config/Local.xcconfig` に設定する
      (`cp apps/Otegami/Config/Local.xcconfig.sample apps/Otegami/Config/Local.xcconfig`

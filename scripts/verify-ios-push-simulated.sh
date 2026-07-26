@@ -137,7 +137,7 @@ doveadm() {
 
 # Reads a `CFBundleIdentifier => GroupContainers` pair for the installed
 # Otegami app out of `xcrun simctl listapps`. Deliberately *discovered*
-# rather than a hardcoded `com.m-tkg.otegami` default (unlike
+# rather than a hardcoded `com.mtkg.otegami` default (unlike
 # `scripts/verify-ios-m9.sh`'s `BUNDLE_ID` env var default): this dev
 # machine's `apps/Otegami/Config/Local.xcconfig` overrides `OTEGAMI_BUNDLE_ID`
 # to `com.mtkg.otegami` (no hyphen) for its own signing setup, per that

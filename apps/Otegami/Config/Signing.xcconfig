@@ -20,7 +20,7 @@ DEVELOPMENT_TEAM =
 // App ID を新規登録する場合は、DEVELOPMENT_TEAM とあわせて自分の Bundle ID
 // も Local.xcconfig で設定すること（既に他の Team が登録済みの Bundle ID は
 // 使えない）。
-OTEGAMI_BUNDLE_ID = com.m-tkg.otegami
+OTEGAMI_BUNDLE_ID = com.mtkg.otegami
 PRODUCT_BUNDLE_IDENTIFIER = $(OTEGAMI_BUNDLE_ID)
 
 // 末尾の "?" は「ファイルが無ければ無視する」の意味。

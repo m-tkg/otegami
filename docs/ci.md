@@ -69,7 +69,7 @@ CI は M0 でワークフローを作って以来、一度も緑になってい�
 
 - **ci-app**: `project.yml` の `CODE_SIGN_STYLE: Automatic` が、CI
   ランナーに証明書もプロビジョニングプロファイルも無いため
-  `xcodebuild` を `error: No profiles for 'com.m-tkg.otegami' were
+  `xcodebuild` を `error: No profiles for 'com.mtkg.otegami' were
   found` で失敗させていた。`CODE_SIGNING_ALLOWED=NO` /
   `CODE_SIGNING_REQUIRED=NO` / `CODE_SIGN_IDENTITY=""` をビルド設定に
   渡すことで解決 (署名を要求せず、ビルドの成否だけを見る)。

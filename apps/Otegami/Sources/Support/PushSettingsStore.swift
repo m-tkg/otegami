@@ -21,7 +21,7 @@ struct PushSettingsStore: @unchecked Sendable {
     private static let deviceIdKey = "push.deviceId"
     private static let enabledKey = "push.enabled"
     private static let watchMapKey = "push.accountWatchMap"
-    private static let keychainService = "com.m-tkg.otegami.push-device-secret"
+    private static let keychainService = "com.mtkg.otegami.push-device-secret"
     private static let keychainAccount = "device"
 
     private let defaults: UserDefaults

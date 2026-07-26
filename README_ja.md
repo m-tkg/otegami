@@ -221,7 +221,7 @@ Simulator は provisioning を要求せず、`make mac` は `Local.xcconfig` が
 との App Group/Keychain 共有を実際に機能させる場合）、プッシュ通知を
 使う場合は、`Config/Local.xcconfig.sample` を `Config/Local.xcconfig`
 （git 管理外）にコピーし、自分の `DEVELOPMENT_TEAM` を設定してください。
-既定の `com.m-tkg.otegami` が別のチームで既に App ID として登録済みの
+既定の `com.mtkg.otegami` が別のチームで既に App ID として登録済みの
 場合のみ (Apple は同じ explicit App ID を2つのチームに登録することを
 許可していません) `OTEGAMI_BUNDLE_ID` も上書きする必要があります —
 詳細は `Config/Local.xcconfig.sample` のコメントを参照してください。
