@@ -57,6 +57,20 @@ struct MessageView: View {
     /// message never carries a previous message's manual choice forward.
     @State private var manualPreferPlainText: Bool?
 
+    // MARK: - C7 link handling (plain-text body)
+
+    /// "メール内リンクを開くブラウザ" applies to a plain-text body's linkified
+    /// `http(s)://` runs too, not just `HTMLMessageView` — see
+    /// `LinkBrowserSettingsStore`'s doc comment. SwiftUI's default `Text`
+    /// link behavior already matches "デフォルトブラウザ" with no override
+    /// needed at all (both platforms), so this only overrides `\.openURL`
+    /// when the setting is "アプリ内ブラウザ" (iOS only — `HTMLMessageView
+    /// .handleLinkTap`'s doc comment covers why macOS has no equivalent).
+    @AppStorage(LinkBrowserSettingsStore.openInAppBrowserKey) private var openInAppBrowser = LinkBrowserSettingsStore.defaultOpenInAppBrowser
+    #if os(iOS)
+    @State private var presentedSafariURL: IdentifiableURL?
+    #endif
+
     @State private var message: MessageRecord?
     @State private var bodyRecord: MessageBodyRecord?
     /// M8: the mailbox path `message` lives in — resolved once during
@@ -142,6 +156,21 @@ struct MessageView: View {
         // modifier rather than a `QLPreviewController`/`QLPreviewPanel`
         // wrapper per platform — see `openAttachment(_:)`'s doc comment.
         .quickLookPreview($previewURL)
+        #if os(iOS)
+        // C7: only overrides SwiftUI's default link-opening behavior when
+        // "アプリ内ブラウザ" is selected — `.systemAction` below falls straight
+        // back to that default (デフォルトブラウザ) otherwise, so this never
+        // needs its own `else` branch.
+        .environment(\.openURL, OpenURLAction { url in
+            guard openInAppBrowser else { return .systemAction }
+            presentedSafariURL = IdentifiableURL(url: url)
+            return .handled
+        })
+        .sheet(item: $presentedSafariURL) { item in
+            SafariViewRepresentable(url: item.url)
+                .ignoresSafeArea()
+        }
+        #endif
     }
 
     private var displaySubject: String {

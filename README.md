@@ -77,7 +77,9 @@ Two things this app is built around, more than any single feature list:
   placeholder instead of a blank pane. Embedded images (inline `cid:` /
   image attachments) default off; remote images default on with an
   in-Settings note about the read-receipt tradeoff — both have their own
-  one-tap "show images" banner as a per-message override.
+  one-tap "show images" banner as a per-message override. Links can open in
+  an in-app browser (default, iOS only) or the system default browser,
+  configurable in Settings.
 - **Attachments**: send and receive, with QuickLook preview, inline
   `cid:` image support, and RFC 2047/2231-aware filename decoding
   (including Japanese filenames).

@@ -2644,6 +2644,59 @@ fixtures/21〜24-security-*.eml`、`docs/design-system.md` には無い今回
 での iframe 内 JS 無効化 (上記3参照、設計上は無効化されるはずだが実機の
 目視確認はしていない)。
 
+## iOS シミュレータ検証 (C7: メール内リンクを開くブラウザ) — 既知の未解決事項
+
+`OtegamiLinkBrowserUITests`。`25-link-browser-test.eml` (実在する
+`https://example.com/` へのリンクを1つ含む通常の HTML メール) を開き、
+リンクをタップして `SFSafariViewController` (既定の「アプリ内ブラウザ」)
+が sheet として提示されることを確認しようとしたテスト。
+
+**この開発機のシミュレータ/ツールチェーン (Xcode-beta.app,
+iPhoneSimulator27.0 SDK) では自動検証・目視確認とも green にできなかった**
+— 詳しい原因調査の記録:
+
+- `HTMLWebViewCoordinator.webView(_:decidePolicyFor:decisionHandler:)`
+  (`HTMLMessageView.swift`) は、メールの初回レンダリング
+  (`loadHTMLString`) はもちろん、実際にリンクをタップしたときの
+  ナビゲーションでも**一度も呼ばれない**ことを、`xcodebuild test` のログ
+  でも `xcrun simctl spawn <udid> log stream` でも捕捉できず、最終的に
+  アプリ自身のプロセスから `UserDefaults` に直接書き込んだマーカーを
+  シミュレータ上の実ファイル (`~/Library/Preferences/com.mtkg.otegami
+  .plist`) を直接 `plutil -p` で読んで確認した (`webView.navigationDelegate
+  === self` は `true` — delegate 自体は正しく設定されている)。
+- 対策として async 版の `decidePolicyFor` と `WKUIDelegate
+  .createWebViewWith` を追加で実装してみたところ、**別の退行が発生し
+  メール本文が一切描画されなくなった** (真新しいシミュレータデバイスを
+  作成しても再現したため、環境の汚染ではなくこの2つの追加実装自体が
+  原因と判断)。両方とも削除し、元のシンプルな同期版
+  `decidePolicyFor` のみに戻して本文描画は復旧させた
+  (`git log` のこのコミット周辺を参照)。
+- 結果、**現在の実装 (同期版 `decidePolicyFor` のみ) はメール本文の
+  描画は正しく行うが、実リンクタップ時に `decidePolicyFor` が呼ばれない
+  という当初の問題自体は残ったまま** — タップしたリンクは
+  `HTMLMessageView` 自身の `WKWebView` 内でそのまま (in-place) ナビゲート
+  してしまい、`onOpenLink`/`SFSafariViewController`/デフォルトブラウザの
+  どれも起動しない。実機スクリーンショットで再現を確認済み。
+
+**セキュリティ上の実害は無いと判断している**: `WKWebpagePreferences
+.allowsContentJavaScript = false` は `WKWebViewConfiguration
+.defaultWebpagePreferences` としてこの `WKWebView` インスタンス全体に
+効く設定であり、`decidePolicyFor` が呼ばれるかどうかとは独立している
+— A9-A3 の再検証 (このファイル内) がこの状態のままでも green だったこと
+で確認済み。つまり最悪のケースでも「タップしたリンク先が、JavaScript
+実行不可のまま同じ `WKWebView` 内に表示される」だけで、スクリプト実行
+やアプリ外への意図しない離脱は起きない。C7 の設定・
+`SFSafariViewController`/デフォルトブラウザの選択ロジック自体
+(`HTMLMessageView.handleLinkTap`) はコードレビュー上正しく、標準的な
+`WKNavigationDelegate` の使い方に従っている — Xcode の安定版
+(非 beta) ツールチェーンでの再検証が今後の課題として残る。
+
+**確認できたこと**: 設定画面の「リンクを開く方法」ピッカー
+(`settings.links.openInAppBrowserPicker`、iOS のみ) 自体は正しく表示・
+選択できる (別途スクリーンショットで確認済み)。macOS はこの設定を出さず
+常にデフォルトブラウザを開く設計 (`LinkBrowserSettingsStore` のコメント
+参照)。
+
 ## iOS シミュレータ検証 (B: 画像の自動表示設定)
 
 `OtegamiImageSettingsUITests`。`ImageSettingsStore` の2設定

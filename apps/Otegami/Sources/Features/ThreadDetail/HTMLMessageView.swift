@@ -5,6 +5,11 @@ import MailTransport
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
+#if os(iOS)
+import SafariServices
+#elseif os(macOS)
+import AppKit
+#endif
 
 /// Renders an HTML message body: a `WKWebView` with page JavaScript
 /// disabled and, independently, two kinds of image auto-display gated by
@@ -53,6 +58,21 @@ struct HTMLMessageView: View {
     /// to the right default even before any explicit write.
     @State private var allowsExternalContent: Bool
     @State private var allowsEmbeddedImages: Bool
+
+    // MARK: - C7 link handling
+
+    /// "メール内リンクを開くブラウザ" — read fresh on every tap (`handleLinkTap`),
+    /// not baked into a `@State` at `init` time the way the two image
+    /// settings above are: this isn't part of what gets rendered into the
+    /// loaded document, so there's no staleness risk in reading it via
+    /// plain `@AppStorage` the normal way.
+    @AppStorage(LinkBrowserSettingsStore.openInAppBrowserKey) private var openInAppBrowser = LinkBrowserSettingsStore.defaultOpenInAppBrowser
+    #if os(iOS)
+    /// Non-nil while `SFSafariViewController` is presented for a tapped
+    /// link — `IdentifiableURL` only exists to give a plain `URL` the
+    /// `Identifiable` conformance `.sheet(item:)` needs.
+    @State private var presentedSafariURL: IdentifiableURL?
+    #endif
 
     init(html: String, accountId: String, messageId: Int64, mailboxPath: String?) {
         self.html = html
@@ -103,13 +123,69 @@ struct HTMLMessageView: View {
                 allowsEmbeddedImages: allowsEmbeddedImages,
                 cidContext: CIDResolutionContext(
                     environment: environment, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath
-                )
+                ),
+                onOpenLink: handleLinkTap
             )
             .accessibilityIdentifier("messageDetail.htmlWebView")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #if os(iOS)
+        .sheet(item: $presentedSafariURL) { item in
+            SafariViewRepresentable(url: item.url)
+                .ignoresSafeArea()
+        }
+        #endif
+    }
+
+    /// C7: the only place a tap on an `http(s)://` link inside message HTML
+    /// ends up — `HTMLWebViewCoordinator.decidePolicyFor` always cancels
+    /// the in-place navigation first (mail HTML never gets to actually
+    /// browse away from itself, per that method's own doc comment) and
+    /// calls this instead. `javascript:`/other schemes never reach here at
+    /// all (see that method), so this only ever has to decide *how* to open
+    /// a legitimate web link, never whether to.
+    private func handleLinkTap(_ url: URL) {
+        #if os(iOS)
+        if openInAppBrowser {
+            presentedSafariURL = IdentifiableURL(url: url)
+        } else {
+            UIApplication.shared.open(url)
+        }
+        #elseif os(macOS)
+        // macOS has no `SFSafariViewController` equivalent — see
+        // `LinkBrowserSettingsStore`'s doc comment for why this setting is
+        // iOS-only and every mail link on macOS always opens the system
+        // default browser.
+        NSWorkspace.shared.open(url)
+        #endif
     }
 }
+
+#if os(iOS)
+/// Not `private` — `MessageView`'s plain-text body (`linkifiedText`) reuses
+/// this same pair for the identical "アプリ内ブラウザ" behavior on a tapped
+/// `http(s)://` link, so both the HTML and plain-text rendering paths
+/// share one `SFSafariViewController` wrapper instead of two.
+struct IdentifiableURL: Identifiable {
+    let url: URL
+    var id: String { url.absoluteString }
+}
+
+/// Wraps `SFSafariViewController` for `.sheet(item:)` presentation — the
+/// "アプリ内ブラウザ" option (C7). A thin, state-free `UIViewControllerRepresentable`;
+/// `SFSafariViewController` manages its own navigation UI (address bar,
+/// reader/share/Safari-open buttons, its own "完了" dismiss) once presented,
+/// so there's nothing else for this wrapper to coordinate.
+struct SafariViewRepresentable: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        SFSafariViewController(url: url)
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+}
+#endif
 
 /// Everything `CIDSchemeHandler` needs to resolve a `cid:` reference to
 /// bytes: which message's `attachment` rows to search, and how to fetch one
@@ -189,8 +265,9 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
     let cidContext: CIDResolutionContext
+    let onOpenLink: (URL) -> Void
 
-    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext) }
+    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext, onOpenLink: onOpenLink) }
 
     func makeUIView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
@@ -217,8 +294,9 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
     let cidContext: CIDResolutionContext
+    let onOpenLink: (URL) -> Void
 
-    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext) }
+    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext, onOpenLink: onOpenLink) }
 
     func makeNSView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
@@ -264,8 +342,14 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// `reloadIfNeeded` regardless.
     let cidHandler: CIDSchemeHandler?
 
-    init(cidContext: CIDResolutionContext) {
+    /// C7: forwarded from `HTMLMessageView.handleLinkTap` — called from
+    /// `decidePolicyFor` for any `http(s)://` link tap, after that
+    /// navigation has already been cancelled in-place.
+    private let onOpenLink: (URL) -> Void
+
+    init(cidContext: CIDResolutionContext, onOpenLink: @escaping (URL) -> Void) {
         self.cidHandler = CIDSchemeHandler(context: cidContext)
+        self.onOpenLink = onOpenLink
     }
 
     private var lastLoadedHTML: String?
@@ -329,15 +413,57 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         }
     }
 
-    /// Any navigation other than the initial `loadHTMLString` (a user
-    /// somehow tapping a link, a resource redirect, ...) is refused rather
-    /// than followed inline — mail HTML is not a place this app should be
-    /// browsing the web from.
+    /// Decides every navigation this web view ever sees — main frame and
+    /// subframe alike. **Deliberately does not branch on
+    /// `navigationAction.navigationType`, and never allows a main-frame
+    /// navigation through this method at all** — two real-simulator
+    /// findings building C7 forced both departures from a more "obvious"
+    /// implementation:
+    ///
+    /// 1. The original implementation allowed exactly `.other`-typed
+    ///    navigations, on the assumption that's what the trusted initial
+    ///    `loadHTMLString(_:baseURL:)` call is classified as. A synthesized
+    ///    tap on a plain `<a href="https://...">` link turned out to *also*
+    ///    reach this method with a main-frame navigation that got allowed
+    ///    through — confirmed by screenshot: the tapped link's page loaded
+    ///    in place inside this same `WKWebView`.
+    /// 2. Tracking "is a programmatic load outstanding" with a flag set
+    ///    right before every `loadHTMLString` call (an earlier attempt at
+    ///    fixing this) didn't help either, and pointed at the real
+    ///    explanation: `loadHTMLString(_:baseURL:)` apparently **never
+    ///    reaches `decidePolicyFor` at all** in this WebKit version — it's
+    ///    not a real `URLRequest`-backed navigation, so there's nothing for
+    ///    the navigation-policy pipeline to decide. The flag was therefore
+    ///    never consumed by the load it was meant to guard, and sat `true`
+    ///    until the *next* navigation — the link tap — consumed it instead
+    ///    and got waved through as if it were the trusted load.
+    ///
+    /// Given `loadHTMLString` itself never shows up here, the correct rule
+    /// is simply: **no main-frame navigation this method ever sees is the
+    /// initial render** — every one is something else (a link tap, a
+    /// redirect, ...) and gets cancelled unconditionally, forwarding
+    /// `http`/`https` targets to `onOpenLink` (C7's browser choice).
+    ///
+    /// Subframe navigations (`targetFrame?.isMainFrame == false` — e.g. an
+    /// `<iframe src>`'s own declarative load) are allowed through
+    /// unconditionally: whether that resource actually loads is entirely
+    /// gated by the `WKContentRuleList` (`applyContentRuleList`, keyed to
+    /// `allowsExternalContent`) at the network level, independent of this
+    /// method — same "外部画像ブロックとは独立に動く" design already documented
+    /// for `cid:` images. JavaScript stays disabled webview-wide
+    /// (`allowsContentJavaScript = false` on `defaultWebpagePreferences`)
+    /// regardless of any of this, so an allowed subframe navigation still
+    /// can't execute script.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if navigationAction.navigationType == .other {
+        let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
+        if !isMainFrame {
             decisionHandler(.allow)
-        } else {
-            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.cancel)
+        if let url = navigationAction.request.url,
+           let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            onOpenLink(url)
         }
     }
 }

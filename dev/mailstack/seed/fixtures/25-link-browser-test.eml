@@ -1,0 +1,14 @@
+From: Otegami Team <team@otegami.test>
+To: test1@otegami.test
+Subject: リンクを開くブラウザのテスト
+Message-ID: <seed-0025@otegami.test>
+Date: Sun, 25 Jan 2026 09:00:00 +0900
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<html>
+<body>
+<p>下のリンクをタップして、設定したブラウザで開かれることを確認してください。</p>
+<a id="test-link" href="https://example.com/">example.com を開く</a>
+</body>
+</html>

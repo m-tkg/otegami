@@ -95,4 +95,8 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/22-security-onerror-bgcolor.eml
 seed_message "test1@otegami.test" "$FIXTURES_DIR/23-security-iframe.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/24-security-javascript-link.eml"
 
+# C7「メール内リンクを開くブラウザ」検証用: 実在する外部リンクを1つ含む
+# 通常の HTML メール (docs/verify.md の C7 節参照)。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/25-link-browser-test.eml"
+
 echo "==> done"

@@ -97,6 +97,23 @@ HTML メールの詳細画面には、件名の隣に控えめな "HTML" バッ�
 インスタンスが作られるため、`@AppStorage` の「初回読み取り時だけ default
 引数が効く」という挙動と相性が悪い)。
 
+## リンク (C7)
+
+`LinkBrowserSettingsStore.swift`。**iOS のみ** — `SFSafariViewController`
+(「アプリ内ブラウザ」) は iOS/iPadOS 専用の API のため、macOS にはこの
+設定自体が無く、メール内リンクは常にシステムのデフォルトブラウザで開く。
+
+| 項目 | キー | 既定値 | 説明 |
+| --- | --- | --- | --- |
+| リンクを開く方法 | `links.openInAppBrowser` | アプリ内ブラウザ | 「アプリ内ブラウザ」(`SFSafariViewController` を sheet 表示) か「デフォルトブラウザ」(`UIApplication.shared.open`) を選べる。HTML 本文・テキスト本文どちらのリンクにも適用される。 |
+
+既知の制約: この開発機のシミュレータ/ツールチェーン (Xcode-beta.app,
+iOS 27 beta) では、実リンクタップ時に `WKNavigationDelegate
+.decidePolicyFor` が呼ばれないという未解決の環境依存の問題があり、
+自動検証・目視確認とも green にできなかった (詳細は `docs/verify.md`
+の C7 節)。JavaScript は引き続き無効なままなので実害は無いと判断して
+いるが、Xcode 安定版での再検証が今後の課題。
+
 ## ピン留め
 
 `PinSettingsStore.swift`。iOS・macOS 共通。

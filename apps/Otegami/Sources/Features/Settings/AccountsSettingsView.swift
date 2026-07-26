@@ -78,6 +78,9 @@ struct AccountsListContent: View {
     // B「画像の設定」— see `ImageSettingsStore`'s doc comment.
     @AppStorage(ImageSettingsStore.autoShowEmbeddedImagesKey) private var autoShowEmbeddedImages = ImageSettingsStore.defaultAutoShowEmbedded
     @AppStorage(ImageSettingsStore.autoShowRemoteImagesKey) private var autoShowRemoteImages = ImageSettingsStore.defaultAutoShowRemote
+    // C7「メール内リンクを開くブラウザ」— see `LinkBrowserSettingsStore`'s doc
+    // comment for why this is iOS-only.
+    @AppStorage(LinkBrowserSettingsStore.openInAppBrowserKey) private var openInAppBrowser = LinkBrowserSettingsStore.defaultOpenInAppBrowser
 
     /// Account edit UI: which account's edit sheet is open, `nil` when
     var body: some View {
@@ -270,6 +273,24 @@ struct AccountsListContent: View {
             } footer: {
                 Text("埋め込み画像はメールに直接添付・埋め込まれた画像（cid: インライン画像・画像添付）です。リモート画像は外部サーバーから読み込む画像で、自動で読み込むと送信者にメールを開いたことが伝わる場合があります（開封トラッキング）。いずれもオフの場合は、メール詳細画面の「画像を表示」ボタンでそのメールだけ一時的に表示できます。")
             }
+
+            // C7「メール内リンクを開くブラウザ」— iOS only; macOS always opens
+            // the system default browser (`LinkBrowserSettingsStore`'s doc
+            // comment).
+            #if os(iOS)
+            Section {
+                Picker("リンクを開く方法", selection: $openInAppBrowser) {
+                    Text("アプリ内ブラウザ").tag(true)
+                    Text("デフォルトブラウザ").tag(false)
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("settings.links.openInAppBrowserPicker")
+            } header: {
+                Text("リンク")
+            } footer: {
+                Text("メール本文内のリンクをタップしたときに、アプリ内のブラウザで開くか、端末のデフォルトブラウザで開くかを選べます。")
+            }
+            #endif
 
             // E9「ピン留め」.
             Section {
