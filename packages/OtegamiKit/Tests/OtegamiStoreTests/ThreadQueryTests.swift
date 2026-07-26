@@ -87,4 +87,120 @@ struct ThreadQueryTests {
         }
         #expect(threadIds == [inboxThread])
     }
+
+    // MARK: - E9 ピン留め: pinned threads sort first
+
+    @Test("request(mailboxId:) sorts a pinned thread ahead of a newer unpinned one")
+    func requestSortsPinnedThreadFirst() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let (older, newer) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let older = try insertThread(accountId: accountId, mailboxId: inboxId, uid: 1, date: base, db: db)
+            let newer = try insertThread(accountId: accountId, mailboxId: inboxId, uid: 2, date: base.addingTimeInterval(3600), db: db)
+            // Pin every message in the older thread (mirrors `MessageListView
+            // .applyPinState`) and recompute the thread's OR-aggregate.
+            var messages = try MessageRecord.filter(Column("threadId") == older).fetchAll(db)
+            for index in messages.indices {
+                messages[index].isPinnedLocal = true
+                try messages[index].update(db)
+            }
+            try ThreadAssigner.recomputeAggregates(threadId: older, db: db)
+            return (older, newer)
+        }
+
+        let threadIds = try database.dbWriter.read { db in
+            try ThreadQuery.request(mailboxId: inboxId).fetchAll(db).map(\.id)
+        }
+        #expect(threadIds == [older, newer], "Expected the pinned (older) thread to sort ahead of the newer unpinned one")
+    }
+
+    // MARK: - B3 フラット表示
+
+    @Test("flatSummaries returns one row per message, not per thread")
+    func flatSummariesReturnsOneRowPerMessage() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try database.dbWriter.write { db in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 3)
+            try thread.insert(db)
+            for uid in 1...3 {
+                var message = MessageRecord(
+                    mailboxId: inboxId, uid: Int64(uid),
+                    date: base.addingTimeInterval(Double(uid) * 60), internalDate: base.addingTimeInterval(Double(uid) * 60),
+                    threadId: thread.id
+                )
+                try message.insert(db)
+            }
+        }
+
+        let flat = try database.dbWriter.read { db in
+            try ThreadQuery.flatSummaries(mailboxId: inboxId, accountId: accountId, db: db)
+        }
+        #expect(flat.count == 3, "Expected 3 separate rows for a 3-message thread in flat mode")
+        // Each synthetic summary should report the real thread id (for
+        // actions) while still being individually addressable/unique (for
+        // `List` row identity) — see `ThreadSummary.init(flatMessage:accountId:)`.
+        #expect(Set(flat.map(\.id)).count == 3, "Expected each flat row to have a unique List identity")
+        #expect(Set(flat.map(\.thread.accountId)) == [accountId])
+    }
+
+    @Test("flatSummaries sorts a pinned message ahead of a newer unpinned one")
+    func flatSummariesSortsPinnedMessageFirst() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let (olderMessageId, _) = try database.dbWriter.write { db -> (Int64, Int64) in
+            var olderThread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 1)
+            try olderThread.insert(db)
+            var older = MessageRecord(mailboxId: inboxId, uid: 1, date: base, internalDate: base, threadId: olderThread.id, isPinnedLocal: true)
+            try older.insert(db)
+
+            var newerThread = ThreadRecord(accountId: accountId, lastMessageDate: base.addingTimeInterval(3600), messageCount: 1)
+            try newerThread.insert(db)
+            var newer = MessageRecord(
+                mailboxId: inboxId, uid: 2, date: base.addingTimeInterval(3600), internalDate: base.addingTimeInterval(3600), threadId: newerThread.id
+            )
+            try newer.insert(db)
+            return (older.id!, newer.id!)
+        }
+
+        let flat = try database.dbWriter.read { db in
+            try ThreadQuery.flatSummaries(mailboxId: inboxId, accountId: accountId, db: db)
+        }
+        #expect(flat.first?.latestMessage?.id == olderMessageId, "Expected the pinned (older) message to sort first")
+    }
+
+    @Test("unifiedInboxFlatSummaries interleaves messages across accounts' inbox mailboxes")
+    func unifiedInboxFlatSummariesInterleavesAccounts() throws {
+        let (database, accountIdA, inboxIdA, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let accountB = AccountRecord(
+            displayName: "Test B", email: "b@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "b@x.test"
+        )
+        let inboxIdB = try database.dbWriter.write { db -> Int64 in
+            try accountB.insert(db)
+            var inbox = MailboxRecord(accountId: accountB.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            inbox = try inbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return inbox.id!
+        }
+
+        try database.dbWriter.write { db in
+            var threadA = ThreadRecord(accountId: accountIdA, lastMessageDate: base, messageCount: 1)
+            try threadA.insert(db)
+            var messageA = MessageRecord(mailboxId: inboxIdA, uid: 1, date: base, internalDate: base, threadId: threadA.id)
+            try messageA.insert(db)
+
+            var threadB = ThreadRecord(accountId: accountB.id, lastMessageDate: base.addingTimeInterval(60), messageCount: 1)
+            try threadB.insert(db)
+            var messageB = MessageRecord(mailboxId: inboxIdB, uid: 1, date: base.addingTimeInterval(60), internalDate: base.addingTimeInterval(60), threadId: threadB.id)
+            try messageB.insert(db)
+        }
+
+        let flat = try database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxFlatSummaries(accountIds: [accountIdA, accountB.id], db: db)
+        }
+        #expect(flat.count == 2)
+        #expect(flat.map(\.thread.accountId) == [accountB.id, accountIdA], "Expected newest-first interleaving across accounts")
+    }
 }

@@ -357,7 +357,8 @@ public enum ThreadAssigner {
                 UPDATE thread SET
                     messageCount = (SELECT COUNT(*) FROM message WHERE message.threadId = thread.id),
                     unreadCount = (SELECT COUNT(*) FROM message WHERE message.threadId = thread.id AND (message.flagsRaw & \(MessageFlags.seen.rawValue)) = 0),
-                    lastMessageDate = (SELECT MAX(COALESCE(message.date, message.internalDate)) FROM message WHERE message.threadId = thread.id)
+                    lastMessageDate = (SELECT MAX(COALESCE(message.date, message.internalDate)) FROM message WHERE message.threadId = thread.id),
+                    isPinned = (SELECT COALESCE(MAX(message.isPinnedLocal), 0) FROM message WHERE message.threadId = thread.id)
                 WHERE thread.id IN (\(idPlaceholders))
                 """,
                 arguments: StatementArguments(chunk)
@@ -382,6 +383,7 @@ public enum ThreadAssigner {
         thread.messageCount = messages.count
         thread.unreadCount = messages.filter { !$0.flags.contains(.seen) }.count
         thread.lastMessageDate = messages.compactMap { $0.date ?? $0.internalDate }.max()
+        thread.isPinned = messages.contains { $0.isPinnedLocal }
         try thread.update(db)
     }
 

@@ -518,6 +518,16 @@ public actor AccountSyncer {
     /// thread's aggregates recomputed, since the resync could have changed
     /// its `\Seen` flag.
     static func upsert(envelope: FetchedEnvelope, mailboxId: Int64, accountId: String, db: Database) throws {
+        // ピン留め (E9): whether this resync should mirror the server's
+        // current `\Flagged` bit into `MessageRecord.isPinnedLocal` — see
+        // `PinSettingsStore`'s doc comment for why this reads the same raw
+        // `UserDefaults` key directly (`SyncEngine` doesn't otherwise depend
+        // on the app target's settings files) rather than being threaded in
+        // as a parameter through every `AccountSyncer` call site. When
+        // disabled (the default), `isPinnedLocal` is left untouched by a
+        // resync entirely (`noOverwrite` below) so a purely local-only pin
+        // survives regardless of what the server's `\Flagged` bit says.
+        let pinSyncEnabled = UserDefaults.standard.bool(forKey: PinSettingsKeys.syncWithFlaggedKey)
         var record = MessageRecord(
             mailboxId: mailboxId,
             uid: Int64(envelope.uid),
@@ -542,15 +552,22 @@ public actor AccountSyncer {
             gmailThreadId: envelope.gmailThreadId.map { Int64(bitPattern: $0) },
             gmailMessageId: envelope.gmailMessageId.map { Int64(bitPattern: $0) },
             hasAttachments: envelope.hasAttachments,
+            isPinnedLocal: pinSyncEnabled && envelope.flags.contains(.flagged),
             updatedAt: Date()
         )
         // `createdAt` is excluded from the update side of the upsert so a
         // resync doesn't overwrite the original insert timestamp.
         // `threadId` is also excluded: an already-threaded message's
         // thread assignment must survive a resync (only the code below,
-        // via `ThreadAssigner`, is allowed to change it).
+        // via `ThreadAssigner`, is allowed to change it). `isPinnedLocal`
+        // is excluded too unless `pinSyncEnabled` — see this method's doc
+        // comment above.
         record = try record.upsertAndFetch(db, onConflict: ["mailboxId", "uid"]) { _ in
-            [Column("createdAt").noOverwrite, Column("threadId").noOverwrite]
+            var excluded = [Column("createdAt").noOverwrite, Column("threadId").noOverwrite]
+            if !pinSyncEnabled {
+                excluded.append(Column("isPinnedLocal").noOverwrite)
+            }
+            return excluded
         }
         guard let messageId = record.id else { return }
 

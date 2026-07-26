@@ -17,6 +17,17 @@ public enum OpQueueKind: String, Sendable {
     case setFlags
     case move
     case delete
+    /// D8 スワイプ設定「迷惑メールにする」: a `move` to whatever mailbox has
+    /// `MailboxRole.junk` for this account *at replay time* — same
+    /// "resolve/self-heal at replay, not enqueue" shape as `.delete`'s
+    /// Trash resolution (`OpQueueKind`'s own doc comment on why), reused
+    /// here for the "Junk が無ければ Trash 自動作成と同じパターンで対処" requirement.
+    /// Payload is `JunkOpPayload`, structurally identical to
+    /// `DeleteOpPayload` but kept as its own type — matching this file's
+    /// existing convention of one payload type per `OpQueueKind` rather
+    /// than reusing an unrelated kind's type for a coincidentally-identical
+    /// shape.
+    case junk
     /// M5: send a composed/replied message. Payload is `SendOpPayload`, a
     /// reference to the `outboxMessage` row carrying the actual draft —
     /// see `SendOpPayload`'s doc comment for why the payload itself stays
@@ -84,6 +95,20 @@ public struct MoveOpPayload: Codable, Sendable, Equatable {
 /// for this account *at replay time* — no `destinationMailboxId` here on
 /// purpose (see `OpQueueKind`'s doc comment).
 public struct DeleteOpPayload: Codable, Sendable, Equatable {
+    public var sourceMailboxId: Int64
+    public var uidValidity: Int64
+    public var uids: [UInt32]
+
+    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+        self.sourceMailboxId = sourceMailboxId
+        self.uidValidity = uidValidity
+        self.uids = uids
+    }
+}
+
+/// `junk`'s payload — see `OpQueueKind.junk`'s doc comment; shape is
+/// identical to `DeleteOpPayload`.
+public struct JunkOpPayload: Codable, Sendable, Equatable {
     public var sourceMailboxId: Int64
     public var uidValidity: Int64
     public var uids: [UInt32]
@@ -189,6 +214,18 @@ public enum OpQueue {
         guard !uids.isEmpty else { return }
         let payload = DeleteOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
         try enqueue(kind: .delete, accountId: accountId, payload: payload, db: db)
+    }
+
+    public static func enqueueJunk(
+        accountId: String,
+        sourceMailboxId: Int64,
+        uidValidity: Int64,
+        uids: [UInt32],
+        db: Database
+    ) throws {
+        guard !uids.isEmpty else { return }
+        let payload = JunkOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
+        try enqueue(kind: .junk, accountId: accountId, payload: payload, db: db)
     }
 
     public static func enqueueSend(

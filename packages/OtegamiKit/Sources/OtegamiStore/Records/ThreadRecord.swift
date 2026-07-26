@@ -17,6 +17,12 @@ public struct ThreadRecord: Codable, Equatable, Sendable, FetchableRecord, Mutab
     /// alongside `messageCount`/`lastMessageDate` — not a live query, so
     /// `ThreadRow` can render a count badge without a join. Added in v4.
     public var unreadCount: Int
+    /// ピン留め (E9): `true` if *any* message in this thread has
+    /// `MessageRecord.isPinnedLocal` set — the OR-aggregate that makes "1通
+    /// でもピン留めされたらそのスレッド自体が最上位" possible without a join at
+    /// list-query time. Maintained by `ThreadAssigner.recomputeAggregates`,
+    /// same as `unreadCount`. Added in v16.
+    public var isPinned: Bool
 
     public init(
         id: Int64? = nil,
@@ -24,7 +30,8 @@ public struct ThreadRecord: Codable, Equatable, Sendable, FetchableRecord, Mutab
         normalizedSubject: String? = nil,
         lastMessageDate: Date? = nil,
         messageCount: Int = 0,
-        unreadCount: Int = 0
+        unreadCount: Int = 0,
+        isPinned: Bool = false
     ) {
         self.id = id
         self.accountId = accountId
@@ -32,6 +39,7 @@ public struct ThreadRecord: Codable, Equatable, Sendable, FetchableRecord, Mutab
         self.lastMessageDate = lastMessageDate
         self.messageCount = messageCount
         self.unreadCount = unreadCount
+        self.isPinned = isPinned
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

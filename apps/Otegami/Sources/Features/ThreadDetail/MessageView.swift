@@ -41,6 +41,10 @@ struct MessageView: View {
     /// does downstream.
     var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
 
+    /// B5 — see `ListDisplaySettingsStore.showAvatarInDetailKey`'s doc
+    /// comment on why this is read directly via `@AppStorage`.
+    @AppStorage(ListDisplaySettingsStore.showAvatarInDetailKey) private var showAvatarInDetail = ListDisplaySettingsStore.defaultShowAvatarInDetail
+
     @State private var message: MessageRecord?
     @State private var bodyRecord: MessageBodyRecord?
     /// M8: the mailbox path `message` lives in — resolved once during
@@ -133,25 +137,37 @@ struct MessageView: View {
     }
 
     private func header(for message: MessageRecord) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(displaySubject)
-                .font(.title2)
-                .bold()
-                .accessibilityIdentifier("messageDetail.subject")
-            Text(addressListText(message.fromAddresses, prefix: "From"))
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("messageDetail.from")
-            if !message.toAddresses.isEmpty {
-                Text(addressListText(message.toAddresses, prefix: "To"))
+        HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
+            // B5 「本文にも送信者アイコンを出せるように」— see
+            // `ListDisplaySettingsStore.showAvatarInDetailKey`'s doc comment.
+            if showAvatarInDetail {
+                SenderAvatar(
+                    displayName: message.fromAddresses.first?.name,
+                    address: message.fromAddresses.first?.address ?? "",
+                    accountId: accountId,
+                    diameter: 36
+                )
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(displaySubject)
+                    .font(.title2)
+                    .bold()
+                    .accessibilityIdentifier("messageDetail.subject")
+                Text(addressListText(message.fromAddresses, prefix: "From"))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("messageDetail.to")
+                    .accessibilityIdentifier("messageDetail.from")
+                if !message.toAddresses.isEmpty {
+                    Text(addressListText(message.toAddresses, prefix: "To"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("messageDetail.to")
+                }
+                Text(message.date ?? message.internalDate, format: .dateTime.year().month().day().hour().minute())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("messageDetail.date")
             }
-            Text(message.date ?? message.internalDate, format: .dateTime.year().month().day().hour().minute())
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("messageDetail.date")
         }
     }
 

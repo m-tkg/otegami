@@ -16,11 +16,46 @@ public struct ThreadSummary: Sendable, Equatable, Identifiable {
     /// normally be `nil` for a thread a query actually returned.
     public var latestMessage: MessageRecord?
 
-    public var id: Int64 { thread.id ?? 0 }
+    /// B3 フラット表示: non-`nil` only for a synthetic, single-message
+    /// "thread" built by `flatSummaries`/`unifiedInboxFlatSummaries` below —
+    /// see `init(flatMessage:accountId:)`. Distinct from `thread.id`
+    /// because flat mode can legitimately show *several* rows sharing the
+    /// same real `thread.id` (every message of a multi-message thread gets
+    /// its own row), and `List`/`ForEach` identity requires each row's `id`
+    /// to be unique — `thread.id` alone would collide across those rows.
+    private var flatMessageId: Int64?
+
+    public var id: Int64 { flatMessageId ?? (thread.id ?? 0) }
 
     public init(thread: ThreadRecord, latestMessage: MessageRecord?) {
         self.thread = thread
         self.latestMessage = latestMessage
+        self.flatMessageId = nil
+    }
+
+    /// B3: wraps one message as a "thread of one" for flat-mode row
+    /// rendering — `ThreadRowView`/`MessageListRow` read only `summary
+    /// .thread.*`/`summary.latestMessage`/`summary.id`, so this needs no
+    /// changes to either: `thread.messageCount = 1` keeps the ">1" count
+    /// badge from appearing, `thread.unreadCount`/`isPinned` reflect this
+    /// one message directly rather than a real aggregate, and `thread.id`
+    /// is still the message's *real* `threadId` — swipe/tap actions
+    /// (toggleRead/archive/delete/pin) deliberately keep operating on the
+    /// whole underlying thread even from a flat row (see
+    /// `MessageListView`'s flat-mode doc comment for why this was chosen
+    /// over building a fully separate per-message action path).
+    public init(flatMessage message: MessageRecord, accountId: String) {
+        self.thread = ThreadRecord(
+            id: message.threadId,
+            accountId: accountId,
+            normalizedSubject: message.normalizedSubject,
+            lastMessageDate: message.date ?? message.internalDate,
+            messageCount: 1,
+            unreadCount: message.flags.contains(.seen) ? 0 : 1,
+            isPinned: message.isPinnedLocal
+        )
+        self.latestMessage = message
+        self.flatMessageId = message.id
     }
 }
 
@@ -51,7 +86,7 @@ public enum ThreadQuery {
             WHERE EXISTS (
                 SELECT 1 FROM message WHERE message.threadId = thread.id AND message.mailboxId = ?
             )
-            ORDER BY thread.lastMessageDate DESC, thread.id DESC
+            ORDER BY thread.isPinned DESC, thread.lastMessageDate DESC, thread.id DESC
             """
         var arguments: [(any DatabaseValueConvertible)?] = [mailboxId]
         if let limit {
@@ -81,7 +116,7 @@ public enum ThreadQuery {
                   JOIN mailbox ON mailbox.id = message.mailboxId
                   WHERE message.threadId = thread.id AND mailbox.role = ? AND mailbox.accountId = thread.accountId
               )
-            ORDER BY thread.lastMessageDate DESC, thread.id DESC
+            ORDER BY thread.isPinned DESC, thread.lastMessageDate DESC, thread.id DESC
             """
         var arguments: [(any DatabaseValueConvertible)?] = accountIds
         arguments.append(MailboxRoleRecord.inbox.rawValue)
@@ -120,6 +155,70 @@ public enum ThreadQuery {
         ValueObservation.tracking { db in
             try summaries(forThreads: unifiedInboxRequest(accountIds: accountIds, limit: limit).fetchAll(db), db: db)
         }
+    }
+
+    // MARK: - フラット表示 (B3)
+
+    /// One row per *message* rather than per thread, for the "スレッドに
+    /// まとめない" list-display setting — pinned messages first, then newest
+    /// first, mirroring `request(mailboxId:limit:)`'s own ordering.
+    /// `ThreadSummary(flatMessage:accountId:)` wraps each row so
+    /// `ThreadRowView`/`MessageListRow`/`MessageListView`'s existing
+    /// rendering and row actions need no changes to support this mode — see
+    /// that initializer's doc comment.
+    public static func flatSummaries(mailboxId: Int64, limit: Int? = nil, accountId: String, db: Database) throws -> [ThreadSummary] {
+        var sql = """
+            SELECT * FROM message
+            WHERE mailboxId = ?
+            ORDER BY isPinnedLocal DESC, COALESCE(date, internalDate) DESC, uid DESC
+            """
+        var arguments: [(any DatabaseValueConvertible)?] = [mailboxId]
+        if let limit {
+            sql += " LIMIT ?"
+            arguments.append(limit)
+        }
+        let messages = try MessageRecord.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+        return messages.map { ThreadSummary(flatMessage: $0, accountId: accountId) }
+    }
+
+    public static func flatSummariesObservation(mailboxId: Int64, limit: Int? = nil, accountId: String) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+        ValueObservation.tracking { db in try flatSummaries(mailboxId: mailboxId, limit: limit, accountId: accountId, db: db) }
+    }
+
+    /// The flat-mode counterpart to `unifiedInboxRequest` — every account's
+    /// inbox-role mailbox, interleaved. Needs `mailbox.accountId` per row
+    /// (unlike the single-mailbox case above, where the caller already
+    /// knows it), so this fetches plain `Row`s and decodes `MessageRecord`
+    /// out of each one via its `FetchableRecord` conformance (GRDB's default
+    /// `Decodable`-based decoding simply ignores the extra `accountId`
+    /// column it doesn't declare a property for) rather than using
+    /// `MessageRecord.fetchAll(db:sql:)` directly, which would only see the
+    /// `message.*` columns.
+    public static func unifiedInboxFlatSummaries(accountIds: [String], limit: Int? = nil, db: Database) throws -> [ThreadSummary] {
+        guard !accountIds.isEmpty else { return [] }
+        let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
+        var sql = """
+            SELECT message.*, mailbox.accountId AS accountId FROM message
+            JOIN mailbox ON mailbox.id = message.mailboxId
+            WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders))
+            ORDER BY message.isPinnedLocal DESC, COALESCE(message.date, message.internalDate) DESC, message.uid DESC
+            """
+        var arguments: [(any DatabaseValueConvertible)?] = [MailboxRoleRecord.inbox.rawValue]
+        arguments.append(contentsOf: accountIds)
+        if let limit {
+            sql += " LIMIT ?"
+            arguments.append(limit)
+        }
+        let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+        return try rows.map { row in
+            let message = try MessageRecord(row: row)
+            let accountId: String = row["accountId"]
+            return ThreadSummary(flatMessage: message, accountId: accountId)
+        }
+    }
+
+    public static func unifiedInboxFlatSummariesObservation(accountIds: [String], limit: Int? = nil) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+        ValueObservation.tracking { db in try unifiedInboxFlatSummaries(accountIds: accountIds, limit: limit, db: db) }
     }
 
     /// Every message in `threadId`, oldest first — what `ThreadDetailView`

@@ -26,13 +26,24 @@ import OtegamiStore
 /// different row. Recorded here too since it cost significant investigation
 /// time to isolate from a genuine code regression.
 struct MessageListRow: View {
-    /// 1l "操作" setting — see `SwipeActionSettingsStore`'s doc comment on
-    /// why this is the one customizable axis. Read directly via
-    /// `@AppStorage` rather than threaded in as a parameter (same
-    /// reasoning as that type's doc comment).
-    @AppStorage(SwipeActionSettingsStore.leadingQuickActionKey) private var leadingQuickActionRaw = LeadingSwipeQuickAction.toggleRead.rawValue
-    private var leadingQuickAction: LeadingSwipeQuickAction {
-        LeadingSwipeQuickAction(rawValue: leadingQuickActionRaw) ?? .toggleRead
+    /// D8 「スワイプの割り当て」— see `SwipeActionSettingsStore`'s doc comment.
+    /// Read directly via `@AppStorage` rather than threaded in as
+    /// parameters (same reasoning as that type's doc comment).
+    @AppStorage(SwipeActionSettingsStore.leadingShortActionKey) private var leadingShortRaw = SwipeActionSettingsStore.defaultLeadingShort.rawValue
+    @AppStorage(SwipeActionSettingsStore.leadingLongActionKey) private var leadingLongRaw = SwipeActionSettingsStore.defaultLeadingLong.rawValue
+    @AppStorage(SwipeActionSettingsStore.trailingShortActionKey) private var trailingShortRaw = SwipeActionSettingsStore.defaultTrailingShort.rawValue
+    @AppStorage(SwipeActionSettingsStore.trailingLongActionKey) private var trailingLongRaw = SwipeActionSettingsStore.defaultTrailingLong.rawValue
+
+    private var leadingShort: SwipeAction { SwipeAction(rawValue: leadingShortRaw) ?? SwipeActionSettingsStore.defaultLeadingShort }
+    private var leadingLong: SwipeAction { SwipeAction(rawValue: leadingLongRaw) ?? SwipeActionSettingsStore.defaultLeadingLong }
+    private var trailingShort: SwipeAction { SwipeAction(rawValue: trailingShortRaw) ?? SwipeActionSettingsStore.defaultTrailingShort }
+    private var trailingLong: SwipeAction { SwipeAction(rawValue: trailingLongRaw) ?? SwipeActionSettingsStore.defaultTrailingLong }
+
+    /// The short action always shows; the long action only shows if it
+    /// differs from the short one (assigning the same action to both slots
+    /// would otherwise render two identical buttons in the same group).
+    private func slots(short: SwipeAction, long: SwipeAction) -> [SwipeAction] {
+        short == long ? [short] : [short, long]
     }
 
     let summary: ThreadSummary
@@ -56,6 +67,14 @@ struct MessageListRow: View {
     let onToggleRead: (ThreadSummary) -> Void
     let onArchive: (ThreadSummary) -> Void
     let onDelete: (ThreadSummary) -> Void
+    /// D8: 迷惑メールにする — moves to the account's Junk-role mailbox (self-
+    /// healing to a freshly-created "Junk" mailbox the same way delete
+    /// self-heals to Trash — see `OpQueueProcessor.resolveOrCreateJunkMailbox`).
+    let onJunk: (ThreadSummary) -> Void
+    /// E9: ピン留め — see `MessageListView.togglePin(_:)`'s doc comment for
+    /// why this toggles every message in the thread together rather than
+    /// just the row's own `latestMessage`.
+    let onPin: (ThreadSummary) -> Void
     let onAppear: (ThreadSummary) -> Void
 
     var body: some View {
@@ -81,31 +100,14 @@ struct MessageListRow: View {
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
         .otegamiRowDivider()
-        // 1g: "右へ短く=既読/未読、右へ長く=アーカイブ". SwiftUI's
-        // `.swipeActions` can only make *one* action (always the first
-        // declared, per Apple's documentation) auto-fire on a full swipe —
-        // there's no public API for two distance-based thresholds each
-        // firing a *different* action. `onToggleRead` (low-stakes, trivially
-        // reversible) is that one action; `onArchive` is declared second, so
-        // reaching it always requires revealing the full leading group and
-        // tapping explicitly — approximates "長く" as "requires swiping
-        // further to even see the button", not literally "a longer swipe
-        // auto-fires it".
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            leadingSwipeActions
+        // D8 「スワイプの割り当て」— see `SwipeActionSettingsStore`'s doc
+        // comment for the "short=first declared, long=second declared,
+        // guarded actions never auto-fire" design this implements.
+        .swipeActions(edge: .leading, allowsFullSwipe: !leadingShort.isGuardedFromFullSwipe) {
+            swipeButtons(for: slots(short: leadingShort, long: leadingLong))
         }
-        // 1g: "左へ=（翻訳）→後で→削除。削除は最も端でハードスワイプ必須（誤爆防止）".
-        // `allowsFullSwipe: false` here means *no* trailing action ever
-        // auto-fires from swipe distance alone — every one (currently just
-        // delete; see `trailingSwipeActions`'s doc comment for why 翻訳/後で
-        // aren't rendered yet) always needs an explicit tap after revealing.
-        // That's a stricter reading of "誤爆防止" than the handoff's literal
-        // "delete needs a hard full swipe" (which would make delete *the*
-        // full-swipe-eligible action): a swipe can never accidentally
-        // trigger delete at all this way, only reveal it — recorded as an
-        // intentional deviation in docs/design-system.md.
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            trailingSwipeActions
+        .swipeActions(edge: .trailing, allowsFullSwipe: !trailingShort.isGuardedFromFullSwipe) {
+            swipeButtons(for: slots(short: trailingShort, long: trailingLong))
         }
         #if os(macOS)
         .contextMenu {
@@ -142,60 +144,43 @@ struct MessageListRow: View {
         }
     }
 
-    /// 1g/1l: declaration order here decides which of the two leading
-    /// actions SwiftUI auto-fires on a full swipe (always the first one —
-    /// see this type's own doc comment) — `leadingQuickAction` (1l's
-    /// customizable setting) picks which that is.
+    /// D8: builds one button per entry in `actions`, in order — declaration
+    /// order is what decides which one SwiftUI auto-fires on a full swipe
+    /// (always the first — see `body`'s `.swipeActions` doc comment).
     @ViewBuilder
-    private var leadingSwipeActions: some View {
-        switch leadingQuickAction {
+    private func swipeButtons(for actions: [SwipeAction]) -> some View {
+        ForEach(actions) { action in
+            swipeButton(for: action)
+        }
+    }
+
+    /// Dispatches one `SwipeAction` to its callback/label/tint — shared by
+    /// both edges' `swipeButtons(for:)` and (unstyled, via `Button` without
+    /// `.tint`) macOS's `contextMenuContent`.
+    @ViewBuilder
+    private func swipeButton(for action: SwipeAction) -> some View {
+        switch action {
         case .toggleRead:
-            toggleReadButton
-            archiveButton
+            Button { onToggleRead(summary) } label: { toggleReadLabel }
+                .tint(OtegamiColor.accent)
+                .accessibilityIdentifier("messageList.row.\(threadId).toggleRead")
         case .archive:
-            archiveButton
-            toggleReadButton
+            Button { onArchive(summary) } label: { Label(action.title, systemImage: action.systemImage) }
+                .tint(OtegamiColor.paleBaseStrongest)
+                .accessibilityIdentifier("messageList.row.\(threadId).archive")
+        case .junk:
+            Button { onJunk(summary) } label: { Label(action.title, systemImage: action.systemImage) }
+                .tint(OtegamiColor.destructive)
+                .accessibilityIdentifier("messageList.row.\(threadId).junk")
+        case .pin:
+            Button { onPin(summary) } label: { pinLabel }
+                .tint(OtegamiColor.accentText)
+                .accessibilityIdentifier("messageList.row.\(threadId).pin")
+        case .delete:
+            Button(role: .destructive) { onDelete(summary) } label: { Label(action.title, systemImage: action.systemImage) }
+                .tint(OtegamiColor.destructive)
+                .accessibilityIdentifier("messageList.row.\(threadId).delete")
         }
-    }
-
-    private var toggleReadButton: some View {
-        Button {
-            onToggleRead(summary)
-        } label: {
-            toggleReadLabel
-        }
-        .tint(OtegamiColor.accent)
-        .accessibilityIdentifier("messageList.row.\(threadId).toggleRead")
-    }
-
-    private var archiveButton: some View {
-        Button {
-            onArchive(summary)
-        } label: {
-            Label("アーカイブ", systemImage: "archivebox")
-        }
-        .tint(OtegamiColor.paleBaseStrongest)
-        .accessibilityIdentifier("messageList.row.\(threadId).archive")
-    }
-
-    /// Delete-only for now — 翻訳/後で's slots are intentionally not
-    /// rendered yet (`MessageListView`'s own doc comment on
-    /// `translateSwipeSlot`/`laterSwipeSlot` explains why: no fake
-    /// non-functional buttons shown to real users, per this task's brief —
-    /// "場所だけ空けるか、後から差し込める形にしておく"). Once translation ships,
-    /// insert those two buttons *before* this one in this `@ViewBuilder` so
-    /// declaration order stays 翻訳→後で→削除 (nearest-the-edge to
-    /// furthest, matching the handoff) — see `MessageListView`'s reserved
-    /// `translateSwipeSlot`/`laterSwipeSlot` computed properties for the
-    /// intended insertion point.
-    private var trailingSwipeActions: some View {
-        Button(role: .destructive) {
-            onDelete(summary)
-        } label: {
-            Label("削除", systemImage: "trash")
-        }
-        .tint(OtegamiColor.destructive)
-        .accessibilityIdentifier("messageList.row.\(threadId).delete")
     }
 
     @ViewBuilder
@@ -207,23 +192,24 @@ struct MessageListRow: View {
         }
     }
 
+    @ViewBuilder
+    private var pinLabel: some View {
+        if summary.thread.isPinned {
+            Label("ピン留めを解除", systemImage: "pin.slash")
+        } else {
+            Label("ピン留め", systemImage: "pin")
+        }
+    }
+
     #if os(macOS)
+    /// D8: macOS has no swipe gesture, so every assignable action (not just
+    /// whatever's currently assigned to a swipe slot) is always available
+    /// here — `CLAUDE.md`'s "スワイプが無い macOS ではコンテキストメニューに反映する"
+    /// requirement.
     @ViewBuilder
     private var contextMenuContent: some View {
-        Button {
-            onToggleRead(summary)
-        } label: {
-            toggleReadLabel
-        }
-        Button {
-            onArchive(summary)
-        } label: {
-            Label("アーカイブ", systemImage: "archivebox")
-        }
-        Button(role: .destructive) {
-            onDelete(summary)
-        } label: {
-            Label("削除", systemImage: "trash")
+        ForEach(SwipeAction.allCases) { action in
+            swipeButton(for: action)
         }
     }
     #endif

@@ -1,0 +1,58 @@
+import Foundation
+
+/// B4 「本文プレビューの行数」: なし/1行/2行/3行 — `rawValue` doubles as the actual
+/// `lineLimit` passed to the preview `Text` (`0` meaning "show none").
+enum PreviewLineCount: Int, CaseIterable, Identifiable {
+    case none = 0
+    case one = 1
+    case two = 2
+    case three = 3
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: "なし"
+        case .one: "1行"
+        case .two: "2行"
+        case .three: "3行"
+        }
+    }
+}
+
+/// B3/B4 「一覧・表示」設定: list-density preferences, all plain `UserDefaults`
+/// keys read directly via `@AppStorage` — same reasoning as
+/// `SwipeActionSettingsStore`/`TranslationSettingsStore` (a per-device UI
+/// preference with no other business logic attached doesn't need a
+/// dependency-injected home).
+enum ListDisplaySettingsStore {
+    /// B3 「フラット表示」: "スレッドにまとめない" — ON shows one row per message
+    /// instead of per thread. See `ThreadSummary.init(flatMessage:accountId:)`
+    /// and `MessageListView`'s flat-mode doc comment for the query/rendering
+    /// design. Default off — threading is this app's normal, documented
+    /// list behavior (`README.md`'s Features section); flat mode is an
+    /// opt-in alternative for anyone who'd rather see every message
+    /// individually.
+    static let flatModeKey = "listDisplay.flatMode"
+
+    /// B4 「送信者のプロフィールアイコンの表示」: initials-on-account-color circular
+    /// avatar (`SenderAvatar`) — no external image fetch, ever (privacy:
+    /// this task's explicit constraint). Default on: it's a small, low-risk
+    /// addition to the existing row layout and is the whole point of
+    /// building `SenderAvatar` in the first place.
+    static let showAvatarKey = "listDisplay.showAvatar"
+    static let defaultShowAvatar = true
+
+    /// B4 「本文プレビューの行数」— see `PreviewLineCount`. Default `.one`
+    /// matches this app's pre-existing row layout (`ThreadRowTextStack`'s
+    /// single-line snippet), so leaving this setting untouched changes
+    /// nothing for an existing user.
+    static let previewLineCountKey = "listDisplay.previewLineCount"
+    static let defaultPreviewLineCount = PreviewLineCount.one
+
+    /// B5 「本文にも送信者アイコンを出す」: shows `SenderAvatar` next to each
+    /// message's header inside `MessageView`/`ThreadDetailView`. Default on,
+    /// same rationale as `showAvatarKey`.
+    static let showAvatarInDetailKey = "listDisplay.showAvatarInDetail"
+    static let defaultShowAvatarInDetail = true
+}

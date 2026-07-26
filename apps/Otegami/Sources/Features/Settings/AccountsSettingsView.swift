@@ -57,13 +57,22 @@ struct AccountsListContent: View {
     @State private var reauthenticatingAccountId: String?
     @State private var reauthErrorMessage: String?
 
-    // design-phase-3, 1l "操作"/"翻訳" blocks — see `SwipeActionSettingsStore`/
-    // `TranslationSettingsStore`'s doc comments for why these read
-    // `UserDefaults` directly via `@AppStorage` rather than through
-    // `AppEnvironment`.
-    @AppStorage(SwipeActionSettingsStore.leadingQuickActionKey) private var leadingQuickActionRaw = LeadingSwipeQuickAction.toggleRead.rawValue
+    // design-phase-3, 1l "操作"/"翻訳" blocks, D8/B3/B4/E9 の追加設定 — see
+    // `SwipeActionSettingsStore`/`TranslationSettingsStore`/
+    // `ListDisplaySettingsStore`/`PinSettingsStore`'s doc comments for why
+    // these read `UserDefaults` directly via `@AppStorage` rather than
+    // through `AppEnvironment`.
+    @AppStorage(SwipeActionSettingsStore.leadingShortActionKey) private var leadingShortRaw = SwipeActionSettingsStore.defaultLeadingShort.rawValue
+    @AppStorage(SwipeActionSettingsStore.leadingLongActionKey) private var leadingLongRaw = SwipeActionSettingsStore.defaultLeadingLong.rawValue
+    @AppStorage(SwipeActionSettingsStore.trailingShortActionKey) private var trailingShortRaw = SwipeActionSettingsStore.defaultTrailingShort.rawValue
+    @AppStorage(SwipeActionSettingsStore.trailingLongActionKey) private var trailingLongRaw = SwipeActionSettingsStore.defaultTrailingLong.rawValue
     @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = true
     @AppStorage(TranslationSettingsStore.showListSummaryKey) private var showListSummary = false
+    @AppStorage(ListDisplaySettingsStore.flatModeKey) private var isFlatMode = false
+    @AppStorage(ListDisplaySettingsStore.showAvatarKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatar
+    @AppStorage(ListDisplaySettingsStore.previewLineCountKey) private var previewLineCountRaw = ListDisplaySettingsStore.defaultPreviewLineCount.rawValue
+    @AppStorage(ListDisplaySettingsStore.showAvatarInDetailKey) private var showAvatarInDetail = ListDisplaySettingsStore.defaultShowAvatarInDetail
+    @AppStorage(PinSettingsStore.syncWithFlaggedKey) private var pinSyncWithFlagged = false
 
     /// Account edit UI: which account's edit sheet is open, `nil` when
     var body: some View {
@@ -174,20 +183,75 @@ struct AccountsListContent: View {
                 .accessibilityIdentifier("settings.pushNotificationsLink")
             }
 
-            // design-phase-3, 1l "操作": see `SwipeActionSettingsStore`'s
-            // doc comment on why this is the one customizable axis rather
-            // than a full per-slot action picker.
+            // D8「スワイプの割り当て」— iOS only (macOS has no swipe gesture;
+            // every action is always reachable there via the row's
+            // context menu instead — `MessageListRow.contextMenuContent`).
+            #if os(iOS)
             Section {
-                Picker("スワイプのクイック操作", selection: $leadingQuickActionRaw) {
-                    ForEach(LeadingSwipeQuickAction.allCases) { action in
+                Picker("右・短いスワイプ", selection: $leadingShortRaw) {
+                    ForEach(SwipeAction.allCases) { action in
                         Text(action.title).tag(action.rawValue)
                     }
                 }
-                .accessibilityIdentifier("settings.swipeQuickActionPicker")
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("settings.swipe.leadingShortPicker")
+                Picker("右・長いスワイプ", selection: $leadingLongRaw) {
+                    ForEach(SwipeAction.allCases) { action in
+                        Text(action.title).tag(action.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("settings.swipe.leadingLongPicker")
+                Picker("左・短いスワイプ", selection: $trailingShortRaw) {
+                    ForEach(SwipeAction.allCases) { action in
+                        Text(action.title).tag(action.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("settings.swipe.trailingShortPicker")
+                Picker("左・長いスワイプ", selection: $trailingLongRaw) {
+                    ForEach(SwipeAction.allCases) { action in
+                        Text(action.title).tag(action.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("settings.swipe.trailingLongPicker")
             } header: {
                 Text("操作")
             } footer: {
-                Text("右スワイプでまず表示される操作を選べます。削除は誤操作防止のため、常にタップでの確定操作です。")
+                Text("短いスワイプで表示される操作は、そのままスワイプし切ると即座に実行されます（削除・迷惑メールを除く — 誤操作防止のため、必ずタップでの確定操作です）。長いスワイプの操作は、ボタンが表示されてからのタップでのみ実行されます。")
+            }
+            #endif
+
+            // B3/B4「一覧・表示」.
+            Section {
+                Toggle("スレッドにまとめない（フラット表示）", isOn: $isFlatMode)
+                    .accessibilityIdentifier("settings.list.flatModeToggle")
+                Toggle("送信者のプロフィールアイコンを表示", isOn: $showAvatar)
+                    .accessibilityIdentifier("settings.list.showAvatarToggle")
+                Picker("本文プレビューの行数", selection: $previewLineCountRaw) {
+                    ForEach(PreviewLineCount.allCases) { count in
+                        Text(count.title).tag(count.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("settings.list.previewLineCountPicker")
+                Toggle("メール本文にも送信者アイコンを表示", isOn: $showAvatarInDetail)
+                    .accessibilityIdentifier("settings.list.showAvatarInDetailToggle")
+            } header: {
+                Text("一覧・表示")
+            } footer: {
+                Text("プロフィールアイコンは差出人のイニシャルとアカウント色から生成され、外部サービスへの問い合わせは一切行いません。")
+            }
+
+            // E9「ピン留め」.
+            Section {
+                Toggle("サーバーのフラグ (\\Flagged) と連動", isOn: $pinSyncWithFlagged)
+                    .accessibilityIdentifier("settings.pinSyncWithFlaggedToggle")
+            } header: {
+                Text("ピン留め")
+            } footer: {
+                Text("既定ではピン留めはこの端末・このアプリだけのローカルな印です。ONにすると、ピン留め/解除のたびに IMAP の \\Flagged フラグも更新し、他のメールクライアントでのフラグ操作も読み取ってピン留めに反映します。")
             }
 
             // design-phase-3, 1l "翻訳".

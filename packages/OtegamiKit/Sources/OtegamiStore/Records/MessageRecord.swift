@@ -71,6 +71,12 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     /// has been fetched at least once.
     public var snippet: String?
 
+    /// ピン留め (E9): the single source of truth this app orders by — see
+    /// `AppDatabase`'s v16 migration doc comment for the full design
+    /// (local-only by default, optionally mirrored to/from IMAP `\Flagged`
+    /// per `PinSettingsStore.syncWithFlaggedKey`).
+    public var isPinnedLocal: Bool
+
     /// BCP-47 language code (e.g. `"en"`, `"ja"`) of the message body, set
     /// by `SyncEngine.BodyFetcher` via `MessageLanguageDetector` right
     /// after the body is fetched (v15, `docs/translation.md`). `nil` until
@@ -110,6 +116,7 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         threadId: Int64? = nil,
         bodyState: MessageBodyState = .notFetched,
         snippet: String? = nil,
+        isPinnedLocal: Bool = false,
         detectedLanguage: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -137,6 +144,7 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.threadId = threadId
         self.bodyState = bodyState
         self.snippet = snippet
+        self.isPinnedLocal = isPinnedLocal
         self.detectedLanguage = detectedLanguage
         self.createdAt = createdAt
         self.updatedAt = updatedAt

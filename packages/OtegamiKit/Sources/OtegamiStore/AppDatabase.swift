@@ -557,6 +557,33 @@ extension AppDatabase {
             }
         }
 
+        // v16 (ピン留め): `message.isPinnedLocal` is the single source of
+        // truth this app orders by — always updated the moment a user pins/
+        // unpins a message (`MessageListView`/`ThreadDetailView`'s pin
+        // action), independent of whether IMAP `\Flagged` sync is on
+        // (`PinSettingsStore.syncWithFlaggedKey`, default off per the design
+        // decision: "既定はローカル独自のフラグ"). When that setting is on,
+        // `AccountSyncer.upsert` additionally mirrors the server's current
+        // `\Flagged` bit into this column on every resync (so another
+        // client's flag change surfaces here too), and the pin-toggle action
+        // itself also flips the IMAP flag via the existing `setFlags` opQueue
+        // path — see `PinSettingsStore`'s doc comment for the full design.
+        //
+        // `thread.isPinned` is the OR-aggregate over its messages'
+        // `isPinnedLocal` ("スレッド内の1通でもピン留めされたらそのスレッド自体が
+        // 最上位に"), maintained by `ThreadAssigner.recomputeAggregates`
+        // alongside `unreadCount`/`messageCount` — not a live join, so
+        // `ThreadQuery`'s ordering can sort by it directly.
+        migrator.registerMigration("v16") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "isPinnedLocal", .boolean).notNull().defaults(to: false)
+            }
+            try db.alter(table: "thread") { t in
+                t.add(column: "isPinned", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(index: "thread_on_isPinned_lastMessageDate", on: "thread", columns: ["isPinned", "lastMessageDate"])
+        }
+
         return migrator
     }
 }

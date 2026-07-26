@@ -18,6 +18,13 @@ import OtegamiStore
 /// preemptively here rather than waiting for a CI timeout to prove it's
 /// needed.
 struct ThreadRowView: View {
+    /// B4 「送信者のプロフィールアイコンの表示」/「本文プレビューの行数」— see
+    /// `ListDisplaySettingsStore`'s doc comment on why these are read
+    /// directly via `@AppStorage` rather than threaded in as parameters.
+    @AppStorage(ListDisplaySettingsStore.showAvatarKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatar
+    @AppStorage(ListDisplaySettingsStore.previewLineCountKey) private var previewLineCountRaw = ListDisplaySettingsStore.defaultPreviewLineCount.rawValue
+    private var previewLineCount: PreviewLineCount { PreviewLineCount(rawValue: previewLineCountRaw) ?? ListDisplaySettingsStore.defaultPreviewLineCount }
+
     let summary: ThreadSummary
     /// `nil` in a context where showing an account label wouldn't mean
     /// anything (a single already-selected mailbox) — see
@@ -43,7 +50,15 @@ struct ThreadRowView: View {
             }
             HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
                 leadingIndicator
-                ThreadRowTextStack(summary: summary)
+                if showAvatar, !isSelecting {
+                    SenderAvatar(
+                        displayName: summary.latestMessage?.fromAddresses.first?.name,
+                        address: summary.latestMessage?.fromAddresses.first?.address ?? "",
+                        accountId: summary.thread.accountId,
+                        diameter: 28
+                    )
+                }
+                ThreadRowTextStack(summary: summary, previewLineCount: previewLineCount)
                 Spacer(minLength: OtegamiSpacing.sm)
                 ThreadRowTrailing(
                     summary: summary,
@@ -76,6 +91,9 @@ struct ThreadRowView: View {
 /// `View`（`docs/ci.md`参照）。
 private struct ThreadRowTextStack: View {
     let summary: ThreadSummary
+    /// B4 「本文プレビューの行数」— `.none` (0) hides the preview line
+    /// entirely; otherwise it's passed straight through as `.lineLimit(_:)`.
+    let previewLineCount: PreviewLineCount
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -103,11 +121,11 @@ private struct ThreadRowTextStack: View {
                         .accessibilityIdentifier("messageList.row.\(summary.id).countBadge")
                 }
             }
-            if let snippet = summary.latestMessage?.snippet, !snippet.isEmpty {
+            if previewLineCount != .none, let snippet = summary.latestMessage?.snippet, !snippet.isEmpty {
                 Text(snippet)
                     .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.inkTertiary)
-                    .lineLimit(1)
+                    .lineLimit(previewLineCount.rawValue)
             }
         }
     }
@@ -123,13 +141,19 @@ private struct ThreadRowTextStack: View {
     }
 }
 
-/// 右端の日付 + （統合受信トレイのみ）アカウント名ラベル。
+/// 右端の日付 + ピン留めインジケータ + （統合受信トレイのみ）アカウント名ラベル。
 private struct ThreadRowTrailing: View {
     let summary: ThreadSummary
     let accountDisplayName: String?
 
     var body: some View {
         VStack(alignment: .trailing, spacing: OtegamiSpacing.xs) {
+            if summary.thread.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.caption2)
+                    .foregroundStyle(OtegamiColor.accent)
+                    .accessibilityIdentifier("messageList.row.\(summary.id).pinnedIndicator")
+            }
             if let date = summary.thread.lastMessageDate {
                 Text(date, style: .date)
                     .font(OtegamiFont.caption())

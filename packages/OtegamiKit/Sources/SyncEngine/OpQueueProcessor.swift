@@ -179,6 +179,20 @@ public actor OpQueueProcessor {
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: trash.path)
             return .applied
 
+        case .junk:
+            let payload = try JSONDecoder().decode(JunkOpPayload.self, from: op.payload)
+            guard let source = try await mailbox(id: payload.sourceMailboxId), source.uidValidity == payload.uidValidity else {
+                return .staleDiscarded
+            }
+            guard let junk = try await resolveOrCreateJunkMailbox(accountId: account.id, session: session) else {
+                // Same "leave the op pending rather than silently dropping
+                // a user-intended action" shape as `.delete`'s identical
+                // Trash-resolution failure above.
+                throw MailTransportError.mailboxNotFound(path: "(no Junk-role mailbox known)")
+            }
+            try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: junk.path)
+            return .applied
+
         case .send:
             let payload = try JSONDecoder().decode(SendOpPayload.self, from: op.payload)
             guard let outbox = try await outboxMessage(id: payload.outboxMessageId) else {
@@ -469,6 +483,46 @@ public actor OpQueueProcessor {
                 ]
             }
         }
+    }
+
+    private func junkMailbox(accountId: String) async throws -> MailboxRecord? {
+        try await database.dbWriter.read { db in
+            try MailboxRecord
+                .filter(Column("accountId") == accountId)
+                .filter(Column("role") == MailboxRoleRecord.junk.rawValue)
+                .fetchOne(db)
+        }
+    }
+
+    /// The mailbox name `resolveOrCreateJunkMailbox` asks the server to
+    /// `CREATE` when no Junk-role mailbox is known — same rationale as
+    /// ``trashMailboxNameToCreate`` (D8's "迷惑メールにする = Junk role のメール
+    /// ボックスへ移動（無い場合は Trash 自動作成と同じパターンで対処）" requirement).
+    static let junkMailboxNameToCreate = "Junk"
+
+    /// Resolves this account's Junk-role mailbox, self-healing by
+    /// `CREATE`-ing one named ``junkMailboxNameToCreate`` when none is known
+    /// yet — mirrors `resolveOrCreateTrashMailbox` exactly, reusing
+    /// `upsertCreatedMailbox(accountId:info:)` the same way.
+    private func resolveOrCreateJunkMailbox(accountId: String, session: any IMAPSessionProtocol) async throws -> MailboxRecord? {
+        if let existing = try await junkMailbox(accountId: accountId) {
+            return existing
+        }
+
+        do {
+            try await session.createMailbox(path: Self.junkMailboxNameToCreate)
+        } catch {
+            return nil
+        }
+
+        let mailboxInfos = try await session.listMailboxes()
+        guard let created = mailboxInfos.first(where: { info in
+            info.role == .junk || info.path.caseInsensitiveCompare(Self.junkMailboxNameToCreate) == .orderedSame
+        }) else {
+            return nil
+        }
+
+        return try await upsertCreatedMailbox(accountId: accountId, info: created)
     }
 
     /// Builds SMTP-specific credentials from `account.smtpUsername` (the

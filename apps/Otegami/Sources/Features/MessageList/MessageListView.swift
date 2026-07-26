@@ -143,7 +143,43 @@ struct MessageListView: View {
         var accountFilter: String?
         var accountIds: [String]
         var pageLimit: Int
+        var isFlatMode: Bool
     }
+
+    // MARK: - フラット表示 (B3)
+
+    /// "スレッドにまとめない" — when on, `observeThreads()` queries
+    /// `ThreadQuery.flatSummaries`/`unifiedInboxFlatSummaries` (one row per
+    /// message) instead of `summariesObservation`/
+    /// `unifiedInboxSummariesObservation` (one row per thread), but still
+    /// populates the very same `summaries: [ThreadSummary]` this view
+    /// already renders through `MessageListRow`/`ThreadRowView` — see
+    /// `ThreadSummary.init(flatMessage:accountId:)`'s doc comment for how a
+    /// single message masquerades as a "thread of one" with zero changes to
+    /// either row view.
+    ///
+    /// Deliberate scope limit: this only affects the *normal* list — a
+    /// `.searchable` search (macOS's inline mailbox search, and iOS's
+    /// separate `SearchTabView`) keeps showing thread-grouped results
+    /// regardless of this setting. `SearchQuery.threadSummaries` has no
+    /// message-level equivalent, and search results are a comparatively
+    /// small, transient list where "grouped vs. flat" matters far less than
+    /// it does for a whole mailbox's worth of everyday scrolling — building
+    /// a second flat search query was judged not worth the added surface
+    /// area for this pass.
+    ///
+    /// Also deliberate: every row action (既読/未読・アーカイブ・迷惑メール・
+    /// ピン留め・削除) still operates on the row's *whole* underlying thread
+    /// even in flat mode, not just the one message the row displays — see
+    /// `ThreadSummary.init(flatMessage:accountId:)`'s doc comment. Acting on
+    /// any message in a conversation moving/removing the whole conversation
+    /// is normal mail-client behavior (and exactly what grouped mode
+    /// already does), and building a fully separate per-message action path
+    /// alongside the existing thread-scoped one would have doubled this
+    /// view's already-large action surface for comparatively little
+    /// day-to-day benefit — flat mode's core promise ("一覧がメール単位になる")
+    /// is about *what's shown*, not a new per-message operation model.
+    @AppStorage(ListDisplaySettingsStore.flatModeKey) private var isFlatMode = false
 
     /// Whitespace-only input (including the empty string right after
     /// `.searchable` clears) is "not searching" — the normal `summaries`
@@ -312,7 +348,7 @@ struct MessageListView: View {
                     .animation(.default, value: pendingUndo.threadIds)
             }
         }
-        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit)) {
+        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode)) {
             await observeThreads()
         }
         // Not required for correctness anymore (the local write already
@@ -455,6 +491,8 @@ struct MessageListView: View {
                 onToggleRead: toggleRead,
                 onArchive: archiveThread,
                 onDelete: deleteThread,
+                onJunk: junkThread,
+                onPin: togglePin,
                 onAppear: loadMoreIfNeeded
             )
         }
@@ -617,7 +655,9 @@ struct MessageListView: View {
     private func observeThreads() async {
         switch selection {
         case .mailbox(let mailboxSelection):
-            let observation = ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit)
+            let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
+                ? ThreadQuery.flatSummariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, accountId: mailboxSelection.accountId)
+                : ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     summaries = fetched
@@ -628,7 +668,9 @@ struct MessageListView: View {
             }
         case .unifiedInbox:
             let accountIds = unifiedInboxAccountFilter.map { [$0] } ?? environment.accounts.map(\.id)
-            let observation = ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit)
+            let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
+                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, limit: pageLimit)
+                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     summaries = fetched
@@ -795,6 +837,114 @@ struct MessageListView: View {
             await replayOpQueueSoon(accountId: accountId)
         } catch {
             // Best-effort: the row simply doesn't update if this fails.
+        }
+    }
+
+    // MARK: - Pinning (E9)
+
+    /// D8/E9's swipe/context-menu "ピン留め" action — toggles every message
+    /// in the thread to the opposite of the thread's current pinned state
+    /// (`summary.thread.isPinned`, the OR-aggregate over its messages —
+    /// `AppDatabase`'s v16 migration doc comment). Pinning every message in
+    /// the thread together (rather than, say, just the row's own
+    /// `latestMessage`) mirrors `toggleRead(_:)`/`archiveThread(_:)`'s
+    /// existing "act on the whole thread" convention, and keeps pin/unpin
+    /// symmetric: pinning then immediately unpinning the same row returns
+    /// every message to exactly the state it started in, regardless of how
+    /// many were already individually pinned.
+    private func togglePin(_ summary: ThreadSummary) {
+        let pinning = !summary.thread.isPinned
+        Task { await applyPinState(summary, pinning: pinning) }
+    }
+
+    /// No undo toast (unlike delete/archive) — pinning never removes a row
+    /// from the list, it only reorders it, so the action is already
+    /// trivially reversible with one more tap on the same button.
+    private func applyPinState(_ summary: ThreadSummary, pinning: Bool) async {
+        guard let threadId = summary.thread.id else { return }
+        let accountId = summary.thread.accountId
+        let syncEnabled = PinSettingsStore.isSyncWithFlaggedEnabled
+        do {
+            try await environment.database.dbWriter.write { db in
+                let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                for var message in messages {
+                    guard message.isPinnedLocal != pinning else { continue }
+                    message.isPinnedLocal = pinning
+                    if syncEnabled {
+                        if pinning {
+                            message.flags.insert(.flagged)
+                        } else {
+                            message.flags.remove(.flagged)
+                        }
+                    }
+                    message.updatedAt = Date()
+                    try message.update(db)
+                    guard syncEnabled, let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                    try OpQueue.enqueueSetFlags(
+                        accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [UInt32(message.uid)], flags: message.flags, db: db
+                    )
+                }
+                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+            }
+            if syncEnabled { await replayOpQueueSoon(accountId: accountId) }
+        } catch {
+            // Best-effort, matching every other opQueue-enqueuing path in
+            // this file.
+        }
+    }
+
+    // MARK: - Junk (D8)
+
+    /// D8「迷惑メールにする」— mirrors `archiveThread(_:)`/`commitArchive(_:)`'s
+    /// shape exactly, just moving to the account's Junk-role mailbox at
+    /// *replay* time (`OpQueue.enqueueJunk`, resolved/self-healed by
+    /// `OpQueueProcessor.resolveOrCreateJunkMailbox` the same way `delete`
+    /// resolves Trash) rather than a pre-resolved local Archive mailbox id.
+    private func junkThread(_ summary: ThreadSummary) {
+        guard let threadId = summary.thread.id else { return }
+        let accountId = summary.thread.accountId
+        Task {
+            guard let snapshot = await commitJunk(summary) else { return }
+            scheduleUndo(threadIds: [threadId], message: "スレッドを迷惑メールにしました", accountIds: [accountId]) {
+                await undoRemoval(snapshot)
+            }
+        }
+    }
+
+    /// Removes every message in the thread from the local list immediately
+    /// and enqueues one `junk` op per message — same "commit immediately,
+    /// make undo fully reversible" shape as `commitDelete(_:)`/
+    /// `commitArchive(_:)` (see either's doc comment for why).
+    private func commitJunk(_ summary: ThreadSummary) async -> RemovedMessagesSnapshot? {
+        guard let threadId = summary.thread.id else { return nil }
+        let accountId = summary.thread.accountId
+        do {
+            let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
+                guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
+                let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
+                for message in messages {
+                    guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
+                    guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                    try OpQueue.enqueueJunk(
+                        accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [uid], db: db
+                    )
+                    try FTSIndexer.delete(messageId: messageId, db: db)
+                    try MessageRecord.deleteOne(db, key: messageId)
+                }
+                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                let opQueueIds = try Int64.fetchAll(db, sql: "SELECT id FROM opQueue WHERE id > ? ORDER BY id", arguments: [beforeMaxOpId])
+                return RemovedMessagesSnapshot(thread: thread, messages: messages, opQueueIds: opQueueIds)
+            }
+            guard let snapshot else { return nil }
+            if isSearchActive {
+                searchResults.removeAll { $0.id == summary.id }
+            }
+            return snapshot
+        } catch {
+            return nil
         }
     }
 
