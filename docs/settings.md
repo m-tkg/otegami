@@ -72,6 +72,31 @@ HTML メールの詳細画面には、件名の隣に控えめな "HTML" バッ�
 本文が完全に空 (HTML・テキストいずれも実質的な内容が無い) の場合は、
 本文の位置に薄い文字 ("本文なし"、`OtegamiColor.inkTertiary`) を表示する。
 
+## 画像 (B)
+
+`ImageSettingsStore.swift`。iOS・macOS 共通。**既定値が design-phase-3
+以前の挙動と逆になっている** — ユーザーと仕様を確定した上での意図的な
+変更。
+
+| 項目 | キー | 既定値 | 説明 |
+| --- | --- | --- | --- |
+| 埋め込み画像を自動表示 | `images.autoShowEmbedded` | **OFF** | メールに直接埋め込まれた画像 (cid: インライン画像 / 画像添付)。以前は無条件で自動表示していたが、既定 OFF に変更。 |
+| リモート画像を自動で読み込む | `images.autoShowRemote` | **ON** | 外部サーバーから読み込む画像。以前は既定でブロック + バナー表示だったが、既定 ON に変更。設定画面に「開封トラッキング」の注意書きを表示。 |
+
+いずれも `HTMLMessageView` の「画像を表示」系バナー (埋め込み用・
+リモート用の2つ、独立に動作) が手動解除手段として残る — 設定が OFF の
+メールでもバナーをタップすればそのメールだけ一時的に表示できる。バナーの
+状態はメールごと・アプリセッションの間だけで、別のメールを開く・
+アプリを再起動すると設定の既定値に戻る。
+
+`HTMLMessageView` は `@AppStorage` ではなく `init` で
+`UserDefaults.standard.bool(forKey:)` を直接読む (`UserDefaults
+.registerOtegamiImageDefaults()` を `AppEnvironment.init()` から起動時に
+一度呼び、未設定キーでも正しい既定値に解決されるようにしてある) —
+理由は `HTMLMessageView` の doc comment 参照 (メールを開くたびに新しい
+インスタンスが作られるため、`@AppStorage` の「初回読み取り時だけ default
+引数が効く」という挙動と相性が悪い)。
+
 ## ピン留め
 
 `PinSettingsStore.swift`。iOS・macOS 共通。

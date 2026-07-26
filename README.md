@@ -68,12 +68,16 @@ Two things this app is built around, more than any single feature list:
   queries, with a `LIKE` fallback for shorter queries — works for Japanese
   and other scripts with no dictionary/segmenter dependency. Filter chips
   (attachments / unread / English) and People vs. Mail result sections.
-- **HTML mail**: rendered in a sandboxed `WKWebView` (JavaScript disabled,
-  external images blocked behind a one-tap "show images" banner, inline
-  `cid:` images resolved locally). A subtle "HTML" badge marks HTML
-  messages, with a one-tap switch to a plain-text rendering (or "always
-  show as text" in Settings). Messages with no content at all show a
-  subtle "no content" placeholder instead of a blank pane.
+- **HTML mail**: rendered in a sandboxed `WKWebView` (JavaScript disabled;
+  re-verified against real script-injection fixtures — `<script>` DOM
+  rewrites, `onerror` handlers, `iframe`s, `javascript:` links — all
+  confirmed inert). A subtle "HTML" badge marks HTML messages, with a
+  one-tap switch to a plain-text rendering (or "always show as text" in
+  Settings). Messages with no content at all show a subtle "no content"
+  placeholder instead of a blank pane. Embedded images (inline `cid:` /
+  image attachments) default off; remote images default on with an
+  in-Settings note about the read-receipt tradeoff — both have their own
+  one-tap "show images" banner as a per-message override.
 - **Attachments**: send and receive, with QuickLook preview, inline
   `cid:` image support, and RFC 2047/2231-aware filename decoding
   (including Japanese filenames).

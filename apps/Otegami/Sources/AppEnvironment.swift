@@ -108,6 +108,10 @@ final class AppEnvironment {
         // on, list summary off) before any `@AppStorage` reader — see
         // `UserDefaults.registerOtegamiTranslationDefaults()`'s doc comment.
         UserDefaults.registerOtegamiTranslationDefaults()
+        // B「画像の設定」— see `UserDefaults.registerOtegamiImageDefaults()`'s
+        // doc comment for why this needs to run before any `HTMLMessageView`
+        // is ever constructed, not just before any `@AppStorage` read.
+        UserDefaults.registerOtegamiImageDefaults()
 
         let database: AppDatabase
         do {

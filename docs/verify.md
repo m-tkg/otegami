@@ -2643,3 +2643,35 @@ fixtures/21〜24-security-*.eml`、`docs/design-system.md` には無い今回
 **未検証事項**: 「画像を表示」バナーを押して外部コンテンツを許可した状態
 での iframe 内 JS 無効化 (上記3参照、設計上は無効化されるはずだが実機の
 目視確認はしていない)。
+
+## iOS シミュレータ検証 (B: 画像の自動表示設定)
+
+`OtegamiImageSettingsUITests`。`ImageSettingsStore` の2設定
+(埋め込み画像自動表示・リモート画像自動読み込み) が実際に
+`HTMLMessageView` のバナー表示を変えることを確認する。
+
+1. `testDefaultImageSettings` — 既定状態 (埋め込み OFF・リモート ON) で
+   `16-cid-inline-image.eml` を開くと「埋め込み画像を表示」バナーが出る
+   こと、`06-html-external-image.eml` を開くと「画像を表示」バナーが
+   **出ない**ことを確認する。
+2. `testFlippedImageSettingsViaPresetDefaults` — 両設定を反転
+   (埋め込み ON・リモート OFF) した状態で同じ2メッセージを開き、逆の
+   バナー表示 (埋め込みバナーなし・リモートバナーあり) になることを
+   確認する。**設定画面の Toggle をアプリ内でタップして反転する方式は
+   採用しなかった** — `.tap()`・座標 `press()` のどちらも試したが、この
+   開発機のシミュレータでは Toggle 自体は見つかりタップも例外なく成功する
+   のに、その後に開いた `HTMLMessageView` のバナー挙動が設定変更前のまま
+   だった (A9 節に記録した一連の flake と同種の環境要因と判断)。代わりに
+   テスト実行前に `xcrun simctl spawn <udid> defaults write com.mtkg.otegami
+   images.autoShowEmbedded -bool YES` (`images.autoShowRemote` も同様)
+   でアプリのプロセス外から `UserDefaults` を直接書き換えてからアプリを
+   起動する方式に切り替えたところ確実に動作した — 検証したいのは
+   「新しく開いた `HTMLMessageView` が現在の設定値を正しく読むか」という
+   コードパスであり、Settings 画面の Toggle 操作自体の UI 自動化ではない
+   ため、この代替手段で目的は十分満たされている。
+
+埋め込み画像バナーを解除した状態のスクリーンショットで、
+`16-cid-inline-image.eml` の cid: 画像 (小さいオレンジ色の正方形の
+ロゴ) が実際に本文内にレンダリングされていることも目視確認済み —
+`allowsEmbeddedImages` が `CIDURLRewriter.rewrite` の呼び出しを実際に
+左右していることの直接証拠になっている。

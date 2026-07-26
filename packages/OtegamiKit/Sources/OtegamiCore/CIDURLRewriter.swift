@@ -61,6 +61,18 @@ public enum CIDURLRewriter {
         return result as String
     }
 
+    /// B5: whether `html` references any `cid:` inline image at all —
+    /// `HTMLMessageView` uses this (the same way `HTMLExternalResourceScanner
+    /// .containsExternalResource` gates the remote-image banner) to decide
+    /// whether to show the "埋め込み画像を表示" banner *before* ever loading
+    /// the content into a `WKWebView`. Reuses `regex` rather than just
+    /// calling `rewrite(html:) != html`, so a caller that only wants the
+    /// yes/no answer (not the rewritten string) doesn't pay for building one.
+    public static func containsCIDReference(html: String) -> Bool {
+        let nsHTML = html as NSString
+        return regex.firstMatch(in: html, range: NSRange(location: 0, length: nsHTML.length)) != nil
+    }
+
     /// The custom `WKURLSchemeHandler` scheme this rewrite targets. Kept
     /// here (not duplicated as a string literal in `HTMLMessageView`) so
     /// the rewrite and the handler that resolves it can never drift apart.

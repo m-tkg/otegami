@@ -75,6 +75,9 @@ struct AccountsListContent: View {
     @AppStorage(PinSettingsStore.syncWithFlaggedKey) private var pinSyncWithFlagged = false
     // A9「メールの表示」— see `HTMLDisplaySettingsStore`'s doc comment.
     @AppStorage(HTMLDisplaySettingsStore.alwaysShowPlainTextKey) private var alwaysShowPlainText = HTMLDisplaySettingsStore.defaultAlwaysShowPlainText
+    // B「画像の設定」— see `ImageSettingsStore`'s doc comment.
+    @AppStorage(ImageSettingsStore.autoShowEmbeddedImagesKey) private var autoShowEmbeddedImages = ImageSettingsStore.defaultAutoShowEmbedded
+    @AppStorage(ImageSettingsStore.autoShowRemoteImagesKey) private var autoShowRemoteImages = ImageSettingsStore.defaultAutoShowRemote
 
     /// Account edit UI: which account's edit sheet is open, `nil` when
     var body: some View {
@@ -254,6 +257,18 @@ struct AccountsListContent: View {
                 Text("メールの表示")
             } footer: {
                 Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。")
+            }
+
+            // B「画像の設定」.
+            Section {
+                Toggle("埋め込み画像を自動表示", isOn: $autoShowEmbeddedImages)
+                    .accessibilityIdentifier("settings.images.autoShowEmbeddedToggle")
+                Toggle("リモート画像を自動で読み込む", isOn: $autoShowRemoteImages)
+                    .accessibilityIdentifier("settings.images.autoShowRemoteToggle")
+            } header: {
+                Text("画像")
+            } footer: {
+                Text("埋め込み画像はメールに直接添付・埋め込まれた画像（cid: インライン画像・画像添付）です。リモート画像は外部サーバーから読み込む画像で、自動で読み込むと送信者にメールを開いたことが伝わる場合があります（開封トラッキング）。いずれもオフの場合は、メール詳細画面の「画像を表示」ボタンでそのメールだけ一時的に表示できます。")
             }
 
             // E9「ピン留め」.

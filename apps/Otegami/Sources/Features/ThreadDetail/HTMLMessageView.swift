@@ -7,11 +7,15 @@ import OtegamiStore
 import SyncEngine
 
 /// Renders an HTML message body: a `WKWebView` with page JavaScript
-/// disabled and external (`http`/`https`) resources blocked by default via
-/// a `WKContentRuleList`, plus a "画像を表示" banner (shown whenever the
-/// HTML references an external resource) that lifts the block and reloads
-/// — for that message, for the rest of this app session only; a relaunch
-/// (or opening a different message) goes back to blocking by default.
+/// disabled and, independently, two kinds of image auto-display gated by
+/// their own settings (`ImageSettingsStore`) — external (`http`/`https`)
+/// resources via a `WKContentRuleList`, and embedded (`cid:`) images via
+/// whether `CIDURLRewriter` even rewrites them to the resolvable
+/// `otegami-cid://` scheme. Each has its own "画像を表示"-style banner (shown
+/// whenever the HTML references that kind of image and the corresponding
+/// setting is off) that lifts the block and reloads — for that message, for
+/// the rest of this app session only; a relaunch (or opening a different
+/// message) goes back to each setting's default.
 ///
 /// The web view scrolls internally (rather than the SwiftUI-side content
 /// being measured and sized to fit an outer `ScrollView`) — simpler and
@@ -21,13 +25,13 @@ import SyncEngine
 /// this view the remaining space below its (non-scrolling) header instead
 /// of nesting it inside its own `ScrollView`.
 ///
-/// M8: `accountId`/`messageId`/`mailboxPath` back a `WKURLSchemeHandler`
+/// M8/B5: `accountId`/`messageId`/`mailboxPath` back a `WKURLSchemeHandler`
 /// for `cid:` inline images (`CIDSchemeHandler`, registered on the web
 /// view's configuration below) — kept entirely independent of
 /// `allowsExternalContent`/the `WKContentRuleList` (which only ever
-/// matches `^https?://`), so an inline image always renders regardless of
-/// whether the external-image banner has been dismissed, per the plan's
-/// "外部画像ブロックとは独立に動くこと".
+/// matches `^https?://`), so `allowsEmbeddedImages` is a wholly separate
+/// gate (whether `CIDURLRewriter` even runs at all) rather than being
+/// folded into the same content-rule-list mechanism as remote images.
 struct HTMLMessageView: View {
     let html: String
     let accountId: String
@@ -35,14 +39,52 @@ struct HTMLMessageView: View {
     let mailboxPath: String?
 
     @Environment(AppEnvironment.self) private var environment
-    @State private var allowsExternalContent = false
+    /// B: both seeded from `ImageSettingsStore`'s persisted defaults in
+    /// `init` — not `@AppStorage` directly, since `@AppStorage`'s own
+    /// default-value parameter only applies the *first* time a given
+    /// `@AppStorage` call site is read, and every `HTMLMessageView`
+    /// instance (one per opened message — see `MessageView`) is a *new*
+    /// call site each time; reading `UserDefaults.standard` explicitly
+    /// here instead means each freshly opened message correctly reflects
+    /// the current setting value, not just whatever the very first
+    /// `HTMLMessageView` ever constructed happened to see.
+    /// `UserDefaults.registerOtegamiImageDefaults()` (called once from
+    /// `AppEnvironment.init()`) is what makes the un-set-key case resolve
+    /// to the right default even before any explicit write.
+    @State private var allowsExternalContent: Bool
+    @State private var allowsEmbeddedImages: Bool
+
+    init(html: String, accountId: String, messageId: Int64, mailboxPath: String?) {
+        self.html = html
+        self.accountId = accountId
+        self.messageId = messageId
+        self.mailboxPath = mailboxPath
+        _allowsExternalContent = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowRemoteImagesKey))
+        _allowsEmbeddedImages = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowEmbeddedImagesKey))
+    }
 
     private var hasExternalContent: Bool {
         HTMLExternalResourceScanner.containsExternalResource(html: html)
     }
 
+    private var hasEmbeddedContent: Bool {
+        CIDURLRewriter.containsCIDReference(html: html)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if hasEmbeddedContent && !allowsEmbeddedImages {
+                Button {
+                    allowsEmbeddedImages = true
+                } label: {
+                    Label("埋め込み画像を表示", systemImage: "photo")
+                }
+                .buttonStyle(.bordered)
+                .padding(.horizontal)
+                .padding(.top, 4)
+                .accessibilityIdentifier("messageDetail.showEmbeddedImagesBanner")
+            }
+
             if hasExternalContent && !allowsExternalContent {
                 Button {
                     allowsExternalContent = true
@@ -58,6 +100,7 @@ struct HTMLMessageView: View {
             HTMLWebViewRepresentable(
                 html: html,
                 allowsExternalContent: allowsExternalContent,
+                allowsEmbeddedImages: allowsEmbeddedImages,
                 cidContext: CIDResolutionContext(
                     environment: environment, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath
                 )
@@ -144,6 +187,7 @@ import UIKit
 struct HTMLWebViewRepresentable: UIViewRepresentable {
     let html: String
     let allowsExternalContent: Bool
+    let allowsEmbeddedImages: Bool
     let cidContext: CIDResolutionContext
 
     func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext) }
@@ -154,12 +198,15 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
-        context.coordinator.load(html: html, allowsExternalContent: allowsExternalContent, into: webView)
+        context.coordinator.load(html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages, into: webView)
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        context.coordinator.reloadIfNeeded(html: html, allowsExternalContent: allowsExternalContent, cidContext: cidContext, into: webView)
+        context.coordinator.reloadIfNeeded(
+            html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            cidContext: cidContext, into: webView
+        )
     }
 }
 #elseif os(macOS)
@@ -168,6 +215,7 @@ import AppKit
 struct HTMLWebViewRepresentable: NSViewRepresentable {
     let html: String
     let allowsExternalContent: Bool
+    let allowsEmbeddedImages: Bool
     let cidContext: CIDResolutionContext
 
     func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext) }
@@ -176,12 +224,15 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
         webView.navigationDelegate = context.coordinator
         webView.underPageBackgroundColor = .clear
-        context.coordinator.load(html: html, allowsExternalContent: allowsExternalContent, into: webView)
+        context.coordinator.load(html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages, into: webView)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        context.coordinator.reloadIfNeeded(html: html, allowsExternalContent: allowsExternalContent, cidContext: cidContext, into: webView)
+        context.coordinator.reloadIfNeeded(
+            html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            cidContext: cidContext, into: webView
+        )
     }
 }
 #endif
@@ -219,23 +270,36 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
 
     private var lastLoadedHTML: String?
     private var lastAllowsExternalContent: Bool?
+    private var lastAllowsEmbeddedImages: Bool?
 
-    func reloadIfNeeded(html: String, allowsExternalContent: Bool, cidContext: CIDResolutionContext, into webView: WKWebView) {
+    func reloadIfNeeded(
+        html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool,
+        cidContext: CIDResolutionContext, into webView: WKWebView
+    ) {
         cidHandler?.updateContext(cidContext)
-        guard html != lastLoadedHTML || allowsExternalContent != lastAllowsExternalContent else { return }
-        load(html: html, allowsExternalContent: allowsExternalContent, into: webView)
+        guard html != lastLoadedHTML
+            || allowsExternalContent != lastAllowsExternalContent
+            || allowsEmbeddedImages != lastAllowsEmbeddedImages
+        else { return }
+        load(html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages, into: webView)
     }
 
-    func load(html: String, allowsExternalContent: Bool, into webView: WKWebView) {
+    func load(html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, into webView: WKWebView) {
         lastLoadedHTML = html
         lastAllowsExternalContent = allowsExternalContent
+        lastAllowsEmbeddedImages = allowsEmbeddedImages
 
-        // M8: rewrite cid: references to the otegami-cid:// scheme *before*
-        // wrapping — independent of `allowsExternalContent`/the content
-        // rule list below, which only ever matches `^https?://` and so
-        // never touches this custom scheme either way (plan: "外部画像
-        // ブロックとは独立に動くこと").
-        let cidRewrittenHTML = CIDURLRewriter.rewrite(html: html)
+        // B5: rewrite cid: references to the otegami-cid:// scheme *only*
+        // when embedded images are currently allowed — independent of
+        // `allowsExternalContent`/the content rule list below, which only
+        // ever matches `^https?://` and so never touches this custom scheme
+        // either way (plan: "外部画像ブロックとは独立に動くこと"). When
+        // embedded images are off, `cid:` references are left as literal
+        // `src="cid:..."` — WebKit has no handler for a bare `cid:` scheme,
+        // so it simply fails to load that image (the same "broken image"
+        // outcome a blocked remote image already produces), which is the
+        // intended "don't auto-show" behavior.
+        let cidRewrittenHTML = allowsEmbeddedImages ? CIDURLRewriter.rewrite(html: html) : html
         let document = HTMLDocumentBuilder.wrap(bodyHTML: cidRewrittenHTML)
 
         applyContentRuleList(blocked: !allowsExternalContent, to: webView) { [weak webView] in
