@@ -148,7 +148,8 @@ struct MessageListView: View {
 
     // MARK: - フラット表示 (B3)
 
-    /// "スレッドにまとめない" — when on, `observeThreads()` queries
+    /// The inverse of the 「スレッド表示」 setting — when threading is *off*,
+    /// `observeThreads()` queries
     /// `ThreadQuery.flatSummaries`/`unifiedInboxFlatSummaries` (one row per
     /// message) instead of `summariesObservation`/
     /// `unifiedInboxSummariesObservation` (one row per thread), but still
@@ -179,7 +180,12 @@ struct MessageListView: View {
     /// view's already-large action surface for comparatively little
     /// day-to-day benefit — flat mode's core promise ("一覧がメール単位になる")
     /// is about *what's shown*, not a new per-message operation model.
-    @AppStorage(ListDisplaySettingsStore.flatModeKey) private var isFlatMode = false
+    @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
+
+    /// Flat mode is simply "threading turned off" — kept as a derived value
+    /// so the rest of this view (and `ObservationKey`) can keep reading in
+    /// the affirmative "is this the flat query?" direction.
+    private var isFlatMode: Bool { !isThreadingEnabled }
 
     /// Whitespace-only input (including the empty string right after
     /// `.searchable` clears) is "not searching" — the normal `summaries`

@@ -51,7 +51,7 @@ Settings/AccountsSettingsView.swift`）の UI。
 
 | 項目 | キー | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| スレッドにまとめない (フラット表示) | `listDisplay.flatMode` | OFF | ON にすると一覧がスレッド単位ではなくメール単位になる (`ThreadQuery.flatSummaries`/`unifiedInboxFlatSummaries`)。検索結果 (macOS のインライン検索・iOS の検索タブ) には適用されない — 検索は従来通りスレッド単位 (`MessageListView` のドキュメントコメント参照)。スワイプ/コンテキストメニューの各操作は、フラット表示の行から実行した場合でも**そのメールが属するスレッド全体**に対して働く (既存のグループ表示と同じ挙動に揃えてある)。 |
+| スレッド表示 | `listDisplay.threading` | ON | ON で一覧を会話 (スレッド) 単位にまとめる。OFF にすると一覧がメール単位になる (`ThreadQuery.flatSummaries`/`unifiedInboxFlatSummaries`)。検索結果 (macOS のインライン検索・iOS の検索タブ) には適用されない — 検索は従来通りスレッド単位 (`MessageListView` のドキュメントコメント参照)。スワイプ/コンテキストメニューの各操作は、フラット表示の行から実行した場合でも**そのメールが属するスレッド全体**に対して働く (既存のグループ表示と同じ挙動に揃えてある)。 |
 | 送信者のプロフィールアイコンを表示 | `listDisplay.showAvatar` | ON | 一覧の各行に、差出人のイニシャル + アカウント色の丸アイコン (`SenderAvatar`) を表示する。外部サービス (Gravatar 等) には一切問い合わせない。 |
 | 本文プレビューの行数 | `listDisplay.previewLineCount` | 1行 | なし / 1行 / 2行 / 3行 から選択。 |
 | メール本文にも送信者アイコンを表示 | `listDisplay.showAvatarInDetail` | ON | 詳細画面 (スレッド内の各メッセージのヘッダ) にも同じ `SenderAvatar` を表示する。 |

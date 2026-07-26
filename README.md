@@ -93,8 +93,8 @@ Two things this app is built around, more than any single feature list:
 - **Pinning**: pin a message or thread to keep it at the top of the list,
   local-only by default with an opt-in to mirror IMAP `\Flagged` so it
   stays in sync with other clients.
-- **List display**: an optional flat (one row per message, not per
-  thread) list mode, a per-account-colored initials avatar next to each
+- **List display**: conversation threading you can switch off (giving a
+  flat, one-row-per-message list), a per-account-colored initials avatar next to each
   row and each message's header (generated locally — no third-party
   avatar service is ever contacted), and a configurable body-preview
   line count.

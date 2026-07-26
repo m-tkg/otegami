@@ -26,14 +26,18 @@ enum PreviewLineCount: Int, CaseIterable, Identifiable {
 /// preference with no other business logic attached doesn't need a
 /// dependency-injected home).
 enum ListDisplaySettingsStore {
-    /// B3 「フラット表示」: "スレッドにまとめない" — ON shows one row per message
-    /// instead of per thread. See `ThreadSummary.init(flatMessage:accountId:)`
-    /// and `MessageListView`'s flat-mode doc comment for the query/rendering
-    /// design. Default off — threading is this app's normal, documented
-    /// list behavior (`README.md`'s Features section); flat mode is an
-    /// opt-in alternative for anyone who'd rather see every message
-    /// individually.
-    static let flatModeKey = "listDisplay.flatMode"
+    /// B3 「スレッド表示」— ON groups the list by conversation (the app's
+    /// normal behavior); OFF shows one row per message. See
+    /// `ThreadSummary.init(flatMessage:accountId:)` and `MessageListView`'s
+    /// flat-mode doc comment for the query/rendering design.
+    ///
+    /// Stored as a positive "threading is on" flag rather than the negative
+    /// "don't group into threads" it started as: a toggle labelled with a
+    /// negation reads backwards ("turn ON 'don't group'"), which is exactly
+    /// the confusion this rename removes. Default on — threading is this
+    /// app's documented list behavior (`README.md`'s Features section).
+    static let threadingKey = "listDisplay.threading"
+    static let defaultThreading = true
 
     /// B4 「送信者のプロフィールアイコンの表示」: initials-on-account-color circular
     /// avatar (`SenderAvatar`) — no external image fetch, ever (privacy:

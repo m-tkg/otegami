@@ -69,7 +69,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         // `docs/verify.md` documents elsewhere for `messageList.list`).
         XCTAssertTrue(app.buttons["settings.swipe.leadingShortPicker"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings.swipe.trailingLongPicker"].waitForExistence(timeout: 5))
-        XCTAssertTrue(scrollSettingsUntilVisible(app.switches["settings.list.flatModeToggle"], in: app))
+        XCTAssertTrue(scrollSettingsUntilVisible(app.switches["settings.list.threadingToggle"], in: app))
         XCTAssertTrue(app.switches["settings.list.showAvatarToggle"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings.list.previewLineCountPicker"].waitForExistence(timeout: 5))
         XCTAssertTrue(scrollSettingsUntilVisible(app.switches["settings.pinSyncWithFlaggedToggle"], in: app))
@@ -162,9 +162,11 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         // reliably at the data layer by `ThreadQueryTests`
         // (`packages/OtegamiKit`) — this UI test's job is just confirming
         // the setting reaches the list at all.
-        let flatToggle = app.switches["settings.list.flatModeToggle"]
-        XCTAssertTrue(scrollSettingsUntilVisible(flatToggle, in: app))
-        flatToggle.tap()
+        // 「スレッド表示」 defaults to ON, so one tap turns threading off —
+        // i.e. switches the list into flat (one row per message) mode.
+        let threadingToggle = app.switches["settings.list.threadingToggle"]
+        XCTAssertTrue(scrollSettingsUntilVisible(threadingToggle, in: app))
+        threadingToggle.tap()
 
         let mailTab = app.tabBars.buttons["メール"]
         XCTAssertTrue(mailTab.waitForExistence(timeout: 10))

@@ -68,7 +68,7 @@ struct AccountsListContent: View {
     @AppStorage(SwipeActionSettingsStore.trailingLongActionKey) private var trailingLongRaw = SwipeActionSettingsStore.defaultTrailingLong.rawValue
     @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = true
     @AppStorage(TranslationSettingsStore.showListSummaryKey) private var showListSummary = false
-    @AppStorage(ListDisplaySettingsStore.flatModeKey) private var isFlatMode = false
+    @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
     @AppStorage(ListDisplaySettingsStore.showAvatarKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatar
     @AppStorage(ListDisplaySettingsStore.previewLineCountKey) private var previewLineCountRaw = ListDisplaySettingsStore.defaultPreviewLineCount.rawValue
     @AppStorage(ListDisplaySettingsStore.showAvatarInDetailKey) private var showAvatarInDetail = ListDisplaySettingsStore.defaultShowAvatarInDetail
@@ -225,8 +225,8 @@ struct AccountsListContent: View {
 
             // B3/B4「一覧・表示」.
             Section {
-                Toggle("スレッドにまとめない（フラット表示）", isOn: $isFlatMode)
-                    .accessibilityIdentifier("settings.list.flatModeToggle")
+                Toggle("スレッド表示", isOn: $isThreadingEnabled)
+                    .accessibilityIdentifier("settings.list.threadingToggle")
                 Toggle("送信者のプロフィールアイコンを表示", isOn: $showAvatar)
                     .accessibilityIdentifier("settings.list.showAvatarToggle")
                 Picker("本文プレビューの行数", selection: $previewLineCountRaw) {
