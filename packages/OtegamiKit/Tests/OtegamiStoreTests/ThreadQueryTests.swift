@@ -203,4 +203,35 @@ struct ThreadQueryTests {
         #expect(flat.count == 2)
         #expect(flat.map(\.thread.accountId) == [accountB.id, accountIdA], "Expected newest-first interleaving across accounts")
     }
+
+    // MARK: - Mute (新画面構成: メール本文画面「…」メニューの「スレッドをミュート」)
+
+    @Test("setMuted toggles isMuted and is idempotent")
+    func setMutedTogglesIsMuted() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let threadId = try database.dbWriter.write { db in
+            try insertThread(accountId: accountId, mailboxId: inboxId, uid: 1, date: Date(), db: db)
+        }
+
+        try database.dbWriter.write { db in try ThreadQuery.setMuted(threadId: threadId, muted: true, db: db) }
+        var thread = try database.dbWriter.read { db in try ThreadRecord.fetchOne(db, key: threadId) }
+        #expect(thread?.isMuted == true)
+
+        // Idempotent: setting the same value again is a harmless no-op.
+        try database.dbWriter.write { db in try ThreadQuery.setMuted(threadId: threadId, muted: true, db: db) }
+        thread = try database.dbWriter.read { db in try ThreadRecord.fetchOne(db, key: threadId) }
+        #expect(thread?.isMuted == true)
+
+        try database.dbWriter.write { db in try ThreadQuery.setMuted(threadId: threadId, muted: false, db: db) }
+        thread = try database.dbWriter.read { db in try ThreadRecord.fetchOne(db, key: threadId) }
+        #expect(thread?.isMuted == false)
+    }
+
+    @Test("setMuted on a nonexistent thread id is a no-op, not an error")
+    func setMutedOnMissingThreadIsNoOp() throws {
+        let (database, _, _, _) = try makeDatabase()
+        #expect(throws: Never.self) {
+            try database.dbWriter.write { db in try ThreadQuery.setMuted(threadId: 999_999, muted: true, db: db) }
+        }
+    }
 }

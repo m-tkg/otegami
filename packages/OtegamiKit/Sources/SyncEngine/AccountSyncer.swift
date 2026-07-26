@@ -545,6 +545,10 @@ public actor AccountSyncer {
             // doc comment for why `fromAddresses` itself (JSON in a `.blob`
             // column) can't serve that purpose directly.
             fromText: FTSIndexer.composeFromText(envelope.from),
+            // 新画面構成: `to:`/`cc:` 検索演算子用 — see `MessageRecord.toText`/
+            // `.ccText`'s doc comment.
+            toText: FTSIndexer.composeFromText(envelope.to),
+            ccText: FTSIndexer.composeFromText(envelope.cc),
             date: envelope.date,
             internalDate: envelope.internalDate,
             flagsRaw: envelope.flags.rawValue,

@@ -614,6 +614,53 @@ extension AppDatabase {
             }
         }
 
+        // v18 (新画面構成: 検索演算子 `to:`/`cc:`): plain-text mirrors of
+        // `toAddresses`/`ccAddresses`, exactly mirroring v7's `fromText`
+        // addition (see `MessageRecord.toText`/`.ccText`'s doc comment for
+        // why `SearchQuery`'s new operator matching can't query the JSON
+        // `.blob` address columns directly). Backfilled the same way v7
+        // backfilled `fromText`.
+        migrator.registerMigration("v18") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "toText", .text)
+                t.add(column: "ccText", .text)
+            }
+            let messages = try MessageRecord.fetchAll(db)
+            for var message in messages {
+                message.toText = FTSIndexer.composeFromText(message.toAddresses)
+                message.ccText = FTSIndexer.composeFromText(message.ccAddresses)
+                try message.update(db, columns: [Column("toText"), Column("ccText")])
+            }
+        }
+
+        // v19 (新画面構成: メール本文画面「…」メニューの「スレッドをミュート」):
+        // see `ThreadRecord.isMuted`'s doc comment for what this flag does
+        // (and, importantly, does not — push suppression) and why.
+        migrator.registerMigration("v19") { db in
+            try db.alter(table: "thread") { t in
+                t.add(column: "isMuted", .boolean).notNull().defaults(to: false)
+            }
+        }
+
+        // v20 (新画面構成: 検索履歴): the last N raw query strings a user
+        // actually ran, most-recent-first, tappable to re-run
+        // (`SearchHistoryQuery`/`SearchScreenView`). Deliberately its own
+        // tiny table rather than reusing `mailTemplate`'s "flat list +
+        // optional accountId scope" shape — search history has no per-
+        // account scoping concept (a query searches across whichever scope
+        // the search screen has selected at the time, independent of what
+        // was selected when it was first typed) and needs `queryText` to be
+        // unique so re-running an existing entry bumps its `updatedAt`
+        // (moves it to the top) instead of accumulating duplicate rows.
+        migrator.registerMigration("v20") { db in
+            try db.create(table: "searchHistory") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("queryText", .text).notNull().unique()
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.create(index: "searchHistory_on_updatedAt", on: "searchHistory", columns: ["updatedAt"])
+        }
+
         return migrator
     }
 }

@@ -31,6 +31,8 @@ struct SearchQueryTests {
         subject: String?,
         plainText: String? = nil,
         from: [EmailAddress] = [],
+        to: [EmailAddress] = [],
+        cc: [EmailAddress] = [],
         date: Date = Date(timeIntervalSince1970: 1_700_000_000)
     ) throws -> (messageId: Int64, threadId: Int64) {
         var message = MessageRecord(
@@ -38,7 +40,11 @@ struct SearchQueryTests {
             uid: uid,
             subject: subject,
             fromAddresses: from,
+            toAddresses: to,
+            ccAddresses: cc,
             fromText: FTSIndexer.composeFromText(from),
+            toText: FTSIndexer.composeFromText(to),
+            ccText: FTSIndexer.composeFromText(cc),
             date: date,
             internalDate: date
         )
@@ -301,5 +307,120 @@ struct SearchQueryTests {
             }
             #expect(results.isEmpty)
         }
+    }
+
+    // MARK: - Header operators (新画面構成: from:/to:/cc:/subject:)
+
+    @Test("parse splits recognized operator:value tokens out of the free text, case-insensitively")
+    func parseSplitsOperatorsFromFreeText() {
+        let parsed = SearchQuery.parse("From:aiko@otegami.test budget To:boss@otegami.test report Subject:Q3 Cc:cc@otegami.test")
+        #expect(parsed.from == "aiko@otegami.test")
+        #expect(parsed.to == "boss@otegami.test")
+        #expect(parsed.cc == "cc@otegami.test")
+        #expect(parsed.subject == "Q3")
+        #expect(parsed.freeText == "budget report")
+    }
+
+    @Test("parse treats a bare 'from:' with no value as free text, not an operator")
+    func parseTreatsEmptyOperatorValueAsFreeText() {
+        let parsed = SearchQuery.parse("from: budget")
+        #expect(parsed.from == nil)
+        #expect(parsed.freeText == "from: budget")
+    }
+
+    @Test("parse: a repeated operator keeps only its last occurrence")
+    func parseRepeatedOperatorKeepsLastValue() {
+        let parsed = SearchQuery.parse("from:a@x.test from:b@x.test")
+        #expect(parsed.from == "b@x.test")
+    }
+
+    @Test("from: narrows results to the sender's address, independent of the free-text match")
+    func fromOperatorNarrowsToSender() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, mailboxId) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "1") }
+        let (matchId, _) = try database.dbWriter.write { db in
+            try insertMessage(
+                db: db, accountId: accountId, mailboxId: mailboxId, uid: 1,
+                subject: "Budget review", from: [EmailAddress(address: "aiko@otegami.test")]
+            )
+        }
+        _ = try database.dbWriter.write { db in
+            try insertMessage(
+                db: db, accountId: accountId, mailboxId: mailboxId, uid: 2,
+                subject: "Budget review", from: [EmailAddress(address: "someone-else@otegami.test")]
+            )
+        }
+
+        let results = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "from:aiko@otegami.test budget", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(results.map { $0.latestMessage?.id } == [matchId])
+    }
+
+    @Test("an operator-only query (no free text) still runs, matched purely on the operator")
+    func operatorOnlyQueryRunsWithNoFreeText() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, mailboxId) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "1") }
+        let (matchId, _) = try database.dbWriter.write { db in
+            try insertMessage(
+                db: db, accountId: accountId, mailboxId: mailboxId, uid: 1,
+                subject: "Anything", from: [EmailAddress(address: "aiko@otegami.test")]
+            )
+        }
+
+        let results = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "from:aiko@otegami.test", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(results.map { $0.latestMessage?.id } == [matchId])
+    }
+
+    @Test("to: and cc: each narrow independently, and subject: only matches the subject column")
+    func toCcSubjectOperatorsMatchTheirOwnColumn() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, mailboxId) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "1") }
+        let (toMatchId, _) = try database.dbWriter.write { db in
+            try insertMessage(
+                db: db, accountId: accountId, mailboxId: mailboxId, uid: 1,
+                subject: "Weekly sync", to: [EmailAddress(address: "team@otegami.test")]
+            )
+        }
+        let (ccMatchId, _) = try database.dbWriter.write { db in
+            try insertMessage(
+                db: db, accountId: accountId, mailboxId: mailboxId, uid: 2,
+                subject: "FYI", cc: [EmailAddress(address: "manager@otegami.test")]
+            )
+        }
+
+        let toResults = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "to:team@otegami.test", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(toResults.map { $0.latestMessage?.id } == [toMatchId])
+
+        let ccResults = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "cc:manager@otegami.test", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(ccResults.map { $0.latestMessage?.id } == [ccMatchId])
+
+        let subjectResults = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "subject:Weekly", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(subjectResults.map { $0.latestMessage?.id } == [toMatchId])
+    }
+
+    @Test("combining an operator with free text requires both (AND)")
+    func operatorAndFreeTextAreCombinedWithAnd() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, mailboxId) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "1") }
+        _ = try database.dbWriter.write { db in
+            try insertMessage(
+                db: db, accountId: accountId, mailboxId: mailboxId, uid: 1,
+                subject: "Lunch plans", from: [EmailAddress(address: "aiko@otegami.test")]
+            )
+        }
+
+        let results = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "from:aiko@otegami.test zzzznotfound", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(results.isEmpty)
     }
 }

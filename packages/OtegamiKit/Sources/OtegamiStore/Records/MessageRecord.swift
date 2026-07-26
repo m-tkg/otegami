@@ -47,6 +47,16 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     /// inserted directly by a test that doesn't set it.
     public var fromText: String?
 
+    /// Plain-text mirrors of `toAddresses`/`ccAddresses`, added in v18
+    /// (search operators: `to:`/`cc:`) for the exact same reason
+    /// `fromText` exists — `toAddresses`/`ccAddresses` are JSON in a
+    /// `.blob` column, not something a `LIKE`-based operator match can
+    /// search directly. Kept in sync with their address-array counterparts
+    /// by `AccountSyncer.upsert`; `nil` only for rows inserted directly by
+    /// a test that doesn't set them.
+    public var toText: String?
+    public var ccText: String?
+
     public var date: Date?
     public var internalDate: Date
 
@@ -106,6 +116,8 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         bccAddresses: [EmailAddress] = [],
         replyToAddresses: [EmailAddress] = [],
         fromText: String? = nil,
+        toText: String? = nil,
+        ccText: String? = nil,
         date: Date? = nil,
         internalDate: Date,
         flagsRaw: Int = 0,
@@ -134,6 +146,8 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.bccAddresses = bccAddresses
         self.replyToAddresses = replyToAddresses
         self.fromText = fromText
+        self.toText = toText
+        self.ccText = ccText
         self.date = date
         self.internalDate = internalDate
         self.flagsRaw = flagsRaw

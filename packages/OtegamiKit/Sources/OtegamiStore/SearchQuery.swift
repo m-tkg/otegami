@@ -17,6 +17,28 @@ public enum SearchScope: Sendable, Equatable {
 /// `ThreadQuery` does for a plain mailbox listing — so `SearchView` can
 /// render results with the exact same `ThreadRow` a normal message list
 /// uses.
+/// A raw search-bar string, split into its header operators (`from:`/`to:`/
+/// `cc:`/`subject:`) and whatever free text is left over — 新画面構成の検索
+/// 演算子 ("演算子部分は全文検索ではなくヘッダに対する条件として解釈し、残りの
+/// テキストは通常の全文検索"). `SearchQuery.parse(_:)` builds one from a raw
+/// string; `SearchQuery.threadSummaries` is the only place that consumes it.
+public struct ParsedSearchQuery: Sendable, Equatable {
+    public var freeText: String
+    public var from: String?
+    public var to: String?
+    public var cc: String?
+    public var subject: String?
+
+    /// `true` when there's nothing at all to search on (no free text and no
+    /// operator) — the same "an empty query returns no results" rule
+    /// `threadSummaries` already applied to a plain blank string, extended
+    /// to also cover "only whitespace, no operators either."
+    public var isEmpty: Bool {
+        freeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && from == nil && to == nil && cc == nil && subject == nil
+    }
+}
+
 public enum SearchQuery {
     /// Below this many `Character`s (not UTF-8 bytes — a query's *meaning*
     /// scales with grapheme count, not byte count, which matters a lot for
@@ -40,29 +62,112 @@ public enum SearchQuery {
     /// "wait 14 seconds to see all 80,000."
     public static let defaultResultLimit = 200
 
+    /// Recognized header-operator prefixes (新画面構成の検索演算子) —
+    /// case-insensitive, ASCII only (matches the operator names themselves,
+    /// not the values after the colon). A plain `[String]` (rather than a
+    /// table of prefix→closure pairs) so `parse(_:)`'s `switch` below stays
+    /// the one and only place that knows what each operator actually does —
+    /// also sidesteps Swift 6 strict concurrency flagging a `static let` of
+    /// closures as non-`Sendable` shared mutable state.
+    private static let operatorPrefixes = ["from:", "to:", "cc:", "subject:"]
+
+    /// Splits a raw search-bar string into its recognized `operator:value`
+    /// tokens and whatever's left over as free text (plan: "`from:aaa@bbb
+    /// .com` で from 絞り込み。`to:`/`cc:`/`subject:` にも対応"). Tokenizes on
+    /// whitespace — an operator's value can't itself contain a space (e.g.
+    /// `from:"a b"` isn't supported), which matches how every mainstream
+    /// mail client's search-operator syntax works and keeps this a simple,
+    /// single-pass token scan rather than a small quoted-string parser.
+    /// Only the *last* occurrence of a given operator wins if it's repeated
+    /// (e.g. `from:a from:b` behaves as `from:b`) — simpler than merging
+    /// duplicates, and a user typing the same operator twice is almost
+    /// certainly correcting themselves, not asking for an OR.
+    public static func parse(_ raw: String) -> ParsedSearchQuery {
+        var parsed = ParsedSearchQuery(freeText: "", from: nil, to: nil, cc: nil, subject: nil)
+        var freeWords: [String] = []
+        for token in raw.split(separator: " ", omittingEmptySubsequences: true) {
+            let word = String(token)
+            guard let prefix = operatorPrefixes.first(where: { word.lowercased().hasPrefix($0) }) else {
+                freeWords.append(word)
+                continue
+            }
+            let value = String(word.dropFirst(prefix.count))
+            guard !value.isEmpty else {
+                // A bare `from:` with nothing after it isn't a usable
+                // operator — treat the whole token as free text instead of
+                // silently discarding it.
+                freeWords.append(word)
+                continue
+            }
+            switch prefix {
+            case "from:": parsed.from = value
+            case "to:": parsed.to = value
+            case "cc:": parsed.cc = value
+            case "subject:": parsed.subject = value
+            default: freeWords.append(word)
+            }
+        }
+        parsed.freeText = freeWords.joined(separator: " ")
+        return parsed
+    }
+
     /// Runs `query` against `scope`, returning matching threads newest
     /// first (plan: "結果はスコアでなく date DESC で十分" — no relevance ranking).
     /// An empty/whitespace-only query returns no results rather than every
-    /// thread (there is no such thing as "browse mode" via the search bar).
-    /// `limit` caps how many threads are returned — see
-    /// ``defaultResultLimit``'s doc comment for why one exists at all; pass
-    /// `nil` for the pre-M10 "no cap" behavior.
+    /// thread (there is no such thing as "browse mode" via the search bar)
+    /// — extended (新画面構成) so a query that's *only* operators (no free
+    /// text left over, e.g. `from:aaa@bbb.com` alone) still runs, matched
+    /// purely on those operators. `limit` caps how many threads are
+    /// returned — see ``defaultResultLimit``'s doc comment for why one
+    /// exists at all; pass `nil` for the pre-M10 "no cap" behavior.
     public static func threadSummaries(query: String, scope: SearchScope, limit: Int? = defaultResultLimit, db: Database) throws -> [ThreadSummary] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
+        try threadSummaries(parsed: parse(query), scope: scope, limit: limit, db: db)
+    }
 
-        let messageIds = trimmed.count >= minimumFTSLength
-            ? try matchFTS(trimmed, scope: scope, db: db)
-            : try matchLIKE(trimmed, scope: scope, db: db)
-        guard !messageIds.isEmpty else { return [] }
+    /// The operator-aware entry point `threadSummaries(query:scope:limit:db:)`
+    /// delegates to — also callable directly by a caller that already
+    /// parsed the raw text itself (e.g. to render which operators are
+    /// active as chips) and doesn't want to re-parse it.
+    public static func threadSummaries(parsed: ParsedSearchQuery, scope: SearchScope, limit: Int? = defaultResultLimit, db: Database) throws -> [ThreadSummary] {
+        guard !parsed.isEmpty else { return [] }
+
+        // Each operator/free-text component narrows the result set further
+        // (AND semantics — a message must satisfy every one that's
+        // present), computed as `Set<Int64>` intersections rather than a
+        // single combined SQL query: the free-text side already branches
+        // between two entirely different matching strategies (FTS trigram
+        // vs. LIKE, `matchFTS`/`matchLIKE`'s own doc comments), so folding
+        // per-operator `LIKE` clauses into that same SQL would mean
+        // duplicating each strategy's WHERE-building twice over. Every
+        // component here already runs against `scope`, so the intersection
+        // never needs to re-check scope itself.
+        var messageIds: Set<Int64>?
+        func narrow(_ ids: [Int64]) {
+            messageIds = messageIds.map { $0.intersection(ids) } ?? Set(ids)
+        }
+
+        let trimmedFreeText = parsed.freeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedFreeText.isEmpty {
+            let ids = trimmedFreeText.count >= minimumFTSLength
+                ? try matchFTS(trimmedFreeText, scope: scope, db: db)
+                : try matchLIKE(trimmedFreeText, scope: scope, db: db)
+            narrow(ids)
+        }
+        if let from = parsed.from { narrow(try matchColumn("fromText", value: from, scope: scope, db: db)) }
+        if let to = parsed.to { narrow(try matchColumn("toText", value: to, scope: scope, db: db)) }
+        if let cc = parsed.cc { narrow(try matchColumn("ccText", value: cc, scope: scope, db: db)) }
+        if let subject = parsed.subject { narrow(try matchColumn("subject", value: subject, scope: scope, db: db)) }
+
+        guard let messageIds, !messageIds.isEmpty else { return [] }
+        let messageIdsArray = Array(messageIds)
 
         let threadIds = try Int64.fetchAll(
             db,
             sql: """
                 SELECT DISTINCT threadId FROM message
-                WHERE id IN (\(messageIds.map { _ in "?" }.joined(separator: ","))) AND threadId IS NOT NULL
+                WHERE id IN (\(messageIdsArray.map { _ in "?" }.joined(separator: ","))) AND threadId IS NOT NULL
                 """,
-            arguments: StatementArguments(messageIds)
+            arguments: StatementArguments(messageIdsArray)
         )
         guard !threadIds.isEmpty else { return [] }
 
@@ -156,6 +261,27 @@ public enum SearchQuery {
             }
         }
         return result
+    }
+
+    // MARK: - Header operators (新画面構成の検索演算子)
+
+    /// Matches `message.<column> LIKE %value%` — the shared implementation
+    /// behind every header operator (`from:`/`to:`/`cc:`/`subject:`).
+    /// `column` is always one of a small fixed set of literal strings this
+    /// file itself passes in (never user input), so interpolating it
+    /// directly into the SQL text is safe; `value` (genuine user input)
+    /// only ever appears as a bound `?` parameter.
+    private static func matchColumn(_ column: String, value: String, scope: SearchScope, db: Database) throws -> [Int64] {
+        let pattern = "%\(likeEscape(value))%"
+        let (scopeSQL, scopeArgs) = scopeClause(scope, messageAlias: "message")
+        let sql = """
+            SELECT message.id FROM message
+            JOIN mailbox ON mailbox.id = message.mailboxId
+            WHERE message.\(column) LIKE ? ESCAPE '\\' \(scopeSQL)
+            """
+        var arguments: [(any DatabaseValueConvertible)?] = [pattern]
+        arguments.append(contentsOf: scopeArgs)
+        return try Int64.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
     }
 
     // MARK: - Scope

@@ -24,6 +24,23 @@ public struct ThreadRecord: Codable, Equatable, Sendable, FetchableRecord, Mutab
     /// same as `unreadCount`. Added in v16.
     public var isPinned: Bool
 
+    /// 新画面構成: "スレッドをミュート" (メール本文画面の「…」メニュー) — `true`
+    /// while muted. Purely a local display/notification-intent flag (no
+    /// server-side equivalent to mirror, unlike `isPinned`'s optional
+    /// `\Flagged` sync): a muted thread renders dimmed in the list
+    /// (`ThreadRowView`) and is excluded from the unread-count badges its
+    /// own messages would otherwise contribute. Toggled by
+    /// `ThreadQuery.setMuted(threadId:muted:db:)`. Added in v19.
+    ///
+    /// Does **not** suppress push notifications for this thread — see that
+    /// migration's doc comment for why (the relay that decides whether to
+    /// push has no concept of threads or mutes at all, only "did this
+    /// mailbox get new mail"; teaching it about a purely local, per-device
+    /// flag would need a real client-to-relay sync channel this app
+    /// doesn't have). Documented as a known limitation, not silently
+    /// dropped — `docs/design-system.md`'s design-phase-4 section.
+    public var isMuted: Bool
+
     public init(
         id: Int64? = nil,
         accountId: String,
@@ -31,7 +48,8 @@ public struct ThreadRecord: Codable, Equatable, Sendable, FetchableRecord, Mutab
         lastMessageDate: Date? = nil,
         messageCount: Int = 0,
         unreadCount: Int = 0,
-        isPinned: Bool = false
+        isPinned: Bool = false,
+        isMuted: Bool = false
     ) {
         self.id = id
         self.accountId = accountId
@@ -40,6 +58,7 @@ public struct ThreadRecord: Codable, Equatable, Sendable, FetchableRecord, Mutab
         self.messageCount = messageCount
         self.unreadCount = unreadCount
         self.isPinned = isPinned
+        self.isMuted = isMuted
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
