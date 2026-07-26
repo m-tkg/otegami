@@ -789,10 +789,10 @@ final class AppEnvironment {
     /// here, before either write, since both the DB row and the token
     /// storage need to agree on it) and kicks off the first sync the same
     /// way `AccountSetupView.saveAccount`/`iCloudAccountSetupView` do.
-    func createGmailAccount(email: String, tokens: GoogleOAuthTokens) async throws {
+    func createGmailAccount(email: String, displayName: String, tokens: GoogleOAuthTokens) async throws {
         guard let tokenStore else { throw AuthResolutionError.oauthUnavailable }
         let account = AccountRecord(
-            displayName: email,
+            displayName: displayName.isEmpty ? email : displayName,
             email: email,
             authType: .oauth2,
             kind: .gmail,
