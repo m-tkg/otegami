@@ -93,6 +93,11 @@ Two things this app is built around, more than any single feature list:
   "送信を取り消す" (undo send) button — leaving the app finalizes the send
   immediately instead of continuing to count down in the background. See
   [docs/settings.md](docs/settings.md).
+- **Templates**: reusable compose snippets, managed in Settings, each
+  optionally scoped to one account (unscoped ones are available from
+  every account). Insertable from the Composer's "テンプレートを挿入" menu —
+  fills both subject and body when starting a blank message, or appends
+  to the body otherwise (signature-style).
 - **Swipe actions & bulk select**: both left and right swipes have
   independently configurable short/long actions (read/unread toggle,
   archive, mark as junk, pin, delete), a deliberately tap-only delete/junk

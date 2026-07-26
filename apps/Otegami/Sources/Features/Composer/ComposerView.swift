@@ -132,6 +132,16 @@ struct ComposerView: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     #endif
 
+    // MARK: - C8 テンプレート
+
+    /// Templates visible from the currently-selected `From` account —
+    /// `accountId == nil` (global) or `accountId == selectedAccountId`
+    /// (scoped to this one). Reloaded whenever `selectedAccountId` changes
+    /// (`.task(id: selectedAccountId)` below), not just once at `prepare()`
+    /// time, so switching the `From` picker updates which templates are
+    /// offered without needing to reopen the Composer.
+    @State private var availableTemplates: [MailTemplateRecord] = []
+
     var body: some View {
         NavigationStack {
             Form {
@@ -140,6 +150,7 @@ struct ComposerView: View {
                 subjectSection
                 bodySection
                 attachmentsSection
+                templateSection
                 translationSection
                 if let translateErrorMessage {
                     Section {
@@ -214,6 +225,7 @@ struct ComposerView: View {
                 .accessibilityIdentifier("composer.keepEditingButton")
         }
         .task { await prepare() }
+        .task(id: selectedAccountId) { await loadAvailableTemplates() }
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
@@ -310,6 +322,65 @@ struct ComposerView: View {
             .accessibilityIdentifier("composer.addPhotoButton")
             #endif
         }
+    }
+
+    /// C8: only shown when at least one template is available to the
+    /// currently-selected `From` account (`availableTemplates`, kept in
+    /// sync by `.task(id: selectedAccountId)` in `body`) — an empty `Menu`
+    /// with nothing to pick would just be confusing. A `Menu` (not a
+    /// `Picker`) since applying a template is an *action* (inserts text
+    /// right away), not a persistent selection state.
+    @ViewBuilder
+    private var templateSection: some View {
+        if !availableTemplates.isEmpty {
+            Section {
+                Menu {
+                    ForEach(availableTemplates) { template in
+                        Button(template.name) { applyTemplate(template) }
+                    }
+                } label: {
+                    Label("テンプレートを挿入", systemImage: "doc.on.doc")
+                }
+                .accessibilityIdentifier("composer.insertTemplateMenu")
+            } header: {
+                Text("テンプレート")
+            }
+        }
+    }
+
+    /// C8: "署名的な使い方（本文の末尾に定型文）と、定型メール全体の両方に使える"
+    /// — which of the two this does isn't a property of the template
+    /// itself, just whether the Composer already has content: a
+    /// completely blank new message (no subject, no body) gets the
+    /// template's subject (if it has one) and body used wholesale, exactly
+    /// like starting from a canned message; anything else (already typed
+    /// a subject, already typed some body text, or a template with no
+    /// subject of its own) appends the template's body to whatever's
+    /// already there — the signature-style case.
+    private func applyTemplate(_ template: MailTemplateRecord) {
+        let isBlankComposition = subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if isBlankComposition, let templateSubject = template.subject, !templateSubject.isEmpty {
+            subject = templateSubject
+            bodyText = template.body
+        } else if bodyText.isEmpty {
+            bodyText = template.body
+        } else {
+            bodyText += "\n\n" + template.body
+        }
+    }
+
+    private func loadAvailableTemplates() async {
+        guard let selectedAccountId else {
+            availableTemplates = []
+            return
+        }
+        availableTemplates = (try? await environment.database.dbWriter.read { db in
+            try MailTemplateRecord
+                .filter(Column("accountId") == nil || Column("accountId") == selectedAccountId)
+                .order(Column("sortOrder"))
+                .fetchAll(db)
+        }) ?? []
     }
 
     /// 1k: "下部ツールバーに 📎 と『英語に翻訳して送る』" — this app's Composer is a

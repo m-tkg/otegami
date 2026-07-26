@@ -584,6 +584,36 @@ extension AppDatabase {
             try db.create(index: "thread_on_isPinned_lastMessageDate", on: "thread", columns: ["isPinned", "lastMessageDate"])
         }
 
+        // v17 (C8 テンプレート): reusable compose templates. Managed globally
+        // (not per-account) with an *optional* per-template account scope —
+        // `accountId == nil` means "available from every account's
+        // Composer"; a non-nil value restricts it to that one account
+        // (`t.column("accountId", .text)...references("account", onDelete:
+        // .cascade)` — deleting an account quietly drops only *that*
+        // account's own scoped templates, never a global one). This is the
+        // "interpretation B" the plan called out as the more practical of
+        // the two readings of "アカウントごとに設定できる" (per-template scope
+        // vs. a per-account default template): a single flat list is far
+        // simpler to build a settings CRUD screen and a Composer picker
+        // around than two parallel concepts, while still satisfying the
+        // literal requirement — most users will want the same signature-
+        // style templates everywhere and occasionally one that only makes
+        // sense from a specific (e.g. work) account.
+        migrator.registerMigration("v17") { db in
+            try db.create(table: "mailTemplate") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("name", .text).notNull()
+                t.column("subject", .text)
+                t.column("body", .text).notNull()
+                t.column("accountId", .text)
+                    .indexed()
+                    .references("account", onDelete: .cascade)
+                t.column("sortOrder", .integer).notNull().defaults(to: 0)
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+            }
+        }
+
         return migrator
     }
 }

@@ -191,6 +191,16 @@ struct AccountsListContent: View {
                 .accessibilityIdentifier("settings.pushNotificationsLink")
             }
 
+            // C8「メール作成のテンプレート」.
+            Section {
+                NavigationLink {
+                    TemplatesSettingsView()
+                } label: {
+                    Label("テンプレート", systemImage: "doc.on.doc")
+                }
+                .accessibilityIdentifier("settings.templatesLink")
+            }
+
             // D8「スワイプの割り当て」— iOS only (macOS has no swipe gesture;
             // every action is always reachable there via the row's
             // context menu instead — `MessageListRow.contextMenuContent`).
