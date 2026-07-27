@@ -266,6 +266,123 @@ struct GooglePeopleAvatarClientTests {
         #expect(data == nil)
     }
 
+    // MARK: - Diagnostics outcome (Task #42「アバター診断」)
+
+    @Test
+    func fetchOtherContactsIndexOutcomeReportsEntryAndPhotoCountsOnSuccess() async throws {
+        PeopleAPIStubURLProtocol.handler = { request in
+            self.jsonResponse(request.url!, status: 200, body: [
+                "otherContacts": [
+                    ["emailAddresses": [["value": "photo@example.com"]], "photos": [["url": "https://example.com/p.jpg"]]],
+                    ["emailAddresses": [["value": "nophoto@example.com"]]],
+                ],
+            ])
+        }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        let outcome = await client.fetchOtherContactsIndexOutcome(accessToken: "token")
+        #expect(outcome.result == .success(["photo@example.com": URL(string: "https://example.com/p.jpg")!]))
+        #expect(outcome.diagnostics.httpStatus == 200)
+        #expect(outcome.diagnostics.pagesFetched == 1)
+        #expect(outcome.diagnostics.entriesFetched == 2)
+        #expect(outcome.diagnostics.entriesWithPhoto == 1)
+        #expect(outcome.diagnostics.discarded == false)
+    }
+
+    @Test
+    func fetchOtherContactsIndexOutcomeReportsDiscardWhenALaterPageFails() async throws {
+        PeopleAPIStubURLProtocol.handler = { [self] request in
+            let pageToken = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "pageToken" })?.value
+            if pageToken == nil {
+                return jsonResponse(request.url!, status: 200, body: [
+                    "otherContacts": [
+                        ["emailAddresses": [["value": "first@example.com"]], "photos": [["url": "https://example.com/first.jpg"]]]
+                    ],
+                    "nextPageToken": "page-2",
+                ])
+            }
+            return jsonResponse(request.url!, status: 500, body: ["error": "boom, and someone@example.com is in here too"])
+        }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        let outcome = await client.fetchOtherContactsIndexOutcome(accessToken: "token")
+        #expect(outcome.result == .unavailable)
+        #expect(outcome.diagnostics.httpStatus == 500)
+        #expect(outcome.diagnostics.pagesFetched == 1)
+        #expect(outcome.diagnostics.entriesFetched == 1)
+        #expect(outcome.diagnostics.entriesWithPhoto == 1)
+        #expect(outcome.diagnostics.discarded == true)
+        #expect(outcome.diagnostics.discardReason?.contains("1件") == true)
+        #expect(outcome.diagnostics.errorBodySnippet?.contains("boom") == true)
+    }
+
+    @Test
+    func fetchOtherContactsIndexOutcomeReportsNetworkErrorDescription() async throws {
+        PeopleAPIStubURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        let outcome = await client.fetchOtherContactsIndexOutcome(accessToken: "token")
+        #expect(outcome.result == .unavailable)
+        #expect(outcome.diagnostics.networkErrorDescription != nil)
+        #expect(outcome.diagnostics.discarded == false)
+    }
+
+    // MARK: - fetchSelfPhotoIndexOutcome (Task #42「自分のプロフィール写真」)
+
+    @Test
+    func fetchSelfPhotoIndexOutcomeHitsPeopleMeAndMapsEveryAliasToTheSamePhoto() async throws {
+        PeopleAPIStubURLProtocol.handler = { request in
+            #expect(request.url?.absoluteString.hasPrefix("https://people.googleapis.com/v1/people/me") == true)
+            #expect(request.url?.absoluteString.contains("people/me/connections") == false)
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            #expect(items.first(where: { $0.name == "personFields" })?.value == "emailAddresses,photos")
+            return self.jsonResponse(request.url!, status: 200, body: [
+                "emailAddresses": [["value": "me@example.com"], ["value": "alias@example.com"]],
+                "photos": [["url": "https://example.com/me.jpg", "default": false]],
+            ])
+        }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        let outcome = await client.fetchSelfPhotoIndexOutcome(accessToken: "token")
+        #expect(outcome.result == .success([
+            "me@example.com": URL(string: "https://example.com/me.jpg")!,
+            "alias@example.com": URL(string: "https://example.com/me.jpg")!,
+        ]))
+        #expect(outcome.diagnostics.httpStatus == 200)
+        #expect(outcome.diagnostics.entriesFetched == 1)
+        #expect(outcome.diagnostics.entriesWithPhoto == 1)
+    }
+
+    @Test
+    func fetchSelfPhotoIndexOutcomeReturnsSuccessWithEmptyIndexWhenNoPhoto() async throws {
+        PeopleAPIStubURLProtocol.handler = { request in
+            self.jsonResponse(request.url!, status: 200, body: ["emailAddresses": [["value": "me@example.com"]]])
+        }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        let outcome = await client.fetchSelfPhotoIndexOutcome(accessToken: "token")
+        #expect(outcome.result == .success([:]))
+        #expect(outcome.diagnostics.entriesWithPhoto == 0)
+    }
+
+    @Test
+    func fetchSelfPhotoIndexOutcomeReturnsInsufficientScopeOn403() async throws {
+        PeopleAPIStubURLProtocol.handler = { request in
+            self.jsonResponse(request.url!, status: 403, body: ["error": ["code": 403]])
+        }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        let outcome = await client.fetchSelfPhotoIndexOutcome(accessToken: "token")
+        #expect(outcome.result == .insufficientScope)
+        #expect(outcome.diagnostics.httpStatus == 403)
+    }
+
     // MARK: - Pure helpers
 
     @Test

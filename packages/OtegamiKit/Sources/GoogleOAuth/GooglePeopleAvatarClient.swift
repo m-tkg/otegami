@@ -22,6 +22,100 @@ public enum GooglePeopleIndexResult: Sendable, Equatable {
     case unavailable
 }
 
+/// Task #42「アバター診断」: per-request debugging detail that
+/// `GooglePeopleIndexResult` alone can't carry (it only distinguishes
+/// success/insufficientScope/unavailable, not *why* — which page, which
+/// HTTP status, how many entries actually had a usable photo). Every
+/// `fetch...IndexOutcome(accessToken:)` method below returns one of these
+/// alongside its `GooglePeopleIndexResult`, so `AccountEditView`'s "アバター
+/// 診断" screen can show a user's single screenshot enough information to
+/// pin down the failure mode without needing developer-side log access —
+/// see that screen's doc comment for the full rationale.
+public struct GooglePeopleFetchDiagnostics: Sendable, Equatable {
+    /// The last HTTP status code observed (the one that ended the fetch,
+    /// whether by success or failure) — `nil` only when the request never
+    /// reached the network at all (malformed URL) or threw before a
+    /// response arrived (see `networkErrorDescription`).
+    public var httpStatus: Int?
+    /// How many pages were successfully fetched and parsed before this
+    /// result was reached. 0 for the single-item `people/me` lookup (no
+    /// paging there) and for a first-page failure.
+    public var pagesFetched: Int
+    /// Total person entries seen across every successfully-parsed page,
+    /// regardless of whether they had a usable photo.
+    public var entriesFetched: Int
+    /// Of `entriesFetched`, how many contributed a photo URL to the index
+    /// (`GooglePeopleAvatarClient.bestPhotoURLString(in:)` found something
+    /// usable). A large gap between this and `entriesFetched` is the normal
+    /// case (most other-contacts/connections entries have no photo at all)
+    /// — not itself a sign anything is wrong.
+    public var entriesWithPhoto: Int
+    /// First ~200 characters of a non-2xx response body, **unmasked** —
+    /// callers displaying this to the user must run it through
+    /// `GooglePeopleDiagnosticsFormatting.maskEmailAddresses(in:)` first
+    /// (kept unmasked here so a test asserting on the raw body doesn't have
+    /// to account for masking, and so a future caller that logs this
+    /// server-side isn't forced through the same redaction).
+    public var errorBodySnippet: String?
+    /// `String(describing:)` of a thrown `Error` (network failure, timeout)
+    /// that ended the fetch before any HTTP response was received. Mutually
+    /// exclusive with `httpStatus`/`errorBodySnippet` being from a bad
+    /// status — either the request never got a response (this field) or it
+    /// got one Google didn't like (those fields).
+    public var networkErrorDescription: String?
+    /// **Task #42, point 3 (「索引構築失敗の可視化」)**: `true` when at
+    /// least one page had already been fetched and merged before a later
+    /// page failed — i.e. real data existed for a moment during this fetch
+    /// but was thrown away rather than returned, per `fetchPhotoIndex`'s
+    /// documented "discard the whole index on any partial failure" policy.
+    /// The diagnostics screen surfaces this explicitly (rather than staying
+    /// silent about it) so a user/developer looking at "0 entries" doesn't
+    /// wrongly conclude the account has no other contacts/connections at
+    /// all — the truth might be "47 were fetched, then page 3 failed and
+    /// all 47 were discarded".
+    public var discarded: Bool
+    /// Human-readable reason for `discarded` (e.g. "ページ3件目で HTTP 500
+    /// を受信したため、既に取得済みの47件を破棄"), `nil` when `discarded`
+    /// is `false`.
+    public var discardReason: String?
+
+    public init(
+        httpStatus: Int? = nil,
+        pagesFetched: Int = 0,
+        entriesFetched: Int = 0,
+        entriesWithPhoto: Int = 0,
+        errorBodySnippet: String? = nil,
+        networkErrorDescription: String? = nil,
+        discarded: Bool = false,
+        discardReason: String? = nil
+    ) {
+        self.httpStatus = httpStatus
+        self.pagesFetched = pagesFetched
+        self.entriesFetched = entriesFetched
+        self.entriesWithPhoto = entriesWithPhoto
+        self.errorBodySnippet = errorBodySnippet
+        self.networkErrorDescription = networkErrorDescription
+        self.discarded = discarded
+        self.discardReason = discardReason
+    }
+}
+
+/// A `GooglePeopleIndexResult` plus the `GooglePeopleFetchDiagnostics` that
+/// produced it. `fetchOtherContactsIndexOutcome`/`fetchConnectionsIndexOutcome`/
+/// `fetchSelfPhotoIndexOutcome` return this; the pre-existing
+/// `fetchOtherContactsPhotoIndex`/`fetchConnectionsPhotoIndex` (unchanged
+/// call sites in `GoogleProfilePhotoAvatarResolver`'s normal resolve path)
+/// just discard the `diagnostics` half.
+public struct GooglePeopleIndexOutcome: Sendable, Equatable {
+    public var result: GooglePeopleIndexResult
+    public var diagnostics: GooglePeopleFetchDiagnostics
+
+    public init(result: GooglePeopleIndexResult, diagnostics: GooglePeopleFetchDiagnostics) {
+        self.result = result
+        self.diagnostics = diagnostics
+    }
+}
+
 /// Talks to two of the Google People API's `list` endpoints — `otherContacts`
 /// (Gmail's auto-collected "people you've corresponded with but never
 /// saved") and `people/me/connections` (the user's explicitly-saved
@@ -66,6 +160,13 @@ public actor GooglePeopleAvatarClient {
     /// comment for why `.list` (not `.search`) and why both
     /// `READ_SOURCE_TYPE_CONTACT`/`READ_SOURCE_TYPE_PROFILE` are requested.
     public func fetchOtherContactsPhotoIndex(accessToken: String) async -> GooglePeopleIndexResult {
+        await fetchOtherContactsIndexOutcome(accessToken: accessToken).result
+    }
+
+    /// Same as `fetchOtherContactsPhotoIndex(accessToken:)` but also returns
+    /// the `GooglePeopleFetchDiagnostics` the diagnostics screen needs —
+    /// see that type's doc comment.
+    public func fetchOtherContactsIndexOutcome(accessToken: String) async -> GooglePeopleIndexOutcome {
         await fetchPhotoIndex(
             baseURL: Self.otherContactsBaseURL,
             itemsKey: .otherContacts,
@@ -81,12 +182,103 @@ public actor GooglePeopleAvatarClient {
     /// without it gets `.insufficientScope` here, same 401/403 convention
     /// as `fetchOtherContactsPhotoIndex`.
     public func fetchConnectionsPhotoIndex(accessToken: String) async -> GooglePeopleIndexResult {
+        await fetchConnectionsIndexOutcome(accessToken: accessToken).result
+    }
+
+    /// Same as `fetchConnectionsPhotoIndex(accessToken:)` but also returns
+    /// diagnostics — see `GooglePeopleFetchDiagnostics`.
+    public func fetchConnectionsIndexOutcome(accessToken: String) async -> GooglePeopleIndexOutcome {
         await fetchPhotoIndex(
             baseURL: Self.connectionsBaseURL,
             itemsKey: .connections,
             fieldsParamName: "personFields",
             accessToken: accessToken
         )
+    }
+
+    /// Task #42, point 2 (「自分のプロフィール写真」): the signed-in user's
+    /// own address(es) never appear in `otherContacts` or `connections` —
+    /// both endpoints list *other* people, never the authenticated user
+    /// themselves — so a sender row for your own address (e.g. mail you
+    /// sent to yourself, or a thread where you're CC'd) never got a photo
+    /// from either index no matter how complete they were. `GET
+    /// people/me?personFields=photos,emailAddresses` closes that gap: it
+    /// returns the authenticated user's own `Person` (their profile photo
+    /// plus every email address Google associates with their account —
+    /// often more than one, e.g. an alias or a Workspace account's primary
+    /// + alternate addresses), which this method turns into the same
+    /// (address → photo URL) shape the other two indexes use so
+    /// `GoogleProfilePhotoAvatarResolver` can merge all three without any
+    /// special-casing at the lookup site.
+    ///
+    /// **No new OAuth scope required**: `people.get`'s documented
+    /// authorization-scopes list includes
+    /// `https://www.googleapis.com/auth/contacts.other.readonly` — the same
+    /// scope `fetchOtherContactsPhotoIndex` already uses and every Gmail
+    /// account connected through this app already requests
+    /// (`GoogleOAuthEndpoints.scope`) — alongside the sensitive/Workspace-
+    /// only scopes this app deliberately doesn't request. This was
+    /// confirmed against Google's published API reference
+    /// (developers.google.com/people/api/rest/v1/people/get) rather than
+    /// assumed; a 403 here (an account whose token structurally lacks
+    /// `contacts.other.readonly` — the same population `otherContactsScopeInsufficientAccountIds`
+    /// already tracks) is still handled as `.insufficientScope` in case that
+    /// research turns out wrong for some account states in practice.
+    public func fetchSelfPhotoIndexOutcome(accessToken: String) async -> GooglePeopleIndexOutcome {
+        guard let url = Self.selfURL(fieldsParamName: "personFields") else {
+            return GooglePeopleIndexOutcome(result: .unavailable, diagnostics: GooglePeopleFetchDiagnostics())
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            return GooglePeopleIndexOutcome(
+                result: .unavailable,
+                diagnostics: GooglePeopleFetchDiagnostics(networkErrorDescription: String(describing: error))
+            )
+        }
+        guard let http = response as? HTTPURLResponse else {
+            return GooglePeopleIndexOutcome(result: .unavailable, diagnostics: GooglePeopleFetchDiagnostics())
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            return GooglePeopleIndexOutcome(
+                result: .insufficientScope,
+                diagnostics: GooglePeopleFetchDiagnostics(httpStatus: http.statusCode, errorBodySnippet: Self.snippet(of: data))
+            )
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            return GooglePeopleIndexOutcome(
+                result: .unavailable,
+                diagnostics: GooglePeopleFetchDiagnostics(httpStatus: http.statusCode, errorBodySnippet: Self.snippet(of: data))
+            )
+        }
+        guard let entry = try? JSONDecoder().decode(PersonEntry.self, from: data) else {
+            return GooglePeopleIndexOutcome(
+                result: .unavailable,
+                diagnostics: GooglePeopleFetchDiagnostics(httpStatus: http.statusCode, errorBodySnippet: "(decode failure)")
+            )
+        }
+        var index: [String: URL] = [:]
+        if let photoURLString = Self.bestPhotoURLString(in: entry.photos ?? []), let photoURL = URL(string: photoURLString) {
+            for email in entry.emailAddresses ?? [] {
+                guard let raw = email.value else { continue }
+                let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !normalized.isEmpty else { continue }
+                index[normalized] = photoURL
+            }
+        }
+        let diagnostics = GooglePeopleFetchDiagnostics(
+            httpStatus: http.statusCode,
+            pagesFetched: 1,
+            entriesFetched: 1,
+            entriesWithPhoto: index.isEmpty ? 0 : 1
+        )
+        return GooglePeopleIndexOutcome(result: .success(index), diagnostics: diagnostics)
     }
 
     /// Downloads the raw image bytes from a URL one of the index-fetching
@@ -111,6 +303,7 @@ public actor GooglePeopleAvatarClient {
 
     private static let otherContactsBaseURL = URL(string: "https://people.googleapis.com/v1/otherContacts")!
     private static let connectionsBaseURL = URL(string: "https://people.googleapis.com/v1/people/me/connections")!
+    private static let selfBaseURL = URL(string: "https://people.googleapis.com/v1/people/me")!
 
     /// Safety cap on the number of pages fetched per index build (1,000
     /// results/page × 100 pages = 100,000 people) — far beyond any realistic
@@ -132,14 +325,28 @@ public actor GooglePeopleAvatarClient {
         itemsKey: ListResponse.ItemsKey,
         fieldsParamName: String,
         accessToken: String
-    ) async -> GooglePeopleIndexResult {
+    ) async -> GooglePeopleIndexOutcome {
         var merged: [String: URL] = [:]
         var pageToken: String?
         var pagesFetched = 0
+        var entriesFetched = 0
+        var entriesWithPhoto = 0
+
+        /// Builds the `.discarded` diagnostics for an early return — only
+        /// meaningful once at least one page already succeeded (see
+        /// `GooglePeopleFetchDiagnostics.discarded`'s doc comment).
+        func discardNote() -> (discarded: Bool, reason: String?) {
+            guard pagesFetched > 0 else { return (false, nil) }
+            return (true, "ページ\(pagesFetched + 1)件目の取得に失敗したため、既に取得済みの\(entriesFetched)件 (うち写真あり\(entriesWithPhoto)件) を破棄しました。")
+        }
 
         repeat {
             guard let url = Self.pageURL(baseURL: baseURL, fieldsParamName: fieldsParamName, pageToken: pageToken) else {
-                return .unavailable
+                let discard = discardNote()
+                return GooglePeopleIndexOutcome(
+                    result: .unavailable,
+                    diagnostics: GooglePeopleFetchDiagnostics(pagesFetched: pagesFetched, discarded: discard.discarded, discardReason: discard.reason)
+                )
             }
             var request = URLRequest(url: url)
             request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
@@ -150,9 +357,26 @@ public actor GooglePeopleAvatarClient {
             do {
                 (data, response) = try await session.data(for: request)
             } catch {
-                return .unavailable
+                let discard = discardNote()
+                return GooglePeopleIndexOutcome(
+                    result: .unavailable,
+                    diagnostics: GooglePeopleFetchDiagnostics(
+                        pagesFetched: pagesFetched,
+                        entriesFetched: entriesFetched,
+                        entriesWithPhoto: entriesWithPhoto,
+                        networkErrorDescription: String(describing: error),
+                        discarded: discard.discarded,
+                        discardReason: discard.reason
+                    )
+                )
             }
-            guard let http = response as? HTTPURLResponse else { return .unavailable }
+            guard let http = response as? HTTPURLResponse else {
+                let discard = discardNote()
+                return GooglePeopleIndexOutcome(
+                    result: .unavailable,
+                    diagnostics: GooglePeopleFetchDiagnostics(pagesFetched: pagesFetched, discarded: discard.discarded, discardReason: discard.reason)
+                )
+            }
             if http.statusCode == 401 || http.statusCode == 403 {
                 // Google returns 401 (no/expired token) or 403 (token valid
                 // but missing this scope) for both cases; this resolver only
@@ -160,21 +384,95 @@ public actor GooglePeopleAvatarClient {
                 // reports as currently valid, so in practice this means
                 // "missing scope" — see `GoogleOAuthEndpoints.scope`'s doc
                 // comment.
-                return .insufficientScope
+                let discard = discardNote()
+                return GooglePeopleIndexOutcome(
+                    result: .insufficientScope,
+                    diagnostics: GooglePeopleFetchDiagnostics(
+                        httpStatus: http.statusCode,
+                        pagesFetched: pagesFetched,
+                        entriesFetched: entriesFetched,
+                        entriesWithPhoto: entriesWithPhoto,
+                        errorBodySnippet: Self.snippet(of: data),
+                        discarded: discard.discarded,
+                        discardReason: discard.reason
+                    )
+                )
             }
-            guard (200..<300).contains(http.statusCode) else { return .unavailable }
+            guard (200..<300).contains(http.statusCode) else {
+                let discard = discardNote()
+                return GooglePeopleIndexOutcome(
+                    result: .unavailable,
+                    diagnostics: GooglePeopleFetchDiagnostics(
+                        httpStatus: http.statusCode,
+                        pagesFetched: pagesFetched,
+                        entriesFetched: entriesFetched,
+                        entriesWithPhoto: entriesWithPhoto,
+                        errorBodySnippet: Self.snippet(of: data),
+                        discarded: discard.discarded,
+                        discardReason: discard.reason
+                    )
+                )
+            }
 
-            guard let page = Self.parsePage(data, itemsKey: itemsKey) else { return .unavailable }
+            guard let page = Self.parsePage(data, itemsKey: itemsKey) else {
+                let discard = discardNote()
+                return GooglePeopleIndexOutcome(
+                    result: .unavailable,
+                    diagnostics: GooglePeopleFetchDiagnostics(
+                        httpStatus: http.statusCode,
+                        pagesFetched: pagesFetched,
+                        entriesFetched: entriesFetched,
+                        entriesWithPhoto: entriesWithPhoto,
+                        errorBodySnippet: "(decode failure)",
+                        discarded: discard.discarded,
+                        discardReason: discard.reason
+                    )
+                )
+            }
             // First-wins across pages for the same address — an address
             // repeated across pages (shouldn't normally happen, but the API
             // doesn't guarantee otherwise) keeps whichever photo it was
             // first paired with rather than churning on every page.
             merged.merge(page.index) { current, _ in current }
+            entriesFetched += page.entryCount
+            entriesWithPhoto += page.entriesWithPhotoCount
             pageToken = page.nextPageToken
             pagesFetched += 1
         } while pageToken != nil && pagesFetched < Self.maxPages
 
-        return .success(merged)
+        return GooglePeopleIndexOutcome(
+            result: .success(merged),
+            diagnostics: GooglePeopleFetchDiagnostics(
+                httpStatus: 200,
+                pagesFetched: pagesFetched,
+                entriesFetched: entriesFetched,
+                entriesWithPhoto: entriesWithPhoto
+            )
+        )
+    }
+
+    /// First ~200 characters of a response body, decoded as UTF-8 (falling
+    /// back to `nil` for undecodable/empty bodies) — used to populate
+    /// `GooglePeopleFetchDiagnostics.errorBodySnippet`.
+    static func snippet(of data: Data, maxLength: Int = 200) -> String? {
+        guard !data.isEmpty, let string = String(data: data, encoding: .utf8) else { return nil }
+        return String(string.prefix(maxLength))
+    }
+
+    /// `people/me`'s URL has no `pageToken`/`pageSize` (it's a single-item
+    /// lookup, not a list) but otherwise wants the same `personFields`/
+    /// `sources` query shape as `connections`/`otherContacts` — kept as its
+    /// own small builder rather than reusing `pageURL` so that function's
+    /// signature doesn't have to grow an "is this paged" flag for one
+    /// caller.
+    static func selfURL(fieldsParamName: String) -> URL? {
+        var components = URLComponents(url: selfBaseURL, resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: fieldsParamName, value: "emailAddresses,photos"),
+            URLQueryItem(name: "sources", value: "READ_SOURCE_TYPE_PROFILE"),
+            URLQueryItem(name: "sources", value: "READ_SOURCE_TYPE_CONTACT"),
+        ]
+        return components?.url
     }
 
     // MARK: - URL building / response parsing (pure — exercised directly by tests)
@@ -219,7 +517,7 @@ public actor GooglePeopleAvatarClient {
     /// index plus the next page token, or `nil` for undecodable JSON (a
     /// parse failure, not "empty page" — an empty-but-well-formed page
     /// decodes fine and just contributes nothing to the index).
-    static func parsePage(_ data: Data, itemsKey: ListResponse.ItemsKey) -> (index: [String: URL], nextPageToken: String?)? {
+    static func parsePage(_ data: Data, itemsKey: ListResponse.ItemsKey) -> (index: [String: URL], entryCount: Int, entriesWithPhotoCount: Int, nextPageToken: String?)? {
         guard let decoded = try? JSONDecoder().decode(ListResponse.self, from: data) else { return nil }
         let entries: [PersonEntry]
         switch itemsKey {
@@ -228,10 +526,12 @@ public actor GooglePeopleAvatarClient {
         }
 
         var index: [String: URL] = [:]
+        var entriesWithPhotoCount = 0
         for entry in entries {
             guard let photoURLString = bestPhotoURLString(in: entry.photos ?? []),
                   let photoURL = URL(string: photoURLString)
             else { continue }
+            entriesWithPhotoCount += 1
             for email in entry.emailAddresses ?? [] {
                 guard let raw = email.value else { continue }
                 let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -241,7 +541,7 @@ public actor GooglePeopleAvatarClient {
                 if index[normalized] == nil { index[normalized] = photoURL }
             }
         }
-        return (index, decoded.nextPageToken)
+        return (index, entries.count, entriesWithPhotoCount, decoded.nextPageToken)
     }
 
     /// One person's photo choice: prefer a non-default photo whose
