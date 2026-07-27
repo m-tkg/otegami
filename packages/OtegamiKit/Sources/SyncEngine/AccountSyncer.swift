@@ -272,6 +272,15 @@ public actor AccountSyncer {
                         Column("lastSyncedAt").noOverwrite,
                         Column("lastSyncError").noOverwrite,
                         Column("lastSyncErrorAt").noOverwrite,
+                        // メールボックス単位の非表示: every sync pass re-lists
+                        // and re-upserts every mailbox `IMAP LIST` reports,
+                        // but the freshly-constructed `record` above always
+                        // starts `isHidden: false` (it has no way to know the
+                        // user's choice) — without `.noOverwrite` here, the
+                        // very next sync after hiding a mailbox would quietly
+                        // un-hide it again. See `MailboxRecord.isHidden`'s
+                        // doc comment.
+                        Column("isHidden").noOverwrite,
                     ]
                 }
                 records[info.path] = record
@@ -377,7 +386,18 @@ public actor AccountSyncer {
         case .mailbox(let path):
             targets = mailboxInfos.filter { $0.path == path }
         case .all:
-            targets = mailboxInfos.filter { !$0.attributes.contains(.noSelect) }
+            // メールボックス単位の非表示: a hidden mailbox is excluded from a
+            // full manual refresh too (`docs/settings.md`'s "同期も止める"
+            // judgment — battery/network cost, not just a display filter).
+            // `.inboxOnly`/`.mailbox(path:)` above don't need the same
+            // check: `.inboxOnly` only ever targets INBOX/Drafts (hiding
+            // either would be a strange, unsupported edge case), and
+            // `.mailbox(path:)` is only ever invoked with a path the caller
+            // found in the (already hidden-filtered) sidebar/hamburger
+            // tree.
+            targets = mailboxInfos.filter { info in
+                !info.attributes.contains(.noSelect) && !(mailboxRecordsByPath[info.path]?.isHidden ?? false)
+            }
         }
 
         var combined = MailboxSyncer.Progress()

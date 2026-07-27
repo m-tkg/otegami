@@ -110,7 +110,11 @@ public enum ThreadQuery {
     /// this unions across accounts at query time rather than merging
     /// threads across account boundaries (plan: "アカウント境界を跨いだスレッド
     /// 結合はしない"). Same `EXISTS`-based rewrite as ``request(mailboxId:limit:)``
-    /// and for the same reason — see its doc comment.
+    /// and for the same reason — see its doc comment. `mailbox.isHidden = 0`
+    /// excludes hidden mailboxes (メールボックス単位の非表示) from the
+    /// aggregate — see `MailboxRecord.isHidden`'s doc comment; in practice
+    /// this only matters if a user hides an inbox-role mailbox itself,
+    /// since non-inbox mailboxes were never part of this aggregate anyway.
     public static func unifiedInboxRequest(accountIds: [String], limit: Int? = nil) -> SQLRequest<ThreadRecord> {
         guard !accountIds.isEmpty else {
             return SQLRequest(sql: "SELECT * FROM thread WHERE 0")
@@ -123,6 +127,7 @@ public enum ThreadQuery {
                   SELECT 1 FROM message
                   JOIN mailbox ON mailbox.id = message.mailboxId
                   WHERE message.threadId = thread.id AND mailbox.role = ? AND mailbox.accountId = thread.accountId
+                        AND mailbox.isHidden = 0
               )
             ORDER BY thread.isPinned DESC, thread.lastMessageDate DESC, thread.id DESC
             """
@@ -208,7 +213,7 @@ public enum ThreadQuery {
         var sql = """
             SELECT message.*, mailbox.accountId AS accountId FROM message
             JOIN mailbox ON mailbox.id = message.mailboxId
-            WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders))
+            WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders)) AND mailbox.isHidden = 0
             ORDER BY message.isPinnedLocal DESC, COALESCE(message.date, message.internalDate) DESC, message.uid DESC
             """
         var arguments: [(any DatabaseValueConvertible)?] = [MailboxRoleRecord.inbox.rawValue]

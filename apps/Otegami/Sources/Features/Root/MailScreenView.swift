@@ -113,7 +113,7 @@ struct MailScreenView: View {
                 SendCountdownBar(pending: pending, onCancel: handleCancelPendingSend)
             }
             if isUnifiedInboxSelected, !environment.accounts.isEmpty {
-                AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter, onAddAccount: presentAddAccount)
+                AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
             }
             if environment.accounts.isEmpty {
                 emptyState

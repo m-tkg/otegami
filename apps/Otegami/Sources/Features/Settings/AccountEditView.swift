@@ -137,6 +137,15 @@ struct AccountEditView: View {
                 AccountLabelColorPicker(selection: $labelColorKey, autoColor: OtegamiAccountColor.color(for: account.id))
             }
 
+            Section {
+                NavigationLink("メールボックスの表示設定") {
+                    MailboxVisibilityView(account: account)
+                }
+                .accessibilityIdentifier("accountEdit.mailboxVisibilityLink")
+            } footer: {
+                Text("Gmail の「すべてのメール」など、一覧に出したくないメールボックスを個別に隠せます。")
+            }
+
             if !availableSignatures.isEmpty {
                 Section {
                     Picker("デフォルト署名", selection: $defaultSignatureId) {

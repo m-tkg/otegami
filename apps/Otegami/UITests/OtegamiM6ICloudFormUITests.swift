@@ -17,13 +17,12 @@ final class OtegamiM6ICloudFormUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        let emptyStateButton = app.buttons["mail.addAccountButton"]
-        let addAccountChip = app.buttons["mail.chip.addAccount"]
-        XCTAssertTrue(
-            emptyStateButton.waitForExistence(timeout: 10) || addAccountChip.waitForExistence(timeout: 10),
-            "Neither the empty-state nor chip-row \"add account\" button appeared"
-        )
-        (emptyStateButton.exists ? emptyStateButton : addAccountChip).tap()
+        // 実機フィードバック: the chip row's trailing "＋" (`mail.chip
+        // .addAccount`) was removed (`AccountFilterChipRow`'s doc comment) —
+        // `openAccountTypeSelection` covers both the empty-state and
+        // already-has-an-account (設定 経由, e.g. left behind by an earlier
+        // test in this run) cases.
+        openAccountTypeSelection(in: app)
 
         let icloudButton = app.buttons["accountTypeSelection.icloudButton"]
         XCTAssertTrue(icloudButton.waitForExistence(timeout: 5), "iCloud button did not appear")

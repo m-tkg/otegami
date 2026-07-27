@@ -684,20 +684,35 @@ extension AppDatabase {
         // overwrite — but repairing it immediately means a user isn't
         // staring at mojibake folder names until their next sync
         // completes).
+        // Raw `Row`/SQL, not `MailboxRecord.fetchAll(db)`/`.update(db)` —
+        // deliberately: a migration runs against the schema *as it existed
+        // at that version*, but a `FetchableRecord`/`MutablePersistableRecord`
+        // conformance always decodes/writes using *today's* Swift struct
+        // shape, columns added by any later migration included. `mailbox`
+        // gained `isHidden` in v26 (after this one), and `MailboxRecord`
+        // already declares that property in current code — decoding via
+        // `MailboxRecord.fetchAll(db)` here would fail with "column not
+        // found: isHidden" against a v21-stage table that hasn't run v26
+        // yet, exactly the same "frozen schema vs. live struct" hazard
+        // `v21RepairsDisplayPath` (`AppDatabaseTests.swift`) already
+        // exercises for hand-inserted rows, now confirmed to bite a
+        // *production* migration's own code too, not just a test's setup.
         migrator.registerMigration("v21") { db in
-            let mailboxes = try MailboxRecord.fetchAll(db)
-            for var mailbox in mailboxes {
-                let decodedPath = ModifiedUTF7.decode(mailbox.path)
-                let delimiter = mailbox.delimiter
+            let rows = try Row.fetchAll(db, sql: "SELECT id, path, delimiter, displayPath FROM mailbox")
+            for row in rows {
+                let id: Int64 = row["id"]
+                let path: String = row["path"]
+                let delimiter: String? = row["delimiter"]
+                let currentDisplayPath: String = row["displayPath"]
+                let decodedPath = ModifiedUTF7.decode(path)
                 let displayPath: String
                 if let delimiter, delimiter != "/" {
                     displayPath = decodedPath.replacingOccurrences(of: delimiter, with: "/")
                 } else {
                     displayPath = decodedPath
                 }
-                guard displayPath != mailbox.displayPath else { continue }
-                mailbox.displayPath = displayPath
-                try mailbox.update(db, columns: [Column("displayPath")])
+                guard displayPath != currentDisplayPath else { continue }
+                try db.execute(sql: "UPDATE mailbox SET displayPath = ? WHERE id = ?", arguments: [displayPath, id])
             }
         }
 
@@ -773,6 +788,17 @@ extension AppDatabase {
             for (index, var account) in accounts.enumerated() {
                 account.sortOrder = index
                 try account.update(db, columns: [Column("sortOrder")])
+            }
+        }
+
+        // v26 (メールボックス単位の非表示): `MailboxRecord.isHidden`'s doc
+        // comment has the full picture. `false` for every existing
+        // mailbox — nothing changes visibility/sync scope for an existing
+        // install until the user explicitly hides one via the new
+        // per-account "メールボックスの表示設定" screen.
+        migrator.registerMigration("v26") { db in
+            try db.alter(table: "mailbox") { t in
+                t.add(column: "isHidden", .boolean).notNull().defaults(to: false)
             }
         }
 

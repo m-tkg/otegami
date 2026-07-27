@@ -658,8 +658,12 @@ struct RootView: View {
         Task {
             var flattened: [SidebarSelection] = [.unifiedInbox]
             for account in environment.accounts {
+                // メールボックス単位の非表示: skip hidden mailboxes, matching
+                // the sidebar tree this cycles through (`SidebarView`'s own
+                // `includeHidden: false` observation) — a hidden mailbox
+                // isn't a selectable row there either.
                 let mailboxes = (try? await environment.database.dbWriter.read { db in
-                    try MailboxQuery.request(accountId: account.id).fetchAll(db)
+                    try MailboxQuery.request(accountId: account.id, includeHidden: false).fetchAll(db)
                 }) ?? []
                 for mailbox in mailboxes {
                     guard let mailboxId = mailbox.id else { continue }

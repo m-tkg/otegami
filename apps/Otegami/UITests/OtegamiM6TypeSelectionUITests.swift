@@ -20,13 +20,11 @@ final class OtegamiM6TypeSelectionUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        let emptyStateButton = app.buttons["mail.addAccountButton"]
-        let addAccountChip = app.buttons["mail.chip.addAccount"]
-        XCTAssertTrue(
-            emptyStateButton.waitForExistence(timeout: 10) || addAccountChip.waitForExistence(timeout: 10),
-            "Neither the empty-state nor chip-row \"add account\" button appeared"
-        )
-        (emptyStateButton.exists ? emptyStateButton : addAccountChip).tap()
+        // 実機フィードバック: the chip row's trailing "＋" (`mail.chip
+        // .addAccount`) was removed (`AccountFilterChipRow`'s doc comment) —
+        // `openAccountTypeSelection` covers both the empty-state and
+        // already-has-an-account (設定 経由) cases.
+        openAccountTypeSelection(in: app)
 
         XCTAssertTrue(app.otherElements["accountTypeSelection.sheet"].waitForExistence(timeout: 5) || app.buttons["accountTypeSelection.otherButton"].waitForExistence(timeout: 5), "Account type selection sheet did not appear")
 
@@ -66,13 +64,11 @@ final class OtegamiM6TypeSelectionUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        let emptyStateButton = app.buttons["mail.addAccountButton"]
-        let addAccountChip = app.buttons["mail.chip.addAccount"]
-        XCTAssertTrue(
-            emptyStateButton.waitForExistence(timeout: 10) || addAccountChip.waitForExistence(timeout: 10),
-            "Neither the empty-state nor chip-row \"add account\" button appeared"
-        )
-        (emptyStateButton.exists ? emptyStateButton : addAccountChip).tap()
+        // 実機フィードバック: the chip row's trailing "＋" (`mail.chip
+        // .addAccount`) was removed (`AccountFilterChipRow`'s doc comment) —
+        // `openAccountTypeSelection` covers both the empty-state and
+        // already-has-an-account (設定 経由) cases.
+        openAccountTypeSelection(in: app)
 
         let cancelButton = app.buttons["accountTypeSelection.cancelButton"]
         XCTAssertTrue(cancelButton.waitForExistence(timeout: 5), "Cancel button did not appear")

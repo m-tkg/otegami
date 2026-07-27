@@ -60,6 +60,20 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     public var lastSyncError: String?
     public var lastSyncErrorAt: Date?
 
+    /// メールボックス単位の非表示 (migration v26)。ON の間、このメールボックスは
+    /// ハンバーガー/サイドバーのツリーに出ず (`MailboxQuery.request(accountId:
+    /// includeHidden:)`)、統合受信トレイの集計からも外れる
+    /// (`ThreadQuery.unifiedInboxRequest`/`unifiedInboxFlatSummaries`,
+    /// `MessageQuery.unifiedInboxUnreadCount` の `mailbox.isHidden = 0`
+    /// 条件)。**同期も止まる** (`AccountSyncer.performIncrementalSync`'s
+    /// `.all` スコープが除外する — 電池・通信の節約が目的、判断理由は
+    /// `docs/settings.md` 参照)。**移動先ピッカーからは除外しない** — 操作対象
+    /// としては引き続き有効という判断も同じドキュメントに記録した。
+    /// `AccountSyncer.upsertMailboxes` は `IMAP LIST` の結果を毎回この列も
+    /// 含めて upsert するが、`Column("isHidden").noOverwrite` で既存の値を
+    /// 保護しているため、通常の再一覧化でユーザーの選択が消えることはない。
+    public var isHidden: Bool
+
     public init(
         id: Int64? = nil,
         accountId: String,
@@ -74,7 +88,8 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         messageCount: Int = 0,
         lastSyncedAt: Date? = nil,
         lastSyncError: String? = nil,
-        lastSyncErrorAt: Date? = nil
+        lastSyncErrorAt: Date? = nil,
+        isHidden: Bool = false
     ) {
         self.id = id
         self.accountId = accountId
@@ -90,6 +105,7 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.lastSyncedAt = lastSyncedAt
         self.lastSyncError = lastSyncError
         self.lastSyncErrorAt = lastSyncErrorAt
+        self.isHidden = isHidden
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

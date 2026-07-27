@@ -284,7 +284,10 @@ struct FolderListSheet: View {
     }
 
     private func observeMailboxes(accountId: String) async {
-        let observation = MailboxQuery.observation(accountId: accountId)
+        // メールボックス単位の非表示: `includeHidden: false` keeps a hidden
+        // mailbox out of the hamburger tree entirely — see
+        // `MailboxQuery.request(accountId:includeHidden:)`'s doc comment.
+        let observation = MailboxQuery.observation(accountId: accountId, includeHidden: false)
         do {
             for try await mailboxes in observation.values(in: environment.database.dbWriter) {
                 mailboxesByAccountId[accountId] = mailboxes

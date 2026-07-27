@@ -451,22 +451,61 @@ extension XCTestCase {
     }
 
     /// Like `popBackOnceIfNeeded`, but keeps popping (up to 3 times — the
-    /// deepest `MailScreenView`'s own `NavigationStack` gets) until its "add
-    /// account" entry point (either the empty-state button or the chip-row
-    /// "＋") is reachable — for a test that needs to add another account
-    /// and can't assume how many levels deep a restored launch left off at.
-    /// 新画面構成: no tab bar to switch back to anymore (design-phase-2's
+    /// deepest `MailScreenView`'s own `NavigationStack` gets) until the
+    /// hamburger button — the one always-present entry point back to
+    /// `MailScreenView`'s root, whether or not any account exists yet — is
+    /// reachable, for a test that needs to add another account and can't
+    /// assume how many levels deep a restored launch left off at. 新画面構成:
+    /// no tab bar to switch back to anymore (design-phase-2's
     /// `returnToSidebarRootIfNeeded` rename already dropped the sidebar
     /// equivalent; this drops the Mail-tab-switch step design-phase-2 itself
-    /// added, now that there's only ever one always-visible screen).
+    /// added, now that there's only ever one always-visible screen). 実機
+    /// フィードバック: this used to also check for the account filter chip
+    /// row's trailing "＋" (`mail.chip.addAccount`), removed along with that
+    /// chip (`AccountFilterChipRow`'s doc comment) — the hamburger button
+    /// alone is a strictly more reliable "am I at the mail root" signal
+    /// since it's present regardless of account count.
     func returnToMailTabRootIfNeeded(in app: XCUIApplication) {
         for _ in 0..<3 {
-            if app.buttons["mail.addAccountButton"].exists || app.buttons["mail.chip.addAccount"].exists {
+            if app.buttons["mail.hamburgerButton"].exists || app.buttons["mail.addAccountButton"].exists {
                 return
             }
             let backButton = app.navigationBars.buttons.element(boundBy: 0)
             guard backButton.waitForExistence(timeout: 3) else { return }
             backButton.tap()
+        }
+    }
+
+    /// Reaches `AccountTypeSelectionView` — either from the Mail tab's
+    /// empty-state button (zero accounts) or, once at least one account
+    /// exists, via 設定 →「アカウントの設定」→「アカウントを追加」(実機
+    /// フィードバック: the account filter chip row's trailing "＋" that used
+    /// to cover this case directly from the mail root was removed — see
+    /// `AccountFilterChipRow`'s doc comment; account setup already has an
+    /// always-available entry point in Settings, so duplicating it in the
+    /// chip row was redundant). Shared by `openAccountSetup(in:)` below and
+    /// any test that needs to pick a *different* account type (Gmail/
+    /// iCloud) than "その他".
+    func openAccountTypeSelection(in app: XCUIApplication) {
+        let emptyStateButton = app.buttons["mail.addAccountButton"]
+        if emptyStateButton.waitForExistence(timeout: 5) {
+            emptyStateButton.tap()
+        } else {
+            let hamburgerButton = app.buttons["mail.hamburgerButton"]
+            XCTAssertTrue(hamburgerButton.waitForExistence(timeout: 10), "Hamburger menu button not found")
+            hamburgerButton.tap()
+
+            let settingsButton = app.buttons["folderSheet.settings"]
+            XCTAssertTrue(settingsButton.waitForExistence(timeout: 5), "Settings button not found in folder sheet")
+            settingsButton.tap()
+
+            let accountsCategoryLink = app.buttons["settings.category.accounts"]
+            XCTAssertTrue(accountsCategoryLink.waitForExistence(timeout: 5), "Accounts settings category link not found")
+            accountsCategoryLink.tap()
+
+            let addAccountButton = app.buttons["settings.addAccountButton"]
+            XCTAssertTrue(addAccountButton.waitForExistence(timeout: 5), "Add account button not found in account settings")
+            addAccountButton.tap()
         }
     }
 
@@ -479,21 +518,8 @@ extension XCTestCase {
     /// single continuous `.sheet(item:)` (see `AccountEntryRoute`'s doc
     /// comment), so there's no intermediate sheet-dismiss animation to wait
     /// out between the two taps below.
-    ///
-    /// Design-phase-2: the "add account" entry point moved off the old
-    /// sidebar's toolbar — the Mail tab's empty-state button
-    /// (`mail.addAccountButton`, shown when there are zero accounts) or the
-    /// account filter chip row's trailing "＋" (`mail.chip.addAccount`,
-    /// shown once at least one account exists — 1a bundles "add account"
-    /// into the chip row rather than a separate toolbar button).
     func openAccountSetup(in app: XCUIApplication) {
-        let emptyStateButton = app.buttons["mail.addAccountButton"]
-        let addAccountChip = app.buttons["mail.chip.addAccount"]
-        XCTAssertTrue(
-            emptyStateButton.waitForExistence(timeout: 10) || addAccountChip.waitForExistence(timeout: 10),
-            "Neither the empty-state nor chip-row \"add account\" button appeared"
-        )
-        (emptyStateButton.exists ? emptyStateButton : addAccountChip).tap()
+        openAccountTypeSelection(in: app)
 
         let otherButton = app.buttons["accountTypeSelection.otherButton"]
         XCTAssertTrue(otherButton.waitForExistence(timeout: 5), "Account type selection sheet did not appear")
@@ -594,6 +620,20 @@ extension XCTestCase {
             app.textFields["accountSetup.displayName"].waitForNonExistence(timeout: 5),
             "Account setup sheet did not dismiss after saving"
         )
+
+        // 実機フィードバック: once at least one account already exists,
+        // `openAccountSetup(in:)` reaches this sheet via 設定 →
+        // 「アカウントの設定」(the chip row's "＋" that used to add an account
+        // without ever leaving the mail root was removed — see
+        // `AccountFilterChipRow`'s doc comment). Saving only dismisses this
+        // `AccountSetupView` sheet itself, leaving the Settings sheet open
+        // underneath — close it too so every caller of `saveAccount(in:)`
+        // keeps landing back on the mail root afterward, exactly as it did
+        // before that chip was removed.
+        let settingsCloseButton = app.buttons["settingsSheet.closeButton"]
+        if settingsCloseButton.exists {
+            settingsCloseButton.tap()
+        }
     }
 
     /// 下書き lives in `FolderListSheet`'s content, now the hamburger menu's

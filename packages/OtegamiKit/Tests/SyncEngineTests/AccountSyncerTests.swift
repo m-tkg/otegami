@@ -407,4 +407,116 @@ struct AccountSyncerTests {
         #expect(afterRecovery.lastSyncError == nil)
         #expect(afterRecovery.lastSyncErrorAt == nil)
     }
+
+    // MARK: - メールボックス単位の非表示
+
+    /// A full manual refresh (`.all`) must skip a hidden mailbox — see
+    /// `MailboxRecord.isHidden`'s doc comment ("同期も止める", battery/
+    /// network cost). `.inboxOnly` isn't covered here since it only ever
+    /// targets INBOX/Drafts regardless of any mailbox's `isHidden`.
+    @Test(".all scope skips a hidden mailbox but still syncs a visible one")
+    func allScopeSkipsHiddenMailbox() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let archive = MailboxInfo(path: "Archive", displayPath: "Archive", role: .archive, attributes: [])
+
+        let initialSyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox, archive],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Archive": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                ]
+            ))
+        }
+        _ = try await initialSyncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let archiveMailboxId = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "Archive").fetchOne(db)?.id
+            }
+        )
+        try await database.dbWriter.write { db in
+            try MailboxQuery.setHidden(mailboxId: archiveMailboxId, hidden: true, db: db)
+        }
+
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox, archive],
+            envelopesByPath: [
+                "INBOX": [makeInbox(uid: 1, subject: "INBOX新着")],
+                "Archive": [makeInbox(uid: 1, subject: "Archive新着")],
+            ],
+            statusByPath: [
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1),
+                "Archive": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1),
+            ]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"), scope: .all)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.contains { $0.subject == "INBOX新着" }, "Visible mailbox should still be synced by .all")
+        #expect(!messages.contains { $0.subject == "Archive新着" }, "Hidden mailbox must be skipped by .all")
+
+        // The hidden mailbox's own row still got re-listed/upserted (it's
+        // not simply absent from `mailbox`) — just excluded from the sync
+        // *targets*. `isHidden` itself must have survived that re-upsert.
+        let archiveAfter = try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db, key: archiveMailboxId) }
+        #expect(archiveAfter?.isHidden == true)
+    }
+
+    /// `AccountSyncer.upsertMailboxes` runs on *every* sync pass (initial,
+    /// incremental, IDLE-triggered), re-listing and re-upserting every
+    /// mailbox `IMAP LIST` reports — without `Column("isHidden")
+    /// .noOverwrite`, the freshly-constructed `MailboxRecord` (always
+    /// `isHidden: false`, since it has no way to know the user's choice)
+    /// would silently un-hide a mailbox on its very next sync.
+    @Test("a hidden mailbox stays hidden across a later .inboxOnly sync that re-lists it")
+    func hiddenMailboxSurvivesResync() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let archive = MailboxInfo(path: "Archive", displayPath: "Archive", role: .archive, attributes: [])
+
+        let initialSyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox, archive],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Archive": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                ]
+            ))
+        }
+        _ = try await initialSyncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+        let archiveMailboxId = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "Archive").fetchOne(db)?.id
+            }
+        )
+        try await database.dbWriter.write { db in
+            try MailboxQuery.setHidden(mailboxId: archiveMailboxId, hidden: true, db: db)
+        }
+
+        // `.inboxOnly` — the frequent/IDLE-wake path — still re-lists every
+        // mailbox via `listMailboxes()`/`upsertMailboxes` before narrowing
+        // down to its actual sync targets.
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox, archive],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Archive": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                ]
+            ))
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let archiveAfter = try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db, key: archiveMailboxId) }
+        #expect(archiveAfter?.isHidden == true, "A resync must not silently un-hide a mailbox")
+    }
 }

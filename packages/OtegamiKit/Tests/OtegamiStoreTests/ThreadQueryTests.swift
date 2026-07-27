@@ -88,6 +88,28 @@ struct ThreadQueryTests {
         #expect(threadIds == [inboxThread])
     }
 
+    /// メールボックス単位の非表示: this only matters in practice if the
+    /// inbox-role mailbox itself is hidden (`MailboxRecord.isHidden`'s doc
+    /// comment) — a non-inbox mailbox like Gmail's "すべてのメール" was
+    /// already excluded by `unifiedInboxScopesToInboxRole` above.
+    @Test("unifiedInboxRequest excludes a hidden inbox-role mailbox's threads")
+    func unifiedInboxExcludesHiddenMailbox() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        _ = try database.dbWriter.write { db in
+            try insertThread(accountId: accountId, mailboxId: inboxId, uid: 1, date: base, db: db)
+        }
+
+        try database.dbWriter.write { db in
+            try MailboxQuery.setHidden(mailboxId: inboxId, hidden: true, db: db)
+        }
+
+        let threadIds = try database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxRequest(accountIds: [accountId]).fetchAll(db).map(\.id)
+        }
+        #expect(threadIds.isEmpty)
+    }
+
     // MARK: - E9 ピン留め: pinned threads sort first
 
     @Test("request(mailboxId:) sorts a pinned thread ahead of a newer unpinned one")

@@ -150,4 +150,98 @@ struct MessageQueryTests {
         }
         #expect(total == 2)
     }
+
+    @Test("unifiedInboxUnreadCount excludes a hidden inbox-role mailbox")
+    func unifiedInboxUnreadCountExcludesHiddenMailbox() throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Test", email: "t@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "t@x.test"
+        )
+        try database.dbWriter.write { db in try account.insert(db) }
+        let inboxId = try database.dbWriter.write { db -> Int64 in
+            var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            inbox = try inbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return inbox.id!
+        }
+        try database.dbWriter.write { db in
+            var unread = MessageRecord(mailboxId: inboxId, uid: 1, internalDate: Date())
+            try unread.insert(db)
+        }
+
+        let beforeHiding = try database.dbWriter.read { db in
+            try MessageQuery.unifiedInboxUnreadCount(accountIds: [account.id], db: db)
+        }
+        #expect(beforeHiding == 1)
+
+        try database.dbWriter.write { db in
+            try MailboxQuery.setHidden(mailboxId: inboxId, hidden: true, db: db)
+        }
+
+        let afterHiding = try database.dbWriter.read { db in
+            try MessageQuery.unifiedInboxUnreadCount(accountIds: [account.id], db: db)
+        }
+        #expect(afterHiding == 0)
+    }
+}
+
+@Suite("MailboxQuery")
+struct MailboxQueryTests {
+    private func makeDatabase() throws -> (database: AppDatabase, accountId: String) {
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Test", email: "t@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "t@x.test"
+        )
+        try database.dbWriter.write { db in try account.insert(db) }
+        return (database, account.id)
+    }
+
+    @Test("request(accountId:includeHidden: false) excludes hidden mailboxes; the default includes everything")
+    func includeHiddenFiltering() throws {
+        let (database, accountId) = try makeDatabase()
+        let (inboxId, allMailId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            var inbox = MailboxRecord(accountId: accountId, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            inbox = try inbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var allMail = MailboxRecord(accountId: accountId, path: "[Gmail]/All Mail", displayPath: "[Gmail]/All Mail", role: .all)
+            allMail = try allMail.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return (inbox.id!, allMail.id!)
+        }
+        try database.dbWriter.write { db in
+            try MailboxQuery.setHidden(mailboxId: allMailId, hidden: true, db: db)
+        }
+
+        let visibleOnly = try database.dbWriter.read { db in
+            try MailboxQuery.request(accountId: accountId, includeHidden: false).fetchAll(db).map(\.id)
+        }
+        #expect(visibleOnly == [inboxId])
+
+        let everything = try database.dbWriter.read { db in
+            try MailboxQuery.request(accountId: accountId).fetchAll(db).compactMap(\.id).sorted()
+        }
+        #expect(everything == [inboxId, allMailId].sorted())
+    }
+
+    @Test("setHidden toggles isHidden and is idempotent")
+    func setHiddenToggles() throws {
+        let (database, accountId) = try makeDatabase()
+        let mailboxId = try database.dbWriter.write { db -> Int64 in
+            var mailbox = MailboxRecord(accountId: accountId, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return mailbox.id!
+        }
+
+        try database.dbWriter.write { db in try MailboxQuery.setHidden(mailboxId: mailboxId, hidden: true, db: db) }
+        var mailbox = try database.dbWriter.read { db in try MailboxRecord.fetchOne(db, key: mailboxId) }
+        #expect(mailbox?.isHidden == true)
+
+        // Idempotent: setting the same value again doesn't throw or flip anything unexpected.
+        try database.dbWriter.write { db in try MailboxQuery.setHidden(mailboxId: mailboxId, hidden: true, db: db) }
+        mailbox = try database.dbWriter.read { db in try MailboxRecord.fetchOne(db, key: mailboxId) }
+        #expect(mailbox?.isHidden == true)
+
+        try database.dbWriter.write { db in try MailboxQuery.setHidden(mailboxId: mailboxId, hidden: false, db: db) }
+        mailbox = try database.dbWriter.read { db in try MailboxRecord.fetchOne(db, key: mailboxId) }
+        #expect(mailbox?.isHidden == false)
+    }
 }

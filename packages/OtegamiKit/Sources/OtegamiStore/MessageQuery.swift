@@ -88,6 +88,7 @@ public enum MessageQuery {
                 SELECT COUNT(*) FROM message
                 JOIN mailbox ON mailbox.id = message.mailboxId
                 WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders)) AND message.flagsRaw & \(seenFlagBit) = 0
+                      AND mailbox.isHidden = 0
                 """,
             arguments: StatementArguments(arguments)
         ) ?? 0
@@ -103,19 +104,42 @@ public enum MailboxQuery {
     /// All mailboxes for one account, ordered for sidebar display: Inbox
     /// first, then other special-use roles, then everything else
     /// alphabetically by display path.
-    public static func request(accountId: String) -> QueryInterfaceRequest<MailboxRecord> {
-        MailboxRecord
-            .filter(Column("accountId") == accountId)
-            .order(
-                (Column("role") == MailboxRoleRecord.inbox.rawValue).desc,
-                Column("displayPath")
-            )
+    ///
+    /// `includeHidden` (メールボックス単位の非表示): `false` filters out
+    /// `MailboxRecord.isHidden` mailboxes — what the hamburger/sidebar tree
+    /// (`SidebarView`/`FolderListSheet`) and the mac ⌘]/⌘[ mailbox cycling
+    /// (`OtegamiApp.cycleMailboxSelection`) pass, so a hidden mailbox is
+    /// simply absent from every navigation surface. Defaults to `true`
+    /// (every existing caller before this feature keeps seeing every
+    /// mailbox) — the per-account "メールボックスの表示設定" screen
+    /// (`MailboxVisibilityView`) needs the unfiltered list to offer a
+    /// toggle for *every* mailbox, hidden or not.
+    public static func request(accountId: String, includeHidden: Bool = true) -> QueryInterfaceRequest<MailboxRecord> {
+        var request = MailboxRecord.filter(Column("accountId") == accountId)
+        if !includeHidden {
+            request = request.filter(Column("isHidden") == false)
+        }
+        return request.order(
+            (Column("role") == MailboxRoleRecord.inbox.rawValue).desc,
+            Column("displayPath")
+        )
     }
 
-    public static func observation(accountId: String) -> ValueObservation<ValueReducers.Fetch<[MailboxRecord]>> {
+    public static func observation(accountId: String, includeHidden: Bool = true) -> ValueObservation<ValueReducers.Fetch<[MailboxRecord]>> {
         ValueObservation.tracking { db in
-            try request(accountId: accountId).fetchAll(db)
+            try request(accountId: accountId, includeHidden: includeHidden).fetchAll(db)
         }
+    }
+
+    /// Flips `MailboxRecord.isHidden` — `MailboxVisibilityView`'s Toggle
+    /// action. A targeted `UPDATE` (not a fetch-mutate-`update()` round
+    /// trip) since the caller only ever has a mailbox id and the new value
+    /// in hand, not a full `MailboxRecord`.
+    public static func setHidden(mailboxId: Int64, hidden: Bool, db: Database) throws {
+        try db.execute(
+            sql: "UPDATE mailbox SET isHidden = ? WHERE id = ?",
+            arguments: [hidden, mailboxId]
+        )
     }
 
     /// Every mailbox (across `accountIds`) currently recording a sync
