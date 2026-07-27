@@ -89,7 +89,10 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
         let firstRow = list.cells.firstMatch
         XCTAssertTrue(firstRow.waitForExistence(timeout: 20), "Expected at least one row in the message list")
         firstRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-        XCTAssertTrue(detailScroll.waitForExistence(timeout: 20), "Expected tapping the top row to open its thread detail")
+        // 画面構造改修バッチ (Task #33, 1): whichever thread sorts first may
+        // now route through the selection screen first (2+ messages) — see
+        // `waitForThreadDetailPossiblyThroughSelectionScreen`'s doc comment.
+        XCTAssertTrue(waitForThreadDetailPossiblyThroughSelectionScreen(in: app), "Expected tapping the top row to open its thread detail")
 
         // The reported layout-collapse symptom: the expanded message's
         // header row (always mounted once a message is expanded,
@@ -221,10 +224,15 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
         let row = list.cells.firstMatch
         XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected at least one row to open")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-        let detailScroll = app.scrollViews["threadDetail.scrollView"]
-        XCTAssertTrue(detailScroll.waitForExistence(timeout: 20), "Expected the first tap to open the thread detail")
+        // 画面構造改修バッチ (Task #33, 1): whichever thread sorts first may
+        // now route through the selection screen first (2+ messages) — see
+        // `waitForThreadDetailPossiblyThroughSelectionScreen`'s doc comment.
+        // Depth back to the list can now be up to 2 levels, not just 1, so
+        // this uses `returnToMailTabRootIfNeeded` (up to 3 pops) instead of
+        // `popBackOnceIfNeeded` both times below.
+        XCTAssertTrue(waitForThreadDetailPossiblyThroughSelectionScreen(in: app), "Expected the first tap to open the thread detail")
 
-        popBackOnceIfNeeded(in: app)
+        returnToMailTabRootIfNeeded(in: app)
         XCTAssertTrue(list.waitForExistence(timeout: 20), "Expected popping back to return to the message list")
 
         // Same row, same underlying thread id — re-tap it.
@@ -233,7 +241,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
         sameRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         XCTAssertTrue(
-            detailScroll.waitForExistence(timeout: 20),
+            waitForThreadDetailPossiblyThroughSelectionScreen(in: app),
             "Expected re-tapping the same message row after popping back to reopen its thread detail, not stay stuck on the list"
         )
     }

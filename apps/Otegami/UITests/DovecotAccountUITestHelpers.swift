@@ -450,6 +450,40 @@ extension XCTestCase {
         }
     }
 
+    /// 画面構造改修バッチ (Task #33, 1): tapping a thread row no longer
+    /// always lands on `ThreadDetailView` directly — a 2+ message thread
+    /// now interposes `ThreadSelectionView` first (`ThreadEntryView`'s doc
+    /// comment). Several existing QA-sweep-style tests tap "whichever
+    /// thread happens to sort first" without asserting a specific subject
+    /// (deliberately, to churn-test general resilience rather than one
+    /// fixture) and then hard-assert `threadDetail.scrollView` appears —
+    /// which thread that turns out to be, and therefore whether it's a
+    /// 1- or 2+-message thread, isn't something those tests control. This
+    /// waits for *either* screen after a row's already been tapped, and
+    /// taps through the first selection row if the selection screen (not
+    /// the message body) is what actually came up — so those tests keep
+    /// asserting "did opening a thread work at all," the thing they
+    /// actually care about, regardless of which screen a given seeded
+    /// thread's message count happens to route through this run.
+    @discardableResult
+    func waitForThreadDetailPossiblyThroughSelectionScreen(in app: XCUIApplication, timeout: TimeInterval = 20) -> Bool {
+        let detail = app.scrollViews["threadDetail.scrollView"]
+        let selection = app.scrollViews["threadSelection.scrollView"]
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if detail.exists { return true }
+            if selection.exists { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        guard selection.exists else { return detail.waitForExistence(timeout: 1) }
+        let firstSelectionRow = selection.buttons
+            .matching(NSPredicate(format: "identifier CONTAINS %@", "threadSelection.message."))
+            .firstMatch
+        guard firstSelectionRow.waitForExistence(timeout: 5) else { return false }
+        firstSelectionRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+        return detail.waitForExistence(timeout: timeout)
+    }
+
     /// Like `popBackOnceIfNeeded`, but keeps popping (up to 3 times — the
     /// deepest `MailScreenView`'s own `NavigationStack` gets) until the
     /// hamburger button — the one always-present entry point back to

@@ -1,17 +1,48 @@
 import XCTest
 
 /// M4 verification, phase 2 (plan checkpoint (b): "スレッドを開くと 3 通、
-/// 最新のみ展開"). Assumes `OtegamiM4SetupUITests` already ran in this
-/// simulator install (account + seeded threads present in GRDB).
+/// 最新のみ展開") — **rewritten for 画面構造改修バッチ (Task #33, 1)**, which
+/// deliberately replaced the behavior this suite originally checked. The
+/// user's own report ("メール本文のエリアが狭い。スレッド表示にする場合、
+/// スレッドを選ぶ画面を別で挟んで、メール本文の画面ではスレッドは出さない
+/// 方がいい") is the exact opposite of "開くと全メッセージがアコーディオンで
+/// 並ぶ" this file used to assert — a 2+ message thread now interposes
+/// `ThreadSelectionView` (`ThreadEntryView`'s doc comment) before
+/// `ThreadDetailView`, and `ThreadDetailView` itself never shows more than
+/// one message once reached this way (`singleMessageId`, not the full
+/// accordion). Each test below is self-contained (adds the account itself
+/// if genuinely starting from zero, `OtegamiQASweepUITests`'s
+/// `ensureDovecotTest1AccountExists(in:)` pattern) rather than assuming a
+/// separate setup phase already ran in this simulator install — this file
+/// used to assume `OtegamiM4SetupUITests` ran first, which only holds when
+/// the *entire* UITest target runs in file-declaration order; verifying
+/// just this file in isolation (e.g. `-only-testing:OtegamiUITests
+/// /OtegamiM4ThreadDetailUITests`) needs it to stand on its own.
 final class OtegamiM4ThreadDetailUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
     }
 
-    func testOpeningThreadShowsAllMessagesWithOnlyLatestExpanded() throws {
+    /// See `OtegamiQASweepUITests.ensureDovecotTest1AccountExists(in:)`'s
+    /// identical doc comment — same reasoning, kept as this file's own
+    /// copy per this UITest target's established "each file keeps its own
+    /// small helpers" convention.
+    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
+        let emptyStateButton = app.buttons["mail.addAccountButton"]
+        if emptyStateButton.waitForExistence(timeout: 5) {
+            addDovecotTest1Account(in: app)
+            restartAppToRecoverTouchDelivery(app)
+        }
+    }
+
+    /// The 3-message thread this suite has always used ("来週のランチ" /
+    /// "Re: 来週のランチ" ×2, newest body "駅前のカフェはどうでしょう") now
+    /// lands on the selection screen first, not the accordion detail view.
+    func testOpeningAMultiMessageThreadShowsSelectionScreenThenSingleMessage() throws {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
+        ensureDovecotTest1AccountExists(in: app)
 
         let list = app.collectionViews["messageList.list"]
         let threadRow = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "来週のランチ")).firstMatch
@@ -28,127 +59,70 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
         )
         threadRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
-        // Scoped to the thread detail pane specifically, not `app` at
-        // large: on this simulator/device size ("iPhone 17 Pro Max"),
-        // `NavigationSplitView` renders content and detail side by side
-        // rather than collapsing to compact width, so `messageList.list`'s
-        // own row for this same thread (also showing "来週のランチ" in its
-        // subject) stays on screen right next to the detail pane —
-        // querying `app.staticTexts` unscoped double-counts it.
-        let detail = app.scrollViews["threadDetail.scrollView"]
-        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected the thread detail pane to appear after tapping the thread row")
+        // 画面構造改修バッチ (Task #33, 1): a thread with 2+ messages now
+        // opens `ThreadSelectionView` first — one row per message, same
+        // information a list row already shows (icon/preview/time).
+        let selection = app.scrollViews["threadSelection.scrollView"]
+        XCTAssertTrue(selection.waitForExistence(timeout: 20), "Expected the thread selection screen to appear for a 3-message thread")
 
-        // Every message in the thread gets its own collapsed/expanded
-        // header row, regardless of expansion state.
+        let selectionRows = selection.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadSelection.message."))
+        XCTAssertTrue(
+            waitForCount(selectionRows, atLeast: 3, timeout: 20),
+            "Expected 3 rows on the thread selection screen, found \(selectionRows.count)"
+        )
+
+        // Tapping the newest row (last in the list, oldest-first per
+        // `ThreadSelectionView`'s doc comment) pushes straight to that one
+        // message's body — no selection UI carries over onto that screen.
+        let newestRow = selectionRows.element(boundBy: selectionRows.count - 1)
+        newestRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+
+        let detail = app.scrollViews["threadDetail.scrollView"]
+        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected the message body screen to appear after tapping a selection row")
+
+        // 「本文画面ではスレッドのアコーディオン/スタックを出さない」— exactly
+        // one message header mounted, never the old 3-row accordion this
+        // test used to assert.
         let headers = detail.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message."))
             .matching(NSPredicate(format: "identifier CONTAINS %@", ".header"))
-        XCTAssertTrue(
-            waitForCount(headers, atLeast: 3, timeout: 20),
-            "Expected 3 message header rows in the thread detail view, found \(headers.count)"
-        )
+        XCTAssertTrue(waitForCount(headers, atLeast: 1, timeout: 20), "Expected the single-message body screen to mount its one header row")
+        XCTAssertEqual(headers.count, 1, "Expected no thread accordion/stack on the message body screen, found \(headers.count) header rows")
 
-        // Only the newest message (seed-0011, "駅前のカフェはどうでしょう")
-        // starts expanded — its body should be visible without tapping
-        // anything.
         let latestBody = detail.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "駅前のカフェ")).firstMatch
-        XCTAssertTrue(latestBody.waitForExistence(timeout: 20), "Expected the newest message's body to be expanded by default")
+        XCTAssertTrue(latestBody.waitForExistence(timeout: 20), "Expected the tapped (newest) message's body to be shown")
 
-        // Exactly one `MessageView` should be mounted at a time — counted
-        // by its subject header text ("来週のランチ", shared by all 3
-        // messages' subjects: the original and both "Re:" replies), which
-        // only ever appears inside an *expanded* `MessageView`
-        // (`ThreadMessageSummaryRow`, the collapsed header, never renders
-        // the subject — only sender/snippet/date), never any collapsed
-        // header row. Neither an identifier-based query
-        // (`messageDetail.subject`, exact *or* `CONTAINS` — this
-        // simulator/toolchain's accessibility bridging didn't expose it to
-        // either form) nor a container-level `...body` identifier query
-        // (over-counted to 5 for one mounted instance — nested elements
-        // apparently inherit/re-report an ancestor's identifier here) held
-        // up; a label-text `CONTAINS` search restricted to text that only
-        // exists in the expanded state, scoped to `detail` (see above),
-        // does.
-        let subjects = detail.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "来週のランチ"))
-        XCTAssertEqual(subjects.count, 1, "Expected exactly one expanded message body before tapping any other header")
-
-        // Tapping the oldest message's collapsed header expands it too
-        // (plan: "ヘッダタップで展開") — now two bodies should be mounted.
-        let oldestHeader = headers.element(boundBy: 0)
-        XCTAssertTrue(oldestHeader.exists, "Expected at least one collapsed header row")
-        oldestHeader.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
-        XCTAssertTrue(
-            waitForCount(subjects, atLeast: 2, timeout: 20),
-            "Expected tapping the oldest header to expand a second message body, found \(subjects.count)"
-        )
-
-        // Hold the thread open for the wrapping shell script's mid-test
-        // screenshot (same technique as M6/M8) — `RootView`'s "last opened
-        // thread" restoration is same-session-only now, not cross-launch
-        // (`OtegamiApp.swift`'s `hasSkippedInitialRestoration` doc
-        // comment), so `scripts/verify-ios-m4.sh` can no longer screenshot
-        // this thread by relaunching after the test process exits.
+        // Hold the message open for the wrapping shell script's mid-test
+        // screenshot (same technique as M6/M8).
         Thread.sleep(forTimeInterval: 4)
     }
 
-    /// Bug-fix verification (2026-07-26, "スレッド表示で全メッセージを折りたたむと
-    /// 表示が画面下部に寄ってしまう" / "一番上のスレッドを開くとタイトルバーが見えない
-    /// 状態で表示される"): opens the same 3-message thread this suite's
-    /// other test already exercises, then collapses every message
-    /// (including the newest, expanded-by-default one) and screenshots the
-    /// result for a human/agent to visually confirm the content sits
-    /// top-aligned rather than pinned to the bottom of the screen with a
-    /// blank band above it — `ThreadDetailView.body`'s
-    /// `.defaultScrollAnchor(.bottom)` (since replaced by a one-shot
-    /// `ScrollViewReader.scrollTo`) used to re-apply on every content-size
-    /// change, including a collapse shrinking the content well below the
-    /// viewport height.
-    func testCollapsingEveryMessageStaysTopAligned() throws {
+    /// A single-message thread ("ようこそ otegami へ", seed-0001) skips the
+    /// selection screen entirely and opens straight into the body — the
+    /// other half of 画面構造改修バッチ (Task #33, 1)'s approved behavior
+    /// ("スレッドが1通だけなら選択画面をスキップして直接本文へ").
+    func testOpeningASingleMessageThreadSkipsTheSelectionScreen() throws {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
+        ensureDovecotTest1AccountExists(in: app)
 
         let list = app.collectionViews["messageList.list"]
-        let threadRow = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "来週のランチ")).firstMatch
-        XCTAssertTrue(waitForElementScrollingIfNeeded(threadRow, in: app), "Expected the 3-message thread row to be present")
+        let subject = "ようこそotegamiへ"
+        XCTAssertTrue(waitForSeededSubjectScrollingIfNeeded(subject, in: app), "Expected the single-message welcome seed to appear")
+        let threadRow = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "ようこそ")).firstMatch
         threadRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         let detail = app.scrollViews["threadDetail.scrollView"]
-        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected the thread detail pane to appear after tapping the thread row")
+        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected a 1-message thread to open straight into the body screen")
+        XCTAssertFalse(
+            app.scrollViews["threadSelection.scrollView"].exists,
+            "Expected the selection screen to be skipped entirely for a 1-message thread"
+        )
 
         let headers = detail.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message."))
             .matching(NSPredicate(format: "identifier CONTAINS %@", ".header"))
-        XCTAssertTrue(waitForCount(headers, atLeast: 3, timeout: 20), "Expected 3 message header rows")
-
-        // Right after opening (nothing tapped yet), the newest message is
-        // expanded by default — this is also the bug-2 repro point
-        // ("開いた直後は先頭が見えるようにする"): hold it up for a screenshot
-        // before touching anything else.
-        Thread.sleep(forTimeInterval: 2)
-
-        // Only the newest message starts expanded (per
-        // `testOpeningThreadShowsAllMessagesWithOnlyLatestExpanded`); every
-        // other header is already collapsed. Collapsing that one newest
-        // header alone is enough to reach "every message collapsed" —
-        // tapping every header by index in a loop instead proved flaky here
-        // (a collapse changes row heights/scroll position out from under a
-        // later index's on-screen coordinate mid-loop).
-        headers.element(boundBy: headers.count - 1).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
-        // No message body should remain mounted once every header is
-        // collapsed — same "来週のランチ" text-based body detector the sibling
-        // test above uses (only an *expanded* `MessageView` ever renders
-        // its own subject text).
-        let subjects = detail.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "来週のランチ"))
-        let deadline = Date().addingTimeInterval(10)
-        while Date() < deadline, subjects.count > 0 {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
-        }
-        XCTAssertEqual(subjects.count, 0, "Expected every message body to be collapsed")
-
-        // Hold the fully-collapsed state up for the wrapping shell script's
-        // mid-test screenshot.
-        Thread.sleep(forTimeInterval: 4)
+        XCTAssertTrue(waitForCount(headers, atLeast: 1, timeout: 20), "Expected the single message's header row to mount")
+        XCTAssertEqual(headers.count, 1, "Expected exactly one header row for a 1-message thread")
     }
 
     /// Polls `collection.count` until it reaches at least `minimum` or

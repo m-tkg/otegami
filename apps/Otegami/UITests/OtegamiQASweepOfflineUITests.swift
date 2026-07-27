@@ -31,7 +31,11 @@ final class OtegamiQASweepOfflineUITests: XCTestCase {
         let firstRow = list.cells.firstMatch
         XCTAssertTrue(firstRow.waitForExistence(timeout: 20), "Expected the offline message list to still show cached content")
         firstRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-        XCTAssertTrue(app.scrollViews["threadDetail.scrollView"].waitForExistence(timeout: 20), "Expected opening a thread to work from local storage alone while offline")
+        // 画面構造改修バッチ (Task #33, 1): see
+        // `waitForThreadDetailPossiblyThroughSelectionScreen`'s doc comment
+        // — whichever thread sorts first may now route through the
+        // (equally local-storage-only) selection screen first.
+        XCTAssertTrue(waitForThreadDetailPossiblyThroughSelectionScreen(in: app), "Expected opening a thread to work from local storage alone while offline")
     }
 
     /// Phase: mailstack still down. Marks "HTML版だより" read via a leading
