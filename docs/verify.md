@@ -1041,6 +1041,18 @@ Keychain/KVS を含むシミュレータの全状態をリセットするため�
 実行して同じ現象に遭遇したら同じパターンに揃えること
 (`docs/roadmap.md` にも記録済み)。
 
+**[訂正 — 実機汚染インシデントの調査で判明]** 上記の「原因」は不完全
+だった。実際には「シミュレータ/toolchain 内でコンテナ外に永続化される
+だけ」ではなく、この Mac が実 Apple ID にサインインしているため、
+シミュレータの `NSUbiquitousKeyValueStore` 書き込みはホストの `cloudd`
+経由で**実 iCloud** に届いていた (`cloudd` の統一ログで直接確認済み) —
+つまり `simctl erase` が直しているのはシミュレータ内のローカルキャッシュ
+だけでなく、実 iCloud 側に残っている汚染データそのものへの参照でもある
+(erase してもすぐ次の `reconcile()` で再度実 iCloud から復元されうる)。
+詳細・実測手順・修正は `docs/icloud-sync.md` の「開発用アカウントの除外と
+実機汚染インシデント」節、および直下の「iOS シミュレータ検証: cloud sync
+隔離」節を参照。
+
 ### `Toggle` の `Switch.value` をタップ直後に読むのは信頼できない
 
 `settings.cloudSyncToggle` (`Toggle`) をタップした直後に
@@ -1054,6 +1066,51 @@ Keychain/KVS を含むシミュレータの全状態をリセットするため�
 起こさないことの確認) にはそれで十分だったため。デフォルト値そのものの
 確認 (`testCloudSyncToggleIsShownAndOnByDefault`) は `Switch.value` の
 単発読み取りで問題なく動く (タップ直後の再読み取りだけが不安定)。
+
+## iOS シミュレータ検証 (M11 追補: cloud sync 隔離)
+
+```sh
+scripts/verify-ios-cloud-sync-isolation.sh
+```
+
+実機汚染インシデント (`docs/icloud-sync.md`「開発用アカウントの除外と実機
+汚染インシデント」節) の修正 — シミュレータビルドはデフォルトで
+`AccountCloudSyncEngine` に一切参加しない
+(`AppEnvironment.isCloudSyncPermittedOnThisBuild`) — を、アプリの外側
+(ホスト Mac 自身の `cloudd` ログ) から検証する。
+
+この検証がアプリ内部のアサーションではなくホスト OS のログを見る設計に
+した理由は、そもそもの汚染がまさに「アプリ内部からは正常に見える
+(`AccountCloudSyncEngine` は Fake ではなく本物の `NSUbiquitousKeyValueStore`
+に書き込めている) が、その書き込み先が開発機の実 iCloud だった」という
+種類のバグだったため — アプリ内のログ/状態だけを見る検証では、この
+クラスのバグを構造的に見逃す。
+
+1. シミュレータを `erase` してクリーンな状態にする。
+2. `OtegamiCloudSyncSimulatorIsolationUITests`
+   (`-otegamiEnableCloudSyncInSimulator` を**付けない**、通常の verify
+   スクリプトと同じ起動) を実行し、dev mailstack の Dovecot アカウントを
+   追加する — 汚染インシデントを実際に引き起こしていたのと同じ操作。
+3. テスト実行の開始・終了それぞれの実時刻を記録し、その時間窓について
+   ホスト側の `log show --predicate 'eventMessage CONTAINS
+   "iCloud.<bundle id>"'` を実行、`cloudd`/CloudKit のコンテナアクセス
+   ログが一切無いことを確認する (1件でもあれば `FAIL` としてその内容を
+   表示する)。
+
+`log`/`grep` はこの開発環境では `/usr/bin/log`/フルパスで呼ぶ必要がある
+点に注意 (このシェルの rtk フックが引用符付き `--predicate` を誤解析する
+ため、bare の `log` コマンドは `too many arguments` で落ちる —
+`type -a log` で `log is a shell builtin` と `log is /usr/bin/log` の
+両方が返る環境固有の問題)。
+
+実行結果: 初回実行では上記「実行時の環境ノート」に記録済みの
+`simctl erase` 直後の IMAP 接続不安定 flake を1回踏み、接続テストの
+段階で失敗した (cloud sync とは無関係)。同じテストフェーズを単体で
+再実行すると成功し、その実行時間窓についてホストの `cloudd` ログを
+確認したところ `iCloud.com.mtkg.otegami` コンテナへのアクセスは
+0件だった — シミュレータの cloud sync ゲートが機能していることを確認
+(詳細は `docs/icloud-sync.md`「開発用アカウントの除外と実機汚染
+インシデント」節の「検証」参照)。
 
 ### `List(selection:)` の行から Settings を閉じた後にメッセージ一覧へ戻る
 

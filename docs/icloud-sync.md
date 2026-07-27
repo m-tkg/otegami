@@ -241,14 +241,14 @@ iCloud 経由では同期されない (片方のデバイスだけ切りたい�
 
 ## 制限
 
-- iOS シミュレータでは実 iCloud KVS が「ローカルフォールバック」動作を
-  する場合がある (Apple のドキュメント上の既知の制約)。この開発環境の
-  シミュレータでは実際に KVS の内容がシミュレータ単位で永続化され
-  (`xcrun simctl uninstall` では消えない — Keychain も同様)、複数の
-  verify スクリプトをまたいで意図せずアカウントが「復活」する現象を
-  確認した (`docs/verify.md`/`.claude/skills/verify/SKILL.md` の M11 節
-  参照)。実 2 台のデバイス間での本当の同期は、この開発環境からは検証
-  できない (`PENDING.md` 参照)。
+- **[訂正]** 以前この節には「iOS シミュレータでは実 iCloud KVS が
+  『ローカルフォールバック』動作をする場合がある」と書いていたが、
+  この前提は誤りだったことが実機汚染インシデントの調査で判明した —
+  実際にはこの開発機のシミュレータは**実 iCloud** (この Mac がサイン
+  インしている実 Apple ID) と通信していた。詳細と修正は下記「開発用
+  アカウントの除外と実機汚染インシデント」節を参照。実 2 台のデバイス
+  間での本当の同期は、この開発環境からは検証できない (`PENDING.md`
+  参照)。
 - `.gmail` (`.oauth2`) kind のアカウントも同期対象だが (スキーマ上は
   generic/icloud と同列)、cloud から新規挿入されたケースの自動同期開始は
   `GoogleOAuth.TokenStore.hasStoredRefreshToken`/`.accessToken(for:)`
@@ -516,3 +516,161 @@ DB へのフォールバック) を静かに踏んでいる可能性が高いと
 複数回パス済みで、かつ本セッションの変更 (`AccountDuplicateMerger`
 自体は無変更、`AppEnvironment` の新規コードは上記の通り分離検証済み)
 がこの挙動の原因でないことは切り分け済み。
+
+## 開発用アカウントの除外と実機汚染インシデント
+
+実機の設定に、削除したはずの開発用アカウント (`test1@otegami.test`) が
+**2つ** (表示名「Dovecot Test1」と「test」、いずれも資格情報待ち) 復活し
+続ける、という報告があった。ユーザーが削除 → tombstone push しても、
+しばらくすると (別の verify 実行のたびに) 再出現する。
+
+### 根本原因: 開発機のシミュレータ/ネイティブビルドが実 iCloud と通信していた
+
+この機能の実装当初、「iOS シミュレータの `NSUbiquitousKeyValueStore` は
+実 iCloud に接続せずローカルフォールバック動作をする」という Apple の
+ドキュメント上の記述を前提にしていた (旧「制限」節)。今回の調査で、
+**この開発環境ではその前提が成立していない**ことが実測で確認された。
+
+**アーキテクチャ上の理由**: `com.apple.developer.ubiquity-kvstore-identifier`
+entitlement の値は `$(TeamIdentifierPrefix)$(CFBundleIdentifier)` — つまり
+Team ID + bundle id の組で決まる。この開発機の `apps/Otegami/Config
+/Local.xcconfig` は開発者本人の Team ID と bundle id を設定しており、
+これは `scripts/deploy-ota.sh` が
+Ad Hoc 配布 IPA をビルドする際と**まったく同じ** Team ID / bundle id
+である。つまり、この Mac 上のあらゆるローカルビルド (シミュレータ・
+macOS ネイティブ・実機への Ad Hoc 配布) は、**同一の iCloud KVS
+コンテナ**を指す同一の entitlement を持つ。そしてこの Mac 自体は
+(開発機として当然) 開発者本人の実 Apple ID にサインイン
+している。つまり「シミュレータ専用の隔離された iCloud」は最初から
+存在せず、この Mac 上のどのビルドも実ユーザーの実 iCloud KVS
+(`accounts.v1`) を直接読み書きしていた。
+
+**実測による裏付け**: この Mac の `cloudd` (Apple 標準の iCloud デーモン)
+の統一ログ (`log show`) を確認したところ、`xcodebuild test` (verify
+スクリプト経由でのシミュレータ実行) のタイミングと完全に一致して、
+以下のようなログが実際に記録されていた:
+
+```
+cloudd[...] [com.apple.cloudkit:CK] TCC approved access for container
+containerID=iCloud.com.mtkg.otegami:Sandbox, applicationID=<...
+applicationBundleID=com.mtkg.otegami>
+```
+
+これは「シミュレータのプロセスが、ホスト Mac の実 `cloudd` 経由で実
+iCloud コンテナへのアクセス許可を得た」ことを示す直接的な証拠である。
+`docs/verify.md` の M11 節がこれまで「シミュレータの KVS はシミュレータ
+単位でローカル永続化されるだけ」と記録していた現象 (`simctl uninstall`
+を跨いでアカウントが復活する) は、実際には「シミュレータの KVS 書き込みが
+実 iCloud に届き、実 iCloud から読み戻されている」ことの観測結果だった
+可能性が高い — ローカルキャッシュとリモート同期は外部から見分けが
+つきにくく、当時は誤って前者と結論づけていた。
+
+2つ並んで復活していたのは (旧トラブルシューティングの推測通り) 過去の
+複数回の verify 実行が異なる IMAP ホスト表記 (`192.168.0.163` など) で
+同じ `test1@otegami.test` を別々の `accountId` で push したものが、
+重複統合ロジックの対象外 (このアカウント自体が実機にはローカル行として
+存在しない、cloud のみに残った「負けエントリ」) のまま cloud payload に
+残り続けていたため。
+
+### 多層防御
+
+上記の根本原因は「シミュレータ固有の抜け穴を塞ぐ」だけでは不十分
+(`make mac` によるこの Mac 上でのネイティブ実行は、シミュレータの
+話ではなく最初から普通に実 iCloud と通信する) と分かったため、2層の
+独立した防御を実装した。
+
+**層1: シミュレータのビルドはデフォルトで cloud sync に一切参加しない**
+(`AppEnvironment.isCloudSyncPermittedOnThisBuild()`)。`#if
+targetEnvironment(simulator)` でガードし、`AccountCloudSyncEngine` への
+push (`pushLocalChange`/`pushLocalDeletion`) だけでなく reconcile の
+pull (cloud → ローカル挿入) 側も止める — シミュレータに実アカウントが
+降ってくるのも逆方向の汚染であるため。`-otegamiEnableCloudSyncInSimulator`
+launch argument で明示的にオプトインすれば、開発者が意図的にシミュレータ
+上で実 cloud sync 挙動を検証することもできる。UI テストプロセス向けに
+`OTEGAMI_UITEST_DISABLE_CLOUD_SYNC` という独立した強制無効化フラグも
+用意した (`targetEnvironment(simulator)` の外で UI 自動化するケースへの
+保険)。`AccountCloudSyncEngine`/`AccountCloudSyncTests` は Fake
+`UbiquitousStoring` を直接使うため、この層の影響を一切受けない。
+
+**層2: 開発用ホストのアカウントは cloud payload に一切乗らない**
+(`CloudAccountSnapshot.isDevelopmentAccount`/`.isDevelopmentHost(_:)`,
+`packages/OtegamiKit/Sources/AccountCloudSync/CloudAccountSnapshot.swift`)。
+IMAP ホストが以下のいずれかに一致するアカウントを「開発用」と判定する
+純関数:
+
+- `localhost`
+- ループバック (`127.0.0.0/8`)
+- プライベート LAN (`10.0.0.0/8` / `172.16.0.0/12` / `192.168.0.0/16`,
+  RFC 1918)
+- `.test` / `.local` ドメイン (末尾一致、大文字小文字を無視)
+
+`AccountCloudSyncEngine.reconcile()`/`pushLocalChange` の両方がこの
+判定を使う:
+
+- ローカルのみにある開発用アカウントは、そもそも `reconcile()` の
+  対象集合から除外される (cloud に「無い」とみなされて push される
+  ことがない)。
+- `pushLocalChange` (アカウント追加/編集直後の即時 push 経路) も同じ
+  判定で早期リターンする。
+- **既存の汚染データの掃除**: cloud payload 側に既に乗っている開発用
+  アカウントのエントリは、`reconcile()` のフェーズ4 (cloud のみに
+  存在するアカウントの挿入判定) で見つかり次第、ローカルには挿入せず、
+  payload からもそのエントリ自体を削除する (tombstone は使わない —
+  tombstone は「削除された」という意味を他デバイスに伝播させてしまうが、
+  このエントリは「そもそも存在すべきでなかった」ものなので削除の伝播は
+  不要かつ不適切)。これは**一度きりの移行処理ではなく**、`reconcile()`
+  が実行されるたびに毎回チェックする設計 — この Mac だけでなく、修正版が
+  入った実デバイスが次に `reconcile()` を実行した時点でも同じ掃除が働く
+  (冪等・自己修復的)。この Mac に既に存在するローカルの開発用アカウント
+  行自体はこの層では一切触らない (ユーザーが Settings から手動削除する
+  必要がある) — 削除後に cloud 側の汚染エントリが既に掃除されていれば、
+  二度と復活しない。
+
+層2は層1と独立に効く。層1がガードするのはこの Mac のシミュレータ
+ビルドのみだが、層2は macOS ネイティブビルド・実機ビルドを含む
+**すべてのプラットフォーム**で、IMAP ホストが開発用アドレスかどうかだけ
+を見て判定するため、`make mac` を含むあらゆる実行経路を防御する。
+
+### 検証
+
+- 単体テスト (`packages/OtegamiKit`, `swift test`):
+  - `CloudAccountSnapshotDevelopmentFilterTests`: `isDevelopmentHost(_:)`
+    の境界値 (LAN 3レンジ・ループバック・`.test`/`.local`・大文字小文字・
+    172.16.0.0/12 の上下境界・"otegami.testing" のような部分一致誤検知
+    防止など) を網羅。
+  - `AccountCloudSyncEngineTests` に新規4件: `pushLocalChange`が開発用
+    アカウントを無視すること、`reconcile()` がローカルの開発用アカウント
+    を push しないこと、cloud のみにある開発用アカウントを挿入せず
+    payload から除去すること (`ReconcileSummary
+    .purgedDevelopmentAccountIds`)、既にローカル行が存在する開発用
+    アカウントについてはローカル行を一切触らずに cloud 側のエントリだけ
+    を掃除すること。
+  - 既存の重複挿入バグ回帰テスト群が `imapHost: "imap.otegami.test"` を
+    汎用フィクスチャとして使っていたため (`.test` ドメインのため今回の
+    層2フィルタに引っかかってしまう)、本題ではないこれらのテストのホスト
+    を `imap.otegami-mail.example` に差し替えた (テストの意図・アサーション
+    は無変更)。
+- シミュレータでの実機相当検証: `scripts/verify-ios-cloud-sync-isolation.sh`
+  (新規) — シミュレータを `erase` してクリーンな状態にし、
+  `OtegamiCloudSyncSimulatorIsolationUITests` (新規、
+  `-otegamiEnableCloudSyncInSimulator` を付けない通常起動で dev
+  mailstack の Dovecot アカウントを追加) を実行しつつ、ホスト側の
+  `log show` でその時間窓に `cloudd` が `iCloud.com.mtkg.otegami`
+  コンテナへのアクセスを一切ログしていないことを確認する — 「シミュレータ
+  からの cloud sync トラフィックがそもそも発生しない」ことを、アプリ内部
+  ではなくホスト OS のデーモンログという外部の事実で検証する設計 (この
+  節の根本原因調査で使ったのと同じ手法)。実行結果: `docs/verify.md`
+  「実行時の環境ノート」に既に記録されている既知の flake (`simctl erase`
+  直後の1回目のテストは IMAP 接続が不安定になることがある) を1回踏んだ
+  ため、その回だけ接続テストが `connectionFailed` で落ちた (このテスト
+  自身は cloud sync とは無関係な、erase 直後のシミュレータのネットワーク
+  スタック初期化タイミングの既知の問題)。同じフェーズを単体で再実行して
+  成功し、その成功した実行の開始〜終了の実時刻について `log show` を
+  実行した結果、`cloudd`/CloudKit の `iCloud.com.mtkg.otegami` コンテナ
+  アクセスは**0件**だった (`PASS`) — シミュレータの cloud sync ゲートが
+  効いていることを確認。
+- `make test` / `make ios` / `make mac` がグリーンであることを確認。
+- OTA 配信後、ユーザーが実機で既存の2つの復活アカウントを手動削除すれば
+  (今回の修正により cloud 側の汚染エントリも同時に掃除されるため) 再発
+  しなくなるはず — これは実機でのユーザー自身の最終確認が必要
+  (`PENDING.md` 参照)。
