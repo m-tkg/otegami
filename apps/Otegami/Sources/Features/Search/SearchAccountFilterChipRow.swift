@@ -18,7 +18,7 @@ struct SearchAccountFilterChipRow: View {
                 }
                 .accessibilityIdentifier("search.accountChip.all")
                 ForEach(accounts) { account in
-                    AccountFilterChip(title: account.displayName, isSelected: selectedAccountId == account.id) {
+                    AccountFilterChip(title: account.displayName, isSelected: selectedAccountId == account.id, isTitleLocalizable: false) {
                         selectedAccountId = account.id
                     }
                     .accessibilityIdentifier("search.accountChip.\(account.id)")

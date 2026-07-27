@@ -33,7 +33,7 @@ struct AccountFilterChipRow: View {
 
     @ViewBuilder
     private func accountChip(for account: AccountRecord) -> some View {
-        AccountFilterChip(title: account.displayName, isSelected: selectedAccountId == account.id) {
+        AccountFilterChip(title: account.displayName, isSelected: selectedAccountId == account.id, isTitleLocalizable: false) {
             select(account.id)
         }
         .accessibilityIdentifier("mail.chip.\(account.id)")
