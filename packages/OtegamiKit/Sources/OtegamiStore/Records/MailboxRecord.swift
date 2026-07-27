@@ -15,6 +15,56 @@ public enum MailboxRoleRecord: String, Codable, Sendable {
     case none
 }
 
+extension MailboxRoleRecord {
+    /// Gmail は `\Archive` special-use フォルダを持たないため、「アーカイブ」
+    /// カテゴリの実体を Gmail アカウントに限り All Mail (`.all`) とする —
+    /// Spark 等の挙動に合わせたマッピング (Task #52, 2)。`.archive`以外の
+    /// role は恒等 (マッピング無し) — Gmail アカウントの受信トレイ/送信済み
+    /// 等には一切影響しない。`ThreadQuery`/`MessageQuery`の unifiedInbox*
+    /// 系がこれを使い、`account.kind == .gmail`かどうかで実際に見る
+    /// `mailbox.role`をSQL側で出し分ける (`account.kind != .gmail`のアカウント
+    /// は引き続き`self`のまま、つまり`.archive`を見る)。
+    var gmailArchiveQueryRole: MailboxRoleRecord {
+        self == .archive ? .all : self
+    }
+}
+
+/// Task #52 追記: Gmail の「アーカイブ」の実体定義 — ユーザー指定の Gmail
+/// 検索式 `-in:spam -in:trash -is:sent -in:drafts -in:inbox` と等価な集合。
+/// 単純に All Mail (role `.all`) 全件を「アーカイブ済み」扱いにすると、まだ
+/// 受信トレイにある未アーカイブメールや、自分の送信コピー・下書きの写しまで
+/// 「アーカイブ済み」として出てしまう — Gmail の IMAP モデルでは同じメッ
+/// セージが複数ラベル (= 複数 mailbox) に重複して現れるため。スパム/ゴミ箱は
+/// そもそも All Mail に含まれない (Gmail 自身の挙動) ので、除外条件は
+/// INBOX/Sent/Drafts の3つで足りる。
+///
+/// 「同一メッセージ」の判定は同一アカウント内の `X-GM-MSGID`
+/// (`MessageRecord.gmailMessageId`) 突き合わせ — RFC 822 `Message-ID`
+/// ヘッダ (`MessageRecord.messageId`) は欠落/複製されうる一方、
+/// `X-GM-MSGID` は Gmail が発行するアカウント内一意な内部識別子で確実。
+/// `docs/design-system.md`にこの定義 (ユーザー指定の検索式) を記録。
+enum GmailArchiveFilter {
+    /// `message`/`mailbox`/`account`がJOIN済みの行に対して足す WHERE断片。
+    /// ガード (`mailbox.role = 'all' AND account.kind = 'gmail'`) が偽なら
+    /// 常に真 (=除外しない) になるため、Gmail の All Mail 以外のどの
+    /// メールボックスにも影響しない — 呼び出し側は`message`/`mailbox`/
+    /// `account`という非エイリアスのテーブル名でJOINしていることが前提
+    /// (`ThreadQuery`/`MessageQuery`の各SQLで共通)。
+    static let excludeUnarchivedSQL = """
+        NOT (
+            mailbox.role = 'all' AND account.kind = 'gmail'
+            AND message.gmailMessageId IS NOT NULL
+            AND EXISTS (
+                SELECT 1 FROM message AS gmailArchiveDup
+                JOIN mailbox AS gmailArchiveDupMailbox ON gmailArchiveDupMailbox.id = gmailArchiveDup.mailboxId
+                WHERE gmailArchiveDupMailbox.accountId = mailbox.accountId
+                  AND gmailArchiveDupMailbox.role IN ('inbox', 'sent', 'drafts')
+                  AND gmailArchiveDup.gmailMessageId = message.gmailMessageId
+            )
+        )
+        """
+}
+
 /// A synced mailbox (IMAP folder). One row per `(accountId, path)`; upserted
 /// idempotently by `SyncEngine` on every `listMailboxes()` pass.
 public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, MutablePersistableRecord, Identifiable {

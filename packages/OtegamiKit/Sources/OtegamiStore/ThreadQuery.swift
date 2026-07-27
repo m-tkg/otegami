@@ -93,11 +93,22 @@ public enum ThreadQuery {
     /// メッセージの `flagsRaw` ではなく `ThreadAssigner.recomputeAggregates`
     /// が維持する集計列を見るのは、ピン留め (`thread.isPinned`) と同じ理由:
     /// 集計済みの列を見ればスレッド単位のフィルタにジョインが要らない。
+    /// Task #52 追記: `mailboxId`が Gmail アカウントの All Mail (role `.all`)
+    /// なら、`GmailArchiveFilter`の「アーカイブ」定義 (INBOX/Sent/Draftsとの
+    /// 重複を除外) を常に適用する — All Mail をどの導線 (カテゴリ優先メニュー
+    /// の「アーカイブ」行/アカウント優先メニューの素のフォルダツリー/検索) から
+    /// 開いても同じ「アーカイブ済み」集合を見せる、という単一の定義に統一する
+    /// ための判断 (`docs/design-system.md`参照)。Gmail の All Mail 以外の
+    /// どのメールボックスにも影響しない (フィルタ自身のガード節による)。
     public static func request(mailboxId: Int64, limit: Int? = nil, unreadOnly: Bool = false) -> SQLRequest<ThreadRecord> {
         var sql = """
             SELECT thread.* FROM thread
             WHERE EXISTS (
-                SELECT 1 FROM message WHERE message.threadId = thread.id AND message.mailboxId = ?
+                SELECT 1 FROM message
+                JOIN mailbox ON mailbox.id = message.mailboxId
+                JOIN account ON account.id = mailbox.accountId
+                WHERE message.threadId = thread.id AND message.mailboxId = ?
+                      AND \(GmailArchiveFilter.excludeUnarchivedSQL)
             )
             """
         var arguments: [(any DatabaseValueConvertible)?] = [mailboxId]
@@ -125,6 +136,10 @@ public enum ThreadQuery {
     /// ボックス単位の非表示) from the aggregate — see `MailboxRecord
     /// .isHidden`'s doc comment. `unreadOnly` — see `request(mailboxId:
     /// limit:unreadOnly:)`'s doc comment.
+    /// `account.kind`をJOINして参照するのは Gmail のアーカイブマッピング
+    /// (`MailboxRoleRecord.gmailArchiveQueryRole`) のため — Gmail アカウント
+    /// だけ`role`の代わりに`role.gmailArchiveQueryRole`(`.archive`→`.all`、
+    /// 他は恒等)を見る (Task #52, 2)。
     public static func unifiedInboxRequest(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false) -> SQLRequest<ThreadRecord> {
         guard !accountIds.isEmpty else {
             return SQLRequest(sql: "SELECT * FROM thread WHERE 0")
@@ -136,12 +151,21 @@ public enum ThreadQuery {
               AND EXISTS (
                   SELECT 1 FROM message
                   JOIN mailbox ON mailbox.id = message.mailboxId
-                  WHERE message.threadId = thread.id AND mailbox.role = ? AND mailbox.accountId = thread.accountId
+                  JOIN account ON account.id = mailbox.accountId
+                  WHERE message.threadId = thread.id AND mailbox.accountId = thread.accountId
                         AND mailbox.isHidden = 0
+                        AND (
+                            (account.kind = ? AND mailbox.role = ?)
+                            OR (account.kind != ? AND mailbox.role = ?)
+                        )
+                        AND \(GmailArchiveFilter.excludeUnarchivedSQL)
               )
             """
         var arguments: [(any DatabaseValueConvertible)?] = accountIds
-        arguments.append(role.rawValue)
+        arguments.append(contentsOf: [
+            AccountKind.gmail.rawValue, role.gmailArchiveQueryRole.rawValue,
+            AccountKind.gmail.rawValue, role.rawValue,
+        ])
         if unreadOnly {
             sql += " AND thread.unreadCount > 0"
         }
@@ -196,10 +220,18 @@ public enum ThreadQuery {
     /// (each row is one message, not a real thread rollup), so this filters
     /// on the message's own `flagsRaw` `\Seen` bit directly instead, matching
     /// `MessageQuery.unreadCounts(accountId:db:)`'s own SQL.
+    /// Task #52 追記: `request(mailboxId:limit:unreadOnly:)`と同じ理由で
+    /// Gmail の All Mail をアーカイブ定義でフィルタする — `SELECT message.*`
+    /// にしているのは`mailbox`/`account`もJOINするようになった分、
+    /// `SELECT *`だと余計な列 (`mailbox.id`等) が`MessageRecord`のデコードに
+    /// 混ざってしまうのを避けるため。
     public static func flatSummaries(mailboxId: Int64, limit: Int? = nil, accountId: String, unreadOnly: Bool = false, db: Database) throws -> [ThreadSummary] {
         var sql = """
-            SELECT * FROM message
-            WHERE mailboxId = ?
+            SELECT message.* FROM message
+            JOIN mailbox ON mailbox.id = message.mailboxId
+            JOIN account ON account.id = mailbox.accountId
+            WHERE message.mailboxId = ?
+                  AND \(GmailArchiveFilter.excludeUnarchivedSQL)
             """
         var arguments: [(any DatabaseValueConvertible)?] = [mailboxId]
         if unreadOnly {
@@ -230,16 +262,28 @@ public enum ThreadQuery {
     /// `unreadOnly` — same `flagsRaw` `\Seen`-bit filter as `flatSummaries`.
     /// `role` — see `unifiedInboxRequest(accountIds:role:limit:unreadOnly:)`'s
     /// doc comment; defaults to `.inbox` for every pre-existing call site.
+    /// `account.kind`をJOINして参照する理由は`unifiedInboxRequest(accountIds:
+    /// role:limit:unreadOnly:)`と同じ — Gmail のアーカイブマッピング
+    /// (Task #52, 2)。
     public static func unifiedInboxFlatSummaries(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false, db: Database) throws -> [ThreadSummary] {
         guard !accountIds.isEmpty else { return [] }
         let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
         var sql = """
             SELECT message.*, mailbox.accountId AS accountId FROM message
             JOIN mailbox ON mailbox.id = message.mailboxId
-            WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders)) AND mailbox.isHidden = 0
+            JOIN account ON account.id = mailbox.accountId
+            WHERE mailbox.accountId IN (\(placeholders)) AND mailbox.isHidden = 0
+                  AND (
+                      (account.kind = ? AND mailbox.role = ?)
+                      OR (account.kind != ? AND mailbox.role = ?)
+                  )
+                  AND \(GmailArchiveFilter.excludeUnarchivedSQL)
             """
-        var arguments: [(any DatabaseValueConvertible)?] = [role.rawValue]
-        arguments.append(contentsOf: accountIds)
+        var arguments: [(any DatabaseValueConvertible)?] = accountIds
+        arguments.append(contentsOf: [
+            AccountKind.gmail.rawValue, role.gmailArchiveQueryRole.rawValue,
+            AccountKind.gmail.rawValue, role.rawValue,
+        ])
         if unreadOnly {
             sql += " AND message.flagsRaw & \(MessageQuery.seenFlagBit) = 0"
         }

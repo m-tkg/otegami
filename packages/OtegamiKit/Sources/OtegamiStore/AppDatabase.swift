@@ -802,6 +802,16 @@ extension AppDatabase {
             }
         }
 
+        // v27 (Task #52, Gmail アーカイブの定義): `GmailArchiveFilter`が
+        // 「Gmail の All Mail のうち INBOX/Sent/Drafts と重複しないもの」を
+        // 判定するたび `message.gmailMessageId` で自己結合するため、その
+        // 列にインデックスを張る — `message_on_gmailThreadId` (v?, スレッド
+        // 組み立て用) と同じ理由で、この列も既存の非インデックス列のままだと
+        // フルスキャンになる規模 (All Mail は他のどのメールボックスより大きい)。
+        migrator.registerMigration("v27") { db in
+            try db.create(index: "message_on_gmailMessageId", on: "message", columns: ["gmailMessageId"])
+        }
+
         return migrator
     }
 }

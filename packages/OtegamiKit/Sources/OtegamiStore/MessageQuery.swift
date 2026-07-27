@@ -50,6 +50,13 @@ public enum MessageQuery {
     /// row, backed by `message_on_mailboxId_flagsRaw` (v9). Mailboxes with
     /// zero unread messages are simply absent from the result (not present
     /// with a `0`); callers should treat a missing key as zero.
+    /// Task #52 追記: Gmail の All Mail (role `.all`) の未読数も
+    /// `GmailArchiveFilter`のアーカイブ定義でフィルタする —
+    /// `folderSheet.mailbox.<accountId>.<path>.unreadBadge`(All Mail の行の
+    /// バッジ)が、実際にその行をタップして開いた時のスレッド一覧
+    /// (`ThreadQuery.request(mailboxId:)`, 同じ定義でフィルタ済み)と矛盾しない
+    /// ようにするため。Gmail の All Mail 以外のどのメールボックスにも
+    /// 影響しない。
     public static func unreadCounts(accountId: String, db: Database) throws -> [Int64: Int] {
         let rows = try Row.fetchAll(
             db,
@@ -57,7 +64,9 @@ public enum MessageQuery {
                 SELECT message.mailboxId AS mailboxId, COUNT(*) AS unreadCount
                 FROM message
                 JOIN mailbox ON mailbox.id = message.mailboxId
+                JOIN account ON account.id = mailbox.accountId
                 WHERE mailbox.accountId = ? AND message.flagsRaw & \(seenFlagBit) = 0
+                      AND \(GmailArchiveFilter.excludeUnarchivedSQL)
                 GROUP BY message.mailboxId
                 """,
             arguments: [accountId]
@@ -79,18 +88,30 @@ public enum MessageQuery {
     /// for any other role, scoped the same way `ThreadQuery
     /// .unifiedInboxRequest` scopes its thread list (`role`-role mailboxes
     /// only, not every mailbox).
+    /// `account.kind`をJOINして参照するのは Gmail のアーカイブマッピング
+    /// (`MailboxRoleRecord.gmailArchiveQueryRole`, Task #52, 2) のため —
+    /// `ThreadQuery.unifiedInboxRequest`と同じ理由・同じ出し分け方。
     public static func unifiedInboxUnreadCount(accountIds: [String], role: MailboxRoleRecord = .inbox, db: Database) throws -> Int {
         guard !accountIds.isEmpty else { return 0 }
         let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
-        var arguments: [(any DatabaseValueConvertible)?] = [role.rawValue]
+        var arguments: [(any DatabaseValueConvertible)?] = [
+            AccountKind.gmail.rawValue, role.gmailArchiveQueryRole.rawValue,
+            AccountKind.gmail.rawValue, role.rawValue,
+        ]
         arguments.append(contentsOf: accountIds)
         return try Int.fetchOne(
             db,
             sql: """
                 SELECT COUNT(*) FROM message
                 JOIN mailbox ON mailbox.id = message.mailboxId
-                WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders)) AND message.flagsRaw & \(seenFlagBit) = 0
+                JOIN account ON account.id = mailbox.accountId
+                WHERE (
+                          (account.kind = ? AND mailbox.role = ?)
+                          OR (account.kind != ? AND mailbox.role = ?)
+                      )
+                      AND mailbox.accountId IN (\(placeholders)) AND message.flagsRaw & \(seenFlagBit) = 0
                       AND mailbox.isHidden = 0
+                      AND \(GmailArchiveFilter.excludeUnarchivedSQL)
                 """,
             arguments: StatementArguments(arguments)
         ) ?? 0
