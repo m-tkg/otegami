@@ -161,12 +161,18 @@ Two things this app is built around, more than any single feature list:
   avatar/preview treatment, styled distinctly (a softer tint, no card
   background) so they read as "inside one thread" rather than the
   top-level list.
-- **Thread view is a strict accordion**: exactly one message expanded at
-  a time — tapping another message's header collapses whatever was open
-  and expands that one instead, with the expanded row visually
-  highlighted (an accent-colored rail, like the account-color rail in the
-  list). The message footer toolbar's Reply/Forward/Search/Info always
-  act on whichever message is currently expanded.
+- **Thread reading, platform-appropriate**: on iOS, tapping a thread with
+  2+ messages opens a selection screen first (one row per message, same
+  icon/preview/time treatment as the list) — picking one pushes straight
+  to that single message's body, with no accordion/stack on screen at
+  all; a 1-message thread skips the selection screen entirely. macOS's
+  wider 3-pane layout keeps the original strict accordion instead —
+  exactly one message expanded at a time, tapping another message's
+  header collapses whatever was open and expands that one instead, with
+  the expanded row visually highlighted (an accent-colored rail, like the
+  account-color rail in the list). Either way, the message footer
+  toolbar's Reply/Forward/Search/Info always act on whichever message is
+  currently shown/expanded.
 - **Display language**: choose "Match System", Japanese, or English in
   Settings — the app UI itself is localized via a String Catalog, covering
   the great majority of screens (list, message view, compose, search, the
@@ -226,7 +232,11 @@ system): flat, zero-corner-radius, 2pt rules, Archivo for Latin text with
 system fonts for Japanese, a pale-blue-on-white palette with a matching
 dark theme. iOS has a single always-visible mail screen (unified inbox +
 account filter chips + an unread-only toggle) with a hamburger-menu drawer
-for folder navigation and settings, a floating search button (bottom-left)
+for folder navigation and settings — folders group by category by default
+(Inbox/Archive/Sent/Drafts/... sections, each account listed inside, plus
+an "all accounts" cross-account row per category), switchable back to the
+original per-account tree via a segmented control — a floating search
+button (bottom-left)
 that opens a dedicated search screen (account chips, `from:`/`to:`/`cc:`/
 `subject:` search operators, search history), pull-to-refresh for
 resyncing, and a fixed footer toolbar on the message screen (reply/forward/

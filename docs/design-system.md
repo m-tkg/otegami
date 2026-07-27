@@ -784,6 +784,201 @@ green、Phase 3 以降の Mailpit 到達確認は上記の背景遷移タイミ�
 - `PendingSendCoordinator`/`OpQueueProcessor` の Simulator 固有と見られる
   バックグラウンド送信タイミング不具合の原因調査 (実機での再検証)。
 
+## 画面構造改修バッチ: スレッド選択画面・圧縮ヘッダ・カテゴリ優先メニュー
+
+ユーザー要望3点セット (iOS のみ — macOS の3ペインは無変更、`CLAUDE.md`の
+1a 系スコープをそのまま踏襲) の記録。実装中に実機報告「スレッド表示を
+オフにしてるのに、スレッドで表示されることがある」も同じ領域として対応
+した (末尾の節)。
+
+### 1. スレッド選択画面 (メール本文のエリアが狭い問題)
+
+「スレッド表示にする場合、スレッドを選ぶ画面を別で挟んで、メール本文の
+画面ではスレッドは出さない方がいい」という要望どおり、iOS の push 型
+遷移 (`MailScreenView`/`SearchScreenView`) では **一覧 → (スレッドに
+2通以上ある場合のみ) スレッド選択画面 → 単一メール本文画面** の3段構成
+にした。承認済み仕様: スレッドが1通だけなら選択画面をスキップして直接
+本文へ。
+
+- **`ThreadEntryView`** (新設): これまで一覧/検索結果のタップ先だった
+  `ThreadDetailView`の代わりに push される仲介ビュー。`preselectedMessageId`
+  (フラット行/フラット検索結果が既に確定させている1通) が非`nil`なら
+  即座に`ThreadDetailView(singleMessageId:)`を返す (選択画面もメッセージ
+  数の問い合わせも一切しない)。`nil`なら`ThreadQuery.messages(threadId:
+  db:)`で実際のメッセージ数を1回だけ読み、1通以下ならそのまま
+  `ThreadDetailView`へ、2通以上なら`ThreadSelectionView`を表示して選ばせる。
+- **`ThreadSelectionView`** (新設): 「スレッド選択画面の行は一覧と同等の
+  情報 (アイコン・プレビュー・時刻)」の要件どおり、`ThreadMessageSummaryRow`
+  (下記) の行をメッセージごとに並べる。タップで`.navigationDestination
+  (item:)`により`ThreadDetailView(singleMessageId:)`へ push — 本文画面
+  には常にその1通だけが表示され、以前のようなアコーディオン/スタックは
+  出ない。
+- **`ThreadMessageSummaryRow`** (`ThreadDetailView.swift`から分離・
+  一般化): 元は`ThreadDetailView`のアコーディオン行専用の`private`型
+  だったものを独立ファイルに切り出し、`Mode`(`.accordion(isExpanded:)`/
+  `.list`) で挙動を切り替えられるようにした — `ThreadDetailView`自身の
+  見た目は無変更 (`.accordion`モード側は既存ロジックをそのまま踏襲)、
+  `ThreadSelectionView`はこの同じ型を`.list`モードで再利用する。
+- **macOS は対象外**: `OtegamiApp.swift`の`detailColumn`は
+  `ThreadDetailView`を直接インスタンス化したまま — 3ペインの広い画面には
+  「本文のエリアが狭い」問題自体が無く、選択画面を挟むのはこのバッチが
+  求めた以上のインタラクション変更になるため。
+
+### 2. Spark 式の圧縮ヘッダ
+
+`MessageView`の本文ヘッダを、Spark を参考にした約2行の圧縮レイアウトに
+置き換えた (`MessageHeaderCompactView`、新設・別ファイル):
+
+- 1行目: 差出人の表示名 (太字) + 時刻 (`OtegamiDateFormat.listRowText`、
+  一覧の行と同じ短縮フォーマット)。HTML メールなら`HTMLBadge`も併記。
+- 2行目: 「宛先: <先頭の宛先の表示名/アドレス> (他N名)」+ HTML⇄テキスト
+  切替ボタン (アイコンのみに圧縮)。
+- **件名はヘッダに出さない** (この画面に到達する前の一覧/スレッド選択
+  画面、フッターツールバーの「情報」に既にある) — 旧ヘッダは件名
+  (`.title2`)・From/To のフルアドレス・秒単位の日時をすべて表示しており、
+  縦に厚いことが「本文のエリアが狭い」の一因だった。詳細情報は既存の
+  「情報」シート (`MessageHeaderInfoView`) に委ねる (無変更)。
+- **AI要約バー/翻訳バー (`AISummaryBar`/`TranslationBar`) は変更していない**
+  — 検討はしたが、既存の実機 UITest
+  (`OtegamiTranslationBarUITests.testOpeningEnglishMessageShowsTranslationBarButDoesNotAutoTranslate`)
+  が「英文メールを開いた直後、タップ無しで翻訳バーの見出しが見える」ことを
+  前提にしており、バーをボタン化して折りたたむとこの前提が崩れる。両方
+  ともヘッダ本体には元から含まれておらず (ヘッダの下の独立した薄い1行
+  バー)、アイドル時は既に「アイコン+見出し+ボタン」の1行に収まっている
+  ため、「常設ヘッダから外し、コンパクトに」の要件は実質的に満たしている
+  と判断し、既存の挙動・テストを壊すリスクを取らないことにした。
+
+### 3. ハンバーガーメニューのカテゴリ優先グルーピング
+
+`FolderListSheet`に、既存の「アカウントごとの選択」(account-first) に
+加えて「role (受信トレイ/アーカイブ/送信済み/下書き/ゴミ箱等) ごとに
+セクションを作り、その中に各アカウントを並べる」(category-first) を
+実装し、既定を category-first にした。
+
+- **`FolderGroupingMode`/`FolderGroupingModeStore`** (新設): `category`/
+  `account`の2値、`@AppStorage`で永続化 (既定`category`)。
+  `groupingModeSection`のセグメントコントロールで切替。
+- **`MailboxRoleRecord`の拡張** (`MailboxRoleDisplay.swift`、新設・
+  `Support/`): `categoryDisplayName`/`categorySystemImage`/
+  `categoryOrder` (受信トレイ→フラグ付き→アーカイブ→送信済み→下書き→
+  迷惑メール→ゴミ箱→すべてのメール、の固定順)。`.none`(ユーザー作成の
+  独自フォルダ) は role で束ねられないため「その他」セクションに個別行
+  のまま並べる (横断ビューは作らない)。
+- **横断ビュー**: 各roleセクションの先頭に「すべての<ロール名>」行
+  (`categoryUnifiedRow`) — 複数アカウントがそのroleを持つ場合のみ表示
+  (1アカウントしか無ければ直後の個別行と内容が完全に重複するため、
+  `showsAccountAccent`と同じ判断)。新設の`SidebarSelection.unifiedRole
+  (MailboxRoleRecord)`を選択する。
+    - `ThreadQuery.unifiedInboxRequest`/`unifiedInboxSummariesObservation`/
+      `unifiedInboxFlatSummaries`/`unifiedInboxFlatSummariesObservation`、
+      `MessageQuery.unifiedInboxUnreadCount(Observation)`に`role:
+      MailboxRoleRecord = .inbox`パラメータを追加 (既定値により既存呼び
+      出し元は無変更) — 「すべての受信トレイ」専用だったクエリを任意の
+      role に一般化した。
+    - `MessageListView`の`selection`に対する`switch`6箇所すべてに
+      `.unifiedRole`ケースを追加 (`observeThreads`/`title`/
+      `showsAccountAccent`/`currentAccountLastSyncError`/
+      `availableScopes`/`refresh()`)。`refresh()`は role 専用の同期
+      スコープが`SyncCoordinator`に無いため`.all`(全メールボックスの
+      フル差分同期) にフォールバックする。
+    - 既存の折りたたみ状態 (`FolderSectionCollapseStore`、アカウント
+      優先モード用) は変更せず、category-first 用に独立した
+      `FolderCategoryCollapseStore`を新設した — 表示単位そのものが違う
+      2つのモードに同じ折りたたみ状態を使い回す理由が無いため。
+    - `FolderMailboxRow`に`accountLabelText`(既定`nil`)を追加 — category
+      優先モードでは1セクションに複数アカウントの行が混ざるため、
+      アカウント優先モードのようにSection見出し自体がアカウント名を兼ね
+      られない。フォルダ名の下に小さく併記する。
+
+### 実機報告「スレッド表示をオフにしてるのに、スレッドで表示されることが
+ある」の調査と修正
+
+上記の改修中に追加で報告された実機バグ。`ThreadQuery.request`/
+`unifiedInboxRequest`(グループ化) と`flatSummaries`/
+`unifiedInboxFlatSummaries`(フラット) の使い分けを全呼び出し箇所
+(統合受信トレイ/単一メールボックス/検索結果/未読のみトグル/アカウント
+絞り込みチップ) で点検した結果:
+
+- **`MessageListView.observeThreads()`自体は既に正しい**: 単一メール
+  ボックス・統合受信トレイ (今回追加した`.unifiedRole`含む) はすべて
+  `isFlatMode`で正しく分岐しており、`unreadOnly`/アカウント絞り込みとの
+  組み合わせも`ObservationKey`に両方の値が含まれるため設定変更のたびに
+  観測が再構築される。ここに漏れは無かった。
+- **本当の漏れは検索だった**: `SearchQuery.threadSummaries`(macOS の
+  `MessageListView`インライン検索、iOS の`SearchScreenView`が共通で使う)
+  は`isFlatMode`を一切見ず、常にスレッドをグループ化して返していた —
+  実は`ThreadDetailView`の doc comment 上は「search always shows grouped
+  threads」として以前から**意図的な**スコープ外と記録されていた
+  (「実機フィードバック第3弾: フラット表示の単一メッセージ化」節、
+  検索結果は小さく一時的なリストなので影響は薄いという判断)。今回、
+  実際にユーザーがこれを踏んだと判断し、その判断を撤回して修正した。
+  - **`SearchQuery.flatMessageSummaries`** (新設): `threadSummaries`と
+    同じ演算子/FTS/LIKE マッチングロジックを再利用し、マッチした
+    メッセージ ID 集合をスレッドへ集約する代わりに`ThreadSummary
+    (flatMessage:accountId:)`でメッセージ単位の行として返す —
+    `ThreadQuery.flatSummaries`が`request`に対して持つのと同じ関係。
+  - `MessageListView.performSearch`(macOS インライン検索) /
+    `SearchScreenView.performSearch`(iOS) の両方を`isFlatMode`/
+    `!isThreadingEnabled`で分岐するよう修正。設定を検索中に切り替えた
+    場合に備え、`.onChange(of: isThreadingEnabled) { scheduleSearch() }`
+    も追加した (今までは`searchText`/`searchScope`の変化でしか再検索
+    しなかった)。
+  - `SearchScreenView`に`selectedMessageId`状態を新設し、フラット検索
+    結果の行 (`summary.singleMessageId`が非`nil`) をタップした際に
+    `ThreadEntryView.preselectedMessageId`へ伝播するようにした —
+    これが無いと、フラットな検索結果をタップしても`ThreadEntryView`が
+    グループ化モードと誤認し、実際のスレッドのメッセージ数を数え直して
+    選択画面 (またはグループ化された本文) を出してしまい、今回の報告と
+    全く同じ症状を検索経路で再現してしまうところだった。
+- **このバッチ自身が持ち込みかけていた回帰**: 「1. スレッド選択画面」の
+  実装で、グループ化モードの複数メッセージスレッドも
+  `ThreadSelectionView`経由で1通だけを表示するようになった結果、
+  `ThreadDetailView`が元々「`singleMessageId != nil` ⇒ フラット行」と
+  推定していた前提 (「実機フィードバック第3弾: A」節) が崩れていた —
+  グループ化モードでも`singleMessageId`が非`nil`になるケースが新たに
+  生まれたため。放置すると「削除/アーカイブ後に次のメールを開く」設定
+  (`MessagePostActionSettingsStore`) が、選択画面経由で開いたグループ化
+  スレッドに対して常に無効化される (`ThreadDetailView
+  .notifyThreadRemoved()`が常に`dismiss()`一択になる) 回帰になるところ
+  だった。`ThreadDetailView`に`isFlatModeEntry: Bool`(既定`true`— 未修正
+  の呼び出し元の暗黙の前提をそのまま保つ) を新設し、`singleMessageId`は
+  「どのメッセージを表示するか」だけの意味に戻した。`ThreadEntryView`は
+  `preselectedMessageId`が非`nil`のときだけ`isFlatModeEntry: true`を渡し、
+  自身がメッセージ数を見て解決したケース (1通スキップ/選択画面経由の
+  どちらも) では`false`のまま — 「次のメールを開く」はグループ化モードの
+  スレッドである限り、選択画面を経由したかどうかに関わらず引き続き効く。
+  macOS の`detailColumn`(`OtegamiApp.swift`) は唯一の直接
+  `ThreadDetailView`インスタンス化経路なので、以前と同じ判断
+  (`selectedMessageId != nil`) を明示的に`isFlatModeEntry`へ渡すよう更新
+  した。
+- **回帰テスト**: `SearchQueryTests`に`flatMessageSummaries`のテストを
+  追加 — 同じスレッドに属する2通のメッセージが両方マッチするクエリで、
+  グループ化検索 (`threadSummaries`) は1行、フラット検索
+  (`flatMessageSummaries`) は2行 (`singleMessageId`がそれぞれ異なる)
+  になることを確認する、今回の報告に直接対応する回帰テスト。
+
+### 検証
+
+`make test`/`make ios`/`make mac` すべて green (`SearchQueryTests`の新規
+2件を含む)。実機シミュレータでの目視確認 (スクリーンショット) は
+`.claude/skills/verify/SKILL.md`の手順に沿って実施し、結果を別途記録する
+— このドキュメント更新の時点でまだ実施中/未完了の場合は、対応する
+コミットメッセージまたは最終報告を参照。
+
+既存 UITest への影響: `OtegamiM4ThreadDetailUITests`(旧「スレッドを開くと
+全メッセージがアコーディオン」を検証していたテスト) はこのバッチの
+意図した挙動変更そのものを検証する内容へ全面的に書き換えた。
+`OtegamiDisplayBatchScreenshotUITests`/`OtegamiFeedbackBatch2ScreenshotUITests`/
+`OtegamiColdLaunchAndSidebarSelectionUITests`/`OtegamiQASweepUITests`/
+`OtegamiQASweepOfflineUITests`の一部テストは、「どのスレッドが最初に
+ソートされるか」に依存する既存の (意図的な) 非決定性により、2+メッセージ
+のスレッドを開くと新設の選択画面を経由するようになった影響を受けた —
+新設の共有ヘルパー`waitForThreadDetailPossiblyThroughSelectionScreen(in:)`
+(`DovecotAccountUITestHelpers.swift`) が選択画面を透過的に1段タップして
+本文画面まで進める形で対応した。`OtegamiQASweepScenario2UITests`/
+`OtegamiM4SetupUITests`は既知の単一メッセージ固定フィクスチャのみを対象
+にしており無改修。
+
 ## 表示・操作改善バッチ: カード状一覧・翻訳/AI要約・作成画面の添付統合・
 アカウントフォーム・表示言語
 
@@ -1514,6 +1709,10 @@ green だったため、コード側の不具合ではないと判断した)。�
 
 ## アバター強化バッチ フェーズ3: 企業ロゴ (favicon) — BIMI は実装見送り
 
+**[Task #42 で判断を覆した]** 以下の節は当時の判断の記録として残すが、
+BIMI は Task #42 で実装済み — 詳細は本ファイル末尾の「Task #42: BIMI
+対応・自分のプロフィール写真・アバター診断」節を参照。
+
 フェーズ1 (連絡先)・フェーズ2 (Gravatar) に続く第3優先の情報源。
 
 ### BIMI を実装しなかった判断とその理由
@@ -2162,3 +2361,155 @@ enqueue するには「元の op がどのメールボックスへ実際に着�
 実機シミュレータでの目視確認 (スクリーンショット/録画) は
 `.claude/skills/verify/SKILL.md` の手順に沿って実施し、結果をここに
 追記する。
+
+## Task #42: BIMI 対応・自分のプロフィール写真・アバター診断
+
+Google プロフィール写真の索引方式 (`adacb94`) 後も実機で写真が出ない
+という報告を受けて着手したバッチ。4点まとめて実施した:
+
+### 1. アバター診断画面
+
+設定 → アカウント編集 (Gmail アカウント) →「アバター診断」
+(`GoogleAvatarDiagnosticsView`、`apps/Otegami/Sources/Features/Settings/
+GoogleAvatarDiagnosticsView.swift`)。開くたびに Google
+プロフィール写真の索引を実際に強制再構築し (`GoogleProfilePhotoAvatarResolver
+.forceRebuildDiagnostics(accountId:)`)、以下を1画面に表示する:
+
+- スコープ3状態 (許可済み(完全)/(基本)/未許可/確認できず) — 既存の
+  `GoogleScopeDiagnosisRow`を再利用。
+- `otherContacts.list`/`people/me/connections`/`people/me`それぞれの
+  結果 (成功/スコープ不足/取得失敗)・HTTP ステータス・取得エントリ数・
+  写真ありエントリ数・エラー時のレスポンス本文冒頭 (`GooglePeopleDiagnosticsFormatting
+  .maskEmailAddresses(in:)`でメールアドレスをマスクしてから表示)。
+- 索引の総アドレス数・最終構築時刻。
+- **索引構築が部分失敗で丸ごと破棄された場合、その事実と理由を表示**
+  (下記「3. 索引構築失敗の可視化」参照) — 握り潰さない。
+
+`GooglePeopleAvatarClient`(`packages/OtegamiKit/Sources/GoogleOAuth/
+GooglePeopleAvatarClient.swift`)に、既存の`.list`呼び出しはそのまま
+(挙動非変更) に保ちつつ、診断用の`fetch...IndexOutcome(accessToken:)`
+系メソッド (`GooglePeopleIndexOutcome` = 結果 +
+`GooglePeopleFetchDiagnostics`) を追加した。
+
+### 2. 自分のプロフィール写真
+
+`GooglePeopleAvatarClient.fetchSelfPhotoIndexOutcome(accessToken:)`が
+`GET people/me?personFields=emailAddresses,photos`を叩き、自分の
+アドレス (エイリアス含む全件) → 写真の索引を返す。
+`GoogleProfilePhotoAvatarResolver.fetchAndStoreIndex`が既存の
+`otherContacts`/`connections`と同様にこれもマージする。
+
+**新規スコープは追加していない** —
+developers.google.com/people/api/rest/v1/people/get の
+Authorization scopes 一覧を実際に確認したところ、`people.get`は
+`https://www.googleapis.com/auth/contacts.other.readonly`
+(このアプリが`otherContacts.list`用に既に要求している既存スコープ) を
+受理することを確認した。実 Google での E2E は不可のため「このスコープで
+`photos`フィールドが実際に返るか」まで実機確認はできていないが、
+`otherContacts.list`は同じスコープで他人の`photos`を返せている以上、
+`people/me`の自分の`photos`も同じスコープで返る可能性が高いと判断した
+(判断の詳細は`GooglePeopleAvatarClient.fetchSelfPhotoIndexOutcome`の
+ドキュメントコメント)。実機で写真が出ない場合、アバター診断画面の
+「people/me (自分のプロフィール写真)」行の HTTP ステータスが確認の
+手がかりになる — 403 ならスコープ不足の可能性がある (その場合は
+別途 profile 系スコープの追加要否を再検討する)。
+
+### 3. 索引構築失敗の可視化
+
+`GooglePeopleAvatarClient.fetchPhotoIndex`は元々「ページ途中の失敗で
+索引全体を破棄する」実装 (部分索引をキャッシュに書き込むと欠落が
+`indexTTL`の間ずっと気付かれないため) だったが、破棄が起きたこと自体は
+どこにも記録されていなかった。`GooglePeopleFetchDiagnostics.discarded`/
+`.discardReason`にこれを記録し、アバター診断画面に表示するようにした
+(例: 「ページ3件目の取得に失敗したため、既に取得済みの47件を破棄しま
+した。」)。
+
+### 4. BIMI 対応
+
+`apps/Otegami/Sources/Support/CompanyLogoAvatarResolver.swift`が
+favicon より前に BIMI を試すようになった。
+
+**方針転換 (上の「BIMI は実装見送り」節からの reversal)**: 当時の
+見送り理由の2点目 (DNS TXT 取得の高レベル API 不在) は今回の指示が
+明示的に DNS over HTTPS (`https://dns.google/resolve`) 経由の実装を
+指定したことで解消された。1点目の懸念 (サードパーティ DoH への問い合わせ
+はプライバシー上のトレードオフ) は依然として残るが、今回の指示は
+このトレードオフを認識した上で明示的に DoH 実装を求めており、この
+バッチの作者による意図的な再選択として実装した。BIMI 判定のたびに
+差出人ドメイン名が Google の DoH エンドポイントへ送信される点は、
+`CompanyLogoAvatarResolver`が favicon 取得のために元々ドメイン名を
+接続先サーバーへ送っているのと同種のトレードオフとして扱った (設定の
+footer 注記は変更していない — 送信先が増える差分はあるが、注記の
+文言レベルでは既存の「ドメイン名が接続先サーバーに送信されます」で
+包含されると判断した)。
+
+実装は新規 SPM ターゲット`BIMI`
+(`packages/OtegamiKit/Sources/BIMI/`、`Package.swift`に追加、
+Linux 互換・`URLSession`のみ) に集約した:
+
+- `BIMIRecordClient.resolveLogoURL(domain:)`: `default._bimi.<domain>`
+  の TXT レコードを DoH JSON API で引き、`v=BIMI1; l=<URL>`から SVG
+  URL を取り出す。複数の quoted segment に分割された長い TXT 値の
+  再結合 (空白を挟まず連結) も実装 — 実際に PayPal の公開 BIMI
+  レコードで確認済み。
+- `BIMISVGSafety.isSafe(_:)`: **セキュリティ必須**のゲート。
+  `<script>`・`javascript:`・イベントハンドラ属性・`<image>`/
+  `<iframe>`/`<foreignObject>`/`<style>`・外部参照 (`#fragment`以外の
+  `href`/`xlink:href`)・XXE 相当の`<!ENTITY>`・サイズ上限 (64KB) を
+  拒否する。何であれ「安全とわかっている構文以外は全部拒否」の
+  fail-closed。
+- `BIMISVGParser`: 安全な subset のみを解釈する手書きのタグスキャナ
+  (`XMLParser`は Linux 互換性のため不使用)。対応要素:
+  `svg`/`g`/`path`/`rect`/`circle`/`ellipse`/`polygon`/`polyline`/
+  `line`/`defs`/`title`/`desc`。パスコマンドは`M`/`L`/`H`/`V`/`C`/`S`
+  (滑らかな3次ベジエ)/`Z`のみ — `Q`/`T`/`A`(2次ベジエ・弧) は
+  非対応で文書全体を拒否する (誤った形状で描画するくらいなら描画しない
+  方が安全、という判断)。`transform`は`translate`/`scale`/`matrix`の
+  みサポート。`fill="url(#...)"` (グラデーション/パターン参照) は
+  未対応と判定して文書全体を拒否する (以前は「指定なし」と誤って
+  親の色を継承してしまうバグがあったが、`FillAttributeResolution`
+  導入で修正済み)。
+- `BIMISVGRenderer`(app 層、`apps/Otegami/Sources/Support/
+  BIMISVGRenderer.swift`): `CoreGraphics`+`ImageIO`でラスタライズし
+  PNG を生成する唯一の Apple-only な部分。`WKWebView`は使わない
+  (指示どおり)。
+
+**実際の公開ドメインへの1回限りの動作確認**: PayPal
+(`default._bimi.paypal.com`) の実際の BIMI レコードを DoH 経由で取得し
+(読み取りのみ)、実際に公開されている SVG ロゴ
+(`paypalobjects.com/marketing/web/logos/paypal_ppe.svg`) を取得して
+`BIMISVGSafety`/`BIMISVGParser`に通した。この検証で2つの実装ギャップを
+発見・修正した:
+1. Adobe Illustrator 等が出力する`<title>`要素がパーサーに未対応で
+   文書全体が拒否されていた → `title`/`desc`を`defs`と同様スキップする
+   対象に追加。
+2. 実際のロゴが`S`/`s`(滑らかな3次ベジエ) コマンドを使っていて
+   未対応だった → `S`/`s`を実装 (制御点の反射計算は SVG 仕様どおりの
+   厳密な変換であり近似ではない)。
+実際のロゴ SVG 全文 (PayPal のもの) を`BIMISVGParserTests`の回帰
+フィクスチャとしてそのまま埋め込んである。
+
+FreeMailDomains (gmail.com 等) は BIMI 対象外のまま (favicon と同じ
+ドメイン単位の除外判定を BIMI にも適用)。
+
+### 検証
+
+`packages/OtegamiKit`に新規`BIMITests`(DoH 応答パース・TXT 再結合・
+安全性拒否ケース・SVG パーサーの各種ケース・実際の PayPal ロゴでの
+end-to-end) を追加、`GoogleOAuthTests`にも診断系メソッド・マスク
+関数のテストを追加。`make test`/`make mac`/`make ios` green。
+
+`GoogleAvatarDiagnosticsView`は実 Google 認証なしで到達できないため、
+`OtegamiAvatarDiagnosticsUITests`が UITest 専用の
+`OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT`環境変数
+(`AppEnvironment.init()`) で実トークンを持たない偽の`.gmail`アカウントを
+挿入し、設定 → アカウント編集 →「アバター診断」まで実際にタップで
+遷移して画面が (スコープ確認できず/トークン取得失敗の状態で) 表示崩れ
+なく描画されることを確認した。
+
+### ユーザーへの診断手順
+
+実機で Gmail アカウントの「アカウント編集」→「アバター診断」を開き、
+画面全体のスクリーンショットを1枚送ってもらえれば、このセッションの
+変更内容だけで原因を確定できるはず — スコープ3状態・3エンドポイントの
+HTTP ステータス/エントリ数・索引の総アドレス数が1画面に揃っている。
