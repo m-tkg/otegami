@@ -256,6 +256,44 @@ struct MailCoreIMAPSessionIntegrationTests {
         // without throwing is what's under test.
         _ = try await session.capabilities()
     }
+
+    /// Empirical confirmation, against a real Dovecot rather than
+    /// `FakeIMAPSession`, of the two assumptions `BodyFetcher
+    /// .attemptSelfHeal` (実機報告「MailCoreErrorDomain error 19」の自己修復) is
+    /// built on: (1) `UID FETCH` for a UID the mailbox has never had throws
+    /// — Dovecot answers `NO`, which `mapError` has no specific `MailCoreError`
+    /// case for and so falls through to `.serverError`, exactly the shape
+    /// the real-device error report's "error 19" surfaces as; (2) `UID FETCH`
+    /// of *envelopes* (`fetchEnvelopes`, `BodyFetcher`'s existence-check
+    /// substitute for a real `UID SEARCH`) for that same nonexistent UID does
+    /// *not* throw at all — it simply returns no results, the same "came
+    /// back successfully, just empty" shape `attemptSelfHeal` relies on to
+    /// tell "confirmed gone" apart from "the check itself failed".
+    @Test("fetching a UID the mailbox never had fails the body fetch but not the envelope existence check")
+    func fetchingANonexistentUIDFailsBodyButNotEnvelopeExistenceCheck() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+
+        let status = try await session.select("INBOX")
+        // One past the mailbox's `uidNext` is guaranteed to have never been
+        // assigned to any message this mailbox has ever held.
+        let neverAssignedUID = UInt32(status.uidNext) + 10_000
+
+        let envelopes = try await session.fetchEnvelopes(mailboxPath: "INBOX", uids: .uid(neverAssignedUID), batchSize: 1)
+        #expect(envelopes.isEmpty)
+
+        do {
+            _ = try await session.fetchBody(mailboxPath: "INBOX", uid: neverAssignedUID)
+            Issue.record("expected fetchBody to throw for a UID this mailbox never had")
+        } catch let error as MailTransportError {
+            guard case .serverError = error else {
+                Issue.record("expected .serverError (the MailCoreErrorDomain error 19 shape), got \(error)")
+                return
+            }
+        }
+    }
 }
 
 /// Connection details for the dev mailstack (or another IMAP server),
