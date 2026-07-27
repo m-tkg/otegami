@@ -116,6 +116,63 @@ extension CloudAccountSnapshot {
         "\(authType.rawValue)|\(email.lowercased())|\(imapHost.lowercased())|\(imapUsername.lowercased())"
     }
 
+    /// True when `imapHost` looks like a development/test mail server
+    /// rather than a real one — a LAN address, loopback, or a `.test`/
+    /// `.local` hostname. `AccountCloudSyncEngine.reconcile()`/
+    /// `pushLocalChange` use this to keep this repo's own dev-mailstack
+    /// accounts (`test1@otegami.test` on `localhost`/`192.168.x.x`, added
+    /// by `scripts/verify-ios-*.sh`/XCUITests) out of the real iCloud KVS
+    /// payload entirely.
+    ///
+    /// This exists because of a real-device incident
+    /// (`docs/icloud-sync.md`'s "開発用アカウントの除外" section): a
+    /// developer's own Mac is, by construction, signed into that
+    /// developer's real Apple ID, and every local/Simulator build of this
+    /// app shares the exact same `com.apple.developer.ubiquity
+    /// -kvstore-identifier` (Team ID + bundle id) as the Ad-Hoc-signed
+    /// build shipped to a real device (`make deploy-ota`) — there is no
+    /// separate sandboxed iCloud a dev/verify run talks to instead.
+    /// `AccountCloudSyncEngine.reconcile()`'s launch-time push therefore
+    /// really did reach the real device's real iCloud KVS key, reseeding
+    /// deleted dev accounts there every time a verify script or manual
+    /// `make ios`/`make mac` run added one. This predicate is the second
+    /// layer of defense (the first being `AppEnvironment`'s Simulator
+    /// gate) — it also protects a Mac-native `make mac` run, which the
+    /// Simulator gate alone can't, and doubles as the mechanism that
+    /// scrubs already-contaminated cloud payload entries back out on the
+    /// next `reconcile()` (see that method's phase 4).
+    public var isDevelopmentAccount: Bool {
+        Self.isDevelopmentHost(imapHost)
+    }
+
+    /// Pure host classifier backing `isDevelopmentAccount`, kept separate
+    /// (and `static`, taking a plain `String`) so
+    /// `CloudAccountSnapshotDevelopmentFilterTests` can exercise every
+    /// boundary case — the three private-use IPv4 ranges (RFC 1918),
+    /// loopback, `.test`/`.local` suffixes, and a battery of ordinary
+    /// public hostnames that must *not* match — directly against host
+    /// strings, without constructing a full snapshot for each one.
+    static func isDevelopmentHost(_ host: String) -> Bool {
+        let lowered = host.lowercased()
+        if lowered.isEmpty { return false }
+        if lowered == "localhost" { return true }
+        if lowered.hasSuffix(".test") || lowered.hasSuffix(".local") { return true }
+
+        // Only treat this as an IPv4-shaped host if all four dot-separated
+        // parts parse as integers — anything else (an ordinary hostname
+        // that happens to contain dots, say) falls through to `false`
+        // below rather than being misread as a partial/invalid address.
+        let parts = lowered.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard parts.count == 4, let a = parts[0], let b = parts[1], parts[2] != nil, parts[3] != nil else {
+            return false
+        }
+        if a == 127 { return true } // 127.0.0.0/8 — loopback
+        if a == 10 { return true } // 10.0.0.0/8
+        if a == 192, b == 168 { return true } // 192.168.0.0/16
+        if a == 172, (16...31).contains(b) { return true } // 172.16.0.0/12
+        return false
+    }
+
     /// Captures every synced field of `account` as it stands right now —
     /// called both when pushing a locally-created/changed account to the
     /// cloud and when `AccountCloudSyncEngine.reconcile()` asks

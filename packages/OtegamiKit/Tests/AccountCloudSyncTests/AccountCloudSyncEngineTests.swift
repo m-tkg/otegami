@@ -103,15 +103,22 @@ struct AccountCloudSyncEngineTests {
     /// carries a second copy of the *same* mailbox (same email/imapHost/
     /// imapUsername) under a different UUID, pushed by another device.
     /// `reconcile()` must not insert that second copy as a new account.
+    ///
+    /// `imapHost` here is deliberately *not* the real `imap.otegami.test`
+    /// dev-mailstack host the original bug report used — `.test` domains
+    /// are now excluded from cloud sync entirely (`CloudAccountSnapshot
+    /// .isDevelopmentAccount`'s doc comment, added after this test), which
+    /// would make phase 4 purge these fixtures instead of exercising the
+    /// duplicate-detection logic this test is actually about.
     @Test
     func reconcileDoesNotInsertACloudDuplicateOfAnAccountAlreadyLocal() async {
         let store = FakeUbiquitousStore()
         let local = FakeLocalAccountDirectory()
-        local.seedLocalAccount(.fixture(accountId: "device-a-uuid", email: "test1@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch))
+        local.seedLocalAccount(.fixture(accountId: "device-a-uuid", email: "test1@otegami.test", imapHost: "imap.otegami-mail.example", updatedAt: epoch))
         // Another device's copy of the exact same mailbox, different UUID,
         // not yet known to this device and not tombstoned.
         store.seed(AccountCloudPayload(accounts: [
-            .fixture(accountId: "device-b-uuid", email: "test1@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch)
+            .fixture(accountId: "device-b-uuid", email: "test1@otegami.test", imapHost: "imap.otegami-mail.example", updatedAt: epoch)
         ]))
         let engine = makeEngine(store: store, local: local)
 
@@ -136,8 +143,8 @@ struct AccountCloudSyncEngineTests {
     func reconcileInsertsOnlyOneOfTwoDuplicateCloudAccountsWithNoLocalCopyAtAll() async {
         let store = FakeUbiquitousStore()
         store.seed(AccountCloudPayload(accounts: [
-            .fixture(accountId: "zzz-later", email: "test1@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch),
-            .fixture(accountId: "aaa-earlier", email: "test1@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch)
+            .fixture(accountId: "zzz-later", email: "test1@otegami.test", imapHost: "imap.otegami-mail.example", updatedAt: epoch),
+            .fixture(accountId: "aaa-earlier", email: "test1@otegami.test", imapHost: "imap.otegami-mail.example", updatedAt: epoch)
         ]))
         let local = FakeLocalAccountDirectory()
         let engine = makeEngine(store: store, local: local)
@@ -156,9 +163,9 @@ struct AccountCloudSyncEngineTests {
     func reconcileStillInsertsGenuinelyDifferentCloudAccounts() async {
         let store = FakeUbiquitousStore()
         let local = FakeLocalAccountDirectory()
-        local.seedLocalAccount(.fixture(accountId: "local-work", email: "work@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch))
+        local.seedLocalAccount(.fixture(accountId: "local-work", email: "work@otegami.test", imapHost: "imap.otegami-mail.example", updatedAt: epoch))
         store.seed(AccountCloudPayload(accounts: [
-            .fixture(accountId: "cloud-personal", email: "personal@otegami.test", imapHost: "imap.otegami.test", updatedAt: epoch)
+            .fixture(accountId: "cloud-personal", email: "personal@otegami.test", imapHost: "imap.otegami-mail.example", updatedAt: epoch)
         ]))
         let engine = makeEngine(store: store, local: local)
 
@@ -177,10 +184,10 @@ struct AccountCloudSyncEngineTests {
         let store = FakeUbiquitousStore()
         let local = FakeLocalAccountDirectory()
         local.seedLocalAccount(
-            .fixture(accountId: "local-password", email: "same@otegami.test", authType: .password, imapHost: "imap.otegami.test", updatedAt: epoch)
+            .fixture(accountId: "local-password", email: "same@otegami.test", authType: .password, imapHost: "imap.otegami-mail.example", updatedAt: epoch)
         )
         store.seed(AccountCloudPayload(accounts: [
-            .fixture(accountId: "cloud-oauth2", email: "same@otegami.test", authType: .oauth2, imapHost: "imap.otegami.test", updatedAt: epoch)
+            .fixture(accountId: "cloud-oauth2", email: "same@otegami.test", authType: .oauth2, imapHost: "imap.otegami-mail.example", updatedAt: epoch)
         ]))
         let engine = makeEngine(store: store, local: local)
 
@@ -188,6 +195,87 @@ struct AccountCloudSyncEngineTests {
 
         #expect(summary.insertedAccounts.map(\.accountId) == ["cloud-oauth2"])
         #expect(summary.duplicateCloudAccountIds.isEmpty)
+    }
+
+    // MARK: - Development/test account exclusion (docs/icloud-sync.md
+    // "開発用アカウントの除外": a Mac used for local development shares the
+    // exact same iCloud KVS identifier — and the same, real, signed-in
+    // Apple ID — as an Ad-Hoc-signed real-device build, so a dev-mailstack
+    // account (LAN/loopback IMAP host, or `.test`/`.local` domain) must
+    // never reach the real cloud payload.)
+
+    @Test
+    func pushLocalChangeSkipsADevelopmentAccount() async {
+        let store = FakeUbiquitousStore()
+        let local = FakeLocalAccountDirectory()
+        let engine = makeEngine(store: store, local: local)
+
+        await engine.pushLocalChange(.fixture(accountId: "dev-1", imapHost: "192.168.0.163", updatedAt: epoch))
+
+        #expect(store.currentPayload() == nil)
+        #expect(store.setCallCount == 0)
+    }
+
+    @Test
+    func reconcileNeverPushesALocalDevelopmentAccountToTheCloud() async {
+        let store = FakeUbiquitousStore()
+        let local = FakeLocalAccountDirectory()
+        local.seedLocalAccount(.fixture(accountId: "dev-2", imapHost: "test1.otegami.test", updatedAt: epoch))
+        let engine = makeEngine(store: store, local: local)
+
+        let summary = await engine.reconcile()
+
+        #expect(summary.pushedAccountIds.isEmpty)
+        #expect(store.currentPayload() == nil)
+        #expect(store.setCallCount == 0)
+    }
+
+    /// The self-healing half: a development account already sitting in the
+    /// cloud payload (pushed before this exclusion existed, or by another
+    /// dev/Simulator machine sharing the same Apple ID) must be scrubbed
+    /// out — not inserted locally — the next time *any* device reconciles,
+    /// regardless of whether that device has a local copy of it or not.
+    @Test
+    func reconcilePurgesADevelopmentAccountFoundOnlyInTheCloudInsteadOfInsertingIt() async {
+        let store = FakeUbiquitousStore()
+        store.seed(AccountCloudPayload(accounts: [
+            .fixture(accountId: "contaminated-1", imapHost: "192.168.0.163", updatedAt: epoch),
+            .fixture(accountId: "real-1", imapHost: "imap.gmail.com", updatedAt: epoch)
+        ]))
+        let local = FakeLocalAccountDirectory()
+        let engine = makeEngine(store: store, local: local)
+
+        let summary = await engine.reconcile()
+
+        #expect(summary.purgedDevelopmentAccountIds == ["contaminated-1"])
+        #expect(summary.insertedAccounts.map(\.accountId) == ["real-1"])
+        #expect(local.insertedAccounts.map(\.snapshot.accountId) == ["real-1"])
+        #expect(store.currentPayload()?.accounts.map(\.accountId) == ["real-1"])
+    }
+
+    /// Covers the exact end state a real device was left in: this device
+    /// already has a local `AccountRecord` row for the dev account (from
+    /// before the fix), and the cloud payload also still carries it. The
+    /// local row is left completely untouched (the user still deletes it
+    /// by hand, same as any other unwanted account) — only the cloud
+    /// payload entry is purged, so it can never be re-synced down again
+    /// after that manual deletion.
+    @Test
+    func reconcileLeavesAnExistingLocalDevelopmentAccountUntouchedWhilePurgingItsCloudEntry() async {
+        let store = FakeUbiquitousStore()
+        let devSnapshot = CloudAccountSnapshot.fixture(accountId: "dev-3", displayName: "Dovecot Test1", imapHost: "localhost", updatedAt: epoch)
+        store.seed(AccountCloudPayload(accounts: [devSnapshot]))
+        let local = FakeLocalAccountDirectory()
+        local.seedLocalAccount(devSnapshot)
+        let engine = makeEngine(store: store, local: local)
+
+        let summary = await engine.reconcile()
+
+        #expect(summary.purgedDevelopmentAccountIds == ["dev-3"])
+        #expect(summary.deletedAccountIds.isEmpty, "the existing local row must not be deleted by this cleanup")
+        #expect(local.deletedAccountIds.isEmpty)
+        #expect(local.currentAccount("dev-3") != nil, "the local row survives — only the cloud entry is purged")
+        #expect(store.currentPayload()?.accounts.isEmpty == true)
     }
 
     // MARK: - Tombstone deletion propagation

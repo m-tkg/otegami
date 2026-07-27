@@ -30,6 +30,17 @@ public struct ReconcileSummary: Equatable, Sendable {
     /// fired; app code has no separate action to take for these (unlike
     /// `insertedAccounts`) since by definition nothing changed locally.
     public var duplicateCloudAccountIds: [String] = []
+    /// Cloud-only accounts `reconcile()`'s phase 4 recognized as
+    /// development/test accounts (`CloudAccountSnapshot
+    /// .isDevelopmentAccount` — a LAN/loopback IMAP host, or a `.test`/
+    /// `.local` domain) sitting in the KVS payload — never inserted
+    /// locally, and stripped out of the payload that gets saved back
+    /// instead, so this is also the mechanism that self-heals an already-
+    /// contaminated cloud payload (`docs/icloud-sync.md`'s "開発用アカウン
+    /// トの除外"): every device's next `reconcile()` scrubs any dev
+    /// account entry it finds, regardless of which device originally
+    /// pushed it or when.
+    public var purgedDevelopmentAccountIds: [String] = []
     /// `true` when `reconcile()` short-circuited because iCloud account sync
     /// is toggled off (`AccountCloudSyncEngine.isEnabled`) — every other
     /// field is empty in that case, since nothing was looked at at all.
@@ -41,6 +52,7 @@ public struct ReconcileSummary: Equatable, Sendable {
         deletedAccountIds: [String] = [],
         pushedAccountIds: [String] = [],
         duplicateCloudAccountIds: [String] = [],
+        purgedDevelopmentAccountIds: [String] = [],
         disabled: Bool = false
     ) {
         self.insertedAccounts = insertedAccounts
@@ -48,6 +60,7 @@ public struct ReconcileSummary: Equatable, Sendable {
         self.deletedAccountIds = deletedAccountIds
         self.pushedAccountIds = pushedAccountIds
         self.duplicateCloudAccountIds = duplicateCloudAccountIds
+        self.purgedDevelopmentAccountIds = purgedDevelopmentAccountIds
         self.disabled = disabled
     }
 
@@ -191,7 +204,17 @@ public actor AccountCloudSyncEngine {
         if freshTombstones.count != payload.tombstones.count { payloadChanged = true }
         payload.tombstones = freshTombstones
 
-        let localSnapshots = await local.allAccountSnapshots()
+        // Development/test accounts (`CloudAccountSnapshot
+        // .isDevelopmentAccount`'s doc comment) are kept out of every phase
+        // below entirely — excluded here, up front, rather than filtered
+        // out of `cloudById`/`payload.accounts` individually, so a local
+        // dev account is never considered "missing from the cloud" (phase
+        // 3, which would push it) and a tombstone for one is never chased
+        // (phase 2 — moot anyway, since one should never have been pushed
+        // to generate a tombstone from in the first place). They still
+        // exist as ordinary local `AccountRecord` rows outside this engine
+        // entirely; this only opts them out of cloud sync bookkeeping.
+        let localSnapshots = await local.allAccountSnapshots().filter { !$0.isDevelopmentAccount }
         var localById = Dictionary(uniqueKeysWithValues: localSnapshots.map { ($0.accountId, $0) })
         var cloudById = Dictionary(uniqueKeysWithValues: payload.accounts.map { ($0.accountId, $0) })
         let tombstoneIds = Set(payload.tombstones.map(\.accountId))
@@ -264,6 +287,25 @@ public actor AccountCloudSyncEngine {
         var claimedIdentities = Set(localById.values.map(\.identityKey))
         for (id, cloudSnapshot) in cloudById.sorted(by: { $0.key < $1.key })
         where localById[id] == nil && !tombstoneIds.contains(id) {
+            // Contamination cleanup (`CloudAccountSnapshot
+            // .isDevelopmentAccount`'s doc comment,
+            // `ReconcileSummary.purgedDevelopmentAccountIds`'s doc
+            // comment): a dev/test account sitting in the cloud payload —
+            // whether pushed by this device before the exclusion above
+            // existed, or by another (dev/Simulator) machine sharing this
+            // Apple ID — is never inserted locally. It's removed from
+            // `cloudById` (so the payload saved at the end of this method
+            // no longer carries it) rather than tombstoned: a tombstone
+            // would need to outlive `tombstoneRetention` and gets
+            // interpreted as "was deleted, cascade the deletion" by every
+            // device, neither of which fits "this entry should simply
+            // never have existed".
+            guard !cloudSnapshot.isDevelopmentAccount else {
+                cloudById.removeValue(forKey: id)
+                payloadChanged = true
+                summary.purgedDevelopmentAccountIds.append(id)
+                continue
+            }
             guard !claimedIdentities.contains(cloudSnapshot.identityKey) else {
                 summary.duplicateCloudAccountIds.append(id)
                 continue
@@ -286,6 +328,13 @@ public actor AccountCloudSyncEngine {
     /// after a local insert/update. A no-op while sync is toggled off.
     public func pushLocalChange(_ snapshot: CloudAccountSnapshot) async {
         guard isEnabled() else { return }
+        // `CloudAccountSnapshot.isDevelopmentAccount`'s doc comment: a
+        // dev/test account must never reach the real iCloud KVS payload at
+        // all, and this immediate-push path (called right after a local
+        // add/edit, `AppEnvironment.pushAccountToCloud`) is the one
+        // `reconcile()`'s own up-front filtering doesn't cover — this is
+        // its counterpart.
+        guard !snapshot.isDevelopmentAccount else { return }
         await acquirePayloadLock()
         defer { releasePayloadLock() }
         var payload = loadPayload()
