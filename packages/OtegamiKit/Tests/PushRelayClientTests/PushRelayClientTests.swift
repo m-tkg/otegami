@@ -127,6 +127,32 @@ struct PushRelayClientTests {
         #expect(response.accountId == "account-1")
     }
 
+    @Test("listWatches GETs with the bearer secret and decodes the watch list")
+    func listWatches() async throws {
+        let client = makeClient()
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.absoluteString == "https://relay.example.com/v1/watches")
+            #expect(request.httpMethod == "GET")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer s1")
+
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let body = try encoder.encode(
+                ListWatchesResponse(watches: [
+                    WatchSummary(watchId: "w1", accountId: "account-1", imapHost: "imap.example.com", mailbox: "INBOX", createdAt: Date(timeIntervalSince1970: 0)),
+                ])
+            )
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!, body)
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let watches = try await client.listWatches(baseURL: URL(string: "https://relay.example.com")!, deviceSecret: "s1")
+        #expect(watches.count == 1)
+        #expect(watches[0].watchId == "w1")
+        #expect(watches[0].accountId == "account-1")
+        #expect(watches[0].imapHost == "imap.example.com")
+    }
+
     @Test("deleteWatch DELETEs with the bearer secret")
     func deleteWatch() async throws {
         let client = makeClient()

@@ -143,6 +143,87 @@ struct WatchRoutesTests {
         }
     }
 
+    @Test("GET /v1/watches returns only this device's watches, credential-free")
+    func listWatchesIsScopedAndCredentialFree() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let owner = try await registerDevice(client: client)
+                let other = try await registerDevice(client: client)
+
+                let ownerWatchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "owner-account",
+                        imapHost: "imap.watch-test.invalid",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@example.com",
+                        auth: WatchAuth(secret: "app-password")
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(owner.deviceSecret)"],
+                    body: ByteBuffer(data: ownerWatchBody)
+                ) { response in
+                    #expect(response.status == .created)
+                }
+
+                let otherWatchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "other-account",
+                        imapHost: "imap.watch-test.invalid",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user2@example.com",
+                        auth: WatchAuth(secret: "app-password-2")
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(other.deviceSecret)"],
+                    body: ByteBuffer(data: otherWatchBody)
+                ) { response in
+                    #expect(response.status == .created)
+                }
+
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .get,
+                    headers: [.authorization: "Bearer \(owner.deviceSecret)"]
+                ) { response in
+                    #expect(response.status == .ok)
+                    let decoded = try TestSupport.jsonDecoder.decode(ListWatchesResponse.self, from: response.body)
+                    #expect(decoded.watches.count == 1)
+                    #expect(decoded.watches[0].accountId == "owner-account")
+                    #expect(decoded.watches[0].imapHost == "imap.watch-test.invalid")
+                    // Never echoes the credential back.
+                    #expect(String(buffer: response.body).contains("app-password") == false)
+                }
+            }
+        }
+    }
+
+    @Test("GET /v1/watches without a valid bearer secret is rejected")
+    func listWatchesRequiresAuth() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .get,
+                    headers: [.authorization: "Bearer not-a-real-secret"]
+                ) { response in
+                    #expect(response.status == .unauthorized)
+                }
+            }
+        }
+    }
+
     @Test("creating a watch with an empty IMAP host is a 400, not persisted")
     func createWatchValidatesRequiredFields() async throws {
         try await TestSupport.withStore { store, watcherPool, _ in

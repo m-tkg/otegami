@@ -415,6 +415,13 @@ struct RootView: View {
             // launch (`AppEnvironment.refreshBadgeObservation()`'s doc
             // comment).
             environment.refreshBadgeObservation()
+            // M9 follow-up (実機バグ1): self-heals relay watch drift
+            // (deleted-account watches left over from a failed best-effort
+            // `DELETE`, or a local account missing its watch) — throttled
+            // internally to ~once/day, so calling this unconditionally on
+            // every foreground is cheap (`AppEnvironment
+            // .reconcilePushWatchesIfNeeded()`'s doc comment).
+            await environment.reconcilePushWatchesIfNeeded()
         case .background, .inactive:
             await environment.syncCoordinator.stopAllIdleLoops()
             // C7 「アプリを離脱したら即座に送信を確定」— cuts short whatever's

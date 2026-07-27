@@ -267,6 +267,39 @@ actor RelayStore {
         try await watches(whereClause: "WHERE id = ?", binds: [.text(id)]).first
     }
 
+    /// `GET /v1/watches`'s backing query — every watch belonging to
+    /// `deviceId`, scoped exactly like `deleteWatch` (a device only ever
+    /// sees its own watches). Deliberately its own query rather than
+    /// filtering `watches(whereClause:binds:)`'s result: that helper always
+    /// decrypts `encryptedSecret` (needed by `WatcherPool`, which is its
+    /// only other caller), and a listing endpoint that hands the result
+    /// straight back over HTTP has no reason to ever hold a plaintext IMAP
+    /// credential in memory, let alone risk it leaking into a future
+    /// response shape.
+    func listWatchSummaries(deviceId: String) async throws -> [WatchSummary] {
+        let rows = try await connection.query(
+            """
+            SELECT id, accountId, imapHost, mailbox, createdAt
+            FROM watch
+            WHERE deviceId = ?
+            ORDER BY createdAt ASC
+            """,
+            [.text(deviceId)]
+        )
+        return try rows.map { row in
+            guard let id = row.column("id")?.string,
+                  let accountId = row.column("accountId")?.string,
+                  let imapHost = row.column("imapHost")?.string,
+                  let mailbox = row.column("mailbox")?.string,
+                  let createdAtRaw = row.column("createdAt")?.string,
+                  let createdAt = Self.iso8601.date(from: createdAtRaw)
+            else {
+                throw RelayStoreError.watchNotFound
+            }
+            return WatchSummary(watchId: id, accountId: accountId, imapHost: imapHost, mailbox: mailbox, createdAt: createdAt)
+        }
+    }
+
     private func watches(whereClause: String, binds: [SQLiteData]) async throws -> [WatchRecord] {
         let rows = try await connection.query(
             """

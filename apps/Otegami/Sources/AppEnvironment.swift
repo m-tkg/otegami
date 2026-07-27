@@ -1182,6 +1182,77 @@ final class AppEnvironment {
         try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: watchId)
     }
 
+    /// Throttle for `reconcilePushWatchesIfNeeded()` — see that method's
+    /// doc comment for why a full reconcile pass doesn't need to run on
+    /// every single foreground.
+    private static let watchReconcileInterval: TimeInterval = 60 * 60 * 24
+
+    /// M9 follow-up (実機バグ1: 削除済みアカウントの watch がリレーに残り
+    /// 通知が届き続ける): `unregisterWatch`'s `DELETE` is (and stays)
+    /// best-effort `try?` with no retry of its own — a relay that's
+    /// unreachable for that one call previously meant the watch (and the
+    /// IMAP credential it holds) lived on the relay forever, with nothing
+    /// to ever notice or retry. This is the self-healing counterpart:
+    /// called from every launch/foreground (`RootView
+    /// .handleScenePhaseChange`'s `.active` case), it fetches this
+    /// device's actual watch list from the relay (`GET /v1/watches`,
+    /// ground truth) and reconciles it against local accounts via
+    /// `WatchReconciler.plan` —
+    ///   - a relay watch for an account no longer known locally gets
+    ///     `DELETE`d (fixes the actual bug: a deleted account's watch
+    ///     that a prior best-effort delete failed to clean up).
+    ///   - a local `.password` account with no live relay watch gets a
+    ///     fresh one registered (the initial `createWatch` failed, or the
+    ///     local map fell out of sync some other way).
+    ///   - the local accountId→watchId map is repaired to match the
+    ///     relay wherever it disagrees — no network call needed for that
+    ///     part, just local bookkeeping.
+    /// Throttled to roughly once a day (`PushSettingsStore
+    /// .lastWatchReconcileDate`) rather than running on every single
+    /// foreground — once healed, this shouldn't need to run often, and a
+    /// `GET` plus up to one request per drifted account on every
+    /// foreground would be wasteful. A relay that's unreachable right now
+    /// just means this quietly no-ops and tries again next time the
+    /// throttle allows it — same "best-effort, no user-visible failure"
+    /// posture as the rest of this file's push plumbing.
+    func reconcilePushWatchesIfNeeded() async {
+        guard isPushEnabled else { return }
+        if let last = pushSettings.lastWatchReconcileDate, Date().timeIntervalSince(last) < Self.watchReconcileInterval {
+            return
+        }
+        guard let baseURL = Self.validatedRelayURL(pushSettings.relayURLString ?? ""),
+              let deviceSecret = try? pushSettings.deviceSecret()
+        else { return }
+        guard let serverWatches = try? await pushRelayClient.listWatches(baseURL: baseURL, deviceSecret: deviceSecret) else {
+            return
+        }
+        // Recorded even if `serverWatches` turns out empty/no drift —
+        // a successful `GET` is what the throttle is protecting against
+        // repeating, regardless of what it found.
+        pushSettings.lastWatchReconcileDate = Date()
+
+        let localPasswordAccountIds = Set(accounts.filter { $0.authType == .password }.map(\.id))
+        let plan = WatchReconciler.plan(
+            localPasswordAccountIds: localPasswordAccountIds,
+            localWatchMap: pushSettings.accountWatchMap,
+            serverWatches: serverWatches
+        )
+
+        for watchId in plan.watchIdsToDelete {
+            try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: watchId)
+        }
+        for (accountId, watchId) in plan.watchIdsToAdoptLocally {
+            pushSettings.setWatchId(watchId, forAccountId: accountId)
+        }
+        for accountId in plan.accountIdsToForgetLocally {
+            pushSettings.setWatchId(nil, forAccountId: accountId)
+        }
+        for accountId in plan.accountIdsToRegister {
+            guard let account = accounts.first(where: { $0.id == accountId }) else { continue }
+            await registerWatch(for: account, baseURL: baseURL, deviceSecret: deviceSecret)
+        }
+    }
+
     private func requestAPNsToken() async throws -> String {
         #if os(iOS)
         do {

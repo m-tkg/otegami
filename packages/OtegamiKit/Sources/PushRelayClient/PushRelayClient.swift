@@ -97,6 +97,23 @@ public actor PushRelayClient {
         )
     }
 
+    /// `GET /v1/watches` — every watch this device currently owns on the
+    /// relay, credential-free. `AppEnvironment.reconcilePushWatchesIfNeeded()`
+    /// is the one caller: it diffs this against the app's local accounts
+    /// (via `WatchReconciler.plan`) to delete orphaned watches and
+    /// re-register missing ones.
+    public func listWatches(baseURL: URL, deviceSecret: String) async throws -> [WatchSummary] {
+        let response: ListWatchesResponse = try await send(
+            baseURL: baseURL,
+            path: "v1/watches",
+            method: "GET",
+            body: Optional<String>.none,
+            bearerToken: deviceSecret,
+            expectedStatus: 200
+        )
+        return response.watches
+    }
+
     public func deleteWatch(baseURL: URL, deviceSecret: String, watchId: String) async throws {
         try await sendNoContent(
             baseURL: baseURL,

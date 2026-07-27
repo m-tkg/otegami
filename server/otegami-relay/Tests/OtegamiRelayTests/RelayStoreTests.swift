@@ -113,6 +113,45 @@ struct RelayStoreTests {
         }
     }
 
+    @Test("listWatchSummaries returns only the requesting device's watches, without the credential")
+    func listWatchSummariesIsScopedAndCredentialFree() async throws {
+        try await TestSupport.withStore { store, _, _ in
+            let owner = try await store.createDevice(apnsToken: "", environment: .sandbox)
+            let other = try await store.createDevice(apnsToken: "", environment: .sandbox)
+
+            let ownerWatch = try await store.createWatch(
+                deviceId: owner.deviceId,
+                request: CreateWatchRequest(
+                    accountId: "owner-account",
+                    imapHost: "imap.watch-test.invalid",
+                    imapPort: 993,
+                    imapUseTLS: true,
+                    imapUsername: "user@example.com",
+                    auth: WatchAuth(secret: "owner-password")
+                )
+            )
+            _ = try await store.createWatch(
+                deviceId: other.deviceId,
+                request: CreateWatchRequest(
+                    accountId: "other-account",
+                    imapHost: "imap.watch-test.invalid",
+                    imapPort: 993,
+                    imapUseTLS: true,
+                    imapUsername: "user2@example.com",
+                    auth: WatchAuth(secret: "other-password")
+                )
+            )
+
+            let summaries = try await store.listWatchSummaries(deviceId: owner.deviceId)
+            #expect(summaries.count == 1)
+            #expect(summaries[0].watchId == ownerWatch.watchId)
+            #expect(summaries[0].accountId == "owner-account")
+            #expect(summaries[0].imapHost == "imap.watch-test.invalid")
+
+            #expect(try await store.listWatchSummaries(deviceId: other.deviceId).count == 1)
+        }
+    }
+
     @Test("watch credentials are never stored as plaintext")
     func credentialsAreEncryptedAtRest() async throws {
         try await TestSupport.withStore { store, _, _ in

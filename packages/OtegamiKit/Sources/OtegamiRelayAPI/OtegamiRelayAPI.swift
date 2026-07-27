@@ -10,6 +10,7 @@ import Foundation
 //   PUT    /v1/devices/:id/token -> UpdateDeviceTokenRequest
 //   POST   /v1/watches           -> CreateWatchRequest      (Bearer deviceSecret)
 //   DELETE /v1/watches/:id       -> (no body; wipes credentials immediately)
+//   GET    /v1/watches           -> ListWatchesResponse     (Bearer deviceSecret; this device's watches only)
 //   GET    /health               -> plain "ok"
 //
 // Every request that creates/reads a watch must be authenticated as the
@@ -154,6 +155,46 @@ public struct PushNotificationPayload: Codable, Equatable, Sendable {
     public init(accountId: String, uidNext: Int) {
         self.accountId = accountId
         self.uidNext = uidNext
+    }
+}
+
+/// One entry of `GET /v1/watches`'s response — everything about a watch
+/// this device owns *except* its credential (never re-exposed over the
+/// API, per `docs/relay-deployment.md`'s threat model). `imapHost` (not
+/// present on `WatchResponse`) is included so a future debugging UI could
+/// show which server each watch is actually watching, but the app's own
+/// use of this today (M9 follow-up: reconciling the relay's watch list
+/// against local accounts on launch/foreground) only reads `watchId`/
+/// `accountId`.
+public struct WatchSummary: Codable, Equatable, Sendable {
+    public var watchId: String
+    public var accountId: String
+    public var imapHost: String
+    public var mailbox: String
+    public var createdAt: Date
+
+    public init(watchId: String, accountId: String, imapHost: String, mailbox: String, createdAt: Date) {
+        self.watchId = watchId
+        self.accountId = accountId
+        self.imapHost = imapHost
+        self.mailbox = mailbox
+        self.createdAt = createdAt
+    }
+}
+
+/// `GET /v1/watches` response: every watch the authenticated device owns.
+/// The app's `AppEnvironment.reconcilePushWatchesIfNeeded()` treats this as
+/// ground truth — a relay watch for an account the app no longer has
+/// locally gets `DELETE`d, and a local `.password` account missing from
+/// this list gets a fresh watch registered — self-healing the case a
+/// prior `DELETE /v1/watches/:id` failed silently (M9's `try?`, no retry)
+/// and left a deleted account's watch (and IMAP credential) alive on the
+/// relay indefinitely.
+public struct ListWatchesResponse: Codable, Equatable, Sendable {
+    public var watches: [WatchSummary]
+
+    public init(watches: [WatchSummary]) {
+        self.watches = watches
     }
 }
 

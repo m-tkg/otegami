@@ -21,6 +21,10 @@ struct PushSettingsStore: @unchecked Sendable {
     private static let deviceIdKey = "push.deviceId"
     private static let enabledKey = "push.enabled"
     private static let watchMapKey = "push.accountWatchMap"
+    /// M9 follow-up (実機バグ1): last time `AppEnvironment
+    /// .reconcilePushWatchesIfNeeded()` actually ran a full `GET
+    /// /v1/watches` reconcile pass — not secret, just a throttle timestamp.
+    private static let lastWatchReconcileDateKey = "push.lastWatchReconcileDate"
     private static let keychainService = "com.mtkg.otegami.push-device-secret"
     /// Same rename hazard as `KeychainCredentialStore.legacyServices`
     /// (`52df393` changed this hardcoded default too) — kept here for
@@ -67,6 +71,16 @@ struct PushSettingsStore: @unchecked Sendable {
         nonmutating set {
             defaults.set(try? JSONEncoder().encode(newValue), forKey: Self.watchMapKey)
         }
+    }
+
+    /// See `lastWatchReconcileDateKey`'s doc comment — `nil` until the
+    /// first reconcile pass has ever run (e.g. a fresh install, or an
+    /// existing install that just upgraded to this feature), which
+    /// `AppEnvironment.reconcilePushWatchesIfNeeded()` treats the same as
+    /// "due now."
+    var lastWatchReconcileDate: Date? {
+        get { defaults.object(forKey: Self.lastWatchReconcileDateKey) as? Date }
+        nonmutating set { defaults.set(newValue, forKey: Self.lastWatchReconcileDateKey) }
     }
 
     func setWatchId(_ watchId: String?, forAccountId accountId: String) {
@@ -151,6 +165,7 @@ struct PushSettingsStore: @unchecked Sendable {
         deviceId = nil
         isEnabled = false
         accountWatchMap = [:]
+        lastWatchReconcileDate = nil
         try? deleteDeviceSecret()
     }
 

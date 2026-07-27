@@ -42,3 +42,4 @@ struct RelayHTTPError: Error, HTTPResponseError {
 // so these conformances live here instead.
 extension RegisterDeviceResponse: @retroactive ResponseEncodable {}
 extension WatchResponse: @retroactive ResponseEncodable {}
+extension ListWatchesResponse: @retroactive ResponseEncodable {}
