@@ -221,7 +221,13 @@ struct AccountEditView: View {
             scopeDiagnosis = .unknown
             return
         }
-        scopeDiagnosis = scope.contains("contacts.other.readonly") ? .granted : .notGranted
+        let hasOtherContacts = scope.contains("contacts.other.readonly")
+        let hasConnections = scope.contains("auth/contacts.readonly")
+        switch (hasOtherContacts, hasConnections) {
+        case (true, true): scopeDiagnosis = .full
+        case (true, false): scopeDiagnosis = .basic
+        case (false, _): scopeDiagnosis = .notGranted
+        }
     }
 
     private func loadAvailableSignatures() async {
@@ -391,14 +397,14 @@ struct AccountEditView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             // アバター強化バッチ「Google プロフィール写真」: 新スコープ
-            // (`contacts.other.readonly`) 追加前に接続したアカウントは、
-            // 下の「再認証」ボタンで同じ OAuth フローを再実行する (現在の
-            // `GoogleOAuthEndpoints.scope`には既に新スコープが含まれている
-            // ので、再同意するだけで有効になる — アカウントの削除・再作成は
-            // 不要)。`needsReauth`の有無に関わらず常に出す (このヒントは
-            // 「認証切れ」ではなく「新しい機能を有効にする」ための案内な
-            // ので)。
-            Text("再接続すると、差出人の Google プロフィール写真を表示できるようになります。")
+            // (`contacts.other.readonly`、後に `contacts.readonly` も追加)
+            // 追加前に接続したアカウントは、下の「再認証」ボタンで同じ
+            // OAuth フローを再実行する (現在の `GoogleOAuthEndpoints.scope`
+            // には既に新スコープが含まれているので、再同意するだけで
+            // 有効になる — アカウントの削除・再作成は不要)。
+            // `needsReauth`の有無に関わらず常に出す (このヒントは「認証
+            // 切れ」ではなく「新しい機能を有効にする」ための案内なので)。
+            Text("再接続すると、差出人の Google プロフィール写真 (保存済み連絡先を含む) を表示できるようになります。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Button {
@@ -584,16 +590,23 @@ enum GoogleScopeDiagnosisState: Equatable {
     /// まだ問い合わせ中、または `.gmail` 以外のアカウント種別 (この画面
     /// では表示自体がされないので実質観測されない)。
     case checking
-    /// `AppEnvironment.googleGrantedScope(for:)` が返したスコープ文字列に
-    /// `contacts.other.readonly` が含まれていた。
-    case granted
-    /// 問い合わせには成功したが、そのスコープが含まれていなかった —
-    /// 「再認証したのに Google 側で付与されていない」実機バグの症状その
-    /// もの。ユーザーへの案内は「再認証してください」で足りる (再認証
-    /// 自体が機能していれば次で解消するはず — 再認証してもなお解消しない
-    /// 場合は Google Cloud Console 側の OAuth 同意画面設定を疑う必要が
-    /// あるが、それはアプリの外側の話なので `docs/oauth-setup.md` の
-    /// 手順に譲る)。
+    /// `contacts.other.readonly`・`contacts.readonly` の**両方**が
+    /// 付与済み — other contacts (自動収集された連絡先) と保存済み連絡先
+    /// の両方から Google プロフィール写真を解決できる状態
+    /// (`GoogleProfilePhotoAvatarResolver`)。
+    case full
+    /// `contacts.other.readonly` のみ付与済み・`contacts.readonly` は
+    /// 未許可 — このバッチで `contacts.readonly` を追加した時点の既存
+    /// アカウントの典型的な状態。other contacts 由来の写真は解決できるが、
+    /// 保存済み連絡先の写真には対応できていない。もう一度「再認証」する
+    /// ことで解消する。
+    case basic
+    /// どちらのスコープも付与されていない — 「再認証したのに Google 側で
+    /// 付与されていない」実機バグの症状そのもの。ユーザーへの案内は
+    /// 「再認証してください」で足りる (再認証自体が機能していれば次で
+    /// 解消するはず — 再認証してもなお解消しない場合は Google Cloud
+    /// Console 側の OAuth 同意画面設定を疑う必要があるが、それはアプリの
+    /// 外側の話なので `docs/oauth-setup.md` の手順に譲る)。
     case notGranted
     /// 問い合わせ自体が失敗した (ネットワークエラー・リフレッシュ
     /// トークン喪失等) — `.notGranted`と違い「許可されていない」とは
@@ -620,11 +633,16 @@ private struct GoogleScopeDiagnosisRow: View {
                 ProgressView()
             }
             .accessibilityIdentifier("accountEdit.scopeDiagnosis.checking")
-        case .granted:
-            Label("連絡先の写真: 許可済み", systemImage: "checkmark.circle")
+        case .full:
+            Label("連絡先の写真: 許可済み (完全)", systemImage: "checkmark.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .accessibilityIdentifier("accountEdit.scopeDiagnosis.granted")
+                .accessibilityIdentifier("accountEdit.scopeDiagnosis.full")
+        case .basic:
+            Label("連絡先の写真: 許可済み (基本) — 保存済み連絡先には未対応。「再認証」をお試しください", systemImage: "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("accountEdit.scopeDiagnosis.basic")
         case .notGranted:
             Label("連絡先の写真: 未許可 — 「再認証」をお試しください", systemImage: "exclamationmark.circle")
                 .font(.caption)
