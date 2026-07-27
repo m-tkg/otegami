@@ -1666,48 +1666,6 @@ final class AppEnvironment {
     /// avatar images the real `.eml` fixture loads via `cid:`.
     private static let uitestFakeHTMLMessagePlaceholderImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMGjRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg=="
 
-    /// Task #51: one entry per dark-mode regression scenario
-    /// (`docs/design-system.md`'s Task #51 節), inserted as three separate
-    /// seeded messages so `OtegamiSecurityNoticeDarkModeUITests` can open
-    /// and screenshot all three in one run instead of needing three
-    /// separate env-var-gated code paths:
-    /// - `securityNotice` (case b): explicit white background + dark text,
-    ///   no self-declared dark support — the *original* Task #45 fixture;
-    ///   still needs the invert to stay readable in dark mode.
-    /// - `noColors` (case a): zero color declarations anywhere — the
-    ///   Task #51 regression case itself (see `HTMLDocumentBuilder.wrap
-    ///   (bodyHTML:autoAdjustColorsInDarkMode:)`'s doc comment); must NOT
-    ///   be inverted, since it already renders correctly via this app's
-    ///   own `color-scheme`/`CanvasText` CSS reset alone.
-    /// - `selfDarkAware` (case c): declares its own `prefers-color-scheme`
-    ///   handling, so `HTMLDocumentBuilder.wrap` should skip inversion
-    ///   consideration entirely regardless of what the JS measurement would
-    ///   have found — proves the "mail already handles its own dark mode"
-    ///   gate still wins over the newer measured-inversion logic.
-    fileprivate struct UITestFakeHTMLMessage {
-        let subject: String
-        let snippet: String
-        let html: String
-    }
-
-    fileprivate static let uitestFakeHTMLMessages: [UITestFakeHTMLMessage] = [
-        UITestFakeHTMLMessage(
-            subject: "セキュリティ通知",
-            snippet: "あなたは otegami に Example アカウントのデータの一部へのアクセスを許可しました",
-            html: uitestFakeHTMLMessageBodySecurityNotice
-        ),
-        UITestFakeHTMLMessage(
-            subject: "色指定なしのシンプルなお知らせ (UITest)",
-            snippet: "このメールは背景色・文字色のどちらも一切指定していません。",
-            html: uitestFakeHTMLMessageBodyNoColors
-        ),
-        UITestFakeHTMLMessage(
-            subject: "自前ダーク対応済みのお知らせ (UITest)",
-            snippet: "このメールは prefers-color-scheme で自前のダークモード対応を宣言しています。",
-            html: uitestFakeHTMLMessageBodySelfDarkAware
-        )
-    ]
-
     /// See the doc comment above `uitestFakeHTMLMessagePlaceholderImage`.
     /// Structurally identical to `31-security-notice-dark-mode.eml`'s
     /// `text/html` part (white card background + explicit dark text, no
@@ -1716,7 +1674,7 @@ final class AppEnvironment {
     /// footer line that deterministically forces fit-to-width's scale path)
     /// — kept in sync by hand since a UITest-only Swift string literal can't
     /// `include` the `.eml` fixture file.
-    fileprivate static let uitestFakeHTMLMessageBodySecurityNotice = """
+    fileprivate static let uitestFakeHTMLMessageBody = """
     <!doctype html>
     <html>
     <head>
@@ -1752,54 +1710,6 @@ final class AppEnvironment {
     <div class="footer">
       <p>otegami に付与したあなたのデータへのアクセス権は、Example アカウントでいつでも変更できます。</p>
       <p class="nowrap-disclaimer">このメールは security-noreply@example.com からの重要なお知らせのため配信停止の対象外です。返信はできません。</p>
-    </div>
-    </body>
-    </html>
-    """
-
-    /// Task #51 の退行ケースそのもの — `dev/mailstack/seed/fixtures/
-    /// 32-plain-html-no-colors.eml` と同内容 (背景色・文字色を一切
-    /// 指定しない、最も単純な HTML メール)。ダークモードで開いても
-    /// `HTMLDocumentBuilder`の CSS リセット (`color-scheme: light dark`)
-    /// だけで元々正しく読めるはずで、`.otegami-invert-for-dark`が
-    /// 付いてはいけない (実測が「背景が確定しない」と判定し、無変換の
-    /// ままになることを確認する)。
-    fileprivate static let uitestFakeHTMLMessageBodyNoColors = """
-    <html>
-    <body>
-    <p>こんにちは、otegami です。</p>
-    <p>このメールは背景色・文字色のどちらも一切指定していません。ダークモードで開いたとき、アプリの CSS リセット (color-scheme: light dark) だけに任せて自動的に明るい文字色で表示されるはずです。</p>
-    <p>Task #51: ここに「反転」を無条件に適用すると、本来すでに正しく読めていたはずのこのメールが暗地に暗文字になり読めなくなる回帰があった — その再現ケース。</p>
-    </body>
-    </html>
-    """
-
-    /// メール自身が`<meta name="color-scheme">`と`prefers-color-scheme`
-    /// メディアクエリの両方で自前のダークモード対応を宣言しているケース
-    /// — `HTMLDocumentBuilder.mailDeclaresOwnDarkModeSupport(html:)`が
-    /// true を返すため、`wrap(bodyHTML:autoAdjustColorsInDarkMode:)`は
-    /// 反転を検討する対象からそもそも除外する (`data-otegami-invert-check`
-    /// 属性すら付かない)。ライトモードでは白背景+濃色文字、ダーク
-    /// モードでは自前の暗背景+明文字に自分で切り替わる想定で、
-    /// どちらのモードでもアプリ側の反転が絶対にかかっていないことを
-    /// 目視確認する。
-    fileprivate static let uitestFakeHTMLMessageBodySelfDarkAware = """
-    <!doctype html>
-    <html>
-    <head>
-    <meta name="color-scheme" content="light dark">
-    <style type="text/css">
-      body { margin: 0; padding: 0; background-color: #ffffff; color: #202124; font-family: 'Helvetica Neue', Arial, sans-serif; }
-      .card { max-width: 480px; margin: 24px auto; padding: 24px; }
-      @media (prefers-color-scheme: dark) {
-        body { background-color: #1e1e1e; color: #e8eaed; }
-      }
-    </style>
-    </head>
-    <body>
-    <div class="card">
-      <p>このメールは prefers-color-scheme で自前のダークモード対応を宣言しています。</p>
-      <p>otegami はこのメールに対して「反転」処理を一切適用しません — ライト・ダークどちらの外観でも、この HTML 自身が指定した配色のまま表示されるはずです。</p>
     </div>
     </body>
     </html>
