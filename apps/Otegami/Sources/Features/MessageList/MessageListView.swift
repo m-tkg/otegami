@@ -487,6 +487,14 @@ struct MessageListView: View {
         .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, unreadOnly: isUnreadOnly)) {
             await observeThreads()
         }
+        // Task #44: see `syncSelectedMailboxOnAppear()`'s doc comment —
+        // keyed on `selection` alone (not the `ObservationKey` above, which
+        // also changes for `unreadOnly`/`isFlatMode`/pagination and would
+        // otherwise re-trigger a network sync for purely local display
+        // settings).
+        .task(id: selection) {
+            await syncSelectedMailboxOnAppear()
+        }
         // Not required for correctness anymore (the local write already
         // happened by the time a `PendingUndo` exists — see `commitDelete`/
         // `commitArchive`'s doc comment), but backgrounding is also the
@@ -955,7 +963,13 @@ struct MessageListView: View {
     /// queued offline operations first, since "the user explicitly asked
     /// to reconnect" is exactly the moment those should get a chance to
     /// flush too.
-    private func refresh() async {
+    ///
+    /// `surfaceErrors` (Task #44 実機バグ「All Mail に新着が反映されない」):
+    /// `syncSelectedMailboxOnAppear()` calls this same scope-resolution
+    /// logic with `false` — see that method's doc comment for why a
+    /// merely-opened-a-screen sync shouldn't pop the same alert an
+    /// explicit pull-to-refresh does.
+    private func refresh(surfaceErrors: Bool = true) async {
         isSyncing = true
         defer { isSyncing = false }
 
@@ -967,10 +981,10 @@ struct MessageListView: View {
                 do {
                     auth = try await environment.auth(for: account)
                 } catch TokenStoreError.reauthenticationRequired {
-                    syncErrorMessage = "再認証が必要です。設定からアカウントを再認証してください。"
+                    if surfaceErrors { syncErrorMessage = "再認証が必要です。設定からアカウントを再認証してください。" }
                     return
                 } catch {
-                    syncErrorMessage = "保存された資格情報が見つかりません。アカウントを再追加してください。"
+                    if surfaceErrors { syncErrorMessage = "保存された資格情報が見つかりません。アカウントを再追加してください。" }
                     return
                 }
                 let mailboxPath = try await environment.database.dbWriter.read { db in
@@ -983,7 +997,7 @@ struct MessageListView: View {
                     _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth)
                 }
             } catch {
-                syncErrorMessage = "\(error)"
+                if surfaceErrors { syncErrorMessage = "\(error)" }
             }
         case .unifiedInbox:
             let accountsToRefresh = unifiedInboxAccountFilter
@@ -1007,7 +1021,7 @@ struct MessageListView: View {
                     failures.append("\(account.email): \(error)")
                 }
             }
-            if !failures.isEmpty {
+            if surfaceErrors, !failures.isEmpty {
                 syncErrorMessage = failures.joined(separator: "\n")
             }
         case .unifiedRole:
@@ -1029,11 +1043,67 @@ struct MessageListView: View {
                     failures.append("\(account.email): \(error)")
                 }
             }
-            if !failures.isEmpty {
+            if surfaceErrors, !failures.isEmpty {
                 syncErrorMessage = failures.joined(separator: "\n")
             }
         }
     }
+
+    /// Task #44 (実機バグ: Gmail の「すべてのメール」を表示/pull-to-refresh
+    /// しても直近の新着が反映されない): merely *selecting* a mailbox
+    /// previously triggered no sync of its own at all — INBOX mostly hid
+    /// this gap (`OtegamiApp.syncAllAccountsOnce`'s launch/foreground
+    /// `.inboxOnly` pass, plus the foreground `IDLE` loop, both keep it
+    /// fresh independent of what's on screen), but every other mailbox
+    /// (Sent/Archive, Gmail's role-`.all` "すべてのメール", ...) only ever
+    /// caught up if/when the user happened to pull-to-refresh *that exact
+    /// screen* — recently arrived mail already visible in INBOX could sit
+    /// unsynced there indefinitely otherwise. Runs the identical
+    /// scope-per-selection differential sync `refresh()` does (so once it
+    /// succeeds, `MailboxSyncer.incrementalSync`'s "everything since the
+    /// highest UID already stored" step 1 closes *any* gap in one pass,
+    /// not just whatever arrived since the last sync — self-healing any
+    /// backlog this mailbox missed while unviewed), just silently
+    /// (`surfaceErrors: false`): a stale/offline connection here shouldn't
+    /// interrupt browsing with the same alert an explicit pull-to-refresh
+    /// shows, since the user never asked this particular pass to run.
+    ///
+    /// **Keeps retrying** every ``selectedMailboxResyncInterval`` while this
+    /// mailbox stays on screen, rather than a single one-shot pass: real
+    /// Gmail's own server-side indexing lag for "すべてのメール" (a message
+    /// already visible in INBOX simply isn't in All Mail's IMAP view *yet*,
+    /// server-side) means the very first sync right when the screen opens
+    /// can legitimately, correctly come back with nothing new — confirmed
+    /// against the real dev mailstack (`SyncEngineIntegrationTests
+    /// .mailboxScopedIncrementalSyncPicksUpNewMailInNonInboxMailbox`) that
+    /// `.mailbox(path:)`'s differential sync itself has no bug here.
+    /// Looping turns "the user has to keep manually pulling to refresh,
+    /// hoping to catch the exact moment Gmail catches up" into "shows up on
+    /// its own eventually, no action needed" — closing the same gap INBOX
+    /// already doesn't have (its foreground `IDLE` loop reacts the instant
+    /// the server pushes new data). No explicit lifetime bookkeeping
+    /// needed: `.task(id: selection)` cancels this loop for free the
+    /// instant `selection` changes or this view disappears, so it simply
+    /// stops the moment this mailbox isn't the one on screen anymore.
+    ///
+    /// `.task(id: selection)` (not `.onChange(of: selection)`) so this also
+    /// covers the very first mailbox shown after a cold launch/relaunch
+    /// (e.g. a restored "last selected" mailbox) — `.onChange` only fires
+    /// on a *later* change, never for the initial value.
+    private func syncSelectedMailboxOnAppear() async {
+        while !Task.isCancelled {
+            await refresh(surfaceErrors: false)
+            try? await Task.sleep(for: .seconds(Self.selectedMailboxResyncInterval))
+        }
+    }
+
+    /// How often ``syncSelectedMailboxOnAppear()`` retries while a mailbox
+    /// stays on screen — battery/network-conscious (this dev mailstack's
+    /// own `SyncCoordinator.prefetchUnifiedInboxBodiesIfNeeded` uses the
+    /// same 5-minute figure for its own "don't spam this too often" budget)
+    /// rather than IDLE-loop-tight, since this is a best-effort background
+    /// catch-up pass, not the primary "new mail arrived" signal path.
+    private static let selectedMailboxResyncInterval: TimeInterval = 5 * 60
 
     // MARK: - Row actions (M4/1g: thread-wide, applied to every message)
 
