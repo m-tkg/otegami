@@ -3356,3 +3356,68 @@ HTML5 パース仕様に基づく static な文字列処理のみ。`make ios`/`
 (参考画像1相当のフィクスチャが正しく画面幅に収まって描画されるか) は
 次回セッションで`scripts/verify-ios-b-html-render.sh`
 (または`OtegamiWideMarketingHTMLUITests`を直接) を再実行して確認する。
+
+## プッシュ通知まわりの恒久修正2件 (削除済みアカウントの watch 残存 / 通知バナーのアイコン白紙)
+
+### 実機バグ1: 削除済みアカウントの watch がリレーに残り通知が届き続ける
+
+`AppEnvironment.unregisterWatch`/`deleteAccount`の`DELETE /v1/watches/:id`
+は`try?`のベストエフォートでリトライが無く、そのタイミングでリレーに
+到達できなければ削除済みアカウントの watch (と IMAP 資格情報) がリレー
+上に残り続け、存在しないローカルアカウント宛の通知が届き続けるバグ。
+`CloudAccountDirectory.deleteLocally`(tombstone 経由の削除) は既に
+`unregisterWatch`を呼ぶよう配線済みだった (このセッションでの変更前から)。
+
+**修正**: リレーに`GET /v1/watches`(Bearer deviceSecret、そのデバイスの
+watch のみ、資格情報は返さない) を追加し、アプリ起動/フォアグラウンド
+復帰のたびに (`RootView.handleScenePhaseChange`の`.active`分岐、実際の
+照合パスは`AppEnvironment.reconcilePushWatchesIfNeeded()`) リレーの
+watch 一覧をローカルのアカウント一覧・accountId→watchId マップと突き合わせ、
+孤児 watch を削除・欠落 watch を再登録・ローカルマップの不整合を修復する。
+1日1回程度に間引き (`PushSettingsStore.lastWatchReconcileDate`)。
+`unregisterWatch`失敗時の個別リトライキューは別途持たず、この定期照合
+一本に統一した (アカウント削除自体は既にローカル DB から消えているので、
+次回照合時に必ず「ローカアカウントに対応しない watch」として検出され
+自然に消える)。
+
+**テスト**: サーバ側`RelayStoreTests`/`WatchRoutesTests`に device スコープ・
+資格情報非露出のテストを追加、アプリ側は純粋な差分計算ロジック
+(`WatchReconciler.plan`) を`PushRelayClientTests`ターゲットに切り出して
+単体テスト (孤児削除/欠落再登録/ローカルマップ修復/重複 watch 削除/
+no-op の5パターン)。`make server-test`/`make test`/`make ios`/`make mac`
+すべて green。
+
+### 実機バグ2: 通知バナーのアイコンが白紙 (グリッドのプレースホルダ)
+
+ホーム画面のアプリアイコンは正常なのに、プッシュ通知バナーのアイコン
+だけ白紙のグリッドプレースホルダになる実機報告。
+
+**原因の特定**: `scripts/deploy-ota.sh`と同じ手順 (クリーン worktree →
+`xcodebuild archive` → `-exportArchive method:ad-hoc`) で実際に OTA IPA
+を作り、`unzip`して`Assets.car`を`assetutil --info`でダンプして原因確定
+まで追い込んだ。修正前は`AppIcon.appiconset`が Xcode 14+ の「1024×1024
+1枚だけの universal 単一サイズ」形式で、ホーム画面はこの1枚を
+Springboard が実行時に縮小表示できるため正常に見えるが、
+**この開発機の Xcode 27 beta の`actool`は、この単一サイズ形式から
+`Assets.car`内に必要な idiom/size/scale 別のレンディションを一切
+生成していなかった** (`assetutil`のダンプが`phone/pad`とも
+`Scale 1, 1024px`の1エントリのみだったことで確認)。通知バナー/設定
+アプリの一覧/Spotlight は`CFBundleIconName`経由で`Assets.car`から
+idiom・scale 完全一致のレンディションを探すため、該当が無く汎用の
+プレースホルダにフォールバックしていたと見られる。
+
+**修正**: `AppIcon.appiconset`を、既存の 1024 マスターから`sips`で
+書き出した明示的な多サイズ形式 (iPhone: 20/29/40/60pt の @2x/@3x、
+iPad: 20/29/40/76/83.5pt の @1x/@2x、マーケティング 1024) に置き換えた
+(`Contents.json`を全エントリ列挙、`packages`ではなくアセットカタログ
+自体の修正)。修正後の IPA を同じ手順で再ビルドし、`assetutil --info`で
+`phone / Scale 3 / 180px / AppIcon-App-60@3x.png`等、修正前には存在
+しなかったレンディションが`Assets.car`に実際に入っていることを確認
+済み。iOS 7 以降で実質未使用の Notification/Settings/Spotlight 専用ロール
+(actool が「iOS 10 未満向けのみ」という notice を出す) も参考までに
+埋めているが、機能上必須なのは App ロール (60pt/76pt/83.5pt) 側の
+2x/3x/1x レンディション。
+
+**未確認**: 実機での見た目確認 (通知バナーのアイコンが実際に正しく
+表示されること) はユーザーに依頼— この場では`Assets.car`のレンディション
+存在をビルド成果物レベルで確認するところまで。

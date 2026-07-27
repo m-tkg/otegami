@@ -132,6 +132,18 @@ Tunnel 等) を置いて TLS を終端すること。IMAP 資格情報を平文�
 サーバ側の資格情報を即座に消去する。アカウント削除時も同様に連動して
 その watch を削除する。
 
+**watch の照合掃除 (M9 follow-up)**: アカウント削除時の `DELETE
+/v1/watches/:id` はベストエフォート (`try?`) でリトライが無いため、
+その瞬間リレーに到達できなければ削除済みアカウントの watch がリレー
+上に残り続けるバグがあった。これを自己修復するため、アプリは起動/
+フォアグラウンド復帰のたびに (1日1回程度に間引き) `GET /v1/watches`
+(Bearer deviceSecret、そのデバイスの watch のみ、資格情報は返さない)
+でリレー側の実際の watch 一覧を取得し、ローカルのアカウント一覧と
+突き合わせて孤児 watch の削除・欠落 watch の再登録・ローカル
+accountId→watchId マップの修復を行う (`AppEnvironment
+.reconcilePushWatchesIfNeeded()`、詳細は `docs/verify.md`「プッシュ
+通知まわりの恒久修正2件」参照)。
+
 ## 脅威モデル
 
 このサーバは、自分（またはプッシュ通知を有効にした人）の IMAP 資格情報
