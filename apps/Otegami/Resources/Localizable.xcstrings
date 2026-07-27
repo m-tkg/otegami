@@ -3220,6 +3220,16 @@
           }
         }
       }
+    },
+    "プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先の写真・Google プロフィール写真・Gravatar・企業ロゴを優先順に探して表示します。どの情報源を使うか（外部への問い合わせを含む）は「メール一覧」設定の同名のトグルで個別にオフにできます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatars try, in order, the sender's matching contact photo, Google profile photo, Gravatar, and company logo, falling back to the sender's initials and the account's color. Which sources are used (including which ones contact an external service) can be turned off individually from the matching toggles in the Message List settings."
+          }
+        }
+      }
     }
   },
   "version": "1.0"
