@@ -69,6 +69,25 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
         Task {
             if let payload {
+                // H「アプリアイコンの未読バッジ」— best-effort increment from
+                // whatever count `AppEnvironment.restartBadgeObservationIfNeeded`
+                // last wrote to the shared App Group `UserDefaults` suite.
+                // Setting `content.badge` here (rather than calling
+                // `UNUserNotificationCenter.setBadgeCount` from this
+                // Extension process) is the actual supported mechanism for
+                // an Extension to affect the badge — the OS applies it the
+                // moment this notification is delivered. This is
+                // deliberately just "+1", not the true unread count: the
+                // Extension never inserts the new message into the shared
+                // database itself (only `enrich(payload:)`'s own read-only
+                // envelope fetch, for display text), so it has no way to
+                // compute the *true* post-sync count here. The next time
+                // the main app runs its own live `ValueObservation` (any
+                // foreground/sync/read-toggle — `AppEnvironment
+                // .restartBadgeObservationIfNeeded`'s doc comment) it
+                // overwrites this with the real number, self-correcting
+                // any drift from multiple pushes arriving before that.
+                incrementSharedBadgeCount()
                 await enrich(payload: payload)
             }
             deliver()
@@ -88,6 +107,23 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         self.contentHandler = nil
         contentHandler(bestAttemptContent)
     }
+
+    /// H「アプリアイコンの未読バッジ」— see the `Task` block's doc comment in
+    /// `didReceive(_:withContentHandler:)` for the overall "increment here,
+    /// main app self-corrects to the true count later" design.
+    private func incrementSharedBadgeCount() {
+        guard let appGroupIdentifier = Self.appGroupIdentifier, let defaults = UserDefaults(suiteName: appGroupIdentifier) else { return }
+        let newCount = defaults.integer(forKey: Self.sharedBadgeCountKey) + 1
+        defaults.set(newCount, forKey: Self.sharedBadgeCountKey)
+        bestAttemptContent?.badge = NSNumber(value: newCount)
+    }
+
+    /// Mirrored copy of `BadgeCenter.sharedCountKey`
+    /// (`apps/Otegami/Sources/Support/BadgeCenter.swift`) — must match
+    /// byte-for-byte (same reasoning as `NotificationEnrichment` below:
+    /// this Extension target doesn't share source files with the app
+    /// target, per `OtegamiAppGroup.swift`'s doc comment).
+    private static let sharedBadgeCountKey = "badge.sharedCount"
 
     private func enrich(payload: PushNotificationPayload) async {
         guard let account = try? await Self.lookupAccount(id: payload.accountId) else { return }

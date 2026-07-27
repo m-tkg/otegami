@@ -86,6 +86,11 @@ struct MessageView: View {
     // MARK: - Translation (design-phase-3, 1i)
 
     @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = true
+    /// I「設定画面の再構成」→「メールビューア」の「AI 機能の on/off (翻訳・要約を
+    /// まとめて)」— see `AIFeaturesSettingsStore`'s doc comment. Master
+    /// switch for both `TranslationBar` (`shouldShowTranslationBar`) and
+    /// `AISummaryBar` (`body`'s `if aiFeaturesEnabled` below).
+    @AppStorage(AIFeaturesSettingsStore.enabledKey) private var aiFeaturesEnabled = AIFeaturesSettingsStore.defaultEnabled
     @State private var translationState: MessageTranslationState = .none
 
     // MARK: - AI要約 (表示・操作改善バッチ)
@@ -130,7 +135,7 @@ struct MessageView: View {
     /// 翻訳の必要がなく、バー自体を出さない。日本語 (またはシステムが日本語)
     /// の場合は従来どおり出す。
     private var shouldShowTranslationBar: Bool {
-        isEnglishMessage && LocalizationSettingsStore.effectiveLanguageCode != "en"
+        aiFeaturesEnabled && isEnglishMessage && LocalizationSettingsStore.effectiveLanguageCode != "en"
     }
 
     var body: some View {
@@ -141,11 +146,15 @@ struct MessageView: View {
                 // 表示・操作改善バッチ「AI要約ボタン」: 言語を問わずどの
                 // メッセージにも出す — `TranslationBar`(翻訳) のすぐ上に
                 // 置き、「本文画面に生えたAI機能」として並べる。
-                AISummaryBar(
-                    state: summaryState,
-                    isAvailable: environment.isTranslationAvailable,
-                    onSummarize: { requestSummary(message: message) }
-                )
+                // I「AI 機能の on/off (翻訳・要約をまとめて)」: `aiFeaturesEnabled`
+                // が false ならこのバー自体を出さない。
+                if aiFeaturesEnabled {
+                    AISummaryBar(
+                        state: summaryState,
+                        isAvailable: environment.isTranslationAvailable,
+                        onSummarize: { requestSummary(message: message) }
+                    )
+                }
                 // 1i: "件名 → 送信者行 → 翻訳バー → 本文" — right after the
                 // header (subject/from/to/date), before attachments/body.
                 if shouldShowTranslationBar {
@@ -215,6 +224,7 @@ struct MessageView: View {
                     displayName: message.fromAddresses.first?.name,
                     address: message.fromAddresses.first?.address ?? "",
                     accountId: accountId,
+                    labelColorKey: environment.accounts.first(where: { $0.id == accountId })?.labelColorKey,
                     diameter: 36
                 )
             }
@@ -889,6 +899,7 @@ struct MessageView: View {
         // out first; showing the bar and letting them tap "翻訳" themselves
         // for that ambiguous case is the safer default, while a *confirmed*
         // English message still auto-translates exactly as before.
+        guard aiFeaturesEnabled else { return }
         guard message.detectedLanguage == "en" else { return }
         guard LocalizationSettingsStore.effectiveLanguageCode != "en" else { return }
         guard environment.isTranslationAvailable else { return }

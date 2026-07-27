@@ -18,9 +18,15 @@ struct CatalogBorderSection: View {
                     .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.inkSecondary)
                 dashedLine
-                Text("radius: \(Int(OtegamiRadius.none))pt everywhere (flat, no rounded corners)")
+                Text("radius: \(Int(OtegamiRadius.none))pt everywhere except cards")
                     .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.inkSecondary)
+                Text("card (\(Int(OtegamiRadius.card))pt, no border — 実機フィードバック第2弾 C)")
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                RoundedRectangle(cornerRadius: OtegamiRadius.card, style: .continuous)
+                    .fill(OtegamiColor.surface)
+                    .frame(height: 28)
             }
         }
     }

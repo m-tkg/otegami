@@ -98,8 +98,11 @@ xxl=32`。
 - `OtegamiStroke.secondary` = 1pt (行間の区切り、`dividerSubtle` と
   ダッシュスタイルでセット — `SectionDivider.swift` の
   `.otegamiRowDivider()` 参照)
-- `OtegamiRadius.none` = 0pt — このデザインシステムに角丸はない
-  (Modernist ベースの方針)
+- `OtegamiRadius.none` = 0pt — カード以外 (ボタン・チップ・バッジ等) は
+  引き続き角丸なし
+- `OtegamiRadius.card` = 8pt — **実機フィードバック第2弾 (C) でカードのみ
+  角丸を解禁** (以前の「角丸0」方針からの転換、詳細は本ファイル末尾の
+  「実機フィードバック第2弾: C」節参照)
 
 ## 基本コンポーネント — `Components/`
 
@@ -914,3 +917,79 @@ M2の「`.tap()`後の`{-1,-1}`ヒットポイント」等、この環境固有�
 「開いた状態」系の目視確認 (添付メニュー展開・リンクタップ後のブラウザ
 表示) は上記の環境要因により自動化できず、実機での確認をユーザーに依頼
 する形で`PENDING.md`に記録した。
+
+## 実機フィードバック第2弾: C カードデザインの変更・E スレッド表示のアコーディオン化
+
+実機フィードバック第2弾バッチ (A〜J) のうち、デザインシステムに直接関わる
+2項目の記録。
+
+### C: カードの角丸解禁
+
+design-phase-2 以来「Modernist ベース・角丸0」を一貫した方針として明記
+してきたが (`OtegamiRadius.none`のドキュメントコメント参照)、ユーザーの
+明示指定により**カードのみ**角丸を解禁した。
+
+- **`OtegamiRadius.card = 8`** (新規、`OtegamiBorder.swift`) を追加。
+  `OtegamiRadius.none = 0`はカード以外 (ボタン・チップ・バッジ・区切り線)
+  に引き続き適用される — カードだけ丸めることで「これは独立してタップ
+  可能な項目」という信号を一覧内の他要素と区別している。全部を丸めると
+  この区別が失われるため、今回は角丸をカード限定のスコープに留めた
+  (将来より統一感のある丸め方針に変える場合はこの判断を再検討する余地
+  として残す)。
+- **輪郭線を撤去**: `SectionDivider.swift`の`otegamiCardBorder()`
+  (2pt `OtegamiColor.divider`の全周線) を`otegamiCardBackground(_:)`に
+  置き換えた。新しい実装は指定色を`.background(_:)`で塗ってから
+  `RoundedRectangle(cornerRadius: OtegamiRadius.card, style: .continuous)`
+  で`.clipShape`するだけで、線は一切描かない — 面 (`OtegamiColor.surface`/
+  `.paleBaseStrong`) だけでカードを表現するユーザー指定どおりの実装。
+- **`AccountColorRail`との整合**: `ThreadRowView`の`AccountColorRail`
+  (角のない矩形) は`clipShape`の対象に含まれる`HStack`の内側にそのまま
+  残しており、`otegamiCardBackground(_:)`の丸め処理がカード全体
+  (ラベルの縦棒を含む) に一括で効くため、ラベル縦棒もカードの丸い輪郭に
+  沿って角が切り取られる — 「維持・調整」の「調整」はこのクリップだけで、
+  `AccountColorRail`自体のコード (色・幅の決定ロジック) は無変更。
+- カード同士の隙間は従来どおり`MessageListRow`/`SearchScreenView`の
+  `.listRowInsets`が担う (角丸にしても間隔の作り方自体は変えていない)。
+- カタログ (`CatalogBorderSection.swift`) に`OtegamiRadius.card`の
+  スウォッチを追加し、目視確認できるようにした。
+
+### E: スレッド表示のアコーディオン化
+
+design-phase-2 の`ThreadDetailView`は「最新メッセージだけ初期展開、以降は
+Gmail/Apple Mail 的に複数メッセージを独立して展開できる」実装だった
+(`expandedMessageIds: Set<Int64>`)。ユーザー指定により**常に1通だけ展開**
+する厳密なアコーディオンに変更した。
+
+- **`expandedMessageId: Int64?`** (旧`Set<Int64>`) — 別メッセージのヘッダを
+  タップすると、それが展開され他はすべて畳まれる。すでに展開中の行の
+  ヘッダを再タップしても何も起きない (「展開ゼロ」はこの画面が想定しない
+  状態のため — `load()`が読み込み直後に必ず最新メッセージを1つ展開する)。
+- **フッターツールバーの操作対象**: 「返信」「全員に返信」「転送」「検索」
+  「情報」は、E以前は常にスレッド内**最新**メッセージ (`newestMessage`)
+  を対象にしていた (複数展開できる旧UIでは「対象は展開中のメッセージ」が
+  曖昧になるため、最新固定という割り切りだった)。アコーディオン化により
+  「展開中のメッセージ」が常に一意になったため、`targetMessage`
+  (`expandedMessageId`に対応する`MessageRecord`、見つからない場合のみ
+  最新へフォールバック) に対象を変更した — ユーザー指定の「フッター
+  ツールバーの操作対象＝展開中のメッセージ、が明確になるように」に対応。
+  macOS の ⌘R (`RootView.replyToSelectedThread()`) は今回変更していない
+  (`ThreadDetailView`とは独立した実装で、引き続き「スレッド内最新」を
+  対象にする — その doc comment に理由を明記済み)。
+- **展開中メッセージの視覚的強調**: `ThreadMessageSummaryRow`に
+  - 展開中だけ`OtegamiColor.accent`で塗る3pt左罫線 (`AccountColorRail`と
+    同じ幅・同じ「この行は意味を持つ」という信号の再利用、ただしアカウント
+    色ではなくアクセント色)。
+  - 背景を`OtegamiColor.paleBase`(折りたたみ時と同じ) →
+    `paleBaseStrong`(展開時、`ThreadRowView`の選択行と同じ「強い強調地」
+    トークン) に変更。
+  を追加した。左罫線の分だけ本文側の左パディングを`.lg`から`.sm`に
+  調整し、罫線幅(3pt)+`.sm`(8pt)が旧`.lg`(16pt)相当の見た目になるよう
+  帳尻を合わせている (展開・折りたたみで行全体の横位置がガタつかない
+  ようにするため)。
+
+### 検証
+
+`make test`/`make mac`/`make ios` green。実機シミュレータでのライト/
+ダーク両方のスクリーンショット目視確認は、他のバッチ項目 (D/F/G/H/I) と
+まとめて本バッチ完了時に実施 (このファイルの後続コミット・
+`docs/verify.md`参照)。

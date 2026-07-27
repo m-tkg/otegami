@@ -64,6 +64,18 @@ final class AppEnvironment {
 
     private(set) var accounts: [AccountRecord] = []
     @ObservationIgnored private var accountsObservationTask: Task<Void, Never>?
+    /// H「アプリアイコンの未読バッジ」— restarted (not just left running)
+    /// every time `accounts` changes, since `MessageQuery
+    /// .unifiedInboxUnreadCountObservation(accountIds:)`'s `accountIds`
+    /// argument has to track the current account list. See
+    /// `restartBadgeObservationIfNeeded(accountIds:)`.
+    @ObservationIgnored private var badgeObservationTask: Task<Void, Never>?
+    /// Set once `BadgeCenter.requestAuthorizationIfNeeded()` has actually
+    /// been called this launch — guards against re-requesting on every
+    /// single `accounts` change (harmless either way since the OS itself is
+    /// idempotent about a decided authorization, but there's no reason to
+    /// call it more than once).
+    @ObservationIgnored private var hasRequestedBadgeAuthorization = false
 
     /// design-phase-3 (1i/1k, `docs/translation.md`): the raw engine, for
     /// one-off translations not tied to a stored message (`ComposerView`'s
@@ -112,6 +124,9 @@ final class AppEnvironment {
         // doc comment for why this needs to run before any `HTMLMessageView`
         // is ever constructed, not just before any `@AppStorage` read.
         UserDefaults.registerOtegamiImageDefaults()
+        // H「アプリアイコンの未読バッジ」— default on; see
+        // `BadgeSettingsStore`'s doc comment.
+        UserDefaults.registerOtegamiBadgeDefaults()
 
         let database: AppDatabase
         do {
@@ -417,6 +432,7 @@ final class AppEnvironment {
 
     deinit {
         accountsObservationTask?.cancel()
+        badgeObservationTask?.cancel()
         if let cloudSyncNotificationObserver {
             NotificationCenter.default.removeObserver(cloudSyncNotificationObserver)
         }
@@ -478,6 +494,7 @@ final class AppEnvironment {
                 for try await accounts in observation.values(in: database.dbWriter) {
                     guard !Task.isCancelled else { return }
                     self.accounts = accounts
+                    restartBadgeObservationIfNeeded(accountIds: accounts.map(\.id))
                     // Backfill (M4): thread every not-yet-threaded message
                     // for each known account. Covers both a brand new
                     // account (belt-and-suspenders — `AccountSyncer`
@@ -500,6 +517,57 @@ final class AppEnvironment {
             } catch {
                 // A failing account-list observation shouldn't be fatal —
                 // the sidebar just won't update further until relaunch.
+            }
+        }
+    }
+
+    /// H「アプリアイコンの未読バッジ」: (re)subscribes to `MessageQuery
+    /// .unifiedInboxUnreadCountObservation(accountIds:)` and pushes every
+    /// update to `BadgeCenter.setBadge(count:)` — this single `ValueObservation`
+    /// is what covers "既読操作・同期・フォアグラウンド復帰での更新" all at once
+    /// (every one of those already writes to `message`/mutates flags
+    /// through the same tables this query reads, so the observation fires
+    /// on its own without any scene-phase-specific code here). Called from
+    /// `startObservingAccounts()`'s loop on every `accounts` change, since
+    /// `accountIds` has to track the current list — cancels and replaces
+    /// any previous subscription rather than accumulating one per account
+    /// change. A no-op (and clears any existing badge) when
+    /// `BadgeSettingsStore.isEnabled` is `false`.
+    /// `AccountsListContent`'s badge toggle's `.onChange(of:)` target — the
+    /// setting itself is a plain `@AppStorage` `AccountsListContent` reads
+    /// directly (this app's usual pattern for a single on/off preference),
+    /// but flipping it also has to immediately start/stop the observation
+    /// task and clear a stale badge, which only `AppEnvironment` can do —
+    /// see `restartBadgeObservationIfNeeded(accountIds:)`.
+    func refreshBadgeObservation() {
+        restartBadgeObservationIfNeeded(accountIds: accounts.map(\.id))
+    }
+
+    private func restartBadgeObservationIfNeeded(accountIds: [String]) {
+        badgeObservationTask?.cancel()
+        guard BadgeSettingsStore.isEnabled else {
+            BadgeCenter.setBadge(count: 0)
+            return
+        }
+        if !hasRequestedBadgeAuthorization {
+            hasRequestedBadgeAuthorization = true
+            Task { await BadgeCenter.requestAuthorizationIfNeeded() }
+        }
+        guard !accountIds.isEmpty else {
+            BadgeCenter.setBadge(count: 0)
+            return
+        }
+        let observation = MessageQuery.unifiedInboxUnreadCountObservation(accountIds: accountIds)
+        badgeObservationTask = Task { [database] in
+            do {
+                for try await count in observation.values(in: database.dbWriter) {
+                    guard !Task.isCancelled else { return }
+                    BadgeCenter.setBadge(count: count)
+                }
+            } catch {
+                // Best-effort — a failing observation just leaves the badge
+                // at whatever it last showed, same "not fatal" shape as
+                // `startObservingAccounts()`'s own catch above.
             }
         }
     }
@@ -586,7 +654,9 @@ final class AppEnvironment {
         smtpPort: Int?,
         smtpSecurity: ConnectionSecurityRecord?,
         smtpUsername: String?,
-        newPassword: String?
+        newPassword: String?,
+        labelColorKey: String?? = nil,
+        defaultSignatureId: Int64?? = nil
     ) async throws {
         var updated = account
         updated.displayName = displayName
@@ -597,6 +667,23 @@ final class AppEnvironment {
         updated.smtpPort = smtpPort
         updated.smtpSecurity = smtpSecurity
         updated.smtpUsername = smtpUsername
+        // D「アカウントのラベル色を変更可能に」: `labelColorKey` is `String??`
+        // (an optional-of-an-optional) specifically so callers that don't
+        // pass it at all (every pre-existing call site) leave the column
+        // untouched, while `AccountEditView` — which always knows the
+        // picker's current selection, including "自動" (nil) — can pass
+        // `.some(nil)` to explicitly clear back to auto-assignment. `nil`
+        // (the parameter itself absent) means "don't touch this field";
+        // `.some(x)` means "set it to x", where x may itself be nil.
+        if let labelColorKey {
+            updated.labelColorKey = labelColorKey
+        }
+        // F「デフォルト署名（アカウントごと）」— same "`??` means don't touch,
+        // `.some(x)` means set to x (possibly nil)" shape as `labelColorKey`
+        // just above; see that parameter's doc comment.
+        if let defaultSignatureId {
+            updated.defaultSignatureId = defaultSignatureId
+        }
         updated.updatedAt = Date()
 
         if let newPassword, !newPassword.isEmpty {

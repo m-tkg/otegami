@@ -24,8 +24,8 @@ public extension View {
     /// separate divider view between rows.
     ///
     /// No longer used by the top-level message list rows since the card
-    /// layout replaced it (see `otegamiCardBorder()`) — kept as a general
-    /// utility for any future plain (non-card) row list.
+    /// layout replaced it (see `otegamiCardBackground(_:)`) — kept as a
+    /// general utility for any future plain (non-card) row list.
     func otegamiRowDivider() -> some View {
         overlay(alignment: .bottom) {
             Rectangle()
@@ -35,19 +35,20 @@ public extension View {
         }
     }
 
-    /// 表示・操作改善バッチ: the card-style list row border — a full 2pt
-    /// `OtegamiColor.divider` frame around the row, replacing the previous
-    /// "罫線で繋がったリスト" look (background color + a dashed line only
-    /// between rows) with distinct, separated "面" per row. `OtegamiRadius
-    /// .none` means this stays a plain rectangle, not a rounded card — the
-    /// separation reads through spacing (the `List` row's own vertical
-    /// inset, applied by the call site) and this border, in keeping with
-    /// the design system's flat/angular Modernist base rather than
-    /// introducing rounded corners.
-    func otegamiCardBorder() -> some View {
-        overlay {
-            Rectangle()
-                .strokeBorder(OtegamiColor.divider, lineWidth: OtegamiStroke.primary)
-        }
+    /// 実機フィードバック第2弾 (C): the message-list row card — no outline
+    /// (per the user's explicit instruction: "カードの輪郭線を描かない。背景色
+    /// (surface) だけで面を表現"), just `color` filled into a rounded shape
+    /// (`OtegamiRadius.card`) and clipped so every child — including
+    /// `AccountColorRail`'s sharp-cornered rectangle at the row's leading
+    /// edge — follows the same rounded silhouette rather than poking out
+    /// past it. Replaces the previous `otegamiCardBorder()` (a 2pt
+    /// `OtegamiColor.divider` stroke around a plain, unrounded rectangle) —
+    /// separation between adjacent cards still reads through spacing alone
+    /// (the `List` row's own vertical/horizontal inset, applied by the call
+    /// site), same as before; only the fill shape and the removed stroke
+    /// changed.
+    func otegamiCardBackground(_ color: Color) -> some View {
+        background(color)
+            .clipShape(RoundedRectangle(cornerRadius: OtegamiRadius.card, style: .continuous))
     }
 }
