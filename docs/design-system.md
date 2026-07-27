@@ -1554,3 +1554,190 @@ iOS 側 (`splitView` は iOS では描画されない dead code、`rootContent`
 ロジック)、実機での最終確認 (ウィンドウを本当に極端に狭くする/タイル
 化する操作を人の手で行い、復帰ボタンが現れてタップで戻ることを確認)
 は次回の実機フィードバックで裏付けることを申し送る。
+
+## アカウント絞り込みチップ列の「＋」削除
+
+`AccountFilterChipRow` (1a のアカウント絞り込みチップ、design-phase-2
+節参照) の末尾にあった「＋」(アカウント追加) チップを削除した。ハンバー
+ガーメニュー側の同等ボタン (`folderSheet.addAccountToolbarButton`、
+アカウント0件時の空状態ボタンは例外として残置) は実機フィードバック
+第3弾 (K) で既に削除済み — `docs/settings.md`「ハンバーガーメニューの
+アカウントセクション折りたたみ」節参照。今回、チップ列側にも同じ理由
+(アカウント追加は設定画面 →「アカウントの設定」→「アカウントを追加」
+から常にできるため、複数の場所に同じ入口を重複させる必要が無い) が
+当てはまると判断し、揃えて削除した。アカウント0件時の空状態
+(`MailScreenView.emptyState`) の「アカウントを追加」ボタンは維持。
+
+`AccountFilterChipRow`の`onAddAccount`クロージャは削除し、呼び出し側
+(`MailScreenView.swift`) からも該当引数を1行だけ取り除いた — この
+バッチの並行作業者が別途 `MailScreenView`/`MessageListView` の一覧
+ヘッダ改修を予定していたため、それ以外の変更は加えていない
+(`presentAddAccount`関数自体はアカウント0件時の空状態ボタンから引き続き
+参照されるため、削除していない)。
+
+XCUITest 側: `mail.chip.addAccount`を直接参照していた
+`DovecotAccountUITestHelpers.openAccountSetup(in:)`/
+`returnToMailTabRootIfNeeded(in:)`と、同じパターンをインラインで持って
+いた`OtegamiM6ICloudFormUITests`/`OtegamiM6TypeSelectionUITests`を、
+「アカウントが1件も無ければ空状態ボタン、既にあれば 設定 →
+アカウントの設定 → アカウントを追加」という新しい導線に合わせて更新
+した (共通ロジックは`openAccountTypeSelection(in:)`に切り出し)。
+`saveAccount(in:)`は、設定画面経由でアカウント作成シートを開いた場合に
+備え、保存後に開いたままの設定シートも閉じてメール一覧ルートへ戻る
+処理を追加した (`settingsSheet.closeButton`が存在するときだけ) — チップ
+「＋」経由では発生しなかった「保存後も設定シートの中にいる」状態を
+吸収し、既存テストの「保存したら一覧に戻っている」という前提を壊さない
+ようにした。
+
+## メールボックス単位の非表示
+
+`docs/settings.md`「メールボックス単位の非表示」節に実装・判断の詳細を
+まとめた (設定画面からの導線、非表示にすると消える範囲、同期を止める
+理由、移動先ピッカーからは除外しない理由)。ここには実装上の技術的な
+注記のみ残す。
+
+- **`MailboxRecord`への`isHidden`追加は、過去のマイグレーション自身の
+  型デコードを壊しうる**: v21 マイグレーション (Gmail フォルダ名の
+  文字化け修復) が`MailboxRecord.fetchAll(db)`で当時のテーブルを
+  Codable 経由で読んでいたが、これは「今のSwift構造体の形」でデコード
+  するため、v21 実行時点でまだ存在しない列 (今回追加した`isHidden`、
+  v26 で追加) があると `column not found` で失敗する。
+  `AppDatabaseTests.v21RepairsDisplayPath`が (元々は「素の SQL で
+  v20 まで手動セットアップしてから `migrator.migrate(dbQueue)` で
+  最新まで一気に流す」という別の理由で書かれていたテストだったが)
+  この壊れ方を実際に検出した。修正: v21 マイグレーション自身を
+  `MailboxRecord`の Codable デコードに頼らない素の `Row`/SQL 実装に
+  書き換えた — `AccountRecord`のテストヘルパー側で既に確立していた
+  「凍結されたスキーマ vs. 今の Swift 型」という回避パターンを、
+  マイグレーション本体のコードにも適用した形。同種の`MessageRecord
+  .fetchAll(db)`を使っている v7/v18 マイグレーションは今回変更して
+  いない (今回のバッチでは`message`テーブルに列を追加していないため
+  実害が無い) が、将来`message`テーブルに列を追加する際は同じ注意が
+  必要になる。
+
+### 検証
+
+`make test`/`make mac`/`make ios` green。iOS シミュレータ実機で
+「メールボックスの表示設定」画面の表示・トグル操作、非表示にした
+メールボックスがハンバーガーメニューのツリーから消えることを確認
+(スクリーンショットは `docs/verify.md` 参照)。
+
+## しきい値で自動実行 (D8 スワイプ操作バッチ)
+
+ユーザー要望「ショートスワイプやロングスワイプで、止まらずに処理して
+欲しい (今はボタンが出るだけ)」— design-phase-2 で確定した「短い/長いの
+2段しきい値、長い側はボタンを出してタップ確定」という妥協 (SwiftUI 標準
+`.swipeActions` の「宣言順の最初の1つしかフルスワイプで自動発火できない」
+という制約が理由、design-phase-2 節参照) を撤廃し、iOS の一覧行のスワイプ
+を `.swipeActions` から自前の `DragGesture` ベースの実装 (`MessageListRow`)
+に作り替えた。
+
+### 実装
+
+- **しきい値**: `shortSwipeThreshold` (72pt)・`longSwipeThreshold`
+  (152pt)、`MessageListRow` の `private let`。ドラッグ量がどちらの符号
+  (正=leading、負=trailing) かでどちらの辺のアクションかを、しきい値との
+  比較で短い/長いどちらのアクションかを決める (`reveal(for:)`)。
+  `longSwipeThreshold + 40pt` でクランプし、指を大きく動かしても行が
+  画面外まで滑っていかないようにしている。
+- **プレビュー**: ドラッグが `DragGesture(minimumDistance: 20)` の
+  しきい値を超えた瞬間から、行の下に色付きの背景 + アイコン (`SwipeRevealBackground`)
+  が現れる — `shortSwipeThreshold` 未満でもここでは短い方のアクションを
+  仮表示する (Gmail 等のプレビュー挙動を参考に確定した見た目)。
+  `longSwipeThreshold` を超えると長い方のアクションの色・アイコンに切り
+  替わる。**ボタンではなく色 + アイコンのみ** — ラベル文字は付けない。
+- **触覚フィードバック**: 表示中のアクションが切り替わるたび
+  (`.none → short`, `short → long`) に `UIImpactFeedbackGenerator` を鳴らす
+  (短いアクション = `.light`、長いアクション = `.medium`)。
+- **即座に実行、ボタンなし**: 指を離した時点のドラッグ量が
+  `shortSwipeThreshold` 以上なら、そのしきい値に対応するアクションを
+  その場で実行する (`commitSwipe(translation:)`)。未満なら
+  `withAnimation(.easeOut)` で行を `0` へ戻すだけで、何も実行しない。
+- **削除・迷惑メールのタップ確定ガードを撤廃**: design-phase-2 で導入した
+  `SwipeAction.isGuardedFromFullSwipe` (削除/迷惑メールだけはフルスワイプ
+  で自動発火させず、必ず明示タップを要求する) は削除した。このバッチの
+  要件が「削除・迷惑メールも自動実行してよい (既存の Undo トーストが
+  受け皿)」と明言しているため — `MessageListView.scheduleUndo` の
+  Undo トースト自体は無変更。
+- **スクロールとの共存**: `List` 自身の縦スクロール用パンジェスチャー
+  (UIKit の `UIScrollView` 由来) と、行に付けた `DragGesture` の両方が
+  同じタッチストリームに対して独立に反応できるよう、`swipeGesture` の
+  `onChanged` は横方向優位のドラッグ (`abs(width) > abs(height)`) のときだけ
+  `dragTranslation` を更新する — 縦方向優位 (=スクロール) のドラッグでは
+  行を一切動かさないので、`List` 側のスクロール認識を妨げない。1h の
+  長押し選択ジェスチャー (`.simultaneousGesture(LongPressGesture(...))`)
+  と合わせて、1つの行に3種類のジェスチャー (タップ・長押し・横ドラッグ) が
+  同じタッチストリームで競合なく共存する。
+
+### 実機バグ: スワイプ発火と同時に本文へ遷移してしまう不具合
+
+実機フィードバックで、スワイプでアクション (アーカイブ) が正しく発火する
+一方、**指を離した瞬間にその行のタップ判定も成立し、本文画面へ遷移して
+しまう** (アーカイブで消えたスレッドを開こうとして「本文が見つかりません」
+という空表示になる) というバグが見つかった。
+
+**原因**: 初期実装は `swipeGesture` を `.simultaneousGesture` で行の
+`ZStack` に付けていた。`rowButton` (`Button(action: handleTap)` で包んだ
+`ThreadRowView`) はドラッグ量ぶんそのまま `.offset(x: dragTranslation)` で
+指に追従させている — つまりボタンの見た目は常に指の真下にある。`Button`
+自身の既定のタップジェスチャーは「指がボタンの領域から一定以上離れたら
+タップを不成立にする」という drag-cancel の仕組みを内部に持つが、
+ボタン自体が指に追従して見た目上まったく動かないため、この
+drag-cancel が一度も発動しない。結果、`swipeGesture` の `onEnded` で
+アクションが発火するのと同じタッチアップから、`Button` 自身のタップも
+成立してしまっていた。
+
+**修正**: `swipeGesture` の付与を `.simultaneousGesture` から
+`.highPriorityGesture` に変更した。`DragGesture(minimumDistance: 20)` が
+実際に認識される (=しきい値以上ドラッグされる) ときだけ `Button` の既定
+ジェスチャーより優先され、その回のタップは完全に握り潰される。
+`minimumDistance` 未満の本物のタップは `DragGesture` がそもそも認識しない
+(=`.highPriorityGesture` が横取りするものが無い) ため、`Button` の通常の
+タップは今まで通り成立する。`List` 自身の縦スクロール用パンジェスチャーは
+SwiftUI の外側 (UIKit) の別レイヤーで調停されるため、この優先度変更の
+影響を受けない。
+
+### 検証
+
+`make test`/`make ios`/`make mac` green (`MessageListRow.swift` の変更は
+iOS/macOS 両方でビルド可能な `#if os(iOS)` 分岐に閉じている)。
+
+新規 `OtegamiSwipeAutoFireUITests` (`apps/Otegami/UITests/`) を追加し、
+以下を確認する設計にした:
+
+- しきい値未満のドラッグは何も発火せず、行が元の位置に戻ること
+  (`testDragBelowShortThresholdFiresNothing`)。
+- 短いしきい値を超えたドラッグでアクション (ピン留め) が即座に発火する
+  こと、ボタンを介さないこと (`testShortSwipeFiresTheShortActionImmediately`)。
+- 長いしきい値を超えたドラッグで別のアクション (アーカイブ) が即座に
+  発火し、行が一覧から消えること (`testLongSwipeFiresTheLongActionImmediately`)。
+- 上記のバグ修正の回帰確認: スワイプでアクションが発火しても本文画面へは
+  遷移しないこと (`testSwipeDoesNotAlsoNavigateToThreadDetail`)、通常の
+  タップは変わらず本文画面へ遷移すること (`testPlainTapStillNavigatesToThreadDetail`)。
+
+既存の `OtegamiM3SwipeActionsUITests`/`OtegamiM4SwipeReadUITests`/
+`OtegamiPinSwipeListDisplayUITests` は、ボタンを探してタップする手順を
+`performThresholdSwipe(on:distancePoints:in:)` (新設のポイント単位の
+座標ドラッグヘルパー、`DovecotAccountUITestHelpers.swift`) で置き換え、
+発火した結果 (行が残る/消える、ピン留め状態が変わる) を直接アサートする
+形に更新した。`XCUIElement.swipeLeft()`/`.swipeRight()` は SwiftUI 標準の
+`.swipeActions` 用の便宜メソッドで、この自前 `DragGesture` には使えない
+(短い/長いを打ち分けられない) ため。
+
+**このセッションでの制約**: 実機/シミュレータでの XCUITest 実行時、
+アカウント追加フォームの「接続テスト」が `MailCoreErrorDomain error 1`
+(connectionFailed) で一貫して失敗する現象に遭遇した。切り分けの結果:
+`MailCoreIMAPSession` を直接叩く `MailCoreIMAPSessionIntegrationTests`
+(macOS のプレーンプロセスから同じ dev mailstack の Dovecot へ接続) は
+即座に全件成功し、dev mailstack・`MailCoreIMAPSession` 自体は健全である
+ことを確認した。複数の異なるシミュレータ (Xcode 標準の iPhone 17e、
+`simctl create` で新規作成したデバイスを含む)、mailstack の完全な
+再作成 (`docker compose down && up`)、低いシステム負荷の状態のいずれでも
+再現し、この開発機で並行稼働していた別エージェントの無関係な
+`OtegamiM1VerificationUITests` でも同じ症状が独立に発生していたことも
+確認した — このセッション固有の、iOS シミュレータのネットワーキング
+(具体的な原因は未特定) に起因する環境要因であり、`MessageListRow` の
+コード自体の欠陥ではないと判断している。上記の新規/更新 UITest は
+コードとしては揃えたが、この制約により今回のセッションでは実行完了
+(green) を確認できていない — 次回セッションでシミュレータ/mailstack の
+状態が回復し次第、優先して再実行し結果をここに追記すること。
