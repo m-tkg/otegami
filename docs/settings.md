@@ -103,7 +103,8 @@ Settings/AccountsSettingsView.swift`）の UI。
 | 項目 | キー | 既定値 | 説明 |
 | --- | --- | --- | --- |
 | スレッド表示 | `listDisplay.threading` | ON | ON で一覧を会話 (スレッド) 単位にまとめる。OFF にすると一覧がメール単位になる (`ThreadQuery.flatSummaries`/`unifiedInboxFlatSummaries`)。検索結果 (macOS のインライン検索・iOS の検索タブ) には適用されない — 検索は従来通りスレッド単位 (`MessageListView` のドキュメントコメント参照)。スワイプ/コンテキストメニューの各操作は、フラット表示の行から実行した場合でも**そのメールが属するスレッド全体**に対して働く (既存のグループ表示と同じ挙動に揃えてある)。 |
-| 送信者のプロフィールアイコンを表示 | `listDisplay.showAvatar` | ON | 一覧の各行に、差出人のイニシャル + アカウント色の丸アイコン (`SenderAvatar`) を表示する。外部サービス (Gravatar 等) には一切問い合わせない。 |
+| 送信者のプロフィールアイコンを表示 | `listDisplay.showAvatar` | ON | 一覧の各行に、差出人のアバター (`SenderAvatar`) を表示する。 |
+| 連絡先の写真を表示 | `avatarSource.showContactPhoto` | ON | アバター強化バッチ フェーズ1。差出人アドレスを `CNContactStore` (オンデバイス、Contacts framework) と照合し、一致する連絡先に写真があればイニシャルより優先して表示する。初回照合時に OS の連絡先アクセス許可ダイアログが出る (`NSContactsUsageDescription`)。拒否/未許可なら静かにイニシャル表示にフォールバックする。iOS 18+ の limited access (一部の連絡先のみ許可) にも対応 — 許可された範囲だけを照合する。照合結果はメモリ+ディスクにキャッシュし (`Caches/AvatarCache/Contacts/`)、連絡先の変更 (`CNContactStoreDidChange`) で丸ごと無効化する。外部には一切送信しない。 |
 | 本文プレビューの行数 | `listDisplay.previewLineCount` | 1行 | なし / 1行 / 2行 / 3行 から選択。 |
 | メール本文にも送信者アイコンを表示 | `listDisplay.showAvatarInDetail` | ON | 詳細画面 (スレッド内の各メッセージのヘッダ) にも同じ `SenderAvatar` を表示する。 |
 

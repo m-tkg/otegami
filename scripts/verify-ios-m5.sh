@@ -110,6 +110,7 @@ echo "    UDID: $UDID"
 echo "==> Booting simulator (if needed)"
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
+xcrun simctl privacy "$UDID" grant contacts "$BUNDLE_ID" 2>/dev/null || true  # アバター強化バッチ: Contacts の OS 権限ダイアログが自動検証中に出るのを防ぐ (docs/verify.mdの同種の対策と同じ理由)
 
 echo "==> Starting dev mailstack and seeding fixtures (idempotent reseed)"
 make mailstack-up
@@ -137,6 +138,7 @@ xcrun simctl shutdown "$UDID" 2>/dev/null || true
 xcrun simctl erase "$UDID"
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
+xcrun simctl privacy "$UDID" grant contacts "$BUNDLE_ID" 2>/dev/null || true  # アバター強化バッチ: Contacts の OS 権限ダイアログが自動検証中に出るのを防ぐ (docs/verify.mdの同種の対策と同じ理由)
 
 echo "==> Regenerating Xcode project and building for testing"
 (cd apps/Otegami && xcodegen generate)

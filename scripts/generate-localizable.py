@@ -138,8 +138,13 @@ translations = {
     "送信者のプロフィールアイコンを表示": "Show Sender Avatars",
     "メール本文にも送信者アイコンを表示": "Also Show Avatars in Message View",
     "一覧・表示": "List & Display",
-    "プロフィールアイコンは差出人のイニシャルとアカウント色から生成され、外部サービスへの問い合わせは一切行いません。":
-        "Avatars are generated from the sender's initials and the account's color — no external service is ever contacted.",
+    # アバター強化バッチ フェーズ1: 旧文言 ("プロフィールアイコンは...外部
+    # サービスへの問い合わせは一切行いません。") を置き換えた
+    # (`MailListSettingsView.swift`) — 連絡先の写真を追加した時点でもう
+    # 正確ではなくなったため。
+    "連絡先の写真を表示": "Show Contact Photos",
+    "プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先に一致する写真があればそれを優先して表示します（連絡先の照合はこの端末上だけで行われ、外部には送信されません）。":
+        "Avatars default to the sender's initials and the account's color, preferring a matching contact photo when one exists (contact matching happens on this device only and is never sent externally).",
     "常にテキストで表示": "Always Show as Text",
     "メールの表示": "Message Display",
     "HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。":

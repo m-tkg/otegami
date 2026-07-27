@@ -12,6 +12,9 @@ import SwiftUI
 struct MailListSettingsView: View {
     @AppStorage(ListDisplaySettingsStore.previewLineCountKey) private var previewLineCountRaw = ListDisplaySettingsStore.defaultPreviewLineCount.rawValue
     @AppStorage(ListDisplaySettingsStore.showAvatarKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatar
+    // アバター強化バッチ フェーズ1: `AvatarSourceSettingsStore`のドキュメント
+    // コメント参照。
+    @AppStorage(AvatarSourceSettingsStore.showContactPhotoKey) private var showContactPhoto = AvatarSourceSettingsStore.defaultShowContactPhoto
     @AppStorage(TranslationSettingsStore.showListSummaryKey) private var showListSummary = false
     // 実機フィードバック第3弾 (I) で旧「その他」から移設。
     @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
@@ -29,6 +32,13 @@ struct MailListSettingsView: View {
             Section {
                 Toggle("送信者のプロフィールアイコンを表示", isOn: $showAvatar)
                     .accessibilityIdentifier("settings.list.showAvatarToggle")
+                // アバター強化バッチ フェーズ1「連絡先の写真」— `showAvatar`
+                // がそもそも OFF ならこのトグル自体意味を持たないが、
+                // `showAvatar` OFF でもこの値は変更・保持できるようにあえて
+                // 出しっぱなしにしている (再度 ON にしたときに前の選択が
+                // 残っている方が自然)。
+                Toggle("連絡先の写真を表示", isOn: $showContactPhoto)
+                    .accessibilityIdentifier("settings.list.showContactPhotoToggle")
                 Picker("本文プレビューの行数", selection: $previewLineCountRaw) {
                     ForEach(PreviewLineCount.allCases) { count in
                         Text(count.title).tag(count.rawValue)
@@ -41,7 +51,11 @@ struct MailListSettingsView: View {
             } header: {
                 Text("表示")
             } footer: {
-                Text("プロフィールアイコンは差出人のイニシャルとアカウント色から生成され、外部サービスへの問い合わせは一切行いません。")
+                // アバター強化バッチ: 元の「外部サービスへの問い合わせは
+                // 一切行いません」という文言は、連絡先の写真を追加した
+                // フェーズ1の時点ではまだ正確 (連絡先はオンデバイス) —
+                // Gravatar/企業ロゴを追加するフェーズ2/3でこの文言を更新する。
+                Text("プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先に一致する写真があればそれを優先して表示します（連絡先の照合はこの端末上だけで行われ、外部には送信されません）。")
             }
 
             #if os(iOS)

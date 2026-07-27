@@ -71,6 +71,14 @@ targets:
         # (`CameraPicker`, `UIImagePickerController.sourceType == .camera`) —
         # このキーがないと権限ダイアログを出さずに即クラッシュする。
         NSCameraUsageDescription: メール作成時に写真を撮って添付するために使用します。
+        # アバター強化バッチ フェーズ1「連絡先の写真」— `ContactPhotoResolver`
+        # が初めてメールアドレスを照合しようとした瞬間に OS の権限ダイアログ
+        # を出す。既存の `NSCameraUsageDescription`/`NSLocalNetworkUsageDescription`
+        # と同じく、このプロジェクトには Info.plist キー専用の英語ローカラ
+        # イズ機構 (`InfoPlist.xcstrings`) が無いため日本語のみ
+        # (`docs/localization.md`参照 — UI文字列の`Localizable.xcstrings`は
+        # Info.plistキーの対象外)。
+        NSContactsUsageDescription: 差出人の写真を表示するために連絡先を使用します。
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

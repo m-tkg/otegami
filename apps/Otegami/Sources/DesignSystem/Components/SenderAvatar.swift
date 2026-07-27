@@ -1,12 +1,29 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
-/// B4/B5 「送信者のプロフィールアイコン」: a circular avatar showing the sender's
-/// initials on a per-account-colored background (`OtegamiAccountColor`) —
-/// deliberately **never** fetches an image from any external service (this
-/// task's explicit privacy constraint: a mail client shouldn't leak "this
-/// address was opened" to a third-party avatar/gravatar host just by
-/// rendering a list row). Used by `ThreadRowView` (B4, the message list) and
-/// `MessageView`'s per-message header (B5, the thread detail screen).
+/// B4/B5 「送信者のプロフィールアイコン」: a circular avatar for a message's
+/// sender. アバター強化バッチ以降は優先順位付きの複数情報源を持つ
+/// (`docs/design-system.md` のこのバッチの節):
+///
+/// 1. 連絡先の写真 (`ContactPhotoResolver`, オンデバイス)
+/// 2. Gravatar (`GravatarAvatarResolver`, 差出人アドレスのハッシュを
+///    gravatar.com に送信 — 既定 ON、設定で無効化可)
+/// 3. BIMI/企業ロゴの favicon (`CompanyLogoAvatarResolver`)
+/// 4. どれも解決できなければイニシャル + アカウント色
+///    (`OtegamiAccountColor`) — 元々の唯一の実装で、いまもこのビュー自身が
+///    直接描画する最終フォールバック。
+///
+/// 実際の解決は `@Environment(\.avatarImageResolver)` (`AvatarImageResolving`
+/// プロトコル、`AvatarImageResolving.swift` 参照) 越しに行う — この型自体は
+/// `Contacts`/`URLSession` の類に一切依存しないので、`DesignSystemCatalog`
+/// (resolver を注入しない) では常にイニシャル表示のまま安全に描画できる。
+/// Used by `ThreadRowView` (B4, the message list), `MessageView`'s
+/// per-message header (B5, the thread detail screen), and
+/// `ThreadMessageSummaryRow`'s collapsed-row preview.
 public struct SenderAvatar: View {
     private let displayName: String?
     private let address: String
@@ -15,6 +32,15 @@ public struct SenderAvatar: View {
     /// forwarded as-is. See `AccountColorRail`'s identical field / `OtegamiAccountColor.color(for:override:)`.
     private let labelColorKey: String?
     private let diameter: CGFloat
+
+    @Environment(\.avatarImageResolver) private var resolver
+    /// `nil` until (if ever) `resolver` resolves a non-`nil` image for
+    /// `address` — the initials fallback renders unconditionally underneath
+    /// this, so there is no loading spinner/placeholder state to represent
+    /// separately (一覧のスクロールをブロックしない、`docs/design-system.md`
+    /// の要件どおり: このビューは非同期解決を`.task`で待つだけで、初期描画は
+    /// 常に即座にイニシャルで完了する)。
+    @State private var imageData: Data?
 
     /// - Parameters:
     ///   - displayName: the sender's display name if the message had one
@@ -47,11 +73,48 @@ public struct SenderAvatar: View {
             .fill(OtegamiAccountColor.color(for: accountId, override: labelColorKey))
             .frame(width: diameter, height: diameter)
             .overlay {
-                Text(initials)
-                    .font(.system(size: diameter * 0.4, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+                avatarContent
             }
             .accessibilityHidden(true)
+            // `id: address`: a `SenderAvatar` instance is reused by SwiftUI
+            // across row recycling for a *different* address (same identity
+            // in the view tree) without necessarily reinitializing `@State`
+            // — keying the task to `address` restarts resolution (and clears
+            // the previous address' stale `imageData`) whenever the address
+            // this instance is showing actually changes.
+            .task(id: address) {
+                imageData = nil
+                guard let resolver, !address.isEmpty else { return }
+                imageData = await resolver.resolveAvatarImageData(displayName: displayName, address: address)
+            }
+    }
+
+    @ViewBuilder
+    private var avatarContent: some View {
+        if let platformImage {
+            platformImage
+                .resizable()
+                .scaledToFill()
+                .frame(width: diameter, height: diameter)
+                .clipShape(Circle())
+        } else {
+            Text(initials)
+                .font(.system(size: diameter * 0.4, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+        }
+    }
+
+    private var platformImage: Image? {
+        guard let imageData else { return nil }
+        #if canImport(UIKit)
+        guard let uiImage = UIImage(data: imageData) else { return nil }
+        return Image(uiImage: uiImage)
+        #elseif canImport(AppKit)
+        guard let nsImage = NSImage(data: imageData) else { return nil }
+        return Image(nsImage: nsImage)
+        #else
+        return nil
+        #endif
     }
 
     /// Up to 2 characters: the first letter of each of the first two

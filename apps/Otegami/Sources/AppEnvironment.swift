@@ -100,6 +100,15 @@ final class AppEnvironment {
     /// on-device model twice.
     @ObservationIgnored let messageTranslator: MessageTranslator
 
+    /// アバター強化バッチ: `SenderAvatar`'s priority-ordered image source
+    /// (`docs/design-system.md`). A single shared instance so its per-source
+    /// caches actually cache across every row — see `CompositeAvatarImageResolver`'s
+    /// doc comment. Injected into the SwiftUI environment alongside
+    /// `.environment(environment)` (`OtegamiApp.swift`), not read directly
+    /// off `AppEnvironment` by any view — `SenderAvatar` lives in
+    /// `DesignSystem`, which can't import this app-target type.
+    @ObservationIgnored let avatarImageResolver: any AvatarImageResolving
+
     /// Drives the translation bar's visibility/enabled state and the
     /// Composer's "英語に翻訳して送る" toggle — `false` covers every
     /// `TranslationUnavailableReason` (device not eligible, Apple
@@ -135,6 +144,20 @@ final class AppEnvironment {
         // but this is the same "run migrations first" ordering the other
         // `register...Defaults()` calls above already follow).
         LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()
+        // アバター強化バッチ: `AvatarSourceSettingsStore`'s doc comment — the
+        // `ContactPhotoResolver` actor reads these keys directly via
+        // `UserDefaults.standard`, not `@AppStorage`, so they need to
+        // resolve correctly from its very first call too.
+        UserDefaults.registerOtegamiAvatarSourceDefaults()
+
+        // アバター強化バッチ: no dependency on `database`/`credentialStore`/
+        // anything constructed further below, so it's safe to build this
+        // early alongside the other launch-time setup above. Sources are
+        // listed in `SenderAvatar`'s documented priority order — see
+        // `CompositeAvatarImageResolver`'s doc comment.
+        self.avatarImageResolver = CompositeAvatarImageResolver(sources: [
+            ContactPhotoResolver()
+        ])
 
         let database: AppDatabase
         do {

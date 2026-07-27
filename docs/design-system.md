@@ -1196,3 +1196,113 @@ xcresult バンドルへ埋め込んだスクリーンショットを目視確�
 ため繰り返しタイミングを外し (ホーム画面やアカウント追加シートを捉える
 だけに終わった)、`XCTAttachment`によるテストプロセス内蔵キャプチャに
 切り替えて解決した。
+
+## アバター強化バッチ フェーズ1: 連絡先の写真
+
+`SenderAvatar` (旧: イニシャル+アカウント色のみ) を、優先順位付きの複数
+情報源を持つ設計に拡張するバッチの記録。フェーズ1は最優先の情報源
+「連絡先の写真」を実装した。フェーズ2 (Gravatar)/フェーズ3 (BIMI/企業
+ロゴ favicon) は別バッチ (小出しリリース) で追加する。
+
+### 設計: `AvatarImageResolving` + SwiftUI `EnvironmentValues`
+
+`SenderAvatar`自体 (`DesignSystem/Components/SenderAvatar.swift`) は
+`Contacts`/`URLSession`の類に一切依存しない — 実際の画像解決は
+`AvatarImageResolving`プロトコル (`DesignSystem/AvatarImageResolving.swift`、
+Foundation only) の背後に隠し、`@Environment(\.avatarImageResolver)`
+経由で受け取る。具象型 (`ContactPhotoResolver`など) は
+`apps/Otegami/Sources/Support/`側 (アプリ本体ターゲットのみ) に置く。
+
+この分離により、`DesignSystemCatalog`(独立した SwiftPM 実行ターゲット、
+`NSContactsUsageDescription`を持たない) は resolver を注入しないまま
+`SenderAvatar`をそのまま安全に描画できる — 注入されなければ
+`CNContactStore`に一切触れないため、使用目的文言の無いプロセスから
+権限付きAPIを呼んでクラッシュする心配がない。`AppEnvironment
+.avatarImageResolver`(`CompositeAvatarImageResolver`、複数情報源を優先
+順に試す合成 resolver) が唯一のインスタンスを持ち、
+`OtegamiApp.swift`の各`.environment(environment)`呼び出し箇所に
+`.environment(\.avatarImageResolver, environment.avatarImageResolver)`を
+併設してビュー階層へ配る。`ThreadRowView`/`MessageView`/
+`ThreadDetailView`側の`SenderAvatar(...)`呼び出し自体は一切変更していない
+(SwiftUI Environment が自動的に配られるため)。
+
+### `ContactPhotoResolver`
+
+`Contacts`framework (`CNContactStore`) をオンデバイスで使う actor。
+
+- **権限**: 初回呼び出し時に一度だけ`authorizationStatus`を確認し、
+  `.notDetermined`なら`requestAccess(for:)`で OS ダイアログを出す。
+  `.limited`(iOS 18+ の一部連絡先のみ許可) も`.authorized`と同様に扱う —
+  許可された範囲内だけを検索対象にするのは`CNContactStore`自身の仕事。
+  拒否/未許可なら静かに`nil`を返すだけで、エラーも UI も一切出さない。
+- **キャッシュ**: メールアドレス (小文字化、SHA-256 でファイル名化) を
+  キーに、メモリ + ディスク (`Caches/AvatarCache/Contacts/`) の2段。
+  「写真なし」という negative result もキャッシュし、無い連絡先を毎回
+  問い合わせ直さない。`CNContactStoreDidChange`通知でメモリ・ディスク
+  両方を丸ごと無効化する (差分無効化はコストに見合わないと判断)。
+- **coalesce**: 同一アドレスへの同時呼び出しは`Task`を共有する — 一覧の
+  高速スクロールで同じ差出人の行が複数同時に構築されても、
+  `CNContactStore`への問い合わせは1回で済む。
+- `CompositeAvatarImageResolver`(actor): 複数情報源を宣言順に試し、最初の
+  非`nil`を返す合成 resolver。フェーズ1時点では`[ContactPhotoResolver()]`
+  の1要素のみ。
+
+### 設定
+
+`AvatarSourceSettingsStore.showContactPhotoKey`(既定 ON)。設定 →「メール
+一覧」の「送信者のプロフィールアイコンを表示」のすぐ下に「連絡先の写真を
+表示」トグルを追加した。footer の説明文も、連絡先の写真を追加した時点で
+もう正確ではなくなった旧文言 ("外部サービスへの問い合わせは一切行い
+ません") から、実態 ("連絡先の照合はこの端末上だけで行われ、外部には
+送信されません") に更新した。
+
+### `NSContactsUsageDescription`
+
+`project.yml`に追加 (`NSCameraUsageDescription`/`NSLocalNetworkUsageDescription`
+と同じく、このプロジェクトには Info.plist キー専用の英語ローカライズ機構
+が無いため日本語のみ)。
+
+### 検証で見つかった verify script への影響
+
+`ContactPhotoResolver`は初回呼び出しで権限が`.notDetermined`なら
+`requestAccess`を呼ぶため、既存の`scripts/verify-ios-m*.sh`など
+アカウント登録済みの一覧を自動検証する全スクリプトが、一覧の最初の行が
+描画された瞬間に OS の連絡先アクセス許可ダイアログを踏みうる (`.claude/skills/verify/SKILL.md`が既に警告している「予期しないシステムダイアログが
+次のタップを奪う」系の問題と同種)。`xcrun simctl erase`直後・アプリ起動
+前に`xcrun simctl privacy "$UDID" grant contacts "$BUNDLE_ID"`で事前許可
+することで OS ダイアログ自体が出ないようにし、既存の
+`scripts/verify-ios-*.sh`全13本 (b-html-render/m1〜m9/account-edit/
+credential-recovery/drafts-sync/icloud) に同じ1行を追加した。
+
+新規に`scripts/verify-ios-avatar-phase1.sh`(+`OtegamiAvatarSettingsUITests`)
+を追加し、設定画面に「連絡先の写真を表示」トグルが現れ操作できることを
+確認した。**アカウント0件の初回起動直後だけ、ハンバーガー→設定の遷移が
+`settingsSheet.navigationStack`のタイムアウトで失敗する**現象を発見 —
+このプロジェクトの他の全テストは「少なくとも1回何か (アカウント追加等)
+に成功した後で」ハンバーガーメニューを開いており、真に何もしていない
+初回フレームでこの遷移を試すテストが実質的に無かったため、これまで
+気付かれていなかった simulator/toolchain 固有の不安定さと見ている
+(コード側の不具合ではない — アプリの通常起動フローでユーザーがこの
+タイミングだけを狙って設定を開くことはまず無い)。数秒の猶予 + リトライ
+で回避した。
+
+**dev mailstack への実 IMAP 接続がこのセッション中に断続的に失敗する
+既知の環境問題** (`docs/verify.md`「実機フィードバック第2弾 B」節に既に
+記録済み — ホストプロセス/Safari からは`localhost:1143`に到達できるが
+Otegami アプリのプロセスだけ`connectionFailed`になる、iOS 27 beta の
+ローカルネットワーク権限まわりの未解決の環境劣化) に本バッチの検証中も
+複数回遭遇した。Simulator/CoreSimulator の完全再起動を試しても再現した
+ため、`docs/verify.md`の既存の記録どおり **この開発機のシミュレータ/OS
+beta 環境側の問題であり、本バッチのコード変更が原因ではない**と判断し、
+アカウント追加を伴う M1 等のフル検証は次回セッション (安定版シミュレータ
+または環境復旧後) に持ち越した。フェーズ1の検証は上記の設定画面 UITest +
+`make test`/`make mac`/`make ios` (いずれも green) の範囲に留めている。
+
+### 次フェーズへの申し送り
+
+- フェーズ2 (Gravatar)・フェーズ3 (BIMI/企業ロゴ favicon) を
+  `CompositeAvatarImageResolver`の情報源リストに追加する。
+- dev mailstack 接続断の環境問題が解消され次第、`scripts/verify-ios-m1.sh`
+  等のフル回帰と、実際に連絡先に写真を登録した状態での目視確認
+  (`CNContactStore`への書き込みを伴う専用 UITest、またはシミュレータの
+  連絡先アプリへの手動登録) を行うこと。

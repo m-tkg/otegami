@@ -13,6 +13,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 IOS_SIMULATOR="${IOS_SIMULATOR:-iPhone 17 Pro Max}"
+BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
 SCREENSHOT_DIR="${SCREENSHOT_DIR:-/tmp/otegami-verify}"
 OUT_NAME="${1:-b-html-marketing.png}"
 
@@ -35,6 +36,7 @@ xcrun simctl erase "$UDID"
 echo "==> Booting simulator"
 xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b
+xcrun simctl privacy "$UDID" grant contacts "$BUNDLE_ID" 2>/dev/null || true  # アバター強化バッチ: Contacts の OS 権限ダイアログが自動検証中に出るのを防ぐ (docs/verify.mdの同種の対策と同じ理由)
 
 if [[ "${SKIP_MAILSTACK_RESET:-0}" != "1" ]]; then
   echo "==> Starting dev mailstack and seeding fixtures (idempotent reseed)"

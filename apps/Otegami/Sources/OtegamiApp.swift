@@ -15,6 +15,11 @@ struct OtegamiApp: App {
         WindowGroup {
             RootView()
                 .environment(environment)
+                // アバター強化バッチ: `SenderAvatar` (in `DesignSystem`, which
+                // can't import `AppEnvironment`) reads this custom
+                // `EnvironmentValues` key instead — see
+                // `AvatarImageResolving.swift`'s doc comment.
+                .environment(\.avatarImageResolver, environment.avatarImageResolver)
         }
         #if os(macOS)
         // M10: menu bar (⌘N/⌘R/⌘⌫/⌘⇧F/⌘]/⌘[) — `OtegamiCommands` reads its
@@ -36,6 +41,11 @@ struct OtegamiApp: App {
         WindowGroup("作成", id: "composer", for: ComposerLaunchPayload.self) { $payload in
             ComposerView(payload: payload ?? .new)
                 .environment(environment)
+                // アバター強化バッチ: `SenderAvatar` (in `DesignSystem`, which
+                // can't import `AppEnvironment`) reads this custom
+                // `EnvironmentValues` key instead — see
+                // `AvatarImageResolving.swift`'s doc comment.
+                .environment(\.avatarImageResolver, environment.avatarImageResolver)
         }
         .defaultSize(width: 560, height: 520)
         #endif
@@ -46,6 +56,11 @@ struct OtegamiApp: App {
         Settings {
             OtegamiSettingsView()
                 .environment(environment)
+                // アバター強化バッチ: `SenderAvatar` (in `DesignSystem`, which
+                // can't import `AppEnvironment`) reads this custom
+                // `EnvironmentValues` key instead — see
+                // `AvatarImageResolving.swift`'s doc comment.
+                .environment(\.avatarImageResolver, environment.avatarImageResolver)
         }
         #endif
     }

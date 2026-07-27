@@ -1081,12 +1081,22 @@
         }
       }
     },
-    "プロフィールアイコンは差出人のイニシャルとアカウント色から生成され、外部サービスへの問い合わせは一切行いません。": {
+    "連絡先の写真を表示": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Avatars are generated from the sender's initials and the account's color — no external service is ever contacted."
+            "value": "Show Contact Photos"
+          }
+        }
+      }
+    },
+    "プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先に一致する写真があればそれを優先して表示します（連絡先の照合はこの端末上だけで行われ、外部には送信されません）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatars default to the sender's initials and the account's color, preferring a matching contact photo when one exists (contact matching happens on this device only and is never sent externally)."
           }
         }
       }
