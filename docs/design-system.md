@@ -2745,3 +2745,67 @@ JS 側を `Promise` を返す IIFE にするだけで Swift 側の呼び出し�
 シミュレータでのスクリーンショット確認に委ねた
 (`xcrun simctl ui booted appearance dark`)。`make test`/`make mac`/
 `make ios` green。
+
+## Task #53: スワイプの滑らかさ改善 (79aca4b) が引き起こした退行 — ショート距離でロングのアイコン/色が出る
+
+### 症状
+
+実機報告: しきい値 (`shortSwipeThreshold` 72pt / `longSwipeThreshold`
+152pt) のうち**ショート**の距離までしか指を動かしていないのに、
+リリース後にロングスワイプ用のアイコン・色がプレビューに一瞬出る。
+「しきい値で自動実行」節・「スワイプの滑らかさ改善」節でこの2段階
+UI を作り込んだ直後の退行。
+
+### 原因
+
+「スワイプの滑らかさ改善」節の `commitRemoval(action:direction:)` は、
+アーカイブ・削除・迷惑メールをコミットした際に `dragTranslation` を
+`0` へ戻すのではなく、行自身の幅 + 余白ぶん (`Self.exitOvershoot`)
+さらに同方向へスプリングでスライドさせて完全に画面外へ出す — この
+値は例えば行幅380pt程度なら「ショートスワイプ (80pt) の直後」でも
+最終的に460pt前後まで動く。
+
+`MessageListRow.swift` はこの `dragTranslation` を**単一の状態**として
+2つの目的に使い回していた: (1) 行の表示位置 (`rowButton.offset(x:
+dragTranslation)`)、(2) プレビューの色/アイコン判定
+(`swipeActionBackground` が `reveal(for: dragTranslation)` を直接
+評価)。(2) はコミット後もこの同じ値を毎フレーム再評価し続けるため、
+退出スライド中に `dragTranslation` が `longSwipeThreshold` (152pt) を
+通過した瞬間、実際のスワイプ距離とは無関係にプレビューがロング用の
+アイコン・色へ切り替わってしまう — スワイプ距離自体が過大化したわけ
+ではなく、「退出アニメーション用に人為的に伸ばした表示位置」を
+しきい値判定にも使い回していたことが原因。
+
+### 修正
+
+`apps/Otegami/Sources/Features/MessageList/MessageListRow.swift` に
+`armedReveal` (`@State`) を新設し、「プレビューに表示するアクション」を
+「行の表示位置 (`dragTranslation`)」から完全に切り離した:
+
+- `armedReveal` への書き込みは常に**生のジェスチャー値**からのみ行う —
+  `swipeGesture.onChanged` は `value.translation.width` から、
+  `commitSwipe(translation:)` はリリース時の最終 `translation.width`
+  から、それぞれ `reveal(for:)` を再評価して書き込む。
+- コミット後 (`commitRemoval` の退出スライド中) は `armedReveal` を
+  一切更新しない — `dragTranslation` がどれだけ `longSwipeThreshold` を
+  超えて動いても、プレビューはコミット時点で確定したアクションのまま
+  固定される。
+- `swipeActionBackground` は `reveal(for: dragTranslation)` の代わりに
+  `armedReveal` を直接 switch する。
+- `armedReveal` を `.none` へ戻すタイミングは、行が完全に静止状態へ戻る
+  瞬間に揃えた: キャンセル (`cancelSwipe()`) は `withAnimation(_:
+  completion:)` のコールバックで、スプリングが視覚的に収まった後に
+  `.none` へ戻す (即座に `.none` にすると、指を離した瞬間に色付き背景
+  だけ先に消えて行の視覚的な戻りと分離して見える退行を防ぐため)。
+  `commitRemoval` の `perform(action)` が実際には行を消せなかった
+  フォールバック (`dragTranslation = 0` で行を復帰させる分岐) と、
+  選択モード突入時のリセット (`onChange(of: isSelecting)`) にも同様に
+  `armedReveal = .none` を追加した。
+
+### 検証
+
+`make test`/`make ios`/`make mac` green。境界前後 (72pt 付近・152pt
+付近・コミット後の退出スライド中) の挙動はコード上で確認済み — 実機
+シミュレータでの目視確認 (スクリーンショット/録画) は
+`.claude/skills/verify/SKILL.md` の手順に沿って別途実施し、結果を
+ここに追記する。

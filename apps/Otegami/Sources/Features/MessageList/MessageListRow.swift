@@ -126,6 +126,29 @@ struct MessageListRow: View {
     /// interrupting the exit animation (the row is on its way out either
     /// way, whether or not `perform` ends up actually removing it).
     @State private var isCommitting = false
+    /// Task #53 回帰修正: which action/icon `swipeActionBackground` draws —
+    /// deliberately a *separate* piece of state from `dragTranslation`, only
+    /// ever written from a raw (un-animated) gesture value (`onChanged`'s
+    /// `value.translation`, or `commitSwipe`'s final `translation` at
+    /// release) and otherwise left untouched. `dragTranslation` itself is
+    /// *also* used to drive the exit-slide animation in `commitRemoval`
+    /// (past the row's own edge, `Self.exitOvershoot` beyond `rowWidth` —
+    /// see `commitRemoval`'s doc comment), which routinely animates it to a
+    /// magnitude far past `longSwipeThreshold` even for a short swipe (e.g.
+    /// a 80pt archive swipe still slides out to ~400pt+). Before this fix,
+    /// `swipeActionBackground` read `reveal(for: dragTranslation)` directly,
+    /// so it kept re-evaluating against that animated, spring-interpolated
+    /// value as it climbed through the exit slide — crossing
+    /// `longSwipeThreshold` partway through made the background/icon flip
+    /// to the *long* action mid-exit even though the swipe that triggered it
+    /// never came close to `longSwipeThreshold`, a real-device-reported
+    /// regression from the スワイプの滑らかさ改善 pass that introduced the
+    /// slide (`docs/design-system.md`'s dedicated section). Freezing this to
+    /// the release-time decision (see `commitSwipe(translation:)`) instead
+    /// keeps the displayed icon/color pinned to what was actually decided,
+    /// independent of how far `dragTranslation` is subsequently animated for
+    /// purely visual reasons.
+    @State private var armedReveal: SwipeReveal = .none
 
     /// Below this many points of horizontal drag, releasing does nothing
     /// (the row springs back) — but the short action's color/icon already
@@ -199,6 +222,7 @@ struct MessageListRow: View {
                 if nowSelecting {
                     dragTranslation = 0
                     lastHapticReveal = .none
+                    armedReveal = .none
                     isCommitting = false
                 }
             }
@@ -373,7 +397,7 @@ extension MessageListRow {
 
     @ViewBuilder
     private var swipeActionBackground: some View {
-        switch liveReveal {
+        switch armedReveal {
         case .none:
             Color.clear
         case .leading(let action, let isLong):
@@ -411,14 +435,14 @@ extension MessageListRow {
         }
     }
 
-    private var liveReveal: SwipeReveal { reveal(for: dragTranslation) }
-
     /// Classifies a horizontal translation into an armed action: `.none` at
     /// rest, otherwise the short action below `longSwipeThreshold` or the
     /// long action past it, on whichever edge the sign of `translationWidth`
-    /// points toward. Used both for the *live* preview (fed `dragTranslation`,
-    /// re-evaluated on every `onChanged`) and for the *commit* decision at
-    /// release (fed the gesture's final `translation.width`).
+    /// points toward. A pure function of whatever raw value is passed in —
+    /// callers (`swipeGesture`'s `onChanged`, `commitSwipe(translation:)`)
+    /// are what guarantee that value is always the actual gesture
+    /// translation, never an animated/interpolated one; see `armedReveal`'s
+    /// doc comment for why that distinction matters.
     private func reveal(for translationWidth: CGFloat) -> SwipeReveal {
         guard translationWidth != 0 else { return .none }
         let magnitude = abs(translationWidth)
@@ -451,7 +475,12 @@ extension MessageListRow {
                 guard !isSelecting, !isCommitting else { return }
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
                 dragTranslation = clampedTranslation(value.translation.width)
-                let current = liveReveal
+                // Task #53: derived from the raw gesture value on this same
+                // line, not from `dragTranslation` after it's potentially
+                // been driven somewhere else by an animation — see
+                // `armedReveal`'s doc comment.
+                let current = reveal(for: value.translation.width)
+                armedReveal = current
                 if current != lastHapticReveal {
                     lastHapticReveal = current
                     if current != .none {
@@ -479,7 +508,15 @@ extension MessageListRow {
             cancelSwipe()
             return
         }
-        switch reveal(for: translation.width) {
+        // Task #53: re-decide from the raw, final gesture translation (not
+        // `dragTranslation`, which `commitReveal` below is about to start
+        // animating well past this value for `.archive`/`.delete`/`.junk`)
+        // and pin `armedReveal` to that decision — see its doc comment for
+        // why `swipeActionBackground` must not keep re-deriving this from
+        // `dragTranslation` once the exit-slide animation starts.
+        let decided = reveal(for: translation.width)
+        armedReveal = decided
+        switch decided {
         case .none:
             cancelSwipe()
         case .leading(let action, _):
@@ -500,6 +537,13 @@ extension MessageListRow {
     private func cancelSwipe() {
         withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.82)) {
             dragTranslation = 0
+        } completion: {
+            // Task #53: only clear the displayed icon/color once the
+            // spring-back has visually settled at rest — `armedReveal` was
+            // pinned (not re-derived from `dragTranslation`) at whatever it
+            // was at release, so this is the one place it needs to reset
+            // back to `.none` for this path.
+            armedReveal = .none
         }
     }
 
@@ -558,6 +602,7 @@ extension MessageListRow {
             // off-screen with no way to swipe again.
             dragTranslation = 0
             lastHapticReveal = .none
+            armedReveal = .none
             isCommitting = false
         }
     }
