@@ -1995,3 +1995,170 @@ iOS/macOS 両方でビルド可能な `#if os(iOS)` 分岐に閉じている)。
 コードとしては揃えたが、この制約により今回のセッションでは実行完了
 (green) を確認できていない — 次回セッションでシミュレータ/mailstack の
 状態が回復し次第、優先して再実行し結果をここに追記すること。
+
+## 実機報告: アーカイブ後の「元に戻す」が効かない (根本原因と修正)
+
+実機報告「アーカイブをした後、元に戻すをしても戻ってなさそう」の調査記録。
+「しきい値で自動実行」節・「design-phase-2: delaying a destructive
+action's entire local commit for an undo window loses data on an app kill
+mid-window」節で確立した設計 (即座にローカル DB へコミットし、Undo は
+「その書き込みを逆再生する」形にする) 自体は正しかったが、その逆再生
+(`undoRemoval(_:)`、現 `MessageRemoval.undo(_:db:)`) の実装に**再現性の
+高いバグ**があった。
+
+### 原因
+
+`MessageRecord.threadId` は `thread` テーブルへの外部キー
+(`AppDatabase.foreignKeysEnabled = true`) で、`onDelete: .setNull` は
+「参照先の `thread` 行が削除されたとき」の挙動を決めるだけで、**存在しない
+`thread.id` を指す `message` 行を INSERT しようとした瞬間にも即座に違反
+になる** (SQLite の外部キー制約はデフォルトで immediate、`DEFERRABLE
+INITIALLY DEFERRED` を明示しない限りトランザクションの最後まで待たない)。
+
+旧 `undoRemoval(_:)` は次の順序で書き戻していた:
+
+1. スナップショットに含まれる `message` 行をすべて INSERT (この時点で
+   `thread.id` はまだ存在しない可能性がある)
+2. `thread` 行が無ければ INSERT、あれば `recomputeAggregates`
+
+スレッドの**最後の1通**をアーカイブ/削除すると
+(`ThreadAssigner.recomputeAggregates`) `thread` 行ごと削除される —
+これは単一メッセージのスレッド (よくあるケース) なら常に起きる。この
+状態で Undo すると、手順1の `message` 行 INSERT が外部キー違反で例外を
+投げ、`dbWriter.write` のトランザクション全体がロールバックする。呼び出し
+側は `catch { }` で例外を握りつぶしていたため、UI 上は「タップしても
+何も起きない」ように見えていた — スレッドは実際には一切戻っていない。
+
+もう1つ、より狭い範囲の同種のバグも同居していた: `commitArchive` は
+アーカイブ先アカウントの Archive ロールメールボックスに既に入っている
+メッセージを「対象から skip」する (二重アーカイブの防止) が、旧実装は
+`messages` (=フィルタ前の全ターゲット) をそのままスナップショットに
+入れていたため、skip されたメッセージ (=削除されていない行) を Undo が
+再 INSERT しようとして主キー重複で失敗するパスがあった。
+
+### 修正
+
+`packages/OtegamiKit/Sources/SyncEngine/MessageRemoval.swift` (新規)
+に `MessageListView` が抱えていたロジックをそのまま切り出し、以下を
+直した:
+
+- `undo(_:db:)`: `thread` 行が無ければ**メッセージを INSERT する前に**
+  先に復元し、外部キー違反を起こさない順序にした。
+- `commit(_:summary:accountId:db:)`: 実際に削除した (=`continue` で
+  skip されなかった) メッセージだけをスナップショットの `messages` に
+  積むようにした。
+
+`MessageListView.swift` 側 (`commitArchive`/`commitDelete`/`commitJunk`/
+`undoRemoval`) は `MessageRemoval` を呼ぶだけの薄いラッパーに置き換え、
+アーカイブ・削除・迷惑メールの3操作すべてに同じ修正が及ぶようにした
+(旧実装は3つともほぼ同じコードが個別にコピーされていた)。ロジックを
+`SyncEngine` (`OtegamiKit` パッケージ) 側へ移したことで、SwiftUI ホスト
+無しの `swift test` から直接検証できるようになった — 修正前の
+`MessageListView` はこのロジックを private メソッドとして丸ごと抱えて
+いたため、Undo パス自体に自動テストが一切無かった。
+
+### 検証
+
+`packages/OtegamiKit/Tests/SyncEngineTests/MessageRemovalTests.swift`
+(新規) が以下を確認する:
+
+- 単一メッセージのスレッドをアーカイブ (`thread` 行ごと削除される) →
+  Undo → `thread`/`message` 行が両方復元され、`ThreadQuery.request
+  (mailboxId:)` の一覧クエリに再び現れること。同じ検証を削除でも実施。
+- 未送信 (未 replay) の opQueue 行が Undo で削除される (無駄なサーバ
+  往復をしない) こと。
+- Archive ロールに既に入っているメッセージを含むスレッドをアーカイブ
+  すると、そのメッセージは skip され、Undo が主キー重複で失敗しない
+  こと。
+- opQueue の行が (アカウントの IDLE ループ等により) Undo 前に既に
+  replay 済みでも、Undo のローカル復元自体は成功すること。
+
+修正前の実装 (メッセージを先に INSERT する順序) に一時的に戻して同じ
+テストを実行し、実際に外部キー違反で失敗することも確認した — この
+テストスイートが今回のバグを検出できることを裏付けている。
+
+`make test`/`make ios`/`make mac` green。
+
+**未検証**: サーバ側で元の op (アーカイブ/削除の IMAP MOVE) が Undo の
+5秒ウィンドウより先に replay されてしまった場合 (アカウントの IDLE
+ループや手動リフレッシュとの競合)、ローカルは復元されるがサーバ側は
+アーカイブ済みのまま — 次回同期で再びアーカイブに巻き戻される可能性が
+ある。これは今回の修正前から存在する既知のレアケースとして
+`MessageRemoval.undo(_:db:)` のドキュメントコメントに明記してあり、
+今回のセッションではスコープ外とした (サーバ側の逆操作を確実に
+enqueue するには「元の op がどのメールボックスへ実際に着地したか」を
+追跡する仕組みが要り、実機2台での検証もできない現状ではリスクに見合わ
+ないと判断)。
+
+## スワイプの滑らかさ改善
+
+実機報告「スワイプしたときの挙動は、sparkみたいに滑らかにして欲しい」の
+調査・対応記録。参考にしたのは Spark の実機録画 (フレーム抜粋):
+ドラッグ中は行が指に追従しつつ背景色 (完了アクション) が指の位置まで
+伸びる → リリース後、背景色が行全体に広がり行の中身が消える → 行の高さ
+自体が縮んで一覧の隙間が詰まり、下部に Undo トーストが出る、という一連の
+動き。
+
+### 調査: 「滑らかでない」の実体
+
+指への追従自体は元から `DragGesture` の `translation` を毎フレーム
+そのまま `dragTranslation` に反映する 1:1 追従で、他の主要メールアプリと
+同じ設計だった (フレームレート低下の兆候も無し)。実際に見比べて分かった
+差は「リリース後」:
+
+- 旧実装は `.onEnded` で **成立/不成立を問わず常に** `withAnimation
+  (.easeOut(duration: 0.2))` で `dragTranslation` を `0` に戻していた。
+- それとは完全に無関係・非同期に、`commitSwipe(translation:)` が
+  `perform(action)` を呼び、そのままローカル DB を書き換える —
+  アーカイブ/削除ならスレッドが `MessageListView.summaries` の
+  `ValueObservation` から即座に消え、`List` 自身の (アニメーション無しの)
+  デフォルトの行削除が走る。
+
+つまり「行が0へスプリングバックするアニメーション」と「行が
+(ノーアニメーションで) 一覧から消える処理」という**無関係な2つの変化が
+コンマ数秒ずれて同時に走る**のが、実機で「カクッ」と感じる正体だった —
+指への追従そのものの問題ではない。
+
+### 修正
+
+`apps/Otegami/Sources/Features/MessageList/MessageListRow.swift`:
+
+- **キャンセル (しきい値未満で離す)**: `.easeOut(duration: 0.2)` を
+  `interactiveSpring(response: 0.32, dampingFraction: 0.82)` に変更
+  (`cancelSwipe()`)。指を離した勢いを反映して自然に収束する。
+- **コミット (しきい値を超えて離す)**: アクションの性質で分岐
+  (`commitReveal(action:direction:)`)。
+  - **既読/未読切替・ピン留め** (行が一覧から消えない操作): 従来通り
+    即座に `perform(action)` を呼び、`cancelSwipe()` でスプリング
+    バックする — 行自体の見た目 (未読ドット・ピンアイコン) が状態変化を
+    伝えるので、スライドアウトさせる意味が無い。
+  - **アーカイブ・削除・迷惑メール** (行が一覧から消える操作、
+    `commitRemoval(action:direction:)`): `dragTranslation` を `0` へ
+    戻すのではなく、行の自身の幅 (`GeometryReader` で計測) + 余白ぶん
+    さらに同方向へスプリングでスライドさせ、完全に自分の `clipShape`
+    の外まで出す。約240ms 待って (アニメーションが視覚的にほぼ収まる
+    頃) からようやく `perform(action)` を呼びローカル DB を書き換える —
+    行が既に画面外へ消えた**後で**一覧から取り除かれるため、`List` 側の
+    行削除 (高さの collapse) が見えているものと衝突しない。
+- **`MessageListView.swift`**: `observeThreads()` の `summaries` 代入
+  (`applySummaries(_:)` に切り出し) を `withAnimation(.easeInOut
+  (duration: 0.25))` で包んだ — `ForEach(displayedSummaries)` は
+  `ThreadSummary.id` で差分を取るため、無関係なフィールド変更 (未読
+  ドットの切替など) では何もアニメーションされず、行の増減/並び替えの
+  ときだけ高さが滑らかに collapse/expand する。上記のスライドアウトと
+  合わせて「背景色が広がる → 行がスライドアウト → 隙間が詰まる」が1本の
+  連続したアニメーションに見えるようになる。
+- しきい値切替時の触覚フィードバック、Undo トーストは無変更。
+
+### 検証
+
+`make test`/`make ios`/`make mac` green。既存の
+`OtegamiSwipeAutoFireUITests` は `waitForExistence`/`waitForNonExistence`
+をポーリング (5〜10秒) するアサーションのみで固定 `sleep` に依存していない
+ため、約240msの遅延を追加しても許容範囲のはず — 「しきい値で自動実行
+バッチ」節に記載の、このセッションで継続しているシミュレータの接続問題
+(`MailCoreErrorDomain error 1`) の影響を受ける場合は別途この節に追記する。
+
+実機シミュレータでの目視確認 (スクリーンショット/録画) は
+`.claude/skills/verify/SKILL.md` の手順に沿って実施し、結果をここに
+追記する。
