@@ -25,21 +25,30 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
     public var clientId: String
     /// Space-separated OAuth2 scope string. `https://mail.google.com/` is
     /// the plan-mandated IMAP/SMTP scope; `.../auth/userinfo.email` is the
-    /// deliberate addition above. `.../auth/contacts.other.readonly`
-    /// (アバター強化バッチ「Google プロフィール写真」) was added later still —
-    /// read-only access to "other contacts" (people the user has emailed
-    /// but never explicitly saved, the same population Gmail's own UI draws
-    /// its sender-photo fallback from), used by `GooglePeopleAvatarClient`
-    /// via `otherContacts.search`. This is a Google **sensitive scope**
-    /// (unlike the two above, which are non-sensitive/restricted-adjacent) —
-    /// see `docs/oauth-setup.md`'s scope section for what that means for a
-    /// publicly-distributed build's OAuth consent screen verification.
-    /// An account authorized before this scope existed doesn't have it
-    /// until the user reconnects (`AccountEditView`'s "再認証" button reruns
-    /// this same `scope` string, so one re-consent is enough) —
-    /// `GoogleProfilePhotoAvatarResolver` treats a 401/403 from the People
-    /// API as "this account's token doesn't have the scope yet" and quietly
-    /// falls back to the next avatar source rather than forcing reauth.
+    /// deliberate addition above. Two more were added later still, both for
+    /// アバター強化バッチ「Google プロフィール写真」:
+    ///
+    /// - `.../auth/contacts.other.readonly` — read-only access to "other
+    ///   contacts" (people the user has emailed but never explicitly
+    ///   saved), used by `GooglePeopleAvatarClient
+    ///   .fetchOtherContactsPhotoIndex(accessToken:)`.
+    /// - `.../auth/contacts.readonly` — read-only access to the user's
+    ///   explicitly-saved Contacts, used by `GooglePeopleAvatarClient
+    ///   .fetchConnectionsPhotoIndex(accessToken:)`. A sender who *is* a
+    ///   saved Contact never appears in `otherContacts`, so this second
+    ///   scope covers the population the first one structurally can't.
+    ///
+    /// Both are Google **sensitive scopes** (unlike the two above, which are
+    /// non-sensitive/restricted-adjacent) — see `docs/oauth-setup.md`'s
+    /// scope section for what that means for a publicly-distributed build's
+    /// OAuth consent screen verification. An account authorized before
+    /// these scopes existed doesn't have them until the user reconnects
+    /// (`AccountEditView`'s "再認証" button reruns this same `scope` string,
+    /// so one re-consent is enough) — `GoogleProfilePhotoAvatarResolver`
+    /// treats a 401/403 from either People API endpoint as "this account's
+    /// token doesn't have that particular scope yet" and quietly skips just
+    /// that source (falling back to the next avatar source entirely only if
+    /// both are unavailable) rather than forcing reauth.
     public var scope: String
     /// `com.googleusercontent.apps.<reversed client id>:/oauth2redirect`
     /// (plan-specified) — Google's documented redirect URI convention for
@@ -72,7 +81,7 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
             tokenEndpoint: URL(string: "https://oauth2.googleapis.com/token")!,
             userInfoEndpoint: URL(string: "https://www.googleapis.com/oauth2/v3/userinfo")!,
             clientId: clientId,
-            scope: "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/contacts.other.readonly",
+            scope: "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/contacts.other.readonly https://www.googleapis.com/auth/contacts.readonly",
             redirectURI: "\(Self.redirectScheme(forClientId: clientId)):/oauth2redirect"
         )
     }

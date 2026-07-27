@@ -14,20 +14,18 @@ struct GooglePeopleAvatarClientTests {
         return (response, data)
     }
 
-    // MARK: - lookupPhoto
+    // MARK: - fetchOtherContactsPhotoIndex
 
     @Test
-    func lookupPhotoReturnsTheMatchingNonDefaultPhotoURL() async throws {
+    func fetchOtherContactsPhotoIndexReturnsAnIndexOfNonDefaultPhotos() async throws {
         PeopleAPIStubURLProtocol.handler = { [self] request in
-            #expect(request.url?.absoluteString.hasPrefix("https://people.googleapis.com/v1/otherContacts:search") == true)
+            #expect(request.url?.absoluteString.hasPrefix("https://people.googleapis.com/v1/otherContacts") == true)
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-token")
             return jsonResponse(request.url!, status: 200, body: [
-                "results": [
+                "otherContacts": [
                     [
-                        "person": [
-                            "emailAddresses": [["value": "someone@example.com"]],
-                            "photos": [["url": "https://lh3.googleusercontent.com/a/abc", "default": false]],
-                        ]
+                        "emailAddresses": [["value": "someone@example.com"]],
+                        "photos": [["url": "https://lh3.googleusercontent.com/a/abc", "default": false]],
                     ]
                 ],
             ])
@@ -35,143 +33,209 @@ struct GooglePeopleAvatarClientTests {
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        let result = await client.lookupPhoto(accessToken: "test-token", address: "someone@example.com")
-        #expect(result == .found(photoURL: URL(string: "https://lh3.googleusercontent.com/a/abc")!))
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "test-token")
+        #expect(result == .success(["someone@example.com": URL(string: "https://lh3.googleusercontent.com/a/abc")!]))
     }
 
     @Test
-    func lookupPhotoMatchesAddressCaseInsensitively() async throws {
+    func fetchOtherContactsPhotoIndexRequestsBothContactAndProfileSources() async throws {
+        PeopleAPIStubURLProtocol.handler = { [self] request in
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let sources = items.filter { $0.name == "sources" }.compactMap(\.value)
+            #expect(sources == ["READ_SOURCE_TYPE_CONTACT", "READ_SOURCE_TYPE_PROFILE"])
+            #expect(items.first(where: { $0.name == "readMask" })?.value == "emailAddresses,photos")
+            return jsonResponse(request.url!, status: 200, body: ["otherContacts": []])
+        }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        _ = await client.fetchOtherContactsPhotoIndex(accessToken: "test-token")
+    }
+
+    @Test
+    func fetchOtherContactsPhotoIndexNormalizesAddressesCaseInsensitively() async throws {
         PeopleAPIStubURLProtocol.handler = { request in
             self.jsonResponse(request.url!, status: 200, body: [
-                "results": [
-                    ["person": ["emailAddresses": [["value": "Someone@Example.com"]], "photos": [["url": "https://example.com/p.jpg"]]]]
+                "otherContacts": [
+                    ["emailAddresses": [["value": " Someone@Example.com "]], "photos": [["url": "https://example.com/p.jpg"]]]
                 ],
             ])
         }
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        let result = await client.lookupPhoto(accessToken: "token", address: "someone@example.com")
-        #expect(result == .found(photoURL: URL(string: "https://example.com/p.jpg")!))
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "token")
+        #expect(result == .success(["someone@example.com": URL(string: "https://example.com/p.jpg")!]))
     }
 
     @Test
-    func lookupPhotoSkipsAPersonWhoseOnlyPhotoIsTheDefaultSilhouette() async throws {
+    func fetchOtherContactsPhotoIndexSkipsAPersonWhoseOnlyPhotoIsTheDefaultSilhouette() async throws {
         PeopleAPIStubURLProtocol.handler = { request in
             self.jsonResponse(request.url!, status: 200, body: [
-                "results": [
-                    ["person": ["emailAddresses": [["value": "someone@example.com"]], "photos": [["url": "https://example.com/default.jpg", "default": true]]]]
+                "otherContacts": [
+                    ["emailAddresses": [["value": "someone@example.com"]], "photos": [["url": "https://example.com/default.jpg", "default": true]]]
                 ],
             ])
         }
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        let result = await client.lookupPhoto(accessToken: "token", address: "someone@example.com")
-        #expect(result == .notFound)
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "token")
+        #expect(result == .success([:]))
     }
 
     @Test
-    func lookupPhotoReturnsNotFoundWhenNoResultMatchesTheAddress() async throws {
+    func fetchOtherContactsPhotoIndexPrefersAProfileSourcedPhotoOverAContactSourcedOne() async throws {
         PeopleAPIStubURLProtocol.handler = { request in
-            self.jsonResponse(request.url!, status: 200, body: ["results": []])
+            self.jsonResponse(request.url!, status: 200, body: [
+                "otherContacts": [
+                    [
+                        "emailAddresses": [["value": "someone@example.com"]],
+                        "photos": [
+                            ["url": "https://example.com/contact.jpg", "default": false, "metadata": ["source": ["type": "CONTACT"]]],
+                            ["url": "https://example.com/profile.jpg", "default": false, "metadata": ["source": ["type": "PROFILE"]]],
+                        ],
+                    ]
+                ],
+            ])
         }
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        let result = await client.lookupPhoto(accessToken: "token", address: "nobody@example.com")
-        #expect(result == .notFound)
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "token")
+        #expect(result == .success(["someone@example.com": URL(string: "https://example.com/profile.jpg")!]))
     }
 
     @Test
-    func lookupPhotoReturnsInsufficientScopeOn403() async throws {
+    func fetchOtherContactsPhotoIndexFollowsNextPageTokenAndMergesResults() async throws {
+        PeopleAPIStubURLProtocol.handler = { [self] request in
+            let pageToken = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "pageToken" })?.value
+            if pageToken == nil {
+                return jsonResponse(request.url!, status: 200, body: [
+                    "otherContacts": [
+                        ["emailAddresses": [["value": "first@example.com"]], "photos": [["url": "https://example.com/first.jpg"]]]
+                    ],
+                    "nextPageToken": "page-2",
+                ])
+            }
+            #expect(pageToken == "page-2")
+            return jsonResponse(request.url!, status: 200, body: [
+                "otherContacts": [
+                    ["emailAddresses": [["value": "second@example.com"]], "photos": [["url": "https://example.com/second.jpg"]]]
+                ],
+            ])
+        }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "token")
+        #expect(result == .success([
+            "first@example.com": URL(string: "https://example.com/first.jpg")!,
+            "second@example.com": URL(string: "https://example.com/second.jpg")!,
+        ]))
+    }
+
+    @Test
+    func fetchOtherContactsPhotoIndexReturnsInsufficientScopeOn403() async throws {
         PeopleAPIStubURLProtocol.handler = { request in
             self.jsonResponse(request.url!, status: 403, body: ["error": ["code": 403, "status": "PERMISSION_DENIED"]])
         }
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        let result = await client.lookupPhoto(accessToken: "scoped-out-token", address: "someone@example.com")
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "scoped-out-token")
         #expect(result == .insufficientScope)
     }
 
     @Test
-    func lookupPhotoReturnsInsufficientScopeOn401() async throws {
+    func fetchOtherContactsPhotoIndexReturnsInsufficientScopeOn401() async throws {
         PeopleAPIStubURLProtocol.handler = { request in
             self.jsonResponse(request.url!, status: 401, body: ["error": ["code": 401]])
         }
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        let result = await client.lookupPhoto(accessToken: "expired", address: "someone@example.com")
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "expired")
         #expect(result == .insufficientScope)
     }
 
     @Test
-    func lookupPhotoReturnsUnavailableOnServerError() async throws {
+    func fetchOtherContactsPhotoIndexReturnsUnavailableOnServerError() async throws {
         PeopleAPIStubURLProtocol.handler = { request in
             self.jsonResponse(request.url!, status: 500, body: [:])
         }
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        let result = await client.lookupPhoto(accessToken: "token", address: "someone@example.com")
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "token")
         #expect(result == .unavailable)
     }
 
     @Test
-    func lookupPhotoReturnsUnavailableOnNetworkFailure() async throws {
+    func fetchOtherContactsPhotoIndexReturnsUnavailableOnNetworkFailure() async throws {
         PeopleAPIStubURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        let result = await client.lookupPhoto(accessToken: "token", address: "someone@example.com")
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "token")
         #expect(result == .unavailable)
     }
 
-    // MARK: - warmupSearchIndex
-
-    /// Google's documented `otherContacts.search` warmup requirement: the
-    /// resolver (`GoogleProfilePhotoAvatarResolver`, app layer) must send an
-    /// empty-query request before its first real search per account. This
-    /// test exercises `warmupSearchIndex(accessToken:)` itself — the piece
-    /// that actually builds and sends that request — and asserts it hits
-    /// the same `otherContacts:search` endpoint with an empty `query`.
     @Test
-    func warmupSearchIndexSendsAnEmptyQueryRequest() async throws {
-        // Assert inside the handler itself (rather than capturing into a
-        // local `var`) — `PeopleAPIStubURLProtocol.handler` is a `@Sendable`
-        // closure, and Swift 6 strict concurrency rejects mutating a
-        // captured var from inside it (matches every other assertion-in-
-        // handler test in this file, e.g.
-        // `lookupPhotoReturnsTheMatchingNonDefaultPhotoURL` above).
+    func fetchOtherContactsPhotoIndexReturnsUnavailableWhenALaterPageFails() async throws {
         PeopleAPIStubURLProtocol.handler = { [self] request in
-            #expect(request.url?.absoluteString.hasPrefix("https://people.googleapis.com/v1/otherContacts:search") == true)
-            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
-            #expect(items?.first(where: { $0.name == "query" })?.value == "")
-            return jsonResponse(request.url!, status: 200, body: ["results": []])
+            let pageToken = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "pageToken" })?.value
+            if pageToken == nil {
+                return jsonResponse(request.url!, status: 200, body: [
+                    "otherContacts": [
+                        ["emailAddresses": [["value": "first@example.com"]], "photos": [["url": "https://example.com/first.jpg"]]]
+                    ],
+                    "nextPageToken": "page-2",
+                ])
+            }
+            return jsonResponse(request.url!, status: 500, body: [:])
         }
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        await client.warmupSearchIndex(accessToken: "test-token")
+        let result = await client.fetchOtherContactsPhotoIndex(accessToken: "token")
+        // The whole index is discarded, not just the failed page — see
+        // `fetchPhotoIndex`'s doc comment on why a partial index is never
+        // returned.
+        #expect(result == .unavailable)
     }
 
-    /// A warmup failure (network error, non-2xx, anything) must never
-    /// throw or otherwise stop the caller — `GoogleProfilePhotoAvatarResolver
-    /// .fetchFromGoogle` always attempts the real `lookupPhoto` search right
-    /// after, regardless of how the warmup went. `warmupSearchIndex` itself
-    /// has no return value to assert on for "did it swallow the error", so
-    /// this test's real assertion is simply that awaiting it completes
-    /// normally (doesn't throw/crash) even when every request fails.
+    // MARK: - fetchConnectionsPhotoIndex
+
     @Test
-    func warmupSearchIndexNeverThrowsEvenWhenTheRequestFails() async throws {
-        PeopleAPIStubURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+    func fetchConnectionsPhotoIndexHitsTheConnectionsEndpointWithPersonFields() async throws {
+        PeopleAPIStubURLProtocol.handler = { [self] request in
+            #expect(request.url?.absoluteString.hasPrefix("https://people.googleapis.com/v1/people/me/connections") == true)
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            #expect(items.first(where: { $0.name == "personFields" })?.value == "emailAddresses,photos")
+            return jsonResponse(request.url!, status: 200, body: [
+                "connections": [
+                    ["emailAddresses": [["value": "saved@example.com"]], "photos": [["url": "https://example.com/saved.jpg"]]]
+                ],
+            ])
+        }
         defer { PeopleAPIStubURLProtocol.handler = nil }
 
         let client = makeClient()
-        await client.warmupSearchIndex(accessToken: "test-token")
-        // No throw, no crash — reaching this line is the assertion.
+        let result = await client.fetchConnectionsPhotoIndex(accessToken: "token")
+        #expect(result == .success(["saved@example.com": URL(string: "https://example.com/saved.jpg")!]))
+    }
+
+    @Test
+    func fetchConnectionsPhotoIndexReturnsInsufficientScopeOn403() async throws {
+        PeopleAPIStubURLProtocol.handler = { request in
+            self.jsonResponse(request.url!, status: 403, body: ["error": ["code": 403, "status": "PERMISSION_DENIED"]])
+        }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        let result = await client.fetchConnectionsPhotoIndex(accessToken: "scoped-out-token")
+        #expect(result == .insufficientScope)
     }
 
     // MARK: - downloadPhoto
@@ -205,13 +269,21 @@ struct GooglePeopleAvatarClientTests {
     // MARK: - Pure helpers
 
     @Test
-    func searchURLIncludesTheReadMaskAndAddressQuery() throws {
-        let url = try #require(GooglePeopleAvatarClient.searchURL(for: "someone@example.com"))
+    func pageURLIncludesRepeatedSourcesAndFieldsParam() throws {
+        let url = try #require(GooglePeopleAvatarClient.pageURL(baseURL: URL(string: "https://people.googleapis.com/v1/otherContacts")!, fieldsParamName: "readMask", pageToken: nil))
         let items = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
-        func value(_ name: String) -> String? { items.first(where: { $0.name == name })?.value }
-        #expect(url.absoluteString.hasPrefix("https://people.googleapis.com/v1/otherContacts:search"))
-        #expect(value("readMask") == "photos,emailAddresses")
-        #expect(value("query") == "someone@example.com")
+        func values(_ name: String) -> [String] { items.filter { $0.name == name }.compactMap(\.value) }
+        #expect(url.absoluteString.hasPrefix("https://people.googleapis.com/v1/otherContacts"))
+        #expect(values("readMask") == ["emailAddresses,photos"])
+        #expect(values("sources") == ["READ_SOURCE_TYPE_CONTACT", "READ_SOURCE_TYPE_PROFILE"])
+        #expect(values("pageToken").isEmpty)
+    }
+
+    @Test
+    func pageURLIncludesThePageTokenWhenGiven() throws {
+        let url = try #require(GooglePeopleAvatarClient.pageURL(baseURL: URL(string: "https://people.googleapis.com/v1/otherContacts")!, fieldsParamName: "readMask", pageToken: "abc"))
+        let items = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(items.first(where: { $0.name == "pageToken" })?.value == "abc")
     }
 
     @Test
@@ -224,8 +296,8 @@ struct GooglePeopleAvatarClientTests {
     }
 
     @Test
-    func matchingPhotoURLStringReturnsNilForMalformedJSON() {
+    func parsePageReturnsNilForMalformedJSON() {
         let data = Data("not json".utf8)
-        #expect(GooglePeopleAvatarClient.matchingPhotoURLString(in: data, address: "someone@example.com") == nil)
+        #expect(GooglePeopleAvatarClient.parsePage(data, itemsKey: .otherContacts) == nil)
     }
 }

@@ -1,46 +1,59 @@
 import Foundation
 
-/// The outcome of one `GooglePeopleAvatarClient.lookupPhoto(accessToken:address:)`
-/// attempt against a single Gmail account's access token.
-///
-/// Deliberately distinguishes `.notFound` (a well-formed response that just
-/// didn't match `address`) from `.insufficientScope`/`.unavailable` — the
-/// app-layer caller (`GoogleProfilePhotoAvatarResolver`, `apps/Otegami/
-/// Sources/Support/`) needs all three kept apart: `.notFound` is safe to
-/// negative-cache (asking again won't change the answer until the person's
-/// Google contact changes), `.insufficientScope` should be remembered
-/// per-account for the rest of the process so it isn't retried on every
-/// avatar resolution, and `.unavailable` (network error, timeout, an
-/// unexpected non-2xx status) is transient and must not be cached either
-/// way.
-public enum GooglePeopleAvatarLookupResult: Sendable, Equatable {
-    case found(photoURL: URL)
-    case notFound
+/// The outcome of one index-building request (`GooglePeopleAvatarClient
+/// .fetchOtherContactsPhotoIndex(accessToken:)` /
+/// `.fetchConnectionsPhotoIndex(accessToken:)`) against a single Gmail
+/// account's access token. `.success` carries every (normalized email
+/// address → best photo URL) pair the endpoint returned across *all* pages
+/// — the caller (`GoogleProfilePhotoAvatarResolver`, `apps/Otegami/Sources/
+/// Support/`) resolves individual senders by looking their address up in
+/// this dictionary, rather than issuing one network request per sender.
+/// `.insufficientScope` is kept apart from `.unavailable` for the same
+/// reason the old per-address lookup result did: it should be remembered
+/// per-account for the rest of the process (this token structurally cannot
+/// produce data from this endpoint until the user reconnects with a wider
+/// scope), while `.unavailable` (network error, timeout, malformed
+/// response, an unexpected non-2xx status on any page) is transient and
+/// must not be remembered the same way — the very next attempt might
+/// succeed.
+public enum GooglePeopleIndexResult: Sendable, Equatable {
+    case success([String: URL])
     case insufficientScope
     case unavailable
 }
 
-/// Talks to the Google People API's `otherContacts.search` endpoint for one
-/// (access token, sender address) pair. Apple/Linux-agnostic (plain
-/// `URLSession`, no Apple-only framework), like the rest of this target —
-/// the app-layer `GoogleProfilePhotoAvatarResolver` is what's Apple-only
-/// (disk caching under `Caches/`, `UIImage`/`NSImage`), while this type
-/// stays trivially unit-testable with the same `URLProtocol`-stub approach
-/// `GoogleOAuthClientTests` already uses.
+/// Talks to two of the Google People API's `list` endpoints — `otherContacts`
+/// (Gmail's auto-collected "people you've corresponded with but never
+/// saved") and `people/me/connections` (the user's explicitly-saved
+/// Contacts) — building an in-memory (email address → photo URL) index from
+/// each. Apple/Linux-agnostic (plain `URLSession`, no Apple-only framework),
+/// like the rest of this target — the app-layer `GoogleProfilePhotoAvatarResolver`
+/// is what's Apple-only (disk caching under `Caches/`, `UIImage`/`NSImage`),
+/// while this type stays trivially unit-testable with the same
+/// `URLProtocol`-stub approach `GoogleOAuthClientTests` already uses.
 ///
-/// **`otherContacts.search` only, not also `people.searchContacts`**: the
-/// People API also has `people.searchContacts`, which searches a user's
-/// *explicit*, saved Contacts. `otherContacts` — Gmail's auto-collected
-/// "people you've corresponded with but never saved" — is the population
-/// Gmail's own web/mobile clients draw their sender-photo fallback from, and
-/// is exactly the gap this resolver exists to close (a Gravatar-less sender
-/// otegami has no saved Contact for). Adding a second API call to also query
-/// `searchContacts` would double the request count (and thus the scope's
-/// sensitive-data exposure) for a population that's already covered by a
-/// device's on-device `ContactPhotoResolver` (macOS/iOS Contacts sync from
-/// the same Google Contacts, when the user has that sync configured) — the
-/// marginal benefit didn't seem to justify the added cost/complexity, so
-/// this was decided against rather than left unimplemented by oversight.
+/// **`.list`, not `.search`**: an earlier version of this type used
+/// `otherContacts:search` (one request per sender address). Two problems
+/// with that approach motivated this rewrite:
+///
+/// 1. `otherContacts.search` has no `sources` parameter — it can only ever
+///    return `READ_SOURCE_TYPE_CONTACT`-sourced data, which is usually
+///    photo-less for an auto-collected "other contact". The photo Gmail's
+///    own UI shows for such a sender is typically the **PROFILE** source
+///    (the sender's own Google Account profile photo, merged in), which
+///    `otherContacts.list` can request via
+///    `sources=READ_SOURCE_TYPE_CONTACT&sources=READ_SOURCE_TYPE_PROFILE`
+///    but `.search` cannot request at all.
+/// 2. A sender who *is* a saved Contact (not merely an "other contact")
+///    never appears in `otherContacts` at all — reaching them needs the
+///    separate `people/me/connections` endpoint (`fetchConnectionsPhotoIndex`,
+///    a distinct, sensitive-adjacent scope: `contacts.readonly`).
+///
+/// Building a full per-account index up front (rather than searching per
+/// address) also removes the need for `otherContacts.search`'s documented
+/// "warm up the search index with an empty query first" workaround — `.list`
+/// has no such warm-up requirement, so `GoogleProfilePhotoAvatarResolver` no
+/// longer needs to track/send warm-up requests at all.
 public actor GooglePeopleAvatarClient {
     private let session: URLSession
 
@@ -48,64 +61,42 @@ public actor GooglePeopleAvatarClient {
         self.session = session
     }
 
-    /// One search attempt for `address` using `accessToken`. Never throws —
-    /// every failure mode (network, malformed response, HTTP error) maps to
-    /// one of `GooglePeopleAvatarLookupResult`'s cases instead, so the
-    /// caller never needs a `try`/`catch` around this.
-    public func lookupPhoto(accessToken: String, address: String) async -> GooglePeopleAvatarLookupResult {
-        guard let url = Self.searchURL(for: address) else { return .unavailable }
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 10
-
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(for: request)
-        } catch {
-            return .unavailable
-        }
-        guard let http = response as? HTTPURLResponse else { return .unavailable }
-        if http.statusCode == 401 || http.statusCode == 403 {
-            // Google returns 401 (no/expired token) or 403 (token valid but
-            // missing this scope) for both cases; this resolver only ever
-            // reaches here with a token `TokenStore` already reports as
-            // currently valid, so in practice this means "missing scope" —
-            // see `GoogleOAuthEndpoints.scope`'s doc comment.
-            return .insufficientScope
-        }
-        guard (200..<300).contains(http.statusCode) else { return .unavailable }
-
-        guard let photoURLString = Self.matchingPhotoURLString(in: data, address: address),
-              let photoURL = URL(string: photoURLString)
-        else {
-            return .notFound
-        }
-        return .found(photoURL: photoURL)
+    /// Builds the full (address → photo URL) index from `otherContacts.list`
+    /// for this token, paging through every result. See this type's doc
+    /// comment for why `.list` (not `.search`) and why both
+    /// `READ_SOURCE_TYPE_CONTACT`/`READ_SOURCE_TYPE_PROFILE` are requested.
+    public func fetchOtherContactsPhotoIndex(accessToken: String) async -> GooglePeopleIndexResult {
+        await fetchPhotoIndex(
+            baseURL: Self.otherContactsBaseURL,
+            itemsKey: .otherContacts,
+            fieldsParamName: "readMask",
+            accessToken: accessToken
+        )
     }
 
-    /// Google's official guidance for `otherContacts.search`: the very
-    /// first search against a given token can come back empty even for a
-    /// person who genuinely is in "other contacts", because the search
-    /// index isn't warmed up yet — an empty-query request beforehand
-    /// primes it. This method exists solely to send that warmup request;
-    /// its result (success, error, empty body, anything) is deliberately
-    /// discarded — a warmup failure is not evidence of anything (not
-    /// "insufficient scope", not "no other contacts exist") and must never
-    /// stop the caller from still attempting the real `lookupPhoto` search
-    /// right after. Never throws, matching this type's "no exceptions"
-    /// contract.
-    public func warmupSearchIndex(accessToken: String) async {
-        _ = await lookupPhoto(accessToken: accessToken, address: "")
+    /// Builds the full (address → photo URL) index from
+    /// `people/me/connections` (the user's explicitly-saved Contacts) for
+    /// this token, paging through every result. Requires the
+    /// `contacts.readonly` scope (`GoogleOAuthEndpoints.scope`) — a token
+    /// without it gets `.insufficientScope` here, same 401/403 convention
+    /// as `fetchOtherContactsPhotoIndex`.
+    public func fetchConnectionsPhotoIndex(accessToken: String) async -> GooglePeopleIndexResult {
+        await fetchPhotoIndex(
+            baseURL: Self.connectionsBaseURL,
+            itemsKey: .connections,
+            fieldsParamName: "personFields",
+            accessToken: accessToken
+        )
     }
 
-    /// Downloads the raw image bytes from a URL `lookupPhoto` returned.
-    /// Kept as a separate call (rather than folded into `lookupPhoto`) so a
-    /// download failure is clearly distinguishable from "no such person" at
-    /// the call site, and so `GooglePeopleAvatarClientTests` can exercise
-    /// URL-building/JSON-parsing without also having to stub an image byte
-    /// stream. `nil` on any failure (network, non-200, empty body) — never
-    /// throws, matching `lookupPhoto`'s "no exceptions" contract.
+    /// Downloads the raw image bytes from a URL one of the index-fetching
+    /// methods returned. Kept as a separate call (rather than folded into
+    /// the index fetch) so a download failure is clearly distinguishable
+    /// from "no such person" at the call site, and so
+    /// `GooglePeopleAvatarClientTests` can exercise URL-building/JSON-
+    /// parsing without also having to stub an image byte stream. `nil` on
+    /// any failure (network, non-200, empty body) — never throws, matching
+    /// this type's "no exceptions" contract.
     public func downloadPhoto(url: URL) async -> Data? {
         var request = URLRequest(url: Self.sizedPhotoURL(url))
         request.timeoutInterval = 10
@@ -116,42 +107,95 @@ public actor GooglePeopleAvatarClient {
         return data
     }
 
-    // MARK: - URL building / response parsing (pure — exercised directly by tests)
+    // MARK: - Paging
 
-    /// `otherContacts:search?readMask=photos,emailAddresses&query=<address>`
-    /// — a `GET` request per the People API's documented shape.
-    static func searchURL(for address: String) -> URL? {
-        var components = URLComponents(string: "https://people.googleapis.com/v1/otherContacts:search")
-        components?.queryItems = [
-            URLQueryItem(name: "readMask", value: "photos,emailAddresses"),
-            URLQueryItem(name: "query", value: address),
-        ]
-        return components?.url
+    private static let otherContactsBaseURL = URL(string: "https://people.googleapis.com/v1/otherContacts")!
+    private static let connectionsBaseURL = URL(string: "https://people.googleapis.com/v1/people/me/connections")!
+
+    /// Safety cap on the number of pages fetched per index build (1,000
+    /// results/page × 100 pages = 100,000 people) — far beyond any realistic
+    /// "other contacts"/Contacts population, this exists only to guarantee
+    /// termination against a pathological/misbehaving response (e.g. a
+    /// server bug that echoes back the same `nextPageToken` forever) rather
+    /// than to ever actually be hit.
+    private static let maxPages = 100
+
+    /// Never throws — every failure mode (network, malformed response, HTTP
+    /// error, on any page) maps to one of `GooglePeopleIndexResult`'s cases
+    /// instead. A failure partway through paging discards whatever pages
+    /// already succeeded rather than returning a partial index — a partial
+    /// index would get disk-cached by `GoogleProfilePhotoAvatarResolver`
+    /// exactly as if it were complete, silently missing entries past the
+    /// failure point for the rest of that cache's TTL.
+    private func fetchPhotoIndex(
+        baseURL: URL,
+        itemsKey: ListResponse.ItemsKey,
+        fieldsParamName: String,
+        accessToken: String
+    ) async -> GooglePeopleIndexResult {
+        var merged: [String: URL] = [:]
+        var pageToken: String?
+        var pagesFetched = 0
+
+        repeat {
+            guard let url = Self.pageURL(baseURL: baseURL, fieldsParamName: fieldsParamName, pageToken: pageToken) else {
+                return .unavailable
+            }
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 15
+
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await session.data(for: request)
+            } catch {
+                return .unavailable
+            }
+            guard let http = response as? HTTPURLResponse else { return .unavailable }
+            if http.statusCode == 401 || http.statusCode == 403 {
+                // Google returns 401 (no/expired token) or 403 (token valid
+                // but missing this scope) for both cases; this resolver only
+                // ever reaches here with a token `TokenStore` already
+                // reports as currently valid, so in practice this means
+                // "missing scope" — see `GoogleOAuthEndpoints.scope`'s doc
+                // comment.
+                return .insufficientScope
+            }
+            guard (200..<300).contains(http.statusCode) else { return .unavailable }
+
+            guard let page = Self.parsePage(data, itemsKey: itemsKey) else { return .unavailable }
+            // First-wins across pages for the same address — an address
+            // repeated across pages (shouldn't normally happen, but the API
+            // doesn't guarantee otherwise) keeps whichever photo it was
+            // first paired with rather than churning on every page.
+            merged.merge(page.index) { current, _ in current }
+            pageToken = page.nextPageToken
+            pagesFetched += 1
+        } while pageToken != nil && pagesFetched < Self.maxPages
+
+        return .success(merged)
     }
 
-    /// The first non-default photo URL belonging to a result whose
-    /// `emailAddresses` contains `address` (case-insensitive, matching
-    /// `GravatarAvatarResolver.normalize`'s trim+lowercase convention). A
-    /// person with photos but only the placeholder silhouette (`default:
-    /// true`) is treated the same as having no photo at all — showing that
-    /// would be strictly worse than this app's own initials-based
-    /// fallback. `nil` for a well-formed response with no such match
-    /// (`.notFound`, not a parse failure) as well as for genuinely
-    /// undecodable JSON (`.notFound` too — `lookupPhoto` can't tell the two
-    /// apart from this return value alone, and both mean "nothing to show
-    /// from this attempt").
-    static func matchingPhotoURLString(in data: Data, address: String) -> String? {
-        guard let decoded = try? JSONDecoder().decode(SearchResponse.self, from: data) else { return nil }
-        let normalizedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        for result in decoded.results ?? [] {
-            guard let person = result.person else { continue }
-            let emails = (person.emailAddresses ?? []).compactMap { $0.value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            guard emails.contains(normalizedAddress) else { continue }
-            if let photo = (person.photos ?? []).first(where: { $0.isDefault != true && $0.url != nil }) {
-                return photo.url
-            }
+    // MARK: - URL building / response parsing (pure — exercised directly by tests)
+
+    /// `sources` is deliberately two separate repeated query items (Google's
+    /// documented format for a repeated-enum parameter), not a single
+    /// comma-joined value — `URLQueryItem` appended once per value produces
+    /// exactly that (`sources=READ_SOURCE_TYPE_CONTACT&sources=READ_SOURCE_TYPE_PROFILE`).
+    static func pageURL(baseURL: URL, fieldsParamName: String, pageToken: String?) -> URL? {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        var items = [
+            URLQueryItem(name: fieldsParamName, value: "emailAddresses,photos"),
+            URLQueryItem(name: "sources", value: "READ_SOURCE_TYPE_CONTACT"),
+            URLQueryItem(name: "sources", value: "READ_SOURCE_TYPE_PROFILE"),
+            URLQueryItem(name: "pageSize", value: "1000"),
+        ]
+        if let pageToken {
+            items.append(URLQueryItem(name: "pageToken", value: pageToken))
         }
-        return nil
+        components?.queryItems = items
+        return components?.url
     }
 
     /// Google's profile-photo hosting (`lh3.googleusercontent.com` and
@@ -171,30 +215,99 @@ public actor GooglePeopleAvatarClient {
         return URL(string: string + "=s160") ?? url
     }
 
-    private struct SearchResponse: Decodable {
-        var results: [SearchResult]?
+    /// Parses one page's response body into a partial (address → photo URL)
+    /// index plus the next page token, or `nil` for undecodable JSON (a
+    /// parse failure, not "empty page" — an empty-but-well-formed page
+    /// decodes fine and just contributes nothing to the index).
+    static func parsePage(_ data: Data, itemsKey: ListResponse.ItemsKey) -> (index: [String: URL], nextPageToken: String?)? {
+        guard let decoded = try? JSONDecoder().decode(ListResponse.self, from: data) else { return nil }
+        let entries: [PersonEntry]
+        switch itemsKey {
+        case .otherContacts: entries = decoded.otherContacts ?? []
+        case .connections: entries = decoded.connections ?? []
+        }
+
+        var index: [String: URL] = [:]
+        for entry in entries {
+            guard let photoURLString = bestPhotoURLString(in: entry.photos ?? []),
+                  let photoURL = URL(string: photoURLString)
+            else { continue }
+            for email in entry.emailAddresses ?? [] {
+                guard let raw = email.value else { continue }
+                let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                guard !normalized.isEmpty else { continue }
+                // First-wins within a page too, for a person listed with the
+                // same address more than once (shouldn't normally happen).
+                if index[normalized] == nil { index[normalized] = photoURL }
+            }
+        }
+        return (index, decoded.nextPageToken)
     }
 
-    private struct SearchResult: Decodable {
-        var person: Person?
+    /// One person's photo choice: prefer a non-default photo whose
+    /// `metadata.source.type` is `PROFILE` (the person's own Google Account
+    /// profile photo — what Gmail's own UI draws its sender-photo fallback
+    /// from), falling back to any other non-default photo if no PROFILE-
+    /// sourced one exists. A person with photos but only the placeholder
+    /// silhouette (`default: true`) is treated the same as having no photo
+    /// at all — showing that would be strictly worse than this app's own
+    /// initials-based fallback.
+    static func bestPhotoURLString(in photos: [Photo]) -> String? {
+        if let profile = photos.first(where: { $0.isDefault != true && $0.url != nil && $0.metadata?.source?.type == "PROFILE" }) {
+            return profile.url
+        }
+        return photos.first(where: { $0.isDefault != true && $0.url != nil })?.url
     }
 
-    private struct Person: Decodable {
+    /// Both `otherContacts.list` and `people/me/connections`'s response
+    /// bodies share this shape apart from which top-level array key they use
+    /// (`otherContacts` vs `connections`) — declaring both as optional
+    /// properties on one `Decodable` lets a single type parse either,
+    /// disambiguated by `itemsKey` at the call site.
+    struct ListResponse: Decodable {
+        enum ItemsKey {
+            case otherContacts
+            case connections
+        }
+
+        var otherContacts: [PersonEntry]?
+        var connections: [PersonEntry]?
+        var nextPageToken: String?
+    }
+
+    struct PersonEntry: Decodable {
         var emailAddresses: [EmailAddress]?
         var photos: [Photo]?
     }
 
-    private struct EmailAddress: Decodable {
+    struct EmailAddress: Decodable {
         var value: String?
     }
 
-    private struct Photo: Decodable {
+    struct Photo: Decodable {
         var url: String?
         var isDefault: Bool?
+        var metadata: PhotoMetadata?
 
         enum CodingKeys: String, CodingKey {
             case url
             case isDefault = "default"
+            case metadata
         }
+    }
+
+    struct PhotoMetadata: Decodable {
+        var source: PhotoSource?
+    }
+
+    struct PhotoSource: Decodable {
+        /// One of `ACCOUNT`/`PROFILE`/`DOMAIN_PROFILE`/`CONTACT`/
+        /// `DOMAIN_CONTACT` per the People API's `Source.SourceType` enum —
+        /// kept as the raw `String` (not decoded into a Swift enum) since
+        /// `bestPhotoURLString(in:)` only ever compares it against the one
+        /// literal `"PROFILE"` it cares about, and an unrecognized future
+        /// value should fail that comparison harmlessly rather than fail
+        /// JSON decoding of the whole response.
+        var type: String?
     }
 }

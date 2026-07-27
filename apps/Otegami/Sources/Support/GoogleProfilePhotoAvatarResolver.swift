@@ -30,57 +30,79 @@ public protocol GmailAccessTokenProviding: Sendable {
 ///
 /// **Gmail アカウントが1つ以上あるユーザーだけがこの情報源の恩恵を受ける** —
 /// `tokenProvider.gmailAccountIds()`が空を返せば (Gmail アカウント無し、
-/// この端末のビルドに OAuth Client ID 未設定、等) 即座に`nil`。差出人ごとの
-/// People API 問い合わせ自体は `GooglePeopleAvatarClient`
-/// (`packages/OtegamiKit/Sources/GoogleOAuth/`) が担う — この型は「どの
-/// Gmail アカウントのどのトークンで試すか」の順序付け、ディスク/メモリの
-/// 2段キャッシュ、設定トグル、スコープ不足の記録だけを持つ。複数の Gmail
-/// アカウントがある場合、成功するまで順に試し、最初に見つかったもので確定
-/// する (`fetchFromGoogle`)。
+/// この端末のビルドに OAuth Client ID 未設定、等) 即座に`nil`。
 ///
-/// **スコープ不足の扱い**: 新スコープ (`contacts.other.readonly`,
-/// `GoogleOAuthEndpoints.scope`) 追加前に作成された既存 Gmail アカウントは、
-/// 再認証するまでこのスコープを持たず、People API は 401/403 を返す
-/// (`GooglePeopleAvatarClient`のドキュメントコメント参照)。そのアカウントの
-/// トークンは「このプロセスの生存中はスコープ不足」と`scopeInsufficientAccountIds`
-/// に記録し、以降の呼び出しでは People API に問い合わせずスキップする —
-/// 一覧をスクロールするたびに同じアカウントへ 401 を連打しないため。**再
-/// 認証を強制することはしない** — `AccountEditView`の案内からユーザー自身が
-/// 選んで再接続する (`docs/oauth-setup.md`参照)。
+/// **索引方式 (`otherContacts.search`の逐次問い合わせから変更)**: 差出人
+/// アドレスごとに People API へ問い合わせていた旧実装は (a)
+/// `otherContacts.search`が`sources`パラメータを持たず PROFILE 由来の写真
+/// (Gmail 自身が使っている情報源) を取得できない、(b) 保存済み連絡先
+/// (`otherContacts`に含まれない) をそもそもカバーできない、という2つの
+/// 欠落があった。この型は代わりに、Gmail アカウントごとに
+/// `GooglePeopleAvatarClient.fetchOtherContactsPhotoIndex(accessToken:)`
+/// (other contacts) と `.fetchConnectionsPhotoIndex(accessToken:)`
+/// (保存済み連絡先、要`contacts.readonly`スコープ) の2つの全件走査結果を
+/// マージした (メールアドレス → 写真 URL) の索引を1日1回程度構築し、
+/// メモリ/ディスクにキャッシュする (`ensureIndex(for:)`)。個々の差出人の
+/// 解決 (`resolveAvatarImageData`) はこの索引を引くだけで、People API への
+/// 追加のネットワーク問い合わせを伴わない — 一覧をスクロールするたびに
+/// 送信元アドレスの数だけ API を叩いていた旧実装と違い、索引の TTL
+/// (`indexTTL`) が切れるまでは何百通スクロールしても新規リクエストは0件。
+///
+/// **スコープ不足の扱い**: `otherContacts.readonly`/`contacts.readonly`
+/// (`GoogleOAuthEndpoints.scope`) いずれも、追加前に作成された既存 Gmail
+/// アカウントは再認証するまで持たず、People API はそれぞれ独立に 401/403
+/// を返しうる (`GooglePeopleAvatarClient`のドキュメントコメント参照)。
+/// **2つのスコープは別々に記録・スキップする**
+/// (`otherContactsScopeInsufficientAccountIds`/
+/// `connectionsScopeInsufficientAccountIds`) — 例えば
+/// `contacts.other.readonly`は既に許可済みだが`contacts.readonly`は未許可
+/// (このバッチでスコープを追加した直後によくある状態) というアカウントで
+/// も、許可済みの方の情報源だけは使い続けられる。**再認証を強制することは
+/// しない** — `AccountEditView`の案内からユーザー自身が選んで再接続する
+/// (`docs/oauth-setup.md`参照)。
 public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
     private let client: GooglePeopleAvatarClient
     private let tokenProvider: any GmailAccessTokenProviding
+
+    // MARK: - Per-address photo byte cache (2段: メモリ→ディスク)
 
     private var memoryCache: [String: Data?] = [:]
     private var memoryCacheTimestamps: [String: Date] = [:]
     private var inFlight: [String: Task<Data?, Never>] = [:]
     private let cacheDirectory: URL
 
-    /// プロセスの生存中だけ有効 (`AppEnvironment`は毎起動で作り直すので、
-    /// 次回起動時にはもう一度試す — 再認証したのに次回起動まで永久に
-    /// スキップされ続ける、ということは無い)。この型のドキュメントコメント
-    /// の「スコープ不足の扱い」参照。
-    ///
-    /// 実機バグ修正: これに加えて `AppEnvironment.reauthenticateGmailAccount`
-    /// が再認証成功時に `clearScopeInsufficientMemory(for:)` を呼び、この
-    /// アカウント ID の記憶を即座に消す — 元々は「次回起動まで残る」仕様
-    /// だったが、再認証した直後にまだ一覧を開いたままの画面がある場合、
-    /// アプリを再起動しない限り新しい写真が出ないのは体験として不自然
-    /// (再認証の成功メッセージと「まだ写真が出ない」が矛盾して見える)。
-    private var scopeInsufficientAccountIds: Set<String> = []
-
-    /// `otherContacts.search`のウォームアップ要求 (`GooglePeopleAvatarClient
-    /// .warmupSearchIndex(accessToken:)`のドキュメントコメント参照) を
-    /// 既に送ったアカウント ID の集合。プロセスの生存中、アカウントごとに
-    /// 一度だけ送れば十分 — 同じアカウントのトークンで毎回ウォームアップを
-    /// 送り直す必要はない。`scopeInsufficientAccountIds`と同じ理由で
-    /// プロセス寿命限定 (次回起動でまた一度だけ送り直す)。
-    private var warmedUpAccountIds: Set<String> = []
-
     /// Gravatar と同じ 7日 TTL (`GravatarAvatarResolver.ttl`のドキュメント
     /// コメントと同じ理由 — ユーザーが後から Google プロフィール写真を
-    /// 変更する可能性はどちら向きにもある)。
+    /// 変更する可能性はどちら向きにもある)。索引自体の鮮度は別途`indexTTL`
+    /// が管理するので、この TTL は「ダウンロード済みの画像バイト列を
+    /// いつまで使い回すか」の意味に限定される。
     private let ttl: TimeInterval = 7 * 24 * 60 * 60
+
+    // MARK: - Per-account index cache (アカウントごとの索引)
+
+    /// アカウント ID → 直近に構築した索引 + 構築時刻。プロセスの生存中
+    /// (`AppEnvironment`は毎起動で作り直す) と `indexTTL` 以内はメモリの
+    /// 値をそのまま返す — ディスクキャッシュ (`readIndexDiskCache`)
+    /// はプロセス再起動をまたいでこの鮮度を引き継ぐためのもの。
+    private var accountIndexState: [String: (index: [String: URL], fetchedAt: Date)] = [:]
+    private var indexFetchTasks: [String: Task<[String: URL]?, Never>] = [:]
+
+    /// 索引を「1日1回程度」構築し直す (プランの指示どおり)。写真バイト列
+    /// 自体の`ttl` (7日) より短いのは、索引の構築コスト (最大`maxPages`
+    /// ページの全件走査) が「その日のうちに新しく増えた other contacts /
+    /// 連絡先」を拾うにはこのくらいの頻度が妥当と判断したため。
+    private let indexTTL: TimeInterval = 24 * 60 * 60
+
+    /// プロセスの生存中だけ有効 — `otherContacts`側のスコープ不足の記録。
+    /// `AppEnvironment.reauthenticateGmailAccount`が再認証成功時に
+    /// `clearScopeInsufficientMemory(for:)` を呼び、このアカウント ID の
+    /// 記憶を索引キャッシュごと即座に消す — 再認証した直後にまだ一覧を
+    /// 開いたままの画面がある場合、アプリを再起動しない限り新しい写真が
+    /// 出ないのは体験として不自然なため。
+    private var otherContactsScopeInsufficientAccountIds: Set<String> = []
+    /// 上と同じ役割の、`connections` (保存済み連絡先、`contacts.readonly`)
+    /// 側のスコープ不足の記録。
+    private var connectionsScopeInsufficientAccountIds: Set<String> = []
 
     public init(
         tokenProvider: any GmailAccessTokenProviding,
@@ -90,24 +112,29 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         self.client = client
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        // 実機バグ修正: `v2` — 旧ディレクトリ (`AvatarCache/GoogleProfilePhoto`)
-        // には、ウォームアップ要求を送っていなかった旧実装が書いた
-        // `.notFound`の negative cache (7日 TTL, `ttl`) が残っている可能性が
-        // ある。ウォームアップ追加後は同じ差出人でも結果が変わりうるため、
-        // ディレクトリ名を変えて旧キャッシュを無条件に無効化する (世代が
-        // 上がるたびにここを更新する想定)。旧ディレクトリは掃除しない —
-        // 中身は`.jpg`/`.none`だけの数KB〜数十KB程度で、放置しても実害が
-        // 無い一方、ここで消す処理を書くと「他の実装がまだ旧パスを使って
-        // いないか」を毎回確認する負債になる。
-        cacheDirectory = base.appendingPathComponent("AvatarCache/GoogleProfilePhoto/v2", isDirectory: true)
+        // `v3`: `otherContacts.search`の逐次問い合わせから索引方式へ書き
+        // 換えた際に上げた世代。旧`v2`ディレクトリには (a) 旧`.search`
+        // ベースの negative cache (`.none`マーカー) と (b) この新実装とは
+        // 全く形式の異なるファイルが残っている可能性があり、無条件に
+        // 無効化する。旧ディレクトリは掃除しない — `v2`のドキュメント
+        // コメントと同じ理由 (実害の無いゴミより「他の実装がまだ旧パスを
+        // 使っていないか」を毎回確認する負債の方が高くつく)。
+        cacheDirectory = base.appendingPathComponent("AvatarCache/GoogleProfilePhoto/v3", isDirectory: true)
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
 
     /// `AppEnvironment.reauthenticateGmailAccount(_:)`が再認証成功直後に
-    /// 呼ぶ — `scopeInsufficientAccountIds`のドキュメントコメント参照。
-    /// 記録が無いアカウント ID を渡しても無害 (`Set.remove`は no-op)。
+    /// 呼ぶ。両方のスコープ不足記録を消すだけでなく、このアカウントの
+    /// 索引キャッシュ (メモリ・ディスク双方) も丸ごと破棄する — 再認証前に
+    /// 書き込まれた索引は (許可されていなかった方の情報源が) 欠落した
+    /// ままの可能性があり、`indexTTL`が切れるまで古い索引を使い続けて
+    /// しまうと、再認証してもすぐには新しい写真が反映されない。記録が
+    /// 無いアカウント ID を渡しても無害 (`Set.remove`/辞書の削除は no-op)。
     public func clearScopeInsufficientMemory(for accountId: String) {
-        scopeInsufficientAccountIds.remove(accountId)
+        otherContactsScopeInsufficientAccountIds.remove(accountId)
+        connectionsScopeInsufficientAccountIds.remove(accountId)
+        accountIndexState[accountId] = nil
+        deleteIndexDiskCache(accountId: accountId)
     }
 
     public func resolveAvatarImageData(displayName: String?, address: String) async -> Data? {
@@ -131,7 +158,7 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         return result
     }
 
-    // MARK: - Cache
+    // MARK: - Per-address photo byte cache
 
     private func loadAndCache(key: String) async -> Data? {
         if let (data, cachedAt) = readDiskCache(key: key), Date().timeIntervalSince(cachedAt) < ttl {
@@ -139,8 +166,14 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
             memoryCacheTimestamps[key] = cachedAt
             return data
         }
-        switch await fetchFromGoogle(address: key) {
-        case .found(let data):
+        switch await lookupPhotoURL(address: key) {
+        case .found(let photoURL):
+            guard let data = await client.downloadPhoto(url: photoURL) else {
+                // ダウンロード自体の失敗 (ネットワーク/空データ) —
+                // 確定的な「無かった」ではないので negative cache に
+                // 書かない (次回また試す)。
+                return nil
+            }
             memoryCache[key] = data
             memoryCacheTimestamps[key] = Date()
             writeDiskCache(key: key, data: data)
@@ -150,67 +183,159 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
             memoryCacheTimestamps[key] = Date()
             writeDiskCache(key: key, data: nil)
             return nil
-        case .unavailable:
-            // Gravatar/企業ロゴと同じ理由: ネットワークエラー・Gmail
-            // アカウント無し・全アカウントがスコープ不足、いずれも
-            // 確定的な「無かった」ではないので negative cache に書かない。
+        case .indeterminate:
+            // Gravatar/企業ロゴと同じ理由: Gmail アカウント無し・全
+            // アカウントの索引が構築できていない (ネットワークエラー・
+            // 全スコープ不足等)、いずれも確定的な「無かった」ではないので
+            // negative cache に書かない。
             return nil
         }
     }
 
-    private enum OverallResult {
-        case found(Data)
+    private enum LookupResult {
+        case found(URL)
         case notFound
-        case unavailable
+        case indeterminate
     }
 
-    /// `tokenProvider.gmailAccountIds()`の順に (スコープ不足として記録済み
-    /// のものはスキップして) 試し、最初に写真が見つかったアカウントで確定
-    /// する。**1つも定義できるアカウントが無い場合と、試した全アカウントが
-    /// 401/403 やネットワークエラーだった場合は`.unavailable`** — 少なくとも
-    /// 1アカウントが「有効なトークンで問い合わせて、該当する人物が見つから
-    /// なかった」という確定的な結果を返した場合だけ`.notFound`にする
-    /// (`sawDefinitiveAttempt`)。
-    private func fetchFromGoogle(address: String) async -> OverallResult {
+    /// `tokenProvider.gmailAccountIds()`の順に、各アカウントの索引
+    /// (`ensureIndex(for:)`) を引いて`address`を探す。**索引が構築できた
+    /// (=`ensureIndex`が`nil`以外を返した) アカウントが1つ以上あり、その
+    /// どの索引にも`address`が無い場合だけ`.notFound`** — 索引が1つも
+    /// 構築できなかった場合 (Gmail アカウント無し、または試した全アカウント
+    /// が索引未構築) は`.indeterminate`にする (`sawDefinitiveIndex`)。
+    private func lookupPhotoURL(address: String) async -> LookupResult {
         let accountIds = await tokenProvider.gmailAccountIds()
-        guard !accountIds.isEmpty else { return .unavailable }
+        guard !accountIds.isEmpty else { return .indeterminate }
 
-        var sawDefinitiveAttempt = false
+        var sawDefinitiveIndex = false
         for accountId in accountIds {
-            if scopeInsufficientAccountIds.contains(accountId) { continue }
-            guard let accessToken = try? await tokenProvider.accessToken(for: accountId) else { continue }
+            guard let index = await ensureIndex(for: accountId) else { continue }
+            sawDefinitiveIndex = true
+            if let url = index[address] { return .found(url) }
+        }
+        return sawDefinitiveIndex ? .notFound : .indeterminate
+    }
 
-            if !warmedUpAccountIds.contains(accountId) {
-                // 順序が重要: ウォームアップの結果は無視し、成功しても
-                // 失敗しても必ず本検索へ進む (`GooglePeopleAvatarClient
-                // .warmupSearchIndex(accessToken:)`のドキュメントコメント
-                // 参照)。`warmedUpAccountIds`への登録もここで行う —
-                // ウォームアップ自体が失敗しても毎回送り直す意味は無い
-                // (インデックスの温まりは "送ったこと" 自体が効くのであって、
-                // 応答の成否とは無関係)。
-                warmedUpAccountIds.insert(accountId)
-                await client.warmupSearchIndex(accessToken: accessToken)
-            }
+    // MARK: - Per-account index cache
 
-            switch await client.lookupPhoto(accessToken: accessToken, address: address) {
-            case .found(let photoURL):
-                if let data = await client.downloadPhoto(url: photoURL) {
-                    return .found(data)
-                }
-                // ダウンロード自体の失敗 (ネットワーク/空データ) — 同じ
-                // 写真 URL を他のアカウントで試しても結果は変わらないはず
-                // だが、少なくとも「見つからなかった」と負でキャッシュする
-                // 根拠にもならない。次のアカウントがあれば試す。
-            case .notFound:
-                sawDefinitiveAttempt = true
+    /// このアカウントの現在の索引を返す。メモリ内キャッシュが`indexTTL`
+    /// 以内ならそれを返し、そうでなければディスクキャッシュ→ネットワーク
+    /// の順に試して再構築する (`fetchAndStoreIndex(accountId:)`)。同じ
+    /// アカウントに対する同時呼び出しは1本のネットワーク往復にまとめる
+    /// (`indexFetchTasks`、`resolveAvatarImageData`の`inFlight`と同じ
+    /// パターン)。`nil` = このアカウントの索引がまだ一度も構築できて
+    /// いない (index未構築、`lookupPhotoURL`側で`.indeterminate`扱い)。
+    private func ensureIndex(for accountId: String) async -> [String: URL]? {
+        if let state = accountIndexState[accountId], Date().timeIntervalSince(state.fetchedAt) < indexTTL {
+            return state.index
+        }
+        if let existing = indexFetchTasks[accountId] { return await existing.value }
+
+        let task = Task<[String: URL]?, Never> { [weak self] in
+            guard let self else { return nil }
+            return await self.fetchAndStoreIndex(accountId: accountId)
+        }
+        indexFetchTasks[accountId] = task
+        let result = await task.value
+        indexFetchTasks[accountId] = nil
+        return result
+    }
+
+    /// ディスクキャッシュが`indexTTL`以内ならそれをメモリへ昇格して返す。
+    /// それ以外はアクセストークンを取得し、`otherContacts`/`connections`
+    /// の2つの索引取得を (既にスコープ不足と分かっている方はスキップして)
+    /// 試し、成功した方だけをマージする。**どちらも失敗 (スコープ不足
+    /// または一時的なエラー) だった場合は、既存のメモリ内索引 (stale でも)
+    /// をそのまま返す** — 新しい索引が1件も得られなかったからといって
+    /// 古い索引を`nil`で上書きすると、一時的なネットワーク不調のたびに
+    /// それまで表示できていた写真まで消えてしまう。
+    private func fetchAndStoreIndex(accountId: String) async -> [String: URL]? {
+        if let disk = readIndexDiskCache(accountId: accountId), Date().timeIntervalSince(disk.fetchedAt) < indexTTL {
+            accountIndexState[accountId] = disk
+            return disk.index
+        }
+
+        guard let accessToken = try? await tokenProvider.accessToken(for: accountId) else {
+            return accountIndexState[accountId]?.index
+        }
+
+        var merged: [String: URL] = [:]
+        var gotAnySuccess = false
+
+        if !otherContactsScopeInsufficientAccountIds.contains(accountId) {
+            switch await client.fetchOtherContactsPhotoIndex(accessToken: accessToken) {
+            case .success(let index):
+                merged.merge(index) { _, new in new }
+                gotAnySuccess = true
             case .insufficientScope:
-                scopeInsufficientAccountIds.insert(accountId)
+                otherContactsScopeInsufficientAccountIds.insert(accountId)
             case .unavailable:
                 break
             }
         }
-        return sawDefinitiveAttempt ? .notFound : .unavailable
+
+        if !connectionsScopeInsufficientAccountIds.contains(accountId) {
+            switch await client.fetchConnectionsPhotoIndex(accessToken: accessToken) {
+            case .success(let index):
+                // 保存済み連絡先 (`connections`) はユーザー本人が明示的に
+                // 保存した情報なので、同じアドレスが`otherContacts`側にも
+                // (別の写真で) 出ていた場合はこちらを優先する。
+                merged.merge(index) { _, new in new }
+                gotAnySuccess = true
+            case .insufficientScope:
+                connectionsScopeInsufficientAccountIds.insert(accountId)
+            case .unavailable:
+                break
+            }
+        }
+
+        guard gotAnySuccess else {
+            return accountIndexState[accountId]?.index
+        }
+
+        let fetchedAt = Date()
+        accountIndexState[accountId] = (merged, fetchedAt)
+        writeIndexDiskCache(accountId: accountId, index: merged, fetchedAt: fetchedAt)
+        return merged
     }
+
+    // MARK: - Per-account index disk cache
+
+    private struct IndexCacheFile: Codable {
+        var fetchedAt: Date
+        /// `[String: URL]`ではなく`[String: String]`で保存する —
+        /// `URL`の`Codable`実装は将来 Foundation 側の表現が変わっても
+        /// 互換性を保証しない一方、文字列としてのシリアライズはこの型が
+        /// 完全に制御できる (読み込み時に`URL(string:)`で失敗しても
+        /// その1エントリだけ無視すればよく、ファイル全体のデコード失敗に
+        /// しない)。
+        var index: [String: String]
+    }
+
+    private func readIndexDiskCache(accountId: String) -> (index: [String: URL], fetchedAt: Date)? {
+        guard let data = try? Data(contentsOf: indexFileURL(for: accountId)),
+              let file = try? JSONDecoder().decode(IndexCacheFile.self, from: data)
+        else { return nil }
+        let index = file.index.compactMapValues { URL(string: $0) }
+        return (index, file.fetchedAt)
+    }
+
+    private func writeIndexDiskCache(accountId: String, index: [String: URL], fetchedAt: Date) {
+        let file = IndexCacheFile(fetchedAt: fetchedAt, index: index.mapValues(\.absoluteString))
+        guard let data = try? JSONEncoder().encode(file) else { return }
+        try? data.write(to: indexFileURL(for: accountId))
+    }
+
+    private func deleteIndexDiskCache(accountId: String) {
+        try? FileManager.default.removeItem(at: indexFileURL(for: accountId))
+    }
+
+    private func indexFileURL(for accountId: String) -> URL {
+        cacheDirectory.appendingPathComponent(AvatarCacheKey.sha256Hex(accountId) + ".index.json")
+    }
+
+    // MARK: - Per-address photo byte disk cache
 
     private func readDiskCache(key: String) -> (data: Data?, cachedAt: Date)? {
         let fileManager = FileManager.default
