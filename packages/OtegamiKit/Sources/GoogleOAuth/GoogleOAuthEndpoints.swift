@@ -95,7 +95,17 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
     /// (`response_type=code`, `code_challenge`/`code_challenge_method=S256`,
     /// `state` for CSRF protection, `access_type=offline` + `prompt=consent`
     /// so Google actually issues a `refresh_token` — by default a repeat
-    /// consent for the same client/scope combination silently omits it).
+    /// consent for the same client/scope combination silently omits it —
+    /// and, since `prompt=consent` forces the consent screen every time,
+    /// `prompt=consent` alone is also what makes reauthenticating an
+    /// existing account (`AppEnvironment.reauthenticateGmailAccount`) able
+    /// to pick up a scope that's been added to `scope` since the account
+    /// was first connected, rather than Google silently reusing the old
+    /// grant). `include_granted_scopes=true` is Google's documented
+    /// incremental-authorization flag — harmless here since `scope` is
+    /// always the full set rather than an incremental subset, but it's the
+    /// recommended default for any request that might run against an
+    /// account with a pre-existing grant, so it stays on.
     func authorizationURL(pkce: PKCE, state: String) -> URL {
         var components = URLComponents(url: authorizationEndpoint, resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -108,6 +118,7 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "access_type", value: "offline"),
             URLQueryItem(name: "prompt", value: "consent"),
+            URLQueryItem(name: "include_granted_scopes", value: "true"),
         ]
         return components.url!
     }

@@ -42,6 +42,7 @@ struct GoogleOAuthEndpointsTests {
         #expect(value("state") == "state-value")
         #expect(value("access_type") == "offline")
         #expect(value("prompt") == "consent")
+        #expect(value("include_granted_scopes") == "true")
         #expect(value("redirect_uri") == endpoints.redirectURI)
     }
 }
