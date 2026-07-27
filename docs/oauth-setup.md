@@ -125,6 +125,19 @@ URL スキームを宣言する必要がない (`ASWebAuthenticationSessionRunne
 連打することが無くなり、`.search`が必要としていた「空クエリでの事前
 ウォームアップ」リクエストも (`.list`には無い要件のため) 不要になった。
 
+**Task #42 追記「自分のプロフィール写真」**: 自分のアドレス (複数
+エイリアスがあれば全部) は `otherContacts`/`connections` どちらにも
+出てこない — `GooglePeopleAvatarClient.fetchSelfPhotoIndexOutcome
+(accessToken:)` が `people/me?personFields=emailAddresses,photos` を
+叩いて別途カバーする。**新規スコープは追加していない** — People API
+の公式リファレンス (developers.google.com/people/api/rest/v1/people/get)
+で `people.get` が `contacts.other.readonly` を受理することを確認済み。
+実 Google での E2E は不可のため「実際に `photos` フィールドが返るか」
+までは実機未確認 — 「アカウント編集」→「アバター診断」画面の
+「people/me (自分のプロフィール写真)」行の HTTP ステータスで確認できる
+(403 ならスコープ不足の可能性があり、その場合は profile 系スコープの
+追加要否を別途検討する)。
+
 **既存の Gmail アカウントは、再接続 (「アカウント編集」→「再認証」) する
 までどちらのスコープも持たない**。2つのスコープは独立に判定され、
 People API がスコープ不足で 401/403 を返す情報源だけを静かにスキップする
