@@ -102,22 +102,40 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
     /// Builds the full authorization-request URL: `authorizationEndpoint`
     /// plus every query parameter the Authorization Code + PKCE flow needs
     /// (`response_type=code`, `code_challenge`/`code_challenge_method=S256`,
-    /// `state` for CSRF protection, `access_type=offline` + `prompt=consent`
-    /// so Google actually issues a `refresh_token` — by default a repeat
-    /// consent for the same client/scope combination silently omits it —
-    /// and, since `prompt=consent` forces the consent screen every time,
-    /// `prompt=consent` alone is also what makes reauthenticating an
-    /// existing account (`AppEnvironment.reauthenticateGmailAccount`) able
-    /// to pick up a scope that's been added to `scope` since the account
-    /// was first connected, rather than Google silently reusing the old
-    /// grant). `include_granted_scopes=true` is Google's documented
-    /// incremental-authorization flag — harmless here since `scope` is
-    /// always the full set rather than an incremental subset, but it's the
-    /// recommended default for any request that might run against an
-    /// account with a pre-existing grant, so it stays on.
-    func authorizationURL(pkce: PKCE, state: String) -> URL {
+    /// `state` for CSRF protection, `access_type=offline` so Google issues a
+    /// `refresh_token`, and `include_granted_scopes=true` — Google's
+    /// documented incremental-authorization flag, harmless here since
+    /// `scope` is always the full set rather than an incremental subset, but
+    /// the recommended default for any request that might run against an
+    /// account with a pre-existing grant).
+    ///
+    /// `promptConsent` controls whether `prompt=consent` is added:
+    ///
+    /// - `true` (the default, and always what a brand-new account uses,
+    ///   `AppEnvironment.requestGmailAuthorization`/`createGmailAccount`)
+    ///   forces the consent screen every time — required for a first-time
+    ///   grant (by default a repeat consent for the same client/scope
+    ///   combination silently omits the `refresh_token`, so the very first
+    ///   exchange must force it) and for `reauthenticateGmailAccount`'s
+    ///   "the stored grant doesn't cover everything `scope` asks for"
+    ///   branch, where forcing the screen is also what lets the user
+    ///   actually grant the new scope.
+    /// - `false` omits `prompt` entirely — Google then reuses whatever
+    ///   consent the user already gave (silently returning a fresh code
+    ///   with no screen at all, no "アプリは Google で確認されていません"
+    ///   warning either) when it can. `reauthenticateGmailAccount` passes
+    ///   this once it has confirmed (`isSatisfied(byGrantedScope:)`) the
+    ///   account's last-known granted scope already covers `scope` — this
+    ///   is the whole point of the "毎回警告が出るのがつらい" fix: a token
+    ///   refresh from an already-fully-scoped account doesn't need the
+    ///   user to click through anything again. A token response obtained
+    ///   this way may omit `refresh_token` (Google's documented behavior
+    ///   for a prompt-less repeat grant) — `TokenStore.storeInitialTokens`
+    ///   already leaves the previously-stored refresh token untouched in
+    ///   that case, so this doesn't lose the account's ability to sync.
+    func authorizationURL(pkce: PKCE, state: String, promptConsent: Bool = true) -> URL {
         var components = URLComponents(url: authorizationEndpoint, resolvingAgainstBaseURL: false)!
-        components.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "client_id", value: clientId),
             URLQueryItem(name: "redirect_uri", value: redirectURI),
             URLQueryItem(name: "response_type", value: "code"),
@@ -126,10 +144,33 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "access_type", value: "offline"),
-            URLQueryItem(name: "prompt", value: "consent"),
             URLQueryItem(name: "include_granted_scopes", value: "true"),
         ]
+        if promptConsent {
+            queryItems.append(URLQueryItem(name: "prompt", value: "consent"))
+        }
+        components.queryItems = queryItems
         return components.url!
+    }
+
+    /// Whether `grantedScope` — the scope string Google actually granted a
+    /// previous token, as returned by `TokenStore.diagnosticScope(for:)` —
+    /// already covers everything `self.scope` currently requests. `nil`
+    /// (no cached/queryable grant, or the diagnostic lookup itself failed)
+    /// is always "not satisfied" — the safe default is to fall back to
+    /// forcing the consent screen rather than silently skipping it when
+    /// this can't actually be confirmed.
+    ///
+    /// Compared as sets of whitespace-separated scope tokens rather than
+    /// string equality: Google isn't guaranteed to echo requested scopes
+    /// back in the same order, and a grant that happens to be a superset of
+    /// `scope` (e.g. one that predates a scope later being *removed* from
+    /// this build) still counts as satisfied.
+    public func isSatisfied(byGrantedScope grantedScope: String?) -> Bool {
+        guard let grantedScope else { return false }
+        let required = Set(scope.split(separator: " "))
+        let granted = Set(grantedScope.split(separator: " "))
+        return required.isSubset(of: granted)
     }
 
     /// The scheme `ASWebAuthenticationSession`/`AuthorizationSessionRunning`

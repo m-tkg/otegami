@@ -102,6 +102,57 @@ struct GoogleOAuthClientTests {
         }
     }
 
+    /// Task #47: `AppEnvironment.reauthenticateGmailAccount` passes
+    /// `promptConsent: false` once it's confirmed the account's granted
+    /// scope already covers everything requested — this must actually
+    /// reach the authorization URL the browser sheet is presented with.
+    @Test
+    func requestAuthorizationForwardsPromptConsentFalseToTheAuthorizationURL() async throws {
+        let callback = URL(string: "\(endpoints.redirectURI)?code=auth-code-123&state=fixed-state")!
+        let flow = FakeAuthorizationFlow(outcome: .callback(callback))
+        StubURLProtocol.handler = { [self] request in
+            jsonResponse(request.url!, status: 200, body: [
+                "access_token": "access-1",
+                "refresh_token": "refresh-1",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            ])
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let client = makeClient(sessionRunner: flow)
+        _ = try await client.requestAuthorization(promptConsent: false)
+
+        let requestedURL = try #require(flow.lastAuthorizationURL)
+        let items = try #require(URLComponents(url: requestedURL, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(items.first(where: { $0.name == "prompt" }) == nil)
+    }
+
+    /// The default (used by `AppEnvironment.createGmailAccount`'s brand-new
+    /// account flow and by `reauthenticateGmailAccount`'s
+    /// insufficient-scope fallback) still forces the consent prompt.
+    @Test
+    func requestAuthorizationDefaultsToForcingThePromptOnTheAuthorizationURL() async throws {
+        let callback = URL(string: "\(endpoints.redirectURI)?code=auth-code-123&state=fixed-state")!
+        let flow = FakeAuthorizationFlow(outcome: .callback(callback))
+        StubURLProtocol.handler = { [self] request in
+            jsonResponse(request.url!, status: 200, body: [
+                "access_token": "access-1",
+                "refresh_token": "refresh-1",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+            ])
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let client = makeClient(sessionRunner: flow)
+        _ = try await client.requestAuthorization()
+
+        let requestedURL = try #require(flow.lastAuthorizationURL)
+        let items = try #require(URLComponents(url: requestedURL, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(items.first(where: { $0.name == "prompt" })?.value == "consent")
+    }
+
     // MARK: - Refresh
 
     @Test

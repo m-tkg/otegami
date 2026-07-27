@@ -154,6 +154,11 @@ final class AppEnvironment {
         // doc comment for why this needs to run before any `HTMLMessageView`
         // is ever constructed, not just before any `@AppStorage` read.
         UserDefaults.registerOtegamiImageDefaults()
+        // Task #45「ダークモードで文字が読めない」— see
+        // `HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey`'s doc
+        // comment for why this needs the same "before any `HTMLMessageView`
+        // is constructed" ordering as the image defaults registration above.
+        UserDefaults.registerOtegamiHTMLDisplayDefaults()
         // F (実機フィードバック第3弾): one-time, idempotent cleanup of the
         // now-removed in-app "表示言語" setting's `AppleLanguages` override
         // — see `LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`'s
@@ -1140,15 +1145,19 @@ final class AppEnvironment {
     /// Runs the interactive Authorization Code + PKCE flow, then looks up
     /// the signed-in account's email (see `GoogleOAuthEndpoints
     /// .userInfoEndpoint`'s doc comment for why that second round trip is
-    /// needed). Used by `GmailAccountSetupView` both for a brand-new
-    /// account and — with the returned tokens simply re-stored under an
-    /// *existing* account id — for `reauthenticateGmailAccount(_:)` below.
+    /// needed). Used by `GmailAccountSetupView` for a brand-new account
+    /// (always `promptConsent: true`, the default — see
+    /// `GoogleOAuthEndpoints.authorizationURL(pkce:state:promptConsent:)`'s
+    /// doc comment for why a first-time grant needs the consent screen
+    /// forced) and — with the returned tokens simply re-stored under an
+    /// *existing* account id — by `reauthenticateGmailAccount(_:)` below,
+    /// which decides `promptConsent` for itself.
     /// Throws `AuthResolutionError.oauthUnavailable` if this build has no
     /// Client ID (shouldn't be reachable: the Gmail button is disabled in
     /// that case).
-    func requestGmailAuthorization() async throws -> (email: String, tokens: GoogleOAuthTokens) {
+    func requestGmailAuthorization(promptConsent: Bool = true) async throws -> (email: String, tokens: GoogleOAuthTokens) {
         guard let googleOAuthClient else { throw AuthResolutionError.oauthUnavailable }
-        let tokens = try await googleOAuthClient.requestAuthorization()
+        let tokens = try await googleOAuthClient.requestAuthorization(promptConsent: promptConsent)
         let email = try await googleOAuthClient.fetchUserEmail(accessToken: tokens.accessToken)
         return (email, tokens)
     }
@@ -1200,14 +1209,37 @@ final class AppEnvironment {
     /// (`AccountsSettingsView`'s "再認証" button) and clears its
     /// `needsReauth` flag on success. Deliberately does *not* verify the
     /// re-authenticated account is the same Google account as before —
-    /// Google's consent screen always shows the account picker, so the
-    /// user could pick a different one; that's treated as "the user's
-    /// explicit choice", not an error to guard against here (a mismatch
-    /// would just start delivering a different inbox's mail, which is
-    /// immediately obvious rather than a silent data-integrity problem).
+    /// Google's consent screen (when it's shown at all — see below) always
+    /// shows the account picker, so the user could pick a different one;
+    /// that's treated as "the user's explicit choice", not an error to
+    /// guard against here (a mismatch would just start delivering a
+    /// different inbox's mail, which is immediately obvious rather than a
+    /// silent data-integrity problem).
+    ///
+    /// Task #47 (「毎回gmailアカウント追加時に警告のようなものが出るのが
+    /// つらい」): before requesting authorization, checks whether the
+    /// account's last-known granted scope (`TokenStore.diagnosticScope(for:)`,
+    /// the same forced-refresh lookup `AccountEditView`'s「権限の診断」uses)
+    /// already covers everything this build's `scope` asks for
+    /// (`GoogleOAuthEndpoints.isSatisfied(byGrantedScope:)`). If so, the
+    /// authorization request omits `prompt=consent` entirely — Google
+    /// silently reissues a code for the existing grant with no screen and
+    /// no "アプリは確認されていません" warning, so a routine token refresh
+    /// (the common case: nothing about `scope` changed since the account
+    /// was last connected) is a single tap with no consent screen at all.
+    /// Only when the stored scope is missing, stale, or genuinely
+    /// insufficient (a new scope was added to `scope` since this account
+    /// last connected, or the diagnostic lookup itself failed) does this
+    /// fall back to forcing the consent screen, the same as before this
+    /// fix — see `GoogleOAuthEndpoints.authorizationURL(pkce:state:promptConsent:)`'s
+    /// doc comment for the full reasoning.
     func reauthenticateGmailAccount(_ account: AccountRecord) async throws {
-        guard let tokenStore else { throw AuthResolutionError.oauthUnavailable }
-        let (_, tokens) = try await requestGmailAuthorization()
+        guard let tokenStore, let endpoints = GoogleOAuthConfig.endpoints else {
+            throw AuthResolutionError.oauthUnavailable
+        }
+        let grantedScope = try? await tokenStore.diagnosticScope(for: account.id)
+        let promptConsent = !endpoints.isSatisfied(byGrantedScope: grantedScope)
+        let (_, tokens) = try await requestGmailAuthorization(promptConsent: promptConsent)
         try await tokenStore.storeInitialTokens(tokens, accountId: account.id)
         await setNeedsReauth(false, for: account)
         // 実機バグ修正: `GoogleProfilePhotoAvatarResolver.scopeInsufficientAccountIds`

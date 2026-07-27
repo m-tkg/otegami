@@ -35,16 +35,18 @@ public actor GoogleOAuthClient: GoogleTokenRefreshing {
         self.now = now
     }
 
-    /// Runs the full interactive flow: presents the consent screen, waits
-    /// for the redirect, and exchanges the resulting code for tokens.
-    /// Throws `GoogleOAuthError.userCancelled` if the user dismisses the
-    /// sheet, `.stateMismatch`/`.missingAuthorizationCode`/`.authorizationDenied`
+    /// Runs the full interactive flow: presents the consent screen (unless
+    /// `promptConsent` is `false` — see `GoogleOAuthEndpoints
+    /// .authorizationURL(pkce:state:promptConsent:)`'s doc comment for when
+    /// that's safe), waits for the redirect, and exchanges the resulting
+    /// code for tokens. Throws `GoogleOAuthError.userCancelled` if the user
+    /// dismisses the sheet, `.stateMismatch`/`.missingAuthorizationCode`/`.authorizationDenied`
     /// for a malformed or rejected callback, or a token-exchange error (see
     /// `exchangeCode(_:verifier:)`).
-    public func requestAuthorization() async throws -> GoogleOAuthTokens {
+    public func requestAuthorization(promptConsent: Bool = true) async throws -> GoogleOAuthTokens {
         let pkce = pkceGenerator()
         let state = stateGenerator()
-        let url = endpoints.authorizationURL(pkce: pkce, state: state)
+        let url = endpoints.authorizationURL(pkce: pkce, state: state, promptConsent: promptConsent)
         let callbackURL = try await sessionRunner.run(
             authorizationURL: url,
             callbackURLScheme: endpoints.callbackURLScheme

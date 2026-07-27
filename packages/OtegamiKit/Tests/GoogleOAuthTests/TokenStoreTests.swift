@@ -23,6 +23,36 @@ struct TokenStoreTests {
         #expect(keychain.currentValue(accountId: accountId) == "refresh-1")
     }
 
+    /// Task #47 (「毎回警告が出るのがつらい」): a `reauthenticateGmailAccount`
+    /// run with `promptConsent: false` (the account's granted scope already
+    /// covered everything requested) can get back a token response with no
+    /// `refresh_token` at all — Google's documented behavior for a
+    /// prompt-less repeat grant. This must not wipe the refresh token this
+    /// account already had stored from a previous, full authorization —
+    /// only a response that *does* include one should ever overwrite the
+    /// stored value (see the sibling
+    /// `accessTokenPersistsARotatedRefreshTokenWhenGoogleReturnsOne` test
+    /// for the "does" half of that, in `refreshAndCache`).
+    @Test
+    func storeInitialTokensPreservesTheExistingRefreshTokenWhenTheResponseOmitsOne() async throws {
+        let refresher = FakeTokenRefresher { _ in fatalError("refresh should not be called") }
+        let keychain = FakeRefreshTokenStore()
+        keychain.seed("original-refresh", accountId: accountId)
+        let store = TokenStore(refresher: refresher, refreshTokenStore: keychain, now: { self.epoch })
+
+        try await store.storeInitialTokens(
+            GoogleOAuthTokens(accessToken: "access-from-silent-reauth", refreshToken: nil, expiresAt: epoch.addingTimeInterval(3600)),
+            accountId: accountId
+        )
+
+        #expect(try await store.accessToken(for: accountId) == "access-from-silent-reauth")
+        #expect(keychain.currentValue(accountId: accountId) == "original-refresh")
+        // The absence of a refresh token in the response must not even
+        // trigger a Keychain write — `write(_:accountId:)` is skipped
+        // entirely, not called with the old value re-supplied.
+        #expect(keychain.writeCount == 0)
+    }
+
     @Test
     func accessTokenRefreshesWhenNoTokenIsCachedYet() async throws {
         let refresher = FakeTokenRefresher { refreshToken in
