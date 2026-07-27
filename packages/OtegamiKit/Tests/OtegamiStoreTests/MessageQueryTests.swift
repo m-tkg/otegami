@@ -183,6 +183,63 @@ struct MessageQueryTests {
         }
         #expect(afterHiding == 0)
     }
+
+    // MARK: - Background body prefetch (launch/foreground)
+
+    @Test("unfetchedUnifiedInboxCandidates returns only notFetched messages across accounts' inboxes, newest first, up to limit")
+    func unfetchedUnifiedInboxCandidatesFiltersAndOrders() throws {
+        let database = try AppDatabase.makeInMemory()
+        let account1 = AccountRecord(
+            displayName: "A1", email: "a1@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "a1@x.test"
+        )
+        let account2 = AccountRecord(
+            displayName: "A2", email: "a2@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "a2@x.test"
+        )
+        try database.dbWriter.write { db in
+            try account1.insert(db)
+            try account2.insert(db)
+        }
+        let (inbox1, archive1, inbox2) = try database.dbWriter.write { db -> (Int64, Int64, Int64) in
+            var i1 = MailboxRecord(accountId: account1.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            i1 = try i1.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var a1 = MailboxRecord(accountId: account1.id, path: "Archive", displayPath: "Archive", role: .archive)
+            a1 = try a1.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var i2 = MailboxRecord(accountId: account2.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            i2 = try i2.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return (i1.id!, a1.id!, i2.id!)
+        }
+
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try database.dbWriter.write { db in
+            // account1 inbox: notFetched, oldest of the notFetched set.
+            var m1 = MessageRecord(mailboxId: inbox1, uid: 1, subject: "a1-notfetched", internalDate: base)
+            try m1.insert(db)
+            // account1 inbox: already fetched — must be excluded.
+            var m2 = MessageRecord(mailboxId: inbox1, uid: 2, subject: "a1-fetched", internalDate: base.addingTimeInterval(7200), bodyState: .fetched)
+            try m2.insert(db)
+            // account1 archive (non-inbox role): must be excluded regardless of bodyState.
+            var m3 = MessageRecord(mailboxId: archive1, uid: 1, subject: "a1-archive", internalDate: base.addingTimeInterval(9000))
+            try m3.insert(db)
+            // account2 inbox: notFetched, newest overall.
+            var m4 = MessageRecord(mailboxId: inbox2, uid: 1, subject: "a2-notfetched", internalDate: base.addingTimeInterval(3600))
+            try m4.insert(db)
+        }
+
+        let candidates = try database.dbWriter.read { db in
+            try MessageQuery.unfetchedUnifiedInboxCandidates(accountIds: [account1.id, account2.id], limit: 10, db: db)
+        }
+        #expect(candidates.map(\.message.subject) == ["a2-notfetched", "a1-notfetched"])
+        #expect(candidates.allSatisfy { $0.message.bodyState == .notFetched })
+        #expect(Set(candidates.map(\.accountId)) == [account1.id, account2.id])
+        #expect(candidates.first { $0.accountId == account1.id }?.mailboxPath == "INBOX")
+
+        let limited = try database.dbWriter.read { db in
+            try MessageQuery.unfetchedUnifiedInboxCandidates(accountIds: [account1.id, account2.id], limit: 1, db: db)
+        }
+        #expect(limited.map(\.message.subject) == ["a2-notfetched"])
+    }
 }
 
 @Suite("MailboxQuery")
