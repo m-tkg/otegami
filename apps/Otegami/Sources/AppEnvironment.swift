@@ -156,7 +156,8 @@ final class AppEnvironment {
         // listed in `SenderAvatar`'s documented priority order — see
         // `CompositeAvatarImageResolver`'s doc comment.
         self.avatarImageResolver = CompositeAvatarImageResolver(sources: [
-            ContactPhotoResolver()
+            ContactPhotoResolver(),
+            GravatarAvatarResolver()
         ])
 
         let database: AppDatabase

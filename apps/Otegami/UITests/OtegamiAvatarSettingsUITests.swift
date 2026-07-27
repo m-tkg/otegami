@@ -1,7 +1,8 @@
 import XCTest
 
-/// アバター強化バッチ フェーズ1: 「連絡先の写真を表示」トグルが設定 →
-/// 「メール一覧」に実際に現れ、操作できることを確認する軽量な検証。
+/// アバター強化バッチ フェーズ1/2: 「連絡先の写真を表示」「Gravatar の
+/// 画像を表示」の両トグルが設定 →「メール一覧」に実際に現れ、操作できる
+/// ことを確認する軽量な検証。
 ///
 /// アカウント追加・dev mailstack 同期を必要とする `OtegamiM1VerificationUITests`
 /// 等とは違い、この画面はアカウントが1件も無い状態でも到達できる
@@ -13,7 +14,7 @@ final class OtegamiAvatarSettingsUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testContactPhotoToggleAppearsInMailListSettings() throws {
+    func testAvatarSourceTogglesAppearInMailListSettings() throws {
         let app = XCUIApplication()
         app.launch()
         // 完全にアカウント0件の初回起動直後は、SwiftUI の最初のフレームが
@@ -38,13 +39,22 @@ final class OtegamiAvatarSettingsUITests: XCTestCase {
         // いるだけで操作できないトグルではないことの最低限の裏付け。
         contactPhotoToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
+        // アバター強化バッチ フェーズ2「Gravatar」。
+        let gravatarToggle = app.switches["settings.list.showGravatarToggle"]
+        XCTAssertTrue(gravatarToggle.waitForExistence(timeout: 5), "「Gravatar の画像を表示」トグルが見つからなかった")
+        XCTAssertEqual(gravatarToggle.value as? String, "1", "既定で ON になっているはず")
+        gravatarToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+
         // M11「エラーTextFieldの.valueがすぐには追従しない」系の既知の挙動
         // (`.claude/skills/verify/SKILL.md`) と同種の理由で、タップ直後の
         // 厳密な値読み取りに固執せず、アプリが応答し続けていること
         // (クラッシュしていないこと) を確認する程度に留める。
         XCTAssertTrue(app.state == .runningForeground, "トグル操作後もアプリが生きている")
 
-        Thread.sleep(forTimeInterval: 1)
+        // M6と同じ「テスト実行中にホストからスクリーンショットを撮る」
+        // 方式 (`scripts/verify-ios-avatar-phase1.sh`) がこの画面を確実に
+        // 捉えられるだけの時間、この画面を保持する。
+        Thread.sleep(forTimeInterval: 4)
     }
 
     /// `openSettingsFromHamburgerMenu(in:)` reliably fails (settings sheet

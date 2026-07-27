@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# アバター強化バッチ フェーズ1 (連絡先の写真) の軽量検証: 設定 → 「メール
-# 一覧」に「連絡先の写真を表示」トグルが現れ、操作できることを確認する。
+# アバター強化バッチ (フェーズ1「連絡先の写真」/フェーズ2「Gravatar」) の
+# 軽量検証: 設定 →「メール一覧」に両トグルが現れ、操作できることを確認
+# する。アカウント0件でも到達できる (ハンバーガーメニューは常設) ため、
+# mailstack への依存は無い — `SKIP_MAILSTACK_RESET`未指定時に呼ぶ
+# `make mailstack-up`/`seed`はこのスクリプト自体には不要だが、他の
+# `verify-ios-*.sh`と揃えておくと環境準備コマンドを使い分けずに済むため
+# 残してある (無くても本検証は通る)。
 #
-# ハンバーガーメニューは常設でアカウント0件でも到達できるはずだが、実際に
-# 試すとアカウント0件の初回起動画面からの遷移だけ `settingsSheet
-# .navigationStack`が現れずタイムアウトすることを確認した (このプロジェ
-# クトの他のテストがどれも踏んでいない経路だったための simulator/
-# toolchain 固有の不安定さと見られる) — 実績のある経路
-# (`OtegamiFeedbackBatch2ScreenshotUITests`と同じく先にアカウントを1件
-# 追加してから遷移する) に合わせたため、このスクリプトも M1 などと同じく
-# dev mailstack が必要。
+# アカウント0件の初回起動直後だけ、ハンバーガー→設定の遷移が
+# `settingsSheet.navigationStack`のタイムアウトで失敗する現象を発見した
+# (このプロジェクトの他の全テストが「少なくとも1回何かに成功した後で」
+# ハンバーガーメニューを開いており、真に何もしていない初回フレームでこの
+# 遷移を試すテストが無かったための simulator/toolchain 固有の不安定さと
+# 見ている) — `OtegamiAvatarSettingsUITests`側で数秒の猶予 + リトライに
+# より回避済み。
 #
 # 画面 (`SettingsSheetView`) は GRDB 非永続 (シート/画面遷移状態) なので、
 # M6 と同じ「テスト実行中にホストからスクリーンショットを撮る」方式を使う
@@ -67,7 +71,7 @@ TEST_PID=$!
 # the target screen's exact visible window varies run to run (M6's doc
 # comment), so this beats guessing a single fixed delay.
 (
-  for _ in $(seq 1 40); do
+  for _ in $(seq 1 60); do
     xcrun simctl io "$UDID" screenshot "$SCREENSHOT_DIR/avatar-phase1-settings.png" 2>/dev/null || true
     sleep 1
   done

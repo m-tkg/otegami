@@ -28,12 +28,25 @@ enum AvatarSourceSettingsStore {
     static var isContactPhotoEnabled: Bool {
         UserDefaults.standard.bool(forKey: showContactPhotoKey)
     }
+
+    /// フェーズ2「Gravatar」— 差出人アドレスの SHA-256 ハッシュを
+    /// gravatar.com へ送信して画像を取得する。連絡先の写真と違い外部
+    /// サービスへの通信を伴うため、設定画面には「差出人アドレスのハッシュ
+    /// が gravatar.com に送信されます」という注記を添えている
+    /// (`MailListSettingsView`)。既定 ON。
+    static let showGravatarKey = "avatarSource.showGravatar"
+    static let defaultShowGravatar = true
+
+    static var isGravatarEnabled: Bool {
+        UserDefaults.standard.bool(forKey: showGravatarKey)
+    }
 }
 
 extension UserDefaults {
     static func registerOtegamiAvatarSourceDefaults() {
         standard.register(defaults: [
-            AvatarSourceSettingsStore.showContactPhotoKey: AvatarSourceSettingsStore.defaultShowContactPhoto
+            AvatarSourceSettingsStore.showContactPhotoKey: AvatarSourceSettingsStore.defaultShowContactPhoto,
+            AvatarSourceSettingsStore.showGravatarKey: AvatarSourceSettingsStore.defaultShowGravatar
         ])
     }
 }

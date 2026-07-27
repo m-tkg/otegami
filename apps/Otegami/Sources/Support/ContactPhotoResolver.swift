@@ -1,5 +1,4 @@
 import Contacts
-import CryptoKit
 import Foundation
 
 /// アバター強化バッチ フェーズ1「連絡先の写真」: `AvatarImageResolving` の
@@ -139,16 +138,11 @@ public actor ContactPhotoResolver: AvatarImageResolving {
     /// bytes being valid/safe path components on every filesystem this app
     /// could run on.
     private func photoFileURL(for key: String) -> URL {
-        cacheDirectory.appendingPathComponent(Self.digestHex(key) + ".jpg")
+        cacheDirectory.appendingPathComponent(AvatarCacheKey.sha256Hex(key) + ".jpg")
     }
 
     private func noPhotoMarkerURL(for key: String) -> URL {
-        cacheDirectory.appendingPathComponent(Self.digestHex(key) + ".none")
-    }
-
-    private static func digestHex(_ string: String) -> String {
-        let digest = SHA256.hash(data: Data(string.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+        cacheDirectory.appendingPathComponent(AvatarCacheKey.sha256Hex(key) + ".none")
     }
 
     // MARK: - CNContactStore

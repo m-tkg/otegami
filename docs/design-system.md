@@ -1306,3 +1306,81 @@ beta 環境側の問題であり、本バッチのコード変更が原因では
   等のフル回帰と、実際に連絡先に写真を登録した状態での目視確認
   (`CNContactStore`への書き込みを伴う専用 UITest、またはシミュレータの
   連絡先アプリへの手動登録) を行うこと。
+
+## アバター強化バッチ フェーズ2: Gravatar
+
+フェーズ1の`ContactPhotoResolver`に続く第2優先の情報源。連絡先の写真が
+見つからなかった差出人について、Gravatar (gravatar.com) に登録された
+画像を試す。
+
+### `GravatarAvatarResolver`
+
+`AvatarImageResolving`に準拠する actor
+(`apps/Otegami/Sources/Support/GravatarAvatarResolver.swift`)。
+
+- **ハッシュ化**: アドレスを trim + 小文字化してから SHA-256 でハッシュ化
+  し、`https://gravatar.com/avatar/<hash>?d=404&s=160`を`URLSession`で
+  取得する。`d=404`は「登録が無ければ (デフォルトのシルエット画像ではなく)
+  404 を返す」という Gravatar 側のオプション — これが無いと、Gravatar
+  アカウントを持たない差出人全員に同じデフォルト画像が表示されてしまい、
+  「差出人ごとに区別できる」というアバター機能の目的に反する。
+- **フェッチ結果の3分類**: 200 (`.found`)/404 (`.notFound`)/それ以外・
+  ネットワークエラー・タイムアウト (`.unavailable`) を区別する。
+  `.notFound`だけを negative cache に書く — `.unavailable`は「無いことが
+  確定した」わけではないので、キャッシュに書かず次回また試す (指示の
+  「negative cache (無かった事実) も保持」を文字通り「事実が確定した
+  ときだけ」と解釈した)。
+- **キャッシュ**: `ContactPhotoResolver`と同じくメモリ+ディスク
+  (`Caches/AvatarCache/Gravatar/`、ファイル名は`AvatarCacheKey.sha256Hex`
+  で共通化) の2段。ディスクファイルの mtime を「キャッシュされた時刻」
+  として使い (専用の JSON インデックスを持たずに済む)、TTL 7日を超えたら
+  再取得する — found/not-found のどちら側にも同じ TTL を適用する
+  (ユーザーが後から Gravatar に写真を設定/削除する可能性はどちら向きにも
+  あるため)。
+- **coalesce**: `ContactPhotoResolver`と同じ`Task`共有パターン。
+- 一覧のスクロールはブロックしない — `SenderAvatar`の`.task(id: address)`
+  が非同期に解決し、結果が届くまでイニシャルのまま表示され続ける
+  (フェーズ1で確立済みの設計をそのまま踏襲)。
+
+### 設定
+
+`AvatarSourceSettingsStore.showGravatarKey`(既定 ON)。設定 →「メール
+一覧」の「連絡先の写真を表示」のすぐ下に「Gravatar の画像を表示」トグルを
+追加した。footer に「差出人アドレスのハッシュが gravatar.com に送信され
+ます。設定でオフにできます。」という独立した段落を追加した (連絡先の
+注記とは別の段落 — 一方はオンデバイス、他方は外部通信という性質の違いを
+明確にするため)。
+
+### 検証
+
+`make test`/`make mac`/`make ios` green。`OtegamiAvatarSettingsUITests`
+(フェーズ1で追加、フェーズ2でアサーションを拡張) を実行し、「Gravatar
+の画像を表示」トグルが既定 ON で表示され、操作できることを確認した
+(`scripts/verify-ios-avatar-phase1.sh`)。
+
+実際に gravatar.com への実通信 (SHA-256 ハッシュを使った本番と同じ
+クエリ形) が成功することは、Python の`urllib`でホストから直接確認した:
+存在しないアドレスに対して`404`が正しく返る (negative cache 経路)。
+実在の Gravatar 登録者の写真が実際に一覧に描画されるところまでの目視
+確認は、検証に使える適切なテスト用アドレス (第三者の実アドレスを勝手に
+使わない) が無かったため見送った — コードパス自体 (200 応答のデコード・
+表示) は標準的な`URLSession`+`UIImage(data:)`/`NSImage(data:)`の組み合わせ
+で、フェーズ1の連絡先写真表示 (同じ`SenderAvatar.platformImage`経路) で
+実機動作を確認済みのものと完全に同じ描画経路のため、リスクは低いと判断
+している。
+
+設定画面のスクリーンショット取得は、フェーズ1で成功した「テスト実行中に
+ホストからスクリーンショットを撮る」方式 (M6 節参照) が、このバッチの
+検証セッション中は`xcodebuild`のビルド時間の揺らぎにより毎回ホーム画面
+しか捉えられなかった (`docs/verify.md`の「dev mailstack 接続断」と同種の、
+この開発機のシミュレータ/toolchain 側の不安定要因と見ている — 手動での
+`xcrun simctl launch` + `screenshot`では同じ`$UDID`に対して問題無く撮影
+できることを確認済みで、アプリ自体や XCUITest のアサーションは全て
+green だったため、コード側の不具合ではないと判断した)。次回セッションで
+再試行すること。
+
+### 次フェーズへの申し送り
+
+- フェーズ3 (BIMI/企業ロゴ favicon) を`CompositeAvatarImageResolver`へ
+  追加する。
+- 設定画面のスクリーンショット取得タイミング問題の再調査 (上記参照)。

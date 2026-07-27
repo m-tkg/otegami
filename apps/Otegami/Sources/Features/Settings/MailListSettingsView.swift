@@ -15,6 +15,8 @@ struct MailListSettingsView: View {
     // アバター強化バッチ フェーズ1: `AvatarSourceSettingsStore`のドキュメント
     // コメント参照。
     @AppStorage(AvatarSourceSettingsStore.showContactPhotoKey) private var showContactPhoto = AvatarSourceSettingsStore.defaultShowContactPhoto
+    // アバター強化バッチ フェーズ2: 同上。
+    @AppStorage(AvatarSourceSettingsStore.showGravatarKey) private var showGravatar = AvatarSourceSettingsStore.defaultShowGravatar
     @AppStorage(TranslationSettingsStore.showListSummaryKey) private var showListSummary = false
     // 実機フィードバック第3弾 (I) で旧「その他」から移設。
     @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
@@ -39,6 +41,10 @@ struct MailListSettingsView: View {
                 // 残っている方が自然)。
                 Toggle("連絡先の写真を表示", isOn: $showContactPhoto)
                     .accessibilityIdentifier("settings.list.showContactPhotoToggle")
+                // アバター強化バッチ フェーズ2「Gravatar」。連絡先の写真が
+                // 見つからなかった場合の次点として使われる。
+                Toggle("Gravatar の画像を表示", isOn: $showGravatar)
+                    .accessibilityIdentifier("settings.list.showGravatarToggle")
                 Picker("本文プレビューの行数", selection: $previewLineCountRaw) {
                     ForEach(PreviewLineCount.allCases) { count in
                         Text(count.title).tag(count.rawValue)
@@ -51,11 +57,13 @@ struct MailListSettingsView: View {
             } header: {
                 Text("表示")
             } footer: {
-                // アバター強化バッチ: 元の「外部サービスへの問い合わせは
-                // 一切行いません」という文言は、連絡先の写真を追加した
-                // フェーズ1の時点ではまだ正確 (連絡先はオンデバイス) —
-                // Gravatar/企業ロゴを追加するフェーズ2/3でこの文言を更新する。
-                Text("プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先に一致する写真があればそれを優先して表示します（連絡先の照合はこの端末上だけで行われ、外部には送信されません）。")
+                // アバター強化バッチ: フェーズ2 で Gravatar (外部通信あり)
+                // を追加したため、その旨を明記する段落を追記した。企業ロゴ
+                // (フェーズ3) を追加する際もここに追記する。
+                VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
+                    Text("プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先に一致する写真があればそれを優先して表示します（連絡先の照合はこの端末上だけで行われ、外部には送信されません）。")
+                    Text("連絡先に写真が無い場合、Gravatar (gravatar.com) に登録された画像を表示することがあります。差出人アドレスのハッシュが gravatar.com に送信されます。設定でオフにできます。")
+                }
             }
 
             #if os(iOS)
