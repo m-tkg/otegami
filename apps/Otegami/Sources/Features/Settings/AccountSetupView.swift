@@ -43,126 +43,11 @@ struct AccountSetupView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("アカウント") {
-                    TextField("表示名", text: $displayName)
-                        .accessibilityIdentifier("accountSetup.displayName")
-                    TextField("メールアドレス", text: $email)
-                        .textFieldAutocapitalizationNone()
-                        .otegamiEmailKeyboard()
-                        .accessibilityIdentifier("accountSetup.email")
-                        .onChange(of: email) { _, newValue in
-                            // D「メールアドレス入力時、SMTP ユーザー名にも自動反映」
-                            // — IMAP 側の既存の挙動 (「まだ手入力されていなければ」
-                            // 上書き) にそろえた。どちらか一方だけ手入力済みでも
-                            // もう片方はそのまま追従する。
-                            if imapUsername.isEmpty { imapUsername = newValue }
-                            if smtpUsername.isEmpty { smtpUsername = newValue }
-                        }
-                }
-
-                Section("IMAP") {
-                    TextField("ホスト", text: $imapHost)
-                        .textFieldAutocapitalizationNone()
-                        .accessibilityIdentifier("accountSetup.imapHost")
-                    TextField("ポート", text: $imapPortText)
-                        .otegamiNumberPadKeyboard()
-                        .accessibilityIdentifier("accountSetup.imapPort")
-                    Picker("接続方式", selection: $imapSecurity) {
-                        Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
-                        Text("STARTTLS").tag(ConnectionSecurityRecord.startTLS)
-                        Text("TLS").tag(ConnectionSecurityRecord.tls)
-                    }
-                    // `.menu` (rather than the Form default, which pushes a
-                    // navigation-style picker screen) keeps the interaction
-                    // deterministic for XCUITest: tap the row, tap the
-                    // option label, done — no extra "back" navigation step.
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("accountSetup.imapSecurity")
-                    TextField("ユーザー名", text: $imapUsername)
-                        .textFieldAutocapitalizationNone()
-                        .accessibilityIdentifier("accountSetup.imapUsername")
-                    SecureField("パスワード", text: $password)
-                        .accessibilityIdentifier("accountSetup.password")
-                }
-
-                Section("SMTP (送信用。任意 — 未設定の場合は送信できません)") {
-                    TextField("ホスト", text: $smtpHost)
-                        .textFieldAutocapitalizationNone()
-                        .accessibilityIdentifier("accountSetup.smtpHost")
-                    TextField("ポート", text: $smtpPortText)
-                        .otegamiNumberPadKeyboard()
-                        .accessibilityIdentifier("accountSetup.smtpPort")
-                    Picker("接続方式", selection: $smtpSecurity) {
-                        Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
-                        Text("STARTTLS").tag(ConnectionSecurityRecord.startTLS)
-                        Text("TLS").tag(ConnectionSecurityRecord.tls)
-                    }
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("accountSetup.smtpSecurity")
-                    TextField("ユーザー名", text: $smtpUsername)
-                        .textFieldAutocapitalizationNone()
-                        .accessibilityIdentifier("accountSetup.smtpUsername")
-                    // UX fix: a filled-in username used to always trigger
-                    // AUTH, which a non-authenticating SMTP server (e.g. the
-                    // dev mailstack's Mailpit) would then reject outright —
-                    // "leave it blank" wasn't discoverable. Since
-                    // `MailCoreSMTPSession.connect` now falls back to no
-                    // auth on that specific rejection, this hint documents
-                    // the new behavior instead of instructing users to
-                    // clear the field.
-                    Text("空欄の場合は認証なしで接続します。サーバーが認証に対応していない場合は、ユーザー名を入力していても自動的に認証を省略します。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Button {
-                        Task { await testSMTPConnectionTapped() }
-                    } label: {
-                        HStack {
-                            Text("SMTP接続テスト")
-                            if isTestingSMTP { Spacer(); ProgressView() }
-                        }
-                    }
-                    .accessibilityIdentifier("accountSetup.testSMTPConnectionButton")
-                    .disabled(isTestingSMTP || smtpHost.isEmpty || Int(smtpPortText) == nil)
-
-                    if let smtpTestResultMessage {
-                        Label(smtpTestResultMessage, systemImage: smtpTestSucceeded ? "checkmark.circle" : "xmark.octagon")
-                            .foregroundStyle(smtpTestSucceeded ? .green : .red)
-                            .accessibilityIdentifier("accountSetup.smtpTestResult")
-                    }
-                }
-
-                if let testResultMessage {
-                    Section {
-                        Label(testResultMessage, systemImage: testSucceeded ? "checkmark.circle" : "xmark.octagon")
-                            .foregroundStyle(testSucceeded ? .green : .red)
-                            .accessibilityIdentifier("accountSetup.testResult")
-                    }
-                }
-
-                Section {
-                    Button {
-                        Task { await testConnection() }
-                    } label: {
-                        HStack {
-                            Text("接続テスト")
-                            if isTesting { Spacer(); ProgressView() }
-                        }
-                    }
-                    .accessibilityIdentifier("accountSetup.testConnectionButton")
-                    .disabled(isTesting || !isFormValid)
-
-                    Button {
-                        Task { await saveAccount() }
-                    } label: {
-                        HStack {
-                            Text("保存して同期開始")
-                            if isSaving { Spacer(); ProgressView() }
-                        }
-                    }
-                    .accessibilityIdentifier("accountSetup.saveButton")
-                    .disabled(!testSucceeded || isSaving)
-                }
+                accountSection
+                imapSection
+                smtpSection
+                testResultSection
+                actionsSection
             }
             .navigationTitle("アカウントを追加")
             .scrollContentBackground(.hidden)
@@ -181,6 +66,173 @@ struct AccountSetupView: View {
         // NavigationStack{Form{...}}-shaped sheet in this app needs this.
         .frame(minWidth: 480, minHeight: 560)
         #endif
+    }
+
+    // H (実機フィードバック第3弾): each field now carries a persistent
+    // `LabeledContent` label instead of relying on a `TextField` placeholder
+    // alone (which disappears once a value is typed, leaving no indication
+    // of what the field *is* once filled in). Split into per-`Section`
+    // computed properties (docs/ci.md's "SwiftUI ビューは小さく保つこと") —
+    // this `body` was already a multi-`Section` `Form` before H, and the
+    // extra `LabeledContent` nesting per field pushed it well past the
+    // "keep it small" threshold that file warns about.
+    private var accountSection: some View {
+        Section("アカウント") {
+            LabeledContent("表示名") {
+                TextField("", text: $displayName)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityIdentifier("accountSetup.displayName")
+            }
+            LabeledContent("メールアドレス") {
+                TextField("", text: $email)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldAutocapitalizationNone()
+                    .otegamiEmailKeyboard()
+                    .accessibilityIdentifier("accountSetup.email")
+                    .onChange(of: email) { _, newValue in
+                        // D「メールアドレス入力時、SMTP ユーザー名にも自動反映」
+                        // — IMAP 側の既存の挙動 (「まだ手入力されていなければ」
+                        // 上書き) にそろえた。どちらか一方だけ手入力済みでも
+                        // もう片方はそのまま追従する。
+                        if imapUsername.isEmpty { imapUsername = newValue }
+                        if smtpUsername.isEmpty { smtpUsername = newValue }
+                    }
+            }
+        }
+    }
+
+    private var imapSection: some View {
+        Section("IMAP") {
+            LabeledContent("ホスト") {
+                TextField("", text: $imapHost)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldAutocapitalizationNone()
+                    .accessibilityIdentifier("accountSetup.imapHost")
+            }
+            LabeledContent("ポート") {
+                TextField("", text: $imapPortText)
+                    .multilineTextAlignment(.trailing)
+                    .otegamiNumberPadKeyboard()
+                    .accessibilityIdentifier("accountSetup.imapPort")
+            }
+            Picker("接続方式", selection: $imapSecurity) {
+                Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
+                Text("STARTTLS").tag(ConnectionSecurityRecord.startTLS)
+                Text("TLS").tag(ConnectionSecurityRecord.tls)
+            }
+            // `.menu` (rather than the Form default, which pushes a
+            // navigation-style picker screen) keeps the interaction
+            // deterministic for XCUITest: tap the row, tap the
+            // option label, done — no extra "back" navigation step.
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("accountSetup.imapSecurity")
+            LabeledContent("ユーザー名") {
+                TextField("", text: $imapUsername)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldAutocapitalizationNone()
+                    .accessibilityIdentifier("accountSetup.imapUsername")
+            }
+            LabeledContent("パスワード") {
+                SecureField("", text: $password)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityIdentifier("accountSetup.password")
+            }
+        }
+    }
+
+    private var smtpSection: some View {
+        Section("SMTP (送信用。任意 — 未設定の場合は送信できません)") {
+            LabeledContent("ホスト") {
+                TextField("", text: $smtpHost)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldAutocapitalizationNone()
+                    .accessibilityIdentifier("accountSetup.smtpHost")
+            }
+            LabeledContent("ポート") {
+                TextField("", text: $smtpPortText)
+                    .multilineTextAlignment(.trailing)
+                    .otegamiNumberPadKeyboard()
+                    .accessibilityIdentifier("accountSetup.smtpPort")
+            }
+            Picker("接続方式", selection: $smtpSecurity) {
+                Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
+                Text("STARTTLS").tag(ConnectionSecurityRecord.startTLS)
+                Text("TLS").tag(ConnectionSecurityRecord.tls)
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("accountSetup.smtpSecurity")
+            LabeledContent("ユーザー名") {
+                TextField("", text: $smtpUsername)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldAutocapitalizationNone()
+                    .accessibilityIdentifier("accountSetup.smtpUsername")
+            }
+            // UX fix: a filled-in username used to always trigger
+            // AUTH, which a non-authenticating SMTP server (e.g. the
+            // dev mailstack's Mailpit) would then reject outright —
+            // "leave it blank" wasn't discoverable. Since
+            // `MailCoreSMTPSession.connect` now falls back to no
+            // auth on that specific rejection, this hint documents
+            // the new behavior instead of instructing users to
+            // clear the field.
+            Text("空欄の場合は認証なしで接続します。サーバーが認証に対応していない場合は、ユーザー名を入力していても自動的に認証を省略します。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button {
+                Task { await testSMTPConnectionTapped() }
+            } label: {
+                HStack {
+                    Text("SMTP接続テスト")
+                    if isTestingSMTP { Spacer(); ProgressView() }
+                }
+            }
+            .accessibilityIdentifier("accountSetup.testSMTPConnectionButton")
+            .disabled(isTestingSMTP || smtpHost.isEmpty || Int(smtpPortText) == nil)
+
+            if let smtpTestResultMessage {
+                Label(smtpTestResultMessage, systemImage: smtpTestSucceeded ? "checkmark.circle" : "xmark.octagon")
+                    .foregroundStyle(smtpTestSucceeded ? .green : .red)
+                    .accessibilityIdentifier("accountSetup.smtpTestResult")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var testResultSection: some View {
+        if let testResultMessage {
+            Section {
+                Label(testResultMessage, systemImage: testSucceeded ? "checkmark.circle" : "xmark.octagon")
+                    .foregroundStyle(testSucceeded ? .green : .red)
+                    .accessibilityIdentifier("accountSetup.testResult")
+            }
+        }
+    }
+
+    private var actionsSection: some View {
+        Section {
+            Button {
+                Task { await testConnection() }
+            } label: {
+                HStack {
+                    Text("接続テスト")
+                    if isTesting { Spacer(); ProgressView() }
+                }
+            }
+            .accessibilityIdentifier("accountSetup.testConnectionButton")
+            .disabled(isTesting || !isFormValid)
+
+            Button {
+                Task { await saveAccount() }
+            } label: {
+                HStack {
+                    Text("保存して同期開始")
+                    if isSaving { Spacer(); ProgressView() }
+                }
+            }
+            .accessibilityIdentifier("accountSetup.saveButton")
+            .disabled(!testSucceeded || isSaving)
+        }
     }
 
     private var isFormValid: Bool {

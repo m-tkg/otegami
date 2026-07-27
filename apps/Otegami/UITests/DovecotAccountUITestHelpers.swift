@@ -185,10 +185,10 @@ extension XCTestCase {
         // `FolderListSheet.settingsSection`), not a tab bar or a gear-icon
         // sheet off the old sidebar.
         openSettingsFromHamburgerMenu(in: app)
-        // I「設定画面の再構成」: プッシュ通知は「その他」カテゴリの下に移動した
-        // (`DovecotAccountUITestHelpers`'s `navigateToOtherSettingsCategory
-        // (in:)`'s doc comment)。
-        XCTAssertTrue(navigateToOtherSettingsCategory(in: app), "「その他」カテゴリへの遷移に失敗した")
+        // 実機フィードバック第3弾 (I): プッシュ通知は「アカウントの設定」
+        // カテゴリの下に移動した (旧「その他」カテゴリは廃止 —
+        // `AccountsListContent`の doc comment参照)。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
         // ラベルテキストではなくアクセシビリティ識別子で検索 — ロケールに
         // 依存しない (`tapPlainSecurityMenuOption(in:)`のドキュメントコメント
         // が記録している「カタログ拡張で既存のラベル検索が壊れる」class の
@@ -310,15 +310,21 @@ extension XCTestCase {
     }
 
     /// I「設定画面の再構成」: the settings root (`AccountsListContent`) no
-    /// longer shows individual controls directly — it's a list of 5
-    /// category links (`settings.category.accounts`/`.mailViewer`/
-    /// `.mailList`/`.other`, plus the always-root-level `settings
-    /// .signaturesLink`). Any UITest that used to find a control right
-    /// after `openSettingsFromHamburgerMenu(in:)` now needs one extra tap
-    /// into the category that control moved to first — these four
-    /// `navigateToXCategory(in:)` helpers are that one tap, shared by every
-    /// affected test so the category identifier string itself lives in
-    /// exactly one place.
+    /// longer shows individual controls directly — it's a list of category
+    /// links (`settings.category.accounts`/`.mailViewer`/`.mailList`/
+    /// `.mailCompose`). Any UITest that used to find a control right after
+    /// `openSettingsFromHamburgerMenu(in:)` now needs one extra tap into
+    /// the category that control moved to first — these `navigateToXCategory
+    /// (in:)` helpers are that one tap, shared by every affected test so
+    /// the category identifier string itself lives in exactly one place.
+    ///
+    /// 実機フィードバック第3弾 (I): the fifth category, "その他"
+    /// (`navigateToOtherSettingsCategory(in:)`), was removed along with
+    /// `OtherSettingsView` itself — every control that used to live there
+    /// moved into one of the four categories below (`AccountsListContent`'s
+    /// doc comment has the full mapping), so every caller that used to
+    /// navigate to "その他" now navigates to whichever category actually
+    /// owns the control it's testing.
     @discardableResult
     func navigateToAccountSettingsCategory(in app: XCUIApplication) -> Bool {
         let link = app.buttons["settings.category.accounts"]
@@ -344,8 +350,8 @@ extension XCTestCase {
     }
 
     @discardableResult
-    func navigateToOtherSettingsCategory(in app: XCUIApplication) -> Bool {
-        let link = app.buttons["settings.category.other"]
+    func navigateToMailComposeSettingsCategory(in app: XCUIApplication) -> Bool {
+        let link = app.buttons["settings.category.mailCompose"]
         guard link.waitForExistence(timeout: 5) else { return false }
         link.tap()
         return true

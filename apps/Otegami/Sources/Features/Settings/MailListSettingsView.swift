@@ -4,10 +4,18 @@ import SwiftUI
 /// 画像表示・D8 スワイプ設定 (iOS only)・翻訳の「一覧に要約を出す」
 /// (名前が示すとおり一覧側の表示設定のため、このカテゴリに置いた —
 /// `docs/design-system.md`のとおり現状 UI 未実装の設定項目)。
+///
+/// 実機フィードバック第3弾 (I): 旧「その他」カテゴリからピン留めの
+/// フラグ連動設定・スレッド表示設定をここへ移設した — どちらも「一覧の
+/// 並び順/まとめ方」に関わる設定で、このカテゴリの既存項目 (プレビュー・
+/// スワイプ) と同じ「一覧をどう見せるか」の範疇にある。
 struct MailListSettingsView: View {
     @AppStorage(ListDisplaySettingsStore.previewLineCountKey) private var previewLineCountRaw = ListDisplaySettingsStore.defaultPreviewLineCount.rawValue
     @AppStorage(ListDisplaySettingsStore.showAvatarKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatar
     @AppStorage(TranslationSettingsStore.showListSummaryKey) private var showListSummary = false
+    // 実機フィードバック第3弾 (I) で旧「その他」から移設。
+    @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
+    @AppStorage(PinSettingsStore.syncWithFlaggedKey) private var pinSyncWithFlagged = false
 
     #if os(iOS)
     @AppStorage(SwipeActionSettingsStore.leadingShortActionKey) private var leadingShortRaw = SwipeActionSettingsStore.defaultLeadingShort.rawValue
@@ -39,6 +47,23 @@ struct MailListSettingsView: View {
             #if os(iOS)
             swipeSection
             #endif
+
+            // 実機フィードバック第3弾 (I): 旧「その他」から移設。
+            Section {
+                Toggle("スレッド表示", isOn: $isThreadingEnabled)
+                    .accessibilityIdentifier("settings.list.threadingToggle")
+            } footer: {
+                Text("ONで一覧を会話単位にまとめます。OFFにすると一覧がメール単位になります。")
+            }
+
+            Section {
+                Toggle("サーバーのフラグ (\\Flagged) と連動", isOn: $pinSyncWithFlagged)
+                    .accessibilityIdentifier("settings.pinSyncWithFlaggedToggle")
+            } header: {
+                Text("ピン留め")
+            } footer: {
+                Text("既定ではピン留めはこの端末・このアプリだけのローカルな印です。ONにすると、ピン留め/解除のたびに IMAP の \\Flagged フラグも更新し、他のメールクライアントでのフラグ操作も読み取ってピン留めに反映します。")
+            }
         }
         .navigationTitle("メール一覧")
         .scrollContentBackground(.hidden)

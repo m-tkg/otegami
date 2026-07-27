@@ -24,8 +24,9 @@ final class OtegamiM11ICloudSyncUITests: XCTestCase {
         // 新画面構成: "設定" is reached via the hamburger menu's bottom row
         // now, not a tab bar or a gear-icon sheet off the old sidebar.
         openSettingsFromHamburgerMenu(in: app)
-        // I「設定画面の再構成」: iCloud 同期は「その他」カテゴリの下。
-        XCTAssertTrue(navigateToOtherSettingsCategory(in: app), "「その他」カテゴリへの遷移に失敗した")
+        // 実機フィードバック第3弾 (I): iCloud 同期は「アカウントの設定」
+        // カテゴリの下 (旧「その他」カテゴリは廃止)。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
 
         let toggle = app.switches["settings.cloudSyncToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
@@ -61,8 +62,9 @@ final class OtegamiM11ICloudSyncUITests: XCTestCase {
 
         // 新画面構成: "設定" is reached via the hamburger menu's bottom row.
         openSettingsFromHamburgerMenu(in: app)
-        // I「設定画面の再構成」: iCloud 同期は「その他」カテゴリの下。
-        XCTAssertTrue(navigateToOtherSettingsCategory(in: app), "「その他」カテゴリへの遷移に失敗した")
+        // 実機フィードバック第3弾 (I): iCloud 同期は「アカウントの設定」
+        // カテゴリの下 (旧「その他」カテゴリは廃止)。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
 
         let toggle = app.switches["settings.cloudSyncToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))

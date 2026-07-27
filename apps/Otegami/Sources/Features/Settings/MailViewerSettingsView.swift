@@ -3,6 +3,11 @@ import SwiftUI
 /// I「設定画面の再構成」→「メールビューア」: ブラウザの設定 (C7)・G「メール
 /// 削除/アーカイブ時の挙動」・メール本文へのプロフィール画像表示・
 /// AI 機能の on/off (翻訳・要約をまとめて)。
+///
+/// 実機フィードバック第3弾 (I): 旧「その他」カテゴリから画像設定 (B) と
+/// HTML表示設定 (A9) をここへ移設した — どちらも「メール本文の描画」に
+/// 関わる設定で、このカテゴリの既存項目 (ブラウザ・プロフィール画像・
+/// AI機能) と同じ「本文を読む/表示する体験」の範疇にある。
 struct MailViewerSettingsView: View {
     // C7「メール内リンクを開くブラウザ」— iOS only (`LinkBrowserSettingsStore`
     // の doc comment参照)。
@@ -13,6 +18,11 @@ struct MailViewerSettingsView: View {
     /// I「AI 機能の on/off (翻訳・要約をまとめて)」.
     @AppStorage(AIFeaturesSettingsStore.enabledKey) private var aiFeaturesEnabled = AIFeaturesSettingsStore.defaultEnabled
     @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = true
+    // B「画像の設定」— 実機フィードバック第3弾 (I) で旧「その他」から移設。
+    @AppStorage(ImageSettingsStore.autoShowEmbeddedImagesKey) private var autoShowEmbeddedImages = ImageSettingsStore.defaultAutoShowEmbedded
+    @AppStorage(ImageSettingsStore.autoShowRemoteImagesKey) private var autoShowRemoteImages = ImageSettingsStore.defaultAutoShowRemote
+    // A9「メールの表示」— 実機フィードバック第3弾 (I) で旧「その他」から移設。
+    @AppStorage(HTMLDisplaySettingsStore.alwaysShowPlainTextKey) private var alwaysShowPlainText = HTMLDisplaySettingsStore.defaultAlwaysShowPlainText
 
     var body: some View {
         List {
@@ -65,6 +75,28 @@ struct MailViewerSettingsView: View {
                 Text("AI 機能")
             } footer: {
                 Text("翻訳・要約は Apple Intelligence により端末内で行われ、外部に送信されません。オフにすると、メール本文画面の翻訳バー・AI要約ボタンの両方が表示されなくなります。")
+            }
+
+            // B「画像の設定」.
+            Section {
+                Toggle("埋め込み画像を自動表示", isOn: $autoShowEmbeddedImages)
+                    .accessibilityIdentifier("settings.images.autoShowEmbeddedToggle")
+                Toggle("リモート画像を自動で読み込む", isOn: $autoShowRemoteImages)
+                    .accessibilityIdentifier("settings.images.autoShowRemoteToggle")
+            } header: {
+                Text("画像")
+            } footer: {
+                Text("埋め込み画像はメールに直接添付・埋め込まれた画像（cid: インライン画像・画像添付）です。リモート画像は外部サーバーから読み込む画像で、自動で読み込むと送信者にメールを開いたことが伝わる場合があります（開封トラッキング）。いずれもオフの場合は、メール詳細画面の「画像を表示」ボタンでそのメールだけ一時的に表示できます。")
+            }
+
+            // A9「メールの表示」.
+            Section {
+                Toggle("常にテキストで表示", isOn: $alwaysShowPlainText)
+                    .accessibilityIdentifier("settings.html.alwaysShowPlainTextToggle")
+            } header: {
+                Text("メールの表示 (HTML)")
+            } footer: {
+                Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。")
             }
         }
         .navigationTitle("メールビューア")

@@ -59,6 +59,13 @@ struct FolderListSheet: View {
     @State private var mailboxSyncFailureCount = 0
     @State private var unreadByMailboxId: [Int64: Int] = [:]
     @State private var unifiedInboxUnread = 0
+    /// K (実機フィードバック第3弾): which accounts' mailbox trees are
+    /// currently collapsed — seeded once from `FolderSectionCollapseStore`
+    /// (persisted `UserDefaults`) so a relaunch remembers what the user
+    /// last chose, then kept in sync with every toggle
+    /// (`toggleAccountCollapsed(_:)`). Not present in the set = expanded
+    /// (the default for an account never explicitly collapsed).
+    @State private var collapsedAccountIds: Set<String> = FolderSectionCollapseStore.collapsedAccountIds
 
     var body: some View {
         NavigationStack {
@@ -76,13 +83,9 @@ struct FolderListSheet: View {
                 } else {
                     statusSection
                     ForEach(environment.accounts) { account in
-                        Section(account.displayName) {
-                            ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
-                                folderMailboxRow(for: mailbox, in: account)
-                            }
-                        }
-                        .task(id: account.id) { await observeMailboxes(accountId: account.id) }
-                        .task(id: account.id) { await observeUnreadCounts(accountId: account.id) }
+                        accountSection(for: account)
+                            .task(id: account.id) { await observeMailboxes(accountId: account.id) }
+                            .task(id: account.id) { await observeUnreadCounts(accountId: account.id) }
                     }
                     settingsSection
                 }
@@ -96,8 +99,20 @@ struct FolderListSheet: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("閉じる") { onClose() }
-                        .accessibilityIdentifier("folderSheet.closeButton")
+                    // J (実機フィードバック第3弾): アイコンのみのボタンに変更
+                    // (テキストラベルだった旧実装 — `Button("閉じる")`) —
+                    // `Label` の `title`/`icon` を両方渡しつつ
+                    // `.labelStyle(.iconOnly)` にすることで、見た目は
+                    // xmark アイコンだけになりつつ VoiceOver は "title"
+                    // (=「閉じる」) をそのまま読み上げ続ける — SwiftUI の
+                    // `Label` は `.iconOnly` でも `title` をアクセシビリ
+                    // ティラベルとして保持する、というドキュメント通りの
+                    // 挙動。
+                    Button(action: onClose) {
+                        Label("閉じる", systemImage: "xmark")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityIdentifier("folderSheet.closeButton")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
@@ -188,6 +203,56 @@ struct FolderListSheet: View {
             }
             .accessibilityIdentifier("folderSheet.settings")
         }
+    }
+
+    /// K (実機フィードバック第3弾): one account's collapsible mailbox-tree
+    /// `Section` — the header itself is a tappable row
+    /// (`AccountSectionHeader`, split out for the same `docs/ci.md` reason
+    /// every other row-shaped closure in this file already is) rather than
+    /// `Section`'s own `String` header, since a plain `Section` header has
+    /// no tap target to hang the collapse toggle off. The `ForEach` over
+    /// mailboxes only renders while expanded — collapsing removes the rows
+    /// from the list entirely (not just visually hidden), matching a
+    /// standard disclosure-group's behavior.
+    @ViewBuilder
+    private func accountSection(for account: AccountRecord) -> some View {
+        let isCollapsed = collapsedAccountIds.contains(account.id)
+        Section {
+            if !isCollapsed {
+                ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
+                    folderMailboxRow(for: mailbox, in: account)
+                }
+            }
+        } header: {
+            AccountSectionHeader(
+                accountId: account.id,
+                title: account.displayName,
+                unreadCount: accountUnreadCount(for: account.id),
+                isCollapsed: isCollapsed,
+                onToggle: { toggleAccountCollapsed(account.id) }
+            )
+        }
+    }
+
+    /// K: the badge a collapsed account's header shows — every mailbox's
+    /// unread count summed, not just the inbox's, so collapsing an account
+    /// never hides unread mail the way a single-mailbox badge would.
+    private func accountUnreadCount(for accountId: String) -> Int {
+        (mailboxesByAccountId[accountId] ?? [])
+            .compactMap(\.id)
+            .reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) }
+    }
+
+    private func toggleAccountCollapsed(_ accountId: String) {
+        let collapsing = !collapsedAccountIds.contains(accountId)
+        withAnimation(.default) {
+            if collapsing {
+                collapsedAccountIds.insert(accountId)
+            } else {
+                collapsedAccountIds.remove(accountId)
+            }
+        }
+        FolderSectionCollapseStore.setCollapsed(collapsing, accountId: accountId)
     }
 
     /// Mirrors `SidebarView.mailboxRow(for:in:)`'s split (see its own doc
@@ -296,6 +361,72 @@ struct FolderListSheet: View {
         } catch {
             // A failing observation just stops the badge from updating.
         }
+    }
+}
+
+/// K (実機フィードバック第3弾): persists which accounts' mailbox trees are
+/// collapsed — a plain `UserDefaults` array under one key (not a value per
+/// account id, since the set of collapsed accounts is small and read/
+/// written as a whole every time anyway). Account names are dynamic user
+/// data, never localized strings, so unlike this app's `*SettingsStore`
+/// types this one has no `docs/localization.md` concerns.
+enum FolderSectionCollapseStore {
+    static let collapsedAccountIdsKey = "folderSheet.collapsedAccountIds"
+
+    static var collapsedAccountIds: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapsedAccountIdsKey) ?? [])
+    }
+
+    static func setCollapsed(_ collapsed: Bool, accountId: String) {
+        var ids = collapsedAccountIds
+        if collapsed {
+            ids.insert(accountId)
+        } else {
+            ids.remove(accountId)
+        }
+        UserDefaults.standard.set(Array(ids), forKey: collapsedAccountIdsKey)
+    }
+}
+
+/// K: one account's tappable `Section` header inside `FolderListSheet` —
+/// the account's display name, its aggregate unread badge (visible whether
+/// expanded or collapsed — "折りたたみ中も見えること"), and a chevron whose
+/// rotation communicates the current state (SwiftUI's own `DisclosureGroup`
+/// convention, reproduced here rather than using `DisclosureGroup` itself
+/// since that type doesn't let this app style the header as a plain
+/// `Section`-header row alongside the rest of `SidebarView`/`FolderListSheet`'s
+/// existing row styling).
+private struct AccountSectionHeader: View {
+    let accountId: String
+    let title: String
+    let unreadCount: Int
+    let isCollapsed: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack {
+                Text(title)
+                Spacer()
+                if unreadCount > 0 {
+                    Text("\(unreadCount)")
+                        .font(OtegamiFont.badge())
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("folderSheet.account.\(accountId).header")
+        // VoiceOver: the chevron's rotation alone communicates nothing to
+        // VoiceOver, so the collapsed/expanded state is spelled out in the
+        // trait/label instead — standard `DisclosureGroup` accessibility
+        // behavior, reproduced here since this is a hand-rolled substitute.
+        .accessibilityAddTraits(isCollapsed ? [] : .isSelected)
+        .accessibilityValue(isCollapsed ? "折りたたみ" : "展開")
     }
 }
 

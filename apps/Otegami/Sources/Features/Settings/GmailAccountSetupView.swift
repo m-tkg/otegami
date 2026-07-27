@@ -38,8 +38,14 @@ struct GmailAccountSetupView: View {
                 }
 
                 Section("アカウント") {
-                    TextField("表示名 (省略時はメールアドレス)", text: $displayName)
-                        .accessibilityIdentifier("gmailAccountSetup.displayName")
+                    // H (実機フィードバック第3弾) — persistent label instead
+                    // of a placeholder-only field (`AccountEditView`'s
+                    // identical fix's doc comment).
+                    LabeledContent("表示名") {
+                        TextField("省略時はメールアドレス", text: $displayName)
+                            .multilineTextAlignment(.trailing)
+                            .accessibilityIdentifier("gmailAccountSetup.displayName")
+                    }
                 }
 
                 Section {

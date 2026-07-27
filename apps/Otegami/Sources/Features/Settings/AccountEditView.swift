@@ -120,8 +120,17 @@ struct AccountEditView: View {
                     .accessibilityIdentifier("accountEdit.email")
                 LabeledContent("種類", value: kindLabel)
                     .accessibilityIdentifier("accountEdit.kind")
-                TextField("表示名", text: $displayName)
-                    .accessibilityIdentifier("accountEdit.displayName")
+                // H (実機フィードバック第3弾): a persistent label — the
+                // previous plain `TextField("表示名", text:)` only showed
+                // "表示名" as a placeholder, which (unlike this section's
+                // other two `LabeledContent` rows right above) disappeared
+                // the moment a value was typed, leaving no indication of
+                // what the field held once filled in.
+                LabeledContent("表示名") {
+                    TextField("", text: $displayName)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("accountEdit.displayName")
+                }
             }
 
             Section("ラベル色") {
@@ -202,12 +211,18 @@ struct AccountEditView: View {
     @ViewBuilder
     private var genericSections: some View {
         Section("IMAP") {
-            TextField("ホスト", text: $imapHost)
-                .textFieldAutocapitalizationNone()
-                .accessibilityIdentifier("accountEdit.imapHost")
-            TextField("ポート", text: $imapPortText)
-                .otegamiNumberPadKeyboard()
-                .accessibilityIdentifier("accountEdit.imapPort")
+            LabeledContent("ホスト") {
+                TextField("", text: $imapHost)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldAutocapitalizationNone()
+                    .accessibilityIdentifier("accountEdit.imapHost")
+            }
+            LabeledContent("ポート") {
+                TextField("", text: $imapPortText)
+                    .multilineTextAlignment(.trailing)
+                    .otegamiNumberPadKeyboard()
+                    .accessibilityIdentifier("accountEdit.imapPort")
+            }
             Picker("接続方式", selection: $imapSecurity) {
                 Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
                 Text("STARTTLS").tag(ConnectionSecurityRecord.startTLS)
@@ -215,17 +230,26 @@ struct AccountEditView: View {
             }
             .pickerStyle(.menu)
             .accessibilityIdentifier("accountEdit.imapSecurity")
-            SecureField("新しいパスワード (変更する場合のみ入力)", text: $newPassword)
-                .accessibilityIdentifier("accountEdit.password")
+            LabeledContent("新しいパスワード") {
+                SecureField("変更する場合のみ入力", text: $newPassword)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityIdentifier("accountEdit.password")
+            }
         }
 
         Section("SMTP (送信用。任意)") {
-            TextField("ホスト", text: $smtpHost)
-                .textFieldAutocapitalizationNone()
-                .accessibilityIdentifier("accountEdit.smtpHost")
-            TextField("ポート", text: $smtpPortText)
-                .otegamiNumberPadKeyboard()
-                .accessibilityIdentifier("accountEdit.smtpPort")
+            LabeledContent("ホスト") {
+                TextField("", text: $smtpHost)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldAutocapitalizationNone()
+                    .accessibilityIdentifier("accountEdit.smtpHost")
+            }
+            LabeledContent("ポート") {
+                TextField("", text: $smtpPortText)
+                    .multilineTextAlignment(.trailing)
+                    .otegamiNumberPadKeyboard()
+                    .accessibilityIdentifier("accountEdit.smtpPort")
+            }
             Picker("接続方式", selection: $smtpSecurity) {
                 Text("なし (平文)").tag(ConnectionSecurityRecord.plain)
                 Text("STARTTLS").tag(ConnectionSecurityRecord.startTLS)
@@ -233,9 +257,12 @@ struct AccountEditView: View {
             }
             .pickerStyle(.menu)
             .accessibilityIdentifier("accountEdit.smtpSecurity")
-            TextField("ユーザー名", text: $smtpUsername)
-                .textFieldAutocapitalizationNone()
-                .accessibilityIdentifier("accountEdit.smtpUsername")
+            LabeledContent("ユーザー名") {
+                TextField("", text: $smtpUsername)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldAutocapitalizationNone()
+                    .accessibilityIdentifier("accountEdit.smtpUsername")
+            }
 
             Button {
                 Task { await testSMTPConnectionTapped() }
@@ -287,8 +314,11 @@ struct AccountEditView: View {
         }
 
         Section("App 用パスワード") {
-            SecureField("新しい App 用パスワード (変更する場合のみ入力)", text: $newPassword)
-                .accessibilityIdentifier("accountEdit.password")
+            LabeledContent("新しい App 用パスワード") {
+                SecureField("変更する場合のみ入力", text: $newPassword)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityIdentifier("accountEdit.password")
+            }
             Link("appleid.apple.com で App 用パスワードを発行", destination: URL(string: "https://appleid.apple.com/account/manage")!)
                 .accessibilityIdentifier("accountEdit.appPasswordLink")
         }

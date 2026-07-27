@@ -1,22 +1,30 @@
 # 設定項目一覧
 
-## 設定画面の構成 (実機フィードバック第2弾: I)
+## 設定画面の構成 (実機フィードバック第2弾: I → 第3弾: I で再編)
 
 設定画面 (iOS: ハンバーガーメニュー→「設定」シート、macOS: Settings シーン
 の「設定」タブ) のルートは、以前は全設定項目がフラットな1画面に並んで
-いたが、以下の5カテゴリへ再構成した (ユーザー指定の構造)。各カテゴリは
-`AccountsListContent`(設定ルート、`AccountsSettingsView.swift`) からの
-`NavigationLink`で、iOS・macOS 共通の実装 (`AccountsListContent`自体を
-両プラットフォームの`NavigationStack`が共有しているため、カテゴリ構造は
-自動的に両方に揃う)。
+いたが、カテゴリへ再構成した。各カテゴリは`AccountsListContent`(設定
+ルート、`AccountsSettingsView.swift`) からの`NavigationLink`で、iOS・
+macOS 共通の実装 (`AccountsListContent`自体を両プラットフォームの
+`NavigationStack`が共有しているため、カテゴリ構造は自動的に両方に揃う)。
+
+実機フィードバック第3弾 (I): 当初の5分類 (アカウントの設定/メール
+ビューア/メール一覧/署名テンプレート/その他) を4分類 + ルート直下の
+「このアプリについて」に再編した。「その他」は雑多な置き場になっていた
+項目を性質の近い既存カテゴリへ再配置した結果空になったため廃止し
+(`OtherSettingsView.swift`自体を削除)、ルート直下の独立項目だった
+「署名テンプレート」は新設「メール作成」カテゴリへ統合した。
 
 | カテゴリ | 実装 | 内容 |
 | --- | --- | --- |
-| アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、G「デフォルトのアカウント設定」。ラベル色 (D) は各アカウントの編集画面 (`AccountEditView`) 側 |
-| メールビューア | `MailViewerSettingsView.swift` | ブラウザの設定 (C7)、G「削除/アーカイブ時の挙動」、本文へのプロフィール画像表示、AI 機能 on/off (翻訳・要約をまとめて) |
-| メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定 (D8)、一覧に要約を出す |
-| 署名テンプレート | `SignatureTemplatesSettingsView.swift` | F。ルート直下の独立項目 (カテゴリの下ではない) |
-| その他 | `OtherSettingsView.swift` | スレッド表示、ピン留め連動、送信キャンセルの猶予、画像設定、HTML表示、表示言語、テンプレート (C8)、iCloud 同期、プッシュ通知、アイコンバッジ (H)、このアプリについて |
+| アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、G「デフォルトのアカウント設定」、iCloud 同期、プッシュ通知 (いずれも実機フィードバック第3弾 (I) で「その他」から移設)。ラベル色 (D) は各アカウントの編集画面 (`AccountEditView`) 側 |
+| メールビューア | `MailViewerSettingsView.swift` | ブラウザの設定 (C7)、G「削除/アーカイブ時の挙動」、本文へのプロフィール画像表示、AI 機能 on/off (翻訳・要約をまとめて)、画像設定 (B)、HTML表示設定 (A9) (画像・HTML表示は実機フィードバック第3弾 (I) で「その他」から移設) |
+| メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定 (D8)、一覧に要約を出す、スレッド表示、ピン留めのフラグ連動 (スレッド表示・ピン留め連動は実機フィードバック第3弾 (I) で「その他」から移設) |
+| メール作成 | `MailComposeSettingsView.swift` (実機フィードバック第3弾 (I) で新設) | テンプレート (C8)、署名テンプレート (F、旧ルート直下から統合)、送信キャンセルの猶予 (C7、旧「その他」から移設) |
+
+「このアプリについて」(`AboutView`) はルート直下 (iOS のみ — macOS は
+`OtegamiSettingsView`の独立した「情報」タブに既にあるため重複させない)。
 
 - **AI 機能 on/off (メールビューア)**: `AIFeaturesSettingsStore` (新規、
   既定 ON) — `MessageView`の翻訳バー・AI要約バーの両方をまとめて表示/
@@ -25,12 +33,23 @@
   ため)。作成画面 (Composer) の「英語に翻訳して送る」トグルはこのマスター
   の対象外 (独立した、常時表示の機能のまま)。
 - **送信キャンセルの猶予**: `SendCancelSettingsStore`自体は表示・操作
-  改善バッチ (C7) で実装済みだったが、値を変更する`Picker` UI がこの
+  改善バッチ (C7) で実装済みだったが、値を変更する`Picker` UI が第2弾の
   再構成まで存在しなかった (`ComposerView`が既定値を読むだけの状態) —
-  この再構成のついでに「その他」へ配線した。
+  その再構成のついでに配線し、第3弾 (I) で新設の「メール作成」カテゴリへ
+  移した。
+- **メール作成カテゴリへの「署名テンプレート」統合の判断**: テンプレート
+  (C8) と署名テンプレート (F) はどちらも「メールを書くときに使う設定」
+  という共通点があり、ルート一覧に似た名前の項目が2つ (このカテゴリへの
+  入口と、旧ルート直下の署名テンプレート) 並んで見えるより、1つのカテゴ
+  リの中に「テンプレート」「署名テンプレート」の2つの入口がある方が発見
+  しやすいと判断した。`SignatureTemplateRecord`のドキュメントコメントが
+  説明する「テンプレート (全文定型) と署名 (本文末尾への付加) は別機能・
+  別テーブル」という区別自体は変えていない — 設定画面上の置き場所だけの
+  統合。
 - **macOS**: `OtegamiSettingsView`の "設定" タブ (旧「アカウント」タブ、
   中身がカテゴリ一覧に変わったためタブ名も変更) がこの`AccountsListContent`
-  をそのまま埋め込むため、iOS と全く同じカテゴリ構造になる。
+  をそのまま埋め込むため、iOS と全く同じカテゴリ構造になる (「このアプリ
+  について」は例外 — 上記参照)。
 
 otegami の設定項目を一箇所に整理したもの。2026-07-26 のユーザー要望
 バッチ（バグ修正・一覧表示・送信キャンセル・スワイプ設定・ピン留め）で
@@ -165,12 +184,25 @@ HTML メールの詳細画面には、件名の隣に控えめな "HTML" バッ�
   フィールドと同様に同期される (`docs/icloud-sync.md`) — 端末間で選んだ色
   が揃う。
 
-## アプリアイコンの未読バッジ (実機フィードバック第2弾: H)
+## アプリアイコンの未読バッジ (実機フィードバック第2弾: H → 第3弾: G で on/off トグルを削除)
 
-`BadgeSettingsStore`。キー `badge.enabled`、既定 **ON**。統合受信トレイ
-基準 (`MessageQuery.unifiedInboxUnreadCountObservation`、既存のハンバー
-ガーメニュー/macOS サイドバーの未読数表示と同じクエリを再利用) の未読数を
-アプリアイコンに表示する。
+統合受信トレイ基準 (`MessageQuery.unifiedInboxUnreadCountObservation`、
+既存のハンバーガーメニュー/macOS サイドバーの未読数表示と同じクエリを
+再利用) の未読数をアプリアイコンに表示する。
+
+実機フィードバック第3弾 (G): アプリ内蔵の on/off トグル
+(`BadgeSettingsStore`、設定 →「その他」) を**廃止した** — 代わりに **iOS
+の通知設定 (設定 → 通知 → otegami → バッジ)** に完全に従う。
+`AppEnvironment.restartBadgeObservationIfNeeded(accountIds:)` が
+`UNUserNotificationCenter.current().notificationSettings().badgeSetting`
+を確認し、`.enabled`でなければ`BadgeCenter.setBadge(count: 0)`にして
+未読監視自体を開始しない — OS 側で有効なら常に未読数を反映する。この
+チェックはアプリがフォアグラウンドへ戻るたびにも再実行される
+(`RootView.handleScenePhaseChange(.active)` → `environment
+.refreshBadgeObservation()`) — OS の通知設定はこのアプリがバックグラウ
+ンドの間にいつでも変更されうり、変更を検知する通知の仕組みが無いため。
+`BadgeSettingsStore`自体は削除済み (`badge.enabled`キーの残骸は無視して
+問題ない)。
 
 - **通知許可**: `PushTokenCenter` (プッシュ通知の opt-in、`[.alert, .badge,
   .sound]`) とは独立に、`BadgeCenter.requestAuthorizationIfNeeded()` が
@@ -188,10 +220,10 @@ HTML メールの詳細画面には、件名の隣に控えめな "HTML" バッ�
   読み取りのみ) ため正確な未読数を計算できず、暫定的な+1に留まる —
   次にメイン app 側の `ValueObservation` が発火した時点で正しい数へ
   自己修正される。
-- **macOS**: `NSApplication.dockTile.badgeLabel` (権限不要)。App Group が
-  そもそも存在しない (`OtegamiAppGroup.identifier` が常に `nil`) ため
-  Extension 連携の対象外 — メイン app プロセス内の同じ `ValueObservation`
-  だけで完結する。
+- **macOS**: `NSApplication.dockTile.badgeLabel` (権限不要) — 通知設定の
+  確認は iOS 限定 (`#if os(iOS)`)。App Group がそもそも存在しない
+  (`OtegamiAppGroup.identifier` が常に `nil`) ため Extension 連携の対象外
+  — メイン app プロセス内の同じ `ValueObservation` だけで完結する。
 
 ## デフォルトのアカウント (実機フィードバック第2弾: G)
 
@@ -373,19 +405,60 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 有効/無効の概念は無く (5つとも常に表示)、並び順だけを変更できる。詳細・
 各アイコンの動作は `docs/design-system.md`「新画面構成」節を参照。
 
-## 表示言語 (表示・操作改善バッチ)
+## 表示言語 (表示・操作改善バッチ → 実機フィードバック第3弾 F で廃止)
 
-`LocalizationSettingsStore.swift`。設定 →「表示言語」セクションの
-Picker (`.pickerStyle(.menu)`) から「システムに従う」「日本語」
-「English」を選ぶ。
+表示・操作改善バッチで追加したアプリ内蔵の「表示言語」設定 (システムに
+従う/日本語/English の3択ピッカー + 反映には再起動が必要という案内) は
+**廃止した**。代わりに **iOS 標準の「アプリごとの言語」** (設定アプリ →
+otegami → 言語) に委ねる — このアプリの `Info.plist` は元々
+`CFBundleLocalizations: [ja, en]` を宣言しており、OS 標準機能がまさに
+この用途のために存在する。OS 標準の言語切替は設定変更時に OS 自身が
+プロセスを再起動するため、旧実装が抱えていた「ホーム画面に戻っただけ
+では反映されない」という問題自体も構造的に解消される。
 
-| キー | 既定値 |
-| --- | --- |
-| `app.languageOption` | `system` (`AppLanguageOption.system`) |
+`LocalizationSettingsStore.swift`は削除せず、`effectiveLanguageCode`
+(現在有効な表示言語を`Bundle.main.preferredLocalizations`から読む、読み
+取り専用の計算プロパティ) だけを残した — 本文画面の翻訳ボタン表示条件・
+AI要約の出力言語判定 (「メールの言語 ≠ アプリの表示言語」の判定) に
+引き続き必要な機能で、廃止対象は選択 **UI** のみ。
 
-選択は `AppleLanguages`(`UserDefaults`標準キー) の上書きも兼ねる —
-`.system`なら`AppleLanguages`を削除してOS本来の言語解決に戻し、`.ja`/
-`.en`ならその1言語だけの配列を書き込む。**変更の反映にはアプリの再起動
-が必要** (設定画面にもその旨のfooterを表示) — `Bundle.main`のローカライズ
-解決はプロセス起動時に一度だけ行われるため。詳細な仕組み・ローカライズ
-のカバレッジ範囲は [docs/localization.md](localization.md) 参照。
+**移行処理**: 旧設定で明示的に「日本語」/「English」を選んでいた既存
+ユーザーの端末には`AppleLanguages`(`UserDefaults`標準キー) の上書きが
+残っている — 放置すると OS の「アプリごとの言語」設定を無視してこの
+アプリだけ固定言語のままになってしまうため、`AppEnvironment.init()`から
+`LocalizationSettingsStore
+.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`を起動のたびに
+(冪等に) 呼び、この上書きを一度だけ削除する。廃止済み設定の選択値
+(`app.languageOption`キー) 自体は削除しない (無害な残骸)。
+
+詳細な仕組み・ローカライズのカバレッジ範囲は
+[docs/localization.md](localization.md) 参照。
+
+## ハンバーガーメニューのアカウントセクション折りたたみ (実機フィードバック第3弾: K) — iOS のみ
+
+`FolderSectionCollapseStore`(`FolderListSheet.swift`内)。ハンバーガー
+メニュー (`FolderListSheet`) の各アカウントのメールボックスツリーは、
+アカウント名の行 (セクションヘッダ) をタップして開閉できる。
+
+- **設定項目としてではなく `UserDefaults` 直書き**: `folderSheet
+  .collapsedAccountIds`キーに、折りたたみ中のアカウント ID の配列を
+  保存する。ユーザーが選ぶ「設定」ではなく画面状態の記憶なので、他の
+  `*SettingsStore`と違い設定画面には出てこない。
+- **既定は展開**: 一度も折りたたんだことのないアカウントは常に展開状態。
+- **未読バッジは折りたたみ中も表示**: `AccountSectionHeader`がそのアカ
+  ウントの全メールボックスの未読数を合計して表示するため、折りたたんで
+  受信トレイが見えなくなっても未読の有無は分かる。
+- **シェブロンの向きで状態を表現**: `chevron.right`を展開時に90°回転
+  (下向き) — `DisclosureGroup`の慣習を手動で再現したもの
+  (`AccountSectionHeader`のドキュメントコメント参照、`DisclosureGroup`
+  自体を使わなかった理由も記載)。
+
+## アカウント追加/編集フォームのフィールドラベル (実機フィードバック第3弾: H)
+
+`AccountSetupView`/`AccountEditView`/`GmailAccountSetupView`/
+`ICloudAccountSetupView`の各テキストフィールド (表示名・メールアドレス・
+ホスト・ポート・ユーザー名・パスワード等) に、`LabeledContent`による
+永続的なラベルを付けた。以前は`TextField(プレースホルダ, text:)`のみで、
+値を入力するとプレースホルダが消えるため、埋まったフィールドが何を表す
+か分からなくなる問題があった。`AccountEditView`の「メールアドレス」/
+「種類」(既存の`LabeledContent`) と見た目を揃えている。

@@ -7,6 +7,15 @@ import OtegamiStore
 /// このカテゴリ画面ではなく各アカウントの編集画面 (`AccountEditView`) に
 /// ある — 「アカウント全体の設定」ではなく「そのアカウント固有の見た目」
 /// なので、一覧から辿った先の編集画面に置く方が一貫している。
+///
+/// 実機フィードバック第3弾 (I): 「その他」カテゴリから iCloud アカウント
+/// 同期・プッシュ通知の2項目をここへ移設した — どちらも「アカウントの
+/// 接続・同期に関する設定」という点でこのカテゴリの既存項目 (アカウント
+/// 追加削除・デフォルトアカウント) と同じ性質であり、「その他」という
+/// 汎用カテゴリに漠然と置いておく理由がなかった。この移設で「その他」に
+/// 残る項目が「このアプリについて」だけになったため、`OtherSettingsView`
+/// 自体を廃止しルート一覧の直下リンクに格上げした
+/// (`AccountsListContent`の doc comment参照)。
 struct AccountSettingsCategoryView: View {
     @Environment(AppEnvironment.self) private var environment
 
@@ -83,6 +92,30 @@ struct AccountSettingsCategoryView: View {
                         .foregroundStyle(OtegamiColor.destructive)
                         .accessibilityIdentifier("settings.reauthErrorMessage")
                 }
+            }
+
+            // 実機フィードバック第3弾 (I): 旧「その他」カテゴリから移設。
+            Section {
+                Toggle(
+                    "iCloud でアカウントを同期",
+                    isOn: Binding(
+                        get: { environment.isCloudSyncEnabled },
+                        set: { newValue in Task { await environment.setCloudSyncEnabled(newValue) } }
+                    )
+                )
+                .accessibilityIdentifier("settings.cloudSyncToggle")
+            } footer: {
+                Text("同じ Apple ID の他の iOS/Mac デバイスとアカウントの接続設定を同期します。パスワードは iCloud キーチェーンが別途同期します。")
+            }
+
+            // M9: iOS-only in practice.
+            Section {
+                NavigationLink {
+                    PushNotificationSettingsView()
+                } label: {
+                    Label("プッシュ通知", systemImage: "bell.badge")
+                }
+                .accessibilityIdentifier("settings.pushNotificationsLink")
             }
         }
         .navigationTitle("アカウントの設定")

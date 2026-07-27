@@ -310,6 +310,62 @@ translations = {
     "同意して有効にする": "Agree & Enable",
     "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）が入力したリレー URL のサーバーへ送信され、暗号化して保存されます。リレーの運用者を信頼できる場合のみ有効にしてください。Gmail (OAuth) アカウントは現バージョンでは対象外です。":
         "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the server at the relay URL you entered, where it's stored encrypted. Only enable this if you trust the relay's operator. Gmail (OAuth) accounts aren't supported in this version.",
+
+    # --- 実機フィードバック第3弾 (E): 設定画面配下の未登録文字列を洗い出して
+    # 追加。動的な値を埋め込む補間文字列 (例: アカウント削除確認ダイアログの
+    # "\(account.displayName) (\(account.email)) を削除すると...") は
+    # docs/localization.md が既に明記している既存方針どおり対象外のまま
+    # (エラーメッセージの多くと同じ理由 — 該当箇所は該当ファイルのdoc
+    # comment参照)。技術用語 (IMAP/TLS/STARTTLS/Gmail/iCloud/Otegami) も
+    # 両言語で見た目が同じだが、カタログ未登録のまま放置すると
+    # 「登録済みかどうかが文字列ごとにまちまち」という調査コストを将来また
+    # 生むため、英訳=原文のまま明示的に登録した。
+    "IMAP": "IMAP",
+    "TLS": "TLS",
+    "STARTTLS": "STARTTLS",
+    "Gmail": "Gmail",
+    "iCloud": "iCloud",
+    "Otegami": "Otegami",
+    "https://relay.example.com": "https://relay.example.com",
+    "ホスト": "Host",
+    "ポート": "Port",
+    "ユーザー名": "Username",
+    "パスワード": "Password",
+    "接続テスト": "Test Connection",
+    "認証": "Authentication",
+    "署名": "Signature",
+    "デフォルト署名": "Default Signature",
+    "ラベル色": "Label Color",
+    "保存": "Save",
+    "名前": "Name",
+    "例: 定型の署名": "e.g. Standard Signature",
+    "先頭のアカウント": "First Account",
+    "削除・アーカイブ": "Delete & Archive",
+    "プロフィール画像": "Profile Picture",
+    "本文プレビューの行数": "Preview Line Count",
+    "右・短いスワイプ": "Right · Short Swipe",
+    "右・長いスワイプ": "Right · Long Swipe",
+    "左・短いスワイプ": "Left · Short Swipe",
+    "左・長いスワイプ": "Left · Long Swipe",
+    "この配布ビルドには Google OAuth Client ID が設定されていません。docs/oauth-setup.md を参照して各自 Client ID を発行し、Config/Local.xcconfig に設定してください。":
+        "This distribution build has no Google OAuth Client ID configured. See docs/oauth-setup.md to issue your own Client ID and set it in Config/Local.xcconfig.",
+
+    # --- 実機フィードバック第3弾 (H): 表示名等のフィールドに永続ラベルを付与 —
+    # 元は "表示名 (省略時はメールアドレス)"/"新しいパスワード (変更する場合
+    # のみ入力)" のように1つの文字列だった placeholder を「ラベル」+「短い
+    # placeholder」に分割したため、分割後の新しい断片だけをここに追加する
+    # (「表示名」「App 用パスワード」等の共通部分は既存キーを再利用)。
+    "新しいパスワード": "New Password",
+    "新しい App 用パスワード": "New App-Specific Password",
+    "変更する場合のみ入力": "Enter only to change it",
+    "省略時はメールアドレス": "Defaults to email address",
+    "メール作成": "Compose",
+
+    # --- K (実機フィードバック第3弾): ハンバーガーメニューのアカウント
+    # セクション折りたたみ — VoiceOver 用の状態値のみ (アカウント名自体は
+    # 動的データなので対象外、`AccountSectionHeader`のdoc comment参照)。
+    "折りたたみ": "Collapsed",
+    "展開": "Expanded",
 }
 
 

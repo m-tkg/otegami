@@ -31,12 +31,30 @@ struct AccountsSettingsView: View {
 
 /// I「設定画面の再構成」: 設定のルート画面。以前はここに全設定 (アカウント
 /// 一覧・スワイプ・翻訳・画像・etc.) がフラットな`List`として並んでいたが、
-/// ユーザー指定のカテゴリ構造 (アカウントの設定/メールビューア/メール一覧/
-/// 署名テンプレート/その他) に沿って5つのサブ画面へ分割した — 各設定項目
-/// の実体 (`@AppStorage`キー等) は移動していない。分割後の各カテゴリ画面
-/// (`AccountSettingsCategoryView`/`MailViewerSettingsView`/
-/// `MailListSettingsView`/`SignatureTemplatesSettingsView`/
-/// `OtherSettingsView`) を参照。
+/// ユーザー指定のカテゴリ構造に沿ってサブ画面へ分割した — 各設定項目
+/// の実体 (`@AppStorage`キー等) は移動していない。
+///
+/// 実機フィードバック第3弾 (I): 当初の5分類 (アカウントの設定/メール
+/// ビューア/メール一覧/署名テンプレート/その他) を4分類に再編した —
+/// 「その他」は雑多な置き場になっていた項目 (iCloud同期・プッシュ通知・
+/// 画像・HTML表示・ピン留め連動・スレッド表示・テンプレート・送信
+/// キャンセル) を性質の近い既存カテゴリへ再配置した結果、残るのは
+/// 「このアプリについて」だけになったため廃止し、ルート直下の項目に格上げ
+/// した。ルート直下の「署名テンプレート」は新設「メール作成」カテゴリへ
+/// 統合した (`MailComposeSettingsView`の doc comment参照)。各項目の移設先
+/// は以下のとおり:
+///
+/// - **アカウントの設定** (`AccountSettingsCategoryView`) ← iCloud同期・
+///   プッシュ通知を追加。
+/// - **メールビューア** (`MailViewerSettingsView`) ← 画像設定・HTML表示
+///   設定を追加。
+/// - **メール一覧** (`MailListSettingsView`) ← スレッド表示・ピン留めの
+///   フラグ連動を追加。
+/// - **メール作成** (`MailComposeSettingsView`、新設) ← テンプレート・
+///   署名テンプレート・送信キャンセルの猶予。
+/// - **このアプリについて** (`AboutView`) — ルート直下 (iOS のみ。macOS は
+///   `OtegamiSettingsView`の独立した「情報」タブに既にあるため、ここに
+///   重複させない)。
 ///
 /// `AccountsListContent`という型名は維持している (`OtegamiSettingsView`
 /// (macOS Settings シーン) がこの型を直接埋め込む既存の配線を変更せずに
@@ -71,23 +89,27 @@ struct AccountsListContent: View {
                 }
                 .accessibilityIdentifier("settings.category.mailList")
 
-                // F「署名テンプレート」— see `SignatureTemplateRecord`'s doc
-                // comment for why this is separate from C8's templates
-                // (`OtherSettingsView`内) と同列のトップレベル項目にした。
                 NavigationLink {
-                    SignatureTemplatesSettingsView()
+                    MailComposeSettingsView()
                 } label: {
-                    Label("署名テンプレート", systemImage: "signature")
+                    Label("メール作成", systemImage: "square.and.pencil")
                 }
-                .accessibilityIdentifier("settings.signaturesLink")
-
-                NavigationLink {
-                    OtherSettingsView()
-                } label: {
-                    Label("その他", systemImage: "ellipsis.circle")
-                }
-                .accessibilityIdentifier("settings.category.other")
+                .accessibilityIdentifier("settings.category.mailCompose")
             }
+
+            #if os(iOS)
+            // 実機フィードバック第3弾 (I): 「その他」廃止に伴いルート直下へ
+            // 格上げ — macOS は `OtegamiSettingsView` の独立した「情報」
+            // タブに既にあるので、ここでは重複させない。
+            Section {
+                NavigationLink {
+                    AboutView()
+                } label: {
+                    Label("このアプリについて", systemImage: "info.circle")
+                }
+                .accessibilityIdentifier("settings.aboutLink")
+            }
+            #endif
         }
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)

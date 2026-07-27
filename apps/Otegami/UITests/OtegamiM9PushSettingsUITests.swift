@@ -20,8 +20,9 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
 
         // 新画面構成: "設定" is reached via the hamburger menu's bottom row.
         openSettingsFromHamburgerMenu(in: app)
-        // I「設定画面の再構成」: プッシュ通知は「その他」カテゴリの下。
-        XCTAssertTrue(navigateToOtherSettingsCategory(in: app), "「その他」カテゴリへの遷移に失敗した")
+        // 実機フィードバック第3弾 (I): プッシュ通知は「アカウントの設定」
+        // カテゴリの下 (旧「その他」カテゴリは廃止)。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
 
         app.buttons["settings.pushNotificationsLink"].tap()
 
@@ -69,8 +70,9 @@ final class OtegamiM9PushSettingsUITests: XCTestCase {
         // 新画面構成: "設定" is reached via the hamburger menu's bottom row —
         // see the previous test method's comment.
         openSettingsFromHamburgerMenu(in: app)
-        // I「設定画面の再構成」: プッシュ通知は「その他」カテゴリの下。
-        XCTAssertTrue(navigateToOtherSettingsCategory(in: app), "「その他」カテゴリへの遷移に失敗した")
+        // 実機フィードバック第3弾 (I): プッシュ通知は「アカウントの設定」
+        // カテゴリの下 (旧「その他」カテゴリは廃止)。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
         app.buttons["settings.pushNotificationsLink"].tap()
 
         let relayURLField = app.textFields["settings.push.relayURLField"]

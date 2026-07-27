@@ -53,15 +53,27 @@ struct ICloudAccountSetupView: View {
                         .accessibilityIdentifier("icloudAccountSetup.appPasswordLink")
                 }
 
+                // H (実機フィードバック第3弾) — persistent labels instead of
+                // placeholder-only fields (`AccountEditView`'s identical
+                // fix's doc comment).
                 Section("アカウント") {
-                    TextField("表示名 (省略時はメールアドレス)", text: $displayName)
-                        .accessibilityIdentifier("icloudAccountSetup.displayName")
-                    TextField("iCloud メールアドレス", text: $email)
-                        .textFieldAutocapitalizationNone()
-                        .otegamiEmailKeyboard()
-                        .accessibilityIdentifier("icloudAccountSetup.email")
-                    SecureField("App 用パスワード", text: $appPassword)
-                        .accessibilityIdentifier("icloudAccountSetup.appPassword")
+                    LabeledContent("表示名") {
+                        TextField("省略時はメールアドレス", text: $displayName)
+                            .multilineTextAlignment(.trailing)
+                            .accessibilityIdentifier("icloudAccountSetup.displayName")
+                    }
+                    LabeledContent("iCloud メールアドレス") {
+                        TextField("", text: $email)
+                            .multilineTextAlignment(.trailing)
+                            .textFieldAutocapitalizationNone()
+                            .otegamiEmailKeyboard()
+                            .accessibilityIdentifier("icloudAccountSetup.email")
+                    }
+                    LabeledContent("App 用パスワード") {
+                        SecureField("", text: $appPassword)
+                            .multilineTextAlignment(.trailing)
+                            .accessibilityIdentifier("icloudAccountSetup.appPassword")
+                    }
                 }
 
                 Section("接続先 (自動設定)") {
