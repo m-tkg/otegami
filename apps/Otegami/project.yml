@@ -43,6 +43,30 @@ targets:
       path: Generated/Info.plist
       properties:
         CFBundleDisplayName: Otegami
+        # Task #49 (Xcode Cloud/TestFlight 整備, docs/xcode-cloud.md):
+        # XcodeGen の `info.path` モードはこのキーを指定しない限り
+        # CFBundleVersion に固定リテラル "1" を自動生成してしまい、
+        # CURRENT_PROJECT_VERSION (Config/Shared.xcconfig) を変えても
+        # 反映されない。マクロ参照にしておけば、ビルド時に xcconfig の
+        # 値がそのまま埋め込まれる — 他の環境依存キー (GOOGLE_OAUTH_CLIENT_ID
+        # 等、このファイル内で既に同じ書き方をしている) と同じ理屈。
+        # `ci_scripts/ci_post_clone.sh` は Xcode Cloud の `CI_BUILD_NUMBER`
+        # を `Config/Local.xcconfig` に `CURRENT_PROJECT_VERSION` として書き込み、
+        # Signing.xcconfig の `#include? "Local.xcconfig"` 経由で
+        # Shared.xcconfig の既定値 (1) を上書きする — ローカル開発時は
+        # Local.xcconfig にこの行が無いので既定値 1 のまま変わらない。
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # Task #49: TestFlight へのアップロードは Export Compliance
+        # (暗号化の輸出規制申告) の回答を要求する。このアプリが使う暗号化は
+        # IMAP/SMTP over TLS (MailCore2)・HTTPS (URLSession, Google OAuth/
+        # otegami-relay 通信)・Keychain (OS 標準) のみで、いずれも
+        # 「標準的な暗号化 (standard TLS 等)」として輸出規制の対象外
+        # (exempt) — 独自暗号アルゴリズムの実装や、輸出規制対象国向けの
+        # 特別な強度の暗号は一切含まない。`false` にしておくことで
+        # App Store Connect Web 側の質問への回答を毎回アップロードごとに
+        # 求められるのを避けられる (判断根拠は `docs/xcode-cloud.md` に
+        # 記録)。
+        ITSAppUsesNonExemptEncryption: false
         # 表示・操作改善バッチ「表示言語の設定」— どの言語をこのバンドルが
         # 提供するか。`LocalizationSettingsStore`が`AppleLanguages`を
         # ["ja"]/["en"]に上書きしたとき、`Bundle.main`が実際にその
@@ -221,6 +245,12 @@ targets:
       path: Generated/NotificationService-Info.plist
       properties:
         CFBundleDisplayName: Otegami
+        # Task #49: keep in lockstep with the main app's CFBundleVersion
+        # (same macro-reference reasoning as the Otegami target's own
+        # CFBundleVersion above) — App Store Connect's build validation
+        # rejects an archive whose embedded extension's CFBundleVersion
+        # doesn't match its containing app.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
