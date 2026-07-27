@@ -85,7 +85,7 @@ struct MessageView: View {
 
     // MARK: - Translation (design-phase-3, 1i)
 
-    @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = true
+    @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = TranslationSettingsStore.defaultAutoTranslateEnglish
     /// I「設定画面の再構成」→「メールビューア」の「AI 機能の on/off (翻訳・要約を
     /// まとめて)」— see `AIFeaturesSettingsStore`'s doc comment. Master
     /// switch for both `TranslationBar` (`shouldShowTranslationBar`) and
@@ -104,6 +104,14 @@ struct MessageView: View {
     /// state, reset alongside everything else in `load()`.
     @State private var translationParagraphOverrides: Set<Int> = []
     @State private var translateTask: Task<Void, Never>?
+    /// 1i「HTMLメールもレイアウトを保持したまま翻訳」— the live handle
+    /// `HTMLMessageView` reports via `onTranslationControllerReady`,
+    /// non-`nil` only while an `HTMLMessageView` for *this* message is
+    /// actually mounted. `requestTranslation(message:)`'s HTML branch reads
+    /// this to collect the document's text nodes; `nil` there (view torn
+    /// down mid-flight, or this message isn't HTML) just means "nothing to
+    /// translate right now" rather than a crash.
+    @State private var htmlTranslationController: HTMLTranslationController?
 
     /// A message `SyncEngine.BodyFetcher` tagged English gets a bar (plan:
     /// "英文メールのみ翻訳バーを出す"). `detectedLanguage == nil` — a
@@ -136,6 +144,17 @@ struct MessageView: View {
     /// の場合は従来どおり出す。
     private var shouldShowTranslationBar: Bool {
         aiFeaturesEnabled && isEnglishMessage && LocalizationSettingsStore.effectiveLanguageCode != "en"
+    }
+
+    /// 1i「HTMLメールもレイアウトを保持したまま翻訳」— `content`'s HTML branch
+    /// hands this straight to `HTMLMessageView.translatedTexts`. `nil`
+    /// whenever there's nothing translated to overlay (bar hidden, no
+    /// translation requested yet, still in flight, or failed) — matches
+    /// `TranslatedBodyView`'s own gating in the plain-text branch below it,
+    /// just expressed as an array instead of a view swap.
+    private var htmlTranslatedTexts: [String]? {
+        guard shouldShowTranslationBar, case .translated(let record) = translationState else { return nil }
+        return record.paragraphs.map(\.translated)
     }
 
     var body: some View {
@@ -475,16 +494,7 @@ struct MessageView: View {
 
     @ViewBuilder
     private var content: some View {
-        // 1i: "訳文" showing and a translation actually cached — render the
-        // per-paragraph translated view instead of the normal HTML/plain-
-        // text body. Every other state (still translating, failed, "原文"
-        // selected, or not an English message at all) falls through to the
-        // original rendering untouched below — the translation feature
-        // never changes what a non-English or not-yet-translated message
-        // looks like.
-        if shouldShowTranslationBar, !translationShowOriginal, case .translated(let record) = translationState {
-            TranslatedBodyView(paragraphs: record.paragraphs, originalOverrides: $translationParagraphOverrides)
-        } else if isLoading {
+        if isLoading {
             VStack {
                 Spacer()
                 HStack {
@@ -503,9 +513,29 @@ struct MessageView: View {
             // (the message's real `text/plain` part if it has one, else
             // `HTMLTextExtractor`'s output) exactly the way a message with
             // no HTML part at all already does.
+            //
+            // 1i「HTMLメールもレイアウトを保持したまま翻訳」: an HTML message
+            // never swaps over to `TranslatedBodyView` (that would lose the
+            // whole DOM — images, tables, layout) — instead `HTMLMessageView`
+            // itself overlays `htmlTranslatedTexts` onto the loaded
+            // document's own text nodes in place, so this branch always
+            // renders `HTMLMessageView` regardless of translation state.
             if isHTMLMessage, isShowingHTML, let html = bodyRecord.html {
-                HTMLMessageView(html: html, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath)
-                    .accessibilityIdentifier("messageDetail.htmlBody")
+                HTMLMessageView(
+                    html: html, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath,
+                    translatedTexts: htmlTranslatedTexts, showOriginalText: translationShowOriginal,
+                    onTranslationControllerReady: { htmlTranslationController = $0 }
+                )
+                .accessibilityIdentifier("messageDetail.htmlBody")
+            } else if shouldShowTranslationBar, !translationShowOriginal, case .translated(let record) = translationState {
+                // 1i: "訳文" showing and a translation actually cached, for a
+                // *plain-text* body — the per-paragraph long-press original
+                // toggle only makes sense here (the HTML branch above
+                // handles its own translated display entirely inside the
+                // web view instead). Every other state (still translating,
+                // failed, "原文" selected, or not an English message at all)
+                // falls through to the plain-text rendering below untouched.
+                TranslatedBodyView(paragraphs: record.paragraphs, originalOverrides: $translationParagraphOverrides)
             } else if let plainText = plainTextFallback(for: bodyRecord) {
                 ScrollView {
                     linkifiedText(plainText)
@@ -908,27 +938,61 @@ struct MessageView: View {
     }
 
     /// Shared by the automatic kickoff above and the translation bar's
-    /// manual "翻訳"/"再試行" button — `MessageTranslator.translate` already
-    /// checks its own persisted cache first (`docs/translation.md`'s
-    /// キャッシュ方針), so calling this again after a previous success (e.g.
-    /// re-opening the same message) is cheap rather than re-running the
-    /// on-device model.
+    /// manual "翻訳"/"再試行" button — `MessageTranslator.translate`/
+    /// `translateHTMLTextNodes` already check their own persisted cache
+    /// first (`docs/translation.md`'s キャッシュ方針), so calling this again
+    /// after a previous success (e.g. re-opening the same message) is cheap
+    /// rather than re-running the on-device model.
+    ///
+    /// 1i「HTMLメールもレイアウトを保持したまま翻訳」: branches on the same
+    /// `isHTMLMessage`/`isShowingHTML` pair `content` uses to decide which
+    /// body view to render at all — an HTML message currently shown as HTML
+    /// collects its DOM text nodes via `htmlTranslationController` and goes
+    /// through `translateHTMLTextNodes`; everything else (plain-text body,
+    /// or an HTML message the user switched to text view) goes through the
+    /// original flattened-string `translate` path unchanged.
     private func requestTranslation(message: MessageRecord) {
         guard translateTask == nil else { return }
-        guard let sourceText = sourceTextForTranslation() else { return }
-        translationState = .translating
         let messageId = messageId
         let translator = environment.messageTranslator
-        translateTask = Task {
-            let result = await translator.translate(
-                messageId: messageId,
-                sourceText: sourceText,
-                sourceLanguage: .english,
-                targetLanguage: .japanese
-            )
-            guard !Task.isCancelled else { return }
-            translationState = result
-            translateTask = nil
+
+        if isHTMLMessage, isShowingHTML {
+            guard let htmlTranslationController else { return }
+            translationState = .translating
+            translateTask = Task {
+                // `extractTranslatableTexts()` always runs even when
+                // `translateHTMLTextNodes` is about to hit its own cache and
+                // ignore its `texts` argument entirely (`MessageTranslator
+                // .translateHTMLTextNodes`'s doc comment) — collecting is
+                // cheap (idempotent DOM stamping, no engine call) and this
+                // keeps the two call sites symmetric rather than needing a
+                // separate "peek the cache first" API just to skip it.
+                let texts = await htmlTranslationController.extractTranslatableTexts()
+                guard !Task.isCancelled else { return }
+                let result = await translator.translateHTMLTextNodes(
+                    messageId: messageId,
+                    texts: texts,
+                    sourceLanguage: .english,
+                    targetLanguage: .japanese
+                )
+                guard !Task.isCancelled else { return }
+                translationState = result
+                translateTask = nil
+            }
+        } else {
+            guard let sourceText = sourceTextForTranslation() else { return }
+            translationState = .translating
+            translateTask = Task {
+                let result = await translator.translate(
+                    messageId: messageId,
+                    sourceText: sourceText,
+                    sourceLanguage: .english,
+                    targetLanguage: .japanese
+                )
+                guard !Task.isCancelled else { return }
+                translationState = result
+                translateTask = nil
+            }
         }
     }
 

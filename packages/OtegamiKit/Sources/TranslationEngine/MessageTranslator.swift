@@ -78,12 +78,73 @@ public actor MessageTranslator {
         sourceLanguage: TranslationLanguage,
         targetLanguage: TranslationLanguage
     ) async -> MessageTranslationState {
+        await translateAligned(
+            messageId: messageId,
+            paragraphs: ParagraphSplitter.split(sourceText),
+            cacheEngineIdentifier: engineIdentifier,
+            sourceLanguage: sourceLanguage,
+            targetLanguage: targetLanguage
+        )
+    }
+
+    /// HTML メールのレイアウト保持翻訳 (実機フィードバック「htmlメールの場合、
+    /// レイアウトをなるべく崩さないように翻訳を表示して欲しい」): the same
+    /// cache/chunk/persist pipeline as `translate(messageId:sourceText:...)`
+    /// above, but `texts` is already the exact ordered array to translate —
+    /// each element is one DOM text node's current content, collected by
+    /// the app layer's `HTMLTranslationController` (this package has no
+    /// WebKit dependency and can't collect DOM nodes itself) — rather than a
+    /// flattened string this method would otherwise have to re-split with
+    /// `ParagraphSplitter`, which assumes prose paragraph boundaries, not
+    /// arbitrary DOM text-node boundaries (a `<td>` label and its sibling
+    /// value are two separate array elements here even though
+    /// `ParagraphSplitter` would never split them apart from flattened
+    /// text).
+    ///
+    /// Cached under a distinct engine-identifier suffix
+    /// (`htmlEngineIdentifierSuffix`) so a message translated once in HTML
+    /// mode and once in plain-text mode (the "テキストで表示" toggle lets a
+    /// user switch either way per message) never mixes the two differently-
+    /// shaped `paragraphs` arrays together — `translateAligned`'s cache
+    /// check already keys on the engine identifier, so this reuses that
+    /// exact mechanism instead of adding a new cache dimension/column to
+    /// `MessageTranslationRecord`.
+    @discardableResult
+    public func translateHTMLTextNodes(
+        messageId: Int64,
+        texts: [String],
+        sourceLanguage: TranslationLanguage,
+        targetLanguage: TranslationLanguage
+    ) async -> MessageTranslationState {
+        await translateAligned(
+            messageId: messageId,
+            paragraphs: texts,
+            cacheEngineIdentifier: engineIdentifier + Self.htmlEngineIdentifierSuffix,
+            sourceLanguage: sourceLanguage,
+            targetLanguage: targetLanguage
+        )
+    }
+
+    private static let htmlEngineIdentifierSuffix = ".html-nodes"
+
+    /// Shared by `translate(messageId:sourceText:...)` and
+    /// `translateHTMLTextNodes(messageId:texts:...)` — both ultimately just
+    /// need "translate this ordered array of strings, cached under this
+    /// engine identifier", they only differ in *how* that array was
+    /// produced (prose-paragraph splitting vs. DOM-node collection).
+    private func translateAligned(
+        messageId: Int64,
+        paragraphs: [String],
+        cacheEngineIdentifier: String,
+        sourceLanguage: TranslationLanguage,
+        targetLanguage: TranslationLanguage
+    ) async -> MessageTranslationState {
         do {
-            if let cached = try await fetchCached(messageId: messageId), isStillValid(cached, sourceLanguage: sourceLanguage, targetLanguage: targetLanguage) {
+            if let cached = try await fetchCached(messageId: messageId),
+               isStillValid(cached, sourceLanguage: sourceLanguage, targetLanguage: targetLanguage, engineIdentifier: cacheEngineIdentifier) {
                 return .translated(cached)
             }
 
-            let paragraphs = ParagraphSplitter.split(sourceText)
             // design-phase-3: a paragraph that's itself longer than the
             // engine's context window (`TranslationChunker`'s doc comment —
             // the real-device "translation works for some mail, not
@@ -125,7 +186,7 @@ public actor MessageTranslator {
                 targetLanguage: targetLanguage.rawValue,
                 translatedText: aligned.map(\.translated).joined(separator: "\n\n"),
                 paragraphs: aligned,
-                engineIdentifier: engineIdentifier
+                engineIdentifier: cacheEngineIdentifier
             )
             try await persist(record)
             return .translated(record)
@@ -162,7 +223,7 @@ public actor MessageTranslator {
         }
     }
 
-    private func isStillValid(_ cached: MessageTranslationRecord, sourceLanguage: TranslationLanguage, targetLanguage: TranslationLanguage) -> Bool {
+    private func isStillValid(_ cached: MessageTranslationRecord, sourceLanguage: TranslationLanguage, targetLanguage: TranslationLanguage, engineIdentifier: String) -> Bool {
         cached.sourceLanguage == sourceLanguage.rawValue
             && cached.targetLanguage == targetLanguage.rawValue
             && cached.engineIdentifier == engineIdentifier

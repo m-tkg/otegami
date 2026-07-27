@@ -45,7 +45,41 @@ struct HTMLMessageView: View {
     let messageId: Int64
     let mailboxPath: String?
 
+    /// 1i「HTMLメールもレイアウトを保持したまま翻訳」— `MessageView` owns the
+    /// actual translation (it alone has `AppEnvironment.messageTranslator`
+    /// and the bar's `MessageTranslationState`); this view only needs to
+    /// know *what* to show. `nil` means "no translation to display" (not
+    /// yet requested, still in flight, or failed) — the loaded document
+    /// shows its own original text untouched, same as before this feature
+    /// existed. Non-nil and `showOriginalText == false` means "overlay
+    /// these translated strings onto the document's text nodes, in the same
+    /// order `HTMLTranslationController.extractTranslatableTexts()` would
+    /// produce them" — see that method's doc comment for why the ordering
+    /// contract holds without either side needing to know about the
+    /// other's internals.
+    let translatedTexts: [String]?
+    /// The bar's 訳文/原文 segment, mirrored down from `MessageView` —
+    /// meaningless (ignored) when `translatedTexts == nil`.
+    let showOriginalText: Bool
+    /// Handed a live `HTMLTranslationController` once this view exists (and
+    /// `nil` right before it's torn down, e.g. the user navigates to a
+    /// different message) — `MessageView`'s translate button handler calls
+    /// `extractTranslatableTexts()` on whatever controller this last
+    /// reported. A plain callback rather than this view returning the
+    /// controller some other way: SwiftUI views can't hand values back to
+    /// their parent except through a binding or a callback like this one,
+    /// and a `Binding<HTMLTranslationController?>` would let `MessageView`
+    /// mistakenly think it could *assign* a new controller in, which makes
+    /// no sense here (only this view can ever construct one, since only it
+    /// creates the `WKWebView` the controller wraps).
+    let onTranslationControllerReady: (HTMLTranslationController?) -> Void
+
     @Environment(AppEnvironment.self) private var environment
+    /// Created once per `HTMLMessageView` instance (one per opened message,
+    /// like `allowsExternalContent`/`allowsEmbeddedImages` below) —
+    /// `HTMLWebViewRepresentable.makeUIView`/`makeNSView` fills in its
+    /// `webView` the moment the platform view is created.
+    @State private var translationController = HTMLTranslationController()
     /// B: both seeded from `ImageSettingsStore`'s persisted defaults in
     /// `init` — not `@AppStorage` directly, since `@AppStorage`'s own
     /// default-value parameter only applies the *first* time a given
@@ -76,11 +110,18 @@ struct HTMLMessageView: View {
     @State private var presentedSafariURL: IdentifiableURL?
     #endif
 
-    init(html: String, accountId: String, messageId: Int64, mailboxPath: String?) {
+    init(
+        html: String, accountId: String, messageId: Int64, mailboxPath: String?,
+        translatedTexts: [String]? = nil, showOriginalText: Bool = false,
+        onTranslationControllerReady: @escaping (HTMLTranslationController?) -> Void = { _ in }
+    ) {
         self.html = html
         self.accountId = accountId
         self.messageId = messageId
         self.mailboxPath = mailboxPath
+        self.translatedTexts = translatedTexts
+        self.showOriginalText = showOriginalText
+        self.onTranslationControllerReady = onTranslationControllerReady
         _allowsExternalContent = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowRemoteImagesKey))
         _allowsEmbeddedImages = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowEmbeddedImagesKey))
     }
@@ -173,6 +214,7 @@ struct HTMLMessageView: View {
                 cidContext: CIDResolutionContext(
                     environment: environment, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath
                 ),
+                translationController: translationController,
                 onOpenLink: handleLinkTap
             )
             .accessibilityIdentifier("messageDetail.htmlWebView")
@@ -184,6 +226,27 @@ struct HTMLMessageView: View {
                 .ignoresSafeArea()
         }
         #endif
+        .onAppear { onTranslationControllerReady(translationController) }
+        .onDisappear { onTranslationControllerReady(nil) }
+        // 1i: whenever `MessageView` hands down a fresh translated-text
+        // array or flips 訳文/原文, reflect it into the live document.
+        // Re-running `applyTranslations` every time (not just once right
+        // after a translation completes) is deliberate — it's cheap and
+        // idempotent (`HTMLTranslationController.applyTranslations`'s doc
+        // comment), and it's what makes this self-healing after
+        // `HTMLWebViewCoordinator.load(...)` reloads the document from
+        // scratch (e.g. an image-blocking banner toggled mid-session, which
+        // wipes the DOM stamps a previous `applyTranslations` call left
+        // behind) without this view needing to know that happened.
+        .task(id: HTMLTranslationDisplayKey(showOriginal: showOriginalText, translatedTexts: translatedTexts)) {
+            guard let translatedTexts, !translatedTexts.isEmpty else { return }
+            if showOriginalText {
+                await translationController.showOriginal()
+            } else {
+                await translationController.applyTranslations(translatedTexts)
+                await translationController.showTranslated()
+            }
+        }
     }
 
     /// C7: where a tap on an `http(s)://` link inside message HTML ends up
@@ -269,6 +332,33 @@ struct CIDResolutionContext {
 /// `extractBodyContent(from:)`'s doc comment for the actual root cause this
 /// traced to.
 ///
+/// fit-to-width (実機フィードバック — 楽天銀行のような幅600-800px級の固定幅
+/// テーブルHTMLメールが等倍描画され、右端がクリップ・文字が巨大に見える):
+/// 上の`table { width: auto !important; }`等の CSS リセットだけでは、
+/// `white-space: nowrap`が指定されたセル (幅寄せのための隣接ラベル/値など、
+/// 固定幅前提のテンプレートで頻出) の**描画内容**がボックス自体の幅制約を
+/// 無視してはみ出す実際のケースをカバーしきれない — ボックスの幅は
+/// `max-width: 100%!important`で正しく制約されていても、そのボックスから
+/// 中身が視覚的にはみ出すのは別の話 (はみ出た分は`overflow-x: hidden`で
+/// クリップされるだけで、縮小はされない)。Spark 等の参考実装と同じ
+/// "fit-to-width" — 実際に必要な幅 (`scrollWidth`) を計測し、ビューポート幅
+/// を超えていれば `transform: scale()` でページ全体を視覚的に縮小する —
+/// で解決する。`wrap(bodyHTML:)`が本文を`#otegami-fit-outer`/
+/// `#otegami-fit-inner`の入れ子`div`で包むのはこのための足場: `outer`は
+/// `overflow: hidden`を持つ固定サイズのコンテナ (縮小後の見た目の寸法に
+/// JS側で明示的に合わせる — `transform`はペイント時の視覚効果でしかなく
+/// レイアウト上のボックスサイズを変えないため、`outer`側で明示しないと
+/// 縮小後も元の大きな高さ分だけ下に空白が残ってしまう)、`inner`が実際に
+/// `scale()`される対象。JS 本体は `HTMLWebViewCoordinator
+/// .fitToWidthScript`/`applyFitToWidth(to:)` — `didFinish`(ページ読み込み
+/// 完了)後に評価される。ページ自身のスクリプトは`allowsContentJavaScript
+/// = false`で無効化済みだが、ホスト側 (Swift) からの`evaluateJavaScript`
+/// 呼び出しはこの設定と独立に動作する (WebKit の一般的な仕様: `allowsContentJavaScript`
+/// が制限するのはページ自身が埋め込むスクリプト/イベントハンドラ/
+/// `javascript:` URLであり、アプリ自身が能動的に呼ぶ`evaluateJavaScript`
+/// はこの制限を受けない) — 同じ仕組みを1i の HTML レイアウト保持翻訳
+/// (`HTMLTranslationController`) も流用する。
+///
 /// HTML 表示の高さ問題 (B の直後の実機フィードバック): B のこの `extractBodyContent`
 /// が、実在するマーケティング/通知テンプレートが `<head>` にごく普通に含む
 /// **MSO (Outlook) 条件付きコメント** (`<!--[if mso]> ... <![endif]-->`、
@@ -323,10 +413,20 @@ enum HTMLDocumentBuilder {
           td, th { min-width: 0 !important; }
           a { color: LinkText; }
           pre, code { white-space: pre-wrap; }
+          /* fit-to-width の足場 (`HTMLWebViewCoordinator.fitToWidthScript`
+             が JS から実際に幅・transform を設定する) — #otegami-fit-outer
+             に `overflow: hidden` が要るのは、`transform: scale()` が
+             `#otegami-fit-inner`の*レイアウト上の*ボックスサイズ (＝縮小前の
+             元の大きな幅・高さ) を変えないため。JS 側が `outer` の
+             width/height を縮小後の見た目の寸法に明示的に合わせても、
+             `overflow: hidden` が無いと `inner` の (縮小前のままの)
+             レイアウト上のボックスが `outer` をはみ出して結局スクロール
+             領域が縮小前の大きいままになってしまう。 */
+          #otegami-fit-outer { overflow: hidden; }
         </style>
         \(originalHeadStyles)
         </head>
-        <body>\(innerBody)</body>
+        <body><div id="otegami-fit-outer"><div id="otegami-fit-inner">\(innerBody)</div></div></body>
         </html>
         """
     }
@@ -515,6 +615,208 @@ private func makeWebViewConfiguration(cidHandler: CIDSchemeHandler?) -> WKWebVie
     return configuration
 }
 
+/// `HTMLMessageView`'s `.task(id:)` re-application key — see its call site's
+/// doc comment. A plain `Equatable` struct (not `Hashable`; `.task(id:)`
+/// only requires `Equatable`) so SwiftUI can tell "the translation display
+/// state genuinely changed" apart from "this view just re-rendered for an
+/// unrelated reason" without restarting the task on every body evaluation.
+private struct HTMLTranslationDisplayKey: Equatable {
+    let showOriginal: Bool
+    let translatedTexts: [String]?
+}
+
+/// 1i「HTMLメールもレイアウトを保持したまま翻訳」(実機フィードバック
+/// 「htmlメールの場合、レイアウトをなるべく崩さないように翻訳を表示して
+/// 欲しい」): the handle `HTMLMessageView` vends to `MessageView` (via
+/// `onTranslationControllerReady`) so translation — which needs
+/// `AppEnvironment.messageTranslator`, firmly `MessageView`'s
+/// responsibility, and has no business knowing about `WKWebView` — can
+/// still collect and rewrite the live web view's DOM text nodes without
+/// `MessageView` ever importing `WebKit` itself. `HTMLDocumentBuilder.wrap
+/// (bodyHTML:)`'s "fit-to-width" doc comment already explains why a host-
+/// initiated `evaluateJavaScript` call works fine even though page-authored
+/// script is disabled (`allowsContentJavaScript = false`) — this reuses the
+/// exact same mechanism for a different purpose.
+///
+/// Every extracted/rewritten text node is wrapped in a `<span data-otegami-
+/// i="N">` the first time any of these methods sees it — `data-otegami-i`
+/// gives each node a stable handle across the several separate JS round
+/// trips this feature needs (collect → translate (async, off the web view
+/// entirely — `MessageTranslator` is a plain Swift actor) → write back),
+/// `data-otegami-original` preserves the pre-translation text so
+/// `showOriginal()` can restore it without asking Swift for it again. Not
+/// `@Observable`/`ObservableObject`: nothing reads its properties
+/// reactively, it's a purely imperative handle whose methods are called at
+/// specific moments (a button tap, `HTMLMessageView`'s `.task(id:)`).
+///
+/// Every method is a no-op when `webView` is still `nil` (the brief window
+/// before `HTMLWebViewRepresentable.makeUIView`/`makeNSView` has run) —
+/// `HTMLMessageView`'s `.task(id:)` re-runs on the next relevant state
+/// change regardless, so a caller racing view construction just means "try
+/// again shortly", not a crash.
+@MainActor
+final class HTMLTranslationController {
+    fileprivate weak var webView: WKWebView?
+
+    /// The DOM walk every method below shares, as a JS function source
+    /// fragment: skips `<script>`/`<style>`/`<title>` and whitespace-only
+    /// text, wraps each qualifying (or reuses each already-wrapped) text
+    /// node in a stamped `<span>`, and calls `onText(span, index)` for each
+    /// one in document order — `extractTranslatableTexts`/`applyTranslations`
+    /// both embed this and just differ in what their `onText` callback does
+    /// with it. Scoped to `#otegami-fit-inner` (`HTMLDocumentBuilder.wrap`'s
+    /// fit-to-width wrapper) rather than the whole document — conveniently
+    /// already exactly "this message's own rendered content and nothing
+    /// else" (this app's fixed CSS reset in `<style>`/`<head>` isn't inside
+    /// it, so there's no risk of ever touching that instead). Idempotent by
+    /// construction: a node already stamped by an earlier pass (e.g. a
+    /// retry after a failed translation, or `applyTranslations` re-running
+    /// after `HTMLWebViewCoordinator.load(...)` reloaded the document from
+    /// scratch — in which case there's nothing stamped yet, so this
+    /// re-wraps from zero) is reused rather than re-wrapped or double-
+    /// counted.
+    private static let walkAndWrapFunctionSource = """
+    function otegamiWalkAndWrap(onText) {
+      function shouldSkip(tag) { return tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TITLE'; }
+      var index = 0;
+      function walk(node) {
+        if (node.nodeType === 1) {
+          if (shouldSkip(node.tagName)) { return; }
+          if (node.hasAttribute && node.hasAttribute('data-otegami-i')) {
+            onText(node, Number(node.getAttribute('data-otegami-i')));
+            return;
+          }
+          var children = Array.prototype.slice.call(node.childNodes);
+          for (var i = 0; i < children.length; i++) { walk(children[i]); }
+          return;
+        }
+        if (node.nodeType === 3) {
+          var text = node.nodeValue;
+          if (text && text.trim().length > 0) {
+            var span = document.createElement('span');
+            span.setAttribute('data-otegami-i', String(index));
+            span.setAttribute('data-otegami-original', text);
+            node.parentNode.insertBefore(span, node);
+            span.appendChild(node);
+            onText(span, index);
+            index += 1;
+          }
+        }
+      }
+      walk(document.getElementById('otegami-fit-inner') || document.body);
+    }
+    """
+
+    private static let extractScript = """
+    \(walkAndWrapFunctionSource)
+    (function () {
+      var texts = [];
+      otegamiWalkAndWrap(function (span, i) { texts[i] = span.getAttribute('data-otegami-original'); });
+      return texts;
+    })();
+    """
+
+    private static let showOriginalScript = """
+    (function () {
+      var spans = document.querySelectorAll('[data-otegami-i]');
+      for (var i = 0; i < spans.length; i++) {
+        var original = spans[i].getAttribute('data-otegami-original');
+        if (original !== null) { spans[i].textContent = original; }
+      }
+    })();
+    """
+
+    private static let showTranslatedScript = """
+    (function () {
+      var spans = document.querySelectorAll('[data-otegami-i]');
+      for (var i = 0; i < spans.length; i++) {
+        var translated = spans[i].getAttribute('data-otegami-translated');
+        if (translated !== null) { spans[i].textContent = translated; }
+      }
+    })();
+    """
+
+    /// Collects every visible text node's *current* text, in document
+    /// order — the array `MessageView` hands to `MessageTranslator
+    /// .translateHTMLTextNodes(messageId:texts:...)`. Read straight from
+    /// `data-otegami-original` (not the node's live text, which could
+    /// already be showing a translation from an unrelated earlier pass)
+    /// so a re-extraction is always the true source text, never a
+    /// translation-of-a-translation.
+    func extractTranslatableTexts() async -> [String] {
+        guard let webView else { return [] }
+        guard let result = try? await webView.evaluateJavaScript(Self.extractScript) else { return [] }
+        return (result as? [String]) ?? []
+    }
+
+    /// Stamps `translations[i]` onto the node at index `i` as
+    /// `data-otegami-translated`, WITHOUT changing what's currently visible
+    /// — `showTranslated()` is the one that actually flips text on screen,
+    /// so a caller that wants both calls this first, then that. Re-derives
+    /// the stamped-node list fresh every time (via the same
+    /// `otegamiWalkAndWrap` extraction uses) rather than assuming a
+    /// previous call's spans still exist, which is what makes this safe to
+    /// call again after `HTMLWebViewCoordinator.load(...)` has reloaded the
+    /// document from scratch (an image-blocking banner toggled mid-session
+    /// wipes every DOM stamp) — the fresh walk reproduces the identical
+    /// ordered node list `translations` was aligned against, since both
+    /// derive from the same underlying `html` string via the same
+    /// deterministic walk. A count mismatch (a stale cached translation
+    /// from a differently-shaped document — see `MessageTranslator
+    /// .translateHTMLTextNodes`'s doc comment) leaves whatever nodes are in
+    /// range stamped and silently ignores the rest, rather than guessing.
+    /// Re-runs `HTMLWebViewCoordinator`'s fit-to-width pass afterward —
+    /// translated text is rarely the exact same pixel width as the
+    /// original, so the scale computed for the original document can be
+    /// stale once it's replaced.
+    func applyTranslations(_ translations: [String]) async {
+        guard let webView, !translations.isEmpty else { return }
+        guard let payload = Self.encodeStringArray(translations) else { return }
+        let script = "\(Self.walkAndWrapFunctionSource)\n(function (t) { otegamiWalkAndWrap(function (span, i) { if (i >= 0 && i < t.length) { span.setAttribute('data-otegami-translated', t[i]); } }); })(\(payload));"
+        _ = try? await webView.evaluateJavaScript(script)
+        Self.applyFitToWidthAfterMutation(to: webView)
+    }
+
+    /// Restores every stamped node's pre-translation text — a no-op for any
+    /// node with nothing stamped (a document that was never translated in
+    /// the first place already shows its original text; nothing to do).
+    func showOriginal() async {
+        guard let webView else { return }
+        _ = try? await webView.evaluateJavaScript(Self.showOriginalScript)
+        Self.applyFitToWidthAfterMutation(to: webView)
+    }
+
+    /// Flips every stamped node to whatever `applyTranslations` last wrote
+    /// for it — a no-op for a node `applyTranslations` was never called for
+    /// (nothing translated yet).
+    func showTranslated() async {
+        guard let webView else { return }
+        _ = try? await webView.evaluateJavaScript(Self.showTranslatedScript)
+        Self.applyFitToWidthAfterMutation(to: webView)
+    }
+
+    /// `HTMLWebViewCoordinator.applyFitToWidth(to:)` is `fileprivate` to
+    /// that type — both types live in this same file, so a thin same-file
+    /// forwarder is all a cross-type call needs; no need to widen that
+    /// method's own access level just for this one caller.
+    private static func applyFitToWidthAfterMutation(to webView: WKWebView) {
+        HTMLWebViewCoordinator.applyFitToWidth(to: webView)
+    }
+
+    /// `JSONSerialization` rather than hand-rolled string escaping — JSON's
+    /// array-of-strings syntax is valid JS syntax verbatim, and
+    /// `JSONSerialization` already correctly escapes every character JS
+    /// string literals need escaped (quotes, backslashes, newlines, ...),
+    /// which is what makes it safe to splice `translations` (real message
+    /// text — not this app's own trusted source, so it can contain
+    /// anything, including characters that would otherwise break out of a
+    /// naively-quoted JS string) directly into a script string at all.
+    private static func encodeStringArray(_ strings: [String]) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: strings, options: []) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
 #if os(iOS)
 import UIKit
 
@@ -523,12 +825,15 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
     let cidContext: CIDResolutionContext
+    /// 1i — see `HTMLMessageView.translationController`'s doc comment.
+    let translationController: HTMLTranslationController
     let onOpenLink: (URL) -> Void
 
     func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext, onOpenLink: onOpenLink) }
 
     func makeUIView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
+        translationController.webView = webView
         webView.navigationDelegate = context.coordinator
         // C7 バグ修正 (リンクがブラウザで開かない) — `HTMLWebViewCoordinator`
         // のdoc comment参照。real-device 固有と報告された不具合の有力な原因
@@ -563,12 +868,15 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
     let cidContext: CIDResolutionContext
+    /// 1i — see `HTMLMessageView.translationController`'s doc comment.
+    let translationController: HTMLTranslationController
     let onOpenLink: (URL) -> Void
 
     func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext, onOpenLink: onOpenLink) }
 
     func makeNSView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
+        translationController.webView = webView
         webView.navigationDelegate = context.coordinator
         // C7 バグ修正 — `allowsLinkPreview`はiOS専用のプロパティなので
         // macOSにはない。`target="_blank"`リンクの取りこぼし対策の
@@ -742,6 +1050,71 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
                 controller.add(ruleList)
             }
             completion()
+        }
+    }
+
+    // MARK: - fit-to-width
+
+    /// `HTMLDocumentBuilder.wrap(bodyHTML:)`'s "fit-to-width" doc comment
+    /// explains *why*; this is the *how*. Idempotent (safe to run more than
+    /// once against the same, unchanged DOM — resets any previous scale
+    /// first) since `didFinish` below runs it twice per load (once
+    /// immediately, once again shortly after to catch late image layout),
+    /// and 1i's HTML-preserving translation (`HTMLTranslationController`)
+    /// also re-runs it after rewriting text nodes, since a translated
+    /// string is rarely the exact same pixel width as its original.
+    ///
+    /// Measures against `outer.clientWidth` (the actual available content
+    /// width inside `body`'s own padding), not
+    /// `document.documentElement.clientWidth` (the raw viewport width,
+    /// which would overstate the budget by `body`'s left+right padding and
+    /// leave a sliver still clipped at the edge).
+    private static let fitToWidthScript = """
+    (function () {
+      var outer = document.getElementById('otegami-fit-outer');
+      var inner = document.getElementById('otegami-fit-inner');
+      if (!outer || !inner) { return; }
+      inner.style.transform = 'none';
+      inner.style.transformOrigin = '';
+      inner.style.width = '';
+      outer.style.width = '';
+      outer.style.height = '';
+      var viewportWidth = outer.clientWidth;
+      var naturalWidth = Math.max(inner.scrollWidth, inner.offsetWidth);
+      if (!viewportWidth || naturalWidth <= viewportWidth + 1) { return; }
+      var scale = viewportWidth / naturalWidth;
+      var naturalHeight = Math.max(inner.scrollHeight, inner.offsetHeight);
+      inner.style.width = naturalWidth + 'px';
+      inner.style.transformOrigin = 'top left';
+      inner.style.transform = 'scale(' + scale + ')';
+      outer.style.width = viewportWidth + 'px';
+      outer.style.height = Math.ceil(naturalHeight * scale) + 'px';
+    })();
+    """
+
+    fileprivate static func applyFitToWidth(to webView: WKWebView) {
+        webView.evaluateJavaScript(fitToWidthScript, completionHandler: nil)
+    }
+
+    /// `WKNavigationDelegate`'s "load finished" callback — fires once per
+    /// `loadHTMLString(_:baseURL:)` call (`load(html:...)` above), the only
+    /// kind of navigation this app's own code ever initiates (a stray tapped-
+    /// link navigation never reaches `didFinish` as a *successful* main-
+    /// frame load in the way that matters here, since `decidePolicyFor`
+    /// cancels it first). Runs the fit-to-width pass once right away, then
+    /// once more shortly after: `didFinish` corresponds to the page's
+    /// `load` event (fires after referenced images finish loading too, not
+    /// just `DOMContentLoaded`), so the first pass is normally already
+    /// correct, but a slow-to-decode local `cid:` image or a still-settling
+    /// layout could in principle still grow `#otegami-fit-inner`'s natural
+    /// size a little after that first measurement — the second pass is a
+    /// cheap safety net for that case, not something expected to change the
+    /// result most of the time.
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        Self.applyFitToWidth(to: webView)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak webView] in
+            guard let webView else { return }
+            Self.applyFitToWidth(to: webView)
         }
     }
 

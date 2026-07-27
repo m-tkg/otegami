@@ -122,4 +122,15 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/27-google-tos-style.eml"
 # (docs/verify.md の該当節参照)。
 seed_message "test1@otegami.test" "$FIXTURES_DIR/28-both-image-kinds.eml"
 
+# fit-to-width 検証用 (実機フィードバック — 楽天銀行のような幅600-800px級の
+# 固定幅テーブルHTMLメールが等倍描画され、右端がクリップ・文字が巨大に
+# 見える): 幅700pxの中央寄せテーブル + 画像 + 罫線 + white-space: nowrap の
+# ラベル/値行 + 改行なしの区切り線、という実在の銀行通知メールに近い構造
+# (docs/verify.md/docs/design-system.md 該当節参照)。29 は日本語 (実機報告と
+# 同じ言語)、30 はその英語版 — 1i の HTML レイアウト保持翻訳の検証にも使う
+# (fit-to-width と翻訳の両方が同じ固定幅テーブル構造に対して効くことを
+# 1通で確認できる)。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/29-fixed-width-bank-notice.eml"
+seed_message "test1@otegami.test" "$FIXTURES_DIR/30-fixed-width-notice-en.eml"
+
 echo "==> done"

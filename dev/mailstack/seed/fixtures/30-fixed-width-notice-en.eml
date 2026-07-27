@@ -1,0 +1,64 @@
+From: Otegami Bank <no-reply@bank.example>
+To: test1@otegami.test
+Subject: Your payment has been processed
+Message-ID: <seed-0030@otegami.test>
+Date: Mon, 27 Jul 2026 07:13:00 +0900
+Content-Type: multipart/alternative; boundary="otegami-boundary-30"
+MIME-Version: 1.0
+
+--otegami-boundary-30
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+(plain text version)
+Your automatic payment has been processed at the date and time below.
+See the HTML version for details.
+
+--otegami-boundary-30
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=700">
+<title>Your payment has been processed</title>
+<style type="text/css">
+  body { margin: 0; padding: 0; background-color: #f2f2f2; font-family: sans-serif; }
+  .wrapper { width: 700px; margin: 0 auto; background-color: #ffffff; }
+</style>
+</head>
+<body>
+<table class="wrapper" width="700" cellpadding="0" cellspacing="0" border="0" align="center">
+  <tr>
+    <td>
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFEAJZ3lFmAAAAAElFTkSuQmCC" width="700" height="70" alt="Otegami Bank" style="display:block;">
+    </td>
+  </tr>
+  <tr>
+    <td style="border-top: 3px solid #0a5c8a; font-size: 1px; line-height: 1px;">&nbsp;</td>
+  </tr>
+  <tr>
+    <td style="padding: 24px; font-size: 16px; color: #333333;">
+      <p style="margin: 0 0 16px 0;">Dear Taro Yamada (user@example.com),</p>
+      <p style="margin: 0 0 16px 0;">Your automatic payment was processed at the date and time below.</p>
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="white-space: nowrap; font-weight: bold; padding-bottom: 4px;">Payment date and time</td>
+        </tr>
+        <tr>
+          <td style="white-space: nowrap;">2026/07/27 02:29:02</td>
+        </tr>
+      </table>
+      <p style="white-space: nowrap; margin: 24px 0; font-family: monospace;">****************************************************************************************************</p>
+      <p style="margin: 0 0 8px 0;">This email was sent from a notification-only address.</p>
+      <p style="margin: 0 0 16px 0;">If you have any questions, please contact us through our website.</p>
+      <p style="margin: 0;">Otegami Bank <a href="https://bank.example/">https://bank.example/</a></p>
+    </td>
+  </tr>
+</table>
+</body>
+</html>
+
+--otegami-boundary-30--
