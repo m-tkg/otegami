@@ -79,7 +79,6 @@ struct FolderListSheet: View {
                         Button("アカウントを追加") { onAddAccount() }
                             .accessibilityIdentifier("folderSheet.addAccountButton")
                     }
-                    settingsSection
                 } else {
                     statusSection
                     ForEach(environment.accounts) { account in
@@ -87,12 +86,20 @@ struct FolderListSheet: View {
                             .task(id: account.id) { await observeMailboxes(accountId: account.id) }
                             .task(id: account.id) { await observeUnreadCounts(accountId: account.id) }
                     }
-                    settingsSection
                 }
             }
             .accessibilityIdentifier("folderSheet.list")
             .scrollContentBackground(.hidden)
             .background(OtegamiColor.background)
+            // 実機フィードバック: 設定ボタンはリストの最終行 (スクロールしないと
+            // 見えない) ではなく、スクロール位置に関わらず常に左下に浮いている
+            // フローティングボタンにする。`safeAreaInset` ではなく `overlay` を
+            // 使うのは「リストの上に浮いている」見た目の指定のため — リスト末尾
+            // が隠れないよう `contentMargins` で下端に余白を足す。
+            .overlay(alignment: .bottomLeading) {
+                floatingSettingsButton
+            }
+            .contentMargins(.bottom, OtegamiSpacing.xxl + OtegamiSpacing.lg, for: .scrollContent)
             .navigationTitle("フォルダ")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -191,18 +198,26 @@ struct FolderListSheet: View {
         }
     }
 
-    /// 新画面構成 (1): "設定はそのメニューの一番下に配置" — its own trailing
-    /// `Section` so it always renders last regardless of how many account
-    /// sections/mailboxes precede it.
-    private var settingsSection: some View {
-        Section {
-            Button {
-                onOpenSettings()
-            } label: {
-                Label("設定", systemImage: "gearshape")
-            }
-            .accessibilityIdentifier("folderSheet.settings")
+    /// 新画面構成 (1)→実機フィードバック改: 設定はメニュー最下部の「行」では
+    /// なく、スクロール位置に関わらず常に見えている左下のフローティング
+    /// ボタン。丸い面 (カードと同じ radius 世界観) + 影で「浮いている」ことを
+    /// 示す。accessibilityIdentifier は旧実装から据え置き (XCUITest 互換)。
+    private var floatingSettingsButton: some View {
+        Button {
+            onOpenSettings()
+        } label: {
+            Label("設定", systemImage: "gearshape")
+                .font(OtegamiFont.body())
+                .padding(.horizontal, OtegamiSpacing.lg)
+                .padding(.vertical, OtegamiSpacing.md)
+                .background(OtegamiColor.surface, in: Capsule())
+                .overlay(Capsule().stroke(OtegamiColor.dividerSubtle, lineWidth: 1))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
         }
+        .buttonStyle(.plain)
+        .padding(.leading, OtegamiSpacing.lg)
+        .padding(.bottom, OtegamiSpacing.lg)
+        .accessibilityIdentifier("folderSheet.settings")
     }
 
     /// K (実機フィードバック第3弾): one account's collapsible mailbox-tree
