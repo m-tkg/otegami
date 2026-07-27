@@ -26,9 +26,12 @@ Google アカウントを「テストユーザー」に追加しておけば動�
 3. アプリ名 (例: `otegami (dev)`)・ユーザーサポートメール・デベロッパーの
    連絡先メールを入力して保存する。
 4. スコープの追加は不要 (otegami は実行時に必要なスコープを直接リクエストする
-   — `https://mail.google.com/` と `https://www.googleapis.com/auth/userinfo.email`。
-   後者は XOAUTH2 の SASL に必要なメールアドレスを、id_token を要求せずに
-   取得するために使っている。詳細は `GoogleOAuthEndpoints` のコメント参照)。
+   — `https://mail.google.com/`・`https://www.googleapis.com/auth/userinfo.email`・
+   `https://www.googleapis.com/auth/contacts.other.readonly` の3つ。2番目は
+   XOAUTH2 の SASL に必要なメールアドレスを id_token を要求せずに取得する
+   ため、3番目はアバター強化バッチ「Google プロフィール写真」用 (下記
+   「`contacts.other.readonly`」節参照)。詳細は `GoogleOAuthEndpoints` の
+   コメント参照)。
 5. 「テストユーザー」に自分の Gmail アドレスを追加する。**公開ステータスが
    「テスト」のままなら審査は不要**。テストユーザー以外のアカウントはログイン
    できない点に注意 (複数アカウントでテストしたい場合はそれぞれ追加する)。
@@ -88,6 +91,30 @@ URL スキームを宣言する必要がない (`ASWebAuthenticationSessionRunne
 `userinfo.email` スコープは Google の同意画面上でも「メールアドレスの
 表示」という控えめな権限としてしか見えず、`https://mail.google.com/`
 (メールの完全な管理) に比べて実質的に権限を拡大するものではない。
+
+### `contacts.other.readonly` (アバター強化バッチ「Google プロフィール写真」)
+
+差出人一覧のアイコンを Gmail 公式アプリに近づけるため、
+`https://www.googleapis.com/auth/contacts.other.readonly`
+(People API の `otherContacts.search` で読み取り専用アクセス) を追加した
+(`GoogleOAuthEndpoints.scope`)。**新規に追加する Gmail アカウントは
+このスコープを最初から含む** — 何もする必要はない。
+
+**既存の Gmail アカウントは、再接続 (「アカウント編集」→「再認証」) する
+までこのスコープを持たない**。People API がスコープ不足で 401/403 を返す
+限り `GoogleProfilePhotoAvatarResolver` は静かに次の情報源 (Gravatar →
+企業ロゴ → イニシャル) にフォールバックするだけなので、再接続しなくても
+アプリは問題なく動く — Google のプロフィール写真が一覧に出ないだけ。
+
+**このスコープは Google の「機密性の高いスコープ (sensitive scope)」に
+分類される** (`userinfo.email`/`mail.google.com` より一段厳しい審査対象)。
+影響するのは**公開ステータスを「テスト」から「本番」に切り替えて配布ビル
+ド (App Store/TestFlight) を出す場合の OAuth 審査**のみ — 各自の Client ID
+で「テスト」モードのまま自分を「テストユーザー」に追加して開発・確認する
+分には、このスコープを追加していても審査は不要 (このファイル冒頭の注記の
+とおり)。配布を検討する際は Google Cloud Console の OAuth 同意画面で
+このスコープの使用目的 (「差出人のプロフィール写真の表示」) を申告する
+準備をしておくこと。
 
 ## 実機での最終確認手順 (Client ID 発行後、ユーザー自身が行う)
 

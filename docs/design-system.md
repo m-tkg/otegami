@@ -1485,6 +1485,119 @@ green だったため、コード側の不具合ではないと判断した)。�
   が一覧に実際に描画されるところまでの実機目視確認を行うこと — 今回は
   ネットワーク到達性の確認 (ホストからの直接検証) に留めた。
 
+## アバター強化バッチ「Google プロフィール写真」
+
+フェーズ1 (連絡先)・フェーズ2 (Gravatar)・フェーズ3 (企業ロゴ) に続く
+第4の情報源だが、優先順位上はフェーズ2の**前** (連絡先の写真の直後) —
+Gmail 差出人については Gmail 公式アプリと同じ情報源をまず試す、という
+判断。最終的な優先順位: 連絡先の写真 → **Google プロフィール写真** →
+Gravatar → 企業ロゴ → イニシャル。
+
+背景: Gmail 公式アプリが表示する差出人アイコンは Google アカウントの
+プロフィール写真であり、Gravatar に未登録の相手は otegami ではイニシャル
+表示のままになっていた。Gmail アカウントが接続されている場合に限り、
+Google People API からプロフィール写真を取得してこの差を埋める。
+
+### `GooglePeopleAvatarClient` (`packages/OtegamiKit/Sources/GoogleOAuth/`)
+
+People API の `otherContacts.search` (`readMask=photos,emailAddresses`)
+1回分の問い合わせと、写真バイト列のダウンロードを担う、`GoogleOAuthClient`
+と同じ層のプレーンな actor。Apple 専用フレームワークに依存しない
+(`URLSession`のみ) ため、`GoogleOAuthClientTests`と同じ`URLProtocol`スタブ
+方式で`GooglePeopleAvatarClientTests`から直接単体テストできる — アプリ
+ターゲット (`apps/Otegami/Sources/Support/`) の他の3つの resolver
+(連絡先/Gravatar/企業ロゴ) がいずれも単体テストを持たない (アプリターゲット
+に unit test ターゲットが無く、`OtegamiUITests`しか無い —
+`apps/Otegami/project.yml`参照) のとは対照的に、この情報源は「People API
+の URL 構築・JSON パース・ステータスコード分類」という最も間違えやすい
+部分を`swift test`で機械的に検証できるようにした。
+
+- **`otherContacts.search`のみ、`people.searchContacts`は使わない**: 前者は
+  Gmail が自動収集する「連絡はしたが保存していない相手」、後者はユーザーが
+  明示的に保存した Contacts を検索する。Gmail 公式クライアント自身が
+  差出人アイコンのフォールバックに使っているのは前者の母集団で、これは
+  まさにこの機能が埋めたいギャップ (Gravatar 未登録・Contacts 未保存の
+  相手) と一致する。後者も追加で問い合わせると、スコープが触れる個人データ
+  の範囲とリクエスト数が増える一方、その母集団は同期済みの
+  `ContactPhotoResolver` (Google Contacts と端末の連絡先が同期されている
+  場合) で既にある程度カバーされているため、追加コストに見合わないと判断
+  した。
+- **`default: true`の写真 (プレースホルダーのシルエット) は「無い」と同じ
+  扱い** — 表示すれば otegami 自身のイニシャル+アカウント色フォールバック
+  より明らかに劣る。
+- `=s160`サイズ指定を URL に付与してから写真本体をダウンロードする —
+  `GravatarAvatarResolver.gravatarURL(for:)`の`s=160`と同じ動機 (~30pt の
+  丸いアバターのために原寸大の画像を取得しない)。
+
+### `GoogleProfilePhotoAvatarResolver` (`apps/Otegami/Sources/Support/`)
+
+`AvatarImageResolving`に準拠する actor。`GooglePeopleAvatarClient`への
+1回分の問い合わせをラップし、以下を追加で担う:
+
+- **Gmail アカウントが1つ以上あるユーザーだけに効く**: `AppEnvironment`が
+  持つ Gmail アカウント一覧・`TokenStore`への参照を、`GmailAccessTokenBridge`
+  (`AppEnvironment.swift`) 経由の`GmailAccessTokenProviding`プロトコル越しに
+  取得する。この resolver 自身は`AppEnvironment.init()`のごく早い段階
+  (`database`/`tokenStore`がまだ存在しない時点) で構築されるため、
+  `PendingSendCoordinator`と全く同じ「`weak var environment` +
+  `configure(environment:)`を`init()`最後尾で呼ぶ」二段階配線パターンを
+  再利用した (Swift の二相初期化ルール — 詳細は`GmailAccessTokenBridge`の
+  ドキュメントコメント参照)。複数 Gmail アカウントがある場合は成功する
+  まで順に試す。
+- **スコープ不足のフォールバック**: `contacts.other.readonly`スコープ
+  追加前に接続された既存 Gmail アカウントのトークンは、再認証するまで
+  この新スコープを持たない。People API が 401/403 を返した場合、その
+  アカウント id を`scopeInsufficientAccountIds`(このプロセスの生存中だけ
+  有効なメモリ上の`Set`) に記録し、以降の呼び出しでは問い合わせずスキップ
+  する — 一覧をスクロールするたびに同じアカウントへ 401 を連打しない
+  ため。**再認証を強制することはしない** — `AccountEditView`の案内文 +
+  既存の「再認証」ボタン (元々は「認証切れ」時専用だったものを、この
+  ヒントの導線として流用) からユーザー自身が選ぶ。
+- キャッシュは Gravatar と同じ設計 (メモリ+ディスク2段、TTL 7日、
+  ネットワークエラー/該当アカウント無し/全アカウントがスコープ不足は
+  negative cache しない — `Caches/AvatarCache/GoogleProfilePhoto/`)。
+
+### OAuth スコープ
+
+`GoogleOAuthEndpoints.scope`に`https://www.googleapis.com/auth/contacts.other.readonly`
+を追加した。詳細 (機密性の高いスコープであること、既存アカウントの再接続
+導線、公開ステータス切替時の審査への影響) は
+[`docs/oauth-setup.md`](oauth-setup.md)「`contacts.other.readonly`」節参照。
+
+### 設定
+
+`AvatarSourceSettingsStore.showGoogleProfilePhotoKey`(既定 ON)。設定 →
+「メール一覧」の「連絡先の写真を表示」の直後・「Gravatar の画像を表示」の
+直前に「Google プロフィール写真を表示」トグルを追加し、footer に「差出人の
+メールアドレスが Google に送信されます」という段落を追加した (Gravatar の
+ハッシュ送信の注記と同じ形式)。
+
+### 検証
+
+`make test`(`GooglePeopleAvatarClientTests`: 見つかった/デフォルト写真の
+除外/大文字小文字を区別しないマッチ/該当なし/401・403 でスコープ不足判定/
+5xx とネットワークエラーで unavailable 判定/ダウンロード成功・失敗/
+URL 構築のそれぞれを検証)・`make mac`・`make ios` すべて green。
+
+`OtegamiAvatarSettingsUITests`に「Google プロフィール写真を表示」トグルの
+アサーション (既定 ON・存在確認・タップ後もクラッシュしないこと) を追加。
+
+**未検証・ユーザー側作業として残るもの**: 実 Gmail アカウントでの People
+API 呼び出しそのもの (実際に写真が取得できる差出人でのエンドツーエンド
+確認) は、このセッションのシミュレータ環境でネットワーク不調
+(`MailCoreErrorDomain error 1`でアカウント追加自体が失敗する既知事象) が
+あり実施できなかった。`HUMAN_TASKS.md`「既存 Gmail アカウントを再接続し、
+Google プロフィール写真を確認」に手順を記録した。
+
+### 次フェーズへの申し送り
+
+- 実 Gmail アカウントでの People API 呼び出しの実機/実ネットワーク環境
+  での最終確認 (上記参照)。
+- スコープ不足の 401/403 判定は、Google が実際にどちらのステータスで
+  返すかの実地確認をしておらず (People API のドキュメント記述に基づく
+  実装)、両方を同じ扱いにすることで判定を保守的にしてある — 実際の挙動が
+  判明したら、この保守的な扱いを緩める余地があるかもしれない。
+
 ## macOS: 狭いウィンドウでサイドバーに戻れない不具合の修正
 
 実機報告「compact になった時にサイドバーが出てこない。ハンバーガーメニュー
