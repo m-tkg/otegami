@@ -154,11 +154,6 @@ final class AppEnvironment {
         // doc comment for why this needs to run before any `HTMLMessageView`
         // is ever constructed, not just before any `@AppStorage` read.
         UserDefaults.registerOtegamiImageDefaults()
-        // Task #45「ダークモードで文字が読めない」— see
-        // `HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey`'s doc
-        // comment for why this needs the same "before any `HTMLMessageView`
-        // is constructed" ordering as the image defaults registration above.
-        UserDefaults.registerOtegamiHTMLDisplayDefaults()
         // F (実機フィードバック第3弾): one-time, idempotent cleanup of the
         // now-removed in-app "表示言語" setting's `AppleLanguages` override
         // — see `LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`'s
