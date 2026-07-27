@@ -17,6 +17,8 @@ struct MailListSettingsView: View {
     @AppStorage(AvatarSourceSettingsStore.showContactPhotoKey) private var showContactPhoto = AvatarSourceSettingsStore.defaultShowContactPhoto
     // アバター強化バッチ フェーズ2: 同上。
     @AppStorage(AvatarSourceSettingsStore.showGravatarKey) private var showGravatar = AvatarSourceSettingsStore.defaultShowGravatar
+    // アバター強化バッチ フェーズ3: 同上。
+    @AppStorage(AvatarSourceSettingsStore.showCompanyLogoKey) private var showCompanyLogo = AvatarSourceSettingsStore.defaultShowCompanyLogo
     @AppStorage(TranslationSettingsStore.showListSummaryKey) private var showListSummary = false
     // 実機フィードバック第3弾 (I) で旧「その他」から移設。
     @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
@@ -45,6 +47,10 @@ struct MailListSettingsView: View {
                 // 見つからなかった場合の次点として使われる。
                 Toggle("Gravatar の画像を表示", isOn: $showGravatar)
                     .accessibilityIdentifier("settings.list.showGravatarToggle")
+                // アバター強化バッチ フェーズ3「企業ロゴ (favicon)」。連絡先の
+                // 写真・Gravatar のどちらも見つからなかった場合の次点。
+                Toggle("企業ロゴを表示", isOn: $showCompanyLogo)
+                    .accessibilityIdentifier("settings.list.showCompanyLogoToggle")
                 Picker("本文プレビューの行数", selection: $previewLineCountRaw) {
                     ForEach(PreviewLineCount.allCases) { count in
                         Text(count.title).tag(count.rawValue)
@@ -57,12 +63,13 @@ struct MailListSettingsView: View {
             } header: {
                 Text("表示")
             } footer: {
-                // アバター強化バッチ: フェーズ2 で Gravatar (外部通信あり)
-                // を追加したため、その旨を明記する段落を追記した。企業ロゴ
-                // (フェーズ3) を追加する際もここに追記する。
+                // アバター強化バッチ: フェーズ2 (Gravatar)・フェーズ3 (企業
+                // ロゴ) はどちらも外部通信を伴うため、それぞれ独立した段落
+                // で明記している。
                 VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
                     Text("プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先に一致する写真があればそれを優先して表示します（連絡先の照合はこの端末上だけで行われ、外部には送信されません）。")
                     Text("連絡先に写真が無い場合、Gravatar (gravatar.com) に登録された画像を表示することがあります。差出人アドレスのハッシュが gravatar.com に送信されます。設定でオフにできます。")
+                    Text("それでも見つからない場合、差出人の会社ドメインの favicon を企業ロゴとして表示することがあります（フリーメール (Gmail 等) のアドレスは対象外です）。ドメイン名が接続先サーバーに送信されます。設定でオフにできます。")
                 }
             }
 

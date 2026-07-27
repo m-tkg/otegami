@@ -40,13 +40,23 @@ enum AvatarSourceSettingsStore {
     static var isGravatarEnabled: Bool {
         UserDefaults.standard.bool(forKey: showGravatarKey)
     }
+
+    /// フェーズ3「企業ロゴ (favicon)」— `CompanyLogoAvatarResolver`のドキュ
+    /// メントコメント参照 (BIMI は実装していない)。既定 ON。
+    static let showCompanyLogoKey = "avatarSource.showCompanyLogo"
+    static let defaultShowCompanyLogo = true
+
+    static var isCompanyLogoEnabled: Bool {
+        UserDefaults.standard.bool(forKey: showCompanyLogoKey)
+    }
 }
 
 extension UserDefaults {
     static func registerOtegamiAvatarSourceDefaults() {
         standard.register(defaults: [
             AvatarSourceSettingsStore.showContactPhotoKey: AvatarSourceSettingsStore.defaultShowContactPhoto,
-            AvatarSourceSettingsStore.showGravatarKey: AvatarSourceSettingsStore.defaultShowGravatar
+            AvatarSourceSettingsStore.showGravatarKey: AvatarSourceSettingsStore.defaultShowGravatar,
+            AvatarSourceSettingsStore.showCompanyLogoKey: AvatarSourceSettingsStore.defaultShowCompanyLogo
         ])
     }
 }

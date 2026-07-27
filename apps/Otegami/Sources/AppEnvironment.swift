@@ -157,7 +157,8 @@ final class AppEnvironment {
         // `CompositeAvatarImageResolver`'s doc comment.
         self.avatarImageResolver = CompositeAvatarImageResolver(sources: [
             ContactPhotoResolver(),
-            GravatarAvatarResolver()
+            GravatarAvatarResolver(),
+            CompanyLogoAvatarResolver()
         ])
 
         let database: AppDatabase

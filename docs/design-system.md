@@ -1384,3 +1384,103 @@ green だったため、コード側の不具合ではないと判断した)。�
 - フェーズ3 (BIMI/企業ロゴ favicon) を`CompositeAvatarImageResolver`へ
   追加する。
 - 設定画面のスクリーンショット取得タイミング問題の再調査 (上記参照)。
+
+## アバター強化バッチ フェーズ3: 企業ロゴ (favicon) — BIMI は実装見送り
+
+フェーズ1 (連絡先)・フェーズ2 (Gravatar) に続く第3優先の情報源。
+
+### BIMI を実装しなかった判断とその理由
+
+指示は「BIMI (DNS TXT `default._bimi.<domain>` から SVG ロゴ URL を取得)
+を優先し、実装コストが見合わなければ favicon のみにして判断を報告する」
+というものだった。BIMI 自体を見送り、favicon のみを実装した。理由は
+`CompanyLogoAvatarResolver.swift`のドキュメントコメントに詳しく記録した
+が、要点:
+
+1. **システムリゾルバでの DNS TXT レコード取得に、Apple プラットフォーム
+   上の手頃な高レベル API が無い**。`URLSession`は HTTP(S) 専用、
+   `Network`framework の`NWConnection`も DNS レコード種別を選べない。
+   唯一の正しい選択肢は`dnssd`framework の`DNSServiceQueryRecord`(C
+   コールバック API) だが、Swift concurrency へのブリッジ・タイムアウト・
+   `DNSServiceRef`のメモリ管理を新規実装する必要があり、指示が明示的に
+   許容している「実装コストに見合わなければ見送る」の対象と判断した。
+   指示自身が名指しで注意している、サードパーティ DoH (`dns.google`等)
+   経由の実装は、プライバシー方針 (第三者への問い合わせを増やさない) 上
+   採用しなかった。
+2. SVG の安全なラスタライズ (`WKWebView`を使わない、サイズ制限+単純な
+   SVG のみ) も別途実装が要る要素で、1と合わせて実装コストが他フェーズ
+   に対して不釣り合いに大きいと判断した。
+
+### `CompanyLogoAvatarResolver`
+
+`AvatarImageResolving`に準拠する actor
+(`apps/Otegami/Sources/Support/CompanyLogoAvatarResolver.swift`)。
+
+- **favicon フォールバック**: `https://<domain>/apple-touch-icon.png`→
+  失敗すれば`https://<domain>/favicon.ico`の順に試す。取得したバイト列は
+  `UIImage(data:)`/`NSImage(data:)`でデコードできることを確認してから
+  「見つかった」と確定する — `favicon.ico`が真のマルチ解像度 ICO 形式
+  (`UIImage`/`NSImage`がデコードできないことがある) で配信される場合が
+  あるため、デコード不能なバイト列を negative cache に汚さないための
+  ガード。
+- **フリーメールドメインの除外**: `OtegamiCore.FreeMailDomains`(新規、
+  pure logic・依存無しなので`OtegamiCoreTests`で単体テスト可能) が
+  gmail.com/icloud.com/yahoo.co.jp 等の主要フリーメールプロバイダの
+  ドメインを保持する。差出人ドメインがこのリストに含まれる場合は
+  ネットワークにすら問い合わせず即座に`nil`を返す — 「Gmail ユーザー
+  全員に Google のロゴが付いてしまう」という誤りを防ぐ、指示の要件どおり。
+  網羅的なリストではなく、主要な国際/日本語圏プロバイダを中心に収録した
+  (新しいプロバイダは気付いたら追記していく運用)。
+- **キャッシュキーはドメイン単位** — `ContactPhotoResolver`/
+  `GravatarAvatarResolver`がメールアドレス単位でキャッシュするのとの
+  明確な違い。同じ会社の複数の差出人 (`alice@acme.com`/`bob@acme.com`)
+  が同じ favicon 取得結果を共有できる。TTL 30日 (Gravatar の7日より長め
+  — favicon は個人の写真よりずっと変更頻度が低いと考えられるため)。
+- coalesce・非同期・メモリ+ディスクの2段キャッシュ (`Caches/AvatarCache/
+  CompanyLogo/`) は他の2つの resolver と同じ設計。
+
+### 設定
+
+`AvatarSourceSettingsStore.showCompanyLogoKey`(既定 ON)。設定 →「メール
+一覧」に「企業ロゴを表示」トグルを追加し、footer に「ドメイン名が接続先
+サーバーに送信されます」という3段落目の注記を追加した。
+
+### 検証
+
+`make test`/`make mac`/`make ios` green。新規`FreeMailDomainsTests`
+(gmail.com 等が正しく除外される・大文字小文字を区別しない・
+`apple.com`/`otegami.test`のような実在/開発用ドメインは対象のままである
+ことを確認) を含め全テスト green。
+
+実際の favicon 取得がネットワーク越しに成功することを Python の
+`urllib`でホストから直接確認した: `apple.com`/`github.com`の
+`apple-touch-icon.png`/`favicon.ico`がいずれも実際に 200 + 画像バイト列
+を返すこと、dev mailstack のフィクスチャドメイン`otegami.test`(実在しない
+テスト用ドメイン) は DNS 解決エラーになり、これは`CompanyLogoAvatarResolver`
+の`fetchFavicon`が`try?`で捕捉して`nil`を返す (=イニシャルへフォール
+バック) 経路と一致することを確認した。
+
+`OtegamiAvatarSettingsUITests`に「企業ロゴを表示」トグルのアサーション
+(既定 ON・存在確認・タップ後もクラッシュしないこと) を追加し、
+`scripts/verify-ios-avatar-phase1.sh`実行で3トグルとも green。この
+バッチの検証セッションを通じて、設定画面を「テスト実行中にホストから
+スクリーンショットを撮る」方式で捉えることには最後まで成功しなかった
+(スクリーンショット機構自体は`xrun simctl launch`+`screenshot`の手動
+実行では同じ`$UDID`に対して確実に動作することを確認済みで、XCUITest の
+アサーション自体は全て green だったため、アプリのコード側の不具合では
+なく、この開発機のシミュレータ/toolchain 側のスクリーンショット
+タイミング/フォーカス関連の不具合と判断している) — フェーズ1で取得
+できた画面 (連絡先の写真トグルのみ表示) を、Gravatar・企業ロゴのトグルが
+同じ見た目のスタイルでその下に並ぶことの視覚的な裏付けとして扱った。
+
+### 次フェーズへの申し送り
+
+- BIMI の実装 (`DNSServiceQueryRecord`によるシステムリゾルバ経由の DNS
+  TXT 取得 + 安全な SVG ラスタライズ) を、将来必要になった場合の課題として
+  残す。
+- 設定画面のスクリーンショット取得タイミング問題の再調査 (フェーズ2から
+  持ち越し、今回も再現)。
+- 実際に BIMI/favicon を持つ企業ドメインからのメールを dev mailstack の
+  フィクスチャに追加し (実在ドメインの From ヘッダを持つメール)、企業ロゴ
+  が一覧に実際に描画されるところまでの実機目視確認を行うこと — 今回は
+  ネットワーク到達性の確認 (ホストからの直接検証) に留めた。

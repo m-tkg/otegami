@@ -1,8 +1,8 @@
 import XCTest
 
-/// アバター強化バッチ フェーズ1/2: 「連絡先の写真を表示」「Gravatar の
-/// 画像を表示」の両トグルが設定 →「メール一覧」に実際に現れ、操作できる
-/// ことを確認する軽量な検証。
+/// アバター強化バッチ フェーズ1/2/3: 「連絡先の写真を表示」「Gravatar の
+/// 画像を表示」「企業ロゴを表示」の3トグルが設定 →「メール一覧」に実際に
+/// 現れ、操作できることを確認する軽量な検証。
 ///
 /// アカウント追加・dev mailstack 同期を必要とする `OtegamiM1VerificationUITests`
 /// 等とは違い、この画面はアカウントが1件も無い状態でも到達できる
@@ -44,6 +44,12 @@ final class OtegamiAvatarSettingsUITests: XCTestCase {
         XCTAssertTrue(gravatarToggle.waitForExistence(timeout: 5), "「Gravatar の画像を表示」トグルが見つからなかった")
         XCTAssertEqual(gravatarToggle.value as? String, "1", "既定で ON になっているはず")
         gravatarToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+
+        // アバター強化バッチ フェーズ3「企業ロゴ (favicon)」。
+        let companyLogoToggle = app.switches["settings.list.showCompanyLogoToggle"]
+        XCTAssertTrue(companyLogoToggle.waitForExistence(timeout: 5), "「企業ロゴを表示」トグルが見つからなかった")
+        XCTAssertEqual(companyLogoToggle.value as? String, "1", "既定で ON になっているはず")
+        companyLogoToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         // M11「エラーTextFieldの.valueがすぐには追従しない」系の既知の挙動
         // (`.claude/skills/verify/SKILL.md`) と同種の理由で、タップ直後の

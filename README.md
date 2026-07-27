@@ -144,10 +144,13 @@ Two things this app is built around, more than any single feature list:
   one-row-per-message list), and a per-sender avatar next to each row and
   each message's header. The avatar prefers, in order: a matching photo
   from your on-device Contacts (looked up via the Contacts framework —
-  nothing ever leaves the device), then a Gravatar image (looked up by a
-  SHA-256 hash of the sender's address sent to gravatar.com), falling back
-  to initials on a per-account color otherwise. Each source can be turned
-  off independently in Settings → Mail List. A configurable
+  nothing ever leaves the device), a Gravatar image (looked up by a
+  SHA-256 hash of the sender's address sent to gravatar.com), a company
+  logo resolved from the sender's domain favicon (free-mail domains like
+  Gmail/iCloud are excluded so they never get treated as one company's
+  logo), then falls back to initials on a per-account color. Each
+  network-touching source can be turned off independently in Settings →
+  Mail List. A configurable
   body-preview line count. A thread's collapsed rows show the same
   avatar/preview treatment, styled distinctly (a softer tint, no card
   background) so they read as "inside one thread" rather than the
