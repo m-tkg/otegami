@@ -3227,3 +3227,59 @@ dev/mailstack の Dovecot フィクスチャが ASCII のみのフォルダ名�
 - `make mac` / `make ios` / `make ios-device`: いずれも green。
   `make ios-device` のビルド成果物を `xcrun devicectl device install
   app` で実機 (iPad、ペア済み) に転送し、インストール成功を確認した。
+
+## 実機フィードバック第2弾バッチ (2026-07-27, A〜J)
+
+D (アカウントのラベル色)・E (スレッド表示のアコーディオン化)・F (署名
+テンプレート)・G (デフォルトのアカウント/削除・アーカイブ時の挙動)・H
+(アプリアイコンの未読バッジ)・I (設定画面の再構成) をまとめて実装した
+バッチの検証記録。
+
+**単体テスト**: `make test` green (D の `labelColorKey` 往復・自動割当
+フォールバック、F の `signatureTemplate`往復・`account.defaultSignatureId`
+の `onDelete: .setNull` 自己修復を確認する新規テスト2件を含む)。
+
+**ビルド**: `make mac`/`make ios` green (このバッチの全コミット後、複数回
+確認済み)。
+
+**XCUITest による目視確認**: `scripts/verify-ios-account-edit.sh`にD検証用
+のフェーズ4 (ラベル色ピッカーの選択→保存→再読込後も保持されることを確認)
+を追加し、フェーズ1〜3 (アカウント編集・同期エラーバナー・復旧) を含めて
+クリーンな (`simctl erase`済みの) シミュレータで実行し、アカウント編集
+画面・設定画面のスクリーンショットで F の「署名テンプレート」エントリ
+ポイントが一覧に表示されていることを実際に確認した。
+
+**この開発機のシミュレータ固有の不安定性**: このバッチの検証中、この
+simulator/toolchain (iPhone 17 Pro Max, Xcode 27 beta) で以下の環境要因
+に繰り返し遭遇した — いずれもアプリのコード側の問題ではない:
+- `xcodebuild test`が個々のテストの成否に関わらず、テスト完了後に
+  `simctl diagnose`(失敗時の診断情報収集、最大600秒) で長時間停止する
+  ことがあり、「ハングしているように見えて実際には診断収集中」という
+  切り分けに時間を要した。
+- `openSettingsFromHamburgerMenu`等の既存共有ヘルパーが`.tap()`の
+  「スクロール後に無効な hit point を計算する」既知の不具合
+  (`.claude/skills/verify/SKILL.md`のM2節) に断続的に引っかかった —
+  座標ベースの`.coordinate(...).press(forDuration:)`に置き換えて解決。
+- A の作業で判明: このシミュレータのシステム言語が既定で英語であり、
+  `Localizable.xcstrings`に文字列を追加した瞬間、その文字列に依存する
+  既存 XCUITest のラベルテキスト固定 lookup が無言で壊れることがある
+  (詳細は`docs/localization.md`「実機フィードバック第2弾 (A)」節参照)。
+
+**C (カードデザイン) の目視確認**: 上記の`OtegamiFeedbackBatch2ScreenshotUITests`
+はアカウント作成フローの断続的な不安定性により複数回とも完走しなかった
+ため、より単純で実績のある`scripts/verify-ios-m1.sh`(タップ操作を伴わず
+アカウント追加→シード済みメール表示→オフライン永続化確認のみを行う)を
+改めて実行し、その一覧画面スクリーンショット
+(`/tmp/otegami-verify/01-online-inbox.png`/`02-offline-inbox.png`、実行
+機のローカル一時ファイルのためリポジトリには含めない) で `ThreadRowView`
+が枠線無し・角丸・左端3pxのアカウント色ラインで描画されていることを
+実際に確認した。オンライン/オフラインの両画像で見た目は同一で、C はこの
+バッチの他の変更 (D/F と共有する `AccountsListContent` 経路とは別の
+`MessageList`/`ThreadDetail` 経路) と合わせて視覚確認が取れた。
+
+**未実施 (目視未確認のまま残った項目)**: 上記の環境要因により、E (アコー
+ディオン)・G (削除/アーカイブ後の次メール自動オープン)・H (アプリアイコン
+バッジ) の実機/シミュレータでの目視スクリーンショット確認は、このセッ
+ション内では安定して完走させられなかった。実装はコードレビューと
+`make mac`/`make ios`/`make test`のグリーンで裏付けているが、これらの
+項目自体の見た目は次回のセッションで改めて目視確認することが望ましい。
