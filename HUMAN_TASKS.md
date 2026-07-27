@@ -165,7 +165,7 @@
       確認 (Task #54)** — 実機の「アカウント編集」→「アバター診断」画面で
       `people/me` が 403 `Request requires one of the following scopes:
       [profile]` を返すことを確認済み (`otherContacts`/`connections` は
-      正常)。`GoogleOAuthEndpoints.scope` に `https://www.googleapis.com/auth/profile`
+      正常)。`GoogleOAuthEndpoints.scope` に `https://www.googleapis.com/auth/userinfo.profile`
       を追加して修正した (`docs/oauth-setup.md`「Task #54 追記」節参照)。
       残作業:
       1. この修正を含むビルドを OTA で端末に配信する。

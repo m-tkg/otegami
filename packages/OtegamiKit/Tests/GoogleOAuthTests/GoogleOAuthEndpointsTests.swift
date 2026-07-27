@@ -24,7 +24,7 @@ struct GoogleOAuthEndpointsTests {
         #expect(endpoints.tokenEndpoint.absoluteString == "https://oauth2.googleapis.com/token")
         #expect(endpoints.scope.contains("https://mail.google.com/"))
         #expect(endpoints.scope.contains("https://www.googleapis.com/auth/contacts.other.readonly"))
-        #expect(endpoints.scope.contains("https://www.googleapis.com/auth/profile"))
+        #expect(endpoints.scope.contains("https://www.googleapis.com/auth/userinfo.profile"))
     }
 
     @Test

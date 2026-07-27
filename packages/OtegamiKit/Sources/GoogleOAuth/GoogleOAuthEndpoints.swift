@@ -50,7 +50,7 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
     /// that source (falling back to the next avatar source entirely only if
     /// both are unavailable) rather than forcing reauth.
     ///
-    /// A fifth was added later still: `.../auth/profile` — on-device
+    /// A fifth was added later still: `.../auth/userinfo.profile` — on-device
     /// diagnosis (Task #54) confirmed `people/me` (used by
     /// `GooglePeopleAvatarClient.fetchSelfPhotoIndexOutcome(accessToken:)`
     /// to resolve the signed-in user's own avatar) was 403ing with
@@ -96,7 +96,7 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
             tokenEndpoint: URL(string: "https://oauth2.googleapis.com/token")!,
             userInfoEndpoint: URL(string: "https://www.googleapis.com/oauth2/v3/userinfo")!,
             clientId: clientId,
-            scope: "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/contacts.other.readonly https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/profile",
+            scope: "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/contacts.other.readonly https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/userinfo.profile",
             redirectURI: "\(Self.redirectScheme(forClientId: clientId)):/oauth2redirect"
         )
     }

@@ -29,7 +29,7 @@ Google アカウントを「テストユーザー」に追加しておけば動�
    — `https://mail.google.com/`・`https://www.googleapis.com/auth/userinfo.email`・
    `https://www.googleapis.com/auth/contacts.other.readonly`・
    `https://www.googleapis.com/auth/contacts.readonly`・
-   `https://www.googleapis.com/auth/profile` の5つ。2番目は
+   `https://www.googleapis.com/auth/userinfo.profile` の5つ。2番目は
    XOAUTH2 の SASL に必要なメールアドレスを id_token を要求せずに取得する
    ため、3・4・5番目はアバター強化バッチ「Google プロフィール写真」用 (下記
    「`contacts.other.readonly`・`contacts.readonly`」節参照)。詳細は
@@ -142,7 +142,7 @@ URL スキームを宣言する必要がない (`ASWebAuthenticationSessionRunne
 `otherContacts`/`connections` は正常 (診断上でも109エントリ/写真83件を
 確認済み) という状態での 403 だったため、上記の「リファレンス上の記載
 だけを根拠にした」判断が誤りだったと確定した。`GoogleOAuthEndpoints.scope`
-に `https://www.googleapis.com/auth/profile` を追加して修正した。
+に `https://www.googleapis.com/auth/userinfo.profile` を追加して修正した。
 `profile` は Google の**非機密 (basic) スコープ**
 (`userinfo.email` と同じ層、`contacts.other.readonly`/`contacts.readonly`
 より緩い) — 同意画面の審査要件への影響はない。既存アカウントは

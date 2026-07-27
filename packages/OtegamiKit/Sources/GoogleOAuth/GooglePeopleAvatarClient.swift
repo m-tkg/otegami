@@ -221,7 +221,7 @@ public actor GooglePeopleAvatarClient {
     /// following scopes: [profile]` even though `contacts.other.readonly`
     /// was granted and `otherContacts`/`connections` both worked fine.
     /// `GoogleOAuthEndpoints.scope` now includes
-    /// `https://www.googleapis.com/auth/profile` (a non-sensitive/basic
+    /// `https://www.googleapis.com/auth/userinfo.profile` (a non-sensitive/basic
     /// scope, same tier as `userinfo.email`) to cover this. A 403 here is
     /// still handled as `.insufficientScope` for accounts that haven't
     /// reconnected since this scope was added (the same population
