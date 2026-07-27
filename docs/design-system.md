@@ -2513,3 +2513,110 @@ end-to-end) を追加、`GoogleOAuthTests`にも診断系メソッド・マス�
 画面全体のスクリーンショットを1枚送ってもらえれば、このセッションの
 変更内容だけで原因を確定できるはず — スコープ3状態・3エンドポイントの
 HTTP ステータス/エントリ数・索引の総アドレス数が1画面に揃っている。
+
+## Task #45: HTMLメール表示 — ダークモードで文字が読めない・本文が
+途中で切れる
+
+実機報告 (Google のセキュリティ通知メール、スクリーンショット2枚 —
+otegami と Spark の比較) から2件のバグを確定した。
+
+### 1. ダークモードで文字が読めない
+
+ライト前提 (白背景 + 濃色文字を明示指定) の HTML メールをダークモード
+表示中に開くと、`HTMLDocumentBuilder.wrap(bodyHTML:)` の CSS リセット
+(`background: transparent`) のおかげで背景は暗くなる一方、メールが
+明示した濃グレー文字色 (`color: #3c4043` 等) はそのまま残り、暗地に
+暗文字でほぼ読めなくなっていた。Spark/Gmail は同じメールを自動で明るい
+文字色に変換して表示する。
+
+修正: 古典的な「反転」手法 (NetNewsWire 等で使われる) を CSS だけで実装
+した。`HTMLDocumentBuilder.mailDeclaresOwnDarkModeSupport(html:)` が
+メール自身の `<meta name="color-scheme">` / `prefers-color-scheme` メディア
+クエリの有無を判定し (プレーンな大文字小文字無視の部分文字列探索 —
+`stripHTMLComments(from:)` と同じ現実的な割り切り)、メールが自前の
+ダークモード対応を**持たない**場合に限り、`wrap(bodyHTML:
+autoAdjustColorsInDarkMode:)` が `@media (prefers-color-scheme: dark)`
+の中だけで本文ラッパ (`#otegami-fit-inner`) に `filter: invert(1)
+hue-rotate(180deg)` を適用する — 白背景→暗背景・濃文字→明文字になり、
+ブランドカラーも (色相環上で180度回転するだけなので) 概ね保たれる。
+`img`/`picture`/`video`と、インライン `style` に `background-image` を
+持つ要素には同じフィルタをもう一度適用して打ち消す (二重反転で元の色に
+戻る) — 写真・ロゴが不自然に色反転しないようにするため。
+
+**Swift 側からダーク/ライトの判定を渡さない設計**: このアプリはアプリ
+全体のテーマを明示的に上書きしておらず (システム設定に従うだけ)、
+`:root { color-scheme: light dark; }` を既にこのファイルの CSS リセット
+に持っているため、`WKWebView` 自身がホストアプリの実際の外観に応じて
+`@media (prefers-color-scheme: dark)` を正しく評価してくれる。設定値
+(次段落) だけを条件に、CSS を出すか出さないかを Swift 側で決めれば
+十分だった。
+
+設定「メールビューア」→「メールの表示 (HTML)」に「ダークモードで
+メールの配色を自動調整」トグルを追加 (既定 **ON**、
+`HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey`)。
+`ImageSettingsStore` の2キーと同じ理由 (`docs/settings.md` の該当節
+参照) で `HTMLMessageView.init` が `UserDefaults.standard.bool
+(forKey:)` を直接読む — `@AppStorage`では「初回読み取り時だけ default
+引数が効く」ため、メールを開くたびに新しく作られる `HTMLMessageView`
+インスタンスが常に最新の設定値を反映できない。
+
+### 2. 本文が途中で切れる (罫線から下が描画されない)
+
+同じメールで、水平罫線 (`<hr>`) から下の本文 (段落・CTA ボタン・
+フッター) が描画されず、その位置で WebView の表示がそのまま終わって
+いた — fit-to-width (`HTMLWebViewCoordinator.fitToWidthScript`) が
+scale を適用するケースで `outer.style.height` を明示的なピクセル値に
+固定するが、その計測がページの実際のレイアウトが確定する前に走って
+しまうことがあり、あとから画像が読み込まれて本当の高さが伸びても
+反映されないまま — ページ末尾が `#otegami-fit-outer` の `overflow:
+hidden` の外に押し出されて見えなくなる。
+
+**根本原因**: `WKNavigationDelegate.didFinish` (ページの `load` イベント)
+は仕様上「参照されている画像も読み込み終わってから発火する」はずだが、
+M8 の `CIDSchemeHandler` (`cid:` 画像解決) は `WKURLSchemeTask` 経由で
+**非同期に** (添付テーブルの GRDB 検索、未ダウンロードなら IMAP 経由の
+オンデマンド取得まで発生しうる) レスポンスを返す実装になっており、実機
+ではこの非同期解決が `didFinish` の発火より遅れることがある。修正前は
+「`didFinish` 直後に1回 + 0.3秒後にもう1回」という固定ウェイトの決め
+打ちでこれをカバーしていたが、0.3秒より遅い画像解決 (低速回線・未
+キャッシュの添付ダウンロード等) では両方とも間に合わない。さらに、この
+ファイル自身の CSS リセット `img, video, table, iframe { max-width:
+100% !important; height: auto !important; }` が `height: auto` で画像の
+`height` 属性を上書きするため、**メール側が `width`/`height` 属性を明示
+していても** ブラウザは実際に画像が読み込まれてアスペクト比が判明する
+まで最終的な高さを計算できない — 「画像に寸法指定があれば高さは事前に
+確定するはず」という前提が、このアプリ自身のリセットによって成立しない。
+
+修正: `fitToWidthScript` を書き換え、`document.images` のうち
+`complete === false` なもの全てについて `load`/`error` イベント (どちらで
+あっても「この画像の分のレイアウトは確定した」ことを意味する) を実際に
+待ってから測定・scale 適用するようにした — 画像1枚あたり4秒のタイム
+アウト付き (ブロックされたリモート画像・失敗した `cid:` 解決が永久に
+`load`/`error` のどちらも発火しないケースへの安全網)。`evaluateJavaScript`
+の async 版 (Swift) はページが返した `Promise` の解決を実際に待つため、
+JS 側を `Promise` を返す IIFE にするだけで Swift 側の呼び出しは変更不要
+だった。`didFinish` 側の「0.3秒後にもう1回」という決め打ちの2回目呼び
+出しは、根本原因を実際に閉じたことで大部分不要になったため削除し、
+画像読み込み以外の層 (未使用だが将来の Web フォント等) 向けの薄い安全網
+として1.5秒後の呼び出し1回だけ残した。
+
+縮小が不要なケース (`naturalWidth <= viewportWidth`) では元々 `outer`
+の高さを明示的に固定していない (auto のまま) ため、このケース自体は
+今回のバグの対象ではなかった — 影響したのは scale が実際に適用される
+固定幅系のメールのみ。
+
+### 検証
+
+`dev/mailstack/seed/fixtures/31-security-notice-dark-mode.eml` を新設 —
+実機報告のスクリーンショットと同じ構造 (中央寄せの角丸カード、`cid:`
+画像2枚 [ロゴ + アバター、いずれも `width`/`height` 属性明示]、白背景 +
+濃色文字を明示指定 [自前のダークモード対応なし]、罫線、罫線の下に本文
+2段落 + CTA ボタン、fit-to-width の scale パスを画像読み込みタイミングに
+左右されず決定的に踏ませる `white-space: nowrap` の注記行)。
+`OtegamiSecurityNoticeDarkModeUITests` で罫線より下の本文 (2段落 + CTA
+ボタン + フッター) がアクセシビリティツリーに存在することを確認 —
+`OtegamiFitToWidthUITests`/`OtegamiHTMLHeightUITests` と同じ「文字色
+までは目視でしか確認できない」パターンなので、ダークモードの配色自体は
+シミュレータでのスクリーンショット確認に委ねた
+(`xcrun simctl ui booted appearance dark`)。`make test`/`make mac`/
+`make ios` green。
