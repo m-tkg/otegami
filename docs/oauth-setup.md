@@ -27,11 +27,12 @@ Google アカウントを「テストユーザー」に追加しておけば動�
    連絡先メールを入力して保存する。
 4. スコープの追加は不要 (otegami は実行時に必要なスコープを直接リクエストする
    — `https://mail.google.com/`・`https://www.googleapis.com/auth/userinfo.email`・
-   `https://www.googleapis.com/auth/contacts.other.readonly` の3つ。2番目は
+   `https://www.googleapis.com/auth/contacts.other.readonly`・
+   `https://www.googleapis.com/auth/contacts.readonly` の4つ。2番目は
    XOAUTH2 の SASL に必要なメールアドレスを id_token を要求せずに取得する
-   ため、3番目はアバター強化バッチ「Google プロフィール写真」用 (下記
-   「`contacts.other.readonly`」節参照)。詳細は `GoogleOAuthEndpoints` の
-   コメント参照)。
+   ため、3・4番目はアバター強化バッチ「Google プロフィール写真」用 (下記
+   「`contacts.other.readonly`・`contacts.readonly`」節参照)。詳細は
+   `GoogleOAuthEndpoints` のコメント参照)。
 5. 「テストユーザー」に自分の Gmail アドレスを追加する。**公開ステータスが
    「テスト」のままなら審査は不要**。テストユーザー以外のアカウントはログイン
    できない点に注意 (複数アカウントでテストしたい場合はそれぞれ追加する)。
@@ -92,29 +93,66 @@ URL スキームを宣言する必要がない (`ASWebAuthenticationSessionRunne
 表示」という控えめな権限としてしか見えず、`https://mail.google.com/`
 (メールの完全な管理) に比べて実質的に権限を拡大するものではない。
 
-### `contacts.other.readonly` (アバター強化バッチ「Google プロフィール写真」)
+### `contacts.other.readonly`・`contacts.readonly` (アバター強化バッチ「Google プロフィール写真」)
 
-差出人一覧のアイコンを Gmail 公式アプリに近づけるため、
-`https://www.googleapis.com/auth/contacts.other.readonly`
-(People API の `otherContacts.search` で読み取り専用アクセス) を追加した
-(`GoogleOAuthEndpoints.scope`)。**新規に追加する Gmail アカウントは
-このスコープを最初から含む** — 何もする必要はない。
+差出人一覧のアイコンを Gmail 公式アプリに近づけるため、2つのスコープを
+追加した (`GoogleOAuthEndpoints.scope`)。**新規に追加する Gmail アカウント
+はどちらのスコープも最初から含む** — 何もする必要はない。
+
+- `https://www.googleapis.com/auth/contacts.other.readonly` — People API の
+  `otherContacts.list` (Gmail が自動収集した「メールのやり取りはあるが
+  保存はしていない相手」) への読み取り専用アクセス。
+  `GooglePeopleAvatarClient.fetchOtherContactsPhotoIndex(accessToken:)`
+  が使う。
+- `https://www.googleapis.com/auth/contacts.readonly` — People API の
+  `people/me/connections` (ユーザー本人が明示的に保存した Google
+  連絡先) への読み取り専用アクセス。
+  `GooglePeopleAvatarClient.fetchConnectionsPhotoIndex(accessToken:)`
+  が使う。**このバッチで後から追加したスコープ** — `contacts.other.readonly`
+  だけでは「保存済み連絡先」からの写真は取得できない (Gmail が自動収集
+  した「other contacts」の集合には保存済み連絡先が含まれないため) ことが
+  分かり、これをカバーするために追加した。
+
+**実装方式 (差出人ごとの逐次問い合わせ→索引方式への変更)**: 当初は
+`otherContacts.search` で差出人アドレスごとに都度 People API へ問い合わせ
+ていたが、(a) `.search` には`sources`パラメータが無く、Gmail 自身が使って
+いる「PROFILE ソース (相手の Google アカウントのプロフィール写真)」を
+取得できない、という制約があった。現在は `otherContacts.list`/
+`people/me/connections` をそれぞれ全件ページングで走査し、(メールアドレス
+→ 写真 URL) の索引をアカウントごとに1日1回程度構築してディスクキャッシュ
+する方式に変更した (`GoogleProfilePhotoAvatarResolver`)。個々の差出人の
+解決はこの索引を引くだけなので、一覧をスクロールするたびに People API を
+連打することが無くなり、`.search`が必要としていた「空クエリでの事前
+ウォームアップ」リクエストも (`.list`には無い要件のため) 不要になった。
 
 **既存の Gmail アカウントは、再接続 (「アカウント編集」→「再認証」) する
-までこのスコープを持たない**。People API がスコープ不足で 401/403 を返す
-限り `GoogleProfilePhotoAvatarResolver` は静かに次の情報源 (Gravatar →
-企業ロゴ → イニシャル) にフォールバックするだけなので、再接続しなくても
-アプリは問題なく動く — Google のプロフィール写真が一覧に出ないだけ。
+までどちらのスコープも持たない**。2つのスコープは独立に判定され、
+People API がスコープ不足で 401/403 を返す情報源だけを静かにスキップする
+(例: `contacts.other.readonly`のみ許可済みなら other contacts 由来の写真
+だけは引き続き解決できる)。両方が使えない場合だけ次の情報源 (Gravatar →
+企業ロゴ → イニシャル) にフォールバックするので、再接続しなくてもアプリは
+問題なく動く — Google のプロフィール写真の一部/全部が一覧に出ないだけ。
 
-**このスコープは Google の「機密性の高いスコープ (sensitive scope)」に
+**両方とも Google の「機密性の高いスコープ (sensitive scope)」に
 分類される** (`userinfo.email`/`mail.google.com` より一段厳しい審査対象)。
 影響するのは**公開ステータスを「テスト」から「本番」に切り替えて配布ビル
 ド (App Store/TestFlight) を出す場合の OAuth 審査**のみ — 各自の Client ID
 で「テスト」モードのまま自分を「テストユーザー」に追加して開発・確認する
-分には、このスコープを追加していても審査は不要 (このファイル冒頭の注記の
-とおり)。配布を検討する際は Google Cloud Console の OAuth 同意画面で
-このスコープの使用目的 (「差出人のプロフィール写真の表示」) を申告する
-準備をしておくこと。
+分には、これらのスコープを追加していても審査は不要 (このファイル冒頭の
+注記のとおり)。配布を検討する際は Google Cloud Console の OAuth 同意画面
+でこれらのスコープの使用目的 (「差出人のプロフィール写真の表示」) を
+申告する準備をしておくこと。
+
+#### `contacts.readonly` を追加した既存プロジェクトでの作業
+
+`contacts.other.readonly` だけで運用していた Google Cloud プロジェクトに
+`contacts.readonly` を追加で使わせるには、「OAuth 同意画面」→「データへの
+アクセス」で `contacts.readonly` スコープを追加する必要がある (公開ステー
+タスが「テスト」のままなら審査は不要、上記のとおり)。追加後、既存の Gmail
+アカウントは全て再接続 (「アカウント編集」→「再認証」) しないと新スコープ
+を得られない — この画面の「連絡先の写真」診断表示が「許可済み (基本)」
+(other contacts のみ) から「許可済み (完全)」(保存済み連絡先も含む) に
+変わることで確認できる。
 
 #### 実機バグ: 再接続してもスコープが増えない場合
 
@@ -149,23 +187,21 @@ myaccount.google.com/connections でこのアプリの付与日・付与スコ�
   追加した。画面を開くたびに `TokenStore.diagnosticScope(for:)`
   (キャッシュを使わず必ずリフレッシュリクエストを送って、Google が
   実際に返した`scope`フィールドを読む) で問い合わせ、「連絡先の写真:
-  許可済み/未許可」を表示する。これで
+  許可済み (完全/基本)/未許可」を表示する (`contacts.readonly`追加後は
+  2つのスコープを独立に判定するため3状態になった)。これで
   myaccount.google.com/connections のスクリーンショットを取らなくても
   アプリ内で同じ切り分けができる。
 - 再認証成功時に `GoogleProfilePhotoAvatarResolver` の「このプロセスでは
   このアカウントはスコープ不足」という記憶
-  (`scopeInsufficientAccountIds`) を即座にクリアするようにした —
-  以前は次回起動までこの記憶が残り、再認証で新スコープを得た直後でも
-  写真取得が試みられないままだった。
-- `otherContacts.search`は本検索の前に空クエリの「ウォームアップ」
-  リクエストを送らないと検索インデックスが温まっておらず空の結果を
-  返すことがある、という Google の仕様に対応し、アカウント (トークン)
-  ごとにプロセス内で最初の1回だけウォームアップを送るようにした
-  (`GooglePeopleAvatarClient.warmupSearchIndex(accessToken:)`)。
-- 上記のウォームアップ未対応だった旧実装が書いた 7日 negative cache
-  (「見つからなかった」というディスクキャッシュ) を無効化するため、
-  `GoogleProfilePhotoAvatarResolver`のキャッシュディレクトリ名に
-  `v2`を追加した。
+  (`otherContactsScopeInsufficientAccountIds`/
+  `connectionsScopeInsufficientAccountIds`) をキャッシュ済みの索引ごと
+  即座にクリアするようにした — 以前は次回起動までこの記憶が残り、
+  再認証で新スコープを得た直後でも写真取得が試みられないままだった。
+- (2026-07 時点の実装は `otherContacts.search`の逐次問い合わせだった
+  ため、この時点では検索インデックスの「ウォームアップ」リクエストが
+  別途必要だった。後の索引方式への書き換え (`otherContacts.list`/
+  `people/me/connections`のページング全件取得) でこの要件自体が無く
+  なり、ウォームアップ関連のコードは削除した — 上の「実装方式」節参照)。
 
 ## 実機での最終確認手順 (Client ID 発行後、ユーザー自身が行う)
 
@@ -189,14 +225,15 @@ myaccount.google.com/connections でこのアプリの付与日・付与スコ�
    (myaccount.google.com → セキュリティ → サードパーティのアクセス) た後に
    同期を試み、`AccountsSettingsView` に「再認証が必要です」バナーが出て
    「再認証」ボタンから復旧できることを確認する。
-9. (`contacts.other.readonly`スコープの確認) 「アカウント編集」→ 対象の
-   Gmail アカウントを開き、「認証」節の「連絡先の写真: 許可済み/未許可」
-   表示を確認する。**「未許可」のままなら**: (a) まだ「再認証」を一度も
-   実行していないアカウントか、(b) 再認証済みでも Google Cloud Console
-   の OAuth 同意画面にこのスコープが追加されていない・People API が
-   有効化されていない可能性が高い (上の「実機バグ」節参照) — その場合は
-   Console 側の設定を直し、もう一度「再認証」してから開き直して確認する。
-   「許可済み」になれば、Gravatar 未登録の差出人からのメールで一覧の
+9. (スコープの確認) 「アカウント編集」→ 対象の Gmail アカウントを開き、
+   「認証」節の「連絡先の写真: 許可済み (完全/基本)/未許可」表示を確認
+   する。**「未許可」または「許可済み (基本)」のままなら**: (a) まだ
+   「再認証」を一度も実行していないアカウントか、(b) 再認証済みでも
+   Google Cloud Console の OAuth 同意画面に該当スコープが追加されて
+   いない・People API が有効化されていない可能性が高い (上の「実機
+   バグ」節参照) — その場合は Console 側の設定を直し、もう一度
+   「再認証」してから開き直して確認する。「許可済み (完全)」になれば、
+   Gravatar 未登録の差出人 (保存済み連絡先を含む) からのメールで一覧の
    プロフィールアイコンが Google のプロフィール写真に変わることも
    あわせて確認する。
 

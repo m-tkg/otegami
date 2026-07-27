@@ -86,31 +86,47 @@
       Gmail アカウントを追加し、INBOX 同期・送信 (Sent への二重保存が
       起きないこと)・アクセストークン失効後の自動リフレッシュ・アクセス
       取り消し後の「再認証」バナーからの復旧を確認する。**アバター強化
-      バッチ「Google プロフィール写真」で `contacts.other.readonly` スコープ
-      を追加した** (機密性の高いスコープ — 配布ビルドを出す場合のみ Google
-      の OAuth 審査に影響、`docs/oauth-setup.md`「`contacts.other.readonly`」
+      バッチ「Google プロフィール写真」で `contacts.other.readonly`・
+      `contacts.readonly` の2スコープを追加した** (どちらも機密性の高い
+      スコープ — 配布ビルドを出す場合のみ Google の OAuth 審査に影響、
+      `docs/oauth-setup.md`「`contacts.other.readonly`・`contacts.readonly`」
       節参照)。新規追加アカウントは何もせず両スコープを持つ。
-      **済 (2026-07-27)**: People API の有効化・同意画面へのスコープ追加・
-      公開ステータスへの切替 (未検証のまま運用、7日期限は解消)。
+      **済 (2026-07-27)**: People API の有効化・`contacts.other.readonly`
+      の同意画面へのスコープ追加・公開ステータスへの切替 (未検証のまま
+      運用、7日期限は解消)。**済 (追記時点)**: `contacts.readonly` も
+      同意画面のスコープに追加済み — 下の「保存済み連絡先を含む Google
+      プロフィール写真」項目の残作業 (OTA 反映 → 再認証 → 確認) 参照。
       優先度: 高 (Gmail 対応を謳う以上、実接続確認は必須) / 所要時間: 30分
       (Client ID 発行) + 20分 (確認項目一式) / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)、[PENDING.md「M6: Google OAuth Client ID の発行」](PENDING.md#m6-google-oauth-client-id-の発行)
-- [ ] **既存 Gmail アカウントを再接続し、Google プロフィール写真を確認**
-      (**実機で「再接続してもスコープが増えない」不具合を確認済み** —
-      切り分けの結果、原因はアプリ側の認可リクエストではなく Google
-      Cloud Console の OAuth 同意画面設定だった。上の「済 (2026-07-27)」
-      項目で Console 側は直したはずなので、この項目は**再確認**の位置
-      づけ)。設定 → アカウント → 該当の Gmail アカウント →「再認証」で
-      再接続する (削除・再作成は不要、同じ OAuth フローの再実行で新スコープ
-      が付与される)。**再接続後、同じ画面を開き直して**「認証」節の
-      「連絡先の写真: 許可済み」表示になっていることを確認する (「未許可」
-      のままなら Console 側の設定がまだ反映されていない — 詳細と対処は
-      `docs/oauth-setup.md`「実機バグ: 再接続してもスコープが増えない場合」
-      節)。その上で、Gravatar 未登録の差出人からのメールで一覧の
-      プロフィールアイコンが Google のプロフィール写真に変わることも
-      確認する (未許可のままでもアプリは問題なく動く — 単にこの情報源
-      だけ効かない状態が続くだけ)。
+- [ ] **`contacts.readonly` 対応ビルドを反映し、既存 Gmail アカウントを
+      再接続して Google プロフィール写真 (保存済み連絡先を含む) を確認**
+      — Gravatar 未登録の差出人 (Gmail 公式アプリでは写真が出る人) の
+      写真が実機で出ない不具合の修正。原因は
+      (a) 旧実装の `otherContacts.search` が PROFILE ソース (相手の
+      Google アカウント自体のプロフィール写真) を取得できていなかった、
+      (b) 保存済み連絡先はそもそも `otherContacts` に含まれず別スコープ
+      (`contacts.readonly`) が要る、の2点。両方を修正した
+      (`otherContacts.list`/`people/me/connections` の索引方式への
+      書き換え、`contacts.readonly` スコープの追加)。
+      **済**: Google Cloud Console の OAuth 同意画面へ `contacts.readonly`
+      スコープを追加。
+      残作業:
+      1. この修正を含むビルドを OTA で端末に配信する。
+      2. 設定 → アカウント → 該当の Gmail アカウント →「再認証」で
+         再接続する (削除・再作成は不要、同じ OAuth フローの再実行で
+         新スコープが付与される)。
+      3. **再接続後、同じ画面を開き直して**「認証」節の「連絡先の写真:
+         許可済み (完全)」表示になっていることを確認する (「許可済み
+         (基本)」や「未許可」のままなら Console 側の設定がまだ反映されて
+         いない — 詳細と対処は `docs/oauth-setup.md`「実機バグ: 再接続
+         してもスコープが増えない場合」節)。
+      4. Gravatar 未登録の差出人 (保存済み連絡先の相手を含む) からの
+         メールで、一覧のプロフィールアイコンが Google のプロフィール
+         写真に変わることを確認する (「許可済み (完全)」にならない場合
+         でもアプリは問題なく動く — この情報源だけ一部/全部効かない
+         状態が続くだけ)。
       優先度: 中 (既存ユーザー影響、実 Gmail アカウントでの動作確認は自動化
-      対象外) / 所要時間: 5分 / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)「`contacts.other.readonly`」節
+      対象外) / 所要時間: 10分 / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)「`contacts.other.readonly`・`contacts.readonly`」節
 - [ ] **iCloud App用パスワードで実アカウント確認** — appleid.apple.com
       で App 用パスワードを発行し、iCloud メールアドレス + App用パスワード
       でアカウントを追加、INBOX同期・送信・返信のスレッド接続を確認する。
@@ -157,9 +173,10 @@
 - [ ] **Google OAuth の審査を申請する** — 各自の Client ID でのテスト
       利用自体は審査不要 (自分を「テストユーザー」に追加すればよい)。
       配布ビルド (App Store/TestFlight) を出す場合のみ Google の OAuth
-      審査が必要になる。`contacts.other.readonly` (Google プロフィール写真)
-      は機密性の高いスコープなので、審査時にこのスコープの使用目的の申告が
-      追加で必要になる (`docs/oauth-setup.md`「`contacts.other.readonly`」
+      審査が必要になる。`contacts.other.readonly`・`contacts.readonly`
+      (Google プロフィール写真) はどちらも機密性の高いスコープなので、
+      審査時にこの2スコープの使用目的の申告が追加で必要になる
+      (`docs/oauth-setup.md`「`contacts.other.readonly`・`contacts.readonly`」
       節)。
       優先度: 低 (配布を決めてから) / 所要時間: 申請自体は1時間程度、
       審査待ちは数日〜数週間 / 参照: [docs/oauth-setup.md](docs/oauth-setup.md)
