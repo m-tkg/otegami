@@ -96,6 +96,36 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
     public var lastSyncError: String?
     public var lastSyncErrorAt: Date?
 
+    /// D「アカウントのラベル色を変更可能に」(migration v22): a stable key
+    /// naming one of `OtegamiAccountColor`'s eight fixed palette entries
+    /// (e.g. `"teal"`, `"indigo"`) — a raw string, not the `Color` itself
+    /// or an index, since `OtegamiStore` can't depend on the app-target-only
+    /// `DesignSystem` module the palette lives in (same "mirror the type,
+    /// don't import it" constraint `identityKey`'s doc comment already
+    /// documents for `AccountCloudSync`). `nil` (the default for every
+    /// account created before this column existed, and for any account
+    /// whose user never picked a color) means "use the existing
+    /// deterministic FNV-1a hash assignment" — `OtegamiAccountColor.color
+    /// (for:override:)` is the single place that resolves this key (or its
+    /// absence) to an actual `Color`. An unrecognized string (e.g. a future
+    /// build's palette entry read by an older build) falls back to the
+    /// same auto-assignment, never a crash.
+    public var labelColorKey: String?
+
+    /// F「デフォルト署名（アカウントごと）」(migration v24): which
+    /// `SignatureTemplateRecord` `ComposerView` auto-inserts when this
+    /// account is selected as From on a **brand-new** message (never for a
+    /// reply/forward/draft — `ComposerView.loadAvailableSignatures()`'s doc
+    /// comment on why that's scoped down). `nil` = no default (the
+    /// Composer's "署名" picker still offers every signature scoped to this
+    /// account, just starts at "なし"). `onDelete: .setNull` (the v24
+    /// migration) means this self-heals to `nil` automatically if the
+    /// referenced signature is ever deleted — never a dangling id.
+    /// **Deliberately not part of `CloudAccountSnapshot`** — see the v24
+    /// migration's doc comment for why this device-local id can't
+    /// meaningfully sync between devices.
+    public var defaultSignatureId: Int64?
+
     public var createdAt: Date
 
     /// M11 (iCloud account sync): when this row's synced metadata last
@@ -127,6 +157,8 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         smtpUsername: String? = nil,
         lastSyncError: String? = nil,
         lastSyncErrorAt: Date? = nil,
+        labelColorKey: String? = nil,
+        defaultSignatureId: Int64? = nil,
         createdAt: Date = Date(),
         updatedAt: Date? = nil
     ) {
@@ -148,6 +180,8 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         self.smtpUsername = smtpUsername
         self.lastSyncError = lastSyncError
         self.lastSyncErrorAt = lastSyncErrorAt
+        self.labelColorKey = labelColorKey
+        self.defaultSignatureId = defaultSignatureId
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
     }

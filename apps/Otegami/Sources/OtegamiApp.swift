@@ -69,6 +69,23 @@ struct RootView: View {
     // By id, not the whole `ThreadRecord` — `ThreadRecord` isn't
     // `Hashable`, which `List(selection:)` requires.
     @State private var selectedThreadId: Int64?
+    /// G「削除・アーカイブ時の挙動」— see `MailScreenView`'s identical property
+    /// doc comment (macOS's `detailColumn`/`contentColumn` equivalent of
+    /// iOS's `MailScreenView`).
+    @State private var currentThreadOrder: [Int64] = []
+    @AppStorage(MessagePostActionSettingsStore.afterDeleteArchiveKey) private var postDeleteArchiveActionRaw = MessagePostActionSettingsStore.defaultAfterDeleteArchive.rawValue
+
+    /// G「削除・アーカイブ時の挙動」— see `MailScreenView.handleThreadRemoved(_:)`'s
+    /// identical doc comment. Not `#if os(macOS)`-gated even though its only
+    /// callers (`detailColumn`, macOS's `deleteSelectedThread()`) currently
+    /// are — `detailColumn`/`contentColumn`/`splitView` themselves aren't
+    /// platform-gated either (dead code on iOS, where `rootContent` picks
+    /// `OtegamiRootView` instead — see that property's doc comment), so this
+    /// has to compile on both platforms too.
+    private func handleThreadRemoved(_ threadId: Int64) {
+        let action = PostDeleteArchiveAction(rawValue: postDeleteArchiveActionRaw) ?? MessagePostActionSettingsStore.defaultAfterDeleteArchive
+        selectedThreadId = MessagePostActionSettingsStore.nextThreadId(after: threadId, in: currentThreadOrder, action: action)
+    }
 
     // Drives which column a compact-width device (iPhone) shows.
     // `NavigationSplitView` does *not* automatically push from `content`
@@ -295,7 +312,8 @@ struct RootView: View {
                 MessageListView(
                     selection: selection,
                     selectedThreadId: $selectedThreadId,
-                    onThreadSelected: { threadId in selectThread(threadId, under: selection) }
+                    onThreadSelected: { threadId in selectThread(threadId, under: selection) },
+                    onSummariesChanged: { currentThreadOrder = $0 }
                 )
             } else {
                 ContentUnavailableView(
@@ -316,7 +334,8 @@ struct RootView: View {
                     onReply: { messageId, replyAll, translateToEnglish in
                         presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
                     },
-                    onForward: { messageId in presentComposer(.forward(originalMessageId: messageId)) }
+                    onForward: { messageId in presentComposer(.forward(originalMessageId: messageId)) },
+                    onThreadRemoved: handleThreadRemoved
                     // onSearchFromSender: macOS ではまだ配線していない — 新しい
                     // 検索画面 (`SearchScreenView`) は iOS 専用のインフラ
                     // (`MessageDetailFooterToolbar`'s doc comment)。macOS は
@@ -490,7 +509,7 @@ struct RootView: View {
                     try ThreadAssigner.recomputeAggregates(threadId: selectedThreadId, db: db)
                     return thread.accountId
                 }
-                self.selectedThreadId = nil
+                handleThreadRemoved(selectedThreadId)
                 guard let accountId, let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
                 guard let auth = try? await environment.auth(for: account) else { return }
                 _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)

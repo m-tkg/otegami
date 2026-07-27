@@ -51,6 +51,9 @@ struct MessageListRow: View {
     /// Forwarded straight to `ThreadRowView` — see its own doc comment on
     /// `showsAccountAccent`/`accountDisplayName`.
     let accountDisplayName: String?
+    /// Forwarded straight to `ThreadRowView` — see its own doc comment on
+    /// `accountLabelColorKey`.
+    let accountLabelColorKey: String?
     let showsAccountAccent: Bool
     let isSelecting: Bool
     let isSelected: Bool
@@ -82,6 +85,7 @@ struct MessageListRow: View {
             ThreadRowView(
                 summary: summary,
                 accountDisplayName: accountDisplayName,
+                accountLabelColorKey: accountLabelColorKey,
                 showsAccountAccent: showsAccountAccent,
                 isSelecting: isSelecting,
                 isSelected: isSelected
@@ -97,8 +101,8 @@ struct MessageListRow: View {
         // carries real horizontal/vertical margin instead of `.zero` — that
         // margin *is* the gap between cards (and from the screen edge),
         // replacing the previous full-bleed-row + dashed-divider look
-        // (`.otegamiRowDivider()`) with `ThreadRowView.otegamiCardBorder()`'s
-        // bordered "面" per row.
+        // (`.otegamiRowDivider()`) with `ThreadRowView.otegamiCardBackground(_:)`'s
+        // rounded, borderless "面" per row (実機フィードバック第2弾 C).
         .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: OtegamiSpacing.sm, bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.sm))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)

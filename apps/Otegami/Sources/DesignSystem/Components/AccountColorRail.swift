@@ -16,14 +16,19 @@ public struct AccountColorRail: View {
     public static let width: CGFloat = 3
 
     private let accountId: String
+    /// D「アカウントのラベル色を変更可能に」: `AccountRecord.labelColorKey`,
+    /// forwarded as-is (`nil` when the account still uses the automatic
+    /// FNV-1a assignment). See `OtegamiAccountColor.color(for:override:)`.
+    private let labelColorKey: String?
 
-    public init(accountId: String) {
+    public init(accountId: String, labelColorKey: String? = nil) {
         self.accountId = accountId
+        self.labelColorKey = labelColorKey
     }
 
     public var body: some View {
         Rectangle()
-            .fill(OtegamiAccountColor.color(for: accountId))
+            .fill(OtegamiAccountColor.color(for: accountId, override: labelColorKey))
             .frame(width: Self.width)
             .accessibilityHidden(true)
     }

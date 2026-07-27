@@ -1,4 +1,5 @@
 import SwiftUI
+import GRDB
 import MailTransport
 import OtegamiStore
 
@@ -72,6 +73,20 @@ struct AccountEditView: View {
     @State private var isReauthenticating = false
     @State private var reauthErrorMessage: String?
 
+    /// D「アカウントのラベル色を変更可能に」— `nil` means "自動" (the existing
+    /// FNV-1a assignment stays in effect). Decoded from `account
+    /// .labelColorKey` up front; an unrecognized raw string (should not
+    /// normally happen — see that property's doc comment) falls back to
+    /// `nil`/自動 rather than crashing.
+    @State private var labelColorKey: OtegamiAccountColor.PaletteColor?
+
+    /// F「デフォルト署名（アカウントごと）」— every signature currently scoped
+    /// to this account (`SignatureTemplateRecord.accountIds.contains
+    /// (account.id)`), loaded once in `.task` below (this screen has no
+    /// other reason to observe `signatureTemplate` live).
+    @State private var availableSignatures: [SignatureTemplateRecord] = []
+    @State private var defaultSignatureId: Int64?
+
     init(account: AccountRecord) {
         self.account = account
         _displayName = State(initialValue: account.displayName)
@@ -82,6 +97,8 @@ struct AccountEditView: View {
         _smtpPortText = State(initialValue: account.smtpPort.map(String.init) ?? "587")
         _smtpSecurity = State(initialValue: account.smtpSecurity ?? .startTLS)
         _smtpUsername = State(initialValue: account.smtpUsername ?? "")
+        _labelColorKey = State(initialValue: account.labelColorKey.flatMap(OtegamiAccountColor.PaletteColor.init(rawValue:)))
+        _defaultSignatureId = State(initialValue: account.defaultSignatureId)
     }
 
     // A pushed `NavigationLink` destination (`AccountsSettingsView`), not a
@@ -105,6 +122,27 @@ struct AccountEditView: View {
                     .accessibilityIdentifier("accountEdit.kind")
                 TextField("表示名", text: $displayName)
                     .accessibilityIdentifier("accountEdit.displayName")
+            }
+
+            Section("ラベル色") {
+                AccountLabelColorPicker(selection: $labelColorKey, autoColor: OtegamiAccountColor.color(for: account.id))
+            }
+
+            if !availableSignatures.isEmpty {
+                Section {
+                    Picker("デフォルト署名", selection: $defaultSignatureId) {
+                        Text("なし").tag(Int64?.none)
+                        ForEach(availableSignatures) { signature in
+                            Text(signature.name).tag(Optional(signature.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .accessibilityIdentifier("accountEdit.defaultSignaturePicker")
+                } header: {
+                    Text("署名")
+                } footer: {
+                    Text("新規メール作成時、このアカウントを差出人に選ぶと本文末尾に自動で挿入されます（返信・転送では自動挿入されません。作成画面の「署名」欄から手動で選べます）。")
+                }
             }
 
             switch account.kind {
@@ -142,6 +180,21 @@ struct AccountEditView: View {
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         .accessibilityIdentifier("accountEdit.screen")
+        .task { await loadAvailableSignatures() }
+    }
+
+    private func loadAvailableSignatures() async {
+        let all = (try? await environment.database.dbWriter.read { db in
+            try SignatureTemplateRecord.order(Column("sortOrder")).fetchAll(db)
+        }) ?? []
+        availableSignatures = all.filter { $0.accountIds.contains(account.id) }
+        if let defaultSignatureId, !availableSignatures.contains(where: { $0.id == defaultSignatureId }) {
+            // The previously-chosen default no longer applies to this
+            // account (e.g. someone unchecked it in `SignatureTemplateEditView`)
+            // — fall back to "なし" rather than keeping a stale selection
+            // the picker itself doesn't even list.
+            self.defaultSignatureId = nil
+        }
     }
 
     // MARK: - Per-kind sections
@@ -393,7 +446,9 @@ struct AccountEditView: View {
                     smtpPort: account.smtpPort,
                     smtpSecurity: account.smtpSecurity,
                     smtpUsername: account.smtpUsername,
-                    newPassword: nil
+                    newPassword: nil,
+                    labelColorKey: .some(labelColorKey?.rawValue),
+                    defaultSignatureId: .some(defaultSignatureId)
                 )
             case .icloud:
                 try await environment.updateAccount(
@@ -406,7 +461,9 @@ struct AccountEditView: View {
                     smtpPort: ICloudAccountSetupView.smtpPort,
                     smtpSecurity: .startTLS,
                     smtpUsername: account.smtpUsername,
-                    newPassword: newPassword.isEmpty ? nil : newPassword
+                    newPassword: newPassword.isEmpty ? nil : newPassword,
+                    labelColorKey: .some(labelColorKey?.rawValue),
+                    defaultSignatureId: .some(defaultSignatureId)
                 )
             case .generic:
                 guard let imapPort = Int(imapPortText) else {
@@ -424,7 +481,9 @@ struct AccountEditView: View {
                     smtpPort: trimmedSMTPHost == nil ? nil : Int(smtpPortText),
                     smtpSecurity: trimmedSMTPHost == nil ? nil : smtpSecurity,
                     smtpUsername: smtpUsername.isEmpty ? nil : smtpUsername,
-                    newPassword: newPassword.isEmpty ? nil : newPassword
+                    newPassword: newPassword.isEmpty ? nil : newPassword,
+                    labelColorKey: .some(labelColorKey?.rawValue),
+                    defaultSignatureId: .some(defaultSignatureId)
                 )
             }
             dismiss()

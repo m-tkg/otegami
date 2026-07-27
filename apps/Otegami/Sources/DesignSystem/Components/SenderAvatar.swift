@@ -11,6 +11,9 @@ public struct SenderAvatar: View {
     private let displayName: String?
     private let address: String
     private let accountId: String
+    /// D「アカウントのラベル色を変更可能に」: `AccountRecord.labelColorKey`,
+    /// forwarded as-is. See `AccountColorRail`'s identical field / `OtegamiAccountColor.color(for:override:)`.
+    private let labelColorKey: String?
     private let diameter: CGFloat
 
     /// - Parameters:
@@ -31,16 +34,17 @@ public struct SenderAvatar: View {
     ///     typical Mail-app avatar size at this app's row density), 36pt in
     ///     the detail header (`MessageView`, given more room next to the
     ///     larger headline-weight sender name there).
-    public init(displayName: String?, address: String, accountId: String, diameter: CGFloat) {
+    public init(displayName: String?, address: String, accountId: String, labelColorKey: String? = nil, diameter: CGFloat) {
         self.displayName = displayName
         self.address = address
         self.accountId = accountId
+        self.labelColorKey = labelColorKey
         self.diameter = diameter
     }
 
     public var body: some View {
         Circle()
-            .fill(OtegamiAccountColor.color(for: accountId))
+            .fill(OtegamiAccountColor.color(for: accountId, override: labelColorKey))
             .frame(width: diameter, height: diameter)
             .overlay {
                 Text(initials)

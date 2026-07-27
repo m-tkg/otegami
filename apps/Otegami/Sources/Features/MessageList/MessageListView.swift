@@ -65,6 +65,16 @@ struct MessageListView: View {
     /// below take over. Never called on macOS (no long-press gesture there
     /// to trigger it in the first place).
     var onSelectionModeChanged: (Bool) -> Void = { _ in }
+    /// G「削除・アーカイブ時の挙動」: reports the currently-displayed thread
+    /// order (by `thread.id`, in on-screen order) every time `summaries`
+    /// changes, so a parent that also owns `ThreadDetailView`'s
+    /// `onThreadRemoved` (`MailScreenView` on iOS, `RootView` on macOS) can
+    /// resolve `MessagePostActionSettingsStore.nextThreadId(after:in:action:)`
+    /// against a reasonably fresh snapshot. Not called for `searchResults`
+    /// (this view's own inline `.searchable`, macOS only) — search's own
+    /// ordering isn't in scope for this setting (`ThreadDetailView
+    /// .onThreadRemoved`'s doc comment).
+    var onSummariesChanged: ([Int64]) -> Void = { _ in }
 
     /// Backstop for `scheduleUndo`'s delayed commit — see that method's doc
     /// comment on why a background/terminate transition has to flush any
@@ -247,6 +257,16 @@ struct MessageListView: View {
         Dictionary(uniqueKeysWithValues: environment.accounts.map { ($0.id, $0.displayName) })
     }
 
+    /// D「アカウントのラベル色を変更可能に」— only non-`nil` `labelColorKey`s are
+    /// included; `ThreadRowView`/`AccountColorRail`/`SenderAvatar` already
+    /// treat a missing dictionary entry the same as an explicit `nil`
+    /// (auto-assignment).
+    private var accountLabelColorKeys: [String: String] {
+        Dictionary(uniqueKeysWithValues: environment.accounts.compactMap { account in
+            account.labelColorKey.map { (account.id, $0) }
+        })
+    }
+
     // MARK: - Empty state (実機バグ調査: 「アーカイブ運用で INBOX が本当に空」を
     // 「同期が失敗している」と誤読させないための分岐, docs/verify.md)
 
@@ -374,6 +394,9 @@ struct MessageListView: View {
         .onChange(of: searchText) { _, _ in scheduleSearch() }
         .onChange(of: searchScope) { _, _ in scheduleSearch() }
         #endif
+        .onChange(of: summaries) { _, newValue in
+            onSummariesChanged(newValue.compactMap(\.thread.id))
+        }
         .onChange(of: selection) { _, _ in
             if !availableScopes.contains(searchScope) { searchScope = .all }
             // M10 pagination: a fresh mailbox/unified-inbox selection
@@ -538,6 +561,7 @@ struct MessageListView: View {
                 summary: summary,
                 threadId: threadId,
                 accountDisplayName: accountDisplayNames[summary.thread.accountId],
+                accountLabelColorKey: accountLabelColorKeys[summary.thread.accountId],
                 showsAccountAccent: showsAccountAccent,
                 isSelecting: isSelecting,
                 isSelected: selectedThreadIds.contains(threadId),

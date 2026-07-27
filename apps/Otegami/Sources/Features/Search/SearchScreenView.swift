@@ -61,6 +61,14 @@ struct SearchScreenView: View {
         Dictionary(uniqueKeysWithValues: environment.accounts.map { ($0.id, $0.displayName) })
     }
 
+    /// D「アカウントのラベル色を変更可能に」— see `MessageListView`'s identical
+    /// property doc comment.
+    private var accountLabelColorKeys: [String: String] {
+        Dictionary(uniqueKeysWithValues: environment.accounts.compactMap { account in
+            account.labelColorKey.map { (account.id, $0) }
+        })
+    }
+
     private var filteredResults: [ThreadSummary] {
         filter == .all ? results : results.filter(filter.matches)
     }
@@ -231,6 +239,7 @@ struct SearchScreenView: View {
                 ThreadRowView(
                     summary: summary,
                     accountDisplayName: accountDisplayNames[summary.thread.accountId],
+                    accountLabelColorKey: accountLabelColorKeys[summary.thread.accountId],
                     showsAccountAccent: showsAccountAccent
                 )
             }

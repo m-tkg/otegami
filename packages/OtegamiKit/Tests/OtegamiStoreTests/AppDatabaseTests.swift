@@ -53,6 +53,55 @@ struct AppDatabaseTests {
         #expect(fetched == account)
     }
 
+    @Test("D: an account's labelColorKey round-trips, and defaults to nil for an existing row")
+    func roundTripsAccountLabelColorKey() throws {
+        let database = try AppDatabase.makeInMemory()
+        var account = AccountRecord(
+            displayName: "Test", email: "t@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "t@x.test"
+        )
+        try database.dbWriter.write { db in try account.insert(db) }
+
+        let fetchedBeforePick = try database.dbWriter.read { db in try AccountRecord.fetchOne(db, key: account.id) }
+        #expect(fetchedBeforePick?.labelColorKey == nil)
+
+        account.labelColorKey = "coral"
+        try database.dbWriter.write { db in try account.update(db) }
+
+        let fetchedAfterPick = try database.dbWriter.read { db in try AccountRecord.fetchOne(db, key: account.id) }
+        #expect(fetchedAfterPick?.labelColorKey == "coral")
+    }
+
+    @Test("F: a signatureTemplate round-trips (JSON-encoded accountIds), and account.defaultSignatureId self-heals to nil when the signature is deleted")
+    func roundTripsSignatureTemplateAndDefaultSignatureSetNull() throws {
+        let database = try AppDatabase.makeInMemory()
+        var account = AccountRecord(
+            displayName: "Test", email: "t@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "t@x.test"
+        )
+        try database.dbWriter.write { db in try account.insert(db) }
+
+        var signature = SignatureTemplateRecord(name: "仕事用", body: "よろしくお願いします。", accountIds: [account.id])
+        try database.dbWriter.write { db in try signature.insert(db) }
+        #expect(signature.id != nil)
+
+        let fetchedSignature = try database.dbWriter.read { db in try SignatureTemplateRecord.fetchOne(db, key: signature.id) }
+        #expect(fetchedSignature?.accountIds == [account.id])
+        #expect(fetchedSignature?.body == "よろしくお願いします。")
+
+        account.defaultSignatureId = signature.id
+        try database.dbWriter.write { db in try account.update(db) }
+        let fetchedAccount = try database.dbWriter.read { db in try AccountRecord.fetchOne(db, key: account.id) }
+        #expect(fetchedAccount?.defaultSignatureId == signature.id)
+
+        // Deleting the signature should self-heal the account's
+        // `defaultSignatureId` back to nil via `onDelete: .setNull` (v24
+        // migration) — no manual cleanup code needed at the call site.
+        try database.dbWriter.write { db in _ = try SignatureTemplateRecord.deleteOne(db, key: signature.id) }
+        let fetchedAccountAfterDelete = try database.dbWriter.read { db in try AccountRecord.fetchOne(db, key: account.id) }
+        #expect(fetchedAccountAfterDelete?.defaultSignatureId == nil)
+    }
+
     @Test("upserting a mailbox on (accountId, path) is idempotent")
     func upsertsMailboxIdempotently() throws {
         let database = try AppDatabase.makeInMemory()
@@ -132,7 +181,29 @@ struct AppDatabaseTests {
             imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "t@x.test"
         )
         try dbQueue.write { db in
-            try account.insert(db)
+            // Raw SQL, not `account.insert(db)` — deliberately, and for the
+            // same reason the `mailbox` row right below is raw SQL too: the
+            // schema is frozen at v20 here, but `AccountRecord`'s Swift
+            // definition (and the columns GRDB's Codable-based `insert`
+            // derives from it) reflects *every* migration currently
+            // registered in `AppDatabase.migrator`, including ones after
+            // v20 (e.g. v22's `labelColorKey`) that haven't run against
+            // this `dbQueue` yet. `account.insert(db)` would try to write
+            // to a column that doesn't exist yet at this schema version.
+            try db.execute(
+                sql: """
+                    INSERT INTO account
+                        (id, displayName, email, authType, kind, needsReauth,
+                         imapHost, imapPort, imapSecurity, imapAllowsInsecureTLS, imapUsername,
+                         smtpAllowsInsecureTLS, createdAt, updatedAt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    account.id, account.displayName, account.email, account.authType.rawValue, account.kind.rawValue, false,
+                    account.imapHost, account.imapPort, account.imapSecurity.rawValue, false, account.imapUsername,
+                    false, account.createdAt, account.updatedAt,
+                ]
+            )
             try db.execute(
                 sql: """
                     INSERT INTO mailbox

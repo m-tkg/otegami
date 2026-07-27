@@ -20,10 +20,18 @@ import SyncEngine
 /// 新画面構成 (3): owns the screen-level footer toolbar
 /// (`MessageDetailFooterToolbar`, `.safeAreaInset(edge: .bottom)`) that
 /// replaced `MessageView`'s old per-message 返信/全員に返信/英語で返信を
-/// 下書き row. "返信"/"転送"/"検索" all act on the **newest** message in the
-/// thread (`newestMessage`) — the same one `RootView`'s macOS ⌘R shortcut
-/// already targets ("reply to whatever's currently showing expanded, not
-/// an arbitrary message within the thread").
+/// 下書き row. "返信"/"転送"/"検索" all act on **whichever message is
+/// currently expanded** (`targetMessage`) — 実機フィードバック第2弾 (E)
+/// made this unambiguous by turning message expansion into a strict
+/// accordion (`expandedMessageId`, exactly one message expanded at a time),
+/// so "the footer toolbar's target" and "the message you're currently
+/// reading" are now always the same row. Before E, any collapsed message
+/// could *also* be expanded independently (a Gmail/Apple-Mail-style
+/// multi-expand thread view), so the footer toolbar's target was pinned to
+/// the thread's newest message regardless of which row(s) were actually
+/// open — `RootView`'s macOS ⌘R shortcut still documents that older
+/// "newest message" rule for its own, `ThreadDetailView`-independent
+/// implementation (`RootView.replyToSelectedThread()`'s doc comment).
 struct ThreadDetailView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
@@ -38,15 +46,34 @@ struct ThreadDetailView: View {
     /// 絞り込まれた状態で開く"。`nil` だとアイコン自体を出さない
     /// (`MessageDetailFooterToolbar`'s doc comment — macOS では未配線)。
     var onSearchFromSender: ((String) -> Void)?
+    /// G「削除・アーカイブ時の挙動」: called (instead of always popping back)
+    /// once `archiveThread()`/`junkThread()`/`deleteThread()` successfully
+    /// removes this thread — the caller (whichever screen owns the
+    /// currently-displayed thread order and the `selectedThreadId`/
+    /// equivalent binding: `MailScreenView` on iOS, `RootView` on macOS)
+    /// resolves `MessagePostActionSettingsStore`'s setting against that
+    /// order and either opens the next thread or pops back, by mutating its
+    /// own selection state — `ThreadDetailView` itself has no access to
+    /// sibling `MessageListView`'s live thread order, so it can only ever
+    /// report "this thread is gone now", never decide what comes next.
+    /// `nil` (the default — `SearchScreenView`'s push, which doesn't wire
+    /// this) falls back to the pre-existing unconditional `dismiss()`, so
+    /// this setting simply doesn't apply to a thread opened from a search
+    /// result (a separate, less central browsing order this batch didn't
+    /// extend the setting to).
+    var onThreadRemoved: ((Int64) -> Void)?
 
     @State private var accountId: String?
     @State private var messages: [MessageRecord] = []
-    // A `Set`, not a single optional id: each header toggles its own
-    // message independently (the usual thread-view UX — think Gmail/Apple
-    // Mail, where expanding an older message doesn't collapse the one you
-    // were already reading), not an accordion where only one can be open
-    // at a time.
-    @State private var expandedMessageIds: Set<Int64> = []
+    /// 実機フィードバック第2弾 (E): a strict accordion — at most one message
+    /// expanded at a time, unlike the previous `Set<Int64>` (which let
+    /// several rows stay independently expanded, Gmail/Apple-Mail-style).
+    /// Tapping a collapsed message's header expands it and collapses
+    /// whatever was expanded before (`toggleExpanded(_:)`); tapping the
+    /// already-expanded message's header is a no-op — this app never shows
+    /// zero expanded messages once a thread has loaded (`load()` always
+    /// pins one), so "collapse the last one open" isn't a reachable state.
+    @State private var expandedMessageId: Int64?
     @State private var hasPinnedInitialExpansion = false
     @State private var isThreadPinned = false
     @State private var isThreadMuted = false
@@ -144,8 +171,9 @@ struct ThreadDetailView: View {
             ThreadMessageRow(
                 message: message,
                 messageId: messageId,
-                isExpanded: expandedMessageIds.contains(messageId),
+                isExpanded: expandedMessageId == messageId,
                 accountId: accountId,
+                accountLabelColorKey: accountId.flatMap { id in environment.accounts.first(where: { $0.id == id })?.labelColorKey },
                 expandedHeight: expandedMessageHeight(in: containerSize),
                 onToggleExpanded: toggleExpanded
             )
@@ -159,30 +187,33 @@ struct ThreadDetailView: View {
         }
     }
 
-    /// `ThreadMessageRow.onToggleExpanded`'s target — the same
-    /// insert-or-remove-from-`expandedMessageIds` toggle the inline
-    /// `Button` action this replaced used to do directly.
+    /// `ThreadMessageRow.onToggleExpanded`'s target — 実機フィードバック第2弾
+    /// (E)「アコーディオン化」: expanding `messageId` always collapses
+    /// whatever was expanded before (a plain assignment, not the previous
+    /// insert-or-remove-from-a-`Set` toggle). Tapping the already-expanded
+    /// row's own header is a no-op (see `expandedMessageId`'s doc comment
+    /// for why "nothing expanded" is never a state this screen wants).
     private func toggleExpanded(_ messageId: Int64) {
+        guard expandedMessageId != messageId else { return }
         withAnimation(.default) {
-            if expandedMessageIds.contains(messageId) {
-                expandedMessageIds.remove(messageId)
-            } else {
-                expandedMessageIds.insert(messageId)
-            }
+            expandedMessageId = messageId
         }
     }
 
-    /// 新画面構成 (3): "返信"/"転送"/"検索" が対象にするメッセージ — スレッド内
-    /// 最新 (`messages` は oldest-first なので `.last`)。`RootView`'s macOS
-    /// ⌘R が同じ規則を使っている (その doc comment 参照)。
-    private var newestMessage: MessageRecord? {
-        messages.last
+    /// 新画面構成 (3) → 実機フィードバック第2弾 (E): "返信"/"転送"/"検索"/「情報」
+    /// が対象にするメッセージ — 常に**現在展開中の1通** (accordion なので曖昧
+    /// さがない)。`expandedMessageId` に対応する `MessageRecord` が
+    /// `messages` の読み込みタイミングの隙間でまだ見つからない場合だけ、
+    /// スレッド内最新へフォールバックする (`RootView`'s macOS ⌘R が使う規則
+    /// と同じ — その doc comment 参照)。
+    private var targetMessage: MessageRecord? {
+        messages.first(where: { $0.id == expandedMessageId }) ?? messages.last
     }
 
     private func load() async {
         accountId = nil
         messages = []
-        expandedMessageIds = []
+        expandedMessageId = nil
         hasPinnedInitialExpansion = false
         isThreadPinned = false
         isThreadMuted = false
@@ -204,7 +235,7 @@ struct ThreadDetailView: View {
                 // the live observation keeps delivering updates (e.g. a
                 // flag change from opQueue replay).
                 if !hasPinnedInitialExpansion, let newestId = fetched.last?.id {
-                    expandedMessageIds.insert(newestId)
+                    expandedMessageId = newestId
                     hasPinnedInitialExpansion = true
                 }
             }
@@ -218,12 +249,12 @@ struct ThreadDetailView: View {
 
     private var footerToolbar: some View {
         MessageDetailFooterToolbar(
-            onReply: { replyToNewest(replyAll: false) },
-            onReplyAll: { replyToNewest(replyAll: true) },
-            onForward: forwardNewest,
-            onSearch: onSearchFromSender.map { callback in { openSearchFromNewestSender(callback) } },
+            onReply: { replyToTarget(replyAll: false) },
+            onReplyAll: { replyToTarget(replyAll: true) },
+            onForward: forwardTarget,
+            onSearch: onSearchFromSender.map { callback in { openSearchFromTargetSender(callback) } },
             onInfo: { showingInfo = true },
-            onDraftEnglishReply: environment.isTranslationAvailable ? { draftEnglishReplyToNewest() } : nil,
+            onDraftEnglishReply: environment.isTranslationAvailable ? { draftEnglishReplyToTarget() } : nil,
             isMuted: isThreadMuted,
             onToggleMute: toggleMute,
             onMarkUnread: markUnread,
@@ -238,7 +269,7 @@ struct ThreadDetailView: View {
 
     @ViewBuilder
     private var infoSheet: some View {
-        if let message = newestMessage {
+        if let message = targetMessage {
             MessageHeaderInfoView(
                 message: message, references: infoReferences, mailboxPath: infoMailboxPath,
                 contentType: infoContentType
@@ -247,23 +278,23 @@ struct ThreadDetailView: View {
         }
     }
 
-    private func replyToNewest(replyAll: Bool) {
-        guard let id = newestMessage?.id else { return }
+    private func replyToTarget(replyAll: Bool) {
+        guard let id = targetMessage?.id else { return }
         onReply(id, replyAll, false)
     }
 
-    private func draftEnglishReplyToNewest() {
-        guard let id = newestMessage?.id else { return }
+    private func draftEnglishReplyToTarget() {
+        guard let id = targetMessage?.id else { return }
         onReply(id, false, true)
     }
 
-    private func forwardNewest() {
-        guard let id = newestMessage?.id else { return }
+    private func forwardTarget() {
+        guard let id = targetMessage?.id else { return }
         onForward(id)
     }
 
-    private func openSearchFromNewestSender(_ callback: (String) -> Void) {
-        guard let address = newestMessage?.fromAddresses.first?.address else { return }
+    private func openSearchFromTargetSender(_ callback: (String) -> Void) {
+        guard let address = targetMessage?.fromAddresses.first?.address else { return }
         callback("from:\(address)")
     }
 
@@ -391,7 +422,7 @@ struct ThreadDetailView: View {
                 }
                 guard archived else { return }
                 await replaySoon()
-                dismiss()
+                notifyThreadRemoved()
             } catch {
                 // Best-effort — the thread just stays if this fails.
             }
@@ -417,7 +448,7 @@ struct ThreadDetailView: View {
                     try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
                 }
                 await replaySoon()
-                dismiss()
+                notifyThreadRemoved()
             } catch {
                 // Best-effort.
             }
@@ -443,10 +474,21 @@ struct ThreadDetailView: View {
                     try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
                 }
                 await replaySoon()
-                dismiss()
+                notifyThreadRemoved()
             } catch {
                 // Best-effort.
             }
+        }
+    }
+
+    /// See `onThreadRemoved`'s doc comment: reports the removal upward when
+    /// wired, falling back to this screen's own pre-existing `dismiss()`
+    /// otherwise.
+    private func notifyThreadRemoved() {
+        if let onThreadRemoved {
+            onThreadRemoved(threadId)
+        } else {
+            dismiss()
         }
     }
 
@@ -494,6 +536,9 @@ private struct ThreadMessageRow: View {
     let messageId: Int64
     let isExpanded: Bool
     let accountId: String?
+    /// Forwarded straight to `ThreadMessageSummaryRow` — see its own doc
+    /// comment on `accountLabelColorKey`.
+    let accountLabelColorKey: String?
     let expandedHeight: CGFloat
     let onToggleExpanded: (Int64) -> Void
 
@@ -502,7 +547,7 @@ private struct ThreadMessageRow: View {
             Button {
                 onToggleExpanded(messageId)
             } label: {
-                ThreadMessageSummaryRow(message: message, isExpanded: isExpanded, accountId: accountId)
+                ThreadMessageSummaryRow(message: message, isExpanded: isExpanded, accountId: accountId, accountLabelColorKey: accountLabelColorKey)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("threadDetail.message.\(messageId).header")
@@ -530,7 +575,7 @@ private struct ThreadMessageRow: View {
 /// distinct from the top-level message list rather than identical to it —
 /// per `CLAUDE.md`'s explicit requirement — via a softer `paleBase` tint
 /// (vs. the list row's `surface`) and extra leading indent, rather than the
-/// list row's bordered card look (`ThreadRowView.otegamiCardBorder()`):
+/// list row's bordered card look (`ThreadRowView.otegamiCardBackground(_:)`):
 /// these rows already sit inside one continuous thread rather than being
 /// separately-scannable inbox entries, so a card border here would read as
 /// a contradictory "these are independent items" signal.
@@ -538,46 +583,78 @@ private struct ThreadMessageSummaryRow: View {
     let message: MessageRecord
     let isExpanded: Bool
     let accountId: String?
+    /// D「アカウントのラベル色を変更可能に」: `AccountRecord.labelColorKey` for
+    /// `accountId`, forwarded to `SenderAvatar` as-is.
+    let accountLabelColorKey: String?
 
     @AppStorage(ListDisplaySettingsStore.showAvatarInDetailKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatarInDetail
 
     var body: some View {
-        HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
-            UnreadDot(isUnread: !message.flags.contains(.seen))
-                .padding(.top, 6)
-            if showAvatar, let accountId {
-                SenderAvatar(
-                    displayName: message.fromAddresses.first?.name,
-                    address: message.fromAddresses.first?.address ?? "",
-                    accountId: accountId,
-                    diameter: 24
-                )
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(senderText)
-                    .font(OtegamiFont.headline())
-                    .foregroundStyle(OtegamiColor.ink)
-                    .lineLimit(1)
-                if !isExpanded, let snippet = message.snippet, !snippet.isEmpty {
-                    Text(snippet)
-                        .font(OtegamiFont.caption())
-                        .foregroundStyle(OtegamiColor.inkSecondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer(minLength: OtegamiSpacing.sm)
-            OtegamiDateFormat.listRowText(for: message.date ?? message.internalDate)
-                .font(OtegamiFont.caption())
-                .foregroundStyle(OtegamiColor.inkTertiary)
-            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                .font(.caption)
-                .foregroundStyle(OtegamiColor.inkTertiary)
+        HStack(alignment: .top, spacing: 0) {
+            // 実機フィードバック第2弾 (E)「展開中メッセージの視覚的強調」: a 3pt
+            // `OtegamiColor.accent` leading rail, present only on the
+            // expanded row — the same width/treatment `AccountColorRail`
+            // uses for its own "this row means something specific" signal,
+            // reused here for "this is the one row the footer toolbar acts
+            // on" instead of "this row's account". Laid out as a real
+            // (if empty-when-collapsed) leading element rather than an
+            // `.overlay`, so it never shifts this row's own content
+            // horizontally when it appears/disappears.
+            Rectangle()
+                .fill(isExpanded ? OtegamiColor.accent : Color.clear)
+                .frame(width: AccountColorRail.width)
                 .accessibilityHidden(true)
+            HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
+                UnreadDot(isUnread: !message.flags.contains(.seen))
+                    .padding(.top, 6)
+                if showAvatar, let accountId {
+                    SenderAvatar(
+                        displayName: message.fromAddresses.first?.name,
+                        address: message.fromAddresses.first?.address ?? "",
+                        accountId: accountId,
+                        labelColorKey: accountLabelColorKey,
+                        diameter: 24
+                    )
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(senderText)
+                        .font(OtegamiFont.headline())
+                        .foregroundStyle(OtegamiColor.ink)
+                        .lineLimit(1)
+                    if !isExpanded, let snippet = message.snippet, !snippet.isEmpty {
+                        Text(snippet)
+                            .font(OtegamiFont.caption())
+                            .foregroundStyle(OtegamiColor.inkSecondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: OtegamiSpacing.sm)
+                OtegamiDateFormat.listRowText(for: message.date ?? message.internalDate)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkTertiary)
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.caption)
+                    .foregroundStyle(OtegamiColor.inkTertiary)
+                    .accessibilityHidden(true)
+            }
+            .padding(.vertical, OtegamiSpacing.sm)
+            // `.sm` here, not the pre-E `.lg` this row used to apply to its
+            // single top-level `HStack` — the leading accent rail
+            // (`AccountColorRail.width`, 3pt) now accounts for part of that
+            // same "extra indent vs. the top-level list row" visual
+            // language (rail width + `.sm` ≈ the old `.lg`), so the total
+            // indent reads about the same as before regardless of whether
+            // a given row happens to be expanded (the rail's *width* is
+            // always reserved; only its *color* toggles).
+            .padding(.leading, OtegamiSpacing.sm)
+            .padding(.trailing, OtegamiSpacing.md)
         }
-        .padding(.vertical, OtegamiSpacing.sm)
-        .padding(.leading, OtegamiSpacing.lg)
-        .padding(.trailing, OtegamiSpacing.md)
-        .background(OtegamiColor.paleBase)
+        // 実機フィードバック第2弾 (E): `paleBaseStrong` (the same "強い強調地"
+        // token `ThreadRowView`'s selected-row state uses) instead of the
+        // collapsed default `paleBase` — see the accent rail comment above
+        // for why this row specifically needs to read as visually distinct
+        // from its (also `paleBase`-tinted) collapsed siblings.
+        .background(isExpanded ? OtegamiColor.paleBaseStrong : OtegamiColor.paleBase)
         .contentShape(Rectangle())
     }
 

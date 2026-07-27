@@ -36,6 +36,12 @@ struct MailScreenView: View {
     @State private var selectionTitle = String(localized: "すべての受信")
     @State private var selectedThreadId: Int64?
     @State private var isSelecting = false
+    /// G「削除・アーカイブ時の挙動」— see `MessageListView.onSummariesChanged`'s
+    /// doc comment: the most recently observed on-screen thread order,
+    /// refreshed on every `MessageListView` re-render, consulted by
+    /// `handleThreadRemoved(_:)` to resolve "next message" navigation.
+    @State private var currentThreadOrder: [Int64] = []
+    @AppStorage(MessagePostActionSettingsStore.afterDeleteArchiveKey) private var postDeleteArchiveActionRaw = MessagePostActionSettingsStore.defaultAfterDeleteArchive.rawValue
 
     /// ハンバーガーメニュー (フォルダ／設定) の開閉。
     @State private var isMenuOpen = false
@@ -71,7 +77,8 @@ struct MailScreenView: View {
                 .navigationDestination(item: $selectedThreadId) { threadId in
                     ThreadDetailView(
                         threadId: threadId, onReply: onReply, onForward: onForward,
-                        onSearchFromSender: { query in openSearch(presetQuery: query) }
+                        onSearchFromSender: { query in openSearch(presetQuery: query) },
+                        onThreadRemoved: handleThreadRemoved
                     )
                 }
                 .sheet(item: $accountEntryRoute) { route in
@@ -110,7 +117,8 @@ struct MailScreenView: View {
                     selection: mailSelection,
                     unifiedInboxAccountFilter: accountFilter,
                     selectedThreadId: $selectedThreadId,
-                    onSelectionModeChanged: { isSelecting = $0 }
+                    onSelectionModeChanged: { isSelecting = $0 },
+                    onSummariesChanged: { currentThreadOrder = $0 }
                 )
             }
         }
@@ -209,6 +217,16 @@ struct MailScreenView: View {
 
     private func presentAddAccount() {
         accountEntryRoute = .typeSelection
+    }
+
+    /// G「削除・アーカイブ時の挙動」— `ThreadDetailView.onThreadRemoved`'s
+    /// target: resolves the configured setting against `currentThreadOrder`
+    /// and either replaces the pushed thread in place (`.navigationDestination
+    /// (item:)` re-renders with the new id, no pop/push animation) or pops
+    /// back to the list (`nil`).
+    private func handleThreadRemoved(_ threadId: Int64) {
+        let action = PostDeleteArchiveAction(rawValue: postDeleteArchiveActionRaw) ?? MessagePostActionSettingsStore.defaultAfterDeleteArchive
+        selectedThreadId = MessagePostActionSettingsStore.nextThreadId(after: threadId, in: currentThreadOrder, action: action)
     }
 
     private func openSearch(presetQuery: String? = nil) {

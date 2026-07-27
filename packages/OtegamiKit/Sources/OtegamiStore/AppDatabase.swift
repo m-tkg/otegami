@@ -701,6 +701,62 @@ extension AppDatabase {
             }
         }
 
+        // v22 (D「アカウントのラベル色を変更可能に」): nullable — see
+        // `AccountRecord.labelColorKey`'s doc comment. Every pre-existing
+        // row gets NULL (SQLite's default for a nullable column added via
+        // `ALTER TABLE ... ADD COLUMN` with no `.defaults(to:)`), which
+        // `OtegamiAccountColor.color(for:override:)` already treats as
+        // "keep using the deterministic auto-assignment" — no backfill
+        // needed.
+        migrator.registerMigration("v22") { db in
+            try db.alter(table: "account") { t in
+                t.add(column: "labelColorKey", .text)
+            }
+        }
+
+        // v23 (F「署名テンプレート」): see `SignatureTemplateRecord`'s doc
+        // comment for why this is a separate table from `mailTemplate`
+        // rather than an extension of it. `accountIds` is `.blob` for the
+        // same reason `outboxMessage.toAddresses` is (`v1`'s migration) —
+        // GRDB's Codable-record support JSON-encodes a plain Swift array
+        // property to a BLOB column automatically.
+        migrator.registerMigration("v23") { db in
+            try db.create(table: "signatureTemplate") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("name", .text).notNull()
+                t.column("body", .text).notNull()
+                t.column("accountIds", .blob).notNull()
+                t.column("sortOrder", .integer).notNull().defaults(to: 0)
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+            }
+        }
+
+        // v24 (F「デフォルト署名（アカウントごと）」): nullable, `onDelete:
+        // .setNull` so deleting a signature template automatically clears
+        // it from every account that had it as their default — no manual
+        // cleanup code needed at the deletion call site (`SyncEngine`'s
+        // `.setNull` reliance mirrors `mailTemplate.accountId`'s existing
+        // `onDelete: .cascade` pattern from v17, just with a different
+        // action since an account's *default signature* going away should
+        // leave the account itself intact, unlike a template that loses
+        // its owning account). **Deliberately not synced via iCloud**
+        // (`AccountCloudSync.CloudAccountSnapshot` has no
+        // `defaultSignatureId` field) — `signatureTemplate.id` is a
+        // device-local `AUTOINCREMENT` value with no cross-device meaning
+        // (unlike `AccountRecord.id`, a UUID chosen once and treated as the
+        // stable identity `docs/icloud-sync.md` syncs by), so syncing this
+        // column as-is would point at an unrelated or nonexistent row on
+        // another device. Syncing the signatures themselves is future work
+        // this batch doesn't attempt (`docs/settings.md`'s F section notes
+        // the scope decision).
+        migrator.registerMigration("v24") { db in
+            try db.alter(table: "account") { t in
+                t.add(column: "defaultSignatureId", .integer)
+                    .references("signatureTemplate", onDelete: .setNull)
+            }
+        }
+
         return migrator
     }
 }

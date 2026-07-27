@@ -30,6 +30,10 @@ public struct CloudAccountSnapshot: Codable, Equatable, Sendable {
     public var smtpSecurity: ConnectionSecurityRecord?
     public var smtpAllowsInsecureTLS: Bool
     public var smtpUsername: String?
+    /// D「アカウントのラベル色を変更可能に」— see `AccountRecord.labelColorKey`'s
+    /// doc comment. Synced like every other non-secret field so a
+    /// manually-picked color travels between devices (`docs/icloud-sync.md`).
+    public var labelColorKey: String?
     public var createdAt: Date
     /// `AccountCloudSyncEngine`'s last-writer-wins tiebreaker — see
     /// `AccountRecord.updatedAt`'s doc comment.
@@ -51,6 +55,7 @@ public struct CloudAccountSnapshot: Codable, Equatable, Sendable {
         smtpSecurity: ConnectionSecurityRecord?,
         smtpAllowsInsecureTLS: Bool,
         smtpUsername: String?,
+        labelColorKey: String? = nil,
         createdAt: Date,
         updatedAt: Date
     ) {
@@ -69,6 +74,7 @@ public struct CloudAccountSnapshot: Codable, Equatable, Sendable {
         self.smtpSecurity = smtpSecurity
         self.smtpAllowsInsecureTLS = smtpAllowsInsecureTLS
         self.smtpUsername = smtpUsername
+        self.labelColorKey = labelColorKey
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -125,6 +131,7 @@ extension CloudAccountSnapshot {
             smtpSecurity: account.smtpSecurity,
             smtpAllowsInsecureTLS: account.smtpAllowsInsecureTLS,
             smtpUsername: account.smtpUsername,
+            labelColorKey: account.labelColorKey,
             createdAt: account.createdAt,
             updatedAt: account.updatedAt
         )
@@ -154,6 +161,7 @@ extension CloudAccountSnapshot {
             smtpSecurity: smtpSecurity,
             smtpAllowsInsecureTLS: smtpAllowsInsecureTLS,
             smtpUsername: smtpUsername,
+            labelColorKey: labelColorKey,
             createdAt: createdAt,
             updatedAt: updatedAt
         )
@@ -178,6 +186,7 @@ extension CloudAccountSnapshot {
         account.smtpSecurity = smtpSecurity
         account.smtpAllowsInsecureTLS = smtpAllowsInsecureTLS
         account.smtpUsername = smtpUsername
+        account.labelColorKey = labelColorKey
         account.createdAt = createdAt
         account.updatedAt = updatedAt
     }

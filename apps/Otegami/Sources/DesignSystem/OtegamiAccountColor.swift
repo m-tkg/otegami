@@ -42,12 +42,46 @@ public enum OtegamiAccountColor {
 
     private static let palette: [Color] = [teal, indigo, plum, amber, rose, sage, slateBlue, coral]
 
-    /// The color assigned to `accountId`. Stable across launches and
-    /// across devices (iCloud-synced accounts get the same color rail on
-    /// every device once this ships) as long as `accountId` itself is
-    /// stable, which `AccountRecord.id` already is.
-    public static func color(for accountId: String) -> Color {
-        palette[paletteIndex(for: accountId)]
+    /// D「アカウントのラベル色を変更可能に」: a named, stable identifier for
+    /// each palette entry — `AccountRecord.labelColorKey` stores this
+    /// enum's `rawValue` (a plain `String`, since `OtegamiStore` can't
+    /// import this app-target-only module; see that property's doc
+    /// comment), and `AccountCloudSync`'s snapshot carries the same raw
+    /// string so a manually-picked color travels between devices exactly
+    /// like every other account field `docs/icloud-sync.md` syncs.
+    /// `CaseIterable`'s order matches `palette`'s, which is what backs
+    /// `AccountEditView`'s picker grid.
+    public enum PaletteColor: String, CaseIterable, Sendable {
+        case teal, indigo, plum, amber, rose, sage, slateBlue, coral
+
+        public var color: Color {
+            switch self {
+            case .teal: OtegamiAccountColor.teal
+            case .indigo: OtegamiAccountColor.indigo
+            case .plum: OtegamiAccountColor.plum
+            case .amber: OtegamiAccountColor.amber
+            case .rose: OtegamiAccountColor.rose
+            case .sage: OtegamiAccountColor.sage
+            case .slateBlue: OtegamiAccountColor.slateBlue
+            case .coral: OtegamiAccountColor.coral
+            }
+        }
+    }
+
+    /// The color assigned to `accountId`, honoring a manually-picked
+    /// `override` (`AccountRecord.labelColorKey`, decoded to
+    /// `PaletteColor`) when present and recognized. Falls back to the
+    /// deterministic FNV-1a hash assignment when `override` is `nil` *or*
+    /// an unrecognized raw string (e.g. read by an older build against a
+    /// newer palette) — stable across launches and across devices
+    /// (iCloud-synced accounts get the same color rail on every device
+    /// once this ships) as long as `accountId` itself is stable, which
+    /// `AccountRecord.id` already is.
+    public static func color(for accountId: String, override overrideKey: String? = nil) -> Color {
+        if let overrideKey, let picked = PaletteColor(rawValue: overrideKey) {
+            return picked.color
+        }
+        return palette[paletteIndex(for: accountId)]
     }
 
     static func paletteIndex(for accountId: String) -> Int {

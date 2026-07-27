@@ -30,6 +30,11 @@ struct ThreadRowView: View {
     /// anything (a single already-selected mailbox) — see
     /// `showsAccountAccent`.
     let accountDisplayName: String?
+    /// D「アカウントのラベル色を変更可能に」: `AccountRecord.labelColorKey` for
+    /// `summary.thread.accountId`, forwarded to `AccountColorRail`/
+    /// `SenderAvatar` as-is (`nil` when that account still uses the
+    /// automatic assignment). See `OtegamiAccountColor.color(for:override:)`.
+    var accountLabelColorKey: String?
     /// 1d: "統合受信トレイではアカウント色罫線が意味を持ち、単一メールボックス表示
     /// では不要（または控えめ）にする" — `true` for the unified inbox (every row
     /// can belong to a different account, so the rail/label disambiguate at
@@ -46,7 +51,7 @@ struct ThreadRowView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             if showsAccountAccent {
-                AccountColorRail(accountId: summary.thread.accountId)
+                AccountColorRail(accountId: summary.thread.accountId, labelColorKey: accountLabelColorKey)
             }
             HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
                 leadingIndicator
@@ -55,6 +60,7 @@ struct ThreadRowView: View {
                         displayName: summary.latestMessage?.fromAddresses.first?.name,
                         address: summary.latestMessage?.fromAddresses.first?.address ?? "",
                         accountId: summary.thread.accountId,
+                        labelColorKey: accountLabelColorKey,
                         diameter: 28
                     )
                 }
@@ -68,14 +74,17 @@ struct ThreadRowView: View {
             .padding(.horizontal, OtegamiSpacing.md)
             .padding(.vertical, OtegamiSpacing.sm)
         }
-        .background(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface)
-        // 表示・操作改善バッチ「カード状表示」: each row now reads as its own
-        // bordered "面" (card) rather than a plain background between
-        // dashed rules — the gap between cards is `MessageListRow`/
-        // `SearchScreenView`'s `.listRowInsets` (the card border alone
-        // can't create visual separation from its neighbor without a real
-        // gap around it).
-        .otegamiCardBorder()
+        // 表示・操作改善バッチ「カード状表示」→ 実機フィードバック第2弾「C カード
+        // デザインの変更」: each row reads as its own rounded "面" (card) —
+        // no outline, just `OtegamiColor.surface`/`.paleBaseStrong`, clipped
+        // to `OtegamiRadius.card` (`otegamiCardBackground(_:)`'s doc
+        // comment covers the rounding decision and why `AccountColorRail`'s
+        // sharp rectangle still looks right here — it gets clipped to the
+        // same rounded silhouette). The gap between cards is
+        // `MessageListRow`/`SearchScreenView`'s `.listRowInsets` (the card
+        // fill alone can't create visual separation from its neighbor
+        // without a real gap around it).
+        .otegamiCardBackground(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface)
         .contentShape(Rectangle())
     }
 

@@ -1,5 +1,37 @@
 # 設定項目一覧
 
+## 設定画面の構成 (実機フィードバック第2弾: I)
+
+設定画面 (iOS: ハンバーガーメニュー→「設定」シート、macOS: Settings シーン
+の「設定」タブ) のルートは、以前は全設定項目がフラットな1画面に並んで
+いたが、以下の5カテゴリへ再構成した (ユーザー指定の構造)。各カテゴリは
+`AccountsListContent`(設定ルート、`AccountsSettingsView.swift`) からの
+`NavigationLink`で、iOS・macOS 共通の実装 (`AccountsListContent`自体を
+両プラットフォームの`NavigationStack`が共有しているため、カテゴリ構造は
+自動的に両方に揃う)。
+
+| カテゴリ | 実装 | 内容 |
+| --- | --- | --- |
+| アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、G「デフォルトのアカウント設定」。ラベル色 (D) は各アカウントの編集画面 (`AccountEditView`) 側 |
+| メールビューア | `MailViewerSettingsView.swift` | ブラウザの設定 (C7)、G「削除/アーカイブ時の挙動」、本文へのプロフィール画像表示、AI 機能 on/off (翻訳・要約をまとめて) |
+| メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定 (D8)、一覧に要約を出す |
+| 署名テンプレート | `SignatureTemplatesSettingsView.swift` | F。ルート直下の独立項目 (カテゴリの下ではない) |
+| その他 | `OtherSettingsView.swift` | スレッド表示、ピン留め連動、送信キャンセルの猶予、画像設定、HTML表示、表示言語、テンプレート (C8)、iCloud 同期、プッシュ通知、アイコンバッジ (H)、このアプリについて |
+
+- **AI 機能 on/off (メールビューア)**: `AIFeaturesSettingsStore` (新規、
+  既定 ON) — `MessageView`の翻訳バー・AI要約バーの両方をまとめて表示/
+  非表示にするマスタースイッチ。OFF でも「英文を自動で翻訳」設定自体は
+  残るが、マスターが OFF の間は一切参照されない (バーそのものが出ない
+  ため)。作成画面 (Composer) の「英語に翻訳して送る」トグルはこのマスター
+  の対象外 (独立した、常時表示の機能のまま)。
+- **送信キャンセルの猶予**: `SendCancelSettingsStore`自体は表示・操作
+  改善バッチ (C7) で実装済みだったが、値を変更する`Picker` UI がこの
+  再構成まで存在しなかった (`ComposerView`が既定値を読むだけの状態) —
+  この再構成のついでに「その他」へ配線した。
+- **macOS**: `OtegamiSettingsView`の "設定" タブ (旧「アカウント」タブ、
+  中身がカテゴリ一覧に変わったためタブ名も変更) がこの`AccountsListContent`
+  をそのまま埋め込むため、iOS と全く同じカテゴリ構造になる。
+
 otegami の設定項目を一箇所に整理したもの。2026-07-26 のユーザー要望
 バッチ（バグ修正・一覧表示・送信キャンセル・スワイプ設定・ピン留め）で
 設定項目が大きく増えたため新設。実装は `apps/Otegami/Sources/Support/`
@@ -113,6 +145,115 @@ HTML メールの詳細画面には、件名の隣に控えめな "HTML" バッ�
 あったが (実機でも再現確認済み)、`WKWebView.url` の KVO 監視による委譲
 非依存のフォールバック (`HTMLWebViewCoordinator.strayNavigationObservation`)
 で解決済み。詳細・検証結果は `docs/verify.md` の C7 節参照。
+
+## アカウントのラベル色 (実機フィードバック第2弾: D)
+
+`AccountRecord.labelColorKey` (migration v22)。設定 →「アカウント」→ 各
+アカウントの編集画面 (`AccountEditView`) の「ラベル色」セクションから、
+`OtegamiAccountColor` の固定8色パレット (`OtegamiAccountColor.PaletteColor`)
++「自動」を選べる。iOS・macOS 共通、Gmail/iCloud/その他 IMAP のどの `kind`
+でも編集可能 (アカウント種別に関係ない見た目の設定のため)。
+
+- **既定値・「自動」**: `nil`。既存の FNV-1a ハッシュによる固定パレット
+  割り当て (`OtegamiAccountColor.color(for:)`) がそのまま使われる — 移行
+  前のアカウント全件、およびユーザーが明示的に選び直していないアカウント
+  はこの状態のまま。
+- **反映範囲**: `AccountColorRail` (一覧のアカウント色罫線)・`SenderAvatar`
+  (一覧・スレッド詳細の送信者アイコン背景) の両方 —
+  `OtegamiAccountColor.color(for:override:)` を経由する箇所すべて。
+- **iCloud 同期**: `CloudAccountSnapshot.labelColorKey` として他の非秘匿
+  フィールドと同様に同期される (`docs/icloud-sync.md`) — 端末間で選んだ色
+  が揃う。
+
+## アプリアイコンの未読バッジ (実機フィードバック第2弾: H)
+
+`BadgeSettingsStore`。キー `badge.enabled`、既定 **ON**。統合受信トレイ
+基準 (`MessageQuery.unifiedInboxUnreadCountObservation`、既存のハンバー
+ガーメニュー/macOS サイドバーの未読数表示と同じクエリを再利用) の未読数を
+アプリアイコンに表示する。
+
+- **通知許可**: `PushTokenCenter` (プッシュ通知の opt-in、`[.alert, .badge,
+  .sound]`) とは独立に、`BadgeCenter.requestAuthorizationIfNeeded()` が
+  `.badge` のみを要求する。自宅サーバーの otegami-relay を使わないユーザー
+  でも、ローカル同期だけでバッジは機能する。
+- **更新契機**: `AppEnvironment` が `unifiedInboxUnreadCountObservation` を
+  常時購読しているため、既読操作・同期・フォアグラウンド復帰など未読数に
+  影響するすべての操作で自動的に更新される (専用のイベントハンドラ不要)。
+- **プッシュ受信時のインクリメント**: `NotificationService` Extension は
+  新着プッシュのたびに App Group 共有 `UserDefaults` (`badge.sharedCount`)
+  の値を+1し、通知の `content.badge` にセットする (Extension が直接
+  `setBadgeCount` を呼ぶのではなく、配信される通知の `badge` プロパティに
+  設定するのが Extension からバッジを更新する正規の方法)。Extension は
+  新着メッセージをローカル DB に書き込むわけではない (表示用の envelope
+  読み取りのみ) ため正確な未読数を計算できず、暫定的な+1に留まる —
+  次にメイン app 側の `ValueObservation` が発火した時点で正しい数へ
+  自己修正される。
+- **macOS**: `NSApplication.dockTile.badgeLabel` (権限不要)。App Group が
+  そもそも存在しない (`OtegamiAppGroup.identifier` が常に `nil`) ため
+  Extension 連携の対象外 — メイン app プロセス内の同じ `ValueObservation`
+  だけで完結する。
+
+## デフォルトのアカウント (実機フィードバック第2弾: G)
+
+`DefaultAccountSettingsStore`。キー `account.defaultAccountId`、既定は未設定
+(空文字列)。**未設定時、またはアカウント削除等で無効な値になっている時は
+従来どおり「先頭のアカウント」にフォールバックする** — 常に何らかの
+アカウントが選ばれている状態を保証する。
+
+`ComposerView` の**新規メール作成時のみ**この設定を参照する — 返信・転送・
+下書きは元のメッセージ/下書きが属するアカウントを常に使う (この設定より
+優先度が高い、そもそも「デフォルト」という概念が意味を持たない)。設定 UI
+は現状アカウント編集画面ではなく (D「ラベル色」/F「デフォルト署名」とは
+異なりアカウント単位の設定ではないため) 今後の設定画面再構成 (下記「設定
+画面の再構成」参照) の中に配置する。
+
+## メール削除/アーカイブ時の挙動 (実機フィードバック第2弾: G)
+
+`MessagePostActionSettingsStore`。キー `messageAction.afterDeleteArchive`、
+選択肢は「メール一覧に戻る」(既定、この設定が導入される前からの唯一の挙動
+と完全に一致させてある) / 「次のメールを開く」。
+
+- **適用範囲**: メール本文画面 (`ThreadDetailView`) の「…」メニューからの
+  削除・アーカイブ・迷惑メール操作、および macOS の ⌘⌫ (`RootView
+  .deleteSelectedThread()`)。**一覧画面のスワイプ/コンテキストメニュー/
+  一括選択からの削除・アーカイブには適用されない** — 一覧はその場で行が
+  消えるだけで「次に何を開くか」という問いがそもそも発生しないため。
+- **「次のメールを開く」の判定**: `MessageListView` が最後に報告した
+  画面上のスレッド順序 (`onSummariesChanged`) の中から、削除・アーカイブ
+  したスレッドの次の行を開く。次が無ければ (リストの最後だった場合) 1つ
+  前の行を開く。それも無ければ (リストにそのスレッドしか無かった場合)
+  一覧に戻る。iOS (`MailScreenView`)・macOS (`RootView` の3ペイン) の両方
+  に同じロジック (`MessagePostActionSettingsStore.nextThreadId(after:in:
+  action:)`) を適用している。検索結果画面 (`SearchScreenView`) から開いた
+  メール本文には適用されない (検索結果の順序は一覧とは別の並びであり、
+  このバッチのスコープ外と判断した)。
+
+## 署名テンプレート (実機フィードバック第2弾: F)
+
+`SignatureTemplateRecord` (GRDB テーブル `signatureTemplate`、migration
+v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS・macOS 共通。C8
+の「テンプレート」(`MailTemplateRecord`) とは別機能・別テーブル — 詳細は
+`SignatureTemplateRecord` のドキュメントコメント参照 (テンプレートは全文
+定型、署名は本文末尾への付加。テンプレートの `accountId` は単一 optional
+だが、署名の `accountIds` は複数選択できる配列)。
+
+- **項目**: 名前、使用するアカウント (複数選択可)、本文。
+- **アカウント編集画面 (`AccountEditView`) の「デフォルト署名」**:
+  `AccountRecord.defaultSignatureId` (migration v24、参照先の署名が削除
+  されると `onDelete: .setNull` で自動的に `nil` に戻る)。そのアカウントに
+  使用可能として選択されている署名の中から選べる。**iCloud 同期の対象外**
+  — `signatureTemplate.id` は端末ローカルの自動採番値で、端末をまたいで
+  同じ意味を持たない (`AccountRecord.id` のような UUID とは異なる) ため、
+  そのまま同期すると別端末では無関係または存在しない行を指してしまう。
+  署名テンプレート自体の iCloud 同期は今回のスコープでは実装していない。
+- **Composer (作成画面) の「署名」欄**: 差出人アカウントに使用可能な署名が
+  1つ以上あるときだけ Picker が表示される (「なし」+ 各署名名)。選択すると
+  本文末尾に挿入され、別の署名に切り替えると直前に挿入した文字列だけを
+  正確に取り除いてから新しい署名を挿入する (`ComposerView
+  .updateSignatureText(newId:)`)。
+- **デフォルト署名の自動挿入は新規作成時のみ**: 返信・転送・下書き復元では
+  自動挿入しない (本文の非同期プリフィル処理と競合するリスクを避けるため
+  の意図的なスコープ判断)。返信・転送でも「署名」欄から手動で選べる。
 
 ## テンプレート (C8)
 

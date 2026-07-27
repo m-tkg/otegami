@@ -26,6 +26,13 @@ struct ComposerView: View {
 
     let payload: ComposerLaunchPayload
 
+    /// G「デフォルトのアカウント」— see `DefaultAccountSettingsStore`'s doc
+    /// comment. Only consulted by `prepare()` for `.new`; every other
+    /// `payload.kind` overwrites `selectedAccountId` from the original
+    /// message/draft's own account right after, same as before this
+    /// setting existed.
+    @AppStorage(DefaultAccountSettingsStore.defaultAccountIdKey) private var defaultAccountId = ""
+
     @State private var selectedAccountId: String?
     @State private var toText = ""
     @State private var ccText = ""
@@ -150,6 +157,29 @@ struct ComposerView: View {
     /// offered without needing to reopen the Composer.
     @State private var availableTemplates: [MailTemplateRecord] = []
 
+    // MARK: - F 署名
+
+    /// Signatures scoped to the currently-selected `From` account — same
+    /// "reloaded on `.task(id: selectedAccountId)`" shape as
+    /// `availableTemplates` just above, but filtered client-side
+    /// (`SignatureTemplateRecord.accountIds.contains(_:)`) rather than by a
+    /// SQL predicate, since `accountIds` is a JSON-encoded BLOB column
+    /// GRDB can't filter inside SQL — this list is never large enough
+    /// (a handful of signatures at most) for that to matter.
+    @State private var availableSignatures: [SignatureTemplateRecord] = []
+    /// `nil` = "なし" (the picker's own first option). Auto-set to the
+    /// selected account's `defaultSignatureId` only for a brand-new
+    /// composition — see `loadAvailableSignatures()`'s doc comment for why
+    /// reply/forward/draft don't auto-insert.
+    @State private var selectedSignatureId: Int64?
+    /// The exact string `updateSignatureText(newId:)` last appended to
+    /// `bodyText` for `selectedSignatureId` (including its leading
+    /// separator) — tracked so switching signatures (or picking "なし")
+    /// removes precisely what was inserted via an exact suffix match,
+    /// rather than guessing from whitespace. `nil` once nothing is
+    /// currently inserted.
+    @State private var insertedSignatureText: String?
+
     var body: some View {
         NavigationStack {
             Form {
@@ -159,6 +189,7 @@ struct ComposerView: View {
                 bodySection
                 attachmentsSection
                 templateSection
+                signatureSection
                 if let translateErrorMessage {
                     Section {
                         Text(translateErrorMessage)
@@ -233,6 +264,10 @@ struct ComposerView: View {
         }
         .task { await prepare() }
         .task(id: selectedAccountId) { await loadAvailableTemplates() }
+        .task(id: selectedAccountId) { await loadAvailableSignatures() }
+        .onChange(of: selectedSignatureId) { _, newValue in
+            updateSignatureText(newId: newValue)
+        }
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
@@ -458,6 +493,85 @@ struct ComposerView: View {
         }) ?? []
     }
 
+    /// F「作成画面に署名選択欄」— unlike `templateSection`'s `Menu` (an
+    /// *action*), this is a `Picker` bound to persistent state
+    /// (`selectedSignatureId`): choosing a different signature removes
+    /// whatever the previous one inserted and inserts the new one (see
+    /// `updateSignatureText(newId:)`), matching the requirement "切替時は
+    /// 前の署名を除去して差し替え". Only shown once at least one signature is
+    /// scoped to the selected account — an empty picker with nothing but
+    /// "なし" would be pointless chrome.
+    @ViewBuilder
+    private var signatureSection: some View {
+        if !availableSignatures.isEmpty {
+            Section {
+                Picker("署名", selection: $selectedSignatureId) {
+                    Text("なし").tag(Int64?.none)
+                    ForEach(availableSignatures) { signature in
+                        Text(signature.name).tag(Optional(signature.id))
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("composer.signaturePicker")
+            } header: {
+                Text("署名")
+            }
+        }
+    }
+
+    /// Reloads `availableSignatures` for `selectedAccountId` (`.task(id:)`
+    /// in `body`, fired on every From-account switch too) and, only for a
+    /// brand-new composition (`payload.kind == .new` — matching G「デフォル
+    /// トのアカウント」's identical "new-only" scoping in `prepare()`),
+    /// auto-selects that account's default signature the first time. Not
+    /// applied to `.reply`/`.forward`/drafts: those already asynchronously
+    /// prefill `bodyText` with quoted content in `prepare()`, and racing an
+    /// auto-inserted signature against that prefill (which task finishes
+    /// last wins, unpredictably) is a correctness risk this batch avoids by
+    /// simply not auto-inserting there — the picker itself still works, it
+    /// just starts at "なし" and any signature has to be picked manually.
+    private func loadAvailableSignatures() async {
+        guard let selectedAccountId else {
+            availableSignatures = []
+            return
+        }
+        let all = (try? await environment.database.dbWriter.read { db in
+            try SignatureTemplateRecord.order(Column("sortOrder")).fetchAll(db)
+        }) ?? []
+        availableSignatures = all.filter { $0.accountIds.contains(selectedAccountId) }
+
+        if let selectedSignatureId, !availableSignatures.contains(where: { $0.id == selectedSignatureId }) {
+            // The previous pick doesn't apply to the (possibly just-
+            // switched) account anymore — `.onChange(of: selectedSignatureId)`
+            // handles removing its inserted text.
+            self.selectedSignatureId = nil
+        }
+
+        guard case .new = payload.kind, selectedSignatureId == nil else { return }
+        if let account = environment.accounts.first(where: { $0.id == selectedAccountId }),
+           let defaultId = account.defaultSignatureId,
+           availableSignatures.contains(where: { $0.id == defaultId }) {
+            selectedSignatureId = defaultId
+        }
+    }
+
+    /// The single place `bodyText` is ever mutated for a signature change —
+    /// both the Picker's own `.onChange` and `loadAvailableSignatures()`'s
+    /// auto-select path funnel through here (the latter only ever *sets*
+    /// `selectedSignatureId`, never touches `bodyText` directly), so there's
+    /// exactly one insertion/removal code path to reason about.
+    private func updateSignatureText(newId: Int64?) {
+        if let insertedSignatureText, bodyText.hasSuffix(insertedSignatureText) {
+            bodyText.removeLast(insertedSignatureText.count)
+        }
+        insertedSignatureText = nil
+        guard let newId, let signature = availableSignatures.first(where: { $0.id == newId }) else { return }
+        let separator = bodyText.isEmpty ? "" : "\n\n"
+        let insertion = separator + signature.body
+        bodyText += insertion
+        insertedSignatureText = insertion
+    }
+
     private var navigationTitle: String {
         // `.navigationTitle(navigationTitle)`は`String`版のオーバーロードに
         // 解決されるため (verbatim)、`String(localized:)`で明示的に
@@ -479,7 +593,13 @@ struct ComposerView: View {
 
     private func prepare() async {
         if selectedAccountId == nil {
-            selectedAccountId = environment.accounts.first?.id
+            // G「デフォルトのアカウント」: prefer the configured default when
+            // it still matches a current account; otherwise fall back to
+            // the pre-existing "first account" behavior (also what runs
+            // when no default has ever been picked, since `defaultAccountId`
+            // defaults to `""`, which never matches a real account id).
+            selectedAccountId = environment.accounts.first(where: { $0.id == defaultAccountId })?.id
+                ?? environment.accounts.first?.id
         }
         attachUITestFixtureIfRequested()
         switch payload.kind {
