@@ -1,0 +1,74 @@
+From: Google Accounts <no-reply@accounts.example>
+To: test1@otegami.test
+Subject: 【重要】利用規約の変更のお知らせ
+Message-ID: <seed-0027@otegami.test>
+Date: Fri, 10 Jan 2026 09:00:00 +0900
+Content-Type: multipart/alternative; boundary="otegami-boundary-27"
+MIME-Version: 1.0
+
+--otegami-boundary-27
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+(プレーンテキスト版)
+利用規約の変更についてお知らせします。詳細は HTML 版をご覧ください。
+
+--otegami-boundary-27
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width">
+<title>利用規約の変更について</title>
+<!--[if mso]>
+<style type="text/css">
+table {border-collapse:collapse;}
+</style>
+<!-- fallback skeleton for legacy clients: <html><body>このコメント内の文字列が
+本文抽出の誤爆を再現するための仕掛けです。ここは実際には表示されません。
+</body></html> -->
+<![endif]-->
+<style type="text/css">
+  body { margin: 0; padding: 0; background-color: #f2f2f2; font-family: 'Google Sans', Roboto, Arial, sans-serif; }
+  .container { max-width: 640px; margin: 0 auto; background-color: #ffffff; }
+  .header { padding: 24px 32px 0 32px; }
+  .section-title { font-weight: 700; font-size: 16px; margin: 24px 0 8px 0; color: #202124; }
+  .content p { font-size: 14px; line-height: 20px; color: #3c4043; margin: 0 0 16px 0; }
+  .footer { font-size: 11px; color: #70757a; padding: 24px 32px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <p style="font-size:20px;font-weight:700;color:#202124;">利用規約の変更について</p>
+  </div>
+  <div class="content" style="padding: 0 32px;">
+    <p>いつもGoogleのサービスをご利用いただきありがとうございます。このたび、利用規約の内容を一部変更いたしましたのでお知らせいたします。</p>
+    <div class="section-title">1. データの取り扱いについて</div>
+    <p>お客様から提供されるデータの取り扱いに関する規定を明確化しました。当社は引き続きお客様のプライバシーを尊重し、適用されるすべての法令に従ってデータを処理します。詳細はプライバシーポリシーをご確認ください。</p>
+    <p>この変更は、規制環境の変化と、より透明性の高いサービス提供を目指す当社の継続的な取り組みの一環です。お客様が安心してサービスをご利用いただけるよう、今後も規約の見直しを継続してまいります。</p>
+    <div class="section-title">2. サービス利用条件の更新</div>
+    <p>一部のサービスにおいて、利用条件の文言を整理し、わかりやすい表現に改めました。これにより、お客様が規約の内容をより正確に理解できるようになります。実質的な権利義務の変更を意図するものではありません。</p>
+    <p>ただし、一部の新機能に関しては、追加の利用条件が適用される場合があります。該当する機能をご利用になる前に、表示される追加条件を必ずご確認ください。</p>
+    <div class="section-title">3. 紛争解決について</div>
+    <p>本規約に関連して生じる紛争の解決方法について、適用される手続きを明記しました。お客様と当社との間で問題が生じた場合は、まず誠実な協議による解決を試みるものとします。</p>
+    <p>協議によって解決しない場合の手続きについても規約内に定めておりますので、詳細は規約本文をご確認ください。</p>
+    <div class="section-title">4. お問い合わせ</div>
+    <p>本変更に関するご質問やご不明点がございましたら、ヘルプセンターよりお問い合わせください。よくあるご質問もあわせてご参照いただけます。</p>
+    <p>今後とも変わらぬご愛顧を賜りますよう、よろしくお願い申し上げます。</p>
+    <div class="section-title">5. 適用開始日</div>
+    <p>この変更は、本メール送信日から起算して30日後に適用されます。適用開始日以降も対象サービスをご利用いただく場合、変更後の規約に同意いただいたものとみなされます。</p>
+    <p>変更内容にご同意いただけない場合は、適用開始日より前に該当サービスのご利用を停止していただく必要があります。詳細な手続きについてはヘルプセンターをご参照ください。</p>
+  </div>
+  <div class="footer">
+    <p>このメールは重要なお知らせのため配信停止の対象外です。</p>
+    <p>&copy; 2026 Google LLC. All rights reserved.</p>
+  </div>
+</div>
+</body>
+</html>
+
+--otegami-boundary-27--

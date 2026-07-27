@@ -108,4 +108,18 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/25-link-browser-test.eml"
 # (docs/verify.md の B 節参照)。
 seed_message "test1@otegami.test" "$FIXTURES_DIR/26-marketing-wide-html.eml"
 
+# HTML表示の高さ問題検証用: 実機報告 (WebView表示エリアが画面半分で頭打ち、
+# 本文が途中で切れ、下に空白が残る) 相当の Google 利用規約風 HTML —
+# <head> に MSO 条件付きコメント (中に "<body"/"</body>" という文字列を
+# 含むフォールバック骨格、Outlook向けテンプレートで一般的なパターン) と、
+# 本文がクラス経由でしか見た目を制御していない <style> ブロックを両方含む
+# 長文メール (docs/verify.md の該当節参照)。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/27-google-tos-style.eml"
+
+# 画像バナー統合検証用: 埋め込み (cid:) とリモート (http:) 両方の画像
+# 参照を持つメール — 両方ブロックされている状態で「画像を表示」バナーが
+# メニュー (Menu) になり、2つの選択肢を出すことを確認する
+# (docs/verify.md の該当節参照)。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/28-both-image-kinds.eml"
+
 echo "==> done"

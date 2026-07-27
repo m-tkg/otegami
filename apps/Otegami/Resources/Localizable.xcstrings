@@ -1,6 +1,36 @@
 {
   "sourceLanguage": "ja",
   "strings": {
+    "埋め込み画像を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Embedded Images"
+          }
+        }
+      }
+    },
+    "画像を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Images"
+          }
+        }
+      }
+    },
+    "リモート画像も読み込む": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Also Load Remote Images"
+          }
+        }
+      }
+    },
     "既読にする": {
       "localizations": {
         "en": {

@@ -16,10 +16,12 @@ import AppKit
 /// their own settings (`ImageSettingsStore`) — external (`http`/`https`)
 /// resources via a `WKContentRuleList`, and embedded (`cid:`) images via
 /// whether `CIDURLRewriter` even rewrites them to the resolvable
-/// `otegami-cid://` scheme. Each has its own "画像を表示"-style banner (shown
-/// whenever the HTML references that kind of image and the corresponding
-/// setting is off) that lifts the block and reloads — for that message, for
-/// the rest of this app session only; a relaunch (or opening a different
+/// `otegami-cid://` scheme. The two settings stay independent (unblocking
+/// one never touches the other), but they share a single "画像を表示"-style
+/// banner (`imagesBanner`) — a plain tap-to-reveal button when only one
+/// kind is actually blocked for this message, or a `Menu` offering both
+/// choices when both are. Lifting a block only applies for that message,
+/// for the rest of this app session — a relaunch (or opening a different
 /// message) goes back to each setting's default.
 ///
 /// The web view scrolls internally (rather than the SwiftUI-side content
@@ -91,31 +93,78 @@ struct HTMLMessageView: View {
         CIDURLRewriter.containsCIDReference(html: html)
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if hasEmbeddedContent && !allowsEmbeddedImages {
+    /// 画像バナー統合 (実機フィードバック追加分): 埋め込み画像とリモート画像を
+    /// 個別にブロックしうる状態はそれぞれ独立 (`ImageSettingsStore`) だが、
+    /// 両方が同時にブロックされているメールでは以前 `imagesBanner`
+    /// の直下に2つのバナーが縦に並んでしまい、どちらが何を表示するのか
+    /// 紛らわしかった。`isEmbeddedImagesBlocked`/`isExternalImagesBlocked`
+    /// で状況を判定し `imagesBanner` (下) が実際の1つのバナーに集約する。
+    private var isEmbeddedImagesBlocked: Bool { hasEmbeddedContent && !allowsEmbeddedImages }
+    private var isExternalImagesBlocked: Bool { hasExternalContent && !allowsExternalContent }
+
+    /// 画像バナー統合: ブロックされている種類がちょうど1つなら (従来と同じ)
+    /// タップで即座にその種類を表示するボタン、2つとも同時にブロックされて
+    /// いる場合だけ `Menu` でどちらを表示するか選ばせる。`body`
+    /// (`@ViewBuilder` の外) から毎回再評価されるので、メニューで片方だけ
+    /// 選んだ直後は自動的に「残り1種類だけブロックされている」状態に落ち、
+    /// 次の再描画で単純ボタン表示に切り替わる — 「両方選んだ後にバナーが
+    /// 消える」「片方選んだ後にメニューの残りの選択肢だけが残る」という
+    /// 遷移を個別にコーディングする必要がない。
+    ///
+    /// アクセシビリティ識別子は既存のもの (`messageDetail
+    /// .showEmbeddedImagesBanner`/`messageDetail.showImagesBanner`) を
+    /// 単一種類ブロック時にそのまま流用 — 既存の XCUITest
+    /// (`OtegamiImageSettingsUITests`/`OtegamiM8CIDImageUITests`) が
+    /// 前提にしているラベル/識別子を変えない。
+    @ViewBuilder
+    private var imagesBanner: some View {
+        if isEmbeddedImagesBlocked && isExternalImagesBlocked {
+            Menu {
                 Button {
                     allowsEmbeddedImages = true
                 } label: {
                     Label("埋め込み画像を表示", systemImage: "photo")
                 }
-                .buttonStyle(.bordered)
-                .padding(.horizontal)
-                .padding(.top, 4)
-                .accessibilityIdentifier("messageDetail.showEmbeddedImagesBanner")
-            }
-
-            if hasExternalContent && !allowsExternalContent {
+                .accessibilityIdentifier("messageDetail.imagesBanner.showEmbedded")
                 Button {
                     allowsExternalContent = true
                 } label: {
-                    Label("画像を表示", systemImage: "photo.on.rectangle")
+                    Label("リモート画像も読み込む", systemImage: "photo.on.rectangle")
                 }
-                .buttonStyle(.bordered)
-                .padding(.horizontal)
-                .padding(.top, 4)
-                .accessibilityIdentifier("messageDetail.showImagesBanner")
+                .accessibilityIdentifier("messageDetail.imagesBanner.showRemote")
+            } label: {
+                Label("画像を表示", systemImage: "photo.on.rectangle")
             }
+            .buttonStyle(.bordered)
+            .padding(.horizontal)
+            .padding(.top, 4)
+            .accessibilityIdentifier("messageDetail.showImagesBanner")
+        } else if isEmbeddedImagesBlocked {
+            Button {
+                allowsEmbeddedImages = true
+            } label: {
+                Label("埋め込み画像を表示", systemImage: "photo")
+            }
+            .buttonStyle(.bordered)
+            .padding(.horizontal)
+            .padding(.top, 4)
+            .accessibilityIdentifier("messageDetail.showEmbeddedImagesBanner")
+        } else if isExternalImagesBlocked {
+            Button {
+                allowsExternalContent = true
+            } label: {
+                Label("画像を表示", systemImage: "photo.on.rectangle")
+            }
+            .buttonStyle(.bordered)
+            .padding(.horizontal)
+            .padding(.top, 4)
+            .accessibilityIdentifier("messageDetail.showImagesBanner")
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            imagesBanner
 
             HTMLWebViewRepresentable(
                 html: html,
@@ -219,9 +268,27 @@ struct CIDResolutionContext {
 /// `max-width: 100% !important` on images/tables *before* this fix. See
 /// `extractBodyContent(from:)`'s doc comment for the actual root cause this
 /// traced to.
+///
+/// HTML 表示の高さ問題 (B の直後の実機フィードバック): B のこの `extractBodyContent`
+/// が、実在するマーケティング/通知テンプレートが `<head>` にごく普通に含む
+/// **MSO (Outlook) 条件付きコメント** (`<!--[if mso]> ... <![endif]-->`、
+/// 別レンダリングエンジン向けのフォールバックを丸ごと埋め込むのが一般的な
+/// パターン) の中にたまたま `<body`/`</body>` という文字列が含まれていた場合
+/// (例: コメント内のフォールバック骨格 `<html><body>...</body></html>` や、
+/// デバッグ用に埋め込まれた完全なコピー)、それを本物のタグと誤認して本文の
+/// 大半を切り捨てていた — `stripHTMLComments(from:)` で HTML コメントを丸ごと
+/// 除去してからタグ探索する形に修正済み (コメントはブラウザ上も非表示なので
+/// 除去しても見た目に影響しない)。閉じタグ側も `.backwards` で「文書中最後の
+/// `</body>`」を探すよう変更 — 開始タグ検出は最初の `<body` のままで正しい
+/// (コメント除去済みなので、もう `<head>` 内の紛れ込みを拾わない)。
+/// 実機スクリーンショット (WebView の表示エリアが画面の半分程度で頭打ちに
+/// なり、本文が途中で切れ、その下に大きな空白が残る) から発見。
+/// `extractHeadStyles(from:)` も参照 — 同じ B の変更が本文抽出と一緒に元
+/// `<head>` の `<style>` ブロックも丸ごと捨てていた副作用の修正。
 enum HTMLDocumentBuilder {
     static func wrap(bodyHTML: String) -> String {
         let innerBody = extractBodyContent(from: bodyHTML)
+        let originalHeadStyles = extractHeadStyles(from: bodyHTML)
         return """
         <!doctype html>
         <html>
@@ -257,6 +324,7 @@ enum HTMLDocumentBuilder {
           a { color: LinkText; }
           pre, code { white-space: pre-wrap; }
         </style>
+        \(originalHeadStyles)
         </head>
         <body>\(innerBody)</body>
         </html>
@@ -288,15 +356,89 @@ enum HTMLDocumentBuilder {
     /// parses, so its viewport meta and CSS reset can't be shadowed by
     /// whatever the original message happened to ship.
     private static func extractBodyContent(from html: String) -> String {
-        guard let bodyTagRange = html.range(of: "<body", options: [.caseInsensitive]),
-              let bodyTagCloseIndex = html[bodyTagRange.lowerBound...].firstIndex(of: ">")
+        // HTML 表示の高さ問題の修正: comment-stripped first (see
+        // `stripHTMLComments(from:)`'s doc comment) — a real marketing
+        // template's `<head>` commonly contains an MSO/Outlook conditional
+        // comment holding a whole fallback skeleton, which can itself
+        // contain the literal text `<body`/`</body>`. Scanning the raw
+        // (comment-including) string let that spurious occurrence win,
+        // truncating almost the entire real message body.
+        let sanitized = stripHTMLComments(from: html)
+        guard let bodyTagRange = sanitized.range(of: "<body", options: [.caseInsensitive]),
+              let bodyTagCloseIndex = sanitized[bodyTagRange.lowerBound...].firstIndex(of: ">")
         else {
             return html
         }
-        let contentStart = html.index(after: bodyTagCloseIndex)
-        let contentEnd = html.range(of: "</body>", options: [.caseInsensitive])?.lowerBound ?? html.endIndex
+        let contentStart = sanitized.index(after: bodyTagCloseIndex)
+        // `.backwards`: the *real* closing tag is always the last one in a
+        // well-formed document (it closes the one `<body>` element whose
+        // opening tag was just located above) — searching backwards is a
+        // second, independent safety net against any stray `</body>`-like
+        // text elsewhere in `<head>` that comment-stripping alone didn't
+        // happen to catch (e.g. inside a `<script>`/`<style>` string
+        // literal rather than an HTML comment).
+        let contentEnd = sanitized.range(of: "</body>", options: [.caseInsensitive, .backwards])?.lowerBound ?? sanitized.endIndex
         guard contentStart <= contentEnd else { return html }
-        return String(html[contentStart..<contentEnd])
+        return String(sanitized[contentStart..<contentEnd])
+    }
+
+    /// HTML 表示の高さ問題の修正: B (`extractBodyContent(from:)`) が
+    /// 元ドキュメントの `<body>...</body>` だけを取り出す一方で、その
+    /// `<head>` に書かれていた `<style>` ブロック (クラス経由でしか本文の
+    /// 見た目を制御していないマーケティングテンプレートは珍しくない) を
+    /// 完全に捨ててしまっていた副作用の修正。抽出したスタイルは `wrap
+    /// (bodyHTML:)` でこのファイル自身の `<style>` (viewport/幅の
+    /// `!important` リセット) の**後**に差し込む — CSS の cascade では
+    /// `!important` は宣言順を問わず勝つので、元テンプレートの `width:
+    /// 600px` のような非 `!important` 宣言に上書きされる心配はなく、色や
+    /// 余白のような非競合スタイルだけが素直に復元される。
+    /// `stripHTMLComments(from:)` を先に通すのは `extractBodyContent(from:)`
+    /// と同じ理由 (MSO 条件付きコメント内の `<style>` は Outlook 専用の
+    /// フォールバックであって、WebKit でそのまま適用すべきものではない) —
+    /// コメントごと除去することで自然に除外される。
+    private static func extractHeadStyles(from html: String) -> String {
+        let sanitized = stripHTMLComments(from: html)
+        guard let headOpenRange = sanitized.range(of: "<head", options: [.caseInsensitive]),
+              let headCloseRange = sanitized.range(of: "</head>", options: [.caseInsensitive]),
+              headOpenRange.lowerBound < headCloseRange.lowerBound
+        else {
+            return ""
+        }
+        let headSection = sanitized[headOpenRange.lowerBound..<headCloseRange.upperBound]
+        var result = ""
+        var searchStart = headSection.startIndex
+        while let openRange = headSection.range(of: "<style", options: [.caseInsensitive], range: searchStart..<headSection.endIndex),
+              let openTagCloseIndex = headSection[openRange.lowerBound...].firstIndex(of: ">") {
+            let styleContentStart = headSection.index(after: openTagCloseIndex)
+            guard let closeRange = headSection.range(of: "</style>", options: [.caseInsensitive], range: styleContentStart..<headSection.endIndex) else {
+                break
+            }
+            result += String(headSection[openRange.lowerBound..<closeRange.upperBound])
+            result += "\n"
+            searchStart = closeRange.upperBound
+        }
+        return result
+    }
+
+    /// Removes every `<!-- ... -->` HTML comment from `html` — comments
+    /// never render (browsers treat them as inert), so stripping them
+    /// before `extractBodyContent(from:)`/`extractHeadStyles(from:)` scan
+    /// for tags never changes anything visible; it only stops literal
+    /// tag-like text *inside* a comment (an MSO/Outlook conditional
+    /// fallback skeleton is the common real-world case — see
+    /// `extractBodyContent(from:)`'s doc comment) from being mistaken for
+    /// a real tag. `.dotMatchesLineSeparators` so a multi-line comment
+    /// (the norm for these conditional blocks) is matched as one unit
+    /// rather than stopping at the first newline. Falls back to the input
+    /// unchanged if the regex itself somehow fails to compile (a fixed,
+    /// valid pattern — should never happen, but this is display code, not
+    /// somewhere worth crashing over).
+    private static func stripHTMLComments(from html: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: "<!--.*?-->", options: [.dotMatchesLineSeparators]) else {
+            return html
+        }
+        let range = NSRange(html.startIndex..<html.endIndex, in: html)
+        return regex.stringByReplacingMatches(in: html, range: range, withTemplate: "")
     }
 }
 

@@ -1,0 +1,31 @@
+From: Otegami Team <team@otegami.test>
+To: test1@otegami.test
+Subject: 埋め込みとリモート両方の画像つきHTMLメール
+Message-ID: <seed-0028@otegami.test>
+Date: Sat, 17 Jan 2026 09:20:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="otegami-both-images-boundary"
+
+--otegami-both-images-boundary
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<html>
+<body>
+<p>このメールには埋め込み画像 (cid:) とリモート画像 (http:) の両方への参照が含まれています。</p>
+<img src="cid:otegami-both-logo@otegami.test" alt="埋め込みロゴ">
+<img src="http://example.com/remote-banner.png" alt="リモートバナー">
+<p>画像バナー統合の確認用メールです。</p>
+</body>
+</html>
+
+--otegami-both-images-boundary
+Content-Type: image/png; name="inline-logo.png"
+Content-Transfer-Encoding: base64
+Content-ID: <otegami-both-logo@otegami.test>
+Content-Disposition: inline; filename="inline-logo.png"
+
+iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMG
+jRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg==
+
+--otegami-both-images-boundary--
