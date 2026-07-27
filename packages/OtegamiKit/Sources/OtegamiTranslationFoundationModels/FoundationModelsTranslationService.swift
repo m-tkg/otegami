@@ -211,11 +211,21 @@ public struct FoundationModelsTranslationService: TranslationService {
         // means a 26-only device never gets the `.tooLong` special case
         // (falls through to the generic `.failed` below, exactly like
         // before this mapping existed) rather than failing to compile.
+        // `LanguageModelError` is not just OS-gated — the *type* only exists
+        // in the iOS/macOS 27 SDK, so `#available` alone is not enough: on
+        // CI's older Xcode (26.x SDK) the mere mention of the type fails to
+        // compile (`cannot find type 'LanguageModelError' in scope` —
+        // exactly the local-Xcode-27-beta vs CI-Xcode-26.5 divergence
+        // docs/ci.md warns about, this time as a missing type rather than a
+        // type-check timeout). Gate at *compile time* on the compiler that
+        // ships with the 27 SDK, keeping the runtime `#available` inside.
+        #if compiler(>=6.4)
         if #available(iOS 27.0, macOS 27.0, *),
            let languageModelError = error as? LanguageModelError,
            case .contextSizeExceeded(let details) = languageModelError {
             return .tooLong(message: "\(details.tokenCount)/\(details.contextSize) tokens")
         }
+        #endif
         return .failed(message: error.localizedDescription)
     }
 }
