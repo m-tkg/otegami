@@ -652,3 +652,21 @@ IDLEループはいずれも`SyncScope.inboxOnly`固定)。これに Gmail の�
   [docs/default-mail-app.md](docs/default-mail-app.md) 参照、申請自体は
   [HUMAN_TASKS.md](HUMAN_TASKS.md) の該当項目。macOS 側は entitlement
   不要 (`CFBundleURLTypes` の宣言のみで足りる) なのでこの制約の対象外。
+- **Xcode Cloud/TestFlight 配布の準備 (Task #49)**: `ci_scripts/`
+  (`apps/Otegami/ci_scripts/ci_post_clone.sh`)・`ITSAppUsesNonExemptEncryption`・
+  `CFBundleVersion` の CI 連動は実装・ローカル検証済み。**App Store
+  Connect 側のワークフロー作成・cloud signing・実際の TestFlight 配信は
+  この環境から実行できないため未検証**。手順は
+  [docs/xcode-cloud.md](docs/xcode-cloud.md) にまとめ、着手手順は
+  [HUMAN_TASKS.md](HUMAN_TASKS.md) に追記した。
+  - **未解決のまま残した既知の懸念**: TestFlight は必ず Distribution
+    (App Store) プロビジョニングプロファイルで署名されるが、
+    `Config/Otegami-iOS.entitlements` の `aps-environment` は
+    `development` に固定、`AppEnvironment.enablePushNotifications` も
+    otegami-relay への登録時に `.sandbox` を固定で送っている
+    (現行の Ad Hoc/OTA 配布はこの development/sandbox の組み合わせで
+    実機確認済み — 上記「M9: APNs プッシュ通知」参照)。production
+    (Distribution) 側に切り替える対応をしていないため、TestFlight
+    ビルドではプッシュ通知が届かない、または署名自体が entitlements の
+    不整合でエラーになる可能性がある。詳細・修正方針は
+    `docs/xcode-cloud.md`「既知の注意点」節。

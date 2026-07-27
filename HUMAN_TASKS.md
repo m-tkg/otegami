@@ -239,6 +239,35 @@
       優先度: 低 (申請自体は今すぐ着手可、以降は Apple の承認待ち) /
       所要時間: 申請自体は30分程度、承認後の有効化は10分 / 参照:
       [docs/default-mail-app.md](docs/default-mail-app.md)
+- [ ] **Xcode Cloud のワークフローを作成する (Task #49)** — App Store
+      Connect にアプリレコードを作成 (Bundle ID `com.mtkg.otegami`) →
+      Xcode の Report Navigator → Cloud タブからワークフローを作成し
+      リポジトリを接続 → Archive アクション + TestFlight (内部テスト)
+      の Post-Action を設定 → 環境変数
+      (`OTEGAMI_DEVELOPMENT_TEAM`/`OTEGAMI_GOOGLE_CLIENT_ID` は Secret
+      指定) を設定 → cloud signing (証明書/プロビジョニングプロファイル
+      の自動管理) を許可 → 初回ビルドが Archive 成功し TestFlight に
+      ビルドが表示されることを確認する。`ci_scripts/`・
+      `ITSAppUsesNonExemptEncryption`・`CFBundleVersion` の CI 連動は
+      実装・ローカル検証済みだが、実際の cloud signing・TestFlight 配信
+      はこの手順で人間が初めて確認することになる。
+      優先度: 中 (配布を決めてから) / 所要時間: 初回セットアップ1時間
+      程度、以降のビルドは自動 / 参照:
+      [docs/xcode-cloud.md](docs/xcode-cloud.md)
+- [ ] **TestFlight ビルドでのプッシュ通知 production 対応の要否判断
+      (Task #49)** — `docs/xcode-cloud.md`「既知の注意点」の通り、
+      TestFlight (Distribution 署名) は `aps-environment: production`
+      を要求するが、現状は `development`/`.sandbox` 固定 (現行の Ad Hoc
+      配布はこの組み合わせで実機確認済み)。TestFlight で実際にプッシュ
+      通知を使う予定があるなら、entitlements のビルド設定分岐
+      (Debug: development / Release: production) と
+      `AppEnvironment.swift` の対応する分岐実装が必要— まず上の
+      Xcode Cloud 初回ビルドで実際に Archive/署名がエラーになるか
+      どうかを確認してから、対応要否を判断する。
+      優先度: 低 (TestFlight でのプッシュ通知確認を実際にする段階まで
+      保留可) / 所要時間: 実装1〜2時間+実機確認 / 参照:
+      [docs/xcode-cloud.md](docs/xcode-cloud.md)「既知の注意点」節、
+      [PENDING.md](PENDING.md#公開時に必要な対応-まとめ)
 
 ---
 
