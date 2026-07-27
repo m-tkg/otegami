@@ -178,7 +178,8 @@ struct ICloudAccountSetupView: View {
             smtpHost: Self.smtpHost,
             smtpPort: Self.smtpPort,
             smtpSecurity: .startTLS,
-            smtpUsername: email
+            smtpUsername: email,
+            sortOrder: environment.nextAccountSortOrder()
         )
 
         do {

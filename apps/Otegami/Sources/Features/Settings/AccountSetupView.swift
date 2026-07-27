@@ -298,7 +298,8 @@ struct AccountSetupView: View {
             smtpHost: smtpHost.isEmpty ? nil : smtpHost,
             smtpPort: smtpHost.isEmpty ? nil : Int(smtpPortText),
             smtpSecurity: smtpHost.isEmpty ? nil : smtpSecurity,
-            smtpUsername: smtpUsername.isEmpty ? nil : smtpUsername
+            smtpUsername: smtpUsername.isEmpty ? nil : smtpUsername,
+            sortOrder: environment.nextAccountSortOrder()
         )
 
         do {

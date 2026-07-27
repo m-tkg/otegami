@@ -272,4 +272,71 @@ struct AppDatabaseTests {
         }
         #expect(refetched?.translatedText == "更新後の翻訳")
     }
+
+    @Test("v25 migration backfills sortOrder to match createdAt order for pre-existing accounts")
+    func v25BackfillsSortOrderInCreatedAtOrder() throws {
+        // Same "hand-insert against a frozen pre-migration schema, then
+        // migrate the rest of the way" shape as `v21RepairsDisplayPath` —
+        // exercises the migration's backfill against genuinely pre-v25 rows
+        // (no `sortOrder` column at all yet), not rows built with today's
+        // `AccountRecord` initializer (which always has one).
+        let dbQueue = try DatabaseQueue()
+        let migrator = AppDatabase.migrator
+        try migrator.migrate(dbQueue, upTo: "v24")
+
+        // Inserted in an order that does *not* match `createdAt` order, to
+        // confirm the backfill actually sorts by `createdAt` rather than
+        // insertion/rowid order.
+        let accounts = [
+            (id: "third", createdAt: Date(timeIntervalSince1970: 3000)),
+            (id: "first", createdAt: Date(timeIntervalSince1970: 1000)),
+            (id: "second", createdAt: Date(timeIntervalSince1970: 2000)),
+        ]
+        try dbQueue.write { db in
+            for account in accounts {
+                try db.execute(
+                    sql: """
+                        INSERT INTO account
+                            (id, displayName, email, authType, kind, needsReauth,
+                             imapHost, imapPort, imapSecurity, imapAllowsInsecureTLS, imapUsername,
+                             smtpAllowsInsecureTLS, createdAt, updatedAt)
+                        VALUES (?, ?, ?, 'password', 'generic', 0, ?, ?, 'plain', 0, ?, 0, ?, ?)
+                        """,
+                    arguments: [
+                        account.id, account.id, "\(account.id)@x.test",
+                        "localhost", 1143, "\(account.id)@x.test",
+                        account.createdAt, account.createdAt,
+                    ]
+                )
+            }
+        }
+
+        try migrator.migrate(dbQueue)
+
+        let sortOrders = try dbQueue.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, sortOrder FROM account")
+        }.reduce(into: [String: Int]()) { result, row in
+            result[row["id"]] = row["sortOrder"]
+        }
+        #expect(sortOrders["first"] == 0)
+        #expect(sortOrders["second"] == 1)
+        #expect(sortOrders["third"] == 2)
+    }
+
+    @Test("sortOrder round-trips, and a fresh account defaults to 0")
+    func roundTripsAccountSortOrder() throws {
+        let database = try AppDatabase.makeInMemory()
+        var account = AccountRecord(
+            displayName: "Test", email: "t@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "t@x.test"
+        )
+        #expect(account.sortOrder == 0)
+        try database.dbWriter.write { db in try account.insert(db) }
+
+        account.sortOrder = 5
+        try database.dbWriter.write { db in try account.update(db) }
+
+        let fetched = try database.dbWriter.read { db in try AccountRecord.fetchOne(db, key: account.id) }
+        #expect(fetched?.sortOrder == 5)
+    }
 }

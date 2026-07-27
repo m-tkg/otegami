@@ -126,6 +126,35 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
     /// meaningfully sync between devices.
     public var defaultSignatureId: Int64?
 
+    /// アカウント並び替え (migration v25): the position this account shows up
+    /// in everywhere its display order matters — 設定のアカウント一覧、
+    /// ハンバーガーメニュー/`SidebarView`のアカウントセクション、統合トレイの
+    /// アカウント絞り込みチップ、Composer の差出人ピッカー — since all of
+    /// those render straight off `AppEnvironment.accounts`, the single
+    /// `ORDER BY sortOrder, createdAt` query that populates it
+    /// (`AppEnvironment.startObservingAccounts`) is the one place this
+    /// actually gets applied; every UI list simply follows.
+    ///
+    /// Lower sorts first. Not required to be contiguous/unique (a fresh
+    /// install's existing-then-imported accounts, or a duplicate id briefly
+    /// present mid-`AccountCloudSyncEngine.reconcile()`, can share a value —
+    /// `createdAt` breaks any tie deterministically), but
+    /// `AppEnvironment.reorderAccounts(_:)` always writes back a dense
+    /// `0, 1, 2, ...` sequence after a drag so it stays tidy in the normal
+    /// case. New accounts default to `0` here (`AppEnvironment
+    /// .nextAccountSortOrder()` is what actually places a newly-created
+    /// account at the end — every account-creation call site computes and
+    /// passes that value explicitly; this initializer's `0` only matters for
+    /// call sites — tests, `CloudAccountSnapshot.makeAccountRecord()` — that
+    /// intentionally set it themselves right after).
+    ///
+    /// **iCloud 同期の対象**: unlike `defaultSignatureId`, this is a
+    /// meaningful cross-device value (a UI position both devices agree
+    /// belongs to this same account), so it's part of `CloudAccountSnapshot`
+    /// and rides last-writer-wins like every other synced field —
+    /// `docs/settings.md`'s account-reorder section.
+    public var sortOrder: Int
+
     public var createdAt: Date
 
     /// M11 (iCloud account sync): when this row's synced metadata last
@@ -159,6 +188,7 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         lastSyncErrorAt: Date? = nil,
         labelColorKey: String? = nil,
         defaultSignatureId: Int64? = nil,
+        sortOrder: Int = 0,
         createdAt: Date = Date(),
         updatedAt: Date? = nil
     ) {
@@ -182,6 +212,7 @@ public struct AccountRecord: Codable, Equatable, Sendable, FetchableRecord, Pers
         self.lastSyncErrorAt = lastSyncErrorAt
         self.labelColorKey = labelColorKey
         self.defaultSignatureId = defaultSignatureId
+        self.sortOrder = sortOrder
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
     }

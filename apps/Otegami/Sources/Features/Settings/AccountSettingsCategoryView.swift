@@ -53,9 +53,11 @@ struct AccountSettingsCategoryView: View {
                             } label: {
                                 Label("削除", systemImage: "trash")
                             }
+                            .tint(OtegamiColor.destructive)
                             .accessibilityIdentifier("settings.account.\(account.id).delete")
                         }
                     }
+                    .onMove(perform: moveAccounts)
                 }
             }
 
@@ -119,6 +121,22 @@ struct AccountSettingsCategoryView: View {
             }
         }
         .navigationTitle("アカウントの設定")
+        #if os(iOS)
+        // アカウントの並び替え: iOS は`EditButton`で編集モードに入ってから
+        // ドラッグハンドルが出る通常の流儀 (`MessageToolbarSettingsView`の
+        // doc comment が記録している「常時編集モード」の代替) —
+        // このリストは並び替え専用画面ではなく `NavigationLink`
+        // (`AccountEditView`への遷移) とスワイプ削除も同居しているため、
+        // 常時編集モードにすると遷移・スワイプ操作を潰してしまう。
+        // macOS はもとから編集モードなしでドラッグ並び替えできる
+        // (`MessageToolbarSettingsView`と同じ理由) ので不要。
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                EditButton()
+                    .accessibilityIdentifier("settings.accounts.editButton")
+            }
+        }
+        #endif
         .alert(
             "アカウントを削除しますか？",
             isPresented: Binding(
@@ -203,6 +221,21 @@ struct AccountSettingsCategoryView: View {
             }
         }
         .contentShape(Rectangle())
+    }
+
+    /// アカウントの並び替え: `.onMove`'s callback — computes the reordered id
+    /// list the same way `Array.move(fromOffsets:toOffset:)` would, then
+    /// hands it to `AppEnvironment.reorderAccounts(_:)` to persist. Doesn't
+    /// mutate any local `@State` array itself (unlike `MessageToolbarSettingsView
+    /// .move`) — `environment.accounts` isn't owned by this view, it's a
+    /// live `ValueObservation` result, so the list visually settles into its
+    /// new order the moment that DB write commits and the observation fires
+    /// again (near-instant for a local SQLite write).
+    private func moveAccounts(from source: IndexSet, to destination: Int) {
+        var reordered = environment.accounts
+        reordered.move(fromOffsets: source, toOffset: destination)
+        let orderedIds = reordered.map(\.id)
+        Task { await environment.reorderAccounts(orderedIds) }
     }
 
     /// Re-runs the OAuth flow for a `.gmail` account whose refresh token

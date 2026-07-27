@@ -527,8 +527,17 @@ final class AppEnvironment {
     }
 
     private func startObservingAccounts() {
+        // アカウントの並び替え: `sortOrder` first (what a drag reorder
+        // actually changes), `createdAt` only as a tiebreaker for rows that
+        // happen to share a `sortOrder` (pre-migration backfill gives every
+        // row a distinct value already, but this stays deterministic for
+        // e.g. a brief post-`reconcile()` collision). Every account-order-
+        // sensitive UI (`FolderListSheet`, `AccountFilterChipRow`,
+        // `ComposerView`'s From picker, `AccountSettingsCategoryView`) reads
+        // straight off `self.accounts`, so this one query is the single
+        // place account order is decided.
         let observation = ValueObservation.tracking { db in
-            try AccountRecord.order(Column("createdAt")).fetchAll(db)
+            try AccountRecord.order(Column("sortOrder"), Column("createdAt")).fetchAll(db)
         }
         accountsObservationTask = Task { [database] in
             do {
@@ -672,6 +681,57 @@ final class AppEnvironment {
         // other device syncing this Apple ID's iCloud account picks up the
         // deletion too.
         await accountCloudSync.pushLocalDeletion(accountId: account.id)
+    }
+
+    // MARK: - Account ordering
+
+    /// The `sortOrder` a brand-new account should be created with — one past
+    /// whatever's currently highest, so a freshly-added account always lands
+    /// at the *end* of every account-ordered list rather than jumping to an
+    /// arbitrary position. Reads `self.accounts` (already the live,
+    /// correctly-ordered result of `startObservingAccounts`'s
+    /// `ValueObservation`) rather than issuing a fresh DB query — cheap, and
+    /// exactly the list every call site (`AccountSetupView`,
+    /// `ICloudAccountSetupView`, `createGmailAccount`) would otherwise have
+    /// had to read for itself.
+    func nextAccountSortOrder() -> Int {
+        (accounts.map(\.sortOrder).max() ?? -1) + 1
+    }
+
+    /// Persists a drag-reorder from the accounts list (設定 のアカウント一覧
+    /// — same content backs the hamburger menu/filter chips/Composer's From
+    /// picker via `self.accounts`, so this one call is all any of those UIs
+    /// needs). `orderedAccountIds` is the *complete* new order (every known
+    /// account id, exactly once — what SwiftUI's `.onMove`-driven array
+    /// already looks like after the move is applied locally); writes back a
+    /// dense `0, 1, 2, ...` sequence matching that order.
+    ///
+    /// Only actually writes (and pushes to iCloud) the rows whose
+    /// `sortOrder` genuinely changed — most `.onMove` calls only move one
+    /// row past a handful of others, so most rows keep the position they
+    /// already had. Builds `changedAccounts` as the write closure's *return
+    /// value* rather than mutating a captured `var` from inside it — Swift 6
+    /// strict concurrency rejects mutating a captured variable from within a
+    /// `@Sendable` closure like `DatabaseWriter.write`'s, the same
+    /// constraint `updateAccount`'s `toWrite` snapshot works around
+    /// elsewhere in this file.
+    func reorderAccounts(_ orderedAccountIds: [String]) async {
+        let now = Date()
+        let changedAccounts = (try? await database.dbWriter.write { db -> [AccountRecord] in
+            var changed: [AccountRecord] = []
+            for (index, accountId) in orderedAccountIds.enumerated() {
+                guard var row = try AccountRecord.fetchOne(db, key: accountId) else { continue }
+                guard row.sortOrder != index else { continue }
+                row.sortOrder = index
+                row.updatedAt = now
+                try row.update(db, columns: [Column("sortOrder"), Column("updatedAt")])
+                changed.append(row)
+            }
+            return changed
+        }) ?? []
+        for account in changedAccounts {
+            await pushAccountToCloud(account)
+        }
     }
 
     // MARK: - Account editing
@@ -949,7 +1009,8 @@ final class AppEnvironment {
             smtpHost: "smtp.gmail.com",
             smtpPort: 587,
             smtpSecurity: .startTLS,
-            smtpUsername: email
+            smtpUsername: email,
+            sortOrder: nextAccountSortOrder()
         )
         // TokenStore first, same ordering rationale as
         // `AccountSetupView.saveAccount`'s Keychain-before-DB-row: an

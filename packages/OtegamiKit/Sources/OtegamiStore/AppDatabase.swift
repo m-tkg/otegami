@@ -757,6 +757,25 @@ extension AppDatabase {
             }
         }
 
+        // v25 (アカウントの並び替え): `AccountRecord.sortOrder`'s doc comment
+        // has the full picture. Added nullable-free with a `0` SQL default
+        // (unlike, say, v22's `labelColorKey`, "0 for everyone" *is* the
+        // right shared starting point here, not a per-row "unset" marker),
+        // then immediately backfilled to a dense `0, 1, 2, ...` sequence in
+        // `createdAt` order — "既存アカウントは現在の表示順 (createdAt 順) で
+        // 初期化" — so this migration is a no-op for how any existing
+        // install's account list actually looks the moment it runs.
+        migrator.registerMigration("v25") { db in
+            try db.alter(table: "account") { t in
+                t.add(column: "sortOrder", .integer).notNull().defaults(to: 0)
+            }
+            let accounts = try AccountRecord.order(Column("createdAt")).fetchAll(db)
+            for (index, var account) in accounts.enumerated() {
+                account.sortOrder = index
+                try account.update(db, columns: [Column("sortOrder")])
+            }
+        }
+
         return migrator
     }
 }

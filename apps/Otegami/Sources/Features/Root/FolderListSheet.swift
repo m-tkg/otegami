@@ -121,14 +121,6 @@ struct FolderListSheet: View {
                     .labelStyle(.iconOnly)
                     .accessibilityIdentifier("folderSheet.closeButton")
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        onAddAccount()
-                    } label: {
-                        Label("アカウントを追加", systemImage: "plus")
-                    }
-                    .accessibilityIdentifier("folderSheet.addAccountToolbarButton")
-                }
             }
         }
         .tint(OtegamiColor.accent)
