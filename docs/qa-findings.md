@@ -543,3 +543,81 @@ not authorized"` で常に拒否され、通知配信そのものを試すとこ
 /PushRelayClient/` に切り出し、`NotificationEnrichmentTests` で単体
 検証済み — 実 IMAP/GRDB/Keychain を経由するエンドツーエンドの経路だけが
 このブロッカーで未検証のまま残っている。
+
+## 実機バグ: 一部のメールで本文取得が「serverError: ... (MailCoreErrorDomain
+error 19)」で何度開き直しても失敗し続ける
+
+**症状**: 特定のメールを開くと「本文の取得に失敗しました:
+serverError: The operation couldn't be completed. (MailCoreErrorDomain
+error 19.)」が表示される。同じメールで再現し、アプリを再起動しても
+同じメールで再現し続ける — 一時的なネットワークエラーではない。
+
+**原因**: MailCore2 のエラー 19 は `MCOErrorFetch`
+(`UID FETCH` に対するサーバーの `NO` 応答) で、
+`MailCoreIMAPSession+Mapping.mapError` はこの特定のコードに専用の
+`MailTransportError` ケースを持たず `default` 分岐で `.serverError` に
+落ちる。実際には**ローカル DB の `(mailboxId, uid)` がサーバー側の実体と
+食い違っている「UID 陳腐化」** — 別クライアント (Gmail の Web UI など)
+でそのメッセージをアーカイブ/別フォルダへ移動/削除した後、このアプリの
+ローカル `message` 行だけがそのメールボックスの古い UID を指したまま
+残っていた。IMAP の `UID` は `uidValidity` が変わらない限りメールボックス
+内で安定という前提で作られているが、**他クライアントによるサーバー側の
+移動/削除**はこの前提を静かに崩す — このアプリ自身の差分同期
+(`MailboxSyncer`) が追いつく前にこのメールを開くと、サーバーにもう存在
+しない UID への `FETCH` が永遠に `NO` を返し続ける。
+
+**確認したこと (dev mailstack の実 Dovecot に対して)**: メールボックスが
+一度も持ったことのない UID に対して `UID FETCH` (envelope) を投げると
+**例外を投げず空配列を返す**が、同じ UID に対する `fetchParsedMessage`
+(本文取得) は `.serverError` を投げる
+(`MailCoreIMAPSessionIntegrationTests
+.fetchingANonexistentUIDFailsBodyButNotEnvelopeExistenceCheck`)。
+つまり「envelope フェッチは "UID SEARCH 相当" の存在確認として安全に
+使え、本文フェッチだけが失敗する」という設計上の前提が実サーバーでも
+成立することを確認できた。
+
+**修正**: `packages/OtegamiKit/Sources/SyncEngine/BodyFetcher.swift` に
+自己修復 (`attemptSelfHeal`) を追加。本文フェッチが `.serverError` で
+失敗した時だけ、同じセッション上で該当 UID の envelope フェッチ
+(`UID FETCH` 1件、`UID SEARCH` の代用) を行って本当にそのメールボックス
+から消えているか確認する。
+
+1. 確認自体が失敗した場合 (接続断・タイムアウトなど) は**何もしない**
+   — 過去に「空の refetch がメールボックスを全削除した事故」
+   (docs 内の別節) があるため、確認が取れない限り一切削除・変更しない
+   のが安全条件。
+2. UID がまだ存在するなら (何か別の理由でのエラーだったということ)
+   何もしない — 元のエラーをそのまま呼び出し元に返す。
+3. UID が確認どおり消えていた場合、同じアカウントの**ローカル DB**を
+   `Message-ID` で検索し (Gmail の「すべてのメール」= `MailboxRole
+   .all` を優先) — `AccountSyncer.performInitialSync` が選択可能な
+   メールボックス全てを最初に同期する仕様なので、多くの場合はこの
+   ローカル検索だけで見つかる:
+   - 見つかった場合: そのメッセージ行 (同じ `id` を維持——開いている
+     詳細画面などが指している参照を壊さないため) の `mailboxId`/`uid`
+     を発見した場所に張り替え、見つかった側の重複行は
+     `AccountDuplicateMerger.mergeCollidingMailbox` と同じ要領で
+     (ピン留め・フラグを OR で引き継いで) 削除、スレッド集計
+     (`ThreadAssigner.recomputeAggregates`) を再計算してから、同じ
+     セッションでその場所を `select` し直して本文取得をリトライする
+     (リトライ後は元のメールボックスに `select` を戻す)。
+   - どこにも見つからなかった場合: サーバーから消滅済みとみなし、
+     メッセージ行 (+ 本文/添付/検索インデックス) を削除しスレッド集計を
+     再計算する (最後の1通なら `ThreadAssigner.recomputeAggregates` の
+     契約どおりスレッド行自体も消える)。いずれの場合もエラーバナーは
+     出さない — 自己修復できた場合はもちろん、消滅確定の場合も
+     「ユーザーが再タップしても直しようがないエラー」を出し続けるより
+     静かな整理で解決する。
+4. 無限リトライ防止: `BodyFetcher` インスタンス (実質アプリセッション
+   単位) ごとに `messageId` 単位で自己修復は一度だけ試す
+   (`selfHealAttempted`)。
+
+**テスト**: `packages/OtegamiKit/Tests/SyncEngineTests/BodyFetcherTests.swift`
+に `FakeIMAPSession` ベースで4シナリオを追加 (張替え成功/どこにも
+見つからず整理/存在確認自体が失敗して何も削除しない/2回目は確認を
+繰り返さない)。`FakeIMAPSession` 自体にも `failFetchBody`/
+`failFetchEnvelopes` のスクリプト機能を追加
+(`packages/OtegamiKit/Tests/SyncEngineTests/FakeIMAPSession.swift`)。
+`make test`/`make mac`/`make ios` は全て green、dev mailstack に対する
+既存の opt-in 統合テスト (`OTEGAMI_TEST_IMAP_HOST=localhost swift test
+--filter MailTransportMailCoreTests --no-parallel`) も全て green。
