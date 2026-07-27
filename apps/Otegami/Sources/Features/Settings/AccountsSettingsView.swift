@@ -2,10 +2,12 @@ import SwiftUI
 import OtegamiStore
 
 /// Settings → account list (M4 plan: "設定にアカウント一覧 + 追加/削除"). The sheet
-/// both platforms' gear-icon button opens; wraps `AccountsListContent` in
-/// its own `NavigationStack` + "閉じる" toolbar button (a sheet needs an
-/// explicit close affordance). See `AccountsListContent`'s doc comment for
-/// why the actual list lives in its own type now.
+/// macOS's `SidebarView` gear-icon button opens (iOS now opens
+/// `SettingsSheetView` instead, from the hamburger menu — 新画面構成 (1));
+/// wraps `AccountsListContent` in its own `NavigationStack` + "閉じる"
+/// toolbar button (a sheet needs an explicit close affordance). See
+/// `AccountsListContent`'s doc comment for why the actual list lives in its
+/// own type now.
 struct AccountsSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -15,8 +17,16 @@ struct AccountsSettingsView: View {
                 .navigationTitle("設定")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("閉じる") { dismiss() }
-                            .accessibilityIdentifier("settings.closeButton")
+                        // タスク#43: 文字ボタンをxmarkアイコンのみに変更 —
+                        // ハンバーガーメニュー (`FolderListSheet`)/
+                        // `SettingsSheetView`の閉じるボタンと同じ流儀。
+                        // accessibility identifier は既存を維持
+                        // (UITest 互換)。
+                        Button { dismiss() } label: {
+                            Label("閉じる", systemImage: "xmark")
+                        }
+                        .labelStyle(.iconOnly)
+                        .accessibilityIdentifier("settings.closeButton")
                     }
                 }
         }

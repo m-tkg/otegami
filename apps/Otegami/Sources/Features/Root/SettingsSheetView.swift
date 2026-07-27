@@ -20,8 +20,18 @@ struct SettingsSheetView: View {
                 .navigationTitle("設定")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("閉じる") { dismiss() }
-                            .accessibilityIdentifier("settingsSheet.closeButton")
+                        // タスク#43: 文字ボタンをxmarkアイコンのみに変更 —
+                        // ハンバーガーメニュー (`FolderListSheet`) の閉じる
+                        // ボタンと同じ流儀。`Label`の`title`/`icon`を両方
+                        // 渡しつつ`.labelStyle(.iconOnly)`にすることで、
+                        // 見た目はxmarkアイコンだけになりつつ VoiceOver は
+                        // "閉じる"をそのまま読み上げ続ける。accessibility
+                        // identifier は既存を維持 (UITest 互換)。
+                        Button { dismiss() } label: {
+                            Label("閉じる", systemImage: "xmark")
+                        }
+                        .labelStyle(.iconOnly)
+                        .accessibilityIdentifier("settingsSheet.closeButton")
                     }
                 }
         }
