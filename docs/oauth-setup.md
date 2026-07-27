@@ -175,13 +175,16 @@ myaccount.google.com/connections でこのアプリの付与日・付与スコ�
 切り分けの結果は次のとおりで、**アプリの認可リクエスト自体には問題は
 無かった**:
 
-- `GoogleOAuthEndpoints.authorizationURL(pkce:state:)` は最初の実装
-  (M6) の時点から常に `prompt=consent`・`access_type=offline` を含む
-  リクエストを送っており、`reauthenticateGmailAccount(_:)` はこの関数を
-  経由する完全な Authorization Code + PKCE フローを毎回実行している
-  (アクセストークンの単純なリフレッシュで済ませてしまう、といった
-  近道は無い)。`scope` にも `contacts.other.readonly` 追加コミット
-  (8f2aba5) の時点から新スコープが含まれている。
+- `GoogleOAuthEndpoints.authorizationURL(pkce:state:promptConsent:)` は
+  最初の実装 (M6) の時点から `access_type=offline` を含むリクエストを
+  送っており、`reauthenticateGmailAccount(_:)` はこの関数を経由する
+  完全な Authorization Code + PKCE フローを毎回実行している (アクセス
+  トークンの単純なリフレッシュで済ませてしまう、といった近道は無い)。
+  `scope` にも `contacts.other.readonly` 追加コミット (8f2aba5) の時点
+  から新スコープが含まれている。(この実機バグの調査当時は `prompt=consent`
+  を毎回付けていた — Task #47 でこれが条件付きになった経緯は下記「再認証
+  時に同意画面を省略する」節参照。この節の切り分け自体には影響しない:
+  スコープ不足時は現在も必ず `prompt=consent` が付く。)
 - 実際の原因は **Google Cloud Console 側の OAuth 同意画面設定**
   だった — People API を有効化していない、または同意画面の「データへの
   アクセス」にこのスコープを追加していない状態だと、アプリが
@@ -216,6 +219,55 @@ myaccount.google.com/connections でこのアプリの付与日・付与スコ�
   `people/me/connections`のページング全件取得) でこの要件自体が無く
   なり、ウォームアップ関連のコードは削除した — 上の「実装方式」節参照)。
 
+### 再認証時に同意画面を省略する (Task #47: 「毎回警告が出るのがつらい」)
+
+「アプリは Google で確認されていません」という未検証アプリ警告自体は、
+OAuth 同意画面の公開ステータスを「本番」に切り替えて審査を通すまで消せない
+(このファイル冒頭の注記参照)。ただし、この警告と同意画面を**毎回**踏む
+必要はない — 「アクセストークンが切れただけで、許可済みのスコープは
+何も変わっていないアカウントを再認証する」場合、Google は `prompt`
+パラメータを省略したリクエストに対して、要求スコープが既存の許可を
+超えていなければサイレントに (同意画面もアプリ未検証警告も出さずに)
+新しいコードを発行する。
+
+`AppEnvironment.reauthenticateGmailAccount(_:)` は再認証のたびに:
+
+1. `TokenStore.diagnosticScope(for:)` (「アカウント編集」の「権限の診断」
+   と同じ、キャッシュを使わず強制的にリフレッシュリクエストを送る問い
+   合わせ) でこのアカウントの現在の付与スコープを取得する。
+2. `GoogleOAuthEndpoints.isSatisfied(byGrantedScope:)` で、その付与
+   スコープが現在の `scope` 全体を含むか判定する。
+3. 含む場合は `promptConsent: false` で `requestGmailAuthorization(promptConsent:)`
+   を呼び、`prompt` パラメータ自体を省略する
+   (`GoogleOAuthEndpoints.authorizationURL(pkce:state:promptConsent:)`)。
+   ユーザーから見ると、ブラウザシートが一瞬開いて (Google 側のサイレント
+   承認を経て) すぐ閉じるだけのワンタップで再認証が完了する。
+4. 付与スコープが不足している場合 (新しいスコープが `scope` に追加された
+   直後でまだ再接続していないアカウントなど) や、診断問い合わせ自体が
+   失敗した場合 (`try?` で握りつぶし) は、従来通り `promptConsent: true`
+   で同意画面を強制する — 「わからない場合は安全側 (同意画面を出す) に倒す」
+   という判断。
+
+**refresh token の保全**: `prompt` を省略したリクエストへのトークン応答は
+`refresh_token` を含まないことがある (Google の仕様通り — 同一クライアント
+/スコープへの再同意はデフォルトで `refresh_token` を省略する)。
+`TokenStore.storeInitialTokens` はレスポンスに `refresh_token` が含まれる
+場合だけ Keychain の値を上書きする (含まれない場合は何もせず既存の値を
+そのまま残す) ため、この経路でも既存の refresh token が失われることは
+ない。
+
+新規アカウント追加 (`AppEnvironment.createGmailAccount`/`GmailAccountSetupView`)
+は引き続き常に `promptConsent: true` (デフォルト) — 初回はまだ何も許可
+されていないので同意画面が必須であり、かつ初回の交換で確実に
+`refresh_token` を得る必要があるため (「無条件で `prompt=consent` を
+付ける」という元々の理由がそのまま当てはまる)。
+
+実 Google での E2E は不可のため、上記の分岐ロジック自体は
+`GoogleOAuthEndpointsTests`/`GoogleOAuthClientTests`/`TokenStoreTests`
+の URLProtocol スタブ・フェイクで検証している。実機での「再認証が
+ワンタップでサイレントに完了する」体感は自動化できないため、
+`HUMAN_TASKS.md` に確認項目を追記した。
+
 ## 実機での最終確認手順 (Client ID 発行後、ユーザー自身が行う)
 
 1. 上記手順で Client ID を発行し `Local.xcconfig` に設定する。
@@ -238,6 +290,14 @@ myaccount.google.com/connections でこのアプリの付与日・付与スコ�
    (myaccount.google.com → セキュリティ → サードパーティのアクセス) た後に
    同期を試み、`AccountsSettingsView` に「再認証が必要です」バナーが出て
    「再認証」ボタンから復旧できることを確認する。
+8b. (Task #47 確認: 上記「再認証時に同意画面を省略する」節) 8. とは別に、
+   アクセス権を取り消さずスコープも変わっていない状態のまま「アカウント
+   編集」→「再認証」を実行する。同意画面 (アカウント選択以降の許可確認
+   画面) も「アプリは確認されていません」警告も出ず、ブラウザシートが
+   一瞬開いてすぐ閉じるだけでワンタップで完了することを確認する。逆に、
+   `contacts.readonly` のようなスコープをまだ許可していないアカウントで
+   同じ操作をすると、従来通り同意画面が出ることも確認する (スコープ
+   不足時は `promptConsent: true` にフォールバックする分岐)。
 9. (スコープの確認) 「アカウント編集」→ 対象の Gmail アカウントを開き、
    「認証」節の「連絡先の写真: 許可済み (完全/基本)/未許可」表示を確認
    する。**「未許可」または「許可済み (基本)」のままなら**: (a) まだ
