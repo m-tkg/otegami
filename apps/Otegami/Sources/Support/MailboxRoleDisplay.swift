@@ -45,9 +45,20 @@ extension MailboxRoleRecord {
         }
     }
 
-    /// カテゴリ優先メニューがセクションとして並べる順序・対象 role の固定
-    /// リスト — `.none`(ユーザー独自フォルダ)は含まない (上記の理由どおり、
-    /// 「その他」セクションで別途扱う)。受信トレイを先頭にするのは既存の
-    /// 統合受信トレイの並び (メニュー最上部)を踏襲するため。
-    static let categoryOrder: [MailboxRoleRecord] = [.inbox, .flagged, .archive, .sent, .drafts, .junk, .trash, .all]
+    /// ハンバーガーメニューのカテゴリセクションが並べる**既定**順序・対象
+    /// role の固定リスト — `.none`(ユーザー独自フォルダ)は含まない (上記の
+    /// 理由どおり、「その他」セクションで別途扱う)。受信トレイを先頭にする
+    /// のは既存の統合受信トレイの並び (メニュー最上部)を踏襲するため。
+    /// ユーザーが並び替え設定 (`FolderCategoryOrderStore`) で変更していない
+    /// 限り、実際の描画順もこの配列そのもの。
+    ///
+    /// `.all`(「すべてのメール」)を含めていない — Task #52, 2: Gmail は
+    /// `\Archive`special-useフォルダを持たず、その All Mail (role`.all`)は
+    /// `FolderListSheet.matchesCategory(mailbox:account:role:)`により
+    /// 「アーカイブ」カテゴリの一員として扱う (Spark の挙動に合わせた一本化)。
+    /// この配列に`.all`を別途残すと、Gmail の All Mail が「アーカイブ」と
+    /// 「すべてのメール」の2つのセクションに重複して現れてしまう — それを
+    /// 避けるため、`.all`は独立したカテゴリとして持たないことにした
+    /// (`docs/design-system.md`にこの判断を記録)。
+    static let categoryOrder: [MailboxRoleRecord] = [.inbox, .flagged, .archive, .sent, .drafts, .junk, .trash]
 }

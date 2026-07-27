@@ -84,11 +84,17 @@ struct FolderListSheet: View {
     /// 表示単位そのものが違うカテゴリ優先モードに同じ折りたたみ状態を無理に
     /// 使い回す理由にはならない。
     @State private var collapsedCategoryRoles: Set<String> = FolderCategoryCollapseStore.collapsedRoleRawValues
-    /// 画面構造改修バッチ (Task #33, 3): 「既存のアカウント優先表示との切替」—
-    /// 既定はカテゴリ優先 (`FolderGroupingModeStore.defaultMode`)。
-    @AppStorage(FolderGroupingModeStore.key) private var groupingModeRaw = FolderGroupingModeStore.defaultMode.rawValue
-    private var groupingMode: FolderGroupingMode {
-        FolderGroupingMode(rawValue: groupingModeRaw) ?? FolderGroupingModeStore.defaultMode
+    /// Task #52 追記: 「カテゴリ優先/アカウント優先のセグメント切替
+    /// (`FolderGroupingMode`)」は廃止し、Spark と同じく1枚のリストにカテゴリ
+    /// 群 (上) →アカウント群 (下、従来のアカウント優先表示の内容そのまま)を
+    /// 縦に積む構成にした。カテゴリセクション自体の並び順だけがユーザーに
+    /// 開放されている (`FolderCategoryOrderStore`) — `@AppStorage`で生の
+    /// 文字列を直接監視するのは`FolderCategoryOrderStore.loadOrder(from:)`
+    /// のdoc comment参照 (このビューは常設マウントのドロワーで再生成され
+    /// ないため、設定画面での変更を反応的に拾う必要がある)。
+    @AppStorage(FolderCategoryOrderStore.key) private var categoryOrderRaw = ""
+    private var categoryOrder: [MailboxRoleRecord] {
+        FolderCategoryOrderStore.loadOrder(from: categoryOrderRaw)
     }
 
     var body: some View {
@@ -105,16 +111,15 @@ struct FolderListSheet: View {
                     }
                 } else {
                     statusSection
-                    groupingModeSection
-                    if groupingMode == .category {
-                        ForEach(MailboxRoleRecord.categoryOrder, id: \.self) { role in
-                            categorySection(for: role)
-                        }
-                        uncategorizedSection
-                    } else {
-                        ForEach(environment.accounts) { account in
-                            accountSection(for: account)
-                        }
+                    // Task #52 追記: カテゴリ群 (上) →アカウント群 (下) の
+                    // 縦積み構成 — Spark のメニューと同じ (旧セグメント切替
+                    // 廃止の経緯は`categoryOrder`のdoc comment参照)。
+                    ForEach(categoryOrder, id: \.self) { role in
+                        categorySection(for: role)
+                    }
+                    uncategorizedSection
+                    ForEach(environment.accounts) { account in
+                        accountSection(for: account)
                     }
                 }
             }
@@ -161,11 +166,12 @@ struct FolderListSheet: View {
         .task(id: environment.accounts.map(\.id)) { await observeMailboxSyncFailureCount() }
         .task(id: environment.accounts.map(\.id)) { await observeUnifiedInboxUnreadCount() }
         // 画面構造改修バッチ (Task #33, 3): これまで`accountSection(for:)`の
-        // `.task(id: account.id)`としてアカウント優先モードのSectionにぶら
-        // 下がっていた2つの観測を、表示モードに関係なく常時走るようここへ
-        // 引き上げた — カテゴリ優先モード (`categorySection(for:)`) はアカウント
-        // 単位のSection自体を描画しないため、そこにぶら下げたままだと
-        // `mailboxesByAccountId`/`unreadByMailboxId`が一切埋まらない。
+        // `.task(id: account.id)`としてアカウント単位のSectionにぶら下がって
+        // いた2つの観測を、ここへ引き上げてある — Task #52 追記でカテゴリ群/
+        // アカウント群を常に両方描画する構成になった今も、`categorySection
+        // (for:)`(カテゴリ群) 自体はアカウント単位のSectionを描画しない
+        // (`mailboxEntries(for:)`が`mailboxesByAccountId`を横断的に読むだけ)
+        // ため、この位置に置いたままにしている。
         .task(id: environment.accounts.map(\.id)) { await observeAllMailboxes() }
         .task(id: environment.accounts.map(\.id)) { await observeAllUnreadCounts() }
     }
@@ -321,21 +327,6 @@ struct FolderListSheet: View {
 
     // MARK: - 画面構造改修バッチ (Task #33, 3): カテゴリ優先グルーピング
 
-    /// 「既存のアカウント優先表示との切替」— セグメントコントロール1つだけの
-    /// 独立した`Section`。既定値は`FolderGroupingModeStore.defaultMode`
-    /// (カテゴリ優先)。
-    private var groupingModeSection: some View {
-        Section {
-            Picker("フォルダの並び順", selection: $groupingModeRaw) {
-                Text("カテゴリ順").tag(FolderGroupingMode.category.rawValue)
-                Text("アカウント順").tag(FolderGroupingMode.account.rawValue)
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("folderSheet.groupingModePicker")
-        }
-        .listRowBackground(Color.clear)
-    }
-
     /// 1 role分のセクション — 「受信トレイ/アーカイブ/送信済み/下書き/ゴミ箱等の
     /// roleごとにセクションを作り、その中に各アカウントを並べる + 横断ビュー」。
     /// どの account にも `role` のメールボックスが1つも無ければセクション自体を
@@ -356,7 +347,7 @@ struct FolderListSheet: View {
                         categoryUnifiedRow(for: role, entries: entries)
                     }
                     ForEach(entries) { entry in
-                        categoryMailboxRow(for: entry)
+                        categoryAccountRow(for: entry)
                     }
                 }
             } header: {
@@ -395,10 +386,38 @@ struct FolderListSheet: View {
         .accessibilityIdentifier("folderSheet.category.\(role.rawValue).unified")
     }
 
-    /// カテゴリ優先セクション内、1メールボックスぶんの行 — アカウント優先
-    /// モードの`folderMailboxRow(for:in:)`と違い、複数アカウントが同じ
-    /// セクションに混ざるため、どのアカウントの行かを`accountLabelText`で
-    /// 併記する (`FolderMailboxRow`のdoc comment参照)。
+    /// role で分類できるカテゴリセクション (受信トレイ/アーカイブ/送信済み
+    /// 等) 内、1アカウントぶんの行 — Task #52, 1: Spark を参考に「アカウント
+    /// の表示名 + アカウント色の縦罫」を主表示にする (`AccountColorRail`と
+    /// 同じ罫線、`ThreadRowView`が1d一覧行で使っているのと同じ組み方)。
+    /// フォルダ名 (`mailbox.displayPath`) 自体は表示しない — 同じカテゴリ内で
+    /// は「どの役割か」はセクション見出しがすでに示しており、複数アカウントを
+    /// 見分けたいだけの場面でフォルダの生パス名 (IMAP実装依存の命名, 例:
+    /// "[Gmail]/All Mail") を出すのはノイズという判断。role で分類できない
+    /// `.none`セクション (`uncategorizedSection`) は逆にフォルダ名こそが
+    /// 差分なので、そちらは引き続き`categoryMailboxRow(for:)`
+    /// (フォルダ名主表示 + アカウント名併記) を使う。
+    private func categoryAccountRow(for entry: MailboxEntry) -> some View {
+        let mailboxSelection = MailboxSelection(accountId: entry.account.id, mailboxId: entry.mailboxId)
+        let isSelected = selectedMailboxId == entry.mailboxId
+        return CategoryAccountRow(
+            accountId: entry.account.id,
+            mailboxPath: entry.mailbox.path,
+            accountDisplayName: entry.account.displayName,
+            labelColorKey: entry.account.labelColorKey,
+            unreadCount: unreadByMailboxId[entry.mailboxId],
+            isSelected: isSelected,
+            onTap: { onSelectMailbox(mailboxSelection, entry.account.displayName) }
+        )
+    }
+
+    /// role で分類**できない**メールボックス (`.none`、`uncategorizedSection`)
+    /// 専用、1メールボックスぶんの行 — アカウント優先モードの
+    /// `folderMailboxRow(for:in:)`と違い、複数アカウントが同じセクションに
+    /// 混ざるため、どのアカウントの行かを`accountLabelText`で併記する
+    /// (`FolderMailboxRow`のdoc comment参照)。role で分類できるセクション
+    /// (受信トレイ/アーカイブ等) は`categoryAccountRow(for:)`を使う —
+    /// 使い分けの理由はそちらのdoc comment参照。
     private func categoryMailboxRow(for entry: MailboxEntry) -> some View {
         let mailboxSelection = MailboxSelection(accountId: entry.account.id, mailboxId: entry.mailboxId)
         let isSelected = selectedMailboxId == entry.mailboxId
@@ -445,11 +464,28 @@ struct FolderListSheet: View {
     private func mailboxEntries(for role: MailboxRoleRecord) -> [MailboxEntry] {
         environment.accounts.flatMap { account -> [MailboxEntry] in
             (mailboxesByAccountId[account.id] ?? [])
-                .filter { $0.role == role }
+                .filter { matchesCategory(mailbox: $0, account: account, role: role) }
                 .compactMap { mailbox in
                     mailbox.id.map { MailboxEntry(account: account, mailbox: mailbox, mailboxId: $0) }
                 }
         }
+    }
+
+    /// Task #52, 2: Gmail は`\Archive`special-useフォルダを持たないため、
+    /// 「アーカイブ」カテゴリの実体を Gmail アカウントに限り All Mail
+    /// (role`.all`)とする — メニュー表示側 (どのメールボックスを「アーカイブ」
+    /// 行として出すか) のマッピング。対になる`OtegamiStore.MailboxRoleRecord
+    /// .gmailArchiveQueryRole`/`GmailArchiveFilter`は、その行を実際に開いた
+    /// 時のスレッド一覧側の定義 (`docs/design-system.md`記載の Gmail 検索式
+    /// と等価な集合、単純な All Mail 全件ではない) を担う — 役割が違うので
+    /// 別々に実装している。`MailboxRoleRecord.categoryOrder`が`.all`自体を
+    /// 独立カテゴリとして持たない (`.all`を渡してこの関数が呼ばれることは
+    /// 無い) ことで、Gmail の All Mail が「アーカイブ」と「すべてのメール」
+    /// の2箇所に重複表示されることを避けている。
+    private func matchesCategory(mailbox: MailboxRecord, account: AccountRecord, role: MailboxRoleRecord) -> Bool {
+        if mailbox.role == role { return true }
+        if role == .archive, mailbox.role == .all, account.kind == .gmail { return true }
+        return false
     }
 
     private func toggleCategoryCollapsed(_ role: MailboxRoleRecord) {
@@ -642,6 +678,58 @@ private struct AccountSectionHeader: View {
     }
 }
 
+/// Task #52, 1: one account's row inside a role-based category section
+/// (`FolderListSheet.categoryAccountRow(for:)`) — `AccountColorRail` +
+/// the account's display name, mirroring Spark's "アーカイブ" category
+/// screenshot (色付きバー + アカウント名の並び, `docs/design-system.md`参照)
+/// rather than a mailbox path. Split out of the `ForEach` closure for the
+/// same CI type-check reason every other row-shaped closure in this file
+/// already is (`docs/ci.md`).
+private struct CategoryAccountRow: View {
+    let accountId: String
+    /// アクセシビリティ識別子の一意性のためだけの値 — 同じアカウントが
+    /// 複数のカテゴリセクション (例: Gmail が「受信トレイ」と「アーカイブ」
+    /// 両方) に現れうるので、`accountId`単独では識別子が重複する。行の
+    /// マッピング元メールボックスの`path`まで含めれば一意になる
+    /// (`FolderMailboxRow`の`folderSheet.mailbox.<accountId>.<path>`と同じ
+    /// 発想)。
+    let mailboxPath: String
+    let accountDisplayName: String
+    /// D「アカウントのラベル色を変更可能に」: `AccountRecord.labelColorKey`,
+    /// forwarded to `AccountColorRail` as-is (`nil` = automatic FNV-1a
+    /// assignment) — same as `ThreadRowView`'s own use of this field.
+    let labelColorKey: String?
+    let unreadCount: Int?
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(alignment: .center, spacing: 0) {
+                AccountColorRail(accountId: accountId, labelColorKey: labelColorKey)
+                HStack {
+                    // `AccountFilterChip.label`のdoc comment参照: 表示名は
+                    // `LocalizedStringKey`経由に流すと(表示名がメールアドレス
+                    // そのものの場合に) SwiftUIがMarkdownの自動リンクとして
+                    // 解釈し、タップで`mailto:`が開く実機バグを踏む —
+                    // `Text(verbatim:)`で素通しする。
+                    Text(verbatim: accountDisplayName)
+                    Spacer()
+                    if let unreadCount, unreadCount > 0 {
+                        Text("\(unreadCount)")
+                            .font(OtegamiFont.badge())
+                    }
+                }
+                .padding(.leading, OtegamiSpacing.sm)
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(isSelected ? OtegamiColor.paleBase : nil)
+        .accessibilityIdentifier("folderSheet.category.account.\(accountId).\(mailboxPath)")
+    }
+}
+
 /// One mailbox row inside `FolderListSheet` — see `SidebarView.MailboxRow`'s
 /// doc comment for why this is split out of the `ForEach` closure at all
 /// (same CI type-check rationale, independently re-applied to this file).
@@ -699,23 +787,6 @@ private struct FolderMailboxRow: View {
 }
 
 // MARK: - 画面構造改修バッチ (Task #33, 3): カテゴリ優先グルーピング
-
-/// `FolderListSheet.groupingModeSection`が切り替える2つの表示モード。
-/// `rawValue`は`@AppStorage`にそのまま永続化する文字列。
-enum FolderGroupingMode: String {
-    /// 既存の「アカウントごとの選択」— account単位のSectionにmailboxを並べる。
-    case account
-    /// 新設の「roleごとにアカウントを束ねる」— 指示の既定モード。
-    case category
-}
-
-/// `FolderGroupingMode`の永続化キー — 他の`*SettingsStore`と同じ「plain
-/// `UserDefaults`キー + `@AppStorage`」パターン(`ListDisplaySettingsStore`
-/// のdoc comment参照)。
-enum FolderGroupingModeStore {
-    static let key = "folderSheet.groupingMode"
-    static let defaultMode = FolderGroupingMode.category
-}
 
 /// `FolderSectionCollapseStore`のrole版 — カテゴリ優先モードのセクション
 /// (role単位)の折りたたみ状態を、アカウント優先モードのそれとは独立して
