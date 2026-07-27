@@ -890,6 +890,131 @@ green、Phase 3 以降の Mailpit 到達確認は上記の背景遷移タイミ�
       アカウント優先モードのようにSection見出し自体がアカウント名を兼ね
       られない。フォルダ名の下に小さく併記する。
 
+### 4. Task #52: ハンバーガーメニューの改善3点 (Spark 参考)
+
+上の3節で作った「カテゴリ優先/アカウント優先のセグメント切替」を
+廃止し、Spark のメニューと同じ構成に作り直した。あわせて、カテゴリ配下
+の行の見た目、Gmail の「アーカイブ」マッピング、カテゴリの並び替えの
+3点を実装した。
+
+- **セグメント切替の廃止 → 縦積み構成**: `FolderGroupingMode`/
+  `FolderGroupingModeStore`/`groupingModeSection`(セグメントコント
+  ロール) を削除し、`FolderListSheet.body`は常に「カテゴリ群 (受信
+  トレイ/アーカイブ/送信済み/…) → その他 (独自フォルダ) → アカウント群
+  (アカウント名ごとのメールボックスツリー、旧アカウント優先表示そのもの)」
+  を1つの`List`に縦に並べる。両方の折りたたみ状態
+  (`FolderSectionCollapseStore`/`FolderCategoryCollapseStore`) は
+  従来どおり独立したまま維持 — セグメント切替時代からの永続キーを
+  変えていないので、既存インストールでの折りたたみ選択も引き継がれる。
+- **1. カテゴリ配下の行をアカウント名表示に**: 新設の`CategoryAccountRow`
+  (`FolderListSheet.swift`) が、role で分類できるカテゴリセクション
+  (受信トレイ/アーカイブ/送信済み等) 内の各アカウント行を
+  `AccountColorRail`(1d の3pxアカウント色罫線、`ThreadRowView`の1覧行と
+  同じ組み方) + アカウントの表示名で描画する — Spark のスクリーンショット
+  と同じ「色バー+アカウント名」。表示名は`Text(verbatim:)`で素通しする
+  (`AccountFilterChip.label`のdoc comment参照: `LocalizedStringKey`
+  経由だと、表示名がメールアドレスそのもの (未設定時のフォールバック)
+  の場合に自動リンク化して`mailto:`が開く実機バグを踏む)。role で分類
+  **できない**「その他」セクション (`uncategorizedSection`) は逆に
+  フォルダ名こそが差分なので、従来どおり`categoryMailboxRow`/
+  `FolderMailboxRow`(フォルダ名主表示+アカウント名併記) のまま — 使い
+  分けの理由は`categoryAccountRow(for:)`のdoc comment参照。
+- **2. Gmail の「アーカイブ」マッピングと定義**: Gmail は`\Archive`
+  special-useフォルダを持たず、All Mail (role`.all`) が実質のアーカイブ。
+  「重複表示 (アーカイブと「すべてのメール」の2箇所に出る) をどうする
+  か」は Spark と同じ「アーカイブに一本化」を採用 —
+  `MailboxRoleRecord.categoryOrder`(`Support/MailboxRoleDisplay.swift`)
+  から`.all`を除外し、`FolderListSheet.matchesCategory(mailbox:account:
+  role:)`が「role が一致」または「role`.archive`を問い合わせていて、かつ
+  そのメールボックスが Gmail アカウントの`.all`」の場合にアーカイブ
+  カテゴリの一員として扱う。これはメニュー表示側 (どのメールボックスを
+  「アーカイブ」行として出すか) のマッピングで、`OtegamiStore
+  .MailboxRoleRecord.gmailArchiveQueryRole`(`ThreadQuery`/`MessageQuery`
+  の unifiedInbox* 系が`role`引数を Gmail アカウントの実際の SQL 条件へ
+  変換するのに使う、`.archive`→`.all`) と対になる。
+  - **「アーカイブ」の中身の定義** (ユーザー指定、Gmail 検索式と等価):
+    `-in:spam -in:trash -is:sent -in:drafts -in:inbox` — 単純に All Mail
+    全件ではない。Gmail の IMAP モデルでは同じ物理メッセージが複数の
+    ラベル (=mailbox) に重複して現れるため、All Mail に無条件で「アーカ
+    イブ済み」のラベルを付けると、まだ受信トレイにあるメール・自分の
+    送信コピー・下書きの写しまで「アーカイブ済み」として出てしまう。
+    スパム/ゴミ箱はそもそも Gmail の All Mail に含まれないため、除外
+    条件は INBOX/Sent/Drafts の3つで足りる。
+    `OtegamiStore.GmailArchiveFilter`(`Records/MailboxRecord.swift`)
+    がこの定義を1つの SQL WHERE 断片として実装し、`ThreadQuery
+    .request(mailboxId:)`/`.flatSummaries(mailboxId:)`/`unifiedInboxRequest`
+    /`unifiedInboxFlatSummaries`、`MessageQuery.unreadCounts(accountId:)`/
+    `unifiedInboxUnreadCount`の全箇所で共有する。「同一メッセージ」の
+    判定は同一アカウント内の`X-GM-MSGID`(`MessageRecord.gmailMessageId`)
+    突き合わせ — RFC 822`Message-ID`ヘッダは欠落/複製されうる一方、
+    `X-GM-MSGID`は Gmail が発行するアカウント内一意な内部識別子で確実。
+    v27マイグレーションで`message.gmailMessageId`にインデックスを追加
+    した (自己結合の相手方テーブル探索用)。
+  - **設計判断: Gmail の All Mail を開く経路をすべて統一した**。
+    `ThreadQuery.request(mailboxId:)`/`flatSummaries(mailboxId:)`は
+    「渡された`mailboxId`が Gmail アカウントの All Mail かどうか」を
+    SQL側で判定し、該当すればどの導線 (カテゴリ優先メニューの「アーカ
+    イブ」行、アカウント優先メニュー/アカウント群の素のフォルダツリー
+    にある「All Mail」行、検索) から開いても同じ「アーカイブ済み」定義
+    を適用する — 一度「All Mail はアーカイブである」と決めた以上、経路
+    によって「文字通りの全件 (受信トレイの写しも混ざる)」と「アーカイブ
+    済みのみ」が食い違うのはユーザーにとって驚きが大きいと判断した。
+    副作用として、アカウント優先モードの素のフォルダツリーで「All Mail」
+    を直接タップした場合も同じフィルタがかかる (「文字通りの全件」を見る
+    手段は今のところ無い) — 将来そのニーズが出た場合の拡張ポイントとして
+    記録しておく。
+  - テスト: `GmailArchiveFilterTests`(`Tests/OtegamiStoreTests/`) が
+    「INBOX にもある All Mail メッセージはアーカイブに出ない」「アーカイブ
+    済み (All Mail のみ) は出る」「送信コピーは出ない」「下書きは出ない」
+    「非 Gmail アカウントの`.archive`メールボックスは影響を受けない
+    (回帰確認)」を、`ThreadQuery`/`MessageQuery`双方でカバーする。
+- **3. カテゴリの並び替え**: `FolderCategoryOrderStore`
+  (`Support/FolderCategoryOrderStore.swift`) が`MessageToolbarSettingsStore`
+  と同じ「role の`rawValue`をカンマ区切りで1つの`UserDefaults`文字列
+  キーに書く」流儀でカテゴリの並び順を永続化する。設定 → メール一覧 →
+  「カテゴリの並び替え」(`FolderCategoryOrderSettingsView`、
+  `MessageToolbarSettingsView`と同じ「常時編集モードの`List`+`.onMove`」
+  構成) から並び替えられる。`FolderListSheet`は`@AppStorage
+  (FolderCategoryOrderStore.key)`で生の文字列を直接監視し、そのつど
+  `FolderCategoryOrderStore.loadOrder(from:)`で`[MailboxRoleRecord]`へ
+  変換する (`loadOrder()`という無引数版もあるが、こちらは`FolderListSheet`
+  が常設マウントのドロワーで再生成されないビューであるため、設定画面
+  での変更を反応的に拾うのに使えない — `@AppStorage`のプロパティラッパー
+  経由でないと変更が伝播しない)。「その他」(独自フォルダ、role`.none`)
+  は並び替え対象に含めない — 常にメニュー最後に固定表示。
+
+**検証**: `OtegamiTask52HamburgerMenuUITests`が実機シミュレータで
+`OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT`(`AppEnvironment.swift`、この
+バッチで拡張 — INBOX/All Mail/Sent Mail と「アーカイブ済み」/「まだ受信
+トレイにある (未アーカイブ)」の2スレッドを注入するようになった) を使い、
+(a) カテゴリ群+アカウント群が同時に見える・アーカイブ配下の行がアカウント
+名表示・Gmail の行がアーカイブ配下に居る・タップすると「アーカイブ済み」
+の1通だけが見える (未アーカイブの写しが出ない)、(b) 並び替え設定の
+ドラッグがメニューの並びに反映される、の両方をスクリーンショット付きで
+確認した。実機シミュレータで判明した検証上の注意点 (このプロジェクト
+固有の環境依存の話で、アプリのコードとは無関係):
+
+- フェイクメッセージの送信者アドレス (`qa@example.com`) をアバター解決が
+  連絡先と突き合わせようとして、初回起動時に「連絡先へのアクセスを
+  許可しますか」という実システムダイアログが出ることがある。
+  `Thread.sleep`でスクリーンショット用に画面を保持している間にこれが
+  前面に出ると、座標ベースのタップ/ドラッグがそのシステムシートに
+  当たってしまい本来の要素に届かない (`xcodebuild test`のログは
+  「Synthesize event」が成功したと報告するが、実際にはアプリの状態が
+  一切変わらない、という分かりにくい失敗になる) — 検証前に`xcrun simctl
+  privacy grant contacts <bundle-id>`で事前許可しておくのに加え、
+  テスト側も「要素を解決したら即アクション、間に`Thread.sleep`を挟まない」
+  を徹底した。
+- `-only-testing:`を複数指定して1回の`xcodebuild test`にまとめると、
+  XCTest はテストメソッドをコマンドラインの指定順ではなくアルファベット順
+  で実行する — フェーズ間で状態を引き継ぐ意図の2つのテスト
+  (`testCategoryReorderInSettings`→`testCategoryReorderAppliesTo
+  HamburgerMenu`) を1回の呼び出しにまとめたところ、"Applies" が
+  "InSettings" より先に実行されて意図した順序と逆になった
+  (`OtegamiAccountReorderUITests`が最初から「フェーズごとに別の
+  `xcodebuild test`呼び出し」にしているのはこのため)。同じ理由で、この
+  バッチの並び替えテストも2回の別々の`xcodebuild test`呼び出しに分けた。
+
 ### 実機報告「スレッド表示をオフにしてるのに、スレッドで表示されることが
 ある」の調査と修正
 
