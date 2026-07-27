@@ -49,6 +49,21 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
     /// token doesn't have that particular scope yet" and quietly skips just
     /// that source (falling back to the next avatar source entirely only if
     /// both are unavailable) rather than forcing reauth.
+    ///
+    /// A fifth was added later still: `.../auth/profile` — on-device
+    /// diagnosis (Task #54) confirmed `people/me` (used by
+    /// `GooglePeopleAvatarClient.fetchSelfPhotoIndexOutcome(accessToken:)`
+    /// to resolve the signed-in user's own avatar) was 403ing with
+    /// `Request requires one of the following scopes: [profile]`, even
+    /// though `otherContacts`/`connections` worked fine — the doc comment
+    /// on `fetchSelfPhotoIndexOutcome` had assumed `contacts.other.readonly`
+    /// alone would satisfy `people.get`, which turned out to not hold for
+    /// the caller's own profile specifically. `profile` is a Google
+    /// **non-sensitive/basic scope** (same tier as `userinfo.email`, not
+    /// the sensitive tier `contacts.other.readonly`/`contacts.readonly`
+    /// are in), so it adds no extra consent-screen review burden. Same
+    /// `isSatisfied(byGrantedScope:)`-driven one-time re-consent story as
+    /// the two scopes above applies to existing accounts.
     public var scope: String
     /// `com.googleusercontent.apps.<reversed client id>:/oauth2redirect`
     /// (plan-specified) — Google's documented redirect URI convention for
@@ -81,7 +96,7 @@ public struct GoogleOAuthEndpoints: Sendable, Equatable {
             tokenEndpoint: URL(string: "https://oauth2.googleapis.com/token")!,
             userInfoEndpoint: URL(string: "https://www.googleapis.com/oauth2/v3/userinfo")!,
             clientId: clientId,
-            scope: "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/contacts.other.readonly https://www.googleapis.com/auth/contacts.readonly",
+            scope: "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/contacts.other.readonly https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/profile",
             redirectURI: "\(Self.redirectScheme(forClientId: clientId)):/oauth2redirect"
         )
     }

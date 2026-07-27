@@ -28,9 +28,10 @@ Google アカウントを「テストユーザー」に追加しておけば動�
 4. スコープの追加は不要 (otegami は実行時に必要なスコープを直接リクエストする
    — `https://mail.google.com/`・`https://www.googleapis.com/auth/userinfo.email`・
    `https://www.googleapis.com/auth/contacts.other.readonly`・
-   `https://www.googleapis.com/auth/contacts.readonly` の4つ。2番目は
+   `https://www.googleapis.com/auth/contacts.readonly`・
+   `https://www.googleapis.com/auth/profile` の5つ。2番目は
    XOAUTH2 の SASL に必要なメールアドレスを id_token を要求せずに取得する
-   ため、3・4番目はアバター強化バッチ「Google プロフィール写真」用 (下記
+   ため、3・4・5番目はアバター強化バッチ「Google プロフィール写真」用 (下記
    「`contacts.other.readonly`・`contacts.readonly`」節参照)。詳細は
    `GoogleOAuthEndpoints` のコメント参照)。
 5. 「テストユーザー」に自分の Gmail アドレスを追加する。**公開ステータスが
@@ -129,14 +130,24 @@ URL スキームを宣言する必要がない (`ASWebAuthenticationSessionRunne
 エイリアスがあれば全部) は `otherContacts`/`connections` どちらにも
 出てこない — `GooglePeopleAvatarClient.fetchSelfPhotoIndexOutcome
 (accessToken:)` が `people/me?personFields=emailAddresses,photos` を
-叩いて別途カバーする。**新規スコープは追加していない** — People API
-の公式リファレンス (developers.google.com/people/api/rest/v1/people/get)
-で `people.get` が `contacts.other.readonly` を受理することを確認済み。
-実 Google での E2E は不可のため「実際に `photos` フィールドが返るか」
-までは実機未確認 — 「アカウント編集」→「アバター診断」画面の
-「people/me (自分のプロフィール写真)」行の HTTP ステータスで確認できる
-(403 ならスコープ不足の可能性があり、その場合は profile 系スコープの
-追加要否を別途検討する)。
+叩いて別途カバーする。当初は People API の公式リファレンス
+(developers.google.com/people/api/rest/v1/people/get) 上の記載だけを
+根拠に「新規スコープは不要 (`contacts.other.readonly` で足りる)」と
+していたが、実機未確認のままだった。
+
+**Task #54 追記「`profile` スコープの追加」**: 実機の「アカウント編集」
+→「アバター診断」画面で `people/me` の HTTP ステータスを確認したところ
+403 `Request requires one of the following scopes: [profile]` が返って
+いることが判明した — `contacts.other.readonly` は保持していても
+`otherContacts`/`connections` は正常 (診断上でも109エントリ/写真83件を
+確認済み) という状態での 403 だったため、上記の「リファレンス上の記載
+だけを根拠にした」判断が誤りだったと確定した。`GoogleOAuthEndpoints.scope`
+に `https://www.googleapis.com/auth/profile` を追加して修正した。
+`profile` は Google の**非機密 (basic) スコープ**
+(`userinfo.email` と同じ層、`contacts.other.readonly`/`contacts.readonly`
+より緩い) — 同意画面の審査要件への影響はない。既存アカウントは
+`isSatisfied(byGrantedScope:)` の判定により次回再認証時に1回だけ同意
+画面が出て新スコープが付与される。
 
 **既存の Gmail アカウントは、再接続 (「アカウント編集」→「再認証」) する
 までどちらのスコープも持たない**。2つのスコープは独立に判定され、

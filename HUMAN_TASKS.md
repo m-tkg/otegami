@@ -161,6 +161,23 @@
          状態が続くだけ)。
       優先度: 中 (既存ユーザー影響、実 Gmail アカウントでの動作確認は自動化
       対象外) / 所要時間: 10分 / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)「`contacts.other.readonly`・`contacts.readonly`」節
+- [ ] **`profile` スコープ対応ビルドを反映し、自分のプロフィール写真を
+      確認 (Task #54)** — 実機の「アカウント編集」→「アバター診断」画面で
+      `people/me` が 403 `Request requires one of the following scopes:
+      [profile]` を返すことを確認済み (`otherContacts`/`connections` は
+      正常)。`GoogleOAuthEndpoints.scope` に `https://www.googleapis.com/auth/profile`
+      を追加して修正した (`docs/oauth-setup.md`「Task #54 追記」節参照)。
+      残作業:
+      1. この修正を含むビルドを OTA で端末に配信する。
+      2. 設定 → アカウント → 該当の Gmail アカウント →「再認証」で
+         再接続する。
+      3. 再接続後、「アカウント編集」→「アバター診断」画面を開き直し、
+         `people/me` 行の HTTP ステータスが 200 になっていることを確認
+         する。
+      4. 差出人一覧・スレッド一覧で自分自身のメールアドレス宛/CC のメール
+         を開き、自分のプロフィール写真がアイコンに出ることを確認する。
+      優先度: 中 (既存ユーザー影響、実 Gmail アカウントでの動作確認は自動化
+      対象外) / 所要時間: 10分 / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)「Task #54 追記」節
 - [ ] **iCloud App用パスワードで実アカウント確認** — appleid.apple.com
       で App 用パスワードを発行し、iCloud メールアドレス + App用パスワード
       でアカウントを追加、INBOX同期・送信・返信のスレッド接続を確認する。

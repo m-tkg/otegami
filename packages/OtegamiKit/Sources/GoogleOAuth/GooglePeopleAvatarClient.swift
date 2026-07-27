@@ -211,19 +211,22 @@ public actor GooglePeopleAvatarClient {
     /// `GoogleProfilePhotoAvatarResolver` can merge all three without any
     /// special-casing at the lookup site.
     ///
-    /// **No new OAuth scope required**: `people.get`'s documented
-    /// authorization-scopes list includes
-    /// `https://www.googleapis.com/auth/contacts.other.readonly` — the same
-    /// scope `fetchOtherContactsPhotoIndex` already uses and every Gmail
-    /// account connected through this app already requests
-    /// (`GoogleOAuthEndpoints.scope`) — alongside the sensitive/Workspace-
-    /// only scopes this app deliberately doesn't request. This was
-    /// confirmed against Google's published API reference
-    /// (developers.google.com/people/api/rest/v1/people/get) rather than
-    /// assumed; a 403 here (an account whose token structurally lacks
-    /// `contacts.other.readonly` — the same population `otherContactsScopeInsufficientAccountIds`
-    /// already tracks) is still handled as `.insufficientScope` in case that
-    /// research turns out wrong for some account states in practice.
+    /// **Requires the `profile` scope**: this method's original doc comment
+    /// claimed no new scope was needed, reasoning from `people.get`'s
+    /// documented authorization-scopes list alone
+    /// (developers.google.com/people/api/rest/v1/people/get). On-device
+    /// diagnosis (Task #54, via the account-edit avatar diagnostic screen)
+    /// showed that reasoning was wrong in practice for `people/me`
+    /// specifically: the endpoint 403ed with `Request requires one of the
+    /// following scopes: [profile]` even though `contacts.other.readonly`
+    /// was granted and `otherContacts`/`connections` both worked fine.
+    /// `GoogleOAuthEndpoints.scope` now includes
+    /// `https://www.googleapis.com/auth/profile` (a non-sensitive/basic
+    /// scope, same tier as `userinfo.email`) to cover this. A 403 here is
+    /// still handled as `.insufficientScope` for accounts that haven't
+    /// reconnected since this scope was added (the same population
+    /// `otherContactsScopeInsufficientAccountIds` already tracks the
+    /// equivalent state for).
     public func fetchSelfPhotoIndexOutcome(accessToken: String) async -> GooglePeopleIndexOutcome {
         guard let url = Self.selfURL(fieldsParamName: "personFields") else {
             return GooglePeopleIndexOutcome(result: .unavailable, diagnostics: GooglePeopleFetchDiagnostics())
