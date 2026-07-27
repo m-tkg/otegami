@@ -32,6 +32,8 @@ translations = {
     "既読に": "Read",
     "移動": "Move",
     "削除": "Delete",
+    "未読のみ表示": "Unread Only",
+    "未読のメールはありません": "No Unread Mail",
 
     # --- スレッド詳細 (ThreadDetailView / MessageView / footer toolbar / bars) ---
     "メール": "Mail",

@@ -711,6 +711,22 @@ macOS の ⌘R (`RootView.replyToSelectedThread()`) が既に使っていた
     せず手動で2エントリだけ追記した)。
   - 検索画面 (`SearchScreenView`/`SearchQuery`) はこのキーを一切参照
     しない — 「検索画面には影響させない」という要件どおり。
+  - **実装時に踏んだ落とし穴: `ToolbarItemGroup`内のアイコンのみ
+    `Button`は`.buttonStyle(.plain)`が無いと自前の塗り分けが効かない**
+    (このシミュレータの iOS 26 系 Liquid Glass ツールバー描画で確認)。
+    `unreadOnlyToggleButton`は当初`.buttonStyle`を指定していなかった —
+    コンパイルは通り、コード上は`isUnreadOnly`で`.foregroundStyle`/
+    `.background`を切り替えているのに、実機シミュレータのスクリーン
+    ショットで見ると ON/OFF が常に同じ見た目 (システム標準のティント
+    丸背景) になっていた。ツールバーのアイコンのみ`Button`はこの iOS
+    バージョンで自動的に丸い "glass" 背景を被せるらしく、それが内側の
+    `Label`の`.foregroundStyle`/`.background`を覆い隠していた —
+    `floatingSearchButton`(ツールバー外の`overlay`ボタンで、最初から
+    `.buttonStyle(.plain)`)は同じコードパターンで正しく描画できていた
+    ことから切り分けた。`.buttonStyle(.plain)`を追加して解決 — 「見た目を
+    確認したと報告する前に実際の画面を見る」(`CLAUDE.md`)を実践して
+    初めて見つかった実例。今後ツールバー上に状態を色で示すアイコン
+    ボタンを追加する際は同じ落とし穴に注意する。
 
 ### 検証で見つかった既存の環境依存の落とし穴 (このバッチで新たに確認)
 

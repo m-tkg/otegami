@@ -14,8 +14,12 @@ import OtegamiStore
 ///
 /// 旧「ナビタイトルのタップでフォルダシートを開く」動線はハンバーガーボタンに
 /// 置き換えた (`CLAUDE.md`) — タイトル自体は素の `Text` に戻り、フォルダ切替は
-/// 常に左上のハンバーガーアイコンから。検索はヘッダの虫眼鏡ボタンから
-/// `SearchScreenView` をシート表示する。
+/// 常に左上のハンバーガーアイコンから。検索は一覧画面左下のフローティング
+/// ボタン (`floatingSearchButton`、`FolderListSheet.floatingSettingsButton`と
+/// 同じ「常にスクロール位置に関わらず見えている」流儀) から `SearchScreenView`
+/// をシート表示する — ヘッダの再読込ボタンは廃止 (pull-to-refresh に一本化、
+/// `MessageListView`側) し、空いたヘッダには「未読のみ表示」トグル
+/// (`unreadOnlyToggleButton`) を追加した。
 struct MailScreenView: View {
     @Environment(AppEnvironment.self) private var environment
     var onCompose: () -> Void
@@ -63,6 +67,17 @@ struct MailScreenView: View {
     /// ボタンは常に `nil` (空の状態で開く)。
     @State private var showingSearch = false
     @State private var searchPresetQuery: String?
+
+    /// ヘッダの「未読のみ表示」トグル — `ListDisplaySettingsStore.unreadOnlyKey`
+    /// を`MessageListView`と共有する (どちらも同じ`UserDefaults`キーへの
+    /// `@AppStorage`; 一方の変更がもう一方に伝わるのは`@AppStorage`自体の
+    /// 挙動で、明示的な受け渡しは不要)。トグル自体をヘッダ (`MailScreenView`)
+    /// に置き、絞り込みの実行を`MessageListView`側に置くのは、ヘッダの所有者
+    /// が`MailScreenView`である一方、`ThreadQuery`呼び出しを組み立てる
+    /// `observeThreads()`は`MessageListView`側にしかないため。検索画面
+    /// (`SearchScreenView`) はこのキーを一切参照しない — 「検索画面には
+    /// 影響させない」という要件どおり、`SearchQuery`は別の経路。
+    @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
     var body: some View {
         HamburgerMenuContainer(isOpen: $isMenuOpen) {
@@ -129,6 +144,18 @@ struct MailScreenView: View {
             }
         }
         .background(OtegamiColor.background)
+        // 一覧のスクロール位置に関わらず常に同じ場所にある方が押しやすい —
+        // `FolderListSheet.floatingSettingsButton`と同じ「`overlay`+左下
+        // 固定」パターン (ヘッダの虫眼鏡ボタンからの移設、実装ルール参照)。
+        // 選択モード中はヘッダ自体が丸ごとキャンセル/選択数/全選択に
+        // 差し替わる (`toolbarContent`) が、フローティングボタン自体は
+        // `content`側にあるため`isSelecting`と無関係に出続ける — ボタンが
+        // 一括操作の邪魔にならないよう非表示にする。
+        .overlay(alignment: .bottomLeading) {
+            if !isSelecting {
+                floatingSearchButton
+            }
+        }
     }
 
     private var emptyState: some View {
@@ -160,10 +187,7 @@ struct MailScreenView: View {
                     .accessibilityIdentifier("mail.title")
             }
             ToolbarItemGroup(placement: .confirmationAction) {
-                Button { openSearch() } label: {
-                    Label("検索", systemImage: "magnifyingglass")
-                }
-                .accessibilityIdentifier("mail.searchButton")
+                unreadOnlyToggleButton
 
                 Button(action: onCompose) {
                     Label("作成", systemImage: "square.and.pencil")
@@ -172,6 +196,60 @@ struct MailScreenView: View {
                 .disabled(environment.accounts.isEmpty)
             }
         }
+    }
+
+    /// 実装ルール: 「再読込ボタンは不要 (pull-to-refresh で足りる)、その代わり
+    /// 未読のみ表示のトグルをヘッダに」— アイコントグル (`AccountFilterChip`
+    /// の選択状態と同じ「塗り＋文字色」で ON/OFF を色だけでなく形でも示す
+    /// スタイル、CLAUDE.mdの「新しい色をその場で追加しない」に従い既存の
+    /// パレット・チップトークンを再利用)。真偽値そのものは`isUnreadOnly`
+    /// (`ListDisplaySettingsStore.unreadOnlyKey`の`@AppStorage`) — 実際の
+    /// 絞り込みは`MessageListView.observeThreads()`側で行われる。
+    private var unreadOnlyToggleButton: some View {
+        Button {
+            isUnreadOnly.toggle()
+        } label: {
+            Label("未読のみ表示", systemImage: isUnreadOnly ? "envelope.badge.fill" : "envelope.badge")
+                .labelStyle(.iconOnly)
+                .font(OtegamiFont.body())
+                .foregroundStyle(isUnreadOnly ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
+                .padding(OtegamiSpacing.xs)
+                .background(isUnreadOnly ? OtegamiColor.paleBaseStrong : Color.clear, in: Circle())
+        }
+        // `.buttonStyle(.plain)`必須: これが無いと iOS 26 系の Liquid Glass
+        // ツールバーボタンが自前のティント丸背景をこのラベルの上に被せて
+        // しまい、ON/OFF で変えているはずの塗り・文字色 (上の `.background`/
+        // `.foregroundStyle`) が画面上まったく見分けられなくなる — 実機
+        // シミュレータのスクリーンショットで実際に確認して気づいた
+        // (`floatingSearchButton`が同じ`.buttonStyle(.plain)`で正しく
+        // 自前スタイルのまま描画されているのとの比較で判明)。
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("mail.unreadOnlyToggle")
+        .accessibilityAddTraits(isUnreadOnly ? .isSelected : [])
+    }
+
+    /// 一覧画面左下のフローティング検索ボタン — `FolderListSheet
+    /// .floatingSettingsButton`と同じ「丸い面＋影」の流儀をそのまま踏襲
+    /// (実装ルール: 既存の左下フローティングボタンの実装例を踏襲)。
+    /// accessibility identifier はヘッダにあった頃の`mail.searchButton`を
+    /// 据え置き — `SearchUITestHelpers.openSearchScreen(in:)`はこの識別子
+    /// だけを見ているため、位置が変わってもそのまま動く。
+    private var floatingSearchButton: some View {
+        Button {
+            openSearch()
+        } label: {
+            Label("検索", systemImage: "magnifyingglass")
+                .labelStyle(.iconOnly)
+                .font(OtegamiFont.body())
+                .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
+                .background(OtegamiColor.surface, in: Circle())
+                .overlay(Circle().stroke(OtegamiColor.dividerSubtle, lineWidth: 1))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, OtegamiSpacing.lg)
+        .padding(.bottom, OtegamiSpacing.lg)
+        .accessibilityIdentifier("mail.searchButton")
     }
 
     /// 新画面構成 (1): 旧「ナビタイトルのタップでフォルダシートを開く」動線の

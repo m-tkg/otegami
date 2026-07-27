@@ -51,6 +51,26 @@
         }
       }
     },
+    "未読のみ表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unread Only"
+          }
+        }
+      }
+    },
+    "未読のメールはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Unread Mail"
+          }
+        }
+      }
+    },
     "ピン留めを解除": {
       "localizations": {
         "en": {

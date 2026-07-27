@@ -12,10 +12,11 @@ import MailTransport
 /// mailbox's threads (`SidebarSelection.mailbox`) or the cross-account
 /// "すべての受信トレイ" unified inbox (`SidebarSelection.unifiedInbox`, plan:
 /// "アカウント境界を跨いだスレッド結合はしない" — each row is still one
-/// account's thread, just interleaved by date across accounts). Refreshing
-/// (pull-to-refresh or the toolbar button) is what triggers `SyncCoordinator`
-/// to talk to the server; with no network the list still renders whatever's
-/// already stored.
+/// account's thread, just interleaved by date across accounts). Refreshing —
+/// pull-to-refresh on iOS, pull-to-refresh or the toolbar button on macOS
+/// (新画面構成: iOS 側のヘッダ再読込ボタンは廃止、pull-to-refresh に一本化) —
+/// is what triggers `SyncCoordinator` to talk to the server; with no network
+/// the list still renders whatever's already stored.
 ///
 /// Design-phase-2 (1a/1d/1g/1h): the platforms now diverge more than they
 /// used to. macOS keeps everything from before this pass unchanged — its
@@ -172,6 +173,7 @@ struct MessageListView: View {
         var accountIds: [String]
         var pageLimit: Int
         var isFlatMode: Bool
+        var unreadOnly: Bool
     }
 
     // MARK: - フラット表示 (B3)
@@ -209,6 +211,16 @@ struct MessageListView: View {
     /// day-to-day benefit — flat mode's core promise ("一覧がメール単位になる")
     /// is about *what's shown*, not a new per-message operation model.
     @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
+
+    // MARK: - 未読のみ表示 (ヘッダのトグル、iOS only — see `ListDisplaySettingsStore
+    // .unreadOnlyKey`'s doc comment)
+
+    /// `MailScreenView`'s header toggle writes this same `UserDefaults` key
+    /// directly (its own `@AppStorage`, not a binding into this view) — see
+    /// that view's `unreadOnlyToggleButton` for why. Read here to build the
+    /// `ThreadQuery` calls in `observeThreads()` and to pick the empty-state
+    /// copy in `emptyStateTitle`.
+    @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
     /// Flat mode is simply "threading turned off" — kept as a derived value
     /// so the rest of this view (and `ObservationKey`) can keep reading in
@@ -317,9 +329,13 @@ struct MessageListView: View {
     /// recorded failure; a *known-clean* empty mailbox (the common case for
     /// an inbox-zero workflow — this is the exact real-device report that
     /// prompted this split, see docs/verify.md) instead says "メールはあり
-    /// ません", which doesn't imply anything went wrong.
+    /// ません", which doesn't imply anything went wrong. 未読のみ表示中の
+    /// "known-clean" 空状態はさらに専用の文言 ("未読のメールはありません") —
+    /// フィルタで絞った結果ゼロ件なのを「メールが1通もない」と誤読させない
+    /// ため。
     private var emptyStateTitle: LocalizedStringKey {
-        (isSyncing || currentAccountLastSyncError != nil) ? "メッセージがありません" : "メールはありません"
+        if isSyncing || currentAccountLastSyncError != nil { return "メッセージがありません" }
+        return isUnreadOnly ? "未読のメールはありません" : "メールはありません"
     }
 
     /// No description at all for the known-clean empty case — "メールはあり
@@ -361,6 +377,10 @@ struct MessageListView: View {
         // never a gap to fix there).
         #if os(iOS)
         .listSectionSpacing(.compact)
+        // 左下フローティングの検索ボタン (`MailScreenView.floatingSearchButton`)
+        // が最下段の行と重ならないよう、スクロール内容の下端に余白を足す —
+        // `FolderListSheet`の`floatingSettingsButton`と同じパターン。
+        .contentMargins(.bottom, OtegamiSpacing.xxl + OtegamiSpacing.lg, for: .scrollContent)
         #endif
         .overlay {
             if isSearchActive {
@@ -441,7 +461,7 @@ struct MessageListView: View {
                     .animation(.default, value: pendingUndo.threadIds)
             }
         }
-        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode)) {
+        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, unreadOnly: isUnreadOnly)) {
             await observeThreads()
         }
         // Not required for correctness anymore (the local write already
@@ -478,6 +498,10 @@ struct MessageListView: View {
     @ToolbarContentBuilder
     private var listToolbarContent: some ToolbarContent {
         #if os(iOS)
+        // 一覧ヘッダの再読込ボタンは iOS では廃止 — pull-to-refresh
+        // (`.refreshable`、下の `#if os(iOS)` ブロック) がその役目を持つ。
+        // macOS には pull-to-refresh 相当が無いため `refreshToolbarItem` を
+        // そのまま残す (`#else` 側)。
         if isSelecting {
             ToolbarItem(placement: .cancellationAction) {
                 Button("キャンセル") { exitSelectionMode() }
@@ -492,8 +516,6 @@ struct MessageListView: View {
                 Button(isAllVisibleSelected ? "選択解除" : "全選択") { toggleSelectAll() }
                     .accessibilityIdentifier("messageList.selection.selectAllButton")
             }
-        } else {
-            refreshToolbarItem
         }
         #else
         refreshToolbarItem
@@ -764,8 +786,8 @@ struct MessageListView: View {
         switch selection {
         case .mailbox(let mailboxSelection):
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
-                ? ThreadQuery.flatSummariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, accountId: mailboxSelection.accountId)
-                : ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit)
+                ? ThreadQuery.flatSummariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, accountId: mailboxSelection.accountId, unreadOnly: isUnreadOnly)
+                : ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, unreadOnly: isUnreadOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     summaries = fetched
@@ -777,8 +799,8 @@ struct MessageListView: View {
         case .unifiedInbox:
             let accountIds = unifiedInboxAccountFilter.map { [$0] } ?? environment.accounts.map(\.id)
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
-                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, limit: pageLimit)
-                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit)
+                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: isUnreadOnly)
+                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: isUnreadOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     summaries = fetched

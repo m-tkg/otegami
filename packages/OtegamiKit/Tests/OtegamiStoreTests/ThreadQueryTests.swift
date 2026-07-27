@@ -136,6 +136,102 @@ struct ThreadQueryTests {
         #expect(threadIds == [older, newer], "Expected the pinned (older) thread to sort ahead of the newer unpinned one")
     }
 
+    // MARK: - 未読のみ表示 (ヘッダのトグル)
+
+    /// Inserts one thread with one message in `mailboxId`, then recomputes
+    /// the thread's `unreadCount` aggregate from that message's flags —
+    /// unlike `insertThread` above (which leaves `unreadCount` at its
+    /// `ThreadRecord` default of `0` regardless of the message's own
+    /// flags), the unread-filter tests need that aggregate to actually
+    /// reflect what was inserted, since `request(unreadOnly:)` reads
+    /// `thread.unreadCount` directly rather than joining messages.
+    @discardableResult
+    private func insertThread(accountId: String, mailboxId: Int64, uid: Int64, date: Date, seen: Bool, db: Database) throws -> Int64 {
+        var thread = ThreadRecord(accountId: accountId, lastMessageDate: date, messageCount: 1)
+        try thread.insert(db)
+        var message = MessageRecord(
+            mailboxId: mailboxId, uid: uid, date: date, internalDate: date,
+            flagsRaw: seen ? MessageFlags.seen.rawValue : 0, threadId: thread.id
+        )
+        try message.insert(db)
+        try ThreadAssigner.recomputeAggregates(threadId: thread.id!, db: db)
+        return thread.id!
+    }
+
+    @Test("request(unreadOnly: true) only returns threads with at least one unread message")
+    func requestUnreadOnlyFiltersReadThreads() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let (unread, _) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let unread = try insertThread(accountId: accountId, mailboxId: inboxId, uid: 1, date: base, seen: false, db: db)
+            let read = try insertThread(accountId: accountId, mailboxId: inboxId, uid: 2, date: base.addingTimeInterval(3600), seen: true, db: db)
+            return (unread, read)
+        }
+
+        let threadIds = try database.dbWriter.read { db in
+            try ThreadQuery.request(mailboxId: inboxId, unreadOnly: true).fetchAll(db).map(\.id)
+        }
+        #expect(threadIds == [unread])
+    }
+
+    @Test("unifiedInboxRequest(unreadOnly: true) combines with the account scope, not just the unread scope")
+    func unifiedInboxRequestUnreadOnlyCombinesWithAccountFilter() throws {
+        let (database, accountIdA, inboxIdA, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let accountB = AccountRecord(
+            displayName: "Test B", email: "b@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "b@x.test"
+        )
+        let inboxIdB = try database.dbWriter.write { db -> Int64 in
+            try accountB.insert(db)
+            var inbox = MailboxRecord(accountId: accountB.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            inbox = try inbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return inbox.id!
+        }
+
+        // Account A: one unread thread. Account B: one unread thread too,
+        // but scoped out by only passing account A's id below — proves the
+        // unread filter doesn't accidentally widen the account scope.
+        let (unreadA, _) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let unreadA = try insertThread(accountId: accountIdA, mailboxId: inboxIdA, uid: 1, date: base, seen: false, db: db)
+            let readA = try insertThread(accountId: accountIdA, mailboxId: inboxIdA, uid: 2, date: base.addingTimeInterval(60), seen: true, db: db)
+            _ = try insertThread(accountId: accountB.id, mailboxId: inboxIdB, uid: 1, date: base.addingTimeInterval(120), seen: false, db: db)
+            return (unreadA, readA)
+        }
+
+        let threadIds = try database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxRequest(accountIds: [accountIdA], unreadOnly: true).fetchAll(db).map(\.id)
+        }
+        #expect(threadIds == [unreadA], "Expected only account A's unread thread, not account B's or account A's read thread")
+    }
+
+    @Test("flatSummaries(unreadOnly: true) filters by the message's own \\Seen flag")
+    func flatSummariesUnreadOnlyFiltersReadMessages() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let unreadMessageId = try database.dbWriter.write { db -> Int64 in
+            var unreadThread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 1)
+            try unreadThread.insert(db)
+            var unread = MessageRecord(mailboxId: inboxId, uid: 1, date: base, internalDate: base, threadId: unreadThread.id)
+            try unread.insert(db)
+
+            var readThread = ThreadRecord(accountId: accountId, lastMessageDate: base.addingTimeInterval(60), messageCount: 1)
+            try readThread.insert(db)
+            var read = MessageRecord(
+                mailboxId: inboxId, uid: 2, date: base.addingTimeInterval(60), internalDate: base.addingTimeInterval(60),
+                flagsRaw: MessageFlags.seen.rawValue, threadId: readThread.id
+            )
+            try read.insert(db)
+            return unread.id!
+        }
+
+        let flat = try database.dbWriter.read { db in
+            try ThreadQuery.flatSummaries(mailboxId: inboxId, accountId: accountId, unreadOnly: true, db: db)
+        }
+        #expect(flat.map(\.latestMessage?.id) == [unreadMessageId])
+    }
+
     // MARK: - B3 フラット表示
 
     @Test("flatSummaries returns one row per message, not per thread")

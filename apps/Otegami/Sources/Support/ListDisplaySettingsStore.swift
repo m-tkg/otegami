@@ -65,4 +65,14 @@ enum ListDisplaySettingsStore {
     /// same rationale as `showAvatarKey`.
     static let showAvatarInDetailKey = "listDisplay.showAvatarInDetail"
     static let defaultShowAvatarInDetail = true
+
+    /// メール一覧ヘッダの「未読のみ表示」トグル (iOS only — `MailScreenView`'s
+    /// header, wired into `MessageListView.observeThreads()`'s
+    /// `ThreadQuery` calls via `unreadOnly:`). Default off: opting into a
+    /// narrower list is a deliberate per-session choice, not something a
+    /// first-run user should be surprised by. macOS never presents a control
+    /// for this key (`CLAUDE.md`: macOS の3ペインは対象外) — it stays at its
+    /// default there, so this doesn't change macOS's own list content.
+    static let unreadOnlyKey = "listDisplay.unreadOnly"
+    static let defaultUnreadOnly = false
 }
