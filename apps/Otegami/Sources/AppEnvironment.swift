@@ -483,65 +483,94 @@ final class AppEnvironment {
             }
         }
 
-        // Task #45「ダークモードで文字が読めない・本文が途中で切れる」:
+        // Task #45「ダークモードで文字が読めない・本文が途中で切れる」→
+        // Task #51 でその修正の適用条件が広すぎた退行を直した際、同じ
+        // escape hatch に2件追加 (下の `uitestFakeHTMLMessages` 参照):
         // same escape hatch as the fake Gmail account above, for the same
         // reason — this simulator/toolchain's account-setup flow has been
         // unreliable against the dev Dovecot mailstack (`MailCoreErrorDomain
         // error 1`, `docs/verify.md`), which makes `OtegamiSecurityNotice
         // DarkModeUITests` unable to depend on a real IMAP round trip to get
-        // its fixture message onto screen. Inserts a fully local account +
-        // mailbox + message + body directly into GRDB — `bodyState:
-        // .fetched` means `MessageView.load()` reads the body straight from
-        // this row, never touching the network, so `HTMLMessageView`
-        // actually renders real `WKWebView` content (unlike the fake Gmail
-        // account above, which only needs to *exist*, never render a body).
-        // The HTML mirrors `dev/mailstack/seed/fixtures/
-        // 31-security-notice-dark-mode.eml` (white background + explicit
-        // dark text, no `prefers-color-scheme`/`color-scheme` of its own, a
-        // horizontal rule with two paragraphs + a CTA button below it) but
-        // inlines its two images as `data:` URIs instead of `cid:`
-        // references — avoids also having to fake `attachment` rows for
-        // `CIDSchemeHandler` to resolve, while still exercising `fit
-        // ToWidthScript`'s "wait for every still-loading `<img>`" fix
-        // (a `data:` URI image is still decoded asynchronously, just fast).
+        // its fixture messages onto screen. Inserts a fully local account +
+        // mailbox + one message/body row per `uitestFakeHTMLMessages` entry
+        // directly into GRDB — `bodyState: .fetched` means `MessageView
+        // .load()` reads the body straight from this row, never touching
+        // the network, so `HTMLMessageView` actually renders real
+        // `WKWebView` content (unlike the fake Gmail account above, which
+        // only needs to *exist*, never render a body).
         if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE"] == "1" {
+            let fakeAccountEmail = "uitest-fake-html@example.com"
             let fakeAccount = AccountRecord(
                 displayName: "Fake HTML Test (UITest)",
-                email: "uitest-fake-html@example.com",
+                email: fakeAccountEmail,
                 authType: .password,
                 kind: .generic,
                 imapHost: "127.0.0.1",
                 imapPort: 1,
                 imapSecurity: .plain,
-                imapUsername: "uitest-fake-html@example.com",
+                imapUsername: fakeAccountEmail,
                 sortOrder: 1_000
             )
             try? database.dbWriter.write { db in
+                // Task #51: `OtegamiSecurityNoticeDarkModeUITests` now has
+                // three test methods, each doing its own fresh `app.launch()`
+                // with this same env var set — GRDB state (unlike the
+                // process) persists across those launches within one
+                // simulator install, so without this guard every launch
+                // would insert *another* copy of this account/mailbox/
+                // messages, leaving duplicate rows in the unified inbox by
+                // the second test method (confirmed: `openMessage`'s
+                // `.containing(predicate).firstMatch` row lookup then
+                // resolves inconsistently against the growing duplicate
+                // set, and the tap that's supposed to open the message
+                // detail silently fails to navigate — the accessibility
+                // hierarchy at the point of failure showed the app still on
+                // `messageList.list`, never having reached
+                // `messageDetail`/`htmlWebView`). Checking for the account
+                // by its fixed fake email first makes every relaunch within
+                // the same install idempotent, the same guarantee a real
+                // account naturally has (IMAP accounts are unique by
+                // email/host in this app).
+                guard try AccountRecord.filter(Column("email") == fakeAccountEmail).fetchOne(db) == nil else { return }
                 try fakeAccount.insert(db)
                 var mailbox = MailboxRecord(
                     accountId: fakeAccount.id,
                     path: "INBOX",
                     displayPath: "INBOX",
                     role: .inbox,
-                    messageCount: 1
+                    messageCount: Self.uitestFakeHTMLMessages.count
                 )
                 try mailbox.insert(db)
-                var message = MessageRecord(
-                    mailboxId: mailbox.id!,
-                    uid: 1,
-                    messageId: "<uitest-fake-html@otegami.test>",
-                    subject: "セキュリティ通知",
-                    normalizedSubject: "セキュリティ通知",
-                    fromAddresses: [EmailAddress(name: "Example Security", address: "security-noreply@example.com")],
-                    toAddresses: [EmailAddress(name: nil, address: "user@example.com")],
-                    fromText: "Example Security <security-noreply@example.com>",
-                    internalDate: Date(),
-                    bodyState: .fetched,
-                    snippet: "あなたは otegami に Example アカウントのデータの一部へのアクセスを許可しました"
-                )
-                try message.insert(db)
-                let body = MessageBodyRecord(messageId: message.id!, plainText: nil, html: Self.uitestFakeHTMLMessageBody, fetchedAt: Date())
-                try body.insert(db)
+                // Task #51: each message gets its own `internalDate`, one
+                // second apart, rather than all three sharing whatever a
+                // single shared `Date()` call would have given them — a
+                // three-way sort-order tie (`MessageListView`'s unified
+                // inbox sorts newest-first) has no guaranteed-stable
+                // tiebreak, so a tied timestamp risks the list re-ordering
+                // these rows out from under an in-flight XCUITest tap
+                // between when the row is located and when the row is
+                // actually pressed. Spacing them out removes the tie
+                // instead of relying on a tiebreak being stable.
+                let now = Date()
+                for (index, fixture) in Self.uitestFakeHTMLMessages.enumerated() {
+                    let uid = Int64(index + 1)
+                    var message = MessageRecord(
+                        mailboxId: mailbox.id!,
+                        uid: uid,
+                        messageId: "<uitest-fake-html-\(uid)@otegami.test>",
+                        subject: fixture.subject,
+                        normalizedSubject: fixture.subject,
+                        fromAddresses: [EmailAddress(name: "Example Security", address: "security-noreply@example.com")],
+                        toAddresses: [EmailAddress(name: nil, address: "user@example.com")],
+                        fromText: "Example Security <security-noreply@example.com>",
+                        internalDate: now.addingTimeInterval(-Double(index)),
+                        bodyState: .fetched,
+                        snippet: fixture.snippet
+                    )
+                    try message.insert(db)
+                    let body = MessageBodyRecord(messageId: message.id!, plainText: nil, html: fixture.html, fetchedAt: Date())
+                    try body.insert(db)
+                }
             }
         }
 
@@ -1666,6 +1695,48 @@ final class AppEnvironment {
     /// avatar images the real `.eml` fixture loads via `cid:`.
     private static let uitestFakeHTMLMessagePlaceholderImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMGjRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg=="
 
+    /// Task #51: one entry per dark-mode regression scenario
+    /// (`docs/design-system.md`'s Task #51 節), inserted as three separate
+    /// seeded messages so `OtegamiSecurityNoticeDarkModeUITests` can open
+    /// and screenshot all three in one run instead of needing three
+    /// separate env-var-gated code paths:
+    /// - `securityNotice` (case b): explicit white background + dark text,
+    ///   no self-declared dark support — the *original* Task #45 fixture;
+    ///   still needs the invert to stay readable in dark mode.
+    /// - `noColors` (case a): zero color declarations anywhere — the
+    ///   Task #51 regression case itself (see `HTMLDocumentBuilder.wrap
+    ///   (bodyHTML:autoAdjustColorsInDarkMode:)`'s doc comment); must NOT
+    ///   be inverted, since it already renders correctly via this app's
+    ///   own `color-scheme`/`CanvasText` CSS reset alone.
+    /// - `selfDarkAware` (case c): declares its own `prefers-color-scheme`
+    ///   handling, so `HTMLDocumentBuilder.wrap` should skip inversion
+    ///   consideration entirely regardless of what the JS measurement would
+    ///   have found — proves the "mail already handles its own dark mode"
+    ///   gate still wins over the newer measured-inversion logic.
+    fileprivate struct UITestFakeHTMLMessage {
+        let subject: String
+        let snippet: String
+        let html: String
+    }
+
+    fileprivate static let uitestFakeHTMLMessages: [UITestFakeHTMLMessage] = [
+        UITestFakeHTMLMessage(
+            subject: "セキュリティ通知",
+            snippet: "あなたは otegami に Example アカウントのデータの一部へのアクセスを許可しました",
+            html: uitestFakeHTMLMessageBodySecurityNotice
+        ),
+        UITestFakeHTMLMessage(
+            subject: "色指定なしのシンプルなお知らせ (UITest)",
+            snippet: "このメールは背景色・文字色のどちらも一切指定していません。",
+            html: uitestFakeHTMLMessageBodyNoColors
+        ),
+        UITestFakeHTMLMessage(
+            subject: "自前ダーク対応済みのお知らせ (UITest)",
+            snippet: "このメールは prefers-color-scheme で自前のダークモード対応を宣言しています。",
+            html: uitestFakeHTMLMessageBodySelfDarkAware
+        )
+    ]
+
     /// See the doc comment above `uitestFakeHTMLMessagePlaceholderImage`.
     /// Structurally identical to `31-security-notice-dark-mode.eml`'s
     /// `text/html` part (white card background + explicit dark text, no
@@ -1674,7 +1745,7 @@ final class AppEnvironment {
     /// footer line that deterministically forces fit-to-width's scale path)
     /// — kept in sync by hand since a UITest-only Swift string literal can't
     /// `include` the `.eml` fixture file.
-    fileprivate static let uitestFakeHTMLMessageBody = """
+    fileprivate static let uitestFakeHTMLMessageBodySecurityNotice = """
     <!doctype html>
     <html>
     <head>
@@ -1710,6 +1781,54 @@ final class AppEnvironment {
     <div class="footer">
       <p>otegami に付与したあなたのデータへのアクセス権は、Example アカウントでいつでも変更できます。</p>
       <p class="nowrap-disclaimer">このメールは security-noreply@example.com からの重要なお知らせのため配信停止の対象外です。返信はできません。</p>
+    </div>
+    </body>
+    </html>
+    """
+
+    /// Task #51 の退行ケースそのもの — `dev/mailstack/seed/fixtures/
+    /// 32-plain-html-no-colors.eml` と同内容 (背景色・文字色を一切
+    /// 指定しない、最も単純な HTML メール)。ダークモードで開いても
+    /// `HTMLDocumentBuilder`の CSS リセット (`color-scheme: light dark`)
+    /// だけで元々正しく読めるはずで、`.otegami-invert-for-dark`が
+    /// 付いてはいけない (実測が「背景が確定しない」と判定し、無変換の
+    /// ままになることを確認する)。
+    fileprivate static let uitestFakeHTMLMessageBodyNoColors = """
+    <html>
+    <body>
+    <p>こんにちは、otegami です。</p>
+    <p>このメールは背景色・文字色のどちらも一切指定していません。ダークモードで開いたとき、アプリの CSS リセット (color-scheme: light dark) だけに任せて自動的に明るい文字色で表示されるはずです。</p>
+    <p>Task #51: ここに「反転」を無条件に適用すると、本来すでに正しく読めていたはずのこのメールが暗地に暗文字になり読めなくなる回帰があった — その再現ケース。</p>
+    </body>
+    </html>
+    """
+
+    /// メール自身が`<meta name="color-scheme">`と`prefers-color-scheme`
+    /// メディアクエリの両方で自前のダークモード対応を宣言しているケース
+    /// — `HTMLDocumentBuilder.mailDeclaresOwnDarkModeSupport(html:)`が
+    /// true を返すため、`wrap(bodyHTML:autoAdjustColorsInDarkMode:)`は
+    /// 反転を検討する対象からそもそも除外する (`data-otegami-invert-check`
+    /// 属性すら付かない)。ライトモードでは白背景+濃色文字、ダーク
+    /// モードでは自前の暗背景+明文字に自分で切り替わる想定で、
+    /// どちらのモードでもアプリ側の反転が絶対にかかっていないことを
+    /// 目視確認する。
+    fileprivate static let uitestFakeHTMLMessageBodySelfDarkAware = """
+    <!doctype html>
+    <html>
+    <head>
+    <meta name="color-scheme" content="light dark">
+    <style type="text/css">
+      body { margin: 0; padding: 0; background-color: #ffffff; color: #202124; font-family: 'Helvetica Neue', Arial, sans-serif; }
+      .card { max-width: 480px; margin: 24px auto; padding: 24px; }
+      @media (prefers-color-scheme: dark) {
+        body { background-color: #1e1e1e; color: #e8eaed; }
+      }
+    </style>
+    </head>
+    <body>
+    <div class="card">
+      <p>このメールは prefers-color-scheme で自前のダークモード対応を宣言しています。</p>
+      <p>otegami はこのメールに対して「反転」処理を一切適用しません — ライト・ダークどちらの外観でも、この HTML 自身が指定した配色のまま表示されるはずです。</p>
     </div>
     </body>
     </html>

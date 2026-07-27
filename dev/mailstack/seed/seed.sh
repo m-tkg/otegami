@@ -143,4 +143,11 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/30-fixed-width-notice-en.eml"
 # (docs/design-system.md の Task #45 節参照)。
 seed_message "test1@otegami.test" "$FIXTURES_DIR/31-security-notice-dark-mode.eml"
 
+# Task #51 検証用 (Task #45 の退行修正): 31 と対になる、背景色・文字色を
+# 一切指定しないシンプルな HTML メール — ダークモードで開いても
+# `HTMLDocumentBuilder` の CSS リセットだけで元々正しく読めていたはずが、
+# Task #45 の無条件反転がこれを暗地に暗文字へ壊していた実機退行の再現
+# ケース (docs/design-system.md の Task #51 節参照)。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/32-plain-html-no-colors.eml"
+
 echo "==> done"

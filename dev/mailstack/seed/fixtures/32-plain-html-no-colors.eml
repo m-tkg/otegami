@@ -1,0 +1,16 @@
+From: Otegami Team <team@otegami.test>
+To: test1@otegami.test
+Subject: 色指定なしのシンプルなお知らせ
+Message-ID: <seed-0032@otegami.test>
+Date: Tue, 27 Jan 2026 09:15:00 +0900
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+
+<html>
+<body>
+<p>こんにちは、otegami です。</p>
+<p>このメールは背景色・文字色のどちらも一切指定していません。ダークモードで開いたとき、アプリの CSS リセット (color-scheme: light dark) だけに任せて自動的に明るい文字色で表示されるはずです。</p>
+<p>Task #51: ここに「反転」を無条件に適用すると、本来すでに正しく読めていたはずのこのメールが暗地に暗文字になり読めなくなる回帰があった — その再現ケース。</p>
+</body>
+</html>

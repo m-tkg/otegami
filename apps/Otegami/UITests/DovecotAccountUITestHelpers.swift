@@ -176,6 +176,42 @@ extension XCTestCase {
         }
     }
 
+    /// Task #51: a message row rendering its sender (e.g. an avatar lookup)
+    /// can trigger iOS's one-time "Allow "Otegami" to access your
+    /// contacts?" system prompt (`com.apple.springboard`) asynchronously,
+    /// and XCTest's *default* interruption handling — which does fire and
+    /// does dismiss it (confirmed via `xcodebuild test`'s own log:
+    /// "Default interruption handler attempting to dismiss alert by
+    /// tapping 'Continue' Button", "Confirmed successful handling of
+    /// interrupting element") — isn't reliably enough for the *specific*
+    /// gesture it interrupted to still land correctly afterward if that
+    /// gesture happened to be a row tap meant to push message detail: a
+    /// press synthesized during exactly this window observably completed
+    /// (no error, `app` returns to idle) without the app actually
+    /// navigating anywhere, leaving `OtegamiSecurityNoticeDarkModeUITests`
+    /// stuck on `messageList.list` for the rest of the test — the same
+    /// broad "tap not truly delivered right after a system UI
+    /// interruption" class of issue `restartAppToRecoverTouchDelivery`'s
+    /// doc comment documents for `.sheet()` dismissal specifically, just
+    /// triggered by a different kind of interruption. Rather than
+    /// reproducing that heavier terminate+relaunch recovery here, this
+    /// gives the async permission check a moment to fire and resolves it
+    /// *before* the row tap ever happens, so the tap and the alert can no
+    /// longer race — called from `openMessage` right before pressing a row.
+    /// A no-op (not a failure) if no such alert shows within `timeout`,
+    /// same reasoning as `allowNotificationPermissionIfNeeded`'s doc
+    /// comment (e.g. a simulator install where this decision is already
+    /// recorded from an earlier, not-yet-erased run never re-prompts).
+    func dismissContactsPermissionPromptIfNeeded(timeout: TimeInterval = 3) {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let dismissButton = springboard.buttons.matching(
+            NSPredicate(format: "label == %@ OR label == %@ OR label == %@ OR label == %@", "Continue", "OK", "Allow", "許可")
+        ).firstMatch
+        if dismissButton.waitForExistence(timeout: timeout) {
+            dismissButton.tap()
+        }
+    }
+
     /// Opens the account-setup sheet, fills in the dev mailstack's `test1`
     /// Dovecot credentials, runs (and asserts) the connection test, and
     /// saves — leaving the sheet dismissed and initial sync kicked off.
