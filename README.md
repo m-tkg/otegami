@@ -129,6 +129,16 @@ Two things this app is built around, more than any single feature list:
   preselects for a brand-new message in Settings → "アカウントの設定"
   (replies/forwards always use the original message's own account,
   regardless of this setting).
+- **`mailto:` links and default mail app**: otegami registers the
+  `mailto` scheme (`CFBundleURLTypes`) on both platforms, so tapping/
+  clicking a `mailto:` link opens the Composer prefilled with the
+  decoded to/cc/bcc/subject/body (RFC 6068). On macOS this alone makes
+  otegami selectable as the default mail reader (Mail.app's own
+  Settings → General, or System Settings → Desktop & Dock). On iOS,
+  actually becoming the system-wide default additionally requires
+  Apple's `com.apple.developer.mail-client` entitlement, which is a
+  build-time opt-in flag (off by default so the app builds and archives
+  without it) — see [docs/default-mail-app.md](docs/default-mail-app.md).
 - **Configurable post-delete/archive behavior**: from the message view's
   "…" menu, deleting/archiving/marking as junk can either return to the
   list (default) or automatically open the next message in the current

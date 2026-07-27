@@ -101,6 +101,16 @@
       止まる現象を観測した。実機でも同様の背景遷移が起きるか (通常操作で
       は踏みにくいタイミング) の確認。
       優先度: 低 / 所要時間: 15分 / 詳細: [PENDING.md「開発環境: 連続する xcodebuild test...」](PENDING.md)、[docs/design-system.md「新画面構成」節の「検証で見つかった既存の環境依存の落とし穴」](docs/design-system.md)
+- [ ] **mailto: リンクの実機確認 (Task #48)** — 実機/シミュレータで他の
+      アプリ (メモ、Safari 等) から `mailto:宛先?subject=...&body=...`
+      形式のリンクを開き、otegami の作成画面が to/cc/bcc/件名/本文を
+      プリフィルした状態で開くことを確認する (`xcrun simctl openurl` でも
+      代用可)。あわせて設定 →「アカウントの設定」→「デフォルトのメール
+      アプリに設定」の行を開き、entitlement 未承認ビルドでは「Apple の
+      承認待ちです」の案内が、承認済み・フラグ有効ビルドでは「設定 App で
+      既定のメールアプリを選ぶ」ボタンが実際に「設定」アプリの既定アプリ
+      選択画面を開くことを確認する。
+      優先度: 中 / 所要時間: 10分 / 詳細: [docs/default-mail-app.md](docs/default-mail-app.md)
 
 ## 2. 実アカウントでの確認 (自分の認証情報が必要)
 
@@ -216,6 +226,19 @@
       センス全文同梱も必要になる (現状はソース配布のみなので `NOTICE`
       ファイルでの記載に留めている)。
       優先度: 低 (依存更新のたびに) / 所要時間: 10分
+- [ ] **`com.apple.developer.mail-client` entitlement の申請・承認後の
+      有効化 (Task #48)** — まだ申請していなければ
+      [Request a Mail App Entitlement](https://developer.apple.com/contact/request/default-mail-client/)
+      から Account Holder ロールで申請する。承認されたら (1) Developer
+      Portal で対象 App ID の Mail capability を有効化、(2)
+      `Config/Local.xcconfig` に `OTEGAMI_MAIL_CLIENT_ENTITLEMENT = YES`
+      を追加、(3) 実機ビルドで「デフォルトのメールアプリに設定」からの
+      設定 App 遷移・実際にデフォルトとして選択できることを確認する。
+      申請日・承認状況は `PENDING.md` に追記して進捗を追えるようにする
+      こと。
+      優先度: 低 (申請自体は今すぐ着手可、以降は Apple の承認待ち) /
+      所要時間: 申請自体は30分程度、承認後の有効化は10分 / 参照:
+      [docs/default-mail-app.md](docs/default-mail-app.md)
 
 ---
 

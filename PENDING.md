@@ -643,3 +643,12 @@ IDLEループはいずれも`SyncScope.inboxOnly`固定)。これに Gmail の�
   `Package.resolved` と突き合わせて確認する。実バイナリを配布する際は
   Apache-2.0 系依存についてライセンス全文 + NOTICE 内容の同梱が必要
   (現状はソース配布のみなので `NOTICE` ファイルでの記載に留めている)。
+- **iOS でデフォルトのメールアプリになる (Task #48)**: `com.apple.developer
+  .mail-client` entitlement は Apple の個別承認制で、申請から承認までの
+  リードタイムが読めない。実装 (mailto: ハンドリング、entitlement の
+  ビルド時 opt-in フラグ、設定画面の導線) は完了しているが、entitlement
+  自体は未承認のため実機で「実際にシステム全体のデフォルトに選べるか」は
+  まだ確認できていない。申請手順・承認後の有効化手順は
+  [docs/default-mail-app.md](docs/default-mail-app.md) 参照、申請自体は
+  [HUMAN_TASKS.md](HUMAN_TASKS.md) の該当項目。macOS 側は entitlement
+  不要 (`CFBundleURLTypes` の宣言のみで足りる) なのでこの制約の対象外。
