@@ -84,6 +84,21 @@ public actor GooglePeopleAvatarClient {
         return .found(photoURL: photoURL)
     }
 
+    /// Google's official guidance for `otherContacts.search`: the very
+    /// first search against a given token can come back empty even for a
+    /// person who genuinely is in "other contacts", because the search
+    /// index isn't warmed up yet — an empty-query request beforehand
+    /// primes it. This method exists solely to send that warmup request;
+    /// its result (success, error, empty body, anything) is deliberately
+    /// discarded — a warmup failure is not evidence of anything (not
+    /// "insufficient scope", not "no other contacts exist") and must never
+    /// stop the caller from still attempting the real `lookupPhoto` search
+    /// right after. Never throws, matching this type's "no exceptions"
+    /// contract.
+    public func warmupSearchIndex(accessToken: String) async {
+        _ = await lookupPhoto(accessToken: accessToken, address: "")
+    }
+
     /// Downloads the raw image bytes from a URL `lookupPhoto` returned.
     /// Kept as a separate call (rather than folded into `lookupPhoto`) so a
     /// download failure is clearly distinguishable from "no such person" at

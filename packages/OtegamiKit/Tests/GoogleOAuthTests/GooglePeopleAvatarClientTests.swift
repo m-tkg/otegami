@@ -129,6 +129,51 @@ struct GooglePeopleAvatarClientTests {
         #expect(result == .unavailable)
     }
 
+    // MARK: - warmupSearchIndex
+
+    /// Google's documented `otherContacts.search` warmup requirement: the
+    /// resolver (`GoogleProfilePhotoAvatarResolver`, app layer) must send an
+    /// empty-query request before its first real search per account. This
+    /// test exercises `warmupSearchIndex(accessToken:)` itself — the piece
+    /// that actually builds and sends that request — and asserts it hits
+    /// the same `otherContacts:search` endpoint with an empty `query`.
+    @Test
+    func warmupSearchIndexSendsAnEmptyQueryRequest() async throws {
+        // Assert inside the handler itself (rather than capturing into a
+        // local `var`) — `PeopleAPIStubURLProtocol.handler` is a `@Sendable`
+        // closure, and Swift 6 strict concurrency rejects mutating a
+        // captured var from inside it (matches every other assertion-in-
+        // handler test in this file, e.g.
+        // `lookupPhotoReturnsTheMatchingNonDefaultPhotoURL` above).
+        PeopleAPIStubURLProtocol.handler = { [self] request in
+            #expect(request.url?.absoluteString.hasPrefix("https://people.googleapis.com/v1/otherContacts:search") == true)
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            #expect(items?.first(where: { $0.name == "query" })?.value == "")
+            return jsonResponse(request.url!, status: 200, body: ["results": []])
+        }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        await client.warmupSearchIndex(accessToken: "test-token")
+    }
+
+    /// A warmup failure (network error, non-2xx, anything) must never
+    /// throw or otherwise stop the caller — `GoogleProfilePhotoAvatarResolver
+    /// .fetchFromGoogle` always attempts the real `lookupPhoto` search right
+    /// after, regardless of how the warmup went. `warmupSearchIndex` itself
+    /// has no return value to assert on for "did it swallow the error", so
+    /// this test's real assertion is simply that awaiting it completes
+    /// normally (doesn't throw/crash) even when every request fails.
+    @Test
+    func warmupSearchIndexNeverThrowsEvenWhenTheRequestFails() async throws {
+        PeopleAPIStubURLProtocol.handler = { _ in throw URLError(.notConnectedToInternet) }
+        defer { PeopleAPIStubURLProtocol.handler = nil }
+
+        let client = makeClient()
+        await client.warmupSearchIndex(accessToken: "test-token")
+        // No throw, no crash — reaching this line is the assertion.
+    }
+
     // MARK: - downloadPhoto
 
     @Test

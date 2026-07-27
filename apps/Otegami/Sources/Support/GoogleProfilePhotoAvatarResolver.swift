@@ -60,7 +60,22 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
     /// 次回起動時にはもう一度試す — 再認証したのに次回起動まで永久に
     /// スキップされ続ける、ということは無い)。この型のドキュメントコメント
     /// の「スコープ不足の扱い」参照。
+    ///
+    /// 実機バグ修正: これに加えて `AppEnvironment.reauthenticateGmailAccount`
+    /// が再認証成功時に `clearScopeInsufficientMemory(for:)` を呼び、この
+    /// アカウント ID の記憶を即座に消す — 元々は「次回起動まで残る」仕様
+    /// だったが、再認証した直後にまだ一覧を開いたままの画面がある場合、
+    /// アプリを再起動しない限り新しい写真が出ないのは体験として不自然
+    /// (再認証の成功メッセージと「まだ写真が出ない」が矛盾して見える)。
     private var scopeInsufficientAccountIds: Set<String> = []
+
+    /// `otherContacts.search`のウォームアップ要求 (`GooglePeopleAvatarClient
+    /// .warmupSearchIndex(accessToken:)`のドキュメントコメント参照) を
+    /// 既に送ったアカウント ID の集合。プロセスの生存中、アカウントごとに
+    /// 一度だけ送れば十分 — 同じアカウントのトークンで毎回ウォームアップを
+    /// 送り直す必要はない。`scopeInsufficientAccountIds`と同じ理由で
+    /// プロセス寿命限定 (次回起動でまた一度だけ送り直す)。
+    private var warmedUpAccountIds: Set<String> = []
 
     /// Gravatar と同じ 7日 TTL (`GravatarAvatarResolver.ttl`のドキュメント
     /// コメントと同じ理由 — ユーザーが後から Google プロフィール写真を
@@ -75,8 +90,24 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         self.client = client
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        cacheDirectory = base.appendingPathComponent("AvatarCache/GoogleProfilePhoto", isDirectory: true)
+        // 実機バグ修正: `v2` — 旧ディレクトリ (`AvatarCache/GoogleProfilePhoto`)
+        // には、ウォームアップ要求を送っていなかった旧実装が書いた
+        // `.notFound`の negative cache (7日 TTL, `ttl`) が残っている可能性が
+        // ある。ウォームアップ追加後は同じ差出人でも結果が変わりうるため、
+        // ディレクトリ名を変えて旧キャッシュを無条件に無効化する (世代が
+        // 上がるたびにここを更新する想定)。旧ディレクトリは掃除しない —
+        // 中身は`.jpg`/`.none`だけの数KB〜数十KB程度で、放置しても実害が
+        // 無い一方、ここで消す処理を書くと「他の実装がまだ旧パスを使って
+        // いないか」を毎回確認する負債になる。
+        cacheDirectory = base.appendingPathComponent("AvatarCache/GoogleProfilePhoto/v2", isDirectory: true)
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+    }
+
+    /// `AppEnvironment.reauthenticateGmailAccount(_:)`が再認証成功直後に
+    /// 呼ぶ — `scopeInsufficientAccountIds`のドキュメントコメント参照。
+    /// 記録が無いアカウント ID を渡しても無害 (`Set.remove`は no-op)。
+    public func clearScopeInsufficientMemory(for accountId: String) {
+        scopeInsufficientAccountIds.remove(accountId)
     }
 
     public func resolveAvatarImageData(displayName: String?, address: String) async -> Data? {
@@ -148,6 +179,18 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         for accountId in accountIds {
             if scopeInsufficientAccountIds.contains(accountId) { continue }
             guard let accessToken = try? await tokenProvider.accessToken(for: accountId) else { continue }
+
+            if !warmedUpAccountIds.contains(accountId) {
+                // 順序が重要: ウォームアップの結果は無視し、成功しても
+                // 失敗しても必ず本検索へ進む (`GooglePeopleAvatarClient
+                // .warmupSearchIndex(accessToken:)`のドキュメントコメント
+                // 参照)。`warmedUpAccountIds`への登録もここで行う —
+                // ウォームアップ自体が失敗しても毎回送り直す意味は無い
+                // (インデックスの温まりは "送ったこと" 自体が効くのであって、
+                // 応答の成否とは無関係)。
+                warmedUpAccountIds.insert(accountId)
+                await client.warmupSearchIndex(accessToken: accessToken)
+            }
 
             switch await client.lookupPhoto(accessToken: accessToken, address: address) {
             case .found(let photoURL):
