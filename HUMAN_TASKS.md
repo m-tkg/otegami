@@ -81,9 +81,26 @@
       iOS 用 Client ID 発行 → `Config/Local.xcconfig` に設定 → 実際に
       Gmail アカウントを追加し、INBOX 同期・送信 (Sent への二重保存が
       起きないこと)・アクセストークン失効後の自動リフレッシュ・アクセス
-      取り消し後の「再認証」バナーからの復旧を確認する。
+      取り消し後の「再認証」バナーからの復旧を確認する。**アバター強化
+      バッチ「Google プロフィール写真」で `contacts.other.readonly` スコープ
+      を追加した** (機密性の高いスコープ — 配布ビルドを出す場合のみ Google
+      の OAuth 審査に影響、`docs/oauth-setup.md`「`contacts.other.readonly`」
+      節参照)。新規追加アカウントは何もせず両スコープを持つ。
+      **済 (2026-07-27)**: People API の有効化・同意画面へのスコープ追加・
+      公開ステータスへの切替 (未検証のまま運用、7日期限は解消)。
       優先度: 高 (Gmail 対応を謳う以上、実接続確認は必須) / 所要時間: 30分
       (Client ID 発行) + 20分 (確認項目一式) / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)、[PENDING.md「M6: Google OAuth Client ID の発行」](PENDING.md#m6-google-oauth-client-id-の発行)
+- [ ] **既存 Gmail アカウントを再接続し、Google プロフィール写真を確認** —
+      上の項目より前に (`contacts.other.readonly` スコープ追加より前に)
+      既に Gmail アカウントを追加済みの場合、そのアカウントには新スコープが
+      無い。設定 → アカウント → 該当の Gmail アカウント →「再認証」で
+      再接続する (削除・再作成は不要、同じ OAuth フローの再実行で新スコープ
+      が付与される)。再接続後、Gravatar 未登録の差出人からのメールで一覧の
+      プロフィールアイコンが Google のプロフィール写真に変わることを確認
+      する (再接続しなくてもアプリは動く — 単にこの情報源だけ効かない状態
+      が続くだけ)。
+      優先度: 中 (既存ユーザー影響、実 Gmail アカウントでの動作確認は自動化
+      対象外) / 所要時間: 5分 / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)「`contacts.other.readonly`」節
 - [ ] **iCloud App用パスワードで実アカウント確認** — appleid.apple.com
       で App 用パスワードを発行し、iCloud メールアドレス + App用パスワード
       でアカウントを追加、INBOX同期・送信・返信のスレッド接続を確認する。
@@ -130,7 +147,10 @@
 - [ ] **Google OAuth の審査を申請する** — 各自の Client ID でのテスト
       利用自体は審査不要 (自分を「テストユーザー」に追加すればよい)。
       配布ビルド (App Store/TestFlight) を出す場合のみ Google の OAuth
-      審査が必要になる。
+      審査が必要になる。`contacts.other.readonly` (Google プロフィール写真)
+      は機密性の高いスコープなので、審査時にこのスコープの使用目的の申告が
+      追加で必要になる (`docs/oauth-setup.md`「`contacts.other.readonly`」
+      節)。
       優先度: 低 (配布を決めてから) / 所要時間: 申請自体は1時間程度、
       審査待ちは数日〜数週間 / 参照: [docs/oauth-setup.md](docs/oauth-setup.md)
 - [ ] **macOS ビルドの Developer ID 署名 + notarization** — `make mac-app`
