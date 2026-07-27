@@ -61,6 +61,10 @@ final class OtegamiCredentialRecoveryUITests: XCTestCase {
         // nothing under the current service, set `needsReauth = true`, and
         // this banner would appear instead.
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: アカウント一覧 (バナーもここに含まれる) は
+        // 「アカウントの設定」カテゴリの下 — 遷移しないとバナー不在の
+        // アサーションが空振りで常に true になってしまう。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
         XCTAssertFalse(
@@ -117,6 +121,10 @@ final class OtegamiCredentialRecoveryUITests: XCTestCase {
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15), "The message list should still appear normally after the orphan-adoption launch")
 
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: アカウント一覧 (バナーもここに含まれる) は
+        // 「アカウントの設定」カテゴリの下 — 遷移しないとバナー不在の
+        // アサーションが空振りで常に true になってしまう。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
         XCTAssertFalse(

@@ -19,6 +19,8 @@ final class OtegamiLinkBrowserSettingsUITests: XCTestCase {
         app.launch()
 
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: ブラウザの設定は「メールビューア」カテゴリの下。
+        XCTAssertTrue(navigateToMailViewerSettingsCategory(in: app), "「メールビューア」カテゴリへの遷移に失敗した")
 
         let picker = app.buttons["settings.links.openInAppBrowserPicker"]
         XCTAssertTrue(scrollSettingsUntilVisible(picker, in: app), "Expected the link-browser picker to appear in Settings")

@@ -240,6 +240,8 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
 
         // Design-phase-2: "設定" is its own tab now, not a gear-icon sheet.
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: アカウント一覧は「アカウントの設定」カテゴリの下。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
 
         let accountRow = app.collectionViews.cells.containing(NSPredicate(format: "label CONTAINS %@", "Dovecot Test1")).firstMatch
         XCTAssertTrue(accountRow.waitForExistence(timeout: 10), "Expected the test1 account row in Settings")

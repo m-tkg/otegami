@@ -32,18 +32,17 @@ final class OtegamiDesignPhase3ScreenshotUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 3)
         closeSearchScreen(in: app)
 
-        // Phase 2: 設定 (1l), opened via the hamburger menu's bottom row —
-        // アカウント/操作/翻訳 sections. Label text, not the exact
+        // Phase 2: 設定 (1l), opened via the hamburger menu's bottom row.
+        // I「設定画面の再構成」以降、設定ルートはカテゴリ一覧になり、
+        // アカウント一覧は「アカウントの設定」カテゴリの下 — その画面まで
+        // 遷移してからスクリーンショットを撮る。Label text, not the exact
         // `navigationBars` subscript — this simulator/toolchain's
         // well-documented exact-identifier-lookup pitfall applies to
         // navigation bar titles too (`docs/verify.md`).
         openSettingsFromHamburgerMenu(in: app)
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
         let addAccountButton = app.buttons["settings.addAccountButton"]
         XCTAssertTrue(addAccountButton.waitForExistence(timeout: 15))
-        // 操作/翻訳 (1l's new sections) sit below アカウント/iCloud/プッシュ通知
-        // — scroll down so both are actually in frame for the screenshot,
-        // not just the account list at the top.
-        app.swipeUp()
         Thread.sleep(forTimeInterval: 6)
         closeSettingsSheet(in: app)
 

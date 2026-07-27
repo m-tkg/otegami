@@ -55,6 +55,9 @@ final class OtegamiMissingCredentialUITests: XCTestCase {
         // Settings — the same M11 UI a cloud-synced-but-not-yet-keychain-
         // synced account already used, now also covering this case.
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: アカウント一覧 (バナーもここに含まれる) は
+        // 「アカウントの設定」カテゴリの下。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
         XCTAssertTrue(scrollSettingsUntilVisible(pendingCredentialBanner, in: app), "Expected the 資格情報を待っています banner for the account whose Keychain item was deleted")

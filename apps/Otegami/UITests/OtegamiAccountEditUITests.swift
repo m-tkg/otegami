@@ -190,6 +190,49 @@ final class OtegamiAccountEditUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 4)
     }
 
+    /// D「アカウントのラベル色を変更可能に」— phase 4, run after phase 3 has
+    /// already put the account back into a healthy (correct password)
+    /// state. Confirms `AccountLabelColorPicker`'s swatches render and are
+    /// tappable, and that picking one actually persists (`AccountRecord
+    /// .labelColorKey`) by reopening the edit screen after saving and
+    /// checking the same swatch reports itself selected.
+    func testPickingALabelColorPersists() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        app.launch()
+
+        openAccountEditScreen(in: app)
+
+        let autoSwatch = app.buttons["accountEdit.labelColor.auto"]
+        XCTAssertTrue(autoSwatch.waitForExistence(timeout: 5), "expected the 自動 swatch to be shown")
+        let coralSwatch = app.buttons["accountEdit.labelColor.coral"]
+        XCTAssertTrue(coralSwatch.exists, "expected all 8 palette swatches, including coral, to be shown")
+        XCTAssertTrue(autoSwatch.isSelected, "自動 should be selected by default (no labelColorKey saved yet)")
+
+        coralSwatch.tap()
+        XCTAssertTrue(coralSwatch.isSelected, "tapping a swatch should select it immediately")
+
+        let saveButton = app.buttons["accountEdit.saveButton"]
+        scrollAccountEditFormUntilVisible(saveButton, in: app)
+        saveButton.tap()
+        dismissSavePasswordPromptIfNeeded(timeout: 2)
+        XCTAssertTrue(
+            app.textFields["accountEdit.displayName"].waitForNonExistence(timeout: 5),
+            "edit screen did not pop back to the account list after saving a label color"
+        )
+
+        // Reopen and confirm the pick actually persisted, not just the
+        // in-memory `@State` from before saving.
+        openAccountEditScreen(in: app)
+        let reopenedCoralSwatch = app.buttons["accountEdit.labelColor.coral"]
+        XCTAssertTrue(reopenedCoralSwatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(reopenedCoralSwatch.isSelected, "coral should still be selected after reopening the edit screen")
+
+        // Pure navigation state — hold it up for the wrapping script's
+        // background screenshot subshell, same pattern the other phases use.
+        Thread.sleep(forTimeInterval: 4)
+    }
+
     /// Navigates from wherever the app just launched to the renamed (or
     /// still-original, in phase 1 before the rename) account's edit screen
     /// — a `NavigationLink` push, not a sheet (see `AccountsSettingsView`'s
@@ -202,6 +245,8 @@ final class OtegamiAccountEditUITests: XCTestCase {
     /// suite), then waits for `AccountEditView`'s screen to appear.
     private func openAccountEditScreen(in app: XCUIApplication) {
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: アカウント一覧は「アカウントの設定」カテゴリの下。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
 
         // `.any` (not `.buttons`): a `NavigationLink` row's exposed
         // accessibility type isn't guaranteed to be `.button` the way a

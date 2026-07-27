@@ -63,6 +63,8 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         app.launch()
 
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: アカウント一覧は「アカウントの設定」カテゴリの下。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
         let list = app.collectionViews.firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 10))
 
@@ -98,6 +100,8 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         app.launch()
 
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: アカウント一覧は「アカウントの設定」カテゴリの下。
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
         let list = app.collectionViews.firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 10))
 

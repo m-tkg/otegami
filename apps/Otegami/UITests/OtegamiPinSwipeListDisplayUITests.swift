@@ -59,17 +59,18 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
 
         openSettingsFromHamburgerMenu(in: app)
 
-        // Identifier-based lookups only (not the section header `Text`s) —
-        // this settings screen has grown enough sections that the later
-        // ones (一覧・表示/ピン留め) sit below the fold; `List` rows in this
-        // simulator/toolchain aren't reliably found by `waitForExistence`
-        // until scrolled into view (the same class of pitfall
-        // `docs/verify.md` documents elsewhere for `messageList.list`).
+        // I「設定画面の再構成」以降、これらのコントロールは2つのカテゴリに
+        // 分かれている — スワイプ/プロフィールアイコン/プレビュー行数は
+        // 「メール一覧」、スレッド表示/ピン留め連動は「その他」。
+        XCTAssertTrue(navigateToMailListSettingsCategory(in: app), "「メール一覧」カテゴリへの遷移に失敗した")
         XCTAssertTrue(app.buttons["settings.swipe.leadingShortPicker"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings.swipe.trailingLongPicker"].waitForExistence(timeout: 5))
-        XCTAssertTrue(scrollSettingsUntilVisible(app.switches["settings.list.threadingToggle"], in: app))
         XCTAssertTrue(app.switches["settings.list.showAvatarToggle"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings.list.previewLineCountPicker"].waitForExistence(timeout: 5))
+
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(navigateToOtherSettingsCategory(in: app), "「その他」カテゴリへの遷移に失敗した")
+        XCTAssertTrue(app.switches["settings.list.threadingToggle"].waitForExistence(timeout: 5))
         XCTAssertTrue(scrollSettingsUntilVisible(app.switches["settings.pinSyncWithFlaggedToggle"], in: app))
 
         // Hold the screen up for the wrapping shell's mid-test screenshot.
@@ -89,10 +90,19 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         // Assign trailing-long to ピン留め so a revealed (tap-only) button is
         // reachable without touching the always-tap-only-guarded delete slot.
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: スワイプ設定は「メール一覧」カテゴリの下。
+        XCTAssertTrue(navigateToMailListSettingsCategory(in: app), "「メール一覧」カテゴリへの遷移に失敗した")
         let trailingLongPicker = app.buttons["settings.swipe.trailingLongPicker"]
         XCTAssertTrue(trailingLongPicker.waitForExistence(timeout: 10))
         trailingLongPicker.tap()
-        let pinMenuItem = app.buttons["ピン留め"].firstMatch
+        // ラベルテキスト (日本語) 固定ではなく日英どちらにもマッチする述語 —
+        // `DovecotAccountUITestHelpers.tapPlainSecurityMenuOption(in:)`の
+        // doc comment が記録している「カタログ拡張で既存のラベル検索が壊れる」
+        // class の問題を避ける (この開発機のシミュレータはシステム言語が
+        // 英語で、`SwipeAction.title`をA「表示言語の切替」修正時に
+        // `String(localized:)`化したことで「ピン留め」が「Pin」表示に
+        // なりうる)。
+        let pinMenuItem = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "ピン留め", "Pin")).firstMatch
         XCTAssertTrue(pinMenuItem.waitForExistence(timeout: 5))
         pinMenuItem.tap()
 
@@ -143,6 +153,8 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         restartAppToRecoverTouchDelivery(app)
 
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: スレッド表示は「その他」カテゴリの下。
+        XCTAssertTrue(navigateToOtherSettingsCategory(in: app), "「その他」カテゴリへの遷移に失敗した")
         // Reads `Switch.value` unreliably right after a tap on this
         // simulator/toolchain (the same class of pitfall `docs/verify.md`
         // documents for `SecureField`/emptied `TextField`s) — rather than

@@ -21,6 +21,8 @@ final class OtegamiTemplatesUITests: XCTestCase {
 
         // --- Add a template in Settings ---
         openSettingsFromHamburgerMenu(in: app)
+        // I「設定画面の再構成」: テンプレート (C8) は「その他」カテゴリの下。
+        XCTAssertTrue(navigateToOtherSettingsCategory(in: app), "「その他」カテゴリへの遷移に失敗した")
 
         let templatesLink = app.buttons["settings.templatesLink"]
         XCTAssertTrue(scrollUntilVisible(templatesLink, in: app), "Expected the テンプレート settings entry point")

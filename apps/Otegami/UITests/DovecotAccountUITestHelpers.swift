@@ -185,9 +185,17 @@ extension XCTestCase {
         // `FolderListSheet.settingsSection`), not a tab bar or a gear-icon
         // sheet off the old sidebar.
         openSettingsFromHamburgerMenu(in: app)
-        let pushLinkText = app.staticTexts["プッシュ通知"]
-        XCTAssertTrue(pushLinkText.waitForExistence(timeout: 10), "settings screen did not appear")
-        pushLinkText.tap()
+        // I「設定画面の再構成」: プッシュ通知は「その他」カテゴリの下に移動した
+        // (`DovecotAccountUITestHelpers`'s `navigateToOtherSettingsCategory
+        // (in:)`'s doc comment)。
+        XCTAssertTrue(navigateToOtherSettingsCategory(in: app), "「その他」カテゴリへの遷移に失敗した")
+        // ラベルテキストではなくアクセシビリティ識別子で検索 — ロケールに
+        // 依存しない (`tapPlainSecurityMenuOption(in:)`のドキュメントコメント
+        // が記録している「カタログ拡張で既存のラベル検索が壊れる」class の
+        // 問題を避ける)。
+        let pushLink = app.buttons["settings.pushNotificationsLink"]
+        XCTAssertTrue(pushLink.waitForExistence(timeout: 10), "settings screen did not appear")
+        pushLink.tap()
 
         let relayURLField = app.textFields["settings.push.relayURLField"]
         XCTAssertTrue(relayURLField.waitForExistence(timeout: 10), "push settings screen did not appear")
@@ -281,13 +289,66 @@ extension XCTestCase {
     /// 新画面構成: opens the hamburger menu (`mail.hamburgerButton`) and taps
     /// its bottom "設定" row (`folderSheet.settings`), waiting for
     /// `SettingsSheetView`'s sheet to be up.
+    ///
+    /// I「設定画面の再構成」の検証中に発見: `settingsRow.tap()`(素の`.tap()`)
+    /// が、この simulator/toolchain で確認済みの「スクロールしてから hit
+    /// point を計算する内部処理が `{-1, -1}` を返す」既知の不具合
+    /// (`.claude/skills/verify/SKILL.md`のM2節) にたまに引っかかり、
+    /// `kAXErrorFailure performing AXAction kAXScrollToVisibleAction`で
+    /// 失敗することを確認した (同じスクリプト内で複数回`xcodebuild test`を
+    /// 呼ぶうちの後の方のフェーズで再現しやすい)。座標ベースの
+    /// `.coordinate(...).press(forDuration:)`はこの内部スクロール処理を
+    /// 経由しないため、同じ M2 節が他の行タップに対してすでに採用している
+    /// 回避策をここにも適用した。
     @discardableResult
     func openSettingsFromHamburgerMenu(in app: XCUIApplication) -> Bool {
         app.buttons["mail.hamburgerButton"].tap()
         let settingsRow = app.buttons["folderSheet.settings"]
         guard settingsRow.waitForExistence(timeout: 10) else { return false }
-        settingsRow.tap()
+        settingsRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
         return app.otherElements["settingsSheet.navigationStack"].waitForExistence(timeout: 10)
+    }
+
+    /// I「設定画面の再構成」: the settings root (`AccountsListContent`) no
+    /// longer shows individual controls directly — it's a list of 5
+    /// category links (`settings.category.accounts`/`.mailViewer`/
+    /// `.mailList`/`.other`, plus the always-root-level `settings
+    /// .signaturesLink`). Any UITest that used to find a control right
+    /// after `openSettingsFromHamburgerMenu(in:)` now needs one extra tap
+    /// into the category that control moved to first — these four
+    /// `navigateToXCategory(in:)` helpers are that one tap, shared by every
+    /// affected test so the category identifier string itself lives in
+    /// exactly one place.
+    @discardableResult
+    func navigateToAccountSettingsCategory(in app: XCUIApplication) -> Bool {
+        let link = app.buttons["settings.category.accounts"]
+        guard link.waitForExistence(timeout: 5) else { return false }
+        link.tap()
+        return true
+    }
+
+    @discardableResult
+    func navigateToMailViewerSettingsCategory(in app: XCUIApplication) -> Bool {
+        let link = app.buttons["settings.category.mailViewer"]
+        guard link.waitForExistence(timeout: 5) else { return false }
+        link.tap()
+        return true
+    }
+
+    @discardableResult
+    func navigateToMailListSettingsCategory(in app: XCUIApplication) -> Bool {
+        let link = app.buttons["settings.category.mailList"]
+        guard link.waitForExistence(timeout: 5) else { return false }
+        link.tap()
+        return true
+    }
+
+    @discardableResult
+    func navigateToOtherSettingsCategory(in app: XCUIApplication) -> Bool {
+        let link = app.buttons["settings.category.other"]
+        guard link.waitForExistence(timeout: 5) else { return false }
+        link.tap()
+        return true
     }
 
     /// 新画面構成: closes `SettingsSheetView`'s sheet (`settingsSheet
@@ -330,7 +391,7 @@ extension XCTestCase {
         type("1143", into: app.textFields["accountSetup.imapPort"], clearingExisting: true)
 
         app.buttons["accountSetup.imapSecurity"].tap()
-        app.buttons["なし (平文)"].tap()
+        tapPlainSecurityMenuOption(in: app)
 
         type(username, into: app.textFields["accountSetup.imapUsername"], clearingExisting: true)
         type(password, into: app.secureTextFields["accountSetup.password"])
@@ -413,7 +474,7 @@ extension XCTestCase {
         type("1143", into: app.textFields["accountSetup.imapPort"], clearingExisting: true)
 
         app.buttons["accountSetup.imapSecurity"].tap()
-        app.buttons["なし (平文)"].tap()
+        tapPlainSecurityMenuOption(in: app)
 
         type("test1@otegami.test", into: app.textFields["accountSetup.imapUsername"], clearingExisting: true)
         type("test1234", into: app.secureTextFields["accountSetup.password"])
@@ -446,7 +507,24 @@ extension XCTestCase {
         type("1025", into: app.textFields["accountSetup.smtpPort"], clearingExisting: true)
 
         app.buttons["accountSetup.smtpSecurity"].tap()
-        app.buttons["なし (平文)"].tap()
+        tapPlainSecurityMenuOption(in: app)
+    }
+
+    /// A「実機フィードバック第2弾」のローカライズ拡張作業中に発見: この開発機
+    /// のシミュレータのシステム言語は英語がデフォルトで、`AppLanguageOption
+    /// .system`(このアプリの既定設定) はそれにそのまま従うため、
+    /// `Localizable.xcstrings`へ`"なし (平文)"`の英訳を追加した瞬間、この
+    /// 文字列に依存していた既存のラベルテキスト検索
+    /// (`app.buttons["なし (平文)"]`) が「なし (平文)」ではなく「None
+    /// (Plain)」を見るようになり、3箇所とも壊れた — カタログの網羅を進める
+    /// ほど、ラベル文字列に依存する既存 XCUITest がロケール次第で無言で
+    /// 壊れうるという、今後同じ轍を踏まないための教訓。`identifier CONTAINS`
+    /// ではなく日本語/英語どちらのラベルにもマッチする`OR`述語にすることで
+    /// 両方のロケールで動くようにした。
+    func tapPlainSecurityMenuOption(in app: XCUIApplication) {
+        let option = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "なし (平文)", "None (Plain)")).firstMatch
+        XCTAssertTrue(option.waitForExistence(timeout: 5), "「なし (平文)」/「None (Plain)」のメニュー項目が見つからない")
+        option.tap()
     }
 
     func runSMTPConnectionTest(in app: XCUIApplication) {

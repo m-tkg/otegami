@@ -2,7 +2,7 @@
 # Account edit UI automated verification (`docs/roadmap.md`'s former
 # "アカウント編集 UI" entry).
 #
-# Three phases, each its own `xcodebuild test -only-testing:` invocation
+# Four phases, each its own `xcodebuild test -only-testing:` invocation
 # (`OtegamiAccountEditUITests`), no host-side `doveadm`/`Process` calls
 # needed (unlike M3-M5) since this feature's whole point is exercised
 # entirely from inside the app against the already-running dev mailstack:
@@ -20,6 +20,9 @@
 #   3. testFixingThePasswordRecoversSync          save the correct password
 #                                                 back, confirm the banner
 #                                                 clears.
+#   4. testPickingALabelColorPersists             D「アカウントのラベル色」—
+#                                                 pick a swatch, save,
+#                                                 reopen, confirm it stuck.
 #
 # The account-edit sheet (like M6's account-type-selection sheet) is pure
 # navigation state, not GRDB-persisted, so each phase's screenshot is taken
@@ -126,6 +129,9 @@ screenshot_during "OtegamiAccountEditUITests/testSavingWrongPasswordSurfacesASyn
 echo "==> Phase 3/3: fix the password, confirm the sync-error banner clears"
 screenshot_during "OtegamiAccountEditUITests/testFixingThePasswordRecoversSync" "account-edit-03-recovered.png"
 
+echo "==> Phase 4/4: D「アカウントのラベル色」— pick a color swatch, confirm it persists"
+screenshot_during "OtegamiAccountEditUITests/testPickingALabelColorPersists" "account-edit-04-label-color.png"
+
 cat <<EOF
 
 ==> Done.
@@ -133,4 +139,5 @@ Screenshots:
   $SCREENSHOT_DIR/account-edit-01-renamed.png     (account list showing the renamed display name)
   $SCREENSHOT_DIR/account-edit-02-sync-error.png  (visible sync-error banner after a wrong password)
   $SCREENSHOT_DIR/account-edit-03-recovered.png   (banner cleared after the password was corrected)
+  $SCREENSHOT_DIR/account-edit-04-label-color.png (account edit screen with a label color swatch selected)
 EOF
