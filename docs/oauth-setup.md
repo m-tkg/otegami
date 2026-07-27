@@ -116,6 +116,57 @@ URL スキームを宣言する必要がない (`ASWebAuthenticationSessionRunne
 このスコープの使用目的 (「差出人のプロフィール写真の表示」) を申告する
 準備をしておくこと。
 
+#### 実機バグ: 再接続してもスコープが増えない場合
+
+実機で「アカウント編集」→「再認証」を実行しても、
+myaccount.google.com/connections でこのアプリの付与日・付与スコープが
+更新されない (連絡先系スコープが増えない) 症状が報告されたことがある。
+切り分けの結果は次のとおりで、**アプリの認可リクエスト自体には問題は
+無かった**:
+
+- `GoogleOAuthEndpoints.authorizationURL(pkce:state:)` は最初の実装
+  (M6) の時点から常に `prompt=consent`・`access_type=offline` を含む
+  リクエストを送っており、`reauthenticateGmailAccount(_:)` はこの関数を
+  経由する完全な Authorization Code + PKCE フローを毎回実行している
+  (アクセストークンの単純なリフレッシュで済ませてしまう、といった
+  近道は無い)。`scope` にも `contacts.other.readonly` 追加コミット
+  (8f2aba5) の時点から新スコープが含まれている。
+- 実際の原因は **Google Cloud Console 側の OAuth 同意画面設定**
+  だった — People API を有効化していない、または同意画面の「データへの
+  アクセス」にこのスコープを追加していない状態だと、アプリが
+  `prompt=consent`付きで正しくリクエストしても、Google 側がこの
+  スコープだけ静かに許可しない (アプリのリクエスト自体はエラーに
+  ならず完了するため、アプリ側からは「再認証は成功したのにスコープが
+  増えない」としか見えない)。People API の有効化・同意画面へのスコープ
+  追加を行うと解消する (`HUMAN_TASKS.md`の該当項目参照)。
+
+上記の切り分けをアプリ内で完結させるため、以下を追加した:
+
+- `authorizationURL`に`include_granted_scopes=true`を追加 (Google の
+  推奨デフォルト。今回のように毎回フルスコープをリクエストする限り
+  実害は無いが、将来インクリメンタル認可に切り替える場合への保険)。
+- 「アカウント編集」画面 (Gmail アカウント) に**「権限の診断」表示**を
+  追加した。画面を開くたびに `TokenStore.diagnosticScope(for:)`
+  (キャッシュを使わず必ずリフレッシュリクエストを送って、Google が
+  実際に返した`scope`フィールドを読む) で問い合わせ、「連絡先の写真:
+  許可済み/未許可」を表示する。これで
+  myaccount.google.com/connections のスクリーンショットを取らなくても
+  アプリ内で同じ切り分けができる。
+- 再認証成功時に `GoogleProfilePhotoAvatarResolver` の「このプロセスでは
+  このアカウントはスコープ不足」という記憶
+  (`scopeInsufficientAccountIds`) を即座にクリアするようにした —
+  以前は次回起動までこの記憶が残り、再認証で新スコープを得た直後でも
+  写真取得が試みられないままだった。
+- `otherContacts.search`は本検索の前に空クエリの「ウォームアップ」
+  リクエストを送らないと検索インデックスが温まっておらず空の結果を
+  返すことがある、という Google の仕様に対応し、アカウント (トークン)
+  ごとにプロセス内で最初の1回だけウォームアップを送るようにした
+  (`GooglePeopleAvatarClient.warmupSearchIndex(accessToken:)`)。
+- 上記のウォームアップ未対応だった旧実装が書いた 7日 negative cache
+  (「見つからなかった」というディスクキャッシュ) を無効化するため、
+  `GoogleProfilePhotoAvatarResolver`のキャッシュディレクトリ名に
+  `v2`を追加した。
+
 ## 実機での最終確認手順 (Client ID 発行後、ユーザー自身が行う)
 
 1. 上記手順で Client ID を発行し `Local.xcconfig` に設定する。
@@ -138,6 +189,16 @@ URL スキームを宣言する必要がない (`ASWebAuthenticationSessionRunne
    (myaccount.google.com → セキュリティ → サードパーティのアクセス) た後に
    同期を試み、`AccountsSettingsView` に「再認証が必要です」バナーが出て
    「再認証」ボタンから復旧できることを確認する。
+9. (`contacts.other.readonly`スコープの確認) 「アカウント編集」→ 対象の
+   Gmail アカウントを開き、「認証」節の「連絡先の写真: 許可済み/未許可」
+   表示を確認する。**「未許可」のままなら**: (a) まだ「再認証」を一度も
+   実行していないアカウントか、(b) 再認証済みでも Google Cloud Console
+   の OAuth 同意画面にこのスコープが追加されていない・People API が
+   有効化されていない可能性が高い (上の「実機バグ」節参照) — その場合は
+   Console 側の設定を直し、もう一度「再認証」してから開き直して確認する。
+   「許可済み」になれば、Gravatar 未登録の差出人からのメールで一覧の
+   プロフィールアイコンが Google のプロフィール写真に変わることも
+   あわせて確認する。
 
 上記はユーザー本人の Google アカウント/実機が必要なため自動検証の対象外
 (`scripts/verify-ios-m6.sh` は型選択 UI・Client ID 未設定時のボタン無効化・
