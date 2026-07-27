@@ -16,11 +16,13 @@ struct ThreaderTests {
         subject: String? = nil,
         participants: Set<String> = [],
         date: Date = Date(timeIntervalSince1970: 1_700_000_000),
-        gmailThreadId: Int64? = nil
+        gmailThreadId: Int64? = nil,
+        fromAddress: String? = nil
     ) -> Threader.MessageFacts {
         Threader.MessageFacts(
             id: id, messageId: messageId, inReplyTo: inReplyTo, references: references,
-            normalizedSubject: subject, participants: participants, date: date, gmailThreadId: gmailThreadId
+            normalizedSubject: subject, participants: participants, date: date, gmailThreadId: gmailThreadId,
+            fromAddress: fromAddress
         )
     }
 
@@ -158,5 +160,37 @@ struct ThreaderTests {
         let context = Threader.ExistingThreadContext()
         let message = facts(id: 1)
         #expect(Threader.decide(for: message, context: context) == .createNew)
+    }
+
+    // MARK: 実機フィードバック第3弾 (D): no-reply senders never use subject fallback
+
+    @Test("a no-reply sender never joins by subject fallback, even with matching subject/participants/window")
+    func noReplySenderNeverJoinsBySubjectFallback() {
+        let original = date(0)
+        let context = Threader.ExistingThreadContext(
+            subjectCandidatesByNormalizedSubject: [
+                "本日のお知らせ": [
+                    Threader.SubjectCandidate(threadId: 7, participants: ["test1@otegami.test", "no-reply@service.example"], date: original),
+                ],
+            ]
+        )
+        let notification = facts(
+            id: 2,
+            subject: "本日のお知らせ",
+            participants: ["test1@otegami.test", "no-reply@service.example"],
+            date: date(3600),
+            fromAddress: "no-reply@service.example"
+        )
+        #expect(Threader.decide(for: notification, context: context) == .createNew)
+    }
+
+    @Test("isNoReplyAddress recognizes common no-reply/noreply/donotreply patterns, case-insensitively")
+    func isNoReplyAddressRecognizesCommonPatterns() {
+        #expect(Threader.isNoReplyAddress("No-Reply@Service.example"))
+        #expect(Threader.isNoReplyAddress("noreply@service.example"))
+        #expect(Threader.isNoReplyAddress("donotreply@service.example"))
+        #expect(Threader.isNoReplyAddress("do-not-reply@service.example"))
+        #expect(!Threader.isNoReplyAddress("aiko@otegami.test"))
+        #expect(!Threader.isNoReplyAddress(nil))
     }
 }

@@ -42,7 +42,8 @@ public enum ThreadAssigner {
             normalizedSubject: message.normalizedSubject,
             participants: participants(of: message),
             date: message.date ?? message.internalDate,
-            gmailThreadId: message.gmailThreadId
+            gmailThreadId: message.gmailThreadId,
+            fromAddress: message.fromAddresses.first?.address
         )
 
         let context = try buildContext(for: facts, accountId: accountId, excludingMessageId: messageId, db: db)
@@ -142,7 +143,8 @@ public enum ThreadAssigner {
                 normalizedSubject: message.normalizedSubject,
                 participants: participants(of: message),
                 date: message.date ?? message.internalDate,
-                gmailThreadId: message.gmailThreadId
+                gmailThreadId: message.gmailThreadId,
+                fromAddress: message.fromAddresses.first?.address
             )
         }
 

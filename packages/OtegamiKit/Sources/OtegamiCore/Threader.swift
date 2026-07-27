@@ -42,6 +42,13 @@ public enum Threader {
         /// Gmail's `X-GM-THRID`, when known (bit-pattern `Int64`, matching
         /// `OtegamiStore.MessageRecord.gmailThreadId`).
         public var gmailThreadId: Int64?
+        /// The message's own `From` address, lowercased — 実機フィードバック
+        /// 第3弾 (D): used only to detect a no-reply-style sender for the
+        /// subject-fallback pass (step 3 below), never for References/Gmail
+        /// matching. `nil` (e.g. a malformed/missing `From`) is treated the
+        /// same as "not a no-reply sender" — the fallback stays as
+        /// permissive as it was before this field existed.
+        public var fromAddress: String?
 
         public init(
             id: Int64,
@@ -51,7 +58,8 @@ public enum Threader {
             normalizedSubject: String?,
             participants: Set<String>,
             date: Date,
-            gmailThreadId: Int64? = nil
+            gmailThreadId: Int64? = nil,
+            fromAddress: String? = nil
         ) {
             self.id = id
             self.messageId = messageId
@@ -61,6 +69,7 @@ public enum Threader {
             self.participants = participants
             self.date = date
             self.gmailThreadId = gmailThreadId
+            self.fromAddress = fromAddress
         }
     }
 
@@ -171,7 +180,28 @@ public enum Threader {
         // 3. Fallback: same normalized subject, overlapping participants,
         // within the time window. Ties broken toward the most recently
         // active candidate thread.
-        if let subject = message.normalizedSubject, !subject.isEmpty {
+        //
+        // 実機フィードバック第3弾 (D): a no-reply-style sender never
+        // qualifies for this fallback at all, regardless of subject/
+        // participant/window match. Real-device report: 7 unrelated daily
+        // notification emails from the same `no-reply@` address (each with
+        // no References/In-Reply-To — a one-way broadcast, not a
+        // conversation) ended up folded into a single 7-message thread
+        // purely because they all shared one normalized subject, which
+        // pushed the actually-interesting message in `ThreadDetailView`'s
+        // accordion far down past a wall of collapsed rows (`docs/design-
+        // system.md`'s 実機フィードバック第3弾 (A) note on the same
+        // screenshot). Excluding no-reply senders here — rather than
+        // requiring "the recipient has replied at least once", the other
+        // option considered — was chosen because it needs no new signal
+        // threaded through `ExistingThreadContext` (a no-reply sender is
+        // knowable from the message being decided alone) and it directly
+        // matches the failure mode actually observed: broadcast/
+        // notification senders are the case where "same subject" is weak
+        // evidence of one conversation, while two humans replying without
+        // References (some clients omit them on a manual "resend") still
+        // benefits from the fallback exactly as before.
+        if let subject = message.normalizedSubject, !subject.isEmpty, !Threader.isNoReplyAddress(message.fromAddress) {
             let candidates = context.subjectCandidatesByNormalizedSubject[subject] ?? []
             let matching = candidates.filter { candidate in
                 !candidate.participants.isDisjoint(with: message.participants)
@@ -184,5 +214,17 @@ public enum Threader {
 
         // 4. Nothing matched.
         return .createNew
+    }
+
+    /// 実機フィードバック第3弾 (D): a coarse, deliberately simple substring
+    /// check against three common broadcast/notification-sender patterns —
+    /// this is a heuristic for "probably nobody reads/replies from this
+    /// address", not an RFC-defined concept, so it errs toward matching
+    /// only unambiguous cases rather than trying to be exhaustive (e.g. it
+    /// doesn't special-case every provider-specific bounce/mailer-daemon
+    /// convention).
+    static func isNoReplyAddress(_ address: String?) -> Bool {
+        guard let address = address?.lowercased(), !address.isEmpty else { return false }
+        return address.contains("no-reply") || address.contains("noreply") || address.contains("donotreply") || address.contains("do-not-reply")
     }
 }
