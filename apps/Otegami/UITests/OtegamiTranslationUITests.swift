@@ -44,32 +44,36 @@ final class OtegamiTranslationBarUITests: XCTestCase {
         XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected the English seed message row to appear")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
-        // Label text, not the exact identifier — this simulator/toolchain's
-        // well-documented "an exact-identifier `otherElements[id]`/
-        // `staticTexts[id]` lookup can fail to find a plainly-visible
-        // element" class of issue (`docs/verify.md`'s M2/M4/M7 pitfalls)
-        // applies here too: `messageDetail.translationBar` never resolved
-        // via the subscript form even once the bar was confirmed on screen
-        // (via `sqlite3` reading `message.detectedLanguage`/a host
-        // screenshot directly). The bar's own headline text is stable and
-        // unique regardless of translation state, so it's what this
-        // actually waits on.
-        let bar = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "端末内で翻訳")).firstMatch
-        XCTAssertTrue(bar.waitForExistence(timeout: 20), "Expected the translation bar to appear for an English message")
+        // Task #55: the old full-width bar (headline "…端末内で翻訳" always
+        // visible) became a small floating button — its own
+        // accessibilityIdentifier is the reliable lookup now (no separate
+        // headline `Text` to wait on). Exact-identifier subscript lookups
+        // have been unreliable on this simulator/toolchain before
+        // (`docs/verify.md`'s M2/M4/M7 pitfalls), so this still goes through
+        // a broad `.any`-descendant search rather than `app.buttons[id]`.
+        let translateButton = app.descendants(matching: .any).matching(NSPredicate(format: "identifier CONTAINS %@", "translationFloatingButton")).firstMatch
+        XCTAssertTrue(translateButton.waitForExistence(timeout: 20), "Expected the translation floating button to appear for an English message")
 
         // 実機フィードバック「翻訳機能は、勝手に実行しないで欲しい」:
         // `TranslationSettingsStore.defaultAutoTranslateEnglish` flipped to
-        // `false` — opening an English message must show the "翻訳" button
-        // and sit there, never transitioning to "translating"/"訳文" on its
-        // own. Gives the auto-translate path (were it wrongly still firing)
-        // several seconds to kick in before asserting its absence, so this
-        // wouldn't just pass by having not waited long enough.
-        let translateButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "翻訳")).firstMatch
-        XCTAssertTrue(translateButton.waitForExistence(timeout: 10), "Expected the idle 翻訳 button, not an auto-started translation")
-        let loadingIndicator = app.descendants(matching: .any).matching(NSPredicate(format: "identifier CONTAINS %@", "translationBar.loading")).firstMatch
+        // `false` — opening an English message must show the idle 翻訳
+        // button and sit there, never transitioning to "translating"/
+        // "translated" on its own. Gives the auto-translate path (were it
+        // wrongly still firing) several seconds to kick in before asserting
+        // its absence, so this wouldn't just pass by having not waited long
+        // enough. The idle button's own accessibilityLabel contains "翻訳"
+        // (`TranslationFloatingButton.accessibilityLabel`'s `.none` case),
+        // same substring the old headline check waited on.
+        let idleButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "翻訳")).firstMatch
+        XCTAssertTrue(idleButton.waitForExistence(timeout: 10), "Expected the idle 翻訳 button, not an auto-started translation")
+        let loadingIndicator = app.descendants(matching: .any).matching(NSPredicate(format: "identifier CONTAINS %@", "translationFloatingButton.loading")).firstMatch
         XCTAssertFalse(loadingIndicator.waitForExistence(timeout: 3), "Auto-translate must not fire when the setting defaults to off")
-        let translatedSegment = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "訳文")).firstMatch
-        XCTAssertFalse(translatedSegment.exists, "Auto-translate must not fire when the setting defaults to off")
+        // Task #55: once translated, the button's own label switches to a
+        // "戻す" toggle (`TranslationFloatingButton.accessibilityLabel`'s
+        // `.translated` case) — there's no separate "訳文" segment control
+        // to check anymore.
+        let translatedToggleButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "戻す")).firstMatch
+        XCTAssertFalse(translatedToggleButton.exists, "Auto-translate must not fire when the setting defaults to off")
     }
 
     func testTappingTranslateButtonReachesTerminalState() throws {
@@ -101,12 +105,17 @@ final class OtegamiTranslationBarUITests: XCTestCase {
         // tappable when it fails. Every lookup here is a broad
         // `.any`-descendant CONTAINS search, not an exact identifier/type
         // subscript, for the same reason as `translateButton` above.
-        let translatedSegment = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "訳文")).firstMatch
+        // Task #55: "translated" no longer has its own persistent "訳文"
+        // segment control to look for — the floating button's own
+        // accessibilityLabel becomes a "戻す" toggle instead
+        // (`TranslationFloatingButton.accessibilityLabel`'s `.translated`
+        // case).
+        let translatedToggleButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "戻す")).firstMatch
         let failureText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "翻訳に失敗しました")).firstMatch
         let retryButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "再試行")).firstMatch
 
-        let reachedTerminalState = translatedSegment.waitForExistence(timeout: 30) || (failureText.waitForExistence(timeout: 5) && retryButton.exists)
-        XCTAssertTrue(reachedTerminalState, "Expected the translation bar to reach either a translated or a retryable-failure state")
+        let reachedTerminalState = translatedToggleButton.waitForExistence(timeout: 30) || (failureText.waitForExistence(timeout: 5) && retryButton.exists)
+        XCTAssertTrue(reachedTerminalState, "Expected the translation floating button to reach either a translated or a retryable-failure state")
 
         // Hold the screen for the wrapping shell script's mid-test
         // screenshot (M6/M7/M8's established technique — this state isn't

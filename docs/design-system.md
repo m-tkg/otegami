@@ -2809,3 +2809,102 @@ dragTranslation)`)、(2) プレビューの色/アイコン判定
 シミュレータでの目視確認 (スクリーンショット/録画) は
 `.claude/skills/verify/SKILL.md` の手順に沿って別途実施し、結果を
 ここに追記する。
+
+## Task #55: 要約/翻訳バーの廃止 → 左下フローティングボタン2個
+
+### 背景
+
+メール本文画面は「AI要約バー」「翻訳バー」がヘッダ直下に常時2行を占有
+していた — どちらのバーも条件を満たすメッセージなら常に表示され
+(要約は AI 機能設定オンなら言語問わず全メッセージ、翻訳は
+`shouldShowTranslationBar` を満たす英文メールのみ)、ユーザーが一度も
+触れなくても画面の縦スペースを恒常的に消費していた。既存のフローティング
+ボタン (`MailScreenView.floatingSearchButton`検索ボタン、`FolderListSheet
+.floatingSettingsButton`設定ボタン) と同じ「一覧のスクロール位置に関係
+なく常に同じ場所にある」流儀に揃え、この2つのバーを左下フローティング
+ボタン2個 (縦積み、要約が上・翻訳が下) に置き換えた。
+
+### タップ後の見せ方: 要約はシート、翻訳はボタン自身がトグルに
+
+バーには「見出し + 状態に応じたボタン/セグメント + 結果」を並べる横幅
+があったが、フローティングボタン1個にはその余地が無い。2つの機能は
+「結果をどう見せるか」の性質が違うため、それぞれ別の解決策を選んだ:
+
+- **AI要約 (`AISummaryFloatingButton`)**: 結果は本文とは独立した読み物
+  (原文と並べて見比べる必要は薄い) なので、タップで下からシート
+  (`MessageView.summarySheet`、`.presentationDetents([.medium, .large])`)
+  を開いて見せる。未生成ならシートを開くと同時に生成を開始し (シート内は
+  生成中 `ProgressView`)、生成済みなら即座に結果を表示。「再生成」は
+  シート内のツールバーボタンとして残した — バーの「要約」/「再生成」の
+  2ボタン切替をシートの中に押し込めた形。
+- **翻訳 (`TranslationFloatingButton`)**: 結果は本文そのものに適用される
+  (`content`の`htmlTranslatedTexts`/`TranslatedBodyView`分岐、既存のまま
+  無変更) ため、シートで別画面に出す意味が無い。旧バーの「訳文/原文」
+  `Picker(.segmented)`が担っていた切替を、ボタン自身の**トグル**に
+  変更した — 翻訳済みなら、タップのたびに`translationShowOriginal`が
+  反転し、本文の表示が訳文⇄原文で切り替わる。ボタンの色 (アイコン背景が
+  塗り潰し `.active` か、枠線のみ `.neutral` か) で「今どちらを表示中か」
+  を示す (`OtegamiFloatingButtonTone`のdoc comment参照)。
+
+### 状態の表現: 塗り潰し/枠線/赤枠の3トーン + ProgressView
+
+`AISummaryFloatingButton`/`TranslationFloatingButton`はどちらも同じ4状態
+(未生成/生成中/生成済み/失敗) を持つ (`MessageSummaryState`/
+`MessageTranslationState`)。バー時代はテキストラベルで状態を説明できたが、
+アイコン1個のボタンにはその余地が無いため、`OtegamiFloatingButtonTone`
+(`.neutral`/`.active`/`.attention`/`.disabled`) という共有の見た目語彙に
+還元した:
+
+- **生成中**: アイコンの代わりに`ProgressView` (要件「進行中はボタンに
+  ProgressView」)。
+- **未生成/生成済み(翻訳が原文表示中)**: `.neutral` — 検索/設定ボタンと
+  同じ見た目 (surface塗り + accentアイコン)。
+- **生成済み(要約はシートを開ける状態、翻訳は訳文を表示中)**: `.active` —
+  accent色で塗り潰し、白アイコン。「タップすると何か見られる/切り替わる」
+  を示す。
+- **失敗**: `.attention` — destructive色の枠線+アイコン (塗り潰さない、
+  `.active`の「成功」感と混同しないため)。タップで再試行 (旧「再試行」
+  ボタンと同じ一発リトライ)。
+- **この端末では利用不可** (`isAvailable == false`): `.disabled` — ボタン
+  自体は消さず (存在に気付けるように)、`.disabled(true)`+アイコンを
+  `inkTertiary`に沈める。VoiceOverには理由を`accessibilityLabel`で伝える。
+
+この`OtegamiFloatingButtonTone`と円形ボタンのクロム (surface塗り+
+`dividerSubtle`枠線+ドロップシャドウ) は`AISummaryBar.swift`に集約し、
+`TranslationBar.swift`から再利用している。既存の`floatingSearchButton`/
+`floatingSettingsButton`は今回のバッチでは触っていない (別エージェントが
+同じ作業ツリーで`MailScreenView.swift`を並行編集中だったため) — 3箇所
+目の重複になるが、既存2箇所を巻き込んだ共通コンポーネント化は今回の
+スコープ外と判断した (`OtegamiFloatingButtonTone`のdoc comment参照)。
+
+### 失敗時のフィードバック: 翻訳はキャプション、要約はシート内
+
+翻訳の失敗メッセージ (旧バーの`footnote`) は、シートを持たないボタンの
+すぐ上に赤いカプセル型キャプションとして表示する
+(`TranslationFloatingButton.footnoteCaption`) — VoiceOverだけでなく晴眼
+ユーザーにも見える形を残した。要約の失敗メッセージは元々シートの中に
+表示先があるため、追加のキャプションは置いていない (シートを開けば
+失敗理由が読める)。
+
+### 本文とフローティングボタンの重なり回避
+
+`content`のプレーンテキスト`ScrollView`と`TranslatedBodyView`(自前の
+`ScrollView`) の両方に、フローティングボタン2個分の高さを見積もった
+固定値 (`MessageView.floatingButtonsReservedBottomInset`) を
+`.contentMargins(.bottom:, for: .scrollContent)`で確保した —
+`FolderListSheet`が自分の`floatingSettingsButton`のために既にやっている
+のと同じパターン。**`HTMLMessageView`(`WKWebView`) は対象外** — 同じ
+作業ツリーで別エージェントがその実装をダーク反転修正のため並行編集中
+だったため触っておらず、HTML本文はフローティングボタンがスクロール後の
+本文に重なりうる既知の制約として残る。
+
+### 検証
+
+`make test`/`make ios`/`make mac` green。既存の`OtegamiTranslationBarUITests`
+(`OtegamiTranslationUITests.swift`) を新 UI に追随させた — 旧バーの
+固定見出しテキスト("…端末内で翻訳")・`訳文`セグメントラベルへの依存を、
+`translationFloatingButton`系のaccessibilityIdentifier/ボタンの
+accessibilityLabel (未翻訳時は"翻訳"を含む、翻訳済みは"戻す"を含む) への
+依存に置き換えた。実機シミュレータでの目視確認 (スクリーンショット) は
+`.claude/skills/verify/SKILL.md`の手順に沿って別途実施し、結果をここに
+追記する。

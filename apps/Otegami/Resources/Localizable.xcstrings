@@ -3230,6 +3230,86 @@
           }
         }
       }
+    },
+    "要約中": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Summarizing…"
+          }
+        }
+      }
+    },
+    "要約を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Summary"
+          }
+        }
+      }
+    },
+    "要約を再試行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry Summary"
+          }
+        }
+      }
+    },
+    "翻訳中": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translating…"
+          }
+        }
+      }
+    },
+    "翻訳を再試行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry Translation"
+          }
+        }
+      }
+    },
+    "訳文に戻す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Translation"
+          }
+        }
+      }
+    },
+    "原文に戻す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Original"
+          }
+        }
+      }
+    },
+    "AI要約": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Summary"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

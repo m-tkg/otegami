@@ -25,6 +25,13 @@ struct TranslatedBodyView: View {
     /// Owned by the parent (`MessageView`) so it can reset alongside the
     /// rest of that view's translation state whenever `messageId` changes.
     @Binding var originalOverrides: Set<Int>
+    /// Task #55: blank space reserved at the bottom of this view's own
+    /// `ScrollView` so a paragraph never renders directly behind
+    /// `MessageView.floatingActionButtons` — see that property's doc
+    /// comment. Defaults to `0` so this view stays usable on its own
+    /// (previews, tests) without every call site needing to know about a
+    /// sibling view's floating buttons.
+    var bottomContentInset: CGFloat = 0
 
     var body: some View {
         ScrollView {
@@ -36,6 +43,7 @@ struct TranslatedBodyView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }
+        .contentMargins(.bottom, bottomContentInset, for: .scrollContent)
         .accessibilityIdentifier("messageDetail.translatedBody")
     }
 

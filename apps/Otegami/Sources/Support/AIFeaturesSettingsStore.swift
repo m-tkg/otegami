@@ -1,9 +1,11 @@
 import Foundation
 
 /// I「設定画面の再構成」→「メールビューア」節の「AI 機能の on/off (翻訳・要約を
-/// まとめて)」— one master switch for both `TranslationBar` and
-/// `AISummaryBar` (`MessageView`). Default **on**. Turning this off hides
-/// both bars entirely (and skips the auto-translate-on-open behavior
+/// まとめて)」— one master switch for both `TranslationFloatingButton` and
+/// `AISummaryFloatingButton` (`MessageView`, Task #55 — floating buttons,
+/// not the full-width bars these were originally named after). Default
+/// **on**. Turning this off hides both buttons entirely (and skips the
+/// auto-translate-on-open behavior
 /// `TranslationSettingsStore.autoTranslateEnglishKey` would otherwise
 /// trigger) regardless of that finer-grained setting's own value — this is
 /// the "is AI involved at all" master switch; `autoTranslateEnglishKey`
