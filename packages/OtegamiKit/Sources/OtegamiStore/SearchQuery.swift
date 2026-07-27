@@ -181,6 +181,78 @@ public enum SearchQuery {
         return try ThreadQuery.summaries(forThreads: threads, db: db)
     }
 
+    /// B3 フラット表示 + 検索: the message-level counterpart to
+    /// `threadSummaries(query:scope:limit:db:)` — one row per matching
+    /// *message* rather than one row per thread, mirroring the same split
+    /// `ThreadQuery.request`/`unifiedInboxRequest` (グループ化) already has
+    /// against `ThreadQuery.flatSummaries`/`unifiedInboxFlatSummaries`
+    /// (フラット). Added in response to a real-device report ("スレッド表示を
+    /// オフにしてるのに、スレッドで表示されることがある"): this method
+    /// (grouped search) was, until this fix, the *only* place in the app
+    /// that still always grouped results by thread regardless of
+    /// `ListDisplaySettingsStore.threadingKey` — every other list surface
+    /// (`MessageListView.observeThreads()`) already branched on it. A prior
+    /// pass explicitly judged that gap acceptable ("search results are a
+    /// comparatively small, transient list where grouped vs. flat matters
+    /// far less") without live device verification; an actual user hitting
+    /// it means that judgment call didn't hold up in practice.
+    public static func flatMessageSummaries(query: String, scope: SearchScope, limit: Int? = defaultResultLimit, db: Database) throws -> [ThreadSummary] {
+        try flatMessageSummaries(parsed: parse(query), scope: scope, limit: limit, db: db)
+    }
+
+    /// The operator-aware entry point `flatMessageSummaries(query:scope:
+    /// limit:db:)` delegates to — mirrors `threadSummaries(parsed:scope:
+    /// limit:db:)`'s own split between the two entry points, same reason.
+    public static func flatMessageSummaries(parsed: ParsedSearchQuery, scope: SearchScope, limit: Int? = defaultResultLimit, db: Database) throws -> [ThreadSummary] {
+        guard !parsed.isEmpty else { return [] }
+
+        // Identical matching (per-operator `Set<Int64>` intersection) to
+        // `threadSummaries(parsed:scope:limit:db:)` above — only what
+        // happens *after* the matching message id set is computed differs
+        // (grouped into threads there, kept as individual messages here).
+        var messageIds: Set<Int64>?
+        func narrow(_ ids: [Int64]) {
+            messageIds = messageIds.map { $0.intersection(ids) } ?? Set(ids)
+        }
+
+        let trimmedFreeText = parsed.freeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedFreeText.isEmpty {
+            let ids = trimmedFreeText.count >= minimumFTSLength
+                ? try matchFTS(trimmedFreeText, scope: scope, db: db)
+                : try matchLIKE(trimmedFreeText, scope: scope, db: db)
+            narrow(ids)
+        }
+        if let from = parsed.from { narrow(try matchColumn("fromText", value: from, scope: scope, db: db)) }
+        if let to = parsed.to { narrow(try matchColumn("toText", value: to, scope: scope, db: db)) }
+        if let cc = parsed.cc { narrow(try matchColumn("ccText", value: cc, scope: scope, db: db)) }
+        if let subject = parsed.subject { narrow(try matchColumn("subject", value: subject, scope: scope, db: db)) }
+
+        guard let messageIds, !messageIds.isEmpty else { return [] }
+        let messageIdsArray = Array(messageIds)
+
+        // `mailbox.accountId`をJOINで一緒に取得する — `ThreadQuery
+        // .unifiedInboxFlatSummaries`と同じ「`ThreadSummary(flatMessage:
+        // accountId:)`が要求するaccountIdをRowから直接読む」パターン
+        // (`MessageRecord`自身は`accountId`列を持たないため)。
+        var sql = """
+            SELECT message.*, mailbox.accountId AS accountId FROM message
+            JOIN mailbox ON mailbox.id = message.mailboxId
+            WHERE message.id IN (\(messageIdsArray.map { _ in "?" }.joined(separator: ",")))
+            ORDER BY message.isPinnedLocal DESC, COALESCE(message.date, message.internalDate) DESC, message.uid DESC
+            """
+        var arguments: [(any DatabaseValueConvertible)?] = messageIdsArray
+        if let limit {
+            sql += " LIMIT ?"
+            arguments.append(limit)
+        }
+        let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+        return try rows.map { row in
+            let message = try MessageRecord(row: row)
+            let accountId: String = row["accountId"]
+            return ThreadSummary(flatMessage: message, accountId: accountId)
+        }
+    }
+
     // MARK: - FTS5 trigram (query length >= minimumFTSLength)
 
     private static func matchFTS(_ query: String, scope: SearchScope, db: Database) throws -> [Int64] {

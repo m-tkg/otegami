@@ -413,11 +413,17 @@ struct RootView: View {
                 ThreadDetailView(
                     threadId: selectedThreadId,
                     singleMessageId: selectedMessageId,
+                    // 画面構造改修バッチ (Task #33) で`ThreadDetailView`に
+                    // `isFlatModeEntry`が追加された — macOS はここが唯一の
+                    // 直接インスタンス化経路 (`ThreadSelectionView`を経由
+                    // しない) なので、以前と同じ「`singleMessageId`が非nil
+                    // ならフラット行」という判断をそのままここで明示的に渡す
+                    // (`ThreadDetailView.isFlatModeEntry`のdoc comment参照)。
+                    isFlatModeEntry: selectedMessageId != nil,
                     onReply: { messageId, replyAll, translateToEnglish in
                         presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
                     },
                     onForward: { messageId in presentComposer(.forward(originalMessageId: messageId)) },
-                    onThreadRemoved: handleThreadRemoved
                     // onSearchFromSender: macOS ではまだ配線していない — 新しい
                     // 検索画面 (`SearchScreenView`) は iOS 専用のインフラ
                     // (`MessageDetailFooterToolbar`'s doc comment)。macOS は
@@ -426,6 +432,7 @@ struct RootView: View {
                     // あり、この `detailColumn` から直接書き換える手段が
                     // まだ無い。`nil` のときフッターツールバーは検索アイコン
                     // 自体を出さない。
+                    onThreadRemoved: handleThreadRemoved
                 )
             } else {
                 ContentUnavailableView(
@@ -568,6 +575,11 @@ struct RootView: View {
         switch selection {
         case .unifiedInbox: "unified"
         case .mailbox(let mailboxSelection): "mailbox:\(mailboxSelection.mailboxId)"
+        // 画面構造改修バッチ (Task #33, 3): macOS の`SidebarView`は
+        // `.unifiedRole`を一切生成しない (カテゴリ優先メニューはiOS専用の
+        // `FolderListSheet`だけが持つ、`CLAUDE.md`の1a系機能の既存スコープ
+        // どおり) — 網羅性のためだけに存在する到達しない分岐。
+        case .unifiedRole(let role): "unifiedRole:\(role.rawValue)"
         }
     }
 

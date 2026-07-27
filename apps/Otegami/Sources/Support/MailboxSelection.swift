@@ -1,4 +1,5 @@
 import Foundation
+import OtegamiStore
 
 /// Identifies one selected mailbox in the sidebar — the pair `SidebarView`
 /// hands to `MessageListView`, and `MessageListView` uses to observe the
@@ -9,13 +10,20 @@ struct MailboxSelection: Hashable, Sendable {
     var mailboxId: Int64
 }
 
-/// What's selected in the sidebar (M4): either one specific mailbox, or the
-/// cross-account "すべての受信トレイ" unified inbox at the top of the list.
-/// `List(selection:)`'s tag/selection type, and `MessageListView`'s input —
-/// both branches ultimately observe `OtegamiStore.ThreadQuery` rows, just
-/// scoped differently (one mailbox's threads vs. every account's inbox-role
-/// mailbox threads, date-merged).
+/// What's selected in the sidebar (M4): either one specific mailbox, the
+/// cross-account "すべての受信トレイ" unified inbox at the top of the list, or
+/// (画面構造改修バッチ Task #33, 3) any other role's own cross-account
+/// "横断ビュー" — `FolderListSheet`'s category-first grouping mode offers one
+/// per role section, e.g. "すべてのアーカイブ". `List(selection:)`'s tag/
+/// selection type, and `MessageListView`'s input — every case ultimately
+/// observes `OtegamiStore.ThreadQuery` rows, just scoped differently (one
+/// mailbox's threads vs. every account's `role`-role mailbox threads,
+/// date-merged; `.unifiedInbox` and `.unifiedRole(.inbox)` would in fact
+/// query identically, but are kept as separate cases since only
+/// `.unifiedInbox` carries `MessageListView.unifiedInboxAccountFilter`'s
+/// per-account filter chip — `.unifiedRole` always spans every account).
 enum SidebarSelection: Hashable, Sendable {
     case unifiedInbox
     case mailbox(MailboxSelection)
+    case unifiedRole(MailboxRoleRecord)
 }

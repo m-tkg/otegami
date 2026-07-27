@@ -37,8 +37,19 @@ struct FolderListSheet: View {
 
     let selectedMailboxId: Int64?
     let isUnifiedInboxSelected: Bool
+    /// 画面構造改修バッチ (Task #33, 3): カテゴリ優先メニューの「横断ビュー」行
+    /// (例:「すべてのアーカイブ」)がハイライトされるべき role — 現在の
+    /// `MailScreenView.mailSelection`が`.unifiedRole(role)`ならその`role`、
+    /// それ以外 (`.mailbox`/`.unifiedInbox`) なら`nil`。`selectedMailboxId`が
+    /// `.mailbox`専用なのと対になる、もう一つの「今どれが選ばれているか」入力。
+    let selectedUnifiedRole: MailboxRoleRecord?
     var onSelectUnified: () -> Void
     var onSelectMailbox: (MailboxSelection, String) -> Void
+    /// 画面構造改修バッチ (Task #33, 3): カテゴリ優先メニューの「横断ビュー」行
+    /// — タップされた role を渡す。`onSelectMailbox`が特定の1メールボックス
+    /// (`MailboxSelection`)を渡すのに対し、こちらは「この role のメールボックス
+    /// を持つ全アカウントをまとめて見る」という role 単位の選択。
+    var onSelectUnifiedRole: (MailboxRoleRecord) -> Void
     var onOpenOutbox: () -> Void
     var onOpenDrafts: () -> Void
     var onOpenFailedOps: () -> Void
@@ -66,6 +77,19 @@ struct FolderListSheet: View {
     /// (`toggleAccountCollapsed(_:)`). Not present in the set = expanded
     /// (the default for an account never explicitly collapsed).
     @State private var collapsedAccountIds: Set<String> = FolderSectionCollapseStore.collapsedAccountIds
+    /// 画面構造改修バッチ (Task #33, 3): カテゴリ優先メニューの折りたたみ状態 —
+    /// `collapsedAccountIds`(アカウント優先メニュー用)とは別の永続キーで管理
+    /// する。「既存の折りたたみ(FolderSectionCollapseStore)…を尊重」の要件は
+    /// アカウント優先モード自身の折りたたみ状態を変えない、という意味であって、
+    /// 表示単位そのものが違うカテゴリ優先モードに同じ折りたたみ状態を無理に
+    /// 使い回す理由にはならない。
+    @State private var collapsedCategoryRoles: Set<String> = FolderCategoryCollapseStore.collapsedRoleRawValues
+    /// 画面構造改修バッチ (Task #33, 3): 「既存のアカウント優先表示との切替」—
+    /// 既定はカテゴリ優先 (`FolderGroupingModeStore.defaultMode`)。
+    @AppStorage(FolderGroupingModeStore.key) private var groupingModeRaw = FolderGroupingModeStore.defaultMode.rawValue
+    private var groupingMode: FolderGroupingMode {
+        FolderGroupingMode(rawValue: groupingModeRaw) ?? FolderGroupingModeStore.defaultMode
+    }
 
     var body: some View {
         NavigationStack {
@@ -81,10 +105,16 @@ struct FolderListSheet: View {
                     }
                 } else {
                     statusSection
-                    ForEach(environment.accounts) { account in
-                        accountSection(for: account)
-                            .task(id: account.id) { await observeMailboxes(accountId: account.id) }
-                            .task(id: account.id) { await observeUnreadCounts(accountId: account.id) }
+                    groupingModeSection
+                    if groupingMode == .category {
+                        ForEach(MailboxRoleRecord.categoryOrder, id: \.self) { role in
+                            categorySection(for: role)
+                        }
+                        uncategorizedSection
+                    } else {
+                        ForEach(environment.accounts) { account in
+                            accountSection(for: account)
+                        }
                     }
                 }
             }
@@ -130,6 +160,30 @@ struct FolderListSheet: View {
         .task(id: environment.accounts.map(\.id)) { await observeFailedOpCount() }
         .task(id: environment.accounts.map(\.id)) { await observeMailboxSyncFailureCount() }
         .task(id: environment.accounts.map(\.id)) { await observeUnifiedInboxUnreadCount() }
+        // 画面構造改修バッチ (Task #33, 3): これまで`accountSection(for:)`の
+        // `.task(id: account.id)`としてアカウント優先モードのSectionにぶら
+        // 下がっていた2つの観測を、表示モードに関係なく常時走るようここへ
+        // 引き上げた — カテゴリ優先モード (`categorySection(for:)`) はアカウント
+        // 単位のSection自体を描画しないため、そこにぶら下げたままだと
+        // `mailboxesByAccountId`/`unreadByMailboxId`が一切埋まらない。
+        .task(id: environment.accounts.map(\.id)) { await observeAllMailboxes() }
+        .task(id: environment.accounts.map(\.id)) { await observeAllUnreadCounts() }
+    }
+
+    private func observeAllMailboxes() async {
+        await withTaskGroup(of: Void.self) { group in
+            for account in environment.accounts {
+                group.addTask { await observeMailboxes(accountId: account.id) }
+            }
+        }
+    }
+
+    private func observeAllUnreadCounts() async {
+        await withTaskGroup(of: Void.self) { group in
+            for account in environment.accounts {
+                group.addTask { await observeUnreadCounts(accountId: account.id) }
+            }
+        }
     }
 
     @ViewBuilder
@@ -263,6 +317,151 @@ struct FolderListSheet: View {
             }
         }
         FolderSectionCollapseStore.setCollapsed(collapsing, accountId: accountId)
+    }
+
+    // MARK: - 画面構造改修バッチ (Task #33, 3): カテゴリ優先グルーピング
+
+    /// 「既存のアカウント優先表示との切替」— セグメントコントロール1つだけの
+    /// 独立した`Section`。既定値は`FolderGroupingModeStore.defaultMode`
+    /// (カテゴリ優先)。
+    private var groupingModeSection: some View {
+        Section {
+            Picker("フォルダの並び順", selection: $groupingModeRaw) {
+                Text("カテゴリ順").tag(FolderGroupingMode.category.rawValue)
+                Text("アカウント順").tag(FolderGroupingMode.account.rawValue)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("folderSheet.groupingModePicker")
+        }
+        .listRowBackground(Color.clear)
+    }
+
+    /// 1 role分のセクション — 「受信トレイ/アーカイブ/送信済み/下書き/ゴミ箱等の
+    /// roleごとにセクションを作り、その中に各アカウントを並べる + 横断ビュー」。
+    /// どの account にも `role` のメールボックスが1つも無ければセクション自体を
+    /// 出さない (空の「送信済み」セクション等が並ぶのを避ける)。
+    @ViewBuilder
+    private func categorySection(for role: MailboxRoleRecord) -> some View {
+        let entries = mailboxEntries(for: role)
+        if !entries.isEmpty {
+            let isCollapsed = collapsedCategoryRoles.contains(role.rawValue)
+            Section {
+                if !isCollapsed {
+                    // 複数アカウントが同じ role を持つ場合だけ「横断ビュー」を
+                    // 出す — 1アカウントしか無ければ、直後に並ぶそのアカウント
+                    // 自身の行と全く同じ中身になり冗長 (`showsAccountAccent`が
+                    // `MessageListView`で同じ理由により`environment.accounts
+                    // .count > 1`を要求しているのと同じ判断)。
+                    if environment.accounts.count > 1 {
+                        categoryUnifiedRow(for: role, entries: entries)
+                    }
+                    ForEach(entries) { entry in
+                        categoryMailboxRow(for: entry)
+                    }
+                }
+            } header: {
+                CategorySectionHeader(
+                    role: role,
+                    unreadCount: entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
+                    isCollapsed: isCollapsed,
+                    onToggle: { toggleCategoryCollapsed(role) }
+                )
+            }
+        }
+    }
+
+    /// カテゴリ優先セクション内、role単位の「横断ビュー」行 —
+    /// 「全アカウントの該当roleをまとめて見る」。`SidebarSelection
+    /// .unifiedRole(role)`を選択する — `MessageListView`側の観測は
+    /// `ThreadQuery.unifiedInboxSummariesObservation(accountIds:role:...)`
+    /// (既定`role: .inbox`を一般化したもの)。
+    private func categoryUnifiedRow(for role: MailboxRoleRecord, entries: [MailboxEntry]) -> some View {
+        let unreadTotal = entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) }
+        return Button {
+            onSelectUnifiedRole(role)
+        } label: {
+            HStack {
+                Label(String(localized: "すべての\(role.categoryDisplayName)"), systemImage: role.categorySystemImage)
+                Spacer()
+                if unreadTotal > 0 {
+                    Text("\(unreadTotal)")
+                        .font(OtegamiFont.badge())
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(selectedUnifiedRole == role ? OtegamiColor.paleBase : nil)
+        .accessibilityIdentifier("folderSheet.category.\(role.rawValue).unified")
+    }
+
+    /// カテゴリ優先セクション内、1メールボックスぶんの行 — アカウント優先
+    /// モードの`folderMailboxRow(for:in:)`と違い、複数アカウントが同じ
+    /// セクションに混ざるため、どのアカウントの行かを`accountLabelText`で
+    /// 併記する (`FolderMailboxRow`のdoc comment参照)。
+    private func categoryMailboxRow(for entry: MailboxEntry) -> some View {
+        let mailboxSelection = MailboxSelection(accountId: entry.account.id, mailboxId: entry.mailboxId)
+        let isSelected = selectedMailboxId == entry.mailboxId
+        return FolderMailboxRow(
+            accountId: entry.account.id,
+            mailbox: entry.mailbox,
+            unreadCount: unreadByMailboxId[entry.mailboxId],
+            isSelected: isSelected,
+            accountLabelText: entry.account.displayName,
+            onTap: { onSelectMailbox(mailboxSelection, entry.mailbox.displayPath) }
+        )
+    }
+
+    /// role で分類できないメールボックス (`.none` — ユーザーが作成した独自
+    /// フォルダ) をまとめる最終セクション。役割で束ねられないぶん「横断ビュー」
+    /// は作らず (アカウントを跨いで同じ意味を持つ folder ではないため)、各
+    /// アカウントの行をそのまま並べる。
+    @ViewBuilder
+    private var uncategorizedSection: some View {
+        let entries = mailboxEntries(for: .none)
+        if !entries.isEmpty {
+            let isCollapsed = collapsedCategoryRoles.contains(MailboxRoleRecord.none.rawValue)
+            Section {
+                if !isCollapsed {
+                    ForEach(entries) { entry in
+                        categoryMailboxRow(for: entry)
+                    }
+                }
+            } header: {
+                CategorySectionHeader(
+                    role: .none,
+                    unreadCount: entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
+                    isCollapsed: isCollapsed,
+                    onToggle: { toggleCategoryCollapsed(.none) }
+                )
+            }
+        }
+    }
+
+    /// 全アカウントを横断して`role`のメールボックスを集める — `account`ごとに
+    /// 独立して保持している`mailboxesByAccountId`から、この画面のカテゴリ優先
+    /// セクションが必要とする形 (どのアカウントの、どのメールボックスか) へ
+    /// フラット化する。
+    private func mailboxEntries(for role: MailboxRoleRecord) -> [MailboxEntry] {
+        environment.accounts.flatMap { account -> [MailboxEntry] in
+            (mailboxesByAccountId[account.id] ?? [])
+                .filter { $0.role == role }
+                .compactMap { mailbox in
+                    mailbox.id.map { MailboxEntry(account: account, mailbox: mailbox, mailboxId: $0) }
+                }
+        }
+    }
+
+    private func toggleCategoryCollapsed(_ role: MailboxRoleRecord) {
+        let collapsing = !collapsedCategoryRoles.contains(role.rawValue)
+        withAnimation(.default) {
+            if collapsing {
+                collapsedCategoryRoles.insert(role.rawValue)
+            } else {
+                collapsedCategoryRoles.remove(role.rawValue)
+            }
+        }
+        FolderCategoryCollapseStore.setCollapsed(collapsing, role: role)
     }
 
     /// Mirrors `SidebarView.mailboxRow(for:in:)`'s split (see its own doc
@@ -451,12 +650,25 @@ private struct FolderMailboxRow: View {
     let mailbox: MailboxRecord
     let unreadCount: Int?
     let isSelected: Bool
+    /// 画面構造改修バッチ (Task #33, 3): カテゴリ優先モードでは複数アカウント
+    /// の行が同じセクションに混ざる (`FolderListSheet.categoryMailboxRow(for:)`)
+    /// ため、どのアカウントの行かをフォルダ名の下に小さく併記する —
+    /// アカウント優先モード (アカウント自身がすでにSection見出しになっている)
+    /// では`nil`のまま、見た目は変わらない。
+    var accountLabelText: String? = nil
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             HStack {
-                Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
+                VStack(alignment: .leading, spacing: 1) {
+                    Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
+                    if let accountLabelText {
+                        Text(accountLabelText)
+                            .font(OtegamiFont.caption())
+                            .foregroundStyle(OtegamiColor.inkTertiary)
+                    }
+                }
                 Spacer()
                 if let unreadCount, unreadCount > 0 {
                     Text("\(unreadCount)")
@@ -483,5 +695,91 @@ private struct FolderMailboxRow: View {
         case .all: "envelope.badge.fill"
         case .none: "folder"
         }
+    }
+}
+
+// MARK: - 画面構造改修バッチ (Task #33, 3): カテゴリ優先グルーピング
+
+/// `FolderListSheet.groupingModeSection`が切り替える2つの表示モード。
+/// `rawValue`は`@AppStorage`にそのまま永続化する文字列。
+enum FolderGroupingMode: String {
+    /// 既存の「アカウントごとの選択」— account単位のSectionにmailboxを並べる。
+    case account
+    /// 新設の「roleごとにアカウントを束ねる」— 指示の既定モード。
+    case category
+}
+
+/// `FolderGroupingMode`の永続化キー — 他の`*SettingsStore`と同じ「plain
+/// `UserDefaults`キー + `@AppStorage`」パターン(`ListDisplaySettingsStore`
+/// のdoc comment参照)。
+enum FolderGroupingModeStore {
+    static let key = "folderSheet.groupingMode"
+    static let defaultMode = FolderGroupingMode.category
+}
+
+/// `FolderSectionCollapseStore`のrole版 — カテゴリ優先モードのセクション
+/// (role単位)の折りたたみ状態を、アカウント優先モードのそれとは独立して
+/// 永続化する(`FolderListSheet.collapsedCategoryRoles`のdoc comment参照)。
+enum FolderCategoryCollapseStore {
+    static let collapsedRolesKey = "folderSheet.collapsedCategoryRoles"
+
+    static var collapsedRoleRawValues: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: collapsedRolesKey) ?? [])
+    }
+
+    static func setCollapsed(_ collapsed: Bool, role: MailboxRoleRecord) {
+        var values = collapsedRoleRawValues
+        if collapsed {
+            values.insert(role.rawValue)
+        } else {
+            values.remove(role.rawValue)
+        }
+        UserDefaults.standard.set(Array(values), forKey: collapsedRolesKey)
+    }
+}
+
+/// カテゴリ優先モードの1行ぶん — どのアカウントの、どのメールボックスか
+/// (`FolderListSheet.mailboxEntries(for:)`が`mailboxesByAccountId`から
+/// フラット化して作る)。`mailboxId`を`Identifiable`の`id`に使う —
+/// `MailboxRecord.id`自体は`Int64?`(未保存の場合`nil`)だが、この画面が
+/// 扱うのは常にDBから読み込み済みの(=idを持つ)行なので、`mailboxEntries(for:)`
+/// 側で`nil`を弾いてから渡す。
+private struct MailboxEntry: Identifiable {
+    let account: AccountRecord
+    let mailbox: MailboxRecord
+    let mailboxId: Int64
+
+    var id: Int64 { mailboxId }
+}
+
+/// `AccountSectionHeader`のrole版 — カテゴリ優先モードの1セクション見出し。
+/// 「折りたたみ中も見えること」の要件は`AccountSectionHeader`と同じ理由で
+/// ここでも踏襲。
+private struct CategorySectionHeader: View {
+    let role: MailboxRoleRecord
+    let unreadCount: Int
+    let isCollapsed: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack {
+                Label(role.categoryDisplayName, systemImage: role.categorySystemImage)
+                Spacer()
+                if unreadCount > 0 {
+                    Text("\(unreadCount)")
+                        .font(OtegamiFont.badge())
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("folderSheet.category.\(role.rawValue).header")
+        .accessibilityAddTraits(isCollapsed ? [] : .isSelected)
+        .accessibilityValue(isCollapsed ? "折りたたみ" : "展開")
     }
 }

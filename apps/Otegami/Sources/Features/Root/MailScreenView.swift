@@ -95,8 +95,8 @@ struct MailScreenView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
                 .navigationDestination(item: $selectedThreadId) { threadId in
-                    ThreadDetailView(
-                        threadId: threadId, singleMessageId: selectedMessageId, onReply: onReply, onForward: onForward,
+                    ThreadEntryView(
+                        threadId: threadId, preselectedMessageId: selectedMessageId, onReply: onReply, onForward: onForward,
                         onSearchFromSender: { query in openSearch(presetQuery: query) },
                         onThreadRemoved: handleThreadRemoved
                     )
@@ -268,8 +268,10 @@ struct MailScreenView: View {
         FolderListSheet(
             selectedMailboxId: selectedMailboxId,
             isUnifiedInboxSelected: isUnifiedInboxSelected,
+            selectedUnifiedRole: selectedUnifiedRole,
             onSelectUnified: selectUnifiedInbox,
             onSelectMailbox: selectMailbox,
+            onSelectUnifiedRole: selectUnifiedRole,
             onOpenOutbox: { presentAfterClosingMenu { showingOutbox = true } },
             onOpenDrafts: { presentAfterClosingMenu { showingDrafts = true } },
             onOpenFailedOps: { presentAfterClosingMenu { showingFailedOps = true } },
@@ -285,6 +287,13 @@ struct MailScreenView: View {
         return mailboxSelection.mailboxId
     }
 
+    /// 画面構造改修バッチ (Task #33, 3): `FolderListSheet`の「横断ビュー」行の
+    /// ハイライト用 — `selectedMailboxId`の`.unifiedRole`版。
+    private var selectedUnifiedRole: MailboxRoleRecord? {
+        guard case .unifiedRole(let role) = mailSelection else { return nil }
+        return role
+    }
+
     private func selectUnifiedInbox() {
         mailSelection = .unifiedInbox
         selectionTitle = String(localized: "すべての受信")
@@ -295,6 +304,19 @@ struct MailScreenView: View {
     private func selectMailbox(_ mailboxSelection: MailboxSelection, _ displayName: String) {
         mailSelection = .mailbox(mailboxSelection)
         selectionTitle = displayName
+        accountFilter = nil
+        isMenuOpen = false
+    }
+
+    /// 画面構造改修バッチ (Task #33, 3): カテゴリ優先メニューの「横断ビュー」行
+    /// (例:「すべてのアーカイブ」) — `selectUnifiedInbox()`のrole一般化版。
+    /// `accountFilter`は`.unifiedInbox`専用の1a絞り込みチップ用状態なので、
+    /// ここでも念のため`nil`にリセットしておく (`.unifiedRole`selectionでは
+    /// そもそも`AccountFilterChipRow`自体を出さないので実質無害だが、
+    /// `selectMailbox`/`selectUnifiedInbox`と同じ後始末を揃えておく)。
+    private func selectUnifiedRole(_ role: MailboxRoleRecord) {
+        mailSelection = .unifiedRole(role)
+        selectionTitle = String(localized: "すべての\(role.categoryDisplayName)")
         accountFilter = nil
         isMenuOpen = false
     }

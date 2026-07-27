@@ -423,4 +423,91 @@ struct SearchQueryTests {
         }
         #expect(results.isEmpty)
     }
+
+    // MARK: - flatMessageSummaries (B3 フラット表示 + 検索)
+    //
+    // 実機バグ報告「スレッド表示をオフにしてるのに、スレッドで表示される
+    // ことがある」の再発防止テスト — 検索は`ThreadQuery`の他の呼び出しと
+    // 違い、この修正まで`isFlatMode`を一切見ていなかった唯一の経路だった。
+
+    /// Adds a second message to an *existing* thread — `insertMessage`
+    /// above always creates its own single-member thread (fine for every
+    /// grouped-mode test, which never needs two messages sharing one real
+    /// thread), but this suite's flat-mode regression test specifically
+    /// needs two matching messages inside the *same* thread to prove
+    /// `flatMessageSummaries` keeps them as two separate rows rather than
+    /// collapsing them the way `threadSummaries` deliberately does.
+    @discardableResult
+    private func insertMessageIntoThread(
+        db: Database, accountId: String, mailboxId: Int64, threadId: Int64, uid: Int64, subject: String?,
+        date: Date = Date(timeIntervalSince1970: 1_700_000_000)
+    ) throws -> Int64 {
+        var message = MessageRecord(
+            mailboxId: mailboxId, uid: uid, subject: subject, date: date, internalDate: date, threadId: threadId
+        )
+        try message.insert(db)
+        try FTSIndexer.reindex(messageId: message.id!, db: db)
+        return message.id!
+    }
+
+    @Test("flatMessageSummaries returns one row per matching message, even when both share the same real thread")
+    func flatMessageSummariesKeepsEachMessageAsItsOwnRow() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, mailboxId) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "1") }
+        let (firstId, threadId) = try database.dbWriter.write { db in
+            try insertMessage(db: db, accountId: accountId, mailboxId: mailboxId, uid: 1, subject: "来週のランチについて")
+        }
+        let secondId = try database.dbWriter.write { db in
+            try insertMessageIntoThread(db: db, accountId: accountId, mailboxId: mailboxId, threadId: threadId, uid: 2, subject: "Re: 来週のランチについて")
+        }
+
+        // グループ化モード (既定): 同じスレッドの2通は1行にまとまる —
+        // このテストの前提を確認するベースライン。
+        let grouped = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "ランチ", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(grouped.count == 1)
+        #expect(grouped.first?.thread.id == threadId)
+
+        // フラットモード: 同じ検索でも1メッセージ1行 — `ThreadQuery
+        // .flatSummaries`/`unifiedInboxFlatSummaries`と同じ「スレッド表示
+        // オフなら常にメッセージ単位」という約束を検索結果にも適用する。
+        let flat = try database.dbWriter.read { db in
+            try SearchQuery.flatMessageSummaries(query: "ランチ", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(flat.count == 2)
+        #expect(Set(flat.compactMap(\.singleMessageId)) == Set([firstId, secondId]))
+        // `messageCount == 1`/`singleMessageId != nil` on every row — the
+        // same "thread of one" shape `ThreadSummary.init(flatMessage:
+        // accountId:)` gives every other flat-mode row, so `ThreadRowView`/
+        // `MessageListRow` render these identically to a flat list row
+        // with zero further changes.
+        for summary in flat {
+            #expect(summary.thread.messageCount == 1)
+            #expect(summary.singleMessageId != nil)
+        }
+    }
+
+    @Test("flatMessageSummaries returns no rows for a non-matching query, and respects mailbox scope")
+    func flatMessageSummariesRespectsScopeAndEmptyQuery() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountIdA, mailboxIdA) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "a") }
+        let (accountIdB, mailboxIdB) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "b") }
+        let (matchIdA, _) = try database.dbWriter.write { db in
+            try insertMessage(db: db, accountId: accountIdA, mailboxId: mailboxIdA, uid: 1, subject: "Quarterly Budget")
+        }
+        _ = try database.dbWriter.write { db in
+            try insertMessage(db: db, accountId: accountIdB, mailboxId: mailboxIdB, uid: 1, subject: "Quarterly Budget")
+        }
+
+        let scoped = try database.dbWriter.read { db in
+            try SearchQuery.flatMessageSummaries(query: "quarterly", scope: .mailbox(mailboxId: mailboxIdA), db: db)
+        }
+        #expect(scoped.map(\.singleMessageId) == [matchIdA])
+
+        let noMatch = try database.dbWriter.read { db in
+            try SearchQuery.flatMessageSummaries(query: "zzzznotfound", scope: .allAccounts(accountIds: [accountIdA, accountIdB]), db: db)
+        }
+        #expect(noMatch.isEmpty)
+    }
 }

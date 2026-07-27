@@ -36,23 +36,52 @@ struct ThreadDetailView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
     let threadId: Int64
-    /// 実機フィードバック第3弾 (A): non-`nil` when this screen was opened
-    /// from a flat-mode row (`ListDisplaySettingsStore.threadingKey` OFF —
-    /// `MessageListView`'s doc comment on why a flat row still carries its
-    /// *real* underlying `threadId`) — restricts `load()` to just this one
-    /// message instead of every message in `threadId`, so a real
-    /// (possibly multi-message) conversation opened via a flat row shows
-    /// only the tapped message, not the full accordion stack. A real-device
-    /// report ("スレッドをオフにしてもスレッドになる") traced to this screen
-    /// always loading the whole underlying thread regardless of the
-    /// flat/grouped display setting. `nil` (the pre-existing behavior) for
-    /// every other entry point: a grouped-mode row, a search result (search
-    /// always shows grouped threads — `MessageListView`'s flat-mode doc
-    /// comment), and macOS's restored "last opened thread" (which only ever
-    /// remembers a thread id, not a message id — see `RootView
+    /// 実機フィードバック第3弾 (A): non-`nil` when this screen should show
+    /// just one specific message rather than every message in `threadId` —
+    /// restricts `load()` accordingly, so a real (possibly multi-message)
+    /// conversation shows only that one tapped message, not the full
+    /// accordion stack. A real-device report ("スレッドをオフにしても
+    /// スレッドになる") traced to this screen always loading the whole
+    /// underlying thread regardless of the flat/grouped display setting.
+    /// Non-`nil` for two different reasons now — see `isFlatModeEntry`'s
+    /// doc comment for why that separate flag exists to tell them apart:
+    /// - **A flat-mode row, or a flat search result** (`ListDisplaySettingsStore
+    ///   .threadingKey` OFF — `MessageListView`'s doc comment on why a flat
+    ///   row still carries its *real* underlying `threadId`).
+    /// - **画面構造改修バッチ (Task #33, 1)**: a grouped-mode thread,
+    ///   resolved to one specific message by `ThreadEntryView` — either
+    ///   trivially (the thread only has 1 message) or via
+    ///   `ThreadSelectionView`, iOS's push-based navigation
+    ///   (`MailScreenView`/`SearchScreenView`) never shows the old
+    ///   multi-message accordion at all anymore.
+    ///
+    /// `nil` only for macOS's 3-pane `detailColumn` (`OtegamiApp.swift`,
+    /// untouched by Task #33 — `CLAUDE.md`'s iOS-only scope for that batch)
+    /// showing a real grouped-mode thread directly, and for macOS's
+    /// restored "last opened thread" (which only ever remembers a thread
+    /// id, not a message id — see `RootView
     /// .lastOpenedThreadIdBySelectionKey`'s doc comment on that narrower,
     /// accepted gap).
     var singleMessageId: Int64?
+    /// 画面構造改修バッチ (Task #33, 3の続きで発覚した回帰の修正): whether
+    /// `singleMessageId` is non-`nil` *because this is fundamentally a
+    /// flat-mode (one-message-per-row) entry* — a flat list row, or a flat
+    /// search result — as opposed to a **grouped**-mode multi-message
+    /// thread where the caller (`ThreadEntryView`) simply resolved *which*
+    /// message to show first (either trivially, a 1-message thread with
+    /// nothing to pick, or via `ThreadSelectionView`). Both cases render
+    /// identically (one message, no accordion), but `notifyThreadRemoved()`
+    /// needs to tell them apart: only a genuinely flat-mode entry should
+    /// suppress "次のメールを開く" (see that method's doc comment for why).
+    /// Before `ThreadSelectionView` existed, `singleMessageId != nil` alone
+    /// was a reliable proxy for "flat mode" — a grouped-mode open was
+    /// always `nil` (the whole thread's accordion). That's no longer true
+    /// once a grouped-mode thread can *also* resolve to a single message
+    /// via the selection screen, hence this separate, explicit flag.
+    /// Defaults to `true` — matching every pre-`ThreadSelectionView` call
+    /// site's implicit assumption ("non-`nil` singleMessageId always meant
+    /// flat mode"), so an unmodified caller keeps the exact same behavior.
+    var isFlatModeEntry = true
     /// M5/design-phase-3: forwarded to each expanded `MessageView` — see
     /// its `onReply` doc comment.
     var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
@@ -185,7 +214,7 @@ struct ThreadDetailView: View {
     @ViewBuilder
     private func messageRow(for message: MessageRecord, containerSize: CGSize) -> some View {
         if let messageId = message.id {
-            ThreadMessageRow(
+    ThreadMessageRow(
                 message: message,
                 messageId: messageId,
                 isExpanded: expandedMessageId == messageId,
@@ -568,20 +597,30 @@ struct ThreadDetailView: View {
     /// otherwise.
     ///
     /// 実機フィードバック第3弾 (A): always just `dismiss()`s for a flat-mode
-    /// open (`singleMessageId != nil`), never calling `onThreadRemoved` even
-    /// when it's wired — `MessagePostActionSettingsStore.nextThreadId`'s
-    /// "次のメールを開く" resolves against `currentThreadOrder`, an ordered
-    /// list of *real* thread ids (`MessageListView.onSummariesChanged`), not
+    /// open (`isFlatModeEntry`), never calling `onThreadRemoved` even when
+    /// it's wired — `MessagePostActionSettingsStore.nextThreadId`'s「次の
+    /// メールを開く」resolves against `currentThreadOrder`, an ordered list
+    /// of *real* thread ids (`MessageListView.onSummariesChanged`), not
     /// per-message ids; the caller has no way to know *which* message within
     /// the resolved next thread id should open in single-message mode, so
-    /// honoring "次のメールを開く" here would silently reopen the right
+    /// honoring 「次のメールを開く」 here would silently reopen the right
     /// thread but in the wrong (full accordion) mode. Falling back to "戻る"
     /// unconditionally for this entry point is a deliberate, documented
     /// scope limit rather than an attempt to thread per-message ordering
     /// through every caller for a setting whose default is already
     /// "メール一覧に戻る".
+    ///
+    /// Checks `isFlatModeEntry`, not `singleMessageId == nil` — see that
+    /// property's doc comment for why they stopped being equivalent once
+    /// `ThreadSelectionView` (画面構造改修バッチ Task #33, 1) could also
+    /// leave `singleMessageId` non-`nil` for a genuinely **grouped**-mode
+    /// thread. A grouped-mode entry (whether it skipped straight to a
+    /// 1-message thread or resolved via the selection screen) still very
+    /// much wants 「次のメールを開く」 to keep working — only a truly
+    /// flat-mode (or flat search-result) entry has the "which message
+    /// within the next thread" ambiguity this scope limit exists for.
     private func notifyThreadRemoved() {
-        if let onThreadRemoved, singleMessageId == nil {
+        if let onThreadRemoved, !isFlatModeEntry {
             onThreadRemoved(threadId)
         } else {
             dismiss()
@@ -643,7 +682,10 @@ private struct ThreadMessageRow: View {
             Button {
                 onToggleExpanded(messageId)
             } label: {
-                ThreadMessageSummaryRow(message: message, isExpanded: isExpanded, accountId: accountId, accountLabelColorKey: accountLabelColorKey)
+                ThreadMessageSummaryRow(
+                    message: message, accountId: accountId, accountLabelColorKey: accountLabelColorKey,
+                    mode: .accordion(isExpanded: isExpanded)
+                )
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("threadDetail.message.\(messageId).header")
@@ -657,105 +699,9 @@ private struct ThreadMessageRow: View {
     }
 }
 
-/// The collapsed (or about-to-collapse) one-line summary for a single
-/// message within `ThreadDetailView`: sender (+ avatar), a snippet when
-/// collapsed, date, and a disclosure chevron. Tapping it (the enclosing
-/// `Button` in `ThreadDetailView`) toggles expansion.
-///
-/// 表示・操作改善バッチ「スレッド詳細の行にもプレビュー/アイコン」: this row
-/// already showed a one-line snippet when collapsed; it now also shows
-/// `SenderAvatar` (gated by the same `ListDisplaySettingsStore
-/// .showAvatarInDetailKey` setting `MessageView`'s own expanded header
-/// already reads — this row and that header are the same "detail screen"
-/// surface from the user's point of view). Styled to read as visually
-/// distinct from the top-level message list rather than identical to it —
-/// per `CLAUDE.md`'s explicit requirement — via a softer `paleBase` tint
-/// (vs. the list row's `surface`) and extra leading indent, rather than the
-/// list row's bordered card look (`ThreadRowView.otegamiCardBackground(_:)`):
-/// these rows already sit inside one continuous thread rather than being
-/// separately-scannable inbox entries, so a card border here would read as
-/// a contradictory "these are independent items" signal.
-private struct ThreadMessageSummaryRow: View {
-    let message: MessageRecord
-    let isExpanded: Bool
-    let accountId: String?
-    /// D「アカウントのラベル色を変更可能に」: `AccountRecord.labelColorKey` for
-    /// `accountId`, forwarded to `SenderAvatar` as-is.
-    let accountLabelColorKey: String?
-
-    @AppStorage(ListDisplaySettingsStore.showAvatarInDetailKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatarInDetail
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            // 実機フィードバック第2弾 (E)「展開中メッセージの視覚的強調」: a 3pt
-            // `OtegamiColor.accent` leading rail, present only on the
-            // expanded row — the same width/treatment `AccountColorRail`
-            // uses for its own "this row means something specific" signal,
-            // reused here for "this is the one row the footer toolbar acts
-            // on" instead of "this row's account". Laid out as a real
-            // (if empty-when-collapsed) leading element rather than an
-            // `.overlay`, so it never shifts this row's own content
-            // horizontally when it appears/disappears.
-            Rectangle()
-                .fill(isExpanded ? OtegamiColor.accent : Color.clear)
-                .frame(width: AccountColorRail.width)
-                .accessibilityHidden(true)
-            HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
-                UnreadDot(isUnread: !message.flags.contains(.seen))
-                    .padding(.top, 6)
-                if showAvatar, let accountId {
-                    SenderAvatar(
-                        displayName: message.fromAddresses.first?.name,
-                        address: message.fromAddresses.first?.address ?? "",
-                        accountId: accountId,
-                        labelColorKey: accountLabelColorKey,
-                        diameter: 24
-                    )
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(senderText)
-                        .font(OtegamiFont.headline())
-                        .foregroundStyle(OtegamiColor.ink)
-                        .lineLimit(1)
-                    if !isExpanded, let snippet = message.snippet, !snippet.isEmpty {
-                        Text(snippet)
-                            .font(OtegamiFont.caption())
-                            .foregroundStyle(OtegamiColor.inkSecondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: OtegamiSpacing.sm)
-                OtegamiDateFormat.listRowText(for: message.date ?? message.internalDate)
-                    .font(OtegamiFont.caption())
-                    .foregroundStyle(OtegamiColor.inkTertiary)
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(.caption)
-                    .foregroundStyle(OtegamiColor.inkTertiary)
-                    .accessibilityHidden(true)
-            }
-            .padding(.vertical, OtegamiSpacing.sm)
-            // `.sm` here, not the pre-E `.lg` this row used to apply to its
-            // single top-level `HStack` — the leading accent rail
-            // (`AccountColorRail.width`, 3pt) now accounts for part of that
-            // same "extra indent vs. the top-level list row" visual
-            // language (rail width + `.sm` ≈ the old `.lg`), so the total
-            // indent reads about the same as before regardless of whether
-            // a given row happens to be expanded (the rail's *width* is
-            // always reserved; only its *color* toggles).
-            .padding(.leading, OtegamiSpacing.sm)
-            .padding(.trailing, OtegamiSpacing.md)
-        }
-        // 実機フィードバック第2弾 (E): `paleBaseStrong` (the same "強い強調地"
-        // token `ThreadRowView`'s selected-row state uses) instead of the
-        // collapsed default `paleBase` — see the accent rail comment above
-        // for why this row specifically needs to read as visually distinct
-        // from its (also `paleBase`-tinted) collapsed siblings.
-        .background(isExpanded ? OtegamiColor.paleBaseStrong : OtegamiColor.paleBase)
-        .contentShape(Rectangle())
-    }
-
-    private var senderText: String {
-        guard let from = message.fromAddresses.first else { return "(unknown)" }
-        return from.name?.isEmpty == false ? from.name! : from.address
-    }
-}
+// `ThreadMessageSummaryRow` (the row's actual visual content, above) moved
+// to its own file, `ThreadMessageSummaryRow.swift`, and its `isExpanded`
+// parameter generalized into a `Mode` — 画面構造改修バッチ (Task #33, 1)
+// reuses it, unchanged in this accordion's own look, for
+// `ThreadSelectionView`'s "pick a message" rows too. See that file's doc
+// comment.

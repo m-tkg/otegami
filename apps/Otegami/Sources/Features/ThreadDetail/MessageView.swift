@@ -203,11 +203,13 @@ struct MessageView: View {
         .accessibilityIdentifier("messageDetail.scrollView")
         // 表示・操作改善バッチ「ヘッダにメール件名を表示しない」: this view is
         // always embedded inside `ThreadDetailView` (never pushed on its
-        // own), and `displaySubject` already renders in `header(for:)`
-        // above — a `.navigationTitle` here would just repeat it in the
+        // own) — a `.navigationTitle` here would repeat the subject in the
         // nav bar and, being the more deeply nested view, would win over
-        // `ThreadDetailView`'s own generic title. See that view's doc
-        // comment on the same change.
+        // `ThreadDetailView`'s own generic title. 画面構造改修バッチ (Task
+        // #33, 2) 以降、`header(for:)`(`MessageHeaderCompactView`)自体も
+        // 件名を出さなくなった (そのdoc comment参照) — 件名はこの画面に到達
+        // する前の一覧/スレッド選択画面と、フッターツールバーの「情報」にのみ
+        // 出る。
         .task(id: messageId) { await load() }
         // M8: QuickLook, shared across platforms via SwiftUI's own
         // modifier rather than a `QLPreviewController`/`QLPreviewPanel`
@@ -230,65 +232,19 @@ struct MessageView: View {
         #endif
     }
 
-    private var displaySubject: String {
-        message?.subject?.isEmpty == false ? message!.subject! : "(件名なし)"
-    }
-
+    /// 画面構造改修バッチ (Task #33, 2): 圧縮ヘッダ本体は
+    /// `MessageHeaderCompactView`に切り出した — このメソッドはその呼び出しに
+    /// 必要な値を集めるだけの薄いラッパー。
     private func header(for message: MessageRecord) -> some View {
-        HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
-            // B5 「本文にも送信者アイコンを出せるように」— see
-            // `ListDisplaySettingsStore.showAvatarInDetailKey`'s doc comment.
-            if showAvatarInDetail {
-                SenderAvatar(
-                    displayName: message.fromAddresses.first?.name,
-                    address: message.fromAddresses.first?.address ?? "",
-                    accountId: accountId,
-                    labelColorKey: environment.accounts.first(where: { $0.id == accountId })?.labelColorKey,
-                    diameter: 36
-                )
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: OtegamiSpacing.xs) {
-                    Text(displaySubject)
-                        .font(.title2)
-                        .bold()
-                        .accessibilityIdentifier("messageDetail.subject")
-                    // A9-1: a subdued flag that this message *is* HTML —
-                    // independent of `isShowingHTML` below (still shown even
-                    // while the toggle has switched this message to its
-                    // text rendering).
-                    if isHTMLMessage {
-                        HTMLBadge()
-                    }
-                }
-                Text(addressListText(message.fromAddresses, prefix: "From"))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("messageDetail.from")
-                if !message.toAddresses.isEmpty {
-                    Text(addressListText(message.toAddresses, prefix: "To"))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("messageDetail.to")
-                }
-                Text(message.date ?? message.internalDate, format: .dateTime.year().month().day().hour().minute())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("messageDetail.date")
-                // A9-2: only offered for messages that actually have an
-                // HTML body to switch away from/back to — see
-                // `isShowingHTML`'s doc comment for what toggling flips.
-                if isHTMLMessage {
-                    Button(isShowingHTML ? "テキストで表示" : "HTMLで表示") {
-                        manualPreferPlainText = isShowingHTML
-                    }
-                    .font(.caption)
-                    .buttonStyle(.borderless)
-                    .tint(OtegamiColor.accent)
-                    .accessibilityIdentifier("messageDetail.toggleHTMLTextButton")
-                }
-            }
-        }
+        MessageHeaderCompactView(
+            message: message,
+            accountId: accountId,
+            accountLabelColorKey: environment.accounts.first(where: { $0.id == accountId })?.labelColorKey,
+            showAvatar: showAvatarInDetail,
+            isHTMLMessage: isHTMLMessage,
+            isShowingHTML: isShowingHTML,
+            onToggleHTMLText: { manualPreferPlainText = isShowingHTML }
+        )
     }
 
     /// A9-1/A9-4: whether `bodyRecord` has an HTML part with genuinely
@@ -485,11 +441,6 @@ struct MessageView: View {
         return try await environment.syncCoordinator.fetchAttachment(
             attachment, messageUID: message.uid, mailboxPath: mailboxPath, account: account, auth: auth
         )
-    }
-
-    private func addressListText(_ addresses: [EmailAddress], prefix: String) -> String {
-        let formatted = addresses.map { $0.name?.isEmpty == false ? "\($0.name!) <\($0.address)>" : $0.address }
-        return "\(prefix): \(formatted.joined(separator: ", "))"
     }
 
     @ViewBuilder

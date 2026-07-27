@@ -73,14 +73,16 @@ public enum MessageQuery {
         ValueObservation.tracking { db in try unreadCounts(accountId: accountId, db: db) }
     }
 
-    /// Total unread count across every inbox-role mailbox of `accountIds` —
-    /// the badge for "すべての受信トレイ" (the unified inbox sidebar row),
-    /// scoped the same way `ThreadQuery.unifiedInboxRequest` scopes its
-    /// thread list (inbox-role mailboxes only, not every mailbox).
-    public static func unifiedInboxUnreadCount(accountIds: [String], db: Database) throws -> Int {
+    /// Total unread count across every `role`-role mailbox of `accountIds` —
+    /// the badge for "すべての受信トレイ" (`role == .inbox`, the default), and
+    /// 画面構造改修バッチ (Task #33, 3) の「横断ビュー」row's own unread badge
+    /// for any other role, scoped the same way `ThreadQuery
+    /// .unifiedInboxRequest` scopes its thread list (`role`-role mailboxes
+    /// only, not every mailbox).
+    public static func unifiedInboxUnreadCount(accountIds: [String], role: MailboxRoleRecord = .inbox, db: Database) throws -> Int {
         guard !accountIds.isEmpty else { return 0 }
         let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
-        var arguments: [(any DatabaseValueConvertible)?] = [MailboxRoleRecord.inbox.rawValue]
+        var arguments: [(any DatabaseValueConvertible)?] = [role.rawValue]
         arguments.append(contentsOf: accountIds)
         return try Int.fetchOne(
             db,
@@ -94,8 +96,8 @@ public enum MessageQuery {
         ) ?? 0
     }
 
-    public static func unifiedInboxUnreadCountObservation(accountIds: [String]) -> ValueObservation<ValueReducers.Fetch<Int>> {
-        ValueObservation.tracking { db in try unifiedInboxUnreadCount(accountIds: accountIds, db: db) }
+    public static func unifiedInboxUnreadCountObservation(accountIds: [String], role: MailboxRoleRecord = .inbox) -> ValueObservation<ValueReducers.Fetch<Int>> {
+        ValueObservation.tracking { db in try unifiedInboxUnreadCount(accountIds: accountIds, role: role, db: db) }
     }
 
     // MARK: - Background body prefetch (launch/foreground)

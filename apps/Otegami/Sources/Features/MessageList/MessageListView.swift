@@ -189,15 +189,15 @@ struct MessageListView: View {
     /// single message masquerades as a "thread of one" with zero changes to
     /// either row view.
     ///
-    /// Deliberate scope limit: this only affects the *normal* list — a
-    /// `.searchable` search (macOS's inline mailbox search, and iOS's
-    /// separate `SearchTabView`) keeps showing thread-grouped results
-    /// regardless of this setting. `SearchQuery.threadSummaries` has no
-    /// message-level equivalent, and search results are a comparatively
-    /// small, transient list where "grouped vs. flat" matters far less than
-    /// it does for a whole mailbox's worth of everyday scrolling — building
-    /// a second flat search query was judged not worth the added surface
-    /// area for this pass.
+    /// Search (macOS's inline mailbox search here via `performSearch`, and
+    /// iOS's separate `SearchScreenView`) also respects this setting now —
+    /// `SearchQuery.flatMessageSummaries` mirrors this same split. A prior
+    /// pass left search always thread-grouped regardless of this setting,
+    /// reasoned (without live device verification) to be an acceptable gap
+    /// since search results are a comparatively small, transient list. A
+    /// real-device report ("スレッド表示をオフにしてるのに、スレッドで表示
+    /// されることがある") confirmed that gap was in fact user-visible and
+    /// worth closing — see `performSearch`'s doc comment for the fix.
     ///
     /// Also deliberate: every row action (既読/未読・アーカイブ・迷惑メール・
     /// ピン留め・削除) still operates on the row's *whole* underlying thread
@@ -256,7 +256,7 @@ struct MessageListView: View {
     private var availableScopes: [SearchScopeOption] {
         switch selection {
         case .mailbox: [.all, .currentMailbox]
-        case .unifiedInbox: [.all]
+        case .unifiedInbox, .unifiedRole: [.all]
         }
     }
 
@@ -278,8 +278,19 @@ struct MessageListView: View {
     /// system.md`'s design-phase-3 section) rather than in the handoff,
     /// which didn't consider the one-account case explicitly.
     private var showsAccountAccent: Bool {
-        guard case .unifiedInbox = selection else { return false }
-        guard unifiedInboxAccountFilter == nil else { return false }
+        switch selection {
+        case .unifiedInbox:
+            guard unifiedInboxAccountFilter == nil else { return false }
+        case .unifiedRole:
+            // 画面構造改修バッチ (Task #33, 3): カテゴリ優先メニューの「横断
+            // ビュー」も`.unifiedInbox`の「全部」チップと同じ「複数アカウント
+            // の行が混ざりうる」画面 — アカウント絞り込みチップ自体は無い
+            // (この選択には`unifiedInboxAccountFilter`が適用されない) ので、
+            // 常に混ざる前提でよい。
+            break
+        case .mailbox:
+            return false
+        }
         return environment.accounts.count > 1
     }
 
@@ -320,6 +331,12 @@ struct MessageListView: View {
             if let accountId {
                 return environment.accounts.first { $0.id == accountId }?.lastSyncError
             }
+            return environment.accounts.compactMap(\.lastSyncError).first
+        case .unifiedRole:
+            // 画面構造改修バッチ (Task #33, 3): 「横断ビュー」にはアカウント
+            // 絞り込みチップが無い (`showsAccountAccent`のdoc comment) ので、
+            // `.unifiedInbox`のno-filter分岐と同じく「いずれかのアカウントが
+            // 失敗していれば報告」でよい。
             return environment.accounts.compactMap(\.lastSyncError).first
         }
     }
@@ -431,6 +448,12 @@ struct MessageListView: View {
         }
         .onChange(of: searchText) { _, _ in scheduleSearch() }
         .onChange(of: searchScope) { _, _ in scheduleSearch() }
+        // 実機バグ報告「スレッド表示をオフ/オンにした直後、検索結果だけ
+        // 古いグルーピングのまま残る」対策 — `performSearch`は`isFlatMode`
+        // を見るが、`scheduleSearch()`自体は`searchText`/`searchScope`の
+        // 変化でしか再実行されないため、検索中に設定だけ切り替えても
+        // 次のキー入力までは古い結果が残っていた。
+        .onChange(of: isThreadingEnabled) { _, _ in scheduleSearch() }
         #endif
         .onChange(of: summaries) { _, newValue in
             onSummariesChanged(newValue.compactMap(\.thread.id))
@@ -779,6 +802,13 @@ struct MessageListView: View {
             String(localized: "すべての受信トレイ")
         case .mailbox(let mailboxSelection):
             environment.accounts.first { $0.id == mailboxSelection.accountId }.map { $0.displayName } ?? "Inbox"
+        case .unifiedRole(let role):
+            // 画面構造改修バッチ (Task #33, 3): カテゴリ優先メニューの「横断
+            // ビュー」— macOS の`RootView`(`.navigationTitle`をこの`title`
+            // から読む)が対象。iOS は`MailScreenView`自身が独立した
+            // `selectionTitle`を持つため、この`title`は使わない
+            // (`MailScreenView.selectUnifiedRole(_:)`が同じ文言を組み立てる)。
+            String(localized: "すべての\(role.categoryDisplayName)")
         }
     }
 
@@ -801,6 +831,22 @@ struct MessageListView: View {
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
                 ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: isUnreadOnly)
                 : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: isUnreadOnly)
+            do {
+                for try await fetched in observation.values(in: environment.database.dbWriter) {
+                    applySummaries(fetched)
+                }
+            } catch {
+                // Same as above.
+            }
+        case .unifiedRole(let role):
+            // 画面構造改修バッチ (Task #33, 3): `.unifiedInbox`と同じ形だが、
+            // role が`.inbox`固定ではなく、かつ`unifiedInboxAccountFilter`の
+            // ようなアカウント絞り込みが無い (常に全アカウント) —
+            // `FolderListSheet`のカテゴリ優先メニューの「横断ビュー」行。
+            let accountIds = environment.accounts.map(\.id)
+            let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
+                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: isUnreadOnly)
+                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: isUnreadOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     applySummaries(fetched)
@@ -879,8 +925,19 @@ struct MessageListView: View {
             storeScope = .allAccounts(accountIds: environment.accounts.map(\.id))
         }
         do {
+            // 実機バグ報告「スレッド表示をオフにしてるのに、スレッドで表示
+            // されることがある」: 検索結果は`isFlatMode`を無視して常に
+            // グループ化されたスレッドを返していた唯一の経路だった — この
+            // ファイルの他のすべての`ThreadQuery`呼び出し (`observeThreads()`)
+            // は既に`isFlatMode`で分岐していたのに、検索だけ取り残されて
+            // いた。`SearchQuery.flatMessageSummaries`(このバッチで新設) が
+            // `ThreadQuery.flatSummaries`/`unifiedInboxFlatSummaries`と同じ
+            // 「1メッセージ1行」の形を検索結果にも適用する。
+            let isFlat = isFlatMode
             let results = try await environment.database.dbWriter.read { db in
-                try SearchQuery.threadSummaries(query: query, scope: storeScope, db: db)
+                isFlat
+                    ? try SearchQuery.flatMessageSummaries(query: query, scope: storeScope, db: db)
+                    : try SearchQuery.threadSummaries(query: query, scope: storeScope, db: db)
             }
             guard !Task.isCancelled else { return }
             searchResults = results
@@ -946,6 +1003,28 @@ struct MessageListView: View {
                     let auth = try await environment.auth(for: account)
                     _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
                     _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly)
+                } catch {
+                    failures.append("\(account.email): \(error)")
+                }
+            }
+            if !failures.isEmpty {
+                syncErrorMessage = failures.joined(separator: "\n")
+            }
+        case .unifiedRole:
+            // 画面構造改修バッチ (Task #33, 3): 「横断ビュー」の pull-to-
+            // refresh — `.unifiedInbox`の`.inboxOnly`スコープに相当する role
+            // 専用の同期スコープが`SyncCoordinator`側に無い (`SyncScope`は
+            // `.inboxOnly`/`.mailbox(path:)`/`.all`の3種のみ) ため、`.all`
+            // (全メールボックスのフル差分同期、既存の「手動全体更新」と同じ
+            // スコープ)にフォールバックする — 「送信済み」や「アーカイブ」
+            // だけを狙って同期する最適化は無いが、正しさ (最新の状態が見える)
+            // は保たれる。
+            var failures: [String] = []
+            for account in environment.accounts {
+                do {
+                    let auth = try await environment.auth(for: account)
+                    _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .all)
                 } catch {
                     failures.append("\(account.email): \(error)")
                 }

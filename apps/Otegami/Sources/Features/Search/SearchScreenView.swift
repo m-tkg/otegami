@@ -45,6 +45,19 @@ struct SearchScreenView: View {
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var selectedThreadId: Int64?
+    /// 実機バグ報告「スレッド表示をオフにしてるのに、スレッドで表示される
+    /// ことがある」対策 — `MessageListView.selectedMessageId`と同じ役割:
+    /// `isThreadingEnabled`がオフの間、`performSearch`はグループ化された
+    /// スレッドではなく`ThreadQuery`のフラット行と同じ「1メッセージ1行」の
+    /// 結果を返すようになった (`SearchQuery.flatMessageSummaries`) —
+    /// そのタップされた行自身の`singleMessageId`をここに保持し、
+    /// `ThreadEntryView.preselectedMessageId`へそのまま渡す。
+    @State private var selectedMessageId: Int64?
+    /// 一覧画面 (`MessageListView`) と同じ`UserDefaults`キーを共有する —
+    /// 「スレッド表示」設定は画面をまたいで一貫していなければならない
+    /// (この画面はそれ専用の設定 UI を持たない、一覧側の設定がそのまま
+    /// 効く)。
+    @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
     /// design-phase-3 (1j)'s filter chip row — see `SearchFilterOption`'s
     /// doc comment on why this filters `results` client-side rather than
     /// re-querying.
@@ -120,8 +133,20 @@ struct SearchScreenView: View {
             .searchable(text: $searchText, prompt: "差出人・件名・本文 (from:/to:/subject: も使えます)")
             .onChange(of: searchText) { _, _ in scheduleSearch() }
             .onChange(of: accountFilter) { _, _ in scheduleSearch() }
+            // 実機バグ報告「スレッド表示をオフにしてるのに、スレッドで表示
+            // されることがある」対策の一環 — 検索結果自体も`isFlatMode`を
+            // 反映するようになった (`performSearch`) ため、設定を切り替えた
+            // ままの古いグルーピング結果が検索中の画面に残らないよう
+            // 再検索する。
+            .onChange(of: isThreadingEnabled) { _, _ in scheduleSearch() }
             .navigationDestination(item: $selectedThreadId) { threadId in
-                ThreadDetailView(threadId: threadId, onReply: onReply)
+                // `preselectedMessageId`: 通常のグループ化された結果
+                // (`summary.singleMessageId == nil`) では`nil`のまま
+                // (`ThreadEntryView`がメッセージ数を数えて選択画面を出すか
+                // 判断する) — スレッド表示オフ中の結果はフラット (1メッセージ
+                // 1行) なので、`MessageListView`のフラット行と同じく
+                // `singleMessageId`を必ず伝える (`searchRow(for:)`参照)。
+                ThreadEntryView(threadId: threadId, preselectedMessageId: selectedMessageId, onReply: onReply)
             }
         }
         .tint(OtegamiColor.accent)
@@ -235,6 +260,9 @@ struct SearchScreenView: View {
         if let threadId = summary.thread.id {
             Button {
                 selectedThreadId = threadId
+                // スレッド表示オフ中はフラットな検索結果 (1メッセージ1行) —
+                // `selectedMessageId`のdoc comment参照。
+                selectedMessageId = summary.singleMessageId
             } label: {
                 ThreadRowView(
                     summary: summary,
@@ -277,8 +305,16 @@ struct SearchScreenView: View {
     private func performSearch(query: String) async {
         let accountIds = accountFilter.map { [$0] } ?? environment.accounts.map(\.id)
         do {
+            // 実機バグ報告「スレッド表示をオフにしてるのに、スレッドで表示
+            // されることがある」— 検索結果は`isThreadingEnabled`を無視して
+            // 常にグループ化されたスレッドを返していた。`MessageListView
+            // .performSearch`と同じ理由で`SearchQuery.flatMessageSummaries`
+            // (このバッチで新設)に分岐する。
+            let isFlat = !isThreadingEnabled
             let fetched = try await environment.database.dbWriter.read { db in
-                try SearchQuery.threadSummaries(query: query, scope: .allAccounts(accountIds: accountIds), db: db)
+                isFlat
+                    ? try SearchQuery.flatMessageSummaries(query: query, scope: .allAccounts(accountIds: accountIds), db: db)
+                    : try SearchQuery.threadSummaries(query: query, scope: .allAccounts(accountIds: accountIds), db: db)
             }
             guard !Task.isCancelled else { return }
             results = fetched

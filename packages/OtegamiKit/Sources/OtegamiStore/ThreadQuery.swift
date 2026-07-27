@@ -112,19 +112,20 @@ public enum ThreadQuery {
         return SQLRequest(sql: sql, arguments: StatementArguments(arguments))
     }
 
-    /// Threads with at least one message in an inbox-role mailbox across
-    /// any of `accountIds` — the "すべての受信トレイ" unified inbox. Each
-    /// thread still belongs to exactly one account (`thread.accountId`);
-    /// this unions across accounts at query time rather than merging
-    /// threads across account boundaries (plan: "アカウント境界を跨いだスレッド
-    /// 結合はしない"). Same `EXISTS`-based rewrite as ``request(mailboxId:limit:)``
-    /// and for the same reason — see its doc comment. `mailbox.isHidden = 0`
-    /// excludes hidden mailboxes (メールボックス単位の非表示) from the
-    /// aggregate — see `MailboxRecord.isHidden`'s doc comment; in practice
-    /// this only matters if a user hides an inbox-role mailbox itself,
-    /// since non-inbox mailboxes were never part of this aggregate anyway.
-    /// `unreadOnly` — see `request(mailboxId:limit:unreadOnly:)`'s doc comment.
-    public static func unifiedInboxRequest(accountIds: [String], limit: Int? = nil, unreadOnly: Bool = false) -> SQLRequest<ThreadRecord> {
+    /// Threads with at least one message in a `role`-role mailbox across
+    /// any of `accountIds` — the "すべての受信トレイ" unified inbox
+    /// (`role == .inbox`, the default), and 画面構造改修バッチ (Task #33, 3)
+    /// のカテゴリ優先メニューが追加した「横断ビュー」(他の role) の両方が
+    /// これを使う。Each thread still belongs to exactly one account
+    /// (`thread.accountId`); this unions across accounts at query time
+    /// rather than merging threads across account boundaries (plan: "アカウ
+    /// ント境界を跨いだスレッド結合はしない"). Same `EXISTS`-based rewrite as
+    /// ``request(mailboxId:limit:)`` and for the same reason — see its doc
+    /// comment. `mailbox.isHidden = 0` excludes hidden mailboxes (メール
+    /// ボックス単位の非表示) from the aggregate — see `MailboxRecord
+    /// .isHidden`'s doc comment. `unreadOnly` — see `request(mailboxId:
+    /// limit:unreadOnly:)`'s doc comment.
+    public static func unifiedInboxRequest(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false) -> SQLRequest<ThreadRecord> {
         guard !accountIds.isEmpty else {
             return SQLRequest(sql: "SELECT * FROM thread WHERE 0")
         }
@@ -140,7 +141,7 @@ public enum ThreadQuery {
               )
             """
         var arguments: [(any DatabaseValueConvertible)?] = accountIds
-        arguments.append(MailboxRoleRecord.inbox.rawValue)
+        arguments.append(role.rawValue)
         if unreadOnly {
             sql += " AND thread.unreadCount > 0"
         }
@@ -176,9 +177,9 @@ public enum ThreadQuery {
         }
     }
 
-    public static func unifiedInboxSummariesObservation(accountIds: [String], limit: Int? = nil, unreadOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+    public static func unifiedInboxSummariesObservation(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
         ValueObservation.tracking { db in
-            try summaries(forThreads: unifiedInboxRequest(accountIds: accountIds, limit: limit, unreadOnly: unreadOnly).fetchAll(db), db: db)
+            try summaries(forThreads: unifiedInboxRequest(accountIds: accountIds, role: role, limit: limit, unreadOnly: unreadOnly).fetchAll(db), db: db)
         }
     }
 
@@ -227,7 +228,9 @@ public enum ThreadQuery {
     /// `MessageRecord.fetchAll(db:sql:)` directly, which would only see the
     /// `message.*` columns.
     /// `unreadOnly` — same `flagsRaw` `\Seen`-bit filter as `flatSummaries`.
-    public static func unifiedInboxFlatSummaries(accountIds: [String], limit: Int? = nil, unreadOnly: Bool = false, db: Database) throws -> [ThreadSummary] {
+    /// `role` — see `unifiedInboxRequest(accountIds:role:limit:unreadOnly:)`'s
+    /// doc comment; defaults to `.inbox` for every pre-existing call site.
+    public static func unifiedInboxFlatSummaries(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false, db: Database) throws -> [ThreadSummary] {
         guard !accountIds.isEmpty else { return [] }
         let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
         var sql = """
@@ -235,7 +238,7 @@ public enum ThreadQuery {
             JOIN mailbox ON mailbox.id = message.mailboxId
             WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders)) AND mailbox.isHidden = 0
             """
-        var arguments: [(any DatabaseValueConvertible)?] = [MailboxRoleRecord.inbox.rawValue]
+        var arguments: [(any DatabaseValueConvertible)?] = [role.rawValue]
         arguments.append(contentsOf: accountIds)
         if unreadOnly {
             sql += " AND message.flagsRaw & \(MessageQuery.seenFlagBit) = 0"
@@ -253,8 +256,8 @@ public enum ThreadQuery {
         }
     }
 
-    public static func unifiedInboxFlatSummariesObservation(accountIds: [String], limit: Int? = nil, unreadOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
-        ValueObservation.tracking { db in try unifiedInboxFlatSummaries(accountIds: accountIds, limit: limit, unreadOnly: unreadOnly, db: db) }
+    public static func unifiedInboxFlatSummariesObservation(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+        ValueObservation.tracking { db in try unifiedInboxFlatSummaries(accountIds: accountIds, role: role, limit: limit, unreadOnly: unreadOnly, db: db) }
     }
 
     /// Every message in `threadId`, oldest first — what `ThreadDetailView`
