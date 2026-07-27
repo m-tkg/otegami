@@ -112,6 +112,20 @@ struct MessageListRow: View {
     /// little further within the same armed action" — only the former
     /// should buzz.
     @State private var lastHapticReveal: SwipeReveal = .none
+    /// This row's own measured width (via `swipeableRow`'s `GeometryReader`
+    /// background) — `commitReveal(action:direction:)` slides the row this
+    /// far past its own edge so it fully leaves its own clip bounds before
+    /// `perform(action)` actually removes it from the list (see that
+    /// method's doc comment). Defaults to a generous placeholder so a
+    /// commit that somehow lands before the first layout pass still exits
+    /// convincingly rather than stopping short.
+    @State private var rowWidth: CGFloat = 400
+    /// スワイプ滑らかさ改善: `true` from the moment a swipe crosses its
+    /// threshold and commits until `commitReveal`'s exit animation settles
+    /// and `perform(action)` has run — blocks a second drag from
+    /// interrupting the exit animation (the row is on its way out either
+    /// way, whether or not `perform` ends up actually removing it).
+    @State private var isCommitting = false
 
     /// Below this many points of horizontal drag, releasing does nothing
     /// (the row springs back) — but the short action's color/icon already
@@ -126,6 +140,18 @@ struct MessageListRow: View {
     /// rubber-band before being clamped — keeps a very fast/long drag from
     /// sliding the row content off the far edge of the screen.
     private let maxDragOvershoot: CGFloat = 40
+    /// How far past this row's own trailing/leading edge `commitReveal`
+    /// slides it on commit — past `rowWidth` so the content is fully
+    /// clipped out of view (not just touching the edge) before the row
+    /// disappears from the list for real.
+    private static let exitOvershoot: CGFloat = 80
+    /// How long `commitReveal`'s exit animation is given to visually
+    /// settle before `perform(action)` actually mutates the database (and
+    /// so removes this row from `MessageListView.summaries`) — long enough
+    /// that the row is already off-screen by the time the list's own
+    /// height-collapse animation (`MessageListView.applySummaries`) takes
+    /// over, so the two never visibly fight each other.
+    private static let exitSettleDuration: Duration = .milliseconds(240)
     #endif
 
     var body: some View {
@@ -173,6 +199,7 @@ struct MessageListRow: View {
                 if nowSelecting {
                     dragTranslation = 0
                     lastHapticReveal = .none
+                    isCommitting = false
                 }
             }
             #endif
@@ -310,6 +337,20 @@ extension MessageListRow {
                 .offset(x: dragTranslation)
         }
         .clipShape(RoundedRectangle(cornerRadius: OtegamiRadius.card, style: .continuous))
+        // スワイプ滑らかさ改善: measures this row's own width so
+        // `commitReveal(action:direction:)` knows how far past its edge to
+        // slide on commit (`Self.exitOvershoot` beyond it) — a
+        // `GeometryReader` background rather than threading a width down
+        // from `MessageListView` since every row can legitimately differ
+        // (Dynamic Type, `List` insets), and this only fires on layout
+        // changes (`onAppear`/`onChange`), not per drag frame.
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { rowWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { _, newValue in rowWidth = newValue }
+            }
+        )
         // 実機バグ報告 (動画確認済み): `.simultaneousGesture` を使っていた旧実装は
         // 「行の中身 (`rowButton`) をドラッグ量ぶんそのまま `.offset` で追従させる」
         // という表現方法のせいで、`Button` 自身の標準ドラッグキャンセル判定 (指の
@@ -400,10 +441,14 @@ extension MessageListRow {
     /// reaching `onChanged` at all, and keeps an *actual* vertical scroll
     /// drag's very first few points from being misread as the start of a
     /// swipe before `onChanged`'s own width-vs-height check even runs.
+    /// `isCommitting` additionally locks the gesture out entirely once a
+    /// previous swipe has committed and is mid-exit (`commitReveal`) — a
+    /// second drag on a row that's already on its way out would fight that
+    /// animation instead of feeling like a fresh gesture.
     private var swipeGesture: some Gesture {
         DragGesture(minimumDistance: 20, coordinateSpace: .local)
             .onChanged { value in
-                guard !isSelecting else { return }
+                guard !isSelecting, !isCommitting else { return }
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
                 dragTranslation = clampedTranslation(value.translation.width)
                 let current = liveReveal
@@ -415,32 +460,105 @@ extension MessageListRow {
                 }
             }
             .onEnded { value in
-                guard !isSelecting else { return }
-                let translation = value.translation
-                withAnimation(.easeOut(duration: 0.2)) {
-                    dragTranslation = 0
-                }
+                guard !isSelecting, !isCommitting else { return }
                 lastHapticReveal = .none
-                commitSwipe(translation: translation)
+                commitSwipe(translation: value.translation)
             }
     }
 
-    /// Fires the armed action, if any, once the finger lifts — 「止まらずに
-    /// 処理して欲しい」が D8 バッチの主旨そのもの: no button, no confirmation tap.
-    /// Below `shortSwipeThreshold` this is a no-op (the row just springs
-    /// back, already handled by `onEnded` above) — including for delete/
+    /// Decides cancel vs. commit once the finger lifts — 「止まらずに処理
+    /// して欲しい」が D8 バッチの主旨そのもの: no button, no confirmation tap.
+    /// Below `shortSwipeThreshold` (or a drag that ended up more vertical
+    /// than horizontal) cancels back to rest, including for delete/
     /// 迷惑メール, which used to be guarded to "tap only" via
     /// `SwipeAction.isGuardedFromFullSwipe` (removed; the undo toast
     /// `MessageListView.scheduleUndo` schedules is the safety net now, per
     /// `docs/settings.md`).
     private func commitSwipe(translation: CGSize) {
-        guard abs(translation.width) > abs(translation.height) else { return }
-        guard abs(translation.width) >= shortSwipeThreshold else { return }
+        guard abs(translation.width) > abs(translation.height), abs(translation.width) >= shortSwipeThreshold else {
+            cancelSwipe()
+            return
+        }
         switch reveal(for: translation.width) {
         case .none:
-            break
-        case .leading(let action, _), .trailing(let action, _):
+            cancelSwipe()
+        case .leading(let action, _):
+            commitReveal(action: action, direction: 1)
+        case .trailing(let action, _):
+            commitReveal(action: action, direction: -1)
+        }
+    }
+
+    /// A swipe that didn't cross `shortSwipeThreshold` (or a drag that
+    /// ended up more vertical than horizontal): spring back to rest,
+    /// exactly like letting go of a rubber band — 実機報告「スワイプの挙動を
+    /// sparkみたいに滑らかにして欲しい」の一部。前実装は `.easeOut(duration: 0.2)`
+    /// で機械的に0へ戻していた — 一定速度で減速して停止するだけで、指を離した
+    /// 勢い（バネの縮み量）を反映しない分、実機で「カクッ」と止まって見える。
+    /// `interactiveSpring` はその場の変位に応じて自然に収束するため、同じ
+    /// 「元に戻る」動作でも実機で明確になめらかに感じる。
+    private func cancelSwipe() {
+        withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.82)) {
+            dragTranslation = 0
+        }
+    }
+
+    /// A swipe that crossed `shortSwipeThreshold`: branches on whether
+    /// `action` actually removes this row from the list. `.archive`/
+    /// `.delete`/`.junk` always do (the row's thread leaves whatever
+    /// mailbox this list is showing); `.toggleRead`/`.pin` don't (the row
+    /// stays — only its own content, e.g. the unread dot or pin indicator,
+    /// changes), so there's nothing to slide away for those — firing
+    /// immediately and springing back to rest, same as before this pass,
+    /// is already correct for them.
+    private func commitReveal(action: SwipeAction, direction: CGFloat) {
+        switch action {
+        case .archive, .delete, .junk:
+            commitRemoval(action: action, direction: direction)
+        case .toggleRead, .pin:
             perform(action)
+            cancelSwipe()
+        }
+    }
+
+    /// The `.archive`/`.delete`/`.junk` half of `commitReveal(action:
+    /// direction:)`. Unlike the previous implementation (which snapped
+    /// `dragTranslation` straight back to `0` — the *same* animation a
+    /// cancelled swipe used — and, entirely separately/unsynchronized, let
+    /// `perform(action)`'s resulting `MessageListView.summaries` update
+    /// remove the row via `List`'s own default diff animation), this
+    /// slides the row the rest of the way off its own edge first. Those
+    /// two almost-overlapping "row snaps back" and "row vanishes"
+    /// animations racing each other, one beat apart, was the actual source
+    /// of 実機報告「スワイプしたときの挙動を sparkみたいに滑らかにして欲しい」—
+    /// not the drag tracking itself (which was already 1:1 with the
+    /// finger, matching every reference mail client). Sliding fully
+    /// off-screen *before* mutating the database means the row is already
+    /// invisible (clipped outside its own bounds — see `swipeableRow`'s
+    /// `.clipShape`) by the time `MessageListView.applySummaries`'s
+    /// animated removal takes over, so the two coordinate into one
+    /// continuous "colored background fills the row → row slides out → the
+    /// gap it leaves collapses" sequence instead of visibly fighting each
+    /// other (reference frames: `swipe-smooth-frames/f011`–`f017` in the
+    /// verification recording).
+    private func commitRemoval(action: SwipeAction, direction: CGFloat) {
+        isCommitting = true
+        let exitDistance = direction * (rowWidth + Self.exitOvershoot)
+        withAnimation(.spring(response: 0.26, dampingFraction: 0.9)) {
+            dragTranslation = exitDistance
+        }
+        Task {
+            try? await Task.sleep(for: Self.exitSettleDuration)
+            guard !Task.isCancelled else { return }
+            perform(action)
+            // If `perform` didn't actually remove this row from
+            // `MessageListView.summaries` (a best-effort DB write failed
+            // silently — see `MessageListView.commitArchive`'s doc
+            // comment), snap back to rest instead of leaving it stuck
+            // off-screen with no way to swipe again.
+            dragTranslation = 0
+            lastHapticReveal = .none
+            isCommitting = false
         }
     }
 }

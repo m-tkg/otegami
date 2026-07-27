@@ -790,7 +790,7 @@ struct MessageListView: View {
                 : ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, unreadOnly: isUnreadOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
-                    summaries = fetched
+                    applySummaries(fetched)
                 }
             } catch {
                 // A failing observation just stops the list from updating
@@ -803,11 +803,29 @@ struct MessageListView: View {
                 : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: isUnreadOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
-                    summaries = fetched
+                    applySummaries(fetched)
                 }
             } catch {
                 // Same as above.
             }
+        }
+    }
+
+    /// スワイプ滑らかさ改善: wraps every `summaries` update in an animation so
+    /// a swipe/bulk removal (`MessageRemoval.commit`, observed here via
+    /// GRDB's live `ValueObservation` the instant the row's own DB write
+    /// commits) collapses the vacated row height smoothly instead of
+    /// snapping the rows below it up a beat after `MessageListRow`'s own
+    /// slide-out animation already finished — see that type's
+    /// `commitReveal(action:direction:)` doc comment for the full
+    /// choreography this coordinates with. `ForEach(displayedSummaries)`
+    /// diffs by `ThreadSummary.id`, so this only actually animates a
+    /// genuine insert/remove/reorder; an unrelated field changing on an
+    /// otherwise-identical row set (e.g. a read receipt flipping the
+    /// unread dot) is a no-op diff and animates nothing.
+    private func applySummaries(_ fetched: [ThreadSummary]) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            summaries = fetched
         }
     }
 
