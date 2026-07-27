@@ -385,20 +385,42 @@ struct CIDResolutionContext {
 /// `extractHeadStyles(from:)` も参照 — 同じ B の変更が本文抽出と一緒に元
 /// `<head>` の `<style>` ブロックも丸ごと捨てていた副作用の修正。
 enum HTMLDocumentBuilder {
-    /// Task #45「ダークモードで文字が読めない」: ライト前提 (白背景 + 濃色
-    /// 文字を明示指定) で書かれた HTML メールを、アプリのダークモード表示
-    /// 中に開くと、背景だけが (このファイル自身の`background: transparent`
-    /// リセットのおかげで) 暗くなる一方、メールが指定した濃グレー文字色は
-    /// そのまま残り、暗地に暗文字でほぼ読めなくなる実機不具合。Spark/Gmail
-    /// はこの種のメールも自動で明るい文字色に変換して表示する。
+    /// Task #45「ダークモードで文字が読めない」→ Task #51 で条件を絞り
+    /// 込んだ経緯:
     ///
-    /// `autoAdjustColorsInDarkMode`が true (既定 ON、設定「メールビューア」
-    /// →「メールの表示」の「ダークモードでメールの配色を自動調整」トグル)
-    /// かつ、メール自身が`mailDeclaresOwnDarkModeSupport(bodyHTML:)`で
-    /// 判定する自前のダークモード対応を持たない場合に限り、`@media
-    /// (prefers-color-scheme: dark)`の中だけで本文ラッパ (`#otegami-fit-
-    /// inner`) に`filter: invert(1) hue-rotate(180deg)`を適用する — 白backg
-    /// →暗背景・濃文字→明文字になる古典的な手法 (NetNewsWire 等と同方式)。
+    /// Task #45 の初版は、メール自身が`mailDeclaresOwnDarkModeSupport
+    /// (bodyHTML:)`で判定する自前のダークモード対応を持たない限り
+    /// **常に**`#otegami-fit-inner`へ`filter: invert(1) hue-rotate
+    /// (180deg)`(古典的な「反転」手法、NetNewsWire 等と同方式) を適用して
+    /// いた。だがこれは「色指定を一切持たないメール」を壊す実機退行を
+    /// 生んだ: そのようなメールは元々このファイル自身の CSS リセット
+    /// (`:root { color-scheme: light dark; }` + `color: CanvasText`) の
+    /// おかげで、ダークモード中は WebKit が自動的に明るい文字色を解決
+    /// して正しく読めていた — そこへ無条件の反転がかかると、その明るい
+    /// `CanvasText`が暗い文字色へ逆変換されてしまい、透明な (＝アプリの
+    /// ダーク背景がそのまま透ける) 背景の上でほぼ読めなくなる。反転が
+    /// 本当に必要なのは「メールが明示的にライト配色 (明るい背景) を
+    /// 描画するよう指定している」場合だけで、「メールが何も指定して
+    /// いない」場合は逆効果というのが実機の教訓。
+    ///
+    /// **Task #51 での修正**: 静的なタグ検査 (`mailDeclaresOwnDarkModeSupport`
+    /// だけ) で invert するかどうかを決めるのをやめ、ページ読み込み後に
+    /// JS で**実測**する方式に変えた。`wrap(bodyHTML:autoAdjustColorsInDarkMode:)`
+    /// が行うのは「反転を検討してよいか」(`autoAdjustColorsInDarkMode`が
+    /// true、かつメールが自前のダーク対応を持たない) を判定し、条件を
+    /// 満たす場合だけ CSS のクラス (`.otegami-invert-for-dark`、下記) と、
+    /// JS 側が実測結果を書き込む対象を示す `data-otegami-invert-check`
+    /// 属性を仕込むところまで。**実際に invert するかどうかの最終判断は
+    /// `HTMLWebViewCoordinator.fitToWidthScript`が画像読み込み完了後に
+    /// 行う** — `body`/`#otegami-fit-inner`/本文中で最大面積を占める
+    /// 背景要素の`getComputedStyle(...).backgroundColor`と、代表的な
+    /// テキストノード数点の`color`を実際に読み取り、実効背景の輝度
+    /// (WCAG 相対輝度、0.5 を閾値) が高い場合に限って`.otegami-invert-
+    /// for-dark`クラスを`#otegami-fit-inner`へ付与する。背景が最後まで
+    /// 透明で確定しない (＝色指定を一切持たないメール) 場合は**何も
+    /// しない**(安全側のデフォルト) — これが今回の退行ケースを直す。
+    /// 詳細な計測ロジックは `fitToWidthScript`のdoc comment参照。
+    ///
     /// `img`/`picture`/`video`と、インライン`style`に`background-image`を
     /// 持つ要素には同じフィルタをもう一度適用して打ち消す (二重反転で
     /// 元の色に戻る) — 写真・ロゴが色反転して不自然にならないようにする
@@ -406,32 +428,32 @@ enum HTMLDocumentBuilder {
     /// れる (色相環上で180度回転するため、青系統は青系統のまま程度の変化
     /// に留まることが多い)。
     ///
-    /// `@media (prefers-color-scheme: dark)`を使い、Swift 側から実際の
-    /// ダーク/ライト判定を渡さない設計にしているのは意図的: このアプリは
-    /// アプリ全体のテーマを明示的に上書きしていない (システム設定にだけ
-    /// 従う、`grep colorScheme`で確認済み) ため、`WKWebView`自身が
-    /// ホストアプリの実際の外観 (システムのライト/ダーク設定) に応じて
-    /// この媒体クエリを正しく評価してくれる。`:root { color-scheme: light
-    /// dark; }`が既にこのファイルの CSS リセットにあり、ページ自身が
-    /// 両方のスキームに対応していることを WebKit に伝えている。
-    ///
     /// メール自身が既にダークモード対応済みの場合は何もしない (二重に
     /// 反転させると壊れるため) — Spark/Gmail と同じ「メールが対応済みなら
-    /// 尊重する」方針。
+    /// 尊重する」方針。実測はこの判定より**後**には効かない — 自前対応が
+    /// あると分かった時点で`shouldConsiderDarkInversion`自体が false に
+    /// なり、JS側の実測は一切走らない。
     static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool) -> String {
         let innerBody = extractBodyContent(from: bodyHTML)
         let originalHeadStyles = extractHeadStyles(from: bodyHTML)
-        let shouldInvertForDarkMode = autoAdjustColorsInDarkMode && !mailDeclaresOwnDarkModeSupport(html: bodyHTML)
-        let darkModeInvertStyle = shouldInvertForDarkMode ? """
+        // Task #51: この時点ではまだ「反転を検討してよいか」までしか
+        // 決めない — 実際に invert するかどうかは実測 (`fitToWidthScript`
+        // の `decideDarkInversion`) 任せ。変数名を旧来の
+        // `shouldInvertForDarkMode` から変えたのはこの意味の変化を明示
+        // するため。
+        let shouldConsiderDarkInversion = autoAdjustColorsInDarkMode && !mailDeclaresOwnDarkModeSupport(html: bodyHTML)
+        let darkModeInvertStyle = shouldConsiderDarkInversion ? """
         <style>
           @media (prefers-color-scheme: dark) {
-            /* Task #45: ライト専用に書かれたメールをダークモードでも
-               読めるようにする「反転」手法。#otegami-fit-inner は
-               fit-to-width の scale(transform) も受けうる同じ要素だが、
+            /* Task #45/#51: ライト前提で書かれたメールをダークモードでも
+               読めるようにする「反転」手法。実際にこのクラスが付くか
+               どうかは JS の実測 (`fitToWidthScript`) 任せ — ここでは
+               クラスが付いたときの見た目だけを用意する。#otegami-fit-inner
+               は fit-to-width の scale(transform) も受けうる同じ要素だが、
                filter と transform は独立したペイント/コンポジット効果
                同士で、レイアウト計算 (scrollWidth/scrollHeight) には
                互いに影響しない。 */
-            #otegami-fit-inner {
+            #otegami-fit-inner.otegami-invert-for-dark {
               filter: invert(1) hue-rotate(180deg);
             }
             /* 画像・動画・背景画像は反転を打ち消してもう一度反転 (＝
@@ -440,15 +462,21 @@ enum HTMLDocumentBuilder {
                background-image までは拾えないが、「やり過ぎない範囲で」
                という方針どおり、インライン style で背景画像を指定する
                頻出パターンだけを対象にした現実的な範囲。 */
-            #otegami-fit-inner img,
-            #otegami-fit-inner picture,
-            #otegami-fit-inner video,
-            #otegami-fit-inner [style*="background-image"] {
+            #otegami-fit-inner.otegami-invert-for-dark img,
+            #otegami-fit-inner.otegami-invert-for-dark picture,
+            #otegami-fit-inner.otegami-invert-for-dark video,
+            #otegami-fit-inner.otegami-invert-for-dark [style*="background-image"] {
               filter: invert(1) hue-rotate(180deg);
             }
           }
         </style>
         """ : ""
+        // Task #51: `#otegami-fit-outer`にこの属性を付けておくと、
+        // `fitToWidthScript`側は Swift の状態を別途受け渡されなくても
+        // 「このドキュメントは反転を検討してよいか」をDOMから直接読める
+        // — `didFinish`直後・1.5秒後の遅延呼び出し・1i翻訳後の再適用の
+        // どの呼び出し経路でも同じ1本のスクリプトが自己完結して動く。
+        let fitOuterAttributes = shouldConsiderDarkInversion ? " data-otegami-invert-check=\"1\"" : ""
         return """
         <!doctype html>
         <html>
@@ -497,7 +525,7 @@ enum HTMLDocumentBuilder {
         \(originalHeadStyles)
         \(darkModeInvertStyle)
         </head>
-        <body><div id="otegami-fit-outer"><div id="otegami-fit-inner">\(innerBody)</div></div></body>
+        <body><div id="otegami-fit-outer"\(fitOuterAttributes)><div id="otegami-fit-inner">\(innerBody)</div></div></body>
         </html>
         """
     }
@@ -1219,6 +1247,55 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// 発火するはずだが、「はず」に全面的に頼らない)。
     private static let imageWaitTimeoutMs = 4000
 
+    /// Task #51: the dark-mode "反転" decision, made here (not statically
+    /// in `HTMLDocumentBuilder`) — see `HTMLDocumentBuilder.wrap(bodyHTML:
+    /// autoAdjustColorsInDarkMode:)`'s doc comment for why a static
+    /// "does the mail declare its own dark support" check alone regressed
+    /// (it invert()ed messages with zero author color declarations too,
+    /// wrongly flipping their already-correct auto-adapted `CanvasText`
+    /// into unreadable dark-on-transparent). Runs as part of the same
+    /// `fitToWidthScript` IIFE (after `waitForImages()`, before `fit()`)
+    /// rather than as a separate `evaluateJavaScript` call — cheap, keeps
+    /// every call site (`didFinish`, the 1.5s safety net,
+    /// `HTMLTranslationController`'s post-mutation reapply) automatically
+    /// covered without threading a new parameter through all of them, and
+    /// `document.getElementById('otegami-fit-outer').hasAttribute
+    /// ('data-otegami-invert-check')` (set only when `HTMLDocumentBuilder
+    /// .wrap` decided this document is even eligible — setting OFF or the
+    /// mail declaring its own dark support both mean the attribute is
+    /// absent) makes the whole thing self-contained: no Swift-side state
+    /// needs to travel alongside `webView` across those different call
+    /// sites. Skipped entirely outside dark mode (`matchMedia`) since the
+    /// CSS itself is `@media (prefers-color-scheme: dark)`-scoped anyway —
+    /// running the DOM walk in light mode would just be wasted work.
+    ///
+    /// Measures, in priority order, the first *opaque* (alpha > 0)
+    /// `background-color` among: `document.body` itself (a message's own
+    /// `<style>body{...}</style>` rule — preserved verbatim by
+    /// `HTMLDocumentBuilder.extractHeadStyles` into this document's own
+    /// `<head>` — legitimately targets this real `<body>` tag, so this
+    /// catches the extremely common "page background" declaration even
+    /// though the original `<body ...>` tag's own attributes/inline style
+    /// don't survive `extractBodyContent` at all), `#otegami-fit-inner`
+    /// (the wrapper itself), then the largest-on-screen-area element
+    /// anywhere inside it that sets one explicitly (a "card" `<div>` etc.
+    /// — capped to the first 800 elements purely as a cheap safety net
+    /// against a pathological document, not expected to matter for real
+    /// mail). A message with zero color declarations anywhere (today's
+    /// regression case) never finds an opaque candidate at any of the
+    /// three tiers — this file's own reset already sets `background:
+    /// transparent` on `html, body`, and nothing else in the document
+    /// overrides it — so `findEffectiveBackground` returns `null` and
+    /// `decideDarkInversion` leaves `.otegami-invert-for-dark` off
+    /// (the safe default for "couldn't determine").
+    ///
+    /// Only when an opaque background *is* found and its WCAG relative
+    /// luminance is above 0.5 (i.e. it reads as a light background — a
+    /// message written light-mode-only) does this add the class. A
+    /// handful (`<= 6`) of representative text nodes' `color` are also
+    /// sampled as a light corroborating signal (skipped, not blocking,
+    /// when text sampling itself comes back empty — a background that's
+    /// genuinely measured as light is reason enough on its own to invert).
     private static let fitToWidthScript = """
     (function () {
       function waitForImages() {
@@ -1233,6 +1310,77 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
             setTimeout(finish, \(imageWaitTimeoutMs));
           });
         }));
+      }
+      function relativeLuminance(rgb) {
+        function channel(c) {
+          var normalized = c / 255;
+          return normalized <= 0.03928 ? normalized / 12.92 : Math.pow((normalized + 0.055) / 1.055, 2.4);
+        }
+        return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
+      }
+      function parseOpaqueColor(cssColor) {
+        if (!cssColor) { return null; }
+        var match = cssColor.match(/rgba?\\(([^)]+)\\)/);
+        if (!match) { return null; }
+        var parts = match[1].split(',').map(function (part) { return parseFloat(part); });
+        var alpha = parts.length > 3 ? parts[3] : 1;
+        if (!(alpha > 0)) { return null; }
+        return { r: parts[0], g: parts[1], b: parts[2] };
+      }
+      function opaqueBackgroundOf(el) {
+        if (!el) { return null; }
+        return parseOpaqueColor(getComputedStyle(el).backgroundColor);
+      }
+      function findEffectiveBackground(inner) {
+        var bodyColor = opaqueBackgroundOf(document.body);
+        if (bodyColor) { return bodyColor; }
+        var wrapperColor = opaqueBackgroundOf(inner);
+        if (wrapperColor) { return wrapperColor; }
+        var elements = inner.querySelectorAll('*');
+        var limit = Math.min(elements.length, 800);
+        var best = null;
+        var bestArea = 0;
+        for (var i = 0; i < limit; i++) {
+          var el = elements[i];
+          var color = opaqueBackgroundOf(el);
+          if (!color) { continue; }
+          var area = el.offsetWidth * el.offsetHeight;
+          if (area > bestArea) { bestArea = area; best = color; }
+        }
+        return best;
+      }
+      function representativeTextLuminance(inner) {
+        var walker = document.createTreeWalker(inner, NodeFilter.SHOW_TEXT, null);
+        var node;
+        var total = 0;
+        var count = 0;
+        while (count < 6 && (node = walker.nextNode())) {
+          var text = node.nodeValue;
+          if (!text || text.trim().length < 3) { continue; }
+          var parentEl = node.parentElement;
+          if (!parentEl) { continue; }
+          var color = parseOpaqueColor(getComputedStyle(parentEl).color);
+          if (!color) { continue; }
+          total += relativeLuminance(color);
+          count += 1;
+        }
+        return count > 0 ? total / count : null;
+      }
+      function decideDarkInversion() {
+        var outer = document.getElementById('otegami-fit-outer');
+        var inner = document.getElementById('otegami-fit-inner');
+        if (!outer || !inner || !outer.hasAttribute('data-otegami-invert-check')) { return; }
+        if (!window.matchMedia || !window.matchMedia('(prefers-color-scheme: dark)').matches) { return; }
+        var background = findEffectiveBackground(inner);
+        var shouldInvert = false;
+        if (background) {
+          var backgroundLuminance = relativeLuminance(background);
+          if (backgroundLuminance > 0.5) {
+            var textLuminance = representativeTextLuminance(inner);
+            shouldInvert = textLuminance === null || textLuminance < backgroundLuminance;
+          }
+        }
+        inner.classList.toggle('otegami-invert-for-dark', shouldInvert);
       }
       function fit() {
         var outer = document.getElementById('otegami-fit-outer');
@@ -1254,7 +1402,10 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         outer.style.width = viewportWidth + 'px';
         outer.style.height = Math.ceil(naturalHeight * scale) + 'px';
       }
-      return waitForImages().then(fit);
+      return waitForImages().then(function () {
+        decideDarkInversion();
+        fit();
+      });
     })();
     """
 

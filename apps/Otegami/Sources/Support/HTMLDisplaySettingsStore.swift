@@ -20,16 +20,21 @@ enum HTMLDisplaySettingsStore {
     static let alwaysShowPlainTextKey = "htmlDisplay.alwaysShowPlainText"
     static let defaultAlwaysShowPlainText = false
 
-    /// Task #45「ダークモードで文字が読めない」— HTML メール自身が
-    /// ライト前提 (白背景 + 濃色文字を明示指定) で書かれ、かつ自前のダーク
-    /// モード対応 (`meta name="color-scheme"` / `prefers-color-scheme` を
-    /// 含む `<style>`) を持たない場合に、アプリがダークモード表示中なら
-    /// 本文を古典的な「反転」手法 (`filter: invert(1) hue-rotate(180deg)`
-    /// を本文全体に適用し、`img`/`picture`/`video`/背景画像を持つ要素に
-    /// 同フィルタを再適用して元の色を維持する — NetNewsWire 等で使われる
-    /// 手法) で読めるようにするかどうか。既定 **ON**: 何もしなければ暗地に
-    /// 暗文字でほぼ読めなくなるメールが実機で確認されており、大多数の
-    /// メールでは反転の方が明らかに改善になる。
+    /// Task #45「ダークモードで文字が読めない」→ Task #51 で判定方式を
+    /// 変更: HTML メール自身が自前のダークモード対応 (`meta
+    /// name="color-scheme"` / `prefers-color-scheme` を含む `<style>`) を
+    /// 持たない場合に、アプリがダークモード表示中なら本文を古典的な
+    /// 「反転」手法 (`filter: invert(1) hue-rotate(180deg)` を本文全体に
+    /// 適用し、`img`/`picture`/`video`/背景画像を持つ要素に同フィルタを
+    /// 再適用して元の色を維持する — NetNewsWire 等で使われる手法) で
+    /// 読めるようにするかどうか。この設定が ON でも、実際に反転が適用
+    /// されるのは `HTMLWebViewCoordinator.fitToWidthScript` が読み込み後に
+    /// 実効背景色を実測し、明るい (＝ライト前提) と判定できた場合のみ
+    /// — 色指定を一切持たないメールのように、反転すると逆に読めなくなる
+    /// ケースを Task #51 で除外した (`docs/design-system.md` の Task #51
+    /// 節参照)。既定 **ON**: 何もしなければ暗地に暗文字でほぼ読めなく
+    /// なるメールが実機で確認されており、大多数のライト専用メールでは
+    /// 反転の方が明らかに改善になる。
     ///
     /// `ImageSettingsStore`の2キーと同じ理由で、`HTMLMessageView.init`が
     /// `UserDefaults.standard.bool(forKey:)`を直接読んで`@State`を種付け
