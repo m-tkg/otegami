@@ -1,7 +1,7 @@
 # アプリ UI のローカライズ (表示・操作改善バッチ)
 
 アプリ UI を「システムに従う / 日本語 / English」から選べるようにした
-バッチの記録。設定項目自体は [docs/settings.md](settings.md#表示言語-表示操作改善バッチ)
+バッチの記録。設定項目自体は [docs/settings.md](settings.md#表示言語-表示操作改善バッチ--実機フィードバック第3弾-f-で廃止)
 参照 — このドキュメントは仕組みとローカライズの到達範囲を扱う。
 
 ## 仕組み
@@ -20,21 +20,21 @@
   `en.lproj/Localizable.strings` へコンパイルされる (Xcode 標準の動作、
   手動のビルド設定は不要 — `Resources/`配下に置くだけで拾われる)。
 - **`LocalizationSettingsStore.swift`** (`apps/Otegami/Sources/Support/`):
-  ユーザーの選択 (`AppLanguageOption`: `.system`/`.japanese`/`.english`)
-  を保存し、`AppleLanguages`(`UserDefaults`の標準キー、`Bundle.main`の
-  ローカライズ解決がプロセス起動時に読む) を書き換える。**アプリ内即時
-  反映ではなく再起動が必要** — SwiftUI の `Text(LocalizedStringKey)`
-  解決は起動時にロードされた `Bundle` のローカライズに紐づいており、
-  `.environment(\.locale, ...)` を注入するだけでは文字列カタログの参照先
-  までは切り替わらないため (実際に試して確認済み — 環境注入だけでは
-  `Text`の表示は変わらなかった)。
+  実機フィードバック第3弾 (F) でアプリ内蔵の「表示言語」ピッカー
+  (`AppLanguageOption`: `.system`/`.japanese`/`.english`、`AppleLanguages`
+  の自前書き換え) は**廃止済み** — 言語切替は iOS 標準の「設定 →
+  このアプリ → 言語」(アプリ単位言語設定) に委ねている。詳細・経緯は
+  [docs/settings.md](settings.md#表示言語-表示操作改善バッチ--実機フィードバック第3弾-f-で廃止)
+  参照。
 - **`LocalizationSettingsStore.effectiveLanguageCode`**: 「今実際にどの
-  言語で表示されているか」を`"ja"`/`"en"`で返す。`.system`のときは
-  `Locale.preferredLanguages`から解決する。本文画面の翻訳ボタンの表示
+  言語で表示されているか」を`"ja"`/`"en"`で返す (`Bundle.main
+  .preferredLocalizations`から解決 — OS のシステム言語設定・アプリ単位
+  言語設定のどちらの結果もそのまま反映する)。本文画面の翻訳ボタンの表示
   条件 (`MessageView.shouldShowTranslationBar`) と AI要約の出力言語判定
   (`MessageView.requestSummary(message:)`) がこれを参照する — 「メールの
   言語 ≠ アプリの表示言語の場合のみ翻訳を出す」という要件をこの値で判定
-  している。
+  している。この型が公開しているのはこの読み取り専用プロパティのみで、
+  言語設定を書き換える処理はもう存在しない (下記「タスク#43」節参照)。
 
 ## `Text(String)` は自動でローカライズされない ("verbatim" 呼び出し)
 
@@ -205,6 +205,42 @@ lookup**が、対応する文字列をカタログに追加した瞬間に無言
 `SignatureTemplateEditView`/`AccountLabelColorPicker`) の静的な (補間を
 含まない) 文字列をすべて`Localizable.xcstrings`に追加した
 (137→232エントリ)。`AccountTypeSelectionView`も対応済み。
+
+## タスク#43: 「起動し直すと言語設定が毎回英語に戻る」バグの調査と修正
+
+実機フィードバック第3弾 (F) で表示言語ピッカーを廃止した際、旧ピッカーが
+残す`AppleLanguages`上書きの後始末として`AppEnvironment.init()`から起動
+のたびに (冪等の**つもり**で) 呼ぶ移行処理
+`LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`
+を追加した。ところがこの実装は「`AppleLanguages`キーに値があれば削除する」
+だけで、**一度削除したことを覚えるフラグを持っていなかった** —
+そして iOS の「設定 → このアプリ → 言語」(OS 標準のアプリ単位言語設定)
+も内部的にはこの同じ`AppleLanguages`キーで実現されているため、ユーザーが
+OS 設定で言語を選んでも次回起動時にこの移行処理がそれを削除し、システム
+既定の言語 (この場合English) に戻ってしまう — 「起動し直すたびに英語に
+戻る」という実機報告と一致する重大な回帰だった。
+
+**対処: 移行処理そのものを削除した** (フラグを立てて「一度だけ実行」に
+する対処は採らなかった)。理由は`git log`で旧ピッカーの生存期間を確認した
+結果による: `AppLanguageOption`/`setLanguageOption(_:)`は2026-07-27 06:07
+のコミットで導入され、同日13:53 のコミットで廃止された — 生存期間は
+約8時間で、この間に実際に「日本語」/「English」を明示選択したユーザーが
+いたとしても、その残骸は廃止直後の初回起動でこの移行処理が (フラグの
+有無に関わらず) 一度実行された時点でもう消えている。つまり「一度だけ
+消す」という当初の目的は、フラグを追加するかどうかに関係なくとっくに
+果たされていた。それ以降この処理が毎起動削除し続けていたのは専ら OS の
+アプリ単位言語設定であり、フラグ化を選んでも「これまでの毎起動削除」を
+今から一回だけ余分に踏んでしまう (フラグが立っていない状態からのスタート
+になるため) 影響は避けられない。よって一切`AppleLanguages`に触れない
+のが最も安全で、移行処理と呼び出し箇所を削除した
+(`LocalizationSettingsStore.swift`/`AppEnvironment.swift`)。廃止済み設定
+の選択値保存キー (`app.languageOption`) 自体は従来どおり無害な残骸として
+放置している。
+
+この型 (アプリターゲット直下の`Support/`) にはXCTestのユニットテスト
+ターゲットが無く (`make test`が対象とするのは`packages/OtegamiKit`のみ
+— `apps/Otegami`には`OtegamiUITests`しか無い)、今回は削除のみで新しい
+分岐ロジックを追加していないため、新規ユニットテストは追加していない。
 
 ## 確認方法
 

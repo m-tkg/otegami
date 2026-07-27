@@ -17,31 +17,33 @@ import Foundation
 /// アプリの表示言語」を判定するために引き続き必要な機能で、これは表示言語の
 /// **選択 UI** ではなく **現在有効な表示言語を読む**だけの読み取り専用機能
 /// であり、廃止対象の範囲外 (`docs/settings.md`のF節参照)。
+///
+/// タスク#43で発覚した実機バグ: 上記の廃止と同時に導入した
+/// `migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`(旧ピッカーが
+/// 残した`AppleLanguages`上書きを一度だけ消す「移行処理」のつもりだった)
+/// を**削除した**。原因は、iOS の「設定 → このアプリ → 言語」(OS 標準の
+/// アプリ単位言語設定) も内部的にはこの**同じ`AppleLanguages`キー**を
+/// 使って実現されているという事実の見落とし — 「削除するのは一度だけ」の
+/// つもりが実装には「一度だけ実行した」フラグが無く、`object(forKey:)`が
+/// 非nilを返す限り**毎起動**削除する実装になっていたため、ユーザーが OS
+/// 設定で選んだ言語を毎起動削除し「再起動のたびに英語に戻る」という重大
+/// な回帰を引き起こしていた。
+/// 「フラグを立てて一度だけ実行にする」対処も検討したが採らなかった —
+/// 旧ピッカー (`AppLanguageOption`/`setLanguageOption(_:)`) は導入から
+/// この移行処理の追加までわずか約8時間しか存在せず (`git log`で確認可能:
+/// 2026-07-27 06:07 導入 → 同日13:53 廃止)、その短い期間に実際に「日本語」
+/// /「English」を明示選択したユーザーがいたとしても、その残骸は廃止直後
+/// の初回起動時点でこの移行処理が一度実行された段階で既に消えている —
+/// つまり「一度だけ消す」という当初の目的は、フラグの有無によらずとっくに
+/// 果たされていた。それ以降この処理が繰り返し削除していたのは専ら OS の
+/// アプリ単位言語設定であり、フラグ化してもこの型が導入されて以降ずっと
+/// 毎起動削除され続けてきた状態を直す初回の一回はどうしても残ってしまう
+/// (フラグは「これから」を守るだけで、既に壊れた状態を直せない)。よって
+/// 一切`AppleLanguages`に触れないのが最も安全な選択で、以後この型は
+/// `effectiveLanguageCode`(読み取り専用) のみを提供する。廃止済み設定の
+/// 選択値保存キー (`"app.languageOption"`) はこれまでどおり無害な残骸と
+/// して放置する。
 enum LocalizationSettingsStore {
-    /// 表示・操作改善バッチが書き込んでいた `AppleLanguages` の標準
-    /// `UserDefaults` キー — この設定自体は廃止したが、既にこのキーへ
-    /// 明示的な言語配列 (`["ja"]`/`["en"]`) を書き込んでいた既存ユーザーの
-    /// 端末では、そのままではこのアプリ**だけ**が (OS の「アプリごとの
-    /// 言語」設定を無視して) 上書きされた言語のまま固定されてしまう —
-    /// `migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`がこの残骸を
-    /// 一度だけ消す。
-    private static let legacyAppleLanguagesKey = "AppleLanguages"
-
-    /// `AppEnvironment.init()`から起動のたびに (冪等に) 呼ばれる移行処理 —
-    /// 既存ユーザーが表示言語ピッカーで「日本語」/「English」を明示選択して
-    /// いた場合に残る`AppleLanguages`上書きを一度だけ削除し、OS本来の
-    /// 言語解決 (「アプリごとの言語」を含む) に戻す。廃止済み設定が使って
-    /// いた選択値の保存キー (`"app.languageOption"`) 自体は消さない —
-    /// 実際の言語解決にはもう使われない無害な残骸で、G節の「アイコンバッジ」
-    /// 設定廃止時と同じ「UserDefaultsの残骸はそのまま無視で可」という判断を
-    /// 踏襲した。すでに上書きが無い (これから初めてこのバージョンを使う
-    /// ユーザー、または既に一度移行済みのユーザー) 場合は`object(forKey:)`
-    /// が`nil`を返すだけの無害な no-op。
-    static func migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded() {
-        guard UserDefaults.standard.object(forKey: legacyAppleLanguagesKey) != nil else { return }
-        UserDefaults.standard.removeObject(forKey: legacyAppleLanguagesKey)
-    }
-
     /// 「今実際にどの言語で表示されているか」を "ja"/"en" (またはそれ以外の
     /// システム言語コード) で返す — 本文画面の翻訳ボタン表示条件・AI要約の
     /// 出力言語判定に使う。`Bundle.main.preferredLocalizations`は OS が

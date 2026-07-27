@@ -160,14 +160,11 @@ final class AppEnvironment {
         // comment for why this needs the same "before any `HTMLMessageView`
         // is constructed" ordering as the image defaults registration above.
         UserDefaults.registerOtegamiHTMLDisplayDefaults()
-        // F (実機フィードバック第3弾): one-time, idempotent cleanup of the
-        // now-removed in-app "表示言語" setting's `AppleLanguages` override
-        // — see `LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`'s
-        // doc comment. Must run before anything else in this `init()` reads
-        // a localized string (nothing currently does synchronously here,
-        // but this is the same "run migrations first" ordering the other
-        // `register...Defaults()` calls above already follow).
-        LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()
+        // Task #43: F (実機フィードバック第3弾)で入れた
+        // `LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`
+        // の呼び出しはここにあったが、削除した — 「起動のたびに言語設定が
+        // 英語へ戻る」という実機バグの原因だった。詳細は
+        // `LocalizationSettingsStore`の型doc comment参照。
         // アバター強化バッチ: `AvatarSourceSettingsStore`'s doc comment — the
         // `ContactPhotoResolver` actor reads these keys directly via
         // `UserDefaults.standard`, not `@AppStorage`, so they need to
