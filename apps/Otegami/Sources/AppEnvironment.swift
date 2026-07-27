@@ -395,88 +395,182 @@ final class AppEnvironment {
         // init rule — same reason `gmailAccessTokenBridge` needs its own
         // `configure(environment:)` step below).
         if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT"] == "1" {
+            let fakeGmailEmail = "uitest-fake@gmail.com"
             let nextSortOrder = ((try? database.dbWriter.read { db in
                 try AccountRecord.fetchAll(db)
             })?.map(\.sortOrder).max() ?? -1) + 1
             let fakeGmailAccount = AccountRecord(
                 displayName: "Fake Gmail (UITest)",
-                email: "uitest-fake@gmail.com",
+                email: fakeGmailEmail,
                 authType: .oauth2,
                 kind: .gmail,
                 imapHost: "imap.gmail.com",
                 imapPort: 993,
                 imapSecurity: .tls,
-                imapUsername: "uitest-fake@gmail.com",
+                imapUsername: fakeGmailEmail,
                 smtpHost: "smtp.gmail.com",
                 smtpPort: 587,
                 smtpSecurity: .startTLS,
-                smtpUsername: "uitest-fake@gmail.com",
+                smtpUsername: fakeGmailEmail,
                 sortOrder: nextSortOrder
             )
             try? database.dbWriter.write { db in
+                // Task #52 追記: 同じ email の重複挿入を避ける — 元は
+                // `AccountEditView`のGmail専用「アバター診断」リンクの
+                // レイアウト確認だけが目的で、口座が"存在するだけ"でよかった
+                // (再挿入のガードも無かった) が、Task #52 でハンバーガー
+                // メニューの「アーカイブ」カテゴリマッピング (Gmail の All
+                // Mail → アーカイブ、INBOX/Sent/Drafts との重複除外) を検証
+                // するため INBOX/All Mail/Sent とメッセージも併せて挿入する
+                // ようになった — `OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE`の
+                // 同じ理由 (複数回`app.launch()`する検証手順での重複行防止)
+                // でこのガードを追加した。
+                guard try AccountRecord.filter(Column("email") == fakeGmailEmail).fetchOne(db) == nil else { return }
                 try fakeGmailAccount.insert(db)
+
+                var inbox = MailboxRecord(accountId: fakeGmailAccount.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+                try inbox.insert(db)
+                var allMail = MailboxRecord(accountId: fakeGmailAccount.id, path: "[Gmail]/All Mail", displayPath: "All Mail", role: .all)
+                try allMail.insert(db)
+                var sent = MailboxRecord(accountId: fakeGmailAccount.id, path: "[Gmail]/Sent Mail", displayPath: "Sent Mail", role: .sent)
+                try sent.insert(db)
+
+                // 「本当にアーカイブ済み」— All Mail にしか無い (INBOX/Sent
+                // と重複しない) メッセージ。`GmailArchiveFilter`の定義どおり
+                // 「アーカイブ」カテゴリに出るはず。
+                var archivedThread = ThreadRecord(accountId: fakeGmailAccount.id, lastMessageDate: Date(), messageCount: 1)
+                try archivedThread.insert(db)
+                var archivedMessage = MessageRecord(
+                    mailboxId: allMail.id!, uid: 1,
+                    messageId: "<uitest-fake-gmail-archived@otegami.test>",
+                    subject: "アーカイブ済みメール (UITest)", normalizedSubject: "アーカイブ済みメール (UITest)",
+                    fromAddresses: [EmailAddress(name: "Otegami QA", address: "qa@example.com")],
+                    fromText: "Otegami QA <qa@example.com>",
+                    internalDate: Date(),
+                    gmailMessageId: 1,
+                    threadId: archivedThread.id
+                )
+                try archivedMessage.insert(db)
+
+                // 「まだ受信トレイにある (未アーカイブ)」— 同じ物理メールが
+                // INBOX と All Mail の両方に (同じ`gmailMessageId`で) 存在する
+                // — `GmailArchiveFilter`はこれを「アーカイブ」から除外する
+                // はず。
+                var inboxThread = ThreadRecord(accountId: fakeGmailAccount.id, lastMessageDate: Date(), messageCount: 2)
+                try inboxThread.insert(db)
+                var inboxMessage = MessageRecord(
+                    mailboxId: inbox.id!, uid: 1,
+                    messageId: "<uitest-fake-gmail-unarchived@otegami.test>",
+                    subject: "受信トレイのメール (UITest)", normalizedSubject: "受信トレイのメール (UITest)",
+                    fromAddresses: [EmailAddress(name: "Otegami QA", address: "qa@example.com")],
+                    fromText: "Otegami QA <qa@example.com>",
+                    internalDate: Date(),
+                    gmailMessageId: 2,
+                    threadId: inboxThread.id
+                )
+                try inboxMessage.insert(db)
+                var allMailDuplicate = MessageRecord(
+                    mailboxId: allMail.id!, uid: 2,
+                    messageId: "<uitest-fake-gmail-unarchived@otegami.test>",
+                    subject: "受信トレイのメール (UITest)", normalizedSubject: "受信トレイのメール (UITest)",
+                    fromAddresses: [EmailAddress(name: "Otegami QA", address: "qa@example.com")],
+                    fromText: "Otegami QA <qa@example.com>",
+                    internalDate: Date(),
+                    gmailMessageId: 2,
+                    threadId: inboxThread.id
+                )
+                try allMailDuplicate.insert(db)
             }
         }
 
-        // Task #45「ダークモードで文字が読めない・本文が途中で切れる」:
+        // Task #45「ダークモードで文字が読めない・本文が途中で切れる」→
+        // Task #51 でその修正の適用条件が広すぎた退行を直した際、同じ
+        // escape hatch に2件追加 (下の `uitestFakeHTMLMessages` 参照):
         // same escape hatch as the fake Gmail account above, for the same
         // reason — this simulator/toolchain's account-setup flow has been
         // unreliable against the dev Dovecot mailstack (`MailCoreErrorDomain
         // error 1`, `docs/verify.md`), which makes `OtegamiSecurityNotice
         // DarkModeUITests` unable to depend on a real IMAP round trip to get
-        // its fixture message onto screen. Inserts a fully local account +
-        // mailbox + message + body directly into GRDB — `bodyState:
-        // .fetched` means `MessageView.load()` reads the body straight from
-        // this row, never touching the network, so `HTMLMessageView`
-        // actually renders real `WKWebView` content (unlike the fake Gmail
-        // account above, which only needs to *exist*, never render a body).
-        // The HTML mirrors `dev/mailstack/seed/fixtures/
-        // 31-security-notice-dark-mode.eml` (white background + explicit
-        // dark text, no `prefers-color-scheme`/`color-scheme` of its own, a
-        // horizontal rule with two paragraphs + a CTA button below it) but
-        // inlines its two images as `data:` URIs instead of `cid:`
-        // references — avoids also having to fake `attachment` rows for
-        // `CIDSchemeHandler` to resolve, while still exercising `fit
-        // ToWidthScript`'s "wait for every still-loading `<img>`" fix
-        // (a `data:` URI image is still decoded asynchronously, just fast).
+        // its fixture messages onto screen. Inserts a fully local account +
+        // mailbox + one message/body row per `uitestFakeHTMLMessages` entry
+        // directly into GRDB — `bodyState: .fetched` means `MessageView
+        // .load()` reads the body straight from this row, never touching
+        // the network, so `HTMLMessageView` actually renders real
+        // `WKWebView` content (unlike the fake Gmail account above, which
+        // only needs to *exist*, never render a body).
         if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE"] == "1" {
+            let fakeAccountEmail = "uitest-fake-html@example.com"
             let fakeAccount = AccountRecord(
                 displayName: "Fake HTML Test (UITest)",
-                email: "uitest-fake-html@example.com",
+                email: fakeAccountEmail,
                 authType: .password,
                 kind: .generic,
                 imapHost: "127.0.0.1",
                 imapPort: 1,
                 imapSecurity: .plain,
-                imapUsername: "uitest-fake-html@example.com",
+                imapUsername: fakeAccountEmail,
                 sortOrder: 1_000
             )
             try? database.dbWriter.write { db in
+                // Task #51: `OtegamiSecurityNoticeDarkModeUITests` now has
+                // three test methods, each doing its own fresh `app.launch()`
+                // with this same env var set — GRDB state (unlike the
+                // process) persists across those launches within one
+                // simulator install, so without this guard every launch
+                // would insert *another* copy of this account/mailbox/
+                // messages, leaving duplicate rows in the unified inbox by
+                // the second test method (confirmed: `openMessage`'s
+                // `.containing(predicate).firstMatch` row lookup then
+                // resolves inconsistently against the growing duplicate
+                // set, and the tap that's supposed to open the message
+                // detail silently fails to navigate — the accessibility
+                // hierarchy at the point of failure showed the app still on
+                // `messageList.list`, never having reached
+                // `messageDetail`/`htmlWebView`). Checking for the account
+                // by its fixed fake email first makes every relaunch within
+                // the same install idempotent, the same guarantee a real
+                // account naturally has (IMAP accounts are unique by
+                // email/host in this app).
+                guard try AccountRecord.filter(Column("email") == fakeAccountEmail).fetchOne(db) == nil else { return }
                 try fakeAccount.insert(db)
                 var mailbox = MailboxRecord(
                     accountId: fakeAccount.id,
                     path: "INBOX",
                     displayPath: "INBOX",
                     role: .inbox,
-                    messageCount: 1
+                    messageCount: Self.uitestFakeHTMLMessages.count
                 )
                 try mailbox.insert(db)
-                var message = MessageRecord(
-                    mailboxId: mailbox.id!,
-                    uid: 1,
-                    messageId: "<uitest-fake-html@otegami.test>",
-                    subject: "セキュリティ通知",
-                    normalizedSubject: "セキュリティ通知",
-                    fromAddresses: [EmailAddress(name: "Example Security", address: "security-noreply@example.com")],
-                    toAddresses: [EmailAddress(name: nil, address: "user@example.com")],
-                    fromText: "Example Security <security-noreply@example.com>",
-                    internalDate: Date(),
-                    bodyState: .fetched,
-                    snippet: "あなたは otegami に Example アカウントのデータの一部へのアクセスを許可しました"
-                )
-                try message.insert(db)
-                let body = MessageBodyRecord(messageId: message.id!, plainText: nil, html: Self.uitestFakeHTMLMessageBody, fetchedAt: Date())
-                try body.insert(db)
+                // Task #51: each message gets its own `internalDate`, one
+                // second apart, rather than all three sharing whatever a
+                // single shared `Date()` call would have given them — a
+                // three-way sort-order tie (`MessageListView`'s unified
+                // inbox sorts newest-first) has no guaranteed-stable
+                // tiebreak, so a tied timestamp risks the list re-ordering
+                // these rows out from under an in-flight XCUITest tap
+                // between when the row is located and when the row is
+                // actually pressed. Spacing them out removes the tie
+                // instead of relying on a tiebreak being stable.
+                let now = Date()
+                for (index, fixture) in Self.uitestFakeHTMLMessages.enumerated() {
+                    let uid = Int64(index + 1)
+                    var message = MessageRecord(
+                        mailboxId: mailbox.id!,
+                        uid: uid,
+                        messageId: "<uitest-fake-html-\(uid)@otegami.test>",
+                        subject: fixture.subject,
+                        normalizedSubject: fixture.subject,
+                        fromAddresses: [EmailAddress(name: "Example Security", address: "security-noreply@example.com")],
+                        toAddresses: [EmailAddress(name: nil, address: "user@example.com")],
+                        fromText: "Example Security <security-noreply@example.com>",
+                        internalDate: now.addingTimeInterval(-Double(index)),
+                        bodyState: .fetched,
+                        snippet: fixture.snippet
+                    )
+                    try message.insert(db)
+                    let body = MessageBodyRecord(messageId: message.id!, plainText: nil, html: fixture.html, fetchedAt: Date())
+                    try body.insert(db)
+                }
             }
         }
 
