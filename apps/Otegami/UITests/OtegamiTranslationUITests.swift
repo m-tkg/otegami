@@ -34,7 +34,7 @@ final class OtegamiTranslationBarUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testOpeningEnglishMessageShowsTranslationBarAndAutoTranslates() throws {
+    func testOpeningEnglishMessageShowsTranslationBarButDoesNotAutoTranslate() throws {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
@@ -57,7 +57,35 @@ final class OtegamiTranslationBarUITests: XCTestCase {
         let bar = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "端末内で翻訳")).firstMatch
         XCTAssertTrue(bar.waitForExistence(timeout: 20), "Expected the translation bar to appear for an English message")
 
-        // Auto-translate (1l default ON) should kick off without any tap.
+        // 実機フィードバック「翻訳機能は、勝手に実行しないで欲しい」:
+        // `TranslationSettingsStore.defaultAutoTranslateEnglish` flipped to
+        // `false` — opening an English message must show the "翻訳" button
+        // and sit there, never transitioning to "translating"/"訳文" on its
+        // own. Gives the auto-translate path (were it wrongly still firing)
+        // several seconds to kick in before asserting its absence, so this
+        // wouldn't just pass by having not waited long enough.
+        let translateButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "翻訳")).firstMatch
+        XCTAssertTrue(translateButton.waitForExistence(timeout: 10), "Expected the idle 翻訳 button, not an auto-started translation")
+        let loadingIndicator = app.descendants(matching: .any).matching(NSPredicate(format: "identifier CONTAINS %@", "translationBar.loading")).firstMatch
+        XCTAssertFalse(loadingIndicator.waitForExistence(timeout: 3), "Auto-translate must not fire when the setting defaults to off")
+        let translatedSegment = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "訳文")).firstMatch
+        XCTAssertFalse(translatedSegment.exists, "Auto-translate must not fire when the setting defaults to off")
+    }
+
+    func testTappingTranslateButtonReachesTerminalState() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        app.launch()
+
+        let list = app.collectionViews["messageList.list"]
+        let row = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "Quarterly report and next steps")).firstMatch
+        XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected the English seed message row to appear")
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+
+        let translateButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "翻訳")).firstMatch
+        XCTAssertTrue(translateButton.waitForExistence(timeout: 20), "Expected the 翻訳 button (auto-translate is off by default)")
+        translateButton.tap()
+
         // Deliberately asserts "reached *some* terminal state" (translated
         // *or* a failure with a retry affordance), not "always succeeds":
         // `FoundationModelsTranslationService.translateParagraphs` calls
@@ -72,7 +100,7 @@ final class OtegamiTranslationBarUITests: XCTestCase {
         // end state either way, and the "再試行" affordance is present and
         // tappable when it fails. Every lookup here is a broad
         // `.any`-descendant CONTAINS search, not an exact identifier/type
-        // subscript, for the same reason as `bar` above.
+        // subscript, for the same reason as `translateButton` above.
         let translatedSegment = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "訳文")).firstMatch
         let failureText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "翻訳に失敗しました")).firstMatch
         let retryButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "再試行")).firstMatch

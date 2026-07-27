@@ -1,7 +1,9 @@
 import Foundation
 
-/// 1l "翻訳" settings block: "英文を自動で翻訳" (default **ON**) and "一覧に要約を
-/// 出す" (default **OFF**) — persisted the same plain-`UserDefaults` way as
+/// 1l "翻訳" settings block: "英文を自動で翻訳" (default **OFF** — see
+/// `autoTranslateEnglishKey`'s doc comment for why this flipped from the
+/// handoff's original **ON**) and "一覧に要約を出す" (default **OFF**) —
+/// persisted the same plain-`UserDefaults` way as
 /// `CloudSyncSettingsStore`/`PushSettingsStore` (no secrets involved, and
 /// both flags are read via `@AppStorage` at the view layer, not through this
 /// struct directly — its role is just to name the keys/defaults in one
@@ -20,15 +22,41 @@ import Foundation
 /// yet. See `docs/design-system.md`'s design-phase-3 section.
 enum TranslationSettingsStore {
     /// `MessageView`'s translation bar (1i): auto-translate on open vs.
-    /// require an explicit tap. Default **on** — matches the handoff's 1l
-    /// default and this task's own guidance to make a deliberate call
-    /// rather than leave it unspecified; on-device translation is fast
-    /// enough (docs/translation.md's "実測で数秒〜") that defaulting to
-    /// automatic favors the common case (a user opening an English email
-    /// almost always wants the Japanese reading), with the toggle here as
-    /// the escape hatch for anyone who'd rather not spend the latency/
-    /// battery on messages they don't end up reading translated.
-    static let autoTranslateEnglishKey = "translation.autoTranslateEnglish"
+    /// require an explicit tap.
+    ///
+    /// 実機フィードバック (「翻訳機能は、勝手に実行しないで欲しい」):
+    /// default flipped from **on** (this project's original design-phase-3
+    /// choice — on-device translation is fast enough, `docs/translation.md`'s
+    /// "実測で数秒〜", that defaulting to automatic seemed to favor the
+    /// common case) to **off**. In practice that meant *every* English
+    /// message got silently translated the moment it was opened, with no
+    /// way to see the original first — exactly the opposite of what was
+    /// wanted. The translation bar itself is unchanged (it still appears
+    /// for every English message whenever AI 機能 is on); it just no longer
+    /// triggers itself — translation now only ever runs from an explicit
+    /// tap on "翻訳" (or a user turning this setting back on by hand in
+    /// 設定 → メールビューア → AI 機能).
+    ///
+    /// **Key renamed** (`.v2` suffix) rather than just flipping the
+    /// registered default below: `UserDefaults.register(defaults:)` only
+    /// supplies a fallback for a key that's never been explicitly written,
+    /// and `@AppStorage` reading a key at least once can itself persist the
+    /// resolved value back into `UserDefaults` — so a device that already
+    /// opened the translation bar under the old default could keep reading
+    /// back `true` forever no matter what this store now registers,
+    /// silently defeating the new off-by-default intent for exactly the
+    /// installs (existing users) where it matters. A new key side-steps
+    /// this: no existing device has ever written a value for it, so
+    /// `registerOtegamiTranslationDefaults()`'s `false` is what every
+    /// reader sees — fresh install or upgrade alike.
+    static let autoTranslateEnglishKey = "translation.autoTranslateEnglish.v2"
+    /// `@AppStorage(autoTranslateEnglishKey) private var autoTranslateEnglish
+    /// = TranslationSettingsStore.defaultAutoTranslateEnglish` at both call
+    /// sites (`MessageView`/`MailViewerSettingsView`) — named here instead
+    /// of each repeating a bare `false` literal, matching
+    /// `ImageSettingsStore.defaultAutoShowEmbedded`'s/`HTMLDisplaySettingsStore
+    /// .defaultAlwaysShowPlainText`'s existing pattern in this codebase.
+    static let defaultAutoTranslateEnglish = false
     static let showListSummaryKey = "translation.showListSummaryInList"
 }
 
@@ -42,7 +70,7 @@ extension UserDefaults {
     /// repeat it.
     static func registerOtegamiTranslationDefaults() {
         standard.register(defaults: [
-            TranslationSettingsStore.autoTranslateEnglishKey: true,
+            TranslationSettingsStore.autoTranslateEnglishKey: false,
             TranslationSettingsStore.showListSummaryKey: false
         ])
     }
