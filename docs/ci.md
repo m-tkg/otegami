@@ -6,6 +6,9 @@
 通ること」だけを検証する — 実機/シミュレータでの UI 挙動や、実際のメール
 サーバーとの結合動作は別の場所 (後述) でしか検証していない。
 
+TestFlight への配布は GitHub Actions ではなく Xcode Cloud を使う、独立した
+別のパイプライン — [docs/xcode-cloud.md](xcode-cloud.md) 参照。
+
 ## ci-app が検証すること
 
 1. `xcodegen generate` でプロジェクトファイルを生成できること。

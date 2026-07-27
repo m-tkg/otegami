@@ -432,6 +432,13 @@ private-CA/home-server example) and the app-side opt-in flow.
 on a registered device over your own reverse proxy — see
 [docs/ota-deploy.md](docs/ota-deploy.md).
 
+Otegami also builds on Xcode Cloud for TestFlight distribution
+(`apps/Otegami/ci_scripts/ci_post_clone.sh` regenerates the XcodeGen
+project and injects per-builder config from workflow environment
+variables) — see [docs/xcode-cloud.md](docs/xcode-cloud.md) for the setup
+steps and known caveats (export compliance, APNs sandbox vs. production,
+Google OAuth's unverified-app warning for testers).
+
 ## Architecture
 
 - `apps/Otegami/` — the SwiftUI app (iOS + macOS), XcodeGen `project.yml`.

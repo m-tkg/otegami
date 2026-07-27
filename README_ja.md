@@ -413,6 +413,13 @@ CA を使った宅内サーバーでの運用例を含む) とアプリ側のオ
 経由で登録済み端末に OTA インストールできる形で公開します。詳細は
 [docs/ota-deploy.md](docs/ota-deploy.md) を参照してください。
 
+Otegami は Xcode Cloud でのビルド・TestFlight 配布にも対応しています
+(`apps/Otegami/ci_scripts/ci_post_clone.sh` が XcodeGen のプロジェクトを
+再生成し、ワークフローの環境変数から各ビルダー固有の設定を注入します)。
+セットアップ手順と既知の注意点 (輸出規制申告・APNs の sandbox/production・
+テスターに対する Google OAuth 未検証アプリ警告) は
+[docs/xcode-cloud.md](docs/xcode-cloud.md) を参照してください。
+
 ## アーキテクチャ
 
 - `apps/Otegami/` — SwiftUI アプリ本体 (iOS + macOS)、XcodeGen
