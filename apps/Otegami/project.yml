@@ -79,6 +79,30 @@ targets:
         # (`docs/localization.md`参照 — UI文字列の`Localizable.xcstrings`は
         # Info.plistキーの対象外)。
         NSContactsUsageDescription: 差出人の写真を表示するために連絡先を使用します。
+        # Task #48 (デフォルトメールアプリ対応): registers this app as a
+        # candidate handler for `mailto:` links (`OtegamiApp.handleOpenURL(_:)`
+        # / `MailtoURLParser`) on both platforms. This alone lets the OS route
+        # a `mailto:` open here (and lets `xcrun simctl openurl` target this
+        # app for testing) regardless of entitlement state; actually becoming
+        # the system *default* additionally needs the
+        # `com.apple.developer.mail-client` entitlement — see
+        # OTEGAMI_MAIL_CLIENT_ENTITLEMENT below and docs/default-mail-app.md.
+        CFBundleURLTypes:
+          - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER).mailto
+            CFBundleURLSchemes:
+              - mailto
+        # Task #48: read by `DefaultMailAppSettingsView` to decide whether
+        # this *build* actually carries the mail-client entitlement (not
+        # just whether the flag exists — a stray "デフォルトのメールアプリに
+        # 設定" shortcut that doesn't work because the entitlement was never
+        # granted would be worse than no shortcut). String, not a real
+        # Info.plist Boolean — XcodeGen renders this YAML value as a
+        # `<string>`, and Xcode's Info.plist preprocessor substitutes
+        # `$(OTEGAMI_MAIL_CLIENT_ENTITLEMENT)` textually into whatever type
+        # the entry already is, so the built value is literally the text
+        # "YES" or "NO" (same mechanism `GOOGLE_OAUTH_CLIENT_ID` above
+        # already relies on) — compare against the string, not `as? Bool`.
+        OtegamiMailClientEntitlementEnabled: $(OTEGAMI_MAIL_CLIENT_ENTITLEMENT)
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -99,8 +123,17 @@ targets:
         # iOS-only (Config/Otegami-iOS.entitlements' own doc comment
         # explains why macOS intentionally gets no App Group/Keychain
         # Access Group/aps-environment here).
-        CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]: Config/Otegami-iOS.entitlements
-        CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]: Config/Otegami-iOS.entitlements
+        #
+        # Referenced via the `$(OTEGAMI_IOS_ENTITLEMENTS_FILE)` xcconfig
+        # macro rather than a literal path — Task #48 (デフォルトメールアプリ
+        # 対応): Config/Shared.xcconfig's `OTEGAMI_MAIL_CLIENT_ENTITLEMENT`
+        # flag picks between Config/Otegami-iOS.entitlements (default) and
+        # Config/Otegami-iOS-MailClient.entitlements (opt-in, once Apple has
+        # granted `com.apple.developer.mail-client`) — see that xcconfig's
+        # doc comment for why this has to be a macro reference here, not a
+        # literal, for an xcconfig-level override to actually take effect.
+        CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]: $(OTEGAMI_IOS_ENTITLEMENTS_FILE)
+        CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]: $(OTEGAMI_IOS_ENTITLEMENTS_FILE)
         # M11: macOS *does* get an entitlements file now (unlike M9's App
         # Group/Keychain Access Group, which stayed iOS-only per the doc
         # comment above) — iCloud account sync needs to reach both

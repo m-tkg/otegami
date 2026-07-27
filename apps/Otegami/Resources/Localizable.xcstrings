@@ -1071,6 +1071,96 @@
         }
       }
     },
+    "デフォルトのメールアプリに設定": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set as Default Mail App"
+          }
+        }
+      }
+    },
+    "既定のメールアプリ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default Mail App"
+          }
+        }
+      }
+    },
+    "Otegami を既定のメールアプリに設定すると、他のアプリの「メールで送信」リンクや mailto: リンクを開いたときに Otegami が開くようになります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setting Otegami as your default mail app makes it open when you tap a \"Mail\" link or a mailto: link in another app."
+          }
+        }
+      }
+    },
+    "設定 Appで既定のメールアプリを選ぶ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose the Default Mail App in Settings"
+          }
+        }
+      }
+    },
+    "「設定」→「アプリ」→「既定のアプリ」→「メール」から Otegami を選んでください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose Otegami under Settings → Apps → Default Apps → Mail."
+          }
+        }
+      }
+    },
+    "Apple の承認待ちです": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Awaiting Apple's Approval"
+          }
+        }
+      }
+    },
+    "iOS で既定のメールアプリになるには、Apple から com.apple.developer.mail-client の権限を取得する必要があります。この機能は権限が承認され、このビルドで有効化された後に使えるようになります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Becoming the default mail app on iOS requires the com.apple.developer.mail-client entitlement from Apple. This feature becomes usable once that's approved and enabled in this build."
+          }
+        }
+      }
+    },
+    "メニューバーの「メール」アプリ (Mail) を開き、「メール」→「設定」→「一般」の「デフォルトのメールアプリ」から Otegami を選べます。バージョンによっては「システム設定」→「デスクトップと Dock」の「メールアプリ」の項目からも変更できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the Mail app, then choose Otegami from Mail → Settings → General → \"Default Mail App Reader.\" On some macOS versions you can also change it from System Settings → Desktop & Dock → \"Mail App.\""
+          }
+        }
+      }
+    },
+    "Bcc (カンマ区切り)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bcc (comma-separated)"
+          }
+        }
+      }
+    },
     "操作": {
       "localizations": {
         "en": {

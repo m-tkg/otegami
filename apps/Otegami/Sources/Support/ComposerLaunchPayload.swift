@@ -53,6 +53,16 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
         /// database row left to load from; every field the Composer needs
         /// travels in the payload itself.
         case cancelledSend(PendingSendDraftSnapshot)
+        /// Task #48 (デフォルトメールアプリ対応): the OS handed this app a
+        /// `mailto:` URL (`OtegamiApp`'s `.onOpenURL`, `MailtoURLParser`
+        /// (`OtegamiCore`) already decoded it into plain strings). Its own
+        /// case rather than reusing `.new` with optional prefill fields —
+        /// every other `Kind` case already prefers "a dedicated case with
+        /// exactly the fields that trigger matter" over one catch-all case
+        /// with a pile of optionals, and a mailto open is a genuinely
+        /// distinct trigger (external app/OS, not a button inside this
+        /// app).
+        case mailto(MailtoComposePrefill)
     }
 
     var id = UUID()
@@ -95,6 +105,24 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
     static func cancelledSend(_ snapshot: PendingSendDraftSnapshot) -> ComposerLaunchPayload {
         ComposerLaunchPayload(kind: .cancelledSend(snapshot))
     }
+
+    static func mailto(_ prefill: MailtoComposePrefill) -> ComposerLaunchPayload {
+        ComposerLaunchPayload(kind: .mailto(prefill))
+    }
+}
+
+/// Task #48: `ComposerView.prepare()`'s prefill for `.mailto` — plain
+/// `String` address lists (not `[EmailAddress]`) since `ComposerView`'s
+/// To/Cc/Bcc fields are themselves plain comma-separated text (this file's
+/// own doc comment on `parseAddresses(_:)`); joining these with `", "`
+/// lands directly in `toText`/`ccText`/`bccText` with no further
+/// conversion needed.
+struct MailtoComposePrefill: Codable, Hashable, Sendable {
+    var to: [String]
+    var cc: [String]
+    var bcc: [String]
+    var subject: String
+    var body: String
 }
 
 /// C7: everything `ComposerView` needs to restore a just-cancelled pending
@@ -107,6 +135,10 @@ struct PendingSendDraftSnapshot: Codable, Hashable, Sendable {
     var accountId: String
     var toText: String
     var ccText: String
+    /// Task #48: added alongside `ComposerView.bccText` — see that
+    /// property's doc comment for why Bcc has full send-path support but
+    /// (deliberately) no draft-save support.
+    var bccText: String
     var subject: String
     var bodyText: String
     var inReplyToMessageId: String?

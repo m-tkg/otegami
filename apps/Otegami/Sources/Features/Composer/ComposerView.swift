@@ -36,6 +36,23 @@ struct ComposerView: View {
     @State private var selectedAccountId: String?
     @State private var toText = ""
     @State private var ccText = ""
+    /// Task #48 (デフォルトメールアプリ対応): added alongside the `mailto:`
+    /// handler so a `bcc=` hfield has somewhere to land — `OutboxMessageRecord
+    /// .bccAddresses`/`OpQueueProcessor`'s SMTP send already supported Bcc
+    /// end to end (the recipient gets the message via `RCPT TO`, but never
+    /// appears in any header — `OpQueueProcessor`'s `recipients =
+    /// toAddresses + ccAddresses + bccAddresses` vs. the separate `bcc:`
+    /// parameter it passes to the MIME builder), this field was simply the
+    /// only missing piece of Composer UI.
+    ///
+    /// Known gap, not a bug: `DraftMessageRecord` (the "下書きとして保存"
+    /// table) has no `bccAddresses` column, so saving a draft with Bcc
+    /// filled in silently drops it — `saveDraft()` was never touched here.
+    /// Adding draft-level Bcc persistence would need its own schema
+    /// migration and is out of scope for what this field exists to unblock
+    /// (mailto: prefill, immediate send). `PendingSendDraftSnapshot` (C7
+    /// cancelled-send restore) *does* carry it, since that's in-memory only.
+    @State private var bccText = ""
     @State private var subject = ""
     @State private var bodyText = ""
 
@@ -110,12 +127,13 @@ struct ComposerView: View {
     private struct ComposerSnapshot: Equatable {
         var to: String
         var cc: String
+        var bcc: String
         var subject: String
         var body: String
     }
 
     private var currentSnapshot: ComposerSnapshot {
-        ComposerSnapshot(to: toText, cc: ccText, subject: subject, body: bodyText)
+        ComposerSnapshot(to: toText, cc: ccText, bcc: bccText, subject: subject, body: bodyText)
     }
 
     /// Whether closing now would silently lose something the user typed.
@@ -338,6 +356,9 @@ struct ComposerView: View {
             TextField("Cc (カンマ区切り)", text: $ccText)
                 .textFieldAutocapitalizationNone()
                 .accessibilityIdentifier("composer.cc")
+            TextField("Bcc (カンマ区切り)", text: $bccText)
+                .textFieldAutocapitalizationNone()
+                .accessibilityIdentifier("composer.bcc")
         }
     }
 
@@ -582,6 +603,7 @@ struct ComposerView: View {
         case .forward: String(localized: "転送")
         case .draft, .serverDraft: String(localized: "下書き")
         case .cancelledSend: String(localized: "新規作成")
+        case .mailto: String(localized: "新規作成")
         }
     }
 
@@ -628,6 +650,17 @@ struct ComposerView: View {
             // (see `ComposerLaunchPayload.Kind.cancelledSend`'s doc
             // comment for why).
             loadCancelledSend(snapshot)
+        case .mailto(let prefill):
+            // Task #48: `MailtoComposePrefill`'s address lists are already
+            // plain `addr-spec` strings (`MailtoURLParser`'s output, never
+            // display names), so joining them is enough — no
+            // `EmailAddress.description` round-trip needed the way
+            // `loadDraft`/`loadServerDraft` do from a stored `[EmailAddress]`.
+            toText = prefill.to.joined(separator: ", ")
+            ccText = prefill.cc.joined(separator: ", ")
+            bccText = prefill.bcc.joined(separator: ", ")
+            subject = prefill.subject
+            bodyText = prefill.body
         }
         // Baseline for `hasUnsavedChanges` — captured last, after whatever
         // prefill above (reply quoting, or a resumed draft's saved text)
@@ -694,6 +727,7 @@ struct ComposerView: View {
         selectedAccountId = snapshot.accountId
         toText = snapshot.toText
         ccText = snapshot.ccText
+        bccText = snapshot.bccText
         subject = snapshot.subject
         bodyText = snapshot.bodyText
         inReplyToMessageId = snapshot.inReplyToMessageId
@@ -1144,6 +1178,7 @@ struct ComposerView: View {
             return
         }
         let ccAddresses = Self.parseAddresses(ccText)
+        let bccAddresses = Self.parseAddresses(bccText)
 
         isSending = true
         defer { isSending = false }
@@ -1192,6 +1227,7 @@ struct ComposerView: View {
                     accountId: accountId,
                     toAddresses: toAddresses,
                     ccAddresses: ccAddresses,
+                    bccAddresses: bccAddresses,
                     subject: subject,
                     plainTextBody: bodyText,
                     inReplyToMessageId: inReplyToMessageId,
@@ -1231,7 +1267,7 @@ struct ComposerView: View {
             // behavior).
             if let duration = SendCancelWindow(rawValue: sendCancelWindowRaw)?.duration ?? SendCancelSettingsStore.defaultWindow.duration {
                 let snapshot = PendingSendDraftSnapshot(
-                    accountId: accountId, toText: toText, ccText: ccText, subject: subject, bodyText: bodyText,
+                    accountId: accountId, toText: toText, ccText: ccText, bccText: bccText, subject: subject, bodyText: bodyText,
                     inReplyToMessageId: inReplyToMessageId, references: references,
                     translateToEnglishBeforeSend: translateToEnglishBeforeSend, attachments: pendingAttachments,
                     draftServerMailboxId: draftServerMailboxId, draftServerUid: draftServerUid, draftServerUidValidity: draftServerUidValidity

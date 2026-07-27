@@ -119,6 +119,18 @@ struct AccountSettingsCategoryView: View {
                 }
                 .accessibilityIdentifier("settings.pushNotificationsLink")
             }
+
+            // Task #48 (デフォルトメールアプリ対応) — see
+            // `DefaultMailAppSettingsView`'s doc comment for what "既定"
+            // actually requires on each platform.
+            Section {
+                NavigationLink {
+                    DefaultMailAppSettingsView()
+                } label: {
+                    Label("デフォルトのメールアプリに設定", systemImage: "envelope.badge")
+                }
+                .accessibilityIdentifier("settings.defaultMailAppLink")
+            }
         }
         .navigationTitle("アカウントの設定")
         #if os(iOS)

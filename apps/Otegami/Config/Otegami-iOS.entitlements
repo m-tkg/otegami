@@ -54,5 +54,13 @@
 	-->
 	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
 	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
+	<!--
+	Task #48 (デフォルトメールアプリ対応): this file's `com.apple.developer
+	.mail-client`-carrying counterpart is Otegami-iOS-MailClient.entitlements,
+	swapped in via the `OTEGAMI_MAIL_CLIENT_ENTITLEMENT` xcconfig flag
+	(Config/Shared.xcconfig) rather than added here directly — see that
+	file's doc comment for why. Keep the two files' shared keys above in
+	sync by hand if either changes.
+	-->
 </dict>
 </plist>

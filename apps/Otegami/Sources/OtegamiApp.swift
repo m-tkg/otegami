@@ -1,4 +1,5 @@
 import SwiftUI
+import OtegamiCore
 import OtegamiStore
 import SyncEngine
 
@@ -215,6 +216,11 @@ struct RootView: View {
                 guard scenePhase == .active else { return }
                 Task { await startIdleLoops(for: newAccounts) }
             }
+            // Task #48 (デフォルトメールアプリ対応): the OS routes a tapped
+            // `mailto:` link here once this app claims the scheme
+            // (`CFBundleURLTypes`, project.yml) — see `handleOpenURL(_:)`'s
+            // doc comment for what actually makes that routing happen.
+            .onOpenURL(perform: handleOpenURL)
     }
 
     /// design-phase-2 (1a): the actual top-level content, split by
@@ -569,6 +575,31 @@ struct RootView: View {
         #else
         composerPayload = payload
         #endif
+    }
+
+    /// Task #48 (デフォルトメールアプリ対応): handles a `mailto:` URL the OS
+    /// handed this app — either because the user tapped a `mailto:` link
+    /// somewhere and this app is (or, pre-entitlement, is one of the
+    /// candidates for) the handler, or a manual test via
+    /// `xcrun simctl openurl booted 'mailto:...'`. Registering
+    /// `CFBundleURLTypes` for the `mailto` scheme (project.yml) is what
+    /// lets the OS route here at all; actually becoming the system-wide
+    /// *default* additionally needs the `com.apple.developer.mail-client`
+    /// entitlement Apple grants per-app (`docs/default-mail-app.md`) — this
+    /// handler itself works identically either way, since the entitlement
+    /// only gates whether the OS is *willing* to route a link here by
+    /// default, not what this app does once it receives one.
+    ///
+    /// Anything that isn't a recognizable `mailto:` URL (`MailtoURLParser
+    /// .parse` returning `nil` — wrong scheme, e.g. this app is never
+    /// registered for any other custom scheme) is silently ignored, the
+    /// same way a real OS integration should degrade for an open it was
+    /// never meant to handle rather than surfacing an error UI.
+    private func handleOpenURL(_ url: URL) {
+        guard let parsed = MailtoURLParser.parse(url) else { return }
+        presentComposer(.mailto(MailtoComposePrefill(
+            to: parsed.to, cc: parsed.cc, bcc: parsed.bcc, subject: parsed.subject, body: parsed.body
+        )))
     }
 
     private func selectionKey(for selection: SidebarSelection) -> String {

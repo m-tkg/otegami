@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	Task #48 (デフォルトメールアプリ対応): identical to Otegami-iOS.entitlements
+	plus the one extra `com.apple.developer.mail-client` key — see
+	docs/default-mail-app.md for the full story. A *separate* file (rather
+	than always including this key in Otegami-iOS.entitlements) because
+	Apple must specifically grant this capability per-app before it can be
+	requested at all: a profile built against a capability the App ID
+	doesn't have registered fails to sign, so committing it unconditionally
+	would break every build until the request is approved. project.yml
+	switches which of these two files `CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]`/
+	`[sdk=iphonesimulator*]` actually uses via the `OTEGAMI_MAIL_CLIENT_ENTITLEMENT`
+	xcconfig flag (Config/Shared.xcconfig's doc comment) — default `NO`
+	(this file unused, current behavior unchanged), flip to `YES` in
+	Config/Local.xcconfig once Apple's grant lands and the capability is
+	enabled for this App ID in the Developer portal.
+
+	Keep this file's other keys in sync with Otegami-iOS.entitlements by
+	hand — see that file's doc comment for what each one does and why.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(OTEGAMI_APP_GROUP)</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(OTEGAMI_KEYCHAIN_GROUP)</string>
+	</array>
+	<key>aps-environment</key>
+	<string>development</string>
+	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
+	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
+	<!--
+	The capability this whole file exists for — lets this app become a
+	user-selectable default for `mailto:` links / the Mail role once Apple
+	has granted the request (Info.plist's OtegamiMailClientEntitlementEnabled
+	key, which `DefaultMailAppSettingsView` reads, mirrors this same
+	`OTEGAMI_MAIL_CLIENT_ENTITLEMENT` flag so the in-app UI and the actual
+	signed capability can never disagree about whether this build has it).
+	-->
+	<key>com.apple.developer.mail-client</key>
+	<true/>
+</dict>
+</plist>

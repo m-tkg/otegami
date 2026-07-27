@@ -31,3 +31,33 @@ GOOGLE_OAUTH_CLIENT_ID =
 // all read it from Info.plist).
 OTEGAMI_APP_GROUP = group.$(OTEGAMI_BUNDLE_ID)
 OTEGAMI_KEYCHAIN_GROUP = $(DEVELOPMENT_TEAM).$(OTEGAMI_BUNDLE_ID).shared
+
+// Task #48 (デフォルトメールアプリ対応, docs/default-mail-app.md): opt-in
+// switch for the `com.apple.developer.mail-client` entitlement, which
+// Apple must specifically grant per-app before it can even be requested in
+// a provisioning profile — a build that carries it unconditionally would
+// fail to sign for everyone until the grant lands. Default `NO` (current
+// behavior, unaffected); a builder whose grant has been approved *and* who
+// has enabled the capability for this App ID in the Developer portal flips
+// this to `YES` in the git-ignored Config/Local.xcconfig (see
+// Local.xcconfig.sample). Only `NO`/`YES` (not e.g. `false`/`true`) are
+// meaningful here — they're the two suffixes
+// OTEGAMI_IOS_ENTITLEMENTS_FILE_NO/_YES below are named after.
+OTEGAMI_MAIL_CLIENT_ENTITLEMENT = NO
+
+// xcconfig has no native if/else, so this is the standard "variable
+// indirection" trick: `$(OTEGAMI_IOS_ENTITLEMENTS_FILE)` first expands
+// `$(OTEGAMI_MAIL_CLIENT_ENTITLEMENT)` to `YES` or `NO`, then looks up
+// `OTEGAMI_IOS_ENTITLEMENTS_FILE_YES`/`_NO` with that resolved suffix.
+// project.yml's `CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]`/`[sdk=iphonesimulator*]`
+// reference `$(OTEGAMI_IOS_ENTITLEMENTS_FILE)` (a macro, not a literal
+// path) specifically so this file — not project.yml/the generated pbxproj
+// — is what actually decides which entitlements file gets signed in,
+// matching how DEVELOPMENT_TEAM/PRODUCT_BUNDLE_IDENTIFIER above are
+// overridden from Local.xcconfig without touching project.yml (see that
+// file's own doc comment on why: pbxproj-literal values from `settings:`
+// take precedence over xcconfig and would break an xcconfig-level
+// override).
+OTEGAMI_IOS_ENTITLEMENTS_FILE_NO = Config/Otegami-iOS.entitlements
+OTEGAMI_IOS_ENTITLEMENTS_FILE_YES = Config/Otegami-iOS-MailClient.entitlements
+OTEGAMI_IOS_ENTITLEMENTS_FILE = $(OTEGAMI_IOS_ENTITLEMENTS_FILE_$(OTEGAMI_MAIL_CLIENT_ENTITLEMENT))

@@ -28,3 +28,12 @@
 // screen → iOS-type OAuth client) and PENDING.md for the current status.
 // Without this set, the app's "Gmail" add-account button stays disabled.
 // GOOGLE_OAUTH_CLIENT_ID = your-client-id.apps.googleusercontent.com
+
+// デフォルトのメールアプリ対応 (Task #48, docs/default-mail-app.md):
+// `com.apple.developer.mail-client` entitlement の有効化スイッチ。Apple から
+// この entitlement の許可を受け、Developer portal でこの App ID の capability
+// を有効化した後にのみ YES にすること — 許可前に YES にすると provisioning
+// profile の生成に失敗し、`make ios-device`/署名付き `make mac` が壊れる。
+// 既定 (このファイルが存在しない、またはこの行がコメントのまま) は NO
+// で、これまで通りビルドできる。
+// OTEGAMI_MAIL_CLIENT_ENTITLEMENT = YES
