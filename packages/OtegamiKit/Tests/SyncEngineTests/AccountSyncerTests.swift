@@ -519,4 +519,98 @@ struct AccountSyncerTests {
         let archiveAfter = try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db, key: archiveMailboxId) }
         #expect(archiveAfter?.isHidden == true, "A resync must not silently un-hide a mailbox")
     }
+
+    // MARK: - Task #44 (実機バグ: Gmail の「すべてのメール」に新着が反映されない)
+
+    /// Locks in the exact scenario from the real-device bug report at the
+    /// `FakeIMAPSession` level: a `role: .all` mailbox (what this app maps
+    /// Gmail's IMAP `\All` SPECIAL-USE "すべてのメール" to —
+    /// `MailCoreIMAPSession+Mapping.role(for:path:)`), synced via
+    /// `.mailbox(path:)` — exactly what `MessageListView.refresh()`'s
+    /// `.mailbox` case (pull-to-refresh, and now also the "開いた時" sync
+    /// `MessageListView.syncSelectedMailboxOnAppear()` added) does for a
+    /// single selected non-INBOX mailbox — with a real (CONDSTORE-capable)
+    /// server response shape, must pick up new mail that arrived after the
+    /// last sync. The same shape is also confirmed against a real Dovecot
+    /// in `SyncEngineIntegrationTests
+    /// .mailboxScopedIncrementalSyncPicksUpNewMailInNonInboxMailbox` — this
+    /// test is the fast, no-Docker-required counterpart that keeps running
+    /// in `make test`/CI.
+    @Test(".mailbox(path:) scope picks up new mail in a role-.all (Gmail \"すべてのメール\") mailbox, CONDSTORE capable")
+    func mailboxScopedSyncPicksUpNewMailInAllMailRoleMailbox() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let allMail = MailboxInfo(path: "[Gmail]/All Mail", displayPath: "[Gmail]/すべてのメール", role: .all, attributes: [])
+
+        let initialSyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox, allMail],
+                envelopesByPath: [
+                    "INBOX": [makeInbox(uid: 1, subject: "INBOX既存")],
+                    "[Gmail]/All Mail": [makeInbox(uid: 1, subject: "AllMail既存")],
+                ],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 5, messageCount: 1),
+                    "[Gmail]/All Mail": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 5, messageCount: 1),
+                ],
+                capabilitiesToReport: [.condstore]
+            ))
+        }
+        _ = try await initialSyncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let allMailMailboxId = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "[Gmail]/All Mail").fetchOne(db)?.id
+            }
+        )
+
+        // New mail lands in INBOX *and* (this app's simulation of Gmail
+        // having finished indexing it into the virtual "すべてのメール"
+        // view) All Mail — highestModSeq unchanged, isolating this to the
+        // new-mail step exactly like `MailboxSyncerTests.fetchesNewMailOnly`.
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox, allMail],
+            envelopesByPath: [
+                "INBOX": [makeInbox(uid: 2, subject: "INBOX新着")],
+                "[Gmail]/All Mail": [makeInbox(uid: 2, subject: "AllMail新着")],
+            ],
+            statusByPath: [
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 5, messageCount: 2),
+                "[Gmail]/All Mail": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 5, messageCount: 2),
+            ],
+            capabilitiesToReport: [.condstore]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        // Exactly the scope a sidebar selection of "すべてのメール" (or its
+        // pull-to-refresh / 開いた時 sync) uses — *not* `.all`/`.inboxOnly`.
+        let progress = try await syncer.performIncrementalSync(
+            auth: .password(username: "test1@otegami.test", password: "test1234"),
+            scope: .mailbox(path: "[Gmail]/All Mail")
+        )
+        #expect(progress.newMessages == 1)
+        #expect(progress.didFullResync == false)
+
+        let allMailMessages = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == allMailMailboxId).fetchAll(db)
+        }
+        #expect(allMailMessages.count == 2, "the new All Mail message must be picked up even though INBOX wasn't in scope")
+        #expect(allMailMessages.contains { $0.subject == "AllMail新着" })
+
+        // `.mailbox(path:)` must not have touched INBOX at all (out of
+        // scope) — confirms this test's scoping actually exercised the
+        // single-mailbox path, not a broader one.
+        let inboxMailboxId = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "INBOX").fetchOne(db)?.id
+            }
+        )
+        let inboxMessages = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == inboxMailboxId).fetchAll(db)
+        }
+        #expect(inboxMessages.count == 1, "INBOX must be untouched by a .mailbox(path:) scope targeting a different mailbox")
+    }
 }

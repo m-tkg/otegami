@@ -254,6 +254,81 @@ struct SyncEngineIntegrationTests {
         #expect(mailboxAfterRecovery.lastSyncErrorAt == nil)
     }
 
+    /// Task #44 (実機バグ: Gmail の「すべてのメール」を表示/pull-to-refresh
+    /// しても直近の新着が反映されない): a non-INBOX-role mailbox, synced via
+    /// exactly the `.mailbox(path:)` scope `MessageListView.refresh()`
+    /// (pull-to-refresh) uses, must pick up new mail an external client
+    /// delivers — the same shape `incrementalSyncPicksUpExternalChanges`
+    /// already proves for INBOX (default `.inboxOnly` scope), but that test
+    /// alone doesn't rule out a bug specific to non-INBOX targeting or
+    /// real-CONDSTORE (`capabilities()` here reports whatever this actual
+    /// Dovecot advertises, not a `FakeIMAPSession` script's say-so) — the
+    /// two things `MailboxSyncerTests`'/`AccountSyncerTests`' `FakeIMAPSession`
+    /// suites can't independently confirm against a real server. Uses a
+    /// plain user-created mailbox (not `Archive`/`Sent`, which this dev
+    /// mailstack auto-creates as `SPECIAL-USE` — see `DoveadmHelper
+    /// .deleteMailbox`'s doc comment) so this test owns its entire
+    /// lifecycle and can't collide with another opt-in test's fixtures.
+    @Test("incrementalSync's .mailbox(path:) scope — pull-to-refresh on one specific non-INBOX mailbox — picks up new mail delivered by another client")
+    func mailboxScopedIncrementalSyncPicksUpNewMailInNonInboxMailbox() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let user = "test1@otegami.test"
+        let mailboxPath = "IntegrationAllMailSim"
+
+        try? DoveadmHelper.deleteMailbox(user: user, mailboxPath: mailboxPath) // clean slate if a previous run left it
+        defer { try? DoveadmHelper.deleteMailbox(user: user, mailboxPath: mailboxPath) }
+        try DoveadmHelper.createMailbox(user: user, mailboxPath: mailboxPath)
+        try DoveadmHelper.save(user: user, mailboxPath: mailboxPath, content: Self.sampleMessage(uid: "allmail-seed", subject: "AllMailSim seed"))
+
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Integration",
+            email: user,
+            authType: .password,
+            imapHost: env.host,
+            imapPort: env.port,
+            imapSecurity: ConnectionSecurityRecord(env.imapConfig.security),
+            imapAllowsInsecureTLS: env.imapConfig.allowsInsecureTLS,
+            imapUsername: user
+        )
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            MailCoreIMAPSession(config: config)
+        }
+        // performInitialSync syncs every selectable mailbox, including this
+        // one, via the uidValidity==0 windowed-resync path — the same path
+        // a brand new mailbox always takes first.
+        _ = try await syncer.performInitialSync(auth: env.auth)
+
+        let mailboxId = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == mailboxPath).fetchOne(db)?.id
+            }
+        )
+        let seeded = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == mailboxId).fetchAll(db)
+        }
+        #expect(seeded.count == 1)
+
+        // What a second client (or, for real Gmail, the server itself
+        // indexing a message into "すべてのメール" after it already landed
+        // in INBOX) delivers in between.
+        try DoveadmHelper.save(user: user, mailboxPath: mailboxPath, content: Self.sampleMessage(uid: "allmail-new", subject: "AllMailSim new mail"))
+
+        // Exactly `MessageListView.refresh()`'s `.mailbox` case: scope the
+        // incremental sync to this one mailbox's path.
+        let progress = try await syncer.performIncrementalSync(auth: env.auth, scope: .mailbox(path: mailboxPath))
+        #expect(progress.newMessages == 1)
+        #expect(progress.didFullResync == false)
+
+        let messages = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == mailboxId).fetchAll(db)
+        }
+        #expect(messages.count == 2)
+        #expect(messages.contains { $0.subject == "AllMailSim new mail" })
+    }
+
     private static func sampleMessage(uid: String, subject: String) -> String {
         "From: Aiko <aiko@otegami.test>\r\n" +
             "To: test1@otegami.test\r\n" +
