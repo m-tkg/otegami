@@ -2750,6 +2750,386 @@
           }
         }
       }
+    },
+    "メールボックスの表示設定": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mailbox Display Settings"
+          }
+        }
+      }
+    },
+    "Gmail の「すべてのメール」など、一覧に出したくないメールボックスを個別に隠せます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can hide individual mailboxes you don't want in the list, such as Gmail's “All Mail.”"
+          }
+        }
+      }
+    },
+    "再接続すると、差出人の Google プロフィール写真 (保存済み連絡先を含む) を表示できるようになります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reconnecting lets the sender's Google profile photo (including saved contacts) be shown."
+          }
+        }
+      }
+    },
+    "アバター診断": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatar Diagnostics"
+          }
+        }
+      }
+    },
+    "権限を確認中…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking Permission…"
+          }
+        }
+      }
+    },
+    "連絡先の写真: 許可済み (完全)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contact Photos: Authorized (Full)"
+          }
+        }
+      }
+    },
+    "連絡先の写真: 許可済み (基本) — 保存済み連絡先には未対応。「再認証」をお試しください": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contact Photos: Authorized (Basic) — saved contacts aren't supported. Try “Reauthenticate.”"
+          }
+        }
+      }
+    },
+    "連絡先の写真: 未許可 — 「再認証」をお試しください": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Contact Photos: Not Authorized — Try “Reauthenticate.”"
+          }
+        }
+      }
+    },
+    "権限を確認できませんでした": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Check Permission"
+          }
+        }
+      }
+    },
+    "スコープ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scope"
+          }
+        }
+      }
+    },
+    "Google に問い合わせて索引を再構築中…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rebuilding Index via Google…"
+          }
+        }
+      }
+    },
+    "アクセストークンを取得できませんでした (再認証が必要な可能性があります)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Get Access Token (Reauthentication May Be Required)"
+          }
+        }
+      }
+    },
+    "otherContacts.list (自動収集された連絡先)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "otherContacts.list (Auto-Collected Contacts)"
+          }
+        }
+      }
+    },
+    "people/me/connections (保存済み連絡先)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "people/me/connections (Saved Contacts)"
+          }
+        }
+      }
+    },
+    "people/me (自分のプロフィール写真)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "people/me (Your Profile Photo)"
+          }
+        }
+      }
+    },
+    "索引": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Index"
+          }
+        }
+      }
+    },
+    "総アドレス数": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Total Indexed Addresses"
+          }
+        }
+      }
+    },
+    "最終構築時刻": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last Built At"
+          }
+        }
+      }
+    },
+    "もう一度診断する": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run Diagnostics Again"
+          }
+        }
+      }
+    },
+    "この画面を開くたびに Google へ実際に問い合わせて索引を再構築します。表示内容のスクリーンショットにはメールアドレスを含む場合があります (エラー本文中のアドレスはマスク済みですが、他の情報は含まれないか確認してから共有してください)。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opening this screen always contacts Google to rebuild the index. Screenshots of this screen may contain email addresses (addresses in error bodies are masked, but please double-check before sharing anything else shown here)."
+          }
+        }
+      }
+    },
+    "結果": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Result"
+          }
+        }
+      }
+    },
+    "HTTP ステータス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP Status"
+          }
+        }
+      }
+    },
+    "取得エントリ数": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entries Fetched"
+          }
+        }
+      }
+    },
+    "写真ありエントリ数": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Entries With Photo"
+          }
+        }
+      }
+    },
+    "索引の一部が破棄されました": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Part of the Index Was Discarded"
+          }
+        }
+      }
+    },
+    "スコープ不足": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Insufficient Scope"
+          }
+        }
+      }
+    },
+    "取得失敗": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fetch Failed"
+          }
+        }
+      }
+    },
+    "非表示にしたメールボックスは、ハンバーガーメニュー/サイドバーの一覧と統合受信トレイの集計に出なくなり、同期も止まります（電池・通信の節約のためです）。メールの移動先としては引き続き選べます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A hidden mailbox disappears from the hamburger menu/sidebar tree and the unified inbox count, and stops syncing (to save battery and data). You can still move mail into it."
+          }
+        }
+      }
+    },
+    "Google プロフィール写真を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Google Profile Photos"
+          }
+        }
+      }
+    },
+    "Gravatar の画像を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Gravatar Images"
+          }
+        }
+      }
+    },
+    "企業ロゴを表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Company Logos"
+          }
+        }
+      }
+    },
+    "連絡先に写真が無い場合、Gmail アカウントが接続されていれば Google のプロフィール写真を表示することがあります。差出人のメールアドレスが Google に送信されます。設定でオフにできます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If no contact photo is found, a Google profile photo may be shown when a Gmail account is connected. The sender's email address is sent to Google. You can turn this off in Settings."
+          }
+        }
+      }
+    },
+    "それでも見つからない場合、Gravatar (gravatar.com) に登録された画像を表示することがあります。差出人アドレスのハッシュが gravatar.com に送信されます。設定でオフにできます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If still not found, an image registered at Gravatar (gravatar.com) may be shown. A hash of the sender's address is sent to gravatar.com. You can turn this off in Settings."
+          }
+        }
+      }
+    },
+    "それでも見つからない場合、差出人の会社ドメインの favicon を企業ロゴとして表示することがあります（フリーメール (Gmail 等) のアドレスは対象外です）。ドメイン名が接続先サーバーに送信されます。設定でオフにできます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If still not found, the sender's company domain's favicon may be shown as a company logo (free email domains like Gmail are excluded). The domain name is sent to that server. You can turn this off in Settings."
+          }
+        }
+      }
+    },
+    "プロフィールアイコンは差出人のイニシャルとアカウント色から生成され、外部サービスへの問い合わせは一切行いません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatars are generated from the sender's initials and the account's color, with no queries to any external service."
+          }
+        }
+      }
+    },
+    "署名テンプレートを編集": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Signature Template"
+          }
+        }
+      }
+    },
+    "テンプレートを編集": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Template"
+          }
+        }
+      }
+    },
+    "バージョン %@ (%@)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version %@ (%@)"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

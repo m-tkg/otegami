@@ -373,6 +373,72 @@ translations = {
     # 動的データなので対象外、`AccountSectionHeader`のdoc comment参照)。
     "折りたたみ": "Collapsed",
     "展開": "Expanded",
+
+    # --- タスク#43: 設定画面の日英混在解消。既存カテゴリ (アカウント/
+    # メールビューア/メール一覧/署名テンプレート/メール作成) + 直近追加分
+    # (アバター診断画面・「連絡先の写真」診断行・メールボックス表示設定・
+    # Google プロフィール写真トグル) を走査して見つかった未登録分。この
+    # スクリプトは実行時に出力ファイルを**丸ごと上書き**するため、他の
+    # 作業ブランチが直接 `Localizable.xcstrings` へ手動追加したエントリ
+    # (このスクリプトの dict に無いもの) はこの節を更新しても再実行しない
+    # 限り消えない — が、再実行すると当然消える。実際に再実行する場合は
+    # `git diff apps/Otegami/Resources/Localizable.xcstrings` で手動追加分
+    # が失われていないか必ず確認すること。
+    "メールボックスの表示設定": "Mailbox Display Settings",
+    "Gmail の「すべてのメール」など、一覧に出したくないメールボックスを個別に隠せます。":
+        "You can hide individual mailboxes you don't want in the list, such as Gmail's “All Mail.”",
+    "非表示にしたメールボックスは、ハンバーガーメニュー/サイドバーの一覧と統合受信トレイの集計に出なくなり、同期も止まります（電池・通信の節約のためです）。メールの移動先としては引き続き選べます。":
+        "A hidden mailbox disappears from the hamburger menu/sidebar tree and the unified inbox count, and stops syncing (to save battery and data). You can still move mail into it.",
+    "再接続すると、差出人の Google プロフィール写真 (保存済み連絡先を含む) を表示できるようになります。":
+        "Reconnecting lets the sender's Google profile photo (including saved contacts) be shown.",
+    "アバター診断": "Avatar Diagnostics",
+    "権限を確認中…": "Checking Permission…",
+    "連絡先の写真: 許可済み (完全)": "Contact Photos: Authorized (Full)",
+    "連絡先の写真: 許可済み (基本) — 保存済み連絡先には未対応。「再認証」をお試しください":
+        "Contact Photos: Authorized (Basic) — saved contacts aren't supported. Try “Reauthenticate.”",
+    "連絡先の写真: 未許可 — 「再認証」をお試しください":
+        "Contact Photos: Not Authorized — Try “Reauthenticate.”",
+    "権限を確認できませんでした": "Couldn't Check Permission",
+    "スコープ": "Scope",
+    "Google に問い合わせて索引を再構築中…": "Rebuilding Index via Google…",
+    "アクセストークンを取得できませんでした (再認証が必要な可能性があります)":
+        "Couldn't Get Access Token (Reauthentication May Be Required)",
+    "otherContacts.list (自動収集された連絡先)": "otherContacts.list (Auto-Collected Contacts)",
+    "people/me/connections (保存済み連絡先)": "people/me/connections (Saved Contacts)",
+    "people/me (自分のプロフィール写真)": "people/me (Your Profile Photo)",
+    "索引": "Index",
+    "総アドレス数": "Total Indexed Addresses",
+    "最終構築時刻": "Last Built At",
+    "もう一度診断する": "Run Diagnostics Again",
+    "この画面を開くたびに Google へ実際に問い合わせて索引を再構築します。表示内容のスクリーンショットにはメールアドレスを含む場合があります (エラー本文中のアドレスはマスク済みですが、他の情報は含まれないか確認してから共有してください)。":
+        "Opening this screen always contacts Google to rebuild the index. Screenshots of this screen may contain email addresses (addresses in error bodies are masked, but please double-check before sharing anything else shown here).",
+    "結果": "Result",
+    "HTTP ステータス": "HTTP Status",
+    "取得エントリ数": "Entries Fetched",
+    "写真ありエントリ数": "Entries With Photo",
+    "索引の一部が破棄されました": "Part of the Index Was Discarded",
+    "スコープ不足": "Insufficient Scope",
+    "取得失敗": "Fetch Failed",
+    "Google プロフィール写真を表示": "Show Google Profile Photos",
+    "Gravatar の画像を表示": "Show Gravatar Images",
+    "企業ロゴを表示": "Show Company Logos",
+    "連絡先に写真が無い場合、Gmail アカウントが接続されていれば Google のプロフィール写真を表示することがあります。差出人のメールアドレスが Google に送信されます。設定でオフにできます。":
+        "If no contact photo is found, a Google profile photo may be shown when a Gmail account is connected. The sender's email address is sent to Google. You can turn this off in Settings.",
+    "それでも見つからない場合、Gravatar (gravatar.com) に登録された画像を表示することがあります。差出人アドレスのハッシュが gravatar.com に送信されます。設定でオフにできます。":
+        "If still not found, an image registered at Gravatar (gravatar.com) may be shown. A hash of the sender's address is sent to gravatar.com. You can turn this off in Settings.",
+    "それでも見つからない場合、差出人の会社ドメインの favicon を企業ロゴとして表示することがあります（フリーメール (Gmail 等) のアドレスは対象外です）。ドメイン名が接続先サーバーに送信されます。設定でオフにできます。":
+        "If still not found, the sender's company domain's favicon may be shown as a company logo (free email domains like Gmail are excluded). The domain name is sent to that server. You can turn this off in Settings.",
+    "プロフィールアイコンは差出人のイニシャルとアカウント色から生成され、外部サービスへの問い合わせは一切行いません。":
+        "Avatars are generated from the sender's initials and the account's color, with no queries to any external service.",
+    "署名テンプレートを編集": "Edit Signature Template",
+    "テンプレートを編集": "Edit Template",
+
+    # --- タスク#43 検証中に発見: `AboutView`のバージョン表示。
+    # `Text("バージョン \(version) (\(build))")`の interpolation は Xcode の
+    # String Catalog 抽出と同じ規則で「%@」プレースホルダのキーになる —
+    # 動的な値そのものではなく固定部分のみ変わるため、このスクリプトの
+    # 他の補間文字列 (エラーメッセージ等) とは違い翻訳価値があると判断した。
+    "バージョン %@ (%@)": "Version %@ (%@)",
 }
 
 

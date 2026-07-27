@@ -142,10 +142,24 @@ private struct GooglePeopleSourceDiagnosticsRow: View {
         LabeledContent("写真ありエントリ数", value: "\(outcome.diagnostics.entriesWithPhoto)")
             .accessibilityIdentifier("\(identifierPrefix).entriesWithPhoto")
         if outcome.diagnostics.discarded {
-            Label(outcome.diagnostics.discardReason ?? "索引の一部が破棄されました", systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(OtegamiColor.destructive)
-                .accessibilityIdentifier("\(identifierPrefix).discarded")
+            // タスク#43: `discardReason ?? "..."`のまま`Label(String, ...)`
+            // へ渡すと`String`型の verbatim オーバーロードに解決され、
+            // 固定の既定文言側までカタログを引けなくなる
+            // (`docs/localization.md`の「`Text(String)`は自動でローカライズ
+            // されない」節と同じ問題)。`discardReason`自体は動的な診断詳細
+            // (翻訳対象外) だが、既定文言は固定 UI 文言なので分岐して
+            // `LocalizedStringKey`解決になる方へ渡す。
+            if let discardReason = outcome.diagnostics.discardReason {
+                Label(discardReason, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(OtegamiColor.destructive)
+                    .accessibilityIdentifier("\(identifierPrefix).discarded")
+            } else {
+                Label("索引の一部が破棄されました", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(OtegamiColor.destructive)
+                    .accessibilityIdentifier("\(identifierPrefix).discarded")
+            }
         }
         if let networkError = outcome.diagnostics.networkErrorDescription {
             Text("ネットワークエラー: \(networkError)")
@@ -162,10 +176,15 @@ private struct GooglePeopleSourceDiagnosticsRow: View {
     }
 
     private var resultLabel: String {
+        // タスク#43: `LabeledContent(_:value:)`の`value:`はStringをverbatim
+        // 表示する (`docs/localization.md`の switch→`String(localized:)`
+        // パターン1) — 固定文言の2ケースだけ明示的にカタログを引く。
+        // `.success`は件数が動的なため対象外のまま (既存の「補間文字列は
+        // 対象外」方針を踏襲)。
         switch outcome.result {
         case .success(let index): "成功 (\(index.count)件)"
-        case .insufficientScope: "スコープ不足"
-        case .unavailable: "取得失敗"
+        case .insufficientScope: String(localized: "スコープ不足")
+        case .unavailable: String(localized: "取得失敗")
         }
     }
 }
