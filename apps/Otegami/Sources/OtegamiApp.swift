@@ -69,6 +69,15 @@ struct RootView: View {
     // By id, not the whole `ThreadRecord` — `ThreadRecord` isn't
     // `Hashable`, which `List(selection:)` requires.
     @State private var selectedThreadId: Int64?
+    /// 実機フィードバック第3弾 (A) — see `MessageListView.selectedMessageId`'s
+    /// doc comment. Written alongside `selectedThreadId` in `selectThread(_:
+    /// messageId:under:)`; forwarded to `ThreadDetailView.singleMessageId`
+    /// in `detailColumn` below. `restoreLastOpenedThreadIfNeeded()`
+    /// deliberately never sets this (`lastOpenedThreadIdBySelectionKey`
+    /// only remembers a thread id, not a message id — see its doc comment),
+    /// so a same-session restore always reopens the full accordion thread
+    /// even if the original open was a flat-mode single message.
+    @State private var selectedMessageId: Int64?
     /// G「削除・アーカイブ時の挙動」— see `MailScreenView`'s identical property
     /// doc comment (macOS's `detailColumn`/`contentColumn` equivalent of
     /// iOS's `MailScreenView`).
@@ -85,6 +94,12 @@ struct RootView: View {
     private func handleThreadRemoved(_ threadId: Int64) {
         let action = PostDeleteArchiveAction(rawValue: postDeleteArchiveActionRaw) ?? MessagePostActionSettingsStore.defaultAfterDeleteArchive
         selectedThreadId = MessagePostActionSettingsStore.nextThreadId(after: threadId, in: currentThreadOrder, action: action)
+        // 実機フィードバック第3弾 (A): `ThreadDetailView` never calls
+        // `onThreadRemoved` for a flat-mode (`singleMessageId != nil`) open
+        // (see its doc comment), so every arrival here is already a
+        // grouped-mode dismissal — reset defensively anyway so a stale
+        // single-message id can never leak into whatever thread opens next.
+        selectedMessageId = nil
     }
 
     // Drives which column a compact-width device (iPhone) shows.
@@ -268,6 +283,7 @@ struct RootView: View {
         // safe, non-forward-pushing thing to do here.
         .onChange(of: selection) { oldValue, newValue in
             selectedThreadId = nil
+            selectedMessageId = nil
             if newValue == nil {
                 preferredColumn = .sidebar
             } else if oldValue == nil, uiTestsShouldAutoAdvanceToContent {
@@ -312,7 +328,8 @@ struct RootView: View {
                 MessageListView(
                     selection: selection,
                     selectedThreadId: $selectedThreadId,
-                    onThreadSelected: { threadId in selectThread(threadId, under: selection) },
+                    selectedMessageId: $selectedMessageId,
+                    onThreadSelected: { threadId, messageId in selectThread(threadId, messageId: messageId, under: selection) },
                     onSummariesChanged: { currentThreadOrder = $0 }
                 )
             } else {
@@ -331,6 +348,7 @@ struct RootView: View {
             if let selectedThreadId {
                 ThreadDetailView(
                     threadId: selectedThreadId,
+                    singleMessageId: selectedMessageId,
                     onReply: { messageId, replyAll, translateToEnglish in
                         presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
                     },
@@ -375,6 +393,13 @@ struct RootView: View {
         case .active:
             await startIdleLoops(for: environment.accounts)
             await syncAllAccountsOnce()
+            // G (実機フィードバック第3弾): the OS's notification settings
+            // (badge on/off) can change at any time while this app is
+            // backgrounded, with no notification this app receives when it
+            // does — re-check on every foreground return, not just once at
+            // launch (`AppEnvironment.refreshBadgeObservation()`'s doc
+            // comment).
+            environment.refreshBadgeObservation()
         case .background, .inactive:
             await environment.syncCoordinator.stopAllIdleLoops()
             // C7 「アプリを離脱したら即座に送信を確定」— cuts short whatever's
@@ -427,6 +452,7 @@ struct RootView: View {
               let remembered = lastOpenedThreadIdBySelectionKey[selectionKey(for: selection)]
         else { return }
         selectedThreadId = remembered
+        selectedMessageId = nil
         preferredColumn = .detail
     }
 
@@ -437,8 +463,9 @@ struct RootView: View {
     /// `MessageListView.onThreadSelected`'s doc comment for why this must
     /// happen on *every* tap rather than only when `selectedThreadId`'s
     /// value actually changes.
-    private func selectThread(_ threadId: Int64, under selectionUnder: SidebarSelection) {
+    private func selectThread(_ threadId: Int64, messageId: Int64?, under selectionUnder: SidebarSelection) {
         selectedThreadId = threadId
+        selectedMessageId = messageId
         lastOpenedThreadIdBySelectionKey[selectionKey(for: selectionUnder)] = threadId
         preferredColumn = .detail
     }
@@ -470,8 +497,17 @@ struct RootView: View {
     /// message `ThreadDetailView` expands by default, so this matches
     /// "reply to whatever's currently showing expanded", not an arbitrary
     /// message within the thread.
+    /// 実機フィードバック第3弾 (A): replies to `selectedMessageId` directly
+    /// when set (a flat-mode single-message open — "reply to whatever's
+    /// currently showing", which for that mode is unambiguous), falling
+    /// back to the pre-existing "newest message in the thread" rule
+    /// otherwise.
     private func replyToSelectedThread() {
         guard let selectedThreadId else { return }
+        if let selectedMessageId {
+            presentComposer(.reply(originalMessageId: selectedMessageId, replyAll: false))
+            return
+        }
         Task {
             let messages = (try? await environment.database.dbWriter.read { db in
                 try ThreadQuery.messages(threadId: selectedThreadId, db: db)
@@ -489,12 +525,28 @@ struct RootView: View {
     /// the same way, so they can't drift in behavior even though the code
     /// isn't literally shared. Clears the selection afterward, same as a
     /// swipe-deleted row disappearing from the list would.
+    /// 実機フィードバック第3弾 (A): deletes just `selectedMessageId` when set
+    /// (a flat-mode single-message open), the whole thread otherwise — same
+    /// narrowing `MessageListView`'s row actions and `ThreadDetailView`'s
+    /// own "…" menu delete already apply (`OtegamiStore.ThreadQuery
+    /// .actionTargets(for:db:)`'s doc comment). Always pops back to
+    /// "No Message Selected" for the single-message case rather than
+    /// calling `handleThreadRemoved` — see `ThreadDetailView
+    /// .notifyThreadRemoved()`'s doc comment for why "次のメールを開く"
+    /// can't be resolved for a flat-mode open with the ordering data
+    /// available here.
     private func deleteSelectedThread() {
         guard let selectedThreadId else { return }
+        let targetMessageId = selectedMessageId
         Task {
             do {
                 let accountId: String? = try await environment.database.dbWriter.write { db -> String? in
-                    let messages = try ThreadQuery.messages(threadId: selectedThreadId, db: db)
+                    let messages: [MessageRecord]
+                    if let targetMessageId {
+                        messages = try MessageRecord.fetchOne(db, key: targetMessageId).map { [$0] } ?? []
+                    } else {
+                        messages = try ThreadQuery.messages(threadId: selectedThreadId, db: db)
+                    }
                     guard let thread = try ThreadRecord.fetchOne(db, key: selectedThreadId) else { return nil }
                     for message in messages {
                         guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
@@ -509,7 +561,12 @@ struct RootView: View {
                     try ThreadAssigner.recomputeAggregates(threadId: selectedThreadId, db: db)
                     return thread.accountId
                 }
-                handleThreadRemoved(selectedThreadId)
+                if targetMessageId != nil {
+                    self.selectedThreadId = nil
+                    self.selectedMessageId = nil
+                } else {
+                    handleThreadRemoved(selectedThreadId)
+                }
                 guard let accountId, let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
                 guard let auth = try? await environment.auth(for: account) else { return }
                 _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)

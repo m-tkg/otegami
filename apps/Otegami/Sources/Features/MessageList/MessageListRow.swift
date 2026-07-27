@@ -57,8 +57,11 @@ struct MessageListRow: View {
     let showsAccountAccent: Bool
     let isSelecting: Bool
     let isSelected: Bool
-    /// Normal (not-selecting) tap: open the thread.
-    let onSelect: (Int64) -> Void
+    /// Normal (not-selecting) tap: open the thread (or, 実機フィードバック
+    /// 第3弾 (A), just this one message for a flat-mode row) — takes the
+    /// whole `summary` rather than just `threadId` so the caller can also
+    /// read `summary.singleMessageId`.
+    let onSelect: (ThreadSummary) -> Void
     /// A tap while already in selection mode: toggle this row's checkbox
     /// instead of navigating.
     let onToggleSelection: (Int64) -> Void
@@ -146,7 +149,7 @@ struct MessageListRow: View {
         if isSelecting {
             onToggleSelection(threadId)
         } else {
-            onSelect(threadId)
+            onSelect(summary)
         }
     }
 

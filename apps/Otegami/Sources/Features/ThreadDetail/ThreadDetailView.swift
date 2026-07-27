@@ -36,6 +36,23 @@ struct ThreadDetailView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
     let threadId: Int64
+    /// 実機フィードバック第3弾 (A): non-`nil` when this screen was opened
+    /// from a flat-mode row (`ListDisplaySettingsStore.threadingKey` OFF —
+    /// `MessageListView`'s doc comment on why a flat row still carries its
+    /// *real* underlying `threadId`) — restricts `load()` to just this one
+    /// message instead of every message in `threadId`, so a real
+    /// (possibly multi-message) conversation opened via a flat row shows
+    /// only the tapped message, not the full accordion stack. A real-device
+    /// report ("スレッドをオフにしてもスレッドになる") traced to this screen
+    /// always loading the whole underlying thread regardless of the
+    /// flat/grouped display setting. `nil` (the pre-existing behavior) for
+    /// every other entry point: a grouped-mode row, a search result (search
+    /// always shows grouped threads — `MessageListView`'s flat-mode doc
+    /// comment), and macOS's restored "last opened thread" (which only ever
+    /// remembers a thread id, not a message id — see `RootView
+    /// .lastOpenedThreadIdBySelectionKey`'s doc comment on that narrower,
+    /// accepted gap).
+    var singleMessageId: Int64?
     /// M5/design-phase-3: forwarded to each expanded `MessageView` — see
     /// its `onReply` doc comment.
     var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
@@ -222,9 +239,14 @@ struct ThreadDetailView: View {
             try ThreadRecord.fetchOne(db, key: threadId)
         }
         accountId = thread?.accountId
-        isThreadPinned = thread?.isPinned ?? false
         isThreadMuted = thread?.isMuted ?? false
 
+        if let singleMessageId {
+            await loadSingleMessage(singleMessageId)
+            return
+        }
+
+        isThreadPinned = thread?.isPinned ?? false
         let observation = ThreadQuery.messagesObservation(threadId: threadId)
         do {
             for try await fetched in observation.values(in: environment.database.dbWriter) {
@@ -242,6 +264,39 @@ struct ThreadDetailView: View {
         } catch {
             // A failing observation just stops the view from updating
             // further; it doesn't clear what's already shown.
+        }
+    }
+
+    /// `singleMessageId`'s load path (実機フィードバック第3弾 (A)): a live
+    /// observation of just the one message, instead of `ThreadQuery
+    /// .messagesObservation(threadId:)`'s whole-thread query — mirrors that
+    /// method's shape (one `for try await` loop pinning expansion exactly
+    /// once) so this degenerates to the exact same "one row, always
+    /// expanded" rendering `messageRow(for:containerSize:)`/`ThreadMessageRow`
+    /// already give a real one-message thread, no view-layer changes
+    /// needed there. `isThreadPinned` reflects this one message's own
+    /// `isPinnedLocal` (not the thread aggregate `ThreadRecord.isPinned` the
+    /// grouped-mode path reads) — see `togglePin()`/`applyPinState(pinning:)`'s
+    /// doc comment for why the toolbar's pin toggle should only ever speak
+    /// for the message actually on screen here.
+    private func loadSingleMessage(_ messageId: Int64) async {
+        let observation = ValueObservation.tracking { db in try MessageRecord.fetchOne(db, key: messageId) }
+        do {
+            for try await fetched in observation.values(in: environment.database.dbWriter) {
+                guard let fetched else {
+                    messages = []
+                    continue
+                }
+                messages = [fetched]
+                isThreadPinned = fetched.isPinnedLocal
+                if !hasPinnedInitialExpansion {
+                    expandedMessageId = fetched.id
+                    hasPinnedInitialExpansion = true
+                }
+            }
+        } catch {
+            // Same as the grouped-mode path: a failing observation just
+            // stops updating, it doesn't clear what's already shown.
         }
     }
 
@@ -336,7 +391,7 @@ struct ThreadDetailView: View {
         let syncEnabled = PinSettingsStore.isSyncWithFlaggedEnabled
         do {
             try await environment.database.dbWriter.write { db in
-                let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
                 for var message in msgs {
                     guard message.isPinnedLocal != pinning else { continue }
                     message.isPinnedLocal = pinning
@@ -367,7 +422,7 @@ struct ThreadDetailView: View {
         guard let accountId else { return }
         do {
             try await environment.database.dbWriter.write { db in
-                let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
                 for var message in msgs {
                     if markingRead {
                         guard !message.flags.contains(.seen) else { continue }
@@ -404,7 +459,7 @@ struct ThreadDetailView: View {
         Task {
             do {
                 let archived = try await environment.database.dbWriter.write { db -> Bool in
-                    let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                    let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
                     var didArchiveAny = false
                     for message in msgs {
                         guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
@@ -434,7 +489,7 @@ struct ThreadDetailView: View {
         Task {
             do {
                 try await environment.database.dbWriter.write { db in
-                    let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                    let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
                     for message in msgs {
                         guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
                         guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
@@ -460,7 +515,7 @@ struct ThreadDetailView: View {
         Task {
             do {
                 try await environment.database.dbWriter.write { db in
-                    let msgs = try ThreadQuery.messages(threadId: threadId, db: db)
+                    let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
                     for message in msgs {
                         guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
                         guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
@@ -481,11 +536,52 @@ struct ThreadDetailView: View {
         }
     }
 
+    /// 実機フィードバック第3弾 (A): what "…" menu's archive/junk/delete
+    /// operations should actually touch — every message in `threadId` for
+    /// a grouped-mode open (unchanged), or just `singleMessageId` for a
+    /// flat-mode one. Mirrors `OtegamiStore.ThreadQuery.actionTargets(for:
+    /// db:)`'s exact same narrowing for `MessageListView`'s row actions —
+    /// see that method's doc comment for the real-device report both fix.
+    ///
+    /// `nonisolated static`, taking `threadId`/`singleMessageId` as plain
+    /// `Int64`/`Int64?` parameters rather than reading `self` — an
+    /// *instance* method called from inside a `dbWriter.write { db in ... }`
+    /// closure implicitly captures `self` (a non-`Sendable` `View`) to
+    /// resolve the call, which Swift 6 strict concurrency flags as "sending
+    /// 'db' risks causing data races". Plain `static` alone isn't enough
+    /// either — every member of a `View`-conforming type, `static` methods
+    /// included, is implicitly `@MainActor`-isolated (confirmed by `make
+    /// mac`'s error switching from blaming `self` to blaming a `static`
+    /// method call once this was first made `static`, then finally
+    /// compiling once `nonisolated` was added), while the closure passed to
+    /// `dbWriter.write` runs task-isolated, not main-actor-isolated — the
+    /// exact mismatch "sending 'db' risks causing data races" describes.
+    private nonisolated static func targetMessageRecords(threadId: Int64, singleMessageId: Int64?, db: Database) throws -> [MessageRecord] {
+        if let singleMessageId {
+            return try MessageRecord.fetchOne(db, key: singleMessageId).map { [$0] } ?? []
+        }
+        return try ThreadQuery.messages(threadId: threadId, db: db)
+    }
+
     /// See `onThreadRemoved`'s doc comment: reports the removal upward when
     /// wired, falling back to this screen's own pre-existing `dismiss()`
     /// otherwise.
+    ///
+    /// 実機フィードバック第3弾 (A): always just `dismiss()`s for a flat-mode
+    /// open (`singleMessageId != nil`), never calling `onThreadRemoved` even
+    /// when it's wired — `MessagePostActionSettingsStore.nextThreadId`'s
+    /// "次のメールを開く" resolves against `currentThreadOrder`, an ordered
+    /// list of *real* thread ids (`MessageListView.onSummariesChanged`), not
+    /// per-message ids; the caller has no way to know *which* message within
+    /// the resolved next thread id should open in single-message mode, so
+    /// honoring "次のメールを開く" here would silently reopen the right
+    /// thread but in the wrong (full accordion) mode. Falling back to "戻る"
+    /// unconditionally for this entry point is a deliberate, documented
+    /// scope limit rather than an attempt to thread per-message ordering
+    /// through every caller for a setting whose default is already
+    /// "メール一覧に戻る".
     private func notifyThreadRemoved() {
-        if let onThreadRemoved {
+        if let onThreadRemoved, singleMessageId == nil {
             onThreadRemoved(threadId)
         } else {
             dismiss()

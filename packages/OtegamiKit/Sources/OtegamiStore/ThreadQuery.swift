@@ -27,6 +27,14 @@ public struct ThreadSummary: Sendable, Equatable, Identifiable {
 
     public var id: Int64 { flatMessageId ?? (thread.id ?? 0) }
 
+    /// 実機フィードバック第3弾 (A): public accessor for `flatMessageId` — the
+    /// tapped message's own id when this summary is a flat-mode "thread of
+    /// one" row, `nil` for a real (possibly multi-message) threaded-mode
+    /// row. Callers use this to decide whether opening this row's detail
+    /// screen should show only this one message (flat mode's expectation —
+    /// see `MessageListView`'s doc comment) or the full accordion thread.
+    public var singleMessageId: Int64? { flatMessageId }
+
     public init(thread: ThreadRecord, latestMessage: MessageRecord?) {
         self.thread = thread
         self.latestMessage = latestMessage
@@ -232,6 +240,27 @@ public enum ThreadQuery {
 
     public static func messagesObservation(threadId: Int64) -> ValueObservation<ValueReducers.Fetch<[MessageRecord]>> {
         ValueObservation.tracking { db in try messages(threadId: threadId, db: db) }
+    }
+
+    /// 実機フィードバック第3弾 (A): what a row/swipe action's mutation should
+    /// actually touch — every message in the underlying real thread for a
+    /// grouped-mode row (`summary.singleMessageId == nil`, the pre-existing
+    /// behavior), or just the one message a flat-mode row displays
+    /// (`summary.singleMessageId != nil`). Before this existed, every
+    /// `MessageListView` row action (既読/未読・アーカイブ・迷惑メール・
+    /// ピン留め・削除) always operated on the whole real thread via
+    /// `messages(threadId:db:)`, even from a flat row that visually shows
+    /// only one message — a real-device report ("フラット表示でも操作が束で
+    /// 効く") traced to exactly that mismatch. Re-fetches the single message
+    /// fresh from `db` (not `summary.latestMessage`, which can be stale by
+    /// the time an action actually runs) for the same freshness guarantee
+    /// `messages(threadId:db:)` already gives the grouped-mode path.
+    public static func actionTargets(for summary: ThreadSummary, db: Database) throws -> [MessageRecord] {
+        if let messageId = summary.singleMessageId {
+            return try MessageRecord.fetchOne(db, key: messageId).map { [$0] } ?? []
+        }
+        guard let threadId = summary.thread.id else { return [] }
+        return try messages(threadId: threadId, db: db)
     }
 
     /// 新画面構成: メール本文画面「…」メニューの「スレッドをミュート」/「ミュート

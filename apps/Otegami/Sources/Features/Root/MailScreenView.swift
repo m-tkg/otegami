@@ -35,6 +35,11 @@ struct MailScreenView: View {
     // `Text(selectionTitle)`呼び出し自体はそのまま)。
     @State private var selectionTitle = String(localized: "すべての受信")
     @State private var selectedThreadId: Int64?
+    /// 実機フィードバック第3弾 (A) — see `MessageListView.selectedMessageId`'s
+    /// doc comment. Written alongside `selectedThreadId` on every tap;
+    /// forwarded to `ThreadDetailView.singleMessageId` in
+    /// `.navigationDestination(item:)` below.
+    @State private var selectedMessageId: Int64?
     @State private var isSelecting = false
     /// G「削除・アーカイブ時の挙動」— see `MessageListView.onSummariesChanged`'s
     /// doc comment: the most recently observed on-screen thread order,
@@ -76,7 +81,7 @@ struct MailScreenView: View {
                 #endif
                 .navigationDestination(item: $selectedThreadId) { threadId in
                     ThreadDetailView(
-                        threadId: threadId, onReply: onReply, onForward: onForward,
+                        threadId: threadId, singleMessageId: selectedMessageId, onReply: onReply, onForward: onForward,
                         onSearchFromSender: { query in openSearch(presetQuery: query) },
                         onThreadRemoved: handleThreadRemoved
                     )
@@ -117,6 +122,7 @@ struct MailScreenView: View {
                     selection: mailSelection,
                     unifiedInboxAccountFilter: accountFilter,
                     selectedThreadId: $selectedThreadId,
+                    selectedMessageId: $selectedMessageId,
                     onSelectionModeChanged: { isSelecting = $0 },
                     onSummariesChanged: { currentThreadOrder = $0 }
                 )
@@ -227,6 +233,10 @@ struct MailScreenView: View {
     private func handleThreadRemoved(_ threadId: Int64) {
         let action = PostDeleteArchiveAction(rawValue: postDeleteArchiveActionRaw) ?? MessagePostActionSettingsStore.defaultAfterDeleteArchive
         selectedThreadId = MessagePostActionSettingsStore.nextThreadId(after: threadId, in: currentThreadOrder, action: action)
+        // 実機フィードバック第3弾 (A): see `RootView.handleThreadRemoved(_:)`'s
+        // identical doc comment — every arrival here is already a
+        // grouped-mode dismissal, reset defensively anyway.
+        selectedMessageId = nil
     }
 
     private func openSearch(presetQuery: String? = nil) {

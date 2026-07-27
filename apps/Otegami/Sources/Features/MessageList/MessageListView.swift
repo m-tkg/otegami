@@ -48,6 +48,22 @@ struct MessageListView: View {
     // `NavigationSplitView`) or `MailTabView`'s own `.navigationDestination`
     // (iOS).
     @Binding var selectedThreadId: Int64?
+    /// 実機フィードバック第3弾 (A): the tapped row's `singleMessageId` —
+    /// `nil` for a grouped-mode row, the tapped message's own id for a
+    /// flat-mode row — written alongside `selectedThreadId` on every tap so
+    /// whichever screen owns navigation (`MailScreenView`/`RootView`) can
+    /// forward it to `ThreadDetailView.singleMessageId` and open just that
+    /// one message instead of the whole accordion thread (see that
+    /// property's doc comment). A plain `@Binding` — not folded into
+    /// `onThreadSelected`'s callback — for the same reason `selectedThreadId`
+    /// itself already is one: `MailScreenView`'s `NavigationStack` drives
+    /// its push purely off `.navigationDestination(item: $selectedThreadId)`
+    /// without ever overriding `onThreadSelected`, so a binding is the only
+    /// way that call site actually observes this value. Required (no
+    /// default), matching `selectedThreadId`'s own convention — both actual
+    /// call sites (`MailScreenView`, `RootView.contentColumn`) already pass
+    /// a real `@State`-backed binding.
+    @Binding var selectedMessageId: Int64?
     /// Called on *every* row tap, in addition to writing `selectedThreadId`
     /// directly — mirrors `SidebarView.onSelected`'s doc comment: a
     /// re-tap of the row for the thread that's already `selectedThreadId`
@@ -57,8 +73,10 @@ struct MessageListView: View {
     /// of `preferredCompactColumn` never fires a second time
     /// (docs/verify.md, "メール本文 → 戻る → 一覧の「さっき見ていたスレッド」
     /// 行だけタップ不能"). `RootView`/`MailTabView` use this unconditional
-    /// callback to force the column/push forward every time instead.
-    var onThreadSelected: (Int64) -> Void = { _ in }
+    /// callback to force the column/push forward every time instead. The
+    /// second parameter is `summary.singleMessageId` (実機フィードバック
+    /// 第3弾 (A)) — `nil` for a grouped-mode row.
+    var onThreadSelected: (Int64, Int64?) -> Void = { _, _ in }
     /// 1h: fires whenever this view enters/exits bulk-selection mode, so an
     /// iOS-only enclosing `MailTabView` can hide its own toolbar (folder
     /// title button, compose button) while the selection nav/bottom bar
@@ -578,13 +596,19 @@ struct MessageListView: View {
         }
     }
 
-    /// `MessageListRow.onSelect`'s target — writes `selectedThreadId` and
-    /// forwards to `onThreadSelected`, the same two steps the inline
-    /// `Button` action this replaced used to do directly (see this type's
-    /// own doc comment on why a re-tap of the same row needs both).
-    private func handleThreadSelected(_ threadId: Int64) {
+    /// `MessageListRow.onSelect`'s target — writes `selectedThreadId`/
+    /// `selectedMessageId` and forwards to `onThreadSelected`, the same
+    /// steps the inline `Button` action this replaced used to do directly
+    /// (see this type's own doc comment on why a re-tap of the same row
+    /// needs both). 実機フィードバック第3弾 (A): now takes the whole
+    /// `ThreadSummary` (not just its thread id) so it can also forward
+    /// `summary.singleMessageId` — a flat-mode row's own message id, `nil`
+    /// for a grouped-mode row.
+    private func handleThreadSelected(_ summary: ThreadSummary) {
+        guard let threadId = summary.thread.id else { return }
         selectedThreadId = threadId
-        onThreadSelected(threadId)
+        selectedMessageId = summary.singleMessageId
+        onThreadSelected(threadId, summary.singleMessageId)
     }
 
     // MARK: - Bulk selection (1h)
@@ -915,7 +939,7 @@ struct MessageListView: View {
         let accountId = summary.thread.accountId
         do {
             try await environment.database.dbWriter.write { db in
-                let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                let messages = try ThreadQuery.actionTargets(for: summary, db: db)
                 for var message in messages {
                     if markingRead {
                         guard !message.flags.contains(.seen) else { continue }
@@ -966,7 +990,7 @@ struct MessageListView: View {
         let syncEnabled = PinSettingsStore.isSyncWithFlaggedEnabled
         do {
             try await environment.database.dbWriter.write { db in
-                let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                let messages = try ThreadQuery.actionTargets(for: summary, db: db)
                 for var message in messages {
                     guard message.isPinnedLocal != pinning else { continue }
                     message.isPinnedLocal = pinning
@@ -1006,10 +1030,19 @@ struct MessageListView: View {
         let accountId = summary.thread.accountId
         Task {
             guard let snapshot = await commitJunk(summary) else { return }
-            scheduleUndo(threadIds: [threadId], message: "スレッドを迷惑メールにしました", accountIds: [accountId]) {
+            scheduleUndo(threadIds: [threadId], message: "\(undoNoun(for: summary))を迷惑メールにしました", accountIds: [accountId]) {
                 await undoRemoval(snapshot)
             }
         }
+    }
+
+    /// 実機フィードバック第3弾 (A): the undo toast's noun — "スレッド" for a
+    /// grouped-mode row (unchanged wording) vs. "メール" for a flat-mode row,
+    /// matching `ThreadQuery.actionTargets(for:db:)`'s equally narrowed
+    /// scope (see its doc comment) so the toast text never overstates what
+    /// was actually touched.
+    private func undoNoun(for summary: ThreadSummary) -> String {
+        summary.singleMessageId != nil ? "メール" : "スレッド"
     }
 
     /// Removes every message in the thread from the local list immediately
@@ -1022,7 +1055,7 @@ struct MessageListView: View {
         do {
             let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
                 guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
-                let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                let messages = try ThreadQuery.actionTargets(for: summary, db: db)
                 let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
                 for message in messages {
                     guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
@@ -1059,7 +1092,7 @@ struct MessageListView: View {
         let accountId = summary.thread.accountId
         Task {
             guard let snapshot = await commitArchive(summary) else { return }
-            scheduleUndo(threadIds: [threadId], message: "スレッドをアーカイブしました", accountIds: [accountId]) {
+            scheduleUndo(threadIds: [threadId], message: "\(undoNoun(for: summary))をアーカイブしました", accountIds: [accountId]) {
                 await undoRemoval(snapshot)
             }
         }
@@ -1096,7 +1129,7 @@ struct MessageListView: View {
         do {
             let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
                 guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
-                let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                let messages = try ThreadQuery.actionTargets(for: summary, db: db)
                 let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
                 for message in messages {
                     guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
@@ -1133,7 +1166,7 @@ struct MessageListView: View {
         let accountId = summary.thread.accountId
         Task {
             guard let snapshot = await commitDelete(summary) else { return }
-            scheduleUndo(threadIds: [threadId], message: "スレッドを削除しました", accountIds: [accountId]) {
+            scheduleUndo(threadIds: [threadId], message: "\(undoNoun(for: summary))を削除しました", accountIds: [accountId]) {
                 await undoRemoval(snapshot)
             }
         }
@@ -1154,7 +1187,7 @@ struct MessageListView: View {
         do {
             let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
                 guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
-                let messages = try ThreadQuery.messages(threadId: threadId, db: db)
+                let messages = try ThreadQuery.actionTargets(for: summary, db: db)
                 let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
                 for message in messages {
                     guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
