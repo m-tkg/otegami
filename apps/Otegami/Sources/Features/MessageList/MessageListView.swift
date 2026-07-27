@@ -701,7 +701,7 @@ struct MessageListView: View {
         let accountIds = Set(targets.map(\.thread.accountId))
         exitSelectionMode()
         Task {
-            var snapshots: [RemovedMessagesSnapshot] = []
+            var snapshots: [MessageRemoval.Snapshot] = []
             for summary in targets {
                 if let snapshot = await commitArchive(summary) { snapshots.append(snapshot) }
             }
@@ -718,7 +718,7 @@ struct MessageListView: View {
         let accountIds = Set(targets.map(\.thread.accountId))
         exitSelectionMode()
         Task {
-            var snapshots: [RemovedMessagesSnapshot] = []
+            var snapshots: [MessageRemoval.Snapshot] = []
             for summary in targets {
                 if let snapshot = await commitDelete(summary) { snapshots.append(snapshot) }
             }
@@ -1067,33 +1067,12 @@ struct MessageListView: View {
         summary.singleMessageId != nil ? "メール" : "スレッド"
     }
 
-    /// Removes every message in the thread from the local list immediately
-    /// and enqueues one `junk` op per message — same "commit immediately,
-    /// make undo fully reversible" shape as `commitDelete(_:)`/
-    /// `commitArchive(_:)` (see either's doc comment for why).
-    private func commitJunk(_ summary: ThreadSummary) async -> RemovedMessagesSnapshot? {
-        guard let threadId = summary.thread.id else { return nil }
-        let accountId = summary.thread.accountId
+    /// `commitArchive`'s `.junk` counterpart — see its doc comment.
+    private func commitJunk(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
         do {
-            let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
-                guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
-                let messages = try ThreadQuery.actionTargets(for: summary, db: db)
-                let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
-                for message in messages {
-                    guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
-                    guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
-                    try OpQueue.enqueueJunk(
-                        accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [uid], db: db
-                    )
-                    try FTSIndexer.delete(messageId: messageId, db: db)
-                    try MessageRecord.deleteOne(db, key: messageId)
-                }
-                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-                let opQueueIds = try Int64.fetchAll(db, sql: "SELECT id FROM opQueue WHERE id > ? ORDER BY id", arguments: [beforeMaxOpId])
-                return RemovedMessagesSnapshot(thread: thread, messages: messages, opQueueIds: opQueueIds)
-            }
-            guard let snapshot else { return nil }
+            guard let snapshot = try await environment.database.dbWriter.write({ db in
+                try MessageRemoval.commit(.junk, summary: summary, accountId: summary.thread.accountId, db: db)
+            }) else { return nil }
             if isSearchActive {
                 searchResults.removeAll { $0.id == summary.id }
             }
@@ -1103,12 +1082,10 @@ struct MessageListView: View {
         }
     }
 
-    /// The swipe row's single-thread archive action — schedules an undo
-    /// window (see `scheduleUndo`'s doc comment) before actually running
-    /// `commitArchive(_:)`.
     /// The swipe row's single-thread archive action — commits immediately
-    /// (see `commitArchive`'s doc comment), then hands the resulting
-    /// snapshot to `scheduleUndo`.
+    /// (see `MessageRemoval.commit(_:summary:accountId:db:)`'s doc comment
+    /// in `SyncEngine`), then hands the resulting snapshot to
+    /// `scheduleUndo`.
     private func archiveThread(_ summary: ThreadSummary) {
         guard let threadId = summary.thread.id else { return }
         let accountId = summary.thread.accountId
@@ -1120,55 +1097,19 @@ struct MessageListView: View {
         }
     }
 
-    /// Removes every message in the thread from its current mailbox and
-    /// enqueues one `archive` op per message — mirrors `commitDelete(_:)`'s
-    /// shape exactly, just with `OpQueue.enqueueArchive` in place of
-    /// `enqueueDelete`. Like `.delete`, `.archive`'s destination (or, for a
-    /// Gmail account, "no destination — just unlabel the source") is
-    /// resolved by `OpQueueProcessor` at *replay* time, not here at enqueue
-    /// time — see `OpQueueKind.archive`'s doc comment for why a
-    /// pre-resolved local Archive-role mailbox lookup used to make
-    /// archiving silently do nothing on a real Gmail account (Gmail has no
-    /// `\Archive` folder at all).
-    ///
-    /// Commits the local database write (and enqueues the `move` op)
-    /// *immediately*, unlike this feature's first version — see
-    /// `RemovedMessagesSnapshot`/`undoRemoval(_:)`'s doc comment for why:
-    /// delaying the local write itself (so "undo" could just... not commit
-    /// it) turned out to have a real data-loss bug, caught by
-    /// `scripts/verify-ios-m3.sh`'s offline swipe-delete phase — an app
-    /// relaunch inside the old delayed-commit window silently lost the
-    /// action entirely, since the pending `Task.sleep` driving the eventual
-    /// write died with the process before ever running. Committing
-    /// immediately (durable to disk before this method even returns) and
-    /// instead making *undo itself* fully reversible closes that gap: the
-    /// opQueue row this enqueues survives any kill regardless of timing,
-    /// and a normal relaunch's existing foreground-sync replay picks it up
-    /// exactly like any other queued op.
-    private func commitArchive(_ summary: ThreadSummary) async -> RemovedMessagesSnapshot? {
-        guard let threadId = summary.thread.id else { return nil }
-        let accountId = summary.thread.accountId
+    /// Thin app-target wrapper around `SyncEngine.MessageRemoval.commit(_:
+    /// summary:accountId:db:)` — the actual local-DB mutation is `SyncEngine`
+    /// code now (unit-tested there without a SwiftUI host); this just wires
+    /// it to `environment.database.dbWriter` and keeps `searchResults` in
+    /// sync (a one-shot array, not a live `ValueObservation` like
+    /// `summaries` — the normal list picks up a removal automatically, but
+    /// a search-mode row needs this explicit nudge or the just-removed
+    /// thread would keep showing until the next debounced re-search).
+    private func commitArchive(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
         do {
-            let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
-                guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
-                let messages = try ThreadQuery.actionTargets(for: summary, db: db)
-                let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
-                for message in messages {
-                    guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
-                    guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
-                    guard mailbox.role != .archive else { continue }
-                    try OpQueue.enqueueArchive(
-                        accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [uid], db: db
-                    )
-                    try FTSIndexer.delete(messageId: messageId, db: db)
-                    try MessageRecord.deleteOne(db, key: messageId)
-                }
-                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-                let opQueueIds = try Int64.fetchAll(db, sql: "SELECT id FROM opQueue WHERE id > ? ORDER BY id", arguments: [beforeMaxOpId])
-                return RemovedMessagesSnapshot(thread: thread, messages: messages, opQueueIds: opQueueIds)
-            }
-            guard let snapshot else { return nil }
+            guard let snapshot = try await environment.database.dbWriter.write({ db in
+                try MessageRemoval.commit(.archive, summary: summary, accountId: summary.thread.accountId, db: db)
+            }) else { return nil }
             if isSearchActive {
                 searchResults.removeAll { $0.id == summary.id }
             }
@@ -1181,8 +1122,8 @@ struct MessageListView: View {
     }
 
     /// The swipe row's single-thread delete action — commits immediately
-    /// (see `commitDelete`'s doc comment), then hands the resulting
-    /// snapshot to `scheduleUndo`.
+    /// (see `commitArchive`'s doc comment; `commitDelete` is its `.delete`
+    /// counterpart), then hands the resulting snapshot to `scheduleUndo`.
     private func deleteThread(_ summary: ThreadSummary) {
         guard let threadId = summary.thread.id else { return }
         let accountId = summary.thread.accountId
@@ -1194,46 +1135,12 @@ struct MessageListView: View {
         }
     }
 
-    /// Removes every message in the thread from the local list immediately
-    /// (optimistic — the mailbox's/unified inbox's `ValueObservation` picks
-    /// up the deletion right away, and `ThreadAssigner.recomputeAggregates`
-    /// deletes the now-empty `thread` row) and enqueues one `delete` op per
-    /// message (opQueue resolves each message's own account's Trash
-    /// mailbox and issues the actual `MOVE` at replay time) — immediately,
-    /// same as `commitArchive(_:)`; see its doc comment for why "immediately,
-    /// with a fully-reversible undo" replaced this feature's first
-    /// "delay the whole write" design.
-    private func commitDelete(_ summary: ThreadSummary) async -> RemovedMessagesSnapshot? {
-        guard let threadId = summary.thread.id else { return nil }
-        let accountId = summary.thread.accountId
+    /// `commitArchive`'s `.delete` counterpart — see its doc comment.
+    private func commitDelete(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
         do {
-            let snapshot = try await environment.database.dbWriter.write { db -> RemovedMessagesSnapshot? in
-                guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
-                let messages = try ThreadQuery.actionTargets(for: summary, db: db)
-                let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
-                for message in messages {
-                    guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
-                    guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
-                    try OpQueue.enqueueDelete(
-                        accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [uid], db: db
-                    )
-                    // M7: `messageSearchIndex` isn't a real foreign-keyed
-                    // table, so this deletion needs its own explicit
-                    // index cleanup alongside the `message` row's.
-                    try FTSIndexer.delete(messageId: messageId, db: db)
-                    try MessageRecord.deleteOne(db, key: messageId)
-                }
-                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-                let opQueueIds = try Int64.fetchAll(db, sql: "SELECT id FROM opQueue WHERE id > ? ORDER BY id", arguments: [beforeMaxOpId])
-                return RemovedMessagesSnapshot(thread: thread, messages: messages, opQueueIds: opQueueIds)
-            }
-            guard let snapshot else { return nil }
-            // `searchResults` is a one-shot array, not a live
-            // `ValueObservation` like `summaries` — the normal list
-            // picks up a deletion automatically, but a search-mode row
-            // needs this explicit nudge or the just-deleted thread
-            // would keep showing until the next debounced re-search.
+            guard let snapshot = try await environment.database.dbWriter.write({ db in
+                try MessageRemoval.commit(.delete, summary: summary, accountId: summary.thread.accountId, db: db)
+            }) else { return nil }
             if isSearchActive {
                 searchResults.removeAll { $0.id == summary.id }
             }
@@ -1245,50 +1152,17 @@ struct MessageListView: View {
         }
     }
 
-    /// Everything `undoRemoval(_:)` needs to reverse one `commitDelete`/
-    /// `commitArchive` call: the thread's aggregate row and every message
-    /// row it removed (captured *before* removal, full field data —
-    /// re-inserting them restores the exact same `id`s, so nothing else in
-    /// the app needs to know a delete/archive was ever reversed), plus the
-    /// opQueue row ids that call enqueued (captured via a before/after
-    /// max-`id` diff within the same transaction — `OpQueue.enqueueDelete`/
-    /// `enqueueMove` don't themselves return the id they just inserted).
-    private struct RemovedMessagesSnapshot {
-        var thread: ThreadRecord
-        var messages: [MessageRecord]
-        var opQueueIds: [Int64]
-    }
-
-    /// Reverses one `commitDelete`/`commitArchive` call: deletes the
-    /// opQueue rows it enqueued (a no-op for any that already replayed —
-    /// see `scheduleUndo`'s doc comment on that race) and re-inserts every
-    /// removed message plus the thread aggregate row, each with its
-    /// original `id` (GRDB's default `insert` includes an already-set
-    /// primary key value in the `INSERT` statement, and the row it
-    /// occupied was just deleted, so there's no conflict to resolve).
-    /// `FTSIndexer.reindex` restores each message's search-index row the
-    /// same way `FTSIndexer.delete` removed it. Best-effort, matching every
-    /// other opQueue-enqueuing/db-mutating path in this file — a failure
-    /// here just leaves the delete/archive applied, same as if "元に戻す"
-    /// had never been tapped.
-    private func undoRemoval(_ snapshot: RemovedMessagesSnapshot) async {
+    /// Reverses one `commitDelete`/`commitArchive` call — thin wrapper
+    /// around `SyncEngine.MessageRemoval.undo(_:db:)`; see that method's
+    /// doc comment for the thread-before-messages ordering this restores
+    /// and why it matters. Best-effort, matching every other
+    /// opQueue-enqueuing/db-mutating path in this file — a failure here
+    /// just leaves the delete/archive applied, same as if "元に戻す" had
+    /// never been tapped.
+    private func undoRemoval(_ snapshot: MessageRemoval.Snapshot) async {
         do {
             try await environment.database.dbWriter.write { db in
-                try OpQueueRecord.deleteAll(db, keys: snapshot.opQueueIds)
-                for message in snapshot.messages {
-                    var restored = message
-                    try restored.insert(db)
-                    if let messageId = restored.id {
-                        try FTSIndexer.reindex(messageId: messageId, db: db)
-                    }
-                }
-                guard let threadId = snapshot.thread.id else { return }
-                if try ThreadRecord.fetchOne(db, key: threadId) == nil {
-                    var restoredThread = snapshot.thread
-                    try restoredThread.insert(db)
-                } else {
-                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-                }
+                try MessageRemoval.undo(snapshot, db: db)
             }
         } catch {
             // Best-effort — see doc comment above.
