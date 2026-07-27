@@ -235,6 +235,40 @@ OS バージョンは iOS/macOS 26 以降が前提（本アプリの最低対応
   ルは訳文表示時にプレーンテキスト化される、等) は
   `docs/design-system.md` の design-phase-3 節にまとめてある。
 
+## 要約からの引用除外 (QuoteStripper)
+
+ユーザー要望 (Task #46): 「メールの返信がたくさん繰り返されて過去の文章が
+たくさんある時、そこは要約の対象外にして欲しい」。長い返信スレッドを要約
+すると、新しく書かれた分だけでなく引用された過去のやり取り全体まで要約の
+入力に含まれてしまい、要約の質が下がる (古い話題が混ざる、`sentenceCount`
+に対して新規分の比率が薄まる) 問題への対応。
+
+- **`QuoteStripper` (`OtegamiCore`)**: 純関数、`HTMLTextExtractor` と同じく
+  Linux 互換 (WebKit/NSAttributedString 不使用)。「最初に見つかった引用
+  マーカーより後ろを丸ごと落とす」という戦略 — 各メールクライアントの
+  引用規約 (Gmail の `gmail_quote`/`gmail_attr` div、Apple Mail/Thunderbird
+  の `<blockquote>`、Thunderbird の `moz-cite-prefix` div、Outlook の
+  `divRplyFwdMsg`/`appendonsend` id、プレーンテキストの `> ` 引用行、
+  「On ... wrote:」「-----Original Message-----」「〜さんは書きました」
+  「差出人: .../送信日時: ...」ヘッダブロック等) は例外なく「引用がどこ
+  から始まるか」を示すものであって「どこで終わるか」ではないため、
+  new-then-quoted の top-posting (このアプリ自身の `ComposerView
+  .quotedBody`/`forwardHeaderBlock` が生成する形もこれ) を前提に、最初の
+  マーカーの手前で打ち切る。
+  - `strippingQuotedText(fromHTML:)`: 上記の HTML 構造マーカーのうち最も
+    早い位置で HTML 文字列を打ち切ってから `HTMLTextExtractor.plainText`
+    で平文化する。
+  - `strippingQuotedText(fromPlainText:)`: 上記のプレーンテキスト・
+    マーカーのうち最も早い位置で文字列を打ち切る。
+  - **フォールバック**: 打ち切り後の本文 (前後空白を除く) が40文字未満
+    ならその除去を行わず全文を使う — 「転送だけして新規コメントなし」
+    のようなメールで要約の入力が空になるのを防ぐ。
+- **適用範囲は要約のみ**: `MessageView.sourceTextForSummary()` という
+  専用メソッドを新設し、`requestSummary` だけがこれを経由する。
+  `sourceTextForTranslation()` (翻訳と本文表示が共有) 自体は変更しない
+  — 翻訳・本文表示は受信した通りの全文 (引用込み) を扱う必要があるため、
+  同じ関数を要約用に書き換えるのではなく分離した。
+
 ## バグ修正: 実機で「翻訳ボタンが出ない」「AI要約が壊れている」
 
 実機報告を受けて調査・修正。上記の長文コンテキスト超過とは別の、翻訳・

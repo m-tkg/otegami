@@ -955,22 +955,51 @@ struct MessageView: View {
         summaryState = .none
     }
 
-    /// `AISummaryBar`の「要約」/「再生成」ボタンの行き先 — `sourceTextForTranslation()`
-    /// をそのまま再利用する (要約も翻訳と同じく、エンジンはプレーンテキスト
-    /// しか受け付けないため、HTML本文はここでも`HTMLTextExtractor`で平文化
-    /// する)。翻訳と違って結果を永続キャッシュしない (`MessageTranslator`の
-    /// ような専用のキャッシュ層を要約のためだけに新設するのは、このバッチの
-    /// 範囲に対して過大と判断した — 同じメッセージを開き直すたびに再生成に
-    /// なるが、要約はボタンを押した時だけ動く手動機能なので許容範囲) — 出力
-    /// 言語は `LocalizationSettingsStore.effectiveLanguageCode` に合わせる
-    /// (英語表示なら英語要約、それ以外は日本語要約)。`summarize`ではなく
+    /// `requestSummary`専用のソーステキスト — `sourceTextForTranslation()`と
+    /// 同じ「HTML本文は`HTMLTextExtractor`で平文化」経路を辿るが、その前に
+    /// `QuoteStripper`で引用（返信の繰り返しで積み上がった過去の本文）を
+    /// 落とす (Task #46: 「返信がたくさん繰り返されて過去の文章がたくさん
+    /// ある時、そこは要約の対象外にして欲しい」というユーザー要望)。
+    ///
+    /// `sourceTextForTranslation()`を直接書き換えず専用メソッドに分けたのは、
+    /// あのメソッドは翻訳とも共有されており、翻訳・本文表示は引用を含めた
+    /// 全文のまま扱う必要がある (`QuoteStripper`のdoc comment参照) ため —
+    /// 要約だけがこの追加ステップを踏む。
+    private func sourceTextForSummary() -> String? {
+        guard let bodyRecord else { return nil }
+        let candidate: String?
+        if let plainText = bodyRecord.plainText, !plainText.isEmpty {
+            candidate = QuoteStripper.strippingQuotedText(fromPlainText: plainText)
+        } else if let html = bodyRecord.html, !html.isEmpty {
+            candidate = QuoteStripper.strippingQuotedText(fromHTML: html)
+        } else {
+            candidate = nil
+        }
+        guard let candidate else { return nil }
+        // `sourceTextForTranslation()`と同じ安全網: `QuoteStripper`の平文
+        // 経路はすでに`HTMLTextExtractor`を通しているが、プレーンテキスト
+        // 側は生のマークアップが混じっていた場合に備えてもう一度通す
+        // (no-opになるのが通常ケース)。
+        let normalized = HTMLTextExtractor.plainText(fromHTML: candidate)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    /// `AISummaryBar`の「要約」/「再生成」ボタンの行き先 — ソーステキストは
+    /// `sourceTextForSummary()`(`sourceTextForTranslation()`に`QuoteStripper`
+    /// を足したもの、そのdoc comment参照)。翻訳と違って結果を永続キャッシュ
+    /// しない (`MessageTranslator`のような専用のキャッシュ層を要約のためだけ
+    /// に新設するのは、このバッチの範囲に対して過大と判断した — 同じメッセ
+    /// ージを開き直すたびに再生成になるが、要約はボタンを押した時だけ動く
+    /// 手動機能なので許容範囲) — 出力言語は
+    /// `LocalizationSettingsStore.effectiveLanguageCode`に合わせる (英語
+    /// 表示なら英語要約、それ以外は日本語要約)。`summarize`ではなく
     /// `summarizeLongText`を呼ぶ — 長文メールが8192トークンのコンテキスト
     /// 上限を超えて失敗する翻訳と同じ問題を要約も踏みうるため
     /// (`TranslationChunker`のdoc comment参照)、事前分割+map-reduceで
     /// 安全な長さに保つ。
     private func requestSummary(message: MessageRecord) {
         guard summaryTask == nil else { return }
-        guard let sourceText = sourceTextForTranslation() else { return }
+        guard let sourceText = sourceTextForSummary() else { return }
         summaryState = .summarizing
         let translator = environment.translationService
         let targetLanguage: TranslationLanguage = LocalizationSettingsStore.effectiveLanguageCode == "en" ? .english : .japanese
