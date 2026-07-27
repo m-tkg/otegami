@@ -72,6 +72,14 @@ struct AccountEditView: View {
 
     @State private var isReauthenticating = false
     @State private var reauthErrorMessage: String?
+    /// 実機バグ修正: 「権限の診断」— `.task`で画面表示のたびに1回、
+    /// Google に付与済みスコープを問い合わせる (`AppEnvironment
+    /// .googleGrantedScope(for:)`のドキュメントコメント参照)。「再認証」
+    /// ボタンは成功時にこの画面自体を`dismiss()`するので、この状態は
+    /// 「もう一度この画面を開き直す」たびに新しい`.task`が走って更新
+    /// される — 「再認証 → もう一度アカウント編集を開いて確認」という
+    /// ユーザーの実機確認手順 (`docs/oauth-setup.md`) にちょうど対応する。
+    @State private var scopeDiagnosis: GoogleScopeDiagnosisState = .checking
 
     /// D「アカウントのラベル色を変更可能に」— `nil` means "自動" (the existing
     /// FNV-1a assignment stays in effect). Decoded from `account
@@ -199,6 +207,21 @@ struct AccountEditView: View {
         .tint(OtegamiColor.accent)
         .accessibilityIdentifier("accountEdit.screen")
         .task { await loadAvailableSignatures() }
+        .task { await refreshScopeDiagnosis() }
+    }
+
+    /// `.oauth2`以外 (`.generic`/`.icloud`)では常に`.unknown`のまま —
+    /// `gmailSections`しか`scopeDiagnosis`を表示しないので実害は無いが、
+    /// 無駄な `AppEnvironment.googleGrantedScope(for:)` 呼び出し
+    /// (`.oauth2`チェックで`nil`を返すだけ) は避ける。
+    private func refreshScopeDiagnosis() async {
+        guard account.kind == .gmail else { return }
+        scopeDiagnosis = .checking
+        guard let scope = await environment.googleGrantedScope(for: account) else {
+            scopeDiagnosis = .unknown
+            return
+        }
+        scopeDiagnosis = scope.contains("contacts.other.readonly") ? .granted : .notGranted
     }
 
     private func loadAvailableSignatures() async {
@@ -389,6 +412,8 @@ struct AccountEditView: View {
             .accessibilityIdentifier("accountEdit.reauthButton")
             .disabled(isReauthenticating)
 
+            GoogleScopeDiagnosisRow(state: scopeDiagnosis)
+
             if let reauthErrorMessage {
                 Label(reauthErrorMessage, systemImage: "xmark.octagon")
                     .foregroundStyle(OtegamiColor.destructive)
@@ -547,6 +572,69 @@ struct AccountEditView: View {
         case .generic: "その他 (IMAP)"
         case .gmail: "Gmail"
         case .icloud: "iCloud"
+        }
+    }
+}
+
+/// 実機バグ修正: `AccountEditView.scopeDiagnosis`が取りうる4状態。
+/// トップレベル型にしてある — `AccountEditView`自身に対する
+/// `-warn-long-expression-type-checking`の負荷を増やさないため
+/// (`docs/ci.md`の「SwiftUI ビューの型チェックタイムアウト」節参照)。
+enum GoogleScopeDiagnosisState: Equatable {
+    /// まだ問い合わせ中、または `.gmail` 以外のアカウント種別 (この画面
+    /// では表示自体がされないので実質観測されない)。
+    case checking
+    /// `AppEnvironment.googleGrantedScope(for:)` が返したスコープ文字列に
+    /// `contacts.other.readonly` が含まれていた。
+    case granted
+    /// 問い合わせには成功したが、そのスコープが含まれていなかった —
+    /// 「再認証したのに Google 側で付与されていない」実機バグの症状その
+    /// もの。ユーザーへの案内は「再認証してください」で足りる (再認証
+    /// 自体が機能していれば次で解消するはず — 再認証してもなお解消しない
+    /// 場合は Google Cloud Console 側の OAuth 同意画面設定を疑う必要が
+    /// あるが、それはアプリの外側の話なので `docs/oauth-setup.md` の
+    /// 手順に譲る)。
+    case notGranted
+    /// 問い合わせ自体が失敗した (ネットワークエラー・リフレッシュ
+    /// トークン喪失等) — `.notGranted`と違い「許可されていない」とは
+    /// 断定できないので、区別して表示する。
+    case unknown
+}
+
+/// 実機バグ修正: 「アカウント編集」→ Gmail アカウントの「認証」節に出す
+/// 診断行。ユーザーが実機で撮ったスクリーンショット1枚 (Google 側の
+/// myaccount.google.com/connections) だけが頼りだった状態から、アプリ内
+/// の1タップで「連絡先スコープが付与されているか」を確認できるようにする
+/// のが狙い。
+private struct GoogleScopeDiagnosisRow: View {
+    let state: GoogleScopeDiagnosisState
+
+    var body: some View {
+        switch state {
+        case .checking:
+            HStack {
+                Text("権限を確認中…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                ProgressView()
+            }
+            .accessibilityIdentifier("accountEdit.scopeDiagnosis.checking")
+        case .granted:
+            Label("連絡先の写真: 許可済み", systemImage: "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("accountEdit.scopeDiagnosis.granted")
+        case .notGranted:
+            Label("連絡先の写真: 未許可 — 「再認証」をお試しください", systemImage: "exclamationmark.circle")
+                .font(.caption)
+                .foregroundStyle(OtegamiColor.destructive)
+                .accessibilityIdentifier("accountEdit.scopeDiagnosis.notGranted")
+        case .unknown:
+            Label("権限を確認できませんでした", systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("accountEdit.scopeDiagnosis.unknown")
         }
     }
 }

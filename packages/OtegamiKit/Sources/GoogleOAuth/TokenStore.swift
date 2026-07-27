@@ -80,7 +80,30 @@ public actor TokenStore {
         if let cached = cache[accountId], cached.expiresAt.timeIntervalSince(now()) > Self.refreshWindow {
             return cached.value
         }
+        let tokens = try await refreshAndCache(accountId: accountId)
+        return tokens.accessToken
+    }
 
+    /// Diagnostic-only counterpart to `accessToken(for:)`, for
+    /// `AccountEditView`'s "権限の診断" display — the real-device bug this
+    /// exists to help debug is Google silently not granting a newly-added
+    /// scope on reauth, and `accessToken(for:)` alone can't answer "what
+    /// scope did Google actually grant this token" because a cache hit
+    /// (the common case — most calls happen well before the 5-minute
+    /// refresh window) never touches the token endpoint at all, so there's
+    /// no `scope` field to read. This always forces a real refresh — never
+    /// serves the cache — so its answer is never stale by more than the
+    /// time this call itself takes. Not on the hot path (`auth(for:)`
+    /// doesn't call this), so the extra network round trip only happens
+    /// when a user explicitly opens the diagnostic. Same
+    /// `.invalidGrant`/`TokenStoreError.reauthenticationRequired` handling
+    /// as `accessToken(for:)` — a dead refresh token is just as dead here.
+    public func diagnosticScope(for accountId: String) async throws -> String? {
+        let tokens = try await refreshAndCache(accountId: accountId)
+        return tokens.scope
+    }
+
+    private func refreshAndCache(accountId: String) async throws -> GoogleOAuthTokens {
         guard let refreshToken = try refreshTokenStore.read(accountId: accountId) else {
             throw TokenStoreError.missingRefreshToken
         }
@@ -91,7 +114,7 @@ public actor TokenStore {
             if let rotatedRefreshToken = tokens.refreshToken {
                 try refreshTokenStore.write(rotatedRefreshToken, accountId: accountId)
             }
-            return tokens.accessToken
+            return tokens
         } catch GoogleOAuthError.invalidGrant {
             // The refresh token itself is dead — wipe it so a later call
             // fails fast with `.missingRefreshToken` instead of retrying

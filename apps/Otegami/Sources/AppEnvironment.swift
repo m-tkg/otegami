@@ -118,6 +118,15 @@ final class AppEnvironment {
     /// `DesignSystem`, which can't import this app-target type.
     @ObservationIgnored let avatarImageResolver: any AvatarImageResolving
 
+    /// The same instance `avatarImageResolver`'s `CompositeAvatarImageResolver`
+    /// holds (type-erased there behind `any AvatarImageResolving`), kept
+    /// here too under its concrete type so `reauthenticateGmailAccount(_:)`
+    /// can call `clearScopeInsufficientMemory(for:)` on it directly —
+    /// `AvatarImageResolving` itself has no such method (it's specific to
+    /// this one source), and there's no reason to widen that shared
+    /// protocol just for it.
+    @ObservationIgnored let googleProfilePhotoAvatarResolver: GoogleProfilePhotoAvatarResolver
+
     /// Drives the translation bar's visibility/enabled state and the
     /// Composer's "英語に翻訳して送る" toggle — `false` covers every
     /// `TranslationUnavailableReason` (device not eligible, Apple
@@ -164,15 +173,20 @@ final class AppEnvironment {
         // early alongside the other launch-time setup above. Sources are
         // listed in `SenderAvatar`'s documented priority order — see
         // `CompositeAvatarImageResolver`'s doc comment.
+        // アバター強化バッチ「Google プロフィール写真」: 連絡先の写真の次、
+        // Gravatar の前 — `gmailAccessTokenBridge`はまだ`self`を知らない
+        // (下の`configure(environment:)`呼び出しまで) が、それまでの間に
+        // 解決要求が来ても`gmailAccountIds()`が空を返すだけで安全
+        // (`GmailAccessTokenBridge`のドキュメントコメント参照)。単独の
+        // `let`にしてから`sources`に渡す — `reauthenticateGmailAccount(_:)`
+        // が後で同じインスタンスを`googleProfilePhotoAvatarResolver`
+        // 経由で直接呼べるようにするため (上のプロパティのドキュメント
+        // コメント参照)。
+        let googleProfilePhotoAvatarResolver = GoogleProfilePhotoAvatarResolver(tokenProvider: gmailAccessTokenBridge)
+        self.googleProfilePhotoAvatarResolver = googleProfilePhotoAvatarResolver
         self.avatarImageResolver = CompositeAvatarImageResolver(sources: [
             ContactPhotoResolver(),
-            // アバター強化バッチ「Google プロフィール写真」: 連絡先の写真の
-            // 次、Gravatar の前 — `gmailAccessTokenBridge`はまだ`self`を
-            // 知らない (下の`configure(environment:)`呼び出しまで) が、
-            // それまでの間に解決要求が来ても`gmailAccountIds()`が空を返す
-            // だけで安全 (`GmailAccessTokenBridge`のドキュメントコメント
-            // 参照)。
-            GoogleProfilePhotoAvatarResolver(tokenProvider: gmailAccessTokenBridge),
+            googleProfilePhotoAvatarResolver,
             GravatarAvatarResolver(),
             CompanyLogoAvatarResolver()
         ])
@@ -1154,6 +1168,28 @@ final class AppEnvironment {
         let (_, tokens) = try await requestGmailAuthorization()
         try await tokenStore.storeInitialTokens(tokens, accountId: account.id)
         await setNeedsReauth(false, for: account)
+        // 実機バグ修正: `GoogleProfilePhotoAvatarResolver.scopeInsufficientAccountIds`
+        // のドキュメントコメント参照 — 再認証成功でこのアカウントの
+        // 「スコープ不足」記憶を即座に消す。これをしないと、次にスコープ
+        // 不足で401/403を踏んでいた同一プロセス内では、再認証で新しい
+        // スコープを得た直後でも次回起動までGoogleプロフィール写真の
+        // 取得が永久にスキップされ続ける。
+        await googleProfilePhotoAvatarResolver.clearScopeInsufficientMemory(for: account.id)
+    }
+
+    /// `AccountEditView`の「権限の診断」表示専用 — `account`の現在の
+    /// 付与済みスコープを Google に強制的に問い合わせて返す
+    /// (`TokenStore.diagnosticScope(for:)`のドキュメントコメント参照:
+    /// キャッシュされた既存トークンにはスコープ情報が付随しないため、
+    /// 診断のたびに実際にリフレッシュリクエストを送る必要がある)。
+    /// `.oauth2`以外のアカウントやこのビルドに`tokenStore`が無い場合は
+    /// `nil`。問い合わせ自体が失敗した場合 (ネットワークエラー・
+    /// リフレッシュトークン喪失等) も`nil` — このビューは「わからない」
+    /// と「未許可」を区別して見せる必要があるほど厳密な用途ではなく、
+    /// 失敗時は`reauthErrorMessage`側の通常のエラー表示に任せる。
+    func googleGrantedScope(for account: AccountRecord) async -> String? {
+        guard account.authType == .oauth2, let tokenStore else { return nil }
+        return try? await tokenStore.diagnosticScope(for: account.id)
     }
 
     // MARK: - Push notifications (M9)
