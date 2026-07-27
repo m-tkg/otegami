@@ -111,13 +111,14 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         XCTAssertTrue(list.waitForExistence(timeout: 10))
 
         // Pin the older "来週のランチ" thread — pinning it should move it to
-        // the very top of the newest-first list.
+        // the very top of the newest-first list. D8 「しきい値で自動実行」
+        // バッチ: trailing-long is now armed (and fires immediately on
+        // release) once the drag crosses `longSwipeThreshold` —
+        // `MessageListRow`'s custom `DragGesture` fires the action directly,
+        // no revealed button to find/tap anymore.
         let target = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "来週のランチ")).firstMatch
         XCTAssertTrue(waitForElementScrollingIfNeeded(target, in: app), "Expected the target thread row")
-        target.swipeLeft()
-        let pinButton = app.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", ".pin")).firstMatch
-        XCTAssertTrue(pinButton.waitForExistence(timeout: 5), "Expected a revealed ピン留め swipe button")
-        pinButton.tap()
+        performThresholdSwipe(on: target, distancePoints: -200, in: app)
 
         // Scroll to the very top and confirm the pinned thread's row now
         // shows the pin indicator (`ThreadRowTrailing`'s `pinnedIndicator`)

@@ -51,14 +51,15 @@ final class OtegamiM4SwipeReadUITests: XCTestCase {
         let row = subjectRow()
         XCTAssertTrue(row.waitForExistence(timeout: 10), "Expected the 2-message thread row to still be present after nudging it clear of the edge")
 
-        // Leading swipe reveals the toggle-read action
-        // (`.swipeActions(edge: .leading)` in `MessageListView`).
-        row.swipeRight()
-
-        let toggleReadButton = app.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "toggleRead")).firstMatch
-        XCTAssertTrue(toggleReadButton.waitForExistence(timeout: 10), "Expected the leading swipe action button to appear")
-        toggleReadButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
-        XCTAssertTrue(toggleReadButton.waitForNonExistence(timeout: 10), "Swipe action should dismiss once tapped")
+        // D8 「しきい値で自動実行」バッチ: a leading drag past
+        // `shortSwipeThreshold` (`MessageListRow`'s custom `DragGesture`)
+        // fires 既読/未読切替 the instant the finger lifts — no button to
+        // reveal/tap anymore. The row stays in place (toggling read state
+        // doesn't remove it), so this only confirms the swipe didn't crash
+        // or remove the row; the actual server-side effect (both
+        // References-linked messages picking up `\Seen`) is what
+        // `scripts/verify-ios-m4.sh` polls for afterward via `doveadm fetch`.
+        performThresholdSwipe(on: row, distancePoints: 100, in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "既読/未読切替 should leave the row in place, just with its flag flipped")
     }
 }

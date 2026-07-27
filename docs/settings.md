@@ -187,6 +187,35 @@ HTML メールの詳細画面には、件名の隣に控えめな "HTML" バッ�
   フィールドと同様に同期される (`docs/icloud-sync.md`) — 端末間で選んだ色
   が揃う。
 
+## アカウントの並び替え
+
+`AccountRecord.sortOrder` (migration v25、既存アカウントは現在の表示順
+= createdAt 順で初期化)。設定 →「アカウントの設定」のアカウント一覧で
+ドラッグして並び替えられる — iOS は `EditButton` (`settings.accounts
+.editButton`) をタップして編集モードに入ってからドラッグハンドルが出る
+通常の流儀 (`MessageToolbarSettingsView`の「常時編集モード」とは違い、
+このリストは `NavigationLink`によるアカウント編集画面への遷移とスワイプ
+削除も同居しているため、常時編集モードにすると両方を潰してしまう)。
+macOS は元々編集モードなしでドラッグ並び替えできる (`List`+`.onMove`の
+プラットフォーム標準の挙動、`MessageToolbarSettingsView`のドキュメント
+コメント参照) ため `EditButton` は iOS のみ表示。
+
+- **反映範囲**: `AppEnvironment.accounts`(アカウント一覧を裏で支える
+  唯一の`ValueObservation`、`ORDER BY sortOrder, createdAt`)を経由する
+  画面すべて — 設定のアカウント一覧、ハンバーガーメニューのアカウント
+  セクション (`FolderListSheet`)、統合トレイのアカウント絞り込みチップ
+  (`AccountFilterChipRow`)、Composer の差出人ピッカー。個別の画面ごとに
+  並び替えロジックを持たせる必要はなく、`AppEnvironment.reorderAccounts
+  (_:)`がこの1クエリの元データを書き換えるだけで全画面に伝播する。
+- **新規アカウント**: `AppEnvironment.nextAccountSortOrder()`(現在の
+  最大値+1) を作成時に採番し、常に一覧の末尾に追加される (`AccountSetupView`
+  /`ICloudAccountSetupView`/`createGmailAccount`のいずれも)。
+- **iCloud 同期**: `CloudAccountSnapshot.sortOrder` として同期される
+  (`docs/icloud-sync.md`) — 端末間で並び順を揃えるのが自然な設定のため、
+  `labelColorKey`と同様に last-writer-wins の対象。`defaultSignatureId`
+  のようなデバイスローカルな id とは異なり、並び順は端末をまたいで意味を
+  持つ値のため同期対象にした。
+
 ## アプリアイコンの未読バッジ (実機フィードバック第2弾: H → 第3弾: G で on/off トグルを削除)
 
 統合受信トレイ基準 (`MessageQuery.unifiedInboxUnreadCountObservation`、
@@ -455,6 +484,14 @@ AI要約の出力言語判定 (「メールの言語 ≠ アプリの表示言�
   (下向き) — `DisclosureGroup`の慣習を手動で再現したもの
   (`AccountSectionHeader`のドキュメントコメント参照、`DisclosureGroup`
   自体を使わなかった理由も記載)。
+
+`FolderListSheet`のツールバーに常設されていた「アカウントを追加」の
+「＋」ボタン (`folderSheet.addAccountToolbarButton`) は削除した — アカウント
+追加は設定 (「アカウントの設定」→「アカウントを追加」) から常にできるため、
+ハンバーガーメニューという別動線に同じ入口を重複させる必要がなかった。
+**例外**: アカウント0件のときの空状態に出る「アカウントを追加」ボタン
+(`folderSheet.addAccountButton`) は残した — 0件の状態で設定画面まで辿ら
+せるのは不親切なため。
 
 ## アカウント追加/編集フォームのフィールドラベル (実機フィードバック第3弾: H)
 

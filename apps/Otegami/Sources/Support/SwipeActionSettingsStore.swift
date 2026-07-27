@@ -37,40 +37,19 @@ enum SwipeAction: String, CaseIterable, Identifiable {
         case .delete: "trash"
         }
     }
-
-    /// Whether this action is allowed to auto-fire from a full swipe
-    /// (`.swipeActions(allowsFullSwipe:)`) when assigned to a slot whose
-    /// declaration order would otherwise make it eligible (SwiftUI only
-    /// ever auto-fires the *first* declared action in a `.swipeActions`
-    /// group — see `MessageListRow`'s doc comment). `false` for delete/junk
-    /// specifically: both move messages out of the visible mailbox with no
-    /// extra confirmation step, and design-phase-2 already established
-    /// (`docs/design-system.md`'s deviations section) that this app treats
-    /// "a swipe alone can never trigger a message-moving action" as a
-    /// stronger, deliberate reading of the handoff's "誤操作防止" than a
-    /// literal full-swipe-eligible delete would be. Every other action
-    /// (既読/未読, アーカイブ, ピン留め) is fully reversible with one more tap,
-    /// so a full swipe is fine for those.
-    var isGuardedFromFullSwipe: Bool {
-        switch self {
-        case .delete, .junk: true
-        case .toggleRead, .archive, .pin: false
-        }
-    }
 }
 
 /// D8 「スワイプの割り当て」: 左右スワイプそれぞれに短い/長いスワイプの2アクションを
-/// 割り当てられる設定。SwiftUI's `.swipeActions` can only auto-fire the
-/// *first declared* action in a group on a full swipe (no public API for
-/// two distance-based thresholds each firing a different action) — this
-/// still approximates "短い/長い" the same way design-phase-2's single-slot
-/// version already did: the "短い" action is declared first (closer to the
-/// row's edge, reachable by revealing less of the row, and eligible for a
-/// full-swipe auto-fire unless `SwipeAction.isGuardedFromFullSwipe`), the
-/// "長い" action is declared second (requires revealing further, always
-/// tap-only). Four independent keys/slots this time (leading-short/-long,
-/// trailing-short/-long) instead of one, since D8 asks for both edges'
-/// short/long pair to be configurable, not just the leading edge's.
+/// 割り当てられる設定。しきい値で自動実行バッチ以降、"短い"/"長い" は
+/// `MessageListRow`の自前 `DragGesture` が実測するドラッグ距離のしきい値
+/// (`shortSwipeThreshold`/`longSwipeThreshold`) そのものに対応する —
+/// ドラッグ距離がしきい値を超えた状態で指を離すと、対応するアクションが
+/// ボタンを経由せずその場で実行される（旧: SwiftUI 標準の `.swipeActions`
+/// はグループ内の最初の1つしかフルスワイプで自動発火できず、"長い" 側は
+/// 常にボタンを出してタップさせるしかなかった — 詳細は
+/// `MessageListRow`のドキュメントコメントと `docs/design-system.md` 参照）。
+/// 四つの独立したキー/スロット (leading-short/-long, trailing-short/-long)
+/// で、D8 が要求する「左右それぞれの短い/長いペア」を個別に設定できる。
 ///
 /// Defaults match the previous fixed 1g assignment exactly (right-short=
 /// 既読/未読, right-long=アーカイブ, left=削除 for both slots — this app's

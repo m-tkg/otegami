@@ -10,6 +10,16 @@ import XCTest
 /// while it's stopped (so only the local optimistic removal + enqueue can
 /// be confirmed here; the replay-once-back-online part is verified by the
 /// script after `make mailstack-up`, again via `doveadm`).
+///
+/// D8 「しきい値で自動実行」バッチ: both methods used to reveal a swipe-
+/// action button (`.swipeActions`) and tap it. `MessageListRow` now fires
+/// the default leading-short (既読/未読切替) / trailing-short (削除) action
+/// directly once the drag crosses `shortSwipeThreshold` and the finger
+/// lifts — no button anymore, so both methods drag past that threshold with
+/// `performThresholdSwipe(on:distancePoints:in:)` and assert the resulting
+/// effect directly instead of finding-then-tapping a revealed button. See
+/// `OtegamiSwipeAutoFireUITests` for a dedicated short-vs-long-threshold and
+/// sub-threshold-no-op regression suite.
 final class OtegamiM3SwipeActionsUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -49,19 +59,16 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
         start.press(forDuration: 0.05, thenDragTo: end)
         let row = row(forSubject: "Ｆｗｄ：今月のリリースノート", in: app)
 
-        // Leading swipe (`XCUIElement.swipeRight()`) reveals the
-        // toggle-read action (`.swipeActions(edge: .leading)` in
-        // `MessageListView`) — matched by its accessibility identifier
-        // suffix rather than its label text, since the label reads
-        // "既読にする"/"未読にする" depending on the message's *current*
-        // flag state, which this test doesn't want to assume.
-        row.swipeRight()
-
-        let toggleReadButton = swipeActionButton(identifierSuffix: "toggleRead", in: app)
-        XCTAssertTrue(toggleReadButton.waitForExistence(timeout: 10), "Expected the leading swipe action button to appear")
-        toggleReadButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
-        XCTAssertTrue(toggleReadButton.waitForNonExistence(timeout: 10), "Swipe action should dismiss once tapped")
+        // Leading drag (positive `distancePoints`, past `shortSwipeThreshold`
+        // but short of `longSwipeThreshold`) fires the leading-short action
+        // — 既読/未読切替 by default — the instant the finger lifts. There is
+        // no button to find/tap anymore; the row stays put (toggling read
+        // state doesn't remove it from the list), so this method only
+        // confirms the row survives the swipe and the list stays responsive
+        // — the actual server-side `\Seen` effect is confirmed afterward by
+        // `scripts/verify-ios-m3.sh`'s host-side `doveadm fetch` poll.
+        performThresholdSwipe(on: row, distancePoints: 100, in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "既読/未読切替 should leave the row in place, just with its flag flipped")
     }
 
     func testSwipeDeletesMessageOffline() throws {
@@ -92,13 +99,15 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
         start.press(forDuration: 0.05, thenDragTo: end)
 
         let row = row(forSubject: subject, in: app)
-        // Trailing swipe (`XCUIElement.swipeLeft()`) reveals "削除"
-        // (`.swipeActions(edge: .trailing)` in `MessageListView`).
-        row.swipeLeft()
-
-        let deleteButton = swipeActionButton(identifierSuffix: "delete", in: app)
-        XCTAssertTrue(deleteButton.waitForExistence(timeout: 10), "Expected the trailing swipe action to reveal \"削除\"")
-        deleteButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+        // Trailing drag (negative `distancePoints`, past `shortSwipeThreshold`)
+        // fires the trailing-short action — 削除 by default — immediately on
+        // release. No button to reveal/tap anymore (previously this test
+        // guarded delete behind a tap-only reveal via
+        // `SwipeAction.isGuardedFromFullSwipe`; that guard is gone — see
+        // `MessageListRow`'s doc comment — delete/迷惑メール now auto-fire
+        // like every other action, with the existing undo toast as the
+        // safety net).
+        performThresholdSwipe(on: row, distancePoints: -100, in: app)
 
         XCTAssertTrue(
             row.waitForNonExistence(timeout: 10),
@@ -118,15 +127,5 @@ final class OtegamiM3SwipeActionsUITests: XCTestCase {
         // missed until a QA-sweep regression pass caught it.
         XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected message \"\(subject)\" to be in the list")
         return row
-    }
-
-    /// `app.buttons["messageList.row.<id>.\(identifierSuffix)"]` (exact
-    /// identifier lookup) is the kind of query this project's simulator/
-    /// toolchain has previously failed to match even for a visible element
-    /// (see `.claude/skills/verify/SKILL.md`) — a `CONTAINS` predicate
-    /// against `identifier` finds it reliably instead, the same technique
-    /// already used for label text elsewhere in this suite.
-    private func swipeActionButton(identifierSuffix: String, in app: XCUIApplication) -> XCUIElement {
-        app.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", identifierSuffix)).firstMatch
     }
 }

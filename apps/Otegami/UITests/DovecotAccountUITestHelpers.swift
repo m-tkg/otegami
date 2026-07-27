@@ -97,6 +97,35 @@ extension XCTestCase {
         return found
     }
 
+    /// D8 「しきい値で自動実行」バッチ: drags `element` horizontally by exactly
+    /// `distancePoints` and releases, driving `MessageListRow`'s custom
+    /// `DragGesture`-based swipe directly. There is no more "reveal a
+    /// button, then tap it" step to drive with `XCUIElement.swipeLeft()`/
+    /// `.swipeRight()` (those convenience methods targeted SwiftUI's
+    /// built-in `.swipeActions` recognizer specifically, which
+    /// `MessageListRow` no longer uses) — the action now fires the instant
+    /// this drag's synthesized touch-up event lands, so callers should
+    /// assert on the *effect* (a row disappearing, a pin indicator
+    /// appearing, ...) right after calling this, not on some intermediate
+    /// revealed-button state.
+    ///
+    /// Point-based (not normalized) so callers can target
+    /// `MessageListRow`'s exact `shortSwipeThreshold`/`longSwipeThreshold`
+    /// values precisely regardless of the simulator's screen width — see
+    /// that type if these drift. Positive `distancePoints` drags right
+    /// (arms/fires a *leading* action), negative drags left (*trailing*).
+    @discardableResult
+    func performThresholdSwipe(on element: XCUIElement, distancePoints: CGFloat, in app: XCUIApplication) -> Bool {
+        guard element.waitForExistence(timeout: 5) else { return false }
+        let start = element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        // ObjC `-[XCUICoordinate coordinateWithOffset:]` imports into Swift
+        // as `withOffset(_:)` (the Clang importer drops the leading
+        // "coordinate" word since it repeats the receiver's own type name).
+        let end = start.withOffset(CGVector(dx: distancePoints, dy: 0))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        return true
+    }
+
     /// M9 bug fix follow-up: accepts the `UNUserNotificationCenter`
     /// alert/badge/sound authorization prompt (`"“Otegami” Would Like to
     /// Send You Notifications"` / "Allow" — "許可" if the simulator's

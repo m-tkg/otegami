@@ -1,18 +1,21 @@
 import SwiftUI
 import OtegamiStore
+#if os(iOS)
+import UIKit
+#endif
 
 /// One row inside `MessageListView`'s `List` (and, unchanged, reused by
 /// `SearchTabView`'s result list) — the interactive wrapper around
-/// `ThreadRowView`: tap-to-open-or-toggle-selection, 1g's swipe actions,
+/// `ThreadRowView`: tap-to-open-or-toggle-selection, D8's swipe actions,
 /// 1h's long-press-to-select, and (macOS only) the right-click context
 /// menu. Pulled out of `MessageListView.swift` into its own file, on top of
 /// the `docs/ci.md` "keep row-shaped views small, and keep the `ForEach`
 /// call site itself down to one function call" discipline that file's own
-/// history already established — this row grew two `.swipeActions` groups,
-/// a long-press gesture, and a conditional context menu on top of what was
-/// already flagged as risky before design-phase-2, so isolating it in its
-/// own file keeps `MessageListView.swift`'s own body-adjacent code smaller
-/// too.
+/// history already established — this row grew two swipe-related gesture
+/// layers, a long-press gesture, and a conditional context menu on top of
+/// what was already flagged as risky before design-phase-2, so isolating it
+/// in its own file keeps `MessageListView.swift`'s own body-adjacent code
+/// smaller too.
 ///
 /// A real XCUITest regression while building this (`OtegamiM3SwipeActionsUITests
 /// .testSwipeMarksMessageRead`, `row.swipeRight()` no longer revealing the
@@ -25,6 +28,25 @@ import OtegamiStore
 /// `testSwipeDeletesMessageOffline` already had to nudge around for a
 /// different row. Recorded here too since it cost significant investigation
 /// time to isolate from a genuine code regression.
+///
+/// **しきい値で自動実行バッチ**: iOS's swipe UI was rewritten from SwiftUI's
+/// built-in `.swipeActions` (button-reveal, tap-to-confirm) to a custom
+/// `DragGesture`-driven row that fires the action the instant the finger
+/// lifts past a threshold — no button, nothing to tap. `.swipeActions` can
+/// only ever auto-fire the *first declared* action in a group on a full
+/// swipe (no public API for two independent distance thresholds each firing
+/// a different action), which was the whole reason design-phase-2 settled
+/// for "long swipe reveals a button, tap it" instead of "long swipe just
+/// does it". A hand-rolled `DragGesture` has no such limitation: the row
+/// tracks its own horizontal offset directly and switches which
+/// `SwipeAction` is "armed" as the drag crosses `shortSwipeThreshold`/
+/// `longSwipeThreshold`. See `docs/design-system.md`'s dedicated section for
+/// the full design writeup (threshold values, gesture-vs-scroll
+/// disambiguation, haptics, XCUITest approach) and `docs/settings.md`'s
+/// "スワイプの割り当て" section for the resulting user-facing behavior
+/// (delete/迷惑メール now auto-fire too — the previous "always tap to
+/// confirm" guard for those two actions is gone; the undo toast is the
+/// safety net instead).
 struct MessageListRow: View {
     /// D8 「スワイプの割り当て」— see `SwipeActionSettingsStore`'s doc comment.
     /// Read directly via `@AppStorage` rather than threaded in as
@@ -38,13 +60,6 @@ struct MessageListRow: View {
     private var leadingLong: SwipeAction { SwipeAction(rawValue: leadingLongRaw) ?? SwipeActionSettingsStore.defaultLeadingLong }
     private var trailingShort: SwipeAction { SwipeAction(rawValue: trailingShortRaw) ?? SwipeActionSettingsStore.defaultTrailingShort }
     private var trailingLong: SwipeAction { SwipeAction(rawValue: trailingLongRaw) ?? SwipeActionSettingsStore.defaultTrailingLong }
-
-    /// The short action always shows; the long action only shows if it
-    /// differs from the short one (assigning the same action to both slots
-    /// would otherwise render two identical buttons in the same group).
-    private func slots(short: SwipeAction, long: SwipeAction) -> [SwipeAction] {
-        short == long ? [short] : [short, long]
-    }
 
     let summary: ThreadSummary
     let threadId: Int64
@@ -83,7 +98,99 @@ struct MessageListRow: View {
     let onPin: (ThreadSummary) -> Void
     let onAppear: (ThreadSummary) -> Void
 
+    #if os(iOS)
+    /// Live horizontal offset of the tappable row content while a swipe
+    /// drag is in progress; `0` at rest. Positive = dragged right (leading
+    /// edge revealed), negative = dragged left (trailing edge revealed).
+    /// Reset to `0` (animated) the instant a drag ends, whether or not it
+    /// crossed `shortSwipeThreshold` — there is no "stays revealed" state
+    /// anymore, unlike the old button-reveal `.swipeActions` UI.
+    @State private var dragTranslation: CGFloat = 0
+    /// The last `SwipeReveal` a haptic was fired for, tracked separately
+    /// from `dragTranslation` purely so `swipeGesture`'s `onChanged` can
+    /// tell "did the armed action just change" apart from "the drag moved a
+    /// little further within the same armed action" — only the former
+    /// should buzz.
+    @State private var lastHapticReveal: SwipeReveal = .none
+
+    /// Below this many points of horizontal drag, releasing does nothing
+    /// (the row springs back) — but the short action's color/icon already
+    /// previews underneath from the very start of the drag, per the D8
+    /// batch's "ドラッグ中は行の下からアクションの色 + アイコンが現れ" requirement.
+    private let shortSwipeThreshold: CGFloat = 72
+    /// Past this many points, the *long* action is armed instead (color +
+    /// icon switch to it, plus a stronger haptic) — releasing here fires
+    /// the long action.
+    private let longSwipeThreshold: CGFloat = 152
+    /// How far past `longSwipeThreshold` the drag may still visually
+    /// rubber-band before being clamped — keeps a very fast/long drag from
+    /// sliding the row content off the far edge of the screen.
+    private let maxDragOvershoot: CGFloat = 40
+    #endif
+
     var body: some View {
+        rowContent
+            .accessibilityIdentifier("messageList.row.\(threadId)")
+            // Design system: `List` draws its own default (system-styled)
+            // separators and gives each row standard insets/background — both
+            // fight `ThreadRowView`'s own flat/full-bleed styling, so this row
+            // opts out of both and lets `ThreadRowView` own its full visual
+            // bounds. 表示・操作改善バッチ「カード状表示」: `.listRowInsets` now
+            // carries real horizontal/vertical margin instead of `.zero` — that
+            // margin *is* the gap between cards (and from the screen edge),
+            // replacing the previous full-bleed-row + dashed-divider look
+            // (`.otegamiRowDivider()`) with `ThreadRowView.otegamiCardBackground(_:)`'s
+            // rounded, borderless "面" per row (実機フィードバック第2弾 C).
+            .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: OtegamiSpacing.sm, bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.sm))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            #if os(macOS)
+            .contextMenu {
+                contextMenuContent
+            }
+            #endif
+            #if os(iOS)
+            // 1h: long-press enters bulk-selection mode. `.simultaneousGesture`
+            // rather than `.onLongPressGesture`/`.gesture` deliberately — the
+            // latter two exclusively claim the touch, which risks starving
+            // this row's own `swipeGesture` (also `.simultaneousGesture`,
+            // below) of the same touch-down event. `.simultaneousGesture`
+            // lets both recognizers race normally — a long, mostly-vertical-
+            // or-stationary press still recognizes as a long press, while a
+            // horizontal drag still gets recognized by `swipeGesture` as
+            // before design-phase-2 established for the (now-removed)
+            // built-in `.swipeActions` recognizer.
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.4).onEnded { _ in
+                    onEnterSelection(threadId)
+                }
+            )
+            .onChange(of: isSelecting) { _, nowSelecting in
+                // Bulk-selection mode disables swiping entirely (see
+                // `swipeGesture`'s own guards) — also snap any in-flight
+                // drag back to rest so a row doesn't visually stay offset
+                // once selection mode takes over mid-swipe.
+                if nowSelecting {
+                    dragTranslation = 0
+                    lastHapticReveal = .none
+                }
+            }
+            #endif
+            .onAppear {
+                onAppear(summary)
+            }
+    }
+
+    @ViewBuilder
+    private var rowContent: some View {
+        #if os(iOS)
+        swipeableRow
+        #else
+        rowButton
+        #endif
+    }
+
+    private var rowButton: some View {
         Button(action: handleTap) {
             ThreadRowView(
                 summary: summary,
@@ -95,54 +202,6 @@ struct MessageListRow: View {
             )
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("messageList.row.\(threadId)")
-        // Design system: `List` draws its own default (system-styled)
-        // separators and gives each row standard insets/background — both
-        // fight `ThreadRowView`'s own flat/full-bleed styling, so this row
-        // opts out of both and lets `ThreadRowView` own its full visual
-        // bounds. 表示・操作改善バッチ「カード状表示」: `.listRowInsets` now
-        // carries real horizontal/vertical margin instead of `.zero` — that
-        // margin *is* the gap between cards (and from the screen edge),
-        // replacing the previous full-bleed-row + dashed-divider look
-        // (`.otegamiRowDivider()`) with `ThreadRowView.otegamiCardBackground(_:)`'s
-        // rounded, borderless "面" per row (実機フィードバック第2弾 C).
-        .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: OtegamiSpacing.sm, bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.sm))
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-        // D8 「スワイプの割り当て」— see `SwipeActionSettingsStore`'s doc
-        // comment for the "short=first declared, long=second declared,
-        // guarded actions never auto-fire" design this implements.
-        .swipeActions(edge: .leading, allowsFullSwipe: !leadingShort.isGuardedFromFullSwipe) {
-            swipeButtons(for: slots(short: leadingShort, long: leadingLong))
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: !trailingShort.isGuardedFromFullSwipe) {
-            swipeButtons(for: slots(short: trailingShort, long: trailingLong))
-        }
-        #if os(macOS)
-        .contextMenu {
-            contextMenuContent
-        }
-        #endif
-        #if os(iOS)
-        // 1h: long-press enters bulk-selection mode. `.simultaneousGesture`
-        // rather than `.onLongPressGesture`/`.gesture` deliberately — the
-        // latter two exclusively claim the touch, which risks starving
-        // `List`'s own built-in `.swipeActions` pan-gesture recognizer of
-        // the same touch-down event (both are recognized starting from the
-        // same gesture origin). `.simultaneousGesture` lets both recognizers
-        // race normally — a long, mostly-vertical-or-stationary press still
-        // recognizes as a long press, while a horizontal drag (a swipe)
-        // still gets recognized by `.swipeActions`' own recognizer as
-        // before.
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.4).onEnded { _ in
-                onEnterSelection(threadId)
-            }
-        )
-        #endif
-        .onAppear {
-            onAppear(summary)
-        }
     }
 
     private func handleTap() {
@@ -150,45 +209,6 @@ struct MessageListRow: View {
             onToggleSelection(threadId)
         } else {
             onSelect(summary)
-        }
-    }
-
-    /// D8: builds one button per entry in `actions`, in order — declaration
-    /// order is what decides which one SwiftUI auto-fires on a full swipe
-    /// (always the first — see `body`'s `.swipeActions` doc comment).
-    @ViewBuilder
-    private func swipeButtons(for actions: [SwipeAction]) -> some View {
-        ForEach(actions) { action in
-            swipeButton(for: action)
-        }
-    }
-
-    /// Dispatches one `SwipeAction` to its callback/label/tint — shared by
-    /// both edges' `swipeButtons(for:)` and (unstyled, via `Button` without
-    /// `.tint`) macOS's `contextMenuContent`.
-    @ViewBuilder
-    private func swipeButton(for action: SwipeAction) -> some View {
-        switch action {
-        case .toggleRead:
-            Button { onToggleRead(summary) } label: { toggleReadLabel }
-                .tint(OtegamiColor.accent)
-                .accessibilityIdentifier("messageList.row.\(threadId).toggleRead")
-        case .archive:
-            Button { onArchive(summary) } label: { Label(action.title, systemImage: action.systemImage) }
-                .tint(OtegamiColor.paleBaseStrongest)
-                .accessibilityIdentifier("messageList.row.\(threadId).archive")
-        case .junk:
-            Button { onJunk(summary) } label: { Label(action.title, systemImage: action.systemImage) }
-                .tint(OtegamiColor.destructive)
-                .accessibilityIdentifier("messageList.row.\(threadId).junk")
-        case .pin:
-            Button { onPin(summary) } label: { pinLabel }
-                .tint(OtegamiColor.accentText)
-                .accessibilityIdentifier("messageList.row.\(threadId).pin")
-        case .delete:
-            Button(role: .destructive) { onDelete(summary) } label: { Label(action.title, systemImage: action.systemImage) }
-                .tint(OtegamiColor.destructive)
-                .accessibilityIdentifier("messageList.row.\(threadId).delete")
         }
     }
 
@@ -210,6 +230,20 @@ struct MessageListRow: View {
         }
     }
 
+    /// Executes one `SwipeAction` against this row's callbacks — the iOS
+    /// drag gesture's counterpart to `swipeButton(for:)` below (which
+    /// builds a macOS context-menu *row*, not an executor); kept separate
+    /// since the drag gesture has nothing to build a `View` for.
+    private func perform(_ action: SwipeAction) {
+        switch action {
+        case .toggleRead: onToggleRead(summary)
+        case .archive: onArchive(summary)
+        case .junk: onJunk(summary)
+        case .pin: onPin(summary)
+        case .delete: onDelete(summary)
+        }
+    }
+
     #if os(macOS)
     /// D8: macOS has no swipe gesture, so every assignable action (not just
     /// whatever's currently assigned to a swipe slot) is always available
@@ -221,5 +255,196 @@ struct MessageListRow: View {
             swipeButton(for: action)
         }
     }
+
+    /// Dispatches one `SwipeAction` to its callback/label — macOS-only now
+    /// that iOS fires actions directly via `perform(_:)` instead of
+    /// building a tappable `Button` per action.
+    @ViewBuilder
+    private func swipeButton(for action: SwipeAction) -> some View {
+        switch action {
+        case .toggleRead:
+            Button { onToggleRead(summary) } label: { toggleReadLabel }
+        case .archive:
+            Button { onArchive(summary) } label: { Label(action.title, systemImage: action.systemImage) }
+        case .junk:
+            Button { onJunk(summary) } label: { Label(action.title, systemImage: action.systemImage) }
+        case .pin:
+            Button { onPin(summary) } label: { pinLabel }
+        case .delete:
+            Button(role: .destructive) { onDelete(summary) } label: { Label(action.title, systemImage: action.systemImage) }
+        }
+    }
     #endif
 }
+
+#if os(iOS)
+extension MessageListRow {
+    /// Which action is currently "armed" by the live drag distance — `.none`
+    /// below any threshold (drag too small to have started yet), otherwise
+    /// the short or long action for whichever edge the drag is headed
+    /// toward. Also doubles as the value compared against
+    /// `lastHapticReveal` to decide when to buzz.
+    enum SwipeReveal: Equatable {
+        case none
+        case leading(SwipeAction, isLong: Bool)
+        case trailing(SwipeAction, isLong: Bool)
+
+        var isLong: Bool {
+            switch self {
+            case .none: false
+            case .leading(_, let isLong), .trailing(_, let isLong): isLong
+            }
+        }
+    }
+
+    /// The row content (colored action background + the tappable card,
+    /// offset by the live drag) plus the gesture that drives both. Split out
+    /// of `body` per `docs/ci.md`'s "keep each row-shaped view's `body`
+    /// small" discipline — this got noticeably larger than the old
+    /// `.swipeActions`-based version, which pushed all of this complexity
+    /// into SwiftUI's own implementation instead.
+    var swipeableRow: some View {
+        ZStack {
+            swipeActionBackground
+            rowButton
+                .offset(x: dragTranslation)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: OtegamiRadius.card, style: .continuous))
+        // `.simultaneousGesture` (not `.gesture`) so this doesn't exclusively
+        // claim the touch — `List`'s own vertical-scroll pan recognizer
+        // needs to keep working for drags that turn out to be scrolls, not
+        // swipes. `swipeGesture`'s own `onChanged` only updates
+        // `dragTranslation` once a drag looks clearly horizontal
+        // (`abs(width) > abs(height)`), so a vertical scroll drag never
+        // visibly offsets the row in the first place — the two recognizers
+        // race on the same touch stream and each just ignores the motion
+        // it doesn't care about.
+        .simultaneousGesture(swipeGesture)
+    }
+
+    @ViewBuilder
+    private var swipeActionBackground: some View {
+        switch liveReveal {
+        case .none:
+            Color.clear
+        case .leading(let action, let isLong):
+            SwipeRevealBackground(action: action, isLong: isLong, edge: .leading)
+        case .trailing(let action, let isLong):
+            SwipeRevealBackground(action: action, isLong: isLong, edge: .trailing)
+        }
+    }
+
+    private var liveReveal: SwipeReveal { reveal(for: dragTranslation) }
+
+    /// Classifies a horizontal translation into an armed action: `.none` at
+    /// rest, otherwise the short action below `longSwipeThreshold` or the
+    /// long action past it, on whichever edge the sign of `translationWidth`
+    /// points toward. Used both for the *live* preview (fed `dragTranslation`,
+    /// re-evaluated on every `onChanged`) and for the *commit* decision at
+    /// release (fed the gesture's final `translation.width`).
+    private func reveal(for translationWidth: CGFloat) -> SwipeReveal {
+        guard translationWidth != 0 else { return .none }
+        let magnitude = abs(translationWidth)
+        let isLongReveal = magnitude >= longSwipeThreshold
+        if translationWidth > 0 {
+            return .leading(isLongReveal ? leadingLong : leadingShort, isLong: isLongReveal)
+        } else {
+            return .trailing(isLongReveal ? trailingLong : trailingShort, isLong: isLongReveal)
+        }
+    }
+
+    private func clampedTranslation(_ raw: CGFloat) -> CGFloat {
+        let maxMagnitude = longSwipeThreshold + maxDragOvershoot
+        return max(-maxMagnitude, min(maxMagnitude, raw))
+    }
+
+    /// D8 「しきい値で自動実行」: a plain `DragGesture` instead of
+    /// `.swipeActions` — see the type's own doc comment for why. `minimumDistance:
+    /// 20` keeps a plain tap (and the long-press gesture above) from ever
+    /// reaching `onChanged` at all, and keeps an *actual* vertical scroll
+    /// drag's very first few points from being misread as the start of a
+    /// swipe before `onChanged`'s own width-vs-height check even runs.
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 20, coordinateSpace: .local)
+            .onChanged { value in
+                guard !isSelecting else { return }
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                dragTranslation = clampedTranslation(value.translation.width)
+                let current = liveReveal
+                if current != lastHapticReveal {
+                    lastHapticReveal = current
+                    if current != .none {
+                        UIImpactFeedbackGenerator(style: current.isLong ? .medium : .light).impactOccurred()
+                    }
+                }
+            }
+            .onEnded { value in
+                guard !isSelecting else { return }
+                let translation = value.translation
+                withAnimation(.easeOut(duration: 0.2)) {
+                    dragTranslation = 0
+                }
+                lastHapticReveal = .none
+                commitSwipe(translation: translation)
+            }
+    }
+
+    /// Fires the armed action, if any, once the finger lifts — 「止まらずに
+    /// 処理して欲しい」が D8 バッチの主旨そのもの: no button, no confirmation tap.
+    /// Below `shortSwipeThreshold` this is a no-op (the row just springs
+    /// back, already handled by `onEnded` above) — including for delete/
+    /// 迷惑メール, which used to be guarded to "tap only" via
+    /// `SwipeAction.isGuardedFromFullSwipe` (removed; the undo toast
+    /// `MessageListView.scheduleUndo` schedules is the safety net now, per
+    /// `docs/settings.md`).
+    private func commitSwipe(translation: CGSize) {
+        guard abs(translation.width) > abs(translation.height) else { return }
+        guard abs(translation.width) >= shortSwipeThreshold else { return }
+        switch reveal(for: translation.width) {
+        case .none:
+            break
+        case .leading(let action, _), .trailing(let action, _):
+            perform(action)
+        }
+    }
+}
+
+/// The colored, full-bleed action layer revealed underneath the row as it's
+/// dragged — a standalone `View` (not inlined into `swipeActionBackground`)
+/// so its own body stays trivially type-checkable per `docs/ci.md`.
+private struct SwipeRevealBackground: View {
+    let action: SwipeAction
+    let isLong: Bool
+    let edge: HorizontalEdge
+
+    enum HorizontalEdge { case leading, trailing }
+
+    var body: some View {
+        // 色付き背景 + アイコンのみ — ボタンという概念は無い (実機の Gmail の
+        // スワイプ挙動を参照して確定した見た目、しきい値で自動実行バッチの
+        // 検証記録参照)。ラベル文字は付けない: 短い/長いの切り替えは色と
+        // アイコンだけで表現する。
+        HStack(spacing: 0) {
+            if edge == .trailing { Spacer(minLength: 0) }
+            Image(systemName: action.systemImage)
+                .font(.system(size: isLong ? 24 : 20, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, OtegamiSpacing.xl)
+            if edge == .leading { Spacer(minLength: 0) }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(tint)
+        .accessibilityHidden(true)
+    }
+
+    private var tint: Color {
+        switch action {
+        case .toggleRead: OtegamiColor.accent
+        case .archive: OtegamiColor.paleBaseStrongest
+        case .junk: OtegamiColor.destructive
+        case .pin: OtegamiColor.accentText
+        case .delete: OtegamiColor.destructive
+        }
+    }
+}
+#endif
