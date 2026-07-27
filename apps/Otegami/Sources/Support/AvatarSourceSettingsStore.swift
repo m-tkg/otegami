@@ -29,6 +29,18 @@ enum AvatarSourceSettingsStore {
         UserDefaults.standard.bool(forKey: showContactPhotoKey)
     }
 
+    /// アバター強化バッチ「Google プロフィール写真」— Gmail (OAuth) アカウント
+    /// が1つ以上ある場合に限り、差出人アドレスを Google People API に送信して
+    /// プロフィール写真を取得する (`GoogleProfilePhotoAvatarResolver`)。連絡先
+    /// の写真の次、Gravatar の前の優先順位。Gravatar と同じく外部サービスへの
+    /// 通信を伴うため既定 ON・設定でいつでも無効化できる。既定 ON。
+    static let showGoogleProfilePhotoKey = "avatarSource.showGoogleProfilePhoto"
+    static let defaultShowGoogleProfilePhoto = true
+
+    static var isGoogleProfilePhotoEnabled: Bool {
+        UserDefaults.standard.bool(forKey: showGoogleProfilePhotoKey)
+    }
+
     /// フェーズ2「Gravatar」— 差出人アドレスの SHA-256 ハッシュを
     /// gravatar.com へ送信して画像を取得する。連絡先の写真と違い外部
     /// サービスへの通信を伴うため、設定画面には「差出人アドレスのハッシュ
@@ -55,6 +67,7 @@ extension UserDefaults {
     static func registerOtegamiAvatarSourceDefaults() {
         standard.register(defaults: [
             AvatarSourceSettingsStore.showContactPhotoKey: AvatarSourceSettingsStore.defaultShowContactPhoto,
+            AvatarSourceSettingsStore.showGoogleProfilePhotoKey: AvatarSourceSettingsStore.defaultShowGoogleProfilePhoto,
             AvatarSourceSettingsStore.showGravatarKey: AvatarSourceSettingsStore.defaultShowGravatar,
             AvatarSourceSettingsStore.showCompanyLogoKey: AvatarSourceSettingsStore.defaultShowCompanyLogo
         ])

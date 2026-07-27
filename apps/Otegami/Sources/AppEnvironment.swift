@@ -30,6 +30,13 @@ final class AppEnvironment {
     let credentialStore: KeychainCredentialStore
     /// C6/C7 送信キャンセル — see `PendingSendCoordinator`'s doc comment.
     let pendingSendCoordinator = PendingSendCoordinator()
+    /// アバター強化バッチ「Google プロフィール写真」— see `GmailAccessTokenBridge`'s
+    /// doc comment. Default-initialized here (no dependency on anything else
+    /// in this class), same "wired to `self` at the very end of `init()`"
+    /// two-phase pattern as `pendingSendCoordinator` right above — this is
+    /// what makes it safe to already be usable when `avatarImageResolver`
+    /// below is built, well before `database`/`tokenStore` exist.
+    @ObservationIgnored private let gmailAccessTokenBridge = GmailAccessTokenBridge()
     /// M9: push opt-in. `pushSettings` is the persistence layer
     /// (`PushSettingsStore`'s doc comment); `isPushEnabled`/
     /// `pushRelayURLString` mirror it into `@Observable` state so
@@ -84,15 +91,17 @@ final class AppEnvironment {
     /// one-off translations not tied to a stored message (`ComposerView`'s
     /// "英語に翻訳して送る" — there's no `messageId` for a draft still being
     /// typed, so `MessageTranslator`'s per-message cache doesn't apply).
-    /// Always `FoundationModelsTranslationService` — this app's deployment
-    /// target is already iOS/macOS 26 (`project.yml`), so the type itself
-    /// is unconditionally available at compile time; whether it can
-    /// actually translate on *this* device/Apple Intelligence
-    /// configuration is a runtime question `isTranslationAvailable`
-    /// answers by reading `availability`, not something that needs a
-    /// separate `FakeTranslationService` fallback in the shipping app (that
-    /// fake exists for tests/previews — `OtegamiTranslation`'s own doc
-    /// comment).
+    /// `FoundationModelsTranslationService` in every normal build — this
+    /// app's deployment target is already iOS/macOS 26 (`project.yml`), so
+    /// the type itself is unconditionally available at compile time;
+    /// whether it can actually translate on *this* device/Apple
+    /// Intelligence configuration is a runtime question
+    /// `isTranslationAvailable` answers by reading `availability`. `init()`'s
+    /// `OTEGAMI_UITEST_FAKE_TRANSLATION` check is the one exception — swaps
+    /// in `FakeTranslationService` (normally a tests/previews-only type,
+    /// `OtegamiTranslation`'s own doc comment) purely so 1i's HTML-
+    /// preserving translation display can still be verified end-to-end on a
+    /// Simulator where Foundation Models itself doesn't run.
     @ObservationIgnored let translationService: any TranslationService
     /// The cached, per-message-persisted counterpart (`docs/translation.md`'s
     /// "キャッシュ方針") — what `MessageView`'s translation bar (1i) actually
@@ -157,6 +166,13 @@ final class AppEnvironment {
         // `CompositeAvatarImageResolver`'s doc comment.
         self.avatarImageResolver = CompositeAvatarImageResolver(sources: [
             ContactPhotoResolver(),
+            // アバター強化バッチ「Google プロフィール写真」: 連絡先の写真の
+            // 次、Gravatar の前 — `gmailAccessTokenBridge`はまだ`self`を
+            // 知らない (下の`configure(environment:)`呼び出しまで) が、
+            // それまでの間に解決要求が来ても`gmailAccountIds()`が空を返す
+            // だけで安全 (`GmailAccessTokenBridge`のドキュメントコメント
+            // 参照)。
+            GoogleProfilePhotoAvatarResolver(tokenProvider: gmailAccessTokenBridge),
             GravatarAvatarResolver(),
             CompanyLogoAvatarResolver()
         ])
@@ -354,12 +370,37 @@ final class AppEnvironment {
 
         // design-phase-3: see `translationService`/`messageTranslator`'s
         // doc comments.
-        let translationService = FoundationModelsTranslationService()
+        //
+        // `OTEGAMI_UITEST_FAKE_TRANSLATION`: this project's Simulator/host
+        // combination can't actually run Foundation Models from inside the
+        // sandboxed `.app` process (`FoundationModelsTranslationService.translateParagraphs`
+        // consistently throws `FoundationModels.LanguageModelError error -1`
+        // there, confirmed not a code bug — the identical call succeeds in
+        // 2-5s run instead as a plain `swift test` process on the same host;
+        // `docs/translation.md`'s "既知の制限" section has the full
+        // writeup). That makes the HTML-preserving translation display path
+        // (1i) impossible to verify end-to-end via a real on-device
+        // translation on this Simulator — this flag substitutes
+        // `FakeTranslationService` (deterministic `"[ja] ..."` output, no
+        // Apple Intelligence dependency) so a UITest/manual verify run can
+        // still drive the actual DOM-rewrite/layout-preservation code path,
+        // matching this file's other `OTEGAMI_UITEST_*` launch-environment
+        // overrides (`deleteCredentialIfUITestRequested`'s doc comment in
+        // `MessageView`, `OTEGAMI_UITEST_DISABLE_CLOUD_SYNC` below).
+        let translationService: any TranslationService
+        let translationEngineIdentifier: String
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_FAKE_TRANSLATION"] == "1" {
+            translationService = FakeTranslationService()
+            translationEngineIdentifier = MessageTranslator.EngineIdentifier.fake
+        } else {
+            translationService = FoundationModelsTranslationService()
+            translationEngineIdentifier = MessageTranslator.EngineIdentifier.foundationModels
+        }
         self.translationService = translationService
         self.messageTranslator = MessageTranslator(
             database: database,
             service: translationService,
-            engineIdentifier: MessageTranslator.EngineIdentifier.foundationModels
+            engineIdentifier: translationEngineIdentifier
         )
 
         let pushSettings = PushSettingsStore(accessGroup: OtegamiAppGroup.keychainAccessGroup)
@@ -426,6 +467,9 @@ final class AppEnvironment {
         // (Swift's two-phase init rule — `self` can't be handed to
         // anything, even just to store a `weak` back-reference, until then).
         pendingSendCoordinator.configure(environment: self)
+        // アバター強化バッチ「Google プロフィール写真」: same reasoning,
+        // same timing — see `GmailAccessTokenBridge`'s doc comment.
+        gmailAccessTokenBridge.configure(environment: self)
 
         startObservingAccounts()
 
@@ -1348,5 +1392,53 @@ final class AppEnvironment {
             return url
         }
         return nil
+    }
+}
+
+/// Bridges `GoogleProfilePhotoAvatarResolver` (an actor with no reachable
+/// path to `AppEnvironment` at construction time — it's built inside
+/// `AppEnvironment.init()` alongside the other `AvatarImageResolving`
+/// sources, before `database`/`tokenStore`/`accounts` exist at all) to the
+/// live Gmail account list and `TokenStore` it needs at *call* time, once
+/// avatar resolution actually starts happening (well after `init()` has
+/// returned). Mirrors `PendingSendCoordinator`'s `weak var environment`/
+/// `configure(environment:)` two-phase wiring (see that type's doc comment
+/// for the identical reasoning): created with a `nil` `environment` by
+/// `AppEnvironment`'s `gmailAccessTokenBridge` property (a default-valued
+/// stored property, so it already exists before `init()`'s body runs), then
+/// wired to `self` as the very last step of `init()`.
+///
+/// `@MainActor` (not an `actor`) specifically so `configure(environment:)`
+/// can be called synchronously from `AppEnvironment.init()` itself, the same
+/// constraint `PendingSendCoordinator.configure(environment:)` is under.
+/// `@unchecked Sendable`: every stored property (`environment`) is only ever
+/// read/written while isolated to the main actor — the compiler can't verify
+/// that automatically for a plain (non-`actor`) class, but the isolation
+/// itself makes it safe, matching this codebase's other `@unchecked
+/// Sendable` main-actor-isolated types (e.g. `ASWebAuthenticationSessionRunner`'s
+/// doc comment).
+@MainActor
+final class GmailAccessTokenBridge: GmailAccessTokenProviding, @unchecked Sendable {
+    private weak var environment: AppEnvironment?
+
+    func configure(environment: AppEnvironment) {
+        self.environment = environment
+    }
+
+    /// Before `configure(environment:)` has run (a narrow window: only
+    /// between `avatarImageResolver`'s construction and the
+    /// `configure(environment:)` call a few dozen lines later in the same
+    /// `init()`) this returns `[]`, same as "no Gmail accounts yet" — never
+    /// a crash, just a resolver that quietly has nothing to offer yet.
+    func gmailAccountIds() async -> [String] {
+        guard let environment else { return [] }
+        return environment.accounts.filter { $0.kind == .gmail }.map(\.id)
+    }
+
+    func accessToken(for accountId: String) async throws -> String {
+        guard let environment, let tokenStore = environment.tokenStore else {
+            throw TokenStoreError.missingRefreshToken
+        }
+        return try await tokenStore.accessToken(for: accountId)
     }
 }

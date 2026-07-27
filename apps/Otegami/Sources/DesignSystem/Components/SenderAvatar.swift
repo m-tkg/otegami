@@ -10,10 +10,12 @@ import AppKit
 /// (`docs/design-system.md` のこのバッチの節):
 ///
 /// 1. 連絡先の写真 (`ContactPhotoResolver`, オンデバイス)
-/// 2. Gravatar (`GravatarAvatarResolver`, 差出人アドレスのハッシュを
+/// 2. Google プロフィール写真 (`GoogleProfilePhotoAvatarResolver`, Gmail
+///    アカウントが1つ以上ある場合のみ — People API に差出人アドレスを送信)
+/// 3. Gravatar (`GravatarAvatarResolver`, 差出人アドレスのハッシュを
 ///    gravatar.com に送信 — 既定 ON、設定で無効化可)
-/// 3. BIMI/企業ロゴの favicon (`CompanyLogoAvatarResolver`)
-/// 4. どれも解決できなければイニシャル + アカウント色
+/// 4. BIMI/企業ロゴの favicon (`CompanyLogoAvatarResolver`)
+/// 5. どれも解決できなければイニシャル + アカウント色
 ///    (`OtegamiAccountColor`) — 元々の唯一の実装で、いまもこのビュー自身が
 ///    直接描画する最終フォールバック。
 ///
