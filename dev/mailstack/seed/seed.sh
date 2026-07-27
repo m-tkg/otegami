@@ -99,4 +99,13 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/24-security-javascript-link.eml
 # 通常の HTML メール (docs/verify.md の C7 節参照)。
 seed_message "test1@otegami.test" "$FIXTURES_DIR/25-link-browser-test.eml"
 
+# 実機フィードバック第3弾 (B) 検証用: 参考画像1相当のマーケティングHTML
+# (完全な <html><head>...<meta name="viewport" content="width=900">...
+# </head><body>...</body></html> ドキュメント、900px 固定幅のラッパー
+# テーブル、900x300 の画像) — HTMLDocumentBuilder.extractBodyContent(from:)
+# が無いと元メールの競合する viewport meta がこのアプリ自身の viewport
+# meta を上書きし、デスクトップ幅でレイアウトされて拡大描画される
+# (docs/verify.md の B 節参照)。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/26-marketing-wide-html.eml"
+
 echo "==> done"

@@ -212,13 +212,21 @@ struct CIDResolutionContext {
 /// `htmlBodyRendering()`) with a minimal reset so it reads legibly in both
 /// light and dark mode without the message's own styling fighting the
 /// app's chrome (plan: "背景透過・文字色継承・max-width: 100%・画像縮小").
+///
+/// 実機フィードバック第3弾 (B): a marketing/notification HTML mail (参考画像1)
+/// rendered at desktop width — a large logo cropped, text pushed off the
+/// right edge — despite this file already carrying a viewport `<meta>` and
+/// `max-width: 100% !important` on images/tables *before* this fix. See
+/// `extractBodyContent(from:)`'s doc comment for the actual root cause this
+/// traced to.
 enum HTMLDocumentBuilder {
     static func wrap(bodyHTML: String) -> String {
-        """
+        let innerBody = extractBodyContent(from: bodyHTML)
+        return """
         <!doctype html>
         <html>
         <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=yes">
         <meta charset="utf-8">
         <style>
           :root { color-scheme: light dark; }
@@ -231,17 +239,110 @@ enum HTMLDocumentBuilder {
             -webkit-text-size-adjust: 100%;
             word-wrap: break-word;
             overflow-wrap: break-word;
+            overflow-x: hidden;
           }
           body { padding: 8px 12px; }
           * { max-width: 100% !important; box-sizing: border-box; }
           img, video, table, iframe { max-width: 100% !important; height: auto !important; }
+          /* 幅固定のマーケティングHTML (width="600"のテーブル等) 対策:
+             max-width: 100% だけだと table-layout: auto のセル内容が要求
+             する幅次第でテーブル自体がなおコンテナ幅を超えうる。width: auto
+             でテーブル自身の希望幅を「内容に合わせる」側に倒し、頻出する
+             spacerセルの min-width 属性も無効化する — table-layout: fixed
+             (テーブル全体を強制的に均等割りする、もっと強い手段) は列比率が
+             崩れて見た目が壊れるケースがあるため見送った (「やり過ぎない
+             範囲で」という指示どおりの選択)。 */
+          table { width: auto !important; }
+          td, th { min-width: 0 !important; }
           a { color: LinkText; }
           pre, code { white-space: pre-wrap; }
         </style>
         </head>
-        <body>\(bodyHTML)</body>
+        <body>\(innerBody)</body>
         </html>
         """
+    }
+
+    /// MailCore2's `MCOMessageParser.htmlBodyRendering()` hands back
+    /// whatever the message's own `text/html` MIME part actually contained
+    /// — for a great many real senders (marketing/notification templates
+    /// especially) that's a **complete** `<html><head>...</head><body>...
+    /// </body></html>` document, not a bare fragment, and that original
+    /// `<head>` commonly carries its own `<meta name="viewport">` and/or a
+    /// `<style>` block written for a desktop-width preview pane. The
+    /// pre-fix version of this function did `<body>\(bodyHTML)</body>` —
+    /// nesting that entire second document *inside* this file's own
+    /// `<body>` tag. Per the HTML5 parsing algorithm a `<head>` start tag
+    /// encountered while already "in body" insertion mode is dropped, and a
+    /// bare `<meta>`/`<style>` that follows gets inserted as ordinary body
+    /// content instead of governing the page the way it would from a real
+    /// `<head>` — in practice, real WebKit builds have been observed
+    /// treating the *second*, malformed `<meta viewport>` as authoritative
+    /// anyway once it's present anywhere in the document, silently
+    /// overriding this file's own correctly-placed one and putting the
+    /// whole page back into desktop-width layout. Extracting just the
+    /// original document's own `<body>...</body>` content (falling back to
+    /// the input unchanged when there's no `<body>` tag to find — the
+    /// already-a-fragment case, still the common one for plainer mail)
+    /// guarantees this file's `<head>` is the *only* one WebKit ever
+    /// parses, so its viewport meta and CSS reset can't be shadowed by
+    /// whatever the original message happened to ship.
+    private static func extractBodyContent(from html: String) -> String {
+        guard let bodyTagRange = html.range(of: "<body", options: [.caseInsensitive]),
+              let bodyTagCloseIndex = html[bodyTagRange.lowerBound...].firstIndex(of: ">")
+        else {
+            return html
+        }
+        let contentStart = html.index(after: bodyTagCloseIndex)
+        let contentEnd = html.range(of: "</body>", options: [.caseInsensitive])?.lowerBound ?? html.endIndex
+        guard contentStart <= contentEnd else { return html }
+        return String(html[contentStart..<contentEnd])
+    }
+}
+
+/// 実機フィードバック第3弾 (C): one `WKProcessPool` shared by every
+/// `HTMLMessageView` this app ever creates. `WKWebViewConfiguration
+/// .processPool` defaults to a **brand-new** `WKProcessPool` per
+/// configuration unless one is explicitly assigned — before this existed,
+/// every single message opened (HTML or not, since `makeWebViewConfiguration`
+/// runs regardless) spun up its own throwaway WebKit content process from
+/// scratch, which is the primary suspect for the real-device report
+/// "起動し直すと読み込みが入る。表示まで時間がかかる" (`docs/verify.md`'s C note
+/// has the actual measured timings). Sharing one pool lets WebKit reuse an
+/// already-running content process for the second and later message opens
+/// in the same launch; `HTMLWebViewPrewarmer` (below) additionally warms
+/// that first process up *before* the user's first tap, so a fresh launch
+/// benefits too, not just repeat opens within one session.
+@MainActor
+enum HTMLWebViewProcessPool {
+    static let shared = WKProcessPool()
+}
+
+/// 実機フィードバック第3弾 (C): kicked off once, in the background, from
+/// `AppEnvironment.init()` — creates one throwaway, never-displayed
+/// `WKWebView` sharing `HTMLWebViewProcessPool.shared` and loads a trivial
+/// blank document into it, then keeps it alive for the rest of the process
+/// (a `static var`, never deallocated) purely to keep that pool's content
+/// process warm. `HTMLWebViewProcessPool` alone only helps the *second*
+/// message a session opens — there's no already-running process yet for
+/// the very first one on a cold launch, exactly the case the real-device
+/// report called out ("起動し直すと"). Deliberately dispatched from a
+/// `Task` (see the call site), not run synchronously inside `init()` —
+/// spinning up a `WKWebView` has its own non-trivial cost, and blocking
+/// `AppEnvironment.init()` (which runs synchronously before `RootView`'s
+/// first render) on it would trade "message screen feels slow" for "app
+/// launch feels slow", not actually fix anything.
+@MainActor
+enum HTMLWebViewPrewarmer {
+    private static var warmWebView: WKWebView?
+
+    static func prewarm() {
+        guard warmWebView == nil else { return }
+        let configuration = WKWebViewConfiguration()
+        configuration.processPool = HTMLWebViewProcessPool.shared
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.loadHTMLString("<!doctype html><html><body></body></html>", baseURL: nil)
+        warmWebView = webView
     }
 }
 
@@ -252,8 +353,17 @@ enum HTMLDocumentBuilder {
 /// the delegate's `decidePolicyFor:preferences:` — since every load this
 /// view ever does should be equally restricted; there's no case where a
 /// message body should be allowed to run script.
+@MainActor
 private func makeWebViewConfiguration(cidHandler: CIDSchemeHandler?) -> WKWebViewConfiguration {
     let configuration = WKWebViewConfiguration()
+    // 実機フィードバック第3弾 (C) — see `HTMLWebViewProcessPool`'s doc comment.
+    configuration.processPool = HTMLWebViewProcessPool.shared
+    // Explicit even though it's already the default — makes clear this
+    // view deliberately relies on WebKit's own persistent on-disk cache
+    // (images, HTTP cache) surviving across app relaunches, rather than an
+    // ephemeral (`.nonPersistent()`) store that would silently defeat the
+    // "2回目以降はローカルから" requirement.
+    configuration.websiteDataStore = .default()
     let preferences = WKWebpagePreferences()
     preferences.allowsContentJavaScript = false
     configuration.defaultWebpagePreferences = preferences

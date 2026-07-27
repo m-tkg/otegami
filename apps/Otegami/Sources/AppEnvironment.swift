@@ -11,6 +11,9 @@ import OtegamiTranslationFoundationModels
 import PushRelayClient
 import SyncEngine
 import TranslationEngine
+#if os(iOS)
+import UserNotifications
+#endif
 
 /// Root dependency-injection container for the app: the shared database,
 /// the sync coordinator (wired to the real `MailCoreIMAPSession` — tests
@@ -124,9 +127,14 @@ final class AppEnvironment {
         // doc comment for why this needs to run before any `HTMLMessageView`
         // is ever constructed, not just before any `@AppStorage` read.
         UserDefaults.registerOtegamiImageDefaults()
-        // H「アプリアイコンの未読バッジ」— default on; see
-        // `BadgeSettingsStore`'s doc comment.
-        UserDefaults.registerOtegamiBadgeDefaults()
+        // F (実機フィードバック第3弾): one-time, idempotent cleanup of the
+        // now-removed in-app "表示言語" setting's `AppleLanguages` override
+        // — see `LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`'s
+        // doc comment. Must run before anything else in this `init()` reads
+        // a localized string (nothing currently does synchronously here,
+        // but this is the same "run migrations first" ordering the other
+        // `register...Defaults()` calls above already follow).
+        LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()
 
         let database: AppDatabase
         do {
@@ -428,6 +436,14 @@ final class AppEnvironment {
                 await cloudSync.reconcile()
             }
         }
+
+        // C「既読メール再表示の高速化」(実機フィードバック第3弾) — see
+        // `HTMLWebViewPrewarmer`'s doc comment. Deferred to a `Task` (not
+        // called synchronously here) so warming up a `WKWebView` never
+        // delays `RootView`'s first render.
+        Task { @MainActor in
+            HTMLWebViewPrewarmer.prewarm()
+        }
     }
 
     deinit {
@@ -494,7 +510,7 @@ final class AppEnvironment {
                 for try await accounts in observation.values(in: database.dbWriter) {
                     guard !Task.isCancelled else { return }
                     self.accounts = accounts
-                    restartBadgeObservationIfNeeded(accountIds: accounts.map(\.id))
+                    await restartBadgeObservationIfNeeded(accountIds: accounts.map(\.id))
                     // Backfill (M4): thread every not-yet-threaded message
                     // for each known account. Covers both a brand new
                     // account (belt-and-suspenders — `AccountSyncer`
@@ -521,38 +537,56 @@ final class AppEnvironment {
         }
     }
 
-    /// H「アプリアイコンの未読バッジ」: (re)subscribes to `MessageQuery
-    /// .unifiedInboxUnreadCountObservation(accountIds:)` and pushes every
-    /// update to `BadgeCenter.setBadge(count:)` — this single `ValueObservation`
-    /// is what covers "既読操作・同期・フォアグラウンド復帰での更新" all at once
-    /// (every one of those already writes to `message`/mutates flags
-    /// through the same tables this query reads, so the observation fires
-    /// on its own without any scene-phase-specific code here). Called from
-    /// `startObservingAccounts()`'s loop on every `accounts` change, since
-    /// `accountIds` has to track the current list — cancels and replaces
-    /// any previous subscription rather than accumulating one per account
-    /// change. A no-op (and clears any existing badge) when
-    /// `BadgeSettingsStore.isEnabled` is `false`.
-    /// `AccountsListContent`'s badge toggle's `.onChange(of:)` target — the
-    /// setting itself is a plain `@AppStorage` `AccountsListContent` reads
-    /// directly (this app's usual pattern for a single on/off preference),
-    /// but flipping it also has to immediately start/stop the observation
-    /// task and clear a stale badge, which only `AppEnvironment` can do —
-    /// see `restartBadgeObservationIfNeeded(accountIds:)`.
+    /// H「アプリアイコンの未読バッジ」→ G「アイコンバッジの on/off 設定を
+    /// アプリから削除」(実機フィードバック第3弾): (re)subscribes to
+    /// `MessageQuery.unifiedInboxUnreadCountObservation(accountIds:)` and
+    /// pushes every update to `BadgeCenter.setBadge(count:)` — this single
+    /// `ValueObservation` is what covers "既読操作・同期・フォアグラウンド
+    /// 復帰での更新" all at once (every one of those already writes to
+    /// `message`/mutates flags through the same tables this query reads, so
+    /// the observation fires on its own without any scene-phase-specific
+    /// code here). Called from `startObservingAccounts()`'s loop on every
+    /// `accounts` change, since `accountIds` has to track the current list
+    /// — cancels and replaces any previous subscription rather than
+    /// accumulating one per account change.
+    ///
+    /// G: the app's own on/off toggle (`BadgeSettingsStore`) is gone —
+    /// whether the badge shows now follows **the OS's own notification
+    /// settings** (設定 → 通知 → otegami → バッジ) exclusively, checked via
+    /// `UNUserNotificationCenter.current().notificationSettings()
+    /// .badgeSetting` on iOS. macOS keeps the unconditional pre-G behavior
+    /// (`NSApplication.dockTile.badgeLabel` needs no permission at all, so
+    /// there's no OS setting to defer to there — `BadgeCenter.setBadge
+    /// (count:)`'s doc comment). `refreshBadgeObservation()` is public so
+    /// `RootView.handleScenePhaseChange(.active)` can re-check on every
+    /// foreground return — the OS setting can change at any time in
+    /// Settings.app while this app is backgrounded, and there's no
+    /// notification this app receives when that happens.
     func refreshBadgeObservation() {
-        restartBadgeObservationIfNeeded(accountIds: accounts.map(\.id))
+        Task { await restartBadgeObservationIfNeeded(accountIds: accounts.map(\.id)) }
     }
 
-    private func restartBadgeObservationIfNeeded(accountIds: [String]) {
+    private func restartBadgeObservationIfNeeded(accountIds: [String]) async {
         badgeObservationTask?.cancel()
-        guard BadgeSettingsStore.isEnabled else {
+        #if os(iOS)
+        if !hasRequestedBadgeAuthorization {
+            hasRequestedBadgeAuthorization = true
+            await BadgeCenter.requestAuthorizationIfNeeded()
+        }
+        // G: `.notDetermined`/`.disabled` both mean "OS says don't show a
+        // badge" from this app's point of view — the request above only
+        // resolves `.notDetermined` the *first* time this ever runs (a
+        // decision, once made, persists); every call still re-fetches
+        // current settings so a user who changes their mind in Settings.app
+        // is picked up the next time this runs (see `refreshBadgeObservation`'s
+        // doc comment on why `RootView` calls this on every foreground
+        // return, not just once).
+        let notificationSettings = await UNUserNotificationCenter.current().notificationSettings()
+        guard notificationSettings.badgeSetting == .enabled else {
             BadgeCenter.setBadge(count: 0)
             return
         }
-        if !hasRequestedBadgeAuthorization {
-            hasRequestedBadgeAuthorization = true
-            Task { await BadgeCenter.requestAuthorizationIfNeeded() }
-        }
+        #endif
         guard !accountIds.isEmpty else {
             BadgeCenter.setBadge(count: 0)
             return

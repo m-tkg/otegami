@@ -1,0 +1,52 @@
+From: Otegami Shop <no-reply@shop.example>
+To: test1@otegami.test
+Subject: 【会員限定】新春セールのお知らせ
+Message-ID: <seed-0026@otegami.test>
+Date: Thu, 9 Jan 2026 11:00:00 +0900
+Content-Type: multipart/alternative; boundary="otegami-boundary-26"
+MIME-Version: 1.0
+
+--otegami-boundary-26
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+(プレーンテキスト版)
+新春セールのお知らせです。詳細は HTML 版をご覧ください。
+
+--otegami-boundary-26
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=900">
+<title>新春セールのお知らせ</title>
+<style type="text/css">
+  body { margin: 0; padding: 0; background-color: #f2f2f2; }
+  .wrapper { width: 900px; margin: 0 auto; background-color: #ffffff; }
+</style>
+</head>
+<body>
+<table class="wrapper" width="900" cellpadding="0" cellspacing="0" border="0">
+  <tr>
+    <td>
+      <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+P+/HgAFEAJZ3lFmAAAAAElFTkSuQmCC" width="900" height="300" alt="ロゴ" style="display:block;">
+    </td>
+  </tr>
+  <tr>
+    <td style="padding: 24px; font-family: sans-serif; font-size: 16px; color: #333333;">
+      <p>いつもotegami Shopをご利用いただきありがとうございます。</p>
+      <p>会員限定の新春セールを開催中です。この機会にぜひご利用ください。</p>
+      <table width="600" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td width="600" style="background-color:#eeeeee;">詳細はこちらのボタンから</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>
+
+--otegami-boundary-26--

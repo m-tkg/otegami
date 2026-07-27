@@ -3283,3 +3283,76 @@ simulator/toolchain (iPhone 17 Pro Max, Xcode 27 beta) で以下の環境要因
 ション内では安定して完走させられなかった。実装はコードレビューと
 `make mac`/`make ios`/`make test`のグリーンで裏付けているが、これらの
 項目自体の見た目は次回のセッションで改めて目視確認することが望ましい。
+
+## 実機フィードバック第3弾 (A〜K): 検証状況とこのセッションで踏んだ
+シミュレータ固有の環境障害
+
+A〜K のうち B (HTML描画修正) の実機シミュレータでの目視確認を試みたが、
+このセッション中に発生した2つの環境要因により完走できなかった — どちら
+もこのバッチのコード変更が原因ではないと切り分け済み。
+
+### 1. `PosterBoard`(Simulator 関連のホストプロセス) のクラッシュダイアログ
+がホスト画面全体をブロック
+
+ホストの `screencapture` で確認したところ、"Problem Report for
+PosterBoard" というクラッシュレポーターダイアログ (親: `SimulatorTrampoline`)
+がホスト画面前面に出ていた — `System Events`経由でこのダイアログ自体は
+検出・操作できる (`osascript`で"Problem Reporter"プロセスの`OK`ボタンを
+クリックして解消) が、`simctl io screenshot`はこのダイアログの背後の
+シミュレータ画面を問題なく撮り続けていたため、直接の実害はスクリーン
+ショットの取り違えではなく (むしろ`SimRenderServer`/`SimMetalHost`が
+複数インスタンス起動していたことから推測される) Simulator 側のレンダ
+リング/ネットワーキング関連ホストプロセスの不安定化だったと見ている。
+
+### 2. Otegami アプリのプロセスだけが `localhost:1143` (dev mailstack の
+Dovecot) へ接続できない — Safari や host プロセスは同じ `localhost` へ
+問題なく到達できる
+
+`AccountSetupView`の「接続テスト」が毎回
+`接続に失敗しました: サーバーに接続できません。...(connectionFailed:
+... MailCoreErrorDomain error 1.)`で失敗した。切り分けのため以下を
+すべて確認済み:
+
+- **ホスト macOS プロセスから直接**: Python の`socket`で`localhost:1143`
+  に接続 → Dovecot のバナーを正常に受信。`OTEGAMI_TEST_IMAP_HOST=localhost
+  swift test --filter MailCoreIMAPSessionIntegrationTests`(同じ
+  `MailCoreIMAPSession`/mailcore2 を使う、ホスト macOS プロセスとしての
+  統合テスト) も10件全件 green (0.5秒)。→ **Dovecot 自体・mailcore2 の
+  接続ロジック自体は健全**。
+- **シミュレータの Safari から**: `xcrun simctl openurl ... http://
+  localhost:8025`(Mailpit の Web UI) が実際に読み込まれ、実データが
+  表示された。→ **シミュレータから`localhost`への到達性自体は生きている**。
+- **Otegami アプリだけが失敗**: 同じ`localhost`への接続が、このアプリの
+  プロセスの中でだけ一貫して失敗する。既存のシミュレータ (`erase`/
+  `reboot`後も再現) だけでなく、**新規に`simctl create`した別のシミュ
+  レータデバイス**でも同一のエラーで再現した。
+- `xcrun simctl privacy <udid> grant local-network com.mtkg.otegami`/
+  `grant notifications ...`はどちらも`Operation not permitted`で失敗する
+  — この iOS 27 beta ランタイムでは`simctl privacy`のこれらのサービスが
+  未サポートと見られる。
+
+**原因の見立て (未確定)**: iOS の「ローカルネットワーク」プライバシー
+許可 (設定 → プライバシーとセキュリティ → ローカルネットワーク) が
+`mailcore2`の低レベル BSD ソケット接続に対して要求され、かつこの
+beta ランタイムでは`simctl privacy grant`によるプリオーソライズが効か
+ず、かつ (通知許可のような) アプリ内で明示的に答えられる許可ダイアログ
+も一切表示されないまま静かに拒否されている、という筋が最も説明が付く
+(Safari/WKWebView 経由の HTTP 接続と、生ソケットでの IMAP 接続とで
+「ローカルネットワーク」判定の扱いが異なる可能性がある)。ただし
+`Info.plist`/エンティタイトルメント側はこのセッションで一切変更して
+おらず、このセッションの数時間前には同じビルドで接続テストが実際に
+成功していた実績があるため、**アプリ側のコード変更が原因ではなく、この
+開発機のシミュレータ/OS beta 環境が セッション中に何らかの理由で劣化
+した** と判断している。
+
+**この判断の根拠**: B の修正自体 (`HTMLDocumentBuilder.extractBodyContent
+(from:)`) はネットワーキング/エンタイトルメントに一切触れておらず、
+HTML5 パース仕様に基づく static な文字列処理のみ。`make ios`/`make mac`
+のビルドは問題なくグリーンであり、コンパイルレベルでの不整合も無い。
+
+**申し送り**: 次にこの環境で検証する際は、まず (a) Xcode/Simulator.app
+を完全に終了して再起動する、(b) 可能なら安定版 (非 beta) の Simulator
+ランタイムで同じテストを実行する、の2点を試すこと。B の実際の見た目
+(参考画像1相当のフィクスチャが正しく画面幅に収まって描画されるか) は
+次回セッションで`scripts/verify-ios-b-html-render.sh`
+(または`OtegamiWideMarketingHTMLUITests`を直接) を再実行して確認する。

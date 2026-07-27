@@ -993,3 +993,206 @@ Gmail/Apple Mail 的に複数メッセージを独立して展開できる」実
 ダーク両方のスクリーンショット目視確認は、他のバッチ項目 (D/F/G/H/I) と
 まとめて本バッチ完了時に実施 (このファイルの後続コミット・
 `docs/verify.md`参照)。
+
+## 実機フィードバック第3弾: フラット表示の単一メッセージ化・HTML描画・
+再表示高速化・過剰スレッド化抑制・設定整理
+
+実機からの追加報告 (A〜K) をまとめて対応したバッチの記録。設定画面の
+詳細は `docs/settings.md`、ローカライズの詳細は `docs/localization.md`
+を参照 — このファイルは構造・描画・パフォーマンスに関わる項目 (A/B/C/D/
+J/K) を扱う。
+
+### A: フラット表示 (スレッド表示 OFF) で行をタップすると、その1通だけ
+ではなくスレッド全体が展開されて開いていた
+
+`MessageListView`のフラット行 (`ThreadSummary.singleMessageId`が非`nil`)
+は、表示上は1メッセージだけの行だが、内部的には引き続き**実際の**
+(複数メッセージを持ちうる) `thread.id`を保持している
+(`ThreadSummary.init(flatMessage:accountId:)`のドキュメントコメント
+参照)。タップ時に`ThreadDetailView(threadId: threadId)`を開く既存の経路
+は、フラット行かどうかを一切見ておらず、常にその`threadId`配下の**全
+メッセージ**を`ThreadQuery.messagesObservation(threadId:)`で読み込んで
+いた — スレッド表示 OFF で1通だけ見せているつもりが、実際に開くとその
+メッセージが属する会話の全メッセージがアコーディオンで並ぶ、という
+不整合だった。
+
+修正: `ThreadSummary.singleMessageId`を`MessageListRow.onSelect`/
+`MessageListView.handleThreadSelected(_:)`経由で呼び出し側
+(`MailScreenView`/`RootView`) まで伝播させ、`ThreadDetailView`に新設した
+`singleMessageId`パラメータへ渡す。非`nil`のときは`load()`が
+`ThreadQuery.messagesObservation(threadId:)`の代わりに、その1通だけを
+監視する`ValueObservation`(`MessageRecord.fetchOne(db, key:)`) を使う —
+スレッドが1通しかない場合の既存の「1行だけ表示・折りたたみ無し」の
+描画パスをそのまま再利用でき、`ThreadMessageRow`/`ThreadMessageSummaryRow`
+側の変更は不要だった。
+
+- **操作対象もメッセージ単位に**: `MessageListView`の既読/未読・
+  アーカイブ・迷惑メール・ピン留め・削除の各アクションは、フラット行
+  でも常にスレッド全体 (`ThreadQuery.messages(threadId:)`) に対して実行
+  していた。新設の`ThreadQuery.actionTargets(for summary: ThreadSummary,
+  db:)`が`summary.singleMessageId`の有無で「そのスレッドの全メッセージ」
+  と「その1通だけ」を切り替え、`MessageListView`の全アクション関数と
+  `ThreadDetailView`の「…」メニュー (`targetMessageRecords(threadId:
+  singleMessageId:db:)`、同じロジックを独立実装 — 理由は下記) の両方が
+  これを経由するようにした。Undo トーストの文言も「スレッドを削除しま
+  した」/「メールを削除しました」を`singleMessageId`の有無で出し分ける。
+- **「次のメールを開く」設定 (G) はフラット単一メッセージ表示では効か
+  ない**: `MessagePostActionSettingsStore`の「削除/アーカイブ後の動作」
+  は`currentThreadOrder`(実スレッド ID の並び) を使って次を解決するが、
+  フラット行はどのメッセージがどの行かという情報を保持していないため、
+  「次のスレッド」は解決できても「次の行がどのメッセージか」は分から
+  ない。誤って正しくないメッセージへ飛ぶよりは、`ThreadDetailView
+  .notifyThreadRemoved()`が`singleMessageId != nil`のときは常に一覧へ
+  戻る (`onThreadRemoved`を呼ばない) という安全側の仕様にした —
+  スコープを絞った意図的な判断として doc comment に明記。
+- **`ThreadDetailView.targetMessageRecords`を`nonisolated static`に
+  した理由**: `dbWriter.write { db in ... }`クロージャ (task-isolated)
+  から`self`を経由するインスタンスメソッドを呼ぶと Swift 6 の厳格な
+  並行性チェックが「sending 'db' risks causing data races」を出す —
+  `View`準拠型のメンバは (`static`含め) 既定で`@MainActor`になるため、
+  `nonisolated`を明示しないと task-isolated なクロージャから呼べない。
+  `threadId`/`singleMessageId`を`self`経由ではなく素の引数として渡す
+  ことで解決した (`ThreadQuery.messages(threadId:db:)`のような既存の
+  enum 内 static 関数が最初から問題にならなかったのと対照的)。
+
+### B: マーケティング系 HTML メールがデスクトップ幅でレイアウトされ、
+ロゴ画像が巨大に描画される
+
+`HTMLMessageView`(`HTMLDocumentBuilder.wrap(bodyHTML:)`) は元々
+viewport meta と `max-width: 100% !important`の CSS リセットを既に
+持っていたにもかかわらず再現した。原因調査の結果、真因は
+`MCOMessageParser.htmlBodyRendering()`が返す文字列自体にあると特定した
+— 多くの実際の送信者 (特にマーケティング/通知テンプレート) はメールの
+`text/html`パートに**完全な** `<html><head>...</head><body>...</body>
+</html>`ドキュメントを書いており、`htmlBodyRendering()`はそれをほぼ
+そのまま返す。旧実装の`<body>\(bodyHTML)</body>`は、この完全なドキュ
+メントをこのアプリ自身の`<body>`タグの**内側**にネストしていた —
+HTML5 のパースアルゴリズムでは「in body」挿入モード中に現れた
+`<head>`開始タグは無視されるが、その後に続く`<meta>`/`<style>`は
+`<body>`直下の通常コンテンツとして挿入されてしまい、この実機の WebKit
+ビルドでは元メール側の (デスクトップ幅想定の) `<meta name="viewport">`
+がこのアプリ自身の正しい viewport meta を実質的に上書きしてしまう
+挙動を確認した。
+
+修正: `HTMLDocumentBuilder.extractBodyContent(from:)`を新設し、渡された
+HTML から`<body>...</body>`の中身だけを正規表現なしの文字列探索で取り
+出してから、このアプリ自身の`<head>`(viewport meta・CSS リセット) で
+包む。フラグメント (`<body>`タグを持たない、素直な HTML メール) は
+そのまま返るので、この修正で既存の正常系に影響はない。追加で:
+
+- `shrink-to-fit=yes`を viewport meta に追加。
+- `overflow-x: hidden`を`html, body`に追加 (残存する横方向のはみ出しの
+  安全網)。
+- 幅固定テーブル対策として`table { width: auto !important; }`/
+  `td, th { min-width: 0 !important; }`を追加 — `table-layout: fixed`
+  (列比率を強制的に均等割りする、もっと強い手段) は見た目が崩れる
+  ケースがあるため見送った (「やり過ぎない範囲で」という指示どおりの
+  選択、`HTMLDocumentBuilder`内のコメント参照)。
+
+検証用に`dev/mailstack/seed/fixtures/26-marketing-wide-html.eml`(参考
+画像1相当 — 完全な`<html><head>`構造 + `viewport content="width=900"`
++ 900px 固定幅ラッパーテーブル + 900x300 の画像) を新設し、
+`OtegamiWideMarketingHTMLUITests`/`scripts/verify-ios-b-html-render.sh`
+で実機シミュレータに対して確認した。
+
+### C: 一度表示したメールを再度開くと毎回読み込みが入り、体感が遅い
+
+コードを読んだ限り、本文テキスト自体は`MessageView.load()`が
+`bodyState == .fetched`ならローカル DB (`MessageBodyRecord`) から即座に
+読んでおり、ネットワークには一切触れていない — 疑われていた「既読メール
+でもネットワークを叩いている」という仮説はコード上は成立しなかった。
+代わりに疑ったのは WKWebView 自体の初期化コスト: `HTMLMessageView`が
+メッセージを開くたびに`WKWebViewConfiguration()`を新規に作っており、
+`WKWebViewConfiguration.processPool`は明示的に共有しない限り**コンフィ
+ギュレーションごとに新しい`WKProcessPool`**になる — つまりメールを
+1通開くたびに WebKit のコンテンツプロセスをゼロから起動していたことに
+なる (HTML メールに限らず、`HTMLMessageView`の設定関数自体は毎回呼ばれ
+るため全メッセージが対象)。これは「起動し直すと読み込みが入る」という
+報告の有力な説明になる。
+
+修正:
+
+1. **`HTMLWebViewProcessPool.shared`**: アプリ全体で1つの`WKProcessPool`
+   を共有する。2通目以降にメールを開いたとき、同じセッション内で既に
+   起動済みのコンテンツプロセスを再利用できる。
+2. **`HTMLWebViewPrewarmer`**: `AppEnvironment.init()`から (`RootView`
+   の初回描画をブロックしないよう`Task`経由で) 一度だけ、非表示の
+   使い捨て`WKWebView`を同じ共有プロセスプールで生成し、空の HTML を
+   読み込ませる。これにより*コールドランチの最初の1通*でもプロセスが
+   既に温まっている可能性が高くなる — プロセスプール共有だけでは
+   「2通目以降」しか救えない (最初の1通の時点ではまだ再利用できる
+   プロセスが無い) ため、この事前ウォームアップを追加した。
+3. `configuration.websiteDataStore = .default()`を明示 — 挙動は変えて
+   いない (元々の既定値と同じ) が、WebKit 自身の永続ディスクキャッシュ
+   (画像・HTTP キャッシュ) がアプリ再起動をまたいで効くことに依存して
+   いる設計意図をコードとして明記した。
+
+**リモート画像キャッシュについての判断**: `WKWebsiteDataStore.default()`
+は WebKit 自身が管理する永続ディスクキャッシュで、アプリコンテナ内に
+保存されアプリ再起動をまたいで残る (`.nonPersistent()`にしていない
+限り)。このアプリは元々`.nonPersistent()`を使っていなかったため、正しい
+`Cache-Control`ヘッダを返すサーバーの画像は既に再起動後もキャッシュ
+される設計だった、との結論に至った — `URLCache.shared`(このアプリ自身
+の`URLSession`用) を調整しても WKWebView 自身のネットワークスタックには
+効かないため、そちら側の追加対応は行っていない。`Cache-Control: no-store`
+を返す画像 (トラッキングピクセル等) はどのクライアント側キャッシュ戦略
+でも救えないサーバー側の制約であり、対応範囲外とした。
+
+計測は`scripts/verify-ios-b-html-render.sh`実行時の`xcodebuild test`ログ
+上のタイムスタンプ (`docs/verify.md`参照) で確認 — 詳細な体感速度の
+定量比較は今後の課題として残る。
+
+### D: no-reply 系の通知メールが件名フォールバックで過剰にスレッド化
+される
+
+`Threader.decide(for:context:)`のステップ3 (件名フォールバック:
+References が無いメッセージを、正規化件名+参加者重複+7日以内の window
+で紐付ける) は、同一の`no-reply@`アドレスからの無関係な複数の日次通知
+メール (それぞれ独立した内容だが同じ件名) を1つの巨大なスレッドへ束ねて
+しまっていた — References/In-Reply-To が無い一方向のブロードキャスト
+メールに対して「同じ件名」は会話の弱い証拠でしかない。
+
+修正: `Threader.MessageFacts`に`fromAddress`を追加し、
+`Threader.isNoReplyAddress(_:)`(`no-reply`/`noreply`/`donotreply`/
+`do-not-reply`を含むアドレスを検出する簡易ヒューリスティック) が真の
+とき、ステップ3の件名フォールバック自体を完全にスキップするようにした
+— 「返信に一度でも関与しているか」を新しいシグナルとして`ExistingThread
+Context`に通す案も検討したが、`ThreadAssigner`側の配線コストに対して、
+今回観測された不具合 (no-reply の一方向配信) を直接解決できる送信者
+アドレスだけのチェックの方が単純で確実と判断した。`ThreadAssigner
+.assignThread`/`.assignAllUnthreaded`の両方の`MessageFacts`構築箇所を
+更新し、`ThreaderTests`に回帰テストを追加。
+
+### J: ハンバーガーメニューの「閉じる」ボタンをアイコン化
+
+`FolderListSheet`の閉じるボタンをテキスト (`Button("閉じる")`) から
+`xmark`アイコンのみ (`Label("閉じる", systemImage: "xmark")` +
+`.labelStyle(.iconOnly)`) に変更した。`Label`は`.iconOnly`スタイルでも
+VoiceOver 用のアクセシビリティラベルとして`title`引数 (="閉じる") を
+保持し続けるため、見た目だけがアイコンに変わり読み上げは変わらない。
+`.accessibilityIdentifier("folderSheet.closeButton")`は変更していない
+ので既存 XCUITest への影響は無い。
+
+### K: ハンバーガーメニューのアカウントセクションを折りたたみ可能に
+
+`FolderListSheet`の各アカウントの`Section`ヘッダを、タップで開閉できる
+`AccountSectionHeader`(自前実装、`DisclosureGroup`は使わず) に置き換え
+た。折りたたみ状態は`FolderSectionCollapseStore`(`UserDefaults`、
+アカウント ID の配列) に永続化し、既定は展開。折りたたみ中もそのアカウ
+ントの全メールボックスの未読数合計をヘッダのバッジに表示する。
+`DisclosureGroup`自体を使わなかった理由: この行を`Section`ヘッダとして
+他の行 (メールボックス行) と同じスタイリング言語で描画する必要があり、
+`DisclosureGroup`のヘッダ/コンテンツの見た目をこのアプリの既存の行
+スタイルに完全に合わせ込むより、シェブロン回転 + `Section(header:)`の
+手動実装の方が確実だった。
+
+### 検証
+
+`make test`/`make mac`/`make ios` green。`OtegamiWideMarketingHTMLUITests`
+(B) を実機シミュレータで実行し、`XCTAttachment`(`.keepAlways`) で
+xcresult バンドルへ埋め込んだスクリーンショットを目視確認 — ホスト側
+シェルから`xcrun simctl io screenshot`をテストの`Thread.sleep`と競争
+させる従来方式は、このテストがアカウント追加を含む可変長の前段を持つ
+ため繰り返しタイミングを外し (ホーム画面やアカウント追加シートを捉える
+だけに終わった)、`XCTAttachment`によるテストプロセス内蔵キャプチャに
+切り替えて解決した。
