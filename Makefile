@@ -11,6 +11,7 @@
 #   make mailstack-up     start the dev IMAP/SMTP mail stack (Dovecot + Mailpit)
 #   make mailstack-down   stop the dev mail stack
 #   make mailstack-seed   load sample messages into the dev mail stack
+#   make deploy-ota       build + publish an Ad Hoc IPA for OTA install (see docs/ota-deploy.md)
 #   make clean            remove build products
 
 APP_DIR := apps/Otegami
@@ -43,7 +44,7 @@ MAC_SIGNING_FLAGS :=
 endif
 
 .PHONY: all mac mac-app ios ios-device app-project test server server-test relay-docker \
-	mailstack-up mailstack-down mailstack-seed clean
+	mailstack-up mailstack-down mailstack-seed deploy-ota clean
 
 all: mac ios test
 
@@ -123,6 +124,12 @@ mailstack-down:
 
 mailstack-seed:
 	cd $(MAILSTACK_DIR) && ./seed/seed.sh
+
+# Builds an Ad Hoc IPA and publishes it (+ manifest.plist + install page) to
+# the home Pi's nginx for OTA install on the registered iPhone. See
+# docs/ota-deploy.md. The script runs its own `xcodegen generate`.
+deploy-ota:
+	./scripts/deploy-ota.sh
 
 clean:
 	cd $(KIT_DIR) && swift package clean

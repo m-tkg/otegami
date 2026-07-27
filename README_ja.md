@@ -332,6 +332,10 @@ make relay-docker   # Docker イメージをビルド
 CA を使った宅内サーバーでの運用例を含む) とアプリ側のオプトインフローは
 [docs/relay-deployment.md](docs/relay-deployment.md) を参照してください。
 
+`make deploy-ota` は Ad Hoc 版の `.ipa` をビルドし、自前の reverse proxy
+経由で登録済み端末に OTA インストールできる形で公開します。詳細は
+[docs/ota-deploy.md](docs/ota-deploy.md) を参照してください。
+
 ## アーキテクチャ
 
 - `apps/Otegami/` — SwiftUI アプリ本体 (iOS + macOS)、XcodeGen

@@ -343,6 +343,10 @@ See [docs/relay-deployment.md](docs/relay-deployment.md) for deployment
 (Docker Compose, APNs `.p8` key, HTTPS termination, including a
 private-CA/home-server example) and the app-side opt-in flow.
 
+`make deploy-ota` builds an Ad Hoc `.ipa` and publishes it for OTA install
+on a registered device over your own reverse proxy — see
+[docs/ota-deploy.md](docs/ota-deploy.md).
+
 ## Architecture
 
 - `apps/Otegami/` — the SwiftUI app (iOS + macOS), XcodeGen `project.yml`.
