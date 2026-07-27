@@ -12,13 +12,19 @@ enum SwipeAction: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    // A「表示・操作改善バッチ」以降の`Text(String)`は自動でローカライズされない
+    // ("verbatim"呼び出し) — `docs/localization.md`のパターン1どおり
+    // `String(localized:)`で明示的にカタログを引く (`MailListSettingsView`の
+    // `Picker`が`Text(action.title)`としてこの`String`を渡すため。以前は
+    // ここが未対応で、スワイプ設定ピッカーだけ表示言語を英語にしても日本語の
+    // ままになる実バグだった)。
     var title: String {
         switch self {
-        case .toggleRead: "既読/未読切替"
-        case .archive: "アーカイブ"
-        case .junk: "迷惑メールにする"
-        case .pin: "ピン留め"
-        case .delete: "削除"
+        case .toggleRead: String(localized: "既読/未読切替")
+        case .archive: String(localized: "アーカイブ")
+        case .junk: String(localized: "迷惑メールにする")
+        case .pin: String(localized: "ピン留め")
+        case .delete: String(localized: "削除")
         }
     }
 

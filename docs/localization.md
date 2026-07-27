@@ -94,21 +94,13 @@ computed propertyとして返し、それを`Text(title)`のように渡す」�
 - メールの件名・本文・送信者名などの**受信データそのもの** — そもそも
   翻訳対象ではない (これは1i/design-phase-3の翻訳バー機能の役割)。
 - エラーメッセージの多く (`MessageView.errorMessage`/
-  `ComposerView.errorMessage`等) — 大半が`"\(error)"`のようにエラー詳細
-  を埋め込む補間文字列で、固定の接頭辞部分だけを訳しても効果が薄い上に
-  該当箇所が多数散らばっており、このバッチのスコープに対して費用対効果
-  が見合わないと判断した。
-- `Settings/`配下の`AccountsSettingsView.swift`以外のファイル
-  (`AccountSetupView`/`AccountEditView`/`ICloudAccountSetupView`/
-  `GmailAccountSetupView`/`TemplatesSettingsView`/`TemplateEditView`/
-  `PushNotificationSettingsView`/`MessageToolbarSettingsView`/`AboutView`
-  等) — アカウント追加・編集フォームや個別設定画面群。「設定」の入口
-  画面 (`AccountsSettingsView`) は優先対応したが、そこから先に潜る個々の
-  画面までは今回のスコープに含めていない。
-- macOS 専用 UI (`SidebarView`等の3ペイン構成、メニューコマンド) — iOS の
-  主要画面を優先した。文字列自体はソース言語 (日本語) のままなので、
-  macOS で「表示言語: English」を選んでも一覧/検索/設定など今回対応した
-  範囲は英語化されるが、それ以外は日本語のまま混在する。
+  `ComposerView.errorMessage`/`PushNotificationSettingsView.errorMessage`
+  等、`@State private var errorMessage: String?`に代入してから`Text
+  (errorMessage)`で表示するパターン全般) — 大半が`"\(error)"`のように
+  エラー詳細を埋め込む補間文字列で、固定の接頭辞部分だけを訳しても効果
+  が薄い上に該当箇所が多数散らばっており、費用対効果が見合わないと判断
+  した。
+- macOS 専用 UI (`SidebarView`等の3ペイン構成、メニューコマンド)。
 
 これらは新しい文字列を書くたびに`Localizable.xcstrings`へ追記していけば
 段階的に拡張できる — `scripts/generate-localizable.py`の辞書に
@@ -116,6 +108,103 @@ computed propertyとして返し、それを`Text(title)`のように渡す」�
 `Text("日本語")`/`Button("日本語")`呼び出しは自動的にローカライズされる
 (§「`Text(String)`は自動でローカライズされない」に該当する箇所だけは
 追加のSwift側対応が要る)。
+
+## 実機フィードバック第2弾 (A): 「UI に複数言語が混在」「切替が効かない」の調査と修正
+
+実機報告2件を調査した結果、どちらも**この節が既に警告していた
+「`Text(String)`は自動でローカライズされない」という同じ根本原因**が
+複数箇所で見つかった — カタログのカバレッジ不足そのものより、この
+verbatim呼び出しパターンの見落としの方が実際の「混在」の主因だった。
+
+### 1. 「UI に複数言語が混在」の原因: 設定ピッカーの選択肢ラベルが軒並み未対応
+
+`SwipeAction`/`PreviewLineCount`/`SendCancelWindow`/`AppLanguageOption`/
+`MessageToolbarAction`の`var title: String { switch self { case ...: "日本語" } }`
+という実装パターンが、`Text(action.title)`のように**`String`型の
+computed propertyをそのまま`Text`に渡す**呼び出しで使われていた —
+まさにこの節の「switch文で文字列リテラルを組み立てて`String`型の
+computed propertyとして返し、それを`Text(title)`のように渡すパターン」
+そのものだが、`MessageListView.title`等の既知の該当箇所を`String
+(localized:)`で対応した際にこれらの`SettingsStore`系ファイルが見落と
+されていた。表示言語を English に切り替えても、スワイプ設定・プレビュー
+行数・送信キャンセルの猶予・**表示言語ピッカー自身の選択肢**・ツール
+バー並び替え画面だけが日本語のまま残り、「大部分は英語なのに一部だけ
+日本語」という実機報告の「混在」症状と一致する。5ファイルすべてに
+`String(localized:)`を追記して解決した
+(`SwipeActionSettingsStore`/`ListDisplaySettingsStore`/
+`SendCancelSettingsStore`/`LocalizationSettingsStore`/
+`MessageToolbarSettingsStore`)。
+
+同じ調査で`PushNotificationSettingsView`の同意アラートの本文が
+`Text("a" + "b" + "c" + "d")`という**文字列連結の`String`式**を`Text`
+に渡しており、これも同じ理由 (`Text(some StringProtocol)`のverbatim
+オーバーロードに解決される) でカタログを一切引けていなかったことも
+発見した — 複数のリテラルを1つに結合して修正した (英訳は
+`scripts/generate-localizable.py`に追加済み)。
+
+### 2. 「切替が効かない」の原因: バックグラウンド復帰と完全終了の混同
+
+`LocalizationSettingsStore`の`AppleLanguages`書き換え自体は (実機/
+シミュレータへの直接`defaults write`で以前から検証済みのとおり) 正しく
+機能する。ただし**反映には「プロセスの完全終了→再起動」が必要**で、
+iOS の「ホーム画面に戻る→アプリアイコンを再タップ」は多くの場合アプリを
+バックグラウンドから復帰させるだけでプロセスは終了しない — 設定画面の
+小さな footer 注記だけでは、ユーザーが「アプリを再起動した」つもりで
+実際には同じプロセスのまま (=言語設定が反映されないまま) 使い続けて
+しまう、というギャップがあったと考えられる。
+
+対応: 言語ピッカーの選択が変わった直後に確認アラートを表示し、
+「今すぐ終了」ボタンで`exit(0)`により**プロセスそのものを終了**する
+選択肢を追加した (`OtherSettingsView`)。次にアプリアイコンをタップした
+ときは必ず新しいプロセスの起動になるため、「ホーム画面に戻っただけでは
+反映されない」という曖昧さを解消する。「あとで」を選んでも footer の
+案内文はそのまま残るので、後で手動(スワイプで完全終了→再起動)で反映
+することもできる。
+
+### 3. 副作用として発見: この開発機のシミュレータはシステム言語が英語で、
+カタログ拡張が既存 XCUITest のラベルテキスト検索を無言で壊しうる
+
+上記1の調査中、この開発機のシミュレータ (iPhone 17 Pro Max, iOS 27 beta)
+の**システム言語が既定で英語**であることが判明した — `AppLanguageOption
+.system`(このアプリの既定設定) はシステム言語にそのまま従うため、
+`Localizable.xcstrings`に英訳を追加した文字列は、このシミュレータ上では
+**追加した瞬間から** UI に反映される (アプリを明示的に「English」に切り
+替えなくても)。これは仕様どおりの正しい動作だが、副作用として:
+`app.buttons["なし (平文)"]`/`app.staticTexts["プッシュ通知"]`/
+`app.buttons["ピン留め"]`のような**ラベルテキスト固定の XCUITest
+lookup**が、対応する文字列をカタログに追加した瞬間に無言で壊れる
+(「なし (平文)」ボタンが実際には「None (Plain)」というラベルになり、
+厳密一致検索が何も見つけられなくなる)。実機フィードバック第2弾の作業中
+に3箇所 (`DovecotAccountUITestHelpers.fillDovecotAccountForm`/
+`fillMailpitSMTPFields`、`OtegamiM9PushSettingsUITests`、
+`OtegamiPinSwipeListDisplayUITests`) で実際に踏んで修正した — 対応方法は
+「アクセシビリティ識別子があればそちらを使う」「無ければ日英両方の
+ラベルにマッチする`OR`述語にする」のいずれか (`DovecotAccountUITestHelpers
+.tapPlainSecurityMenuOption(in:)`のドキュメントコメント参照)。
+
+**この3箇所以外にも、同種のラベルテキスト固定 lookup が既存の XCUITest
+スイート (`OtegamiCredentialRecoveryUITests`/`OtegamiDuplicateAccountUITests`/
+`OtegamiMissingCredentialUITests`/`OtegamiHTMLDisplayUITests`等) に多数
+残っている**(「資格情報を待っています」「パスワードを入力」「本文なし」
+など、既にカタログに存在する文字列)。これらは今回のバッチが直接触れて
+いない既存テストスイートであり、実際にこのシミュレータで壊れているか
+どうかは未確認 — 網羅的な洗い出しと修正は本バッチのスコープを大きく
+超えるため見送り、次にこれらのテストを実行する際に発覚したらこのパターン
+(識別子検索への切り替え、または日英両対応の述語) で個別に対応する前提で
+`PENDING.md`に記録した。
+
+### 4. カバレッジの拡張
+
+上記の調査と合わせて、以前「対象外」としていた個々の設定画面
+(`AccountSetupView`/`AccountEditView`/`ICloudAccountSetupView`/
+`GmailAccountSetupView`/`TemplatesSettingsView`/`TemplateEditView`/
+`PushNotificationSettingsView`/`MessageToolbarSettingsView`/`AboutView`)
+と、実機フィードバック第2弾で新設した設定画面群
+(`AccountSettingsCategoryView`/`MailViewerSettingsView`/
+`MailListSettingsView`/`OtherSettingsView`/`SignatureTemplatesSettingsView`/
+`SignatureTemplateEditView`/`AccountLabelColorPicker`) の静的な (補間を
+含まない) 文字列をすべて`Localizable.xcstrings`に追加した
+(137→232エントリ)。`AccountTypeSelectionView`も対応済み。
 
 ## 確認方法
 

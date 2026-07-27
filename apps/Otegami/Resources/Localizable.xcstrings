@@ -131,16 +131,6 @@
         }
       }
     },
-    "メールはありません": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No Mail"
-          }
-        }
-      }
-    },
     "既読に": {
       "localizations": {
         "en": {
@@ -1367,6 +1357,966 @@
           "stringUnit": {
             "state": "translated",
             "value": "Japanese"
+          }
+        }
+      }
+    },
+    "アカウントの設定": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account Settings"
+          }
+        }
+      }
+    },
+    "メールビューア": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mail Viewer"
+          }
+        }
+      }
+    },
+    "メール一覧": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mail List"
+          }
+        }
+      }
+    },
+    "デフォルトのアカウント": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default Account"
+          }
+        }
+      }
+    },
+    "新規メール作成時の差出人の既定を選べます。削除などで無効になった場合は先頭のアカウントに戻ります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose the default From account for new messages. If it becomes invalid (e.g. the account was deleted), this falls back to the first account."
+          }
+        }
+      }
+    },
+    "ブラウザ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Browser"
+          }
+        }
+      }
+    },
+    "リンクを開く方法": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Links In"
+          }
+        }
+      }
+    },
+    "削除/アーカイブ後の動作": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "After Delete/Archive"
+          }
+        }
+      }
+    },
+    "メール本文画面から削除・アーカイブ・迷惑メールにする操作をしたあと、一覧に戻るか次のメールを自動で開くかを選べます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose whether to return to the list or automatically open the next message after deleting, archiving, or marking a message as junk from the message view."
+          }
+        }
+      }
+    },
+    "メール一覧に戻る": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Return to Mail List"
+          }
+        }
+      }
+    },
+    "次のメールを開く": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Next Message"
+          }
+        }
+      }
+    },
+    "AI 機能 (翻訳・要約)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Features (Translation & Summary)"
+          }
+        }
+      }
+    },
+    "AI 機能": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI Features"
+          }
+        }
+      }
+    },
+    "翻訳・要約は Apple Intelligence により端末内で行われ、外部に送信されません。オフにすると、メール本文画面の翻訳バー・AI要約ボタンの両方が表示されなくなります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translation and summarization happen on-device via Apple Intelligence and are never sent anywhere else. Turning this off hides both the translation bar and the AI summary button in the message view."
+          }
+        }
+      }
+    },
+    "表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Display"
+          }
+        }
+      }
+    },
+    "スワイプ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Swipe"
+          }
+        }
+      }
+    },
+    "統合受信トレイの未読数をアプリアイコンに表示します。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows the unified inbox's unread count on the app icon."
+          }
+        }
+      }
+    },
+    "今すぐ終了": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quit Now"
+          }
+        }
+      }
+    },
+    "あとで": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Later"
+          }
+        }
+      }
+    },
+    "表示言語を変更しました": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Display Language Changed"
+          }
+        }
+      }
+    },
+    "変更を反映するには、アプリを完全に終了してもう一度起動してください（ホーム画面に戻るだけでは反映されません）。「今すぐ終了」でアプリを終了できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "To apply the change, fully quit the app and reopen it (returning to the Home Screen alone isn't enough). You can quit the app now with “Quit Now.”"
+          }
+        }
+      }
+    },
+    "送信キャンセル": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send Cancellation"
+          }
+        }
+      }
+    },
+    "送信取り消しの猶予": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel-Send Grace Period"
+          }
+        }
+      }
+    },
+    "「送信」をタップしてから実際にサーバーへ送るまでの猶予時間です。この間は「送信を取り消す」で送信をキャンセルできます。アプリをバックグラウンドに切り替えると、残り時間に関わらず即座に送信されます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The grace period between tapping “Send” and the message actually being sent to the server. You can cancel sending during this time with “Cancel Send.” Switching the app to the background sends the message immediately, regardless of the remaining time."
+          }
+        }
+      }
+    },
+    "メールの表示 (HTML)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message Display (HTML)"
+          }
+        }
+      }
+    },
+    "ONで一覧を会話単位にまとめます。OFFにすると一覧がメール単位になります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When on, the list groups messages into conversations. When off, the list shows one row per message."
+          }
+        }
+      }
+    },
+    "なし": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None"
+          }
+        }
+      }
+    },
+    "5秒": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "5 Seconds"
+          }
+        }
+      }
+    },
+    "10秒": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "10 Seconds"
+          }
+        }
+      }
+    },
+    "1行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 Line"
+          }
+        }
+      }
+    },
+    "2行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2 Lines"
+          }
+        }
+      }
+    },
+    "3行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3 Lines"
+          }
+        }
+      }
+    },
+    "既読/未読切替": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Read/Unread"
+          }
+        }
+      }
+    },
+    "自動": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto"
+          }
+        }
+      }
+    },
+    "署名テンプレート": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signature Templates"
+          }
+        }
+      }
+    },
+    "署名テンプレートを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Signature Template"
+          }
+        }
+      }
+    },
+    "署名テンプレートがありません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No signature templates."
+          }
+        }
+      }
+    },
+    "署名テンプレートを削除しますか？": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete this signature template?"
+          }
+        }
+      }
+    },
+    "使用するアカウントが選択されていません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No accounts selected"
+          }
+        }
+      }
+    },
+    "例: 会社用の署名": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "e.g. Work Signature"
+          }
+        }
+      }
+    },
+    "使用するアカウント": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accounts"
+          }
+        }
+      }
+    },
+    "チェックしたアカウントで作成中のメールの「署名」欄からこの署名を選べます。複数選択できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accounts you check here can select this signature from the Signature field when composing a message. You can select more than one."
+          }
+        }
+      }
+    },
+    "ライセンス: MIT": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "License: MIT"
+          }
+        }
+      }
+    },
+    "サードパーティライセンス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Third-Party Licenses"
+          }
+        }
+      }
+    },
+    "GitHub リポジトリ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GitHub Repository"
+          }
+        }
+      }
+    },
+    "既存のメールアカウント (Gmail / iCloud / 汎用 IMAP・SMTP) に接続する、\nオフラインファーストのオープンソースメールクライアントです。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An offline-first, open-source mail client that connects to your existing mail accounts (Gmail / iCloud / generic IMAP & SMTP)."
+          }
+        }
+      }
+    },
+    "なし (平文)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None (Plain)"
+          }
+        }
+      }
+    },
+    "表示名": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Display Name"
+          }
+        }
+      }
+    },
+    "表示名 (省略時はメールアドレス)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Display Name (defaults to email address)"
+          }
+        }
+      }
+    },
+    "接続方式": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Security"
+          }
+        }
+      }
+    },
+    "メールアドレス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Email Address"
+          }
+        }
+      }
+    },
+    "保存して同期開始": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save & Start Syncing"
+          }
+        }
+      }
+    },
+    "空欄の場合は認証なしで接続します。サーバーが認証に対応していない場合は、ユーザー名を入力していても自動的に認証を省略します。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Leave blank to connect without authentication. If the server doesn't support authentication, it's skipped automatically even when a username is entered."
+          }
+        }
+      }
+    },
+    "SMTP (送信用。任意 — 未設定の場合は送信できません)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SMTP (for sending; optional — sending won't work if unset)"
+          }
+        }
+      }
+    },
+    "SMTP (送信用。任意)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SMTP (for sending; optional)"
+          }
+        }
+      }
+    },
+    "SMTP接続テスト": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Test SMTP Connection"
+          }
+        }
+      }
+    },
+    "接続先 (固定)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server (fixed)"
+          }
+        }
+      }
+    },
+    "接続先 (自動設定・変更不可)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server (preset, not editable)"
+          }
+        }
+      }
+    },
+    "接続先 (自動設定)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Server (preset)"
+          }
+        }
+      }
+    },
+    "新しいパスワード (変更する場合のみ入力)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Password (enter only to change it)"
+          }
+        }
+      }
+    },
+    "その他 (IMAP)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Other (IMAP)"
+          }
+        }
+      }
+    },
+    "新しい App 用パスワード (変更する場合のみ入力)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New App-Specific Password (enter only to change it)"
+          }
+        }
+      }
+    },
+    "種類": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        }
+      }
+    },
+    "アカウントを編集": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Account"
+          }
+        }
+      }
+    },
+    "新規メール作成時、このアカウントを差出人に選ぶと本文末尾に自動で挿入されます（返信・転送では自動挿入されません。作成画面の「署名」欄から手動で選べます）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When this account is selected as From on a new message, this is automatically appended to the body (not for replies/forwards — you can still pick it manually from the Signature field in the compose screen)."
+          }
+        }
+      }
+    },
+    "App 用パスワード": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App-Specific Password"
+          }
+        }
+      }
+    },
+    "appleid.apple.com で App 用パスワードを発行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Generate an App-Specific Password at appleid.apple.com"
+          }
+        }
+      }
+    },
+    "Google アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authenticated via your Google account. Your password is never stored by this app. If authentication expires, sign in again using “Reauthenticate.”"
+          }
+        }
+      }
+    },
+    "IMAP ポート番号を確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please check the IMAP port number."
+          }
+        }
+      }
+    },
+    "appleid.apple.com で発行した「App 用パスワード」が必要です。iCloud のパスワードそのものではログインできません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requires an App-Specific Password generated at appleid.apple.com — your regular iCloud password won't work."
+          }
+        }
+      }
+    },
+    "iCloud メールアドレス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iCloud Email Address"
+          }
+        }
+      }
+    },
+    "iCloud アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add iCloud Account"
+          }
+        }
+      }
+    },
+    "Gmail アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Gmail Account"
+          }
+        }
+      }
+    },
+    "Google でログイン": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in with Google"
+          }
+        }
+      }
+    },
+    "Google のログイン画面が表示されます。otegami はメールの送受信に必要な権限のみをリクエストします。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Google's sign-in screen will open. otegami only requests the permissions needed to send and receive mail."
+          }
+        }
+      }
+    },
+    "テンプレートを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Template"
+          }
+        }
+      }
+    },
+    "テンプレートがありません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No templates."
+          }
+        }
+      }
+    },
+    "テンプレートを削除しますか？": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete this template?"
+          }
+        }
+      }
+    },
+    "件名（任意）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subject (Optional)"
+          }
+        }
+      }
+    },
+    "すべてのアカウント": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Accounts"
+          }
+        }
+      }
+    },
+    "特定のアカウントを選ぶと、そのアカウントで作成中のメールでだけこのテンプレートを使えます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choosing a specific account limits this template to messages composed from that account."
+          }
+        }
+      }
+    },
+    "件名を入れておくと、新規作成の本文・件名が両方空のときにこのテンプレートで両方埋められます。空のままなら本文だけが挿入されます（署名のような使い方）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "If you set a subject, this template fills in both the subject and body when starting a brand-new, completely empty message. Otherwise only the body is inserted (useful as a signature-style snippet)."
+          }
+        }
+      }
+    },
+    "ツールバーの編集": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Toolbar"
+          }
+        }
+      }
+    },
+    "ドラッグして、メール本文画面下部のツールバーに並ぶアイコンの順序を変更できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag to reorder the icons in the toolbar at the bottom of the message view."
+          }
+        }
+      }
+    },
+    "アカウントの種類": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account Type"
+          }
+        }
+      }
+    },
+    "Gmail と iCloud はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gmail and iCloud have their host settings filled in automatically. For any other provider, set it up manually via “Other.”"
+          }
+        }
+      }
+    },
+    "自分でホストしたプッシュ中継サーバ (otegami-relay) の URL を入力してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter the URL of your self-hosted push relay server (otegami-relay)."
+          }
+        }
+      }
+    },
+    "リレー URL": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relay URL"
+          }
+        }
+      }
+    },
+    "https:// が必須です（ローカル開発時のみ http://localhost を使用できます）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "https:// is required (http://localhost is allowed for local development only)."
+          }
+        }
+      }
+    },
+    "プッシュ通知は有効です": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Push Notifications Are Enabled"
+          }
+        }
+      }
+    },
+    "無効にする": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disable"
+          }
+        }
+      }
+    },
+    "有効にする": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable"
+          }
+        }
+      }
+    },
+    "設定アプリを開く": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Settings App"
+          }
+        }
+      }
+    },
+    "資格情報の送信について": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About Sending Credentials"
+          }
+        }
+      }
+    },
+    "同意して有効にする": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agree & Enable"
+          }
+        }
+      }
+    },
+    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）が入力したリレー URL のサーバーへ送信され、暗号化して保存されます。リレーの運用者を信頼できる場合のみ有効にしてください。Gmail (OAuth) アカウントは現バージョンでは対象外です。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the server at the relay URL you entered, where it's stored encrypted. Only enable this if you trust the relay's operator. Gmail (OAuth) accounts aren't supported in this version."
           }
         }
       }

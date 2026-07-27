@@ -24,10 +24,17 @@ enum AppLanguageOption: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var id: String { rawValue }
 
+    // A「UI に複数言語が混在」実機報告の原因の一つ: `Text(String)`は自動で
+    // ローカライズされない ("verbatim"呼び出し) — `docs/localization.md`の
+    // パターン1どおり`String(localized:)`で明示的にカタログを引く
+    // (`OtherSettingsView`の`Picker`が`Text(option.title)`としてこの
+    // `String`を渡すため。この「表示言語」ピッカー自身の選択肢ラベルが
+    // 未対応だったのは皮肉だが、実際に表示言語を切り替えてもこのピッカー
+    // だけ日本語のままになる実バグだった)。
     var title: String {
         switch self {
-        case .system: "システムに従う"
-        case .japanese: "日本語"
+        case .system: String(localized: "システムに従う")
+        case .japanese: String(localized: "日本語")
         case .english: "English"
         }
     }

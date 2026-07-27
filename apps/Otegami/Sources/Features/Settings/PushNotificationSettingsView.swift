@@ -122,12 +122,15 @@ struct PushNotificationSettingsView: View {
             }
             .accessibilityIdentifier("settings.push.consentConfirmButton")
         } message: {
-            Text(
-                "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報" +
-                    "（サーバー・ユーザー名・パスワード）が入力したリレー URL のサーバーへ" +
-                    "送信され、暗号化して保存されます。リレーの運用者を信頼できる場合のみ" +
-                    "有効にしてください。Gmail (OAuth) アカウントは現バージョンでは対象外です。"
-            )
+            // A「UI に複数言語が混在」実機報告の原因の一つ: 以前は`"a" + "b" +
+            // "c"`という文字列連結の`String`式を`Text(_:)`に渡していたため、
+            // `Text(LocalizedStringKey)`ではなく`Text(some StringProtocol)`
+            // (verbatim) オーバーロードに解決され、String Catalog を一切
+            // 引けていなかった (`docs/localization.md`の「`Text(String)`は
+            // 自動でローカライズされない」節が警告するパターンそのもの、
+            // ただし連結演算子経由という気づきにくい形)。1つのリテラルに
+            // まとめることで`LocalizedStringKey`解決に戻した。
+            Text("有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）が入力したリレー URL のサーバーへ送信され、暗号化して保存されます。リレーの運用者を信頼できる場合のみ有効にしてください。Gmail (OAuth) アカウントは現バージョンでは対象外です。")
         }
     }
 

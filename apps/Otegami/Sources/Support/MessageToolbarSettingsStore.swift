@@ -14,13 +14,18 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
 
     var id: String { rawValue }
 
+    // A「UI に複数言語が混在」実機報告の原因の一つ: `Text(String)`は自動で
+    // ローカライズされない ("verbatim"呼び出し) — `docs/localization.md`の
+    // パターン1どおり`String(localized:)`で明示的にカタログを引く
+    // (`MessageToolbarSettingsView`の並び替えリストが`Text(action.title)`
+    // としてこの`String`を渡すため)。
     var title: String {
         switch self {
-        case .reply: "返信"
-        case .forward: "転送"
-        case .search: "検索"
-        case .info: "情報"
-        case .more: "その他"
+        case .reply: String(localized: "返信")
+        case .forward: String(localized: "転送")
+        case .search: String(localized: "検索")
+        case .info: String(localized: "情報")
+        case .more: String(localized: "その他")
         }
     }
 

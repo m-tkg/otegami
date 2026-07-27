@@ -175,6 +175,141 @@ translations = {
     # --- 表示言語ピッカー (LocalizationSettingsStore.AppLanguageOption) ---
     "システムに従う": "Match System",
     "日本語": "Japanese",
+
+    # --- 実機フィードバック第2弾: I 設定画面の再構成 (AccountsListContent /
+    # AccountSettingsCategoryView / MailViewerSettingsView /
+    # MailListSettingsView / OtherSettingsView) ---
+    "アカウントの設定": "Account Settings",
+    "メールビューア": "Mail Viewer",
+    "メール一覧": "Mail List",
+    "デフォルトのアカウント": "Default Account",
+    "新規メール作成時の差出人の既定を選べます。削除などで無効になった場合は先頭のアカウントに戻ります。":
+        "Choose the default From account for new messages. If it becomes invalid (e.g. the account was deleted), this falls back to the first account.",
+    "ブラウザ": "Browser",
+    "リンクを開く方法": "Open Links In",
+    "削除/アーカイブ後の動作": "After Delete/Archive",
+    "メール本文画面から削除・アーカイブ・迷惑メールにする操作をしたあと、一覧に戻るか次のメールを自動で開くかを選べます。":
+        "Choose whether to return to the list or automatically open the next message after deleting, archiving, or marking a message as junk from the message view.",
+    "メール一覧に戻る": "Return to Mail List",
+    "次のメールを開く": "Open Next Message",
+    "AI 機能 (翻訳・要約)": "AI Features (Translation & Summary)",
+    "AI 機能": "AI Features",
+    "翻訳・要約は Apple Intelligence により端末内で行われ、外部に送信されません。オフにすると、メール本文画面の翻訳バー・AI要約ボタンの両方が表示されなくなります。":
+        "Translation and summarization happen on-device via Apple Intelligence and are never sent anywhere else. Turning this off hides both the translation bar and the AI summary button in the message view.",
+    "表示": "Display",
+    "スワイプ": "Swipe",
+    "統合受信トレイの未読数をアプリアイコンに表示します。": "Shows the unified inbox's unread count on the app icon.",
+    "今すぐ終了": "Quit Now",
+    "あとで": "Later",
+    "表示言語を変更しました": "Display Language Changed",
+    "変更を反映するには、アプリを完全に終了してもう一度起動してください（ホーム画面に戻るだけでは反映されません）。「今すぐ終了」でアプリを終了できます。":
+        "To apply the change, fully quit the app and reopen it (returning to the Home Screen alone isn't enough). You can quit the app now with “Quit Now.”",
+    "送信キャンセル": "Send Cancellation",
+    "送信取り消しの猶予": "Cancel-Send Grace Period",
+    "「送信」をタップしてから実際にサーバーへ送るまでの猶予時間です。この間は「送信を取り消す」で送信をキャンセルできます。アプリをバックグラウンドに切り替えると、残り時間に関わらず即座に送信されます。":
+        "The grace period between tapping “Send” and the message actually being sent to the server. You can cancel sending during this time with “Cancel Send.” Switching the app to the background sends the message immediately, regardless of the remaining time.",
+    "メールの表示 (HTML)": "Message Display (HTML)",
+    "ONで一覧を会話単位にまとめます。OFFにすると一覧がメール単位になります。":
+        "When on, the list groups messages into conversations. When off, the list shows one row per message.",
+    "なし": "None",
+    "5秒": "5 Seconds",
+    "10秒": "10 Seconds",
+    "1行": "1 Line",
+    "2行": "2 Lines",
+    "3行": "3 Lines",
+    "既読/未読切替": "Toggle Read/Unread",
+
+    # --- F 署名テンプレート (SignatureTemplatesSettingsView / SignatureTemplateEditView / AccountLabelColorPicker) ---
+    "自動": "Auto",
+    "署名テンプレート": "Signature Templates",
+    "署名テンプレートを追加": "Add Signature Template",
+    "署名テンプレートがありません。": "No signature templates.",
+    "署名テンプレートを削除しますか？": "Delete this signature template?",
+    "使用するアカウントが選択されていません": "No accounts selected",
+    "例: 会社用の署名": "e.g. Work Signature",
+    "使用するアカウント": "Accounts",
+    "チェックしたアカウントで作成中のメールの「署名」欄からこの署名を選べます。複数選択できます。":
+        "Accounts you check here can select this signature from the Signature field when composing a message. You can select more than one.",
+
+    # --- AboutView ---
+    "ライセンス: MIT": "License: MIT",
+    "サードパーティライセンス": "Third-Party Licenses",
+    "GitHub リポジトリ": "GitHub Repository",
+    "既存のメールアカウント (Gmail / iCloud / 汎用 IMAP・SMTP) に接続する、\nオフラインファーストのオープンソースメールクライアントです。":
+        "An offline-first, open-source mail client that connects to your existing mail accounts (Gmail / iCloud / generic IMAP & SMTP).",
+
+    # --- AccountSetupView / AccountEditView / ICloudAccountSetupView / GmailAccountSetupView ---
+    "なし (平文)": "None (Plain)",
+    "表示名": "Display Name",
+    "表示名 (省略時はメールアドレス)": "Display Name (defaults to email address)",
+    "接続方式": "Security",
+    "メールアドレス": "Email Address",
+    "保存して同期開始": "Save & Start Syncing",
+    "空欄の場合は認証なしで接続します。サーバーが認証に対応していない場合は、ユーザー名を入力していても自動的に認証を省略します。":
+        "Leave blank to connect without authentication. If the server doesn't support authentication, it's skipped automatically even when a username is entered.",
+    "SMTP (送信用。任意 — 未設定の場合は送信できません)": "SMTP (for sending; optional — sending won't work if unset)",
+    "SMTP (送信用。任意)": "SMTP (for sending; optional)",
+    "SMTP接続テスト": "Test SMTP Connection",
+    "接続先 (固定)": "Server (fixed)",
+    "接続先 (自動設定・変更不可)": "Server (preset, not editable)",
+    "接続先 (自動設定)": "Server (preset)",
+    "新しいパスワード (変更する場合のみ入力)": "New Password (enter only to change it)",
+    "その他 (IMAP)": "Other (IMAP)",
+    "新しい App 用パスワード (変更する場合のみ入力)": "New App-Specific Password (enter only to change it)",
+    "種類": "Type",
+    "アカウントを編集": "Edit Account",
+    "新規メール作成時、このアカウントを差出人に選ぶと本文末尾に自動で挿入されます（返信・転送では自動挿入されません。作成画面の「署名」欄から手動で選べます）。":
+        "When this account is selected as From on a new message, this is automatically appended to the body (not for replies/forwards — you can still pick it manually from the Signature field in the compose screen).",
+    "App 用パスワード": "App-Specific Password",
+    "appleid.apple.com で App 用パスワードを発行": "Generate an App-Specific Password at appleid.apple.com",
+    "Google アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。":
+        "Authenticated via your Google account. Your password is never stored by this app. If authentication expires, sign in again using “Reauthenticate.”",
+    "IMAP ポート番号を確認してください。": "Please check the IMAP port number.",
+    "appleid.apple.com で発行した「App 用パスワード」が必要です。iCloud のパスワードそのものではログインできません。":
+        "Requires an App-Specific Password generated at appleid.apple.com — your regular iCloud password won't work.",
+    "iCloud メールアドレス": "iCloud Email Address",
+    "iCloud アカウントを追加": "Add iCloud Account",
+    "Gmail アカウントを追加": "Add Gmail Account",
+    "Google でログイン": "Sign in with Google",
+    "Google のログイン画面が表示されます。otegami はメールの送受信に必要な権限のみをリクエストします。":
+        "Google's sign-in screen will open. otegami only requests the permissions needed to send and receive mail.",
+
+    # --- TemplatesSettingsView / TemplateEditView (C8) ---
+    "テンプレート": "Templates",
+    "テンプレートを追加": "Add Template",
+    "テンプレートがありません。": "No templates.",
+    "テンプレートを削除しますか？": "Delete this template?",
+    "件名（任意）": "Subject (Optional)",
+    "すべてのアカウント": "All Accounts",
+    "特定のアカウントを選ぶと、そのアカウントで作成中のメールでだけこのテンプレートを使えます。":
+        "Choosing a specific account limits this template to messages composed from that account.",
+    "件名を入れておくと、新規作成の本文・件名が両方空のときにこのテンプレートで両方埋められます。空のままなら本文だけが挿入されます（署名のような使い方）。":
+        "If you set a subject, this template fills in both the subject and body when starting a brand-new, completely empty message. Otherwise only the body is inserted (useful as a signature-style snippet).",
+
+    # --- MessageToolbarSettingsView ---
+    "ツールバーの編集": "Edit Toolbar",
+    "ドラッグして、メール本文画面下部のツールバーに並ぶアイコンの順序を変更できます。":
+        "Drag to reorder the icons in the toolbar at the bottom of the message view.",
+
+    # --- AccountTypeSelectionView ---
+    "アカウントの種類": "Account Type",
+    "Gmail と iCloud はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。":
+        "Gmail and iCloud have their host settings filled in automatically. For any other provider, set it up manually via “Other.”",
+
+    # --- PushNotificationSettingsView ---
+    "自分でホストしたプッシュ中継サーバ (otegami-relay) の URL を入力してください。":
+        "Enter the URL of your self-hosted push relay server (otegami-relay).",
+    "リレー URL": "Relay URL",
+    "https:// が必須です（ローカル開発時のみ http://localhost を使用できます）。":
+        "https:// is required (http://localhost is allowed for local development only).",
+    "プッシュ通知は有効です": "Push Notifications Are Enabled",
+    "無効にする": "Disable",
+    "有効にする": "Enable",
+    "設定アプリを開く": "Open Settings App",
+    "資格情報の送信について": "About Sending Credentials",
+    "同意して有効にする": "Agree & Enable",
+    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）が入力したリレー URL のサーバーへ送信され、暗号化して保存されます。リレーの運用者を信頼できる場合のみ有効にしてください。Gmail (OAuth) アカウントは現バージョンでは対象外です。":
+        "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the server at the relay URL you entered, where it's stored encrypted. Only enable this if you trust the relay's operator. Gmail (OAuth) accounts aren't supported in this version.",
 }
 
 

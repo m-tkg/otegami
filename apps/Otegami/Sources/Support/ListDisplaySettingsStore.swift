@@ -10,12 +10,18 @@ enum PreviewLineCount: Int, CaseIterable, Identifiable {
 
     var id: Int { rawValue }
 
+    // A「表示・操作改善バッチ」以降の`Text(String)`は自動でローカライズされない
+    // ("verbatim"呼び出し) — `docs/localization.md`のパターン1どおり
+    // `String(localized:)`で明示的にカタログを引く (`MailListSettingsView`の
+    // `Picker`が`Text(count.title)`としてこの`String`を渡すため。以前は
+    // ここが未対応で、表示言語を English にしても本文プレビューの行数
+    // ピッカーだけ日本語のままになる実バグだった)。
     var title: String {
         switch self {
-        case .none: "なし"
-        case .one: "1行"
-        case .two: "2行"
-        case .three: "3行"
+        case .none: String(localized: "なし")
+        case .one: String(localized: "1行")
+        case .two: String(localized: "2行")
+        case .three: String(localized: "3行")
         }
     }
 }

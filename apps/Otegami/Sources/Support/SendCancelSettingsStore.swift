@@ -24,11 +24,15 @@ enum SendCancelWindow: Int, CaseIterable, Identifiable {
 
     var id: Int { rawValue }
 
+    // A「表示・操作改善バッチ」以降の`Text(String)`は自動でローカライズされない
+    // ("verbatim"呼び出し) — `docs/localization.md`のパターン1どおり
+    // `String(localized:)`で明示的にカタログを引く (`OtherSettingsView`の
+    // `Picker`が`Text(window.title)`としてこの`String`を渡すため)。
     var title: String {
         switch self {
-        case .none: "なし"
-        case .fiveSeconds: "5秒"
-        case .tenSeconds: "10秒"
+        case .none: String(localized: "なし")
+        case .fiveSeconds: String(localized: "5秒")
+        case .tenSeconds: String(localized: "10秒")
         }
     }
 
