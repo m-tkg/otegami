@@ -367,6 +367,17 @@ struct AccountEditView: View {
             Text("Google アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            // アバター強化バッチ「Google プロフィール写真」: 新スコープ
+            // (`contacts.other.readonly`) 追加前に接続したアカウントは、
+            // 下の「再認証」ボタンで同じ OAuth フローを再実行する (現在の
+            // `GoogleOAuthEndpoints.scope`には既に新スコープが含まれている
+            // ので、再同意するだけで有効になる — アカウントの削除・再作成は
+            // 不要)。`needsReauth`の有無に関わらず常に出す (このヒントは
+            // 「認証切れ」ではなく「新しい機能を有効にする」ための案内な
+            // ので)。
+            Text("再接続すると、差出人の Google プロフィール写真を表示できるようになります。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button {
                 Task { await reauthenticate() }
             } label: {

@@ -1,8 +1,8 @@
 import XCTest
 
-/// アバター強化バッチ フェーズ1/2/3: 「連絡先の写真を表示」「Gravatar の
-/// 画像を表示」「企業ロゴを表示」の3トグルが設定 →「メール一覧」に実際に
-/// 現れ、操作できることを確認する軽量な検証。
+/// アバター強化バッチ: 「連絡先の写真を表示」「Google プロフィール写真を
+/// 表示」「Gravatar の画像を表示」「企業ロゴを表示」の4トグルが設定 →
+/// 「メール一覧」に実際に現れ、操作できることを確認する軽量な検証。
 ///
 /// アカウント追加・dev mailstack 同期を必要とする `OtegamiM1VerificationUITests`
 /// 等とは違い、この画面はアカウントが1件も無い状態でも到達できる
@@ -38,6 +38,12 @@ final class OtegamiAvatarSettingsUITests: XCTestCase {
         // 実際にタップできる (OFF に切り替えられる) ことも確認する — 見えて
         // いるだけで操作できないトグルではないことの最低限の裏付け。
         contactPhotoToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+
+        // アバター強化バッチ「Google プロフィール写真」。
+        let googleProfilePhotoToggle = app.switches["settings.list.showGoogleProfilePhotoToggle"]
+        XCTAssertTrue(googleProfilePhotoToggle.waitForExistence(timeout: 5), "「Google プロフィール写真を表示」トグルが見つからなかった")
+        XCTAssertEqual(googleProfilePhotoToggle.value as? String, "1", "既定で ON になっているはず")
+        googleProfilePhotoToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         // アバター強化バッチ フェーズ2「Gravatar」。
         let gravatarToggle = app.switches["settings.list.showGravatarToggle"]

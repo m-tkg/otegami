@@ -15,6 +15,9 @@ struct MailListSettingsView: View {
     // アバター強化バッチ フェーズ1: `AvatarSourceSettingsStore`のドキュメント
     // コメント参照。
     @AppStorage(AvatarSourceSettingsStore.showContactPhotoKey) private var showContactPhoto = AvatarSourceSettingsStore.defaultShowContactPhoto
+    // アバター強化バッチ「Google プロフィール写真」: 連絡先の写真の次、
+    // Gravatar の前の優先順位。
+    @AppStorage(AvatarSourceSettingsStore.showGoogleProfilePhotoKey) private var showGoogleProfilePhoto = AvatarSourceSettingsStore.defaultShowGoogleProfilePhoto
     // アバター強化バッチ フェーズ2: 同上。
     @AppStorage(AvatarSourceSettingsStore.showGravatarKey) private var showGravatar = AvatarSourceSettingsStore.defaultShowGravatar
     // アバター強化バッチ フェーズ3: 同上。
@@ -43,8 +46,16 @@ struct MailListSettingsView: View {
                 // 残っている方が自然)。
                 Toggle("連絡先の写真を表示", isOn: $showContactPhoto)
                     .accessibilityIdentifier("settings.list.showContactPhotoToggle")
-                // アバター強化バッチ フェーズ2「Gravatar」。連絡先の写真が
-                // 見つからなかった場合の次点として使われる。
+                // アバター強化バッチ「Google プロフィール写真」。連絡先の
+                // 写真が見つからなかった場合の次点。Gmail アカウントが無い
+                // ユーザーには効果が無いが、トグル自体は常に出す (Gravatar/
+                // 企業ロゴのトグルも差出人ドメインを問わず常に出しているのと
+                // 同じ扱い)。
+                Toggle("Google プロフィール写真を表示", isOn: $showGoogleProfilePhoto)
+                    .accessibilityIdentifier("settings.list.showGoogleProfilePhotoToggle")
+                // アバター強化バッチ フェーズ2「Gravatar」。連絡先の写真・
+                // Google プロフィール写真のどちらも見つからなかった場合の
+                // 次点として使われる。
                 Toggle("Gravatar の画像を表示", isOn: $showGravatar)
                     .accessibilityIdentifier("settings.list.showGravatarToggle")
                 // アバター強化バッチ フェーズ3「企業ロゴ (favicon)」。連絡先の
@@ -68,7 +79,8 @@ struct MailListSettingsView: View {
                 // で明記している。
                 VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
                     Text("プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先に一致する写真があればそれを優先して表示します（連絡先の照合はこの端末上だけで行われ、外部には送信されません）。")
-                    Text("連絡先に写真が無い場合、Gravatar (gravatar.com) に登録された画像を表示することがあります。差出人アドレスのハッシュが gravatar.com に送信されます。設定でオフにできます。")
+                    Text("連絡先に写真が無い場合、Gmail アカウントが接続されていれば Google のプロフィール写真を表示することがあります。差出人のメールアドレスが Google に送信されます。設定でオフにできます。")
+                    Text("それでも見つからない場合、Gravatar (gravatar.com) に登録された画像を表示することがあります。差出人アドレスのハッシュが gravatar.com に送信されます。設定でオフにできます。")
                     Text("それでも見つからない場合、差出人の会社ドメインの favicon を企業ロゴとして表示することがあります（フリーメール (Gmail 等) のアドレスは対象外です）。ドメイン名が接続先サーバーに送信されます。設定でオフにできます。")
                 }
             }
