@@ -160,6 +160,8 @@ targets:
         product: OtegamiTranslationFoundationModels
       - package: OtegamiKit
         product: TranslationEngine
+      - package: OtegamiKit
+        product: BIMI
       - target: NotificationService
         embed: true
         platformFilter: iOS

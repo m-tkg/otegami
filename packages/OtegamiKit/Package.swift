@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "OtegamiTranslation", targets: ["OtegamiTranslation"]),
         .library(name: "OtegamiTranslationFoundationModels", targets: ["OtegamiTranslationFoundationModels"]),
         .library(name: "TranslationEngine", targets: ["TranslationEngine"]),
+        .library(name: "BIMI", targets: ["BIMI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
@@ -252,6 +253,25 @@ let package = Package(
         .testTarget(
             name: "TranslationEngineTests",
             dependencies: ["TranslationEngine", "OtegamiStore", "OtegamiTranslation"]
+        ),
+
+        // Task #42, point 4「BIMI 対応」: DNS-over-HTTPS BIMI record lookup +
+        // safe-subset SVG validation/parsing. Linux-compatible (plain
+        // `URLSession`/`Foundation`, no `CoreGraphics`) — like `GoogleOAuth`,
+        // this keeps the network/parsing logic unit-testable without a
+        // Simulator; the actual pixel rasterization is app-layer-only
+        // (`apps/Otegami/Sources/Support/BIMISVGRenderer.swift`, `CoreGraphics`).
+        .target(
+            name: "BIMI"
+        ),
+
+        // `URLProtocol`-stubbed DoH lookup tests, TXT-record/multi-segment
+        // reassembly parsing, SVG safety-rejection cases, and the path-data/
+        // transform/color parser's pure-function tests. No real DNS or HTTP
+        // touched.
+        .testTarget(
+            name: "BIMITests",
+            dependencies: ["BIMI"]
         ),
     ]
 )

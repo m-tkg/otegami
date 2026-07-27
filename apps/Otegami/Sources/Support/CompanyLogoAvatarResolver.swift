@@ -1,3 +1,4 @@
+import BIMI
 import Foundation
 import OtegamiCore
 #if canImport(UIKit)
@@ -9,42 +10,53 @@ import AppKit
 /// アバター強化バッチ フェーズ3「企業ロゴ (BIMI → favicon)」:
 /// `AvatarImageResolving`の第3優先情報源 (連絡先の写真・Gravatar の次)。
 ///
-/// **BIMI は実装していない — 意図的な判断**: 当初の指示は BIMI
-/// (DNS TXT `default._bimi.<domain>` から SVG ロゴ URL を取得) を優先し、
-/// 実装コストが見合わなければ favicon のみにして判断を報告する、という
-/// ものだった。BIMI を見送った理由:
-/// 1. **DNS TXT レコードの取得に、システムリゾルバを使う手頃な高レベル
-///    API が Apple のプラットフォームに存在しない**。`URLSession`は
-///    HTTP(S) 専用で DNS レコード種別を選べず、`Network`framework の
-///    `NWConnection`も同様。唯一の経路は`dnssd`framework の
-///    `DNSServiceQueryRecord`(C コールバック API、`<dns_sd.h>`) で、
-///    これ自体はシステムリゾルバを使う正しい選択肢ではあるものの、
-///    コールバック→Swift concurrency のブリッジ・タイムアウト処理・
-///    `DNSServiceRef`のメモリ管理を新規に実装する必要があり、指示が
-///    明示的に許容している「実装コストに見合わなければ見送る」の対象と
-///    判断した (指示の代替案だった、サードパーティ DoH (`dns.google`
-///    等) 経由の実装は、指示自身が「第三者への照会になる点に注意」と
-///    明記しており、プライバシー方針上採用しない)。
-/// 2. SVG の安全なラスタライズ (`WKWebView`を使わない、サイズ制限+単純な
-///    SVG のみ) も別途実装が要る要素で、1と合わせて BIMI 全体の実装コスト
-///    がこのバッチの他フェーズ (連絡先の写真・Gravatar) に対して不釣り
-///    合いに大きいと判断した。
+/// **Task #42 での方針転換 — BIMI を実装する**: このコメントは以前
+/// 「BIMI は実装していない — 意図的な判断」として、Apple プラットフォーム
+/// に DNS TXT レコード取得の手頃な高レベル API が無いこと、およびサード
+/// パーティ DoH (`dns.google`等) 経由の実装は「第三者への照会になる」
+/// という理由で favicon のみに絞ったことを記録していた。Task #42 の指示は
+/// この判断を明示的に覆し、DoH (`https://dns.google/resolve`) 経由の BIMI
+/// 実装を指定している — プライバシー上のトレードオフ (BIMI 判定のたびに
+/// Google の DoH エンドポイントへドメイン名を送る) を認識した上での、この
+/// バッチの作者による意図的な再選択であり、`docs/design-system.md`の
+/// BIMI 節にもこの転換を記録済み。
 ///
-/// favicon フォールバックのみを実装する: `https://<domain>/apple-touch-icon.png`
-/// → 失敗すれば`https://<domain>/favicon.ico`の順に試す。
+/// - DNS TXT 取得: `BIMIRecordClient`(`packages/OtegamiKit/Sources/BIMI/`)
+///   が`default._bimi.<domain>`を DoH 経由で引き、`v=BIMI1; l=<SVG URL>`
+///   から SVG URL を取得する。
+/// - SVG の安全性: `BIMISVGSafety.isSafe(_:)`が`<script>`・外部参照・
+///   イベントハンドラ属性・サイズ上限 (64KB) を検証してから初めて
+///   `BIMISVGParser`(安全な subset のみをサポート、それ以外は fail closed
+///   で拒否) がパースする。ラスタライズは`BIMISVGRenderer`
+///   (`CoreGraphics`、この型のみが Apple-only) が担う — `WKWebView`は
+///   使わない (指示どおり)。
+/// - BIMI が見つからない/安全でない/パースできない場合は、既存の favicon
+///   フォールバック (`https://<domain>/apple-touch-icon.png` →
+///   `https://<domain>/favicon.ico`) にそのまま委ねる。
 public actor CompanyLogoAvatarResolver: AvatarImageResolving {
     private let session: URLSession
+    private let bimiClient: BIMIRecordClient
     private var memoryCache: [String: Data?] = [:]
     private var memoryCacheTimestamps: [String: Date] = [:]
     private var inFlight: [String: Task<Data?, Never>] = [:]
     private let cacheDirectory: URL
 
-    /// 30日 — favicon はユーザーの写真 (Gravatar, 7日) よりずっと変更
-    /// 頻度が低いと考えられるため、長めの TTL にした。
+    /// 30日 — favicon/BIMI ロゴはユーザーの写真 (Gravatar, 7日) よりずっと
+    /// 変更頻度が低いと考えられるため、長めの TTL にした。BIMI・favicon
+    /// どちらから得たロゴも同じキー (ドメイン単位) の同じキャッシュに載る
+    /// — 「このドメインの企業ロゴ」という1つの概念に対して情報源が2つ
+    /// あるだけなので、二重キャッシュは不要と判断した。
     private let ttl: TimeInterval = 30 * 24 * 60 * 60
+
+    /// `BIMISVGRenderer.render(_:pixelSize:)`に渡すラスタライズ後の一辺の
+    /// ピクセル数。`GooglePeopleAvatarClient.sizedPhotoURL(_:)`の`=s160`と
+    /// 同じ160を採用 — アバター表示サイズ (~30pt) の Retina 3x を超える
+    /// 余裕を持たせつつ、無駄に大きくしない値。
+    private static let bimiRenderedPixelSize = 160
 
     public init(session: URLSession = .shared) {
         self.session = session
+        self.bimiClient = BIMIRecordClient(session: session)
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         cacheDirectory = base.appendingPathComponent("AvatarCache/CompanyLogo", isDirectory: true)
@@ -87,11 +99,42 @@ public actor CompanyLogoAvatarResolver: AvatarImageResolving {
             memoryCacheTimestamps[domain] = cachedAt
             return data
         }
-        let data = await fetchFavicon(domain: domain)
+        let data = await fetchCompanyLogo(domain: domain)
         memoryCache[domain] = data
         memoryCacheTimestamps[domain] = Date()
         writeDiskCache(domain: domain, data: data)
         return data
+    }
+
+    /// BIMI を favicon より先に試す (指示どおり) — 見つからない・安全で
+    /// ない・パースできないのいずれであっても、`fetchFavicon`へ静かに
+    /// フォールバックする (BIMI 側の失敗をエラーとしてこの型の外へ
+    /// 伝える必要は無い — `AvatarImageResolving`の契約どおり「この情報源
+    /// では出せなかった」を表すだけ)。
+    private func fetchCompanyLogo(domain: String) async -> Data? {
+        if let bimiLogo = await fetchBIMILogo(domain: domain) {
+            return bimiLogo
+        }
+        return await fetchFavicon(domain: domain)
+    }
+
+    private func fetchBIMILogo(domain: String) async -> Data? {
+        guard case .found(let svgURL) = await bimiClient.resolveLogoURL(domain: domain) else { return nil }
+
+        var request = URLRequest(url: svgURL)
+        request.timeoutInterval = 8
+        guard let (data, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty,
+              data.count <= BIMISVGSafety.maxByteSize
+        else { return nil }
+
+        // セキュリティ必須: 安全性検証 → パース → ラスタライズの順で、
+        // どの段階が失敗しても`nil`を返し favicon へフォールバックする
+        // (`BIMISVGSafety`/`BIMISVGParser`両方のドキュメントコメント参照
+        // — 「わからないものは描かない」fail-closed の設計)。
+        guard BIMISVGSafety.isSafe(data) else { return nil }
+        guard let vectorImage = BIMISVGParser.parse(data) else { return nil }
+        return BIMISVGRenderer.render(vectorImage, pixelSize: Self.bimiRenderedPixelSize)
     }
 
     private func readDiskCache(domain: String) -> (data: Data?, cachedAt: Date)? {
