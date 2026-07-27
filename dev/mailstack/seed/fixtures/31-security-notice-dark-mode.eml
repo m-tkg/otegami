@@ -1,0 +1,80 @@
+From: "Example Security" <security-noreply@example.com>
+To: test1@otegami.test
+Subject: セキュリティ通知
+Message-ID: <seed-0031@otegami.test>
+Date: Mon, 26 Jan 2026 00:33:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="otegami-boundary-31"
+
+--otegami-boundary-31
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width">
+<title>セキュリティ通知</title>
+<!--[if mso]>
+<style type="text/css">table {border-collapse:collapse;}</style>
+<![endif]-->
+<style type="text/css">
+  body { margin: 0; padding: 0; background-color: #f2f2f2; font-family: 'Helvetica Neue', Arial, sans-serif; }
+  .card { max-width: 480px; margin: 24px auto; background-color: #ffffff; border: 1px solid #dadce0; border-radius: 8px; overflow: hidden; }
+  .card-inner { padding: 40px 40px 32px 40px; text-align: center; }
+  h1 { font-size: 20px; line-height: 26px; color: #202124; font-weight: 400; margin: 24px 0 16px 0; }
+  .account-row { font-size: 14px; color: #3c4043; margin: 0 0 24px 0; }
+  hr { border: none; border-top: 1px solid #e8eaed; margin: 0 0 24px 0; }
+  .body-text { font-size: 14px; line-height: 20px; color: #3c4043; text-align: left; margin: 0 0 16px 0; }
+  .cta { display: inline-block; background-color: #1a73e8; color: #ffffff; font-size: 14px; font-weight: 500; padding: 10px 24px; border-radius: 4px; text-decoration: none; margin: 8px 0 24px 0; }
+  .footer { max-width: 480px; margin: 0 auto; padding: 0 40px 24px 40px; font-size: 11px; line-height: 16px; color: #70757a; }
+  .footer a { color: #1a73e8; }
+  /* fit-to-width 検証用: 実テンプレートに時々ある「折り返させたくない
+     注記行」パターンを模した意図的な white-space: nowrap。ビューポート
+     幅を確実に超える長さにしてあり、fit-to-width の scale 計算パスを
+     決定的に踏ませる (画像の読み込みタイミングに左右されないテスト)。 */
+  .nowrap-disclaimer { white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="card-inner">
+    <img src="cid:otegami-security-logo@otegami.test" width="120" height="40" alt="Example">
+    <h1>あなたは otegami に Example アカウントのデータの一部へのアクセスを許可しました</h1>
+    <p class="account-row">
+      <img src="cid:otegami-security-avatar@otegami.test" width="24" height="24" style="border-radius:50%;vertical-align:middle;" alt="">
+      user@example.com
+    </p>
+    <hr>
+    <p class="body-text">otegami に Example アカウントのデータの一部へのアクセスを許可していない場合は、第三者が Example アカウントのデータにアクセスしようとしている可能性があります。</p>
+    <p class="body-text">今すぐアカウント アクティビティを確認し、アカウントを保護してください。</p>
+    <a class="cta" href="https://example.com/security-checkup">アクティビティを確認</a>
+  </div>
+</div>
+<div class="footer">
+  <p>otegami に付与したあなたのデータへのアクセス権は、Example アカウントでいつでも変更できます。</p>
+  <p class="nowrap-disclaimer">このメールは security-noreply@example.com からの重要なお知らせのため配信停止の対象外です。返信はできません。</p>
+</div>
+</body>
+</html>
+
+--otegami-boundary-31
+Content-Type: image/png; name="security-logo.png"
+Content-Transfer-Encoding: base64
+Content-ID: <otegami-security-logo@otegami.test>
+Content-Disposition: inline; filename="security-logo.png"
+
+iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMG
+jRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg==
+
+--otegami-boundary-31
+Content-Type: image/png; name="security-avatar.png"
+Content-Transfer-Encoding: base64
+Content-ID: <otegami-security-avatar@otegami.test>
+Content-Disposition: inline; filename="security-avatar.png"
+
+iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMG
+jRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg==
+
+--otegami-boundary-31--

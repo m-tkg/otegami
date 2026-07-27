@@ -133,4 +133,14 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/28-both-image-kinds.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/29-fixed-width-bank-notice.eml"
 seed_message "test1@otegami.test" "$FIXTURES_DIR/30-fixed-width-notice-en.eml"
 
+# Task #45 検証用: 実機報告 (Google のセキュリティ通知メールで、ダーク
+# モードだと暗地に暗文字でほぼ読めない/罫線から下の本文が描画されない)
+# を再現する構造 — 白背景・濃色文字を明示指定 (自前のダークモード対応
+# なし)、中央寄せの角丸カード、cid: 画像 (ロゴ + アバター、height: auto
+# !important のCSSリセットにより読み込み完了までレイアウト高さが確定
+# しない)、罫線の下に本文2段落 + CTA ボタン、fit-to-width の scale
+# パスを決定的に踏ませる nowrap の注記行、という組み合わせ
+# (docs/design-system.md の Task #45 節参照)。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/31-security-notice-dark-mode.eml"
+
 echo "==> done"
