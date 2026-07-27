@@ -85,6 +85,22 @@ struct MailListSettingsView: View {
                 }
             }
 
+            // Task #52, 3: ハンバーガーメニューのカテゴリセクション (受信
+            // トレイ/アーカイブ/送信済み等) の並び替え — 一覧そのものではなく
+            // 一覧に辿り着くまでのフォルダメニューの設定だが、「一覧の並び方/
+            // まとめ方」というこのカテゴリの既存項目 (下のスレッド表示等) と
+            // 同じ性質と判断してここに置いた。
+            Section {
+                NavigationLink {
+                    FolderCategoryOrderSettingsView()
+                } label: {
+                    Label("カテゴリの並び替え", systemImage: "arrow.up.arrow.down")
+                }
+                .accessibilityIdentifier("settings.list.categoryOrderLink")
+            } footer: {
+                Text("フォルダメニューに並ぶ「受信トレイ」「アーカイブ」などカテゴリの表示順を変更できます。")
+            }
+
             #if os(iOS)
             swipeSection
             #endif
