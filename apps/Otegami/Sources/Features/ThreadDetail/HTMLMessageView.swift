@@ -94,6 +94,13 @@ struct HTMLMessageView: View {
     /// to the right default even before any explicit write.
     @State private var allowsExternalContent: Bool
     @State private var allowsEmbeddedImages: Bool
+    /// Task #45「ダークモードで文字が読めない」— seeded the same way as the
+    /// two image settings above (see their doc comment; same reasoning:
+    /// this bakes into the loaded document itself via `HTMLDocumentBuilder
+    /// .wrap(bodyHTML:autoAdjustColorsInDarkMode:)`, so a fresh read at
+    /// `init` time — not `@AppStorage` — is what keeps each newly opened
+    /// message honest about the current setting).
+    @State private var autoAdjustColorsInDarkMode: Bool
 
     // MARK: - C7 link handling
 
@@ -124,6 +131,7 @@ struct HTMLMessageView: View {
         self.onTranslationControllerReady = onTranslationControllerReady
         _allowsExternalContent = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowRemoteImagesKey))
         _allowsEmbeddedImages = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowEmbeddedImagesKey))
+        _autoAdjustColorsInDarkMode = State(initialValue: UserDefaults.standard.bool(forKey: HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey))
     }
 
     private var hasExternalContent: Bool {
@@ -211,6 +219,7 @@ struct HTMLMessageView: View {
                 html: html,
                 allowsExternalContent: allowsExternalContent,
                 allowsEmbeddedImages: allowsEmbeddedImages,
+                autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode,
                 cidContext: CIDResolutionContext(
                     environment: environment, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath
                 ),
@@ -376,9 +385,70 @@ struct CIDResolutionContext {
 /// `extractHeadStyles(from:)` も参照 — 同じ B の変更が本文抽出と一緒に元
 /// `<head>` の `<style>` ブロックも丸ごと捨てていた副作用の修正。
 enum HTMLDocumentBuilder {
-    static func wrap(bodyHTML: String) -> String {
+    /// Task #45「ダークモードで文字が読めない」: ライト前提 (白背景 + 濃色
+    /// 文字を明示指定) で書かれた HTML メールを、アプリのダークモード表示
+    /// 中に開くと、背景だけが (このファイル自身の`background: transparent`
+    /// リセットのおかげで) 暗くなる一方、メールが指定した濃グレー文字色は
+    /// そのまま残り、暗地に暗文字でほぼ読めなくなる実機不具合。Spark/Gmail
+    /// はこの種のメールも自動で明るい文字色に変換して表示する。
+    ///
+    /// `autoAdjustColorsInDarkMode`が true (既定 ON、設定「メールビューア」
+    /// →「メールの表示」の「ダークモードでメールの配色を自動調整」トグル)
+    /// かつ、メール自身が`mailDeclaresOwnDarkModeSupport(bodyHTML:)`で
+    /// 判定する自前のダークモード対応を持たない場合に限り、`@media
+    /// (prefers-color-scheme: dark)`の中だけで本文ラッパ (`#otegami-fit-
+    /// inner`) に`filter: invert(1) hue-rotate(180deg)`を適用する — 白backg
+    /// →暗背景・濃文字→明文字になる古典的な手法 (NetNewsWire 等と同方式)。
+    /// `img`/`picture`/`video`と、インライン`style`に`background-image`を
+    /// 持つ要素には同じフィルタをもう一度適用して打ち消す (二重反転で
+    /// 元の色に戻る) — 写真・ロゴが色反転して不自然にならないようにする
+    /// ため。ブランドカラー (テキスト色・アクセント色) は反転後も概ね保た
+    /// れる (色相環上で180度回転するため、青系統は青系統のまま程度の変化
+    /// に留まることが多い)。
+    ///
+    /// `@media (prefers-color-scheme: dark)`を使い、Swift 側から実際の
+    /// ダーク/ライト判定を渡さない設計にしているのは意図的: このアプリは
+    /// アプリ全体のテーマを明示的に上書きしていない (システム設定にだけ
+    /// 従う、`grep colorScheme`で確認済み) ため、`WKWebView`自身が
+    /// ホストアプリの実際の外観 (システムのライト/ダーク設定) に応じて
+    /// この媒体クエリを正しく評価してくれる。`:root { color-scheme: light
+    /// dark; }`が既にこのファイルの CSS リセットにあり、ページ自身が
+    /// 両方のスキームに対応していることを WebKit に伝えている。
+    ///
+    /// メール自身が既にダークモード対応済みの場合は何もしない (二重に
+    /// 反転させると壊れるため) — Spark/Gmail と同じ「メールが対応済みなら
+    /// 尊重する」方針。
+    static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool) -> String {
         let innerBody = extractBodyContent(from: bodyHTML)
         let originalHeadStyles = extractHeadStyles(from: bodyHTML)
+        let shouldInvertForDarkMode = autoAdjustColorsInDarkMode && !mailDeclaresOwnDarkModeSupport(html: bodyHTML)
+        let darkModeInvertStyle = shouldInvertForDarkMode ? """
+        <style>
+          @media (prefers-color-scheme: dark) {
+            /* Task #45: ライト専用に書かれたメールをダークモードでも
+               読めるようにする「反転」手法。#otegami-fit-inner は
+               fit-to-width の scale(transform) も受けうる同じ要素だが、
+               filter と transform は独立したペイント/コンポジット効果
+               同士で、レイアウト計算 (scrollWidth/scrollHeight) には
+               互いに影響しない。 */
+            #otegami-fit-inner {
+              filter: invert(1) hue-rotate(180deg);
+            }
+            /* 画像・動画・背景画像は反転を打ち消してもう一度反転 (＝
+               元の色に戻す) — 写真やロゴの色が不自然に変わらないように
+               する。`[style*="background-image"]` は CSS ではクラス経由の
+               background-image までは拾えないが、「やり過ぎない範囲で」
+               という方針どおり、インライン style で背景画像を指定する
+               頻出パターンだけを対象にした現実的な範囲。 */
+            #otegami-fit-inner img,
+            #otegami-fit-inner picture,
+            #otegami-fit-inner video,
+            #otegami-fit-inner [style*="background-image"] {
+              filter: invert(1) hue-rotate(180deg);
+            }
+          }
+        </style>
+        """ : ""
         return """
         <!doctype html>
         <html>
@@ -425,10 +495,36 @@ enum HTMLDocumentBuilder {
           #otegami-fit-outer { overflow: hidden; }
         </style>
         \(originalHeadStyles)
+        \(darkModeInvertStyle)
         </head>
         <body><div id="otegami-fit-outer"><div id="otegami-fit-inner">\(innerBody)</div></div></body>
         </html>
         """
+    }
+
+    /// Task #45: whether `html` (the *original*, unwrapped message HTML —
+    /// checked before `extractBodyContent`/`extractHeadStyles` run, so this
+    /// sees the original `<head>` regardless of whether it survives
+    /// extraction) already declares its own dark-mode support, in which case
+    /// `wrap(bodyHTML:autoAdjustColorsInDarkMode:)` leaves it untouched
+    /// rather than risking a double-inversion. Two real-world signals,
+    /// either one sufficient:
+    /// - `<meta name="color-scheme" content="...">` (the HTML-level opt-in
+    ///   most mail-authoring tools emit alongside a dark-mode stylesheet).
+    /// - A `prefers-color-scheme` media query anywhere in the message's own
+    ///   markup (almost always inside a `<style>` block — the actual dark-
+    ///   mode color overrides live behind it).
+    /// Plain case-insensitive substring search, not a real CSS/HTML parser —
+    /// consistent with this file's existing pragmatic approach elsewhere
+    /// (`stripHTMLComments(from:)`'s doc comment makes the same tradeoff).
+    /// A false positive (text that happens to contain one of these strings
+    /// without it actually governing color) just means this app trusts the
+    /// message's own dark-mode handling instead of applying its own — the
+    /// safe direction to be wrong in, same as leaving a message's colors
+    /// alone entirely would be.
+    private static func mailDeclaresOwnDarkModeSupport(html: String) -> Bool {
+        let lowercased = html.lowercased()
+        return lowercased.contains("prefers-color-scheme") || lowercased.contains("name=\"color-scheme\"") || lowercased.contains("name='color-scheme'")
     }
 
     /// MailCore2's `MCOMessageParser.htmlBodyRendering()` hands back
@@ -824,6 +920,7 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     let html: String
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
+    let autoAdjustColorsInDarkMode: Bool
     let cidContext: CIDResolutionContext
     /// 1i — see `HTMLMessageView.translationController`'s doc comment.
     let translationController: HTMLTranslationController
@@ -849,14 +946,17 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
-        context.coordinator.load(html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages, into: webView)
+        context.coordinator.load(
+            html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, into: webView
+        )
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.reloadIfNeeded(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            cidContext: cidContext, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, cidContext: cidContext, into: webView
         )
     }
 }
@@ -867,6 +967,7 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     let html: String
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
+    let autoAdjustColorsInDarkMode: Bool
     let cidContext: CIDResolutionContext
     /// 1i — see `HTMLMessageView.translationController`'s doc comment.
     let translationController: HTMLTranslationController
@@ -884,14 +985,17 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
         // ここでも設定する。
         webView.uiDelegate = context.coordinator
         webView.underPageBackgroundColor = .clear
-        context.coordinator.load(html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages, into: webView)
+        context.coordinator.load(
+            html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, into: webView
+        )
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.reloadIfNeeded(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            cidContext: cidContext, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, cidContext: cidContext, into: webView
         )
     }
 }
@@ -937,6 +1041,12 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     private var lastLoadedHTML: String?
     private var lastAllowsExternalContent: Bool?
     private var lastAllowsEmbeddedImages: Bool?
+    /// Task #45 — mirrors the two `lastAllows...` flags above: needs to be
+    /// tracked separately so `reloadIfNeeded` reloads the document when only
+    /// this setting flips (e.g. the user toggles it in Settings while a
+    /// message is still open), the same way it already does for the image
+    /// settings.
+    private var lastAutoAdjustColorsInDarkMode: Bool?
 
     /// C7 real-device/real-simulator bug fix. Extensive diagnostic
     /// instrumentation (temporary `UserDefaults`-marker tracing —
@@ -990,28 +1100,37 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     private func recoverFromStrayNavigation(to url: URL, on webView: WKWebView) {
         webView.stopLoading()
         if let html = lastLoadedHTML, let allowsExternalContent = lastAllowsExternalContent, let allowsEmbeddedImages = lastAllowsEmbeddedImages {
-            load(html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages, into: webView)
+            load(
+                html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+                autoAdjustColorsInDarkMode: lastAutoAdjustColorsInDarkMode ?? HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode,
+                into: webView
+            )
         }
         onOpenLink(url)
     }
 
     func reloadIfNeeded(
-        html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool,
+        html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, autoAdjustColorsInDarkMode: Bool,
         cidContext: CIDResolutionContext, into webView: WKWebView
     ) {
         cidHandler?.updateContext(cidContext)
         guard html != lastLoadedHTML
             || allowsExternalContent != lastAllowsExternalContent
             || allowsEmbeddedImages != lastAllowsEmbeddedImages
+            || autoAdjustColorsInDarkMode != lastAutoAdjustColorsInDarkMode
         else { return }
-        load(html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages, into: webView)
+        load(
+            html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, into: webView
+        )
     }
 
-    func load(html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, into webView: WKWebView) {
+    func load(html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, autoAdjustColorsInDarkMode: Bool, into webView: WKWebView) {
         observeStrayNavigations(on: webView)
         lastLoadedHTML = html
         lastAllowsExternalContent = allowsExternalContent
         lastAllowsEmbeddedImages = allowsEmbeddedImages
+        lastAutoAdjustColorsInDarkMode = autoAdjustColorsInDarkMode
 
         // B5: rewrite cid: references to the otegami-cid:// scheme *only*
         // when embedded images are currently allowed — independent of
@@ -1024,7 +1143,7 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         // outcome a blocked remote image already produces), which is the
         // intended "don't auto-show" behavior.
         let cidRewrittenHTML = allowsEmbeddedImages ? CIDURLRewriter.rewrite(html: html) : html
-        let document = HTMLDocumentBuilder.wrap(bodyHTML: cidRewrittenHTML)
+        let document = HTMLDocumentBuilder.wrap(bodyHTML: cidRewrittenHTML, autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode)
 
         applyContentRuleList(blocked: !allowsExternalContent, to: webView) { [weak webView] in
             guard let webView else { return }
@@ -1058,37 +1177,84 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// `HTMLDocumentBuilder.wrap(bodyHTML:)`'s "fit-to-width" doc comment
     /// explains *why*; this is the *how*. Idempotent (safe to run more than
     /// once against the same, unchanged DOM — resets any previous scale
-    /// first) since `didFinish` below runs it twice per load (once
-    /// immediately, once again shortly after to catch late image layout),
-    /// and 1i's HTML-preserving translation (`HTMLTranslationController`)
-    /// also re-runs it after rewriting text nodes, since a translated
-    /// string is rarely the exact same pixel width as its original.
+    /// first), which is what makes it safe for 1i's HTML-preserving
+    /// translation (`HTMLTranslationController`) to re-run it after
+    /// rewriting text nodes, since a translated string is rarely the exact
+    /// same pixel width as its original.
     ///
     /// Measures against `outer.clientWidth` (the actual available content
     /// width inside `body`'s own padding), not
     /// `document.documentElement.clientWidth` (the raw viewport width,
     /// which would overstate the budget by `body`'s left+right padding and
     /// leave a sliver still clipped at the edge).
+    ///
+    /// 本文が途中で切れる不具合の根本原因と修正 (実機フィードバック):
+    /// `didFinish`(ページの`load`イベント) は仕様上「参照されている画像も
+    /// 読み込み終わってから発火する」はずだが、`CIDSchemeHandler`(M8の
+    /// `cid:`画像解決) は `WKURLSchemeTask` 経由で**非同期に** (添付テーブル
+    /// の GRDB 検索、未ダウンロードなら IMAP 経由のオンデマンド取得まで
+    /// 発生しうる) レスポンスを返す実装になっており、実機では `didFinish`
+    /// がこの非同期解決の完了を待たずに発火することがある — 修正前は
+    /// それを見越して「`didFinish` 直後に1回 + 0.3秒後にもう1回」という
+    /// 固定ウェイトの決め打ちでカバーしていたが、0.3秒より遅い画像解決
+    /// (低速回線・未キャッシュの添付ダウンロード等) では両方とも実際の
+    /// レイアウトが確定する前に測定してしまい、その時点の (実際より小さい)
+    /// `naturalHeight` を元に `outer.style.height` を確定させてしまって
+    /// いた。scale が必要なケース (`naturalWidth > viewportWidth`) では
+    /// この `outer.style.height` が明示的な固定値になるため、あとから画像
+    /// が読み込まれてページの実際の高さが伸びても反映されず、ページ末尾
+    /// (画像より下の段落・ボタン等) が `overflow: hidden` の外側に押し
+    /// 出されたまま見えなくなる — 「罫線の下から本文が描画されない」実機
+    /// 報告と一致する。
+    ///
+    /// 修正: `document.images` のうち `complete === false` なもの全てに
+    /// ついて `load`/`error` イベント (どちらであっても「この画像の分の
+    /// レイアウトは確定した」ことを意味する) を待つ `Promise` を返す
+    /// non-async IIFE にした — `evaluateJavaScript` (Swift の `async` 版)
+    /// はページが返した `Promise` の解決を実際に待つ (WebKit の標準
+    /// 挙動)。画像1枚あたり `imageWaitTimeoutMs` (4秒) のタイムアウトも
+    /// 持たせてある — ブロックされたリモート画像・失敗した `cid:` 解決が
+    /// 永久に `load`/`error` のどちらも発火しないケースへの安全網
+    /// (`WKContentRuleList` でブロックされたリクエストは通常 `error` を
+    /// 発火するはずだが、「はず」に全面的に頼らない)。
+    private static let imageWaitTimeoutMs = 4000
+
     private static let fitToWidthScript = """
     (function () {
-      var outer = document.getElementById('otegami-fit-outer');
-      var inner = document.getElementById('otegami-fit-inner');
-      if (!outer || !inner) { return; }
-      inner.style.transform = 'none';
-      inner.style.transformOrigin = '';
-      inner.style.width = '';
-      outer.style.width = '';
-      outer.style.height = '';
-      var viewportWidth = outer.clientWidth;
-      var naturalWidth = Math.max(inner.scrollWidth, inner.offsetWidth);
-      if (!viewportWidth || naturalWidth <= viewportWidth + 1) { return; }
-      var scale = viewportWidth / naturalWidth;
-      var naturalHeight = Math.max(inner.scrollHeight, inner.offsetHeight);
-      inner.style.width = naturalWidth + 'px';
-      inner.style.transformOrigin = 'top left';
-      inner.style.transform = 'scale(' + scale + ')';
-      outer.style.width = viewportWidth + 'px';
-      outer.style.height = Math.ceil(naturalHeight * scale) + 'px';
+      function waitForImages() {
+        var pending = Array.prototype.slice.call(document.images).filter(function (img) { return !img.complete; });
+        if (pending.length === 0) { return Promise.resolve(); }
+        return Promise.all(pending.map(function (img) {
+          return new Promise(function (resolve) {
+            var settled = false;
+            function finish() { if (!settled) { settled = true; resolve(); } }
+            img.addEventListener('load', finish, { once: true });
+            img.addEventListener('error', finish, { once: true });
+            setTimeout(finish, \(imageWaitTimeoutMs));
+          });
+        }));
+      }
+      function fit() {
+        var outer = document.getElementById('otegami-fit-outer');
+        var inner = document.getElementById('otegami-fit-inner');
+        if (!outer || !inner) { return; }
+        inner.style.transform = 'none';
+        inner.style.transformOrigin = '';
+        inner.style.width = '';
+        outer.style.width = '';
+        outer.style.height = '';
+        var viewportWidth = outer.clientWidth;
+        var naturalWidth = Math.max(inner.scrollWidth, inner.offsetWidth);
+        if (!viewportWidth || naturalWidth <= viewportWidth + 1) { return; }
+        var scale = viewportWidth / naturalWidth;
+        var naturalHeight = Math.max(inner.scrollHeight, inner.offsetHeight);
+        inner.style.width = naturalWidth + 'px';
+        inner.style.transformOrigin = 'top left';
+        inner.style.transform = 'scale(' + scale + ')';
+        outer.style.width = viewportWidth + 'px';
+        outer.style.height = Math.ceil(naturalHeight * scale) + 'px';
+      }
+      return waitForImages().then(fit);
     })();
     """
 
@@ -1101,18 +1267,17 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// kind of navigation this app's own code ever initiates (a stray tapped-
     /// link navigation never reaches `didFinish` as a *successful* main-
     /// frame load in the way that matters here, since `decidePolicyFor`
-    /// cancels it first). Runs the fit-to-width pass once right away, then
-    /// once more shortly after: `didFinish` corresponds to the page's
-    /// `load` event (fires after referenced images finish loading too, not
-    /// just `DOMContentLoaded`), so the first pass is normally already
-    /// correct, but a slow-to-decode local `cid:` image or a still-settling
-    /// layout could in principle still grow `#otegami-fit-inner`'s natural
-    /// size a little after that first measurement — the second pass is a
-    /// cheap safety net for that case, not something expected to change the
-    /// result most of the time.
+    /// cancels it first). A single call is enough now that `fitToWidthScript`
+    /// itself awaits every still-loading `<img>` before measuring (see its
+    /// doc comment) — the previous "run once immediately, run again after a
+    /// blind 0.3s" pair was papering over exactly that race without actually
+    /// closing it. One more delayed call is kept purely as a cheap safety
+    /// net for layout settling unrelated to image loads (e.g. web fonts,
+    /// though this app doesn't currently inject any) — not expected to
+    /// change the result in the common case.
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Self.applyFitToWidth(to: webView)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak webView] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak webView] in
             guard let webView else { return }
             Self.applyFitToWidth(to: webView)
         }

@@ -23,6 +23,8 @@ struct MailViewerSettingsView: View {
     @AppStorage(ImageSettingsStore.autoShowRemoteImagesKey) private var autoShowRemoteImages = ImageSettingsStore.defaultAutoShowRemote
     // A9「メールの表示」— 実機フィードバック第3弾 (I) で旧「その他」から移設。
     @AppStorage(HTMLDisplaySettingsStore.alwaysShowPlainTextKey) private var alwaysShowPlainText = HTMLDisplaySettingsStore.defaultAlwaysShowPlainText
+    // Task #45「ダークモードで文字が読めない」.
+    @AppStorage(HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey) private var autoAdjustColorsInDarkMode = HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode
 
     var body: some View {
         List {
@@ -93,10 +95,13 @@ struct MailViewerSettingsView: View {
             Section {
                 Toggle("常にテキストで表示", isOn: $alwaysShowPlainText)
                     .accessibilityIdentifier("settings.html.alwaysShowPlainTextToggle")
+                // Task #45「ダークモードで文字が読めない」.
+                Toggle("ダークモードでメールの配色を自動調整", isOn: $autoAdjustColorsInDarkMode)
+                    .accessibilityIdentifier("settings.html.autoAdjustColorsInDarkModeToggle")
             } header: {
                 Text("メールの表示 (HTML)")
             } footer: {
-                Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。")
+                Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメールを自動で読みやすい配色に反転します（写真・ロゴの色は保たれます）。メール自身がダークモードに対応済みの場合は何もしません。")
             }
         }
         .navigationTitle("メールビューア")

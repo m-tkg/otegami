@@ -2730,6 +2730,26 @@
           }
         }
       }
+    },
+    "ダークモードでメールの配色を自動調整": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automatically Adjust Colors in Dark Mode"
+          }
+        }
+      }
+    },
+    "HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメールを自動で読みやすい配色に反転します（写真・ロゴの色は保たれます）。メール自身がダークモードに対応済みの場合は何もしません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows HTML messages as plain text by default. You can switch back for an individual message using the toggle button in the message view. While in Dark Mode, messages that explicitly set a white background and dark text are automatically inverted to a readable color scheme (photos and logos keep their original colors). Messages that already support Dark Mode themselves are left untouched."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

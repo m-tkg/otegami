@@ -4,6 +4,7 @@ import GoogleOAuth
 import GRDB
 import MailTransport
 import MailTransportMailCore
+import OtegamiCore
 import OtegamiRelayAPI
 import OtegamiStore
 import OtegamiTranslation
@@ -154,6 +155,11 @@ final class AppEnvironment {
         // doc comment for why this needs to run before any `HTMLMessageView`
         // is ever constructed, not just before any `@AppStorage` read.
         UserDefaults.registerOtegamiImageDefaults()
+        // Task #45「ダークモードで文字が読めない」— see
+        // `HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey`'s doc
+        // comment for why this needs the same "before any `HTMLMessageView`
+        // is constructed" ordering as the image defaults registration above.
+        UserDefaults.registerOtegamiHTMLDisplayDefaults()
         // F (実機フィードバック第3弾): one-time, idempotent cleanup of the
         // now-removed in-app "表示言語" setting's `AppleLanguages` override
         // — see `LocalizationSettingsStore.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`'s
@@ -412,6 +418,68 @@ final class AppEnvironment {
             )
             try? database.dbWriter.write { db in
                 try fakeGmailAccount.insert(db)
+            }
+        }
+
+        // Task #45「ダークモードで文字が読めない・本文が途中で切れる」:
+        // same escape hatch as the fake Gmail account above, for the same
+        // reason — this simulator/toolchain's account-setup flow has been
+        // unreliable against the dev Dovecot mailstack (`MailCoreErrorDomain
+        // error 1`, `docs/verify.md`), which makes `OtegamiSecurityNotice
+        // DarkModeUITests` unable to depend on a real IMAP round trip to get
+        // its fixture message onto screen. Inserts a fully local account +
+        // mailbox + message + body directly into GRDB — `bodyState:
+        // .fetched` means `MessageView.load()` reads the body straight from
+        // this row, never touching the network, so `HTMLMessageView`
+        // actually renders real `WKWebView` content (unlike the fake Gmail
+        // account above, which only needs to *exist*, never render a body).
+        // The HTML mirrors `dev/mailstack/seed/fixtures/
+        // 31-security-notice-dark-mode.eml` (white background + explicit
+        // dark text, no `prefers-color-scheme`/`color-scheme` of its own, a
+        // horizontal rule with two paragraphs + a CTA button below it) but
+        // inlines its two images as `data:` URIs instead of `cid:`
+        // references — avoids also having to fake `attachment` rows for
+        // `CIDSchemeHandler` to resolve, while still exercising `fit
+        // ToWidthScript`'s "wait for every still-loading `<img>`" fix
+        // (a `data:` URI image is still decoded asynchronously, just fast).
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE"] == "1" {
+            let fakeAccount = AccountRecord(
+                displayName: "Fake HTML Test (UITest)",
+                email: "uitest-fake-html@example.com",
+                authType: .password,
+                kind: .generic,
+                imapHost: "127.0.0.1",
+                imapPort: 1,
+                imapSecurity: .plain,
+                imapUsername: "uitest-fake-html@example.com",
+                sortOrder: 1_000
+            )
+            try? database.dbWriter.write { db in
+                try fakeAccount.insert(db)
+                var mailbox = MailboxRecord(
+                    accountId: fakeAccount.id,
+                    path: "INBOX",
+                    displayPath: "INBOX",
+                    role: .inbox,
+                    messageCount: 1
+                )
+                try mailbox.insert(db)
+                var message = MessageRecord(
+                    mailboxId: mailbox.id!,
+                    uid: 1,
+                    messageId: "<uitest-fake-html@otegami.test>",
+                    subject: "セキュリティ通知",
+                    normalizedSubject: "セキュリティ通知",
+                    fromAddresses: [EmailAddress(name: "Example Security", address: "security-noreply@example.com")],
+                    toAddresses: [EmailAddress(name: nil, address: "user@example.com")],
+                    fromText: "Example Security <security-noreply@example.com>",
+                    internalDate: Date(),
+                    bodyState: .fetched,
+                    snippet: "あなたは otegami に Example アカウントのデータの一部へのアクセスを許可しました"
+                )
+                try message.insert(db)
+                let body = MessageBodyRecord(messageId: message.id!, plainText: nil, html: Self.uitestFakeHTMLMessageBody, fetchedAt: Date())
+                try body.insert(db)
             }
         }
 
@@ -1528,6 +1596,62 @@ final class AppEnvironment {
         }
         return nil
     }
+
+    /// Task #45 — see the `OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE` block
+    /// above. A 1x1-ish placeholder PNG (the same tiny fixture image
+    /// `dev/mailstack/seed/fixtures/16-cid-inline-image.eml` and friends
+    /// use, base64-reencoded as a `data:` URI) stands in for the logo/
+    /// avatar images the real `.eml` fixture loads via `cid:`.
+    private static let uitestFakeHTMLMessagePlaceholderImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMGjRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg=="
+
+    /// See the doc comment above `uitestFakeHTMLMessagePlaceholderImage`.
+    /// Structurally identical to `31-security-notice-dark-mode.eml`'s
+    /// `text/html` part (white card background + explicit dark text, no
+    /// `color-scheme`/`prefers-color-scheme` of its own, a `<hr>` with two
+    /// body paragraphs + a CTA button below it, and a `white-space: nowrap`
+    /// footer line that deterministically forces fit-to-width's scale path)
+    /// — kept in sync by hand since a UITest-only Swift string literal can't
+    /// `include` the `.eml` fixture file.
+    fileprivate static let uitestFakeHTMLMessageBody = """
+    <!doctype html>
+    <html>
+    <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <style type="text/css">
+      body { margin: 0; padding: 0; background-color: #f2f2f2; font-family: 'Helvetica Neue', Arial, sans-serif; }
+      .card { max-width: 480px; margin: 24px auto; background-color: #ffffff; border: 1px solid #dadce0; border-radius: 8px; overflow: hidden; }
+      .card-inner { padding: 40px 40px 32px 40px; text-align: center; }
+      h1 { font-size: 20px; line-height: 26px; color: #202124; font-weight: 400; margin: 24px 0 16px 0; }
+      .account-row { font-size: 14px; color: #3c4043; margin: 0 0 24px 0; }
+      hr { border: none; border-top: 1px solid #e8eaed; margin: 0 0 24px 0; }
+      .body-text { font-size: 14px; line-height: 20px; color: #3c4043; text-align: left; margin: 0 0 16px 0; }
+      .cta { display: inline-block; background-color: #1a73e8; color: #ffffff; font-size: 14px; font-weight: 500; padding: 10px 24px; border-radius: 4px; text-decoration: none; margin: 8px 0 24px 0; }
+      .footer { max-width: 480px; margin: 0 auto; padding: 0 40px 24px 40px; font-size: 11px; line-height: 16px; color: #70757a; }
+      .nowrap-disclaimer { white-space: nowrap; }
+    </style>
+    </head>
+    <body>
+    <div class="card">
+      <div class="card-inner">
+        <img src="\(uitestFakeHTMLMessagePlaceholderImage)" width="120" height="40" alt="Example">
+        <h1>あなたは otegami に Example アカウントのデータの一部へのアクセスを許可しました</h1>
+        <p class="account-row">
+          <img src="\(uitestFakeHTMLMessagePlaceholderImage)" width="24" height="24" style="border-radius:50%;vertical-align:middle;" alt="">
+          user@example.com
+        </p>
+        <hr>
+        <p class="body-text">otegami に Example アカウントのデータの一部へのアクセスを許可していない場合は、第三者が Example アカウントのデータにアクセスしようとしている可能性があります。</p>
+        <p class="body-text">今すぐアカウント アクティビティを確認し、アカウントを保護してください。</p>
+        <a class="cta" href="https://example.com/security-checkup">アクティビティを確認</a>
+      </div>
+    </div>
+    <div class="footer">
+      <p>otegami に付与したあなたのデータへのアクセス権は、Example アカウントでいつでも変更できます。</p>
+      <p class="nowrap-disclaimer">このメールは security-noreply@example.com からの重要なお知らせのため配信停止の対象外です。返信はできません。</p>
+    </div>
+    </body>
+    </html>
+    """
 }
 
 /// Bridges `GoogleProfilePhotoAvatarResolver` (an actor with no reachable
