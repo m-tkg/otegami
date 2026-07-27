@@ -132,7 +132,81 @@ final class OtegamiSwipeAutoFireUITests: XCTestCase {
         )
     }
 
+    /// 実機バグ報告 (動画確認済み): swiping to fire an action used to *also*
+    /// open the thread — the row's `Button` tap fired from the same
+    /// touch-up as the swipe's release, because `rowButton` visually
+    /// follows the finger 1:1 (`.offset(x: dragTranslation)`), which
+    /// defeats `Button`'s usual "the touch moved too far, cancel the tap"
+    /// heuristic (see `MessageListRow.swipeableRow`'s doc comment). Fixed by
+    /// switching `swipeGesture` from `.simultaneousGesture` to
+    /// `.highPriorityGesture` — this is the regression check for that fix:
+    /// a swipe that crosses the short threshold (and so *does* fire ピン留め)
+    /// must never also push into thread detail.
+    func testSwipeDoesNotAlsoNavigateToThreadDetail() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        app.launch()
+        ensureDovecotTest1AccountExists(in: app)
+        restartAppToRecoverTouchDelivery(app)
+        assignTrailingSwipeSlots(in: app)
+
+        let row = targetRow(in: app)
+        performThresholdSwipe(on: row, distancePoints: -betweenShortAndLongDistance, in: app)
+
+        // The swipe itself still fires (ピン留め) — confirmed the same way
+        // `testShortSwipeFiresTheShortActionImmediately` does — but the real
+        // point of this test is what happens *instead* of a phantom tap: no
+        // thread detail push, list stays put.
+        XCTAssertTrue(
+            waitFor({ self.pinnedIndicatorExists(in: app) }, timeout: 10),
+            "Expected the swipe to still fire ピン留め (this isn't just \"nothing happened\")"
+        )
+        XCTAssertFalse(
+            footerToolbarExists(in: app),
+            "A swipe must never also open the thread — no messageDetail.footerToolbar should appear"
+        )
+        XCTAssertTrue(
+            app.collectionViews["messageList.list"].waitForExistence(timeout: 5),
+            "Expected to remain on the message list after the swipe"
+        )
+
+        // Clean up: unpin.
+        performThresholdSwipe(on: targetRow(in: app), distancePoints: -betweenShortAndLongDistance, in: app)
+        XCTAssertTrue(waitFor({ !self.pinnedIndicatorExists(in: app) }, timeout: 10), "Expected the cleanup swipe to unpin the thread again")
+    }
+
+    /// Counterpart to `testSwipeDoesNotAlsoNavigateToThreadDetail`: the fix
+    /// for that bug must not break the ordinary case — a plain tap (well
+    /// under `DragGesture`'s `minimumDistance`, so `swipeGesture` never even
+    /// recognizes) should still open the thread exactly as before.
+    func testPlainTapStillNavigatesToThreadDetail() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        app.launch()
+        ensureDovecotTest1AccountExists(in: app)
+        restartAppToRecoverTouchDelivery(app)
+
+        let row = targetRow(in: app)
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+
+        XCTAssertTrue(
+            waitFor({ self.footerToolbarExists(in: app) }, timeout: 10),
+            "Expected a plain tap to still open the thread detail"
+        )
+    }
+
     // MARK: - Steps
+
+    /// `messageDetail.footerToolbar` (`MessageDetailFooterToolbar`) only
+    /// ever mounts once a thread is actually pushed onto screen — a broad
+    /// `.descendants(matching: .any)` `CONTAINS` scan, same reasoning as
+    /// `pinnedIndicatorExists(in:)` above.
+    private func footerToolbarExists(in app: XCUIApplication) -> Bool {
+        app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier CONTAINS %@", "messageDetail.footerToolbar"))
+            .firstMatch
+            .exists
+    }
 
     private func targetRow(in app: XCUIApplication) -> XCUIElement {
         let list = app.collectionViews["messageList.list"]

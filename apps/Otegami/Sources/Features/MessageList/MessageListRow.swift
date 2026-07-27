@@ -310,16 +310,24 @@ extension MessageListRow {
                 .offset(x: dragTranslation)
         }
         .clipShape(RoundedRectangle(cornerRadius: OtegamiRadius.card, style: .continuous))
-        // `.simultaneousGesture` (not `.gesture`) so this doesn't exclusively
-        // claim the touch — `List`'s own vertical-scroll pan recognizer
-        // needs to keep working for drags that turn out to be scrolls, not
-        // swipes. `swipeGesture`'s own `onChanged` only updates
-        // `dragTranslation` once a drag looks clearly horizontal
-        // (`abs(width) > abs(height)`), so a vertical scroll drag never
-        // visibly offsets the row in the first place — the two recognizers
-        // race on the same touch stream and each just ignores the motion
-        // it doesn't care about.
-        .simultaneousGesture(swipeGesture)
+        // 実機バグ報告 (動画確認済み): `.simultaneousGesture` を使っていた旧実装は
+        // 「行の中身 (`rowButton`) をドラッグ量ぶんそのまま `.offset` で追従させる」
+        // という表現方法のせいで、`Button` 自身の標準ドラッグキャンセル判定 (指の
+        // 移動量が一定を超えたらタップを不成立にする) が働かなかった —
+        // ボタンの見た目が指に完全追従するため、ボタン自身から見ると「タップ位置が
+        // 一度も動いていない」ように見えてしまう。結果、スワイプでアクションが
+        // 発火した直後に行のタップ (`handleTap`) も成立し、アーカイブ/削除で
+        // 消えたスレッドを開こうとして本文が「見つかりません」になっていた。
+        // `.highPriorityGesture` に変更: `DragGesture(minimumDistance: 20)` が
+        // 実際に認識される (=しきい値以上ドラッグされる) 場合のみ `Button` 自身の
+        // 既定ジェスチャーより優先され、その回のタップは完全に握り潰される。
+        // `minimumDistance` 未満の本物のタップは `DragGesture` がそもそも認識
+        // しないため、`Button` の通常のタップは今まで通り遷移する。`List` 側の
+        // 縦スクロール用パンジェスチャーは SwiftUI の外側 (UIKit) の別レイヤーで
+        // 調停されるため、ここでの優先度変更には影響されない — `onChanged` が
+        // 縦方向優位のドラッグでは `dragTranslation` を更新しないことと合わせて、
+        // スクロールは変わらず機能する。
+        .highPriorityGesture(swipeGesture)
     }
 
     @ViewBuilder
@@ -328,9 +336,37 @@ extension MessageListRow {
         case .none:
             Color.clear
         case .leading(let action, let isLong):
-            SwipeRevealBackground(action: action, isLong: isLong, edge: .leading)
+            SwipeRevealBackground(systemImage: effectiveSystemImage(for: action), tint: effectiveTint(for: action), isLong: isLong, edge: .leading)
         case .trailing(let action, let isLong):
-            SwipeRevealBackground(action: action, isLong: isLong, edge: .trailing)
+            SwipeRevealBackground(systemImage: effectiveSystemImage(for: action), tint: effectiveTint(for: action), isLong: isLong, edge: .trailing)
+        }
+    }
+
+    /// 実機フィードバック: ピン留め済みの行をスワイプすると、プレビューの
+    /// アイコンが (これから起きること = ピン留め「解除」を示す) `pin.slash` に
+    /// 切り替わる — macOS コンテキストメニューの `pinLabel`/`toggleReadLabel` が
+    /// 既に確立している「現在の状態に応じてラベル/アイコンを変える」流儀を
+    /// iOS のスワイププレビューにも揃えた。他のアクションは状態を持たないので
+    /// `SwipeAction.systemImage` をそのまま使う。
+    private func effectiveSystemImage(for action: SwipeAction) -> String {
+        switch action {
+        case .pin: summary.thread.isPinned ? "pin.slash" : "pin"
+        case .toggleRead: summary.thread.unreadCount > 0 ? "envelope.open" : "envelope.badge"
+        case .archive, .junk, .delete: action.systemImage
+        }
+    }
+
+    /// ピン留め済み（＝これからやるのは「解除」）は、他の色と混同しないよう
+    /// 意図的に別トーンにする — 実機フィードバックの「ピン留め済みの行は別の色で
+    /// 表示すること」要件。それ以外のアクションは既存の固定トーンのまま
+    /// (`SwipeRevealBackground`が以前直接持っていたマッピングをここに移設)。
+    private func effectiveTint(for action: SwipeAction) -> Color {
+        switch action {
+        case .toggleRead: OtegamiColor.accent
+        case .archive: OtegamiColor.paleBaseStrongest
+        case .junk: OtegamiColor.destructive
+        case .pin: summary.thread.isPinned ? OtegamiColor.inkTertiary : OtegamiColor.accentText
+        case .delete: OtegamiColor.destructive
         }
     }
 
@@ -411,9 +447,14 @@ extension MessageListRow {
 
 /// The colored, full-bleed action layer revealed underneath the row as it's
 /// dragged — a standalone `View` (not inlined into `swipeActionBackground`)
-/// so its own body stays trivially type-checkable per `docs/ci.md`.
+/// so its own body stays trivially type-checkable per `docs/ci.md`. Takes
+/// the already-resolved `systemImage`/`tint` rather than a raw `SwipeAction`
+/// — `MessageListRow.effectiveSystemImage(for:)`/`.effectiveTint(for:)`
+/// account for state (e.g. ピン留め済みの行は `pin.slash` + 別トーン), which
+/// needs `summary`, not available here.
 private struct SwipeRevealBackground: View {
-    let action: SwipeAction
+    let systemImage: String
+    let tint: Color
     let isLong: Bool
     let edge: HorizontalEdge
 
@@ -426,7 +467,7 @@ private struct SwipeRevealBackground: View {
         // アイコンだけで表現する。
         HStack(spacing: 0) {
             if edge == .trailing { Spacer(minLength: 0) }
-            Image(systemName: action.systemImage)
+            Image(systemName: systemImage)
                 .font(.system(size: isLong ? 24 : 20, weight: .semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, OtegamiSpacing.xl)
@@ -435,16 +476,6 @@ private struct SwipeRevealBackground: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(tint)
         .accessibilityHidden(true)
-    }
-
-    private var tint: Color {
-        switch action {
-        case .toggleRead: OtegamiColor.accent
-        case .archive: OtegamiColor.paleBaseStrongest
-        case .junk: OtegamiColor.destructive
-        case .pin: OtegamiColor.accentText
-        case .delete: OtegamiColor.destructive
-        }
     }
 }
 #endif
