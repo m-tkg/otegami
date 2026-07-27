@@ -373,6 +373,48 @@ final class AppEnvironment {
         // clobber an existing credential).
         Self.adoptOrphanedCredentialIfUnambiguous(database: database, credentialStore: credentialStore)
 
+        // Task #42「アバター診断」: UITest-only escape hatch inserting a
+        // fake `.gmail`-kind `AccountRecord` with no real OAuth token —
+        // exists purely so `OtegamiAvatarDiagnosticsUITests` can navigate
+        // to `AccountEditView`'s Gmail-only "アバター診断" link and confirm
+        // `GoogleAvatarDiagnosticsView` renders without layout breakage.
+        // Real Google auth is impossible to drive from an automated test
+        // (`docs/oauth-setup.md`), so this account deliberately has no
+        // stored refresh token — every network-backed diagnostic call
+        // (`googleGrantedScope`/`googleAvatarDiagnostics`) fails closed to
+        // "unknown"/`tokenFetchFailed`, which is exactly the state this
+        // fixture needs to exercise the screen's empty/error rendering
+        // paths, not a real diagnosis. Mirrors the other `OTEGAMI_UITEST_*`
+        // flags' inline, doc-commented, launch-environment-gated pattern
+        // above — a plain constant `sortOrder` (rather than
+        // `nextAccountSortOrder()`) is used because `self` isn't fully
+        // initialized yet at this point in `init()` (Swift's two-phase
+        // init rule — same reason `gmailAccessTokenBridge` needs its own
+        // `configure(environment:)` step below).
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT"] == "1" {
+            let nextSortOrder = ((try? database.dbWriter.read { db in
+                try AccountRecord.fetchAll(db)
+            })?.map(\.sortOrder).max() ?? -1) + 1
+            let fakeGmailAccount = AccountRecord(
+                displayName: "Fake Gmail (UITest)",
+                email: "uitest-fake@gmail.com",
+                authType: .oauth2,
+                kind: .gmail,
+                imapHost: "imap.gmail.com",
+                imapPort: 993,
+                imapSecurity: .tls,
+                imapUsername: "uitest-fake@gmail.com",
+                smtpHost: "smtp.gmail.com",
+                smtpPort: 587,
+                smtpSecurity: .startTLS,
+                smtpUsername: "uitest-fake@gmail.com",
+                sortOrder: nextSortOrder
+            )
+            try? database.dbWriter.write { db in
+                try fakeGmailAccount.insert(db)
+            }
+        }
+
         self.syncCoordinator = SyncCoordinator(
             database: database,
             sessionFactory: { config in MailCoreIMAPSession(config: config) },
@@ -1190,6 +1232,16 @@ final class AppEnvironment {
     func googleGrantedScope(for account: AccountRecord) async -> String? {
         guard account.authType == .oauth2, let tokenStore else { return nil }
         return try? await tokenStore.diagnosticScope(for: account.id)
+    }
+
+    /// Task #42「アバター診断」— `AccountEditView`の「アバター診断」画面が
+    /// タップ時に呼ぶ。`googleProfilePhotoAvatarResolver
+    /// .forceRebuildDiagnostics(accountId:)`への薄い橋渡しで、実質的な
+    /// 内容はそちらのドキュメントコメント参照。`.oauth2`以外のアカウント
+    /// (呼び出し元がそもそもこの画面を出さない) には`nil`。
+    func googleAvatarDiagnostics(for account: AccountRecord) async -> GoogleAvatarAccountDiagnostics? {
+        guard account.authType == .oauth2 else { return nil }
+        return await googleProfilePhotoAvatarResolver.forceRebuildDiagnostics(accountId: account.id)
     }
 
     // MARK: - Push notifications (M9)

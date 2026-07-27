@@ -221,13 +221,7 @@ struct AccountEditView: View {
             scopeDiagnosis = .unknown
             return
         }
-        let hasOtherContacts = scope.contains("contacts.other.readonly")
-        let hasConnections = scope.contains("auth/contacts.readonly")
-        switch (hasOtherContacts, hasConnections) {
-        case (true, true): scopeDiagnosis = .full
-        case (true, false): scopeDiagnosis = .basic
-        case (false, _): scopeDiagnosis = .notGranted
-        }
+        scopeDiagnosis = GoogleScopeDiagnosisState.diagnose(scope: scope)
     }
 
     private func loadAvailableSignatures() async {
@@ -425,6 +419,14 @@ struct AccountEditView: View {
                     .foregroundStyle(OtegamiColor.destructive)
                     .accessibilityIdentifier("accountEdit.reauthError")
             }
+
+            // Task #42「アバター診断」(最優先): 実機でまだ Google
+            // プロフィール写真が出ない、という報告の原因をユーザー自身の
+            // スクリーンショット1枚で確定させるための診断画面への導線。
+            NavigationLink("アバター診断") {
+                GoogleAvatarDiagnosticsView(account: account)
+            }
+            .accessibilityIdentifier("accountEdit.avatarDiagnosticsLink")
         }
     }
 
@@ -612,6 +614,21 @@ enum GoogleScopeDiagnosisState: Equatable {
     /// トークン喪失等) — `.notGranted`と違い「許可されていない」とは
     /// 断定できないので、区別して表示する。
     case unknown
+
+    /// `AccountEditView.refreshScopeDiagnosis`と`GoogleAvatarDiagnosticsView`
+    /// (Task #42「アバター診断」) の両方が同じスコープ文字列判定ロジックを
+    /// 必要とするため、ここに1本化した — 判定基準
+    /// (`contacts.other.readonly`/`contacts.readonly`の有無) を2箇所に
+    /// 書いて食い違わせるリスクを避ける。
+    static func diagnose(scope: String) -> GoogleScopeDiagnosisState {
+        let hasOtherContacts = scope.contains("contacts.other.readonly")
+        let hasConnections = scope.contains("auth/contacts.readonly")
+        switch (hasOtherContacts, hasConnections) {
+        case (true, true): return .full
+        case (true, false): return .basic
+        case (false, _): return .notGranted
+        }
+    }
 }
 
 /// 実機バグ修正: 「アカウント編集」→ Gmail アカウントの「認証」節に出す
@@ -619,7 +636,7 @@ enum GoogleScopeDiagnosisState: Equatable {
 /// myaccount.google.com/connections) だけが頼りだった状態から、アプリ内
 /// の1タップで「連絡先スコープが付与されているか」を確認できるようにする
 /// のが狙い。
-private struct GoogleScopeDiagnosisRow: View {
+struct GoogleScopeDiagnosisRow: View {
     let state: GoogleScopeDiagnosisState
 
     var body: some View {

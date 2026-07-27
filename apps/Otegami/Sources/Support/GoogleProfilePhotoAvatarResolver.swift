@@ -103,6 +103,13 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
     /// 上と同じ役割の、`connections` (保存済み連絡先、`contacts.readonly`)
     /// 側のスコープ不足の記録。
     private var connectionsScopeInsufficientAccountIds: Set<String> = []
+    /// Task #42「自分のプロフィール写真」: `people/me`側のスコープ不足の
+    /// 記録。理論上`otherContacts`と同じスコープ (`contacts.other.readonly`)
+    /// で読める見込みが高い (`GooglePeopleAvatarClient
+    /// .fetchSelfPhotoIndexOutcome`のドキュメントコメント参照) が、Google
+    /// 側が将来別の扱いをする可能性に備えて独立に記録・スキップする —
+    /// 既存2スコープと同じパターン。
+    private var selfScopeInsufficientAccountIds: Set<String> = []
 
     public init(
         tokenProvider: any GmailAccessTokenProviding,
@@ -133,8 +140,95 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
     public func clearScopeInsufficientMemory(for accountId: String) {
         otherContactsScopeInsufficientAccountIds.remove(accountId)
         connectionsScopeInsufficientAccountIds.remove(accountId)
+        selfScopeInsufficientAccountIds.remove(accountId)
         accountIndexState[accountId] = nil
         deleteIndexDiskCache(accountId: accountId)
+    }
+
+    /// Task #42「アバター診断」: `AccountEditView`の「アバター診断」画面が
+    /// 表示する1回分のフルレポート。`ensureIndex(for:)`とは違い**常に**
+    /// 3つのエンドポイント (`otherContacts`/`connections`/`people/me`) を
+    /// 実際に問い合わせる — 通常の解決経路と違って「既にスコープ不足と
+    /// わかっている」「索引がまだ`indexTTL`以内」のどちらの理由でもスキップ
+    /// しない。ユーザーが「診断」をタップした時点の Google 側の実際の
+    /// レスポンスを見せるのがこの画面の目的であり、キャッシュされた古い
+    /// 結果や「試す前から諦めた」結果を混ぜると診断の意味が薄れるため。
+    ///
+    /// 成功したソースがあれば、その場でこのアカウントの索引 (メモリ・
+    /// ディスク双方) を上書きする — 「タップで索引を強制再構築」という
+    /// 要求どおり、診断は副作用として通常の解決経路が使う索引も最新化する。
+    /// また各ソースの成否に応じて`...ScopeInsufficientAccountIds`も更新
+    /// する (成功なら記憶を消す、403/401ならその場で記憶する) ので、次回
+    /// 以降の通常解決 (`fetchAndStoreIndex`) もこの診断の結果を引き継ぐ。
+    public func forceRebuildDiagnostics(accountId: String) async -> GoogleAvatarAccountDiagnostics {
+        guard let accessToken = try? await tokenProvider.accessToken(for: accountId) else {
+            let unavailable = GooglePeopleIndexOutcome(result: .unavailable, diagnostics: GooglePeopleFetchDiagnostics())
+            return GoogleAvatarAccountDiagnostics(
+                accountId: accountId,
+                builtAt: Date(),
+                otherContacts: unavailable,
+                connections: unavailable,
+                selfPhoto: unavailable,
+                totalIndexedAddresses: accountIndexState[accountId]?.index.count ?? 0,
+                tokenFetchFailed: true
+            )
+        }
+
+        let otherContactsOutcome = await client.fetchOtherContactsIndexOutcome(accessToken: accessToken)
+        let connectionsOutcome = await client.fetchConnectionsIndexOutcome(accessToken: accessToken)
+        let selfOutcome = await client.fetchSelfPhotoIndexOutcome(accessToken: accessToken)
+
+        var merged: [String: URL] = [:]
+        var gotAnySuccess = false
+
+        switch otherContactsOutcome.result {
+        case .success(let index):
+            merged.merge(index) { _, new in new }
+            gotAnySuccess = true
+            otherContactsScopeInsufficientAccountIds.remove(accountId)
+        case .insufficientScope:
+            otherContactsScopeInsufficientAccountIds.insert(accountId)
+        case .unavailable:
+            break
+        }
+        switch connectionsOutcome.result {
+        case .success(let index):
+            // See `fetchAndStoreIndex`'s identical merge order comment —
+            // saved Contacts win over other-contacts for the same address.
+            merged.merge(index) { _, new in new }
+            gotAnySuccess = true
+            connectionsScopeInsufficientAccountIds.remove(accountId)
+        case .insufficientScope:
+            connectionsScopeInsufficientAccountIds.insert(accountId)
+        case .unavailable:
+            break
+        }
+        switch selfOutcome.result {
+        case .success(let index):
+            merged.merge(index) { _, new in new }
+            gotAnySuccess = true
+            selfScopeInsufficientAccountIds.remove(accountId)
+        case .insufficientScope:
+            selfScopeInsufficientAccountIds.insert(accountId)
+        case .unavailable:
+            break
+        }
+
+        if gotAnySuccess {
+            let fetchedAt = Date()
+            accountIndexState[accountId] = (merged, fetchedAt)
+            writeIndexDiskCache(accountId: accountId, index: merged, fetchedAt: fetchedAt)
+        }
+
+        return GoogleAvatarAccountDiagnostics(
+            accountId: accountId,
+            builtAt: Date(),
+            otherContacts: otherContactsOutcome,
+            connections: connectionsOutcome,
+            selfPhoto: selfOutcome,
+            totalIndexedAddresses: gotAnySuccess ? merged.count : (accountIndexState[accountId]?.index.count ?? 0),
+            tokenFetchFailed: false
+        )
     }
 
     public func resolveAvatarImageData(displayName: String?, address: String) async -> Data? {
@@ -290,6 +384,23 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
             }
         }
 
+        // Task #42「自分のプロフィール写真」: 自分のアドレス (複数エイリ
+        // アスがあれば全部) は`otherContacts`にも`connections`にも出て
+        // 来ない — `people/me`だけがカバーできる母集団なので、成否に
+        // 関わらず常に試す (上の2つと違って「既に成功した」からスキップ
+        // する理由が無い)。
+        if !selfScopeInsufficientAccountIds.contains(accountId) {
+            switch await client.fetchSelfPhotoIndexOutcome(accessToken: accessToken).result {
+            case .success(let index):
+                merged.merge(index) { _, new in new }
+                gotAnySuccess = true
+            case .insufficientScope:
+                selfScopeInsufficientAccountIds.insert(accountId)
+            case .unavailable:
+                break
+            }
+        }
+
         guard gotAnySuccess else {
             return accountIndexState[accountId]?.index
         }
@@ -371,4 +482,27 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
     private func noPhotoMarkerURL(for key: String) -> URL {
         cacheDirectory.appendingPathComponent(AvatarCacheKey.sha256Hex(key) + ".none")
     }
+}
+
+/// Task #42「アバター診断」: `GoogleProfilePhotoAvatarResolver
+/// .forceRebuildDiagnostics(accountId:)`が返す1回分のフルレポート。
+/// トップレベル型にしてある — `GoogleAvatarDiagnosticsView`(app 層) から
+/// 単独で参照できるようにするため、また`AccountEditView`と同じ理由
+/// (`docs/ci.md`の型チェックタイムアウトの節) でこの actor 自身の型
+/// チェック負荷を増やさないため。
+public struct GoogleAvatarAccountDiagnostics: Sendable, Equatable {
+    public var accountId: String
+    public var builtAt: Date
+    public var otherContacts: GooglePeopleIndexOutcome
+    public var connections: GooglePeopleIndexOutcome
+    public var selfPhoto: GooglePeopleIndexOutcome
+    /// 3つのソースをマージした結果、最終的に索引に載ったアドレスの総数
+    /// (成功したソースが1つも無かった場合は、直前まで有効だった索引の
+    /// 件数 — 全滅した診断実行のたびに0件表示に戻ると紛らわしいため)。
+    public var totalIndexedAddresses: Int
+    /// アクセストークンの取得自体が失敗した (リフレッシュトークン喪失・
+    /// ネットワーク不通等) — `true`のとき`otherContacts`/`connections`/
+    /// `selfPhoto`はいずれも意味を持たないダミー値 (`.unavailable`、
+    /// 空の`GooglePeopleFetchDiagnostics`) になる。
+    public var tokenFetchFailed: Bool
 }
