@@ -38,6 +38,23 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// When set, `fetchMessageBody(mailboxPath:uid:partId:)` throws
         /// this instead of consulting `attachmentDataByPath`.
         public var failAttachmentFetch: MailTransportError?
+        /// Per-`(mailboxPath, uid)` scripted `fetchBody` failures —
+        /// `BodyFetcherTests`' self-healing scenarios need `fetchBody` to
+        /// fail with `.serverError` specifically (the shape `MailCoreErrorDomain
+        /// error 19`/`MCOErrorFetch` surfaces as) to exercise `BodyFetcher
+        /// .attemptSelfHeal`, distinct from the plain "no scripted body at
+        /// all" `.malformedResponse` every other `fetchBody` test relies on
+        /// (`fetchFailureRevertsBodyState`) — this takes priority over
+        /// `bodiesByPath` when both are set for the same UID.
+        public var failFetchBody: [String: [UInt32: MailTransportError]]
+        /// When set, every `fetchEnvelopes(mailboxPath:uids:batchSize:)` call
+        /// throws this instead of consulting `envelopesByPath` — scripts a
+        /// server that can't even complete the `UID SEARCH`-equivalent
+        /// existence check `BodyFetcher.attemptSelfHeal` does after a
+        /// `fetchBody` failure (disconnect/timeout while confirming
+        /// staleness), which must never be treated as confirmation that a
+        /// UID is gone.
+        public var failFetchEnvelopes: MailTransportError?
         /// When set, `connect(auth:)` throws this instead of succeeding.
         public var failConnection: MailTransportError?
         /// What `capabilities()` reports — `MailboxSyncer`'s CONDSTORE
@@ -86,6 +103,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             bodiesByPath: [String: [UInt32: MessageBodyContent]] = [:],
             attachmentDataByPath: [String: [UInt32: [String: Data]]] = [:],
             failAttachmentFetch: MailTransportError? = nil,
+            failFetchBody: [String: [UInt32: MailTransportError]] = [:],
+            failFetchEnvelopes: MailTransportError? = nil,
             failConnection: MailTransportError? = nil,
             capabilitiesToReport: Set<IMAPCapability> = [],
             changedSinceEnvelopesByPath: [String: [FetchedEnvelope]] = [:],
@@ -102,6 +121,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.bodiesByPath = bodiesByPath
             self.attachmentDataByPath = attachmentDataByPath
             self.failAttachmentFetch = failAttachmentFetch
+            self.failFetchBody = failFetchBody
+            self.failFetchEnvelopes = failFetchEnvelopes
             self.failConnection = failConnection
             self.capabilitiesToReport = capabilitiesToReport
             self.changedSinceEnvelopesByPath = changedSinceEnvelopesByPath
@@ -272,6 +293,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope] {
+        if let failFetchEnvelopes = script.failFetchEnvelopes {
+            throw failFetchEnvelopes
+        }
         fetchedRanges.append((mailboxPath, uids.lowerBound, uids.upperBound))
         let all = script.envelopesByPath[mailboxPath] ?? []
         return all
@@ -302,6 +326,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {
+        if let failure = script.failFetchBody[mailboxPath]?[uid] {
+            throw failure
+        }
         guard let content = script.bodiesByPath[mailboxPath]?[uid] else {
             throw MailTransportError.malformedResponse(
                 underlyingDescription: "FakeIMAPSession has no scripted body for uid \(uid) in \(mailboxPath)"
