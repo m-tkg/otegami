@@ -206,12 +206,15 @@ struct FolderListSheet: View {
         Button {
             onOpenSettings()
         } label: {
+            // アイコンのみ (実機フィードバック: 文字は不要)。VoiceOver 向けの
+            // タイトルは Label が保持する — ハンバーガーの閉じるボタンと同じ
+            // .iconOnly パターン。
             Label("設定", systemImage: "gearshape")
+                .labelStyle(.iconOnly)
                 .font(OtegamiFont.body())
-                .padding(.horizontal, OtegamiSpacing.lg)
-                .padding(.vertical, OtegamiSpacing.md)
-                .background(OtegamiColor.surface, in: Capsule())
-                .overlay(Capsule().stroke(OtegamiColor.dividerSubtle, lineWidth: 1))
+                .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
+                .background(OtegamiColor.surface, in: Circle())
+                .overlay(Circle().stroke(OtegamiColor.dividerSubtle, lineWidth: 1))
                 .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
         }
         .buttonStyle(.plain)
