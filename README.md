@@ -43,7 +43,11 @@ Two things this app is built around, more than any single feature list:
 - **Offline-first**: every message, thread, and flag change lives in a
   local SQLite database first; the app is fully usable with no network,
   and reconnects replay a queue of pending changes (read/unread, delete,
-  archive, send) once back online.
+  archive, send) once back online. Archiving is provider-aware: Gmail has
+  no real "Archive" folder, so archiving there un-labels the message from
+  the source mailbox (Gmail keeps it in "All Mail" automatically) instead
+  of moving it; other providers move it to (or auto-create) an Archive
+  mailbox.
 - **On-device translation and AI summary** (Apple Foundation Models,
   iOS/macOS 26+): an inline translation bar, shown when a message's
   detected language differs from the app's own display language,
@@ -63,7 +67,14 @@ Two things this app is built around, more than any single feature list:
 - **Unified inbox with account filter chips**: every account's inbox
   interleaved by date behind a "everything" chip, with per-account chips
   to filter down; account color accents and per-mailbox/unified
-  unread-count badges throughout.
+  unread-count badges throughout. Each account's color is auto-assigned
+  (deterministic per account id) but can be overridden from a fixed
+  8-color palette in that account's edit screen — the pick syncs across
+  devices via iCloud like the rest of the account's connection settings.
+- **App icon badge**: the unified inbox's unread count on the app icon
+  (on by default, toggle in Settings), kept live by the same sync/read
+  observation the in-app unread counts use; a push notification bumps it
+  immediately, self-correcting to the real count on the next sync.
 - **Full-text search**: SQLite FTS5 (trigram tokenizer) for 3+ character
   queries, with a `LIKE` fallback for shorter queries — works for Japanese
   and other scripts with no dictionary/segmenter dependency. Filter chips
@@ -100,6 +111,22 @@ Two things this app is built around, more than any single feature list:
   every account). Insertable from the Composer's "テンプレートを挿入" menu —
   fills both subject and body when starting a blank message, or appends
   to the body otherwise (signature-style).
+- **Signature templates**: a separate feature from the templates above —
+  each signature can be assigned to *multiple* accounts, and each account
+  can have a default signature that's automatically appended when
+  composing a brand-new message (not for replies/forwards, to avoid
+  racing their own quoted-content prefill). Managed in Settings →
+  "署名テンプレート"; the Composer's "署名" picker lets you switch or clear
+  it manually at any time, replacing exactly what the previous pick
+  inserted.
+- **Default sending account**: choose which account the Composer
+  preselects for a brand-new message in Settings → "アカウントの設定"
+  (replies/forwards always use the original message's own account,
+  regardless of this setting).
+- **Configurable post-delete/archive behavior**: from the message view's
+  "…" menu, deleting/archiving/marking as junk can either return to the
+  list (default) or automatically open the next message in the current
+  list order — configurable in Settings → "メールビューア".
 - **Swipe actions & bulk select**: both left and right swipes have
   independently configurable short/long actions (read/unread toggle,
   archive, mark as junk, pin, delete), a deliberately tap-only delete/junk
@@ -109,22 +136,42 @@ Two things this app is built around, more than any single feature list:
 - **Pinning**: pin a message or thread to keep it at the top of the list,
   local-only by default with an opt-in to mirror IMAP `\Flagged` so it
   stays in sync with other clients.
-- **List display**: card-style rows (a bordered "面" per thread, not a
-  plain connected list) across the unified inbox, per-mailbox lists, and
-  search results; timestamps read like a typical mail client (time only
-  for today, date + time otherwise). Conversation threading you can
-  switch off (giving a flat, one-row-per-message list), a per-account-colored
-  initials avatar next to each row and each message's header (generated
-  locally — no third-party avatar service is ever contacted), and a
-  configurable body-preview line count. A thread's collapsed rows show
-  the same avatar/preview treatment, styled distinctly (a softer tint,
-  no card border) so they read as "inside one thread" rather than the
+- **List display**: card-style rows (rounded corners, no outline — just
+  the surface color and spacing separate one card from the next) across
+  the unified inbox, per-mailbox lists, and search results; timestamps
+  read like a typical mail client (time only for today, date + time
+  otherwise). Conversation threading you can switch off (giving a flat,
+  one-row-per-message list), a per-account-colored initials avatar next
+  to each row and each message's header (generated locally — no
+  third-party avatar service is ever contacted), and a configurable
+  body-preview line count. A thread's collapsed rows show the same
+  avatar/preview treatment, styled distinctly (a softer tint, no card
+  background) so they read as "inside one thread" rather than the
   top-level list.
+- **Thread view is a strict accordion**: exactly one message expanded at
+  a time — tapping another message's header collapses whatever was open
+  and expands that one instead, with the expanded row visually
+  highlighted (an accent-colored rail, like the account-color rail in the
+  list). The message footer toolbar's Reply/Forward/Search/Info always
+  act on whichever message is currently expanded.
 - **Display language**: choose "Match System", Japanese, or English in
-  Settings (restart to apply) — the app UI itself is localized via a
-  String Catalog, covering the primary screens (list, message view,
-  compose, search, the hamburger menu, and the main Settings screen); see
-  [docs/localization.md](docs/localization.md) for exact coverage.
+  Settings — the app UI itself is localized via a String Catalog, covering
+  the great majority of screens (list, message view, compose, search, the
+  hamburger menu, every Settings screen including account setup/edit
+  forms, templates, signatures, and push notifications). Applying a
+  change requires a full quit-and-relaunch, not just returning to the
+  Home Screen (backgrounding doesn't restart the process) — the app
+  offers a "Quit Now" button right after you pick a language to make that
+  unambiguous. See [docs/localization.md](docs/localization.md) for exact
+  coverage and the mechanism.
+- **Settings, reorganized into five categories**: Account Settings
+  (add/remove accounts, default sending account), Mail Viewer (link
+  browser, post-delete/archive behavior, AI features on/off), Mail List
+  (avatars, preview lines, swipe actions), Signature Templates, and Other
+  (everything else — threading, pinning, send-cancel window, images, HTML
+  display, language, templates, iCloud sync, push notifications, app icon
+  badge, about). Same structure on iOS (hamburger menu → Settings) and
+  macOS (native Settings scene).
 - **Push notifications**: an optional, self-hostable relay server
   (`server/otegami-relay`) watches your IMAP `INBOX` over IDLE and sends a
   privacy-preserving APNs push (no subject/body on the wire — the app's

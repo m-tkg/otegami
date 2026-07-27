@@ -40,6 +40,36 @@
      確認する (`docs/oauth-setup.md` の「実機での最終確認手順」に詳細チェック
      リストあり)。
 
+## 実機フィードバック第2弾: 既存 XCUITest のラベルテキスト固定 lookup が
+## ロケール依存で壊れうる (網羅的な洗い出しは未実施)
+
+**発見の経緯**: A「表示言語の切替」修正作業中、この開発機のシミュレータ
+(iPhone 17 Pro Max, iOS 27 beta) の**システム言語が既定で英語**であること
+が判明した。`AppLanguageOption.system`(既定設定) はシステム言語にそのまま
+従うため、`Localizable.xcstrings`に文字列を追加した瞬間、その文字列に
+依存する既存 XCUITest のラベルテキスト固定 lookup (`app.buttons["日本語
+ラベル"]`等) が無言で壊れる。実際に3箇所 (`DovecotAccountUITestHelpers
+.fillDovecotAccountForm`/`fillMailpitSMTPFields`、
+`OtegamiM9PushSettingsUITests`、`OtegamiPinSwipeListDisplayUITests`) で
+踏んで修正済み (詳細は`docs/localization.md`「実機フィードバック第2弾
+(A)」節の3番目の小節参照)。
+
+- **未確認**: 同種のラベルテキスト固定 lookup を持つ他の既存スイート
+  (`OtegamiCredentialRecoveryUITests`/`OtegamiDuplicateAccountUITests`/
+  `OtegamiMissingCredentialUITests`/`OtegamiHTMLDisplayUITests`等、
+  「資格情報を待っています」「パスワードを入力」「本文なし」等の
+  カタログ済み文字列に依存) が、このシミュレータで実際に壊れているかは
+  未確認 — 本バッチはこれらのスイートを実行していない。
+- **対応手順**: 該当スイートを実行し、ラベルテキスト検索が
+  `waitForExistence`タイムアウトで失敗する箇所を見つけたら、
+  `DovecotAccountUITestHelpers.tapPlainSecurityMenuOption(in:)`が採用した
+  パターン (アクセシビリティ識別子があればそちらへ切り替え、無ければ
+  日英両方のラベルにマッチする`NSPredicate`の`OR`述語にする) で個別に
+  対応する。恒久対策として、このシミュレータのシステム言語を日本語に
+  固定する (`xcrun simctl spawn <UDID> defaults write -g AppleLocale
+  ja_JP` 等) ことも検討に値するが、副作用 (他のロケール依存テストへの
+  影響) の確認が必要なため、この場では変更していない。
+
 ## 実機フィードバック第2弾: Gmail アーカイブ修正の実アカウント確認
 
 **実装状況**: 「Gmail でアーカイブが効かない」実機報告を受け、原因
