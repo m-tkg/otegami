@@ -135,3 +135,52 @@ final class StubURLProtocol: URLProtocol {
         return URLSession(configuration: configuration)
     }
 }
+
+/// A second, independent `URLProtocol` stub — same shape as `StubURLProtocol`
+/// above, deliberately **not shared** with it. `StubURLProtocol.handler` is a
+/// single static var; `GoogleOAuthClientTests` and `GooglePeopleAvatarClientTests`
+/// both set/clear it per-test, and Swift Testing parallelizes test functions
+/// (including across different `@Suite`s in the same target) by default —
+/// two tests from the two different suites racing to set/read that one
+/// static produced real, reproducible cross-suite flakes (one test's request
+/// occasionally hit another test's handler, or a handler cleared by a
+/// `defer` mid-flight) when both suites used the same type. Giving
+/// `GooglePeopleAvatarClientTests` its own stub type with its own static
+/// `handler` removes the shared mutable state entirely, rather than trying
+/// to serialize two independently-`.serialized` suites against each other
+/// (Swift Testing's `.serialized` trait only orders a suite's own children,
+/// not other suites).
+final class PeopleAPIStubURLProtocol: URLProtocol {
+    static let lock = NSLock()
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        PeopleAPIStubURLProtocol.lock.lock()
+        let handler = PeopleAPIStubURLProtocol.handler
+        PeopleAPIStubURLProtocol.lock.unlock()
+
+        guard let handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.unknown))
+            return
+        }
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+
+    static func makeSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PeopleAPIStubURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+}
