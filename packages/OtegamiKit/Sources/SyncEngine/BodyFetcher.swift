@@ -24,6 +24,18 @@ public actor BodyFetcher {
 
     private let database: AppDatabase
 
+    /// Tracks a fetch currently in progress for a given `MessageRecord.id`
+    /// — Task #31 (launch/foreground background prefetch): once that
+    /// prefetch pass and the on-open lazy fetch (`SyncCoordinator.fetchBody
+    /// (for:mailboxPath:account:auth:)`) can both race to fetch the same
+    /// message, actor reentrancy alone isn't enough to prevent a duplicate
+    /// network fetch — `fetchBody` below can suspend at `await session
+    /// .fetchBody(...)`, and a second call for the same `messageId` could
+    /// otherwise enter the actor and start its own independent fetch during
+    /// that suspension. A second caller for a `messageId` already in this
+    /// dictionary awaits the *same* `Task` instead of starting a new one.
+    private var inFlightFetches: [Int64: Task<Void, Error>] = [:]
+
     public init(database: AppDatabase) {
         self.database = database
     }
@@ -35,6 +47,17 @@ public actor BodyFetcher {
     /// racing the prefetch pass for the same message) can tell a fetch is
     /// already underway; on failure, reverts to `.notFetched` and rethrows
     /// so the caller can surface the error.
+    ///
+    /// Always (re-)fetches over the network, even if `message.bodyState`
+    /// is already `.fetched` — `prefetchRecent`'s own re-fetch contract
+    /// (a message's body/attachments get *replaced*, not skipped, on a
+    /// second call) and `SyncCoordinator`'s on-open/compose-quote paths
+    /// both rely on this to force a refresh on demand. Callers that want
+    /// an "already fetched? skip" check (Task #31's launch/foreground
+    /// prefetch — see `SyncCoordinator
+    /// .prefetchUnifiedInboxBodiesIfNeeded`) do that themselves, re-reading
+    /// fresh state right before calling in, rather than this shared entry
+    /// point silently no-op'ing for every caller.
     public func fetchBody(
         message: MessageRecord,
         mailboxPath: String,
@@ -42,6 +65,26 @@ public actor BodyFetcher {
     ) async throws {
         guard let messageId = message.id else { return }
 
+        if let existing = inFlightFetches[messageId] {
+            try await existing.value
+            return
+        }
+
+        let task = Task<Void, Error> { [weak self] in
+            guard let self else { return }
+            try await self.performFetch(message: message, mailboxPath: mailboxPath, session: session, messageId: messageId)
+        }
+        inFlightFetches[messageId] = task
+        defer { inFlightFetches[messageId] = nil }
+        try await task.value
+    }
+
+    private func performFetch(
+        message: MessageRecord,
+        mailboxPath: String,
+        session: any IMAPSessionProtocol,
+        messageId: Int64
+    ) async throws {
         try await database.dbWriter.write { db in
             var record = message
             record.bodyState = .fetching

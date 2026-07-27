@@ -1399,6 +1399,26 @@ final class AppEnvironment {
         }
     }
 
+    /// Task #31 (docs/roadmap.md): thin wiring for `SyncCoordinator
+    /// .prefetchUnifiedInboxBodiesIfNeeded(accounts:now:authProvider:)` —
+    /// all the actual logic (candidate selection, debounce, per-account
+    /// sequencing, silent best-effort failure handling) lives there and is
+    /// unit-tested there with `FakeIMAPSession`; this method exists only
+    /// because `SyncEngine` has no dependency on `KeychainCredentialStore`/
+    /// `GoogleOAuth`, so resolving each account's `MailAuth` has to be
+    /// injected from here, the same way `auth(for:)` already is for
+    /// `syncAllAccountsOnce()`/`startIdleLoops(for:)` in `OtegamiApp.swift`.
+    /// Called from `RootView.handleScenePhaseChange`'s `.active` case as a
+    /// low-priority, fire-and-forget `Task` — never awaited inline with
+    /// user-visible sync/refresh, so a slow or offline prefetch pass can
+    /// never delay them.
+    func prefetchRecentBodiesIfNeeded() async {
+        _ = await syncCoordinator.prefetchUnifiedInboxBodiesIfNeeded(accounts: accounts) { [weak self] account in
+            guard let self else { throw AuthResolutionError.missingCredential }
+            return try await self.auth(for: account)
+        }
+    }
+
     private func requestAPNsToken() async throws -> String {
         #if os(iOS)
         do {

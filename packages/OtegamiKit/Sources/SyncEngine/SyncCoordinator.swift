@@ -181,6 +181,142 @@ public actor SyncCoordinator {
         await syncer.stopIdleLoop()
     }
 
+    /// How many of the unified inbox's most-recently-received not-yet-
+    /// fetched messages `prefetchUnifiedInboxBodiesIfNeeded` prefetches per
+    /// launch/foreground pass (Task #31 — "直近30件程度" of what a user is
+    /// likely to open next, mirroring `BodyFetcher.defaultPrefetchLimit`'s
+    /// per-mailbox post-initial-sync counterpart but scoped to the unified
+    /// inbox across every account, since that's what the message list
+    /// actually shows first).
+    public static let unifiedInboxPrefetchLimit = 30
+
+    /// Debounce for `prefetchUnifiedInboxBodiesIfNeeded` — battery/network
+    /// conscious "once per launch/foreground, not once per scenePhase
+    /// blip" (locking/unlocking the device, or a quick app-switch-and-back,
+    /// can otherwise fire `RootView.handleScenePhaseChange`'s `.active`
+    /// case several times in quick succession).
+    private static let unifiedInboxPrefetchInterval: TimeInterval = 5 * 60
+
+    /// In-memory only (not persisted to `UserDefaults`) — deliberately
+    /// resets on every process launch, so a cold launch always runs the
+    /// prefetch once rather than being blocked by a debounce window from
+    /// the *previous* process's last foreground.
+    private var lastUnifiedInboxPrefetchDate: Date?
+
+    /// Task #31 (docs/roadmap.md): background-prefetches bodies for the
+    /// unified inbox's most recent `limit` not-yet-fetched messages, right
+    /// after launch and on every foreground return — the fix for "さっき
+    /// 読んだメールも、アプリを起動し直すと読み込みが入る?表示まで時間が
+    /// かかる" (a message near the top of the list whose body was never
+    /// lazily fetched otherwise pays a network round trip the moment it's
+    /// opened, every time). Meant to be called from a low-priority,
+    /// fire-and-forget `Task` (`RootView.handleScenePhaseChange`'s `.active`
+    /// case) — never awaited inline with user-visible sync/refresh work, so
+    /// it can't delay them.
+    ///
+    /// - Debounced to at most once per `unifiedInboxPrefetchInterval` (see
+    ///   its doc comment) — a no-op, returning `0`, when called again too
+    ///   soon.
+    /// - Silent best-effort throughout: an offline device, an account whose
+    ///   credentials can't be resolved (`authProvider` throwing), a
+    ///   `connect()`/`select()` failure, or an individual message's fetch
+    ///   failing all just skip that piece and move on — no error banner,
+    ///   no thrown error, so a broken connection at launch never surfaces
+    ///   as a user-visible failure for a feature the user never asked to
+    ///   run. There's always a next foreground to try again.
+    /// - Sequential per account (`for account in accounts`), one account's
+    ///   candidates fetched over one connection before moving to the next
+    ///   — deliberately not fanned out in parallel, matching every other
+    ///   per-account loop in this codebase (`RootView.syncAllAccountsOnce`/
+    ///   `startIdleLoops`), so this doesn't open `accounts.count` IMAP
+    ///   connections at once on every foreground.
+    /// - `authProvider` is injected (rather than this actor resolving
+    ///   credentials itself) because `SyncEngine` has no dependency on
+    ///   Keychain/OAuth — `AppEnvironment.auth(for:)` is the real caller in
+    ///   production; tests pass a trivial closure.
+    ///
+    /// Returns the number of messages actually fetched (for tests; the
+    /// caller doesn't need this).
+    @discardableResult
+    public func prefetchUnifiedInboxBodiesIfNeeded(
+        accounts: [AccountRecord],
+        now: Date = Date(),
+        authProvider: @Sendable (AccountRecord) async throws -> MailAuth
+    ) async -> Int {
+        if let last = lastUnifiedInboxPrefetchDate, now.timeIntervalSince(last) < Self.unifiedInboxPrefetchInterval {
+            return 0
+        }
+        // Recorded regardless of what's found below (even "no accounts" or
+        // "no candidates") — matches `AppEnvironment
+        // .reconcilePushWatchesIfNeeded()`'s "the throttle protects against
+        // repeating the attempt, not against repeating a specific outcome"
+        // convention.
+        lastUnifiedInboxPrefetchDate = now
+        guard !accounts.isEmpty else { return 0 }
+
+        let accountIds = accounts.map(\.id)
+        let candidates: [UnifiedInboxPrefetchCandidate]
+        do {
+            candidates = try await database.dbWriter.read { db in
+                try MessageQuery.unfetchedUnifiedInboxCandidates(
+                    accountIds: accountIds,
+                    limit: Self.unifiedInboxPrefetchLimit,
+                    db: db
+                )
+            }
+        } catch {
+            return 0
+        }
+        guard !candidates.isEmpty else { return 0 }
+
+        var candidatesByAccount: [String: [UnifiedInboxPrefetchCandidate]] = [:]
+        for candidate in candidates {
+            candidatesByAccount[candidate.accountId, default: []].append(candidate)
+        }
+
+        var fetchedCount = 0
+        for account in accounts {
+            guard let group = candidatesByAccount[account.id], let mailboxPath = group.first?.mailboxPath else { continue }
+            guard let auth = try? await authProvider(account) else { continue }
+
+            let session = sessionFactory(account.imapConfig)
+            do {
+                try await session.connect(auth: auth)
+            } catch {
+                continue
+            }
+            defer {
+                let session = session
+                Task { await session.disconnect() }
+            }
+            guard (try? await session.select(mailboxPath)) != nil else { continue }
+
+            for candidate in group {
+                // Re-check fresh state right before fetching, not the
+                // (possibly stale) `bodyState` the candidate list captured
+                // at query time — something else (the on-open fetch, an
+                // earlier prefetch pass) may have already fetched this
+                // exact message by now. `BodyFetcher.fetchBody` itself
+                // always forces a fetch regardless of `bodyState` (its
+                // `prefetchRecent`/on-open/compose-quote callers rely on
+                // that to force a refresh on demand), so this "already
+                // fetched? skip" check belongs here, specific to this
+                // best-effort prefetch pass, not in the shared fetch
+                // entry point.
+                guard let messageId = candidate.message.id else { continue }
+                let current = try? await database.dbWriter.read { db in
+                    try MessageRecord.fetchOne(db, key: messageId)
+                }
+                if current?.bodyState == .fetched { continue }
+
+                if (try? await bodyFetcher.fetchBody(message: candidate.message, mailboxPath: mailboxPath, session: session)) != nil {
+                    fetchedCount += 1
+                }
+            }
+        }
+        return fetchedCount
+    }
+
     private func syncer(for account: AccountRecord) -> AccountSyncer {
         if let existing = syncers[account.id] {
             return existing

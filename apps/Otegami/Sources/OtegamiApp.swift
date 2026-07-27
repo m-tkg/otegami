@@ -471,6 +471,16 @@ struct RootView: View {
             // every foreground is cheap (`AppEnvironment
             // .reconcilePushWatchesIfNeeded()`'s doc comment).
             await environment.reconcilePushWatchesIfNeeded()
+            // Task #31 (docs/roadmap.md, さっき読んだメールも起動し直すと読み込みが
+            // 入る): background-prefetches bodies for the unified inbox's
+            // most recent not-yet-fetched messages so opening one usually
+            // doesn't pay a network round trip. Deliberately a detached,
+            // low-priority, un-awaited `Task` — unlike everything else in
+            // this case, it must never delay `.active` handling itself;
+            // `SyncCoordinator.prefetchUnifiedInboxBodiesIfNeeded` is its
+            // own debounce/best-effort unit, safe to fire on every
+            // foreground return.
+            Task(priority: .background) { await environment.prefetchRecentBodiesIfNeeded() }
         case .background, .inactive:
             await environment.syncCoordinator.stopAllIdleLoops()
             // C7 「アプリを離脱したら即座に送信を確定」— cuts short whatever's

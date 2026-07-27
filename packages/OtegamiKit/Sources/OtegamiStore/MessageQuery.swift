@@ -97,6 +97,68 @@ public enum MessageQuery {
     public static func unifiedInboxUnreadCountObservation(accountIds: [String]) -> ValueObservation<ValueReducers.Fetch<Int>> {
         ValueObservation.tracking { db in try unifiedInboxUnreadCount(accountIds: accountIds, db: db) }
     }
+
+    // MARK: - Background body prefetch (launch/foreground)
+
+    /// Up to `limit` of the unified inbox's most-recently-received messages
+    /// that haven't had their body fetched yet, newest first across every
+    /// account in `accountIds` — the candidate list for `SyncCoordinator
+    /// .prefetchUnifiedInboxBodiesIfNeeded(accounts:now:authProvider:)`'s
+    /// launch/foreground background body prefetch (the fix for "さっき読んだ
+    /// メールも、アプリを起動し直すと読み込みが入る?表示まで時間がかかる" — a
+    /// message that's near the top of the unified inbox but whose body was
+    /// never lazily fetched pays a network round trip the moment it's
+    /// opened; prefetching these ahead of time on launch/foreground means
+    /// `MessageView.load()` usually finds `bodyState == .fetched` already).
+    /// Mirrors `ThreadQuery.unifiedInboxFlatSummaries`'s join shape
+    /// (inbox-role mailboxes, `isHidden = 0`) but filters on `message
+    /// .bodyState = 'notFetched'` instead of read/unread, and returns
+    /// `mailbox.path` (the raw IMAP path a session needs to `SELECT`)
+    /// rather than a UI-facing `ThreadSummary`.
+    public static func unfetchedUnifiedInboxCandidates(
+        accountIds: [String],
+        limit: Int,
+        db: Database
+    ) throws -> [UnifiedInboxPrefetchCandidate] {
+        guard !accountIds.isEmpty else { return [] }
+        let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
+        let sql = """
+            SELECT message.*, mailbox.accountId AS accountId, mailbox.path AS mailboxPath
+            FROM message
+            JOIN mailbox ON mailbox.id = message.mailboxId
+            WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders)) AND mailbox.isHidden = 0
+                  AND message.bodyState = ?
+            ORDER BY COALESCE(message.date, message.internalDate) DESC, message.uid DESC
+            LIMIT ?
+            """
+        var arguments: [(any DatabaseValueConvertible)?] = [MailboxRoleRecord.inbox.rawValue]
+        arguments.append(contentsOf: accountIds)
+        arguments.append(MessageBodyState.notFetched.rawValue)
+        arguments.append(limit)
+        let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
+        return try rows.map { row in
+            let message = try MessageRecord(row: row)
+            let accountId: String = row["accountId"]
+            let mailboxPath: String = row["mailboxPath"]
+            return UnifiedInboxPrefetchCandidate(message: message, accountId: accountId, mailboxPath: mailboxPath)
+        }
+    }
+}
+
+/// One row of ``MessageQuery/unfetchedUnifiedInboxCandidates(accountIds:limit:db:)``
+/// — carries `accountId`/`mailboxPath` alongside the `MessageRecord` itself
+/// so a caller opening a per-account IMAP session (the launch/foreground
+/// background body prefetch) doesn't have to re-look either up.
+public struct UnifiedInboxPrefetchCandidate: Sendable, Equatable {
+    public let message: MessageRecord
+    public let accountId: String
+    public let mailboxPath: String
+
+    public init(message: MessageRecord, accountId: String, mailboxPath: String) {
+        self.message = message
+        self.accountId = accountId
+        self.mailboxPath = mailboxPath
+    }
 }
 
 /// Query helpers for `MailboxRecord`.
