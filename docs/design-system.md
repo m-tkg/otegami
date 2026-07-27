@@ -1245,6 +1245,30 @@ scale()` でページ全体を視覚的に縮小する — で解決した
 上のタイムスタンプ (`docs/verify.md`参照) で確認 — 詳細な体感速度の
 定量比較は今後の課題として残る。
 
+**フォローアップ: 起動/フォアグラウンド復帰時の本文バックグラウンド
+プリフェッチ**: 上記の調査時点では「既読メールでもネットワークを叩いて
+いる」という仮説はコード上成立しなかった (`bodyState == .fetched`なら
+ローカル DB から即座に読む) — が、これは*一度でも本文を取得したことが
+ある*メッセージに限った話で、一覧の上の方に見えていても実際に開いた
+ことが一度も無いメッセージ (`bodyState == .notFetched`) は依然として
+初回オープン時に本文取得のネットワーク往復を待つ。`SyncCoordinator
+.prefetchUnifiedInboxBodiesIfNeeded(accounts:now:authProvider:)`
+(`packages/OtegamiKit/Sources/SyncEngine/SyncCoordinator.swift`) が
+これに対応: アプリの起動完了後・フォアグラウンド復帰のたびに、低優先度
+の`Task`で統合受信トレイの直近30件 (`unifiedInboxPrefetchLimit`) の
+`bodyState == .notFetched`なメッセージをバックグラウンドで先読みする。
+アカウントごとに逐次処理 (並列接続はしない)、5分デバウンス
+(`unifiedInboxPrefetchInterval`)、オフライン/認証エラー/個別メッセージ
+の取得失敗はすべて静かに諦める (エラーバナーを出さず、次回の復帰時に
+再試行) — ユーザー操作 (開封時の本文取得) を妨げないことを優先した設計。
+`BodyFetcher`側にも同一メッセージへの重複フェッチ防止 (`Task`ベースの
+in-flight 管理) を追加し、このプリフェッチと開封時の遅延取得が同じ
+メッセージを取り合っても二重にネットワークへ取得しに行かないようにした。
+`packages/OtegamiKit/Tests/SyncEngineTests/UnifiedInboxPrefetchTests.swift`
+で`FakeIMAPSession`を使い、対象メッセージの選定・デバウンス・エラー
+時の無言スキップを検証済み。実機での2台間の体感速度比較は未検証
+(`PENDING.md`)。
+
 ### D: no-reply 系の通知メールが件名フォールバックで過剰にスレッド化
 される
 
