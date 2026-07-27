@@ -12,6 +12,83 @@
 「修正不能級/設計判断が要る」項目、および「軽微な見た目の違和感 (真バグで
 ないもの)」を記録する。
 
+## Task #44: Gmail の「すべてのメール」に直近の新着が反映されない実バグの調査と修正
+
+**症状**: 実 Gmail アカウントで「すべてのメール」(All Mail) を表示しても、
+直近 (~24時間) のメールが出ない (INBOX には出ている)。表示中に
+pull-to-refresh しても出てこない。
+
+**調査**: `MailboxSyncer.incrementalSync`/`AccountSyncer.performIncrementalSync`
+の差分同期ロジック自体 (新着 = `maxUID+1 ... uidNext`、CONDSTORE フラグ
+同期、非CONDSTORE の refetch-and-diff、uidValidity 変化時のフル再同期)
+は `role`/mailbox の種類を一切区別しない汎用実装で、既存の
+`FakeIMAPSession` テスト (`AccountSyncerTests.allScopeSkipsHiddenMailbox`
+など) で非INBOXメールボックスへの新着取り込みが既に確認されていた。
+それでも実バグ報告と整合させるため、`.mailbox(path:)`スコープ (サイド
+バーで1メールボックスを選んだ時/そのpull-to-refreshが使う経路) を
+**実 dev mailstack Dovecot に対して**新規追加した統合テスト
+(`SyncEngineIntegrationTests
+.mailboxScopedIncrementalSyncPicksUpNewMailInNonInboxMailbox`) で再確認
+したところ、**問題なく新着を取り込めた** — 実サーバー・実 CONDSTORE
+込みで、差分同期そのものにはバグが無いことを確認した。
+
+**根本原因はコードを読んで発見**: `MessageListView`は、サイドバーで
+メールボックスを**選択しただけでは一切同期をトリガーしていなかった**
+(`selection`の`.onChange`はページングリセットなどのみ、`.task(id:
+ObservationKey...)`はDBの`ValueObservation`購読のみ)。非INBOXメール
+ボックスが新着を拾える経路は「そのメールボックスを表示中に明示的に
+pull-to-refreshする」ことだけで、それ以外の自動同期 (`OtegamiApp
+.syncAllAccountsOnce`の起動時/フォアグラウンド復帰時パス、フォアグラ
+ウンド`IDLE`ループ) はいずれも`SyncScope.inboxOnly`固定 — INBOX/下書き
+以外は起動・復帰・IDLEのどれでも一切同期されない設計だった。
+
+これと、Gmail の「すべてのメール」がサーバー側で INBOX とは別に (やや
+遅れて) インデックスされる既知の挙動を組み合わせると: ユーザーが「すべて
+のメール」を開いた直後にpull-to-refreshしても、その時点でまだ Gmail
+サーバー側のAll Mailにそのメッセージが反映されていなければ (差分同期
+ロジックが正しくても) 何も出てこず、しかも自動的な再試行が一切無い
+ため、後で反映されていても**再度そのメールボックスを開いて明示的に
+refreshし直さない限り永遠に取り込まれない** — 「表示しても出ない、
+refreshしても出ない」という報告と一致する。
+
+**修正**: `apps/Otegami/Sources/Features/MessageList/MessageListView.swift`
+- `refresh()`に`surfaceErrors: Bool = true`引数を追加 (既存呼び出し元は
+  無変更) — エラーを`syncErrorMessage`アラートに出すかどうかを分離。
+- 新設`syncSelectedMailboxOnAppear()`: `refresh(surfaceErrors: false)`を
+  `selectedMailboxResyncInterval`(5分) おきに、キャンセルされるまで
+  ループ実行する。`.task(id: selection)`(`.onChange`ではなく) から呼ぶ
+  ことで、コールドランチで復元された初期選択も含めて「そのメール
+  ボックスを見ている間」ずっと自動的に再同期を試み続ける — サイド
+  バー選択を変える/この画面が消える瞬間に SwiftUI が自動キャンセルする
+  ので、明示的なライフタイム管理は不要。エラーはアラートに出さない
+  (単に画面を見ているだけで通信エラーの警告が出るのは不親切なため)。
+- `refresh()`自身のスコープ解決ロジック (`.mailbox`/`.unifiedInbox`/
+  `.unifiedRole`の3ケース) は無変更 — 差分同期そのものは元から正しい
+  という調査結果に基づき、「同期が確実に走るようにする」ことだけを
+  直した。
+
+**テスト**:
+- `packages/OtegamiKit/Tests/SyncEngineTests/AccountSyncerTests.swift`
+  に`mailboxScopedSyncPicksUpNewMailInAllMailRoleMailbox`を追加:
+  `role: .all`のGmail「すべてのメール」を模したメールボックスへ、
+  `.mailbox(path:)`スコープ・CONDSTORE込みで新着が取り込まれることを
+  `FakeIMAPSession`で確認 (INBOXは対象外のまま変化しないことも確認)。
+- `packages/OtegamiKit/Tests/MailTransportMailCoreTests
+  /SyncEngineIntegrationTests.swift`に
+  `mailboxScopedIncrementalSyncPicksUpNewMailInNonInboxMailbox`を追加:
+  実 dev mailstack Dovecot に対して同じシナリオ (`.mailbox(path:)`ス
+  コープでの非INBOXメールボックスへの新着取り込み) を確認 (opt-in、
+  `OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter
+  SyncEngineIntegrationTests`)。
+- `make test`/`make mac`/`make ios`: 全て green。
+
+**できなかったこと/未検証事項**: 実 Gmail アカウントでの実機確認 (シミュ
+レータのアカウント追加不調が継続中のため、`FakeIMAPSession`/実
+Dovecot統合テストのみでの検証)。Gmail サーバー側の「すべてのメール」
+インデックス遅延そのものの実測 (今回の修正はその遅延を前提に「反映
+されるまで自動的に再試行し続ける」設計にしたが、遅延の実際の長さは
+未計測)。`PENDING.md`に記録した。
+
 ## 実機フィードバック第2弾: Gmail でアーカイブが効かない実バグの原因と修正
 
 **症状**: 実 Gmail アカウントでスレッド/メールをアーカイブしても、サーバー
