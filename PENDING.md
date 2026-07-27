@@ -301,11 +301,70 @@ Simulator アプリプロセスから on-device 推論ブローカーを呼ぶ�
   2. Apple Intelligence が有効になっていることを確認する (設定 →
      Apple Intelligence)。
   3. 英文メール (`dev/mailstack` の `20-english-quarterly-report.eml`
-     を seed 済み) を開き、翻訳バーが実際に訳文を表示するか確認する。
-  4. 実機でも同じ `LanguageModelError -1` が出る場合はコード側の不具合
+     を seed 済み) を開き、翻訳バーの「翻訳」ボタンをタップして実際に
+     訳文を表示するか確認する (自動翻訳は既定オフになったため、今は
+     タップが必要 — 下記「自動翻訳の既定 OFF 化」節参照)。
+  4. `30-fixed-width-notice-en.eml` (幅700px級の固定幅テーブル英語メール)
+     でも同様に翻訳し、表・画像・罫線のレイアウトを保ったまま文字だけが
+     日本語化されることを確認する — `HTMLTranslationController` による
+     DOM 書き換え経路 (`docs/translation.md`「実機フィードバック: 「勝手
+     に翻訳しないで」「HTML はレイアウトを保って」」節) の実モデルでの
+     確認。
+  5. 実機でも同じ `LanguageModelError -1` が出る場合はコード側の不具合
      の可能性が高まるので調査を再開する。実機では成功する場合は
      Simulator 固有の制限として `docs/translation.md` に確定情報を追記
      し、この節を消す。
+
+### 追補: 自動翻訳の既定 OFF 化・HTML レイアウト保持翻訳・fit-to-width の実機/シミュレータ確認 (実機フィードバック対応)
+
+**実装状況**: 実機ユーザー報告2件 (「翻訳機能は、勝手に実行しないで
+欲しい」「htmlメールの場合、レイアウトをなるべく崩さないように翻訳を
+表示して欲しい」) を受けて対応済み。`TranslationSettingsStore
+.autoTranslateEnglishKey` を既定 OFF に変更 (キーも `.v2` にリネーム)、
+HTML メールの翻訳は `HTMLTranslationController` による DOM テキスト
+ノード書き換えでレイアウトを保持するようにし、幅600-800px級の固定幅
+テーブル HTML メールが右端クリップ・巨大フォントで描画される別件の
+実機報告にも fit-to-width (`HTMLWebViewCoordinator.fitToWidthScript`)
+で対応した。`make test`/`make ios`/`make mac` すべて green (UITest
+ターゲットのビルドも `-only-testing:` 実行時に成功しており、
+`OtegamiFitToWidthUITests`/`OtegamiHTMLTranslationUITests`/更新した
+`OtegamiTranslationUITests` はコンパイルは通っている)。
+
+**未確認 (このセッション固有のシミュレータ既知事象により)**: この作業
+セッションはシミュレータのネットワークが不調で、アカウント追加の
+「接続テスト」が `MailCoreErrorDomain error 1` (`接続に失敗しました:
+サーバーに接続できません`) で一貫して失敗した (ホスト側から同じ
+`localhost:1143` へは Python の素の socket 接続で疎通確認済みなので、
+Dovecot 自体は正常 — シミュレータ側の何らかのネットワーク経路の問題と
+みられる)。`OtegamiFitToWidthUITests`/`OtegamiHTMLTranslationUITests`は
+いずれもテスト内でアカウント追加 (`addDovecotTest1Account`) が必要な
+構造のため、2回試して同一エラーで失敗し続けたことを確認した時点で
+切り上げた (現在のセッションの既知の制限としてタスク側にも記録あり)。
+その結果、以下は **視覚的に未確認** のまま:
+
+- `29-fixed-width-bank-notice.eml`/`30-fixed-width-notice-en.eml` を
+  実際にシミュレータ/実機で開き、fit-to-width で右端が切れず全幅に
+  収まって表示されることの目視確認。
+- `30-fixed-width-notice-en.eml` を `OTEGAMI_UITEST_FAKE_TRANSLATION=1`
+  (または実機で通常の翻訳) で翻訳し、`HTMLTranslationController` に
+  よるレイアウト保持翻訳が実際に画面上で機能することの目視確認。
+- 実際の Foundation Models モデルによる訳文の品質 (レイアウト保持翻訳
+  経路を通した場合)。
+- 自動翻訳が既定 OFF になったことで、既存インストール (アップグレード)
+  のユーザー体験が意図通りか — キーリネームにより理論上は新規/既存
+  問わず OFF から始まるはずだが (`TranslationSettingsStore
+  .autoTranslateEnglishKey` のドキュメントコメント参照)、実機の
+  アップグレードシナリオでの実地確認はしていない。
+
+- **対応手順**: このシミュレータのネットワーク不調が解消した後 (または
+  別のシミュレータ/実機で)、`make mailstack-up && make mailstack-seed`
+  してから
+  `xcodebuild -project apps/Otegami/Otegami.xcodeproj -scheme Otegami
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max'
+  -only-testing:OtegamiUITests/OtegamiFitToWidthUITests test`
+  (および `OtegamiHTMLTranslationUITests`) を実行し、`.xcresult` に
+  添付されたスクリーンショットを確認する。上記「design-phase-3: 翻訳の
+  実機確認」節の対応手順3・4番とあわせて実施するとよい。
 
 ## 表示・操作改善バッチ: リンクのブラウザオープン修正・添付メニューの実機確認
 

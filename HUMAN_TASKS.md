@@ -29,9 +29,13 @@
       (シミュレータではカメラ非搭載のためグレーアウトのままで、実機でしか
       検証できない)。
       優先度: 高 / 所要時間: 10分 / 詳細: 上記と同じ節
-- [ ] **端末内翻訳が実機で成功するか** — 実機 (Apple Intelligence 対応・
-      有効) で英文メール (`20-english-quarterly-report.eml` seed 済み) を
-      開き、翻訳バーが実際に訳文を表示するか確認する。iOS Simulator の
+- [ ] **端末内翻訳が実機で成功するか (HTML レイアウト保持翻訳を含む)** —
+      実機 (Apple Intelligence 対応・有効) で英文メール
+      (`20-english-quarterly-report.eml` seed 済み) を開き、翻訳バーの
+      「翻訳」ボタンをタップして (自動翻訳は既定オフになった) 実際に
+      訳文を表示するか確認する。あわせて `30-fixed-width-notice-en.eml`
+      (固定幅テーブルの英語メール) でも翻訳し、表・画像・罫線のレイアウト
+      を保ったまま文字だけ日本語化されるか確認する。iOS Simulator の
       `.app` プロセスからは `FoundationModels.LanguageModelError -1` で
       一貫して失敗しており (同一コードが素の `swift test` プロセスからは
       毎回成功)、実機でも同じエラーが出るならコード側の不具合の可能性が

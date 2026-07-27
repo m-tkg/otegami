@@ -318,27 +318,37 @@ showsAccountAccent`/`SearchTabView.showsAccountAccent` の両方に
   を利用できません」に変わり、セグメント/翻訳ボタンは出さない。
 - **既定は訳文**: `TranslationBar` のセグメント (`showOriginal`) は
   `false` (訳文) がデフォルト。
-- **自動翻訳 vs ボタン開始**: 1l の「英文を自動で翻訳」設定 (既定 ON、
-  `TranslationSettingsStore`) が ON のときだけ `MessageView.load()` の
+- **自動翻訳 vs ボタン開始**: 1l の「英文を自動で翻訳」設定
+  (`TranslationSettingsStore`) が ON のときだけ `MessageView.load()` の
   末尾で自動的に翻訳を開始する。OFF のとき、または翻訳が失敗したときは
-  バーに「翻訳」/「再試行」ボタンが出て、明示タップが起点になる。オン
-  デバイス翻訳はコストがある (`docs/translation.md` 実測で数秒〜) との
-  判断から、既定 ON はコストと利便性のトレードオフとして選んだデフォル
-  ト値であり、いつでも設定でオフにできる。
+  バーに「翻訳」/「再試行」ボタンが出て、明示タップが起点になる。
+  design-phase-3 時点ではオンデバイス翻訳のコスト (`docs/translation.md`
+  実測で数秒〜) とのトレードオフとして既定 **ON** を選んでいたが、実機
+  フィードバック (「翻訳機能は、勝手に実行しないで欲しい」) を受けて
+  既定 **OFF** に変更した — `docs/translation.md`「実機フィードバック:
+  「勝手に翻訳しないで」「HTML はレイアウトを保って」」節参照。バー自体
+  の表示条件は変えていない (英文メールなら常に出る)。いつでも設定で
+  ON に戻せる。
 - **段落長押しで原文表示**: `TranslatedBodyView` は
   `MessageTranslationRecord.paragraphs` (原文/訳文ペアの配列) を
   1段落ずつ `Text` として描画し、`.onLongPressGesture` で
   その段落だけ `Set<Int>` の on/off を切り替える。訳文全体を原文に戻す
   操作はセグメントピッカー側 (バー) が担当し、段落単位の切り替えとは独
   立している。
-- **HTML メールの扱い (ハンドオフに無い判断)**: 翻訳エンジンは常にプレ
-  ーンテキストの段落配列を返す (`docs/translation.md`)。HTML 本文のメ
-  ールで「訳文」を選んだときは、`HTMLTextExtractor` で抽出したプレーン
-  テキストを翻訳し `TranslatedBodyView` で表示する — つまり訳文表示時
-  はリンクや太字などの HTML 装飾を失う。「原文」に戻せば元の
-  `HTMLMessageView` (`WKWebView`) がそのまま出る。翻訳 API がプレーン
-  文字列しか扱わない以上、HTML を保持したまま翻訳を差し込む経路は無く、
-  実装コストに見合わないと判断してこの制限を受け入れた。
+- **HTML メールの扱い (ハンドオフに無い判断、design-phase-3 時点)**:
+  翻訳エンジンは常にプレーンテキストの段落配列を返す
+  (`docs/translation.md`)。当初は HTML 本文のメールで「訳文」を選ぶと
+  `HTMLTextExtractor` で抽出したプレーンテキストを翻訳し
+  `TranslatedBodyView` で表示していた — 訳文表示時はリンクや太字などの
+  HTML 装飾を失うという制限を、翻訳 API がプレーン文字列しか扱わないこと
+  を理由に受け入れていた。
+  **実機フィードバック (「htmlメールの場合、レイアウトをなるべく崩さない
+  ように翻訳を表示して欲しい」) を受けて撤回**: `HTMLTranslationController`
+  が WKWebView の DOM テキストノードを直接収集・書き換える方式に変更し、
+  HTML メールも表・画像・罫線などのレイアウトを保ったまま訳文を表示できる
+  ようになった (`TranslatedBodyView`への総入れ替えはプレーンテキスト
+  メールにのみ残る) — 詳細は `docs/translation.md`「実機フィードバック:
+  「勝手に翻訳しないで」「HTML はレイアウトを保って」」節参照。
 - **ストリーミング表示は今回見送り**: `TranslationService.translateStream`
   はエンジン層に実装・検証済み (`docs/translation.md`) だが、UI 側は
   `MessageTranslator.translate(messageId:...)` の非ストリーミング版のみ
@@ -447,7 +457,9 @@ ForEach { 複数行の HStack/VStack } } }` が1つの `body` 式に積み上が
   釣り合いと判断した。設定は `SwipeActionSettingsStore` (`UserDefaults`
   キーのみを1箇所にまとめた enum) + `@AppStorage` で永続化し、
   `MessageListRow.leadingSwipeActions` が宣言順を切り替える。
-- **翻訳: 英文を自動で翻訳 (既定 ON) / 一覧に要約を出す (既定 OFF)**:
+- **翻訳: 英文を自動で翻訳 (design-phase-3 時点の既定 ON、実機フィード
+  バックを受けて後に既定 OFF へ変更 — `docs/translation.md`参照) / 一覧
+  に要約を出す (既定 OFF)**:
   `TranslationSettingsStore` で2つの `UserDefaults` キーを定義し、
   `UserDefaults.registerOtegamiTranslationDefaults()` を `AppEnvironment
   .init()` から呼んで既定値を登録している。前者は実際に
@@ -646,6 +658,59 @@ macOS の ⌘R (`RootView.replyToSelectedThread()`) が既に使っていた
   (`MessageToolbarAction.allCases`) は常にすべて表示、並び順だけを
   変更できる — 有効/無効の概念は無い (「その他」を含めた自由な並び替え
   も許可している。オーバーフローとして固定位置にする強制はしていない)。
+
+### 4. 一覧ヘッダの再編: 検索の左下フローティング化・再読込ボタン廃止・
+未読のみ表示トグル
+
+ユーザー要望により、`MailScreenView`(一覧画面)のヘッダをさらに整理した
+バッチの記録。iOS のみ (macOS の3ペインは無変更 — `MessageListView`は
+両プラットフォーム共有ファイルだが、変更点はすべて`#if os(iOS)`側)。
+
+- **検索ボタンを左下フローティングに移設**: ヘッダの虫眼鏡ボタン
+  (`ToolbarItemGroup(.confirmationAction)`) を廃し、`FolderListSheet
+  .floatingSettingsButton`と同じ「丸い面＋影、`overlay(alignment:
+  .bottomLeading)`、スクロール内容とは`.contentMargins(.bottom:)`で
+  重なりを避ける」流儀で一覧画面左下に常設した
+  (`MailScreenView.floatingSearchButton`)。`accessibilityIdentifier`は
+  旧実装の`mail.searchButton`のまま据え置いたため、
+  `SearchUITestHelpers.openSearchScreen(in:)`を含む既存 UITest は無改修で
+  動く。選択モード中 (`isSelecting`) は一括操作の邪魔にならないよう
+  非表示にする。
+- **再読込ボタンを iOS だけ廃止**: `MessageListView.refreshToolbarItem`
+  はそのまま残し (macOS はまだ pull-to-refresh 相当が無いため)、
+  `listToolbarContent`の`#if os(iOS)`側だけそれを呼ばなくした —
+  pull-to-refresh (`.refreshable`) は変更していないので、iOS でも
+  再同期の手段自体は失っていない。
+- **「未読のみ表示」トグル**: ヘッダに新設したアイコントグル
+  (`MailScreenView.unreadOnlyToggleButton`) — `AccountFilterChip`の
+  選択状態 (`paleBaseStrong`塗り＋`accentText`文字色) と同じ配色ルールを
+  再利用し、新しい色は追加していない。状態は`ListDisplaySettingsStore
+  .unreadOnlyKey`の`@AppStorage`(既定 off、永続化)。`MailScreenView`
+  (ヘッダ)と`MessageListView`(実際の絞り込み)が同じキーを別々の
+  `@AppStorage`で参照する形にした — ヘッダの所有者と`ThreadQuery`呼び出し
+  の組み立て場所が別ビューのため。
+  - `ThreadQuery.request`/`unifiedInboxRequest`に`unreadOnly`引数を追加
+    し、true のとき`thread.unreadCount > 0`をWHERE句に足す (集計列を
+    見るだけでジョイン不要、ピン留めの`thread.isPinned`と同じ設計)。
+    フラット表示 (`flatSummaries`/`unifiedInboxFlatSummaries`) には
+    スレッド集計が無いため、代わりにメッセージ自身の`flagsRaw`の
+    `\Seen`ビットで絞り込む (`MessageQuery.unreadCounts`と同じ判定式)。
+  - アカウント絞り込み (1a のチップ) との合成もそのまま効く —
+    `unifiedInboxRequest(accountIds:unreadOnly:)`は「渡された
+    `accountIds`の範囲内で未読のみ」であって「全アカウント中の未読を
+    集めてから見せる」ではない (`ThreadQueryTests
+    .unifiedInboxRequestUnreadOnlyCombinesWithAccountFilter`で確認)。
+  - 空状態: 未読のみ表示中に0件になったときは「未読のメールはありません」
+    (`MessageListView.emptyStateTitle`) — 「メールが1通も無い」と
+    「フィルタで絞った結果ゼロ件」を区別する、既存の同期エラー分岐と
+    同じ考え方。`Localizable.xcstrings`に日英を追加した
+    (`scripts/generate-localizable.py`の辞書にも同じ2エントリを追記—
+    ただし既存ファイルには本バッチ以前から同スクリプトの辞書に無い
+    エントリが3件 (画像表示関連、別バッチの作業分) 混在しており、
+    それらを壊さないよう`Localizable.xcstrings`はスクリプト再生成
+    せず手動で2エントリだけ追記した)。
+  - 検索画面 (`SearchScreenView`/`SearchQuery`) はこのキーを一切参照
+    しない — 「検索画面には影響させない」という要件どおり。
 
 ### 検証で見つかった既存の環境依存の落とし穴 (このバッチで新たに確認)
 
@@ -1094,6 +1159,28 @@ HTML から`<body>...</body>`の中身だけを正規表現なしの文字列探
 + 900px 固定幅ラッパーテーブル + 900x300 の画像) を新設し、
 `OtegamiWideMarketingHTMLUITests`/`scripts/verify-ios-b-html-render.sh`
 で実機シミュレータに対して確認した。
+
+**追加の実機フィードバック (fit-to-width, Bの後日談)**: 上記の CSS
+リセットだけでは、楽天銀行のような幅600-800px級の固定幅テーブル
+HTMLメールで右端がクリップ・文字が巨大に見える不具合が残っていた —
+`max-width: 100% !important`は各要素の*ボックス*の幅は正しく制約する
+が、`white-space: nowrap`が指定されたセル (幅寄せ用の隣接ラベル/値行
+など、固定幅前提のテンプレートで頻出) の**描画内容**がそのボックスから
+はみ出すケースまでは防げない (`overflow-x: hidden`で見えなくなるだけで
+縮小はされない)。Spark 等の参考実装と同じ "fit-to-width" — 実際に必要な
+幅 (`scrollWidth`) を計測し、ビューポート幅を超えていれば `transform:
+scale()` でページ全体を視覚的に縮小する — で解決した
+(`HTMLWebViewCoordinator.fitToWidthScript`/`applyFitToWidth(to:)`、
+`WKNavigationDelegate.didFinish`後に評価)。ページ自身のスクリプトは
+`allowsContentJavaScript = false`で無効化済みだが、ホスト側 (Swift)
+からの`evaluateJavaScript`呼び出しはこの制限と独立に動作する。
+`HTMLDocumentBuilder.wrap(bodyHTML:)`が本文を`#otegami-fit-outer`/
+`#otegami-fit-inner`の入れ子`div`で包むのはこのための足場 — 詳細は
+同関数のドキュメントコメント参照。検証用に
+`dev/mailstack/seed/fixtures/29-fixed-width-bank-notice.eml`(日本語、
+実機報告と同じ幅700px級の構造) /`30-fixed-width-notice-en.eml`(英語版、
+1i の HTML レイアウト保持翻訳の検証にも使う) を新設し、
+`OtegamiFitToWidthUITests`で確認した。
 
 ### C: 一度表示したメールを再度開くと毎回読み込みが入り、体感が遅い
 

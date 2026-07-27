@@ -422,7 +422,7 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 
 | 項目 | キー | 既定値 |
 | --- | --- | --- |
-| 英文を自動で翻訳 | `translation.autoTranslateEnglish` | ON |
+| 英文を自動で翻訳 | `translation.autoTranslateEnglish.v2` | **OFF** (実機フィードバック「翻訳機能は、勝手に実行しないで欲しい」を受けて design-phase-3 の ON から変更、キーも `.v2` にリネーム — `docs/translation.md`「実機フィードバック: 「勝手に翻訳しないで」「HTML はレイアウトを保って」」節参照。OFF でも翻訳バー自体は英文メールに表示され、「翻訳」ボタンを押した時だけ翻訳する) |
 | 一覧に要約を出す | `translation.showListSummaryInList` | OFF (設定項目のみ存在し、一覧側は現状未実装 — `docs/design-system.md` 参照) |
 
 ## iCloud アカウント同期 (既存)

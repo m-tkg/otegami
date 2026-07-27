@@ -346,6 +346,78 @@ simulator/toolchain 固有の不具合」と同じ性質のものと判断し、
 確認、または非 beta の Xcode/シミュレータでの再確認が今後の課題として
 残る** (`PENDING.md` 参照)。
 
+## 実機フィードバック: 「勝手に翻訳しないで」「HTML はレイアウトを保って」
+
+実機ユーザー報告2件を受けての改修 (`apps/Otegami/Sources/Features/ThreadDetail/
+HTMLMessageView.swift`/`MessageView.swift`、`packages/OtegamiKit/Sources/
+TranslationEngine/MessageTranslator.swift`)。
+
+### 自動翻訳のデフォルトを OFF に変更
+
+`TranslationSettingsStore.autoTranslateEnglishKey` の既定値を **ON → OFF**
+に変更した。英文メールを開くたびに黙って翻訳が始まるのはユーザーの意図に
+反する、という直接のフィードバックへの対応。翻訳バー自体 (「翻訳」ボタン)
+は従来どおり英文メールに表示され、押したときだけ翻訳が走る。設定
+(設定 → メールビューア → AI 機能 → 「英文を自動で翻訳」) で従来どおり
+自動翻訳に戻すこともできる。
+
+キーも `translation.autoTranslateEnglish` → `translation.autoTranslateEnglish.v2`
+にリネームした。`UserDefaults.register(defaults:)` は「一度も明示的に書き
+込まれていないキー」にしかフォールバック値を提供できず、旧キーは
+`@AppStorage` が読んだ時点で解決済みの値 (`true`) を書き戻しうるため、
+デフォルトを変えるだけでは既存ユーザーの端末で新しい既定 (`false`) が
+効かない可能性があった。キーをリネームすることで、アップグレードでも
+新規インストールでも確実に `false` から始まる。
+
+### HTML メールはレイアウトを保持したまま翻訳する
+
+以前は HTML メールを翻訳すると `TranslatedBodyView` (プレーンテキストの
+段落を並べるだけのビュー) に丸ごと差し替えられ、表・画像・罫線などの
+レイアウトが失われていた (このファイルの「UI 未実装」節に記載の通り、
+これは design-phase-3 の時点で意図的に受け入れたトレードオフだった)。
+
+新方式 (`HTMLTranslationController`、`HTMLMessageView.swift`):
+
+1. WKWebView 内の DOM を JS で走査し (`allowsContentJavaScript = false`
+   で無効化されているのはページ自身が埋め込むスクリプトであり、ホスト
+   側 Swift からの `evaluateJavaScript` 呼び出しはこの制限を受けない —
+   `HTMLDocumentBuilder.wrap(bodyHTML:)`のfit-to-width節参照)、`<script>`/
+   `<style>`/`<title>` と空白のみのノードを除外して可視テキストノードを
+   収集する。各ノードは `<span data-otegami-i="N" data-otegami-original="...">`
+   でラップし、後続の書き戻し呼び出しから同じノードを再度指せるようにする。
+2. 収集したテキスト配列を `MessageTranslator.translateHTMLTextNodes
+   (messageId:texts:...)` に渡す — 既存の `translate(messageId:sourceText:...)`
+   と同じキャッシュ/チャンク分割/永続化パイプラインを共有しつつ (両者は
+   内部で `translateAligned` という共通の private メソッドに委譲)、
+   `ParagraphSplitter` によるプローズ段落分割を経由しない (DOM ノード境界
+   はプローズの段落境界と一致しないため)。
+3. 翻訳結果を同じノードへ `data-otegami-translated` 属性として書き戻し、
+   訳文/原文セグメントの切替は同じノードの `textContent` を
+   `data-otegami-translated`/`data-otegami-original` 間で入れ替えるだけ
+   — DOM 構造・画像・表・スタイルは一切変更しない。
+
+**キャッシュの分離**: `MessageTranslationRecord` は messageId 単位で最大
+1行という既存スキーマを変えていない。HTML 経路は `engineIdentifier` に
+`.html-nodes` サフィックスを付けて保存する (`MessageTranslator
+.htmlEngineIdentifierSuffix`) ため、同じメッセージを「常にテキストで
+表示」設定/切替ボタンで両方のモードで翻訳しても、形の異なる2つの
+`paragraphs` 配列が混ざることはない — 既存の `isStillValid` の
+`engineIdentifier` 一致チェックをそのまま再利用しているだけで、新しい
+テーブル列は追加していない。
+
+**プレーンテキストメールは変更なし**: `TranslatedBodyView` (段落長押し
+での原文表示を含む) は従来どおりプレーンテキスト本文にのみ使われる。
+
+**シミュレータでの検証**: この開発機の Simulator では Foundation Models
+自体が呼べない (前述の「design-phase-3: iOS Simulator の `.app`
+プロセスから呼んだときの既知の制限」節) ため、HTML レイアウト保持翻訳の
+表示経路そのものは `OTEGAMI_UITEST_FAKE_TRANSLATION=1` (launch
+environment) で `FakeTranslationService` に差し替えて検証した
+(`AppEnvironment.init()`、`OtegamiHTMLTranslationUITests`)。決定的な
+`"[ja] ..."` 出力がレイアウトを保ったまま DOM に書き戻されることは
+確認できたが、実際の Foundation Models による訳文の品質・実機での
+2デバイス確認はこのフラグの対象外 (`PENDING.md` に記載)。
+
 ## テスト
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、

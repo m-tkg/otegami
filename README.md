@@ -50,16 +50,19 @@ Two things this app is built around, more than any single feature list:
   mailbox.
 - **On-device translation and AI summary** (Apple Foundation Models,
   iOS/macOS 26+): an inline translation bar, shown when a message's
-  detected language differs from the app's own display language,
-  defaulting to the translation with a one-tap toggle back to the
-  original; long-press a single paragraph to peek at just its source
-  text. A separate "AI summary" bar (any message, any language) generates
-  a short on-device summary on tap. "Draft a reply in English" opens the
-  composer with translate-on-send already armed. Auto-translate can be
-  turned off in Settings. Nothing leaves the device — see
-  [`docs/translation.md`](docs/translation.md) for the engine design and
-  its one known Simulator-only limitation. Translation is proven working
-  end-to-end (2–5s per call) against the real on-device model.
+  detected language differs from the app's own display language — but
+  translation only ever runs when you tap "Translate" (auto-translate
+  defaults **off**; turn it back on in Settings). Once translated, a
+  one-tap toggle switches back to the original. Plain-text messages let
+  you long-press a single paragraph to peek at just its source text; HTML
+  messages are translated in place, keeping tables/images/layout intact.
+  A separate "AI summary" bar (any message, any language) generates a
+  short on-device summary on tap. "Draft a reply in English" opens the
+  composer with translate-on-send already armed. Nothing leaves the
+  device — see [`docs/translation.md`](docs/translation.md) for the
+  engine design and its one known Simulator-only limitation. Translation
+  is proven working end-to-end (2–5s per call) against the real
+  on-device model.
 - **Threading**: Gmail `X-GM-THRID` when available, otherwise a JWZ-style
   `References`/`In-Reply-To` union-find with a subject-based fallback,
   batched for fast bulk (re-)threading (100k-message dataset: ~1.4s, see
@@ -82,7 +85,10 @@ Two things this app is built around, more than any single feature list:
 - **HTML mail**: rendered in a sandboxed `WKWebView` (JavaScript disabled;
   re-verified against real script-injection fixtures — `<script>` DOM
   rewrites, `onerror` handlers, `iframe`s, `javascript:` links — all
-  confirmed inert). A subtle "HTML" badge marks HTML messages, with a
+  confirmed inert). Fixed-width table layouts (600-800px-class marketing/
+  notification mail, e.g. a bank payment notice) are scaled to fit the
+  screen width instead of clipping at the right edge or rendering with
+  oversized text. A subtle "HTML" badge marks HTML messages, with a
   one-tap switch to a plain-text rendering (or "always show as text" in
   Settings). Messages with no content at all show a subtle "no content"
   placeholder instead of a blank pane. Embedded images (inline `cid:` /
@@ -219,10 +225,11 @@ for the original wireframe options and
 system): flat, zero-corner-radius, 2pt rules, Archivo for Latin text with
 system fonts for Japanese, a pale-blue-on-white palette with a matching
 dark theme. iOS has a single always-visible mail screen (unified inbox +
-account filter chips) with a hamburger-menu drawer for folder navigation
-and settings, a header search button that opens a dedicated search screen
-(account chips, `from:`/`to:`/`cc:`/`subject:` search operators, search
-history), and a fixed footer toolbar on the message screen (reply/forward/
+account filter chips + an unread-only toggle) with a hamburger-menu drawer
+for folder navigation and settings, a floating search button (bottom-left)
+that opens a dedicated search screen (account chips, `from:`/`to:`/`cc:`/
+`subject:` search operators, search history), pull-to-refresh for
+resyncing, and a fixed footer toolbar on the message screen (reply/forward/
 search-from-sender/message info/more — mute, pin, archive, junk, delete,
 toolbar reordering); macOS keeps its three-pane `NavigationSplitView` — the
 compact layout doesn't fit the wider screen. Full component/token
@@ -241,9 +248,13 @@ Apple's Foundation Models framework (`LanguageModelSession`) — the same
 on-device model behind Apple Intelligence, so no mail content is ever
 sent to a translation API or any server. Highlights:
 
-- Per-message translation bar, defaulting to the translated text, with a
-  segmented control back to the original and per-paragraph long-press to
-  peek at just that paragraph's source.
+- Per-message translation bar, shown for English mail but only ever
+  translating when you tap "Translate" (auto-translate defaults off —
+  flip it back on in Settings). Once translated, a segmented control
+  switches back to the original. Plain-text messages support a
+  per-paragraph long-press to peek at just that paragraph's source; HTML
+  messages translate in place, preserving tables/images/layout instead of
+  falling back to a plain-text rendering.
 - "Draft a reply in English" opens the composer with translate-on-send
   already armed, translating your own reply draft in place (so you can
   see and edit the English result before it's sent, never a silent
