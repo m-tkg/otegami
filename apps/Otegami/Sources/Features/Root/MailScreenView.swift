@@ -493,7 +493,7 @@ struct MailScreenView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if !isSelecting {
-            ToolbarItem(placement: .navigation) {
+            ToolbarItem(placement: hamburgerButtonPlacement) {
                 hamburgerButton
             }
             ToolbarItem(placement: .principal) {
@@ -613,6 +613,26 @@ struct MailScreenView: View {
         .padding(.bottom, OtegamiSpacing.lg)
         .accessibilityIdentifier("mail.composeButton")
         .disabled(environment.accounts.isEmpty)
+    }
+
+    /// Task #109 (実機報告「メール本文から一覧に pop で戻ると、左上の
+    /// ハンバーガーボタンが右側のトグルカプセル (`unreadOnlyToggleButton`
+    /// 等) に混ざって表示される」): 元は`.navigation`だった —
+    /// `ToolbarItemPlacement.navigation`はAppleのドキュメント上も「ナビ
+    /// ゲーション関連のアクションを表す」抽象的な意味論で、iOSの実レイアウト
+    /// 上どのグループに落ちるかが`.principal`/`.confirmationAction`の
+    /// 組み合わせやNavigationStackのpush/pop後の再合成タイミングによって
+    /// 不安定になりうる (この症状はまさにpop直後の再配置で発生)。iOS/iPadOS
+    /// 専用の`.topBarLeading`は左端に固定される明確な意味論を持つため、
+    /// これに固定して安定させる — `MailScreenView`はmacOSでもコンパイル
+    /// される (doc comment参照、実際にはinstantiateされない) ため、
+    /// `.topBarLeading`が存在しないmacOS向けには`.navigation`のまま残す。
+    private var hamburgerButtonPlacement: ToolbarItemPlacement {
+        #if os(iOS)
+        .topBarLeading
+        #else
+        .navigation
+        #endif
     }
 
     /// 新画面構成 (1): 旧「ナビタイトルのタップでフォルダシートを開く」動線の

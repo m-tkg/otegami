@@ -5294,3 +5294,32 @@ macOS (`OtegamiApp.swift`の`RootView`)は`suppressInternalUndoToast`も
 シミュレータでの見た目確認は行っていない — **未検証、実機確認ポイント**:
 一覧でメールをアーカイブ/削除し、「元に戻す」トーストが検索・作成の
 フローティングボタンより手前かつ上に、重ならずに表示されること。
+
+### Task #109: 本文から一覧に戻るとハンバーガーメニューが右側に移動する不具合
+
+実機報告「メール本文を読んで一覧に pop で戻ると、左上のハンバーガー
+ボタンが右側のトグルカプセル (未読のみ表示等) に混ざって表示される」の
+修正。
+
+`MailScreenView.toolbarContent`のハンバーガーボタンは元々
+`ToolbarItem(placement: .navigation)`だった —
+`ToolbarItemPlacement.navigation`はAppleのドキュメント上も「ナビゲー
+ション関連のアクションを表す」という抽象的な意味論しか持たず、iOS の
+実レイアウト上どのグループに落ちるかが`.principal`/`.confirmationAction`
+との組み合わせや`NavigationStack`のpush/pop後の再合成タイミングに
+よって不安定になりうる — 報告された症状 (pop 直後の再配置でボタンが
+右側グループに混ざる) はまさにこの不安定さと一致する。iOS/iPadOS 専用の
+`.topBarLeading`は左端固定という明確な意味論を持つため、これに固定した
+(`hamburgerButtonPlacement`計算プロパティ)。`MailScreenView`はmacOS でも
+コンパイルされる (実際にはinstantiateされない、型自体のdoc comment
+参照) ため、`.topBarLeading`が存在しないmacOS向けには`#if os(iOS)`で
+分岐し`.navigation`のまま残した。
+
+**検証**: `make test`/`make mac`/`make ios`は緑。この不具合はメール本文
+画面への push→pop という遷移を経由しないと再現しない上、
+`docs/verify.md`記載のとおりこのシミュレータ/toolchainはXCUITestの
+タップが不達になる既知不調があるため、シミュレータでの再現・修正確認は
+行っていない (コードから placement 合成が原因と特定して修正するに
+留めた) — **未検証、実機確認ポイント**: メールを開いて一覧へ戻る
+(pop)動作を数回繰り返し、毎回ハンバーガーボタンが左上に固定されたまま
+であること (右側のトグル群に混ざらないこと)。
