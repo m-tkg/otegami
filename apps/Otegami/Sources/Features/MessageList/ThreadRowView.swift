@@ -27,8 +27,11 @@ struct ThreadRowView: View {
 
     let summary: ThreadSummary
     /// `nil` in a context where showing an account label wouldn't mean
-    /// anything (a single already-selected mailbox) — see
-    /// `showsAccountAccent`.
+    /// anything (a single already-selected mailbox, or a unified inbox
+    /// narrowed to one account) — decided by the caller
+    /// (`MessageListView.isMultiAccountScope`), independent of
+    /// `showsAccountAccent` since Task #87 (4) made the rail itself
+    /// unconditional. See `showsAccountAccent`'s doc comment.
     let accountDisplayName: String?
     /// D「アカウントのラベル色を変更可能に」: `AccountRecord.labelColorKey` for
     /// `summary.thread.accountId`, forwarded to `AccountColorRail`/
@@ -36,12 +39,20 @@ struct ThreadRowView: View {
     /// automatic assignment). See `OtegamiAccountColor.color(for:override:)`.
     var accountLabelColorKey: String?
     /// 1d: "統合受信トレイではアカウント色罫線が意味を持ち、単一メールボックス表示
-    /// では不要（または控えめ）にする" — `true` for the unified inbox (every row
-    /// can belong to a different account, so the rail/label disambiguate at
-    /// a glance) and iOS's search tab (same reasoning: results can span
-    /// accounts); `false` once a single specific mailbox is selected via
-    /// the folder sheet, where every row already shares one account and
-    /// the rail would be redundant color noise.
+    /// では不要（または控えめ）にする" — originally `true` only for the unified
+    /// inbox/横断ビュー and `false` for a single specific mailbox, where every
+    /// row already shares one account and the rail read as redundant color
+    /// noise (see `MessageListView.showsAccountAccent`'s doc comment for
+    /// that original reasoning).
+    ///
+    /// Task #87 (4), real-device feedback ("アカウント絞り込み時も色バー常時
+    /// 表示"): `MessageListView.showsAccountAccent` now always returns
+    /// `true`, so in practice this parameter is unconditional too — kept
+    /// as its own parameter rather than deleted outright so this view
+    /// doesn't hardcode that decision itself. The trailing account-name
+    /// label is a *separate* decision now, made by the caller via
+    /// `accountDisplayName` being `nil` or not — see that property's own
+    /// doc comment.
     let showsAccountAccent: Bool
     /// 1h: true once long-press has entered bulk-selection mode — swaps the
     /// leading unread dot for a checkbox.
@@ -68,6 +79,16 @@ struct ThreadRowView: View {
                 Spacer(minLength: OtegamiSpacing.sm)
                 ThreadRowTrailing(
                     summary: summary,
+                    // `showsAccountAccent` is unconditional for
+                    // `MessageListView`'s own rows since Task #87 (4) — that
+                    // caller already passes `nil` for `accountDisplayName`
+                    // itself where the label shouldn't show (see this
+                    // property's own doc comment), so this `? :` is a no-op
+                    // there. Left in place (rather than removed) because
+                    // `SearchScreenView`'s own `showsAccountAccent` still
+                    // *is* conditional and still relies on this exact line
+                    // to hide the label — removing it would silently change
+                    // that unrelated screen's behavior too.
                     accountDisplayName: showsAccountAccent ? accountDisplayName : nil
                 )
             }
