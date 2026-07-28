@@ -698,3 +698,92 @@ error 19.)」が表示される。同じメールで再現し、アプリを再�
 `make test`/`make mac`/`make ios` は全て green、dev mailstack に対する
 既存の opt-in 統合テスト (`OTEGAMI_TEST_IMAP_HOST=localhost swift test
 --filter MailTransportMailCoreTests --no-parallel`) も全て green。
+
+## Task #79: Web でアーカイブ済みのメールが受信トレイに残り続ける実バグの原因と修正
+
+**症状**: Gmail の Web 版で INBOX からアーカイブ済み (= 消滅) のメールが
+Otegami の受信トレイには大量に残り続け、Web より常に件数が多い。
+pull-to-refresh しても消えない。
+
+**原因**: 差分同期 (`MailboxSyncer.incrementalSync`) の CONDSTORE 経路
+(`fetchEnvelopes(mailboxPath:changedSince:)`) は新着・フラグ変化しか
+検出しない — CONDSTORE の `CHANGEDSINCE` はサーバー側のメッセージ消滅
+(`EXPUNGE`) を一切報告しない (RFC 7162 §3.2.10 の `VANISHED` は
+`QRESYNC` 拡張が対応して初めて返る)。非 CONDSTORE 経路
+(`refetchAndDiffFlags`) は既に「同期済みウィンドウを丸ごと再フェッチして
+ローカルとの差分から消滅を検出する」実装を持っていたが、**CONDSTORE
+対応サーバーではこの経路が一切通らない** — Gmail は CONDSTORE に対応して
+いるため常に CONDSTORE 経路を通り、消滅検出のロジックへ一度も到達
+しないまま何ヶ月も残骸が積み上がっていた。
+
+**MailCore2 の QRESYNC 対応状況の調査**: このリポジトリが pin している
+mailcore2 (`readdle/mailcore2`, `44c63329d...`) の Swift オーバーレイ
+(`src/swift` — `Package.swift` の `MailCore` ターゲットが実際にビルドする
+のはここで、`src/objc`ではない) は QRESYNC の `VANISHED` UID 集合を
+`MCOIMAPFetchMessagesOperation.start(completionBlock:)` の第3引数
+(`MCOIndexSet?`) として**既に公開している** —
+`packages/OtegamiKit/Sources/MailTransportMailCore/MailCoreIMAPSession.swift`
+の `fetchEnvelopes(changedSince:)` はこれまでこの第3引数を `_` で
+握りつぶしていただけだった。コア層 (`MCIMAPSession.cpp`) を読むと
+`vanishedMessages()` は `QRESYNC` がサーバーの capability に含まれ、かつ
+このセッションで実際に有効化されている場合のみ非 `nil` になる
+(`mQResyncEnabled && modseq != 0`) ことも確認できた。
+
+ただし **Gmail 自体は QRESYNC に対応していない** (Gmail の IMAP
+`CAPABILITY` は `CONDSTORE` のみを広告し、`QRESYNC` は含まない —
+公知の制限で、対応予定のアナウンスもない)。つまり QRESYNC 配線を追加
+するだけでは今回報告された Gmail の実バグは直らず、**CONDSTORE のみの
+サーバー向けフォールバックが本命の修正**になる。
+
+**修正**:
+1. `IMAPSessionProtocol.fetchEnvelopes(mailboxPath:changedSince:)` の
+   戻り値を `[FetchedEnvelope]` から `ChangedSinceResult`
+   (`envelopes` + `vanishedUIDs: Set<UInt32>?`) に変更
+   (`packages/OtegamiKit/Sources/MailTransport/ChangedSinceResult.swift`)。
+   `vanishedUIDs == nil` は「QRESYNC非対応/不明」、非 `nil` (空集合でも)
+   は「QRESYNC が有効でこの回は本当に何も消えていない」という意味を
+   持たせ、両者を区別できるようにした。
+   `MailCoreIMAPSession` はこの第3引数をそのまま `ChangedSinceResult
+   .vanishedUIDs` にマッピングするだけ (QRESYNC 対応サーバーなら追加の
+   往復なしで消滅検出できる — iCloud など QRESYNC 対応サーバー向けの
+   実質無料の副産物)。
+2. **フォールバック (本命)**: 新規 `IMAPSessionProtocol.searchExistingUIDs
+   (mailboxPath:uids:)` — `UID SEARCH UID <同期済みウィンドウ>` を投げて
+   サーバーが今も持っている UID の集合だけを取得する (envelope データは
+   一切取得しない、軽量なコマンド)。`MailboxSyncer` は
+   `ChangedSinceResult.vanishedUIDs == nil` の場合 (Gmail はここに該当)
+   にこれを使い、ローカルの UID 集合との差分を消滅とみなして削除する。
+   `refetchAndDiffFlags` と全く同じ非破壊ガード (SEARCH が正常完了した
+   場合のみ削除、`status.messageCount > 0` なのに空応答なら「怪しい」と
+   みなし何もしない) を適用。
+3. 削除ロジック (FTS 削除 + `ThreadAssigner.recomputeAggregates`) は
+   `MailboxSyncer.deleteMessages(mailboxId:uids:)` に共通化し、QRESYNC
+   直接経路・フォールバック経路・非 CONDSTORE 経路の3箇所全てから使う。
+4. 頻度: 毎回の差分同期でチェックするが、`status.highestModSeq` が
+   前回から変化していない場合は (新着もフラグ変化も消滅も何もないと
+   保証されるため) そもそも往復しない — 既存の「CONDSTORE で
+   highestModSeq 変化なしなら何もしない」ガードにそのまま相乗り。
+
+**テスト**:
+`packages/OtegamiKit/Tests/SyncEngineTests/MailboxSyncerTests.swift` に
+4シナリオ追加 (QRESYNC 直接経路での削除/フォールバック UID SEARCH での
+削除/フォールバックが空応答でも `messageCount > 0` なら何も消さない/
+フォールバックの SEARCH 自体が失敗しても何も消さない)。既存の
+CONDSTORE テスト (`condstoreFlagSync` など) は非 QRESYNC・
+`existingUIDsByPath` 未指定のままでも green — `FakeIMAPSession` の
+デフォルトは「フォールバック検索は空応答」であり、
+`messageCount` が 0 でない既存テストは全て前述のガードで保護される。
+`FakeIMAPSession` に `qresyncVanishedUIDsByPath`/`existingUIDsByPath`/
+`failSearchExistingUIDs` を追加。
+
+dev mailstack の実 Dovecot に対する統合テストも追加
+(`packages/OtegamiKit/Tests/MailTransportMailCoreTests
+/SyncEngineIntegrationTests.swift`
+`incrementalSyncRemovesMessageExpungedByAnotherClient`) —
+`doveadm expunge ... HEADER Subject <subject>` (新規
+`DoveadmHelper.expungeMessage`) で1通だけを他クライアント視点で消し、
+`incrementalSync` 後にローカルからも消えることを確認する。
+
+`make test` green。実機確認ポイント: Gmail アカウントで Web 側から
+INBOX の1通をアーカイブし、Otegami で pull-to-refresh (または通常の
+差分同期) を行った後、その1通が受信トレイから消えること。

@@ -73,6 +73,16 @@ enum DoveadmHelper {
         _ = try? run(["doveadm", "expunge", "-u", user, "mailbox", mailboxPath, "all"])
     }
 
+    /// `doveadm expunge -u <user> mailbox <mailboxPath> HEADER Subject
+    /// <subject>` — expunges just the one message matching `subject`,
+    /// leaving the rest of the mailbox untouched. Used by
+    /// `SyncEngineIntegrationTests` (Task #79) to simulate exactly what a
+    /// second client (e.g. Gmail's web UI archiving a single message out of
+    /// INBOX) does, as opposed to `expungeAll`'s wholesale reset.
+    static func expungeMessage(user: String, mailboxPath: String = "INBOX", subject: String) throws {
+        try run(["doveadm", "expunge", "-u", user, "mailbox", mailboxPath, "HEADER", "Subject", subject])
+    }
+
     /// `doveadm fetch -u <user> flags mailbox <mailboxPath> HEADER Subject
     /// <subject>` — used by `SMTPIntegrationTests` to confirm a
     /// client-side `IMAPSessionProtocol.append` (M5's best-effort Sent

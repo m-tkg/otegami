@@ -239,11 +239,20 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// checked `capabilities()` contains `.condstore` before calling this;
     /// a non-CONDSTORE server rejects the underlying `FETCH ... (CHANGEDSINCE
     /// ...)` with a tagged `BAD`/`NO`, surfaced here as `.serverError`.
-    /// Vanished (expunged) UIDs are not reported even when the server also
-    /// supports QRESYNC — `MailboxSyncer`'s CONDSTORE path only tracks new
-    /// mail and flag changes; deletion detection is the non-CONDSTORE
-    /// full-window-refetch path's job (see its doc comment).
-    public func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope] {
+    ///
+    /// Vanished (expunged) UIDs: MailCore2's underlying `syncMessages`
+    /// operation also surfaces these (its completion block's third
+    /// argument, previously discarded here) whenever the server additionally
+    /// supports `QRESYNC` — confirmed against the pinned mailcore2 revision
+    /// (`MCIMAPSession.cpp`'s `fetchMessages`: `IMAPSyncResult
+    /// .vanishedMessages()` is only ever non-`nil` when `mQResyncEnabled &&
+    /// modseq != 0`, i.e. the server both advertised `QRESYNC` and this call
+    /// passed a real `modSeq`). Most servers don't support `QRESYNC` — Gmail
+    /// notably advertises `CONDSTORE` but never `QRESYNC` — so
+    /// `ChangedSinceResult.vanishedUIDs` is `nil` there, and
+    /// `MailboxSyncer`'s CONDSTORE path falls back to `searchExistingUIDs`
+    /// to detect deletions instead (Task #79).
+    public func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceResult {
         guard cachedCapabilities.contains(.condstore) else {
             throw MailTransportError.serverError(underlyingDescription: "Server does not support CONDSTORE")
         }
@@ -253,12 +262,34 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
         let indexSet = Self.indexSet(for: .all)
         return try await withCheckedThrowingContinuation { continuation in
-            session.syncMessages(folder: mailboxPath, kind: kind, uids: indexSet, modSeq: modSeq).start { error, messages, _ in
+            session.syncMessages(folder: mailboxPath, kind: kind, uids: indexSet, modSeq: modSeq).start { error, messages, vanished in
                 if let error {
                     continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
                     return
                 }
-                continuation.resume(returning: (messages ?? []).map(Self.envelope(from:)))
+                continuation.resume(returning: ChangedSinceResult(
+                    envelopes: (messages ?? []).map(Self.envelope(from:)),
+                    vanishedUIDs: Self.vanishedUIDs(from: vanished)
+                ))
+            }
+        }
+    }
+
+    /// `UID SEARCH UID <uids>` (`MCOIMAPSearchExpression.searchUIDs`) — the
+    /// subset of `uids` the server currently still has, with no envelope
+    /// data fetched at all. Task #79's CONDSTORE-path fallback for
+    /// detecting server-side `EXPUNGE`s on servers (Gmail among them) that
+    /// don't support `QRESYNC`'s `VANISHED` reporting; see
+    /// `IMAPSessionProtocol.searchExistingUIDs`'s doc comment.
+    public func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32> {
+        let expression = MCOIMAPSearchExpression.searchUIDs(Self.indexSet(for: uids))
+        return try await withCheckedThrowingContinuation { continuation in
+            session.searchExpressionOperation(folder: mailboxPath, expression: expression).start { error, result in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                continuation.resume(returning: Self.uidSet(from: result))
             }
         }
     }

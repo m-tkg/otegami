@@ -108,6 +108,74 @@ struct SyncEngineIntegrationTests {
         #expect(original.flags.contains(.seen))
     }
 
+    /// Task #79 (実機バグ: Web でアーカイブ済みのメールが受信トレイに残り続ける):
+    /// the exact real-device scenario, reproduced against a real IMAP
+    /// server rather than `FakeIMAPSession` — another client (`doveadm`,
+    /// standing in for e.g. Gmail's web UI) expunges one message out of
+    /// INBOX between two `incrementalSync` passes, and the local copy must
+    /// disappear. `MailboxSyncerTests`' `FakeIMAPSession`-driven suite
+    /// already proves both the QRESYNC-direct and UID-SEARCH-fallback code
+    /// paths in isolation; this proves the real wire protocol (whichever
+    /// path this actual Dovecot build's advertised capabilities send
+    /// `MailboxSyncer` down) actually removes the message end to end.
+    @Test("incrementalSync removes a message another client (doveadm) expunged from INBOX — CONDSTORE path deletion detection")
+    func incrementalSyncRemovesMessageExpungedByAnotherClient() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let user = "test1@otegami.test"
+
+        defer { try? DoveadmHelper.restoreStandardFixtures() }
+
+        // A known starting point: three messages, independent of whatever
+        // `make mailstack-seed` last left in this INBOX.
+        try DoveadmHelper.expungeAll(user: user)
+        try DoveadmHelper.save(user: user, content: Self.sampleMessage(uid: "int-vanish-1", subject: "integration vanish survivor 1"))
+        try DoveadmHelper.save(user: user, content: Self.sampleMessage(uid: "int-vanish-2", subject: "integration vanish target"))
+        try DoveadmHelper.save(user: user, content: Self.sampleMessage(uid: "int-vanish-3", subject: "integration vanish survivor 3"))
+
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Integration",
+            email: user,
+            authType: .password,
+            imapHost: env.host,
+            imapPort: env.port,
+            imapSecurity: ConnectionSecurityRecord(env.imapConfig.security),
+            imapAllowsInsecureTLS: env.imapConfig.allowsInsecureTLS,
+            imapUsername: user
+        )
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            MailCoreIMAPSession(config: config)
+        }
+        _ = try await syncer.performInitialSync(auth: env.auth)
+
+        let inboxMailboxId = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "INBOX").fetchOne(db)?.id
+            }
+        )
+        let seeded = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == inboxMailboxId).fetchAll(db)
+        }
+        #expect(seeded.count == 3)
+
+        // What a second client archiving/deleting a single message does:
+        // an `EXPUNGE` that leaves the rest of the mailbox untouched.
+        try DoveadmHelper.expungeMessage(user: user, subject: "integration vanish target")
+
+        let progress = try await syncer.performIncrementalSync(auth: env.auth)
+        #expect(progress.deletedMessages == 1)
+
+        let messages = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == inboxMailboxId).fetchAll(db)
+        }
+        #expect(messages.count == 2)
+        #expect(!messages.contains { $0.subject == "integration vanish target" })
+        #expect(messages.contains { $0.subject == "integration vanish survivor 1" })
+        #expect(messages.contains { $0.subject == "integration vanish survivor 3" })
+    }
+
     @Test("performInitialSync threads the seeded References pair into one thread against a real IMAP server")
     func initialSyncThreadsSeededReferencesPair() async throws {
         let env = try #require(TestIMAPEnvironment.primary)

@@ -127,23 +127,49 @@ public actor MailboxSyncer {
         // something has actually changed since our last-seen modSeq;
         // otherwise fall back to re-fetching FLAGS for the whole synced
         // window and diffing (which also catches server-side deletions —
+        // see its doc comment).
+        //
         // CONDSTORE alone can't distinguish "unchanged" from "expunged"
-        // without QRESYNC's vanished-UID reporting, which
-        // `MailCoreIMAPSession.fetchEnvelopes(changedSince:)` doesn't
-        // surface; see its doc comment).
+        // without QRESYNC's vanished-UID reporting (RFC 7162 §3.2.10) —
+        // Task #79 (実機バグ: Web でアーカイブ済みのメールが受信トレイに残り続ける)
+        // was exactly this gap: a message another client (Gmail's own web
+        // UI) EXPUNGEd from this mailbox was never noticed here, since this
+        // branch used to only ever call `fetchEnvelopes(changedSince:)` and
+        // upsert whatever came back — never checking for anything *missing*.
+        // `ChangedSinceResult.vanishedUIDs` reports vanished UIDs directly
+        // when the server also supports QRESYNC; when it doesn't (`nil` —
+        // confirmed the case for Gmail, which advertises CONDSTORE but never
+        // QRESYNC), `detectAndRemoveVanishedByUIDSearch` below is the
+        // fallback: a cheap `UID SEARCH` over the locally-synced window
+        // (fetches no envelope data at all) rather than the non-CONDSTORE
+        // path's full re-fetch-and-diff, which would defeat the point of
+        // having CONDSTORE in the first place.
         if capabilities.contains(.condstore) {
             if status.highestModSeq > UInt64(mailboxRecord.highestModSeq) {
-                let changed = try await session.fetchEnvelopes(
+                let result = try await session.fetchEnvelopes(
                     mailboxPath: mailboxPath,
                     changedSince: UInt64(mailboxRecord.highestModSeq)
                 )
-                if !changed.isEmpty {
+                if !result.envelopes.isEmpty {
                     try await database.dbWriter.write { db in
-                        for envelope in changed {
+                        for envelope in result.envelopes {
                             try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
                         }
                     }
-                    progress.flagChanges = changed.count
+                    progress.flagChanges = result.envelopes.count
+                }
+                if let vanishedUIDs = result.vanishedUIDs {
+                    progress.deletedMessages = try await deleteMessages(
+                        mailboxId: mailboxId,
+                        uids: Set(vanishedUIDs.map(Int64.init))
+                    )
+                } else {
+                    progress.deletedMessages = try await detectAndRemoveVanishedByUIDSearch(
+                        mailboxId: mailboxId,
+                        mailboxPath: mailboxPath,
+                        session: session,
+                        status: status
+                    )
                 }
             }
         } else {
@@ -272,23 +298,72 @@ public actor MailboxSyncer {
 
         let serverUIDs = Set(refetched.map { Int64($0.uid) })
         let deletedUIDs = Set(localUIDs).subtracting(serverUIDs)
-        guard !deletedUIDs.isEmpty else { return 0 }
+        return try await deleteMessages(mailboxId: mailboxId, uids: deletedUIDs)
+    }
 
-        _ = try await database.dbWriter.write { db in
+    /// Task #79's CONDSTORE-path fallback: a cheap `UID SEARCH` over the
+    /// synced window (from the lowest locally-stored UID onward — same
+    /// `UIDRange.from`-open-ended shape `refetchAndDiffFlags` uses, so it
+    /// also covers step 1's just-added new mail) to learn which
+    /// locally-stored UIDs the server no longer has, without paying for a
+    /// full envelope re-fetch of that whole window the way the
+    /// non-CONDSTORE path must. Used whenever `fetchEnvelopes(changedSince:)`
+    /// couldn't report vanished UIDs itself via QRESYNC
+    /// (`ChangedSinceResult.vanishedUIDs == nil`) — Gmail's case, confirmed
+    /// CONDSTORE-only.
+    ///
+    /// Same non-destructive guard as `refetchAndDiffFlags`, and for the same
+    /// reason: only deletes when the `UID SEARCH` actually completes (a
+    /// thrown error already propagates out of `incrementalSync` entirely,
+    /// deleting nothing), and treats a search that comes back with *no*
+    /// UIDs at all while `status` still reports the mailbox as non-empty as
+    /// a suspicious/degraded response rather than "every locally-known UID
+    /// was expunged".
+    private func detectAndRemoveVanishedByUIDSearch(
+        mailboxId: Int64,
+        mailboxPath: String,
+        session: any IMAPSessionProtocol,
+        status: MailboxStatus
+    ) async throws -> Int {
+        let localUIDs = try await database.dbWriter.read { db in
+            try Int64.fetchAll(db, sql: "SELECT uid FROM message WHERE mailboxId = ?", arguments: [mailboxId])
+        }
+        guard let minUID = localUIDs.min() else { return 0 }
+
+        let serverUIDs = try await session.searchExistingUIDs(
+            mailboxPath: mailboxPath,
+            uids: UIDRange(lowerBound: UInt32(minUID), upperBound: nil)
+        )
+        guard !(serverUIDs.isEmpty && status.messageCount > 0) else { return 0 }
+
+        let deletedUIDs = Set(localUIDs).subtracting(serverUIDs.map(Int64.init))
+        return try await deleteMessages(mailboxId: mailboxId, uids: deletedUIDs)
+    }
+
+    /// Deletes every `message` row in `mailboxId` whose `uid` is in `uids`
+    /// (a no-op, safely, for any `uid` not actually stored locally — both
+    /// `refetchAndDiffFlags` and `detectAndRemoveVanishedByUIDSearch`
+    /// diff against server state that may not perfectly overlap what's
+    /// stored, e.g. QRESYNC's vanished set can include UIDs outside this
+    /// mailbox's currently-synced window), cleaning up the FTS index (M7:
+    /// no foreign key to `message`, since it's a virtual table) and
+    /// recomputing thread aggregates the same way the uidValidity-change
+    /// full resync above does. Returns how many rows were actually deleted.
+    private func deleteMessages(mailboxId: Int64, uids: Set<Int64>) async throws -> Int {
+        guard !uids.isEmpty else { return 0 }
+        return try await database.dbWriter.write { db in
             let doomed = try MessageRecord
                 .filter(Column("mailboxId") == mailboxId)
-                .filter(deletedUIDs.contains(Column("uid")))
+                .filter(uids.contains(Column("uid")))
                 .fetchAll(db)
-            // M7: see the doc comment on the equivalent call above (full
-            // uidValidity-change resync) — same reasoning for this
-            // server-side-expunge diff.
+            guard !doomed.isEmpty else { return 0 }
             try FTSIndexer.deleteAll(messageIds: doomed.compactMap(\.id), db: db)
             try MessageRecord
                 .filter(Column("mailboxId") == mailboxId)
-                .filter(deletedUIDs.contains(Column("uid")))
+                .filter(uids.contains(Column("uid")))
                 .deleteAll(db)
             try ThreadAssigner.recomputeAggregates(forThreadsAmong: doomed, db: db)
+            return doomed.count
         }
-        return deletedUIDs.count
     }
 }

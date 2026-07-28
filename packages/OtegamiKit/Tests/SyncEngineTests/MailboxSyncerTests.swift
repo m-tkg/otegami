@@ -232,6 +232,175 @@ struct MailboxSyncerTests {
         #expect(threadedCount == 3)
     }
 
+    // MARK: (b') Task #79 — CONDSTORE-path vanished-message detection
+    // (実機バグ: Web でアーカイブ済みのメールが受信トレイに残り続ける)
+
+    @Test("CONDSTORE flag sync deletes messages QRESYNC reports as vanished, without a fallback UID SEARCH")
+    func condstoreQresyncVanishedDeletesMessages() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [
+                    makeEnvelope(uid: 1, subject: "1通目"),
+                    makeEnvelope(uid: 2, subject: "2通目（他クライアントでアーカイブされる）"),
+                    makeEnvelope(uid: 3, subject: "3通目"),
+                ]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 4, highestModSeq: 5, messageCount: 3)]
+            )
+        )
+
+        // A QRESYNC-capable server reports uid 2 as vanished directly in
+        // its `changedSince` response — `existingUIDsByPath` is
+        // deliberately left unscripted (and would report "everything
+        // vanished" if consulted) to prove the fallback UID SEARCH is never
+        // reached when QRESYNC already answered the question.
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 4, highestModSeq: 9, messageCount: 2)],
+            capabilitiesToReport: [.condstore, .qresync],
+            qresyncVanishedUIDsByPath: ["INBOX": [2]]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.deletedMessages == 1)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db).sorted { $0.uid < $1.uid } }
+        #expect(messages.map(\.uid) == [1, 3])
+    }
+
+    @Test("CONDSTORE flag sync falls back to a UID SEARCH to detect vanished messages when the server doesn't support QRESYNC (Gmail's case)")
+    func condstoreFallbackUIDSearchDetectsVanishedMessages() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [
+                    makeEnvelope(uid: 1, subject: "1通目"),
+                    makeEnvelope(uid: 2, subject: "2通目（Web でアーカイブされる）"),
+                    makeEnvelope(uid: 3, subject: "3通目"),
+                ]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 4, highestModSeq: 5, messageCount: 3)]
+            )
+        )
+
+        // Gmail-shaped server: CONDSTORE only, no QRESYNC. Another client
+        // (the Gmail web UI) archived uid 2 — INBOX's own EXPUNGE removes
+        // it from this mailbox entirely. `changedSinceEnvelopesByPath` is
+        // left unscripted (uid 1/3's flags didn't change), so this test
+        // isolates the vanished-detection fallback from the flag-sync half
+        // of step 2.
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 4, highestModSeq: 9, messageCount: 2)],
+            capabilitiesToReport: [.condstore],
+            existingUIDsByPath: ["INBOX": [1, 3]]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.deletedMessages == 1)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db).sorted { $0.uid < $1.uid } }
+        #expect(messages.map(\.uid) == [1, 3])
+
+        // Reachable via ThreadQuery too, not just gone from `message` — the
+        // surviving messages' thread aggregates must have settled, not just
+        // uid 2's own row disappearing.
+        let threadedCount = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("threadId") != nil).fetchCount(db)
+        }
+        #expect(threadedCount == 2)
+    }
+
+    @Test("CONDSTORE fallback UID SEARCH does not mass-delete when the search comes back empty but the mailbox still reports messages")
+    func condstoreFallbackDoesNotMassDeleteOnEmptySearch() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [
+                    makeEnvelope(uid: 1, subject: "1通目"),
+                    makeEnvelope(uid: 2, subject: "2通目"),
+                ]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 5, messageCount: 2)]
+            )
+        )
+
+        // A degraded/partial UID SEARCH round trip can come back with no
+        // matches at all without throwing, even though STATUS still reports
+        // 2 messages — same non-destructive guard as
+        // `nonCondstoreFlagSyncDoesNotMassDeleteOnEmptyRefetch`, just for
+        // the CONDSTORE-path fallback.
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 9, messageCount: 2)],
+            capabilitiesToReport: [.condstore],
+            existingUIDsByPath: ["INBOX": []]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.deletedMessages == 0)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db).sorted { $0.uid < $1.uid } }
+        #expect(messages.map(\.uid) == [1, 2])
+    }
+
+    @Test("CONDSTORE fallback UID SEARCH failing deletes nothing for that mailbox (AccountSyncer's per-mailbox catch skips it)")
+    func condstoreFallbackSearchFailureDeletesNothing() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "1通目")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 5, messageCount: 1)]
+            )
+        )
+
+        // `searchExistingUIDs` throwing (a dropped/timed-out UID SEARCH)
+        // must be exactly as non-destructive as a thrown
+        // `fetchEnvelopes(uids:)` already is on the non-CONDSTORE path
+        // (`refetchAndDiffFlags`'s doc comment): `AccountSyncer
+        // .performIncrementalSync`'s per-mailbox `do`/`catch` swallows it
+        // and moves on, so the whole call doesn't throw — but crucially,
+        // nothing gets deleted either.
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 9, messageCount: 1)],
+            capabilitiesToReport: [.condstore],
+            failSearchExistingUIDs: .connectionFailed(underlyingDescription: "simulated dropped connection")
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.deletedMessages == 0)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.count == 1)
+    }
+
     // MARK: (c) uidValidity change
 
     @Test("a uidValidity change discards local messages and re-syncs the recent window from scratch")

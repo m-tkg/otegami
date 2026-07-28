@@ -70,6 +70,32 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// scripts a non-CONDSTORE server for a test even if
         /// `capabilitiesToReport` doesn't already omit `.condstore`.
         public var failChangedSince: MailTransportError?
+        /// Task #79: `fetchEnvelopes(changedSince:)`'s scripted
+        /// `ChangedSinceResult.vanishedUIDs`, per mailbox path — models a
+        /// QRESYNC-capable server directly reporting expunged UIDs. Absent
+        /// for a path (the default) means "not scripted", which
+        /// `fetchEnvelopes(changedSince:)` maps to `nil` (no QRESYNC info —
+        /// matching every CONDSTORE test written before Task #79, which
+        /// don't opt into this and shouldn't need to) rather than an empty
+        /// set (which would instead assert "QRESYNC active, confirmed
+        /// nothing vanished").
+        public var qresyncVanishedUIDsByPath: [String: Set<UInt32>]
+        /// Task #79: `searchExistingUIDs(mailboxPath:uids:)`'s scripted
+        /// result, per mailbox path — models the CONDSTORE-without-QRESYNC
+        /// fallback's `UID SEARCH` (Gmail's case). Absent for a path (the
+        /// default) makes `searchExistingUIDs` report an empty result,
+        /// which — combined with `MailboxSyncer.detectAndRemoveVanishedByUIDSearch`'s
+        /// own "empty search + mailbox still reports messages" guard —
+        /// keeps every existing CONDSTORE test (which predates this fallback
+        /// and never scripts it) from spuriously mass-deleting, as long as
+        /// its scripted `MailboxStatus.messageCount` is non-zero (true of
+        /// every one of them).
+        public var existingUIDsByPath: [String: Set<UInt32>]
+        /// When set, `searchExistingUIDs(mailboxPath:uids:)` throws this
+        /// instead — scripts a dropped/timed-out `UID SEARCH` round trip, to
+        /// confirm the CONDSTORE-path fallback stays as non-destructive as
+        /// the non-CONDSTORE path's own thrown-error case.
+        public var failSearchExistingUIDs: MailTransportError?
         /// Scripted `idle(mailboxPath:)` events (M3), yielded in order and
         /// then the stream finishes; empty means the stream finishes
         /// immediately with no events.
@@ -123,6 +149,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             capabilitiesToReport: Set<IMAPCapability> = [],
             changedSinceEnvelopesByPath: [String: [FetchedEnvelope]] = [:],
             failChangedSince: MailTransportError? = nil,
+            qresyncVanishedUIDsByPath: [String: Set<UInt32>] = [:],
+            existingUIDsByPath: [String: Set<UInt32>] = [:],
+            failSearchExistingUIDs: MailTransportError? = nil,
             idleEvents: [IdleEvent] = [],
             failIdle: MailTransportError? = nil,
             failCreateMailbox: MailTransportError? = nil,
@@ -142,6 +171,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.capabilitiesToReport = capabilitiesToReport
             self.changedSinceEnvelopesByPath = changedSinceEnvelopesByPath
             self.failChangedSince = failChangedSince
+            self.qresyncVanishedUIDsByPath = qresyncVanishedUIDsByPath
+            self.existingUIDsByPath = existingUIDsByPath
+            self.failSearchExistingUIDs = failSearchExistingUIDs
             self.idleEvents = idleEvents
             self.failIdle = failIdle
             self.failCreateMailbox = failCreateMailbox
@@ -366,11 +398,22 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         return Array(all.suffix(count))
     }
 
-    public func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope] {
+    public func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceResult {
         if let failChangedSince = script.failChangedSince {
             throw failChangedSince
         }
-        return script.changedSinceEnvelopesByPath[mailboxPath] ?? []
+        return ChangedSinceResult(
+            envelopes: script.changedSinceEnvelopesByPath[mailboxPath] ?? [],
+            vanishedUIDs: script.qresyncVanishedUIDsByPath[mailboxPath]
+        )
+    }
+
+    public func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32> {
+        if let failSearchExistingUIDs = script.failSearchExistingUIDs {
+            throw failSearchExistingUIDs
+        }
+        let scripted = script.existingUIDsByPath[mailboxPath] ?? []
+        return scripted.filter { uids.contains($0) }
     }
 
     public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {

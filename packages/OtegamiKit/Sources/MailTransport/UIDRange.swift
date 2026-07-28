@@ -26,6 +26,11 @@ public struct UIDRange: Sendable, Codable, Hashable {
 
     /// `1:*` — the entire mailbox.
     public static let all = UIDRange(lowerBound: 1, upperBound: nil)
+
+    /// Whether `uid` falls within this range.
+    public func contains(_ uid: UInt32) -> Bool {
+        uid >= lowerBound && (upperBound.map { uid <= $0 } ?? true)
+    }
 }
 
 /// A discrete, possibly non-contiguous set of UIDs, used where a range

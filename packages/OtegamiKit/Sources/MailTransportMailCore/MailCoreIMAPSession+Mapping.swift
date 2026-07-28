@@ -399,6 +399,36 @@ extension MailCoreIMAPSession {
         )
     }
 
+    // MARK: - QRESYNC vanished / UID search (Task #79)
+
+    /// Converts `syncMessages`'s `vanishedMessages` index set (QRESYNC's
+    /// `VANISHED` response, RFC 7162 §3.2.10) to a plain `Set<UInt32>` of
+    /// expunged UIDs. `nil` when MailCore2 reports no such index set at all
+    /// — the server doesn't support QRESYNC (or it simply isn't active for
+    /// this fetch) — as opposed to a non-`nil` empty set, which means
+    /// QRESYNC *was* active and genuinely nothing vanished this round. See
+    /// `MailCoreIMAPSession.fetchEnvelopes(changedSince:)`'s doc comment for
+    /// why that distinction matters to `MailboxSyncer`.
+    static func vanishedUIDs(from indexSet: MCOIndexSet?) -> Set<UInt32>? {
+        guard let indexSet else { return nil }
+        var result: Set<UInt32> = []
+        indexSet.enumerate { result.insert(UInt32($0)) }
+        return result
+    }
+
+    /// Converts a `UID SEARCH` result index set to a plain `Set<UInt32>` —
+    /// used by `searchExistingUIDs`. `nil` (a legitimately empty match, or
+    /// MailCore2 handing back no index set at all) maps to an empty set
+    /// either way: unlike `vanishedUIDs(from:)` above, there is no
+    /// "unknown vs. definitely none" distinction to preserve here — a
+    /// completed `UID SEARCH` is always authoritative about what it found.
+    static func uidSet(from indexSet: MCOIndexSet?) -> Set<UInt32> {
+        guard let indexSet else { return [] }
+        var result: Set<UInt32> = []
+        indexSet.enumerate { result.insert(UInt32($0)) }
+        return result
+    }
+
     // MARK: - UID ranges
 
     static func indexSet(for range: UIDRange) -> MCOIndexSet {

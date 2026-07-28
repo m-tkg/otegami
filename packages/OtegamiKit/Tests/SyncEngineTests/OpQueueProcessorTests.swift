@@ -1186,7 +1186,8 @@ private actor FailingStoreSession: IMAPSessionProtocol {
     func createMailbox(path: String) async throws {}
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope] { [] }
     func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope] { [] }
-    func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope] { [] }
+    func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceResult { ChangedSinceResult(envelopes: []) }
+    func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32> { [] }
     func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent { MessageBodyContent() }
     func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data { Data() }
     func store(mailboxPath: String, change: FlagChange) async throws {

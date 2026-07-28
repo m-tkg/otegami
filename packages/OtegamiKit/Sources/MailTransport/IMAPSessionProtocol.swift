@@ -87,9 +87,25 @@ public protocol IMAPSessionProtocol: Sendable {
     func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope]
 
     /// `CONDSTORE`-based incremental fetch: envelopes for messages whose
-    /// metadata changed since `modSeq` (RFC 7162). Requires
-    /// `IMAPCapability.condstore`. M3.
-    func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> [FetchedEnvelope]
+    /// metadata changed since `modSeq` (RFC 7162), plus — when the server
+    /// also supports `QRESYNC` — which UIDs vanished (were expunged) since
+    /// then. Requires `IMAPCapability.condstore`. M3;
+    /// `ChangedSinceResult.vanishedUIDs` added for Task #79 (see its doc
+    /// comment).
+    func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceResult
+
+    /// `UID SEARCH`es `mailboxPath` (already `select`ed) restricted to
+    /// `uids`, returning just the subset the server currently still has —
+    /// no envelope data fetched at all, only numbers. Task #79's
+    /// CONDSTORE-path fallback for detecting server-side `EXPUNGE`s when
+    /// `fetchEnvelopes(changedSince:)` can't report them itself
+    /// (`ChangedSinceResult.vanishedUIDs == nil` — no `QRESYNC`; this is
+    /// Gmail's case, confirmed `CONDSTORE`-only): the caller diffs `uids`
+    /// against this result to learn which of its own locally-stored UIDs
+    /// no longer exist server-side, the same way the non-`CONDSTORE` path
+    /// diffs a full re-fetch (see `MailboxSyncer`'s doc comments for the
+    /// full picture).
+    func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32>
 
     /// Downloads and parses the full message body (M2): fetches the raw
     /// RFC 822 content and hands it to the backend's own MIME parser,
