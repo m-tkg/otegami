@@ -93,18 +93,22 @@ enum ListDisplaySettingsStore {
     /// 画面を開いているか」を表すだけの値になり、`MailScreenView`が画面の
     /// 開閉に合わせて書き戻していた。
     ///
-    /// **#99以降** (ユーザーフィードバック「グルーピングボタンは未読のみ
-    /// ボタンと同じトグル挙動にしたい」): プッシュ遷移をやめ、
-    /// `unreadOnlyKey`と全く同じ「タップでon/off反転するだけの永続トグル」
-    /// に戻した — アプリ再起動後も維持される。ONのとき`MailScreenView
-    /// .content`が一覧領域の中身を`MessageListView`から`AccountDigestView`
-    /// (埋め込み表示、ナビゲーションプッシュしない)に切り替える。
-    /// `MessageListView`はこのキーをもう一切読まない。ボタンの見た目/
-    /// 配置・キー名・`UserDefaults`保存の仕組み自体は#77から変えていない。
+    /// **#99時点**: プッシュ遷移をやめ、`unreadOnlyKey`と全く同じ「タップで
+    /// on/off反転するだけの永続トグル」に戻した — アプリ再起動後も維持
+    /// される。ONのとき`MailScreenView.content`が一覧領域の中身を
+    /// `MessageListView`から`AccountDigestView`(埋め込み表示、ナビゲーション
+    /// プッシュしない)に切り替える。`MessageListView`はこのキーをもう一切
+    /// 読まない。キー名・`UserDefaults`保存の仕組み自体は#77から変えていない。
+    ///
+    /// **Task #106**: `MailScreenView`のヘッダにあった専用トグルボタン
+    /// (`groupByAccountToggleButton`) 自体を廃止し、1a の「すべて」チップ
+    /// (`AccountFilterChipRow.AllModeFilterChip`、SwiftUI `Menu`「時系列/
+    /// アカウント別」) がこのキーをトグルするようになった — キーの意味・
+    /// 保存の仕組みは変わらない。
     ///
     /// 単一アカウントしか無い、またはアカウント絞り込みチップ・単一メール
-    /// ボックス選択中でダイジェストが無意味な画面ではボタン自体を出さない
-    /// (`MailScreenView.showsGroupByAccountToggle`/`MessageListView
+    /// ボックス選択中でダイジェストが無意味な画面では「すべて」チップ自体を
+    /// 出さない (`MailScreenView.isAccountDigestEligible`/`MessageListView
     /// .showsAccountAccent`と同じ条件)。Default off:
     /// `unreadOnlyKey`と同じ理由 — 初回起動ユーザーを驚かせない既定に倒す。
     static let groupByAccountKey = "listDisplay.groupByAccount"

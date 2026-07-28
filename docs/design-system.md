@@ -5192,3 +5192,50 @@ html-4 の`body`背景明示+透過ロゴ→白カード、html-5 のインラ�
   ブロッククラス指定型ニュースレター) 本文そのもの。**実機確認ポイント**:
   実際に届いた該当メールをダークモードで開き、本文の濃グレー文字が白
   カード上で明瞭に読めること。
+
+## Task #106〜#109: 一覧ヘッダ整理・アイコン変更・undo トースト重なり・
+ハンバーガーボタン移動の4件バッチ
+
+ユーザー報告4件 (うち2件はスクリーンショット確認済みバグ) をまとめて
+1バッチで修正した記録。
+
+### Task #106: グルーピングボタン廃止 → 「すべて」チップをプルダウン化
+
+`MailScreenView`のヘッダにあった「アカウントでグループ化」トグル
+ボタン (Task #77→#92→#99、`groupByAccountToggleButton`) を廃止し、1a の
+アカウント絞り込みチップ行 (`AccountFilterChipRow`) の先頭チップ「全部」
+を**「すべて」に改名した上でプルダウン化**した:
+
+- 新設した`AccountFilterChipRow.AllModeFilterChip`(SwiftUI `Menu`) が
+  「時系列」/「アカウント別」の2択を持つ。見た目は既存`AccountFilterChip`
+  と同じ「塗り＋枠線」のフラットチップ (`AccountFilterChip.label`が
+  `private`で再利用できないため、同じトークンで複製) に、現在のモードと
+  開閉を示す「すべて ▸ 時系列」のような表示＋`chevron.down`を足した。
+  新しい色は追加していない (`CLAUDE.md`)。
+- 永続化は既存の`ListDisplaySettingsStore.groupByAccountKey`をそのまま
+  流用 (時系列=false / アカウント別=true) — `AccountFilterChipRow`と
+  `MailScreenView`がそれぞれ別の`@AppStorage`で同じキーを参照する設計
+  (`isUnreadOnly`と同じパターン)。
+  `MailScreenView.showsGroupByAccountToggle`は廃止ボタンの表示条件の
+  名残だったため`isAccountDigestEligible`に改名し、
+  `isShowingAccountDigest`(一覧領域をダイジェスト表示に切り替えるか)の
+  判定条件としてだけ生き残っている。
+- メニューのどちらを選んでも`accountFilter = nil`にする — 個別アカウント
+  チップで絞り込み中でも「すべて」の該当モードへ戻る (仕様どおり)。
+- アカウントが1つしかない場合は「すべて」チップ自体を`if accounts.count
+  > 1`で非表示にする (ダイジェストに意味が無いため)。
+- ローカライズは`docs/localization.md`/このファイル記載の既存方針どおり
+  `Localizable.xcstrings`を直接パッチ (スクリプト`generate-localizable
+  .py`は既知のドリフトがあり再生成禁止、Task #100の教訓) — 「すべて」は
+  既存キーを再利用、「時系列」「アカウント別」の2キーだけ追加した
+  (`scripts/generate-localizable.py`の辞書にも同じ2エントリを追記のみ、
+  実行はしていない)。
+
+**検証**: `verify-screen.sh list`(1アカウント)で「すべて」チップが
+表示されないこと、`verify-screen.sh list-2accounts`(2アカウント)で
+「All ▸ Chronological ⌄」(システム言語が英語のシミュレータのため英語
+表示、日本語では「すべて ▸ 時系列」相当)チップが選択状態の見た目で
+表示されることをスクリーンショットで確認した。`account-digest`シナリオ
+(`-uitestsOpenAccountDigestDirectly`)は直接遷移フラグ経由でチップの
+プルダウン自体はタップしていないため未検証 (チップ表示自体は上記で確認
+済み、プルダウン選択の実タップは実機確認ポイント)。

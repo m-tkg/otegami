@@ -3631,6 +3631,26 @@
           }
         }
       }
+    },
+    "時系列": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chronological"
+          }
+        }
+      }
+    },
+    "アカウント別": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By Account"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

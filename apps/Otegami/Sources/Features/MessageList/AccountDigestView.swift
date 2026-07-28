@@ -4,9 +4,11 @@ import OtegamiStore
 import SyncEngine
 
 /// Task #92 (アカウントダイジェスト画面) で追加、Task #99 で埋め込み表示に
-/// 変更: 一覧ヘッダの「アカウントでグループ化」ボタン
-/// (`MailScreenView.groupByAccountToggleButton`) がON/OFFトグルする一覧
-/// 領域の中身の一つ — #77 で実装したインラインのアカウント別`Section`分割
+/// 変更: 元は一覧ヘッダの「アカウントでグループ化」ボタン
+/// (`MailScreenView.groupByAccountToggleButton`、Task #106 で廃止 — 今は
+/// 1a の「すべて」チップのプルダウン`AccountFilterChipRow.AllModeFilterChip`
+/// が同じ`ListDisplaySettingsStore.groupByAccountKey`をトグルする) がON/OFF
+/// する一覧領域の中身の一つ — #77 で実装したインラインのアカウント別`Section`分割
 /// (`AccountGroupSectionHeader`、廃止済み) を置き換える。アカウントごとに
 /// 1行 (`AccountDigestRow`): 色罫線 + 表示名 + 未読/件数バッジ + 直近2-3件の
 /// 差出人/件名プレビュー。行タップでそのアカウントに絞り込んだ一覧へ
@@ -30,8 +32,9 @@ import SyncEngine
 ///
 /// `role`は呼び出し元 (`MailScreenView`) の`mailSelection`から決まる —
 /// `.unifiedInbox`なら`.inbox`、`.unifiedRole(let role)`ならその`role`。
-/// `.mailbox`選択中はそもそもこのボタン自体が出ない
-/// (`MailScreenView.showsGroupByAccountToggle`) ので、このViewが`.mailbox`
+/// `.mailbox`選択中はそもそも`MailScreenView.isAccountDigestEligible`が
+/// `false`でこのViewに切り替わらない (Task #106 以降は入口である「すべて」
+/// チップも`.unifiedInbox`選択中にしか出ない) ので、このViewが`.mailbox`
 /// 由来の`role`を渡されることは無い。
 struct AccountDigestView: View {
     @Environment(AppEnvironment.self) private var environment

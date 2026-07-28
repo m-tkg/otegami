@@ -13,15 +13,29 @@ import OtegamiStore
 /// "アカウントが5つ以上でチップが溢れる"; `ScrollView(.horizontal)` is
 /// exactly the documented mitigation (`docs/design-system.md` records how
 /// this was verified against a synthetic 6+ account list).
+///
+/// Task #106: 先頭チップは「全部」→**「すべて」に改名**し、単純な選択解除
+/// ボタンから「時系列 / アカウント別」を選ぶプルダウン (`AllModeFilterChip`,
+/// SwiftUI `Menu`) に変わった — `MailScreenView`のヘッダにあった「アカウント
+/// でグループ化」トグルボタン (Task #77/#92/#99) はこのチップに統合され廃止。
+/// 永続化は同じ`ListDisplaySettingsStore.groupByAccountKey`をそのまま使う
+/// (この行と`MailScreenView`はどちらも同じキーへの別々の`@AppStorage`
+/// — `isUnreadOnly`と同じ「片方の変更がもう一方に伝わる」設計)。
 struct AccountFilterChipRow: View {
     let accounts: [AccountRecord]
     @Binding var selectedAccountId: String?
+    @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: OtegamiSpacing.sm) {
-                AccountFilterChip(title: "全部", isSelected: selectedAccountId == nil, action: selectAll)
-                    .accessibilityIdentifier("mail.chip.all")
+                // アカウントが1つしかない場合はダイジェスト表示に意味が
+                // 無いため、「すべて」チップ自体を出さない (仕様通り) —
+                // 個別アカウントチップは1件だけになるが、それ自体は今回の
+                // 変更対象ではないのでそのまま残す。
+                if accounts.count > 1 {
+                    AllModeFilterChip(isSelected: selectedAccountId == nil, isGroupByAccount: $isGroupByAccount, onSelectMode: selectAll)
+                }
                 ForEach(accounts) { account in
                     accountChip(for: account)
                 }
@@ -47,5 +61,71 @@ struct AccountFilterChipRow: View {
 
     private func select(_ accountId: String) {
         selectedAccountId = accountId
+    }
+}
+
+/// Task #106: 「すべて」チップのプルダウン本体 — 見た目は`AccountFilterChip
+/// .label`と同じ「塗り＋枠線」のフラットチップ (トークンを直接複製している
+/// のは、`AccountFilterChip`の`label`が`private`でMenuのラベルとして再利用
+/// できないため。デザイントークンはすべて既存のものを再利用しており新しい
+/// 色は足していない — `CLAUDE.md`)。タップで開くメニューは「時系列」
+/// (`isGroupByAccount = false`) / 「アカウント別」(`isGroupByAccount = true`)
+/// の2択のみ — どちらを選んでも`onSelectMode`(=`selectedAccountId = nil`)
+/// を呼び、個別アカウント絞り込み中であっても「すべて」に戻る (仕様「絞り
+/// 込み解除でモードに応じた表示へ」)。
+private struct AllModeFilterChip: View {
+    let isSelected: Bool
+    @Binding var isGroupByAccount: Bool
+    let onSelectMode: () -> Void
+
+    var body: some View {
+        Menu {
+            Button {
+                selectMode(groupByAccount: false)
+            } label: {
+                Label("時系列", systemImage: "clock")
+            }
+            Button {
+                selectMode(groupByAccount: true)
+            } label: {
+                Label("アカウント別", systemImage: "person.2")
+            }
+        } label: {
+            label
+        }
+        .accessibilityIdentifier("mail.chip.all")
+    }
+
+    private func selectMode(groupByAccount: Bool) {
+        isGroupByAccount = groupByAccount
+        onSelectMode()
+    }
+
+    private var label: some View {
+        // 固定ラベル同士の連結 (アカウント表示名のような動的な値は含まない)
+        // だが、`Text(LocalizedStringKey:)`のMarkdown解釈を確実に避ける
+        // ため`AccountFilterChip`の教訓 (`Text(verbatim:)`) に倣う。
+        HStack(spacing: OtegamiSpacing.xs) {
+            Text(verbatim: "\(String(localized: "すべて")) ▸ \(modeTitle)")
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+        }
+        .font(OtegamiFont.caption())
+        .foregroundStyle(isSelected ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
+        .padding(.horizontal, OtegamiSpacing.md)
+        .padding(.vertical, OtegamiSpacing.xs)
+        .background(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface)
+        .overlay(
+            Rectangle().strokeBorder(
+                isSelected ? OtegamiColor.accent : OtegamiColor.dividerSubtle,
+                lineWidth: OtegamiStroke.secondary
+            )
+        )
+        .otegamiMinimumTappable()
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var modeTitle: String {
+        isGroupByAccount ? String(localized: "アカウント別") : String(localized: "時系列")
     }
 }

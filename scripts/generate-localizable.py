@@ -154,6 +154,12 @@ translations = {
     "設定": "Settings",
     "すべての受信": "All Inboxes",
 
+    # --- Task #106: 「全部」チップを「すべて」に改名しプルダウン化
+    # (AccountFilterChipRow) — 「すべて」自体は既存キー (`検索`節の
+    # フィルタチップと共有)。追加が要るのはメニュー2択のみ。
+    "時系列": "Chronological",
+    "アカウント別": "By Account",
+
     # --- 設定 (AccountsSettingsView) ---
     "アカウント": "Account",
     "アカウントがありません。": "No accounts.",

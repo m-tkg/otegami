@@ -95,22 +95,26 @@ struct MailScreenView: View {
     /// 影響させない」という要件どおり、`SearchQuery`は別の経路。
     @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
-    /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」): 未読
-    /// のみトグルの隣に置く「アカウントでグループ化」ボタン —
-    /// `ListDisplaySettingsStore.groupByAccountKey`は当初`MessageListView`と
-    /// 共有する`@AppStorage`で、一覧をこの場でアカウント別`Section`に
-    /// 分割するon/offトグルだった。
+    /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」): 元は
+    /// 未読のみトグルの隣に置いた「アカウントでグループ化」ヘッダボタンの
+    /// 状態だった。
     ///
     /// Task #92 (アカウントダイジェスト画面) でボタンは`AccountDigestView`
     /// (アカウントごとの件数+直近プレビューを一段挟んで見せる画面)への
-    /// **プッシュ遷移**トリガーに変わったが、ユーザーフィードバックにより
-    /// Task #99 でこの永続`@AppStorage`トグルへ戻した —
-    /// `unreadOnlyToggleButton`/`isUnreadOnly`と全く同じ扱い: タップで
-    /// on/offをそのまま反転させるだけで、値はアプリ再起動後も維持される。
-    /// 実際にダイジェスト表示にするかどうかは`isShowingAccountDigest`
-    /// (`content`の分岐条件) が`showsGroupByAccountToggle`との整合も含めて
-    /// 決める — 例えば単一メールボックス選択中はこの値が`true`のままでも
-    /// ダイジェストは出ない。`MessageListView`はこのキーを一切読まない
+    /// **プッシュ遷移**トリガーに変わり、Task #99 で永続`@AppStorage`トグル
+    /// (`unreadOnlyToggleButton`/`isUnreadOnly`と同じ「タップでon/off反転」)
+    /// に戻った。
+    ///
+    /// **Task #106**: ヘッダのボタン自体を廃止し、1a の「すべて」チップ
+    /// (`AccountFilterChipRow.AllModeFilterChip`) のプルダウン (時系列 /
+    /// アカウント別) に統合した — この`@AppStorage`のキー自体・値の意味
+    /// (ON=アカウント別ダイジェスト表示) は変えていないので、チップ側の
+    /// 選択がそのままここに反映される (`isUnreadOnly`と同じ「別ビューの同じ
+    /// キーへの`@AppStorage`が両方に伝わる」設計)。実際にダイジェスト表示に
+    /// するかどうかは`isShowingAccountDigest`(`content`の分岐条件) が
+    /// `isAccountDigestEligible`との整合も含めて決める — 例えば単一メール
+    /// ボックス選択中はこの値が`true`のままでもダイジェストは出ない。
+    /// `MessageListView`はこのキーを一切読まない
     /// (`MessageListView.listContent`のdoc comment参照)。
     @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
 
@@ -357,15 +361,17 @@ struct MailScreenView: View {
     /// 表示へ自動的に戻る(仕様「絞り込み一覧から戻ったらダイジェスト表示に
     /// 戻ること」)。
     private var isShowingAccountDigest: Bool {
-        isGroupByAccount && showsGroupByAccountToggle
+        isGroupByAccount && isAccountDigestEligible
     }
 
     /// Task #92: `AccountDigestView`に渡す`role` — `mailSelection`が
     /// `.unifiedInbox`なら`.inbox`、`.unifiedRole(let role)`ならその
-    /// `role`そのもの。`.mailbox`選択中はそもそも`showsGroupByAccountToggle`
-    /// が`false`でボタン自体が出ない(`groupByAccountToggleButton`はその
-    /// 条件下でしか描画されない)ため、`.mailbox`のフォールバック値
-    /// (`.inbox`)が実際に使われることはない。
+    /// `role`そのもの。`.mailbox`選択中はそもそも`isAccountDigestEligible`
+    /// が`false`で`isShowingAccountDigest`自体が成立しない (Task #106
+    /// 以降、ダイジェストへの入口である「すべて」チップ (`AccountFilterChipRow
+    /// .AllModeFilterChip`) 自体、`.unifiedInbox`選択中にしか表示されない)
+    /// ため、`.mailbox`のフォールバック値 (`.inbox`)が実際に使われることは
+    /// ない。
     private var digestRole: MailboxRoleRecord {
         switch mailSelection {
         case .unifiedInbox: .inbox
@@ -419,11 +425,18 @@ struct MailScreenView: View {
     /// 隠す — `MessageListView.isMultiAccountScope`を同じ理由で揃えたのと
     /// 対になる変更(そちらのdoc comment参照)。
     ///
-    /// Task #99: この`Bool`はボタンの表示可否だけでなく`isShowingAccountDigest`
-    /// の一部としても使う — ボタンを隠す条件と実際にダイジェストを出す
+    /// Task #99: この`Bool`は元々ヘッダボタンの表示可否と`isShowingAccountDigest`
+    /// の両方を兼ねていた — ボタンを隠す条件と実際にダイジェストを出す
     /// 条件を1つの計算プロパティに保つことで、ボタンが見えないのに
-    /// ダイジェストだけ出続けるような食い違いを防ぐ。
-    private var showsGroupByAccountToggle: Bool {
+    /// ダイジェストだけ出続けるような食い違いを防ぐ意図。
+    ///
+    /// **Task #106**: ヘッダボタン自体は廃止した (「すべて」チップの
+    /// プルダウンに統合) が、この計算プロパティは`isShowingAccountDigest`
+    /// の条件としてそのまま生き残っている — 名前をその実態
+    /// (`isAccountDigestEligible`) に合わせて変えただけで、判定内容
+    /// (`.mailbox`選択中／単一アカウント絞り込み中／アカウント1つのみ、
+    /// では`false`) は変えていない。
+    private var isAccountDigestEligible: Bool {
         switch mailSelection {
         case .unifiedInbox, .unifiedRole:
             guard accountFilter == nil else { return false }
@@ -464,9 +477,9 @@ struct MailScreenView: View {
                 }
             }
             ToolbarItemGroup(placement: .confirmationAction) {
-                if showsGroupByAccountToggle {
-                    groupByAccountToggleButton
-                }
+                // Task #106: 「アカウントでグループ化」ボタンはここから廃止
+                // — 1a の「すべて」チップのプルダウン (`AccountFilterChipRow
+                // .AllModeFilterChip`) に統合した。
                 unreadOnlyToggleButton
             }
         }
@@ -500,41 +513,6 @@ struct MailScreenView: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("mail.unreadOnlyToggle")
         .accessibilityAddTraits(isUnreadOnly ? .isSelected : [])
-    }
-
-    /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」):
-    /// `unreadOnlyToggleButton`と同じ「塗り＋アイコン切り替え」スタイルの
-    /// アイコンボタン — 見た目/配置は Task #92 でも変えていない
-    /// (`isGroupByAccount`のdoc comment参照)。ON時のアイコンは
-    /// `person.2.fill`(アカウントの集合という意味)、OFFは`rectangle.grid.1x2`
-    /// (フラットな一覧という意味) — どちらも既存パレット/チップトークンを
-    /// 再利用するだけで新しい色は足さない (`CLAUDE.md`)。
-    ///
-    /// Task #92 でタップ動作を`isGroupByAccount.toggle()`(一覧をこの場で
-    /// 分割する恒久設定)から`showingAccountDigest = true`(ダイジェスト
-    /// 画面を開く一度きりのプッシュ遷移)に変えたが、ユーザーフィード
-    /// バック(「未読のみボタンと同じトグル挙動にしたい」)により Task #99
-    /// で`unreadOnlyToggleButton`と同じ単純な`isGroupByAccount.toggle()`に
-    /// 戻した — 実際にダイジェストを表示するかどうかは`isShowingAccountDigest`
-    /// (`content`の分岐条件、`showsGroupByAccountToggle`と同じ条件を共有)
-    /// が担う。
-    private var groupByAccountToggleButton: some View {
-        Button {
-            isGroupByAccount.toggle()
-        } label: {
-            Label("アカウントでグループ化", systemImage: isGroupByAccount ? "person.2.fill" : "rectangle.grid.1x2")
-                .labelStyle(.iconOnly)
-                .font(OtegamiFont.body())
-                .foregroundStyle(isGroupByAccount ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
-                .padding(OtegamiSpacing.xs)
-                .background(isGroupByAccount ? OtegamiColor.paleBaseStrong : Color.clear, in: Circle())
-        }
-        // `unreadOnlyToggleButton`と同じ理由で`.buttonStyle(.plain)`必須
-        // (Liquid Glass ツールバーボタンの既定ティント丸背景がON/OFFの
-        // 塗り分けを潰してしまう — そのdoc comment参照)。
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("mail.groupByAccountToggle")
-        .accessibilityAddTraits(isGroupByAccount ? .isSelected : [])
     }
 
     /// 一覧画面左下のフローティング検索ボタン — `FolderListSheet
