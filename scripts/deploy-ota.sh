@@ -132,7 +132,28 @@ for candidate in ad-hoc release-testing; do
 	log "'${candidate}' はこの Xcode で無効な method のようです。次の候補を試します。"
 done
 
-[ -n "$EXPORT_METHOD" ] || fail "xcodebuild -exportArchive が 'ad-hoc' / 'release-testing' のどちらでも失敗しました。ログ: $EXPORT_LOG"
+# Ad Hoc export は Apple Distribution 証明書と、それを含む provisioning
+# profile を要求する。ローカルに Distribution 証明書が無い/Apple ID の
+# アカウントセッションが xcodebuild から見えない環境 (実例: 2026-07-28 の
+# 「No Accounts」障害) では両候補とも署名理由で失敗する。その場合は
+# development 署名 (`debugging`) にフォールバックする — 配布先の実機は
+# 開発デバイスとして登録済みなので、itms-services 経由のインストールは
+# development 署名の IPA でも成立する (個人利用 OTA の割り切り)。
+if [ -z "$EXPORT_METHOD" ] && grep -qiE "No signing certificate|doesn't include signing certificate|No Accounts" "$EXPORT_LOG"; then
+	log "Distribution 署名が使えないため development 署名 (debugging) にフォールバックします"
+	write_export_options "debugging"
+	rm -rf "$EXPORT_DIR"
+	if xcodebuild -exportArchive \
+		-archivePath "$ARCHIVE_PATH" \
+		-exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
+		-exportPath "$EXPORT_DIR" \
+		-allowProvisioningUpdates \
+		2>&1 | tee "$EXPORT_LOG"; then
+		EXPORT_METHOD="debugging"
+	fi
+fi
+
+[ -n "$EXPORT_METHOD" ] || fail "xcodebuild -exportArchive が 'ad-hoc' / 'release-testing' / 'debugging' のいずれでも失敗しました。ログ: $EXPORT_LOG"
 
 IPA_PATH="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.ipa' -print -quit)"
 [ -n "$IPA_PATH" ] && [ -f "$IPA_PATH" ] || fail "エクスポートは成功しましたが $EXPORT_DIR に .ipa が見つかりません。"
