@@ -156,9 +156,25 @@ public struct FoundationModelsTranslationService: TranslationService {
         """
     }
 
+    /// Task #62 follow-up: a real-device report said the summary still
+    /// read like a recap of the *quoted* reply history rather than what
+    /// the current message itself is saying. The input may now be
+    /// structured into a "■このメールの新規部分" (this email's own new
+    /// text) section and a "■引用されている過去のやり取り (文脈)" (quoted
+    /// prior thread, as context) section — see
+    /// `MessageView.sourceTextForSummary()`, which builds that structure
+    /// via `QuoteStripper.separatingQuotedText`. These two lines tell the
+    /// model how to weight them: use the quoted section only to understand
+    /// the flow of the conversation, and summarize what the new section
+    /// itself communicates — not a re-summary of the quote. Plain
+    /// unstructured input (the common case: no quote found, nothing to
+    /// separate) is unaffected — there's no section to misweight.
     private static func summarizeInstructions(targetLanguage: TranslationLanguage, sentenceCount: Int) -> String {
         """
         Summarize the user's email content in \(targetLanguage.displayName), in about \(sentenceCount) short sentence\(sentenceCount == 1 ? "" : "s").
+        The input sometimes contains two labeled sections: "■このメールの新規部分" (this email's own new text) and "■引用されている過去のやり取り (文脈)" (quoted history from the prior thread, given only as context).
+        When both sections are present, use the quoted section only to understand the flow of the conversation — your summary should describe what the new section itself is communicating, not re-summarize the quoted history.
+        When there are no such labeled sections, just summarize the text as given.
         Output ONLY the summary itself — no preamble, no explanation.
         """
     }

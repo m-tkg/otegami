@@ -1266,9 +1266,29 @@ struct MessageView: View {
 
     /// `requestSummary`専用のソーステキスト — `sourceTextForTranslation()`と
     /// 同じ「HTML本文は`HTMLTextExtractor`で平文化」経路を辿るが、その前に
-    /// `QuoteStripper`で引用（返信の繰り返しで積み上がった過去の本文）を
-    /// 落とす (Task #46: 「返信がたくさん繰り返されて過去の文章がたくさん
-    /// ある時、そこは要約の対象外にして欲しい」というユーザー要望)。
+    /// `QuoteStripper`で本文を「新規部分」と「引用されている過去のやり
+    /// 取り」に分離する (Task #46: 「返信がたくさん繰り返されて過去の文章
+    /// がたくさんある時、そこは要約の対象外にして欲しい」、Task #62での
+    /// フォローアップ「まだ過去の返信などの引用の内容を要約してるっぽい。
+    /// 完全には無視しなくていいけど、そういう流れがある上で、どういう
+    /// メールなのかを要約するようにして欲しい」)。
+    ///
+    /// Task #46時点は`QuoteStripper.strippingQuotedText`で引用を単純に
+    /// 破棄していたが、それでも「引用そのものを要約している」という実機
+    /// フィードバックが#62で来た — 完全に無視するのではなく、返信の流れを
+    /// 踏まえた上でこのメール自体が何を伝えているかを要約してほしいという
+    /// 要望。そこで`QuoteStripper.separatingQuotedText`(新規部分と引用を
+    /// 分離して両方返すAPI、`QuoteStripper.SeparatedText`のdoc comment
+    /// 参照)に切り替え、`SummaryInputBuilder.build`で構造化テキストとして
+    /// モデルに渡す: 「■このメールの新規部分」「■引用されている過去のやり
+    /// 取り (文脈)」の2セクション(引用側は`SummaryInputBuilder
+    /// .quotedContextCharacterLimit`で切り詰め)。
+    /// `FoundationModelsTranslationService.summarizeInstructions`にはこの
+    /// 2セクションを「新規部分を主対象に、引用は文脈として使う」よう指示
+    /// する文言を追加済み。引用が無い(または新規部分がほぼ無くフォール
+    /// バックが発動した)場合は従来通り単一テキストのまま渡す
+    /// (`SummaryInputBuilder.build`が空の`quotedText`を`newText`そのまま
+    /// 返す形で処理する)。
     ///
     /// `sourceTextForTranslation()`を直接書き換えず専用メソッドに分けたのは、
     /// あのメソッドは翻訳とも共有されており、翻訳・本文表示は引用を含めた
@@ -1276,21 +1296,26 @@ struct MessageView: View {
     /// 要約だけがこの追加ステップを踏む。
     private func sourceTextForSummary() -> String? {
         guard let bodyRecord else { return nil }
-        let candidate: String?
+        let separated: QuoteStripper.SeparatedText?
         if let plainText = bodyRecord.plainText, !plainText.isEmpty {
-            candidate = QuoteStripper.strippingQuotedText(fromPlainText: plainText)
+            separated = QuoteStripper.separatingQuotedText(fromPlainText: plainText)
         } else if let html = bodyRecord.html, !html.isEmpty {
-            candidate = QuoteStripper.strippingQuotedText(fromHTML: html)
+            separated = QuoteStripper.separatingQuotedText(fromHTML: html)
         } else {
-            candidate = nil
+            separated = nil
         }
-        guard let candidate else { return nil }
-        // `sourceTextForTranslation()`と同じ安全網: `QuoteStripper`の平文
+        guard let separated else { return nil }
+        // `sourceTextForTranslation()`と同じ安全網: `QuoteStripper`のHTML
         // 経路はすでに`HTMLTextExtractor`を通しているが、プレーンテキスト
         // 側は生のマークアップが混じっていた場合に備えてもう一度通す
         // (no-opになるのが通常ケース)。
-        let normalized = HTMLTextExtractor.plainText(fromHTML: candidate)
-        return normalized.isEmpty ? nil : normalized
+        let newText = HTMLTextExtractor.plainText(fromHTML: separated.newText)
+        guard !newText.isEmpty else { return nil }
+        guard !separated.quotedText.isEmpty else { return newText }
+
+        let quotedText = HTMLTextExtractor.plainText(fromHTML: separated.quotedText)
+        guard !quotedText.isEmpty else { return newText }
+        return SummaryInputBuilder.build(newText: newText, quotedText: quotedText)
     }
 
     /// `AISummaryBar`の「要約」/「再生成」ボタンの行き先 — ソーステキストは

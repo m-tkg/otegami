@@ -269,6 +269,57 @@ OS バージョンは iOS/macOS 26 以降が前提（本アプリの最低対応
   — 翻訳・本文表示は受信した通りの全文 (引用込み) を扱う必要があるため、
   同じ関数を要約用に書き換えるのではなく分離した。
 
+## 要約: 引用を「文脈」として使う (Task #62)
+
+Task #46 で上記の「引用より後ろを丸ごと落とす」対応をした後も、実機で
+「まだ過去の返信などの引用の内容を要約してるっぽい。完全には無視しなく
+ていいけど、そういう流れがある上で、どういうメールなのかを要約するよう
+にして欲しい」というフォローアップ報告があった。引用を完全に無視するの
+ではなく、返信の流れ (文脈) として使いつつ、要約の主対象は「このメール
+自体が新しく書いた部分」にしたいという要望 — Task #46 のハード除去
+(引用を要約入力から完全に消す) では「要約対象からは除外できるが文脈も
+失われる」ため、引用を捨てずに扱う設計に変更した。
+
+- **`QuoteStripper.SeparatedText` / `separatingQuotedText`**: 「最初に
+  見つかった引用マーカーの手前で打ち切る」という Task #46 の戦略はその
+  まま (マーカー一覧・フォールバック条件も同じ)、`strippingQuotedText`
+  (新規部分だけを返す、後方互換のため残置) に加えて、新規部分と引用部分
+  の**両方**を `SeparatedText { newText, quotedText }` として返す
+  `separatingQuotedText(fromHTML:)`/`separatingQuotedText(fromPlainText:)`
+  を追加。引用マーカーが見つからない、またはフォールバックが発動した
+  場合は `quotedText` が空文字列になり、`newText` に全文が入る (=引用と
+  分離すべきものが実際には無いケース)。
+  - **パターンの追加**: 実機での漏れ調査で見つかった未対応の引用形式を
+    2件追加 — HTML: Yahoo Mail の `yahoo_quoted` div、ProtonMail の
+    `protonmail_quote` div。プレーンテキスト: Apple Mail (iOS/macOS) の
+    日本語返信ヘッダ「2026/07/28 10:00、山田太郎のメール:」(Gmail の
+    「〜さんは書きました」パターンとは異なる言い回しで、既存パターンでは
+    捕捉できていなかった)。
+- **`SummaryInputBuilder` (`OtegamiCore`)**: `separatingQuotedText` の
+  結果を要約入力の1文字列に組み立てる純関数。`quotedText` が空なら
+  `newText` をそのまま返す (Task #46 と同じ挙動)。空でなければ
+  「■このメールの新規部分」「■引用されている過去のやり取り (文脈)」の
+  2セクションに組み立てて返す — ラベル文字列は
+  `newTextSectionLabel`/`quotedTextSectionLabel` として公開し、
+  `FoundationModelsTranslationService.summarizeInstructions` の文言と
+  食い違わないよう単一の情報源にしてある。
+  - **引用側だけ文字数上限で切り詰め** (`quotedContextCharacterLimit`、
+    デフォルト600文字): 新規部分は無制限のまま
+    `TranslationService.summarizeLongText` の map-reduce に委ねる (元々
+    長文メール対応のために存在する仕組み) が、引用は「文脈」であって
+    要約対象そのものではないので、長い引用チェーンがモデル入力を際限
+    なく膨らませないよう切り詰める。新規部分を優先し、引用側だけを削る。
+- **`summarizeInstructions` の更新**: 「入力に2つのラベル付きセクション
+  がある場合、引用セクションは会話の流れを理解するための文脈としてのみ
+  使い、要約は新規セクションが伝えている内容について書くこと。引用の
+  再要約はしないこと」という指示を追加。ラベルが無い (=引用が無い/分離
+  すべきものが無い) 通常ケースはそのまま従来通り全文を要約する。
+- **`MessageView.sourceTextForSummary()`**: `QuoteStripper
+  .strippingQuotedText` の代わりに `separatingQuotedText` を呼び、
+  `SummaryInputBuilder.build(newText:quotedText:)` で上記の構造化文字列
+  (または引用なしなら `newText` そのまま) を組み立てて
+  `summarizeLongText` に渡す。適用範囲は Task #46 と同じく要約のみ。
+
 ## バグ修正: 実機で「翻訳ボタンが出ない」「AI要約が壊れている」
 
 実機報告を受けて調査・修正。上記の長文コンテキスト超過とは別の、翻訳・

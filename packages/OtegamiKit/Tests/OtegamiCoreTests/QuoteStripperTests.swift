@@ -90,6 +90,42 @@ struct QuoteStripperPlainTextTests {
     func fallsBackWhenNoMarker() {
         #expect(QuoteStripper.strippingQuotedText(fromPlainText: newText) == newText)
     }
+
+    @Test("strips an Apple Mail Japanese 'のメール' header and everything after it")
+    func stripsAppleMailJapaneseHeader() {
+        let japaneseNewText = "こちらが今回追加した本文です。前回のやり取りとは別の新しい内容をここに書いています。"
+        let text = """
+        \(japaneseNewText)
+
+        2026/07/28 10:00、山田太郎のメール:
+        > 過去のメッセージ本文
+        > 続きの引用行
+        """
+        #expect(trimmed(QuoteStripper.strippingQuotedText(fromPlainText: text)) == japaneseNewText)
+    }
+
+    @Test("separatingQuotedText returns both the new text and the quoted history")
+    func separatesNewAndQuotedText() {
+        let text = "\(newText)\n\n> Original line one\n> Original line two\n> Original line three"
+        let separated = QuoteStripper.separatingQuotedText(fromPlainText: text)
+        #expect(trimmed(separated.newText) == newText)
+        #expect(separated.quotedText == "> Original line one\n> Original line two\n> Original line three")
+    }
+
+    @Test("separatingQuotedText returns an empty quotedText when there is no marker")
+    func separatingReturnsEmptyQuoteWhenNoMarker() {
+        let separated = QuoteStripper.separatingQuotedText(fromPlainText: newText)
+        #expect(separated.newText == newText)
+        #expect(separated.quotedText.isEmpty)
+    }
+
+    @Test("separatingQuotedText falls back to the full text with an empty quotedText when forward-only")
+    func separatingFallsBackWhenOnlyQuotedContent() {
+        let text = "> Original line one\n> Original line two\n> Original line three"
+        let separated = QuoteStripper.separatingQuotedText(fromPlainText: text)
+        #expect(separated.newText == text)
+        #expect(separated.quotedText.isEmpty)
+    }
 }
 
 @Suite("QuoteStripper HTML")
@@ -173,6 +209,58 @@ struct QuoteStripperHTMLTests {
     func fallsBackWhenNoMarker() {
         let html = "<div>\(newText)</div>"
         #expect(QuoteStripper.strippingQuotedText(fromHTML: html) == newText)
+    }
+
+    @Test("strips a Yahoo Mail yahoo_quoted wrapper")
+    func stripsYahooQuotedWrapper() {
+        let html = """
+        <div>\(newText)</div>
+        <div class="yahoo_quoted">
+        <div>Original message body that should be dropped entirely.</div>
+        </div>
+        """
+        #expect(QuoteStripper.strippingQuotedText(fromHTML: html) == newText)
+    }
+
+    @Test("strips a ProtonMail protonmail_quote wrapper")
+    func stripsProtonMailQuotedWrapper() {
+        let html = """
+        <div>\(newText)</div>
+        <div class="protonmail_quote">
+        <div>Original message body that should be dropped entirely.</div>
+        </div>
+        """
+        #expect(QuoteStripper.strippingQuotedText(fromHTML: html) == newText)
+    }
+
+    @Test("separatingQuotedText returns both the new text and the quoted history")
+    func separatesNewAndQuotedText() {
+        let html = """
+        <div>\(newText)</div>
+        <blockquote type="cite">
+        <div>Original message body that should be dropped entirely.</div>
+        </blockquote>
+        """
+        let separated = QuoteStripper.separatingQuotedText(fromHTML: html)
+        #expect(separated.newText == newText)
+        #expect(separated.quotedText == "Original message body that should be dropped entirely.")
+    }
+
+    @Test("separatingQuotedText returns an empty quotedText when there is no marker")
+    func separatingReturnsEmptyQuoteWhenNoMarker() {
+        let html = "<div>\(newText)</div>"
+        let separated = QuoteStripper.separatingQuotedText(fromHTML: html)
+        #expect(separated.newText == newText)
+        #expect(separated.quotedText.isEmpty)
+    }
+
+    @Test("separatingQuotedText falls back to the full text with an empty quotedText when forward-only")
+    func separatingFallsBackWhenOnlyBlockquote() {
+        let html = "<blockquote type=\"cite\"><div>Original message body only, nothing new here.</div></blockquote>"
+        let expected = HTMLTextExtractor.plainText(fromHTML: html)
+        let separated = QuoteStripper.separatingQuotedText(fromHTML: html)
+        #expect(separated.newText == expected)
+        #expect(separated.quotedText.isEmpty)
     }
 }
 
