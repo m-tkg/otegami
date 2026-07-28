@@ -243,7 +243,7 @@
       センス全文同梱も必要になる (現状はソース配布のみなので `NOTICE`
       ファイルでの記載に留めている)。
       優先度: 低 (依存更新のたびに) / 所要時間: 10分
-- [ ] **`com.apple.developer.mail-client` entitlement の申請・承認後の
+- [x] **`com.apple.developer.mail-client` entitlement の申請・承認後の (申請済み 2026-07-28、承認待ち)
       有効化 (Task #48)** — まだ申請していなければ
       [Request a Mail App Entitlement](https://developer.apple.com/contact/request/default-mail-client/)
       から Account Holder ロールで申請する。承認されたら (1) Developer
