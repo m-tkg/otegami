@@ -494,6 +494,14 @@ struct RootView: View {
             // own debounce/best-effort unit, safe to fire on every
             // foreground return.
             Task(priority: .background) { await environment.prefetchRecentBodiesIfNeeded() }
+            // Task #89: pulls any display-settings change another device
+            // pushed while this one was backgrounded. `SettingsCloudSyncEngine`
+            // has no per-write push hook (`AppSettingsCloudDirectory`'s doc
+            // comment), so every foreground return is also this device's
+            // chance to notice a local change made just before it was last
+            // backgrounded — see the `.background`/`.inactive` case below for
+            // the other half of that pair.
+            await environment.settingsCloudSync.reconcile()
         case .background, .inactive:
             await environment.syncCoordinator.stopAllIdleLoops()
             // C7 「アプリを離脱したら即座に送信を確定」— cuts short whatever's
@@ -503,6 +511,10 @@ struct RootView: View {
             // .finalizeNow()`'s doc comment for why). A no-op if nothing is
             // currently pending.
             await environment.pendingSendCoordinator.finalizeNow()
+            // Task #89: pushes any display-settings change made during this
+            // foreground session before the app leaves it — see the
+            // `.active` case above.
+            await environment.settingsCloudSync.reconcile()
         @unknown default:
             break
         }

@@ -53,6 +53,74 @@ final class FakeUbiquitousStore: UbiquitousStoring, @unchecked Sendable {
         decoder.dateDecodingStrategy = .iso8601
         return try? decoder.decode(AccountCloudPayload.self, from: data)
     }
+
+    /// `seed(_:key:)`'s counterpart for `SettingsCloudSyncEngineTests` —
+    /// same store, same fake, just a different payload type sharing the
+    /// same KVS key namespace (`"settings.v1"` rather than `"accounts.v1"`).
+    func seed(_ payload: SettingsCloudPayload, key: String) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        lock.withLock { storage[key] = (try? encoder.encode(payload)) ?? Data() }
+    }
+
+    /// `currentPayload(key:)`'s `SettingsCloudPayload` counterpart.
+    func currentPayload(key: String) -> SettingsCloudPayload? {
+        guard let data = data(forKey: key) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(SettingsCloudPayload.self, from: data)
+    }
+}
+
+/// A trivial in-memory `LocalSettingsDirectory` — no real `UserDefaults`
+/// touched, mirroring `FakeLocalAccountDirectory`'s role for the account
+/// engine. `values`/`snapshot` are plain settable properties (not seeded
+/// through a method) since, unlike `FakeLocalAccountDirectory`'s account
+/// dictionary, a test only ever needs to set the *whole* current state up
+/// front rather than incrementally build a collection.
+final class FakeLocalSettingsDirectory: LocalSettingsDirectory, @unchecked Sendable {
+    private let lock = NSLock()
+
+    /// This device's current settings, as `currentValues()` should report
+    /// them right now.
+    var values: [String: SettingsCloudValue] {
+        get { lock.withLock { _values } }
+        set { lock.withLock { _values = newValue } }
+    }
+
+    /// This device's own "last synced" bookkeeping — `nil` (the default)
+    /// means "never synced on this device", matching a fresh/reinstalled
+    /// app with no `lastSyncedSnapshot` marker in `UserDefaults` yet.
+    var snapshot: SettingsCloudPayload? {
+        get { lock.withLock { _snapshot } }
+        set { lock.withLock { _snapshot = newValue } }
+    }
+
+    private var _values: [String: SettingsCloudValue] = [:]
+    private var _snapshot: SettingsCloudPayload?
+
+    /// Every payload `apply(_:)` was actually called with, in call order —
+    /// lets a test assert both *that* a pull happened and *what* it wrote.
+    private(set) var appliedPayloads: [SettingsCloudPayload] = []
+
+    func currentValues() async -> [String: SettingsCloudValue] {
+        values
+    }
+
+    func lastSyncedSnapshot() async -> SettingsCloudPayload? {
+        snapshot
+    }
+
+    func saveSyncedSnapshot(_ payload: SettingsCloudPayload) async {
+        snapshot = payload
+    }
+
+    func apply(_ payload: SettingsCloudPayload) async {
+        lock.withLock {
+            _values = payload.values
+            appliedPayloads.append(payload)
+        }
+    }
 }
 
 /// A trivial in-memory `LocalAccountDirectory` — no `AppDatabase`/Keychain

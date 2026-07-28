@@ -674,3 +674,89 @@ IMAP ホストが以下のいずれかに一致するアカウントを「開発
   (今回の修正により cloud 側の汚染エントリも同時に掃除されるため) 再発
   しなくなるはず — これは実機でのユーザー自身の最終確認が必要
   (`PENDING.md` 参照)。
+
+## 表示設定の同期 (Task #89)
+
+実機報告: アプリを再インストールすると、スレッド表示などの表示設定が
+既定値 (ON) に戻ってしまう — 原因は単純で、`UserDefaults` はアプリの
+アンインストールとともに消えるため、再インストール後は初回起動と区別が
+つかない。これまでの account 同期 (`accounts.v1`) はアカウントの接続設定
+だけを対象にしており、UI の表示設定はそもそも同期対象外だった。この節は
+その隙間を埋める、`accounts.v1` の隣に置く2本目の KVS ペイロード。
+
+### 何が同期され、何が同期されないか
+
+`AppSettingsCloudDirectory` (`apps/Otegami/Sources/Support/`) の
+allowlist が唯一の情報源:
+
+| 同期される | 同期されない |
+|---|---|
+| 一覧: スレッド表示・未読のみ・アカウントでグループ化 (`ListDisplaySettingsStore`) | 通知系 (`PushSettingsStore` — relay URL・per-account watch・deviceSecret はデバイス固有) |
+| ビューア: 背景を常に白・ダーク反転オプトイン (`HTMLDisplaySettingsStore`)、画像自動表示2種 (`ImageSettingsStore`) | UITest/verify 系フラグ (`OTEGAMI_UITEST_*`/`-otegami*` は環境変数・起動引数であり、そもそも `UserDefaults` キーではない) |
+| スワイプ割り当て4スロット (`SwipeActionSettingsStore`)、フッターツールバー並び順 (`MessageToolbarSettingsStore`)、ハンバーガーメニューのカテゴリ並び順 (`FolderCategoryOrderStore`) | `CloudSyncSettingsStore.isEnabled` 自身 (この同期に参加するか自体がデバイスごとの選択 — その doc comment参照) |
+| アバターソース4種 (`AvatarSourceSettingsStore`)、翻訳自動実行・一覧要約表示 (`TranslationSettingsStore`)、AI 機能マスタースイッチ (`AIFeaturesSettingsStore`) | ピン留め (`PinSettingsKeys` — 端末ごとの一時的な整理という性質が強く、複数デバイスで強制する意味が薄い) |
+
+### KVS スキーマと reconcile ロジック
+
+キー `settings.v1` に `SettingsCloudPayload` (`packages/OtegamiKit/Sources/AccountCloudSync/`)
+を1個保存する:
+
+```json
+{
+  "values": { "listDisplay.threading": { "bool": false }, "swipeActions.leadingShort": { "string": "toggleRead" }, "...": "..." },
+  "updatedAt": "ISO8601"
+}
+```
+
+account 同期と違い、これはアカウントごとの配列ではなく1つのフラットな
+`[key: value]` バッグで、**ペイロード全体に対して `updatedAt` が1つ**
+だけ — 個々の設定同士に整合性の制約はなく、「どちらか新しい方が全体を
+勝つ」で十分という設計判断 (`SettingsCloudPayload`のdoc comment)。
+
+`SettingsCloudSyncEngine.reconcile()` は毎回この3択で決める:
+
+1. **このデバイスの前回同期時点 (`lastSyncedSnapshot`) から値が変わって
+   おらず、かつ cloud 側がそれより新しい** → pull (他デバイスが後から
+   push した)。
+2. **このデバイスが一度もこの機能で同期したことがなく
+   (`lastSyncedSnapshot == nil`)、かつ cloud に既に何か入っている** →
+   pull (push しない)。**これが再インストールバグの直接の修正点**:
+   `lastSyncedSnapshot` 自体も `UserDefaults` に保存する端末ローカルの
+   目印なので、再インストール直後はこれも消えており「一度も同期して
+   いない」に見える。この状態で自分の既定値を push してしまうと、他の
+   デバイスが選んだ本当の値を黙って上書きしてしまう — それを避けて
+   常に「まず cloud を信じて pull」を優先する。
+3. **それ以外** (前回同期時点から値が変わっている = ローカルで変更が
+   あった、または本当にこの端末が最初の1台で cloud も空) → push。
+
+account 同期の `pushLocalChange`/`pushLocalDeletion` のような書き込み箇所
+フックは採用していない — 対象キーは `MailListSettingsView`/
+`MailViewerSettingsView`/`MessageToolbarSettingsView`/スワイプ設定ピッカー
+など十数箇所のビューが直接 `@AppStorage` で読み書きしており、単一の
+チョークポイントが存在しないため。代わりに `OtegamiApp
+.handleScenePhaseChange` がフォアグラウンド/バックグラウンド遷移のたび
+(`.active`/`.background`/`.inactive`) に `reconcile()` を呼び、
+`UserDefaults` の現在値と前回同期時のスナップショットを比較した差分だけ
+書き出す/取り込む、という低コストな方式を採用した。起動時と
+`didChangeExternallyNotification` (他デバイスの push を検知) でも
+`accountCloudSync` と同じタイミングで呼ばれる。
+
+トグルは既存の「iCloud でアカウントを同期」1本を共用する — 表示設定も
+「この端末の `UserDefaults` は信頼できないことがある」という同じ問題の
+一種であり、別トグルを増やす理由がないため。シミュレータ/開発ビルド汚染
+ガード (`AppEnvironment.isCloudSyncPermittedOnThisBuild()`) も
+`accountCloudSync` と全く同じ関数を共有する。
+
+### 検証
+
+- 単体テスト (`packages/OtegamiKit`, `swift test --filter SettingsCloudSyncEngineTests`):
+  `FakeUbiquitousStore`/`FakeLocalSettingsDirectory` を使い、上記3択の
+  各分岐 (初回 push、再インストール相当の pull-not-push、既存 snapshot
+  からの push/pull、`isSyncEnabled == false` での短絡) を検証。
+  `make test` で他の既存テストと合わせて全件グリーンを確認 (`packages/OtegamiKit`
+  配下、9パッケージ・35以上のスイート)。
+- `make ios` / `make mac` のビルドが通ることを確認。
+- **実機での確認はこのセッションでは未実施** — 「再インストール後に
+  設定が復元されるか」は実機で OTA インストール→設定変更→アプリ削除→
+  再インストールという手順を踏まないと確認できない。`PENDING.md` に
+  確認依頼を記載。

@@ -9,6 +9,23 @@
 知りたい場合はこのファイル、次に何をやればいいかだけ知りたい場合は
 `HUMAN_TASKS.md` を見ること。
 
+## Task #89: 表示設定の iCloud 同期 — 実機での再インストール後復元確認
+
+**実装状況**: `SettingsCloudSyncEngine`/`AppSettingsCloudDirectory`
+(`packages/OtegamiKit/Sources/AccountCloudSync/`, `apps/Otegami/Sources/Support/`)
+で、一覧・ビューア・スワイプ・ツールバー並び・アバターソース・翻訳/AI
+設定を `settings.v1` という2本目の iCloud KVS キーで同期する実装を完了。
+既存の account 同期 (`accounts.v1`) と同じ「iCloud でアカウントを同期」
+トグル・同じシミュレータ汚染ガードを共有する。ユニットテスト
+(`SettingsCloudSyncEngineTests`) green、`make mac`/`make ios` green。
+詳細は `docs/icloud-sync.md`「表示設定の同期 (Task #89)」節参照。
+
+**未確認**: 実機での end-to-end 確認 (OTA インストール→設定変更 (例:
+スレッド表示を OFF)→アプリ削除→再インストール→設定が OFF のまま復元
+されるか) はこのセッションでは実施していない。同じ Apple ID の別デバイス
+への反映 (iOS→Mac、Mac→iOS) も未確認。都合の良いときに実機で確認して
+ほしい。
+
 ## Task #61: HTML メール翻訳「無反応」修正の実機/シミュレータでの end-to-end 確認
 
 **実装状況**: `HTMLTranslationController.extractTranslatableTexts()`が

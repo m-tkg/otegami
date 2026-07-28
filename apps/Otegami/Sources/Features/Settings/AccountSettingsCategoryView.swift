@@ -107,7 +107,7 @@ struct AccountSettingsCategoryView: View {
                 )
                 .accessibilityIdentifier("settings.cloudSyncToggle")
             } footer: {
-                Text("同じ Apple ID の他の iOS/Mac デバイスとアカウントの接続設定を同期します。パスワードは iCloud キーチェーンが別途同期します。")
+                Text("同じ Apple ID の他の iOS/Mac デバイスとアカウントの接続設定・表示設定 (一覧・ビューア・スワイプ操作など) を同期します。パスワードは iCloud キーチェーンが別途同期します。")
             }
 
             // M9: iOS-only in practice.

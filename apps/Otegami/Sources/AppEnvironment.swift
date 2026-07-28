@@ -65,6 +65,18 @@ final class AppEnvironment {
     @ObservationIgnored let cloudSyncSettings: CloudSyncSettingsStore
     @ObservationIgnored let accountCloudSync: AccountCloudSyncEngine
     private(set) var isCloudSyncEnabled: Bool
+    /// Task #89: the display-settings counterpart to `accountCloudSync` —
+    /// syncs the allowlisted `UserDefaults` keys `AppSettingsCloudDirectory`
+    /// names (list display/viewer/swipe/toolbar/avatar/translation
+    /// preferences) through the `"settings.v1"` KVS key, gated by the exact
+    /// same `cloudSyncSettings`/`isCloudSyncPermittedOnThisBuild()` toggle
+    /// as `accountCloudSync` — see `docs/icloud-sync.md`'s settings-sync
+    /// section for why this piggybacks on the same toggle rather than
+    /// getting its own (a re-install wiping every UI preference back to its
+    /// compiled-in default is exactly the same class of "this device's
+    /// `UserDefaults` can't be trusted to survive" problem the account sync
+    /// toggle already exists to address).
+    @ObservationIgnored let settingsCloudSync: SettingsCloudSyncEngine
     // `nonisolated(unsafe)`: only ever written once, from `init()` (already
     // `@MainActor`), and read once, from `deinit` — which Swift requires to
     // be `nonisolated` even on a `@MainActor` class, so this property can't
@@ -836,6 +848,13 @@ final class AppEnvironment {
                 cloudSyncSettings.isEnabled && AppEnvironment.isCloudSyncPermittedOnThisBuild()
             }
         )
+        self.settingsCloudSync = SettingsCloudSyncEngine(
+            store: SystemUbiquitousStore(),
+            local: AppSettingsCloudDirectory(),
+            isEnabled: { [cloudSyncSettings] in
+                cloudSyncSettings.isEnabled && AppEnvironment.isCloudSyncPermittedOnThisBuild()
+            }
+        )
 
         // Tear down whatever per-device state (cached `AccountSyncer`/
         // `IDLE` loop, Keychain password, OAuth tokens, registered push
@@ -887,9 +906,21 @@ final class AppEnvironment {
         // `CloudAccountDirectory`'s doc comment — so the observer here only
         // ever needs to call `reconcile()` and can capture the engine
         // itself (an actor, `Sendable`) rather than `self`.
+        // Task #89: `settingsCloudSync` reconciles alongside
+        // `accountCloudSync` at every one of the same trigger points (launch,
+        // external KVS change) — both share the single `didChangeExternally
+        // Notification` observer below rather than each registering its own,
+        // since the notification doesn't say *which* key changed and both
+        // engines' `reconcile()` calls are cheap no-ops when nothing relevant
+        // changed. Settings sync additionally reconciles on every foreground/
+        // background scene-phase transition (`OtegamiApp.handleScenePhase
+        // Change`) — see `SettingsCloudSyncEngine`'s doc comment for why a
+        // transition-triggered diff stands in for a per-write push hook.
         let cloudSync = accountCloudSync
+        let settingsSync = settingsCloudSync
         Task {
             await cloudSync.reconcile()
+            await settingsSync.reconcile()
         }
         cloudSyncNotificationObserver = NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
@@ -898,6 +929,7 @@ final class AppEnvironment {
         ) { _ in
             Task {
                 await cloudSync.reconcile()
+                await settingsSync.reconcile()
             }
         }
 
@@ -1360,6 +1392,10 @@ final class AppEnvironment {
         isCloudSyncEnabled = enabled
         if enabled, !wasEnabled {
             await accountCloudSync.reconcile()
+            // Task #89: same toggle, same "just turned back on" trigger —
+            // see `settingsCloudSync`'s doc comment for why this piggybacks
+            // on the account-sync toggle instead of getting its own.
+            await settingsCloudSync.reconcile()
         }
     }
 
