@@ -4,16 +4,15 @@ import SwiftUI
 /// なくて設定とか検索とか翻訳要約のフローティングも」): the circular
 /// "floating action button" chrome every screen-level floating button in
 /// this app uses — the unified inbox's compose/search buttons
-/// (`MailScreenView`), the hamburger menu's settings button
-/// (`FolderListSheet`), and the message-detail screen's summarize/translate
-/// buttons (`AISummaryFloatingButton`/`TranslationFloatingButton`).
+/// (`MailScreenView`), and the hamburger menu's settings button
+/// (`FolderListSheet`).
 ///
 /// **History**: 実機フィードバック第4弾でまず`floatingComposeButton`
 /// だけがSpark参考画像に合わせてアクセント塗り+白アイコンになった
 /// (`docs/design-system.md`のTask #77節「新規作成フローティングボタンを
 /// アクセント塗りに」参照) — その時点では「検索・要約・翻訳は控えめな
 /// スタイルのまま、目立たせるのは主要アクションだけ」という階層を意図的に
-/// 保つ判断だった。今回のユーザー要望でその判断を覆し、**全部のフロー
+/// 保つ判断だった。Task #78のユーザー要望でその判断を覆し、**全部のフロー
 /// ティングボタンをcomposeと同じアクセント塗り+白アイコンに統一**した —
 /// この型はその統一後の見た目を1箇所にまとめたもの。以前は
 /// `OtegamiFloatingButtonTone`(要約/翻訳の状態遷移用)が`AISummaryBar
@@ -23,26 +22,40 @@ import SwiftUI
 /// なるだけなので、このペアだけを昇格するのは見送る」) — 全ボタンが同じ
 /// 見た目になった今、複製を維持する理由が無くなったため、design system
 /// のコンポーネントとしてここへ昇格した。
+///
+/// Task #88 (「要約と翻訳のボタンをフローティングをやめてツールバーに
+/// 入れて」): 要約/翻訳の2つはフローティング自体をやめてフッターツール
+/// バーに移った (`MessageDetailFooterToolbar`の`summarizeButton`/
+/// `translateButton` — 独自の色トーン`AIToolbarTone`を持つ、この型とは
+/// 別物)。結果、`neutral`以外の3ケース (`active`/`attention`/`disabled`)
+/// は現時点でどの呼び出し元も使っていない — 検索/設定/作成の3つは元々
+/// 無状態のフローティングボタンで`neutral`しか使わないため。この3ケース
+/// はすぐには消さず残してある: 状態を持つフローティングボタンが将来また
+/// 増えたときに再利用できる、汎用的な色トーンの語彙として設計してある型
+/// のため (削除しても実害はないが、削除の判断は次にこの型を触るバッチに
+/// 委ねる)。
 public enum OtegamiFloatingButtonTone {
     /// Idle/default — 塗りつぶしのアクセント色+白アイコン。無状態の
     /// フローティングボタン (検索・設定・作成) はこのトーンだけを使う。
     case neutral
-    /// A result is ready and tapping reveals/toggles it (summarized, or
-    /// translated-and-currently-showing) — `neutral`と同じアクセント系の
-    /// 塗りだが、`accentText`(通常の`accent`よりコントラストの強い
-    /// ステップ、既存トークン) を使うことで「オン」状態だとまだ見分けが
-    /// つくようにしている — 例えば`TranslationFloatingButton`の「原文へ
-    /// 戻す」トグル状態はこの色の違いだけで示す (アイコン自体は変えない)。
+    /// A result is ready and tapping reveals/toggles it — `neutral`と同じ
+    /// アクセント系の塗りだが、`accentText`(通常の`accent`よりコントラスト
+    /// の強いステップ、既存トークン) を使うことで「オン」状態だとまだ
+    /// 見分けがつくようにしている。Task #88時点でこのケースを使う呼び
+    /// 出し元は無い (上のenum doc comment参照)。
     case active
     /// The last attempt failed — tapping retries. 塗りつぶしの
     /// `OtegamiColor.destructive`(赤) — `active`(青系)と紛れず、
-    /// ひと目で「失敗」と分かる。
+    /// ひと目で「失敗」と分かる。Task #88時点でこのケースを使う呼び出し元
+    /// は無い (上のenum doc comment参照)。
     case attention
     /// This device/configuration can't do this at all right now — dimmed
     /// (アクセント系の塗りにしない、押せないことが分かるよう控えめな
     /// 面のまま), and the button is also disabled (`.disabled(true)` at
     /// the call site); VoiceOver still explains why via
     /// `accessibilityLabel` rather than the button silently vanishing.
+    /// Task #88時点でこのケースを使う呼び出し元は無い (上のenum doc
+    /// comment参照)。
     case disabled
 }
 

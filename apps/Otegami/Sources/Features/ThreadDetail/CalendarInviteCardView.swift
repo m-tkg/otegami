@@ -4,7 +4,8 @@ import OtegamiCore
 /// Task #66 (カレンダー招待メール対応): the invite card shown at the top of a
 /// calendar invite email's body — title/time/location/organizer plus the
 /// 「承諾」「辞退」「未定」response buttons. Pure presentation, same split as
-/// `AttachmentCardRow`/`TranslationFloatingButton`: every piece of state
+/// `AttachmentCardRow`/`MessageDetailFooterToolbar`'s `translateButton`
+/// (formerly `TranslationFloatingButton`, moved by Task #88): every piece of state
 /// (the parsed invite, which response is currently recorded, whether a send
 /// is in flight) lives in the parent (`CalendarInviteSectionView`) and is
 /// handed in as plain values, this view only renders them and forwards taps

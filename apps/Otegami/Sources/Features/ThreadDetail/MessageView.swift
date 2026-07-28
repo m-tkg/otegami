@@ -58,15 +58,17 @@ struct MessageView: View {
     /// `content`'s HTML branch below for the only place this is ever
     /// actually invoked.
     var onHTMLContentHeightChange: (CGFloat) -> Void = { _ in }
-    /// Task #59 (フローティングボタンを画面下部に固定): reports the live
-    /// `MessageDetailAIFeaturesState` this view populates (`aiState` below)
-    /// up to `ThreadDetailView`'s own top-level `overlay` — non-`nil` while
-    /// this view is on screen (`onAppear`), `nil` once it's torn down
-    /// (`onDisappear`, e.g. the accordion collapses this row). See
-    /// `MessageDetailAIFeaturesState`'s doc comment for why the buttons
-    /// themselves had to move out of this view's own `overlay` in the first
-    /// place. Same no-op default / "nothing else currently constructs this
-    /// view" reasoning as `onHTMLContentHeightChange` above.
+    /// Task #59 (フローティングボタンを画面下部に固定), Task #88 (フッター
+    /// ツールバーへ移設): reports the live `MessageDetailAIFeaturesState`
+    /// this view populates (`aiState` below) up to `ThreadDetailView`, which
+    /// forwards it straight into `MessageDetailFooterToolbar`'s
+    /// `aiFeaturesState` parameter — non-`nil` while this view is on screen
+    /// (`onAppear`), `nil` once it's torn down (`onDisappear`, e.g. the
+    /// accordion collapses this row). See `MessageDetailAIFeaturesState`'s
+    /// doc comment for why the buttons themselves had to move out of this
+    /// view's own `overlay` in the first place. Same no-op default /
+    /// "nothing else currently constructs this view" reasoning as
+    /// `onHTMLContentHeightChange` above.
     var onAIFeaturesStateChange: (MessageDetailAIFeaturesState?) -> Void = { _ in }
 
     /// B5 — see `ListDisplaySettingsStore.showAvatarInDetailKey`'s doc
@@ -152,12 +154,13 @@ struct MessageView: View {
 
     @State private var summaryTask: Task<Void, Never>?
     /// Task #55: whether the summary sheet (`summarySheet`) is presented —
-    /// opened by `AISummaryFloatingButton.onShowSummary`, closed by its own
-    /// toolbar button or the sheet's own swipe-to-dismiss. Stays local (not
-    /// folded into `aiState`) — a `.sheet` presents at the window root
-    /// regardless of where in the view tree it's declared, so this doesn't
-    /// need to travel up to `ThreadDetailView` the way the floating buttons
-    /// themselves did (Task #59).
+    /// opened by `aiState.onShowSummary` (called from
+    /// `MessageDetailFooterToolbar`'s `summarizeButton` since Task #88),
+    /// closed by its own toolbar button or the sheet's own swipe-to-dismiss.
+    /// Stays local (not folded into `aiState`) — a `.sheet` presents at the
+    /// window root regardless of where in the view tree it's declared, so
+    /// this doesn't need to travel up to `ThreadDetailView` the way the
+    /// summarize/translate buttons' own live state did (Task #59).
     @State private var isShowingSummarySheet = false
     /// Task #59 (フローティングボタンを画面下部に固定): `summaryState`/
     /// `translationState`/`translationShowOriginal` used to be separate
@@ -324,17 +327,24 @@ struct MessageView: View {
         // is this view's fix: it still owns every button behavior
         // (`requestSummary`/`requestTranslation`, both below), but hands the
         // live, `@Observable` state up to whichever ancestor actually wants
-        // to render the buttons — `ThreadDetailView`'s own top-level
-        // `overlay`, *outside* its `ScrollView`, exactly the way
+        // to render the buttons from it — originally `ThreadDetailView`'s
+        // own top-level `overlay` (outside its `ScrollView`, exactly the way
         // `MailScreenView.floatingSearchButton`/`FolderListSheet
-        // .floatingSettingsButton` already stay pinned to the screen
-        // regardless of scroll position. `onAppear`/`onDisappear` (not
-        // `.task(id: messageId)`) because this needs to fire exactly when
-        // this view enters/leaves the tree (the accordion collapsing this
-        // row tears it down entirely — `ThreadMessageRow`'s `if isExpanded`
-        // — which is also when the ancestor should stop showing these
-        // buttons), matching the existing `onTranslationControllerReady`
-        // handoff `HTMLMessageView` already uses for the same reason.
+        // .floatingSettingsButton` stay pinned to the screen regardless of
+        // scroll position); Task #88 moved the *renderer* to
+        // `MessageDetailFooterToolbar`'s `summarizeButton`/`translateButton`
+        // instead (フローティングボタン自体を廃止しツールバーへ統合), but
+        // the hoisting mechanism itself — this view stays the one true owner
+        // of every mutation, an ancestor merely reads/calls through the
+        // shared handle — is unchanged, still needed for the exact same
+        // "this row can be much taller than the viewport" reason. `onAppear`/
+        // `onDisappear` (not `.task(id: messageId)`) because this needs to
+        // fire exactly when this view enters/leaves the tree (the accordion
+        // collapsing this row tears it down entirely — `ThreadMessageRow`'s
+        // `if isExpanded` — which is also when the ancestor should stop
+        // reflecting these buttons), matching the existing
+        // `onTranslationControllerReady` handoff `HTMLMessageView` already
+        // uses for the same reason.
         .onAppear { onAIFeaturesStateChange(aiState) }
         .onDisappear { onAIFeaturesStateChange(nil) }
         // Task #59: keeps the buttons' visibility live if the user toggles
@@ -372,14 +382,16 @@ struct MessageView: View {
         #endif
     }
 
-    // MARK: - Task #55/#59: AI要約/翻訳 floating buttons
+    // MARK: - Task #55/#59/#88: AI要約/翻訳 (フッターツールバー起点)
 
-    /// Task #59 (実機フィードバック「フローティングアイコンを左下固定に」):
-    /// keeps `aiState` — the handle `ThreadDetailView`'s own top-level
-    /// `overlay` actually renders the buttons from, outside this view's own
-    /// (now potentially very tall, post-Task #58) frame — in sync with this
-    /// view's show/hide conditions and button actions. Both conditions are
-    /// unchanged from Task #55's original `floatingActionButtons`:
+    /// Task #59 (実機フィードバック「フローティングアイコンを左下固定に」)、
+    /// Task #88 (フッターツールバーへ移設): keeps `aiState` — the handle
+    /// `MessageDetailFooterToolbar`'s `summarizeButton`/`translateButton`
+    /// actually render from (via `ThreadDetailView`'s forwarding, outside
+    /// this view's own, now potentially very tall post-Task #58, frame) — in
+    /// sync with this view's show/hide conditions and button actions. Both
+    /// conditions are unchanged since Task #55's original
+    /// `floatingActionButtons`:
     /// - 要約: shown whenever I「AI 機能の on/off」(`aiFeaturesEnabled`) is
     ///   on, language-independent (a summary is useful even for a Japanese
     ///   mail).
@@ -392,7 +404,7 @@ struct MessageView: View {
     /// effect immediately because the old `floatingActionButtons` read
     /// `aiFeaturesEnabled` directly on every body evaluation; this keeps
     /// that same live behavior now that `aiState`, not this view's own
-    /// body, is what `ThreadDetailView` actually renders from.
+    /// body, is what the footer toolbar actually renders from.
     private func syncAIFeaturesState() {
         // Task #64 (実機フィードバック「本文読み込み完了までフローティング
         // ボタンを出さないでほしい」): gates on `bodyRecord != nil` — the
@@ -439,9 +451,10 @@ struct MessageView: View {
     }
 
     /// Task #55: where a generated summary is actually shown — a sheet
-    /// (`AISummaryFloatingButton.onShowSummary`) rather than the old bar's
-    /// inline text, since a floating button has no room of its own to grow
-    /// text into. Handles all four `MessageSummaryState` cases so it reads
+    /// (`aiState.onShowSummary`, called from `MessageDetailFooterToolbar`'s
+    /// `summarizeButton` since Task #88) rather than the old bar's inline
+    /// text, since a small toolbar icon has no room of its own to grow text
+    /// into either. Handles all four `MessageSummaryState` cases so it reads
     /// sensibly regardless of when it's opened (including mid-generation,
     /// if a user re-opens it right after tapping the button).
     private var summarySheet: some View {
@@ -1441,28 +1454,39 @@ private extension View {
 
 /// Task #59 (実機フィードバック「要約/翻訳のフローティングアイコンが常に
 /// 左下固定であってほしいのに、HTML本文と一緒にスクロールしてしまう」):
-/// the shared, `@Observable` handle that lets `ThreadDetailView`'s own
-/// top-level `overlay` — *outside* its `ScrollView`, so it stays pinned to
-/// the screen regardless of scroll position, the same way `MailScreenView
-/// .floatingSearchButton`/`FolderListSheet.floatingSettingsButton` already
-/// do — render and drive the 要約/翻訳 buttons that `MessageView` (nested
-/// three levels down: `ThreadDetailView` → `ThreadMessageRow` →
-/// `MessageView`, and itself now potentially much taller than the screen
-/// post-Task #58) still fully owns the behavior of.
+/// the shared, `@Observable` handle that originally let `ThreadDetailView`'s
+/// own top-level `overlay` — *outside* its `ScrollView`, so it stays pinned
+/// to the screen regardless of scroll position — render and drive the
+/// 要約/翻訳 buttons that `MessageView` (nested three levels down:
+/// `ThreadDetailView` → `ThreadMessageRow` → `MessageView`, and itself now
+/// potentially much taller than the screen post-Task #58) still fully owns
+/// the behavior of.
+///
+/// Task #88 (「要約と翻訳のボタンをフローティングをやめてツールバーに
+/// 入れて」): the overlay/floating rendering (`MessageDetailFloatingButtons`,
+/// `AISummaryFloatingButton`, `TranslationFloatingButton`) is gone —
+/// `MessageDetailFooterToolbar`'s `summarizeButton`/`translateButton` render
+/// from this same handle instead, forwarded through unchanged
+/// (`ThreadDetailView.footerToolbar`'s `aiFeaturesState:` parameter). The
+/// class itself, and the reason it has to live *outside* this potentially
+/// very tall view rather than as plain `@State` here, are otherwise
+/// unchanged by that move — a footer toolbar pinned via `.safeAreaInset
+/// (edge: .bottom)` is just as much "outside this view's own frame" as the
+/// old top-level `overlay` was.
 ///
 /// `MessageView` is the only writer of every property here (via
 /// `syncAIFeaturesState()`/`requestSummary(message:)`/`requestTranslation
 /// (message:)`) and the only place `onSummarize`/`onShowSummary`/
-/// `onTranslate` are assigned; `ThreadDetailView`'s rendering (through
-/// `MessageDetailFloatingButtons`) only ever *reads* these properties and
-/// *calls* these closures — never assigns state directly — mirroring how
-/// `HTMLTranslationController` already draws that same "owns the behavior /
-/// exposes a live handle" line for a different feature in this same file.
-/// A plain `@Observable` class (not `ObservableObject`/a `Binding` pair)
-/// because SwiftUI's `@Observable` tracks property-level reads from
-/// *any* view that touches them, regardless of where in the tree that view
-/// physically lives — exactly what's needed to let an ancestor three levels
-/// up react to state a descendant mutates.
+/// `onTranslate` are assigned; `MessageDetailFooterToolbar`'s rendering only
+/// ever *reads* these properties and *calls* these closures — never assigns
+/// state directly — mirroring how `HTMLTranslationController` already draws
+/// that same "owns the behavior / exposes a live handle" line for a
+/// different feature in this same file. A plain `@Observable` class (not
+/// `ObservableObject`/a `Binding` pair) because SwiftUI's `@Observable`
+/// tracks property-level reads from *any* view that touches them, regardless
+/// of where in the tree that view physically lives — exactly what's needed
+/// to let an ancestor three levels up (now: a sibling of the whole
+/// expanded-row subtree) react to state a descendant mutates.
 @MainActor
 @Observable
 final class MessageDetailAIFeaturesState {
@@ -1470,92 +1494,14 @@ final class MessageDetailAIFeaturesState {
     var summaryState: MessageSummaryState = .none
     var showsTranslationButton = false
     var translationState: MessageTranslationState = .none
-    /// The 訳文/原文 toggle `TranslationFloatingButton` drives directly
-    /// (`MessageDetailFloatingButtons`'s `$state.translationShowOriginal`
-    /// binding) — `false` (訳文) is the handoff's explicit default
-    /// ("既定は訳文"), unchanged from before this state moved out of
-    /// `MessageView`.
+    /// The 訳文/原文 toggle `MessageDetailFooterToolbar`'s `translateButton`
+    /// drives directly (`handleTranslateTap`'s `aiFeaturesState
+    /// .translationShowOriginal.toggle()`) — `false` (訳文) is the handoff's
+    /// explicit default ("既定は訳文"), unchanged since this state first
+    /// moved out of `MessageView`.
     var translationShowOriginal = false
     var isTranslationAvailable = false
     var onSummarize: () -> Void = {}
     var onShowSummary: () -> Void = {}
     var onTranslate: () -> Void = {}
-
-    /// Task #59 (「本文下の空白が過剰」): how much blank space
-    /// `ThreadDetailView`'s own outer `ScrollView` reserves at its bottom
-    /// (`.contentMargins(.bottom:)`) so its content never renders directly
-    /// behind whichever of the two buttons above is currently showing — the
-    /// exact same footprint estimate `MessageView`'s old, now-removed
-    /// `floatingButtonsReservedBottomInset` used (two `OtegamiSpacing.xl`-
-    /// diameter circular buttons + the gap between them + the buttons' own
-    /// bottom edge padding), just computed once here instead of being
-    /// duplicated into every scrollable body branch
-    /// (`HTMLMessageView`'s DOM spacer, the plain-text `ScrollView`,
-    /// `TranslatedBodyView`) the way it used to be. That duplication was
-    /// itself additive with `ThreadMessageRow`'s separate `+180pt` chrome
-    /// allowance — together, most of Task #59's "空白が過剰" report. `0`
-    /// when neither button will actually show.
-    ///
-    /// Task #64 (実機フィードバック「本文とフッターの間に空き帯が出る」):
-    /// this used to always reserve room for *both* buttons stacked
-    /// (`buttonFootprint * 2`) regardless of how many were actually
-    /// showing — a non-English message (要約だけ表示、翻訳ボタンは
-    /// `shouldShowTranslationBar`が偽で非表示) still reserved a whole second
-    /// button's worth of blank space below the body that nothing ever
-    /// occupied. Now scales with the *actual* visible button count — "ボタン
-    /// 高さ＋間隔ちょうど" — so a single-button case reserves exactly one
-    /// button's footprint (no inter-button gap, since there's only one row),
-    /// and the two-button case is unchanged from before.
-    var reservedBottomInset: CGFloat {
-        let visibleButtonCount = (showsSummaryButton ? 1 : 0) + (showsTranslationButton ? 1 : 0)
-        guard visibleButtonCount > 0 else { return 0 }
-        let buttonFootprint = OtegamiSpacing.xl + (OtegamiSpacing.md + OtegamiSpacing.xs) * 2
-        let interButtonGap = visibleButtonCount > 1 ? OtegamiSpacing.sm : 0
-        return buttonFootprint * CGFloat(visibleButtonCount) + interButtonGap + OtegamiSpacing.lg
-    }
-}
-
-/// Task #59: the two small circular buttons, stacked bottom-leading —
-/// `ThreadDetailView`'s own rendering of whatever `MessageDetailAIFeaturesState`
-/// the currently-expanded `MessageView` last reported. Purely a dumb
-/// presentation of `state`'s current values plus its stored callbacks —
-/// see that type's doc comment for why all the actual *behavior* still
-/// lives in `MessageView`, not here.
-///
-/// Stacked with `OtegamiSpacing.sm` between them (要約 above 翻訳, same
-/// order Task #55's original bars appeared in top-to-bottom) rather than
-/// side by side — two side-by-side circles at the bottom-leading corner
-/// would sit awkwardly close to the screen's rounded corner/home indicator
-/// on iOS, while stacking vertically only grows *up* into body content,
-/// which `state.reservedBottomInset` already reserves space for.
-struct MessageDetailFloatingButtons: View {
-    @Bindable var state: MessageDetailAIFeaturesState
-
-    var body: some View {
-        // Task #85 (フローティングボタン調整): moved from bottom-leading to
-        // bottom-trailing — `ThreadDetailView.body`'s own top-level
-        // `.overlay(alignment:)` moved to match (see its doc comment).
-        // Still a vertical stack, still the same spacing from the footer
-        // toolbar (`.padding(.bottom, OtegamiSpacing.lg)`, unchanged).
-        VStack(alignment: .trailing, spacing: OtegamiSpacing.sm) {
-            if state.showsSummaryButton {
-                AISummaryFloatingButton(
-                    state: state.summaryState,
-                    isAvailable: state.isTranslationAvailable,
-                    onSummarize: state.onSummarize,
-                    onShowSummary: state.onShowSummary
-                )
-            }
-            if state.showsTranslationButton {
-                TranslationFloatingButton(
-                    state: state.translationState,
-                    showOriginal: $state.translationShowOriginal,
-                    isAvailable: state.isTranslationAvailable,
-                    onTranslate: state.onTranslate
-                )
-            }
-        }
-        .padding(.trailing, OtegamiSpacing.lg)
-        .padding(.bottom, OtegamiSpacing.lg)
-    }
 }

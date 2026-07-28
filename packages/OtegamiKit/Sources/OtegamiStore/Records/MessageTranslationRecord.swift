@@ -95,8 +95,10 @@ public struct MessageTranslationRecord: Codable, Equatable, Sendable, FetchableR
 
     /// Task #61: whether *any* paragraph in this translation had a chunk
     /// the engine's safety guardrails blocked (`TranslatedParagraph
-    /// .wasBlocked`'s doc comment) — `apps/Otegami`'s `TranslationFloatingButton`
-    /// uses this to show a modest "一部の文は翻訳できませんでした" note
+    /// .wasBlocked`'s doc comment) — `apps/Otegami`'s
+    /// `MessageDetailFooterToolbar` (`translateButton`, Task #88; formerly
+    /// `TranslationFloatingButton`) uses this to show a modest "一部の文は
+    /// 翻訳できませんでした" note
     /// instead of treating a partially-blocked translation as either a
     /// silent full success or a scary full failure.
     public var hasPartiallyBlockedContent: Bool {

@@ -1,10 +1,10 @@
 import SwiftUI
 
 /// 新画面構成 (3): メール本文画面フッターツールバーの「…」メニュー →
-/// 「ツールバーをカスタマイズ」から開く並び替え画面。5つのアクション
-/// (`MessageToolbarAction.allCases`) は常にすべて表示される — 有効/無効の
-/// 概念は無く、並び順だけを変更できる (`MessageToolbarSettingsStore`'s doc
-/// comment)。
+/// 「ツールバーをカスタマイズ」から開く並び替え画面。7つのアクション
+/// (`MessageToolbarAction.allCases`、Task #88 で要約/翻訳が加わり5→7)
+/// は常にすべて表示される — 有効/無効の概念は無く、並び順だけを変更できる
+/// (`MessageToolbarSettingsStore`'s doc comment)。
 ///
 /// `List`+`.onMove` は既定でドラッグハンドルを見せない (通常は`EditButton`
 /// で編集モードに入る必要がある) が、この画面は「並び替えること」自体が

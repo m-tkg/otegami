@@ -67,9 +67,10 @@ public enum TranslationServiceError: Error, Sendable, Equatable, LocalizedError 
     /// A short, Japanese, user-facing explanation of *why* this failed —
     /// `errorDescription` above stays an English, log-oriented description
     /// (existing behavior, unchanged); this is what `apps/Otegami`'s
-    /// `TranslationFloatingButton`'s footnote/`MessageView`'s summary sheet
-    /// footnote (Task #55 renamed these from `TranslationBar`/`AISummaryBar`)
-    /// should actually show a user, since both
+    /// `MessageDetailFooterToolbar`'s `translateButton` footnote (Task #88;
+    /// formerly `TranslationFloatingButton`, Task #55 renamed these from
+    /// `TranslationBar`/`AISummaryBar`)/`MessageView`'s summary sheet
+    /// footnote should actually show a user, since both
     /// `MessageTranslationState.failed`/`MessageSummaryState.failed` only
     /// carry a `String` (not this `Error` itself — see
     /// `MessageTranslationState`'s doc comment for why), so the category

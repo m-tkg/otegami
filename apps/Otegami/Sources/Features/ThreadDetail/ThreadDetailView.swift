@@ -127,19 +127,21 @@ struct ThreadDetailView: View {
     @State private var showingInfo = false
     @State private var showingToolbarSettings = false
     /// Task #59 (実機フィードバック「要約/翻訳のフローティングアイコンを
-    /// 常に左下固定にしてほしい」): whatever `MessageDetailAIFeaturesState`
-    /// the currently-expanded row's `MessageView` last reported (via
-    /// `ThreadMessageRow.onAIFeaturesStateChange`, itself just forwarding
-    /// `MessageView.onAIFeaturesStateChange`) — `nil` whenever nothing is
-    /// expanded yet, or right after the accordion switches to a different
-    /// message (the old row's `MessageView.onDisappear` reports `nil` before
-    /// the newly-expanded row's `onAppear` reports its own state, so there's
-    /// at most one frame with no buttons — matches "現在展開中の単一
-    /// メッセージ基準" from the same accordion invariant `targetMessage`
-    /// already relies on). `body`'s own top-level `overlay` (outside the
-    /// `ScrollView`) is what actually renders this — see
-    /// `MessageDetailAIFeaturesState`'s doc comment for why it had to move
-    /// out of `MessageView`'s own `overlay` in the first place.
+    /// 常に左下固定にしてほしい」), Task #88 (フッターツールバーへ移設):
+    /// whatever `MessageDetailAIFeaturesState` the currently-expanded row's
+    /// `MessageView` last reported (via `ThreadMessageRow
+    /// .onAIFeaturesStateChange`, itself just forwarding `MessageView
+    /// .onAIFeaturesStateChange`) — `nil` whenever nothing is expanded yet,
+    /// or right after the accordion switches to a different message (the old
+    /// row's `MessageView.onDisappear` reports `nil` before the
+    /// newly-expanded row's `onAppear` reports its own state, so there's at
+    /// most one frame with no buttons — matches "現在展開中の単一メッセージ
+    /// 基準" from the same accordion invariant `targetMessage` already relies
+    /// on). Forwarded straight into `footerToolbar`'s `aiFeaturesState:`
+    /// parameter, which is what actually renders the 要約/翻訳 icons from it
+    /// now — originally rendered by `body`'s own top-level `overlay`
+    /// (removed by Task #88; see `MessageDetailAIFeaturesState`'s doc comment
+    /// for the full history of why this state has to live up here at all).
     @State private var expandedAIFeaturesState: MessageDetailAIFeaturesState?
 
     var body: some View {
@@ -176,21 +178,17 @@ struct ThreadDetailView: View {
                     guard pinned, let newestId = messages.last?.id else { return }
                     scrollProxy.scrollTo(newestId, anchor: .top)
                 }
-                // Task #59: reserves blank space at the bottom of *this*
-                // single outer `ScrollView` so its content never renders
-                // directly behind the floating 要約/翻訳 buttons
-                // (`body`'s own top-level `.overlay(alignment: .bottomTrailing)`
-                // below — Task #85 moved this from `.bottomLeading`) — the
-                // one place this reservation happens now,
-                // replacing the old per-message
-                // duplication (`HTMLMessageView`'s DOM spacer, the
-                // plain-text `ScrollView`, `TranslatedBodyView`, each with
-                // their own copy) `MessageDetailAIFeaturesState
-                // .reservedBottomInset`'s doc comment covers in full — that
-                // duplication, stacked with `ThreadMessageRow`'s separate
-                // `+180pt` chrome guess, was most of the "本文下の空白が
-                // 過剰" report.
-                .contentMargins(.bottom, expandedAIFeaturesState?.reservedBottomInset ?? 0, for: .scrollContent)
+                // Task #59 had this outer `ScrollView` reserve blank space at
+                // its bottom (`.contentMargins(.bottom:)`) so its content
+                // never rendered directly behind the floating 要約/翻訳
+                // buttons that used to overlay it. Task #88 (「要約と翻訳の
+                // ボタンをフローティングをやめてツールバーに入れて」) removed
+                // both the overlay and this reservation together — the two
+                // buttons now live inside `footerToolbar`'s
+                // `.safeAreaInset(edge: .bottom)`, which SwiftUI already
+                // accounts for like any other bottom safe-area content, so
+                // there's nothing left here that would ever render behind
+                // them.
             }
             .accessibilityIdentifier("threadDetail.scrollView")
             .background(OtegamiColor.background)
@@ -208,38 +206,18 @@ struct ThreadDetailView: View {
         // replaced with a generic screen title.
         .navigationTitle("メール")
         .task(id: threadId) { await load() }
-        // Task #60 (実機報告「要約/翻訳ボタンがフッターツールバーの Reply に
-        // 被る」): attached *before* `.safeAreaInset(edge: .bottom)` below —
-        // Task #59 originally had this the other way around (`overlay`
-        // *after* `safeAreaInset`), reasoning that the overlay would resolve
-        // against the safe area `safeAreaInset` carves out. That was wrong:
-        // with `overlay` as the *outer* modifier, its bottom-anchored
-        // alignment (originally `.bottomLeading`, `.bottomTrailing` since
-        // Task #85 — the mechanism is identical either way) resolves against
-        // the combined (content + footerToolbar) frame's own bottom edge —
-        // i.e. the bottom of the toolbar itself, not above it — which is
-        // exactly the overlap the real-device screenshot showed. Attaching
-        // `overlay` here, *inside* (before) `.safeAreaInset(edge: .bottom)`,
-        // means `safeAreaInset` is the outer modifier instead: it insets the
-        // already-overlaid content by `footerToolbar`'s height, so the
-        // overlay's bottom alignment now resolves just above the toolbar
-        // rather than behind it. Same "outside the scrollable content,
-        // screen-fixed" placement
-        // `MailScreenView.floatingSearchButton`/`FolderListSheet
-        // .floatingSettingsButton` already use — the whole point of
-        // Task #59's move (`MessageDetailAIFeaturesState`'s doc comment) —
-        // just with the two modifiers in the order that actually achieves
-        // it. `MessageDetailFloatingButtons`' own `.padding(.bottom,
-        // OtegamiSpacing.lg)` is what leaves the one-spacing-step gap above
-        // the toolbar's top edge.
-        // Task #85 (フローティングボタン調整): 左下 → 右下。`MessageDetail
-        // FloatingButtons`自身のスタック方向・フッターからの間隔は変えず、
-        // 画面上の位置だけを反転させる。
-        .overlay(alignment: .bottomTrailing) {
-            if let expandedAIFeaturesState {
-                MessageDetailFloatingButtons(state: expandedAIFeaturesState)
-            }
-        }
+        // Task #55/#59/#60/#85 had a top-level `.overlay(alignment:
+        // .bottomTrailing)` here rendering `MessageDetailFloatingButtons` —
+        // the whole history of *that* overlay's exact placement relative to
+        // `.safeAreaInset(edge: .bottom)` below (Task #60's "被る" fix, in
+        // particular) no longer applies to anything: Task #88 removed the
+        // overlay entirely and moved the 要約/翻訳 buttons it rendered into
+        // `footerToolbar` itself (`MessageDetailFooterToolbar`'s
+        // `summarizeButton`/`translateButton`, fed by the same
+        // `expandedAIFeaturesState` this view already tracked for the old
+        // overlay). One fewer moving part: the toolbar is the only bottom-
+        // anchored UI now, so there's no second layer to keep from
+        // overlapping it.
         .safeAreaInset(edge: .bottom) { footerToolbar }
         .sheet(isPresented: $showingInfo) { infoSheet }
         .sheet(isPresented: $showingToolbarSettings) {
@@ -437,7 +415,8 @@ struct ThreadDetailView: View {
             isPinned: isThreadPinned,
             onTogglePin: togglePin,
             onDelete: deleteThread,
-            onCustomizeToolbar: { showingToolbarSettings = true }
+            onCustomizeToolbar: { showingToolbarSettings = true },
+            aiFeaturesState: expandedAIFeaturesState
         )
     }
 

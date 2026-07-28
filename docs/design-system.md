@@ -655,10 +655,12 @@ macOS の ⌘R (`RootView.replyToSelectedThread()`) が既に使っていた
 - **ツールバーのカスタマイズ**: `MessageToolbarSettingsStore`
   (`UserDefaults` にカンマ区切りで永続化、`SwipeActionSettingsStore` と
   同じ「素の `UserDefaults` キーの集まり」方針) + `MessageToolbarSettingsView`
-  (常時編集モードの `List`/`.onMove`)。5アクション
-  (`MessageToolbarAction.allCases`) は常にすべて表示、並び順だけを
-  変更できる — 有効/無効の概念は無い (「その他」を含めた自由な並び替え
-  も許可している。オーバーフローとして固定位置にする強制はしていない)。
+  (常時編集モードの `List`/`.onMove`)。7アクション
+  (`MessageToolbarAction.allCases`、Task #88 で要約/翻訳が加わり5→7) は
+  常にすべて表示、並び順だけを変更できる — 有効/無効の概念は無い (「その他」
+  を含めた自由な並び替えも許可している。オーバーフローとして固定位置に
+  する強制はしていない)。要約/翻訳のフローティングボタンからの移設の
+  経緯は「Task #88」節参照。
 
 ### 4. 一覧ヘッダの再編: 検索の左下フローティング化・再読込ボタン廃止・
 未読のみ表示トグル
@@ -4656,3 +4658,233 @@ design-phase-3 (1j) で追加したフィルタチップの4択 (全部/添付/�
 の`"english"`を含む) は安全側の`.all`にフォールバックする。関連する
 UITest (`OtegamiSearchFilterUITests.testEnglishFilterChipExcludesJapaneseOnlyMatches`)
 と対応する String Catalog エントリ (`"英語"`) も削除した。
+
+## Task #88: 要約/翻訳ボタンをフローティングからフッターツールバーへ
+
+ユーザー要望「要約と翻訳のボタンをフローティングをやめてツールバーに
+入れて」を受けたバッチの記録。Task #55 で「本文下の全幅バー2本」から
+「左下(→ Task #85 で右下)のフローティングボタン2個」に変わっていた
+要約/翻訳の入り口を、`MessageDetailFooterToolbar`(新画面構成 (3) の
+本文フッターツールバー) 内の2アイコンへ再度移設した — フローティング
+ボタンという表現自体をやめ、既存の返信/転送/検索/情報/その他と同じ
+「並び替え可能なツールバーアイコン」という枠組みに統合した判断。
+
+### 実装
+
+- **`MessageDetailFloatingButtons`/`AISummaryFloatingButton`/
+  `TranslationFloatingButton`を削除**。`TranslationBar.swift`は
+  `TranslationFloatingButton`以外の中身が無かったため、ファイルごと
+  削除した (`MessageTranslationState.isFailure`のprivate extensionだけ
+  `MessageDetailFooterToolbar.swift`に引き継いだ)。`AISummaryBar.swift`
+  は`MessageSummaryState`(状態enum、`summarySheet`と新ツールバーの両方が
+  共有) だけを残した。
+- **状態の受け渡しは変えず、描画先だけ差し替えた**: `MessageView`が
+  唯一の状態オーナーである`MessageDetailAIFeaturesState`(Task #59が
+  導入した`@Observable`のハンドル) はそのまま — `ThreadDetailView`が
+  `onAIFeaturesStateChange`経由で受け取ったハンドルを、以前は自身の
+  トップレベル`overlay`に渡していたのを、`MessageDetailFooterToolbar`
+  の新しい`aiFeaturesState:`パラメータに渡すよう変えただけ。`MessageView`
+  側の`syncAIFeaturesState()`/`requestSummary`/`requestTranslation`は
+  無改修。
+- **`MessageToolbarAction`に`summarize`/`translate`を追加** (5→7)。
+  アイコンは旧フローティングボタンから継承 (`sparkles`/`translate`)。
+  既定の並びは「返信/転送/検索/情報/**要約/翻訳**/その他」——
+  フローティング時代の縦積み順 (要約が上、翻訳が下) をそのまま左→右に
+  対応させた。`MessageToolbarSettingsStore.loadOrder()`の既存ロジック
+  (保存済みの並びに含まれないアクションは末尾に追記) により、**既存
+  ユーザーの保存済み並びには、この2つが「その他」より後ろに追記される**
+  — 新規ユーザーの既定順とは位置がずれる。手動で並び替えるまではそのまま
+  で、これは意図した挙動として記録しておく (`docs/settings.md`にも
+  同じ注記あり)。
+- **常に表示 + グレーアウト、非表示にはしない**: 本文未読込・この端末で
+  AI機能が使えない・「AI 機能の on/off」設定オフ、いずれの場合も
+  アイコン自体は消さず、`OtegamiColor.inkTertiary`でグレーアウトする —
+  他の5アイコンと違い、この2つだけが状態を持つため、専用の
+  `AIToolbarTone`(`normal`/`active`/`attention`/`disabled`) という
+  色だけのenumを新設した (円形フローティングボタン用の
+  `OtegamiFloatingButtonTone`とは別物 — ツールバーアイコンには塗り
+  つぶす円が無いため、そのまま流用できなかった)。進行中はアイコンを
+  `ProgressView`に差し替え、翻訳済みは「原文へ戻す」トグル状態を
+  `accentText`のハイライトで示す (アイコン自体は変えない、旧
+  `TranslationFloatingButton`と同じ判断)。
+- **部分ブロック注記の表示経路は維持**: 「一部の文は翻訳できませんでした」
+  /「翻訳に失敗しました: …」は、旧フローティングボタンでは専用の縦積み
+  レイアウトに表示していたが、等幅で並ぶツールバーの1アイコンにはその
+  余地が無い — 翻訳アイコンの真上に小さな吹き出しとして重ねることにした
+  (`translateFootnoteCaption`、`.overlay(alignment: .top)`)。
+- **`accentFloating`トークン/`OtegamiFloatingButtonChrome`は削除しない**:
+  検索・作成・設定のフローティングボタン (`MailScreenView`/
+  `FolderListSheet`) は今回のバッチの対象外で、引き続き
+  `otegamiFloatingButtonChrome()`(既定`.neutral`トーン = `accentFloating`)
+  を使う。結果として`OtegamiFloatingButtonTone`の`.active`/`.attention`/
+  `.disabled`の3ケースはこの時点でどの呼び出し元も使わなくなった (元々
+  要約/翻訳専用だったため) が、汎用の色トーン語彙として型自体は残した
+  (`OtegamiFloatingButton.swift`のdoc comment参照) — 削除するかどうかの
+  判断は次にこの型を触るバッチに委ねる。
+- **ScrollViewの下部余白予約を撤去**: `MessageDetailAIFeaturesState
+  .reservedBottomInset`(Task #59/#64、フローティングボタンに本文が
+  隠れないよう`ScrollView`の`.contentMargins(.bottom:)`で確保していた
+  余白の見積もり) を削除し、`ThreadDetailView`側の`.contentMargins`
+  呼び出しも撤去した — フローティングの重なり回避という前提自体が
+  無くなったため。フッターツールバー自体の高さは既存の
+  `.safeAreaInset(edge: .bottom)`がそのまま吸収する。
+
+### 検証
+
+`OtegamiTranslationUITests.swift`のフローティングボタン起点だった
+lookup (`identifier CONTAINS "translationFloatingButton"`) を
+`messageDetail.toolbar.translate`系のidentifierに更新した。要約側の
+UITestはこのバッチ以前から存在しない (`AISummaryFloatingButton`にも
+専用UITestは無かった)。実機/シミュレータでの見た目確認は
+`docs/settings.md`のマイグレーション注記どおりの並びになっているかを
+含め、次回のverifyバッチで実施 (このバッチの時点では未確認 — 申し送り)。
+
+## Task #87: 一覧行まわり4点バッチ (アーカイブ解除・角丸・アバター下地・色バー常時表示)
+
+実機スクリーンショット (`docs/verify.md`と同じ「すべてのアーカイブ」経路)
+で見つかった1件の見た目バグと、3件のユーザー要望をまとめて対応した。
+対象は`MessageListRow`/`MessageListView`/`ThreadRowView`/`SenderAvatar`/
+`SyncEngine`の一覧行・opQueue系のみ — 検索画面 (`SearchScreenView`等) は
+このバッチと並行していた別作業の対象のため触れていない。
+
+### 1. アーカイブ表示中のスワイプ/コンテキストメニューは「アーカイブ解除」に
+
+アーカイブビュー (`MailboxRoleRecord.role == .archive`のメールボックス、
+または Gmail アカウントの All Mail — `gmailArchiveQueryRole`のドキュメント
+コメントどおり Gmail には`.archive`実体が無く All Mail が常にその意味を
+持つ、および`.unifiedRole(.archive)`の「すべてのアーカイブ」横断ビュー)
+を表示中は、スワイプのアーカイブスロット (割り当て設定に関わらずどのスロット
+であっても) とmacOSのコンテキストメニュー行が「アーカイブ解除」に置き換わる
+— アイコン`tray.and.arrow.up`、色は`pin`の「解除」トーンと同じ考え方で
+`accentText`(通常のアーカイブは`paleBaseStrongest`のまま)。
+
+- **`MessageListView.isArchiveView`**: `selection`から導出する新しい
+  `@State`。`.unifiedRole(.archive)`は判定にDB読み込み不要、`.mailbox`は
+  対象メールボックスの`role`を1回読んで`.archive`または(`.all`かつ
+  `account.kind == .gmail`)かを見る。`.task(id: selection)`で選択が変わる
+  たびに再計算 — 既存の`syncSelectedMailboxOnAppear()`と同じキーイング。
+- **`MessageListRow`**: 新しい`isArchiveView: Bool`/`onUnarchive: (ThreadSummary)
+  -> Void`パラメータ。`perform(_:)`/`effectiveSystemImage(for:)`/
+  `effectiveTint(for:)`(iOS のスワイプ)と`swipeButton(for:)`(macOS の
+  コンテキストメニュー)の`.archive`分岐すべてがこのフラグを見る —
+  `pinLabel`/`toggleReadLabel`が既に確立している「状態依存でラベル/
+  アイコン/色を変える」流儀をそのまま踏襲した新しい`archiveLabel`。
+- **`SyncEngine`側の逆操作**: `MessageRemoval.Kind.unarchive`(既存の
+  `.archive`/`.delete`/`.junk`と同じ「即時ローカル削除 + 逆方向の
+  opQueue enqueue、undo は再挿入」パターンをそのまま流用)、
+  `OpQueueKind.unarchive`/`UnarchiveOpPayload`/`OpQueue.enqueueUnarchive`、
+  `OpQueueProcessor`の`.unarchive`replay分岐。**通常サーバー**はメッセージが
+  現在いる場所 (Archive ロールのメールボックス) から`inboxMailbox(accountId:)`
+  で解決したその アカウントのINBOXへ`move`。**Gmail**は`.archive`が
+  「source を`\Deleted`+`EXPUNGE`するだけ (move/COPYなし)」の逆として、
+  All Mail に残したまま INBOX へ`copy`するだけ (ラベル追加、All Mail
+  からは消えない) — この`copy`のためだけに`IMAPSessionProtocol`へ新しい
+  `copy(mailboxPath:uids:to:)`を追加した (`move`と同じ`copyMessagesOperation`
+  を呼ぶが、その後の`STORE +FLAGS \Deleted`+`EXPUNGE`を省略するだけの
+  実装 — `MailCoreIMAPSession.move`のGmail非対応フォールバック経路と
+  ほぼ同じコード)。INBOX は自動作成しない (`resolveOrCreateTrash/Junk/
+  ArchiveMailbox`と違い、INBOXは初回同期で必ず存在するため) —
+  見つからなければ他の`resolveOrCreate*`失敗と同じく op を pending の
+  ままにする。
+- **既知のギャップ**: ローカルコミットは既存の`.archive`/`.delete`/`.junk`
+  と同じ「今いる場所から即座に消す、逆側 (INBOX) への行の追加は次の
+  INBOX 同期任せ」という設計 — つまりアーカイブ解除した瞬間にアーカイブ
+  ビューからは消えるが、統合受信トレイ/INBOXにその行が現れるのは次の
+  INBOX同期 (IDLE/定期再同期/pull-to-refresh) 待ちになる。`.archive`
+  自身も同じ非対称性を最初から持っており (アーカイブした瞬間にアーカイブ
+  ビュー側に現れるわけではない)、このバッチで新規に生んだギャップではない。
+  一括選択の「移動」ボタン (`MessageListView.selectionBottomBar`) は今回
+  対象外 — 要望文が明示的にスワイプ/コンテキストメニューのみだったため
+  未変更 (アーカイブビュー中に一括選択で「移動」を押すと、依然として
+  Archive へ**もう一度**移動しようとする — 実害は薄い想定だが、次に
+  この画面を触るバッチでの見直し候補として記録)。
+- **テスト**: `MessageRemovalTests`に3件 (undo付き正常系、Gmail の
+  All Mail判定、まだアーカイブされていないメッセージへのno-op)、
+  `OpQueueProcessorTests`に2件 (非Gmailのmove、GmailのCOPYかつ
+  move/store/expungeが一切呼ばれないことの確認) を追加。UI 側の
+  実スワイプ操作自体 (`isArchiveView`分岐後の見た目) はシミュレータでの
+  screenshotスクリプト (`verify-screen.sh`) にアーカイブ表示シナリオが
+  無く、タップ操作も自動化していないため未検証 — 実機確認ポイント。
+
+### 2. 一覧行の角丸の完全四角化 (`.listStyle(.plain)`)
+
+実機報告 (「すべてのアーカイブ」表示、ダークモード、2アカウント):
+先頭行の左上/右上と最終行の左下/右下だけが丸まって見える — `ThreadRowView
+.rowCornerRadius`(iOS は`OtegamiRadius.none`、Task #67で撤去済みのはず)
+を疑ったが、実際の原因はそこではなく、**`List`自体に`.listStyle`を明示
+していなかったこと** (既定の`.automatic`) だった。`MessageListView`の
+`List`に`.listStyle(.plain)`(iOS のみ) を追加したところ、`scripts/
+verify-screen.sh list-2accounts`/`list-grouped`(いずれもダークモード、
+`AccountColorRail`の色帯が角のすぐ内側に来る構成) で確認済みの直下の
+問題が解消した。
+
+- Task #67 (`ac39adc`) がこの経路に効いていなかった理由: そのバッチの
+  検証フィクスチャはアカウント1件で`AccountColorRail`自体が
+  `showsAccountAccent`により非表示だった (Task #67のドキュメントコメント
+  にもその制約が明記されている) — 丸みの合わさる角に高コントラストな
+  色帯が無かったため、目視で気付けなかった。
+- `MessageListView`の`List`1つが単一 mailbox/unifiedInbox/unifiedRole/
+  アカウントグループ化`Section`/macOSのインライン検索、すべての経路を
+  共有しているため、この1箇所の修正で全経路に効く。iOS 専用の検索タブ
+  (`SearchScreenView`、別`List`) は対象外 — 別作業中のため確認していない。
+- macOS は元々`NavigationSplitView`の3ペインで`List`のスタイルが違う
+  見た目になるため、`#if os(iOS)`限定 (`CLAUDE.md`のmacOS維持方針どおり)。
+
+### 3. アバター画像の下地を濃い灰色に (`OtegamiColor.avatarImageBackdrop`)
+
+`SenderAvatar`の**画像系アバター** (連絡先写真/Google写真/Gravatar/BIMI・
+favicon) だけ、下地の`Circle`塗りを`OtegamiAccountColor.color(for:
+override:)`(アカウント色) から新設の`OtegamiColor.avatarImageBackdrop`
+(ライト`0x4A4A4A`/ダーク`0x3A3F42`、この設計システムの水色系トークンとは
+意図的に無彩色) に変えた — 透過PNGロゴの余白がアカウント色でハロー状に
+色付いたり、暗い色のロゴマークが暗いアカウント色に沈んで見えなくなる
+問題への対応。イニシャル表示の下地は変更なし (引き続きアカウント色 —
+「この行/このアカウントの色」という意味を保つのはイニシャル表示だけで
+よい)。ダーク値は`surface`/`background`より一段明るくし、チップ自体が
+アプリの暗い地に溶けずに独立した形として読めるようにした。
+
+- `SenderAvatar.body`で`platformImage`を1度だけ`let`に取り出し、塗り色の
+  判定 (`nil`かどうか) と`avatarContent(image:)`への引き渡しの両方に使う
+  よう小さくリファクタした (以前は`avatarContent`内で`platformImage`を
+  再度読んでいた — 同じ`Data`から`UIImage`/`NSImage`を毎回デコードし直す
+  無駄を避けた)。
+- **未検証**: `scripts/verify-screen.sh`は連絡先権限ダイアログを避けるため
+  常に`OTEGAMI_UITEST_DISABLE_AVATAR_SOURCES=1`を付与しており、画像系
+  アバター自体がシミュレータのどのシナリオでも解決されない — この変更
+  はコードレビューのみで、実機での見た目確認はユーザーに委ねる。
+
+### 4. アカウント絞り込み時も色バー (`AccountColorRail`) を常時表示
+
+`MessageListView.showsAccountAccent`が単一メールボックス/1アカウントに
+絞った統合受信トレイで`false`を返し、`AccountColorRail`自体を隠して
+いた挙動をやめ、常に`true`を返すようにした (`scripts/verify-screen.sh
+list`で1アカウント構成でも色帯が出ることを確認済み)。
+
+- **トレーリングのアカウント名ラベルとは切り離した**: 元の
+  `showsAccountAccent`は色帯とラベルの両方を1つの真偽値で制御していたが、
+  ラベルの方は「複数アカウントが混ざりうる画面でだけ意味を持つ」という
+  従来の理由が今回も変わらず正しい (`isMultiAccountScope`という名前で
+  そのまま残した — 純粋にネーミングの都合上のリネームで判定ロジック自体は
+  無変更)。`MessageListView.threadRow(for:)`が`accountDisplayName`を
+  `isMultiAccountScope`で`nil`に落としてから`MessageListRow`へ渡すため、
+  `ThreadRowView.body`側の`showsAccountAccent ? accountDisplayName : nil`
+  という既存の1行はそのまま残してある — この行は`SearchScreenView`
+  (別作業中、このバッチの対象外) も参照しており、`showsAccountAccent`
+  自体をそちらでは今も本来の条件式のまま使っているため、無条件に
+  `accountDisplayName`を素通しする形に書き換えると`SearchScreenView`の
+  見た目を意図せず変えてしまうところだった。
+- **`isGroupingActive`(Task #77) は元の条件を維持**: グルーピングは
+  「複数アカウントが混ざりうる画面」でだけ意味を持つ (`isMultiAccountScope`)
+  — 色帯の常時表示化とは無関係に、アカウント絞り込み時/単一メールボックス
+  ではセクション分割自体が今までどおり効かない。ヘッダのグループ化トグル
+  表示条件 (`MailScreenView.showsGroupByAccountToggle`) も無変更。
+
+### 検証
+
+`make test`(新規5件含め全緑)・`make ios`・`make mac`とも成功を確認。
+`scripts/verify-screen.sh list`/`list-2accounts`/`list-grouped`を
+ライト/ダーク双方で確認し、2の角丸修正 (先頭/最終行とも完全に四角) と
+4の色帯常時表示 (1アカウント構成でも表示) を実際のスクリーンショットで
+確認した。1のアーカイブ解除スワイプ自体の実機/シミュレータでの見た目と、
+3のアバター下地の実機での見た目は、上記の理由によりこのバッチでは
+未確認 — 実機確認ポイントとして残す。
