@@ -3,6 +3,7 @@ import GRDB
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
+import os
 
 /// M4's thread reading view: every message in the thread laid out
 /// vertically, newest expanded, everything older collapsed to a one-line
@@ -203,8 +204,20 @@ struct ThreadDetailView: View {
     /// without the expanded row overflowing past the visible area on
     /// typical phone screens.
     private func expandedMessageHeight(in containerSize: CGSize) -> CGFloat {
-        max(360, containerSize.height - 160)
+        let height = max(360, containerSize.height - 160)
+        // Task #58 diagnostic instrumentation (temporary): the fixed height
+        // budget handed to the expanded row's `MessageView`/`HTMLMessageView`
+        // — see `docs/design-system.md`'s Task #58 note for why this is
+        // under suspicion as the real ceiling on rendered HTML content,
+        // independent of anything `fitToWidthScript` does inside the
+        // `WKWebView` itself.
+        Self.diagnosticLogger.notice("expandedMessageHeight: containerSize=\(String(describing: containerSize), privacy: .public) -> height=\(height, privacy: .public)")
+        return height
     }
+
+    /// Task #58 diagnostic instrumentation (temporary) — see
+    /// `expandedMessageHeight(in:)`'s doc comment.
+    private static let diagnosticLogger = Logger(subsystem: "com.mtkg.otegami", category: "HTMLHeightDiagnostic")
 
     /// Builds one row for the `ForEach` in `body` — pulled into its own
     /// `@ViewBuilder` method, and the row's `Button`/summary/conditional
@@ -677,6 +690,44 @@ private struct ThreadMessageRow: View {
     let expandedHeight: CGFloat
     let onToggleExpanded: (Int64) -> Void
 
+    /// Task #58 (根治): the real, full content height an HTML message's
+    /// `WKWebView` measured — see `HTMLWebViewCoordinator.onHeightChange`'s
+    /// doc comment for the whole chain this arrives through, and
+    /// `MessageView.onHTMLContentHeightChange`'s for why this row (not
+    /// `MessageView` itself) is where it has to land: `expandedHeight` — a
+    /// fixed, guessed budget — is exactly what silently clipped taller
+    /// messages before this existed (`docs/design-system.md`'s Task #58
+    /// note has the full root-cause writeup). `nil` (falls back to
+    /// `expandedHeight` alone below) until the first `otegamiHeight` message
+    /// arrives, and for a plain-text message, which never reports one at
+    /// all.
+    @State private var measuredHTMLContentHeight: CGFloat?
+
+    /// Rough allowance for everything in `MessageView`'s `VStack` *besides*
+    /// the HTML body itself (header, attachment section, divider, their
+    /// paddings) — same "an estimate, not a measured value" tradeoff
+    /// `MessageView.floatingButtonsReservedBottomInset`'s doc comment
+    /// already makes for a different bottom-margin constant, and for the
+    /// same reason: threading real geometry through for this would cost far
+    /// more than the estimate being slightly generous ever would. Generous
+    /// on purpose — an over-estimate here just means a little extra blank
+    /// space at the bottom of a row inside `ThreadDetailView`'s own
+    /// scrollable `ScrollView`, which costs nothing; an under-estimate would
+    /// silently reproduce a smaller version of the exact bug this exists to
+    /// fix.
+    private static let nonHTMLChromeAllowance: CGFloat = 180
+
+    /// The actual frame height handed to `MessageView` below — `nil`
+    /// `measuredHTMLContentHeight` (not yet measured, or a plain-text
+    /// message) falls back to the old fixed `expandedHeight` budget
+    /// unchanged; once a real measurement arrives, the row grows to fit it
+    /// (never shrinks below `expandedHeight`, so a short message still gets
+    /// the same comfortable minimum it always did).
+    private var resolvedHeight: CGFloat {
+        guard let measuredHTMLContentHeight else { return expandedHeight }
+        return max(expandedHeight, measuredHTMLContentHeight + Self.nonHTMLChromeAllowance)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -691,10 +742,26 @@ private struct ThreadMessageRow: View {
             .accessibilityIdentifier("threadDetail.message.\(messageId).header")
 
             if isExpanded, let accountId {
-                MessageView(accountId: accountId, messageId: messageId)
-                    .frame(height: expandedHeight)
+                MessageView(
+                    accountId: accountId, messageId: messageId,
+                    onHTMLContentHeightChange: { measuredHTMLContentHeight = $0 }
+                )
+                    .frame(height: resolvedHeight)
                     .accessibilityIdentifier("threadDetail.message.\(messageId).body")
             }
+        }
+        // Task #58: a different message expanding (accordion — only one
+        // row is ever expanded at a time, `ThreadDetailView.toggleExpanded`)
+        // must not carry a stale measurement forward onto *this* row the
+        // next time it's the one that expands — without this, collapsing
+        // and re-expanding the same tall message would still show the
+        // correct (already-cached) height immediately, which is fine, but a
+        // message that *shrank* (e.g. a translation toggled back to a
+        // shorter original) would incorrectly keep the taller stale value
+        // forever, since nothing else ever resets it back down.
+        .onChange(of: isExpanded) { _, expanded in
+            guard !expanded else { return }
+            measuredHTMLContentHeight = nil
         }
     }
 }

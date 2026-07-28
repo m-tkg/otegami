@@ -31,6 +31,18 @@ struct MessageView: View {
     /// context a caller must still supply.
     let accountId: String
     let messageId: Int64
+    /// Task #58 (根治): reports an HTML message's real, full content height
+    /// once `HTMLMessageView`'s `WKWebView` measures it — `ThreadMessageRow`
+    /// (`ThreadDetailView.swift`) is the actual caller, and uses this to
+    /// size the fixed-height budget it gives this whole view to match real
+    /// content instead of a constant that used to silently clip taller
+    /// messages. A no-op default so this stays source-compatible for
+    /// anything that doesn't care (nothing else currently constructs this
+    /// view, but there's no reason to force every future call site to
+    /// thread this through). Meaningless for a plain-text message — see
+    /// `content`'s HTML branch below for the only place this is ever
+    /// actually invoked.
+    var onHTMLContentHeightChange: (CGFloat) -> Void = { _ in }
 
     /// B5 — see `ListDisplaySettingsStore.showAvatarInDetailKey`'s doc
     /// comment on why this is read directly via `@AppStorage`.
@@ -612,7 +624,8 @@ struct MessageView: View {
                     // have the full writeup.
                     bottomContentInset: floatingButtonsReservedBottomInset,
                     translatedTexts: htmlTranslatedTexts, showOriginalText: translationShowOriginal,
-                    onTranslationControllerReady: { htmlTranslationController = $0 }
+                    onTranslationControllerReady: { htmlTranslationController = $0 },
+                    onHeightChange: onHTMLContentHeightChange
                 )
                 .accessibilityIdentifier("messageDetail.htmlBody")
             } else if shouldShowTranslationBar, !translationShowOriginal, case .translated(let record) = translationState {

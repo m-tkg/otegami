@@ -5,6 +5,7 @@ import MailTransport
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
+import os
 #if os(iOS)
 import SafariServices
 #elseif os(macOS)
@@ -89,6 +90,12 @@ struct HTMLMessageView: View {
     /// no sense here (only this view can ever construct one, since only it
     /// creates the `WKWebView` the controller wraps).
     let onTranslationControllerReady: (HTMLTranslationController?) -> Void
+    /// Task #58 (根治) — see `HTMLWebViewCoordinator.onHeightChange`'s doc
+    /// comment for the full root-cause writeup this exists to fix. Default
+    /// no-op so every other call site (none currently exist beyond
+    /// `MessageView`, but this keeps the initializer source-compatible)
+    /// doesn't have to opt in.
+    let onHeightChange: (CGFloat) -> Void
 
     @Environment(AppEnvironment.self) private var environment
     /// Created once per `HTMLMessageView` instance (one per opened message,
@@ -137,7 +144,8 @@ struct HTMLMessageView: View {
         html: String, accountId: String, messageId: Int64, mailboxPath: String?,
         bottomContentInset: CGFloat = 0,
         translatedTexts: [String]? = nil, showOriginalText: Bool = false,
-        onTranslationControllerReady: @escaping (HTMLTranslationController?) -> Void = { _ in }
+        onTranslationControllerReady: @escaping (HTMLTranslationController?) -> Void = { _ in },
+        onHeightChange: @escaping (CGFloat) -> Void = { _ in }
     ) {
         self.html = html
         self.accountId = accountId
@@ -147,6 +155,7 @@ struct HTMLMessageView: View {
         self.translatedTexts = translatedTexts
         self.showOriginalText = showOriginalText
         self.onTranslationControllerReady = onTranslationControllerReady
+        self.onHeightChange = onHeightChange
         _allowsExternalContent = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowRemoteImagesKey))
         _allowsEmbeddedImages = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowEmbeddedImagesKey))
         _autoAdjustColorsInDarkMode = State(initialValue: UserDefaults.standard.bool(forKey: HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey))
@@ -243,7 +252,8 @@ struct HTMLMessageView: View {
                     environment: environment, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath
                 ),
                 translationController: translationController,
-                onOpenLink: handleLinkTap
+                onOpenLink: handleLinkTap,
+                onHeightChange: onHeightChange
             )
             .accessibilityIdentifier("messageDetail.htmlWebView")
         }
@@ -1035,11 +1045,28 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     /// 1i — see `HTMLMessageView.translationController`'s doc comment.
     let translationController: HTMLTranslationController
     let onOpenLink: (URL) -> Void
+    /// Task #58 — see `HTMLWebViewCoordinator.onHeightChange`'s doc comment.
+    let onHeightChange: (CGFloat) -> Void
 
-    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext, onOpenLink: onOpenLink) }
+    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext, onOpenLink: onOpenLink, onHeightChange: onHeightChange) }
 
     func makeUIView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
+        // Task #58 (根治): this document's own real content height is now
+        // reported back (`otegamiHeight` message handler, registered below)
+        // and used to size this web view's *actual* frame, up at
+        // `ThreadMessageRow` — so this web view no longer needs (or should
+        // rely on) its own internal scroll surface. Two independent
+        // scrollers used to be nested (this `WKWebView`'s own `UIScrollView`
+        // inside `ThreadDetailView`'s outer `ScrollView`), and on this
+        // toolchain the outer one always won the pan gesture, making
+        // whatever didn't fit in this web view's fixed frame silently
+        // unreachable — not just badly measured, genuinely unscrollable.
+        // Disabling this one leaves exactly one scroller, which is what
+        // actually fixes that (see `docs/design-system.md`'s Task #58 note
+        // for the full root-cause writeup).
+        webView.scrollView.isScrollEnabled = false
+        webView.configuration.userContentController.add(context.coordinator, name: HTMLWebViewCoordinator.heightMessageHandlerName)
         translationController.webView = webView
         webView.navigationDelegate = context.coordinator
         // C7 バグ修正 (リンクがブラウザで開かない) — `HTMLWebViewCoordinator`
@@ -1085,11 +1112,21 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     /// 1i — see `HTMLMessageView.translationController`'s doc comment.
     let translationController: HTMLTranslationController
     let onOpenLink: (URL) -> Void
+    /// Task #58 — see `HTMLWebViewCoordinator.onHeightChange`'s doc comment.
+    let onHeightChange: (CGFloat) -> Void
 
-    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext, onOpenLink: onOpenLink) }
+    func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext, onOpenLink: onOpenLink, onHeightChange: onHeightChange) }
 
     func makeNSView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
+        // Task #58 — see the iOS `makeUIView`'s identical comment (this
+        // repo's macOS layout doesn't nest `HTMLMessageView` inside its own
+        // accordion `ScrollView` the way `ThreadDetailView`'s iOS-shared
+        // implementation does today, but registering the same height
+        // channel here keeps both platforms on one code path and leaves
+        // room for macOS to opt into the same real-height sizing later
+        // without another round of WKWebView plumbing).
+        webView.configuration.userContentController.add(context.coordinator, name: HTMLWebViewCoordinator.heightMessageHandlerName)
         translationController.webView = webView
         webView.navigationDelegate = context.coordinator
         // C7 バグ修正 — `allowsLinkPreview`はiOS専用のプロパティなので
@@ -1147,9 +1184,22 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// navigation has already been cancelled in-place.
     private let onOpenLink: (URL) -> Void
 
-    init(cidContext: CIDResolutionContext, onOpenLink: @escaping (URL) -> Void) {
+    /// Task #58 (根治): the document's real, full content height (in CSS
+    /// px, which this app's viewport makes equal to points) — see
+    /// `heightReportingScript`'s doc comment for how it's measured and
+    /// posted. `HTMLWebViewRepresentable` forwards whatever `HTMLMessageView`
+    /// was given, which threads all the way up to `ThreadMessageRow`
+    /// (`ThreadDetailView.swift`) — that's the view that actually owns the
+    /// fixed-height budget this document used to be silently clipped to
+    /// (`docs/design-system.md`'s Task #58 note has the full root-cause
+    /// writeup), so this callback is what lets that budget grow to match
+    /// real content instead of guessing a constant.
+    private let onHeightChange: (CGFloat) -> Void
+
+    init(cidContext: CIDResolutionContext, onOpenLink: @escaping (URL) -> Void, onHeightChange: @escaping (CGFloat) -> Void) {
         self.cidHandler = CIDSchemeHandler(context: cidContext)
         self.onOpenLink = onOpenLink
+        self.onHeightChange = onHeightChange
     }
 
     private var lastLoadedHTML: String?
@@ -1506,7 +1556,7 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
       function fit() {
         var outer = document.getElementById('otegami-fit-outer');
         var inner = document.getElementById('otegami-fit-inner');
-        if (!outer || !inner) { return; }
+        if (!outer || !inner) { return { otegamiDiagError: 'missing-outer-or-inner' }; }
         inner.style.transform = 'none';
         inner.style.transformOrigin = '';
         inner.style.width = '';
@@ -1514,24 +1564,141 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         outer.style.height = '';
         var viewportWidth = outer.clientWidth;
         var naturalWidth = Math.max(inner.scrollWidth, inner.offsetWidth);
-        if (!viewportWidth || naturalWidth <= viewportWidth + 1) { return; }
-        var scale = viewportWidth / naturalWidth;
         var naturalHeight = Math.max(inner.scrollHeight, inner.offsetHeight);
+        // Task #58 diagnostic instrumentation (temporary — removed once the
+        // root cause is found): every candidate height signal at the moment
+        // `fit()` runs, so a real-device repro can be told apart from "scale
+        // path never even ran" vs. "scale path ran and picked a too-small
+        // height" vs. "no scale needed but something *else* clips the
+        // WKWebView's own frame".
+        var diag = {
+          otegamiDiagViewportWidth: viewportWidth,
+          otegamiDiagNaturalWidth: naturalWidth,
+          otegamiDiagNaturalHeight: naturalHeight,
+          otegamiDiagInnerScrollHeight: inner.scrollHeight,
+          otegamiDiagInnerOffsetHeight: inner.offsetHeight,
+          otegamiDiagOuterScrollHeight: outer.scrollHeight,
+          otegamiDiagOuterClientHeight: outer.clientHeight,
+          otegamiDiagBodyScrollHeight: document.body.scrollHeight,
+          otegamiDiagDocElScrollHeight: document.documentElement.scrollHeight,
+          otegamiDiagWindowInnerHeight: window.innerHeight,
+          otegamiDiagWindowInnerWidth: window.innerWidth,
+          otegamiDiagScaled: false
+        };
+        if (!viewportWidth || naturalWidth <= viewportWidth + 1) { return diag; }
+        var scale = viewportWidth / naturalWidth;
         inner.style.width = naturalWidth + 'px';
         inner.style.transformOrigin = 'top left';
         inner.style.transform = 'scale(' + scale + ')';
         outer.style.width = viewportWidth + 'px';
         outer.style.height = Math.ceil(naturalHeight * scale) + 'px';
+        diag.otegamiDiagScaled = true;
+        diag.otegamiDiagScale = scale;
+        diag.otegamiDiagOuterHeightSet = Math.ceil(naturalHeight * scale);
+        return diag;
+      }
+      // Task #58 (根治): the actual fix — report this document's real,
+      // full content height (including `#otegami-bottom-inset-spacer`,
+      // deliberately: the fixed frame this used to be silently clipped to
+      // had no way to know that spacer existed either) back to Swift via
+      // the `otegamiHeight` message handler, every time it might have
+      // changed. `postHeight` alone (called once, right after `fit()`)
+      // covers the common case; the `ResizeObserver` below additionally
+      // catches later changes this same script doesn't otherwise revisit —
+      // 1i's translation overlay rewriting text nodes (rarely the same
+      // pixel height as the original) is the realistic one, but this is
+      // deliberately general rather than re-deriving the exact set of
+      // callers that might change layout. `data-otegami-height-observer`
+      // guards against attaching a second observer on a later
+      // `applyFitToWidth` call against the same still-alive document (the
+      // 1.5s safety net, or 1i's post-mutation reapply) — `WKWebView
+      // .loadHTMLString` always produces a brand-new `document`, so a fresh
+      // load never sees this attribute already set.
+      function postHeight() {
+        var height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.otegamiHeight) {
+          window.webkit.messageHandlers.otegamiHeight.postMessage(height);
+        }
+      }
+      function ensureHeightObserver() {
+        if (document.documentElement.hasAttribute('data-otegami-height-observer')) { return; }
+        document.documentElement.setAttribute('data-otegami-height-observer', '1');
+        if (typeof ResizeObserver === 'undefined') { return; }
+        var scheduled = false;
+        var observer = new ResizeObserver(function () {
+          if (scheduled) { return; }
+          scheduled = true;
+          requestAnimationFrame(function () { scheduled = false; postHeight(); });
+        });
+        observer.observe(document.documentElement);
       }
       return waitForImages().then(function () {
         decideDarkInversion();
-        fit();
+        // Task #58 diagnostic instrumentation (temporary): stash the
+        // measurement into a DOM attribute instead of returning it —
+        // `evaluateJavaScript` (both the closure-completion-handler overload
+        // *and* the `async` one) fails with WKErrorDomain Code=5
+        // "JavaScript execution returned a result of an unsupported type"
+        // for *any* value resolved via this script's Promise chain, on this
+        // toolchain/simulator — confirmed with both overloads, and even for
+        // a trivial JSON string. A later, wholly separate, plain synchronous
+        // `evaluateJavaScript` call (no Promise involved) reads this
+        // attribute back and *does* bridge successfully — the same shape
+        // `HTMLTranslationController.extractTranslatableTexts()`'s working
+        // synchronous IIFE already relies on elsewhere in this file — so the
+        // bug is specific to bridging a Promise-resolved value, not to
+        // complex values in general.
+        document.documentElement.setAttribute('data-otegami-diag', JSON.stringify(fit()));
+        postHeight();
+        ensureHeightObserver();
       });
     })();
     """
 
+    /// Task #58 diagnostic instrumentation (temporary): reads back whatever
+    /// `fitToWidthScript` stashed into `data-otegami-diag` — see that
+    /// script's doc comment for why this indirection (rather than just
+    /// returning the value from `fitToWidthScript` itself) is needed on this
+    /// toolchain. Plain and synchronous (no `Promise`), which is what makes
+    /// this one actually bridge back through `evaluateJavaScript`.
+    private static let readDiagScript = "document.documentElement.getAttribute('data-otegami-diag');"
+
+    /// Task #58 diagnostic instrumentation (temporary): logs whatever
+    /// `readDiagScript` reads back via `Logger` so a `simctl spawn ... log
+    /// show` capture during a real-device-style repro shows the exact
+    /// numbers `fit()` measured — see `fitToWidthScript`'s doc comment for
+    /// what each field means. Removed once Task #58's root cause is
+    /// confirmed and fixed.
+    private static let diagnosticLogger = Logger(subsystem: "com.mtkg.otegami", category: "HTMLHeightDiagnostic")
+
+    /// Task #58 (根治): the `WKScriptMessageHandler` name `fitToWidthScript`'s
+    /// `postHeight()` posts to — registered on `webView.configuration
+    /// .userContentController` by both `HTMLWebViewRepresentable.makeUIView`/
+    /// `makeNSView`. A message handler is a separate, independent channel
+    /// from `evaluateJavaScript`'s own return-value bridging (the thing
+    /// that's broken for Promise-resolved values on this toolchain — see
+    /// `fitToWidthScript`'s doc comment) — confirmed reliable in this same
+    /// investigation, which is why the actual fix uses it instead of trying
+    /// to work around the return-value bug.
+    static let heightMessageHandlerName = "otegamiHeight"
+
     fileprivate static func applyFitToWidth(to webView: WKWebView) {
         webView.evaluateJavaScript(fitToWidthScript, completionHandler: nil)
+        // Task #58 diagnostic instrumentation (temporary) — see
+        // `readDiagScript`'s doc comment. A short fixed delay (not a retry
+        // loop) is good enough here: this whole call is diagnostics-only,
+        // triggered from a controlled repro, not something that needs to be
+        // robust against arbitrary timing the way the real fit-to-width path
+        // does.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            do {
+                let result = try await webView.evaluateJavaScript(readDiagScript)
+                diagnosticLogger.notice("fitToWidth diag: \(String(describing: result), privacy: .public); webView.bounds=\(String(describing: webView.bounds), privacy: .public); webView.frame=\(String(describing: webView.frame), privacy: .public)")
+            } catch {
+                diagnosticLogger.error("fitToWidth diag read failed: \(String(describing: error), privacy: .public)")
+            }
+        }
     }
 
     /// `WKNavigationDelegate`'s "load finished" callback — fires once per
@@ -1607,6 +1774,20 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
            let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
             onOpenLink(url)
         }
+    }
+}
+
+/// Task #58 (根治): receives the real content height `fitToWidthScript`'s
+/// `postHeight()` posts to `HTMLWebViewCoordinator.heightMessageHandlerName`.
+/// `message.body` is whatever JSON-compatible value `postMessage` was
+/// called with — a plain JS number bridges to `NSNumber` here (unlike the
+/// Promise-return-value bridging bug `fitToWidthScript`'s doc comment
+/// documents; this is an entirely different WebKit code path and isn't
+/// affected by it).
+extension HTMLWebViewCoordinator: WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == Self.heightMessageHandlerName, let height = (message.body as? NSNumber)?.doubleValue, height.isFinite, height > 0 else { return }
+        onHeightChange(CGFloat(height))
     }
 }
 
