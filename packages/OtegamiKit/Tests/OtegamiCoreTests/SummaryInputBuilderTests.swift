@@ -20,14 +20,35 @@ struct SummaryInputBuilderTests {
         #expect(result.contains(SummaryInputBuilder.quotedTextSectionLabel))
         #expect(result.contains(newText))
         #expect(result.contains(quotedText))
-        // The new-text section must precede the quoted-context section —
-        // Task #62's whole point is that the new part is the primary
-        // subject and the quote is background read after it.
-        let newTextRange = try? #require(result.range(of: newText))
-        let quotedTextRange = try? #require(result.range(of: quotedText))
-        if let newTextRange, let quotedTextRange {
-            #expect(newTextRange.lowerBound < quotedTextRange.lowerBound)
+        // The quoted-context section must precede the new-text section —
+        // Task #97: the quote is chronologically the *earlier* part of the
+        // conversation (it's the history being replied to) while the new
+        // text is the *latest* event, so presenting the quote first lines
+        // the input order up with chronological order. This is the
+        // opposite of Task #62's original "new text first" ordering, which
+        // a real-device report said made summaries narrate events
+        // backwards (new reply described first, quoted history mentioned
+        // as an afterthought). The new text remains the summary's primary
+        // *subject* regardless of this input ordering — that's enforced by
+        // `FoundationModelsTranslationService.summarizeInstructions`, not
+        // by section order.
+        guard let quotedTextRange = result.range(of: quotedText), let newTextRange = result.range(of: newText) else {
+            Issue.record("expected both newText and quotedText to be present in the result")
+            return
         }
+        #expect(quotedTextRange.lowerBound < newTextRange.lowerBound)
+    }
+
+    @Test("labels the quoted section as past context and the new section as the reply to summarize")
+    func labelsReflectChronologicalRoles() {
+        // Task #97: labels spell out each section's *role* now that they
+        // no longer appear in "new, then old" order — asserting on the
+        // exact wording (rather than just presence, which the test above
+        // already covers) guards against a future edit reintroducing
+        // wording that implies the old "new part / quoted part" framing
+        // without the context-vs-target distinction.
+        #expect(SummaryInputBuilder.quotedTextSectionLabel.contains("過去のやり取り"))
+        #expect(SummaryInputBuilder.newTextSectionLabel.contains("要約対象"))
     }
 
     @Test("truncates quoted context to the character limit, keeping newText intact")

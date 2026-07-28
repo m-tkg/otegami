@@ -1396,12 +1396,18 @@ struct MessageView: View {
     /// 要望。そこで`QuoteStripper.separatingQuotedText`(新規部分と引用を
     /// 分離して両方返すAPI、`QuoteStripper.SeparatedText`のdoc comment
     /// 参照)に切り替え、`SummaryInputBuilder.build`で構造化テキストとして
-    /// モデルに渡す: 「■このメールの新規部分」「■引用されている過去のやり
-    /// 取り (文脈)」の2セクション(引用側は`SummaryInputBuilder
-    /// .quotedContextCharacterLimit`で切り詰め)。
+    /// モデルに渡す: 「■これは過去のやり取り (文脈参照用)」「■これが今回
+    /// 届いた返信 (要約対象)」の2セクション、この順(引用側は
+    /// `SummaryInputBuilder.quotedContextCharacterLimit`で切り詰め)。
+    /// この2セクションの並び順(引用が先・新規部分が後)は Task #97 で
+    /// 「引用→新規」の時系列順に揃えたもの — 元は Task #62 時点で逆順
+    /// (新規部分が先)だったが、実機報告「返信メールの要約で叙述順が時系列
+    /// と逆になる」を受けて入れ替えた。詳細は`SummaryInputBuilder`の
+    /// doc comment参照。
     /// `FoundationModelsTranslationService.summarizeInstructions`にはこの
     /// 2セクションを「新規部分を主対象に、引用は文脈として使う」よう指示
-    /// する文言を追加済み。引用が無い(または新規部分がほぼ無くフォール
+    /// する文言(Task #97でさらに「出力も時系列順に」という指示を追加)を
+    /// 追加済み。引用が無い(または新規部分がほぼ無くフォール
     /// バックが発動した)場合は従来通り単一テキストのまま渡す
     /// (`SummaryInputBuilder.build`が空の`quotedText`を`newText`そのまま
     /// 返す形で処理する)。

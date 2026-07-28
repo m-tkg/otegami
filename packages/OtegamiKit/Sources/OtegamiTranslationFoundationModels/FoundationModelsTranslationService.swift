@@ -179,12 +179,33 @@ public struct FoundationModelsTranslationService: TranslationService {
     /// short-new-section case (a one-line "了解です" reply): describe what
     /// *this* message did in response to the thread, rather than either
     /// padding out a one-liner or falling back to summarizing the quote.
+    ///
+    /// Task #97 follow-up: a real-device report said summaries *narrated
+    /// events out of order* — the output described the new reply first,
+    /// then belatedly mentioned the quoted history, even though the quote
+    /// is chronologically *earlier* than the reply sitting on top of it.
+    /// Two changes, both required together (see
+    /// `SummaryInputBuilder`'s doc comment for the input-side half):
+    ///  - `SummaryInputBuilder.build` now presents the quoted section
+    ///    *first* and the new section *second*, so input order already
+    ///    matches chronological (and desired narration) order — the
+    ///    section labels below were reworded to match
+    ///    (`newTextSectionLabel`/`quotedTextSectionLabel`).
+    ///  - This instruction now spells out the *output* shape explicitly
+    ///    instead of only constraining which section is the "main
+    ///    subject": open with a single short context sentence derived from
+    ///    the quoted section (only when a quoted section is present),
+    ///    then describe the new reply. This still isn't "summarize the
+    ///    quote" — the #90 prohibition on making the quote the main
+    ///    subject, and the #90 short-reply fallback, are unchanged below
+    ///    — it only fixes which one is mentioned *first* in the output.
     private static func summarizeInstructions(targetLanguage: TranslationLanguage, sentenceCount: Int) -> String {
         """
         Summarize the user's email content in \(targetLanguage.displayName), in about \(sentenceCount) short sentence\(sentenceCount == 1 ? "" : "s").
-        The input sometimes contains two labeled sections: "■このメールの新規部分" (this email's own new text) and "■引用されている過去のやり取り (文脈)" (quoted history from the prior thread, given only as context).
-        When both sections are present: you must not summarize only the content of the quoted section. The main subject of your summary must be the new section. Use the quoted section only as background to understand the flow of the conversation.
-        If the new section is very short (e.g. just a greeting or a one-line acknowledgment like "了解です"/"承知しました"), do not pad it out and do not fall back to summarizing the quote instead — in 1-2 sentences, state what this email did in response to the quoted thread (e.g. "見積もりの件を了承する返信" rather than a recap of the quoted estimate itself).
+        The input sometimes contains two labeled sections: "■これは過去のやり取り (文脈参照用)" (quoted history from the prior thread, given only as context) and "■これが今回届いた返信 (要約対象)" (this email's own new text — the thing to summarize).
+        When both sections are present: you must not summarize only the content of the quoted section. The main subject of your summary must be the new reply section. Use the quoted section only as background to understand the flow of the conversation.
+        When both sections are present, structure your output in chronological order, not input-label order: start with at most one short sentence giving context from the quoted history (only if needed to understand the reply), then describe what the new reply says. Do not describe the new reply first and mention the quoted history as an afterthought — the quoted history happened earlier, so it comes first in your narration too.
+        If the new reply section is very short (e.g. just a greeting or a one-line acknowledgment like "了解です"/"承知しました"), do not pad it out and do not fall back to summarizing the quote instead — in 1-2 sentences, state what this email did in response to the quoted thread (e.g. "見積もりの件を了承する返信" rather than a recap of the quoted estimate itself).
         When there are no such labeled sections, just summarize the text as given.
         Output ONLY the summary itself — no preamble, no explanation.
         """

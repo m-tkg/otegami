@@ -14,6 +14,21 @@ import Foundation
 /// quoted part only as background. When there's no quoted context (the
 /// common case: no quote marker found), `newText` is returned unchanged —
 /// there's nothing to label.
+///
+/// Task #97: the quoted section is presented **first**, the new-text
+/// section **second** — the reverse of Task #62's original ordering. A
+/// real-device report said summaries narrated events out of chronological
+/// order ("summarizes the new reply, then belatedly mentions the quoted
+/// history") — an email's own new text is chronologically the *latest*
+/// event, while the quote beneath it is the *earlier* history, so an LLM
+/// asked to narrate "what happened" from input presented new-then-old tends
+/// to reproduce that same backwards order in its output. Putting the quote
+/// (earlier) before the new text (later) lines the input order up with
+/// story order, so the model's natural "read top to bottom, narrate top to
+/// bottom" tendency produces a chronologically-ordered summary instead of
+/// fighting it. This is purely an input-ordering change — which section is
+/// the *primary subject* of the summary is unchanged (still the new text;
+/// see `FoundationModelsTranslationService.summarizeInstructions`).
 public enum SummaryInputBuilder {
     /// Character cap applied to the quoted-context section — it's
     /// background, not the thing being summarized, so a long reply chain
@@ -28,9 +43,12 @@ public enum SummaryInputBuilder {
     /// The section labels the model is told about in
     /// `FoundationModelsTranslationService.summarizeInstructions` — kept
     /// here as the single source of truth so the builder and the
-    /// instructions can't drift apart.
-    public static let newTextSectionLabel = "■このメールの新規部分"
-    public static let quotedTextSectionLabel = "■引用されている過去のやり取り (文脈)"
+    /// instructions can't drift apart. Reworded for Task #97 to spell out
+    /// each section's *role* (context vs. summary target) rather than just
+    /// its chronological position ("新規部分"/"過去のやり取り"), since the
+    /// two sections no longer appear in "new, then old" reading order.
+    public static let newTextSectionLabel = "■これが今回届いた返信 (要約対象)"
+    public static let quotedTextSectionLabel = "■これは過去のやり取り (文脈参照用)"
 
     /// - Parameters:
     ///   - newText: the mail's own new text. Returned unchanged when
@@ -44,11 +62,11 @@ public enum SummaryInputBuilder {
         guard !quotedText.isEmpty else { return newText }
         let truncatedQuote = String(quotedText.prefix(characterLimit))
         return """
-        \(newTextSectionLabel):
-        \(newText)
-
         \(quotedTextSectionLabel):
         \(truncatedQuote)
+
+        \(newTextSectionLabel):
+        \(newText)
         """
     }
 }
