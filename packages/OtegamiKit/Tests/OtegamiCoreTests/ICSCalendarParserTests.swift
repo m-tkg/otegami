@@ -174,6 +174,34 @@ struct ICSCalendarParserTests {
         #expect(ICSCalendarParser.parse(ics) == nil)
     }
 
+    /// Task #94 (「応答済み表示」): the existing coverage above only ever
+    /// exercised `PARTSTAT=NEEDS-ACTION` — this pins down that `ACCEPTED`/
+    /// `DECLINED`/`TENTATIVE` (the three values `CalendarInviteLoader
+    /// .loadCurrentResponse` actually needs to recognize, to show "すでに
+    /// 別のクライアントで回答済み" for an invite this app itself never
+    /// responded to) parse correctly too, one attendee per status.
+    @Test("ATTENDEE PARTSTAT of ACCEPTED/DECLINED/TENTATIVE all parse correctly, not just NEEDS-ACTION")
+    func parsesNonDefaultAttendeePartStats() throws {
+        let ics = """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        METHOD:REQUEST
+        BEGIN:VEVENT
+        UID:partstat-variety@example.com
+        SUMMARY:Partstat Variety
+        SEQUENCE:0
+        ATTENDEE;PARTSTAT=ACCEPTED;CN=Accepted Person:mailto:accepted@example.com
+        ATTENDEE;PARTSTAT=DECLINED;CN=Declined Person:mailto:declined@example.com
+        ATTENDEE;PARTSTAT=TENTATIVE;CN=Tentative Person:mailto:tentative@example.com
+        END:VEVENT
+        END:VCALENDAR
+        """
+        let invite = try #require(ICSCalendarParser.parse(ics))
+        #expect(invite.attendee(matching: "accepted@example.com")?.partStat == .accepted)
+        #expect(invite.attendee(matching: "declined@example.com")?.partStat == .declined)
+        #expect(invite.attendee(matching: "tentative@example.com")?.partStat == .tentative)
+    }
+
     @Test("missing SEQUENCE defaults to 0")
     func missingSequenceDefaultsToZero() throws {
         let ics = """

@@ -5,9 +5,10 @@ import OtegamiCore
 /// calendar invite email's body — title/time/location/organizer plus the
 /// 「承諾」「辞退」「未定」response buttons. Pure presentation, same split as
 /// `AttachmentCardRow`/`MessageDetailFooterToolbar`'s `translateButton`
-/// (formerly `TranslationFloatingButton`, moved by Task #88): every piece of state
-/// (the parsed invite, which response is currently recorded, whether a send
-/// is in flight) lives in the parent (`CalendarInviteSectionView`) and is
+/// (formerly `TranslationFloatingButton`, moved by Task #88): every piece of
+/// state (the parsed invite, which response is currently recorded, whether a
+/// send is in flight) lives in `CalendarInviteLoader` (Task #94; owned by
+/// `MessageView`'s own `@State`, not `CalendarInviteSectionView`'s) and is
 /// handed in as plain values, this view only renders them and forwards taps
 /// via `onRespond`.
 struct CalendarInviteCardView: View {
@@ -46,7 +47,7 @@ struct CalendarInviteCardView: View {
                 detailRow(systemImage: "person", text: organizer.description, accessibilityId: "messageDetail.calendarInvite.organizer")
             }
             if let currentResponse, currentResponse != .needsAction {
-                Text("現在の回答: \(localizedLabel(for: currentResponse))")
+                Text(respondedLabel(for: currentResponse))
                     .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("messageDetail.calendarInvite.currentResponse")
@@ -125,16 +126,22 @@ struct CalendarInviteCardView: View {
     /// constant — that package has no String Catalog of its own (it's pure
     /// business logic, not UI) — so the app-facing "現在の回答" line routes
     /// each case through its own `String(localized:)` call here instead,
-    /// the same way `buttonRow`'s three titles already do, rather than
-    /// displaying `OtegamiCore`'s untranslated Japanese constant verbatim
-    /// in an English-localized build.
-    private func localizedLabel(for partStat: CalendarPartStat) -> String {
+    /// rather than displaying `OtegamiCore`'s untranslated Japanese constant
+    /// verbatim in an English-localized build.
+    ///
+    /// Task #94 (「応答済み表示」): worded so it's unambiguous this is a
+    /// *response already sent* (by this device, or read off the invite's
+    /// own `ATTENDEE` list because another client already responded), not
+    /// just a status label — distinct from `buttonRow`'s own action-verb
+    /// button titles ("承諾"/"辞退"/"未定"), which stay imperative even when
+    /// one of them is currently selected/highlighted.
+    private func respondedLabel(for partStat: CalendarPartStat) -> String {
         switch partStat {
-        case .accepted: String(localized: "参加")
-        case .declined: String(localized: "不参加")
-        case .tentative: String(localized: "未定")
+        case .accepted: String(localized: "承諾済み")
+        case .declined: String(localized: "辞退済み")
+        case .tentative: String(localized: "未定で返答済み")
         case .needsAction: String(localized: "未回答")
-        case .delegated: String(localized: "委任")
+        case .delegated: String(localized: "委任済み")
         }
     }
 

@@ -118,6 +118,11 @@ struct MessageView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var attachments: [AttachmentRecord] = []
+    /// Task #94: owns the calendar-invite card's own state (ICS download/
+    /// parse result, RSVP send-in-flight) independently of
+    /// `CalendarInviteSectionView`'s own lifecycle — see
+    /// `CalendarInviteLoader`'s doc comment for why that matters.
+    @State private var calendarInviteLoader = CalendarInviteLoader()
     /// M8: which attachment (by id) is currently being downloaded on-demand
     /// — drives that row's spinner. A `Set` rather than a single optional
     /// id since a user could plausibly tap two attachment rows in quick
@@ -257,7 +262,8 @@ struct MessageView: View {
                         messageId: messageId,
                         messageUID: message.uid,
                         mailboxPath: mailboxPath,
-                        calendarAttachment: calendarInviteAttachment
+                        calendarAttachment: calendarInviteAttachment,
+                        loader: calendarInviteLoader
                     )
                     .padding(.horizontal)
                     .padding(.bottom, 8)
@@ -896,6 +902,7 @@ struct MessageView: View {
         attachmentErrorMessages = [:]
         previewURL = nil
         manualPreferPlainText = nil
+        calendarInviteLoader.reset()
         resetTranslationState()
         resetSummaryState()
         // Task #59: hides both floating buttons immediately while this
@@ -927,6 +934,7 @@ struct MessageView: View {
             // .detectedLanguage`, which that call may have just filled in.
             syncAIFeaturesState()
             kickoffTranslationIfNeeded(message: backfilledMessage)
+            loadCalendarInviteIfNeeded(messageUID: loadedMessage.uid)
             return
         }
 
@@ -957,6 +965,7 @@ struct MessageView: View {
             markAsReadIfNeeded()
             syncAIFeaturesState()
             kickoffTranslationIfNeeded(message: refreshed)
+            loadCalendarInviteIfNeeded(messageUID: refreshed.uid)
         } catch {
             // Offline (or any other network failure): fall back to
             // whatever's already in the local database — a `.fetching`
@@ -967,10 +976,34 @@ struct MessageView: View {
                 markAsReadIfNeeded()
                 syncAIFeaturesState()
                 kickoffTranslationIfNeeded(message: loadedMessage)
+                loadCalendarInviteIfNeeded(messageUID: loadedMessage.uid)
             } else {
                 errorMessage = await missingCredentialAwareErrorMessage(prefix: "本文の取得に失敗しました", underlyingError: error)
             }
         }
+    }
+
+    /// Task #94: kicks off (or logs the absence of) the calendar-invite
+    /// card's load, using whichever `attachments` this call happens after —
+    /// every call site above re-reads `attachments` from the database
+    /// immediately before calling this, so `calendarInviteAttachment`
+    /// (computed from that same `@State`) reflects the message's current,
+    /// real attachment rows. `CalendarInviteLoader.load` itself is a no-op
+    /// if this attachment is already loaded/loading, so calling this more
+    /// than once per message (offline fallback + a later successful retry,
+    /// for instance) is harmless.
+    private func loadCalendarInviteIfNeeded(messageUID: Int64) {
+        let candidate = calendarInviteAttachment
+        CalendarInviteLoader.logRecognition(messageId: messageId, attachments: attachments, primary: candidate)
+        guard let candidate, let mailboxPath else { return }
+        calendarInviteLoader.load(
+            attachment: candidate,
+            messageId: messageId,
+            messageUID: messageUID,
+            mailboxPath: mailboxPath,
+            accountId: accountId,
+            environment: environment
+        )
     }
 
     /// Real-device bug report (`docs/icloud-sync.md`'s "重複挿入バグ"):
