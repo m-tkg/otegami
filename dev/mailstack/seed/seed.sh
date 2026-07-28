@@ -161,4 +161,13 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/32-plain-html-no-colors.eml"
 # (docs/design-system.md の Task #56 節参照)。
 seed_message "test1@otegami.test" "$FIXTURES_DIR/33-beta-testing-notice.eml"
 
+# 実機フィードバック検証用 (MakerWorld実メールとの比較報告 — ダークモード
+# のスマート反転で(1) 右端に縦の白帯、(2) セクション間の色ムラ、(3) 透過
+# PNGロゴが暗背景に沈む、の3点): MakerWorldの構造 (白背景をbody自身に
+# 明示指定、中央寄せの透過PNGロゴ、薄グレーの角丸カード、緑のCTAボタン)
+# を模した最小構成。ロゴ画像は120x40の透過PNG (黒の線画ブロック、
+# ロゴチップ判定の閾値200px以下に収まるサイズ) — `HTMLDocumentBuilder
+# .wrap`の`<style>`コメント/`fitToWidthScript`の`decideLogoChips`参照。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/34-white-canvas-transparent-logo.eml"
+
 echo "==> done"

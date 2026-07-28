@@ -1,0 +1,59 @@
+From: "MakerWorld-like Notice" <notice@otegami.test>
+To: test1@otegami.test
+Subject: A boost token is about to expire
+Message-ID: <seed-0034@otegami.test>
+Date: Tue, 28 Jul 2026 19:40:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="otegami-boundary-34"
+
+--otegami-boundary-34
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width">
+<title>A boost token is about to expire</title>
+<style>
+  /* 実機フィードバック (MakerWorld比較) の再現に必要な、テンプレート側の
+     「ページ全体を白背景にする」という頻出パターン — body 自身に背景色を
+     持たせる (このメールに限らず、マーケティング/通知テンプレートで
+     ごく一般的)。ダークモードの「反転」対象探索 (`findEffectiveBackground`)
+     がこの body 自身の背景色を最優先で見つける、その典型ケース。 */
+  body { background-color: #ffffff; margin: 0; padding: 0; }
+  .otegami-fixture-card { background-color: #f3f3f5; border-radius: 8px; }
+  .otegami-fixture-button { background-color: #34a853; color: #ffffff; }
+</style>
+</head>
+<body>
+<div style="max-width:520px; margin:0 auto; padding:24px; text-align:center;">
+  <img src="cid:otegami-fixture34-logo@otegami.test" width="120" height="40" alt="MakerWorld" style="display:block; margin:0 auto 24px auto;">
+  <hr style="border:none; border-top:1px solid #e0e0e0; margin:0 0 24px 0;">
+  <p style="color:#222222; font-size:15px; line-height:22px; text-align:left; margin:0 0 24px 0;">Your boost token is nearing expiration. Kindly utilize it to boost your preferred model and win points reward.</p>
+  <div class="otegami-fixture-card" style="padding:20px; margin:0 0 24px 0; text-align:left;">
+    <p style="color:#7b3fe4; font-size:18px; font-weight:bold; margin:0 0 8px 0;">Boost Token</p>
+    <p style="color:#666666; font-size:13px; margin:0 0 4px 0;">Expires on</p>
+    <p style="color:#222222; font-size:14px; margin:0;">2026-08-03 10:27 UTC</p>
+  </div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px 0;">
+    <tr><td class="otegami-fixture-button" style="background-color:#34a853; color:#ffffff; font-size:15px; font-weight:bold; text-align:center; padding:14px 0; border-radius:4px;">Boost to model</td></tr>
+  </table>
+  <p style="color:#999999; font-size:12px; line-height:18px; text-align:left; margin:0;">If you wish to unsubscribe, or change notification settings: <a href="https://example.test/unsubscribe">Click here</a></p>
+</div>
+</body>
+</html>
+
+--otegami-boundary-34
+Content-Type: image/png; name="logo.png"
+Content-Transfer-Encoding: base64
+Content-ID: <otegami-fixture34-logo@otegami.test>
+Content-Disposition: inline; filename="logo.png"
+
+iVBORw0KGgoAAAANSUhEUgAAAHgAAAAoCAYAAAA16j4lAAAAeUlEQVR4nO3aMQ6AIBAAQTT+/8va
+WdkacJ0pabhkQ0FgDAAAAPiP7WHtnLTvKvun7LMH4F0CxwkcJ3CcwHHH7AEWdI7vu28JTnCcwHEC
+xwkcJ3CcwHECxwkcJ3CcwHECxwkc57Eh/p3HCY4TOE7gOIHjBAYAAGD8yAV2jAM3LCTYZQAAAABJ
+RU5ErkJggg==
+
+--otegami-boundary-34--
