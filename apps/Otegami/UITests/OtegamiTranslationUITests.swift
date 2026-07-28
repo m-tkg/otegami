@@ -147,7 +147,11 @@ final class OtegamiTranslationDraftEnglishReplyUITests: XCTestCase {
         let moreMenuButton = app.buttons["messageDetail.toolbar.more"]
         XCTAssertTrue(moreMenuButton.waitForExistence(timeout: 20), "Expected the footer toolbar's … button")
         moreMenuButton.tap()
-        let draftEnglishReplyButton = app.buttons["messageDetail.toolbar.more.draftEnglishReply"]
+        // 2026-07-29 追加仕様: 「その他」ネイティブ項目を一級の
+        // `MessageToolbarAction`へ昇格した際、非表示状態 (既定) のときの
+        // 識別子は他の非表示アクションと同じ `more.hidden.*` 系列に統一
+        // された (`MessageDetailFooterToolbar.hiddenActionMenuItem(for:)`)。
+        let draftEnglishReplyButton = app.buttons["messageDetail.toolbar.more.hidden.draftEnglishReply"]
         XCTAssertTrue(draftEnglishReplyButton.waitForExistence(timeout: 5), "Expected the 英語で返信を下書き menu item")
         draftEnglishReplyButton.tap()
 

@@ -3,24 +3,31 @@ import OtegamiStore
 import TranslationEngine
 
 /// 新画面構成 (3): メール本文画面 (`ThreadDetailView`) 下部の固定ツールバー。
-/// アクションの全体集合は常に7つ (`MessageToolbarAction.allCases`、Task #88
-/// で要約/翻訳の2つが5つから増えた) — `MessageToolbarSettingsStore` 経由で
-/// 並び順に加え、Task #100 (「フッターツールバーのカスタマイズ」) 以降は
-/// 表示/非表示も変更できる。設定画面自体 (`MessageToolbarSettingsView`)
-/// への入口は2つ — 「…」メニュー内の `onCustomizeToolbar` (この画面を
-/// 見ながらすぐ調整したい、という近さ優先) と、設定 → メールビューア →
-/// 「ツールバーのカスタマイズ」(`MailViewerSettingsView`、他の表示設定と
-/// 同じ場所にまとまっている一貫性優先) — どちらも同じ画面を開くだけで、
-/// 状態は`MessageToolbarSettingsStore`に一本化されている。表示オフの
-/// アクションはこのツールバーには描画せず、
-/// `moreMenuButton`の「その他」メニュー内に項目として追加表示する
-/// (`hiddenActionMenuItems`)。「その他」自身は非表示にできず常に最後尾。
+/// アクションの全体集合は常に14個 (`MessageToolbarAction.allCases`、Task #88
+/// で要約/翻訳が加わり5→7、2026-07-29の追加仕様で旧「その他」メニュー
+/// ネイティブの7操作 — ミュート・ピン留め・未読にする・アーカイブ・
+/// 迷惑メールにする・英語で返信を下書き・削除 — を一級アクションへ昇格し
+/// 7→14) — `MessageToolbarSettingsStore` 経由で並び順に加え、Task #100
+/// (「フッターツールバーのカスタマイズ」) 以降は表示/非表示も変更できる。
+/// 設定画面自体 (`MessageToolbarSettingsView`) への入口は2つ — 「…」
+/// メニュー内の `onCustomizeToolbar` (この画面を見ながらすぐ調整したい、
+/// という近さ優先) と、設定 → メールビューア →「ツールバーのカスタマイズ」
+/// (`MailViewerSettingsView`、他の表示設定と同じ場所にまとまっている
+/// 一貫性優先) — どちらも同じ画面を開くだけで、状態は
+/// `MessageToolbarSettingsStore`に一本化されている。表示オフのアクション
+/// はこのツールバーには描画せず、`moreMenuButton`の「その他」メニュー内に
+/// 項目として追加表示する (`hiddenActionMenuItems`) — つまり「その他」の
+/// 中身は「ユーザーが非表示にしたアクション」で完全に説明できる。「その他」
+/// 自身と、この画面自体を開く「ツールバーをカスタマイズ」ショートカット
+/// (`onCustomizeToolbar`、メッセージへの操作ではないためアクション化して
+/// いない) は非表示にできず常に最後尾・末尾固定。表示オンのアクションが
+/// 画面幅に収まらない場合 (大きな文字サイズ設定・狭い端末幅・多くの
+/// アクションを表示オンにした場合等) は、既定の均等配置 (`fixedRow`) の
+/// 代わりにインジケータ非表示・左端起点の横スクロール (`scrollableRow`)
+/// にフォールバックする — `body`の`ViewThatFits`のdoc comment参照。
 ///
 /// 「返信」は返信/全員に返信の2択を持つ `Menu` (design-phase-3 の「返信/
-/// 全員に返信/英語で返信を下書き」ボタン群のうち、返信系2つをここに統合 —
-/// 「英語で返信を下書き」は指示どおり「…」メニュー側に置いた)。「…」には
-/// ミュート・削除・未読にする・アーカイブ・迷惑メールにする・ピン留め・
-/// 英語で返信を下書き・ツールバーのカスタマイズを集約する。
+/// 全員に返信/英語で返信を下書き」ボタン群のうち、返信系2つをここに統合)。
 ///
 /// `onSearch`/`onDraftEnglishReply` が `nil` のときはそのアイコン/メニュー
 /// 項目自体を出さない (`onSearch` は macOS 側で配線していない — 新しい検索
@@ -55,7 +62,21 @@ struct MessageDetailFooterToolbar: View {
     var onCustomizeToolbar: () -> Void
     var aiFeaturesState: MessageDetailAIFeaturesState?
 
-    @State private var items: [MessageToolbarItemSetting] = MessageToolbarSettingsStore.loadItems()
+    // 実機報告 (2026-07-29):「ツールバーをカスタマイズ」で設定を変えても
+    // 画面遷移するまで反映されなかった — 元は`@State`に一度だけ読み込み、
+    // `.onAppear`で読み直すだけだったため、カスタマイズ画面をシートで
+    // 開いたまま裏のこの画面が変更を検知する手段が無かった (`@State`は
+    // `UserDefaults`を購読しない)。`@AppStorage`は`UserDefaults`の
+    // 同じキーへの書き込みを購読して自動的に再描画を起こす — 他の
+    // `*SettingsStore`群 (`ListDisplaySettingsStore`等) が設定画面側で
+    // 使っているのと同じ仕組みで、こちら側 (読み取り専用の購読者) にも
+    // 適用した。`items`は`rawOrder`が変わるたびに再計算される computed
+    // property にしたので、`MessageToolbarSettingsView`が
+    // `MessageToolbarSettingsStore.saveItems(_:)`で同じキーに書き込んだ
+    // 瞬間、シートを閉じずともこのツールバーが即座に切り替わる。
+    @AppStorage(MessageToolbarSettingsStore.orderKey) private var rawOrder: String = ""
+
+    private var items: [MessageToolbarItemSetting] { MessageToolbarSettingsStore.items(fromRawValue: rawOrder) }
 
     /// アイコンとして描画する、表示オンのアクションだけの並び。
     private var visibleOrder: [MessageToolbarAction] { MessageToolbarSettingsStore.visibleOrder(items) }
@@ -65,22 +86,55 @@ struct MessageDetailFooterToolbar: View {
     private var hiddenActions: [MessageToolbarAction] { MessageToolbarSettingsStore.hiddenOrder(items) }
 
     var body: some View {
+        // ユーザー指示 (2026-07-29 追加仕様): 表示オンのアクションが画面幅を
+        // 超える場合は横スクロールできるようにする。`ViewThatFits`は候補を
+        // 先頭から順に試し、その*理想サイズ*(親から幅の提案が無いときの
+        // 自然な幅) が利用可能な幅に収まる最初の候補を採用する — `fixedRow`
+        // 側の各アイコンに付けている`.frame(maxWidth: .infinity)`は「親が
+        // 幅を提案してきたときに目一杯広がる」指定であって理想サイズ自体を
+        // 無限大にはしない (理想サイズは中身の内在幅のまま) ので、7アイコン
+        // 分の内在幅の合計が画面幅以下なら`fixedRow`(既存の均等配置、
+        // 見た目は完全に不変) が選ばれ、収まらなければ最後の候補
+        // `scrollableRow`にフォールバックする。最後の候補は「収まるか」の
+        // 判定自体をスキップされる (無条件フォールバック) ので、
+        // `ScrollView`の理想サイズが何であっても問題にならない。
+        ViewThatFits(in: .horizontal) {
+            fixedRow
+            scrollableRow
+        }
+        .padding(.horizontal, OtegamiSpacing.sm)
+        .padding(.vertical, OtegamiSpacing.sm)
+        .background(OtegamiColor.surface)
+        .accessibilityIdentifier("messageDetail.footerToolbar")
+    }
+
+    /// 全項目が画面幅に収まる場合の既存レイアウト — 変更前と1文字も違わない
+    /// (`ViewThatFits`に切り出しただけ)。均等配置 (各アイコンが
+    /// `.frame(maxWidth: .infinity)`で余った幅を均等に分け合う)。
+    private var fixedRow: some View {
         HStack(spacing: 0) {
             ForEach(visibleOrder) { action in
                 toolbarButton(for: action)
                     .frame(maxWidth: .infinity)
             }
         }
-        .padding(.horizontal, OtegamiSpacing.sm)
-        .padding(.vertical, OtegamiSpacing.sm)
-        .background(OtegamiColor.surface)
-        .accessibilityIdentifier("messageDetail.footerToolbar")
-        // ツールバーのカスタマイズ画面から戻ってきたときに並び順・可視性を
-        // 反映する — このビュー自身は設定変更を監視しない (`UserDefaults` の
-        // `@AppStorage` にしていない理由は `MessageToolbarSettingsStore`
-        // のドキュメント参照。頻繁に変わる値ではないので、再表示のたびに
-        // 読み直せば十分)。
-        .onAppear { items = MessageToolbarSettingsStore.loadItems() }
+    }
+
+    /// 収まりきらないときのフォールバック — インジケータ非表示の横スクロール。
+    /// `ScrollView(.horizontal)`は既定で左端 (先頭) 起点なので、開始位置を
+    /// 明示的に設定する必要は無い。アイコン間は`OtegamiSpacing.md`固定
+    /// (均等配置のように余白を伸縮させない — 内在幅どおりに詰めて並べる、
+    /// スクロール可能な列としては自然な見た目)。各アイコン自体の最小幅は
+    /// `toolbarIcon`/`toolbarAIIcon`が使う`.otegamiMinimumTappable()`
+    /// (44pt) がそのまま保証する。
+    private var scrollableRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: OtegamiSpacing.md) {
+                ForEach(visibleOrder) { action in
+                    toolbarButton(for: action)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -92,6 +146,13 @@ struct MessageDetailFooterToolbar: View {
         case .info: infoButton
         case .summarize: summarizeButton
         case .translate: translateButton
+        case .mute: muteButton
+        case .pin: pinButton
+        case .markUnread: markUnreadButton
+        case .archive: archiveButton
+        case .junk: junkButton
+        case .draftEnglishReply: draftEnglishReplyButton
+        case .delete: deleteButton
         case .more: moreMenuButton
         }
     }
@@ -126,6 +187,71 @@ struct MessageDetailFooterToolbar: View {
     private var infoButton: some View {
         Button(action: onInfo) { toolbarIcon(.info) }
             .accessibilityIdentifier("messageDetail.toolbar.info")
+    }
+
+    // MARK: - 2026-07-29 追加仕様: 旧「その他」ネイティブ項目のツールバー
+    // 直接表示バリアント。表示オンにするとここが使われ、非表示 (既定) の
+    // 間は`hiddenActionMenuItem(for:)`の同名ケースが「その他」メニューの
+    // 中に同じラベル/アイコンで描画する — ハンドラ (`onToggleMute`等) も
+    // 完全に共有しているので、表示/非表示を切り替えても押した結果は
+    // 変わらない。
+
+    /// ミュート/ピン留めは状態でラベル・アイコンが変わるトグル — 静的な
+    /// `MessageToolbarAction.title`/`.systemImage`をそのまま使わず、
+    /// `toolbarIcon(_:title:systemImage:)`のオーバーライド引数で
+    /// `moreMenuButton`の旧実装と同じ2状態の文言/アイコンを再現する。
+    @ViewBuilder
+    private var muteButton: some View {
+        Button(action: onToggleMute) {
+            toolbarIcon(.mute, title: isMuted ? "ミュート解除" : "スレッドをミュート", systemImage: isMuted ? "bell" : "bell.slash")
+        }
+        .accessibilityIdentifier("messageDetail.toolbar.mute")
+    }
+
+    @ViewBuilder
+    private var pinButton: some View {
+        Button(action: onTogglePin) {
+            toolbarIcon(.pin, title: isPinned ? "ピン留めを解除" : "ピン留め", systemImage: isPinned ? "pin.slash" : "pin")
+        }
+        .accessibilityIdentifier("messageDetail.toolbar.pin")
+    }
+
+    @ViewBuilder
+    private var markUnreadButton: some View {
+        Button(action: onMarkUnread) { toolbarIcon(.markUnread) }
+            .accessibilityIdentifier("messageDetail.toolbar.markUnread")
+    }
+
+    @ViewBuilder
+    private var archiveButton: some View {
+        Button(action: onArchive) { toolbarIcon(.archive) }
+            .accessibilityIdentifier("messageDetail.toolbar.archive")
+    }
+
+    @ViewBuilder
+    private var junkButton: some View {
+        Button(action: onJunk) { toolbarIcon(.junk) }
+            .accessibilityIdentifier("messageDetail.toolbar.junk")
+    }
+
+    @ViewBuilder
+    private var draftEnglishReplyButton: some View {
+        if let onDraftEnglishReply {
+            Button(action: onDraftEnglishReply) { toolbarIcon(.draftEnglishReply) }
+                .accessibilityIdentifier("messageDetail.toolbar.draftEnglishReply")
+        }
+    }
+
+    /// 削除だけは`role: .destructive`＋`OtegamiColor.destructive`で赤く
+    /// する — 「その他」メニュー内での旧表示 (Menu が`role: .destructive`
+    /// のラベルを自動的に赤くする) と同じ破壊的操作の見た目をツールバー
+    /// 直接表示でも踏襲する (指示どおり「その他」実装の挙動を踏襲)。
+    @ViewBuilder
+    private var deleteButton: some View {
+        Button(role: .destructive, action: onDelete) {
+            toolbarIcon(.delete, tint: OtegamiColor.destructive)
+        }
+        .accessibilityIdentifier("messageDetail.toolbar.delete")
     }
 
     // MARK: - Task #88: 要約/翻訳 (旧 `MessageDetailFloatingButtons`)
@@ -285,9 +411,10 @@ struct MessageDetailFooterToolbar: View {
     // MARK: - Task #100: 非表示にしたアクションを「その他」メニューへ移動
 
     /// `hiddenActions`それぞれをメニュー項目として並べ、1件以上あれば末尾に
-    /// 区切り線を足す (以降の常設項目 — ミュート等 — と視覚的に分ける)。
-    /// `.reply`は元がサブメニュー (返信/全員に返信の2択) なので、非表示時は
-    /// 2つのフラットな項目に展開する。
+    /// 区切り線を足す (唯一残った固定項目「ツールバーをカスタマイズ」と
+    /// 視覚的に分ける — `moreMenuButton`参照)。`.reply`は元がサブメニュー
+    /// (返信/全員に返信の2択) なので、非表示時は2つのフラットな項目に
+    /// 展開する。
     @ViewBuilder
     private var hiddenActionMenuItems: some View {
         ForEach(hiddenActions) { action in
@@ -325,6 +452,33 @@ struct MessageDetailFooterToolbar: View {
             Button(action: handleTranslateTap) { Label(translateAccessibilityLabel, systemImage: action.systemImage) }
                 .disabled(!isTranslateEnabled)
                 .accessibilityIdentifier("messageDetail.toolbar.more.hidden.translate")
+        case .mute:
+            Button { onToggleMute() } label: {
+                Label(isMuted ? "ミュート解除" : "スレッドをミュート", systemImage: isMuted ? "bell" : "bell.slash")
+            }
+            .accessibilityIdentifier("messageDetail.toolbar.more.hidden.mute")
+        case .pin:
+            Button { onTogglePin() } label: {
+                Label(isPinned ? "ピン留めを解除" : "ピン留め", systemImage: isPinned ? "pin.slash" : "pin")
+            }
+            .accessibilityIdentifier("messageDetail.toolbar.more.hidden.pin")
+        case .markUnread:
+            Button { onMarkUnread() } label: { Label(action.title, systemImage: action.systemImage) }
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.markUnread")
+        case .archive:
+            Button { onArchive() } label: { Label(action.title, systemImage: action.systemImage) }
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.archive")
+        case .junk:
+            Button { onJunk() } label: { Label(action.title, systemImage: action.systemImage) }
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.junk")
+        case .draftEnglishReply:
+            if let onDraftEnglishReply {
+                Button { onDraftEnglishReply() } label: { Label(action.title, systemImage: action.systemImage) }
+                    .accessibilityIdentifier("messageDetail.toolbar.more.hidden.draftEnglishReply")
+            }
+        case .delete:
+            Button(role: .destructive) { onDelete() } label: { Label(action.title, systemImage: action.systemImage) }
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.delete")
         case .more:
             // `more`自身は非表示にできない (`MessageToolbarSettingsStore`の
             // 不変条件) — `hiddenActions`にこの値が来ることはない。
@@ -332,57 +486,51 @@ struct MessageDetailFooterToolbar: View {
         }
     }
 
+    /// 「その他」メニューの中身は、もう固定項目をほとんど持たない —
+    /// 非表示にした13アクションすべてが`hiddenActionMenuItems`経由で動的に
+    /// 並ぶ。唯一の固定項目「ツールバーをカスタマイズ」はメッセージへの
+    /// 操作ではなく設定画面へのショートカットなので、
+    /// `MessageToolbarAction`化せずここに直書きしたまま (指示どおり)。
     private var moreMenuButton: some View {
         Menu {
             hiddenActionMenuItems
 
-            Button { onToggleMute() } label: {
-                Label(isMuted ? "ミュート解除" : "スレッドをミュート", systemImage: isMuted ? "bell" : "bell.slash")
-            }
-            .accessibilityIdentifier("messageDetail.toolbar.more.mute")
-
-            Button { onTogglePin() } label: {
-                Label(isPinned ? "ピン留めを解除" : "ピン留め", systemImage: isPinned ? "pin.slash" : "pin")
-            }
-            .accessibilityIdentifier("messageDetail.toolbar.more.pin")
-
-            Button { onMarkUnread() } label: { Label("未読にする", systemImage: "envelope.badge") }
-                .accessibilityIdentifier("messageDetail.toolbar.more.markUnread")
-
-            Button { onArchive() } label: { Label("アーカイブ", systemImage: "archivebox") }
-                .accessibilityIdentifier("messageDetail.toolbar.more.archive")
-
-            Button { onJunk() } label: { Label("迷惑メールにする", systemImage: "exclamationmark.octagon") }
-                .accessibilityIdentifier("messageDetail.toolbar.more.junk")
-
-            if let onDraftEnglishReply {
-                Button { onDraftEnglishReply() } label: { Label("英語で返信を下書き", systemImage: "globe") }
-                    .accessibilityIdentifier("messageDetail.toolbar.more.draftEnglishReply")
-            }
-
-            Divider()
-
             Button { onCustomizeToolbar() } label: { Label("ツールバーをカスタマイズ", systemImage: "slider.horizontal.3") }
                 .accessibilityIdentifier("messageDetail.toolbar.more.customize")
-
-            Divider()
-
-            Button(role: .destructive) { onDelete() } label: { Label("削除", systemImage: "trash") }
-                .accessibilityIdentifier("messageDetail.toolbar.more.delete")
         } label: {
             toolbarIcon(.more)
         }
         .accessibilityIdentifier("messageDetail.toolbar.more")
     }
 
-    private func toolbarIcon(_ action: MessageToolbarAction) -> some View {
+    /// - Parameters:
+    ///   - title/systemImage: 既定は`action`自身の静的な値だが、状態で
+    ///     見た目が変わるトグル (`muteButton`/`pinButton`) が上書きできる。
+    ///   - tint: 既定は`OtegamiColor.accent`。`deleteButton`だけが
+    ///     `OtegamiColor.destructive`で上書きする。
+    private func toolbarIcon(
+        _ action: MessageToolbarAction,
+        title: String? = nil,
+        systemImage: String? = nil,
+        tint: Color = OtegamiColor.accent
+    ) -> some View {
         VStack(spacing: 2) {
-            Image(systemName: action.systemImage)
+            Image(systemName: systemImage ?? action.systemImage)
                 .font(.system(size: 18))
-            Text(action.title)
+            // `.lineLimit(1)`: 横スクロールへのフォールバック
+            // (`body`の`ViewThatFits`) は各ボタンの理想幅の合計で判定される
+            // — ラベルの折り返しを許すと、大きな文字サイズ設定下では横に
+            // あふれる代わりに縦に折り返して(最悪1文字ずつ改行して)理想幅
+            // 自体は小さいまま収まってしまい、スクロールへ切り替わるべき
+            // 場面でも切り替わらず、崩れた見た目のまま`fixedRow`が選ばれ
+            // 続ける。1行固定にすることで理想幅がラベルの実サイズを正しく
+            // 反映するようになり、収まらない場合に`scrollableRow`へ確実に
+            // フォールバックする。
+            Text(title ?? action.title)
                 .font(OtegamiFont.badge())
+                .lineLimit(1)
         }
-        .foregroundStyle(OtegamiColor.accent)
+        .foregroundStyle(tint)
         .otegamiMinimumTappable()
     }
 
@@ -428,8 +576,13 @@ struct MessageDetailFooterToolbar: View {
                 Image(systemName: action.systemImage)
                     .font(.system(size: 18))
             }
+            // `.lineLimit(1)`: `toolbarIcon(_:title:systemImage:tint:)`の
+            // 同名の doc comment と同じ理由 — 要約/翻訳も`fixedRow`/
+            // `scrollableRow`の判定対象なので、ここだけラベルの折り返しを
+            // 許すと横スクロールへ切り替わるべき場面を見逃す。
             Text(action.title)
                 .font(OtegamiFont.badge())
+                .lineLimit(1)
         }
         .foregroundStyle(tone.color)
         .otegamiMinimumTappable()
