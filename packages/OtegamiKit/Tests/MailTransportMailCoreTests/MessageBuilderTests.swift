@@ -190,6 +190,48 @@ struct MessageBuilderTests {
         #expect((parser.attachments() ?? []).isEmpty)
     }
 
+    /// Task #66 (カレンダー招待メール対応): `ComposeAttachment.contentTypeParameters`
+    /// round-trips onto the wire as genuinely separate `Content-Type`
+    /// parameters — the iTIP `REPLY` attachment's `method=REPLY` is what
+    /// Google Calendar (and any other CalDAV-backed calendar) actually
+    /// keys its "apply this RSVP" behavior off of, so this needs to survive
+    /// real RFC 822 encoding/re-parsing, not just be set on the in-memory
+    /// `MCOAttachment` and never verified on the wire.
+    @Test("a text/calendar attachment's method=REPLY content-type parameter round-trips")
+    func calendarReplyContentTypeParameterRoundTrips() throws {
+        let ics = "BEGIN:VCALENDAR\r\nMETHOD:REPLY\r\nEND:VCALENDAR\r\n"
+        let draft = ComposeDraft(
+            from: sender, to: [recipient],
+            subject: "Accepted: Quarterly Planning Sync", plainTextBody: "Aiko has accepted this invitation.",
+            attachments: [
+                ComposeAttachment(
+                    filename: "invite.ics", mimeType: "text/calendar", data: Data(ics.utf8),
+                    contentTypeParameters: ["method": "REPLY", "charset": "UTF-8"]
+                )
+            ]
+        )
+        let built = MailCoreMessageBuilder.build(draft)
+
+        let parser = MCOMessageParser(data: built.data)
+        let attachments = try #require(parser.attachments())
+        let attachment = try #require(attachments.first as? MCOAttachment)
+        #expect(attachment.filename == "invite.ics")
+        #expect(attachment.mimeType == "text/calendar")
+        #expect(attachment.data == Data(ics.utf8))
+        #expect(attachment.contentTypeParameterValueForName(name: "method") == "REPLY")
+
+        // The raw bytes themselves must actually contain a legible
+        // `Content-Type: text/calendar` header with a `method=REPLY`
+        // parameter on it (quoted or bare — both are equally valid per
+        // RFC 2045 §5.1's `parameter` grammar, and every real-world iTIP
+        // consumer normalizes the quoting away before comparing) —
+        // confirming this isn't just re-attached by `MCOMessageParser`'s
+        // own (possibly more lenient) re-interpretation.
+        let rawMessage = String(decoding: built.data, as: UTF8.self)
+        #expect(rawMessage.localizedCaseInsensitiveContains("text/calendar"))
+        #expect(rawMessage.contains("method=REPLY") || rawMessage.contains("method=\"REPLY\""))
+    }
+
     /// `MCOMessageHeader.to`/`.cc`/`.bcc` are declared as bare `NSArray *`
     /// (the `MCOAddress` element type is only documented in a comment, not
     /// expressed via Objective-C lightweight generics), so the Swift

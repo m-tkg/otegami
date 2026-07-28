@@ -111,4 +111,94 @@ struct SyncCoordinatorTests {
         }
         await coordinator.invalidateSyncer(for: "never-synced")
     }
+
+    // MARK: - Task #66: sendCalendarReply
+
+    private func makeAccountWithSMTP() -> AccountRecord {
+        AccountRecord(
+            displayName: "Test", email: "test1@otegami.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "test1@otegami.test",
+            smtpHost: "localhost", smtpPort: 1025, smtpSecurity: .plain, smtpUsername: "test1@otegami.test"
+        )
+    }
+
+    private func makeCalendarReplyDraft() -> ComposeDraft {
+        let invite = CalendarInvite(
+            uid: "abc123@google.com", sequence: 0,
+            organizer: EmailAddress(name: "Organizer", address: "organizer@example.com")
+        )
+        let selfAddress = EmailAddress(name: "Test One", address: "test1@otegami.test")
+        let ics = ICSReplyBuilder.buildReply(for: invite, partStat: .accepted, selfAddress: selfAddress)
+        return ComposeDraft(
+            from: selfAddress,
+            to: [invite.organizer!],
+            subject: ICSReplyBuilder.subject(for: invite, partStat: .accepted),
+            plainTextBody: ICSReplyBuilder.plainTextBody(for: invite, partStat: .accepted, selfAddress: selfAddress),
+            attachments: [
+                ComposeAttachment(
+                    filename: "invite.ics", mimeType: "text/calendar", data: Data(ics.utf8),
+                    contentTypeParameters: ["method": "REPLY"]
+                )
+            ]
+        )
+    }
+
+    @Test("sendCalendarReply connects with SMTP auth and sends the reply to the organizer")
+    func sendCalendarReplySendsToOrganizer() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let smtpRecorder = FakeSMTPSession.CallRecorder()
+        let coordinator = SyncCoordinator(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script()) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: FakeSMTPSession.Script(), recorder: smtpRecorder) },
+            messageBuilder: { draft in
+                BuiltMessage(data: Data("fake rfc822 for \(draft.subject)".utf8), messageId: "<fake-\(draft.subject)@otegami.local>")
+            }
+        )
+        let account = makeAccountWithSMTP()
+        let auth = MailAuth.password(username: "test1@otegami.test", password: "test1234")
+
+        try await coordinator.sendCalendarReply(makeCalendarReplyDraft(), account: account, auth: auth)
+
+        let sendCalls = smtpRecorder.sendCalls
+        #expect(sendCalls.count == 1)
+        #expect(sendCalls.first?.recipients.map(\.address) == ["organizer@example.com"])
+        #expect(sendCalls.first?.from.address == "test1@otegami.test")
+    }
+
+    @Test("sendCalendarReply throws when the account has no SMTP configuration")
+    func sendCalendarReplyThrowsWithoutSMTPConfig() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let coordinator = SyncCoordinator(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script()) }
+        )
+        let account = makeAccount(host: "localhost") // no SMTP fields set
+        let auth = MailAuth.password(username: "test1@otegami.test", password: "test1234")
+
+        await #expect(throws: (any Error).self) {
+            try await coordinator.sendCalendarReply(makeCalendarReplyDraft(), account: account, auth: auth)
+        }
+    }
+
+    @Test("sendCalendarReply propagates an SMTP send failure")
+    func sendCalendarReplyPropagatesSendFailure() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let coordinator = SyncCoordinator(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script()) },
+            smtpSessionFactory: { config in
+                FakeSMTPSession(config: config, script: FakeSMTPSession.Script(failSend: .serverError(underlyingDescription: "550 rejected")))
+            },
+            messageBuilder: { draft in
+                BuiltMessage(data: Data("fake rfc822 for \(draft.subject)".utf8), messageId: "<fake-\(draft.subject)@otegami.local>")
+            }
+        )
+        let account = makeAccountWithSMTP()
+        let auth = MailAuth.password(username: "test1@otegami.test", password: "test1234")
+
+        await #expect(throws: (any Error).self) {
+            try await coordinator.sendCalendarReply(makeCalendarReplyDraft(), account: account, auth: auth)
+        }
+    }
 }

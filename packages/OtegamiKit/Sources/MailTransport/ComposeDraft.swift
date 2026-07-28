@@ -63,14 +63,27 @@ public struct ComposeDraft: Sendable, Equatable {
 /// encoding" split `ComposeDraft.subject`/`.plainTextBody` already follow.
 public struct ComposeAttachment: Sendable, Equatable {
     public var filename: String
-    /// Full `"type/subtype"` (e.g. `"image/png"`, `"application/pdf"`).
+    /// Full `"type/subtype"` (e.g. `"image/png"`, `"application/pdf"`) —
+    /// no parameters embedded here; use `contentTypeParameters` for those
+    /// (e.g. `["method": "REPLY"]`).
     public var mimeType: String
     public var data: Data
+    /// Extra `Content-Type` parameters beyond `mimeType` itself — Task #66
+    /// (カレンダー招待メール対応)'s iTIP reply is the first (and, as of this
+    /// writing, only) user: a `text/calendar` reply attachment needs
+    /// `method=REPLY` on its `Content-Type` line for Google Calendar (and
+    /// any other CalDAV-backed calendar) to actually apply it, rather than
+    /// just being downloaded as an inert `.ics` file. Empty for every other
+    /// (regular file) attachment. See `MailCoreMessageBuilder.mcoAttachment`
+    /// for how this reaches the wire (`MCOAbstractPart
+    /// .setContentTypeParameterValue(_:name:)`).
+    public var contentTypeParameters: [String: String]
 
-    public init(filename: String, mimeType: String, data: Data) {
+    public init(filename: String, mimeType: String, data: Data, contentTypeParameters: [String: String] = [:]) {
         self.filename = filename
         self.mimeType = mimeType
         self.data = data
+        self.contentTypeParameters = contentTypeParameters
     }
 }
 

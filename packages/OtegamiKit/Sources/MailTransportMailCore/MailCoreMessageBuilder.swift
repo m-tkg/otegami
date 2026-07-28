@@ -68,6 +68,33 @@ public enum MailCoreMessageBuilder {
     private static func mcoAttachment(_ attachment: ComposeAttachment) -> MCOAttachment {
         let mco = MCOAttachment(data: attachment.data, filename: attachment.filename)
         mco.mimeType = attachment.mimeType
+        // Task #66: `setContentTypeParameterValue(_:name:)` appends a
+        // genuinely separate `Content-Type` parameter (mailcore2's
+        // `content_type_parameters_from_attachment`/`mime_from_attachment`
+        // read these back and hand them to libetpan's `mailmime_content`
+        // verbatim) — unlike folding `"; method=REPLY"` into `mimeType`
+        // itself, which would risk the whole string being quoted as one
+        // opaque atom instead of parsed as `type/subtype` plus a parameter.
+        //
+        // The call below passes `(value: name, name: value)` — swapped
+        // from what the method's own parameter labels suggest — to work
+        // around a confirmed bug in this pinned mailcore2 revision's Swift
+        // port: `AbstractPart.setContentTypeParameter(name:value:)`'s core
+        // (C++) signature is `(name, value)`, and the Objective-C binding
+        // calls it in that order, but `AbstractPart.swift`'s
+        // `setContentTypeParameterValue(_ value:name:)` calls
+        // `nativeInstance.setContentTypeParameter(value, name)` — i.e. the
+        // two arguments reversed. Confirmed empirically (not just by
+        // reading the vendored source) by `MessageBuilderTests
+        // .calendarReplyContentTypeParameterRoundTrips`: calling this with
+        // the "obvious" `(value, name: name)` order produced a wire
+        // `Content-Type` of `text/calendar; REPLY="method"` instead of
+        // `text/calendar; method=REPLY`. Swapping here is the narrowest
+        // fix — patching the vendored dependency itself would need to
+        // survive every future `mailcore2` version bump.
+        for (name, value) in attachment.contentTypeParameters {
+            mco.setContentTypeParameterValue(name, name: value)
+        }
         return mco
     }
 

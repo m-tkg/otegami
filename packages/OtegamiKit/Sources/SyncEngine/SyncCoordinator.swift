@@ -13,6 +13,16 @@ import OtegamiStore
 public actor SyncCoordinator {
     private let database: AppDatabase
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+    /// M5's SMTP session factory, retained here (not just forwarded to
+    /// `opQueueProcessor`) for `sendCalendarReply(draft:account:auth:)`
+    /// (Task #66) — a calendar RSVP reply sends immediately over its own
+    /// short-lived SMTP connection, the same "opens its own session, no
+    /// persistent connection" shape `fetchBody`/`fetchAttachment` already
+    /// use, rather than going through the durable `outboxMessage`/`opQueue`
+    /// path (see that method's doc comment for why immediate send was the
+    /// natural fit here).
+    private let smtpSessionFactory: @Sendable (SMTPConfig) -> any SMTPSessionProtocol
+    private let messageBuilder: @Sendable (ComposeDraft) -> BuiltMessage
     private var syncers: [String: AccountSyncer] = [:]
     private let bodyFetcher: BodyFetcher
     private let attachmentFetcher: AttachmentFetcher
@@ -28,6 +38,8 @@ public actor SyncCoordinator {
     ) {
         self.database = database
         self.sessionFactory = sessionFactory
+        self.smtpSessionFactory = smtpSessionFactory
+        self.messageBuilder = messageBuilder
         self.bodyFetcher = BodyFetcher(database: database)
         self.attachmentFetcher = AttachmentFetcher(database: database)
         self.opQueueProcessor = OpQueueProcessor(
@@ -113,6 +125,54 @@ public actor SyncCoordinator {
             mailboxPath: mailboxPath,
             session: session
         )
+    }
+
+    /// Sends a calendar invite RSVP (`ICSReplyBuilder.buildReply`'s
+    /// `text/calendar; method=REPLY` attachment, wrapped in `draft`) over
+    /// its own short-lived SMTP connection — Task #66's "承諾/辞退/未定"
+    /// buttons. Deliberately bypasses the durable `outboxMessage`/`opQueue`
+    /// path `ComposerView`'s regular sends go through: an RSVP reply has no
+    /// user-facing "送信待ち"/cancel affordance to begin with (the invite
+    /// card's own buttons are the only UI for it), and immediate send-or-
+    /// fail lets the card show a normal inline error with a retry (tap the
+    /// button again) exactly like `MessageView.openAttachment`'s on-demand
+    /// attachment fetch already does — no new durable-queue plumbing
+    /// (`OutboxAttachmentRecord` has no `contentTypeParameters` column,
+    /// and adding one only for this single caller isn't worth the schema
+    /// migration) needed for what is, from the network's perspective, a
+    /// single one-shot send.
+    public func sendCalendarReply(
+        _ draft: ComposeDraft,
+        account: AccountRecord,
+        auth: MailAuth
+    ) async throws {
+        guard let smtpConfig = account.smtpConfig else {
+            throw MailTransportError.serverError(underlyingDescription: "Account \(account.id) has no SMTP configuration")
+        }
+        let built = messageBuilder(draft)
+        let smtpSession = smtpSessionFactory(smtpConfig)
+        try await smtpSession.connect(auth: Self.smtpAuth(imapAuth: auth, account: account))
+        defer {
+            let smtpSession = smtpSession
+            Task { await smtpSession.disconnect() }
+        }
+        let recipients = draft.to + draft.cc + draft.bcc
+        try await smtpSession.sendMessage(messageData: built.data, from: draft.from, recipients: recipients)
+    }
+
+    /// Identical to `OpQueueProcessor`'s own private `smtpAuth(imapAuth:
+    /// account:)` — SMTP submission can require a different username than
+    /// IMAP (`AccountRecord.smtpUsername`), same rationale as that method's
+    /// doc comment. Kept as its own small copy here rather than exposing
+    /// `OpQueueProcessor`'s version, since `SyncCoordinator` doesn't
+    /// otherwise reach into that actor's internals.
+    private static func smtpAuth(imapAuth: MailAuth, account: AccountRecord) -> MailAuth {
+        switch imapAuth {
+        case .password(_, let password):
+            .password(username: account.smtpUsername ?? "", password: password)
+        case .xoauth2(let username, let accessToken):
+            .xoauth2(username: account.smtpUsername ?? username, accessToken: accessToken)
+        }
     }
 
     /// Differential sync (M3): only fetches what changed since the last
