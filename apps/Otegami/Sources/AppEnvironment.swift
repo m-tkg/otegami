@@ -2062,6 +2062,22 @@ final class AppEnvironment {
     ///   しつつ、全体としては明示的な暗〜中間色テキストが文字数で過半を
     ///   占める構造)。`explicitDarkTextIsMajority`(Task #98) が無いとこの
     ///   ケースは白カード化されず、暗地に暗〜中間色文字のまま残る。
+    /// - `styleBlockGrayTextNotice` (Task #104、実機報告: Readdle Documents
+    ///   のニュースレター等が Task #98 対策後もダークネイティブのまま
+    ///   読めない): 上の`calendarInviteRealisticNotice`と違い、文字色を
+    ///   **インライン`style`ではなく`<head>`の`<style>`ブロックの CSS
+    ///   クラス**で指定するニュースレターテンプレートを再現する
+    ///   (`.headline`/`.body-text`/`.footer-text`が`color`を持つクラス、
+    ///   本文側は`class="body-text"`のようにクラス名を書くだけでインライン
+    ///   `style`を一切持たない)。背景は本文中どこにも指定せず (青い
+    ///   ヒーロー画像は`<img>`のみで背景色を持つ要素ではない — CTAボタンの
+    ///   背景色だけが唯一の候補になるが `inner`の30%未満なのでTask #84の
+    ///   足切りに掛かりnullのまま)、文書冒頭に色未指定の前置き文を2行
+    ///   置いて`representativeTextLuminance`の6サンプル平均を0.5超で固定
+    ///   しつつ、クラス経由の暗〜中間グレー本文が文字数で過半を占める —
+    ///   `explicitDarkTextIsMajority`がインライン`style`しか見ていなければ
+    ///   (Task #98時点の実装) この過半を検出できず「介入不要」に誤って
+    ///   倒れる、その取りこぼしを再現するケース。
     fileprivate struct UITestFakeHTMLMessage {
         let subject: String
         let snippet: String
@@ -2098,6 +2114,11 @@ final class AppEnvironment {
             subject: "四半期計画会議 (Quarterly Planning Sync) (UITest)",
             snippet: "otegami calendar organizer さんがあなたを招待しました",
             html: uitestFakeHTMLMessageBodyCalendarInviteRealisticNotice
+        ),
+        UITestFakeHTMLMessage(
+            subject: "FakeDocs Weekly Update (UITest)",
+            snippet: "共同編集がさらに高速になりました",
+            html: uitestFakeHTMLMessageBodyStyleBlockGrayTextNotice
         )
     ]
 
@@ -2310,6 +2331,55 @@ final class AppEnvironment {
     <p style="color:#3c4043; font-size:14px; margin:0;">Otegami Organizer - 主催者</p>
     <p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">Fake Calendar Invite</p>
     <p style="color:#5f6368; font-size:12px; margin:0;">このメールへの返信、またはアプリの「承諾」「辞退」「未定」ボタンで出欠をお知らせください。</p>
+    </div>
+    </body>
+    </html>
+    """
+
+    /// Task #104 (実機報告: Readdle Documents のニュースレター等が Task #98
+    /// 対策後もダークモードでほぼ読めない) — 上の`UITestFakeHTMLMessage`配列
+    /// のdoc comment (`styleBlockGrayTextNotice`項) 参照。文字色をインライン
+    /// `style`ではなく`<head>`の`<style>`ブロックのクラス (`.headline`/
+    /// `.body-text`/`.footer-text`) で指定する点が、同じ「背景なし+
+    /// 中間グレー文字」構造の`calendarInviteRealisticNotice`(Task #98) との
+    /// 違い — あちらは全部インライン`style`で色指定していたため、Task #98
+    /// 時点の`explicitDarkTextIsMajority`(インライン限定) でも検出できて
+    /// いた。冒頭の2行 (色未指定、CanvasText由来で明るく解決) + CTA
+    /// ボタンの白文字 (`.cta`、明示的だが明るい色) で最初の6テキストノード
+    /// の平均を0.5超に保ちつつ、`.headline`/`.body-text`×2/`.footer-text`
+    /// (すべてクラス経由の暗〜中間グレー) が文字数で過半を占める。CTA
+    /// ボタン自身の`background-color`はTask #84の30%カバレッジ要件未満
+    /// (`inner`に対して小さいボタン1つだけ) のため`findEffectiveBackground`
+    /// は`null`のまま — カレンダー招待フィクスチャと同じ「背景なし」
+    /// フォールバック経路をたどる。
+    fileprivate static let uitestFakeHTMLMessageBodyStyleBlockGrayTextNotice = """
+    <!doctype html>
+    <html>
+    <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="viewport" content="width=device-width">
+    <title>FakeDocs Weekly Update (UITest)</title>
+    <style type="text/css">
+      body { margin: 0; padding: 0; font-family: -apple-system, Helvetica, Arial, sans-serif; }
+      .content { padding: 0 24px; }
+      .headline { color: #202124; font-size: 16px; font-weight: bold; margin: 0 0 12px 0; }
+      .body-text { color: #5f6368; font-size: 14px; line-height: 20px; margin: 0 0 16px 0; }
+      .cta { display: inline-block; background-color: #1a73e8; color: #ffffff; font-size: 14px; font-weight: bold; padding: 10px 24px; border-radius: 4px; text-decoration: none; }
+      .footer-text { color: #80868b; font-size: 11px; line-height: 16px; margin: 24px 0 0 0; }
+    </style>
+    </head>
+    <body>
+    <p style="margin:16px 24px 4px 24px;">FakeDocs Weekly Update (UITest)</p>
+    <p style="margin:0 24px 16px 24px;">FakeDocs をご利用いただきありがとうございます</p>
+    <div style="text-align:center; padding:8px 0 24px 0;">
+      <img src="\(uitestFakeHTMLMessagePlaceholderImage)" width="320" height="120" alt="FakeDocs">
+    </div>
+    <div class="content">
+      <p class="headline">共同編集がさらに高速になりました</p>
+      <p class="body-text">FakeDocs の最新アップデートでは、複数人での同時編集時の反映速度が大幅に改善されました。大きなドキュメントでもストレスなく共同作業を進めていただけます。</p>
+      <p class="body-text">今回のアップデートには、コメント通知まわりの改善やモバイル版での表示速度向上も含まれています。詳しい変更点は以下のリンクからご確認いただけます。</p>
+      <a class="cta" href="https://example.com/fakedocs-updates">アップデートの詳細を見る</a>
+      <p class="footer-text">このメールは FakeDocs アカウントをお持ちの方にお送りしている週刊ニュースレターです。配信停止をご希望の場合は<a href="https://example.com/fakedocs-unsubscribe" style="color:#80868b;">こちら</a>から手続きできます。</p>
     </div>
     </body>
     </html>
