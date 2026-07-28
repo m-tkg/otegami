@@ -689,6 +689,27 @@ final class AppEnvironment {
                     try body.insert(db)
                     if index == directOpenIndex {
                         capturedDirectOpenThreadId = try? ThreadAssigner.assignThread(messageId: message.id!, accountId: fakeAccount.id, db: db)
+                        // Task #103 ("ソースを表示"): pre-writes this fixture's
+                        // own raw-source cache file directly (`MessageSourceFetcher
+                        // .prewarmCache` — see its doc comment) so `scripts/
+                        // verify-screen.sh message-source`'s `-uitestsOpenMessageSourceDirectly`
+                        // shows real fixture content instead of the offline
+                        // error state — this fake account's IMAP host
+                        // (`127.0.0.1:1`) never actually connects, same
+                        // reason `OTEGAMI_UITEST_INSERT_FAKE_CALENDAR_INVITE`
+                        // below writes its ICS straight to an
+                        // `AttachmentRecord.localPath` file instead.
+                        let rawSource = """
+                            From: Example Security <security-noreply@example.com>\r
+                            To: user@example.com\r
+                            Subject: \(fixture.subject)\r
+                            Content-Type: text/html; charset=UTF-8\r
+                            \r
+                            \(fixture.html)
+                            """
+                        try? MessageSourceFetcher.prewarmCache(
+                            accountId: fakeAccount.id, messageId: message.id!, data: Data(rawSource.utf8)
+                        )
                     }
                 }
             }

@@ -80,6 +80,13 @@
 #                                       招待カード (36番フィクスチャ相当 —
 #                                       タイトル/日時/場所/主催者 +
 #                                       「承諾」「辞退」「未定」ボタン)
+#   message-source                     Task #103: 「ソースを表示」— 生
+#                                       RFC822ソースのモノスペース表示
+#                                       (`MessageSourceView`)。html-0
+#                                       フィクスチャのメッセージを開き、
+#                                       キャッシュファイルに直接書き込んだ
+#                                       (プリウォーム済みの) 生ソースを
+#                                       タップ無しで表示する。
 #   list                                統合受信トレイの一覧画面 (fakeメッセージ5件)
 #   list-2accounts                      Task #77: fake HTML アカウント +
 #                                       fake Gmail アカウントの2つを注入
@@ -256,6 +263,20 @@ case "$SCENARIO" in
     # download.
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_CALENDAR_INVITE=1")
     default_out="calendar-invite.png"
+    ;;
+  message-source)
+    # Task #103 (「ソースを表示」): html-0 fixture's message, with
+    # `-uitestsOpenMessageSourceDirectly` (`ThreadDetailView`'s
+    # `hasPinnedInitialExpansion`-keyed `.onChange`) opening
+    # `MessageSourceView`'s sheet without a "…" メニュー tap. The raw
+    # source itself is pre-written straight to `MessageSourceFetcher`'s
+    # cache file by `AppEnvironment` (`MessageSourceFetcher.prewarmCache`)
+    # for this same reason `calendar-invite` above reads its ICS from a
+    # locally-written file — this fake account's IMAP host never actually
+    # connects on this simulator/toolchain.
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=0")
+    launch_args+=("-uitestsOpenMessageSourceDirectly")
+    default_out="message-source.png"
     ;;
   list)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
