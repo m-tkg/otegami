@@ -57,6 +57,14 @@ struct FolderListSheet: View {
     var onAddAccount: () -> Void
     /// 新画面構成 (1): メニュー最下部の「設定」行。
     var onOpenSettings: () -> Void
+    /// Task #73: ドロワーの開閉状態そのもの — `MailScreenView.isMenuOpen`が
+    /// そのまま渡ってくる。このビューは`HamburgerMenuContainer`の doc
+    /// comment通り常設マウントされたまま`offset`でスライドするだけなので、
+    /// `.sheet`のような「開くたびに再生成される」ライフサイクルが無い。
+    /// 「開いた時は全折りたたみ＋選択中のみ展開」を実現するには、この値の
+    /// 変化 (`false`→`true`) を`.onChange`で拾って毎回明示的にリセットする
+    /// しかない — `resetCollapseStateToCurrentSelection()`参照。
+    let isMenuOpen: Bool
     /// 新画面構成 (1): "閉じる" ツールバーボタン — このビューはもう `.sheet`
     /// ではなくドロワーとして常設マウントされているため、`@Environment
     /// (\.dismiss)` は使えない (呼び出しても何も起きない、提示コンテキストが
@@ -174,6 +182,65 @@ struct FolderListSheet: View {
         // ため、この位置に置いたままにしている。
         .task(id: environment.accounts.map(\.id)) { await observeAllMailboxes() }
         .task(id: environment.accounts.map(\.id)) { await observeAllUnreadCounts() }
+        // Task #73: 「開いた時は全折りたたみ＋選択中のみ展開」— ドロワーが
+        // 閉→開に切り替わるたびリセットする。開いている間の手動開閉
+        // (`toggleAccountCollapsed`/`toggleCategoryCollapsed`) はここでは
+        // 一切妨げない (このビューは常設マウントのため、閉じている間の
+        // 手動操作もそのまま次に活きてしまうが、次に開いた瞬間に必ずここで
+        // 上書きされるので実害はない)。
+        .onChange(of: isMenuOpen) { _, newValue in
+            if newValue {
+                resetCollapseStateToCurrentSelection()
+            }
+        }
+    }
+
+    /// Task #73: ドロワーが開かれた瞬間に呼ばれる — 現在の選択
+    /// (`selectedUnifiedRole`/`selectedMailboxId`) が属するセクションだけを
+    /// 展開状態にし、それ以外の全セクション (カテゴリ・アカウント両方) を
+    /// 折りたたむ。`.unifiedInbox`が選択中 (どちらの入力も`nil`) の場合は
+    /// 展開対象が無い = 全折りたたみになる。
+    private func resetCollapseStateToCurrentSelection() {
+        var expandedRoles: Set<String> = []
+        var expandedAccountIds: Set<String> = []
+
+        if let selectedUnifiedRole {
+            expandedRoles.insert(selectedUnifiedRole.rawValue)
+        }
+
+        if let selectedMailboxId, let entry = accountAndMailbox(forMailboxId: selectedMailboxId) {
+            expandedAccountIds.insert(entry.account.id)
+            // 「該当roleのカテゴリにも属するならそちらも」— `matchesCategory`
+            // は Gmail の All Mail→アーカイブ読み替え含め、実際にカテゴリ
+            // セクションがこのメールボックスをどう表示するかの唯一の判定
+            // 元 (`categorySection(for:)`/`uncategorizedSection`と同じ関数)
+            // なので、ここでも同じ関数で判定する。
+            for role in categoryOrder + [.none] where matchesCategory(mailbox: entry.mailbox, account: entry.account, role: role) {
+                expandedRoles.insert(role.rawValue)
+            }
+        }
+
+        let allRoleValues = Set((categoryOrder + [.none]).map(\.rawValue))
+        let allAccountIds = Set(environment.accounts.map(\.id))
+
+        withAnimation(.default) {
+            collapsedCategoryRoles = allRoleValues.subtracting(expandedRoles)
+            collapsedAccountIds = allAccountIds.subtracting(expandedAccountIds)
+        }
+        FolderCategoryCollapseStore.replaceAll(collapsedRoleRawValues: collapsedCategoryRoles)
+        FolderSectionCollapseStore.replaceAll(collapsedAccountIds: collapsedAccountIds)
+    }
+
+    /// 現在選択中の`mailboxId`がどのアカウント・メールボックスのものかを
+    /// `mailboxesByAccountId`から引く — `resetCollapseStateToCurrentSelection()`
+    /// 専用のヘルパー。
+    private func accountAndMailbox(forMailboxId mailboxId: Int64) -> (account: AccountRecord, mailbox: MailboxRecord)? {
+        for account in environment.accounts {
+            if let mailbox = (mailboxesByAccountId[account.id] ?? []).first(where: { $0.id == mailboxId }) {
+                return (account, mailbox)
+            }
+        }
+        return nil
     }
 
     private func observeAllMailboxes() async {
@@ -634,6 +701,13 @@ enum FolderSectionCollapseStore {
         }
         UserDefaults.standard.set(Array(ids), forKey: collapsedAccountIdsKey)
     }
+
+    /// Task #73: ドロワーを開いた瞬間の一括リセット専用 — `setCollapsed(_:accountId:)`
+    /// を1件ずつ呼ぶ (読み直し→書き直しをアカウント数ぶん繰り返す) 代わりに、
+    /// 計算済みの集合をまとめて書く。
+    static func replaceAll(collapsedAccountIds: Set<String>) {
+        UserDefaults.standard.set(Array(collapsedAccountIds), forKey: collapsedAccountIdsKey)
+    }
 }
 
 /// K: one account's tappable `Section` header inside `FolderListSheet` —
@@ -806,6 +880,12 @@ enum FolderCategoryCollapseStore {
             values.remove(role.rawValue)
         }
         UserDefaults.standard.set(Array(values), forKey: collapsedRolesKey)
+    }
+
+    /// Task #73: `FolderSectionCollapseStore.replaceAll(collapsedAccountIds:)`
+    /// と同じ理由の一括版。
+    static func replaceAll(collapsedRoleRawValues: Set<String>) {
+        UserDefaults.standard.set(Array(collapsedRoleRawValues), forKey: collapsedRolesKey)
     }
 }
 

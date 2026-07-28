@@ -49,6 +49,9 @@ struct MailScreenView: View {
     /// doc comment: the most recently observed on-screen thread order,
     /// refreshed on every `MessageListView` re-render, consulted by
     /// `handleThreadRemoved(_:)` to resolve "next message" navigation.
+    /// Task #74 でも二つ目の消費者として使う: `.count`をタイトル横の件数表示
+    /// (`toolbarContent`) にそのまま流用する — 新規の観測を増やさずに済む
+    /// (詳細はその使用箇所のdoc comment参照)。
     @State private var currentThreadOrder: [Int64] = []
     @AppStorage(MessagePostActionSettingsStore.afterDeleteArchiveKey) private var postDeleteArchiveActionRaw = MessagePostActionSettingsStore.defaultAfterDeleteArchive.rawValue
 
@@ -206,10 +209,28 @@ struct MailScreenView: View {
                 hamburgerButton
             }
             ToolbarItem(placement: .principal) {
-                Text(selectionTitle)
-                    .font(OtegamiFont.headline())
-                    .foregroundStyle(OtegamiColor.ink)
-                    .accessibilityIdentifier("mail.title")
+                // Task #74: タイトル横に「今表示されてる件数」— 新規の観測を
+                // 増やさず、G「削除・アーカイブ時の挙動」用に元々
+                // `onSummariesChanged`から受け取っている`currentThreadOrder`
+                // (スレッド集約時はスレッド数、フラット表示時はメッセージ数、
+                // 未読のみトグルON時はその絞り込み後の件数 — `MessageListView
+                // .summaries`をそのまま映した配列なので、要件の3ケースすべて
+                // 追加コード無しで満たす) の件数をそのまま流用する。ページング
+                // (`MessageListView.pageLimit`)で切られた「現在読み込み済みの
+                // 件数」であって、メールボックス全体の総件数ではない — 「今
+                // 表示されてる件数」という要件そのものなので、これで正しい。
+                HStack(spacing: OtegamiSpacing.xs) {
+                    Text(selectionTitle)
+                        .font(OtegamiFont.headline())
+                        .foregroundStyle(OtegamiColor.ink)
+                        .accessibilityIdentifier("mail.title")
+                    if !environment.accounts.isEmpty {
+                        Text("(\(currentThreadOrder.count))")
+                            .font(OtegamiFont.caption())
+                            .foregroundStyle(OtegamiColor.inkSecondary)
+                            .accessibilityIdentifier("mail.title.count")
+                    }
+                }
             }
             ToolbarItemGroup(placement: .confirmationAction) {
                 unreadOnlyToggleButton
@@ -303,6 +324,7 @@ struct MailScreenView: View {
             onOpenMailboxSyncFailures: { presentAfterClosingMenu { showingMailboxSyncFailures = true } },
             onAddAccount: { presentAfterClosingMenu { accountEntryRoute = .typeSelection } },
             onOpenSettings: { presentAfterClosingMenu { showingSettings = true } },
+            isMenuOpen: isMenuOpen,
             onClose: { isMenuOpen = false }
         )
     }

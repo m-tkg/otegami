@@ -3755,3 +3755,60 @@ sage/green/emerald) が軒並み暗いオリーブ色に潰れて区別できな
 `scripts/verify-screen.sh settings` で行った。実機/シミュレータでの
 色ピッカー画面 (グリッド化後のスクロール・タップ挙動) の最終確認は
 ユーザーに委ねる。
+
+## Task #73: ハンバーガーメニューは開くたび全折りたたみ＋選択中のみ展開
+
+`FolderListSheet` は `HamburgerMenuContainer` のドロワーとして常設マウ
+ントされたまま `offset` でスライドするだけの View なので (`.sheet`の
+ような「開くたびに再生成される」ライフサイクルが無い)、折りたたみ状態
+(`collapsedCategoryRoles`/`collapsedAccountIds`) は以前は初回マウント
+時に一度だけ `FolderCategoryCollapseStore`/`FolderSectionCollapseStore`
+(`UserDefaults`) から読み込むだけで、あとは手動トグル以外で変化しな
+かった。「開いた時は基本全て折りたたまれてる状態にして、今選択されて
+るやつだけが開かれているように」という要望を受け、`MailScreenView`の
+`isMenuOpen` をそのまま `FolderListSheet` に渡し、`.onChange(of:
+isMenuOpen)` が `false`→`true` になるたびに
+`resetCollapseStateToCurrentSelection()` を呼ぶようにした:
+
+- 選択が `.unifiedRole(role)` なら、そのカテゴリセクションだけ展開。
+- 選択が `.mailbox` (単一メールボックス) なら、そのアカウントのセク
+  ション (アカウント優先メニュー) を展開し、そのメールボックスが属す
+  るカテゴリ (`matchesCategory(mailbox:account:role:)` で判定 — Gmail
+  の All Mail→アーカイブ読み替えも含めて実際の表示ロジックと同じ関数
+  を再利用) も展開する。
+- 選択が `.unifiedInbox` (デフォルト) なら、展開対象が無い=全折りたた
+  み。
+
+ドロワーを開いている間の手動開閉 (`toggleAccountCollapsed`/
+`toggleCategoryCollapsed`) はこれまでどおり自由 — リセットはあくまで
+「閉→開」の瞬間だけに効く。両ストアに `replaceAll(...)` を追加し、1件
+ずつの読み直し→書き直しを繰り返す代わりに計算済みの集合をまとめて永続
+化するようにした。
+
+検証は `apps/Otegami/UITests/OtegamiTask73HamburgerMenuCollapseUITests.swift`
+(`OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT` フィクスチャ、`.value`で
+`AccountSectionHeader`/`CategorySectionHeader`の折りたたみ/展開状態を
+読む) の2テストで行った — デフォルト選択での全折りたたみ、および
+INBOX選択→メニュー再オープンでアカウント/受信トレイカテゴリのみ展開
+されアーカイブカテゴリは折りたたまれたままであることを確認済み。
+`.accessibilityValue`にはソース文字列 (`"折りたたみ"`/`"展開"`) をその
+まま渡しているが、String Catalog 経由で英語にも訳されるため、シミュ
+レータの実行言語によっては`.value`が`"Collapsed"`/`"Expanded"`で返る
+— テストはどちらの言語でも判定できるヘルパーで比較している。
+
+## Task #74: 一覧タイトル横に表示中の件数
+
+`MailScreenView`のヘッダタイトル (「すべての受信」/フォルダ名) の右
+に、現在一覧に出ている件数を控えめな `caption` フォントで並べて表示す
+るようにした (`(\(currentThreadOrder.count))`)。新しい観測を増やさず、
+G「削除・アーカイブ時の挙動」用に元々 `MessageListView.onSummariesChanged`
+から受け取っていた `currentThreadOrder` ( `MessageListView.summaries`
+をそのまま`thread.id`配列へ写したもの) の `.count` をそのまま流用して
+いる — スレッド集約表示ならスレッド数、フラット表示なら (`thread.id`
+が重複しうるだけで) メッセージ数、未読のみトグルON時はその絞り込み後
+の件数と、要件の3ケースをすべて追加コード無しで満たす。ページング
+(`MessageListView.pageLimit`) で切られた「現在読み込み済みの件数」で
+あって、メールボックス全体の総件数ではない — 「今表示されてる件数」
+という要件そのものなので、これで正しい。`scripts/verify-screen.sh list`
+のフェイクHTMLメッセージ5件フィクスチャで「All Inboxes (5)」と表示さ
+れることを確認した。
