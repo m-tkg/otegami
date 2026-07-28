@@ -106,6 +106,13 @@
 #   account-edit                        Task #72: ↑からさらに1画面 (先頭
 #                                       アカウントの編集画面 — ラベル色の
 #                                       グリッドピッカーを確認)
+#   toolbar-customize                   Task #100: 設定→メールビューア→
+#                                       「ツールバーのカスタマイズ」
+#                                       (`MessageToolbarSettingsView`) を
+#                                       直接開く — 表示/非表示トグル・
+#                                       ドラッグ並び替えリストと、常時
+#                                       グレーアウト固定の「その他」行の
+#                                       見た目確認用。
 #   search                               Task #86 (検索画面再構成): 検索画面
 #                                       を空状態 (履歴タブ) で直接開く —
 #                                       トップバー (角丸フィールド+星+丸い
@@ -276,6 +283,14 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
     launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenFirstAccountEditDirectly")
     default_out="account-edit.png"
+    ;;
+  toolbar-customize)
+    # Task #100: 設定 → メールビューア → 「ツールバーのカスタマイズ」を
+    # タップ無しで直接開く (`AccountsListContent`/`MailViewerSettingsView`
+    # それぞれの`-uitestsOpen*Directly`フックを積み重ねる、`account-edit`
+    # と同じ「1段深いところまで一気に」パターン)。
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenMailViewerSettingsDirectly" "-uitestsOpenToolbarCustomizeDirectly")
+    default_out="toolbar-customize.png"
     ;;
   search)
     # Task #86: 空状態 (クエリ未入力、履歴タブ) — トップバー/タブの見た目
