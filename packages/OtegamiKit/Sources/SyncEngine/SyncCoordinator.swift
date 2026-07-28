@@ -120,7 +120,13 @@ public actor SyncCoordinator {
         scope: SyncScope = .inboxOnly
     ) async throws -> MailboxSyncer.Progress {
         let syncer = syncer(for: account)
-        return try await syncer.performIncrementalSync(auth: auth, scope: scope)
+        let progress = try await syncer.performIncrementalSync(auth: auth, scope: scope)
+        // Task #63: "各メールボックスの同期完了後にも1回" — see
+        // `schedulePostSyncPrefetchIfNeeded(for:auth:)`'s doc comment. Only
+        // scheduled after a *successful* sync (the `try await` above would
+        // have already thrown and returned early otherwise).
+        schedulePostSyncPrefetchIfNeeded(for: account, auth: auth)
+        return progress
     }
 
     /// Replays `account`'s queued offline operations (flag changes,
@@ -181,20 +187,32 @@ public actor SyncCoordinator {
         await syncer.stopIdleLoop()
     }
 
-    /// How many of the unified inbox's most-recently-received not-yet-
-    /// fetched messages `prefetchUnifiedInboxBodiesIfNeeded` prefetches per
-    /// launch/foreground pass (Task #31 — "直近30件程度" of what a user is
-    /// likely to open next, mirroring `BodyFetcher.defaultPrefetchLimit`'s
-    /// per-mailbox post-initial-sync counterpart but scoped to the unified
-    /// inbox across every account, since that's what the message list
-    /// actually shows first).
-    public static let unifiedInboxPrefetchLimit = 30
+    /// How far back `prefetchUnifiedInboxBodiesIfNeeded`/the post-sync
+    /// prefetch trigger look for not-yet-fetched unified inbox messages
+    /// (Task #63 — "直近3日間くらいのものでいい"). Replaces Task #31's
+    /// original flat "直近30件" count-based criterion: a quiet inbox
+    /// shouldn't reach past 3 days just to fill a count, and a noisy one
+    /// shouldn't skip fetching a message that arrived 2 days ago just
+    /// because 30 newer ones already filled the list. See `MessageQuery
+    /// .unfetchedUnifiedInboxCandidates(accountIds:since:limit:db:)`'s doc
+    /// comment for the query itself.
+    public static let unifiedInboxPrefetchWindow: TimeInterval = 3 * 24 * 60 * 60
 
-    /// Debounce for `prefetchUnifiedInboxBodiesIfNeeded` — battery/network
-    /// conscious "once per launch/foreground, not once per scenePhase
-    /// blip" (locking/unlocking the device, or a quick app-switch-and-back,
-    /// can otherwise fire `RootView.handleScenePhaseChange`'s `.active`
-    /// case several times in quick succession).
+    /// Safety cap on top of `unifiedInboxPrefetchWindow` — a first sync, or
+    /// an unusually high-volume inbox, could otherwise have far more than a
+    /// handful of not-yet-fetched messages inside the 3-day window; this
+    /// bounds one background pass's worst case rather than fetching an
+    /// unbounded number of bodies. Generous relative to Task #31's original
+    /// flat 30-message limit since the window is now doing the primary
+    /// filtering.
+    public static let unifiedInboxPrefetchCandidateLimit = 200
+
+    /// Debounce for the launch/foreground prefetch pass
+    /// (`prefetchUnifiedInboxBodiesIfNeeded`) — battery/network conscious
+    /// "once per launch/foreground, not once per scenePhase blip"
+    /// (locking/unlocking the device, or a quick app-switch-and-back, can
+    /// otherwise fire `RootView.handleScenePhaseChange`'s `.active` case
+    /// several times in quick succession).
     private static let unifiedInboxPrefetchInterval: TimeInterval = 5 * 60
 
     /// In-memory only (not persisted to `UserDefaults`) — deliberately
@@ -203,16 +221,37 @@ public actor SyncCoordinator {
     /// the *previous* process's last foreground.
     private var lastUnifiedInboxPrefetchDate: Date?
 
+    /// Debounce for the *post-sync* prefetch trigger
+    /// (`schedulePostSyncPrefetchIfNeeded(for:auth:)`, Task #63) — much
+    /// shorter than `unifiedInboxPrefetchInterval` on purpose: this
+    /// trigger's whole point is reacting promptly to *this* mailbox's
+    /// just-synced new mail ("新着の本文が即先読みされるように"), not
+    /// waiting out the 5-minute launch/foreground debounce. Keyed
+    /// per-account (`lastPostSyncPrefetchDateByAccount`) rather than one
+    /// shared timestamp, so a busy account's frequent IDLE wake-ups can't
+    /// starve another account's post-sync prefetch, and a foreground pass
+    /// that just ran doesn't block the very next sync's post-sync trigger
+    /// for a full 5 minutes.
+    private static let postSyncPrefetchInterval: TimeInterval = 60
+
+    /// In-memory only, same rationale as `lastUnifiedInboxPrefetchDate`.
+    private var lastPostSyncPrefetchDateByAccount: [String: Date] = [:]
+
     /// Task #31 (docs/roadmap.md): background-prefetches bodies for the
-    /// unified inbox's most recent `limit` not-yet-fetched messages, right
-    /// after launch and on every foreground return — the fix for "さっき
-    /// 読んだメールも、アプリを起動し直すと読み込みが入る?表示まで時間が
-    /// かかる" (a message near the top of the list whose body was never
-    /// lazily fetched otherwise pays a network round trip the moment it's
-    /// opened, every time). Meant to be called from a low-priority,
-    /// fire-and-forget `Task` (`RootView.handleScenePhaseChange`'s `.active`
-    /// case) — never awaited inline with user-visible sync/refresh work, so
-    /// it can't delay them.
+    /// unified inbox's not-yet-fetched messages received within
+    /// `unifiedInboxPrefetchWindow` (up to `unifiedInboxPrefetchCandidateLimit`
+    /// as a safety cap), right after launch and on every foreground return
+    /// — the fix for "さっき読んだメールも、アプリを起動し直すと読み込みが
+    /// 入る?表示まで時間がかかる" (a message near the top of the list whose
+    /// body was never lazily fetched otherwise pays a network round trip
+    /// the moment it's opened, every time). Meant to be called from a
+    /// low-priority, fire-and-forget `Task`
+    /// (`RootView.handleScenePhaseChange`'s `.active` case) — never awaited
+    /// inline with user-visible sync/refresh work, so it can't delay them.
+    /// `schedulePostSyncPrefetchIfNeeded(for:auth:)` is this method's Task
+    /// #63 sibling — same candidate query/window, but triggered per-account
+    /// right after that account's own incremental sync completes, instead
+    /// of only at launch/foreground.
     ///
     /// - Debounced to at most once per `unifiedInboxPrefetchInterval` (see
     ///   its doc comment) — a no-op, returning `0`, when called again too
@@ -254,13 +293,96 @@ public actor SyncCoordinator {
         lastUnifiedInboxPrefetchDate = now
         guard !accounts.isEmpty else { return 0 }
 
+        return await runUnifiedInboxPrefetch(
+            accounts: accounts,
+            since: now.addingTimeInterval(-Self.unifiedInboxPrefetchWindow),
+            authProvider: authProvider
+        )
+    }
+
+    /// Task #63 follow-up to `prefetchUnifiedInboxBodiesIfNeeded`'s
+    /// launch/foreground pass: "各メールボックスの同期完了後にも1回" — called
+    /// from `syncAccountIncrementally` right after a successful sync, so
+    /// newly-arrived mail's body is usually already local by the time the
+    /// message list re-renders with it, not only at the next
+    /// launch/foreground. Scoped to just `account` (the one that just
+    /// synced) rather than every account, since that's the only account
+    /// that could plausibly have new unified-inbox candidates as of this
+    /// exact sync completing.
+    ///
+    /// Fires as a detached, low-priority `Task` — never awaited inline —
+    /// so it can never delay `syncAccountIncrementally`'s own caller
+    /// (pull-to-refresh, IDLE wake-ups, `OtegamiApp.syncAllAccountsOnce()`),
+    /// matching every other prefetch entry point's "must not block
+    /// user-visible sync" rule.
+    ///
+    /// Debounced per-account (`lastPostSyncPrefetchDateByAccount`,
+    /// `postSyncPrefetchInterval`) — see that property's doc comment for
+    /// why it doesn't share `lastUnifiedInboxPrefetchDate`/
+    /// `unifiedInboxPrefetchInterval` with the launch/foreground pass.
+    ///
+    /// Cannot infinite-loop: this only ever opens its own short-lived IMAP
+    /// session and calls `bodyFetcher.fetchBody` directly — never
+    /// `syncAccountIncrementally` itself — and fetching a body only ever
+    /// changes `MessageRecord.bodyState`/body columns, which nothing in
+    /// this app treats as a trigger for another `syncAccountIncrementally`
+    /// call (no database-change observer wires the two together). A body
+    /// fetched here therefore can't cause a resync that reschedules this
+    /// same prefetch again.
+    private func schedulePostSyncPrefetchIfNeeded(for account: AccountRecord, auth: MailAuth) {
+        let now = Date()
+        if let last = lastPostSyncPrefetchDateByAccount[account.id], now.timeIntervalSince(last) < Self.postSyncPrefetchInterval {
+            return
+        }
+        lastPostSyncPrefetchDateByAccount[account.id] = now
+        lastPostSyncPrefetchTask = Task(priority: .background) { [weak self] in
+            guard let self else { return 0 }
+            return await self.runUnifiedInboxPrefetch(
+                accounts: [account],
+                since: now.addingTimeInterval(-Self.unifiedInboxPrefetchWindow),
+                authProvider: { _ in auth }
+            )
+        }
+    }
+
+    /// The `Task` `schedulePostSyncPrefetchIfNeeded` most recently created
+    /// (`nil` if none has run yet, or the last call was itself debounced) —
+    /// exists purely so `waitForPendingPostSyncPrefetchForTesting()` below
+    /// has something to await; production code never reads this.
+    private var lastPostSyncPrefetchTask: Task<Int, Never>?
+
+    /// Test-only synchronization hook (not `public` — reachable only via
+    /// `@testable import SyncEngine`, same pattern as `RelayStore
+    /// .rawEncryptedSecretForTesting()`): awaits the post-sync prefetch
+    /// `Task` scheduled by the most recent `syncAccountIncrementally` call,
+    /// if any, so a test can assert on its result deterministically instead
+    /// of racing a detached background `Task` that production code
+    /// deliberately never waits for (see `schedulePostSyncPrefetchIfNeeded`'s
+    /// doc comment for why it must stay detached). Returns `nil` if no
+    /// post-sync prefetch was scheduled (e.g. the call was debounced).
+    func waitForPendingPostSyncPrefetchForTesting() async -> Int? {
+        await lastPostSyncPrefetchTask?.value
+    }
+
+    /// Shared worker behind both `prefetchUnifiedInboxBodiesIfNeeded` (the
+    /// launch/foreground pass) and `schedulePostSyncPrefetchIfNeeded` (the
+    /// post-sync trigger) — everything except the debounce bookkeeping,
+    /// which differs between the two callers (see each one's doc comment).
+    /// Always applies `unifiedInboxPrefetchCandidateLimit` as the safety
+    /// cap described on that constant.
+    private func runUnifiedInboxPrefetch(
+        accounts: [AccountRecord],
+        since: Date,
+        authProvider: @Sendable (AccountRecord) async throws -> MailAuth
+    ) async -> Int {
         let accountIds = accounts.map(\.id)
         let candidates: [UnifiedInboxPrefetchCandidate]
         do {
             candidates = try await database.dbWriter.read { db in
                 try MessageQuery.unfetchedUnifiedInboxCandidates(
                     accountIds: accountIds,
-                    limit: Self.unifiedInboxPrefetchLimit,
+                    since: since,
+                    limit: Self.unifiedInboxPrefetchCandidateLimit,
                     db: db
                 )
             }

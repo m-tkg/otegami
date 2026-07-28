@@ -184,7 +184,7 @@ struct MessageQueryTests {
         #expect(afterHiding == 0)
     }
 
-    // MARK: - Background body prefetch (launch/foreground)
+    // MARK: - Background body prefetch (launch/foreground/post-sync)
 
     @Test("unfetchedUnifiedInboxCandidates returns only notFetched messages across accounts' inboxes, newest first, up to limit")
     func unfetchedUnifiedInboxCandidatesFiltersAndOrders() throws {
@@ -227,8 +227,9 @@ struct MessageQueryTests {
             try m4.insert(db)
         }
 
+        let since = base.addingTimeInterval(-1)
         let candidates = try database.dbWriter.read { db in
-            try MessageQuery.unfetchedUnifiedInboxCandidates(accountIds: [account1.id, account2.id], limit: 10, db: db)
+            try MessageQuery.unfetchedUnifiedInboxCandidates(accountIds: [account1.id, account2.id], since: since, limit: 10, db: db)
         }
         #expect(candidates.map(\.message.subject) == ["a2-notfetched", "a1-notfetched"])
         #expect(candidates.allSatisfy { $0.message.bodyState == .notFetched })
@@ -236,9 +237,40 @@ struct MessageQueryTests {
         #expect(candidates.first { $0.accountId == account1.id }?.mailboxPath == "INBOX")
 
         let limited = try database.dbWriter.read { db in
-            try MessageQuery.unfetchedUnifiedInboxCandidates(accountIds: [account1.id, account2.id], limit: 1, db: db)
+            try MessageQuery.unfetchedUnifiedInboxCandidates(accountIds: [account1.id, account2.id], since: since, limit: 1, db: db)
         }
         #expect(limited.map(\.message.subject) == ["a2-notfetched"])
+    }
+
+    @Test("unfetchedUnifiedInboxCandidates excludes notFetched messages older than the since cutoff")
+    func unfetchedUnifiedInboxCandidatesRespectsSinceCutoff() throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "A1", email: "a1@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "a1@x.test"
+        )
+        try database.dbWriter.write { db in try account.insert(db) }
+        let inbox = try database.dbWriter.write { db -> Int64 in
+            var mailbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return mailbox.id!
+        }
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let threeDaysAgo = now.addingTimeInterval(-3 * 24 * 60 * 60)
+        try database.dbWriter.write { db in
+            // Just inside the 3-day window: included.
+            var recent = MessageRecord(mailboxId: inbox, uid: 1, subject: "recent", internalDate: threeDaysAgo.addingTimeInterval(3600))
+            try recent.insert(db)
+            // Just outside the 3-day window: excluded even though notFetched.
+            var stale = MessageRecord(mailboxId: inbox, uid: 2, subject: "stale", internalDate: threeDaysAgo.addingTimeInterval(-3600))
+            try stale.insert(db)
+        }
+
+        let candidates = try database.dbWriter.read { db in
+            try MessageQuery.unfetchedUnifiedInboxCandidates(accountIds: [account.id], since: threeDaysAgo, limit: 200, db: db)
+        }
+        #expect(candidates.map(\.message.subject) == ["recent"])
     }
 }
 

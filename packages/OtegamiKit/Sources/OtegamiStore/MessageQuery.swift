@@ -121,25 +121,38 @@ public enum MessageQuery {
         ValueObservation.tracking { db in try unifiedInboxUnreadCount(accountIds: accountIds, role: role, db: db) }
     }
 
-    // MARK: - Background body prefetch (launch/foreground)
+    // MARK: - Background body prefetch (launch/foreground/post-sync)
 
-    /// Up to `limit` of the unified inbox's most-recently-received messages
-    /// that haven't had their body fetched yet, newest first across every
-    /// account in `accountIds` — the candidate list for `SyncCoordinator
-    /// .prefetchUnifiedInboxBodiesIfNeeded(accounts:now:authProvider:)`'s
-    /// launch/foreground background body prefetch (the fix for "さっき読んだ
-    /// メールも、アプリを起動し直すと読み込みが入る?表示まで時間がかかる" — a
-    /// message that's near the top of the unified inbox but whose body was
-    /// never lazily fetched pays a network round trip the moment it's
-    /// opened; prefetching these ahead of time on launch/foreground means
-    /// `MessageView.load()` usually finds `bodyState == .fetched` already).
+    /// Up to `limit` of the unified inbox's not-yet-fetched messages
+    /// received within `since`, newest first across every account in
+    /// `accountIds` — the candidate list for `SyncCoordinator`'s background
+    /// body prefetch (launch/foreground, and after each mailbox sync
+    /// completes; Task #63). Originally (Task #31) this was simply "the
+    /// most recent `limit` not-yet-fetched messages" — the fix for "さっき
+    /// 読んだメールも、アプリを起動し直すと読み込みが入る?表示まで時間が
+    /// かかる". Task #63 changed the primary selection criterion to a
+    /// **recency window** ("直近3日間くらいのものでいい") instead of a raw
+    /// count: a quiet inbox with only 5 messages in the last 3 days
+    /// shouldn't also drag in a 6-day-old message #6 just to fill a count
+    /// of 30, and a noisy inbox with 300 messages in the last 3 days
+    /// shouldn't fetch all 300 in one pass either — `limit` remains as a
+    /// safety cap on top of the window, not the primary criterion anymore.
     /// Mirrors `ThreadQuery.unifiedInboxFlatSummaries`'s join shape
     /// (inbox-role mailboxes, `isHidden = 0`) but filters on `message
     /// .bodyState = 'notFetched'` instead of read/unread, and returns
     /// `mailbox.path` (the raw IMAP path a session needs to `SELECT`)
     /// rather than a UI-facing `ThreadSummary`.
+    ///
+    /// The `since` cutoff is applied to the same `COALESCE(message.date,
+    /// message.internalDate)` expression used for the `ORDER BY` below
+    /// (rather than `internalDate` alone, which is what
+    /// ``request(mailboxId:)`` uses) so a message's presence/absence in the
+    /// result is consistent with where it would sort — using a different
+    /// field for the cutoff than for the ordering could otherwise exclude a
+    /// message that sorts within the window, or include one that doesn't.
     public static func unfetchedUnifiedInboxCandidates(
         accountIds: [String],
+        since: Date,
         limit: Int,
         db: Database
     ) throws -> [UnifiedInboxPrefetchCandidate] {
@@ -151,12 +164,14 @@ public enum MessageQuery {
             JOIN mailbox ON mailbox.id = message.mailboxId
             WHERE mailbox.role = ? AND mailbox.accountId IN (\(placeholders)) AND mailbox.isHidden = 0
                   AND message.bodyState = ?
+                  AND COALESCE(message.date, message.internalDate) >= ?
             ORDER BY COALESCE(message.date, message.internalDate) DESC, message.uid DESC
             LIMIT ?
             """
         var arguments: [(any DatabaseValueConvertible)?] = [MailboxRoleRecord.inbox.rawValue]
         arguments.append(contentsOf: accountIds)
         arguments.append(MessageBodyState.notFetched.rawValue)
+        arguments.append(since)
         arguments.append(limit)
         let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
         return try rows.map { row in
@@ -168,7 +183,7 @@ public enum MessageQuery {
     }
 }
 
-/// One row of ``MessageQuery/unfetchedUnifiedInboxCandidates(accountIds:limit:db:)``
+/// One row of ``MessageQuery/unfetchedUnifiedInboxCandidates(accountIds:since:limit:db:)``
 /// — carries `accountId`/`mailboxPath` alongside the `MessageRecord` itself
 /// so a caller opening a per-account IMAP session (the launch/foreground
 /// background body prefetch) doesn't have to re-look either up.

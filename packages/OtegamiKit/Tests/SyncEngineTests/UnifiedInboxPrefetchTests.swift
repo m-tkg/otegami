@@ -65,10 +65,16 @@ struct UnifiedInboxPrefetchTests {
         let account = makeAccount(id: "account-1", email: "a1@otegami.test")
         try await database.dbWriter.write { db in try account.insert(db) }
 
-        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        // Recent (well inside the 3-day `unifiedInboxPrefetchWindow`), not a
+        // fixed 2023 timestamp — this call defaults `now:` to the real
+        // `Date()`, so a fixed-past date would fall outside the window and
+        // never even reach the fetch step (see the dedicated
+        // "excludes messages older than the window" test below for that
+        // behavior).
+        let base = Date().addingTimeInterval(-3600)
         _ = try await insertInboxMessage(database: database, accountId: account.id, uid: 1, subject: "old", internalDate: base)
         let alreadyFetchedId = try await insertInboxMessage(
-            database: database, accountId: account.id, uid: 2, subject: "already", internalDate: base.addingTimeInterval(3600), bodyState: .fetched
+            database: database, accountId: account.id, uid: 2, subject: "already", internalDate: base.addingTimeInterval(1800), bodyState: .fetched
         )
 
         let script = FakeIMAPSession.Script(statusByPath: inboxStatus, bodiesByPath: ["INBOX": [1: MessageBodyContent(plainText: "本文")]])
@@ -112,9 +118,9 @@ struct UnifiedInboxPrefetchTests {
             try account2.insert(db)
         }
 
-        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let base = Date().addingTimeInterval(-3600)
         _ = try await insertInboxMessage(database: database, accountId: account1.id, uid: 1, subject: "a1", internalDate: base)
-        _ = try await insertInboxMessage(database: database, accountId: account2.id, uid: 1, subject: "a2", internalDate: base.addingTimeInterval(3600))
+        _ = try await insertInboxMessage(database: database, accountId: account2.id, uid: 1, subject: "a2", internalDate: base.addingTimeInterval(1800))
 
         let recorder = HostRecorder()
         let script = FakeIMAPSession.Script(statusByPath: inboxStatus, bodiesByPath: [
@@ -217,5 +223,192 @@ struct UnifiedInboxPrefetchTests {
         let coordinator = SyncCoordinator(database: database) { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script()) }
         let fetchedCount = await coordinator.prefetchUnifiedInboxBodiesIfNeeded(accounts: []) { _ in self.auth }
         #expect(fetchedCount == 0)
+    }
+
+    // MARK: - Task #63: recency window (replaces the old flat 30-message limit)
+
+    @Test("excludes notFetched messages received before the 3-day unifiedInboxPrefetchWindow, even though a flat count would have included them")
+    func excludesMessagesOlderThanTheWindow() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount(id: "account-1", email: "a1@otegami.test")
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let windowStart = now.addingTimeInterval(-SyncCoordinator.unifiedInboxPrefetchWindow)
+        _ = try await insertInboxMessage(
+            database: database, accountId: account.id, uid: 1, subject: "recent", internalDate: windowStart.addingTimeInterval(3600)
+        )
+        _ = try await insertInboxMessage(
+            database: database, accountId: account.id, uid: 2, subject: "stale", internalDate: windowStart.addingTimeInterval(-3600)
+        )
+
+        // Only uid 1 ("recent") has a scripted body — if the window
+        // exclusion failed and uid 2 ("stale") were attempted too, its
+        // `fetchBody` would hit the fake's "no scripted body" failure path
+        // and be silently skipped rather than crash, so the count/state
+        // assertions below (not just "didn't throw") are what actually
+        // proves the exclusion happened at the query level.
+        let script = FakeIMAPSession.Script(statusByPath: inboxStatus, bodiesByPath: ["INBOX": [1: MessageBodyContent(plainText: "本文")]])
+        let coordinator = SyncCoordinator(database: database) { config in FakeIMAPSession(config: config, script: script) }
+
+        let fetchedCount = await coordinator.prefetchUnifiedInboxBodiesIfNeeded(accounts: [account], now: now) { _ in self.auth }
+        #expect(fetchedCount == 1)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.first { $0.subject == "recent" }?.bodyState == .fetched)
+        #expect(messages.first { $0.subject == "stale" }?.bodyState == .notFetched)
+    }
+
+    @Test("caps the number of messages fetched at unifiedInboxPrefetchCandidateLimit even when more notFetched messages exist inside the window")
+    func capsAtCandidateLimitSafetyCeiling() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount(id: "account-1", email: "a1@otegami.test")
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let overLimitCount = SyncCoordinator.unifiedInboxPrefetchCandidateLimit + 5
+        // Built up front (not mutated inside the `@Sendable` `dbWriter.write`
+        // closure below, which Swift 6 strict concurrency disallows for a
+        // captured `var`) — a pure function of `overLimitCount`, so
+        // precomputing it here changes nothing about what gets scripted.
+        let bodiesByUID = Dictionary(
+            uniqueKeysWithValues: (0..<overLimitCount).map { i in (UInt32(i + 1), MessageBodyContent(plainText: "本文\(i)")) }
+        )
+        try await database.dbWriter.write { db in
+            var mailbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            for i in 0..<overLimitCount {
+                // Distinct, strictly-increasing-with-i dates a few seconds
+                // apart — all comfortably inside the 3-day window, but
+                // deterministically ordered so "which `unifiedInboxPrefetchCandidateLimit`
+                // survive the cap" isn't ambiguous.
+                var message = MessageRecord(
+                    mailboxId: mailbox.id!,
+                    uid: Int64(i + 1),
+                    subject: "msg-\(i)",
+                    internalDate: now.addingTimeInterval(Double(i))
+                )
+                try message.insert(db)
+            }
+        }
+
+        let script = FakeIMAPSession.Script(statusByPath: inboxStatus, bodiesByPath: ["INBOX": bodiesByUID])
+        let coordinator = SyncCoordinator(database: database) { config in FakeIMAPSession(config: config, script: script) }
+
+        let fetchedCount = await coordinator.prefetchUnifiedInboxBodiesIfNeeded(accounts: [account], now: now) { _ in self.auth }
+        #expect(fetchedCount == SyncCoordinator.unifiedInboxPrefetchCandidateLimit)
+    }
+
+    // MARK: - Task #63: post-sync trigger ("各メールボックスの同期完了後にも1回")
+
+    @Test("a successful syncAccountIncrementally triggers a background prefetch of the newly-synced account's notFetched bodies")
+    func postSyncTriggerPrefetchesAfterIncrementalSync() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount(id: "account-1", email: "a1@otegami.test")
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        // `messageCount: 1` (matching the one message this test inserts
+        // directly below) — not `0`: `MailboxSyncer.refetchAndDiffFlags`'s
+        // non-CONDSTORE flag-sync step treats "server says N>0 messages
+        // exist but my scripted UID-range refetch came back empty" as "the
+        // refetch itself came up short, don't trust it", but "server says
+        // 0 messages exist" as authoritative proof every locally-stored UID
+        // was expunged — with `messageCount: 0` here it would delete the
+        // very message this test just inserted before the post-sync
+        // prefetch trigger ever got to see it.
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inboxInfo],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 1)],
+            bodiesByPath: ["INBOX": [1: MessageBodyContent(plainText: "本文")]]
+        )
+        let coordinator = SyncCoordinator(database: database) { config in FakeIMAPSession(config: config, script: script) }
+
+        // Establishes the mailbox's uidValidity baseline the same way
+        // `SyncCoordinatorTests` does, so the incremental sync below takes
+        // the normal differential path rather than a full
+        // uidValidity-changed resync.
+        _ = try await coordinator.syncAccount(account, auth: auth)
+
+        let mailboxId = try await database.dbWriter.read { db in
+            try MailboxRecord
+                .filter(Column("accountId") == account.id)
+                .filter(Column("path") == "INBOX")
+                .fetchOne(db)!
+                .id!
+        }
+        // Simulates new mail an incremental sync's own envelope fetch would
+        // discover — inserted directly rather than scripted through
+        // `FakeIMAPSession`'s `changedSinceEnvelopesByPath`, since only the
+        // post-sync *prefetch* trigger under test cares that this row
+        // exists and is `notFetched` by the time `syncAccountIncrementally`
+        // returns, not how it got there.
+        try await database.dbWriter.write { db in
+            var message = MessageRecord(mailboxId: mailboxId, uid: 1, subject: "new mail", internalDate: Date())
+            try message.insert(db)
+        }
+
+        _ = try await coordinator.syncAccountIncrementally(account, auth: auth)
+
+        // Synchronizes with the detached, low-priority `Task` the trigger
+        // fires (`schedulePostSyncPrefetchIfNeeded`'s doc comment) — see
+        // `waitForPendingPostSyncPrefetchForTesting()`'s doc comment for why
+        // this test-only hook exists instead of racing it with a sleep.
+        let fetchedCount = await coordinator.waitForPendingPostSyncPrefetchForTesting()
+        #expect(fetchedCount == 1)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.first { $0.subject == "new mail" }?.bodyState == .fetched)
+    }
+
+    @Test("the post-sync prefetch trigger is debounced per account: a second sync moments later doesn't re-run it")
+    func postSyncTriggerDebouncesPerAccount() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount(id: "account-1", email: "a1@otegami.test")
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        // `messageCount: 1` (matching the one message this test inserts
+        // directly below) — not `0`: `MailboxSyncer.refetchAndDiffFlags`'s
+        // non-CONDSTORE flag-sync step treats "server says N>0 messages
+        // exist but my scripted UID-range refetch came back empty" as "the
+        // refetch itself came up short, don't trust it", but "server says
+        // 0 messages exist" as authoritative proof every locally-stored UID
+        // was expunged — with `messageCount: 0` here it would delete the
+        // very message this test just inserted before the post-sync
+        // prefetch trigger ever got to see it.
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inboxInfo],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 1)],
+            bodiesByPath: ["INBOX": [1: MessageBodyContent(plainText: "本文")]]
+        )
+        let coordinator = SyncCoordinator(database: database) { config in FakeIMAPSession(config: config, script: script) }
+
+        _ = try await coordinator.syncAccount(account, auth: auth)
+        let mailboxId = try await database.dbWriter.read { db in
+            try MailboxRecord
+                .filter(Column("accountId") == account.id)
+                .filter(Column("path") == "INBOX")
+                .fetchOne(db)!
+                .id!
+        }
+        try await database.dbWriter.write { db in
+            var message = MessageRecord(mailboxId: mailboxId, uid: 1, subject: "new mail", internalDate: Date())
+            try message.insert(db)
+        }
+
+        _ = try await coordinator.syncAccountIncrementally(account, auth: auth)
+        let first = await coordinator.waitForPendingPostSyncPrefetchForTesting()
+        #expect(first == 1)
+
+        // A second sync immediately after (well within
+        // `postSyncPrefetchInterval`'s 60s) must not reschedule the
+        // trigger. If it wrongly did, the message is already `.fetched` by
+        // now — the query candidate list would be empty and the re-run
+        // would report `0`, distinguishable from the debounced case simply
+        // returning the *same already-completed* `1` from the first task.
+        _ = try await coordinator.syncAccountIncrementally(account, auth: auth)
+        let second = await coordinator.waitForPendingPostSyncPrefetchForTesting()
+        #expect(second == first)
     }
 }

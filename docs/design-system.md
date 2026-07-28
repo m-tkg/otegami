@@ -1575,19 +1575,56 @@ scale()` でページ全体を視覚的に縮小する — で解決した
 .prefetchUnifiedInboxBodiesIfNeeded(accounts:now:authProvider:)`
 (`packages/OtegamiKit/Sources/SyncEngine/SyncCoordinator.swift`) が
 これに対応: アプリの起動完了後・フォアグラウンド復帰のたびに、低優先度
-の`Task`で統合受信トレイの直近30件 (`unifiedInboxPrefetchLimit`) の
-`bodyState == .notFetched`なメッセージをバックグラウンドで先読みする。
-アカウントごとに逐次処理 (並列接続はしない)、5分デバウンス
-(`unifiedInboxPrefetchInterval`)、オフライン/認証エラー/個別メッセージ
-の取得失敗はすべて静かに諦める (エラーバナーを出さず、次回の復帰時に
-再試行) — ユーザー操作 (開封時の本文取得) を妨げないことを優先した設計。
-`BodyFetcher`側にも同一メッセージへの重複フェッチ防止 (`Task`ベースの
-in-flight 管理) を追加し、このプリフェッチと開封時の遅延取得が同じ
-メッセージを取り合っても二重にネットワークへ取得しに行かないようにした。
+の`Task`で統合受信トレイの`bodyState == .notFetched`なメッセージを
+バックグラウンドで先読みする。アカウントごとに逐次処理 (並列接続は
+しない)、5分デバウンス (`unifiedInboxPrefetchInterval`)、オフライン/
+認証エラー/個別メッセージの取得失敗はすべて静かに諦める (エラー
+バナーを出さず、次回の復帰時に再試行) — ユーザー操作 (開封時の本文
+取得) を妨げないことを優先した設計。`BodyFetcher`側にも同一メッセージ
+への重複フェッチ防止 (`Task`ベースの in-flight 管理) を追加し、この
+プリフェッチと開封時の遅延取得が同じメッセージを取り合っても二重に
+ネットワークへ取得しに行かないようにした。
+
+**Task #63 追記 (「メール本文画面じゃなくても、まだ読み込んでないメール
+があるなら裏で読み込みしてほしい。直近3日間くらいのものでいい」)**:
+対象基準を当初の「統合受信トレイの直近30件」という固定件数から、
+**「受信日時が3日以内 (`unifiedInboxPrefetchWindow`)」という期間基準**
+に変更した — 静かな受信トレイで3日前の未読が30件に届かないからと
+いって取得対象から漏れる/賑やかな受信トレイで直近30件を超えた
+3日以内のメッセージが取得されない、という件数基準特有のズレを無くす
+ため。無制限に取得しないための保険の上限 (`unifiedInboxPrefetchCandidateLimit`
+= 200件) は残している。`MessageQuery
+.unfetchedUnifiedInboxCandidates(accountIds:since:limit:db:)`
+(`packages/OtegamiKit/Sources/OtegamiStore/MessageQuery.swift`) が
+このクエリを持つ。対象は引き続き統合受信トレイ (inbox role のメール
+ボックス) のみ — アーカイブ等の他メールボックスまで対象を広げるかは
+実装コストとのトレードオフとして見送った (この先読み機能が効くのは
+「まだ開いていない受信メール」がほとんどのユースケースであるため)。
+
+トリガーも追加した。従来は起動/フォアグラウンド復帰時のみだったが、
+**各アカウントの差分同期 (`SyncCoordinator.syncAccountIncrementally`)
+が成功するたびにも1回**、その同期対象アカウントに絞って走らせる
+(`schedulePostSyncPrefetchIfNeeded(for:auth:)`) — 新着メールの本文が
+起動/復帰を待たずに先読みされるようにするため。IDLE のサーバー
+プッシュ・pull-to-refresh・フォアグラウンド復帰時の同期など、
+`syncAccountIncrementally`を呼ぶ経路すべてに自動的に効く。起動/復帰
+パス (5分デバウンス) と同じデバウンス変数を共有すると同期直後に
+デバウンスで弾かれてしまうため、同期完了トリガー専用にアカウントごと
+の短いデバウンス (`postSyncPrefetchInterval` = 1分) を別に持たせた。
+低優先度の`Task`として起動して即座にreturnする (`await`しない) ため
+同期呼び出し元 (pull-to-refreshのスピナー等) を遅延させない。無限
+ループ (プリフェッチ→DB変更→再トリガー) の懸念は構造上発生しない —
+この同期完了トリガーは`bodyFetcher.fetchBody`を直接呼ぶだけで
+`syncAccountIncrementally`自体を再度呼ぶことは無く、本文取得が書き
+換えるのは`MessageRecord.bodyState`等のみで、それをトリガーに再同期
+を走らせる仕組み (DB変更オブザーバ経由の連鎖等) はどこにも無いため。
+
+`packages/OtegamiKit/Tests/OtegamiStoreTests/MessageQueryTests.swift`と
 `packages/OtegamiKit/Tests/SyncEngineTests/UnifiedInboxPrefetchTests.swift`
-で`FakeIMAPSession`を使い、対象メッセージの選定・デバウンス・エラー
-時の無言スキップを検証済み。実機での2台間の体感速度比較は未検証
-(`PENDING.md`)。
+で`FakeIMAPSession`を使い、対象メッセージの選定 (3日以内のみ・保険の
+上限件数)・起動/復帰時デバウンス・同期完了後トリガー (成功時に走る・
+アカウントごとにデバウンスされる)・エラー時の無言スキップを検証済み。
+実機での2台間の体感速度比較は未検証 (`PENDING.md`)。
 
 ### D: no-reply 系の通知メールが件名フォールバックで過剰にスレッド化
 される
