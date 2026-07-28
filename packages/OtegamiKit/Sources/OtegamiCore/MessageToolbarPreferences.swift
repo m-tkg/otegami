@@ -43,20 +43,39 @@ public struct MessageToolbarItemPreference: Equatable, Sendable {
 /// through `parse` into "everything visible, in its saved order" exactly
 /// as `loadOrder()` used to behave, so existing users' saved order survives
 /// the upgrade unchanged (nothing was hidden before this feature existed).
+///
+/// **`defaults` parameter (not just a plain ID list)**: every `parse`/
+/// `encode`/`normalize` call takes the *full default item set* — id, order,
+/// **and each id's own default visibility** — rather than a bare
+/// `[String]` of valid IDs. This is what lets a later app update introduce
+/// a brand-new ID with a *specific* fallback visibility instead of always
+/// defaulting missing IDs to visible: Task #88's `summarize`/`translate`
+/// wanted "newly visible" (append before the overflow trigger), but the
+/// follow-up batch that promoted the overflow menu's own native actions
+/// (mute/pin/mark-unread/archive/junk/draft-English-reply/delete) into
+/// first-class, customizable `MessageToolbarAction` cases wants the
+/// opposite — "still hidden by default, exactly where they already were" —
+/// for every user who upgrades with a pre-existing saved order that
+/// predates those IDs. A single hardcoded "missing = visible" rule (the
+/// original Task #100 shape of this API) can't express both defaults at
+/// once; per-ID defaults can.
 public enum MessageToolbarPreferencesCoding {
     /// Parses a raw `UserDefaults` string (or `nil`/empty, i.e. "never
     /// saved before") into normalized items.
     ///
-    /// - `knownIDs`: the full valid ID set, in the order missing/new ones
-    ///   should be appended — an ID from `raw` that isn't in `knownIDs` is
-    ///   dropped (stale ID from a since-removed action), and a `knownIDs`
-    ///   entry missing from `raw` is appended as visible (an app upgrade
-    ///   that adds a new action never silently drops it from the toolbar —
-    ///   same rule `loadOrder()` used to apply).
+    /// - `defaults`: the full default item set, in the order missing/new
+    ///   ones should be appended, each carrying its own fallback
+    ///   visibility (see this type's doc comment). An ID from `raw` that
+    ///   isn't in `defaults` is dropped (stale ID from a since-removed
+    ///   action); a `defaults` entry missing from `raw` is appended using
+    ///   *that entry's own* `isVisible` (an app upgrade that adds a new
+    ///   action never silently drops it from the toolbar, but doesn't have
+    ///   to default it to visible either).
     /// - `pinnedTrailingID`: forced visible and moved to the end regardless
     ///   of what `raw` said (the "その他" overflow trigger — it can't be
     ///   hidden or reordered).
-    public static func parse(raw: String?, knownIDs: [String], pinnedTrailingID: String) -> [MessageToolbarItemPreference] {
+    public static func parse(raw: String?, defaults: [MessageToolbarItemPreference], pinnedTrailingID: String) -> [MessageToolbarItemPreference] {
+        let knownIDs = Set(defaults.map(\.id))
         var items: [MessageToolbarItemPreference] = []
         var seen = Set<String>()
         if let raw, !raw.isEmpty {
@@ -70,37 +89,38 @@ public enum MessageToolbarPreferencesCoding {
                 seen.insert(id)
             }
         }
-        for id in knownIDs where !seen.contains(id) {
-            items.append(MessageToolbarItemPreference(id: id, isVisible: true))
-            seen.insert(id)
+        for defaultItem in defaults where !seen.contains(defaultItem.id) {
+            items.append(defaultItem)
+            seen.insert(defaultItem.id)
         }
-        return normalize(items, knownIDs: knownIDs, pinnedTrailingID: pinnedTrailingID)
+        return normalize(items, defaults: defaults, pinnedTrailingID: pinnedTrailingID)
     }
 
     /// Encodes normalized items back to the raw `UserDefaults` string.
-    public static func encode(_ items: [MessageToolbarItemPreference], knownIDs: [String], pinnedTrailingID: String) -> String {
-        normalize(items, knownIDs: knownIDs, pinnedTrailingID: pinnedTrailingID)
+    public static func encode(_ items: [MessageToolbarItemPreference], defaults: [MessageToolbarItemPreference], pinnedTrailingID: String) -> String {
+        normalize(items, defaults: defaults, pinnedTrailingID: pinnedTrailingID)
             .map { "\($0.id):\($0.isVisible ? "1" : "0")" }
             .joined(separator: ",")
     }
 
     /// Enforces the invariants both `parse` and `encode` rely on:
-    /// - `pinnedTrailingID` (if it's in `knownIDs`) is always present,
+    /// - `pinnedTrailingID` (if it's in `defaults`) is always present,
     ///   always visible, and always last — wherever it appeared in `items`
     ///   is ignored.
-    /// - every other `knownIDs` entry missing from `items` is appended
-    ///   (visible), in `knownIDs`'s order.
+    /// - every other `defaults` entry missing from `items` is appended
+    ///   using that entry's own default visibility, in `defaults`'s order.
     /// - unknown ids and duplicates are dropped, first occurrence wins.
-    public static func normalize(_ items: [MessageToolbarItemPreference], knownIDs: [String], pinnedTrailingID: String) -> [MessageToolbarItemPreference] {
+    public static func normalize(_ items: [MessageToolbarItemPreference], defaults: [MessageToolbarItemPreference], pinnedTrailingID: String) -> [MessageToolbarItemPreference] {
+        let knownIDs = Set(defaults.map(\.id))
         var seen = Set<String>()
         var result: [MessageToolbarItemPreference] = []
         for item in items where knownIDs.contains(item.id) && item.id != pinnedTrailingID && !seen.contains(item.id) {
             result.append(item)
             seen.insert(item.id)
         }
-        for id in knownIDs where id != pinnedTrailingID && !seen.contains(id) {
-            result.append(MessageToolbarItemPreference(id: id, isVisible: true))
-            seen.insert(id)
+        for defaultItem in defaults where defaultItem.id != pinnedTrailingID && !seen.contains(defaultItem.id) {
+            result.append(defaultItem)
+            seen.insert(defaultItem.id)
         }
         if knownIDs.contains(pinnedTrailingID) {
             result.append(MessageToolbarItemPreference(id: pinnedTrailingID, isVisible: true))
