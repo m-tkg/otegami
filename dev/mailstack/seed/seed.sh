@@ -176,4 +176,11 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/34-white-canvas-transparent-log
 # 確認できないため追加。
 seed_message "test1@otegami.test" "$FIXTURES_DIR/35-attachment-long-filename.eml"
 
+# Task #66 検証用 (カレンダー招待メール対応): Google Calendar 形式の招待
+# メール (multipart/mixed の中に text/plain+text/html の
+# multipart/alternative、text/calendar;method=REQUEST、application/ics
+# 添付、の3パーツ) — 招待カードの「承諾」「辞退」「未定」ボタン表示・
+# ICS パース・iTIP REPLY 送信の実機確認用。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/36-calendar-invite-google.eml"
+
 echo "==> done"

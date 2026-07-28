@@ -1,0 +1,87 @@
+From: Otegami Organizer <organizer@otegami.test>
+To: test1@otegami.test
+Subject: Invitation: 四半期計画会議 (Quarterly Planning Sync) @ Mon Aug 3, 2026 3pm - 4pm (JST)
+Message-ID: <seed-0036@otegami.test>
+Date: Mon, 27 Jul 2026 09:00:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="otegami-calendar-invite-boundary"
+
+--otegami-calendar-invite-boundary
+Content-Type: multipart/alternative; boundary="otegami-calendar-invite-alt-boundary"
+
+--otegami-calendar-invite-alt-boundary
+Content-Type: text/plain; charset="UTF-8"; format=flowed
+Content-Transfer-Encoding: 8bit
+
+四半期計画会議 (Quarterly Planning Sync)
+
+日時: 2026年8月3日(月) 15:00 - 16:00 (JST)
+場所: 会議室A / Conference Room A
+主催者: Otegami Organizer (organizer@otegami.test)
+
+四半期の計画会議です。事前に資料をご確認ください。
+
+このメールへの返信、またはアプリの「承諾」「辞退」「未定」ボタンで
+出欠をお知らせください。
+
+--otegami-calendar-invite-alt-boundary
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: 8bit
+
+<html><body>
+<h2>四半期計画会議 (Quarterly Planning Sync)</h2>
+<p><b>日時:</b> 2026年8月3日(月) 15:00 - 16:00 (JST)<br>
+<b>場所:</b> 会議室A / Conference Room A<br>
+<b>主催者:</b> Otegami Organizer (organizer@otegami.test)</p>
+<p>四半期の計画会議です。事前に資料をご確認ください。</p>
+<p>このメールへの返信、またはアプリの「承諾」「辞退」「未定」ボタンで出欠をお知らせください。</p>
+</body></html>
+
+--otegami-calendar-invite-alt-boundary--
+--otegami-calendar-invite-boundary
+Content-Type: text/calendar; charset="UTF-8"; method=REQUEST
+Content-Transfer-Encoding: 7bit
+
+BEGIN:VCALENDAR
+PRODID:-//Google Inc//Google Calendar 70.9054//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:REQUEST
+BEGIN:VEVENT
+DTSTART:20260803T060000Z
+DTEND:20260803T070000Z
+DTSTAMP:20260728T000000Z
+ORGANIZER;CN=Otegami Organizer:mailto:organizer@otegami.test
+UID:seed-0036-event@otegami.test
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Test One:mailto:test1@otegami.test
+CREATED:20260728T000000Z
+DESCRIPTION:四半期の計画会議です。事前に資料をご確認ください。
+LAST-MODIFIED:20260728T000000Z
+LOCATION:会議室A / Conference Room A
+SEQUENCE:0
+STATUS:CONFIRMED
+SUMMARY:四半期計画会議 (Quarterly Planning Sync)
+TRANSP:OPAQUE
+END:VEVENT
+END:VCALENDAR
+
+--otegami-calendar-invite-boundary
+Content-Type: application/ics; name="invite.ics"
+Content-Disposition: attachment; filename="invite.ics"
+Content-Transfer-Encoding: base64
+
+QkVHSU46VkNBTEVOREFSDQpQUk9ESUQ6LS8vR29vZ2xlIEluYy8vR29vZ2xlIENhbGVuZGFyIDcw
+LjkwNTQvL0VODQpWRVJTSU9OOjIuMA0KQ0FMU0NBTEU6R1JFR09SSUFODQpNRVRIT0Q6UkVRVUVT
+VA0KQkVHSU46VkVWRU5UDQpEVFNUQVJUOjIwMjYwODAzVDA2MDAwMFoNCkRURU5EOjIwMjYwODAz
+VDA3MDAwMFoNCkRUU1RBTVA6MjAyNjA3MjhUMDAwMDAwWg0KT1JHQU5JWkVSO0NOPU90ZWdhbWkg
+T3JnYW5pemVyOm1haWx0bzpvcmdhbml6ZXJAb3RlZ2FtaS50ZXN0DQpVSUQ6c2VlZC0wMDM2LWV2
+ZW50QG90ZWdhbWkudGVzdA0KQVRURU5ERUU7Q1VUWVBFPUlORElWSURVQUw7Uk9MRT1SRVEtUEFS
+VElDSVBBTlQ7UEFSVFNUQVQ9TkVFRFMtQUNUSU9OO1JTVlA9VFJVRTtDTj1UZXN0IE9uZTptYWls
+dG86dGVzdDFAb3RlZ2FtaS50ZXN0DQpDUkVBVEVEOjIwMjYwNzI4VDAwMDAwMFoNCkRFU0NSSVBU
+SU9OOuWbm+WNiuacn+OBruioiOeUu+S8muitsOOBp+OBmeOAguS6i+WJjeOBq+izh+aWmeOCkuOB
+lOeiuuiqjeOBj+OBoOOBleOBhOOAgg0KTEFTVC1NT0RJRklFRDoyMDI2MDcyOFQwMDAwMDBaDQpM
+T0NBVElPTjrkvJrorbDlrqRBIC8gQ29uZmVyZW5jZSBSb29tIEENClNFUVVFTkNFOjANClNUQVRV
+UzpDT05GSVJNRUQNClNVTU1BUlk65Zub5Y2K5pyf6KiI55S75Lya6K2wIChRdWFydGVybHkgUGxh
+bm5pbmcgU3luYykNClRSQU5TUDpPUEFRVUUNCkVORDpWRVZFTlQNCkVORDpWQ0FMRU5EQVINCg==
+
+--otegami-calendar-invite-boundary--

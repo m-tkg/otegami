@@ -100,6 +100,14 @@ Two things this app is built around, more than any single feature list:
 - **Attachments**: send and receive, with QuickLook preview, inline
   `cid:` image support, and RFC 2047/2231-aware filename decoding
   (including Japanese filenames).
+- **Calendar invites**: a Google Calendar-style invite email (a
+  `text/calendar; method=REQUEST` MIME part) shows an invite card — title,
+  time (converted to your device's timezone), location, organizer — with
+  Accept/Decline/Maybe buttons. Tapping one sends a standard iTIP
+  `METHOD:REPLY` back to the organizer, the same mechanism any calendar
+  client uses, so Google Calendar updates your RSVP without needing any
+  calendar API access or OAuth scope. See
+  [docs/calendar-invites.md](docs/calendar-invites.md).
 - **Compose/reply**: a required sender picker to avoid cross-account
   mistakes, plain-text quoting, an Outbox for offline sends, local draft
   saving (with a save/discard confirmation on both platforms), and

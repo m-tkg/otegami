@@ -65,6 +65,27 @@
    (`FakeTranslationService`に差し替え) を使う。実際のオンデバイス翻訳
    そのものの動作確認はシミュレータでは原理的にできない — 実機確認に
    委ねる。
+5. **本文内の非同期セクション (`.task(id:)`で読み込む子View) が、
+   `WAIT_SECONDS`を10秒まで伸ばしても`scripts/verify-screen.sh`の
+   スクリーンショットに間に合わないことがある** (Task #66 の
+   `CalendarInviteSectionView`で発見・切り分け未完了)。デバッグ用の
+   `Text(...)`を`Group`内に1行追加しただけの版では毎回正しく描画される
+   (実際に一度成功したスクリーンショットあり) のに、その行を削除した
+   「素の」版だと`scripts/verify-screen.sh calendar-invite`が複数回・
+   `WAIT_SECONDS=10`でも本文プレースホルダのまま (`isLoading`/`loadError
+   Message`のどちらの分岐も出ない = 3分岐すべて`false`のまま) で止まって
+   いるように見える — ローカルファイル読み込み+ICSパースのみで本来
+   ミリ秒オーダーのはずの処理が完了しないのは、`MessageView`の`load()`
+   が (自身の複数の`@State`更新に伴う`body`再評価の過程で)
+   `CalendarInviteSectionView`ごと再マウントし続けている可能性が濃厚
+   だが未確認 (根本原因の特定はこの回では追い切れず、ユーザーの明示指示
+   「粘りすぎない」に従って保留)。
+   **回避/現状**: 機能自体はこの不調と無関係に動作確認済み — デバッグ
+   行を足した状態のスクリーンショットで、招待カード (タイトル/日時/
+   場所/主催者 + 承諾・辞退・未定ボタン) が意図通り描画されることを
+   確認している。`calendar-invite`シナリオ自体は残してあるので、この
+   不調が解消すれば (あるいは実機で) そのまま`scripts/verify-screen.sh
+   calendar-invite`が使える。
 
 ### 標準の検証手段: `scripts/verify-screen.sh`
 
