@@ -1,5 +1,6 @@
 import SwiftUI
 import OtegamiStore
+import SyncEngine
 
 /// iOS's 検索画面 (新画面構成 (2)): presented as a sheet from
 /// `MailScreenView`'s header search button, or from `ThreadDetailView`'s
@@ -319,6 +320,7 @@ struct SearchScreenView: View {
             }
             guard !Task.isCancelled else { return }
             results = fetched
+            schedulePrefetch(for: fetched)
             try? await environment.database.dbWriter.write { db in
                 try SearchHistoryQuery.record(query, db: db)
             }
@@ -328,6 +330,54 @@ struct SearchScreenView: View {
             results = []
         }
         isSearching = false
+    }
+
+    // MARK: - Task #80: search-result-triggered background body prefetch
+
+    /// Same debounce length/rationale as `MessageListView`'s identical
+    /// property — this screen's own `scheduleSearch()` already debounces
+    /// keystrokes by 300ms before a search even runs; this is a further,
+    /// much longer debounce on top, for the background *prefetch* rather
+    /// than the search itself (the user isn't waiting on this one).
+    private static let listUpdatePrefetchDebounce: Duration = .seconds(3)
+
+    @State private var prefetchTask: Task<Void, Never>?
+    /// See `MessageListView.lastPrefetchedMessageIds`'s doc comment — same
+    /// "skip a repeat call for an unchanged candidate set" role, kept as
+    /// this screen's own `@State` rather than shared since the two views
+    /// don't share any other state either.
+    @State private var lastPrefetchedMessageIds: Set<Int64> = []
+
+    /// Task #80 (「検索結果など、メール一覧が更新されたときに、バックグラウンド
+    /// でメールを取得するようにしてほしい」): this screen's `performSearch`
+    /// counterpart to `MessageListView.schedulePrefetch(for:)` — background-
+    /// prefetches the leading `SyncCoordinator.listUpdatePrefetchLimit`
+    /// not-yet-fetched messages among a just-landed set of search results,
+    /// so opening a hit right after searching usually doesn't pay the
+    /// on-open fetch's own network round trip. See that method's doc
+    /// comment for the shared debounce/dedupe/best-effort behavior — this
+    /// is a near-identical copy, not a shared helper, for the same "these
+    /// two views' surrounding state has already diverged enough" reason
+    /// `performSearch`'s own doc comment gives for not sharing
+    /// `scheduleSearch()` either.
+    private func schedulePrefetch(for results: [ThreadSummary]) {
+        let candidateIds = results
+            .compactMap(\.latestMessage)
+            .filter { $0.bodyState != .fetched }
+            .compactMap(\.id)
+            .prefix(SyncCoordinator.listUpdatePrefetchLimit)
+        guard !candidateIds.isEmpty else { return }
+        let idSet = Set(candidateIds)
+        guard idSet != lastPrefetchedMessageIds else { return }
+
+        prefetchTask?.cancel()
+        let ids = Array(candidateIds)
+        prefetchTask = Task(priority: .background) {
+            try? await Task.sleep(for: Self.listUpdatePrefetchDebounce)
+            guard !Task.isCancelled else { return }
+            lastPrefetchedMessageIds = idSet
+            _ = await environment.prefetchMessageBodiesIfNeeded(messageIds: ids)
+        }
     }
 
     private func loadHistory() async {

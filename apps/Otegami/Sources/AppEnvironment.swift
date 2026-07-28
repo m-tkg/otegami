@@ -1757,6 +1757,24 @@ final class AppEnvironment {
         }
     }
 
+    /// Task #80 (「一覧が更新されたときにバックグラウンドで先読み」): same thin-
+    /// wiring role as `prefetchRecentBodiesIfNeeded()` above, but for
+    /// `SyncCoordinator.prefetchMessageBodies(messageIds:accounts:
+    /// authProvider:)` — `MessageListView`/`SearchScreenView` call this with
+    /// the leading `SyncCoordinator.listUpdatePrefetchLimit` not-yet-fetched
+    /// message ids of whatever list/search-result content just came on
+    /// screen (each view debounces its own trigger first; see those views'
+    /// doc comments). All the actual logic lives in `SyncCoordinator` and is
+    /// unit-tested there; this exists only to supply `auth(for:)`, same
+    /// rationale as `prefetchRecentBodiesIfNeeded()`.
+    @discardableResult
+    func prefetchMessageBodiesIfNeeded(messageIds: [Int64]) async -> Int {
+        await syncCoordinator.prefetchMessageBodies(messageIds: messageIds, accounts: accounts) { [weak self] account in
+            guard let self else { throw AuthResolutionError.missingCredential }
+            return try await self.auth(for: account)
+        }
+    }
+
     private func requestAPNsToken() async throws -> String {
         #if os(iOS)
         do {

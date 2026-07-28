@@ -1627,6 +1627,53 @@ scale()` でページ全体を視覚的に縮小する — で解決した
 アカウントごとにデバウンスされる)・エラー時の無言スキップを検証済み。
 実機での2台間の体感速度比較は未検証 (`PENDING.md`)。
 
+**Task #80 追記 (「直近3日200件だけでなく、検索結果など、メール一覧が
+更新されたときに、バックグラウンドでメールを取得するようにしてほしい」)**:
+上記2つのトリガー (起動/復帰、同期完了後) は対象を常に「統合受信トレイ・
+直近3日・inbox roleのみ」に固定していた — 検索結果 (アーカイブ/送信済み
+等どのメールボックスの、いつのメッセージでもヒットしうる) や、単一
+メールボックス表示・アカウント絞り込みチップ・スレッド表示ON/OFF切替
+などで一覧の中身が変わる瞬間はカバーしていなかった。`SyncCoordinator
+.prefetchMessageBodies(messageIds:accounts:authProvider:)`
+(`packages/OtegamiKit/Sources/SyncEngine/SyncCoordinator.swift`) を新設し、
+固定の候補選定クエリではなく**呼び出し側が指定した任意のメッセージID
+リスト**を対象にした — `prefetchUnifiedInboxBodiesIfNeeded`の汎用版という
+位置づけで、対象選定以外 (アカウントごと逐次接続・オフライン/認証エラー
+の無言スキップ・`BodyFetcher`の in-flight 重複防止との共存) は既存の
+仕組みをそのまま流用する。既存の候補と違い、同一アカウント内でも
+メールボックス (mailboxPath) が複数またがりうる (検索結果がINBOXと
+アーカイブのヒットを混在させる、等) ため、アカウントでグループ化した
+あと、さらにmailboxPathでグループ化して「同じメールボックスは1回だけ
+`select`」する2段のグルーピングにしている。
+
+呼び出し元は`MessageListView`(一覧の`summaries`/`searchResults`更新の
+たび、`applySummaries`/`performSearch`経由) と`SearchScreenView`
+(検索結果`results`更新のたび、`performSearch`経由) —
+いずれも表示中リストの先頭`SyncCoordinator.listUpdatePrefetchLimit`
+(50件) のうち`bodyState != .fetched`なメッセージIDだけを抜き出して渡す。
+デバウンス・「同一内容ならスキップ」判定はどちらも**呼び出し側の
+SwiftUI `@State`**に持たせた (`SyncCoordinator`側にはデバウンスを
+追加していない) — 一覧/検索結果の「何が変わったか」を知っているのは
+呼び出し側だけであり、`prefetchUnifiedInboxBodiesIfNeeded`のような
+固定候補クエリと違って"再実行しても副作用が無い"とは限らない
+(呼び出しごとにDBを読み直す分のコストがある) ため。具体的には各ビューが
+①3秒デバウンス (検索の300msキーストロークデバウンスより意図的に長い —
+ユーザーが待っているものではない裏取得のため) の`Task`を1つだけ保持し
+新しい更新が来たら前のTaskをキャンセル、②直近に実際にリクエストした
+メッセージID集合と今回の集合が完全一致するときはリクエスト自体をスキップ
+(検索中のタイピングで同じ結果が繰り返し降ってきても連打しない) の2つを
+組み合わせている。
+
+`packages/OtegamiKit/Tests/SyncEngineTests/MessageBodiesPrefetchTests.swift`
+で`FakeIMAPSession`を使い、未取得のみ取得・複数メールボックスにまたがる
+グルーピング (mailboxPathごとに1回だけselect)・呼び出し元に無いアカウント
+のIDのスキップ・オフライン時の無言スキップ・既存の3日/200件プリフェッチ
+との共存 (3日枠外のメッセージもこちらは取得できる/既に取得済みなら
+二重取得しない) を検証済み。デバウンス自体はSwiftUIビューの`@State`に
+あるため上記ユニットテストの対象外 — コードレビューでの確認と、
+実機での「検索結果を開いた直後にヒットメールが即表示されるか」の確認は
+`PENDING.md`行き (未検証)。
+
 ### D: no-reply 系の通知メールが件名フォールバックで過剰にスレッド化
 される
 

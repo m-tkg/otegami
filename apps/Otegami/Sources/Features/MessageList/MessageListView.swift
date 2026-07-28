@@ -973,6 +973,60 @@ struct MessageListView: View {
         withAnimation(.easeInOut(duration: 0.25)) {
             summaries = fetched
         }
+        schedulePrefetch(for: fetched)
+    }
+
+    // MARK: - Task #80: list-update-triggered background body prefetch
+
+    /// Debounce before `schedulePrefetch(for:)`'s candidate ids are actually
+    /// requested from `SyncCoordinator` — a few seconds, deliberately much
+    /// longer than `scheduleSearch()`'s 300ms input-debounce: this is a
+    /// background, low-priority fetch the user isn't waiting on, not
+    /// something blocking visible search results, so there's no reason to
+    /// react as fast. Also acts as a coalescing window for a burst of
+    /// `ValueObservation` fires in quick succession (e.g. several read-state
+    /// flips landing together).
+    private static let listUpdatePrefetchDebounce: Duration = .seconds(3)
+
+    @State private var prefetchTask: Task<Void, Never>?
+    /// The candidate id set `schedulePrefetch(for:)` most recently actually
+    /// dispatched to `SyncCoordinator` — a repeat call whose leading
+    /// not-yet-fetched ids come out identical (e.g. `summaries` re-fired
+    /// from an unrelated field changing, per `applySummaries`'s doc comment)
+    /// is skipped outright, on top of the time-based debounce above, so
+    /// typing in macOS's inline search or an unrelated live update never
+    /// re-requests the exact same in-flight/already-attempted set.
+    @State private var lastPrefetchedMessageIds: Set<Int64> = []
+
+    /// Task #80 (「メール一覧が更新されたときに、バックグラウンドでメールを
+    /// 取得するようにしてほしい」): whenever `summaries`/`searchResults`
+    /// change — a fresh sync landing, switching mailboxes, or (macOS) a
+    /// search producing new results — background-prefetches the leading
+    /// `SyncCoordinator.listUpdatePrefetchLimit` not-yet-fetched messages
+    /// among what's now on screen, the same "3日/200件" background-fetch
+    /// infrastructure (`SyncCoordinator`/`BodyFetcher`, Task #31/#63) reused
+    /// for an arbitrary displayed list rather than only the fixed unified-
+    /// inbox candidate set. Only ever reads `summary.latestMessage` (the
+    /// message a row would actually open first) — a grouped-mode thread's
+    /// older messages aren't prefetched here.
+    private func schedulePrefetch(for summaries: [ThreadSummary]) {
+        let candidateIds = summaries
+            .compactMap(\.latestMessage)
+            .filter { $0.bodyState != .fetched }
+            .compactMap(\.id)
+            .prefix(SyncCoordinator.listUpdatePrefetchLimit)
+        guard !candidateIds.isEmpty else { return }
+        let idSet = Set(candidateIds)
+        guard idSet != lastPrefetchedMessageIds else { return }
+
+        prefetchTask?.cancel()
+        let ids = Array(candidateIds)
+        prefetchTask = Task(priority: .background) {
+            try? await Task.sleep(for: Self.listUpdatePrefetchDebounce)
+            guard !Task.isCancelled else { return }
+            lastPrefetchedMessageIds = idSet
+            _ = await environment.prefetchMessageBodiesIfNeeded(messageIds: ids)
+        }
     }
 
     /// M10 pagination: called from every row's `.onAppear` — cheap even
@@ -1041,6 +1095,7 @@ struct MessageListView: View {
             }
             guard !Task.isCancelled else { return }
             searchResults = results
+            schedulePrefetch(for: results)
         } catch {
             guard !Task.isCancelled else { return }
             searchResults = []

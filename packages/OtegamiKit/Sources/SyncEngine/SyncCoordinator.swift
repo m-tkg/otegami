@@ -460,6 +460,155 @@ public actor SyncCoordinator {
         return fetchedCount
     }
 
+    // MARK: - Task #80: list/search-update-triggered background prefetch
+
+    /// How many of the leading not-yet-fetched messages in a just-updated
+    /// list `MessageListView`/`SearchScreenView` ask
+    /// `prefetchMessageBodies(messageIds:accounts:authProvider:)` to fetch —
+    /// shared by both call sites so "top of whatever's currently on screen"
+    /// means the same thing everywhere, matching `BodyFetcher
+    /// .defaultPrefetchLimit`'s identical role for the post-initial-sync
+    /// prefetch.
+    public static let listUpdatePrefetchLimit = 50
+
+    /// Task #80 (「直近3日200件だけでなく、検索結果など、メール一覧が更新
+    /// されたときに、バックグラウンドでメールを取得するようにしてほしい」):
+    /// fetches bodies for whichever of `messageIds` don't have one yet, as a
+    /// general-purpose sibling to `prefetchUnifiedInboxBodiesIfNeeded`'s
+    /// fixed "unified inbox, last 3 days" candidate set — here the *caller*
+    /// decides which ids matter (`MessageListView`/`SearchScreenView` pass
+    /// the leading `listUpdatePrefetchLimit` of whatever list/search-result
+    /// content just came on screen, threading/flat mode and search scope
+    /// already resolved by the time this is called).
+    ///
+    /// Re-reads each id's current `MessageRecord`/owning `MailboxRecord`
+    /// fresh from the database rather than trusting anything the caller
+    /// captured earlier — by the time this actually runs (typically hopped
+    /// through a low-priority background `Task`), an id could already be
+    /// `.fetched` (the on-open fetch, or another prefetch pass, beat it to
+    /// it), or its owning mailbox could have changed. An id whose message
+    /// row is gone, already `.fetched`, or whose mailbox's account isn't in
+    /// `accounts` is simply skipped — not our job to fetch on behalf of an
+    /// account this call wasn't told about.
+    ///
+    /// Grouped by account first (one IMAP connection open at a time, in
+    /// `accounts` order — the same "don't fan out N accounts' connections
+    /// at once" convention `runUnifiedInboxPrefetch` and every other
+    /// per-account loop in this app follow), then by `mailboxPath` *within*
+    /// that account: unlike the unified-inbox candidate set (always exactly
+    /// one inbox-role mailbox per account), an arbitrary id list can span
+    /// more than one mailbox of the same account — a search result mixing
+    /// an INBOX hit with an Archive hit, say — so each distinct mailboxPath
+    /// gets its own `select` before fetching the messages that belong to
+    /// it.
+    ///
+    /// No debounce and no "did the list actually change" diffing here —
+    /// that's the caller's responsibility (`MessageListView`/
+    /// `SearchScreenView` each debounce their own trigger a few seconds and
+    /// skip re-running for unchanged content, since a search box firing
+    /// this on every keystroke would be its own bug). This method only ever
+    /// applies the same best-effort/offline-silent behavior every other
+    /// prefetch entry point here already has: a connection failure, a
+    /// credential resolution failure, or one message's fetch failing all
+    /// just skip that piece and move on — no thrown error, no error banner.
+    ///
+    /// Shares `BodyFetcher.fetchBody`'s per-message in-flight dedupe with
+    /// every other caller (the on-open fetch, the unified-inbox prefetch
+    /// passes) — two overlapping calls to this method (e.g. the list and
+    /// search screens both prefetching the same message) or a race with the
+    /// on-open fetch never triggers two independent network fetches for the
+    /// same message id.
+    ///
+    /// Returns the number of messages actually fetched (for tests; the
+    /// caller doesn't need this).
+    @discardableResult
+    public func prefetchMessageBodies(
+        messageIds: [Int64],
+        accounts: [AccountRecord],
+        authProvider: @Sendable (AccountRecord) async throws -> MailAuth
+    ) async -> Int {
+        guard !messageIds.isEmpty, !accounts.isEmpty else { return 0 }
+        let knownAccountIds = Set(accounts.map(\.id))
+
+        struct Candidate {
+            var message: MessageRecord
+            var accountId: String
+            var mailboxPath: String
+        }
+
+        let candidates: [Candidate]
+        do {
+            candidates = try await database.dbWriter.read { db in
+                var result: [Candidate] = []
+                for messageId in messageIds {
+                    guard let message = try MessageRecord.fetchOne(db, key: messageId),
+                          message.bodyState != .fetched,
+                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId),
+                          knownAccountIds.contains(mailbox.accountId)
+                    else { continue }
+                    result.append(Candidate(message: message, accountId: mailbox.accountId, mailboxPath: mailbox.path))
+                }
+                return result
+            }
+        } catch {
+            return 0
+        }
+        guard !candidates.isEmpty else { return 0 }
+
+        var candidatesByAccount: [String: [Candidate]] = [:]
+        for candidate in candidates {
+            candidatesByAccount[candidate.accountId, default: []].append(candidate)
+        }
+
+        var fetchedCount = 0
+        for account in accounts {
+            guard let group = candidatesByAccount[account.id] else { continue }
+            guard let auth = try? await authProvider(account) else { continue }
+
+            let session = sessionFactory(account.imapConfig)
+            do {
+                try await session.connect(auth: auth)
+            } catch {
+                continue
+            }
+            defer {
+                let session = session
+                Task { await session.disconnect() }
+            }
+
+            // Sub-group by mailboxPath, preserving first-seen order —
+            // `select` each distinct mailbox once rather than re-selecting
+            // per message.
+            var mailboxOrder: [String] = []
+            var candidatesByMailbox: [String: [MessageRecord]] = [:]
+            for candidate in group {
+                if candidatesByMailbox[candidate.mailboxPath] == nil {
+                    mailboxOrder.append(candidate.mailboxPath)
+                }
+                candidatesByMailbox[candidate.mailboxPath, default: []].append(candidate.message)
+            }
+
+            for mailboxPath in mailboxOrder {
+                guard (try? await session.select(mailboxPath)) != nil else { continue }
+                for message in candidatesByMailbox[mailboxPath] ?? [] {
+                    guard let messageId = message.id else { continue }
+                    // Re-check fresh state right before fetching — see this
+                    // method's doc comment on why the candidate list alone
+                    // can't be trusted as of the moment this actually runs.
+                    let current = try? await database.dbWriter.read { db in
+                        try MessageRecord.fetchOne(db, key: messageId)
+                    }
+                    if current?.bodyState == .fetched { continue }
+
+                    if (try? await bodyFetcher.fetchBody(message: message, mailboxPath: mailboxPath, session: session)) != nil {
+                        fetchedCount += 1
+                    }
+                }
+            }
+        }
+        return fetchedCount
+    }
+
     private func syncer(for account: AccountRecord) -> AccountSyncer {
         if let existing = syncers[account.id] {
             return existing
