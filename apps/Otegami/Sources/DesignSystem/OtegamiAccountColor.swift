@@ -37,39 +37,55 @@ public enum OtegamiAccountColor {
     /// (SwiftUI's `Color` doesn't expose that uniformly across platforms
     /// without a `UIColor`/`NSColor` bridge).
     ///
-    /// The original 8 (`teal`/`indigo`/`plum`/`amber`/`rose`/`sage`/
-    /// `slateBlue`/`coral`) keep their *exact* previous hex values —
-    /// existing accounts' already-saved `labelColorKey`s (and every
-    /// account still on the FNV-1a auto assignment) must not visibly
-    /// change color just because the palette grew. The 12 new hues fill
-    /// the gaps between them so the resulting 20-stop wheel is close to
-    /// evenly spaced (see the palette-design note in `docs/design-system.md`
-    /// for the exact hue/gap numbers). Saturation/value stay in the same
-    /// desaturated "上品" family the original 8 established (per this
-    /// enum's pre-existing doc comment) rather than jumping to the fully
-    /// saturated swatches of the reference screenshot (a different app's
-    /// visual style) — the goal was more *distinct hues*, not a different
-    /// color language for this app.
-    private static let red = Color(light: 0xA84940, dark: 0xDE8881)
-    private static let coral = Color(light: 0xC97A54, dark: 0xE8A97F)
-    private static let amber = Color(light: 0xB8853A, dark: 0xE3B36E)
-    private static let mustard = Color(light: 0x806920, dark: 0xC7AD5A)
-    private static let yellow = Color(light: 0xD1C02A, dark: 0xE6D967)
-    private static let sage = Color(light: 0x6B8F4E, dark: 0xA9CB86)
-    private static let green = Color(light: 0x439445, dark: 0x7ACC7D)
-    private static let emerald = Color(light: 0x3C8559, dark: 0x70C291)
-    private static let mint = Color(light: 0x4A947B, dark: 0x82D1B7)
-    private static let teal = Color(light: 0x2F8F82, dark: 0x6FCBBE)
-    private static let cyan = Color(light: 0x439BA8, dark: 0x7FCFDB)
-    private static let slateBlue = Color(light: 0x4A6FA5, dark: 0x8FB3E0)
-    private static let indigo = Color(light: 0x5B6EC9, dark: 0x9AA8EA)
-    private static let periwinkle = Color(light: 0x6155BD, dark: 0x9D93E6)
-    private static let violet = Color(light: 0x7252A3, dark: 0xAE8EDE)
-    private static let plum = Color(light: 0x8A5A9E, dark: 0xC79FDB)
-    private static let lavender = Color(light: 0xBC7EC2, dark: 0xE1AEE6)
-    private static let magenta = Color(light: 0xA84793, dark: 0xE087CD)
-    private static let pink = Color(light: 0xCC568F, dark: 0xE68EB8)
-    private static let rose = Color(light: 0xC15B6E, dark: 0xE8A0AF)
+    /// The 12 hues added in Task #72 fill the gaps between the original 8
+    /// so the resulting 20-stop wheel is close to evenly spaced (see the
+    /// palette-design note in `docs/design-system.md` for the exact
+    /// hue/gap numbers).
+    ///
+    /// Task #72 follow-up (実機フィードバック): the desaturated "上品" family
+    /// Task #72 shipped with read as "5段階の色の差は小さい" once the wheel
+    /// grew to 20 stops — adjacent hues (especially within the
+    /// purple/blue families) were too close in saturation and value to
+    /// tell apart at the size an account color actually renders at (a 3px
+    /// rail, a small dot). Every hue below — **including the original 8,
+    /// whose hue angle is unchanged but whose saturation/value is
+    /// not** — was re-tuned to a vivid, high-saturation family closer to
+    /// the reference screenshot's (Spark's picker), because "上品" and
+    /// "はっきり見分けられる" turned out to be in tension at 20 stops.
+    /// Saturation/value are picked per-hue rather than one flat pair for
+    /// all 20: the yellow-green band (`sage`/`green`/`emerald`) needs a
+    /// lower value than red/orange to avoid clipping to neon, and every
+    /// dark-mode variant runs brighter/more saturated than its light-mode
+    /// counterpart so it still pops against a black background instead of
+    /// looking washed out next to it.
+    ///
+    /// This *is* a visible color change for every existing account
+    /// (manually-picked or auto-assigned) — unlike the original Task #72
+    /// hue-only expansion, keeping the exact old hex was explicitly not
+    /// the goal this time (see the account-color re-tune note in
+    /// `docs/design-system.md`). Only the case *names* (and therefore
+    /// already-saved `labelColorKey` strings) are stable; the `Color`
+    /// each name resolves to is not.
+    private static let red = Color(light: 0xCC3325, dark: 0xEB3423)
+    private static let coral = Color(light: 0xD96227, dark: 0xF26924)
+    private static let amber = Color(light: 0xD98F21, dark: 0xF29B18)
+    private static let mustard = Color(light: 0xC79F1E, dark: 0xE6B822)
+    private static let yellow = Color(light: 0xD9C621, dark: 0xF2DE24)
+    private static let sage = Color(light: 0x66A632, dark: 0x7DCC3D)
+    private static let green = Color(light: 0x29A62E, dark: 0x2DCC32)
+    private static let emerald = Color(light: 0x29A65B, dark: 0x2ED16F)
+    private static let mint = Color(light: 0x2BAD82, dark: 0x36D9A3)
+    private static let teal = Color(light: 0x21A694, dark: 0x2AD1BB)
+    private static let cyan = Color(light: 0x26ABBF, dark: 0x2ECDE6)
+    private static let slateBlue = Color(light: 0x396FBF, dark: 0x4082E6)
+    private static let indigo = Color(light: 0x3850C7, dark: 0x425EEB)
+    private static let periwinkle = Color(light: 0x4A39CC, dark: 0x5542EB)
+    private static let violet = Color(light: 0x6D32C7, dark: 0x7E39E6)
+    private static let plum = Color(light: 0x8C32B2, dark: 0xAA3DD9)
+    private static let lavender = Color(light: 0xC649D1, dark: 0xDA57E6)
+    private static let magenta = Color(light: 0xC728A4, dark: 0xE62EBE)
+    private static let pink = Color(light: 0xD93685, dark: 0xEB3B90)
+    private static let rose = Color(light: 0xD12E4C, dark: 0xEB2F51)
 
     private static let palette: [Color] = [
         red, coral, amber, mustard, yellow, sage, green, emerald, mint, teal,
