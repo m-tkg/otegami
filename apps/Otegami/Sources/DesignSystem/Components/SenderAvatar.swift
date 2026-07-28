@@ -77,17 +77,21 @@ public struct SenderAvatar: View {
         // `imageData`) independently.
         let resolvedImage = platformImage
         return Circle()
-            // Task #87 (3): a resolved image (Google 写真/Gravatar/BIMI・
-            // favicon/連絡先写真) sits on a neutral dark-gray chip
-            // (`OtegamiColor.avatarImageBackdrop`) instead of the account
-            // color — a transparent PNG logo's margin previously read as an
-            // odd color-keyed halo, and a dark logo mark could disappear
-            // into a dark account color. The initials fallback keeps the
-            // account color exactly as before (that's the one place this
-            // fill still doubles as the actual account-identity signal —
-            // see `OtegamiAccountColor.color(for:override:)`'s doc
-            // comment).
-            .fill(resolvedImage != nil ? OtegamiColor.avatarImageBackdrop : OtegamiAccountColor.color(for: accountId, override: labelColorKey))
+            // Task #87 (3) / Task #93: both a resolved image (Google 写真/
+            // Gravatar/BIMI・favicon/連絡先写真) and the initials fallback
+            // sit on the same neutral dark-gray chip
+            // (`OtegamiColor.avatarImageBackdrop`) — a transparent PNG
+            // logo's margin previously read as an odd color-keyed halo, a
+            // dark logo mark could disappear into a dark account color, and
+            // (Task #93) the account-color-keyed initials background was
+            // visually inconsistent with the image case and not guaranteed
+            // to contrast with the white initials text in every account
+            // color. `accountId`/`labelColorKey` remain stored properties
+            // (call sites still pass them) but no longer feed the fill
+            // color — kept for API stability and in case a future design
+            // wants the account-color signal back in a different spot
+            // (e.g. a small colored ring).
+            .fill(OtegamiColor.avatarImageBackdrop)
             .frame(width: diameter, height: diameter)
             .overlay {
                 avatarContent(image: resolvedImage)

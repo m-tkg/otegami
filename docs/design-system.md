@@ -4843,6 +4843,14 @@ override:)`(アカウント色) から新設の`OtegamiColor.avatarImageBackdrop
 よい)。ダーク値は`surface`/`background`より一段明るくし、チップ自体が
 アプリの暗い地に溶けずに独立した形として読めるようにした。
 
+**Task #93 で上記の「イニシャル表示の下地は変更なし」を撤回**:
+アイコンが無くイニシャル文字だけになるアバターも同じ`avatarImageBackdrop`
+の濃灰下地に統一した (文字色は既存どおり白)。画像系アバターと見た目の
+一貫性を持たせるのと、アカウント色によっては白文字とのコントラストが
+不足しうる問題への対応。`SenderAvatar`の`accountId`/`labelColorKey`は
+呼び出し元との互換のためプロパティとしては残しているが、塗り色には
+もう使わない。
+
 - `SenderAvatar.body`で`platformImage`を1度だけ`let`に取り出し、塗り色の
   判定 (`nil`かどうか) と`avatarContent(image:)`への引き渡しの両方に使う
   よう小さくリファクタした (以前は`avatarContent`内で`platformImage`を
