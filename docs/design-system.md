@@ -655,13 +655,16 @@ macOS の ⌘R (`RootView.replyToSelectedThread()`) が既に使っていた
 - **ツールバーのカスタマイズ**: `MessageToolbarSettingsStore`
   (`UserDefaults` にカンマ区切りで永続化、`SwipeActionSettingsStore` と
   同じ「素の `UserDefaults` キーの集まり」方針) + `MessageToolbarSettingsView`
-  (常時編集モードの `List`/`.onMove`)。7アクション
-  (`MessageToolbarAction.allCases`、Task #88 で要約/翻訳が加わり5→7)
-  のうち、要約/翻訳のフローティングボタンからの移設の経緯は「Task #88」
-  節参照。**Task #100 で表示/非表示トグルを追加** (「その他」だけは
-  非表示・並び替えとも不可、常に最後尾固定) — 詳細は
-  `docs/settings.md`「メール本文フッターツールバーの表示/非表示・並び順」
-  節参照。
+  (常時編集モードの `List`/`.onMove`)。14アクション
+  (`MessageToolbarAction.allCases`、Task #88 で要約/翻訳が加わり5→7、
+  2026-07-29 の追加仕様で旧「その他」ネイティブ項目7つを一級アクション化
+  し7→14) のうち、要約/翻訳のフローティングボタンからの移設の経緯は
+  「Task #88」節参照。**Task #100 で表示/非表示トグルを追加** (「その他」
+  だけは非表示・並び替えとも不可、常に最後尾固定)。表示オンのアクション
+  が画面幅を超える場合は横スクロールへフォールバックし
+  (`ViewThatFits`)、カスタマイズ画面の変更は`@AppStorage`経由で即座に
+  ツールバーへ反映される — 詳細は `docs/settings.md`「メール本文
+  フッターツールバーの表示/非表示・並び順」節参照。
 
 ### 4. 一覧ヘッダの再編: 検索の左下フローティング化・再読込ボタン廃止・
 未読のみ表示トグル
@@ -5117,3 +5120,75 @@ Task #84 で追加したテスト用フィクスチャ (`AppEnvironment
   値、および本文が白カード上で明瞭に読めること。0.55/過半という閾値は
   暫定値 — 実機で読みづらい/過剰に白カード化されるケースが見つかった
   場合は`explicitDarkTextIsMajority`のこれらの数値を調整する。
+
+### Task #104 追記: `<style>` ブロックの CSS クラス経由の明示色を見ていなかった取りこぼし (実機報告)
+
+実機報告: 最新ビルドでもダークモードで文字がほぼ黒のまま沈んで読めない
+メールがまだある (例: 架空のドキュメント共有サービスのニュースレター —
+青いヒーロー画像は出るが本文の濃グレー文字が読めない)。上の Task #98 の
+`explicitDarkTextIsMajority`はドキュメントコメントに明記していたとおり
+「インライン`style`のみ (CSS の`<style>`ブロック経由のクラス指定までは
+追わない)」という割り切りだった — 実際にはニュースレターテンプレートの
+かなりの割合が、インライン`style`ではなく`<head>`の`<style>`ブロックに
+書いたクラス (`.body-text { color: #5f6368; }`のような) で本文の文字色を
+指定しており、この割り切りがそのまま検出漏れになっていた。
+
+#### 修正: 案A (スタイルシート走査 + `Element.matches()`)
+
+`HTMLMessageView.swift`の`fitToWidthScript`に2つの案を検討した:
+
+- 案A (採用): `document.styleSheets`を走査して`color`宣言を持つセレクタを
+  集め (`collectExplicitColorSelectors`/`collectRulesInto`)、
+  `nearestExplicitColorAncestor`が祖先を`Element.matches()`でそれらの
+  セレクタに照合する — インライン`style`判定と同じ経路に合流させる。
+- 案B (見送り): ダークネイティブ時の注入デフォルト文字色と実際の
+  `getComputedStyle`を比較し、異なれば「明示色」とみなす方式。より
+  網羅的に見えたが、このファイル自身が注入する`a { color: LinkText; }`
+  のようなベースCSSまで「著者の明示指定」と誤認するリスクがあり
+  (`<a>`タグはメール自身が何も指定していなくても body 継承色とは異なる
+  色になる)、その誤検出を避けるための除外ロジックが案Aより複雑になる
+  と判断した。
+
+案Aの実装ポイント:
+
+- `HTMLDocumentBuilder.wrap`がこのファイル自身の3つの`<style>`タグ (基本
+  リセット、`darkModeInvertStyle`、`forceLightBackgroundStyle`) に
+  `data-otegami-base-style="1"`を付与し、`collectExplicitColorSelectors`
+  がその属性を持つ`<style>`の所属シートを丸ごとスキップする — メール
+  自身が持っていた`<style>`ブロック (`originalHeadStyles`、マークなし)
+  だけを走査対象にする。
+- `@media`等のグルーピングルールは条件の一致・不一致を問わず再帰的に
+  中身を集める (`collectRulesInto`) — `@media (prefers-color-scheme:
+  dark)`ブロックにだけ書かれた`color`宣言も、著者が明示的に色分けする
+  意図の証拠として数える (「取りこぼすより多めに拾う」という Task #98
+  からの既存方針を踏襲)。
+- 外部スタイルシートはこのアプリの`WKContentRuleList`がそもそもリモート
+  リソースを遮断するため読み込まれず、same-document の走査だけで完結
+  する。`el.matches(selector)`が未対応セレクタ構文で例外を投げるケースは
+  セレクタ単位で`try`/`catch`して無視する。
+
+輝度閾値 (0.55)・過半数 (50%) 判定・Task #98 までの既存ロジック (自己
+申告ダーク尊重、Task #84 の背景30%カバレッジ要件、無彩色メールをダーク
+ネイティブのまま残す、「背景を常に白に」設定) は一切変更していない。
+
+#### 検証
+
+`AppEnvironment.uitestFakeHTMLMessages`に`html-6`(架空ブランド
+「FakeDocs」、`example.com`のみ使用) を追加 — html-5 と同じ「背景なし+
+色未指定の前置き2行+中間グレー本文」構造だが、文字色をインライン
+`style`ではなく`<style>`ブロックのCSSクラス(`.headline`/`.body-text`/
+`.footer-text`)で指定する点が異なる。`scripts/verify-screen.sh`に
+`html-6`/`html-style-block-gray-text`シナリオを追加し、ダークモードで
+撮影 — 白カードになり本文が明瞭に読めることを確認した。
+
+既存`html-0`〜`html-5`の全シナリオをライト・ダーク両方で再撮影し、回帰が
+ないことを確認した (ライトメール→白カード、色指定なし→ダークネイティブ
+のまま、自前ダーク対応→無変換、html-3 のインライン`#444`→白カード、
+html-4 の`body`背景明示+透過ロゴ→白カード、html-5 のインライングレー→
+白カード)。`make test`(既知の無関係flake — MessageBuilderTestsの日本語
+ラウンドトリップ — 以外は緑)・`make ios`とも成功を確認した。
+
+- **未検証**: 実機の実際の Readdle Documents (または類似の`<style>`
+  ブロッククラス指定型ニュースレター) 本文そのもの。**実機確認ポイント**:
+  実際に届いた該当メールをダークモードで開き、本文の濃グレー文字が白
+  カード上で明瞭に読めること。
