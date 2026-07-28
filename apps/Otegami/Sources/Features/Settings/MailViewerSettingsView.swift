@@ -106,14 +106,15 @@ struct MailViewerSettingsView: View {
             Section {
                 Toggle("常にテキストで表示", isOn: $alwaysShowPlainText)
                     .accessibilityIdentifier("settings.html.alwaysShowPlainTextToggle")
-                // Task #45「ダークモードで文字が読めない」.
-                Toggle("ダークモードでメールの配色を自動調整", isOn: $autoAdjustColorsInDarkMode)
+                // Task #45「ダークモードで文字が読めない」→ Task #80 で
+                // 既定 OFF・ラベル/説明を反転専用トグルとして更新。
+                Toggle("ダークモードで暗い背景に反転", isOn: $autoAdjustColorsInDarkMode)
                     .accessibilityIdentifier("settings.html.autoAdjustColorsInDarkModeToggle")
                     // Task #71: この設定は「メールの背景を常に白」と排他 —
-                    // 常に白がONの間は自動調整そのものが常にスキップされる
-                    // (`HTMLDocumentBuilder.wrap`側の`forceLightBackground`
-                    // 分岐参照) ので、トグル自体を無効化して「今は関係ない」
-                    // ことを見た目でも伝える。
+                    // 常に白がONの間はダークモード判定自体が常にスキップ
+                    // される (`HTMLDocumentBuilder.wrap`側の
+                    // `forceLightBackground`分岐参照) ので、トグル自体を
+                    // 無効化して「今は関係ない」ことを見た目でも伝える。
                     .disabled(forceLightBackground)
                 // Task #71「メールの背景を常に白に」.
                 Toggle("メールの背景を常に白（ライト表示）", isOn: $forceLightBackground)
@@ -121,7 +122,7 @@ struct MailViewerSettingsView: View {
             } header: {
                 Text("メールの表示 (HTML)")
             } footer: {
-                Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメールを自動で読みやすい配色に反転します（写真・ロゴの色は保たれます）。メール自身がダークモードに対応済みの場合は何もしません。「メールの背景を常に白」をオンにすると、ダークモードでも本文を常にメール本来の配色（白背景）で表示します（自動調整は無効になります）。")
+                Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメール（ライトデザインのメール）は、既定では反転せずメール本来の配色（白背景）のまま表示します。色指定を持たないメールは、読みやすい配色に自動で解決されます。メール自身がダークモードに対応済みの場合は何もしません。「ダークモードで暗い背景に反転」をオンにすると、ライトデザインのメールを暗い背景に反転して表示します（文字中心のメールで暗い背景を好む場合向け）。「メールの背景を常に白」をオンにすると、色指定の有無にかかわらずすべてのメールを常に白背景で表示します（このとき上の反転設定は無効になります）。")
             }
         }
         .navigationTitle("メールビューア")

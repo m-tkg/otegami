@@ -21,20 +21,49 @@ enum HTMLDisplaySettingsStore {
     static let defaultAlwaysShowPlainText = false
 
     /// Task #45「ダークモードで文字が読めない」→ Task #51 で判定方式を
-    /// 変更: HTML メール自身が自前のダークモード対応 (`meta
-    /// name="color-scheme"` / `prefers-color-scheme` を含む `<style>`) を
-    /// 持たない場合に、アプリがダークモード表示中なら本文を古典的な
-    /// 「反転」手法 (`filter: invert(1) hue-rotate(180deg)` を本文全体に
-    /// 適用し、`img`/`picture`/`video`/背景画像を持つ要素に同フィルタを
-    /// 再適用して元の色を維持する — NetNewsWire 等で使われる手法) で
-    /// 読めるようにするかどうか。この設定が ON でも、実際に反転が適用
-    /// されるのは `HTMLWebViewCoordinator.fitToWidthScript` が読み込み後に
-    /// 実効背景色を実測し、明るい (＝ライト前提) と判定できた場合のみ
-    /// — 色指定を一切持たないメールのように、反転すると逆に読めなくなる
-    /// ケースを Task #51 で除外した (`docs/design-system.md` の Task #51
-    /// 節参照)。既定 **ON**: 何もしなければ暗地に暗文字でほぼ読めなく
-    /// なるメールが実機で確認されており、大多数のライト専用メールでは
-    /// 反転の方が明らかに改善になる。
+    /// 変更 → **Task #80 でこの設定の意味と既定値を変更**。
+    ///
+    /// 実機動画 (f012→f015 遷移) で、ライトデザインの HTML メール
+    /// (MakerWorld 等の白背景+濃色文字のマーケティング/通知メール) が
+    /// 「初期描画はライトで正しく見える → 読み込み後にスマート反転が
+    /// 後がけされて暗転する」— チラつきに加え、反転特有のアーティファクト
+    /// (透過ロゴが沈む等、Task #71 参照) が発生し、ユーザーはむしろ
+    /// ライト表示のままの方を望んでいることが分かった (Spark 等の他アプリ
+    /// はこの種のメールをライトのまま表示する)。
+    ///
+    /// **Task #80 での意味変更**: 「メールがダークモードで読みにくく
+    /// なりそうか」の判定 (`HTMLWebViewCoordinator.decideDarkInversion`
+    /// の実効背景色/文字色の実測ロジック自体) はこの設定の ON/OFF に
+    /// 関係なく常に行う (`HTMLDocumentBuilder.wrap`側の
+    /// `shouldConsiderDarkModeHandling`は `forceLightBackground`とメール
+    /// 自身のダーク対応有無だけで決まり、もうこのキーを参照しない)。
+    /// この設定が実際に左右するのは、判定が「介入が要る」と出たときの
+    /// **対処の種類**だけ:
+    /// - **OFF (新既定)**: 反転せず、メール本来の配色のまま (白カード)
+    ///   表示する — 新しい既定挙動。`.otegami-keep-light-active`クラス
+    ///   (`HTMLDocumentBuilder.wrap`のdoc comment参照)。
+    /// - **ON (旧既定・任意)**: 従来どおりの古典的「反転」手法
+    ///   (`filter: invert(1) hue-rotate(180deg)`、`img`/`picture`/`video`/
+    ///   背景画像を持つ要素には同フィルタを再適用して元の色を維持) を
+    ///   適用する — 文字中心のメールで暗い背景を好むユーザー向けの
+    ///   オプトイン。`.otegami-invert-for-dark`クラス。
+    ///
+    /// 色指定を一切持たないメール (判定が「介入不要」と出るケース) は
+    /// この設定に関わらず常にダークネイティブ (このファイル自身の CSS
+    /// リセットが与える `color: CanvasText` にダークモード中の自動解決を
+    /// 任せる) のまま — Task #51 で確認済みのとおり、この既定を反転
+    /// させると壊れる方向に働くため、そもそも判定の対象にすら入らない。
+    /// メール自身が自前のダーク対応 (`meta name="color-scheme"` /
+    /// `prefers-color-scheme`) を宣言している場合も同様に対象外 (二重に
+    /// 手を加えない)。
+    ///
+    /// **既定を OFF に変更** (旧既定は ON): チラつき・反転アーティファクト
+    /// への実機フィードバックを受け、「反転しない (ライトのまま見せる)」
+    /// 方を新しい既定とし、従来の反転挙動は望むユーザーだけが明示的に
+    /// ONにするオプトインへ位置付けを変えた。**キー自体は変更しない** —
+    /// 既に ON で保存済みの既存ユーザーの値はそのまま尊重され、この
+    /// 既定値の変更は「未設定 (今回初めて起動するユーザー)」の解決先
+    /// にのみ影響する。
     ///
     /// `ImageSettingsStore`の2キーと同じ理由で、`HTMLMessageView.init`が
     /// `UserDefaults.standard.bool(forKey:)`を直接読んで`@State`を種付け
@@ -43,10 +72,10 @@ enum HTMLDisplaySettingsStore {
     /// に焼き込まれるため、メールを開くたびに新しく作られる
     /// `HTMLMessageView`インスタンスが常に最新の設定値を反映する必要が
     /// ある。`registerOtegamiHTMLDisplayDefaults()`が `AppEnvironment.init()`
-    /// から起動時に一度呼ばれ、未設定キーでもこの既定値 (true) に解決
+    /// から起動時に一度呼ばれ、未設定キーでもこの既定値 (false) に解決
     /// されるようにしてある。
     static let autoAdjustColorsInDarkModeKey = "htmlDisplay.autoAdjustColorsInDarkMode"
-    static let defaultAutoAdjustColorsInDarkMode = true
+    static let defaultAutoAdjustColorsInDarkMode = false
 
     /// Task #71 (実機フィードバック「メールの背景を常に白（ライト表示）に
     /// したい」): 本文を常にメール本来の配色 (Gmail の「ライト表示」相当)
@@ -60,6 +89,19 @@ enum HTMLDisplaySettingsStore {
     /// アプリ全体のダークモードに本文も追従してほしいはずで、常時ライト
     /// 表示は「元の配色を優先したい」という明示的な選択のときだけ使う
     /// オプトイン機能。
+    ///
+    /// **Task #80 との違い (重要)**: Task #80 で入った新しい既定挙動
+    /// (`autoAdjustColorsInDarkModeKey`のdoc comment参照) は、ダーク
+    /// モード中に**ライトデザインだと判定できたメールだけ**をライトの
+    /// まま見せる — 色指定を一切持たないメールはダークネイティブの
+    /// ままで、この設定とは別物。対してこの `forceLightBackgroundKey`
+    /// は**判定を一切行わず無条件**に全メールをライト固定にする (色
+    /// 指定のないメールも含め、常に白背景+濃色文字で強制描画) —
+    /// 「メールごとの実際の配色を尊重しつつダークモードでも読みやすく
+    /// する」新既定と、「メールの中身によらず常にライト表示したい」と
+    /// いう、より強い・明示的な選択をするこの設定は、意図も適用範囲も
+    /// 異なる。設定画面 (`MailViewerSettingsView`) の説明文もこの区別が
+    /// 分かるように書く。
     ///
     /// `autoAdjustColorsInDarkModeKey`と同じ理由で `HTMLMessageView.init`
     /// が `UserDefaults.standard.bool(forKey:)` を直接読んで `@State` を

@@ -467,23 +467,47 @@ enum HTMLDocumentBuilder {
     /// メール自身が既にダークモード対応済みの場合は何もしない (二重に
     /// 反転させると壊れるため) — Spark/Gmail と同じ「メールが対応済みなら
     /// 尊重する」方針。実測はこの判定より**後**には効かない — 自前対応が
-    /// あると分かった時点で`shouldConsiderDarkInversion`自体が false に
+    /// あると分かった時点で`shouldConsiderDarkModeHandling`自体が false に
     /// なり、JS側の実測は一切走らない。
+    ///
+    /// **Task #80 でのさらなる変更 (実機動画 f012→f015 — MakerWorld 等の
+    /// ライトデザインメールで「初期描画は正しいライト → 読み込み後に反転
+    /// が後がけされて暗転する」チラつき + 反転アーティファクトの報告)**:
+    /// 上の実測ロジック自体 (実効背景色/文字色の測定、Task #56 の「背景
+    /// なし+暗文字」拡張分岐含む) はそのまま — 変わったのは**実測が
+    /// 「介入が要る」と判定したときにどちらの対処をするか**。
+    /// `autoAdjustColorsInDarkMode`の既定が ON→OFF に変わったのに伴い、
+    /// 既定 (OFF) では**反転せずメール本来のライト配色のまま見せる**
+    /// (`.otegami-keep-light-active`、下記) — 反転は明示的に ON にした
+    /// ユーザー向けのオプトインになった。判定自体 (`shouldConsiderDark
+    /// ModeHandling`) はこの設定値と無関係に常に行う (`autoAdjustColorsIn
+    /// DarkMode`はもう判定条件に含めない) — 実際にどちらの対処になるかは
+    /// `data-otegami-prefer-invert`属性経由でJSに伝わる。色指定を一切
+    /// 持たないメールが「介入不要」判定に落ち着く (＝ダークネイティブの
+    /// まま) のは従来どおり変わらない。
     static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool, forceLightBackground: Bool = false, bottomContentInset: CGFloat = 0) -> String {
         let innerBody = extractBodyContent(from: bodyHTML)
         let originalHeadStyles = extractHeadStyles(from: bodyHTML)
-        // Task #51: この時点ではまだ「反転を検討してよいか」までしか
-        // 決めない — 実際に invert するかどうかは実測 (`fitToWidthScript`
-        // の `decideDarkInversion`) 任せ。変数名を旧来の
-        // `shouldInvertForDarkMode` から変えたのはこの意味の変化を明示
-        // するため。
+        // Task #51: この時点ではまだ「介入 (反転 or ライト維持) を検討して
+        // よいか」までしか決めない — 実際にどちらの対処を行うか (あるいは
+        // 何もしないか) は実測 (`fitToWidthScript`の`decideDarkInversion`)
+        // 任せ。変数名を旧来の`shouldInvertForDarkMode`から変えたのはこの
+        // 意味の変化を明示するため。
+        //
+        // Task #80: `autoAdjustColorsInDarkMode`はもうここでの分岐条件に
+        // 含めない — 「介入してよいか」自体は常に判定する (対処が要ると
+        // 分かったときにどちらの対処 (ライト維持 or 反転) を選ぶかだけを
+        // 左右する、下の`fitOuterAttributes`の`data-otegami-prefer-invert`
+        // 経由でJSに伝える値になった)。これにより新既定
+        // (`autoAdjustColorsInDarkMode == false`) でも「実効的にライト
+        // デザインのメールをライトのまま見せる」判定自体は動く。
         //
         // Task #71 (「メールの背景を常に白に」): `forceLightBackground`が
-        // 真なら、スマート反転を検討する余地自体を最初から無くす — 下の
-        // `forceLightBackgroundStyle`がこの文書自体をライト固定にするので、
-        // 反転を検討する対象がそもそも存在しない (無条件でメール本来の
-        // 配色のまま、Gmailの「ライト表示」相当)。
-        let shouldConsiderDarkInversion = !forceLightBackground && autoAdjustColorsInDarkMode && !mailDeclaresOwnDarkModeSupport(html: bodyHTML)
+        // 真なら、この判定自体を検討する余地を最初から無くす — 下の
+        // `forceLightBackgroundStyle`がこの文書自体を無条件でライト固定
+        // にするので、判定対象がそもそも存在しない (Gmailの「ライト表示」
+        // 相当、色指定のないメールも含め常にライト)。
+        let shouldConsiderDarkModeHandling = !forceLightBackground && !mailDeclaresOwnDarkModeSupport(html: bodyHTML)
         // Task #71: `:root`の`color-scheme: light dark;`(下の基本`<style>`)
         // と、メール自身の`<style>`(`originalHeadStyles`、この文書の`<head>`
         // 内でこの後に続く) が持ちうる`color-scheme`宣言の両方に確実に勝つ
@@ -499,17 +523,20 @@ enum HTMLDocumentBuilder {
           html, body { background-color: #ffffff !important; }
         </style>
         """ : ""
-        let darkModeInvertStyle = shouldConsiderDarkInversion ? """
+        let darkModeInvertStyle = shouldConsiderDarkModeHandling ? """
         <style>
           @media (prefers-color-scheme: dark) {
             /* Task #45/#51: ライト前提で書かれたメールをダークモードでも
-               読めるようにする「反転」手法。実際にこのクラスが付くか
-               どうかは JS の実測 (`fitToWidthScript`) 任せ — ここでは
-               クラスが付いたときの見た目だけを用意する。#otegami-fit-inner
-               は fit-to-width の scale(transform) も受けうる同じ要素だが、
-               filter と transform は独立したペイント/コンポジット効果
-               同士で、レイアウト計算 (scrollWidth/scrollHeight) には
-               互いに影響しない。 */
+               読めるようにする「反転」手法 — Task #80 でこの手法を選ぶのは
+               「ダークモードで配色を自動調整」トグルを明示的に ON にした
+               ユーザーだけになった (新既定は下の `otegami-keep-light-for-dark`
+               を使う)。実際にこのクラスが付くかどうかは JS の実測
+               (`fitToWidthScript`) 任せ — ここではクラスが付いたときの
+               見た目だけを用意する。#otegami-fit-inner は fit-to-width の
+               scale(transform) も受けうる同じ要素だが、filter と
+               transform は独立したペイント/コンポジット効果同士で、
+               レイアウト計算 (scrollWidth/scrollHeight) には互いに影響
+               しない。 */
             #otegami-fit-inner.otegami-invert-for-dark {
               filter: invert(1) hue-rotate(180deg);
             }
@@ -564,15 +591,49 @@ enum HTMLDocumentBuilder {
               border-radius: 6px;
               padding: 4px;
             }
+            /* Task #80 (新既定 — チラつき+反転アーティファクトの実機
+               フィードバックを受けた変更): 「ダークモードで配色を自動
+               調整」が OFF (既定) のとき、`decideDarkInversion`が「介入が
+               要る」と判定したメール (実効的にライトデザイン — 明背景を
+               実測、または背景なし+暗い文字色を実測、Task #56 の
+               「背景が解決しない」拡張分岐と同じ判定) には、反転ではなく
+               こちらを使う — メール本来の配色のまま (白カード) 見せる。
+               反転と違い画像・ロゴの色には一切手を加えない (元々ライトな
+               ページにライトな画像がそのまま乗っているだけなので、色を
+               打ち消す必要がない — `decideLogoChips`もこの経路では呼ば
+               ない)。`html`自身に`color-scheme: light`を強制するのは、
+               このサブツリー内で著者が明示指定していない部分が誤って
+               `CanvasText`等のダーク側システム色に解決されるのを防ぐ
+               ため。`html`/`body`の背景を白へ強制するのは
+               `forceLightBackgroundStyle`と同じ保険 — メール自身が
+               `body`へ明示的な背景を指定していればそれがそのまま活きる
+               (非`!important`同士でこのルールより前に来るので無害) が、
+               指定が要素の隙間などで途切れている場合や、介入判定が
+               「背景なし+暗文字」経由だった場合 (背景色はそもそも透明の
+               まま) にも確実にライト表示になるようにする。 */
+            html.otegami-keep-light-active,
+            html.otegami-keep-light-active body {
+              color-scheme: light !important;
+              background-color: #ffffff !important;
+            }
           }
         </style>
         """ : ""
         // Task #51: `#otegami-fit-outer`にこの属性を付けておくと、
         // `fitToWidthScript`側は Swift の状態を別途受け渡されなくても
-        // 「このドキュメントは反転を検討してよいか」をDOMから直接読める
-        // — `didFinish`直後・1.5秒後の遅延呼び出し・1i翻訳後の再適用の
-        // どの呼び出し経路でも同じ1本のスクリプトが自己完結して動く。
-        let fitOuterAttributes = shouldConsiderDarkInversion ? " data-otegami-invert-check=\"1\"" : ""
+        // 「このドキュメントは介入 (反転 or ライト維持) を検討してよいか」
+        // をDOMから直接読める — `didFinish`直後・1.5秒後の遅延呼び出し・
+        // 1i翻訳後の再適用のどの呼び出し経路でも同じ1本のスクリプトが
+        // 自己完結して動く。
+        //
+        // Task #80: `data-otegami-prefer-invert`は「介入が要ると分かった
+        // ときに反転 (旧既定・オプトイン) を選ぶか、ライト維持 (新既定)
+        // を選ぶか」をJSに伝える — `autoAdjustColorsInDarkMode`が true の
+        // ときだけ付与する。この属性が無い (== false) 場合の既定は
+        // ライト維持。
+        let fitOuterAttributes = shouldConsiderDarkModeHandling
+            ? " data-otegami-invert-check=\"1\"" + (autoAdjustColorsInDarkMode ? " data-otegami-prefer-invert=\"1\"" : "")
+            : ""
         // Task #56 (実機フィードバック: 要約/翻訳フローティングボタンが
         // HTML本文に被る): プレーンテキスト側の `.contentMargins(.bottom:)`
         // と同じ効果を、この文書自身の末尾に高さ分の空 `<div>` を1つ足す
@@ -1199,6 +1260,13 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
+        // Task #80 (チラつき根絶): hidden until `HTMLWebViewCoordinator
+        // .applyFitToWidth(to:)`'s reveal callback fires — see that
+        // method's doc comment for why this is the right moment (same
+        // luminance-measurement pass this app already runs, not a new
+        // mechanism) and why hiding only here (this view's *first* load,
+        // not every `reloadIfNeeded` reload) is deliberate.
+        webView.alpha = 0
         context.coordinator.load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
             autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
@@ -1255,6 +1323,8 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
         // ここでも設定する。
         webView.uiDelegate = context.coordinator
         webView.underPageBackgroundColor = .clear
+        // Task #80 — see the iOS `makeUIView`'s identical comment.
+        webView.alphaValue = 0
         context.coordinator.load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
             autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
@@ -1578,6 +1648,29 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// sampled as a light corroborating signal (skipped, not blocking,
     /// when text sampling itself comes back empty — a background that's
     /// genuinely measured as light is reason enough on its own to invert).
+    ///
+    /// **Task #80**: everything above still decides *whether* a message
+    /// needs help ("intervene" — `shouldIntervene` in `decideDarkInversion`
+    /// below); what changed is *which* remedy gets applied once that's
+    /// true. `outer.hasAttribute('data-otegami-prefer-invert')` (set by
+    /// `HTMLDocumentBuilder.wrap` only when `autoAdjustColorsInDarkMode` is
+    /// `true` — now an opt-in, default `false`) picks classic invert
+    /// (`.otegami-invert-for-dark`/`.otegami-invert-active`, unchanged from
+    /// Task #51/#56/#71) when present; the new default (attribute absent)
+    /// picks "keep light" (`.otegami-keep-light-active`) instead — the
+    /// message's own light colors render untouched (no filter, no logo-chip
+    /// treatment needed) while a small CSS safety net
+    /// (`HTMLDocumentBuilder.wrap`'s `darkModeInvertStyle`, the
+    /// `otegami-keep-light-active` rule) forces `html`/`body` to a white
+    /// canvas so nothing shows through any gap the message's own styling
+    /// doesn't cover. This directly answers the real-device report (video
+    /// f012→f015) that the invert path's "flash correct-light, then flip to
+    /// inverted-dark" transition, plus its own artifacts (Task #71's white
+    /// stripe/logo-sinking), were worse than just leaving a light-designed
+    /// message light. A message with no color declarations at all still
+    /// never reaches `shouldIntervene = true` (this section's existing
+    /// reasoning, unchanged), so it keeps rendering dark-native via
+    /// `CanvasText` regardless of this setting either way.
     private static let fitToWidthScript = """
     (function () {
       function waitForImages() {
@@ -1653,21 +1746,28 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         var inner = document.getElementById('otegami-fit-inner');
         if (!outer || !inner || !outer.hasAttribute('data-otegami-invert-check')) { return; }
         if (!window.matchMedia || !window.matchMedia('(prefers-color-scheme: dark)').matches) { return; }
+        // Task #80: whether this document, if left untouched, would look
+        // broken in dark mode — the measurement itself is unchanged from
+        // Task #51/#56 (see this function's doc comment above `fitToWidthScript`
+        // for the full history). What's new is `preferInvert`: which of the
+        // two remedies below actually gets applied once `shouldIntervene`
+        // is true.
+        var preferInvert = outer.hasAttribute('data-otegami-prefer-invert');
         var background = findEffectiveBackground(inner);
-        var shouldInvert = false;
+        var shouldIntervene = false;
         if (background) {
           var backgroundLuminance = relativeLuminance(background);
           if (backgroundLuminance > 0.5) {
             var textLuminance = representativeTextLuminance(inner);
-            shouldInvert = textLuminance === null || textLuminance < backgroundLuminance;
+            shouldIntervene = textLuminance === null || textLuminance < backgroundLuminance;
           }
         } else {
           // Task #56 (実機フィードバック: TestFlight通知メール — 背景色を
           // 一切指定せず、文字色だけ #444 系の濃色で明示指定しているメール
           // がダークモードで暗地に暗文字になり読めなかった): 背景が最後まで
           // 解決しない (=`findEffectiveBackground`がnullを返す) からといって
-          // 「反転しない」で確定させず、実測した代表的な文字色の輝度が低い
-          // (暗い) ときだけ追加で反転する。判定の鍵は「文字色を明示指定して
+          // 「介入不要」で確定させず、実測した代表的な文字色の輝度が低い
+          // (暗い) ときだけ追加で介入する。判定の鍵は「文字色を明示指定して
           // いないメール (32番フィクスチャ) では `color: CanvasText`
           // (このファイル自身のCSSリセット) がダークモード中は既に明るい色
           // へ自動解決されている」という事実 — `getComputedStyle(...).color`
@@ -1679,10 +1779,14 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
           // 無い (透明) メールを反転しても、透明ピクセルはCSS `filter:
           // invert()`でもアルファ非対象のため透明のまま (アプリのダーク
           // 背景がそのまま透けて見える) — 効果は文字色 (と、img/videoは
-          // 二重反転で打ち消し済みの通り) にしか出ない。
+          // 二重反転で打ち消し済みの通り) にしか出ない。ライト維持
+          // (Task #80 の新既定) の側は、このケースでも`html`/`body`の
+          // 背景を白へ強制するCSSが効くので、透明のままにはならない。
           var textLuminance = representativeTextLuminance(inner);
-          shouldInvert = textLuminance !== null && textLuminance < 0.5;
+          shouldIntervene = textLuminance !== null && textLuminance < 0.5;
         }
+        var shouldInvert = shouldIntervene && preferInvert;
+        var shouldKeepLight = shouldIntervene && !preferInvert;
         inner.classList.toggle('otegami-invert-for-dark', shouldInvert);
         // 実機フィードバック (MakerWorld比較 — 右端の白帯・セクション間の
         // 色ムラ): `html.otegami-invert-active`は反転を実際に決めたときだけ
@@ -1704,6 +1808,10 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         } else {
           inner.style.backgroundColor = '';
         }
+        // Task #80 (新既定): ライト維持は画像・ロゴに一切手を加えない
+        // (反転していないので、色を打ち消す必要も白チップを敷く必要も
+        // ない) — `html`自身のクラス切り替えだけで済む。
+        document.documentElement.classList.toggle('otegami-keep-light-active', shouldKeepLight);
         decideLogoChips(inner, shouldInvert);
       }
       /* 実機フィードバック (MakerWorldロゴが暗背景に沈む): 反転対象の画像の
@@ -1927,7 +2035,24 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     static let heightMessageHandlerName = "otegamiHeight"
 
     fileprivate static func applyFitToWidth(to webView: WKWebView) {
-        webView.evaluateJavaScript(fitToWidthScript, completionHandler: nil)
+        // Task #80 (チラつき根絶): `fitToWidthScript` is an IIFE that
+        // returns a `Promise` (`waitForImages().then(...)`, doc comment
+        // above `fitToWidthScript` covers why) — `evaluateJavaScript(_:
+        // completionHandler:)` genuinely waits for that promise to settle
+        // before invoking its completion handler, exactly the behavior this
+        // reveal needs: by the time this closure runs, `decideDarkInversion()`
+        // has already decided "keep light" / "invert" / "do nothing" *and*
+        // `fit()`/`postHeight()` have already run, so revealing here can
+        // never show a frame that's still mid-decision. The completion
+        // handler still fires (with an error) even though bridging the
+        // resolved value itself is broken on this toolchain (this same
+        // method's diagnostic `Task` below documents that bug) — this
+        // reveal only cares that the closure *ran*, never about `error` or
+        // the (discarded) result, so that bug doesn't affect it.
+        webView.evaluateJavaScript(fitToWidthScript) { [weak webView] _, _ in
+            guard let webView else { return }
+            revealIfNeeded(webView)
+        }
         // Task #58 diagnostic instrumentation (temporary) — see
         // `readDiagScript`'s doc comment. A short fixed delay (not a retry
         // loop) is good enough here: this whole call is diagnostics-only,
@@ -1943,6 +2068,27 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
                 diagnosticLogger.error("fitToWidth diag read failed: \(String(describing: error), privacy: .public)")
             }
         }
+    }
+
+    /// Task #80 (チラつき根絶): reveals `webView` (`HTMLWebViewRepresentable
+    /// .makeUIView`/`makeNSView` sets `alpha`/`alphaValue = 0` right after
+    /// creating it) with a short fade — called every time `applyFitToWidth`'s
+    /// promise settles (initial `didFinish`, the 1.5s safety net, and 1i's
+    /// post-mutation reapply via `HTMLTranslationController`), not just
+    /// once: the `alpha < 1` guard makes every call after the first a cheap,
+    /// harmless no-op, so there's no need to track "have we revealed yet"
+    /// as separate state. Also called from `didFail`/`didFailProvisionalNavigation`
+    /// below as a safety net for the case `didFinish` never fires at all
+    /// (a real navigation failure) — this view must never stay permanently
+    /// invisible.
+    private static func revealIfNeeded(_ webView: WKWebView) {
+        #if os(iOS)
+        guard webView.alpha < 1 else { return }
+        UIView.animate(withDuration: 0.15) { webView.alpha = 1 }
+        #elseif os(macOS)
+        guard webView.alphaValue < 1 else { return }
+        webView.animator().alphaValue = 1
+        #endif
     }
 
     /// `WKNavigationDelegate`'s "load finished" callback — fires once per
@@ -1964,6 +2110,25 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
             guard let webView else { return }
             Self.applyFitToWidth(to: webView)
         }
+    }
+
+    /// Task #80 (チラつき根絶) safety net: `applyFitToWidth`'s reveal only
+    /// ever fires once `didFinish` actually happens — a genuine navigation
+    /// failure (rare for this app's own trusted `loadHTMLString`, but not
+    /// impossible) would otherwise leave the web view permanently hidden at
+    /// `alpha`/`alphaValue == 0` with no further callback ever arriving to
+    /// undo that. Revealing here regardless of what actually failed to load
+    /// is the right call — showing whatever partial/blank content resulted
+    /// is strictly better than an invisible message view a user can't tell
+    /// apart from "still loading" forever.
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        Self.revealIfNeeded(webView)
+    }
+
+    /// Task #80 — see `didFail(navigation:withError:)` just above; same
+    /// reasoning, the other WebKit failure callback shape.
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        Self.revealIfNeeded(webView)
     }
 
     /// Decides every navigation this web view ever sees — main frame and

@@ -2842,32 +2842,12 @@
         }
       }
     },
-    "ダークモードでメールの配色を自動調整": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Automatically Adjust Colors in Dark Mode"
-          }
-        }
-      }
-    },
     "メールの背景を常に白（ライト表示）": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Always Show Message Background in White (Light Mode)"
-          }
-        }
-      }
-    },
-    "HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメールを自動で読みやすい配色に反転します（写真・ロゴの色は保たれます）。メール自身がダークモードに対応済みの場合は何もしません。「メールの背景を常に白」をオンにすると、ダークモードでも本文を常にメール本来の配色（白背景）で表示します（自動調整は無効になります）。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Shows HTML messages as plain text by default. You can switch back for an individual message using the toggle button in the message view. While in Dark Mode, messages that explicitly set a white background and dark text are automatically inverted to a readable color scheme (photos and logos keep their original colors). Messages that already support Dark Mode themselves are left untouched. Turning on “Always Show Message Background in White” makes messages always render in their original (white-background) colors, even in Dark Mode (automatic adjustment is disabled while this is on)."
           }
         }
       }
@@ -3338,6 +3318,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "AI Summary"
+          }
+        }
+      }
+    },
+    "ダークモードで暗い背景に反転": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invert to a Dark Background in Dark Mode"
+          }
+        }
+      }
+    },
+    "HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメール（ライトデザインのメール）は、既定では反転せずメール本来の配色（白背景）のまま表示します。色指定を持たないメールは、読みやすい配色に自動で解決されます。メール自身がダークモードに対応済みの場合は何もしません。「ダークモードで暗い背景に反転」をオンにすると、ライトデザインのメールを暗い背景に反転して表示します（文字中心のメールで暗い背景を好む場合向け）。「メールの背景を常に白」をオンにすると、色指定の有無にかかわらずすべてのメールを常に白背景で表示します（このとき上の反転設定は無効になります）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows HTML messages as plain text by default. You can switch back for an individual message using the toggle button in the message view. While in Dark Mode, messages that explicitly set a white background and dark text (light-designed messages) are, by default, left in their original (white-background) colors rather than inverted. Messages with no color declarations at all resolve automatically to a readable color scheme. Messages that already support Dark Mode themselves are left untouched. Turning on “Invert to a Dark Background in Dark Mode” instead inverts light-designed messages to a dark background (for those who prefer a dark background for text-heavy messages). Turning on “Always Show Message Background in White” makes every message always render on a white background regardless of its own colors (the inversion setting above is disabled while this is on)."
           }
         }
       }

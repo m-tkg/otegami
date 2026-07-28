@@ -4296,3 +4296,162 @@ Spark の新規作成 FAB はアクセントブルーの塗りつぶし円+白�
   翻訳を実行し、翻訳フローティングボタンが要約ボタンと同じアクセント塗り
   +白アイコンで表示されること、「原文へ戻す」トグルで色調
   (`accentText`) が変わって見分けがつくことを確認する。
+
+## Task #80: HTML ダーク表示の既定変更 (ライトデザインメールは反転せず維持)
+
+実機動画 (f012→f015 遷移) の報告: ライトデザインの HTML メール
+(MakerWorld 等、白背景+濃色文字のマーケティング/通知メール) を
+ダークモード中に開くと、**初期描画は正しいライトのまま見える → 読み込み
+完了後にスマート反転 (Task #45/#51) が後がけされて暗転する**というチラつき
+が発生していた。ユーザーは反転後の見た目ではなく初期描画のライト表示の方を
+正としており、チラつきに加え反転特有のアーティファクト (透過ロゴが暗背景に
+沈む等、Task #71 参照) にも不満があった。Spark はこの種のメールを反転せず
+ライトのまま表示する — Otegami も同じ方向に既定を変える。
+
+### 1. 既定挙動の変更 (ダークモード時)
+
+`HTMLWebViewCoordinator.decideDarkInversion` の実効背景色/文字色の**実測
+ロジック自体は変えていない** (Task #51 の3段階の背景探索 + Task #56 の
+「背景が解決しない場合は代表的な文字色の輝度で判定」拡張、そのまま)。
+変わったのは、実測が「この文書は何もしないと読みにくくなる (`shouldIntervene`)」
+と判定したときに**どちらの対処をするか**:
+
+- **メールが実効的にライトデザイン** (輝度実測で明背景が見つかる、または
+  背景なし+暗い文字色が見つかる — どちらも `shouldIntervene == true`) →
+  **新既定: 反転せずライトのまま表示** (白カード、`.otegami-keep-light-active`)。
+- **色指定なし** (`shouldIntervene == false` — Task #51 で確認済みのとおり、
+  この既定を反転させると壊れる) → 従来どおりダークネイティブ
+  (このファイル自身の CSS リセットが与える `color: CanvasText` の自動解決)。
+- **メール自身が自前ダーク対応を宣言** (`shouldConsiderDarkModeHandling ==
+  false`) → そのまま (二重に手を加えない、従来どおり)。
+
+判定自体は `autoAdjustColorsInDarkMode` の値と無関係に常に行う
+(`HTMLDocumentBuilder.wrap`の`shouldConsiderDarkModeHandling`はもうこの
+設定を条件に含めない) — 変わったのは介入が必要と分かったときの対処だけ、
+という設計。
+
+### 2. 「ダークモードで配色を自動調整 (反転)」トグルの既定を OFF に変更
+
+`HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey`(既定値のみ
+true→false に変更、キー自体・保存済み値は変えていない — 既に ON で使って
+いた既存ユーザーはそのまま ON で使い続けられる)。この設定が実際に選ぶのは
+「介入が必要」と判定されたときの対処の種類だけ:
+
+- **OFF (新既定)**: 上記1の「ライトのまま表示」を使う。
+- **ON (旧既定・任意)**: 従来どおりの古典的「反転」手法 (`filter:
+  invert(1) hue-rotate(180deg)`、Task #45/#51/#71 のロゴチップ対処含め
+  変更なし) を使う — 文字中心のメールで暗い背景を好むユーザー向けの
+  オプトイン。
+
+Swift/JS 側の実装 (`HTMLMessageView.swift`):
+- `HTMLDocumentBuilder.wrap`が両方の`<style>`ブロック
+  (`.otegami-invert-for-dark`系と新設の`.otegami-keep-light-active`系) を
+  `shouldConsiderDarkModeHandling`が真である限り常に埋め込み、
+  `#otegami-fit-outer`に`data-otegami-prefer-invert`属性を
+  `autoAdjustColorsInDarkMode`が true のときだけ追加する (無ければ既定の
+  ライト維持)。
+- `decideDarkInversion()`が`shouldIntervene`(旧`shouldInvert`、実測結果) と
+  `preferInvert`(`data-otegami-prefer-invert`の有無) から
+  `shouldInvert = shouldIntervene && preferInvert`/`shouldKeepLight =
+  shouldIntervene && !preferInvert`を導出し、`html.otegami-invert-active`/
+  `html.otegami-keep-light-active`のどちらかを (排他的に) トグルする。
+  `decideLogoChips`は反転経路のときだけ呼ぶ — ライト維持経路は画像・ロゴに
+  一切手を加えない (元々ライトなページに元々ライトな画像が乗っているだけ
+  なので、色を打ち消す必要も白チップを敷く必要もない)。
+- `.otegami-keep-light-active`の CSS は `forceLightBackgroundStyle`
+  (Task #71) と考え方は同じ保険 — `html`/`body`に`color-scheme: light
+  !important`+`background-color: #ffffff !important`を強制する。メール
+  自身が`body`へ明示的な背景を指定していればそのまま活きる (非
+  `!important`同士でこのルールより前に来るので無害) が、指定が要素の隙間で
+  途切れている場合や、介入判定が「背景なし+暗文字」経由だった場合
+  (背景色はそもそも透明) にも確実にライト表示になる。
+
+設定画面 (`MailViewerSettingsView`) のラベルも実挙動に合わせて変更:
+「ダークモードでメールの配色を自動調整」→「**ダークモードで暗い背景に
+反転**」(既定 OFF)。footer も新既定・オプトイン反転・「常に白」との違いを
+説明する文言に更新した。`forceLightBackgroundKey`(Task #71) との関係は
+そのまま維持 (排他、ON の間は反転トグルをグレーアウト) — ただし今回の
+変更で「常に白」と新既定の違いが分かりにくくなったため、両方のdoc
+comment/設定文言に「常に白 = 判定なしで全メール (色指定のないメールも
+含む) を白固定 / 新既定 = ライトデザインと判定できたメールだけを白 (色
+指定のないメールはダークネイティブのまま)」という区別を明記した
+(`HTMLDisplaySettingsStore.swift`・`docs/settings.md`参照)。
+
+### 3. チラつき根絶 (WebView のフェード表示)
+
+表示モードの決定 (ライト維持 / ダークネイティブ / 反転 / 自前ダーク対応の
+どれになるか) が確定するまで、`WKWebView`自体を非表示 (`alpha`/
+`alphaValue = 0`) にし、確定した瞬間に一度だけフェード表示する —
+「一瞬別の見た目 → 切り替わる」というチラつきを構造的に無くす。
+
+- **非表示にするタイミング**: `HTMLWebViewRepresentable.makeUIView`/
+  `makeNSView`(このビューが最初に作られる瞬間) だけ — `reloadIfNeeded`
+  経由の再読み込み (画像バナーのタップ等) では非表示に戻さない。設定
+  変更やバナー操作のたびに毎回フェードアウト/インを繰り返すと、それ自体が
+  新しい「チカチカ」になってしまうため、狙うべきは初回表示時のチラつきに
+  限定した。
+- **再表示させるタイミング**: `HTMLWebViewCoordinator.applyFitToWidth(to:)`
+  が呼ぶ`fitToWidthScript`の`Promise`が解決した瞬間 (`evaluateJavaScript(_:
+  completionHandler:)`のコールバック) — 既存の輝度実測経路
+  (`waitForImages()`→`decideDarkInversion()`→`fit()`→`postHeight()`)
+  をそのまま流用し、新しい計測の仕組みは追加していない。表示モードの
+  判定はこの`decideDarkInversion()`の中で確定するので、コールバックが
+  発火した時点では既に確定済み。`didFinish`直後・1.5秒後の安全網・1i
+  翻訳後の再適用のどの呼び出し経路からもこの同じ関数を通るため、
+  `revealIfNeeded`側は「`alpha < 1`ならフェードイン」という単純な冪等
+  ガードだけで済み、「初回表示済みかどうか」を別途状態として持つ必要が
+  ない。
+- **失敗時の安全網**: `didFinish`が一度も発火しない (実際のナビゲーション
+  失敗) ケースに備え、`webView(_:didFail:withError:)`/
+  `webView(_:didFailProvisionalNavigation:withError:)`でも
+  `revealIfNeeded`を呼ぶ — この機構がある限り、WebView が永久に非表示の
+  ままになることはない。
+- **高さ通知・1i翻訳との干渉なし**: `alpha`/`alphaValue`はペイントの
+  不透明度だけを変える見た目の属性で、レイアウト計算・JS実行・
+  `postHeight()`の`otegamiHeight`メッセージ送出のいずれにも影響しない
+  (WebKit は非表示中の`WKWebView`でもレイアウト/スクリプトを止めない) —
+  Task #58 の高さ計測・1i のレイアウト保持翻訳はこの変更の影響を受けない。
+
+### 4. 「背景を常に白」設定 (forceLightBackground) との整理
+
+- **`forceLightBackground` (常に白、Task #71)**: 判定を一切行わず、
+  色指定の有無に関わらず**すべてのメール**を無条件でライト固定にする —
+  より強い・明示的な選択。
+- **新既定 (Task #80)**: ライトデザインだと**判定できたメールだけ**を
+  ライトのまま見せる — 色指定を一切持たないメールは対象外 (ダーク
+  ネイティブのまま)。
+
+設定画面の footer と各キーの doc comment の両方にこの区別を明記した
+(`MailViewerSettingsView.swift`・`HTMLDisplaySettingsStore.swift`・
+`docs/settings.md`)。
+
+### 5. 検証
+
+`scripts/verify-screen.sh`の既存フィクスチャ (`html-0`=31番相当・白背景
+指定、`html-1`=32番相当・色指定なし、`html-2`=自前ダーク対応、`html-3`=
+33番相当・背景なし+暗文字、`html-4`=34番相当・MakerWorld型) を
+light/dark 両方 (`APPEARANCE=light`/`dark`)、新既定 (トグル OFF) で
+撮影し、以下の挙動マトリクスどおりであることを確認する:
+
+| フィクスチャ | ライト外観 | ダーク外観 (新既定 OFF) |
+| --- | --- | --- |
+| html-0 (白背景指定) | 変化なし (元々ライト) | 反転せず白背景のまま (`otegami-keep-light-active`) |
+| html-1 (色指定なし) | 変化なし | ダークネイティブ (何もしない、CanvasText 自動解決) |
+| html-2 (自前ダーク対応) | メール自身の配色 | メール自身の配色 (変化なし) |
+| html-3 (背景なし+暗文字) | 変化なし | 反転せず白背景のまま (背景なし+暗文字 経由の`shouldIntervene`) |
+| html-4 (MakerWorld型) | 変化なし | 反転せず白背景のまま、右端の白帯・色ムラ・ロゴ沈みは発生しない (そもそも反転していないため) |
+
+- **実施状況**: このタスクの実装・doc更新は完了。実機シミュレータでの
+  スクリーンショット目視確認は `.claude/skills/verify/SKILL.md`の手順で
+  別途実施が必要 — 特に `html-4`(MakerWorld型) をダーク外観で撮影し、
+  修正前の反転表示 (Task #71節のスクリーンショット) と比べて「白帯・
+  色ムラ・ロゴ沈みが無く、単純にライトのまま表示される」ことを確認する
+  こと。
+- **チラつきの検証**: `xcrun simctl io booted recordVideo`でメール本文を
+  開く瞬間を録画し、「一瞬ライト/一瞬別の見た目→切り替わる」フレームが
+  無いことを確認するのが理想だが、シミュレータでの録画タイミング調整に
+  複数回沼る場合は無理に追わず「未検証」と明記する方針
+  (`PENDING.md`/session の申し送りルールに従う)。
+- 反転オプトイン (トグル ON) 側の見た目は Task #71 で既に確認済みの挙動
+  そのまま (ロジック自体は変更していない) なので、このタスクでの再確認は
+  必須ではない。
