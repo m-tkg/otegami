@@ -256,7 +256,7 @@
       優先度: 低 (申請自体は今すぐ着手可、以降は Apple の承認待ち) /
       所要時間: 申請自体は30分程度、承認後の有効化は10分 / 参照:
       [docs/default-mail-app.md](docs/default-mail-app.md)
-- [ ] **Xcode Cloud のワークフローを作成する (Task #49)** — App Store
+- [x] **Xcode Cloud のワークフローを作成する (Task #49)** (2026-07-28 完了) — App Store
       Connect にアプリレコードを作成 (Bundle ID `com.mtkg.otegami`) →
       Xcode の Report Navigator → Cloud タブからワークフローを作成し
       リポジトリを接続 → Archive アクション + TestFlight (内部テスト)
