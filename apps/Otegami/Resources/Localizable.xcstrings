@@ -3542,12 +3542,22 @@
         }
       }
     },
-    "メール本文画面下部に並ぶアイコン（返信・転送・検索・情報・要約・翻訳・その他）の表示/非表示と順序を変更できます。非表示にしたアイコンは「その他」メニューから引き続き使えます。": {
+    "ミュート": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Choose which icons (Reply, Forward, Search, Info, Summarize, Translate, More) appear at the bottom of the message view, and in what order. Icons you hide are still available from the “More” menu."
+            "value": "Mute"
+          }
+        }
+      }
+    },
+    "メール本文画面下部に並ぶアイコンの表示/非表示と順序を変更できます。非表示にしたアイコンは「その他」メニューから引き続き使えます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose which icons appear at the bottom of the message view, and in what order. Icons you hide are still available from the “More” menu."
           }
         }
       }

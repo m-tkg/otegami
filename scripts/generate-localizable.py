@@ -330,10 +330,14 @@ translations = {
     "「その他」は常にツールバーの末尾に固定表示され、オフにしたり並べ替えたりすることはできません。":
         "“More” always stays fixed at the end of the toolbar — it can't be turned off or reordered.",
 
-    # --- MailViewerSettingsView: フッターツールバー入口 (Task #100) ---
+    # --- MailViewerSettingsView: フッターツールバー入口 (Task #100、
+    # 2026-07-29 追加仕様でアクション集合が7→14に増えたため列挙をやめた) ---
     "フッターツールバー": "Footer Toolbar",
-    "メール本文画面下部に並ぶアイコン（返信・転送・検索・情報・要約・翻訳・その他）の表示/非表示と順序を変更できます。非表示にしたアイコンは「その他」メニューから引き続き使えます。":
-        "Choose which icons (Reply, Forward, Search, Info, Summarize, Translate, More) appear at the bottom of the message view, and in what order. Icons you hide are still available from the “More” menu.",
+    "メール本文画面下部に並ぶアイコンの表示/非表示と順序を変更できます。非表示にしたアイコンは「その他」メニューから引き続き使えます。":
+        "Choose which icons appear at the bottom of the message view, and in what order. Icons you hide are still available from the “More” menu.",
+
+    # --- 2026-07-29 追加仕様: 「その他」ネイティブ項目の一級 MessageToolbarAction 化 ---
+    "ミュート": "Mute",
 
     # --- AccountTypeSelectionView ---
     "アカウントの種類": "Account Type",
