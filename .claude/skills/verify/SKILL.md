@@ -56,10 +56,41 @@ APPEARANCE=dark scripts/verify-screen.sh html-1   # same, in dark mode
 **Default to this for any "does this screen render correctly" check.**
 Reserve `xcodebuild test -only-testing:OtegamiUITests` for (a) confirming
 the UITest target still *builds* and (b) the handful of existing tests that
-don't depend on a list-row tap or an account. Don't spend more than one or
-two retries chasing a flaky XCUITest run in this environment before falling
-back to `verify-screen.sh` or handing the "please confirm on a real
-device" step to the user (`make deploy-ota`/the `deploy-worktree` skill).
+don't depend on a list-row tap or an account.
+
+### Don't over-try: cap retries at 1-2, then hand off (explicit user instruction)
+
+The user has explicitly said, verbatim: 「シミュレータでエラーになる場合
+は頑張りすぎず人間に確認を任せて欲しい」("when the simulator errors out,
+don't push too hard — let a human take over the check"). Concretely: if
+`verify-screen.sh` or an XCUITest run errors out, **retry at most 1-2
+times**. Don't sink an open-ended amount of time into root-causing a new
+simulator flake or hunting for another workaround — this environment's
+failure modes are already well-catalogued (the 4 above), and chasing a
+5th is exactly the kind of investigation this instruction says to stop
+doing. Once 1-2 retries haven't fixed it, switch to this standard
+hand-off procedure instead of continuing to dig:
+
+1. **Ship anyway, gated only on unit tests + build, not on simulator
+   screenshots.** `make test` and `make ios`/`make mac` green is the
+   release bar; a failed/flaky simulator screenshot is not a release
+   blocker. Proceed with `make deploy-ota`/the `deploy-worktree` skill as
+   normal.
+2. **State "unverified" explicitly in the report to the user.** Don't
+   describe a screen as confirmed when it wasn't — name exactly which
+   screen/scenario couldn't be confirmed in the Simulator and, if known,
+   which of the 4 failure categories above it looks like.
+3. **Hand the user a bulleted, do-it-yourself real-device checklist** —
+   concrete navigation steps + what to look at + what "correct" should
+   look like, written so they can just follow it, not a vague "please
+   check this manually."
+
+This applies to your own work in this skill too, not just future
+sessions: if you hit a *new* simulator instability that isn't one of the
+4 above, it's fine to spend a retry or two confirming it and adding a
+short note about it to `docs/verify.md`'s known-issues section — but once
+that's done (or if it doesn't resolve), follow steps 1-3 above rather
+than continuing to iterate on it.
 
 ## Dev mail server
 
