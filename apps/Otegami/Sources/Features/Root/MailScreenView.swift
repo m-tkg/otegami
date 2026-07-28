@@ -96,12 +96,30 @@ struct MailScreenView: View {
     @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
     /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」): 未読
-    /// のみトグルの隣に置く「アカウントでグループ化」トグル —
-    /// `ListDisplaySettingsStore.groupByAccountKey`を`MessageListView`と共有
-    /// する同じ`@AppStorage`の流儀 (`isUnreadOnly`のdoc comment参照)。実際の
-    /// グルーピング (セクション分割) は`MessageListView.isGroupingActive`/
-    /// `groupedSummaries`側で行う — ここはトグルの表示/書き込みだけ。
+    /// のみトグルの隣に置く「アカウントでグループ化」ボタン —
+    /// `ListDisplaySettingsStore.groupByAccountKey`は当初`MessageListView`と
+    /// 共有する`@AppStorage`で、一覧をこの場でアカウント別`Section`に
+    /// 分割するon/offトグルだった。
+    ///
+    /// Task #92 (アカウントダイジェスト画面): インラインのセクション分割を
+    /// 廃止し、ボタンは`AccountDigestView`(アカウントごとの件数+直近
+    /// プレビューを一段挟んで見せる画面)への遷移トリガーに変わった —
+    /// `ListDisplaySettingsStore.groupByAccountKey`の**意味**は「一覧を
+    /// この場でグルーピングするか」から「ダイジェスト画面を(一時的に)
+    /// 開いているか」に変わったが、**キー自体・保存の仕組み・ボタンの
+    /// 見た目/配置は変えていない**(仕様「ボタンの見た目/配置は現状維持」) —
+    /// `groupByAccountToggleButton`の同じON/OFFアイコン切り替えスタイルを
+    /// そのまま流用し、タップした瞬間`true`にしてダイジェスト画面を開き、
+    /// その画面が閉じた瞬間`false`に戻す(`onChange(of: showingAccountDigest)`)、
+    /// というダイジェスト画面の開閉と1対1対応する一時的な値として使う。
+    /// `MessageListView`はもうこのキーを一切読まない
+    /// (`MessageListView.listContent`のdoc comment参照)。
     @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
+
+    /// Task #92: 「アカウントでグループ化」ボタンが遷移する先 —
+    /// `content`の`.navigationDestination(isPresented:)`(compact/regular
+    /// 両方の`NavigationStack`から見える共通祖先)にぶら下げる。
+    @State private var showingAccountDigest = false
 
     var body: some View {
         HamburgerMenuContainer(isOpen: $isMenuOpen) {
@@ -154,6 +172,14 @@ struct MailScreenView: View {
                     searchPresetQuery = preset
                 }
                 showingSearch = true
+            }
+            // Task #92 (アカウントダイジェスト画面): 同じ「タップ不要の直接
+            // 遷移」パターンで`AccountDigestView`を`scripts/verify-screen.sh`
+            // から開けるようにする — グルーピングボタンをタップせずに
+            // ダイジェスト画面の見た目を直接screenshotできる。
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenAccountDigestDirectly") {
+                isGroupByAccount = true
+                showingAccountDigest = true
             }
         }
     }
@@ -317,6 +343,50 @@ struct MailScreenView: View {
                 floatingComposeButton
             }
         }
+        // Task #92: `groupByAccountToggleButton`が開くダイジェスト画面 —
+        // `content`にぶら下げることで、`compactNavigationStack`/
+        // `regularSplitView.listColumn`どちらの`NavigationStack`からでも
+        // 同じ1箇所の定義で押し込める(`.sheet`群を`mailContent`に一本化
+        // しているのと同じ理由)。
+        .navigationDestination(isPresented: $showingAccountDigest) {
+            AccountDigestView(role: digestRole, onSelectAccount: selectDigestAccount)
+        }
+        // バックボタンで戻った場合も含め、ダイジェスト画面が閉じたら
+        // ボタンの見た目 (`groupByAccountToggleButton`のON/OFF描画) を
+        // 必ずOFFへ戻す — `selectDigestAccount`側でも明示的に`false`へ
+        // 戻しているが(行タップの経路)、バックボタンでの離脱はこの
+        // `.navigationDestination`が`showingAccountDigest`自体を`false`に
+        // 書き戻すだけなので、`isGroupByAccount`はここで追随させる必要が
+        // ある。
+        .onChange(of: showingAccountDigest) { _, isShowing in
+            if !isShowing { isGroupByAccount = false }
+        }
+    }
+
+    /// Task #92: `AccountDigestView`に渡す`role` — `mailSelection`が
+    /// `.unifiedInbox`なら`.inbox`、`.unifiedRole(let role)`ならその
+    /// `role`そのもの。`.mailbox`選択中はそもそも`showsGroupByAccountToggle`
+    /// が`false`でボタン自体が出ない(`groupByAccountToggleButton`はその
+    /// 条件下でしか描画されない)ため、`.mailbox`のフォールバック値
+    /// (`.inbox`)が実際に使われることはない。
+    private var digestRole: MailboxRoleRecord {
+        switch mailSelection {
+        case .unifiedInbox: .inbox
+        case .unifiedRole(let role): role
+        case .mailbox: .inbox
+        }
+    }
+
+    /// `AccountDigestView`の行タップ — 1a のアカウント絞り込みチップと
+    /// 同じ`accountFilter`にセットして`MessageListView`をそのアカウントに
+    /// 絞り込む(`.unifiedRole`にも`MessageListView.observeThreads()`が
+    /// Task #92 で`unifiedInboxAccountFilter`を適用するようになったので、
+    /// `mailSelection`がどちらのケースでも同じ1行で絞り込みが効く)。
+    /// ダイジェスト画面自体は`AccountDigestView.selectAccount(_:)`が
+    /// `dismiss()`で閉じる — ここでは`isGroupByAccount`をOFFへ戻すだけ。
+    private func selectDigestAccount(_ accountId: String) {
+        accountFilter = accountId
+        isGroupByAccount = false
     }
 
     private var emptyState: some View {
@@ -335,19 +405,23 @@ struct MailScreenView: View {
         return false
     }
 
-    /// Task #77: 「アカウントでグループ化」トグル自体を出すかどうか —
+    /// Task #77: 「アカウントでグループ化」ボタン自体を出すかどうか —
     /// `MessageListView.showsAccountAccent`と同じ条件をこの画面側の状態
     /// (`mailSelection`/`accountFilter`) から再現する。単一メールボックス
     /// 選択中 (`.mailbox`) や、1a のアカウント絞り込みチップで1アカウントに
-    /// 絞った統合受信トレイ、アカウントが1つしか無い場合は、グルーピング
-    /// しても全行が同じアカウントで意味が無いのでトグル自体を隠す
-    /// (ユーザー要望「単一アカウントのメールボックス表示時はトグルを出さない」)。
+    /// 絞った統合受信トレイ、アカウントが1つしか無い場合は、ダイジェスト
+    /// (Task #92) を開いても全行が同じアカウントで意味が無いのでボタン
+    /// 自体を隠す(ユーザー要望「単一アカウントのメールボックス表示時は
+    /// トグルを出さない」)。
+    ///
+    /// Task #92: `.unifiedRole`も`.unifiedInbox`と同じく`accountFilter`
+    /// (ダイジェスト画面の行タップ経由でのみセットされる)で絞り込み済みなら
+    /// 隠す — `MessageListView.isMultiAccountScope`を同じ理由で揃えたのと
+    /// 対になる変更(そちらのdoc comment参照)。
     private var showsGroupByAccountToggle: Bool {
         switch mailSelection {
-        case .unifiedInbox:
+        case .unifiedInbox, .unifiedRole:
             guard accountFilter == nil else { return false }
-        case .unifiedRole:
-            break
         case .mailbox:
             return false
         }
@@ -425,15 +499,23 @@ struct MailScreenView: View {
 
     /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」):
     /// `unreadOnlyToggleButton`と同じ「塗り＋アイコン切り替え」スタイルの
-    /// アイコントグル — ON/OFF は`isGroupByAccount`
-    /// (`ListDisplaySettingsStore.groupByAccountKey`の`@AppStorage`) そのもの、
-    /// 実際のセクション分割は`MessageListView`側。ON時のアイコンは
+    /// アイコンボタン — 見た目/配置は Task #92 でも変えていない
+    /// (`isGroupByAccount`のdoc comment参照)。ON時のアイコンは
     /// `person.2.fill`(アカウントの集合という意味)、OFFは`rectangle.grid.1x2`
     /// (フラットな一覧という意味) — どちらも既存パレット/チップトークンを
     /// 再利用するだけで新しい色は足さない (`CLAUDE.md`)。
+    ///
+    /// Task #92: タップ動作は`isGroupByAccount.toggle()`(一覧をこの場で
+    /// 分割する恒久設定)から`showingAccountDigest = true`(ダイジェスト
+    /// 画面を開く一度きりの遷移)に変わった — `isGroupByAccount`自体は
+    /// このボタンの見た目をダイジェスト画面が開いている間だけ「ON」表示
+    /// にするための一時的な値としてまだ書く(`onChange(of:
+    /// showingAccountDigest)`/`selectDigestAccount(_:)`が画面が閉じる
+    /// タイミングで`false`に戻す)。
     private var groupByAccountToggleButton: some View {
         Button {
-            isGroupByAccount.toggle()
+            isGroupByAccount = true
+            showingAccountDigest = true
         } label: {
             Label("アカウントでグループ化", systemImage: isGroupByAccount ? "person.2.fill" : "rectangle.grid.1x2")
                 .labelStyle(.iconOnly)

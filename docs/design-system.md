@@ -4888,3 +4888,112 @@ list`で1アカウント構成でも色帯が出ることを確認済み)。
 確認した。1のアーカイブ解除スワイプ自体の実機/シミュレータでの見た目と、
 3のアバター下地の実機での見た目は、上記の理由によりこのバッチでは
 未確認 — 実機確認ポイントとして残す。
+
+## Task #92: アカウントダイジェスト画面 (Task #77のインライングルーピングを置き換え)
+
+ユーザー承認済み仕様: 一覧ヘッダの「アカウントでグループ化」ボタンが
+Task #77 のインラインの`Section`分割 (`AccountGroupSectionHeader`) では
+なく、一段挟んだ**ダイジェスト画面**へ遷移するようにした。
+
+### 1. `AccountDigestView`/`AccountDigestRow` — 新画面
+
+`apps/Otegami/Sources/Features/MessageList/AccountDigestView.swift`/
+`AccountDigestRow.swift`。アカウントごとに1行 (カード):
+
+- 左端に既存の`AccountColorRail`(1d の3px色罫線、新しい色は足していない)。
+- アカウント表示名 (`Text(verbatim:)` — `AccountFilterChip.label`と同じ
+  理由、表示名がメールアドレスそのものだと`LocalizedStringKey`経由で
+  SwiftUIが自動リンク化し`mailto:`が開く実機バグを避けるため) +
+  未読件数バッジ (`unreadCount > 0`のときだけ、アクセント塗り) + 総件数
+  バッジ (`ThreadRowTextStack`のスレッド内メッセージ数バッジと同じ
+  「角丸0+`paleBase`背景」)。
+- その下に直近2-3件の「差出人・件名」プレビュー行 (薄い色、1行ずつ)。
+- 行タップ → `onSelectAccount(accountId)` → `MailScreenView`が1a の
+  アカウント絞り込みチップと**同じ`accountFilter`機構**をセットして画面を
+  閉じる — 新しいフィルタ機構は増やしていない。
+
+### 2. データ: `AccountDigestQuery` (OtegamiKit / OtegamiStore)
+
+`packages/OtegamiKit/Sources/OtegamiStore/AccountDigestQuery.swift`。
+`AccountDigest`は accountId ごとの`totalCount`/`unreadCount`/
+`recentSummaries`(既定3件)。`ThreadQuery.unifiedInboxRequest`をそのまま
+再利用し (新規SQLの大部分は不要)、`totalCount`/`unreadCount`は常に
+**未読のみ表示トグルとは無関係な、そのアカウントの完全なスコープ**で
+計算する — ダイジェストは複数アカウント横断の一覧性が目的の画面であり、
+「たまたま一覧を未読のみ表示にしていたかどうか」で同じアカウントの見え方
+が変わるのはこの画面の目的にそぐわないと判断した (行タップ後の絞り込み
+一覧では、引き続き未読のみ表示トグルが効く)。`AccountDigestQueryTests`
+(`OtegamiStoreTests`) でカウント/順序/スコープ (アーカイブ役割のメール
+を含めない等) をカバーした。
+
+### 3. 一括処理: 行のスワイプ
+
+`AccountDigestRow`は`MessageListRow`と**同じ`SwipeActionSettingsStore`の
+4スロット** (leading/trailing × short/long) を読むが、あの行の自前
+`DragGesture`(しきい値超えで確認無しに自動発火) ではなく、SwiftUI標準の
+`.swipeActions`(ボタンが現れてタップで実行) を採用した — この行のスワイプ
+は「表示中フォルダの全メールを一括処理」という重い操作で、`AccountDigestView`
+側が必ず`.confirmationDialog`を挟む(仕様「件数が多い操作なので確認
+ダイアログを出し」)以上、もう一つカスタムドラッグジェスチャーを書く方が
+無駄になるという判断。macOS には`.swipeActions`が無いため、
+`MessageListRow`のmacOS分岐と同じ理由でコンテキストメニューに同じ
+アクションを並べる。
+
+実行対象は確認ダイアログを閉じた時点で`AccountDigestQuery.allSummaries`
+から**都度取り直す**(表示中の`AccountDigest.totalCount`はスナップショット
+で多少古くてもよい、表示用の見積もりに過ぎない)。アーカイブ/削除/迷惑
+メールは`MessageListView.archiveSelected`/`deleteSelected`と同じ「1
+スレッドずつ`MessageRemoval.commit`してスナップショットを集め、1つでも
+成功したら`UndoToast`を出す」形 — 既存の一括操作パス(1h の長押し一括
+選択)をそのまま踏襲した。既読/未読切替・ピン留めは`MessageListView
+.applyReadState`/`.applyPinState`と同じ実装をこの画面向けに複製している
+(どちらも薄いopQueue経由の書き込みで、切り出すほどの共通ロジックが無い
+ための重複、`AccountDigestView`のdoc comment参照)。
+
+### 4. 「アカウントでグループ化」ボタンの意味変更
+
+`ListDisplaySettingsStore.groupByAccountKey`(`@AppStorage`) は**キー名・
+保存の仕組み・ボタンの見た目/配置は変えていない**(仕様「ボタンの見た目/
+配置は現状維持」) — `MailScreenView.groupByAccountToggleButton`の同じ
+ON/OFFアイコン切り替えスタイル(`person.2.fill`/`rectangle.grid.1x2`)を
+そのまま流用し、タップした瞬間`true`にしてダイジェスト画面を開き、その
+画面が閉じた瞬間(行タップ経由でも、バックボタンでの離脱でも)`false`に
+戻す、というダイジェスト画面の開閉と1対1対応する一時的な値に変わった。
+`MessageListView`はこのキーをもう一切読まない — Task #77 のインライン
+`Section`分割 (`isGroupingActive`/`groupedSummaries`)・`AccountGroupSectionHeader`
+はすべて削除した。
+
+`MessageListView.observeThreads()`は`.unifiedRole`ケースでも
+`unifiedInboxAccountFilter`を適用するように拡張した — ダイジェスト行
+タップが`.unifiedRole`選択中にも起こりうるようになったため
+(`.unifiedInbox`の「全部」チップと同じ形に揃えた)。既存の呼び出し元は
+`unifiedInboxAccountFilter`を渡さない(`nil`)ので挙動は変わらない。
+
+### 5. iPad (regular幅) 2ペイン構成での動線
+
+ダイジェスト画面は`MailScreenView.content`(compact/regular 両方の
+`NavigationStack`が共有する共通祖先)に`.navigationDestination(isPresented:)`
+でぶら下げているため、`compactNavigationStack`(単一カラムpush)/
+`regularSplitView.listColumn`(左ペインの`NavigationStack`)のどちらでも
+同じ1箇所の定義でダイジェスト画面が開く。
+
+### 検証
+
+`make test`(新規`AccountDigestQueryTests`4件含め全緑)・`make ios`・
+`make mac`とも成功を確認。`scripts/verify-screen.sh account-digest`
+(旧`list-grouped`のエイリアス、`-uitestsOpenAccountDigestDirectly`の
+タップ不要直接遷移)で、fake Gmail + fake HTML の2アカウント構成の
+ダイジェスト画面 (色罫線+表示名+未読/件数バッジ+直近プレビュー2-3行が
+2アカウント分) を実際にスクリーンショットで確認した。
+
+- **未検証**: 行のスワイプ→確認ダイアログ→一括処理→Undoトースト、という
+  操作の連鎖はタップ/スワイプを一切行わないtap-free経路
+  (`scripts/verify-screen.sh`) では確認できない(Task #77の「3.」節と同じ
+  制約)。XCUITestでの実スワイプ検証はこの開発機のシミュレータでは
+  タップ不達/IMAP接続不能の既知不調があるため見送った — **実機確認
+  ポイント**: 統合受信トレイ(複数アカウント)で「アカウントでグループ化」
+  ボタンを押してダイジェスト画面を開き、(1) 行をタップしてそのアカウント
+  に絞り込んだ一覧へ遷移すること、(2) 行を左右にスワイプしてボタンを
+  タップし確認ダイアログが出ること、(3) 確認後にそのアカウントのメール
+  がまとめてアーカイブ/削除され、「元に戻す」バーが出て実際に元に戻せる
+  こと、(4) iPad (2ペイン) でも同じ動線が破綻しないこと、を確認する。

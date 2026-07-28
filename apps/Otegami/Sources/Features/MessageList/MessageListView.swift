@@ -245,65 +245,19 @@ struct MessageListView: View {
         ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.unreadOnlyKey, default: ListDisplaySettingsStore.defaultUnreadOnly)
     }
 
-    // MARK: - アカウントでグループ化 (Task #77、ヘッダのトグル — see
-    // `ListDisplaySettingsStore.groupByAccountKey`'s doc comment)
-
-    /// `MailScreenView`の`groupByAccountToggleButton`が同じ`UserDefaults`キー
-    /// を直接書く (`isUnreadOnly`と同じ流儀 — `@AppStorage`自体が両者を
-    /// 同期する)。ここでは`isGroupingActive`経由でのみ読む。
-    @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
-
-    /// グルーピングが実際に効くのは、設定がONかつ`showsAccountAccent`が
-    /// 真の画面 (複数アカウントが混ざりうる統合受信トレイ/横断ビュー) の
-    /// ときだけ — 単一メールボックス表示や、1a のアカウント絞り込み
-    /// チップで1アカウントに絞った統合受信トレイでは、そもそも全行が
-    /// 同じアカウントなのでセクション分割自体が意味を持たない
-    /// (`MailScreenView.showsGroupByAccountToggle`がトグル自体を隠す条件と
-    /// 同じ)。
-    ///
-    /// Task #82: reads `isGroupByAccount`'s persisted value straight from
-    /// `UserDefaults` (same reasoning as `persistedUnreadOnly`/`isFlatMode`)
-    /// rather than trusting the `@AppStorage` property's current in-memory
-    /// value — a grouped/ungrouped list is just as visibly wrong on a stale
-    /// first read as the threaded/flat query is. `_ = isGroupByAccount`
-    /// (the value itself is unused) keeps SwiftUI's change-tracking
-    /// subscribed to `groupByAccountKey` — `isGroupByAccount` is otherwise
-    /// never read directly anywhere in this view's `body`, and dropping
-    /// this line entirely would mean nothing here ever re-renders (and
-    /// re-runs this fresh read) when the setting changes elsewhere.
-    private var isGroupingActive: Bool {
-        _ = isGroupByAccount
-        return ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.groupByAccountKey, default: ListDisplaySettingsStore.defaultGroupByAccount) && isMultiAccountScope
-    }
-
-    /// Task #77: `displayedSummaries`をアカウントIDで区分した1セクション分。
-    /// 新規のSQLクエリは追加しない — 既に取得済みの`ThreadSummary`配列を
-    /// メモリ内で再グルーピングするだけ(ミッションの規模 (ページングで
-    /// せいぜい数百件) ならこれで十分、`docs/design-system.md`のTask #77
-    /// 節参照)。
-    private struct AccountGroup: Identifiable {
-        var accountId: String
-        var summaries: [ThreadSummary]
-        var id: String { accountId }
-    }
-
-    /// アカウントの並び順は「そのアカウントの最初の行が現れた順」——
-    /// `displayedSummaries`は既に日付降順でアカウント間インターリーブ済み
-    /// なので、これは自然に「直近の更新があるアカウントが上」という順序に
-    /// なる（参考画像のGmail/PLAIDの並びと同じ考え方）。
-    private var groupedSummaries: [AccountGroup] {
-        var order: [String] = []
-        var buckets: [String: [ThreadSummary]] = [:]
-        for summary in displayedSummaries {
-            let accountId = summary.thread.accountId
-            if buckets[accountId] == nil {
-                order.append(accountId)
-                buckets[accountId] = []
-            }
-            buckets[accountId, default: []].append(summary)
-        }
-        return order.map { AccountGroup(accountId: $0, summaries: buckets[$0] ?? []) }
-    }
+    // MARK: - アカウントでグループ化 (Task #77 → Task #92)
+    //
+    // Task #77 で導入したインラインの`Section`分割 (`isGroupingActive`/
+    // `groupedSummaries`/`AccountGroupSectionHeader`) は Task #92 で廃止した
+    // — 「アカウントでグループ化」ボタンは一覧をこの場でセクション分割する
+    // 代わりに、一段挟んだ`AccountDigestView`(アカウントごとの件数+直近
+    // プレビューのダイジェスト画面)へ遷移するようになった
+    // (`MailScreenView.groupByAccountToggleButton`)。この`MessageListView`
+    // 自体はもうグルーピングの状態を一切知らない — `ListDisplaySettingsStore
+    // .groupByAccountKey`はまだ存在するが、その意味は「一覧をこの場で
+    // グルーピングするか」から「ダイジェスト画面を開いているか」へ変わった
+    // (`MailScreenView`側の同名プロパティのdoc comment参照)。詳細は
+    // `docs/design-system.md`のTask #92節。
 
     /// Flat mode is simply "threading turned off" — kept as a derived value
     /// so the rest of this view (and `ObservationKey`) can keep reading in
@@ -378,29 +332,33 @@ struct MessageListView: View {
     /// even for a single mailbox or an account-filtered unified inbox —
     /// the doc comment above (and `isMultiAccountScope` just below) record
     /// the narrower condition this property used to return, kept alive
-    /// only for `isGroupingActive` (grouping by account still shouldn't
-    /// kick in where every visible row already shares one account — that
-    /// would just draw a single, redundant section header). The header's
-    /// own グループ化 toggle visibility (`MailScreenView
+    /// only for `isMultiAccountScope` (the trailing account-name label
+    /// still shouldn't show where every visible row already shares one
+    /// account — that would just be a redundant repeated label). The
+    /// header's own グループ化 toggle visibility (`MailScreenView
     /// .showsGroupByAccountToggle`) is unrelated and intentionally
     /// untouched by this change.
     private var showsAccountAccent: Bool { true }
 
     /// The condition `showsAccountAccent` used to gate on before Task #87
-    /// (4) made the rail unconditional — still exactly right for
-    /// `isGroupingActive`, which only makes sense where more than one
-    /// account's rows could actually appear together in `displayedSummaries`.
+    /// (4) made the rail unconditional — still exactly right for deciding
+    /// whether `threadRow(for:)`'s trailing account-name label should show
+    /// at all (only where more than one account's rows could actually
+    /// appear together in `displayedSummaries`).
     private var isMultiAccountScope: Bool {
         switch selection {
         case .unifiedInbox:
             guard unifiedInboxAccountFilter == nil else { return false }
         case .unifiedRole:
-            // 画面構造改修バッチ (Task #33, 3): カテゴリ優先メニューの「横断
-            // ビュー」も`.unifiedInbox`の「全部」チップと同じ「複数アカウント
-            // の行が混ざりうる」画面 — アカウント絞り込みチップ自体は無い
-            // (この選択には`unifiedInboxAccountFilter`が適用されない) ので、
-            // 常に混ざる前提でよい。
-            break
+            // 画面構造改修バッチ (Task #33, 3) 時点では「横断ビュー」に
+            // アカウント絞り込みチップが無く、`unifiedInboxAccountFilter`は
+            // 常に無視されていた。Task #92 (アカウントダイジェスト画面):
+            // ダイジェスト行タップ→絞り込み一覧という新しい遷移が
+            // `.unifiedRole`にも`unifiedInboxAccountFilter`を実際に適用する
+            // ようになった (`observeThreads()`) ため、ここも`.unifiedInbox`
+            // と同じ条件に揃える — 1アカウントに絞られた横断ビューでも、
+            // もう全行が同じアカウントなのでラベルは冗長になる。
+            guard unifiedInboxAccountFilter == nil else { return false }
         case .mailbox:
             return false
         }
@@ -536,8 +494,7 @@ struct MessageListView: View {
         // 維持する") opts back into the flat, edge-to-edge list rendering
         // this design has relied on since 実機フィードバック第2弾, across
         // every entry point this same `List` serves (single mailbox/
-        // unifiedInbox/unifiedRole/macOS's inline search, and both the
-        // grouped-`Section` and flat `ForEach` branches of `listContent`).
+        // unifiedInbox/unifiedRole/macOS's inline search).
         #if os(iOS)
         .listStyle(.plain)
         #endif
@@ -819,34 +776,18 @@ struct MessageListView: View {
     /// `.swipeActions` groups, a long-press gesture, and a conditional
     /// context menu on top of what was already flagged as risky) is larger
     /// still.
-    /// `body`の`List`本体 — Task #77: `isGroupingActive`なら
-    /// `groupedSummaries`をアカウントごとの`Section`に分けて描画し、そう
-    /// でなければ従来どおりのフラットな`ForEach`。`docs/ci.md`の「`List`の
-    /// 中身は独立した式に切り出す」方針どおり、条件分岐を`body`本体から
-    /// 追い出すために切り出した (この分岐自体を`body`に直書きすると、
-    /// 既にこの`List`に積んである長いモディファイアチェーンと合わさって
-    /// CI型チェックタイムアウトの典型的な引き金になりうる)。
+    /// `body`の`List`本体 — Task #77 ではここで`isGroupingActive`を見て
+    /// アカウントごとの`Section`分割/フラットな`ForEach`を出し分けていたが、
+    /// Task #92 (アカウントダイジェスト画面) がそのインライン分割を廃止した
+    /// ため、常にフラットな`ForEach`一本になった。`@ViewBuilder`のまま
+    /// (中身を1行のプロパティに畳まない) で残しているのは、`docs/ci.md`の
+    /// 「`List`の中身は独立した式に切り出す」方針そのもの — この`List`には
+    /// 既に長いモディファイアチェーンが積んであり、それと合わさって
+    /// CI型チェックタイムアウトの典型的な引き金になりうるため。
     @ViewBuilder
     private var listContent: some View {
-        if isGroupingActive {
-            ForEach(groupedSummaries) { group in
-                Section {
-                    ForEach(group.summaries) { summary in
-                        threadRow(for: summary)
-                    }
-                } header: {
-                    AccountGroupSectionHeader(
-                        accountId: group.accountId,
-                        accountDisplayName: accountDisplayNames[group.accountId] ?? group.accountId,
-                        labelColorKey: accountLabelColorKeys[group.accountId],
-                        count: group.summaries.count
-                    )
-                }
-            }
-        } else {
-            ForEach(displayedSummaries) { summary in
-                threadRow(for: summary)
-            }
+        ForEach(displayedSummaries) { summary in
+            threadRow(for: summary)
         }
     }
 
@@ -1088,10 +1029,17 @@ struct MessageListView: View {
             }
         case .unifiedRole(let role):
             // 画面構造改修バッチ (Task #33, 3): `.unifiedInbox`と同じ形だが、
-            // role が`.inbox`固定ではなく、かつ`unifiedInboxAccountFilter`の
-            // ようなアカウント絞り込みが無い (常に全アカウント) —
-            // `FolderListSheet`のカテゴリ優先メニューの「横断ビュー」行。
-            let accountIds = environment.accounts.map(\.id)
+            // role が`.inbox`固定ではない — `FolderListSheet`のカテゴリ優先
+            // メニューの「横断ビュー」行。当初は`unifiedInboxAccountFilter`
+            // のようなアカウント絞り込みが無く常に全アカウントだったが、
+            // Task #92 (アカウントダイジェスト画面): ダイジェスト行タップ
+            // →絞り込み一覧という遷移がこの`selection`でも起きるように
+            // なったため、`.unifiedInbox`と同じく`unifiedInboxAccountFilter`
+            // を適用する。`MailScreenView`はこの遷移でしか`.unifiedRole`
+            // 選択中に`accountFilter`を設定しない (`selectUnifiedRole(_:)`
+            // は毎回`nil`にリセットする) ので、フィルタ無し(`nil`)の
+            // 既存の呼び出し元は挙動が変わらない。
+            let accountIds = unifiedInboxAccountFilter.map { [$0] } ?? environment.accounts.map(\.id)
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
                 ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: persistedUnreadOnly)
                 : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: persistedUnreadOnly)

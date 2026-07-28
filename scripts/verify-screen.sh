@@ -66,13 +66,18 @@
 #                                       ントでグループ化」トグルが現れること
 #                                       (単一アカウントでは出ない) の確認用。
 #                                       トグル自体はOFFのまま。
-#   list-grouped                        Task #77: ↑と同じ2アカウント構成で、
-#                                       `-listDisplay.groupByAccount 1`
-#                                       (`NSArgumentDomain`経由の`@AppStorage`
-#                                       既定値上書き — タップ不要でON状態を
-#                                       直接screenshot) によりグルーピング
-#                                       表示 (アカウント色罫線+表示名+件数の
-#                                       セクション見出しが2つ) を確認する。
+#   list-grouped / account-digest       Task #77→Task #92: ↑と同じ2アカウント
+#                                       構成で、`-uitestsOpenAccountDigestDirectly`
+#                                       (タップ不要の直接遷移引数)によりアカウント
+#                                       ダイジェスト画面(`AccountDigestView`—
+#                                       アカウント色罫線+表示名+未読/件数バッジ+
+#                                       直近プレビュー2行、が2アカウント分)を
+#                                       直接screenshotする。Task #92 以前は
+#                                       `-listDisplay.groupByAccount 1`で一覧
+#                                       自体をインラインのSectionに分割していた
+#                                       (廃止済み) — シナリオ名`list-grouped`は
+#                                       後方互換のエイリアスとして残し、新しい
+#                                       `account-digest`と同じ動作にした。
 #   settings                            設定画面 (SettingsSheetView)
 #   menu                                 ハンバーガーメニュー (FolderListSheet
 #                                       — 左下floatingSettingsButtonの
@@ -213,16 +218,17 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
     default_out="list-2accounts.png"
     ;;
-  list-grouped)
+  list-grouped|account-digest)
+    # Task #92 (アカウントダイジェスト画面): `-uitestsOpenAccountDigestDirectly`
+    # は`MailScreenView`の`.task`ブロックが読む「タップ不要の直接遷移」引数
+    # (`-uitestsOpenSettingsDirectly`等と同じパターン) — グルーピングボタンを
+    # タップせず`AccountDigestView`を直接開く。Task #92 以前の`list-grouped`
+    # は`-listDisplay.groupByAccount 1`で一覧自体をインラインSection分割
+    # していたが、そのインライン分割機能自体が廃止された(この画面に置き
+    # 換わった)ため、シナリオ名は後方互換で残しつつ中身をこちらに揃えた。
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
-    # `NSArgumentDomain`経由 — `@AppStorage(ListDisplaySettingsStore
-    # .groupByAccountKey)`が起動直後からこの値を読む。タップ操作を一切
-    # 挟まずに ON 状態のスクリーンショットを撮るための launch 引数
-    # (`UserDefaults`の引数ドメインはアプリ自身が書き込んだ値より優先度が
-    # 高い — このスクリプトは`simctl uninstall`+`install`で毎回まっさらな
-    # コンテナから始めるので、他のフラグと衝突する既存値も無い)。
-    launch_args+=("-listDisplay.groupByAccount" "1")
-    default_out="list-grouped.png"
+    launch_args+=("-uitestsOpenAccountDigestDirectly")
+    default_out="account-digest.png"
     ;;
   settings)
     launch_args+=("-uitestsOpenSettingsDirectly")

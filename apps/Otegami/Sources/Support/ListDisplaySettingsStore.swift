@@ -77,18 +77,29 @@ enum ListDisplaySettingsStore {
     static let defaultUnreadOnly = false
 
     /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」、Spark の
-    /// 参考画像参照): メール一覧ヘッダの「アカウントでグループ化」トグル
+    /// 参考画像参照) で追加、Task #92 (アカウントダイジェスト画面) で意味が
+    /// 変わったキー — メール一覧ヘッダの「アカウントでグループ化」ボタン
     /// (iOS only — `unreadOnlyKey`と同じ場所、`MailScreenView`の
-    /// `groupByAccountToggleButton`)。ON で `MessageListView` がアカウント
-    /// ごとのセクション (色罫線＋表示名＋件数バッジ、`AccountGroupSectionHeader`)
-    /// に一覧を分割する — 新規クエリは増やさず、既に取得済みの`summaries`
-    /// をメモリ内でグルーピングし直すだけ (`MessageListView.groupedSummaries`
-    /// の doc comment参照)。単一アカウントしか無い、またはアカウント絞り込み
-    /// チップ・単一メールボックス選択中でグルーピングが無意味な画面では
-    /// トグル自体を出さない (`MailScreenView.showsGroupByAccountToggle`/
-    /// `MessageListView.showsAccountAccent`と同じ条件)。Default off:
-    /// `unreadOnlyKey`と同じ理由 — 一覧の並びを変える表示切り替えは、
-    /// 初回起動ユーザーを驚かせない既定に倒す。
+    /// `groupByAccountToggleButton`)。
+    ///
+    /// **#77時点**: ON で `MessageListView` がアカウントごとのセクション
+    /// (色罫線＋表示名＋件数バッジ、`AccountGroupSectionHeader`) に一覧を
+    /// インラインで分割する、恒久的な表示設定だった。
+    ///
+    /// **#92以降**: インライン分割は廃止し、ボタンは`AccountDigestView`
+    /// (アカウントごとの件数+直近プレビューを一段挟んで見せる画面)への
+    /// 遷移トリガーになった — このキーは「一覧をこの場でグルーピングする
+    /// か」という恒久設定ではなく、「ダイジェスト画面を(一時的に)開いて
+    /// いるか」を表す一時的な値になった(`MailScreenView`がダイジェスト
+    /// 画面の開閉に合わせて`true`/`false`を書く)。`MessageListView`は
+    /// このキーをもう一切読まない。ボタンの見た目/配置・キー名・
+    /// `UserDefaults`保存の仕組み自体は変えていない。
+    ///
+    /// 単一アカウントしか無い、またはアカウント絞り込みチップ・単一メール
+    /// ボックス選択中でダイジェストが無意味な画面ではボタン自体を出さない
+    /// (`MailScreenView.showsGroupByAccountToggle`/`MessageListView
+    /// .showsAccountAccent`と同じ条件)。Default off:
+    /// `unreadOnlyKey`と同じ理由 — 初回起動ユーザーを驚かせない既定に倒す。
     static let groupByAccountKey = "listDisplay.groupByAccount"
     static let defaultGroupByAccount = false
 
