@@ -5239,3 +5239,17 @@ html-4 の`body`背景明示+透過ロゴ→白カード、html-5 のインラ�
 (`-uitestsOpenAccountDigestDirectly`)は直接遷移フラグ経由でチップの
 プルダウン自体はタップしていないため未検証 (チップ表示自体は上記で確認
 済み、プルダウン選択の実タップは実機確認ポイント)。
+
+### Task #107: テキスト/HTML 切り替えボタンのアイコン変更
+
+`MessageHeaderCompactView`のHTML/テキスト切り替えボタン (「あぁ」= 文字
+サイズ変更ボタンに見えるという実機フィードバック) のアイコンを変更した:
+`textformat`/`chevron.left.slash.chevron.right`という「今の表示形式」
+アイコンペアから、`doc.plaintext`(HTML表示中、テキストへの切替を示唆)/
+`doc.richtext`(テキスト表示中、HTMLへ戻すことを示唆)という「タップで
+切り替わる先」を示すペアに変えた。`accessibilityLabel`(「テキストで
+表示」/「HTMLで表示」)は変更していない。
+
+**検証**: `verify-screen.sh html-0`で本文ヘッダ右上のボタンが
+`doc.plaintext`(ページ+テキスト行のアウトライン)として描画されている
+ことをスクリーンショットのクロップ拡大で確認した。

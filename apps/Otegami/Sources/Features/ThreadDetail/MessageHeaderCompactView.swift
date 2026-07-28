@@ -75,8 +75,17 @@ struct MessageHeaderCompactView: View {
                     // toggling flips. Icon-only now (was a text button) to
                     // stay inside this row's compact height.
                     if isHTMLMessage {
+                        // Task #107 (実機フィードバック「ヘッダ右上のボタンが
+                        // 文字サイズ変更ボタンに見える」): 旧アイコン
+                        // (`textformat`/`chevron.left.slash.chevron.right`)
+                        // をやめ、「今表示している形式」ではなく「タップで
+                        // 切り替わる先」が伝わるアイコンペアに変更 —
+                        // HTML表示中は`doc.plaintext`(テキストへの切替を
+                        // 示唆)、テキスト表示中は`doc.richtext`(HTMLへ戻す
+                        // ことを示唆)。`accessibilityLabel`はこのボタンの
+                        // 意味 (押した後どちらの表示になるか) を維持。
                         Button(action: onToggleHTMLText) {
-                            Image(systemName: isShowingHTML ? "textformat" : "chevron.left.slash.chevron.right")
+                            Image(systemName: isShowingHTML ? "doc.plaintext" : "doc.richtext")
                                 .font(.caption)
                         }
                         .buttonStyle(.plain)
