@@ -48,11 +48,18 @@ JSON文字列に統一する防御的な変更を実装済み。ガードレー�
 `OtegamiHTMLTranslationUITests.testHTMLTranslationPreservesLayoutAndTranslatesText`
 (`OTEGAMI_UITEST_FAKE_TRANSLATION=1`で決定的な`"[ja] ..."`出力を使い、
 HTML翻訳ボタンをタップして本文中に現れることを確認する既存テスト) を
-2回実行しようとしたが、いずれも"Test crashed with signal kill before
+2回実行しようとしたが、2回とも別々の理由で本題 (翻訳ボタンの挙動) まで
+到達できなかった: 1回目は"Test crashed with signal kill before
 establishing connection"というXCUITestランナー自体のインフラ的
-クラッシュ (Task #61のPENDINGにも記録済みの、このシミュレータ/
-ツールチェーン固有の既知の不調と同種) に阻まれ、修正後の実際の
-翻訳成功までは確認できていない。
+クラッシュ、2回目はランナー自体は起動したものの、seed済みのはずの
+"Your payment has been processed"メッセージが一覧に現れず
+`addDovecotTest1Account`によるアカウント追加ステップで94秒かけて失敗
+(dev mailstackへの接続不調 — この`PENDING.md`の随所に記録がある
+`MailCoreErrorDomain error 1`系の既知の環境不調と同種とみられる、未確証)。
+いずれも翻訳ボタン自体のロジックに達する前の環境要因で止まっており、
+今回の修正そのものへの反証にはなっていない — Task #61のPENDINGにも
+記録済みの、このシミュレータ/ツールチェーン固有の既知の不調と同種と
+見ている。修正後の実際の翻訳成功までは、結局まだ確認できていない。
 
 - **対応手順**: 次回このテストが安定して動く環境 (実機、または
   ツールチェーン更新後のシミュレータ) で
