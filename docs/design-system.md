@@ -2746,6 +2746,118 @@ JS 側を `Promise` を返す IIFE にするだけで Swift 側の呼び出し�
 (`xcrun simctl ui booted appearance dark`)。`make test`/`make mac`/
 `make ios` green。
 
+## Task #51: Task #45 の反転が広すぎた退行 — 実測ベースの判定に変更
+
+### 症状
+
+実機報告: **色指定を一切持たないシンプルな HTML メール**をダークモードで
+開くと、暗いグレー文字になりほぼ読めない。Task #45 で「メールが読めない」
+を直したはずが、別の (色を何も指定していない) メールを新たに読めなく
+していた。
+
+### 原因
+
+Task #45 の初版は、`HTMLDocumentBuilder.mailDeclaresOwnDarkModeSupport
+(html:)` (`prefers-color-scheme`/`color-scheme` の有無を見るだけの静的な
+文字列検査) が false を返す限り、**メールが実際にライト配色を描画して
+いるかどうかに関わらず**常に `#otegami-fit-inner` へ `filter: invert(1)
+hue-rotate(180deg)` を適用していた。
+
+色指定を一切持たないメールは、そもそも `HTMLDocumentBuilder.wrap` 自身の
+CSS リセット (`:root { color-scheme: light dark; } html, body { background:
+transparent; color: CanvasText; }`) だけで、ダークモード中は WebKit が
+`CanvasText` を自動的に明るい色へ解決し、正しく読めていた。そこへ無条件
+の反転がかかると、その明るい文字色が暗い文字色へ逆変換されてしまい、
+透明な (＝アプリのダーク背景がそのまま透ける) 背景の上でほぼ読めなく
+なる — Task #45 が直した「白背景+濃色文字を明示指定したメール」とは
+真逆の失敗モード。反転が実際に必要なのは「メールが明示的にライト配色
+(明るい背景) を描画するよう指定している」場合だけで、「メールが何も
+指定していない」場合はむしろ逆効果、というのが実機からの教訓。
+
+### 修正: 静的判定 → 実測判定
+
+`mailDeclaresOwnDarkModeSupport` による「メールが自前のダーク対応を
+持っているか」の判定 (持っていれば無条件にスキップ) はそのまま維持しつつ、
+その判定を通過したメールに対して**常に反転する**のをやめ、**ページ
+読み込み後に JS で実際の見た目を測定してから決める**方式に変更した。
+
+- `HTMLDocumentBuilder.wrap(bodyHTML:autoAdjustColorsInDarkMode:)` は
+  「反転を検討してよいか」(`autoAdjustColorsInDarkMode` が true、かつ
+  `mailDeclaresOwnDarkModeSupport` が false) だけを判定する。検討して
+  よい場合に限り、`@media (prefers-color-scheme: dark)` の中で
+  `.otegami-invert-for-dark` クラスに対して `filter: invert(...)` を
+  適用する CSS と、`#otegami-fit-outer` への `data-otegami-invert-check`
+  属性 (JS 側が実測してよい対象であることの目印) を仕込む。この時点では
+  実際にそのクラスを付けるかどうかまでは決めない。
+- 実際に invert するかどうかの最終判断は
+  `HTMLWebViewCoordinator.fitToWidthScript` (fit-to-width の画像読み込み
+  待ち — `waitForImages()` — が終わった直後) が行う。`document.body` →
+  `#otegami-fit-inner` → 本文中で最大面積を占める背景要素、の優先順で
+  最初に見つかった不透明な `background-color` を実効背景とみなし、その
+  WCAG 相対輝度が 0.5 を超える (＝明るい背景) 場合に限り
+  `.otegami-invert-for-dark` クラスを `#otegami-fit-inner` へ付与する。
+  代表的なテキストノード数点の `color` も測定し、背景より明らかに暗い
+  ことを軽い裏付けとして使う (テキスト測定が不能な場合は背景の輝度
+  だけで判定する)。**背景が最後まで不透明な値として確定しない (＝色
+  指定を一切持たないメール) 場合は何もしない** — これが安全側のデフォ
+  ルトで、今回の退行ケースを直す。
+  - `document.body` を最初に見るのは、`HTMLDocumentBuilder
+    .extractHeadStyles` が元メールの `<style>` ブロックをそのまま
+    このファイル自身の `<head>` へ差し込んでいるため — 元メールが
+    よく書く `body { background-color: ...; }` という CSS セレクタは、
+    元の `<body ...>` タグそのもの (属性は `extractBodyContent` の
+    仕様上失われる) ではなく、**このラッパーが作る実際の `<body>`
+    タグ**にそのまま効く。多くのマーケティング/通知テンプレートが
+    ページ全体の背景をこの `body {...}` セレクタで指定するパターンを、
+    追加の仕掛けなしに拾える。
+  - `filter` は視覚的なペイント効果であり、`scrollWidth`/`scrollHeight`
+    などのレイアウト計測には影響しない — fit-to-width の高さ確定
+    (`fit()`) の前後どちらでこの判定を挟んでも安全 (実装は
+    `waitForImages()` の直後、`fit()` の直前に置いている)。
+  - 実測は `didFinish` 直後・1.5秒後の遅延呼び出し・1i (HTML レイアウト
+    保持翻訳) の再適用、のどの呼び出し経路からも同じ1本のスクリプトが
+    自己完結して実行する — Swift 側の状態を別途持ち回る必要はない
+    (`data-otegami-invert-check` 属性が DOM 自身に判定条件を保持して
+    いるため)。
+
+### 既知の制約
+
+- 元メールが `<body bgcolor="#fff">`/`<body style="background:#fff">`
+  のように**タグの属性やインライン style だけ**で背景を指定していて、
+  かつ `<style>` セレクタ経由の指定を一切持たない場合、その情報は
+  `HTMLDocumentBuilder.extractBodyContent` の時点で (`<body ...>` タグ
+  そのものを読み捨てる既存の仕様により) 失われる。本文中の他の要素
+  (テーブルの `bgcolor`、`div` の `style` 等) が実効背景として拾える
+  ケースは「最大面積の背景要素」の探索でカバーされるが、拾えない場合は
+  「背景が確定しない」側に倒れて無変換になる — 誤って読めなくするより
+  安全な方向の割り切り。
+- OS のダーク/ライト切り替えをアプリ起動中にリアルタイムには追従しない
+  (実測は `didFinish` 等の限られたタイミングでしか走らない) — 既存の
+  fit-to-width 自体も同じ制約を持っており、この機能固有の新しい制約では
+  ない。
+- 輝度の閾値 (0.5) はチューニング可能な値であり、絶対的な基準ではない。
+
+### 検証
+
+`dev/mailstack/seed/fixtures/32-plain-html-no-colors.eml` を新設 (今回の
+退行ケース — 背景色・文字色を一切指定しない、最も単純な HTML メール)。
+`AppEnvironment.uitestFakeHTMLMessages` (`OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE`
+経由) にも同内容と、自前の `prefers-color-scheme` 対応を宣言するメール
+(既存の反転スキップ条件が実測より優先されることの確認用) を追加し、
+`OtegamiSecurityNoticeDarkModeUITests` が3ケースすべてを開いて
+スクリーンショットを撮る:
+
+- a. 色指定なしのシンプルメール (新規、今回の退行ケース) →
+  ダークモードで反転なし・明るい文字で読める。
+- b. 白背景+濃色文字を明示指定 (既存の `31-security-notice-dark-mode.eml`) →
+  ダークモードで反転がかかり読める (Task #45 の成果を維持)。
+- c. 自前のダークモード対応 (`prefers-color-scheme`) を宣言済み →
+  ライト・ダークどちらでも無変換 (メール自身の配色のまま)。
+
+ライトモードでは a/b/c すべて従来通り (このパスは `@media
+(prefers-color-scheme: dark)` の外なので元々無関係)。`make test`/
+`make mac`/`make ios` green。
+
 ## Task #53: スワイプの滑らかさ改善 (79aca4b) が引き起こした退行 — ショート距離でロングのアイコン/色が出る
 
 ### 症状
