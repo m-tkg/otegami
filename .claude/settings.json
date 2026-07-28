@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -e \".tool_input.run_in_background == true\" > /dev/null && echo \"{\\\"hookSpecificOutput\\\":{\\\"hookEventName\\\":\\\"PreToolUse\\\",\\\"permissionDecision\\\":\\\"deny\\\",\\\"permissionDecisionReason\\\":\\\"run_in_background is prohibited in this repo. Run the command in the FOREGROUND and wait for completion (background waiting stalls agents). Re-run the same command without run_in_background.\\\"}}\" || true"
+          }
+        ]
+      }
+    ]
+  }
+}
