@@ -25,6 +25,8 @@ struct MailViewerSettingsView: View {
     @AppStorage(HTMLDisplaySettingsStore.alwaysShowPlainTextKey) private var alwaysShowPlainText = HTMLDisplaySettingsStore.defaultAlwaysShowPlainText
     // Task #45「ダークモードで文字が読めない」.
     @AppStorage(HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey) private var autoAdjustColorsInDarkMode = HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode
+    // Task #71「メールの背景を常に白に」.
+    @AppStorage(HTMLDisplaySettingsStore.forceLightBackgroundKey) private var forceLightBackground = HTMLDisplaySettingsStore.defaultForceLightBackground
 
     var body: some View {
         List {
@@ -107,10 +109,19 @@ struct MailViewerSettingsView: View {
                 // Task #45「ダークモードで文字が読めない」.
                 Toggle("ダークモードでメールの配色を自動調整", isOn: $autoAdjustColorsInDarkMode)
                     .accessibilityIdentifier("settings.html.autoAdjustColorsInDarkModeToggle")
+                    // Task #71: この設定は「メールの背景を常に白」と排他 —
+                    // 常に白がONの間は自動調整そのものが常にスキップされる
+                    // (`HTMLDocumentBuilder.wrap`側の`forceLightBackground`
+                    // 分岐参照) ので、トグル自体を無効化して「今は関係ない」
+                    // ことを見た目でも伝える。
+                    .disabled(forceLightBackground)
+                // Task #71「メールの背景を常に白に」.
+                Toggle("メールの背景を常に白（ライト表示）", isOn: $forceLightBackground)
+                    .accessibilityIdentifier("settings.html.forceLightBackgroundToggle")
             } header: {
                 Text("メールの表示 (HTML)")
             } footer: {
-                Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメールを自動で読みやすい配色に反転します（写真・ロゴの色は保たれます）。メール自身がダークモードに対応済みの場合は何もしません。")
+                Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメールを自動で読みやすい配色に反転します（写真・ロゴの色は保たれます）。メール自身がダークモードに対応済みの場合は何もしません。「メールの背景を常に白」をオンにすると、ダークモードでも本文を常にメール本来の配色（白背景）で表示します（自動調整は無効になります）。")
             }
         }
         .navigationTitle("メールビューア")

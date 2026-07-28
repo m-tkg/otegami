@@ -47,16 +47,39 @@ enum HTMLDisplaySettingsStore {
     /// されるようにしてある。
     static let autoAdjustColorsInDarkModeKey = "htmlDisplay.autoAdjustColorsInDarkMode"
     static let defaultAutoAdjustColorsInDarkMode = true
+
+    /// Task #71 (実機フィードバック「メールの背景を常に白（ライト表示）に
+    /// したい」): 本文を常にメール本来の配色 (Gmail の「ライト表示」相当)
+    /// で見せる — ダークモード中でも `autoAdjustColorsInDarkModeKey` の
+    /// 「スマート反転」を一切適用せず、HTML は wrapper 自体の
+    /// `color-scheme`/背景をライトに固定し、プレーンテキストは白背景+濃色
+    /// 文字で描画する (`MessageView.content`のプレーンテキスト各分岐参照)。
+    /// `autoAdjustColorsInDarkModeKey`とは排他 — この設定が ON の間は
+    /// スマート反転の設定トグル自体を無効化 (グレーアウト) する
+    /// (`MailViewerSettingsView`参照)。既定 **OFF**: 大多数のユーザーは
+    /// アプリ全体のダークモードに本文も追従してほしいはずで、常時ライト
+    /// 表示は「元の配色を優先したい」という明示的な選択のときだけ使う
+    /// オプトイン機能。
+    ///
+    /// `autoAdjustColorsInDarkModeKey`と同じ理由で `HTMLMessageView.init`
+    /// が `UserDefaults.standard.bool(forKey:)` を直接読んで `@State` を
+    /// 種付けする (`@AppStorage`ではない) — この設定も`HTMLDocumentBuilder
+    /// .wrap(bodyHTML:autoAdjustColorsInDarkMode:forceLightBackground:)`が
+    /// 生成する HTML 文書そのものに焼き込まれるため。
+    static let forceLightBackgroundKey = "htmlDisplay.forceLightBackground"
+    static let defaultForceLightBackground = false
 }
 
 extension UserDefaults {
     /// `ImageSettingsStore.registerOtegamiImageDefaults()`と同じ理由 —
-    /// `autoAdjustColorsInDarkModeKey`は`HTMLMessageView.init`が
-    /// `UserDefaults.standard.bool(forKey:)`を直接読むため、`@AppStorage`の
-    /// 「初回読み取り時だけ default 引数が効く」という挙動に頼れない。
+    /// `autoAdjustColorsInDarkModeKey`/`forceLightBackgroundKey`は
+    /// `HTMLMessageView.init`が`UserDefaults.standard.bool(forKey:)`を直接
+    /// 読むため、`@AppStorage`の「初回読み取り時だけ default 引数が効く」
+    /// という挙動に頼れない。
     static func registerOtegamiHTMLDisplayDefaults() {
         standard.register(defaults: [
-            HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey: HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode
+            HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey: HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode,
+            HTMLDisplaySettingsStore.forceLightBackgroundKey: HTMLDisplaySettingsStore.defaultForceLightBackground
         ])
     }
 }
