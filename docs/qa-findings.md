@@ -857,3 +857,118 @@ category == "MailboxReconcile"'`) でこの照合が実機で実際に走って
 `make test`/`make mac`/`make ios` 全て green。
 `OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter
 SyncEngineIntegrationTests` (dev mailstack) も5件全て green。
+
+## Task #105: スレッド表示オフなのに再起動直後の一覧だけスレッド表示になるバグの調査と防御的修正
+
+**症状** (実機報告、動画あり、再現性100%): スレッド表示の設定はオフ
+(設定画面を開いてもオフ表示のまま) なのに、アプリを再起動すると一覧の
+挙動が必ずスレッド表示になる。トグルを一度オン→オフし直すと正しく
+フラット表示に戻る。
+
+**#101/#82 との違い**: #101 (49535bf) は「トグルをオフにしても値自体が
+勝手にオンへ巻き戻る」バグ (iCloud設定同期のreconcileレース) で、
+既に修正済み。#105 は**値そのものは常にオフのまま**で、設定画面の
+`@AppStorage`も一貫してオフを示す — 一覧の描画だけが違うクエリを
+使っている「読み出し経路のバグ」で、症状としては別物。#82 (06c1062) は
+`MessageListView`/`SearchScreenView`が一覧クエリを組み立てる際に
+`@AppStorage`の per-view キャッシュ値ではなく`ListDisplaySettingsStore
+.persistedBool(forKey:default:)`経由で`UserDefaults.standard`を直接
+読むようにする防御的修正を既に入れていたが、実機ではそれでもなお
+この症状が再発した。
+
+### コードレビューで確認したこと (バグの箇所は見つからなかった)
+
+`MessageListView`の`isFlatMode`/`persistedUnreadOnly`(いずれも#82で
+`persistedBool`直読みに変更済み)、`ObservationKey`(`.task(id:)`のID
+に`isFlatMode`を含む)、`observeThreads()`(`isFlatMode`を都度読み直して
+`ThreadQuery.flatSummariesObservation`/`summariesObservation`を選ぶ)を
+一行ずつ確認したが、いずれも実装として矛盾は無かった。`ThreadSummary
+.init(flatMessage:accountId:)`の`id`もメッセージ単位のユニークな値を
+使っており、フラット行が`List`/`ForEach`の識別子衝突でスレッド単位に
+潰れて見える、という別経路の仮説も`id`の実装を見て否定した。iCloud
+設定同期 (`SettingsCloudSyncEngine.reconcile()`) が起動直後に古い
+cloud payload を pull してこのキーを上書きしている可能性も検討したが、
+`reconcile()`が実際に`UserDefaults.standard`へ書き込む`pull()`は
+Settings 画面が読む値そのものも書き換えるため、「設定画面は常にオフの
+まま」という報告と矛盾する — この経路も除外した。
+
+### 有力な仮説: プロセス起動直後の`UserDefaults.standard`自身の
+### インメモリキャッシュが、ディスクの内容とまだ同期し切れていない
+
+#82の直読み修正は「`@AppStorage`のper-viewインスタンスのキャッシュが
+古い」という仮説に基づいていたが、`UserDefaults.standard`への直読みに
+変えてもなお再発したことから、キャッシュがずれている主体は
+`@AppStorage`ではなく**`UserDefaults.standard`自身のプロセス内
+キャッシュ**である可能性が高いと判断した。`UserDefaults.standard`は
+`cfprefsd`とのXPC通信を裏で行っており、プロセスの起動直後・まだ最初の
+アクセスが済んでいないキーに対する最初の読み出しが、ディスクの最新
+内容と同期し切る前の値を返しうる、という理論は Apple 自身のドキュメント
+では精密には説明されていない (06c1062のdoc commentも同じ限界を認めて
+いた) — が、「一覧の`.task(id:)`が起動直後の最初のフレームで読む
+タイミング」と「ユーザーが数秒後に手で設定画面を開いて読むタイミング」
+の間に`cfprefsd`との同期が追いつく、という時間差の説明は「設定画面は
+常に正しい」「一覧だけ最初だけ間違う」「トグルを一度書き込むと直る
+(書き込みで強制的にキャッシュが更新されるため)」の3点全てと矛盾なく
+一致する。
+
+### 修正 (防御的、#82/#101と同じ位置付け)
+
+1. **`CFPreferencesAppSynchronize`によるプロセス起動直後の強制リロード**
+   (`apps/Otegami/Sources/Support/ListDisplaySettingsStore.swift`の
+   `forceReloadFromDiskOnce()`): このプロセス自身のpreferencesドメイン
+   を今すぐディスクから読み直させる、まさにこの種の「起動直後、まだ
+   ディスクと同期し切れていないかもしれないキャッシュ」を捨てるための
+   API (通常はApp Group/ウィジェット拡張のようなマルチプロセス共有の
+   文脈で紹介されるが、API自体はマルチプロセスに限定されない)。プロセス
+   の生存期間中に一度だけ呼べば十分なので、`persistedBool`の最初の
+   呼び出し1回に限定してコストを無視できる範囲に抑えた。
+2. **`AppEnvironment.init()`の最冒頭で明示的に呼び出す**
+   (`apps/Otegami/Sources/AppEnvironment.swift`): 既存の
+   `UserDefaults.registerOtegami*Defaults()`群 (「どの`@AppStorage`
+   読み出しよりも前に」というコメント付きで最初に呼ばれている) と全く
+   同じ「起動直後、何よりも先に」という並び順に揃えた。`persistedBool`
+   側の呼び出しは、万一これより前に何かが設定を読んでしまうケースへの
+   保険として残した。
+3. **OSLog計装** (`ListDisplaySettingsStore`の`Logger(subsystem:
+   "com.mtkg.otegami", category: "ListDisplaySettings")`、
+   `MessageListView`の`Logger(... category: "MessageListQueryMode")`):
+   `persistedBool`の呼び出しごとに実際に読めた値を、`observeThreads()`
+   の呼び出しごとに選んだクエリモード (`isFlatMode`/`unreadOnly`/
+   `selection`) を1行ずつ記録する。Task #101の`SettingsCloudSync`
+   計装と同じ狙い — 次に実機で再現したときに`log stream`で正確な値と
+   タイミングを追えるようにする:
+
+   ```sh
+   xcrun simctl spawn booted log stream --level debug \
+     --predicate 'subsystem == "com.mtkg.otegami" && (category == "ListDisplaySettings" || category == "MessageListQueryMode")' \
+     --style compact
+   # 実機の場合: log stream を接続したデバイスに対して実行、または Console.app。
+   ```
+
+### 検証
+
+- `make mac`/`make ios` (`xcodebuild ... build`) いずれも green。
+- `make test` (`packages/OtegamiKit`): 既知の無関係 flake
+  (`MessageBuilderTests`の日本語ラウンドトリップ、1件) のみ、他49件
+  green。
+- `scripts/verify-screen.sh list`: 修正後も一覧が正常にレンダリングされる
+  ことをスクリーンショットで確認 (回帰なし)。
+- **このバグ自体の再現・修正の効果検証はこのシミュレータ/開発機では
+  できなかった** — `defaults write com.mtkg.otegami listDisplay.threading
+  -bool NO` → `simctl terminate` → `simctl launch` を挟んで
+  `log stream`で最初の`persistedBool`呼び出しを確認したところ、
+  修正の有無に関わらず**シミュレータでは最初の読み出しから一貫して
+  正しい値 (`false`) が返っており、そもそもこのシミュレータではレース
+  自体が再現しない** (06c1062・Task #101の際も同じ限界が記録されている
+  — `docs/verify.md`のシミュレータ既知不調と同種、`UserDefaults`/
+  `cfprefsd`周りの挙動がホスト共有のシミュレータでは実機より速い/
+  決定的である可能性が高い)。したがって本修正は理論的な筋が通ることを
+  確認した上での防御的対応であり、実機での確定的な効果確認はできていない。
+  **実機での確認ポイント** (`PENDING.md`参照):
+  1. スレッド表示をオフにする (設定画面でオフ表示になることを確認)。
+  2. アプリスイッチャーから完全に kill し、再起動する。
+  3. 一覧が (これまでの報告どおりスレッド表示になっていたところが)
+     正しくフラット表示になっていることを確認。
+  4. 上記の`log stream`コマンドで`persistedBool(listDisplay.threading)`
+     の最初の値と`observeThreads: isFlatMode=...`の値を突き合わせ、
+     一覧が実際にどちらのクエリを選んだかを確認できる。

@@ -176,6 +176,18 @@ final class AppEnvironment {
     var isTranslationAvailable: Bool { translationService.availability.isAvailable }
 
     init() {
+        // Task #105 (実機報告「スレッド表示はオフのまま (設定画面も含め)
+        // なのに、再起動直後の一覧だけがスレッド表示になる」): forces
+        // `UserDefaults.standard`'s in-process cache to reload from disk
+        // before *anything* — including the `register...Defaults()` calls
+        // right below, and every `ListDisplaySettingsStore.persistedBool`
+        // call `MessageListView`'s `.task(id:)` makes on its very first
+        // post-launch render — reads it. See `ListDisplaySettingsStore
+        // .forceReloadFromDiskOnce()`'s doc comment for why this targets a
+        // cold-launch `UserDefaults`/`cfprefsd` cache-lag theory that #82
+        // (06c1062)'s own direct-`UserDefaults.standard`-read fix didn't
+        // fully close.
+        ListDisplaySettingsStore.forceReloadFromDiskOnce()
         // Design system: registers the bundled Archivo variable font with
         // CoreText before any view can render — see `OtegamiFont
         // .registerCustomFontsIfNeeded()`'s doc comment. Was previously

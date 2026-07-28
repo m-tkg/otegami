@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// B4 「本文プレビューの行数」: なし/1行/2行/3行 — `rawValue` doubles as the actual
 /// `lineLimit` passed to the preview `Text` (`0` meaning "show none").
@@ -138,6 +139,63 @@ enum ListDisplaySettingsStore {
     /// property is what makes the view re-render (and re-run this fresh
     /// read) the moment the setting changes anywhere else in the app.
     static func persistedBool(forKey key: String, default defaultValue: Bool) -> Bool {
-        (UserDefaults.standard.object(forKey: key) as? Bool) ?? defaultValue
+        Self.forceReloadFromDiskOnce()
+        let value = (UserDefaults.standard.object(forKey: key) as? Bool) ?? defaultValue
+        Self.logger.debug("persistedBool(\(key, privacy: .public)) -> \(value, privacy: .public) (default \(defaultValue, privacy: .public))")
+        return value
     }
+
+    /// Task #105 (実機報告「スレッド表示はオフのまま (設定画面も含め) なのに、
+    /// アプリを**再起動**した直後の一覧だけがスレッド表示になる。トグルを
+    /// 一度オン→オフし直すと直る」): #82 (06c1062, 上の`persistedBool`の doc
+    /// comment) は「`@AppStorage`の per-view インスタンスが持つキャッシュ
+    /// 値」を疑い、`UserDefaults.standard`への直読みに変えたが、それでも
+    /// この症状は直らなかった — 「設定画面 (別インスタンスの`@AppStorage`)
+    /// を開けば常に正しい値が見える」という報告は、キャッシュがずれている
+    /// 主体がビュー側の`@AppStorage`ではなく、**プロセス起動直後の
+    /// `UserDefaults.standard`自身が保持するインメモリキャッシュ**である
+    /// 可能性を示す — 同じ`persistedBool`呼び出しでも、一覧の`.task(id:)`が
+    /// 起動直後の最初のフレームで読むタイミングと、ユーザーが数秒後に手で
+    /// 設定画面を開いて読むタイミングとでは、後者の方が`cfprefsd`との
+    /// 同期が済んでいる可能性が高い。
+    ///
+    /// `CFPreferencesAppSynchronize` はまさにこの「プロセスの起動直後、
+    /// まだディスクの内容と同期し切れていないかもしれないキャッシュを
+    /// 破棄し、今すぐディスクから読み直す」ためのAPI (通常はApp
+    /// Group/ウィジェット拡張のようなマルチプロセス共有の文脈で紹介される
+    /// が、このAPI自体はマルチプロセスに限定されない、この呼び出しプロセス
+    /// 自身のpreferencesドメインの同期メカニズムそのもの)。プロセスの
+    /// 生存期間中に一度だけ呼べば十分 (2回目以降のキャッシュはこのプロセス
+    /// 自身の書き込みで正しく更新され続ける — 実際に食い違いうるのは
+    /// 「起動してから最初に読むまでの間」だけ) なので、`persistedBool`の
+    /// 最初の呼び出し1回だけに限定して無視できるコストに抑える。
+    ///
+    /// 実機での確定的な再現ができなかった (シミュレータでは`UserDefaults`
+    /// の同期が速く、この種のレースを再現できない — `docs/qa-findings.md`
+    /// のTask #105節参照) ため、この修正はTask #82/#101と同じ「理論的に
+    /// 筋は通るが確証は無い防御的修正」という位置付け — `logger`によるOSLog
+    /// 計装を併設し、次に実機で再現したときに`persistedBool`が実際どの値を
+    /// 返したかを`log stream`で追えるようにしてある。
+    // `nonisolated(unsafe)`: a plain one-shot guard flag, not actor-isolated
+    // state. Worst case under a genuine data race (two nearly-simultaneous
+    // first calls from different isolation domains) is calling
+    // `CFPreferencesAppSynchronize` twice instead of once — harmless, and
+    // far cheaper to accept than adding real synchronization for a flag
+    // that only ever transitions `false` → `true` once per process.
+    private nonisolated(unsafe) static var hasForcedReloadFromDisk = false
+
+    /// Also called explicitly and eagerly from `AppEnvironment.init()`
+    /// (before *anything* reads `UserDefaults`, the same "before any
+    /// `@AppStorage` reader" ordering the `UserDefaults.registerOtegami
+    /// *Defaults()` calls right above it already follow) — `persistedBool`
+    /// calling this itself too is just a second, redundant safety net for
+    /// any read that could somehow happen first.
+    static func forceReloadFromDiskOnce() {
+        guard !hasForcedReloadFromDisk else { return }
+        hasForcedReloadFromDisk = true
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
+        Self.logger.debug("forced a CFPreferencesAppSynchronize reload before this process's first persistedBool read")
+    }
+
+    private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "ListDisplaySettings")
 }

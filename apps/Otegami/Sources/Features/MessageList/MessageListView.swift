@@ -5,6 +5,7 @@ import OtegamiCore
 import OtegamiStore
 import SyncEngine
 import MailTransport
+import os
 
 /// The selected sidebar item's threads, newest-first (M4: thread rows, not
 /// individual messages — plan: "MessageListView をスレッド単位表示に変更").
@@ -1004,7 +1005,18 @@ struct MessageListView: View {
     /// doc comment for why. This guarantees every call to this method,
     /// starting with the very first one after launch, reflects whatever is
     /// actually persisted rather than risking a stale in-memory default.
+    /// Task #105: one line per `observeThreads()` call stating which query
+    /// mode it picked and the raw persisted values behind that pick — see
+    /// `ListDisplaySettingsStore.forceReloadFromDiskOnce()`'s doc comment
+    /// for the bug this instruments (mirrors `SettingsCloudSyncEngine`'s
+    /// own `Logger` from Task #101, added for the same "couldn't reproduce
+    /// deterministically off-device" reason).
+    private static let observeThreadsLogger = Logger(subsystem: "com.mtkg.otegami", category: "MessageListQueryMode")
+
     private func observeThreads() async {
+        Self.observeThreadsLogger.debug(
+            "observeThreads: isFlatMode=\(isFlatMode, privacy: .public) unreadOnly=\(persistedUnreadOnly, privacy: .public) selection=\(String(describing: selection), privacy: .public)"
+        )
         switch selection {
         case .mailbox(let mailboxSelection):
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
