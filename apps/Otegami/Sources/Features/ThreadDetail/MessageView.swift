@@ -1134,7 +1134,17 @@ struct MessageView: View {
         let translator = environment.messageTranslator
 
         if isHTMLMessage, isShowingHTML {
-            guard let htmlTranslationController else { return }
+            // Task #61 (実機フィードバック「HTMLメールの翻訳ボタンが無反応」
+            // の一因): `htmlTranslationController` がまだ `nil` (`HTMLMessageView
+            // .onAppear`がまだ発火していない、ごく短い窓) の間にタップされた
+            // 場合、以前はここで無言で `return` していた — ボタンが
+            // `.translating` にすら遷移しないので、ユーザーからは本当に
+            // 「タップしても何も起きない」ように見えていた。ユーザー可視の
+            // 失敗状態にして「再試行」で再度タップできるようにする。
+            guard let htmlTranslationController else {
+                aiState.translationState = .failed(message: "本文の準備がまだ完了していません。もう一度お試しください。")
+                return
+            }
             aiState.translationState = .translating
             translateTask = Task {
                 // `extractTranslatableTexts()` always runs even when
@@ -1144,7 +1154,20 @@ struct MessageView: View {
                 // cheap (idempotent DOM stamping, no engine call) and this
                 // keeps the two call sites symmetric rather than needing a
                 // separate "peek the cache first" API just to skip it.
-                let texts = await htmlTranslationController.extractTranslatableTexts()
+                //
+                // Task #61: `nil` (not just an empty array) means the DOM
+                // text-node extraction itself failed (`extractTranslatableTexts`'s
+                // doc comment) — silently proceeding with an empty `texts`
+                // array here used to make `translateHTMLTextNodes` "succeed"
+                // translating zero paragraphs, which looked identical to a
+                // dead tap (no visible change, no error) from the user's
+                // side. Surface it as a real failure instead.
+                guard let texts = await htmlTranslationController.extractTranslatableTexts() else {
+                    guard !Task.isCancelled else { return }
+                    aiState.translationState = .failed(message: "本文の読み込みに失敗しました。もう一度お試しください。")
+                    translateTask = nil
+                    return
+                }
                 guard !Task.isCancelled else { return }
                 let result = await translator.translateHTMLTextNodes(
                     messageId: messageId,

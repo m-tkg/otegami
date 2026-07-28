@@ -32,10 +32,27 @@ public actor FakeTranslationService: TranslationService {
     public private(set) var translateCallCount = 0
     public private(set) var translateParagraphsCallCount = 0
     public private(set) var summarizeCallCount = 0
+    /// Task #61 (ガードレール誤発動の寛容化テスト用): exact input strings
+    /// `translate(_:from:to:)` should fail with `TranslationServiceError
+    /// .contentBlocked` for, independent of `behavior` — lets a test
+    /// simulate "the model's safety guardrails misfired on *this one*
+    /// chunk, but every other chunk translates fine" (the real-device
+    /// report this exists to cover), which a single global `Behavior` case
+    /// can't express since it applies to every call. Checked first, before
+    /// `checkBehavior()`, so a test can combine this with `.success` (the
+    /// common case: "mostly fine, one chunk blocked").
+    private var blockedTexts: Set<String> = []
 
     public init(availability: TranslationAvailability = .available, behavior: Behavior = .success) {
         self.availabilityValue = availability
         self.behavior = behavior
+    }
+
+    /// Task #61: marks `texts` as guardrail-blocked for every subsequent
+    /// `translate(_:from:to:)` call whose input matches exactly — see
+    /// `blockedTexts`'s doc comment.
+    public func configureContentBlocked(for texts: Set<String>) {
+        blockedTexts = texts
     }
 
     /// Immutable for the lifetime of one instance (unlike `behavior`) — a
@@ -52,6 +69,9 @@ public actor FakeTranslationService: TranslationService {
 
     public func translate(_ text: String, from source: TranslationLanguage, to target: TranslationLanguage) async throws -> String {
         translateCallCount += 1
+        if blockedTexts.contains(text) {
+            throw TranslationServiceError.contentBlocked(message: "fake guardrail violation")
+        }
         try checkBehavior()
         return Self.deterministicTranslation(text, to: target)
     }

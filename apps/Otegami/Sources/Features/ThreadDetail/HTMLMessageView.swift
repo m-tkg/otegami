@@ -921,12 +921,25 @@ final class HTMLTranslationController {
     }
     """
 
+    /// Task #61 (実機フィードバック「HTMLメールの翻訳ボタンが無反応」):
+    /// `return texts;` (a bare JS array) ではなく `return JSON.stringify
+    /// (texts);` (プレーンな文字列) を返す — このプロジェクトのツール
+    /// チェーンでは `evaluateJavaScript` の戻り値ブリッジが Promise 解決値
+    /// に対して壊れていることが Task #58 で確認済み (`fitToWidthScript`の
+    /// doc comment参照) で、この抽出 IIFE 自体は Promise を経由しない同期
+    /// 呼び出しなので理論上は影響を受けないはずだが、実機フィードバックが
+    /// 「HTMLメールの翻訳だけ無反応」と報告している以上、複雑な値の
+    /// ブリッジそのものに実機依存の余地がある可能性を排除できない —
+    /// 同じファイルの`readDiagScript`/`fitToWidthScript`の`data-otegami-diag`
+    /// 属性が採る「JSON文字列として運び、Swift側でデコードする」という
+    /// 実証済みの安全な形に統一しておくことで、この抽出だけが疑わしい
+    /// 特別扱いのまま残ることを避ける。
     private static let extractScript = """
     \(walkAndWrapFunctionSource)
     (function () {
       var texts = [];
       otegamiWalkAndWrap(function (span, i) { texts[i] = span.getAttribute('data-otegami-original'); });
-      return texts;
+      return JSON.stringify(texts);
     })();
     """
 
@@ -950,6 +963,15 @@ final class HTMLTranslationController {
     })();
     """
 
+    /// Task #61 diagnostic/failure logging — separate from `diagnosticLogger`
+    /// (Task #58, HTML height) since this covers a different feature; kept
+    /// permanent (not marked "temporary") since a JS-bridge failure here is
+    /// exactly the kind of real-device-only anomaly this project has
+    /// repeatedly needed `simctl spawn ... log stream` to diagnose (Task
+    /// #58's own writeup). Only ever logs on an actual failure — no
+    /// per-success noise.
+    private static let translationLogger = Logger(subsystem: "com.mtkg.otegami", category: "HTMLTranslationDiagnostic")
+
     /// Collects every visible text node's *current* text, in document
     /// order — the array `MessageView` hands to `MessageTranslator
     /// .translateHTMLTextNodes(messageId:texts:...)`. Read straight from
@@ -957,10 +979,34 @@ final class HTMLTranslationController {
     /// already be showing a translation from an unrelated earlier pass)
     /// so a re-extraction is always the true source text, never a
     /// translation-of-a-translation.
-    func extractTranslatableTexts() async -> [String] {
-        guard let webView else { return [] }
-        guard let result = try? await webView.evaluateJavaScript(Self.extractScript) else { return [] }
-        return (result as? [String]) ?? []
+    ///
+    /// Task #61 (実機フィードバック「HTMLメールの翻訳ボタンが無反応」):
+    /// returns `nil` — not `[]` — when the JS call itself failed
+    /// (`evaluateJavaScript` threw, or the result didn't decode as the JSON
+    /// array `extractScript` promises) so `MessageView.requestTranslation`
+    /// can tell "this message genuinely has no translatable text" (`[]`,
+    /// harmless — an image-only mail, say) apart from "extraction broke"
+    /// (`nil`) and show a visible failure for the latter instead of quietly
+    /// doing nothing, which is what made the original report look like a
+    /// dead tap ("無反応") — the translation flow used to press ahead with
+    /// an empty `texts` array either way, translating zero paragraphs
+    /// "successfully" with no visible effect and no error shown.
+    func extractTranslatableTexts() async -> [String]? {
+        guard let webView else { return nil }
+        do {
+            let result = try await webView.evaluateJavaScript(Self.extractScript)
+            guard let jsonString = result as? String,
+                  let data = jsonString.data(using: .utf8),
+                  let texts = try? JSONDecoder().decode([String].self, from: data)
+            else {
+                Self.translationLogger.error("extractTranslatableTexts: unexpected result shape \(String(describing: result), privacy: .public)")
+                return nil
+            }
+            return texts
+        } catch {
+            Self.translationLogger.error("extractTranslatableTexts failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
     }
 
     /// Stamps `translations[i]` onto the node at index `i` as

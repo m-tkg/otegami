@@ -9,10 +9,37 @@ import GRDB
 public struct TranslatedParagraph: Codable, Equatable, Sendable {
     public var original: String
     public var translated: String
+    /// Task #61 (ガードレール誤発動の寛容化): `true` when this paragraph
+    /// contained at least one chunk that `MessageTranslator.translateAligned`
+    /// couldn't translate because the engine reported
+    /// `TranslationServiceError.contentBlocked` (Apple Foundation Models の
+    /// ガードレール誤発動 — 無害な文面でも発生しうる、`docs/translation.md`
+    /// 参照) — `translated` is then just `original` verbatim for (at least
+    /// part of) this paragraph, not a real translation.
+    ///
+    /// Decoded via `decodeIfPresent` (custom `init(from:)` below) so a
+    /// `messageTranslation` row cached before this field existed decodes as
+    /// `false` rather than failing to decode at all — this is stored as
+    /// JSON inside `MessageTranslationRecord.paragraphs`'s existing `.blob`
+    /// column (that type's own doc comment), so adding this field needs no
+    /// GRDB schema migration, just backward-compatible `Codable`.
+    public var wasBlocked: Bool
 
-    public init(original: String, translated: String) {
+    public init(original: String, translated: String, wasBlocked: Bool = false) {
         self.original = original
         self.translated = translated
+        self.wasBlocked = wasBlocked
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case original, translated, wasBlocked
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        original = try container.decode(String.self, forKey: .original)
+        translated = try container.decode(String.self, forKey: .translated)
+        wasBlocked = try container.decodeIfPresent(Bool.self, forKey: .wasBlocked) ?? false
     }
 }
 
@@ -64,5 +91,15 @@ public struct MessageTranslationRecord: Codable, Equatable, Sendable, FetchableR
         self.paragraphs = paragraphs
         self.engineIdentifier = engineIdentifier
         self.translatedAt = translatedAt
+    }
+
+    /// Task #61: whether *any* paragraph in this translation had a chunk
+    /// the engine's safety guardrails blocked (`TranslatedParagraph
+    /// .wasBlocked`'s doc comment) — `apps/Otegami`'s `TranslationFloatingButton`
+    /// uses this to show a modest "一部の文は翻訳できませんでした" note
+    /// instead of treating a partially-blocked translation as either a
+    /// silent full success or a scary full failure.
+    public var hasPartiallyBlockedContent: Bool {
+        paragraphs.contains { $0.wasBlocked }
     }
 }

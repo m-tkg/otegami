@@ -208,24 +208,47 @@ public struct FoundationModelsTranslationService: TranslationService {
         // than this type's own 26+) — this package's deployment target is
         // still 26 (`docs/translation.md`), so this whole type has to be
         // reachable on a 26-only device too; the `#available` check just
-        // means a 26-only device never gets the `.tooLong` special case
-        // (falls through to the generic `.failed` below, exactly like
-        // before this mapping existed) rather than failing to compile.
-        // `LanguageModelError` is not just OS-gated — the *type* only exists
-        // in the iOS/macOS 27 SDK, so `#available` alone is not enough: on
-        // CI's older Xcode (26.x SDK) the mere mention of the type fails to
-        // compile (`cannot find type 'LanguageModelError' in scope` —
-        // exactly the local-Xcode-27-beta vs CI-Xcode-26.5 divergence
-        // docs/ci.md warns about, this time as a missing type rather than a
-        // type-check timeout). Gate at *compile time* on the compiler that
-        // ships with the 27 SDK, keeping the runtime `#available` inside.
+        // means a 26-only device never gets the `.tooLong`/`.contentBlocked`
+        // special cases below (falls through to the generic `.failed`,
+        // exactly like before this mapping existed) rather than failing to
+        // compile. `LanguageModelError` is not just OS-gated — the *type*
+        // only exists in the iOS/macOS 27 SDK, so `#available` alone is not
+        // enough: on CI's older Xcode (26.x SDK) the mere mention of the
+        // type fails to compile (`cannot find type 'LanguageModelError' in
+        // scope` — exactly the local-Xcode-27-beta vs CI-Xcode-26.5
+        // divergence docs/ci.md warns about, this time as a missing type
+        // rather than a type-check timeout). Gate at *compile time* on the
+        // compiler that ships with the 27 SDK, keeping the runtime
+        // `#available` inside.
         #if compiler(>=6.4)
-        if #available(iOS 27.0, macOS 27.0, *),
-           let languageModelError = error as? LanguageModelError,
-           case .contextSizeExceeded(let details) = languageModelError {
-            return .tooLong(message: "\(details.tokenCount)/\(details.contextSize) tokens")
+        if #available(iOS 27.0, macOS 27.0, *), let languageModelError = error as? LanguageModelError {
+            switch languageModelError {
+            case .contextSizeExceeded(let details):
+                return .tooLong(message: "\(details.tokenCount)/\(details.contextSize) tokens")
+            // Task #61 (実機フィードバック「無害なマーケティングメールなのに
+            // "The model's safety guardrails were triggered." で翻訳全体が
+            // 失敗する」): ガードレールの誤発動 (実際には安全な文面でも
+            // 発生しうる、Apple の既知の挙動) を `.failed` から独立した
+            // `.contentBlocked` へ分離 — `MessageTranslator.translateAligned`
+            // がこのケースだけをチャンク単位で「原文のまま残して続行」の
+            // 対象として識別できるようにする。
+            case .guardrailViolation(let violation):
+                return .contentBlocked(message: violation.debugDescription)
+            default:
+                break
+            }
         }
         #endif
+        // `LanguageModelSession.GenerationError` (26.0+, `deprecated: 27.0`
+        // in favor of `LanguageModelError` above) is the shape a call on an
+        // iOS/macOS 26-only device (this package's actual deployment floor)
+        // still throws — unlike `LanguageModelError`, this type isn't
+        // gated behind the 27 SDK, so no `#if compiler`/`#available` guard
+        // is needed to reference it, only to catch the (harmless,
+        // deprecation-only) case actually being hit on such a device.
+        if let generationError = error as? LanguageModelSession.GenerationError, case .guardrailViolation = generationError {
+            return .contentBlocked(message: generationError.localizedDescription)
+        }
         return .failed(message: error.localizedDescription)
     }
 }

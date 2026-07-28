@@ -452,6 +452,105 @@ environment) で `FakeTranslationService` に差し替えて検証した
 確認できたが、実際の Foundation Models による訳文の品質・実機での
 2デバイス確認はこのフラグの対象外 (`PENDING.md` に記載)。
 
+## 実機フィードバック: 「HTML メールの翻訳ボタンが無反応」(Task #61)
+
+**症状**: HTML メールを開き、翻訳フローティングボタンをタップしても
+何も起きない（プレーンテキストのメールは動く）。要約ボタンは影響なし
+(`sourceTextForSummary()`はJSを一切経由しないため)。
+
+**根治した握り潰し**: `HTMLTranslationController.extractTranslatableTexts()`
+(DOM テキストノード収集のJS呼び出し) が何らかの理由で失敗しても、以前は
+`try?` で握り潰して空配列 `[]` を返していた。`MessageView
+.requestTranslation`はその空配列をそのまま `MessageTranslator
+.translateHTMLTextNodes` に渡し、0段落を「翻訳」して `.translated` (成功)
+状態にしていた — 結果、画面には何の変化も起きず、エラーも出ないため
+「タップしても無反応」に見えていた。
+
+**修正 (2点)**:
+
+1. `extractTranslatableTexts()` の戻り値を `[String]` から `[String]?`
+   に変更 — `nil` は「抽出そのものが失敗した」を意味し、`MessageView
+   .requestTranslation`はこれを見て翻訳フローティングボタンを
+   `.failed("本文の読み込みに失敗しました。もう一度お試しください。")`
+   にする（空だが正常な抽出＝画像だけで文字が無いメールとは区別する）。
+   `htmlTranslationController` がまだ `nil` (`HTMLMessageView.onAppear`
+   がまだ発火していないごく短い窓でタップされた場合) も同様に、以前の
+   無言 `return` をやめて `.failed(...)` にした。
+2. 収集スクリプト自体も `return texts;` (bare な JS 配列) ではなく
+   `return JSON.stringify(texts);` (プレーンな JSON 文字列) を返すよう
+   変更し、Swift 側で `JSONDecoder` によりデコードする — この
+   プロジェクトのツールチェーンでは `evaluateJavaScript` の戻り値
+   ブリッジが **Promise 解決値**に対して壊れていることが Task #58 で
+   確認済み (`HTMLWebViewCoordinator.fitToWidthScript`のdoc comment
+   参照）。この抽出 IIFE 自体は Promise を経由しない同期呼び出しであり、
+   壊れているのは Promise 解決値のケースだけだと Task #58 時点では
+   推定されていたが、実機フィードバックが「HTML メールの翻訳だけ無反応」
+   と報告している以上、複雑な値のブリッジそのものに実機依存の余地を
+   完全には排除できない。すでに実証済みの「JSON 文字列として運ぶ」形
+   (`readDiagScript`と同じ形) に統一しておくのは低コストな保険であり、
+   ロジック自体は変えない。
+
+**実機での検証状況**: この修正はコードレビュー（`HTMLWebViewCoordinator
+.fitToWidthScript`のdoc comment、Task #58 の既知の教訓）に基づく対応で、
+`make test`/`make mac`/`make ios` は緑になっているが、シミュレータでの
+XCUITest による end-to-end 再現・確認は完了していない — この開発機の
+シミュレータでは、翻訳フローティングボタン自体がシミュレータのシステム
+言語設定 (`LocalizationSettingsStore.effectiveLanguageCode`) と
+メール本文の検出言語 (`detectedLanguage`) の両方に依存して表示・非表示
+が切り替わるため (英語UIでは常に非表示)、UITest 実行時の権限ダイアログ
+(連絡先アクセス) や別プロセスとのシミュレータ競合と合わさって、この
+セッション内では安定した再現に至らなかった。実機での再確認は
+`PENDING.md` 参照。
+
+## 実機フィードバック: ガードレール誤発動の寛容化 (Task #61)
+
+**症状**: 無害なマーケティングメール (例: 3Dプリンタコミュニティの通知
+メール) を翻訳すると、「翻訳に失敗しました: The model's safety
+guardrails were triggered.」でメール全体の翻訳が失敗する。Apple
+Foundation Models のガードレールは誤発動することがあり (Apple 既知の
+挙動で、アプリ側で無効化する API はない)、原文には実際に問題のある
+内容は含まれていない。
+
+**修正方針**: 翻訳はチャンク (プレーンテキスト) / DOM テキストノード
+(HTML) 単位で行われている — ガードレール誤発動を検知したチャンクだけ
+原文のまま残して続行し、他のチャンクが1つでも翻訳できていれば全体は
+成功 (`.translated`) 扱いにする。全チャンクがブロックされた場合だけ
+失敗 (`.failed`) にする。
+
+1. `TranslationServiceError` に `.contentBlocked(message:)` を新設 —
+   `.failed` から独立させたのは、`MessageTranslator.translateAligned`
+   がこのケースだけを「チャンク単位で原文のまま続行」の対象として
+   識別できるようにするため。
+2. `FoundationModelsTranslationService.mapEngineError` がガードレール
+   誤発動を検知: iOS/macOS 27+ の `LanguageModelError.guardrailViolation`
+   と、26+ (この非推奨だが現行の deployment target) の
+   `LanguageModelSession.GenerationError.guardrailViolation` の両方を
+   `.contentBlocked` にマップする。
+3. `MessageTranslator.translateAligned` は以前 `service.translateParagraphs`
+   への一括呼び出しでチャンク配列全体を1回のエンジン呼び出しに渡して
+   いたが、これだとチャンク1つの例外が配列全体を巻き込んで失敗させて
+   いた。1チャンクずつ `service.translate` を呼ぶループに変更し、
+   `.contentBlocked` だけをそのチャンクの原文採用で握り潰して続行する
+   (他のエラーは従来どおり全体を失敗させる)。
+4. `TranslatedParagraph` に `wasBlocked: Bool` (既定 `false`) を追加 —
+   `paragraphs` は既存の `.blob` 列に JSON として保存されているだけなので
+   GRDB スキーマ移行は不要。`decodeIfPresent` により、この機能追加より
+   前にキャッシュされた行も `false` として問題なくデコードできる。
+   `MessageTranslationRecord.hasPartiallyBlockedContent`
+   (=`paragraphs`のいずれかが`wasBlocked`) を UI 層が読む。
+5. `TranslationFloatingButton`: 全体が `.translated` かつ
+   `hasPartiallyBlockedContent` の場合、赤い失敗カプセルではなく控えめな
+   グレーのカプセルで「一部の文は翻訳できませんでした」と表示する
+   （スキップされた段落自体は原文のまま表示される）。
+
+**テスト** (`MessageTranslatorTests`): `FakeTranslationService
+.configureContentBlocked(for:)` で特定の入力文字列だけ
+`.contentBlocked` を投げるよう設定し、(a) 3段落中1段落だけブロックされて
+も残り2段落は翻訳され全体は `.translated` になること、その段落だけ
+`wasBlocked == true` で原文がそのまま採用されること、
+`hasPartiallyBlockedContent == true` になること、(b) 唯一の段落がブロック
+された場合は `.failed` になることを確認。
+
 ## テスト
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、
@@ -462,7 +561,8 @@ environment) で `FakeTranslationService` に差し替えて検証した
 - `TranslationEngineTests`: `MessageTranslator` のキャッシュヒット/ミス、
   エンジン識別子が変わった場合の再翻訳、失敗時の状態、`invalidate()`、
   上限を超える段落がチャンク分割されたうえで1つの `TranslatedParagraph`
-  に再結合されること。
+  に再結合されること、ガードレール誤発動チャンクの寛容化 (部分スキップ
+  成功・全滅時失敗、上記「ガードレール誤発動の寛容化」節参照)。
 - `OtegamiTranslationFoundationModelsTests`: 実機のオンデバイスモデルに対する
   結合テスト（可用性に応じて自動スキップ）。
 - `SyncEngineTests`（`BodyFetcherTests`）: 本文取得時に

@@ -9,6 +9,30 @@
 知りたい場合はこのファイル、次に何をやればいいかだけ知りたい場合は
 `HUMAN_TASKS.md` を見ること。
 
+## Task #61: HTML メール翻訳「無反応」修正の実機/シミュレータでの end-to-end 確認
+
+**実装状況**: `HTMLTranslationController.extractTranslatableTexts()`が
+抽出失敗を `nil` として返し、`MessageView.requestTranslation`がそれを
+ユーザー可視の失敗状態にする修正、および `evaluateJavaScript`の戻り値を
+JSON文字列に統一する防御的な変更を実装済み。ガードレール誤発動の寛容化
+(1チャンクだけブロックされても他は翻訳を続行) も実装済み。
+`MessageTranslatorTests`のユニットテストは green、`make mac`/`make ios`
+のビルドも green。詳細は `docs/translation.md`の該当節参照。
+
+**残っているのは実機/シミュレータでの end-to-end 確認のみ**:
+このセッションでは XCUITest による再現を試みたが、(a) このシミュレータ/
+ツールチェーンでの XCUITest 実行が非常に不安定 (システム権限ダイアログ・
+別プロセスとのシミュレータ競合により1回のテスト実行に4-5分かかることが
+あった)、(b) 翻訳フローティングボタンの表示条件がシミュレータのシステム
+言語設定に依存する (`LocalizationSettingsStore.effectiveLanguageCode`)
+ことに気づくまで時間を要した、という2点により、修正後の「タップして
+実際に翻訳される」ところまでの確定的な再現には至らなかった。次回は
+シミュレータのシステム言語を日本語に設定したうえで、
+`OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE`+
+`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`+
+`OTEGAMI_UITEST_FAKE_TRANSLATION=1` の直接遷移経路 (タップ操作を
+迂回できる) から始めること。
+
 ## M6: Google OAuth Client ID の発行
 
 **実装状況**: M6 のロジック・UI は実装済み・単体テスト済み (PKCE 生成/token

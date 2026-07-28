@@ -109,7 +109,23 @@ struct TranslationFloatingButton: View {
         if case .failed(let message) = state {
             return "翻訳に失敗しました: \(message)"
         }
+        // Task #61 (ガードレール誤発動の寛容化): 一部の段落だけがガード
+        // レール誤発動でスキップされた場合 (`MessageTranslationRecord
+        // .hasPartiallyBlockedContent`) は全体を失敗扱いにせず、控えめな
+        // 注記だけを添える — スキップされた段落は原文のまま表示される
+        // (`MessageTranslator.translateAligned`のdoc comment参照)。
+        if case .translated(let record) = state, record.hasPartiallyBlockedContent {
+            return "一部の文は翻訳できませんでした"
+        }
         return nil
+    }
+
+    /// `.failed`の赤い（`OtegamiColor.destructive`）カプセルと区別する —
+    /// 部分スキップは失敗ではなく「一部だけ原文のまま」という穏やかな
+    /// お知らせなので、より控えめな中間色を使う。
+    private var footnoteTone: Color {
+        if case .failed = state { return OtegamiColor.destructive }
+        return OtegamiColor.inkSecondary
     }
 
     private func footnoteCaption(_ text: String) -> some View {
@@ -118,7 +134,7 @@ struct TranslationFloatingButton: View {
             .foregroundStyle(.white)
             .padding(.horizontal, OtegamiSpacing.sm)
             .padding(.vertical, OtegamiSpacing.xs)
-            .background(OtegamiColor.destructive, in: Capsule())
+            .background(footnoteTone, in: Capsule())
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: 240, alignment: .leading)
             .accessibilityIdentifier("messageDetail.translationFloatingButton.footnote")

@@ -167,18 +167,55 @@ public actor MessageTranslator {
                 chunkCounts.append(pieces.count)
             }
 
-            let translatedChunks = try await service.translateParagraphs(chunks, from: sourceLanguage, to: targetLanguage)
+            // Task #61 (実機フィードバック「無害なマーケティングメールなのに
+            // "The model's safety guardrails were triggered." で翻訳全体が
+            // 失敗する」): 以前は `service.translateParagraphs` への一括呼び
+            // 出しがチャンク1つのガードレール誤発動で配列全体を巻き込んで
+            // 失敗していた。1チャンクずつ `service.translate` を呼び、
+            // `.contentBlocked` (ガードレール誤発動 — `TranslationServiceError
+            // .contentBlocked`のdoc comment参照) だけはそのチャンクの原文を
+            // そのまま採用して続行する。それ以外のエラー (`.tooLong`/
+            // `.unavailable`/その他の`.failed`) は `catch` に一致せずこの
+            // `do` ブロックの外側 (このメソッド自身の `catch` 節) へ素通り
+            // し、従来どおり全体を失敗させる — 意図的に「握り潰し」を
+            // ガードレール誤発動 1 種類だけに絞っている。
+            var translatedChunks: [String] = []
+            translatedChunks.reserveCapacity(chunks.count)
+            var blockedChunkIndices = Set<Int>()
+            for (index, chunk) in chunks.enumerated() {
+                do {
+                    translatedChunks.append(try await service.translate(chunk, from: sourceLanguage, to: targetLanguage))
+                } catch let error as TranslationServiceError where error.isContentBlocked {
+                    translatedChunks.append(chunk)
+                    blockedChunkIndices.insert(index)
+                }
+            }
+            // 全チャンクがガードレールでブロックされた場合だけ失敗扱いに
+            // する — 1つでも翻訳できていれば「一部スキップ」として成功
+            // 扱いにし、`MessageTranslationRecord.hasPartiallyBlockedContent`
+            // 経由でUIが控えめな注記を出す (`docs/translation.md`参照)。
+            if !chunks.isEmpty, blockedChunkIndices.count == chunks.count {
+                throw TranslationServiceError.contentBlocked(message: "every chunk was blocked by the model's safety guardrails")
+            }
 
             var translatedParagraphs: [String] = []
             translatedParagraphs.reserveCapacity(paragraphs.count)
+            var paragraphWasBlocked: [Bool] = []
+            paragraphWasBlocked.reserveCapacity(paragraphs.count)
             var cursor = 0
             for count in chunkCounts {
-                let pieceTranslations = translatedChunks[cursor..<(cursor + count)]
+                let range = cursor..<(cursor + count)
+                let pieceTranslations = translatedChunks[range]
                 translatedParagraphs.append(pieceTranslations.joined(separator: " "))
+                paragraphWasBlocked.append(range.contains { blockedChunkIndices.contains($0) })
                 cursor += count
             }
 
-            let aligned = zip(paragraphs, translatedParagraphs).map { TranslatedParagraph(original: $0, translated: $1) }
+            var aligned: [TranslatedParagraph] = []
+            aligned.reserveCapacity(paragraphs.count)
+            for i in 0..<paragraphs.count {
+                aligned.append(TranslatedParagraph(original: paragraphs[i], translated: translatedParagraphs[i], wasBlocked: paragraphWasBlocked[i]))
+            }
 
             let record = MessageTranslationRecord(
                 messageId: messageId,

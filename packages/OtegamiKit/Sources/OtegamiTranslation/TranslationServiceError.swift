@@ -25,10 +25,22 @@ public enum TranslationServiceError: Error, Sendable, Equatable, LocalizedError 
     /// when available).
     case tooLong(message: String)
     /// The engine attempted the translation and failed for some other
-    /// reason (guardrail violation, decoding failure, transient engine
-    /// error, ...). `message` is a short, already-localized-enough-for-a-
-    /// log-line description of what went wrong.
+    /// reason (decoding failure, transient engine error, ...). `message` is
+    /// a short, already-localized-enough-for-a-log-line description of
+    /// what went wrong.
     case failed(message: String)
+    /// Task #61 (実機フィードバック「無害なマーケティングメールなのに
+    /// "The model's safety guardrails were triggered." で翻訳全体が失敗
+    /// する」): Apple Foundation Models のガードレール (`LanguageModelError
+    /// .guardrailViolation`/旧`LanguageModelSession.GenerationError
+    /// .guardrailViolation` — `FoundationModelsTranslationService
+    /// .mapEngineError`のdoc comment参照) は実際には無害な文面でも誤発動
+    /// することが実機で確認された。`.failed`から独立したケースにしたのは、
+    /// `MessageTranslator.translateAligned`がこのケースだけをチャンク単位
+    /// で「原文のまま残して続行」の対象として識別できるようにするため —
+    /// 他の`.failed`要因 (デコード失敗など) は従来どおりチャンク1つの失敗が
+    /// 全体を失敗させる。
+    case contentBlocked(message: String)
 
     public var errorDescription: String? {
         switch self {
@@ -38,7 +50,18 @@ public enum TranslationServiceError: Error, Sendable, Equatable, LocalizedError 
             "Text too long: \(message)"
         case .failed(let message):
             "Translation failed: \(message)"
+        case .contentBlocked(let message):
+            "Translation content blocked: \(message)"
         }
+    }
+
+    /// `MessageTranslator.translateAligned`'s per-chunk tolerance check —
+    /// named as a predicate (not a `switch` inline at each call site) so
+    /// that check reads as intent ("was this chunk's failure a guardrail
+    /// misfire?") rather than pattern-matching noise.
+    public var isContentBlocked: Bool {
+        if case .contentBlocked = self { return true }
+        return false
     }
 
     /// A short, Japanese, user-facing explanation of *why* this failed —
@@ -60,6 +83,15 @@ public enum TranslationServiceError: Error, Sendable, Equatable, LocalizedError 
             return "本文が長すぎるため処理できませんでした"
         case .failed(let message):
             return message
+        case .contentBlocked:
+            // Task #61: this case only ever reaches a user as the *whole*
+            // translation's failure when every single chunk hit it
+            // (`MessageTranslator.translateAligned`'s all-blocked branch) —
+            // a partial hit is tolerated silently (per-chunk original text
+            // kept, surfaced later as a modest "一部の文は翻訳できません
+            // でした" note via `MessageTranslationRecord
+            // .hasPartiallyBlockedContent`, not this message).
+            return "翻訳できませんでした（モデルの安全機構が本文をブロックしました）"
         }
     }
 }

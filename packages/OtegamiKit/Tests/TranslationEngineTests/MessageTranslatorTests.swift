@@ -52,7 +52,13 @@ struct MessageTranslatorTests {
             TranslatedParagraph(original: "The report is attached.", translated: "[ja] The report is attached."),
         ])
         #expect(record.engineIdentifier == MessageTranslator.EngineIdentifier.fake)
-        #expect(await service.translateParagraphsCallCount == 1)
+        // Task #61: `translateAligned` now calls `service.translate` once
+        // per chunk (not `translateParagraphs` once for the whole batch) so
+        // a single guardrail-blocked chunk can be tolerated without failing
+        // every other chunk — see `guardrailBlockedChunkIsToleratedAndOthersStillTranslate`
+        // below. Two short paragraphs here means two chunks, so two calls.
+        #expect(await service.translateCallCount == 2)
+        #expect(await service.translateParagraphsCallCount == 0)
 
         // Compared field-by-field rather than `persisted == record`:
         // `translatedAt` defaults to an unrounded `Date()`, and GRDB's
@@ -108,12 +114,17 @@ struct MessageTranslatorTests {
         // carry exactly one "[ja] " prefix; more than one proves the
         // engine actually received several chunks for this one paragraph,
         // which then got rejoined into a single `TranslatedParagraph`.
-        #expect(record.paragraphs[1].translated.components(separatedBy: "[ja] ").count - 1 > 1)
-        // `MessageTranslator.translate` still only calls
-        // `translateParagraphs` once overall (all chunks from every
-        // paragraph batched into one call) — chunking doesn't turn one
-        // `translate` into multiple round trips to the engine.
-        #expect(await service.translateParagraphsCallCount == 1)
+        let longParagraphPieceCount = record.paragraphs[1].translated.components(separatedBy: "[ja] ").count - 1
+        #expect(longParagraphPieceCount > 1)
+        // Task #61: `translateAligned` calls `service.translate` once per
+        // chunk (not `translateParagraphs` once for the whole batch, which
+        // is what let one guardrail-blocked chunk fail every other chunk —
+        // see `guardrailBlockedChunkIsToleratedAndOthersStillTranslate`
+        // below) — so the total call count is every chunk from every
+        // paragraph: the short intro's one chunk plus the long paragraph's
+        // `longParagraphPieceCount` pieces.
+        #expect(await service.translateCallCount == 1 + longParagraphPieceCount)
+        #expect(await service.translateParagraphsCallCount == 0)
     }
 
     @Test("a second call for the same message is served from cache, not the engine")
@@ -135,7 +146,7 @@ struct MessageTranslatorTests {
         // the behavior actually under test.
         #expect(first.translatedRecord?.translatedText == second.translatedRecord?.translatedText)
         #expect(first.translatedRecord?.paragraphs == second.translatedRecord?.paragraphs)
-        #expect(await service.translateParagraphsCallCount == 1)
+        #expect(await service.translateCallCount == 1)
     }
 
     @Test("a cached row from a different engine is treated as a miss and re-translated")
@@ -155,7 +166,7 @@ struct MessageTranslatorTests {
             return
         }
         #expect(record.engineIdentifier == "engine-b")
-        #expect(await secondService.translateParagraphsCallCount == 1)
+        #expect(await secondService.translateCallCount == 1)
     }
 
     @Test("engine failure resolves to .failed rather than throwing")
@@ -189,7 +200,65 @@ struct MessageTranslatorTests {
         try await translator.invalidate(messageId: messageId)
         _ = await translator.translate(messageId: messageId, sourceText: "Hello.", sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(await service.translateParagraphsCallCount == 2)
+        #expect(await service.translateCallCount == 2)
+    }
+
+    @Test("a guardrail-blocked chunk keeps its original text and doesn't fail the other chunks")
+    func guardrailBlockedChunkIsToleratedAndOthersStillTranslate() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        // Task #61 (実機フィードバック「無害なマーケティングメールなのに
+        // "The model's safety guardrails were triggered." で翻訳全体が失敗
+        // する」): 3段落中1段落だけがガードレール誤発動を起こしても、残り
+        // 2段落は正常に翻訳され、全体としては `.translated` (成功) 扱いに
+        // なることを確認する。
+        await service.configureContentBlocked(for: ["This one triggers the guardrail."])
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let sourceText = "First paragraph is fine.\n\nThis one triggers the guardrail.\n\nThird paragraph is also fine."
+        let state = await translator.translate(messageId: messageId, sourceText: sourceText, sourceLanguage: .english, targetLanguage: .japanese)
+
+        guard case .translated(let record) = state else {
+            Issue.record("expected .translated (partial success), got \(state)")
+            return
+        }
+        #expect(record.paragraphs.count == 3)
+        #expect(record.paragraphs[0] == TranslatedParagraph(original: "First paragraph is fine.", translated: "[ja] First paragraph is fine.", wasBlocked: false))
+        // The blocked paragraph's "translated" text is just its own
+        // original, verbatim — not run through `deterministicTranslation`
+        // — and flagged `wasBlocked: true` so the UI layer
+        // (`MessageTranslationRecord.hasPartiallyBlockedContent`) can show
+        // its modest "一部の文は翻訳できませんでした" note.
+        #expect(record.paragraphs[1] == TranslatedParagraph(original: "This one triggers the guardrail.", translated: "This one triggers the guardrail.", wasBlocked: true))
+        #expect(record.paragraphs[2] == TranslatedParagraph(original: "Third paragraph is also fine.", translated: "[ja] Third paragraph is also fine.", wasBlocked: false))
+        #expect(record.hasPartiallyBlockedContent)
+        // Every chunk was still individually attempted (the blocked one
+        // included) — only its *result* was substituted, the call itself
+        // wasn't skipped.
+        #expect(await service.translateCallCount == 3)
+    }
+
+    @Test("every chunk being guardrail-blocked resolves to .failed, not a silently-empty .translated")
+    func allChunksBlockedResolvesToFailed() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        await service.configureContentBlocked(for: ["Only paragraph, also blocked."])
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let state = await translator.translate(messageId: messageId, sourceText: "Only paragraph, also blocked.", sourceLanguage: .english, targetLanguage: .japanese)
+
+        guard case .failed(let message) = state else {
+            Issue.record("expected .failed when every chunk is blocked, got \(state)")
+            return
+        }
+        #expect(message == TranslationServiceError.contentBlocked(message: "").userFacingMessage)
+
+        let persisted = try await database.dbWriter.read { db in
+            try MessageTranslationRecord.fetchOne(db, key: messageId)
+        }
+        #expect(persisted == nil)
     }
 
     @Test("availability forwards the underlying service's availability")
