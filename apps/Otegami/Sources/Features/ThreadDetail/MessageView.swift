@@ -568,23 +568,44 @@ struct MessageView: View {
     /// Inline (`cid:`-referenced) parts are excluded — those render inside
     /// `HTMLMessageView`'s body itself (via the `otegami-cid://` scheme
     /// handler), so listing them again here as a separate downloadable row
-    /// would be confusing/redundant. Only genuine "here's a file" parts
-    /// show up in this list.
+    /// would be confusing/redundant. Task #84: recognized calendar-invite
+    /// technical parts (the unnamed `text/calendar` alternative, the
+    /// `invite.ics`-style attachment) are excluded too, same rationale as
+    /// Gmail/Spark — `CalendarInviteSectionView` above already shows the
+    /// event as a card, so re-listing its raw MIME carrier(s) as plain
+    /// "here's a file" rows would just be confusing technical noise, not
+    /// useful to the user. Only genuine "here's a file" parts show up in
+    /// this list.
     private var listableAttachments: [AttachmentRecord] {
-        attachments.filter { !$0.isInline }
+        attachments.filter { !$0.isInline && !Self.isCalendarInvitePart($0) }
     }
 
-    /// Task #66: the `text/calendar` part (a Google Calendar-style invite
-    /// always includes one, `METHOD:REQUEST`) driving `CalendarInviteSectionView`
-    /// above, or a plain `.ics`-named attachment as a fallback for a sender
-    /// whose MIME type is less precise (`application/ics`,
-    /// `application/octet-stream`, ...) but still names the file `.ics`.
-    /// Still listed in `attachmentSection` too (unchanged) — this is purely
-    /// "does an invite card exist *in addition to* the regular attachment
-    /// row", not a replacement for it.
+    /// Task #66/#84: the MIME part driving `CalendarInviteSectionView`
+    /// above. A real Google Calendar invite carries the event as *two*
+    /// separate parts — an unnamed `text/calendar; method=REQUEST` part
+    /// (nested as a third sibling of `multipart/alternative`'s `text/plain`/
+    /// `text/html`, not the `multipart/mixed`-level sibling the original
+    /// fixture modeled) plus a separately named `application/ics`
+    /// (`invite.ics`) attachment — so either alone finding a match isn't
+    /// enough; `CalendarInviteAttachmentMatching.primaryInvitePart` picks
+    /// whichever single one should feed the card, in preference order (see
+    /// its own doc comment). Still listed in `attachmentSection` too before
+    /// Task #84 (now hidden via `listableAttachments` above) — this
+    /// computed property is purely "does an invite card exist", not about
+    /// what else is visible below it.
     private var calendarInviteAttachment: AttachmentRecord? {
-        attachments.first { $0.mimeType.lowercased() == "text" && $0.mimeSubtype.lowercased() == "calendar" }
-            ?? attachments.first { ($0.filename ?? "").lowercased().hasSuffix(".ics") }
+        CalendarInviteAttachmentMatching.primaryInvitePart(
+            among: attachments,
+            mimeType: { $0.mimeType },
+            mimeSubtype: { $0.mimeSubtype },
+            filename: { $0.filename }
+        )
+    }
+
+    private static func isCalendarInvitePart(_ attachment: AttachmentRecord) -> Bool {
+        CalendarInviteAttachmentMatching.isInvitePart(
+            mimeType: attachment.mimeType, mimeSubtype: attachment.mimeSubtype, filename: attachment.filename
+        )
     }
 
     /// Task #76 (Spark 参考画像を基にしたカード表示への刷新):

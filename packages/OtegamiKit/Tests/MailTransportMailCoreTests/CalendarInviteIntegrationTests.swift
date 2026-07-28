@@ -119,4 +119,96 @@ struct CalendarInviteIntegrationTests {
         #expect(invite.start?.date == calendar.date(from: components))
         #expect(invite.start?.isAllDay == false)
     }
+
+    /// Task #84: the real-device report was that a genuine Google Calendar
+    /// invite showed *no* invite card at all — only two generic attachment
+    /// rows ("添付ファイル (名前なし)" and "invite.ics"). Fixture 36 (above)
+    /// models `text/calendar` as a `multipart/mixed`-level sibling of
+    /// `multipart/alternative`; the real structure nests it *inside* that
+    /// `multipart/alternative`, as a third representation alongside
+    /// `text/plain`/`text/html` (`37-calendar-invite-nested-alternative.eml`).
+    /// This test's whole point is confirming `MailCoreIMAPSession
+    /// .fetchBody`/`BodyFetcher` still discover that nested part with the
+    /// same `mimeType == "text"`/`mimeSubtype == "calendar"` regardless of
+    /// nesting depth (mailcore2's `MCOMessageParser.attachments()` doesn't
+    /// distinguish by container, only by the part's own MIME type — see
+    /// `docs/calendar-invites.md`) — i.e. that the MIME-parsing layer was
+    /// never actually the bug; `CalendarInviteAttachmentMatching`'s
+    /// `OtegamiCoreTests` coverage is what actually needed fixing.
+    @Test("BodyFetcher discovers a text/calendar part nested inside multipart/alternative, alongside a separate invite.ics attachment")
+    func discoversTextCalendarNestedInsideAlternative() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let database = try AppDatabase.makeInMemory()
+
+        let account = AccountRecord(
+            displayName: "Integration", email: "test1@otegami.test", authType: .password,
+            imapHost: env.host, imapPort: env.port,
+            imapSecurity: ConnectionSecurityRecord(env.imapConfig.security),
+            imapAllowsInsecureTLS: env.imapConfig.allowsInsecureTLS,
+            imapUsername: "test1@otegami.test"
+        )
+        try await database.dbWriter.write { db in try account.insert(db) }
+        defer { cleanUp(accountId: account.id) }
+
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+        _ = try await session.select("INBOX")
+
+        let envelopes = try await session.fetchEnvelopes(mailboxPath: "INBOX", uids: .all, batchSize: 50)
+        let envelope = try #require(envelopes.first { $0.messageId == "<seed-0037@otegami.test>" })
+
+        let messageId = try await database.dbWriter.write { db -> Int64 in
+            var mailbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var message = MessageRecord(
+                mailboxId: mailbox.id!, uid: Int64(envelope.uid), subject: envelope.subject,
+                internalDate: envelope.internalDate
+            )
+            try message.insert(db)
+            return message.id!
+        }
+        let message = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: messageId)! }
+
+        try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: session)
+
+        let attachments = try await database.dbWriter.read { db in
+            try AttachmentRecord.filter(Column("messageId") == messageId).fetchAll(db)
+        }
+
+        // Exactly two non-inline parts: the nested, unnamed text/calendar
+        // representation and the separately named invite.ics — matching the
+        // real-device report's "添付ファイル (名前なし)" + "invite.ics" pair.
+        let calendarPart = try #require(attachments.first { $0.mimeType == "text" && $0.mimeSubtype == "calendar" })
+        #expect(calendarPart.filename == nil)
+        let icsAttachment = try #require(attachments.first { ($0.filename ?? "").lowercased() == "invite.ics" })
+        #expect(icsAttachment.mimeType == "application")
+
+        // `CalendarInviteAttachmentMatching` (the actual fix, Task #84):
+        // both parts are recognized as invite parts, and the text/calendar
+        // one is picked to drive the card.
+        for attachment in attachments {
+            #expect(CalendarInviteAttachmentMatching.isInvitePart(
+                mimeType: attachment.mimeType, mimeSubtype: attachment.mimeSubtype, filename: attachment.filename
+            ))
+        }
+        let primary = CalendarInviteAttachmentMatching.primaryInvitePart(
+            among: attachments, mimeType: { $0.mimeType }, mimeSubtype: { $0.mimeSubtype }, filename: { $0.filename }
+        )
+        #expect(primary?.id == calendarPart.id)
+
+        let downloaded = try await AttachmentFetcher(database: database).fetchAndStore(
+            attachment: calendarPart, accountId: account.id, messageUID: message.uid,
+            mailboxPath: "INBOX", session: session
+        )
+        let localPath = try #require(downloaded.localPath)
+        let icsData = try Data(contentsOf: URL(fileURLWithPath: localPath))
+        let icsText = String(decoding: icsData, as: UTF8.self)
+
+        let invite = try #require(ICSCalendarParser.parse(icsText))
+        #expect(invite.uid == "seed-0037-event@otegami.test")
+        #expect(invite.method == "REQUEST")
+        #expect(invite.summary == "週次同期 (Weekly Sync)")
+        #expect(invite.organizer?.address == "organizer2@otegami.test")
+    }
 }

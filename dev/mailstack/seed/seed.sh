@@ -183,4 +183,14 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/35-attachment-long-filename.eml
 # ICS パース・iTIP REPLY 送信の実機確認用。
 seed_message "test1@otegami.test" "$FIXTURES_DIR/36-calendar-invite-google.eml"
 
+# Task #84 検証用 (実物のGoogle招待でカードが出ない): 36番はtext/calendarが
+# multipart/mixed直下 (multipart/alternativeの兄弟) に入る構造だったが、実物の
+# Google カレンダー招待はtext/calendarがmultipart/alternativeの**内側**
+# (text/plain・text/htmlと並ぶ3つ目の代替表現) に入り、別途
+# application/ics(invite.ics)が添付される — この構造差が検出漏れの原因
+# だったため、実物同等の入れ子構造を再現する。HTML側も実物同様、背景色を
+# 一切指定せず薄いグレー文字 (#5f6368) を明示指定した構造 (ダークモードの
+# ライト維持判定がこのメールに効くかどうかの確認も兼ねる)。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/37-calendar-invite-nested-alternative.eml"
+
 echo "==> done"

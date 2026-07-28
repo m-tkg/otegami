@@ -1633,12 +1633,17 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// anywhere inside it that sets one explicitly (a "card" `<div>` etc.
     /// — capped to the first 800 elements purely as a cheap safety net
     /// against a pathological document, not expected to matter for real
-    /// mail). A message with zero color declarations anywhere (today's
-    /// regression case) never finds an opaque candidate at any of the
-    /// three tiers — this file's own reset already sets `background:
-    /// transparent` on `html, body`, and nothing else in the document
-    /// overrides it — so `findEffectiveBackground` returns `null` and
-    /// `decideDarkInversion` leaves `.otegami-invert-for-dark` off
+    /// mail) **and covering at least 30% of `inner`'s own rendered area**
+    /// (Task #84 — see `findEffectiveBackground`'s own inline comment for
+    /// the real-device case this guards against: a small colored CTA
+    /// button being the *only* element with any background at all,
+    /// trivially "winning" as the largest candidate despite covering a
+    /// sliver of the message). A message with zero color declarations
+    /// anywhere (today's regression case) never finds an opaque candidate
+    /// at any of the three tiers — this file's own reset already sets
+    /// `background: transparent` on `html, body`, and nothing else in the
+    /// document overrides it — so `findEffectiveBackground` returns `null`
+    /// and `decideDarkInversion` leaves `.otegami-invert-for-dark` off
     /// (the safe default for "couldn't determine").
     ///
     /// Only when an opaque background *is* found and its WCAG relative
@@ -1721,6 +1726,30 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
           if (!color) { continue; }
           var area = el.offsetWidth * el.offsetHeight;
           if (area > bestArea) { bestArea = area; best = color; }
+        }
+        // Task #84 (real-device report: a Google Calendar invite's HTML —
+        // no `body`/wrapper background at all, just a small blue "Google
+        // Meet に参加する" CTA button — rendered as washed-out gray-on-black
+        // in dark mode instead of getting either remedy). Root cause: that
+        // button was the *only* element in the whole document with any
+        // background-color at all, so it trivially "won" the loop above as
+        // the largest (only) candidate — `findEffectiveBackground` returned
+        // its color, `decideDarkInversion` treated that as "the message's
+        // real canvas color", and since a button's blue isn't `> 0.5`
+        // luminance, concluded "already fine in dark mode" without ever
+        // reaching the text-luminance fallback (this function's own doc
+        // comment, `representativeTextLuminance`) that would have caught
+        // the actually-dark, actually-unreadable gray label text. A CTA
+        // button covering a sliver of the message isn't a credible stand-in
+        // for its overall page background the way a `body`-level color or a
+        // full-width "card" `<div>` is — requiring the candidate to cover a
+        // real share of the rendered content (30% of `inner`'s own area)
+        // before trusting it fixes this without touching the `body`/wrapper
+        // tiers above (those are explicit, unambiguous page-level
+        // declarations regardless of size).
+        if (best && inner.offsetWidth > 0 && inner.offsetHeight > 0) {
+          var innerArea = inner.offsetWidth * inner.offsetHeight;
+          if (bestArea < innerArea * 0.3) { return null; }
         }
         return best;
       }

@@ -1,0 +1,98 @@
+From: Kosuke Otani <organizer2@otegami.test>
+To: test1@otegami.test
+Subject: Invitation: 週次同期 (Weekly Sync) @ Mon Aug 3, 2026 3pm - 4pm (JST)
+Message-ID: <seed-0037@otegami.test>
+Date: Mon, 27 Jul 2026 09:05:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="otegami-nested-invite-boundary"
+
+--otegami-nested-invite-boundary
+Content-Type: multipart/alternative; boundary="otegami-nested-invite-alt-boundary"
+
+--otegami-nested-invite-alt-boundary
+Content-Type: text/plain; charset="UTF-8"; format=flowed
+Content-Transfer-Encoding: 8bit
+
+週次同期 (Weekly Sync)
+
+会議のリンク: meet.otegami.test/abc-defg-hij
+
+日時: 2026年8月3日(月) 15:00 - 16:00 (日本標準時)
+
+ゲスト
+Kosuke Otani - 主催者
+Test One
+Guest Two
+
+このメールへの返信、またはアプリの「承諾」「辞退」「未定」ボタンで
+出欠をお知らせください。
+
+--otegami-nested-invite-alt-boundary
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: 8bit
+
+<html><body style="font-family:Roboto,Arial,sans-serif;">
+<table role="presentation" cellpadding="0" cellspacing="0" style="background-color:#1a73e8; border-radius:4px;">
+<tr><td style="padding:12px 24px;"><a href="https://meet.otegami.test/abc-defg-hij" style="color:#ffffff; font-size:14px; font-weight:bold; text-decoration:none;">Google Meet に参加する</a></td></tr>
+</table>
+<p style="color:#5f6368; font-size:12px; margin:16px 0 2px 0;">会議のリンク</p>
+<p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">meet.otegami.test/abc-defg-hij</p>
+<p style="color:#5f6368; font-size:12px; margin:0 0 2px 0;">日時</p>
+<p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">2026/08/03 (月曜日) &middot; 15:00 &ndash; 16:00 (日本標準時)</p>
+<p style="color:#5f6368; font-size:12px; margin:0 0 2px 0;">ゲスト</p>
+<p style="color:#3c4043; font-size:14px; margin:0;">Kosuke Otani - 主催者</p>
+<p style="color:#3c4043; font-size:14px; margin:0;">Test One</p>
+<p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">Guest Two</p>
+<p style="color:#5f6368; font-size:12px; margin:0;">このメールへの返信、またはアプリの「承諾」「辞退」「未定」ボタンで出欠をお知らせください。</p>
+</body></html>
+
+--otegami-nested-invite-alt-boundary
+Content-Type: text/calendar; charset="UTF-8"; method=REQUEST
+Content-Transfer-Encoding: 7bit
+
+BEGIN:VCALENDAR
+PRODID:-//Google Inc//Google Calendar 70.9054//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:REQUEST
+BEGIN:VEVENT
+DTSTART:20260803T060000Z
+DTEND:20260803T070000Z
+DTSTAMP:20260728T000000Z
+ORGANIZER;CN=Kosuke Otani:mailto:organizer2@otegami.test
+UID:seed-0037-event@otegami.test
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Test One:mailto:test1@otegami.test
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Guest Two:mailto:guest2@otegami.test
+CREATED:20260728T000000Z
+DESCRIPTION:定例の週次同期MTGです。
+LAST-MODIFIED:20260728T000000Z
+LOCATION:meet.otegami.test/abc-defg-hij
+SEQUENCE:0
+STATUS:CONFIRMED
+SUMMARY:週次同期 (Weekly Sync)
+TRANSP:OPAQUE
+END:VEVENT
+END:VCALENDAR
+
+--otegami-nested-invite-alt-boundary--
+--otegami-nested-invite-boundary
+Content-Type: application/ics; name="invite.ics"
+Content-Disposition: attachment; filename="invite.ics"
+Content-Transfer-Encoding: base64
+
+QkVHSU46VkNBTEVOREFSDQpQUk9ESUQ6LS8vR29vZ2xlIEluYy8vR29vZ2xlIENhbGVuZGFyIDcw
+LjkwNTQvL0VODQpWRVJTSU9OOjIuMA0KQ0FMU0NBTEU6R1JFR09SSUFODQpNRVRIT0Q6UkVRVUVT
+VA0KQkVHSU46VkVWRU5UDQpEVFNUQVJUOjIwMjYwODAzVDA2MDAwMFoNCkRURU5EOjIwMjYwODAz
+VDA3MDAwMFoNCkRUU1RBTVA6MjAyNjA3MjhUMDAwMDAwWg0KT1JHQU5JWkVSO0NOPUtvc3VrZSBP
+dGFuaTptYWlsdG86b3JnYW5pemVyMkBvdGVnYW1pLnRlc3QNClVJRDpzZWVkLTAwMzctZXZlbnRA
+b3RlZ2FtaS50ZXN0DQpBVFRFTkRFRTtDVVRZUEU9SU5ESVZJRFVBTDtST0xFPVJFUS1QQVJUSUNJ
+UEFOVDtQQVJUU1RBVD1ORUVEUy1BQ1RJT047UlNWUD1UUlVFO0NOPVRlc3QgT25lOm1haWx0bzp0
+ZXN0MUBvdGVnYW1pLnRlc3QNCkFUVEVOREVFO0NVVFlQRT1JTkRJVklEVUFMO1JPTEU9UkVRLVBB
+UlRJQ0lQQU5UO1BBUlRTVEFUPU5FRURTLUFDVElPTjtSU1ZQPVRSVUU7Q049R3Vlc3QgVHdvOm1h
+aWx0bzpndWVzdDJAb3RlZ2FtaS50ZXN0DQpDUkVBVEVEOjIwMjYwNzI4VDAwMDAwMFoNCkRFU0NS
+SVBUSU9OOuWumuS+i+OBrumAseasoeWQjOacn01UR+OBp+OBmeOAgg0KTEFTVC1NT0RJRklFRDoy
+MDI2MDcyOFQwMDAwMDBaDQpMT0NBVElPTjptZWV0Lm90ZWdhbWkudGVzdC9hYmMtZGVmZy1oaWoN
+ClNFUVVFTkNFOjANClNUQVRVUzpDT05GSVJNRUQNClNVTU1BUlk66YCx5qyh5ZCM5pyfIChXZWVr
+bHkgU3luYykNClRSQU5TUDpPUEFRVUUNCkVORDpWRVZFTlQNCkVORDpWQ0FMRU5EQVINCg==
+
+--otegami-nested-invite-boundary--
