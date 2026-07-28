@@ -150,4 +150,15 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/31-security-notice-dark-mode.em
 # ケース (docs/design-system.md の Task #51 節参照)。
 seed_message "test1@otegami.test" "$FIXTURES_DIR/32-plain-html-no-colors.eml"
 
+# Task #56 検証用: 実機報告 (TestFlight風の通知メールで、アプリアイコン
+# 画像が画面幅いっぱいに引き伸ばされる/背景色を指定しないまま文字色だけ
+# #444 系で明示指定していてダークモードで暗地に暗文字になる/本文が
+# 途中で切れる/要約・翻訳フローティングボタンが本文に被る、という4点が
+# 同時に発生) を再現する構造 — 背景色なし・#444 濃色文字を明示指定、
+# 中央寄せの cid: 画像 (`width`属性 + `style="width:100%;
+# max-width:120px;"`という業界標準の「レスポンシブだが上限あり」画像
+# 手法、Apple/主要ESPのテンプレートで頻出)、リンク数本、複数段落
+# (docs/design-system.md の Task #56 節参照)。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/33-beta-testing-notice.eml"
+
 echo "==> done"

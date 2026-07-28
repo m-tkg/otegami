@@ -85,6 +85,18 @@ struct MailScreenView: View {
         } content: {
             mailNavigationStack
         }
+        // Task #56 — see `AppEnvironment.uitestDirectOpenThreadId`'s doc
+        // comment. `.task` (not `.onAppear`) so this doesn't fight
+        // `@Observable`'s own dispatch timing; runs once per this view's
+        // lifetime, which is exactly "once per app launch" since this view
+        // is never torn down and recreated while the app is running. A
+        // no-op (`environment.uitestDirectOpenThreadId == nil`) on every
+        // real launch.
+        .task {
+            if let threadId = environment.uitestDirectOpenThreadId {
+                selectedThreadId = threadId
+            }
+        }
     }
 
     private var mailNavigationStack: some View {

@@ -29,6 +29,14 @@ final class AppEnvironment {
     let database: AppDatabase
     let syncCoordinator: SyncCoordinator
     let credentialStore: KeychainCredentialStore
+    /// Task #56 — see `OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`'s doc
+    /// comment (inside the `OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE` block
+    /// below). Non-nil only when that env var was set at launch; `nil` in
+    /// every real launch. `MailScreenView`'s matching `.task` reads this
+    /// once and pushes straight to that thread — the "UITest の直接遷移
+    /// 経路" fallback for when this simulator/toolchain's `MessageListRow`
+    /// tap doesn't register.
+    var uitestDirectOpenThreadId: Int64? = nil
     /// C6/C7 送信キャンセル — see `PendingSendCoordinator`'s doc comment.
     let pendingSendCoordinator = PendingSendCoordinator()
     /// アバター強化バッチ「Google プロフィール写真」— see `GmailAccessTokenBridge`'s
@@ -511,6 +519,12 @@ final class AppEnvironment {
                 imapUsername: fakeAccountEmail,
                 sortOrder: 1_000
             )
+            // Declared here, *outside* the `dbWriter.write` closure below —
+            // see that closure's `capturedDirectOpenThreadId` comment for
+            // why the assignment to `self.uitestDirectOpenThreadId` has to
+            // happen out here too, as a plain statement after the closure
+            // returns, not from inside it.
+            var capturedDirectOpenThreadId: Int64?
             try? database.dbWriter.write { db in
                 // Task #51: `OtegamiSecurityNoticeDarkModeUITests` now has
                 // three test methods, each doing its own fresh `app.launch()`
@@ -552,6 +566,39 @@ final class AppEnvironment {
                 // actually pressed. Spacing them out removes the tie
                 // instead of relying on a tiebreak being stable.
                 let now = Date()
+                // Task #56: this simulator/toolchain's `MessageListRow` tap
+                // (`.highPriorityGesture`/`.simultaneousGesture` for swipe/
+                // long-press-select, per this file's own `docs/verify.md`
+                // notes) can fail to register at all — confirmed not specific
+                // to this batch's own fixture by reproducing the identical
+                // failure on an untouched, previously-passing test in the
+                // same suite. `OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`
+                // (0-based index into `uitestFakeHTMLMessages`) is the "UITest
+                // の直接遷移経路" fallback: threading each fake message right
+                // here (rather than waiting for `AccountSyncer`'s own
+                // self-heal backfill pass, which needs a foreground sync
+                // this offline fake account never gets) means
+                // `uitestDirectOpenThreadId` is ready the moment this method
+                // returns, so `MailScreenView`'s matching `.task` can push
+                // straight to `ThreadEntryView` without any XCUITest tap at
+                // all. `ThreadAssigner.assignThread` is safe to call twice
+                // for the same message (its own doc comment) — a real
+                // foreground sync backfill pass later finding these
+                // messages already threaded is a no-op.
+                let directOpenIndex = ProcessInfo.processInfo.environment["OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX"].flatMap(Int.init)
+                // `capturedDirectOpenThreadId` is captured by reference here
+                // (an ordinary local, declared *outside* this closure right
+                // above the `dbWriter.write` call) — not a `self.` property
+                // write. Writing to `self.uitestDirectOpenThreadId` directly
+                // from inside this closure (an earlier version of this
+                // change did exactly that) hits "'self' captured by a
+                // closure before all members were initialized": this
+                // closure runs well before every stored property declared
+                // below this point in `init()` has been assigned. The actual
+                // `self.uitestDirectOpenThreadId = capturedDirectOpenThreadId`
+                // assignment happens after this closure returns instead
+                // (below) — the same safe pattern `duplicateMerges` uses
+                // further up this file.
                 for (index, fixture) in Self.uitestFakeHTMLMessages.enumerated() {
                     let uid = Int64(index + 1)
                     var message = MessageRecord(
@@ -570,8 +617,12 @@ final class AppEnvironment {
                     try message.insert(db)
                     let body = MessageBodyRecord(messageId: message.id!, plainText: nil, html: fixture.html, fetchedAt: Date())
                     try body.insert(db)
+                    if index == directOpenIndex {
+                        capturedDirectOpenThreadId = try? ThreadAssigner.assignThread(messageId: message.id!, accountId: fakeAccount.id, db: db)
+                    }
                 }
             }
+            self.uitestDirectOpenThreadId = capturedDirectOpenThreadId
         }
 
         self.syncCoordinator = SyncCoordinator(
@@ -1696,11 +1747,11 @@ final class AppEnvironment {
     /// avatar images the real `.eml` fixture loads via `cid:`.
     private static let uitestFakeHTMLMessagePlaceholderImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMGjRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg=="
 
-    /// Task #51: one entry per dark-mode regression scenario
-    /// (`docs/design-system.md`'s Task #51 節), inserted as three separate
-    /// seeded messages so `OtegamiSecurityNoticeDarkModeUITests` can open
-    /// and screenshot all three in one run instead of needing three
-    /// separate env-var-gated code paths:
+    /// Task #51/#56: one entry per dark-mode/HTML-rendering regression
+    /// scenario (`docs/design-system.md`'s Task #51/#56 節), inserted as
+    /// separate seeded messages so `OtegamiSecurityNoticeDarkModeUITests`
+    /// can open and screenshot all of them in one run instead of needing
+    /// one separate env-var-gated code path per case:
     /// - `securityNotice` (case b): explicit white background + dark text,
     ///   no self-declared dark support — the *original* Task #45 fixture;
     ///   still needs the invert to stay readable in dark mode.
@@ -1714,6 +1765,13 @@ final class AppEnvironment {
     ///   consideration entirely regardless of what the JS measurement would
     ///   have found — proves the "mail already handles its own dark mode"
     ///   gate still wins over the newer measured-inversion logic.
+    /// - `betaTestingNotice` (Task #56): no background at all *and* an
+    ///   explicit dark text color (`#444444`) — the case neither `b` nor
+    ///   `a` above covers (background genuinely unresolved, but unlike `a`
+    ///   the text isn't relying on `CanvasText`). Also exercises the
+    ///   "responsive but capped" image technique (`width` attribute +
+    ///   `style="width:100%; max-width:120px;"`) that the image-enlargement
+    ///   fix targets.
     fileprivate struct UITestFakeHTMLMessage {
         let subject: String
         let snippet: String
@@ -1735,6 +1793,11 @@ final class AppEnvironment {
             subject: "自前ダーク対応済みのお知らせ (UITest)",
             snippet: "このメールは prefers-color-scheme で自前のダークモード対応を宣言しています。",
             html: uitestFakeHTMLMessageBodySelfDarkAware
+        ),
+        UITestFakeHTMLMessage(
+            subject: "AppSample 2.1 (45) is ready to test on iOS. (UITest)",
+            snippet: "AppSample 2.1 (45) is ready to test on iOS.",
+            html: uitestFakeHTMLMessageBodyBetaTestingNotice
         )
     ]
 
@@ -1830,6 +1893,47 @@ final class AppEnvironment {
     <div class="card">
       <p>このメールは prefers-color-scheme で自前のダークモード対応を宣言しています。</p>
       <p>otegami はこのメールに対して「反転」処理を一切適用しません — ライト・ダークどちらの外観でも、この HTML 自身が指定した配色のまま表示されるはずです。</p>
+    </div>
+    </body>
+    </html>
+    """
+
+    /// Task #56 (実機フィードバック: TestFlight通知メールで「1. 画像の
+    /// 巨大化」「2. 背景なし+濃色文字が読めない」「3. 高さ切れ」「4. 要約/
+    /// 翻訳フローティングボタンが本文に被る」の4点が同時発生) — 見出しの
+    /// doc comment参照。`dev/mailstack/seed/fixtures/
+    /// 33-beta-testing-notice.eml`と同内容 (cid: 画像をこのファイルの
+    /// data: URI プレースホルダに置き換えただけ) — 手で同期を保つ理由は
+    /// `uitestFakeHTMLMessageBodySecurityNotice`のdoc comment参照。
+    /// 背景色を一切指定せず (1で使う`autoAdjustColorsInDarkMode`の
+    /// 「背景が解決しない」経路を踏む)、`color:#444444`を明示指定
+    /// (CanvasText由来ではない「著者が明示した暗い文字色」であることが
+    /// この再現の肝 — 32番フィクスチャの retention と区別する実測ロジック
+    /// の対象)、画像は `width`属性 + `style="width:100%;
+    /// max-width:120px;"`という「レスポンシブだが上限あり」手法 (Apple/
+    /// 主要ESPのテンプレートで頻出、これが無条件`max-width:100%
+    /// !important`に上限を踏み潰されて拡大していた実機バグの再現条件)、
+    /// リンク数本、複数段落 — 罫線こそ持たないが31番同様に段落が複数
+    /// あるぶん、高さ計測 (3) の回帰確認にも使える。
+    fileprivate static let uitestFakeHTMLMessageBodyBetaTestingNotice = """
+    <!doctype html>
+    <html>
+    <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="viewport" content="width=device-width">
+    <title>AppSample 2.1 (45) is ready to test on iOS.</title>
+    </head>
+    <body style="margin:0; padding:0; font-family: -apple-system, Helvetica, Arial, sans-serif; color:#444444;">
+    <div style="max-width:480px; margin:0 auto; padding:24px;">
+      <p style="color:#444444; font-size:15px; line-height:22px; margin:0 0 24px 0;">AppSample 2.1 (45) is ready to test on iOS.</p>
+      <div style="text-align:center; margin:0 0 24px 0;">
+        <img src="\(uitestFakeHTMLMessagePlaceholderImage)" width="120" height="120" alt="AppSample" style="width:100%; max-width:120px; height:auto; display:block; margin:0 auto; border-radius:22px;">
+      </div>
+      <p style="color:#444444; font-size:16px; line-height:24px; text-align:center; margin:0 0 24px 0;">AppSample 2.1 (45) is ready to test on iOS.</p>
+      <p style="color:#444444; font-size:14px; line-height:20px; margin:0 0 16px 0;">To test this app, open <a href="https://beta.otegami.test/link/">Otegami Beta</a> on your iOS device using iOS 26.0 or later and install the update.</p>
+      <p style="color:#444444; font-size:14px; line-height:20px; margin:0 0 16px 0;">You can stop testing and manage notifications in the <a href="https://beta.otegami.test/app">Otegami Beta app</a>.</p>
+      <p style="color:#444444; font-size:14px; line-height:20px; margin:0 0 16px 0;">To be removed from this developer's list of potential testers, <a href="https://beta.otegami.test/contact">contact the developer</a>.</p>
+      <p style="color:#444444; font-size:12px; line-height:18px; margin:24px 0 0 0;">To learn more about installation, testing, sending feedback, supported OS versions and the use of your data, visit <a href="https://beta.otegami.test/">beta.otegami.test</a>.</p>
     </div>
     </body>
     </html>

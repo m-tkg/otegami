@@ -1,0 +1,44 @@
+From: "Otegami Beta Testing" <beta-notify@otegami.test>
+To: test1@otegami.test
+Subject: AppSample 2.1 (45) is ready to test on iOS.
+Message-ID: <seed-0033@otegami.test>
+Date: Tue, 28 Jul 2026 02:12:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="otegami-boundary-33"
+
+--otegami-boundary-33
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<!doctype html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width">
+<title>AppSample 2.1 (45) is ready to test on iOS.</title>
+</head>
+<body style="margin:0; padding:0; font-family: -apple-system, Helvetica, Arial, sans-serif; color:#444444;">
+<div style="max-width:480px; margin:0 auto; padding:24px;">
+  <p style="color:#444444; font-size:15px; line-height:22px; margin:0 0 24px 0;">AppSample 2.1 (45) is ready to test on iOS.</p>
+  <div style="text-align:center; margin:0 0 24px 0;">
+    <img src="cid:otegami-beta-app-icon@otegami.test" width="120" height="120" alt="AppSample" style="width:100%; max-width:120px; height:auto; display:block; margin:0 auto; border-radius:22px;">
+  </div>
+  <p style="color:#444444; font-size:16px; line-height:24px; text-align:center; margin:0 0 24px 0;">AppSample 2.1 (45) is ready to test on iOS.</p>
+  <p style="color:#444444; font-size:14px; line-height:20px; margin:0 0 16px 0;">To test this app, open <a href="https://beta.otegami.test/link/">Otegami Beta</a> on your iOS device using iOS 26.0 or later and install the update.</p>
+  <p style="color:#444444; font-size:14px; line-height:20px; margin:0 0 16px 0;">You can stop testing and manage notifications in the <a href="https://beta.otegami.test/app">Otegami Beta app</a>.</p>
+  <p style="color:#444444; font-size:14px; line-height:20px; margin:0 0 16px 0;">To be removed from this developer's list of potential testers, <a href="https://beta.otegami.test/contact">contact the developer</a>.</p>
+  <p style="color:#444444; font-size:12px; line-height:18px; margin:24px 0 0 0;">To learn more about installation, testing, sending feedback, supported OS versions and the use of your data, visit <a href="https://beta.otegami.test/">beta.otegami.test</a>.</p>
+</div>
+</body>
+</html>
+
+--otegami-boundary-33
+Content-Type: image/png; name="app-icon.png"
+Content-Transfer-Encoding: base64
+Content-ID: <otegami-beta-app-icon@otegami.test>
+Content-Disposition: inline; filename="app-icon.png"
+
+iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMG
+jRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg==
+
+--otegami-boundary-33--

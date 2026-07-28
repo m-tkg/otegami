@@ -17,6 +17,14 @@ import XCTest
 ///    判定できた場合だけ反転するよう修正 — このファイルはその3ケースを
 ///    それぞれ開いてスクリーンショットする。
 ///
+/// Task #56 (TestFlight風の通知メールの実機フィードバック、4点セット):
+/// 4つ目のテストメソッド (`testBetaTestingNoticeRendersFullyWithoutOverlap`)
+/// はこの3ケースとは別枠 — 画像の巨大化禁止 (`img`向けCSSの`:not()`
+/// スコープ修正)、背景なし+濃色文字の可読化 (`decideDarkInversion`の
+/// 「背景が解決しない」分岐拡張)、高さ切れの再確認、要約/翻訳フローティング
+/// ボタンの本文被り解消 (`HTMLMessageView.bottomContentInset`) の4点を
+/// まとめて検証する。`docs/design-system.md`のTask #56節に詳細。
+///
 /// Drives `OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE` (`AppEnvironment.init()`)
 /// rather than a real Dovecot account added through the account-setup UI —
 /// this simulator/toolchain's account-setup flow has been unreliable
@@ -26,9 +34,9 @@ import XCTest
 /// direct local GRDB insert instead, bypassing IMAP entirely — same escape
 /// hatch `OtegamiAvatarDiagnosticsUITests` already established for
 /// `OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT`. `AppEnvironment
-/// .uitestFakeHTMLMessages` now seeds three messages (see that array's doc
-/// comment) mirroring the three regression cases above — this test opens
-/// each in turn.
+/// .uitestFakeHTMLMessages` now seeds four messages (see that array's doc
+/// comment) mirroring the regression cases above — this test opens each in
+/// turn.
 ///
 /// **既知の環境問題 (Task #51 のスコープ外)**: この検証中に、
 /// `messageList.list` の行を XCUITest から実際にタップしても本文詳細へ
@@ -122,6 +130,67 @@ final class OtegamiSecurityNoticeDarkModeUITests: XCTestCase {
         assertBodyContains(text: "prefers-color-scheme で自前のダークモード対応を宣言しています", in: app)
 
         screenshotCurrentScreen(named: "self-dark-aware-message", in: app)
+    }
+
+    /// Task #56 検証用 (実機フィードバック: TestFlight風の通知メールで
+    /// 「1. 画像の巨大化」「2. 背景なし+濃色文字が読めない」「3. 高さ切れ」
+    /// 「4. 要約/翻訳フローティングボタンが本文に被る」の4点が同時発生)。
+    /// このテスト自身が機械的に確認できるのは (a) 罫線を持たない代わりに
+    /// 複数段落あるぶん本文が最後の段落まで欠けずに描画されていること
+    /// (3の直接の回帰シグナル)、(b) `assertBodyContains`が拾える最後の
+    /// フッター行の存在 — 1 (画像サイズ)・2 (文字色反転)・4 (ボタン被り)
+    /// はいずれもアクセシビリティツリーだけでは判定できない見た目の問題
+    /// なので、スクリーンショットの目視確認に委ねる (このファイルの他の
+    /// テストメソッドと同じパターン)。
+    func testBetaTestingNoticeRendersFullyWithoutOverlap() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        app.launchEnvironment["OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE"] = "1"
+        // Task #56: この4件セットの検証を書いている最中、この既存ファイルの
+        // 他3メソッド (このコミット以前から存在し、このバッチの変更を一切
+        // 受けていない) でも `messageList.list` の行タップが同じように
+        // `htmlWebView never appeared` で失敗することを確認した — この
+        // シミュレータ/ツールチェーン固有の既知の環境問題 (このファイル冒頭
+        // のdoc comment) であって、Task #56 のどの変更が原因でもない。
+        // `AppEnvironment.uitestDirectOpenThreadId`
+        // (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`) の直接遷移経路で
+        // タップそのものを迂回する — 3 (betaTestingNotice は
+        // `uitestFakeHTMLMessages`の0始まりインデックスで3番目)。
+        app.launchEnvironment["OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX"] = "3"
+        app.launch()
+
+        // Task #56: `openMessage(subject:in:)` (the other 3 tests in this
+        // file) already calls `dismissContactsPermissionPromptIfNeeded`
+        // before every row-press attempt — this test skips `openMessage`
+        // entirely (the direct-open path above), so it has to dismiss
+        // system permission prompts itself instead. Confirmed necessary on
+        // a freshly-erased/uninstalled simulator install, and confirmed
+        // *not* reliably resolved by a single upfront pass of each: the
+        // notifications prompt (`BadgeCenter.requestAuthorizationIfNeeded()`)
+        // can fire noticeably later than the contacts one (triggered by
+        // avatar resolution once the seeded message renders), so either can
+        // still be sitting on screen — starving every subsequent
+        // `waitForExistence` poll — after a single early call to each
+        // already returned. Looping both a few times, spaced out, catches
+        // whichever shows up whenever it shows up without needing to know
+        // the exact order.
+        for _ in 0..<4 {
+            allowNotificationPermissionIfNeeded(timeout: 2)
+            dismissContactsPermissionPromptIfNeeded(timeout: 2)
+        }
+
+        XCTAssertTrue(waitForMessageDetailToAppear(in: app, timeout: 20), "Expected the Task #56 direct-open path to land on the message detail view (htmlWebView never appeared)")
+
+        // 冒頭 — 修正前のバグ品でもここまでは表示される。
+        assertBodyContains(text: "AppSample 2.1", in: app)
+        // 中盤の段落群 — 高さ計測が画像読み込み前に確定してしまう不具合
+        // (3) が再発した場合、ここから下が消える。
+        assertBodyContains(text: "Otegami Beta app", in: app)
+        assertBodyContains(text: "contact the developer", in: app)
+        // 末尾のフッター行 — 本文全体の最後まで欠けていないことの確認。
+        assertBodyContains(text: "beta.otegami.test", in: app)
+
+        screenshotCurrentScreen(named: "beta-testing-notice", in: app)
     }
 
     /// WKWebView がレイアウト/ペイント (fit-to-width の画像待ち・Task #51
