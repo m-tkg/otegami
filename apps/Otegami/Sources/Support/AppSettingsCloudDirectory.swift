@@ -69,14 +69,17 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
 
     /// Every synced `String`-valued setting (a `RawRepresentable` enum's
     /// `rawValue`, or `MessageToolbarSettingsStore`/`FolderCategoryOrderStore`'s
-    /// comma-joined raw-string order lists), paired with its own store's
-    /// compiled-in default rendered the same way.
+    /// comma-joined raw-string order lists — Task #100 extended
+    /// `MessageToolbarSettingsStore`'s to also carry a per-item visibility
+    /// flag, same key, `MessageToolbarSettingsStore`'s doc comment has the
+    /// back-compat details), paired with its own store's compiled-in
+    /// default rendered the same way.
     private static let stringDefaults: [String: String] = [
         SwipeActionSettingsStore.leadingShortActionKey: SwipeActionSettingsStore.defaultLeadingShort.rawValue,
         SwipeActionSettingsStore.leadingLongActionKey: SwipeActionSettingsStore.defaultLeadingLong.rawValue,
         SwipeActionSettingsStore.trailingShortActionKey: SwipeActionSettingsStore.defaultTrailingShort.rawValue,
         SwipeActionSettingsStore.trailingLongActionKey: SwipeActionSettingsStore.defaultTrailingLong.rawValue,
-        MessageToolbarSettingsStore.orderKey: MessageToolbarSettingsStore.defaultOrder.map(\.rawValue).joined(separator: ","),
+        MessageToolbarSettingsStore.orderKey: MessageToolbarSettingsStore.encodedRawValue(for: MessageToolbarSettingsStore.defaultItems),
         FolderCategoryOrderStore.key: FolderCategoryOrderStore.defaultOrder.map(\.rawValue).joined(separator: ",")
     ]
 
