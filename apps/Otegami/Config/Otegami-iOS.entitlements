@@ -29,14 +29,18 @@
 	<!--
 	Required for UIApplication.registerForRemoteNotifications() to
 	actually obtain a real device token on a physical device (moot on the
-	simulator — see PushTokenCenter.swift's doc comment). "development"
-	routes to APNs' sandbox environment, matching
-	RegisterDeviceRequest.Environment.sandbox, which is what
-	PushNotificationSettingsView sends. A release/TestFlight/App Store
-	build talking to a relay's production APNs environment would need
-	this switched to "production" (and the app code updated to send
-	.production accordingly) — out of scope while this repo has no
-	Apple Developer Program distribution build at all yet.
+	simulator — see PushTokenCenter.swift's doc comment). This static
+	"development" value is only ever meaningful for an unsigned/
+	locally-signed build — for a real Development/Ad Hoc/Distribution
+	provisioning profile, Xcode's automatic signing overwrites this key
+	at sign time to whatever the assigned profile actually grants (a
+	Distribution profile only ever grants "production"), which is why
+	this file staying "development" hasn't blocked archiving/signing
+	TestFlight builds. What environment gets *sent* to otegami-relay at
+	push-registration time is decided at runtime instead, by reading the
+	actual signed-in aps-environment out of the running binary's own
+	embedded provisioning profile — see
+	APNSEnvironmentDetector.detectedEnvironment(bundle:) (Task #57).
 	-->
 	<key>aps-environment</key>
 	<string>development</string>

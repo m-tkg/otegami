@@ -1476,6 +1476,7 @@ final class AppEnvironment {
         }
 
         let apnsToken = try await requestAPNsToken()
+        let apnsEnvironment = APNSEnvironmentDetector.detectedEnvironment()
 
         let deviceId: String
         let deviceSecret: String
@@ -1488,12 +1489,12 @@ final class AppEnvironment {
                 deviceId: existingId,
                 deviceSecret: existingSecret,
                 apnsToken: apnsToken,
-                environment: .sandbox
+                environment: apnsEnvironment
             )
             deviceId = existingId
             deviceSecret = existingSecret
         } else {
-            let response = try await pushRelayClient.registerDevice(baseURL: baseURL, apnsToken: apnsToken, environment: .sandbox)
+            let response = try await pushRelayClient.registerDevice(baseURL: baseURL, apnsToken: apnsToken, environment: apnsEnvironment)
             deviceId = response.deviceId
             deviceSecret = response.deviceSecret
             try pushSettings.setDeviceSecret(deviceSecret)
