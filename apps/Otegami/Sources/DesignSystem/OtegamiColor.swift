@@ -103,4 +103,24 @@ public enum OtegamiColor {
 
     /// Secondary/row-level divider — 1pt dashed, quieter than `divider`.
     public static let dividerSubtle = Color(light: 0xCCCCCC, dark: 0x2A363C)
+
+    // MARK: アバター画像の下地 (avatar image backdrop)
+
+    /// Task #87 (3): the chip `SenderAvatar` fills *behind an image* (Google
+    /// profile photo / Gravatar / BIMI-or-favicon company logo / a synced
+    /// contact photo) — never behind the initials fallback, which keeps
+    /// using `OtegamiAccountColor.color(for:override:)` as before. A
+    /// transparent PNG (most company logos) previously sat directly on
+    /// `SenderAvatar`'s existing account-color fill, so a dark logo mark
+    /// could disappear into a dark account color, and the transparent
+    /// margin around a non-circular logo read as an odd color-keyed halo
+    /// rather than a neutral mat. Deliberately a plain, desaturated dark
+    /// gray — distinct from every other token above, all of which lean
+    /// into this design system's pale-blue family — since the whole point
+    /// is a neutral backdrop that doesn't fight whatever color the logo
+    /// itself actually is. The dark-mode value is a step *lighter* than
+    /// `surface`/`background` (not the same near-black) so the chip still
+    /// reads as its own distinct shape against the app's dark paper rather
+    /// than blending into it.
+    public static let avatarImageBackdrop = Color(light: 0x4A4A4A, dark: 0x3A3F42)
 }

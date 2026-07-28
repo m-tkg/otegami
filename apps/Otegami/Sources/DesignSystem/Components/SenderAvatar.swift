@@ -71,11 +71,26 @@ public struct SenderAvatar: View {
     }
 
     public var body: some View {
-        Circle()
-            .fill(OtegamiAccountColor.color(for: accountId, override: labelColorKey))
+        // Decoded once per `body` evaluation and shared by the fill color
+        // and `avatarContent` below, rather than each reading the
+        // `platformImage` computed property (and so re-decoding
+        // `imageData`) independently.
+        let resolvedImage = platformImage
+        return Circle()
+            // Task #87 (3): a resolved image (Google 写真/Gravatar/BIMI・
+            // favicon/連絡先写真) sits on a neutral dark-gray chip
+            // (`OtegamiColor.avatarImageBackdrop`) instead of the account
+            // color — a transparent PNG logo's margin previously read as an
+            // odd color-keyed halo, and a dark logo mark could disappear
+            // into a dark account color. The initials fallback keeps the
+            // account color exactly as before (that's the one place this
+            // fill still doubles as the actual account-identity signal —
+            // see `OtegamiAccountColor.color(for:override:)`'s doc
+            // comment).
+            .fill(resolvedImage != nil ? OtegamiColor.avatarImageBackdrop : OtegamiAccountColor.color(for: accountId, override: labelColorKey))
             .frame(width: diameter, height: diameter)
             .overlay {
-                avatarContent
+                avatarContent(image: resolvedImage)
             }
             .accessibilityHidden(true)
             // `id: address`: a `SenderAvatar` instance is reused by SwiftUI
@@ -92,9 +107,9 @@ public struct SenderAvatar: View {
     }
 
     @ViewBuilder
-    private var avatarContent: some View {
-        if let platformImage {
-            platformImage
+    private func avatarContent(image: Image?) -> some View {
+        if let image {
+            image
                 .resizable()
                 .scaledToFill()
                 .frame(width: diameter, height: diameter)
