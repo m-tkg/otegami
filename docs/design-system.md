@@ -4571,3 +4571,88 @@ Plus/Max 系) のときだけ2カラム `NavigationSplitView` (左=一覧、右=
   こと、(3) 回転中に選択中のスレッドが本文ペインに表示されたまま
   切り替わること (一覧のスクロール位置は多少ずれても許容)、(4) iPhone
   Plus/Max系機種を横向きにしたときも同じ2ペインになること。
+
+## 検索画面再構成 (Task #86, Sparkハンドオフ)
+
+ユーザーがSparkの検索画面スクリーンショットを提示し、`SearchScreenView`
+(design-phase-3の1j、新画面構成 (2)「検索の移設と強化」) の見た目・構造
+をそれに合わせる形で再構成したバッチの記録。iOS のみ。検索そのものの
+挙動 (演算子 `from:`/`to:`/`cc:`/`subject:`、FTS、フィルタの判定ロジック)
+は不変 — 変わったのは画面の構成要素だけ。
+
+### 1. トップバー: システム`.searchable`から独自`TextField`へ
+
+`SearchTopBar` (角丸/カプセル型の`TextField` + 先頭の星ボタン + 右側の
+丸い閉じるボタン) が、design-phase-2以来使ってきたシステムの
+`.searchable`+`.toolbar`の組み合わせを置き換えた。理由: Sparkの参考画像
+はフィールドの中に星アイコンが同居する独自レイアウトで、システム検索
+バーの標準装飾ではこの形にできない。
+
+- **`OtegamiRadius`からの意図的な例外**: このアプリのデザインシステムは
+  「カードだけ角丸、他はフラット」を明言している
+  (`OtegamiRadius`のドキュメントコメント、実機フィードバック第2弾C)。
+  検索フィールドと閉じるボタンの2つだけ、`OtegamiRadius`に数値トークンを
+  足すのではなく`Capsule()`/`Circle()`シェイプを`SearchTopBar.swift`の
+  中に閉じたスコープで直接使う形にした — 詳細は`OtegamiBorder.swift`の
+  「検索画面再構成 (Task #86)」節のコメント参照。他のチップ/ボタン/
+  バッジがこれを理由に角丸化することは意図していない。
+- **UITestへの影響**: `app.searchFields` (`XCUIElementTypeSearchField`)
+  が`app.textFields["search.textField"]`に変わった。システムの「Clear
+  text」ボタン/キーボードの「Cancel」も無くなったため、
+  `SearchUITestHelpers.clearSearchQuery(in:)`はbackspaceキー送出に
+  作り直した。`search.closeButton`のidentifierは変えていない (丸い閉じる
+  ボタンがそのまま引き継ぐ)。
+
+### 2. 「履歴」「保存済み」タブ
+
+クエリが空のあいだ (`isActive == false`)、フィールド直下に`SearchTabRow`
+(下線付きの「履歴」/「保存済み」タブ) を表示する。
+
+- **履歴**: 既存の`SearchHistoryQuery`をそのまま流用。行の見た目を
+  プレーンな「アイコン+クエリ文字列」に変更 (`Label(entry.queryText,
+  systemImage:)`をやめ、`Image`+`Text(verbatim:)`の手組みにした——
+  `Label(_:systemImage:)`の第1引数が`LocalizedStringKey`であるため、
+  保存された検索文字列がメールアドレスそのものだと`AccountFilterChip
+  .label`のドキュメントコメントが記録した実機バグ (Markdown経由の自動
+  `mailto:`リンク化) と同じ経路を踏みかねない、という潜在バグをこの
+  バッチで併せて直した)。
+- **保存済み (新機能)**: フィールド先頭の星をタップすると、現在の
+  クエリ+フィルタ+アカウント絞りを名前を付けずに保存する
+  (`SavedSearchQuery`/`SavedSearchRecord`, v29 migration)。もう一度
+  同じ組み合わせで星をタップすると保存を解除する (トグル、`recent()`で
+  読める分をそのまま「保存済みか」の判定にも使い回すので追加のDB往復は
+  無い——詳細は`SearchScreenView.isCurrentQuerySaved`のドキュメント
+  コメント参照)。保存件数の上限は`SavedSearchQuery.maxEntries`(50) —
+  上限に達した状態で新規保存すると、作成日時が一番古い1件を追い出す。
+  行タップで一発再実行、スワイプで個別削除。**GRDB vs. `@AppStorage`
+  JSONの選択**: 既存の`SearchHistoryQuery`/`SearchHistoryRecord`と
+  ほぼ同じ形 (テーブル1つ、`Record`/`Query`のペア) をそのまま複製する
+  方が、`@AppStorage`側で配列のJSONエンコード/デコード・50件の手動
+  切り詰め・スキーマ変更時の移行を自前で書くより実装コストが低いと
+  判断し、GRDBを選んだ。
+- **チップの表示条件の整理**: アカウント絞り込みチップ・フィルタチップ
+  (`SearchAccountFilterChipRow`/`SearchFilterChipRow`) は「入力中また
+  は結果表示時」(`isActive`) だけ表示し、タブ表示中 (空状態) は出さない
+  — Sparkの空状態がチップ無しだったことに合わせた。
+- **`search.list`は常に存在する**: 空状態 (履歴/保存済みタブ) でも
+  `List`自体は消さず、中身が0件のときは`ContentUnavailableView`を
+  `.overlay`で重ねるだけ (旧`resultsList`/`overlayContent`の「常に
+  `List`がある」流儀をそのまま踏襲、`search.list`を前提にした既存の
+  `waitForExistence`系UITestを壊さないため)。`Section`の
+  header/footer (「最近の検索」「履歴をすべて削除」等) は中身が0件でも
+  描画されてしまうため、空のときは`Section`ごと描画しないよう
+  `listContent`側でガードしている。
+
+### 3. 「英語」フィルタチップの廃止
+
+design-phase-3 (1j) で追加したフィルタチップの4択 (全部/添付/未読/英語)
+のうち、「英語」(`detectedLanguage == "en"`によるフィルタ) をユーザー
+要望で削除した — 添付/未読ほど頻繁に使う軸ではなく、翻訳機能側の言語
+判定 (`MessageView`の「英語で返信を下書き」等) と役割が紛らわしいという
+判断。`SearchFilterOption.english` case自体を削除し、
+`SearchFilterOption.persisted(rawValue:)`という後方互換の入口を新設した
+— `SavedSearchRecord.filter`(保存済み検索がフィルタを`String`のまま
+永続化する列) を読み戻すとき、現在の`allCases`に無い`rawValue`(廃止済み
+の`"english"`を含む) は安全側の`.all`にフォールバックする。関連する
+UITest (`OtegamiSearchFilterUITests.testEnglishFilterChipExcludesJapaneseOnlyMatches`)
+と対応する String Catalog エントリ (`"英語"`) も削除した。

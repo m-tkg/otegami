@@ -28,7 +28,7 @@ final class OtegamiDesignPhase3ScreenshotUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 3)
         // Dismiss the keyboard (submit via Return) before closing the
         // sheet — the keyboard fully covers the close button while up.
-        app.searchFields.firstMatch.typeText("\n")
+        app.textFields["search.textField"].typeText("\n")
         Thread.sleep(forTimeInterval: 3)
         closeSearchScreen(in: app)
 

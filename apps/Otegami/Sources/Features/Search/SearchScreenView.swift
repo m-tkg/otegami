@@ -2,27 +2,32 @@ import SwiftUI
 import OtegamiStore
 import SyncEngine
 
-/// iOS's 検索画面 (新画面構成 (2)): presented as a sheet from
+/// iOS's 検索画面 (検索画面再構成 Task #86): presented as a sheet from
 /// `MailScreenView`'s header search button, or from `ThreadDetailView`'s
 /// footer toolbar「検索」button (opened with `presetQuery` already filled in
-/// as `from:<差出人>` — "そのメールの from で絞り込まれた状態で開く"). Replaces
-/// design-phase-2's dedicated 検索タブ now that the bottom tab bar is gone
-/// (`docs/design-system.md`'s design-phase-2 record of the original M7→1a
-/// move is superseded by this one).
+/// as `from:<差出人>` — "そのメールの from で絞り込まれた状態で開く").
 ///
-/// Adds, on top of the design-phase-2/M7 baseline this evolved from:
-/// - **アカウントの絞り込み** (`SearchAccountFilterChipRow`, only shown with
-///   2+ accounts — same "redundant with only one" gate `showsAccountAccent`
-///   already uses elsewhere).
-/// - **検索演算子** (`from:`/`to:`/`cc:`/`subject:` — `SearchQuery.parse`
-///   does the actual interpretation; this view just types raw text through
-///   unchanged and lets that layer sort out operators vs. free text). The
-///   prompt/hint text below the search field is this operator syntax's
-///   discovery affordance (指示: "演算子の存在をユーザーが発見できるUI").
-/// - **検索履歴** (`SearchHistoryQuery`/`historyList`): the most recent
-///   queries, tap to re-run, swipe or "すべて削除" to remove. Shown only
-///   before a query becomes active (`isActive == false`) — once there's a
-///   real query, the results (or empty state) take over the same space.
+/// **Task #86 (Sparkハンドオフ)**: 前バッチ (新画面構成) の`.searchable`＋
+/// ナビゲーションバーの構成を、Sparkのスクリーンショットに合わせて総入れ
+/// 替えした——
+/// - **トップバー** (`SearchTopBar`): 角丸 (カプセル型) の`TextField`。先頭に
+///   「現在のクエリ+フィルタ+アカウント絞りを保存」の星、右に丸い閉じる
+///   ボタン (旧`search.closeButton`の役割をそのまま引き継ぐ)。システムの
+///   `.searchable`をやめたのは、Sparkの参考画像が「フィールドの中に星
+///   アイコンがある」独自レイアウトで、システム検索バーの装飾ではこの
+///   形にできないため。
+/// - **タブ「履歴」「保存済み」** (`SearchTabRow`): クエリが空のあいだだけ
+///   表示。履歴は既存の検索履歴 (`SearchHistoryQuery`) をそのまま流用、
+///   保存済みは今回の新機能 (`SavedSearchQuery`)。
+/// - **チップの表示条件**: アカウント絞り込み・フィルタチップは「入力中
+///   または結果表示時」(`isActive`) だけ表示し、タブ表示中は出さない —
+///   Sparkの空状態がチップ無しだったことに合わせた。
+///
+/// 検索そのもの (演算子・FTS・フィルタの挙動) は前バッチから不変 ——
+/// **検索演算子** `from:`/`to:`/`cc:`/`subject:` — `SearchQuery.parse(_:)`
+/// がトークンを演算子とフリーテキストに分割し、
+/// `SearchQuery.threadSummaries(parsed:scope:limit:db:)` が両者を
+/// `Set<Int64>` の積集合として組み合わせる (AND 条件)。
 ///
 /// Reuses `ThreadRowView` (the same 1d row `MessageListView`/
 /// `MessageListRow` render) so a search hit looks identical to the same
@@ -66,6 +71,12 @@ struct SearchScreenView: View {
     /// 新画面構成 (2): `nil` = 全アカウント横断。
     @State private var accountFilter: String?
     @State private var historyEntries: [SearchHistoryRecord] = []
+    /// Task #86: 保存済み検索の一覧 — 常に`SavedSearchQuery.maxEntries`以下
+    /// なので、丸ごとメモリに持って「現在の検索は保存済みか」の判定
+    /// (`isCurrentQuerySaved`) にもそのまま流用する (DB往復を増やさない)。
+    @State private var savedEntries: [SavedSearchRecord] = []
+    /// Task #86: クエリが空のあいだ表示するタブ。
+    @State private var selectedTab: SearchTab = .history
 
     private var isActive: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -109,29 +120,52 @@ struct SearchScreenView: View {
         return from.address.lowercased().contains(query)
     }
 
+    /// Task #86: 現在のクエリ+フィルタ+アカウント絞りが、既に`savedEntries`
+    /// のどれかと一致するか — 星の塗りつぶし状態はこれをそのまま反映する。
+    /// `savedEntries`はDB全体を常に丸ごと持っている (`SavedSearchQuery
+    /// .maxEntries`以下しか無い) ので、追加のDB往復無しに計算できる。
+    private var isCurrentQuerySaved: Bool {
+        guard isActive else { return false }
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return savedEntries.contains {
+            $0.queryText == trimmed && $0.filter == filter.rawValue && $0.accountId == accountFilter
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if environment.accounts.count > 1 {
-                    SearchAccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
-                }
+                SearchTopBar(
+                    searchText: $searchText,
+                    isSaved: isCurrentQuerySaved,
+                    isSaveEnabled: isActive,
+                    onToggleSaved: toggleSaved,
+                    onClose: { dismiss() }
+                )
                 if isActive {
+                    if environment.accounts.count > 1 {
+                        SearchAccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
+                    }
                     SearchFilterChipRow(selection: $filter)
+                } else {
+                    SearchTabRow(selection: $selectedTab)
                 }
-                resultsList
+                listArea
             }
             .background(OtegamiColor.background)
-            .navigationTitle("検索")
+            // Task #86: システム検索バー/ナビゲーションタイトルの代わりに
+            // `SearchTopBar`を使うので、この画面のナビゲーションバー自体は
+            // 隠す — 押し先の`ThreadEntryView`はこの画面と別のスコープなので
+            // 自身のバーは通常どおり表示される。`ToolbarPlacement
+            // .navigationBar`はmacOSには無い (この型自体はマルチプラット
+            // フォームターゲットの一部としてmacOS destinationでもコンパイル
+            // される — `SearchScreenView`をインスタンス化するのは
+            // `MailScreenView`の`#if os(iOS)`ブロックの中だけだが、この
+            // ファイル自体はどちらのプラットフォームでもビルドされる) ため
+            // `#if os(iOS)`で囲む。
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
             #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("閉じる") { dismiss() }
-                        .accessibilityIdentifier("search.closeButton")
-                }
-            }
-            .searchable(text: $searchText, prompt: "差出人・件名・本文 (from:/to:/subject: も使えます)")
             .onChange(of: searchText) { _, _ in scheduleSearch() }
             .onChange(of: accountFilter) { _, _ in scheduleSearch() }
             // 実機バグ報告「スレッド表示をオフにしてるのに、スレッドで表示
@@ -151,19 +185,54 @@ struct SearchScreenView: View {
             }
         }
         .tint(OtegamiColor.accent)
-        .task { await loadHistory() }
+        .task {
+            await loadHistory()
+            await loadSavedSearches()
+        }
         .onAppear {
             guard let presetQuery, searchText != presetQuery else { return }
             searchText = presetQuery
         }
     }
 
-    /// Split out of `body` (`docs/ci.md`'s type-check-timeout discipline —
-    /// two `Section`s each with their own `ForEach`, inline in the same
-    /// expression as the filter chip rows and `.searchable`'s modifier
-    /// chain, is exactly the shape that's bitten this app before).
-    private var resultsList: some View {
-        List {
+    /// この画面の唯一の`List` — `isActive`/`selectedTab`に応じて中身
+    /// (`listContent`) だけが差し替わり、`accessibilityIdentifier`は常に
+    /// `search.list`のまま (UITestの「検索画面が開けば`search.list`は必ず
+    /// 存在する」という前提を維持する — 空状態も`overlay`で重ねるだけで
+    /// `List`自体は消さない、旧`resultsList`/`overlayContent`と同じ流儀)。
+    /// Split out of `body` (`docs/ci.md`'s type-check-timeout discipline)。
+    private var listArea: some View {
+        List { listContent }
+            .accessibilityIdentifier("search.list")
+            .scrollContentBackground(.hidden)
+            .background(OtegamiColor.background)
+            .overlay { listOverlayContent }
+    }
+
+    /// `historySection`/`savedSection`は空のときは丸ごと描画しない (`if
+    /// !historyEntries.isEmpty { historySection }`) — `Section`の
+    /// header/footer ("最近の検索"「履歴をすべて削除」等) は中身の`ForEach`が
+    /// 0件でも描画されてしまうため、そのまま出すと`listOverlayContent`の
+    /// 空状態と二重表示になる。`resultsSections`が空のとき何も描画しない
+    /// (`if !peopleResults.isEmpty`/`if !mailResults.isEmpty`) のと同じ
+    /// 流儀。
+    @ViewBuilder
+    private var listContent: some View {
+        if isActive {
+            resultsSections
+        } else if selectedTab == .history {
+            if !historyEntries.isEmpty {
+                historySection
+            }
+        } else {
+            if !savedEntries.isEmpty {
+                savedSection
+            }
+        }
+    }
+
+    private var resultsSections: some View {
+        Group {
             if !peopleResults.isEmpty {
                 Section("人") {
                     ForEach(peopleResults) { summary in
@@ -179,72 +248,96 @@ struct SearchScreenView: View {
                 }
             }
         }
-        .accessibilityIdentifier("search.list")
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
-        .overlay { overlayContent }
+    }
+
+    private var historySection: some View {
+        Section {
+            ForEach(historyEntries) { entry in
+                historyRow(for: entry)
+            }
+            .onDelete(perform: deleteHistoryEntries)
+        } header: {
+            Text("最近の検索")
+        } footer: {
+            Button("履歴をすべて削除", role: .destructive) { clearHistory() }
+                .font(OtegamiFont.caption())
+                .accessibilityIdentifier("search.history.clearAll")
+        }
+    }
+
+    private var savedSection: some View {
+        Section {
+            ForEach(savedEntries) { entry in
+                savedRow(for: entry)
+            }
+            .onDelete(perform: deleteSavedEntries)
+        } header: {
+            Text("保存済みの検索")
+        }
     }
 
     /// Kept as an `.overlay` on top of (not a row *inside*) `search.list` —
     /// matching M7's original design — so `search.list.cells.count` stays a
     /// reliable "how many real result rows" signal for both the loading
-    /// state and the zero-results state, not just the search history list.
+    /// state and the zero-results state, not just the history/saved lists.
     @ViewBuilder
-    private var overlayContent: some View {
-        if !isActive {
-            historyOrPromptState
-        } else if isSearching {
-            ProgressView("検索中…")
-                .accessibilityIdentifier("search.loading")
-        } else if filteredResults.isEmpty {
-            ContentUnavailableView.search(text: searchText)
-                .accessibilityIdentifier("search.emptyState")
-        }
-    }
-
-    /// 新画面構成 (2)「検索履歴」— shown instead of the plain "メールを検索"
-    /// prompt state whenever there's at least one remembered query.
-    @ViewBuilder
-    private var historyOrPromptState: some View {
-        if historyEntries.isEmpty {
-            ContentUnavailableView(
-                "メールを検索",
-                systemImage: "magnifyingglass",
-                description: Text("差出人・件名・本文から、すべてのアカウントを横断して検索します。\n「from:」「to:」「cc:」「subject:」でヘッダを絞り込めます。")
-            )
-            .accessibilityIdentifier("search.promptState")
+    private var listOverlayContent: some View {
+        if isActive {
+            if isSearching {
+                ProgressView("検索中…")
+                    .accessibilityIdentifier("search.loading")
+            } else if filteredResults.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+                    .accessibilityIdentifier("search.emptyState")
+            }
+        } else if selectedTab == .history {
+            if historyEntries.isEmpty {
+                ContentUnavailableView(
+                    "検索履歴はありません",
+                    systemImage: "clock",
+                    description: Text("差出人・件名・本文から、すべてのアカウントを横断して検索します。\n「from:」「to:」「cc:」「subject:」でヘッダを絞り込めます。")
+                )
+                .accessibilityIdentifier("search.history.emptyState")
+            }
         } else {
-            historyList
-        }
-    }
-
-    private var historyList: some View {
-        List {
-            Section {
-                ForEach(historyEntries) { entry in
-                    historyRow(for: entry)
-                }
-                .onDelete(perform: deleteHistoryEntries)
-            } header: {
-                Text("最近の検索")
-            } footer: {
-                Button("履歴をすべて削除", role: .destructive) { clearHistory() }
-                    .font(OtegamiFont.caption())
-                    .accessibilityIdentifier("search.history.clearAll")
+            if savedEntries.isEmpty {
+                ContentUnavailableView(
+                    "保存した検索はありません",
+                    systemImage: "star",
+                    description: Text("検索フィールド左の星をタップすると、今の検索条件 (クエリ・絞り込み・アカウント) を名前を付けずに保存できます。")
+                )
+                .accessibilityIdentifier("search.saved.emptyState")
             }
         }
-        .accessibilityIdentifier("search.history.list")
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
     }
 
     private func historyRow(for entry: SearchHistoryRecord) -> some View {
         Button {
             searchText = entry.queryText
         } label: {
-            Label(entry.queryText, systemImage: "clock")
+            // `Label(entry.queryText, systemImage:)`にしない理由:
+            // `AccountFilterChip.label`のドキュメントコメント参照 —
+            // `Label(_:systemImage:)`の第1引数は`LocalizedStringKey`であり、
+            // 保存された検索文字列がメールアドレスそのものだと SwiftUI が
+            // Markdown 経由で自動的に`mailto:`リンク化してしまう実機バグの
+            // 経路を踏む。動的文字列は`Text(verbatim:)`で素通しする。
+            HStack(spacing: OtegamiSpacing.sm) {
+                Image(systemName: "clock")
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                Text(verbatim: entry.queryText)
+                    .foregroundStyle(OtegamiColor.ink)
+            }
         }
         .accessibilityIdentifier("search.history.row.\(entry.id ?? 0)")
+    }
+
+    private func savedRow(for entry: SavedSearchRecord) -> some View {
+        Button {
+            applySavedSearch(entry)
+        } label: {
+            SavedSearchRow(entry: entry, accountDisplayName: entry.accountId.flatMap { accountDisplayNames[$0] })
+        }
+        .accessibilityIdentifier("search.saved.row.\(entry.id ?? 0)")
     }
 
     /// 1d/design-phase-3: same "more than one account" gate as
@@ -406,6 +499,57 @@ struct SearchScreenView: View {
                 try SearchHistoryQuery.deleteAll(db: db)
             }
             await loadHistory()
+        }
+    }
+
+    // MARK: - Task #86: saved searches
+
+    private func loadSavedSearches() async {
+        savedEntries = (try? await environment.database.dbWriter.read { db in
+            try SavedSearchQuery.recent(db: db)
+        }) ?? []
+    }
+
+    /// 検索フィールド先頭の星タップ — 現在のクエリ+フィルタ+アカウント絞りが
+    /// 既に保存済みなら解除、未保存なら保存する (`SavedSearchQuery.toggle`
+    /// がそのままトグル)。クエリが空 (`isActive == false`) の間は
+    /// `SearchTopBar`側で無効化済みだが、念のためここでも同じガードを持つ。
+    private func toggleSaved() {
+        guard isActive else { return }
+        let query = searchText
+        let currentFilter = filter.rawValue
+        let currentAccount = accountFilter
+        Task {
+            do {
+                try await environment.database.dbWriter.write { db in
+                    try SavedSearchQuery.toggle(queryText: query, filter: currentFilter, accountId: currentAccount, db: db)
+                }
+                await loadSavedSearches()
+            } catch {
+                // ベストエフォート — `loadHistory`/`clearHistory`と同じ判断:
+                // 保存の失敗はこの画面の主機能 (検索そのもの) をブロック
+                // しない。
+            }
+        }
+    }
+
+    /// 保存済み検索の行タップ — クエリ・フィルタ・アカウント絞りを一括で
+    /// 再適用する。`searchText`を最後に設定するのは、それが`onChange`で
+    /// `scheduleSearch()`を起動する唯一のトリガーであり、その時点で
+    /// `filter`/`accountFilter`が既に新しい値になっている必要があるため。
+    private func applySavedSearch(_ entry: SavedSearchRecord) {
+        accountFilter = entry.accountId
+        filter = SearchFilterOption.persisted(rawValue: entry.filter)
+        searchText = entry.queryText
+    }
+
+    private func deleteSavedEntries(at offsets: IndexSet) {
+        let ids = offsets.compactMap { savedEntries[$0].id }
+        Task {
+            try? await environment.database.dbWriter.write { db in
+                for id in ids { try SavedSearchQuery.delete(id: id, db: db) }
+            }
+            await loadSavedSearches()
         }
     }
 }

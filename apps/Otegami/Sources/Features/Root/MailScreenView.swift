@@ -142,6 +142,19 @@ struct MailScreenView: View {
             if ProcessInfo.processInfo.arguments.contains("-uitestsOpenFolderMenuDirectly") {
                 isMenuOpen = true
             }
+            // 検索画面再構成 (Task #86): 同じ「タップ不要の直接遷移」パターン
+            // で`SearchScreenView`を`scripts/verify-screen.sh`から開けるように
+            // する — トップバー/タブ/保存済み検索の見た目確認用。
+            // `OTEGAMI_UITEST_SEARCH_PRESET_QUERY`(任意)を指定すると、既存の
+            // `presetQuery`経路 (`ThreadDetailView`の「検索」ツールバーボタン
+            // と同じ仕組み) でクエリ入力済みの「結果表示中」状態も、タップ
+            // 無しで直接screenshotできる。
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenSearchDirectly") {
+                if let preset = ProcessInfo.processInfo.environment["OTEGAMI_UITEST_SEARCH_PRESET_QUERY"], !preset.isEmpty {
+                    searchPresetQuery = preset
+                }
+                showingSearch = true
+            }
         }
     }
 

@@ -830,6 +830,26 @@ extension AppDatabase {
             }
         }
 
+        // v29 (検索画面再構成 Task #86: 検索画面の「保存済み」タブ): クエリ
+        // 文字列 + フィルタ (`SearchFilterOption.rawValue`) + アカウント絞り
+        // (`nil` = 全部) の組み合わせを、検索フィールドの星タップで明示的に
+        // 保存する (`SavedSearchQuery`/`SavedSearchRecord`)。`searchHistory`
+        // (v20、実行したクエリを自動記録) とは別テーブル — こちらは
+        // 「ユーザーが選んで残した」ものだけが入る。`queryText`に`UNIQUE`を
+        // 付けないのは v20 との意図的な違い: 同じクエリ文字列でもフィルタ/
+        // アカウントが異なれば別の保存として共存できる必要があるため
+        // (`SavedSearchQuery.toggle`のドキュメントコメント参照)。
+        migrator.registerMigration("v29") { db in
+            try db.create(table: "savedSearch") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("queryText", .text).notNull()
+                t.column("filter", .text).notNull()
+                t.column("accountId", .text)
+                t.column("createdAt", .datetime).notNull()
+            }
+            try db.create(index: "savedSearch_on_createdAt", on: "savedSearch", columns: ["createdAt"])
+        }
+
         return migrator
     }
 }

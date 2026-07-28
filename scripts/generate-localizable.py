@@ -106,14 +106,25 @@ translations = {
         "Searches sender, subject, and body across every account.\nUse “from:”, “to:”, “cc:”, or “subject:” to narrow by header.",
     "最近の検索": "Recent Searches",
     "履歴をすべて削除": "Clear All History",
-    "メールを検索": "Search Mail",
     "検索中…": "Searching…",
-    "差出人・件名・本文 (from:/to:/subject: も使えます)": "Sender, subject, body (from:/to:/subject: also work)",
     "全部": "All",
     "未読": "Unread",
-    "英語": "English",
     "すべて": "All",
     "このメールボックス": "This Mailbox",
+
+    # --- 検索画面再構成 (Task #86, Sparkハンドオフ): トップバー (角丸
+    # フィールド+星+丸い閉じるボタン)、「履歴」/「保存済み」タブ、保存済み
+    # 検索。「英語」フィルタチップはユーザー要望で廃止したため上の節から
+    # 削除済み (`SearchFilterOption`参照)。
+    "履歴": "History",
+    "保存済み": "Saved",
+    "検索履歴はありません": "No Search History",
+    "保存した検索はありません": "No Saved Searches",
+    "検索フィールド左の星をタップすると、今の検索条件 (クエリ・絞り込み・アカウント) を名前を付けずに保存できます。":
+        "Tap the star at the left of the search field to save the current query, filter, and account scope — unnamed.",
+    "保存済みの検索": "Saved Searches",
+    "この検索を保存": "Save This Search",
+    "この検索の保存を解除": "Remove This Saved Search",
 
     # --- ハンバーガーメニュー / メール画面 (MailScreenView / FolderListSheet) ---
     "アカウントがありません": "No Accounts",

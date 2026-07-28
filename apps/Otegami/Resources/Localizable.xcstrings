@@ -872,32 +872,12 @@
         }
       }
     },
-    "メールを検索": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Search Mail"
-          }
-        }
-      }
-    },
     "検索中…": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Searching…"
-          }
-        }
-      }
-    },
-    "差出人・件名・本文 (from:/to:/subject: も使えます)": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sender, subject, body (from:/to:/subject: also work)"
           }
         }
       }
@@ -918,16 +898,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Unread"
-          }
-        }
-      }
-    },
-    "英語": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "English"
           }
         }
       }
@@ -3448,6 +3418,86 @@
           "stringUnit": {
             "state": "translated",
             "value": "Delegated"
+          }
+        }
+      }
+    },
+    "履歴": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "History"
+          }
+        }
+      }
+    },
+    "保存済み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved"
+          }
+        }
+      }
+    },
+    "検索履歴はありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Search History"
+          }
+        }
+      }
+    },
+    "保存した検索はありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Saved Searches"
+          }
+        }
+      }
+    },
+    "検索フィールド左の星をタップすると、今の検索条件 (クエリ・絞り込み・アカウント) を名前を付けずに保存できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap the star at the left of the search field to save the current query, filter, and account scope — unnamed."
+          }
+        }
+      }
+    },
+    "保存済みの検索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved Searches"
+          }
+        }
+      }
+    },
+    "この検索を保存": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save This Search"
+          }
+        }
+      }
+    },
+    "この検索の保存を解除": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove This Saved Search"
           }
         }
       }

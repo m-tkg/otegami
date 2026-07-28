@@ -83,6 +83,18 @@
 #   account-edit                        Task #72: ↑からさらに1画面 (先頭
 #                                       アカウントの編集画面 — ラベル色の
 #                                       グリッドピッカーを確認)
+#   search                               Task #86 (検索画面再構成): 検索画面
+#                                       を空状態 (履歴タブ) で直接開く —
+#                                       トップバー (角丸フィールド+星+丸い
+#                                       閉じるボタン) と「履歴」「保存済み」
+#                                       タブの見た目確認用。
+#   search-active                       Task #86: ↑と同じ検索画面を、
+#                                       `OTEGAMI_UITEST_SEARCH_PRESET_QUERY`
+#                                       でクエリ入力済み (結果表示中) の状態
+#                                       にして開く — チップ列 (絞り込み/
+#                                       アカウント) と結果一覧の見た目確認用。
+#                                       `list`と同じfakeメッセージ (件名に
+#                                       "UITest"を含む) がヒットする。
 #
 # 上5つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜4番目
 # (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応) — 実体は
@@ -232,6 +244,24 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
     launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenFirstAccountEditDirectly")
     default_out="account-edit.png"
+    ;;
+  search)
+    # Task #86: 空状態 (クエリ未入力、履歴タブ) — トップバー/タブの見た目
+    # 確認用。アカウントが無くても`SearchScreenView`自体は開けるが、
+    # フィクスチャ挿入分のアカウントがあった方が実際のスクリーンショットに
+    # 近い見た目になるので`list`と同じfakeメッセージを挿入しておく。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
+    launch_args+=("-uitestsOpenSearchDirectly")
+    default_out="search.png"
+    ;;
+  search-active)
+    # Task #86: `OTEGAMI_UITEST_SEARCH_PRESET_QUERY`で検索欄にプリセット
+    # した状態 (チップ列+結果一覧が見える「結果表示中」) — "UITest"は
+    # `list`と同じfakeメッセージの件名 (「受信トレイのメール (UITest)」等)
+    # に共通して含まれる断片。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_SEARCH_PRESET_QUERY=UITest")
+    launch_args+=("-uitestsOpenSearchDirectly")
+    default_out="search-active.png"
     ;;
   *)
     echo "error: unknown scenario '$SCENARIO' — see this script's header comment for the list" >&2

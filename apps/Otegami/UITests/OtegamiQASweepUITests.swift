@@ -139,7 +139,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
         openSearchScreen(in: app)
-        let searchField = app.searchFields.firstMatch
+        let searchField = app.textFields["search.textField"]
         XCTAssertTrue(searchField.waitForExistence(timeout: 10))
         searchField.tap()
         searchField.typeText("zzzznotfound")
@@ -239,21 +239,19 @@ final class OtegamiQASweepUITests: XCTestCase {
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
         openSearchScreen(in: app)
-        let searchField = app.searchFields.firstMatch
+        let searchField = app.textFields["search.textField"]
         XCTAssertTrue(searchField.waitForExistence(timeout: 10))
         searchField.tap()
         searchField.typeText("html")
 
-        let cancelButton = app.buttons["Cancel"]
-        if cancelButton.waitForExistence(timeout: 3) {
-            cancelButton.tap()
-        } else {
-            // Some layouts use a system "Clear text" (x) button instead of
-            // a text "Cancel" — try that, then dismiss the keyboard.
-            let clearButton = searchField.buttons.firstMatch
-            if clearButton.exists { clearButton.tap() }
-            app.swipeDown()
-        }
+        // 検索画面再構成 (Task #86): システムの`.searchable`が持っていた
+        // 「Cancel」ボタン/「Clear text」(x) は無くなった (`SearchTopBar`は
+        // 独自の`TextField`——閉じるボタンは画面全体を閉じる方の導線なので
+        // ここでは使わない) — backspaceで打ち消してから同じ画面内で打ち
+        // 直す、という「入力→即取り消し→再入力」の意図はそのまま
+        // backspaceキー送出で再現する。
+        searchField.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "html".count))
+        app.swipeDown()
 
         let searchList = app.collectionViews["search.list"]
         XCTAssertTrue(searchList.waitForExistence(timeout: 10), "search list did not reappear after cancelling search")
@@ -313,7 +311,7 @@ final class OtegamiQASweepUITests: XCTestCase {
 
         // 新画面構成: search opens as a sheet from the header button now.
         openSearchScreen(in: app)
-        let searchField = app.searchFields.firstMatch
+        let searchField = app.textFields["search.textField"]
         if searchField.waitForExistence(timeout: 5) {
             searchField.tap()
             searchField.typeText("a")

@@ -56,7 +56,7 @@ final class OtegamiMailListHeaderUITests: XCTestCase {
         let searchButton = app.buttons["mail.searchButton"]
         XCTAssertTrue(searchButton.waitForExistence(timeout: 10), "左下フローティングの検索ボタンが見つからない")
         searchButton.tap()
-        XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 10), "検索ボタンから検索画面が開かなかった")
+        XCTAssertTrue(app.textFields["search.textField"].waitForExistence(timeout: 10), "検索ボタンから検索画面が開かなかった")
         // ラッピングシェルの mid-test スクリーンショット用に少し保持する。
         Thread.sleep(forTimeInterval: 3)
         _ = closeSearchScreen(in: app)
