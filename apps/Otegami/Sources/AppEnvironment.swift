@@ -82,6 +82,25 @@ final class AppEnvironment {
     // be `nonisolated` even on a `@MainActor` class, so this property can't
     // itself be actor-isolated if `deinit` is going to read it at all.
     @ObservationIgnored nonisolated(unsafe) private var cloudSyncNotificationObserver: NSObjectProtocol?
+    /// Task #101 (実機報告「スレッド表示をオフにしても再起動で戻る」フォロー
+    /// アップ): `settingsCloudSync` previously only ever got a chance to push
+    /// a local `*SettingsStore` edit at a `.background`/`.inactive` scene-
+    /// phase transition (`OtegamiApp.handleScenePhaseChange`'s doc comment
+    /// explains why there's no per-write hook) — an un-pushed edit could sit
+    /// on this device for the entire rest of a foreground session with no
+    /// other trigger. This observer debounces `UserDefaults.didChangeNotification`
+    /// (which fires on *every* `UserDefaults.standard` write, not just the
+    /// allowlisted sync keys — `AppSettingsCloudDirectory`'s allowlist is
+    /// what keeps an unrelated write, e.g. `lastOpenedThreadIdBySelectionKey`,
+    /// from mattering here; `reconcile()` itself is a cheap no-op when
+    /// nothing relevant changed) and calls `reconcile()` a few seconds after
+    /// things go quiet, so a change gets a real chance to reach the cloud
+    /// well before the user might background/kill the app, shrinking (not
+    /// eliminating — `reconcile()`'s own doc comment on why a genuinely
+    /// concurrent edit still needs its own guard) the window during which an
+    /// un-pushed local edit exists at all.
+    @ObservationIgnored nonisolated(unsafe) private var settingsChangeNotificationObserver: NSObjectProtocol?
+    @ObservationIgnored private var settingsChangeDebounceTask: Task<Void, Never>?
     /// `nil` when `GOOGLE_OAUTH_CLIENT_ID` isn't configured for this build
     /// (see `GoogleOAuthConfig`'s doc comment) — every Gmail-entry point
     /// checks this (directly or via `isGmailOAuthConfigured`) before
@@ -932,6 +951,18 @@ final class AppEnvironment {
                 await settingsSync.reconcile()
             }
         }
+        // Task #101: see `settingsChangeNotificationObserver`'s doc comment
+        // — debounced, so this only calls `reconcile()` a few seconds after
+        // the last `UserDefaults.standard` write rather than on every one.
+        settingsChangeNotificationObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: UserDefaults.standard,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.scheduleDebouncedSettingsPush()
+            }
+        }
 
         // C「既読メール再表示の高速化」(実機フィードバック第3弾) — see
         // `HTMLWebViewPrewarmer`'s doc comment. Deferred to a `Task` (not
@@ -945,8 +976,31 @@ final class AppEnvironment {
     deinit {
         accountsObservationTask?.cancel()
         badgeObservationTask?.cancel()
+        settingsChangeDebounceTask?.cancel()
         if let cloudSyncNotificationObserver {
             NotificationCenter.default.removeObserver(cloudSyncNotificationObserver)
+        }
+        if let settingsChangeNotificationObserver {
+            NotificationCenter.default.removeObserver(settingsChangeNotificationObserver)
+        }
+    }
+
+    /// Task #101: restarts a short debounce timer on every `UserDefaults
+    /// .standard` write — cancelling and replacing any still-pending one —
+    /// so a burst of writes (e.g. a picker view that updates a couple of
+    /// keys in quick succession) only triggers one `settingsCloudSync
+    /// .reconcile()` call after things go quiet, not one per write.
+    /// `reconcile()` itself is cheap when nothing in the allowlist actually
+    /// changed (`SettingsCloudSyncEngine`'s doc comment), so firing it more
+    /// often than strictly necessary here is a non-issue; the debounce
+    /// exists to avoid a `Task.sleep` pile-up, not to protect `reconcile()`.
+    private func scheduleDebouncedSettingsPush() {
+        settingsChangeDebounceTask?.cancel()
+        let settingsSync = settingsCloudSync
+        settingsChangeDebounceTask = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            await settingsSync.reconcile()
         }
     }
 
