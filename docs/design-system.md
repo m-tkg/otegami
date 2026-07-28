@@ -655,13 +655,16 @@ macOS の ⌘R (`RootView.replyToSelectedThread()`) が既に使っていた
 - **ツールバーのカスタマイズ**: `MessageToolbarSettingsStore`
   (`UserDefaults` にカンマ区切りで永続化、`SwipeActionSettingsStore` と
   同じ「素の `UserDefaults` キーの集まり」方針) + `MessageToolbarSettingsView`
-  (常時編集モードの `List`/`.onMove`)。7アクション
-  (`MessageToolbarAction.allCases`、Task #88 で要約/翻訳が加わり5→7)
-  のうち、要約/翻訳のフローティングボタンからの移設の経緯は「Task #88」
-  節参照。**Task #100 で表示/非表示トグルを追加** (「その他」だけは
-  非表示・並び替えとも不可、常に最後尾固定) — 詳細は
-  `docs/settings.md`「メール本文フッターツールバーの表示/非表示・並び順」
-  節参照。
+  (常時編集モードの `List`/`.onMove`)。14アクション
+  (`MessageToolbarAction.allCases`、Task #88 で要約/翻訳が加わり5→7、
+  2026-07-29 の追加仕様で旧「その他」ネイティブ項目7つを一級アクション化
+  し7→14) のうち、要約/翻訳のフローティングボタンからの移設の経緯は
+  「Task #88」節参照。**Task #100 で表示/非表示トグルを追加** (「その他」
+  だけは非表示・並び替えとも不可、常に最後尾固定)。表示オンのアクション
+  が画面幅を超える場合は横スクロールへフォールバックし
+  (`ViewThatFits`)、カスタマイズ画面の変更は`@AppStorage`経由で即座に
+  ツールバーへ反映される — 詳細は `docs/settings.md`「メール本文
+  フッターツールバーの表示/非表示・並び順」節参照。
 
 ### 4. 一覧ヘッダの再編: 検索の左下フローティング化・再読込ボタン廃止・
 未読のみ表示トグル
