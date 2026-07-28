@@ -179,6 +179,33 @@ final class AppEnvironment {
         // resolve correctly from its very first call too.
         UserDefaults.registerOtegamiAvatarSourceDefaults()
 
+        // Task #60 (シミュレータ検証基盤の整備): `OTEGAMI_UITEST_DISABLE_AVATAR_SOURCES`
+        // — a UITest/verify-script-only escape hatch, same `OTEGAMI_UITEST_*`
+        // launch-environment pattern as every other flag in this file.
+        // 連絡先の写真 (`ContactPhotoResolver`) は初回解決の瞬間に OS の
+        // 連絡先アクセス許可ダイアログを出す (`ContactPhotoResolver`のドキュ
+        // メントコメント参照) — このダイアログはシミュレータ上で非決定的な
+        // タイミングで現れ、XCUITest の待機やタップ前提の起動フローを潰す
+        // (`docs/verify.md`「シミュレータ検証の既知の不調」参照)。フォース
+        // する4キーはいずれも `ContactPhotoResolver`/`GoogleProfilePhotoAvatarResolver`/
+        // `GravatarAvatarResolver`/`CompanyLogoAvatarResolver`の`resolveAvatarImageData`
+        // が本体処理 (権限確認・ネットワーク送信) より前に読む早期 `guard`
+        // なので、ここで`false`に上書きしておけば連絡先ダイアログだけでなく
+        // Google People API/Gravatar/favicon への通信も一切発生せず、
+        // `SenderAvatar`は常にイニシャル+アカウント色の最終フォールバックへ
+        // 直行する。`.set(false, forKey:)`(`.register(defaults:)`ではなく)
+        // を使うのは、同じシミュレータインストールでこのフラグ無しの launch
+        // が過去にあった場合、その launch がユーザー操作で書き込んだ
+        // (「常に有効」がデフォルト) 実際の値を確実に上書きするため —
+        // `register`は「キーが未設定のときだけ」効くので、それだと過去の
+        // 値が残って上書きできない。
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_DISABLE_AVATAR_SOURCES"] == "1" {
+            UserDefaults.standard.set(false, forKey: AvatarSourceSettingsStore.showContactPhotoKey)
+            UserDefaults.standard.set(false, forKey: AvatarSourceSettingsStore.showGoogleProfilePhotoKey)
+            UserDefaults.standard.set(false, forKey: AvatarSourceSettingsStore.showGravatarKey)
+            UserDefaults.standard.set(false, forKey: AvatarSourceSettingsStore.showCompanyLogoKey)
+        }
+
         // アバター強化バッチ: no dependency on `database`/`credentialStore`/
         // anything constructed further below, so it's safe to build this
         // early alongside the other launch-time setup above. Sources are

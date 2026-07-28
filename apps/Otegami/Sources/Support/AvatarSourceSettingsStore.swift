@@ -11,6 +11,11 @@ import Foundation
 /// すべてそこに集約する、という既存の置き場所に合わせた
 /// (`docs/settings.md` 参照)。
 ///
+/// Task #60: `AppEnvironment.init()`の`OTEGAMI_UITEST_DISABLE_AVATAR_SOURCES`
+/// はこの4キーすべてを強制的に`false`へ上書きする、UITest/verify-script
+/// 専用のエスケープハッチ — 連絡先権限ダイアログの非決定的な出現
+/// (`docs/verify.md`「シミュレータ検証の既知の不調」参照) を根絶するため。
+///
 /// `ListDisplaySettingsStore`/`ImageSettingsStore` と同じ「プレーンな
 /// `UserDefaults` キーの集まり」方針。`ContactPhotoResolver`/
 /// `GravatarAvatarResolver`/`CompanyLogoAvatarResolver` (actor、`@AppStorage`

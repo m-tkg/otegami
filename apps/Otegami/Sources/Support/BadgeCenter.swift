@@ -21,8 +21,22 @@ enum BadgeCenter {
     /// `setBadgeCount` without authorization); never surfaced as an error
     /// anywhere a user would see it, matching every other push-adjacent
     /// permission flow in this app.
+    ///
+    /// Task #60 (シミュレータ検証基盤の整備): `OTEGAMI_UITEST_DISABLE_NOTIFICATION_PERMISSION_REQUEST`
+    /// — a UITest/verify-script-only escape hatch, same `OTEGAMI_UITEST_*`
+    /// launch-environment pattern as every flag in `AppEnvironment.swift`
+    /// (`OTEGAMI_UITEST_DISABLE_AVATAR_SOURCES`のドキュメントコメント参照)。
+    /// `AppEnvironment.restartBadgeObservationIfNeeded`はアカウントが1件でも
+    /// あれば最初の呼び出しで必ずこれを一度呼ぶため、`scripts/verify-screen.sh`
+    /// のようなアカウント注入フラグ (`OTEGAMI_UITEST_INSERT_FAKE_*`) を使う
+    /// tap-free 起動では、この OS の通知許可ダイアログがほぼ確実に最初の
+    /// スクリーンショットへ写り込んでしまう — `simctl privacy grant
+    /// notifications`はこの開発機のシミュレータランタイムでは`Operation not
+    /// permitted`で使えない (`docs/verify.md`参照) ため、アプリ側にこの
+    /// エスケープハッチを用意した。
     static func requestAuthorizationIfNeeded() async {
         #if os(iOS)
+        guard ProcessInfo.processInfo.environment["OTEGAMI_UITEST_DISABLE_NOTIFICATION_PERMISSION_REQUEST"] != "1" else { return }
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.badge])
         #endif
     }

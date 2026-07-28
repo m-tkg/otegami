@@ -96,6 +96,19 @@ struct MailScreenView: View {
             if let threadId = environment.uitestDirectOpenThreadId {
                 selectedThreadId = threadId
             }
+            // Task #60 (シミュレータ検証基盤の整備): same "tap-free direct
+            // navigation" idea as `uitestDirectOpenThreadId` above, for the
+            // 設定画面 — there's no fake-fixture DB row to key off of here,
+            // so this reads a plain launch *argument* (matching
+            // `OtegamiApp.uiTestsShouldAutoAdvanceToContent`'s
+            // `-uiTestsAutoAdvanceToContent`, not an `OTEGAMI_UITEST_*`
+            // launch *environment* variable) instead. Lets
+            // `scripts/verify-screen.sh` reach `SettingsSheetView` via a
+            // plain `xcrun simctl launch ... -uitestsOpenSettingsDirectly`,
+            // with no hamburger-menu-button tap needed.
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenSettingsDirectly") {
+                showingSettings = true
+            }
         }
     }
 
