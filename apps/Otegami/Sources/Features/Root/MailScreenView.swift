@@ -184,6 +184,17 @@ struct MailScreenView: View {
                 floatingSearchButton
             }
         }
+        // ユーザー要望: 「メールの新規作成ボタンは、ヘッダ部ではなく右下に
+        // フローティングして欲しい」— 左下の`floatingSearchButton`と対に
+        // なる配置。`MessageListView`の`List`は既に`.contentMargins(.bottom:
+        // )`でこの高さぶんの余白を確保済み (検索ボタンのために追加済みの
+        // 余白を両ボタンで共有するだけで、追加の余白は不要 — 左右どちらの
+        // フローティングボタンも同じ縦位置にあるため)。
+        .overlay(alignment: .bottomTrailing) {
+            if !isSelecting {
+                floatingComposeButton
+            }
+        }
     }
 
     private var emptyState: some View {
@@ -234,12 +245,6 @@ struct MailScreenView: View {
             }
             ToolbarItemGroup(placement: .confirmationAction) {
                 unreadOnlyToggleButton
-
-                Button(action: onCompose) {
-                    Label("作成", systemImage: "square.and.pencil")
-                }
-                .accessibilityIdentifier("mail.composeButton")
-                .disabled(environment.accounts.isEmpty)
             }
         }
     }
@@ -296,6 +301,30 @@ struct MailScreenView: View {
         .padding(.leading, OtegamiSpacing.lg)
         .padding(.bottom, OtegamiSpacing.lg)
         .accessibilityIdentifier("mail.searchButton")
+    }
+
+    /// 一覧画面右下のフローティング作成ボタン — ヘッダの新規作成ボタン
+    /// (`ToolbarItemGroup(placement: .confirmationAction)`) をここへ移設
+    /// (ユーザー要望:「メールの新規作成ボタンは、ヘッダ部ではなく右下に
+    /// フローティングして欲しい」)。左下の`floatingSearchButton`と対にな
+    /// る配置・同じ「丸い面＋影」の流儀をそのまま踏襲する。accessibility
+    /// identifier はヘッダにあった頃の`mail.composeButton`を据え置き —
+    /// 参照 UITest がある場合でもこの識別子で動くようにするため。
+    private var floatingComposeButton: some View {
+        Button(action: onCompose) {
+            Label("作成", systemImage: "square.and.pencil")
+                .labelStyle(.iconOnly)
+                .font(OtegamiFont.body())
+                .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
+                .background(OtegamiColor.surface, in: Circle())
+                .overlay(Circle().stroke(OtegamiColor.dividerSubtle, lineWidth: 1))
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, OtegamiSpacing.lg)
+        .padding(.bottom, OtegamiSpacing.lg)
+        .accessibilityIdentifier("mail.composeButton")
+        .disabled(environment.accounts.isEmpty)
     }
 
     /// 新画面構成 (1): 旧「ナビタイトルのタップでフォルダシートを開く」動線の
