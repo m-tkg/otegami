@@ -1,10 +1,17 @@
 import Foundation
 import OtegamiCore
 
-/// 新画面構成 (3): メール本文画面のフッターツールバーに出すアイコンとその並び順。
-/// Task #88 (「要約と翻訳のボタンをフローティングをやめてツールバーに入れて」)
-/// までは5アクション、それ以降は`summarize`/`translate`を加えた7アクション
-/// (`allCases`が全アクションの唯一の情報源)。
+/// 新画面構成 (3): メール本文画面のフッターツールバーに出せるアイコンの全体
+/// 集合 (`allCases`が唯一の情報源)。Task #88 で要約/翻訳が加わり5→7、
+/// 2026-07-29 の追加仕様でさらに「その他」メニューがネイティブに持っていた
+/// 7操作 (ミュート・ピン留め・未読にする・アーカイブ・迷惑メールにする・
+/// 英語で返信を下書き・削除) を一級のアクションへ昇格し7→14になった —
+/// これで「その他」の中身は「ユーザーが非表示にしたアクションの集まり」に
+/// 完全に統一され、「昇格できない固定のその他専用項目」という特別扱いは
+/// 無くなった (唯一の例外は`more`自身と、`MessageDetailFooterToolbar
+/// .onCustomizeToolbar`が開く「ツールバーをカスタマイズ」— これは操作対象の
+/// メッセージに対する操作ではなく設定へのショートカットなので
+/// `MessageToolbarAction`化していない、常に「その他」メニュー末尾固定)。
 ///
 /// Task #100 (「フッターツールバーのカスタマイズ」) 以降、ユーザーが変えられる
 /// のは並び順に加えて**表示/非表示のトグル**: 非表示にしたアクションは
@@ -20,6 +27,10 @@ import OtegamiCore
 /// それは「ユーザーが明示的に非表示にした」とは別の話 — 表示オンのままの
 /// 状態を指す (アイコン自体は出したまま`MessageDetailFooterToolbar`側で
 /// グレーアウト表示にするに留める、`MessageDetailAIFeaturesState`経由)。
+/// 同様に`draftEnglishReply`は端末が翻訳非対応なら`onDraftEnglishReply`が
+/// `nil`になり、表示オンでもアイコン自体を出さない
+/// (`MessageDetailFooterToolbar`の該当箇所参照) — これも「非表示に設定した」
+/// とは別の話。
 enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable {
     case reply
     case forward
@@ -27,6 +38,13 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
     case info
     case summarize
     case translate
+    case mute
+    case pin
+    case markUnread
+    case archive
+    case junk
+    case draftEnglishReply
+    case delete
     case more
 
     var id: String { rawValue }
@@ -36,6 +54,14 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
     // パターン1どおり`String(localized:)`で明示的にカタログを引く
     // (`MessageToolbarSettingsView`の並び替えリストが`Text(action.title)`
     // としてこの`String`を渡すため)。
+    //
+    // `mute`/`pin`は状態 (ミュート中か・ピン留め中か) で見た目が変わる
+    // トグル操作 — ここでの`title`/`systemImage`はあくまで設定画面の並び
+    // 替えリストで使う「操作を指す固定のラベル」であって、
+    // `MessageDetailFooterToolbar`がツールバーアイコン/「その他」メニュー
+    // 項目として実際に描画する際は、そちらで状態に応じたラベル/アイコンに
+    // 差し替える (`muteButton`/`pinButton`/`hiddenActionMenuItem(for:)`の
+    // `.mute`/`.pin`ケース参照)。
     var title: String {
         switch self {
         case .reply: String(localized: "返信")
@@ -44,6 +70,13 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
         case .info: String(localized: "情報")
         case .summarize: String(localized: "要約")
         case .translate: String(localized: "翻訳")
+        case .mute: String(localized: "ミュート")
+        case .pin: String(localized: "ピン留め")
+        case .markUnread: String(localized: "未読にする")
+        case .archive: String(localized: "アーカイブ")
+        case .junk: String(localized: "迷惑メールにする")
+        case .draftEnglishReply: String(localized: "英語で返信を下書き")
+        case .delete: String(localized: "削除")
         case .more: String(localized: "その他")
         }
     }
@@ -59,6 +92,16 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
         // の doc comment 参照 (どちらも Task #88 で撤去済み)。
         case .summarize: "sparkles"
         case .translate: "translate"
+        // ミュート中/ピン留め中の実際のアイコンは`title`のdoc comment
+        // どおり状態依存 — ここでは設定画面用の既定 (非ミュート/非ピン留め
+        // を意味する側) を返す。
+        case .mute: "bell.slash"
+        case .pin: "pin"
+        case .markUnread: "envelope.badge"
+        case .archive: "archivebox"
+        case .junk: "exclamationmark.octagon"
+        case .draftEnglishReply: "globe"
+        case .delete: "trash"
         case .more: "ellipsis.circle"
         }
     }
@@ -92,21 +135,46 @@ struct MessageToolbarItemSetting: Identifiable, Equatable, Sendable {
 /// `MessageToolbarPreferencesCoding`のdoc comment参照。可視性サフィックス
 /// 無しのトークンは「表示」として扱われるので、既存ユーザーの保存済み
 /// 並び順は全項目表示のまま、その並びだけを引き継ぐ。
+///
+/// **2026-07-29 追加仕様での後方互換**: 「その他」ネイティブ項目を
+/// `MessageToolbarAction`へ昇格した際、`defaultItems`の新規7件は
+/// **非可視**をデフォルトにしている (`MessageToolbarPreferencesCoding
+/// .parse`が「保存済みデータに無い id は、その id の`defaults`エントリ
+/// 自身の可視性で補う」という仕様になっている — 単純に「無ければ可視」
+/// ではない、そのdoc comment参照)。これにより、この変更以前から保存済み
+/// の並びを持つユーザーはこの7件が「その他」に入ったまま (今までどおり)
+/// upgrade でき、新規ユーザーの既定構成 (返信/転送/検索/情報/要約/翻訳が
+/// ツールバー直接、残り7件+ショートカットは「その他」) とも一致する。
 enum MessageToolbarSettingsStore {
     static let orderKey = "messageToolbar.order"
 
     // Task #88: 要約/翻訳は「返信/転送/検索/情報」という既存メッセージ操作
-    // 群のすぐ後ろ、「その他」の手前に置く — フローティング時代の見た目の
-    // 並び (要約が上、翻訳がその下) をそのまま左→右の順序に対応させた。
-    static let defaultOrder: [MessageToolbarAction] = [.reply, .forward, .search, .info, .summarize, .translate, .more]
+    // 群のすぐ後ろに置く — フローティング時代の見た目の並び (要約が上、
+    // 翻訳がその下) をそのまま左→右の順序に対応させた。2026-07-29:
+    // 昇格した7件はその後ろ、「その他」の手前に追加した — 元々「その他」
+    // メニュー内で並んでいた順番 (`MessageDetailFooterToolbar
+    // .moreMenuButton`の旧実装) をそのまま踏襲している。
+    static let defaultOrder: [MessageToolbarAction] = [
+        .reply, .forward, .search, .info, .summarize, .translate,
+        .mute, .pin, .markUnread, .archive, .junk, .draftEnglishReply, .delete,
+        .more
+    ]
+
+    /// `defaultOrder`のうち、新規ユーザー (このキー未設定) でツールバーに
+    /// 直接表示される既定集合。残り (`more`を除く) は「その他」入り —
+    /// 昇格前の実機での見た目 (この6つだけがツールバー直接表示) を
+    /// そのまま既定値として維持する。
+    private static let defaultVisibleActions: Set<MessageToolbarAction> = [
+        .reply, .forward, .search, .info, .summarize, .translate, .more
+    ]
 
     /// 非表示にできず・並び替えもできず・常に末尾固定の唯一のアクション。
     private static let pinnedTrailingAction = MessageToolbarAction.more
 
-    private static var knownIDs: [String] { defaultOrder.map(\.rawValue) }
+    private static var defaults: [MessageToolbarItemPreference] { encode(defaultItems) }
 
     static var defaultItems: [MessageToolbarItemSetting] {
-        defaultOrder.map { MessageToolbarItemSetting(action: $0, isVisible: true) }
+        defaultOrder.map { MessageToolbarItemSetting(action: $0, isVisible: defaultVisibleActions.contains($0)) }
     }
 
     /// 保存された並び順 + 可視性を読む。キーが未設定、旧形式、または保存後に
@@ -114,9 +182,21 @@ enum MessageToolbarSettingsStore {
     /// 増えた等) 場合でもクラッシュせず安全に解決する
     /// (`MessageToolbarPreferencesCoding.parse`の不変条件)。
     static func loadItems() -> [MessageToolbarItemSetting] {
+        items(fromRawValue: UserDefaults.standard.string(forKey: orderKey))
+    }
+
+    /// `loadItems()`の中身 — 生の`UserDefaults`文字列を明示的に受け取る
+    /// オーバーロード。`MessageDetailFooterToolbar`が`@AppStorage`
+    /// (`UserDefaults`変更を購読し、書き込まれた瞬間に再描画を起こす仕組み)
+    /// 経由で読んだ生文字列をここに渡せるようにするため切り出した —
+    /// `UserDefaults.standard.string(forKey:)`を直接呼ぶだけの
+    /// `loadItems()`はビュー内で使うと「設定画面を開いたまま裏でトグルして
+    /// も、このビュー自身が変更を購読していないので戻ってくるまで反映され
+    /// ない」という実機報告済みの不具合を再現してしまう。
+    static func items(fromRawValue raw: String?) -> [MessageToolbarItemSetting] {
         let preferences = MessageToolbarPreferencesCoding.parse(
-            raw: UserDefaults.standard.string(forKey: orderKey),
-            knownIDs: knownIDs,
+            raw: raw,
+            defaults: defaults,
             pinnedTrailingID: pinnedTrailingAction.rawValue
         )
         return decode(preferences)
@@ -129,7 +209,7 @@ enum MessageToolbarSettingsStore {
     /// `AppSettingsCloudDirectory`がキー未設定時のフォールバック値として
     /// 使う既定値の生文字列表現 — 生成ロジックをここに一箇所に集約する。
     static func encodedRawValue(for items: [MessageToolbarItemSetting]) -> String {
-        MessageToolbarPreferencesCoding.encode(encode(items), knownIDs: knownIDs, pinnedTrailingID: pinnedTrailingAction.rawValue)
+        MessageToolbarPreferencesCoding.encode(encode(items), defaults: defaults, pinnedTrailingID: pinnedTrailingAction.rawValue)
     }
 
     /// ツールバー本体 (`MessageDetailFooterToolbar`) がアイコンとして描画する、
