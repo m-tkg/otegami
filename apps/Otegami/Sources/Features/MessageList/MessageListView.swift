@@ -245,19 +245,22 @@ struct MessageListView: View {
         ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.unreadOnlyKey, default: ListDisplaySettingsStore.defaultUnreadOnly)
     }
 
-    // MARK: - アカウントでグループ化 (Task #77 → Task #92)
+    // MARK: - アカウントでグループ化 (Task #77 → Task #92 → Task #99)
     //
     // Task #77 で導入したインラインの`Section`分割 (`isGroupingActive`/
     // `groupedSummaries`/`AccountGroupSectionHeader`) は Task #92 で廃止した
     // — 「アカウントでグループ化」ボタンは一覧をこの場でセクション分割する
-    // 代わりに、一段挟んだ`AccountDigestView`(アカウントごとの件数+直近
-    // プレビューのダイジェスト画面)へ遷移するようになった
-    // (`MailScreenView.groupByAccountToggleButton`)。この`MessageListView`
-    // 自体はもうグルーピングの状態を一切知らない — `ListDisplaySettingsStore
-    // .groupByAccountKey`はまだ存在するが、その意味は「一覧をこの場で
-    // グルーピングするか」から「ダイジェスト画面を開いているか」へ変わった
+    // 代わりに`AccountDigestView`(アカウントごとの件数+直近プレビューの
+    // ダイジェスト画面)へ切り替えるようになった
+    // (`MailScreenView.groupByAccountToggleButton`)。#92時点ではプッシュ
+    // 遷移だったが、Task #99 で`MailScreenView.content`が`MessageListView`
+    // とこの`AccountDigestView`を条件分岐で出し分けるトグル表示に変わった
+    // — いずれにせよこの`MessageListView`自体はもうグルーピングの状態を
+    // 一切知らない。`ListDisplaySettingsStore.groupByAccountKey`はまだ
+    // 存在するが、その意味は「一覧をこの場でグルーピングするか」から
+    // 「ダイジェスト表示にするか」の永続トグルへ変わった
     // (`MailScreenView`側の同名プロパティのdoc comment参照)。詳細は
-    // `docs/design-system.md`のTask #92節。
+    // `docs/design-system.md`のTask #92節/Task #99追記。
 
     /// Flat mode is simply "threading turned off" — kept as a derived value
     /// so the rest of this view (and `ObservationKey`) can keep reading in

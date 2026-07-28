@@ -101,25 +101,18 @@ struct MailScreenView: View {
     /// 共有する`@AppStorage`で、一覧をこの場でアカウント別`Section`に
     /// 分割するon/offトグルだった。
     ///
-    /// Task #92 (アカウントダイジェスト画面): インラインのセクション分割を
-    /// 廃止し、ボタンは`AccountDigestView`(アカウントごとの件数+直近
-    /// プレビューを一段挟んで見せる画面)への遷移トリガーに変わった —
-    /// `ListDisplaySettingsStore.groupByAccountKey`の**意味**は「一覧を
-    /// この場でグルーピングするか」から「ダイジェスト画面を(一時的に)
-    /// 開いているか」に変わったが、**キー自体・保存の仕組み・ボタンの
-    /// 見た目/配置は変えていない**(仕様「ボタンの見た目/配置は現状維持」) —
-    /// `groupByAccountToggleButton`の同じON/OFFアイコン切り替えスタイルを
-    /// そのまま流用し、タップした瞬間`true`にしてダイジェスト画面を開き、
-    /// その画面が閉じた瞬間`false`に戻す(`onChange(of: showingAccountDigest)`)、
-    /// というダイジェスト画面の開閉と1対1対応する一時的な値として使う。
-    /// `MessageListView`はもうこのキーを一切読まない
+    /// Task #92 (アカウントダイジェスト画面) でボタンは`AccountDigestView`
+    /// (アカウントごとの件数+直近プレビューを一段挟んで見せる画面)への
+    /// **プッシュ遷移**トリガーに変わったが、ユーザーフィードバックにより
+    /// Task #99 でこの永続`@AppStorage`トグルへ戻した —
+    /// `unreadOnlyToggleButton`/`isUnreadOnly`と全く同じ扱い: タップで
+    /// on/offをそのまま反転させるだけで、値はアプリ再起動後も維持される。
+    /// 実際にダイジェスト表示にするかどうかは`isShowingAccountDigest`
+    /// (`content`の分岐条件) が`showsGroupByAccountToggle`との整合も含めて
+    /// 決める — 例えば単一メールボックス選択中はこの値が`true`のままでも
+    /// ダイジェストは出ない。`MessageListView`はこのキーを一切読まない
     /// (`MessageListView.listContent`のdoc comment参照)。
     @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
-
-    /// Task #92: 「アカウントでグループ化」ボタンが遷移する先 —
-    /// `content`の`.navigationDestination(isPresented:)`(compact/regular
-    /// 両方の`NavigationStack`から見える共通祖先)にぶら下げる。
-    @State private var showingAccountDigest = false
 
     var body: some View {
         HamburgerMenuContainer(isOpen: $isMenuOpen) {
@@ -173,13 +166,13 @@ struct MailScreenView: View {
                 }
                 showingSearch = true
             }
-            // Task #92 (アカウントダイジェスト画面): 同じ「タップ不要の直接
-            // 遷移」パターンで`AccountDigestView`を`scripts/verify-screen.sh`
-            // から開けるようにする — グルーピングボタンをタップせずに
-            // ダイジェスト画面の見た目を直接screenshotできる。
+            // Task #92 (アカウントダイジェスト画面)、Task #99 でトグル化:
+            // 同じ「タップ不要の直接遷移」パターンで`isGroupByAccount`を
+            // `true`にし、`scripts/verify-screen.sh`からグルーピングボタン
+            // をタップせずにダイジェスト表示 (`isShowingAccountDigest`) の
+            // 見た目を直接screenshotできるようにする。
             if ProcessInfo.processInfo.arguments.contains("-uitestsOpenAccountDigestDirectly") {
                 isGroupByAccount = true
-                showingAccountDigest = true
             }
         }
     }
@@ -303,12 +296,18 @@ struct MailScreenView: View {
             if let pending = environment.pendingSendCoordinator.pendingSend {
                 SendCountdownBar(pending: pending, onCancel: handleCancelPendingSend)
             }
-            if isUnifiedInboxSelected, !environment.accounts.isEmpty {
-                AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
-            }
             if environment.accounts.isEmpty {
                 emptyState
+            } else if isShowingAccountDigest {
+                // Task #99: プッシュ遷移をやめ、一覧領域の中身だけをこの
+                // 埋め込み`AccountDigestView`に差し替える — ヘッダ
+                // (`toolbarContent`) やフローティングボタンはこの`content`
+                // の外側/overlayのままなので変わらず表示され続ける。
+                AccountDigestView(role: digestRole, onSelectAccount: selectDigestAccount)
             } else {
+                if isUnifiedInboxSelected {
+                    AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
+                }
                 MessageListView(
                     selection: mailSelection,
                     unifiedInboxAccountFilter: accountFilter,
@@ -343,24 +342,22 @@ struct MailScreenView: View {
                 floatingComposeButton
             }
         }
-        // Task #92: `groupByAccountToggleButton`が開くダイジェスト画面 —
-        // `content`にぶら下げることで、`compactNavigationStack`/
-        // `regularSplitView.listColumn`どちらの`NavigationStack`からでも
-        // 同じ1箇所の定義で押し込める(`.sheet`群を`mailContent`に一本化
-        // しているのと同じ理由)。
-        .navigationDestination(isPresented: $showingAccountDigest) {
-            AccountDigestView(role: digestRole, onSelectAccount: selectDigestAccount)
-        }
-        // バックボタンで戻った場合も含め、ダイジェスト画面が閉じたら
-        // ボタンの見た目 (`groupByAccountToggleButton`のON/OFF描画) を
-        // 必ずOFFへ戻す — `selectDigestAccount`側でも明示的に`false`へ
-        // 戻しているが(行タップの経路)、バックボタンでの離脱はこの
-        // `.navigationDestination`が`showingAccountDigest`自体を`false`に
-        // 書き戻すだけなので、`isGroupByAccount`はここで追随させる必要が
-        // ある。
-        .onChange(of: showingAccountDigest) { _, isShowing in
-            if !isShowing { isGroupByAccount = false }
-        }
+    }
+
+    /// Task #99: 一覧領域をダイジェスト表示に切り替えるかどうか —
+    /// `isGroupByAccount`(永続トグル)だけでなく`showsGroupByAccountToggle`
+    /// と同じ「ダイジェストが意味を持つ画面か」の条件も満たす必要がある
+    /// (単一メールボックス選択中や、既にアカウント絞り込みチップ/ダイジェスト
+    /// 行タップで1アカウントに絞られている間はダイジェストではなく通常の
+    /// 一覧を出す)。行タップ (`selectDigestAccount`) は`accountFilter`を
+    /// セットするだけで`isGroupByAccount`自体は変えない — その結果この
+    /// 条件が`false`になって通常の絞り込み一覧に切り替わり、絞り込みチップ
+    /// (`AccountFilterChipRow`)の「すべて」でその絞り込みを解除すると
+    /// `accountFilter`が`nil`に戻ってこの条件が再び`true`になり、ダイジェスト
+    /// 表示へ自動的に戻る(仕様「絞り込み一覧から戻ったらダイジェスト表示に
+    /// 戻ること」)。
+    private var isShowingAccountDigest: Bool {
+        isGroupByAccount && showsGroupByAccountToggle
     }
 
     /// Task #92: `AccountDigestView`に渡す`role` — `mailSelection`が
@@ -382,11 +379,14 @@ struct MailScreenView: View {
     /// 絞り込む(`.unifiedRole`にも`MessageListView.observeThreads()`が
     /// Task #92 で`unifiedInboxAccountFilter`を適用するようになったので、
     /// `mailSelection`がどちらのケースでも同じ1行で絞り込みが効く)。
-    /// ダイジェスト画面自体は`AccountDigestView.selectAccount(_:)`が
-    /// `dismiss()`で閉じる — ここでは`isGroupByAccount`をOFFへ戻すだけ。
+    ///
+    /// Task #99: `isGroupByAccount`はここでは**変えない** — トグルは永続
+    /// 設定に戻したので、行タップだけでOFFに戻すのは意図的な仕様変更
+    /// (プッシュ遷移の「戻る」相当の動作) を暗黙に混ぜ込むことになり
+    /// 望ましくない。`accountFilter`がセットされたことで`isShowingAccountDigest`
+    /// が`false`になり、絞り込み一覧に自動的に切り替わる。
     private func selectDigestAccount(_ accountId: String) {
         accountFilter = accountId
-        isGroupByAccount = false
     }
 
     private var emptyState: some View {
@@ -418,6 +418,11 @@ struct MailScreenView: View {
     /// (ダイジェスト画面の行タップ経由でのみセットされる)で絞り込み済みなら
     /// 隠す — `MessageListView.isMultiAccountScope`を同じ理由で揃えたのと
     /// 対になる変更(そちらのdoc comment参照)。
+    ///
+    /// Task #99: この`Bool`はボタンの表示可否だけでなく`isShowingAccountDigest`
+    /// の一部としても使う — ボタンを隠す条件と実際にダイジェストを出す
+    /// 条件を1つの計算プロパティに保つことで、ボタンが見えないのに
+    /// ダイジェストだけ出続けるような食い違いを防ぐ。
     private var showsGroupByAccountToggle: Bool {
         switch mailSelection {
         case .unifiedInbox, .unifiedRole:
@@ -505,17 +510,17 @@ struct MailScreenView: View {
     /// (フラットな一覧という意味) — どちらも既存パレット/チップトークンを
     /// 再利用するだけで新しい色は足さない (`CLAUDE.md`)。
     ///
-    /// Task #92: タップ動作は`isGroupByAccount.toggle()`(一覧をこの場で
+    /// Task #92 でタップ動作を`isGroupByAccount.toggle()`(一覧をこの場で
     /// 分割する恒久設定)から`showingAccountDigest = true`(ダイジェスト
-    /// 画面を開く一度きりの遷移)に変わった — `isGroupByAccount`自体は
-    /// このボタンの見た目をダイジェスト画面が開いている間だけ「ON」表示
-    /// にするための一時的な値としてまだ書く(`onChange(of:
-    /// showingAccountDigest)`/`selectDigestAccount(_:)`が画面が閉じる
-    /// タイミングで`false`に戻す)。
+    /// 画面を開く一度きりのプッシュ遷移)に変えたが、ユーザーフィード
+    /// バック(「未読のみボタンと同じトグル挙動にしたい」)により Task #99
+    /// で`unreadOnlyToggleButton`と同じ単純な`isGroupByAccount.toggle()`に
+    /// 戻した — 実際にダイジェストを表示するかどうかは`isShowingAccountDigest`
+    /// (`content`の分岐条件、`showsGroupByAccountToggle`と同じ条件を共有)
+    /// が担う。
     private var groupByAccountToggleButton: some View {
         Button {
-            isGroupByAccount = true
-            showingAccountDigest = true
+            isGroupByAccount.toggle()
         } label: {
             Label("アカウントでグループ化", systemImage: isGroupByAccount ? "person.2.fill" : "rectangle.grid.1x2")
                 .labelStyle(.iconOnly)

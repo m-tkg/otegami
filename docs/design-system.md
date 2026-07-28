@@ -4998,6 +4998,48 @@ ON/OFFアイコン切り替えスタイル(`person.2.fill`/`rectangle.grid.1x2`)
   がまとめてアーカイブ/削除され、「元に戻す」バーが出て実際に元に戻せる
   こと、(4) iPad (2ペイン) でも同じ動線が破綻しないこと、を確認する。
 
+### 6. Task #99 追記: プッシュ遷移をやめてトグル表示に変更 (ユーザーフィードバック)
+
+上記の実装 (プッシュ遷移、戻るボタン付き) はユーザーの意図と異なった —
+「アカウントでグループ化」ボタンは、隣の「未読のみ表示」ボタンと**同じ
+トグル挙動**であるべきという要望を受け、次のように変更した。
+
+- **ナビゲーション**: `MailScreenView.content`の
+  `.navigationDestination(isPresented:)`を廃止し、`isShowingAccountDigest`
+  (`isGroupByAccount && showsGroupByAccountToggle`)が真の間、一覧領域
+  (`AccountFilterChipRow`+`MessageListView`の代わりに)`AccountDigestView`
+  をその場に埋め込むだけの条件分岐にした。ヘッダ (ハンバーガー/タイトル/
+  未読のみトグル/グルーピングトグル自身) や左下のフローティング検索
+  ボタンはこの`content`の外側 (`toolbarContent`/`overlay`) にあるため、
+  ダイジェスト表示中も変わらず表示され続ける — 戻るボタンは出ない。
+- **`AccountDigestView`**: `.navigationTitle`/`\.dismiss`を持つ独立画面
+  だったのをやめ、`.navigationTitle`修飾子と`dismiss()`呼び出しを削除して
+  純粋な埋め込み可能な`View`にした。行タップ (`onSelectAccount`) はもう
+  自分自身を閉じない — 呼び出し元が`accountFilter`をセットするだけで、
+  `isShowingAccountDigest`が`false`になり呼び出し元が自動的に描画を
+  切り替える。
+- **`isGroupByAccount` (`ListDisplaySettingsStore.groupByAccountKey`)**:
+  #92 で「ダイジェスト画面が開いている間だけ`true`の一時フラグ」になって
+  いたのを、`unreadOnlyKey`と同じ**永続トグル**に戻した — タップで単純に
+  `.toggle()`し、行タップ・バックボタン相当の離脱では**書き戻さない**。
+  アプリ再起動後も選択状態が維持される表示系設定であり、`AppSettingsCloud
+  Directory`のiCloud同期許可リストには元々このキーが含まれているため
+  (#89)、追加の対応は不要だった。
+- **「絞り込み一覧から戻ったらダイジェスト表示に戻る」**: ダイジェスト行
+  タップは`accountFilter`をセットするだけで`isGroupByAccount`は変えない
+  ため、`isShowingAccountDigest`が`false`になり通常の絞り込み一覧に切り
+  替わる。その絞り込み一覧の`AccountFilterChipRow`で「すべて」を選び
+  `accountFilter`を`nil`に戻すと、`isGroupByAccount`がまだ`true`のままなので
+  `isShowingAccountDigest`が再び`true`になり、ダイジェスト表示へ自動的に
+  戻る — 専用の状態を増やさず、既存の2つの状態 (`isGroupByAccount`/
+  `accountFilter`) の組み合わせだけで実現した。
+- **iPad (regular幅)**: `isShowingAccountDigest`の分岐は`compactNavigationStack`/
+  `regularSplitView.listColumn`が共有する`content`自体にあるため、iPadの
+  左ペイン内でも同じ1箇所の定義で同じトグル挙動になる — 変更不要。
+
+行スワイプでの一括処理・確認ダイアログ・Undoトーストは #92 の実装のまま
+変更していない。
+
 ## Task #98: Google カレンダー招待メールがダークモードで読みづらい (実機報告)
 
 実機報告 (スクリーンショット添付): Google カレンダーの招待メールを

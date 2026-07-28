@@ -77,18 +77,25 @@
 #                                       ントでグループ化」トグルが現れること
 #                                       (単一アカウントでは出ない) の確認用。
 #                                       トグル自体はOFFのまま。
-#   list-grouped / account-digest       Task #77→Task #92: ↑と同じ2アカウント
+#   list-grouped / account-digest       Task #77→#92→#99: ↑と同じ2アカウント
 #                                       構成で、`-uitestsOpenAccountDigestDirectly`
-#                                       (タップ不要の直接遷移引数)によりアカウント
-#                                       ダイジェスト画面(`AccountDigestView`—
-#                                       アカウント色罫線+表示名+未読/件数バッジ+
-#                                       直近プレビュー2行、が2アカウント分)を
-#                                       直接screenshotする。Task #92 以前は
-#                                       `-listDisplay.groupByAccount 1`で一覧
-#                                       自体をインラインのSectionに分割していた
-#                                       (廃止済み) — シナリオ名`list-grouped`は
-#                                       後方互換のエイリアスとして残し、新しい
-#                                       `account-digest`と同じ動作にした。
+#                                       (タップ不要の直接遷移引数)により
+#                                       `isGroupByAccount`をONにし、一覧領域
+#                                       の中身をアカウントダイジェスト表示
+#                                       (`AccountDigestView`が`MailScreenView
+#                                       .content`に埋め込まれる形、ヘッダは
+#                                       通常どおり — アカウント色罫線+表示名+
+#                                       未読/件数バッジ+直近プレビュー2行、が
+#                                       2アカウント分)にして直接screenshot
+#                                       する。Task #92 時点ではこれがプッシュ
+#                                       遷移(戻るボタン付き)だったが、Task #99
+#                                       でトグル表示に変更した。Task #92 以前
+#                                       は`-listDisplay.groupByAccount 1`で
+#                                       一覧自体をインラインのSectionに分割
+#                                       していた(廃止済み) — シナリオ名
+#                                       `list-grouped`は後方互換のエイリアス
+#                                       として残し、新しい`account-digest`と
+#                                       同じ動作にした。
 #   settings                            設定画面 (SettingsSheetView)
 #   menu                                 ハンバーガーメニュー (FolderListSheet
 #                                       — 左下floatingSettingsButtonの
@@ -235,13 +242,16 @@ case "$SCENARIO" in
     default_out="list-2accounts.png"
     ;;
   list-grouped|account-digest)
-    # Task #92 (アカウントダイジェスト画面): `-uitestsOpenAccountDigestDirectly`
-    # は`MailScreenView`の`.task`ブロックが読む「タップ不要の直接遷移」引数
-    # (`-uitestsOpenSettingsDirectly`等と同じパターン) — グルーピングボタンを
-    # タップせず`AccountDigestView`を直接開く。Task #92 以前の`list-grouped`
-    # は`-listDisplay.groupByAccount 1`で一覧自体をインラインSection分割
-    # していたが、そのインライン分割機能自体が廃止された(この画面に置き
-    # 換わった)ため、シナリオ名は後方互換で残しつつ中身をこちらに揃えた。
+    # Task #92→Task #99 (アカウントダイジェスト画面):
+    # `-uitestsOpenAccountDigestDirectly`は`MailScreenView`の`.task`ブロックが
+    # 読む「タップ不要の直接遷移」引数 (`-uitestsOpenSettingsDirectly`等と
+    # 同じパターン) — グルーピングボタンをタップせず`isGroupByAccount`を
+    # ONにし、一覧領域を`AccountDigestView`の埋め込み表示に切り替える
+    # (Task #99 でプッシュ遷移からトグル表示へ変更、ヘッダはそのまま)。
+    # Task #92 以前の`list-grouped`は`-listDisplay.groupByAccount 1`で一覧
+    # 自体をインラインSection分割していたが、そのインライン分割機能自体が
+    # 廃止された(この画面に置き換わった)ため、シナリオ名は後方互換で残し
+    # つつ中身をこちらに揃えた。
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
     launch_args+=("-uitestsOpenAccountDigestDirectly")
     default_out="account-digest.png"

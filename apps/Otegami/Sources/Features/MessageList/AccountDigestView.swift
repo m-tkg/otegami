@@ -3,9 +3,10 @@ import GRDB
 import OtegamiStore
 import SyncEngine
 
-/// Task #92 (アカウントダイジェスト画面): 一覧ヘッダの「アカウントでグループ化」
-/// ボタン (`MailScreenView.groupByAccountToggleButton`) が遷移する一段挟んだ
-/// 画面 — #77 で実装したインラインのアカウント別`Section`分割
+/// Task #92 (アカウントダイジェスト画面) で追加、Task #99 で埋め込み表示に
+/// 変更: 一覧ヘッダの「アカウントでグループ化」ボタン
+/// (`MailScreenView.groupByAccountToggleButton`) がON/OFFトグルする一覧
+/// 領域の中身の一つ — #77 で実装したインラインのアカウント別`Section`分割
 /// (`AccountGroupSectionHeader`、廃止済み) を置き換える。アカウントごとに
 /// 1行 (`AccountDigestRow`): 色罫線 + 表示名 + 未読/件数バッジ + 直近2-3件の
 /// 差出人/件名プレビュー。行タップでそのアカウントに絞り込んだ一覧へ
@@ -15,6 +16,18 @@ import SyncEngine
 /// — 確認ダイアログを必ず挟み、実行後は`MessageListView`と同じ`UndoToast`
 /// を出す。
 ///
+/// Task #99 (ユーザーフィードバック「グルーピングボタンは未読のみボタンと
+/// 同じトグル挙動にしたい」): 当初 (#92) は`MailScreenView.content`から
+/// `.navigationDestination`でプッシュされる独立画面 (`.navigationTitle`+
+/// 戻るボタン付き) だった。プッシュ遷移だと戻るボタンが余分に出てしまう
+/// ため、`MailScreenView.content`が`MessageListView`の代わりにこの`View`を
+/// 直接埋め込む形に変えた — このため`.navigationTitle`/`\.dismiss`は
+/// 持たない(ヘッダは呼び出し元の`NavigationStack`のものがそのまま
+/// 見え続ける)。行タップ (`onSelectAccount`) はもう画面を閉じない —
+/// 呼び出し元が`accountFilter`をセットするだけで、`MailScreenView
+/// .isShowingAccountDigest`が`false`になり自動的に絞り込み一覧へ切り替わる
+/// (そちらのdoc comment参照)。
+///
 /// `role`は呼び出し元 (`MailScreenView`) の`mailSelection`から決まる —
 /// `.unifiedInbox`なら`.inbox`、`.unifiedRole(let role)`ならその`role`。
 /// `.mailbox`選択中はそもそもこのボタン自体が出ない
@@ -22,7 +35,6 @@ import SyncEngine
 /// 由来の`role`を渡されることは無い。
 struct AccountDigestView: View {
     @Environment(AppEnvironment.self) private var environment
-    @Environment(\.dismiss) private var dismiss
 
     let role: MailboxRoleRecord
     /// タップされた行のアカウントIDを呼び出し元へ — `MailScreenView`が
@@ -76,10 +88,6 @@ struct AccountDigestView: View {
         .accessibilityIdentifier("accountDigest.list")
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
-        .navigationTitle("アカウント別")
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
         .overlay {
             if digests.isEmpty {
                 ContentUnavailableView("アカウントがありません", systemImage: "envelope.badge")
@@ -137,9 +145,13 @@ struct AccountDigestView: View {
         })
     }
 
+    /// Task #99: 以前は`dismiss()`で自身を閉じていたが、この`View`はもう
+    /// プッシュされていない(埋め込み表示)ので閉じる対象が無い —
+    /// `onSelectAccount`が`accountFilter`をセットした結果、呼び出し元
+    /// (`MailScreenView.content`)がこの`View`自体を描画しなくなることで
+    /// 「閉じる」が実現される。
     private func selectAccount(_ accountId: String) {
         onSelectAccount(accountId)
-        dismiss()
     }
 
     private func observeDigests() async {
