@@ -760,3 +760,130 @@ account 同期の `pushLocalChange`/`pushLocalDeletion` のような書き込み
   設定が復元されるか」は実機で OTA インストール→設定変更→アプリ削除→
   再インストールという手順を踏まないと確認できない。`PENDING.md` に
   確認依頼を記載。
+
+## スレッド表示トグルが再起動で戻るバグ (Task #101)
+
+実機報告: スレッド表示をオフにしても、アプリを再起動すると再びオンに
+戻る。#89 (表示設定の同期、上の節) 導入後に出た症状。
+
+### 原因
+
+ユーザー提示の2つの仮説のうち、コードレビューと再現テストで実際に
+突き止められたのは2つ目のもの — **`reconcile()` の3択判定自体に、
+判定に使った値が古くなる (stale) レースがあった**:
+
+`reconcile()` は `cloudPayload`/`localValues`/`snapshot` を読んでから
+push/pull を決めるが、`localValues`/`snapshot` の読み出しはどちらも
+`await` を挟む本物のサスペンションポイントで、しかも `reconcile()`
+自体、**他デバイスの push が `didChangeExternallyNotification` 経由で
+届くたびに新しく呼ばれる** ため、この一連の判定処理はユーザーの
+ちょうどそのタイミングの操作 (トグル) と平行して走りうる。
+
+具体的な再現シーケンス:
+
+1. このデバイスの `snapshot`・`localValues` がまだ一致している (前回
+   同期以降ローカル変更なし) 状態で、たまたま他デバイスの新しい push
+   が届き、`reconcile()` が「pull しよう」と決める。
+2. その判定の直後・実際に `apply()` でローカルに書き込むまでの
+   わずかな窓で、ユーザーがスレッド表示トグルをオフにする
+   (`UserDefaults` へ即書き込み)。
+3. 修正前の `reconcile()` はこの窓を一切見ておらず、判定時に読んだ
+   (トグル前の) 値のまま `local.apply(cloudPayload)` を実行 — ユーザー
+   のオフ操作をそのまま黙って上書きしてしまう。UI 上は「オフにしたのに
+   何もしていないのに勝手にオンへ戻った」としか見えない。
+
+もう1つの仮説 (バックグラウンド遷移の `reconcile()` が push 前に kill
+される) は、コードを辿った限りでは **`reconcile()` 単体では実際には
+安全**だと確認した — `snapshot != localValues` である限り、push が
+1回失敗しても次回起動時の `reconcile()` が必ずローカルの最新値を
+再度 push する (このパスは `localChangeSinceLastSyncIsPushedEvenWhenA
+CloudPayloadAlreadyExists` テストが既にカバーしており、Task #101 でも
+壊していない)。とはいえ「ローカル変更が push されるまでの時間窓」を
+縮めておくこと自体は無駄ではないため、下記の (2) は保険として追加した。
+
+### 修正
+
+1. **`SettingsCloudSyncEngine.reconcile()` の pull 直前再チェック**
+   (`packages/OtegamiKit/Sources/AccountCloudSync/SettingsCloudSyncEngine.swift`):
+   pull すると決めた2分岐 (「ローカル変更なし・cloud が新しい」「未同期
+   デバイス・cloud に何かある」) はどちらも共通の `pull(_:becauseOfReason
+   :observedLocalValues:snapshot:)` を通るようにし、そこで
+   `apply()` する直前にもう一度 `local.currentValues()` を読み直す。
+   判定時に見た値と食い違っていれば (=判定中にローカルへ書き込みが
+   あった)、pull を中止してその最新のローカル値を push する側に倒す
+   — 「判定中に見つかった新しいローカル変更は、古い判定に基づく pull
+   より常に勝つ」という保証を関数の構造として持たせた。
+   再インストール時の「cloud 優先で復元」(#89 の要点) 自体は変えていない
+   — 通常時 (再チェックで食い違いが出ない) は完全に元の3択のまま。
+2. **`UserDefaults.didChangeNotification` のデバウンス push**
+   (`apps/Otegami/Sources/AppEnvironment.swift` の
+   `settingsChangeNotificationObserver`/`scheduleDebouncedSettingsPush()`):
+   `UserDefaults.standard` へのあらゆる書き込みを監視し、3秒デバウンス
+   した上で `settingsCloudSync.reconcile()` を叩く。これまでは
+   フォアグラウンド/バックグラウンド遷移でしか push の機会がなく、
+   ユーザーが設定を変えたままバックグラウンドに一度も回らず使い続けた
+   場合、その変更がセッション中ずっと未 push のままになり得た —
+   この仕組みで「変更してから数秒後には push 済み」に近づけ、上記の
+   レース (もう1つの仮説) が実際に起きる確率もあわせて下げている。
+   `AppSettingsCloudDirectory.swift` は変更していない (他エージェントが
+   並行して同ファイルを編集中だったため、エンジン側で完結する設計を
+   優先した)。
+3. **OSLog 計装** (`SettingsCloudSyncEngine` の
+   `Logger(subsystem: "com.mtkg.otegami", category: "SettingsCloudSync")`):
+   `reconcile()` の呼び出しごとに push/pull/no-op/disabled の結果・理由・
+   ローカルとクラウドで食い違っているキー・`snapshot`/`cloud` それぞれの
+   `updatedAt` を1行で出力する。実機で切り分けるときは:
+
+   ```sh
+   xcrun simctl spawn booted log stream \
+     --predicate 'subsystem == "com.mtkg.otegami" && category == "SettingsCloudSync"' \
+     --style compact
+   # 実機の場合: Console.app で同じ subsystem/category を検索、または
+   # log stream --predicate '...' をデバイスに対して実行。
+   ```
+
+### 積み残し (v2 移行)
+
+タスクの依頼どおり、ペイロード全体を1つの `updatedAt` で丸ごと
+上書きする現行方式 (`SettingsCloudPayload`) から、キー単位の
+`updatedAt` (per-key last-writer-wins、`settings.v2`、`v1` 読み取り
+互換) へ移行する案は見送った — 上記の pull 直前再チェックと
+デバウンス push で実害のあるレースは塞げており、v2 移行は
+「2台が同時刻に別々のキーを変更した場合、片方の変更が丸ごと消える」
+という現行方式の既知の設計限界 (`SettingsCloudPayload` のdoc comment
+参照) を根絶するためのより大きな工数のリファクタになる。優先度が
+上がったら着手する TODO として残す。
+
+### 検証
+
+- 新規ユニットテスト (`SettingsCloudSyncEngineTests`):
+  - `concurrentLocalChangeDuringAPullDecisionIsNotDiscarded`: 上記の
+    レースそのものを `AsyncGate`/`FakeLocalSettingsDirectory
+    .onLastSyncedSnapshot` フックで決定的に再現。修正前のコードに
+    戻すと実際に失敗する (`.pulled` になり、トグルがロールバックされ、
+    クラウドの値も上書きされない) ことを確認してから修正を適用した。
+  - `twoDevicePingPongConvergesOnTheNewestValue`: デバイス A (最初に
+    push)・デバイス B (pull → ローカルでオフに変更 → push) ・
+    デバイス A が再度 reconcile、という順序で、最終的に一番新しい
+    変更 (デバイス B のオフ) に両デバイスとも収束することを確認。
+  - 既存6本 (`firstDeviceEverPushesItsCurrentValuesAsTheInitialPayload`
+    ほか) は無改修のまま全件グリーン。
+- `make test` (`packages/OtegamiKit`) 実行、`AccountCloudSyncTests`
+  37件全件グリーンを確認。既知の無関係 flake
+  (`MessageBuilderTests` の日本語ラウンドトリップ) のみ発生、無視可。
+- `xcodebuild ... -destination 'platform=macOS' build` /
+  `-destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' build`
+  (`make mac`/`make ios` 相当) をそれぞれ直接実行し、`BUILD SUCCEEDED`
+  を確認。
+- **実機での確認はこのセッションでは未実施** — iCloud KVS 自体が
+  シミュレータで不安定なため (`docs/verify.md`)。ユーザー側の確認手順:
+  1. 実機でスレッド表示をオフにする。
+  2. すぐ (デバウンス猶予の3秒以内) にアプリスイッチャーからスワイプ
+     して kill し、再起動する — オフのままであることを確認。
+  3. 上記の `log stream` コマンドで `reconcile -> pushed`/`pulled` の
+     行と `diffKeys`/`updatedAt` を見て、押し戻す挙動が実際に無いか
+     継続的に確認できる。
+  4. 複数デバイスがある場合、片方でオン⇔オフを繰り返しても、最終的に
+     全デバイスが同じ値に収束することを確認 (`docs/icloud-sync.md`の
+     この節が指す「last write wins」の既知の制約自体は変わっていない
+     ので、同時刻に近い操作は最後に reconcile したデバイスの値が勝つ)。
