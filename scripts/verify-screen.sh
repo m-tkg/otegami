@@ -52,6 +52,10 @@
 #                                       ダーク反転時の右端白帯/セクション間
 #                                       色ムラ/透過ロゴが暗背景に沈む、の
 #                                       3点の確認用)
+#   calendar-invite                    Task #66: カレンダー招待メールの
+#                                       招待カード (36番フィクスチャ相当 —
+#                                       タイトル/日時/場所/主催者 +
+#                                       「承諾」「辞退」「未定」ボタン)
 #   list                                統合受信トレイの一覧画面 (fakeメッセージ5件)
 #   list-2accounts                      Task #77: fake HTML アカウント +
 #                                       fake Gmail アカウントの2つを注入
@@ -179,6 +183,15 @@ case "$SCENARIO" in
   html-4|html-makerworld-like)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=4")
     default_out="html-4-makerworld-like.png"
+    ;;
+  calendar-invite)
+    # Task #66: `CalendarInviteSectionView`'s card (title/time/location/
+    # organizer + 承諾/辞退/未定 buttons) — see `AppEnvironment
+    # .uitestFakeCalendarInviteICS`'s doc comment for why this reads the
+    # ICS from a locally-written file rather than a real IMAP/attachment
+    # download.
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_CALENDAR_INVITE=1")
+    default_out="calendar-invite.png"
     ;;
   list)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")

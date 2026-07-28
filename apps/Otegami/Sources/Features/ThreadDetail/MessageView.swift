@@ -230,6 +230,23 @@ struct MessageView: View {
             if let message {
                 header(for: message)
                     .padding()
+                // Task #66 (カレンダー招待メール対応): shown above the plain
+                // attachment list when this message carries a `text/
+                // calendar` (or `.ics`) part — a calendar invite's whole
+                // point is the event itself, not "here's a file", so it
+                // gets its own prominent card rather than being just
+                // another row in `attachmentSection` below.
+                if let calendarInviteAttachment, let mailboxPath {
+                    CalendarInviteSectionView(
+                        accountId: accountId,
+                        messageId: messageId,
+                        messageUID: message.uid,
+                        mailboxPath: mailboxPath,
+                        calendarAttachment: calendarInviteAttachment
+                    )
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                }
                 if !attachments.isEmpty {
                     attachmentSection
                         .padding(.horizontal)
@@ -555,6 +572,19 @@ struct MessageView: View {
     /// show up in this list.
     private var listableAttachments: [AttachmentRecord] {
         attachments.filter { !$0.isInline }
+    }
+
+    /// Task #66: the `text/calendar` part (a Google Calendar-style invite
+    /// always includes one, `METHOD:REQUEST`) driving `CalendarInviteSectionView`
+    /// above, or a plain `.ics`-named attachment as a fallback for a sender
+    /// whose MIME type is less precise (`application/ics`,
+    /// `application/octet-stream`, ...) but still names the file `.ics`.
+    /// Still listed in `attachmentSection` too (unchanged) — this is purely
+    /// "does an invite card exist *in addition to* the regular attachment
+    /// row", not a replacement for it.
+    private var calendarInviteAttachment: AttachmentRecord? {
+        attachments.first { $0.mimeType.lowercased() == "text" && $0.mimeSubtype.lowercased() == "calendar" }
+            ?? attachments.first { ($0.filename ?? "").lowercased().hasSuffix(".ics") }
     }
 
     /// Task #76 (Spark 参考画像を基にしたカード表示への刷新):

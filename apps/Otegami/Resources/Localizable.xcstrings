@@ -3341,6 +3341,116 @@
           }
         }
       }
+    },
+    "予定への招待": {
+      "comment": "Task #66 calendar invite card header, above the event title/time/location.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invitation"
+          }
+        }
+      }
+    },
+    "現在の回答: %@": {
+      "comment": "Task #66 calendar invite card: shows the RSVP already recorded for this invite, e.g. \"現在の回答: 参加\" / \"Your response: Accepted\".",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your response: %@"
+          }
+        }
+      }
+    },
+    "招待の内容を読み込んでいます…": {
+      "comment": "Task #66 calendar invite card: loading state while the text/calendar part downloads and parses.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading invitation…"
+          }
+        }
+      }
+    },
+    "承諾": {
+      "comment": "Task #66 calendar invite card: \"Accept\" RSVP button (also reused for the current-response label).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accept"
+          }
+        }
+      }
+    },
+    "辞退": {
+      "comment": "Task #66 calendar invite card: \"Decline\" RSVP button (also reused for the current-response label).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Decline"
+          }
+        }
+      }
+    },
+    "未定": {
+      "comment": "Task #66 calendar invite card: \"Maybe\"/tentative RSVP button (also reused for the current-response label).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maybe"
+          }
+        }
+      }
+    },
+    "参加": {
+      "comment": "Task #66 calendar invite card: current-response label for an accepted invite.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accepted"
+          }
+        }
+      }
+    },
+    "不参加": {
+      "comment": "Task #66 calendar invite card: current-response label for a declined invite.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Declined"
+          }
+        }
+      }
+    },
+    "未回答": {
+      "comment": "Task #66 calendar invite card: current-response label meaning no RSVP has been sent yet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No response"
+          }
+        }
+      }
+    },
+    "委任": {
+      "comment": "Task #66 calendar invite card: current-response label for an invite delegated to someone else.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delegated"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

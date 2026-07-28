@@ -652,6 +652,85 @@ final class AppEnvironment {
             self.uitestDirectOpenThreadId = capturedDirectOpenThreadId
         }
 
+        // Task #66 (カレンダー招待メール対応): same "insert a fully local,
+        // already-`.fetched` fake message" escape hatch as
+        // `OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE` above and for the same
+        // reason (this simulator/toolchain's IMAP connectivity is
+        // unreliable — `docs/verify.md`) — `scripts/verify-screen.sh
+        // calendar-invite`'s only way to get `CalendarInviteSectionView`
+        // on screen without a real IMAP/attachment-download round trip.
+        // Unlike the HTML fixtures (whose body is inline `MessageBodyRecord
+        // .html`), the invite card reads its `text/calendar` content from
+        // an `AttachmentRecord.localPath` file on disk (the same shape a
+        // real download leaves behind — see `CalendarInviteSectionView
+        // .loadICSText()`), so this writes the fixture ICS text to a real
+        // temp file and points the inserted attachment row at it, rather
+        // than needing `AttachmentFetcher`/a network fetch to populate it.
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_CALENDAR_INVITE"] == "1" {
+            let fakeAccountEmail = "uitest-fake-calendar-invite@example.com"
+            let fakeAccount = AccountRecord(
+                displayName: "Fake Calendar Invite (UITest)",
+                email: fakeAccountEmail,
+                authType: .password,
+                kind: .generic,
+                imapHost: "127.0.0.1",
+                imapPort: 1,
+                imapSecurity: .plain,
+                imapUsername: fakeAccountEmail,
+                sortOrder: 1_001
+            )
+            var capturedThreadId: Int64?
+            try? database.dbWriter.write { db in
+                // Idempotent across repeated `app.launch()`s within the
+                // same install — same rationale/guard as the HTML fixture
+                // block above.
+                guard try AccountRecord.filter(Column("email") == fakeAccountEmail).fetchOne(db) == nil else { return }
+                try fakeAccount.insert(db)
+                var mailbox = MailboxRecord(accountId: fakeAccount.id, path: "INBOX", displayPath: "INBOX", role: .inbox, messageCount: 1)
+                try mailbox.insert(db)
+
+                let icsText = Self.uitestFakeCalendarInviteICS.replacingOccurrences(of: "\n", with: "\r\n")
+                let icsURL = URL(fileURLWithPath: NSTemporaryDirectory())
+                    .appendingPathComponent("otegami-uitest-calendar-invite.ics")
+                try? icsText.data(using: .utf8)?.write(to: icsURL, options: .atomic)
+
+                var message = MessageRecord(
+                    mailboxId: mailbox.id!,
+                    uid: 1,
+                    messageId: "<uitest-fake-calendar-invite@otegami.test>",
+                    subject: "Invitation: 四半期計画会議 (Quarterly Planning Sync)",
+                    normalizedSubject: "Invitation: 四半期計画会議 (Quarterly Planning Sync)",
+                    fromAddresses: [EmailAddress(name: "Otegami Organizer", address: "organizer@otegami.test")],
+                    toAddresses: [EmailAddress(address: fakeAccountEmail)],
+                    fromText: "Otegami Organizer <organizer@otegami.test>",
+                    internalDate: Date(),
+                    hasAttachments: true,
+                    bodyState: .fetched,
+                    snippet: "四半期の計画会議です。事前に資料をご確認ください。"
+                )
+                try message.insert(db)
+                let body = MessageBodyRecord(
+                    messageId: message.id!,
+                    plainText: "四半期の計画会議です。事前に資料をご確認ください。",
+                    fetchedAt: Date()
+                )
+                try body.insert(db)
+                var attachment = AttachmentRecord(
+                    messageId: message.id!,
+                    partId: "2",
+                    filename: nil,
+                    mimeType: "text",
+                    mimeSubtype: "calendar",
+                    isInline: false,
+                    size: icsText.utf8.count,
+                    localPath: icsURL.path
+                )
+                try attachment.insert(db)
+                capturedThreadId = try? ThreadAssigner.assignThread(messageId: message.id!, accountId: fakeAccount.id, db: db)
+            }
+            self.uitestDirectOpenThreadId = capturedThreadId
+        }
+
         self.syncCoordinator = SyncCoordinator(
             database: database,
             sessionFactory: { config in MailCoreIMAPSession(config: config) },
@@ -2069,6 +2148,39 @@ final class AppEnvironment {
     </div>
     </body>
     </html>
+    """
+
+    // MARK: - Task #66 (カレンダー招待メール対応) UITest fixture
+
+    /// `OTEGAMI_UITEST_INSERT_FAKE_CALENDAR_INVITE`'s `text/calendar`
+    /// content — same event as `dev/mailstack/seed/fixtures/
+    /// 36-calendar-invite-google.eml`'s `METHOD:REQUEST` part, so a
+    /// screenshot taken via this escape hatch and one taken against the
+    /// real dev mailstack (once IMAP-in-Simulator is reliable, or on a
+    /// physical device) show the identical invite.
+    fileprivate static let uitestFakeCalendarInviteICS = """
+    BEGIN:VCALENDAR
+    PRODID:-//Google Inc//Google Calendar 70.9054//EN
+    VERSION:2.0
+    CALSCALE:GREGORIAN
+    METHOD:REQUEST
+    BEGIN:VEVENT
+    DTSTART:20260803T060000Z
+    DTEND:20260803T070000Z
+    DTSTAMP:20260728T000000Z
+    ORGANIZER;CN=Otegami Organizer:mailto:organizer@otegami.test
+    UID:uitest-fake-calendar-invite-event@otegami.test
+    ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Fake Calendar Invite:mailto:uitest-fake-calendar-invite@example.com
+    CREATED:20260728T000000Z
+    DESCRIPTION:四半期の計画会議です。事前に資料をご確認ください。
+    LAST-MODIFIED:20260728T000000Z
+    LOCATION:会議室A / Conference Room A
+    SEQUENCE:0
+    STATUS:CONFIRMED
+    SUMMARY:四半期計画会議 (Quarterly Planning Sync)
+    TRANSP:OPAQUE
+    END:VEVENT
+    END:VCALENDAR
     """
 }
 
