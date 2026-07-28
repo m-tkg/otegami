@@ -1196,10 +1196,19 @@ struct MessageListView: View {
                     try MailboxRecord.fetchOne(db, key: mailboxSelection.mailboxId)?.path
                 }
                 _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+                // Task #83: `refresh()` is only ever reached from
+                // pull-to-refresh, macOS's manual 再同期 button, and
+                // `syncSelectedMailboxOnAppear()`'s 5-minute loop below —
+                // all low-frequency, this-mailbox-scoped passes — so it
+                // always asks for the vanished-UID reconciliation
+                // unconditionally rather than trusting `highestModSeq`
+                // alone (see `MailboxSyncer.incrementalSync`'s
+                // `forceReconcileVanishedUIDs` doc comment for why that
+                // guard alone missed a real residual-message bug).
                 if let mailboxPath {
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .mailbox(path: mailboxPath), autoRetry: autoRetry)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .mailbox(path: mailboxPath), autoRetry: autoRetry, forceReconcileVanishedUIDs: true)
                 } else {
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, autoRetry: autoRetry)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, autoRetry: autoRetry, forceReconcileVanishedUIDs: true)
                 }
             } catch {
                 if surfaceErrors { syncErrorMessage = "\(error)" }
@@ -1221,7 +1230,7 @@ struct MessageListView: View {
                 do {
                     let auth = try await environment.auth(for: account)
                     _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly, autoRetry: autoRetry)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly, autoRetry: autoRetry, forceReconcileVanishedUIDs: true)
                 } catch {
                     failures.append("\(account.email): \(error)")
                 }
@@ -1243,7 +1252,7 @@ struct MessageListView: View {
                 do {
                     let auth = try await environment.auth(for: account)
                     _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .all, autoRetry: autoRetry)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .all, autoRetry: autoRetry, forceReconcileVanishedUIDs: true)
                 } catch {
                     failures.append("\(account.email): \(error)")
                 }

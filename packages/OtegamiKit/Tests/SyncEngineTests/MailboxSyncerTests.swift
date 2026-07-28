@@ -401,6 +401,70 @@ struct MailboxSyncerTests {
         #expect(messages.count == 1)
     }
 
+    // MARK: (b'') Task #83 — real-device follow-up: `highestModSeq` staying
+    // put is not proof nothing was expunged (実機バグ: Spark/Gmail Web で
+    // アーカイブ済みのメールが Otegami の受信箱に残り続ける、
+    // pull-to-refresh でも消えない)
+
+    @Test("STATUS completely unchanged (uidNext/highestModSeq/messageCount all identical) still detects a server-side vanished message when forceReconcileVanishedUIDs is true")
+    func forceReconcileDetectsVanishedMessageDespiteUnchangedStatus() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [
+                    makeEnvelope(uid: 1, subject: "1通目"),
+                    makeEnvelope(uid: 2, subject: "2通目（Spark でアーカイブ、Gmail 側の modSeq は進まない）"),
+                    makeEnvelope(uid: 3, subject: "3通目"),
+                ]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 4, highestModSeq: 5, messageCount: 3)]
+            )
+        )
+
+        // The real-device gap this reproduces: a Gmail-shaped server
+        // (CONDSTORE, no QRESYNC) that reports the *exact same*
+        // uidValidity/uidNext/highestModSeq/messageCount as last time even
+        // though another client expunged uid 2 in between — before this
+        // fix, `incrementalSync`'s `if status.highestModSeq >
+        // mailboxRecord.highestModSeq` guard kept this scenario from ever
+        // reaching `detectAndRemoveVanishedByUIDSearch` at all (Task #79's
+        // own fallback), so the message never got noticed as gone no matter
+        // how many times pull-to-refresh ran.
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 4, highestModSeq: 5, messageCount: 3)],
+            capabilitiesToReport: [.condstore],
+            existingUIDsByPath: ["INBOX": [1, 3]]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+
+        // Without the fix's opt-in, this is exactly the bug: the modSeq-gated
+        // guard never runs the vanished-UID check, so nothing is deleted.
+        let unforcedProgress = try await syncer.performIncrementalSync(
+            auth: .password(username: "test1@otegami.test", password: "test1234")
+        )
+        #expect(unforcedProgress.deletedMessages == 0)
+        let stillPresent = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db).sorted { $0.uid < $1.uid } }
+        #expect(stillPresent.map(\.uid) == [1, 2, 3])
+
+        // `forceReconcileVanishedUIDs: true` — what `MessageListView`'s
+        // pull-to-refresh and its 5-minute mailbox-display auto-resync both
+        // now pass — runs the UID SEARCH reconciliation unconditionally and
+        // finally notices uid 2 is gone.
+        let forcedProgress = try await syncer.performIncrementalSync(
+            auth: .password(username: "test1@otegami.test", password: "test1234"),
+            forceReconcileVanishedUIDs: true
+        )
+        #expect(forcedProgress.deletedMessages == 1)
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db).sorted { $0.uid < $1.uid } }
+        #expect(messages.map(\.uid) == [1, 3])
+    }
+
     // MARK: (c) uidValidity change
 
     @Test("a uidValidity change discards local messages and re-syncs the recent window from scratch")

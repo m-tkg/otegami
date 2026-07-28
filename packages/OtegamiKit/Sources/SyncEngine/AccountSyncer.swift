@@ -618,11 +618,16 @@ public actor AccountSyncer {
     /// "差分同期は INBOX を高頻度") — `.mailbox(path:)` is what a sidebar
     /// mailbox selection or its manual-refresh button asks for, `.all` a
     /// full manual refresh across every mailbox.
+    /// - Parameter forceReconcileVanishedUIDs: Task #83 — forwarded verbatim
+    ///   to every mailbox's `MailboxSyncer.incrementalSync` call this pass;
+    ///   see that parameter's doc comment for which call sites should pass
+    ///   `true`.
     @discardableResult
     public func performIncrementalSync(
         auth: MailAuth,
         scope: SyncScope = .inboxOnly,
-        autoRetry: Bool = true
+        autoRetry: Bool = true,
+        forceReconcileVanishedUIDs: Bool = false
     ) async throws -> MailboxSyncer.Progress {
         // Task #69 dedup: see `isAutoRetrying`'s doc comment.
         if autoRetry {
@@ -690,7 +695,8 @@ public actor AccountSyncer {
                         mailboxPath: info.path,
                         accountId: account.id,
                         session: session,
-                        capabilities: capabilities
+                        capabilities: capabilities,
+                        forceReconcileVanishedUIDs: forceReconcileVanishedUIDs
                     )
                     progress = mailboxProgress
                 }

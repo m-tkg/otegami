@@ -3,6 +3,7 @@ import GRDB
 import MailTransport
 import OtegamiCore
 import OtegamiStore
+import os
 
 /// Differential ("incremental") sync for a single mailbox (M3): new mail
 /// since the last sync, flag changes (`CONDSTORE` when available, a
@@ -27,6 +28,13 @@ public actor MailboxSyncer {
         self.database = database
     }
 
+    /// Task #83 diagnostics: real-device reports of "アーカイブ済みのメールが
+    /// 受信箱に残り続ける" (残骸) needed a way to confirm, from a Console pull,
+    /// that the vanished-UID reconciliation this file does actually *ran* on
+    /// the device and what it found — subsystem matches every other OSLog
+    /// call site in this app (`MessageTranslator.logger`).
+    private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "MailboxReconcile")
+
     public struct Progress: Sendable, Equatable {
         public var newMessages = 0
         public var flagChanges = 0
@@ -48,13 +56,36 @@ public actor MailboxSyncer {
     /// `messageCount`/`lastSyncedAt`) and a summary of what changed. Safe
     /// to call repeatedly (e.g. every IDLE wake or pull-to-refresh) —
     /// every step is idempotent the same way `AccountSyncer.upsert` is.
+    ///
+    /// - Parameter forceReconcileVanishedUIDs: Task #83 (実機バグ: Spark/
+    ///   Gmail Web でアーカイブ済みのメールが Otegami の受信箱に残り続ける).
+    ///   `false` (the default, every high-frequency caller e.g. the
+    ///   foreground `IDLE` wake) keeps the CONDSTORE path's existing
+    ///   behavior: the vanished-UID check below only runs when `status
+    ///   .highestModSeq` actually advanced past what was last stored.
+    ///   That guard turned out to be exactly the real-device bug — Gmail
+    ///   advertises CONDSTORE but doesn't necessarily bump a mailbox's
+    ///   `HIGHESTMODSEQ` for another client's `EXPUNGE`, so an
+    ///   archived-elsewhere message could leave `highestModSeq` completely
+    ///   unchanged and this whole block, including Task #79's own
+    ///   `detectAndRemoveVanishedByUIDSearch` fallback, was skipped
+    ///   entirely. `true` (pull-to-refresh and `MessageListView`'s
+    ///   5-minute mailbox-display auto-resync, both low-frequency,
+    ///   user-visible-mailbox-scoped passes — see their call sites) runs
+    ///   that same cheap `UID SEARCH` reconciliation unconditionally,
+    ///   regardless of whether `highestModSeq` moved. Left at `false` for
+    ///   the `IDLE` wake path deliberately: that one fires far more often,
+    ///   and INBOX's own foreground `IDLE` loop plus the periodic passes
+    ///   above already give a stuck-residual message a bounded time to
+    ///   self-heal without paying for a `UID SEARCH` on every single wake.
     @discardableResult
     public func incrementalSync(
         mailboxRecord: MailboxRecord,
         mailboxPath: String,
         accountId: String,
         session: any IMAPSessionProtocol,
-        capabilities: Set<IMAPCapability>
+        capabilities: Set<IMAPCapability>,
+        forceReconcileVanishedUIDs: Bool = false
     ) async throws -> (mailbox: MailboxRecord, progress: Progress) {
         guard let mailboxId = mailboxRecord.id else {
             return (mailboxRecord, Progress())
@@ -145,6 +176,7 @@ public actor MailboxSyncer {
         // path's full re-fetch-and-diff, which would defeat the point of
         // having CONDSTORE in the first place.
         if capabilities.contains(.condstore) {
+            var vanishedAlreadyHandled = false
             if status.highestModSeq > UInt64(mailboxRecord.highestModSeq) {
                 let result = try await session.fetchEnvelopes(
                     mailboxPath: mailboxPath,
@@ -163,6 +195,7 @@ public actor MailboxSyncer {
                         mailboxId: mailboxId,
                         uids: Set(vanishedUIDs.map(Int64.init))
                     )
+                    vanishedAlreadyHandled = true
                 } else {
                     progress.deletedMessages = try await detectAndRemoveVanishedByUIDSearch(
                         mailboxId: mailboxId,
@@ -170,7 +203,23 @@ public actor MailboxSyncer {
                         session: session,
                         status: status
                     )
+                    vanishedAlreadyHandled = true
                 }
+            }
+            // Task #83: see `forceReconcileVanishedUIDs`'s doc comment —
+            // `highestModSeq` staying put is not proof nothing was expunged
+            // by another client, so a low-frequency caller asks for this
+            // reconciliation unconditionally rather than trusting that guard.
+            if forceReconcileVanishedUIDs, !vanishedAlreadyHandled {
+                Self.logger.notice(
+                    "reconcile: forcing UID SEARCH for \(mailboxPath, privacy: .public) despite unchanged highestModSeq=\(mailboxRecord.highestModSeq, privacy: .public)"
+                )
+                progress.deletedMessages = try await detectAndRemoveVanishedByUIDSearch(
+                    mailboxId: mailboxId,
+                    mailboxPath: mailboxPath,
+                    session: session,
+                    status: status
+                )
             }
         } else {
             progress.deletedMessages = try await refetchAndDiffFlags(
@@ -334,10 +383,19 @@ public actor MailboxSyncer {
             mailboxPath: mailboxPath,
             uids: UIDRange(lowerBound: UInt32(minUID), upperBound: nil)
         )
-        guard !(serverUIDs.isEmpty && status.messageCount > 0) else { return 0 }
+        guard !(serverUIDs.isEmpty && status.messageCount > 0) else {
+            Self.logger.notice(
+                "reconcile: suspicious empty UID SEARCH for \(mailboxPath, privacy: .public) (server reports messageCount=\(status.messageCount, privacy: .public)) — skipping deletion this pass"
+            )
+            return 0
+        }
 
         let deletedUIDs = Set(localUIDs).subtracting(serverUIDs.map(Int64.init))
-        return try await deleteMessages(mailboxId: mailboxId, uids: deletedUIDs)
+        let deletedCount = try await deleteMessages(mailboxId: mailboxId, uids: deletedUIDs)
+        Self.logger.notice(
+            "reconcile: \(mailboxPath, privacy: .public) serverUIDs=\(serverUIDs.count, privacy: .public) localUIDs=\(localUIDs.count, privacy: .public) deleted=\(deletedCount, privacy: .public)"
+        )
+        return deletedCount
     }
 
     /// Deletes every `message` row in `mailboxId` whose `uid` is in `uids`

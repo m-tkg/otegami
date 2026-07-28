@@ -787,3 +787,73 @@ dev mailstack の実 Dovecot に対する統合テストも追加
 `make test` green。実機確認ポイント: Gmail アカウントで Web 側から
 INBOX の1通をアーカイブし、Otegami で pull-to-refresh (または通常の
 差分同期) を行った後、その1通が受信トレイから消えること。
+
+### 追記 (Task #83): 実機で効かなかった原因と修正
+
+**症状の再発**: 上記修正後も実機で、Spark でアーカイブ済み (Gmail Web
+でもアーカイブ済み = サーバーの INBOX から消滅済みを確認) のメールが
+Otegami の受信箱に残り続けた。pull-to-refresh を繰り返しても消えない。
+FakeIMAPSession によるユニットテストは全て green のままで、実装その
+ものの消滅検出ロジック (`detectAndRemoveVanishedByUIDSearch`) 自体に
+バグは無かった。
+
+**原因**: 上の「修正」4番、「`status.highestModSeq` が前回から変化して
+いない場合は往復しない」という前提が実機では成り立っていなかった。
+`MailboxSyncer.incrementalSync` の CONDSTORE 経路は
+
+```swift
+if status.highestModSeq > UInt64(mailboxRecord.highestModSeq) {
+    // ここでしか vanishedUIDs / detectAndRemoveVanishedByUIDSearch に
+    // 到達しない
+}
+```
+
+という `if` の中に、QRESYNC 経由の `vanishedUIDs` 判定も #79 の
+UID SEARCH フォールバックも両方とも入れ子になっていた。Gmail は
+他クライアントの `EXPUNGE` に対して必ずしも INBOX の `HIGHESTMODSEQ`
+を進めるとは限らない (少なくとも実機で観測された範囲では、Spark 側の
+アーカイブ操作後も `STATUS` の `uidNext`/`HIGHESTMODSEQ`/
+`MESSAGES` が前回同期時と完全に同一のまま返ってくるケースがあった) —
+その場合この `if` に一度も入らず、フォールバックの UID SEARCH 自体が
+実行されないまま「変化なし」として同期が終わっていた。「`HIGHESTMODSEQ`
+が変化しない ⇒ 何も消えていない」という保証は RFC 7162 のどこにも
+存在せず、これは実装側の誤った前提だった。
+
+**修正**: `MailboxSyncer.incrementalSync`/`AccountSyncer
+.performIncrementalSync`/`SyncCoordinator.syncAccountIncrementally` に
+`forceReconcileVanishedUIDs: Bool = false` を追加。`true` を渡すと
+`highestModSeq` の比較結果に関係なく `detectAndRemoveVanishedByUIDSearch`
+(軽量な `UID SEARCH` 1回) を必ず実行する。デフォルトは `false` のまま
+(`IDLE` wake などの高頻度パスは従来どおり `highestModSeq` ガード付き —
+毎回 `UID SEARCH` を払うコストに見合わないため)。`true` を渡すのは
+`MessageListView.refresh()` — pull-to-refresh、macOS の手動再同期
+ボタン、`syncSelectedMailboxOnAppear()` の5分間隔の自動再同期
+(492c4ca) がいずれもこの1関数を経由する — の呼び出し全箇所のみ。
+
+**計装**: `MailboxSyncer` に OSLog (`subsystem: "com.mtkg.otegami"`,
+`category: "MailboxReconcile"`) を追加。`detectAndRemoveVanishedByUIDSearch`
+実行のたびに対象メールボックスパス・サーバー側 UID 数・ローカル UID 数・
+削除件数を記録し、`forceReconcileVanishedUIDs` によって
+`highestModSeq` 不変でも強制実行された場合はその旨も別途記録する。
+Console (`log stream --predicate 'subsystem == "com.mtkg.otegami" &&
+category == "MailboxReconcile"'`) でこの照合が実機で実際に走って
+いること、削除件数が0より大きいことを確認できる。
+
+**テスト**:
+`MailboxSyncerTests.forceReconcileDetectsVanishedMessageDespiteUnchangedStatus`
+を追加 — `uidValidity`/`uidNext`/`highestModSeq`/`messageCount` の
+全てが前回と完全一致する `MailboxStatus` を返す `FakeIMAPSession` に
+対して、`forceReconcileVanishedUIDs` 無し (デフォルト `false`) では
+何も削除されないこと (= 修正前の実機バグの再現)、`true` を渡すと
+消滅した1通が検出・削除されることの両方を1テストで確認する。
+
+既存の実 Dovecot 統合テスト
+(`SyncEngineIntegrationTests.incrementalSyncRemovesMessageExpungedByAnotherClient`)
+も再実行し green を確認 — こちらは Dovecot 自身が `EXPUNGE` に対して
+`HIGHESTMODSEQ` を進めるため今回の実機パターン (`highestModSeq` 不変)
+そのものは再現できないが、`detectAndRemoveVanishedByUIDSearch` 自体の
+正しさの裏取りとして継続して有効。
+
+`make test`/`make mac`/`make ios` 全て green。
+`OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter
+SyncEngineIntegrationTests` (dev mailstack) も5件全て green。

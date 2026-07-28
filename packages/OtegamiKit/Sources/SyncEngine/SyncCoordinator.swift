@@ -193,15 +193,30 @@ public actor SyncCoordinator {
     /// 実行し、失敗は従来どおり表示」(Task #69's request) means a user who
     /// just pulled to refresh should see the result of *that* attempt, not
     /// wait through up to ~30s of silent background retries first.
+    ///
+    /// `forceReconcileVanishedUIDs` (Task #83, default `false`): forwarded
+    /// to `AccountSyncer.performIncrementalSync`/`MailboxSyncer
+    /// .incrementalSync` — see that parameter's doc comment. `true` for
+    /// `MessageListView`'s pull-to-refresh and its 5-minute mailbox-display
+    /// auto-resync (both low-frequency, user-visible-mailbox-scoped);
+    /// left at `false` here (and for the `IDLE`-wake call below) so the
+    /// higher-frequency automatic paths don't all pay for an extra `UID
+    /// SEARCH` per mailbox on every pass.
     @discardableResult
     public func syncAccountIncrementally(
         _ account: AccountRecord,
         auth: MailAuth,
         scope: SyncScope = .inboxOnly,
-        autoRetry: Bool = true
+        autoRetry: Bool = true,
+        forceReconcileVanishedUIDs: Bool = false
     ) async throws -> MailboxSyncer.Progress {
         let syncer = syncer(for: account)
-        let progress = try await syncer.performIncrementalSync(auth: auth, scope: scope, autoRetry: autoRetry)
+        let progress = try await syncer.performIncrementalSync(
+            auth: auth,
+            scope: scope,
+            autoRetry: autoRetry,
+            forceReconcileVanishedUIDs: forceReconcileVanishedUIDs
+        )
         // Task #63: "各メールボックスの同期完了後にも1回" — see
         // `schedulePostSyncPrefetchIfNeeded(for:auth:)`'s doc comment. Only
         // scheduled after a *successful* sync (the `try await` above would
