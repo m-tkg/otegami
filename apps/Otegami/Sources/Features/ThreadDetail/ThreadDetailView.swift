@@ -207,25 +207,38 @@ struct ThreadDetailView: View {
         // replaced with a generic screen title.
         .navigationTitle("メール")
         .task(id: threadId) { await load() }
+        // Task #60 (実機報告「要約/翻訳ボタンがフッターツールバーの Reply に
+        // 被る」): attached *before* `.safeAreaInset(edge: .bottom)` below —
+        // Task #59 originally had this the other way around (`overlay`
+        // *after* `safeAreaInset`), reasoning that the overlay would resolve
+        // against the safe area `safeAreaInset` carves out. That was wrong:
+        // with `overlay` as the *outer* modifier, its bottom-leading
+        // alignment resolves against the combined (content + footerToolbar)
+        // frame's own bottom edge — i.e. the bottom of the toolbar itself,
+        // not above it — which is exactly the overlap the real-device
+        // screenshot showed. Attaching `overlay` here, *inside* (before)
+        // `.safeAreaInset(edge: .bottom)`, means `safeAreaInset` is the
+        // outer modifier instead: it insets the already-overlaid content by
+        // `footerToolbar`'s height, so the overlay's bottom-leading
+        // alignment now resolves just above the toolbar rather than behind
+        // it. Same "outside the scrollable content, screen-fixed" placement
+        // `MailScreenView.floatingSearchButton`/`FolderListSheet
+        // .floatingSettingsButton` already use — the whole point of
+        // Task #59's move (`MessageDetailAIFeaturesState`'s doc comment) —
+        // just with the two modifiers in the order that actually achieves
+        // it. `MessageDetailFloatingButtons`' own `.padding(.bottom,
+        // OtegamiSpacing.lg)` is what leaves the one-spacing-step gap above
+        // the toolbar's top edge.
+        .overlay(alignment: .bottomLeading) {
+            if let expandedAIFeaturesState {
+                MessageDetailFloatingButtons(state: expandedAIFeaturesState)
+            }
+        }
         .safeAreaInset(edge: .bottom) { footerToolbar }
         .sheet(isPresented: $showingInfo) { infoSheet }
         .sheet(isPresented: $showingToolbarSettings) {
             NavigationStack { MessageToolbarSettingsView() }
                 .tint(OtegamiColor.accent)
-        }
-        // Task #59: attached *last* — after `.safeAreaInset(edge: .bottom)`
-        // — so this `overlay`'s bottom-leading alignment resolves against
-        // the safe area `safeAreaInset` already carved out for
-        // `footerToolbar`, keeping the buttons pinned just above it rather
-        // than behind it. Same "outside the scrollable content, screen-
-        // fixed" placement `MailScreenView.floatingSearchButton`/
-        // `FolderListSheet.floatingSettingsButton` already use — the whole
-        // point of Task #59's move (`MessageDetailAIFeaturesState`'s doc
-        // comment).
-        .overlay(alignment: .bottomLeading) {
-            if let expandedAIFeaturesState {
-                MessageDetailFloatingButtons(state: expandedAIFeaturesState)
-            }
         }
     }
 

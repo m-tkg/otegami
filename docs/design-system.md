@@ -3402,3 +3402,34 @@ Task #55 以来`MessageView`自身の`.overlay(alignment: .bottomLeading)`
 **検証状況**: `make test`/`make ios`/`make mac`緑を確認した。実機
 シミュレータでのスクリーンショット確認はこの回では実施していない
 (実装ルールにより不要 — OTA配信後の実機確認はユーザーに委ねる)。
+
+## Task #60: Task #59 のフローティングボタン画面固定が下すぎてフッター
+ツールバーに被る退行
+
+Task #59 で画面固定にした要約/翻訳フローティングボタンが、実機では
+フッターツールバー (Reply/Forward/…) の真上に重なって表示された
+(実機スクリーンショット: Reply アイコンの上にボタンが被さっていた)。
+
+**原因**: `ThreadDetailView.body`が`.overlay(alignment: .bottomLeading)`
+(ボタン) を`.safeAreaInset(edge: .bottom) { footerToolbar }`より**後**
+(=外側) に付けていた。Task #59 はこの順序なら overlay が
+`safeAreaInset`の確保した safe area の中に収まる (=ツールバーの上)
+と想定していたが、実際の SwiftUI の挙動は逆だった: `overlay`が外側の
+修飾子だと、その bottom-leading 整列は「content + footerToolbar」を
+合わせた**外側ビュー全体**のフレームの下端を基準に解決される — つまり
+ツールバー自身の下端であり、ツールバーの上ではない。
+
+**修正**: 2つの修飾子の順序を入れ替え、`.overlay(alignment:
+.bottomLeading)`を`.safeAreaInset(edge: .bottom) { footerToolbar }`
+より**前**(=内側)に付けるようにした (`ThreadDetailView.swift`)。これで
+`safeAreaInset`が外側の修飾子になり、「overlay 済みの content」を
+`footerToolbar`の高さぶんインセットする — overlay の bottom-leading
+整列はそのインセット後のフレーム基準になるため、ツールバーのすぐ上に
+収まる。ボタン下端とツールバー上端の間隔は、`MessageDetailFloatingButtons`
+がもともと持っていた`.padding(.bottom, OtegamiSpacing.lg)`でそのまま
+確保される (別途調整不要)。ScrollView 側の`.contentMargins(.bottom:)`
+(Task #59 で一本化した「ボタン重なり回避の下部余白」) はボタンの
+見た目の位置には依存しないため変更なし。
+
+**検証状況**: `make test`/`make ios`/`make mac`緑を確認した。実機での
+見た目確認はユーザーに委ねる (OTA配信後)。
