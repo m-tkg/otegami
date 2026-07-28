@@ -75,4 +75,20 @@ enum ListDisplaySettingsStore {
     /// default there, so this doesn't change macOS's own list content.
     static let unreadOnlyKey = "listDisplay.unreadOnly"
     static let defaultUnreadOnly = false
+
+    /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」、Spark の
+    /// 参考画像参照): メール一覧ヘッダの「アカウントでグループ化」トグル
+    /// (iOS only — `unreadOnlyKey`と同じ場所、`MailScreenView`の
+    /// `groupByAccountToggleButton`)。ON で `MessageListView` がアカウント
+    /// ごとのセクション (色罫線＋表示名＋件数バッジ、`AccountGroupSectionHeader`)
+    /// に一覧を分割する — 新規クエリは増やさず、既に取得済みの`summaries`
+    /// をメモリ内でグルーピングし直すだけ (`MessageListView.groupedSummaries`
+    /// の doc comment参照)。単一アカウントしか無い、またはアカウント絞り込み
+    /// チップ・単一メールボックス選択中でグルーピングが無意味な画面では
+    /// トグル自体を出さない (`MailScreenView.showsGroupByAccountToggle`/
+    /// `MessageListView.showsAccountAccent`と同じ条件)。Default off:
+    /// `unreadOnlyKey`と同じ理由 — 一覧の並びを変える表示切り替えは、
+    /// 初回起動ユーザーを驚かせない既定に倒す。
+    static let groupByAccountKey = "listDisplay.groupByAccount"
+    static let defaultGroupByAccount = false
 }

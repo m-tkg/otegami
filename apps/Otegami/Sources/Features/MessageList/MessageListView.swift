@@ -222,6 +222,52 @@ struct MessageListView: View {
     /// copy in `emptyStateTitle`.
     @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
+    // MARK: - アカウントでグループ化 (Task #77、ヘッダのトグル — see
+    // `ListDisplaySettingsStore.groupByAccountKey`'s doc comment)
+
+    /// `MailScreenView`の`groupByAccountToggleButton`が同じ`UserDefaults`キー
+    /// を直接書く (`isUnreadOnly`と同じ流儀 — `@AppStorage`自体が両者を
+    /// 同期する)。ここでは`isGroupingActive`経由でのみ読む。
+    @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
+
+    /// グルーピングが実際に効くのは、設定がONかつ`showsAccountAccent`が
+    /// 真の画面 (複数アカウントが混ざりうる統合受信トレイ/横断ビュー) の
+    /// ときだけ — 単一メールボックス表示や、1a のアカウント絞り込み
+    /// チップで1アカウントに絞った統合受信トレイでは、そもそも全行が
+    /// 同じアカウントなのでセクション分割自体が意味を持たない
+    /// (`MailScreenView.showsGroupByAccountToggle`がトグル自体を隠す条件と
+    /// 同じ)。
+    private var isGroupingActive: Bool { isGroupByAccount && showsAccountAccent }
+
+    /// Task #77: `displayedSummaries`をアカウントIDで区分した1セクション分。
+    /// 新規のSQLクエリは追加しない — 既に取得済みの`ThreadSummary`配列を
+    /// メモリ内で再グルーピングするだけ(ミッションの規模 (ページングで
+    /// せいぜい数百件) ならこれで十分、`docs/design-system.md`のTask #77
+    /// 節参照)。
+    private struct AccountGroup: Identifiable {
+        var accountId: String
+        var summaries: [ThreadSummary]
+        var id: String { accountId }
+    }
+
+    /// アカウントの並び順は「そのアカウントの最初の行が現れた順」——
+    /// `displayedSummaries`は既に日付降順でアカウント間インターリーブ済み
+    /// なので、これは自然に「直近の更新があるアカウントが上」という順序に
+    /// なる（参考画像のGmail/PLAIDの並びと同じ考え方）。
+    private var groupedSummaries: [AccountGroup] {
+        var order: [String] = []
+        var buckets: [String: [ThreadSummary]] = [:]
+        for summary in displayedSummaries {
+            let accountId = summary.thread.accountId
+            if buckets[accountId] == nil {
+                order.append(accountId)
+                buckets[accountId] = []
+            }
+            buckets[accountId, default: []].append(summary)
+        }
+        return order.map { AccountGroup(accountId: $0, summaries: buckets[$0] ?? []) }
+    }
+
     /// Flat mode is simply "threading turned off" — kept as a derived value
     /// so the rest of this view (and `ObservationKey`) can keep reading in
     /// the affirmative "is this the flat query?" direction.
@@ -366,9 +412,7 @@ struct MessageListView: View {
 
     var body: some View {
         List {
-            ForEach(displayedSummaries) { summary in
-                threadRow(for: summary)
-            }
+            listContent
         }
         .accessibilityIdentifier("messageList.list")
         .scrollContentBackground(.hidden)
@@ -482,6 +526,23 @@ struct MessageListView: View {
             if let pendingUndo {
                 UndoToast(message: pendingUndo.message, onUndo: undoPending)
                     .animation(.default, value: pendingUndo.threadIds)
+                    // 実機報告「アーカイブしました、元に戻す、のバーが、
+                    // フローティングボタンと被ってしまう」— iOS のみ、
+                    // `MailScreenView`の左下`floatingSearchButton`/右下
+                    // `floatingComposeButton`の分だけこのトーストを画面下端
+                    // から持ち上げる。マジックナンバーを新設せず、同じ
+                    // クリアランスを見積もる`.contentMargins(.bottom:)`
+                    // (このファイル冒頭、一覧本体の最終行がこの2ボタンと
+                    // 被らないよう既に採用済みの値) をそのまま再利用する —
+                    // 横幅は変えない (`UndoToast`自身の`.padding(.horizontal:)`
+                    // のまま)。ボタン自体は`MailScreenView.content`の
+                    // `overlay`側にあり、この`MessageListView`より手前に
+                    // 描画される(＝タップも常にボタン優先)ので、トースト側の
+                    // 見た目の重なりだけを直せば済む — ヒットテストの
+                    // 変更は不要。
+                    #if os(iOS)
+                    .padding(.bottom, OtegamiSpacing.xxl + OtegamiSpacing.lg)
+                    #endif
             }
         }
         .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, unreadOnly: isUnreadOnly)) {
@@ -625,6 +686,37 @@ struct MessageListView: View {
     /// `.swipeActions` groups, a long-press gesture, and a conditional
     /// context menu on top of what was already flagged as risky) is larger
     /// still.
+    /// `body`の`List`本体 — Task #77: `isGroupingActive`なら
+    /// `groupedSummaries`をアカウントごとの`Section`に分けて描画し、そう
+    /// でなければ従来どおりのフラットな`ForEach`。`docs/ci.md`の「`List`の
+    /// 中身は独立した式に切り出す」方針どおり、条件分岐を`body`本体から
+    /// 追い出すために切り出した (この分岐自体を`body`に直書きすると、
+    /// 既にこの`List`に積んである長いモディファイアチェーンと合わさって
+    /// CI型チェックタイムアウトの典型的な引き金になりうる)。
+    @ViewBuilder
+    private var listContent: some View {
+        if isGroupingActive {
+            ForEach(groupedSummaries) { group in
+                Section {
+                    ForEach(group.summaries) { summary in
+                        threadRow(for: summary)
+                    }
+                } header: {
+                    AccountGroupSectionHeader(
+                        accountId: group.accountId,
+                        accountDisplayName: accountDisplayNames[group.accountId] ?? group.accountId,
+                        labelColorKey: accountLabelColorKeys[group.accountId],
+                        count: group.summaries.count
+                    )
+                }
+            }
+        } else {
+            ForEach(displayedSummaries) { summary in
+                threadRow(for: summary)
+            }
+        }
+    }
+
     @ViewBuilder
     private func threadRow(for summary: ThreadSummary) -> some View {
         if let threadId = summary.thread.id {

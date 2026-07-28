@@ -4066,3 +4066,122 @@ DesignSystemCatalog`の`DesignSystemTests`(`leastUsedColorKey(avoiding:)`
 のアルゴリズムテスト、色の16進値自体は検証対象外) は`swift test`で
 グリーンを確認、`make test`(`packages/OtegamiKit`) も影響を受けない
 モジュール境界のため引き続きグリーン。
+
+## Task #77: 一覧のアカウント別グルーピング・作成ボタンのアクセント塗り・Undoトースト位置修正
+
+ユーザー要望3点 (うち2点は参考画像、どちらも Spark) を元にした変更。
+
+### 1. 一覧をアカウントごとのセクションに分割する設定
+
+参考画像 (統合受信トレイの一覧で「Gmail 33」「PLAID 9」のようなアカウント
+名+件数の見出しの下に、そのアカウントのメールが並ぶ) と同じグルーピング
+を、既存の「未読のみ表示」トグルの隣に置くヘッダのアイコントグルで
+on/off できるようにした。
+
+- **設定の保存**: `ListDisplaySettingsStore.groupByAccountKey`
+  (`listDisplay.groupByAccount`、既定 off) — `unreadOnlyKey`と全く同じ
+  「`MailScreenView`のヘッダと`MessageListView`が同じ`UserDefaults`キーを
+  それぞれ`@AppStorage`で読む」流儀。新規のクエリは追加していない:
+  `MessageListView.groupedSummaries`が、既に`observeThreads()`で取得済み
+  の`[ThreadSummary]`をメモリ内でアカウントIDごとに区分し直すだけ
+  (ページングで絞られる規模、せいぜい数百件なのでこれで十分と判断した)。
+  アカウントの並び順は「そのアカウントの最初の行が現れた順」— 一覧が
+  既に日付降順でアカウント間インターリーブ済みなので、これは自然に
+  「直近の更新があるアカウントが上」になる。
+- **トグルを出す条件**: `MailScreenView.showsGroupByAccountToggle`が
+  `MessageListView.showsAccountAccent`(1d の「統合受信トレイでは行の
+  アカウント色罫線/ラベルを出す」条件) と全く同じ条件を、この画面の
+  `mailSelection`/`accountFilter`から再現している — 単一メールボックス
+  選択中、1a のアカウント絞り込みチップで1アカウントに絞った統合受信
+  トレイ、アカウントが1つしか無い場合は、グルーピングしても全行が同じ
+  アカウントで意味が無いのでトグル自体を隠す(ユーザー要望「単一アカウント
+  のメールボックス表示時はトグルを出さない」)。
+- **セクション見出し**: 新設の`AccountGroupSectionHeader`
+  (`Features/MessageList/AccountGroupSectionHeader.swift`) — 既存の
+  `AccountColorRail`(1d の3px罫線) + アカウント表示名 + 件数バッジ。
+  件数バッジは参考画像の丸ピルではなく、`ThreadRowTextStack`のスレッド内
+  メッセージ数バッジと同じ「角丸0＋`paleBase`背景」— `OtegamiRadius`の
+  既存方針(「バッジは角丸0のまま、丸めるのはカードだけ」)に従い、Spark
+  側の丸ピルはあえて採用しなかった。表示名は`Text(verbatim:)`で素通しする
+  — `AccountFilterChip.label`/`FolderListSheet.CategoryAccountRow`が
+  既に踏んだ「表示名がメールアドレスそのものの場合、`LocalizedStringKey`
+  経由だとSwiftUIが自動リンク化しタップで`mailto:`が開く」実機バグと
+  同じ経路の危険を避けるため。
+- **配下の行は変更なし**: グルーピングON時も各行は通常の`MessageListRow`/
+  `ThreadRowView`のまま(日付順)— 参考画像にある「差出人アバターを複数
+  並べたダイジェスト行」は今回のスコープ外(必要になれば別途追加)。
+  `showsAccountAccent`自体も変えていないため、セクション見出しとは別に
+  各行にも従来どおりのアカウント色罫線/トレーリングのアカウント名が出る
+  — 冗長ではあるが、要件が「配下は通常のメール行」と明示していたため
+  行側は意図的に手を入れていない。
+- **アイコン**: OFF は`rectangle.grid.1x2`(フラットな一覧)、ON は
+  `person.2.fill`(アカウントの集合) — `unreadOnlyToggleButton`と同じ
+  「塗り+アイコン切り替え」スタイルをそのまま踏襲し、新しい色は足して
+  いない(`CLAUDE.md`)。
+
+### 検証
+
+`make test`/`make mac`/`make ios`はグリーン。`scripts/verify-screen.sh`に
+`list-2accounts`(fake HTML アカウント + fake Gmail アカウントの2件を
+DB直接注入、ネットワーク不要 — トグル自体が現れることの確認用)と
+`list-grouped`(同じ2アカウント構成 + `-listDisplay.groupByAccount 1`で
+`NSArgumentDomain`経由に既定値を上書きし、タップ無しでON状態を直接
+スクリーンショット)の2シナリオを追加した。
+
+### 2. 新規作成フローティングボタンをアクセント塗りに (Spark 準拠)
+
+ユーザー要望「フローティングボタンの色は、sparkに合わせて」— 参考画像の
+Spark の新規作成 FAB はアクセントブルーの塗りつぶし円+白いペンアイコン。
+`MailScreenView.floatingComposeButton`の背景を`OtegamiColor.surface`
+(枠線付きの面)から`OtegamiColor.accent`塗りへ、アイコンを`.white`へ
+変更した — `SidebarView.UnreadCountBadge`が既に確立している「アクセント
+塗りの上は`.white`」という組み合わせの再利用で、新しい色は足していない。
+枠線(`.overlay(Circle().stroke(...))`)は塗りのある円には視覚的に不要
+なので外し、影(`.shadow(color: .black.opacity(0.18), radius: 8, y: 2)`)は
+そのまま維持した。
+
+**この変更は`floatingComposeButton`だけのスコープ** — 左下の
+`floatingSearchButton`や本文画面の要約/翻訳フローティングボタンは
+現状の控えめな面スタイル(`OtegamiColor.surface`+`dividerSubtle`枠線)の
+まま変えていない。Spark 自身も、検索や翻訳のような二次アクションは
+控えめなスタイルのまま、目立たせるのは主要アクション(新規作成)だけと
+いう階層を保っており、そのメリハリをそのまま踏襲した判断。
+`scripts/verify-screen.sh list`のスクリーンショットに、light/dark
+両方でアクセント塗りの作成ボタンが視認できることを含めて確認した。
+
+### 3. Undo トーストが左下/右下フローティングボタンと被る問題の修正
+
+実機報告「アーカイブしました、元に戻す、のバーが、フローティングボタンと
+被ってしまう」— `UndoToast`(`MessageListView.body`の
+`.overlay(alignment: .bottom)`)は画面下端ぎりぎりに出る作りだったため、
+1a の`floatingSearchButton`/`floatingComposeButton`(どちらも
+`MailScreenView.content`側の`overlay`で、`MessageListView`より手前に
+描画される)と縦位置が重なっていた。
+
+- **修正**: `UndoToast`自体は変えず(横幅も含め、他プラットフォーム/
+  将来の呼び出し元に影響しない共通コンポーネントのまま)、呼び出し側
+  (`MessageListView.body`のこの`overlay`)で iOS のときだけ追加の
+  `.padding(.bottom:)`を足してトーストを持ち上げた。値は新しいマジック
+  ナンバーを起こさず、同じ2ボタンのクリアランス用に**既に採用済み**の
+  `.contentMargins(.bottom, OtegamiSpacing.xxl + OtegamiSpacing.lg, for:
+  .scrollContent)`(一覧本体の最終行がこの2ボタンと被らないよう当てて
+  あった値)をそのまま再利用した — 同じボタン2つを避けるための余白な
+  ので、同じ定数を指すのが一番の食い違い防止になる。
+- **ボタンのタップ可否**: ボタン自体は`content`側の`overlay`にあり、
+  `MessageListView`(トーストはその内側)より常に手前に描画されるため、
+  この修正の前後でヒットテストの優先順位は変わらない — 見た目の重なり
+  だけが問題だったので、視覚位置の調整のみで解決する。
+- **未検証事項**: `Undo`トーストは実際のスワイプ削除/アーカイブでしか
+  出せない一方、`scripts/verify-screen.sh`はタップ・スワイプを一切
+  行わないタップ不要経路 (この開発機のシミュレータでは一覧行への
+  タップ自体が不達になりがちなため、意図的にそう作ってある — この
+  ファイル冒頭参照) なので、このスクリプト単体では確認できない。
+  `OtegamiM3SwipeActionsUITests`のような実スワイプ系XCUITestは実
+  Dovecotアカウントのセットアップが前提で、この開発機ではIMAP接続が
+  シミュレータ内から不安定 (`MailCoreErrorDomain error 1`、同じくこの
+  ファイル冒頭に記録済みの既知の不調) なため、今回はそこまで手を伸ばさ
+  ず上記のレイアウト根拠 (共通クリアランス定数の再利用) の説明に留めた
+  — **実機確認ポイント**: 統合受信トレイでメールを1件スワイプ削除
+  またはアーカイブし、「元に戻す」バーが左下検索/右下作成のどちらの
+  ボタンにも重ならず、その少し上に浮いて見えることを確認する。あわせて
+  バー表示中でも両ボタンが引き続きタップできることも確認する。

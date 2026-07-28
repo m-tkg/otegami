@@ -53,6 +53,22 @@
 #                                       色ムラ/透過ロゴが暗背景に沈む、の
 #                                       3点の確認用)
 #   list                                統合受信トレイの一覧画面 (fakeメッセージ5件)
+#   list-2accounts                      Task #77: fake HTML アカウント +
+#                                       fake Gmail アカウントの2つを注入
+#                                       (`OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE`
+#                                       +`OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT`
+#                                       の組み合わせ、どちらもDBへの直接注入
+#                                       でネットワーク不要) — ヘッダに「アカウ
+#                                       ントでグループ化」トグルが現れること
+#                                       (単一アカウントでは出ない) の確認用。
+#                                       トグル自体はOFFのまま。
+#   list-grouped                        Task #77: ↑と同じ2アカウント構成で、
+#                                       `-listDisplay.groupByAccount 1`
+#                                       (`NSArgumentDomain`経由の`@AppStorage`
+#                                       既定値上書き — タップ不要でON状態を
+#                                       直接screenshot) によりグルーピング
+#                                       表示 (アカウント色罫線+表示名+件数の
+#                                       セクション見出しが2つ) を確認する。
 #   settings                            設定画面 (SettingsSheetView)
 #   account-settings                    Task #72: 設定→アカウントの設定
 #                                       (fake Gmail アカウント1件を挿入、
@@ -164,6 +180,21 @@ case "$SCENARIO" in
   list)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
     default_out="list.png"
+    ;;
+  list-2accounts)
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
+    default_out="list-2accounts.png"
+    ;;
+  list-grouped)
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
+    # `NSArgumentDomain`経由 — `@AppStorage(ListDisplaySettingsStore
+    # .groupByAccountKey)`が起動直後からこの値を読む。タップ操作を一切
+    # 挟まずに ON 状態のスクリーンショットを撮るための launch 引数
+    # (`UserDefaults`の引数ドメインはアプリ自身が書き込んだ値より優先度が
+    # 高い — このスクリプトは`simctl uninstall`+`install`で毎回まっさらな
+    # コンテナから始めるので、他のフラグと衝突する既存値も無い)。
+    launch_args+=("-listDisplay.groupByAccount" "1")
+    default_out="list-grouped.png"
     ;;
   settings)
     launch_args+=("-uitestsOpenSettingsDirectly")

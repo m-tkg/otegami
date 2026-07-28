@@ -61,6 +61,16 @@
         }
       }
     },
+    "アカウントでグループ化": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Group by Account"
+          }
+        }
+      }
+    },
     "未読のメールはありません": {
       "localizations": {
         "en": {

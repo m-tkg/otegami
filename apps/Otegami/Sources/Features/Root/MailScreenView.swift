@@ -82,6 +82,14 @@ struct MailScreenView: View {
     /// 影響させない」という要件どおり、`SearchQuery`は別の経路。
     @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
+    /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」): 未読
+    /// のみトグルの隣に置く「アカウントでグループ化」トグル —
+    /// `ListDisplaySettingsStore.groupByAccountKey`を`MessageListView`と共有
+    /// する同じ`@AppStorage`の流儀 (`isUnreadOnly`のdoc comment参照)。実際の
+    /// グルーピング (セクション分割) は`MessageListView.isGroupingActive`/
+    /// `groupedSummaries`側で行う — ここはトグルの表示/書き込みだけ。
+    @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
+
     var body: some View {
         HamburgerMenuContainer(isOpen: $isMenuOpen) {
             menuContent
@@ -213,6 +221,25 @@ struct MailScreenView: View {
         return false
     }
 
+    /// Task #77: 「アカウントでグループ化」トグル自体を出すかどうか —
+    /// `MessageListView.showsAccountAccent`と同じ条件をこの画面側の状態
+    /// (`mailSelection`/`accountFilter`) から再現する。単一メールボックス
+    /// 選択中 (`.mailbox`) や、1a のアカウント絞り込みチップで1アカウントに
+    /// 絞った統合受信トレイ、アカウントが1つしか無い場合は、グルーピング
+    /// しても全行が同じアカウントで意味が無いのでトグル自体を隠す
+    /// (ユーザー要望「単一アカウントのメールボックス表示時はトグルを出さない」)。
+    private var showsGroupByAccountToggle: Bool {
+        switch mailSelection {
+        case .unifiedInbox:
+            guard accountFilter == nil else { return false }
+        case .unifiedRole:
+            break
+        case .mailbox:
+            return false
+        }
+        return environment.accounts.count > 1
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         if !isSelecting {
@@ -244,6 +271,9 @@ struct MailScreenView: View {
                 }
             }
             ToolbarItemGroup(placement: .confirmationAction) {
+                if showsGroupByAccountToggle {
+                    groupByAccountToggleButton
+                }
                 unreadOnlyToggleButton
             }
         }
@@ -279,6 +309,33 @@ struct MailScreenView: View {
         .accessibilityAddTraits(isUnreadOnly ? .isSelected : [])
     }
 
+    /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」):
+    /// `unreadOnlyToggleButton`と同じ「塗り＋アイコン切り替え」スタイルの
+    /// アイコントグル — ON/OFF は`isGroupByAccount`
+    /// (`ListDisplaySettingsStore.groupByAccountKey`の`@AppStorage`) そのもの、
+    /// 実際のセクション分割は`MessageListView`側。ON時のアイコンは
+    /// `person.2.fill`(アカウントの集合という意味)、OFFは`rectangle.grid.1x2`
+    /// (フラットな一覧という意味) — どちらも既存パレット/チップトークンを
+    /// 再利用するだけで新しい色は足さない (`CLAUDE.md`)。
+    private var groupByAccountToggleButton: some View {
+        Button {
+            isGroupByAccount.toggle()
+        } label: {
+            Label("アカウントでグループ化", systemImage: isGroupByAccount ? "person.2.fill" : "rectangle.grid.1x2")
+                .labelStyle(.iconOnly)
+                .font(OtegamiFont.body())
+                .foregroundStyle(isGroupByAccount ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
+                .padding(OtegamiSpacing.xs)
+                .background(isGroupByAccount ? OtegamiColor.paleBaseStrong : Color.clear, in: Circle())
+        }
+        // `unreadOnlyToggleButton`と同じ理由で`.buttonStyle(.plain)`必須
+        // (Liquid Glass ツールバーボタンの既定ティント丸背景がON/OFFの
+        // 塗り分けを潰してしまう — そのdoc comment参照)。
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("mail.groupByAccountToggle")
+        .accessibilityAddTraits(isGroupByAccount ? .isSelected : [])
+    }
+
     /// 一覧画面左下のフローティング検索ボタン — `FolderListSheet
     /// .floatingSettingsButton`と同じ「丸い面＋影」の流儀をそのまま踏襲
     /// (実装ルール: 既存の左下フローティングボタンの実装例を踏襲)。
@@ -307,17 +364,32 @@ struct MailScreenView: View {
     /// (`ToolbarItemGroup(placement: .confirmationAction)`) をここへ移設
     /// (ユーザー要望:「メールの新規作成ボタンは、ヘッダ部ではなく右下に
     /// フローティングして欲しい」)。左下の`floatingSearchButton`と対にな
-    /// る配置・同じ「丸い面＋影」の流儀をそのまま踏襲する。accessibility
-    /// identifier はヘッダにあった頃の`mail.composeButton`を据え置き —
-    /// 参照 UITest がある場合でもこの識別子で動くようにするため。
+    /// る配置・同じ「丸い面＋影」の流儀を踏襲するが、**塗りだけ**は別
+    /// (下の doc comment 参照)。accessibility identifier はヘッダにあった
+    /// 頃の`mail.composeButton`を据え置き — 参照 UITest がある場合でも
+    /// この識別子で動くようにするため。
+    ///
+    /// ユーザー要望「フローティングボタンの色は、sparkに合わせて」
+    /// (参考画像: Spark の新規作成 FAB はアクセントブルーの塗りつぶし円＋
+    /// 白いペンアイコン): このボタンの背景だけ`OtegamiColor.surface`
+    /// (control-color の面) から`OtegamiColor.accent`塗りへ、アイコンを
+    /// `.white`へ変える — `SidebarView.UnreadCountBadge`が既に確立して
+    /// いる「アクセント塗りの上は`.white`」という組み合わせをそのまま
+    /// 再利用するだけで新しい色は足さない (`CLAUDE.md`)。
+    /// **`floatingSearchButton`／本文画面の要約・翻訳ボタンはこの変更の
+    /// 対象外** — Spark 自身も検索や翻訳のような二次アクションは控えめな
+    /// スタイルのまま、目立たせるのは主要アクション (新規作成) だけという
+    /// 階層を保っている。枠線 (`.overlay(Circle().stroke(...))`) は塗りの
+    /// ある円には視覚的に不要なので外し、影はそのまま維持する
+    /// (`docs/design-system.md`のフローティングボタン節に記録)。
     private var floatingComposeButton: some View {
         Button(action: onCompose) {
             Label("作成", systemImage: "square.and.pencil")
                 .labelStyle(.iconOnly)
                 .font(OtegamiFont.body())
+                .foregroundStyle(.white)
                 .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
-                .background(OtegamiColor.surface, in: Circle())
-                .overlay(Circle().stroke(OtegamiColor.dividerSubtle, lineWidth: 1))
+                .background(OtegamiColor.accent, in: Circle())
                 .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
         }
         .buttonStyle(.plain)
