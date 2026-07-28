@@ -222,6 +222,18 @@ struct MessageListView: View {
     /// copy in `emptyStateTitle`.
     @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
+    /// Task #82: the value `observeThreads()`/`ObservationKey` actually use
+    /// to build the `ThreadQuery` call — see `ListDisplaySettingsStore
+    /// .persistedBool(forKey:default:)`'s doc comment for why this reads
+    /// straight from `UserDefaults` instead of trusting `isUnreadOnly`
+    /// (the `@AppStorage` property above) directly. `isUnreadOnly` itself
+    /// stays declared and is still read directly in `emptyStateTitle` below
+    /// — that's what keeps SwiftUI's change-tracking subscribed to this key
+    /// so a toggle flips this computed property's result too.
+    private var persistedUnreadOnly: Bool {
+        ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.unreadOnlyKey, default: ListDisplaySettingsStore.defaultUnreadOnly)
+    }
+
     // MARK: - アカウントでグループ化 (Task #77、ヘッダのトグル — see
     // `ListDisplaySettingsStore.groupByAccountKey`'s doc comment)
 
@@ -237,7 +249,21 @@ struct MessageListView: View {
     /// 同じアカウントなのでセクション分割自体が意味を持たない
     /// (`MailScreenView.showsGroupByAccountToggle`がトグル自体を隠す条件と
     /// 同じ)。
-    private var isGroupingActive: Bool { isGroupByAccount && showsAccountAccent }
+    ///
+    /// Task #82: reads `isGroupByAccount`'s persisted value straight from
+    /// `UserDefaults` (same reasoning as `persistedUnreadOnly`/`isFlatMode`)
+    /// rather than trusting the `@AppStorage` property's current in-memory
+    /// value — a grouped/ungrouped list is just as visibly wrong on a stale
+    /// first read as the threaded/flat query is. `_ = isGroupByAccount`
+    /// (the value itself is unused) keeps SwiftUI's change-tracking
+    /// subscribed to `groupByAccountKey` — `isGroupByAccount` is otherwise
+    /// never read directly anywhere in this view's `body`, and dropping
+    /// this line entirely would mean nothing here ever re-renders (and
+    /// re-runs this fresh read) when the setting changes elsewhere.
+    private var isGroupingActive: Bool {
+        _ = isGroupByAccount
+        return ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.groupByAccountKey, default: ListDisplaySettingsStore.defaultGroupByAccount) && showsAccountAccent
+    }
 
     /// Task #77: `displayedSummaries`をアカウントIDで区分した1セクション分。
     /// 新規のSQLクエリは追加しない — 既に取得済みの`ThreadSummary`配列を
@@ -271,7 +297,20 @@ struct MessageListView: View {
     /// Flat mode is simply "threading turned off" — kept as a derived value
     /// so the rest of this view (and `ObservationKey`) can keep reading in
     /// the affirmative "is this the flat query?" direction.
-    private var isFlatMode: Bool { !isThreadingEnabled }
+    ///
+    /// Task #82 (実機報告「スレッド表示オフが起動直後に反映されない」):
+    /// reads `threadingKey`'s persisted value straight from `UserDefaults`
+    /// rather than `!isThreadingEnabled` — see `ListDisplaySettingsStore
+    /// .persistedBool(forKey:default:)`'s doc comment for the real-device
+    /// bug this fixes. `isThreadingEnabled` is still declared and read
+    /// directly via `.onChange(of: isThreadingEnabled)` below, which is
+    /// what keeps SwiftUI's change-tracking subscribed to this key so this
+    /// computed property (and the `.task(id:)` it feeds) re-evaluates the
+    /// moment the setting changes anywhere in the app, e.g. in
+    /// `MailListSettingsView`'s own Toggle.
+    private var isFlatMode: Bool {
+        !ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.threadingKey, default: ListDisplaySettingsStore.defaultThreading)
+    }
 
     /// Whitespace-only input (including the empty string right after
     /// `.searchable` clears) is "not searching" — the normal `summaries`
@@ -545,7 +584,7 @@ struct MessageListView: View {
                     #endif
             }
         }
-        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, unreadOnly: isUnreadOnly)) {
+        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, unreadOnly: persistedUnreadOnly)) {
             await observeThreads()
         }
         // Task #44: see `syncSelectedMailboxOnAppear()`'s doc comment —
@@ -912,12 +951,19 @@ struct MessageListView: View {
         }
     }
 
+    /// Task #82: every branch below reads `isFlatMode`/`persistedUnreadOnly`
+    /// (both backed by a fresh `UserDefaults` read, not a cached
+    /// `@AppStorage` value) to decide which `ThreadQuery` observation to
+    /// start — see `ListDisplaySettingsStore.persistedBool(forKey:default:)`'s
+    /// doc comment for why. This guarantees every call to this method,
+    /// starting with the very first one after launch, reflects whatever is
+    /// actually persisted rather than risking a stale in-memory default.
     private func observeThreads() async {
         switch selection {
         case .mailbox(let mailboxSelection):
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
-                ? ThreadQuery.flatSummariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, accountId: mailboxSelection.accountId, unreadOnly: isUnreadOnly)
-                : ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, unreadOnly: isUnreadOnly)
+                ? ThreadQuery.flatSummariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, accountId: mailboxSelection.accountId, unreadOnly: persistedUnreadOnly)
+                : ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, unreadOnly: persistedUnreadOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     applySummaries(fetched)
@@ -929,8 +975,8 @@ struct MessageListView: View {
         case .unifiedInbox:
             let accountIds = unifiedInboxAccountFilter.map { [$0] } ?? environment.accounts.map(\.id)
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
-                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: isUnreadOnly)
-                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: isUnreadOnly)
+                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: persistedUnreadOnly)
+                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: persistedUnreadOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     applySummaries(fetched)
@@ -945,8 +991,8 @@ struct MessageListView: View {
             // `FolderListSheet`のカテゴリ優先メニューの「横断ビュー」行。
             let accountIds = environment.accounts.map(\.id)
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
-                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: isUnreadOnly)
-                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: isUnreadOnly)
+                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: persistedUnreadOnly)
+                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: persistedUnreadOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     applySummaries(fetched)

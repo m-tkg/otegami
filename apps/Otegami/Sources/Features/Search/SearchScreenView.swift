@@ -312,7 +312,11 @@ struct SearchScreenView: View {
             // 常にグループ化されたスレッドを返していた。`MessageListView
             // .performSearch`と同じ理由で`SearchQuery.flatMessageSummaries`
             // (このバッチで新設)に分岐する。
-            let isFlat = !isThreadingEnabled
+            // Task #82: `!isThreadingEnabled`(`@AppStorage`のキャッシュ値)
+            // ではなく`UserDefaults`から直接読み直す — `MessageListView
+            // .isFlatMode`と同じ理由 (`ListDisplaySettingsStore
+            // .persistedBool(forKey:default:)`のdoc comment参照)。
+            let isFlat = !ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.threadingKey, default: ListDisplaySettingsStore.defaultThreading)
             let fetched = try await environment.database.dbWriter.read { db in
                 isFlat
                     ? try SearchQuery.flatMessageSummaries(query: query, scope: .allAccounts(accountIds: accountIds), db: db)

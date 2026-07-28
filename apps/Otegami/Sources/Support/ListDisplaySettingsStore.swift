@@ -91,4 +91,36 @@ enum ListDisplaySettingsStore {
     /// 初回起動ユーザーを驚かせない既定に倒す。
     static let groupByAccountKey = "listDisplay.groupByAccount"
     static let defaultGroupByAccount = false
+
+    /// Task #82 (実機報告「OTAインストール後の起動で、設定はオフ表示なのに
+    /// 一覧がスレッド表示。トグルをオン→オフすると直る」): reads `key`
+    /// directly from `UserDefaults.standard`, bypassing whatever value a
+    /// `@AppStorage`-declared property bound to the same key currently
+    /// holds in a given `View` instance.
+    ///
+    /// `@AppStorage`'s own `= default` parameter only ever supplies that one
+    /// property's fallback for a key with no stored value at all — it's
+    /// otherwise just a thin, per-call-site cache over the same
+    /// `UserDefaults` storage. The real-device report above was tracked
+    /// down to exactly that cache: `MessageListView`'s `@AppStorage`-backed
+    /// `isThreadingEnabled` returned the compiled-in default (`true`) on
+    /// the very first post-launch observation despite `threadingKey`
+    /// already being persisted as `false` from a previous session, and kept
+    /// returning it until *something* wrote to that key again (toggling it
+    /// on then off in Settings) — Apple doesn't document `@AppStorage`'s
+    /// internal caching precisely enough to say exactly why the first read
+    /// can lag, but the fix doesn't need to explain that, only route around
+    /// it: any call site that decides *which database query to run* — where
+    /// a stale read produces a visibly wrong result for as long as the view
+    /// stays alive, unlike a purely cosmetic label — should read straight
+    /// from here instead of trusting its own `@AppStorage` property's
+    /// current in-memory value, so the very first observation after launch
+    /// (and every one after it) is guaranteed to reflect whatever is
+    /// actually on disk. The `@AppStorage` property itself is still worth
+    /// declaring alongside this: SwiftUI's own change-tracking for that
+    /// property is what makes the view re-render (and re-run this fresh
+    /// read) the moment the setting changes anywhere else in the app.
+    static func persistedBool(forKey key: String, default defaultValue: Bool) -> Bool {
+        (UserDefaults.standard.object(forKey: key) as? Bool) ?? defaultValue
+    }
 }
