@@ -602,18 +602,72 @@ Foundation Models のガードレールは誤発動することがあり (Apple 
 `hasPartiallyBlockedContent == true` になること、(b) 唯一の段落がブロック
 された場合は `.failed` になることを確認。
 
+## 実機フィードバック: ガードレール弾きチャンクの文単位リトライ (Task #81)
+
+**症状**: MakerWorld のメールを翻訳すると、Task #61 のチャンク単位寛容化
+のあとも「一部が翻訳されずに原文のまま残る」範囲が実機で確認されたより
+広かった。原因はチャンク粒度の粗さ — `TranslationChunker` のチャンクは
+複数文をまとめて1つの塊にすることがあり (`TranslationChunker
+.defaultMaxChunkLength` 以下ならパラグラフ全体が1チャンク)、その塊の
+どこか1文だけがガードレールを誤発動させても、Task #61 の実装はチャンク
+**全体**を原文のまま残していた。同じチャンク内の無害な文まで巻き添えで
+未翻訳になっていた、というのが実際の不具合。
+
+**修正方針**: `.contentBlocked` を受けたチャンクを、そのまま原文採用する
+前に**文単位**へさらに分割し、1文ずつ `service.translate` を再試行する。
+本当にガードレールが反応する文だけが原文のまま残り、同じチャンク内の
+無害な文は救済される。
+
+1. `SentenceSplitter`（`OtegamiTranslation`、新規）: `.`/`!`/`?`/`。`/`．`/
+   `！`/`？` 終端 (改行のみの行はそれ自体を1文として) で分割する、
+   `TranslationChunker` の内部分割ロジックとほぼ同じだが独立した公開型。
+   `TranslationChunker` 自身は変更していない（既存の分割挙動・テストへの
+   影響を避けるため）。
+2. `MessageTranslator.translateAligned` の`.contentBlocked`ハンドラを
+   `retryBlockedChunkBySentence(_:sourceLanguage:targetLanguage:)` 呼び
+   出しに変更: `SentenceSplitter.split(chunk)` が2文以上に分割できる場合
+   だけ1文ずつ再試行し、`.contentBlocked` を受けた文だけがその文の原文を
+   採用、それ以外の文は通常どおり翻訳される。1文にしか分割できない
+   チャンク（Task #61 が想定していた「短い1文がまるごとブロックされた」
+   ケース）は従来どおりチャンク全体の原文をそのまま採用する — **再帰は
+   1段まで**で、文単位で再びブロックされてもそれ以上（単語・節単位）へは
+   分割しない。
+3. 「全チャンクがブロックされた場合だけ失敗」の判定も文単位に合わせて
+   更新: あるチャンクが「1文も翻訳できなかった」場合だけそのチャンクを
+   `.failed` 相当としてカウントし、メッセージ全体でその状態が揃った場合
+   だけ `.failed` にする。1文でも翻訳できていれば、そのチャンク・段落は
+   部分スキュー扱い（`wasBlocked`）で成功パスに乗る。
+4. OSLog (`Logger(subsystem: "com.mtkg.otegami", category:
+   "MessageTranslator")`) で、どのチャンク/文が `.contentBlocked` に
+   なったか（本文そのものではなく先頭20文字のみ、プライバシー配慮）を
+   記録 — ガードレールの誤発動条件は Apple 側が公開しておらず再現性が
+   低いため、実機の sysdiagnose から後追いで切り分けられるようにする
+   ためのログ。
+
+**テスト**: `SentenceSplitterTests`（ASCII/日本語終端・改行のみ・
+終端なし1文・空白トリム・空入力）、`MessageTranslatorTests` に3件追加
+— (a) チャンクがブロックされても文単位再試行でほとんどの文が翻訳される
+こと（ブロックされた1文だけ原文のまま）、(b) 文単位再試行後も全ての文が
+ブロックされたままの場合はその段落が原文のまま `wasBlocked` になり、
+かつ他の段落は正常に成功すること、(c) ガードレールに触れない通常の
+複数文チャンクはチャンク単位1回のエンジン呼び出しのままで、文単位
+リトライの経路が余計に走らないこと（非退行）。
+
 ## テスト
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、
   `ParagraphSplitter`（空行分割・空白トリム・空入力等）、
   `MessageLanguageDetector`（英文/和文/混在/短文/記号のみ）、
   `TranslationChunker`（上限内はそのまま・文境界優先分割・句読点の無い
-  長文の強制分割・日本語の句点対応）。
+  長文の強制分割・日本語の句点対応）、`SentenceSplitter`（ASCII/日本語
+  終端・改行のみ・終端なし1文・空白トリム・空入力、上記 Task #81 節参照）。
 - `TranslationEngineTests`: `MessageTranslator` のキャッシュヒット/ミス、
   エンジン識別子が変わった場合の再翻訳、失敗時の状態、`invalidate()`、
   上限を超える段落がチャンク分割されたうえで1つの `TranslatedParagraph`
   に再結合されること、ガードレール誤発動チャンクの寛容化 (部分スキップ
-  成功・全滅時失敗、上記「ガードレール誤発動の寛容化」節参照)。
+  成功・全滅時失敗、上記「ガードレール誤発動の寛容化」節参照)、ブロック
+  されたチャンクの文単位リトライ (部分救済・全滅時の原文維持・非退行、
+  上記「ガードレール弾きチャンクの文単位リトライ」節参照)。
 - `OtegamiTranslationFoundationModelsTests`: 実機のオンデバイスモデルに対する
   結合テスト（可用性に応じて自動スキップ）。
 - `SyncEngineTests`（`BodyFetcherTests`）: 本文取得時に

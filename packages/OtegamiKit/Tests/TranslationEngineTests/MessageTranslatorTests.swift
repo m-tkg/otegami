@@ -261,6 +261,103 @@ struct MessageTranslatorTests {
         #expect(persisted == nil)
     }
 
+    @Test("a guardrail-blocked chunk is retried sentence-by-sentence so only the actually-blocked sentence stays original")
+    func guardrailBlockedChunkRetriesBySentenceAndMostlyTranslates() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let sourceText = "First sentence is fine. This one triggers the guardrail. Third sentence is also fine."
+        // Task #81 (実機フィードバック「MakerWorldのメールで翻訳が一部効か
+        // ない」): the whole paragraph is one chunk (well under
+        // `TranslationChunker.defaultMaxChunkLength`), and the chunk-level
+        // call is blocked — simulating a chunk-wide guardrail misfire.
+        // `translateAligned` now retries at sentence granularity instead of
+        // discarding the whole chunk (Task #61's coarser prior behavior,
+        // still covered by `guardrailBlockedChunkIsToleratedAndOthersStillTranslate`
+        // below for the un-splittable single-sentence case).
+        await service.configureContentBlocked(for: [sourceText, "This one triggers the guardrail."])
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let state = await translator.translate(messageId: messageId, sourceText: sourceText, sourceLanguage: .english, targetLanguage: .japanese)
+
+        guard case .translated(let record) = state else {
+            Issue.record("expected .translated (partial success via sentence retry), got \(state)")
+            return
+        }
+        #expect(record.paragraphs.count == 1)
+        let paragraph = record.paragraphs[0]
+        #expect(paragraph.original == sourceText)
+        // The two innocuous sentences translate normally; only the middle
+        // sentence keeps its own original text — Task #61's coarser
+        // chunk-wide fallback would have discarded "First sentence is
+        // fine."/"Third sentence is also fine." too, which is exactly the
+        // real-device bug this retry fixes.
+        #expect(paragraph.translated == "[ja] First sentence is fine. This one triggers the guardrail. [ja] Third sentence is also fine.")
+        #expect(paragraph.wasBlocked)
+        #expect(record.hasPartiallyBlockedContent)
+        // 1 chunk-level call (blocked) + 3 sentence-level retry calls.
+        #expect(await service.translateCallCount == 4)
+    }
+
+    @Test("when every sentence in a retried chunk is still blocked, that paragraph keeps its original text (unchanged) and stays flagged blocked")
+    func guardrailBlockedChunkFullyBlockedAtSentenceLevelKeepsOriginal() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let blockedParagraph = "This sentence is blocked. This other sentence is also blocked."
+        await service.configureContentBlocked(for: [
+            blockedParagraph,
+            "This sentence is blocked.",
+            "This other sentence is also blocked.",
+        ])
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let sourceText = "First paragraph is fine.\n\n\(blockedParagraph)\n\nThird paragraph is also fine."
+        let state = await translator.translate(messageId: messageId, sourceText: sourceText, sourceLanguage: .english, targetLanguage: .japanese)
+
+        guard case .translated(let record) = state else {
+            Issue.record("expected .translated (other paragraphs still succeed), got \(state)")
+            return
+        }
+        #expect(record.paragraphs.count == 3)
+        #expect(record.paragraphs[0] == TranslatedParagraph(original: "First paragraph is fine.", translated: "[ja] First paragraph is fine.", wasBlocked: false))
+        // Both sentences remained blocked even after the sentence-level
+        // retry — the paragraph's "translated" text is just its own
+        // original, verbatim, same as Task #61's un-splittable single-
+        // sentence case, just reached via two blocked sentences instead of
+        // one blocked chunk.
+        #expect(record.paragraphs[1] == TranslatedParagraph(original: blockedParagraph, translated: blockedParagraph, wasBlocked: true))
+        #expect(record.paragraphs[2] == TranslatedParagraph(original: "Third paragraph is also fine.", translated: "[ja] Third paragraph is also fine.", wasBlocked: false))
+        #expect(record.hasPartiallyBlockedContent)
+        // 3 chunk-level calls (one per paragraph) + 2 sentence-level retry
+        // calls for the fully-blocked paragraph's chunk.
+        #expect(await service.translateCallCount == 5)
+    }
+
+    @Test("ordinary multi-sentence text makes exactly one engine call per chunk — the sentence retry path never runs without a guardrail block")
+    func normalMultiSentenceChunkIsNotExplodedIntoSentenceCalls() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let sourceText = "First sentence is fine. Second sentence is also fine. Third sentence is fine too."
+        let state = await translator.translate(messageId: messageId, sourceText: sourceText, sourceLanguage: .english, targetLanguage: .japanese)
+
+        guard case .translated(let record) = state else {
+            Issue.record("expected .translated, got \(state)")
+            return
+        }
+        #expect(record.paragraphs.count == 1)
+        #expect(record.paragraphs[0] == TranslatedParagraph(original: sourceText, translated: "[ja] \(sourceText)", wasBlocked: false))
+        #expect(!record.hasPartiallyBlockedContent)
+        // Task #81's sentence-level retry only ever runs after a chunk-
+        // level `.contentBlocked` — an ordinary chunk with no guardrail
+        // involvement at all is still translated as one whole chunk, one
+        // engine call, exactly as before Task #81 (non-regression).
+        #expect(await service.translateCallCount == 1)
+    }
+
     @Test("availability forwards the underlying service's availability")
     func availabilityForwardsService() async throws {
         let database = try AppDatabase.makeInMemory()

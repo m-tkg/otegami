@@ -3,6 +3,7 @@ import GRDB
 import OtegamiCore
 import OtegamiStore
 import OtegamiTranslation
+import os
 
 /// Ties a `TranslationService` to persistence: checks
 /// `messageTranslation` (`MessageTranslationRecord`) before calling the
@@ -179,22 +180,37 @@ public actor MessageTranslator {
             // `do` ブロックの外側 (このメソッド自身の `catch` 節) へ素通り
             // し、従来どおり全体を失敗させる — 意図的に「握り潰し」を
             // ガードレール誤発動 1 種類だけに絞っている。
+            //
+            // Task #81 (実機フィードバック「MakerWorldのメールで翻訳が一部
+            // 効かない」): Task #61 のチャンク単位フォールバックは、ブロック
+            // されたチャンクに含まれる無害な文まで道連れで原文のまま残して
+            // いた。ブロックされたチャンクは `retryBlockedChunkBySentence`
+            // でさらに文単位に分割し、1文ずつ再翻訳する（再帰は1段まで —
+            // 文単位で再度ブロックされてもそれ以上は分割しない）。
+            // `chunkHasBlockedContent[i]` は「このチャンクに1文でも原文の
+            // まま残った」、`chunkFullyBlocked[i]` は「このチャンクは1文も
+            // 翻訳できなかった」を表し、後者は「全チャンクがブロックされた
+            // 場合のみ失敗」判定に、前者は段落単位の `wasBlocked` に使う。
             var translatedChunks: [String] = []
             translatedChunks.reserveCapacity(chunks.count)
-            var blockedChunkIndices = Set<Int>()
+            var chunkHasBlockedContent = [Bool](repeating: false, count: chunks.count)
+            var chunkFullyBlocked = [Bool](repeating: false, count: chunks.count)
             for (index, chunk) in chunks.enumerated() {
                 do {
                     translatedChunks.append(try await service.translate(chunk, from: sourceLanguage, to: targetLanguage))
                 } catch let error as TranslationServiceError where error.isContentBlocked {
-                    translatedChunks.append(chunk)
-                    blockedChunkIndices.insert(index)
+                    Self.logger.notice("chunk \(index) content-blocked, retrying by sentence: \(Self.logPrefix(chunk), privacy: .public)")
+                    let retry = try await retryBlockedChunkBySentence(chunk, sourceLanguage: sourceLanguage, targetLanguage: targetLanguage)
+                    translatedChunks.append(retry.text)
+                    chunkHasBlockedContent[index] = retry.hasBlockedContent
+                    chunkFullyBlocked[index] = retry.fullyBlocked
                 }
             }
-            // 全チャンクがガードレールでブロックされた場合だけ失敗扱いに
-            // する — 1つでも翻訳できていれば「一部スキップ」として成功
-            // 扱いにし、`MessageTranslationRecord.hasPartiallyBlockedContent`
-            // 経由でUIが控えめな注記を出す (`docs/translation.md`参照)。
-            if !chunks.isEmpty, blockedChunkIndices.count == chunks.count {
+            // 全チャンクが1文も翻訳できなかった場合だけ失敗扱いにする —
+            // 1文でも翻訳できていれば「一部スキップ」として成功扱いにし、
+            // `MessageTranslationRecord.hasPartiallyBlockedContent` 経由で
+            // UIが控えめな注記を出す (`docs/translation.md`参照)。
+            if !chunks.isEmpty, chunkFullyBlocked.allSatisfy({ $0 }) {
                 throw TranslationServiceError.contentBlocked(message: "every chunk was blocked by the model's safety guardrails")
             }
 
@@ -207,7 +223,7 @@ public actor MessageTranslator {
                 let range = cursor..<(cursor + count)
                 let pieceTranslations = translatedChunks[range]
                 translatedParagraphs.append(pieceTranslations.joined(separator: " "))
-                paragraphWasBlocked.append(range.contains { blockedChunkIndices.contains($0) })
+                paragraphWasBlocked.append(range.contains { chunkHasBlockedContent[$0] })
                 cursor += count
             }
 
@@ -237,6 +253,70 @@ public actor MessageTranslator {
         } catch {
             return .failed(message: error.localizedDescription)
         }
+    }
+
+    /// Task #81: retries a guardrail-blocked chunk one sentence at a time.
+    /// `SentenceSplitter.split(chunk)` yields the smallest retry unit this
+    /// method goes to — a sentence that's itself still blocked keeps its
+    /// own original text rather than being split further (words/clauses),
+    /// which is the "recursion is one level deep" limit called for by the
+    /// real-device report this exists to fix (a chunk that's already a
+    /// single sentence-like unit, i.e. `sentences.count <= 1`, can't be
+    /// split any smaller either, so it falls straight back to the whole
+    /// chunk's original text — identical to the pre-Task #81 behavior for
+    /// that case).
+    ///
+    /// A non-`contentBlocked` error from `service.translate` (e.g.
+    /// `.tooLong`/`.unavailable`/another `.failed`) is intentionally *not*
+    /// caught here — same tolerance boundary as the chunk-level loop in
+    /// `translateAligned` above, it propagates out to that method's own
+    /// `catch` and fails the whole translation rather than being silently
+    /// treated as "blocked".
+    ///
+    /// Returns the rejoined chunk text, whether *any* sentence in it
+    /// remained untranslated (feeds `chunkHasBlockedContent`, which in turn
+    /// decides `TranslatedParagraph.wasBlocked`), and whether *every*
+    /// sentence remained untranslated (feeds `chunkFullyBlocked`, which
+    /// decides the "every chunk blocked" total-failure check).
+    private func retryBlockedChunkBySentence(
+        _ chunk: String,
+        sourceLanguage: TranslationLanguage,
+        targetLanguage: TranslationLanguage
+    ) async throws -> (text: String, hasBlockedContent: Bool, fullyBlocked: Bool) {
+        let sentences = SentenceSplitter.split(chunk)
+        guard sentences.count > 1 else {
+            Self.logger.notice("chunk has no further sentence boundary, kept original: \(Self.logPrefix(chunk), privacy: .public)")
+            return (chunk, true, true)
+        }
+
+        var translatedSentences: [String] = []
+        translatedSentences.reserveCapacity(sentences.count)
+        var blockedCount = 0
+        for sentence in sentences {
+            do {
+                translatedSentences.append(try await service.translate(sentence, from: sourceLanguage, to: targetLanguage))
+            } catch let error as TranslationServiceError where error.isContentBlocked {
+                Self.logger.notice("sentence content-blocked, kept original: \(Self.logPrefix(sentence), privacy: .public)")
+                translatedSentences.append(sentence)
+                blockedCount += 1
+            }
+        }
+        return (translatedSentences.joined(separator: " "), blockedCount > 0, blockedCount == sentences.count)
+    }
+
+    /// Task #81: OSLog category for guardrail-retry diagnostics — real-
+    /// device reports of "translation doesn't work for this one mail" are
+    /// otherwise unreproducible from a bug report alone, since the
+    /// guardrail's trigger condition isn't documented by Apple; logging
+    /// which chunk/sentence got blocked (truncated, see `logPrefix`) lets a
+    /// follow-up sysdiagnose narrow down what actually tripped it.
+    private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "MessageTranslator")
+
+    /// First 20 characters of `text` — enough to identify which
+    /// chunk/sentence a log line is about without logging a user's full
+    /// mail content to the system log.
+    private static func logPrefix(_ text: String) -> String {
+        String(text.prefix(20))
     }
 
     /// Drops `messageId`'s cached translation, if any — for a future
