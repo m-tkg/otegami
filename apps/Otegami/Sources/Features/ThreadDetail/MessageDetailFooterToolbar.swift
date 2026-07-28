@@ -3,10 +3,18 @@ import OtegamiStore
 import TranslationEngine
 
 /// 新画面構成 (3): メール本文画面 (`ThreadDetailView`) 下部の固定ツールバー。
-/// 表示するアイコンの集合は常に7つ (`MessageToolbarAction.allCases`、Task #88
-/// で要約/翻訳の2つが5つから増えた) — ユーザーが変えられるのは
-/// `MessageToolbarSettingsStore` 経由の並び順だけ (「ツールバーの編集」=
-/// `onCustomizeToolbar`、「…」メニュー内から開く)。
+/// アクションの全体集合は常に7つ (`MessageToolbarAction.allCases`、Task #88
+/// で要約/翻訳の2つが5つから増えた) — `MessageToolbarSettingsStore` 経由で
+/// 並び順に加え、Task #100 (「フッターツールバーのカスタマイズ」) 以降は
+/// 表示/非表示も変更できる。設定画面自体 (`MessageToolbarSettingsView`)
+/// への入口は2つ — 「…」メニュー内の `onCustomizeToolbar` (この画面を
+/// 見ながらすぐ調整したい、という近さ優先) と、設定 → メールビューア →
+/// 「ツールバーのカスタマイズ」(`MailViewerSettingsView`、他の表示設定と
+/// 同じ場所にまとまっている一貫性優先) — どちらも同じ画面を開くだけで、
+/// 状態は`MessageToolbarSettingsStore`に一本化されている。表示オフの
+/// アクションはこのツールバーには描画せず、
+/// `moreMenuButton`の「その他」メニュー内に項目として追加表示する
+/// (`hiddenActionMenuItems`)。「その他」自身は非表示にできず常に最後尾。
 ///
 /// 「返信」は返信/全員に返信の2択を持つ `Menu` (design-phase-3 の「返信/
 /// 全員に返信/英語で返信を下書き」ボタン群のうち、返信系2つをここに統合 —
@@ -47,11 +55,18 @@ struct MessageDetailFooterToolbar: View {
     var onCustomizeToolbar: () -> Void
     var aiFeaturesState: MessageDetailAIFeaturesState?
 
-    @State private var order: [MessageToolbarAction] = MessageToolbarSettingsStore.loadOrder()
+    @State private var items: [MessageToolbarItemSetting] = MessageToolbarSettingsStore.loadItems()
+
+    /// アイコンとして描画する、表示オンのアクションだけの並び。
+    private var visibleOrder: [MessageToolbarAction] { MessageToolbarSettingsStore.visibleOrder(items) }
+
+    /// Task #100: 非表示にしたアクション (`more`自身は含まれない) —
+    /// `moreMenuButton`が末尾に項目として追加表示する。
+    private var hiddenActions: [MessageToolbarAction] { MessageToolbarSettingsStore.hiddenOrder(items) }
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(order) { action in
+            ForEach(visibleOrder) { action in
                 toolbarButton(for: action)
                     .frame(maxWidth: .infinity)
             }
@@ -60,12 +75,12 @@ struct MessageDetailFooterToolbar: View {
         .padding(.vertical, OtegamiSpacing.sm)
         .background(OtegamiColor.surface)
         .accessibilityIdentifier("messageDetail.footerToolbar")
-        // ツールバーのカスタマイズ画面から戻ってきたときに並び順を反映する —
-        // このビュー自身は設定変更を監視しない (`UserDefaults` の
+        // ツールバーのカスタマイズ画面から戻ってきたときに並び順・可視性を
+        // 反映する — このビュー自身は設定変更を監視しない (`UserDefaults` の
         // `@AppStorage` にしていない理由は `MessageToolbarSettingsStore`
         // のドキュメント参照。頻繁に変わる値ではないので、再表示のたびに
         // 読み直せば十分)。
-        .onAppear { order = MessageToolbarSettingsStore.loadOrder() }
+        .onAppear { items = MessageToolbarSettingsStore.loadItems() }
     }
 
     @ViewBuilder
@@ -267,8 +282,60 @@ struct MessageDetailFooterToolbar: View {
             .accessibilityIdentifier("messageDetail.toolbar.translate.footnote")
     }
 
+    // MARK: - Task #100: 非表示にしたアクションを「その他」メニューへ移動
+
+    /// `hiddenActions`それぞれをメニュー項目として並べ、1件以上あれば末尾に
+    /// 区切り線を足す (以降の常設項目 — ミュート等 — と視覚的に分ける)。
+    /// `.reply`は元がサブメニュー (返信/全員に返信の2択) なので、非表示時は
+    /// 2つのフラットな項目に展開する。
+    @ViewBuilder
+    private var hiddenActionMenuItems: some View {
+        ForEach(hiddenActions) { action in
+            hiddenActionMenuItem(for: action)
+        }
+        if !hiddenActions.isEmpty {
+            Divider()
+        }
+    }
+
+    @ViewBuilder
+    private func hiddenActionMenuItem(for action: MessageToolbarAction) -> some View {
+        switch action {
+        case .reply:
+            Button { onReply() } label: { Label(action.title, systemImage: action.systemImage) }
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.reply")
+            Button { onReplyAll() } label: { Label("全員に返信", systemImage: "arrowshape.turn.up.left.2") }
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.replyAll")
+        case .forward:
+            Button { onForward() } label: { Label(action.title, systemImage: action.systemImage) }
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.forward")
+        case .search:
+            if let onSearch {
+                Button(action: onSearch) { Label(action.title, systemImage: action.systemImage) }
+                    .accessibilityIdentifier("messageDetail.toolbar.more.hidden.search")
+            }
+        case .info:
+            Button { onInfo() } label: { Label(action.title, systemImage: action.systemImage) }
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.info")
+        case .summarize:
+            Button(action: handleSummarizeTap) { Label(summarizeAccessibilityLabel, systemImage: action.systemImage) }
+                .disabled(!isSummarizeEnabled)
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.summarize")
+        case .translate:
+            Button(action: handleTranslateTap) { Label(translateAccessibilityLabel, systemImage: action.systemImage) }
+                .disabled(!isTranslateEnabled)
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.translate")
+        case .more:
+            // `more`自身は非表示にできない (`MessageToolbarSettingsStore`の
+            // 不変条件) — `hiddenActions`にこの値が来ることはない。
+            EmptyView()
+        }
+    }
+
     private var moreMenuButton: some View {
         Menu {
+            hiddenActionMenuItems
+
             Button { onToggleMute() } label: {
                 Label(isMuted ? "ミュート解除" : "スレッドをミュート", systemImage: isMuted ? "bell" : "bell.slash")
             }
