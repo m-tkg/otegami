@@ -458,18 +458,21 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 「プッシュ通知」から有効化。詳細は
 [docs/relay-deployment.md](relay-deployment.md)。
 
-## メール本文フッターツールバーの表示/非表示・並び順 (新画面構成、Task #88 で7アイコンに、Task #100 でカスタマイズ機能に、2026-07-29 追加仕様で14アクションに)
+## メール本文フッターツールバーの表示/非表示・並び順 (新画面構成、Task #88 で7アイコンに、Task #100 でカスタマイズ機能に、2026-07-29 追加仕様で14アクションに、Task #103 で15アクションに)
 
 `MessageToolbarSettingsStore.swift`(アプリターゲット)。メール本文画面
-(`ThreadDetailView`) 下部のフッターツールバーに出せる14アクション
+(`ThreadDetailView`) 下部のフッターツールバーに出せる15アクション
 (返信/転送/検索/情報/要約/翻訳/ミュート/ピン留め/未読にする/アーカイブ/
-迷惑メールにする/英語で返信を下書き/削除/その他) の表示/非表示と並び順。
+迷惑メールにする/英語で返信を下書き/削除/ソースを表示/その他) の表示/
+非表示と並び順。
 要約/翻訳の2つは Task #88 (「要約と翻訳のボタンをフローティングをやめて
 ツールバーに入れて」) で、旧フローティングボタン
 (`AISummaryFloatingButton`/`TranslationFloatingButton`) から移設した。
 ミュート以降の7つは2026-07-29の追加仕様で、旧「その他」メニューが
 ネイティブに (トグル不可・常設で) 持っていた操作を一級のアクションへ
-昇格したもの — 下記「その他」ネイティブ項目の一級化」節参照。
+昇格したもの — 下記「その他」ネイティブ項目の一級化」節参照。「ソースを
+表示」は Task #103 で追加した15番目のアクション — 下記「Task #103」節
+参照。
 
 設定画面 (`MessageToolbarSettingsView`) への入口は2つ:
 - メール本文画面の「…」メニュー →「ツールバーをカスタマイズ」
@@ -501,7 +504,7 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 
 | キー | 既定値 |
 | --- | --- |
-| `messageToolbar.order` | `reply:1,forward:1,search:1,info:1,summarize:1,translate:1,mute:0,pin:0,markUnread:0,archive:0,junk:0,draftEnglishReply:0,delete:0,more:1` (カンマ区切り、`id:1`が表示・`id:0`が非表示) |
+| `messageToolbar.order` | `reply:1,forward:1,search:1,info:1,summarize:1,translate:1,mute:0,pin:0,markUnread:0,archive:0,junk:0,draftEnglishReply:0,delete:0,viewSource:0,more:1` (カンマ区切り、`id:1`が表示・`id:0`が非表示。`viewSource`は Task #103 で追加、既定非表示) |
 
 要約/翻訳がメッセージ次第で意味を持たないことがある (本文未読込・この
 端末で AI 機能が使えない・翻訳不要な言語、等) という話は上記の「表示/
@@ -593,6 +596,49 @@ Task #100 リリース直後のユーザー指示。それまで「その他」�
 再描画を起こす」仕組みをこちら (読み取り専用の購読者) にも適用した —
 `MessageToolbarSettingsView`が同じキーへ書き込んだ瞬間、シートを閉じずに
 即座にツールバーへ反映される。
+
+### Task #103「ソースを表示」
+
+表示崩れメールの調査経路として、生の RFC822 ソース (eml) をモノスペース
+表示 + シェアシートで `.eml` ファイルとして書き出せる機能。ツールバーの
+15番目のアクション (`.viewSource`、SF Symbol `doc.plaintext`) として
+追加 — 既定は**非表示** (「その他」メニュー内)、上記の表示/非表示・並び
+順トグルの対象。
+
+- **生ソース取得**: ローカル DB には解析済み本文しか保存していないため
+  (`MessageHeaderInfoView`の「生ヘッダ (Received チェーンを含む RFC822
+  ヘッダ全体) はこのアプリでは保存していない」という既存の scope 制限
+  参照)、IMAP `UID FETCH BODY.PEEK[]` でオンデマンド取得する。既存の
+  `IMAPSessionProtocol.fetchMessageBody(mailboxPath:uid:partId:)`を
+  `partId: nil`で呼ぶだけ — そのメソッドの doc comment が元々「`partId`
+  が`nil`なら全文の raw RFC822 バイト列」と定義済みで、
+  `MailCoreIMAPSession`の実装 (mailcore2 の`fetchMessageOperation`)
+  が内部で`BODY.PEEK[]`(`\Seen`を立てない`.PEEK`変種) を発行することを
+  ピン留めした mailcore2 リビジョンのソース (`MCIMAPSession.cpp`の
+  `fetch_rfc822`/`mailimap_fetch_att_new_body_peek_section`) で確認した
+  ため、`MailTransport`プロトコルへの新しいメソッド追加は不要だった。
+- **取得・キャッシュ**: `SyncEngine.MessageSourceFetcher`(新規actor) が
+  `<Application Support>/otegami/MessageSource/<accountId>/<messageId>.eml`
+  に保存 — `AttachmentFetcher`と同じ「ディスク上のファイルの存在自体が
+  キャッシュ」方式だが、`AttachmentRecord.localPath`のような DB カラムは
+  持たない (このためだけの新カラム/マイグレーションを避けた)。
+  `SyncCoordinator.fetchRawSource(messageId:messageUID:mailboxPath:
+  account:auth:)`はキャッシュ済みなら接続すら開かない — 一度見た
+  メッセージのソース再表示はオフラインでも動く。
+- **表示**: `MessageSourceView`(モノスペース `Text`、`OtegamiFont
+  .monospaceBody()`) + `MessageSourceLoader`(`@Observable`、Task #94 の
+  `CalendarInviteLoader`と同じ「プレーンな`Task`をロード側から起動、
+  SwiftUI の`.task`修飾子には依存しない」パターン)。表示は先頭512KBまで
+  (`MessageSourceLoader.previewByteLimit`) — 巨大メール対策。読み込み中
+  / エラー(オフライン等、再試行ボタン付き) / 表示、を常にどれか1つ描画し
+  無言で何も出ない状態を作らない。
+- **シェア**: `ShareLink`で`.eml`として書き出す。共有時のファイル名は
+  `OtegamiCore.MessageSourceFilename.sanitized(subject:)`が件名から生成
+  (記号除去・80文字まで切り詰め・空なら`"message"`) — キャッシュ済みの
+  生ファイルを`FileManager.temporaryDirectory`配下にその名前でコピーして
+  から共有する (キャッシュ本体のファイル名`<messageId>.eml`をそのまま
+  シェアシートに出さないため)。表示は512KBで切り詰めても、シェアされる
+  のは常に全文。
 
 詳細・各アイコンの動作は `docs/design-system.md`「新画面構成」節参照。
 
