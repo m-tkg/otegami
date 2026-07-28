@@ -491,6 +491,13 @@ enum HTMLDocumentBuilder {
     /// .explicitDarkTextIsMajority`のdoc comment参照。この関数 (`wrap`) 自体
     /// に変更はない (Swift側は相変わらず「介入を検討してよいか」までしか
     /// 決めない)。
+    ///
+    /// **Task #104**: このファイル自身が注入する3つの`<style>`タグに
+    /// `data-otegami-base-style="1"`を付けるようになった (下記) — JS側の
+    /// `collectExplicitColorSelectors`がメール自身の`<style>`ブロックだけを
+    /// 走査し、このファイル自身のCSSルールを「著者の明示指定」と誤認しない
+    /// ようにするための目印。判定ロジック自体 (「介入を検討してよいか」まで
+    /// しか決めない、実際の判定はJS側) という役割分担は変わらない。
     static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool, forceLightBackground: Bool = false, bottomContentInset: CGFloat = 0) -> String {
         let innerBody = extractBodyContent(from: bodyHTML)
         let originalHeadStyles = extractHeadStyles(from: bodyHTML)
@@ -524,13 +531,13 @@ enum HTMLDocumentBuilder {
         // 自身の`background: transparent`のままだとアプリのダーク背景が
         // 透けてしまう) にも確実にライト表示になるようにするための保険。
         let forceLightBackgroundStyle = forceLightBackground ? """
-        <style>
+        <style data-otegami-base-style="1">
           :root { color-scheme: light !important; }
           html, body { background-color: #ffffff !important; }
         </style>
         """ : ""
         let darkModeInvertStyle = shouldConsiderDarkModeHandling ? """
-        <style>
+        <style data-otegami-base-style="1">
           @media (prefers-color-scheme: dark) {
             /* Task #45/#51: ライト前提で書かれたメールをダークモードでも
                読めるようにする「反転」手法 — Task #80 でこの手法を選ぶのは
@@ -656,13 +663,27 @@ enum HTMLDocumentBuilder {
         let bottomInsetSpacer = bottomContentInset > 0
             ? "<div id=\"otegami-bottom-inset-spacer\" style=\"height: \(Int(bottomContentInset.rounded(.up)))px; flex-shrink: 0;\"></div>"
             : ""
+        // Task #104 (実機フィードバック: Readdle Documents のニュースレター等、
+        // `<style>` ブロックの CSS クラスで文字色を指定するメールがダーク
+        // ネイティブのまま読めなかった — Task #98 の `explicitDarkTextIsMajority`
+        // はインライン `style` の `color` しか見ておらず、クラス経由の
+        // 明示指定を見落としていた): 3つの `<style>` タグ (この基本リセット、
+        // 下の `darkModeInvertStyle`、`forceLightBackgroundStyle`) すべてに
+        // `data-otegami-base-style="1"` を付け、`fitToWidthScript`側の
+        // `collectExplicitColorSelectors` がこの属性を持つ `<style>` を
+        // 「アプリ自身の注入スタイル」として除外できるようにする —
+        // `originalHeadStyles` (メール自身が持っていた `<style>` ブロック、
+        // すぐ下で差し込む) だけがマークされずに残るので、そちらだけが
+        // 「メール著者が明示指定した色」の走査対象になる。この属性が無いと
+        // このファイル自身の `a { color: LinkText; }` のようなルールまで
+        // 「著者の明示指定」に誤カウントしてしまう。
         return """
         <!doctype html>
         <html>
         <head>
         <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=yes">
         <meta charset="utf-8">
-        <style>
+        <style data-otegami-base-style="1">
           :root { color-scheme: light dark; }
           html, body {
             margin: 0;
@@ -1695,16 +1716,32 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// 「介入不要」に転ぶことがあった (実測で確認済み)。`explicitDarkText
     /// IsMajority`はこの取りこぼしを拾う追加の証拠 — 6件のサンプリングでは
     /// なく`inner`配下の**全テキストノード**を文字数ベースで集計し、
-    /// 「祖先のいずれかがインライン`style`で`color`を明示指定している」
-    /// サブツリー配下のテキストだけを対象に、その実測輝度 (閾値 0.55、
+    /// 「祖先のいずれかが明示的に`color`を指定している」サブツリー配下の
+    /// テキストだけを対象に、その実測輝度 (閾値 0.55、
     /// `representativeTextLuminance`の0.5よりわずかに緩い — 白背景前提の
     /// 中間色まで拾うため) が低いものの文字数が可視テキスト全体の過半を
     /// 占めるかどうかを見る。色を一切指定しない (継承のみの) テキストは
     /// 明示指定側にカウントしない — プレーンテキスト風メールを誤って
     /// 白カード化しないための線引き。既存の6サンプル判定 (`shouldIntervene`
     /// が既に`true`) はそのまま優先し、この追加判定は「介入不要」に転んだ
-    /// ときの二段目のフォールバックとしてだけ働く。詳細は
-    /// `docs/design-system.md`のTask #98節参照。
+    /// ときの二段目のフォールバックとしてだけ働く。
+    ///
+    /// **Task #104 (実機フィードバック: Readdle Documents のニュースレター等
+    /// が上記 Task #98 の対策後もダークネイティブのまま読めない)**: 直前の
+    /// 段落の「明示的に`color`を指定」の判定方法をここで拡張した —
+    /// リリース当初 (Task #98) は「祖先のいずれかがインライン`style`で
+    /// `color`を指定」だけを見ており、`<style>`ブロックの CSS クラス経由で
+    /// 文字色を指定するニュースレター (インライン style を使わず
+    /// `.body-text { color: #5f6368; }` のようなクラスセレクタで配色する
+    /// テンプレートは珍しくない) を取りこぼしていた。
+    /// `collectExplicitColorSelectors`が`document.styleSheets`
+    /// (`HTMLDocumentBuilder.wrap`が注入する自前の`<style>`は
+    /// `data-otegami-base-style`属性で除外し、メール自身が持っていた
+    /// `<style>`ブロックだけを見る) を走査して`color`宣言を持つセレクタを
+    /// 集め、`nearestExplicitColorAncestor`が`Element.matches()`で祖先を
+    /// マッチさせる — インライン`style`の判定と同じ経路に合流させることで、
+    /// どちらの書き方でも同じ実測輝度ベースの判定を通る。詳細は
+    /// `docs/design-system.md`のTask #98節 (このTask #104の追記含む) 参照。
     private static let fitToWidthScript = """
     (function () {
       function waitForImages() {
@@ -1803,25 +1840,91 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
       // `fitToWidthScript` for why the 6-sample average above isn't always
       // enough. `nearestExplicitColorAncestor` walks up from a text node's
       // parent looking for the nearest ancestor (up to and including
-      // `boundary`, normally `#otegami-fit-inner`) that declares `color` on
-      // its own inline `style` — a literal declaration check, not
-      // `getComputedStyle` (which always resolves to *some* color, explicit
-      // or inherited, and so can't tell the two apart on its own). Inline
-      // `style` rather than also matching the message's own `<style>` rules
-      // is a deliberate, pragmatic simplification (consistent with this
-      // file's other heuristics, e.g. `mailDeclaresOwnDarkModeSupport`'s
-      // plain substring search) — real-world transactional/invite templates
-      // overwhelmingly set text color via inline `style` for the widest
-      // mail-client compatibility, so this covers the common case without a
-      // real CSS cascade/selector-matching engine.
-      function nearestExplicitColorAncestor(el, boundary) {
+      // `boundary`, normally `#otegami-fit-inner`) that declares `color`
+      // explicitly — a literal declaration check, not `getComputedStyle`
+      // (which always resolves to *some* color, explicit or inherited, and
+      // so can't tell the two apart on its own).
+      //
+      // Task #104 (実機フィードバック: Readdle Documents のニュースレター等、
+      // `<style>` ブロックの CSS クラスで文字色を指定するメールが検出漏れし
+      // ダークネイティブのまま読めなかった): Task #98 版はインライン `style`
+      // の `color` しか見ておらず、`<style>` ブロックのクラスセレクタ経由の
+      // 明示指定を見落としていた。`selectors` (`collectExplicitColorSelectors`
+      // が集めた、`color` 宣言を持つセレクタ文字列の配列) が渡されたときは
+      // それも見る — `Element.matches()` でどのセレクタにもマッチしなければ
+      // インライン判定のみだった従来の挙動のまま。
+      function nearestExplicitColorAncestor(el, boundary, selectors) {
         var node = el;
         while (node) {
           if (node.style && node.style.color) { return node; }
+          if (selectors && selectors.length && elementMatchesAnySelector(node, selectors)) { return node; }
           if (node === boundary) { return null; }
           node = node.parentElement;
         }
         return null;
+      }
+      // Task #104: `el.matches(selector)` throws on a selector this
+      // WebKit build doesn't understand (e.g. a vendor-prefixed pseudo-class
+      // some ESP template generator emits) — caught and skipped per-selector
+      // so one unsupported selector in a message's `<style>` block doesn't
+      // abort the whole scan, consistent with this file's other "don't let
+      // one weird input wreck the whole heuristic" choices (e.g.
+      // `stripHTMLComments`'s regex-compile fallback).
+      function elementMatchesAnySelector(el, selectors) {
+        for (var i = 0; i < selectors.length; i++) {
+          try {
+            if (el.matches(selectors[i])) { return true; }
+          } catch (e) { /* unsupported selector syntax — skip it */ }
+        }
+        return false;
+      }
+      // Task #104: walks `document.styleSheets` to collect every selector
+      // whose rule declares a `color` — this is what lets
+      // `nearestExplicitColorAncestor` recognize "explicit color" set via a
+      // CSS class in a `<style>` block, not just an inline `style="color:
+      // ..."` attribute. Skips any sheet whose owning `<style>`/`<link>`
+      // element carries `data-otegami-base-style` (`HTMLDocumentBuilder
+      // .wrap`'s own injected `<style>` tags — the base reset, the dark-
+      // invert/keep-light styles, `forceLightBackgroundStyle`) so this
+      // file's own rules (e.g. `a { color: LinkText; }`) never get mistaken
+      // for the *message author's* explicit color intent — only
+      // `originalHeadStyles` (the message's own extracted `<style>` blocks,
+      // left unmarked) is scanned. External stylesheets can't appear here at
+      // all (this app strips remote resources via `WKContentRuleList`
+      // before the page ever loads one), so a same-document walk is
+      // complete on its own — no CORS-blocked `cssRules` access to worry
+      // about for *message* stylesheets (a `try`/`catch` around the access
+      // is still cheap insurance). `collectRulesInto` recurses into grouping
+      // rules (`@media`/`@supports`/etc, anything exposing its own
+      // `.cssRules`) regardless of whether the rule's own condition matches
+      // the current environment — a `@media (prefers-color-scheme: dark)`
+      // block a newsletter ships alongside its light-mode default still
+      // reflects the author's intent to color that text explicitly, so it
+      // counts too (deliberately erring toward *more* explicit-color
+      // detections here, matching this whole heuristic's existing bias per
+      // its Task #98 doc comment above `fitToWidthScript`).
+      function collectExplicitColorSelectors() {
+        var selectors = [];
+        var sheets = document.styleSheets;
+        for (var s = 0; s < sheets.length; s++) {
+          var sheet = sheets[s];
+          var ownerNode = sheet.ownerNode;
+          if (ownerNode && ownerNode.hasAttribute && ownerNode.hasAttribute('data-otegami-base-style')) { continue; }
+          var rules;
+          try { rules = sheet.cssRules; } catch (e) { continue; }
+          if (rules) { collectRulesInto(rules, selectors); }
+        }
+        return selectors;
+      }
+      function collectRulesInto(rules, selectors) {
+        for (var i = 0; i < rules.length; i++) {
+          var rule = rules[i];
+          if (typeof rule.selectorText === 'string' && rule.style && rule.style.color) {
+            selectors.push(rule.selectorText);
+          } else if (rule.cssRules) {
+            collectRulesInto(rule.cssRules, selectors);
+          }
+        }
       }
       // Task #98: character-count based (not a fixed sample of 6 nodes) —
       // walks every text node under `inner`, and for each one that falls
@@ -1838,7 +1941,13 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
       // (its explicit-dark share stays at 0%, never a majority). Capped at
       // 4000 visited text nodes purely as a cheap safety net against a
       // pathological document, matching this file's other such caps (`findEffectiveBackground`'s 800-element cap).
+      //
+      // Task #104: `selectors` is computed once per call (not per text
+      // node) via `collectExplicitColorSelectors` and threaded through to
+      // `nearestExplicitColorAncestor` — cheap relative to the 4000-node cap
+      // above it, and keeps the stylesheet walk out of the hot per-node loop.
       function explicitDarkTextIsMajority(inner) {
+        var selectors = collectExplicitColorSelectors();
         var walker = document.createTreeWalker(inner, NodeFilter.SHOW_TEXT, null);
         var node;
         var visited = 0;
@@ -1853,7 +1962,7 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
           totalLength += trimmed.length;
           var parentEl = node.parentElement;
           if (!parentEl) { continue; }
-          var colorEl = nearestExplicitColorAncestor(parentEl, inner);
+          var colorEl = nearestExplicitColorAncestor(parentEl, inner, selectors);
           if (!colorEl) { continue; }
           var color = parseOpaqueColor(getComputedStyle(parentEl).color);
           if (!color) { continue; }
