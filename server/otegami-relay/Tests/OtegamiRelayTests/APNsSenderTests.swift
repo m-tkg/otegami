@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import OtegamiRelayAPI
 import Testing
 
 @testable import OtegamiRelay
@@ -80,6 +81,16 @@ struct APNsSenderTests {
         let signatureData = try base64urlDecode(String(segments[2]))
         let signature = try P256.Signing.ECDSASignature(rawRepresentation: signatureData)
         #expect(!key.publicKey.isValidSignature(signature, for: signingInput))
+    }
+
+    @Test("a device registered as .sandbox is routed to APNs' sandbox host")
+    func sandboxRoutesToSandboxHost() {
+        #expect(APNsSender.host(for: .sandbox) == "api.sandbox.push.apple.com")
+    }
+
+    @Test("a device registered as .production is routed to APNs' production host")
+    func productionRoutesToProductionHost() {
+        #expect(APNsSender.host(for: .production) == "api.push.apple.com")
     }
 
     // MARK: - Helpers

@@ -54,10 +54,7 @@ struct APNsSender: PushSending {
         environment: RegisterDeviceRequest.Environment,
         payload: PushNotificationPayload
     ) async throws {
-        let host = switch environment {
-        case .sandbox: "api.sandbox.push.apple.com"
-        case .production: "api.push.apple.com"
-        }
+        let host = Self.host(for: environment)
         let jwt = try await tokenCache.currentToken()
 
         let body = APNsBody(
@@ -107,6 +104,20 @@ struct APNsSender: PushSending {
                 "environment": .string(environment.rawValue),
             ]
         )
+    }
+
+    /// Which APNs endpoint a device's registered environment routes to.
+    /// Pulled out of `send(deviceToken:environment:payload:)` as its own
+    /// (non-`private`, so `@testable import OtegamiRelay` can reach it)
+    /// function purely so `APNsSenderTests` can assert the sandbox/
+    /// production split directly, without needing a live HTTP round trip —
+    /// `send` itself is never exercised against real APNs in this repo's
+    /// test suite (see this type's doc comment).
+    static func host(for environment: RegisterDeviceRequest.Environment) -> String {
+        switch environment {
+        case .sandbox: "api.sandbox.push.apple.com"
+        case .production: "api.push.apple.com"
+        }
     }
 
     /// Never logs a full device token — only enough to eyeball "yes, this
