@@ -363,7 +363,16 @@ struct MessageView: View {
         // reflecting these buttons), matching the existing
         // `onTranslationControllerReady` handoff `HTMLMessageView` already
         // uses for the same reason.
-        .onAppear { onAIFeaturesStateChange(aiState) }
+        // Task #96 (実機報告: 本文読み込み完了前に一覧へ戻ると既読にならない):
+        // fires the instant this view mounts — a thread row's expand or a
+        // direct push, either way completely independent of `.task(id:
+        // messageId)`'s own cancellable lifecycle below — so an early pop
+        // back to the list mid-body-fetch no longer means `\Seen` never
+        // gets applied. See `markAsReadIfNeeded()`'s doc comment.
+        .onAppear {
+            onAIFeaturesStateChange(aiState)
+            markAsReadIfNeeded()
+        }
         .onDisappear { onAIFeaturesStateChange(nil) }
         // Task #59: keeps the buttons' visibility live if the user toggles
         // I「AI 機能の on/off」while this message is open — see
@@ -1085,28 +1094,26 @@ struct MessageView: View {
     /// server (M3) and makes a best-effort replay attempt right away —
     /// harmless if offline, the op just waits for the next successful
     /// connection (foreground IDLE reconnect, pull-to-refresh, ...).
+    ///
+    /// Task #96: the actual DB write/enqueue now lives in `SyncEngine
+    /// .MessageReadMarker.markSeen` (testable without SwiftUI at all) —
+    /// this just wraps it in the same "own unstructured `Task { }`, best-
+    /// effort replay after" shape as before. Deliberately reads
+    /// `messageId`/`accountId` (the view's `let` constants, always
+    /// available) rather than `self.message` (a `@State` that may still be
+    /// `nil` the instant `.onAppear` fires, since `.onAppear` and `.task`
+    /// aren't ordered against each other) — every call site, including the
+    /// ones still inside `load()`'s post-body-fetch branches, is safely
+    /// idempotent thanks to `markSeen`'s own "already `\Seen`?" guard.
     private func markAsReadIfNeeded() {
-        guard let message, !message.flags.contains(.seen) else { return }
         let messageId = messageId
         let accountId = accountId
-        let mailboxId = message.mailboxId
         Task {
             do {
-                try await environment.database.dbWriter.write { db in
-                    guard var record = try MessageRecord.fetchOne(db, key: messageId) else { return }
-                    guard !record.flags.contains(.seen) else { return }
-                    record.flags.insert(.seen)
-                    record.updatedAt = Date()
-                    try record.update(db)
-                    guard let mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return }
-                    try OpQueue.enqueueSetFlags(
-                        accountId: accountId, mailboxId: mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [UInt32(record.uid)], flags: record.flags, db: db
-                    )
-                    if let threadId = record.threadId {
-                        try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-                    }
+                let didMark = try await environment.database.dbWriter.write { db in
+                    try MessageReadMarker.markSeen(messageId: messageId, accountId: accountId, db: db)
                 }
+                guard didMark else { return }
                 guard let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
                 guard let auth = try? await environment.auth(for: account) else { return }
                 _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
