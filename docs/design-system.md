@@ -3311,3 +3311,94 @@ Task #56 では画像巨大化バグの修正 (1) が原因だったと"推測"�
 ことを同じ手順でスクリーンショット確認するところまでは、この回では
 実施できていない** (作業時間の制約でOTA配信を優先) — 実機での
 最終確認はユーザーに委ねる。
+
+## Task #59: HTML本文表示の仕上げ2点 (本文下の過剰な空白／フローティング
+ボタンの画面固定)
+
+Task #58 で「本文が最後まで描画される」こと自体は根治したが、実機
+スクリーンショットには別の2点が残っていた。
+
+### 1. 本文下の空白が過剰
+
+**原因は高さの二重計上、それも2箇所で**:
+
+- `fitToWidthScript`の`postHeight()`が
+  `Math.max(document.documentElement.scrollHeight,
+  document.body.scrollHeight)` — **文書全体**の高さを通知していた。
+  これには Task #56 で入れた「フローティングボタン重なり回避の
+  bottom-inset スペーサー div」(`#otegami-bottom-inset-spacer`、
+  `#otegami-fit-outer`の**兄弟**として`body`直下に置かれる) が含まれ
+  てしまう。
+- その上で `ThreadMessageRow`(Task #58 で追加) が
+  `measuredHTMLContentHeight + 180pt`(ヘッダ/添付/罫線の見積り
+  `nonHTMLChromeAllowance`) を`MessageView`全体の`.frame(height:)`
+  として渡していた — スペーサー分の高さと、この`+180pt`見積りが
+  **別々の場所でそれぞれ「クロームの分の余白」を足しており、実質的に
+  二重加算**になっていた。
+
+**修正**:
+
+1. **JS側**: `postHeight()`が`#otegami-fit-outer`自身の
+   `getBoundingClientRect().height`を測るよう変更
+   (`HTMLWebViewCoordinator.postHeight()`のdoc comment参照)。
+   `fit()`が`outer`をスケール後の実表示サイズに明示的に合わせている
+   (`outer.style.height`をスケール時に設定、非スケール時は自然サイズ)
+   ため、`outer`自身の矩形はスペーサーを含まない「本文のコア高さ」と
+   厳密に一致する。
+2. **Swift側**: `ThreadMessageRow`の`nonHTMLChromeAllowance`(`+180pt`)
+   を廃止。`MessageView`に新しい`contentHeight`パラメータを追加し、
+   実測値がある場合は`content`(HTML本文)だけに
+   `.frame(height: contentHeight)`を与え、ヘッダ・添付欄・罫線は
+   各自の intrinsic な高さのまま`VStack`が積み上げる — `ThreadMessageRow`
+   側は実測値がある間、`MessageView`全体には**高さを一切強制しない**
+   (`.frame(height: nil)`)。「WebViewは通知された高さぴったり、その他
+   要素は各自の intrinsic 高さ」という狙いどおりの構成になった。
+3. **フローティングボタン回避余白の一本化**: `HTMLMessageView
+   .bottomContentInset`(DOMスペーサー)と、プレーンテキスト系の
+   `.contentMargins(.bottom:)`は**どちらも0を渡す**ように変更し、
+   代わりに`ThreadDetailView`自身の外側`ScrollView`ただ1箇所だけが
+   `.contentMargins(.bottom: expandedAIFeaturesState?.reservedBottomInset
+   ?? 0, for: .scrollContent)`で余白を確保する (下記「2」でボタン自体が
+   画面固定になったのに合わせた判断 — メッセージごとに個別のDOM
+   スペーサーを持つ意味がなくなったため)。`HTMLDocumentBuilder.wrap
+   (bodyHTML:...bottomContentInset:)`のDOMスペーサー機構自体は
+   (`bottomContentInset > 0`のときだけ挿入するガードのまま) 残し、
+   将来また個別のインセットが必要になった場合に備えている。
+
+### 2. 要約/翻訳フローティングボタンを画面下部に固定
+
+**原因**: `AISummaryFloatingButton`/`TranslationFloatingButton`は
+Task #55 以来`MessageView`自身の`.overlay(alignment: .bottomLeading)`
+として実装されていた。Task #58 で`MessageView`(→`ThreadMessageRow`)の
+フレームが「実測した本文の高さ」に伸びるようになった結果、長いHTML
+メールでは`MessageView`のフレーム自体が画面より遥かに高くなる —
+その**フレームの**左下隅に固定されたoverlayは、外側`ScrollView`を
+スクロールするとメッセージ本文と一緒に流れてしまい、画面上の固定位置
+には留まらなくなっていた。ユーザー報告「要約などのフローティング
+アイコンは常にフローティングで左下に固定してほしい。いまはHTML内で
+一緒にスクロールしてしまう」はこれが原因。
+
+**修正**: `MessageView`が持っていた`summaryState`/`translationState`/
+`translationShowOriginal`の3つの`@State`を、新しい`@Observable`クラス
+`MessageDetailAIFeaturesState`(`MessageView.swift`)1つにまとめた。
+`MessageView`は引き続きすべての実際の挙動 (`requestSummary`/
+`requestTranslation`とその状態遷移) を所有するが、この
+`aiState`インスタンス自体は`onAIFeaturesStateChange`コールバック経由で
+`MessageView` → `ThreadMessageRow` → `ThreadDetailView`と3階層分
+持ち上げる (`HTMLTranslationController`をすでに同じ形で
+`onTranslationControllerReady`経由で渡している前例を踏襲)。
+`ThreadDetailView`は`@State private var expandedAIFeaturesState`
+に受け取ったものを保持し、**外側`ScrollView`の外**、
+`.safeAreaInset(edge: .bottom) { footerToolbar }`より後の
+`.overlay(alignment: .bottomLeading)`で`MessageDetailFloatingButtons`
+(ボタン2個の見た目だけを描く新しい薄いView) を描画する —
+`MailScreenView.floatingSearchButton`/`FolderListSheet
+.floatingSettingsButton`と同じ「スクロール位置に関係なく画面に固定」
+パターン。アコーディオンで展開中メッセージが切り替わる瞬間は、旧行の
+`MessageView.onDisappear`が`nil`を報告してから新行の`onAppear`が自分の
+`aiState`を報告するため、最大1フレームだけボタンが消える瞬間があるが
+実用上問題ない (「現在展開中の単一メッセージ基準」の自然な帰結)。
+
+**検証状況**: `make test`/`make ios`/`make mac`緑を確認した。実機
+シミュレータでのスクリーンショット確認はこの回では実施していない
+(実装ルールにより不要 — OTA配信後の実機確認はユーザーに委ねる)。
