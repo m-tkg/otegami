@@ -656,11 +656,12 @@ macOS の ⌘R (`RootView.replyToSelectedThread()`) が既に使っていた
   (`UserDefaults` にカンマ区切りで永続化、`SwipeActionSettingsStore` と
   同じ「素の `UserDefaults` キーの集まり」方針) + `MessageToolbarSettingsView`
   (常時編集モードの `List`/`.onMove`)。7アクション
-  (`MessageToolbarAction.allCases`、Task #88 で要約/翻訳が加わり5→7) は
-  常にすべて表示、並び順だけを変更できる — 有効/無効の概念は無い (「その他」
-  を含めた自由な並び替えも許可している。オーバーフローとして固定位置に
-  する強制はしていない)。要約/翻訳のフローティングボタンからの移設の
-  経緯は「Task #88」節参照。
+  (`MessageToolbarAction.allCases`、Task #88 で要約/翻訳が加わり5→7)
+  のうち、要約/翻訳のフローティングボタンからの移設の経緯は「Task #88」
+  節参照。**Task #100 で表示/非表示トグルを追加** (「その他」だけは
+  非表示・並び替えとも不可、常に最後尾固定) — 詳細は
+  `docs/settings.md`「メール本文フッターツールバーの表示/非表示・並び順」
+  節参照。
 
 ### 4. 一覧ヘッダの再編: 検索の左下フローティング化・再読込ボタン廃止・
 未読のみ表示トグル

@@ -19,7 +19,7 @@ macOS 共通の実装 (`AccountsListContent`自体を両プラットフォーム
 | カテゴリ | 実装 | 内容 |
 | --- | --- | --- |
 | アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、G「デフォルトのアカウント設定」、iCloud 同期、プッシュ通知 (いずれも実機フィードバック第3弾 (I) で「その他」から移設)。ラベル色 (D) は各アカウントの編集画面 (`AccountEditView`) 側 |
-| メールビューア | `MailViewerSettingsView.swift` | ブラウザの設定 (C7)、G「削除/アーカイブ時の挙動」、本文へのプロフィール画像表示、AI 機能 on/off (翻訳・要約をまとめて)、画像設定 (B)、HTML表示設定 (A9) (画像・HTML表示は実機フィードバック第3弾 (I) で「その他」から移設) |
+| メールビューア | `MailViewerSettingsView.swift` | ブラウザの設定 (C7)、G「削除/アーカイブ時の挙動」、本文へのプロフィール画像表示、AI 機能 on/off (翻訳・要約をまとめて)、画像設定 (B)、HTML表示設定 (A9) (画像・HTML表示は実機フィードバック第3弾 (I) で「その他」から移設)、フッターツールバーのカスタマイズへの入口 (Task #100 で追加、詳細は下記「メール本文フッターツールバーの表示/非表示・並び順」節) |
 | メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定 (D8)、一覧に要約を出す、スレッド表示、ピン留めのフラグ連動 (スレッド表示・ピン留め連動は実機フィードバック第3弾 (I) で「その他」から移設) |
 | メール作成 | `MailComposeSettingsView.swift` (実機フィードバック第3弾 (I) で新設) | テンプレート (C8)、署名テンプレート (F、旧ルート直下から統合)、送信キャンセルの猶予 (C7、旧「その他」から移設) |
 
@@ -458,33 +458,80 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 「プッシュ通知」から有効化。詳細は
 [docs/relay-deployment.md](relay-deployment.md)。
 
-## メール本文フッターツールバーの並び順 (新画面構成、Task #88 で7アイコンに) — iOS のみ
+## メール本文フッターツールバーの表示/非表示・並び順 (新画面構成、Task #88 で7アイコンに、Task #100 でカスタマイズ機能に)
 
-`MessageToolbarSettingsStore.swift`。メール本文画面 (`ThreadDetailView`)
-下部のフッターツールバーに並ぶ7アイコン (返信/転送/検索/情報/要約/翻訳/
-その他) の順序。要約/翻訳の2つは Task #88 (「要約と翻訳のボタンを
-フローティングをやめてツールバーに入れて」) で、旧フローティングボタン
-(`AISummaryFloatingButton`/`TranslationFloatingButton`) から移設した。
-メール本文画面の「…」メニュー →「ツールバーをカスタマイズ」
-(`MessageToolbarSettingsView`、常時編集モードの並び替えリスト) から
-変更できる。
+`MessageToolbarSettingsStore.swift`(アプリターゲット)。メール本文画面
+(`ThreadDetailView`) 下部のフッターツールバーに並ぶ7アイコン (返信/転送/
+検索/情報/要約/翻訳/その他) の表示/非表示と並び順。要約/翻訳の2つは
+Task #88 (「要約と翻訳のボタンをフローティングをやめてツールバーに
+入れて」) で、旧フローティングボタン (`AISummaryFloatingButton`/
+`TranslationFloatingButton`) から移設した。
+
+設定画面 (`MessageToolbarSettingsView`) への入口は2つ:
+- メール本文画面の「…」メニュー →「ツールバーをカスタマイズ」
+  (`MessageDetailFooterToolbar.onCustomizeToolbar`)。
+- 設定 →「メールビューア」→「ツールバーをカスタマイズ」
+  (`MailViewerSettingsView`の「フッターツールバー」セクション、
+  Task #100 で追加)。
+
+どちらも同じ画面を開くだけで、状態は`MessageToolbarSettingsStore`に
+一本化されている。macOS も含む両プラットフォームに存在する
+(`ThreadDetailView`はメール本文画面として iOS・macOS 共通で使われる)。
+
+### Task #100「フッターツールバーのカスタマイズ」
+
+それまでの「並び替えのみ」から、各アクションの**表示/非表示トグル**を
+追加した:
+
+- 表示オンの6アクション (「その他」を除く) はトグルで非表示にでき、
+  表示オンのものだけドラッグで並び替えられる。
+- **非表示にしたアクションはツールバーから消えるのではなく、「その他」
+  メニューの中に項目として追加され、引き続き使える**
+  (`MessageDetailFooterToolbar.hiddenActionMenuItems`)。「返信」は元が
+  返信/全員に返信の2択を持つサブメニューなので、非表示時は2つのフラット
+  な項目に展開する。
+- **「その他」自身だけは例外** — 非表示にできず、並び替えもできず、常に
+  最後尾固定。設定画面でも別セクション・グレーアウト表示にして、他の
+  6アクションとは扱いが違うことを見た目でも伝える
+  (`MessageToolbarSettingsPinnedRow`)。
 
 | キー | 既定値 |
 | --- | --- |
-| `messageToolbar.order` | `reply,forward,search,info,summarize,translate,more` (カンマ区切り) |
+| `messageToolbar.order` | `reply:1,forward:1,search:1,info:1,summarize:1,translate:1,more:1` (カンマ区切り、`id:1`が表示・`id:0`が非表示) |
 
-有効/無効の概念は無く (7つとも常に表示)、並び順だけを変更できる —
-要約/翻訳はメッセージ次第で意味を持たないことがある (本文未読込・
-この端末で AI 機能が使えない・翻訳不要な言語、等) が、その場合もアイコン
-自体は消さずグレーアウトするだけ (並びを安定させるため)。**既存ユーザーの
-移行**: `MessageToolbarSettingsStore.loadOrder()`の「保存済みの並びに
-含まれないアクションは末尾に追記する」という既存ロジックにより、この
-バッチ以前から保存済みの並びを持つユーザーは`summarize`/`translate`が
-(「その他」を含む既存の並びの**後ろ**に) 追記される — 新規ユーザーの
-既定順 (「その他」の手前) とは位置が変わる。手動で並び替えるまでその
-ままなので、意図した挙動 (次にアクション集合が増えた場合も同じ) として
-記録しておく。詳細・各アイコンの動作は `docs/design-system.md`「新画面
-構成」節参照。
+要約/翻訳がメッセージ次第で意味を持たないことがある (本文未読込・この
+端末で AI 機能が使えない・翻訳不要な言語、等) という話は上記の「表示/
+非表示」設定とは別軸 — その場合もアイコン自体は表示オンのまま
+グレーアウトするだけ (`MessageDetailAIFeaturesState`)。
+
+**パース・移行ロジックの実体は `OtegamiCore` の
+`MessageToolbarPreferencesCoding`** (`String` id ベースの純粋関数) —
+`apps/Otegami`にはこの種のロジックを unit test する手段が無い
+(`make test`が対象にするのは`packages/OtegamiKit`の`swift test`のみ、
+`apps/Otegami`は XCUITest しか無い) ため、テスト可能な
+`packages/OtegamiKit/Tests/OtegamiCoreTests/MessageToolbarPreferencesTests.swift`
+に実際のロジックを寄せ、アプリ側の`MessageToolbarSettingsStore`は
+`MessageToolbarAction`との変換と`UserDefaults`の読み書きだけを担う薄い
+ラッパーにした。
+
+**既存ユーザーの移行 (後方互換)**: キー名 (`messageToolbar.order`) は
+変えていない — Task #88 時点の「保存済みの並びに含まれないアクションは
+末尾に追記する」というロジックは維持しつつ、可視性の概念が無い旧形式
+(`"reply,forward,search,info,summarize,translate,more"`、`:0`/`:1`
+サフィックスが無い) もそのまま読める。可視性サフィックス無しのトークン
+は「表示」として扱われるので、既存ユーザーの保存済み並び順は**全項目
+表示のまま、その並びだけを引き継ぐ** (このバッチ以前は「非表示」という
+状態自体が存在しなかったので、これが唯一自然な解釈)。キー名を変えな
+かった理由はもう一つ — このキーは `AppSettingsCloudDirectory` の iCloud
+設定同期許可リスト対象 (下記「同期する設定」節) で、キー名を変えると
+「新形式で書く新バージョンの端末」と「旧形式のまま書き続ける旧バージョン
+の端末」が別々のキーを同期することになり、アプリを更新していない方の
+端末の変更が伝わらなくなる — 同じキーのまま、値のエンコード方法だけを
+拡張したことで、この移行期間中もどちらの方向の読み込みも安全に縮退する
+(不明なサフィックス/トークンは`MessageToolbarPreferencesCoding`が
+黙って無視し、既定順にフォールバックするだけでクラッシュしない)。
+
+詳細・各アイコンの動作は `docs/design-system.md`「新画面構成」節参照。
 
 ## 表示言語 (表示・操作改善バッチ → 実機フィードバック第3弾 F で廃止)
 

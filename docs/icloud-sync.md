@@ -693,7 +693,7 @@ allowlist が唯一の情報源:
 |---|---|
 | 一覧: スレッド表示・未読のみ・アカウントでグループ化 (`ListDisplaySettingsStore`) | 通知系 (`PushSettingsStore` — relay URL・per-account watch・deviceSecret はデバイス固有) |
 | ビューア: 背景を常に白・ダーク反転オプトイン (`HTMLDisplaySettingsStore`)、画像自動表示2種 (`ImageSettingsStore`) | UITest/verify 系フラグ (`OTEGAMI_UITEST_*`/`-otegami*` は環境変数・起動引数であり、そもそも `UserDefaults` キーではない) |
-| スワイプ割り当て4スロット (`SwipeActionSettingsStore`)、フッターツールバー並び順 (`MessageToolbarSettingsStore`)、ハンバーガーメニューのカテゴリ並び順 (`FolderCategoryOrderStore`) | `CloudSyncSettingsStore.isEnabled` 自身 (この同期に参加するか自体がデバイスごとの選択 — その doc comment参照) |
+| スワイプ割り当て4スロット (`SwipeActionSettingsStore`)、フッターツールバーの表示/非表示・並び順 (`MessageToolbarSettingsStore`、Task #100 で表示/非表示を追加 — 詳細は `docs/settings.md`)、ハンバーガーメニューのカテゴリ並び順 (`FolderCategoryOrderStore`) | `CloudSyncSettingsStore.isEnabled` 自身 (この同期に参加するか自体がデバイスごとの選択 — その doc comment参照) |
 | アバターソース4種 (`AvatarSourceSettingsStore`)、翻訳自動実行・一覧要約表示 (`TranslationSettingsStore`)、AI 機能マスタースイッチ (`AIFeaturesSettingsStore`) | ピン留め (`PinSettingsKeys` — 端末ごとの一時的な整理という性質が強く、複数デバイスで強制する意味が薄い) |
 
 ### KVS スキーマと reconcile ロジック
