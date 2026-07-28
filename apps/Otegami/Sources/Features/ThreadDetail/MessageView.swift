@@ -603,6 +603,14 @@ struct MessageView: View {
             if isHTMLMessage, isShowingHTML, let html = bodyRecord.html {
                 HTMLMessageView(
                     html: html, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath,
+                    // Task #56: `HTMLMessageView`'s `WKWebView` now reserves
+                    // the same blank space at the bottom of its own
+                    // internally-scrolling document that the plain-text
+                    // branches already reserve via `.contentMargins` —
+                    // `floatingActionButtons`'s doc comment and
+                    // `HTMLMessageView.bottomContentInset`'s doc comment
+                    // have the full writeup.
+                    bottomContentInset: floatingButtonsReservedBottomInset,
                     translatedTexts: htmlTranslatedTexts, showOriginalText: translationShowOriginal,
                     onTranslationControllerReady: { htmlTranslationController = $0 }
                 )
@@ -633,10 +641,12 @@ struct MessageView: View {
                 // scrollable content so text never renders directly behind
                 // `floatingActionButtons` — same `.contentMargins`/floating-
                 // button pairing `FolderListSheet` already established.
-                // `HTMLMessageView`'s `WKWebView` has no equivalent margin
-                // wired up (out of scope here — see `floatingActionButtons`'s
-                // doc comment); this only covers the two plain-text-rendering
-                // branches.
+                // Task #56: `HTMLMessageView`'s `WKWebView` gets the same
+                // reservation now too, via its own `bottomContentInset`
+                // parameter (a DOM spacer injected into the loaded document
+                // rather than `.contentMargins`, since a `WKWebView` scrolls
+                // its own internal document — see that parameter's doc
+                // comment for why).
                 .contentMargins(.bottom, floatingButtonsReservedBottomInset, for: .scrollContent)
             } else {
                 // A9-4: shown whenever there is genuinely no body content at

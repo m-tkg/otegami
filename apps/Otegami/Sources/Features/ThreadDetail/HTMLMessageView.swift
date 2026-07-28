@@ -44,6 +44,22 @@ struct HTMLMessageView: View {
     let accountId: String
     let messageId: Int64
     let mailboxPath: String?
+    /// Task #56 (実機フィードバック: 要約/翻訳フローティングボタンがHTML本文
+    /// に被る): `MessageView.floatingButtonsReservedBottomInset`と同じ値を
+    /// 渡してもらい、`HTMLDocumentBuilder.wrap(bodyHTML:...:bottomContentInset:)`
+    /// が読み込む文書自体の末尾にその高さ分の余白 (spacer) を注入する —
+    /// プレーンテキスト側の `.contentMargins(.bottom:)` と同じ「フローティング
+    /// ボタンの分だけ最後にスクロールしても本文の下に空白を残す」効果を、
+    /// `WKWebView`側でも実現する。`WKWebView`の`scrollView`(iOS)/相当機構
+    /// (macOS) 経由の`contentInset`ではなく文書側にDOM要素を足す方式を選んだ
+    /// のは、iOS/macOSで共通のコード1本になる (`WKWebView`はmacOSでは
+    /// `UIScrollView`を持たない) のと、fit-to-width のスケール計算
+    /// (`#otegami-fit-outer`/`#otegami-fit-inner`) の対象に含めない兄弟要素
+    /// として置くことで、スケール処理と一切干渉しないため — 詳細は
+    /// `HTMLDocumentBuilder.wrap(bodyHTML:autoAdjustColorsInDarkMode:
+    /// bottomContentInset:)`のdoc comment参照。既定値 0 (呼び出し側が
+    /// 明示的に渡さない限り、フローティングボタンぶんの余白は付かない)。
+    let bottomContentInset: CGFloat
 
     /// 1i「HTMLメールもレイアウトを保持したまま翻訳」— `MessageView` owns the
     /// actual translation (it alone has `AppEnvironment.messageTranslator`
@@ -119,6 +135,7 @@ struct HTMLMessageView: View {
 
     init(
         html: String, accountId: String, messageId: Int64, mailboxPath: String?,
+        bottomContentInset: CGFloat = 0,
         translatedTexts: [String]? = nil, showOriginalText: Bool = false,
         onTranslationControllerReady: @escaping (HTMLTranslationController?) -> Void = { _ in }
     ) {
@@ -126,6 +143,7 @@ struct HTMLMessageView: View {
         self.accountId = accountId
         self.messageId = messageId
         self.mailboxPath = mailboxPath
+        self.bottomContentInset = bottomContentInset
         self.translatedTexts = translatedTexts
         self.showOriginalText = showOriginalText
         self.onTranslationControllerReady = onTranslationControllerReady
@@ -220,6 +238,7 @@ struct HTMLMessageView: View {
                 allowsExternalContent: allowsExternalContent,
                 allowsEmbeddedImages: allowsEmbeddedImages,
                 autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode,
+                bottomContentInset: bottomContentInset,
                 cidContext: CIDResolutionContext(
                     environment: environment, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath
                 ),
@@ -433,7 +452,7 @@ enum HTMLDocumentBuilder {
     /// 尊重する」方針。実測はこの判定より**後**には効かない — 自前対応が
     /// あると分かった時点で`shouldConsiderDarkInversion`自体が false に
     /// なり、JS側の実測は一切走らない。
-    static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool) -> String {
+    static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool, bottomContentInset: CGFloat = 0) -> String {
         let innerBody = extractBodyContent(from: bodyHTML)
         let originalHeadStyles = extractHeadStyles(from: bodyHTML)
         // Task #51: この時点ではまだ「反転を検討してよいか」までしか
@@ -477,6 +496,22 @@ enum HTMLDocumentBuilder {
         // — `didFinish`直後・1.5秒後の遅延呼び出し・1i翻訳後の再適用の
         // どの呼び出し経路でも同じ1本のスクリプトが自己完結して動く。
         let fitOuterAttributes = shouldConsiderDarkInversion ? " data-otegami-invert-check=\"1\"" : ""
+        // Task #56 (実機フィードバック: 要約/翻訳フローティングボタンが
+        // HTML本文に被る): プレーンテキスト側の `.contentMargins(.bottom:)`
+        // と同じ効果を、この文書自身の末尾に高さ分の空 `<div>` を1つ足す
+        // ことで実現する — `#otegami-fit-outer`の*兄弟*として`body`直下に
+        // 置く (中に入れない) のがポイント: fit-to-width
+        // (`HTMLWebViewCoordinator.fitToWidthScript`) は`#otegami-fit-inner`
+        // の`scrollWidth`/`scrollHeight`だけを測って`outer`のtransform/
+        // サイズを決めるので、この spacer をその外に置けば scale 計算には
+        // 一切影響しない (スケールされたメール本文の下に、常にスケール
+        // されていない一定の高さの余白が残る)。`bottomContentInset <= 0`
+        // (フローティングボタンが1つも出ない設定の場合など) なら何も足さず
+        // 従来どおり — `MessageView.floatingButtonsReservedBottomInset`が
+        // 既に同じ「出ないときは0」ガードを持っている。
+        let bottomInsetSpacer = bottomContentInset > 0
+            ? "<div id=\"otegami-bottom-inset-spacer\" style=\"height: \(Int(bottomContentInset.rounded(.up)))px; flex-shrink: 0;\"></div>"
+            : ""
         return """
         <!doctype html>
         <html>
@@ -497,8 +532,53 @@ enum HTMLDocumentBuilder {
             overflow-x: hidden;
           }
           body { padding: 8px 12px; }
-          * { max-width: 100% !important; box-sizing: border-box; }
-          img, video, table, iframe { max-width: 100% !important; height: auto !important; }
+          /* Task #56: `img` はこの `*` の対象から除外し、専用ルール群
+             (下、`img { box-sizing: border-box; ... }` 以降) で個別に扱う
+             — 理由はそちらのコメント参照 (この `!important` が著者の
+             インライン `max-width` を問答無用で踏み潰していた実機バグの
+             修正)。 */
+          *:not(img) { max-width: 100% !important; box-sizing: border-box; }
+          video, table, iframe { max-width: 100% !important; height: auto !important; }
+          /* Task #56「画像の巨大化禁止」(実機フィードバック: TestFlight
+             通知メールのアプリアイコン ~120px 画像が画面幅いっぱいに
+             引き伸ばされていた): 原因は責任分解の失敗 — メール側は
+             「画面に合わせて縮むが上限は120px」という業界標準のレスポン
+             シブ画像手法 (`width` 属性 + `style="width:100%;
+             max-width:120px;"` の併用、Litmus/Email on Acid 等が推奨する
+             定石) を使っていたのに、この `<style>` の `img` 向けリセットが
+             `max-width: 100% !important` を無条件にかけていたため、著者の
+             `max-width: 120px` (`!important` 無し) を、`!important` 同士
+             なら詳細度を問わず勝つという CSS のカスケード規則により問答
+             無用で上書きしていた — 結果「上限なし」＝コンテナ幅いっぱい
+             まで拡大 (実機ログ・再現手順は `docs/design-system.md` の
+             Task #56 節参照。ローカルの WKWebView 計測スクリプトで複数の
+             実装候補を比較のうえ選定した)。
+             著者が独自の `max-width` をインライン `style` に持たない画像
+             だけへ `!important` の100%上限をかけ
+             (`img:not([style*="max-width" i])`)、独自の `max-width` を
+             持つ画像には非`!important`のフォールバック上限だけを与える
+             (`img[style*="max-width" i]`) — これなら CSS の詳細度
+             (インライン `style` が最優先) により著者側のより小さい値が
+             自然に勝つ。著者が `max-width` を極端に大きく指定していた
+             場合でも、ページ全体の fit-to-width
+             (`HTMLWebViewCoordinator.fitToWidthScript`) がページ全体を
+             縮小する安全網としてなお機能する (下の固定幅テーブル対策と
+             同じ考え方)。 */
+          img { box-sizing: border-box; height: auto !important; }
+          img:not([style*="max-width" i]) { max-width: 100% !important; }
+          img[style*="max-width" i] { max-width: 100%; }
+          /* 拡大禁止の残り半分: `width` 属性もインライン `style` の
+             `width` も持たない画像は常に自然サイズ (`width: auto`) で
+             描画する — これが無いと、著者の `<style>` ブロック側で
+             `img { width: 100% !important; }` のような汎用リセットが
+             仕込まれていた場合 (これもテンプレートで頻出) にそれがその
+             まま採用され、結局自然サイズより拡大されてしまう。`width`
+             属性/インライン `style` で明示指定がある画像はこの対象から
+             除外し、その指定をそのまま尊重する — 拡大方向にだけ効く
+             他のルールと違い、こちらは `!important` を使っても
+             フィットスケール以外に副作用がない (対象を明示指定なしの
+             画像だけに絞っているため)。 */
+          img:not([width]):not([style*="width" i]) { width: auto !important; }
           /* 幅固定のマーケティングHTML (width="600"のテーブル等) 対策:
              max-width: 100% だけだと table-layout: auto のセル内容が要求
              する幅次第でテーブル自体がなおコンテナ幅を超えうる。width: auto
@@ -525,7 +605,7 @@ enum HTMLDocumentBuilder {
         \(originalHeadStyles)
         \(darkModeInvertStyle)
         </head>
-        <body><div id="otegami-fit-outer"\(fitOuterAttributes)><div id="otegami-fit-inner">\(innerBody)</div></div></body>
+        <body><div id="otegami-fit-outer"\(fitOuterAttributes)><div id="otegami-fit-inner">\(innerBody)</div></div>\(bottomInsetSpacer)</body>
         </html>
         """
     }
@@ -949,6 +1029,8 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
     let autoAdjustColorsInDarkMode: Bool
+    /// Task #56 — see `HTMLMessageView.bottomContentInset`'s doc comment.
+    let bottomContentInset: CGFloat
     let cidContext: CIDResolutionContext
     /// 1i — see `HTMLMessageView.translationController`'s doc comment.
     let translationController: HTMLTranslationController
@@ -976,7 +1058,7 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
         webView.scrollView.backgroundColor = .clear
         context.coordinator.load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset, into: webView
         )
         return webView
     }
@@ -984,7 +1066,8 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.reloadIfNeeded(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, cidContext: cidContext, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset,
+            cidContext: cidContext, into: webView
         )
     }
 }
@@ -996,6 +1079,8 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
     let autoAdjustColorsInDarkMode: Bool
+    /// Task #56 — see `HTMLMessageView.bottomContentInset`'s doc comment.
+    let bottomContentInset: CGFloat
     let cidContext: CIDResolutionContext
     /// 1i — see `HTMLMessageView.translationController`'s doc comment.
     let translationController: HTMLTranslationController
@@ -1015,7 +1100,7 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
         webView.underPageBackgroundColor = .clear
         context.coordinator.load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset, into: webView
         )
         return webView
     }
@@ -1023,7 +1108,8 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.reloadIfNeeded(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, cidContext: cidContext, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset,
+            cidContext: cidContext, into: webView
         )
     }
 }
@@ -1075,6 +1161,12 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// message is still open), the same way it already does for the image
     /// settings.
     private var lastAutoAdjustColorsInDarkMode: Bool?
+    /// Task #56 — mirrors the flags above: tracked so `reloadIfNeeded`
+    /// reloads (re-injects the bottom spacer, `HTMLDocumentBuilder.wrap`'s
+    /// doc comment) when only this changes, e.g. the AI要約/翻訳 floating
+    /// buttons appear/disappear for the same open message (a translation
+    /// becoming available mid-view is the realistic case).
+    private var lastBottomContentInset: CGFloat?
 
     /// C7 real-device/real-simulator bug fix. Extensive diagnostic
     /// instrumentation (temporary `UserDefaults`-marker tracing —
@@ -1131,6 +1223,7 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
             load(
                 html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
                 autoAdjustColorsInDarkMode: lastAutoAdjustColorsInDarkMode ?? HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode,
+                bottomContentInset: lastBottomContentInset ?? 0,
                 into: webView
             )
         }
@@ -1139,26 +1232,31 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
 
     func reloadIfNeeded(
         html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, autoAdjustColorsInDarkMode: Bool,
-        cidContext: CIDResolutionContext, into webView: WKWebView
+        bottomContentInset: CGFloat, cidContext: CIDResolutionContext, into webView: WKWebView
     ) {
         cidHandler?.updateContext(cidContext)
         guard html != lastLoadedHTML
             || allowsExternalContent != lastAllowsExternalContent
             || allowsEmbeddedImages != lastAllowsEmbeddedImages
             || autoAdjustColorsInDarkMode != lastAutoAdjustColorsInDarkMode
+            || bottomContentInset != lastBottomContentInset
         else { return }
         load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset, into: webView
         )
     }
 
-    func load(html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, autoAdjustColorsInDarkMode: Bool, into webView: WKWebView) {
+    func load(
+        html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, autoAdjustColorsInDarkMode: Bool,
+        bottomContentInset: CGFloat = 0, into webView: WKWebView
+    ) {
         observeStrayNavigations(on: webView)
         lastLoadedHTML = html
         lastAllowsExternalContent = allowsExternalContent
         lastAllowsEmbeddedImages = allowsEmbeddedImages
         lastAutoAdjustColorsInDarkMode = autoAdjustColorsInDarkMode
+        lastBottomContentInset = bottomContentInset
 
         // B5: rewrite cid: references to the otegami-cid:// scheme *only*
         // when embedded images are currently allowed — independent of
@@ -1171,7 +1269,9 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         // outcome a blocked remote image already produces), which is the
         // intended "don't auto-show" behavior.
         let cidRewrittenHTML = allowsEmbeddedImages ? CIDURLRewriter.rewrite(html: html) : html
-        let document = HTMLDocumentBuilder.wrap(bodyHTML: cidRewrittenHTML, autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode)
+        let document = HTMLDocumentBuilder.wrap(
+            bodyHTML: cidRewrittenHTML, autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset
+        )
 
         applyContentRuleList(blocked: !allowsExternalContent, to: webView) { [weak webView] in
             guard let webView else { return }
@@ -1379,6 +1479,27 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
             var textLuminance = representativeTextLuminance(inner);
             shouldInvert = textLuminance === null || textLuminance < backgroundLuminance;
           }
+        } else {
+          // Task #56 (実機フィードバック: TestFlight通知メール — 背景色を
+          // 一切指定せず、文字色だけ #444 系の濃色で明示指定しているメール
+          // がダークモードで暗地に暗文字になり読めなかった): 背景が最後まで
+          // 解決しない (=`findEffectiveBackground`がnullを返す) からといって
+          // 「反転しない」で確定させず、実測した代表的な文字色の輝度が低い
+          // (暗い) ときだけ追加で反転する。判定の鍵は「文字色を明示指定して
+          // いないメール (32番フィクスチャ) では `color: CanvasText`
+          // (このファイル自身のCSSリセット) がダークモード中は既に明るい色
+          // へ自動解決されている」という事実 — `getComputedStyle(...).color`
+          // で実測すれば、CanvasText由来の明るい文字色と、著者が明示指定した
+          // 暗い文字色は輝度の実測値だけで区別でき、どちらのケースかを別途
+          // 覚えておく仕組みは要らない (32番フィクスチャがこの分岐に入って
+          // しまわないことは、WKWebViewでの実測で確認済み — ダークモード中の
+          // CanvasTextの輝度は1.0、著者明示の#444は0.058)。背景がそもそも
+          // 無い (透明) メールを反転しても、透明ピクセルはCSS `filter:
+          // invert()`でもアルファ非対象のため透明のまま (アプリのダーク
+          // 背景がそのまま透けて見える) — 効果は文字色 (と、img/videoは
+          // 二重反転で打ち消し済みの通り) にしか出ない。
+          var textLuminance = representativeTextLuminance(inner);
+          shouldInvert = textLuminance !== null && textLuminance < 0.5;
         }
         inner.classList.toggle('otegami-invert-for-dark', shouldInvert);
       }
