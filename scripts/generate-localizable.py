@@ -8,6 +8,23 @@ See docs/localization.md for the coverage policy and how to extend this
 list (most entries need nothing beyond adding a line here, since Text/
 Button/Label already use the Japanese literal itself as the String Catalog
 key — see that doc for the cases that need an actual Swift-side change).
+
+**KNOWN DRIFT (found during Task #100, unresolved)**: as of this comment,
+the committed `Localizable.xcstrings` has ~30 more entries than this
+`translations` dict produces (e.g. "画像を表示"/"埋め込み画像を表示"/
+"リモート画像も読み込む"/"アカウントでグループ化" are in the shipped
+catalog, actively referenced by `HTMLMessageView.swift`/`MailScreenView
+.swift`, but absent here) — someone edited the `.xcstrings` file directly
+(Xcode's own String Catalog editor, most likely) without mirroring the
+addition back into this script. **Do not run this script and commit its
+output until that drift is reconciled** — doing so silently deletes every
+entry this dict doesn't know about, which is exactly the mistake Task #100
+avoided by hand-patching new entries into the JSON instead of regenerating.
+Reconciling means diffing the live catalog's keys against this dict and
+folding the extras back in as their own lines below (or accepting them as
+Xcode-editor-owned and excluding this script from the workflow entirely) —
+out of scope for whatever bug/feature you're fixing right now unless that's
+specifically what you're here to fix.
 """
 import json
 import pathlib
@@ -304,10 +321,19 @@ translations = {
     "件名を入れておくと、新規作成の本文・件名が両方空のときにこのテンプレートで両方埋められます。空のままなら本文だけが挿入されます（署名のような使い方）。":
         "If you set a subject, this template fills in both the subject and body when starting a brand-new, completely empty message. Otherwise only the body is inserted (useful as a signature-style snippet).",
 
-    # --- MessageToolbarSettingsView ---
+    # --- MessageToolbarSettingsView (Task #100 で表示/非表示トグルを追加、
+    # 旧「並び替えのみ」時代の footer 文言はここで差し替え) ---
     "ツールバーの編集": "Edit Toolbar",
-    "ドラッグして、メール本文画面下部のツールバーに並ぶアイコンの順序を変更できます。":
-        "Drag to reorder the icons in the toolbar at the bottom of the message view.",
+    "表示するアイコン": "Icons Shown",
+    "トグルをオフにしたアイコンは、ツールバーから消えて「その他」メニューの中から使えるようになります。ドラッグで、オンのアイコンがツールバーに並ぶ順序を変更できます。":
+        "Icons you toggle off disappear from the toolbar and move into the “More” menu instead. Drag to reorder the icons that stay on.",
+    "「その他」は常にツールバーの末尾に固定表示され、オフにしたり並べ替えたりすることはできません。":
+        "“More” always stays fixed at the end of the toolbar — it can't be turned off or reordered.",
+
+    # --- MailViewerSettingsView: フッターツールバー入口 (Task #100) ---
+    "フッターツールバー": "Footer Toolbar",
+    "メール本文画面下部に並ぶアイコン（返信・転送・検索・情報・要約・翻訳・その他）の表示/非表示と順序を変更できます。非表示にしたアイコンは「その他」メニューから引き続き使えます。":
+        "Choose which icons (Reply, Forward, Search, Info, Summarize, Translate, More) appear at the bottom of the message view, and in what order. Icons you hide are still available from the “More” menu.",
 
     # --- AccountTypeSelectionView ---
     "アカウントの種類": "Account Type",

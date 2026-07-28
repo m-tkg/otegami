@@ -84,6 +84,12 @@ struct AccountsListContent: View {
     /// real launch.
     @State private var uitestShowAccountSettingsDirectly = false
 
+    /// Task #100: same tap-free idea, for `scripts/verify-screen.sh`
+    /// screenshots of `MailViewerSettingsView` (and, one screen further via
+    /// its own `-uitestsOpenToolbarCustomizeDirectly` hook, the toolbar
+    /// customize screen) without a real tap on this row.
+    @State private var uitestShowMailViewerSettingsDirectly = false
+
     var body: some View {
         List {
             Section {
@@ -133,9 +139,15 @@ struct AccountsListContent: View {
         .navigationDestination(isPresented: $uitestShowAccountSettingsDirectly) {
             AccountSettingsCategoryView()
         }
+        .navigationDestination(isPresented: $uitestShowMailViewerSettingsDirectly) {
+            MailViewerSettingsView()
+        }
         .task {
             if ProcessInfo.processInfo.arguments.contains("-uitestsOpenAccountSettingsDirectly") {
                 uitestShowAccountSettingsDirectly = true
+            }
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenMailViewerSettingsDirectly") {
+                uitestShowMailViewerSettingsDirectly = true
             }
         }
         .scrollContentBackground(.hidden)

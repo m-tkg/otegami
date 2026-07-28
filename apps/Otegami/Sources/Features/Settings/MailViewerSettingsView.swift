@@ -8,6 +8,13 @@ import SwiftUI
 /// HTML表示設定 (A9) をここへ移設した — どちらも「メール本文の描画」に
 /// 関わる設定で、このカテゴリの既存項目 (ブラウザ・プロフィール画像・
 /// AI機能) と同じ「本文を読む/表示する体験」の範疇にある。
+///
+/// Task #100「フッターツールバーのカスタマイズ」: 本文画面下部ツールバーの
+/// 表示/非表示・並び順設定 (`MessageToolbarSettingsView`) への入口も
+/// このカテゴリに置く (末尾の「フッターツールバー」セクション)。同じ画面へは
+/// 本文画面の「…」メニュー →「ツールバーをカスタマイズ」からも遷移できる
+/// (`MessageDetailFooterToolbar`) — 入口が2つある理由はそちらのdoc comment
+/// 参照。
 struct MailViewerSettingsView: View {
     // C7「メール内リンクを開くブラウザ」— iOS only (`LinkBrowserSettingsStore`
     // の doc comment参照)。
@@ -27,6 +34,12 @@ struct MailViewerSettingsView: View {
     @AppStorage(HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey) private var autoAdjustColorsInDarkMode = HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode
     // Task #71「メールの背景を常に白に」.
     @AppStorage(HTMLDisplaySettingsStore.forceLightBackgroundKey) private var forceLightBackground = HTMLDisplaySettingsStore.defaultForceLightBackground
+
+    /// Task #100: tap-free navigation for `scripts/verify-screen.sh`, same
+    /// idea as `AccountsListContent.uitestShowAccountSettingsDirectly` —
+    /// pushes straight to `MessageToolbarSettingsView`. A no-op (`false`,
+    /// and the `.task` below never flips it) on every real launch.
+    @State private var uitestShowToolbarCustomizeDirectly = false
 
     var body: some View {
         List {
@@ -123,6 +136,35 @@ struct MailViewerSettingsView: View {
                 Text("メールの表示 (HTML)")
             } footer: {
                 Text("HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメール（ライトデザインのメール）は、既定では反転せずメール本来の配色（白背景）のまま表示します。色指定を持たないメールは、読みやすい配色に自動で解決されます。メール自身がダークモードに対応済みの場合は何もしません。「ダークモードで暗い背景に反転」をオンにすると、ライトデザインのメールを暗い背景に反転して表示します（文字中心のメールで暗い背景を好む場合向け）。「メールの背景を常に白」をオンにすると、色指定の有無にかかわらずすべてのメールを常に白背景で表示します（このとき上の反転設定は無効になります）。")
+            }
+
+            // Task #100「フッターツールバーのカスタマイズ」: 本文画面下部の
+            // 「…」メニューからも同じ画面 (`MessageToolbarSettingsView`) を
+            // 開けるが、設定画面の「メールビューア」カテゴリからも辿れる
+            // ようにする、という指示どおりここにも入口を置く。
+            Section {
+                NavigationLink {
+                    MessageToolbarSettingsView()
+                } label: {
+                    // 「…」メニュー側の項目 (`MessageDetailFooterToolbar
+                    // .moreMenuButton`) と同じ文言・同じ既存の翻訳キーを
+                    // 再利用する (`scripts/generate-localizable.py`に
+                    // 別キーを増やさないため)。
+                    Label("ツールバーをカスタマイズ", systemImage: "slider.horizontal.3")
+                }
+                .accessibilityIdentifier("settings.mailViewer.customizeToolbar")
+            } header: {
+                Text("フッターツールバー")
+            } footer: {
+                Text("メール本文画面下部に並ぶアイコン（返信・転送・検索・情報・要約・翻訳・その他）の表示/非表示と順序を変更できます。非表示にしたアイコンは「その他」メニューから引き続き使えます。")
+            }
+        }
+        .navigationDestination(isPresented: $uitestShowToolbarCustomizeDirectly) {
+            MessageToolbarSettingsView()
+        }
+        .task {
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenToolbarCustomizeDirectly") {
+                uitestShowToolbarCustomizeDirectly = true
             }
         }
         .navigationTitle("メールビューア")
