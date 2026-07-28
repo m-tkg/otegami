@@ -140,8 +140,13 @@ enum ListDisplaySettingsStore {
     /// read) the moment the setting changes anywhere else in the app.
     static func persistedBool(forKey key: String, default defaultValue: Bool) -> Bool {
         Self.forceReloadFromDiskOnce()
-        let value = (UserDefaults.standard.object(forKey: key) as? Bool) ?? defaultValue
-        Self.logger.debug("persistedBool(\(key, privacy: .public)) -> \(value, privacy: .public) (default \(defaultValue, privacy: .public))")
+        // `.notice` (not `.debug`): debug/info は log collect のアーカイブに
+        // 永続化されず、実機の事後採取 (Task #105 の再現調査) でこの行が
+        // 1 行も残らなかった。stored=nil (未保存で既定値が効いた) か
+        // 実際に false/true が保存されていたかの区別も調査に必須。
+        let stored = UserDefaults.standard.object(forKey: key) as? Bool
+        let value = stored ?? defaultValue
+        Self.logger.notice("persistedBool(\(key, privacy: .public)) -> \(value, privacy: .public) (stored=\(stored.map(String.init) ?? "nil", privacy: .public), default \(defaultValue, privacy: .public))")
         return value
     }
 
@@ -194,7 +199,7 @@ enum ListDisplaySettingsStore {
         guard !hasForcedReloadFromDisk else { return }
         hasForcedReloadFromDisk = true
         CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)
-        Self.logger.debug("forced a CFPreferencesAppSynchronize reload before this process's first persistedBool read")
+        Self.logger.notice("forced a CFPreferencesAppSynchronize reload before this process's first persistedBool read")
     }
 
     private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "ListDisplaySettings")

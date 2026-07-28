@@ -1014,7 +1014,8 @@ struct MessageListView: View {
     private static let observeThreadsLogger = Logger(subsystem: "com.mtkg.otegami", category: "MessageListQueryMode")
 
     private func observeThreads() async {
-        Self.observeThreadsLogger.debug(
+        // `.notice`: debug は log collect アーカイブに残らない (Task #105)。
+        Self.observeThreadsLogger.notice(
             "observeThreads: isFlatMode=\(isFlatMode, privacy: .public) unreadOnly=\(persistedUnreadOnly, privacy: .public) selection=\(String(describing: selection), privacy: .public)"
         )
         switch selection {
