@@ -111,6 +111,15 @@ struct MailboxSyncFailuresView: View {
         retryingMailboxIds.insert(mailboxId)
         defer { retryingMailboxIds.remove(mailboxId) }
         guard let auth = try? await environment.auth(for: account) else { return }
-        _ = try? await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .mailbox(path: mailbox.path))
+        // Task #69: `autoRetry: false` — this button is itself an explicit
+        // "try this one mailbox again" user action, the same "immediate,
+        // one attempt, show the result" spirit as `MessageListView`'s
+        // manual pull-to-refresh (see `refresh(surfaceErrors:autoRetry:)`'s
+        // doc comment). Auto-retrying here would risk the tap appearing to
+        // do nothing: a single retried failure wouldn't re-record
+        // `lastSyncError` until the streak reaches `maxAttempts`, leaving
+        // this banner showing the old error with no visible feedback that
+        // the button did anything.
+        _ = try? await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .mailbox(path: mailbox.path), autoRetry: false)
     }
 }

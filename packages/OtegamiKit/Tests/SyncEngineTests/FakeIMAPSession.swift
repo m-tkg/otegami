@@ -96,6 +96,20 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// `DraftMessageRecord.serverUid`.
         public var appendReturnsUID: UInt32?
 
+        /// Task #69 (`AccountSyncer` automatic-retry): a mailbox-level retry
+        /// (unlike `connect()`'s) reuses the *same* `FakeIMAPSession`
+        /// instance across every in-process attempt rather than asking
+        /// `sessionFactory` for a fresh one each time (see
+        /// `AccountSyncer.syncMailboxWithRetry`'s doc comment for why) — so
+        /// a plain `failFetchEnvelopes` (thrown unconditionally, forever)
+        /// can't script "fails N times then succeeds" the way varying the
+        /// session factory's returned script per call already does for
+        /// `connectFailureSchedule`. This is that same "fail-then-succeed"
+        /// knob, scoped to `fetchRecentEnvelopes` — the call
+        /// `AccountSyncerTests`' mailbox-level retry scenarios exercise via
+        /// `performInitialSync`. `nil` (default): no failure injected.
+        public var flakyFetchRecentEnvelopes: FlakyCallController?
+
         public init(
             mailboxes: [MailboxInfo] = [],
             envelopesByPath: [String: [FetchedEnvelope]] = [:],
@@ -113,7 +127,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             failIdle: MailTransportError? = nil,
             failCreateMailbox: MailTransportError? = nil,
             mailboxRevealedAfterCreate: MailboxInfo? = nil,
-            appendReturnsUID: UInt32? = nil
+            appendReturnsUID: UInt32? = nil,
+            flakyFetchRecentEnvelopes: FlakyCallController? = nil
         ) {
             self.mailboxes = mailboxes
             self.envelopesByPath = envelopesByPath
@@ -132,6 +147,36 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.failCreateMailbox = failCreateMailbox
             self.mailboxRevealedAfterCreate = mailboxRevealedAfterCreate
             self.appendReturnsUID = appendReturnsUID
+            self.flakyFetchRecentEnvelopes = flakyFetchRecentEnvelopes
+        }
+    }
+
+    /// Task #69: see `Script.flakyFetchRecentEnvelopes`'s doc comment.
+    /// `@unchecked Sendable` + `NSLock`, same shape as `CallRecorder` above
+    /// — needs synchronous mutation from a `@Sendable` context (this is
+    /// consulted from `fetchRecentEnvelopes`, itself called from
+    /// `AccountSyncer`'s actor-isolated retry loop, but the type must still
+    /// be safely shareable across the several `FakeIMAPSession` instances
+    /// one retrying test's session factory creates).
+    public final class FlakyCallController: @unchecked Sendable {
+        private let lock = NSLock()
+        private var remainingFailures: Int
+        private let error: MailTransportError
+
+        public init(failCount: Int, error: MailTransportError) {
+            self.remainingFailures = failCount
+            self.error = error
+        }
+
+        /// Consumes one "remaining failure" and returns the scripted error,
+        /// or `nil` once `failCount` calls have already failed (every call
+        /// from then on should succeed).
+        func nextResult() -> MailTransportError? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard remainingFailures > 0 else { return nil }
+            remainingFailures -= 1
+            return error
         }
     }
 
@@ -313,6 +358,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     /// overload above) to match what the real `MailCoreIMAPSession`
     /// implementation guarantees.
     public func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope] {
+        if let flaky = script.flakyFetchRecentEnvelopes, let error = flaky.nextResult() {
+            throw error
+        }
         guard count > 0 else { return [] }
         let all = (script.envelopesByPath[mailboxPath] ?? []).sorted { $0.uid < $1.uid }
         return Array(all.suffix(count))

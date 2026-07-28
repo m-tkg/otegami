@@ -33,6 +33,75 @@ public enum SyncScope: Sendable, Equatable {
     case all
 }
 
+/// Task #69 (「メールボックス同期エラーは、5回自動でリトライして、それでも
+/// ダメなときだけ表示して」): the automatic-retry policy `AccountSyncer`
+/// applies to a sync pass's `connect()` and each mailbox's sync body, when
+/// that call's `autoRetry` is `true` (the default for every entry point
+/// except `MessageListView`'s manual pull-to-refresh — see `SyncCoordinator
+/// .syncAccountIncrementally(_:auth:scope:autoRetry:)`'s doc comment).
+///
+/// Not every failure retries the same way — see `AccountSyncer
+/// .FailureClass`/`classify(_:)` for the three-way split this type's
+/// `maxAttempts`/backoff actually drives:
+/// - `.authentication` never retries (§4 exception 1: リトライ無意味).
+/// - `.networkUnreachable` (`MailTransportError.connectionFailed` — this
+///   app has no `NWPathMonitor`, so "could not connect at all" is the
+///   closest signal to "the device is offline") consumes one of
+///   `maxAttempts` per *external call* to `connect`/a mailbox's sync, with
+///   no in-process sleep — deliberately: sleeping `backoffBase`-scaled
+///   seconds while genuinely offline just blocks the caller for no benefit,
+///   when the next foreground-resume/IDLE-reconnect/pull-to-refresh is
+///   already going to call this again anyway (§4 exception 3: "5連敗を
+///   空費しない…既存のフォアグラウンド同期タイミングで足りる").
+/// - `.other` (transient IMAP/server hiccups: `serverError`,
+///   `malformedResponse`, `notConnected`, `cancelled`, `mailboxNotFound`,
+///   `notImplemented`) retries in-process, sleeping `backoffBase * 2^n`
+///   (capped at `backoffCap`) between attempts, up to `maxAttempts` total
+///   tries within the one call — this is the "5回自動でリトライ" the
+///   original request describes literally.
+///
+/// `sleep` is injected so `AccountSyncerTests`' `.other`-class retry
+/// scenarios don't have to actually wait through real backoff delays
+/// (`SyncRetryPolicy(sleep: { _ in })`), the same "injected clock/sleeper"
+/// shape `OpQueueProcessor.backoffBase`/`.backoffCap` establish for op
+/// replay (that one isn't injectable since its backoff lives *between*
+/// separate `replay()` calls, driven by a persisted `nextRetryAt` column
+/// rather than an in-process sleep — this type's `.other` case is the one
+/// that actually blocks synchronously, hence needing the hook).
+public struct SyncRetryPolicy: Sendable {
+    /// Total tries before a failure is finally recorded as visible —
+    /// matches the request's literal "5回" (attempt 1 + up to 4 retries).
+    public var maxAttempts: Int
+    /// `.other`-class backoff base, doubled each attempt (2s/4s/8s/16s for
+    /// attempts 2–5) — mirrors `OpQueueProcessor.backoffBase`'s shape at a
+    /// much shorter timescale (a stuck sync pass shouldn't block minutes
+    /// the way a queued op replay can afford to).
+    public var backoffBase: TimeInterval
+    /// Ceiling on any single backoff delay — reachable only if `maxAttempts`
+    /// were raised well past 5; present for the same "don't let this grow
+    /// unbounded" reason `OpQueueProcessor.backoffCap` exists, not because
+    /// 5 attempts at `backoffBase = 2` ever gets close to it.
+    public var backoffCap: TimeInterval
+
+    public var sleep: @Sendable (TimeInterval) async -> Void
+
+    public init(
+        maxAttempts: Int = 5,
+        backoffBase: TimeInterval = 2,
+        backoffCap: TimeInterval = 32,
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { seconds in
+            try? await Task.sleep(for: .seconds(seconds))
+        }
+    ) {
+        self.maxAttempts = maxAttempts
+        self.backoffBase = backoffBase
+        self.backoffCap = backoffCap
+        self.sleep = sleep
+    }
+
+    public static let `default` = SyncRetryPolicy()
+}
+
 public actor AccountSyncer {
     /// How many of a mailbox's most recent messages the initial sync
     /// fetches (plan: "直近500件"), by IMAP *sequence* number via
@@ -62,6 +131,8 @@ public actor AccountSyncer {
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     private let bodyFetcher: BodyFetcher
     private let mailboxSyncer: MailboxSyncer
+    /// Task #69: see `SyncRetryPolicy`'s doc comment.
+    private let retryPolicy: SyncRetryPolicy
 
     /// The long-lived foreground `IDLE` loop's `Task` (M3), started by
     /// ``startIdleLoop(auth:onWake:)`` and stopped by ``stopIdleLoop()``.
@@ -69,13 +140,51 @@ public actor AccountSyncer {
     /// a new one cancels whatever was already running first.
     private var idleTask: Task<Void, Never>?
 
+    /// Task #69: consecutive `.networkUnreachable`-classified `connect()`
+    /// failures, one persisted count per this `AccountSyncer` instance —
+    /// which itself lives for the app's process lifetime once created
+    /// (`SyncCoordinator.syncer(for:)` caches it by account id), so this
+    /// naturally accumulates across separate IDLE-wake/foreground/pull-to-
+    /// refresh calls the way `SyncRetryPolicy`'s doc comment describes,
+    /// without needing a DB column. Reset to `0` the moment a connect
+    /// succeeds (`connectWithRetry(auth:autoRetry:)`).
+    private var accountNetworkFailureStreak = 0
+    /// Same idea, per mailbox (keyed by `MailboxRecord.id`) — "アカウント
+    /// （またはメールボックス）単位で独立" (Task #69's request): one
+    /// mailbox's offline streak never affects another mailbox's, or the
+    /// account-level `connect()`'s.
+    private var mailboxNetworkFailureStreaks: [Int64: Int] = [:]
+    /// Task #69 "リトライ中に新しい同期要求が来た場合の重複防止": set for the
+    /// whole duration of an `autoRetry: true` `performInitialSync`/
+    /// `performIncrementalSync` call (not just while a backoff sleep is in
+    /// flight) — a second automatic call arriving while one is already
+    /// running for this account is a no-op (returns an empty `Progress`)
+    /// rather than opening a second concurrent connection. Manual calls
+    /// (`autoRetry: false`) never consult or set this — see
+    /// `SyncCoordinator.syncAccountIncrementally(_:auth:scope:autoRetry:)`'s
+    /// doc comment for why a manual pull-to-refresh must always run
+    /// immediately regardless of what's happening automatically.
+    private var isAutoRetrying = false
+
+    /// Test-only observation hook (not `public` — reachable only via
+    /// `@testable import SyncEngine`, same pattern as `SyncCoordinator
+    /// .waitForPendingPostSyncPrefetchForTesting()`): lets a dedup test
+    /// wait until an in-flight automatic sync call has actually set
+    /// `isAutoRetrying`, rather than racing a fixed number of
+    /// `Task.yield()`s against however long that takes.
+    func isAutoRetryingForTesting() -> Bool {
+        isAutoRetrying
+    }
+
     public init(
         account: AccountRecord,
         database: AppDatabase,
+        retryPolicy: SyncRetryPolicy = .default,
         sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     ) {
         self.account = account
         self.database = database
+        self.retryPolicy = retryPolicy
         self.sessionFactory = sessionFactory
         self.bodyFetcher = BodyFetcher(database: database)
         self.mailboxSyncer = MailboxSyncer(database: database)
@@ -110,12 +219,19 @@ public actor AccountSyncer {
     @discardableResult
     public func performInitialSync(
         auth: MailAuth,
+        autoRetry: Bool = true,
         onProgress: (@Sendable (Progress) -> Void)? = nil
     ) async throws -> Progress {
+        // Task #69 dedup: see `isAutoRetrying`'s doc comment.
+        if autoRetry {
+            guard !isAutoRetrying else { return Progress() }
+            isAutoRetrying = true
+        }
+        defer { if autoRetry { isAutoRetrying = false } }
+
         var progress = Progress()
 
-        let session = sessionFactory(account.imapConfig)
-        try await connect(session, auth: auth)
+        let session = try await connectWithRetry(auth: auth, autoRetry: autoRetry)
         defer {
             let session = session
             Task { await session.disconnect() }
@@ -152,75 +268,72 @@ public actor AccountSyncer {
             // the database and the mailbox's own `uidNext`/`uidValidity`
             // (persisted per-mailbox, *inside* this loop, before this
             // point) already looks fully synced on every later resync.
+            //
+            // Task #69: the whole block below now runs through
+            // `syncMailboxWithRetry` — retried/suppressed per
+            // `SyncRetryPolicy`'s doc comment when `autoRetry`, exactly one
+            // attempt with an immediate record-on-failure otherwise (manual
+            // pull-to-refresh's `.all` scope). Either way, any failure that
+            // ultimately propagates out of this `do` just moves on to the
+            // next mailbox (`docs/qa-findings.md`'s "部分同期失敗の UI可視化"
+            // — one mailbox's failure must not cost every other mailbox its
+            // threading pass below).
             do {
-                progress.selectedMailboxPath = info.path
-                onProgress?(progress)
+                try await syncMailboxWithRetry(mailboxId: mailboxId, autoRetry: autoRetry) {
+                    progress.selectedMailboxPath = info.path
+                    onProgress?(progress)
 
-                let status = try await session.select(info.path)
+                    let status = try await session.select(info.path)
 
-                if status.messageCount > 0 {
-                    let envelopes = try await session.fetchRecentEnvelopes(
-                        mailboxPath: info.path,
-                        count: Int(Self.initialSyncWindow),
-                        batchSize: Self.fetchBatchSize
-                    )
+                    if status.messageCount > 0 {
+                        let envelopes = try await session.fetchRecentEnvelopes(
+                            mailboxPath: info.path,
+                            count: Int(Self.initialSyncWindow),
+                            batchSize: Self.fetchBatchSize
+                        )
 
-                    try await database.dbWriter.write { [account] db in
-                        for envelope in envelopes {
-                            try Self.upsert(envelope: envelope, mailboxId: mailboxId, accountId: account.id, db: db)
+                        try await database.dbWriter.write { [account] db in
+                            for envelope in envelopes {
+                                try Self.upsert(envelope: envelope, mailboxId: mailboxId, accountId: account.id, db: db)
+                            }
                         }
+
+                        progress.envelopesFetched += envelopes.count
+                        onProgress?(progress)
                     }
 
-                    progress.envelopesFetched += envelopes.count
-                    onProgress?(progress)
-                }
+                    // Captured as a `let` snapshot rather than mutated directly
+                    // inside the closure: `DatabaseWriter.write`'s closure is
+                    // `@Sendable`, and mutating a captured `var` across a Sendable
+                    // closure boundary is rejected under Swift 6 strict
+                    // concurrency even though `AccountSyncer` itself is
+                    // actor-isolated.
+                    let syncedRecord = record
+                    try await database.dbWriter.write { db in
+                        var updated = syncedRecord
+                        updated.uidValidity = Int64(status.uidValidity)
+                        updated.uidNext = Int64(status.uidNext)
+                        updated.highestModSeq = Int64(status.highestModSeq)
+                        updated.messageCount = status.messageCount
+                        updated.lastSyncedAt = Date()
+                        try updated.update(db)
+                    }
 
-                // Captured as a `let` snapshot rather than mutated directly
-                // inside the closure: `DatabaseWriter.write`'s closure is
-                // `@Sendable`, and mutating a captured `var` across a Sendable
-                // closure boundary is rejected under Swift 6 strict
-                // concurrency even though `AccountSyncer` itself is
-                // actor-isolated.
-                let syncedRecord = record
-                try await database.dbWriter.write { db in
-                    var updated = syncedRecord
-                    updated.uidValidity = Int64(status.uidValidity)
-                    updated.uidNext = Int64(status.uidNext)
-                    updated.highestModSeq = Int64(status.highestModSeq)
-                    updated.messageCount = status.messageCount
-                    updated.lastSyncedAt = Date()
-                    try updated.update(db)
+                    if info.role == .inbox {
+                        // Best-effort: `prefetchRecent` already swallows individual
+                        // message failures, and initial sync itself shouldn't fail
+                        // just because prefetch couldn't run at all (e.g. a
+                        // mid-sync disconnect) — the message list still renders
+                        // fine with bodies fetched lazily on open instead.
+                        progress.bodiesFetched = (try? await bodyFetcher.prefetchRecent(
+                            mailboxId: mailboxId,
+                            mailboxPath: info.path,
+                            session: session
+                        )) ?? 0
+                        onProgress?(progress)
+                    }
                 }
-
-                if info.role == .inbox {
-                    // Best-effort: `prefetchRecent` already swallows individual
-                    // message failures, and initial sync itself shouldn't fail
-                    // just because prefetch couldn't run at all (e.g. a
-                    // mid-sync disconnect) — the message list still renders
-                    // fine with bodies fetched lazily on open instead.
-                    progress.bodiesFetched = (try? await bodyFetcher.prefetchRecent(
-                        mailboxId: mailboxId,
-                        mailboxPath: info.path,
-                        session: session
-                    )) ?? 0
-                    onProgress?(progress)
-                }
-
-                // This mailbox's sync just succeeded — clear any failure a
-                // *previous* pass recorded (see `MailboxRecord
-                // .lastSyncError`'s doc comment) so `MailboxSyncFailuresView`'s
-                // banner disappears on its own rather than requiring a
-                // manual dismissal for a problem that's since resolved
-                // itself.
-                await clearMailboxSyncFailureIfNeeded(mailboxId: mailboxId)
             } catch {
-                // Move on to the next mailbox; see the doc comment above
-                // this `do` for why one mailbox's failure shouldn't cost
-                // every other mailbox its threading pass. Record *what*
-                // failed (`docs/qa-findings.md`'s "部分同期失敗の UI可視化")
-                // rather than the previous silent `continue` — this is the
-                // only place that failure is ever visible to the user.
-                await recordMailboxSyncFailure(mailboxId: mailboxId, error: error)
                 continue
             }
         }
@@ -317,21 +430,165 @@ public actor AccountSyncer {
         }
     }
 
-    /// Connects `session`, recording (account edit UI) or clearing
-    /// `AccountRecord.lastSyncError` around it — see that field's doc
-    /// comment for why a connect-level failure (as opposed to one scoped to
-    /// a single mailbox, `recordMailboxSyncFailure` above) needs its own
-    /// account-level record. Rethrows on failure so every existing caller's
-    /// control flow (abort the rest of this sync pass) is unchanged; this
-    /// only adds a side effect, not a new error path.
-    private func connect(_ session: any IMAPSessionProtocol, auth: MailAuth) async throws {
-        do {
-            try await session.connect(auth: auth)
-        } catch {
-            await recordAccountSyncFailure(error: error)
-            throw error
+    /// Task #69: which of the three retry treatments `SyncRetryPolicy`'s
+    /// doc comment describes an error gets. Any error that isn't a
+    /// `MailTransportError` at all (shouldn't normally happen — every
+    /// `IMAPSessionProtocol` method's documented failure mode is one of
+    /// that enum's cases) falls into `.other` rather than crashing or
+    /// silently never retrying.
+    private enum FailureClass {
+        case authentication
+        case networkUnreachable
+        case other
+    }
+
+    private static func classify(_ error: Error) -> FailureClass {
+        guard let error = error as? MailTransportError else { return .other }
+        switch error {
+        case .authenticationFailed:
+            return .authentication
+        case .connectionFailed:
+            return .networkUnreachable
+        case .serverError, .malformedResponse, .mailboxNotFound, .notConnected, .cancelled, .notImplemented:
+            return .other
         }
-        await clearAccountSyncFailureIfNeeded()
+    }
+
+    /// Task #69: connects with automatic retry — builds a *fresh* session
+    /// via `sessionFactory` on every attempt (mirrors `runIdleLoop`'s own
+    /// reconnect pattern) rather than retrying `connect(auth:)` on the one
+    /// session built before the first attempt, so a retried attempt is a
+    /// genuine new connection, not a replay against whatever broke the
+    /// first one. Records (account edit UI) or clears `AccountRecord
+    /// .lastSyncError` around it — see that field's doc comment for why a
+    /// connect-level failure (as opposed to one scoped to a single mailbox,
+    /// `recordMailboxSyncFailure` above) needs its own account-level
+    /// record.
+    ///
+    /// `autoRetry: false` (manual pull-to-refresh) is exactly the
+    /// pre-Task-#69 behavior: one attempt, immediate record + rethrow on
+    /// failure. `autoRetry: true` applies `SyncRetryPolicy`'s
+    /// authentication/networkUnreachable/other classification — see
+    /// `classify(_:)`/`SyncRetryPolicy`'s doc comments.
+    private func connectWithRetry(auth: MailAuth, autoRetry: Bool) async throws -> any IMAPSessionProtocol {
+        guard autoRetry else {
+            let session = sessionFactory(account.imapConfig)
+            do {
+                try await session.connect(auth: auth)
+            } catch {
+                await recordAccountSyncFailure(error: error)
+                throw error
+            }
+            accountNetworkFailureStreak = 0
+            await clearAccountSyncFailureIfNeeded()
+            return session
+        }
+
+        var attempt = 0
+        while true {
+            attempt += 1
+            let session = sessionFactory(account.imapConfig)
+            do {
+                try await session.connect(auth: auth)
+                accountNetworkFailureStreak = 0
+                await clearAccountSyncFailureIfNeeded()
+                return session
+            } catch {
+                switch Self.classify(error) {
+                case .authentication:
+                    // 認証エラーはリトライ無意味 — 即時表示 (Task #69 exception 1).
+                    await recordAccountSyncFailure(error: error)
+                    throw error
+
+                case .networkUnreachable:
+                    // オフライン系: このプロセス内ではスリープ/再試行せず、
+                    // この呼び出し1回を streak に積んで即座に諦める — 次に
+                    // フォアグラウンド復帰/IDLE 再接続/次回同期機会がこの
+                    // メソッドをもう一度呼んだ時が「次の1回」になる (Task #69
+                    // exception 3; `accountNetworkFailureStreak`の doc comment)。
+                    accountNetworkFailureStreak += 1
+                    if accountNetworkFailureStreak >= retryPolicy.maxAttempts {
+                        await recordAccountSyncFailure(error: error)
+                    }
+                    throw error
+
+                case .other:
+                    guard attempt < retryPolicy.maxAttempts else {
+                        await recordAccountSyncFailure(error: error)
+                        throw error
+                    }
+                    let backoff = min(retryPolicy.backoffCap, retryPolicy.backoffBase * pow(2, Double(attempt - 1)))
+                    await retryPolicy.sleep(backoff)
+                    // Loop again — a fresh session/attempt.
+                }
+            }
+        }
+    }
+
+    /// Task #69: runs one mailbox's sync body (`operation`) under the same
+    /// retry/suppression policy `connectWithRetry(auth:autoRetry:)` applies
+    /// to the account-level connect — see that method's doc comment and
+    /// `SyncRetryPolicy`'s for the authentication/networkUnreachable/other
+    /// classification both share. `mailboxId` keys
+    /// `mailboxNetworkFailureStreaks` — see that property's doc comment for
+    /// why each mailbox's offline streak is independent of every other
+    /// mailbox's and of the account-level connect's.
+    ///
+    /// Unlike `connectWithRetry`, a retried attempt reuses whatever session
+    /// `operation` closes over rather than rebuilding one — a mailbox-level
+    /// failure (a transient `NO`/parse hiccup on this one mailbox) doesn't
+    /// imply the connection itself is bad, so there's nothing to reconnect;
+    /// `operation` itself would throw `.networkUnreachable` if the
+    /// underlying connection actually did drop.
+    private func syncMailboxWithRetry(
+        mailboxId: Int64,
+        autoRetry: Bool,
+        operation: () async throws -> Void
+    ) async throws {
+        guard autoRetry else {
+            do {
+                try await operation()
+            } catch {
+                await recordMailboxSyncFailure(mailboxId: mailboxId, error: error)
+                throw error
+            }
+            mailboxNetworkFailureStreaks[mailboxId] = 0
+            await clearMailboxSyncFailureIfNeeded(mailboxId: mailboxId)
+            return
+        }
+
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                try await operation()
+                mailboxNetworkFailureStreaks[mailboxId] = 0
+                await clearMailboxSyncFailureIfNeeded(mailboxId: mailboxId)
+                return
+            } catch {
+                switch Self.classify(error) {
+                case .authentication:
+                    await recordMailboxSyncFailure(mailboxId: mailboxId, error: error)
+                    throw error
+
+                case .networkUnreachable:
+                    let streak = (mailboxNetworkFailureStreaks[mailboxId] ?? 0) + 1
+                    mailboxNetworkFailureStreaks[mailboxId] = streak
+                    if streak >= retryPolicy.maxAttempts {
+                        await recordMailboxSyncFailure(mailboxId: mailboxId, error: error)
+                    }
+                    throw error
+
+                case .other:
+                    guard attempt < retryPolicy.maxAttempts else {
+                        await recordMailboxSyncFailure(mailboxId: mailboxId, error: error)
+                        throw error
+                    }
+                    let backoff = min(retryPolicy.backoffCap, retryPolicy.backoffBase * pow(2, Double(attempt - 1)))
+                    await retryPolicy.sleep(backoff)
+                }
+            }
+        }
     }
 
     private func recordAccountSyncFailure(error: Error) async {
@@ -362,9 +619,19 @@ public actor AccountSyncer {
     /// mailbox selection or its manual-refresh button asks for, `.all` a
     /// full manual refresh across every mailbox.
     @discardableResult
-    public func performIncrementalSync(auth: MailAuth, scope: SyncScope = .inboxOnly) async throws -> MailboxSyncer.Progress {
-        let session = sessionFactory(account.imapConfig)
-        try await connect(session, auth: auth)
+    public func performIncrementalSync(
+        auth: MailAuth,
+        scope: SyncScope = .inboxOnly,
+        autoRetry: Bool = true
+    ) async throws -> MailboxSyncer.Progress {
+        // Task #69 dedup: see `isAutoRetrying`'s doc comment.
+        if autoRetry {
+            guard !isAutoRetrying else { return MailboxSyncer.Progress() }
+            isAutoRetrying = true
+        }
+        defer { if autoRetry { isAutoRetrying = false } }
+
+        let session = try await connectWithRetry(auth: auth, autoRetry: autoRetry)
         defer {
             let session = session
             Task { await session.disconnect() }
@@ -411,31 +678,27 @@ public actor AccountSyncer {
             // from a `performInitialSync` that hit this same situation)
             // relies on, so it needs to keep reaching that final call even
             // when one mailbox in `targets` errors out.
+            // Task #69: same `syncMailboxWithRetry` wrapper
+            // `performInitialSync`'s per-mailbox loop uses — see that call
+            // site's doc comment.
+            guard let mailboxId = record.id else { continue }
             do {
-                let (_, progress) = try await mailboxSyncer.incrementalSync(
-                    mailboxRecord: record,
-                    mailboxPath: info.path,
-                    accountId: account.id,
-                    session: session,
-                    capabilities: capabilities
-                )
+                var progress = MailboxSyncer.Progress()
+                try await syncMailboxWithRetry(mailboxId: mailboxId, autoRetry: autoRetry) {
+                    let (_, mailboxProgress) = try await mailboxSyncer.incrementalSync(
+                        mailboxRecord: record,
+                        mailboxPath: info.path,
+                        accountId: account.id,
+                        session: session,
+                        capabilities: capabilities
+                    )
+                    progress = mailboxProgress
+                }
                 combined.newMessages += progress.newMessages
                 combined.flagChanges += progress.flagChanges
                 combined.deletedMessages += progress.deletedMessages
                 combined.didFullResync = combined.didFullResync || progress.didFullResync
-
-                // See `performInitialSync`'s identical call for why: clears
-                // a previously-recorded failure now that this pass
-                // succeeded.
-                if let mailboxId = record.id {
-                    await clearMailboxSyncFailureIfNeeded(mailboxId: mailboxId)
-                }
             } catch {
-                // See `performInitialSync`'s identical call for why this
-                // records rather than silently `continue`s.
-                if let mailboxId = record.id {
-                    await recordMailboxSyncFailure(mailboxId: mailboxId, error: error)
-                }
                 continue
             }
         }
@@ -476,8 +739,16 @@ public actor AccountSyncer {
         var backoffSeconds: TimeInterval = 5
         while !Task.isCancelled {
             do {
-                let session = sessionFactory(account.imapConfig)
-                try await connect(session, auth: auth)
+                // Task #69: `autoRetry: false` here on purpose — this loop
+                // already implements its *own* infinite reconnect-with-
+                // backoff (5s/10s/.../300s, below) for as long as the app
+                // stays foregrounded, which would otherwise stack with
+                // `SyncRetryPolicy`'s separate 5-attempt/2s-32s policy in a
+                // confusing way. `autoRetry: false` keeps this exactly the
+                // pre-Task-#69 behavior: one attempt per reconnect, account
+                // -level `lastSyncError` recorded/cleared around it same as
+                // always.
+                let session = try await connectWithRetry(auth: auth, autoRetry: false)
                 let mailboxInfos = try await session.listMailboxes()
                 guard let inboxInfo = Self.inbox(among: mailboxInfos) else {
                     await session.disconnect()

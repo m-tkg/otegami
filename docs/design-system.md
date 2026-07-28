@@ -3536,3 +3536,120 @@ iOS だけ画面端まで届く全幅表示に変更した — `CLAUDE.md`の「
 ため静的スクリーンショットでは検証できておらず、コードレビューで
 `swipeableRow`のクリップと`ThreadRowView`側の角丸を揃えたことのみ確認
 した — 実機での見た目確認はユーザーに委ねる。
+
+## Task #69: 同期エラーの自動リトライ (5回) と表示抑制
+
+「メールボックス同期エラーは、5回自動でリトライして、それでもダメな
+ときだけ表示して」という要望への対応。**表示自体を止めるのではなく、
+`AccountRecord.lastSyncError`/`MailboxRecord.lastSyncError`への「記録」
+を5回連続失敗が確定するまで遅らせる** — 両フィールドを読む UI
+(`MailboxSyncFailuresView`のバナー、`MessageListView`の空状態文言/
+`syncErrorMessage`) 側は無変更で、記録タイミングだけを`AccountSyncer`
+(`packages/OtegamiKit/Sources/SyncEngine/AccountSyncer.swift`) 側で
+制御する設計にした。
+
+### 3種類のエラー分類 (`AccountSyncer.FailureClass`/`classify(_:)`)
+
+一律5回リトライではなく、エラーの性質で扱いを変える:
+
+- **認証エラー (`MailTransportError.authenticationFailed`)**: リトライ
+  無意味なので即座に記録・表示。既存の再認証導線 (`AccountRecord
+  .needsReauth`等) はそのまま。
+- **接続不達 (`.connectionFailed` — DNS/TCP/TLS 確立不可。このアプリは
+  `NWPathMonitor`を持たないため「オフライン」を判定する最も近い信号は
+  これ)**: プロセス内でスリープ→再試行はしない。5回のうち1回分を
+  **外部呼び出し1回ごとに**消費するだけで、次のフォアグラウンド復帰/
+  IDLE再接続/pull-to-refreshが「次の1回」になる。オフライン中に
+  2s/4s/8s/16s と無意味にブロックして待つのを避けるため
+  (`SyncRetryPolicy`のドキュメントコメント参照)。
+- **それ以外 (`serverError`/`malformedResponse`/`notConnected`/
+  `cancelled`/`mailboxNotFound`/`notImplemented` — 一過性の IMAP/サーバ
+  不調想定)**: 1回の呼び出し内で最大5回、2s/4s/8s/16s の指数バックオフ
+  でリトライ。これが要望の「5回自動でリトライして」の文字通りの実装。
+
+`accountNetworkFailureStreak`/`mailboxNetworkFailureStreaks`(メール
+ボックス単位、`mailboxId`キー) は`AccountSyncer`インスタンス — これは
+`SyncCoordinator.syncer(for:)`がアカウントIDごとにキャッシュしプロセス
+生存期間ずっと使い回す — の**メモリ上の状態**として持たせた。DB
+カラムを増やす設計(`OpQueueRecord.attempts`/`nextRetryAt`と同種) も
+検討したが、アプリ再起動をまたいで「あと何回」を覚えておく必要は
+要望に含まれておらず、複雑さに見合わないと判断した。
+
+### 例外: 手動 pull-to-refresh とアカウント設定「再試行」ボタン
+
+`SyncCoordinator.syncAccountIncrementally(_:auth:scope:autoRetry:)`/
+`syncAccount(_:auth:autoRetry:onProgress:)`に`autoRetry: Bool`引数を
+追加 (デフォルト`true` — IDLE 起床・フォアグラウンド/起動時同期・
+Task #63 の同期後トリガーなど自動系の呼び出し元はすべて既定値のまま
+で新挙動を得る)。ユーザー操作起点の2箇所だけ明示的に`false`を渡す:
+
+- `MessageListView.refresh(surfaceErrors:autoRetry:)` — `.refreshable`
+  の pull-to-refresh 本体 (`autoRetry`規定値`false`)。「即時1回実行、
+  失敗は従来どおり表示」の要望どおり。`syncSelectedMailboxOnAppear()`
+  (5分おきの無音バックグラウンド再同期、`surfaceErrors: false`で元々
+  エラーを見せない) だけは明示的に`autoRetry: true`を渡す — 元々無音
+  なのでリトライ抑制を適用しても体験の劣化がなく、むしろ一過性障害を
+  静かに自己修復できる方に倒した。
+- `MailboxSyncFailuresView`の「再試行」ボタン (`autoRetry: false`) —
+  これ自体が「このメールボックスをもう一度試して」というユーザー操作
+  なので、自動リトライを挟むとタップしても即座に反映されず (再記録は
+  streak が5に達するまで起きない)「ボタンを押しても何も起きない」
+  ように見えるリスクがあったため。
+
+`AccountSetupView`/`ICloudAccountSetupView`のアカウント新規追加フロー
+は特に対応せず既定の`autoRetry: true`のまま — 要望の除外対象は
+「手動 pull-to-refresh」のみと解釈し、アカウント追加時の接続失敗が
+`.other`分類なら最大 ~30秒(2+4+8+16s) 待ってから失敗表示になる点は
+許容できるトレードオフと判断した (`.authenticationFailed`/
+`.connectionFailed`は従来どおり即時 or 実質即時)。
+
+### リトライ中の重複防止 (`isAutoRetrying`)
+
+`autoRetry: true`の呼び出し中(`performInitialSync`/
+`performIncrementalSync`の開始から終了まで、バックオフ中に限らず)は
+`AccountSyncer`インスタンスに`isAutoRetrying`フラグを立て、その間に
+届いた2件目以降の自動呼び出しは接続すら開かず空の`Progress`を返す
+no-op にした。手動呼び出し (`autoRetry: false`) はこのフラグを一切
+見ない/立てない — ユーザーが pull-to-refresh した瞬間は自動リトライの
+都合で待たされるべきではないため。
+
+`AccountSyncer.startIdleLoop`が内部で回す IDLE 再接続ループ
+(`runIdleLoop`) は元から独自の無限リトライ+バックオフ (5s→300s上限)
+を持っており、今回の5回ポリシーと二重に積み重なると分かりにくくなる
+ため、ここは`connectWithRetry(auth:autoRetry: false)`を使い、
+account 単位の`lastSyncError`記録/クリアだけは既存どおり働かせつつ
+Task #69 のリトライ回数制御そのものは適用しないことにした
+(挙動は Task #69 以前と完全に同一)。
+
+### テスト
+
+`packages/OtegamiKit/Tests/SyncEngineTests/AccountSyncerTests.swift`に
+「Task #69」名を冠したテスト群を追加 (`FakeIMAPSession`ベース、
+account-level/mailbox-level それぞれ): 4回失敗→5回目成功で
+`lastSyncError`が立たないこと、5連敗で立つこと、認証エラーは即座
+かつリトライなしで記録されること (セッションファクトリの呼び出し回数
+で確認)、`connectionFailed`は外部呼び出し単位でしか streak が進まない
+こと (1呼び出しにつき1回しかセッションを開かない)、リトライ中の
+重複同期がセッションを開かずスキップされること、`autoRetry: false`は
+1回で即記録すること。バックオフの実待ちを避けるため`SyncRetryPolicy
+.sleep`を注入可能にし (`OpQueueProcessor`が発想元)、テストは無音
+sleeper (`{ _ in }`) を使う — 重複防止テストだけは逆に「確実にまだ
+リトライ中」を検証したいので、`CheckedContinuation`で明示的に開ける
+ゲート付き sleeper を使った。
+
+`mailboxSyncFailureClearsOnNextSuccess`/`... doesn't leave an earlier
+mailbox's messages unthreaded`という**既存**の2テストは、SELECT が
+毎回決定的に失敗するスクリプトを使っていたため、Task #69 導入後は
+デフォルトの`autoRetry: true`で実バックオフ (2+4+8+16s) を5回分
+本当に待ってしまい、それぞれ約31秒に伸びるリグレッションを起こした
+— この2件だけ`autoRetry: false`を明示して元の「1回で即記録」挙動に
+戻し、`make test`全体が数秒で終わることを確認した (この落とし穴は
+今後同種のテストを書く際の注意点として記録しておく: 既存の
+`AccountSyncer`呼び出しをスクリプトで失敗させるテストは、Task #69
+以降`autoRetry`を明示しない限り既定でリトライする)。
+
+`make test`/`make mac`緑を確認した。実機/シミュレータでの動作確認
+(オフライン再現・5回失敗後のバナー表示など) は未実施 — このバッチは
+ユニットテスト中心の検証に留めており、実機での「オフラインにして
+pull-to-refreshを試す」「Wi-Fiを切ったまま数分待って自動復帰を待つ」
+系の確認はユーザーに委ねる。

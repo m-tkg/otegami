@@ -969,7 +969,19 @@ struct MessageListView: View {
     /// logic with `false` — see that method's doc comment for why a
     /// merely-opened-a-screen sync shouldn't pop the same alert an
     /// explicit pull-to-refresh does.
-    private func refresh(surfaceErrors: Bool = true) async {
+    ///
+    /// `autoRetry` (Task #69): defaults to `false` so `.refreshable {
+    /// await refresh() }`'s pull-to-refresh gesture keeps its pre-Task-#69
+    /// behavior verbatim — 「手動 pull-to-refresh はユーザー操作起点 → 即時
+    /// 1回実行し、失敗は従来どおり表示」(the request's exception 2):
+    /// exactly one attempt, and a failure shows up in `syncErrorMessage`
+    /// right away rather than after `SyncCoordinator`'s automatic-retry
+    /// window. `syncSelectedMailboxOnAppear()` passes `true` explicitly —
+    /// that pass is already silent (`surfaceErrors: false`), so applying
+    /// `AccountSyncer.SyncRetryPolicy`'s retry-then-suppress behavior there
+    /// too is a strict improvement (a transient hiccup self-heals quietly
+    /// instead of just waiting for the next 5-minute pass).
+    private func refresh(surfaceErrors: Bool = true, autoRetry: Bool = false) async {
         isSyncing = true
         defer { isSyncing = false }
 
@@ -992,9 +1004,9 @@ struct MessageListView: View {
                 }
                 _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
                 if let mailboxPath {
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .mailbox(path: mailboxPath))
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .mailbox(path: mailboxPath), autoRetry: autoRetry)
                 } else {
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, autoRetry: autoRetry)
                 }
             } catch {
                 if surfaceErrors { syncErrorMessage = "\(error)" }
@@ -1016,7 +1028,7 @@ struct MessageListView: View {
                 do {
                     let auth = try await environment.auth(for: account)
                     _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly, autoRetry: autoRetry)
                 } catch {
                     failures.append("\(account.email): \(error)")
                 }
@@ -1038,7 +1050,7 @@ struct MessageListView: View {
                 do {
                     let auth = try await environment.auth(for: account)
                     _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .all)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .all, autoRetry: autoRetry)
                 } catch {
                     failures.append("\(account.email): \(error)")
                 }
@@ -1092,7 +1104,7 @@ struct MessageListView: View {
     /// on a *later* change, never for the initial value.
     private func syncSelectedMailboxOnAppear() async {
         while !Task.isCancelled {
-            await refresh(surfaceErrors: false)
+            await refresh(surfaceErrors: false, autoRetry: true)
             try? await Task.sleep(for: .seconds(Self.selectedMailboxResyncInterval))
         }
     }

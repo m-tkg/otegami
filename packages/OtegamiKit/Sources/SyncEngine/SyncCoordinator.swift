@@ -43,14 +43,22 @@ public actor SyncCoordinator {
     /// a manual refresh or pull-to-refresh — since `AccountSyncer`'s
     /// initial sync upserts idempotently. Full differential sync (only
     /// fetching what changed since the last sync) lands in M3.
+    /// `autoRetry` (Task #69, default `true`): applies `AccountSyncer
+    /// .SyncRetryPolicy`'s automatic-retry-then-suppress-until-given-up
+    /// behavior — see that type's doc comment for the authentication/
+    /// networkUnreachable/other classification it drives, and
+    /// `syncAccountIncrementally(_:auth:scope:autoRetry:)`'s doc comment
+    /// for why every entry point except a manual pull-to-refresh should
+    /// leave this at its default.
     @discardableResult
     public func syncAccount(
         _ account: AccountRecord,
         auth: MailAuth,
+        autoRetry: Bool = true,
         onProgress: (@Sendable (AccountSyncer.Progress) -> Void)? = nil
     ) async throws -> AccountSyncer.Progress {
         let syncer = syncer(for: account)
-        return try await syncer.performInitialSync(auth: auth, onProgress: onProgress)
+        return try await syncer.performInitialSync(auth: auth, autoRetry: autoRetry, onProgress: onProgress)
     }
 
     /// Fetches (and persists) one message's body on demand — the "開封時は
@@ -113,14 +121,27 @@ public actor SyncCoordinator {
     /// foreground-resume, and IDLE wake-ups all call — see
     /// `AccountSyncer.performIncrementalSync`'s doc comment for the exact
     /// per-mailbox behavior.
+    ///
+    /// `autoRetry` (Task #69, default `true`): whether a connect/mailbox
+    /// failure gets `AccountSyncer.SyncRetryPolicy`'s automatic-retry-then-
+    /// suppress-until-given-up treatment (see that type's doc comment) or
+    /// the pre-Task-#69 "one attempt, record/show immediately" behavior.
+    /// Every automatic call site (IDLE wake, foreground/launch sync, the
+    /// post-sync prefetch trigger below) should leave this at its default;
+    /// `MessageListView`'s manual pull-to-refresh is the one caller that
+    /// passes `false` — 「手動 pull-to-refresh はユーザー操作起点 → 即時1回
+    /// 実行し、失敗は従来どおり表示」(Task #69's request) means a user who
+    /// just pulled to refresh should see the result of *that* attempt, not
+    /// wait through up to ~30s of silent background retries first.
     @discardableResult
     public func syncAccountIncrementally(
         _ account: AccountRecord,
         auth: MailAuth,
-        scope: SyncScope = .inboxOnly
+        scope: SyncScope = .inboxOnly,
+        autoRetry: Bool = true
     ) async throws -> MailboxSyncer.Progress {
         let syncer = syncer(for: account)
-        let progress = try await syncer.performIncrementalSync(auth: auth, scope: scope)
+        let progress = try await syncer.performIncrementalSync(auth: auth, scope: scope, autoRetry: autoRetry)
         // Task #63: "各メールボックスの同期完了後にも1回" — see
         // `schedulePostSyncPrefetchIfNeeded(for:auth:)`'s doc comment. Only
         // scheduled after a *successful* sync (the `try await` above would
