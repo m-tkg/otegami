@@ -3812,3 +3812,206 @@ G「削除・アーカイブ時の挙動」用に元々 `MessageListView.onSumma
 という要件そのものなので、これで正しい。`scripts/verify-screen.sh list`
 のフェイクHTMLメッセージ5件フィクスチャで「All Inboxes (5)」と表示さ
 れることを確認した。
+
+## Task #64: 本文読み込み完了までフローティングボタンを出さない/翻訳
+アイコン変更/フラット表示の重複ヘッダ削除/HTML高さ計測の精密化
+
+実機フィードバックのバッチ対応、4点。
+
+**1. 要約/翻訳フローティングボタンを本文読み込み完了まで非表示に**:
+`MessageView.syncAIFeaturesState()`の表示条件を`message != nil`から
+`bodyRecord != nil`へ変更。`message`は`load()`が本文取得の**前**に
+セットする (`message = loadedMessage`) ため、`message != nil`だけで
+ゲートすると本文取得中 (「本文を取得しています…」スピナー表示中) にも
+ボタンが出てしまう窓があった。`bodyRecord`は本文が実際にローカルへ
+揃った時点でしかセットされないため、この窓が閉じる。読み込み失敗時
+(ローカルにキャッシュも無い場合) は`syncAIFeaturesState()`自体が
+一度も呼ばれないパスのままなので、非表示が保たれる。
+
+**2. 翻訳アイコンの変更**: `TranslationFloatingButton`の
+`Image(systemName: "globe")`が実機で「ブラウザで開く」に見えるという
+フィードバックを受け、`"translate"`(SF Symbols、iOS 26 SDK で存在確認
+済み) に変更。要約ボタンの`"sparkles"`とは明確に区別が付く。
+
+**3. フラット表示時の最上部スレッドバー削除**: `ThreadDetailView`が
+`ThreadMessageRow`に新しい`showsHeader: Bool`(`!isFlatModeEntry`) を
+渡すようにし、`ThreadMessageRow.body`はその値が`false`のときだけ
+`Button`/`ThreadMessageSummaryRow`(差出人+時刻+シェブロンの1行) の
+描画自体をスキップする。フラットモードのメッセージは常に1通・常に
+展開済みで、この行の内容は直下の`MessageHeaderCompactView`(圧縮ヘッダ)
+と完全に重複していた。スレッド表示 ON (グループモード) の場合は、
+1通のスレッドでも複数通のスレッドでも一切変更なし — `isFlatModeEntry`
+の既存の使い分け (画面構造改修バッチ Task #33 で追加、フラットモードの
+1行と、グループモードが1メッセージへ自明に解決したケースを区別する
+フラグ) をそのまま流用しているため。
+
+**4. HTML本文の最終行が欠ける/本文とフッター間の空きすぎ**:
+- `HTMLWebViewCoordinator.postHeight()`: `#otegami-fit-outer`自身の
+  `getBoundingClientRect().height`だけを信じず、`#otegami-fit-inner`
+  から`lastElementChild`を辿った「実際の最下端」(`deepestLastBottom`)
+  との`Math.max`を取り、`Math.ceil`に加えて`+4px`の余裕を持たせるよう
+  精密化した。実機で最終行が数十pt欠けていた原因はマージン絡みの計測
+  漏れが有力候補と見ているが、コード上でどちらのCSS機構が根本原因かを
+  完全に特定するより、実測値を頑健にする対症的な修正を優先した。
+- `MessageDetailAIFeaturesState.reservedBottomInset`: 要約/翻訳の
+  ボタンが**両方**表示される前提で常に「2ボタン分」の空白を予約して
+  いたのを、実際に表示されているボタンの数 (0/1/2) に応じて計算する
+  よう修正 — 日本語メール等で翻訳ボタンが出ない (要約だけ) ケースでは
+  丸々1ボタン分の余分な空白が本文の下に残っていた。
+
+検証: `scripts/verify-screen.sh html-3` (Task #56の高さ切れ検証フィク
+スチャ、`OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1`
+`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=3`) のスクリーンショットで、
+最終行 (`beta.otegami.test.`) までの完全な描画と、要約ボタン1つだけの
+場合に本文とフッターの間の余白が詰まっていることを確認した。項目1
+(bodyState取得までボタン非表示) と項目3 (フラットモードの重複ヘッダ
+削除) は、静的スクリーンショット1枚では検証しづらい性質の変更 (前者は
+数十ms〜数百msの過渡状態、後者はフラットモードの入り口である一覧行
+タップ経路そのものの再現がこの検証手段の範囲外) のため、コードレビュー
+レベルの確認に留め、実機での最終確認は今後の課題として`PENDING.md`へ
+記録する。
+
+### 根治: HTMLメールの翻訳ボタンが「本文の準備がまだ完了していません」
+で恒常的に失敗する不具合
+
+上記バッチの検証中に見つかった別系統の実機報告 (OTA ba3ba47 で可視化
+した「翻訳ボタンが無反応」フィードバック (Task #61) の続報): HTML本文
+が完全に描画済みでも、翻訳ボタンを押すと「翻訳に失敗しました: 本文の
+準備がまだ完了していません。もう一度お試しください。」が出る。リトライ
+しても同じ — 一瞬のタイミング問題ではなく恒常的に踏まれていた。
+
+**根本原因**: `MessageView.body`が
+```swift
+if let contentHeight {
+    content.frame(maxWidth: .infinity, alignment: .topLeading).frame(height: contentHeight)
+} else {
+    content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+}
+```
+という`if`/`else`で同じ`content`を2通りに包んでいた。SwiftUIの
+`_ConditionalContent`は`if`/`else`の2つの分岐を**構造的に別のビュー**
+として扱う (`TrueContent`/`FalseContent`) — 中身が実質同じ`content`
+でも例外ではない。`contentHeight`は`nil`から始まり (Task #58の高さ
+計測がまだ届いていない)、HTMLメッセージの`WKWebView`が最初の
+fit-to-width計測を終えた直後 (=ほぼ全てのHTMLメールで、初回描画から
+コンマ秒後) に非`nil`へ変わる — この瞬間に`if`/`else`の分岐が切り
+替わり、`content`のサブツリー全体 (`HTMLMessageView`の`WKWebView`と
+その`HTMLTranslationController`ごと) が丸ごと破棄されて新しく組み
+直されていた。破棄される旧サブツリーの`.onDisappear`
+(`onTranslationControllerReady(nil)`) が、組み直された新サブツリーの
+`.onAppear`(新しいコントローラを報告) より**後**に発火すると、
+`MessageView`の`htmlTranslationController`は恒久的に`nil`のまま残る
+— 一度この状態に落ち着くと、ビューが安定している限り二度と`onAppear`
+は発火し直さないため、リトライしても直らない「恒常的な」失敗として
+観測された。
+
+**修正**: `if`/`else`を完全に排し、`content`を単一の呼び出しのまま
+`.frame(maxWidth: .infinity, maxHeight: contentHeight == nil ? .infinity : nil, alignment: .topLeading).frame(height: contentHeight)`
+と書き換えた。`.frame(height:)`は元々`nil`を「制約なし」として扱う
+ため、両方の状態で以前と同じ見た目を保ったまま、`content`のビュー
+identity が`contentHeight`の値によらず一貫するようにした。
+
+**副次対応**:
+- `requestTranslation`のコントローラ`nil`ガードに `OSLog`
+  (`translationWiringLogger`、category `HTMLTranslationDiagnostic` —
+  `HTMLTranslationController`自身の`translationLogger`とはログ内容の
+  意味が異なる: 前者は「コントローラ未接続 (配線/identity の問題)」、
+  後者は「接続済みだが抽出JSが失敗」を指す) を追加し、実機ログから
+  どちらの失敗経路かを一意に判別できるようにした。ユーザー向けメッセージ
+  も「（内部エラー）」を明示する形に変えた。
+- `MessageView.syncAIFeaturesState()`の翻訳ボタン表示条件に、HTML
+  メッセージがHTML表示中の場合は`htmlTranslationController != nil`も
+  含めた — 「ボタンが出ている＝実際に翻訳できる」という保証を強め、
+  項目1の「読み込み完了までボタン非表示」の精神とも整合させた。
+  `onTranslationControllerReady`のコールバックからも
+  `syncAIFeaturesState()`を呼び直し、コントローラが接続/切断された
+  瞬間にボタンの表示も追従するようにした。
+
+検証: `OtegamiHTMLTranslationUITests.testHTMLTranslationPreservesLayoutAndTranslatesText`
+(既存、`OTEGAMI_UITEST_FAKE_TRANSLATION=1`で`FakeTranslationService`の
+決定的な`"[ja] ..."`出力を使い、HTML翻訳ボタンをタップして本文中に
+現れることを確認する) を実行しようとしたが、このシミュレータ/
+ツールチェーンの既知の不調 (`docs/verify.md`) である XCUITest ランナー
+自体のクラッシュ ("Test crashed with signal kill before establishing
+connection") に2回とも阻まれ、実機/実XCUITestでの最終確認はできて
+いない。`make ios`のビルド成功と、コードレベルでの原因追跡 (上記) に
+基づく修正であることを明記しておく — 次回このテストが動く環境で
+再実行して確認すること。
+
+## Task #71: メールの背景を常に白（ライト表示）+ ダーク反転の副作用修正
+
+実機フィードバック「メールの背景を常に白にしたい」を受け、設定 →
+メールビューアに「メールの背景を常に白（ライト表示）」トグル
+(`HTMLDisplaySettingsStore.forceLightBackgroundKey`、既定 OFF) を追加
+した。ON にすると:
+
+- HTML: `HTMLDocumentBuilder.wrap(bodyHTML:autoAdjustColorsInDarkMode:
+  forceLightBackground:)`が、スマート反転の検討自体を最初からスキップ
+  し (`shouldConsiderDarkInversion`を強制的に`false`)、`:root
+  {color-scheme: light !important;}`と`html, body {background-color:
+  #ffffff !important;}`を追加の`<style>`として注入する。メール自身の
+  `<style>`より後 (かつ`!important`) なので、メール自身が何色を指定
+  していても確実にライト固定になる。
+- プレーンテキスト (訳文表示の`TranslatedBodyView`含む): SwiftUI側の
+  `.colorScheme(.light)` + 明示的な白背景 (`MessageView`の
+  `otegamiForceLightBackground(_:)`) を適用 — `WKWebView`と違い
+  SwiftUIの意味色はアプリの`colorScheme`環境値に従うため、この
+  サブツリーだけライトへ固定する標準的な方法。
+- 「ダークモードでメールの配色を自動調整」とは排他 — この設定が ON の
+  間は自動調整のトグル自体を`.disabled`でグレーアウトする
+  (`MailViewerSettingsView`)。
+
+### ダーク反転 (スマート反転) の副作用修正 (MakerWorld実メールとの比較
+から発見)
+
+実機フィードバックで、ダークモードのスマート反転適用時に3つの問題が
+一度に報告された (Spark の「ライト表示」と Otegami の反転表示を並べて
+比較したスクリーンショットから発見):
+
+1. **右端に縦の白帯**、**セクション間の色ムラ**: 原因は同一 —
+   `.otegami-invert-for-dark`のフィルタは`#otegami-fit-inner`とその
+   子孫にしかかからないのに、メール自身の`<style>body{background:#fff}`
+   のようなルール (`extractHeadStyles`がこのファイル自身の
+   `background: transparent`の後に差し込むので、非`!important`同士
+   なら後勝ちで採用される) はそのまま`body`の実ペイント色として残る
+   — `body`のpadding分の余白や要素間の隙間で、反転されていない元の
+   ライト背景色がそのまま透けて見えていた。
+   - 修正: `decideDarkInversion`が実際に反転を決めたときだけ、
+     `<html>`に`otegami-invert-active`クラスを付与し、そのクラスが
+     ある間だけ`body`/`html`自身の背景を`!important`で強制的に
+     透明化する新しい`<style>`ルールを追加。同時に、`body`自身の
+     背景が「有効な背景」の発見源だった場合はその色を
+     `#otegami-fit-inner`自身へコピーする — キャンバス色そのものは
+     失わず、フィルタの対象内 (`#otegami-fit-inner`) に収める。
+2. **透過PNGロゴが暗背景に沈む**: 透過ロゴ (黒い線画、背景なし) は
+   `img`の二重反転ルールで「元の色 (黒)」に戻る一方、ページ自体は
+   反転済みで暗背景になるため、黒い線画が暗背景にほぼ同化して見え
+   なくなる (Gmailのダーク表示が同じ問題への対処として小さい透過画像
+   に白系の背景チップを敷いているのと同じ状況)。
+   - 修正: `decideLogoChips`が、反転が有効な間、画像の内在サイズ
+     (`naturalWidth`/`naturalHeight`) が両方200px以下の画像にだけ
+     `otegami-invert-logo-chip`クラスを付け、白系の角丸チップ背景
+     (`rgba(255,255,255,0.94)`) を敷く。写真本体は大抵もっと大きい
+     サイズで来るため、この閾値だけでも実用上ほとんど誤爆しない、
+     という現実的な割り切り — より確実な「透過判定」は今回のスコープ
+     では見送った。
+
+MakerWorldの構造 (白背景をbody自身に明示指定・中央寄せの透過PNGロゴ・
+薄グレーの角丸カード・緑のCTAボタン・右余白が出る幅) を模した最小構成
+のフィクスチャを2本追加した:
+`dev/mailstack/seed/fixtures/34-white-canvas-transparent-logo.eml`
+(dev mailstackのseed経由) と、`AppEnvironment
+.uitestFakeHTMLMessages`の5番目のエントリ (`scripts/verify-screen.sh
+html-4` — 実体は同じPNGバイト列を使うUITest専用のSwift文字列リテラル、
+`uitestFakeHTMLMessageBodySecurityNotice`等と同じ「手で同期を保つ」
+パターン)。
+
+検証: `scripts/verify-screen.sh html-4`をダークモード
+(`APPEARANCE=dark`) でスクリーンショットし、修正前は右端の白帯・
+セクション間の色ムラ・ロゴが暗背景にほぼ見えなかったのが、修正後は
+帯/ムラが消え、ロゴが白いチップの上にはっきり見えることを目視確認
+した。さらに `xcrun simctl spawn ... defaults write com.mtkg.otegami
+htmlDisplay.forceLightBackground -bool true` でこの設定をONにした状態
+でも同シナリオを撮影し、Spark の「ライト表示」相当の白背景・黒文字
+表示になること (反転もチップも一切適用されず、メール本来の配色の
+まま) を確認した。

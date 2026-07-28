@@ -33,6 +33,61 @@ JSON文字列に統一する防御的な変更を実装済み。ガードレー�
 `OTEGAMI_UITEST_FAKE_TRANSLATION=1` の直接遷移経路 (タップ操作を
 迂回できる) から始めること。
 
+## Task #64: HTML翻訳ボタン恒常的失敗の根治修正 — XCUITestでのend-to-end確認
+
+**実装状況**: `MessageView.body`の`if let contentHeight { ... } else
+{ ... }`が`content`(HTML本文のWKWebViewを含む) を2つの構造的に別の
+ビュー分岐として扱ってしまい、HTML本文の初回描画直後 (`contentHeight`
+が`nil`→非`nil`に変わる瞬間) に`WKWebView`ごと`HTMLTranslationController`
+が破棄・再構築され、`MessageView.htmlTranslationController`が恒久的に
+`nil`のまま残ることがある不具合を特定・修正した (`if`/`else`を単一の
+`.frame`呼び出しに統合、`docs/design-system.md`「Task #64」節の「根治」
+小節に詳細)。`make ios`のビルド成功は確認済み。
+
+**残っているのは実機/シミュレータでのend-to-end確認のみ**: 既存の
+`OtegamiHTMLTranslationUITests.testHTMLTranslationPreservesLayoutAndTranslatesText`
+(`OTEGAMI_UITEST_FAKE_TRANSLATION=1`で決定的な`"[ja] ..."`出力を使い、
+HTML翻訳ボタンをタップして本文中に現れることを確認する既存テスト) を
+2回実行しようとしたが、いずれも"Test crashed with signal kill before
+establishing connection"というXCUITestランナー自体のインフラ的
+クラッシュ (Task #61のPENDINGにも記録済みの、このシミュレータ/
+ツールチェーン固有の既知の不調と同種) に阻まれ、修正後の実際の
+翻訳成功までは確認できていない。
+
+- **対応手順**: 次回このテストが安定して動く環境 (実機、または
+  ツールチェーン更新後のシミュレータ) で
+  `xcodebuild ... -only-testing:OtegamiUITests/OtegamiHTMLTranslationUITests test`
+  を再実行し、`"[ja]"`マーカーが本文中に現れることを確認する。あわせて
+  `scripts/verify-screen.sh html-3`(英語HTMLメール) で翻訳ボタンをタップ
+  し、`messageDetail.translationFloatingButton.footnote`に「本文の準備が
+  まだ完了していません」が出ないことも確認するとよい (tap-freeでは
+  ボタンを押せないため、この確認自体はXCUITestかタップ操作が必要)。
+
+## Task #64/#71: フラット表示の重複ヘッダ削除・本文読み込み完了までの
+## フローティングボタン非表示 — 実機/シミュレータでの目視確認
+
+**実装状況**: `ThreadDetailView`が`isFlatModeEntry`に応じて最上部の
+サマリー行 (差出人+時刻) の表示/非表示を切り替える`showsHeader`を
+`ThreadMessageRow`に渡すようにし、`MessageView.syncAIFeaturesState()`
+のフローティングボタン表示条件を`bodyRecord != nil`ベースに変更した
+(詳細は`docs/design-system.md`「Task #64」節)。`make ios`ビルド成功、
+`scripts/verify-screen.sh html-3`/`html-4`のスクリーンショットで全体的な
+レイアウト崩れが無いことは確認済み。
+
+**未確認**: この2点はどちらも、現在のtap-free検証手段
+(`scripts/verify-screen.sh`の`html-*`シナリオ) の対象範囲外の状態変化
+— 前者はフラットモード (スレッド表示OFFの一覧行タップ、または検索
+結果) からの遷移でしか再現しない (`html-*`はいずれもグループモードの
+「1メッセージスレッド」経由で開く) ため、実際に一覧の「スレッド表示」
+設定をOFFにして行をタップする操作が必要。後者は本文取得中 (数十〜
+数百ms) の過渡的な状態で、ローカルに`bodyState: .fetched`済みの
+フィクスチャではほぼ観測不能。
+- **対応手順**: 設定 →「スレッド表示」をOFFにしてから一覧行をタップし、
+  本文画面の最上部にサマリー行 (差出人+時刻の1行) が出ないことを
+  目視確認する。フローティングボタンの方は、オフラインのままネットワーク
+  取得が必要な (まだ一度も開いていない) メッセージを開き、本文取得の
+  スピナー表示中にボタンが出ていないことを確認するとよい。
+
 ## M6: Google OAuth Client ID の発行
 
 **実装状況**: M6 のロジック・UI は実装済み・単体テスト済み (PKCE 生成/token
