@@ -4185,3 +4185,67 @@ Spark の新規作成 FAB はアクセントブルーの塗りつぶし円+白�
   またはアーカイブし、「元に戻す」バーが左下検索/右下作成のどちらの
   ボタンにも重ならず、その少し上に浮いて見えることを確認する。あわせて
   バー表示中でも両ボタンが引き続きタップできることも確認する。
+
+## Task #78: フローティングボタンをすべてアクセント塗りに統一
+
+ユーザー要望「アクセントブルーにするのは compose だけじゃなくて設定とか
+検索とか翻訳要約のフローティングも」。上のTask #77の項目2で
+`floatingComposeButton`だけをSpark参考画像のアクセント塗り+白アイコンに
+変えた際は「検索・要約・翻訳は控えめなスタイルのまま」という階層を意図的に
+残したが、今回その判断を覆し、この画面にあるフローティングボタン全部
+(検索・設定・作成・要約・翻訳の5個) を同じ見た目に統一した。
+
+- **対象**: `MailScreenView.floatingSearchButton`/`floatingComposeButton`、
+  `FolderListSheet.floatingSettingsButton`、`AISummaryFloatingButton`/
+  `TranslationFloatingButton`(`MessageDetailFloatingButtons`が並べる2個)。
+- **共有コンポーネントへの昇格**: `OtegamiFloatingButtonTone`と
+  `otegamiFloatingButtonChrome(tone:)`は元々`AISummaryBar.swift`の中だけに
+  あり、要約/翻訳の状態遷移ボタン2個のためだけの型だった (その旧doc
+  comment: 「検索/設定ボタンは今も独自にスタイルを複製している状態で、
+  この2個だけを昇格すると3つの近い重複実装になるだけなので見送る」)。
+  全ボタンが同じ見た目になった今はその理由が無くなったため、
+  `apps/Otegami/Sources/DesignSystem/Components/OtegamiFloatingButton.swift`
+  へ昇格し、`floatingSearchButton`/`floatingComposeButton`/
+  `floatingSettingsButton`はそれぞれの独自インラインスタイルを
+  `.otegamiFloatingButtonChrome()`(既定`.neutral`トーン)の1行へ置き換えた。
+- **トーン別の見た目 (更新後)**:
+  - `.neutral`(通常・無状態): `OtegamiColor.accent`塗り+白アイコン
+    (compose と同じ)。検索・設定・作成ボタンはこのトーンだけを使う。
+  - `.active`(要約済み/翻訳中の訳文表示中): `OtegamiColor.accentText`
+    (`accent`よりコントラストの強い既存トークン) 塗り+白アイコン —
+    `neutral`とは違う色調にすることで、「アクセント塗り」という統一感を
+    保ったまま`TranslationFloatingButton`の「原文へ戻す」トグル状態
+    (訳文表示中かどうか) がまだ見分けられるようにした。新しい色は追加
+    していない (`CLAUDE.md`)。
+  - `.attention`(要約/翻訳が失敗): 以前は`OtegamiColor.destructive`の
+    枠線のみ (地は`surface`) だったが、他のトーンが軒並み塗りつぶしに
+    なったことに合わせ、`destructive`の塗りつぶし+白アイコンに変更 —
+    青系の`neutral`/`active`とひと目で区別できる。
+  - `.disabled`(この端末では利用不可): 変更なし — `OtegamiColor.surface`
+    地+`dividerSubtle`枠線+`inkTertiary`アイコンのまま、押せないことが
+    伝わる控えめな見た目を維持。
+  - 塗りつぶしの円 (`neutral`/`active`/`attention`) には
+    `floatingComposeButton`が元々そうだったのと同じ理由で枠線を外した
+    (視覚的に不要) — `disabled`だけ枠線を残す。
+- **進行中スピナー/トグル状態の視認性**: `iconOrProgress`(アイコンまたは
+  `ProgressView`)を`otegamiFloatingButtonChrome(tone:)`が包む既存の構造
+  上、スピナーもアイコンも同じ`.foregroundStyle(iconColor)`を継承する —
+  `iconColor`を`neutral`/`active`/`attention`すべて`.white`にしたことで、
+  進行中スピナーが濃い塗りの上でも白く見えるようになるのは呼び出し側の
+  追加対応なしに自動的に満たされた。「原文へ戻す」トグルの視認性は上記
+  `.active`の色調変更(`accentText`)で担保している。
+- **検証**: `scripts/verify-screen.sh`に`menu`シナリオを追加した
+  (`FolderListSheet`をタップ無しで直接開く`-uitestsOpenFolderMenuDirectly`
+  引数、`MailScreenView`の`.task`に追加)。`list`(検索・作成)/`menu`
+  (設定)/`html-3`(要約) の3シナリオを light/dark 両方でスクリーンショット
+  し、いずれもアクセント塗り+白アイコンで描画されることを確認した。
+  `html-3`のフィクスチャは英語本文だが、この検証実行時は
+  `TranslationFloatingButton`(2個目の要約下のボタン)が同じ4秒の待機
+  ウィンドウ内に描画されなかった (HTML本文のWKWebView読み込み・言語
+  検出のタイミング起因の可能性 — `docs/verify.md`の既知の不調参照) ため
+  未確認 — ただし同じ`otegamiFloatingButtonChrome(tone:)`を経由する
+  ことは`TranslationFloatingButton`自体のコードから明らかなので、
+  実装上は同じ見た目になる。**実機確認ポイント**: 英語メールを開いて
+  翻訳を実行し、翻訳フローティングボタンが要約ボタンと同じアクセント塗り
+  +白アイコンで表示されること、「原文へ戻す」トグルで色調
+  (`accentText`) が変わって見分けがつくことを確認する。

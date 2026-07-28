@@ -321,6 +321,13 @@ struct FolderListSheet: View {
     /// なく、スクロール位置に関わらず常に見えている左下のフローティング
     /// ボタン。丸い面 (カードと同じ radius 世界観) + 影で「浮いている」ことを
     /// 示す。accessibilityIdentifier は旧実装から据え置き (XCUITest 互換)。
+    ///
+    /// Task #78 (ユーザー要望「アクセントブルーにするのは compose だけ
+    /// じゃなくて設定とか検索とか翻訳要約のフローティングも」):
+    /// `MailScreenView.floatingComposeButton`/`floatingSearchButton`と
+    /// 同じアクセント塗り+白アイコンへ統一 — 見た目は
+    /// `otegamiFloatingButtonChrome()`(既定`.neutral`トーン、
+    /// `OtegamiFloatingButton.swift`) に委譲。
     private var floatingSettingsButton: some View {
         Button {
             onOpenSettings()
@@ -330,11 +337,7 @@ struct FolderListSheet: View {
             // .iconOnly パターン。
             Label("設定", systemImage: "gearshape")
                 .labelStyle(.iconOnly)
-                .font(OtegamiFont.body())
-                .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
-                .background(OtegamiColor.surface, in: Circle())
-                .overlay(Circle().stroke(OtegamiColor.dividerSubtle, lineWidth: 1))
-                .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+                .otegamiFloatingButtonChrome()
         }
         .buttonStyle(.plain)
         .padding(.leading, OtegamiSpacing.lg)

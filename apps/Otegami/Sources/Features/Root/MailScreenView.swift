@@ -120,6 +120,15 @@ struct MailScreenView: View {
             if ProcessInfo.processInfo.arguments.contains("-uitestsOpenSettingsDirectly") {
                 showingSettings = true
             }
+            // Task #78: 同じ「タップ不要の直接遷移」パターンで、ハンバー
+            // ガーメニュー (`FolderListSheet`、左下の`floatingSettingsButton`
+            // が乗っている画面) を`scripts/verify-screen.sh`から開けるように
+            // する — アクセント塗り統一の見た目確認用 (`-uitestsOpenSettingsDirectly`
+            // 同様、実機/通常起動では`-uitestsOpenFolderMenuDirectly`引数が
+            // 無いので常にno-op)。
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenFolderMenuDirectly") {
+                isMenuOpen = true
+            }
         }
     }
 
@@ -342,17 +351,20 @@ struct MailScreenView: View {
     /// accessibility identifier はヘッダにあった頃の`mail.searchButton`を
     /// 据え置き — `SearchUITestHelpers.openSearchScreen(in:)`はこの識別子
     /// だけを見ているため、位置が変わってもそのまま動く。
+    ///
+    /// Task #78 (ユーザー要望「アクセントブルーにするのは compose だけ
+    /// じゃなくて設定とか検索とか翻訳要約のフローティングも」):
+    /// `floatingComposeButton`だけがアクセント塗りだった状態を解消し、
+    /// このボタンも`otegamiFloatingButtonChrome()`(既定`.neutral`トーン、
+    /// `OtegamiFloatingButton.swift`) 経由でcomposeと同じアクセント塗り+
+    /// 白アイコンへ統一した。
     private var floatingSearchButton: some View {
         Button {
             openSearch()
         } label: {
             Label("検索", systemImage: "magnifyingglass")
                 .labelStyle(.iconOnly)
-                .font(OtegamiFont.body())
-                .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
-                .background(OtegamiColor.surface, in: Circle())
-                .overlay(Circle().stroke(OtegamiColor.dividerSubtle, lineWidth: 1))
-                .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+                .otegamiFloatingButtonChrome()
         }
         .buttonStyle(.plain)
         .padding(.leading, OtegamiSpacing.lg)
@@ -364,33 +376,23 @@ struct MailScreenView: View {
     /// (`ToolbarItemGroup(placement: .confirmationAction)`) をここへ移設
     /// (ユーザー要望:「メールの新規作成ボタンは、ヘッダ部ではなく右下に
     /// フローティングして欲しい」)。左下の`floatingSearchButton`と対にな
-    /// る配置・同じ「丸い面＋影」の流儀を踏襲するが、**塗りだけ**は別
-    /// (下の doc comment 参照)。accessibility identifier はヘッダにあった
-    /// 頃の`mail.composeButton`を据え置き — 参照 UITest がある場合でも
-    /// この識別子で動くようにするため。
+    /// る配置・同じ「丸い面＋影」の流儀を踏襲する。accessibility
+    /// identifier はヘッダにあった頃の`mail.composeButton`を据え置き —
+    /// 参照 UITest がある場合でもこの識別子で動くようにするため。
     ///
     /// ユーザー要望「フローティングボタンの色は、sparkに合わせて」
     /// (参考画像: Spark の新規作成 FAB はアクセントブルーの塗りつぶし円＋
-    /// 白いペンアイコン): このボタンの背景だけ`OtegamiColor.surface`
-    /// (control-color の面) から`OtegamiColor.accent`塗りへ、アイコンを
-    /// `.white`へ変える — `SidebarView.UnreadCountBadge`が既に確立して
-    /// いる「アクセント塗りの上は`.white`」という組み合わせをそのまま
-    /// 再利用するだけで新しい色は足さない (`CLAUDE.md`)。
-    /// **`floatingSearchButton`／本文画面の要約・翻訳ボタンはこの変更の
-    /// 対象外** — Spark 自身も検索や翻訳のような二次アクションは控えめな
-    /// スタイルのまま、目立たせるのは主要アクション (新規作成) だけという
-    /// 階層を保っている。枠線 (`.overlay(Circle().stroke(...))`) は塗りの
-    /// ある円には視覚的に不要なので外し、影はそのまま維持する
-    /// (`docs/design-system.md`のフローティングボタン節に記録)。
+    /// 白いペンアイコン) — 当初は`floatingComposeButton`だけの変更
+    /// だったが (`docs/design-system.md`のTask #77節)、Task #78で
+    /// 全フローティングボタンに拡張された。見た目自体は
+    /// `otegamiFloatingButtonChrome()`(`OtegamiFloatingButton.swift`)に
+    /// 委譲 — このボタンだけの`.disabled(environment.accounts.isEmpty)`
+    /// はそのまま残す。
     private var floatingComposeButton: some View {
         Button(action: onCompose) {
             Label("作成", systemImage: "square.and.pencil")
                 .labelStyle(.iconOnly)
-                .font(OtegamiFont.body())
-                .foregroundStyle(.white)
-                .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
-                .background(OtegamiColor.accent, in: Circle())
-                .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
+                .otegamiFloatingButtonChrome()
         }
         .buttonStyle(.plain)
         .padding(.trailing, OtegamiSpacing.lg)

@@ -102,86 +102,11 @@ enum MessageSummaryState: Equatable {
     }
 }
 
-// MARK: - Shared floating-button chrome (Task #55)
+// MARK: - Shared floating-button chrome
 
-/// Which visual state a message-detail floating button is signaling —
-/// shared by `AISummaryFloatingButton`/`TranslationFloatingButton` since
-/// both need the same four states and neither owns the other. Deliberately
-/// *not* a general-purpose design-system component (`apps/Otegami/Sources/
-/// DesignSystem/`): it only expresses what these two message-detail buttons
-/// need, and the two pre-existing floating buttons this chrome is visually
-/// modeled on (`MailScreenView.floatingSearchButton`/`FolderListSheet
-/// .floatingSettingsButton`) each still inline their own copy of this same
-/// styling rather than sharing it — promoting *this* one pair to a shared
-/// design-system component without also consolidating those two would just
-/// leave three near-duplicate implementations instead of one, and touching
-/// either of those two files is out of scope here (both had unrelated
-/// in-flight edits from another change at the time this was written).
-enum OtegamiFloatingButtonTone {
-    /// Idle/default — visually identical to the existing floating search/
-    /// settings buttons (`OtegamiColor.surface` fill, accent-tinted icon).
-    case neutral
-    /// A result is ready and tapping reveals/toggles it (summarized, or
-    /// translated-and-currently-showing) — filled with the accent color so
-    /// it reads as "on"/"active" against the neutral default.
-    case active
-    /// The last attempt failed — tapping retries. Bordered/iconed in
-    /// `OtegamiColor.destructive` rather than filled, so it doesn't compete
-    /// visually with `.active`'s "this succeeded" affordance while still
-    /// standing out from `.neutral`.
-    case attention
-    /// This device/configuration can't do this at all right now
-    /// (`isAvailable == false`) — dimmed, and the button is also disabled
-    /// (`.disabled(true)` at the call site); VoiceOver still explains why
-    /// via `accessibilityLabel` rather than the button silently vanishing.
-    case disabled
-}
-
-extension View {
-    /// The circular "surface fill + subtle border + soft shadow" chrome
-    /// `MailScreenView.floatingSearchButton`/`FolderListSheet
-    /// .floatingSettingsButton` each already use, parameterized by `tone`
-    /// instead of being a single fixed look — see `OtegamiFloatingButtonTone`'s
-    /// doc comment for why this isn't promoted to a wider shared component.
-    func otegamiFloatingButtonChrome(tone: OtegamiFloatingButtonTone) -> some View {
-        modifier(OtegamiFloatingButtonChromeModifier(tone: tone))
-    }
-}
-
-private struct OtegamiFloatingButtonChromeModifier: ViewModifier {
-    let tone: OtegamiFloatingButtonTone
-
-    func body(content: Content) -> some View {
-        content
-            .font(OtegamiFont.body())
-            .foregroundStyle(iconColor)
-            .frame(width: OtegamiSpacing.xl, height: OtegamiSpacing.xl)
-            .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
-            .background(backgroundColor, in: Circle())
-            .overlay(Circle().stroke(borderColor, lineWidth: 1))
-            .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
-    }
-
-    private var backgroundColor: Color {
-        switch tone {
-        case .neutral, .attention, .disabled: OtegamiColor.surface
-        case .active: OtegamiColor.accent
-        }
-    }
-
-    private var iconColor: Color {
-        switch tone {
-        case .neutral: OtegamiColor.accent
-        case .active: .white
-        case .attention: OtegamiColor.destructive
-        case .disabled: OtegamiColor.inkTertiary
-        }
-    }
-
-    private var borderColor: Color {
-        switch tone {
-        case .attention: OtegamiColor.destructive
-        default: OtegamiColor.dividerSubtle
-        }
-    }
-}
+// Task #78: `OtegamiFloatingButtonTone`と`otegamiFloatingButtonChrome(tone:)`
+// はこのファイルではなく`apps/Otegami/Sources/DesignSystem/Components/
+// OtegamiFloatingButton.swift`に昇格した — 検索・設定のフローティング
+// ボタンも同じアクセント塗り+白アイコンに統一されたことで、この2つの
+// 状態遷移ボタン専用に留める理由が無くなったため (そのファイルの
+// doc comment参照)。

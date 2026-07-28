@@ -70,6 +70,9 @@
 #                                       表示 (アカウント色罫線+表示名+件数の
 #                                       セクション見出しが2つ) を確認する。
 #   settings                            設定画面 (SettingsSheetView)
+#   menu                                 ハンバーガーメニュー (FolderListSheet
+#                                       — 左下floatingSettingsButtonの
+#                                       アクセント塗り確認用)
 #   account-settings                    Task #72: 設定→アカウントの設定
 #                                       (fake Gmail アカウント1件を挿入、
 #                                       一覧行の色ドットを確認)
@@ -199,6 +202,13 @@ case "$SCENARIO" in
   settings)
     launch_args+=("-uitestsOpenSettingsDirectly")
     default_out="settings.png"
+    ;;
+  menu)
+    # Task #78: フローティング設定ボタン (`FolderListSheet
+    # .floatingSettingsButton`) のアクセント塗り統一確認用 — ハンバーガー
+    # メニューをタップ無しで直接開く。
+    launch_args+=("-uitestsOpenFolderMenuDirectly")
+    default_out="menu.png"
     ;;
   account-settings)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
