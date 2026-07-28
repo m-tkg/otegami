@@ -71,6 +71,21 @@ public enum OtegamiColor {
     /// in dark mode for the equivalent contrast reason.
     public static let accentText = Color(light: 0x2A6B88, dark: 0x9AD6EC)
 
+    /// Task #85 (実機フィードバック「フローティングボタンの青をもう少し
+    /// 濃く」): `accent`より一段深い、常に同じ向き (どちらのモードでも
+    /// 「より濃い」) に振れる青 — `OtegamiFloatingButton`の塗りつぶし専用。
+    /// `accentText`を丸ごと流用しなかった理由: `accentText`はダークモードで
+    /// **より明るい**方向に振れる (本文上の文字コントラスト用トークンの
+    /// ため) — 白アイコンを乗せる塗りつぶしの円には逆効果 (`accent`の
+    /// ダーク値`0x7FC7E3`はただでさえ薄い水色で、白アイコンとのコントラ
+    /// ストが低かった)。ダーク値は`accent`のライト値をそのまま「一段深い
+    /// ステップ」として再利用しているが、ライト値は`accentText`
+    /// (`OtegamiFloatingButtonTone.active`が今も使う色) とは別の、さらに
+    /// 一段深い値にしてある — でないと`neutral`と`active`がライトモードで
+    /// 同色になり、Task #78の「オン状態だけ色で見分けられる」という設計が
+    /// 壊れる。
+    public static let accentFloating = Color(light: 0x235A73, dark: 0x3D7F9E)
+
     // MARK: 破壊的操作 (destructive)
 
     /// Delete/discard actions — the one color carried over unchanged from

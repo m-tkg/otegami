@@ -58,9 +58,17 @@ private struct OtegamiFloatingButtonChromeModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .font(OtegamiFont.body())
+            // Task #85 (実機フィードバック「アイコンをもう少し大きく」):
+            // `OtegamiFont.body()`(16pt, Archivo — Dynamic Type向けの
+            // カスタム書体) から、`AttachmentCardRow.iconChip`と同じ
+            // 「アイコン専用は素の`Font.system(size:weight:)`」に変更
+            // — SF Symbolの見た目は元々書体に左右されないので、Archivo
+            // 由来のDynamic Typeスケーリングを保つ意味がここには無い。
+            // `frame`もアイコンの拡大に合わせて24→28に広げてある(circleの
+            // 外径は`padding`が変わらない分だけ大きくなる)。
+            .font(.system(size: 19, weight: .semibold))
             .foregroundStyle(iconColor)
-            .frame(width: OtegamiSpacing.xl, height: OtegamiSpacing.xl)
+            .frame(width: OtegamiSpacing.xl + OtegamiSpacing.xs, height: OtegamiSpacing.xl + OtegamiSpacing.xs)
             .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
             .background(backgroundColor, in: Circle())
             .overlay {
@@ -77,7 +85,12 @@ private struct OtegamiFloatingButtonChromeModifier: ViewModifier {
 
     private var backgroundColor: Color {
         switch tone {
-        case .neutral: OtegamiColor.accent
+        // Task #85 (「青をもう少し濃く」): `.accent` → `.accentFloating`
+        // (`OtegamiColor.accentFloating`のdoc comment参照)。`.active`は
+        // 元々の`.accentText`のまま — `accentFloating`のライト値は
+        // `accentText`とは別の、さらに一段深い値にしてあるので、
+        // `.neutral`/`.active`の色分けはこの変更後も保たれる。
+        case .neutral: OtegamiColor.accentFloating
         case .active: OtegamiColor.accentText
         case .attention: OtegamiColor.destructive
         case .disabled: OtegamiColor.surface

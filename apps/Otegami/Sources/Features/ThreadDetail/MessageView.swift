@@ -1532,7 +1532,12 @@ struct MessageDetailFloatingButtons: View {
     @Bindable var state: MessageDetailAIFeaturesState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
+        // Task #85 (フローティングボタン調整): moved from bottom-leading to
+        // bottom-trailing — `ThreadDetailView.body`'s own top-level
+        // `.overlay(alignment:)` moved to match (see its doc comment).
+        // Still a vertical stack, still the same spacing from the footer
+        // toolbar (`.padding(.bottom, OtegamiSpacing.lg)`, unchanged).
+        VStack(alignment: .trailing, spacing: OtegamiSpacing.sm) {
             if state.showsSummaryButton {
                 AISummaryFloatingButton(
                     state: state.summaryState,
@@ -1550,7 +1555,7 @@ struct MessageDetailFloatingButtons: View {
                 )
             }
         }
-        .padding(.leading, OtegamiSpacing.lg)
+        .padding(.trailing, OtegamiSpacing.lg)
         .padding(.bottom, OtegamiSpacing.lg)
     }
 }
