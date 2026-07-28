@@ -812,6 +812,24 @@ extension AppDatabase {
             try db.create(index: "message_on_gmailMessageId", on: "message", columns: ["gmailMessageId"])
         }
 
+        // v28 (Task #66, カレンダー招待メール対応): `CalendarInviteResponseRecord`'s
+        // doc comment has the full picture — one row per `message.id`
+        // (`unique()`), replaced wholesale on every re-response rather than
+        // accumulating history, so `MessageView`'s invite card can show
+        // "すでに回答済み" the next time the same invite email is opened.
+        // `onDelete: .cascade` mirrors `attachment.messageId`'s v1 shape:
+        // this row is meaningless once its owning `message` row is gone
+        // (deleted, or the account itself removed).
+        migrator.registerMigration("v28") { db in
+            try db.create(table: "calendarInviteResponse") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("messageId", .integer).notNull().unique().indexed()
+                    .references("message", onDelete: .cascade)
+                t.column("partStat", .text).notNull()
+                t.column("respondedAt", .datetime).notNull()
+            }
+        }
+
         return migrator
     }
 }

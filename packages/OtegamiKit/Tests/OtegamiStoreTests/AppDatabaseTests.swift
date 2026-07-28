@@ -339,4 +339,56 @@ struct AppDatabaseTests {
         let fetched = try database.dbWriter.read { db in try AccountRecord.fetchOne(db, key: account.id) }
         #expect(fetched?.sortOrder == 5)
     }
+
+    /// Task #66 (v28): `calendarInviteResponse` round-trips one row per
+    /// message, replacing (not accumulating) on re-response, and cleans
+    /// itself up when the owning `message` row is deleted.
+    @Test("calendarInviteResponse round-trips, upserts one row per message, and cascade-deletes with its message")
+    func roundTripsCalendarInviteResponse() throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Test", email: "t@x.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "t@x.test"
+        )
+        try database.dbWriter.write { db in try account.insert(db) }
+
+        let messageId = try database.dbWriter.write { db -> Int64 in
+            var mailbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var message = MessageRecord(mailboxId: mailbox.id!, uid: 1, internalDate: Date(timeIntervalSince1970: 1_700_000_000))
+            try message.insert(db)
+            return message.id!
+        }
+
+        var response = CalendarInviteResponseRecord(
+            messageId: messageId, partStat: .accepted,
+            respondedAt: Date(timeIntervalSince1970: 1_700_000_100)
+        )
+        try database.dbWriter.write { db in try response.insert(db) }
+
+        let fetched = try database.dbWriter.read { db in
+            try CalendarInviteResponseRecord.filter(Column("messageId") == messageId).fetchOne(db)
+        }
+        #expect(fetched?.partStat == .accepted)
+
+        // Re-responding (e.g. tapping 辞退 after having tapped 承諾)
+        // replaces the row on `messageId` rather than erroring on a unique
+        // constraint or accumulating a second row.
+        try database.dbWriter.write { db in
+            try CalendarInviteResponseRecord.filter(Column("messageId") == messageId).deleteAll(db)
+            response = CalendarInviteResponseRecord(messageId: messageId, partStat: .declined)
+            try response.insert(db)
+        }
+        let afterReResponse = try database.dbWriter.read { db in
+            try CalendarInviteResponseRecord.filter(Column("messageId") == messageId).fetchAll(db)
+        }
+        #expect(afterReResponse.count == 1)
+        #expect(afterReResponse.first?.partStat == .declined)
+
+        try database.dbWriter.write { db in _ = try MessageRecord.deleteOne(db, key: messageId) }
+        let afterMessageDelete = try database.dbWriter.read { db in
+            try CalendarInviteResponseRecord.filter(Column("messageId") == messageId).fetchAll(db)
+        }
+        #expect(afterMessageDelete.isEmpty)
+    }
 }
