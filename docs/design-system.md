@@ -3005,10 +3005,11 @@ dragTranslation)`)、(2) プレビューの色/アイコン判定
 固定値 (`MessageView.floatingButtonsReservedBottomInset`) を
 `.contentMargins(.bottom:, for: .scrollContent)`で確保した —
 `FolderListSheet`が自分の`floatingSettingsButton`のために既にやっている
-のと同じパターン。**`HTMLMessageView`(`WKWebView`) は対象外** — 同じ
-作業ツリーで別エージェントがその実装をダーク反転修正のため並行編集中
+のと同じパターン。**`HTMLMessageView`(`WKWebView`) は当初対象外** —
+同じ作業ツリーで別エージェントがその実装をダーク反転修正のため並行編集中
 だったため触っておらず、HTML本文はフローティングボタンがスクロール後の
-本文に重なりうる既知の制約として残る。
+本文に重なりうる既知の制約として残っていた。Task #56 でこの制約を解消
+した (下記「Task #56」節参照)。
 
 ### 検証
 
@@ -3020,3 +3021,194 @@ accessibilityLabel (未翻訳時は"翻訳"を含む、翻訳済みは"戻す"�
 依存に置き換えた。実機シミュレータでの目視確認 (スクリーンショット) は
 `.claude/skills/verify/SKILL.md`の手順に沿って別途実施し、結果をここに
 追記する。
+
+## Task #56: HTMLメール表示の総仕上げ4点 (TestFlight風通知メールの実機報告)
+
+実機報告 (TestFlight のビルド通知メール、otegami と Spark の比較
+スクリーンショット2枚) から4件のバグを確定した — 背景色を指定しない
+まま文字色だけ明示指定するメール、`width`属性+インライン`style`の
+「レスポンシブだが上限あり」画像手法など、Task #45/#51 の対象
+(31/32番フィクスチャ) には無かった新しい組み合わせが原因。
+
+### 1. 画像の巨大化禁止
+
+**症状**: 中央の ~120px アプリアイコン画像が画面幅いっぱいに引き伸ば
+されて表示される (Spark は自然サイズのまま)。
+
+**原因の特定**: 憶測で直さず、まず `HTMLDocumentBuilder.wrap` が出す
+CSS リセットだけを抜き出したオフスクリーン `WKWebView` (Swift script、
+`swift <file>.swift` で単体実行) を用意し、複数の候補となる著者側
+マークアップ (`width`属性のみ/`width`属性なしのcid画像/`width:100%`+
+`max-width:120px`のインラインstyleを併用する「レスポンシブだが上限
+あり」手法、Litmus/Email on Acid 等が推奨し ESP テンプレートで頻出/
+著者`<style>`ブロックで`img{width:100%!important}`を仕込むケース、等)
+を実測したところ、「`width`属性 + `style="width:100%;
+max-width:120px;"`」の組み合わせだけが確実に画面幅いっぱいまで拡大
+された。
+
+根本原因はこのファイル自身の CSS リセットの二重の見落とし:
+1. `* { max-width: 100% !important; box-sizing: border-box; }`
+   (全要素向け) と `img, video, table, iframe { max-width: 100%
+   !important; ... }` (img含む個別) の両方が `img` にも `!important`
+   で `max-width: 100%` を強制していた。CSS のカスケードでは
+   `!important` 同士は詳細度を問わず勝つため、著者がインライン
+   `style="max-width:120px"` (非`!important`) で明示した、より小さい
+   上限をこの2つの `!important` ルールが問答無用で上書きしていた。
+   結果、著者の意図した「上限120px」が消え、著者自身も併記していた
+   `width:100%` (フルード化) だけが有効になり、コンテナ幅いっぱいまで
+   拡大された。
+2. 著者が `width`/`style`の`width`を一切指定しない画像 (稀だが著者側
+   `<style>`ブロックの汎用リセットが影響しうる) を自然サイズのまま
+   描画する仕組みがそもそも無かった。
+
+**修正** (`HTMLMessageView.swift`、`HTMLDocumentBuilder.wrap`内の
+`<style>`):
+- `img`をブランケットの`* { max-width: 100% !important; }`の対象から
+  除外 (`*:not(img)`)。
+- `img`向けの上限は「著者がインライン`style`に自前の`max-width`を
+  持たない画像だけ」`!important`で100%上限をかけ
+  (`img:not([style*="max-width" i])`)、自前の`max-width`を持つ画像には
+  非`!important`のフォールバック上限だけを与える
+  (`img[style*="max-width" i] { max-width: 100%; }`) — CSSの詳細度
+  (インライン`style`が最優先) により著者側のより小さい値が自然に勝つ。
+- `width`属性もインライン`style`の`width`も持たない画像は常に自然
+  サイズ (`width: auto !important`) で描画する
+  (`img:not([width]):not([style*="width" i])`)。
+- 著者が`max-width`を極端に大きく指定していた場合でも、ページ全体の
+  fit-to-width (`HTMLWebViewCoordinator.fitToWidthScript`) がページ
+  全体を縮小する既存の安全網としてなお機能する (29/30番フィクスチャの
+  固定幅テーブル対策と同じ考え方) — 個々の画像を完全に取りこぼしなく
+  抑え込む必要はない。
+
+再現・修正確認は WKWebView 単体実行スクリプトで行った (A: width属性
+のみ→120px、B: フルード+max-width併用→修正前366px/修正後120px、
+C: 指定なし→自然サイズ、G: width=900の広い画像→100%上限で正しく
+縮小、いずれも regression なし)。
+
+### 2. 背景なし + 濃色文字メールの可読化
+
+**症状**: 背景色を一切指定せず、文字色だけ `#444` 系で明示指定した
+メールがダークモードで暗地に暗文字になり読めない。Task #51 の判定
+(`decideDarkInversion`) は「実効背景が不透明に解決した場合のみ」反転を
+検討する設計だったため、背景が最後まで解決しない (＝透明) メールは
+無条件で「反転しない」に倒れていた — 32番フィクスチャ (色指定なし)
+のような「本当に無指定で `CanvasText` に任せてよいメール」と、
+このケース (「背景は無指定だが文字色だけ明示的に暗い」メール) を
+区別できていなかった。
+
+**方式選定**: 2案を比較検討した。
+- (a) 背景が解決しない場合も、実測した文字輝度が低ければ既存の
+  `.otegami-invert-for-dark` クラスをそのまま適用する。
+- (b) 反転はかけず、`color` 等のテキスト系プロパティだけを CSS で
+  明色に上書きする。
+
+(a) を採用した。理由:
+- 背景が透明なままの要素に `filter: invert(1)` をかけても、CSS
+  Filter Effects の仕様上アルファチャンネルは反転の対象にならない
+  (透明は反転しても透明のまま) — 見た目への影響はテキスト色 (と、
+  既存の二重反転補正が効く img/video) にしか出ない。実測でも
+  確認済み (`getComputedStyle` で透明ピクセルに副作用が出ないこと)。
+- (b) は反転で自動的に得られる「テキストだけでなくボーダー・
+  アクセントカラーなども込みで概ね妥当な配色になる」効果を失い、
+  `color` 以外のプロパティ (`border-color` 等) は個別に手当てが要る
+  — 実装・保守コストが (a) より高い割に、31/32番フィクスチャが
+  既に検証済みの反転パスをそのまま再利用できる (a) ほど枯れていない。
+
+**判定の鍵**: `color: CanvasText` (このファイル自身のCSSリセット、
+文字色未指定のメールが暗黙に使う値) は、ダークモード中は WebKit が
+既に明るい色へ自動解決している。一方、著者が明示的に指定した暗い
+文字色 (`#444` 等) は外観に関係なく指定値のまま変わらない。
+`getComputedStyle(...).color` を実測すれば、この2ケースは輝度の
+実測値だけで区別できる (WKWebView単体実行スクリプトで実測:
+ダークモード中の`color: CanvasText`の輝度は1.0、`#444`は0.058) —
+「文字色を明示指定していないメールかどうか」を別途覚えておく仕組みは
+不要で、32番フィクスチャの retention (無変換のまま) は実測ロジック
+だけで自然に保たれる。
+
+**修正**: `HTMLWebViewCoordinator.fitToWidthScript`の`decideDarkInversion`
+に、背景が解決しなかった場合の分岐を追加 — 代表的なテキストノードの
+輝度を実測し、0.5 未満 (暗い) なら `.otegami-invert-for-dark` を付与する。
+
+### 3. 高さ切れの再確認
+
+1の画像サイズ修正後、fit-to-width の高さ計測 (`fitToWidthScript`の
+`waitForImages()`→`fit()`) が正しく機能することを新フィクスチャ
+(33番、後述) で再確認した。33番フィクスチャは罫線を持たないぶん
+31番より単純だが、複数段落+フッターまで本文全体が最後まで欠けずに
+描画されることを機械的に確認する `OtegamiSecurityNoticeDarkModeUITests
+.testBetaTestingNoticeRendersFullyWithoutOverlap` を追加した。切れる
+別の根本原因は見つからなかった (1の修正が唯一の原因だった)。
+
+### 4. フローティングボタンの本文被り解消
+
+Task #55 (要約/翻訳フローティングボタン) 実装時点では、プレーンテキスト
+側の2ブランチ (`ScrollView`/`TranslatedBodyView`) だけが
+`.contentMargins(.bottom:, for: .scrollContent)` で
+`floatingButtonsReservedBottomInset` 分の余白を確保しており、
+`HTMLMessageView`(`WKWebView`) は「別エージェントが並行編集中だった
+ため対象外」という既知の制約として残っていた (design-phase-3節参照)。
+
+**修正**: `HTMLMessageView`に`bottomContentInset: CGFloat`パラメータを
+追加し、`MessageView`から`floatingButtonsReservedBottomInset`と同じ値を
+渡す。`WKWebView`側の`scrollView.contentInset`(iOS)は使わず —
+`WKWebView`はmacOSでは`UIScrollView`を持たないため iOS/macOS 共通の
+コードにならない — 代わりに`HTMLDocumentBuilder.wrap`が読み込む文書
+自体の末尾 (`#otegami-fit-outer`の*兄弟*として`body`直下) に、その
+高さ分の空`<div>` (spacer) を注入する方式にした。`#otegami-fit-outer`の
+*外*に置くことで、fit-to-widthのスケール計算 (`#otegami-fit-inner`の
+`scrollWidth`/`scrollHeight`だけを見る) と一切干渉しない。
+
+### フィクスチャ33・検証
+
+`dev/mailstack/seed/fixtures/33-beta-testing-notice.eml` (+
+`AppEnvironment.uitestFakeHTMLMessages`への同内容の追加、
+`OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE`経路): 背景色なし・`#444`系の
+文字色を明示指定・中央120pxのcid画像 (`width`属性+`style="width:100%;
+max-width:120px;"`)・リンク数本・複数段落、というTask #56の再現構造。
+`OtegamiSecurityNoticeDarkModeUITests.testBetaTestingNoticeRendersFullyWithoutOverlap`
+が本文の冒頭・中盤・末尾の存在 (3の回帰確認) を機械的に確認し、
+スクリーンショットを撮る。31/32番フィクスチャの既存挙動 (32番が
+無変換のまま) も同じテストファイル内の既存テストで retention 確認済み。
+
+`make test`/`make mac`/`make ios` green。
+
+**実機シミュレータでの検証状況**: `OtegamiSecurityNoticeDarkModeUITests`
+の既存3メソッド (このバッチの変更を一切受けていない) も含め、この
+シミュレータ/ツールチェーンで `messageList.list` の行タップが
+`htmlWebView never appeared` で失敗する既知の環境問題
+(このファイル冒頭のdoc comment) に阻まれ、XCUITest 経由の自動
+スクリーンショット撮影は安定しなかった。「UITest の直接遷移経路」
+フォールバックとして `AppEnvironment.uitestDirectOpenThreadId`
+(`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`) を追加し、タップを
+経由せず`selectedThreadId`を直接セットして本文へ遷移する経路を
+実装 — `xcrun simctl launch`からの手動起動 (`SIMCTL_CHILD_*`環境変数
+経由) では実際にこの経路で本文詳細への遷移に成功することを確認した
+(スクリーンショットで本文冒頭・段落・フッターの存在を確認)。ただし
+同じ経路を `XCUITest` プロセス内から使うと、今度は端末側の
+「連絡先へのアクセスを許可」システムダイアログ (差出人アバター解決が
+トリガー) が非決定的なタイミングで表示され、`dismissContactsPermissionPromptIfNeeded`
+の複数回リトライおよび `simctl privacy grant contacts` による事前許可
+のどちらでも確実には解消できず、最終的な自動スクリーンショット取得は
+今回の作業時間内には安定させられなかった。
+
+**やったこと/できなかったことの切り分け**:
+- 1 (画像巨大化禁止) と 2 (背景なし+濃色文字可読化) は、実際の
+  `WKWebView`/実際のCSSカスケード規則に対する単体実行スクリプトでの
+  実測により、修正前後の挙動を数値で比較検証済み (上記各節参照) —
+  実機シミュレータのスクリーンショットに頼らない、確度の高い検証。
+- 4 (フローティングボタン被り) は、fit-to-widthのスケール計算対象
+  (`#otegami-fit-inner`) の外にDOM要素を追加するだけの変更で、
+  スケール計算と無関係であることをコードレビューで確認 — 視覚的な
+  「被らない」ことそのものの実機確認は今回できていない。
+- 3 (高さ切れ) は、1の画像修正 (誤って拡大された画像がfit-to-widthの
+  `scrollHeight`計測を狂わせていた可能性) が根本原因だったと考えられる
+  ことをコードパス上で確認したが、修正後に本文が最後まで実際に描画
+  されることの実機/シミュレータでのスクリーンショット確認は今回
+  できていない (`xcrun simctl launch`での手動確認では本文の複数段落
+  ・フッターまでアクセシビリティツリー上で読めることを確認できたが、
+  ダイアログに阻まれクリーンなスクリーンショットは撮れなかった)。
+
+残作業: このシミュレータ/ツールチェーンでの連絡先許可ダイアログの
+非決定的タイミング問題の解消 (`simctl privacy grant`が期待通りに
+効かない原因調査を含む)、または `screenshotCurrentScreen`側の
+リトライ/タイムアウト延長。
