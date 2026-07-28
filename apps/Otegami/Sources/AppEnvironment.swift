@@ -1993,6 +1993,21 @@ final class AppEnvironment {
     ///   (findEffectiveBackgroundの最優先候補) と、透過PNGの小さいロゴ画像
     ///   の組み合わせ — ダーク反転時の「右端の白帯・セクション間の色ムラ・
     ///   透過ロゴが暗背景に沈む」の3点を確認する。
+    /// - `calendarInviteRealisticNotice` (Task #98、実機報告: Google カレン
+    ///   ダー招待メールがダークモードでほぼ読めない): `uitestFakeCalendarInviteHTML`
+    ///   (Task #84、`calendar-invite`シナリオ) 自体は既に「背景なし+過半数
+    ///   ラベルが`#5f6368`系」のケースを再現しているが、そちらは本文冒頭
+    ///   から即座にラベル (`#5f6368`) が始まるため、
+    ///   `representativeTextLuminance`の「最初の6テキストノードの平均」
+    ///   だけでも実は既に閾値未満に落ちて正しく判定できてしまっていた
+    ///   (Task #84 時点で確認済み)。実機報告の実際のメールはタイトル見出し
+    ///   や「〜さんが招待しました」といった色未指定の前置きテキストが本文
+    ///   冒頭に複数行あり、そちらが平均を0.5超まで押し上げて「介入不要」に
+    ///   誤って倒れる — その取りこぼしそのものを再現するのがこのケース
+    ///   (色未指定のテキストを冒頭に3つ挟み、6サンプル平均を0.5超で固定
+    ///   しつつ、全体としては明示的な暗〜中間色テキストが文字数で過半を
+    ///   占める構造)。`explicitDarkTextIsMajority`(Task #98) が無いとこの
+    ///   ケースは白カード化されず、暗地に暗〜中間色文字のまま残る。
     fileprivate struct UITestFakeHTMLMessage {
         let subject: String
         let snippet: String
@@ -2024,6 +2039,11 @@ final class AppEnvironment {
             subject: "A boost token is about to expire (UITest)",
             snippet: "Your boost token is nearing expiration. Kindly utilize it to boost your preferred model and win points reward.",
             html: uitestFakeHTMLMessageBodyMakerWorldLikeNotice
+        ),
+        UITestFakeHTMLMessage(
+            subject: "四半期計画会議 (Quarterly Planning Sync) (UITest)",
+            snippet: "otegami calendar organizer さんがあなたを招待しました",
+            html: uitestFakeHTMLMessageBodyCalendarInviteRealisticNotice
         )
     ]
 
@@ -2202,6 +2222,40 @@ final class AppEnvironment {
         <tr><td style="background-color:#34a853; color:#ffffff; font-size:15px; font-weight:bold; text-align:center; padding:14px 0; border-radius:4px;">Boost to model</td></tr>
       </table>
       <p style="color:#999999; font-size:12px; line-height:18px; text-align:left; margin:0;">If you wish to unsubscribe, or change notification settings: <a href="https://example.test/unsubscribe">Click here</a></p>
+    </div>
+    </body>
+    </html>
+    """
+
+    /// Task #98 (実機報告: Google カレンダー招待メールがダークモードでほぼ
+    /// 読めない) — 上の`UITestFakeHTMLMessage`配列のdoc comment
+    /// (`calendarInviteRealisticNotice`項) 参照。`uitestFakeCalendarInviteHTML`
+    /// (Task #84) と同じラベル/値の構造 (`#5f6368`のラベル+`#3c4043`の値、
+    /// 背景指定なし) を土台に、実機の実際のメールが持つ「タイトル見出し」
+    /// 「〜さんが招待しました、という色未指定の前置き」を本文冒頭に追加
+    /// した — この2行 + CTAボタンの白文字で、文書順で見つかる最初の
+    /// 6テキストノードのうち3つが明るい色 (見出し/前置きはCanvasText由来、
+    /// ボタンは明示的な`#ffffff`) になり、`representativeTextLuminance`の
+    /// 単純平均だけでは0.5をわずかに超えて「介入不要」に落ちる
+    /// (`explicitDarkTextIsMajority`が無いと再現する回帰)。
+    fileprivate static let uitestFakeHTMLMessageBodyCalendarInviteRealisticNotice = """
+    <!doctype html>
+    <html>
+    <body style="font-family:Roboto,Arial,sans-serif; margin:0; padding:0;">
+    <h2 style="margin:16px 24px 4px 24px; font-size:18px; font-weight:400;">四半期計画会議 (Quarterly Planning Sync)</h2>
+    <p style="margin:0 24px 16px 24px; font-size:14px;">otegami calendar organizer さんがあなたを招待しました</p>
+    <div style="margin:0 24px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" style="background-color:#1a73e8; border-radius:4px;">
+    <tr><td style="padding:12px 24px;"><a href="https://meet.otegami.test/abc-defg-hij" style="color:#ffffff; font-size:14px; font-weight:bold; text-decoration:none;">Google Meet に参加する</a></td></tr>
+    </table>
+    <p style="color:#5f6368; font-size:12px; margin:16px 0 2px 0;">会議のリンク</p>
+    <p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">meet.otegami.test/abc-defg-hij</p>
+    <p style="color:#5f6368; font-size:12px; margin:0 0 2px 0;">日時</p>
+    <p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">2026/08/03 (月曜日) &middot; 15:00 &ndash; 16:00 (日本標準時)</p>
+    <p style="color:#5f6368; font-size:12px; margin:0 0 2px 0;">ゲスト</p>
+    <p style="color:#3c4043; font-size:14px; margin:0;">Otegami Organizer - 主催者</p>
+    <p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">Fake Calendar Invite</p>
+    <p style="color:#5f6368; font-size:12px; margin:0;">このメールへの返信、またはアプリの「承諾」「辞退」「未定」ボタンで出欠をお知らせください。</p>
     </div>
     </body>
     </html>

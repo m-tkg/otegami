@@ -485,6 +485,12 @@ enum HTMLDocumentBuilder {
     /// `data-otegami-prefer-invert`属性経由でJSに伝わる。色指定を一切
     /// 持たないメールが「介入不要」判定に落ち着く (＝ダークネイティブの
     /// まま) のは従来どおり変わらない。
+    ///
+    /// **Task #98**: 「背景なし+暗文字」拡張分岐 (Task #56、上記) 自体の
+    /// 実測ロジックをさらに一段拡張 — `HTMLWebViewCoordinator
+    /// .explicitDarkTextIsMajority`のdoc comment参照。この関数 (`wrap`) 自体
+    /// に変更はない (Swift側は相変わらず「介入を検討してよいか」までしか
+    /// 決めない)。
     static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool, forceLightBackground: Bool = false, bottomContentInset: CGFloat = 0) -> String {
         let innerBody = extractBodyContent(from: bodyHTML)
         let originalHeadStyles = extractHeadStyles(from: bodyHTML)
@@ -1676,6 +1682,29 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// never reaches `shouldIntervene = true` (this section's existing
     /// reasoning, unchanged), so it keeps rendering dark-native via
     /// `CanvasText` regardless of this setting either way.
+    ///
+    /// **Task #98 (実機フィードバック: Google カレンダー招待メール等がダーク
+    /// モードでほぼ読めない)**: 背景が最後まで解決しない (`findEffectiveBackground`
+    /// が`null`) ケースの`representativeTextLuminance`によるフォールバック
+    /// (直前の段落、Task #56) は文書順で見つかった最初の6テキストノードしか
+    /// 平均しない — 実際の招待メールは本文の主要ラベル ("会議のリンク"/
+    /// "日時"/"ゲスト"、白背景前提の`#5f6368`等の中間グレーを明示指定) に
+    /// 届く前に、非表示のプレビュー用テキストや色を明示しない見出しなど
+    /// (著者が色を指定していないので `CanvasText` 経由でダークモード中は
+    /// 明るく解決される) を複数拾ってしまい、6件の平均が0.5を超えて
+    /// 「介入不要」に転ぶことがあった (実測で確認済み)。`explicitDarkText
+    /// IsMajority`はこの取りこぼしを拾う追加の証拠 — 6件のサンプリングでは
+    /// なく`inner`配下の**全テキストノード**を文字数ベースで集計し、
+    /// 「祖先のいずれかがインライン`style`で`color`を明示指定している」
+    /// サブツリー配下のテキストだけを対象に、その実測輝度 (閾値 0.55、
+    /// `representativeTextLuminance`の0.5よりわずかに緩い — 白背景前提の
+    /// 中間色まで拾うため) が低いものの文字数が可視テキスト全体の過半を
+    /// 占めるかどうかを見る。色を一切指定しない (継承のみの) テキストは
+    /// 明示指定側にカウントしない — プレーンテキスト風メールを誤って
+    /// 白カード化しないための線引き。既存の6サンプル判定 (`shouldIntervene`
+    /// が既に`true`) はそのまま優先し、この追加判定は「介入不要」に転んだ
+    /// ときの二段目のフォールバックとしてだけ働く。詳細は
+    /// `docs/design-system.md`のTask #98節参照。
     private static let fitToWidthScript = """
     (function () {
       function waitForImages() {
@@ -1770,6 +1799,77 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         }
         return count > 0 ? total / count : null;
       }
+      // Task #98: see `representativeTextLuminance`'s doc comment above
+      // `fitToWidthScript` for why the 6-sample average above isn't always
+      // enough. `nearestExplicitColorAncestor` walks up from a text node's
+      // parent looking for the nearest ancestor (up to and including
+      // `boundary`, normally `#otegami-fit-inner`) that declares `color` on
+      // its own inline `style` — a literal declaration check, not
+      // `getComputedStyle` (which always resolves to *some* color, explicit
+      // or inherited, and so can't tell the two apart on its own). Inline
+      // `style` rather than also matching the message's own `<style>` rules
+      // is a deliberate, pragmatic simplification (consistent with this
+      // file's other heuristics, e.g. `mailDeclaresOwnDarkModeSupport`'s
+      // plain substring search) — real-world transactional/invite templates
+      // overwhelmingly set text color via inline `style` for the widest
+      // mail-client compatibility, so this covers the common case without a
+      // real CSS cascade/selector-matching engine.
+      function nearestExplicitColorAncestor(el, boundary) {
+        var node = el;
+        while (node) {
+          if (node.style && node.style.color) { return node; }
+          if (node === boundary) { return null; }
+          node = node.parentElement;
+        }
+        return null;
+      }
+      // Task #98: character-count based (not a fixed sample of 6 nodes) —
+      // walks every text node under `inner`, and for each one that falls
+      // under an explicitly `color`-declared ancestor, measures that
+      // ancestor's actual rendered color (`getComputedStyle` *is* used here,
+      // just to resolve the real rgb() value once a node has already
+      // qualified as "explicitly colored" — this is the "measuring" half,
+      // separate from the "is it explicit" question `nearestExplicit
+      // ColorAncestor` answers on its own). Text with no explicitly colored
+      // ancestor at all (pure inheritance — e.g. a color-less heading, or a
+      // hidden preheader line) is counted toward the visible-text total but
+      // never toward the "explicit dark" bucket, which is exactly what keeps
+      // a genuinely colorless plain-text-style message from tripping this
+      // (its explicit-dark share stays at 0%, never a majority). Capped at
+      // 4000 visited text nodes purely as a cheap safety net against a
+      // pathological document, matching this file's other such caps (`findEffectiveBackground`'s 800-element cap).
+      function explicitDarkTextIsMajority(inner) {
+        var walker = document.createTreeWalker(inner, NodeFilter.SHOW_TEXT, null);
+        var node;
+        var visited = 0;
+        var totalLength = 0;
+        var explicitDarkLength = 0;
+        while (visited < 4000 && (node = walker.nextNode())) {
+          visited += 1;
+          var text = node.nodeValue;
+          if (!text) { continue; }
+          var trimmed = text.trim();
+          if (trimmed.length === 0) { continue; }
+          totalLength += trimmed.length;
+          var parentEl = node.parentElement;
+          if (!parentEl) { continue; }
+          var colorEl = nearestExplicitColorAncestor(parentEl, inner);
+          if (!colorEl) { continue; }
+          var color = parseOpaqueColor(getComputedStyle(parentEl).color);
+          if (!color) { continue; }
+          // 0.55: slightly looser than `representativeTextLuminance`'s 0.5
+          // — this is meant to also catch white-background-assuming
+          // mid-grays (`#5f6368`前後、Google 系テンプレート頻出) that read
+          // fine on white but wash out on a dark canvas, not just clearly
+          // "dark" text. Starting point per Task #98's spec; adjust here if
+          // real-world verification (`docs/design-system.md`のTask #98節)
+          // finds it too aggressive or not aggressive enough.
+          if (relativeLuminance(color) < 0.55) {
+            explicitDarkLength += trimmed.length;
+          }
+        }
+        return totalLength > 0 && explicitDarkLength > totalLength / 2;
+      }
       function decideDarkInversion() {
         var outer = document.getElementById('otegami-fit-outer');
         var inner = document.getElementById('otegami-fit-inner');
@@ -1813,6 +1913,14 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
           // 背景を白へ強制するCSSが効くので、透明のままにはならない。
           var textLuminance = representativeTextLuminance(inner);
           shouldIntervene = textLuminance !== null && textLuminance < 0.5;
+          // Task #98: only tried as a second-pass fallback when the 6-sample
+          // average above didn't already call for intervention — see
+          // `explicitDarkTextIsMajority`'s doc comment for why that average
+          // can miss a message whose readable-on-white body text doesn't
+          // happen to be among the first 6 text nodes in document order.
+          if (!shouldIntervene) {
+            shouldIntervene = explicitDarkTextIsMajority(inner);
+          }
         }
         var shouldInvert = shouldIntervene && preferInvert;
         var shouldKeepLight = shouldIntervene && !preferInvert;

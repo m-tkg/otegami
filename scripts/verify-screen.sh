@@ -52,6 +52,17 @@
 #                                       ダーク反転時の右端白帯/セクション間
 #                                       色ムラ/透過ロゴが暗背景に沈む、の
 #                                       3点の確認用)
+#   html-5 / html-calendar-invite-realistic  Task #98 (実機報告: Google
+#                                       カレンダー招待メールがダークモード
+#                                       でほぼ読めない): 背景なし+ラベルは
+#                                       白背景前提の中間グレー(#5f6368等)
+#                                       明示指定という`calendar-invite`
+#                                       シナリオと同じ土台に、実機メール
+#                                       同様のタイトル見出し/前置き文 (色
+#                                       未指定) を本文冒頭に足し、6サンプル
+#                                       平均だけの旧判定だと見落とす退行
+#                                       ケースを再現する — 白カードで読める
+#                                       ことの確認用 (`explicitDarkTextIsMajority`)。
 #   calendar-invite                    Task #66: カレンダー招待メールの
 #                                       招待カード (36番フィクスチャ相当 —
 #                                       タイトル/日時/場所/主催者 +
@@ -101,11 +112,12 @@
 #                                       `list`と同じfakeメッセージ (件名に
 #                                       "UITest"を含む) がヒットする。
 #
-# 上5つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜4番目
-# (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応) — 実体は
+# 上6つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜5番目
+# (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応) — 0〜4番目の実体は
 # `dev/mailstack/seed/fixtures/31/32/33/34-*.eml`と同内容のSwift文字列
 # リテラル (自前ダーク対応は.emlフィクスチャなし、AppEnvironment内にのみ
-# 存在)。
+# 存在)。5番目 (Task #98) も.emlフィクスチャなし、AppEnvironment内にのみ
+# 存在。
 #
 # Env:
 #   IOS_SIMULATOR    Simulator name (default: iPhone 17 Pro Max)
@@ -200,6 +212,10 @@ case "$SCENARIO" in
   html-4|html-makerworld-like)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=4")
     default_out="html-4-makerworld-like.png"
+    ;;
+  html-5|html-calendar-invite-realistic)
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=5")
+    default_out="html-5-calendar-invite-realistic.png"
     ;;
   calendar-invite)
     # Task #66: `CalendarInviteSectionView`'s card (title/time/location/
