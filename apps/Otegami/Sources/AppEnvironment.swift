@@ -712,6 +712,7 @@ final class AppEnvironment {
                 let body = MessageBodyRecord(
                     messageId: message.id!,
                     plainText: "四半期の計画会議です。事前に資料をご確認ください。",
+                    html: Self.uitestFakeCalendarInviteHTML,
                     fetchedAt: Date()
                 )
                 try body.insert(db)
@@ -726,6 +727,26 @@ final class AppEnvironment {
                     localPath: icsURL.path
                 )
                 try attachment.insert(db)
+                // Task #84: a real Google Calendar invite also carries a
+                // separately named `invite.ics` (`application/ics`)
+                // attachment alongside the unnamed `text/calendar` part
+                // above — both should be recognized as the same invite and
+                // hidden from the plain attachment list (`MessageView
+                // .listableAttachments`), not just the one driving the
+                // card. This second row exercises that "hide every
+                // recognized invite part, not only the one used" behavior
+                // in `scripts/verify-screen.sh calendar-invite` screenshots.
+                var icsAttachment = AttachmentRecord(
+                    messageId: message.id!,
+                    partId: "3",
+                    filename: "invite.ics",
+                    mimeType: "application",
+                    mimeSubtype: "ics",
+                    isInline: false,
+                    size: icsText.utf8.count,
+                    localPath: icsURL.path
+                )
+                try icsAttachment.insert(db)
                 capturedThreadId = try? ThreadAssigner.assignThread(messageId: message.id!, accountId: fakeAccount.id, db: db)
             }
             self.uitestDirectOpenThreadId = capturedThreadId
@@ -2181,6 +2202,32 @@ final class AppEnvironment {
     TRANSP:OPAQUE
     END:VEVENT
     END:VCALENDAR
+    """
+
+    /// Task #84: real-device report (screenshot) showed a genuine Google
+    /// Calendar invite's HTML rendering with washed-out light-gray text on
+    /// the app's dark canvas — this reproduces that mail's actual shape
+    /// (no `background-color` anywhere, secondary labels in `#5f6368`,
+    /// primary values in `#3c4043`, matching `dev/mailstack/seed/fixtures/
+    /// 37-calendar-invite-nested-alternative.eml`'s `text/html` part) so
+    /// `scripts/verify-screen.sh calendar-invite`'s screenshot can show
+    /// whether the dark-mode "keep light" heuristic (`HTMLDocumentBuilder
+    /// .wrap`/`fitToWidthScript`'s `decideDarkInversion`, Task #80) actually
+    /// fires for this content.
+    fileprivate static let uitestFakeCalendarInviteHTML = """
+    <html><body style="font-family:Roboto,Arial,sans-serif;">
+    <table role="presentation" cellpadding="0" cellspacing="0" style="background-color:#1a73e8; border-radius:4px;">
+    <tr><td style="padding:12px 24px;"><a href="https://meet.otegami.test/abc-defg-hij" style="color:#ffffff; font-size:14px; font-weight:bold; text-decoration:none;">Google Meet に参加する</a></td></tr>
+    </table>
+    <p style="color:#5f6368; font-size:12px; margin:16px 0 2px 0;">会議のリンク</p>
+    <p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">meet.otegami.test/abc-defg-hij</p>
+    <p style="color:#5f6368; font-size:12px; margin:0 0 2px 0;">日時</p>
+    <p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">2026/08/03 (月曜日) &middot; 15:00 &ndash; 16:00 (日本標準時)</p>
+    <p style="color:#5f6368; font-size:12px; margin:0 0 2px 0;">ゲスト</p>
+    <p style="color:#3c4043; font-size:14px; margin:0;">Otegami Organizer - 主催者</p>
+    <p style="color:#3c4043; font-size:14px; margin:0 0 16px 0;">Fake Calendar Invite</p>
+    <p style="color:#5f6368; font-size:12px; margin:0;">このメールへの返信、またはアプリの「承諾」「辞退」「未定」ボタンで出欠をお知らせください。</p>
+    </body></html>
     """
 }
 
