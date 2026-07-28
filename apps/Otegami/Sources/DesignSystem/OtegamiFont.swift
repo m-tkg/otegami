@@ -30,6 +30,14 @@ public enum OtegamiFont {
     public static func caption() -> Font { archivo(.medium, size: 12, relativeTo: .caption) }
     /// Smallest text — badges ("EN"), tap-target-adjacent labels.
     public static func badge() -> Font { archivo(.semibold, size: 11, relativeTo: .caption2) }
+    /// Literal/raw content that needs fixed-width alignment to read
+    /// correctly — RFC822 source (Task #103's「ソースを表示」), the only
+    /// case so far. System font, not Archivo (Archivo has no monospaced
+    /// design variant); still scales with Dynamic Type via `Font
+    /// .system(_:design:)`'s built-in `TextStyle` relation, consistent
+    /// with every other case here even though it doesn't go through
+    /// `archivo(_:size:relativeTo:)`.
+    public static func monospaceBody() -> Font { .system(.body, design: .monospaced) }
 
     /// Archivo's weight axis, as the variable font's named instances
     /// (confirmed via `ttx -t fvar` against the Google Fonts source: each

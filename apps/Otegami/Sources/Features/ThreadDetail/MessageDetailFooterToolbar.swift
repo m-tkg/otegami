@@ -3,11 +3,12 @@ import OtegamiStore
 import TranslationEngine
 
 /// 新画面構成 (3): メール本文画面 (`ThreadDetailView`) 下部の固定ツールバー。
-/// アクションの全体集合は常に14個 (`MessageToolbarAction.allCases`、Task #88
+/// アクションの全体集合は常に15個 (`MessageToolbarAction.allCases`、Task #88
 /// で要約/翻訳が加わり5→7、2026-07-29の追加仕様で旧「その他」メニュー
 /// ネイティブの7操作 — ミュート・ピン留め・未読にする・アーカイブ・
 /// 迷惑メールにする・英語で返信を下書き・削除 — を一級アクションへ昇格し
-/// 7→14) — `MessageToolbarSettingsStore` 経由で並び順に加え、Task #100
+/// 7→14、Task #103 で「ソースを表示」が加わり14→15) —
+/// `MessageToolbarSettingsStore` 経由で並び順に加え、Task #100
 /// (「フッターツールバーのカスタマイズ」) 以降は表示/非表示も変更できる。
 /// 設定画面自体 (`MessageToolbarSettingsView`) への入口は2つ — 「…」
 /// メニュー内の `onCustomizeToolbar` (この画面を見ながらすぐ調整したい、
@@ -59,6 +60,10 @@ struct MessageDetailFooterToolbar: View {
     var isPinned: Bool
     var onTogglePin: () -> Void
     var onDelete: () -> Void
+    /// Task #103 (「ソースを表示」): 生RFC822ソースのシート
+    /// (`MessageSourceView`) を開く — `onInfo`と同様、対象は常に現在展開中の
+    /// 1通 (`ThreadDetailView.targetMessage`)。
+    var onViewSource: () -> Void
     var onCustomizeToolbar: () -> Void
     var aiFeaturesState: MessageDetailAIFeaturesState?
 
@@ -153,6 +158,7 @@ struct MessageDetailFooterToolbar: View {
         case .junk: junkButton
         case .draftEnglishReply: draftEnglishReplyButton
         case .delete: deleteButton
+        case .viewSource: viewSourceButton
         case .more: moreMenuButton
         }
     }
@@ -252,6 +258,14 @@ struct MessageDetailFooterToolbar: View {
             toolbarIcon(.delete, tint: OtegamiColor.destructive)
         }
         .accessibilityIdentifier("messageDetail.toolbar.delete")
+    }
+
+    /// Task #103: 静的なアイコン/ラベル (`toolbarIcon(.viewSource)`) だけの
+    /// 単純なボタン — `mute`/`pin`のような状態依存の見た目は無い。
+    @ViewBuilder
+    private var viewSourceButton: some View {
+        Button(action: onViewSource) { toolbarIcon(.viewSource) }
+            .accessibilityIdentifier("messageDetail.toolbar.viewSource")
     }
 
     // MARK: - Task #88: 要約/翻訳 (旧 `MessageDetailFloatingButtons`)
@@ -479,6 +493,9 @@ struct MessageDetailFooterToolbar: View {
         case .delete:
             Button(role: .destructive) { onDelete() } label: { Label(action.title, systemImage: action.systemImage) }
                 .accessibilityIdentifier("messageDetail.toolbar.more.hidden.delete")
+        case .viewSource:
+            Button { onViewSource() } label: { Label(action.title, systemImage: action.systemImage) }
+                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.viewSource")
         case .more:
             // `more`自身は非表示にできない (`MessageToolbarSettingsStore`の
             // 不変条件) — `hiddenActions`にこの値が来ることはない。

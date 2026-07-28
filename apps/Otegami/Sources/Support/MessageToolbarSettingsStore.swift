@@ -5,13 +5,14 @@ import OtegamiCore
 /// 集合 (`allCases`が唯一の情報源)。Task #88 で要約/翻訳が加わり5→7、
 /// 2026-07-29 の追加仕様でさらに「その他」メニューがネイティブに持っていた
 /// 7操作 (ミュート・ピン留め・未読にする・アーカイブ・迷惑メールにする・
-/// 英語で返信を下書き・削除) を一級のアクションへ昇格し7→14になった —
-/// これで「その他」の中身は「ユーザーが非表示にしたアクションの集まり」に
-/// 完全に統一され、「昇格できない固定のその他専用項目」という特別扱いは
-/// 無くなった (唯一の例外は`more`自身と、`MessageDetailFooterToolbar
-/// .onCustomizeToolbar`が開く「ツールバーをカスタマイズ」— これは操作対象の
-/// メッセージに対する操作ではなく設定へのショートカットなので
-/// `MessageToolbarAction`化していない、常に「その他」メニュー末尾固定)。
+/// 英語で返信を下書き・削除) を一級のアクションへ昇格し7→14、Task #103
+/// (「ソースを表示」) で15になった — これで「その他」の中身は「ユーザーが
+/// 非表示にしたアクションの集まり」に完全に統一され、「昇格できない固定の
+/// その他専用項目」という特別扱いは無くなった (唯一の例外は`more`自身と、
+/// `MessageDetailFooterToolbar.onCustomizeToolbar`が開く「ツールバーを
+/// カスタマイズ」— これは操作対象のメッセージに対する操作ではなく設定への
+/// ショートカットなので`MessageToolbarAction`化していない、常に「その他」
+/// メニュー末尾固定)。
 ///
 /// Task #100 (「フッターツールバーのカスタマイズ」) 以降、ユーザーが変えられる
 /// のは並び順に加えて**表示/非表示のトグル**: 非表示にしたアクションは
@@ -45,6 +46,16 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
     case junk
     case draftEnglishReply
     case delete
+    /// Task #103 ("ソースを表示" — 表示崩れメールの eml を受け渡す調査経路):
+    /// 生 RFC822 ソースをモノスペース表示 + シェアで `.eml` として書き出す。
+    /// 新規追加ケースのお手本は`MessageToolbarSettingsStore.defaultItems`の
+    /// doc comment のとおり — `defaultOrder`には`more`の直前に追加し、
+    /// `defaultVisibleActions`には**入れない** (デフォルト非表示・「その他」
+    /// メニュー内)。`MessageToolbarPreferencesCoding.parse`の「保存済み
+    /// データに無い id は、その id の`defaults`エントリ自身の可視性で補う」
+    /// 仕様により、この変更以前から保存済みの並びを持つユーザーにもこの
+    /// 項目が自動的に「その他」入りで追加される。
+    case viewSource
     case more
 
     var id: String { rawValue }
@@ -77,6 +88,7 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
         case .junk: String(localized: "迷惑メールにする")
         case .draftEnglishReply: String(localized: "英語で返信を下書き")
         case .delete: String(localized: "削除")
+        case .viewSource: String(localized: "ソースを表示")
         case .more: String(localized: "その他")
         }
     }
@@ -102,6 +114,7 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
         case .junk: "exclamationmark.octagon"
         case .draftEnglishReply: "globe"
         case .delete: "trash"
+        case .viewSource: "doc.plaintext"
         case .more: "ellipsis.circle"
         }
     }
@@ -145,6 +158,13 @@ struct MessageToolbarItemSetting: Identifiable, Equatable, Sendable {
 /// の並びを持つユーザーはこの7件が「その他」に入ったまま (今までどおり)
 /// upgrade でき、新規ユーザーの既定構成 (返信/転送/検索/情報/要約/翻訳が
 /// ツールバー直接、残り7件+ショートカットは「その他」) とも一致する。
+///
+/// **Task #103 (「ソースを表示」)**: 同じ仕組みに乗った8件目の非可視デフォルト
+/// 追加 — `.viewSource`は`defaultOrder`の`more`直前に足しただけで、
+/// `defaultVisibleActions`には入れていない。上と全く同じ理屈 (`parse`の
+/// 「無ければ可視」ではなく「その`defaults`エントリ自身の可視性」規則) で、
+/// 既存ユーザー・新規ユーザーどちらでも自動的に「その他」入りで現れる —
+/// 保存済みデータのマイグレーションは一切不要。
 enum MessageToolbarSettingsStore {
     static let orderKey = "messageToolbar.order"
 
@@ -157,6 +177,7 @@ enum MessageToolbarSettingsStore {
     static let defaultOrder: [MessageToolbarAction] = [
         .reply, .forward, .search, .info, .summarize, .translate,
         .mute, .pin, .markUnread, .archive, .junk, .draftEnglishReply, .delete,
+        .viewSource,
         .more
     ]
 

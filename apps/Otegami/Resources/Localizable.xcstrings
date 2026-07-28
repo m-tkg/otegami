@@ -3561,6 +3561,76 @@
           }
         }
       }
+    },
+    "ソースを表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View Source"
+          }
+        }
+      }
+    },
+    "メールのソース": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message Source"
+          }
+        }
+      }
+    },
+    "ソースを読み込んでいます…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading source…"
+          }
+        }
+      }
+    },
+    "ソースを読み込めませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load the message source."
+          }
+        }
+      }
+    },
+    "ソースを読み込めませんでした。オフラインの場合は接続を確認して再試行してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load the message source. If you're offline, check your connection and try again."
+          }
+        }
+      }
+    },
+    "表示は先頭512KBまでです。全文はシェアで書き出せます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Showing the first 512KB. Share to export the full message."
+          }
+        }
+      }
+    },
+    "アカウントが見つかりません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account not found."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

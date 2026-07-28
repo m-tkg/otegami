@@ -125,6 +125,7 @@ struct ThreadDetailView: View {
     @State private var isThreadPinned = false
     @State private var isThreadMuted = false
     @State private var showingInfo = false
+    @State private var showingSource = false
     @State private var showingToolbarSettings = false
     /// Task #59 (実機フィードバック「要約/翻訳のフローティングアイコンを
     /// 常に左下固定にしてほしい」), Task #88 (フッターツールバーへ移設):
@@ -220,9 +221,22 @@ struct ThreadDetailView: View {
         // overlapping it.
         .safeAreaInset(edge: .bottom) { footerToolbar }
         .sheet(isPresented: $showingInfo) { infoSheet }
+        .sheet(isPresented: $showingSource) { sourceSheet }
         .sheet(isPresented: $showingToolbarSettings) {
             NavigationStack { MessageToolbarSettingsView() }
                 .tint(OtegamiColor.accent)
+        }
+        // Task #103 (シミュレータ検証基盤): 同じ「タップ不要の直接遷移」
+        // パターン (`MailScreenView.body`の`.task`が読む各`-uitestsOpen...
+        // Directly`引数群と同じ考え方) — `hasPinnedInitialExpansion`が
+        // `true`になった時点で`targetMessage`が初めて確定するので、その
+        // タイミングでこの引数を確認して`showingSource`を立てる。`scripts/
+        // verify-screen.sh message-source`から、フッターツールバーの「その
+        // 他」メニューをタップせずに`MessageSourceView`を直接screenshot
+        // できる。
+        .onChange(of: hasPinnedInitialExpansion) { _, pinned in
+            guard pinned, ProcessInfo.processInfo.arguments.contains("-uitestsOpenMessageSourceDirectly") else { return }
+            showingSource = true
         }
     }
 
@@ -415,6 +429,7 @@ struct ThreadDetailView: View {
             isPinned: isThreadPinned,
             onTogglePin: togglePin,
             onDelete: deleteThread,
+            onViewSource: { showingSource = true },
             onCustomizeToolbar: { showingToolbarSettings = true },
             aiFeaturesState: expandedAIFeaturesState
         )
@@ -428,6 +443,18 @@ struct ThreadDetailView: View {
                 contentType: infoContentType
             )
             .task { await loadInfoDetails(for: message) }
+        }
+    }
+
+    /// Task #103 ("ソースを表示"): unlike `infoSheet`, no separate async
+    /// `mailboxPath` lookup needed here — `MessageSourceLoader` resolves
+    /// the message's owning mailbox path (and `uid`) itself, straight from
+    /// `environment.database`, only on an actual cache miss (see its
+    /// `resolveMessageLocation` doc comment).
+    @ViewBuilder
+    private var sourceSheet: some View {
+        if let message = targetMessage, let messageId = message.id, let accountId {
+            MessageSourceView(messageId: messageId, accountId: accountId, subject: message.subject)
         }
     }
 
