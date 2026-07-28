@@ -24,5 +24,17 @@ let package = Package(
             name: "DesignSystemCatalogRenderer",
             dependencies: ["DesignSystem"]
         ),
+        // Task #72: pure-logic tests for `DesignSystem` code that has no
+        // XCTest target anywhere else (the app target only has
+        // `OtegamiUITests`, which needs a Simulator). Not wired into
+        // `make test` (that only runs `packages/OtegamiKit`) or CI
+        // (`ci-app.yml` doesn't touch this package) — run manually with
+        // `swift test` from this directory. See
+        // `docs/design-system.md`'s "Task #72" section for why this gap
+        // exists rather than adding a real Xcode unit-test target.
+        .testTarget(
+            name: "DesignSystemTests",
+            dependencies: ["DesignSystem"]
+        ),
     ]
 )

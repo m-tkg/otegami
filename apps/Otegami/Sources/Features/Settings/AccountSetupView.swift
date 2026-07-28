@@ -299,6 +299,9 @@ struct AccountSetupView: View {
             smtpPort: smtpHost.isEmpty ? nil : Int(smtpPortText),
             smtpSecurity: smtpHost.isEmpty ? nil : smtpSecurity,
             smtpUsername: smtpUsername.isEmpty ? nil : smtpUsername,
+            // Task #72「自動割当の改善」: see `AppEnvironment
+            // .leastUsedAccountLabelColorKey()`'s doc comment.
+            labelColorKey: environment.leastUsedAccountLabelColorKey(),
             sortOrder: environment.nextAccountSortOrder()
         )
 

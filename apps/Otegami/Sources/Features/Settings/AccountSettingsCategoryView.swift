@@ -173,6 +173,23 @@ struct AccountSettingsCategoryView: View {
                 AccountEditView(account: account)
             }
         }
+        // Task #72: tap-free navigation for `scripts/verify-screen.sh` —
+        // same idea as `AccountsListContent`'s
+        // `-uitestsOpenAccountSettingsDirectly` hook, one screen deeper.
+        // Reuses `passwordEntryAccountId`'s existing `navigationDestination
+        // (item:)` above rather than adding a second one; a no-op on every
+        // real launch. Both `.task` (covers the case `environment.accounts`
+        // is already populated by the time this view appears) *and*
+        // `.onChange` (covers the more common case: this view appears
+        // before `environment`'s GRDB `ValueObservation` has delivered its
+        // first `accounts` array, so the `.task` body's own read sees an
+        // still-empty list) — a single `.task` alone missed the fixture
+        // account the first time this was tried, since `.task` never
+        // re-runs once `accounts` later updates.
+        .task { openFirstAccountEditForUITestIfNeeded() }
+        .onChange(of: environment.accounts.map(\.id)) { _, _ in
+            openFirstAccountEditForUITestIfNeeded()
+        }
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
@@ -181,8 +198,31 @@ struct AccountSettingsCategoryView: View {
     /// One account row's content — see `AccountsListContent`'s previous
     /// identical doc comment (moved here verbatim, `docs/ci.md`'s "keep
     /// row-shaped views/closures small" precedent).
+    ///
+    /// Task #72「アカウント設定画面で、アカウント名の横に色を出すように」:
+    /// a trailing color dot showing this account's *resolved* label color
+    /// (manual pick if set, otherwise the FNV-1a auto assignment) — same
+    /// placement as the reference screenshot's account-color list (dot at
+    /// the row's trailing edge, roughly level with the display name). Just
+    /// a preview of "this is what `AccountEditView`'s color picker
+    /// currently has selected", not itself tappable — changing the color
+    /// still requires opening the edit screen this row already links to.
     @ViewBuilder
     private func accountRow(for account: AccountRecord) -> some View {
+        HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
+            accountRowContent(for: account)
+            Spacer(minLength: OtegamiSpacing.sm)
+            Circle()
+                .fill(OtegamiAccountColor.color(for: account.id, override: account.labelColorKey))
+                .frame(width: 14, height: 14)
+                .accessibilityHidden(true)
+                .accessibilityIdentifier("settings.account.\(account.id).colorDot")
+        }
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func accountRowContent(for account: AccountRecord) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(account.displayName)
                 .font(.headline)
@@ -248,6 +288,17 @@ struct AccountSettingsCategoryView: View {
         reordered.move(fromOffsets: source, toOffset: destination)
         let orderedIds = reordered.map(\.id)
         Task { await environment.reorderAccounts(orderedIds) }
+    }
+
+    /// See the `.task`/`.onChange` pair above this view's `body` that call
+    /// this — idempotent (bails via `passwordEntryAccountId == nil` once
+    /// the destination is already showing) and a no-op on every real
+    /// launch.
+    private func openFirstAccountEditForUITestIfNeeded() {
+        guard passwordEntryAccountId == nil,
+              ProcessInfo.processInfo.arguments.contains("-uitestsOpenFirstAccountEditDirectly"),
+              let firstAccount = environment.accounts.first else { return }
+        passwordEntryAccountId = firstAccount.id
     }
 
     /// Re-runs the OAuth flow for a `.gmail` account whose refresh token

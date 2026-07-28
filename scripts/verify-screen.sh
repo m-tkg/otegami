@@ -46,12 +46,24 @@
 #   html-2 / html-self-dark-aware      自前ダーク対応宣言あり (反転させない)
 #   html-3 / html-beta-testing-notice  33番相当 (背景なし+#444文字+cid画像、
 #                                       高さ切れ修正のTask #58/#59対象)
-#   list                                統合受信トレイの一覧画面 (fakeメッセージ4件)
+#   html-4 / html-makerworld-like       34番相当 (body自身が白背景を明示+
+#                                       透過PNGロゴ+薄グレーのカード+緑
+#                                       ボタン — 実機報告のMakerWorld比較:
+#                                       ダーク反転時の右端白帯/セクション間
+#                                       色ムラ/透過ロゴが暗背景に沈む、の
+#                                       3点の確認用)
+#   list                                統合受信トレイの一覧画面 (fakeメッセージ5件)
 #   settings                            設定画面 (SettingsSheetView)
+#   account-settings                    Task #72: 設定→アカウントの設定
+#                                       (fake Gmail アカウント1件を挿入、
+#                                       一覧行の色ドットを確認)
+#   account-edit                        Task #72: ↑からさらに1画面 (先頭
+#                                       アカウントの編集画面 — ラベル色の
+#                                       グリッドピッカーを確認)
 #
-# 上4つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜3番目
+# 上5つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜4番目
 # (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応) — 実体は
-# `dev/mailstack/seed/fixtures/31/32/33-*.eml`と同内容のSwift文字列
+# `dev/mailstack/seed/fixtures/31/32/33/34-*.eml`と同内容のSwift文字列
 # リテラル (自前ダーク対応は.emlフィクスチャなし、AppEnvironment内にのみ
 # 存在)。
 #
@@ -145,6 +157,10 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=3")
     default_out="html-3-beta-testing-notice.png"
     ;;
+  html-4|html-makerworld-like)
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=4")
+    default_out="html-4-makerworld-like.png"
+    ;;
   list)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
     default_out="list.png"
@@ -152,6 +168,16 @@ case "$SCENARIO" in
   settings)
     launch_args+=("-uitestsOpenSettingsDirectly")
     default_out="settings.png"
+    ;;
+  account-settings)
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly")
+    default_out="account-settings.png"
+    ;;
+  account-edit)
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenFirstAccountEditDirectly")
+    default_out="account-edit.png"
     ;;
   *)
     echo "error: unknown scenario '$SCENARIO' — see this script's header comment for the list" >&2

@@ -117,12 +117,13 @@ xxl=32`。
 
 ## アカウント色の割り当て — `OtegamiAccountColor.swift`
 
-アカウント ID (`String`) から FNV-1a ハッシュで固定パレット (8色、パレ
-ブルーのトーンに調和する彩度を抑えた色相) のインデックスを決め、常に同
-じ ID には同じ色を返す。`String.hashValue` はプロセスごとにソルトされ
-実行のたびに変わる (Swift の意図的な仕様) ため使っていない — この色は
-デバイス間・再起動間で同じでなければならない (iCloud 経由でアカウント
-情報が同期される、`docs/icloud-sync.md`)。
+アカウント ID (`String`) から FNV-1a ハッシュで固定パレット (20色、パレ
+ブルーのトーンに調和する彩度を抑えた色相 — Task #72 で8色から拡充、詳細
+は末尾の「Task #72」節参照) のインデックスを決め、常に同じ ID には同じ
+色を返す。`String.hashValue` はプロセスごとにソルトされ実行のたびに変わ
+る (Swift の意図的な仕様) ため使っていない — この色はデバイス間・再起動
+間で同じでなければならない (iCloud 経由でアカウント情報が同期される、
+`docs/icloud-sync.md`)。
 
 ## カタログで見た目を確認する
 
@@ -3653,3 +3654,104 @@ mailbox's messages unthreaded`という**既存**の2テストは、SELECT が
 ユニットテスト中心の検証に留めており、実機での「オフラインにして
 pull-to-refreshを試す」「Wi-Fiを切ったまま数分待って自動復帰を待つ」
 系の確認はユーザーに委ねる。
+
+## Task #72: アカウント色のバリエーション拡充
+
+実機フィードバック: 「アカウントのラベルの色は、このくらいバリエーショ
+ン持たせて。いまあまり違いがない」（Spark の参考画像 — 紫3種→ラベン
+ダー→マゼンタ→ピンク→赤→朱→橙2種→アンバー→黄→緑3種→シアン→
+青3種＋解除、の約20色パレット）と「アカウント設定画面で、アカウント
+名の横に色を出すようにして」の2点。
+
+### パレット拡充 (8色→20色) — `OtegamiAccountColor.swift`
+
+既存8色 (`teal`/`indigo`/`plum`/`amber`/`rose`/`sage`/`slateBlue`/
+`coral`) は**16進値を一切変更していない** — 既にどこかのアカウントに
+保存済みの `labelColorKey` や、まだ自動割当(FNV-1a ハッシュ)のままの
+アカウントが、パレットを拡げただけで見た目の色を変えてしまわないよう
+にするため。新規12色 (`red`/`mustard`/`yellow`/`green`/`emerald`/
+`mint`/`cyan`/`periwinkle`/`violet`/`lavender`/`magenta`/`pink`) を、
+既存8色の隙間を埋めるように追加した。
+
+`PaletteColor` の宣言順は色相の昇順 (色相環を一周: 赤→橙→黄→緑→シ
+アン→青→紫→マゼンタ→ピンク→赤に戻る) — `AccountLabelColorPicker`
+のグリッド表示順であると同時に、`wheelIndex`(宣言順インデックス)が
+円環距離の近似値としても使われる（次節参照）。既存8色の実測色相と、
+そこに新規12色を挟んだ結果の20点はおよそ13〜22度間隔で、ほぼ均等に
+色相環をカバーする:
+
+```
+red(5) coral(20) amber(36) mustard(46) yellow(54) sage(93) green(122)
+emerald(144) mint(160) teal(172) cyan(188) slateBlue(216) indigo(230)
+periwinkle(247) violet(264) plum(282) lavender(295) magenta(313)
+pink(331) rose(349) → red(365=5) で一周
+```
+
+彩度・明度は既存8色と同じ「上品」な抑えた家族に留めた (この enum の
+既存ドキュメントコメントが元々言っていた方針) — 参考画像はもっと彩度
+の高いビビッドな配色だが、それは別アプリ (Spark) の配色言語であり、
+このアプリの既存トーンをそのまま拡張する方が一貫性がある、という判断
+での意図的な逸脱。ただし初稿は黄緑〜黄の帯 (amber/mustard/yellow/
+sage/green/emerald) が軒並み暗いオリーブ色に潰れて区別できなかった
+(`DesignSystemCatalogRenderer` でのレンダリング確認で判明) ため、その
+帯だけ明度・彩度を上げて (特に `yellow` は明るく高彩度な金色寄りに)
+作り直した — 低彩度×黄緑域は人間の目が最も色を区別しにくい帯という、
+一般的な配色の落とし穴に一度ハマった記録として残す。
+
+### 自動割当の改善 — `leastUsedColorKey(avoiding:)`
+
+新規アカウント追加時、以前は各作成画面 (`AccountSetupView`/
+`ICloudAccountSetupView`/`AppEnvironment.createGmailAccount`) が
+`labelColorKey`を`nil`のまま保存し、表示時にFNV-1aハッシュへ委ねてい
+た — 実機で3アカウントが揃って「amber」になるなど、衝突を避ける仕組み
+が無かった。
+
+`OtegamiAccountColor.leastUsedColorKey(avoiding:)` を追加: 既存の全ア
+カウントの**解決済みの色**(手動選択でも自動ハッシュでも、
+`resolvedPaletteColor(for:override:)`で同一視する)から、円環上で最も
+離れた色 (どのアカウントの色からの最短距離も最大になる色)を選ぶ。色相
+を`Color`から実行時に逆算するのではなく、`PaletteColor.wheelIndex`
+(宣言順、すなわち色相順のインデックス)同士の円環距離で近似している —
+`SwiftUI.Color`はプラットフォーム共通の方法でHSB成分を取り出せないた
+め。`AppEnvironment.leastUsedAccountLabelColorKey()`がこの計算を
+`environment.accounts`に対して行い、3箇所の新規作成画面すべてで明示的
+に`labelColorKey`として保存するようにした（以前のように`nil`のまま
+残さない）。既存アカウントの`labelColorKey`/ハッシュ割当には一切触れ
+ていない。
+
+### 色選択UI: グリッド化 — `AccountLabelColorPicker`
+
+パレットが8→20色に増えたことで、従来の横スクロール`HStack`1行では大
+半のスワッチが最初から画面外に隠れ、「見て選ぶ」比較ができなくなった
+ため、参考画像のレイアウトに寄せて `LazyVGrid` (5列)に変更した。「自
+動」ピルは維持 (先頭セル)。`AccountEditView`側の呼び出しコード自体は
+変更していない (Binding とプロパティのシグネチャが同じため)。
+
+### 設定のアカウント一覧に色ドット — `AccountSettingsCategoryView`
+
+「アカウント設定」→アカウント一覧の各行に、参考画像と同じ配置 (行の
+右端、アカウント名とだいたい同じ高さ)で現在の解決済み色を14pt円で表示
+した (`OtegamiAccountColor.color(for:override:)`)。タップ可能な要素で
+はなく、あくまで「今どの色が設定されているか」のプレビュー — 変更は
+既存どおり行タップ→`AccountEditView`の色ピッカーで行う。
+
+### テスト
+
+`leastUsedColorKey(avoiding:)`のアルゴリズム自体 (円環上で最も離れた
+インデックスを選ぶ) を`apps/Otegami/DesignSystemCatalog`パッケージに
+新設した`DesignSystemTests`ターゲットでユニットテストした
+(空/1件/複数件・境界となる隣接ケース・タイブレークの決定性を確認)。
+**`make test`ではカバーされない** — `OtegamiAccountColor`はアプリ
+ターゲット専用の`DesignSystem`モジュールにあり、`packages/OtegamiKit`
+(`make test`の対象)からは（意図的に）参照できない構造になっているた
+め (このファイル冒頭の「アカウント色の割り当て」節、および
+`AccountRecord.labelColorKey`のドキュメントコメントが説明している同じ
+モジュール境界)。`DesignSystemCatalog`はそもそも CI (`ci-app.yml`) の
+対象外の開発者用ツールで、このテストターゲットも同様 —
+`cd apps/Otegami/DesignSystemCatalog && swift test` で手動実行する
+必要がある。今後 CI に組み込むかどうかは未検討の課題として残す。
+
+見た目の確認は `DesignSystemCatalogRenderer` (light/dark) と
+`scripts/verify-screen.sh settings` で行った。実機/シミュレータでの
+色ピッカー画面 (グリッド化後のスクロール・タップ挙動) の最終確認は
+ユーザーに委ねる。

@@ -1037,6 +1037,23 @@ final class AppEnvironment {
         (accounts.map(\.sortOrder).max() ?? -1) + 1
     }
 
+    /// The `labelColorKey` a brand-new account should be created with —
+    /// Task #72「自動割当の改善」: the palette color whose hue is farthest
+    /// from every existing account's *resolved* color (manual pick or the
+    /// FNV-1a hash fallback alike), so a freshly-added account doesn't land
+    /// on a color an existing account already has by chance (real device
+    /// report: three accounts in a row all auto-assigned "amber"/gold).
+    /// Persisted as an explicit `labelColorKey` rather than left `nil` (which
+    /// would just fall back to the same hash) — same reasoning and same
+    /// three call sites as `nextAccountSortOrder()` above
+    /// (`AccountSetupView`, `ICloudAccountSetupView`, `createGmailAccount`).
+    func leastUsedAccountLabelColorKey() -> String {
+        let usedColors = accounts.map {
+            OtegamiAccountColor.resolvedPaletteColor(for: $0.id, override: $0.labelColorKey)
+        }
+        return OtegamiAccountColor.leastUsedColorKey(avoiding: usedColors).rawValue
+    }
+
     /// Persists a drag-reorder from the accounts list (設定 のアカウント一覧
     /// — same content backs the hamburger menu/filter chips/Composer's From
     /// picker via `self.accounts`, so this one call is all any of those UIs
@@ -1417,6 +1434,10 @@ final class AppEnvironment {
             smtpPort: 587,
             smtpSecurity: .startTLS,
             smtpUsername: email,
+            // Task #72「自動割当の改善」: see this call's identical doc
+            // comment on `AccountSetupView.saveAccount`/
+            // `ICloudAccountSetupView.saveAccount`.
+            labelColorKey: leastUsedAccountLabelColorKey(),
             sortOrder: nextAccountSortOrder()
         )
         // TokenStore first, same ordering rationale as
@@ -1774,6 +1795,20 @@ final class AppEnvironment {
     /// avatar images the real `.eml` fixture loads via `cid:`.
     private static let uitestFakeHTMLMessagePlaceholderImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMGjRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg=="
 
+    /// 実機フィードバック (MakerWorld実メールとの比較報告): 完全に透明な
+    /// 背景の上に不透明な黒だけを描いた120x40のPNG (ロゴの線画部分を模した
+    /// 単純な矩形3つ) — 上の `uitestFakeHTMLMessagePlaceholderImage` (ほぼ
+    /// 1x1、装飾目的のダミー) と違い、この画像自体の見た目 (透過部分がある
+    /// こと、黒い部分の実サイズが小さいこと) がテスト対象そのもの:
+    /// 「反転フィルタを打ち消すために img がもう一度反転される→透過PNGの
+    /// 黒いロゴがそのまま黒で残る→反転後の暗い背景に沈んで読めなくなる」
+    /// という実機報告と、その対策 (`decideLogoChips`によるロゴサイズの
+    /// 画像への白系チップ背景) を実際に目視確認できるようにするための
+    /// 実物。`dev/mailstack/seed/fixtures/34-white-canvas-transparent-logo.eml`
+    /// と同じPNGバイト列 (手で同期を保つ理由は
+    /// `uitestFakeHTMLMessageBodySecurityNotice`のdoc comment参照)。
+    private static let uitestFakeHTMLMessagePlaceholderTransparentLogo = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAAAoCAYAAAA16j4lAAAAeUlEQVR4nO3aMQ6AIBAAQTT+/8vaWdkacJ0pabhkQ0FgDAAAAPiP7WHtnLTvKvun7LMH4F0CxwkcJ3CcwHHH7AEWdI7vu28JTnCcwHECxwkcJ3CcwHECxwkcJ3CcwHECxwkc57Eh/p3HCY4TOE7gOIHjBAYAAGD8yAV2jAM3LCTYZQAAAABJRU5ErkJggg=="
+
     /// Task #51/#56: one entry per dark-mode/HTML-rendering regression
     /// scenario (`docs/design-system.md`'s Task #51/#56 節), inserted as
     /// separate seeded messages so `OtegamiSecurityNoticeDarkModeUITests`
@@ -1799,6 +1834,11 @@ final class AppEnvironment {
     ///   "responsive but capped" image technique (`width` attribute +
     ///   `style="width:100%; max-width:120px;"`) that the image-enlargement
     ///   fix targets.
+    /// - `makerWorldLikeNotice` (実機フィードバック、MakerWorld実メールとの
+    ///   比較報告): `body`自身が`background-color`を明示指定するテンプレート
+    ///   (findEffectiveBackgroundの最優先候補) と、透過PNGの小さいロゴ画像
+    ///   の組み合わせ — ダーク反転時の「右端の白帯・セクション間の色ムラ・
+    ///   透過ロゴが暗背景に沈む」の3点を確認する。
     fileprivate struct UITestFakeHTMLMessage {
         let subject: String
         let snippet: String
@@ -1825,6 +1865,11 @@ final class AppEnvironment {
             subject: "AppSample 2.1 (45) is ready to test on iOS. (UITest)",
             snippet: "AppSample 2.1 (45) is ready to test on iOS.",
             html: uitestFakeHTMLMessageBodyBetaTestingNotice
+        ),
+        UITestFakeHTMLMessage(
+            subject: "A boost token is about to expire (UITest)",
+            snippet: "Your boost token is nearing expiration. Kindly utilize it to boost your preferred model and win points reward.",
+            html: uitestFakeHTMLMessageBodyMakerWorldLikeNotice
         )
     ]
 
@@ -1961,6 +2006,48 @@ final class AppEnvironment {
       <p style="color:#444444; font-size:14px; line-height:20px; margin:0 0 16px 0;">You can stop testing and manage notifications in the <a href="https://beta.otegami.test/app">Otegami Beta app</a>.</p>
       <p style="color:#444444; font-size:14px; line-height:20px; margin:0 0 16px 0;">To be removed from this developer's list of potential testers, <a href="https://beta.otegami.test/contact">contact the developer</a>.</p>
       <p style="color:#444444; font-size:12px; line-height:18px; margin:24px 0 0 0;">To learn more about installation, testing, sending feedback, supported OS versions and the use of your data, visit <a href="https://beta.otegami.test/">beta.otegami.test</a>.</p>
+    </div>
+    </body>
+    </html>
+    """
+
+    /// 実機フィードバック (MakerWorld実メールとの比較報告): ダークモードの
+    /// スマート反転で (1) 右端に縦の白帯、(2) セクション間の色ムラ、(3)
+    /// 透過PNGロゴが暗背景に沈む、の3点が同時発生した実例を再現する構造 —
+    /// `dev/mailstack/seed/fixtures/34-white-canvas-transparent-logo.eml`と
+    /// 同内容 (cid: 画像をこのファイルの
+    /// `uitestFakeHTMLMessagePlaceholderTransparentLogo`に置き換えただけ)。
+    /// `body`自身に`background-color:#ffffff`を明示指定 (`findEffectiveBackground`
+    /// が最優先で見つける「body自身の背景」のテストケース — これが
+    /// `#otegami-fit-inner`の外、bodyのpaddingの範囲でそのまま透けて残って
+    /// いたのが「右端の白帯・色ムラ」の実体)、中央寄せの透過PNGロゴ、薄
+    /// グレーの角丸カード、緑のCTAボタン、という組み合わせ。
+    fileprivate static let uitestFakeHTMLMessageBodyMakerWorldLikeNotice = """
+    <!doctype html>
+    <html>
+    <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="viewport" content="width=device-width">
+    <title>A boost token is about to expire (UITest)</title>
+    <style>
+      body { background-color: #ffffff; margin: 0; padding: 0; }
+      .otegami-fixture-card { background-color: #f3f3f5; border-radius: 8px; }
+    </style>
+    </head>
+    <body>
+    <div style="max-width:520px; margin:0 auto; padding:24px; text-align:center;">
+      <img src="\(uitestFakeHTMLMessagePlaceholderTransparentLogo)" width="120" height="40" alt="MakerWorld" style="display:block; margin:0 auto 24px auto;">
+      <hr style="border:none; border-top:1px solid #e0e0e0; margin:0 0 24px 0;">
+      <p style="color:#222222; font-size:15px; line-height:22px; text-align:left; margin:0 0 24px 0;">Your boost token is nearing expiration. Kindly utilize it to boost your preferred model and win points reward.</p>
+      <div class="otegami-fixture-card" style="padding:20px; margin:0 0 24px 0; text-align:left;">
+        <p style="color:#7b3fe4; font-size:18px; font-weight:bold; margin:0 0 8px 0;">Boost Token</p>
+        <p style="color:#666666; font-size:13px; margin:0 0 4px 0;">Expires on</p>
+        <p style="color:#222222; font-size:14px; margin:0;">2026-08-03 10:27 UTC</p>
+      </div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px 0;">
+        <tr><td style="background-color:#34a853; color:#ffffff; font-size:15px; font-weight:bold; text-align:center; padding:14px 0; border-radius:4px;">Boost to model</td></tr>
+      </table>
+      <p style="color:#999999; font-size:12px; line-height:18px; text-align:left; margin:0;">If you wish to unsubscribe, or change notification settings: <a href="https://example.test/unsubscribe">Click here</a></p>
     </div>
     </body>
     </html>

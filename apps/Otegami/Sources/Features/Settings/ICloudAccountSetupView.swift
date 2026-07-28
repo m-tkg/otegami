@@ -179,6 +179,9 @@ struct ICloudAccountSetupView: View {
             smtpPort: Self.smtpPort,
             smtpSecurity: .startTLS,
             smtpUsername: email,
+            // Task #72「自動割当の改善」: see `AppEnvironment
+            // .leastUsedAccountLabelColorKey()`'s doc comment.
+            labelColorKey: environment.leastUsedAccountLabelColorKey(),
             sortOrder: environment.nextAccountSortOrder()
         )
 

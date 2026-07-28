@@ -75,6 +75,15 @@ struct AccountsSettingsView: View {
 /// (`AccountsSettingsView`の、または`OtegamiSettingsView`の"設定"タブの)
 /// にそのまま`NavigationLink`で積み上がる。
 struct AccountsListContent: View {
+    /// Task #72: tap-free navigation for `scripts/verify-screen.sh`,
+    /// mirroring `MailScreenView`'s `-uitestsOpenSettingsDirectly` hook
+    /// (see its doc comment) — pushes straight to
+    /// `AccountSettingsCategoryView` so a screenshot of the account list
+    /// (the new per-row color dot) doesn't need a real tap on this row.
+    /// A no-op (`false`, and the `.task` below never flips it) on every
+    /// real launch.
+    @State private var uitestShowAccountSettingsDirectly = false
+
     var body: some View {
         List {
             Section {
@@ -120,6 +129,14 @@ struct AccountsListContent: View {
                 .accessibilityIdentifier("settings.aboutLink")
             }
             #endif
+        }
+        .navigationDestination(isPresented: $uitestShowAccountSettingsDirectly) {
+            AccountSettingsCategoryView()
+        }
+        .task {
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenAccountSettingsDirectly") {
+                uitestShowAccountSettingsDirectly = true
+            }
         }
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)

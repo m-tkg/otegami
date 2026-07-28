@@ -1,15 +1,19 @@
 import SwiftUI
 
-/// D「アカウントのラベル色を変更可能に」: a row of tappable swatches (the eight
-/// `OtegamiAccountColor.PaletteColor` entries) plus a leading "自動" (auto)
-/// option, used by `AccountEditView`. Selection state (`nil` == 自動) lives
-/// in the caller — this view is purely presentational, matching the rest of
-/// this app's row-shaped `View`s (`ThreadRowView`/`MessageListRow`, per
-/// `docs/ci.md`'s "keep row-shaped views small, and keep the loop body
-/// itself down to one function call" discipline, applied here even though
-/// this row has no `List`/`ForEach` of its own to worry about — a `HStack`
-/// of eight circles plus a "自動" pill is still worth its own file/type
-/// rather than inlining into `AccountEditView.body`).
+/// D「アカウントのラベル色を変更可能に」/ Task #72: a grid of tappable
+/// swatches (all `OtegamiAccountColor.PaletteColor` entries, in hue order)
+/// plus a leading "自動" (auto) option, used by `AccountEditView`. Selection
+/// state (`nil` == 自動) lives in the caller — this view is purely
+/// presentational, matching the rest of this app's row-shaped `View`s
+/// (`ThreadRowView`/`MessageListRow`, per `docs/ci.md`'s "keep row-shaped
+/// views small" discipline, applied here to the grid's per-swatch cell).
+///
+/// Task #72 switched this from a single horizontally-scrolling `HStack` row
+/// to a `LazyVGrid` — with the palette grown from 8 to 20 colors, a single
+/// row would scroll far enough that most swatches were never visible without
+/// deliberately dragging, which defeats "見て選ぶ" comparison shopping. A
+/// 5-column grid (matching the reference screenshot's layout) keeps every
+/// swatch on screen at once at the same 28pt size the old row used.
 struct AccountLabelColorPicker: View {
     @Binding var selection: OtegamiAccountColor.PaletteColor?
     /// The color "自動" would currently resolve to (the FNV-1a assignment
@@ -18,16 +22,16 @@ struct AccountLabelColorPicker: View {
     /// placeholder.
     let autoColor: Color
 
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: OtegamiSpacing.sm), count: 5)
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: OtegamiSpacing.sm) {
-                autoSwatch
-                ForEach(OtegamiAccountColor.PaletteColor.allCases, id: \.self) { paletteColor in
-                    swatch(for: paletteColor)
-                }
+        LazyVGrid(columns: columns, spacing: OtegamiSpacing.sm) {
+            autoSwatch
+            ForEach(OtegamiAccountColor.PaletteColor.allCases, id: \.self) { paletteColor in
+                swatch(for: paletteColor)
             }
-            .padding(.vertical, OtegamiSpacing.xs)
         }
+        .padding(.vertical, OtegamiSpacing.xs)
         .accessibilityIdentifier("accountEdit.labelColorPicker")
     }
 

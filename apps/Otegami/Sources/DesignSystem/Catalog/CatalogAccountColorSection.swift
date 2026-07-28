@@ -1,10 +1,11 @@
 #if DEBUG
 import SwiftUI
 
-/// Sample account ids run through `OtegamiAccountColor` — demonstrates
-/// the full 8-color palette (there are exactly 8 sample ids below so
-/// every palette slot appears at least once) and that the same id always
-/// maps to the same color.
+/// Task #72: two demonstrations of `OtegamiAccountColor` — every named
+/// `PaletteColor` swatch (so the full 20-hue wheel is visible at a glance,
+/// in the same hue order `AccountLabelColorPicker`'s grid uses), plus a
+/// handful of sample account ids run through the FNV-1a hash fallback
+/// (confirming the same id always maps to the same color).
 struct CatalogAccountColorSection: View {
     private let sampleAccountIds = [
         "work@example.com", "personal@example.com", "team@example.com",
@@ -12,8 +13,20 @@ struct CatalogAccountColorSection: View {
         "shop@example.com", "backup@example.com",
     ]
 
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: OtegamiSpacing.sm), count: 8)
+
     var body: some View {
         CatalogSection(title: "Account colors — OtegamiAccountColor") {
+            LazyVGrid(columns: columns, spacing: OtegamiSpacing.sm) {
+                ForEach(OtegamiAccountColor.PaletteColor.allCases, id: \.self) { paletteColor in
+                    Circle()
+                        .fill(paletteColor.color)
+                        .frame(width: 24, height: 24)
+                }
+            }
+
+            SectionDivider()
+
             ForEach(sampleAccountIds, id: \.self) { accountId in
                 CatalogAccountColorRow(accountId: accountId)
             }
