@@ -5,6 +5,62 @@ description: Steps for building, running, and driving Otegami (iOS/macOS SwiftUI
 
 # Verifying Otegami against the real app
 
+## Start here: `scripts/verify-screen.sh` (tap-free screenshots)
+
+This dev machine's Simulator/toolchain (Xcode-beta.app + an iOS 27 beta
+runtime) has four recurring environment-level failure modes, none of them
+app bugs — full writeup in `docs/verify.md`'s "シミュレータ検証の既知の
+不調と回避策" section:
+
+1. In-Simulator IMAP connections fail outright (`MailCoreErrorDomain error
+   1`) even though the same `localhost` is reachable from a host process or
+   Simulator Safari. **Don't try to verify IMAP connectivity through the
+   Simulator at all** — use the host-process integration test instead:
+   `OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter
+   MailCoreIMAPSessionIntegrationTests` (after `make mailstack-up`).
+2. XCUITest taps from a message-list row into the message-detail screen
+   routinely don't register (`htmlWebView never appeared`), reproducing on
+   an unmodified `main`. Don't build a new screenshot flow around a list-row
+   `.tap()`.
+3. Avatar resolution's Contacts permission dialog appears at a
+   non-deterministic moment and eats whatever `XCUIElement.waitForExistence`
+   was polling for; the same is true of the badge/notification permission
+   dialog that appears the moment any account exists. `simctl privacy
+   grant` doesn't reliably pre-authorize either on this runtime.
+4. Foundation Models throws `LanguageModelError error -1` from inside the
+   Simulator's sandboxed `.app` process — the engine itself works fine from
+   a host `swift test` process. Translation UI can only be screenshotted
+   with `OTEGAMI_UITEST_FAKE_TRANSLATION=1`; real on-device translation
+   needs a physical device.
+
+`scripts/verify-screen.sh <scenario>` is the standard way to get a clean
+screenshot despite (2) and (3): it never launches an XCUITest runner at
+all. It builds the app (`xcodebuild build`, no test bundle), does a fresh
+`simctl uninstall`+`install`, then `xcrun simctl launch` with fixture
+selection passed as `SIMCTL_CHILD_OTEGAMI_UITEST_*` environment variables
+(the DB-direct-injection flags `AppEnvironment.init()` already supports)
+and screen-selection passed as plain launch arguments
+(`-uiTestsAutoAdvanceToContent`, `-uitestsOpenSettingsDirectly`) — no tap
+anywhere in the pipeline. It also sets
+`OTEGAMI_UITEST_DISABLE_AVATAR_SOURCES=1`/
+`OTEGAMI_UITEST_DISABLE_NOTIFICATION_PERMISSION_REQUEST=1` by default so
+(3)'s dialogs never appear in the first place.
+
+```bash
+scripts/verify-screen.sh html-3        # a fixture message body (see the script's own header for the scenario list)
+scripts/verify-screen.sh list          # the unified inbox list
+scripts/verify-screen.sh settings      # the settings sheet
+APPEARANCE=dark scripts/verify-screen.sh html-1   # same, in dark mode
+```
+
+**Default to this for any "does this screen render correctly" check.**
+Reserve `xcodebuild test -only-testing:OtegamiUITests` for (a) confirming
+the UITest target still *builds* and (b) the handful of existing tests that
+don't depend on a list-row tap or an account. Don't spend more than one or
+two retries chasing a flaky XCUITest run in this environment before falling
+back to `verify-screen.sh` or handing the "please confirm on a real
+device" step to the user (`make deploy-ota`/the `deploy-worktree` skill).
+
 ## Dev mail server
 
 ```bash

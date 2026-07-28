@@ -4,6 +4,108 @@
 チェックポイントを確認する方針 (計画書「テスト戦略」参照)。ノウハウは
 `.claude/skills/verify/SKILL.md` にも蓄積している。
 
+## シミュレータ検証の既知の不調と回避策 (Task #60、標準手順)
+
+この開発機 (Xcode-beta.app + iOS 27 beta シミュレータランタイム) では、
+以下4種類の環境不調が繰り返し自動検証の足を引っ張ってきた。いずれも
+アプリのコードバグではなく、この開発機のシミュレータ/ツールチェーン固有の
+問題と切り分け済み — 詳細な調査記録は各節が指す既存節を参照。**エージェント
+がこのアプリの画面を確認するときは、まず下の「標準の検証手段」節から読む
+こと。**
+
+1. **シミュレータ内からのIMAP接続が全滅する** (`接続に失敗しました: サーバー
+   に接続できません。... MailCoreErrorDomain error 1.`)。ホストmacOSプロセス
+   からの直接接続やシミュレータのSafari経由のHTTP接続は同じ`localhost`へ
+   問題なく到達できるのに、アプリの`mailcore2`ソケット接続だけが一貫して
+   失敗する (新規`simctl create`した別デバイスでも再現) — 「実機フィード
+   バック第3弾 (A〜K)」節で切り分け済み。iOSの「ローカルネットワーク」
+   プライバシー許可がこのbetaランタイムでは`simctl privacy grant
+   local-network`によるプリオーソライズが効かないまま静かに拒否している
+   線が最有力 (未確定)。
+   **回避**: IMAP接続そのものを検証したいときは、シミュレータを介さず
+   ホストmacOSプロセスとしての統合テストに寄せる — `make mailstack-up`
+   後、`packages/OtegamiKit`内で
+   `OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter
+   MailCoreIMAPSessionIntegrationTests`。同じ`MailCoreIMAPSession`/
+   mailcore2を使うが、シミュレータのプライバシー/ネットワーキング層を
+   経由しないためこの不調の影響を受けない。
+2. **XCUITestのタップが一覧行→本文遷移で不達になる** — 未修正の`main`でも
+   再現するtoolchain問題 (`messageList.list`の行をタップしても
+   `htmlWebView`が現れない)。`.tap()`の内部実装 (「スクロールして見える
+   ようにしてからヒットポイントを計算する」) がこの環境で信頼できない
+   ことは`.claude/skills/verify/SKILL.md`のM2節で詳しく記録済みだが、
+   一覧行→本文の遷移だけは`row.coordinate(...).press(...)`のような
+   ワークアラウンドでも安定しなかった (Task #56)。
+   **回避**: `AppEnvironment.uitestDirectOpenThreadId`
+   (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`環境変数) — DB直接注入した
+   フェイクメッセージへ、タップを経由せず`selectedThreadId`を直接セット
+   して遷移する「UITestの直接遷移経路」。`scripts/verify-screen.sh`が
+   標準的に使う。
+3. **アバター解決の連絡先権限ダイアログが非決定的なタイミングで出て
+   XCUITestの待機を潰す** — `simctl privacy grant contacts`による事前許可
+   も確実には効かない。
+   **回避**: `OTEGAMI_UITEST_DISABLE_AVATAR_SOURCES=1` (Task #60で追加、
+   `AppEnvironment.init()`/`AvatarSourceSettingsStore`参照) — 連絡先・
+   Googleプロフィール写真・Gravatar・企業ロゴ(BIMI/favicon)の4つの外部/
+   権限系アバター解決を丸ごとスキップし、`SenderAvatar`を常にイニシャル+
+   アカウント色のフォールバックへ直行させる。`scripts/verify-screen.sh`が
+   既定で付与する。同じ検証中に見つかった隣接の不調として、アカウントが
+   1件でもあれば起動直後にOSの通知許可ダイアログも出る
+   (`simctl privacy grant notifications`はこのランタイムでは`Operation
+   not permitted`で使えない) — `OTEGAMI_UITEST_DISABLE_NOTIFICATION_PERMISSION_REQUEST=1`
+   (`BadgeCenter.requestAuthorizationIfNeeded()`参照) で同様に回避する。
+   どちらも`scripts/verify-screen.sh`が既定で付与するので、この2つの
+   フラグを手で意識する必要は通常ない。
+4. **Foundation Modelsをシミュレータの`.app`プロセスから呼ぶと
+   `LanguageModelError error -1`になる** — エンジン層自体はホストmacOS
+   プロセスとしての`swift test`からは毎回正常に翻訳できる
+   (`docs/design-system.md`の該当節、`docs/translation.md`「既知の制限」
+   参照)。
+   **回避**: 翻訳UIの見た目確認には`OTEGAMI_UITEST_FAKE_TRANSLATION=1`
+   (`FakeTranslationService`に差し替え) を使う。実際のオンデバイス翻訳
+   そのものの動作確認はシミュレータでは原理的にできない — 実機確認に
+   委ねる。
+
+### 標準の検証手段: `scripts/verify-screen.sh`
+
+上記(2)(3)を回避する「タップ不要」経路だけを使い、XCUITestランナー
+(`xcodebuild test`) そのものを一切起動しないスクリーンショット取得
+スクリプト。`xcodebuild build` (テストバンドル不要) → `simctl install`
+(毎回`uninstall`してから — GRDBを含む前回installの状態を持ち越さない
+ため) → `simctl launch` (環境変数は呼び出し元シェルの`SIMCTL_CHILD_*`
+プレフィクス経由、`xcrun simctl launch --help`参照) → 数秒待ち →
+`simctl io screenshot`、の一直線。
+
+```sh
+scripts/verify-screen.sh html-3                    # Task #58/#59対象フィクスチャの本文画面
+scripts/verify-screen.sh list                       # 一覧画面
+scripts/verify-screen.sh settings                   # 設定画面
+APPEARANCE=dark scripts/verify-screen.sh html-1      # ダークモードで開く (32番=無色指定、反転させないケース)
+```
+
+シナリオ一覧・各環境変数 (`SKIP_BUILD`/`ERASE_SIMULATOR`/`WAIT_SECONDS`等)
+の詳細はスクリプト自身のヘッダコメント参照。既存の`OTEGAMI_UITEST_*`
+launch-environment flagsの棚卸しもスクリプトのヘッダコメントに含む。
+
+**エージェントがこのアプリの画面を確認するときはまずこれを使うこと。**
+XCUITest (`OtegamiUITests`) は(2)の不調があるため、「ビルドが通ること」
+の確認と、アカウント/タップを必要としない一部のテストの実行に留め、
+新しい画面の見た目確認の主手段にはしない。
+
+(1)のIMAP接続不能は`scripts/verify-screen.sh`の対象外 — フェイクフィク
+スチャのDB直接注入のみで、実IMAP接続を一切経由しない。実際の同期挙動を
+確認したいときは、上記1の統合テストか、`make deploy-ota`/deploy-worktree
+経由の実機確認に頼ること。
+
+実際にこのスクリプトを動かして得られた所見の例 (Task #60で確認): `html-3`
+(Task #58/#59が対象にした「背景なし+濃色文字+cid画像+高さ切れ」フィク
+スチャ) を`ERASE_SIMULATOR=1 WAIT_SECONDS=10`で実行したところ、本文が
+末尾のフッターリンクまで欠けずに描画され、フローティングボタンとの重なり
+も無かった — Task #58の doc comment に残っていた「修正後の見た目は未確認」
+という申し送りを埋める結果になった。`html-1`(32番=無色指定、Task #51の
+リグレッションケース)をダークモードで開いても反転されず、地の色のまま
+読めることも確認した。
+
 ## 単体テスト
 
 ```sh
