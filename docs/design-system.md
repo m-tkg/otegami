@@ -5253,3 +5253,44 @@ html-4 の`body`背景明示+透過ロゴ→白カード、html-5 のインラ�
 **検証**: `verify-screen.sh html-0`で本文ヘッダ右上のボタンが
 `doc.plaintext`(ページ+テキスト行のアウトライン)として描画されている
 ことをスクリーンショットのクロップ拡大で確認した。
+
+### Task #108: undo トーストがフローティングボタンの背面に描画される不具合
+
+実機報告「アーカイブを解除しました／元に戻す、のトーストが検索・新規
+作成のフローティングボタンの背面に描画され重なる」の修正。
+
+**根本原因**: `MessageListView`内部の`.overlay(alignment: .bottom)`
+(undo トースト) は、`MailScreenView.content`が付ける
+`floatingSearchButton`/`floatingComposeButton`用の`.overlay`2つより**先に
+チェーンに組み込まれていた** — SwiftUI の`.overlay`チェーンは後から
+適用したものほど手前 (top) に描画されるため、`MessageListView`側でどれ
+だけ縦位置の余白を調整してもトーストは常にFABの背面になっていた
+(`.zIndex`はその`.overlay`が作る`ZStack`の中でしか効かず、この階層を
+またいでは効かない)。
+
+**修正**: undo トーストの実描画を`MessageListView`から`MailScreenView`
+へ持ち上げた —
+`MessageListView.suppressInternalUndoToast`(既定`false`)を`true`にすると
+内部描画を止め、`onPendingUndoChanged: (UndoToastPayload?) -> Void`で
+状態変化を親へ伝える (`UndoToastPayload`は`message`+`onUndo`だけの
+表示専用の型)。`MailScreenView`はこれを`@State`で受け、FABの2つの
+`.overlay`より**後**に3つ目の`.overlay(alignment: .bottom)`を追加して
+トーストを描画する — チェーンの最後に付けたことで構造的に必ずFABより
+手前になる (念のため`.zIndex(1)`も明示)。縦のクリアランスも
+`floatingButtonClearance`(FABの円の直径+底からの余白+一呼吸ぶんの余白、
+すべて既存の`OtegamiSpacing`トークンの組み合わせ、マジックナンバー無し)
+としてFABの上端を確実に超える位置まで持ち上げ、重なり自体を無くした。
+macOS (`OtegamiApp.swift`の`RootView`)は`suppressInternalUndoToast`も
+`onPendingUndoChanged`も渡さないため、挙動は変わらず内部描画のまま
+(そもそもmacOSにはFABが無いため元々問題なし)。
+
+トースト自体の高さも底上げした (`UndoToast`の`.padding(.vertical:)`を
+`.md`→`.lg`) — 実機報告「トーストが薄くて元に戻すが押しにくい」に対応。
+「元に戻す」ボタンには`AccountFilterChip`と同じ`otegamiMinimumTappable()`
+を付け、タップ領域を44pt以上に保証した。
+
+**検証**: `make test`/`make mac`/`make ios`は緑。実際にトーストを表示
+させるにはアーカイブ/削除のスワイプ操作 (タップ依存) が要るため、
+シミュレータでの見た目確認は行っていない — **未検証、実機確認ポイント**:
+一覧でメールをアーカイブ/削除し、「元に戻す」トーストが検索・作成の
+フローティングボタンより手前かつ上に、重ならずに表示されること。

@@ -96,6 +96,37 @@ struct MessageListView: View {
     /// .onThreadRemoved`'s doc comment).
     var onSummariesChanged: ([Int64]) -> Void = { _ in }
 
+    /// Task #108 (実機報告「元に戻すトーストが検索・新規作成 FAB の背面に
+    /// 描画され重なる」): `MailScreenView`のフローティングボタン
+    /// (`floatingSearchButton`/`floatingComposeButton`) はこの`View`より
+    /// **外側**の`overlay`として親 (`MailScreenView.content`) に付いている
+    /// — SwiftUI の`.overlay`チェーンは後から適用したものほど手前に描画
+    /// されるため、親のフローティングボタンは常にこの`View`自身の内部
+    /// `overlay`(旧`UndoToast`表示)より手前に来てしまい、`zIndex`だけでは
+    /// 越えられない (`zIndex`はその`overlay`が作る`ZStack`の中でしか効か
+    /// ない)。根本修正として、undo トーストの表示自体を`MailScreenView`側
+    /// (フローティングボタンより後に付ける`overlay`)に持ち上げられるよう、
+    /// `suppressInternalUndoToast: true`のとき内部描画を止め、状態変化を
+    /// この`onPendingUndoChanged`で親へ伝える。`macOS`(`RootView`)の呼び
+    /// 出し元はこのパラメータもコールバックも渡さず既定値のままなので、
+    /// 挙動は変わらない (内部描画のまま)。
+    var suppressInternalUndoToast = false
+    /// See `suppressInternalUndoToast`'s doc comment — fires with the
+    /// current `pendingUndo` (`nil` when there is none) every time it
+    /// changes, regardless of `suppressInternalUndoToast`'s value (cheap,
+    /// and harmless for callers that don't use it — the default no-op).
+    var onPendingUndoChanged: (UndoToastPayload?) -> Void = { _ in }
+
+    /// A read-only, display-only projection of the private `PendingUndo` —
+    /// just enough for a parent to render an `UndoToast` itself
+    /// (`onPendingUndoChanged`'s doc comment). Intentionally doesn't expose
+    /// `threadIds`/`accountIds`: those only matter to this view's own
+    /// `scheduleUndo`/`undoPending`/`.onChange(of: scenePhase)` bookkeeping.
+    struct UndoToastPayload {
+        let message: String
+        let onUndo: () -> Void
+    }
+
     /// Backstop for `scheduleUndo`'s delayed commit — see that method's doc
     /// comment on why a background/terminate transition has to flush any
     /// pending delete/archive immediately rather than letting the undo
@@ -339,9 +370,9 @@ struct MessageListView: View {
     /// only for `isMultiAccountScope` (the trailing account-name label
     /// still shouldn't show where every visible row already shares one
     /// account — that would just be a redundant repeated label). The
-    /// header's own グループ化 toggle visibility (`MailScreenView
-    /// .showsGroupByAccountToggle`) is unrelated and intentionally
-    /// untouched by this change.
+    /// header's own account-digest eligibility (`MailScreenView
+    /// .isAccountDigestEligible`, gating the "すべて" chip's dropdown as of
+    /// Task #106) is unrelated and intentionally untouched by this change.
     private var showsAccountAccent: Bool { true }
 
     /// The condition `showsAccountAccent` used to gate on before Task #87
@@ -611,23 +642,14 @@ struct MessageListView: View {
         }
         #endif
         .overlay(alignment: .bottom) {
-            if let pendingUndo {
+            // Task #108: `suppressInternalUndoToast`(`MailScreenView`が
+            // 渡す)のときはここで描画せず、`onPendingUndoChanged`経由で
+            // 親に委ねる — そのプロパティのdoc comment参照。macOS
+            // (`RootView`)はこのパラメータを渡さないので、これまでどおり
+            // ここで描画する。
+            if !suppressInternalUndoToast, let pendingUndo {
                 UndoToast(message: pendingUndo.message, onUndo: undoPending)
                     .animation(.default, value: pendingUndo.threadIds)
-                    // 実機報告「アーカイブしました、元に戻す、のバーが、
-                    // フローティングボタンと被ってしまう」— iOS のみ、
-                    // `MailScreenView`の左下`floatingSearchButton`/右下
-                    // `floatingComposeButton`の分だけこのトーストを画面下端
-                    // から持ち上げる。マジックナンバーを新設せず、同じ
-                    // クリアランスを見積もる`.contentMargins(.bottom:)`
-                    // (このファイル冒頭、一覧本体の最終行がこの2ボタンと
-                    // 被らないよう既に採用済みの値) をそのまま再利用する —
-                    // 横幅は変えない (`UndoToast`自身の`.padding(.horizontal:)`
-                    // のまま)。ボタン自体は`MailScreenView.content`の
-                    // `overlay`側にあり、この`MessageListView`より手前に
-                    // 描画される(＝タップも常にボタン優先)ので、トースト側の
-                    // 見た目の重なりだけを直せば済む — ヒットテストの
-                    // 変更は不要。
                     #if os(iOS)
                     .padding(.bottom, OtegamiSpacing.xxl + OtegamiSpacing.lg)
                     #endif
@@ -660,6 +682,7 @@ struct MessageListView: View {
             guard newPhase != .active, let pendingUndo else { return }
             pendingUndoTask?.cancel()
             self.pendingUndo = nil
+            notifyPendingUndoChanged()
             Task { await replayOpQueueSoon(accountIds: pendingUndo.accountIds) }
         }
         .alert(
@@ -962,12 +985,28 @@ struct MessageListView: View {
             Task { await replayOpQueueSoon(accountIds: previous.accountIds) }
         }
         pendingUndo = PendingUndo(threadIds: threadIds, message: message, accountIds: accountIds, undo: undo)
+        notifyPendingUndoChanged()
         pendingUndoTask = Task {
             try? await Task.sleep(for: Self.undoWindow)
             guard !Task.isCancelled else { return }
             pendingUndo = nil
+            notifyPendingUndoChanged()
             await replayOpQueueSoon(accountIds: accountIds)
         }
+    }
+
+    /// Task #108: reports the current `pendingUndo` (or its absence) to
+    /// `onPendingUndoChanged` — called from every site that mutates
+    /// `pendingUndo` (`scheduleUndo`'s two writes, `undoPending()`, and the
+    /// `scenePhase` backstop below) so a parent rendering the toast
+    /// externally (`suppressInternalUndoToast`'s doc comment) never sees a
+    /// stale value.
+    private func notifyPendingUndoChanged() {
+        guard let pendingUndo else {
+            onPendingUndoChanged(nil)
+            return
+        }
+        onPendingUndoChanged(UndoToastPayload(message: pendingUndo.message, onUndo: undoPending))
     }
 
     private func undoPending() {
@@ -975,6 +1014,7 @@ struct MessageListView: View {
         guard let pendingUndo else { return }
         let undo = pendingUndo.undo
         self.pendingUndo = nil
+        notifyPendingUndoChanged()
         Task { await undo() }
     }
 

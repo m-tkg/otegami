@@ -66,6 +66,13 @@ struct MailScreenView: View {
     /// (`toolbarContent`) にそのまま流用する — 新規の観測を増やさずに済む
     /// (詳細はその使用箇所のdoc comment参照)。
     @State private var currentThreadOrder: [Int64] = []
+    /// Task #108: see `MessageListView.suppressInternalUndoToast`'s doc
+    /// comment — the undo toast's actual rendering lives here (in an
+    /// `.overlay` applied *after* the floating search/compose buttons
+    /// below) instead of inside `MessageListView` itself, so it's
+    /// guaranteed to paint on top of those buttons rather than being
+    /// silently layered underneath them by the outer `.overlay` chain.
+    @State private var pendingUndoPayload: MessageListView.UndoToastPayload?
     @AppStorage(MessagePostActionSettingsStore.afterDeleteArchiveKey) private var postDeleteArchiveActionRaw = MessagePostActionSettingsStore.defaultAfterDeleteArchive.rawValue
 
     /// ハンバーガーメニュー (フォルダ／設定) の開閉。
@@ -318,7 +325,9 @@ struct MailScreenView: View {
                     selectedThreadId: $selectedThreadId,
                     selectedMessageId: $selectedMessageId,
                     onSelectionModeChanged: { isSelecting = $0 },
-                    onSummariesChanged: { currentThreadOrder = $0 }
+                    onSummariesChanged: { currentThreadOrder = $0 },
+                    suppressInternalUndoToast: true,
+                    onPendingUndoChanged: { pendingUndoPayload = $0 }
                 )
             }
         }
@@ -346,10 +355,45 @@ struct MailScreenView: View {
                 floatingComposeButton
             }
         }
+        // Task #108 (実機報告「元に戻すトーストが検索・新規作成 FAB の
+        // 背面に描画され重なる」): このoverlayは上の2つ (floatingSearch
+        // Button/floatingComposeButton)より**後**に付けている — SwiftUI の
+        // `.overlay`チェーンは後から適用したものほど手前に描画されるため、
+        // ここに置くだけでFABより確実に手前になる (`.zIndex`はチェーンが
+        // 生成する各`ZStack`の中でしか効かず、この階層をまたいでは効かない
+        // ため、根本修正はこの「最後に付ける」という位置そのもの — 明示
+        // `.zIndex`は下記の通り保険として併記)。縦位置もFABの上端
+        // (フローティングボタンの直径+底からの余白) を確実に超える位置まで
+        // 持ち上げ、重なり自体を無くす (`MessageListView`が以前担っていた
+        // クリアランス計算をここに集約した — `pendingUndoPayload`のdoc
+        // comment参照)。
+        .overlay(alignment: .bottom) {
+            if let pendingUndoPayload {
+                UndoToast(message: pendingUndoPayload.message, onUndo: pendingUndoPayload.onUndo)
+                    .animation(.default, value: pendingUndoPayload.message)
+                    #if os(iOS)
+                    .padding(.bottom, floatingButtonClearance)
+                    #endif
+                    .zIndex(1)
+            }
+        }
+    }
+
+    /// Task #108: FAB (`floatingSearchButton`/`floatingComposeButton`、
+    /// `OtegamiFloatingButtonChromeModifier`) の円の直径 + その`overlay`
+    /// 自身の`.padding(.bottom, OtegamiSpacing.lg)`を、既存のトークンの
+    /// 組み合わせだけで再現した値 — マジックナンバーを新設しない
+    /// (`MessageListView`の旧実装のコメントと同じ方針)。円の直径は
+    /// `OtegamiFloatingButtonChromeModifier`の`frame`(`.xl + .xs`)と
+    /// `padding`(`.md + .xs`を両側)の合計、そこにボタン自身の下端余白
+    /// (`.lg`)と、トーストとの間に一呼吸ぶんの余白 (`.sm`)を足す。
+    private var floatingButtonClearance: CGFloat {
+        let circleDiameter = (OtegamiSpacing.xl + OtegamiSpacing.xs) + 2 * (OtegamiSpacing.md + OtegamiSpacing.xs)
+        return circleDiameter + OtegamiSpacing.lg + OtegamiSpacing.sm
     }
 
     /// Task #99: 一覧領域をダイジェスト表示に切り替えるかどうか —
-    /// `isGroupByAccount`(永続トグル)だけでなく`showsGroupByAccountToggle`
+    /// `isGroupByAccount`(永続トグル)だけでなく`isAccountDigestEligible`
     /// と同じ「ダイジェストが意味を持つ画面か」の条件も満たす必要がある
     /// (単一メールボックス選択中や、既にアカウント絞り込みチップ/ダイジェスト
     /// 行タップで1アカウントに絞られている間はダイジェストではなく通常の

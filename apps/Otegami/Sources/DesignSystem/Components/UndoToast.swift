@@ -28,10 +28,16 @@ public struct UndoToast: View {
                     .font(OtegamiFont.subheadline())
                     .foregroundStyle(OtegamiColor.accentText)
             }
+            // Task #108 (c): 「元に戻す」のタップ領域を44pt以上に拡大 —
+            // `AccountFilterChip`と同じ`otegamiMinimumTappable()`を使い、
+            // 見た目のテキストサイズ自体は変えない。
+            .otegamiMinimumTappable()
             .accessibilityIdentifier("undoToast.undoButton")
         }
         .padding(.horizontal, OtegamiSpacing.lg)
-        .padding(.vertical, OtegamiSpacing.md)
+        // Task #108 (c): 実機報告「トーストが薄くて元に戻すが押しにくい」—
+        // `.md`(12)→`.lg`(16)に増やし、トースト全体の高さも底上げする。
+        .padding(.vertical, OtegamiSpacing.lg)
         .background(OtegamiColor.ink)
         .overlay(Rectangle().strokeBorder(OtegamiColor.divider, lineWidth: OtegamiStroke.secondary))
         .padding(.horizontal, OtegamiSpacing.lg)
