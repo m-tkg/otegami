@@ -3212,3 +3212,102 @@ max-width:120px;"`)・リンク数本・複数段落、というTask #56の再�
 非決定的タイミング問題の解消 (`simctl privacy grant`が期待通りに
 効かない原因調査を含む)、または `screenshotCurrentScreen`側の
 リトライ/タイムアウト延長。
+
+**Task #56 の「3 (高さ切れ)」は根治できていなかった** — 上記のとおり
+Task #56 では画像巨大化バグの修正 (1) が原因だったと"推測"しただけで、
+実際に本文が最後まで描画されることを見て確認していなかった。実機
+(TestFlight通知メール) では色・画像サイズは直った一方で、本文が文の
+途中で水平にスパッと切れ、その下がずっと空白のまま — というユーザー
+報告が続き、Task #58 として根治した。詳細は以下。
+
+## Task #58: HTMLメール本文の高さ切れの根治
+
+### 再現
+
+`OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE` + `OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=3`
+(33番=TestFlight通知型フィクスチャ) を `xcrun simctl launch` の
+`SIMCTL_CHILD_*` 環境変数経由で直接起動し (XCUITestのタップ経由では
+連絡先/通知許可ダイアログのタイミングが非決定的なため、`simctl`直叩き
++ 各ダイアログを都度 `simctl privacy grant`/待機でかわす方式に変更)、
+`xcrun simctl io booted screenshot` で撮影して再現した。症状は実機報告
+と一致: 本文が「To learn more about installation, testing...」の段落
+途中で切れ、その下はフッターツールバーまで空白。
+
+### 根本原因
+
+`HTMLMessageView`のdoc comment (冒頭) が明言していた設計: 「HTML本文は
+`WKWebView`内部でスクロールする — SwiftUI側で計測して外側の`ScrollView`
+に合わせるのではなく、`MessageView`がヘッダの下の残りスペースをそのまま
+渡す」。この設計は**単体では正しいが、`ThreadDetailView`が実際には
+`MessageView`を外側の`ScrollView`(スレッド全体を縦列挙するアコーディオン)
+の中に、かつ`.frame(height: expandedHeight)`で固定した箱に入れて埋め込む
+という2つの制約を後から重ねていた**ことと矛盾していた:
+
+1. `ThreadDetailView.expandedMessageHeight(in:)`が
+   `max(360, containerSize.height - 160)`という**固定の高さ予算**を
+   `MessageView`(→`HTMLMessageView`→`WKWebView`)に強制していた。
+   計装ログ (`os.Logger`, category `HTMLHeightDiagnostic`) の実測:
+   `containerSize=(440.0, 738.0) → height=578.0`。
+2. `fitToWidthScript`(`HTMLWebViewCoordinator`)を計装し、
+   `#otegami-fit-outer`のJSON診断値をDOM属性経由で読み出したところ
+   (`evaluateJavaScript`がPromiseの解決値をこのツールチェーンでは
+   一切ブリッジできない — closure版・async版どちらも
+   `WKErrorDomain Code=5 "unsupported type"` — という別の実測済みの
+   不具合があり、通常の戻り値では読めなかったため、いったんDOM属性に
+   書き込んでから改めて同期スクリプトで読み直す形にした)、実測値は:
+   `naturalHeight=516`, `outer.scrollHeight=516`, かつ
+   `document.body.scrollHeight=668`(`#otegami-bottom-inset-spacer`込み)。
+   一方 実際にSwiftUIが`WKWebView`へ与えていたフレームは
+   `webView.bounds=(0, 0, 440, 510.67)` — **本文そのもの (516pt) より
+   even shorter**。
+3. `WKWebView`は本来この差分を自分の内部`UIScrollView`でスクロール
+   できるはずだが、`ThreadDetailView`の外側`ScrollView`に入れ子に
+   なっているため、この環境ではパン・ジェスチャーが常に外側の
+   `ScrollView`に取られ、`WKWebView`内部のスクロールへ実質的に届か
+   ない — 「正しく計測されているのに何も理由なく描画が止まる」ように
+   見えた原因。Task #45/#56で2度「直したはず」なのに実機で再発した
+   のは、どちらの回もこの**固定フレーム予算 + 二重スクロール入れ子**
+   という構造そのものには手を付けず、`fitToWidthScript`側の計測条件
+   (画像待ち・拡大禁止) だけを直していたため。
+
+### 修正
+
+1. **実測した本文高さをSwiftUI側へ伝播する**: `fitToWidthScript`の
+   `fit()`実行後に`document.documentElement.scrollHeight`/
+   `document.body.scrollHeight`の大きい方 (= `#otegami-bottom-inset-
+   spacer`込みの実際の全高) を`WKScriptMessageHandler`
+   (`otegamiHeight`、`evaluateJavaScript`の戻り値ブリッジ不具合とは
+   別経路なので影響を受けない) 経由でSwiftへ通知。後続のレイアウト
+   変化 (1iの翻訳オーバーレイでの再フロー等) も拾えるよう
+   `ResizeObserver`も併設。
+2. **`HTMLWebViewCoordinator` → `HTMLWebViewRepresentable` →
+   `HTMLMessageView` → `MessageView` → `ThreadMessageRow`**まで
+   `onHeightChange`コールバックを貫通させ、`ThreadMessageRow`が
+   `expandedHeight`固定値の代わりに
+   `max(expandedHeight, measuredHTMLContentHeight + 180pt推定シェブロン)`
+   を`MessageView`へ渡すよう変更 (`180pt`はヘッダ/添付/罫線の見積り —
+   `floatingButtonsReservedBottomInset`と同じ「厳密でなくてよい、
+   多めに見積もって安全側に倒す」方針)。これで固定予算より本文が長い
+   メールでは行自体が伸び、外側`ScrollView`がその分スクロールできる
+   ようになる。
+3. **`WKWebView`自身の内部スクロールを無効化** (`webView.scrollView
+   .isScrollEnabled = false`、iOS)。フレームが実コンテンツに一致する
+   よう伸びるようになった以上、二重スクロール入れ子を維持する理由が
+   ない — スクロール主体を外側`ScrollView`ひとつに統一し、ジェス
+   チャー競合の可能性自体を構造的に消す。
+4. 計装用の`os.Logger`(`HTMLHeightDiagnostic`)はそのまま残した —
+   実機での追加切り分けに使えるため。
+
+**macOS**: `ThreadDetailView`はiOS/macOS共通コードで同じ入れ子構造を
+持つため理論上は同じ修正が有効なはずだが、`WKWebView`(macOS)には
+`scrollView.isScrollEnabled`に相当する単純なプロパティがなく、今回は
+`otegamiHeight`メッセージハンドラの登録のみ共通化して内部スクロール
+無効化は見送った (`HTMLWebViewRepresentable.makeNSView`のコメント
+参照) — macOSでの実機/実プレビュー確認は未実施。
+
+**検証状況**: この修正は `make test`/`make ios`/`make mac` 緑まで確認
+した。33番フィクスチャでの実機シミュレータ再現・計装ログでの数値
+確認は上記のとおり完了しているが、**修正後の「最後まで描画される」
+ことを同じ手順でスクリーンショット確認するところまでは、この回では
+実施できていない** (作業時間の制約でOTA配信を優先) — 実機での
+最終確認はユーザーに委ねる。
