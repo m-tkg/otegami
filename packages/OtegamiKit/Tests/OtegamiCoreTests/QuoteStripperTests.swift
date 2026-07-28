@@ -126,6 +126,84 @@ struct QuoteStripperPlainTextTests {
         #expect(separated.newText == text)
         #expect(separated.quotedText.isEmpty)
     }
+
+    @Test("separatingQuotedText reports the matched marker name")
+    func separatingReportsDetectedMarkerName() {
+        let text = "\(newText)\n\n> Original line one\n> Original line two\n> Original line three"
+        let separated = QuoteStripper.separatingQuotedText(fromPlainText: text)
+        #expect(separated.detectedMarker == "quoteBlockLine")
+    }
+
+    @Test("separatingQuotedText reports a nil marker when there is nothing to split")
+    func separatingReportsNilMarkerWhenNoSplit() {
+        let separated = QuoteStripper.separatingQuotedText(fromPlainText: newText)
+        #expect(separated.detectedMarker == nil)
+    }
+
+    // MARK: - Task #90: reply-only header patterns (isReply: true)
+
+    @Test("does NOT strip a bare 'From: Name <addr>' line when isReply is false (default) — too risky on ordinary prose")
+    func doesNotStripBareFromLineWhenNotReply() {
+        let text = """
+        \(newText)
+
+        From: Tokyo Station <info@example.com>
+        the itinerary continues here with more plain prose that is not a quote at all.
+        """
+        #expect(trimmed(QuoteStripper.strippingQuotedText(fromPlainText: text)) == trimmed(text))
+    }
+
+    @Test("strips a bare 'From: Name <addr>' line (no Sent/To/Subject block) when isReply is true")
+    func stripsBareFromLineWhenReply() {
+        let text = """
+        \(newText)
+
+        From: John Doe <john@example.com>
+        Original message body here, with no Sent/To/Subject block at all.
+        """
+        let separated = QuoteStripper.separatingQuotedText(fromPlainText: text, isReply: true)
+        #expect(trimmed(separated.newText) == newText)
+        #expect(separated.detectedMarker == "englishFromLineOnly")
+    }
+
+    @Test("strips an 'On ... <addr>' header missing its 'wrote:' verb when isReply is true")
+    func stripsOnHeaderMissingWroteVerbWhenReply() {
+        let text = """
+        \(newText)
+
+        On Mon, Jul 27, 2026 at 10:00 AM John Doe <john@example.com>
+        > Original line one
+        > Original line two
+        """
+        let separated = QuoteStripper.separatingQuotedText(fromPlainText: text, isReply: true)
+        #expect(trimmed(separated.newText) == newText)
+        #expect(separated.detectedMarker == "onWroteAddressOnly")
+    }
+
+    @Test("does NOT strip an 'On ... <addr>' header missing 'wrote:' when isReply is false")
+    func doesNotStripOnHeaderMissingWroteVerbWhenNotReply() {
+        let text = """
+        \(newText)
+
+        On Mon, Jul 27, 2026 at 10:00 AM John Doe <john@example.com>
+        this is just a plain sentence, not a quote header, mentioning someone by address.
+        """
+        #expect(trimmed(QuoteStripper.strippingQuotedText(fromPlainText: text)) == trimmed(text))
+    }
+
+    @Test("strips a Japanese '送信者:' header line when isReply is true")
+    func stripsJapaneseSenderLineWhenReply() {
+        let japaneseNewText = "こちらが今回追加した本文です。前回のやり取りとは別の新しい内容をここに書いています。"
+        let text = """
+        \(japaneseNewText)
+
+        送信者: 山田太郎 <yamada@example.com>
+        過去のメッセージ本文
+        """
+        let separated = QuoteStripper.separatingQuotedText(fromPlainText: text, isReply: true)
+        #expect(trimmed(separated.newText) == japaneseNewText)
+        #expect(separated.detectedMarker == "japaneseSenderLineOnly")
+    }
 }
 
 @Suite("QuoteStripper HTML")
@@ -261,6 +339,35 @@ struct QuoteStripperHTMLTests {
         let separated = QuoteStripper.separatingQuotedText(fromHTML: html)
         #expect(separated.newText == expected)
         #expect(separated.quotedText.isEmpty)
+    }
+
+    @Test("strips a class-less border-left-styled quote div (Task #90 gap fix)")
+    func stripsBorderLeftStyledQuoteDiv() {
+        let html = """
+        <div>\(newText)</div>
+        <div style="margin-left:8px; border-left: 2px solid #ccc; padding-left: 8px;">
+        <div>Original message body that should be dropped entirely.</div>
+        </div>
+        """
+        let separated = QuoteStripper.separatingQuotedText(fromHTML: html)
+        #expect(separated.newText == newText)
+        #expect(separated.detectedMarker == "borderLeftQuoteDiv")
+    }
+
+    @Test("strips an Outlook-mobile-style border-top divider followed by a From: block (Task #90 gap fix)")
+    func stripsOutlookMobileBorderTopDivider() {
+        let html = """
+        <div>\(newText)</div>
+        <div style="border-top:solid #E1E1E1 1.0pt; padding:3.0pt 0in 0in 0in">
+        <p><b>From:</b> John Doe &lt;john@example.com&gt;<br>
+        <b>Sent:</b> Monday, July 27, 2026 10:00 AM<br>
+        <b>Subject:</b> Re: Project update</p>
+        </div>
+        <div>Original message body that should be dropped entirely.</div>
+        """
+        let separated = QuoteStripper.separatingQuotedText(fromHTML: html)
+        #expect(separated.newText == newText)
+        #expect(separated.detectedMarker == "borderTopFromBlock")
     }
 }
 

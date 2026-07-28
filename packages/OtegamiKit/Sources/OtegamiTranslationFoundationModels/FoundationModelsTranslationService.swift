@@ -169,11 +169,22 @@ public struct FoundationModelsTranslationService: TranslationService {
     /// itself communicates — not a re-summary of the quote. Plain
     /// unstructured input (the common case: no quote found, nothing to
     /// separate) is unaffected — there's no section to misweight.
+    ///
+    /// Task #90 follow-up: the #62 wording ("use the quoted section only
+    /// to understand the flow") still left room for the model to lean on
+    /// the quote when the new section was short — a real-device report
+    /// said summaries could *still* read as a recap of past quoted
+    /// content. Added an explicit prohibition ("must not") instead of a
+    /// soft preference, plus a fallback instruction for the genuinely
+    /// short-new-section case (a one-line "了解です" reply): describe what
+    /// *this* message did in response to the thread, rather than either
+    /// padding out a one-liner or falling back to summarizing the quote.
     private static func summarizeInstructions(targetLanguage: TranslationLanguage, sentenceCount: Int) -> String {
         """
         Summarize the user's email content in \(targetLanguage.displayName), in about \(sentenceCount) short sentence\(sentenceCount == 1 ? "" : "s").
         The input sometimes contains two labeled sections: "■このメールの新規部分" (this email's own new text) and "■引用されている過去のやり取り (文脈)" (quoted history from the prior thread, given only as context).
-        When both sections are present, use the quoted section only to understand the flow of the conversation — your summary should describe what the new section itself is communicating, not re-summarize the quoted history.
+        When both sections are present: you must not summarize only the content of the quoted section. The main subject of your summary must be the new section. Use the quoted section only as background to understand the flow of the conversation.
+        If the new section is very short (e.g. just a greeting or a one-line acknowledgment like "了解です"/"承知しました"), do not pad it out and do not fall back to summarizing the quote instead — in 1-2 sentences, state what this email did in response to the quoted thread (e.g. "見積もりの件を了承する返信" rather than a recap of the quoted estimate itself).
         When there are no such labeled sections, just summarize the text as given.
         Output ONLY the summary itself — no preamble, no explanation.
         """

@@ -143,6 +143,18 @@ struct MessageView: View {
     /// unambiguous in `log stream` output.
     private static let translationWiringLogger = Logger(subsystem: "com.mtkg.otegami", category: "HTMLTranslationDiagnostic")
 
+    /// Task #90: real-device follow-up to the Task #62 fix — a report that
+    /// summaries could still read like a recap of quoted reply history
+    /// ("まだ、要約において過去の引用のみが要約されてたりする") is otherwise
+    /// undiagnosable after the fact, since `QuoteStripper`'s split happens
+    /// silently and only its *output* (the combined summary source string)
+    /// is visible anywhere else. `sourceTextForSummary()` logs, per call,
+    /// how many characters landed on each side of the split and which
+    /// named marker pattern (`QuoteStripper.SeparatedText.detectedMarker`)
+    /// made the cut — "did splitting even fire, and on what" is the first
+    /// question any follow-up investigation needs answered from Console.
+    private static let summaryInputLogger = Logger(subsystem: "com.mtkg.otegami", category: "SummaryInput")
+
     @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = TranslationSettingsStore.defaultAutoTranslateEnglish
     /// I「設定画面の再構成」→「メールビューア」の「AI 機能の on/off (翻訳・要約を
     /// まとめて)」— see `AIFeaturesSettingsStore`'s doc comment. Master
@@ -1358,17 +1370,27 @@ struct MessageView: View {
     /// あのメソッドは翻訳とも共有されており、翻訳・本文表示は引用を含めた
     /// 全文のまま扱う必要がある (`QuoteStripper`のdoc comment参照) ため —
     /// 要約だけがこの追加ステップを踏む。
+    ///
+    /// Task #90: `message?.inReplyTo`の有無を`QuoteStripper`の`isReply`に
+    /// 渡す — In-Reply-To/Referencesがあり「このメールは返信である」と
+    /// 分かっている場合のみ、`QuoteStripper.replyOnlyPlainTextQuoteMarker
+    /// Patterns`(「wrote:」を欠いた「On ... <address>」行、Sent/To/Subject
+    /// ブロックを伴わない裸の「From: ... <address>」行など)を有効化する。
+    /// これらは返信だと確定していない本文では旅程表の「From: 東京」等と
+    /// 誤検知しうるため、ヘッダで裏付けが取れた時だけ使う。
     private func sourceTextForSummary() -> String? {
         guard let bodyRecord else { return nil }
+        let isReply = message?.inReplyTo != nil
         let separated: QuoteStripper.SeparatedText?
         if let plainText = bodyRecord.plainText, !plainText.isEmpty {
-            separated = QuoteStripper.separatingQuotedText(fromPlainText: plainText)
+            separated = QuoteStripper.separatingQuotedText(fromPlainText: plainText, isReply: isReply)
         } else if let html = bodyRecord.html, !html.isEmpty {
             separated = QuoteStripper.separatingQuotedText(fromHTML: html)
         } else {
             separated = nil
         }
         guard let separated else { return nil }
+        Self.summaryInputLogger.debug("sourceTextForSummary: messageId=\(messageId, privacy: .public) isReply=\(isReply, privacy: .public) newTextLength=\(separated.newText.count, privacy: .public) quotedTextLength=\(separated.quotedText.count, privacy: .public) detectedMarker=\(separated.detectedMarker ?? "none", privacy: .public)")
         // `sourceTextForTranslation()`と同じ安全網: `QuoteStripper`のHTML
         // 経路はすでに`HTMLTextExtractor`を通しているが、プレーンテキスト
         // 側は生のマークアップが混じっていた場合に備えてもう一度通す

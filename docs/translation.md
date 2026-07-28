@@ -320,6 +320,58 @@ Task #46 で上記の「引用より後ろを丸ごと落とす」対応をし�
   (または引用なしなら `newText` そのまま) を組み立てて
   `summarizeLongText` に渡す。適用範囲は Task #46 と同じく要約のみ。
 
+## 要約: 「引用だけの要約」再発の追加対応 (Task #90)
+
+Task #62 の対応後も実機報告が続いた: 「まだ、要約において過去の引用のみが
+要約されてたりする。引用は考慮するものの基本は引用じゃない部分を要約する
+ようにして欲しい」。原因は2つに分解できる — (1) `QuoteStripper` が分離
+自体に失敗し (未対応の引用マーカー形式で本文全体が「新規部分」扱いになる)
+本文全体が要約対象に回ってしまうケース、(2) 分離自体は成功しても
+`summarizeInstructions` の指示が弱く、モデルが新規部分が短いときに引用側
+へ寄ってしまうケース。両方に対応した。
+
+- **検出強化 (1): 返信ヘッダの手がかりを使った条件付き緩和パターン** —
+  `separatingQuotedText(fromPlainText:isReply:)`/`strippingQuotedText
+  (fromPlainText:isReply:)` に `isReply` パラメータを追加 (デフォルト
+  `false`、既存呼び出し・テストは無変更)。`true` のときだけ
+  `QuoteStripper.replyOnlyPlainTextQuoteMarkerPatterns` (「wrote:」を欠いた
+  「On ... <address>」行、Sent/To/Subject ブロックを伴わない裸の
+  「From: Name <address>」行、日本語の「送信者:」単独行) を有効化する。
+  これらは「引用ヘッダらしき行だが確証が薄い」パターンで、返信だと確定
+  していない本文にまで適用すると旅程表の「From: 東京」のような地の文を
+  誤検知しうるため、呼び出し元がメッセージの `In-Reply-To` ヘッダの有無
+  (`MessageView.sourceTextForSummary()` では `message?.inReplyTo != nil`)
+  で「これは返信だ」と確認できた場合限定で有効化する設計にした。
+  - **HTML 側にも2パターン追加** (`isReply` 非依存 — 命名クラス付きの
+    `gmail_quote`/`yahoo_quoted`等と違い、そもそもクラス名を持たない
+    スタイルベースの引用構造で、既存パターンにマッチする文脈が元から
+    無いためリスクが低い): クラス名を持たない `border-left` スタイルのみ
+    の引用 div (`borderLeftQuoteDiv`)、Outlook モバイル/新 Outlook Web が
+    `<hr>` の代わりに使う `border-top` スタイル div + 直後の
+    From/差出人/Sent/送信 ブロック (`borderTopFromBlock`、既存の
+    `hrFromBlock` の div 版)。
+  - **`SeparatedText.detectedMarker`**: どのマーカー (`"blockquote"`
+    `"onWrote"` `"quoteBlockLine"` 等、パターンごとの名前) で分離が
+    成立したか (成立しなければ `nil`) を新規公開。次項の診断ログのために
+    追加した。
+- **指示強化 (2)**: `FoundationModelsTranslationService
+  .summarizeInstructions` の Task #62 時点の文言 ("use the quoted section
+  only to understand the flow") はまだ柔らかい推奨止まりだったため、
+  「引用セクションの内容だけを要約してはならない (must not)。要約の主対象
+  は新規セクション」という禁止形の指示に強化。加えて、新規部分が「了解
+  です」のような一言だけの場合に水増しや引用への逃げをせず、「このメール
+  が文脈に対して何をしたか」を1-2文で述べるよう明記した (例:
+  「見積もりの件を了承する返信」であって見積もり自体の再要約ではない)。
+- **診断ログ**: `MessageView` に OSLog `Logger(subsystem: "com.mtkg
+  .otegami", category: "SummaryInput")` (`summaryInputLogger`) を追加し、
+  `sourceTextForSummary()` が呼ばれるたびに `isReply` の値、新規部分/
+  引用部分それぞれの文字数、`detectedMarker` (未検出なら `"none"`) を
+  1行で出す。実機で「このメールは分離できているか、できているとして
+  どのパターンで検出したか」を Console.app (`log stream --predicate
+  'subsystem == "com.mtkg.otegami" && category == "SummaryInput"'` 等) で
+  確認できるようにするための追加 — Task #62 時点は分離結果を確認する
+  手段が無く、実機報告のたびに再現条件を推測するしかなかった。
+
 ## バグ修正: 実機で「翻訳ボタンが出ない」「AI要約が壊れている」
 
 実機報告を受けて調査・修正。上記の長文コンテキスト超過とは別の、翻訳・
