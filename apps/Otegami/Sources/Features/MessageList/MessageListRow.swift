@@ -70,6 +70,18 @@ struct MessageListRow: View {
     /// `accountLabelColorKey`.
     let accountLabelColorKey: String?
     let showsAccountAccent: Bool
+    /// Task #87 (1): `true` while this row is displayed inside an archive
+    /// view (a mailbox whose role is `.archive`, a Gmail account's All
+    /// Mail — always "archive" for Gmail, see `MailboxRoleRecord
+    /// .gmailArchiveQueryRole`'s doc comment — or the cross-account
+    /// `.unifiedRole(.archive)` "すべてのアーカイブ" view) — see
+    /// `MessageListView.isArchiveView`'s doc comment for exactly how this
+    /// is decided. Swaps the archive swipe slot/context-menu row over to
+    /// "アーカイブ解除" (`onUnarchive` instead of `onArchive`) — every row
+    /// visible in an archive view is, by definition, an already-archived
+    /// message, so there is nothing else the archive slot could usefully
+    /// do there.
+    let isArchiveView: Bool
     let isSelecting: Bool
     let isSelected: Bool
     /// Normal (not-selecting) tap: open the thread (or, 実機フィードバック
@@ -87,6 +99,10 @@ struct MessageListRow: View {
     let onEnterSelection: (Int64) -> Void
     let onToggleRead: (ThreadSummary) -> Void
     let onArchive: (ThreadSummary) -> Void
+    /// Task #87 (1): "アーカイブ解除" — only ever invoked when `isArchiveView`
+    /// is `true` (`perform(_:)`/`swipeButton(for:)` both branch on it before
+    /// calling either this or `onArchive`).
+    let onUnarchive: (ThreadSummary) -> Void
     let onDelete: (ThreadSummary) -> Void
     /// D8: 迷惑メールにする — moves to the account's Junk-role mailbox (self-
     /// healing to a freshly-created "Junk" mailbox the same way delete
@@ -295,6 +311,19 @@ struct MessageListRow: View {
         }
     }
 
+    /// Task #87 (1): the archive slot's label/icon, state-dependent the
+    /// same way `pinLabel`/`toggleReadLabel` already are — "アーカイブ解除"
+    /// (a tray-with-upward-arrow icon, echoing "put it back") while
+    /// `isArchiveView`, the normal "アーカイブ" otherwise.
+    @ViewBuilder
+    private var archiveLabel: some View {
+        if isArchiveView {
+            Label("アーカイブ解除", systemImage: "tray.and.arrow.up")
+        } else {
+            Label(SwipeAction.archive.title, systemImage: SwipeAction.archive.systemImage)
+        }
+    }
+
     /// Executes one `SwipeAction` against this row's callbacks — the iOS
     /// drag gesture's counterpart to `swipeButton(for:)` below (which
     /// builds a macOS context-menu *row*, not an executor); kept separate
@@ -302,7 +331,7 @@ struct MessageListRow: View {
     private func perform(_ action: SwipeAction) {
         switch action {
         case .toggleRead: onToggleRead(summary)
-        case .archive: onArchive(summary)
+        case .archive: isArchiveView ? onUnarchive(summary) : onArchive(summary)
         case .junk: onJunk(summary)
         case .pin: onPin(summary)
         case .delete: onDelete(summary)
@@ -330,7 +359,11 @@ struct MessageListRow: View {
         case .toggleRead:
             Button { onToggleRead(summary) } label: { toggleReadLabel }
         case .archive:
-            Button { onArchive(summary) } label: { Label(action.title, systemImage: action.systemImage) }
+            if isArchiveView {
+                Button { onUnarchive(summary) } label: { archiveLabel }
+            } else {
+                Button { onArchive(summary) } label: { archiveLabel }
+            }
         case .junk:
             Button { onJunk(summary) } label: { Label(action.title, systemImage: action.systemImage) }
         case .pin:
@@ -437,7 +470,12 @@ extension MessageListRow {
         switch action {
         case .pin: summary.thread.isPinned ? "pin.slash" : "pin"
         case .toggleRead: summary.thread.unreadCount > 0 ? "envelope.open" : "envelope.badge"
-        case .archive, .junk, .delete: action.systemImage
+        // Task #87 (1): mirrors the `.pin`/`.toggleRead` state-dependent
+        // icon swap above — while `isArchiveView`, every row is already an
+        // archived message, so the archive slot previews "put it back"
+        // instead.
+        case .archive: isArchiveView ? "tray.and.arrow.up" : action.systemImage
+        case .junk, .delete: action.systemImage
         }
     }
 
@@ -445,10 +483,17 @@ extension MessageListRow {
     /// 意図的に別トーンにする — 実機フィードバックの「ピン留め済みの行は別の色で
     /// 表示すること」要件。それ以外のアクションは既存の固定トーンのまま
     /// (`SwipeRevealBackground`が以前直接持っていたマッピングをここに移設)。
+    ///
+    /// Task #87 (1): "アーカイブ解除" gets the same treatment — a distinct
+    /// tone from the normal archive tint, following the exact `.pin`
+    /// precedent above (already-archived/about-to-restore reads as the
+    /// brighter `accentText` tone, the same one `.pin`'s "not yet pinned"
+    /// state uses, rather than the muted `paleBaseStrongest` a plain
+    /// archive swipe shows).
     private func effectiveTint(for action: SwipeAction) -> Color {
         switch action {
         case .toggleRead: OtegamiColor.accent
-        case .archive: OtegamiColor.paleBaseStrongest
+        case .archive: isArchiveView ? OtegamiColor.accentText : OtegamiColor.paleBaseStrongest
         case .junk: OtegamiColor.destructive
         case .pin: summary.thread.isPinned ? OtegamiColor.inkTertiary : OtegamiColor.accentText
         case .delete: OtegamiColor.destructive

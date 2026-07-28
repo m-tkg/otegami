@@ -107,6 +107,17 @@ struct MessageListView: View {
     @State private var isSyncing = false
     @State private var syncErrorMessage: String?
 
+    // MARK: - Archive view detection (Task #87, 1)
+
+    /// `true` while `selection` shows an archive view — see
+    /// `refreshArchiveViewFlag()`'s doc comment for exactly how this is
+    /// decided. Forwarded to every `MessageListRow` as `isArchiveView`,
+    /// which is what actually swaps the archive swipe slot/context-menu
+    /// row over to "アーカイブ解除". Starts `false` (not "archive") so a
+    /// fresh selection never briefly shows the wrong slot before
+    /// `refreshArchiveViewFlag()`'s first read completes.
+    @State private var isArchiveView = false
+
     // MARK: - Pagination (M10, docs/performance.md)
 
     /// How many threads `observeThreads()` currently requests — starts at
@@ -262,7 +273,7 @@ struct MessageListView: View {
     /// re-runs this fresh read) when the setting changes elsewhere.
     private var isGroupingActive: Bool {
         _ = isGroupByAccount
-        return ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.groupByAccountKey, default: ListDisplaySettingsStore.defaultGroupByAccount) && showsAccountAccent
+        return ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.groupByAccountKey, default: ListDisplaySettingsStore.defaultGroupByAccount) && isMultiAccountScope
     }
 
     /// Task #77: `displayedSummaries`をアカウントIDで区分した1セクション分。
@@ -362,7 +373,24 @@ struct MessageListView: View {
     /// by actually looking at a single-account screenshot (`docs/design-
     /// system.md`'s design-phase-3 section) rather than in the handoff,
     /// which didn't consider the one-account case explicitly.
-    private var showsAccountAccent: Bool {
+    ///
+    /// Task #87 (4): real-device feedback wanted the rail visible *always*,
+    /// even for a single mailbox or an account-filtered unified inbox —
+    /// the doc comment above (and `isMultiAccountScope` just below) record
+    /// the narrower condition this property used to return, kept alive
+    /// only for `isGroupingActive` (grouping by account still shouldn't
+    /// kick in where every visible row already shares one account — that
+    /// would just draw a single, redundant section header). The header's
+    /// own グループ化 toggle visibility (`MailScreenView
+    /// .showsGroupByAccountToggle`) is unrelated and intentionally
+    /// untouched by this change.
+    private var showsAccountAccent: Bool { true }
+
+    /// The condition `showsAccountAccent` used to gate on before Task #87
+    /// (4) made the rail unconditional — still exactly right for
+    /// `isGroupingActive`, which only makes sense where more than one
+    /// account's rows could actually appear together in `displayedSummaries`.
+    private var isMultiAccountScope: Bool {
         switch selection {
         case .unifiedInbox:
             guard unifiedInboxAccountFilter == nil else { return false }
@@ -377,6 +405,42 @@ struct MessageListView: View {
             return false
         }
         return environment.accounts.count > 1
+    }
+
+    /// Task #87 (1): decides `isArchiveView` for whatever `selection`
+    /// currently is. `.unifiedRole(.archive)` (the カテゴリ優先メニューの
+    /// 「アーカイブ」行, i.e. "すべてのアーカイブ") is archive unconditionally
+    /// — no DB read needed. `.mailbox` needs an actual read: a specific
+    /// mailbox counts as "archive" if its own role is `.archive`, or —
+    /// Gmail has no `\Archive`-flagged folder at all — if it's that
+    /// account's All Mail (`role == .all`), which `MailboxRecord
+    /// .request(mailboxId:...)`'s own `GmailArchiveFilter` already always
+    /// narrows down to exactly the "archived" subset regardless of which
+    /// entry point opened it (that filter's own doc comment covers why
+    /// there's no separate "raw All Mail, unfiltered" view to distinguish
+    /// from). `.unifiedInbox` is never "archive" — 1a's account-filter
+    /// chips only ever narrow *which accounts'* INBOX-role mail shows, not
+    /// which role.
+    private func refreshArchiveViewFlag() async {
+        switch selection {
+        case .unifiedRole(let role):
+            isArchiveView = (role == .archive)
+        case .unifiedInbox:
+            isArchiveView = false
+        case .mailbox(let mailboxSelection):
+            guard let account = environment.accounts.first(where: { $0.id == mailboxSelection.accountId }) else {
+                isArchiveView = false
+                return
+            }
+            do {
+                let role = try await environment.database.dbWriter.read { db in
+                    try MailboxRecord.fetchOne(db, key: mailboxSelection.mailboxId)?.role
+                }
+                isArchiveView = role == .archive || (role == .all && account.kind == .gmail)
+            } catch {
+                isArchiveView = false
+            }
+        }
     }
 
     private var accountDisplayNames: [String: String] {
@@ -453,6 +517,30 @@ struct MessageListView: View {
         List {
             listContent
         }
+        // Task #87 (2): iOS 26's default `List` style renders the whole
+        // scrollable content region as one implicit rounded "card" (visible
+        // as a rounded top-left/top-right corner on the very first row and
+        // a rounded bottom-left/bottom-right corner on the very last one,
+        // confirmed via `scripts/verify-screen.sh list-2accounts` in dark
+        // mode — the rounding is most visible against `AccountColorRail`'s
+        // hard-edged color bar sitting right at that corner) — independent
+        // of `ThreadRowView.rowCornerRadius`'s own `OtegamiRadius.none`,
+        // which only ever governed each row's *own* background shape, never
+        // this outer system-level masking. Task #67 never caught this: its
+        // own verification fixture had exactly one account, and
+        // `AccountColorRail` is hidden entirely for a single account
+        // (`MessageListView.showsAccountAccent`), so the rounded corner had
+        // nothing high-contrast sitting against it to make it visible.
+        // `.listStyle(.plain)` (iOS only — macOS stays exactly as it was,
+        // per `CLAUDE.md`'s "macOS は現状の `NavigationSplitView` 3ペインを
+        // 維持する") opts back into the flat, edge-to-edge list rendering
+        // this design has relied on since 実機フィードバック第2弾, across
+        // every entry point this same `List` serves (single mailbox/
+        // unifiedInbox/unifiedRole/macOS's inline search, and both the
+        // grouped-`Section` and flat `ForEach` branches of `listContent`).
+        #if os(iOS)
+        .listStyle(.plain)
+        #endif
         .accessibilityIdentifier("messageList.list")
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
@@ -594,6 +682,12 @@ struct MessageListView: View {
         // settings).
         .task(id: selection) {
             await syncSelectedMailboxOnAppear()
+        }
+        // Task #87 (1): also keyed on `selection` alone, same reasoning as
+        // the task right above — an archive-or-not read has nothing to do
+        // with `unreadOnly`/`isFlatMode`/pagination either.
+        .task(id: selection) {
+            await refreshArchiveViewFlag()
         }
         // Not required for correctness anymore (the local write already
         // happened by the time a `PendingUndo` exists — see `commitDelete`/
@@ -762,9 +856,16 @@ struct MessageListView: View {
             MessageListRow(
                 summary: summary,
                 threadId: threadId,
-                accountDisplayName: accountDisplayNames[summary.thread.accountId],
+                // Task #87 (4): `showsAccountAccent` itself now always
+                // shows the rail, but the trailing account-name label
+                // (`ThreadRowTrailing`) still only makes sense where more
+                // than one account's rows could actually appear —
+                // `isMultiAccountScope` is the old `showsAccountAccent`
+                // condition, kept for exactly this.
+                accountDisplayName: isMultiAccountScope ? accountDisplayNames[summary.thread.accountId] : nil,
                 accountLabelColorKey: accountLabelColorKeys[summary.thread.accountId],
                 showsAccountAccent: showsAccountAccent,
+                isArchiveView: isArchiveView,
                 isSelecting: isSelecting,
                 isSelected: selectedThreadIds.contains(threadId),
                 onSelect: handleThreadSelected,
@@ -772,6 +873,7 @@ struct MessageListView: View {
                 onEnterSelection: enterSelectionMode,
                 onToggleRead: toggleRead,
                 onArchive: archiveThread,
+                onUnarchive: unarchiveThread,
                 onDelete: deleteThread,
                 onJunk: junkThread,
                 onPin: togglePin,
@@ -1490,6 +1592,42 @@ struct MessageListView: View {
         do {
             guard let snapshot = try await environment.database.dbWriter.write({ db in
                 try MessageRemoval.commit(.archive, summary: summary, accountId: summary.thread.accountId, db: db)
+            }) else { return nil }
+            if isSearchActive {
+                searchResults.removeAll { $0.id == summary.id }
+            }
+            return snapshot
+        } catch {
+            // Best-effort, matching every other opQueue-enqueuing path in
+            // this file.
+            return nil
+        }
+    }
+
+    /// Task #87 (1): "アーカイブ解除" — the archive view's swipe/context-menu
+    /// row action. Mirrors `archiveThread(_:)`/`commitArchive(_:)` exactly
+    /// (see their doc comments); only reached when `MessageListRow
+    /// .isArchiveView` is `true`, so every `summary` this is ever called
+    /// with is already an archived thread. Undo (`undoRemoval`) reverses
+    /// this exactly like it reverses an archive/delete/junk — it just
+    /// re-inserts the removed row(s) and cancels the not-yet-replayed
+    /// `.unarchive` opQueue rows, which in effect re-archives.
+    private func unarchiveThread(_ summary: ThreadSummary) {
+        guard let threadId = summary.thread.id else { return }
+        let accountId = summary.thread.accountId
+        Task {
+            guard let snapshot = await commitUnarchive(summary) else { return }
+            scheduleUndo(threadIds: [threadId], message: "\(undoNoun(for: summary))のアーカイブを解除しました", accountIds: [accountId]) {
+                await undoRemoval(snapshot)
+            }
+        }
+    }
+
+    /// `commitArchive`'s `.unarchive` counterpart — see its doc comment.
+    private func commitUnarchive(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
+        do {
+            guard let snapshot = try await environment.database.dbWriter.write({ db in
+                try MessageRemoval.commit(.unarchive, summary: summary, accountId: summary.thread.accountId, db: db)
             }) else { return nil }
             if isSearchActive {
                 searchResults.removeAll { $0.id == summary.id }
