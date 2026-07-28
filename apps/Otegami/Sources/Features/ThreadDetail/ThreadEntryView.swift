@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import os
 import OtegamiCore
 import OtegamiStore
 
@@ -77,7 +78,18 @@ struct ThreadEntryView: View {
             }
         }
         .task(id: threadId) { await load() }
+        .onAppear {
+            // Task #105 続報の計装: cold launch 直後の初回タップだけ
+            // `preselectedMessageId` が nil で渡り、フラット設定なのに
+            // スレッド選択画面が出る実機報告の切り分け用 (notice — log
+            // collect のアーカイブに残るレベル)。
+            Self.entryLogger.notice(
+                "ThreadEntryView appear: threadId=\(threadId, privacy: .public) preselectedMessageId=\(preselectedMessageId.map(String.init) ?? "nil", privacy: .public)"
+            )
+        }
     }
+
+    private static let entryLogger = Logger(subsystem: "com.mtkg.otegami", category: "ThreadEntry")
 
     private func detailView(singleMessageId: Int64?, isFlatModeEntry: Bool) -> ThreadDetailView {
         ThreadDetailView(
