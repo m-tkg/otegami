@@ -52,7 +52,17 @@ struct TranslationFloatingButton: View {
             ProgressView()
                 .accessibilityIdentifier("messageDetail.translationFloatingButton.loading")
         } else {
-            Image(systemName: "globe")
+            // Task #64 (実機フィードバック「翻訳アイコンがブラウザで開くように
+            // 見える」): `"globe"` looks like "open in browser"/"language of
+            // this page" (Safari's own toolbar uses the identical symbol for
+            // exactly that), easily confused with this app's *actual*
+            // "ブラウザで開く" affordances elsewhere (`LinkBrowserSettingsStore`
+            // 周り) — not a translation-specific symbol at all. `"translate"`
+            // (confirmed present on this project's SDK — SF Symbols 5, well
+            // below this app's iOS/macOS 26 minimum) is unambiguous and is
+            // the dedicated system glyph for this exact action, distinct at a
+            // glance from `AISummaryFloatingButton`'s `"sparkles"`.
+            Image(systemName: "translate")
         }
     }
 
