@@ -271,18 +271,27 @@
       優先度: 中 (配布を決めてから) / 所要時間: 初回セットアップ1時間
       程度、以降のビルドは自動 / 参照:
       [docs/xcode-cloud.md](docs/xcode-cloud.md)
-- [ ] **TestFlight ビルドでのプッシュ通知 production 対応の要否判断
-      (Task #49)** — `docs/xcode-cloud.md`「既知の注意点」の通り、
-      TestFlight (Distribution 署名) は `aps-environment: production`
-      を要求するが、現状は `development`/`.sandbox` 固定 (現行の Ad Hoc
-      配布はこの組み合わせで実機確認済み)。TestFlight で実際にプッシュ
-      通知を使う予定があるなら、entitlements のビルド設定分岐
-      (Debug: development / Release: production) と
-      `AppEnvironment.swift` の対応する分岐実装が必要— まず上の
-      Xcode Cloud 初回ビルドで実際に Archive/署名がエラーになるか
-      どうかを確認してから、対応要否を判断する。
-      優先度: 低 (TestFlight でのプッシュ通知確認を実際にする段階まで
-      保留可) / 所要時間: 実装1〜2時間+実機確認 / 参照:
+- [ ] **対応済み — TestFlight ビルドで通知が届くことを確認する
+      (Task #57)** — TestFlight (Distribution 署名) のビルドは実際の
+      APNs 環境が production になるが、アプリは otegami-relay への
+      デバイス登録時に `environment: .sandbox` を固定で送っていたため、
+      TestFlight ビルドではプッシュ通知が届かなかった。実行時に
+      `embedded.mobileprovision` の `aps-environment` を読んで
+      sandbox/production を判定するよう修正済み
+      (`APNSEnvironmentDetector`、
+      `packages/OtegamiKit/Sources/PushRelayClient/
+      APNSEnvironmentDetector.swift`) — プロビジョニングプロファイルが
+      見つからない場合は production にフォールバックする。`server/
+      otegami-relay` 側は元々環境ごとの APNs 送信振り分けに対応済み
+      だったため変更不要。ユニットテスト
+      (`APNSEnvironmentDetectorTests`、`APNsSenderTests`) は追加済みだが、
+      **実際に TestFlight ビルドをインストールした端末にプッシュ通知が
+      届くかどうかは Apple 実機環境が必要でこの環境からは確認できない**
+      — 新しい TestFlight ビルドをインストールし、push を有効化した状態で
+      新着メールが届いた際に通知が表示されることを確認してほしい。
+      優先度: 中 (次回 TestFlight ビルド配布時に確認) / 所要時間: 数分
+      (既存の push 設定を一度無効化→再有効化して端末トークンを
+      production 用として再登録させる必要がある) / 参照:
       [docs/xcode-cloud.md](docs/xcode-cloud.md)「既知の注意点」節、
       [PENDING.md](PENDING.md#公開時に必要な対応-まとめ)
 

@@ -168,60 +168,57 @@ Apple Developer / App Store Connect 側の実際の操作が必要で、この�
 
 ## 既知の注意点
 
-### APNs が TestFlight (Distribution) では production 環境になる
+### APNs が TestFlight (Distribution) では production 環境になる — 対応済み (Task #57)
 
-`apps/Otegami/Config/Otegami-iOS.entitlements` の `aps-environment` は
-現在 **`development` に固定**されており、`AppEnvironment.swift` の
-`enablePushNotifications(relayURLString:)` も otegami-relay への
-デバイス登録時に **`environment: .sandbox` を固定で送っている**
-(`registerDevice`/`updateDeviceToken` 呼び出し箇所)。これは Apple の
-仕様上の制約に対応している: `aps-environment` の値は署名に使う
+Apple の仕様上の制約: `aps-environment` の実際の値は署名に使う
 プロビジョニングプロファイルの種類で決まり、Development プロファイルは
 `development` しか持てず、Distribution 系プロファイル (Ad Hoc/App Store)
-は `production` しか持てない。
+は `production` しか持てない。`apps/Otegami/Config/Otegami-iOS.entitlements`
+の `aps-environment` ソース側の値は (Automatic signing の下では) 実際に
+割り当てられるプロファイルに応じて署名時に上書きされるため
+`development` 固定のままで構わない — 実際、この repo はタグ打ち →
+Xcode Cloud → TestFlight のアーカイブ・署名に既に複数回成功している
+(`ac42ada` 以降のコミット参照) ので、署名そのものがこの値と矛盾して
+失敗する、という当初懸念していたシナリオは発生しなかった。
 
-**TestFlight への提出は必ず App Store (Distribution) プロファイルで
-署名される**ため、Apple 側のバリデーション、あるいは Xcode Cloud の
-cloud signing 自体が、`aps-environment: development` を要求する現状の
-entitlements と矛盾してエラーになる可能性がある (この環境には Apple
-Developer アカウントへの実アクセスが無く、実際に TestFlight 提出まで
-到達させて再現・確認することはできなかった — 上記「検証できていない
-こと」参照)。仮にビルド自体が (Xcode Cloud が entitlements を汲んで
-自動的に production 用のプロファイルを発行することで) 通ったとしても、
-`AppEnvironment.swift` が `.sandbox` を送り続ける限り、APNs
-サンドボックス環境宛てのデバイストークンを otegami-relay に登録する
-ことになり、実際のプッシュは production 環境の APNs (`api.push.apple.com`)
-であるべきところ `api.sandbox.push.apple.com` に送られて配信されない
+残っていた実問題は署名ではなくアプリ側のロジックだった:
+`AppEnvironment.swift` の `enablePushNotifications(relayURLString:)` が
+otegami-relay へのデバイス登録時に **`environment: .sandbox` を固定で
+送っていた**ため、TestFlight (Distribution 署名 = 実際の APNs 環境は
+production) のデバイストークンが sandbox 環境宛てとして登録され、
+実際のプッシュは `api.push.apple.com` に送られるべきところ
+`api.sandbox.push.apple.com` に送られて配信されなかった
 (`server/otegami-relay/Sources/OtegamiRelay/Push/APNsSender.swift`
 の `environment` によるホスト切り替えを参照)。
 
-実際、現行の `make deploy-ota` (Ad Hoc 配布) 経由のプッシュ通知は
-`aps-environment: development` + `.sandbox` の組み合わせのまま実機
-エンドツーエンドで動作確認済み (`PENDING.md`「M9: APNs プッシュ通知 —
-完了」)。これは Apple の仕様上の整合が取れているから成立している
-組み合わせであり (Development プロファイルで署名されたビルドの
-デバイストークンは APNs sandbox 環境でしか有効にならない)、
-TestFlight (Distribution プロファイル・`production`) に切り替える際は
-entitlements と `AppEnvironment.swift` の両方を production 側に揃えない
-限り、同じロジックのまま動くとは期待できない。
+**修正**: ビルド設定 (Debug/Release) で分岐させる方式ではなく、
+実行時にこのバイナリが実際にどちらの環境で署名されたかを
+`embedded.mobileprovision` の `Entitlements.aps-environment` を読んで
+判定する方式にした —
+`packages/OtegamiKit/Sources/PushRelayClient/APNSEnvironmentDetector.swift`
+(`APNSEnvironmentDetector.detectedEnvironment(bundle:)`)。埋め込み
+プロビジョニングプロファイルが存在しない/parse できない場合は
+`.production` にフォールバックする — App Store/TestFlight 配布では
+`embedded.mobileprovision` が同梱されない (または簡単には見つけられない)
+ことがあるため、「見つからない = production」が安全なデフォルトになる
+(Debug/Ad Hoc ビルドは必ずプロファイルを同梱するので、このフォール
+バックが実際に踏まれるのは配布ビルドだけ)。`AppEnvironment.swift` の
+2箇所の登録呼び出し (`registerDevice`/`updateDeviceToken`) はこの判定
+結果を送るよう変更済み。
 
-なお `server/otegami-relay` 自体は既にデバイスごとに `sandbox`/
-`production` を切り替えられる設計になっている
-(`OtegamiRelayAPI.RegisterDeviceRequest.Environment`) ので、リレー側の
-変更は不要 — 直す場合はアプリ側 (entitlements をビルド設定
-[Debug: development / Release: production] で分岐させる、かつ
-`AppEnvironment.swift` が Debug/Release を判定して対応する
-`environment` を送るようにする) だけで完結する。
+`server/otegami-relay` 自体は元々デバイスごとに `sandbox`/`production`
+を切り替えられる設計だった (`OtegamiRelayAPI.RegisterDeviceRequest.
+Environment`、`APNsSender.host(for:)`) ため、リレー側の変更は不要
+だった — 変更はアプリ側のみで完結している。
 
-**このタスクではこの修正を行っていない** (影響範囲が entitlements・
-署名・push 登録ロジックの3箇所にまたがり、かつ APNs production 環境
-経由のプッシュはこのリポジトリでまだ一度も検証できていない — sandbox
-環境での実機確認は完了しているが [上記 `PENDING.md`「M9」参照]、
-production 環境は Distribution 署名のビルドが無ければ検証しようが
-ないため、Xcode Cloud 導入自体を止めずに別タスクとして切り出した —
-`HUMAN_TASKS.md`/`PENDING.md` に追記済み)。
-**プッシュ通知を使わない検証・配布であればこの制約は影響しない**
-(アーカイブ・TestFlight 配布そのものは通る想定)。
+**検証**: `APNSEnvironmentDetectorTests`
+(`packages/OtegamiKit/Tests/PushRelayClientTests/`) がプロビジョニング
+プロファイルのパース (development→sandbox / production→production /
+欠落・不正値→production フォールバック) をユニットテストで検証。
+`server/otegami-relay`側の sandbox/production ホスト切り替えは
+`APNsSenderTests`に回帰テストを追加。**実際に TestFlight ビルドで
+プッシュが届くことの確認 (E2E) は Apple 実機環境が必要なため
+`HUMAN_TASKS.md` にユーザー確認タスクとして残っている。**
 
 ### Google OAuth が「未検証アプリ」のまま TestFlight 内部テストで使われる
 

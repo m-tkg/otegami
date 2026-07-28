@@ -659,14 +659,14 @@ IDLEループはいずれも`SyncScope.inboxOnly`固定)。これに Gmail の�
   この環境から実行できないため未検証**。手順は
   [docs/xcode-cloud.md](docs/xcode-cloud.md) にまとめ、着手手順は
   [HUMAN_TASKS.md](HUMAN_TASKS.md) に追記した。
-  - **未解決のまま残した既知の懸念**: TestFlight は必ず Distribution
-    (App Store) プロビジョニングプロファイルで署名されるが、
-    `Config/Otegami-iOS.entitlements` の `aps-environment` は
-    `development` に固定、`AppEnvironment.enablePushNotifications` も
-    otegami-relay への登録時に `.sandbox` を固定で送っている
-    (現行の Ad Hoc/OTA 配布はこの development/sandbox の組み合わせで
-    実機確認済み — 上記「M9: APNs プッシュ通知」参照)。production
-    (Distribution) 側に切り替える対応をしていないため、TestFlight
-    ビルドではプッシュ通知が届かない、または署名自体が entitlements の
-    不整合でエラーになる可能性がある。詳細・修正方針は
-    `docs/xcode-cloud.md`「既知の注意点」節。
+  - **(対応済み: Task #57) 当時未解決だった既知の懸念**: TestFlight は
+    必ず Distribution (App Store) プロビジョニングプロファイルで
+    署名されるが、`AppEnvironment.enablePushNotifications` は otegami-relay
+    への登録時に `.sandbox` を固定で送っており、TestFlight ビルドでは
+    プッシュ通知が届かなかった。実行時に `embedded.mobileprovision` の
+    `aps-environment` を判定して sandbox/production を送り分けるよう
+    修正済み (`APNSEnvironmentDetector` — 署名そのものは entitlements の
+    `aps-environment` ソース値と無関係に Automatic signing 下で常に成功
+    していた、心配していた署名エラーは実際には発生しなかった)。詳細は
+    `docs/xcode-cloud.md`「既知の注意点」節、実機での最終確認は
+    `HUMAN_TASKS.md` 参照。
