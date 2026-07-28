@@ -124,6 +124,11 @@ struct HTMLMessageView: View {
     /// `init` time — not `@AppStorage` — is what keeps each newly opened
     /// message honest about the current setting).
     @State private var autoAdjustColorsInDarkMode: Bool
+    /// Task #71「メールの背景を常に白に」— seeded the same way as
+    /// `autoAdjustColorsInDarkMode` just above (same reasoning: bakes into
+    /// the loaded document via `HTMLDocumentBuilder.wrap(bodyHTML:
+    /// autoAdjustColorsInDarkMode:forceLightBackground:)`).
+    @State private var forceLightBackground: Bool
 
     // MARK: - C7 link handling
 
@@ -159,6 +164,7 @@ struct HTMLMessageView: View {
         _allowsExternalContent = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowRemoteImagesKey))
         _allowsEmbeddedImages = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowEmbeddedImagesKey))
         _autoAdjustColorsInDarkMode = State(initialValue: UserDefaults.standard.bool(forKey: HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey))
+        _forceLightBackground = State(initialValue: UserDefaults.standard.bool(forKey: HTMLDisplaySettingsStore.forceLightBackgroundKey))
     }
 
     private var hasExternalContent: Bool {
@@ -247,6 +253,7 @@ struct HTMLMessageView: View {
                 allowsExternalContent: allowsExternalContent,
                 allowsEmbeddedImages: allowsEmbeddedImages,
                 autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode,
+                forceLightBackground: forceLightBackground,
                 bottomContentInset: bottomContentInset,
                 cidContext: CIDResolutionContext(
                     environment: environment, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath
@@ -462,7 +469,7 @@ enum HTMLDocumentBuilder {
     /// 尊重する」方針。実測はこの判定より**後**には効かない — 自前対応が
     /// あると分かった時点で`shouldConsiderDarkInversion`自体が false に
     /// なり、JS側の実測は一切走らない。
-    static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool, bottomContentInset: CGFloat = 0) -> String {
+    static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool, forceLightBackground: Bool = false, bottomContentInset: CGFloat = 0) -> String {
         let innerBody = extractBodyContent(from: bodyHTML)
         let originalHeadStyles = extractHeadStyles(from: bodyHTML)
         // Task #51: この時点ではまだ「反転を検討してよいか」までしか
@@ -470,7 +477,28 @@ enum HTMLDocumentBuilder {
         // の `decideDarkInversion`) 任せ。変数名を旧来の
         // `shouldInvertForDarkMode` から変えたのはこの意味の変化を明示
         // するため。
-        let shouldConsiderDarkInversion = autoAdjustColorsInDarkMode && !mailDeclaresOwnDarkModeSupport(html: bodyHTML)
+        //
+        // Task #71 (「メールの背景を常に白に」): `forceLightBackground`が
+        // 真なら、スマート反転を検討する余地自体を最初から無くす — 下の
+        // `forceLightBackgroundStyle`がこの文書自体をライト固定にするので、
+        // 反転を検討する対象がそもそも存在しない (無条件でメール本来の
+        // 配色のまま、Gmailの「ライト表示」相当)。
+        let shouldConsiderDarkInversion = !forceLightBackground && autoAdjustColorsInDarkMode && !mailDeclaresOwnDarkModeSupport(html: bodyHTML)
+        // Task #71: `:root`の`color-scheme: light dark;`(下の基本`<style>`)
+        // と、メール自身の`<style>`(`originalHeadStyles`、この文書の`<head>`
+        // 内でこの後に続く) が持ちうる`color-scheme`宣言の両方に確実に勝つ
+        // よう`!important`。`html, body`の背景も同様に白へ固定 — メール
+        // 自身の`<style>body{background:...}`が非`!important`のライト背景
+        // を指定していればそのまま活きる (この状況では無害) が、万一暗い
+        // 背景を指定していた場合や、何も指定していない場合 (このファイル
+        // 自身の`background: transparent`のままだとアプリのダーク背景が
+        // 透けてしまう) にも確実にライト表示になるようにするための保険。
+        let forceLightBackgroundStyle = forceLightBackground ? """
+        <style>
+          :root { color-scheme: light !important; }
+          html, body { background-color: #ffffff !important; }
+        </style>
+        """ : ""
         let darkModeInvertStyle = shouldConsiderDarkInversion ? """
         <style>
           @media (prefers-color-scheme: dark) {
@@ -496,6 +524,45 @@ enum HTMLDocumentBuilder {
             #otegami-fit-inner.otegami-invert-for-dark video,
             #otegami-fit-inner.otegami-invert-for-dark [style*="background-image"] {
               filter: invert(1) hue-rotate(180deg);
+            }
+            /* 実機フィードバック (MakerWorld 比較 — 右端に縦の白帯・セクション
+               間の色ムラ): `.otegami-invert-for-dark`のフィルタは
+               `#otegami-fit-inner`とその子孫にしかかからないため、メール
+               自身の `<style>body{background:#fff}`のようなルール
+               (`extractHeadStyles`がこのファイル自身の `background:
+               transparent` の後に差し込むので、非`!important`同士なら
+               後勝ちでそちらが実際に採用される) はそのまま`body`の実ペイント
+               色として残ってしまい、`body`のpadding分の余白 (左右12px) や、
+               要素どうしの隙間で本来のライト背景色がそのまま透けて見えて
+               いた — 「反転された本文の中に反転されていない帯が残る」の
+               正体。`html.otegami-invert-active`はJS側 (`decideDarkInversion`)
+               が実際に反転を決めたときだけ付与するクラスで、その間だけ
+               `body`/`html`自身の背景を強制的に透明化する — 反転しない
+               メール (ダークモード対応済み・元から暗背景等) の見た目は
+               一切変えない。`body`本来の背景色は同じJSが`#otegami-fit-inner`
+               自身へ移し替える (下記コメント) ので、キャンバス色そのものは
+               失われず、フィルタの対象内に収まる。 */
+            html.otegami-invert-active,
+            html.otegami-invert-active body {
+              background-color: transparent !important;
+            }
+            /* 実機フィードバック (MakerWorld ロゴが暗背景に沈む): 透過PNGの
+               ロゴ (黒い線画、背景なし) は上の img 二重反転ルールで「元の
+               色 (黒)」に戻る一方、ページ側は反転済みで暗背景になるため、
+               黒の線画が暗い背景にほぼ同化して見えなくなる — Gmail のダーク
+               表示が小さい透過ロゴにやっているのと同じ対処 (白系の背景
+               チップを敷いて元の配色のまま読めるようにする) を採る。
+               どの画像が「透過ロゴ」かをCSS/DOMだけから確実に判定するのは
+               難しいため、`decideDarkInversion`が実測した画像の内在サイズ
+               (`naturalWidth`/`naturalHeight`) が両方 200px 以下という
+               実用的なヒューリスティクスで対象を絞る (写真本体は大抵もっと
+               大きいので誤爆しにくい、という判断 — 詳細は`docs/design-system.md`
+               参照)。対象の画像だけに `otegami-invert-logo-chip` クラスが
+               付く。 */
+            #otegami-fit-inner.otegami-invert-for-dark img.otegami-invert-logo-chip {
+              background-color: rgba(255, 255, 255, 0.94);
+              border-radius: 6px;
+              padding: 4px;
             }
           }
         </style>
@@ -614,6 +681,7 @@ enum HTMLDocumentBuilder {
         </style>
         \(originalHeadStyles)
         \(darkModeInvertStyle)
+        \(forceLightBackgroundStyle)
         </head>
         <body><div id="otegami-fit-outer"\(fitOuterAttributes)><div id="otegami-fit-inner">\(innerBody)</div></div>\(bottomInsetSpacer)</body>
         </html>
@@ -1085,6 +1153,8 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
     let autoAdjustColorsInDarkMode: Bool
+    /// Task #71 — see `HTMLMessageView.forceLightBackground`'s doc comment.
+    let forceLightBackground: Bool
     /// Task #56 — see `HTMLMessageView.bottomContentInset`'s doc comment.
     let bottomContentInset: CGFloat
     let cidContext: CIDResolutionContext
@@ -1131,7 +1201,8 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
         webView.scrollView.backgroundColor = .clear
         context.coordinator.load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
+            bottomContentInset: bottomContentInset, into: webView
         )
         return webView
     }
@@ -1139,7 +1210,8 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.reloadIfNeeded(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset,
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
+            bottomContentInset: bottomContentInset,
             cidContext: cidContext, into: webView
         )
     }
@@ -1152,6 +1224,8 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
     let autoAdjustColorsInDarkMode: Bool
+    /// Task #71 — see `HTMLMessageView.forceLightBackground`'s doc comment.
+    let forceLightBackground: Bool
     /// Task #56 — see `HTMLMessageView.bottomContentInset`'s doc comment.
     let bottomContentInset: CGFloat
     let cidContext: CIDResolutionContext
@@ -1183,7 +1257,8 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
         webView.underPageBackgroundColor = .clear
         context.coordinator.load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
+            bottomContentInset: bottomContentInset, into: webView
         )
         return webView
     }
@@ -1191,7 +1266,8 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.reloadIfNeeded(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset,
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
+            bottomContentInset: bottomContentInset,
             cidContext: cidContext, into: webView
         )
     }
@@ -1257,6 +1333,9 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// message is still open), the same way it already does for the image
     /// settings.
     private var lastAutoAdjustColorsInDarkMode: Bool?
+    /// Task #71 — mirrors `lastAutoAdjustColorsInDarkMode` immediately above,
+    /// same reasoning.
+    private var lastForceLightBackground: Bool?
     /// Task #56 — mirrors the flags above: tracked so `reloadIfNeeded`
     /// reloads (re-injects the bottom spacer, `HTMLDocumentBuilder.wrap`'s
     /// doc comment) when only this changes, e.g. the AI要約/翻訳 floating
@@ -1319,6 +1398,7 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
             load(
                 html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
                 autoAdjustColorsInDarkMode: lastAutoAdjustColorsInDarkMode ?? HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode,
+                forceLightBackground: lastForceLightBackground ?? HTMLDisplaySettingsStore.defaultForceLightBackground,
                 bottomContentInset: lastBottomContentInset ?? 0,
                 into: webView
             )
@@ -1328,6 +1408,7 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
 
     func reloadIfNeeded(
         html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, autoAdjustColorsInDarkMode: Bool,
+        forceLightBackground: Bool,
         bottomContentInset: CGFloat, cidContext: CIDResolutionContext, into webView: WKWebView
     ) {
         cidHandler?.updateContext(cidContext)
@@ -1335,16 +1416,19 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
             || allowsExternalContent != lastAllowsExternalContent
             || allowsEmbeddedImages != lastAllowsEmbeddedImages
             || autoAdjustColorsInDarkMode != lastAutoAdjustColorsInDarkMode
+            || forceLightBackground != lastForceLightBackground
             || bottomContentInset != lastBottomContentInset
         else { return }
         load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset, into: webView
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
+            bottomContentInset: bottomContentInset, into: webView
         )
     }
 
     func load(
         html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, autoAdjustColorsInDarkMode: Bool,
+        forceLightBackground: Bool = false,
         bottomContentInset: CGFloat = 0, into webView: WKWebView
     ) {
         observeStrayNavigations(on: webView)
@@ -1352,6 +1436,7 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         lastAllowsExternalContent = allowsExternalContent
         lastAllowsEmbeddedImages = allowsEmbeddedImages
         lastAutoAdjustColorsInDarkMode = autoAdjustColorsInDarkMode
+        lastForceLightBackground = forceLightBackground
         lastBottomContentInset = bottomContentInset
 
         // B5: rewrite cid: references to the otegami-cid:// scheme *only*
@@ -1366,7 +1451,8 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         // intended "don't auto-show" behavior.
         let cidRewrittenHTML = allowsEmbeddedImages ? CIDURLRewriter.rewrite(html: html) : html
         let document = HTMLDocumentBuilder.wrap(
-            bodyHTML: cidRewrittenHTML, autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, bottomContentInset: bottomContentInset
+            bodyHTML: cidRewrittenHTML, autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode,
+            forceLightBackground: forceLightBackground, bottomContentInset: bottomContentInset
         )
 
         applyContentRuleList(blocked: !allowsExternalContent, to: webView) { [weak webView] in
@@ -1598,6 +1684,42 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
           shouldInvert = textLuminance !== null && textLuminance < 0.5;
         }
         inner.classList.toggle('otegami-invert-for-dark', shouldInvert);
+        // 実機フィードバック (MakerWorld比較 — 右端の白帯・セクション間の
+        // 色ムラ): `html.otegami-invert-active`は反転を実際に決めたときだけ
+        // 付き、`body`/`html`自身の背景を強制的に透明化するCSS (上の
+        // `<style>`) を有効にする。`document.body`自身の背景が「有効な
+        // 背景」の発見源だった場合、その色を`#otegami-fit-inner`自身に
+        // 移し替える — こうしておかないと、`body`側を透明化した途端に
+        // ページ全体の「キャンバス色」そのものが消えてアプリの暗い背景が
+        // そのまま透けるだけになり、`#otegami-fit-inner`が変わらず反転
+        // フィルタを持っていても対象の色そのものが無くなってしまう。
+        // 反転しないと決まった場合は、以前の呼び出し (1iの翻訳後再適用等)
+        // で移し替えた値が残っていれば元に戻す。
+        document.documentElement.classList.toggle('otegami-invert-active', shouldInvert);
+        if (shouldInvert) {
+          var bodyOwnBackground = opaqueBackgroundOf(document.body);
+          if (bodyOwnBackground && !inner.style.backgroundColor) {
+            inner.style.backgroundColor = getComputedStyle(document.body).backgroundColor;
+          }
+        } else {
+          inner.style.backgroundColor = '';
+        }
+        decideLogoChips(inner, shouldInvert);
+      }
+      /* 実機フィードバック (MakerWorldロゴが暗背景に沈む): 反転対象の画像の
+         うち、内在サイズが小さい (ロゴ/アイコン相当) ものにだけ、読める
+         ようにするための白系チップ背景を敷くクラスを付け外しする —
+         付与条件のCSS本体は`HTMLDocumentBuilder.wrap`側の`<style>`コメント
+         参照。写真本体は大抵もっと大きいサイズで来るため、この閾値
+         (200px以下) だけでも実用上ほとんど誤爆しない、という現実的な
+         割り切り。 */
+      function decideLogoChips(inner, shouldInvert) {
+        var images = inner.querySelectorAll('img');
+        for (var i = 0; i < images.length; i++) {
+          var img = images[i];
+          var isLogoSized = shouldInvert && img.naturalWidth > 0 && img.naturalWidth <= 200 && img.naturalHeight > 0 && img.naturalHeight <= 200;
+          img.classList.toggle('otegami-invert-logo-chip', isLogoSized);
+        }
       }
       function fit() {
         var outer = document.getElementById('otegami-fit-outer');
@@ -1686,11 +1808,58 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
       // `#otegami-fit-outer` is somehow missing (shouldn't happen — `fit()`
       // above already returns early with a diagnostic error in that case —
       // but this function has no reason to crash over it).
+      // Task #64 (根治: 実機報告「HTML本文の最終行が半分欠ける」): walks the
+      // "last child" chain from `root` (normally `#otegami-fit-inner`),
+      // comparing each level's own rendered bottom edge and keeping the
+      // largest one seen. `outer.getBoundingClientRect().height` alone (the
+      // previous, Task #58 measurement) trusts `outer`'s own laid-out box —
+      // which on this toolchain was observed to sometimes come up a few
+      // dozen points short of where the *last line of real content* actually
+      // paints (a trailing child's own bottom margin not fully reflected in
+      // its ancestor's auto height is the leading suspect, though a WebKit-
+      // level layout/paint discrepancy on this specific toolchain can't be
+      // ruled out either — this fix doesn't depend on pinning down which).
+      // Walking `lastElementChild` is cheap (bounded by DOM depth, not
+      // breadth) and `Math.max` at each step is a defensive measure against
+      // a last-in-markup child that isn't also the visually lowest one
+      // (e.g. an absolutely-positioned or floated element later in the
+      // document) — this only ever *increases* the reported height,
+      // matching the reported symptom (content cut short), never decreases
+      // it below what a correct measurement would already have given.
+      function deepestLastBottom(root) {
+        var bottom = root.getBoundingClientRect().bottom;
+        var el = root.lastElementChild;
+        while (el) {
+          var rect = el.getBoundingClientRect();
+          if (rect.bottom > bottom) { bottom = rect.bottom; }
+          el = el.lastElementChild;
+        }
+        return bottom;
+      }
       function postHeight() {
         var outer = document.getElementById('otegami-fit-outer');
-        var height = outer
-          ? Math.ceil(outer.getBoundingClientRect().height)
-          : Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+        var height;
+        if (outer) {
+          var outerRect = outer.getBoundingClientRect();
+          var inner = document.getElementById('otegami-fit-inner');
+          // Task #64: the larger of (a) `outer`'s own measured bottom edge
+          // (the previous, sole signal) and (b) the deepest-last-child walk
+          // from `inner` — see `deepestLastBottom`'s doc comment. `+ 4`
+          // (beyond the `Math.ceil` rounding this already had) is a small,
+          // fixed safety margin for exactly this kind of sub-pixel/rounding
+          // shortfall — cheap insurance against a one- or two-point clip
+          // that would otherwise still shave the very bottom of the last
+          // line, and small enough that it reads as "a hair of breathing
+          // room", not a new "空き帯が出る" regression of its own (the
+          // `reservedBottomInset` fix right above this file's own doc
+          // comment is what actually matters for that report; this `+4` is
+          // two orders of magnitude smaller).
+          var contentBottom = inner ? deepestLastBottom(inner) : outerRect.bottom;
+          var bottom = Math.max(outerRect.bottom, contentBottom);
+          height = Math.ceil(bottom - outerRect.top) + 4;
+        } else {
+          height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+        }
         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.otegamiHeight) {
           window.webkit.messageHandlers.otegamiHeight.postMessage(height);
         }

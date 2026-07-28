@@ -34,9 +34,13 @@ import XCTest
 /// direct local GRDB insert instead, bypassing IMAP entirely — same escape
 /// hatch `OtegamiAvatarDiagnosticsUITests` already established for
 /// `OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT`. `AppEnvironment
-/// .uitestFakeHTMLMessages` now seeds four messages (see that array's doc
+/// .uitestFakeHTMLMessages` now seeds five messages (see that array's doc
 /// comment) mirroring the regression cases above — this test opens each in
-/// turn.
+/// turn. (The 5th, MakerWorld比較 — 実機フィードバック, is exercised via
+/// `scripts/verify-screen.sh html-4` rather than its own XCTest method here,
+/// since its point is a dark-mode color-rendering comparison — the same
+/// "目視確認に委ねる" category the rest of this doc comment already
+/// describes, not a new accessibility-tree assertion.)
 ///
 /// **既知の環境問題 (Task #51 のスコープ外)**: この検証中に、
 /// `messageList.list` の行を XCUITest から実際にタップしても本文詳細へ
