@@ -287,6 +287,20 @@ struct ThreadDetailView: View {
                 message: message,
                 messageId: messageId,
                 isExpanded: expandedMessageId == messageId,
+                // Task #64 (実機フィードバック「スレッド表示オフの本文画面で
+                // 最上部のスレッドバーを出さないでほしい」): a genuinely
+                // flat-mode entry (`isFlatModeEntry`'s doc comment) is always
+                // exactly one message, always expanded (`loadSingleMessage`
+                // pins it on first load and this screen never offers a way
+                // to collapse it back) — its own header/summary row (sender
+                // + time, `ThreadMessageSummaryRow`) is pure duplication of
+                // the compressed header `MessageView`/`MessageHeaderCompactView`
+                // renders directly underneath. A grouped-mode thread (`
+                // isFlatModeEntry == false`, whether it has one message or
+                // several) keeps every row's header unchanged — this only
+                // ever hides it for the flat/no-choice case the request
+                // scoped it to.
+                showsHeader: !isFlatModeEntry,
                 accountId: accountId,
                 accountLabelColorKey: accountId.flatMap { id in environment.accounts.first(where: { $0.id == id })?.labelColorKey },
                 expandedHeight: expandedMessageHeight(in: containerSize),
@@ -740,6 +754,14 @@ private struct ThreadMessageRow: View {
     let message: MessageRecord
     let messageId: Int64
     let isExpanded: Bool
+    /// Task #64: `false` only for a genuinely flat-mode entry (see
+    /// `ThreadDetailView.messageRow(for:containerSize:)`'s call-site doc
+    /// comment) — suppresses the `Button`/`ThreadMessageSummaryRow` header
+    /// entirely, since that screen's only message is always already
+    /// expanded and its sender/time duplicate what `MessageView`'s own
+    /// compressed header shows right underneath. `true` (unchanged, header
+    /// shown) for every grouped-mode case, single-message or not.
+    let showsHeader: Bool
     let accountId: String?
     /// Forwarded straight to `ThreadMessageSummaryRow` — see its own doc
     /// comment on `accountLabelColorKey`.
@@ -780,16 +802,18 @@ private struct ThreadMessageRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                onToggleExpanded(messageId)
-            } label: {
-                ThreadMessageSummaryRow(
-                    message: message, accountId: accountId, accountLabelColorKey: accountLabelColorKey,
-                    mode: .accordion(isExpanded: isExpanded)
-                )
+            if showsHeader {
+                Button {
+                    onToggleExpanded(messageId)
+                } label: {
+                    ThreadMessageSummaryRow(
+                        message: message, accountId: accountId, accountLabelColorKey: accountLabelColorKey,
+                        mode: .accordion(isExpanded: isExpanded)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("threadDetail.message.\(messageId).header")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("threadDetail.message.\(messageId).header")
 
             if isExpanded, let accountId {
                 MessageView(
