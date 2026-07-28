@@ -170,4 +170,10 @@ seed_message "test1@otegami.test" "$FIXTURES_DIR/33-beta-testing-notice.eml"
 # .wrap`の`<style>`コメント/`fitToWidthScript`の`decideLogoChips`参照。
 seed_message "test1@otegami.test" "$FIXTURES_DIR/34-white-canvas-transparent-logo.eml"
 
+# Task #76 検証用: 添付ファイルのカード表示 (ファイル名2行省略、サイズ表示)
+# を確認するための、長い日本語ファイル名 (RFC 2047 encoded-word) の PDF
+# 添付メール — 14/15/19 の短いファイル名だけでは2行折り返し・省略の見た目を
+# 確認できないため追加。
+seed_message "test1@otegami.test" "$FIXTURES_DIR/35-attachment-long-filename.eml"
+
 echo "==> done"

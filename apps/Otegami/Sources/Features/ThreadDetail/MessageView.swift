@@ -121,7 +121,11 @@ struct MessageView: View {
     /// id since a user could plausibly tap two attachment rows in quick
     /// succession.
     @State private var fetchingAttachmentIds: Set<Int64> = []
-    @State private var attachmentErrorMessage: String?
+    /// M8, per-card since Task #76: keyed by attachment id so a fetch
+    /// failure shows on the specific `AttachmentCardRow` that failed rather
+    /// than one shared message below the whole list (see
+    /// `attachmentSection`'s doc comment).
+    @State private var attachmentErrorMessages: [Int64: String] = [:]
     /// M8: the attachment currently shown in the `.quickLookPreview` sheet
     /// — `nil` means no preview is presented.
     @State private var previewURL: URL?
@@ -553,74 +557,33 @@ struct MessageView: View {
         attachments.filter { !$0.isInline }
     }
 
+    /// Task #76 (Spark 参考画像を基にしたカード表示への刷新):
+    /// 「添付ファイル N 個」ヘッダ + `AttachmentCardRow` のカード列。行の
+    /// 中身は `AttachmentCardRow` (別ファイル) に切り出し済み — CLAUDE.md の
+    /// 「`ForEach`の中身は独立した`View`型に切り出す」というCI型チェック
+    /// タイムアウト対策のルール参照。エラーはカードごと
+    /// (`attachmentErrorMessages[id]`) に持つよう変更 — 以前は
+    /// リスト全体の下に1つだけ表示していたが (`missingCredentialAwareErrorMessage`
+    /// が返す「(Google認証が原因の可能性)」的な文言も含め)、複数の添付が
+    /// ある時にどれの取得が失敗したのか分からなくなるため、失敗した
+    /// カード自身にエラー文言を出す設計に変更した。
     private var attachmentSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
+            Text("添付ファイル \(listableAttachments.count) 個")
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
+                .accessibilityIdentifier("messageDetail.attachmentsHeader")
             ForEach(listableAttachments) { attachment in
-                attachmentRow(attachment)
-            }
-            if let attachmentErrorMessage {
-                Text(attachmentErrorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .accessibilityIdentifier("messageDetail.attachmentError")
+                let attachmentId = attachment.id ?? 0
+                AttachmentCardRow(
+                    attachment: attachment,
+                    isDownloading: fetchingAttachmentIds.contains(attachmentId),
+                    errorMessage: attachmentErrorMessages[attachmentId],
+                    onTap: { Task { await openAttachment(attachment) } }
+                )
             }
         }
         .accessibilityIdentifier("messageDetail.attachments")
-    }
-
-    private func attachmentRow(_ attachment: AttachmentRecord) -> some View {
-        let attachmentId = attachment.id ?? 0
-        return Button {
-            Task { await openAttachment(attachment) }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: Self.iconName(for: attachment))
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(attachment.filename?.isEmpty == false ? attachment.filename! : "添付ファイル")
-                        .font(.subheadline)
-                        .lineLimit(1)
-                    Text(Self.formattedSize(attachment.size))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 8)
-                if fetchingAttachmentIds.contains(attachmentId) {
-                    ProgressView()
-                        .accessibilityIdentifier("messageDetail.attachment.\(attachmentId).loading")
-                } else if let localPath = attachment.localPath {
-                    // 保存 (plan: "iOS: ShareLink / fileExporter、macOS: 保存
-                    // パネル") — `ShareLink` works on both platforms (a
-                    // share sheet on iOS, `NSSharingServicePicker` — which
-                    // includes "Save to Downloads"/"Save As…" style services
-                    // — on macOS), so one cross-platform control covers
-                    // both rather than diverging per platform here.
-                    ShareLink(item: URL(fileURLWithPath: localPath)) {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("messageDetail.attachment.\(attachmentId).shareButton")
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.vertical, 4)
-        .accessibilityIdentifier("messageDetail.attachment.\(attachmentId)")
-    }
-
-    private static func iconName(for attachment: AttachmentRecord) -> String {
-        switch attachment.mimeType.lowercased() {
-        case "image": "photo"
-        case "video": "film"
-        case "audio": "waveform"
-        case "application" where attachment.mimeSubtype.lowercased() == "pdf": "doc.richtext"
-        default: "doc"
-        }
-    }
-
-    private static func formattedSize(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
     /// Tapping an attachment row: already-downloaded (`localPath` points at
@@ -635,7 +598,7 @@ struct MessageView: View {
     /// previous" browsing across the whole attachment list).
     private func openAttachment(_ attachment: AttachmentRecord) async {
         guard let attachmentId = attachment.id else { return }
-        attachmentErrorMessage = nil
+        attachmentErrorMessages[attachmentId] = nil
 
         if let localPath = attachment.localPath, FileManager.default.fileExists(atPath: localPath) {
             previewURL = URL(fileURLWithPath: localPath)
@@ -654,10 +617,10 @@ struct MessageView: View {
             if let localPath = updated.localPath {
                 previewURL = URL(fileURLWithPath: localPath)
             } else {
-                attachmentErrorMessage = "添付ファイルの取得に失敗しました。"
+                attachmentErrorMessages[attachmentId] = "添付ファイルの取得に失敗しました。"
             }
         } catch {
-            attachmentErrorMessage = await missingCredentialAwareErrorMessage(prefix: "添付ファイルの取得に失敗しました", underlyingError: error)
+            attachmentErrorMessages[attachmentId] = await missingCredentialAwareErrorMessage(prefix: "添付ファイルの取得に失敗しました", underlyingError: error)
         }
     }
 
@@ -854,7 +817,7 @@ struct MessageView: View {
         message = nil
         mailboxPath = nil
         attachments = []
-        attachmentErrorMessage = nil
+        attachmentErrorMessages = [:]
         previewURL = nil
         manualPreferPlainText = nil
         resetTranslationState()

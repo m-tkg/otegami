@@ -1,0 +1,31 @@
+From: Otegami Team <team@otegami.test>
+To: test1@otegami.test
+Subject: 添付ファイルつきメール（長いファイル名PDF）
+Message-ID: <seed-0035@otegami.test>
+Date: Sun, 26 Jul 2026 09:05:00 +0900
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="otegami-m8-longname-boundary"
+
+--otegami-m8-longname-boundary
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+長いファイル名の添付ファイルを送ります。Task #76 のカード表示 (ファイル名
+2行省略) を確認するためのテスト用メールです。
+
+--otegami-m8-longname-boundary
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment;
+ filename="=?UTF-8?B?MjAyNuW5tOW6pl/mmKXmnJ/orJvluqdf5a2m57+S54q25rOB5aCx5ZGK5pu4X+acgOe1gueiuuWumueJiF/mj5Dlh7rnlKgucGRm?="
+
+JVBERi0xLjQKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+ZW5kb2JqCjIgMCBv
+Ymo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iagozIDAgb2JqPDwvVHlw
+ZS9QYWdlL1BhcmVudCAyIDAgUi9NZWRpYUJveFswIDAgMjAwIDIwMF0vUmVzb3VyY2VzPDwvRm9u
+dDw8L0YxIDQgMCBSPj4+Pi9Db250ZW50cyA1IDAgUj4+ZW5kb2JqCjQgMCBvYmo8PC9UeXBlL0Zv
+bnQvU3VidHlwZS9UeXBlMS9CYXNlRm9udC9IZWx2ZXRpY2E+PmVuZG9iago1IDAgb2JqPDwvTGVu
+Z3RoIDU4Pj5zdHJlYW0KQlQgL0YxIDEyIFRmIDIwIDEwMCBUZCAob3RlZ2FtaSB0ZXN0IGludm9p
+Y2UpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAp0
+cmFpbGVyPDwvU2l6ZSA2L1Jvb3QgMSAwIFI+PgpzdGFydHhyZWYKMAolJUVPRgo=
+
+--otegami-m8-longname-boundary--

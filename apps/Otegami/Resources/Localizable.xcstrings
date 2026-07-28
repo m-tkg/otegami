@@ -261,6 +261,17 @@
         }
       }
     },
+    "添付ファイル %lld 個": {
+      "comment": "Task #76 attachment card list header, e.g. \"添付ファイル 2 個\" / \"Attachments (2)\".",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attachments (%lld)"
+          }
+        }
+      }
+    },
     "本文なし": {
       "localizations": {
         "en": {
