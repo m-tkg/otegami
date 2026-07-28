@@ -26,6 +26,12 @@ public actor SyncCoordinator {
     private var syncers: [String: AccountSyncer] = [:]
     private let bodyFetcher: BodyFetcher
     private let attachmentFetcher: AttachmentFetcher
+    /// Task #103: no `AppDatabase` dependency (unlike `bodyFetcher`/
+    /// `attachmentFetcher`) — see `MessageSourceFetcher`'s own doc comment
+    /// for why. Constructed directly here rather than in `init` alongside
+    /// the other two, since it needs nothing from this type's own
+    /// parameters.
+    private let messageSourceFetcher = MessageSourceFetcher()
     private let opQueueProcessor: OpQueueProcessor
 
     public init(
@@ -120,6 +126,46 @@ public actor SyncCoordinator {
         _ = try await session.select(mailboxPath)
         return try await attachmentFetcher.fetchAndStore(
             attachment: attachment,
+            accountId: account.id,
+            messageUID: messageUID,
+            mailboxPath: mailboxPath,
+            session: session
+        )
+    }
+
+    /// Task #103 ("ソースを表示" — 表示崩れメールの eml を受け渡す調査経路):
+    /// fetches (caching to disk) and returns the local file `URL` of one
+    /// message's raw RFC822 source — the on-demand "調査経路として今すぐ
+    /// 必要" counterpart to `fetchBody`/`fetchAttachment` above, same
+    /// short-lived-session shape (open → select → fetch → disconnect).
+    ///
+    /// Checks `MessageSourceFetcher.cachedURL` *before* opening a
+    /// connection at all: a message whose source was already fetched once
+    /// (this session or a previous one — the cache is on disk, not in
+    /// memory) resolves entirely offline, matching this feature's "取得後は
+    /// ローカルにキャッシュ...再表示時は再取得しない" requirement without
+    /// even attempting a network round trip on the common "already viewed
+    /// this one" path.
+    @discardableResult
+    public func fetchRawSource(
+        messageId: Int64,
+        messageUID: Int64,
+        mailboxPath: String,
+        account: AccountRecord,
+        auth: MailAuth
+    ) async throws -> URL {
+        if let cached = MessageSourceFetcher.cachedURL(accountId: account.id, messageId: messageId) {
+            return cached
+        }
+        let session = sessionFactory(account.imapConfig)
+        try await session.connect(auth: auth)
+        defer {
+            let session = session
+            Task { await session.disconnect() }
+        }
+        _ = try await session.select(mailboxPath)
+        return try await messageSourceFetcher.fetchAndStore(
+            messageId: messageId,
             accountId: account.id,
             messageUID: messageUID,
             mailboxPath: mailboxPath,
