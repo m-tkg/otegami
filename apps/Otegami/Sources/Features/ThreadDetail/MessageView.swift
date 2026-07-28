@@ -31,6 +31,20 @@ struct MessageView: View {
     /// context a caller must still supply.
     let accountId: String
     let messageId: Int64
+    /// Task #59 (「本文下の空白が過剰」): the height `ThreadMessageRow`
+    /// wants `content`'s HTML branch given explicitly — `measuredHTMLContentHeight`,
+    /// its own `@State` this view's `onHTMLContentHeightChange` (below)
+    /// last reported, handed straight back down. `nil` (the default, and
+    /// always true for a plain-text message, which never reports one)
+    /// means `content` keeps its old `maxHeight: .infinity` behavior,
+    /// relying on whatever fixed frame the caller imposes on this whole
+    /// view instead (`ThreadMessageRow`'s `expandedHeight` fallback). Once
+    /// non-`nil`, `content` sizes to exactly this value and this view stops
+    /// needing an externally-imposed total height at all — see `body`'s
+    /// `content` call and `ThreadMessageRow.body`'s `.frame(height:)` for
+    /// the two sides of this "WebView gets its exact measured height, every
+    /// other element sizes itself, `VStack` sums them" arrangement.
+    var contentHeight: CGFloat?
     /// Task #58 (根治): reports an HTML message's real, full content height
     /// once `HTMLMessageView`'s `WKWebView` measures it — `ThreadMessageRow`
     /// (`ThreadDetailView.swift`) is the actual caller, and uses this to
@@ -43,6 +57,16 @@ struct MessageView: View {
     /// `content`'s HTML branch below for the only place this is ever
     /// actually invoked.
     var onHTMLContentHeightChange: (CGFloat) -> Void = { _ in }
+    /// Task #59 (フローティングボタンを画面下部に固定): reports the live
+    /// `MessageDetailAIFeaturesState` this view populates (`aiState` below)
+    /// up to `ThreadDetailView`'s own top-level `overlay` — non-`nil` while
+    /// this view is on screen (`onAppear`), `nil` once it's torn down
+    /// (`onDisappear`, e.g. the accordion collapses this row). See
+    /// `MessageDetailAIFeaturesState`'s doc comment for why the buttons
+    /// themselves had to move out of this view's own `overlay` in the first
+    /// place. Same no-op default / "nothing else currently constructs this
+    /// view" reasoning as `onHTMLContentHeightChange` above.
+    var onAIFeaturesStateChange: (MessageDetailAIFeaturesState?) -> Void = { _ in }
 
     /// B5 — see `ListDisplaySettingsStore.showAvatarInDetailKey`'s doc
     /// comment on why this is read directly via `@AppStorage`.
@@ -103,20 +127,27 @@ struct MessageView: View {
     /// switch for both `TranslationBar` (`shouldShowTranslationBar`) and
     /// `AISummaryBar` (`body`'s `if aiFeaturesEnabled` below).
     @AppStorage(AIFeaturesSettingsStore.enabledKey) private var aiFeaturesEnabled = AIFeaturesSettingsStore.defaultEnabled
-    @State private var translationState: MessageTranslationState = .none
 
     // MARK: - AI要約 (表示・操作改善バッチ)
 
-    @State private var summaryState: MessageSummaryState = .none
     @State private var summaryTask: Task<Void, Never>?
     /// Task #55: whether the summary sheet (`summarySheet`) is presented —
     /// opened by `AISummaryFloatingButton.onShowSummary`, closed by its own
-    /// toolbar button or the sheet's own swipe-to-dismiss.
+    /// toolbar button or the sheet's own swipe-to-dismiss. Stays local (not
+    /// folded into `aiState`) — a `.sheet` presents at the window root
+    /// regardless of where in the view tree it's declared, so this doesn't
+    /// need to travel up to `ThreadDetailView` the way the floating buttons
+    /// themselves did (Task #59).
     @State private var isShowingSummarySheet = false
-    /// The 訳文/原文 toggle `TranslationFloatingButton` now drives directly
-    /// (its own tap, once translated) — `false` (訳文) is the handoff's
-    /// explicit default ("既定は訳文"), unchanged from the old bar's segment.
-    @State private var translationShowOriginal = false
+    /// Task #59 (フローティングボタンを画面下部に固定): `summaryState`/
+    /// `translationState`/`translationShowOriginal` used to be separate
+    /// `@State` here — folded into one `@Observable` handle so
+    /// `ThreadDetailView`'s own top-level `overlay` (outside the scrollable
+    /// content — see `MessageDetailAIFeaturesState`'s doc comment for why)
+    /// can read and drive them too. This view still owns every mutation
+    /// (`requestSummary`/`requestTranslation` below); `aiState` is purely
+    /// the shared storage both sides read/write.
+    @State private var aiState = MessageDetailAIFeaturesState()
     /// `TranslatedBodyView.originalOverrides` — per-paragraph long-press
     /// state, reset alongside everything else in `load()`.
     @State private var translationParagraphOverrides: Set<Int> = []
@@ -170,7 +201,7 @@ struct MessageView: View {
     /// `TranslatedBodyView`'s own gating in the plain-text branch below it,
     /// just expressed as an array instead of a view swap.
     private var htmlTranslatedTexts: [String]? {
-        guard shouldShowTranslationBar, case .translated(let record) = translationState else { return nil }
+        guard shouldShowTranslationBar, case .translated(let record) = aiState.translationState else { return nil }
         return record.paragraphs.map(\.translated)
     }
 
@@ -192,26 +223,61 @@ struct MessageView: View {
             // instead of wrapping the header in one too, so a long HTML
             // message never ends up nested inside two independent
             // scrollers.
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-        // Task #55: replaced the old "AI要約バー + 翻訳バー" pair (each a
-        // full-width row under the header, present on *every* message that
-        // qualified, whether or not the user ever touched them) with two
-        // small floating buttons — `floatingActionButtons`'s doc comment has
-        // the full design-decision writeup, `docs/design-system.md`'s
-        // Task #55 section the historical record. Gated on `message` the
-        // same way the old bars were (`if let message` above) — nothing to
-        // summarize/translate before a message has loaded.
-        .overlay(alignment: .bottomLeading) {
-            if message != nil {
-                floatingActionButtons
+            //
+            // Task #59: `contentHeight` non-`nil` (a real HTML measurement
+            // has arrived) sizes `content` to that exact height instead of
+            // `maxHeight: .infinity` — see `contentHeight`'s own doc
+            // comment for why: this view's total height then becomes
+            // "header/attachments/divider's own intrinsic sizes + this
+            // exact value", summed by the `VStack` itself, rather than a
+            // guessed constant added on top of it one level up
+            // (`ThreadMessageRow`'s removed `nonHTMLChromeAllowance`).
+            if let contentHeight {
+                content
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .frame(height: contentHeight)
+            } else {
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
         .sheet(isPresented: $isShowingSummarySheet) {
             summarySheet
         }
         .accessibilityIdentifier("messageDetail.scrollView")
+        // Task #59 (実機フィードバック「要約/翻訳のフローティングアイコンが
+        // HTML本文と一緒にスクロールしてしまう、常に左下固定にしてほしい」):
+        // Task #55 originally rendered these two buttons as this view's own
+        // `.overlay(alignment: .bottomLeading)` — that worked while this
+        // view's frame roughly matched the visible viewport, but Task #58's
+        // fix (measuring the real HTML content height and sizing this row
+        // to fit it, so `ThreadDetailView`'s own outer `ScrollView` becomes
+        // the *only* scroller) means an expanded HTML message's frame is now
+        // routinely much taller than the screen — an `.overlay` anchored to
+        // *that* frame's bottom-leading corner sits wherever the message's
+        // real content ends, which is usually scrolled far out of view, not
+        // at the visible screen's bottom-leading corner the way a floating
+        // button is supposed to. `MessageDetailAIFeaturesState` (`aiState`)
+        // is this view's fix: it still owns every button behavior
+        // (`requestSummary`/`requestTranslation`, both below), but hands the
+        // live, `@Observable` state up to whichever ancestor actually wants
+        // to render the buttons — `ThreadDetailView`'s own top-level
+        // `overlay`, *outside* its `ScrollView`, exactly the way
+        // `MailScreenView.floatingSearchButton`/`FolderListSheet
+        // .floatingSettingsButton` already stay pinned to the screen
+        // regardless of scroll position. `onAppear`/`onDisappear` (not
+        // `.task(id: messageId)`) because this needs to fire exactly when
+        // this view enters/leaves the tree (the accordion collapsing this
+        // row tears it down entirely — `ThreadMessageRow`'s `if isExpanded`
+        // — which is also when the ancestor should stop showing these
+        // buttons), matching the existing `onTranslationControllerReady`
+        // handoff `HTMLMessageView` already uses for the same reason.
+        .onAppear { onAIFeaturesStateChange(aiState) }
+        .onDisappear { onAIFeaturesStateChange(nil) }
+        // Task #59: keeps the buttons' visibility live if the user toggles
+        // I「AI 機能の on/off」while this message is open — see
+        // `syncAIFeaturesState()`'s doc comment.
+        .onChange(of: aiFeaturesEnabled) { _, _ in syncAIFeaturesState() }
         // 表示・操作改善バッチ「ヘッダにメール件名を表示しない」: this view is
         // always embedded inside `ThreadDetailView` (never pushed on its
         // own) — a `.navigationTitle` here would repeat the subject in the
@@ -243,72 +309,47 @@ struct MessageView: View {
         #endif
     }
 
-    // MARK: - Task #55: floating AI要約/翻訳 buttons
+    // MARK: - Task #55/#59: AI要約/翻訳 floating buttons
 
-    /// Two small circular buttons, stacked bottom-leading — replaces the old
-    /// full-width `AISummaryBar`/`TranslationBar` pair. Follows the same
-    /// "always visible regardless of scroll position, `overlay` + bottom-
-    /// leading" pattern `MailScreenView.floatingSearchButton`/
-    /// `FolderListSheet.floatingSettingsButton` already established
-    /// (`AISummaryFloatingButton`/`TranslationFloatingButton`'s own doc
-    /// comments cover the shared circular chrome and per-button state
-    /// machine); this is just the two-button stack and its show/hide
-    /// conditions, which are otherwise unchanged from the old bars':
+    /// Task #59 (実機フィードバック「フローティングアイコンを左下固定に」):
+    /// keeps `aiState` — the handle `ThreadDetailView`'s own top-level
+    /// `overlay` actually renders the buttons from, outside this view's own
+    /// (now potentially very tall, post-Task #58) frame — in sync with this
+    /// view's show/hide conditions and button actions. Both conditions are
+    /// unchanged from Task #55's original `floatingActionButtons`:
     /// - 要約: shown whenever I「AI 機能の on/off」(`aiFeaturesEnabled`) is
     ///   on, language-independent (a summary is useful even for a Japanese
-    ///   mail) — identical condition the old `AISummaryBar` used.
-    /// - 翻訳: `shouldShowTranslationBar` — identical condition the old
-    ///   `TranslationBar` used (English message, app not already displayed
-    ///   in English, AI features on).
+    ///   mail).
+    /// - 翻訳: `shouldShowTranslationBar` (English message, app not already
+    ///   displayed in English, AI features on).
     ///
-    /// Stacked with `OtegamiSpacing.sm` between them (要約 above 翻訳, same
-    /// order the old bars appeared in top-to-bottom) rather than side by
-    /// side — two side-by-side circles at the bottom-leading corner would
-    /// sit awkwardly close to the screen's rounded corner/home indicator on
-    /// iOS, while stacking vertically only grows *up* into body content,
-    /// which `floatingButtonsReservedBottomInset` already reserves space
-    /// for.
-    @ViewBuilder
-    private var floatingActionButtons: some View {
-        if let message {
-            VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
-                if aiFeaturesEnabled {
-                    AISummaryFloatingButton(
-                        state: summaryState,
-                        isAvailable: environment.isTranslationAvailable,
-                        onSummarize: { requestSummary(message: message) },
-                        onShowSummary: { isShowingSummarySheet = true }
-                    )
-                }
-                if shouldShowTranslationBar {
-                    TranslationFloatingButton(
-                        state: translationState,
-                        showOriginal: $translationShowOriginal,
-                        isAvailable: environment.isTranslationAvailable,
-                        onTranslate: { requestTranslation(message: message) }
-                    )
-                }
-            }
-            .padding(.leading, OtegamiSpacing.lg)
-            .padding(.bottom, OtegamiSpacing.lg)
+    /// Called from `load()` once `message` is known (so the two closures
+    /// below always have a real message to act on) and from `body`'s
+    /// `.onChange(of: aiFeaturesEnabled)` — the settings toggle used to take
+    /// effect immediately because the old `floatingActionButtons` read
+    /// `aiFeaturesEnabled` directly on every body evaluation; this keeps
+    /// that same live behavior now that `aiState`, not this view's own
+    /// body, is what `ThreadDetailView` actually renders from.
+    private func syncAIFeaturesState() {
+        // `message == nil` (still loading, or `load()` just reset it for a
+        // new `messageId`) always hides both buttons — matches Task #55's
+        // original `if let message` gate on the whole `floatingActionButtons`
+        // overlay. Needed explicitly here (not implied by `aiFeaturesEnabled`/
+        // `shouldShowTranslationBar` alone) because `isEnglishMessage`
+        // trivially reads as `true` when `message` is `nil` (`nil == nil`),
+        // which would otherwise flash the 翻訳 button on during every load.
+        aiState.showsSummaryButton = message != nil && aiFeaturesEnabled
+        aiState.showsTranslationButton = message != nil && shouldShowTranslationBar
+        aiState.isTranslationAvailable = environment.isTranslationAvailable
+        aiState.onSummarize = { [self] in
+            guard let message else { return }
+            requestSummary(message: message)
         }
-    }
-
-    /// How much blank space the plain-text scrollable body branches
-    /// (`content`'s `ScrollView`/`TranslatedBodyView`) reserve at the bottom
-    /// so their content never renders directly behind `floatingActionButtons`
-    /// — an estimate (two `OtegamiSpacing.xl`-diameter circular buttons +
-    /// the `OtegamiSpacing.sm` gap between them + the same bottom edge
-    /// padding the buttons themselves use), not a measured value: getting
-    /// this exactly pixel-perfect isn't worth threading real geometry
-    /// through for a bottom margin that only needs to be "enough", not
-    /// exact. `0` when neither button will actually show, so a message with
-    /// AI features off and nothing to translate doesn't lose scrollable
-    /// space for buttons that were never going to appear.
-    private var floatingButtonsReservedBottomInset: CGFloat {
-        guard aiFeaturesEnabled || shouldShowTranslationBar else { return 0 }
-        let buttonFootprint = OtegamiSpacing.xl + (OtegamiSpacing.md + OtegamiSpacing.xs) * 2
-        return buttonFootprint * 2 + OtegamiSpacing.sm + OtegamiSpacing.lg
+        aiState.onShowSummary = { [self] in isShowingSummarySheet = true }
+        aiState.onTranslate = { [self] in
+            guard let message else { return }
+            requestTranslation(message: message)
+        }
     }
 
     /// Task #55: where a generated summary is actually shown — a sheet
@@ -321,7 +362,7 @@ struct MessageView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: OtegamiSpacing.md) {
-                    switch summaryState {
+                    switch aiState.summaryState {
                     case .none:
                         EmptyView()
                     case .summarizing:
@@ -361,7 +402,7 @@ struct MessageView: View {
                         .accessibilityIdentifier("messageDetail.summarySheet.closeButton")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    if summaryState.isSummarizing {
+                    if aiState.summaryState.isSummarizing {
                         ProgressView()
                     } else if let message {
                         Button("再生成") { requestSummary(message: message) }
@@ -615,20 +656,32 @@ struct MessageView: View {
             if isHTMLMessage, isShowingHTML, let html = bodyRecord.html {
                 HTMLMessageView(
                     html: html, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath,
-                    // Task #56: `HTMLMessageView`'s `WKWebView` now reserves
-                    // the same blank space at the bottom of its own
-                    // internally-scrolling document that the plain-text
-                    // branches already reserve via `.contentMargins` —
-                    // `floatingActionButtons`'s doc comment and
-                    // `HTMLMessageView.bottomContentInset`'s doc comment
-                    // have the full writeup.
-                    bottomContentInset: floatingButtonsReservedBottomInset,
-                    translatedTexts: htmlTranslatedTexts, showOriginalText: translationShowOriginal,
+                    // Task #59 (「本文下の空白が過剰」): this used to pass
+                    // `floatingButtonsReservedBottomInset` here so the
+                    // *loaded document itself* reserved room for the
+                    // floating buttons at the end of its own scroll — Task
+                    // #56's original reasoning, back when this `WKWebView`
+                    // still scrolled internally. Task #58 turned
+                    // `ThreadDetailView`'s outer `ScrollView` into the only
+                    // scroller (this view's frame is now sized to the real
+                    // measured content height, not the viewport), and Task
+                    // #59 moved the floating buttons themselves out to that
+                    // same outer level — so the "don't render behind the
+                    // buttons" reservation only needs to happen *once*, at
+                    // that single outer scroller, not once per body branch
+                    // here too (the two used to add together, which was most
+                    // of the "空白が過剰" bug: this document's own bottom
+                    // spacer *plus* the outer row's `+180pt` chrome
+                    // allowance). See `ThreadDetailView`'s own
+                    // `.contentMargins(.bottom:)` for where the single
+                    // reservation now lives, computed from `expandedAIFeaturesState`.
+                    bottomContentInset: 0,
+                    translatedTexts: htmlTranslatedTexts, showOriginalText: aiState.translationShowOriginal,
                     onTranslationControllerReady: { htmlTranslationController = $0 },
                     onHeightChange: onHTMLContentHeightChange
                 )
                 .accessibilityIdentifier("messageDetail.htmlBody")
-            } else if shouldShowTranslationBar, !translationShowOriginal, case .translated(let record) = translationState {
+            } else if shouldShowTranslationBar, !aiState.translationShowOriginal, case .translated(let record) = aiState.translationState {
                 // 1i: "訳文" showing and a translation actually cached, for a
                 // *plain-text* body — the per-paragraph long-press original
                 // toggle only makes sense here (the HTML branch above
@@ -636,10 +689,13 @@ struct MessageView: View {
                 // web view instead). Every other state (still translating,
                 // failed, "原文" selected, or not an English message at all)
                 // falls through to the plain-text rendering below untouched.
+                // Task #59: `bottomContentInset: 0` — see the HTML branch's
+                // doc comment above; the same single-reservation-at-the-
+                // outer-scroller reasoning applies here.
                 TranslatedBodyView(
                     paragraphs: record.paragraphs,
                     originalOverrides: $translationParagraphOverrides,
-                    bottomContentInset: floatingButtonsReservedBottomInset
+                    bottomContentInset: 0
                 )
             } else if let plainText = plainTextFallback(for: bodyRecord) {
                 ScrollView {
@@ -650,17 +706,10 @@ struct MessageView: View {
                         .padding()
                         .accessibilityIdentifier("messageDetail.plainTextBody")
                 }
-                // Task #55: reserves blank space at the bottom of the
-                // scrollable content so text never renders directly behind
-                // `floatingActionButtons` — same `.contentMargins`/floating-
-                // button pairing `FolderListSheet` already established.
-                // Task #56: `HTMLMessageView`'s `WKWebView` gets the same
-                // reservation now too, via its own `bottomContentInset`
-                // parameter (a DOM spacer injected into the loaded document
-                // rather than `.contentMargins`, since a `WKWebView` scrolls
-                // its own internal document — see that parameter's doc
-                // comment for why).
-                .contentMargins(.bottom, floatingButtonsReservedBottomInset, for: .scrollContent)
+                // Task #59: no longer reserves bottom space here — see the
+                // HTML branch's doc comment above (`ThreadDetailView`'s own
+                // outer `ScrollView` is the single place this reservation
+                // happens now).
             } else {
                 // A9-4: shown whenever there is genuinely no body content at
                 // all (no HTML, no `text/plain`, and — for an HTML message
@@ -733,6 +782,12 @@ struct MessageView: View {
         manualPreferPlainText = nil
         resetTranslationState()
         resetSummaryState()
+        // Task #59: hides both floating buttons immediately while this
+        // message (re-)loads — `syncAIFeaturesState()`'s `message != nil`
+        // guard is what actually does that; every exit path below that sets
+        // a real `message` calls this again once `aiFeaturesEnabled`/
+        // `shouldShowTranslationBar` have something meaningful to read.
+        syncAIFeaturesState()
         await deleteCredentialIfUITestRequested()
 
         guard let loadedMessage = try? await environment.database.dbWriter.read({ db in
@@ -751,6 +806,10 @@ struct MessageView: View {
             bodyRecord = existing
             let backfilledMessage = await backfillDetectedLanguageIfNeeded(message: loadedMessage, body: existing)
             markAsReadIfNeeded()
+            // Task #59: after `backfillDetectedLanguageIfNeeded`, not
+            // before — `shouldShowTranslationBar` reads `message
+            // .detectedLanguage`, which that call may have just filled in.
+            syncAIFeaturesState()
             kickoffTranslationIfNeeded(message: backfilledMessage)
             return
         }
@@ -780,6 +839,7 @@ struct MessageView: View {
             }) ?? loadedMessage
             message = refreshed
             markAsReadIfNeeded()
+            syncAIFeaturesState()
             kickoffTranslationIfNeeded(message: refreshed)
         } catch {
             // Offline (or any other network failure): fall back to
@@ -789,6 +849,7 @@ struct MessageView: View {
             if let existing = try? await fetchBodyRecord(messageId: messageId) {
                 bodyRecord = existing
                 markAsReadIfNeeded()
+                syncAIFeaturesState()
                 kickoffTranslationIfNeeded(message: loadedMessage)
             } else {
                 errorMessage = await missingCredentialAwareErrorMessage(prefix: "本文の取得に失敗しました", underlyingError: error)
@@ -934,8 +995,8 @@ struct MessageView: View {
     private func resetTranslationState() {
         translateTask?.cancel()
         translateTask = nil
-        translationState = .none
-        translationShowOriginal = false
+        aiState.translationState = .none
+        aiState.translationShowOriginal = false
         translationParagraphOverrides = []
     }
 
@@ -1074,7 +1135,7 @@ struct MessageView: View {
 
         if isHTMLMessage, isShowingHTML {
             guard let htmlTranslationController else { return }
-            translationState = .translating
+            aiState.translationState = .translating
             translateTask = Task {
                 // `extractTranslatableTexts()` always runs even when
                 // `translateHTMLTextNodes` is about to hit its own cache and
@@ -1092,12 +1153,12 @@ struct MessageView: View {
                     targetLanguage: .japanese
                 )
                 guard !Task.isCancelled else { return }
-                translationState = result
+                aiState.translationState = result
                 translateTask = nil
             }
         } else {
             guard let sourceText = sourceTextForTranslation() else { return }
-            translationState = .translating
+            aiState.translationState = .translating
             translateTask = Task {
                 let result = await translator.translate(
                     messageId: messageId,
@@ -1106,7 +1167,7 @@ struct MessageView: View {
                     targetLanguage: .japanese
                 )
                 guard !Task.isCancelled else { return }
-                translationState = result
+                aiState.translationState = result
                 translateTask = nil
             }
         }
@@ -1117,7 +1178,7 @@ struct MessageView: View {
     private func resetSummaryState() {
         summaryTask?.cancel()
         summaryTask = nil
-        summaryState = .none
+        aiState.summaryState = .none
         // Task #55: `load()` calls this on every message switch (this view
         // is reused across messages via `.task(id: messageId)`, not
         // recreated) — an open summary sheet left showing the *previous*
@@ -1172,14 +1233,14 @@ struct MessageView: View {
     private func requestSummary(message: MessageRecord) {
         guard summaryTask == nil else { return }
         guard let sourceText = sourceTextForSummary() else { return }
-        summaryState = .summarizing
+        aiState.summaryState = .summarizing
         let translator = environment.translationService
         let targetLanguage: TranslationLanguage = LocalizationSettingsStore.effectiveLanguageCode == "en" ? .english : .japanese
         summaryTask = Task {
             do {
                 let result = try await translator.summarizeLongText(sourceText, targetLanguage: targetLanguage)
                 guard !Task.isCancelled else { return }
-                summaryState = .summarized(result)
+                aiState.summaryState = .summarized(result)
             } catch {
                 guard !Task.isCancelled else { return }
                 // `.userFacingMessage`（`TranslationServiceError`のケースが
@@ -1187,12 +1248,115 @@ struct MessageView: View {
                 // 例: `failed(message: "...")`)をそのまま表示していたのを
                 // 修正 (実機での「AI要約が壊れている」報告の一因)。
                 if let serviceError = error as? TranslationServiceError {
-                    summaryState = .failed(serviceError.userFacingMessage)
+                    aiState.summaryState = .failed(serviceError.userFacingMessage)
                 } else {
-                    summaryState = .failed(error.localizedDescription)
+                    aiState.summaryState = .failed(error.localizedDescription)
                 }
             }
             summaryTask = nil
         }
+    }
+}
+
+/// Task #59 (実機フィードバック「要約/翻訳のフローティングアイコンが常に
+/// 左下固定であってほしいのに、HTML本文と一緒にスクロールしてしまう」):
+/// the shared, `@Observable` handle that lets `ThreadDetailView`'s own
+/// top-level `overlay` — *outside* its `ScrollView`, so it stays pinned to
+/// the screen regardless of scroll position, the same way `MailScreenView
+/// .floatingSearchButton`/`FolderListSheet.floatingSettingsButton` already
+/// do — render and drive the 要約/翻訳 buttons that `MessageView` (nested
+/// three levels down: `ThreadDetailView` → `ThreadMessageRow` →
+/// `MessageView`, and itself now potentially much taller than the screen
+/// post-Task #58) still fully owns the behavior of.
+///
+/// `MessageView` is the only writer of every property here (via
+/// `syncAIFeaturesState()`/`requestSummary(message:)`/`requestTranslation
+/// (message:)`) and the only place `onSummarize`/`onShowSummary`/
+/// `onTranslate` are assigned; `ThreadDetailView`'s rendering (through
+/// `MessageDetailFloatingButtons`) only ever *reads* these properties and
+/// *calls* these closures — never assigns state directly — mirroring how
+/// `HTMLTranslationController` already draws that same "owns the behavior /
+/// exposes a live handle" line for a different feature in this same file.
+/// A plain `@Observable` class (not `ObservableObject`/a `Binding` pair)
+/// because SwiftUI's `@Observable` tracks property-level reads from
+/// *any* view that touches them, regardless of where in the tree that view
+/// physically lives — exactly what's needed to let an ancestor three levels
+/// up react to state a descendant mutates.
+@MainActor
+@Observable
+final class MessageDetailAIFeaturesState {
+    var showsSummaryButton = false
+    var summaryState: MessageSummaryState = .none
+    var showsTranslationButton = false
+    var translationState: MessageTranslationState = .none
+    /// The 訳文/原文 toggle `TranslationFloatingButton` drives directly
+    /// (`MessageDetailFloatingButtons`'s `$state.translationShowOriginal`
+    /// binding) — `false` (訳文) is the handoff's explicit default
+    /// ("既定は訳文"), unchanged from before this state moved out of
+    /// `MessageView`.
+    var translationShowOriginal = false
+    var isTranslationAvailable = false
+    var onSummarize: () -> Void = {}
+    var onShowSummary: () -> Void = {}
+    var onTranslate: () -> Void = {}
+
+    /// Task #59 (「本文下の空白が過剰」): how much blank space
+    /// `ThreadDetailView`'s own outer `ScrollView` reserves at its bottom
+    /// (`.contentMargins(.bottom:)`) so its content never renders directly
+    /// behind whichever of the two buttons above is currently showing — the
+    /// exact same footprint estimate `MessageView`'s old, now-removed
+    /// `floatingButtonsReservedBottomInset` used (two `OtegamiSpacing.xl`-
+    /// diameter circular buttons + the gap between them + the buttons' own
+    /// bottom edge padding), just computed once here instead of being
+    /// duplicated into every scrollable body branch
+    /// (`HTMLMessageView`'s DOM spacer, the plain-text `ScrollView`,
+    /// `TranslatedBodyView`) the way it used to be. That duplication was
+    /// itself additive with `ThreadMessageRow`'s separate `+180pt` chrome
+    /// allowance — together, most of Task #59's "空白が過剰" report. `0`
+    /// when neither button will actually show.
+    var reservedBottomInset: CGFloat {
+        guard showsSummaryButton || showsTranslationButton else { return 0 }
+        let buttonFootprint = OtegamiSpacing.xl + (OtegamiSpacing.md + OtegamiSpacing.xs) * 2
+        return buttonFootprint * 2 + OtegamiSpacing.sm + OtegamiSpacing.lg
+    }
+}
+
+/// Task #59: the two small circular buttons, stacked bottom-leading —
+/// `ThreadDetailView`'s own rendering of whatever `MessageDetailAIFeaturesState`
+/// the currently-expanded `MessageView` last reported. Purely a dumb
+/// presentation of `state`'s current values plus its stored callbacks —
+/// see that type's doc comment for why all the actual *behavior* still
+/// lives in `MessageView`, not here.
+///
+/// Stacked with `OtegamiSpacing.sm` between them (要約 above 翻訳, same
+/// order Task #55's original bars appeared in top-to-bottom) rather than
+/// side by side — two side-by-side circles at the bottom-leading corner
+/// would sit awkwardly close to the screen's rounded corner/home indicator
+/// on iOS, while stacking vertically only grows *up* into body content,
+/// which `state.reservedBottomInset` already reserves space for.
+struct MessageDetailFloatingButtons: View {
+    @Bindable var state: MessageDetailAIFeaturesState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
+            if state.showsSummaryButton {
+                AISummaryFloatingButton(
+                    state: state.summaryState,
+                    isAvailable: state.isTranslationAvailable,
+                    onSummarize: state.onSummarize,
+                    onShowSummary: state.onShowSummary
+                )
+            }
+            if state.showsTranslationButton {
+                TranslationFloatingButton(
+                    state: state.translationState,
+                    showOriginal: $state.translationShowOriginal,
+                    isAvailable: state.isTranslationAvailable,
+                    onTranslate: state.onTranslate
+                )
+            }
+        }
+        .padding(.leading, OtegamiSpacing.lg)
+        .padding(.bottom, OtegamiSpacing.lg)
     }
 }

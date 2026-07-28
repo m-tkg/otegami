@@ -1597,25 +1597,54 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         diag.otegamiDiagOuterHeightSet = Math.ceil(naturalHeight * scale);
         return diag;
       }
-      // Task #58 (根治): the actual fix — report this document's real,
-      // full content height (including `#otegami-bottom-inset-spacer`,
-      // deliberately: the fixed frame this used to be silently clipped to
-      // had no way to know that spacer existed either) back to Swift via
-      // the `otegamiHeight` message handler, every time it might have
-      // changed. `postHeight` alone (called once, right after `fit()`)
-      // covers the common case; the `ResizeObserver` below additionally
-      // catches later changes this same script doesn't otherwise revisit —
-      // 1i's translation overlay rewriting text nodes (rarely the same
-      // pixel height as the original) is the realistic one, but this is
-      // deliberately general rather than re-deriving the exact set of
-      // callers that might change layout. `data-otegami-height-observer`
-      // guards against attaching a second observer on a later
-      // `applyFitToWidth` call against the same still-alive document (the
-      // 1.5s safety net, or 1i's post-mutation reapply) — `WKWebView
-      // .loadHTMLString` always produces a brand-new `document`, so a fresh
-      // load never sees this attribute already set.
+      // Task #58 (根治): the actual fix — report this document's real
+      // content height back to Swift via the `otegamiHeight` message
+      // handler, every time it might have changed. `postHeight` alone
+      // (called once, right after `fit()`) covers the common case; the
+      // `ResizeObserver` below additionally catches later changes this same
+      // script doesn't otherwise revisit — 1i's translation overlay
+      // rewriting text nodes (rarely the same pixel height as the original)
+      // is the realistic one, but this is deliberately general rather than
+      // re-deriving the exact set of callers that might change layout.
+      // `data-otegami-height-observer` guards against attaching a second
+      // observer on a later `applyFitToWidth` call against the same
+      // still-alive document (the 1.5s safety net, or 1i's post-mutation
+      // reapply) — `WKWebView.loadHTMLString` always produces a brand-new
+      // `document`, so a fresh load never sees this attribute already set.
+      //
+      // Task #59 (「本文下の空白が過剰」): this used to report
+      // `Math.max(document.documentElement.scrollHeight,
+      // document.body.scrollHeight)` — the *whole document's* height,
+      // which includes `#otegami-bottom-inset-spacer` (`body`'s sibling to
+      // `#otegami-fit-outer`, injected only when `bottomContentInset > 0` —
+      // see `HTMLDocumentBuilder.wrap`'s doc comment). That was deliberate
+      // at the time (Task #58's doc comment above, now superseded):
+      // Swift's frame budget had no other way to know the spacer existed.
+      // But `HTMLMessageView`'s `bottomContentInset` is always `0` now
+      // (Task #59 moved the "leave room for the floating buttons"
+      // reservation to `ThreadDetailView`'s own outer `ScrollView`, applied
+      // exactly once instead of once per message body — see
+      // `MessageView.content`'s doc comment on its HTML branch), so in
+      // practice this rarely differs today — but reporting the *whole
+      // document* was always measuring the wrong thing conceptually, and
+      // silently reintroduces a double-counted blank space the moment any
+      // future caller passes a non-zero `bottomContentInset` again. Measure
+      // `#otegami-fit-outer` itself instead — the fit-to-width scaffold
+      // `fit()` (above) already sizes explicitly to the real, post-scale
+      // content box (`outer.style.height`/`outer.style.width` when scaled;
+      // its natural laid-out size otherwise) and is a strict sibling of the
+      // spacer, never a container for it — so its own
+      // `getBoundingClientRect().height` is exactly the core content height,
+      // with no spacer (or anything else `body` might ever grow to include)
+      // mixed in. Falls back to the old whole-document measurement only if
+      // `#otegami-fit-outer` is somehow missing (shouldn't happen — `fit()`
+      // above already returns early with a diagnostic error in that case —
+      // but this function has no reason to crash over it).
       function postHeight() {
-        var height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+        var outer = document.getElementById('otegami-fit-outer');
+        var height = outer
+          ? Math.ceil(outer.getBoundingClientRect().height)
+          : Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.otegamiHeight) {
           window.webkit.messageHandlers.otegamiHeight.postMessage(height);
         }

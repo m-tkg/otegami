@@ -126,6 +126,21 @@ struct ThreadDetailView: View {
     @State private var isThreadMuted = false
     @State private var showingInfo = false
     @State private var showingToolbarSettings = false
+    /// Task #59 (実機フィードバック「要約/翻訳のフローティングアイコンを
+    /// 常に左下固定にしてほしい」): whatever `MessageDetailAIFeaturesState`
+    /// the currently-expanded row's `MessageView` last reported (via
+    /// `ThreadMessageRow.onAIFeaturesStateChange`, itself just forwarding
+    /// `MessageView.onAIFeaturesStateChange`) — `nil` whenever nothing is
+    /// expanded yet, or right after the accordion switches to a different
+    /// message (the old row's `MessageView.onDisappear` reports `nil` before
+    /// the newly-expanded row's `onAppear` reports its own state, so there's
+    /// at most one frame with no buttons — matches "現在展開中の単一
+    /// メッセージ基準" from the same accordion invariant `targetMessage`
+    /// already relies on). `body`'s own top-level `overlay` (outside the
+    /// `ScrollView`) is what actually renders this — see
+    /// `MessageDetailAIFeaturesState`'s doc comment for why it had to move
+    /// out of `MessageView`'s own `overlay` in the first place.
+    @State private var expandedAIFeaturesState: MessageDetailAIFeaturesState?
 
     var body: some View {
         // `GeometryReader` here purely to hand `expandedMessageHeight(in:)`
@@ -161,6 +176,20 @@ struct ThreadDetailView: View {
                     guard pinned, let newestId = messages.last?.id else { return }
                     scrollProxy.scrollTo(newestId, anchor: .top)
                 }
+                // Task #59: reserves blank space at the bottom of *this*
+                // single outer `ScrollView` so its content never renders
+                // directly behind the floating 要約/翻訳 buttons
+                // (`body`'s own top-level `.overlay(alignment: .bottomLeading)`
+                // below) — the one place this reservation happens now,
+                // replacing the old per-message
+                // duplication (`HTMLMessageView`'s DOM spacer, the
+                // plain-text `ScrollView`, `TranslatedBodyView`, each with
+                // their own copy) `MessageDetailAIFeaturesState
+                // .reservedBottomInset`'s doc comment covers in full — that
+                // duplication, stacked with `ThreadMessageRow`'s separate
+                // `+180pt` chrome guess, was most of the "本文下の空白が
+                // 過剰" report.
+                .contentMargins(.bottom, expandedAIFeaturesState?.reservedBottomInset ?? 0, for: .scrollContent)
             }
             .accessibilityIdentifier("threadDetail.scrollView")
             .background(OtegamiColor.background)
@@ -183,6 +212,20 @@ struct ThreadDetailView: View {
         .sheet(isPresented: $showingToolbarSettings) {
             NavigationStack { MessageToolbarSettingsView() }
                 .tint(OtegamiColor.accent)
+        }
+        // Task #59: attached *last* — after `.safeAreaInset(edge: .bottom)`
+        // — so this `overlay`'s bottom-leading alignment resolves against
+        // the safe area `safeAreaInset` already carved out for
+        // `footerToolbar`, keeping the buttons pinned just above it rather
+        // than behind it. Same "outside the scrollable content, screen-
+        // fixed" placement `MailScreenView.floatingSearchButton`/
+        // `FolderListSheet.floatingSettingsButton` already use — the whole
+        // point of Task #59's move (`MessageDetailAIFeaturesState`'s doc
+        // comment).
+        .overlay(alignment: .bottomLeading) {
+            if let expandedAIFeaturesState {
+                MessageDetailFloatingButtons(state: expandedAIFeaturesState)
+            }
         }
     }
 
@@ -234,7 +277,8 @@ struct ThreadDetailView: View {
                 accountId: accountId,
                 accountLabelColorKey: accountId.flatMap { id in environment.accounts.first(where: { $0.id == id })?.labelColorKey },
                 expandedHeight: expandedMessageHeight(in: containerSize),
-                onToggleExpanded: toggleExpanded
+                onToggleExpanded: toggleExpanded,
+                onAIFeaturesStateChange: { expandedAIFeaturesState = $0 }
             )
             // Design system: a 1pt dashed row separator (`OtegamiStroke
             // .secondary`/`OtegamiColor.dividerSubtle`), matching the
@@ -689,44 +733,37 @@ private struct ThreadMessageRow: View {
     let accountLabelColorKey: String?
     let expandedHeight: CGFloat
     let onToggleExpanded: (Int64) -> Void
+    /// Task #59: forwarded straight to `MessageView.onAIFeaturesStateChange`
+    /// — see that parameter's doc comment. This row is just a pass-through
+    /// (it isn't itself the state's ultimate destination, `ThreadDetailView`
+    /// is — see `body`'s own top-level `overlay`) because `MessageView` is
+    /// nested one level deeper than where `ThreadDetailView.messageRow(for:
+    /// containerSize:)` constructs this row.
+    let onAIFeaturesStateChange: (MessageDetailAIFeaturesState?) -> Void
 
-    /// Task #58 (根治): the real, full content height an HTML message's
+    /// Task #58 (根治): the real content height an HTML message's
     /// `WKWebView` measured — see `HTMLWebViewCoordinator.onHeightChange`'s
     /// doc comment for the whole chain this arrives through, and
     /// `MessageView.onHTMLContentHeightChange`'s for why this row (not
-    /// `MessageView` itself) is where it has to land: `expandedHeight` — a
-    /// fixed, guessed budget — is exactly what silently clipped taller
-    /// messages before this existed (`docs/design-system.md`'s Task #58
-    /// note has the full root-cause writeup). `nil` (falls back to
-    /// `expandedHeight` alone below) until the first `otegamiHeight` message
-    /// arrives, and for a plain-text message, which never reports one at
-    /// all.
+    /// `MessageView` itself) is where it has to land. `nil` until the first
+    /// `otegamiHeight` message arrives, and for a plain-text message, which
+    /// never reports one at all.
+    ///
+    /// Task #59 (「本文下の空白が過剰」): this used to feed
+    /// `resolvedHeight`'s `measuredHTMLContentHeight + nonHTMLChromeAllowance`
+    /// (a blind `+180pt` guess for "everything in `MessageView`'s `VStack`
+    /// besides the HTML body itself") as the frame handed to the *entire*
+    /// `MessageView`. That guess is gone now — see `body`'s `.frame(height:)`
+    /// below for the replacement: once a real measurement exists, this row
+    /// stops imposing a height on `MessageView` at all, letting its own
+    /// `VStack` sum each element's actual intrinsic height (header,
+    /// attachments, divider) plus the HTML body's own now-exact
+    /// `.frame(height:)` (`MessageView.content`'s HTML branch) — no guessed
+    /// constant, and (Task #59's root cause) no double-counting against the
+    /// separate DOM-level spacer `HTMLMessageView`'s JS used to fold into
+    /// this same measurement (`HTMLWebViewCoordinator.postHeight()`'s doc
+    /// comment has that half of the fix).
     @State private var measuredHTMLContentHeight: CGFloat?
-
-    /// Rough allowance for everything in `MessageView`'s `VStack` *besides*
-    /// the HTML body itself (header, attachment section, divider, their
-    /// paddings) — same "an estimate, not a measured value" tradeoff
-    /// `MessageView.floatingButtonsReservedBottomInset`'s doc comment
-    /// already makes for a different bottom-margin constant, and for the
-    /// same reason: threading real geometry through for this would cost far
-    /// more than the estimate being slightly generous ever would. Generous
-    /// on purpose — an over-estimate here just means a little extra blank
-    /// space at the bottom of a row inside `ThreadDetailView`'s own
-    /// scrollable `ScrollView`, which costs nothing; an under-estimate would
-    /// silently reproduce a smaller version of the exact bug this exists to
-    /// fix.
-    private static let nonHTMLChromeAllowance: CGFloat = 180
-
-    /// The actual frame height handed to `MessageView` below — `nil`
-    /// `measuredHTMLContentHeight` (not yet measured, or a plain-text
-    /// message) falls back to the old fixed `expandedHeight` budget
-    /// unchanged; once a real measurement arrives, the row grows to fit it
-    /// (never shrinks below `expandedHeight`, so a short message still gets
-    /// the same comfortable minimum it always did).
-    private var resolvedHeight: CGFloat {
-        guard let measuredHTMLContentHeight else { return expandedHeight }
-        return max(expandedHeight, measuredHTMLContentHeight + Self.nonHTMLChromeAllowance)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -744,9 +781,23 @@ private struct ThreadMessageRow: View {
             if isExpanded, let accountId {
                 MessageView(
                     accountId: accountId, messageId: messageId,
-                    onHTMLContentHeightChange: { measuredHTMLContentHeight = $0 }
+                    contentHeight: measuredHTMLContentHeight,
+                    onHTMLContentHeightChange: { measuredHTMLContentHeight = $0 },
+                    onAIFeaturesStateChange: onAIFeaturesStateChange
                 )
-                    .frame(height: resolvedHeight)
+                    // Task #59: a real measurement (`measuredHTMLContentHeight
+                    // != nil`) means `MessageView` itself now sizes its HTML
+                    // body to an exact `.frame(height:)` internally
+                    // (`contentHeight` above) — imposing *another* fixed
+                    // height on the whole view here would just reintroduce
+                    // the same "guessed total" problem this Task set out to
+                    // remove, one level up. `nil` (no constraint) lets this
+                    // row's `VStack` size to `MessageView`'s own natural
+                    // total instead. Only the pre-measurement/plain-text
+                    // fallback (`expandedHeight`, `GeometryReader`-derived —
+                    // see that method's doc comment) still imposes a fixed
+                    // budget, unchanged from before this task.
+                    .frame(height: measuredHTMLContentHeight == nil ? expandedHeight : nil)
                     .accessibilityIdentifier("threadDetail.message.\(messageId).body")
             }
         }
