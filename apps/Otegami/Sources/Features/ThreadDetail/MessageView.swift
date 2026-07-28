@@ -8,6 +8,7 @@ import MailTransport
 import GRDB
 import OtegamiTranslation
 import TranslationEngine
+import os
 
 /// Single-message reading view (M2's "ThreadDetail"; real multi-message
 /// thread collapsing lands in M4). Shows the header, then the body: if
@@ -83,6 +84,12 @@ struct MessageView: View {
     /// *this* message — reset in `load()` so switching to a different
     /// message never carries a previous message's manual choice forward.
     @State private var manualPreferPlainText: Bool?
+    /// Task #71「メールの背景を常に白に」— see `HTMLDisplaySettingsStore
+    /// .forceLightBackgroundKey`'s doc comment. Forwarded to `HTMLMessageView`
+    /// as-is (that view bakes it into the loaded document's own CSS); the
+    /// plain-text branches below (`content`) apply the SwiftUI-side
+    /// equivalent themselves (`otegamiForceLightBackground(_:)`).
+    @AppStorage(HTMLDisplaySettingsStore.forceLightBackgroundKey) private var forceLightBackground = HTMLDisplaySettingsStore.defaultForceLightBackground
 
     // MARK: - C7 link handling (plain-text body)
 
@@ -120,6 +127,15 @@ struct MessageView: View {
     @State private var previewURL: URL?
 
     // MARK: - Translation (design-phase-3, 1i)
+
+    /// Task #64 (根治): distinguishes "the HTML web view's translation
+    /// controller was never connected (a wiring bug)" from
+    /// `HTMLTranslationController`'s own `translationLogger` (`HTMLMessageView
+    /// .swift`), which only ever logs a *connected* controller's own
+    /// extraction/JS-bridge failures — the two loggers cover disjoint
+    /// failure modes on purpose, so a real occurrence of either is
+    /// unambiguous in `log stream` output.
+    private static let translationWiringLogger = Logger(subsystem: "com.mtkg.otegami", category: "HTMLTranslationDiagnostic")
 
     @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = TranslationSettingsStore.defaultAutoTranslateEnglish
     /// I「設定画面の再構成」→「メールビューア」の「AI 機能の on/off (翻訳・要約を
@@ -232,14 +248,40 @@ struct MessageView: View {
             // exact value", summed by the `VStack` itself, rather than a
             // guessed constant added on top of it one level up
             // (`ThreadMessageRow`'s removed `nonHTMLChromeAllowance`).
-            if let contentHeight {
-                content
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .frame(height: contentHeight)
-            } else {
-                content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
+            //
+            // Task #64 (根治: HTML翻訳ボタンが「本文の準備がまだ完了して
+            // いません」で恒常的に失敗する): this used to be `if let
+            // contentHeight { content.frame(...) } else { content.frame
+            // (...) }` — two separate `if`/`else` branches wrapping the
+            // *same* `content`. SwiftUI's `_ConditionalContent` treats an
+            // `if`/`else`'s two branches as structurally distinct views
+            // (`TrueContent`/`FalseContent`), even when both sides happen
+            // to build the identical child — so the very first time
+            // `contentHeight` flips from `nil` to a real value (which
+            // happens for essentially every HTML message, moments after its
+            // `WKWebView` finishes its own initial fit-to-width height
+            // measurement — `HTMLWebViewCoordinator.onHeightChange`), this
+            // branch switch tore down the whole `content` subtree —
+            // including `HTMLMessageView`'s `WKWebView` and its
+            // `HTMLTranslationController` — and mounted a brand-new one in
+            // its place. The old subtree's `.onDisappear` (`HTMLMessageView
+            // .body`'s `onTranslationControllerReady(nil)`) could then fire
+            // *after* the new subtree's `.onAppear` reported its own fresh
+            // controller, permanently leaving `htmlTranslationController`
+            // `nil` — exactly the persistent (not just a one-frame race)
+            // "本文の準備がまだ完了していません" failure a real-device report
+            // hit on every retry, since nothing ever re-triggers another
+            // `onAppear` once the view has settled into that one stable
+            // branch. Fixed by never switching branches at all: a single
+            // `content` call whose two `.frame` modifiers individually go
+            // from "unconstrained" to "exact value" as `contentHeight`
+            // changes — `.frame(height:)` already treats `nil` as "impose no
+            // height constraint", the same effect the removed `else` branch
+            // had, so this is behavior-preserving for both states while
+            // keeping `content` at one single, stable identity throughout.
+            content
+                .frame(maxWidth: .infinity, maxHeight: contentHeight == nil ? .infinity : nil, alignment: .topLeading)
+                .frame(height: contentHeight)
         }
         .sheet(isPresented: $isShowingSummarySheet) {
             summarySheet
@@ -331,15 +373,38 @@ struct MessageView: View {
     /// that same live behavior now that `aiState`, not this view's own
     /// body, is what `ThreadDetailView` actually renders from.
     private func syncAIFeaturesState() {
-        // `message == nil` (still loading, or `load()` just reset it for a
-        // new `messageId`) always hides both buttons — matches Task #55's
-        // original `if let message` gate on the whole `floatingActionButtons`
-        // overlay. Needed explicitly here (not implied by `aiFeaturesEnabled`/
-        // `shouldShowTranslationBar` alone) because `isEnglishMessage`
-        // trivially reads as `true` when `message` is `nil` (`nil == nil`),
-        // which would otherwise flash the 翻訳 button on during every load.
-        aiState.showsSummaryButton = message != nil && aiFeaturesEnabled
-        aiState.showsTranslationButton = message != nil && shouldShowTranslationBar
+        // Task #64 (実機フィードバック「本文読み込み完了までフローティング
+        // ボタンを出さないでほしい」): gates on `bodyRecord != nil` — the
+        // message's body has actually finished loading — rather than the
+        // previous `message != nil`. `message` is set (`load()`'s
+        // `message = loadedMessage`) *before* a not-yet-fetched body's
+        // network round-trip even starts, so gating on it alone let the
+        // buttons appear while `content` was still showing the "本文を取得
+        // しています…" spinner. Gating on `bodyRecord` instead means both
+        // buttons stay hidden through the fetch and, if it fails with
+        // nothing cached locally either (`load()`'s `catch` branch, no
+        // `syncAIFeaturesState()` call at all when there's no `bodyRecord`
+        // to show), stay hidden — this call simply never runs again in that
+        // case, so whatever this last computed (hidden, from the initial
+        // reset) is what persists. Also incidentally fixes a narrower edge
+        // case: `.onChange(of: aiFeaturesEnabled)` below calls this same
+        // method directly, and could previously flash the buttons on for a
+        // split second if the AI-features setting were toggled while a body
+        // fetch was still in flight (`message` already set, `bodyRecord`
+        // not yet).
+        aiState.showsSummaryButton = bodyRecord != nil && aiFeaturesEnabled
+        // Task #64 (根治の一環、「ボタンが出ている＝翻訳可能を保証」): for an
+        // HTML message currently shown as HTML, tapping 翻訳 goes through
+        // `htmlTranslationController` (`requestTranslation`'s HTML branch) —
+        // requiring it to already be connected here means the button itself
+        // never shows in the (now much shorter, post-identity-fix) window
+        // before that happens, rather than showing it optimistically and
+        // relying on `requestTranslation`'s own nil-guard to catch a tap
+        // that would otherwise fail. Irrelevant (always `true`) for a
+        // plain-text body or an HTML message switched to text view — that
+        // path never touches `htmlTranslationController` at all.
+        let htmlControllerReadyIfNeeded = !isHTMLMessage || !isShowingHTML || htmlTranslationController != nil
+        aiState.showsTranslationButton = bodyRecord != nil && shouldShowTranslationBar && htmlControllerReadyIfNeeded
         aiState.isTranslationAvailable = environment.isTranslationAvailable
         aiState.onSummarize = { [self] in
             guard let message else { return }
@@ -677,7 +742,17 @@ struct MessageView: View {
                     // reservation now lives, computed from `expandedAIFeaturesState`.
                     bottomContentInset: 0,
                     translatedTexts: htmlTranslatedTexts, showOriginalText: aiState.translationShowOriginal,
-                    onTranslationControllerReady: { htmlTranslationController = $0 },
+                    // Task #64 (根治の一環): re-syncs `aiState.showsTranslationButton`
+                    // right when the controller connects/disconnects, not
+                    // just at `load()` time — see `syncAIFeaturesState()`'s
+                    // updated gating for why a connected controller is now
+                    // part of "翻訳ボタンを見せてよいか" for an HTML message,
+                    // so the button's actual visibility stays honest with
+                    // whether tapping it would work.
+                    onTranslationControllerReady: { controller in
+                        htmlTranslationController = controller
+                        syncAIFeaturesState()
+                    },
                     onHeightChange: onHTMLContentHeightChange
                 )
                 .accessibilityIdentifier("messageDetail.htmlBody")
@@ -697,6 +772,7 @@ struct MessageView: View {
                     originalOverrides: $translationParagraphOverrides,
                     bottomContentInset: 0
                 )
+                .otegamiForceLightBackground(forceLightBackground)
             } else if let plainText = plainTextFallback(for: bodyRecord) {
                 ScrollView {
                     linkifiedText(plainText)
@@ -706,6 +782,7 @@ struct MessageView: View {
                         .padding()
                         .accessibilityIdentifier("messageDetail.plainTextBody")
                 }
+                .otegamiForceLightBackground(forceLightBackground)
                 // Task #59: no longer reserves bottom space here — see the
                 // HTML branch's doc comment above (`ThreadDetailView`'s own
                 // outer `ScrollView` is the single place this reservation
@@ -1142,7 +1219,20 @@ struct MessageView: View {
             // 「タップしても何も起きない」ように見えていた。ユーザー可視の
             // 失敗状態にして「再試行」で再度タップできるようにする。
             guard let htmlTranslationController else {
-                aiState.translationState = .failed(message: "本文の準備がまだ完了していません。もう一度お試しください。")
+                // Task #64 (根治): this branch means the wiring itself is
+                // broken (`onTranslationControllerReady` never reported a
+                // non-`nil` controller for this message, or reported `nil`
+                // after — see `MessageView.body`'s `.frame` fix's doc
+                // comment for the identity-teardown bug that used to cause
+                // exactly this, persistently, on every retry) — distinct
+                // from `extractTranslatableTexts()` returning `nil` below
+                // (DOM extraction itself failing on a *connected* web view).
+                // Logged (unlike the ordinary "not ready yet" case this
+                // guard used to only cover before the identity fix) since a
+                // real occurrence now points at a wiring regression, not a
+                // one-frame race.
+                Self.translationWiringLogger.error("requestTranslation: htmlTranslationController is nil for messageId=\(messageId, privacy: .public) — controller never connected or was disconnected")
+                aiState.translationState = .failed(message: "本文の準備がまだ完了していません（内部エラー）。もう一度お試しください。")
                 return
             }
             aiState.translationState = .translating
@@ -1281,6 +1371,35 @@ struct MessageView: View {
     }
 }
 
+/// Task #71「メールの背景を常に白に」: the plain-text-rendering side of the
+/// setting — `content`'s HTML branch bakes the equivalent directly into the
+/// loaded document's own CSS (`HTMLDocumentBuilder.wrap`'s
+/// `forceLightBackgroundStyle`), since a `WKWebView`'s rendering is governed
+/// by that document's CSS `color-scheme`/`prefers-color-scheme`, not by
+/// SwiftUI's environment. Plain text (and its translated variant,
+/// `TranslatedBodyView`) has no such document to inject CSS into — it's
+/// ordinary SwiftUI `Text`, whose `.primary`/`OtegamiColor` semantic colors
+/// resolve per the environment's `colorScheme` instead. `.colorScheme(.light)`
+/// is the standard SwiftUI tool for "force this subtree to resolve semantic
+/// colors as light, regardless of the system/app-wide appearance"; paired
+/// with an explicit white background (nothing in these two branches paints
+/// one on its own — they rely on whatever's behind them, normally
+/// `OtegamiColor.background`, dark in dark mode) so "白背景+濃色文字" holds
+/// even though nothing here declares an *explicit* text color the way the
+/// HTML branch's CSS does.
+private extension View {
+    @ViewBuilder
+    func otegamiForceLightBackground(_ enabled: Bool) -> some View {
+        if enabled {
+            self
+                .colorScheme(.light)
+                .background(Color.white)
+        } else {
+            self
+        }
+    }
+}
+
 /// Task #59 (実機フィードバック「要約/翻訳のフローティングアイコンが常に
 /// 左下固定であってほしいのに、HTML本文と一緒にスクロールしてしまう」):
 /// the shared, `@Observable` handle that lets `ThreadDetailView`'s own
@@ -1337,10 +1456,23 @@ final class MessageDetailAIFeaturesState {
     /// itself additive with `ThreadMessageRow`'s separate `+180pt` chrome
     /// allowance — together, most of Task #59's "空白が過剰" report. `0`
     /// when neither button will actually show.
+    ///
+    /// Task #64 (実機フィードバック「本文とフッターの間に空き帯が出る」):
+    /// this used to always reserve room for *both* buttons stacked
+    /// (`buttonFootprint * 2`) regardless of how many were actually
+    /// showing — a non-English message (要約だけ表示、翻訳ボタンは
+    /// `shouldShowTranslationBar`が偽で非表示) still reserved a whole second
+    /// button's worth of blank space below the body that nothing ever
+    /// occupied. Now scales with the *actual* visible button count — "ボタン
+    /// 高さ＋間隔ちょうど" — so a single-button case reserves exactly one
+    /// button's footprint (no inter-button gap, since there's only one row),
+    /// and the two-button case is unchanged from before.
     var reservedBottomInset: CGFloat {
-        guard showsSummaryButton || showsTranslationButton else { return 0 }
+        let visibleButtonCount = (showsSummaryButton ? 1 : 0) + (showsTranslationButton ? 1 : 0)
+        guard visibleButtonCount > 0 else { return 0 }
         let buttonFootprint = OtegamiSpacing.xl + (OtegamiSpacing.md + OtegamiSpacing.xs) * 2
-        return buttonFootprint * 2 + OtegamiSpacing.sm + OtegamiSpacing.lg
+        let interButtonGap = visibleButtonCount > 1 ? OtegamiSpacing.sm : 0
+        return buttonFootprint * CGFloat(visibleButtonCount) + interButtonGap + OtegamiSpacing.lg
     }
 }
 
