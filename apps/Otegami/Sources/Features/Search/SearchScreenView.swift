@@ -273,9 +273,10 @@ struct SearchScreenView: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("search.row.\(threadId)")
-            // 表示・操作改善バッチ「カード状表示」: same margin-as-gap treatment
-            // as `MessageListRow` — see its doc comment.
-            .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: OtegamiSpacing.sm, bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.sm))
+            // Task #67: same iOS full-bleed treatment as `MessageListRow`
+            // (this screen is iOS-only — `MailScreenView` only instantiates
+            // it inside an `#if os(iOS)` block) — see its doc comment.
+            .listRowInsets(EdgeInsets())
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
         }

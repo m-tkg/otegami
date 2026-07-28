@@ -184,13 +184,27 @@ struct MessageListRow: View {
             // separators and gives each row standard insets/background — both
             // fight `ThreadRowView`'s own flat/full-bleed styling, so this row
             // opts out of both and lets `ThreadRowView` own its full visual
-            // bounds. 表示・操作改善バッチ「カード状表示」: `.listRowInsets` now
-            // carries real horizontal/vertical margin instead of `.zero` — that
-            // margin *is* the gap between cards (and from the screen edge),
-            // replacing the previous full-bleed-row + dashed-divider look
-            // (`.otegamiRowDivider()`) with `ThreadRowView.otegamiCardBackground(_:)`'s
-            // rounded, borderless "面" per row (実機フィードバック第2弾 C).
+            // bounds. 表示・操作改善バッチ「カード状表示」: `.listRowInsets` used to
+            // carry real horizontal/vertical margin instead of `.zero` on every
+            // platform — that margin *was* the gap between cards (and from the
+            // screen edge), replacing the previous full-bleed-row +
+            // dashed-divider look (`.otegamiRowDivider()`) with
+            // `ThreadRowView.otegamiCardBackground(_:)`'s rounded, borderless
+            // "面" per row (実機フィードバック第2弾 C).
+            //
+            // Task #67 ("メール一覧のカードの幅を画面幅に広げて欲しい", iOS
+            // only per `CLAUDE.md`'s macOS-stays-as-is guidance): iOS drops
+            // back to `.zero` insets so the row reaches the true screen edge —
+            // `ThreadRowView.rowCornerRadius` squares off the corners to match,
+            // and its own `.otegamiRowDivider()` hairline takes back over as
+            // the inter-row separator now that there's no margin gap to read
+            // as one. macOS is unchanged: it keeps the real margin (and the
+            // rounded card it was introduced for).
+            #if os(iOS)
+            .listRowInsets(EdgeInsets())
+            #else
             .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: OtegamiSpacing.sm, bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.sm))
+            #endif
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
             #if os(macOS)
@@ -360,7 +374,13 @@ extension MessageListRow {
             rowButton
                 .offset(x: dragTranslation)
         }
-        .clipShape(RoundedRectangle(cornerRadius: OtegamiRadius.card, style: .continuous))
+        // Task #67: square corners on iOS now that the row is full-width —
+        // matches `ThreadRowView.rowCornerRadius`'s own `OtegamiRadius.none`
+        // (see its doc comment). This clip itself isn't just about rounding
+        // though — it's what keeps `rowButton`'s drag-offset content (and
+        // `swipeActionBackground`'s full-bleed fill) from visually spilling
+        // past this row's own bounds mid-swipe, so it stays even at radius 0.
+        .clipShape(RoundedRectangle(cornerRadius: OtegamiRadius.none, style: .continuous))
         // スワイプ滑らかさ改善: measures this row's own width so
         // `commitReveal(action:direction:)` knows how far past its edge to
         // slide on commit (`Self.exitOvershoot` beyond it) — a

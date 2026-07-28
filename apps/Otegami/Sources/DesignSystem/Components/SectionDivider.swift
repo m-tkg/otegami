@@ -47,8 +47,16 @@ public extension View {
     /// (the `List` row's own vertical/horizontal inset, applied by the call
     /// site), same as before; only the fill shape and the removed stroke
     /// changed.
-    func otegamiCardBackground(_ color: Color) -> some View {
+    ///
+    /// Task #67: `cornerRadius` became a parameter (default
+    /// `OtegamiRadius.card`, unchanged for existing callers) so
+    /// `ThreadRowView` can pass `OtegamiRadius.none` on iOS once the list
+    /// went edge-to-edge — a rounded card touching the screen's left/right
+    /// edges reads as a rendering glitch, not a corner. See
+    /// `docs/design-system.md`'s list layout section for the full
+    /// reasoning.
+    func otegamiCardBackground(_ color: Color, cornerRadius: CGFloat = OtegamiRadius.card) -> some View {
         background(color)
-            .clipShape(RoundedRectangle(cornerRadius: OtegamiRadius.card, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }

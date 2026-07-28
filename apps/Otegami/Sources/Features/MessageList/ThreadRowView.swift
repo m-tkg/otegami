@@ -75,17 +75,40 @@ struct ThreadRowView: View {
             .padding(.vertical, OtegamiSpacing.sm)
         }
         // 表示・操作改善バッチ「カード状表示」→ 実機フィードバック第2弾「C カード
-        // デザインの変更」: each row reads as its own rounded "面" (card) —
-        // no outline, just `OtegamiColor.surface`/`.paleBaseStrong`, clipped
-        // to `OtegamiRadius.card` (`otegamiCardBackground(_:)`'s doc
-        // comment covers the rounding decision and why `AccountColorRail`'s
-        // sharp rectangle still looks right here — it gets clipped to the
-        // same rounded silhouette). The gap between cards is
-        // `MessageListRow`/`SearchScreenView`'s `.listRowInsets` (the card
-        // fill alone can't create visual separation from its neighbor
-        // without a real gap around it).
-        .otegamiCardBackground(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface)
+        // デザインの変更」: each row reads as its own "面" (card) — no
+        // outline, just `OtegamiColor.surface`/`.paleBaseStrong`
+        // (`otegamiCardBackground(_:cornerRadius:)`'s doc comment covers the
+        // removed-stroke decision). macOS keeps the original rounded corner
+        // (`rowCornerRadius`) with the gap between cards coming from
+        // `MessageListRow`'s `.listRowInsets` margin, unchanged.
+        //
+        // Task #67: iOS went full-width ("メール一覧のカードの幅を画面幅に
+        // 広げて欲しい") — `MessageListRow`/`SearchScreenView` now zero out
+        // `.listRowInsets` on iOS so the card (and `AccountColorRail`) reach
+        // the screen's true left/right edges. A rounded corner sitting
+        // flush against the screen edge reads as clipped/broken rather than
+        // as a corner, so `rowCornerRadius` drops to `OtegamiRadius.none`
+        // there — and since the inter-row *margin* that used to double as
+        // the visual separator is gone too, `.otegamiRowDivider()` (a 1pt
+        // `dividerSubtle` hairline, previously unused since the card layout
+        // replaced it — see that function's own doc comment) comes back for
+        // iOS only to keep rows visually distinct. See
+        // `docs/design-system.md`'s list layout section for the full
+        // decision record.
+        .otegamiCardBackground(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface, cornerRadius: rowCornerRadius)
+        #if os(iOS)
+        .otegamiRowDivider()
+        #endif
         .contentShape(Rectangle())
+    }
+
+    /// See the `Task #67` doc comment on `body` above.
+    private var rowCornerRadius: CGFloat {
+        #if os(iOS)
+        OtegamiRadius.none
+        #else
+        OtegamiRadius.card
+        #endif
     }
 
     @ViewBuilder

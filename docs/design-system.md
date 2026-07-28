@@ -3470,3 +3470,69 @@ Task #59 で画面固定にした要約/翻訳フローティングボタンが�
 
 **検証状況**: `make test`/`make ios`/`make mac`緑を確認した。実機での
 見た目確認はユーザーに委ねる (OTA配信後)。
+
+## Task #67: メール一覧のカードを画面幅いっぱいに広げる (iOS)
+
+ユーザー要望「メール一覧のカードの幅を画面幅に広げて欲しい」。実機
+フィードバック第2弾 (C) 以来、`MessageListRow`/`SearchScreenView`の
+`.listRowInsets`が実マージンを持ち、そのマージン自体が「画面端からの
+余白」兼「カード同士の隙間」を兼ねる作りだった (`ThreadRowView`
+本体は`otegamiCardBackground(_:)`で`OtegamiRadius.card`の角丸)。これを
+iOS だけ画面端まで届く全幅表示に変更した — `CLAUDE.md`の「macOS は
+現状の`NavigationSplitView`3ペインを維持する」を踏襲し、macOS は
+今回無変更 (`ThreadRowView`は`MessageListView`/`SearchScreenView`
+(iOS専用画面 — `MailScreenView`が`#if os(iOS)`の中でしかインスタンス化
+しない) の2箇所でしか使われていないことをまず確認した上での判断)。
+
+- **`.listRowInsets`を iOS のみ`.zero`に**
+  (`MessageListRow.swift`/`SearchScreenView.swift`)。従来の
+  `EdgeInsets(top: .xs, leading: .sm, bottom: .xs, trailing: .sm)`は
+  macOS 向けとして残し、iOS 側だけ画面端に届かせる。
+- **角丸の扱い**: 全幅で画面端に触れた状態のまま角を丸めると、角の
+  部分だけ背景色 (`OtegamiColor.background`) が三角に覗いて「壊れて
+  見える」ため、iOS は**角丸を撤去**(`OtegamiRadius.none`) すると
+  判断した — 「上下のみ極小」も検討したが、`AccountColorRail`
+  (画面左端に接する3pxの帯) が上下の角のすぐ内側にあり、極小の丸みでも
+  帯の角が変に切れて見えたため見送った。`otegamiCardBackground(_:)`
+  (`SectionDivider.swift`) に`cornerRadius`引数を追加
+  (デフォルトは既存挙動と同じ`OtegamiRadius.card`) し、
+  `ThreadRowView`が`#if os(iOS)`で`.none`/`.card`を切り替える
+  (`rowCornerRadius`)。macOS の見た目は完全に不変。
+- **カード間のセパレーション**: マージンが隙間を兼ねていた前提が
+  iOS では崩れるため、`.otegamiRowDivider()`(1pt
+  `OtegamiColor.dividerSubtle`のヘアライン、実機フィードバック第2弾で
+  カード化した際に使われなくなり「将来また全幅の行リストが必要に
+  なったときのための汎用ユーティリティ」として`SectionDivider.swift`
+  に残されていたもの) を iOS の`ThreadRowView.body`にだけ復活させた。
+  Spark など主要メールクライアントの全幅リストがヘアライン区切りで
+  行を視認させている参考に倣った — 縦の隙間そのものを作る案 (行の
+  上下に薄いパディングを足す) も検討したが、`OtegamiColor.background`/
+  `.surface`の明度差 (ライトモードで`#EEF3F6`/`#FFFFFF`) だけでは
+  1〜2pt程度の隙間だと視認性が低く、ヘアラインの方が確実だった。
+- **`AccountColorRail`(3px 左罫)**: コード変更なし。`ThreadRowView.body`
+  の`HStack(spacing: 0)`内で一番先頭に置かれている構造はそのままで、
+  `.listRowInsets`の leading が`0`になったことで結果的に画面の真の
+  左端まで届くようになった (以前は`OtegamiSpacing.sm`ぶん内側にあった)。
+- **スワイプ (D8) との整合**: `MessageListRow.swipeableRow`が独自に
+  持っていた`.clipShape(RoundedRectangle(cornerRadius: OtegamiRadius
+  .card))`(スワイプ中のドラッグオフセットや背景色プレビューがカードの
+  外に溢れないようにするためのクリップ — 角丸はそのついでに効いて
+  いただけ) も iOS 専用コードのため揃えて`OtegamiRadius.none`に変更。
+  `rowWidth`計測 (`GeometryReader`) やしきい値判定・オフセット計算は
+  角丸に依存していないため無変更。
+
+### 検証
+
+`make test`緑を確認した。`scripts/verify-screen.sh list`
+(`APPEARANCE=light`/`dark`それぞれ) でスクリーンショットを撮り、
+カードが画面左右端まで届いていること・角丸が無いこと・行間にヘアライン
+区切りが見えること・ダークモードでも同様であることを目視確認した (この
+回でのフィクスチャは1アカウントのため`AccountColorRail`は
+`showsAccountAccent`の条件によりそもそも非表示 — 複数アカウント時の
+帯の見た目は`verify-screen.sh`に対応シナリオが無く、この回では再検証
+できていない。`AccountColorRail`自体のコードは無変更であり、実機での
+複数アカウント確認はユーザーに委ねる)。スワイプ中のドラッグ/リリース
+アニメーションは`verify-screen.sh`がタップ・ドラッグ操作に対応しない
+ため静的スクリーンショットでは検証できておらず、コードレビューで
+`swipeableRow`のクリップと`ThreadRowView`側の角丸を揃えたことのみ確認
+した — 実機での見た目確認はユーザーに委ねる。
