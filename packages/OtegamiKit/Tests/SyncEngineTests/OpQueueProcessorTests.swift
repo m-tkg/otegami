@@ -453,6 +453,86 @@ struct OpQueueProcessorTests {
         #expect(recorder.expungeCalls == ["INBOX"])
     }
 
+    // MARK: unarchive → back to INBOX (non-Gmail move) / COPY into INBOX (Gmail)
+
+    @Test("replay resolves an unarchive op back to the account's INBOX mailbox and issues a move")
+    func replayResolvesUnarchiveBackToInbox() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database)
+        let archiveId = try await database.dbWriter.write { db -> Int64 in
+            var record = MailboxRecord(accountId: account.id, path: "Archive", displayPath: "Archive", role: .archive)
+            try record.insert(db)
+            return record.id!
+        }
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueUnarchive(
+                accountId: account.id, sourceMailboxId: archiveId, uidValidity: 0,
+                uids: [9], db: db
+            )
+        }
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+
+        let call = try #require(recorder.moveCalls.first)
+        #expect(call.path == "Archive")
+        #expect(call.uids == [9])
+        #expect(call.destination == "INBOX")
+        #expect(recorder.copyCalls.isEmpty)
+    }
+
+    @Test("replay restores a Gmail account's INBOX label via COPY (never a move — the message must stay in All Mail too)")
+    func replayRestoresGmailInboxLabelViaCopy() async throws {
+        // Mirrors `replayArchivesGmailAccountInPlace`'s Gmail setup —
+        // Gmail's "All Mail" (role `.all`) is where an archived message
+        // actually sits (see `OpQueueKind.unarchive`'s doc comment): a plain
+        // `COPY` into INBOX adds the label back without ever touching All
+        // Mail, unlike `move` (which would incorrectly pull it out).
+        let database = try AppDatabase.makeInMemory()
+        let gmailAccount = AccountRecord(
+            displayName: "Gmail Test", email: "test@gmail.com", authType: .oauth2, kind: .gmail,
+            imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls, imapUsername: "test@gmail.com"
+        )
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database, withTrash: false, account: gmailAccount)
+        let allMailId = try await database.dbWriter.write { db -> Int64 in
+            var record = MailboxRecord(accountId: account.id, path: "[Gmail]/All Mail", displayPath: "All Mail", role: .all)
+            try record.insert(db)
+            return record.id!
+        }
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueUnarchive(
+                accountId: account.id, sourceMailboxId: allMailId, uidValidity: 0,
+                uids: [9], db: db
+            )
+        }
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+
+        let call = try #require(recorder.copyCalls.first)
+        #expect(call.path == "[Gmail]/All Mail")
+        #expect(call.uids == [9])
+        #expect(call.destination == "INBOX")
+        // Never a move/store+expunge — All Mail must stay untouched.
+        #expect(recorder.moveCalls.isEmpty)
+        #expect(recorder.storeCalls.isEmpty)
+        #expect(recorder.expungeCalls.isEmpty)
+    }
+
     // MARK: attempts ceiling
 
     @Test("an op that keeps failing stops being retried once it reaches maxAttempts")
@@ -1195,6 +1275,7 @@ private actor FailingStoreSession: IMAPSessionProtocol {
     }
     func append(mailboxPath: String, messageData: Data, flags: MessageFlags) async throws -> UInt32? { nil }
     func move(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {}
+    func copy(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {}
     func expunge(mailboxPath: String) async throws {}
     nonisolated func idle(mailboxPath: String) -> AsyncThrowingStream<IdleEvent, Error> {
         AsyncThrowingStream { $0.finish() }

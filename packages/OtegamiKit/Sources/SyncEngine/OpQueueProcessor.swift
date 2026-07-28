@@ -223,6 +223,35 @@ public actor OpQueueProcessor {
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: archive.path)
             return .applied
 
+        case .unarchive:
+            let payload = try JSONDecoder().decode(UnarchiveOpPayload.self, from: op.payload)
+            guard let source = try await mailbox(id: payload.sourceMailboxId), source.uidValidity == payload.uidValidity else {
+                return .staleDiscarded
+            }
+            guard let inbox = try await inboxMailbox(accountId: account.id) else {
+                // No INBOX-role mailbox known yet for this account (should
+                // only happen if the very first sync somehow hasn't
+                // completed) — leave the op pending rather than silently
+                // dropping a user-intended "アーカイブ解除", same shape as
+                // every other `resolveOrCreate*`/lookup failure above.
+                throw MailTransportError.mailboxNotFound(path: "(no INBOX-role mailbox known)")
+            }
+            if account.kind == .gmail {
+                // Gmail: restoring the INBOX label is "add it to INBOX
+                // too", never a move — see `OpQueueKind.unarchive`'s doc
+                // comment. A plain `COPY`, not `MOVE`/`COPY`+delete+expunge:
+                // the message must stay in All Mail exactly as it already
+                // is.
+                try await session.copy(mailboxPath: source.path, uids: UIDSet(payload.uids), to: inbox.path)
+                return .applied
+            }
+            // Every other provider: the reverse of `.archive`'s own
+            // `session.move(...)` call just above — a real move back to
+            // INBOX from wherever it currently sits (its Archive-role
+            // mailbox).
+            try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: inbox.path)
+            return .applied
+
         case .send:
             let payload = try JSONDecoder().decode(SendOpPayload.self, from: op.payload)
             guard let outbox = try await outboxMessage(id: payload.outboxMessageId) else {
@@ -427,6 +456,23 @@ public actor OpQueueProcessor {
 
     private func mailbox(id: Int64) async throws -> MailboxRecord? {
         try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db, key: id) }
+    }
+
+    /// Task #87 (1): `.unarchive`'s destination — unlike Trash/Junk/Archive,
+    /// INBOX never needs a self-healing `CREATE`: every IMAP account has one
+    /// by construction, and this app's own initial sync always discovers
+    /// and upserts it (`AccountSyncer`) before any op could possibly be
+    /// queued against it. `nil` here would only mean "this account hasn't
+    /// completed even its first sync yet" — the caller leaves the op
+    /// pending in that case, same as every other `resolveOrCreate*`
+    /// failure.
+    private func inboxMailbox(accountId: String) async throws -> MailboxRecord? {
+        try await database.dbWriter.read { db in
+            try MailboxRecord
+                .filter(Column("accountId") == accountId)
+                .filter(Column("role") == MailboxRoleRecord.inbox.rawValue)
+                .fetchOne(db)
+        }
     }
 
     private func trashMailbox(accountId: String) async throws -> MailboxRecord? {

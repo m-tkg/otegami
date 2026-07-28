@@ -65,6 +65,19 @@ public enum OpQueueKind: String, Sendable {
     /// Mailbox`). Payload is `ArchiveOpPayload`, structurally identical to
     /// `DeleteOpPayload`/`JunkOpPayload`.
     case archive
+    /// Task #87 (1): "アーカイブ解除" — the reverse of `.archive`, resolved at
+    /// *replay* time exactly the same way (self-heal against current
+    /// server state, branching on `account.kind`). Every other provider:
+    /// a plain `move` from wherever the message currently sits (its
+    /// Archive-role mailbox — `.archive`'s own destination) back to the
+    /// account's INBOX-role mailbox. Gmail: `.archive`'s replay never moves
+    /// anything (it un-labels the source, leaving the message in All Mail
+    /// regardless — see this case's own doc comment above), so the reverse
+    /// is "add the INBOX label back", i.e. `COPY` from All Mail to INBOX
+    /// (`IMAPSessionProtocol.copy(mailboxPath:uids:to:)`) — never a `move`,
+    /// which would incorrectly pull it *out* of All Mail too. Payload is
+    /// `UnarchiveOpPayload`, structurally identical to `ArchiveOpPayload`.
+    case unarchive
 }
 
 /// `setFlags`'s payload carries the **absolute** desired `MessageFlags`
@@ -146,6 +159,23 @@ public struct JunkOpPayload: Codable, Sendable, Equatable {
 /// destination (or, for Gmail, "no destination at all — just unlabel") is
 /// resolved at replay time, not enqueue time.
 public struct ArchiveOpPayload: Codable, Sendable, Equatable {
+    public var sourceMailboxId: Int64
+    public var uidValidity: Int64
+    public var uids: [UInt32]
+
+    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+        self.sourceMailboxId = sourceMailboxId
+        self.uidValidity = uidValidity
+        self.uids = uids
+    }
+}
+
+/// `unarchive`'s payload — see `OpQueueKind.unarchive`'s doc comment; shape
+/// is identical to `ArchiveOpPayload`. `sourceMailboxId` here is wherever
+/// the message currently sits (the account's Archive-role mailbox, or —
+/// for Gmail — All Mail), the same "where it is now, not where it's
+/// going" convention every other payload in this file already uses.
+public struct UnarchiveOpPayload: Codable, Sendable, Equatable {
     public var sourceMailboxId: Int64
     public var uidValidity: Int64
     public var uids: [UInt32]
@@ -275,6 +305,18 @@ public enum OpQueue {
         guard !uids.isEmpty else { return }
         let payload = ArchiveOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
         try enqueue(kind: .archive, accountId: accountId, payload: payload, db: db)
+    }
+
+    public static func enqueueUnarchive(
+        accountId: String,
+        sourceMailboxId: Int64,
+        uidValidity: Int64,
+        uids: [UInt32],
+        db: Database
+    ) throws {
+        guard !uids.isEmpty else { return }
+        let payload = UnarchiveOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
+        try enqueue(kind: .unarchive, accountId: accountId, payload: payload, db: db)
     }
 
     public static func enqueueSend(

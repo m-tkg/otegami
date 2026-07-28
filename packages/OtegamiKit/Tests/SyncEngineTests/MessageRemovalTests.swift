@@ -250,4 +250,115 @@ struct MessageRemovalTests {
         #expect(threadAfterUndo != nil)
         #expect(messageAfterUndo != nil)
     }
+
+    // MARK: unarchive (Task #87, 1)
+
+    @Test("unarchive → undo restores a single-message thread the same way archive does, and enqueues an unarchive op")
+    func undoRestoresSingleMessageThreadAfterUnarchive() throws {
+        let (database, accountId, _) = try makeDatabase()
+        let archiveId = try database.dbWriter.write { db -> Int64 in
+            var archive = MailboxRecord(accountId: accountId, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1)
+            try archive.insert(db)
+            return archive.id!
+        }
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db in
+            try insertSingleMessageThread(accountId: accountId, mailboxId: archiveId, uid: 4, date: date, db: db)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.unarchive, summary: summary, accountId: accountId, db: db)
+        }
+        let snapshot2 = try #require(snapshot)
+
+        let (messageAfterUnarchive, threadAfterUnarchive, opCountAfterUnarchive, opKindAfterUnarchive) = try database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: messageId),
+                try ThreadRecord.fetchOne(db, key: threadId),
+                try OpQueueRecord.fetchCount(db),
+                try OpQueueRecord.fetchOne(db)?.kind
+            )
+        }
+        #expect(messageAfterUnarchive == nil)
+        #expect(threadAfterUnarchive == nil)
+        #expect(opCountAfterUnarchive == 1)
+        #expect(opKindAfterUnarchive == OpQueueKind.unarchive.rawValue)
+
+        try database.dbWriter.write { db in try MessageRemoval.undo(snapshot2, db: db) }
+
+        let (threadAfterUndo, messageAfterUndo, opCountAfterUndo) = try database.dbWriter.read { db in
+            (
+                try ThreadRecord.fetchOne(db, key: threadId),
+                try MessageRecord.fetchOne(db, key: messageId),
+                try OpQueueRecord.fetchCount(db)
+            )
+        }
+        #expect(threadAfterUndo != nil)
+        #expect(messageAfterUndo != nil)
+        #expect(opCountAfterUndo == 0)
+    }
+
+    @Test("unarchiving a Gmail account's All Mail-labeled message is treated as archived (no dedicated Archive role to check)")
+    func unarchiveTreatsGmailAllMailAsArchived() throws {
+        let database = try AppDatabase.makeInMemory()
+        let gmailAccount = AccountRecord(
+            displayName: "Gmail Test", email: "g@gmail.test", authType: .oauth2, kind: .gmail,
+            imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls, imapUsername: "g@gmail.test"
+        )
+        try database.dbWriter.write { db in try gmailAccount.insert(db) }
+        let allMailId = try database.dbWriter.write { db -> Int64 in
+            var allMail = MailboxRecord(accountId: gmailAccount.id, path: "[Gmail]/All Mail", displayPath: "All Mail", role: .all, uidValidity: 1)
+            try allMail.insert(db)
+            return allMail.id!
+        }
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db in
+            try insertSingleMessageThread(accountId: gmailAccount.id, mailboxId: allMailId, uid: 5, date: date, db: db)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.unarchive, summary: summary, accountId: gmailAccount.id, db: db)
+        }
+        #expect(snapshot != nil)
+        let opCount = try database.dbWriter.read { db in try OpQueueRecord.fetchCount(db) }
+        #expect(opCount == 1)
+    }
+
+    @Test("unarchiving a message that isn't actually archived (still in INBOX) is a no-op — nothing to reverse")
+    func unarchiveSkipsAMessageNotActuallyArchived() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db in
+            try insertSingleMessageThread(accountId: accountId, mailboxId: inboxId, uid: 6, date: date, db: db)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.unarchive, summary: summary, accountId: accountId, db: db)
+        }
+        #expect(snapshot == nil)
+
+        let (messageStillThere, opCount) = try database.dbWriter.read { db in
+            (try MessageRecord.fetchOne(db, key: messageId), try OpQueueRecord.fetchCount(db))
+        }
+        #expect(messageStillThere != nil)
+        #expect(opCount == 0)
+    }
 }

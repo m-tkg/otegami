@@ -29,6 +29,16 @@ public enum MessageRemoval {
         /// `.delete` resolves Trash) rather than a pre-resolved local
         /// Archive mailbox id.
         case junk
+        /// Task #87 (1): "アーカイブ解除" — the archive view's swipe/context-
+        /// menu reverse action. Mirrors `.archive`'s local-commit shape
+        /// exactly (remove the message's row from wherever it currently
+        /// sits, enqueue the reverse op, let the destination side's own
+        /// sync discover it later — see `commit(_:summary:accountId:db:)`'s
+        /// doc comment for why every `Kind` here works this way rather than
+        /// inserting a new row up front) — only the enqueued `OpQueueKind`
+        /// (`.unarchive` instead of `.archive`) and the per-message
+        /// "already in the right place?" guard differ.
+        case unarchive
     }
 
     /// Everything `undo(_:db:)` needs to reverse one `commit(_:summary:
@@ -89,6 +99,11 @@ public enum MessageRemoval {
         guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
         let targets = try ThreadQuery.actionTargets(for: summary, db: db)
         let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
+        // Only `.unarchive`'s per-message guard needs this (Gmail's
+        // "archived" location is All Mail, not a dedicated Archive-role
+        // mailbox — see below) — fetched once rather than per-message
+        // since it's the same account for every target here.
+        let accountKind = kind == .unarchive ? try AccountRecord.fetchOne(db, key: accountId)?.kind : nil
         var removedMessages: [MessageRecord] = []
         for message in targets {
             guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
@@ -107,6 +122,17 @@ public enum MessageRemoval {
                 )
             case .junk:
                 try OpQueue.enqueueJunk(
+                    accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                    uids: [uid], db: db
+                )
+            case .unarchive:
+                // The mirror image of `.archive`'s own guard just above:
+                // only a message actually sitting in an "archived" location
+                // (a real Archive-role mailbox, or — for Gmail, which has
+                // no such role at all — All Mail) has anything to reverse.
+                let isArchived = mailbox.role == .archive || (mailbox.role == .all && accountKind == .gmail)
+                guard isArchived else { continue }
+                try OpQueue.enqueueUnarchive(
                     accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
                     uids: [uid], db: db
                 )

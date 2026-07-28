@@ -223,6 +223,11 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         private let lock = NSLock()
         private var _storeCalls: [(path: String, change: FlagChange)] = []
         private var _moveCalls: [(path: String, uids: [UInt32], destination: String)] = []
+        /// Task #87 (1): `copy(mailboxPath:uids:to:)` calls — kept separate
+        /// from `_moveCalls` so a test can assert "this was a COPY, the
+        /// source mailbox was never touched" (Gmail's アーカイブ解除 replay)
+        /// as distinct from a real move.
+        private var _copyCalls: [(path: String, uids: [UInt32], destination: String)] = []
         private var _expungeCalls: [String] = []
         /// M5: `append(mailboxPath:messageData:flags:)` calls (`OpQueueProcessor
         /// .send`'s best-effort Sent-mailbox copy), in call order.
@@ -243,6 +248,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         func recordMove(path: String, uids: [UInt32], destination: String) {
             lock.lock()
             _moveCalls.append((path, uids, destination))
+            lock.unlock()
+        }
+
+        func recordCopy(path: String, uids: [UInt32], destination: String) {
+            lock.lock()
+            _copyCalls.append((path, uids, destination))
             lock.unlock()
         }
 
@@ -274,6 +285,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             lock.lock()
             defer { lock.unlock() }
             return _moveCalls
+        }
+
+        public var copyCalls: [(path: String, uids: [UInt32], destination: String)] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _copyCalls
         }
 
         public var expungeCalls: [String] {
@@ -451,6 +468,10 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
 
     public func move(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {
         recorder?.recordMove(path: mailboxPath, uids: uids.uids, destination: destinationPath)
+    }
+
+    public func copy(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {
+        recorder?.recordCopy(path: mailboxPath, uids: uids.uids, destination: destinationPath)
     }
 
     public func expunge(mailboxPath: String) async throws {

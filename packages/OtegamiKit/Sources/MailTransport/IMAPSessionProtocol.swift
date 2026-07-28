@@ -141,6 +141,17 @@ public protocol IMAPSessionProtocol: Sendable {
     /// `COPY` + `STORE +FLAGS \Deleted` + `EXPUNGE`). M5.
     func move(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws
 
+    /// Copies messages into another mailbox (`COPY`) *without* removing
+    /// them from `mailboxPath` — unlike `move(mailboxPath:uids:to:)`, which
+    /// always leaves `mailboxPath` without them one way or another. Task
+    /// #87 (1): Gmail's "アーカイブ解除" (un-archiving from All Mail back to
+    /// INBOX) needs exactly this — Gmail auto-retains every non-Spam/Trash
+    /// message in All Mail regardless of label state (see `OpQueueKind
+    /// .archive`'s doc comment for the archive side of the same fact), so
+    /// restoring the INBOX label is "add it to INBOX too", never "move it
+    /// out of All Mail".
+    func copy(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws
+
     /// Permanently removes messages flagged `\Deleted` (`EXPUNGE`). M3/M5.
     func expunge(mailboxPath: String) async throws
 

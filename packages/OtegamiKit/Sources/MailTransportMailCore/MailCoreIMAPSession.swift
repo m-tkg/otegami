@@ -478,6 +478,26 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         try await runVoid(session.expungeOperation(folder: mailboxPath))
     }
 
+    /// Task #87 (1): a plain `COPY`, no `STORE +FLAGS \Deleted`/`EXPUNGE`
+    /// afterward — see `IMAPSessionProtocol.copy(mailboxPath:uids:to:)`'s
+    /// doc comment for why this must leave `mailboxPath` untouched, unlike
+    /// `move(mailboxPath:uids:to:)`'s non-`MOVE`-capability fallback above
+    /// (which reuses the same `copyMessagesOperation` call but always
+    /// follows it with the delete+expunge that turns it into a move).
+    public func copy(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {
+        guard !uids.uids.isEmpty else { return }
+        let indexSet = Self.indexSet(for: uids)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            session.copyMessagesOperation(folder: mailboxPath, uids: indexSet, destFolder: destinationPath).start { error, _ in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
     // MARK: - IDLE (M3)
 
     /// How long a single `IDLE` round is allowed to run before this session
