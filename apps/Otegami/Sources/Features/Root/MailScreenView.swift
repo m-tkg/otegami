@@ -22,6 +22,19 @@ import OtegamiStore
 /// (`unreadOnlyToggleButton`) を追加した。
 struct MailScreenView: View {
     @Environment(AppEnvironment.self) private var environment
+    /// Task #70 (ユーザー要望「iPad 版など、横長の場合は必ず左側にメール
+    /// 一覧、右側にメール本文という形にして」): iPad の全画面/大きめ
+    /// Split View、iPhone の横向き Plus/Max 系など horizontal size class が
+    /// `.regular` の間だけ `regularSplitView` (2カラム `NavigationSplitView`)
+    /// に切り替える — `.compact` (iPhone 縦向き、iPad の狭い Split View/
+    /// Slide Over) は従来どおり `compactNavigationStack` の単一カラム push
+    /// 遷移のまま。`docs/design-system.md`の「Task #70」節に、`CLAUDE.md`の
+    /// 「1a はコンパクト幅向けの設計」という記述をこの分岐でどう扱うかの
+    /// 判断を記録した。macOS では `horizontalSizeClass` は常に`nil`
+    /// (AppKit にサイズクラスの概念が無い) だが、この型自体が
+    /// `OtegamiRootView`のdoc comment通りiOS専用でmacOSからは never
+    /// instantiated なので実害はない。
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     var onCompose: () -> Void
     var onOpenDraft: (Int64) -> Void
     var onOpenServerDraft: (Int64) -> Void
@@ -94,7 +107,7 @@ struct MailScreenView: View {
         HamburgerMenuContainer(isOpen: $isMenuOpen) {
             menuContent
         } content: {
-            mailNavigationStack
+            mailContent
         }
         // Task #56 — see `AppEnvironment.uitestDirectOpenThreadId`'s doc
         // comment. `.task` (not `.onAppear`) so this doesn't fight
@@ -132,7 +145,49 @@ struct MailScreenView: View {
         }
     }
 
-    private var mailNavigationStack: some View {
+    /// Task #70: `HamburgerMenuContainer`の`content`にはこの一つだけを渡す
+    /// — 中身が`compactNavigationStack`/`regularSplitView`のどちらであって
+    /// も、共通の状態 (`accountEntryRoute`/`showingOutbox`等) が駆動する
+    /// シート群はここで一度だけ付ける (どちらの分岐でも同じ`.sheet`群が
+    /// 要る一方、分岐のたびに複製すると片方だけ直し忘れる不整合の元になる
+    /// ため)。`.tint`もここに一本化 (以前は`mailNavigationStack`自身に
+    /// 付いていたのを、両分岐の共通祖先であるこの階層に上げただけ)。
+    private var mailContent: some View {
+        Group {
+            if horizontalSizeClass == .regular {
+                regularSplitView
+            } else {
+                compactNavigationStack
+            }
+        }
+        .tint(OtegamiColor.accent)
+        .sheet(item: $accountEntryRoute) { route in
+            accountEntryDestination(for: route, binding: $accountEntryRoute)
+        }
+        .sheet(isPresented: $showingOutbox) { OutboxView() }
+        .sheet(isPresented: $showingDrafts) {
+            DraftsView(onOpenDraft: onOpenDraft, onOpenServerDraft: onOpenServerDraft)
+        }
+        .sheet(isPresented: $showingFailedOps) { FailedOperationsView() }
+        .sheet(isPresented: $showingMailboxSyncFailures) { MailboxSyncFailuresView() }
+        .sheet(isPresented: $showingSettings) { SettingsSheetView() }
+        .sheet(isPresented: $showingSearch, onDismiss: { searchPresetQuery = nil }) {
+            SearchScreenView(onReply: onReply, presetQuery: searchPresetQuery)
+        }
+    }
+
+    /// `.compact` (iPhone 縦向き、iPad の狭い Split View/Slide Over) —
+    /// 従来どおり単一カラムの`NavigationStack`で、選択中のスレッド
+    /// (`selectedThreadId`) を`.navigationDestination(item:)`でpushする。
+    /// `regularSplitView`からこちらへサイズクラスが遷移してきたとき
+    /// (回転・Split View のリサイズ・Stage Manager) も、`selectedThreadId`
+    /// は`MailScreenView`自身の`@State`でありこの分岐の切り替え自体では
+    /// リセットされないため、非nilならこの`.navigationDestination(item:)`
+    /// が初回appearanceの時点で即座にpushする — 結果として「本文が
+    /// push済みの状態で表示される」(Task #70の要件4) を追加コード無しで
+    /// 満たす。`environment.uitestDirectOpenThreadId`が同じ仕組みで
+    /// deep-linkしているのと同じ挙動。
+    private var compactNavigationStack: some View {
         NavigationStack {
             content
                 .toolbar { toolbarContent }
@@ -146,21 +201,58 @@ struct MailScreenView: View {
                         onThreadRemoved: handleThreadRemoved
                     )
                 }
-                .sheet(item: $accountEntryRoute) { route in
-                    accountEntryDestination(for: route, binding: $accountEntryRoute)
-                }
-                .sheet(isPresented: $showingOutbox) { OutboxView() }
-                .sheet(isPresented: $showingDrafts) {
-                    DraftsView(onOpenDraft: onOpenDraft, onOpenServerDraft: onOpenServerDraft)
-                }
-                .sheet(isPresented: $showingFailedOps) { FailedOperationsView() }
-                .sheet(isPresented: $showingMailboxSyncFailures) { MailboxSyncFailuresView() }
-                .sheet(isPresented: $showingSettings) { SettingsSheetView() }
-                .sheet(isPresented: $showingSearch, onDismiss: { searchPresetQuery = nil }) {
-                    SearchScreenView(onReply: onReply, presetQuery: searchPresetQuery)
-                }
         }
-        .tint(OtegamiColor.accent)
+    }
+
+    /// `.regular` (iPad 全画面/大きめ Split View、iPhone 横向き Plus/Max 系):
+    /// 左=`listColumn`(現行の一覧+ヘッダのトグル類+フローティング検索/作成、
+    /// `content`/`toolbarContent`をそのまま流用)、右=`detailColumn`(選択中
+    /// スレッドの本文、未選択時はプレースホルダ)。フォルダ切替は3カラム化
+    /// せず、`compactNavigationStack`と同じ`HamburgerMenuContainer`のドロワー
+    /// をそのまま流用する (`docs/design-system.md`のTask #70節に判断を記録)
+    /// — `mailContent`がこの`regularSplitView`ごと`HamburgerMenuContainer
+    /// .content`に渡っているので、ハンバーガーボタン (`listColumn`の
+    /// `toolbarContent`内) を押せば2ペインの上に同じドロワーが重なる。
+    private var regularSplitView: some View {
+        NavigationSplitView(columnVisibility: .constant(.all)) {
+            listColumn
+        } detail: {
+            detailColumn
+        }
+    }
+
+    private var listColumn: some View {
+        NavigationStack {
+            content
+                .toolbar { toolbarContent }
+                #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+                #endif
+        }
+    }
+
+    /// 右ペイン — Task #70要件3「スレッド選択画面(2通以上)は右ペイン内で
+    /// 選択画面→本文のpush」: `ThreadEntryView`自身が持つ
+    /// `.navigationDestination(item:)`(`ThreadSelectionView`→
+    /// `ThreadDetailView`) がこの`NavigationStack`の中で完結する。
+    private var detailColumn: some View {
+        NavigationStack {
+            Group {
+                if let selectedThreadId {
+                    ThreadEntryView(
+                        threadId: selectedThreadId, preselectedMessageId: selectedMessageId, onReply: onReply, onForward: onForward,
+                        onSearchFromSender: { query in openSearch(presetQuery: query) },
+                        onThreadRemoved: handleThreadRemoved
+                    )
+                } else {
+                    ContentUnavailableView(
+                        "メッセージが選択されていません",
+                        systemImage: "envelope.open"
+                    )
+                    .accessibilityIdentifier("mail.detailEmptyState")
+                }
+            }
+        }
     }
 
     private var content: some View {

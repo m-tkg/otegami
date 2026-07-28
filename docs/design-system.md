@@ -4455,3 +4455,119 @@ light/dark 両方 (`APPEARANCE=light`/`dark`)、新既定 (トグル OFF) で
 - 反転オプトイン (トグル ON) 側の見た目は Task #71 で既に確認済みの挙動
   そのまま (ロジック自体は変更していない) なので、このタスクでの再確認は
   必須ではない。
+
+## Task #70: iPad/横長対応 (regular 幅で左=一覧・右=本文の2ペイン)
+
+ユーザー要望原文:「iPad版など、横長の場合は必ず左側にメール一覧、右側に
+メール本文という形にして」。
+
+### CLAUDE.md「1a はコンパクト幅向け」の記述の扱い
+
+`CLAUDE.md`のUIデザイン方針には元々「1a はコンパクト幅向けの設計であり、
+Macの広い画面には適用しない」とだけ書かれていた — これは「iOS の1a構造
+自体がサイズクラス分岐を持たない」ことを前提にした記述で、実際
+「macOS: 狭いウィンドウでサイドバーに戻れない不具合の修正」節の調査でも
+「iOS 側 (`OtegamiRootView`/`MailScreenView`) はサイズクラスに関係なく
+常時ハンバーガーボタンを描画する構造」と明記されていた (当時は事実)。
+このタスクでその前提を変える: **iOS 側にも horizontal size class 分岐を
+新設し、`.regular`(iPad の全画面/大きめ Split View、iPhone 横向きの
+Plus/Max 系) のときだけ2カラム `NavigationSplitView` (左=一覧、右=本文)
+に切り替える**。macOS の3ペイン (`OtegamiApp.swift`の`RootView.splitView`)
+自体は既存のまま変更していない — 「Mac の広い画面には適用しない」という
+元の記述はMac側について今も正しい。`CLAUDE.md`自体は書き換えず、この
+節に判断を記録するにとどめる (`CLAUDE.md`の指示通り、UI設計の経緯は
+`docs/design-system.md`側に書く運用)。
+
+### 実装 (`MailScreenView.swift`)
+
+- `@Environment(\.horizontalSizeClass)`を新規に読み、`body`が
+  `HamburgerMenuContainer`に渡す`content`を`mailContent`という1つの
+  computed propertyに統合。中身は`Group { if horizontalSizeClass ==
+  .regular { regularSplitView } else { compactNavigationStack } }`+
+  共通の`.sheet`群 (アカウント追加/送信待ち/下書き/失敗操作/同期エラー/
+  設定/検索) — これらのシートは分岐のたびに複製せず、両分岐の共通祖先の
+  この1箇所にだけ付ける。
+- **`compactNavigationStack`**: 従来の`mailNavigationStack`を改名した
+  だけ (単一カラム`NavigationStack`+`.navigationDestination(item:
+  $selectedThreadId)`によるpush、ロジック変更なし)。
+- **`regularSplitView`**: `NavigationSplitView(columnVisibility:
+  .constant(.all)) { listColumn } detail: { detailColumn }` の2カラム。
+  - `listColumn`: 従来の`content`(ヘッダのトグル類+`AccountFilterChipRow`
+    +`MessageListView`+フローティング検索/作成ボタン) をそのまま
+    `NavigationStack`でラップしただけ — 一覧側のロジック・見た目は
+    compact/regular で完全に共通。
+  - `detailColumn`: `NavigationStack { if let selectedThreadId {
+    ThreadEntryView(...) } else { ContentUnavailableView(...) } }` —
+    `ThreadEntryView`自体が持つ「スレッドが1通なら`ThreadDetailView`に
+    直行、2通以上なら`ThreadSelectionView`→`.navigationDestination(item:)`
+    で`ThreadDetailView`にpush」という既存ロジック (Task #33) がこの
+    `NavigationStack`の中でそのまま完結するため、要件3「スレッド選択画面
+    は右ペイン内でpush」は`ThreadEntryView`を右ペインの直接の中身にする
+    だけで自動的に満たされた (追加のpush制御コードは不要)。
+- **フォルダ切替 (要件2)**: 2ペイン時も3カラム化しない。`HamburgerMenu
+  Container`のドロワー (`FolderListSheet`) は`mailContent`ごと (つまり
+  `regularSplitView`全体の上に) 重なる既存の仕組みをそのまま流用 — 新規
+  実装なし。実機/シミュレータで確認した通り、ドロワーは幅320pt固定の
+  まま (`HamburgerMenuContainer.drawerWidth`)、iPad の広い画面でも一覧側
+  だけを覆う形で開く。
+- **サイズクラス遷移時の状態保持 (要件4)**: `selectedThreadId`/
+  `selectedMessageId`は`MailScreenView`自身の`@State`であり、
+  `regularSplitView`⇄`compactNavigationStack`の切り替え (`Group`の
+  `if`分岐) 自体はこれらをリセットしない。`compactNavigationStack`の
+  `.navigationDestination(item: $selectedThreadId)`は、回転等で
+  regularからcompactへ切り替わった直後の初回appearance時点で
+  `selectedThreadId`が既に非nilなら即座にpushする — `environment
+  .uitestDirectOpenThreadId`によるタップ不要deep-linkが同じ仕組みで
+  動いているのと同じSwiftUIの挙動で、追加コード不要で「本文がpush済み
+  の状態で表示される」を満たす。**スクロール位置**は`MessageListView`
+  自体の内部`@State`であり、compact/regular いずれの分岐でも`content`
+  という同じcomputed propertyから生成される`MessageListView`インスタンス
+  だが、親のコンテナ構造 (`NavigationStack`単体 vs `NavigationSplitView`
+  の`listColumn`) が変わるため、SwiftUIがビューIDの同一性をまたいで
+  スクロール位置を保持する保証はない (「可能な範囲で」の実装、実機での
+  確認が望ましい)。
+
+### 検証
+
+- `make test`/`make ios`/`make mac` いずれも green (このタスクの変更後)。
+- **シミュレータでの2ペイン確認**: `scripts/verify-screen.sh`は
+  `IOS_SIMULATOR`にiPadの機種名 (例:「iPad mini (A17 Pro)」) を渡すと、
+  スクリプト自身の`awk -F '[()]' -v name="$IOS_SIMULATOR"`によるUDID
+  解決が、機種名自体に含まれる括弧 (`(A17 Pro)`) のせいで正規表現マッチ
+  にもフィールド分割にも失敗し、"no available simulator" エラーになる
+  既知の制約が判明した (iPhone等、括弧を含まない機種名では問題ない) —
+  今回はこのタスクのために`scripts/verify-screen.sh`と同じ手順
+  (`xcodebuild build`→`simctl install`→`simctl launch`(fixture注入用の
+  `SIMCTL_CHILD_OTEGAMI_UITEST_*`環境変数付き)→`simctl io screenshot`)
+  を、UDIDだけ`simctl list devices available -j`から`jq`相当(Python)
+  で直接取り出す形で手動再現し、iPad mini (A17 Pro) シミュレータで撮影
+  した。スクリプト自体の括弧問題は今回は直さず (別スコープ)、この節に
+  既知の制約として記録するにとどめる。
+  - `list`シナリオ相当 (fake HTMLアカウント5件挿入): 左に一覧、右に
+    「メッセージが選択されていません」のプレースホルダ — 2カラムが
+    portrait のiPad mini でも表示されることを確認。
+  - `html-0`相当 (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=0`によるタップ
+    不要deep-link) で、右ペインに実際の`ThreadDetailView`(件名・返信/
+    転送/検索/情報/その他のフッターツールバー含む) が表示されることを
+    確認 — タップを一切介さず選択済みスレッドが本文として直接描画される
+    ことの確認。
+  - `-uitestsOpenFolderMenuDirectly`で、ハンバーガードロワーが2ペイン
+    全体 (一覧+本文プレースホルダ) の上に重なることを確認。
+  - iPhone 17 Pro Max (portrait、compact幅) で`list`シナリオを撮影し、
+    従来通りの単一カラムであることを確認 (リグレッションなし)。
+- **未検証事項**: このセッションの実行環境には実際にウィンドウを表示する
+  Simulator.app のGUIが無く (`osascript`によるSimulator操作が
+  `Can't get application "Simulator"`で失敗、`iosSimulator`機能自体が
+  ロールアウトフラグで無効と判明)、`Cmd+←/→`によるシミュレータの回転が
+  できなかった。そのため「iPhone の横向き (Plus/Max系機種) でregular幅
+  になる」ケース自体は screenshot で確認できていない。ただし iPad は
+  フルスクリーン表示である限りportrait/landscapeのどちらでも
+  `horizontalSizeClass == .regular`になる (今回のiPad mini portrait
+  スクリーンショットが実際にそれを示している) ため、コードパスとしては
+  同じ`regularSplitView`が実機の横向きiPadでもそのまま使われる。
+  実機確認ポイント: (1) iPad実機で本アプリを全画面起動し、portrait/
+  landscape どちらでも2ペイン (左一覧+右本文) になっていること、(2)
+  iPad の Split View で幅を狭めたときに単一カラム (compact) に戻る
+  こと、(3) 回転中に選択中のスレッドが本文ペインに表示されたまま
+  切り替わること (一覧のスクロール位置は多少ずれても許容)、(4) iPhone
+  Plus/Max系機種を横向きにしたときも同じ2ペインになること。
