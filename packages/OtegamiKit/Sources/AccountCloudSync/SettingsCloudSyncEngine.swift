@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// What `SettingsCloudSyncEngine.reconcile()` actually did — mirrors
 /// `ReconcileSummary`'s role for the account engine, just simpler (this
@@ -56,6 +57,19 @@ public enum SettingsReconcileResult: Equatable, Sendable {
 /// simplification (`SettingsCloudPayload`'s doc comment) for independent UI
 /// preferences with no cross-field invariants to protect.
 ///
+/// **Task #101** (実機報告「スレッド表示をオフにしても再起動で戻る」):
+/// branches 1/2 above both decide to pull based on `localValues`/`snapshot`
+/// captured *before* their own `await`s — a local edit landing during that
+/// window (this whole call can itself be triggered by another device's push
+/// arriving via `didChangeExternallyNotification` at any moment, including
+/// the instant a user taps a settings toggle) used to be invisible to that
+/// decision and got silently clobbered by `apply()`. `pull(_:becauseOfReason
+/// :observedLocalValues:snapshot:)` now re-reads `local.currentValues()`
+/// immediately before writing anything and falls back to pushing the fresher
+/// value if it disagrees with what was observed — see that method's doc
+/// comment, and `docs/icloud-sync.md`'s Task #101 section for the full
+/// writeup and the OSLog invocation that surfaces this on a real device.
+///
 /// An `actor` for the same reason as `AccountCloudSyncEngine`: every
 /// operation here is either pure data-juggling or awaits onto
 /// `LocalSettingsDirectory`/`UbiquitousStoring`, nothing UI-related. Guards
@@ -75,6 +89,17 @@ public actor SettingsCloudSyncEngine {
     public static let maxPayloadBytes = 60_000
 
     private static let payloadKey = "settings.v1"
+
+    /// Task #101 (実機報告「スレッド表示をオフにしても再起動で戻る」): one
+    /// `Logger` line per `reconcile()` call stating the outcome (push/pull/
+    /// no-op/disabled), why, which keys disagree between local and cloud,
+    /// and every timestamp involved — a real-device `log stream` capture is
+    /// otherwise the only way to tell "this device pushed its change" from
+    /// "this device pulled over it" after the fact, since both look
+    /// identical from the UI (the toggle just silently reverts). See
+    /// `docs/icloud-sync.md`'s Task #101 section for the `log stream`
+    /// invocation this is meant to be read with.
+    private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "SettingsCloudSync")
 
     private let store: any UbiquitousStoring
     private let local: any LocalSettingsDirectory
@@ -128,7 +153,10 @@ public actor SettingsCloudSyncEngine {
     /// over that).
     @discardableResult
     public func reconcile() async -> SettingsReconcileResult {
-        guard isEnabled() else { return .disabled }
+        guard isEnabled() else {
+            Self.logger.debug("reconcile -> disabled (iCloud settings sync is off)")
+            return .disabled
+        }
         await acquirePayloadLock()
         defer { releasePayloadLock() }
 
@@ -137,20 +165,72 @@ public actor SettingsCloudSyncEngine {
         let snapshot = await local.lastSyncedSnapshot()
 
         if let snapshot, snapshot.values == localValues {
-            guard cloudPayload.updatedAt > snapshot.updatedAt else { return .inSync }
-            await local.apply(cloudPayload)
-            await local.saveSyncedSnapshot(cloudPayload)
-            return .pulled
+            guard cloudPayload.updatedAt > snapshot.updatedAt else {
+                log(.inSync, reason: "local matches last-synced snapshot; cloud is not newer", local: localValues, cloud: cloudPayload, snapshot: snapshot)
+                return .inSync
+            }
+            return await pull(
+                cloudPayload, becauseOfReason: "local unchanged since last sync; cloud has a newer payload",
+                observedLocalValues: localValues, snapshot: snapshot
+            )
         }
 
         if snapshot == nil, !cloudPayload.values.isEmpty {
-            await local.apply(cloudPayload)
-            await local.saveSyncedSnapshot(cloudPayload)
-            return .pulled
+            return await pull(
+                cloudPayload, becauseOfReason: "never synced on this device (fresh install/reinstall); cloud already has a payload",
+                observedLocalValues: localValues, snapshot: snapshot
+            )
         }
 
+        return await push(
+            localValues: localValues, cloudPayload: cloudPayload, snapshot: snapshot,
+            reason: snapshot == nil ? "first device ever to sync (cloud is also empty)" : "local changed since last sync"
+        )
+    }
+
+    /// Both places `reconcile()` above decided a pull is warranted funnel
+    /// through here, which re-reads `local.currentValues()` one more time
+    /// immediately before actually overwriting anything. This closes a real
+    /// race (Task #101, the exact real-device repro of "toggle a display
+    /// setting off, it reverts on the next restart"): `reconcile()`'s two
+    /// `await`s above (`local.currentValues()`, `local.lastSyncedSnapshot()`)
+    /// are genuine suspension points, and this whole call can itself be
+    /// triggered by another device's push landing via
+    /// `didChangeExternallyNotification` at literally any moment — including
+    /// the instant the user taps a settings toggle on *this* device. Without
+    /// this re-check, a local edit that lands in that window is invisible to
+    /// the branch logic above (it already captured `observedLocalValues`
+    /// before the edit happened) and `apply(cloudPayload)` would silently
+    /// overwrite it. A local edit discovered here always outranks a pull
+    /// decision that was made against now-stale data, so this falls through
+    /// to `push(_:)` instead of applying the pull.
+    private func pull(
+        _ cloudPayload: SettingsCloudPayload, becauseOfReason reason: String,
+        observedLocalValues: [String: SettingsCloudValue], snapshot: SettingsCloudPayload?
+    ) async -> SettingsReconcileResult {
+        let freshLocalValues = await local.currentValues()
+        guard freshLocalValues == observedLocalValues else {
+            return await push(
+                localValues: freshLocalValues, cloudPayload: cloudPayload, snapshot: snapshot,
+                reason: "local changed again while deciding to pull (\(reason)); a fresh local edit wins over a stale pull decision"
+            )
+        }
+        log(.pulled, reason: reason, local: observedLocalValues, cloud: cloudPayload, snapshot: snapshot)
+        await local.apply(cloudPayload)
+        await local.saveSyncedSnapshot(cloudPayload)
+        return .pulled
+    }
+
+    private func push(
+        localValues: [String: SettingsCloudValue], cloudPayload: SettingsCloudPayload,
+        snapshot: SettingsCloudPayload?, reason: String
+    ) async -> SettingsReconcileResult {
         let newPayload = SettingsCloudPayload(values: localValues, updatedAt: now())
-        guard savePayload(newPayload) else { return .inSync }
+        guard savePayload(newPayload) else {
+            log(.inSync, reason: "push failed (payload encoding/size guard) — treating as a no-op this cycle", local: localValues, cloud: cloudPayload, snapshot: snapshot)
+            return .inSync
+        }
+        log(.pushed, reason: reason, local: localValues, cloud: cloudPayload, snapshot: snapshot)
         await local.saveSyncedSnapshot(newPayload)
         return .pushed
     }
@@ -167,6 +247,29 @@ public actor SettingsCloudSyncEngine {
         store.set(data, forKey: Self.payloadKey)
         store.synchronize()
         return true
+    }
+
+    /// One `Logger` line per `reconcile()` outcome — see `logger`'s doc
+    /// comment. `diffKeys` is every allowlisted key where `local` and
+    /// `cloud.values` currently disagree (regardless of which one this call
+    /// picked), which is usually more useful on a real device than the full
+    /// payload: it immediately shows *which* setting is in contention
+    /// without needing to decode both payloads by hand.
+    private func log(
+        _ result: SettingsReconcileResult, reason: String,
+        local: [String: SettingsCloudValue], cloud: SettingsCloudPayload, snapshot: SettingsCloudPayload?
+    ) {
+        let diffKeys = Self.diffKeys(local, cloud.values).sorted().joined(separator: ",")
+        Self.logger.info(
+            "reconcile -> \(String(describing: result), privacy: .public): \(reason, privacy: .public) | diffKeys=[\(diffKeys, privacy: .public)] | snapshot.updatedAt=\(snapshot?.updatedAt.description ?? "nil", privacy: .public) | cloud.updatedAt=\(cloud.updatedAt.description, privacy: .public)"
+        )
+    }
+
+    private static func diffKeys(_ a: [String: SettingsCloudValue], _ b: [String: SettingsCloudValue]) -> [String] {
+        var keys = Set<String>()
+        for (key, value) in a where b[key] != value { keys.insert(key) }
+        for (key, value) in b where a[key] != value { keys.insert(key) }
+        return Array(keys)
     }
 }
 

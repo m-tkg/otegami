@@ -107,8 +107,23 @@ final class FakeLocalSettingsDirectory: LocalSettingsDirectory, @unchecked Senda
         values
     }
 
+    /// Test-only hook, awaited at the very start of `lastSyncedSnapshot()`
+    /// — the point `SettingsCloudSyncEngine.reconcile()` reaches right
+    /// after it has already captured `localValues` from `currentValues()`
+    /// but before it decides push/pull and, if pulling, re-reads
+    /// `currentValues()` a second time (`pull(_:becauseOfReason
+    /// :observedLocalValues:snapshot:)`'s re-check). Pausing here lets a
+    /// test land a concurrent local write (e.g. a UI toggle) in exactly the
+    /// window that re-check exists to catch — see `SettingsCloudSyncEngineTests
+    /// .concurrentLocalChangeDuringAPullDecisionIsNotDiscarded`. `nil` (the
+    /// default) makes this a no-op, matching every other test in this file.
+    var onLastSyncedSnapshot: (@Sendable () async -> Void)?
+
     func lastSyncedSnapshot() async -> SettingsCloudPayload? {
-        snapshot
+        if let onLastSyncedSnapshot {
+            await onLastSyncedSnapshot()
+        }
+        return snapshot
     }
 
     func saveSyncedSnapshot(_ payload: SettingsCloudPayload) async {
