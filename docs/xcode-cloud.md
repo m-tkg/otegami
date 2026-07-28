@@ -283,6 +283,13 @@ TestFlight 内部テストを配る場合:
    Account Holder/Admin 権限が必要)。
 6. **初回ビルドを確認する** — ワークフローを保存すると初回ビルドが
    自動的にキックされる (または Xcode の Cloud タブから手動トリガー)。
+
+   > **このリポジトリの実運用 (2026-07-28 設定済み)**: リリース用
+   > ワークフローの開始条件は**git tag** に設定してある。リリース
+   > したいコミットに tag を打って push すると Xcode Cloud が
+   > Archive → TestFlight 配布を実行する。ブランチ push では
+   > リリースビルドは走らない。開発中の即時配信は従来どおり
+   > `make deploy-ota` (Ad Hoc) を併用する。
    Archive アクションが成功し、TestFlight の対象アプリに新しいビルドが
    表示され、「処理中」→「テスト可能」になることを確認する。失敗した
    場合は Xcode の Cloud タブ、または App Store Connect の Xcode Cloud
