@@ -151,6 +151,16 @@ struct PendingSendDraftSnapshot: Codable, Hashable, Sendable {
     /// storage in between — this type is in-memory only for the countdown's
     /// duration — so that fallback is defensive, not a real migration path).
     var htmlBody: String?
+    /// Task #162 (実機フィードバック「署名が本文に混ざって編集しづらい」): the
+    /// signature selected at send time, kept separate from `bodyText`/
+    /// `htmlBody` (neither of which contains the signature — only
+    /// `ComposerView.send()` combines them, transiently, for the actual
+    /// `OutboxMessageRecord` it wrote just before this snapshot was
+    /// captured). `ComposerView.loadCancelledSend(_:)` restores this
+    /// straight into `selectedSignatureId`, so "送信を取り消す" shows the same
+    /// signature preview the send had, without it ever having been mixed
+    /// into the editable body.
+    var signatureId: Int64?
     var inReplyToMessageId: String?
     var references: [String]
     var attachments: [PendingAttachment]

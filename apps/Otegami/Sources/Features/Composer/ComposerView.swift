@@ -103,11 +103,12 @@ struct ComposerView: View {
     /// in, exactly like before — only newly-typed/selected text ever picks
     /// up formatting from the formatting bar).
     @State private var attributedBodyText = RichTextAttributedString.plainAttributedString("")
-    /// Task #125 「署名カーソル」: bound to `bodySection`'s `RichTextEditor` —
-    /// only ever *written* by `updateSignatureText(newId:)` right after it
-    /// mutates `attributedBodyText` (`ComposerCursorPlacement.cursorIndex`'s
-    /// result, converted to an `NSRange`). Left untouched the rest of the
-    /// time, so normal typing/selection isn't interfered with.
+    /// Bound to `bodySection`'s `RichTextEditor` — reflects the live
+    /// cursor/selection. Task #125's 「署名カーソル」placement logic that used
+    /// to write here (right after a signature's text was appended to
+    /// `attributedBodyText`) was retired by Task #162 — signatures no
+    /// longer touch the body at all, so there's no post-insertion cursor to
+    /// place; see "MARK: - F 署名"'s doc comment.
     @State private var bodySelectedRange = NSRange(location: 0, length: 0)
     /// Task #129: created once, handed to both `bodySection`'s
     /// `RichTextEditor` and its formatting bar — see
@@ -200,13 +201,27 @@ struct ComposerView: View {
     /// count as "something to lose" for `hasUnsavedChanges`'s save-or-
     /// discard prompt.
     ///
-    /// Task #156: `send()` reuses this exact same rendering as
-    /// `OutboxMessageRecord.htmlBody`/`PendingSendDraftSnapshot.htmlBody` —
-    /// it's already precisely "what the current body looks like as HTML",
-    /// which is exactly what the actual SMTP send (and a cancelled-send
-    /// restore) need too, no separate computation required.
+    /// Task #156: `send()` reuses this exact same rendering for
+    /// `PendingSendDraftSnapshot.htmlBody` (C7's cancelled-send restore) and
+    /// `saveDraft()` for `DraftMessageRecord.htmlBody` — both want
+    /// precisely "what the editable body looks like as HTML", the
+    /// signature deliberately *not* included (Task #162: neither a
+    /// cancelled-send restore nor a resumed draft should show the
+    /// signature already baked into the body — see `bodyDocumentWithSignature`
+    /// for the one place that combines them, and this file's "MARK: - F
+    /// 署名" doc comment for the full picture).
     private var bodySnapshotString: String {
         RichTextHTMLCoder.encode(RichTextAttributedString.makeDocument(from: attributedBodyText))
+    }
+
+    /// Task #162: the editable body combined with the currently-selected
+    /// signature (if any) as "本文 + 空行 + 署名" — `send()`'s sole caller,
+    /// right before deriving `OutboxMessageRecord.plainTextBody`/`.htmlBody`
+    /// from it. See `RichTextDocument.appendingSignature(_:)`'s doc comment
+    /// for why this builds one combined document rather than string-
+    /// splicing the plain and HTML forms independently.
+    private var bodyDocumentWithSignature: RichTextDocument {
+        RichTextAttributedString.makeDocument(from: attributedBodyText).appendingSignature(selectedSignature?.body)
     }
 
     /// Whether closing now would silently lose something the user typed.
@@ -249,6 +264,20 @@ struct ComposerView: View {
     @State private var availableTemplates: [MailTemplateRecord] = []
 
     // MARK: - F 署名
+    //
+    // Task #162 (実機フィードバック「署名が本文に混ざって編集しづらい」):
+    // signatures are no longer inserted into `attributedBodyText` at all —
+    // `selectedSignatureId` only drives a read-only preview row
+    // (`flatSignatureRow`/`signatureSection`) below the body editor.
+    // Combining "本文 + 空行 + 署名" happens exactly once, transiently, at
+    // `send()` (`RichTextDocument.appendingSignature(_:)`) — the editable
+    // body the user actually types into, `DraftMessageRecord`'s persisted
+    // columns, and C7's `PendingSendDraftSnapshot` all keep body and
+    // signature choice entirely separate. This also retires Task #125's
+    // 「署名カーソル」cursor-placement logic (`ComposerCursorPlacement`,
+    // deleted) — that logic only ever existed to place the cursor relative
+    // to signature text that lived *inside* the body; with nothing being
+    // inserted there anymore, there's no cursor to place.
 
     /// Signatures scoped to the currently-selected `From` account — same
     /// "reloaded on `.task(id: selectedAccountId)`" shape as
@@ -258,18 +287,14 @@ struct ComposerView: View {
     /// GRDB can't filter inside SQL — this list is never large enough
     /// (a handful of signatures at most) for that to matter.
     @State private var availableSignatures: [SignatureTemplateRecord] = []
-    /// `nil` = "なし" (the picker's own first option). Auto-set to the
-    /// selected account's `defaultSignatureId` only for a brand-new
-    /// composition — see `loadAvailableSignatures()`'s doc comment for why
-    /// reply/forward/draft don't auto-insert.
+    /// `nil` = "なし" (the picker's own first option). Auto-selected by
+    /// `loadAvailableSignatures()` whenever this is still `nil` after a From
+    /// account (re)load — priority "前回選択 (`LastSignatureSettingsStore`) >
+    /// アカウント既定署名 (`AccountRecord.defaultSignatureId`) > なし". Restored
+    /// verbatim (never re-derived) when resuming a saved draft
+    /// (`DraftMessageRecord.signatureId`) or a cancelled send
+    /// (`PendingSendDraftSnapshot.signatureId`).
     @State private var selectedSignatureId: Int64?
-    /// The exact string `updateSignatureText(newId:)` last appended to
-    /// `bodyText` for `selectedSignatureId` (including its leading
-    /// separator) — tracked so switching signatures (or picking "なし")
-    /// removes precisely what was inserted via an exact suffix match,
-    /// rather than guessing from whitespace. `nil` once nothing is
-    /// currently inserted.
-    @State private var insertedSignatureText: String?
 
     var body: some View {
         NavigationStack {
@@ -332,9 +357,6 @@ struct ComposerView: View {
         .task { await prepare() }
         .task(id: selectedAccountId) { await loadAvailableTemplates() }
         .task(id: selectedAccountId) { await loadAvailableSignatures() }
-        .onChange(of: selectedSignatureId) { _, newValue in
-            updateSignatureText(newId: newValue)
-        }
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls):
@@ -618,10 +640,12 @@ struct ComposerView: View {
 
     /// F「作成画面に署名選択欄」— unlike `templateSection`'s `Menu` (an
     /// *action*), this is a `Picker` bound to persistent state
-    /// (`selectedSignatureId`): choosing a different signature removes
-    /// whatever the previous one inserted and inserts the new one (see
-    /// `updateSignatureText(newId:)`), matching the requirement "切替時は
-    /// 前の署名を除去して差し替え". Only shown once at least one signature is
+    /// (`selectedSignatureId`, via `selectedSignatureIdBinding` so a genuine
+    /// user pick also records `LastSignatureSettingsStore`'s per-account
+    /// memory). Task #162: 本文への挿入はもうしない — 署名の内容自体は
+    /// `signatureBodyPreview`の読み取り専用プレビューで見せる。ラベルは常に
+    /// 「署名: <名前>」/「署名: なし」形式 (実機フィードバック「いきなり『なし』
+    /// だけだと分かりにくい」)。Only shown once at least one signature is
     /// scoped to the selected account — an empty picker with nothing but
     /// "なし" would be pointless chrome.
     #if os(macOS)
@@ -629,7 +653,7 @@ struct ComposerView: View {
     private var signatureSection: some View {
         if !availableSignatures.isEmpty {
             Section {
-                Picker("署名", selection: $selectedSignatureId) {
+                Picker("署名", selection: selectedSignatureIdBinding) {
                     Text("なし").tag(Int64?.none)
                     ForEach(availableSignatures) { signature in
                         Text(signature.name).tag(Optional(signature.id))
@@ -637,6 +661,7 @@ struct ComposerView: View {
                 }
                 .pickerStyle(.menu)
                 .accessibilityIdentifier("composer.signaturePicker")
+                signatureBodyPreview
             } header: {
                 Text("署名")
             }
@@ -864,40 +889,35 @@ struct ComposerView: View {
         }
     }
 
-    /// 「署名: 本文下に「署名なし」のようなグレーテキスト行 — タップで既存の
-    /// 署名選択。署名選択済みなら署名内容を表示。」`Picker(selection:label:)`
-    /// にカスタムラベルを渡し`.pickerStyle(.menu)`にする、という標準の
-    /// SwiftUIパターン — ラベル (`selectedSignatureLabel`、選択中の署名名か
-    /// 「署名なし」) がそのままタップ可能な行の見た目になり、タップすると
+    /// 「署名: 本文下に「署名: なし」/「署名: <名前>」というグレーテキスト行 —
+    /// タップで既存の署名選択。署名選択済みなら署名内容をその下にプレビュー
+    /// 表示 (`signatureBodyPreview`)。」実機フィードバック「いきなり『なし』
+    /// だけだと分かりにくい」を受けて、ラベルは常に「署名: 」を前置きする
+    /// (`selectedSignatureLabel`)。`Picker(selection:label:)`にカスタム
+    /// ラベルを渡し`.pickerStyle(.menu)`にする、という標準のSwiftUIパターン —
+    /// ラベルがそのままタップ可能な行の見た目になり、タップすると
     /// `availableSignatures`のメニューが開く。選択そのもの
-    /// (`selectedSignatureId`) と、それが変わったときの本文への挿入/削除
-    /// (`updateSignatureText(newId:)`、カーソル位置調整含む) はmacOS側の
-    /// `signatureSection`と完全に同じロジックを共有している (`onChange(of:
-    /// selectedSignatureId)`が`body`トップレベルにあるので、プラットフォーム
-    /// ごとの見た目の違いに関わらず1箇所で動く)。
+    /// (`selectedSignatureId`、`selectedSignatureIdBinding`経由) はmacOS側の
+    /// `signatureSection`と完全に同じ状態を共有している。
     @ViewBuilder
     private var flatSignatureRow: some View {
         if !availableSignatures.isEmpty {
-            Picker(selection: $selectedSignatureId) {
-                Text("なし").tag(Int64?.none)
-                ForEach(availableSignatures) { signature in
-                    Text(signature.name).tag(Optional(signature.id))
+            VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
+                Picker(selection: selectedSignatureIdBinding) {
+                    Text("なし").tag(Int64?.none)
+                    ForEach(availableSignatures) { signature in
+                        Text(signature.name).tag(Optional(signature.id))
+                    }
+                } label: {
+                    Text(selectedSignatureLabel)
+                        .font(OtegamiFont.subheadline())
+                        .foregroundStyle(OtegamiColor.inkTertiary)
                 }
-            } label: {
-                Text(selectedSignatureLabel)
-                    .font(OtegamiFont.subheadline())
-                    .foregroundStyle(OtegamiColor.inkTertiary)
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("composer.signaturePicker")
+                signatureBodyPreview
             }
-            .pickerStyle(.menu)
-            .accessibilityIdentifier("composer.signaturePicker")
         }
-    }
-
-    private var selectedSignatureLabel: String {
-        guard let selectedSignatureId,
-              let signature = availableSignatures.first(where: { $0.id == selectedSignatureId })
-        else { return "署名なし" }
-        return signature.name
     }
 
     /// 添付済みファイル一覧: 装飾を他の行と同トーンに（`Section`の見出しなし）。
@@ -921,17 +941,74 @@ struct ComposerView: View {
     }
     #endif
 
+    // MARK: - F 署名 (プラットフォーム共通)
+
+    private var selectedSignature: SignatureTemplateRecord? {
+        guard let selectedSignatureId else { return nil }
+        return availableSignatures.first(where: { $0.id == selectedSignatureId })
+    }
+
+    /// Task #162: 「署名: なし」「署名: <署名名>」形式 — 実機フィードバック
+    ///「いきなり『なし』だけだと分かりにくい」を受けて、常に「署名: 」を
+    /// 前置きする (以前は選択済みなら署名名のみ、未選択なら「署名なし」と
+    /// 前置きなしだった)。
+    private var selectedSignatureLabel: String {
+        "署名: " + (selectedSignature?.name ?? "なし")
+    }
+
+    /// Task #162: 選択中の署名の本文を、編集不可・グレーのプレビューとして
+    /// 表示する — 本文欄には何も挿入しない代わりに、送信時にどう結合される
+    /// かをここで見せる。署名が「なし」なら何も描画しない。
+    @ViewBuilder
+    private var signatureBodyPreview: some View {
+        if let selectedSignature, !selectedSignature.body.isEmpty {
+            Text(selectedSignature.body)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("composer.signaturePreview")
+        }
+    }
+
+    /// Task #162 (アカウント別の前回署名記憶): the `Picker`s' own binding —
+    /// distinct from the raw `$selectedSignatureId` so a genuine user pick
+    /// (routed through this binding's `set`) records
+    /// `LastSignatureSettingsStore`'s per-account memory, while
+    /// `loadAvailableSignatures()`'s programmatic clear-on-account-switch/
+    /// auto-select (which assigns `selectedSignatureId` directly, bypassing
+    /// this binding entirely) never does — see that store's doc comment for
+    /// why conflating the two would corrupt the memory during an account
+    /// switch.
+    private var selectedSignatureIdBinding: Binding<Int64?> {
+        Binding(
+            get: { selectedSignatureId },
+            set: { newValue in
+                selectedSignatureId = newValue
+                if let selectedAccountId {
+                    LastSignatureSettingsStore.recordSelection(newValue, forAccountId: selectedAccountId)
+                }
+            }
+        )
+    }
+
     /// Reloads `availableSignatures` for `selectedAccountId` (`.task(id:)`
-    /// in `body`, fired on every From-account switch too) and, only for a
-    /// brand-new composition (`payload.kind == .new` — matching G「デフォル
-    /// トのアカウント」's identical "new-only" scoping in `prepare()`),
-    /// auto-selects that account's default signature the first time. Not
-    /// applied to `.reply`/`.forward`/drafts: those already asynchronously
-    /// prefill `bodyText` with quoted content in `prepare()`, and racing an
-    /// auto-inserted signature against that prefill (which task finishes
-    /// last wins, unpredictably) is a correctness risk this batch avoids by
-    /// simply not auto-inserting there — the picker itself still works, it
-    /// just starts at "なし" and any signature has to be picked manually.
+    /// in `body`, fired on every From-account switch too) and, whenever
+    /// `selectedSignatureId` is still `nil` at that point, auto-selects one
+    /// at the priority "前回選択 (`LastSignatureSettingsStore`) > アカウント
+    /// 既定署名 (`AccountRecord.defaultSignatureId`) > なし".
+    ///
+    /// Task #162: this used to be restricted to a brand-new composition
+    /// only (`payload.kind == .new`) — reply/forward/draft avoided
+    /// auto-selecting because doing so used to *insert the signature's text
+    /// into `bodyText`*, which could race against those flows' own
+    /// asynchronous quoted-body prefill in `prepare()` (whichever finished
+    /// last would win, unpredictably). Signatures no longer touch the body
+    /// at all (only `send()` combines them, transiently — see
+    /// `RichTextDocument.appendingSignature(_:)`), so that race can no
+    /// longer happen, and this now runs for every composition kind — a
+    /// reply/forward switched to a different `From` account now also picks
+    /// up that account's last-used (or default) signature, matching the
+    /// plan's "差出人アカウントを切り替えたらそのアカウントの前回署名に追随".
     private func loadAvailableSignatures() async {
         guard let selectedAccountId else {
             availableSignatures = []
@@ -944,73 +1021,30 @@ struct ComposerView: View {
 
         if let selectedSignatureId, !availableSignatures.contains(where: { $0.id == selectedSignatureId }) {
             // The previous pick doesn't apply to the (possibly just-
-            // switched) account anymore — `.onChange(of: selectedSignatureId)`
-            // handles removing its inserted text.
+            // switched) account anymore.
             self.selectedSignatureId = nil
         }
 
-        guard case .new = payload.kind, selectedSignatureId == nil else { return }
+        guard selectedSignatureId == nil else { return }
+        if let lastSelection = LastSignatureSettingsStore.lastSelection(forAccountId: selectedAccountId) {
+            // A past explicit choice is on record for this account — honor
+            // it verbatim, including an explicit past "なし"
+            // (`lastSelection == .some(nil)`, which leaves `selectedSignatureId`
+            // at its current `nil` and does nothing further below). If the
+            // recorded id no longer resolves to a signature actually scoped
+            // to this account (deleted, or reassigned to a different
+            // account since), fall through to the account-default check
+            // below instead of leaving a stale, unusable id selected.
+            if let lastId = lastSelection, availableSignatures.contains(where: { $0.id == lastId }) {
+                selectedSignatureId = lastId
+                return
+            }
+            if lastSelection == nil { return }
+        }
         if let account = environment.accounts.first(where: { $0.id == selectedAccountId }),
            let defaultId = account.defaultSignatureId,
            availableSignatures.contains(where: { $0.id == defaultId }) {
             selectedSignatureId = defaultId
-        }
-    }
-
-    /// The single place `bodyText` is ever mutated for a signature change —
-    /// both the Picker's own `.onChange` and `loadAvailableSignatures()`'s
-    /// auto-select path funnel through here (the latter only ever *sets*
-    /// `selectedSignatureId`, never touches `bodyText` directly), so there's
-    /// exactly one insertion/removal code path to reason about.
-    ///
-    /// Task #125 「署名カーソル」: after (re)inserting, also repositions
-    /// `bodySelection` via `ComposerCursorPlacement.cursorIndex` — without
-    /// this, `TextEditor` is free to leave the cursor wherever it happened
-    /// to be (typically the very end, right after the just-appended
-    /// signature), which is exactly where a user would *not* want to keep
-    /// typing. Picking "なし" (removal-only, `newId == nil`) doesn't move
-    /// the cursor — there's no fresh insertion point to jump to, and
-    /// leaving the selection alone matches how removing text normally
-    /// behaves.
-    private func updateSignatureText(newId: Int64?) {
-        if let insertedSignatureText, bodyText.hasSuffix(insertedSignatureText) {
-            // Task #129: removal has to go through the attributed string
-            // directly (not `String.removeLast(_:)`) — `NSRange` counts
-            // UTF-16 units, not `Character`s, so the length to delete is
-            // measured the same way.
-            let mutable = NSMutableAttributedString(attributedString: attributedBodyText)
-            let removeLength = (insertedSignatureText as NSString).length
-            mutable.deleteCharacters(in: NSRange(location: mutable.length - removeLength, length: removeLength))
-            attributedBodyText = mutable
-        }
-        insertedSignatureText = nil
-        guard let newId, let signature = availableSignatures.first(where: { $0.id == newId }) else { return }
-        let separator = bodyText.isEmpty ? "" : "\n\n"
-        let insertion = separator + signature.body
-        appendPlainBody(insertion)
-        insertedSignatureText = insertion
-        let cursorIndex = ComposerCursorPlacement.cursorIndex(
-            in: bodyText, signatureBody: signature.body, hasQuoteAboveSignature: hasQuoteAboveSignature
-        )
-        // `ComposerCursorPlacement` works in `String.Index` terms;
-        // `NSRange(_:in:)` converts that to the UTF-16-based `NSRange`
-        // `RichTextEditor`'s `UITextView`/`NSTextView` selection expects.
-        let nsIndex = NSRange(cursorIndex..<cursorIndex, in: bodyText)
-        bodySelectedRange = NSRange(location: nsIndex.location, length: 0)
-    }
-
-    /// Task #125 「署名カーソル」: whether `bodyText` already carries a
-    /// quoted block above wherever `updateSignatureText(newId:)` appends a
-    /// signature (always at the very end) — true for `.reply`/`.forward`,
-    /// both of which prefill `bodyText` with a `> `-quoted original message
-    /// (`prefillReply`/`prefillForward`) before the user ever gets to pick a
-    /// signature. See `ComposerCursorPlacement`'s doc comment for why this
-    /// collapses the "above quote" and "above signature" cases into one
-    /// (quote is always above signature) cursor position.
-    private var hasQuoteAboveSignature: Bool {
-        switch payload.kind {
-        case .reply, .forward: true
-        case .new, .draft, .serverDraft, .cancelledSend, .mailto: false
         }
     }
 
@@ -1136,6 +1170,14 @@ struct ComposerView: View {
         } else {
             setPlainBody(draft.plainTextBody)
         }
+        // Task #162: the signature choice this draft was saved with —
+        // restored verbatim (never re-derived) rather than left for
+        // `loadAvailableSignatures()`'s auto-select to fill in, same as
+        // every other field above. `nil` for a draft this schema predates
+        // (no migration) or one whose signature was still literal text
+        // inside `plainTextBody` back then — either way `selectedSignatureId`
+        // simply falls through to the normal auto-select priority chain.
+        selectedSignatureId = draft.signatureId
         inReplyToMessageId = draft.inReplyToMessageId
         references = draft.references
         draftServerMailboxId = draft.serverMailboxId
@@ -1173,6 +1215,11 @@ struct ComposerView: View {
         } else {
             setPlainBody(snapshot.bodyText)
         }
+        // Task #162: the signature selected at send time — restored
+        // straight into `selectedSignatureId` (not mixed back into the
+        // body, which `snapshot.bodyText`/`.htmlBody` never contained in
+        // the first place).
+        selectedSignatureId = snapshot.signatureId
         inReplyToMessageId = snapshot.inReplyToMessageId
         references = snapshot.references
         pendingAttachments = snapshot.attachments
@@ -1360,6 +1407,10 @@ struct ComposerView: View {
                     subject: subject,
                     plainTextBody: bodyText,
                     htmlBody: bodySnapshotString,
+                    // Task #162: the signature choice, kept separate from
+                    // the body above (never mixed in) — see
+                    // `DraftMessageRecord.signatureId`'s doc comment.
+                    signatureId: selectedSignatureId,
                     inReplyToMessageId: inReplyToMessageId,
                     references: references,
                     serverMailboxId: draftServerMailboxId,
@@ -1637,6 +1688,12 @@ struct ComposerView: View {
             // outbox row.
             let stagedAttachments = try Self.stageAttachments(pendingAttachments, subdirectory: "Outbox")
 
+            // Task #162: "本文 + 空行 + 署名" combined exactly once, here, for
+            // the actual RFC822 payload — see `bodyDocumentWithSignature`'s
+            // doc comment for why the plain/HTML pair is derived from one
+            // shared `RichTextDocument` rather than two independently-built
+            // strings.
+            let sendDocument = bodyDocumentWithSignature
             let outboxId: Int64? = try await environment.database.dbWriter.write { db in
                 var outbox = OutboxMessageRecord(
                     accountId: accountId,
@@ -1644,8 +1701,8 @@ struct ComposerView: View {
                     ccAddresses: ccAddresses,
                     bccAddresses: bccAddresses,
                     subject: subject,
-                    plainTextBody: bodyText,
-                    htmlBody: bodySnapshotString,
+                    plainTextBody: sendDocument.plainText,
+                    htmlBody: RichTextHTMLCoder.encode(sendDocument),
                     inReplyToMessageId: inReplyToMessageId,
                     references: references,
                     draftServerMailboxId: draftServerMailboxId,
@@ -1683,9 +1740,16 @@ struct ComposerView: View {
             // immediate on that platform, matching every prior milestone's
             // behavior).
             if let duration = SendCancelWindow(rawValue: sendCancelWindowRaw)?.duration ?? SendCancelSettingsStore.defaultWindow.duration {
+                // Task #162: deliberately the *unmerged* body (`bodyText`/
+                // `bodySnapshotString`, not `sendDocument` above) plus the
+                // signature choice kept separate — reopening a cancelled
+                // send should show the same editable body and signature
+                // preview the Composer had, not the body with the
+                // signature already baked into it.
                 let snapshot = PendingSendDraftSnapshot(
                     accountId: accountId, toText: toText, ccText: ccText, bccText: bccText, subject: subject, bodyText: bodyText,
                     htmlBody: bodySnapshotString,
+                    signatureId: selectedSignatureId,
                     inReplyToMessageId: inReplyToMessageId, references: references,
                     attachments: pendingAttachments,
                     draftServerMailboxId: draftServerMailboxId, draftServerUid: draftServerUid, draftServerUidValidity: draftServerUidValidity
