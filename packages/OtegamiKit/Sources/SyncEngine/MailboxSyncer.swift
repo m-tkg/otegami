@@ -239,7 +239,15 @@ public actor MailboxSyncer {
             var record = mailboxRecord
             record.uidValidity = Int64(status.uidValidity)
             record.uidNext = Int64(status.uidNext)
-            record.highestModSeq = Int64(status.highestModSeq)
+            // Task #167 / F13: `status.highestModSeq` is a server-
+            // controlled `UInt64` (the `SELECT` response's
+            // `HIGHESTMODSEQ` resp-text-code, RFC 7162 §3.1.1) —
+            // `Int64(_:)` traps for any value past `Int64.max`.
+            // `Int64(clamping:)` never traps; this field is only ever
+            // compared for "did it advance since last sync", so clamping
+            // an unrealistic value to `Int64.max` is indistinguishable in
+            // practice from storing it exactly.
+            record.highestModSeq = Int64(clamping: status.highestModSeq)
             record.messageCount = status.messageCount
             record.lastSyncedAt = Date()
             try record.update(db)
@@ -284,7 +292,15 @@ public actor MailboxSyncer {
             var record = mailboxRecord
             record.uidValidity = Int64(status.uidValidity)
             record.uidNext = Int64(status.uidNext)
-            record.highestModSeq = Int64(status.highestModSeq)
+            // Task #167 / F13: `status.highestModSeq` is a server-
+            // controlled `UInt64` (the `SELECT` response's
+            // `HIGHESTMODSEQ` resp-text-code, RFC 7162 §3.1.1) —
+            // `Int64(_:)` traps for any value past `Int64.max`.
+            // `Int64(clamping:)` never traps; this field is only ever
+            // compared for "did it advance since last sync", so clamping
+            // an unrealistic value to `Int64.max` is indistinguishable in
+            // practice from storing it exactly.
+            record.highestModSeq = Int64(clamping: status.highestModSeq)
             record.messageCount = status.messageCount
             record.lastSyncedAt = Date()
             try record.update(db)

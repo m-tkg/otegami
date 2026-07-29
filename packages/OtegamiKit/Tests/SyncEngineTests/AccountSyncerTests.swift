@@ -130,6 +130,36 @@ struct AccountSyncerTests {
         #expect(mailboxes.count == 1)
     }
 
+    /// Task #167 / F14 (`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md`):
+    /// a hostile/compromised IMAP server's `SELECT` response can report a
+    /// `HIGHESTMODSEQ` above `Int64.max` — `Int64(status.highestModSeq)`
+    /// used to trap-crash the process on that value, on every initial
+    /// sync attempt against that mailbox. `Int64(clamping:)` must instead
+    /// store `Int64.max` and let initial sync complete normally.
+    @Test("initial sync clamps a server-reported HIGHESTMODSEQ above Int64.max instead of crashing")
+    func initialSyncClampsOversizedHighestModSeq() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [makeInbox(uid: 1, subject: "ようこそ otegami へ")]],
+            statusByPath: [
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: UInt64.max, messageCount: 1),
+            ]
+        )
+
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: script)
+        }
+        _ = try await syncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let mailboxes = try await database.dbWriter.read { db in try MailboxRecord.fetchAll(db) }
+        #expect(mailboxes.first?.highestModSeq == Int64.max)
+    }
+
     @Test("only fetches the most recent initialSyncWindow messages from a larger mailbox")
     func fetchesOnlyRecentWindow() async throws {
         let database = try AppDatabase.makeInMemory()

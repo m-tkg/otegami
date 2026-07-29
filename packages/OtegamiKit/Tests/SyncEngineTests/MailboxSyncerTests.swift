@@ -467,6 +467,74 @@ struct MailboxSyncerTests {
 
     // MARK: (c) uidValidity change
 
+    /// Task #167 / F13 (`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md`):
+    /// a hostile/compromised IMAP server's `SELECT` response can report a
+    /// `HIGHESTMODSEQ` above `Int64.max` — `Int64(status.highestModSeq)`
+    /// used to trap-crash the process on every incremental sync of that
+    /// mailbox. `Int64(clamping:)` must instead store `Int64.max` and let
+    /// the sync pass complete normally (step 3, the mailbox-metadata write
+    /// this exercises).
+    @Test("incremental sync clamps a server-reported HIGHESTMODSEQ above Int64.max instead of crashing")
+    func incrementalSyncClampsOversizedHighestModSeq() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "1通目")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+            )
+        )
+
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: UInt64.max, messageCount: 1)],
+            capabilitiesToReport: [.condstore],
+            changedSinceEnvelopesByPath: ["INBOX": []]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let mailbox = try #require(try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db) })
+        #expect(mailbox.highestModSeq == Int64.max)
+    }
+
+    /// Same as `incrementalSyncClampsOversizedHighestModSeq` above, but for
+    /// `performWindowedResync` (the uidValidity-changed/never-synced path),
+    /// which has its own separate `Int64(status.highestModSeq)` call site.
+    @Test("a uidValidity-changed resync clamps a server-reported HIGHESTMODSEQ above Int64.max instead of crashing")
+    func windowedResyncClampsOversizedHighestModSeq() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "旧世代1")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+            )
+        )
+
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "新世代1")]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 2, uidNext: 2, highestModSeq: UInt64.max, messageCount: 1)]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+        #expect(progress.didFullResync == true)
+
+        let mailbox = try #require(try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db) })
+        #expect(mailbox.highestModSeq == Int64.max)
+    }
+
     @Test("a uidValidity change discards local messages and re-syncs the recent window from scratch")
     func uidValidityChangeTriggersFullResync() async throws {
         let database = try AppDatabase.makeInMemory()

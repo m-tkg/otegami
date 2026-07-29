@@ -324,7 +324,18 @@ public actor AccountSyncer {
                         var updated = syncedRecord
                         updated.uidValidity = Int64(status.uidValidity)
                         updated.uidNext = Int64(status.uidNext)
-                        updated.highestModSeq = Int64(status.highestModSeq)
+                        // Task #167 / F14: `status.highestModSeq` is a
+                        // server-controlled `UInt64` (the `SELECT`
+                        // response's `HIGHESTMODSEQ` resp-text-code, RFC
+                        // 7162 §3.1.1) — `Int64(_:)` traps for any value
+                        // past `Int64.max`, and the `do`/`catch { continue
+                        // }` this closure runs inside can't catch a Swift
+                        // runtime trap. `Int64(clamping:)` never traps;
+                        // storing `Int64.max` for a `HIGHESTMODSEQ` that
+                        // large is indistinguishable in practice from the
+                        // real value for this field's only use (detecting
+                        // whether it advanced since last sync).
+                        updated.highestModSeq = Int64(clamping: status.highestModSeq)
                         updated.messageCount = status.messageCount
                         updated.lastSyncedAt = Date()
                         try updated.update(db)
@@ -486,7 +497,7 @@ public actor AccountSyncer {
             return .authentication
         case .connectionFailed:
             return .networkUnreachable
-        case .serverError, .malformedResponse, .mailboxNotFound, .notConnected, .cancelled, .notImplemented:
+        case .serverError, .malformedResponse, .mailboxNotFound, .notConnected, .cancelled, .notImplemented, .invalidAddress:
             return .other
         }
     }

@@ -463,7 +463,78 @@ extension MailCoreIMAPSession {
         )
     }
 
-    // MARK: - QRESYNC vanished / UID search (Task #79)
+    // MARK: - QRESYNC vanished / UID search (Task #79, Task #167 / F5)
+
+    /// Circuit breaker for `materializedUIDs(from:)`: the most UIDs either
+    /// `vanishedUIDs(from:)` or `uidSet(from:)` will ever expand a single
+    /// server-reported index set into. RFC 3501 UIDs are 32-bit, so any
+    /// real mailbox's vanished/search-match set is nowhere near this — it
+    /// exists purely to bound the memory an adversarial (or MITM'd, or
+    /// compromised) IMAP server can force this client to allocate by
+    /// reporting a huge-but-technically-`UInt32`-representable range (e.g.
+    /// `1:4294967295`). See F5 in
+    /// `CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md`.
+    private static let maxMaterializedUIDCount = 200_000
+
+    /// Converts `indexSet`'s ranges to a `Set<UInt32>`, defending against a
+    /// server-controlled index set whose ranges reach past what `UInt32`
+    /// can represent — RFC 7162's `VANISHED (EARLIER) n:*` is mapped by
+    /// mailcore2's `indexSetFromSet` to a range ending at `UINT64_MAX`
+    /// (`* == 0` in libetpan's `mailimap_seq_number_parse`, which
+    /// `indexSetFromSet` then turns into `RangeMake(n, UINT64_MAX)`) — or
+    /// simply enormous (`1:4294967295`, ~4.3 billion elements). The
+    /// previous implementation drove `MCOIndexSet.enumerate`, which calls
+    /// this method's block once per element with a `UInt64` — piping that
+    /// straight into `UInt32(_:)` (a trapping, range-checked initializer)
+    /// crashed the process outright the first time an element exceeded
+    /// `UInt32.max`, and even a range that stayed within `UInt32`'s range
+    /// but was merely huge would materialize hundreds of millions of `Set`
+    /// entries and exhaust memory first. This walks `allRanges()` instead
+    /// (mailcore2's dense-range representation, never itself proportional
+    /// to element count) so an out-of-bounds or oversized range can be
+    /// detected and rejected *before* any trapping conversion or
+    /// unbounded materialization happens:
+    ///
+    /// - A range whose lower bound already exceeds `UInt32.max` is skipped
+    ///   entirely — RFC 3501 UIDs are 32-bit, so nothing in it could be a
+    ///   real UID.
+    /// - A range's upper bound is clipped to `UInt32.max`, computed with
+    ///   overflow-safe addition (`addingReportingOverflow`) since a
+    ///   "vanished-until-end" range's `length` can itself be `UInt64.max`
+    ///   — `location + length` would trap on plain `+`.
+    /// - If the running total across every (already-clipped) range would
+    ///   exceed `maxMaterializedUIDCount`, returns `nil` immediately rather
+    ///   than continuing to materialize a huge `Set` — callers treat `nil`
+    ///   as "can't safely say" and fall back to a cheaper reconciliation
+    ///   path instead of trusting an incomplete/truncated result.
+    /// - Every element that does get inserted is bounded to `[0,
+    ///   UInt32.max]` by the two checks above, so `UInt32(truncatingIfNeeded:)`
+    ///   (never-trapping, unlike `UInt32(_:)`) is safe here purely as
+    ///   defense in depth, not because it's expected to ever actually
+    ///   truncate.
+    private static func materializedUIDs(from indexSet: MCOIndexSet) -> Set<UInt32>? {
+        var result: Set<UInt32> = []
+        result.reserveCapacity(min(Int(clamping: indexSet.count()), maxMaterializedUIDCount))
+        for range in indexSet.allRanges() {
+            let location = range.location
+            guard location <= UInt64(UInt32.max) else { continue }
+
+            let upper: UInt64
+            let (sum, overflowed) = location.addingReportingOverflow(range.length)
+            upper = overflowed ? UInt64(UInt32.max) : min(sum, UInt64(UInt32.max))
+            guard upper >= location else { continue }
+
+            let rangeCount = upper - location + 1
+            guard result.count + Int(clamping: rangeCount) <= maxMaterializedUIDCount else { return nil }
+
+            var value = location
+            while value <= upper {
+                result.insert(UInt32(truncatingIfNeeded: value))
+                value += 1
+            }
+        }
+        return result
+    }
 
     /// Converts `syncMessages`'s `vanishedMessages` index set (QRESYNC's
     /// `VANISHED` response, RFC 7162 §3.2.10) to a plain `Set<UInt32>` of
@@ -472,24 +543,38 @@ extension MailCoreIMAPSession {
     /// this fetch) — as opposed to a non-`nil` empty set, which means
     /// QRESYNC *was* active and genuinely nothing vanished this round. See
     /// `MailCoreIMAPSession.fetchEnvelopes(changedSince:)`'s doc comment for
-    /// why that distinction matters to `MailboxSyncer`.
+    /// why that distinction matters to `MailboxSyncer`. As of Task #167,
+    /// also returns `nil` — collapsing into the same "unknown" case — when
+    /// `materializedUIDs(from:)` refuses to safely materialize the set (an
+    /// out-of-range or oversized server-reported range); `MailboxSyncer`'s
+    /// existing `nil` handling already falls back to
+    /// `detectAndRemoveVanishedByUIDSearch`'s `UID SEARCH` reconciliation
+    /// in that case, so this doesn't need its own separate signal.
     static func vanishedUIDs(from indexSet: MCOIndexSet?) -> Set<UInt32>? {
         guard let indexSet else { return nil }
-        var result: Set<UInt32> = []
-        indexSet.enumerate { result.insert(UInt32($0)) }
-        return result
+        return materializedUIDs(from: indexSet)
     }
 
     /// Converts a `UID SEARCH` result index set to a plain `Set<UInt32>` —
-    /// used by `searchExistingUIDs`. `nil` (a legitimately empty match, or
-    /// MailCore2 handing back no index set at all) maps to an empty set
-    /// either way: unlike `vanishedUIDs(from:)` above, there is no
-    /// "unknown vs. definitely none" distinction to preserve here — a
+    /// used by `searchExistingUIDs`. `nil` `indexSet` (a legitimately empty
+    /// match, or MailCore2 handing back no index set at all) maps to an
+    /// empty set: unlike `vanishedUIDs(from:)` above, there is no "unknown
+    /// vs. definitely none" distinction to preserve for that case — a
     /// completed `UID SEARCH` is always authoritative about what it found.
-    static func uidSet(from indexSet: MCOIndexSet?) -> Set<UInt32> {
+    /// A *non-`nil`* `indexSet` that `materializedUIDs(from:)` can't safely
+    /// materialize (Task #167 / F5) is different: silently returning an
+    /// empty set here would read to `MailboxSyncer.detectAndRemoveVanishedByUIDSearch`
+    /// as "the server confirms zero of these UIDs still exist" and delete
+    /// every locally-stored message in the window — the opposite of safe.
+    /// This throws instead, which that caller's existing error handling
+    /// already treats as "couldn't confirm this pass, delete nothing."
+    static func uidSet(from indexSet: MCOIndexSet?) throws -> Set<UInt32> {
         guard let indexSet else { return [] }
-        var result: Set<UInt32> = []
-        indexSet.enumerate { result.insert(UInt32($0)) }
+        guard let result = materializedUIDs(from: indexSet) else {
+            throw MailTransportError.serverError(
+                underlyingDescription: "UID SEARCH result too large to process safely"
+            )
+        }
         return result
     }
 

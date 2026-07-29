@@ -289,7 +289,11 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
                     continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
                     return
                 }
-                continuation.resume(returning: Self.uidSet(from: result))
+                do {
+                    continuation.resume(returning: try Self.uidSet(from: result))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
     }
