@@ -187,19 +187,21 @@ struct ThreadDetailView: View {
     @State private var isShowingThreadSummarySheet = false
     @State private var threadSummaryTask: Task<Void, Never>?
     /// Task #160 (実機フィードバック「複数回 FoundationModel 実行していい
-    /// から、時系列で経緯をまとめて欲しい」): `TranslationService
-    /// .summarizeThread(_:targetLanguage:onProgress:)`がメッセージ単位で
-    /// マップ段を回すようになった (`TranslationService.swift`のdoc comment
-    /// 参照) 分、メッセージ数が多いスレッドほど生成に時間がかかる —
-    /// `onProgress`が拾う「今n通目/m通中」を保持し、`threadSummarySheet`の
-    /// 生成中表示に出す。`threadSummaryState`とは別の`@State`にしている
-    /// のは、`ThreadSummaryState`自体は`Equatable`な4状態の列挙 (`.none`/
-    /// `.summarizing`/`.summarized`/`.failed`) のままにしておきたいため —
-    /// 進捗という「同じ`.summarizing`状態の中で連続的に変わる値」を
-    /// enumのケースに埋め込むと、その都度`ThreadSummaryState`ごと新しい
-    /// 値になり比較・関連コードが煩雑になる。`requestThreadSummary()`が
-    /// 生成開始時に`nil`へ戻す。
-    @State private var threadSummaryProgress: (current: Int, total: Int)?
+    /// から、時系列で経緯をまとめて欲しい」) → Task #160フォローアップ3
+    /// (「仕上げ」パスの追加): `TranslationService.summarizeThread(_:
+    /// targetLanguage:onProgress:)`がメッセージ単位でマップ段を回す
+    /// (`TranslationService.swift`のdoc comment参照) 分、メッセージ数が
+    /// 多いスレッドほど生成に時間がかかる — `onProgress`が拾う
+    /// `ThreadSummaryProgress`(「今n通目/m通中」または「仕上げ中」) を
+    /// 保持し、`threadSummarySheet`の生成中表示に出す。`threadSummaryState`
+    /// とは別の`@State`にしているのは、`ThreadSummaryState`自体は
+    /// `Equatable`な4状態の列挙 (`.none`/`.summarizing`/`.summarized`/
+    /// `.failed`) のままにしておきたいため — 進捗という「同じ
+    /// `.summarizing`状態の中で連続的に変わる値」をenumのケースに埋め
+    /// 込むと、その都度`ThreadSummaryState`ごと新しい値になり比較・関連
+    /// コードが煩雑になる。`requestThreadSummary()`が生成開始時に`nil`へ
+    /// 戻す。
+    @State private var threadSummaryProgress: ThreadSummaryProgress?
 
     var body: some View {
         // `GeometryReader` here purely to hand `expandedMessageHeight(in:)`
@@ -683,16 +685,17 @@ struct ThreadDetailView: View {
                             // Task #160: メッセージ単位でモデルを複数回
                             // 実行するようになった分、生成に時間がかかる
                             // ことがある — `threadSummaryProgress`が届き
-                            // 次第「今n通目/m通中」を出す (届く前の一瞬は
-                            // `ProgressView`だけ)。動的な数値の埋め込みで
-                            // 固定文言部分の意味は変わらないため、通常の
-                            // 文字列補間`Text`のままでよい (CLAUDE.mdが
-                            // `Text(verbatim:)`を求めているのはアカウント
-                            // 表示名・検索クエリのような外部由来の動的
-                            // 文字列がMarkdown解釈で事故る場合の話で、ここ
-                            // は整数2つだけ)。
+                            // 次第「今n通目/m通中」または(Task #160フォロー
+                            // アップ3の仕上げパス実行中の)「仕上げ中…」を
+                            // 出す (届く前の一瞬は`ProgressView`だけ)。
+                            // 動的な数値の埋め込みで固定文言部分の意味は
+                            // 変わらないため、通常の文字列補間`Text`のまま
+                            // でよい (CLAUDE.mdが`Text(verbatim:)`を求めて
+                            // いるのはアカウント表示名・検索クエリのような
+                            // 外部由来の動的文字列がMarkdown解釈で事故る
+                            // 場合の話で、ここは整数2つだけ)。
                             if let progress = threadSummaryProgress {
-                                Text("\(progress.current)/\(progress.total) 通目を要約中…")
+                                Text(progressLabelText(for: progress))
                                     .font(OtegamiFont.caption())
                                     .foregroundStyle(OtegamiColor.inkSecondary)
                                     .accessibilityIdentifier("threadDetail.summarySheet.progress")
@@ -737,6 +740,19 @@ struct ThreadDetailView: View {
         .presentationDetents([.medium, .large])
     }
 
+    /// Task #160フォローアップ3: `threadSummaryProgress`(`ThreadSummaryProgress`、
+    /// `OtegamiTranslation`) の2ケースをそれぞれの表示文言へ変換する —
+    /// `.refining`は仕上げパス (`summarizeThread`のdoc comment参照) 実行中
+    /// を表す新しい状態。
+    private func progressLabelText(for progress: ThreadSummaryProgress) -> String {
+        switch progress {
+        case .extractingMessage(let current, let total):
+            "\(current)/\(total) 通目を要約中…"
+        case .refining:
+            "仕上げ中…"
+        }
+    }
+
     /// `MessageView.requestSummary(message:)`と同じ形 (`summaryTask`と同じ
     /// 「既に実行中なら二重起動しない」ガード、`TranslationServiceError`を
     /// `.userFacingMessage`へ変換する同じcatch) だが、対象は現在展開中の
@@ -764,8 +780,8 @@ struct ThreadDetailView: View {
                 return
             }
             do {
-                let result = try await translator.summarizeThread(entries, targetLanguage: targetLanguage) { current, total in
-                    threadSummaryProgress = (current, total)
+                let result = try await translator.summarizeThread(entries, targetLanguage: targetLanguage) { event in
+                    threadSummaryProgress = event
                 }
                 guard !Task.isCancelled else { return }
                 threadSummaryState = .summarized(result)

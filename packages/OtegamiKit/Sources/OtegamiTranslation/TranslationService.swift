@@ -1,5 +1,15 @@
 import Foundation
 
+/// `TranslationService.summarizeThread(_:targetLanguage:onProgress:)`'s
+/// threshold below which the `refineThreadEntries` polish pass is skipped
+/// entirely (task spec: "3通以下の短いスレッドは refine パスをスキップ") —
+/// a thread this short is already close to as compact as a refined one
+/// would be, so the extra model call isn't worth its latency. A file-scope
+/// `let` rather than a `static let` on the protocol extension itself:
+/// Swift doesn't support stored static properties in protocol extensions
+/// (no storage location to put them in).
+private let threadEntryRefinementSkipThreshold = 3
+
 /// The single seam between "otegami translates mail" and any particular
 /// engine that does the translating. Everything above this protocol
 /// (`TranslationEngine`'s cache-aware `MessageTranslator`, and eventually
@@ -101,6 +111,25 @@ public protocol TranslationService: TranslationOnlyService {
     /// と同じく`SummaryOutputSanitizer`を通さない (ラベル構造が無いので
     /// 対象外)。
     func summarizeThreadEntry(_ text: String, targetLanguage: TranslationLanguage) async throws -> String
+
+    /// Task #160フォローアップ3 (ユーザー要望「要約済みのものを再度読ませて
+    /// さらに要約を挟ませて、もう少しシンプルにする」): an optional
+    /// "polish" pass between `summarizeThreadEntry`'s per-message facts and
+    /// the final `■経緯` — `summarizeThread`'s doc comment has the full
+    /// rationale for why this is safe from the Task #160フォローアップ
+    /// double-compression bug (this consolidates already-extracted facts;
+    /// it never re-reads raw mail bodies). `text` is the same header-
+    /// prefixed, newline-joined per-message lines `summarizeThreadDigest`
+    /// (■現状) also reads. Output starts with the `ThreadDigestLabel
+    /// .progress` label on its own first line (mirrors `summarizeThreadDigest`'s
+    /// own `ThreadDigestLabel.currentStatus`-first contract) followed by
+    /// however many condensed, chronological lines it collapsed the input
+    /// into — unlike the per-message input lines, these no longer carry a
+    /// `"[date] sender:"` bracket prefix (a merged line can span several
+    /// original messages/dates/senders, so a single bracket wouldn't fit;
+    /// real names drawn only from the input are used inline instead when
+    /// attribution is needed).
+    func refineThreadEntries(_ text: String, targetLanguage: TranslationLanguage) async throws -> String
 }
 
 extension TranslationService {
@@ -211,27 +240,72 @@ extension TranslationService {
     /// annotations together are strictly more permissive for the caller
     /// than `@Sendable` alone would be. Called with `await` below since
     /// this method itself has no actor affinity.
+    ///
+    /// Task #160フォローアップ3 (ユーザー要望「要約済みのものを再度読ませて
+    /// さらに要約を挟ませて、もう少しシンプルにする」): after the map step
+    /// builds `combined` exactly as before, an optional third pass —
+    /// `refineThreadEntries` — now runs over `combined` to condense it into
+    /// fewer, chronological lines before it becomes the displayed `■経緯`
+    /// (`summarizeThreadDigest`'s `■現状` call still reads the *un*-refined
+    /// `combined`, unchanged from Task #160フォローアップ — the "現行どおり"
+    /// this feature's own spec asked for). This is deliberately **not** a
+    /// third compressing pass over raw content (which is what Task #160
+    /// フォローアップ's whole redesign eliminated) — `combined` is already
+    /// every message's own extracted facts, so refining it is a
+    /// consolidation of already-fact-preserving text, one level up from
+    /// "compress the raw email", not a re-run of the same lossy operation.
+    ///
+    /// Two guards keep this pass from ever being the reason a summary
+    /// fails or gets thinner than before:
+    ///  - **Skipped entirely for `messages.count <=
+    ///    threadEntryRefinementSkipThreshold`** — a short thread's
+    ///    unrefined per-message bullet list is already about as short as a
+    ///    "refined" one would be, so there's nothing worth spending an
+    ///    extra model call to condense.
+    ///  - **Falls back to the unrefined `combined`(with the `■経緯` label
+    ///    prepended by this method itself, exactly like the pre-refine
+    ///    behavior) if `refineThreadEntries` throws** — a transient model
+    ///    error during this optional polish pass must never turn an
+    ///    otherwise-successful summary into a thrown error the user sees as
+    ///    total failure.
     public func summarizeThread(
         _ messages: [ThreadDigestMessage],
         targetLanguage: TranslationLanguage,
-        onProgress: (@MainActor @Sendable (_ current: Int, _ total: Int) -> Void)? = nil
+        onProgress: (@MainActor @Sendable (_ event: ThreadSummaryProgress) -> Void)? = nil
     ) async throws -> String {
         guard !messages.isEmpty else { return "" }
 
         var perMessageLines: [String] = []
         perMessageLines.reserveCapacity(messages.count)
         for (index, message) in messages.enumerated() {
-            await onProgress?(index + 1, messages.count)
+            await onProgress?(.extractingMessage(current: index + 1, total: messages.count))
             let extracted = try await extractThreadEntryText(message.text, targetLanguage: targetLanguage)
             perMessageLines.append("\(message.header) \(extracted)")
         }
-        // Task #160フォローアップ: `■経緯`はここで組み立てたら終わり —
-        // このあと`summarizeThreadDigest`へ渡すのは`■現状`だけを生成させる
-        // ためで、その戻り値をこの`combined`の後ろに連結するだけ (モデルは
-        // 一度も`■経緯`の内容そのものを書き直さない)。
         let combined = perMessageLines.joined(separator: "\n")
+
+        let progressSection: String
+        if messages.count > threadEntryRefinementSkipThreshold {
+            await onProgress?(.refining)
+            do {
+                progressSection = try await refineThreadEntries(combined, targetLanguage: targetLanguage)
+            } catch {
+                // Best-effort: an unrefined `■経緯` is still a correct,
+                // complete summary — only this optional polish pass is
+                // lost, not the whole feature.
+                progressSection = "\(ThreadDigestLabel.progress)\n\(combined)"
+            }
+        } else {
+            progressSection = "\(ThreadDigestLabel.progress)\n\(combined)"
+        }
+
+        // Task #160フォローアップ: `summarizeThreadDigest`(■現状) always
+        // reads the *un*-refined `combined` — never `progressSection` —
+        // regardless of whether the refine pass ran, succeeded, or was
+        // skipped. See this method's own doc comment on why that's
+        // unchanged from before this pass existed.
         let currentStatus = try await summarizeThreadDigest(combined, targetLanguage: targetLanguage)
-        return "\(ThreadDigestLabel.progress)\n\(combined)\n\n\(currentStatus)"
+        return "\(progressSection)\n\n\(currentStatus)"
     }
 
     /// The oversized-single-message safety net `summarizeThread(_:targetLanguage:onProgress:)`'s
@@ -273,6 +347,17 @@ extension TranslationService {
 public enum ThreadDigestLabel {
     public static let progress = "■経緯"
     public static let currentStatus = "■現状"
+}
+
+/// Task #160フォローアップ3: `summarizeThread(_:targetLanguage:onProgress:)`'s
+/// progress events — a plain `(current: Int, total: Int)` pair (Task #160's
+/// original shape) could only describe "which message is being extracted",
+/// with no way to signal that the run has moved into the `refineThreadEntries`
+/// polish pass afterward. `ThreadDetailView`'s generating sheet switches on
+/// this to show either "n/m 通目を要約中…" or "仕上げ中…".
+public enum ThreadSummaryProgress: Sendable, Equatable {
+    case extractingMessage(current: Int, total: Int)
+    case refining
 }
 
 /// Task #160: one thread message's map-stage input for

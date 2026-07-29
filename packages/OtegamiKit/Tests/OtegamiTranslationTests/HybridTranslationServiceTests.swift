@@ -35,7 +35,7 @@ struct HybridTranslationServiceTests {
         #expect(results == ["[ja] A.", "[ja] B."])
     }
 
-    @Test("summarize/summarizePlain/summarizeThreadDigest/summarizeThreadEntry delegate to the summarization engine, never the translation engine")
+    @Test("summarize/summarizePlain/summarizeThreadDigest/summarizeThreadEntry/refineThreadEntries delegate to the summarization engine, never the translation engine")
     func summarizeUsesSummarizationEngine() async throws {
         let translationEngine = FakeTranslationService(behavior: .failure(message: "translation engine must not be called for summarize"))
         let summarizationEngine = FakeTranslationService()
@@ -47,15 +47,19 @@ struct HybridTranslationServiceTests {
         // Task #160フォローアップ: `summarizeThreadEntry`(事実抽出のmap段)
         // も他の要約系メソッドと同じく summarizationEngine への単純委譲。
         _ = try await hybrid.summarizeThreadEntry("One message's new text.", targetLanguage: .japanese)
+        // Task #160フォローアップ3: `refineThreadEntries`(仕上げパス) も同様。
+        _ = try await hybrid.refineThreadEntries("[7/27] Someone: some extracted text.", targetLanguage: .japanese)
 
         let summarizeCount = await summarizationEngine.summarizeCallCount
         let summarizePlainCount = await summarizationEngine.summarizePlainCallCount
         let summarizeThreadDigestCount = await summarizationEngine.summarizeThreadDigestCallCount
         let summarizeThreadEntryCount = await summarizationEngine.summarizeThreadEntryCallCount
+        let refineThreadEntriesCount = await summarizationEngine.refineThreadEntriesCallCount
         #expect(summarizeCount == 1)
         #expect(summarizePlainCount == 1)
         #expect(summarizeThreadDigestCount == 1)
         #expect(summarizeThreadEntryCount == 1)
+        #expect(refineThreadEntriesCount == 1)
     }
 
     @Test("availability reflects the translation engine, not the summarization engine")

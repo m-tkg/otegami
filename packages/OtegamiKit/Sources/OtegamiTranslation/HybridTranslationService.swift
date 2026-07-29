@@ -69,4 +69,10 @@ public struct HybridTranslationService: TranslationService {
     public func summarizeThreadEntry(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
         try await summarizationEngine.summarizeThreadEntry(text, targetLanguage: targetLanguage)
     }
+
+    /// Task #160フォローアップ3: same delegation shape as every other
+    /// summarize-family method above.
+    public func refineThreadEntries(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+        try await summarizationEngine.refineThreadEntries(text, targetLanguage: targetLanguage)
+    }
 }

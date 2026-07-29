@@ -229,6 +229,31 @@ public struct FoundationModelsTranslationService: TranslationService {
     /// Task #160フォローアップ節) で薄いと分かれば調整する。
     private static let threadEntryLongMessageThreshold = 400
 
+    /// Task #160フォローアップ3 (ユーザー要望「要約済みのものを再度読ませて
+    /// さらに要約を挟ませて、もう少しシンプルにする」): `TranslationService
+    /// .summarizeThread`の任意の「仕上げ」パス — `summarizeThreadEntry`の
+    /// per-message抽出結果 (改行区切り、`"[日付] 差出人: 内容"`形式) を
+    /// 1回読み、同じ話題への複数の応答をまとめて簡潔化した`■経緯`を生成
+    /// する。`refineThreadEntriesInstructions`のdoc comment参照 —
+    /// `currentStatusInstructions`と同じ「単一ラベルで始める」出力形式
+    /// なので、`SummaryOutputSanitizer.sanitize(_:labels:)`をそのまま流用
+    /// できる。`summarizeThreadEntry`と同じ理由で
+    /// `ThreadEntryMetaCommentaryStripper`もこの出力に通す — こちらは
+    /// 複数行 (1行1トピック) の出力になるため、`strip(_:)`が行区切りを
+    /// 保持したまま各行を独立に処理する (そちらのdoc comment参照)。
+    public func refineThreadEntries(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+        try requireAvailable()
+        let messageCount = max(1, text.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count)
+        let session = LanguageModelSession(model: model, instructions: Self.refineThreadEntriesInstructions(targetLanguage: targetLanguage, messageCount: messageCount))
+        do {
+            let response = try await session.respond(to: text, options: Self.summarizeOptions)
+            let sanitized = SummaryOutputSanitizer.sanitize(response.content, labels: [ThreadDigestLabel.progress])
+            return ThreadEntryMetaCommentaryStripper.strip(sanitized)
+        } catch {
+            throw Self.mapEngineError(error)
+        }
+    }
+
     // MARK: - Session/options
 
     private func makeSession(from source: TranslationLanguage, to target: TranslationLanguage) -> LanguageModelSession {
@@ -469,6 +494,67 @@ public struct FoundationModelsTranslationService: TranslationService {
         【出力例】
         \(ThreadDigestLabel.currentStatus)
         水曜14時にイタリアンの店で開催することが合意され、予約はまだ取れていない。田中が予約を担当し、取れ次第スレッドで共有する予定。
+        """
+    }
+
+    /// Task #160フォローアップ3 (ユーザー要望「要約済みのものを再度読ませて
+    /// さらに要約を挟ませて、もう少しシンプルにする」): `refineThreadEntries`
+    /// が使う指示文 — 入力は`summarizeThreadEntry`が既に事実を抽出した
+    /// per-messageの行 (`currentStatusInstructions`と同じ`"[日付] 差出人:
+    /// 内容"`形式) なので、これは**生の本文の再圧縮ではない** — 既に
+    /// 「情報を落とさない」制約下で抽出済みのテキストを、同じ話題への
+    /// 複数の応答をまとめて簡潔にする「統合」パス。Task #160フォロー
+    /// アップの二重圧縮バグ (2段とも生の本文を圧縮していた) とは構造が
+    /// 違う、という設計上の区別がこのメソッド全体の安全性の根拠。
+    ///
+    /// `summarizeThreadEntryInstructions`(Task #160フォローアップ2) と同じ
+    /// 2つの教訓を引き継ぐ: (1) メッセージ(ここでは複数メッセージの経緯)
+    /// 自体を話題にする説明調(メタ言及)の言い回しを明示的に禁止し、
+    /// 良い例/悪い例を添える。(2) その例文の題材は、実際のスレッドの
+    /// 内容と偶然一致しないよう、意図的に無関係なもの(会議室の予約) に
+    /// する — Task #160フォローアップ2で「例文の題材が実FMフィクスチャと
+    /// 偶然一致し、無関係なメッセージへの数値ハルシネーションを誘発した」
+    /// という実際の失敗を踏まえた対策 (このファイル内`summarizeThreadEntryInstructions`
+    /// の同名doc comment参照)。
+    ///
+    /// 出力は`currentStatusInstructions`と同じ「ラベル1行 + 内容」形式だが
+    /// ラベルは`ThreadDigestLabel.progress`(■経緯) — `summarizeThreadEntry`
+    /// の出力と違い、ここでは改行を許可・むしろ要求する (1行1トピックで
+    /// 複数行) — 単一の`"[日付] 差出人:"`ブラケットでは複数メッセージに
+    /// またがる統合行を表せないため、ブラケット無しで実名を文中に直接
+    /// 使わせる (使ってよい名前は入力の各行にある名前だけ、という制約は
+    /// 維持)。
+    private static func refineThreadEntriesInstructions(targetLanguage: TranslationLanguage, messageCount: Int) -> String {
+        let minLines = max(1, messageCount / 2)
+        return """
+        以下は、メールスレッド内の各メッセージから既に事実を抽出した結果です。各行は "[日付] 差出人: 内容" という形式で、メッセージ1通につき1行、時系列順(古い順)に並んでいます。この結果を\(targetLanguage.displayName)でさらに簡潔に整理してください。以下のルールに従ってください。
+
+        【最優先ルール: 情報を一切落とさない】
+        入力の各行にある決定事項・依頼や質問・数値(金額・日時・個数・期限など)・固有名詞(人名・会社名・場所名・店名など)は、1つも省略しないでください。同じ話題への複数の応答を1行にまとめる場合も、誰が何を言ったかという帰属を保ったまま統合してください(例: 「田中が候補を提示し、佐藤が予算を確認、5000円程度で決定」のような統合はOKです)。
+
+        【やること: 簡潔化】
+        入力の各行を、同じ話題についての一連のやり取り(往復)ごとにまとめ、冗長な表現を削って、時系列の流れとして簡潔に書き直してください。目安の行数は\(minLines)〜\(messageCount)行です — 情報を落とさない範囲でこれより少なくても構いませんが、これより明らかに少ない行数(内容が薄くなりすぎる)は避けてください。
+
+        【差出人名について(重要)】
+        名前を使う場合、使ってよい名前は入力の各行の "[日付] 差出人:" 部分に実際に書かれている名前だけです。入力に登場しない名前を推測や創作で書き加えることは絶対に禁止します。
+
+        【入力に実際に書かれていない内容を補わない(重要)】
+        書いてよいのは、入力の各行に実際に書かれている事柄だけです。入力に明示されていないのに推測や一般的な想像で補ってはいけません。
+
+        【まとめを説明するな、事実を直接書け(重要)】
+        この結果について"説明"してはいけません。実際に起きたことを、事実として直接、断定的に書いてください。次のような、まとめ自体を話題にする言い回し(メタ言及)は絶対に使わないでください: 「この経緯では」「この結果では」「〜が述べられている」「〜と述べられている」「〜が記載されている」「〜と記載されている」「〜という内容」。
+
+        【出力例(最重要)】
+        悪い例: この経緯では会議室の予約状況について複数のやり取りがなされている。
+        良い例: 鈴木が会議室Aの空き状況を確認し、木村が水曜午後なら空いていると回答した。
+
+        【出力形式(最重要)】
+        出力の最初の行は"\(ThreadDigestLabel.progress)"という文字列だけにしてください。2行目以降に、上記の簡潔化した内容を1行1トピックの形で、改行区切りで書いてください(箇条書き記号「・」や番号は付けない、行の先頭に"[日付]"のようなブラケットも付けない)。ラベルの説明文やこの指示文自体、英語のテキストを出力に含めないでください。このラベルは出力全体を通じてちょうど1回だけ出現させてください。
+
+        【出力例(全体)】
+        \(ThreadDigestLabel.progress)
+        鈴木が会議室Aの空き状況を確認し、木村が水曜午後なら空いていると回答した。
+        鈴木が水曜14時で予約を依頼し、木村が予約を完了した。
         """
     }
 

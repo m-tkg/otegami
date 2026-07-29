@@ -49,6 +49,12 @@ public actor FakeTranslationService: TranslationService {
     /// (単一メッセージの長文圧縮のmap段でも使う) と役割が分かれた今は
     /// 独立カウントにしないと、両方を使うテストで数値の意味が混ざる。
     public private(set) var summarizeThreadEntryCallCount = 0
+    /// Task #160フォローアップ3 (ユーザー要望「要約済みのものを再度読ませて
+    /// さらに要約を挟ませてシンプルにする」): `summarizeThread`の任意の
+    /// 「仕上げ」パス (`refineThreadEntries`) の呼び出し回数 — 独立カウント
+    /// にしておくことで、テストが「短いスレッドではこのパスがスキップ
+    /// される (0回)」「長いスレッドではちょうど1回」を検証できる。
+    public private(set) var refineThreadEntriesCallCount = 0
     /// Task #61 (ガードレール誤発動の寛容化テスト用): exact input strings
     /// `translate(_:from:to:)` should fail with `TranslationServiceError
     /// .contentBlocked` for, independent of `behavior` — lets a test
@@ -59,10 +65,23 @@ public actor FakeTranslationService: TranslationService {
     /// `checkBehavior()`, so a test can combine this with `.success` (the
     /// common case: "mostly fine, one chunk blocked").
     private var blockedTexts: Set<String> = []
+    /// Task #160フォローアップ3: same "fail just this one call, everything
+    /// else succeeds" motivation as `blockedTexts` above — lets
+    /// `TranslationServiceSummarizeThreadTests` verify `summarizeThread`'s
+    /// "an unrefined `■経緯` is still a correct, complete summary" fallback
+    /// contract without having to fail the *whole* engine (`behavior`),
+    /// which would also fail the map step and `summarizeThreadDigest`.
+    private var refineThreadEntriesShouldFail = false
 
     public init(availability: TranslationAvailability = .available, behavior: Behavior = .success) {
         self.availabilityValue = availability
         self.behavior = behavior
+    }
+
+    /// Task #160フォローアップ3: see `refineThreadEntriesShouldFail`'s doc
+    /// comment.
+    public func configureRefineThreadEntriesFailure(_ shouldFail: Bool) {
+        refineThreadEntriesShouldFail = shouldFail
     }
 
     /// Task #61: marks `texts` as guardrail-blocked for every subsequent
@@ -187,6 +206,27 @@ public actor FakeTranslationService: TranslationService {
         let sentences = Self.splitSentences(text)
         let picked = sentences.prefix(5).joined(separator: " ")
         return Self.deterministicTranslation(picked.isEmpty ? text : picked, to: targetLanguage)
+    }
+
+    /// Task #160フォローアップ3: `summarizeThread`の任意の「仕上げ」パス
+    /// — `summarizeThreadDigest`と同様、決定的な出力にするため実際の
+    /// `■経緯`ラベル付き出力をそのまま返す (`ThreadDigestLabel.progress`
+    /// を共有して drift を防ぐ)。
+    public func refineThreadEntries(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+        refineThreadEntriesCallCount += 1
+        // Task #160フォローアップ3: `blockedTexts`と同じ理由で`checkBehavior()`
+        // より先に見る — `configureRefineThreadEntriesFailure(true)`は
+        // このメソッドだけを狙って失敗させる (`behavior`を`.failure`に
+        // すると map段/■現状生成まで巻き添えで失敗してしまうため)。
+        guard !refineThreadEntriesShouldFail else {
+            throw TranslationServiceError.failed(message: "fake refineThreadEntries failure (test-only)")
+        }
+        try checkBehavior()
+        let translated = Self.deterministicTranslation(text, to: targetLanguage)
+        return """
+        \(ThreadDigestLabel.progress)
+        \(translated)
+        """
     }
 
     private func checkBehavior() throws {

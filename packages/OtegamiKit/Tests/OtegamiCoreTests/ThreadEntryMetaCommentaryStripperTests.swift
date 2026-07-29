@@ -41,6 +41,23 @@ struct ThreadEntryMetaCommentaryStripperTests {
         }
     }
 
+    @Test("recognizes the この経緯では/この経緯は opener used by the refine pass")
+    func recognizesThreadDigestOpener() {
+        #expect(ThreadEntryMetaCommentaryStripper.strip("この経緯では会議室の予約状況が述べられている。") == "会議室の予約状況。")
+        #expect(ThreadEntryMetaCommentaryStripper.strip("この経緯は水曜14時に決定という内容。") == "水曜14時に決定。")
+    }
+
+    @Test("preserves line breaks — a multi-line input (Task #160フォローアップ3's refineThreadEntries output shape) is rewritten line-by-line, not collapsed into one space-joined blob")
+    func preservesLineBreaksAcrossMultiLineInput() {
+        let input = "■経緯\nこの返信では会場はイタリアンだと伝えられている。\n鈴木が水曜14時で予約を依頼した。"
+        let result = ThreadEntryMetaCommentaryStripper.strip(input)
+        let lines = result.components(separatedBy: "\n")
+        #expect(lines.count == 3)
+        #expect(lines[0] == "■経緯")
+        #expect(lines[1] == "会場はイタリアンだ。")
+        #expect(lines[2] == "鈴木が水曜14時で予約を依頼した。")
+    }
+
     @Test("leaves a sentence without the self-referencing opener completely untouched, even if it contains a banned verb as genuine content")
     func leavesGenuineThirdPartyReportedSpeechUntouched() {
         // The real point of this test: "伝えられている"/"述べられている" etc.

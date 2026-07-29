@@ -32,14 +32,19 @@ import Foundation
 /// negative cases, which is exactly what this feature's own spec asked
 /// this backstop to avoid ("正規表現ベースで過剰除去しないこと").
 public enum ThreadEntryMetaCommentaryStripper {
-    /// The message-self-referencing subjects `summarizeThreadEntryInstructions`
-    /// explicitly bans as an opener. Order doesn't currently matter (none is
-    /// a prefix of another), kept as a plain list so a future addition is a
-    /// one-line change.
+    /// The message-self-referencing subjects `summarizeThreadEntryInstructions`/
+    /// `refineThreadEntriesInstructions` explicitly ban as an opener —
+    /// `"この経緯では"`/`"この経緯は"` covers the refine pass's own output
+    /// (Task #160フォローアップ3, which describes several merged messages
+    /// at once rather than a single one, so it talks about "この経緯"
+    /// rather than "この返信"/"このメール"). Order doesn't currently matter
+    /// (none is a prefix of another), kept as a plain list so a future
+    /// addition is a one-line change.
     private static let openers = [
         "この返信では", "この返信は",
         "このメールでは", "このメールは",
         "このメッセージでは", "このメッセージは",
+        "この経緯では", "この経緯は",
     ]
 
     /// The meta-commentary predicate `summarizeThreadEntryInstructions`
@@ -57,13 +62,24 @@ public enum ThreadEntryMetaCommentaryStripper {
         "という内容である", "という内容です", "という内容",
     ]
 
-    /// Splits `text` into sentence-like units, rewrites only the units that
-    /// open with a self-referencing subject, and rejoins with a single
-    /// space. `FoundationModelsTranslationService.summarizeThreadEntry`
-    /// already collapses the model's own line breaks to spaces before
-    /// calling this, so every unit handed in is already part of one flowed
-    /// line — the space-joining here just undoes the sentence splitting,
-    /// it isn't re-introducing structure the model didn't already produce.
+    /// Line-aware: splits `text` on `"\n"` first, then within each line
+    /// splits into sentence-like units, rewrites only the units that open
+    /// with a self-referencing subject, and rejoins units within a line
+    /// with a single space — but **preserves every line break**, rejoining
+    /// lines with `"\n"`.
+    ///
+    /// This line-awareness matters for Task #160フォローアップ3's
+    /// `refineThreadEntries` (`FoundationModelsTranslationService`'s
+    /// conforming implementation), whose whole multi-line `"■経緯\n<line 1>
+    /// \n<line 2>\n..."` output this method now also runs over — an
+    /// earlier, non-line-aware version of this method would have collapsed
+    /// every one of those lines into a single space-joined blob, destroying
+    /// the very "fewer, chronological lines" structure that pass exists to
+    /// produce. `FoundationModelsTranslationService.summarizeThreadEntry`'s
+    /// input has no line breaks at all by the time it reaches here (it
+    /// collapses the model's own line breaks to spaces first), so for that
+    /// caller this method still behaves exactly as it always did — a single
+    /// "line" is the whole input.
     ///
     /// Sentence-splitting logic mirrors `OtegamiTranslation.SentenceSplitter`
     /// (deliberately not shared code — that type's own doc comment already
@@ -71,8 +87,13 @@ public enum ThreadEntryMetaCommentaryStripper {
     /// shared abstraction" pattern in this codebase, and `OtegamiCore`
     /// doesn't depend on `OtegamiTranslation` to begin with).
     public static func strip(_ text: String) -> String {
-        let units = splitIntoUnits(text)
-        guard !units.isEmpty else { return text }
+        let lines = text.components(separatedBy: "\n")
+        return lines.map(stripLine).joined(separator: "\n")
+    }
+
+    private static func stripLine(_ line: String) -> String {
+        let units = splitIntoUnits(line)
+        guard !units.isEmpty else { return line }
         return units.map(rewriteUnitIfNeeded).joined(separator: " ")
     }
 
