@@ -367,7 +367,7 @@ struct MessageDetailFooterToolbar: View {
     private func handleTranslateTap() {
         guard isTranslateEnabled, let aiFeaturesState else { return }
         switch aiFeaturesState.translationState {
-        case .none, .failed:
+        case .none, .failed, .insufficientInput:
             aiFeaturesState.onTranslate()
         case .translating:
             break
@@ -391,17 +391,20 @@ struct MessageDetailFooterToolbar: View {
         return switch aiFeaturesState.translationState {
         case .none: String(localized: "英語 → 日本語（端末内で翻訳）")
         case .translating: String(localized: "翻訳中")
-        case .failed: String(localized: "翻訳を再試行")
+        case .failed, .insufficientInput: String(localized: "翻訳を再試行")
         case .translated: aiFeaturesState.translationShowOriginal ? String(localized: "訳文に戻す") : String(localized: "原文に戻す")
         }
     }
 
     /// 旧`TranslationFloatingButton.footnote`と同一のロジック — `String
     /// (localized:)`を通さない理由もそのまま (`message`が実行時の値を
-    /// 含むため)。
+    /// 含むため)。2026-07-30 (Phase 5続報): `.failed`/`.insufficientInput`
+    /// を`MessageTranslationState.failureMessage`という共通アクセサ経由で
+    /// 同列に扱う — 呼び出し側 (このView) がケースを2つ書き分ける必要が
+    /// なくなり、将来ケースが増えてもここを直し忘れるリスクを減らす。
     private var translateFootnote: String? {
         guard let aiFeaturesState else { return nil }
-        if case .failed(let message) = aiFeaturesState.translationState {
+        if let message = aiFeaturesState.translationState.failureMessage {
             return "翻訳に失敗しました: \(message)"
         }
         if case .translated(let record) = aiFeaturesState.translationState, record.hasPartiallyBlockedContent {
@@ -411,7 +414,7 @@ struct MessageDetailFooterToolbar: View {
     }
 
     private var translateFootnoteTone: Color {
-        if let aiFeaturesState, case .failed = aiFeaturesState.translationState { return OtegamiColor.destructive }
+        if let aiFeaturesState, aiFeaturesState.translationState.failureMessage != nil { return OtegamiColor.destructive }
         return OtegamiColor.inkSecondary
     }
 
@@ -637,8 +640,11 @@ struct MessageDetailFooterToolbar: View {
 /// いた同名のprivate extensionをそのまま引き継いだ — 唯一の利用元が
 /// `translateTone`に変わっただけ。
 private extension MessageTranslationState {
+    /// 2026-07-30 (Phase 5続報): `.insufficientInput`も`.failed`と同じ
+    /// 「失敗」トーンとして扱う — `failureMessage`(共通アクセサ) が
+    /// `nil`でないかどうかで判定するので、将来ケースが増えても書き忘れ
+    /// にくい。
     var isFailure: Bool {
-        if case .failed = self { return true }
-        return false
+        failureMessage != nil
     }
 }

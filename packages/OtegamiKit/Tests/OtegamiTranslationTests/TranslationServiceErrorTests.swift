@@ -69,4 +69,26 @@ struct TranslationServiceErrorTests {
         #expect(!message.contains("ダウンロード"))
         #expect(message.contains("再試行") || message.contains("時間をおいて"))
     }
+
+    // MARK: - Phase 5続報 (2026-07-30): .insufficientInput classification —
+    // added after a real-device report showed the same root cause (empty/
+    // too-short input) surfacing as a *different* message
+    // ("翻訳元の言語を判定できませんでした") than the one a prior fix's
+    // string-comparison fallback checked for. These lock in that the
+    // classification is queryable by case/property, not by comparing
+    // rendered text.
+
+    @Test("isInsufficientInput is true only for .insufficientInput, false for every other case")
+    func isInsufficientInputPredicate() {
+        #expect(TranslationServiceError.insufficientInput(message: "x").isInsufficientInput)
+        #expect(!TranslationServiceError.failed(message: "x").isInsufficientInput)
+        #expect(!TranslationServiceError.tooLong(message: "x").isInsufficientInput)
+        #expect(!TranslationServiceError.contentBlocked(message: "x").isInsufficientInput)
+        #expect(!TranslationServiceError.unavailable(.deviceNotEligible).isInsufficientInput)
+    }
+
+    @Test("insufficientInput's userFacingMessage passes its message straight through, same as .failed")
+    func insufficientInputMessagePassthrough() {
+        #expect(TranslationServiceError.insufficientInput(message: "翻訳元の言語を判定できませんでした").userFacingMessage == "翻訳元の言語を判定できませんでした")
+    }
 }

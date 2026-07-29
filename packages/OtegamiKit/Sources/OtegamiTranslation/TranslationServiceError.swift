@@ -41,6 +41,20 @@ public enum TranslationServiceError: Error, Sendable, Equatable, LocalizedError 
     /// 他の`.failed`要因 (デコード失敗など) は従来どおりチャンク1つの失敗が
     /// 全体を失敗させる。
     case contentBlocked(message: String)
+    /// 2026-07-30 (Phase 5続報、実機フィードバック f7b623f 適用後の再報告):
+    /// エンジンへ渡した入力自体が「翻訳しようがない」ために失敗した — 空/
+    /// 空白/不可視文字だけ (`MessageTranslator.noTranslatableContentMessage`
+    /// 経由)、または `Translation.TranslationError.unableToIdentifyLanguage`
+    /// /`.nothingToTranslate` (`AppleTranslationService.mapEngineError`)。
+    /// `.failed`から独立させた理由: 前回の修正 (9e74419) は「HTML抽出が
+    /// `MessageTranslator.noTranslatableContentMessage`という**特定の文言**
+    /// を返したら plain へフォールバックする」という文字列比較に頼っており、
+    /// 同じ根本原因 (実質空の入力) がAppleの翻訳エンジン側で
+    /// `unableToIdentifyLanguage`という**別の**エラーとして表面化した実機
+    /// ケース (「翻訳元の言語を判定できませんでした」) を素通りしてしまった
+    /// — 将来また新しい文言のバリエーションが増えてもすり抜けないよう、
+    /// 「入力不足系の失敗かどうか」をケース (型) で判定できるようにする。
+    case insufficientInput(message: String)
 
     public var errorDescription: String? {
         switch self {
@@ -52,6 +66,8 @@ public enum TranslationServiceError: Error, Sendable, Equatable, LocalizedError 
             "Translation failed: \(message)"
         case .contentBlocked(let message):
             "Translation content blocked: \(message)"
+        case .insufficientInput(let message):
+            "Translation input insufficient: \(message)"
         }
     }
 
@@ -61,6 +77,18 @@ public enum TranslationServiceError: Error, Sendable, Equatable, LocalizedError 
     /// misfire?") rather than pattern-matching noise.
     public var isContentBlocked: Bool {
         if case .contentBlocked = self { return true }
+        return false
+    }
+
+    /// `MessageTranslator.translateAligned`'s outer catch, and (via
+    /// `MessageTranslationState.insufficientInput`) `MessageView
+    /// .requestTranslation`'s HTML→plain fallback decision — a
+    /// type/case-level check rather than comparing rendered message
+    /// strings (see `.insufficientInput`'s own doc comment for why the
+    /// prior string-comparison approach broke on exactly this failure
+    /// mode).
+    public var isInsufficientInput: Bool {
+        if case .insufficientInput = self { return true }
         return false
     }
 
@@ -88,6 +116,8 @@ public enum TranslationServiceError: Error, Sendable, Equatable, LocalizedError 
         case .tooLong:
             return "本文が長すぎるため処理できませんでした"
         case .failed(let message):
+            return message
+        case .insufficientInput(let message):
             return message
         case .contentBlocked:
             // Task #61: this case only ever reaches a user as the *whole*

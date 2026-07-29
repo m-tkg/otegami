@@ -237,9 +237,18 @@ public struct AppleTranslationService: TranslationOnlyService {
         case TranslationError.unsupportedSourceLanguage, TranslationError.unsupportedTargetLanguage, TranslationError.unsupportedLanguagePairing:
             return .unavailable(.languagePairUnsupported)
         case TranslationError.unableToIdentifyLanguage:
-            return .failed(message: "翻訳元の言語を判定できませんでした")
+            // 2026-07-30 (Phase 5続報、実機フィードバック f7b623f 適用後):
+            // `.failed`ではなく`.insufficientInput` — 実機ログでは
+            // "Can't resolve source locale since there's no source strings
+            // to use with LID" (= 入力が実質空) がこのケースとして表面化
+            // した。前回の修正 (9e74419) の plain フォールバックは
+            // `MessageTranslator.noTranslatableContentMessage`という特定の
+            // 文言との文字列一致だけを見ていたため、この経路はすり抜けて
+            // いた — `TranslationServiceError.insufficientInput`のdoc
+            // comment参照。
+            return .insufficientInput(message: "翻訳元の言語を判定できませんでした")
         case TranslationError.nothingToTranslate:
-            return .failed(message: "翻訳する本文がありませんでした")
+            return .insufficientInput(message: "翻訳する本文がありませんでした")
         default:
             break
         }
@@ -260,6 +269,19 @@ public struct AppleTranslationService: TranslationOnlyService {
         // comment). Everything that reaches here — including
         // `.notInstalled` — gets the same neutral, retry-oriented message
         // instead of a possibly-wrong diagnosis.
+        //
+        // 2026-07-30 (Phase 5続報): 実機ログの Code=21 は今のOSでは
+        // `case TranslationError.unableToIdentifyLanguage:`側で捕まる
+        // ことを確認済みだが、`~=`によるケース一致はApple側の非公開実装
+        // 詳細でOSバージョン間で変わり得る — 万一そのケースに一致せず
+        // ここまで落ちてきても、`TranslationErrorDomain`のCode 21 (「LID
+        // に渡す文字列が無い」という同じ意味) だけは生の`NSError`
+        // domain/codeで直接検知し、同じく`.insufficientInput`として扱う。
+        // それ以外の未分類コードは引き続き中立な`.failed`。
+        let nsError = error as NSError
+        if nsError.domain == "TranslationErrorDomain", nsError.code == 21 {
+            return .insufficientInput(message: "翻訳元の言語を判定できませんでした")
+        }
         return .failed(message: "翻訳に失敗しました（時間をおいて再試行してください）")
     }
 

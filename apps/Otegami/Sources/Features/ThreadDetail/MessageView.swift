@@ -1799,18 +1799,28 @@ struct MessageView: View {
                 // 2026-07-30 (Phase 5続報、実機 eml 再現: Okta通知メールの
                 // table レイアウトHTML — `<p>`が1つも無く本文が`<td>`直下の
                 // テキストノード): このメッセージでは
-                // `extractTranslatableTexts()`が実質空の`texts`を返し
-                // (`translateHTMLTextNodes`が`MessageTranslator
-                // .noTranslatableContentMessage`で失敗)、一方
+                // `extractTranslatableTexts()`が実質空の`texts`を返し、一方
                 // `bodyRecord.plainText`(またはHTMLからの`HTMLTextExtractor`
                 // 抽出)には翻訳可能な本文が存在した。DOM抽出が実際に何も
-                // 拾えなかった場合に限り、plain 本文へフォールバックして
+                // 拾えなかった (または拾えても短すぎてエンジンが言語判定
+                // できなかった) 場合に限り、plain 本文へフォールバックして
                 // 再試行する — HTML表示のレイアウト保持は諦めるが、翻訳
-                // 自体は失敗させない。それ以外の失敗理由 (ガードレール・
-                // 未対応言語など) はフォールバックしても同じ結果になるだけ
-                // なので、この特定のメッセージだけを狙い撃ちする。
-                if case .failed(let message) = result, message == MessageTranslator.noTranslatableContentMessage,
-                   let fallbackSourceText = sourceTextForTranslation() {
+                // 自体は失敗させない。
+                //
+                // 2026-07-30 再訂正 (f7b623f 適用後の実機再報告): 当初は
+                // `result`が`MessageTranslator.noTranslatableContentMessage`
+                // という**特定の文言**と完全一致するかで判定していたが、
+                // 同じ根本原因 (実質空/短すぎる入力) が Apple 側の
+                // `unableToIdentifyLanguage`経由で「翻訳元の言語を判定
+                // できませんでした」という**別の文言**として表面化した実機
+                // ケースをすり抜けた。`MessageTranslationState
+                // .insufficientInput` (`TranslationServiceError
+                // .isInsufficientInput`由来、型で分類) を見るよう修正 —
+                // 将来また新しい言い回しのバリエーションが増えても文字列
+                // 比較に頼らない。それ以外の失敗理由 (ガードレール・未対応
+                // 言語など) はフォールバックしても同じ結果になるだけなので、
+                // 対象を`.insufficientInput`だけに絞ったまま。
+                if case .insufficientInput = result, let fallbackSourceText = sourceTextForTranslation() {
                     let fallbackResult = await translator.translate(
                         messageId: messageId,
                         sourceText: fallbackSourceText,

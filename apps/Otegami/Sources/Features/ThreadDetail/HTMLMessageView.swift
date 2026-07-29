@@ -1149,6 +1149,18 @@ final class HTMLTranslationController {
     /// "successfully" with no visible effect and no error shown.
     func extractTranslatableTexts() async -> [String]? {
         guard let webView else { return nil }
+        // Phase 5続報 (2026-07-30、実機 eml 再現: table レイアウトHTMLで
+        // 抽出が0件を返す不具合の調査用): 呼び出し時点で`webView.isLoading`
+        // が`true`なら、ページ読み込み完了 (`didFinish`) より先に抽出を
+        // 呼んでしまっているレース疑い (`translationController.webView`は
+        // `makeUIView`/`makeNSView`でページ読込前にセットされ、`didFinish`
+        // を待たない — `MessageView.htmlTranslationController`が
+        // non-nilになるタイミングと実際に`#otegami-fit-inner`がDOMに
+        // 存在するタイミングは別) の直接証拠になる。本文は一切含めない
+        // (F15の趣旨)。
+        // `HTMLTranslationController`自体が`@MainActor`なので`webView`
+        // への同期アクセスはこのまま安全 (`MainActor.run`は不要)。
+        let wasLoading = webView.isLoading
         do {
             let result = try await webView.evaluateJavaScript(Self.extractScript)
             guard let jsonString = result as? String,
@@ -1166,9 +1178,15 @@ final class HTMLTranslationController {
                 Self.translationLogger.error("extractTranslatableTexts: unexpected result shape \(String(describing: result))")
                 return nil
             }
+            // Phase 5続報: notice レベル固定 (`docs/verify.md`: debug/info
+            // は`log collect`に残らない) — 件数・合計文字数・読込中フラグ
+            // だけを記録、本文は含めない。次に「HTML翻訳が失敗する」報告が
+            // 来た時、この1行で「抽出自体が0件だったか」「ページ読込中に
+            // 呼ばれていたか (レース)」を実機ログから直接判定できる。
+            Self.translationLogger.notice("extractTranslatableTexts: count=\(texts.count, privacy: .public) totalChars=\(texts.reduce(0) { $0 + $1.count }, privacy: .public) wasLoading=\(wasLoading, privacy: .public)")
             return texts
         } catch {
-            Self.translationLogger.error("extractTranslatableTexts failed: \(String(describing: error))")
+            Self.translationLogger.error("extractTranslatableTexts failed: wasLoading=\(wasLoading, privacy: .public) error=\(String(describing: error))")
             return nil
         }
     }

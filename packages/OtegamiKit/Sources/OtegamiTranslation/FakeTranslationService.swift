@@ -24,6 +24,13 @@ public actor FakeTranslationService: TranslationService {
         /// the "本文が長すぎます" UI path without needing a real engine's
         /// context-window limit.
         case tooLong(message: String)
+        /// 2026-07-30 (Phase 5続報): simulates `TranslationServiceError
+        /// .insufficientInput` — for tests covering the "engine itself
+        /// reports it couldn't work with this input" path (e.g. Apple's
+        /// `TranslationError.unableToIdentifyLanguage`), independent of
+        /// `MessageTranslator.translateAligned`'s own pre-emptive empty/
+        /// too-short guard (which never calls into this fake at all).
+        case insufficientInput(message: String)
     }
 
     private var behavior: Behavior
@@ -111,6 +118,8 @@ public actor FakeTranslationService: TranslationService {
                     continuation.finish(throwing: TranslationServiceError.unavailable(reason))
                 case .tooLong(let message):
                     continuation.finish(throwing: TranslationServiceError.tooLong(message: message))
+                case .insufficientInput(let message):
+                    continuation.finish(throwing: TranslationServiceError.insufficientInput(message: message))
                 case .success:
                     // Cumulative word-by-word chunks, matching
                     // `LanguageModelSession.streamResponse`'s own
@@ -179,6 +188,8 @@ public actor FakeTranslationService: TranslationService {
             throw TranslationServiceError.unavailable(reason)
         case .tooLong(let message):
             throw TranslationServiceError.tooLong(message: message)
+        case .insufficientInput(let message):
+            throw TranslationServiceError.insufficientInput(message: message)
         }
     }
 

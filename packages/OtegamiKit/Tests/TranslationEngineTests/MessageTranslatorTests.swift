@@ -401,7 +401,7 @@ struct MessageTranslatorTests {
 
         let state = await translator.translate(messageId: messageId, sourceText: "", sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(state == .failed(message: MessageTranslator.noTranslatableContentMessage))
+        #expect(state == .insufficientInput(message: MessageTranslator.noTranslatableContentMessage))
         #expect(await service.translateCallCount == 0)
     }
 
@@ -414,7 +414,7 @@ struct MessageTranslatorTests {
 
         let state = await translator.translate(messageId: messageId, sourceText: "   \n\t  ", sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(state == .failed(message: MessageTranslator.noTranslatableContentMessage))
+        #expect(state == .insufficientInput(message: MessageTranslator.noTranslatableContentMessage))
         #expect(await service.translateCallCount == 0)
     }
 
@@ -427,7 +427,7 @@ struct MessageTranslatorTests {
 
         let state = await translator.translateHTMLTextNodes(messageId: messageId, texts: [], sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(state == .failed(message: MessageTranslator.noTranslatableContentMessage))
+        #expect(state == .insufficientInput(message: MessageTranslator.noTranslatableContentMessage))
         #expect(await service.translateCallCount == 0)
     }
 
@@ -444,7 +444,7 @@ struct MessageTranslatorTests {
         // content) that produced `TranslationErrorDomain Code=21` on-device.
         let state = await translator.translateHTMLTextNodes(messageId: messageId, texts: ["\u{200B}", "  ", "\n"], sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(state == .failed(message: MessageTranslator.noTranslatableContentMessage))
+        #expect(state == .insufficientInput(message: MessageTranslator.noTranslatableContentMessage))
         #expect(await service.translateCallCount == 0)
     }
 
@@ -475,5 +475,57 @@ struct MessageTranslatorTests {
         // zero-width-space node contributes zero chunks (`TranslationChunker
         // .chunk`'s `isBlank` check) and is never sent as a translate call.
         #expect(await service.translateCallCount == 2)
+    }
+
+    // MARK: - Phase 5続報 (2026-07-30, 実機フィードバック f7b623f 適用後):
+    // "翻訳元の言語を判定できませんでした" という別の文言で同じ根本原因
+    // (実質空の入力) が表面化し、9e74419 の文字列一致フォールバックを
+    // すり抜けた実機報告への対応 — `.insufficientInput`という独立ケースが
+    // ちゃんと型として伝播することを確認する。
+    //
+    // 「合計文字数が閾値未満なら事前に弾く」という追加ガードは一度実装した
+    // が、既存の短い正当な入力 ("Hello."等) を巻き込んで壊すことが判明し
+    // 撤回した (`translateAligned`のdoc comment参照) — 短いが非空の入力は
+    // 実際にエンジンへ渡り、エンジン自身が「わからない」と答えた場合だけ
+    // `.insufficientInput`になる、という以下のテストがその方針を確認する。
+
+    @Test("short but non-blank input still reaches the engine (no pre-emptive length rejection) and translates normally when the engine accepts it")
+    func shortNonBlankInputStillReachesEngine() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        // "Hi" + "OK" — short, but real, non-blank content a user might
+        // genuinely want translated; must not be blocked before ever
+        // asking the engine.
+        let state = await translator.translateHTMLTextNodes(messageId: messageId, texts: ["Hi", "OK"], sourceLanguage: .english, targetLanguage: .japanese)
+
+        guard case .translated = state else {
+            Issue.record("expected .translated, got \(state)")
+            return
+        }
+        #expect(await service.translateCallCount == 2)
+    }
+
+    @Test("an engine-reported insufficient-input failure (e.g. can't identify source language) propagates as .insufficientInput, not .failed")
+    func engineInsufficientInputFailurePropagatesAsInsufficientInput() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        // The engine itself reporting it couldn't work with the input
+        // (Apple's `TranslationError.unableToIdentifyLanguage`, mapped by
+        // `AppleTranslationService.mapEngineError`) — the reactive
+        // detection path this task adds, independent of any pre-emptive
+        // Swift-side length guard.
+        let service = FakeTranslationService(behavior: .insufficientInput(message: "翻訳元の言語を判定できませんでした"))
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let state = await translator.translate(messageId: messageId, sourceText: "Some reasonably long line of text here.", sourceLanguage: .english, targetLanguage: .japanese)
+
+        guard case .insufficientInput(let message) = state else {
+            Issue.record("expected .insufficientInput, got \(state)")
+            return
+        }
+        #expect(message == "翻訳元の言語を判定できませんでした")
     }
 }

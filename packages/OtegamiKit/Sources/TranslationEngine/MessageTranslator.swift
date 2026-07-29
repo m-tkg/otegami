@@ -202,11 +202,25 @@ public actor MessageTranslator {
             // `TranslationChunker.chunk`が空白/不可視文字のみの段落を`[]`に
             // 潰す (このタスクでの修正、そのファイルのdoc comment参照) ため
             // `chunks`はここで初めて「翻訳すべき実体が本当に1つも無い」を
-            // 判定できる、意味のある空チェックになる — エンジンを一切呼ばず
-            // 中立な「見つかりませんでした」を返す。
+            // 判定できる、意味のある空チェックになる。
+            //
+            // Phase 5続報 (2026-07-30、f7b623f 適用後の実機再報告):「合計
+            // 文字数が閾値未満なら事前に弾く」という追加ガードを一度実装
+            // してみたが、既存テスト ("Hello." など6文字の正当な短文を
+            // 実際に翻訳させるテスト) がこのガードに引っかかって落ちた —
+            // Appleの言語自動判定が実際どこまで短い入力を処理できるかは
+            // 非公開で、Swift側で決め打ちの文字数閾値を置くと「本来翻訳
+            // できたはずの正当な短文」まで一律ブロックしてしまうリスクの
+            // 方が実害として確認された。そのため文字数閾値は導入せず、
+            // 「本当に空 (chunks.isEmpty)」だけを事前ガードとして残し、
+            // 「非空だが短すぎてエンジン自身が言語判定できない」ケースは
+            // 下の`catch`節が`TranslationServiceError.isInsufficientInput`
+            // (型) で判定する方針に統一した — エンジンに一度尋ねてから、
+            // エンジン自身の「わからない」という回答を型で受け取る方が、
+            // Swift側の憶測より正確。
             guard !chunks.isEmpty else {
                 Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) aborting — no translatable content after chunking (paragraphCount=\(paragraphs.count, privacy: .public))")
-                return .failed(message: Self.noTranslatableContentMessage)
+                return .insufficientInput(message: Self.noTranslatableContentMessage)
             }
 
             // Task #61 (実機フィードバック「無害なマーケティングメールなのに
@@ -299,6 +313,16 @@ public actor MessageTranslator {
             // doc comment for why the mapping has to happen here rather
             // than in the UI layer.
             Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            // Phase 5続報 (2026-07-30): `.insufficientInput`かどうかを型
+            // (`TranslationServiceError.isInsufficientInput`) で判定し、同じ
+            // 形の`MessageTranslationState`ケースへ写す — `MessageView
+            // .requestTranslation`のHTML→plainフォールバックがここを見て
+            // 判断する。エンジン側 (`AppleTranslationService.mapEngineError`)
+            // がこの失敗をどんな文言で表現しても (今後増えても)、ここでの
+            // 分岐は文字列を一切見ない。
+            if error.isInsufficientInput {
+                return .insufficientInput(message: error.userFacingMessage)
+            }
             return .failed(message: error.userFacingMessage)
         } catch {
             let nsError = error as NSError
