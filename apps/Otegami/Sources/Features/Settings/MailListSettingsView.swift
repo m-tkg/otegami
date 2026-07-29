@@ -22,7 +22,9 @@ struct MailListSettingsView: View {
     @AppStorage(AvatarSourceSettingsStore.showGravatarKey) private var showGravatar = AvatarSourceSettingsStore.defaultShowGravatar
     // アバター強化バッチ フェーズ3: 同上。
     @AppStorage(AvatarSourceSettingsStore.showCompanyLogoKey) private var showCompanyLogo = AvatarSourceSettingsStore.defaultShowCompanyLogo
-    @AppStorage(TranslationSettingsStore.showListSummaryKey) private var showListSummary = false
+    // 「一覧に要約を出す」トグルは実機フィードバック (2026-07-29) で削除
+    // (UI 未実装の設定項目だった)。保存キーは他所で参照していないため
+    // ここでの宣言ごと撤去。
     // 実機フィードバック第3弾 (I) で旧「その他」から移設。
     @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
     @AppStorage(PinSettingsStore.syncWithFlaggedKey) private var pinSyncWithFlagged = false
@@ -37,31 +39,26 @@ struct MailListSettingsView: View {
     var body: some View {
         List {
             Section {
+                // 実機フィードバック (2026-07-29): アイコン系 5 トグル
+                // (プロフィールアイコン/連絡先の写真/Google プロフィール
+                // 写真/Gravatar/企業ロゴ) を 1 トグルに集約し、外部通信の
+                // 注意書き footer も削除した。ON でこの 1 トグルが全ソース
+                // (連絡先→Google→Gravatar→企業ロゴ→イニシャル) をまとめて
+                // 有効化する — 個別ソースの保存キー
+                // (`AvatarSourceSettingsStore`) は解決チェーン側がそのまま
+                // 読むため残っており、この画面から書き分ける UI を無くした
+                // だけ。
                 Toggle("送信者のプロフィールアイコンを表示", isOn: $showAvatar)
                     .accessibilityIdentifier("settings.list.showAvatarToggle")
-                // アバター強化バッチ フェーズ1「連絡先の写真」— `showAvatar`
-                // がそもそも OFF ならこのトグル自体意味を持たないが、
-                // `showAvatar` OFF でもこの値は変更・保持できるようにあえて
-                // 出しっぱなしにしている (再度 ON にしたときに前の選択が
-                // 残っている方が自然)。
-                Toggle("連絡先の写真を表示", isOn: $showContactPhoto)
-                    .accessibilityIdentifier("settings.list.showContactPhotoToggle")
-                // アバター強化バッチ「Google プロフィール写真」。連絡先の
-                // 写真が見つからなかった場合の次点。Gmail アカウントが無い
-                // ユーザーには効果が無いが、トグル自体は常に出す (Gravatar/
-                // 企業ロゴのトグルも差出人ドメインを問わず常に出しているのと
-                // 同じ扱い)。
-                Toggle("Google プロフィール写真を表示", isOn: $showGoogleProfilePhoto)
-                    .accessibilityIdentifier("settings.list.showGoogleProfilePhotoToggle")
-                // アバター強化バッチ フェーズ2「Gravatar」。連絡先の写真・
-                // Google プロフィール写真のどちらも見つからなかった場合の
-                // 次点として使われる。
-                Toggle("Gravatar の画像を表示", isOn: $showGravatar)
-                    .accessibilityIdentifier("settings.list.showGravatarToggle")
-                // アバター強化バッチ フェーズ3「企業ロゴ (favicon)」。連絡先の
-                // 写真・Gravatar のどちらも見つからなかった場合の次点。
-                Toggle("企業ロゴを表示", isOn: $showCompanyLogo)
-                    .accessibilityIdentifier("settings.list.showCompanyLogoToggle")
+                    .onChange(of: showAvatar) { _, isOn in
+                        // 1 トグル化に伴い、個別ソースも一括で追随させる
+                        // (OFF→ON で「前に一部だけ切っていた」状態が残ると
+                        // 1 トグルの見た目と実挙動がずれるため)。
+                        showContactPhoto = isOn
+                        showGoogleProfilePhoto = isOn
+                        showGravatar = isOn
+                        showCompanyLogo = isOn
+                    }
                 Picker("本文プレビューの行数", selection: $previewLineCountRaw) {
                     ForEach(PreviewLineCount.allCases) { count in
                         Text(count.title).tag(count.rawValue)
@@ -69,20 +66,8 @@ struct MailListSettingsView: View {
                 }
                 .pickerStyle(.menu)
                 .accessibilityIdentifier("settings.list.previewLineCountPicker")
-                Toggle("一覧に要約を出す", isOn: $showListSummary)
-                    .accessibilityIdentifier("settings.listSummaryToggle")
             } header: {
                 Text("表示")
-            } footer: {
-                // アバター強化バッチ: フェーズ2 (Gravatar)・フェーズ3 (企業
-                // ロゴ) はどちらも外部通信を伴うため、それぞれ独立した段落
-                // で明記している。
-                VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
-                    Text("プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先に一致する写真があればそれを優先して表示します（連絡先の照合はこの端末上だけで行われ、外部には送信されません）。")
-                    Text("連絡先に写真が無い場合、Gmail アカウントが接続されていれば Google のプロフィール写真を表示することがあります。差出人のメールアドレスが Google に送信されます。設定でオフにできます。")
-                    Text("それでも見つからない場合、Gravatar (gravatar.com) に登録された画像を表示することがあります。差出人アドレスのハッシュが gravatar.com に送信されます。設定でオフにできます。")
-                    Text("それでも見つからない場合、差出人の会社ドメインの favicon を企業ロゴとして表示することがあります（フリーメール (Gmail 等) のアドレスは対象外です）。ドメイン名が接続先サーバーに送信されます。設定でオフにできます。")
-                }
             }
 
             // Task #52, 3: ハンバーガーメニューのカテゴリセクション (受信
@@ -114,7 +99,7 @@ struct MailListSettingsView: View {
             }
 
             Section {
-                Toggle("サーバーのフラグ (\\Flagged) と連動", isOn: $pinSyncWithFlagged)
+                Toggle("サーバーのフラグと連動", isOn: $pinSyncWithFlagged)
                     .accessibilityIdentifier("settings.pinSyncWithFlaggedToggle")
             } header: {
                 Text("ピン留め")
