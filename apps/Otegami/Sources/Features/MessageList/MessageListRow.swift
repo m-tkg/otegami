@@ -99,6 +99,18 @@ struct MessageListRow: View {
     let onEnterSelection: (Int64) -> Void
     let onToggleRead: (ThreadSummary) -> Void
     let onArchive: (ThreadSummary) -> Void
+    /// Task #163 (実機フィードバック「ピン留めされたメールはアーカイブできない
+    /// ようにしてほしい」): fired instead of `onArchive` when an armed
+    /// `.archive` swipe (not `.unarchive` — `isArchiveView`'s doc comment on
+    /// why that direction is never guarded) releases on a pinned row —
+    /// `commitReveal(action:direction:)`'s doc comment. The actual guard
+    /// still lives in the shared `SyncEngine.MessageRemoval.commit(_:
+    /// summary:accountId:db:)` layer (`ArchiveGuardError.pinned`); this is
+    /// purely a UI-level pre-check so a swipe that's going to be refused
+    /// doesn't play its "row slides off and vanishes" exit animation
+    /// (`commitRemoval(action:direction:)`) only to have the row silently
+    /// reappear once the (async) archive attempt actually fails.
+    let onArchiveBlocked: (ThreadSummary) -> Void
     /// Task #87 (1): "アーカイブ解除" — only ever invoked when `isArchiveView`
     /// is `true` (`perform(_:)`/`swipeButton(for:)` both branch on it before
     /// calling either this or `onArchive`).
@@ -633,6 +645,16 @@ extension MessageListRow {
     /// immediately and springing back to rest, same as before this pass,
     /// is already correct for them.
     private func commitReveal(action: SwipeAction, direction: CGFloat) {
+        // Task #163: a real archive (not "アーカイブ解除" — `isArchiveView`)
+        // against a pinned row is refused by `MessageRemoval.commit` no
+        // matter what; catching it here too just avoids playing the exit
+        // animation for a swipe that's certain to fail — see
+        // `onArchiveBlocked`'s doc comment.
+        if action == .archive, !isArchiveView, summary.thread.isPinned {
+            onArchiveBlocked(summary)
+            cancelSwipe()
+            return
+        }
         switch action {
         case .archive, .delete, .junk:
             commitRemoval(action: action, direction: direction)

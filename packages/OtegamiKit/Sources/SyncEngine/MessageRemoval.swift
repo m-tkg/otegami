@@ -19,6 +19,21 @@ import OtegamiStore
 /// surrounding `catch` swallowed that failure silently, so "元に戻す" looked
 /// like it did nothing. Fixed here by restoring the thread row first.
 public enum MessageRemoval {
+    /// Task #163 (実機フィードバック「ピン留めされたメールはアーカイブできない
+    /// ようにしてほしい」): thrown by `commit(.archive, ...)` instead of
+    /// running at all when `summary.thread.isPinned` is `true` — kept as a
+    /// thrown error rather than folded into `commit`'s existing `nil`
+    /// "nothing to remove" return so every call site (single swipe, the
+    /// thread-detail toolbar, the accordion, the account-digest bulk swipe)
+    /// can tell "blocked because pinned" apart from "already archived"/
+    /// "already gone" and show the right message instead of silently
+    /// no-op'ing. Only `.archive` is guarded — delete/junk/unarchive and
+    /// every non-removal action (read state, pin toggle, move) are
+    /// unaffected, matching the feature's scope.
+    public enum ArchiveGuardError: Error, Equatable, Sendable {
+        case pinned
+    }
+
     public enum Kind: Sendable {
         case archive
         case delete
@@ -96,6 +111,16 @@ public enum MessageRemoval {
     @discardableResult
     public static func commit(_ kind: Kind, summary: ThreadSummary, accountId: String, db: Database) throws -> Snapshot? {
         guard let threadId = summary.thread.id else { return nil }
+        // Task #163: `summary.thread.isPinned` is the exact same OR-
+        // aggregate `ThreadRecord` column every list/detail screen already
+        // displays pin state from (`ThreadRecord.isPinned`'s doc comment —
+        // "at least one message in the thread has `isPinnedLocal` set"),
+        // whether or not server-flag sync (`\Flagged`) is enabled — that
+        // column is the local pin source of truth either way, so this guard
+        // can never disagree with what the pin icon on screen shows.
+        if kind == .archive, summary.thread.isPinned {
+            throw ArchiveGuardError.pinned
+        }
         guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
         let targets = try ThreadQuery.actionTargets(for: summary, db: db)
         let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0

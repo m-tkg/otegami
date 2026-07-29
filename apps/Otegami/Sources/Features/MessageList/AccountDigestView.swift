@@ -60,7 +60,12 @@ struct AccountDigestView: View {
     private struct PendingUndo {
         var accountId: String
         var message: String
-        var undo: () async -> Void
+        /// Task #163: `nil` for a blocked-action notice — nothing was
+        /// actually removed (every target in the batch was pinned), so
+        /// there's nothing to reverse. See `MessageListView.PendingUndo
+        /// .undo`'s doc comment for the identical rationale in the sibling
+        /// view this mirrors.
+        var undo: (() async -> Void)?
     }
     @State private var pendingUndo: PendingUndo?
     @State private var pendingUndoTask: Task<Void, Never>?
@@ -100,7 +105,7 @@ struct AccountDigestView: View {
         }
         .overlay(alignment: .bottom) {
             if let pendingUndo {
-                UndoToast(message: pendingUndo.message, onUndo: undoPending)
+                UndoToast(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo))
                     .animation(.default, value: pendingUndo.message)
             }
         }
@@ -204,6 +209,13 @@ struct AccountDigestView: View {
     /// `.archive`/`.delete`/`.junk`の一括版 — `MessageListView.archiveSelected`/
     /// `deleteSelected`と同じ「1スレッドずつ`MessageRemoval.commit`して
     /// スナップショットを集め、1つでも成功したらUndoトーストを出す」形。
+    ///
+    /// Task #163: `.archive`の各`commit`呼び出しが`ArchiveGuardError.pinned`
+    /// を投げた件数 (ピン留め済みでスキップされた件数) を別途数える —
+    /// アーカイブが1件でも成功していればそのスキップ件数をUndoトースト本文に
+    /// 添え(「n件をアーカイブしました（m件はピン留めのためスキップ）」)、
+    /// 全件ピン留めで1件も成功しなかった場合は元に戻す対象が無いので
+    /// Undoボタン無しの通知のみを出す。
     private func performRemoval(_ action: SwipeAction, summaries: [ThreadSummary], accountId: String) async {
         let kind: MessageRemoval.Kind
         switch action {
@@ -213,6 +225,7 @@ struct AccountDigestView: View {
         case .toggleRead, .pin: return
         }
         var snapshots: [MessageRemoval.Snapshot] = []
+        var pinnedSkipCount = 0
         for summary in summaries {
             do {
                 if let snapshot = try await environment.database.dbWriter.write({ db in
@@ -220,13 +233,24 @@ struct AccountDigestView: View {
                 }) {
                     snapshots.append(snapshot)
                 }
+            } catch is MessageRemoval.ArchiveGuardError {
+                pinnedSkipCount += 1
             } catch {
                 // Best-effort — the rest of the batch still proceeds.
             }
         }
-        guard !snapshots.isEmpty else { return }
+        guard !snapshots.isEmpty || pinnedSkipCount > 0 else { return }
         let name = accountDisplayNames[accountId] ?? accountId
-        scheduleUndo(accountId: accountId, message: "\(name)の\(snapshots.count)件を\(action.title)しました") {
+        guard !snapshots.isEmpty else {
+            // Every target was pinned — nothing to undo, just notify.
+            scheduleUndo(accountId: accountId, message: "\(name)の\(pinnedSkipCount)件はピン留めのためスキップしました", undo: nil)
+            return
+        }
+        var message = "\(name)の\(snapshots.count)件を\(action.title)しました"
+        if pinnedSkipCount > 0 {
+            message += "（\(pinnedSkipCount)件はピン留めのためスキップ）"
+        }
+        scheduleUndo(accountId: accountId, message: message) {
             for snapshot in snapshots {
                 do {
                     try await environment.database.dbWriter.write { db in try MessageRemoval.undo(snapshot, db: db) }
@@ -315,7 +339,7 @@ struct AccountDigestView: View {
         }
     }
 
-    private func scheduleUndo(accountId: String, message: String, undo: @escaping () async -> Void) {
+    private func scheduleUndo(accountId: String, message: String, undo: (() async -> Void)?) {
         pendingUndoTask?.cancel()
         if let previous = pendingUndo {
             Task { await replayOpQueueSoon(accountId: previous.accountId) }
@@ -331,10 +355,24 @@ struct AccountDigestView: View {
 
     private func undoPending() {
         pendingUndoTask?.cancel()
-        guard let pendingUndo else { return }
-        let undo = pendingUndo.undo
+        guard let pendingUndo, let undo = pendingUndo.undo else { return }
         self.pendingUndo = nil
         Task { await undo() }
+    }
+
+    /// Task #163: `UndoToast`'s `onUndo` for a given `PendingUndo` — `nil`
+    /// (no button rendered) for a blocked-action notice (`pending.undo ==
+    /// nil`), `undoPending` otherwise. Pulled into its own explicitly-typed
+    /// function rather than an inline ternary at the `body` call site —
+    /// the inline form (`pending.undo != nil ? undoPending : nil`) made the
+    /// surrounding `some View` expression fail to type-check with a Swift
+    /// compiler crash ("failed to produce diagnostic for expression"),
+    /// presumably the same class of `ViewBuilder`-inference blowup
+    /// `CLAUDE.md`'s CI type-check-timeout note already warns this codebase
+    /// is prone to.
+    private func undoButtonAction(for pending: PendingUndo) -> (() -> Void)? {
+        guard pending.undo != nil else { return nil }
+        return undoPending
     }
 
     private func replayOpQueueSoon(accountId: String) async {

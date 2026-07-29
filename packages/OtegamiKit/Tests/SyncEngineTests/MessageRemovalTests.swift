@@ -356,6 +356,126 @@ struct MessageRemovalTests {
         #expect(opCount == 1)
     }
 
+    // MARK: pinned archive guard (Task #163)
+
+    @Test("archiving a pinned thread throws ArchiveGuardError.pinned instead of removing anything")
+    func archiveThrowsForPinnedThread() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let ids = try insertSingleMessageThread(accountId: accountId, mailboxId: inboxId, uid: 11, date: date, db: db)
+            var message = try MessageRecord.fetchOne(db, key: ids.messageId)!
+            message.isPinnedLocal = true
+            try message.update(db)
+            try ThreadAssigner.recomputeAggregates(threadId: ids.threadId, db: db)
+            return ids
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+        #expect(summary.thread.isPinned == true)
+
+        #expect(throws: MessageRemoval.ArchiveGuardError.pinned) {
+            try database.dbWriter.write { db in
+                try MessageRemoval.commit(.archive, summary: summary, accountId: accountId, db: db)
+            }
+        }
+
+        // Nothing was touched: the message is still in the inbox, no op
+        // was queued.
+        let (messageAfter, opCount) = try database.dbWriter.read { db in
+            (try MessageRecord.fetchOne(db, key: messageId), try OpQueueRecord.fetchCount(db))
+        }
+        #expect(messageAfter?.mailboxId == inboxId)
+        #expect(opCount == 0)
+    }
+
+    @Test("deleting a pinned thread still works — only .archive is guarded")
+    func deleteStillWorksForPinnedThread() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let ids = try insertSingleMessageThread(accountId: accountId, mailboxId: inboxId, uid: 12, date: date, db: db)
+            var message = try MessageRecord.fetchOne(db, key: ids.messageId)!
+            message.isPinnedLocal = true
+            try message.update(db)
+            try ThreadAssigner.recomputeAggregates(threadId: ids.threadId, db: db)
+            return ids
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+        #expect(summary.thread.isPinned == true)
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.delete, summary: summary, accountId: accountId, db: db)
+        }
+        #expect(snapshot != nil)
+        let messageAfter = try database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: messageId) }
+        #expect(messageAfter == nil)
+    }
+
+    @Test("junking a pinned thread still works — only .archive is guarded")
+    func junkStillWorksForPinnedThread() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let ids = try insertSingleMessageThread(accountId: accountId, mailboxId: inboxId, uid: 13, date: date, db: db)
+            var message = try MessageRecord.fetchOne(db, key: ids.messageId)!
+            message.isPinnedLocal = true
+            try message.update(db)
+            try ThreadAssigner.recomputeAggregates(threadId: ids.threadId, db: db)
+            return ids
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.junk, summary: summary, accountId: accountId, db: db)
+        }
+        #expect(snapshot != nil)
+    }
+
+    @Test("unarchiving a pinned message still works — only .archive is guarded, not .unarchive")
+    func unarchiveStillWorksForPinnedThread() throws {
+        let (database, accountId, _) = try makeDatabase()
+        let archiveId = try database.dbWriter.write { db -> Int64 in
+            var archive = MailboxRecord(accountId: accountId, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1)
+            try archive.insert(db)
+            return archive.id!
+        }
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let ids = try insertSingleMessageThread(accountId: accountId, mailboxId: archiveId, uid: 14, date: date, db: db)
+            var message = try MessageRecord.fetchOne(db, key: ids.messageId)!
+            message.isPinnedLocal = true
+            try message.update(db)
+            try ThreadAssigner.recomputeAggregates(threadId: ids.threadId, db: db)
+            return ids
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.unarchive, summary: summary, accountId: accountId, db: db)
+        }
+        #expect(snapshot != nil)
+    }
+
     @Test("unarchiving a message that isn't actually archived (still in INBOX) is a no-op — nothing to reverse")
     func unarchiveSkipsAMessageNotActuallyArchived() throws {
         let (database, accountId, inboxId) = try makeDatabase()

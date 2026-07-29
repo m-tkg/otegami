@@ -138,7 +138,9 @@ struct MessageListView: View {
     /// `scheduleUndo`/`undoPending`/`.onChange(of: scenePhase)` bookkeeping.
     struct UndoToastPayload {
         let message: String
-        let onUndo: () -> Void
+        /// Task #163: `nil` for a blocked-action notice — see
+        /// `PendingUndo.undo`'s doc comment.
+        let onUndo: (() -> Void)?
     }
 
     /// Backstop for `scheduleUndo`'s delayed commit — see that method's doc
@@ -209,7 +211,10 @@ struct MessageListView: View {
         var threadIds: Set<Int64>
         var message: String
         var accountIds: Set<String>
-        var undo: () async -> Void
+        /// Task #163: `nil` for a blocked-action notice (nothing was
+        /// actually removed, so there's nothing to reverse) — see
+        /// `showArchiveBlockedByPinNotice()`'s doc comment.
+        var undo: (() async -> Void)?
     }
     @State private var pendingUndo: PendingUndo?
     @State private var pendingUndoTask: Task<Void, Never>?
@@ -732,7 +737,7 @@ struct MessageListView: View {
             // (`RootView`)はこのパラメータを渡さないので、これまでどおり
             // ここで描画する。
             if !suppressInternalUndoToast, let pendingUndo {
-                UndoToast(message: pendingUndo.message, onUndo: undoPending)
+                UndoToast(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo))
                     .animation(.default, value: pendingUndo.threadIds)
                     #if os(iOS)
                     .padding(.bottom, OtegamiSpacing.xxl + OtegamiSpacing.lg)
@@ -930,6 +935,7 @@ struct MessageListView: View {
                 onEnterSelection: enterSelectionMode,
                 onToggleRead: toggleRead,
                 onArchive: archiveThread,
+                onArchiveBlocked: { _ in showArchiveBlockedByPinNotice() },
                 onUnarchive: unarchiveThread,
                 onDelete: deleteThread,
                 onJunk: junkThread,
@@ -1078,7 +1084,7 @@ struct MessageListView: View {
     /// scheduling a new one while an earlier one is still pending lets the
     /// earlier one's replay proceed immediately instead of waiting out its
     /// own window unseen.
-    private func scheduleUndo(threadIds: Set<Int64>, message: String, accountIds: Set<String>, undo: @escaping () async -> Void) {
+    private func scheduleUndo(threadIds: Set<Int64>, message: String, accountIds: Set<String>, undo: (() async -> Void)?) {
         pendingUndoTask?.cancel()
         if let previous = pendingUndo {
             Task { await replayOpQueueSoon(accountIds: previous.accountIds) }
@@ -1105,16 +1111,39 @@ struct MessageListView: View {
             onPendingUndoChanged(nil)
             return
         }
-        onPendingUndoChanged(UndoToastPayload(message: pendingUndo.message, onUndo: undoPending))
+        onPendingUndoChanged(UndoToastPayload(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo)))
     }
 
     private func undoPending() {
         pendingUndoTask?.cancel()
-        guard let pendingUndo else { return }
-        let undo = pendingUndo.undo
+        guard let pendingUndo, let undo = pendingUndo.undo else { return }
         self.pendingUndo = nil
         notifyPendingUndoChanged()
         Task { await undo() }
+    }
+
+    /// Task #163: `UndoToast`/`UndoToastPayload`'s `onUndo` for a given
+    /// `PendingUndo` — `nil` (no button) for a blocked-action notice
+    /// (`pending.undo == nil`), `undoPending` otherwise. Extracted into its
+    /// own explicitly-typed function rather than an inline ternary at
+    /// either call site — see `AccountDigestView.undoButtonAction(for:)`'s
+    /// identical doc comment for why (a Swift compiler crash the inline
+    /// form triggered inside `body`'s `some View` expression).
+    private func undoButtonAction(for pending: PendingUndo) -> (() -> Void)? {
+        guard pending.undo != nil else { return nil }
+        return undoPending
+    }
+
+    /// Task #163 (実機フィードバック「ピン留めされたメールはアーカイブできない
+    /// ようにしてほしい」): shown when `SyncEngine.MessageRemoval.commit(_:
+    /// summary:accountId:db:)` throws `MessageRemoval.ArchiveGuardError
+    /// .pinned` — reuses `scheduleUndo`'s exact timer/external-render
+    /// plumbing (`suppressInternalUndoToast`'s doc comment) with an empty
+    /// `threadIds`/`accountIds` and a `nil` `undo`, so it renders as the same
+    /// toast shell with no "元に戻す" button (`UndoToast`'s doc comment) and
+    /// no opQueue replay to schedule — nothing was actually removed.
+    private func showArchiveBlockedByPinNotice() {
+        scheduleUndo(threadIds: [], message: "ピン留め中のためアーカイブできません", accountIds: [], undo: nil)
     }
 
     private var title: String {
@@ -1764,6 +1793,16 @@ struct MessageListView: View {
                 searchResults.removeAll { $0.id == summary.id }
             }
             return snapshot
+        } catch is MessageRemoval.ArchiveGuardError {
+            // Task #163: pinned — `archiveThread(_:)`'s swipe already
+            // pre-checks this (`MessageListRow.commitReveal`'s pinned guard)
+            // to skip the exit-slide animation, but this catch is still the
+            // one place that actually blocks *every* archive path (the
+            // toolbar/context-menu row action on macOS has no such
+            // pre-check) — see `MessageRemoval.ArchiveGuardError`'s doc
+            // comment.
+            showArchiveBlockedByPinNotice()
+            return nil
         } catch {
             // Best-effort, matching every other opQueue-enqueuing path in
             // this file.

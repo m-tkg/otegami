@@ -151,6 +151,17 @@ struct ThreadDetailView: View {
     @State private var showingInfo = false
     @State private var showingSource = false
     @State private var showingToolbarSettings = false
+    /// Task #163 (実機フィードバック「ピン留めされたメールはアーカイブできない
+    /// ようにしてほしい」): shown when `commitRemoval(.archive)` catches
+    /// `MessageRemoval.ArchiveGuardError.pinned` — this screen otherwise has
+    /// no toast/notice of any kind (`MARK: 新画面構成 (3): スレッド操作`'s doc
+    /// comment: every other action just pops back to the list on success,
+    /// which is its own confirmation), so a blocked archive needs one added
+    /// specifically for this "nothing happened, and that's not obvious"
+    /// case — see `showPinnedArchiveNotice()`.
+    @State private var pinnedArchiveNotice: String?
+    @State private var pinnedArchiveNoticeTask: Task<Void, Never>?
+    private static let pinnedArchiveNoticeWindow: Duration = .seconds(3)
     /// Task #59 (実機フィードバック「要約/翻訳のフローティングアイコンを
     /// 常に左下固定にしてほしい」), Task #88 (フッターツールバーへ移設):
     /// whatever `MessageDetailAIFeaturesState` the currently-expanded row's
@@ -300,6 +311,19 @@ struct ThreadDetailView: View {
         // overlay). One fewer moving part: the toolbar is the only bottom-
         // anchored UI now, so there's no second layer to keep from
         // overlapping it.
+        // Task #163: placed here (before the footer toolbar's own
+        // `.safeAreaInset`), mirroring the now-removed `MessageDetailFloatingButtons`
+        // overlay's old position (see the doc comment right above this
+        // one) — an `.overlay(alignment: .bottom)` applied before a sibling
+        // `.safeAreaInset(edge: .bottom)` renders inside the safe area that
+        // inset carves out, i.e. right above `footerToolbar`, never
+        // overlapping its buttons.
+        .overlay(alignment: .bottom) {
+            if let pinnedArchiveNotice {
+                UndoToast(message: pinnedArchiveNotice)
+                    .animation(.default, value: pinnedArchiveNotice)
+            }
+        }
         .safeAreaInset(edge: .bottom) { footerToolbar }
         .sheet(isPresented: $showingInfo) { infoSheet }
         .sheet(isPresented: $showingSource) { sourceSheet }
@@ -1098,8 +1122,26 @@ struct ThreadDetailView: View {
             // このヘルパー1箇所にしか存在しないので、以後崩れようがない。
             notifyThreadRemoved()
             await replaySoon()
+        } catch is MessageRemoval.ArchiveGuardError {
+            // Task #163: pinned — refused by `MessageRemoval.commit` itself
+            // (the shared guard every archive path routes through), so
+            // nothing was removed and there's nothing to notify/replay for.
+            showPinnedArchiveNotice()
         } catch {
             // Best-effort — the thread just stays if this fails.
+        }
+    }
+
+    /// Task #163: auto-dismissing, undo-less notice — see
+    /// `pinnedArchiveNotice`'s doc comment for why this screen needs one at
+    /// all when every other action here has none.
+    private func showPinnedArchiveNotice() {
+        pinnedArchiveNoticeTask?.cancel()
+        pinnedArchiveNotice = "ピン留め中のためアーカイブできません"
+        pinnedArchiveNoticeTask = Task {
+            try? await Task.sleep(for: Self.pinnedArchiveNoticeWindow)
+            guard !Task.isCancelled else { return }
+            pinnedArchiveNotice = nil
         }
     }
 
