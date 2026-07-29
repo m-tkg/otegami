@@ -152,6 +152,10 @@ struct AccountDigestRow: View {
                 .font(OtegamiFont.headline())
                 .foregroundStyle(OtegamiColor.ink)
                 .lineLimit(1)
+            Spacer(minLength: OtegamiSpacing.sm)
+            // 実機フィードバック第4弾 (2026-07-29「右端のメールの件数は
+            // 未読のみ表示して」): 右端の総件数バッジを廃止し、未読バッジ
+            // だけを右端に出す (0 件なら何も出さない)。
             if digest.unreadCount > 0 {
                 Text("\(digest.unreadCount)")
                     .font(OtegamiFont.badge())
@@ -161,14 +165,6 @@ struct AccountDigestRow: View {
                     .background(OtegamiColor.accent)
                     .accessibilityIdentifier("accountDigest.row.\(digest.accountId).unreadBadge")
             }
-            Spacer(minLength: OtegamiSpacing.sm)
-            Text("\(digest.totalCount)")
-                .font(OtegamiFont.caption())
-                .foregroundStyle(OtegamiColor.inkSecondary)
-                .padding(.horizontal, OtegamiSpacing.xs)
-                .padding(.vertical, 2)
-                .background(OtegamiColor.paleBase)
-                .accessibilityIdentifier("accountDigest.row.\(digest.accountId).countBadge")
         }
     }
 }
