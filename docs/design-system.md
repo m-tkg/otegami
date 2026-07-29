@@ -5655,3 +5655,51 @@ DB の反映だけで完結する) ので、3操作 (`archiveThread`/`junkThread
 5) 遅いネットワーク環境でも (アーカイブ自体は即座に反映されるはずなの
    で) サーバ側に最終的にアーカイブ/削除/迷惑メール操作が反映される
    こと (`replaySoon()`が遷移後もバックグラウンドで完走することの確認)。
+
+## Task #117: アカウント設定一覧に自分のアバターを表示
+
+設定 →「アカウントの設定」の各アカウント行に、そのアカウント自身の
+アバターを表示する (`AccountSettingsCategoryView.accountRow(for:)`)。
+
+### 実装
+
+新規のアバター解決 API は用意していない —
+`SenderAvatar(displayName:address:accountId:labelColorKey:diameter:)`に
+`account.displayName`/`account.email`/`account.id`/`account.labelColorKey`
+をそのまま渡すだけで、メッセージ一覧・スレッド詳細の送信者アバターと
+**まったく同じ優先順位チェーン**
+(連絡先の写真 → Google プロフィール写真 → Gravatar → 企業ロゴ
+favicon → イニシャル+統一背景) がこのアカウント自身のメールアドレスに
+対して働く。Gmail アカウントの場合、`GoogleProfilePhotoAvatarResolver`
+が Task #42「自分のプロフィール写真」で`people/me`の結果を other
+contacts/connections と同じ (メールアドレス → 写真URL) 索引にマージ済み
+なので、`account.email`をキーに引いた時点で自分の Google プロフィール
+写真が「ついでに」見つかる — `resolveAvatarImageData(address:)`の通常
+の解決経路が Gmail アカウント自身のアドレスも他の送信者アドレスと分け
+隔てなく扱えることを利用しているだけで、`GoogleAvatarDiagnosticsView`
+のような専用の`people/me`直叩きは行っていない。`AvatarSourceSettingsStore`
+の4トグル (連絡先/Google プロフィール写真/Gravatar/企業ロゴ) もこの行
+にそのまま適用される。
+
+配置は、既存のアカウント色ドット (`settings.account.<id>.colorDot`、
+行の右端) と共存する形で、行の左端 (`accountRowContent(for:)`の直前)
+に 36pt の`SenderAvatar`を追加しただけ — 詳細画面のヘッダ (36pt) と
+同じサイズを選び、一覧行 (28pt) より少し大きく、この画面の情報密度
+(氏名・アドレス・再認証バナー等が複数行) に見合う存在感にした。画像が
+無い場合のイニシャル+濃灰背景フォールバックは`SenderAvatar`自身が
+すでに統一済み (Task #87 (3) / Task #93、`SenderAvatar`のdoc comment
+参照) なので追加の作業は不要だった。
+
+### 検証
+
+`make test`(既知の無関係flake以外緑)・`make mac`・`make ios`とも
+成功。`scripts/verify-screen.sh account-settings`
+(`OTEGAMI_UITEST_DISABLE_AVATAR_SOURCES=1`が既定で付くため、外部アバ
+ター情報源は全て無効化された状態でのイニシャル表示になる) で
+「Fake Gmail (UITest)」アカウント行の左端に「FG」の濃灰背景イニシャル
+アバターが表示され、右端の色ドットと違和感なく共存していることを screenshot
+で確認した。**未検証**: 実際に Google プロフィール写真/連絡先の写真/
+Gravatar が解決される見た目 (アバター情報源を無効化しない実機での確認)。
+**実機確認ポイント**: 設定 →「アカウントの設定」で、Gmail アカウントに
+Google プロフィール写真が設定されていれば、そのアカウント行の左端に
+その写真が円形で表示されること (一覧の送信者アバターと同じ見た目)。

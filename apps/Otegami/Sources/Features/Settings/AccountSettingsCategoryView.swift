@@ -207,9 +207,30 @@ struct AccountSettingsCategoryView: View {
     /// a preview of "this is what `AccountEditView`'s color picker
     /// currently has selected", not itself tappable — changing the color
     /// still requires opening the edit screen this row already links to.
+    ///
+    /// Task #117「アカウント設定一覧に自分のアバターを表示」: a leading
+    /// `SenderAvatar` for *this account's own address* — passing
+    /// `account.email` as the resolved `address` reuses the exact same
+    /// priority chain a message sender's avatar already goes through
+    /// (`SenderAvatar`'s doc comment: 連絡先の写真 → Google プロフィール
+    /// 写真 → Gravatar → 企業ロゴ → イニシャル), no bespoke "my own avatar"
+    /// API needed. For a Gmail account this resolves to the same `people/me`
+    /// self-photo `GoogleProfilePhotoAvatarResolver` already indexes
+    /// alongside every other contact (Task #42「自分のプロフィール写真」
+    /// doc comment, `GoogleProfilePhotoAvatarResolver.fetchAndStoreIndex`) —
+    /// merged into the very index `resolveAvatarImageData(address:)` already
+    /// looks `account.email` up in, so this account row gets it "for free"
+    /// once that resolver's normal (non-diagnostic) path runs. Every other
+    /// `AvatarSourceSettingsStore` on/off toggle (contacts/Gravatar/company
+    /// logo) and the unified dark-gray backdrop + white-initials fallback
+    /// apply unchanged, same as any other `SenderAvatar` call site.
     @ViewBuilder
     private func accountRow(for account: AccountRecord) -> some View {
         HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
+            SenderAvatar(
+                displayName: account.displayName, address: account.email, accountId: account.id,
+                labelColorKey: account.labelColorKey, diameter: 36
+            )
             accountRowContent(for: account)
             Spacer(minLength: OtegamiSpacing.sm)
             Circle()

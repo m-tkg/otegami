@@ -252,6 +252,19 @@ macOS は元々編集モードなしでドラッグ並び替えできる (`List`
   のようなデバイスローカルな id とは異なり、並び順は端末をまたいで意味を
   持つ値のため同期対象にした。
 
+## アカウント設定一覧の自分のアバター (Task #117)
+
+設定 →「アカウントの設定」の各アカウント行の左端に、そのアカウント
+自身のアバター (`SenderAvatar`) を表示する
+(`AccountSettingsCategoryView.accountRow(for:)`) — 右端の既存の
+アカウント色ドット (`AccountRecord.labelColorKey`、上の「アカウントの
+ラベル色」節) と共存する配置。新規の解決 API は追加しておらず、メッセ
+ージ一覧・スレッド詳細と同じ`SenderAvatar`/`AvatarSourceSettingsStore`
+の優先順位チェーンに`account.email`を通すだけ — Gmail アカウントなら
+Task #42「自分のプロフィール写真」(`people/me`) の結果が既にこの索引
+に含まれているので、自分の Google プロフィール写真もそのまま解決され
+る。詳細な実装・検証は `docs/design-system.md`「Task #117」節参照。
+
 ## アプリアイコンの未読バッジ (実機フィードバック第2弾: H → 第3弾: G で on/off トグルを削除)
 
 統合受信トレイ基準 (`MessageQuery.unifiedInboxUnreadCountObservation`、
