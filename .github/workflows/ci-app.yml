@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# 連続 push 時に古い実行を自動キャンセルする (タグ実行はグループが別になる
+# だけでキャンセル対象の重複が起きない)。
+concurrency:
+  group: ci-app-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   app:
     # macos-26 (arm64) ships Xcode 27, which supports the iOS/macOS 26 SDKs

@@ -3,7 +3,26 @@ name: ci-server
 on:
   push:
     branches: [main]
+    # サーバ関連の変更時だけ実行 (アプリだけの push では回さない)。
+    # 共有 DTO (OtegamiRelayAPI/OtegamiCore) はリレーのビルドに影響する
+    # ため含める。
+    paths:
+      - "server/**"
+      - "packages/OtegamiKit/Sources/OtegamiRelayAPI/**"
+      - "packages/OtegamiKit/Sources/OtegamiCore/**"
+      - ".github/workflows/ci-server.yml"
   pull_request:
+    paths:
+      - "server/**"
+      - "packages/OtegamiKit/Sources/OtegamiRelayAPI/**"
+      - "packages/OtegamiKit/Sources/OtegamiCore/**"
+      - ".github/workflows/ci-server.yml"
+
+# 連続 push 時に古い実行を自動キャンセルする (タグ実行はグループが別になる
+# だけでキャンセル対象の重複が起きない)。
+concurrency:
+  group: ci-server-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   server:
