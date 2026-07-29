@@ -70,6 +70,46 @@ struct MessageView: View {
     /// "nothing else currently constructs this view" reasoning as
     /// `onHTMLContentHeightChange` above.
     var onAIFeaturesStateChange: (MessageDetailAIFeaturesState?) -> Void = { _ in }
+    /// Task #149 (実機報告「スレッド表示で要約/翻訳ボタンが一瞬有効→無効に
+    /// 戻る」): whether *this* instance is the one `ThreadDetailView.
+    /// expandedAIFeaturesState` (and therefore the footer toolbar) should
+    /// currently be reflecting — `ThreadMessageRow`/`ThreadDetailView.
+    /// messageRow(for:containerSize:)` compute this as `expandedMessageId ==
+    /// 自 messageId`, mirroring `isExpanded` exactly. Root cause: the
+    /// accordion is a strict "one `MessageView` at a time" model in theory,
+    /// but in practice several instances can be alive simultaneously for a
+    /// brief window — the newly-expanding row's fresh `MessageView`, the
+    /// just-collapsed row's own instance lingering mid-`withAnimation`
+    /// removal (SwiftUI doesn't call `onDisappear` until that animation
+    /// settles, yet its `.task`/`.onChange` machinery keeps running the
+    /// whole time), and Task #147's `observeBodyRecordChanges()` loop on
+    /// that same lingering instance possibly delivering one more body
+    /// update before it's actually torn down. All of them used to call the
+    /// exact same unconditional `onAIFeaturesStateChange` closure
+    /// (`{ expandedAIFeaturesState = $0 }`), so whichever one happened to
+    /// run *last* won — commonly the stale collapsing instance's
+    /// `onDisappear` (`nil`) or #147 delivery (its own, wrong-message
+    /// `aiState`), landing *after* the newly-expanded instance had already
+    /// reported correctly, which is exactly "一瞬有効→無効" (briefly
+    /// correct, then clobbered).
+    ///
+    /// This flag is this view's own first line of defense: every write into
+    /// `onAIFeaturesStateChange` below is gated on it, so a non-target
+    /// instance simply never calls out at all (only touches its own local
+    /// `aiState`, harmless since nothing reads it while non-target). It's
+    /// deliberately *not* the only defense, though — see `ThreadDetailView.
+    /// messageRow(for:containerSize:)`'s `onAIFeaturesStateChange` closure
+    /// doc comment for why a `let` flag frozen at this instance's
+    /// construction time can't, by itself, catch a residual instance that
+    /// was still the target *when it was created* but no longer is by the
+    /// time it actually calls out; that closure adds a second, live check
+    /// against `ThreadDetailView`'s own current `expandedMessageId` that
+    /// closes that gap regardless of timing. Defaults to `true` — the only
+    /// call site (`ThreadMessageRow.body`) always passes an explicit value,
+    /// but a permissive default keeps this source-compatible with the same
+    /// "nothing else currently constructs this view" reasoning as
+    /// `onHTMLContentHeightChange`/`onAIFeaturesStateChange` just above.
+    var isToolbarTarget = true
 
     /// B5 — see `ListDisplaySettingsStore.showAvatarInDetailKey`'s doc
     /// comment on why this is read directly via `@AppStorage`.
@@ -393,10 +433,29 @@ struct MessageView: View {
         // back to the list mid-body-fetch no longer means `\Seen` never
         // gets applied. See `markAsReadIfNeeded()`'s doc comment.
         .onAppear {
-            onAIFeaturesStateChange(aiState)
+            // Task #149: see `isToolbarTarget`'s doc comment — a non-target
+            // instance never reports itself to the shared toolbar state at
+            // all, appear or not.
+            if isToolbarTarget { onAIFeaturesStateChange(aiState) }
             markAsReadIfNeeded()
         }
-        .onDisappear { onAIFeaturesStateChange(nil) }
+        .onDisappear {
+            if isToolbarTarget { onAIFeaturesStateChange(nil) }
+        }
+        // Task #149 (2): the accordion switching to a new target message
+        // reconstructs `MessageView` fresh (see `isToolbarTarget`'s doc
+        // comment — it's always `true` from the moment a target instance is
+        // first constructed), so in practice this fires only for the
+        // pathological case a future change might introduce (an existing
+        // instance's target status flipping without a full remount) — kept
+        // anyway as the explicit "becoming target re-syncs immediately"
+        // rule the fix calls for, rather than relying on it being currently
+        // unreachable.
+        .onChange(of: isToolbarTarget) { _, isTarget in
+            guard isTarget else { return }
+            syncAIFeaturesState()
+            onAIFeaturesStateChange(aiState)
+        }
         // Task #59: keeps the buttons' visibility live if the user toggles
         // I「AI 機能の on/off」while this message is open — see
         // `syncAIFeaturesState()`'s doc comment.
@@ -466,6 +525,21 @@ struct MessageView: View {
     /// that same live behavior now that `aiState`, not this view's own
     /// body, is what the footer toolbar actually renders from.
     private func syncAIFeaturesState() {
+        // Task #149 (3): a non-target instance (`isToolbarTarget`'s doc
+        // comment) never mutates `aiState` at all here — not just "mutates
+        // it but doesn't forward it" — so a residual/racing instance's #147
+        // `observeBodyRecordChanges()` delivery (this method's other call
+        // site, `applyObservedBodyRecordIfNeeded`) can't even leave stale
+        // button-visibility state sitting in its own `aiState` for some
+        // later code path to accidentally pick up. Still logs (at both
+        // gate loggers, with `skipped` in place of the usual field dump) so
+        // a real occurrence of exactly this race remains visible in
+        // `log stream` instead of just silently doing nothing.
+        guard isToolbarTarget else {
+            Self.summaryGateLogger.notice("syncAIFeaturesState: messageId=\(messageId, privacy: .public) skipped (non-target)")
+            Self.translationGateLogger.notice("syncAIFeaturesState: messageId=\(messageId, privacy: .public) skipped (non-target)")
+            return
+        }
         // Task #64 (実機フィードバック「本文読み込み完了までフローティング
         // ボタンを出さないでほしい」): gates on `bodyRecord != nil` — the
         // message's body has actually finished loading — rather than the
@@ -500,7 +574,7 @@ struct MessageView: View {
         let hasSettledBodyState = bodyRecord != nil || errorMessage != nil
         aiState.showsSummaryButton = hasSettledBodyState && aiFeaturesEnabled
         Self.summaryGateLogger.notice("""
-        syncAIFeaturesState: messageId=\(messageId, privacy: .public) \
+        syncAIFeaturesState: messageId=\(messageId, privacy: .public) isToolbarTarget=\(isToolbarTarget, privacy: .public) \
         hasBody=\(bodyRecord != nil, privacy: .public) hasError=\(errorMessage != nil, privacy: .public) \
         aiFeaturesEnabled=\(aiFeaturesEnabled, privacy: .public) \
         showsSummaryButton=\(aiState.showsSummaryButton, privacy: .public)
@@ -536,7 +610,8 @@ struct MessageView: View {
         // never survive into a `log collect` archive (the same #105/#122
         // trap, hit a third time here).
         Self.translationGateLogger.notice("""
-        syncAIFeaturesState: messageId=\(messageId, privacy: .public) hasBody=\(hasBody, privacy: .public) \
+        syncAIFeaturesState: messageId=\(messageId, privacy: .public) isToolbarTarget=\(isToolbarTarget, privacy: .public) \
+        hasBody=\(hasBody, privacy: .public) \
         shouldShowTranslationBar=\(shouldShowTranslationBar, privacy: .public) \
         htmlControllerReadyIfNeeded=\(htmlControllerReadyIfNeeded, privacy: .public) \
         showsTranslationButton=\(aiState.showsTranslationButton, privacy: .public) \

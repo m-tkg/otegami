@@ -361,7 +361,27 @@ struct ThreadDetailView: View {
                 accountLabelColorKey: accountId.flatMap { id in environment.accounts.first(where: { $0.id == id })?.labelColorKey },
                 expandedHeight: expandedMessageHeight(in: containerSize),
                 onToggleExpanded: toggleExpanded,
-                onAIFeaturesStateChange: { expandedAIFeaturesState = $0 }
+                // Task #149 (実機報告「要約/翻訳ボタンが一瞬有効→無効に
+                // 戻る」): `isToolbarTarget`(下)は`MessageView`側の1次防御
+                // (非対象インスタンスがそもそも書きに来ない) に過ぎず、
+                // SwiftUIのアコーディオン切替アニメーション中は「畳んだ側の
+                // 残骸」インスタンスが構築時点の`let`値(まだ`true`だった頃)
+                // を凍結したまま持ち続けるため、それ単体では
+                // `onDisappear`/`#147`の遅延配信からの書き込みを確実には
+                // 防げない — 唯一確実に「今の」正解を知っているのはこの
+                // 受け手 (`ThreadDetailView`) 自身の`expandedMessageId`
+                // (`@State`なので、このクロージャがいつ・どのインスタンス
+                // 経由で呼ばれても読み取り時点の最新値を返す) なので、ここで
+                // もう一段、呼び出し元の`messageId`(このクロージャが束縛して
+                // いる行自身のid、行ごとに固定) と突き合わせて一致しない
+                // 書き込みは黙って無視する。これが実質的な根本修正 —
+                // `isToolbarTarget`はログ用途と「そもそも無駄な書き込みを
+                // 減らす」防御の二段構え。
+                onAIFeaturesStateChange: { newState in
+                    guard messageId == expandedMessageId else { return }
+                    expandedAIFeaturesState = newState
+                },
+                isToolbarTarget: expandedMessageId == messageId
             )
             // Task #146: `accordionScrollTarget`のスクロール先ターゲット —
             // ヘッダを含むこの行全体に付けておけば、`showsHeader`が`true`
@@ -911,6 +931,19 @@ private struct ThreadMessageRow: View {
     /// nested one level deeper than where `ThreadDetailView.messageRow(for:
     /// containerSize:)` constructs this row.
     let onAIFeaturesStateChange: (MessageDetailAIFeaturesState?) -> Void
+    /// Task #149: forwarded straight to `MessageView.isToolbarTarget` — see
+    /// that parameter's doc comment. Computed by `ThreadDetailView.messageRow
+    /// (for:containerSize:)` as `expandedMessageId == messageId`, the exact
+    /// same condition `isExpanded` above already is; kept as its own,
+    /// separately-named parameter (rather than just reusing `isExpanded`)
+    /// because it names a different question ("should this instance be
+    /// writing to the shared toolbar state right now") than `isExpanded`
+    /// ("should this row currently render its `MessageView` at all") —
+    /// today the two happen to always agree at construction time, but a
+    /// residual instance mid-accordion-transition (`onAIFeaturesStateChange`'s
+    /// call-site doc comment) is exactly the case where relying on that
+    /// coincidence would be wrong.
+    let isToolbarTarget: Bool
 
     /// Task #58 (根治): the real content height an HTML message's
     /// `WKWebView` measured — see `HTMLWebViewCoordinator.onHeightChange`'s
@@ -956,7 +989,8 @@ private struct ThreadMessageRow: View {
                     accountId: accountId, messageId: messageId,
                     contentHeight: measuredHTMLContentHeight,
                     onHTMLContentHeightChange: { measuredHTMLContentHeight = $0 },
-                    onAIFeaturesStateChange: onAIFeaturesStateChange
+                    onAIFeaturesStateChange: onAIFeaturesStateChange,
+                    isToolbarTarget: isToolbarTarget
                 )
                     // Task #59: a real measurement (`measuredHTMLContentHeight
                     // != nil`) means `MessageView` itself now sizes its HTML

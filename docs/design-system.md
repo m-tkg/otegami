@@ -6828,3 +6828,69 @@ green。`scripts/verify-screen.sh html-0`で通常の本文読み込み経路に
 込む」というタイミング依存の競合状態でしか再現せず、tap-freeの単発
 スクリーンショットでは決定的に再現できないため、実機でのend-to-end確認
 は`PENDING.md`「Task #147」節へ記録した (Task #64の類似項目と同じ判断)。
+
+## Task #149: スレッド表示で要約/翻訳ボタンが一瞬有効→無効に戻る修正
+
+実機報告: スレッドのアコーディオン表示で、一部のメールを展開したときに
+フッターツールバーの要約/翻訳ボタンが一瞬有効になった直後に無効へ
+戻ってしまう。
+
+**根本原因**: `MessageDetailAIFeaturesState`(`aiState`)は`ThreadDetailView`
+が`@State private var expandedAIFeaturesState`として1つだけ保持し、
+各`MessageView`(展開中の1通だけが`ThreadMessageRow`の`if isExpanded`
+経由でマウントされる) が`onAIFeaturesStateChange`コールバック経由で
+書き込む設計 (Task #59/#88) だが、そのコールバック自体は「誰から呼ばれ
+たか」を一切確認せず、常に`expandedAIFeaturesState = $0`で無条件上書き
+していた。アコーディオンを別の行へ切り替える瞬間、`withAnimation`に
+包まれた挿入/削除アニメーションの間、畳まれる側の`MessageView`は
+`onDisappear`が実際に発火するまで(アニメーション完了まで)`.task`/
+`.onChange`ごと生き続ける — その間に旧行の`onDisappear`(→`nil`書き込み)
+や、Task #147の`observeBodyRecordChanges()`が拾った本文更新
+(→古い`aiState`での`syncAIFeaturesState()`) が、新しく展開された行の
+正しい状態が反映された**後**に届くと、それだけで上書きされてしまう。
+「一瞬有効→無効」はまさにこの「新行が正しく反映→旧行の残骸が古い/`nil`
+値で上書き」という順序で起きる。
+
+**修正 (二段防御)**:
+1. **受け手側 (根本修正)**: `ThreadDetailView.messageRow(for:
+   containerSize:)`が各行に渡す`onAIFeaturesStateChange`クロージャで、
+   書き込み時点の`messageId`(行ごとに固定) と`self.expandedMessageId`
+   (`@State`、読み取り時点の最新値を返す) を突き合わせ、一致しない書き
+   込みは黙って無視する。これは「どのインスタンス経由で・いつ呼ばれて
+   も」正しく機能する — `@State`への代入・参照はクロージャが束縛した
+   `self`が"古い"コピーであっても常に同じ永続ストレージを指すため。
+2. **送り手側 (防御)**: `MessageView`/`ThreadMessageRow`に
+   `isToolbarTarget: Bool`(`expandedMessageId == 自 messageId`) を追加し、
+   `onAppear`/`onDisappear`/`syncAIFeaturesState()`はいずれも非対象の
+   間は`onAIFeaturesStateChange`を一切呼ばない (`syncAIFeaturesState()`
+   は`aiState`自体も変更しない)。対象になった瞬間 (`.onChange(of:
+   isToolbarTarget)`) は`syncAIFeaturesState()`を呼んで即座に再同期する。
+   このフラグは構築時点で凍結される`let`なので、上記1のような
+   タイミング非依存の保証はこれ単体では持たない (残骸インスタンスは
+   構築時点でまだ対象だった`true`を持ち続ける) — あくまで「そもそも
+   無駄な書き込みを減らす」一次防御と、`SummaryGate`/`TranslationGate`
+   ログでの目視診断用。
+
+**ログ**: `SummaryGate`/`TranslationGate`(既存、Task #128/#138) の両方に
+`isToolbarTarget=`フィールドを追加、非対象時は`skipped (non-target)`の
+専用行を出す — `log stream --predicate 'category == "SummaryGate" OR
+category == "TranslationGate"'`で「対象/非対象のどちらから何が届いたか」
+を追える。
+
+**回帰確認**: フラットモード (`isFlatModeEntry`、常に1通だけが常に
+`isToolbarTarget: true`) は分岐が増えても`isToolbarTarget`の既定値
+`true`のまま動作不変。グループモードのアコーディオン切替では、常に
+「今展開している行」の状態だけが`expandedAIFeaturesState`に反映される
+ことを`make mac`ビルドと`log stream`のログ設計で確認 — タイミング依存の
+競合状態のため、Task #147と同じ理由で決定的なtap-free screenshotでの
+再現・確認はできない。実機での「アコーディオンを連続して切り替えても
+要約/翻訳ボタンが安定して正しいメッセージの状態を表示し続けるか」の
+確認は`PENDING.md`に記録する。
+
+なお、実機報告では「一覧で同じメールが2重表示されているときに起きる
+ことがある」という追加情報もあった — その2重表示自体はTask #150
+(`ThreadQuery`の集計/JOIN起因の別バグ) の領域であり、本タスクでは
+`ThreadQuery`/`OtegamiStore`には触れていない。ただし本タスクの防御は
+「同じ`messageId`の`MessageView`が2インスタンス同時に存在する」ケースに
+も同様に効く設計 (受け手側のガードは`messageId`の一致だけで判定する)
+ため、#150が解消しても#149の防御自体は独立して有効であり続ける。
