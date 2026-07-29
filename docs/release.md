@@ -41,14 +41,19 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 | `NOTARY_APPLE_ID` | notarization 用 Apple ID |
 | `NOTARY_PASSWORD` | 上記 Apple ID の App 用パスワード (notarytool 用) |
 | `NOTARY_TEAM_ID` | Apple Developer Team ID。署名・notarize 両方および entitlements のチーム識別子解決 (下記) に使う |
+| `OTEGAMI_GOOGLE_CLIENT_ID` (任意) | Gmail OAuth の Client ID。登録済みなら「Generate Local.xcconfig from OAuth Client ID secrets」ステップがこの secret から `Config/Local.xcconfig` を生成し、配布ビルドで Gmail 認証が有効になる。**未登録でもビルドは失敗しない** — その場合は Gmail 認証ボタンが無効化された「素のビルド」になるだけ (`docs/oauth-setup.md`)。 |
+| `OTEGAMI_MICROSOFT_CLIENT_ID` (任意) | Outlook/Office365 OAuth の Client ID。上記と同じ仕組み・同じ「未登録でも失敗しない」挙動 (`docs/oauth-setup.md`)。 |
 
-`OTEGAMI_GOOGLE_CLIENT_ID`/`OTEGAMI_MICROSOFT_CLIENT_ID` 等の OAuth
-Client ID は意図的に設定していない — Xcode Cloud (`ci_post_clone.sh`)
-と違ってこのワークフローに環境変数を渡す仕組みを用意していないため、
-ビルドされる macOS 版は Gmail/Outlook/Office365 の追加ボタンが無効な
-「素のビルド」になる (パスワード認証の IMAP/SMTP アカウント・iCloud は
-問題なく使える)。将来必要になれば Xcode Cloud 側と同じマッピングを
-このワークフローにも追加すればよい。
+実機フィードバック (v1.2.0-beta2): 上記2つの OAuth Client ID secret が
+未対応だったため、GitHub Release からインストールした macOS ビルドは
+Gmail の「再認証」が常に `oauthUnavailable` で失敗していた
+(パスワード認証の IMAP/SMTP アカウント・iCloud は元々問題なく使える)。
+「Generate Local.xcconfig from OAuth Client ID secrets」ステップ
+(`xcodegen generate` の直前) を追加して解消した — 値はジョブ内の
+`Config/Local.xcconfig` (git 管理外、コミットもアーティファクト化もしない)
+にのみ書き込み、`::add-mask::` でログへの出力も防いでいる。Xcode Cloud
+(`ci_post_clone.sh`) 側は元々同種の変数マッピングを持っており、今回の
+変更はこのワークフロー側を追いつかせただけ。
 
 ## 署名の仕組み: なぜ `xcodebuild` 自身に署名させないか
 

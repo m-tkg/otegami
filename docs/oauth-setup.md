@@ -5,6 +5,16 @@ OSS のため、Google Cloud の Client ID をリポジトリには含めませ�
 各自が Google Cloud Console で発行し、`Config/Local.xcconfig` (git 管理外) に
 設定してください。設定しない場合、アプリ内の「アカウントを追加」→「Gmail」
 ボタンは無効化され、この手順への案内が表示されます (`GoogleOAuthConfig`)。
+既存の Gmail アカウントで「再認証」ボタンを押した場合も同様に無効化され、
+「このビルドには Google OAuth Client ID が設定されていないため…」という
+案内が表示されます (`AccountEditView`)。
+
+**GitHub Release で配布される macOS ビルドで Gmail 認証を有効にするには**、
+リポジトリの GitHub Secrets に `OTEGAMI_GOOGLE_CLIENT_ID` を登録する必要が
+ある (`.github/workflows/release-macos.yml` がビルド時にこの secret から
+`Config/Local.xcconfig` を生成する)。未登録でもビルド自体は失敗しない —
+その場合は上記と同じ「無効化 + 案内表示」になるだけ。詳細は
+[docs/release.md](release.md#必要な-github-secrets) 参照。
 
 作者本人の配布ビルド (App Store / TestFlight) だけは Google の OAuth 審査が
 必要になりますが、**各自が自分の Client ID で開発・テストする分には審査は
@@ -338,6 +348,12 @@ Azure Portal で発行し、`Config/Local.xcconfig`(git 管理外)に設定す�
 設定しない場合、「アカウントを追加」→「Outlook」/「Office365」ボタンは
 無効化され、この手順への案内が表示される
 (`AccountTypeSelectionView.outlookButton`/`MicrosoftOAuthConfig`)。
+既存アカウントの「再認証」ボタンも同様に無効化される (`AccountEditView`)。
+
+**GitHub Release で配布される macOS ビルドで Microsoft 認証を有効にする
+には**、GitHub Secrets に `OTEGAMI_MICROSOFT_CLIENT_ID` を登録する必要が
+ある。Gmail 側と同じ仕組み・同じ「未登録でも失敗しない」挙動 —
+[docs/release.md](release.md#必要な-github-secrets) 参照。
 
 ## 1. Azure AD アプリを登録する
 

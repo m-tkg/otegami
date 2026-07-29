@@ -18,8 +18,10 @@ import UIKit
 /// M9 scope, see that Extension's own doc comment), which this view
 /// surfaces as an explanatory message rather than a raw error, on the
 /// platforms where the button can even be reached at all (macOS hides the
-/// entry point in `AccountsSettingsView` — this view itself still compiles
-/// and works standalone, e.g. for previews, on both platforms).
+/// entry point with `#if os(iOS)` in `AccountSettingsCategoryView` — 実機
+/// フィードバック 2026-07-30 で漏れていたことが判明し、そこで追加した —
+/// this view itself still compiles and works standalone, e.g. for
+/// previews, on both platforms).
 struct PushNotificationSettingsView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss

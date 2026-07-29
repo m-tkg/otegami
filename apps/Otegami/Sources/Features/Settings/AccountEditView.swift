@@ -435,7 +435,19 @@ struct AccountEditView: View {
                 }
             }
             .accessibilityIdentifier("accountEdit.reauthButton")
-            .disabled(isReauthenticating)
+            .disabled(isReauthenticating || !environment.isGmailOAuthConfigured)
+
+            // 実機フィードバック: Client ID 未設定のビルド (例: secret 未登録の
+            // GitHub Release ビルド) でボタンを押すと `AuthResolutionError
+            // .oauthUnavailable` がそのまま出て何が悪いのか伝わらなかった —
+            // `AccountTypeSelectionView`と同じく、押す前にボタンを無効化して
+            // 理由を明示する。
+            if !environment.isGmailOAuthConfigured {
+                Text("このビルドには Google OAuth Client ID が設定されていないため、Google 認証は行えません。詳細は docs/oauth-setup.md を参照してください。")
+                    .font(.caption)
+                    .foregroundStyle(OtegamiColor.destructive)
+                    .accessibilityIdentifier("accountEdit.gmailOAuthUnconfiguredHint")
+            }
 
             GoogleScopeDiagnosisRow(state: scopeDiagnosis)
 
@@ -481,7 +493,16 @@ struct AccountEditView: View {
                 }
             }
             .accessibilityIdentifier("accountEdit.reauthButton")
-            .disabled(isReauthenticating)
+            .disabled(isReauthenticating || !environment.isMicrosoftOAuthConfigured)
+
+            // gmailSections の同種ヒントと同じ理由 (Client ID 未設定ビルドで
+            // `oauthUnavailable` をそのまま見せない)。
+            if !environment.isMicrosoftOAuthConfigured {
+                Text("このビルドには Microsoft OAuth Client ID が設定されていないため、Microsoft 認証は行えません。詳細は docs/oauth-setup.md を参照してください。")
+                    .font(.caption)
+                    .foregroundStyle(OtegamiColor.destructive)
+                    .accessibilityIdentifier("accountEdit.microsoftOAuthUnconfiguredHint")
+            }
 
             if let reauthErrorMessage {
                 Label(reauthErrorMessage, systemImage: "xmark.octagon")
@@ -578,6 +599,19 @@ struct AccountEditView: View {
                 return
             }
             dismiss()
+        } catch AppEnvironment.AuthResolutionError.oauthUnavailable {
+            // ボタンは `isGmailOAuthConfigured`/`isMicrosoftOAuthConfigured`
+            // が `false` の間disabledなので通常はここに来ないが、値が変わる
+            // 競合 (ほぼ起こらない) に備えて防御的に分岐しておく — 生の
+            // `oauthUnavailable` という英語の enum 名をユーザーに見せない。
+            switch account.kind {
+            case .gmail:
+                reauthErrorMessage = "このビルドには Google OAuth Client ID が設定されていないため、Google 認証は行えません。詳細は docs/oauth-setup.md を参照してください。"
+            case .microsoft:
+                reauthErrorMessage = "このビルドには Microsoft OAuth Client ID が設定されていないため、Microsoft 認証は行えません。詳細は docs/oauth-setup.md を参照してください。"
+            case .generic, .icloud:
+                reauthErrorMessage = "再認証に失敗しました。"
+            }
         } catch {
             reauthErrorMessage = "再認証に失敗しました: \(error)"
         }

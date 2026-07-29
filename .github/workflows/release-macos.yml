@@ -70,6 +70,45 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # 実機フィードバック (v1.2.0-beta2): GitHub Actions には
+      # Config/Local.xcconfig (git-ignored、docs/oauth-setup.md参照) が
+      # 存在せず、この workflow にも Client ID を渡す仕組みが無かったため、
+      # Release ビルドは Gmail/Microsoft OAuth が常に無効だった (「再認証に
+      # 失敗しました: oauthUnavailable」)。secret から Local.xcconfig を
+      # 生成することで解消する。
+      #
+      # - secret が未設定でも失敗させない — 他のビルダー/フォークが secret
+      #   を登録していなくても、従来どおり OAuth 無効のままビルドが通る
+      #   (`Signing.xcconfig`の`#include? "Local.xcconfig"`は任意 includeな
+      #   ので、このファイル自体を作らなければ何も変わらない)。
+      # - Client ID の値はログに出さない — `::add-mask::`で登録した上で、
+      #   値を書き込む先はこのジョブのワークスペース内の一時ファイルのみ
+      #   (コミットもアーティファクトへのアップロードもしない)。
+      - name: Generate Local.xcconfig from OAuth Client ID secrets (optional)
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.OTEGAMI_GOOGLE_CLIENT_ID }}
+          MICROSOFT_CLIENT_ID: ${{ secrets.OTEGAMI_MICROSOFT_CLIENT_ID }}
+        run: |
+          LOCAL_XCCONFIG="$APP_DIR/Config/Local.xcconfig"
+          LINES=()
+          if [ -n "$GOOGLE_CLIENT_ID" ]; then
+            echo "::add-mask::$GOOGLE_CLIENT_ID"
+            LINES+=("GOOGLE_OAUTH_CLIENT_ID = $GOOGLE_CLIENT_ID")
+            echo "Gmail OAuth: configured from OTEGAMI_GOOGLE_CLIENT_ID secret"
+          else
+            echo "Gmail OAuth: OTEGAMI_GOOGLE_CLIENT_ID secret not set — this build will have Gmail auth disabled"
+          fi
+          if [ -n "$MICROSOFT_CLIENT_ID" ]; then
+            echo "::add-mask::$MICROSOFT_CLIENT_ID"
+            LINES+=("OTEGAMI_MICROSOFT_CLIENT_ID = $MICROSOFT_CLIENT_ID")
+            echo "Microsoft OAuth: configured from OTEGAMI_MICROSOFT_CLIENT_ID secret"
+          else
+            echo "Microsoft OAuth: OTEGAMI_MICROSOFT_CLIENT_ID secret not set — this build will have Microsoft auth disabled"
+          fi
+          if [ "${#LINES[@]}" -gt 0 ]; then
+            printf '%s\n' "${LINES[@]}" > "$LOCAL_XCCONFIG"
+          fi
+
       - name: Generate Xcode project
         run: cd "$APP_DIR" && xcodegen generate
 

@@ -215,7 +215,17 @@ struct AccountSettingsCategoryView: View {
                 Text("同じ Apple ID の他の iOS/Mac デバイスとアカウントの接続設定・表示設定 (一覧・ビューア・スワイプ操作など) を同期します。パスワードは iCloud キーチェーンが別途同期します。")
             }
 
-            // M9: iOS-only in practice.
+            // M9: iOS-only — `AppEnvironment.enablePushNotifications` throws
+            // `.unsupportedPlatform` on macOS (no `NotificationService`
+            // Extension there, see that type's doc comment), so this entry
+            // point led nowhere useful. 実機フィードバック (macOS,
+            // 2026-07-30):「mac 版にこの設定は不要なので隠して」— この
+            // `#if os(iOS)` 自体がその対応 (以前はこの Section が両 OS に
+            // 出ていた。`PushNotificationSettingsView`のドキュメントコメント
+            // が「macOS hides the entry point」と主張していたのは、リ
+            // ファクタでこの画面がここへ移設された際に更新し忘れていた
+            // stale な記述だった)。
+            #if os(iOS)
             Section {
                 NavigationLink {
                     PushNotificationSettingsView()
@@ -224,6 +234,7 @@ struct AccountSettingsCategoryView: View {
                 }
                 .accessibilityIdentifier("settings.pushNotificationsLink")
             }
+            #endif
 
             // Task #48 (デフォルトメールアプリ対応) — see
             // `DefaultMailAppSettingsView`'s doc comment for what "既定"

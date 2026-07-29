@@ -291,6 +291,18 @@
       優先度: 低 (配布を決めてから、ただし着手自体は完了) / 所要時間:
       次回タグ push 時に Actions の run を見るだけ (数分) / 参照:
       [docs/release.md](docs/release.md)、[PENDING.md「公開時に必要な対応」](PENDING.md#公開時に必要な対応-まとめ)
+- [x] **GitHub Secrets に `OTEGAMI_GOOGLE_CLIENT_ID` / `OTEGAMI_MICROSOFT_CLIENT_ID`
+      を登録する (2026-07-30 登録済み・`gh secret list` で確認)** —
+      実機フィードバック: GitHub Release からインストールした macOS
+      ビルド (v1.2.0-beta2) は、この2つの secret が無いことが原因で
+      Gmail の「再認証」が常に `oauthUnavailable` になっていた。
+      `release-macos.yml` がビルド時にこの secret から
+      `Config/Local.xcconfig` を生成するようになったため、次回の
+      Release ビルドから Gmail/Microsoft 認証が有効になる見込み
+      (`workflow_dispatch` の dry-run で Local.xcconfig 生成・値の
+      非ログ出力までは確認済み — 詳細は [docs/release.md](docs/release.md#必要な-github-secrets))。
+      優先度: 高 (完了) / 所要時間: 完了済み / 参照:
+      [docs/oauth-setup.md](docs/oauth-setup.md)、[docs/release.md](docs/release.md)
 - [x] **サードパーティライセンス表記 (`NOTICE`) の確認** — (2026-07-29
       確認済み)。以後は依存を追加/更新する PR の際にエージェント側で
       NOTICE を追随させる運用 (人間の定期作業からは外す)。
