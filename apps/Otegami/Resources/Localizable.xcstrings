@@ -1,36 +1,6 @@
 {
   "sourceLanguage": "ja",
   "strings": {
-    "埋め込み画像を表示": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Show Embedded Images"
-          }
-        }
-      }
-    },
-    "画像を表示": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Show Images"
-          }
-        }
-      }
-    },
-    "リモート画像も読み込む": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Also Load Remote Images"
-          }
-        }
-      }
-    },
     "既読にする": {
       "localizations": {
         "en": {
@@ -47,66 +17,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Mark as Unread"
-          }
-        }
-      }
-    },
-    "未読のみ表示": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Unread Only"
-          }
-        }
-      }
-    },
-    "フラグ付きのみ表示": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pinned Only"
-          }
-        }
-      }
-    },
-    "フラグ付きのメールはありません": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No Pinned Messages"
-          }
-        }
-      }
-    },
-    "未読かつフラグ付きのメールはありません": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No Unread Pinned Messages"
-          }
-        }
-      }
-    },
-    "アカウントでグループ化": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Group by Account"
-          }
-        }
-      }
-    },
-    "未読のメールはありません": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No Unread Mail"
           }
         }
       }
@@ -137,16 +47,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sync Error"
-          }
-        }
-      }
-    },
-    "OK": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "OK"
           }
         }
       }
@@ -251,6 +151,26 @@
         }
       }
     },
+    "未読のみ表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unread Only"
+          }
+        }
+      }
+    },
+    "未読のメールはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Unread Mail"
+          }
+        }
+      }
+    },
     "メール": {
       "localizations": {
         "en": {
@@ -337,17 +257,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Attachment"
-          }
-        }
-      }
-    },
-    "添付ファイル %lld 個": {
-      "comment": "Task #76 attachment card list header, e.g. \"添付ファイル 2 個\" / \"Attachments (2)\".",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Attachments (%lld)"
           }
         }
       }
@@ -1002,6 +911,86 @@
         }
       }
     },
+    "履歴": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "History"
+          }
+        }
+      }
+    },
+    "保存済み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved"
+          }
+        }
+      }
+    },
+    "検索履歴はありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Search History"
+          }
+        }
+      }
+    },
+    "保存した検索はありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Saved Searches"
+          }
+        }
+      }
+    },
+    "検索フィールド左の星をタップすると、今の検索条件 (クエリ・絞り込み・アカウント) を名前を付けずに保存できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap the star at the left of the search field to save the current query, filter, and account scope — unnamed."
+          }
+        }
+      }
+    },
+    "保存済みの検索": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved Searches"
+          }
+        }
+      }
+    },
+    "この検索を保存": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save This Search"
+          }
+        }
+      }
+    },
+    "この検索の保存を解除": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove This Saved Search"
+          }
+        }
+      }
+    },
     "アカウントがありません": {
       "localizations": {
         "en": {
@@ -1072,16 +1061,6 @@
         }
       }
     },
-    "すべてのメール": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "All Mail"
-          }
-        }
-      }
-    },
     "設定": {
       "localizations": {
         "en": {
@@ -1098,6 +1077,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "All Inboxes"
+          }
+        }
+      }
+    },
+    "時系列": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chronological"
+          }
+        }
+      }
+    },
+    "アカウント別": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By Account"
           }
         }
       }
@@ -1148,96 +1147,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Push Notifications"
-          }
-        }
-      }
-    },
-    "デフォルトのメールアプリに設定": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Set as Default Mail App"
-          }
-        }
-      }
-    },
-    "既定のメールアプリ": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Default Mail App"
-          }
-        }
-      }
-    },
-    "Otegami を既定のメールアプリに設定すると、他のアプリの「メールで送信」リンクや mailto: リンクを開いたときに Otegami が開くようになります。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Setting Otegami as your default mail app makes it open when you tap a \"Mail\" link or a mailto: link in another app."
-          }
-        }
-      }
-    },
-    "設定 Appで既定のメールアプリを選ぶ": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose the Default Mail App in Settings"
-          }
-        }
-      }
-    },
-    "「設定」→「アプリ」→「既定のアプリ」→「メール」から Otegami を選んでください。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose Otegami under Settings → Apps → Default Apps → Mail."
-          }
-        }
-      }
-    },
-    "Apple の承認待ちです": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Awaiting Apple's Approval"
-          }
-        }
-      }
-    },
-    "iOS で既定のメールアプリになるには、Apple から com.apple.developer.mail-client の権限を取得する必要があります。この機能は権限が承認され、このビルドで有効化された後に使えるようになります。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Becoming the default mail app on iOS requires the com.apple.developer.mail-client entitlement from Apple. This feature becomes usable once that's approved and enabled in this build."
-          }
-        }
-      }
-    },
-    "メニューバーの「メール」アプリ (Mail) を開き、「メール」→「設定」→「一般」の「デフォルトのメールアプリ」から Otegami を選べます。バージョンによっては「システム設定」→「デスクトップと Dock」の「メールアプリ」の項目からも変更できます。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open the Mail app, then choose Otegami from Mail → Settings → General → \"Default Mail App Reader.\" On some macOS versions you can also change it from System Settings → Desktop & Dock → \"Mail App.\""
-          }
-        }
-      }
-    },
-    "Bcc (カンマ区切り)": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bcc (comma-separated)"
           }
         }
       }
@@ -2422,12 +2331,62 @@
         }
       }
     },
-    "ドラッグして、メール本文画面下部のツールバーに並ぶアイコンの順序を変更できます。": {
+    "表示するアイコン": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Drag to reorder the icons in the toolbar at the bottom of the message view."
+            "value": "Icons Shown"
+          }
+        }
+      }
+    },
+    "トグルをオフにしたアイコンは、ツールバーから消えて「その他」メニューの中から使えるようになります。ドラッグで、オンのアイコンがツールバーに並ぶ順序を変更できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Icons you toggle off disappear from the toolbar and move into the “More” menu instead. Drag to reorder the icons that stay on."
+          }
+        }
+      }
+    },
+    "「その他」は常にツールバーの末尾に固定表示され、オフにしたり並べ替えたりすることはできません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "“More” always stays fixed at the end of the toolbar — it can't be turned off or reordered."
+          }
+        }
+      }
+    },
+    "フッターツールバー": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Footer Toolbar"
+          }
+        }
+      }
+    },
+    "メール本文画面下部に並ぶアイコンの表示/非表示と順序を変更できます。非表示にしたアイコンは「その他」メニューから引き続き使えます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose which icons appear at the bottom of the message view, and in what order. Icons you hide are still available from the “More” menu."
+          }
+        }
+      }
+    },
+    "ミュート": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mute"
           }
         }
       }
@@ -2902,16 +2861,6 @@
         }
       }
     },
-    "メールの背景を常に白（ライト表示）": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Always Show Message Background in White (Light Mode)"
-          }
-        }
-      }
-    },
     "メールボックスの表示設定": {
       "localizations": {
         "en": {
@@ -2928,6 +2877,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "You can hide individual mailboxes you don't want in the list, such as Gmail's “All Mail.”"
+          }
+        }
+      }
+    },
+    "非表示にしたメールボックスは、ハンバーガーメニュー/サイドバーの一覧と統合受信トレイの集計に出なくなり、同期も止まります（電池・通信の節約のためです）。メールの移動先としては引き続き選べます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A hidden mailbox disappears from the hamburger menu/sidebar tree and the unified inbox count, and stops syncing (to save battery and data). You can still move mail into it."
           }
         }
       }
@@ -3182,16 +3141,6 @@
         }
       }
     },
-    "非表示にしたメールボックスは、ハンバーガーメニュー/サイドバーの一覧と統合受信トレイの集計に出なくなり、同期も止まります（電池・通信の節約のためです）。メールの移動先としては引き続き選べます。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "A hidden mailbox disappears from the hamburger menu/sidebar tree and the unified inbox count, and stops syncing (to save battery and data). You can still move mail into it."
-          }
-        }
-      }
-    },
     "Google プロフィール写真を表示": {
       "localizations": {
         "en": {
@@ -3292,86 +3241,6 @@
         }
       }
     },
-    "プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先の写真・Google プロフィール写真・Gravatar・企業ロゴを優先順に探して表示します。どの情報源を使うか（外部への問い合わせを含む）は「メール一覧」設定の同名のトグルで個別にオフにできます。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Avatars try, in order, the sender's matching contact photo, Google profile photo, Gravatar, and company logo, falling back to the sender's initials and the account's color. Which sources are used (including which ones contact an external service) can be turned off individually from the matching toggles in the Message List settings."
-          }
-        }
-      }
-    },
-    "要約中": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Summarizing…"
-          }
-        }
-      }
-    },
-    "要約を表示": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Show Summary"
-          }
-        }
-      }
-    },
-    "要約を再試行": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Retry Summary"
-          }
-        }
-      }
-    },
-    "翻訳中": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Translating…"
-          }
-        }
-      }
-    },
-    "翻訳を再試行": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Retry Translation"
-          }
-        }
-      }
-    },
-    "訳文に戻す": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Show Translation"
-          }
-        }
-      }
-    },
-    "原文に戻す": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Show Original"
-          }
-        }
-      }
-    },
     "AI要約": {
       "localizations": {
         "en": {
@@ -3382,402 +3251,22 @@
         }
       }
     },
-    "ダークモードで暗い背景に反転": {
+    "Apple の承認待ちです": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Invert to a Dark Background in Dark Mode"
+            "value": "Awaiting Apple's Approval"
           }
         }
       }
     },
-    "HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメール（ライトデザインのメール）は、既定では反転せずメール本来の配色（白背景）のまま表示します。色指定を持たないメールは、読みやすい配色に自動で解決されます。メール自身がダークモードに対応済みの場合は何もしません。「ダークモードで暗い背景に反転」をオンにすると、ライトデザインのメールを暗い背景に反転して表示します（文字中心のメールで暗い背景を好む場合向け）。「メールの背景を常に白」をオンにすると、色指定の有無にかかわらずすべてのメールを常に白背景で表示します（このとき上の反転設定は無効になります）。": {
+    "Bcc (カンマ区切り)": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Shows HTML messages as plain text by default. You can switch back for an individual message using the toggle button in the message view. While in Dark Mode, messages that explicitly set a white background and dark text (light-designed messages) are, by default, left in their original (white-background) colors rather than inverted. Messages with no color declarations at all resolve automatically to a readable color scheme. Messages that already support Dark Mode themselves are left untouched. Turning on “Invert to a Dark Background in Dark Mode” instead inverts light-designed messages to a dark background (for those who prefer a dark background for text-heavy messages). Turning on “Always Show Message Background in White” makes every message always render on a white background regardless of its own colors (the inversion setting above is disabled while this is on)."
-          }
-        }
-      }
-    },
-    "予定への招待": {
-      "comment": "Task #66 calendar invite card header, above the event title/time/location.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Invitation"
-          }
-        }
-      }
-    },
-    "現在の回答: %@": {
-      "comment": "Task #66 calendar invite card: shows the RSVP already recorded for this invite, e.g. \"現在の回答: 参加\" / \"Your response: Accepted\".",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Your response: %@"
-          }
-        }
-      }
-    },
-    "招待の内容を読み込んでいます…": {
-      "comment": "Task #66 calendar invite card: loading state while the text/calendar part downloads and parses.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Loading invitation…"
-          }
-        }
-      }
-    },
-    "承諾": {
-      "comment": "Task #66 calendar invite card: \"Accept\" RSVP button (also reused for the current-response label).",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Accept"
-          }
-        }
-      }
-    },
-    "辞退": {
-      "comment": "Task #66 calendar invite card: \"Decline\" RSVP button (also reused for the current-response label).",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Decline"
-          }
-        }
-      }
-    },
-    "未定": {
-      "comment": "Task #66 calendar invite card: \"Maybe\"/tentative RSVP button (also reused for the current-response label).",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Maybe"
-          }
-        }
-      }
-    },
-    "参加": {
-      "comment": "Task #66 calendar invite card: current-response label for an accepted invite.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Accepted"
-          }
-        }
-      }
-    },
-    "不参加": {
-      "comment": "Task #66 calendar invite card: current-response label for a declined invite.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Declined"
-          }
-        }
-      }
-    },
-    "未回答": {
-      "comment": "Task #66 calendar invite card: current-response label meaning no RSVP has been sent yet.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No response"
-          }
-        }
-      }
-    },
-    "委任": {
-      "comment": "Task #66 calendar invite card: current-response label for an invite delegated to someone else.",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Delegated"
-          }
-        }
-      }
-    },
-    "履歴": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "History"
-          }
-        }
-      }
-    },
-    "保存済み": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Saved"
-          }
-        }
-      }
-    },
-    "検索履歴はありません": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No Search History"
-          }
-        }
-      }
-    },
-    "保存した検索はありません": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No Saved Searches"
-          }
-        }
-      }
-    },
-    "検索フィールド左の星をタップすると、今の検索条件 (クエリ・絞り込み・アカウント) を名前を付けずに保存できます。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tap the star at the left of the search field to save the current query, filter, and account scope — unnamed."
-          }
-        }
-      }
-    },
-    "保存済みの検索": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Saved Searches"
-          }
-        }
-      }
-    },
-    "この検索を保存": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Save This Search"
-          }
-        }
-      }
-    },
-    "この検索の保存を解除": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Remove This Saved Search"
-          }
-        }
-      }
-    },
-    "表示するアイコン": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Icons Shown"
-          }
-        }
-      }
-    },
-    "トグルをオフにしたアイコンは、ツールバーから消えて「その他」メニューの中から使えるようになります。ドラッグで、オンのアイコンがツールバーに並ぶ順序を変更できます。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Icons you toggle off disappear from the toolbar and move into the “More” menu instead. Drag to reorder the icons that stay on."
-          }
-        }
-      }
-    },
-    "「その他」は常にツールバーの末尾に固定表示され、オフにしたり並べ替えたりすることはできません。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "“More” always stays fixed at the end of the toolbar — it can't be turned off or reordered."
-          }
-        }
-      }
-    },
-    "フッターツールバー": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Footer Toolbar"
-          }
-        }
-      }
-    },
-    "ミュート": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mute"
-          }
-        }
-      }
-    },
-    "メール本文画面下部に並ぶアイコンの表示/非表示と順序を変更できます。非表示にしたアイコンは「その他」メニューから引き続き使えます。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Choose which icons appear at the bottom of the message view, and in what order. Icons you hide are still available from the “More” menu."
-          }
-        }
-      }
-    },
-    "ソースを表示": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "View Source"
-          }
-        }
-      }
-    },
-    "メールのソース": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Message Source"
-          }
-        }
-      }
-    },
-    "ソースを読み込んでいます…": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Loading source…"
-          }
-        }
-      }
-    },
-    "ソースを読み込めませんでした。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn't load the message source."
-          }
-        }
-      }
-    },
-    "ソースを読み込めませんでした。オフラインの場合は接続を確認して再試行してください。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Couldn't load the message source. If you're offline, check your connection and try again."
-          }
-        }
-      }
-    },
-    "表示は先頭512KBまでです。全文はシェアで書き出せます。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Showing the first 512KB. Share to export the full message."
-          }
-        }
-      }
-    },
-    "アカウントが見つかりません。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Account not found."
-          }
-        }
-      }
-    },
-    "時系列": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Chronological"
-          }
-        }
-      }
-    },
-    "アカウント別": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "By Account"
-          }
-        }
-      }
-    },
-    "ボタンのラベルを表示": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Show Button Labels"
-          }
-        }
-      }
-    },
-    "オフにすると、ツールバーのボタンがアイコンだけになり、高さも詰まります。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When off, toolbar buttons show icons only, and the bar becomes more compact."
-          }
-        }
-      }
-    },
-    "Yahoo": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Yahoo"
-          }
-        }
-      }
-    },
-    "Yahoo! JAPAN": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Yahoo! JAPAN"
+            "value": "Bcc (comma-separated)"
           }
         }
       }
@@ -3792,6 +3281,16 @@
         }
       }
     },
+    "Exchange アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Exchange Account"
+          }
+        }
+      }
+    },
     "Gmail・iCloud・Yahoo・Yahoo! JAPAN・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。": {
       "localizations": {
         "en": {
@@ -3802,12 +3301,132 @@
         }
       }
     },
-    "Yahoo のアカウント管理で発行した「アプリのパスワード」が必要です。Yahoo のパスワードそのものではログインできません。": {
+    "Gmail・iCloud・Yahoo・Yahoo! JAPAN・Outlook・Office365・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "You need an app password issued from Yahoo Account Security. Your regular Yahoo password won’t work."
+            "value": "Gmail, iCloud, Yahoo, Yahoo! JAPAN, Outlook, Office365, and Exchange have their server settings filled in automatically. For other providers, use “Other” to set them up manually."
+          }
+        }
+      }
+    },
+    "HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメール（ライトデザインのメール）は、既定では反転せずメール本来の配色（白背景）のまま表示します。色指定を持たないメールは、読みやすい配色に自動で解決されます。メール自身がダークモードに対応済みの場合は何もしません。「ダークモードで暗い背景に反転」をオンにすると、ライトデザインのメールを暗い背景に反転して表示します（文字中心のメールで暗い背景を好む場合向け）。「メールの背景を常に白」をオンにすると、色指定の有無にかかわらずすべてのメールを常に白背景で表示します（このとき上の反転設定は無効になります）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shows HTML messages as plain text by default. You can switch back for an individual message using the toggle button in the message view. While in Dark Mode, messages that explicitly set a white background and dark text (light-designed messages) are, by default, left in their original (white-background) colors rather than inverted. Messages with no color declarations at all resolve automatically to a readable color scheme. Messages that already support Dark Mode themselves are left untouched. Turning on “Invert to a Dark Background in Dark Mode” instead inverts light-designed messages to a dark background (for those who prefer a dark background for text-heavy messages). Turning on “Always Show Message Background in White” makes every message always render on a white background regardless of its own colors (the inversion setting above is disabled while this is on)."
+          }
+        }
+      }
+    },
+    "Microsoft": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microsoft"
+          }
+        }
+      }
+    },
+    "Microsoft でログイン": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in with Microsoft"
+          }
+        }
+      }
+    },
+    "Microsoft のログイン画面が表示されます。会社・学校の Microsoft 365 アカウントでサインインしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microsoft's sign-in screen will appear. Sign in with your work or school Microsoft 365 account."
+          }
+        }
+      }
+    },
+    "Microsoft のログイン画面が表示されます。個人の Outlook.com / Hotmail アカウントでサインインしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microsoft's sign-in screen will appear. Sign in with your personal Outlook.com / Hotmail account."
+          }
+        }
+      }
+    },
+    "Microsoft アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This account authenticates with your Microsoft account. Your password is never stored in this app. If authentication expires, sign in again via “Reauthenticate.”"
+          }
+        }
+      }
+    },
+    "Office365": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Office365"
+          }
+        }
+      }
+    },
+    "Office365 アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Office365 Account"
+          }
+        }
+      }
+    },
+    "Otegami を既定のメールアプリに設定すると、他のアプリの「メールで送信」リンクや mailto: リンクを開いたときに Otegami が開くようになります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Setting Otegami as your default mail app makes it open when you tap a \"Mail\" link or a mailto: link in another app."
+          }
+        }
+      }
+    },
+    "Outlook": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outlook"
+          }
+        }
+      }
+    },
+    "Outlook アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Outlook Account"
+          }
+        }
+      }
+    },
+    "Yahoo": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yahoo"
           }
         }
       }
@@ -3822,22 +3441,12 @@
         }
       }
     },
-    "Yahoo メールアドレス": {
+    "Yahoo のアカウント管理で発行した「アプリのパスワード」が必要です。Yahoo のパスワードそのものではログインできません。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Yahoo Email Address"
-          }
-        }
-      }
-    },
-    "アプリのパスワード": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "App Password"
+            "value": "You need an app password issued from Yahoo Account Security. Your regular Yahoo password won’t work."
           }
         }
       }
@@ -3848,6 +3457,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Add Yahoo Account"
+          }
+        }
+      }
+    },
+    "Yahoo メールアドレス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yahoo Email Address"
+          }
+        }
+      }
+    },
+    "Yahoo! JAPAN": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yahoo! JAPAN"
+          }
+        }
+      }
+    },
+    "Yahoo! JAPAN アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Yahoo! JAPAN Account"
+          }
+        }
+      }
+    },
+    "Yahoo!メールの「メールソフトでの利用設定 (IMAP/POP アクセス)」を有効にしておく必要があります。無効のままだと、正しいパスワードでも「メールサーバにアクセスできない」等のエラーで接続できません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You need to enable “Mail Software Access (IMAP/POP Access)” in Yahoo! Mail first. Without it, connecting will fail (e.g. “can’t reach the mail server”) even with the correct password."
           }
         }
       }
@@ -3882,112 +3531,22 @@
         }
       }
     },
-    "Yahoo! JAPAN アカウントを追加": {
+    "iOS で既定のメールアプリになるには、Apple から com.apple.developer.mail-client の権限を取得する必要があります。この機能は権限が承認され、このビルドで有効化された後に使えるようになります。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Add Yahoo! JAPAN Account"
+            "value": "Becoming the default mail app on iOS requires the com.apple.developer.mail-client entitlement from Apple. This feature becomes usable once that's approved and enabled in this build."
           }
         }
       }
     },
-    "Exchange アカウントを追加": {
+    "「設定」→「アプリ」→「既定のアプリ」→「メール」から Otegami を選んでください。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Add Exchange Account"
-          }
-        }
-      }
-    },
-    "社内 (オンプレミス) の Exchange サーバーで IMAP アクセスが有効になっている環境向けです。ホスト名はシステム管理者に確認してください。Microsoft 365 / Outlook.com は「アカウントを追加」→「Outlook」または「Office365」からサインインしてください。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "For an on-premises Exchange server with IMAP access enabled. Ask your system administrator for the hostname. For Microsoft 365 / Outlook.com, use “Add Account” → “Outlook” or “Office365” instead."
-          }
-        }
-      }
-    },
-    "Outlook": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Outlook"
-          }
-        }
-      }
-    },
-    "Office365": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Office365"
-          }
-        }
-      }
-    },
-    "Microsoft": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Microsoft"
-          }
-        }
-      }
-    },
-    "Outlook アカウントを追加": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add Outlook Account"
-          }
-        }
-      }
-    },
-    "Office365 アカウントを追加": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Add Office365 Account"
-          }
-        }
-      }
-    },
-    "Microsoft のログイン画面が表示されます。個人の Outlook.com / Hotmail アカウントでサインインしてください。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Microsoft's sign-in screen will appear. Sign in with your personal Outlook.com / Hotmail account."
-          }
-        }
-      }
-    },
-    "Microsoft のログイン画面が表示されます。会社・学校の Microsoft 365 アカウントでサインインしてください。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Microsoft's sign-in screen will appear. Sign in with your work or school Microsoft 365 account."
-          }
-        }
-      }
-    },
-    "Microsoft でログイン": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sign in with Microsoft"
+            "value": "Choose Otegami under Settings → Apps → Default Apps → Mail."
           }
         }
       }
@@ -4002,42 +3561,202 @@
         }
       }
     },
-    "Gmail・iCloud・Yahoo・Yahoo! JAPAN・Outlook・Office365・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。": {
+    "すべてのメール": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Gmail, iCloud, Yahoo, Yahoo! JAPAN, Outlook, Office365, and Exchange have their server settings filled in automatically. For other providers, use “Other” to set them up manually."
+            "value": "All Mail"
           }
         }
       }
     },
-    "Microsoft アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。": {
+    "アカウントが見つかりません。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This account authenticates with your Microsoft account. Your password is never stored in this app. If authentication expires, sign in again via “Reauthenticate.”"
+            "value": "Account not found."
           }
         }
       }
     },
-    "Yahoo!メールの「メールソフトでの利用設定 (IMAP/POP アクセス)」を有効にしておく必要があります。無効のままだと、正しいパスワードでも「メールサーバにアクセスできない」等のエラーで接続できません。": {
+    "アカウントでグループ化": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "You need to enable “Mail Software Access (IMAP/POP Access)” in Yahoo! Mail first. Without it, connecting will fail (e.g. “can’t reach the mail server”) even with the correct password."
+            "value": "Group by Account"
           }
         }
       }
     },
-    "手順: Yahoo!メールにログイン → 画面右上の歯車アイコン (設定) → 「メールの基本設定」→ 下の方にある「IMAP/POPアクセス」を「有効にする」に変更して保存。": {
+    "アプリのパスワード": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Steps: Sign in to Yahoo! Mail → the gear icon (Settings) in the top right → “Basic Mail Settings” → near the bottom, set “IMAP/POP Access” to enabled and save."
+            "value": "App Password"
+          }
+        }
+      }
+    },
+    "オフにすると、ツールバーのボタンがアイコンだけになり、高さも詰まります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When off, toolbar buttons show icons only, and the bar becomes more compact."
+          }
+        }
+      }
+    },
+    "ソースを表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View Source"
+          }
+        }
+      }
+    },
+    "ソースを読み込めませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load the message source."
+          }
+        }
+      }
+    },
+    "ソースを読み込めませんでした。オフラインの場合は接続を確認して再試行してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load the message source. If you're offline, check your connection and try again."
+          }
+        }
+      }
+    },
+    "ソースを読み込んでいます…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading source…"
+          }
+        }
+      }
+    },
+    "ダークモードで暗い背景に反転": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invert to a Dark Background in Dark Mode"
+          }
+        }
+      }
+    },
+    "デフォルトのメールアプリに設定": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set as Default Mail App"
+          }
+        }
+      }
+    },
+    "ドラッグして、メール本文画面下部のツールバーに並ぶアイコンの順序を変更できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag to reorder the icons in the toolbar at the bottom of the message view."
+          }
+        }
+      }
+    },
+    "フラグ付きのみ表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pinned Only"
+          }
+        }
+      }
+    },
+    "フラグ付きのメールはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Pinned Messages"
+          }
+        }
+      }
+    },
+    "プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先の写真・Google プロフィール写真・Gravatar・企業ロゴを優先順に探して表示します。どの情報源を使うか（外部への問い合わせを含む）は「メール一覧」設定の同名のトグルで個別にオフにできます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatars try, in order, the sender's matching contact photo, Google profile photo, Gravatar, and company logo, falling back to the sender's initials and the account's color. Which sources are used (including which ones contact an external service) can be turned off individually from the matching toggles in the Message List settings."
+          }
+        }
+      }
+    },
+    "ボタンのラベルを表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Button Labels"
+          }
+        }
+      }
+    },
+    "メニューバーの「メール」アプリ (Mail) を開き、「メール」→「設定」→「一般」の「デフォルトのメールアプリ」から Otegami を選べます。バージョンによっては「システム設定」→「デスクトップと Dock」の「メールアプリ」の項目からも変更できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open the Mail app, then choose Otegami from Mail → Settings → General → \"Default Mail App Reader.\" On some macOS versions you can also change it from System Settings → Desktop & Dock → \"Mail App.\""
+          }
+        }
+      }
+    },
+    "メールのソース": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message Source"
+          }
+        }
+      }
+    },
+    "メールの背景を常に白（ライト表示）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Always Show Message Background in White (Light Mode)"
+          }
+        }
+      }
+    },
+    "リモート画像も読み込む": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Also Load Remote Images"
           }
         }
       }
@@ -4052,12 +3771,262 @@
         }
       }
     },
-    "通常はメールアドレスと同じログインIDで接続できます。接続テストが失敗する場合は、ログインIDを「@yahoo.co.jp より前の Yahoo! JAPAN ID」だけに変更して再度お試しください。": {
+    "不参加": {
+      "comment": "Task #66 calendar invite card: current-response label for a declined invite.",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usually the login ID is the same as your email address. If the connection test fails, try changing the login ID to just your Yahoo! JAPAN ID (the part before “@yahoo.co.jp”)."
+            "value": "Declined"
+          }
+        }
+      }
+    },
+    "予定への招待": {
+      "comment": "Task #66 calendar invite card header, above the event title/time/location.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Invitation"
+          }
+        }
+      }
+    },
+    "原文に戻す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Original"
+          }
+        }
+      }
+    },
+    "参加": {
+      "comment": "Task #66 calendar invite card: current-response label for an accepted invite.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accepted"
+          }
+        }
+      }
+    },
+    "埋め込み画像を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Embedded Images"
+          }
+        }
+      }
+    },
+    "委任": {
+      "comment": "Task #66 calendar invite card: current-response label for an invite delegated to someone else.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delegated"
+          }
+        }
+      }
+    },
+    "手順: Yahoo!メールにログイン → 画面右上の歯車アイコン (設定) → 「メールの基本設定」→ 下の方にある「IMAP/POPアクセス」を「有効にする」に変更して保存。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Steps: Sign in to Yahoo! Mail → the gear icon (Settings) in the top right → “Basic Mail Settings” → near the bottom, set “IMAP/POP Access” to enabled and save."
+          }
+        }
+      }
+    },
+    "承諾": {
+      "comment": "Task #66 calendar invite card: \"Accept\" RSVP button (also reused for the current-response label).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accept"
+          }
+        }
+      }
+    },
+    "招待の内容を読み込んでいます…": {
+      "comment": "Task #66 calendar invite card: loading state while the text/calendar part downloads and parses.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading invitation…"
+          }
+        }
+      }
+    },
+    "既定のメールアプリ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Default Mail App"
+          }
+        }
+      }
+    },
+    "未回答": {
+      "comment": "Task #66 calendar invite card: current-response label meaning no RSVP has been sent yet.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No response"
+          }
+        }
+      }
+    },
+    "未定": {
+      "comment": "Task #66 calendar invite card: \"Maybe\"/tentative RSVP button (also reused for the current-response label).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maybe"
+          }
+        }
+      }
+    },
+    "未読かつフラグ付きのメールはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Unread Pinned Messages"
+          }
+        }
+      }
+    },
+    "添付ファイル %lld 個": {
+      "comment": "Task #76 attachment card list header, e.g. \"添付ファイル 2 個\" / \"Attachments (2)\".",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Attachments (%lld)"
+          }
+        }
+      }
+    },
+    "現在の回答: %@": {
+      "comment": "Task #66 calendar invite card: shows the RSVP already recorded for this invite, e.g. \"現在の回答: 参加\" / \"Your response: Accepted\".",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Your response: %@"
+          }
+        }
+      }
+    },
+    "画像を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Images"
+          }
+        }
+      }
+    },
+    "社内 (オンプレミス) の Exchange サーバーで IMAP アクセスが有効になっている環境向けです。ホスト名はシステム管理者に確認してください。Microsoft 365 / Outlook.com は「アカウントを追加」→「Outlook」または「Office365」からサインインしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "For an on-premises Exchange server with IMAP access enabled. Ask your system administrator for the hostname. For Microsoft 365 / Outlook.com, use “Add Account” → “Outlook” or “Office365” instead."
+          }
+        }
+      }
+    },
+    "翻訳を再試行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry Translation"
+          }
+        }
+      }
+    },
+    "翻訳中": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Translating…"
+          }
+        }
+      }
+    },
+    "表示は先頭512KBまでです。全文はシェアで書き出せます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Showing the first 512KB. Share to export the full message."
+          }
+        }
+      }
+    },
+    "要約を再試行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry Summary"
+          }
+        }
+      }
+    },
+    "要約を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Summary"
+          }
+        }
+      }
+    },
+    "要約中": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Summarizing…"
+          }
+        }
+      }
+    },
+    "設定 Appで既定のメールアプリを選ぶ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose the Default Mail App in Settings"
+          }
+        }
+      }
+    },
+    "訳文に戻す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Translation"
           }
         }
       }
@@ -4068,6 +4037,27 @@
           "stringUnit": {
             "state": "translated",
             "value": "Summarize in Detail"
+          }
+        }
+      }
+    },
+    "辞退": {
+      "comment": "Task #66 calendar invite card: \"Decline\" RSVP button (also reused for the current-response label).",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Decline"
+          }
+        }
+      }
+    },
+    "通常はメールアドレスと同じログインIDで接続できます。接続テストが失敗する場合は、ログインIDを「@yahoo.co.jp より前の Yahoo! JAPAN ID」だけに変更して再度お試しください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usually the login ID is the same as your email address. If the connection test fails, try changing the login ID to just your Yahoo! JAPAN ID (the part before “@yahoo.co.jp”)."
           }
         }
       }

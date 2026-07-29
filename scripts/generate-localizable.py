@@ -9,22 +9,27 @@ list (most entries need nothing beyond adding a line here, since Text/
 Button/Label already use the Japanese literal itself as the String Catalog
 key — see that doc for the cases that need an actual Swift-side change).
 
-**KNOWN DRIFT (found during Task #100, unresolved)**: as of this comment,
-the committed `Localizable.xcstrings` has ~30 more entries than this
-`translations` dict produces (e.g. "画像を表示"/"埋め込み画像を表示"/
-"リモート画像も読み込む"/"アカウントでグループ化" are in the shipped
-catalog, actively referenced by `HTMLMessageView.swift`/`MailScreenView
-.swift`, but absent here) — someone edited the `.xcstrings` file directly
-(Xcode's own String Catalog editor, most likely) without mirroring the
-addition back into this script. **Do not run this script and commit its
-output until that drift is reconciled** — doing so silently deletes every
-entry this dict doesn't know about, which is exactly the mistake Task #100
-avoided by hand-patching new entries into the JSON instead of regenerating.
-Reconciling means diffing the live catalog's keys against this dict and
-folding the extras back in as their own lines below (or accepting them as
-Xcode-editor-owned and excluding this script from the workflow entirely) —
-out of scope for whatever bug/feature you're fixing right now unless that's
-specifically what you're here to fix.
+**Drift reconciled at Task #145 (2026-07)**: the drift first noted during
+Task #100 had grown to 82 entries present in the committed
+`Localizable.xcstrings` but missing from this dict (mostly the Yahoo/
+Outlook/Office365/Exchange/Microsoft account-setup screens, calendar
+invite responses, and a few HTML-display/toolbar strings) plus one stale
+entry whose Swift-side literal had since changed ("例: 会社用の署名" →
+"例: あいさつ用の署名", `SignatureTemplateEditView`'s placeholder). Folded
+all 82 back in as their own lines below (grouped under "--- Task #145
+drift reconciliation ---") using the `en` value already committed in the
+live catalog, and fixed the stale one in place. Verified this script's
+output now byte-for-byte matches the committed catalog before committing
+either.
+
+**Keeping this from drifting again**: whenever you edit
+`Localizable.xcstrings` directly via Xcode's String Catalog editor
+(rather than adding a line here and rerunning the script), mirror the
+same key/value back into this dict in the same commit — otherwise the
+next unrelated run of this script will silently delete your addition.
+If you're ever unsure whether the two are still in sync, diff the live
+catalog's keys against this dict (`python3 -c` with `json.load` +
+`importlib` works fine ad hoc) before rerunning and committing.
 """
 import json
 import pathlib
@@ -38,7 +43,12 @@ translations = {
     "ピン留めを解除": "Unpin",
     "ピン留め": "Pin",
     "同期エラー": "Sync Error",
-    "OK": "OK",
+    # Task #145: this alert's dismiss button used to read "OK" itself (the
+    # source-language literal, not just its English translation) — the
+    # only outlier among this app's alert/dismiss buttons, which otherwise
+    # all use a Japanese verb ("削除"/"キャンセル"/"閉じる"/etc., see
+    # docs/localization.md). Changed the Swift-side literal to "閉じる" to
+    # match, so this dict no longer needs an "OK" key at all.
     "キャンセル": "Cancel",
     "選択解除": "Deselect All",
     "全選択": "Select All",
@@ -278,7 +288,7 @@ translations = {
     "署名テンプレートがありません。": "No signature templates.",
     "署名テンプレートを削除しますか？": "Delete this signature template?",
     "使用するアカウントが選択されていません": "No accounts selected",
-    "例: 会社用の署名": "e.g. Work Signature",
+    "例: あいさつ用の署名": "e.g. Greeting Signature",
     "使用するアカウント": "Accounts",
     "チェックしたアカウントで作成中のメールの「署名」欄からこの署名を選べます。複数選択できます。":
         "Accounts you check here can select this signature from the Signature field when composing a message. You can select more than one.",
@@ -497,22 +507,152 @@ translations = {
     # 動的な値そのものではなく固定部分のみ変わるため、このスクリプトの
     # 他の補間文字列 (エラーメッセージ等) とは違い翻訳価値があると判断した。
     "バージョン %@ (%@)": "Version %@ (%@)",
+
+    # --- Task #145 drift reconciliation: entries already present in the
+    # committed Localizable.xcstrings (added directly via Xcode's String
+    # Catalog editor for Yahoo/Outlook/Office365/Exchange/Microsoft account
+    # setup, calendar invite responses, and a few HTML-display/toolbar
+    # strings) but missing from this dict until now ---
+    "AI要約": "AI Summary",
+    "Apple の承認待ちです": "Awaiting Apple's Approval",
+    "Bcc (カンマ区切り)": "Bcc (comma-separated)",
+    "Exchange": "Exchange",
+    "Exchange アカウントを追加": "Add Exchange Account",
+    "Gmail・iCloud・Yahoo・Yahoo! JAPAN・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。":
+        "Gmail, iCloud, Yahoo, Yahoo! JAPAN, and Exchange have their server settings filled in automatically. For other providers, use “Other” to set them up manually.",
+    "Gmail・iCloud・Yahoo・Yahoo! JAPAN・Outlook・Office365・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。":
+        "Gmail, iCloud, Yahoo, Yahoo! JAPAN, Outlook, Office365, and Exchange have their server settings filled in automatically. For other providers, use “Other” to set them up manually.",
+    "HTMLメールを既定でテキスト表示にします。メール詳細画面の切替ボタンで、メールごとに一時的に戻すこともできます。ダークモード表示中、白背景・濃い文字色を明示したメール（ライトデザインのメール）は、既定では反転せずメール本来の配色（白背景）のまま表示します。色指定を持たないメールは、読みやすい配色に自動で解決されます。メール自身がダークモードに対応済みの場合は何もしません。「ダークモードで暗い背景に反転」をオンにすると、ライトデザインのメールを暗い背景に反転して表示します（文字中心のメールで暗い背景を好む場合向け）。「メールの背景を常に白」をオンにすると、色指定の有無にかかわらずすべてのメールを常に白背景で表示します（このとき上の反転設定は無効になります）。":
+        "Shows HTML messages as plain text by default. You can switch back for an individual message using the toggle button in the message view. While in Dark Mode, messages that explicitly set a white background and dark text (light-designed messages) are, by default, left in their original (white-background) colors rather than inverted. Messages with no color declarations at all resolve automatically to a readable color scheme. Messages that already support Dark Mode themselves are left untouched. Turning on “Invert to a Dark Background in Dark Mode” instead inverts light-designed messages to a dark background (for those who prefer a dark background for text-heavy messages). Turning on “Always Show Message Background in White” makes every message always render on a white background regardless of its own colors (the inversion setting above is disabled while this is on).",
+    "Microsoft": "Microsoft",
+    "Microsoft でログイン": "Sign in with Microsoft",
+    "Microsoft のログイン画面が表示されます。会社・学校の Microsoft 365 アカウントでサインインしてください。":
+        "Microsoft's sign-in screen will appear. Sign in with your work or school Microsoft 365 account.",
+    "Microsoft のログイン画面が表示されます。個人の Outlook.com / Hotmail アカウントでサインインしてください。":
+        "Microsoft's sign-in screen will appear. Sign in with your personal Outlook.com / Hotmail account.",
+    "Microsoft アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。":
+        "This account authenticates with your Microsoft account. Your password is never stored in this app. If authentication expires, sign in again via “Reauthenticate.”",
+    "Office365": "Office365",
+    "Office365 アカウントを追加": "Add Office365 Account",
+    "Otegami を既定のメールアプリに設定すると、他のアプリの「メールで送信」リンクや mailto: リンクを開いたときに Otegami が開くようになります。":
+        "Setting Otegami as your default mail app makes it open when you tap a \"Mail\" link or a mailto: link in another app.",
+    "Outlook": "Outlook",
+    "Outlook アカウントを追加": "Add Outlook Account",
+    "Yahoo": "Yahoo",
+    "Yahoo のアカウント管理でアプリのパスワードを発行": "Get an app password from Yahoo Account Security",
+    "Yahoo のアカウント管理で発行した「アプリのパスワード」が必要です。Yahoo のパスワードそのものではログインできません。":
+        "You need an app password issued from Yahoo Account Security. Your regular Yahoo password won’t work.",
+    "Yahoo アカウントを追加": "Add Yahoo Account",
+    "Yahoo メールアドレス": "Yahoo Email Address",
+    "Yahoo! JAPAN": "Yahoo! JAPAN",
+    "Yahoo! JAPAN アカウントを追加": "Add Yahoo! JAPAN Account",
+    "Yahoo!メールの「メールソフトでの利用設定 (IMAP/POP アクセス)」を有効にしておく必要があります。無効のままだと、正しいパスワードでも「メールサーバにアクセスできない」等のエラーで接続できません。":
+        "You need to enable “Mail Software Access (IMAP/POP Access)” in Yahoo! Mail first. Without it, connecting will fail (e.g. “can’t reach the mail server”) even with the correct password.",
+    "Yahoo!メールの設定で「メールソフトでの利用設定 (IMAP アクセス)」を有効にしておく必要があります。無効のままだと、正しいパスワードでも接続できません。":
+        "You need to enable “Mail Software Access (IMAP Access)” in Yahoo! Mail settings first. Without it, connecting will fail even with the correct password.",
+    "Yahoo!メールを開く": "Open Yahoo! Mail",
+    "Yahoo!メールアドレス": "Yahoo! Mail Address",
+    "iOS で既定のメールアプリになるには、Apple から com.apple.developer.mail-client の権限を取得する必要があります。この機能は権限が承認され、このビルドで有効化された後に使えるようになります。":
+        "Becoming the default mail app on iOS requires the com.apple.developer.mail-client entitlement from Apple. This feature becomes usable once that's approved and enabled in this build.",
+    "「設定」→「アプリ」→「既定のアプリ」→「メール」から Otegami を選んでください。": "Choose Otegami under Settings → Apps → Default Apps → Mail.",
+    "この配布ビルドには Microsoft OAuth Client ID が設定されていません。docs/oauth-setup.md を参照して各自 Client ID を発行し、Config/Local.xcconfig に設定してください。":
+        "This build has no Microsoft OAuth Client ID configured. See docs/oauth-setup.md to issue your own Client ID and set it in Config/Local.xcconfig.",
+    "すべてのメール": "All Mail",
+    "アカウントが見つかりません。": "Account not found.",
+    "アカウントでグループ化": "Group by Account",
+    "アプリのパスワード": "App Password",
+    "オフにすると、ツールバーのボタンがアイコンだけになり、高さも詰まります。":
+        "When off, toolbar buttons show icons only, and the bar becomes more compact.",
+    "ソースを表示": "View Source",
+    "ソースを読み込めませんでした。": "Couldn't load the message source.",
+    "ソースを読み込めませんでした。オフラインの場合は接続を確認して再試行してください。":
+        "Couldn't load the message source. If you're offline, check your connection and try again.",
+    "ソースを読み込んでいます…": "Loading source…",
+    "ダークモードで暗い背景に反転": "Invert to a Dark Background in Dark Mode",
+    "デフォルトのメールアプリに設定": "Set as Default Mail App",
+    "ドラッグして、メール本文画面下部のツールバーに並ぶアイコンの順序を変更できます。":
+        "Drag to reorder the icons in the toolbar at the bottom of the message view.",
+    "フラグ付きのみ表示": "Pinned Only",
+    "フラグ付きのメールはありません": "No Pinned Messages",
+    "プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先の写真・Google プロフィール写真・Gravatar・企業ロゴを優先順に探して表示します。どの情報源を使うか（外部への問い合わせを含む）は「メール一覧」設定の同名のトグルで個別にオフにできます。":
+        "Avatars try, in order, the sender's matching contact photo, Google profile photo, Gravatar, and company logo, falling back to the sender's initials and the account's color. Which sources are used (including which ones contact an external service) can be turned off individually from the matching toggles in the Message List settings.",
+    "ボタンのラベルを表示": "Show Button Labels",
+    "メニューバーの「メール」アプリ (Mail) を開き、「メール」→「設定」→「一般」の「デフォルトのメールアプリ」から Otegami を選べます。バージョンによっては「システム設定」→「デスクトップと Dock」の「メールアプリ」の項目からも変更できます。":
+        "Open the Mail app, then choose Otegami from Mail → Settings → General → \"Default Mail App Reader.\" On some macOS versions you can also change it from System Settings → Desktop & Dock → \"Mail App.\"",
+    "メールのソース": "Message Source",
+    "メールの背景を常に白（ライト表示）": "Always Show Message Background in White (Light Mode)",
+    "リモート画像も読み込む": "Also Load Remote Images",
+    "ログインID": "Login ID",
+    "不参加": "Declined",
+    "予定への招待": "Invitation",
+    "原文に戻す": "Show Original",
+    "参加": "Accepted",
+    "埋め込み画像を表示": "Show Embedded Images",
+    "委任": "Delegated",
+    "手順: Yahoo!メールにログイン → 画面右上の歯車アイコン (設定) → 「メールの基本設定」→ 下の方にある「IMAP/POPアクセス」を「有効にする」に変更して保存。":
+        "Steps: Sign in to Yahoo! Mail → the gear icon (Settings) in the top right → “Basic Mail Settings” → near the bottom, set “IMAP/POP Access” to enabled and save.",
+    "承諾": "Accept",
+    "招待の内容を読み込んでいます…": "Loading invitation…",
+    "既定のメールアプリ": "Default Mail App",
+    "未回答": "No response",
+    "未定": "Maybe",
+    "未読かつフラグ付きのメールはありません": "No Unread Pinned Messages",
+    "添付ファイル %lld 個": "Attachments (%lld)",
+    "現在の回答: %@": "Your response: %@",
+    "画像を表示": "Show Images",
+    "社内 (オンプレミス) の Exchange サーバーで IMAP アクセスが有効になっている環境向けです。ホスト名はシステム管理者に確認してください。Microsoft 365 / Outlook.com は「アカウントを追加」→「Outlook」または「Office365」からサインインしてください。":
+        "For an on-premises Exchange server with IMAP access enabled. Ask your system administrator for the hostname. For Microsoft 365 / Outlook.com, use “Add Account” → “Outlook” or “Office365” instead.",
+    "翻訳を再試行": "Retry Translation",
+    "翻訳中": "Translating…",
+    "表示は先頭512KBまでです。全文はシェアで書き出せます。": "Showing the first 512KB. Share to export the full message.",
+    "要約を再試行": "Retry Summary",
+    "要約を表示": "Show Summary",
+    "要約中": "Summarizing…",
+    "設定 Appで既定のメールアプリを選ぶ": "Choose the Default Mail App in Settings",
+    "訳文に戻す": "Show Translation",
+    "詳しく要約": "Summarize in Detail",
+    "辞退": "Decline",
+    "通常はメールアドレスと同じログインIDで接続できます。接続テストが失敗する場合は、ログインIDを「@yahoo.co.jp より前の Yahoo! JAPAN ID」だけに変更して再度お試しください。":
+        "Usually the login ID is the same as your email address. If the connection test fails, try changing the login ID to just your Yahoo! JAPAN ID (the part before “@yahoo.co.jp”).",
+}
+
+# Disambiguation comments for a handful of short/reused source strings —
+# these existed in the committed catalog (added directly via Xcode's String
+# Catalog editor, e.g. Task #66's calendar-invite RSVP labels that are each
+# reused for both a button and a read-only current-response label) and
+# `build()` below would otherwise silently drop them on the next
+# regeneration. Keyed by the same `ja` source string as `translations`.
+comments = {
+    "添付ファイル %lld 個": 'Task #76 attachment card list header, e.g. "添付ファイル 2 個" / "Attachments (2)".',
+    "予定への招待": "Task #66 calendar invite card header, above the event title/time/location.",
+    "現在の回答: %@": 'Task #66 calendar invite card: shows the RSVP already recorded for this invite, e.g. "現在の回答: 参加" / "Your response: Accepted".',
+    "招待の内容を読み込んでいます…": "Task #66 calendar invite card: loading state while the text/calendar part downloads and parses.",
+    "承諾": 'Task #66 calendar invite card: "Accept" RSVP button (also reused for the current-response label).',
+    "辞退": 'Task #66 calendar invite card: "Decline" RSVP button (also reused for the current-response label).',
+    "未定": 'Task #66 calendar invite card: "Maybe"/tentative RSVP button (also reused for the current-response label).',
+    "参加": "Task #66 calendar invite card: current-response label for an accepted invite.",
+    "不参加": "Task #66 calendar invite card: current-response label for a declined invite.",
+    "未回答": "Task #66 calendar invite card: current-response label meaning no RSVP has been sent yet.",
+    "委任": "Task #66 calendar invite card: current-response label for an invite delegated to someone else.",
 }
 
 
 def build():
     strings = {}
     for ja, en in translations.items():
-        strings[ja] = {
-            "localizations": {
-                "en": {
-                    "stringUnit": {
-                        "state": "translated",
-                        "value": en,
-                    }
+        entry = {}
+        comment = comments.get(ja)
+        if comment:
+            entry["comment"] = comment
+        entry["localizations"] = {
+            "en": {
+                "stringUnit": {
+                    "state": "translated",
+                    "value": en,
                 }
             }
         }
+        strings[ja] = entry
     catalog = {
         "sourceLanguage": "ja",
         "strings": strings,
