@@ -349,6 +349,13 @@
 #                    初回ブート待ちが余分にかかるだけ遅い。真に「初回起動」
 #                    の見た目 (通知許可ダイアログを敢えて見る等) を確認
 #                    したいときだけ使う。
+#   LOCALE           Task #170 (言語設定の総点検): ja | en — 指定すると
+#                    `-AppleLanguages (xx)` `-AppleLocale xx_XX` を launch
+#                    引数に追加し、シミュレータ本体の言語設定を変えずに
+#                    このアプリのプロセスだけをその言語で起動する (Xcode の
+#                    スキーム編集画面の「Application Language」と同じ、
+#                    アプリ単位の言語上書き)。未指定ならシミュレータの
+#                    現在の言語設定のまま。
 #   WAIT_SECONDS     起動〜スクリーンショットまでの待ち時間 (default: 4)。
 #                    `ERASE_SIMULATOR=1`の直後は初回ブートでSpringboard/
 #                    アプリの初期化が普段より遅く、4秒では足りないことが
@@ -383,6 +390,7 @@ IOS_SIMULATOR="${IOS_SIMULATOR:-iPhone 17 Pro Max}"
 SCREENSHOT_DIR="${SCREENSHOT_DIR:-/tmp/otegami-verify}"
 BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
 APPEARANCE="${APPEARANCE:-}"
+LOCALE="${LOCALE:-}"
 DISABLE_AVATAR_SOURCES="${DISABLE_AVATAR_SOURCES:-1}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 ERASE_SIMULATOR="${ERASE_SIMULATOR:-0}"
@@ -672,6 +680,17 @@ if [[ "$DISABLE_AVATAR_SOURCES" == "1" ]]; then
   launch_env+=("OTEGAMI_UITEST_DISABLE_AVATAR_SOURCES=1")
 fi
 launch_env+=("OTEGAMI_UITEST_DISABLE_NOTIFICATION_PERMISSION_REQUEST=1")
+
+if [[ -n "$LOCALE" ]]; then
+  case "$LOCALE" in
+    ja) launch_args+=("-AppleLanguages" "(ja)" "-AppleLocale" "ja_JP") ;;
+    en) launch_args+=("-AppleLanguages" "(en)" "-AppleLocale" "en_US") ;;
+    *)
+      echo "error: unknown LOCALE '$LOCALE' — expected 'ja' or 'en'" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 OUT_NAME="${2:-$default_out}"
 OUT_PATH="$SCREENSHOT_DIR/$OUT_NAME"
