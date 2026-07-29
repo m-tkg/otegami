@@ -45,11 +45,25 @@ public enum MessageReadMarker {
         record.flags.insert(.seen)
         record.updatedAt = Date()
         try record.update(db)
-        guard let mailbox = try MailboxRecord.fetchOne(db, key: record.mailboxId) else { return false }
-        try OpQueue.enqueueSetFlags(
-            accountId: accountId, mailboxId: record.mailboxId, uidValidity: mailbox.uidValidity,
-            uids: [UInt32(record.uid)], flags: record.flags, db: db
-        )
+        // Task #120: a `MessageRecord.isPendingRelocation` row has no real
+        // server UID to `STORE` this flag against yet — the local write
+        // above already applied (so the row reads \Seen immediately), but
+        // mirroring it to the server has to wait until this mailbox's next
+        // sync reconciles the row (`AccountSyncer.reconcilePendingRelocation`).
+        // Known, accepted limitation: if the pending window closes with the
+        // server's own copy of this message *not* already \Seen, that
+        // resync's envelope refresh overwrites `flagsRaw` back to the
+        // server's state (only `createdAt`/`threadId`/`isPinnedLocal` are
+        // protected from a resync overwrite — see `AccountSyncer.upsert`'s
+        // doc comment) and this optimistic mark-as-read can be silently
+        // lost. Narrow window in practice (the op queue usually replays,
+        // and the destination syncs, within moments), not attempted here.
+        if !record.isPendingRelocation, let mailbox = try MailboxRecord.fetchOne(db, key: record.mailboxId) {
+            try OpQueue.enqueueSetFlags(
+                accountId: accountId, mailboxId: record.mailboxId, uidValidity: mailbox.uidValidity,
+                uids: [UInt32(record.uid)], flags: record.flags, db: db
+            )
+        }
         if let threadId = record.threadId {
             try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
         }

@@ -807,6 +807,15 @@ public actor AccountSyncer {
     /// thread's aggregates recomputed, since the resync could have changed
     /// its `\Seen` flag.
     static func upsert(envelope: FetchedEnvelope, mailboxId: Int64, accountId: String, db: Database) throws {
+        // Task #120: before the normal upsert-by-`(mailboxId, uid)` below,
+        // check whether this envelope is the real, server-confirmed arrival
+        // of a message `MessageRemoval` already relocated to this mailbox
+        // ahead of the server (`MessageRecord.isPendingRelocation`) —
+        // reconcile it onto the real UID *in place* rather than letting the
+        // upsert insert a brand-new row alongside it (a visible duplicate:
+        // the same message would show up twice in this mailbox's list).
+        try reconcilePendingRelocation(envelope: envelope, mailboxId: mailboxId, db: db)
+
         // ピン留め (E9): whether this resync should mirror the server's
         // current `\Flagged` bit into `MessageRecord.isPinnedLocal` — see
         // `PinSettingsStore`'s doc comment for why this reads the same raw
@@ -885,5 +894,46 @@ public actor AccountSyncer {
         // threading it through, so a flag-only resync can't accidentally
         // blow away a previously-indexed body).
         try FTSIndexer.reindex(messageId: messageId, db: db)
+    }
+
+    /// Task #120: the reconciliation half of `MessageRemoval`'s "relocate
+    /// immediately, ahead of the server" local moves. Looks for a
+    /// `MessageRecord.isPendingRelocation` row already sitting in
+    /// `mailboxId` whose `messageId` matches this envelope's — i.e. the
+    /// exact message a prior archive/unarchive/junk/delete already moved
+    /// here locally, now genuinely confirmed by the server — and, if found,
+    /// repoints *that same row* onto the real UID `envelope.uid` before
+    /// `upsert`'s own `(mailboxId, uid)`-keyed upsert runs.
+    ///
+    /// This matters because that follow-up upsert can only ever match an
+    /// existing row by the exact `(mailboxId, uid)` pair its `onConflict`
+    /// targets — a placeholder's synthetic negative UID never equals a real
+    /// one, so without this step the upsert would simply insert a *second*,
+    /// duplicate row for the same message (the placeholder would then sit
+    /// there forever, orphaned, since nothing else ever revisits it). Doing
+    /// the repoint here first means that same upsert call, immediately
+    /// after, finds a genuine `(mailboxId, uid)` conflict against the
+    /// now-real-UID row and updates it in place instead — the message's
+    /// `id` (and everything keyed by it: thread assignment, cached body/
+    /// attachments, translation state, FTS index) never changes.
+    ///
+    /// A no-op when `envelope.messageId` is `nil`/empty (can't reliably
+    /// match) — a message without a `Message-ID` header is rare, and this
+    /// app has no other cross-mailbox identity to match on. That pending
+    /// row is left as-is: still visible to the user (it was never lost),
+    /// just permanently a placeholder UID (see `MessageRecord
+    /// .isPendingRelocation`'s doc comment for the accepted-limitation call
+    /// sites that already treat a placeholder gracefully rather than
+    /// crashing on it).
+    private static func reconcilePendingRelocation(envelope: FetchedEnvelope, mailboxId: Int64, db: Database) throws {
+        guard let messageId = envelope.messageId, !messageId.isEmpty else { return }
+        guard var pending = try MessageRecord
+            .filter(Column("mailboxId") == mailboxId)
+            .filter(Column("uid") <= 0)
+            .filter(Column("messageId") == messageId)
+            .fetchOne(db)
+        else { return }
+        pending.uid = Int64(envelope.uid)
+        try pending.update(db, columns: [Column("uid")])
     }
 }

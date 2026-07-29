@@ -327,8 +327,15 @@ public actor MailboxSyncer {
         session: any IMAPSessionProtocol,
         status: MailboxStatus
     ) async throws -> Int {
+        // `AND uid > 0` (Task #120): a `MessageRecord.isPendingRelocation`
+        // row's synthetic negative placeholder UID must never enter this
+        // diff — it isn't a real server UID at all (so it can't legitimately
+        // be "vanished"), and `UInt32(minUID)` below would trap outright if
+        // one ever became the minimum (the common case, since a placeholder
+        // is always negative and therefore always smaller than every real
+        // UID in the same mailbox).
         let localUIDs = try await database.dbWriter.read { db in
-            try Int64.fetchAll(db, sql: "SELECT uid FROM message WHERE mailboxId = ?", arguments: [mailboxId])
+            try Int64.fetchAll(db, sql: "SELECT uid FROM message WHERE mailboxId = ? AND uid > 0", arguments: [mailboxId])
         }
         guard let minUID = localUIDs.min() else { return 0 }
 
@@ -374,8 +381,10 @@ public actor MailboxSyncer {
         session: any IMAPSessionProtocol,
         status: MailboxStatus
     ) async throws -> Int {
+        // `AND uid > 0` — same Task #120 reasoning as `refetchAndDiffFlags`'s
+        // identical guard just above.
         let localUIDs = try await database.dbWriter.read { db in
-            try Int64.fetchAll(db, sql: "SELECT uid FROM message WHERE mailboxId = ?", arguments: [mailboxId])
+            try Int64.fetchAll(db, sql: "SELECT uid FROM message WHERE mailboxId = ? AND uid > 0", arguments: [mailboxId])
         }
         guard let minUID = localUIDs.min() else { return 0 }
 

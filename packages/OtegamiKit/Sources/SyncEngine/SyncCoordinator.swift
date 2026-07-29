@@ -93,6 +93,13 @@ public actor SyncCoordinator {
         account: AccountRecord,
         auth: MailAuth
     ) async throws {
+        // Task #120: skip opening a connection at all for a
+        // `MessageRecord.isPendingRelocation` row — `BodyFetcher.fetchBody`
+        // would just reject it anyway (see its own doc comment), so there's
+        // nothing a network round trip could accomplish here yet.
+        guard !message.isPendingRelocation else {
+            throw MailTransportError.serverError(underlyingDescription: "message \(message.id.map(String.init) ?? "?") is pending local relocation; no server UID yet")
+        }
         let session = sessionFactory(account.imapConfig)
         try await session.connect(auth: auth)
         defer {
@@ -117,6 +124,13 @@ public actor SyncCoordinator {
         account: AccountRecord,
         auth: MailAuth
     ) async throws -> AttachmentRecord {
+        // Task #120: `messageUID <= 0` means the owning message is a
+        // `MessageRecord.isPendingRelocation` row — same reasoning as
+        // `fetchBody(for:mailboxPath:account:auth:)`'s identical guard
+        // above; there's no real server UID to `UID FETCH` a part of yet.
+        guard messageUID > 0 else {
+            throw MailTransportError.serverError(underlyingDescription: "message is pending local relocation; no server UID yet")
+        }
         let session = sessionFactory(account.imapConfig)
         try await session.connect(auth: auth)
         defer {
@@ -156,6 +170,11 @@ public actor SyncCoordinator {
     ) async throws -> URL {
         if let cached = MessageSourceFetcher.cachedURL(accountId: account.id, messageId: messageId) {
             return cached
+        }
+        // Task #120: same "no real server UID yet" guard as
+        // `fetchAttachment`/`fetchBody` above.
+        guard messageUID > 0 else {
+            throw MailTransportError.serverError(underlyingDescription: "message \(messageId) is pending local relocation; no server UID yet")
         }
         let session = sessionFactory(account.imapConfig)
         try await session.connect(auth: auth)

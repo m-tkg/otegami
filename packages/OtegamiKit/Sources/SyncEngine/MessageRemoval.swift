@@ -103,7 +103,20 @@ public enum MessageRemoval {
         // "archived" location is All Mail, not a dedicated Archive-role
         // mailbox — see below) — fetched once rather than per-message
         // since it's the same account for every target here.
-        let accountKind = kind == .unarchive ? try AccountRecord.fetchOne(db, key: accountId)?.kind : nil
+        let account = try AccountRecord.fetchOne(db, key: accountId)
+        let accountKind = kind == .unarchive ? account?.kind : nil
+        // Task #120 (実機報告「アーカイブ解除しても受信箱に pull-to-refresh まで
+        // 現れない」): resolved once per commit call, not per-message — the
+        // mailbox this `kind` relocates a removed message *into* locally,
+        // right now, so it's visible in that mailbox's own list without
+        // waiting for that mailbox's own next sync to discover it. `nil`
+        // when no such mailbox is known locally yet (this account's very
+        // first archive/junk/delete before that role's mailbox has ever
+        // been discovered, or a Gmail archive — see `destinationMailbox`'s
+        // doc comment) — falls back to the pre-#120 behavior for that
+        // message: remove locally, let the destination's own eventual sync
+        // discover it, exactly as before this task.
+        let destination = try Self.destinationMailbox(for: kind, account: account, db: db)
         var removedMessages: [MessageRecord] = []
         for message in targets {
             guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
@@ -137,17 +150,80 @@ public enum MessageRemoval {
                     uids: [uid], db: db
                 )
             }
-            // M7: `messageSearchIndex` isn't a real foreign-keyed table, so
-            // this deletion needs its own explicit index cleanup alongside
-            // the `message` row's.
-            try FTSIndexer.delete(messageId: messageId, db: db)
-            try MessageRecord.deleteOne(db, key: messageId)
+            if let destinationId = destination?.id, destinationId != message.mailboxId {
+                // Relocate in place rather than delete-then-wait-for-sync:
+                // same row `id` (so its thread assignment, cached body/
+                // attachments, and translation state all carry over
+                // untouched), moved to the destination mailbox with a
+                // synthetic placeholder UID (`MessageRecord
+                // .isPendingRelocation`'s doc comment) until
+                // `AccountSyncer.reconcilePendingRelocation` adopts the real
+                // one. The `messageSearchIndex`/FTS row is untouched too —
+                // relocating changes *where* the message lives, never its
+                // content, so there's nothing to delete or reindex here
+                // (contrast the `else` branch below, a true removal).
+                var relocated = message
+                relocated.mailboxId = destinationId
+                relocated.uid = -messageId
+                relocated.updatedAt = Date()
+                try relocated.update(db)
+            } else {
+                // No destination known locally yet (or a Gmail archive,
+                // which never relocates — see `destinationMailbox`'s doc
+                // comment): the pre-#120 behavior. M7: `messageSearchIndex`
+                // isn't a real foreign-keyed table, so this removal needs
+                // its own explicit index cleanup alongside the `message`
+                // row's.
+                try FTSIndexer.delete(messageId: messageId, db: db)
+                try MessageRecord.deleteOne(db, key: messageId)
+            }
             removedMessages.append(message)
         }
         guard !removedMessages.isEmpty else { return nil }
         try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
         let opQueueIds = try Int64.fetchAll(db, sql: "SELECT id FROM opQueue WHERE id > ? ORDER BY id", arguments: [beforeMaxOpId])
         return Snapshot(thread: thread, messages: removedMessages, opQueueIds: opQueueIds)
+    }
+
+    /// Task #120: the mailbox `kind` relocates a message into locally, or
+    /// `nil` when there's nothing safe/known to relocate into yet (the
+    /// caller then falls back to the pre-#120 remove-and-wait-for-sync
+    /// behavior for that message):
+    /// - `.unarchive` → this account's INBOX-role mailbox. Always known
+    ///   locally once an account has completed even one sync (mirrors
+    ///   `OpQueueProcessor.inboxMailbox`'s own "never `nil` in practice"
+    ///   assumption).
+    /// - `.junk`/`.delete` → this account's Junk-/Trash-role mailbox, if
+    ///   already discovered. `nil` for an account that's never junked/
+    ///   deleted anything before and whose server doesn't advertise one —
+    ///   `OpQueueProcessor.resolveOrCreateJunkMailbox`/
+    ///   `resolveOrCreateTrashMailbox` will still `CREATE` one server-side
+    ///   on replay; this method just can't relocate into a mailbox this
+    ///   database doesn't have a row for yet.
+    /// - `.archive` → this account's Archive-role mailbox, *except* for a
+    ///   Gmail account, which never gets one here: Gmail has no dedicated
+    ///   Archive folder at all (`OpQueueKind.archive`'s doc comment) —
+    ///   "archiving" just un-labels the source, and the message's All Mail
+    ///   copy (role `.all`) already independently represents it in the
+    ///   "アーカイブ" unified category whenever All Mail has been synced.
+    ///   Relocating a *second*, synthetic row into All Mail here would risk
+    ///   sitting alongside that already-real one as a visible duplicate
+    ///   instead.
+    private static func destinationMailbox(for kind: Kind, account: AccountRecord?, db: Database) throws -> MailboxRecord? {
+        guard let account else { return nil }
+        let role: MailboxRoleRecord
+        switch kind {
+        case .unarchive: role = .inbox
+        case .junk: role = .junk
+        case .delete: role = .trash
+        case .archive:
+            guard account.kind != .gmail else { return nil }
+            role = .archive
+        }
+        return try MailboxRecord
+            .filter(Column("accountId") == account.id)
+            .filter(Column("role") == role.rawValue)
+            .fetchOne(db)
     }
 
     /// Reverses one `commit(_:summary:accountId:db:)` call: deletes the
@@ -159,25 +235,50 @@ public enum MessageRemoval {
     /// accepted edge case, not silent data corruption either way) and
     /// re-inserts the thread aggregate row (if `commit` deleted it — i.e.
     /// this was the thread's last remaining message) *before* re-inserting
-    /// any removed message, then every removed message with its original
-    /// `id` (GRDB's default `insert` includes an already-set primary key
-    /// value in the `INSERT` statement, and the row it occupied was just
-    /// deleted, so there's no conflict to resolve).
+    /// any removed message.
     ///
-    /// The thread-before-messages order is load-bearing: `message.threadId`
-    /// has a foreign key to `thread` (`AppDatabase.foreignKeysEnabled =
-    /// true`), so inserting a message that still points at a thread row
-    /// that hasn't been restored yet throws immediately and rolls back the
-    /// *entire* transaction — restoring nothing at all. This was the root
-    /// cause behind 実機報告「アーカイブ後に元に戻すが効かない」: a thread's last
-    /// message being archived/deleted empties (and so deletes) the thread
-    /// row, and the previous ordering inserted messages first.
+    /// Task #120: `commit` no longer always deletes a target message row —
+    /// when it knew a destination mailbox locally, it *relocated* the row
+    /// there instead (`MessageRecord.isPendingRelocation`), leaving it very
+    /// much still present. Each `snapshot.messages` entry is handled
+    /// according to which actually happened, decided by whether a row with
+    /// that `id` still exists:
+    /// - **Still exists (relocated)**: restore only `mailboxId`/`uid` back
+    ///   to their pre-commit values via `update`, not a blanket overwrite of
+    ///   every column — any *other* field the row picked up during the
+    ///   pending window (e.g. its body finished fetching, or a read/unread
+    ///   toggle) is intentionally left alone rather than silently reverted
+    ///   by an unrelated "元に戻す" tap. A no-op if `mailboxId`/`uid` already
+    ///   match (e.g. this message's slot in `snapshot.messages` belongs to
+    ///   a `kind` that never relocated it in the first place — every entry
+    ///   here that *was* relocated has both fields differ from the
+    ///   snapshot's captured pre-commit values, by construction).
+    /// - **Gone (deleted)**: `insert` with the original id, exactly as
+    ///   before this task (GRDB's default `insert` includes an already-set
+    ///   primary key value in the `INSERT` statement, and the row it
+    ///   occupied was just deleted, so there's no conflict to resolve), and
+    ///   `FTSIndexer.reindex` restores its search-index row the same way
+    ///   `FTSIndexer.delete` removed it (relocated rows never had their FTS
+    ///   row touched in the first place — see `commit`'s doc comment — so
+    ///   there's nothing to reindex for those).
     ///
-    /// `FTSIndexer.reindex` restores each message's search-index row the
-    /// same way `FTSIndexer.delete` removed it. Best-effort, matching every
-    /// other opQueue-enqueuing/db-mutating path in this file — a failure
-    /// here just leaves the delete/archive applied, same as if "元に戻す"
-    /// had never been tapped.
+    /// The thread-before-messages order is load-bearing for the delete/
+    /// insert case: `message.threadId` has a foreign key to `thread`
+    /// (`AppDatabase.foreignKeysEnabled = true`), so inserting a message
+    /// that still points at a thread row that hasn't been restored yet
+    /// throws immediately and rolls back the *entire* transaction —
+    /// restoring nothing at all. This was the root cause behind 実機報告
+    /// 「アーカイブ後に元に戻すが効かない」: a thread's last message being
+    /// archived/deleted empties (and so deletes) the thread row, and the
+    /// previous ordering inserted messages first. A relocated (never
+    /// deleted) message never hits this at all — its thread row was never
+    /// removed, since the message row itself never left the `message`
+    /// table.
+    ///
+    /// Every write here still throws normally (no `try?`), matching every
+    /// other opQueue-enqueuing/db-mutating path in this file: a failure
+    /// just leaves the delete/archive/relocation applied, same as if
+    /// "元に戻す" had never been tapped.
     public static func undo(_ snapshot: Snapshot, db: Database) throws {
         try OpQueueRecord.deleteAll(db, keys: snapshot.opQueueIds)
         guard let threadId = snapshot.thread.id else { return }
@@ -186,10 +287,17 @@ public enum MessageRemoval {
             var restoredThread = snapshot.thread
             try restoredThread.insert(db)
         }
-        for message in snapshot.messages {
-            var restored = message
-            try restored.insert(db)
-            if let messageId = restored.id {
+        for original in snapshot.messages {
+            guard let messageId = original.id else { continue }
+            if var current = try MessageRecord.fetchOne(db, key: messageId) {
+                guard current.mailboxId != original.mailboxId || current.uid != original.uid else { continue }
+                current.mailboxId = original.mailboxId
+                current.uid = original.uid
+                current.updatedAt = Date()
+                try current.update(db)
+            } else {
+                var restored = original
+                try restored.insert(db)
                 try FTSIndexer.reindex(messageId: messageId, db: db)
             }
         }

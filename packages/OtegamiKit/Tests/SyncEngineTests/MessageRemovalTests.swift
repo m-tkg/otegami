@@ -198,6 +198,10 @@ struct MessageRemovalTests {
         // it would collide with its still-present primary key).
         #expect(snapshot2.messages.map(\.id) == [inboxMessageId])
 
+        // Task #120: `archiveId` (an Archive-role mailbox) is already known
+        // locally here, so `commit` relocates the inbox copy into it
+        // immediately (pending a real UID) rather than deleting it — the
+        // row survives with the same `id`, just a new `mailboxId`/`uid`.
         let (messageAfterArchive, archivedMessageStillThere, threadAfterArchive) = try database.dbWriter.read { db in
             (
                 try MessageRecord.fetchOne(db, key: inboxMessageId),
@@ -205,17 +209,24 @@ struct MessageRemovalTests {
                 try ThreadRecord.fetchOne(db, key: threadId)
             )
         }
-        #expect(messageAfterArchive == nil)
+        #expect(messageAfterArchive?.mailboxId == archiveId)
+        #expect(messageAfterArchive?.isPendingRelocation == true)
         #expect(archivedMessageStillThere != nil)
-        #expect(threadAfterArchive != nil) // thread survives: one message left
+        #expect(archivedMessageStillThere?.mailboxId == archiveId)
+        #expect(archivedMessageStillThere?.isPendingRelocation == false, "the already-archived message must be untouched, still its real UID")
+        #expect(threadAfterArchive != nil)
+        #expect(threadAfterArchive?.messageCount == 2, "relocating never removes a message, so the thread's count is unaffected")
 
-        // Undo must not throw (no duplicate-primary-key insert of the
-        // still-present archived message) and must bring the inbox copy back.
+        // Undo must not throw (relocated back via `update`, not a
+        // duplicate-primary-key `insert` of a still-present row) and must
+        // restore the inbox copy's original mailbox/UID.
         try database.dbWriter.write { db in try MessageRemoval.undo(snapshot2, db: db) }
         let (messageAfterUndo, threadAfterUndo) = try database.dbWriter.read { db in
             (try MessageRecord.fetchOne(db, key: inboxMessageId), try ThreadRecord.fetchOne(db, key: threadId))
         }
-        #expect(messageAfterUndo != nil)
+        #expect(messageAfterUndo?.mailboxId == inboxId)
+        #expect(messageAfterUndo?.uid == 1)
+        #expect(messageAfterUndo?.isPendingRelocation == false)
         #expect(threadAfterUndo?.messageCount == 2)
     }
 
@@ -255,7 +266,10 @@ struct MessageRemovalTests {
 
     @Test("unarchive → undo restores a single-message thread the same way archive does, and enqueues an unarchive op")
     func undoRestoresSingleMessageThreadAfterUnarchive() throws {
-        let (database, accountId, _) = try makeDatabase()
+        // `makeDatabase()` always creates an INBOX-role mailbox internally
+        // (Task #120: `commit(.unarchive, ...)` relocates into it, since
+        // it's known locally the moment an account exists at all).
+        let (database, accountId, inboxId) = try makeDatabase()
         let archiveId = try database.dbWriter.write { db -> Int64 in
             var archive = MailboxRecord(accountId: accountId, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1)
             try archive.insert(db)
@@ -277,6 +291,9 @@ struct MessageRemovalTests {
         }
         let snapshot2 = try #require(snapshot)
 
+        // Task #120: relocated into INBOX (pending a real UID), not
+        // deleted — the thread survives too, since the message never
+        // actually left the `message` table.
         let (messageAfterUnarchive, threadAfterUnarchive, opCountAfterUnarchive, opKindAfterUnarchive) = try database.dbWriter.read { db in
             (
                 try MessageRecord.fetchOne(db, key: messageId),
@@ -285,8 +302,9 @@ struct MessageRemovalTests {
                 try OpQueueRecord.fetchOne(db)?.kind
             )
         }
-        #expect(messageAfterUnarchive == nil)
-        #expect(threadAfterUnarchive == nil)
+        #expect(messageAfterUnarchive?.mailboxId == inboxId)
+        #expect(messageAfterUnarchive?.isPendingRelocation == true)
+        #expect(threadAfterUnarchive?.messageCount == 1)
         #expect(opCountAfterUnarchive == 1)
         #expect(opKindAfterUnarchive == OpQueueKind.unarchive.rawValue)
 
@@ -300,7 +318,9 @@ struct MessageRemovalTests {
             )
         }
         #expect(threadAfterUndo != nil)
-        #expect(messageAfterUndo != nil)
+        #expect(messageAfterUndo?.mailboxId == archiveId)
+        #expect(messageAfterUndo?.uid == 4)
+        #expect(messageAfterUndo?.isPendingRelocation == false)
         #expect(opCountAfterUndo == 0)
     }
 

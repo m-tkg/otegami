@@ -250,7 +250,11 @@ struct AccountDigestView: View {
                     }
                     message.updatedAt = Date()
                     try message.update(db)
-                    guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                    // Task #120: same pending-relocation guard as
+                    // `MessageListView.applyReadState(_:markingRead:)`.
+                    guard !message.isPendingRelocation,
+                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
+                    else { continue }
                     try OpQueue.enqueueSetFlags(
                         accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
                         uids: [UInt32(message.uid)], flags: message.flags, db: db
@@ -284,7 +288,11 @@ struct AccountDigestView: View {
                     }
                     message.updatedAt = Date()
                     try message.update(db)
-                    guard syncEnabled, let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                    // Task #120: same pending-relocation guard as
+                    // `MessageListView.applyPinState(_:pinning:)`.
+                    guard syncEnabled, !message.isPendingRelocation,
+                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
+                    else { continue }
                     try OpQueue.enqueueSetFlags(
                         accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
                         uids: [UInt32(message.uid)], flags: message.flags, db: db

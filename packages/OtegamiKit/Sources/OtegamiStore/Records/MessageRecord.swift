@@ -102,6 +102,29 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         set { flagsRaw = newValue.rawValue }
     }
 
+    /// Task #120 (実機報告「アーカイブ解除しても受信箱に pull-to-refresh まで現れない」):
+    /// `true` for a message `SyncEngine.MessageRemoval` has relocated to a
+    /// new `mailboxId` *ahead of* the server confirming the move (archive/
+    /// unarchive/junk/delete's local half now happens immediately, offline-
+    /// safe, the same way removing a message from its source mailbox
+    /// already did) — `uid` is a synthetic placeholder (`-id`, always
+    /// negative and, since `id` is this table's own primary key, always
+    /// unique) rather than a real server-assigned UID, since real IMAP UIDs
+    /// are always `>= 1` (RFC 3501 §2.3.1.1). `AccountSyncer.upsert`
+    /// reconciles this row (adopts the real UID in place, same row `id`,
+    /// preserving thread/body-cache/attachment/translation state) the next
+    /// time this mailbox's sync actually fetches the moved message's
+    /// envelope — matched by `messageId`, see `AccountSyncer
+    /// .reconcilePendingRelocation`'s doc comment.
+    ///
+    /// Every call site that turns `uid` into a real IMAP `UID` (a `UID
+    /// FETCH`/`STORE` argument, or a `MAX(uid)`/vanished-UID diff query)
+    /// must check this first and skip/defer rather than blindly converting
+    /// — `uid <= 0` traps `UInt32(uid)` (unlike `UInt32(exactly:)`, which
+    /// safely returns `nil`), and even where it wouldn't trap, a synthetic
+    /// placeholder is never a UID the server would recognize.
+    public var isPendingRelocation: Bool { uid <= 0 }
+
     public init(
         id: Int64? = nil,
         mailboxId: Int64,

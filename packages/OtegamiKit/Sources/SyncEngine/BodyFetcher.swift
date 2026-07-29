@@ -102,6 +102,18 @@ public actor BodyFetcher {
         session: any IMAPSessionProtocol
     ) async throws {
         guard let messageId = message.id else { return }
+        // Task #120: a `MessageRecord.isPendingRelocation` row has no real
+        // server UID yet — `UInt32(message.uid)` further down (both here and
+        // in `attemptSelfHeal`) traps on a negative value, and even a
+        // non-trapping conversion would just `UID FETCH` a number the server
+        // never assigned. Nothing to fetch until this mailbox's next sync
+        // reconciles the row onto its real UID (`AccountSyncer
+        // .reconcilePendingRelocation`); surfacing this as a normal fetch
+        // failure lets the caller's existing retry affordance apply rather
+        // than hanging or crashing.
+        guard !message.isPendingRelocation else {
+            throw MailTransportError.serverError(underlyingDescription: "message \(messageId) is pending local relocation; no server UID yet")
+        }
 
         if let existing = inFlightFetches[messageId] {
             try await existing.value

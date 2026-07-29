@@ -25,10 +25,17 @@ public enum MessageQuery {
     /// The single highest UID currently stored for a mailbox, used by
     /// `AccountSyncer` to resume an incremental sync (`UID FETCH
     /// uidNext:*`, M3). `nil` for an empty (or never-synced) mailbox.
+    ///
+    /// `AND uid > 0` (Task #120): excludes a `MessageRecord.isPendingRelocation`
+    /// row — its synthetic negative placeholder UID must never factor into
+    /// "what's the highest *real* UID this mailbox has ever fetched," and
+    /// `UInt32(value)` below would trap outright if a pending row's negative
+    /// UID ever became the `MAX(uid)` (e.g. a mailbox containing nothing but
+    /// a just-relocated pending message).
     public static func maxUID(mailboxId: Int64, db: Database) throws -> UInt32? {
         let value = try Int64.fetchOne(
             db,
-            sql: "SELECT MAX(uid) FROM message WHERE mailboxId = ?",
+            sql: "SELECT MAX(uid) FROM message WHERE mailboxId = ? AND uid > 0",
             arguments: [mailboxId]
         )
         guard let value else { return nil }

@@ -1081,3 +1081,110 @@ SPECIAL-USE を広告するため問題にならないが、iCloud や多くの�
   Trash が消え、「ゴミ箱」セクションに正しいアカウントとして現れるかは
   iCloud または SPECIAL-USE 非広告の汎用 IMAP アカウントを実際に追加
   した実機/シミュレータでの確認が必要。
+
+## Task #120: アーカイブ解除しても受信箱一覧に pull-to-refresh まで現れないバグ
+
+### 報告
+
+実機報告: アーカイブ済みの未読メールをアーカイブ解除しても、受信箱一覧に
+pull-to-refresh するまで現れない — 「元のメールボックスから消える」側は
+即座に反映されるのに、「移動先メールボックスに現れる」側だけ次の同期
+待ちになっていた。
+
+### 原因
+
+`SyncEngine.MessageRemoval.commit(_:summary:accountId:db:)` (archive/
+delete/junk/unarchive の共通ローカル反映ロジック、`MessageListView`/
+`AccountDigestView` のスワイプ・一括操作が使う) は、対象メッセージの
+`message` 行を**削除するだけ**だった — 移動先メールボックスへの行の
+作成/付け替えは一切行わず、`OpQueueProcessor` によるサーバー側の実際の
+移動 (COPY/MOVE) が完了し、かつ移動先メールボックスの**次回同期**が
+その新着を発見するまで、ローカル DB には移動先の行が存在しなかった。
+「元から消える」側 (`MessageRecord.deleteOne`) は即座にコミットされる
+一方、「先に現れる」側には対応する仕組みがそもそも無かった、という
+非対称性が原因。
+
+### 修正: pending relocation (仮配置) 機構
+
+既存に同種の「仮 UID」機構は無かった (`draftMessage`/`outboxMessage`の
+`serverUid`類はサーバー確定後にしか埋まらない別の設計)ため、新規に
+以下を導入した:
+
+1. **`MessageRecord.isPendingRelocation`**
+   (`packages/OtegamiKit/Sources/OtegamiStore/Records/MessageRecord.swift`):
+   `uid <= 0` を「サーバー未確定の仮配置」の目印とする — 実 IMAP UID は
+   常に `>= 1` (RFC 3501 §2.3.1.1) なので、負数は衝突しない安全な
+   センチネル。新規カラムを増やすより、`(mailboxId, uid)` の一意制約を
+   そのまま「仮配置行同士も衝突しない」保証に転用できる利点がある
+   (`uid = -id` — `id` はテーブル全体で一意な主キーなので、どのメール
+   ボックスに仮配置しても衝突しない)。
+2. **`MessageRemoval.commit`**
+   (`packages/OtegamiKit/Sources/SyncEngine/MessageRemoval.swift`):
+   archive/junk/delete/unarchive のたびに、その kind の移動先ロール
+   メールボックス (unarchive→INBOX、junk→Junk、delete→Trash、
+   archive→Archive) が**ローカルに既知**なら、対象行を削除する代わりに
+   同じ行 `id` のまま `mailboxId`/`uid` だけ書き換えて即座に移動先へ
+   "仮配置" する (スレッド割当・本文キャッシュ・添付・翻訳キャッシュは
+   `id` 不変なのでそのまま生きる)。移動先が未知の場合 (そのロールの
+   メールボックスをまだ一度も発見していないアカウント、または Gmail の
+   archive — Gmail は専用 Archive フォルダを持たず All Mail 行が既に
+   独立してアーカイブ扱いを表現するため、二重行を避けて仮配置しない)
+   は、#120 以前と同じ「削除して次回同期待ち」にフォールバックする。
+   `undo` (元に戻す) も両ケースに対応: 行がまだ存在する (仮配置された)
+   場合は `mailboxId`/`uid` だけを元に戻す `update`、行が消えている
+   (削除された) 場合は従来通り `insert` — スレッド行の削除→再挿入順序
+   に依存する `insert` 経路は仮配置には一切関わらない (行そのものが
+   消えていないため)。
+3. **`AccountSyncer.reconcilePendingRelocation`**
+   (`packages/OtegamiKit/Sources/SyncEngine/AccountSyncer.swift`,
+   `upsert(envelope:mailboxId:accountId:db:)` の前段): 移動先メール
+   ボックスの次回同期がその仮配置メッセージの実エンベロープを取得した
+   時、`messageId` (Message-ID ヘッダ) が一致する仮配置行を探して
+   **同じ行の `uid` だけを実 UID に書き換える** — その直後の通常の
+   upsert が `(mailboxId, uid)` の一致で「更新」経路に入り、二重行を
+   作らない。`messageId` が無い (稀な壊れたメール) 場合は仮配置のまま
+   残る既知の制限として許容 (ユーザーには見え続けるので実害は限定的)。
+4. **クラッシュ面の防御的な全面点検**: 仮配置行の `uid` は負数なので、
+   これを無条件に `UInt32` へキャストする箇所は全てトラップ (クラッシュ)
+   しうる。既存コードベース全体を洗い出し、以下を修正:
+   - `MessageQuery.maxUID`、`MailboxSyncer` の vanished-UID diff 2箇所
+     (`refetchAndDiffFlags`/`detectAndRemoveVanishedByUIDSearch`) —
+     `AND uid > 0` を追加し、仮配置行が「消えた扱い」で誤って削除された
+     り `MAX(uid)`/`MIN(uid)` がトラップしたりしないようにした。
+   - `BodyFetcher.fetchBody`/`SyncCoordinator.fetchBody`/`fetchAttachment`/
+     `fetchRawSource` — 仮配置行に対する本文/添付/ソースの取得を
+     ネットワーク接続前にガードし、「まだサーバー UID が無い」ことを
+     示すエラーを投げて既存のリトライ導線に委ねる。
+   - `MessageReadMarker.markSeen`、`MessageListView`/`ThreadDetailView`/
+     `AccountDigestView` の既読/未読・ピン留めの `setFlags` enqueue 箇所
+     (計6箇所) — 仮配置行はローカルのフラグ変更は即座に適用しつつ、
+     サーバーへの `STORE` enqueue だけスキップする (実 UID が無いため)。
+     既知の受容範囲: 仮配置中にフラグを変更し、かつ移動先の実エンベロープ
+     がそのフラグと異なる状態で届いた場合、次回同期の envelope 上書きで
+     ローカルの楽観的フラグ変更が失われうる (`flagsRaw` は
+     `createdAt`/`threadId`/`isPinnedLocal` と違い upsert の
+     `noOverwrite` 対象外) — 数秒程度の狭い競合窓なので許容。
+5. 未読フラグの即時反映自体 (`MessageListView.applyReadState`ほか) は
+   元々既に「ローカル書き込み→即 `update(db)`→その後 enqueue」の順序
+   だったため、#120 の対象外 (既存動作の確認のみ、変更なし)。
+
+### 検証
+
+- `swift test --filter "MessageRemovalTests|MessageReadMarkerTests|
+  AccountSyncerTests|MailboxSyncerTests|MessageRelocationReconciliationTests"`
+  および `swift test` (packages/OtegamiKit フルスイート) 全件グリーン。
+- 新規追加: `MessageRelocationReconciliationTests`
+  (`packages/OtegamiKit/Tests/SyncEngineTests/`) — タスク仕様どおり
+  FakeIMAPSession を使い「unarchive → 受信箱クエリに即出現 →
+  `AccountSyncer.performIncrementalSync` 後も重複しない」を1本の
+  シナリオテストで固定。
+- `make mac` ビルド成功を確認 (アプリ側の `MessageListView.swift`/
+  `ThreadDetailView.swift`/`AccountDigestView.swift`/`SyncCoordinator.swift`
+  の変更を含む)。
+- **実機での確認はこのセッションでは未実施** — 「アーカイブ済み未読
+  メールをアーカイブ解除→受信箱一覧に pull-to-refresh 無しで即座に
+  現れるか」「サーバー同期後に重複行が残らないか」は実機/シミュレータ
+  での確認が必要。`ThreadDetailView`("…" メニュー) 側の archive/junk/
+  delete は今回このタスクでは仮配置に対応させていない (独自実装の
+  重複、unarchive アクション自体が無い) — 別 follow-up の余地として
+  `PENDING.md` に記録。

@@ -1469,7 +1469,17 @@ struct MessageListView: View {
                     }
                     message.updatedAt = Date()
                     try message.update(db)
-                    guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                    // Task #120: `message.isPendingRelocation` — no real
+                    // server UID to enqueue a `setFlags` op against yet;
+                    // see `MessageReadMarker.markSeen`'s identical guard for
+                    // the accepted-limitation rationale (this optimistic
+                    // flag write can be silently superseded by that
+                    // mailbox's next resync if the window doesn't close in
+                    // time — the local write above still applies either
+                    // way).
+                    guard !message.isPendingRelocation,
+                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
+                    else { continue }
                     try OpQueue.enqueueSetFlags(
                         accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
                         uids: [UInt32(message.uid)], flags: message.flags, db: db
@@ -1522,7 +1532,11 @@ struct MessageListView: View {
                     }
                     message.updatedAt = Date()
                     try message.update(db)
-                    guard syncEnabled, let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+                    // Task #120: same pending-relocation guard as
+                    // `applyReadState(_:markingRead:)` just above.
+                    guard syncEnabled, !message.isPendingRelocation,
+                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
+                    else { continue }
                     try OpQueue.enqueueSetFlags(
                         accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
                         uids: [UInt32(message.uid)], flags: message.flags, db: db
