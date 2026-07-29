@@ -210,12 +210,48 @@ struct MessageListView: View {
     /// adding a second account (M4 verification scenario (c)) should widen
     /// which accounts' inbox threads it observes without needing a manual
     /// refresh or relaunch.
+    ///
+    /// Task #135 (実機報告「設定でスレッド表示を on/off して設定シートを
+    /// 閉じても、一覧が新モードで更新されない」): `isThreadingEnabled` is a
+    /// field here *in addition to* `isFlatMode` even though `isFlatMode`
+    /// alone is what `observeThreads()` actually uses to pick the query —
+    /// see `isFlatMode`'s own doc comment for why it deliberately reads
+    /// `ListDisplaySettingsStore.persistedBool(forKey:default:)` (a raw
+    /// `UserDefaults` read) rather than trusting `isThreadingEnabled`'s
+    /// `@AppStorage`-cached value directly (#82/#105: a per-view
+    /// `@AppStorage` cache can still be stale right after launch). That
+    /// defense has a cost this task's bug is the real-device symptom of:
+    /// a `@AppStorage` property only makes SwiftUI re-invoke `body` (and
+    /// therefore reconstruct this key and re-fire `.task(id:)`) when the
+    /// view actually *reads* that property while building `body`. Every
+    /// read of `isThreadingEnabled` in this file used to be
+    /// `#if os(macOS)`-only (the inline-search `.onChange(of:
+    /// isThreadingEnabled)` below) — on iOS nothing in `body` ever touched
+    /// the property, so SwiftUI never subscribed to `threadingKey` changes
+    /// there at all, and toggling it in `MailListSettingsView` (a sibling
+    /// view's own `@AppStorage` on the same key) never re-ran this view's
+    /// `body`, no matter how correct `isFlatMode`'s persisted-value read
+    /// was — a `.task(id:)` can't refire from a change nothing ever
+    /// noticed. Including `isThreadingEnabled` here anchors that read
+    /// (`ObservationKey(...)` is built while constructing `body`, so this
+    /// field's value has to actually be read) on every platform, which is
+    /// exactly `persistedUnreadOnly`'s existing doc comment: it names
+    /// `emptyStateTitle`'s direct read of `isUnreadOnly` as what "keeps
+    /// SwiftUI's change-tracking subscribed to this key" for that setting
+    /// — `isThreadingEnabled` had no such unconditional read anywhere
+    /// until this field. `observeThreads()` still only ever consults
+    /// `isFlatMode`'s persisted-value read for the actual query choice, so
+    /// this doesn't reintroduce the #82/#105 stale-on-launch bug either of
+    /// those fixed — this field only exists to make the view re-render (and
+    /// therefore re-read `isFlatMode` fresh) the moment the setting
+    /// changes, not to feed the query decision itself.
     private struct ObservationKey: Hashable {
         var selection: SidebarSelection
         var accountFilter: String?
         var accountIds: [String]
         var pageLimit: Int
         var isFlatMode: Bool
+        var isThreadingEnabled: Bool
         var unreadOnly: Bool
     }
 
@@ -655,7 +691,7 @@ struct MessageListView: View {
                     #endif
             }
         }
-        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, unreadOnly: persistedUnreadOnly)) {
+        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, isThreadingEnabled: isThreadingEnabled, unreadOnly: persistedUnreadOnly)) {
             await observeThreads()
         }
         // Task #44: see `syncSelectedMailboxOnAppear()`'s doc comment —

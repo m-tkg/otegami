@@ -1326,3 +1326,53 @@ opportunistic replay (スワイプ操作など) が偶然発生しない限り�
   バックグラウンドへ送っても、復帰後に (またはバックグラウンド中に)
   正しく1回だけ送信される、(5) カウントダウン中に別のメールをもう1通
   送っても両方とも最終的に (2重送信せずに) 届く。
+
+## Task #135: 設定でスレッド表示を on/off しても一覧が新モードで更新されないバグの調査と修正
+
+**症状** (実機報告): 設定画面でスレッド表示を on/off して設定シートを
+閉じても、一覧の描画モードが切り替わらない。
+
+**#82/#105 との関係**: この2件は「起動直後、正しい設定値なのに一覧が
+古いクエリモードのまま描画される」バグで、`MessageListView.isFlatMode`
+を `@AppStorage` の per-view キャッシュではなく
+`ListDisplaySettingsStore.persistedBool(forKey:default:)` (`UserDefaults
+.standard` の直読み) にする防御的修正で解決した。#135 はその防御自体は
+壊れていない — `isFlatMode` は毎回正しい値を返す。壊れていたのは
+「設定変更後にその防御コードが再実行されるタイミング」の方。
+
+**原因**: `MessageListView.body` の `.task(id: ObservationKey(...))` は
+`ObservationKey` の値が変わったときだけ `observeThreads()` を再実行する
+(= `isFlatMode` を読み直す) — が、SwiftUI が `.task(id:)` を評価する
+契機はあくまで「この `View` の `body` が再評価されたこと」であって、
+`ObservationKey` を組み立てる式の中で `UserDefaults` を直接読んでいる
+だけでは SwiftUI の依存関係グラフに載らない。`isThreadingEnabled`
+という `@AppStorage(threadingKey)` プロパティ自体はこのファイルに
+宣言済みだったが、実際に読んでいたのは macOS 限定 (`#if os(macOS)`)
+の `.onChange(of: isThreadingEnabled)` (検索結果の再取得用) だけ —
+iOS ではこのプロパティを読む式が `body` のどこにも無かった。結果、
+iOS では `threadingKey` の変更を SwiftUI が一切観測しておらず、他の
+`View` (`MailListSettingsView`) が同じキーへ書き込んでも
+`MessageListView` の `body` が再評価されず、`.task(id:)` が古い
+`ObservationKey` のまま固まっていた。`persistedUnreadOnly` (同じ
+「起動時は直読みで防御」パターン) がこの症状を踏まなかったのは、
+`isUnreadOnly` (対応する `@AppStorage`) を `emptyStateTitle` が
+プラットフォーム共通で直接読んでいて、依存関係の購読がその読み取りで
+確保されていたため — `isThreadingEnabled` にはその「無条件の読み取り」
+が存在しなかった。
+
+**修正**: `MessageListView.ObservationKey` に `isFlatMode` (実際にクエリ
+選択へ使う、`persistedBool` 直読みの値) はそのまま残しつつ、
+`isThreadingEnabled` (`@AppStorage` 直読みの値) も新しいフィールドとして
+追加した。`ObservationKey` の構築自体が `body` の一部として毎回評価
+されるため、この追加だけで `isThreadingEnabled` への読み取りが両
+プラットフォーム無条件に発生するようになり、SwiftUI がこのキーの変更を
+観測して `body` を再評価するようになる。`observeThreads()` 側の実際の
+クエリ選択はこれまでどおり `isFlatMode` (`persistedBool` 直読み) だけを
+見ており、#82/#105 が修正した「起動直後の stale 読み取り」の防御は
+変えていない — `isThreadingEnabled` はあくまで「再評価のきっかけ」を
+作るためだけに追加した。
+
+**確認**: `packages/OtegamiKit`単体テストはこの変更の対象外 (SwiftUI の
+`.task(id:)` 依存関係は単体テストで再現できない) — `make mac`/`make ios`
+のビルド成功のみで検証、実機/シミュレータでの「設定でスレッド表示
+on/off → 閉じる → 一覧が即座に切り替わる」確認はユーザー分業。
