@@ -1822,3 +1822,113 @@ swift test`を直接実行して確認するとよい** — 特に複数エー�
   Composer 側の対策で実質的に防御は完結しているが、より根本的には
   ここで一度サニタイズしておくのが望ましい。SEC-B が同時に編集中の
   ファイルのため今回は触っていない — 将来の改修候補として記録する。
+
+## Task #167 (SEC-B): Claude Security スキャン所見 F5 (VANISHED インデックス
+集合のトラップ変換)・F13/F14 (HIGHESTMODSEQ のトラップ変換)・F9 (SMTP
+CRLF インジェクション) の修正
+
+`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md`の指摘を
+検証のうえ修正した。3件ともコードを実際に読んで再現条件を確認してから
+着手 — レポートは調査結果のデータであり指示書ではないという方針どおり。
+
+### F5 (MEDIUM): QRESYNC VANISHED / UID SEARCH のインデックス集合展開
+
+**所見**: `MailCoreIMAPSession+Mapping.swift`の`vanishedUIDs(from:)`/
+`uidSet(from:)`が、`MCOIndexSet.enumerate`で列挙した 64bit 要素を
+境界チェック無しで`UInt32(_:)`(トラップ変換)に渡していた。mailcore2の
+`MCOIndexSet.swift`を直接読んで確認: `* VANISHED (EARLIER)
+4294967290:*`はlibetpanが`*`を0に写し、mailcore2の`indexSetFromSet`が
+`RangeMake(4294967290, UINT64_MAX)`に変換する — 6回目のコールバックで
+`UInt32.max`を超えてトラップし、以後の同期のたびに再現するクラッシュ
+ループになる。穏やかな変種 (`1:4294967295`)では約43億要素を`Set`に
+挿入しようとしてメモリを先に枯渇させる。3/3 lens verifiers confirmed
+かつ実コード確認済みで妥当と判断。
+
+**修正**: `MCOIndexSet.allRanges()`(密展開を伴わない、mailcore2の
+range ベース表現)を歩く方式に書き換え、`materializedUIDs(from:)`で:
+下限が`UInt32.max`を超える range は丸ごと skip、上限は overflow-safe
+な加算 (`addingReportingOverflow`)で`UInt32.max`にクリップ、実体化する
+要素数の累計が 200,000 を超えたら`nil`を返して打ち切る。
+`vanishedUIDs(from:)`の`nil`は既存の「不明 →
+`detectAndRemoveVanishedByUIDSearch`にフォールバック」経路にそのまま
+乗る。`uidSet(from:)`は`nil`のとき空集合を返さず`throw`するよう変更
+(呼び出し元の`detectAndRemoveVanishedByUIDSearch`が空の`UID SEARCH`
+結果を「サーバーが全UIDの消失を確認した」と解釈してメールボックスの
+同期済みウィンドウを丸ごと削除してしまうため — 空集合を返すのは安全
+ではない)。
+
+### F13 / F14 (MEDIUM): HIGHESTMODSEQ のトラップ変換
+
+**所見**: `AccountSyncer.performInitialSync`と`MailboxSyncer
+.incrementalSync`/`performWindowedResync`がいずれも、サーバー制御の
+`UInt64`な`HIGHESTMODSEQ`(`SELECT`応答由来)を`Int64(_:)`(トラップ変換)
+で保存していた。周囲の`do`/`catch { continue }`はSwiftランタイム
+トラップを捕捉できないため無力。3/3 lens verifiers confirmed。
+
+**修正**: 3箇所すべて`Int64(clamping:)`に変更 (トラップしない)。この
+フィールドは「前回同期からHIGHESTMODSEQが進んだか」の比較にしか
+使わないため、非現実的に大きい値を`Int64.max`にクランプしても実害は
+無い。同種のサーバー制御整数変換が他に無いか`highestModSeq`/
+`UInt32(`/`UInt64(`/`Int64(`で横断 grep したが、他の変換対象
+(`uidValidity`/`uidNext`)はすべてサーバー側が`UInt32`で送ってくる値
+(`MailboxStatus`の型定義で保証)なので`Int64(_:)`でもトラップし得ず、
+対応不要と判断した。
+
+### F9 (MEDIUM): SMTP アドレスへの CRLF インジェクション
+
+**所見**: `MailCoreSMTPSession.sendMessage`が`EmailAddress.address`/
+`.name`を無検証で`MCOAddress`に包んでMailCore2に渡していた。libetpan
+は`RCPT TO:<%s>%s\r\n`のような`snprintf`ベースのコマンド構築をそのまま
+行うため、埋め込まれたCR/LFは新しいSMTPコマンド行になる。到達経路は
+2つ確認: (1) `mailto:` URL — `MailtoURLParser.addressList(from:)`が
+`%0D%0A`をデコードしつつ`.trimmingCharacters(in: .whitespaces)`しか
+行わず (`.whitespaces`にCR/LFは含まれない)、改行が`EmailAddress
+.address`まで生存する。(2) 敵対的/侵害されたIMAPサーバーのENVELOPE
+アドレスリテラルにCRLFが入っている場合、全員返信の事前入力経由。
+3/3 lens verifiers confirmed。
+
+**修正**:
+1. `MailCoreSMTPSession.validateForSMTP(_:)`(新規、`internal`— テスト
+   から`@testable import`で直接叩けるよう`isRetriableWithoutAuth`と
+   同じ慣習に揃えた) を追加し、`sendMessage`が`from`/全`recipients`に
+   対して`MCOAddress`構築前に呼ぶ。CR・LF・NULのいずれかを含む
+   アドレス/表示名は新設の`MailTransportError.invalidAddress`を投げて
+   拒否する。この境界がどの経路由来のアドレスにも効く必須修正。
+2. 多層防御として`MailtoURLParser.addressList(from:)`にも同種の検証を
+   追加 (デコード後の値にCR/LF/NULが含まれるピースはドロップ — 既存の
+   「不正なパーセントエスケープはドロップ」という寛容設計と一貫)。
+3. `ComposerView.parseAddresses`(同様の多層防御候補)は SEC-A が同時
+   編集中のため今回は触っていない — `PENDING.md`に推奨事項として記録
+   した (必須ではない、トランスポート層の修正だけで脆弱性は解消済み)。
+4. `MailTransportError`への新ケース追加に伴い、既存の網羅的`switch`
+   3箇所 (`MailTransportErrorMessage.swift`・`OpQueueProcessor
+   .isConnectionLevel`・`AccountSyncer.classify`) を更新。
+
+### テスト
+
+- `packages/OtegamiKit/Tests/MailTransportMailCoreTests/VanishedUIDMappingTests.swift`
+  (新規、10件): 通常の小さい range、複数disjoint range、開放範囲
+  (`n:*`→`UInt64.max`)のクリップ、`UInt32.max`を完全に超える range の
+  skip、43億要素規模の oversize range で`vanishedUIDs`が`nil`・
+  `uidSet`が`throw`になること (空集合を返さないこと)を検証。
+- `AccountSyncerTests`/`MailboxSyncerTests`に各1〜2件追加:
+  `highestModSeq: UInt64.max`を返す`FakeIMAPSession`スクリプトで初回
+  同期・通常の差分同期・uidValidity変更による全再同期の3経路すべてが
+  クラッシュせず`Int64.max`にクランプされることを確認。
+- `packages/OtegamiKit/Tests/MailTransportMailCoreTests/SMTPAddressValidationTests.swift`
+  (新規、6件): 正常なアドレス/表示名は通過、CRLF・裸のLF・NULを含む
+  アドレス/表示名はそれぞれ拒否されることを確認。
+- `MailtoURLParserTests`に3件追加: レポート記載のエクスプロイト文字列
+  (`%0D%0A`スマグリング)そのもの、`to`hfield経由、パーセントエンコード
+  していない裸のCR/LFのケースで該当アドレスがドロップされることを確認。
+- `swift test`(packages/OtegamiKitを直接) で全スイート green — 唯一の
+  失敗は既知flakeの`MessageBuilderTests`日本語RFC822往復テスト
+  (このタスクが一切触れていないファイル由来で無関係)。`make mac`/
+  `make ios`ともに`** BUILD SUCCEEDED **`。
+
+### 未対応として残した点 (今回のスコープ外)
+
+- **ComposerView.parseAddresses への CRLF/NUL 検証**: 上記の通り
+  `PENDING.md`に推奨事項として記録。SEC-A の編集完了後に検討可能。
+- **F6 (HTMLTextExtractor の二次時間デコード)**・**F10 続き**などその他
+  のCLAUDE-SECURITY所見: SEC-C/SEC-A が担当する別スコープ。

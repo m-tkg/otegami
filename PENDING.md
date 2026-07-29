@@ -1427,3 +1427,22 @@ Task #165節の検証セクションに詳細な8項目チェックリストあ�
 メニューバーの新規ショートカット (⌘E アーカイブ・⇧⌘U 既読未読・⇧⌘R
 全員に返信・⇧⌘F 転送)、⌘E化で件名欄等への通常のタイピングに副作用が
 無いこと、⌘F への検索ショートカット移動。
+
+## Task #167 (SEC-B): ComposerView.parseAddresses への CRLF/NUL 検証追加を推奨
+
+`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md` F9 (SMTP
+CRLFインジェクション) の本修正は `MailCoreSMTPSession.sendMessage` /
+`validateForSMTP(_:)` (トランスポート境界で CR/LF/NUL を含むアドレス・
+表示名を throw で拒否) で完了済み — これがどの経路 (mailto: URL 由来、
+IMAP ENVELOPE 由来、Composer 手入力由来) から来たアドレスに対しても
+効く唯一の必須修正であり、脆弱性は既に閉じている。多層防御として
+`MailtoURLParser.addressList(from:)` にも同種の検証を追加済み。
+
+残っているのは多層防御としての「推奨」のみ:
+`apps/Otegami/Sources/Features/Composer/ComposerView.swift` の
+`parseAddresses` (`,` で分割し空白/タブのみトリム、CRLF はトリムしない)
+にも同じ CR/LF/NUL 検証を入れると、ユーザーが手入力欄に何らかの経路で
+制御文字混じりの文字列を貼り付けた場合、送信ボタンを押す前の UI 段階で
+気づける。このファイルは並行エージェント (SEC-A) が編集中のため今回は
+触れていない。次にこのファイルを触る機会があれば検討してほしい
+(必須ではない — トランスポート層の修正だけで脆弱性自体は解消済み)。
