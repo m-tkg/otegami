@@ -786,7 +786,7 @@ struct MessageListView: View {
                 set: { if !$0 { syncErrorMessage = nil } }
             )
         ) {
-            Button("OK") { syncErrorMessage = nil }
+            Button("閉じる") { syncErrorMessage = nil }
         } message: {
             Text(syncErrorMessage ?? "")
         }
@@ -1155,7 +1155,7 @@ struct MessageListView: View {
             // `Localizable.xcstrings`を引く。
             String(localized: "すべての受信トレイ")
         case .mailbox(let mailboxSelection):
-            environment.accounts.first { $0.id == mailboxSelection.accountId }.map { $0.displayName } ?? "Inbox"
+            environment.accounts.first { $0.id == mailboxSelection.accountId }.map { $0.displayName } ?? String(localized: "受信トレイ")
         case .unifiedRole(let role):
             // 画面構造改修バッチ (Task #33, 3): カテゴリ優先メニューの「横断
             // ビュー」— macOS の`RootView`(`.navigationTitle`をこの`title`

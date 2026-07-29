@@ -434,7 +434,7 @@ struct RootView: View {
                     systemImage: "tray",
                     description: Text("左のサイドバーからアカウントを追加、またはメールボックスを選択してください。")
                 )
-                .navigationTitle("Inbox")
+                .navigationTitle("受信トレイ")
             }
         }
     }
