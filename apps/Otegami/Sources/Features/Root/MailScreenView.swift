@@ -14,12 +14,11 @@ import OtegamiStore
 ///
 /// 旧「ナビタイトルのタップでフォルダシートを開く」動線はハンバーガーボタンに
 /// 置き換えた (`CLAUDE.md`) — タイトル自体は素の `Text` に戻り、フォルダ切替は
-/// 常に左上のハンバーガーアイコンから。検索は一覧画面左下のフローティング
-/// ボタン (`floatingSearchButton`、`FolderListSheet.floatingSettingsButton`と
-/// 同じ「常にスクロール位置に関わらず見えている」流儀) から `SearchScreenView`
-/// をシート表示する — ヘッダの再読込ボタンは廃止 (pull-to-refresh に一本化、
-/// `MessageListView`側) し、空いたヘッダには「未読のみ表示」トグル
-/// (`unreadOnlyToggleButton`) を追加した。
+/// 常に左上のハンバーガーアイコンから。検索・新規作成は一覧画面右下の
+/// speed-dial FAB (`speedDialFAB`、Task #131 — 「…」1個をタップすると
+/// その上に「新規作成」「検索」が縦に展開する) から呼ぶ — ヘッダの再読込
+/// ボタンは廃止 (pull-to-refresh に一本化、`MessageListView`側) し、空いた
+/// ヘッダには「未読のみ表示」トグル (`unreadOnlyToggleButton`) を追加した。
 struct MailScreenView: View {
     @Environment(AppEnvironment.self) private var environment
     /// Task #70 (ユーザー要望「iPad 版など、横長の場合は必ず左側にメール
@@ -47,6 +46,16 @@ struct MailScreenView: View {
 
     @State private var mailSelection: SidebarSelection = .unifiedInbox
     @State private var accountFilter: String?
+    /// Task #131 (一覧FABのspeed-dial化): 右下の「…」FABが展開中かどうか —
+    /// 展開状態は仕様どおり永続化しない (`@AppStorage`ではなくただの
+    /// `@State`、アプリを再起動すれば常に畳んだ状態から始まる)。既定は
+    /// `false`だが、`scripts/verify-screen.sh`が「展開状態のスクリーン
+    /// ショット」をタップ無しで撮れるよう、`-uitestsExpandFabDirectly`
+    /// (実機/通常起動では引数に無いので常にno-op) が付いていれば最初から
+    /// `true`で始める — `FolderListSheet.resetCollapseStateToCurrentSelection()`
+    /// の`-uitestsExpandFolderMenuSectionsDirectly`と同じ「タップ不要の
+    /// 直接遷移」パターン。
+    @State private var isFabExpanded = ProcessInfo.processInfo.arguments.contains("-uitestsExpandFabDirectly")
     // `Text(selectionTitle)`はverbatim呼び出しになるため、代入箇所すべてで
     // `String(localized:)`を使う (このプロパティの唯一の消費者である
     // `Text(selectionTitle)`呼び出し自体はそのまま)。
@@ -368,41 +377,34 @@ struct MailScreenView: View {
             }
         }
         .background(OtegamiColor.background)
-        // 一覧のスクロール位置に関わらず常に同じ場所にある方が押しやすい —
-        // `FolderListSheet.floatingSettingsButton`と同じ「`overlay`+左下
-        // 固定」パターン (ヘッダの虫眼鏡ボタンからの移設、実装ルール参照)。
-        // 選択モード中はヘッダ自体が丸ごとキャンセル/選択数/全選択に
-        // 差し替わる (`toolbarContent`) が、フローティングボタン自体は
+        // Task #131 (一覧FABのspeed-dial化): 旧・左下`floatingSearchButton`
+        // + 右下`floatingComposeButton`の2個独立配置を廃止し、右下1個の
+        // speed-dial FAB (`speedDialFAB`) に統合した — 一覧のスクロール
+        // 位置に関わらず常に同じ場所にある方が押しやすい、という元の判断
+        // 自体は変えていない。選択モード中はヘッダ自体が丸ごとキャンセル/
+        // 選択数/全選択に差し替わる (`toolbarContent`) が、FAB自体は
         // `content`側にあるため`isSelecting`と無関係に出続ける — ボタンが
         // 一括操作の邪魔にならないよう非表示にする。
-        .overlay(alignment: .bottomLeading) {
-            if !isSelecting {
-                floatingSearchButton
-            }
-        }
-        // ユーザー要望: 「メールの新規作成ボタンは、ヘッダ部ではなく右下に
-        // フローティングして欲しい」— 左下の`floatingSearchButton`と対に
-        // なる配置。`MessageListView`の`List`は既に`.contentMargins(.bottom:
-        // )`でこの高さぶんの余白を確保済み (検索ボタンのために追加済みの
-        // 余白を両ボタンで共有するだけで、追加の余白は不要 — 左右どちらの
-        // フローティングボタンも同じ縦位置にあるため)。
         .overlay(alignment: .bottomTrailing) {
             if !isSelecting {
-                floatingComposeButton
+                speedDialFAB
             }
         }
         // Task #108 (実機報告「元に戻すトーストが検索・新規作成 FAB の
-        // 背面に描画され重なる」): このoverlayは上の2つ (floatingSearch
-        // Button/floatingComposeButton)より**後**に付けている — SwiftUI の
-        // `.overlay`チェーンは後から適用したものほど手前に描画されるため、
-        // ここに置くだけでFABより確実に手前になる (`.zIndex`はチェーンが
-        // 生成する各`ZStack`の中でしか効かず、この階層をまたいでは効かない
-        // ため、根本修正はこの「最後に付ける」という位置そのもの — 明示
-        // `.zIndex`は下記の通り保険として併記)。縦位置もFABの上端
-        // (フローティングボタンの直径+底からの余白) を確実に超える位置まで
-        // 持ち上げ、重なり自体を無くす (`MessageListView`が以前担っていた
-        // クリアランス計算をここに集約した — `pendingUndoPayload`のdoc
-        // comment参照)。
+        // 背面に描画され重なる」): このoverlayは上の`speedDialFAB`(Task #131
+        // で統合、旧`floatingSearchButton`/`floatingComposeButton`)より
+        // **後**に付けている — SwiftUI の`.overlay`チェーンは後から適用した
+        // ものほど手前に描画されるため、ここに置くだけでFABより確実に手前に
+        // なる (`.zIndex`はチェーンが生成する各`ZStack`の中でしか効かず、
+        // この階層をまたいでは効かないため、根本修正はこの「最後に付ける」
+        // という位置そのもの — 明示`.zIndex`は下記の通り保険として併記)。
+        // 縦位置もFABの上端 (フローティングボタンの直径+底からの余白) を
+        // 確実に超える位置まで持ち上げ、重なり自体を無くす
+        // (`MessageListView`が以前担っていたクリアランス計算をここに集約した
+        // — `pendingUndoPayload`のdoc comment参照)。展開中のspeed-dial子
+        // ボタンはトースト表示中には両立しない (子ボタンをタップした瞬間に
+        // 畳んでからアクションを実行する`collapseAndPerform(_:)`) ため、
+        // このクリアランス計算は畳んだ状態の1個ぶんの直径のままで正しい。
         .overlay(alignment: .bottom) {
             if let pendingUndoPayload {
                 UndoToast(message: pendingUndoPayload.message, onUndo: pendingUndoPayload.onUndo)
@@ -595,60 +597,64 @@ struct MailScreenView: View {
         .accessibilityAddTraits(isUnreadOnly ? .isSelected : [])
     }
 
-    /// 一覧画面左下のフローティング検索ボタン — `FolderListSheet
-    /// .floatingSettingsButton`と同じ「丸い面＋影」の流儀をそのまま踏襲
-    /// (実装ルール: 既存の左下フローティングボタンの実装例を踏襲)。
-    /// accessibility identifier はヘッダにあった頃の`mail.searchButton`を
-    /// 据え置き — `SearchUITestHelpers.openSearchScreen(in:)`はこの識別子
-    /// だけを見ているため、位置が変わってもそのまま動く。
+    /// Task #131 (一覧FABのspeed-dial化): 旧・左下`floatingSearchButton`+
+    /// 右下`floatingComposeButton`の2個独立配置を統合した、右下1個の
+    /// speed-dial FAB。畳んだ状態は「…」の丸ボタン1個だけ、タップすると
+    /// その真上に「新規作成」「検索」("…"に近い方から新規作成→検索の順) が
+    /// 縦に展開する —
+    /// 子ボタンをタップすると対応するアクションを実行しつつ自動で畳む
+    /// (`collapseAndPerform(_:)`)。展開中は「…」自身も×へ変化して活性を
+    /// 示す (`fabToggleButton`)。色は全ボタンとも既存の
+    /// `otegamiFloatingButtonChrome()`(`accentFloating`塗り+白アイコン、
+    /// `OtegamiFloatingButton.swift`) をそのまま使う — 新しい色トークンは
+    /// 増やしていない。展開状態 (`isFabExpanded`) 自体は永続化しない。
     ///
-    /// Task #78 (ユーザー要望「アクセントブルーにするのは compose だけ
-    /// じゃなくて設定とか検索とか翻訳要約のフローティングも」):
-    /// `floatingComposeButton`だけがアクセント塗りだった状態を解消し、
-    /// このボタンも`otegamiFloatingButtonChrome()`(既定`.neutral`トーン、
-    /// `OtegamiFloatingButton.swift`) 経由でcomposeと同じアクセント塗り+
-    /// 白アイコンへ統一した。
-    private var floatingSearchButton: some View {
-        Button {
-            openSearch()
-        } label: {
-            Label("検索", systemImage: "magnifyingglass")
-                .labelStyle(.iconOnly)
-                .otegamiFloatingButtonChrome()
+    /// `docs/ci.md`のSwiftUI body肥大化ルールに合わせ、子ボタン行は
+    /// `SpeedDialChildButton`という独立した`View`型に切り出している —
+    /// このプロパティ自体は`VStack`+条件分岐だけの薄い組み立てのまま。
+    private var speedDialFAB: some View {
+        VStack(alignment: .trailing, spacing: OtegamiSpacing.md) {
+            if isFabExpanded {
+                SpeedDialChildButton(title: "検索", systemImage: "magnifyingglass", accessibilityId: "mail.searchButton") {
+                    collapseAndPerform { openSearch() }
+                }
+                .transition(.scale(scale: 0.5).combined(with: .opacity))
+                SpeedDialChildButton(title: "新規作成", systemImage: "square.and.pencil", accessibilityId: "mail.composeButton") {
+                    collapseAndPerform(onCompose)
+                }
+                .disabled(environment.accounts.isEmpty)
+                .transition(.scale(scale: 0.5).combined(with: .opacity))
+            }
+            fabToggleButton
         }
-        .buttonStyle(.plain)
-        .padding(.leading, OtegamiSpacing.lg)
-        .padding(.bottom, OtegamiSpacing.lg)
-        .accessibilityIdentifier("mail.searchButton")
-    }
-
-    /// 一覧画面右下のフローティング作成ボタン — ヘッダの新規作成ボタン
-    /// (`ToolbarItemGroup(placement: .confirmationAction)`) をここへ移設
-    /// (ユーザー要望:「メールの新規作成ボタンは、ヘッダ部ではなく右下に
-    /// フローティングして欲しい」)。左下の`floatingSearchButton`と対にな
-    /// る配置・同じ「丸い面＋影」の流儀を踏襲する。accessibility
-    /// identifier はヘッダにあった頃の`mail.composeButton`を据え置き —
-    /// 参照 UITest がある場合でもこの識別子で動くようにするため。
-    ///
-    /// ユーザー要望「フローティングボタンの色は、sparkに合わせて」
-    /// (参考画像: Spark の新規作成 FAB はアクセントブルーの塗りつぶし円＋
-    /// 白いペンアイコン) — 当初は`floatingComposeButton`だけの変更
-    /// だったが (`docs/design-system.md`のTask #77節)、Task #78で
-    /// 全フローティングボタンに拡張された。見た目自体は
-    /// `otegamiFloatingButtonChrome()`(`OtegamiFloatingButton.swift`)に
-    /// 委譲 — このボタンだけの`.disabled(environment.accounts.isEmpty)`
-    /// はそのまま残す。
-    private var floatingComposeButton: some View {
-        Button(action: onCompose) {
-            Label("作成", systemImage: "square.and.pencil")
-                .labelStyle(.iconOnly)
-                .otegamiFloatingButtonChrome()
-        }
-        .buttonStyle(.plain)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isFabExpanded)
         .padding(.trailing, OtegamiSpacing.lg)
         .padding(.bottom, OtegamiSpacing.lg)
-        .accessibilityIdentifier("mail.composeButton")
-        .disabled(environment.accounts.isEmpty)
+    }
+
+    /// speed-dial FABの起点ボタン ("…" / 展開中は"×") — タップのたびに
+    /// `isFabExpanded`をトグルするだけ。`.contentTransition(.symbolEffect
+    /// (.replace))`でアイコン切り替え自体をアニメーションさせる
+    /// (仕様「展開中の「…」は活性表示 (×へ回転等)」)。
+    private var fabToggleButton: some View {
+        Button {
+            isFabExpanded.toggle()
+        } label: {
+            Image(systemName: isFabExpanded ? "xmark" : "ellipsis")
+                .contentTransition(.symbolEffect(.replace))
+                .otegamiFloatingButtonChrome()
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("mail.fabToggleButton")
+        .accessibilityLabel(isFabExpanded ? Text("閉じる") : Text("その他のアクション"))
+        .accessibilityAddTraits(isFabExpanded ? .isSelected : [])
+    }
+
+    /// 子ボタン共通の「実行して畳む」— どちらの子ボタンも「タップで実行 +
+    /// 自動で畳む」という同じ仕様なので、この1箇所にまとめてある。
+    private func collapseAndPerform(_ action: () -> Void) {
+        isFabExpanded = false
+        action()
     }
 
     /// Task #109 (実機報告「メール本文から一覧に pop で戻ると、左上の
@@ -812,6 +818,29 @@ struct MailScreenView: View {
     private func presentAfterClosingMenu(_ present: () -> Void) {
         isMenuOpen = false
         present()
+    }
+}
+
+/// Task #131 (一覧FABのspeed-dial化): `MailScreenView.speedDialFAB`が展開中
+/// にだけ出す子ボタン1個ぶん — `docs/ci.md`の「`ForEach`/条件分岐の中身は
+/// 独立した`View`に切り出す」方針どおり、`speedDialFAB`自身の`body`を薄い
+/// ままに保つための切り出し。見た目は畳んだ状態の「…」ボタンと同じ
+/// `otegamiFloatingButtonChrome()`(`accentFloating`塗り+白アイコン) —
+/// 主/子で見た目のトーンを変える理由が無いため揃えている。
+private struct SpeedDialChildButton: View {
+    let title: String
+    let systemImage: String
+    let accessibilityId: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+                .otegamiFloatingButtonChrome()
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(accessibilityId)
     }
 }
 

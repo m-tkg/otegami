@@ -120,6 +120,16 @@
 #                                       (プリウォーム済みの) 生ソースを
 #                                       タップ無しで表示する。
 #   list                                統合受信トレイの一覧画面 (fakeメッセージ5件)
+#   list-fab-expanded                   Task #131 (一覧FABのspeed-dial化):
+#                                       ↑と同じ一覧画面を、
+#                                       `-uitestsExpandFabDirectly`
+#                                       (`MailScreenView.isFabExpanded`の
+#                                       初期値として読む「タップ不要の直接
+#                                       遷移」引数) で右下speed-dial FABが
+#                                       展開済みの状態のまま直接screenshot
+#                                       する — 「新規作成」「検索」2ボタンが
+#                                       「…」の上に縦に積まれ、「…」自体が
+#                                       「×」に変わっていることの確認用。
 #   list-2accounts                      Task #77: fake HTML アカウント +
 #                                       fake Gmail アカウントの2つを注入
 #                                       (`OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE`
@@ -334,6 +344,15 @@ case "$SCENARIO" in
   list)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
     default_out="list.png"
+    ;;
+  list-fab-expanded)
+    # Task #131: see this script's own header comment above — same fake
+    # message fixture as `list`, plus `-uitestsExpandFabDirectly`
+    # (`MailScreenView.isFabExpanded`'s tap-free direct-transition flag) so
+    # the speed-dial FAB screenshots already expanded.
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
+    launch_args+=("-uitestsExpandFabDirectly")
+    default_out="list-fab-expanded.png"
     ;;
   list-2accounts)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")

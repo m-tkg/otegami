@@ -3,9 +3,12 @@ import SwiftUI
 /// Task #78 (ユーザー要望「アクセントブルーにするのは compose だけじゃ
 /// なくて設定とか検索とか翻訳要約のフローティングも」): the circular
 /// "floating action button" chrome every screen-level floating button in
-/// this app uses — the unified inbox's compose/search buttons
-/// (`MailScreenView`), and the hamburger menu's settings button
-/// (`FolderListSheet`).
+/// this app uses — the unified inbox's speed-dial FAB and its expanded
+/// children (`MailScreenView`, Task #131 で「…」1個 + 展開時の「新規作成」/
+/// 「検索」2個に統合、旧`floatingComposeButton`/`floatingSearchButton`の
+/// 独立配置はもう無い). ハンバーガーメニューの設定ボタンは Task #126 で
+/// ヘッダ右上のツールバーアイテムへ移設し、このフローティングチロムはもう
+/// 使っていない (`FolderListSheet`).
 ///
 /// **History**: 実機フィードバック第4弾でまず`floatingComposeButton`
 /// だけがSpark参考画像に合わせてアクセント塗り+白アイコンになった
