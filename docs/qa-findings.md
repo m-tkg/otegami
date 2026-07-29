@@ -1710,3 +1710,115 @@ Gmail の IMAP モデル (二重ラベリング) では、1通の物理メール
   に「Otegami QA」の行が1つだけ表示され、2重表示になっていないことを
   目視確認済み (本文取得失敗の赤文字は fake アカウントに実 OAuth トークンが
   無いための無関係な表示)。
+
+## Task #166 (SEC-A): Claude Security スキャン所見 F1/F10 (添付ファイル名の
+パストラバーサル) と F17 (URL スキーム未検証) の修正
+
+`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md` (Claude
+Security によるリポジトリ全体スキャン) の指摘を検証のうえ修正した。
+
+### F1 (HIGH) / F10 (MEDIUM): 添付ステージングでのパストラバーサル
+
+**所見**: `ComposerView.stageAttachments(_:subdirectory:)`
+(`apps/Otegami/Sources/Features/Composer/ComposerView.swift`) が、受信
+メールの MIME `Content-Disposition`/`Content-Type`
+ファイル名 (`AttachmentRecord.filename` — 攻撃者が完全に制御できる) を
+サニタイズせず`appendingPathComponent`してから`Data.write(to:)`していた。
+転送 (`prefillForward`) や返信で受信添付を`pendingAttachments`に持ち込み、
+送信/下書き保存すると`stageAttachments`が呼ばれる経路。macOS ターゲット
+に`com.apple.security.app-sandbox` entitlement が無いため、
+`filename="../../../../Users/x/.zshrc"`のようなヘッダを持つメールを
+転送するだけで、書き込みがアプリ領域を脱出しユーザー権限のファイルを
+上書きしうる (F1)。同種の問題で、`../../otegami.sqlite`のような相対
+パスを使えばアプリ自身の DB も上書きできた (F10、macOS/iOS 共通)。
+コードを読んで実際に`appendingPathComponent`がサニタイズ無しで
+呼ばれていることを確認した — 3/3 lens verifiers confirmed の通り妥当な
+指摘と判断。
+
+**修正**:
+1. `packages/OtegamiKit/Sources/OtegamiCore/AttachmentFilename.swift`
+   (新規): 受信キャッシュ側に既にあった
+   `SyncEngine.AttachmentFetcher.sanitizeFilename`と同じロジック (`/`・
+   `\`・NUL を`_`に置換、先頭の`.`を除去、`maxLength`=255に切り詰め、
+   空になったら`"attachment"`にフォールバック) を`OtegamiCore`
+   (Linux 互換・純ロジック層、`make test`でカバーされる) に集約。
+   `AttachmentFetcher.sanitizeFilename`はこれへの薄い委譲に変更。
+   `ComposerView.stageAttachments`はこの共有関数でファイル名を
+   サニタイズしてから`appendingPathComponent`する。
+2. `packages/OtegamiKit/Sources/OtegamiCore/FileSystemPathContainment.swift`
+   (新規): サニタイズとは独立に、書き込み直前で解決後の URL が意図した
+   ステージングディレクトリの子孫であることを`standardizedFileURL`の
+   パス比較で検証する防御的チェック (`isDescendant(of:url:)`)。逸脱時は
+   `ComposerAttachmentStagingError`を投げて書き込まない。将来サニタイザ
+   側に抜けができても、この境界チェックが単独でフェイルクローズする
+   設計。
+3. トランスポート境界 (`MailCoreIMAPSession+Mapping.swift`の
+   `MIMEPartInfo.filename`)での正規化は、SEC-B が同時に編集中のため
+   このタスクでは触っていない — 受信側でも一度サニタイズしておくのが
+   より根本的な対策として望ましいが、Composer 側 + 共有サニタイザ +
+   境界チェックの組み合わせで実質的な防御は完結している。
+
+### F17 (LOW): プレーンテキストのリンクがスキーム検証なしにアプリ内ブラウザへ
+
+**所見**: `MessageView.swift`の`OpenURLAction`クロージャが、プレーン
+テキスト本文の`NSDataDetector`検出結果 (裸のメールアドレス →`mailto:`
+等) をスキーム判定せず`SFSafariViewController`(`SafariViewRepresentable`)
+に渡していた。同 init は http/https 以外だと例外を送出すると文書化
+されており、攻撃者が本文にメールアドレスを1行書くだけで「アプリ内
+ブラウザ」設定時に確実にクラッシュしうる状態だった。`HTMLMessageView
+.handleLinkTap`は既に http/https のみに絞っていたので、その基準に
+揃えるだけで直る不整合— 2/3 lens verifiers confirmed だが実際にコード
+を読んで再現条件を確認し、妥当と判断した。
+
+**修正**: `packages/OtegamiKit/Sources/OtegamiCore/InAppBrowserURLPolicy.swift`
+(新規) に判定を切り出し (`isSupported(_:)`、http/https のみ true)、
+`MessageView.swift`の`OpenURLAction`はこれが false のとき`.systemAction`
+にフォールバック (`mailto:`なら既定メールアプリが開く)。ロジックを
+`OtegamiCore`に出したのは、`apps/Otegami`に unit test target が無く
+(XCUITest のみ、シミュレータ必須) `make test`で検証できないため —
+`MessageSourceFilename`/`AttachmentFilename`と同じ理由。
+
+### テスト
+
+- `packages/OtegamiKit/Tests/OtegamiCoreTests/AttachmentFilenameTests.swift`
+  (新規、17件): 通常のファイル名、相対/絶対パストラバーサル、F10 の
+  具体的なエクスプロイト文字列 (`../../otegami.sqlite`)、RFC 2231
+  デコード後のペイロード、バックスラッシュ、NUL、先頭ドット、空/nil、
+  超長ファイル名、日本語ファイル名、カスタム fallback を検証。
+- `packages/OtegamiKit/Tests/OtegamiCoreTests/FileSystemPathContainmentTests.swift`
+  (新規、6件): 通常の子ファイル/ネストした子ファイルは descendant、
+  `..`によるエスケープ・無関係な絶対パス・「文字列としては前方一致する
+  だけの兄弟ディレクトリ」(`hasPrefix`単純比較の既知の落とし穴の回帰
+  ガード)・ディレクトリ自身は non-descendant であることを検証。
+- `packages/OtegamiKit/Tests/OtegamiCoreTests/InAppBrowserURLPolicyTests.swift`
+  (新規、7件): http/https (大文字小文字混在含む) は true、F17 の
+  エクスプロイトシナリオ (`mailto:`)・`tel:`・スキーム無し・任意の
+  カスタムスキームは false であることを検証。
+- `swift test` (packages/OtegamiKit を直接、`make`/rtk 経由のキャッシュ
+  された古いログに惑わされたため — 詳細は下記の教訓参照) で
+  353 tests (OtegamiCoreTests) を含む全スイート green (exit 0、
+  `recorded an issue`/`✘`一切なし) を確認。`make mac`/`make ios`
+  ともに`** BUILD SUCCEEDED **`。
+
+### 教訓: `rtk`/`make test`のログがビルド内容と食い違うことがある
+
+このタスクの作業中、`make test`の出力 (rtk 経由) が実際には既に修正
+済みのはずのテスト失敗を報告し続けるという事象があった。同じ内容の
+`swift test --filter AttachmentFilenameTests`を`packages/OtegamiKit`
+ディレクトリで直接実行すると即座に green になった。原因は特定していない
+(rtk 側のコマンド出力キャッシュの疑いがあるが未確認) が、**`make test`
+の出力を鵜呑みにせず、疑わしい結果が出たら`cd packages/OtegamiKit &&
+swift test`を直接実行して確認するとよい** — 特に複数エージェントが
+同一ツリーを共有し、同じコマンドを短時間に繰り返し叩く運用では起こり
+やすいと思われる。
+
+### 未対応として残した点 (今回のスコープ外)
+
+- **F2/F3 (otegami-relay の SSRF/CRLF インジェクション、HIGH/MEDIUM)**:
+  `server/otegami-relay/`配下 — SEC-D が担当する別コンポーネント。この
+  タスクでは対応していない。
+- **受信トランスポート境界でのファイル名正規化**
+  (`MailCoreIMAPSession+Mapping.swift`の`MIMEPartInfo.filename`):
+  Composer 側の対策で実質的に防御は完結しているが、より根本的には
+  ここで一度サニタイズしておくのが望ましい。SEC-B が同時に編集中の
+  ファイルのため今回は触っていない — 将来の改修候補として記録する。

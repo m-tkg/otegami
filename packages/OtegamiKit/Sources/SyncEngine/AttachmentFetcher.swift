@@ -101,11 +101,13 @@ public actor AttachmentFetcher {
     /// Strips path separators and leading dots from an (untrusted, IMAP-
     /// server-supplied) filename so it can't escape `storageURL`'s intended
     /// directory (`"../../etc/passwd"`) or be hidden (a leading `.`).
+    ///
+    /// Delegates to `OtegamiCore.AttachmentFilename.sanitize` — Task #166
+    /// (SEC-A) pulled the logic there so `ComposerView.stageAttachments`
+    /// (which found the same untrusted filename reaching `Data.write(to:)`
+    /// unsanitized on the outbox/draft-staging path — see F1/F10 in
+    /// `docs/qa-findings.md`) could share it instead of duplicating it.
     static func sanitizeFilename(_ filename: String) -> String {
-        let stripped = filename
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "\\", with: "_")
-        let trimmed = stripped.drop { $0 == "." }
-        return trimmed.isEmpty ? "attachment" : String(trimmed)
+        AttachmentFilename.sanitize(filename)
     }
 }

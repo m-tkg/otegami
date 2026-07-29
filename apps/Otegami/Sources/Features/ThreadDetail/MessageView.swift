@@ -498,6 +498,23 @@ struct MessageView: View {
         // needs its own `else` branch.
         .environment(\.openURL, OpenURLAction { url in
             guard openInAppBrowser else { return .systemAction }
+            // Task #166 (SEC-A, F17): `url` here can be anything
+            // `NSDataDetector` linkified out of an untrusted plain-text
+            // body — not just http(s) links, but e.g. a bare email
+            // address turned into a `mailto:` URL. `SFSafariViewController`
+            // (`SafariViewRepresentable`) is documented to require http/
+            // https and throws on `init` otherwise, so passing it a
+            // `mailto:`/anything-else URL was a guaranteed crash on tap —
+            // a single attacker-controlled body line away. Mirror
+            // `HTMLMessageView.handleLinkTap`'s existing http/https-only
+            // gate: anything else falls through to `.systemAction`, which
+            // hands it to the system (e.g. `mailto:` opens the user's
+            // default mail composer instead of a browser sheet). See
+            // `InAppBrowserURLPolicy`'s doc comment for why the check
+            // itself lives in `OtegamiCore` instead of inline here.
+            guard InAppBrowserURLPolicy.isSupported(url) else {
+                return .systemAction
+            }
             presentedSafariURL = IdentifiableURL(url: url)
             return .handled
         })
