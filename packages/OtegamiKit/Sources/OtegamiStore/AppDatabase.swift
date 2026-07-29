@@ -904,6 +904,16 @@ extension AppDatabase {
             }
         }
 
+        // v34 (Task #162, 実機フィードバック「署名が本文に混ざって編集しづらい」):
+        // `DraftMessageRecord.signatureId`'s doc comment has the full
+        // picture — `NULL` for every existing row (no backfill), non-`NULL`
+        // only for a row `ComposerView.saveDraft()` writes from here on.
+        migrator.registerMigration("v34") { db in
+            try db.alter(table: "draftMessage") { t in
+                t.add(column: "signatureId", .integer)
+            }
+        }
+
         return migrator
     }
 }

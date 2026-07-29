@@ -64,6 +64,22 @@ public struct DraftMessageRecord: Codable, Equatable, Sendable, FetchableRecord,
     /// now carries formatting there too, not just plain text.
     public var htmlBody: String?
 
+    /// Task #162 (実機フィードバック「署名が本文に混ざって編集しづらい」):
+    /// the `SignatureTemplateRecord.id` selected in the Composer when this
+    /// draft was saved, or `nil` for "なし" — kept entirely separate from
+    /// `plainTextBody`/`htmlBody`, which never contain the signature text
+    /// (only `ComposerView.send()` combines them, transiently, for the
+    /// actual `OutboxMessageRecord` — see `RichTextDocument
+    /// .appendingSignature(_:)`'s doc comment). `nil` also for a row this
+    /// schema predates (v34 migration, no backfill) — reopening such a
+    /// draft just starts with no signature selected, same as any other
+    /// composition; a draft saved *before* this task, whose signature was
+    /// still literal text inside `plainTextBody`/`htmlBody` back then,
+    /// needs no migration either — it simply keeps reading as plain
+    /// editable body text going forward (plan: "既に署名が本文に挿入されて
+    /// いる旧下書きはそのまま").
+    public var signatureId: Int64?
+
     /// Same meaning as `OutboxMessageRecord.inReplyToMessageId`/`.references`
     /// — preserved so resuming a saved reply draft still sends with the
     /// right threading headers, instead of silently degrading into a
@@ -96,6 +112,7 @@ public struct DraftMessageRecord: Codable, Equatable, Sendable, FetchableRecord,
         subject: String,
         plainTextBody: String,
         htmlBody: String? = nil,
+        signatureId: Int64? = nil,
         inReplyToMessageId: String? = nil,
         references: [String] = [],
         serverMailboxId: Int64? = nil,
@@ -111,6 +128,7 @@ public struct DraftMessageRecord: Codable, Equatable, Sendable, FetchableRecord,
         self.subject = subject
         self.plainTextBody = plainTextBody
         self.htmlBody = htmlBody
+        self.signatureId = signatureId
         self.inReplyToMessageId = inReplyToMessageId
         self.references = references
         self.serverMailboxId = serverMailboxId
