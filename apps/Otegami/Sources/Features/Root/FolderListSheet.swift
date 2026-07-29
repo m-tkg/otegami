@@ -148,6 +148,12 @@ struct FolderListSheet: View {
                 }
             }
             .accessibilityIdentifier("folderSheet.list")
+            // 実機フィードバック第3弾 (2026-07-29「まだ『受信トレイ』とか
+            // 『フラグ付き』とかの高さが高い」): 行高そのものは 6257a0d で
+            // 圧縮済み — 残っていた高さの正体はセクション見出し行の上下に
+            // つく List 既定のセクション間余白。`.listSectionSpacing` で
+            // セクション間を最小に詰める。
+            .listSectionSpacing(4)
             // `menuScrollTarget` の doc comment 参照 — 展開直後に見出しを
             // 上端へスクロール。`.onChange` は展開行の insert が同じ更新
             // サイクルで確定した後に発火するため、`scrollTo` 時点で行の
@@ -947,7 +953,12 @@ private struct CategorySectionHeader: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            // 実機フィードバック第3弾 (2026-07-29「たまにシェブロンを
+            // タップしても反応しない」): 同じ見出し行に2つの `.plain`
+            // ボタンが並ぶと List のタップ判定が競合して片方が落ちる
+            // ことがある既知の SwiftUI 挙動 — 複数ボタン行の定石どおり
+            // `.borderless` に変更 (シェブロン側も同様)。
+            .buttonStyle(.borderless)
             // Task #126, 2: `AccountSectionHeader`と同じ理由 —
             // `Section`の`header:`なので`.listRowInsets`は効かず、
             // `.frame(minHeight:)`だけタップターゲットの下限保証として
@@ -983,7 +994,7 @@ private struct CategoryDisclosureChevron: View {
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
         .accessibilityIdentifier("folderSheet.category.\(role.rawValue).chevron")
         .accessibilityLabel(Text(role.categoryDisplayName))
         .accessibilityAddTraits(isCollapsed ? [] : .isSelected)
