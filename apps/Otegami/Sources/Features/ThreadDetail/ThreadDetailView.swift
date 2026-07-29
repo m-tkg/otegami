@@ -522,8 +522,26 @@ struct ThreadDetailView: View {
     /// `String(localized:)` to still pick up its String Catalog entry
     /// rather than rendering the raw Japanese unconditionally regardless of
     /// the device's language.
+    ///
+    /// 実機フィードバック (2026-07-30):「スレッド」の後ろに件数を出してほしい
+    /// — "スレッド (5)" 形式。`messages.count`は`ThreadQuery
+    /// .messagesObservation(threadId:)`(= `ThreadQuery.messages(threadId:
+    /// db:)`)の結果で、これは既に`ThreadQuery.deduplicate(_:db:)`を通した
+    /// 後の件数 — 一覧の通数バッジ (Task #136、`ThreadRowView`が読む
+    /// `summary.thread.messageCount`) も`ThreadAssigner
+    /// .recomputeAggregates`内で同じ`ThreadQuery.deduplicate`を通して
+    /// 計算しているので (Gmail INBOX+All Mail の二重カウントを同じ規則で
+    /// 除外)、一覧のバッジと詳細のヘッダで数が食い違うことはない。新しい
+    /// クエリを足さず、この画面が既にライブ観測している`messages`をそのまま
+    /// 数えるだけなので、スレッドへメッセージが増減すれば自動で追従する。
+    ///
+    /// 1件のスレッドでは件数を出さない — 一覧側の通数バッジ自体
+    /// (`ThreadRowView`の`summary.thread.messageCount > 1`) が1件のときは
+    /// 表示しない既存ルールと揃え、「スレッド (1)」という冗長な表記を避ける。
     private var navigationTitleText: String {
-        isFlatModeEntry ? String(localized: "メール") : String(localized: "スレッド")
+        guard !isFlatModeEntry else { return String(localized: "メール") }
+        guard messages.count > 1 else { return String(localized: "スレッド") }
+        return String(localized: "スレッド (\(messages.count))")
     }
 
     /// 新画面構成 (3) → 実機フィードバック第2弾 (E): "返信"/"転送"/"検索"/「情報」
