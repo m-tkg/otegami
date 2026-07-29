@@ -404,6 +404,99 @@ struct QuoteStripperHTMLTests {
         let html = "<blockquote type=\"cite\"><div>Original message body only, nothing new here.</div></blockquote>"
         #expect(QuoteStripper.separatingQuotedHTML(fromHTML: html) == nil)
     }
+
+    // MARK: - Combined plain+HTML fallback (Task #138)
+
+    @Test("separatingQuotedText(plainText:html:) prefers a successful plain-text split over html")
+    func combinedTextPrefersPlainWhenBothSucceed() throws {
+        let plainText = """
+        \(newText)
+
+        On Mon, Jul 27, 2026 at 10:00 AM John Doe <john@example.com> wrote:
+        > Original line one
+        """
+        let html = """
+        <div>Different new text entirely, also long enough to pass the threshold check here.</div>
+        <blockquote type="cite"><div>Original message body that should be dropped entirely.</div></blockquote>
+        """
+        let separated = try #require(QuoteStripper.separatingQuotedText(plainText: plainText, html: html, isReply: false))
+        #expect(separated.detectedMarker == "onWrote")
+        #expect(separated.newText.contains(newText))
+    }
+
+    @Test("separatingQuotedText(plainText:html:) falls back to html when plain has no marker (Task #138 real-device repro shape)")
+    func combinedTextFallsBackToHTMLWhenPlainHasNoMarker() throws {
+        // Approximates a cached `plainText` corrupted by mailcore's own
+        // `plainTextBodyRendering()` (Task #134's doc comment) — no
+        // recognizable quote marker left, even though the message really is
+        // a reply. The independently-cached `html` field still splits fine.
+        let corruptedPlainText = "\(newText) Some run-on text with no recognizable quote marker in it at all."
+        let html = """
+        <div>\(newText)</div>
+        <blockquote type="cite"><div>Original message body that should be dropped entirely.</div></blockquote>
+        """
+        let separated = try #require(QuoteStripper.separatingQuotedText(plainText: corruptedPlainText, html: html, isReply: false))
+        #expect(separated.newText == newText)
+        #expect(separated.quotedText == "Original message body that should be dropped entirely.")
+        #expect(separated.detectedMarker != nil)
+    }
+
+    @Test("separatingQuotedText(plainText:html:) returns the marker-less plain result when both fail")
+    func combinedTextReturnsPlainWhenBothFail() {
+        let plainText = "\(newText) No markers anywhere in this text."
+        let html = "<div>\(newText) No markers here either.</div>"
+        let separated = QuoteStripper.separatingQuotedText(plainText: plainText, html: html, isReply: false)
+        #expect(separated?.detectedMarker == nil)
+        #expect(separated?.newText == plainText)
+    }
+
+    @Test("separatingQuotedText(plainText:html:) returns nil when neither input is given")
+    func combinedTextReturnsNilWhenNoInput() {
+        #expect(QuoteStripper.separatingQuotedText(plainText: nil, html: nil, isReply: false) == nil)
+    }
+
+    @Test("separatingQuotedHTML(html:plainText:) prefers a successful html split over plain (avoids losing tag-preserving truncation)")
+    func combinedHTMLPrefersHTMLWhenBothSucceed() throws {
+        let plainText = """
+        \(newText)
+
+        On Mon, Jul 27, 2026 at 10:00 AM John Doe <john@example.com> wrote:
+        > Original line one
+        """
+        let html = """
+        <div>\(newText)</div>
+        <blockquote type="cite"><div>Original message body that should be dropped entirely.</div></blockquote>
+        """
+        let separated = try #require(QuoteStripper.separatingQuotedHTML(html: html, plainText: plainText, isReply: false))
+        #expect(separated.detectedMarker == "blockquote")
+        #expect(separated.newHTML.contains("<div>\(newText)</div>"))
+    }
+
+    @Test("separatingQuotedHTML(html:plainText:) falls back to a plain-derived quotedHTML when html has no marker (Task #138)")
+    func combinedHTMLFallsBackToPlainWhenHTMLHasNoMarker() throws {
+        // The html field is just mailcore's plain-text rendering wrapped in
+        // a div — no blockquote/gmail_quote-style wrapper at all — while the
+        // plain text (uncorrupted, unlike the summary repro above) does
+        // carry a recognizable "on ... wrote:" marker.
+        let html = "<div>\(newText) Some run-on text with no recognizable quote wrapper in it at all.</div>"
+        let plainText = """
+        \(newText)
+
+        On Mon, Jul 27, 2026 at 10:00 AM John Doe <john@example.com> wrote:
+        > Original line one
+        """
+        let separated = try #require(QuoteStripper.separatingQuotedHTML(html: html, plainText: plainText, isReply: false))
+        #expect(separated.newHTML == html)
+        #expect(separated.quotedHTML == "On Mon, Jul 27, 2026 at 10:00 AM John Doe <john@example.com> wrote:\n> Original line one")
+        #expect(separated.detectedMarker == "onWrote")
+    }
+
+    @Test("separatingQuotedHTML(html:plainText:) returns nil when neither html nor plain finds a marker")
+    func combinedHTMLReturnsNilWhenBothFail() {
+        let html = "<div>\(newText) No markers here either.</div>"
+        let plainText = "\(newText) No markers anywhere in this text."
+        #expect(QuoteStripper.separatingQuotedHTML(html: html, plainText: plainText, isReply: false) == nil)
+    }
 }
 
 /// The exact trailing whitespace/newline count left behind at a truncation

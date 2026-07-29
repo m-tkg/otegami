@@ -175,6 +175,15 @@ struct MessageView: View {
     /// question any follow-up investigation needs answered from Console.
     private static let summaryInputLogger = Logger(subsystem: "com.mtkg.otegami", category: "SummaryInput")
 
+    /// Task #138 追加報告 (実機「要約ボタンが押せない時がある」):
+    /// `translationGateLogger`と同じ理由の`showsSummaryButton`専用ログ — 元の
+    /// `aiState.showsSummaryButton = bodyRecord != nil && aiFeaturesEnabled`
+    /// には診断ログが一切無く、「押せない」報告から`bodyRecord`が`nil`のまま
+    /// なのか`aiFeaturesEnabled`が`false`なのかを切り分ける手段が無かった。
+    /// `log stream --predicate 'category == "SummaryGate"'`で
+    /// `syncAIFeaturesState()`ごとの状態を追える。
+    private static let summaryGateLogger = Logger(subsystem: "com.mtkg.otegami", category: "SummaryGate")
+
     @AppStorage(TranslationSettingsStore.autoTranslateEnglishKey) private var autoTranslateEnglish = TranslationSettingsStore.defaultAutoTranslateEnglish
     /// I「設定画面の再構成」→「メールビューア」の「AI 機能の on/off (翻訳・要約を
     /// まとめて)」— see `AIFeaturesSettingsStore`'s doc comment. Master
@@ -216,37 +225,25 @@ struct MessageView: View {
     /// translate right now" rather than a crash.
     @State private var htmlTranslationController: HTMLTranslationController?
 
-    /// A message `SyncEngine.BodyFetcher` tagged English gets a bar (plan:
-    /// "英文メールのみ翻訳バーを出す"). `detectedLanguage == nil` — a
-    /// message whose language couldn't be confidently determined
-    /// (`MessageLanguageDetector.detect`'s doc comment: too short/
-    /// ambiguous text) *or*, in practice on real devices, a message whose
-    /// body was fetched by a build that predates this field — also counts
-    /// as "maybe English" here rather than "hide the bar": real-device
-    /// report (design-phase-3 follow-up) was that the translation button
-    /// never appeared even for genuinely English mail, traced to exactly
-    /// this — a strict `== "en"` silently hid the button for every message
-    /// whose language was merely *unknown*, which turned out to be most of
-    /// a real inbox's already-fetched history. Only a message confidently
-    /// detected as something *other* than English (`"ja"`, `"fr"`, ...)
-    /// hides the bar — `load()`'s `backfillDetectedLanguageIfNeeded` also
-    /// opportunistically fills in the unknown case from already-downloaded
-    /// body text so it stops being "unknown" the next time this message is
-    /// opened.
-    private var isEnglishMessage: Bool {
-        message?.detectedLanguage == "en" || message?.detectedLanguage == nil
-    }
-
-    /// 表示・操作改善バッチ「翻訳ボタン: メールの言語 ≠ アプリの表示言語の
-    /// 場合のみ表示」— この翻訳機能自体が英語→日本語の一方向にしか対応して
-    /// いない (`requestTranslation`が常に`.english`→`.japanese`) ため、
-    /// 「メールの言語」は事実上 `isEnglishMessage` のまま、「アプリの表示
-    /// 言語」を `LocalizationSettingsStore.effectiveLanguageCode` と比較する
-    /// 形で一般化した: アプリの表示言語が英語なら (メールも自分も英語なので)
-    /// 翻訳の必要がなく、バー自体を出さない。日本語 (またはシステムが日本語)
-    /// の場合は従来どおり出す。
+    /// Task #138 (実機報告: 言語判定に依らず翻訳ボタンを常時有効にしてほしい
+    /// — ユーザー指示による仕様変更): 以前はここで`message?.detectedLanguage`
+    /// (「英語メールらしいか」)と`LocalizationSettingsStore
+    /// .effectiveLanguageCode`(「アプリの表示言語」)の両方を条件にしていた
+    /// (`isEnglishMessage`という別のプロパティも存在した)が、design-phase-3
+    /// 以降 #90/#128 と繰り返し「英語メールなのに翻訳ボタンが出ない/押せ
+    /// ない」実機報告が続いた根本原因が「言語判定そのものの信頼性」だった
+    /// ため、表示条件からその判定を完全に取り除いた。今は
+    /// `aiFeaturesEnabled`(I「AI 機能の on/off」)と本文が確定していること
+    /// (`syncAIFeaturesState()`の`hasBody`)だけがゲート — 言語に関係なく
+    /// 常に押せる。実際の翻訳自体は英語→日本語の一方向専用のまま
+    /// (`requestTranslation`)なので、日本語メールで押しても実質無意味な
+    /// 結果にはなるが、「ボタンが出ない/押せない」という誤診断可能性を
+    /// 完全に潰すことを優先した。自動翻訳の起動条件
+    /// (`kickoffTranslationIfNeeded`の「確信 en のみ」ガード)は誤爆防止と
+    /// して意図的に維持している — 変更されるのは*ボタンの表示/有効*条件
+    /// だけ。
     private var shouldShowTranslationBar: Bool {
-        aiFeaturesEnabled && isEnglishMessage && LocalizationSettingsStore.effectiveLanguageCode != "en"
+        aiFeaturesEnabled
     }
 
     /// 1i「HTMLメールもレイアウトを保持したまま翻訳」— `content`'s HTML branch
@@ -448,8 +445,8 @@ struct MessageView: View {
     /// - 要約: shown whenever I「AI 機能の on/off」(`aiFeaturesEnabled`) is
     ///   on, language-independent (a summary is useful even for a Japanese
     ///   mail).
-    /// - 翻訳: `shouldShowTranslationBar` (English message, app not already
-    ///   displayed in English, AI features on).
+    /// - 翻訳: `shouldShowTranslationBar` (Task #138 以降、言語判定なしで
+    ///   AI 機能が on であれば常に表示 — そのプロパティのdoc comment参照)。
     ///
     /// Called from `load()` once `message` is known (so the two closures
     /// below always have a real message to act on) and from `body`'s
@@ -478,7 +475,26 @@ struct MessageView: View {
         // split second if the AI-features setting were toggled while a body
         // fetch was still in flight (`message` already set, `bodyRecord`
         // not yet).
-        aiState.showsSummaryButton = bodyRecord != nil && aiFeaturesEnabled
+        // Task #138 追加報告 (実機「要約ボタンが押せない時がある」): 元は
+        // `bodyRecord != nil` だけがゲートだった — 本文取得が失敗した
+        // (`load()`の`catch`分岐、`bodyRecord`は`nil`のまま`errorMessage`が
+        // 立つ)場合、このメソッドはその後二度と呼ばれず、ボタンは永久に
+        // 非表示のまま固定されていた(このdoc comment冒頭のTask #64の説明が
+        // まさにその構造そのもの)。`errorMessage != nil`も"settled"(読み込み
+        // 試行が完了した)状態として扱うことで、取得失敗後もボタン自体は
+        // 出るようにし、タップ時の再試行に賭けられるようにした
+        // (`requestSummary(message:)`の`fetchBodyForSummaryRetryIfNeeded`
+        // 参照)。翻訳ボタンの言語判定撤去 (`shouldShowTranslationBar`の
+        // doc comment) と同じ「ボタンを隠して誤診断させるより、押せる
+        // ようにして失敗時はその場でエラーを見せる」方針。
+        let hasSettledBodyState = bodyRecord != nil || errorMessage != nil
+        aiState.showsSummaryButton = hasSettledBodyState && aiFeaturesEnabled
+        Self.summaryGateLogger.notice("""
+        syncAIFeaturesState: messageId=\(messageId, privacy: .public) \
+        hasBody=\(bodyRecord != nil, privacy: .public) hasError=\(errorMessage != nil, privacy: .public) \
+        aiFeaturesEnabled=\(aiFeaturesEnabled, privacy: .public) \
+        showsSummaryButton=\(aiState.showsSummaryButton, privacy: .public)
+        """)
         // Task #64 (根治の一環、「ボタンが出ている＝翻訳可能を保証」) had this
         // also require `htmlTranslationController != nil` for an HTML
         // message shown as HTML — reasoning that showing the button before
@@ -699,15 +715,26 @@ struct MessageView: View {
     /// Task #133 (実機報告「引用折りたたみがHTMLメールで効かない」— #123の
     /// 折りたたみはプレーンテキスト表示限定だったが、実際のGmailはほぼ全部
     /// HTML付きでHTML表示が優先されるため実機で機能しなかった):
-    /// `content`のHTML分岐版 — `QuoteStripper.separatingQuotedHTML(fromHTML:)`
-    /// で生HTMLのまま new/quoted に分割する。`plainTextQuoteHistorySplit`と
-    /// 違い`isHTMLMessage`を要求する側(こちらが真、あちらが偽)なので相互排他。
-    /// `nil`は「分割できなかった (マーカーなし、または新規部分が短すぎる
-    /// フォールバック)」— その場合`content`は従来どおり`bodyRecord.html`
-    /// 全体を`HTMLMessageView`にそのまま渡す(挙動不変)。
+    /// `content`のHTML分岐版 — `bodyRecord.html`で新/旧 new/quoted に分割
+    /// する。`plainTextQuoteHistorySplit`と違い`isHTMLMessage`を要求する側
+    /// (こちらが真、あちらが偽)なので相互排他。`nil`は「分割できなかった
+    /// (マーカーなし、または新規部分が短すぎるフォールバック)」— その場合
+    /// `content`は従来どおり`bodyRecord.html`全体を`HTMLMessageView`に
+    /// そのまま渡す(挙動不変)。
+    ///
+    /// Task #138 (キャッシュ済み本文の救済、`sourceTextForSummary()`と
+    /// 同じ動機): `QuoteStripper.separatingQuotedHTML(html:plainText:
+    /// isReply:)`を使う — `html`の構造的マーカー(`blockquote`/
+    /// `gmail_quote`など)を先に試し、見つからなければ`bodyRecord.plainText`
+    /// のマーカーへフォールバックする。`sourceTextForSummary()`の
+    /// 「plainを先に」とは*あえて順序を逆*にしている — その関数の doc
+    /// comment(`QuoteStripper.separatingQuotedHTML(html:plainText:
+    /// isReply:)`側)参照: `html`が健全な(#134以降に取得された)ふつうの
+    /// メッセージでタグ保持の`newHTML`短縮を毎回捨てる回帰を避けるため。
     private var htmlQuoteHistorySplit: QuoteStripper.SeparatedHTML? {
         guard isHTMLMessage, let html = bodyRecord?.html, !html.isEmpty else { return nil }
-        return QuoteStripper.separatingQuotedHTML(fromHTML: html)
+        let isReply = message?.inReplyTo != nil
+        return QuoteStripper.separatingQuotedHTML(html: html, plainText: bodyRecord?.plainText, isReply: isReply)
     }
 
     /// `htmlQuoteHistorySplit`が見つかった時に`QuoteHistorySectionView`へ
@@ -1141,13 +1168,15 @@ struct MessageView: View {
             attachments = (try? await fetchAttachmentRecords(messageId: messageId)) ?? []
             // design-phase-3: `SyncEngine.BodyFetcher` also sets
             // `detectedLanguage` as part of this same fetch — `loadedMessage`
-            // predates it (read *before* the fetch even started), so the
-            // translation bar's `isEnglishMessage` check needs the freshly
-            // re-read row, not the stale one, or a message opened for the
-            // first time (the common case: body not fetched yet) would
-            // never show a translation bar on its first open. Caught by a
-            // real XCUITest run, not by inspection — `docs/verify.md`'s
-            // translation section.
+            // predates it (read *before* the fetch even started). Task #138
+            // dropped the translation *bar*'s own dependency on this field
+            // (`shouldShowTranslationBar`'s doc comment), but
+            // `kickoffTranslationIfNeeded(message:)` below still gates
+            // auto-translate on a *confirmed* `detectedLanguage == "en"`, so
+            // the freshly re-read row (not the stale `loadedMessage`) still
+            // matters here — a message opened for the first time (the
+            // common case: body not fetched yet) would otherwise never
+            // auto-translate on its first open.
             let refreshed = (try? await environment.database.dbWriter.read { db in
                 try MessageRecord.fetchOne(db, key: messageId)
             }) ?? loadedMessage
@@ -1457,13 +1486,15 @@ struct MessageView: View {
     /// off or a previous attempt failed) goes through the same
     /// `requestTranslation(message:)` this calls into.
     private func kickoffTranslationIfNeeded(message: MessageRecord) {
-        // design-phase-3: deliberately *stricter* than `isEnglishMessage`
-        // (which now also shows the bar for `nil`/undetectable — see its
+        // design-phase-3: deliberately *stricter* than `shouldShowTranslationBar`
+        // (Task #138: that gate dropped its language check entirely — the
+        // bar now shows for every message, language-independent — see its
         // doc comment). Auto-translating on a mere "maybe English, couldn't
-        // tell" guess would silently run the on-device model against
-        // possibly-non-English text with no way for the user to have opted
-        // out first; showing the bar and letting them tap "翻訳" themselves
-        // for that ambiguous case is the safer default, while a *confirmed*
+        // tell" guess (or a confirmed-non-English message) would silently
+        // run the on-device model against possibly-non-English text with no
+        // way for the user to have opted out first; showing the bar and
+        // letting them tap "翻訳" themselves for that ambiguous/non-English
+        // case is the safer default, while a *confirmed*
         // English message still auto-translates exactly as before.
         guard aiFeaturesEnabled else { return }
         guard message.detectedLanguage == "en" else { return }
@@ -1628,23 +1659,45 @@ struct MessageView: View {
     /// 誤検知しうるため、ヘッダで裏付けが取れた時だけ使う。
     private func sourceTextForSummary() -> String? {
         guard let bodyRecord else { return nil }
+        let plainText = bodyRecord.plainText
+        let html = bodyRecord.html
+        guard plainText != nil || html != nil else { return nil }
         let isReply = message?.inReplyTo != nil
         // Task #134: 実機でのみ`bodyRecord.plainText`がmailcore2の
         // `plainTextBodyRendering()`(HTML優先タグ剥がし)経由になり、Mac
         // 上の再現とは異なる形状になっていた疑いがある(#132の実機不再現の
-        // 原因調査)— どちらの経路を辿ったかを`sourceKind`としてログへ残す。
-        let sourceKind: String
-        let separated: QuoteStripper.SeparatedText?
-        if let plainText = bodyRecord.plainText, !plainText.isEmpty {
-            separated = QuoteStripper.separatingQuotedText(fromPlainText: plainText, isReply: isReply)
-            sourceKind = "plain"
-        } else if let html = bodyRecord.html, !html.isEmpty {
-            separated = QuoteStripper.separatingQuotedText(fromHTML: html)
-            sourceKind = "html"
-        } else {
-            separated = nil
-            sourceKind = "none"
+        // 原因調査)。
+        //
+        // Task #138 (キャッシュ済み本文の救済): 実機で`source=plain
+        // quotedTextLength=0 detectedMarker=none`(分離できず全文がそのまま
+        // モデルへ渡る)ケースが確認された — #134より前にキャッシュされた
+        // 行の`plainText`は上記の合成レンダリング由来で、`plainText
+        // QuoteMarkerPatterns`と確実には一致しない形をしていることがある。
+        // `plainText`をまず試し、マーカーが見つからない時だけ(独立に
+        // キャッシュされ、この問題の影響を受けない)`html`でも試す —
+        // どちらが実際に採用されたかを`sourceKind`としてログへ残す
+        // (`QuoteStripper.separatingQuotedText(plainText:html:isReply:)`の
+        // doc comment参照。ロジックはそちらと同じだが、ログ用に採用元を
+        // ここで直接追う)。
+        let plainSplit: QuoteStripper.SeparatedText? = plainText.flatMap { text in
+            guard !text.isEmpty else { return nil }
+            return QuoteStripper.separatingQuotedText(fromPlainText: text, isReply: isReply)
         }
+        let separated: QuoteStripper.SeparatedText?
+        let sourceKind: String
+        if let plainSplit, plainSplit.detectedMarker != nil {
+            separated = plainSplit
+            sourceKind = "plain"
+        } else if let html, !html.isEmpty, case let htmlSplit = QuoteStripper.separatingQuotedText(fromHTML: html), htmlSplit.detectedMarker != nil {
+            separated = htmlSplit
+            sourceKind = plainSplit == nil ? "html" : "html-fallback"
+        } else {
+            separated = plainSplit ?? (html.flatMap { markup in markup.isEmpty ? nil : QuoteStripper.separatingQuotedText(fromHTML: markup) })
+            sourceKind = plainSplit != nil ? "plain" : (html != nil ? "html" : "none")
+        }
+        // `plainText`/`html`が両方とも非`nil`だが空文字列だった場合だけ、
+        // ここで`separated`が`nil`になりうる(上のガードは`nil`か否かしか
+        // 見ていない)。
         guard let separated else { return nil }
         // Task #134: #105/#122/#128で3度踏んだ罠(`.debug`/`.info`は`log
         // collect`のアーカイブに残らない — `docs/verify.md`参照)を避け、
@@ -1674,11 +1727,23 @@ struct MessageView: View {
     /// 安全な長さに保つ。
     private func requestSummary(message: MessageRecord) {
         guard summaryTask == nil else { return }
-        guard let sourceText = sourceTextForSummary() else { return }
         aiState.summaryState = .summarizing
         let translator = environment.translationService
         let targetLanguage: TranslationLanguage = LocalizationSettingsStore.effectiveLanguageCode == "en" ? .english : .japanese
         summaryTask = Task {
+            // Task #138 追加報告: `showsSummaryButton`は本文取得が失敗した
+            // 状態(`bodyRecord == nil`, `errorMessage != nil`)でも出る
+            // (`syncAIFeaturesState()`のdoc comment参照) — その状態でタップ
+            // された時は、要約を諦める前にもう一度だけ本文取得を試みる。
+            if bodyRecord == nil {
+                await retryBodyFetchForSummary(message: message)
+            }
+            guard !Task.isCancelled else { return }
+            guard let sourceText = sourceTextForSummary() else {
+                aiState.summaryState = .failed("本文を取得できませんでした。しばらくしてからもう一度お試しください。")
+                summaryTask = nil
+                return
+            }
             do {
                 let result = try await translator.summarizeLongText(sourceText, targetLanguage: targetLanguage)
                 guard !Task.isCancelled else { return }
@@ -1696,6 +1761,28 @@ struct MessageView: View {
                 }
             }
             summaryTask = nil
+        }
+    }
+
+    /// `requestSummary(message:)`が`bodyRecord == nil`(取得失敗済み、または
+    /// まだ一度も取得していない)のままタップされた時の一度きりの再試行 —
+    /// `load()`の`fetchBodyOverNetwork`失敗分岐と同じ経路を辿るが、成功時に
+    /// `bodyRecord`/`errorMessage`/`aiState`(`syncAIFeaturesState()`経由で
+    /// `showsTranslationButton`も)をこの場で更新する点が違う: `load()`の
+    /// 完了を待たず、要約ボタンをタップした瞬間に即座に反映したいため。
+    /// 失敗時は何もしない — 呼び出し元の`guard let sourceText =
+    /// sourceTextForSummary()`が`nil`のまま拾って`.failed`にする。
+    private func retryBodyFetchForSummary(message: MessageRecord) async {
+        do {
+            try await fetchBodyOverNetwork(message: message)
+            guard let fetched = try await fetchBodyRecord(messageId: messageId) else { return }
+            bodyRecord = fetched
+            errorMessage = nil
+            markAsReadIfNeeded()
+            syncAIFeaturesState()
+        } catch {
+            // ベストエフォート — 失敗はそのまま`sourceTextForSummary() ==
+            // nil`として上の呼び出し元に伝わる。
         }
     }
 }

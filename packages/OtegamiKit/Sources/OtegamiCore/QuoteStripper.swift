@@ -103,6 +103,47 @@ public enum QuoteStripper {
         )
     }
 
+    // MARK: - Combined plain+HTML fallback (Task #138)
+
+    /// Task #138 (キャッシュ済み本文の救済): `plainText`を先に試し、マーカーが
+    /// 見つかればその結果をそのまま返す (`separatingQuotedText(fromPlainText:)`
+    /// を直接呼ぶのと同じ)。`plainText`側でマーカーが見つからなかった時だけ、
+    /// `html`があればそちらでも試し (`separatingQuotedText(fromHTML:)`)、
+    /// 見つかった方を採用する。
+    ///
+    /// 実機報告 (`SummaryInput`ログ: `source=plain, quotedTextLength=0,
+    /// detectedMarker=none`): `MessageBodyRecord.plainText`が Task #134 より
+    /// 前にキャッシュされた行は、そのメッセージが本当に持つ`text/plain`
+    /// パートの生文字列ではなく mailcore2 の`plainTextBodyRendering()`
+    /// (HTML優先タグ剥がし)由来になっている場合があり、その合成結果の形状
+    /// は`plainTextQuoteMarkerPatterns`と確実には一致しない (#134のdoc
+    /// comment参照)。一方`MessageBodyRecord.html`は常に
+    /// `MCOMessageParser.htmlBodyRendering()`由来で、この問題の影響を
+    /// 受けない — plain側が失敗した時のレスキュー元として使える。
+    /// #134の根治(既存キャッシュの移行はしない)を破らずに済むランタイム
+    /// 側の救済策。両方とも失敗した場合は`plainText`優先で「マーカーなし」
+    /// の結果を返す(`plainText`が無ければ`html`側の「マーカーなし」)。
+    /// どちらも与えられなければ`nil`。
+    ///
+    /// 呼び出し元は`MessageView.sourceTextForSummary()`一つ。
+    public static func separatingQuotedText(plainText: String?, html: String?, isReply: Bool) -> SeparatedText? {
+        let plainSplit: SeparatedText? = {
+            guard let plainText, !plainText.isEmpty else { return nil }
+            return separatingQuotedText(fromPlainText: plainText, isReply: isReply)
+        }()
+        if let plainSplit, plainSplit.detectedMarker != nil {
+            return plainSplit
+        }
+        let htmlSplit: SeparatedText? = {
+            guard let html, !html.isEmpty else { return nil }
+            return separatingQuotedText(fromHTML: html)
+        }()
+        if let htmlSplit, htmlSplit.detectedMarker != nil {
+            return htmlSplit
+        }
+        return plainSplit ?? htmlSplit
+    }
+
     /// Task #133 (実機報告「引用折りたたみがHTMLメールで効かない」— #123の
     /// 折りたたみはプレーンテキスト表示限定だったが、実際のGmailはほぼ全部
     /// HTML付きでHTML表示が優先されるため実機で機能しなかった): `MessageView`
@@ -136,6 +177,35 @@ public enum QuoteStripper {
             return nil
         }
         return SeparatedHTML(newHTML: split.new, quotedHTML: split.quoted, detectedMarker: split.markerName)
+    }
+
+    /// Task #138 (キャッシュ済み本文の救済、`separatingQuotedText(plainText:
+    /// html:isReply:)`のタグ保持版): `html`を先に試す — `html`側の構造的
+    /// マーカー(`blockquote`/`gmail_quote`など)が見つかった場合、それは
+    /// `WKWebView`をそのまま短縮表示できるタグ付き`newHTML`/`quotedHTML`を
+    /// 伴う唯一の経路なので、`plainText`優先の上記関数とはあえて順序を
+    /// 逆にしている — `plainText`側を先に試すと、両方が健全な(#134以降に
+    /// 取得された)ふつうのメッセージでもタグ付き短縮を毎回捨ててしまう
+    /// 回帰になる (doc: `MessageView.htmlQuoteHistorySplit`)。
+    ///
+    /// `html`側が失敗した時だけ`plainText`(`isReply`ゲート込み)を試し、
+    /// マーカーが見つかれば`SeparatedHTML`を返す — ただし`newHTML`は元の
+    /// `html`をそのまま(分割せず)使う: `plainText`の分割位置は`html`の
+    /// マークアップ中の対応する位置を教えてくれないため、`WKWebView`側の
+    /// 表示は短縮できない。`quotedHTML`には`plainText`分割の`quotedText`を
+    /// そのまま入れる — `MessageView.htmlQuoteHistoryQuotedText`が
+    /// `HTMLTextExtractor.plainText(fromHTML:)`に通しても(実質プレーン
+    /// テキストなので)無害に通り抜ける。両方とも失敗すれば`nil`
+    /// (呼び出し側は元の`html`全体をそのまま表示する、`separatingQuotedHTML
+    /// (fromHTML:)`単体と同じ契約)。
+    public static func separatingQuotedHTML(html: String, plainText: String?, isReply: Bool) -> SeparatedHTML? {
+        if let htmlSplit = separatingQuotedHTML(fromHTML: html) {
+            return htmlSplit
+        }
+        guard let plainText, !plainText.isEmpty else { return nil }
+        let plainSplit = separatingQuotedText(fromPlainText: plainText, isReply: isReply)
+        guard plainSplit.detectedMarker != nil else { return nil }
+        return SeparatedHTML(newHTML: html, quotedHTML: plainSplit.quotedText, detectedMarker: plainSplit.detectedMarker)
     }
 
     /// Finds the earliest known quote-wrapper marker in `html` and splits

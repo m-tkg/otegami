@@ -1185,6 +1185,75 @@ end-to-end 再現。`make ios`/UITest ビルドは green。実機/シミュレ�
 同系統の問題で、`#134` はこれを対象にしていない (残存する既存の
 【差出人・宛先について】規則はそのまま維持)。
 
+## 翻訳ボタンの常時有効化・要約/引用カードのキャッシュ救済 (Task #138)
+
+**(1) 翻訳ボタン: 言語判定を廃止し常時有効に (ユーザー指示による仕様
+変更)**: `#134`までは`MessageView.shouldShowTranslationBar`が
+`message.detectedLanguage`(「英語メールらしいか」、`isEnglishMessage`と
+いう別プロパティ)と`LocalizationSettingsStore.effectiveLanguageCode`
+(「アプリの表示言語」)の両方を条件にしていた。design-phase-3 以降 `#90`/
+`#128`と繰り返し「英語メールなのに翻訳ボタンが出ない/押せない」実機報告が
+続いた根本原因が言語判定そのものの信頼性だったため、この判定を表示条件
+から完全に撤去した。今は`aiFeaturesEnabled && bodyRecord != nil`
+(`syncAIFeaturesState()`の`hasBody`)だけがゲートで、言語に関係なく常に
+押せる。`isEnglishMessage`プロパティ自体も削除済み。実際の翻訳は英語→
+日本語の一方向専用のまま (`requestTranslation`) — 日本語メールで押しても
+実質無意味な結果にはなるが、「ボタンが出ない/押せない」という誤診断の
+可能性を完全に潰すことを優先した。自動翻訳の起動条件
+(`kickoffTranslationIfNeeded`の「`detectedLanguage == "en"`確信のみ」
+ガード)は誤爆防止として意図的に維持している — 変更されるのは*ボタンの
+表示/有効*条件だけ。`#128`の HTML controller 未接続時のプレーンテキスト
+翻訳フォールバックはそのまま維持。
+
+**(2) 要約/引用カード: キャッシュ済み本文の分離フォールバック**: 実機の
+予約メールで`SummaryInput`ログが`source=plain, quotedTextLength=0,
+detectedMarker=none`(分離できず全文がそのまま要約対象になり、引用だらけ
+の要約になる)を記録した。原因は`#134`より前にキャッシュされた行の
+`MessageBodyRecord.plainText`で、mailcore2の`plainTextBodyRendering()`
+(HTML優先タグ剥がし)由来の合成テキストが`QuoteStripper`の引用マーカー
+検出パターンと確実には一致しない形をしていたこと (`#134`のdoc comment
+参照。`#134`自身は「次回フェッチ時から新しい経路に切り替わる」設計で、
+既存キャッシュの移行はしない方針だった)。一方`MessageBodyRecord.html`は
+常に`MCOMessageParser.htmlBodyRendering()`由来で、この問題の影響を受け
+ない — ランタイム側の救済策として、`plainText`側でマーカーが見つからな
+かった時だけ`html`側でも試すフォールバックを追加した:
+
+- `QuoteStripper.separatingQuotedText(plainText:html:isReply:)`(新規):
+  `plainText`を先に試し、マーカーが見つからなければ`html`
+  (`separatingQuotedText(fromHTML:)`)でも試し、見つかった方を採用する。
+  `MessageView.sourceTextForSummary()`が使う。
+- `QuoteStripper.separatingQuotedHTML(html:plainText:isReply:)`(新規):
+  `MessageView.htmlQuoteHistorySplit`(`#133`、引用折りたたみカード)が
+  使う対になる関数だが、*あえて`html`を先に試す*順序にしている —
+  `html`側の構造的マーカー(`blockquote`/`gmail_quote`など)が見つかれば
+  タグ保持の`newHTML`/`quotedHTML`で`WKWebView`をそのまま短縮表示できる
+  唯一の経路になるため、`plainText`優先にすると健全な(`#134`以降に取得
+  された)ふつうのメッセージでもこの短縮を毎回捨てる回帰になってしまう。
+  `html`側が失敗した時だけ`plainText`のマーカーへフォールバックし、
+  `newHTML`は元の`html`をそのまま(分割せず)使う — 表示は短縮できないが、
+  折りたたみカード自体は`plainText`分割の`quotedText`で出せる。
+
+どちらも`packages/OtegamiKit/Sources/OtegamiCore/QuoteStripper.swift`に
+実装、`QuoteStripperTests.swift`に「plain分離不能・html分離可能」
+「html分離不能・plain分離可能」「両方失敗」の各ケースをユニットテスト
+追加。実機の`yoyaku_htmlderived.txt`相当データでの再検証は本タスクの
+セッションでは未実施 (機微フィクスチャが手元に無いため) — 実機確認
+ポイントとして引き続き要注意。
+
+**(3) 追加報告: 要約ボタンが押せないメールがある**: `syncAIFeaturesState()`
+の`showsSummaryButton`ゲートは元々`bodyRecord != nil && aiFeaturesEnabled`
+だった — 本文取得が失敗する (`load()`の`catch`分岐、`bodyRecord`は`nil`
+のまま`errorMessage`が立つ) と、このメソッドはその後二度と呼ばれず、
+ボタンは永久に非表示のまま固定される構造だった (`#64`のdoc comment参照)。
+`(1)`の常時有効化と対称の方針で、`bodyRecord != nil || errorMessage !=
+nil`(「読み込み試行が完了した」)をゲートに変え、取得失敗後もボタン自体
+は出すようにした。タップされた時点でまだ`bodyRecord`が無ければ
+`requestSummary`が本文取得を一度だけ再試行 (`retryBodyFetchForSummary`)
+してから要約へ進み、それでも失敗すればエラー表示にフォールバックする。
+切り分け用に`TranslationGate`と対になる`SummaryGate`ログ
+(`syncAIFeaturesState()`ごとの`hasBody`/`hasError`/`showsSummaryButton`)
+も追加した。
+
 ## テスト
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、
