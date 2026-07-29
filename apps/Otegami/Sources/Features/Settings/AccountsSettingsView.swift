@@ -92,6 +92,10 @@ struct AccountsListContent: View {
 
     var body: some View {
         List {
+            // 実機フィードバック第4弾 (2026-07-29): 表示順を「アカウント →
+            // メール一覧 → メールビューア → メール作成」に変更し、
+            // 「このアプリについて」行は削除 (AboutView 自体は macOS の
+            // 「情報」タブが引き続き使う)。
             Section {
                 NavigationLink {
                     AccountSettingsCategoryView()
@@ -101,18 +105,18 @@ struct AccountsListContent: View {
                 .accessibilityIdentifier("settings.category.accounts")
 
                 NavigationLink {
-                    MailViewerSettingsView()
-                } label: {
-                    Label("メールビューア", systemImage: "envelope.open")
-                }
-                .accessibilityIdentifier("settings.category.mailViewer")
-
-                NavigationLink {
                     MailListSettingsView()
                 } label: {
                     Label("メール一覧", systemImage: "list.bullet")
                 }
                 .accessibilityIdentifier("settings.category.mailList")
+
+                NavigationLink {
+                    MailViewerSettingsView()
+                } label: {
+                    Label("メールビューア", systemImage: "envelope.open")
+                }
+                .accessibilityIdentifier("settings.category.mailViewer")
 
                 NavigationLink {
                     MailComposeSettingsView()
@@ -121,20 +125,6 @@ struct AccountsListContent: View {
                 }
                 .accessibilityIdentifier("settings.category.mailCompose")
             }
-
-            #if os(iOS)
-            // 実機フィードバック第3弾 (I): 「その他」廃止に伴いルート直下へ
-            // 格上げ — macOS は `OtegamiSettingsView` の独立した「情報」
-            // タブに既にあるので、ここでは重複させない。
-            Section {
-                NavigationLink {
-                    AboutView()
-                } label: {
-                    Label("このアプリについて", systemImage: "info.circle")
-                }
-                .accessibilityIdentifier("settings.aboutLink")
-            }
-            #endif
         }
         .navigationDestination(isPresented: $uitestShowAccountSettingsDirectly) {
             AccountSettingsCategoryView()

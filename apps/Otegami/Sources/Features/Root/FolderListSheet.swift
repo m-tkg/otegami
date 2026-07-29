@@ -386,6 +386,7 @@ struct FolderListSheet: View {
         } header: {
             AccountSectionHeader(
                 accountId: account.id,
+                labelColorKey: account.labelColorKey,
                 title: account.displayName,
                 unreadCount: accountUnreadCount(for: account.id),
                 isCollapsed: isCollapsed,
@@ -725,6 +726,10 @@ enum FolderSectionCollapseStore {
 /// existing row styling).
 private struct AccountSectionHeader: View {
     let accountId: String
+    /// 実機フィードバック第3弾 (2026-07-29「ハンバーガーメニューでも
+    /// アカウント名の横に色をつけてほしい」): カテゴリ内アカウント行
+    /// (`CategoryAccountRow`) と同じ `AccountColorRail` を名前の左に出す。
+    let labelColorKey: String?
     let title: String
     let unreadCount: Int
     let isCollapsed: Bool
@@ -733,7 +738,8 @@ private struct AccountSectionHeader: View {
     var body: some View {
         Button(action: onToggle) {
             HStack {
-                Text(title)
+                AccountColorRail(accountId: accountId, labelColorKey: labelColorKey)
+                Text(verbatim: title)
                 Spacer()
                 if unreadCount > 0 {
                     Text("\(unreadCount)")
