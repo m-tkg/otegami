@@ -401,7 +401,7 @@ struct MessageTranslatorTests {
 
         let state = await translator.translate(messageId: messageId, sourceText: "", sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(state == .failed(message: "翻訳できる本文が見つかりませんでした"))
+        #expect(state == .failed(message: MessageTranslator.noTranslatableContentMessage))
         #expect(await service.translateCallCount == 0)
     }
 
@@ -414,7 +414,7 @@ struct MessageTranslatorTests {
 
         let state = await translator.translate(messageId: messageId, sourceText: "   \n\t  ", sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(state == .failed(message: "翻訳できる本文が見つかりませんでした"))
+        #expect(state == .failed(message: MessageTranslator.noTranslatableContentMessage))
         #expect(await service.translateCallCount == 0)
     }
 
@@ -427,7 +427,7 @@ struct MessageTranslatorTests {
 
         let state = await translator.translateHTMLTextNodes(messageId: messageId, texts: [], sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(state == .failed(message: "翻訳できる本文が見つかりませんでした"))
+        #expect(state == .failed(message: MessageTranslator.noTranslatableContentMessage))
         #expect(await service.translateCallCount == 0)
     }
 
@@ -444,7 +444,7 @@ struct MessageTranslatorTests {
         // content) that produced `TranslationErrorDomain Code=21` on-device.
         let state = await translator.translateHTMLTextNodes(messageId: messageId, texts: ["\u{200B}", "  ", "\n"], sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(state == .failed(message: "翻訳できる本文が見つかりませんでした"))
+        #expect(state == .failed(message: MessageTranslator.noTranslatableContentMessage))
         #expect(await service.translateCallCount == 0)
     }
 

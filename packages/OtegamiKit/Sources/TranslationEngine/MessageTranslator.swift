@@ -136,6 +136,15 @@ public actor MessageTranslator {
 
     private static let htmlEngineIdentifierSuffix = ".html-nodes"
 
+    /// 2026-07-30 (Phase 5 follow-up, 実機 eml 再現: Okta通知メールの table
+    /// レイアウトHTML — `<p>`が1つも無く本文が`<td>`直下のテキストノード)。
+    /// `translateAligned`の「翻訳すべき実体が1つも無い」失敗が返すメッセージ
+    /// — `public`にしているのは、呼び出し側 (`MessageView.requestTranslation`
+    /// のHTML経路) がこの特定の失敗だけを検知して plain 本文へフォールバック
+    /// するため。文字列そのものを2箇所に埋め込むより、この定数を共有する
+    /// ことで両者がズレる (フォールバック判定が効かなくなる) のを防ぐ。
+    public static let noTranslatableContentMessage = "翻訳できる本文が見つかりませんでした"
+
     /// Shared by `translate(messageId:sourceText:...)` and
     /// `translateHTMLTextNodes(messageId:texts:...)` — both ultimately just
     /// need "translate this ordered array of strings, cached under this
@@ -197,7 +206,7 @@ public actor MessageTranslator {
             // 中立な「見つかりませんでした」を返す。
             guard !chunks.isEmpty else {
                 Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) aborting — no translatable content after chunking (paragraphCount=\(paragraphs.count, privacy: .public))")
-                return .failed(message: "翻訳できる本文が見つかりませんでした")
+                return .failed(message: Self.noTranslatableContentMessage)
             }
 
             // Task #61 (実機フィードバック「無害なマーケティングメールなのに

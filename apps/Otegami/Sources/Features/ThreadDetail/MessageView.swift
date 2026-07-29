@@ -1796,6 +1796,32 @@ struct MessageView: View {
                     targetLanguage: .japanese
                 )
                 guard !Task.isCancelled else { return }
+                // 2026-07-30 (Phase 5続報、実機 eml 再現: Okta通知メールの
+                // table レイアウトHTML — `<p>`が1つも無く本文が`<td>`直下の
+                // テキストノード): このメッセージでは
+                // `extractTranslatableTexts()`が実質空の`texts`を返し
+                // (`translateHTMLTextNodes`が`MessageTranslator
+                // .noTranslatableContentMessage`で失敗)、一方
+                // `bodyRecord.plainText`(またはHTMLからの`HTMLTextExtractor`
+                // 抽出)には翻訳可能な本文が存在した。DOM抽出が実際に何も
+                // 拾えなかった場合に限り、plain 本文へフォールバックして
+                // 再試行する — HTML表示のレイアウト保持は諦めるが、翻訳
+                // 自体は失敗させない。それ以外の失敗理由 (ガードレール・
+                // 未対応言語など) はフォールバックしても同じ結果になるだけ
+                // なので、この特定のメッセージだけを狙い撃ちする。
+                if case .failed(let message) = result, message == MessageTranslator.noTranslatableContentMessage,
+                   let fallbackSourceText = sourceTextForTranslation() {
+                    let fallbackResult = await translator.translate(
+                        messageId: messageId,
+                        sourceText: fallbackSourceText,
+                        sourceLanguage: .english,
+                        targetLanguage: .japanese
+                    )
+                    guard !Task.isCancelled else { return }
+                    aiState.translationState = fallbackResult
+                    translateTask = nil
+                    return
+                }
                 aiState.translationState = result
                 translateTask = nil
             }

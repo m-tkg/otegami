@@ -38,6 +38,41 @@ struct HTMLTextExtractorTests {
         let html = "<html><body><p>こんにちは、otegami です。</p><p>これはHTML専用の日本語メールです。</p></body></html>"
         #expect(HTMLTextExtractor.plainText(fromHTML: html) == "こんにちは、otegami です。\nこれはHTML専用の日本語メールです。")
     }
+
+    /// 2026-07-30 (Phase 5続報、実機 eml 再現): 通知系メール (Okta の
+    /// サインオン通知が実例) にありがちな、`<p>`を1つも使わず
+    /// `<table>`/`<tbody>`/`<tr>`/`<td>`だけで組んだレイアウトの HTML —
+    /// 本文テキストは全て`<td>`直下、行区切りは`<br />`。
+    /// `HTMLTranslationController`のDOM抽出 (WKWebView 側 JS) がこの構造で
+    /// 空を返すケースが実機で確認され、`MessageView.requestTranslation`は
+    /// その場合 plain 本文が無ければこの`HTMLTextExtractor.plainText`
+    /// (HTMLからの) フォールバックへ流れる — フォールバック先そのものが
+    /// table レイアウトから読める本文を作れることを確認しておく。
+    /// (この eml の実内容は実名/実メールアドレスを含むため、フィクスチャは
+    /// 架空の宛名/ドメインで同じ構造だけ再現している。)
+    @Test("table-layout HTML with no <p> tags still extracts readable text, from cells and <br>-separated lines")
+    func tableLayoutNotificationEmailExtractsText() {
+        let html = """
+        <html><body>
+        <table><tbody>
+          <tr><td>Example Corp - New sign-on detected for your account</td></tr>
+          <tr><td>Hi Alex,</td></tr>
+          <tr><td>Your Example Corp account alex@example.com was just used to sign in from a new device.</td></tr>
+          <tr><td>Sign-In Details</td></tr>
+          <tr><td>SAFARI - Mac OS X (iPhone) <br /> Monday, January 1, 2026 <br /> Example City, Example Country <br /> IP: 203.0.113.5</td></tr>
+        </tbody></table>
+        </body></html>
+        """
+        let extracted = HTMLTextExtractor.plainText(fromHTML: html)
+        #expect(!extracted.isEmpty)
+        #expect(extracted.contains("Hi Alex,"))
+        #expect(extracted.contains("was just used to sign in from a new device."))
+        // The `<br />`-separated lines inside one `<td>` each survive as
+        // their own line, not collapsed into one run-on sentence.
+        #expect(extracted.contains("SAFARI - Mac OS X (iPhone)"))
+        #expect(extracted.contains("Monday, January 1, 2026"))
+        #expect(extracted.contains("IP: 203.0.113.5"))
+    }
 }
 
 @Suite("SnippetBuilder")
