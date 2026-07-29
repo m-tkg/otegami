@@ -238,4 +238,32 @@ public struct RichTextDocument: Equatable, Sendable, Codable {
             }
         }.joined(separator: "\n")
     }
+
+    /// Task #162 (実機フィードバック「署名が本文に混ざって編集しづらい」):
+    /// combines this (editable, persisted) body with a signature template's
+    /// body as "本文 + 空行 + 署名" — a blank-line paragraph, then one plain
+    /// paragraph per line of `signatureBody` (`plainText(_:)`'s "one plain
+    /// run per line" shape, since a signature template's body is itself
+    /// plain text, `SignatureTemplateRecord.body: String`, never rich text).
+    /// `nil`/empty `signatureBody` returns `self` unchanged (no trailing
+    /// blank line added when there's nothing to append).
+    ///
+    /// Deliberately the *only* place body and signature ever combine —
+    /// `ComposerView.send()`'s sole caller, right before deriving both the
+    /// `plainText` and `RichTextHTMLCoder.encode(_:)` representations for
+    /// `OutboxMessageRecord`. Building one combined `RichTextDocument` and
+    /// deriving both representations from it (rather than hand-splicing two
+    /// independently-produced plain/HTML strings) guarantees the two never
+    /// drift out of sync with each other. Every other body/signature
+    /// consumer (the Composer's own editor, `DraftMessageRecord`, C7's
+    /// `PendingSendDraftSnapshot`) keeps body and signature choice
+    /// (`selectedSignatureId`) entirely separate — see `ComposerView`'s
+    /// "MARK: - F 署名" doc comment for the full picture of why.
+    public func appendingSignature(_ signatureBody: String?) -> RichTextDocument {
+        guard let signatureBody, !signatureBody.isEmpty else { return self }
+        var combined = self
+        combined.paragraphs.append(RichTextParagraph(runs: []))
+        combined.paragraphs.append(contentsOf: RichTextDocument.plainText(signatureBody).paragraphs)
+        return combined
+    }
 }

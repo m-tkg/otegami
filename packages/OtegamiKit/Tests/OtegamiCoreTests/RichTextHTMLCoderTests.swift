@@ -279,4 +279,36 @@ import Testing
         ]))
         #expect(document.plainText == "line one\nline two")
     }
+
+    // MARK: - Task #162 (署名を本文に混在させない): appendingSignature(_:)
+
+    @Test func appendingSignatureAddsOneBlankLineThenTheSignatureAsPlainParagraphs() {
+        let body = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "本文", isBold: true)]),
+        ])
+        let combined = body.appendingSignature("よろしくお願いします。\n山田太郎")
+        #expect(combined.paragraphs == [
+            RichTextParagraph(runs: [RichTextRun(text: "本文", isBold: true)]),
+            RichTextParagraph(runs: []),
+            RichTextParagraph(runs: [RichTextRun(text: "よろしくお願いします。")]),
+            RichTextParagraph(runs: [RichTextRun(text: "山田太郎")]),
+        ])
+        #expect(combined.plainText == "本文\n\nよろしくお願いします。\n山田太郎")
+    }
+
+    @Test func appendingSignatureWithNilSignatureLeavesTheDocumentUnchanged() {
+        let body = RichTextDocument(paragraphs: [RichTextParagraph(runs: [RichTextRun(text: "本文")])])
+        #expect(body.appendingSignature(nil) == body)
+    }
+
+    @Test func appendingSignatureWithAnEmptyStringLeavesTheDocumentUnchanged() {
+        let body = RichTextDocument(paragraphs: [RichTextParagraph(runs: [RichTextRun(text: "本文")])])
+        #expect(body.appendingSignature("") == body)
+    }
+
+    @Test func appendingSignatureThenEncodingToHTMLProducesExactlyOneBlankLineBetweenBodyAndSignature() {
+        let body = RichTextDocument(paragraphs: [RichTextParagraph(runs: [RichTextRun(text: "本文", isBold: true)])])
+        let html = RichTextHTMLCoder.encode(body.appendingSignature("署名です"))
+        #expect(html == "<p><b>本文</b></p><p><br></p><p>署名です</p>")
+    }
 }
