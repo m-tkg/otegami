@@ -369,6 +369,41 @@ struct QuoteStripperHTMLTests {
         #expect(separated.newText == newText)
         #expect(separated.detectedMarker == "borderTopFromBlock")
     }
+
+    // MARK: - separatingQuotedHTML (Task #133)
+
+    @Test("separatingQuotedHTML returns raw, un-flattened HTML on both sides of a gmail_quote split")
+    func separatingQuotedHTMLKeepsRawMarkup() throws {
+        let html = """
+        <div dir="auto">\(newText)</div>
+        <div class="gmail_quote">
+        <div dir="ltr" class="gmail_attr">2026年7月27日(月) 10:00 山田太郎 &lt;yamada@example.com&gt;:</div>
+        <blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex">
+        <div dir="auto">Original quoted body, dropped from the WKWebView side but kept intact here.</div>
+        </blockquote>
+        </div>
+        """
+        let separated = QuoteStripper.separatingQuotedHTML(fromHTML: html)
+        let unwrapped = try #require(separated)
+        // Raw markup preserved (not flattened to plain text) — the whole
+        // point of this API over `separatingQuotedText(fromHTML:)`.
+        #expect(unwrapped.newHTML.contains("<div dir=\"auto\">\(newText)</div>"))
+        #expect(unwrapped.quotedHTML.contains("gmail_attr"))
+        #expect(unwrapped.quotedHTML.contains("blockquote"))
+        #expect(unwrapped.detectedMarker == "gmailQuote")
+    }
+
+    @Test("separatingQuotedHTML returns nil when there is no quote marker")
+    func separatingQuotedHTMLReturnsNilWhenNoMarker() {
+        let html = "<div>\(newText)</div>"
+        #expect(QuoteStripper.separatingQuotedHTML(fromHTML: html) == nil)
+    }
+
+    @Test("separatingQuotedHTML returns nil when the new-text side is too short (forward-only fallback)")
+    func separatingQuotedHTMLReturnsNilWhenForwardOnly() {
+        let html = "<blockquote type=\"cite\"><div>Original message body only, nothing new here.</div></blockquote>"
+        #expect(QuoteStripper.separatingQuotedHTML(fromHTML: html) == nil)
+    }
 }
 
 /// The exact trailing whitespace/newline count left behind at a truncation

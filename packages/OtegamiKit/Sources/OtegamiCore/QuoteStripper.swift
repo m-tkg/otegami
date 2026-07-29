@@ -103,6 +103,41 @@ public enum QuoteStripper {
         )
     }
 
+    /// Task #133 (実機報告「引用折りたたみがHTMLメールで効かない」— #123の
+    /// 折りたたみはプレーンテキスト表示限定だったが、実際のGmailはほぼ全部
+    /// HTML付きでHTML表示が優先されるため実機で機能しなかった): `MessageView`
+    /// のHTML表示分岐が使う、**生HTMLのまま**の new/quoted 分割。
+    /// `separatingQuotedText(fromHTML:)`は両側を`HTMLTextExtractor`で平文化
+    /// してしまう (要約向けの既存契約 — この型のdoc comment参照) — HTML
+    /// メールでは新規部分をレイアウトを保ったまま`WKWebView`に渡したいので、
+    /// タグ付きのまま返す専用API。`separatingQuotedText(fromHTML:)`と同じ
+    /// `splitHTML`/`minimumStrippedLength`の閾値判定を再利用し、分割が
+    /// 見つからない(またはフォールバックが発動した)場合は`nil`を返す —
+    /// 呼び出し側はその場合、元のHTML全体をそのまま表示する契約
+    /// (`MessageView.htmlQuoteHistorySplit`のdoc comment参照)。
+    public struct SeparatedHTML: Sendable, Equatable {
+        /// 新規部分のHTML (タグ付き、未加工) — `WKWebView`にはこちらだけを渡す。
+        public let newHTML: String
+        /// 引用履歴部分のHTML (タグ付き、未加工) — `QuoteHistoryParser`へ渡す前に
+        /// `HTMLTextExtractor.plainText(fromHTML:)`で平文化する必要がある。
+        public let quotedHTML: String
+        /// `SeparatedText.detectedMarker`と同じ意味。
+        public let detectedMarker: String?
+    }
+
+    /// `separatingQuotedText(fromHTML:)`と同じ判定(閾値含む)で分割するが、
+    /// 平文化せず生HTMLのまま`newHTML`/`quotedHTML`を返す。分割できない
+    /// (マーカーが見つからない、または新規部分が短すぎてフォールバックが
+    /// 発動する)場合は`nil`。
+    public static func separatingQuotedHTML(fromHTML html: String) -> SeparatedHTML? {
+        guard let split = splitHTML(html) else { return nil }
+        let newPlainText = HTMLTextExtractor.plainText(fromHTML: split.new)
+        guard newPlainText.trimmingCharacters(in: .whitespacesAndNewlines).count >= minimumStrippedLength else {
+            return nil
+        }
+        return SeparatedHTML(newHTML: split.new, quotedHTML: split.quoted, detectedMarker: split.markerName)
+    }
+
     /// Finds the earliest known quote-wrapper marker in `html` and splits
     /// `html` right before it into `(new, quoted)`. `nil` when no marker is
     /// found (nothing to split). Truncating mid-document can leave

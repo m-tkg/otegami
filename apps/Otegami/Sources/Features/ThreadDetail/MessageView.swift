@@ -336,9 +336,20 @@ struct MessageView: View {
             // height constraint", the same effect the removed `else` branch
             // had, so this is behavior-preserving for both states while
             // keeping `content` at one single, stable identity throughout.
+            //
+            // Task #133 (実機報告「引用折りたたみがHTMLメールで効かない」):
+            // this exact `.frame` pair used to be applied right here, to
+            // `content` as a whole. It moved down into `content`'s own HTML
+            // branch (applied to just `HTMLMessageView`, not the whole
+            // branch) so a quote-split HTML message's `QuoteHistorySectionView`
+            // card below the `WKWebView` gets its own natural height added
+            // on top, instead of being squeezed inside the web view's exact
+            // measured height. This was already a no-op for every other
+            // branch (`contentHeight` is only ever non-`nil` while an HTML
+            // branch is mounted — `onHTMLContentHeightChange` is the only
+            // writer), so removing it here changes nothing for the plain-
+            // text/translated/empty/loading/error branches.
             content
-                .frame(maxWidth: .infinity, maxHeight: contentHeight == nil ? .infinity : nil, alignment: .topLeading)
-                .frame(height: contentHeight)
         }
         .sheet(isPresented: $isShowingSummarySheet) {
             summarySheet
@@ -681,6 +692,47 @@ struct MessageView: View {
         return trimmed.isEmpty ? plainText : trimmed
     }
 
+    /// Task #133 (実機報告「引用折りたたみがHTMLメールで効かない」— #123の
+    /// 折りたたみはプレーンテキスト表示限定だったが、実際のGmailはほぼ全部
+    /// HTML付きでHTML表示が優先されるため実機で機能しなかった):
+    /// `content`のHTML分岐版 — `QuoteStripper.separatingQuotedHTML(fromHTML:)`
+    /// で生HTMLのまま new/quoted に分割する。`plainTextQuoteHistorySplit`と
+    /// 違い`isHTMLMessage`を要求する側(こちらが真、あちらが偽)なので相互排他。
+    /// `nil`は「分割できなかった (マーカーなし、または新規部分が短すぎる
+    /// フォールバック)」— その場合`content`は従来どおり`bodyRecord.html`
+    /// 全体を`HTMLMessageView`にそのまま渡す(挙動不変)。
+    private var htmlQuoteHistorySplit: QuoteStripper.SeparatedHTML? {
+        guard isHTMLMessage, let html = bodyRecord?.html, !html.isEmpty else { return nil }
+        return QuoteStripper.separatingQuotedHTML(fromHTML: html)
+    }
+
+    /// `htmlQuoteHistorySplit`が見つかった時に`QuoteHistorySectionView`へ
+    /// 渡す平文 — 実装方針(#133のタスク仕様)通り、入力の優先順位は:
+    /// 1. `bodyRecord.plainText`があれば、そちらを`QuoteStripper`のプレーン
+    ///    分割 (`plainTextQuoteHistorySplit`と同じ`isReply`ゲート) にかけた
+    ///    `quotedText` — HTMLタグのノイズが無く`QuoteHistoryParser`の帰属行
+    ///    パターンに素直に一致する(実物`yoyaku.eml`で検証済み:
+    ///    detectedMarker=japaneseSaidWroteAddressEnd、新規117字/引用1777字)。
+    /// 2. `bodyRecord.plainText`が無い(またはそちらの分割が空だった)場合は
+    ///    `htmlQuoteHistorySplit.quotedHTML`を`HTMLTextExtractor`で平文化した
+    ///    ものにフォールバック。
+    /// どちらの経路で得たテキストも`QuoteHistoryParser.parse`が帰属行を
+    /// 一つも確信を持って検出できなければ`.unparsed`(生テキストのまま
+    /// カード表示)に自然にフォールバックする — `QuoteHistorySectionView`
+    /// 自身の既存契約どおり、ここでは何もしない。
+    private var htmlQuoteHistoryQuotedText: String? {
+        guard let htmlSplit = htmlQuoteHistorySplit else { return nil }
+        if let plainText = bodyRecord?.plainText, !plainText.isEmpty {
+            let isReply = message?.inReplyTo != nil
+            let plainSplit = QuoteStripper.separatingQuotedText(fromPlainText: plainText, isReply: isReply)
+            if !plainSplit.quotedText.isEmpty {
+                return plainSplit.quotedText
+            }
+        }
+        let extracted = HTMLTextExtractor.plainText(fromHTML: htmlSplit.quotedHTML)
+        return extracted.isEmpty ? nil : extracted
+    }
+
     // MARK: - Attachments (M8)
 
     /// Inline (`cid:`-referenced) parts are excluded — those render inside
@@ -851,43 +903,76 @@ struct MessageView: View {
             // document's own text nodes in place, so this branch always
             // renders `HTMLMessageView` regardless of translation state.
             if isHTMLMessage, isShowingHTML, let html = bodyRecord.html {
-                HTMLMessageView(
-                    html: html, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath,
-                    // Task #59 (「本文下の空白が過剰」): this used to pass
-                    // `floatingButtonsReservedBottomInset` here so the
-                    // *loaded document itself* reserved room for the
-                    // floating buttons at the end of its own scroll — Task
-                    // #56's original reasoning, back when this `WKWebView`
-                    // still scrolled internally. Task #58 turned
-                    // `ThreadDetailView`'s outer `ScrollView` into the only
-                    // scroller (this view's frame is now sized to the real
-                    // measured content height, not the viewport), and Task
-                    // #59 moved the floating buttons themselves out to that
-                    // same outer level — so the "don't render behind the
-                    // buttons" reservation only needs to happen *once*, at
-                    // that single outer scroller, not once per body branch
-                    // here too (the two used to add together, which was most
-                    // of the "空白が過剰" bug: this document's own bottom
-                    // spacer *plus* the outer row's `+180pt` chrome
-                    // allowance). See `ThreadDetailView`'s own
-                    // `.contentMargins(.bottom:)` for where the single
-                    // reservation now lives, computed from `expandedAIFeaturesState`.
-                    bottomContentInset: 0,
-                    translatedTexts: htmlTranslatedTexts, showOriginalText: aiState.translationShowOriginal,
-                    // Task #64 (根治の一環): re-syncs `aiState.showsTranslationButton`
-                    // right when the controller connects/disconnects, not
-                    // just at `load()` time — see `syncAIFeaturesState()`'s
-                    // updated gating for why a connected controller is now
-                    // part of "翻訳ボタンを見せてよいか" for an HTML message,
-                    // so the button's actual visibility stays honest with
-                    // whether tapping it would work.
-                    onTranslationControllerReady: { controller in
-                        htmlTranslationController = controller
-                        syncAIFeaturesState()
-                    },
-                    onHeightChange: onHTMLContentHeightChange
-                )
-                .accessibilityIdentifier("messageDetail.htmlBody")
+                // Task #133 (実機報告「引用折りたたみがHTMLメールで効か
+                // ない」): `htmlQuoteHistorySplit`が取れた場合、`WKWebView`
+                // には新規部分のHTML(`newHTML`)だけを渡し、引用履歴は下の
+                // `QuoteHistorySectionView`のネイティブカードへ切り出す —
+                // プレーンテキスト分岐(#123)と同じトグル+カードのハイブリッド
+                // 表示。分割できなかった場合(`nil`)は`html`をそのまま渡す
+                // 従来どおりの挙動(回帰なし)。`htmlQuoteHistorySplit`は
+                // `bodyRecord.html`が確定した時点から不変(WKWebView自身の
+                // 非同期な高さ報告等、後から変わる値には一切依存しない)ので、
+                // この`VStack`自体が毎回同じ構造で安定 — Task #64が修正した
+                // 「`contentHeight`のif/elseで`HTMLMessageView`ごと再マウント
+                // される」問題を再導入しない。
+                VStack(alignment: .leading, spacing: 0) {
+                    HTMLMessageView(
+                        html: htmlQuoteHistorySplit?.newHTML ?? html, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath,
+                        // Task #59 (「本文下の空白が過剰」): this used to pass
+                        // `floatingButtonsReservedBottomInset` here so the
+                        // *loaded document itself* reserved room for the
+                        // floating buttons at the end of its own scroll —
+                        // Task #56's original reasoning, back when this
+                        // `WKWebView` still scrolled internally. Task #58
+                        // turned `ThreadDetailView`'s outer `ScrollView` into
+                        // the only scroller (this view's frame is now sized
+                        // to the real measured content height, not the
+                        // viewport), and Task #59 moved the floating buttons
+                        // themselves out to that same outer level — so the
+                        // "don't render behind the buttons" reservation only
+                        // needs to happen *once*, at that single outer
+                        // scroller, not once per body branch here too (the
+                        // two used to add together, which was most of the
+                        // "空白が過剰" bug: this document's own bottom
+                        // spacer *plus* the outer row's `+180pt` chrome
+                        // allowance). See `ThreadDetailView`'s own
+                        // `.contentMargins(.bottom:)` for where the single
+                        // reservation now lives, computed from
+                        // `expandedAIFeaturesState`.
+                        bottomContentInset: 0,
+                        translatedTexts: htmlTranslatedTexts, showOriginalText: aiState.translationShowOriginal,
+                        // Task #64 (根治の一環): re-syncs `aiState.showsTranslationButton`
+                        // right when the controller connects/disconnects, not
+                        // just at `load()` time — see `syncAIFeaturesState()`'s
+                        // updated gating for why a connected controller is now
+                        // part of "翻訳ボタンを見せてよいか" for an HTML message,
+                        // so the button's actual visibility stays honest with
+                        // whether tapping it would work.
+                        onTranslationControllerReady: { controller in
+                            htmlTranslationController = controller
+                            syncAIFeaturesState()
+                        },
+                        onHeightChange: onHTMLContentHeightChange
+                    )
+                    .accessibilityIdentifier("messageDetail.htmlBody")
+                    // Task #133: this exact-height framing used to sit on
+                    // `content` as a whole (`body`'s own modifier chain,
+                    // Task #64's "never branch the modifier chain" fix) —
+                    // moved down to just `HTMLMessageView` itself now that
+                    // this branch can render more than one child
+                    // (`QuoteHistorySectionView`'s card below needs its own
+                    // natural height, not squeezed into the WKWebView's
+                    // exact measured height). `content` itself keeps being
+                    // one single, unconditional call from `body` either way
+                    // — only what's *inside* this one HTML branch grew —
+                    // so Task #64's identity-stability fix isn't reintroduced.
+                    .frame(maxWidth: .infinity, maxHeight: contentHeight == nil ? .infinity : nil, alignment: .topLeading)
+                    .frame(height: contentHeight)
+                    if let quotedText = htmlQuoteHistoryQuotedText {
+                        QuoteHistorySectionView(quotedText: quotedText)
+                            .padding()
+                    }
+                }
             } else if shouldShowTranslationBar, !aiState.translationShowOriginal, case .translated(let record) = aiState.translationState {
                 // 1i: "訳文" showing and a translation actually cached, for a
                 // *plain-text* body — the per-paragraph long-press original

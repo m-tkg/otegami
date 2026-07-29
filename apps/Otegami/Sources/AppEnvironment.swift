@@ -2473,6 +2473,15 @@ final class AppEnvironment {
             snippet: "We noticed a new sign-in to your Example App account. If this was you, no action is needed.",
             html: uitestFakeHTMLMessageBodySSONotice,
             detectedLanguage: "fr"
+        ),
+        // Task #133 (実機報告「引用折りたたみがHTMLメールで効かない」):
+        // `html-9` — see `uitestFakeHTMLMessageBodyGmailQuoteHistory`'s doc
+        // comment for what this checks (HTML branch's quote-history
+        // toggle+card, newHTML-only WKWebView rendering).
+        UITestFakeHTMLMessage(
+            subject: "ご予約について (UITest)",
+            snippet: "承知しました、21日の11時でお願いします。",
+            html: uitestFakeHTMLMessageBodyGmailQuoteHistory
         )
     ]
 
@@ -2832,6 +2841,26 @@ final class AppEnvironment {
     </table>
     </body>
     </html>
+    """
+
+    /// Task #133 (実機報告「引用折りたたみがHTMLメールで効かない」— #123の
+    /// 折りたたみはプレーンテキスト表示限定だったが、実際のGmailはほぼ全部
+    /// HTML付きでHTML表示が優先されるため実機で機能しなかった、ユーザー提供
+    /// の実メール`yoyaku.eml`で再現・修正): `html-9`シナリオ (index 8はTask #128の
+    /// SSO通知フィクスチャがすでに使用中のため、9から採番) — 実物と同じ
+    /// Gmail HTML の引用構造 (`<div class="gmail_quote">` が
+    /// `<div class="gmail_attr">`(帰属行) と入れ子の
+    /// `<blockquote class="gmail_quote" style="...border-left...">`を包む、
+    /// 2段ネスト) を持つが、内容は実物と無関係な架空の予約確認シナリオ・
+    /// 架空名・example.com アドレスに差し替えた匿名フィクスチャ (実物は
+    /// 機微データのためコミット禁止 — `docs/design-system.md`のTask #133
+    /// 節「検証」参照。実物での確認はシミュレータへの一時注入で別途行い、
+    /// 確認後にコードをrevertした)。
+    /// `HTMLMessageView`には新規部分のHTMLだけが渡り、引用履歴 (2段) は
+    /// `QuoteHistorySectionView`のトグル+カードに折りたたまれることを
+    /// スクリーンショットで確認する用途。
+    fileprivate static let uitestFakeHTMLMessageBodyGmailQuoteHistory = """
+    <div dir="ltr"><div dir="auto">田中さん</div><div dir="auto">承知しました、21日の11時でお願いします。</div><div dir="auto">当日はよろしくお願いいたします。</div><div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">2026年7月20日(月) 15:00 田中花子 &lt;<a href="mailto:hanako@example.com">hanako@example.com</a>&gt;:</div><blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex"><div dir="auto">ご予約ありがとうございます。</div><div dir="auto">21日11時でお取りできます。</div><div dir="auto">前日までにお店へご確認のお電話をお願いいたします。</div><div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">2026年7月20日(月) 14:30 佐藤太郎 &lt;<a href="mailto:taro@example.com">taro@example.com</a>&gt;:</div><blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex"><div dir="auto">はじめまして、佐藤です。</div><div dir="auto">7月21日の11時に予約をお願いしたいのですが、空いていますでしょうか。</div><div dir="auto">よろしくお願いいたします。</div></blockquote></div></div></blockquote></div></div></div>
     """
 
     // MARK: - Task #66 (カレンダー招待メール対応) UITest fixture

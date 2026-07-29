@@ -98,6 +98,31 @@
 #                                       過半判定の分母を水増ししないこと
 #                                       (isVisuallyHiddenText) も併せて確認
 #                                       する。白カードで読めることの確認用。
+#   html-9 / html-gmail-quote-history  Task #133 (実機報告「引用折りたたみが
+#                                       HTMLメールで効かない」— #123の折り
+#                                       たたみはプレーンテキスト表示限定
+#                                       だったが、実際のGmailはほぼ全部HTML
+#                                       付きでHTML表示が優先されるため実機で
+#                                       機能しなかった。ユーザー提供の実メール
+#                                       yoyaku.emlで再現・修正)。番号が8を
+#                                       飛ばして9なのは、`uitestFakeHTMLMessages`
+#                                       のindex 8はTask #128がすでに使って
+#                                       いる(SSOサインイン通知、`detectedLanguage`
+#                                       誤検出の再現用 — このスクリプトの
+#                                       シナリオとしては未公開、
+#                                       `OtegamiHTMLTranslationUITests`が
+#                                       直接indexを指定して使う)ため。実物と同じ
+#                                       Gmail HTML引用構造 (gmail_quote +
+#                                       gmail_attr + 入れ子blockquote、2段)
+#                                       だが内容は架空の予約確認シナリオに
+#                                       差し替えたフィクスチャ
+#                                       (`AppEnvironment
+#                                       .uitestFakeHTMLMessageBodyGmailQuoteHistory`)
+#                                       — WKWebViewには新規部分のHTMLだけが
+#                                       渡り、引用履歴2段が下のネイティブ
+#                                       トグル+カード(#123と同じ
+#                                       `QuoteHistorySectionView`)に折り
+#                                       たたまれることの確認用。
 #   calendar-invite                    Task #66: カレンダー招待メールの
 #                                       招待カード (36番フィクスチャ相当 —
 #                                       タイトル/日時/場所/主催者 +
@@ -199,12 +224,13 @@
 #                                       `list`と同じfakeメッセージ (件名に
 #                                       "UITest"を含む) がヒットする。
 #
-# 上8つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目
-# (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応) — 0〜4番目の実体は
+# 上9つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目・
+# 9番目 (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応、8番目だけ
+# 抜けているのは`html-9`の項目のdoc comment参照) — 0〜4番目の実体は
 # `dev/mailstack/seed/fixtures/31/32/33/34-*.eml`と同内容のSwift文字列
 # リテラル (自前ダーク対応は.emlフィクスチャなし、AppEnvironment内にのみ
-# 存在)。5番目 (Task #98)・6番目 (Task #104)・7番目 (Task #112) も
-# .emlフィクスチャなし、AppEnvironment内にのみ存在。
+# 存在)。5番目 (Task #98)・6番目 (Task #104)・7番目 (Task #112)・9番目
+# (Task #133) も .emlフィクスチャなし、AppEnvironment内にのみ存在。
 #
 # Env:
 #   IOS_SIMULATOR    Simulator name (default: iPhone 17 Pro Max)
@@ -311,6 +337,13 @@ case "$SCENARIO" in
   html-7|html-white-card-hero)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=7")
     default_out="html-7-white-card-hero.png"
+    ;;
+  html-9|html-gmail-quote-history)
+    # Task #133: index 8 is already Task #128's SSO-notice fixture (see this
+    # script's own scenario-list comment above for why this skips straight
+    # to 9).
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=9")
+    default_out="html-9-gmail-quote-history.png"
     ;;
   calendar-invite)
     # Task #66: `CalendarInviteSectionView`'s card (title/time/location/

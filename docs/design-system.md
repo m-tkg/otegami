@@ -6151,3 +6151,105 @@ Microsoft アカウントが無いためこのセッションでは検証不可�
 `make test` green。`scripts/verify-screen.sh list`(畳んだ状態) /
 `list-fab-expanded`(展開状態) のスクリーンショットで、「…」1個への統合・
 展開時の2ボタン配置・アイコン切り替えを目視確認。
+
+## Task #133: 引用折りたたみをHTMLメールでも効かせる (#123の第2段)
+
+#123 の引用折りたたみ (「履歴を表示/非表示」トグル + メッセージ単位の
+時系列カード) はプレーンテキスト表示のメールに限定していた ——
+上の「HTML メールについて」節にそのスコープ外の理由 (`WKWebView`の
+DOM書き換えが必要で作り込みが重い) を書いた第2段課題そのもの。実際の
+Gmail はほぼ全てHTML付きでHTML表示が既定のため、実機では折りたたみが
+一度も発動しないというユーザー報告を受けて着手した。
+
+### 方針 (DOM 手術を避けるハイブリッド)
+
+`WKWebView`のDOMを直接書き換える代わりに、**引用を含むHTMLメールは
+新規部分だけを`WKWebView`に読み込ませ、引用履歴は#123と同じネイティブ
+の「トグル+カード」で下に足す** — プレーンテキスト分岐が既にやって
+いることと同じ構造をHTML分岐にも適用しただけで、`HTMLMessageView`
+自体には一切手を入れていない。
+
+### 実装
+
+- `packages/OtegamiKit/Sources/OtegamiCore/QuoteStripper.swift`:
+  `separatingQuotedHTML(fromHTML:)`(新規) — 既存の
+  `separatingQuotedText(fromHTML:)`は両側を`HTMLTextExtractor`で
+  平文化してしまう (要約向けの既存契約、この型のdoc comment参照) ため、
+  `WKWebView`に渡すには使えない。同じ`splitHTML`/`minimumStrippedLength`
+  判定を再利用しつつ、**生HTMLのまま**`newHTML`/`quotedHTML`を返す
+  `SeparatedHTML`構造体を新設。分割できない (マーカーなし、または
+  新規部分が短すぎるフォールバック) 場合は`nil`。
+- `apps/Otegami/Sources/Features/ThreadDetail/MessageView.swift`:
+  - `htmlQuoteHistorySplit`(新規 computed property):
+    `isHTMLMessage`かつ`bodyRecord.html`が非空の場合のみ
+    `QuoteStripper.separatingQuotedHTML(fromHTML:)`を呼ぶ —
+    `plainTextQuoteHistorySplit`のHTML版。`bodyRecord.html`が確定した
+    時点から不変 (`WKWebView`自身の非同期な高さ報告など、後から変わる
+    値には一切依存しない) ので、この結果に基づく分岐は毎回同じ構造で
+    安定する — Task #64が修正した「`contentHeight`のif/elseで
+    `HTMLMessageView`ごと再マウントされる」問題を再導入しない。
+  - `content`のHTML分岐: `htmlQuoteHistorySplit`が取れた場合、
+    `HTMLMessageView`には`newHTML`(分割できなければ元の`html`) だけを
+    渡し、その下に`QuoteHistorySectionView`(#123のものをそのまま再利用)
+    を追加する`VStack`に変更。高さの厳密な`.frame(height: contentHeight)`
+    (Task #58/#64) は`content`全体ではなく`HTMLMessageView`自身に
+    移動 — カードぶんの自然な高さがその下に足されるようにするため。
+    `body`側で`content`全体に掛けていた同じ`.frame`は削除 (他の分岐
+    では元々no-opだったので挙動に影響なし)。
+  - `htmlQuoteHistoryQuotedText`(新規 computed property):
+    `QuoteHistorySectionView`に渡す平文の優先順位は (1)
+    `bodyRecord.plainText`があればそちらを`QuoteStripper`のプレーン
+    分割 (`plainTextQuoteHistorySplit`と同じ`isReply`ゲート) にかけた
+    `quotedText`(HTMLタグのノイズが無く帰属行パターンに素直に一致する
+    — 実物メールで検証済み、下記「検証」節参照)、(2) 無ければ
+    `htmlQuoteHistorySplit.quotedHTML`を`HTMLTextExtractor`で平文化した
+    ものにフォールバック。どちらもパースできなければ
+    `QuoteHistorySectionView`自身の既存の`.unparsed`フォールバック
+    (生テキストのままカード表示) に落ちる。
+  - HTML翻訳 (1i) は`WKWebView`に読み込まれるDOM (=`newHTML`) だけが
+    対象になる — 引用履歴側は元々翻訳の対象にしていなかった動作を
+    そのまま引き継ぐ自然な帰結で、`htmlTranslationController`周りの
+    配線 (#61/#64/#128) には手を入れていない。
+  - 引用部にしか無い`cid:`画像は、その部分のHTMLごと`newHTML`から
+    落ちるため単に消えるだけ (クラッシュしない) — 引用画像を保持する
+    仕組みは今回のスコープ外。
+- `apps/Otegami/Sources/AppEnvironment.swift`:
+  `uitestFakeHTMLMessageBodyGmailQuoteHistory`(新規、`html-9`シナリオ):
+  実物のGmail HTML引用構造 (`gmail_quote`+`gmail_attr`+入れ子
+  `blockquote`、2段ネスト) だが内容は架空の予約確認シナリオに差し替えた
+  匿名フィクスチャ。`uitestFakeHTMLMessages`配列のindex 9 (index 8は
+  既にTask #128のSSO通知フィクスチャが使用中のため9から採番 —
+  `scripts/verify-screen.sh`の`html-9`シナリオのコメント参照)。
+
+### テスト
+
+`packages/OtegamiKit/Tests/OtegamiCoreTests/QuoteStripperTests.swift`に
+`separatingQuotedHTML`向けの3件を追加: gmail_quote構造での生HTML保持
+(平文化されないこと)、マーカー無しでの`nil`、フォワードオンリー
+フォールバックでの`nil`。
+
+### 検証
+
+`make test`(既知の無関係flake以外 green、新規3件含め全green)・
+`make mac`・`make ios`とも成功。`scripts/verify-screen.sh html-9`
+(新規シナリオ) のライト/ダーク双方のスクリーンショットで、
+`WKWebView`には新規部分のみが表示され、その下に「履歴を非表示」
+トグル+2段のネイティブカード (差出人太字+日時+本文) が出ることを
+確認。既存`html-0`〜`html-7`(引用なしメール、高さ計測・ダーク反転の
+回帰対象) はライト/ダーク全16枚を撮り直し、カードが出ないこと・
+高さが切れていないこと・ダーク反転が従来どおり効くことを確認 —
+回帰なし。
+
+**実物`.eml`での確認**: ユーザー提供の実メール (text/plain 3.5KB +
+text/html 14KB、Gmailの`gmail_quote`構造、4段ネスト) を一時的に
+ローカルフィクスチャへ注入し (`AppEnvironment.swift`を一時的にのみ
+書き換え、確認後に revert — コミット履歴には残らない)、シミュレータで
+実際の折りたたみ動作を確認した。新規部分 (7行) が`WKWebView`に正しく
+表示され、その下のカードに4段の引用が「Sasaki 2026年5月10日(日)
+17:43」のように差出人・日時付きで正しく分解されて表示されることを
+確認 — `QuoteHistoryParser`の`detectedMarker=japaneseSaidWroteAddressEnd`
+が実際のGmail形式の帰属行 (「2026年5月10日(日) 17:43 Name &lt;addr&gt;:」)
+に正しくヒットしている。初回起動直後の1回だけ`WKWebView`の初期描画が
+間に合わず新規部分が一瞬空白になる事象を観測したが、待ち時間を伸ばして
+再実行すると正しく描画された — タイミングの揺らぎであり、実装のバグでは
+ないと判断 (`WAIT_SECONDS`を増やしたリトライで再現しなくなることを確認)。
