@@ -1369,3 +1369,37 @@ Mailpitがデコードした`HTML`フィールドに`<b>`タグが残ること�
 受け渡し (「この自動翻訳は事後的に見るとスキップすべきだった」という
 判定結果の伝播) が必要になり、タスク範囲を超えると判断して見送った。
 `docs/translation.md`の Task #159 節「自動翻訳の言語判定」参照。
+
+## Task #145: 言語/ローカライズ周りの精査 — 見送った点
+
+`docs/localization.md`の Task #145 節参照 (見つけた英語残り・xcstringsドリ
+フト解消・XCUITestのロケール依存lookup対応の全体まとめはそちら)。ここには
+このタスク中に見つけたが直さなかった点だけ記録する。
+
+- **`OtegamiQASweepScenario2UITests.testBoundarySearchQueries`が現在の
+  検索UIと乖離している疑い**: このテストは`app.searchFields.firstMatch`
+  (システム標準の`.searchable`が生成する検索フィールド) を探すが、
+  `MessageListView.swift`の`.searchable(text:prompt:)`は`#if os(macOS)`
+  専用になっており (コード中のコメントが「iOSはもう`.searchable`を使わ
+  ない、検索は`SearchScreenView`へ」と明言している)、`OtegamiUITests`は
+  iOS専用ターゲット (`project.yml`の`platform: iOS`) — つまりこのテスト
+  は今のiOS実装に対して`searchField.waitForExistence`が失敗する可能性が
+  高い。ロケール依存lookup (`"No Results"`→`messageList.search
+  .emptyState`識別子、`"Cancel"`→OR述語) はTask #145で修正済みだが、
+  「検索フィールドの発見自体」を`SearchScreenView`/`SearchTopBar`の実際
+  の構造 (カスタム`TextField`+`search.closeButton`) に合わせて書き直す
+  作業はローカライズの範囲を超えるため見送った。次にこのテストを実行する
+  機会があれば要確認・要書き直し。
+
+- **`make mac`/`make test`が現状赤い件について**: Task #145の作業中、
+  同じワークツリー上で別のエージェントが`TranslationService
+  .summarizeThread`のクロージャ引数を`(current, total)`から
+  `ThreadSummaryProgress`単一引数へ変更する作業を並行して進めており
+  (`packages/OtegamiKit/Sources/OtegamiTranslation/`配下と
+  `ThreadDetailView.swift`が未コミットのまま変更中)、呼び出し側の追従が
+  終わっていない状態だったため`make mac`/`make test`がその箇所で赤に
+  なっていた。Task #145の変更ファイル (このコミット群) はそれとは無関係
+  — `swift build` (テスト抜き) の成功、変更ファイル個別の`swiftc -parse`
+  通過、および変更内容が文字列リテラルの置き換えのみであることで確認
+  済み。ビルドが緑になっているか、別途 (このタスクの変更を取り込んだ
+  クリーンな worktree で) 確認してほしい。

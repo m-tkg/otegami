@@ -263,3 +263,123 @@ xcrun simctl launch --terminate-running-process <UDID> com.mtkg.otegami
 このバッチではこの方法で一覧画面 ("All Inboxes"/"All"チップ) と検索画面
 ("Search"/"Search Mail"/フィルタ文言) の英語表示を実機さながらのスクリー
 ンショットで確認済み。
+
+## Task #145: 言語/ローカライズ周り総点検 (2026-07)
+
+ユーザー指示「全体の開発が一旦終わったら言語周りを精査して対応して」を
+受けた棚博し。直近の大改修 (作成画面フラット化/書式バー/署名行/スレッド
+要約シート/アップデートチェック/macOS設定NavigationSplitView/アーカイブ
+バッジ/トースト類) を中心に、全UI文字列・xcstringsとコードのドリフト・
+XCUITestのロケール依存lookup・日付/数値書式の4点を洗い出した。多言語対応
+(英語UI提供) 自体はスコープ外 — 日本語UIの一貫性とテストのロケール耐性が
+目的 (このドキュメント冒頭の方針どおり)。
+
+### 1. 見つかった生英語 (直書き) と対応
+
+新画面自体 (フォーマットバー・署名行・要約シート・macOS設定サイドバー・
+アーカイブバッジ・アップデートチェック画面) はいずれも点検済みで問題
+無し — 見つかった3件はすべて**それ以前から存在した**箇所だった:
+
+- `OtegamiApp.swift`のmacOS 3ペイン中央カラム、何も選択していない時の
+  プレースホルダに`.navigationTitle("Inbox")` — 唯一のセレクション未選択
+  時に見える生英語。`"受信トレイ"` (`MailboxRoleDisplay.swift`が既に使っ
+  ている語) に変更。
+- `MessageListView.title`の`.mailbox`ケース、該当アカウントが見つからな
+  かった場合のフォールバックが`?? "Inbox"` — 通常到達しないはずの防御
+  分岐だが、他の分岐は`String(localized:)`を通しているのにここだけ生
+  リテラルだった。`?? String(localized: "受信トレイ")`に統一。
+- 同期エラーアラートの`Button("OK")` — このアプリの他のアラート/閉じる
+  ボタンはすべて日本語の動詞 (「削除」「キャンセル」「閉じる」「同意し
+  て有効にする」) で、「OK」だけが唯一の例外だった。`"閉じる"`に変更
+  (`scripts/generate-localizable.py`の`"OK": "OK"`エントリも不要になった
+  ため削除)。
+
+**意図的に変更しなかったもの** (英語のままが正しい/既存の一貫した設計):
+Composer の`From`/`To`/`Cc`/`Bcc`(macOS版フォームとiOS版フラット行の両方
+でRFC見出し語として英語のまま — メール情報シートの`Message-ID`/
+`In-Reply-To`/`References`と同じ扱い)、`IMAP`/`STARTTLS`/`TLS`等のプロトコ
+ル名、`Gmail`/`iCloud`/`Yahoo`/`Yahoo! JAPAN`/`Outlook`/`Office365`/
+`Exchange`/`Microsoft`のプロバイダブランド名、`ENBadge`(`"EN"`)/`HTMLBadge`
+(`"HTML"`)の短縮バッジ、`DesignSystemCatalogView`(`#if DEBUG`のみ・開発者
+向けカタログ画面で出荷UIではない)。
+
+### 2. `Localizable.xcstrings`とジェネレータスクリプトのドリフト解消
+
+`scripts/generate-localizable.py`にはTask #100発覚時点で「~30件」と書か
+れていたドリフト注記がそのまま放置されており、実際には**82件**まで拡大
+していた (Yahoo/Outlook/Office365/Exchange/Microsoftのアカウント設定画面
+群、カレンダー招待の出欠ラベル、HTML表示/ツールバー設定の一部文言) —
+すべてXcodeのString Catalogエディタで直接追記され、このスクリプトには
+一度も反映されていなかったもの。加えて1件、スクリプト側だけに残っていた
+古い文言 (`"例: 会社用の署名"` — 実際のSwiftソースは`SignatureTemplateEditView
+.swift`で`"例: あいさつ用の署名"`に変わっていた) も見つかった。
+
+対応: 生きた`Localizable.xcstrings`から82件の`en`訳をそのまま吸い上げて
+スクリプトの辞書に追記し、古い1件を実際のソースに合わせて修正、スクリプ
+トを実行して**再生成した出力が元のコミット済みカタログとバイト単位で一致
+すること** (`"OK"`エントリを消した1件の差分を除く) を確認済み。あわせて
+`build()`が`comment`フィールド (Xcodeエディタで付与された、カレンダー招
+待の出欠ラベルのような短い/使い回しの文字列の曖昧さ回避コメント、11件)
+を保持するよう拡張した — 以前の`build()`は`comment`を一切出力しない実装
+だったため、再生成のたびにこれらのコメントが黙って失われる状態だった。
+
+**今後ドリフトさせないための運用**: `scripts/generate-localizable.py`の
+ファイル冒頭docstringに明記した通り、Xcodeの String Catalog エディタで
+直接`Localizable.xcstrings`を編集した場合は**同じコミットで**同じキー/
+値をこのスクリプトの`translations`辞書 (曖昧さ回避コメントが要る場合は
+`comments`辞書) にも反映すること。次に誰かがこのスクリプトを実行して
+コミットする際、辞書にない追記は容赦なく削除される。同期が怪しくなった
+ら、コミット前に生きたカタログのキー集合とこの辞書を突き合わせて確認する
+(`python3`のワンライナーで`json.load` + このスクリプトを`importlib`で
+読み込んで`set`比較すれば十分 — 今回の調査で実際に使った方法)。
+
+### 3. XCUITestのロケール依存lookup
+
+全65本のUITestファイルを`.buttons["..."]`/`.staticTexts["..."]`等の
+文字列リテラルsubscriptで洗い出したところ、既存のidentifier慣行から外れ
+ていたのは8箇所のみ (大半は既にaccessibilityIdentifier/OR述語ベースで
+書かれていた)。うち実際に直したもの:
+
+- `DovecotAccountUITestHelpers.dismissSavePasswordPromptIfNeeded`の
+  `"Not Now"`固定lookup — 同じファイルの`allowNotificationPermissionIfNeeded`
+  が既に使っているOR述語 (`label == "Allow" OR label == "許可"`) と同じ
+  パターンに合わせ、日本語候補 (`"今はしない"`/`"あとで"`) とのOR述語に
+  変更 (システム管理下のAutoFillシートで正確な訳文がこのリポジトリのどこ
+  にも記録されていないため、複数候補をORした — ベストエフォート)。
+- `OtegamiMailtoUITests`の`mailto:`起動同意アラート、springboardの
+  `"Open"`固定lookup — `"開く"`とのOR述語に変更。
+- `OtegamiQASweepScenario2UITests.testBoundarySearchQueries`の
+  `"No Results"`固定lookup (`ContentUnavailableView.search(text:)`はApple
+  提供のローカライズ済みビューなのでシステム言語で文言が変わる) —
+  `MessageListView`が既に付けている`messageList.search.emptyState`識別子
+  に置き換え。同じテストの`"Cancel"`固定lookupも`"キャンセル"`とのOR述語
+  に変更。
+
+見つけたが直さなかったもの (テスト自体が既存の検索UIと乖離している疑い)
+は`PENDING.md`のTask #145節に記録した — `OtegamiQASweepScenario2UITests`
+が対象にしている`app.searchFields.firstMatch`はiOS版では`.searchable`を
+使っていない (macOS専用) ため、そもそも見つからない可能性が高い。ロケール
+lookupの修正はしたが、検索フィールドの発見方法自体の書き直しはローカライ
+ズの範囲を超えるため見送った。
+
+### 4. 日付/数値の書式
+
+一覧・スレッド行の日付は`OtegamiDateFormat.listRowText(for:)`
+(`DesignSystem/OtegamiDateFormat.swift`) に集約されており、`Calendar
+.current`+`Text(date, format: .dateTime...)`という標準API経由 — ロケール
+追従は Foundation/SwiftUI 側が担うため崩れる要素が無い。カレンダー招待
+カード (`CalendarInviteCardView`) の`DateFormatter`も`dateStyle`/
+`timeStyle`のみ指定でロケールを固定していない、標準的な使い方。スレッド
+要約ヘッダの`"[M/d]"`(`ThreadDetailView`、Task #160)も`.formatted(.dateTime
+.month().day())`という標準APIで、指示どおり表示専用のため現状維持。
+いずれも`Locale(identifier:)`で固定する必要のある不具合は見つからなかっ
+た。
+
+### 検証状況の注記
+
+`make test`/`make mac`は、このタスクの変更とは無関係に、同じワークツリー
+で並行していた別の変更 (`TranslationService.summarizeThread`のクロージャ
+シグネチャ変更、未コミット) により作業時点で赤だった。このタスクの変更
+ファイルは`swift build`(テスト抜き)の成功・変更ファイルの`swiftc -parse`
+通過・変更内容が文字列リテラル置き換え中心であることで個別に確認済み。
+詳細は`PENDING.md`のTask #145節参照。
