@@ -59,6 +59,22 @@ struct ComposerView: View {
     /// (mailto: prefill, immediate send). `PendingSendDraftSnapshot` (C7
     /// cancelled-send restore) *does* carry it, since that's in-memory only.
     @State private var bccText = ""
+    /// 2026-07-29デザイン指示 (iOSフラットデザイン化): the iOS "宛先" row's
+    /// "Cc: Bcc:" ピルボタンをタップした結果 — `true`になった後は元に戻らない
+    /// (一度展開したCc/Bcc行を再び隠す操作はない、他のメールクライアントの
+    /// 慣習どおり)。`isShowingCcBcc`はこれと「すでにCc/Bccに値が入っている」
+    /// のORで決まるので、mailto:プリフィル/全員に返信/送信キャンセル復元で
+    /// 最初からCc/Bccに値が入っているケースはピルをタップしなくても最初から
+    /// 展開済みで見える — `OtegamiMailtoUITests`がタップなしで
+    /// `composer.cc`/`composer.bcc`を直接読むのはこの前提に依存している。
+    @State private var isCcBccExpandedByUser = false
+
+    /// See `isCcBccExpandedByUser`'s doc comment.
+    private var isShowingCcBcc: Bool {
+        isCcBccExpandedByUser
+            || !ccText.trimmingCharacters(in: .whitespaces).isEmpty
+            || !bccText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
     @State private var subject = ""
     /// Task #129 (作成画面リッチテキスト化): the body editor's real state —
     /// replaces the M1-era plain `bodyText: String` now that `bodySection`
@@ -241,48 +257,28 @@ struct ComposerView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                fromSection
-                addressSection
-                subjectSection
-                bodySection
-                templateSection
-                signatureSection
-                // Task #125 「添付UIの位置」: 添付ボタン/添付済み一覧は本文＋
-                // 署名の下 — 署名選択で本文末尾が変わっても、添付欄の位置が
-                // それに引きずられて動かないようにする。
-                attachmentsSection
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .foregroundStyle(OtegamiColor.destructive)
-                            .accessibilityIdentifier("composer.errorMessage")
+            composerContent
+                .navigationTitle(navigationTitle)
+                .tint(OtegamiColor.accent)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("キャンセル") { handleCloseRequested() }
+                            .accessibilityIdentifier("composer.cancelButton")
                     }
-                }
-            }
-            .navigationTitle(navigationTitle)
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
-            .tint(OtegamiColor.accent)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("キャンセル") { handleCloseRequested() }
-                        .accessibilityIdentifier("composer.cancelButton")
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        Task { await send() }
-                    } label: {
-                        if isSending {
-                            ProgressView()
-                        } else {
-                            Text("送信")
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button {
+                            Task { await send() }
+                        } label: {
+                            if isSending {
+                                ProgressView()
+                            } else {
+                                Text("送信")
+                            }
                         }
+                        .accessibilityIdentifier("composer.sendButton")
+                        .disabled(isSending || isLoadingReplyContext || !isFormValid)
                     }
-                    .accessibilityIdentifier("composer.sendButton")
-                    .disabled(isSending || isLoadingReplyContext || !isFormValid)
                 }
-            }
         }
         .accessibilityIdentifier("composer.sheet")
         // M10: block the iOS sheet's swipe-down dismissal whenever there's
@@ -357,7 +353,45 @@ struct ComposerView: View {
         #endif
     }
 
-    // MARK: - Form sections
+    // MARK: - Top-level content (platform split)
+    //
+    // 2026-07-29デザイン指示 (Spark ダークモード参考): iOS はカード/`Form`の
+    // グループ化された見た目をやめ、背景に直接フィールドが並ぶミニマムな
+    // フラットデザインへ — `flatContent`とその下の「MARK: - iOS flat layout」
+    // 節がそれ。macOS は今回のスコープ外 (指示の「macOSは崩れない範囲で
+    // 追随、優先はiOS」どおり、既存の`Form`ベースのレイアウトをそのまま
+    // 維持) — `fromSection`以下、この下に続く「MARK: - Form sections
+    // (macOS)」節がそれ。
+    @ViewBuilder
+    private var composerContent: some View {
+        #if os(iOS)
+        flatContent
+        #else
+        Form {
+            fromSection
+            addressSection
+            subjectSection
+            bodySection
+            templateSection
+            signatureSection
+            // Task #125 「添付UIの位置」: 添付ボタン/添付済み一覧は本文＋
+            // 署名の下 — 署名選択で本文末尾が変わっても、添付欄の位置が
+            // それに引きずられて動かないようにする。
+            attachmentsSection
+            if let errorMessage {
+                Section {
+                    Text(errorMessage)
+                        .foregroundStyle(OtegamiColor.destructive)
+                        .accessibilityIdentifier("composer.errorMessage")
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(OtegamiColor.background)
+        #endif
+    }
+
+    // MARK: - Form sections (macOS)
     //
     // `docs/ci.md`'s SwiftUI type-check-timeout pitfall, hit for real
     // building this: a `Form { Section { ForEach { multi-line HStack } } }`
@@ -372,6 +406,7 @@ struct ComposerView: View {
     // `AttachmentRow` type below, not just a smaller closure, since the row
     // itself still had a multi-line `HStack`/`VStack`/two-`Text` shape.
 
+    #if os(macOS)
     private var fromSection: some View {
         Section("差出人") {
             Picker("From", selection: $selectedAccountId) {
@@ -443,6 +478,7 @@ struct ComposerView: View {
             attachmentsMenu
         }
     }
+    #endif
 
     @ViewBuilder
     private var attachmentsMenu: some View {
@@ -509,6 +545,7 @@ struct ComposerView: View {
     /// with nothing to pick would just be confusing. A `Menu` (not a
     /// `Picker`) since applying a template is an *action* (inserts text
     /// right away), not a persistent selection state.
+    #if os(macOS)
     @ViewBuilder
     private var templateSection: some View {
         if !availableTemplates.isEmpty {
@@ -526,6 +563,7 @@ struct ComposerView: View {
             }
         }
     }
+    #endif
 
     /// C8: "署名的な使い方（本文の末尾に定型文）と、定型メール全体の両方に使える"
     /// — which of the two this does isn't a property of the template
@@ -570,6 +608,7 @@ struct ComposerView: View {
     /// 前の署名を除去して差し替え". Only shown once at least one signature is
     /// scoped to the selected account — an empty picker with nothing but
     /// "なし" would be pointless chrome.
+    #if os(macOS)
     @ViewBuilder
     private var signatureSection: some View {
         if !availableSignatures.isEmpty {
@@ -587,6 +626,211 @@ struct ComposerView: View {
             }
         }
     }
+    #endif
+
+    // MARK: - iOS flat layout
+    //
+    // 2026-07-29デザイン指示 (Spark ダークモード参考): `Form`/`Section`の
+    // カード的なグループ化をやめ、背景に直接フィールドが並ぶミニマムな
+    // フラットデザインへ。区切りは`.otegamiRowDivider()`（罫線1本）か余白の
+    // みで、見出しラベルは基本置かない — 差出人/宛先/Cc/Bccだけは「ラベル:
+    // フィールド」という最小限のインライン表記 (`ComposerFieldRow`) を使う。
+    // 件名/本文はプレースホルダのみで、ラベル自体を出さない。
+    //
+    // このセクション全体を1つの`ScrollView`にまとめて`body`に直接書くと
+    // （`Form`のときと同じ理由で）CI の型チェックタイムアウトを再発させる
+    // 恐れがあるため、`flatContent`は各行を個別の computed property/型に
+    // 割った上で並べるだけの薄いラッパーにしている。
+
+    #if os(iOS)
+    private var flatContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: OtegamiSpacing.lg) {
+                flatFromRow
+                flatRecipientsSection
+                flatSubjectRow
+                flatBodySection
+                flatTemplateSection
+                flatSignatureRow
+                // Task #125 「添付UIの位置」: 添付ボタン/添付済み一覧は本文＋
+                // 署名の下 — 署名選択で本文末尾が変わっても、添付欄の位置が
+                // それに引きずられて動かないようにする。
+                flatAttachmentsSection
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(OtegamiFont.subheadline())
+                        .foregroundStyle(OtegamiColor.destructive)
+                        .accessibilityIdentifier("composer.errorMessage")
+                }
+            }
+            .padding(.horizontal, OtegamiSpacing.lg)
+            .padding(.vertical, OtegamiSpacing.md)
+        }
+        .background(OtegamiColor.background)
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    /// 「差出人 (From アカウント) 行は現行機能を維持しつつ同トーンの控えめな
+    /// 行に」— `macOS`側の`fromSection`と同じ`Picker`/`selectedAccountId`
+    /// バインディングをそのまま使い、ラベルだけ他の行 (宛先/Cc/Bcc) と揃えた
+    /// 見た目にする。`.labelsHidden()`で`Picker`自身の既定ラベルを隠し、
+    /// 手前の`Text("差出人:")`だけを見せているのは、他の行がすべて
+    /// 「ラベル: 値」という共通の形なのに揃えるため。
+    private var flatFromRow: some View {
+        HStack(spacing: OtegamiSpacing.sm) {
+            Text("差出人:")
+                .font(OtegamiFont.subheadline())
+                .foregroundStyle(OtegamiColor.inkSecondary)
+            Picker("差出人", selection: $selectedAccountId) {
+                ForEach(environment.accounts) { account in
+                    Text("\(account.displayName) <\(account.email)>")
+                        .tag(Optional(account.id))
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("composer.fromPicker")
+            Spacer(minLength: 0)
+        }
+        .otegamiRowDivider()
+        .padding(.bottom, OtegamiSpacing.sm)
+    }
+
+    /// 宛先行 (常に表示) + 「Cc: Bcc:」ピルボタン (`isShowingCcBcc`が`false`の
+    /// 間だけ、宛先行の右端に表示) + Cc/Bcc行 (`isShowingCcBcc`が`true`に
+    /// なったら表示、ピルは消える) — 詳細は`isCcBccExpandedByUser`/
+    /// `isShowingCcBcc`の doc comment 参照。
+    private var flatRecipientsSection: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
+            HStack(spacing: OtegamiSpacing.sm) {
+                Text("宛先:")
+                    .font(OtegamiFont.subheadline())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                TextField("", text: $toText)
+                    .textFieldAutocapitalizationNone()
+                    .accessibilityIdentifier("composer.to")
+                if !isShowingCcBcc {
+                    ComposerCcBccPillButton { isCcBccExpandedByUser = true }
+                }
+            }
+            if isShowingCcBcc {
+                ComposerFieldRow(label: "Cc:", text: $ccText, accessibilityIdentifier: "composer.cc")
+                ComposerFieldRow(label: "Bcc:", text: $bccText, accessibilityIdentifier: "composer.bcc")
+            }
+        }
+        .otegamiRowDivider()
+        .padding(.bottom, OtegamiSpacing.sm)
+    }
+
+    /// 「プレースホルダのみのプレーン入力」— ラベルなし、`Form`の見出しも
+    /// なし。件名の値そのものにはプレースホルダと違う色を使いたいわけでは
+    /// ないので、`TextField`本体の既定のプレースホルダ描画に任せている。
+    private var flatSubjectRow: some View {
+        TextField("件名", text: $subject)
+            .font(OtegamiFont.body())
+            .accessibilityIdentifier("composer.subject")
+            .otegamiRowDivider()
+            .padding(.bottom, OtegamiSpacing.sm)
+    }
+
+    /// 本文: `RichTextEditor`自体はプレースホルダを知らない
+    /// (`RichTextEditor`のdoc comment参照) ので、空のときだけ`ZStack`で
+    /// プレースホルダの`Text`を重ねている — `UITextView`の既定の
+    /// `textContainerInset`(top/bottom 8pt)/`lineFragmentPadding`(5pt)に
+    /// おおよそ合わせた`padding`で、入力済みテキストの先頭とほぼ同じ位置に
+    /// 見えるようにしている（厳密なピクセル一致は狙っていない — 1文字でも
+    /// 入力されればプレースホルダ自体が消えるので実害は小さい）。
+    private var flatBodySection: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
+            RichTextFormattingBar(controller: richTextEditingController)
+            ZStack(alignment: .topLeading) {
+                if attributedBodyText.string.isEmpty {
+                    Text("本文を入力してください")
+                        .font(OtegamiFont.body())
+                        .foregroundStyle(OtegamiColor.inkTertiary)
+                        .padding(.top, 8)
+                        .padding(.leading, 5)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+                RichTextEditor(
+                    attributedText: $attributedBodyText,
+                    selectedRange: $bodySelectedRange,
+                    controller: richTextEditingController,
+                    accessibilityIdentifier: "composer.body"
+                )
+            }
+            .frame(minHeight: 240)
+        }
+    }
+
+    @ViewBuilder
+    private var flatTemplateSection: some View {
+        if !availableTemplates.isEmpty {
+            Menu {
+                ForEach(availableTemplates) { template in
+                    Button(template.name) { applyTemplate(template) }
+                }
+            } label: {
+                Label("テンプレートを挿入", systemImage: "doc.on.doc")
+                    .font(OtegamiFont.subheadline())
+                    .foregroundStyle(OtegamiColor.accentText)
+            }
+            .accessibilityIdentifier("composer.insertTemplateMenu")
+        }
+    }
+
+    /// 「署名: 本文下に「署名なし」のようなグレーテキスト行 — タップで既存の
+    /// 署名選択。署名選択済みなら署名内容を表示。」`Picker(selection:label:)`
+    /// にカスタムラベルを渡し`.pickerStyle(.menu)`にする、という標準の
+    /// SwiftUIパターン — ラベル (`selectedSignatureLabel`、選択中の署名名か
+    /// 「署名なし」) がそのままタップ可能な行の見た目になり、タップすると
+    /// `availableSignatures`のメニューが開く。選択そのもの
+    /// (`selectedSignatureId`) と、それが変わったときの本文への挿入/削除
+    /// (`updateSignatureText(newId:)`、カーソル位置調整含む) はmacOS側の
+    /// `signatureSection`と完全に同じロジックを共有している (`onChange(of:
+    /// selectedSignatureId)`が`body`トップレベルにあるので、プラットフォーム
+    /// ごとの見た目の違いに関わらず1箇所で動く)。
+    @ViewBuilder
+    private var flatSignatureRow: some View {
+        if !availableSignatures.isEmpty {
+            Picker(selection: $selectedSignatureId) {
+                Text("なし").tag(Int64?.none)
+                ForEach(availableSignatures) { signature in
+                    Text(signature.name).tag(Optional(signature.id))
+                }
+            } label: {
+                Text(selectedSignatureLabel)
+                    .font(OtegamiFont.subheadline())
+                    .foregroundStyle(OtegamiColor.inkTertiary)
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("composer.signaturePicker")
+        }
+    }
+
+    private var selectedSignatureLabel: String {
+        guard let selectedSignatureId,
+              let signature = availableSignatures.first(where: { $0.id == selectedSignatureId })
+        else { return "署名なし" }
+        return signature.name
+    }
+
+    /// 添付: 装飾を他の行と同トーンに（`Section`の見出しなし）。macOS側の
+    /// `attachmentsSection`が`List`の`.onDelete`（スワイプ削除）に頼っている
+    /// のに対し、`ScrollView`+`VStack`の中では`.onDelete`が機能しないため、
+    /// 各行に明示的な削除ボタン (`AttachmentRow(onRemove:)`) を渡している。
+    private var flatAttachmentsSection: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
+            ForEach(pendingAttachments) { attachment in
+                AttachmentRow(attachment: attachment) {
+                    pendingAttachments.removeAll { $0.id == attachment.id }
+                }
+            }
+            attachmentsMenu
+        }
+    }
+    #endif
 
     /// Reloads `availableSignatures` for `selectedAccountId` (`.task(id:)`
     /// in `body`, fired on every From-account switch too) and, only for a
@@ -1439,6 +1683,12 @@ struct PendingAttachment: Identifiable, Equatable, Hashable, Codable, Sendable {
 /// "MARK: - Form sections" doc comment for why this split was necessary.
 private struct AttachmentRow: View {
     let attachment: PendingAttachment
+    /// 2026-07-29デザイン指示: iOSのフラットレイアウト (`ComposerView
+    /// .flatAttachmentsSection`) は`List`の外なので`.onDelete`のスワイプ
+    /// 削除が使えない — その代わりにこの行自身へ明示的な削除ボタンを渡す。
+    /// macOS側の`attachmentsSection`（`List`/`.onDelete`のまま）は`nil`の
+    /// ままなので見た目は変わらない。
+    var onRemove: (() -> Void)? = nil
 
     var body: some View {
         HStack {
@@ -1452,8 +1702,64 @@ private struct AttachmentRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let onRemove {
+                Spacer(minLength: OtegamiSpacing.sm)
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(OtegamiColor.inkTertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("composer.attachment.\(attachment.id).remove")
+            }
         }
         .accessibilityIdentifier("composer.attachment.\(attachment.id)")
+    }
+}
+
+/// 2026-07-29デザイン指示: 宛先行の「ラベル: フィールド」という最小限の
+/// インライン表記 — Cc/Bcc両方に使う小さな共通行。`accessibilityIdentifier`
+/// は行全体ではなく`TextField`自体に付ける（既存のUITestが
+/// `app.textFields["composer.cc"]`のように`textFields`経由でクエリする
+/// ため、`HStack`側に付けても見つからない）。
+private struct ComposerFieldRow: View {
+    let label: String
+    @Binding var text: String
+    let accessibilityIdentifier: String
+
+    var body: some View {
+        HStack(spacing: OtegamiSpacing.sm) {
+            Text(label)
+                .font(OtegamiFont.subheadline())
+                .foregroundStyle(OtegamiColor.inkSecondary)
+            TextField("", text: $text)
+                .textFieldAutocapitalizationNone()
+                .accessibilityIdentifier(accessibilityIdentifier)
+        }
+    }
+}
+
+/// 2026-07-29デザイン指示: 宛先行の右端に出す「Cc: Bcc:」丸角アウトライン
+/// ピルボタン。`OtegamiRadius`は原則フラット（角丸0）だが、`SearchTopBar`
+/// が検索画面のトップバーで既に確立した「カプセル/円は個別ビュー内だけの
+/// 閉じたスコープの例外として`Capsule()`/`Circle()`を直接使う」という前例
+/// (`OtegamiBorder.swift`のdoc comment参照) に倣い、ここでも新しい
+/// `OtegamiRadius`トークンを追加せず`Capsule()`をこのビュー内だけで使う。
+private struct ComposerCcBccPillButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(verbatim: "Cc: Bcc:")
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
+                .padding(.horizontal, OtegamiSpacing.md)
+                .padding(.vertical, OtegamiSpacing.xs)
+                .overlay(
+                    Capsule().strokeBorder(OtegamiColor.dividerSubtle, lineWidth: OtegamiStroke.secondary)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("composer.showCcBccButton")
     }
 }
 
