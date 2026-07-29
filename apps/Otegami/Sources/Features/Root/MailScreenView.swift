@@ -51,12 +51,26 @@ struct MailScreenView: View {
     // `String(localized:)`を使う (このプロパティの唯一の消費者である
     // `Text(selectionTitle)`呼び出し自体はそのまま)。
     @State private var selectionTitle = String(localized: "すべての受信")
-    @State private var selectedThreadId: Int64?
-    /// 実機フィードバック第3弾 (A) — see `MessageListView.selectedMessageId`'s
-    /// doc comment. Written alongside `selectedThreadId` on every tap;
-    /// forwarded to `ThreadDetailView.singleMessageId` in
-    /// `.navigationDestination(item:)` below.
-    @State private var selectedMessageId: Int64?
+    /// Task #105 続報 (実機ログで確定した cold launch 初回タップのバグ):
+    /// 以前はここが `selectedThreadId`/`selectedMessageId` の**2つ**の
+    /// `@State` で、`.navigationDestination(item: $selectedThreadId)` の
+    /// destination クロージャが兄弟 state の `selectedMessageId` を読んで
+    /// いた。SwiftUI はこの destination クロージャを登録時点の view 値で
+    /// キャプチャすることがあり、cold launch 後の**初回 push に限って**
+    /// 「`handleThreadSelected` は `singleMessageId=9879` を書いたのに
+    /// `ThreadEntryView` には `preselectedMessageId=nil` が渡る」ことを
+    /// 実機の OSLog で観測した (書き込み順を messageId 先行に変えても
+    /// 再現)。アプリスイッチャーを出すと再描画でクロージャが最新値に
+    /// 更新され「直る」ように見える、という報告挙動もこれで説明がつく。
+    /// 対策: navigation item 自体に threadId + messageId を両方持たせ、
+    /// destination クロージャは **item 引数だけ**から画面を組み立てる —
+    /// 兄弟 state を読まないので stale capture が構造的に起きない。
+    @State private var selectedRoute: ThreadRoute?
+    /// `MessageListView` は互換のため従来どおり「messageId → threadId」の
+    /// 順で2つの binding に書く — messageId の書き込みをここに一時保持し、
+    /// threadId の書き込み時に `ThreadRoute` へ合成する (下の
+    /// `selectedThreadIdBinding`/`selectedMessageIdBinding` 参照)。
+    @State private var pendingTapMessageId: Int64?
     @State private var isSelecting = false
     /// G「削除・アーカイブ時の挙動」— see `MessageListView.onSummariesChanged`'s
     /// doc comment: the most recently observed on-screen thread order,
@@ -140,7 +154,7 @@ struct MailScreenView: View {
         // real launch.
         .task {
             if let threadId = environment.uitestDirectOpenThreadId {
-                selectedThreadId = threadId
+                selectedRoute = ThreadRoute(threadId: threadId, messageId: nil)
             }
             // Task #60 (シミュレータ検証基盤の整備): same "tap-free direct
             // navigation" idea as `uitestDirectOpenThreadId` above, for the
@@ -237,9 +251,11 @@ struct MailScreenView: View {
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
-                .navigationDestination(item: $selectedThreadId) { threadId in
+                .navigationDestination(item: $selectedRoute) { route in
+                    // Task #105 続報: `route` (item 引数) だけから組み立てる —
+                    // 兄弟 state を読まない (上の `selectedRoute` doc comment)。
                     ThreadEntryView(
-                        threadId: threadId, preselectedMessageId: selectedMessageId, onReply: onReply, onForward: onForward,
+                        threadId: route.threadId, preselectedMessageId: route.messageId, onReply: onReply, onForward: onForward,
                         onSearchFromSender: { query in openSearch(presetQuery: query) },
                         onThreadRemoved: handleThreadRemoved
                     )
@@ -281,9 +297,9 @@ struct MailScreenView: View {
     private var detailColumn: some View {
         NavigationStack {
             Group {
-                if let selectedThreadId {
+                if let selectedRoute {
                     ThreadEntryView(
-                        threadId: selectedThreadId, preselectedMessageId: selectedMessageId, onReply: onReply, onForward: onForward,
+                        threadId: selectedRoute.threadId, preselectedMessageId: selectedRoute.messageId, onReply: onReply, onForward: onForward,
                         onSearchFromSender: { query in openSearch(presetQuery: query) },
                         onThreadRemoved: handleThreadRemoved
                     )
@@ -329,8 +345,8 @@ struct MailScreenView: View {
                 MessageListView(
                     selection: mailSelection,
                     unifiedInboxAccountFilter: accountFilter,
-                    selectedThreadId: $selectedThreadId,
-                    selectedMessageId: $selectedMessageId,
+                    selectedThreadId: selectedThreadIdBinding,
+                    selectedMessageId: selectedMessageIdBinding,
                     onSelectionModeChanged: { isSelecting = $0 },
                     onSummariesChanged: { currentThreadOrder = $0 },
                     suppressInternalUndoToast: true,
@@ -723,11 +739,36 @@ struct MailScreenView: View {
     /// back to the list (`nil`).
     private func handleThreadRemoved(_ threadId: Int64) {
         let action = PostDeleteArchiveAction(rawValue: postDeleteArchiveActionRaw) ?? MessagePostActionSettingsStore.defaultAfterDeleteArchive
-        selectedThreadId = MessagePostActionSettingsStore.nextThreadId(after: threadId, in: currentThreadOrder, action: action)
-        // 実機フィードバック第3弾 (A): see `RootView.handleThreadRemoved(_:)`'s
-        // identical doc comment — every arrival here is already a
-        // grouped-mode dismissal, reset defensively anyway.
-        selectedMessageId = nil
+        // 実機フィードバック第3弾 (A): messageId は付けない — every arrival
+        // here is already a grouped-mode dismissal (see `RootView
+        // .handleThreadRemoved(_:)`'s identical doc comment)。
+        selectedRoute = MessagePostActionSettingsStore.nextThreadId(after: threadId, in: currentThreadOrder, action: action)
+            .map { ThreadRoute(threadId: $0, messageId: nil) }
+        pendingTapMessageId = nil
+    }
+
+    /// Task #105 続報: `MessageListView` の2本の binding を `selectedRoute`
+    /// へ合成するアダプタ。書き込み順 (messageId → threadId) は
+    /// `MessageListView.handleThreadSelected` が保証している。
+    private var selectedThreadIdBinding: Binding<Int64?> {
+        Binding(
+            get: { selectedRoute?.threadId },
+            set: { newValue in
+                if let newValue {
+                    selectedRoute = ThreadRoute(threadId: newValue, messageId: pendingTapMessageId)
+                } else {
+                    selectedRoute = nil
+                }
+                pendingTapMessageId = nil
+            }
+        )
+    }
+
+    private var selectedMessageIdBinding: Binding<Int64?> {
+        Binding(
+            get: { selectedRoute?.messageId },
+            set: { pendingTapMessageId = $0 }
+        )
     }
 
     private func openSearch(presetQuery: String? = nil) {
@@ -759,4 +800,17 @@ struct MailScreenView: View {
         isMenuOpen = false
         present()
     }
+}
+
+/// Task #105 続報: 「開くスレッド + フラット時に開く単一メッセージ」を
+/// 1つの navigation item に束ねた値。`MailScreenView.selectedRoute` の
+/// doc comment 参照 — destination クロージャが兄弟 state を読むと cold
+/// launch の初回 push で stale capture が起きるため、必要な値はすべて
+/// item 自身が運ぶ。`id` は threadId — `handleThreadRemoved` の「次の
+/// スレッドへ差し替え」で id が変わり、`.navigationDestination(item:)` が
+/// pop せず in-place で再描画する既存挙動を維持する。
+private struct ThreadRoute: Hashable, Identifiable {
+    let threadId: Int64
+    let messageId: Int64?
+    var id: Int64 { threadId }
 }
