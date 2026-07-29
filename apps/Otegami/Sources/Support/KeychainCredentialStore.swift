@@ -180,6 +180,30 @@ struct KeychainCredentialStore: Sendable {
             try? migrateLegacyItem(data: data, fromService: legacyService, accountId: accountId)
             return String(data: data, encoding: .utf8)
         }
+        // 実機バグ修正 (2026-07-29「mac では、iCloud で同期されたアカウント
+        // の認証が切れているが再認証できない」— `Otegami-macOS.entitlements`
+        // の doc comment に詳細): このビルドから macOS も
+        // `accessGroup`(`OtegamiAppGroup.keychainAccessGroup`)を非nilで
+        // 渡すようになった。だが *それより前* の macOS ビルドで直接この
+        // Mac 上で追加されたパスワード型アカウントは、当時の
+        // `accessGroup: nil`(プロセスの既定グループ)で書き込まれている
+        // — `kSecAttrAccessGroup`はACLの権限チェックではなく完全一致の
+        // 属性フィルタなので、非nilになった今のクエリでは絶対に見つから
+        // ない。`legacyServices`と同じ「次に読んだときに新しい場所へ
+        // 移行する」形で救済する: グループ指定を外したクエリでもう一度
+        // 探し、見つかればそれを正しい (新しい) アクセスグループへ書き
+        // 直す。`accessGroup`自体が最初から`nil`の環境 (`swift test`・
+        // プレビュー・エンタイトルメント未設定ビルド) では
+        // `dataIgnoringAccessGroup`は上の`data(service:accountId:)`と
+        // 完全に同じクエリになり無意味な二度読みになるだけなので、
+        // `accessGroup != nil`のときだけ試す。
+        if accessGroup != nil {
+            for candidateService in [service] + Self.legacyServices {
+                guard let data = try dataIgnoringAccessGroup(service: candidateService, accountId: accountId) else { continue }
+                try? migrateFromDefaultAccessGroup(data: data, fromService: candidateService, accountId: accountId)
+                return String(data: data, encoding: .utf8)
+            }
+        }
         return nil
     }
 
@@ -327,6 +351,46 @@ struct KeychainCredentialStore: Sendable {
     private func migrateLegacyItem(data: Data, fromService legacyService: String, accountId: String) throws {
         try addSynchronizable(data, accountId: accountId)
         _ = SecItemDelete(Self.anySynchronizableQuery(baseQuery(service: legacyService, accountId: accountId)) as CFDictionary)
+    }
+
+    /// See `password(forAccountId:)`'s doc comment on the macOS
+    /// Keychain-Access-Group migration this backs — a query that omits
+    /// `kSecAttrAccessGroup` entirely, regardless of what `self.accessGroup`
+    /// is, so it can find an item a *previous* build of this store (when
+    /// `accessGroup` was still `nil` on this platform) wrote to the
+    /// process's implicit default group.
+    private func dataIgnoringAccessGroup(service: String, accountId: String) throws -> Data? {
+        var query = Self.anySynchronizableQuery([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: accountId,
+        ])
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+        return result as? Data
+    }
+
+    /// Rewrites an item `dataIgnoringAccessGroup` found (no access group,
+    /// under `fromService`) into the current `service`/`accessGroup` —
+    /// mirrors `migrateLegacyItem`'s "delete the old copy once the new one
+    /// is written" shape. The delete query deliberately also omits the
+    /// access group (matching how the item was found), not
+    /// `self.accessGroup` — it has to target the *old*, ungrouped item, not
+    /// (accidentally, and harmlessly-but-uselessly) the freshly-written new
+    /// one `addSynchronizable` just created.
+    private func migrateFromDefaultAccessGroup(data: Data, fromService: String, accountId: String) throws {
+        try addSynchronizable(data, accountId: accountId)
+        let deleteQuery = Self.anySynchronizableQuery([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: fromService,
+            kSecAttrAccount as String: accountId,
+        ])
+        _ = SecItemDelete(deleteQuery as CFDictionary)
     }
 
     func deletePassword(forAccountId accountId: String) throws {

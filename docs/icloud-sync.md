@@ -991,3 +991,164 @@ reconcile した方の push がペイロード全体を丸ごと上書きし、�
      category == "SettingsCloudSync"'` で `reconcile -> merged` の行が
      実際に出ること、`diffKeys` が想定どおりのキーになっていることを
      確認。
+
+## macOS: iCloud で同期されたパスワード型アカウントの認証が切れて再認証できないバグ (2026-07-29 実機報告)
+
+実機報告:「mac 版において、iCloud で同期されたアカウントの認証が切れて
+いるが再認証できない」。背景 (このドキュメントの前提どおり): アカウント
+本体は iCloud KVS で同期されるが、資格情報 (パスワード/OAuth token) は
+Keychain 所在で、`kSecAttrSynchronizable` 経由の iCloud キーチェーン同期
+に委ねられる — 別端末で先に追加したアカウントが Mac に「アカウントは
+あるが認証が無い (`needsReauth`)」状態で現れるのは元々正規の一時状態
+(この文書の「突き合わせのルール」フェーズ3) だが、Mac 側でこの状態から
+抜け出す手段が実質無かった。
+
+### 真因: iOS と macOS の Keychain Access Group 不一致 (パスワード型のみ)
+
+`.password` 種別 (iCloud/その他IMAP/Yahoo 等) のアカウントは
+`KeychainCredentialStore` がパスワードを保存する。この store は
+`kSecAttrAccessGroup` を問い合わせに使えるが:
+
+- **iOS**: `Otegami-iOS.entitlements` の `keychain-access-groups` により
+  明示的なグループ文字列 `$(DEVELOPMENT_TEAM).$(OTEGAMI_BUNDLE_ID).shared`
+  を渡していた (M9: `NotificationService` Extension と共有するため)。
+- **macOS (このバグ修正前)**: `Otegami-macOS.entitlements` にこの
+  entitlement 自体が無く、`OtegamiAppGroup.keychainAccessGroup` は
+  macOS で常に `nil` を返していた (M9 当時、macOS には共有すべき
+  `NotificationService` が存在しないという理由だけで iOS 限定にされて
+  いた)。`accessGroup: nil` は「グループ指定なし」ではなく「プロセスの
+  既定グループ」を意味する。
+
+`kSecAttrAccessGroup` はACLの権限チェックではなく**完全一致の属性
+フィルタ**なので、iOS が明示グループ付きで書いたパスワードアイテムは、
+たとえ iCloud キーチェーン経由で実際にこの Mac のキーチェーンへ物理的に
+同期されていても、グループ指定の無い macOS 側のクエリには**絶対に見え
+ない**。これが「認証が切れているのに再認証(=資格情報の到着待ち)が
+永遠に終わらない」の実体だった。
+
+一方、**OAuth (Gmail/Microsoft) の再認証はこのバグの影響を受けない** —
+リフレッシュトークンを保存する `RefreshTokenStoring`
+(`KeychainRefreshTokenStore`) はそもそもどちらのプラットフォームも
+明示グループを指定しない実装のままだったため、iOS/macOS とも同じ
+「プロセスの既定グループ」に書く/読むという一貫した挙動になっており、
+今回の不一致は生じていない。Gmail/Microsoft アカウントの「再認証」ボタン
+(`ASWebAuthenticationSession` 経由、`AuthPresentationContextProvider`は
+既に macOS 分岐 `NSApplication.shared.keyWindow` を持っている) は、この
+節のバグとは無関係に元から動作するはず — 認証切れ自体は「トークンが
+実際に失効/取り消された」という正当な理由である可能性が高い。
+
+### 修正
+
+1. `apps/Otegami/Config/Otegami-macOS.entitlements` に
+   `keychain-access-groups`(`$(OTEGAMI_KEYCHAIN_GROUP)`、iOS と同じ文字列)
+   を追加。
+2. `OtegamiAppGroup.keychainAccessGroup` の macOS `nil` オーバーライドを
+   撤去 — 両プラットフォームとも Info.plist の値 (`OTEGAMI_KEYCHAIN_GROUP`)
+   をそのまま返す。`identifier` (App Group、`NotificationService`専用) は
+   macOS `nil` のまま — この節の対象外。
+3. **後方互換の移行**: この修正**以前**の macOS ビルドで、この Mac上で
+   直接追加していたパスワード型アカウント (iCloud KVS 経由でなく) は、
+   当時の `accessGroup: nil` (= プロセスの既定グループ、`.shared`接尾辞
+   無し) で書かれている。修正後、`accessGroup`が非nilになった新しい
+   クエリだけではこれらの既存アイテムが**逆に見えなくなる**回帰リスクが
+   あったため、`KeychainCredentialStore.password(forAccountId:)` に
+   「グループ指定を外した問い合わせでも探し、見つかればそれを新しい
+   グループへ書き直す」フォールバックを追加した (`legacyServices`の
+   サービス名リネーム救済と同じ「次に読んだときに移行する」形)。
+
+### 検証
+
+`make test`/`make mac`/`make ios` は緑 (`make mac`のビルド成功は、
+macOS 自動署名がこの新しい Keychain Sharing capability を問題なく
+解決できたことも意味する)。**実機での確認は未実施** — 具体的には:
+
+- パスワード型 (iCloud/generic/Yahoo) アカウントについて: iOS で
+  アカウントを追加 → iCloud キーチェーンが同期 → Mac 側の同じアカウントで
+  「資格情報を待っています」バナーが自動的に消え、同期が再開すること。
+- 上記の後方互換フォールバックが実際に機能すること: 修正前のビルドで
+  Mac 上に直接追加していたパスワード型アカウントが、修正後のビルドに
+  更新してもパスワードを再入力せずに済むこと。
+- Gmail/Microsoft の「再認証」ボタンが Mac の設定画面から実際に
+  `ASWebAuthenticationSession` の同意画面を開き、完走できること
+  (この開発環境ではブラウザでの実ログインまでは検証できない)。
+- 万一「再認証できない」がまだ再現する場合、それはこの節のバグとは
+  別の原因 (実際にトークン/パスワードが失効している等) である可能性が
+  高い — その場合は改めて切り分けが必要。
+
+### 別端末での再認証手順 (ユーザー向け)
+
+Mac の設定 → アカウント一覧で、あるアカウントに「資格情報を待って
+います」(パスワード型) または「再認証が必要です」(Gmail/Microsoft) が
+出ている場合:
+
+- **パスワード型 (iCloud/その他IMAP/Yahoo)**: 上記の修正後は、iOS/iPad
+  側で同じ Apple ID の iCloud キーチェーンが有効なら、多くの場合しばらく
+  待つだけで自動的に解消する (`retryPendingCredentialIfAvailable`が
+  アカウント一覧の更新のたびに自動チェックする)。すぐに使いたい場合は
+  「パスワードを入力」から手動でパスワードを再入力して保存すれば即座に
+  解消する。
+- **Gmail/Microsoft (OAuth)**: 「再認証」ボタンから対話的なサインイン
+  フローが開く。これは端末ごとに独立しており、iCloud 同期に依存しない
+  — 別端末で再認証済みでも Mac 側では改めてこのボタンからサインインが
+  必要。
+
+## macOS は設定 (settings.v2) を同期対象から除外、アカウントのみ同期 (2026-07-29)
+
+ユーザー指示「mac では、アカウント以外の情報は iCloud 同期しなくて良い」
+に対応。**アカウント本体の同期 (`accounts.v1`、このドキュメントの本題)
+は macOS でも従来どおり有効** — 変更したのは表示・操作設定
+(`settings.v2`、Task #89/#144、上の「表示設定の同期」節) だけ。
+
+### 実装
+
+`AppEnvironment.init()` が `SettingsCloudSyncEngine` に渡す `isEnabled`
+クロージャを `#if os(macOS)` で分岐し、macOS では無条件に `false` を
+返すようにした:
+
+```swift
+self.settingsCloudSync = SettingsCloudSyncEngine(
+    store: SystemUbiquitousStore(),
+    local: AppSettingsCloudDirectory(),
+    isEnabled: { [cloudSyncSettings] in
+        #if os(macOS)
+        false
+        #else
+        cloudSyncSettings.isEnabled && AppEnvironment.isCloudSyncPermittedOnThisBuild()
+        #endif
+    }
+)
+```
+
+`SettingsCloudSyncEngine`のpush/pull双方の経路 (`reconcile()`・
+`pushLocalChange`相当) はどれもこの`isEnabled`を毎回読み直してから
+動くため (`docs/icloud-sync.md`の他の節が既に前提にしている挙動)、
+ここ1箇所のゲートだけで「macOSは読みも書きもしない」を達成できる —
+呼び出し側 (`setCloudSyncEnabled`のOFF→ON即時reconcileなど) は無改造
+のままで良い。`accountCloudSync`(アカウント本体)は別のエンジン
+インスタンスで、このゲートの影響を受けない。
+
+### スコープ外だったもの
+
+- 「iCloud でアカウントを同期」トグル (`AccountSettingsCategoryView`の
+  `settings.cloudSyncToggle`) はラベルどおりアカウント同期
+  (`accountCloudSync`) 専用のまま — この変更で意味が変わったわけでは
+  ない。
+- Task #121 でプッシュリレー URL を「設定」側の同期対象に含めた分も、
+  macOS ではこのゲートにより同期対象外になる (ユーザー指示「アカウント
+  以外は同期しない」のとおり)。
+
+### 検証
+
+`make test`/`make mac`/`make ios` は緑。**macOS で設定を変更しても
+他端末 (iOS/iPad) に伝播しない/他端末の設定変更が macOS 側に反映
+されないことの実機確認は未実施** (iCloud KVS はシミュレータで不安定
+なため、`docs/verify.md`) — ユーザー側の確認手順:
+
+1. macOS でスレッド表示・スワイプ割り当てなど「設定」側の項目を変更
+   する。
+2. iPhone/iPad 側でその変更が**反映されない**こと (今までどおり
+   iOS/iPad 間だけで同期されること) を確認。
+3. 逆に iPhone/iPad 側で同種の設定を変更しても、macOS 側は変わらない
+   ままであることを確認。
+4. アカウントの追加・削除・編集は、この変更後も引き続き macOS ⇔
+   iOS/iPad 間で同期されることを確認 (今回のゲートの対象外)。

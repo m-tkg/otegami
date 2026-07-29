@@ -8,19 +8,44 @@
 	carries. Deliberately its *own*, separate, minimal entitlements file
 	rather than reusing Otegami-iOS.entitlements for both SDKs — see the
 	M9 lesson recorded on Otegami-iOS.entitlements' doc comment and
-	project.yml's CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: the App Group +
-	Keychain Access Group entitlements iOS carries are deliberately
-	*not* here (NotificationService, the only thing that shares those, is
-	iOS-only), so macOS's automatic-signing provisioning profile only
-	ever needs to satisfy this one iCloud capability, not App Groups too
-	— keeping the surface this repo's macOS automatic signing depends on
-	as small as the M9 postmortem already established it needs to be.
+	project.yml's CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: the App Group
+	entitlement iOS carries is deliberately *not* here (NotificationService,
+	the only thing that shares it, is iOS-only), keeping the surface this
+	repo's macOS automatic signing depends on smaller than iOS's.
 
 	aps-environment is likewise omitted: it's a push-specific capability
 	(iOS-only, PushSettingsStore/AppEnvironment.PushError.unsupportedPlatform's
 	doc comments) that macOS never registers for.
+
+	実機バグ修正 (2026-07-29「mac では、iCloud で同期されたアカウントの
+	認証が切れているが再認証できない」): Keychain Access Group は元々
+	(M9)「NotificationService Extension と共有するため」という iOS 固有の
+	理由だけで iOS 限定にされていた
+	(`OtegamiAppGroup.swift`/`Otegami-iOS.entitlements`の doc comment)。
+	だが `KeychainCredentialStore`(IMAP/SMTPパスワード)が iOS では明示的な
+	`$(OTEGAMI_KEYCHAIN_GROUP)` (`$(DEVELOPMENT_TEAM).$(OTEGAMI_BUNDLE_ID)
+	.shared`) を指定するのに対し、macOS はこのentitlementが無いため
+	`accessGroup: nil` (プロセスの既定グループ) で問い合わせていた —
+	iOS が書いた`kSecAttrSynchronizable`なアイテムは iCloud キーチェーン
+	経由で実際に Mac のキーチェーンへ物理的に届いても、**明示グループを
+	要求しない macOS 側のクエリには (既定グループが `.shared` 接尾辞なしの
+	別グループのため) 見えない** — これが「iOS で追加したパスワード型
+	アカウント (iCloud/その他IMAP) が Mac 側でいつまでも『資格情報を
+	待っています』のままになる」の実体だった (OAuthリフレッシュトークン
+	`RefreshTokenStoring`は元々どちらのプラットフォームも明示グループを
+	指定しないため、この不整合の影響を受けない — Gmail/Microsoftアカウントの
+	認証切れは無関係の理由)。
+	`keychain-access-groups`をmacOSにも追加しiOSと同じ文字列を共有する
+	ことで、iOS が書いたパスワードアイテムをmacOSも正しく問い合わせられる
+	ようにした — `OtegamiAppGroup.keychainAccessGroup`(macOSでの`nil`
+	オーバーライドを撤去)/`KeychainCredentialStore`側の変更は不要
+	(既に`accessGroup`引数を受け取る形になっている)。
 	-->
 	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
 	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(OTEGAMI_KEYCHAIN_GROUP)</string>
+	</array>
 </dict>
 </plist>
