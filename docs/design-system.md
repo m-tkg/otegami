@@ -5896,3 +5896,258 @@ Microsoft アカウントが無いためこのセッションでは検証不可�
 アプリ登録・リダイレクト URI 登録・Client ID 設定後、「アカウントを
 追加」→「Outlook」/「Office365」から実際にサインインし、INBOX 同期・
 送信・再認証・アクセス取り消し後の復旧を確認する。
+
+## Task #123: 引用履歴をメッセージ単位に分解して時系列表示 (Spark 参考)
+
+引用が1つ以上あるプレーンテキストメールの本文表示を、Spark を参考に
+刷新した。従来は新規本文も過去の引用もまとめて1つの`Text`に「>」記号
+込みでそのまま流し込んでいた — 深いネスト引用 (何度も返信を重ねた
+スレッド) では「>」がずらずら並ぶ壁のような表示になり、どの段が誰の
+いつの発言かが読み取りづらかった。
+
+### 挙動
+
+1. 新規本文 (今回の返信) はこれまでどおり通常表示。
+2. その下に「履歴を表示/非表示」トグル (テキストボタン、`accentText`
+   色)。**既定は表示** — トグル状態自体は永続化しない (`@State`のみ、
+   メッセージを開き直すたびに既定へ戻る)。
+3. 引用履歴は角丸カード (`surface`背景) の中に、**メッセージ単位に
+   分解して時系列表示**: 各セグメント = 差出人名 (太字) + 帰属行から
+   取れた日時 + 本文 (「>」引用記号を除去して整形)、セグメント間は
+   1pt の`dividerSubtle`区切り。
+4. パースできない (帰属行が1つも見つからない) 場合や自信が持てない
+   場合は、生のテキストをカード内にそのまま表示する — 壊れない
+   フォールバック。
+5. **プレーンテキストメールのみ対象** (`!isHTMLMessage`)。HTML メール
+   は今回スコープ外 — 下の「HTML メールについて」参照。
+
+### 実装
+
+- `packages/OtegamiKit/Sources/OtegamiCore/QuoteHistoryParser.swift`
+  (新規): `QuoteStripper.separatingQuotedText(fromPlainText:)`が返す
+  `quotedText`(最初の引用マーカーから先の全文) を受け取り、行頭の
+  `>`の連続数 (ネスト深度) を数えながら、`QuoteStripper`の帰属行パターン
+  (`plainTextQuoteMarkerPatterns`/`replyOnlyPlainTextQuoteMarkerPatterns`
+  — この Task で`private`から外し`QuoteHistoryParser`と共有した) を
+  行単位で当てはめて「この行は前のメッセージの帰属行(On.../さんは
+  書きました/差出人:等)か」を判定、境界が見つかるたびに新しい
+  `Segment`を切り出す。差出人名/日時は`QuoteHistoryParser`独自の
+  名前付きキャプチャグループ正規表現 (`attributionExtractors`) で
+  ベストエフォート抽出 — 抽出に失敗しても境界自体は有効なセグメント
+  として扱い、その場合は帰属行の生テキストをカード内に代わりに表示
+  する。Outlook 形式の`From:`/`Sent:`/`To:`/`Subject:`4行ブロックは
+  先読みして1つの帰属行としてまとめて消費する
+  (`matchOutlookHeaderBlock`)。
+  - **ネスト深度がそのまま時系列順序**: top-posting のメールクライア
+    ントは「返信するたびに直前のメッセージ全体 (帰属行込み) をまるごと
+    1段深く引用する」ので、浅い方が新しい・深い方が古い、という順序が
+    ネスト深度から機械的に復元できる — テキストを先頭から素直に走査
+    するだけで、セグメントは自然と新しい順に並ぶ。詳細な理由付けは
+    `QuoteHistoryParser`のdoc comment参照。
+- `apps/Otegami/Sources/Features/ThreadDetail/QuoteHistorySectionView.swift`
+  (新規): トグルボタン + カードの表示。`ForEach`の中身は
+  `QuoteHistorySegmentRow`という独立した`View`型に切り出し済み
+  (CLAUDE.md「SwiftUI ビューは小さく保つ」— CI 型チェックタイムアウト
+  対策)。差出人名/日時/本文はすべて`Text(verbatim:)`— 帰属行の抽出
+  結果には生のメールアドレスが残ることがあり (`名前`抽出に失敗した
+  場合の帰属行そのままフォールバック含む)、`LocalizedStringKey`経由
+  だと Markdown 解釈でアドレスが`mailto:`リンク化してしまう実バグ
+  前例 (`AccountFilterChip.swift`のdoc comment) があるため。
+- `apps/Otegami/Sources/Features/ThreadDetail/MessageView.swift`:
+  `plainTextQuoteHistorySplit`(新規 computed property) が
+  `!isHTMLMessage`かつ`bodyRecord.plainText`が非空の場合のみ
+  `QuoteStripper.separatingQuotedText(fromPlainText:isReply:)`を呼ぶ
+  (`isReply`は既存の`sourceTextForSummary()`と同じく
+  `message?.inReplyTo != nil`から算出、Task #90 と同じ判断基準を共有)。
+  `content`のプレーンテキスト分岐は、この split があれば新規本文側
+  (`newText`) だけを`linkifiedText`に渡し、`QuoteHistorySectionView`
+  を新規本文の下に追加する — split が無い (引用なしメール) 場合は
+  従来どおり`plainText`全文をそのまま表示するので、このバッチ以前の
+  挙動は完全に保たれる。
+
+### HTML メールについて
+
+このバッチのスコープはプレーンテキストのみ。HTML メールの引用は
+既存の`QuoteStripper`の検出パターン (`gmail_quote`/`blockquote`等) を
+流用した「折りたたみトグルだけ」という軽量な代替案も検討したが、
+`HTMLMessageView`は`WKWebView`に読み込み済みの文書を直接操作する
+必要がある (JavaScript 経由でのDOM書き換え/高さ再測定が要り、
+1i の翻訳オーバーレイと同程度の作り込みが必要) ため、このセッション
+の範囲では見送り、第2段の課題として残す。プレーンテキスト側の
+`QuoteHistoryParser`は既に共有可能な形 (帰属行パターンの検出と抽出
+を分離) にしてあるので、HTML側の実装時は「`HTMLTextExtractor`で
+引用部分だけを取り出し→`QuoteHistoryParser`に通す→結果をオーバーレイ
+表示」という流れで多くを再利用できる見込み。
+
+### テスト
+
+`packages/OtegamiKit/Tests/OtegamiCoreTests/QuoteHistoryParserTests.swift`
+(新規、8件、架空名フィクスチャ): 4段ネストの日本語 Gmail 形式チェーン
+の分解 (差出人/日時/本文の抽出、セグメント数)、ネスト深度からの順序
+復元、`QuoteStripper.separatingQuotedText`との end-to-end 連携、帰属行
+が1つも無い場合の`.unparsed`フォールバック (空文字列含む)、英語
+"On ... wrote:" 形式 (日付部分にカンマを含む実例で正しく分割される
+ことも確認)、Outlook 形式`From:`/`Sent:`/`To:`/`Subject:`ブロック、
+`Sent:`行を伴わない裸の`From:`行、をそれぞれ検証。
+
+### 検証
+
+`make test`(既知の無関係flake `MessageBuilderTests`日本語ラウンド
+トリップ以外 green、新規`QuoteHistoryParserTests`8件含め全て green)・
+`make mac`・`make ios`とも成功 (共有ワークツリーで並行作業中の他
+エージェントの一時的なビルド breakage を1回踏んだが、自分のコードとは
+無関係と確認しリトライで解消)。`scripts/verify-screen.sh quote-history`
+(新規シナリオ、`AppEnvironment.uitestFakeQuotedPlainMessageBody`— 3段
+ネストの日本語チェーン) でカード表示をスクリーンショット確認。
+
+## Task #125: 作成画面3点バッチ (署名カーソル・添付UIの位置・署名名プレースホルダ)
+
+### 実装
+
+- **署名カーソル**: `packages/OtegamiKit/Sources/OtegamiCore/ComposerCursorPlacement.swift`
+  (新規) に純粋なカーソル位置計算を切り出した —
+  `cursorIndex(in:signatureBody:hasQuoteAboveSignature:)`は「返信/転送
+  (本文に引用ブロックが既にある) なら本文の一番上 (引用の上、結果として
+  署名の上でもある)、それ以外 (新規作成) なら署名の直前 (直上の空行)」を
+  `String.Index`で返すだけの`enum`。`ComposerView`側は`TextEditor(text:
+  selection:)`(`bodySelection: TextSelection?`) に切り替え、唯一の
+  署名挿入/削除箇所である`updateSignatureText(newId:)`が`bodyText`を
+  更新した直後にこの関数の結果を`TextSelection(insertionPoint:)`として
+  書き込む — 新規作成のデフォルト署名自動挿入 (`loadAvailableSignatures()`
+  → `selectedSignatureId`セット → 同じ`.onChange`) も同じ経路を通るので
+  追加コード無しでカバーされる。「なし」を選んで署名を除去するだけの
+  操作ではカーソルを動かさない (除去には新しい挿入位置が無いため)。
+  ユニットテストは`packages/OtegamiKit/Tests/OtegamiCoreTests/
+  ComposerCursorPlacementTests.swift`(6件、SwiftUIホスト不要)。
+- **添付UIの位置**: `ComposerView.body`の`Form`内、`attachmentsSection`を
+  `bodySection`/`signatureSection`より前 (旧: 本文の直後・署名より前) から
+  後ろ (本文＋テンプレート＋署名の下) へ移動しただけ — セクションの実装
+  自体は変えていない。
+- **署名名プレースホルダ**: `SignatureTemplateEditView.swift`の名前欄
+  プレースホルダを「例: 会社用の署名」→「例: あいさつ用の署名」に変更
+  (`Localizable.xcstrings`のキー/英語訳`e.g. Greeting Signature`も追随)。
+
+### 検証
+
+`make test`(`ComposerCursorPlacementTests`含め green)。**未検証**:
+`TextEditor`の実際のカーソル移動・タップ操作依存の見た目 — XCUITestで
+`TextEditor`のキャレット位置を直接検証するのは難しく (`docs/verify.md`の
+既知の不調とは別に、`TextSelection`自体がタップ不要の`verify-screen.sh`
+経路から確認できる性質のものでもない) 、このセッションではロジック関数
+のユニットテストのみで済ませた。実機確認ポイント: 新規作成でデフォルト
+署名が入る画面・返信画面で署名を選ぶ画面それぞれで、カーソルが仕様通り
+(署名の直前 / 引用と署名の上) にあることを目視で確認してほしい。
+
+## Task #126: ハンバーガーメニュー3点バッチ (設定ボタン移設・行のコンパクト化・「その他」廃止)
+
+ユーザーからの追加仕様 (スクショ確認後): #110 以降「受信トレイ」カテゴリ
+セクション見出し行のタップが統合受信トレイ選択と同じ意味になったため、
+メニュー最上部の独立した「すべての受信トレイ」ピン留め行が完全に重複して
+いた — これも本タスクで削除した。
+
+### 実装 (`FolderListSheet.swift`)
+
+- **設定ボタンの移設**: 左下フローティング (`floatingSettingsButton`、
+  `otegamiFloatingButtonChrome()`) を廃止し、ヘッダ右上の歯車アイコン
+  (`ToolbarItem(placement: .confirmationAction)`) に変更した。
+  `onOpenSettings`経由の「ドロワーを閉じてから設定シートを開く」動線
+  (`MailScreenView.presentAfterClosingMenu`) はそのまま — 呼び出し元を
+  ツールバーボタンに変えただけ。フローティングボタン用に確保していた
+  `.contentMargins(.bottom:)`の余分な余白も削除した。
+- **「すべての受信トレイ」ピン留め行の削除**: `statusSection`先頭の専用
+  行 (`onSelectUnified`) を削除し、選択中ハイライトを「受信トレイ」
+  カテゴリセクションの見出し行自身 (`CategorySectionHeader`、role
+  `.inbox`) に移した。`CategorySectionHeader`に`isSelected: Bool`を
+  追加 (`.inbox`は`isUnifiedInboxSelected`、他のroleは既存の
+  `selectedUnifiedRole == role`で判定) — 選択中は他の行と同じ
+  `OtegamiColor.paleBase`を背景に敷く。見出しバッジの未読数も、削除した
+  専用行が使っていた`MessageQuery.unifiedInboxUnreadCountObservation`
+  (`unifiedInboxUnread`) を`.inbox`カテゴリに引き継いだ (他roleは従来
+  どおりメールボックス単位の合算)。`onSelectUnified`が常に非`nil`になった
+  ことで`CategorySectionHeader`の`nil`分岐 (旧「その他」向け) も不要になり、
+  非オプショナルな`() -> Void`に単純化した。
+- **行の縦paddingを詰める**: `otegamiMenuRowChrome()`(ファイルスコープの
+  `private extension View`、新規) を`statusSection`の各ボタン・
+  `CategoryAccountRow`・`FolderMailboxRow`に適用 —
+  `.listRowInsets`の縦方向だけ既存のシステム既定 (目視でおおむね12pt前後)
+  から`OtegamiSpacing.sm`(8pt、目安2/3程度) に詰め、`.frame(minHeight: 44)`
+  で HIG の最小タップターゲットを別途保証する。フォントサイズは変えて
+  いない。`Section`の`header:`(`AccountSectionHeader`/
+  `CategorySectionHeader`) は`.listRowInsets`が効かない領域のため、
+  こちらは`.frame(minHeight: 44)`のタップターゲット保証のみを追加し、
+  縦paddingそのものはシステム既定のまま (繰り返し行に比べて元々コンパクト
+  なため、体感密度への影響は行側が主)。
+- **「その他」セクションの廃止**: role で分類できない (`.none` — #119
+  のロール補完後もなお未分類なフォルダ) 専用の`uncategorizedSection`と
+  そのための`categoryMailboxRow(for:)`を削除した。**未分類フォルダは
+  メニューから消えるわけではない** — 各アカウントのアカウント別ツリー
+  (`accountSection(for:)`、role を問わず全メールボックスを表示) に引き続き
+  現れる。カテゴリ優先セクション側にだけ「その他」という専用の集約が
+  無くなった、という変更。付随して`FolderMailboxRow.accountLabelText`
+  (「その他」セクション専用だった、複数アカウント混在時のアカウント名
+  併記) も使われなくなったため削除した。
+
+### 検証
+
+`make test` green。`scripts/verify-screen.sh menu`/`menu-expanded`の
+スクリーンショットで、右上歯車・行の詰まり・「その他」が出ないこと・
+「受信トレイ」見出し行のハイライトを目視確認 (シナリオ定義自体は
+変更不要 — 直接遷移フラグはそのまま)。
+
+## Task #130: アカウント別ダイジェスト2点バッチ (自分のアバター表示・カード間の隙間)
+
+### 実装
+
+- **自分のアバター**: `AccountDigestRow`に`accountEmail: String`を追加し、
+  `AccountColorRail`の隣に`SenderAvatar(displayName:address:accountId:
+  labelColorKey:diameter: 36)`を配置した — `AccountSettingsCategoryView
+  .accountRow(for:)`(Task #117) と全く同じ経路 (`account.email`を
+  `address`にそのまま渡すだけで、連絡先写真→Googleプロフィール写真→
+  Gravatar→企業ロゴ→イニシャルの既存優先順位チェーンに乗る)。
+  `AccountDigestView`に`accountEmails: [String: String]`(既存の
+  `accountDisplayNames`/`accountLabelColorKeys`と同じ形の辞書) を追加し、
+  行へ渡している。
+- **カード間の隙間**: `AccountDigestRow`の`.listRowInsets(EdgeInsets())`
+  (ゼロ、旧実装は隙間なく連続) を`EdgeInsets(top: OtegamiSpacing.xs,
+  leading: 0, bottom: OtegamiSpacing.xs, trailing: 0)`に変更 —
+  上下だけ4ptの隙間を追加、左右は`0`のまま (iOSの全幅カード表示を維持)。
+
+### 検証
+
+`make test` green。`scripts/verify-screen.sh account-digest`のスクリーン
+ショットでアバター表示・カード間の隙間を目視確認 (2アカウント構成、
+既存シナリオそのまま)。
+
+## Task #131: 一覧FABのspeed-dial化
+
+右下の検索/新規作成フローティングボタンを1つの「…」FABに統合し、タップで
+その上に「新規作成」「検索」が縦に展開するspeed-dial UIにした。
+
+### 実装 (`MailScreenView.swift`)
+
+- 左下`floatingSearchButton`+右下`floatingComposeButton`の2個独立配置を
+  廃止し、右下1個の`speedDialFAB`(新規、`.overlay(alignment: .bottomTrailing)`)
+  に統合した。畳んだ状態は`fabToggleButton`(「…」、展開中は`.contentTransition
+  (.symbolEffect(.replace))`で「×」へアニメーション切り替え) 1個だけ —
+  タップで`isFabExpanded`(永続化しない`@State`) をトグルする。展開時は
+  `SpeedDialChildButton`(新規の`private struct`、`docs/ci.md`の「行/子要素は
+  独立した`View`に切り出す」方針どおり`speedDialFAB`自身を薄く保つための
+  切り出し) を「新規作成」→「検索」の順で下から積む (「…」に近い方が
+  新規作成)。子ボタンをタップすると`collapseAndPerform(_:)`が
+  `isFabExpanded = false`にしてからアクションを実行する (仕様「子ボタン
+  タップで実行 + 自動で畳む」)。展開/畳みは`.spring`アニメーション付き。
+  色は全ボタンとも既存の`otegamiFloatingButtonChrome()`(`accentFloating`
+  塗り+白アイコン) をそのまま使い、新しい色トークンは追加していない。
+  Undoトースト (#108) のz順・クリアランス計算 (`floatingButtonClearance`)
+  は畳んだ状態の1個ぶんの直径のまま — 子ボタンタップは畳んでから
+  アクションを実行するため、トースト表示中に展開状態と衝突することはない。
+- `scripts/verify-screen.sh`の`list`シナリオは畳んだ状態のまま (変更なし)。
+  展開状態を直接確認できるよう、`-uitestsExpandFabDirectly`(タップ不要の
+  直接遷移フラグ、`MailScreenView.isFabExpanded`の初期値として読む) と
+  `list-fab-expanded`シナリオを追加した。
+
+### 検証
+
+`make test` green。`scripts/verify-screen.sh list`(畳んだ状態) /
+`list-fab-expanded`(展開状態) のスクリーンショットで、「…」1個への統合・
+展開時の2ボタン配置・アイコン切り替えを目視確認。

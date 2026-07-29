@@ -102,6 +102,16 @@
 #                                       招待カード (36番フィクスチャ相当 —
 #                                       タイトル/日時/場所/主催者 +
 #                                       「承諾」「辞退」「未定」ボタン)
+#   quote-history                      Task #123 (Spark 参考「引用履歴を
+#                                       メッセージ単位に分解して時系列
+#                                       表示」): 3段ネストの引用チェーンを
+#                                       持つプレーンテキストメール
+#                                       (`AppEnvironment
+#                                       .uitestFakeQuotedPlainMessageBody`)
+#                                       を直接遷移で開く —「履歴を表示/
+#                                       非表示」トグル(既定表示)+ 角丸カード
+#                                       内にメッセージ単位で分解された各段
+#                                       (差出人太字/日時/本文) の見た目確認用。
 #   message-source                     Task #103: 「ソースを表示」— 生
 #                                       RFC822ソースのモノスペース表示
 #                                       (`MessageSourceView`)。html-0
@@ -300,6 +310,12 @@ case "$SCENARIO" in
     # download.
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_CALENDAR_INVITE=1")
     default_out="calendar-invite.png"
+    ;;
+  quote-history)
+    # Task #123: see this script's own header comment above for what this
+    # screenshot is checking (`QuoteHistorySectionView`'s toggle + card).
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_QUOTED_PLAIN_MESSAGE=1")
+    default_out="quote-history.png"
     ;;
   message-source)
     # Task #103 (「ソースを表示」): html-0 fixture's message, with

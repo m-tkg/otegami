@@ -600,6 +600,50 @@ struct MessageView: View {
         return nil
     }
 
+    // MARK: - Quote history (Task #123)
+
+    /// Task #123 (Spark 参考「引用履歴をメッセージ単位に分解して時系列
+    /// 表示」): the new-text/quoted-history split for `content`'s plain-text
+    /// branch, `nil` whenever there's nothing to split off (no body yet, no
+    /// genuine `text/plain` part, or `QuoteStripper` found no quote marker
+    /// at all).
+    ///
+    /// Deliberately scoped to `!isHTMLMessage` — an HTML message's own
+    /// `bodyRecord.plainText` (when it even has one) is a client-provided
+    /// *alternative* rendering, not guaranteed to carry the same `>` quote
+    /// structure the HTML side does, and Task #123's brief explicitly scopes
+    /// the full per-message card to plain-text mail ("まずプレーンテキスト
+    /// メールを対象") — an HTML message (including one manually toggled to
+    /// its text view via `manualPreferPlainText`) keeps showing its full,
+    /// unsplit plain-text fallback here; the lighter HTML-side fold is the
+    /// follow-up `docs/design-system.md`'s Task #123 section notes.
+    ///
+    /// Reuses the exact same `isReply`-gated split `sourceTextForSummary()`
+    /// already computes for AI summarization (see that method's own Task
+    /// #90 doc comment for why `message?.inReplyTo` gates the looser
+    /// `replyOnlyPlainTextQuoteMarkerPatterns`) — same input, same trust
+    /// level, just a different consumer (display instead of a summarization
+    /// prompt).
+    private var plainTextQuoteHistorySplit: QuoteStripper.SeparatedText? {
+        guard !isHTMLMessage, let bodyRecord, let plainText = bodyRecord.plainText, !plainText.isEmpty else { return nil }
+        let isReply = message?.inReplyTo != nil
+        let split = QuoteStripper.separatingQuotedText(fromPlainText: plainText, isReply: isReply)
+        guard !split.quotedText.isEmpty else { return nil }
+        return split
+    }
+
+    /// The text `content`'s plain-text branch actually renders as the main
+    /// body: `plainTextQuoteHistorySplit`'s new-text half (trimmed) when a
+    /// quote history was split off — the quoted half moves into
+    /// `QuoteHistorySectionView`'s own card instead — otherwise `plainText`
+    /// untouched (no quote history found, so nothing changes from this
+    /// feature's pre-Task-#123 behavior).
+    private func plainTextBodyDisplayText(for plainText: String) -> String {
+        guard let split = plainTextQuoteHistorySplit else { return plainText }
+        let trimmed = split.newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? plainText : trimmed
+    }
+
     // MARK: - Attachments (M8)
 
     /// Inline (`cid:`-referenced) parts are excluded — those render inside
@@ -825,13 +869,27 @@ struct MessageView: View {
                 )
                 .otegamiForceLightBackground(forceLightBackground)
             } else if let plainText = plainTextFallback(for: bodyRecord) {
+                // Task #123 (Spark 参考「引用履歴をメッセージ単位に分解して
+                // 時系列表示」): when `plainTextQuoteHistorySplit` finds a
+                // quote to split off, only the new-reply half renders here
+                // — the quoted half moves into `QuoteHistorySectionView`'s
+                // own toggleable card below instead of staying inline as
+                // one undifferentiated wall of `>` text. A message with no
+                // quote history (the common case) is unaffected:
+                // `plainTextBodyDisplayText(for:)` falls straight back to
+                // `plainText` untouched.
                 ScrollView {
-                    linkifiedText(plainText)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .accessibilityIdentifier("messageDetail.plainTextBody")
+                    VStack(alignment: .leading, spacing: OtegamiSpacing.lg) {
+                        linkifiedText(plainTextBodyDisplayText(for: plainText))
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("messageDetail.plainTextBody")
+                        if let split = plainTextQuoteHistorySplit {
+                            QuoteHistorySectionView(quotedText: split.quotedText)
+                        }
+                    }
+                    .padding()
                 }
                 .otegamiForceLightBackground(forceLightBackground)
                 // Task #59: no longer reserves bottom space here — see the

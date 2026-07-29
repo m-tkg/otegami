@@ -842,6 +842,71 @@ final class AppEnvironment {
             self.uitestDirectOpenThreadId = capturedThreadId
         }
 
+        // Task #123 (Spark 参考「引用履歴をメッセージ単位に分解して時系列
+        // 表示」): same "insert a fully local, already-`.fetched` fake
+        // message" escape hatch as `OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE`
+        // above and for the same reason — `scripts/verify-screen.sh
+        // quote-history`'s only way to get `QuoteHistorySectionView`'s
+        // card on screen without a real IMAP round trip. Unlike that
+        // fixture, this one is plain text (`MessageBodyRecord.plainText`,
+        // no `html`) — `QuoteHistorySectionView` is deliberately scoped to
+        // genuinely plain-text mail (see `MessageView
+        // .plainTextQuoteHistorySplit`'s doc comment) — and models the same
+        // three-level-deep top-posted reply chain shape
+        // `QuoteHistoryParserTests`' own fixture exercises (each level's
+        // attribution line at its own nesting depth, that level's body one
+        // `>` deeper still), so this screenshot and those unit tests are
+        // checking the same real-world shape end to end.
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_QUOTED_PLAIN_MESSAGE"] == "1" {
+            let fakeAccountEmail = "uitest-fake-quoted-plain@example.com"
+            let fakeAccount = AccountRecord(
+                displayName: "Fake Quoted Plain Test (UITest)",
+                email: fakeAccountEmail,
+                authType: .password,
+                kind: .generic,
+                imapHost: "127.0.0.1",
+                imapPort: 1,
+                imapSecurity: .plain,
+                imapUsername: fakeAccountEmail,
+                sortOrder: 1_002
+            )
+            var capturedThreadId: Int64?
+            try? database.dbWriter.write { db in
+                // Idempotent across repeated `app.launch()`s within the
+                // same install — same rationale/guard as the HTML fixture
+                // block above.
+                guard try AccountRecord.filter(Column("email") == fakeAccountEmail).fetchOne(db) == nil else { return }
+                try fakeAccount.insert(db)
+                var mailbox = MailboxRecord(accountId: fakeAccount.id, path: "INBOX", displayPath: "INBOX", role: .inbox, messageCount: 1)
+                try mailbox.insert(db)
+
+                var message = MessageRecord(
+                    mailboxId: mailbox.id!,
+                    uid: 1,
+                    messageId: "<uitest-fake-quoted-plain@otegami.test>",
+                    inReplyTo: "<uitest-fake-quoted-plain-parent@otegami.test>",
+                    subject: "Re: 定例ミーティングの件 (UITest)",
+                    normalizedSubject: "定例ミーティングの件 (UITest)",
+                    fromAddresses: [EmailAddress(name: "山田太郎", address: "yamada@example.com")],
+                    toAddresses: [EmailAddress(name: "田中花子", address: "tanaka@example.com")],
+                    fromText: "山田太郎 <yamada@example.com>",
+                    internalDate: Date(),
+                    bodyState: .fetched,
+                    snippet: "資料のご確認ありがとうございます。来週の定例はオンラインで問題ありません。"
+                )
+                try message.insert(db)
+                let body = MessageBodyRecord(
+                    messageId: message.id!,
+                    plainText: Self.uitestFakeQuotedPlainMessageBody,
+                    html: nil,
+                    fetchedAt: Date()
+                )
+                try body.insert(db)
+                capturedThreadId = try? ThreadAssigner.assignThread(messageId: message.id!, accountId: fakeAccount.id, db: db)
+            }
+            self.uitestDirectOpenThreadId = capturedThreadId
+        }
+
         self.syncCoordinator = SyncCoordinator(
             database: database,
             sessionFactory: { config in MailCoreIMAPSession(config: config) },
@@ -2205,6 +2270,40 @@ final class AppEnvironment {
         let line = "> このダミー引用行はメールソース表示のパフォーマンス検証 (Task #111) 用に生成した合成テキストです。実データは一切含みません。"
         return Array(repeating: line, count: 500).joined(separator: "\r\n")
     }()
+
+    /// Task #123 (Spark 参考「引用履歴をメッセージ単位に分解して時系列
+    /// 表示」): `OTEGAMI_UITEST_INSERT_FAKE_QUOTED_PLAIN_MESSAGE`'s body — a
+    /// three-level-deep, top-posted Japanese Gmail-style reply chain (same
+    /// shape/fictional names `QuoteStripperTests`/`QuoteHistoryParserTests`
+    /// already use: 山田太郎 <yamada@example.com> / 田中花子
+    /// <tanaka@example.com>). Each level's attribution line ("YYYY年M月D日
+    /// (曜) H:MM 名前 <addr>:") lands one `>` shallower than that level's
+    /// own body, mirroring exactly how a real top-posting client's quoting
+    /// nests (see `QuoteHistoryParser`'s doc comment for why nesting depth
+    /// alone recovers chronological order) — `scripts/verify-screen.sh
+    /// quote-history` opens this fixture to screenshot
+    /// `QuoteHistorySectionView`'s card with real (if fictional) multi-
+    /// message content instead of a placeholder.
+    private static let uitestFakeQuotedPlainMessageBody = """
+        田中さん
+
+        資料のご確認ありがとうございます。来週の定例はオンラインで問題ありません。ご都合の良い候補日を2〜3つ、水曜までに教えていただけますと助かります。
+
+        > 2026年7月28日(火) 10:15 田中花子 <tanaka@example.com>:
+        > > 山田さん
+        > >
+        > > 明日の打ち合わせですが、資料を先にお送りしておきますね。会議室ではなくオンラインに変更しても大丈夫でしょうか。
+        > >
+        > > > 2026年7月25日(土) 09:03 山田太郎 <yamada@example.com>:
+        > > > > 田中さん
+        > > > >
+        > > > > 承知しました、来週の打ち合わせの件、日程調整ありがとうございます。会議室の予約は私の方で進めておきます。
+        > > > >
+        > > > > > 2026年7月20日(月) 16:47 田中花子 <tanaka@example.com>:
+        > > > > > > 山田さん
+        > > > > > >
+        > > > > > > お世話になっております。次回の定例ミーティングの日程について、来週のどこかでお時間いただけますでしょうか。
+        """
 
     /// 実機フィードバック (MakerWorld実メールとの比較報告): 完全に透明な
     /// 背景の上に不透明な黒だけを描いた120x40のPNG (ロゴの線画部分を模した

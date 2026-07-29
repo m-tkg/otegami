@@ -265,7 +265,13 @@ public enum QuoteStripper {
         return nil
     }
 
-    private static let plainTextQuoteMarkerPatterns: [(name: String, pattern: String)] = [
+    /// Not `private` (unlike `htmlQuoteMarkerPatterns` above): Task #123's
+    /// `QuoteHistoryParser` reuses these same attribution-line patterns to
+    /// detect where one quoted message ends and the next (older, more
+    /// deeply nested) one begins inside an already-split `quotedText` block
+    /// — see that type's doc comment for why sharing the detection patterns
+    /// (rather than hand-rolling a second, subtly-different set) matters.
+    static let plainTextQuoteMarkerPatterns: [(name: String, pattern: String)] = [
         // Gmail/Apple Mail-style English: "On Mon, Jul 27, 2026 at 10:00
         // AM Jane Doe <jane@example.com> wrote:" — the date/name/address
         // portion varies a lot, so this only anchors on the stable
@@ -309,7 +315,13 @@ public enum QuoteStripper {
     /// prose sentence that happens to start with "From:" in a message
     /// that isn't a reply is exactly the false-positive case being guarded
     /// against.
-    private static let replyOnlyPlainTextQuoteMarkerPatterns: [(name: String, pattern: String)] = [
+    /// Not `private` — see `plainTextQuoteMarkerPatterns`'s doc comment
+    /// above; `QuoteHistoryParser` includes these too (unconditionally, not
+    /// gated on an `isReply` flag) since by construction every line it
+    /// scans already lives inside a confirmed quoted-history block, so the
+    /// false-positive risk these patterns exist to guard against in
+    /// `QuoteStripper`'s own top-level split doesn't apply.
+    static let replyOnlyPlainTextQuoteMarkerPatterns: [(name: String, pattern: String)] = [
         // "On Mon, Jul 27, 2026 at 10:00 AM John Doe <john@example.com>"
         // with no trailing "wrote:" — the verb landed on the next
         // (wrapped) line, or the flattening step dropped it, but the
