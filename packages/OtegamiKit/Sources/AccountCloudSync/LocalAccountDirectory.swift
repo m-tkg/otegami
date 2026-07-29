@@ -20,8 +20,12 @@ public protocol LocalAccountDirectory: Sendable {
     /// (a Keychain password for `.password`, a stored refresh token for
     /// `.oauth2`) — decides whether a cloud-discovered account can start
     /// syncing immediately or needs to wait for iCloud Keychain to catch up
-    /// (`insertFromCloud`'s `hasCredential` parameter).
-    func hasCredential(accountId: String, authType: AccountAuthType) async -> Bool
+    /// (`insertFromCloud`'s `hasCredential` parameter). `kind` is needed
+    /// alongside `authType` for an `.oauth2` account (Task #116 第2段):
+    /// which provider's `TokenStore` to check for a stored refresh token
+    /// (`.gmail` vs `.microsoft`) isn't decidable from `authType` alone once
+    /// more than one OAuth provider exists.
+    func hasCredential(accountId: String, authType: AccountAuthType, kind: AccountKind) async -> Bool
 
     /// A cloud-only account (present in the payload, not found locally, no
     /// tombstone for it) needs to be created locally.

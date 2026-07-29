@@ -79,6 +79,14 @@ targets:
         # this key at runtime and treats empty/unset as "Gmail unavailable
         # in this build".
         GOOGLE_OAUTH_CLIENT_ID: $(GOOGLE_OAUTH_CLIENT_ID)
+        # Task #116 第2段: Outlook.com/Office 365 OAuth Client ID, same
+        # xcconfig-sourced mechanism as GOOGLE_OAUTH_CLIENT_ID just above
+        # (`Config/Shared.xcconfig` defines it empty; `Config/Local.xcconfig`,
+        # git-ignored, is where a builder sets their own — see
+        # docs/oauth-setup.md). `MicrosoftOAuthConfig` reads this key at
+        # runtime and treats empty/unset as "Outlook/Office365 unavailable
+        # in this build".
+        OTEGAMI_MICROSOFT_CLIENT_ID: $(OTEGAMI_MICROSOFT_CLIENT_ID)
         # M9: read by AppEnvironment/KeychainCredentialStore/AppDatabase at
         # runtime — see Config/Shared.xcconfig's doc comment on why these
         # are composed from xcconfig variables instead of hardcoded.
@@ -207,6 +215,8 @@ targets:
         product: MailTransportMailCore
       - package: OtegamiKit
         product: GoogleOAuth
+      - package: OtegamiKit
+        product: MicrosoftOAuth
       - package: OtegamiKit
         product: PushRelayClient
       - package: OtegamiKit

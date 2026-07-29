@@ -15,6 +15,14 @@ CURRENT_PROJECT_VERSION = 1
 // value as "Gmail unavailable in this build" and disables the Gmail button.
 GOOGLE_OAUTH_CLIENT_ID =
 
+// Task #116 第2段: Outlook.com/Office 365 OAuth Client ID (Azure app
+// registration). Same empty-by-default/git-ignored-Local.xcconfig-override
+// story as GOOGLE_OAUTH_CLIENT_ID just above — see docs/oauth-setup.md's
+// Microsoft section. `MicrosoftOAuthConfig` (app code) treats an empty/
+// unset value as "Outlook/Office365 unavailable in this build" and
+// disables both buttons.
+OTEGAMI_MICROSOFT_CLIENT_ID =
+
 // M9: App Group (shared GRDB database container) + Keychain Access Group
 // (shared account-password items), so the NotificationService Extension
 // can look up an account's IMAP settings + password without the push

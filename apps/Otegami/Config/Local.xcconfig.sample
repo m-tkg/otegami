@@ -29,6 +29,14 @@
 // Without this set, the app's "Gmail" add-account button stays disabled.
 // GOOGLE_OAUTH_CLIENT_ID = your-client-id.apps.googleusercontent.com
 
+// Microsoft OAuth Client ID (Task #116 第2段, Outlook.com/Office 365
+// account support). See docs/oauth-setup.md's Microsoft section for how to
+// register an Azure AD app (App registrations → new registration → public
+// client/native platform → this exact redirect URI:
+// com.mtkg.otegami.msauth://oauth2redirect). Without this set, the app's
+// "Outlook"/"Office365" add-account buttons stay disabled.
+// OTEGAMI_MICROSOFT_CLIENT_ID = your-azure-app-client-id
+
 // デフォルトのメールアプリ対応 (Task #48, docs/default-mail-app.md):
 // `com.apple.developer.mail-client` entitlement の有効化スイッチ。Apple から
 // この entitlement の許可を受け、Developer portal でこの App ID の capability

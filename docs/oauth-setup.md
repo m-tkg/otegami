@@ -325,3 +325,147 @@ OAuth 同意画面の公開ステータスを「本番」に切り替えて審�
 (`scripts/verify-ios-m6.sh` は型選択 UI・Client ID 未設定時のボタン無効化・
 iCloud フォームの見た目・「その他」経路が従来通り動くことのみを自動確認する
 — 詳細は `docs/verify.md` の M6 節、既知の課題は `PENDING.md` を参照)。
+
+# Microsoft OAuth Client ID の取得 (Task #116 第2段: Outlook.com/Office365)
+
+Microsoft は IMAP の Basic 認証 (ID/パスワードでのログイン) を廃止済み
+のため、Outlook.com/Office 365 アカウントは XOAUTH2 (OAuth2) でしか
+接続できない。実装は Gmail の `GoogleOAuth`(Authorization Code + PKCE、
+`ASWebAuthenticationSession`)をひな形にした `MicrosoftOAuth`
+(`packages/OtegamiKit/Sources/MicrosoftOAuth/`)。Gmail と同じく OSS の
+ため、Azure の Client ID をリポジトリには含めない。ビルドする人各自が
+Azure Portal で発行し、`Config/Local.xcconfig`(git 管理外)に設定する。
+設定しない場合、「アカウントを追加」→「Outlook」/「Office365」ボタンは
+無効化され、この手順への案内が表示される
+(`AccountTypeSelectionView.outlookButton`/`MicrosoftOAuthConfig`)。
+
+## 1. Azure AD アプリを登録する
+
+1. [Azure Portal](https://portal.azure.com/) → 「Microsoft Entra ID」
+   (旧 Azure Active Directory) → 「アプリの登録」→「新規登録」を開く。
+2. 名前は任意 (例: `otegami-dev`)。
+3. **サポートされているアカウントの種類**は「任意の組織ディレクトリ内の
+   アカウントと個人の Microsoft アカウント」を選ぶ — Outlook.com (個人)
+   と Microsoft 365 (組織) の両方を1つの Client ID でカバーするために
+   必須 (`MicrosoftOAuthEndpoints`が `common` テナントの1エンドポイント
+   だけを使っているのはこの前提に基づく)。
+4. リダイレクト URI はこの時点では未設定のままでよい (次の手順で追加)。
+5. 登録すると「アプリケーション (クライアント) ID」が発行される —
+   これが `OTEGAMI_MICROSOFT_CLIENT_ID` の値。
+
+## 2. リダイレクト URI を登録する (Google と違い**必須**)
+
+Google の iOS クライアントタイプと違い、Azure AD は使う `redirect_uri`
+を事前登録しないと認可リクエスト自体が `redirect_uri_mismatch` で
+拒否される。
+
+1. 登録したアプリの「認証」ページを開く。
+2. 「プラットフォームを追加」→「モバイルアプリケーションおよびデスク
+   トップアプリケーション」を選ぶ。
+3. 「カスタムリダイレクト URI」に次の値を**そのまま**入力する
+   (`MicrosoftOAuthEndpoints.standardRedirectURI`と一致させる必要が
+   あり、この値は otegami 側で固定・変更不可):
+   ```
+   com.mtkg.otegami.msauth://oauth2redirect
+   ```
+4. 「パブリック クライアント フローを許可する」を **はい** にする —
+   otegami はクライアントシークレットを持たない PKCE のみの構成
+   (Gmail の「iOS」クライアントタイプと同じ思想)。シークレットを要求
+   する構成のままだとトークン交換が失敗する。
+
+## 3. API のアクセス許可 (スコープ) を確認する
+
+`MicrosoftOAuthEndpoints.scope`が実行時に直接リクエストするため、
+Azure Portal 側でスコープを追加登録する必要は**無い**
+(`https://outlook.office.com/IMAP.AccessAsUser.All`・
+`https://outlook.office.com/SMTP.Send`・`offline_access`・`openid`・
+`email` の5つ — 1つ目が IMAP フルアクセス、2つ目が SMTP 送信、3つ目が
+リフレッシュトークン発行、4・5つ目が id_token からのメールアドレス
+取得用)。同意画面はユーザーの初回サインイン時に Microsoft 側が自動で
+出す。
+
+## 4. `Config/Local.xcconfig` に設定する
+
+```sh
+cp apps/Otegami/Config/Local.xcconfig.sample apps/Otegami/Config/Local.xcconfig
+# 既に Gmail 用に作成済みなら不要
+```
+
+`Local.xcconfig` に以下を追記する (発行された Client ID をそのまま):
+
+```
+OTEGAMI_MICROSOFT_CLIENT_ID = your-azure-app-client-id
+```
+
+`make mac` / `make ios` で再ビルドすれば、`Info.plist` の
+`OTEGAMI_MICROSOFT_CLIENT_ID` キー経由でアプリが実行時に読み込む
+(`MicrosoftOAuthConfig.clientId`)。「アカウントを追加」→「Outlook」/
+「Office365」ボタンが有効になっていれば設定成功。
+
+## メールアドレスの取得方法 (Google との違い)
+
+Gmail は `https://mail.google.com/` スコープだけでは識別情報が一切
+取れないため、`userinfo.email`スコープを追加した上で別途 userinfo
+エンドポイントへ HTTP リクエストしてメールアドレスを取得している
+(このファイル前半の「スコープについて」節参照)。Microsoft は
+`openid email` スコープを付けるだけで、トークン応答の `id_token`
+(JWT) に `email`(取れない場合は `preferred_username`)クレームが
+そのまま載ってくるため、**追加のネットワーク往復が不要**
+(`MicrosoftOAuthClient.fetchUserEmail(idToken:)`)。id_token の署名検証は
+行っていない — Azure AD のトークンエンドポイントから TLS 越しに直接
+受け取ったものだけを読むので、なりすまされたトークンを渡されるリスクが
+無く、検証には JWKS 取得+JWT ライブラリという余分な依存が要るため、
+このアプリの用途 (表示用のメールアドレス取得のみ、認可判断には使わな
+い) には見合わないと判断した。
+
+## kind: `.microsoft` と `TokenStore` の使い分け
+
+`AccountRecord.kind`に `.gmail`と並んで `.microsoft`を追加した
+(`.oauth2`な `authType`だけでは「どちらのプロバイダのトークンか」が
+わからないため)。`AppEnvironment.auth(for:)`/
+`CloudAccountDirectory.resolveAuth(for:)`はどちらも`account.kind`で
+`GoogleOAuth.TokenStore`/`MicrosoftOAuth.TokenStore`のどちらを使うかを
+分岐する。1ビルドで Gmail・Microsoft の両方・片方・どちらも未設定、の
+どの組み合わせでも動く (`isGmailOAuthConfigured`/
+`isMicrosoftOAuthConfigured`がそれぞれ独立)。
+
+## 実機での最終確認手順 (Client ID 発行後、ユーザー自身が行う)
+
+実 Azure AD アプリでの E2E はこのセッションでは実施していない (OSS
+Client ID 問題 — Gmail と同じ制約)。ユーザー自身の Azure テナント/
+Microsoft アカウントが必要な手順:
+
+1. 上記手順で Client ID を発行し、リダイレクト URI を登録し、
+   `Local.xcconfig`に設定する。
+2. `make ios` (または実機の場合 `make ios-device`) でビルドし、
+   実機/シミュレータにインストールする。
+3. アプリを起動し、「アカウントを追加」→「Outlook」(個人の
+   Outlook.com/Hotmail アカウントの場合) または「Office365」(会社・
+   学校の Microsoft 365 アカウントの場合) を選択 (ボタンが有効になって
+   いることを確認)。
+4. 「Microsoft でログイン」をタップし、Safari 経由の Microsoft
+   サインイン画面でアカウントを選択・サインイン・同意する。
+5. アプリに戻り、アカウントが追加され (表示名は3.で入力した値、空欄
+   だった場合は id_token から取得したメールアドレスがそのまま使わ
+   れる)、INBOX の同期が始まることを確認する。
+6. 新規作成 → 送信し、正常に送信できることを確認する。
+7. しばらく使い続け、再ログイン無しに同期が継続することを確認する
+   (`MicrosoftOAuth.TokenStore`の自動リフレッシュ、Gmail と同じ5分前
+   リフレッシュ)。
+8. (任意) Microsoft アカウント側でアプリのアクセス権を取り消し
+   (account.microsoft.com or myapps.microsoft.com → アプリのアクセス
+   許可)た後に同期を試み、「アカウント編集」に「再認証が必要です」
+   バナーが出て「再認証」ボタンから復旧できることを確認する。
+9. リダイレクト URI の登録漏れ・「パブリック クライアント フロー」
+   未許可などの設定ミスがあると、Safari 上で `AADSTS...` から始まる
+   Microsoft 側のエラーページがそのまま表示される — その場合は上記
+   2〜3の Azure Portal 設定を見直すこと。
+
+上記はユーザー本人の Microsoft アカウント/実機/Azure テナントが必要
+なため自動検証の対象外。ユニットテスト
+(`MicrosoftOAuthEndpointsTests`/`MicrosoftOAuthClientTests`/
+`TokenStoreTests`、`packages/OtegamiKit/Tests/MicrosoftOAuthTests/`)は
+`URLProtocol`スタブ + フェイク認可フローで、Gmail 側のテスト構造
+(`GoogleOAuthTests`)をそのまま踏襲して検証済み — トークン交換/
+リフレッシュ/invalid_grant/id_token からのメールアドレス抽出をカバー
+している。

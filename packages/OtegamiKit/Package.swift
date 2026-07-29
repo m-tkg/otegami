@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "OtegamiRelayAPI", targets: ["OtegamiRelayAPI"]),
         .library(name: "MailTransportMailCore", targets: ["MailTransportMailCore"]),
         .library(name: "GoogleOAuth", targets: ["GoogleOAuth"]),
+        .library(name: "MicrosoftOAuth", targets: ["MicrosoftOAuth"]),
         .library(name: "PushRelayClient", targets: ["PushRelayClient"]),
         .library(name: "AccountCloudSync", targets: ["AccountCloudSync"]),
         .library(name: "OtegamiTranslation", targets: ["OtegamiTranslation"]),
@@ -168,6 +169,30 @@ let package = Package(
         .testTarget(
             name: "GoogleOAuthTests",
             dependencies: ["GoogleOAuth"]
+        ),
+
+        // Task #116 第2段「Outlook.com / Office365 (Microsoft OAuth)」:
+        // Outlook.com/Office 365's Authorization Code + PKCE client +
+        // `TokenStore`. Deliberately mirrors `GoogleOAuth` above (same
+        // Apple-only surface — AuthenticationServices/CryptoKit/Security —
+        // and the same "no dependency on any other target in this package"
+        // shape) rather than sharing code with it: keeping the two
+        // providers fully independent means either one can be dropped, or a
+        // third provider added the same way, without touching the other.
+        // See `MicrosoftOAuth`'s individual files for the "mirrors
+        // GoogleOAuth.X" doc comments that spell out what, if anything,
+        // differs from its Google counterpart.
+        .target(
+            name: "MicrosoftOAuth"
+        ),
+
+        // Mirrors `GoogleOAuthTests` — PKCE known-vector test (shared RFC
+        // 7636 ground truth), `MicrosoftOAuthEndpoints`/`MicrosoftOAuthClient`
+        // URLProtocol-stubbed token-exchange/refresh/id_token-decoding
+        // tests, and `TokenStore` expiry/refresh/invalid_grant tests.
+        .testTarget(
+            name: "MicrosoftOAuthTests",
+            dependencies: ["MicrosoftOAuth"]
         ),
 
         // iCloud account-definition sync (iCloud Keychain already syncs

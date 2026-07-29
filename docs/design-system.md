@@ -5769,3 +5769,130 @@ Yahoo/Yahoo! JAPAN/Exchange の各ボタンから遷移するフォームで、�
 Yahoo/Yahoo! JAPAN アカウント (アプリ用パスワード発行/IMAP アクセス
 有効化済み) で「接続テスト」→「保存して同期開始」まで通ることを
 確認してほしい。
+
+### 実機フィードバックによる修正: Yahoo! JAPAN「メールサーバにアクセスできない」
+
+実際に接続を試みたユーザーから上記の失敗報告があった。切り分けの結果:
+
+- **ホスト/ポート/セキュリティ設定自体は正しかった**
+  (`MailProviderPresets.yahooJapan`: IMAP `imap.mail.yahoo.co.jp:993`・
+  SMTP `smtp.mail.yahoo.co.jp:465`、いずれも暗黙 TLS)。Yahoo! JAPAN
+  公式が案内する「SMTP_AUTH」(SSL 上の AUTH PLAIN/LOGIN) と整合して
+  おり、`ConnectionSecurityRecord.tls` → `MailConnectionSecurity.tls`
+  は最初から暗黙 TLS で接続する (STARTTLS ではない) ことをコードで
+  再確認した。
+- 実際の原因は主にユーザー側の設定・入力の2点:
+  1. Yahoo!メールの「メールソフトでの利用設定 (IMAP/POPアクセス)」が
+     既定でオフになっている — 有効化しない限りどんなパスワードでも
+     「メールサーバにアクセスできない」等のエラーで拒否される。
+  2. Yahoo! JAPAN の IMAP/POP ログインは環境によって「Yahoo! JAPAN ID
+     (`@yahoo.co.jp`より前の部分のみ)」を要求することがあり、フル
+     メールアドレスでは認証に失敗する場合がある。
+
+**対応**: `YahooJapanAccountSetupView`のガイダンス文言を「Yahoo!メール
+にログイン → 右上の歯車アイコン → 「メールの基本設定」→「IMAP/POP
+アクセス」を有効にする」という具体的な手順に拡充し、メールアドレスとは
+別に編集可能な「ログインID」フィールドを追加した (既定値はメール
+アドレスと同じ — `onChange(of: email)`で未編集時のみ追従 —
+`AccountSetupView.accountSection`の`imapUsername`/`smtpUsername`自動
+反映と同じパターン)。接続テストが失敗する場合、ユーザーはこのフィール
+ドを Yahoo! JAPAN ID だけに書き換えて再試行できる。ホスト/ポート/
+セキュリティのプリセット自体は変更していない。
+
+`make test`・`make mac`・`make ios`とも成功。**未検証**: この修正後の
+実機での再確認 (`HUMAN_TASKS.md`に確認項目を追加済み) — 実 Yahoo!
+JAPAN アカウントが無いため、このセッションではガイダンス文言の見た目
+と「ログインID」フィールドの追加・編集可能性のみをコードレベルで確認
+した。
+
+## Task #116: アカウント追加画面のプロバイダ拡充 (第2段: Outlook.com/Office365, Microsoft OAuth)
+
+Gmail の `GoogleOAuth`実装 (Authorization Code + PKCE、
+`ASWebAuthenticationSession`、XOAUTH2 SASL) をひな形に、Outlook.com/
+Office 365 向けの `MicrosoftOAuth`を実装した。Microsoft は IMAP の
+Basic 認証を廃止済みのため、XOAUTH2 以外に接続手段が無い。
+
+### 実装
+
+- `packages/OtegamiKit/Sources/MicrosoftOAuth/`(新規ターゲット):
+  `PKCE`/`AuthorizationSessionRunning`/`ASWebAuthenticationSessionRunner`
+  は`GoogleOAuth`の同名ファイルをそのまま踏襲した独立コピー (この
+  パッケージ内の他ターゲットに依存しない、という`GoogleOAuth`自身の
+  設計方針を維持するため — 詳細は`Package.swift`のターゲットコメント
+  参照)。`MicrosoftOAuthEndpoints`は`https://login.microsoftonline.com/
+  common/oauth2/v2.0/{authorize,token}`(`common`テナントで個人
+  Outlook.com/Hotmail アカウントと組織 Microsoft 365 アカウントの両方を
+  1つの Client ID でカバー)、scope
+  `https://outlook.office.com/IMAP.AccessAsUser.All
+  https://outlook.office.com/SMTP.Send offline_access openid email`。
+  リダイレクト URI は Google と違い `clientId`から自動導出できる規約が
+  無いため固定の
+  `com.mtkg.otegami.msauth://oauth2redirect`を使い、Azure Portal 側での
+  事前登録を必須にした (`docs/oauth-setup.md`に手順)。
+- **メールアドレス取得は Google よりシンプル**: Google は
+  `userinfo.email`スコープ+別の HTTP リクエストが必要だったが、
+  Microsoft は`openid email`スコープだけで token 応答の`id_token`
+  (JWT) に`email`(無ければ`preferred_username`)クレームが直接載る
+  ため、`MicrosoftOAuthClient.fetchUserEmail(idToken:)`は追加のネット
+  ワーク往復無しに JWT ペイロードをデコードするだけで済む。署名検証は
+  行っていない (Azure AD のトークンエンドポイントから TLS 越しに直接
+  受け取ったものだけを読むため、なりすましリスクが無い — 表示用の
+  メールアドレス取得にしか使わない用途に対して JWKS 取得+JWT ライブラリ
+  という追加依存は見合わないと判断)。
+- `AccountRecord.kind`に`.microsoft`を追加。`.oauth2`な`authType`だけ
+  では「どちらのプロバイダのトークンか」が分からなくなる (1ビルドで
+  Gmail・Microsoft 両方の Client ID を設定できるため) ので、
+  `AppEnvironment.auth(for:)`/`CloudAccountDirectory.resolveAuth(for:)`
+  はどちらも`account.kind`で`GoogleOAuth.TokenStore`/
+  `MicrosoftOAuth.TokenStore`を分岐する。`AccountEditView`の5箇所の
+  網羅的な`switch account.kind`(`body`・`isFormValid`・
+  `testConnectionTapped`・`saveAccount`・`kindLabel`)全てに`.microsoft`
+  ケースを追加し、`microsoftSections`(`gmailSections`のミラー、Google
+  プロフィール写真関連の行だけ無し)を新設した。
+- `AppEnvironment`に`microsoftOAuthClient`/`microsoftTokenStore`/
+  `isMicrosoftOAuthConfigured`/`requestMicrosoftAuthorization`/
+  `createMicrosoftAccount`/`reauthenticateMicrosoftAccount`を追加
+  (Gmail 側の同名メソッド群のミラー)。`GoogleOAuth`/`MicrosoftOAuth`が
+  同名の型 (`TokenStore`・`ASWebAuthenticationSessionRunner`・
+  `TokenStoreError`)を持つため、両方を`import`するファイル
+  (`AppEnvironment.swift`・`CloudAccountDirectory.swift`)では該当箇所を
+  `GoogleOAuth.TokenStore`/`MicrosoftOAuth.TokenStore`のように明示的に
+  修飾した。
+- `MicrosoftAccountSetupView.swift`(新規): `GmailAccountSetupView`と
+  ほぼ同じ形 (OAuth のみ、表示名以外に入力欄なし)。「Outlook」「Office365」
+  の2ボタンは`MicrosoftAccountProvider`(表示文言だけが違う列挙型) を
+  介して同じビューを共有する — サーバー側の分岐は一切無い (`common`
+  テナントが両方をカバーするため)。
+- `AccountTypeSelectionView`: Outlook/Office365 ボタンを追加、
+  Gmail ボタンと同じ「Client ID 未設定なら無効化+案内文言」の挙動
+  (`environment.isMicrosoftOAuthConfigured`)。
+- `AccountCloudSync.LocalAccountDirectory.hasCredential`の引数に`kind`
+  を追加 (プロトコル変更、`AccountCloudSyncEngine`の呼び出し元・
+  `AccountCloudSyncEngineTests`のフェイクも追随) — `.oauth2`な
+  クラウド発見アカウントが Gmail か Microsoft かを`authType`だけでは
+  判定できないため。
+- `apps/Otegami/project.yml`/`Config/Shared.xcconfig`/
+  `Config/Local.xcconfig.sample`に`OTEGAMI_MICROSOFT_CLIENT_ID`を追加
+  (`GOOGLE_OAUTH_CLIENT_ID`と同じ xcconfig 経由の仕組み)。
+- `Localizable.xcstrings`に新規文言を手パッチ。
+
+### テスト
+
+`packages/OtegamiKit/Tests/MicrosoftOAuthTests/`(31件、新規):
+`GoogleOAuthTests`と同じ構造 (`URLProtocol`スタブ + `FakeAuthorizationFlow`)
+で PKCE 既知ベクタ・エンドポイント URL 組み立て・トークン交換/リフレッシュ/
+invalid_grant・id_token からのメールアドレス抽出 (email/preferred_username
+フォールバック/不正な JWT) ・`TokenStore`の有効期限/リフレッシュ/
+invalid_grant を検証。
+
+### 検証
+
+`make test`(新規`MicrosoftOAuthTests`31件含め green、既知の無関係flake
+除く)・`make mac`・`make ios`とも成功。**未検証**: 実 Azure AD アプリ
+との E2E (OSS Client ID 問題、Gmail と同じ制約 — 実 Azure テナント/
+Microsoft アカウントが無いためこのセッションでは検証不可能)。
+**実機確認ポイント**: `docs/oauth-setup.md`「Microsoft OAuth Client ID
+の取得」節・`HUMAN_TASKS.md`「Task #116 (第2段)」項目参照 — Azure AD
+アプリ登録・リダイレクト URI 登録・Client ID 設定後、「アカウントを
+追加」→「Outlook」/「Office365」から実際にサインインし、INBOX 同期・
+送信・再認証・アクセス取り消し後の復旧を確認する。

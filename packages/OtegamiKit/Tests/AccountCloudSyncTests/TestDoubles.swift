@@ -194,7 +194,7 @@ final class FakeLocalAccountDirectory: LocalAccountDirectory, @unchecked Sendabl
         return lock.withLock { Array(accounts.values) }
     }
 
-    func hasCredential(accountId: String, authType: AccountAuthType) async -> Bool {
+    func hasCredential(accountId: String, authType: AccountAuthType, kind: AccountKind) async -> Bool {
         lock.withLock { credentialedAccountIds.contains(accountId) }
     }
 

@@ -3821,6 +3821,156 @@
           }
         }
       }
+    },
+    "Outlook": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outlook"
+          }
+        }
+      }
+    },
+    "Office365": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Office365"
+          }
+        }
+      }
+    },
+    "Microsoft": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microsoft"
+          }
+        }
+      }
+    },
+    "Outlook アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Outlook Account"
+          }
+        }
+      }
+    },
+    "Office365 アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Office365 Account"
+          }
+        }
+      }
+    },
+    "Microsoft のログイン画面が表示されます。個人の Outlook.com / Hotmail アカウントでサインインしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microsoft's sign-in screen will appear. Sign in with your personal Outlook.com / Hotmail account."
+          }
+        }
+      }
+    },
+    "Microsoft のログイン画面が表示されます。会社・学校の Microsoft 365 アカウントでサインインしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Microsoft's sign-in screen will appear. Sign in with your work or school Microsoft 365 account."
+          }
+        }
+      }
+    },
+    "Microsoft でログイン": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in with Microsoft"
+          }
+        }
+      }
+    },
+    "この配布ビルドには Microsoft OAuth Client ID が設定されていません。docs/oauth-setup.md を参照して各自 Client ID を発行し、Config/Local.xcconfig に設定してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build has no Microsoft OAuth Client ID configured. See docs/oauth-setup.md to issue your own Client ID and set it in Config/Local.xcconfig."
+          }
+        }
+      }
+    },
+    "Gmail・iCloud・Yahoo・Yahoo! JAPAN・Outlook・Office365・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gmail, iCloud, Yahoo, Yahoo! JAPAN, Outlook, Office365, and Exchange have their server settings filled in automatically. For other providers, use “Other” to set them up manually."
+          }
+        }
+      }
+    },
+    "Microsoft アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This account authenticates with your Microsoft account. Your password is never stored in this app. If authentication expires, sign in again via “Reauthenticate.”"
+          }
+        }
+      }
+    },
+    "Yahoo!メールの「メールソフトでの利用設定 (IMAP/POP アクセス)」を有効にしておく必要があります。無効のままだと、正しいパスワードでも「メールサーバにアクセスできない」等のエラーで接続できません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You need to enable “Mail Software Access (IMAP/POP Access)” in Yahoo! Mail first. Without it, connecting will fail (e.g. “can’t reach the mail server”) even with the correct password."
+          }
+        }
+      }
+    },
+    "手順: Yahoo!メールにログイン → 画面右上の歯車アイコン (設定) → 「メールの基本設定」→ 下の方にある「IMAP/POPアクセス」を「有効にする」に変更して保存。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Steps: Sign in to Yahoo! Mail → the gear icon (Settings) in the top right → “Basic Mail Settings” → near the bottom, set “IMAP/POP Access” to enabled and save."
+          }
+        }
+      }
+    },
+    "ログインID": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Login ID"
+          }
+        }
+      }
+    },
+    "通常はメールアドレスと同じログインIDで接続できます。接続テストが失敗する場合は、ログインIDを「@yahoo.co.jp より前の Yahoo! JAPAN ID」だけに変更して再度お試しください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Usually the login ID is the same as your email address. If the connection test fails, try changing the login ID to just your Yahoo! JAPAN ID (the part before “@yahoo.co.jp”)."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

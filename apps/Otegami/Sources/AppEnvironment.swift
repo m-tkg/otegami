@@ -4,6 +4,7 @@ import GoogleOAuth
 import GRDB
 import MailTransport
 import MailTransportMailCore
+import MicrosoftOAuth
 import OtegamiCore
 import OtegamiRelayAPI
 import OtegamiStore
@@ -106,11 +107,24 @@ final class AppEnvironment {
     /// checks this (directly or via `isGmailOAuthConfigured`) before
     /// offering the option at all.
     let googleOAuthClient: GoogleOAuthClient?
-    let tokenStore: TokenStore?
+    let tokenStore: GoogleOAuth.TokenStore?
 
     /// Drives `AccountTypeSelectionView`'s Gmail button (disabled + a
     /// docs/oauth-setup.md hint when `false`) — see `GoogleOAuthConfig`.
     var isGmailOAuthConfigured: Bool { googleOAuthClient != nil }
+
+    /// Task #116 第2段: Outlook.com/Office 365's counterpart to
+    /// `googleOAuthClient`/`tokenStore` above — `nil` when
+    /// `OTEGAMI_MICROSOFT_CLIENT_ID` isn't configured for this build (see
+    /// `MicrosoftOAuthConfig`'s doc comment). A build can have Gmail,
+    /// Microsoft, both, or neither configured independently — each
+    /// provider's Client ID comes from its own xcconfig variable.
+    let microsoftOAuthClient: MicrosoftOAuthClient?
+    let microsoftTokenStore: MicrosoftOAuth.TokenStore?
+
+    /// Drives `AccountTypeSelectionView`'s Outlook/Office365 buttons —
+    /// mirrors `isGmailOAuthConfigured`.
+    var isMicrosoftOAuthConfigured: Bool { microsoftOAuthClient != nil }
 
     private(set) var accounts: [AccountRecord] = []
     @ObservationIgnored private var accountsObservationTask: Task<Void, Never>?
@@ -880,13 +894,40 @@ final class AppEnvironment {
         if let endpoints = GoogleOAuthConfig.endpoints {
             let client = GoogleOAuthClient(
                 endpoints: endpoints,
-                sessionRunner: ASWebAuthenticationSessionRunner(presentationContextProvider: AuthPresentationContextProvider())
+                // Explicitly `GoogleOAuth.` — `MicrosoftOAuth` (imported
+                // below for the Microsoft branch right after this one)
+                // declares its own identically-named
+                // `ASWebAuthenticationSessionRunner`/`AuthorizationSessionRunning`
+                // (a deliberate mirror, see that type's doc comment), so the
+                // bare name is ambiguous once both modules are imported into
+                // the same file.
+                sessionRunner: GoogleOAuth.ASWebAuthenticationSessionRunner(presentationContextProvider: AuthPresentationContextProvider())
             )
             self.googleOAuthClient = client
-            self.tokenStore = TokenStore(refresher: client)
+            self.tokenStore = GoogleOAuth.TokenStore(refresher: client)
         } else {
             self.googleOAuthClient = nil
             self.tokenStore = nil
+        }
+
+        // Task #116 第2段: same shape as the Google branch just above, for
+        // Outlook.com/Office 365. `ASWebAuthenticationSessionRunner` here is
+        // `MicrosoftOAuth`'s own copy (a deliberate mirror of `GoogleOAuth`'s
+        // — see that type's doc comment), not the Google one, even though
+        // both are named identically — Swift resolves each to the type from
+        // its own module since neither call site imports both unqualified
+        // in a way that's ambiguous here (the module is inferred from
+        // `MicrosoftOAuthClient`'s own parameter type).
+        if let endpoints = MicrosoftOAuthConfig.endpoints {
+            let client = MicrosoftOAuthClient(
+                endpoints: endpoints,
+                sessionRunner: MicrosoftOAuth.ASWebAuthenticationSessionRunner(presentationContextProvider: AuthPresentationContextProvider())
+            )
+            self.microsoftOAuthClient = client
+            self.microsoftTokenStore = MicrosoftOAuth.TokenStore(refresher: client)
+        } else {
+            self.microsoftOAuthClient = nil
+            self.microsoftTokenStore = nil
         }
 
         // M11: iCloud account sync. `directory` bundles everything
@@ -901,6 +942,7 @@ final class AppEnvironment {
             database: database,
             credentialStore: credentialStore,
             tokenStore: tokenStore,
+            microsoftTokenStore: microsoftTokenStore,
             syncCoordinator: syncCoordinator,
             pushSettings: pushSettings,
             pushRelayClient: pushRelayClient
@@ -1600,13 +1642,41 @@ final class AppEnvironment {
             return .password(username: account.imapUsername, password: password)
 
         case .oauth2:
-            guard let tokenStore else { throw AuthResolutionError.oauthUnavailable }
-            do {
-                let accessToken = try await tokenStore.accessToken(for: account.id)
-                return .xoauth2(username: account.imapUsername, accessToken: accessToken)
-            } catch TokenStoreError.reauthenticationRequired {
-                await setNeedsReauth(true, for: account)
-                throw TokenStoreError.reauthenticationRequired
+            // Task #116 第2段: `.oauth2` alone doesn't say *which* provider's
+            // tokens to use — `account.kind` does. Each branch below is a
+            // near-identical mirror of the other, just against a different
+            // `TokenStore`/error type (`GoogleOAuth.TokenStoreError` vs
+            // `MicrosoftOAuth.TokenStoreError` — same case names, different
+            // types, since the two OAuth packages are deliberately
+            // independent of each other).
+            switch account.kind {
+            case .gmail:
+                guard let tokenStore else { throw AuthResolutionError.oauthUnavailable }
+                do {
+                    let accessToken = try await tokenStore.accessToken(for: account.id)
+                    return .xoauth2(username: account.imapUsername, accessToken: accessToken)
+                } catch GoogleOAuth.TokenStoreError.reauthenticationRequired {
+                    await setNeedsReauth(true, for: account)
+                    throw GoogleOAuth.TokenStoreError.reauthenticationRequired
+                }
+            case .microsoft:
+                guard let microsoftTokenStore else { throw AuthResolutionError.oauthUnavailable }
+                do {
+                    let accessToken = try await microsoftTokenStore.accessToken(for: account.id)
+                    return .xoauth2(username: account.imapUsername, accessToken: accessToken)
+                } catch MicrosoftOAuth.TokenStoreError.reauthenticationRequired {
+                    await setNeedsReauth(true, for: account)
+                    throw MicrosoftOAuth.TokenStoreError.reauthenticationRequired
+                }
+            case .generic, .icloud:
+                // Shouldn't be reachable — only `.gmail`/`.microsoft`-kind
+                // accounts are ever created with `authType: .oauth2` (every
+                // account-creation call site pairs the two together). Not a
+                // `fatalError` regardless, matching this method's existing
+                // "handled explicitly rather than force-unwrapping" style
+                // for the sibling `AuthResolutionError.oauthUnavailable`
+                // case just above.
+                throw AuthResolutionError.oauthUnavailable
             }
         }
     }
@@ -1750,7 +1820,7 @@ final class AppEnvironment {
     /// と「未許可」を区別して見せる必要があるほど厳密な用途ではなく、
     /// 失敗時は`reauthErrorMessage`側の通常のエラー表示に任せる。
     func googleGrantedScope(for account: AccountRecord) async -> String? {
-        guard account.authType == .oauth2, let tokenStore else { return nil }
+        guard account.authType == .oauth2, account.kind == .gmail, let tokenStore else { return nil }
         return try? await tokenStore.diagnosticScope(for: account.id)
     }
 
@@ -1762,6 +1832,75 @@ final class AppEnvironment {
     func googleAvatarDiagnostics(for account: AccountRecord) async -> GoogleAvatarAccountDiagnostics? {
         guard account.authType == .oauth2 else { return nil }
         return await googleProfilePhotoAvatarResolver.forceRebuildDiagnostics(accountId: account.id)
+    }
+
+    // MARK: - Microsoft sign-in (Task #116 第2段)
+
+    /// Mirrors `requestGmailAuthorization(promptConsent:)` — runs the
+    /// interactive Authorization Code + PKCE flow, then reads the signed-in
+    /// account's email straight out of the token response's id_token
+    /// (`MicrosoftOAuthClient.fetchUserEmail(idToken:)`'s doc comment on
+    /// why that needs no extra network round trip the way Google's does).
+    /// Unlike Google, there's no `promptConsent` parameter to thread
+    /// through — Microsoft's flow always requests `prompt=select_account`
+    /// (`MicrosoftOAuthEndpoints.authorizationURL(pkce:state:)`'s doc
+    /// comment), and `offline_access` alone (no forced-reconsent flag
+    /// needed) already guarantees a `refresh_token` on every grant.
+    func requestMicrosoftAuthorization() async throws -> (email: String, tokens: MicrosoftOAuthTokens) {
+        guard let microsoftOAuthClient else { throw AuthResolutionError.oauthUnavailable }
+        let tokens = try await microsoftOAuthClient.requestAuthorization()
+        let email = try microsoftOAuthClient.fetchUserEmail(idToken: tokens.idToken)
+        return (email, tokens)
+    }
+
+    /// Mirrors `createGmailAccount(email:displayName:tokens:)` — Outlook.com/
+    /// Office 365 preset (`outlook.office365.com:993` TLS /
+    /// `smtp.office365.com:587` STARTTLS, plan-specified), `kind: .microsoft`,
+    /// `authType: .oauth2`. Both "Outlook" and "Office365" buttons on
+    /// `AccountTypeSelectionView` call this same method — see
+    /// `MicrosoftOAuthEndpoints.authorizationEndpoint`'s doc comment for why
+    /// there's no server-side difference between the two entry points.
+    func createMicrosoftAccount(email: String, displayName: String, tokens: MicrosoftOAuthTokens) async throws {
+        guard let microsoftTokenStore else { throw AuthResolutionError.oauthUnavailable }
+        let account = AccountRecord(
+            displayName: displayName.isEmpty ? email : displayName,
+            email: email,
+            authType: .oauth2,
+            kind: .microsoft,
+            imapHost: "outlook.office365.com",
+            imapPort: 993,
+            imapSecurity: .tls,
+            imapUsername: email,
+            smtpHost: "smtp.office365.com",
+            smtpPort: 587,
+            smtpSecurity: .startTLS,
+            smtpUsername: email,
+            labelColorKey: leastUsedAccountLabelColorKey(),
+            sortOrder: nextAccountSortOrder()
+        )
+        try await microsoftTokenStore.storeInitialTokens(tokens, accountId: account.id)
+        try await database.dbWriter.write { db in
+            try account.insert(db)
+        }
+
+        Task {
+            guard let auth = try? await self.auth(for: account) else { return }
+            _ = try? await self.syncCoordinator.syncAccount(account, auth: auth)
+        }
+        Task { await pushAccountToCloud(account) }
+    }
+
+    /// Mirrors `reauthenticateGmailAccount(_:)` — re-runs the OAuth flow for
+    /// an already-existing `.microsoft` account and clears `needsReauth` on
+    /// success. No `isSatisfied(byGrantedScope:)`-driven "skip the consent
+    /// screen" fast path the way Gmail's reauth has (Task #47) — Microsoft's
+    /// `prompt=select_account` always shows the account picker regardless,
+    /// so there's no silent-refresh case to special-case here.
+    func reauthenticateMicrosoftAccount(_ account: AccountRecord) async throws {
+        guard let microsoftTokenStore else { throw AuthResolutionError.oauthUnavailable }
+        let (_, tokens) = try await requestMicrosoftAuthorization()
+        try await microsoftTokenStore.storeInitialTokens(tokens, accountId: account.id)
+        await setNeedsReauth(false, for: account)
     }
 
     // MARK: - Push notifications (M9)
@@ -2627,7 +2766,7 @@ final class GmailAccessTokenBridge: GmailAccessTokenProviding, @unchecked Sendab
 
     func accessToken(for accountId: String) async throws -> String {
         guard let environment, let tokenStore = environment.tokenStore else {
-            throw TokenStoreError.missingRefreshToken
+            throw GoogleOAuth.TokenStoreError.missingRefreshToken
         }
         return try await tokenStore.accessToken(for: accountId)
     }

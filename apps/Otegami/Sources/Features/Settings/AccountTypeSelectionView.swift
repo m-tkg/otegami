@@ -19,6 +19,8 @@ struct AccountTypeSelectionView: View {
     var onSelectICloud: () -> Void
     var onSelectYahoo: () -> Void
     var onSelectYahooJapan: () -> Void
+    var onSelectOutlook: () -> Void
+    var onSelectOffice365: () -> Void
     var onSelectExchange: () -> Void
     var onSelectOther: () -> Void
 
@@ -30,12 +32,14 @@ struct AccountTypeSelectionView: View {
                     icloudButton
                     yahooButton
                     yahooJapanButton
+                    outlookButton
+                    office365Button
                     exchangeButton
                     otherButton
                 } header: {
                     Text("アカウントの種類")
                 } footer: {
-                    Text("Gmail・iCloud・Yahoo・Yahoo! JAPAN・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。")
+                    Text("Gmail・iCloud・Yahoo・Yahoo! JAPAN・Outlook・Office365・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。")
                 }
             }
             .navigationTitle("アカウントを追加")
@@ -118,6 +122,39 @@ struct AccountTypeSelectionView: View {
         .accessibilityIdentifier("accountTypeSelection.yahooJapanButton")
     }
 
+    // Task #116 第2段: Outlook/Office365 mirror `gmailButton`'s
+    // disabled+hint shape (both are OAuth-only, so both need the same
+    // "Client ID not configured" affordance) — see `AppEnvironment
+    // .isMicrosoftOAuthConfigured`.
+    private var outlookButton: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                onSelectOutlook()
+            } label: {
+                Label("Outlook", systemImage: "envelope.badge")
+            }
+            .accessibilityIdentifier("accountTypeSelection.outlookButton")
+            .disabled(!environment.isMicrosoftOAuthConfigured)
+
+            if !environment.isMicrosoftOAuthConfigured {
+                Text("この配布ビルドには Microsoft OAuth Client ID が設定されていません。docs/oauth-setup.md を参照して各自 Client ID を発行し、Config/Local.xcconfig に設定してください。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("accountTypeSelection.outlookDisabledHint")
+            }
+        }
+    }
+
+    private var office365Button: some View {
+        Button {
+            onSelectOffice365()
+        } label: {
+            Label("Office365", systemImage: "envelope.badge")
+        }
+        .accessibilityIdentifier("accountTypeSelection.office365Button")
+        .disabled(!environment.isMicrosoftOAuthConfigured)
+    }
+
     private var exchangeButton: some View {
         Button {
             onSelectExchange()
@@ -149,6 +186,8 @@ enum AccountEntryRoute: String, Identifiable {
     case icloud
     case yahoo
     case yahooJapan
+    case outlook
+    case office365
     case exchange
     case other
 
@@ -170,6 +209,8 @@ func accountEntryDestination(for route: AccountEntryRoute, binding: Binding<Acco
             onSelectICloud: { binding.wrappedValue = .icloud },
             onSelectYahoo: { binding.wrappedValue = .yahoo },
             onSelectYahooJapan: { binding.wrappedValue = .yahooJapan },
+            onSelectOutlook: { binding.wrappedValue = .outlook },
+            onSelectOffice365: { binding.wrappedValue = .office365 },
             onSelectExchange: { binding.wrappedValue = .exchange },
             onSelectOther: { binding.wrappedValue = .other }
         )
@@ -181,6 +222,10 @@ func accountEntryDestination(for route: AccountEntryRoute, binding: Binding<Acco
         YahooAccountSetupView()
     case .yahooJapan:
         YahooJapanAccountSetupView()
+    case .outlook:
+        MicrosoftAccountSetupView(provider: .outlookCom)
+    case .office365:
+        MicrosoftAccountSetupView(provider: .office365)
     case .exchange:
         AccountSetupView(preset: .exchange)
     case .other:

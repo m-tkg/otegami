@@ -311,7 +311,7 @@ public actor AccountCloudSyncEngine {
                 continue
             }
             claimedIdentities.insert(cloudSnapshot.identityKey)
-            let hasCredential = await local.hasCredential(accountId: id, authType: cloudSnapshot.authType)
+            let hasCredential = await local.hasCredential(accountId: id, authType: cloudSnapshot.authType, kind: cloudSnapshot.kind)
             await local.insertFromCloud(cloudSnapshot, hasCredential: hasCredential)
             summary.insertedAccounts.append(.init(accountId: id, hasCredential: hasCredential))
         }

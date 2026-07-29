@@ -36,6 +36,15 @@ public enum AccountKind: String, Codable, Sendable {
     case generic
     case gmail
     case icloud
+    /// Task #116 第2段: Outlook.com/Office 365, XOAUTH2 via `MicrosoftOAuth`.
+    /// Unlike `.gmail`, this carries no special-cased sync behavior
+    /// anywhere (no "すべてのメール" archive-role remapping, no
+    /// client-side Sent-copy skip) — it exists purely so `AppEnvironment
+    /// .auth(for:)`/`CloudAccountDirectory` know which `TokenStore`
+    /// (`GoogleOAuth.TokenStore` vs `MicrosoftOAuth.TokenStore`) an
+    /// `.oauth2`-authType account's tokens live in, since a build can have
+    /// both providers configured at once.
+    case microsoft
 }
 
 /// A configured mail account. Credentials are never stored here: passwords

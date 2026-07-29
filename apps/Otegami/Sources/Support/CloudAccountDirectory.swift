@@ -2,6 +2,7 @@ import AccountCloudSync
 import Foundation
 import GoogleOAuth
 import MailTransport
+import MicrosoftOAuth
 import OtegamiRelayAPI
 import OtegamiStore
 import PushRelayClient
@@ -29,7 +30,11 @@ import SyncEngine
 struct CloudAccountDirectory: LocalAccountDirectory, @unchecked Sendable {
     let database: AppDatabase
     let credentialStore: KeychainCredentialStore
-    let tokenStore: TokenStore?
+    let tokenStore: GoogleOAuth.TokenStore?
+    /// Task #116 第2段: Microsoft's counterpart to `tokenStore` above — see
+    /// `AppEnvironment.microsoftTokenStore`'s doc comment on why a build can
+    /// have either, both, or neither provider's `TokenStore` non-`nil`.
+    let microsoftTokenStore: MicrosoftOAuth.TokenStore?
     let syncCoordinator: SyncCoordinator
     let pushSettings: PushSettingsStore
     let pushRelayClient: PushRelayClient
@@ -39,13 +44,27 @@ struct CloudAccountDirectory: LocalAccountDirectory, @unchecked Sendable {
         return accounts.map(CloudAccountSnapshot.init(account:))
     }
 
-    func hasCredential(accountId: String, authType: AccountAuthType) async -> Bool {
+    /// `authType` alone doesn't say *which* OAuth provider's `TokenStore`
+    /// to check for an `.oauth2` account — `AccountCloudSyncEngine` only
+    /// ever calls this against a `CloudAccountSnapshot` it already has
+    /// `kind` for (`allAccountSnapshots()`/`insertFromCloud`'s `snapshot`
+    /// parameter both carry it), so this takes `kind` as a separate
+    /// parameter rather than looking it up again.
+    func hasCredential(accountId: String, authType: AccountAuthType, kind: AccountKind) async -> Bool {
         switch authType {
         case .password:
             return ((try? credentialStore.password(forAccountId: accountId)) ?? nil) != nil
         case .oauth2:
-            guard let tokenStore else { return false }
-            return await tokenStore.hasStoredRefreshToken(for: accountId)
+            switch kind {
+            case .gmail:
+                guard let tokenStore else { return false }
+                return await tokenStore.hasStoredRefreshToken(for: accountId)
+            case .microsoft:
+                guard let microsoftTokenStore else { return false }
+                return await microsoftTokenStore.hasStoredRefreshToken(for: accountId)
+            case .generic, .icloud:
+                return false
+            }
         }
     }
 
@@ -96,8 +115,18 @@ struct CloudAccountDirectory: LocalAccountDirectory, @unchecked Sendable {
 
         await syncCoordinator.stopIdleLoop(for: account)
         try? credentialStore.deletePassword(forAccountId: accountId)
+        // Task #116 第2段: cleared unconditionally from *both* provider
+        // token stores rather than branching on `account.kind` — a
+        // `clearTokens` call against a store that never held this
+        // `accountId` is a harmless no-op (mirrors `KeychainCredentialStore
+        // .deletePassword`'s existing "delete, tolerate not-found" shape),
+        // so there's no need to duplicate the `kind` branch `auth(for:)`
+        // already has just to skip one no-op call.
         if let tokenStore {
             try? await tokenStore.clearTokens(for: accountId)
+        }
+        if let microsoftTokenStore {
+            try? await microsoftTokenStore.clearTokens(for: accountId)
         }
         await unregisterWatch(forAccountId: accountId)
         try? await database.dbWriter.write { db in
@@ -136,8 +165,13 @@ struct CloudAccountDirectory: LocalAccountDirectory, @unchecked Sendable {
     func cleanupAfterDuplicateMerge(accountId: String) async {
         await syncCoordinator.invalidateSyncer(for: accountId)
         try? credentialStore.deletePassword(forAccountId: accountId)
+        // See `deleteLocally`'s identical comment on why both stores are
+        // cleared unconditionally.
         if let tokenStore {
             try? await tokenStore.clearTokens(for: accountId)
+        }
+        if let microsoftTokenStore {
+            try? await microsoftTokenStore.clearTokens(for: accountId)
         }
         await unregisterWatch(forAccountId: accountId)
     }
@@ -156,8 +190,17 @@ struct CloudAccountDirectory: LocalAccountDirectory, @unchecked Sendable {
             guard let password = (try? credentialStore.password(forAccountId: account.id)) ?? nil else { return nil }
             return .password(username: account.imapUsername, password: password)
         case .oauth2:
-            guard let tokenStore, let accessToken = try? await tokenStore.accessToken(for: account.id) else { return nil }
-            return .xoauth2(username: account.imapUsername, accessToken: accessToken)
+            // See `AppEnvironment.auth(for:)`'s identical `kind` branch.
+            switch account.kind {
+            case .gmail:
+                guard let tokenStore, let accessToken = try? await tokenStore.accessToken(for: account.id) else { return nil }
+                return .xoauth2(username: account.imapUsername, accessToken: accessToken)
+            case .microsoft:
+                guard let microsoftTokenStore, let accessToken = try? await microsoftTokenStore.accessToken(for: account.id) else { return nil }
+                return .xoauth2(username: account.imapUsername, accessToken: accessToken)
+            case .generic, .icloud:
+                return nil
+            }
         }
     }
 

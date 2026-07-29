@@ -205,12 +205,37 @@
       「アカウントを追加」に追加した3つのプリセットは実アカウント/実
       サーバーが無く未検証。(1) Yahoo: アプリ用パスワードを発行して
       追加し、「接続テスト」→「保存して同期開始」まで通ることを確認する
-      (`login.yahoo.com/myaccount/security`)。(2) Yahoo! JAPAN: Yahoo!
-      メールの設定で「メールソフトでの利用設定 (IMAP アクセス)」を有効
-      にしてから同様に確認する。(3) Exchange: 社内など IMAP が有効な
-      オンプレ Exchange サーバーがあれば、ホスト名を入力して接続テストの
-      通り方を確認する (無ければスキップで構わない)。
-      優先度: 中 / 所要時間: 20分 / 詳細: [docs/design-system.md「Task #116」節](docs/design-system.md)
+      (`login.yahoo.com/myaccount/security`)。(2) Yahoo! JAPAN: **実機
+      フィードバックで「メールサーバにアクセスできない」報告済み** —
+      修正 (ガイダンス文言の具体化 + ログインIDをメールアドレスと別の
+      編集可能フィールドに変更) 後、改めて確認してほしい。手順:
+      Yahoo!メールの設定で「メールソフトでの利用設定 (IMAP/POPアクセス)」
+      を有効化 → アプリの「アカウントを追加」→「Yahoo! JAPAN」でメール
+      アドレス・パスワードを入力 → 接続テストが失敗する場合は「ログイン
+      ID」欄を `@yahoo.co.jp` より前の Yahoo! JAPAN ID だけに変更して
+      再テスト。(3) Exchange: 社内など IMAP が有効なオンプレ Exchange
+      サーバーがあれば、ホスト名を入力して接続テストの通り方を確認する
+      (無ければスキップで構わない)。
+      優先度: 高 (Yahoo! JAPAN は実機で失敗報告済み) / 所要時間: 20分 /
+      詳細: [docs/design-system.md「Task #116」節](docs/design-system.md)
+- [ ] **Task #116 (第2段): Azure AD アプリ登録 + Outlook/Office365 の実接続確認** —
+      Microsoft OAuth (XOAUTH2) は実 Azure AD アプリでの E2E がこの
+      セッションでは未実施 (OSS Client ID 問題、Gmail と同じ制約)。
+      (1) [docs/oauth-setup.md](docs/oauth-setup.md)の「Microsoft OAuth
+      Client ID の取得」節に従い Azure Portal でアプリを登録し、
+      リダイレクト URI `com.mtkg.otegami.msauth://oauth2redirect` を
+      「モバイルアプリケーションおよびデスクトップアプリケーション」
+      プラットフォームに登録、「パブリック クライアント フローを許可
+      する」を有効化する。(2) 発行された Client ID を
+      `Config/Local.xcconfig`の`OTEGAMI_MICROSOFT_CLIENT_ID`に設定し、
+      `make ios`/`make mac`で再ビルド。(3)「アカウントを追加」→
+      「Outlook」(個人 Outlook.com/Hotmail アカウント) と「Office365」
+      (会社・学校の Microsoft 365 アカウント) の両方で実際にサインイン
+      し、INBOX 同期・送信・アクセストークン失効後の自動リフレッシュ・
+      アクセス取り消し後の「再認証」バナーからの復旧を確認する。
+      優先度: 中 (Outlook/Office365 対応を謳う前に必須、ただし配布判断は
+      別途) / 所要時間: 20分 (Azure アプリ登録) + 15分 (確認項目一式) /
+      詳細: [docs/oauth-setup.md「Microsoft OAuth Client ID の取得」節](docs/oauth-setup.md)
 
 ## 3. インフラ・運用まわり
 

@@ -9,6 +9,80 @@
 知りたい場合はこのファイル、次に何をやればいいかだけ知りたい場合は
 `HUMAN_TASKS.md` を見ること。
 
+## Task #119/#120/#121: 実機での最終確認
+
+実装・単体テスト (`make test`)・`make mac` ビルドは完了済み。以下は実機/
+シミュレータでの確認が必要:
+
+- **Task #119 (「その他 → Trash」問題)**: iCloud または SPECIAL-USE を
+  広告しない汎用 IMAP アカウントを追加し、ハンバーガーメニューの「その他」
+  セクションから Trash/Junk/Sent/Drafts/Archive が消え、対応する統合
+  カテゴリセクションに正しく現れるか。詳細: `docs/qa-findings.md`
+  「Task #119」節。
+- **Task #120 (アーカイブ解除の即時反映)**: アーカイブ済み未読メールを
+  アーカイブ解除した瞬間、pull-to-refresh なしで受信箱一覧に現れるか。
+  その後サーバー同期が完了しても重複行が残らないか。同じ観点でアーカイブ/
+  迷惑メール移動/削除についても、Trash・Junk・Archive の各メールボックス
+  が既にローカルに存在するアカウントで確認。詳細: `docs/qa-findings.md`
+  「Task #120」節。
+  - **follow-up 候補 (未着手)**: `ThreadDetailView`("…" メニュー) の
+    archive/junk/delete は `MessageListView`/`AccountDigestView` とは
+    別の独自実装 (`MessageRemoval.commit`を呼ばない) で、今回の仮配置
+    機構の対象外のまま — 統合すれば同じ即時反映を得られるが、Task #115
+    で慎重に直した `notifyThreadRemoved()`/`replaySoon()`の順序を崩さない
+    よう別タスクとして着手すること。
+- **Task #121 (リレー URL の iCloud 同期)**: 別端末または再インストール
+  後に、設定済みのプッシュ通知リレー URL が自動的に復元されるか (per-
+  account watch・deviceSecret はデバイス固有のまま残る想定)。
+
+## Task #116: アカウント追加画面のプロバイダ拡充 — 実接続・Azure アプリ登録待ち
+
+**実装状況**: 第1段 (Yahoo/Yahoo! JAPAN/Exchange のホスト/ポートプリセット)・
+第2段 (Outlook.com/Office365 の Microsoft OAuth) とも実装・単体テスト済み
+(`make test`)。**残っているのは実アカウント/実 Azure テナントでの最終
+確認のみ。**
+
+- **第1段 (Yahoo/Yahoo! JAPAN/Exchange)**: `MailProviderPresetTests`で
+  プリセット値 (ホスト/ポート/セキュリティ) を検証済み。**Yahoo! JAPAN
+  は実機フィードバックで「メールサーバにアクセスできない」報告があった**
+  — 原因はプリセット自体ではなく (1) Yahoo!メール側「メールソフトでの
+  利用設定 (IMAP/POPアクセス)」が既定オフ、(2) ログイン ID がフル
+  メールアドレスでなく Yahoo! JAPAN ID (`@`より前) を要求される場合が
+  ある、の2点と判断し、ガイダンス文言の具体化 + 編集可能な「ログインID」
+  フィールドの追加で対応した。**改めて実機確認が必要** — 詳細は
+  `docs/design-system.md`「Task #116」節、確認項目は `HUMAN_TASKS.md`。
+- **第2段 (Outlook.com/Office365)**: OSS のため Azure AD の Client ID を
+  リポジトリに含めない方針 (Gmail の Google Cloud Client ID と同じ)。
+  ビルドする人が各自 Azure Portal でアプリを登録する必要がある。
+  - **ブロックしている機能**: Outlook.com/Office365 アカウントの追加・
+    同期・送受信の**実サービスでの動作確認** (コード自体は実装済み。
+    `AccountTypeSelectionView`の Outlook/Office365 ボタンは
+    `OTEGAMI_MICROSOFT_CLIENT_ID`未設定の間ずっと無効化され続ける)。
+  - **対応手順** (`docs/oauth-setup.md`「Microsoft OAuth Client ID の
+    取得」節に詳細版あり):
+    1. [Azure Portal](https://portal.azure.com/) → Microsoft Entra ID →
+       「アプリの登録」で新規登録 (アカウントの種類は「任意の組織
+       ディレクトリ内のアカウントと個人の Microsoft アカウント」)。
+    2. 「認証」→「プラットフォームを追加」→「モバイルアプリケーション
+       およびデスクトップアプリケーション」でリダイレクト URI
+       `com.mtkg.otegami.msauth://oauth2redirect` を登録し、「パブリック
+       クライアント フローを許可する」を有効化する (Google と違い
+       **この登録は必須** — 未登録だと `redirect_uri_mismatch` で失敗
+       する)。
+    3. 発行された Client ID を `Config/Local.xcconfig`(git 管理外) の
+       `OTEGAMI_MICROSOFT_CLIENT_ID`に設定する。
+    4. `make ios`/`make mac`で再ビルドし、「アカウントを追加」→
+       「Outlook」/「Office365」ボタンが有効になっていることを確認する。
+    5. 実際にサインインし、INBOX 同期・送信・再認証・アクセス取り消し
+       後の復旧を確認する (`docs/oauth-setup.md`「実機での最終確認手順」
+       節に詳細なチェックリストあり)。
+  - ユニットテスト (`MicrosoftOAuthEndpointsTests`/
+    `MicrosoftOAuthClientTests`/`TokenStoreTests`、31件) は Gmail 側の
+    `GoogleOAuthTests`と同じ`URLProtocol`スタブ+フェイク認可フロー構造
+    で検証済み — token 交換/refresh/invalid_grant/id_token からのメール
+    アドレス抽出をカバーしている。実 Azure AD サーバとの通信・実機での
+    ブラウザ遷移・実際の同意画面表示は自動化の対象外。
+
 ## Task #115: アーカイブ後の空状態フラッシュ修正 — 実機での即時遷移確認
 
 `ThreadDetailView`のフッターツールバーからアーカイブ/削除/迷惑メールに

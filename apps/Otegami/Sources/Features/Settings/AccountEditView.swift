@@ -174,6 +174,8 @@ struct AccountEditView: View {
             switch account.kind {
             case .gmail:
                 gmailSections
+            case .microsoft:
+                microsoftSections
             case .icloud:
                 icloudSections
             case .generic:
@@ -430,12 +432,48 @@ struct AccountEditView: View {
         }
     }
 
+    /// Task #116 第2段: Outlook.com/Office 365 — mirrors `gmailSections`'
+    /// shape (fixed connection preset + a「再認証」button), minus the
+    /// Google-specific scope-diagnosis/avatar-diagnostics rows this
+    /// provider has no equivalent of.
+    @ViewBuilder
+    private var microsoftSections: some View {
+        Section("接続先 (固定)") {
+            LabeledContent("IMAP", value: "\(account.imapHost):\(account.imapPort)")
+            if let smtpHostValue = account.smtpHost, let smtpPortValue = account.smtpPort {
+                LabeledContent("SMTP", value: "\(smtpHostValue):\(smtpPortValue)")
+            }
+        }
+
+        Section("認証") {
+            Text("Microsoft アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button {
+                Task { await reauthenticate() }
+            } label: {
+                HStack {
+                    Text("再認証")
+                    if isReauthenticating { Spacer(); ProgressView() }
+                }
+            }
+            .accessibilityIdentifier("accountEdit.reauthButton")
+            .disabled(isReauthenticating)
+
+            if let reauthErrorMessage {
+                Label(reauthErrorMessage, systemImage: "xmark.octagon")
+                    .foregroundStyle(OtegamiColor.destructive)
+                    .accessibilityIdentifier("accountEdit.reauthError")
+            }
+        }
+    }
+
     // MARK: - Validation
 
     private var isFormValid: Bool {
         guard !displayName.isEmpty else { return false }
         switch account.kind {
-        case .gmail:
+        case .gmail, .microsoft:
             return true
         case .icloud:
             return true
@@ -474,7 +512,9 @@ struct AccountEditView: View {
             host = imapHost
             port = parsedPort
             security = imapSecurity
-        case .gmail:
+        case .gmail, .microsoft:
+            // No password-based "接続テスト" for an OAuth account — its
+            // `gmailSections`/`microsoftSections` offer「再認証」instead.
             return
         }
 
@@ -494,13 +534,26 @@ struct AccountEditView: View {
         smtpTestResultMessage = result.message
     }
 
+    /// Shared by `gmailSections`'/`microsoftSections`'「再認証」buttons —
+    /// branches on `account.kind` to call the matching provider's reauth
+    /// flow. A single `AccountEditView` instance only ever shows one of
+    /// those two sections (whichever matches `account.kind`), so sharing
+    /// `isReauthenticating`/`reauthErrorMessage` between them is safe: only
+    /// one branch's button can ever be the one that triggered this.
     private func reauthenticate() async {
         isReauthenticating = true
         reauthErrorMessage = nil
         defer { isReauthenticating = false }
 
         do {
-            try await environment.reauthenticateGmailAccount(account)
+            switch account.kind {
+            case .gmail:
+                try await environment.reauthenticateGmailAccount(account)
+            case .microsoft:
+                try await environment.reauthenticateMicrosoftAccount(account)
+            case .generic, .icloud:
+                return
+            }
             dismiss()
         } catch {
             reauthErrorMessage = "再認証に失敗しました: \(error)"
@@ -519,6 +572,23 @@ struct AccountEditView: View {
                 // (host/port/security/username) stays exactly what
                 // `createGmailAccount` set, and there's no password to
                 // (possibly) update.
+                try await environment.updateAccount(
+                    account,
+                    displayName: displayName,
+                    imapHost: account.imapHost,
+                    imapPort: account.imapPort,
+                    imapSecurity: account.imapSecurity,
+                    smtpHost: account.smtpHost,
+                    smtpPort: account.smtpPort,
+                    smtpSecurity: account.smtpSecurity,
+                    smtpUsername: account.smtpUsername,
+                    newPassword: nil,
+                    labelColorKey: .some(labelColorKey?.rawValue),
+                    defaultSignatureId: .some(defaultSignatureId)
+                )
+            case .microsoft:
+                // Same rationale as `.gmail` just above — nothing but
+                // display name is editable for an OAuth account.
                 try await environment.updateAccount(
                     account,
                     displayName: displayName,
@@ -579,6 +649,7 @@ struct AccountEditView: View {
         switch account.kind {
         case .generic: "その他 (IMAP)"
         case .gmail: "Gmail"
+        case .microsoft: "Microsoft"
         case .icloud: "iCloud"
         }
     }
