@@ -100,7 +100,13 @@ public enum ThreadQuery {
     /// 開いても同じ「アーカイブ済み」集合を見せる、という単一の定義に統一する
     /// ための判断 (`docs/design-system.md`参照)。Gmail の All Mail 以外の
     /// どのメールボックスにも影響しない (フィルタ自身のガード節による)。
-    public static func request(mailboxId: Int64, limit: Int? = nil, unreadOnly: Bool = false) -> SQLRequest<ThreadRecord> {
+    /// Task #142 追記 (「フラグ付きのみ表示」): `pinnedOnly` true で
+    /// `thread.isPinned = 1` を追加する — `unreadOnly`が読む`thread
+    /// .unreadCount`と同じ「集計済みの列を見ればスレッド単位のフィルタに
+    /// ジョインが要らない」理由で、こちらもスレッドの OR-aggregate
+    /// (`ThreadRecord.isPinned`、ローカルピン+`\Flagged`同期の両方を反映
+    /// 済み — `docs/design-system.md`の Task #142 節参照) をそのまま見る。
+    public static func request(mailboxId: Int64, limit: Int? = nil, unreadOnly: Bool = false, pinnedOnly: Bool = false) -> SQLRequest<ThreadRecord> {
         var sql = """
             SELECT thread.* FROM thread
             WHERE EXISTS (
@@ -114,6 +120,9 @@ public enum ThreadQuery {
         var arguments: [(any DatabaseValueConvertible)?] = [mailboxId]
         if unreadOnly {
             sql += " AND thread.unreadCount > 0"
+        }
+        if pinnedOnly {
+            sql += " AND thread.isPinned = 1"
         }
         sql += " ORDER BY thread.isPinned DESC, thread.lastMessageDate DESC, thread.id DESC"
         if let limit {
@@ -150,7 +159,10 @@ public enum ThreadQuery {
     /// (`docs/design-system.md`の Task #141 節参照) にするための特別扱い。
     /// 他のどの role でもこの分岐は効かない (`nonGmailMatchesAnyMailbox`が
     /// 常に`false`)。
-    public static func unifiedInboxRequest(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false) -> SQLRequest<ThreadRecord> {
+    ///
+    /// Task #142: `pinnedOnly` — `request(mailboxId:limit:unreadOnly:
+    /// pinnedOnly:)`のdoc comment参照、同じ`thread.isPinned = 1`条件。
+    public static func unifiedInboxRequest(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false, pinnedOnly: Bool = false) -> SQLRequest<ThreadRecord> {
         guard !accountIds.isEmpty else {
             return SQLRequest(sql: "SELECT * FROM thread WHERE 0")
         }
@@ -183,6 +195,9 @@ public enum ThreadQuery {
         if unreadOnly {
             sql += " AND thread.unreadCount > 0"
         }
+        if pinnedOnly {
+            sql += " AND thread.isPinned = 1"
+        }
         sql += " ORDER BY thread.isPinned DESC, thread.lastMessageDate DESC, thread.id DESC"
         if let limit {
             sql += " LIMIT ?"
@@ -209,15 +224,15 @@ public enum ThreadQuery {
     /// `limit` (M10 pagination — `MessageListView`'s "load more on scroll",
     /// docs/performance.md): `nil` keeps the pre-M10 "fetch everything"
     /// behavior for any caller that still wants it.
-    public static func summariesObservation(mailboxId: Int64, limit: Int? = nil, unreadOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+    public static func summariesObservation(mailboxId: Int64, limit: Int? = nil, unreadOnly: Bool = false, pinnedOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
         ValueObservation.tracking { db in
-            try summaries(forThreads: request(mailboxId: mailboxId, limit: limit, unreadOnly: unreadOnly).fetchAll(db), db: db)
+            try summaries(forThreads: request(mailboxId: mailboxId, limit: limit, unreadOnly: unreadOnly, pinnedOnly: pinnedOnly).fetchAll(db), db: db)
         }
     }
 
-    public static func unifiedInboxSummariesObservation(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+    public static func unifiedInboxSummariesObservation(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false, pinnedOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
         ValueObservation.tracking { db in
-            try summaries(forThreads: unifiedInboxRequest(accountIds: accountIds, role: role, limit: limit, unreadOnly: unreadOnly).fetchAll(db), db: db)
+            try summaries(forThreads: unifiedInboxRequest(accountIds: accountIds, role: role, limit: limit, unreadOnly: unreadOnly, pinnedOnly: pinnedOnly).fetchAll(db), db: db)
         }
     }
 
@@ -239,7 +254,12 @@ public enum ThreadQuery {
     /// にしているのは`mailbox`/`account`もJOINするようになった分、
     /// `SELECT *`だと余計な列 (`mailbox.id`等) が`MessageRecord`のデコードに
     /// 混ざってしまうのを避けるため。
-    public static func flatSummaries(mailboxId: Int64, limit: Int? = nil, accountId: String, unreadOnly: Bool = false, db: Database) throws -> [ThreadSummary] {
+    /// Task #142 追記: `pinnedOnly` — フラット表示は`thread.isPinned`の
+    /// ような集計列を持たない (1行1メッセージ) ため、`unreadOnly`と同じく
+    /// メッセージ自身の列を直接見る — `isPinnedLocal`は`MessageRecord`の
+    /// 独立した`Bool`列 (`flagsRaw`のビットではない) なので、`unreadOnly`の
+    /// ような`&`ビット演算は不要。
+    public static func flatSummaries(mailboxId: Int64, limit: Int? = nil, accountId: String, unreadOnly: Bool = false, pinnedOnly: Bool = false, db: Database) throws -> [ThreadSummary] {
         var sql = """
             SELECT message.* FROM message
             JOIN mailbox ON mailbox.id = message.mailboxId
@@ -251,6 +271,9 @@ public enum ThreadQuery {
         if unreadOnly {
             sql += " AND flagsRaw & \(MessageQuery.seenFlagBit) = 0"
         }
+        if pinnedOnly {
+            sql += " AND isPinnedLocal = 1"
+        }
         sql += " ORDER BY isPinnedLocal DESC, COALESCE(date, internalDate) DESC, uid DESC"
         if let limit {
             sql += " LIMIT ?"
@@ -260,8 +283,8 @@ public enum ThreadQuery {
         return messages.map { ThreadSummary(flatMessage: $0, accountId: accountId) }
     }
 
-    public static func flatSummariesObservation(mailboxId: Int64, limit: Int? = nil, accountId: String, unreadOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
-        ValueObservation.tracking { db in try flatSummaries(mailboxId: mailboxId, limit: limit, accountId: accountId, unreadOnly: unreadOnly, db: db) }
+    public static func flatSummariesObservation(mailboxId: Int64, limit: Int? = nil, accountId: String, unreadOnly: Bool = false, pinnedOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+        ValueObservation.tracking { db in try flatSummaries(mailboxId: mailboxId, limit: limit, accountId: accountId, unreadOnly: unreadOnly, pinnedOnly: pinnedOnly, db: db) }
     }
 
     /// The flat-mode counterpart to `unifiedInboxRequest` — every account's
@@ -279,8 +302,10 @@ public enum ThreadQuery {
     /// `account.kind`をJOINして参照する理由は`unifiedInboxRequest(accountIds:
     /// role:limit:unreadOnly:)`と同じ — Gmail のアーカイブマッピング
     /// (Task #52, 2)。`role == .all`の非Gmail特別扱い (Task #141) も同関数
-    /// と同じ — その doc comment参照。
-    public static func unifiedInboxFlatSummaries(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false, db: Database) throws -> [ThreadSummary] {
+    /// と同じ — その doc comment参照。`pinnedOnly` (Task #142) —
+    /// `flatSummaries(mailboxId:limit:accountId:unreadOnly:pinnedOnly:db:)`
+    /// と同じ`message.isPinnedLocal`列を直接見る。
+    public static func unifiedInboxFlatSummaries(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false, pinnedOnly: Bool = false, db: Database) throws -> [ThreadSummary] {
         guard !accountIds.isEmpty else { return [] }
         let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
         let nonGmailMatchesAnyMailbox = role == .all
@@ -306,6 +331,9 @@ public enum ThreadQuery {
         if unreadOnly {
             sql += " AND message.flagsRaw & \(MessageQuery.seenFlagBit) = 0"
         }
+        if pinnedOnly {
+            sql += " AND message.isPinnedLocal = 1"
+        }
         sql += " ORDER BY message.isPinnedLocal DESC, COALESCE(message.date, message.internalDate) DESC, message.uid DESC"
         if let limit {
             sql += " LIMIT ?"
@@ -319,8 +347,8 @@ public enum ThreadQuery {
         }
     }
 
-    public static func unifiedInboxFlatSummariesObservation(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
-        ValueObservation.tracking { db in try unifiedInboxFlatSummaries(accountIds: accountIds, role: role, limit: limit, unreadOnly: unreadOnly, db: db) }
+    public static func unifiedInboxFlatSummariesObservation(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false, pinnedOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
+        ValueObservation.tracking { db in try unifiedInboxFlatSummaries(accountIds: accountIds, role: role, limit: limit, unreadOnly: unreadOnly, pinnedOnly: pinnedOnly, db: db) }
     }
 
     /// Every message in `threadId`, oldest first — what `ThreadDetailView`

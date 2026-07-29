@@ -6625,7 +6625,76 @@ Gmail の有無に関わらず常に有効な概念のため。
 (既存シナリオ、Gmail+非Gmailの2アカウント構成を注入済みのため追加の
 シナリオ変更は不要) でスクリーンショット確認: 「すべてのメール」
 セクションがアーカイブの隣に表示され、シェブロン展開でGmailアカウントの
-行が見える。
+行が見える。未読バッジ「11」(受信トレイと同値) は Fake Gmail の All Mail
+分(1) + Fake HTML Test アカウント (非Gmail) のINBOX分(10) の合算と一致 —
+非Gmail側の「全 mailbox 横断」が実際に効いていることの実測的な裏付けにも
+なった。
+
+## Task #142: 一覧ヘッダにフラグ付きフィルタトグル
+
+「未読のみ表示」トグルの隣に「フラグ付きのみ表示」トグルを追加した —
+同じ視覚言語 (アイコンの塗り分けでON/OFF、`.buttonStyle(.plain)`必須の
+理由も同じ)、ピン系SF Symbol (`pin`/`pin.fill` — 一覧行のピン留め表示
+`ThreadRowView`の`pin.fill`と揃えた)。「フラグ付き」は新しい概念を別途
+作らず、このアプリの既存のピン留め表現 (`ThreadRecord.isPinned`/
+`MessageRecord.isPinnedLocal` — ローカルピン+`PinSettingsStore
+.syncWithFlaggedKey`によるIMAP`\Flagged`との双方向同期) にそのまま乗せた。
+
+- `ListDisplaySettingsStore.pinnedOnlyKey`(`listDisplay.pinnedOnly`、
+  default off) を`unreadOnlyKey`と同じ設計で追加。`AppSettingsCloudDirectory
+  .boolDefaults`にも追加し iCloud 同期対象に (`docs/icloud-sync.md`の表も
+  更新)。
+- `ThreadQuery`の4関数 (`request`/`unifiedInboxRequest`/`flatSummaries`/
+  `unifiedInboxFlatSummaries`、各Observationラッパー含む) に`pinnedOnly`
+  パラメータを追加。グルーピング済み (スレッド表示) は`unreadOnly`の
+  `thread.unreadCount > 0`と同じ発想で`thread.isPinned = 1`(集計済み列、
+  ジョイン不要) を、フラット表示 (1行1メッセージ) は`message
+  .isPinnedLocal = 1`(独立した`Bool`列 — `unreadOnly`のような`flagsRaw`
+  ビット演算は不要) を追加する。`unreadOnly`とは常にAND — 検索
+  (`SearchQuery`) は対象外 (別クエリ経路、元々`unreadOnly`も同様)。
+  `unifiedRole`(Task #141の「すべてのメール」含む) にもそのまま効く —
+  role別の分岐と独立したフィルタのため。
+- `MessageListView`に`isPinnedOnly`(`@AppStorage`)/`persistedPinnedOnly`
+  (`persistedUnreadOnly`と同じ「起動直後の`UserDefaults`キャッシュ遅延」
+  対策、Task #82/#105参照) を追加、`ObservationKey`にも`pinnedOnly`
+  フィールドを追加して`.task(id:)`が正しく再実行されるようにした。
+  `emptyStateTitle`にも専用文言 ("フラグ付きのメールはありません"/
+  "未読かつフラグ付きのメールはありません") を追加 — `isUnreadOnly`と同じ
+  理由 (空状態が「フィルタの結果ゼロ件」であることを明示) に加え、この
+  直接読みが`isPinnedOnly`(`@AppStorage`)をSwiftUIの変更検知に購読させる
+  役目も兼ねる (`isThreadingEnabled`のObservationKeyフィールドと同じ事情、
+  そのdoc comment参照)。
+- `MailScreenView`に`pinnedOnlyToggleButton`を追加、ツールバーで
+  `unreadOnlyToggleButton`の右隣に配置。
+- ヘッダ未読数 (#137 のroleスコープ集計) はこのフィルタと独立のまま
+  (`observeUnreadCountInScope()`は`unreadOnly`/`pinnedOnly`いずれも
+  受け取らない既存の作り) — 変更不要だった。
+
+### 検証
+
+`ThreadQueryTests.swift`に`pinnedOnly`のケースを5件追加
+(`request`/`unifiedInboxRequest`の`unreadOnly`とのAND併用/`flatSummaries`/
+`unifiedInboxFlatSummaries`)。`make test`/`make mac`green。
+
+`scripts/verify-screen.sh`に`list-pinned-only`シナリオを追加 —
+`OTEGAMI_UITEST_INSERT_FAKE_PINNED_MESSAGE`(ピン留め済み1件+未ピン1件の
+fakeフィクスチャ、`AppEnvironment`に追加) + トグル直接ON。**トグル直接ON
+の実装で1つ嵌まった点**: 当初`-listDisplay.pinnedOnly 1`という素の
+launch argument (`list-grouped`が過去使っていた`-listDisplay
+.groupByAccount 1`と同じ`NSArgumentDomain`経由の手段) を使ったが、
+スクリーンショットで確認すると**ヘッダのトグルアイコンだけ塗り (ON) に
+なり、実際のフィルタは効いていなかった** (未ピンの行も残ったまま) —
+原因は`ListDisplaySettingsStore.persistedBool(forKey:default:)`が使う
+厳密な`UserDefaults.standard.object(forKey:) as? Bool`キャストは
+launch argumentの`String`値"1"を`Bool`として認識できず`nil`(→既定値
+`false`)に落ちる一方、`@AppStorage`(ヘッダのトグルアイコン側)は緩い
+`UserDefaults.bool(forKey:)`を使うため"1"を`true`と読めてしまう、という
+2つの読み方の食い違いだった。対策として`AppEnvironment.init()`に
+`OTEGAMI_UITEST_FORCE_PINNED_ONLY`環境変数を追加し、`UserDefaults
+.standard.set(true, forKey:)`で実際の`Bool`を書き込む専用フックに
+変更 — この修正後にスクリーンショットで再確認し、未ピンの行が消えて
+ピン留め済みの1件だけが残ること、トグルアイコンが塗りになっていること
+の両方を確認した。
 
 ## Task #146: アコーディオン展開時の自動スクロール
 

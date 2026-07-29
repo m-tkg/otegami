@@ -202,6 +202,22 @@ final class AppEnvironment {
         // (06c1062)'s own direct-`UserDefaults.standard`-read fix didn't
         // fully close.
         ListDisplaySettingsStore.forceReloadFromDiskOnce()
+        // Task #142 (`scripts/verify-screen.sh list-pinned-only`):「フラグ
+        // 付きのみ表示」トグルをタップ無しで直接ONにする検証用フック —
+        // 他の`-uitests...Directly`系launch argumentと違い、こちらは
+        // `UserDefaults.standard.set(true, forKey:)`で実際の`Bool`値を書く
+        // 必要がある。`-listDisplay.pinnedOnly 1`のような素の launch
+        // argument (`NSArgumentDomain`) だと `String` "1" として入るだけで、
+        // `ListDisplaySettingsStore.persistedBool(forKey:default:)`が使う
+        // 厳密な`object(forKey:) as? Bool`キャストでは`nil`(→既定値`false`)
+        // に落ちてしまう (`@AppStorage`側の緩い`UserDefaults.bool(forKey:)`
+        // だけは真として読めてしまうため、ヘッダのトグルアイコンだけON表示
+        // で実際のフィルタが効かないという食い違いが実機/シミュレータで
+        // 再現した — この`set(true, forKey:)`はその食い違いを避けるための
+        // 修正)。
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_FORCE_PINNED_ONLY"] == "1" {
+            UserDefaults.standard.set(true, forKey: ListDisplaySettingsStore.pinnedOnlyKey)
+        }
         // Design system: registers the bundled Archivo variable font with
         // CoreText before any view can render — see `OtegamiFont
         // .registerCustomFontsIfNeeded()`'s doc comment. Was previously
@@ -1027,6 +1043,72 @@ final class AppEnvironment {
             }
             if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_OPEN_MULTI_MESSAGE_THREAD_DIRECTLY"] == "1" {
                 self.uitestDirectOpenThreadId = capturedThreadId
+            }
+        }
+
+        // Task #142 (一覧ヘッダの「フラグ付きのみ表示」トグル):
+        // `scripts/verify-screen.sh list-pinned-only`向け — 1件ピン留め済み
+        // + 1件未ピンのfakeメッセージを挿入する。`OTEGAMI_UITEST_INSERT_FAKE_
+        // HTML_MESSAGE`と同じ「オフラインの完結したfakeアカウント」パターン
+        // だが、こちらは`MessageRecord.isPinnedLocal`をシード時に直接立てる
+        // 点だけが違う (ピン留め操作自体はタップ操作なのでこのシミュレータ/
+        // ツールチェーンでは検証できない — `docs/verify.md`の既知不調)。
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_PINNED_MESSAGE"] == "1" {
+            let fakeAccountEmail = "uitest-fake-pinned@example.com"
+            let fakeAccount = AccountRecord(
+                displayName: "Fake Pinned Test (UITest)",
+                email: fakeAccountEmail,
+                authType: .password,
+                kind: .generic,
+                imapHost: "127.0.0.1",
+                imapPort: 1,
+                imapSecurity: .plain,
+                imapUsername: fakeAccountEmail,
+                sortOrder: 1_004
+            )
+            try? database.dbWriter.write { db in
+                // Idempotent across repeated `app.launch()`s within the same
+                // install — same rationale/guard as the fixtures above.
+                guard try AccountRecord.filter(Column("email") == fakeAccountEmail).fetchOne(db) == nil else { return }
+                try fakeAccount.insert(db)
+                var mailbox = MailboxRecord(accountId: fakeAccount.id, path: "INBOX", displayPath: "INBOX", role: .inbox, messageCount: 2)
+                try mailbox.insert(db)
+
+                let now = Date()
+                var pinnedThread = ThreadRecord(accountId: fakeAccount.id, normalizedSubject: "フラグ付きのテストメール (UITest)", messageCount: 0, unreadCount: 0)
+                try pinnedThread.insert(db)
+                var pinned = MessageRecord(
+                    mailboxId: mailbox.id!, uid: 1,
+                    messageId: "<uitest-fake-pinned-1@otegami.test>",
+                    subject: "フラグ付きのテストメール (UITest)", normalizedSubject: "フラグ付きのテストメール (UITest)",
+                    fromAddresses: [EmailAddress(name: "Pinned Sender", address: "pinned@example.com")],
+                    toAddresses: [EmailAddress(address: fakeAccountEmail)],
+                    fromText: "Pinned Sender <pinned@example.com>",
+                    internalDate: now,
+                    threadId: pinnedThread.id,
+                    bodyState: .fetched,
+                    snippet: "このメールはフラグ付き (ピン留め) のfakeフィクスチャです。",
+                    isPinnedLocal: true
+                )
+                try pinned.insert(db)
+                try ThreadAssigner.recomputeAggregates(threadId: pinnedThread.id!, db: db)
+
+                var unpinnedThread = ThreadRecord(accountId: fakeAccount.id, normalizedSubject: "フラグ無しのテストメール (UITest)", messageCount: 0, unreadCount: 0)
+                try unpinnedThread.insert(db)
+                var unpinned = MessageRecord(
+                    mailboxId: mailbox.id!, uid: 2,
+                    messageId: "<uitest-fake-pinned-2@otegami.test>",
+                    subject: "フラグ無しのテストメール (UITest)", normalizedSubject: "フラグ無しのテストメール (UITest)",
+                    fromAddresses: [EmailAddress(name: "Regular Sender", address: "regular@example.com")],
+                    toAddresses: [EmailAddress(address: fakeAccountEmail)],
+                    fromText: "Regular Sender <regular@example.com>",
+                    internalDate: now.addingTimeInterval(-60),
+                    threadId: unpinnedThread.id,
+                    bodyState: .fetched,
+                    snippet: "このメールはフラグ無しのfakeフィクスチャです。"
+                )
+                try unpinned.insert(db)
+                try ThreadAssigner.recomputeAggregates(threadId: unpinnedThread.id!, db: db)
             }
         }
 

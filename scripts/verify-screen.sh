@@ -205,6 +205,23 @@
 #                                       `list-grouped`は後方互換のエイリアス
 #                                       として残し、新しい`account-digest`と
 #                                       同じ動作にした。
+#   list-pinned-only                    Task #142 (一覧ヘッダの「フラグ付きの
+#                                       み表示」トグル): ピン留め済み1件+
+#                                       未ピン1件を注入
+#                                       (`OTEGAMI_UITEST_INSERT_FAKE_PINNED_MESSAGE`)
+#                                       した上で、トグルをタップせず
+#                                       `OTEGAMI_UITEST_FORCE_PINNED_ONLY=1`
+#                                       (`AppEnvironment.init()`が実際の`Bool`
+#                                       を`UserDefaults.standard`へ書く —
+#                                       素の`-listDisplay.pinnedOnly 1`launch
+#                                       argumentだと`persistedBool`の厳密な
+#                                       `as? Bool`キャストがStringを弾いて
+#                                       効かないため、専用フックにした。同じ
+#                                       doc comment参照)で直接ONにする —
+#                                       ヘッダのトグルアイコンが塗り
+#                                       (`pin.fill`) になっていること、一覧に
+#                                       ピン留め済みの1件だけが残ること
+#                                       (未ピンの1件は消えていること) の確認用。
 #   settings                            設定画面 (SettingsSheetView)
 #   menu                                 ハンバーガーメニュー (FolderListSheet
 #                                       — 左下floatingSettingsButtonの
@@ -455,6 +472,15 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
     launch_args+=("-uitestsOpenAccountDigestDirectly")
     default_out="account-digest.png"
+    ;;
+  list-pinned-only)
+    # Task #142: このスクリプトの header comment 参照 — ピン留め済み1件+
+    # 未ピン1件 (`OTEGAMI_UITEST_INSERT_FAKE_PINNED_MESSAGE`) を注入し、
+    # `OTEGAMI_UITEST_FORCE_PINNED_ONLY=1`(`AppEnvironment.init()`が
+    # `UserDefaults.standard.set(true, forKey:)`する専用フック) でトグルを
+    # タップ無しで直接ONにする。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_PINNED_MESSAGE=1" "OTEGAMI_UITEST_FORCE_PINNED_ONLY=1")
+    default_out="list-pinned-only.png"
     ;;
   settings)
     launch_args+=("-uitestsOpenSettingsDirectly")

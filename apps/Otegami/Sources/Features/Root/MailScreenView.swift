@@ -151,6 +151,11 @@ struct MailScreenView: View {
     /// 影響させない」という要件どおり、`SearchQuery`は別の経路。
     @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
+    /// Task #142: 「未読のみ表示」の隣に並ぶ「フラグ付きのみ表示」トグル —
+    /// `isUnreadOnly`と全く同じ設計 (`ListDisplaySettingsStore.pinnedOnlyKey`
+    /// のdoc comment参照)、`unreadOnlyKey`同様検索画面には影響させない。
+    @AppStorage(ListDisplaySettingsStore.pinnedOnlyKey) private var isPinnedOnly = ListDisplaySettingsStore.defaultPinnedOnly
+
     /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」): 元は
     /// 未読のみトグルの隣に置いた「アカウントでグループ化」ヘッダボタンの
     /// 状態だった。
@@ -627,7 +632,9 @@ struct MailScreenView: View {
                 // Task #106: 「アカウントでグループ化」ボタンはここから廃止
                 // — 1a の「すべて」チップのプルダウン (`AccountFilterChipRow
                 // .AllModeFilterChip`) に統合した。
+                // Task #142: 「フラグ付きのみ表示」を「未読のみ表示」の隣に追加。
                 unreadOnlyToggleButton
+                pinnedOnlyToggleButton
             }
         }
     }
@@ -660,6 +667,29 @@ struct MailScreenView: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("mail.unreadOnlyToggle")
         .accessibilityAddTraits(isUnreadOnly ? .isSelected : [])
+    }
+
+    /// Task #142: 「フラグ付きのみ表示」トグル — `unreadOnlyToggleButton`と
+    /// 同じ視覚言語 (アイコンの塗り分けでON/OFFを示す、`.buttonStyle(.plain)`
+    /// が必須な理由も同じ、そのdoc comment参照)。アイコンは一覧行のピン
+    /// 表示 (`ThreadRowView`の`pin.fill`) に揃えたピン系SF Symbol —
+    /// 「フラグ付き」の実体はこのアプリのピン留め (`ListDisplaySettingsStore
+    /// .pinnedOnlyKey`のdoc comment参照) なので、アプリ内の他のピン表現と
+    /// 記号を統一する。
+    private var pinnedOnlyToggleButton: some View {
+        Button {
+            isPinnedOnly.toggle()
+        } label: {
+            Label("フラグ付きのみ表示", systemImage: isPinnedOnly ? "pin.fill" : "pin")
+                .labelStyle(.iconOnly)
+                .font(OtegamiFont.body())
+                .foregroundStyle(isPinnedOnly ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
+                .padding(OtegamiSpacing.xs)
+                .background(isPinnedOnly ? OtegamiColor.paleBaseStrong : Color.clear, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("mail.pinnedOnlyToggle")
+        .accessibilityAddTraits(isPinnedOnly ? .isSelected : [])
     }
 
     /// Task #131 (一覧FABのspeed-dial化): 旧・左下`floatingSearchButton`+

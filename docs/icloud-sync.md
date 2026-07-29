@@ -691,7 +691,7 @@ allowlist が唯一の情報源:
 
 | 同期される | 同期されない |
 |---|---|
-| 一覧: スレッド表示・未読のみ・アカウントでグループ化 (`ListDisplaySettingsStore`) | 通知系のうちデバイス固有の部分 (`PushSettingsStore` の device id・per-account watch map・enabled フラグ・deviceSecret) |
+| 一覧: スレッド表示・未読のみ・フラグ付きのみ (Task #142)・アカウントでグループ化 (`ListDisplaySettingsStore`) | 通知系のうちデバイス固有の部分 (`PushSettingsStore` の device id・per-account watch map・enabled フラグ・deviceSecret) |
 | ビューア: 背景を常に白・ダーク反転オプトイン (`HTMLDisplaySettingsStore`)、画像自動表示2種 (`ImageSettingsStore`) | UITest/verify 系フラグ (`OTEGAMI_UITEST_*`/`-otegami*` は環境変数・起動引数であり、そもそも `UserDefaults` キーではない) |
 | Task #121: プッシュ通知のリレー URL (`PushSettingsStore.relayURLKey`) — ユーザーが入力しただけのホスト名でデバイス固有ではないため、これだけ他の通知系設定と切り離して同期対象にした | — |
 | スワイプ割り当て4スロット (`SwipeActionSettingsStore`)、フッターツールバーの表示/非表示・並び順 (`MessageToolbarSettingsStore`、Task #100 で表示/非表示を追加 — 詳細は `docs/settings.md`)、ハンバーガーメニューのカテゴリ並び順 (`FolderCategoryOrderStore`) | `CloudSyncSettingsStore.isEnabled` 自身 (この同期に参加するか自体がデバイスごとの選択 — その doc comment参照) |

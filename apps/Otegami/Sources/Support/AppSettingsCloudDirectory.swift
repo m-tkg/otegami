@@ -56,6 +56,10 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
     private static let boolDefaults: [String: Bool] = [
         ListDisplaySettingsStore.threadingKey: ListDisplaySettingsStore.defaultThreading,
         ListDisplaySettingsStore.unreadOnlyKey: ListDisplaySettingsStore.defaultUnreadOnly,
+        // Task #142: 「フラグ付きのみ表示」トグル — `unreadOnlyKey`と同じ、
+        // 見た目の好みを同期する対象 (`ListDisplaySettingsStore.pinnedOnlyKey`
+        // のdoc comment参照)。
+        ListDisplaySettingsStore.pinnedOnlyKey: ListDisplaySettingsStore.defaultPinnedOnly,
         ListDisplaySettingsStore.groupByAccountKey: ListDisplaySettingsStore.defaultGroupByAccount,
         HTMLDisplaySettingsStore.forceLightBackgroundKey: HTMLDisplaySettingsStore.defaultForceLightBackground,
         HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey: HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode,

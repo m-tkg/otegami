@@ -267,6 +267,9 @@ struct MessageListView: View {
         var isFlatMode: Bool
         var isThreadingEnabled: Bool
         var unreadOnly: Bool
+        /// Task #142: 「フラグ付きのみ表示」トグルの現在値
+        /// (`persistedPinnedOnly`) — `unreadOnly`と同じ役割・同じ理由。
+        var pinnedOnly: Bool
     }
 
     /// `onUnreadCountChanged`'s own `.task(id:)` key — deliberately *not*
@@ -338,6 +341,18 @@ struct MessageListView: View {
     /// so a toggle flips this computed property's result too.
     private var persistedUnreadOnly: Bool {
         ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.unreadOnlyKey, default: ListDisplaySettingsStore.defaultUnreadOnly)
+    }
+
+    // MARK: - フラグ付きのみ表示 (Task #142、ヘッダのトグル — 未読のみ表示の隣)
+
+    /// `unreadOnlyKey`/`isUnreadOnly`の対 — `MailScreenView`のヘッダ側トグル
+    /// (`pinnedOnlyToggleButton`) が同じ`UserDefaults`キーへ直接書く。
+    @AppStorage(ListDisplaySettingsStore.pinnedOnlyKey) private var isPinnedOnly = ListDisplaySettingsStore.defaultPinnedOnly
+
+    /// `persistedUnreadOnly`と同じ理由 (#82/#105) — `observeThreads()`は
+    /// このプロパティ経由で`ThreadQuery`を呼ぶ。
+    private var persistedPinnedOnly: Bool {
+        ListDisplaySettingsStore.persistedBool(forKey: ListDisplaySettingsStore.pinnedOnlyKey, default: ListDisplaySettingsStore.defaultPinnedOnly)
     }
 
     // MARK: - アカウントでグループ化 (Task #77 → Task #92 → Task #99)
@@ -554,9 +569,15 @@ struct MessageListView: View {
     /// ません", which doesn't imply anything went wrong. 未読のみ表示中の
     /// "known-clean" 空状態はさらに専用の文言 ("未読のメールはありません") —
     /// フィルタで絞った結果ゼロ件なのを「メールが1通もない」と誤読させない
-    /// ため。
+    /// ため。Task #142: 「フラグ付きのみ表示」も同じ理由で専用文言を持つ —
+    /// この直接読みが`isPinnedOnly`(`@AppStorage`)を購読させる役目も兼ねる
+    /// (`persistedPinnedOnly`のdoc comment/`isThreadingEnabled`のObservationKey
+    /// フィールドと同じ「どこかで実際に読まないとSwiftUIの変更検知が効かない」
+    /// 事情、`ObservationKey`のdoc comment参照)。
     private var emptyStateTitle: LocalizedStringKey {
         if isSyncing || currentAccountLastSyncError != nil { return "メッセージがありません" }
+        if isUnreadOnly && isPinnedOnly { return "未読かつフラグ付きのメールはありません" }
+        if isPinnedOnly { return "フラグ付きのメールはありません" }
         return isUnreadOnly ? "未読のメールはありません" : "メールはありません"
     }
 
@@ -718,7 +739,7 @@ struct MessageListView: View {
                     #endif
             }
         }
-        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, isThreadingEnabled: isThreadingEnabled, unreadOnly: persistedUnreadOnly)) {
+        .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, isThreadingEnabled: isThreadingEnabled, unreadOnly: persistedUnreadOnly, pinnedOnly: persistedPinnedOnly)) {
             await observeThreads()
         }
         // `onUnreadCountChanged`'s doc comment — independent of the
@@ -1120,7 +1141,9 @@ struct MessageListView: View {
     /// (both backed by a fresh `UserDefaults` read, not a cached
     /// `@AppStorage` value) to decide which `ThreadQuery` observation to
     /// start — see `ListDisplaySettingsStore.persistedBool(forKey:default:)`'s
-    /// doc comment for why. This guarantees every call to this method,
+    /// doc comment for why. Task #142 adds `persistedPinnedOnly` alongside
+    /// it, same treatment (AND-combined with `unreadOnly` in every
+    /// `ThreadQuery` call below, not an either/or). This guarantees every call to this method,
     /// starting with the very first one after launch, reflects whatever is
     /// actually persisted rather than risking a stale in-memory default.
     /// Task #105: one line per `observeThreads()` call stating which query
@@ -1134,13 +1157,13 @@ struct MessageListView: View {
     private func observeThreads() async {
         // `.notice`: debug は log collect アーカイブに残らない (Task #105)。
         Self.observeThreadsLogger.notice(
-            "observeThreads: isFlatMode=\(isFlatMode, privacy: .public) unreadOnly=\(persistedUnreadOnly, privacy: .public) selection=\(String(describing: selection), privacy: .public)"
+            "observeThreads: isFlatMode=\(isFlatMode, privacy: .public) unreadOnly=\(persistedUnreadOnly, privacy: .public) pinnedOnly=\(persistedPinnedOnly, privacy: .public) selection=\(String(describing: selection), privacy: .public)"
         )
         switch selection {
         case .mailbox(let mailboxSelection):
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
-                ? ThreadQuery.flatSummariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, accountId: mailboxSelection.accountId, unreadOnly: persistedUnreadOnly)
-                : ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, unreadOnly: persistedUnreadOnly)
+                ? ThreadQuery.flatSummariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, accountId: mailboxSelection.accountId, unreadOnly: persistedUnreadOnly, pinnedOnly: persistedPinnedOnly)
+                : ThreadQuery.summariesObservation(mailboxId: mailboxSelection.mailboxId, limit: pageLimit, unreadOnly: persistedUnreadOnly, pinnedOnly: persistedPinnedOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     applySummaries(fetched)
@@ -1152,8 +1175,8 @@ struct MessageListView: View {
         case .unifiedInbox:
             let accountIds = unifiedInboxAccountFilter.map { [$0] } ?? environment.accounts.map(\.id)
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
-                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: persistedUnreadOnly)
-                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: persistedUnreadOnly)
+                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: persistedUnreadOnly, pinnedOnly: persistedPinnedOnly)
+                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, limit: pageLimit, unreadOnly: persistedUnreadOnly, pinnedOnly: persistedPinnedOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     applySummaries(fetched)
@@ -1175,8 +1198,8 @@ struct MessageListView: View {
             // 既存の呼び出し元は挙動が変わらない。
             let accountIds = unifiedInboxAccountFilter.map { [$0] } ?? environment.accounts.map(\.id)
             let observation: ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> = isFlatMode
-                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: persistedUnreadOnly)
-                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: persistedUnreadOnly)
+                ? ThreadQuery.unifiedInboxFlatSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: persistedUnreadOnly, pinnedOnly: persistedPinnedOnly)
+                : ThreadQuery.unifiedInboxSummariesObservation(accountIds: accountIds, role: role, limit: pageLimit, unreadOnly: persistedUnreadOnly, pinnedOnly: persistedPinnedOnly)
             do {
                 for try await fetched in observation.values(in: environment.database.dbWriter) {
                     applySummaries(fetched)

@@ -77,6 +77,20 @@ enum ListDisplaySettingsStore {
     static let unreadOnlyKey = "listDisplay.unreadOnly"
     static let defaultUnreadOnly = false
 
+    /// Task #142: メール一覧ヘッダの「フラグ付きのみ表示」トグル —
+    /// `unreadOnlyKey`のすぐ隣に並ぶ2つ目のフィルタトグル、同じ視覚言語
+    /// (アイコン形状のON/OFF切り替え+塗り背景) で「未読のみ表示」の隣に
+    /// 置く。「フラグ付き」の実体はこのアプリの既存のピン留め表現
+    /// (`ThreadRecord.isPinned`/`MessageRecord.isPinnedLocal` — ローカル
+    /// ピン+`PinSettingsStore.syncWithFlaggedKey`によるIMAP`\Flagged`との
+    /// 双方向同期、詳細はそれぞれのdoc comment参照) にそのまま乗る —
+    /// 新しい「フラグ」概念を別途作らず、一覧行のピンアイコン表示
+    /// (`ThreadRowView`の`pin.fill`) と一致させる。`unreadOnlyKey`と同じく
+    /// `unreadOnly`とAND併用可能 (`ThreadQuery`各関数の`pinnedOnly`
+    /// パラメータ)。Default off: 同じ理由 (初回起動ユーザーを驚かせない)。
+    static let pinnedOnlyKey = "listDisplay.pinnedOnly"
+    static let defaultPinnedOnly = false
+
     /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」、Spark の
     /// 参考画像参照) で追加、Task #92→Task #99 で意味が変わったキー — メール
     /// 一覧ヘッダの「アカウントでグループ化」ボタン (iOS only —

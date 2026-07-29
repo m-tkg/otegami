@@ -206,6 +206,114 @@ struct ThreadQueryTests {
         #expect(threadIds == [unreadA], "Expected only account A's unread thread, not account B's or account A's read thread")
     }
 
+    // MARK: - Task #142: フラグ付きのみ表示
+
+    @Test("request(pinnedOnly: true) only returns pinned threads")
+    func requestPinnedOnlyFiltersUnpinnedThreads() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let (pinned, _) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let pinned = try insertThread(accountId: accountId, mailboxId: inboxId, uid: 1, date: base, db: db)
+            let unpinned = try insertThread(accountId: accountId, mailboxId: inboxId, uid: 2, date: base.addingTimeInterval(3600), db: db)
+            var messages = try MessageRecord.filter(Column("threadId") == pinned).fetchAll(db)
+            for index in messages.indices {
+                messages[index].isPinnedLocal = true
+                try messages[index].update(db)
+            }
+            try ThreadAssigner.recomputeAggregates(threadId: pinned, db: db)
+            return (pinned, unpinned)
+        }
+
+        let threadIds = try database.dbWriter.read { db in
+            try ThreadQuery.request(mailboxId: inboxId, pinnedOnly: true).fetchAll(db).map(\.id)
+        }
+        #expect(threadIds == [pinned])
+    }
+
+    @Test("unifiedInboxRequest(unreadOnly: true, pinnedOnly: true) ANDs both filters together")
+    func unifiedInboxRequestCombinesUnreadAndPinnedFilters() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let (unreadAndPinned, _, _) = try database.dbWriter.write { db -> (Int64, Int64, Int64) in
+            // Unread + pinned: should survive both filters.
+            var unreadPinnedThread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 1)
+            try unreadPinnedThread.insert(db)
+            var unreadPinnedMessage = MessageRecord(mailboxId: inboxId, uid: 1, date: base, internalDate: base, threadId: unreadPinnedThread.id, isPinnedLocal: true)
+            try unreadPinnedMessage.insert(db)
+            try ThreadAssigner.recomputeAggregates(threadId: unreadPinnedThread.id!, db: db)
+
+            // Read + pinned: excluded by unreadOnly even though pinned.
+            var readPinnedThread = ThreadRecord(accountId: accountId, lastMessageDate: base.addingTimeInterval(60), messageCount: 1)
+            try readPinnedThread.insert(db)
+            var readPinnedMessage = MessageRecord(
+                mailboxId: inboxId, uid: 2, date: base.addingTimeInterval(60), internalDate: base.addingTimeInterval(60),
+                flagsRaw: MessageFlags.seen.rawValue, threadId: readPinnedThread.id, isPinnedLocal: true
+            )
+            try readPinnedMessage.insert(db)
+            try ThreadAssigner.recomputeAggregates(threadId: readPinnedThread.id!, db: db)
+
+            // Unread + unpinned: excluded by pinnedOnly even though unread.
+            var unreadUnpinnedThread = ThreadRecord(accountId: accountId, lastMessageDate: base.addingTimeInterval(120), messageCount: 1)
+            try unreadUnpinnedThread.insert(db)
+            var unreadUnpinnedMessage = MessageRecord(mailboxId: inboxId, uid: 3, date: base.addingTimeInterval(120), internalDate: base.addingTimeInterval(120), threadId: unreadUnpinnedThread.id)
+            try unreadUnpinnedMessage.insert(db)
+            try ThreadAssigner.recomputeAggregates(threadId: unreadUnpinnedThread.id!, db: db)
+
+            return (unreadPinnedThread.id!, readPinnedThread.id!, unreadUnpinnedThread.id!)
+        }
+
+        let threadIds = try database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxRequest(accountIds: [accountId], unreadOnly: true, pinnedOnly: true).fetchAll(db).map(\.id)
+        }
+        #expect(threadIds == [unreadAndPinned], "Expected only the thread that's both unread and pinned")
+    }
+
+    @Test("flatSummaries(pinnedOnly: true) filters by the message's own isPinnedLocal")
+    func flatSummariesPinnedOnlyFiltersUnpinnedMessages() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let pinnedMessageId = try database.dbWriter.write { db -> Int64 in
+            var pinnedThread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 1)
+            try pinnedThread.insert(db)
+            var pinned = MessageRecord(mailboxId: inboxId, uid: 1, date: base, internalDate: base, threadId: pinnedThread.id, isPinnedLocal: true)
+            try pinned.insert(db)
+
+            var unpinnedThread = ThreadRecord(accountId: accountId, lastMessageDate: base.addingTimeInterval(60), messageCount: 1)
+            try unpinnedThread.insert(db)
+            var unpinned = MessageRecord(mailboxId: inboxId, uid: 2, date: base.addingTimeInterval(60), internalDate: base.addingTimeInterval(60), threadId: unpinnedThread.id)
+            try unpinned.insert(db)
+            return pinned.id!
+        }
+
+        let flat = try database.dbWriter.read { db in
+            try ThreadQuery.flatSummaries(mailboxId: inboxId, accountId: accountId, pinnedOnly: true, db: db)
+        }
+        #expect(flat.map(\.latestMessage?.id) == [pinnedMessageId])
+    }
+
+    @Test("unifiedInboxFlatSummaries(pinnedOnly: true) filters by the message's own isPinnedLocal")
+    func unifiedInboxFlatSummariesPinnedOnlyFiltersUnpinnedMessages() throws {
+        let (database, accountId, inboxId, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let pinnedMessageId = try database.dbWriter.write { db -> Int64 in
+            var pinnedThread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 1)
+            try pinnedThread.insert(db)
+            var pinned = MessageRecord(mailboxId: inboxId, uid: 1, date: base, internalDate: base, threadId: pinnedThread.id, isPinnedLocal: true)
+            try pinned.insert(db)
+
+            var unpinnedThread = ThreadRecord(accountId: accountId, lastMessageDate: base.addingTimeInterval(60), messageCount: 1)
+            try unpinnedThread.insert(db)
+            var unpinned = MessageRecord(mailboxId: inboxId, uid: 2, date: base.addingTimeInterval(60), internalDate: base.addingTimeInterval(60), threadId: unpinnedThread.id)
+            try unpinned.insert(db)
+            return pinned.id!
+        }
+
+        let flat = try database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxFlatSummaries(accountIds: [accountId], pinnedOnly: true, db: db)
+        }
+        #expect(flat.map(\.latestMessage?.id) == [pinnedMessageId])
+    }
+
     @Test("flatSummaries(unreadOnly: true) filters by the message's own \\Seen flag")
     func flatSummariesUnreadOnlyFiltersReadMessages() throws {
         let (database, accountId, inboxId, _) = try makeDatabase()
