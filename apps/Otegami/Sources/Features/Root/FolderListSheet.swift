@@ -229,22 +229,16 @@ struct FolderListSheet: View {
         var expandedRoles: Set<String> = []
         var expandedAccountIds: Set<String> = []
 
+        // 実機フィードバック第2弾 (2026-07-29「常に1つだけ開かれてる状態に
+        // して」): アコーディオン化に合わせ、開いた時の展開も**最大1
+        // セクション**に絞る — 以前は「選択中メールボックスのアカウント +
+        // それが属するカテゴリ」の複数を同時に展開していたが、選択に一番
+        // 近い1つ (role 選択中ならその role、メールボックス選択中はその
+        // アカウント) だけを開く。
         if let selectedUnifiedRole {
             expandedRoles.insert(selectedUnifiedRole.rawValue)
-        }
-
-        if let selectedMailboxId, let entry = accountAndMailbox(forMailboxId: selectedMailboxId) {
+        } else if let selectedMailboxId, let entry = accountAndMailbox(forMailboxId: selectedMailboxId) {
             expandedAccountIds.insert(entry.account.id)
-            // 「該当roleのカテゴリにも属するならそちらも」— `matchesCategory`
-            // は Gmail の All Mail→アーカイブ読み替え含め、実際にカテゴリ
-            // セクションがこのメールボックスをどう表示するかの唯一の判定元
-            // (`categorySection(for:)`と同じ関数) なので、ここでも同じ関数
-            // で判定する。Task #126: `.none`(未分類フォルダ)はもう独立した
-            // カテゴリセクションを持たない (`uncategorizedSection`削除済み)
-            // ため、`categoryOrder`のみを見ればよい。
-            for role in categoryOrder where matchesCategory(mailbox: entry.mailbox, account: entry.account, role: role) {
-                expandedRoles.insert(role.rawValue)
-            }
         }
 
         let allRoleValues = Set(categoryOrder.map(\.rawValue))
@@ -382,16 +376,22 @@ struct FolderListSheet: View {
             .reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) }
     }
 
+    /// 実機フィードバック第2弾 (2026-07-29): アコーディオン動作 — 展開する
+    /// ときは他のセクション (カテゴリ・アカウントとも) を全て畳み、常に
+    /// 最大1セクションだけが開いた状態を保つ。畳む操作は単にそのセクション
+    /// を閉じるだけ (全closedは許容)。
     private func toggleAccountCollapsed(_ accountId: String) {
         let collapsing = !collapsedAccountIds.contains(accountId)
         withAnimation(.default) {
             if collapsing {
                 collapsedAccountIds.insert(accountId)
             } else {
-                collapsedAccountIds.remove(accountId)
+                collapsedAccountIds = Set(environment.accounts.map(\.id)).subtracting([accountId])
+                collapsedCategoryRoles = Set(categoryOrder.map(\.rawValue))
             }
         }
-        FolderSectionCollapseStore.setCollapsed(collapsing, accountId: accountId)
+        FolderSectionCollapseStore.replaceAll(collapsedAccountIds: collapsedAccountIds)
+        FolderCategoryCollapseStore.replaceAll(collapsedRoleRawValues: collapsedCategoryRoles)
     }
 
     // MARK: - 画面構造改修バッチ (Task #33, 3): カテゴリ優先グルーピング
@@ -520,16 +520,19 @@ struct FolderListSheet: View {
         return false
     }
 
+    /// `toggleAccountCollapsed(_:)` の doc comment 参照 (アコーディオン動作)。
     private func toggleCategoryCollapsed(_ role: MailboxRoleRecord) {
         let collapsing = !collapsedCategoryRoles.contains(role.rawValue)
         withAnimation(.default) {
             if collapsing {
                 collapsedCategoryRoles.insert(role.rawValue)
             } else {
-                collapsedCategoryRoles.remove(role.rawValue)
+                collapsedCategoryRoles = Set(categoryOrder.map(\.rawValue)).subtracting([role.rawValue])
+                collapsedAccountIds = Set(environment.accounts.map(\.id))
             }
         }
-        FolderCategoryCollapseStore.setCollapsed(collapsing, role: role)
+        FolderCategoryCollapseStore.replaceAll(collapsedRoleRawValues: collapsedCategoryRoles)
+        FolderSectionCollapseStore.replaceAll(collapsedAccountIds: collapsedAccountIds)
     }
 
     /// Mirrors `SidebarView.mailboxRow(for:in:)`'s split (see its own doc
@@ -710,9 +713,9 @@ private struct AccountSectionHeader: View {
         // Task #126, 2: これは`Section`の`header:`(List行そのものではない)
         // なので`.listRowInsets`は効かない — `.frame(minHeight: 44)`だけ、
         // タップターゲットの下限保証として付けている (`otegamiMenuRowChrome()`
-        // のdoc comment参照)。見出し自体の縦paddingはシステム既定のまま
-        // (元々行より控えめなため、詰める対象は主に繰り返し行の方)。
-        .frame(minHeight: 44)
+        // のdoc comment参照)。実機フィードバック第2弾でこちらも 44→36 に
+        // 圧縮 (セクション見出しは繰り返し行より一段だけ背を残す)。
+        .frame(minHeight: 36)
         .accessibilityIdentifier("folderSheet.account.\(accountId).header")
         // VoiceOver: the chevron's rotation alone communicates nothing to
         // VoiceOver, so the collapsed/expanded state is spelled out in the
@@ -916,9 +919,9 @@ private struct CategorySectionHeader: View {
             .buttonStyle(.plain)
             // Task #126, 2: `AccountSectionHeader`と同じ理由 —
             // `Section`の`header:`なので`.listRowInsets`は効かず、
-            // `.frame(minHeight: 44)`だけタップターゲットの下限保証として
-            // 付ける。
-            .frame(minHeight: 44)
+            // `.frame(minHeight:)`だけタップターゲットの下限保証として
+            // 付ける。実機フィードバック第2弾で 44→36 に圧縮。
+            .frame(minHeight: 36)
             .accessibilityIdentifier("folderSheet.category.\(role.rawValue).header")
             .accessibilityAddTraits(isSelected ? .isSelected : [])
 
@@ -957,24 +960,22 @@ private struct CategoryDisclosureChevron: View {
     }
 }
 
-/// Task #126, 2 (ハンバーガーメニュー各行の縦paddingを詰める): この画面の
-/// 行/見出し行 (`statusSection`のボタン群、`AccountSectionHeader`、
-/// `CategoryAccountRow`、`FolderMailboxRow`、`CategorySectionHeader`) が
-/// 共通で使うコンパクト化 — 縦方向の`.listRowInsets`を既存のシステム既定
-/// (目視でおおむね12pt前後) から`OtegamiSpacing.sm`(8pt、目安2/3程度)へ
-/// 詰める。フォントサイズは一切変えていない。水平方向の余白は
-/// `OtegamiSpacing.lg`(16pt) — この画面の見出し/他行との横位置を揃える。
-/// `.frame(minHeight: 44)`は縦paddingを詰めてもHIGの最小タップターゲット
-/// (44×44pt) を下回らないようにするための独立した保証 — 見た目の高さ
-/// (insetsで決まる) とタップ可能な高さ (この`frame`で決まる下限) を別々に
-/// 制御する。`private`なので同一ファイル内の型だけが使う。
+/// Task #126, 2 (ハンバーガーメニュー各行の縦paddingを詰める) → 実機
+/// フィードバック第2弾 (2026-07-29「各行の高さをもっと短くして」) で
+/// さらに圧縮: `minHeight` 44→32、縦insets `OtegamiSpacing.sm`(8pt)→
+/// `OtegamiSpacing.xs`(4pt)。HIG の 44pt タップターゲットを見た目の行高
+/// が下回るが、これはユーザーの明示指示によるトレードオフ (行自体が
+/// リスト幅いっぱいのタップ領域を持つため、横方向の当てやすさで実用上
+/// 補われる)。フォントサイズは変えていない。水平方向は
+/// `OtegamiSpacing.lg`(16pt) のまま。`private`なので同一ファイル内の型
+/// だけが使う。
 private extension View {
     func otegamiMenuRowChrome() -> some View {
         self
-            .frame(minHeight: 44)
+            .frame(minHeight: 32)
             .listRowInsets(EdgeInsets(
-                top: OtegamiSpacing.sm, leading: OtegamiSpacing.lg,
-                bottom: OtegamiSpacing.sm, trailing: OtegamiSpacing.lg
+                top: OtegamiSpacing.xs, leading: OtegamiSpacing.lg,
+                bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.lg
             ))
     }
 }
