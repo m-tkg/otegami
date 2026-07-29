@@ -972,3 +972,36 @@ Settings 画面が読む値そのものも書き換えるため、「設定画�
   4. 上記の`log stream`コマンドで`persistedBool(listDisplay.threading)`
      の最初の値と`observeThreads: isFlatMode=...`の値を突き合わせ、
      一覧が実際にどちらのクエリを選んだかを確認できる。
+
+### 決着 (2026-07-29、実機確認済み)
+
+上記の防御的修正 (`CFPreferencesAppSynchronize`) では直らなかった。実機の
+OSLog 採取 (notice レベルへの計装引き上げ → `log collect --device`) で
+以下が確定した:
+
+- 起動直後から `persistedBool(listDisplay.threading) -> false (stored=false)`、
+  `observeThreads: isFlatMode=true` — **UserDefaults の読み取りも一覧の
+  クエリ選択も最初から正しかった** (上の「プロセス起動直後のキャッシュ
+  未同期」説は棄却)。
+- 壊れていたのは**タップ後の遷移**: `handleThreadSelected: threadId=6338
+  singleMessageId=9879` の 20ms 後に `ThreadEntryView appear:
+  preselectedMessageId=nil` — 行データも binding への書き込み順も正しい
+  のに、`.navigationDestination(item: $selectedThreadId)` の destination
+  クロージャが兄弟 state (`selectedMessageId`) の書き込みを見ていない。
+  **cold launch 後の初回 push に限って** destination クロージャが登録
+  時点の view 値を stale capture する SwiftUI の挙動で、アプリスイッチャー
+  を出すと再描画でクロージャが最新値に更新され「直る」ように見える、
+  という再現報告 (「スイッチャーに移動するとその瞬間フラットの
+  メールビューに変化する」) とも完全に一致する。
+
+恒久修正 (`c1804f4`): navigation item 自体に threadId + messageId を束ねた
+`ThreadRoute` を導入し、destination クロージャは **item 引数だけ**から
+画面を組み立てる構造に変更 (`MailScreenView.selectedRoute` の doc comment
+参照)。実機で「終了 → 起動 → 初回タップ」がフラット表示になることを
+ユーザーが確認済み。
+
+教訓: destination クロージャ (`navigationDestination(item:)`) の中で
+navigation item 以外の state を読まない — push に必要な文脈はすべて
+item に載せる。#61 (WKWebView 再生成) / #94 (`.task` キャンセル) に続く
+「SwiftUI の view identity/クロージャ更新タイミングに依存した状態受け渡し
+は cold launch 初回に壊れる」系の 3 例目。
