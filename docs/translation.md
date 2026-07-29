@@ -496,6 +496,100 @@ Task #97 の指示 (「引用の文脈を伝える1文 (必要な場合のみ)�
   伸びる一方、■伝えたいこと/■アクションはほぼ1文のまま安定していた
   (「`sentenceCount`は■要約だけを縛る」という再定義どおりの挙動)。
 
+## 要約: 3パート構造の反復・指示文リーク再発の修正 (Task #122)
+
+実機報告 (スクリーンショット確認済み) で、Task #102 の3パート要約に2つの
+症状: (a) ■要約/■伝えたいこと/■アクションの3パートが複数回繰り返される、
+(b) 正しい3パートの後ろに `summarizeInstructions` のラベル定義ブロック
+(「■要約 — in about 2 short sentences, describe...」のような、ラベルと
+英語の説明文を `" — "` で1行に連結した文言) がそのまま出力され、各ラベルの
+回答が再掲される。
+
+### 原因1: チャンク分割経路が3パート構造をチャンクごとに複製していた
+
+`TranslationService.summarizeLongText` (長文メール向けの map-reduce) は、
+分割した各チャンクを**構造化された** `summarize` (3パート指示つき) で
+要約し、その結果を連結してから、もう一度 `summarize` に通していた。長文
+メール (チャンク閾値 `TranslationChunker.defaultMaxChunkLength` == 2000字
+超) では、この時点で「■要約/■伝えたいこと/■アクション」がチャンクの数
+だけ既に出力に含まれており、それを**入力として**最終 `summarize` 呼び出し
+に渡していた — 出力してほしい構造そのものが入力中に複数回現れる状態で
+モデルを呼んでいたことになる。(a) の「3パートが複数回繰り返される」症状は
+主にこの経路で発生していたと考えられる。
+
+### 原因2: 指示文の「ラベル — 説明」形式がもっともらしい出力行に見えた
+
+`summarizeInstructions` は各ラベルの説明を「■要約 — in about N short
+sentences, describe...」のように、ラベルと説明文を `" — "` でひと続きに
+した英語の1行として書いていた。これは「ラベル+同じ行の内容」という、
+モデルが実際に出力すべき行の形とよく似ている — 正解の3パートを出力し
+終えた後、モデルが自分の入力コンテキストに残っているこの行を「まだ出力
+すべき何か」と誤認し、そのまま (あるいは劣化した形で) 継続生成してしまう
+のが (b) の直接の原因と見られる。
+
+### 変更
+
+1. **チャンク段階を非構造化に分離**: `TranslationService` に
+   `summarizePlain(_:targetLanguage:sentenceCount:)` を追加 — ■ラベルを
+   一切使わない、プレーンな1文程度の要約を返すメソッド。
+   `summarizeLongText` はチャンクの map 段階をこちらに切り替え、
+   最終的な reduce 段階 (連結後のテキストを`summarize`に渡す) だけが
+   3パート構造を要求する。チャンク数に関わらず reduce は必ず1回だけ実行
+   する (以前は「チャンクが1個だけならreduceをスキップ」という分岐が
+   あったが、`summarizeLongText`のチャンク閾値と`TranslationChunker`の
+   `maxLength`が同じ値である以上、チャンク分割に入った時点でチャンクが
+   1個だけになることは数学的に起こり得ない — 「1個の場合はスキップ」は
+   到達不能なデッドコードだったと判明したため削除し、常にreduceを通す
+   形に単純化した)。`FakeTranslationService`/
+   `FoundationModelsTranslationService`双方に`summarizePlain`を実装。
+2. **`summarizeInstructions`の構造を再編**: 「ラベル + " — " + 説明」を
+   1行に連結する形をやめ、(i) ルール説明を日本語の文章で書く (出力言語と
+   揃えることで、仮にリークしても言語の不一致という分かりやすい壊れ方に
+   ならないよう完全には防げないが、リスクは下げた)、(ii) 出力形式を
+   「3行構造のみ・ラベルは3つの文字列そのまま・説明や指示文自体や英語を
+   含めない・この構造は全体で一度だけ」という命令文として、ラベル説明とは
+   別の段落に独立させる、(iii) 具体的な出力例を1つ添える、の3ゾーンに
+   分離した。Task #62/#90/#97/#102 由来の内容ルール (引用の逐次再話禁止・
+   日付/時刻禁止・短い新規本文の扱い・従属節は冒頭1つまで) はプロセ文中に
+   そのまま維持。`summarizePlain`用の非構造化バージョン
+   (`summarizePlainInstructions`) も追加。
+3. **出力後処理の防御パーサ `SummaryOutputSanitizer`
+   (`OtegamiCore/SummaryOutputSanitizer.swift`)**: 生成された文字列から
+   最初の完全な「■要約→■伝えたいこと→■アクション」ブロックだけを抽出し、
+   それ以降のテキスト (2回目以降のラベル、リークした指示文断片) を切り
+   落とす純粋関数。`FoundationModelsTranslationService.summarize`が
+   モデルの応答を返す直前に必ず通す — 1./2.の修正で原因そのものを塞いだ
+   後の、多重防御としてのバックストップ。`OtegamiTranslationFoundationModels`
+   ターゲットは`OtegamiCore`への依存を明示的に追加 (従来は`OtegamiTranslation`
+   経由の推移的依存にのみ頼っていた)。
+
+### 検証
+
+`OtegamiCoreTests/SummaryOutputSanitizerTests`(単体・8ケース: 正常系の
+そのまま透過、(a)反復除去、(b)指示文リーク除去、(a)+(b)複合、ラベルと内容が
+同一行のケース、ラベル欠落時のフォールバック、複数行にまたがる内容の保持)
+と、`OtegamiTranslationTests/TranslationServiceSummarizeLongTextTests`
+(`FakeTranslationService`の`summarizeCallCount`/`summarizePlainCallCount`
+を使い、短文は`summarize`のみ1回・長文は`summarizePlain`をチャンク数分+
+`summarize`を最終段で1回だけ呼ぶことを確認) を追加。`make test`緑
+(既知flakeのMessageBuilderTests日本語ラウンドトリップを除く)。
+
+実機相当の確認は、スクラッチパッドの再現ランナー (Task #102と同じ、
+`FoundationModelsTranslationService`を直接呼ぶ`swift run`プロジェクト、
+リポジトリ外) を`summarizeLongText`経由に更新した上で:
+
+- 短文フィクスチャ (`mail_fixture.txt`、Task #102と同じ架空フィクスチャ、
+  チャンク分割は起きない): `sentenceCount=2,3`で5回ずつ (計10回) 実行し、
+  いずれも反復・リークなしの単一3パートを確認。
+- 長文フィクスチャ (`mail_fixture_long.txt`、新規追加・架空、新規本文
+  だけで約1,700字・引用込みの`SummaryInput`が2,373字とチャンク閾値
+  2,000字を超え、`TranslationChunker.chunk`が2チャンクに分割されることを
+  確認済み): `sentenceCount=2,3`で5回ずつ (計10回) 実行し、いずれも
+  map-reduce経路を通った上で反復・リークなしの単一3パートを確認。
+
+いずれの経路も出力が確率的にぶれる性質のバグだったため複数回の実行で
+確認したが、全20回で症状は再発しなかった。
+
 ## バグ修正: 実機で「翻訳ボタンが出ない」「AI要約が壊れている」
 
 実機報告を受けて調査・修正。上記の長文コンテキスト超過とは別の、翻訳・

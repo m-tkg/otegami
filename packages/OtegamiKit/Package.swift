@@ -246,9 +246,14 @@ let package = Package(
         // and never imported by `OtegamiTranslation` itself (only the other
         // way around), so a `FoundationModels`-less SDK (or a future Linux
         // build) never needs to resolve this target at all.
+        //
+        // Task #122: also depends on `OtegamiCore` directly (not just
+        // transitively via `OtegamiTranslation`) so `summarize` can call
+        // `SummaryOutputSanitizer` — an explicit dependency rather than
+        // relying on SwiftPM's transitive module visibility.
         .target(
             name: "OtegamiTranslationFoundationModels",
-            dependencies: ["OtegamiTranslation"]
+            dependencies: ["OtegamiTranslation", "OtegamiCore"]
         ),
 
         // Opt-in like `MailTransportMailCoreTests`: exercises the real

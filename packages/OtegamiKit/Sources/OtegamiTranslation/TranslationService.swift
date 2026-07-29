@@ -74,6 +74,29 @@ public protocol TranslationService: Sendable {
     /// about desired length rather than a hard constraint the caller can
     /// rely on for layout.
     func summarize(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int) async throws -> String
+
+    /// A short, **unlabeled** summary of `text` — no fixed output structure,
+    /// unlike `summarize` (whose `FoundationModelsTranslationService`
+    /// implementation always requests a 3-part ■要約/■伝えたいこと/
+    /// ■アクション structure). Exists solely as the "map" half of
+    /// `summarizeLongText`'s map-reduce over long input: each
+    /// `TranslationChunker` piece is compressed to about `sentenceCount`
+    /// plain sentences here, and only the final, combined "reduce" step
+    /// calls `summarize` — exactly once — for the real structured output.
+    ///
+    /// Task #122: before this method existed, `summarizeLongText` called the
+    /// *structured* `summarize` once per chunk. For a multi-chunk email that
+    /// produced the 3-part structure once per chunk, all joined together —
+    /// and fed that already-■-labeled text back into one more structured
+    /// `summarize` call as its literal input. A real-device report showed
+    /// exactly the resulting failure: the labeled structure repeated, and
+    /// the model — primed by ■-labeled text already present in its own
+    /// input — went on to echo `summarizeInstructions`'s own label-
+    /// definition wording verbatim after the real answer. Splitting the
+    /// map (plain) from the reduce (structured, exactly once) removes the
+    /// repeated-structure input that triggered this; `SummaryOutputSanitizer`
+    /// (`OtegamiCore`) is the remaining defense-in-depth layer.
+    func summarizePlain(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int) async throws -> String
 }
 
 extension TranslationService {
@@ -91,11 +114,13 @@ extension TranslationService {
     /// `MessageTranslator`'s cache the way message translation does, so
     /// this lives here as a plain protocol extension any conformer gets for
     /// free. Map-reduce for oversized input: summarize each
-    /// `TranslationChunker` piece to about one sentence, then (if the
-    /// combined partial summaries are themselves still long) summarize
-    /// that combination down to `sentenceCount`. Short input (the common
-    /// case) is a single, un-chunked `summarize` call, unchanged from
-    /// before this existed.
+    /// `TranslationChunker` piece to about one sentence via the *unlabeled*
+    /// `summarizePlain` (Task #122 — see its doc comment for why the map
+    /// step must not be the structured, 3-part `summarize`), then always
+    /// run the combined partial summaries through exactly one final
+    /// `summarize` call for the real 3-part structure. Short input (the
+    /// common case) is a single, un-chunked `summarize` call, unchanged
+    /// from before this existed.
     public func summarizeLongText(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int = 2) async throws -> String {
         guard text.count > TranslationChunker.defaultMaxChunkLength else {
             return try await summarize(text, targetLanguage: targetLanguage, sentenceCount: sentenceCount)
@@ -105,21 +130,21 @@ extension TranslationService {
         var partialSummaries: [String] = []
         partialSummaries.reserveCapacity(chunks.count)
         for chunk in chunks {
-            partialSummaries.append(try await summarize(chunk, targetLanguage: targetLanguage, sentenceCount: 1))
+            partialSummaries.append(try await summarizePlain(chunk, targetLanguage: targetLanguage, sentenceCount: 1))
         }
         let combined = partialSummaries.joined(separator: " ")
-        guard partialSummaries.count > 1 else {
-            // Only one chunk came back (an input just over the threshold,
-            // split into a single "unit") — it's already one summarize
-            // call's worth of output, no second pass needed.
-            return combined
-        }
-        // Multiple chunks: compress their concatenated one-sentence
-        // summaries down to what the caller actually asked for, rather
-        // than returning an unbounded wall of per-chunk summaries. This
-        // combined text is itself short (a handful of sentences) even for
-        // a huge source email, so it's always safely under the chunk
-        // threshold — no risk of *this* call recursing into another split.
+        // Task #122: always run `combined` through the structured
+        // `summarize` — even when there was only a single chunk. Before
+        // this fix, a single-chunk input returned `combined` (that one
+        // chunk's own already-structured `summarize` output) directly,
+        // skipping this call; now that the map step is unlabeled, skipping
+        // it here would return a summary with no ■要約/■伝えたいこと/
+        // ■アクション structure at all, breaking `summarizeLongText`'s
+        // contract that its output always has that shape (same as the
+        // un-chunked short-input path above). This combined text is itself
+        // short (a handful of sentences) even for a huge source email, so
+        // it's always safely under the chunk threshold — no risk of *this*
+        // call recursing into another split.
         return try await summarize(combined, targetLanguage: targetLanguage, sentenceCount: sentenceCount)
     }
 }

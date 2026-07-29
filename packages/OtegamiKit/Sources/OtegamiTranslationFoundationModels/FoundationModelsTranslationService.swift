@@ -1,5 +1,6 @@
 import Foundation
 import FoundationModels
+import OtegamiCore
 import OtegamiTranslation
 
 /// The real, on-device `TranslationService` — backed by
@@ -123,9 +124,32 @@ public struct FoundationModelsTranslationService: TranslationService {
         }
     }
 
+    /// Task #122: the raw model response is passed through
+    /// `SummaryOutputSanitizer.sanitize` before being returned — a
+    /// defense-in-depth backstop (see that type's doc comment) against the
+    /// model repeating the 3-part structure or echoing this method's own
+    /// instructions verbatim after the real answer, independent of how well
+    /// `summarizeInstructions`'s wording holds up.
     public func summarize(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int) async throws -> String {
         try requireAvailable()
         let session = LanguageModelSession(model: model, instructions: Self.summarizeInstructions(targetLanguage: targetLanguage, sentenceCount: sentenceCount))
+        do {
+            let response = try await session.respond(to: text, options: Self.summarizeOptions)
+            return SummaryOutputSanitizer.sanitize(response.content)
+        } catch {
+            throw Self.mapEngineError(error)
+        }
+    }
+
+    /// The unlabeled "map" half of `summarizeLongText`'s map-reduce — see
+    /// `TranslationService.summarizePlain`'s doc comment (Task #122) for why
+    /// this must NOT reuse `summarizeInstructions`'s 3-part structure. No
+    /// `SummaryOutputSanitizer` pass here: that parser looks specifically
+    /// for the ■要約/■伝えたいこと/■アクション structure, which this
+    /// method's output was never asked to have.
+    public func summarizePlain(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int) async throws -> String {
+        try requireAvailable()
+        let session = LanguageModelSession(model: model, instructions: Self.summarizePlainInstructions(targetLanguage: targetLanguage, sentenceCount: sentenceCount))
         do {
             let response = try await session.respond(to: text, options: Self.summarizeOptions)
             return response.content
@@ -229,27 +253,65 @@ public struct FoundationModelsTranslationService: TranslationService {
     /// than content that scales with the source text's length. See
     /// `TranslationService.summarize`'s doc comment for the "hint, not a
     /// guarantee" framing this still follows.
+    ///
+    /// Task #122 follow-up: two real-device reports (screenshots) showed the
+    /// 3-part output (a) repeating itself multiple times, and (b) followed
+    /// by the *previous* version of this very instructions string leaking
+    /// into the output verbatim — specifically the "■要約 — in about N
+    /// short sentences, describe..." line, i.e. a label and its rule
+    /// description concatenated with " — " on one line. That concatenated
+    /// shape is suspiciously close to a plausible *output* line (a label
+    /// followed by content on the same line), which is presumably why the
+    /// model treated it as something to reproduce rather than purely as an
+    /// instruction. Restructured below into three clearly separate zones —
+    /// (1) a prose rule explanation in Japanese (matching the output
+    /// language, so a leak is more likely to at least look right rather
+    /// than surface as an obvious language mismatch), (2) a single output-
+    /// format directive stated as an imperative rule, never combined with a
+    /// label on the same line, explicitly saying the 3-line structure
+    /// appears exactly once and forbidding the instructions themselves from
+    /// appearing in the output, and (3) a concrete example — so no line in
+    /// this string looks like `"■ラベル — 説明"` anymore. The #62/#90/#97
+    /// content rules above (quote-narration ban, date/time ban, short-reply
+    /// handling, at-most-one subordinate clause) are preserved, just moved
+    /// into (1)'s prose. `FoundationModelsTranslationService.summarize`
+    /// additionally runs the response through `SummaryOutputSanitizer` as a
+    /// backstop for whatever this wording still doesn't prevent.
     private static func summarizeInstructions(targetLanguage: TranslationLanguage, sentenceCount: Int) -> String {
         """
-        Summarize the user's email content in \(targetLanguage.displayName), as exactly this 3-part labeled structure — three labels below, each on its own line, each followed by its own content on the next line(s). Do not add any other section, heading, preamble, or explanation, and do not omit any of the three labels even when a part's content is minimal.
+        あなたはメール本文を\(targetLanguage.displayName)で要約するアシスタントです。以下のルールに従ってください。
 
+        【入力の構造】
+        入力には "■これは過去のやり取り (文脈参照用)" と "■これが今回届いた返信 (要約対象)" という2つのラベル付きセクションが含まれることがあります。前者は過去の引用スレッドで、文脈把握のためだけの背景情報です。後者がこのメール自身の新規本文であり、要約すべき対象です。これらのセクションが無い場合は、入力全体を新規本文として扱ってください。
+
+        【各パートの内容ルール】
+        ■要約パートでは、約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")で、新規本文が伝えている内容を説明してください。これが主要パートであり、主題は常に新規本文であって、引用された過去のやり取りではありません。新規本文を理解するために本当に必要な場合に限り、冒頭に短い従属節を一つだけ置いて過去の経緯に触れてもかまいません(例:「〜の件について、」)。それ以外の場合は過去の経緯に一切触れないでください。引用された過去のやり取りが何件あっても、それを時系列に沿って一通ずつ語り直してはいけません。日付・時刻、および「〜さんが「…」と返信し」のように個々の引用メールを物語る言い回しは、この従属節の中であっても禁止します。新規本文が短い場合(挨拶や「了解です」「承知しました」のような一行の受領確認のみなど)は、水増しせず、引用内容の要約に逃げず、このメールがスレッドに対して何を行ったかを簡潔に述べてください(例:見積もりの件を了承する返信であれば「見積もりの件を了承する返信」と述べ、見積もり自体を再説明しない)。
+        ■伝えたいことパートでは、約1文で、新規本文を書いた送信者の意図とトーン(お礼を伝えたい、確認を求めている、丁寧・カジュアルな調子など)を述べてください。■要約パートの内容を繰り返すのではなく、このメールが何を達成しようとしているかを述べてください。
+        ■アクションパートでは、約1文で、新規本文が受信者に求める行動(返信・確認・日程調整・判断・情報提供など)を述べてください。何も求めていない場合は、このパートの内容を「特になし」の一語のみにしてください。
+
+        【出力形式(最重要)】
+        出力は次の3行構造のみで構成してください。ラベル行は「■要約」「■伝えたいこと」「■アクション」の3つを、この順番・この文字列そのままで、それぞれ単独の行として書いてください。各ラベルの内容は次の行以降に書き、ラベル行自体には他の文字を含めないでください。ラベルの説明文やこの指示文自体、英語のテキストを出力に含めないでください。この3行構造は出力全体を通じてちょうど1回だけ出現させてください — 同じラベルを2回書いたり、3行構造を繰り返したりすることは絶対にしないでください。
+
+        【出力例】
         ■要約
-        (content summary goes here)
+        見積もりの件について、来週の打ち合わせ日程を確認する返信です。
 
         ■伝えたいこと
-        (sender's intent/tone goes here)
+        丁寧に日程調整を依頼している。
 
         ■アクション
-        (requested action, or 特になし, goes here)
+        来週水曜までに希望日を返信する。
+        """
+    }
 
-        The input sometimes contains two labeled sections: "■これは過去のやり取り (文脈参照用)" (quoted history from the prior thread, given only as context) and "■これが今回届いた返信 (要約対象)" (this email's own new text — the thing to summarize). All three output parts below describe the NEW reply section; the quoted section is background only, never itself the subject of any part.
-
-        ■要約 — in about \(sentenceCount) short sentence\(sentenceCount == 1 ? "" : "s"), describe what this email's own new reply says. This is the main part and its primary subject must always be the new reply, never the quoted history. If — and only if — understanding the reply genuinely requires it, you may open with at most one short subordinate clause referencing the quoted history (e.g. "〜の件について、"); otherwise skip any reference to the quoted history entirely. Regardless of how many messages the quoted history contains, you must NEVER retell it as a sequence of past messages, and you must NEVER mention dates, times, or phrases like "〜さんが「…」と返信し" that narrate an individual quoted message — that narration style is forbidden even inside the single permitted subordinate clause. If the new reply is very short (e.g. just a greeting or a one-line acknowledgment like "了解です"/"承知しました"), do not pad it out and do not fall back to summarizing the quote instead — state briefly what this reply did in response to the thread (e.g. "見積もりの件を了承する返信" rather than a recap of the quoted estimate itself).
-        ■伝えたいこと — in about one sentence, describe the sender's intent and tone in writing the new reply (e.g. お礼を伝えたい、確認を求めている、丁寧な／カジュアルな調子など). This is not a repeat of ■要約's content — it's what the message is trying to accomplish, not what it says.
-        ■アクション — state in about one sentence what action, if any, the new reply asks the recipient to take (a reply, a confirmation, scheduling, a decision, providing information, etc.). If the new reply asks for nothing, output exactly "特になし" and nothing else for this part.
-
-        When there are no such labeled input sections (no quoted history at all), apply the same three parts to the whole text as given.
-        Output ONLY the 3-part structure above — no preamble, no explanation, no text before ■要約 or after the ■アクション content.
+    /// The unlabeled counterpart used by `summarizePlain` — no ■ labels, no
+    /// fixed structure, just a short plain-prose summary. See
+    /// `TranslationService.summarizePlain`'s doc comment (Task #122) for why
+    /// `summarizeLongText`'s per-chunk "map" pass must use this instead of
+    /// `summarizeInstructions`.
+    private static func summarizePlainInstructions(targetLanguage: TranslationLanguage, sentenceCount: Int) -> String {
+        """
+        次のメール本文を\(targetLanguage.displayName)で、約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")の自然な文章として要約してください。ラベルや見出し、箇条書き、記号("■"など)は付けず、要約の文章だけを出力してください。説明文やこの指示文自体を出力に含めないでください。
         """
     }
 

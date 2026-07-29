@@ -32,6 +32,11 @@ public actor FakeTranslationService: TranslationService {
     public private(set) var translateCallCount = 0
     public private(set) var translateParagraphsCallCount = 0
     public private(set) var summarizeCallCount = 0
+    /// Task #122: tracked separately from `summarizeCallCount` so a test can
+    /// assert `summarizeLongText`'s map-reduce shape — one `summarizePlain`
+    /// call per `TranslationChunker` chunk, then exactly one `summarize`
+    /// call for the final structured pass.
+    public private(set) var summarizePlainCallCount = 0
     /// Task #61 (ガードレール誤発動の寛容化テスト用): exact input strings
     /// `translate(_:from:to:)` should fail with `TranslationServiceError
     /// .contentBlocked` for, independent of `behavior` — lets a test
@@ -123,6 +128,19 @@ public actor FakeTranslationService: TranslationService {
 
     public func summarize(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int) async throws -> String {
         summarizeCallCount += 1
+        try checkBehavior()
+        let sentences = Self.splitSentences(text)
+        let picked = sentences.prefix(max(0, sentenceCount)).joined(separator: " ")
+        return Self.deterministicTranslation(picked.isEmpty ? text : picked, to: targetLanguage)
+    }
+
+    /// Same deterministic "first N sentences" behavior as `summarize` —
+    /// `FakeTranslationService`'s output was never labeled to begin with, so
+    /// there's no structure to strip here; this exists as its own method
+    /// (rather than reusing `summarize`) purely so `summarizePlainCallCount`
+    /// can track it separately, matching the real engine's map/reduce split.
+    public func summarizePlain(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int) async throws -> String {
+        summarizePlainCallCount += 1
         try checkBehavior()
         let sentences = Self.splitSentences(text)
         let picked = sentences.prefix(max(0, sentenceCount)).joined(separator: " ")
