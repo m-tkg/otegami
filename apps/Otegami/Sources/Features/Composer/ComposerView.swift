@@ -444,10 +444,20 @@ struct ComposerView: View {
     // `AttachmentRow` type below, not just a smaller closure, since the row
     // itself still had a multi-line `HStack`/`VStack`/two-`Text` shape.
 
+    // Task #164 (実機フィードバック「メール作成のUIがおかしい。ラベルが複数
+    // あるとか」): macOS の `Form` は `Section("見出し")` の見出しテキストと、
+    // 各コントロールの先頭引数 (`Picker`/`TextField` のタイトル、Form内では
+    // 左ラベルとして描画される) の両方が同時に見えるため、`Section("差出人")`
+    // + `Picker("From", ...)` のように見出しと行ラベルを両方付けると
+    // 「差出人」「From: <picker>」の二重表示になる (実機フィードバック
+    // スクリーンショットで確認)。以下の3セクションは見出しを外し、
+    // 行ラベル1本 (macOS 標準 Mail.app の「宛先: / Cc: / 件名:」に合わせた
+    // 日本語) に統一した。`Section`自体は見出しなしのままグルーピング目的で
+    // 残している (`Form`の区切り線はそのまま活きる)。
     #if os(macOS)
     private var fromSection: some View {
-        Section("差出人") {
-            Picker("From", selection: $selectedAccountId) {
+        Section {
+            Picker("差出人:", selection: $selectedAccountId) {
                 ForEach(environment.accounts) { account in
                     Text("\(account.displayName) <\(account.email)>")
                         .tag(Optional(account.id))
@@ -459,22 +469,22 @@ struct ComposerView: View {
     }
 
     private var addressSection: some View {
-        Section("宛先") {
-            TextField("To (カンマ区切り)", text: $toText)
+        Section {
+            TextField("宛先:", text: $toText, prompt: Text("カンマ区切りで複数指定可"))
                 .textFieldAutocapitalizationNone()
                 .accessibilityIdentifier("composer.to")
-            TextField("Cc (カンマ区切り)", text: $ccText)
+            TextField("Cc:", text: $ccText, prompt: Text("カンマ区切りで複数指定可"))
                 .textFieldAutocapitalizationNone()
                 .accessibilityIdentifier("composer.cc")
-            TextField("Bcc (カンマ区切り)", text: $bccText)
+            TextField("Bcc:", text: $bccText, prompt: Text("カンマ区切りで複数指定可"))
                 .textFieldAutocapitalizationNone()
                 .accessibilityIdentifier("composer.bcc")
         }
     }
 
     private var subjectSection: some View {
-        Section("件名") {
-            TextField("件名", text: $subject)
+        Section {
+            TextField("件名:", text: $subject)
                 .accessibilityIdentifier("composer.subject")
         }
     }

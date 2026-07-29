@@ -641,22 +641,62 @@
         }
       }
     },
-    "To (カンマ区切り)": {
+    "差出人:": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "To (comma-separated)"
+            "value": "From:"
           }
         }
       }
     },
-    "Cc (カンマ区切り)": {
+    "宛先:": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cc (comma-separated)"
+            "value": "To:"
+          }
+        }
+      }
+    },
+    "Cc:": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cc:"
+          }
+        }
+      }
+    },
+    "Bcc:": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bcc:"
+          }
+        }
+      }
+    },
+    "件名:": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Subject:"
+          }
+        }
+      }
+    },
+    "カンマ区切りで複数指定可": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Comma-separated for multiple"
           }
         }
       }
@@ -3257,16 +3297,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Awaiting Apple's Approval"
-          }
-        }
-      }
-    },
-    "Bcc (カンマ区切り)": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Bcc (comma-separated)"
           }
         }
       }

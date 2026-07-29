@@ -119,8 +119,17 @@ translations = {
     "保存せずに破棄": "Discard",
     "差出人": "From",
     "宛先": "To",
-    "To (カンマ区切り)": "To (comma-separated)",
-    "Cc (カンマ区切り)": "Cc (comma-separated)",
+    # Task #164 (実機フィードバック「メール作成のUIがおかしい。ラベルが複数
+    # あるとか」): macOS Composer の Section見出し+行ラベル二重表示を解消
+    # した際の行ラベル (`ComposerView.swift`のfromSection/addressSection/
+    # subjectSectionのdoc comment参照) — 上の見出し用エントリ (コロンなし)
+    # とは別キー。
+    "差出人:": "From:",
+    "宛先:": "To:",
+    "Cc:": "Cc:",
+    "Bcc:": "Bcc:",
+    "件名:": "Subject:",
+    "カンマ区切りで複数指定可": "Comma-separated for multiple",
     "本文": "Body",
     "ファイルを選択": "Choose File",
     "写真を選択": "Choose Photo",
@@ -515,7 +524,6 @@ translations = {
     # strings) but missing from this dict until now ---
     "AI要約": "AI Summary",
     "Apple の承認待ちです": "Awaiting Apple's Approval",
-    "Bcc (カンマ区切り)": "Bcc (comma-separated)",
     "Exchange": "Exchange",
     "Exchange アカウントを追加": "Add Exchange Account",
     "Gmail・iCloud・Yahoo・Yahoo! JAPAN・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。":
