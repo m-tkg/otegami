@@ -895,18 +895,23 @@ struct ComposerView: View {
         return signature.name
     }
 
-    /// 添付: 装飾を他の行と同トーンに（`Section`の見出しなし）。macOS側の
-    /// `attachmentsSection`が`List`の`.onDelete`（スワイプ削除）に頼っている
-    /// のに対し、`ScrollView`+`VStack`の中では`.onDelete`が機能しないため、
-    /// 各行に明示的な削除ボタン (`AttachmentRow(onRemove:)`) を渡している。
+    /// 添付済みファイル一覧: 装飾を他の行と同トーンに（`Section`の見出しなし）。
+    /// macOS側の`attachmentsSection`が`List`の`.onDelete`（スワイプ削除）に
+    /// 頼っているのに対し、`ScrollView`+`VStack`の中では`.onDelete`が機能
+    /// しないため、各行に明示的な削除ボタン (`AttachmentRow(onRemove:)`) を
+    /// 渡している。Task #161: 添付を追加するアクション自体
+    /// (`attachmentsMenu`) は下部バー (`flatBottomActionBar`) に移した —
+    /// ここは追加済みファイルが1件もなければ何も描画しない。
+    @ViewBuilder
     private var flatAttachmentsSection: some View {
-        VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
-            ForEach(pendingAttachments) { attachment in
-                AttachmentRow(attachment: attachment) {
-                    pendingAttachments.removeAll { $0.id == attachment.id }
+        if !pendingAttachments.isEmpty {
+            VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
+                ForEach(pendingAttachments) { attachment in
+                    AttachmentRow(attachment: attachment) {
+                        pendingAttachments.removeAll { $0.id == attachment.id }
+                    }
                 }
             }
-            attachmentsMenu
         }
     }
     #endif
@@ -1824,6 +1829,34 @@ private struct ComposerFieldRow: View {
 /// 閉じたスコープの例外として`Capsule()`/`Circle()`を直接使う」という前例
 /// (`OtegamiBorder.swift`のdoc comment参照) に倣い、ここでも新しい
 /// `OtegamiRadius`トークンを追加せず`Capsule()`をこのビュー内だけで使う。
+#if os(iOS)
+/// Task #161 (下部バーのSpark準拠再構成): the "T" button that toggles
+/// `RichTextFormattingBar`'s visibility in `flatBottomActionBar` — same
+/// small-leaf-view shape as `RichTextFormattingBar`'s own `FormatBarButton`
+/// (not reused directly since that one is `private` to that file and this
+/// button's highlighted-when-open state is `ComposerView`'s own concern,
+/// not the formatting bar's).
+private struct FormatBarToggleButton: View {
+    let isActive: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(verbatim: "T")
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 36, height: 32)
+                .foregroundStyle(isActive ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isActive ? OtegamiColor.paleBaseStrong : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("composer.formatBarToggle")
+    }
+}
+#endif
+
 private struct ComposerCcBccPillButton: View {
     let action: () -> Void
 
