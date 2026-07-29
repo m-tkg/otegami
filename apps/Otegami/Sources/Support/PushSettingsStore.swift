@@ -17,7 +17,18 @@ import Security
 // `@unchecked Sendable`: `UserDefaults` is documented as thread-safe but
 // isn't declared `Sendable` in this SDK snapshot.
 struct PushSettingsStore: @unchecked Sendable {
-    private static let relayURLKey = "push.relayURLString"
+    /// Task #121 (実機報告「別端末/再インストールでリレー URL が消える」):
+    /// this one key is *not* device-specific the way the rest of this
+    /// store's state is — it's just a hostname the user typed once, so
+    /// losing it on reinstall (or never seeing it on a second device)
+    /// forces re-typing the same URL for no benefit. `internal` (not
+    /// `private`) so `AppSettingsCloudDirectory` can allowlist it directly
+    /// rather than this store needing its own `SettingsCloudValue`-shaped
+    /// accessor — see that type's `stringDefaults` and
+    /// `docs/icloud-sync.md`'s settings-sync table for the rationale this
+    /// key alone crossed over while `deviceId`/`accountWatchMap`/
+    /// `deviceSecret` stayed device-local.
+    static let relayURLKey = "push.relayURLString"
     private static let deviceIdKey = "push.deviceId"
     private static let enabledKey = "push.enabled"
     private static let watchMapKey = "push.accountWatchMap"

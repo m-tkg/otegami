@@ -22,11 +22,14 @@ import Foundation
 /// `boolKeys`/`stringKeys` below ever leave this device. Deliberately
 /// excluded (`docs/icloud-sync.md`'s settings-sync section has the full
 /// rationale table):
-/// - **通知系** (`PushSettingsStore`'s relay URL/watch map/enabled flag): a
-///   push relay endpoint and per-account watch registrations are
-///   inherently device-specific (each device's own APNs token pairs with
-///   its own watch) — syncing them would either be meaningless or actively
-///   wrong on another device.
+/// - **通知系のうちデバイス固有の部分** (`PushSettingsStore`'s device id/
+///   per-account watch map/enabled flag/`deviceSecret`): each device's own
+///   APNs token pairs with its own watch, so syncing these would either be
+///   meaningless or actively wrong on another device. Task #121: the relay
+///   URL itself (`PushSettingsStore.relayURLKey`) is the one exception —
+///   it's just a hostname the user typed, not device-specific at all, so it
+///   *is* synced (see `stringDefaults` below) even though the rest of this
+///   store stays local-only.
 /// - **UITest 系フラグ**: every `OTEGAMI_UITEST_*`/`-otegami*` escape hatch
 ///   this codebase uses is a launch environment variable/argument, never a
 ///   `UserDefaults` key, so none of them could end up in this allowlist by
@@ -84,7 +87,14 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
         SwipeActionSettingsStore.trailingShortActionKey: SwipeActionSettingsStore.defaultTrailingShort.rawValue,
         SwipeActionSettingsStore.trailingLongActionKey: SwipeActionSettingsStore.defaultTrailingLong.rawValue,
         MessageToolbarSettingsStore.orderKey: MessageToolbarSettingsStore.encodedRawValue(for: MessageToolbarSettingsStore.defaultItems),
-        FolderCategoryOrderStore.key: FolderCategoryOrderStore.defaultOrder.map(\.rawValue).joined(separator: ",")
+        FolderCategoryOrderStore.key: FolderCategoryOrderStore.defaultOrder.map(\.rawValue).joined(separator: ","),
+        // Task #121: the relay URL alone, not the rest of `PushSettingsStore`
+        // (see this type's doc comment) — an empty-string default matches a
+        // device that's never configured a self-hosted relay, and
+        // `AppEnvironment.validatedRelayURL("")` already treats that as "no
+        // relay configured" the same way `PushSettingsStore.relayURLString
+        // == nil` does, so round-tripping through `""` here is safe.
+        PushSettingsStore.relayURLKey: ""
     ]
 
     func currentValues() async -> [String: SettingsCloudValue] {
