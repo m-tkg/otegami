@@ -140,11 +140,25 @@ public enum ThreadQuery {
     /// (`MailboxRoleRecord.gmailArchiveQueryRole`) のため — Gmail アカウント
     /// だけ`role`の代わりに`role.gmailArchiveQueryRole`(`.archive`→`.all`、
     /// 他は恒等)を見る (Task #52, 2)。
+    ///
+    /// Task #141 追記 (「すべてのメール」): `role == .all`のときだけ、
+    /// 非Gmailアカウント側の`mailbox.role = ?`一致条件を外す
+    /// (`nonGmailMatchesAnyMailbox`) — Gmail は既存どおり All Mail
+    /// (`mailbox.role == .all`) 一つに絞る一方、`\All` special-useを持つ
+    /// メールボックスがまず存在しない他アカウントでは「すべてのメール」＝
+    /// 「そのアカウントの隠されていない mailbox すべて」という定義
+    /// (`docs/design-system.md`の Task #141 節参照) にするための特別扱い。
+    /// 他のどの role でもこの分岐は効かない (`nonGmailMatchesAnyMailbox`が
+    /// 常に`false`)。
     public static func unifiedInboxRequest(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false) -> SQLRequest<ThreadRecord> {
         guard !accountIds.isEmpty else {
             return SQLRequest(sql: "SELECT * FROM thread WHERE 0")
         }
         let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
+        let nonGmailMatchesAnyMailbox = role == .all
+        let nonGmailCondition = nonGmailMatchesAnyMailbox
+            ? "account.kind != ?"
+            : "(account.kind != ? AND mailbox.role = ?)"
         var sql = """
             SELECT thread.* FROM thread
             WHERE thread.accountId IN (\(placeholders))
@@ -156,16 +170,16 @@ public enum ThreadQuery {
                         AND mailbox.isHidden = 0
                         AND (
                             (account.kind = ? AND mailbox.role = ?)
-                            OR (account.kind != ? AND mailbox.role = ?)
+                            OR \(nonGmailCondition)
                         )
                         AND \(GmailArchiveFilter.excludeUnarchivedSQL)
               )
             """
         var arguments: [(any DatabaseValueConvertible)?] = accountIds
-        arguments.append(contentsOf: [
-            AccountKind.gmail.rawValue, role.gmailArchiveQueryRole.rawValue,
-            AccountKind.gmail.rawValue, role.rawValue,
-        ])
+        arguments.append(contentsOf: [AccountKind.gmail.rawValue, role.gmailArchiveQueryRole.rawValue, AccountKind.gmail.rawValue])
+        if !nonGmailMatchesAnyMailbox {
+            arguments.append(role.rawValue)
+        }
         if unreadOnly {
             sql += " AND thread.unreadCount > 0"
         }
@@ -264,10 +278,15 @@ public enum ThreadQuery {
     /// doc comment; defaults to `.inbox` for every pre-existing call site.
     /// `account.kind`をJOINして参照する理由は`unifiedInboxRequest(accountIds:
     /// role:limit:unreadOnly:)`と同じ — Gmail のアーカイブマッピング
-    /// (Task #52, 2)。
+    /// (Task #52, 2)。`role == .all`の非Gmail特別扱い (Task #141) も同関数
+    /// と同じ — その doc comment参照。
     public static func unifiedInboxFlatSummaries(accountIds: [String], role: MailboxRoleRecord = .inbox, limit: Int? = nil, unreadOnly: Bool = false, db: Database) throws -> [ThreadSummary] {
         guard !accountIds.isEmpty else { return [] }
         let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
+        let nonGmailMatchesAnyMailbox = role == .all
+        let nonGmailCondition = nonGmailMatchesAnyMailbox
+            ? "account.kind != ?"
+            : "(account.kind != ? AND mailbox.role = ?)"
         var sql = """
             SELECT message.*, mailbox.accountId AS accountId FROM message
             JOIN mailbox ON mailbox.id = message.mailboxId
@@ -275,15 +294,15 @@ public enum ThreadQuery {
             WHERE mailbox.accountId IN (\(placeholders)) AND mailbox.isHidden = 0
                   AND (
                       (account.kind = ? AND mailbox.role = ?)
-                      OR (account.kind != ? AND mailbox.role = ?)
+                      OR \(nonGmailCondition)
                   )
                   AND \(GmailArchiveFilter.excludeUnarchivedSQL)
             """
         var arguments: [(any DatabaseValueConvertible)?] = accountIds
-        arguments.append(contentsOf: [
-            AccountKind.gmail.rawValue, role.gmailArchiveQueryRole.rawValue,
-            AccountKind.gmail.rawValue, role.rawValue,
-        ])
+        arguments.append(contentsOf: [AccountKind.gmail.rawValue, role.gmailArchiveQueryRole.rawValue, AccountKind.gmail.rawValue])
+        if !nonGmailMatchesAnyMailbox {
+            arguments.append(role.rawValue)
+        }
         if unreadOnly {
             sql += " AND message.flagsRaw & \(MessageQuery.seenFlagBit) = 0"
         }

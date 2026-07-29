@@ -114,13 +114,20 @@ public enum MessageQuery {
     /// `account.kind`をJOINして参照するのは Gmail のアーカイブマッピング
     /// (`MailboxRoleRecord.gmailArchiveQueryRole`, Task #52, 2) のため —
     /// `ThreadQuery.unifiedInboxRequest`と同じ理由・同じ出し分け方。
+    /// `role == .all`の非Gmail特別扱い (Task #141、「すべてのメール」は
+    /// 非Gmailアカウントで role 一致を要求しない) も同関数と同じ —
+    /// その doc comment参照。
     public static func unifiedInboxUnreadCount(accountIds: [String], role: MailboxRoleRecord = .inbox, db: Database) throws -> Int {
         guard !accountIds.isEmpty else { return 0 }
         let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
-        var arguments: [(any DatabaseValueConvertible)?] = [
-            AccountKind.gmail.rawValue, role.gmailArchiveQueryRole.rawValue,
-            AccountKind.gmail.rawValue, role.rawValue,
-        ]
+        let nonGmailMatchesAnyMailbox = role == .all
+        let nonGmailCondition = nonGmailMatchesAnyMailbox
+            ? "account.kind != ?"
+            : "(account.kind != ? AND mailbox.role = ?)"
+        var arguments: [(any DatabaseValueConvertible)?] = [AccountKind.gmail.rawValue, role.gmailArchiveQueryRole.rawValue, AccountKind.gmail.rawValue]
+        if !nonGmailMatchesAnyMailbox {
+            arguments.append(role.rawValue)
+        }
         arguments.append(contentsOf: accountIds)
         return try Int.fetchOne(
             db,
@@ -130,7 +137,7 @@ public enum MessageQuery {
                 JOIN account ON account.id = mailbox.accountId
                 WHERE (
                           (account.kind = ? AND mailbox.role = ?)
-                          OR (account.kind != ? AND mailbox.role = ?)
+                          OR \(nonGmailCondition)
                       )
                       AND mailbox.accountId IN (\(placeholders)) AND message.flagsRaw & \(seenFlagBit) = 0
                       AND mailbox.isHidden = 0

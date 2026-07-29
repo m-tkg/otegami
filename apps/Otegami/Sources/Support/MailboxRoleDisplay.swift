@@ -52,13 +52,12 @@ extension MailboxRoleRecord {
     /// ユーザーが並び替え設定 (`FolderCategoryOrderStore`) で変更していない
     /// 限り、実際の描画順もこの配列そのもの。
     ///
-    /// `.all`(「すべてのメール」)を含めていない — Task #52, 2: Gmail は
-    /// `\Archive`special-useフォルダを持たず、その All Mail (role`.all`)は
-    /// `FolderListSheet.matchesCategory(mailbox:account:role:)`により
-    /// 「アーカイブ」カテゴリの一員として扱う (Spark の挙動に合わせた一本化)。
-    /// この配列に`.all`を別途残すと、Gmail の All Mail が「アーカイブ」と
-    /// 「すべてのメール」の2つのセクションに重複して現れてしまう — それを
-    /// 避けるため、`.all`は独立したカテゴリとして持たないことにした
-    /// (`docs/design-system.md`にこの判断を記録)。
-    static let categoryOrder: [MailboxRoleRecord] = [.inbox, .flagged, .archive, .sent, .drafts, .junk, .trash]
+    /// Task #141: `.all`(「すべてのメール」)を`.archive`の隣に追加した ——
+    /// Task #52, 2 時点では「Gmail の All Mail が『アーカイブ』と『すべて
+    /// のメール』の2箇所に重複して現れる」ことを避けるためあえて含めて
+    /// いなかったが、今回はその重複を許容する判断に変更した (Gmail のみ
+    /// 該当。定義・理由は`docs/design-system.md`の Task #141 節、クエリ側
+    /// の実装は`ThreadQuery.unifiedInboxRequest`/`MessageQuery
+    /// .unifiedInboxUnreadCount`の doc comment参照)。
+    static let categoryOrder: [MailboxRoleRecord] = [.inbox, .flagged, .archive, .all, .sent, .drafts, .junk, .trash]
 }

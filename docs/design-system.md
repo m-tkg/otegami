@@ -6548,3 +6548,81 @@ detectedMarker=none`(分離できず全文が要約対象になり引用だら�
 
 `make test`/`make mac`/`make ios`すべてgreen。README/README_ja.mdの
 機能説明からも「英語で返信を下書き」の記述を削除。
+
+## Task #141: ハンバーガーメニューに「すべてのメール」カテゴリ
+
+`MailboxRoleRecord.categoryOrder`(ハンバーガーメニューのカテゴリ優先
+グルーピング、`FolderListSheet`)に`.all`(「すべてのメール」)を追加した
+— `.archive`の隣 (`[.inbox, .flagged, .archive, .all, .sent, .drafts,
+.junk, .trash]`)。既存カテゴリと同じ作法: セクション見出し行タップで
+統合ビュー選択、シェブロンでアカウント別行を展開。`MailboxRoleRecord.all`
+自体は Task #52 (Gmail の All Mail special-useフォルダのマッピング) から
+既に存在しており、`MailboxRoleDisplay.categoryDisplayName`/
+`categorySystemImage`もすでに「すべてのメール」/`envelope.badge.fill`を
+持っていた (Task #52, 2 時点ではあえて`categoryOrder`に含めていなかった
+だけ) — enum への新規ケース追加ではないため、DBマイグレーション不要
+(`MailboxRoleRecord`は`String` rawValueとしてテーブルに保存されており、
+Swift側の enum に既存値を並び順リストへ追加するだけなら列定義もスキーマ
+も変わらない)。
+
+**「すべてのメール」の定義 (実装しやすい方を採用、`docs/design-system.md`
+に明記という指示に基づく判断)**:
+
+- **Gmail アカウント**: All Mail メールボックス (`mailbox.role == .all`)。
+  既存の`GmailArchiveFilter`(Task #52, 2 の「アーカイブ」定義: INBOX/
+  Sent/Draftsとの重複を除外) を**そのまま流用**する — 生の All Mail 全件
+  (重複含む) を出す専用の「フィルタなし」経路は今回作らなかった。
+  `ThreadQuery.request(mailboxId:)`をはじめ、Gmail の All Mail
+  メールボックスに触れるあらゆる経路 (`MessageListView.refreshArchive
+  ViewFlag()`も`.all`+`account.kind == .gmail`を「アーカイブビュー」
+  として扱っている) が既にこの定義で統一されており、そこにもう1つ
+  別定義を割り込ませるコストに見合う実利用上のメリットが薄いと判断
+  した。結果、Gmail アカウントの「アーカイブ」と「すべてのメール」は
+  同じ集合を指す (`FolderListSheet.matchesCategory`のdoc comment参照)
+  — カテゴリとしては重複表示になるが、Task #52, 2 時点で避けていた
+  この重複を今回は許容する。
+- **非Gmailアカウント**: `\All` special-useを広告するIMAPサーバがまず
+  存在しないため、「そのアカウントの隠されていない mailbox すべて」を
+  横断する — 単一の物理メールボックスに対応しないため、ハンバーガー
+  メニューの「アカウント別展開行」(`FolderListSheet.categoryAccountRow`)
+  は非Gmailアカウントには表示されない (`matchesCategory`が個別
+  メールボックスの`role`一致でしか判定できないため)。その代わり、
+  セクション見出し行タップの統合ビュー (`.unifiedRole(.all)`) には
+  ちゃんと含まれる — `ThreadQuery.unifiedInboxRequest`/
+  `unifiedInboxFlatSummaries`/`MessageQuery.unifiedInboxUnreadCount`の
+  非Gmail側マッチ条件を、`role == .all`のときだけ`mailbox.role = ?`
+  一致要求から「そのアカウントの mailbox なら何でもよい」に緩めた
+  (`account.kind != ?`のみ)。他のどの role でもこの緩和は効かない。
+  この非対称 (Gmailは個別行を持つが非Gmailは持たない) は
+  `FolderListSheet.categorySection(for:)`のdoc comment/`unreadCount
+  ForAllMailCategory(entries:)`にも記録した。
+
+**カテゴリセクション自体の表示条件**: 他のカテゴリは対応する物理
+メールボックスを持つアカウントが1つも無ければセクション見出しごと
+消える (`!entries.isEmpty`ガード) が、「すべてのメール」は非Gmail
+アカウントが`entries`に現れない設計上、Gmailアカウントが1つも無い
+構成だとこのガードのままでは常に非表示になってしまう。`role == .all`
+のときだけこのガードを外し、見出し自体は常に表示する — 統合ビューは
+Gmail の有無に関わらず常に有効な概念のため。
+
+**未読バッジ**: セクション見出しの未読数は他カテゴリと同じ
+`entries`ベースの合算だと非Gmailアカウント分が漏れる (上記の理由で
+`entries`に現れないため) ので、`unreadCountForAllMailCategory(entries:)`
+という専用の集計関数を追加した — Gmail分は`entries`(All Mailのみ)から、
+非Gmail分は`mailboxesByAccountId`の全メールボックスを横断して別途
+合算する。一覧ヘッダ側のタイトル・未読数 (#137 のroleスコープ集計、
+`MessageListView`の`title`/`observeUnreadCountInScope()`)は元々
+`role: MailboxRoleRecord`引数を汎用的に取る作りだったため、`.all`を
+渡すだけでそのまま動作する (新規コード不要)。
+
+### 検証
+
+`GmailArchiveFilterTests.swift`に`role == .all`のケースを追加 (Gmailは
+既存の「アーカイブ」定義どおり重複除外、非Gmailは複数mailbox横断で
+両方カウント) — `unifiedInboxRequest`/`unifiedInboxFlatSummaries`/
+`unifiedInboxUnreadCount`の3関数それぞれ。`make test`/`make mac`green
+(`make ios`は未実施 — 下記参照)。`scripts/verify-screen.sh menu-expanded`
+(既存シナリオ、Gmail+非Gmailの2アカウント構成を注入済みのため追加の
+シナリオ変更は不要) でスクリーンショット確認: 「すべてのメール」
+セクションがアーカイブの隣に表示され、シェブロン展開でGmailアカウントの
+行が見える。

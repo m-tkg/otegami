@@ -452,10 +452,23 @@ struct FolderListSheet: View {
     /// 選択中のセクションだけ展開」という既存の初期状態
     /// (`resetCollapseStateToCurrentSelection()`) はシェブロンの開閉状態と
     /// して変わらず維持する。
+    /// Task #141: 「すべてのメール」(`role == .all`) は他カテゴリと違い
+    /// `entries`が空でもセクション自体を隠さない — Gmail以外のアカウントは
+    /// `matchesCategory(mailbox:account:role:)`が個別の物理メールボックスに
+    /// 一致させられない (`\All` special-useを持つIMAPサーバがまず無いため)
+    /// ので`entries`に現れないが、「そのアカウントの隠されていない mailbox
+    /// すべて」という定義でセクション見出しタップの統合ビュー
+    /// (`onSelectUnifiedRole(.all)` → `ThreadQuery.unifiedInboxRequest`/
+    /// `MessageQuery.unifiedInboxUnreadCount`の`role == .all`特別扱い) には
+    /// ちゃんと含まれる。つまりGmailだけのアカウント構成が無くても
+    /// 「すべてのメール」自体は常に有効な見出し — 他カテゴリのように
+    /// 「対応する物理メールボックスを持つアカウントが1つも無ければ見出し
+    /// ごと消える」動作にはしない。詳細な定義は`docs/design-system.md`の
+    /// Task #141 節参照。
     @ViewBuilder
     private func categorySection(for role: MailboxRoleRecord) -> some View {
         let entries = mailboxEntries(for: role)
-        if !entries.isEmpty {
+        if !entries.isEmpty || role == .all {
             let isCollapsed = collapsedCategoryRoles.contains(role.rawValue)
             Section {
                 if !isCollapsed {
@@ -472,9 +485,15 @@ struct FolderListSheet: View {
                     // メールボックス単位の合算とは別の「統合受信トレイ」自身の
                     // 未読数) を、`.inbox`カテゴリの見出しバッジへそのまま
                     // 引き継ぐ — 他のroleは従来どおりメールボックス単位の合算。
+                    // Task #141: `.all`は`entries`(Gmailの All Mail のみ) 単独
+                    // だと非Gmailアカウント分が漏れるため専用の集計関数を使う
+                    // (`unreadCountForAllMailCategory(entries:)`のdoc comment
+                    // 参照)。
                     unreadCount: role == .inbox
                         ? unifiedInboxUnread
-                        : entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
+                        : role == .all
+                            ? unreadCountForAllMailCategory(entries: entries)
+                            : entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
                     isCollapsed: isCollapsed,
                     // Task #126 追加仕様: 削除した最上部「すべての受信トレイ」
                     // 行が担っていた選択中ハイライトを、「受信トレイ」セクション
@@ -488,6 +507,24 @@ struct FolderListSheet: View {
                 .id("menuSection-role-\(role.rawValue)")
             }
         }
+    }
+
+    /// Task #141: 「すべてのメール」セクション見出しの未読バッジ —
+    /// 他カテゴリの`entries`ベース集計 (`categorySection(for:)`参照) と
+    /// 違い、Gmail以外のアカウントは`mailboxEntries(for: .all)`に現れない
+    /// (per-account 展開行を持たない — `matchesCategory`のdoc comment参照)
+    /// ので、その分をアカウントの全 mailbox 横断で別途足し込む。Gmail
+    /// アカウントは`entries`(All Mail mailboxのみ) に含まれる値をそのまま
+    /// 使う (`mailboxesByAccountId`から二重に拾って二重計上しないため)。
+    private func unreadCountForAllMailCategory(entries: [MailboxEntry]) -> Int {
+        let gmailTotal = entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) }
+        let nonGmailTotal = environment.accounts
+            .filter { $0.kind != .gmail }
+            .reduce(0) { total, account in
+                let mailboxIds = (mailboxesByAccountId[account.id] ?? []).compactMap(\.id)
+                return total + mailboxIds.reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) }
+            }
+        return gmailTotal + nonGmailTotal
     }
 
     /// Task #110: 「受信トレイ」セクション見出しのタップは、統合受信トレイ
@@ -551,10 +588,21 @@ struct FolderListSheet: View {
     /// .gmailArchiveQueryRole`/`GmailArchiveFilter`は、その行を実際に開いた
     /// 時のスレッド一覧側の定義 (`docs/design-system.md`記載の Gmail 検索式
     /// と等価な集合、単純な All Mail 全件ではない) を担う — 役割が違うので
-    /// 別々に実装している。`MailboxRoleRecord.categoryOrder`が`.all`自体を
-    /// 独立カテゴリとして持たない (`.all`を渡してこの関数が呼ばれることは
-    /// 無い) ことで、Gmail の All Mail が「アーカイブ」と「すべてのメール」
-    /// の2箇所に重複表示されることを避けている。
+    /// 別々に実装している。
+    ///
+    /// Task #141: `MailboxRoleRecord.categoryOrder`が`.all`(「すべてのメール」)
+    /// を独立カテゴリとして持つようになった後も、この関数自体は無変更 ——
+    /// `role == .all`で呼ばれた場合、`mailbox.role == role`の等価チェックが
+    /// そのまま Gmail の All Mail メールボックスに一致する (`.all == .all`)。
+    /// 結果として Gmail の All Mail は「アーカイブ」と「すべてのメール」の
+    /// 両カテゴリの展開行に重複して現れる — Task #52, 2 時点で避けていた
+    /// 重複をこのタスクでは許容する判断 (`docs/design-system.md`参照)。
+    /// 非Gmailアカウントは`\All` special-useを持つことがまず無いため、
+    /// この等価チェックだけでは「すべてのメール」の展開行に現れない ——
+    /// それは仕様どおりで、`categorySection(for:)`のdoc comment/
+    /// `docs/design-system.md`が記録する「非Gmailは統合ビュー (セクション
+    /// 見出しタップ) からのみ到達— 個別アカウント行は持たない」という
+    /// 判断による。
     private func matchesCategory(mailbox: MailboxRecord, account: AccountRecord, role: MailboxRoleRecord) -> Bool {
         if mailbox.role == role { return true }
         if role == .archive, mailbox.role == .all, account.kind == .gmail { return true }

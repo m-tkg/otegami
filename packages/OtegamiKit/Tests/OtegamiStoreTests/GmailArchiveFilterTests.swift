@@ -235,4 +235,118 @@ struct GmailArchiveFilterTests {
         }
         #expect(threadIds == [archivedThread])
     }
+
+    // MARK: - Task #141: 「すべてのメール」(role `.all`) の非Gmail「全 mailbox
+    // 横断」定義
+
+    /// `unifiedInboxRequest(role: .all)`/`unifiedInboxFlatSummaries(role:
+    /// .all)`/`MessageQuery.unifiedInboxUnreadCount(role: .all)`が共有する
+    /// フィクスチャ — Gmail アカウント (All Mail に「本当にアーカイブ済み」
+    /// 1件+「INBOXにも残っている(=未アーカイブ)」1件) と、`\All`
+    /// special-useを持たない非Gmailアカウント (INBOX 1件 + Archive 1件、
+    /// どちらも「すべてのメール」に含まれるべき) の両方を用意する。
+    private func makeMixedAccountsDatabase() throws -> (
+        database: AppDatabase, gmailAccountId: String, allMailId: Int64, gmailInboxId: Int64,
+        imapAccountId: String, imapInboxId: Int64, imapArchiveId: Int64
+    ) {
+        let (database, gmailAccountId, allMailId, gmailInboxId, _, _) = try makeDatabase()
+        let imapAccount = AccountRecord(
+            displayName: "IMAP", email: "i2@example.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "i2@example.test"
+        )
+        let (imapInboxId, imapArchiveId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            try imapAccount.insert(db)
+            var inbox = MailboxRecord(accountId: imapAccount.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            inbox = try inbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var archive = MailboxRecord(accountId: imapAccount.id, path: "Archive", displayPath: "Archive", role: .archive)
+            archive = try archive.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return (inbox.id!, archive.id!)
+        }
+        return (database, gmailAccountId, allMailId, gmailInboxId, imapAccount.id, imapInboxId, imapArchiveId)
+    }
+
+    @Test("unifiedInboxRequest(role: .all) includes a non-Gmail account's mail from every mailbox, not just one role")
+    func unifiedInboxRequestAllRoleSpansEveryNonGmailMailbox() throws {
+        let (database, gmailAccountId, allMailId, gmailInboxId, imapAccountId, imapInboxId, imapArchiveId) = try makeMixedAccountsDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let (gmailArchived, imapInboxThread, imapArchiveThread) = try database.dbWriter.write { db -> (Int64, Int64, Int64) in
+            // Gmail: only the genuinely-archived All Mail message counts —
+            // the INBOX-duplicated one stays excluded, same as `.archive`.
+            let gmailArchived = try insertGmailMessage(accountId: gmailAccountId, allMailId: allMailId, gmailMessageId: 1, date: base, db: db)
+            _ = try insertGmailMessage(
+                accountId: gmailAccountId, allMailId: allMailId, gmailMessageId: 2, date: base.addingTimeInterval(60),
+                duplicateInMailboxId: gmailInboxId, db: db
+            )
+            // Non-Gmail: both its INBOX and Archive mailboxes should count
+            // — "すべてのメール" for a non-Gmail account is every one of its
+            // mailboxes, not one role.
+            var imapInboxThread = ThreadRecord(accountId: imapAccountId, lastMessageDate: base.addingTimeInterval(120), messageCount: 1)
+            try imapInboxThread.insert(db)
+            var imapInboxMessage = MessageRecord(mailboxId: imapInboxId, uid: 1, date: base.addingTimeInterval(120), internalDate: base.addingTimeInterval(120), threadId: imapInboxThread.id)
+            try imapInboxMessage.insert(db)
+
+            var imapArchiveThread = ThreadRecord(accountId: imapAccountId, lastMessageDate: base.addingTimeInterval(180), messageCount: 1)
+            try imapArchiveThread.insert(db)
+            var imapArchiveMessage = MessageRecord(mailboxId: imapArchiveId, uid: 1, date: base.addingTimeInterval(180), internalDate: base.addingTimeInterval(180), threadId: imapArchiveThread.id)
+            try imapArchiveMessage.insert(db)
+
+            return (gmailArchived, imapInboxThread.id!, imapArchiveThread.id!)
+        }
+
+        let threadIds = try database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxRequest(accountIds: [gmailAccountId, imapAccountId], role: .all).fetchAll(db).map(\.id)
+        }
+        #expect(
+            Set(threadIds) == Set([gmailArchived, imapInboxThread, imapArchiveThread]),
+            "Expected the Gmail account's genuinely-archived All Mail thread plus both of the non-Gmail account's threads"
+        )
+    }
+
+    @Test("unifiedInboxFlatSummaries(role: .all) applies the same non-Gmail any-mailbox scope in flat mode")
+    func unifiedInboxFlatSummariesAllRoleSpansEveryNonGmailMailbox() throws {
+        let (database, gmailAccountId, allMailId, _, imapAccountId, imapInboxId, imapArchiveId) = try makeMixedAccountsDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try database.dbWriter.write { db in
+            _ = try insertGmailMessage(accountId: gmailAccountId, allMailId: allMailId, gmailMessageId: 1, date: base, db: db)
+
+            var imapInboxThread = ThreadRecord(accountId: imapAccountId, lastMessageDate: base.addingTimeInterval(60), messageCount: 1)
+            try imapInboxThread.insert(db)
+            var imapInboxMessage = MessageRecord(mailboxId: imapInboxId, uid: 1, date: base.addingTimeInterval(60), internalDate: base.addingTimeInterval(60), threadId: imapInboxThread.id)
+            try imapInboxMessage.insert(db)
+
+            var imapArchiveThread = ThreadRecord(accountId: imapAccountId, lastMessageDate: base.addingTimeInterval(120), messageCount: 1)
+            try imapArchiveThread.insert(db)
+            var imapArchiveMessage = MessageRecord(mailboxId: imapArchiveId, uid: 1, date: base.addingTimeInterval(120), internalDate: base.addingTimeInterval(120), threadId: imapArchiveThread.id)
+            try imapArchiveMessage.insert(db)
+        }
+
+        let flat = try database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxFlatSummaries(accountIds: [gmailAccountId, imapAccountId], role: .all, db: db)
+        }
+        #expect(flat.count == 3, "Expected 1 genuinely-archived Gmail message + the non-Gmail account's INBOX and Archive messages")
+    }
+
+    @Test("unifiedInboxUnreadCount(role: .all) sums the non-Gmail account's every mailbox, not just one role")
+    func unifiedInboxUnreadCountAllRoleSpansEveryNonGmailMailbox() throws {
+        let (database, gmailAccountId, allMailId, gmailInboxId, imapAccountId, imapInboxId, imapArchiveId) = try makeMixedAccountsDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try database.dbWriter.write { db in
+            // Gmail: 1 genuinely-archived unread message, 1 excluded (still in INBOX).
+            _ = try insertGmailMessage(accountId: gmailAccountId, allMailId: allMailId, gmailMessageId: 1, date: base, db: db)
+            _ = try insertGmailMessage(
+                accountId: gmailAccountId, allMailId: allMailId, gmailMessageId: 2, date: base.addingTimeInterval(60),
+                duplicateInMailboxId: gmailInboxId, db: db
+            )
+            // Non-Gmail: 1 unread in INBOX, 1 unread in Archive — both count.
+            var imapInboxMessage = MessageRecord(mailboxId: imapInboxId, uid: 1, date: base.addingTimeInterval(120), internalDate: base.addingTimeInterval(120))
+            try imapInboxMessage.insert(db)
+            var imapArchiveMessage = MessageRecord(mailboxId: imapArchiveId, uid: 1, date: base.addingTimeInterval(180), internalDate: base.addingTimeInterval(180))
+            try imapArchiveMessage.insert(db)
+        }
+
+        let count = try database.dbWriter.read { db in
+            try MessageQuery.unifiedInboxUnreadCount(accountIds: [gmailAccountId, imapAccountId], role: .all, db: db)
+        }
+        #expect(count == 3, "Expected 1 (Gmail, archived-only) + 2 (non-Gmail, every mailbox)")
+    }
 }
