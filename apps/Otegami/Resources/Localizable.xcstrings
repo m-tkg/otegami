@@ -4091,6 +4091,626 @@
           }
         }
       }
+    },
+    "アカウントを選択": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select an Account"
+          }
+        }
+      }
+    },
+    "スレッド (%lld)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thread (%lld)"
+          }
+        }
+      }
+    },
+    "すべての%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All %@"
+          }
+        }
+      }
+    },
+    "宛先: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "To: %@"
+          }
+        }
+      }
+    },
+    "宛先: %@ 他%lld名": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "To: %@ and %lld more"
+          }
+        }
+      }
+    },
+    "アーカイブ済み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archived"
+          }
+        }
+      }
+    },
+    "英語のメール": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "English-language Mail"
+          }
+        }
+      }
+    },
+    "HTMLメール": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTML Mail"
+          }
+        }
+      }
+    },
+    "元に戻す": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo"
+          }
+        }
+      }
+    },
+    "本文を入力してください": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a message"
+          }
+        }
+      }
+    },
+    "添付ファイルの保存に失敗しました。ファイル名が無効です。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't save the attachment. The filename is invalid."
+          }
+        }
+      }
+    },
+    "下書きはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Drafts"
+          }
+        }
+      }
+    },
+    "編集": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit"
+          }
+        }
+      }
+    },
+    "選択中の下書きを削除": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Selected Draft"
+          }
+        }
+      }
+    },
+    "送信待ちのメールはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Pending Messages"
+          }
+        }
+      }
+    },
+    "リンクを削除": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove Link"
+          }
+        }
+      }
+    },
+    "追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add"
+          }
+        }
+      }
+    },
+    "アーカイブ解除": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unarchive"
+          }
+        }
+      }
+    },
+    "受信トレイ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inbox"
+          }
+        }
+      }
+    },
+    "メッセージが選択されていません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Message Selected"
+          }
+        }
+      }
+    },
+    "その他のアクション": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "More Actions"
+          }
+        }
+      }
+    },
+    "失敗した操作はありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Failed Operations"
+          }
+        }
+      }
+    },
+    "破棄": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard"
+          }
+        }
+      }
+    },
+    "同期に失敗したメールボックスはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Mailbox Sync Failures"
+          }
+        }
+      }
+    },
+    "メールボックス同期エラー": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mailbox Sync Error"
+          }
+        }
+      }
+    },
+    "承諾済み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Accepted"
+          }
+        }
+      }
+    },
+    "辞退済み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Declined"
+          }
+        }
+      }
+    },
+    "未定で返答済み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Responded Maybe"
+          }
+        }
+      }
+    },
+    "委任済み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delegated"
+          }
+        }
+      }
+    },
+    "招待の内容を読み込めませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load the invitation."
+          }
+        }
+      }
+    },
+    "この招待の内容を解析できませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't parse this invitation."
+          }
+        }
+      }
+    },
+    "この招待には主催者の情報がありません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This invitation has no organizer information."
+          }
+        }
+      }
+    },
+    "宛先: (なし)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "To: (none)"
+          }
+        }
+      }
+    },
+    "アップデートを確認": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check for Updates"
+          }
+        }
+      }
+    },
+    "確認しています…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking…"
+          }
+        }
+      }
+    },
+    "最新版です": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You're Up to Date"
+          }
+        }
+      }
+    },
+    "新しいバージョンがあります": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A New Version Is Available"
+          }
+        }
+      }
+    },
+    "ダウンロードページを開く": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Download Page"
+          }
+        }
+      }
+    },
+    "確認できませんでした": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't Check for Updates"
+          }
+        }
+      }
+    },
+    "プレリリースを含めて確認中": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Including Pre-releases"
+          }
+        }
+      }
+    },
+    "サイドバーを表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Sidebar"
+          }
+        }
+      }
+    },
+    "メールボックスを選択してください": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a Mailbox"
+          }
+        }
+      }
+    },
+    "左のサイドバーからアカウントを追加、またはメールボックスを選択してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add an account or select a mailbox from the sidebar on the left."
+          }
+        }
+      }
+    },
+    "戻る": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Back"
+          }
+        }
+      }
+    },
+    "フラグ付き": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flagged"
+          }
+        }
+      }
+    },
+    "送信済み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sent"
+          }
+        }
+      }
+    },
+    "迷惑メール": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Junk"
+          }
+        }
+      }
+    },
+    "ゴミ箱": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trash"
+          }
+        }
+      }
+    },
+    "アップデートを確認…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check for Updates…"
+          }
+        }
+      }
+    },
+    "新規メッセージ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Message"
+          }
+        }
+      }
+    },
+    "メッセージ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Message"
+          }
+        }
+      }
+    },
+    "既読/未読を切り替え": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Read/Unread"
+          }
+        }
+      }
+    },
+    "次のメールボックス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next Mailbox"
+          }
+        }
+      }
+    },
+    "前のメールボックス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previous Mailbox"
+          }
+        }
+      }
+    },
+    "カテゴリの並び替え": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reorder Categories"
+          }
+        }
+      }
+    },
+    "サーバーのフラグと連動": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sync with Server Flag"
+          }
+        }
+      }
+    },
+    "このビルドには Google OAuth Client ID が設定されていないため、Google 認証は行えません。詳細は docs/oauth-setup.md を参照してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build has no Google OAuth Client ID configured, so Google sign-in isn't available. See docs/oauth-setup.md for details."
+          }
+        }
+      }
+    },
+    "このビルドには Microsoft OAuth Client ID が設定されていないため、Microsoft 認証は行えません。詳細は docs/oauth-setup.md を参照してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This build has no Microsoft OAuth Client ID configured, so Microsoft sign-in isn't available. See docs/oauth-setup.md for details."
+          }
+        }
+      }
+    },
+    "同じ Apple ID の他の iOS/Mac デバイスとアカウントの接続設定・表示設定 (一覧・ビューア・スワイプ操作など) を同期します。パスワードは iCloud キーチェーンが別途同期します。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Syncs the account's connection and display settings (list/viewer/swipe actions, etc.) with your other iOS/Mac devices signed into the same Apple ID. Passwords are synced separately via iCloud Keychain."
+          }
+        }
+      }
+    },
+    "ドラッグして、フォルダメニューに並ぶカテゴリの表示順を変更できます。「その他」(独自フォルダ) は常に一番下に表示されます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag to reorder the categories shown in the folder menu. “Other” (custom folders) always stays at the bottom."
+          }
+        }
+      }
+    },
+    "フォルダメニューに並ぶ「受信トレイ」「アーカイブ」などカテゴリの表示順を変更できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Change the order categories like “Inbox” and “Archive” appear in the folder menu."
+          }
+        }
+      }
+    },
+    "プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先の写真・Google プロフィール写真・Gravatar・企業ロゴを優先順に探して表示します。どの情報源を使うか (外部への問い合わせを含む) は「メール一覧」設定の同名のトグルで個別にオフにできます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avatars try, in order, the sender's matching contact photo, Google profile photo, Gravatar, and company logo, falling back to the sender's initials and the account's color. Which sources are used (including which ones contact an external service) can be turned off individually from the matching toggles in the Message List settings."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

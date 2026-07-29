@@ -783,7 +783,23 @@ struct ComposerView: View {
                     }
                 }
             } label: {
-                Text(verbatim: flatFromLabel)
+                // Task #170 (実機報告「英語設定なのに日本語が出ている」):
+                // was `Text(verbatim: flatFromLabel)` — `flatFromLabel`
+                // mixes dynamic account data (never localize: display
+                // name/email, e.g. "a@example.com <a@example.com>") with a
+                // fixed fallback string ("アカウントを選択") for when no
+                // account is selected yet, so plain `Text(flatFromLabel)`
+                // (the `Text(String)` verbatim overload,
+                // docs/localization.md's "`Text(String)`は自動でローカラ
+                // イズされない" section) was correct for the dynamic case
+                // but silently skipped the catalog for the fallback.
+                // `LocalizedStringKey(_:)` is docs/localization.md's
+                // documented fix for exactly this shape (§3, same
+                // technique `AccountFilterChip` already uses): dynamic
+                // values that don't match any catalog key just render as
+                // themselves (safe), while the fallback now picks up its
+                // `en` translation.
+                Text(LocalizedStringKey(flatFromLabel))
                     .font(OtegamiFont.body())
                     .foregroundStyle(OtegamiColor.accent)
                     .lineLimit(1)

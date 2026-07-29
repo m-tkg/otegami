@@ -524,8 +524,15 @@ struct RootView: View {
                     onThreadRemoved: handleThreadRemoved
                 )
             } else {
+                // Task #170: was the English literal "No Message Selected"
+                // directly (never localized, always English regardless of
+                // the device's language — see check-localizable-coverage.py's
+                // "EN-hardcoded" class of finding). Switched to the same
+                // Japanese source string `MailScreenView.detailColumn` uses
+                // for the iPad-regular-width equivalent of this same empty
+                // state, so both share one catalog entry/translation.
                 ContentUnavailableView(
-                    "No Message Selected",
+                    "メッセージが選択されていません",
                     systemImage: "envelope.open"
                 )
                 .accessibilityIdentifier("messageDetail.emptyState")

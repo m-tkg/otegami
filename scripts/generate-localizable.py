@@ -622,6 +622,110 @@ translations = {
     "辞退": "Decline",
     "通常はメールアドレスと同じログインIDで接続できます。接続テストが失敗する場合は、ログインIDを「@yahoo.co.jp より前の Yahoo! JAPAN ID」だけに変更して再度お試しください。":
         "Usually the login ID is the same as your email address. If the connection test fails, try changing the login ID to just your Yahoo! JAPAN ID (the part before “@yahoo.co.jp”).",
+
+    # --- Task #170 (言語設定不一致の総点検): scripts/check-localizable-
+    # coverage.py で新規に検出したカタログ未登録の文字列。macOS メニュー
+    # バー (OtegamiCommands, #158/#165), アップデート確認画面 (#158),
+    # ハンバーガーメニューのカテゴリ見出し (MailboxRoleDisplay — 「アーカ
+    # イブ」「下書き」等は既訳済みだったのに「受信トレイ」「送信済み」等が
+    # 抜けており、表示言語を切り替えるとメニュー内で言語が混在していた),
+    # トースト・バッジ・空状態など。
+    "アカウントを選択": "Select an Account",
+    # Task #170: `ThreadDetailView.navigationTitleText` builds this via
+    # `String(localized: "スレッド (\(messages.count))")` — `String
+    # (localized:)`'s `String.LocalizationValue` interpolation converts an
+    # interpolated `Int` into a `%lld` format specifier at the extraction
+    # level (not the literal number), the same convention this catalog
+    # already uses for "添付ファイル %lld 個" above. Found via manual
+    # screenshot verification (LOCALE=en scripts/verify-screen.sh
+    # thread-accordion) — check-localizable-coverage.py's static scanner
+    # can't resolve this class of call (any interpolated literal is
+    # skipped as unresolvable, see its `unescape_swift_literal` doc
+    # comment), so this one didn't show up in its report.
+    "スレッド (%lld)": "Thread (%lld)",
+    # Task #170: same `String(localized: "... \(x)")` format-specifier class
+    # as the entry above — found by the same manual `grep 'String(localized:.*\\('`
+    # sweep, not the automated scanner (see check-localizable-coverage.py's
+    # docstring). `role.categoryDisplayName` (an already-localized `String`,
+    # MailboxRoleDisplay) interpolates as `%@`; `MessageListView.title` /
+    # `MailScreenView.selectUnifiedRole(_:)` share this exact template for
+    # the cross-account "every mailbox with this role" navigation title
+    # (e.g. "すべてのアーカイブ"/"All Archive").
+    "すべての%@": "All %@",
+    # MessageHeaderCompactView.toSummaryText: `name` interpolates as `%@`,
+    # `extra` (an `Int`, `message.toAddresses.count - 1`) as `%lld`.
+    "宛先: %@": "To: %@",
+    "宛先: %@ 他%lld名": "To: %@ and %lld more",
+    "アーカイブ済み": "Archived",
+    "英語のメール": "English-language Mail",
+    "HTMLメール": "HTML Mail",
+    "元に戻す": "Undo",
+    "本文を入力してください": "Enter a message",
+    "添付ファイルの保存に失敗しました。ファイル名が無効です。": "Couldn't save the attachment. The filename is invalid.",
+    "下書きはありません": "No Drafts",
+    "編集": "Edit",
+    "選択中の下書きを削除": "Delete Selected Draft",
+    "送信待ちのメールはありません": "No Pending Messages",
+    "リンクを削除": "Remove Link",
+    "追加": "Add",
+    "アーカイブ解除": "Unarchive",
+    "受信トレイ": "Inbox",
+    "メッセージが選択されていません": "No Message Selected",
+    "その他のアクション": "More Actions",
+    "失敗した操作はありません": "No Failed Operations",
+    "破棄": "Discard",
+    "同期に失敗したメールボックスはありません": "No Mailbox Sync Failures",
+    "メールボックス同期エラー": "Mailbox Sync Error",
+    "承諾済み": "Accepted",
+    "辞退済み": "Declined",
+    "未定で返答済み": "Responded Maybe",
+    "委任済み": "Delegated",
+    "招待の内容を読み込めませんでした。": "Couldn't load the invitation.",
+    "この招待の内容を解析できませんでした。": "Couldn't parse this invitation.",
+    "この招待には主催者の情報がありません。": "This invitation has no organizer information.",
+    "宛先: (なし)": "To: (none)",
+    "アップデートを確認": "Check for Updates",
+    "確認しています…": "Checking…",
+    "最新版です": "You're Up to Date",
+    "新しいバージョンがあります": "A New Version Is Available",
+    "ダウンロードページを開く": "Open Download Page",
+    "確認できませんでした": "Couldn't Check for Updates",
+    "プレリリースを含めて確認中": "Including Pre-releases",
+    "サイドバーを表示": "Show Sidebar",
+    "メールボックスを選択してください": "Select a Mailbox",
+    "左のサイドバーからアカウントを追加、またはメールボックスを選択してください。": "Add an account or select a mailbox from the sidebar on the left.",
+    "戻る": "Back",
+    "フラグ付き": "Flagged",
+    "送信済み": "Sent",
+    "迷惑メール": "Junk",
+    "ゴミ箱": "Trash",
+    "アップデートを確認…": "Check for Updates…",
+    "新規メッセージ": "New Message",
+    "メッセージ": "Message",
+    "既読/未読を切り替え": "Toggle Read/Unread",
+    "次のメールボックス": "Next Mailbox",
+    "前のメールボックス": "Previous Mailbox",
+    # Task #170: found alongside the above, in settings screens owned by a
+    # concurrent agent (apps/Otegami/Sources/Features/Settings/ — see
+    # CLAUDE.md's multi-agent shared-worktree rules) that this task was
+    # told not to touch. Adding the catalog entries themselves is safe
+    # (source language is ja, so the Japanese literal already committed in
+    # those files just becomes this key — no edit to the owned files
+    # needed to pick up the translation).
+    "カテゴリの並び替え": "Reorder Categories",
+    "サーバーのフラグと連動": "Sync with Server Flag",
+    "このビルドには Google OAuth Client ID が設定されていないため、Google 認証は行えません。詳細は docs/oauth-setup.md を参照してください。":
+        "This build has no Google OAuth Client ID configured, so Google sign-in isn't available. See docs/oauth-setup.md for details.",
+    "このビルドには Microsoft OAuth Client ID が設定されていないため、Microsoft 認証は行えません。詳細は docs/oauth-setup.md を参照してください。":
+        "This build has no Microsoft OAuth Client ID configured, so Microsoft sign-in isn't available. See docs/oauth-setup.md for details.",
+    "同じ Apple ID の他の iOS/Mac デバイスとアカウントの接続設定・表示設定 (一覧・ビューア・スワイプ操作など) を同期します。パスワードは iCloud キーチェーンが別途同期します。":
+        "Syncs the account's connection and display settings (list/viewer/swipe actions, etc.) with your other iOS/Mac devices signed into the same Apple ID. Passwords are synced separately via iCloud Keychain.",
+    "ドラッグして、フォルダメニューに並ぶカテゴリの表示順を変更できます。「その他」(独自フォルダ) は常に一番下に表示されます。":
+        "Drag to reorder the categories shown in the folder menu. “Other” (custom folders) always stays at the bottom.",
+    "フォルダメニューに並ぶ「受信トレイ」「アーカイブ」などカテゴリの表示順を変更できます。":
+        "Change the order categories like “Inbox” and “Archive” appear in the folder menu.",
+    "プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先の写真・Google プロフィール写真・Gravatar・企業ロゴを優先順に探して表示します。どの情報源を使うか (外部への問い合わせを含む) は「メール一覧」設定の同名のトグルで個別にオフにできます。":
+        "Avatars try, in order, the sender's matching contact photo, Google profile photo, Gravatar, and company logo, falling back to the sender's initials and the account's color. Which sources are used (including which ones contact an external service) can be turned off individually from the matching toggles in the Message List settings.",
 }
 
 # Disambiguation comments for a handful of short/reused source strings —
