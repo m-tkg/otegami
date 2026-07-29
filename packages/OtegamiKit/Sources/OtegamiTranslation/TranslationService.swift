@@ -186,10 +186,9 @@ extension TranslationService {
     /// ■経緯の箇条書き・reduce段への入力どちらの行も`message.header`
     /// (呼び出し元が信頼できるメタデータから組み立てた文字列) をこちら側
     /// で機械的に前置きする。理由もTask #160と同じ:
-    /// `summarizeThreadEntryInstructions`は「本文中に差出人・宛先名が
-    /// 出てきても主語にせず『この返信』を主語にする」設計のため、ヘッダを
-    /// モデルへの入力に混ぜるとその名前・日時をモデルが不確実な言い回しで
-    /// 本文に混ぜて返すリスクがある。
+    /// `summarizeThreadEntryInstructions`は「差出人・宛先名を行為の主語に
+    /// しない」設計のため、ヘッダをモデルへの入力に混ぜるとその名前・日時を
+    /// モデルが不確実な言い回しで本文に混ぜて返すリスクがある。
     ///
     /// 1メッセージの本文単体が`TranslationChunker.defaultMaxChunkLength`
     /// を超える場合だけ、`extractThreadEntryText(_:targetLanguage:)`
