@@ -6676,3 +6676,52 @@ scrollTo」は実装しなかった — 展開直後から`ThreadDetailView
 →`thread-accordion-scroll`のスクリーンショット比較で自動スクロールを
 実機 (シミュレータ) 確認済み — 最古メッセージ (田中花子、16:37) の
 ヘッダ行が画面上端まで来ている。
+
+## Task #147: 本文の後着で要約/翻訳ボタンが有効化されない修正
+
+実機報告: 本文読み込みが未完のメールを開くと、その後読み込みが完了
+しても (アプリを再起動しない限り) 要約/翻訳ボタンが押せないままになる。
+
+**根本原因**: `MessageView.load()`は開いた時点での一回きりの本文取得で
+完結する — Task #64が導入した`syncAIFeaturesState()`の`bodyRecord !=
+nil`ゲート自体は正しいが、`bodyRecord`(`@State`)を更新する経路が
+`load()`一本しかなかった。そのため、`load()`自身の取得が (オフライン、
+別経路との競合等で) 失敗し、かつローカルにキャッシュも無い場合、
+`bodyRecord`は`nil`のまま固定され、その後バックグラウンドプリフェッチ
+(b7003ab「統合受信トレイの本文を起動/フォアグラウンド復帰時に事前取得」)
+が同じメッセージの本文をDBへ書き込んでも、この画面はそれを二度と観測
+しない。
+
+**修正**: `messageBody`行への`ValueObservation`を`MessageView`に追加。
+`load()`とは別の、もう1本の`.task(id: messageId)`として
+`observeBodyRecordChanges()`を並走させる — 同じidキーなので、メッセージ
+が切り替わる/この`MessageView`自体が破棄される (#136のアコーディオンで
+折りたたまれる) たびに`load()`と一緒に確実にキャンセルされる。届いた値
+ごとに`applyObservedBodyRecordIfNeeded(_:)`が呼ばれ、`bodyRecord`を更新
+した上で`load()`が本文をその場で取得できたときと同じ後段パイプライン
+(言語検出の補完・既読化・`syncAIFeaturesState()`・自動翻訳キックオフ) を
+再実行する。いずれも既存の冪等なガード付きメソッド (`markSeen`の「既に
+`\Seen`か」、`requestTranslation`の「`translateTask == nil`か」等) の
+ため、`load()`自身の初回反映とタイミングが重なっても二重の副作用には
+ならない。`attachments`/カレンダー招待カードはこの観測 (`messageBody`
+テーブルのみ追跡) の対象外 — スコープを要約/翻訳ボタンの有効化+本文
+表示の更新に絞った (`applyObservedBodyRecordIfNeeded(_:)`のdoc comment
+参照)。
+
+**テスト可能性**: 「届いた値を実際に反映する価値があるか」の判定だけを
+`SyncEngine.MessageBodyObservationGate.shouldApply(current:incoming:)`
+という純粋関数 (SwiftUIのview lifecycle非依存) へ切り出した —
+`MessageReadMarker`(#96)/`MessageRemoval`と同じ「app targetのprivate
+メソッドから純粋ロジックだけ`SyncEngine`へ抜き出す」方針。
+`MessageBodyObservationGateTests`(5ケース: 初回到着/同一内容の再配信
+無視/内容変化での再適用/行なし/行消失) で網羅。
+
+### 検証
+
+`make test`(`MessageBodyObservationGateTests`5件green含む)/`make ios`
+green。`scripts/verify-screen.sh html-0`で通常の本文読み込み経路に回帰が
+無いことを目視確認 (要約/翻訳ボタンが従来どおり表示される)。この不具合
+自体は「本文取得中に開く→取得完了と非同期に競合する別経路が後から書き
+込む」というタイミング依存の競合状態でしか再現せず、tap-freeの単発
+スクリーンショットでは決定的に再現できないため、実機でのend-to-end確認
+は`PENDING.md`「Task #147」節へ記録した (Task #64の類似項目と同じ判断)。

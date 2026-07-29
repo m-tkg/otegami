@@ -411,6 +411,16 @@ struct MessageView: View {
         // する前の一覧/スレッド選択画面と、フッターツールバーの「情報」にのみ
         // 出る。
         .task(id: messageId) { await load() }
+        // Task #147 (実機報告「本文の後着で要約/翻訳ボタンが有効化されない」):
+        // `load()`とは別の、もう1本の`.task(id: messageId)` — 同じidキー
+        // なので、メッセージが切り替わる/この`MessageView`自体が破棄される
+        // (`ThreadMessageRow`の`if isExpanded` — #136のアコーディオンで
+        // 折りたたまれる) たびに`load()`と同時に確実にキャンセルされる。
+        // `observeBodyRecordChanges()`のdoc comment参照 — `load()`が
+        // 開いた時点の一回きりの取得で終わるのに対し、こちらは表示中ずっと
+        // `messageBody`行を監視し続け、後から (バックグラウンドプリフェッチ
+        // 等で) 届いた本文にも反応する。
+        .task(id: messageId) { await observeBodyRecordChanges() }
         // M8: QuickLook, shared across platforms via SwiftUI's own
         // modifier rather than a `QLPreviewController`/`QLPreviewPanel`
         // wrapper per platform — see `openAttachment(_:)`'s doc comment.
@@ -1200,6 +1210,80 @@ struct MessageView: View {
                 errorMessage = await missingCredentialAwareErrorMessage(prefix: "本文の取得に失敗しました", underlyingError: error)
             }
         }
+    }
+
+    /// Task #147 (実機報告「本文の後着で要約/翻訳ボタンが有効化されない」):
+    /// `load()`は開いた時点の一回きりの取得で完結する — その後にローカル
+    /// DBへ届いた本文 (`SyncEngine`のバックグラウンドプリフェッチが書き
+    /// 込むケース、または`load()`自身の`fetchBodyOverNetwork`と競合して
+    /// いた別経路が後から完了するケース) を`load()`自身は二度と観測しない
+    /// ため、`bodyRecord`が`nil`のまま`syncAIFeaturesState()`が再実行されず
+    /// 要約/翻訳ボタンがアプリ再起動まで有効化されなかった。
+    ///
+    /// `messageBody`行への`ValueObservation`を張って、この`MessageView`が
+    /// 画面上にある間 (`.task(id: messageId)`— `ThreadDetailView`のアコー
+    /// ディオンで折りたたまれれば`load()`と一緒に破棄される、#136のアコー
+    /// ディオンとの整合) ずっと監視し続ける。`CalendarInviteLoader`(#94) が
+    /// 選んだ「独立した`@Observable`クラス、view lifecycle 非依存」という
+    /// 形までは踏襲していない — こちらは`bodyRecord`という既存の`@State`
+    /// (と、それに連動する`content`の表示切り替え・`syncAIFeaturesState()`
+    /// 等の既存メソッド群) をそのまま使い回す方が、新しい並行の状態保持先
+    /// を作るより小さな変更で済むため。「届いた値を実際に反映する価値が
+    /// あるか」の判定だけは`MessageBodyObservationGate`(`SyncEngine`) に
+    /// 切り出してあり、SwiftUIのview lifecycleから独立してテストできる —
+    /// `MessageReadMarker`(#96) と同じ「app targetのprivateメソッドから
+    /// 純粋ロジックだけ`SyncEngine`へ抜き出す」方針。
+    private func observeBodyRecordChanges() async {
+        let observation = ValueObservation.tracking { db in
+            try MessageBodyRecord.fetchOne(db, key: messageId)
+        }
+        do {
+            for try await fetched in observation.values(in: environment.database.dbWriter) {
+                await applyObservedBodyRecordIfNeeded(fetched)
+            }
+        } catch {
+            // ベストエフォート — この監視自体が失敗しても`load()`が既に
+            // 表示している内容 (取得済み本文、または「取得中」/エラー) は
+            // そのまま残る。
+        }
+    }
+
+    /// `observeBodyRecordChanges()`の1配信ごとの反映 — `MessageBodyObservationGate
+    /// .shouldApply(current:incoming:)`が`false`を返す間 (本文行がまだ無い、
+    /// または前回と実質同じ内容の再配信) は何もしない。`true`のときだけ
+    /// `bodyRecord`を更新し、`load()`が「本文がその場で取得できた」ときに
+    /// 辿るのと同じ後段パイプライン (言語検出の補完・既読化・AI機能ボタンの
+    /// 状態同期・自動翻訳キックオフ) を再実行する — いずれも既存の冪等な
+    /// ガード付きメソッド (`markSeen`の「既に`\Seen`か」、`requestTranslation`
+    /// の「`translateTask == nil`か」等) なので、`load()`自身の初回反映と
+    /// このタイミングが重なっても二重の副作用にはならない。
+    private func applyObservedBodyRecordIfNeeded(_ fetched: MessageBodyRecord?) async {
+        guard MessageBodyObservationGate.shouldApply(current: bodyRecord, incoming: fetched) else { return }
+        guard let fetched else { return }
+        bodyRecord = fetched
+        // Task #64 (実機報告「まだ読み込み中のように見える」)と同じ理由 —
+        // 本文がこの観測経由で埋まったなら、`load()`のネットワーク取得が
+        // 失敗して立てた古い`errorMessage`はもう実情に合わない。
+        errorMessage = nil
+        guard let currentMessage = message else {
+            // `message`(メタデータ行)自体がまだ読めていない極端な競合状態
+            // — `syncAIFeaturesState()`は`bodyRecord`の更新だけでも安全に
+            // 呼べる (`hasSettledBodyState`のガード参照) が、`kickoffTranslationIfNeeded`
+            // 等`MessageRecord`が要る後段はここでは呼べないので、次に`load()`
+            // か別の配信が`message`を埋めるまで待つ。
+            syncAIFeaturesState()
+            return
+        }
+        // Task #147のスコープは要約/翻訳ボタンの有効化 + 本文表示の更新まで
+        // — `attachments`/カレンダー招待カードはこの観測 (`messageBody`
+        // テーブルのみ追跡) では更新されない別状態のままなので、
+        // `loadCalendarInviteIfNeeded`はここでは呼ばない (呼んでも古い
+        // (空の可能性がある)`attachments`しか見えず実質no-opなだけで、
+        // 「動いているように見えて実は何もしていない」誤解を生むだけ)。
+        let backfilled = await backfillDetectedLanguageIfNeeded(message: currentMessage, body: fetched)
+        markAsReadIfNeeded()
+        syncAIFeaturesState()
+        kickoffTranslationIfNeeded(message: backfilled)
     }
 
     /// Task #94: kicks off (or logs the absence of) the calendar-invite
