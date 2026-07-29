@@ -132,6 +132,44 @@ enum RichTextAttributedString {
         return (listStyle, max(0, level))
     }
 
+    // MARK: - RichTextDocument → NSAttributedString (C7 cancelled-send restore)
+
+    /// The reverse of `makeDocument(from:)` — rebuilds a live, editable
+    /// `NSAttributedString` from a `RichTextDocument` (typically one just
+    /// decoded back out of HTML via `RichTextHTMLCoder.decode(html:)`).
+    /// Task #156's only caller is `ComposerView.loadCancelledSend(_:)`
+    /// (`PendingSendDraftSnapshot.htmlBody`'s doc comment) — reopening after
+    /// "送信を取り消す" needs the exact formatting the user had applied, not
+    /// just the plain-text projection `setPlainBody(_:)` would give it.
+    ///
+    /// Same lossy edge as `makeDocument(from:)`'s forward direction: an
+    /// empty paragraph (blank line) never carries list/indent state either
+    /// way (`documentListStyleAndIndent`'s `contentLength > 0` guard), so
+    /// this doesn't bother attaching `.paragraphStyle` to a paragraph with
+    /// no runs — there is nothing meaningful to restore for one.
+    static func makeAttributedString(from document: RichTextDocument) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        for (index, paragraph) in document.paragraphs.enumerated() {
+            let style = paragraphStyle(listStyle: paragraph.listStyle, indentLevel: paragraph.indentLevel)
+            if index > 0 {
+                result.append(NSAttributedString(string: "\n", attributes: [.font: bodyFont]))
+            }
+            for run in paragraph.runs {
+                guard !run.text.isEmpty else { continue }
+                var font = settingBold(run.isBold, on: bodyFont)
+                font = settingItalic(run.isItalic, on: font)
+                var attributes: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: style]
+                if run.isUnderline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+                if run.isStrikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+                result.append(NSAttributedString(string: run.text, attributes: attributes))
+            }
+        }
+        guard result.length > 0 else {
+            return NSAttributedString(string: "", attributes: [.font: bodyFont])
+        }
+        return result
+    }
+
     // MARK: - Font trait helpers
 
     static func isBold(_ font: PlatformFont) -> Bool {

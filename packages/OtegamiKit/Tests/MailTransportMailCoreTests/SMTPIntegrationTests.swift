@@ -162,9 +162,11 @@ struct SMTPIntegrationTests {
 /// for a just-sent message by subject substring, no full API surface.
 enum MailpitClient {
     struct MessageSummary: Decodable {
+        var id: String
         var subject: String
 
         enum CodingKeys: String, CodingKey {
+            case id = "ID"
             case subject = "Subject"
         }
     }
@@ -201,5 +203,41 @@ enum MailpitClient {
     /// receiver rather than a `FakeSMTPSession` recorder.
     static func countMessages(withSubjectContaining marker: String) async throws -> Int {
         try await fetchMessages().filter { $0.subject.contains(marker) }.count
+    }
+
+    /// Task #156: fetches a captured message's raw RFC 822 source
+    /// (`GET /api/v1/message/{ID}/raw`) — used to assert the actual wire
+    /// *structure* (`Content-Type: multipart/alternative`/`text/html`
+    /// headers are never content-transfer-encoded, so a literal substring
+    /// check on them is reliable regardless of how MailCore2 chooses to
+    /// encode each part's body).
+    static func fetchRawSource(id: String) async throws -> String {
+        let url = URL(string: "http://localhost:8025/api/v1/message/\(id)/raw")!
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Task #156: fetches Mailpit's own decoded view of a message
+    /// (`GET /api/v1/message/{ID}`) — `Text`/`HTML` come back already
+    /// content-transfer-decoded (7bit/quoted-printable/base64, whichever
+    /// `MailCoreMessageBuilder` picked), confirmed directly against a
+    /// running dev-mailstack Mailpit while writing this test. Asserting
+    /// against these rather than searching `fetchRawSource(id:)`'s bytes
+    /// for the literal formatting tags avoids coupling the test to
+    /// MailCore2's internal choice of transfer encoding.
+    struct MessageDetail: Decodable {
+        var text: String
+        var html: String
+
+        enum CodingKeys: String, CodingKey {
+            case text = "Text"
+            case html = "HTML"
+        }
+    }
+
+    static func fetchMessageDetail(id: String) async throws -> MessageDetail {
+        let url = URL(string: "http://localhost:8025/api/v1/message/\(id)")!
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return try JSONDecoder().decode(MessageDetail.self, from: data)
     }
 }

@@ -878,6 +878,21 @@ extension AppDatabase {
             }
         }
 
+        // v32 (Task #156, #129のHTML送信配線): `OutboxMessageRecord.htmlBody`'s
+        // doc comment has the full picture — `NULL` for every existing row
+        // (nothing in-flight at migration time was composed with the rich
+        // text editor's HTML rendering captured), non-`NULL` only for a row
+        // `ComposerView.send()` writes from here on. No backfill needed:
+        // an already-queued send with a `NULL` htmlBody just replays as the
+        // plain `text/plain` message it always was (`OpQueueProcessor`'s
+        // `.send` case passes `outbox.htmlBody` straight through to
+        // `ComposeDraft.htmlBody`, which is optional).
+        migrator.registerMigration("v32") { db in
+            try db.alter(table: "outboxMessage") { t in
+                t.add(column: "htmlBody", .text)
+            }
+        }
+
         return migrator
     }
 }

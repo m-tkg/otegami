@@ -353,6 +353,7 @@ public actor OpQueueProcessor {
                 bcc: outbox.bccAddresses,
                 subject: outbox.subject,
                 plainTextBody: outbox.plainTextBody,
+                htmlBody: outbox.htmlBody,
                 inReplyTo: outbox.inReplyToMessageId,
                 references: outbox.references,
                 attachments: composeAttachments

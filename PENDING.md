@@ -1106,45 +1106,63 @@ green。
   …」というエラー文言が表示されることを確認する (クラッシュ・無限
   ローディングにならないこと)。
 
-## Task #129: 作成画面リッチテキスト化 — HTML送信の最終配線 (OutboxMessageRecord/OpQueueProcessor)、実機確認
+## Task #129/#156: 作成画面リッチテキスト化 — HTML送信配線は完了、実機確認が残る
 
-**実装状況**: 本文エディタを SwiftUI `TextEditor` から `RichTextEditor`
-(`UITextView`/`NSTextView` + `NSAttributedString`) へ移行し、太字/イタリック/
-下線/打ち消し線/番号付きリスト/箇条書きリスト/インデント増減/書式クリアの
-インラインフォーマットバー (`RichTextFormattingBar`) を追加した。
-`OtegamiCore.RichTextDocument`/`RichTextHTMLCoder` (AttributedString相当の
-中立モデル⇄HTML、UIKit/AppKit非依存) のラウンドトリップ単体テスト16件、
-`MailCoreMessageBuilder`に`ComposeDraft.htmlBody`対応 (設定時
-`multipart/alternative` を生成) の単体テスト3件を追加、いずれも
-`make test` green。`make mac`/`make ios` green。`scripts/verify-screen.sh
-composer-richtext` でフォーマットバー表示をスクリーンショット確認済み。
+**実装状況 (#129 第1段)**: 本文エディタを SwiftUI `TextEditor` から
+`RichTextEditor` (`UITextView`/`NSTextView` + `NSAttributedString`) へ移行し、
+太字/イタリック/下線/打ち消し線/番号付きリスト/箇条書きリスト/インデント
+増減/書式クリアのインラインフォーマットバー (`RichTextFormattingBar`) を
+追加した。`OtegamiCore.RichTextDocument`/`RichTextHTMLCoder`
+(AttributedString相当の中立モデル⇄HTML、UIKit/AppKit非依存) のラウンド
+トリップ単体テスト16件、`MailCoreMessageBuilder`に`ComposeDraft.htmlBody`
+対応 (設定時`multipart/alternative`を生成) の単体テスト3件を追加。
 
-**未配線 (既知のギャップ、意図的にこのセッションの対象外)**:
-このセッションは並行作業の都合で担当領域が Composer 系 +
-`MailCoreMessageBuilder` に限定されており (`SyncEngine`/`OtegamiStore` は
-他エージェントの担当領域)、`ComposerView.send()` が書き込む
-`OutboxMessageRecord` には htmlBody を保持する列がまだ無く、実際の SMTP
-送信は `OpQueueProcessor` が非同期に `ComposeDraft` を組み立てて
-`MailCoreMessageBuilder.build` を呼ぶ経路のため、**現時点では書式を付けて
-送信しても実際に送られるメールはまだ text/plain のみ** (画面上は書式が
-効く/下書き保存もできるが、送信時に HTML パートへ反映されない)。フォロー
-アップに必要な変更:
-  1. `OutboxMessageRecord`/`DraftMessageRecord` (`OtegamiStore`) に
-     `htmlBody: String?` 列を追加 (`AppDatabase`のマイグレーション)。
-  2. `ComposerView.send()`/`saveDraft()` で
-     `RichTextHTMLCoder.encode(RichTextAttributedString.makeDocument(from:
-     attributedBodyText))` を計算し、その列にセット。
-  3. `OpQueueProcessor.swift` の2箇所の `ComposeDraft(...)` 構築に
-     `htmlBody: outbox.htmlBody` (draft側も同様) を1行ずつ追加。
-  これで初めて「受信側 (Gmail web 等) で書式が再現される」という受け入れ
-  条件が実際の送信経路で満たされる。
+**実装状況 (Task #156, HTML送信の最終配線)**: 上記が未配線のまま残していた
+ギャップを解消した。
+  1. `OutboxMessageRecord.htmlBody: String?` 列を追加
+     (`AppDatabase`のv32マイグレーション、既存行は`NULL`のままバックフィル
+     不要 — `.send`側は`ComposeDraft.htmlBody`がoptionalなので問題ない)。
+  2. `ComposerView.send()`が`bodySnapshotString`
+     (既存の`hasUnsavedChanges`比較用に計算していたHTMLレンダリングをそのまま
+     再利用) を`OutboxMessageRecord.htmlBody`/`PendingSendDraftSnapshot
+     .htmlBody`にセット。
+  3. `OpQueueProcessor.swift`の`.send`ケースの`ComposeDraft(...)`構築に
+     `htmlBody: outbox.htmlBody`を追加。
+  4. C7送信キャンセルの復元 (`PendingSendDraftSnapshot`経由で
+     `ComposerView.loadCancelledSend(_:)`が再度Composerを開く経路) でも
+     書式が保持されるよう、新規`RichTextAttributedString
+     .makeAttributedString(from:)` (`makeDocument(from:)`の逆変換) を追加し、
+     `snapshot.htmlBody`があれば`RichTextHTMLCoder.decode(html:)`経由で
+     `NSAttributedString`を復元するようにした。
 
-- **対応手順 (実機/シミュレータでの目視確認)**: `scripts/verify-screen.sh
-  composer-richtext` (または実機) で新規作成画面を開き、本文にいくつか
-  書式 (太字/イタリック/下線/打ち消し線/箇条書き/番号付きリスト/インデント)
-  を実際にタップで付けてみて、フォーマットバーのハイライト状態が選択範囲
-  に追従すること、リスト/インデントが見た目どおり反映されることを確認
-  する (タップ操作を伴うため本タスクのセッションでは未検証)。上記の
-  最終配線 (1〜3) を別タスクで済ませた後、自分宛てに書式付きメールを送信
-  し、Gmail 側 (Web) で太字/イタリック/下線/打ち消し線/リストが再現される
-  ことを確認する。
+これで「受信側 (Gmail web 等) で書式が再現される」という受け入れ条件が実際
+の送信経路で満たされる。dev/mailstackのMailpit REST APIに対する統合テスト
+(`OutboxHTMLSendIntegrationTests.swift`、`OTEGAMI_TEST_IMAP_HOST=localhost
+swift test --filter OutboxHTMLSendIntegrationTests`) で、太字書式付きの
+`OutboxMessageRecord`が実際に`multipart/alternative`として送信され、
+Mailpitがデコードした`HTML`フィールドに`<b>`タグが残ることを確認済み
+(green)。Outboxラウンドトリップの単体テスト
+(`OutboxMessageRecordTests.swift`) も追加。`make test`/`make mac`/`make ios`
+すべてgreen。
+
+**意図的に対象外のまま残した範囲**:
+- `DraftMessageRecord`/`saveDraft()`への`htmlBody`追加 (下書き保存経路)。
+  Task #156のスコープは送信経路 (`OutboxMessageRecord`) のみで、下書き
+  テーブルは他エージェントの担当領域と重ならないよう明示的に対象外にした。
+  下書きを再開して送信しても、いまの`send()`は毎回そのときの
+  `attributedBodyText`からHTMLを計算し直すので実害はない (下書き保存中の
+  書式自体はUI上保持される — 失われるのは「保存済み下書きをそのまま
+  サーバへPUSHする`OpQueueKind.saveDraft`のレプレイ」経路のHTML化のみ)。
+- 第2段の書式 (フォント選択/文字色/背景色/リンク挿入/引用ブロック、
+  下部バーのSpark準拠再構成) は着手していない — 余力があれば次のタスクで。
+
+- **対応手順 (実機での目視確認、未実施)**: 実機またはシミュレータで新規
+  作成画面を開き、本文にいくつか書式 (太字/イタリック/下線/打ち消し線/
+  箇条書き/番号付きリスト/インデント) を実際にタップで付けてみて、
+  フォーマットバーのハイライト状態が選択範囲に追従すること、リスト/
+  インデントが見た目どおり反映されることを確認する (#129のときから未検証
+  のまま — タップ操作を伴うためこのセッションでも未検証)。続けて、
+  自分宛てに書式付きメールを送信し、Gmail側 (Web) で太字/イタリック/
+  下線/打ち消し線/リストが実際に再現されることを確認する — 統合テストは
+  Mailpitの`HTML`フィールドで書式タグの残存を確認済みだが、実際の
+  Gmail/Outlookなど実メールクライアントでの表示確認はまだ。

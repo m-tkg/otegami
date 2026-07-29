@@ -139,6 +139,18 @@ struct PendingSendDraftSnapshot: Codable, Hashable, Sendable {
     var bccText: String
     var subject: String
     var bodyText: String
+    /// Task #156: an HTML rendering of `bodyText` (`RichTextHTMLCoder.encode
+    /// (RichTextAttributedString.makeDocument(from:))`), captured alongside
+    /// it so "送信を取り消す" restores formatting (bold/italic/underline/
+    /// strikethrough/list/indent), not just the plain-text projection —
+    /// `ComposerView.loadCancelledSend(_:)` decodes this back into an
+    /// `NSAttributedString` via `RichTextAttributedString
+    /// .makeAttributedString(from:)` when present, falling back to
+    /// `setPlainBody(bodyText)` (`nil`) the same way a pre-#156 snapshot
+    /// would if one somehow reached this code (there is no persistent
+    /// storage in between — this type is in-memory only for the countdown's
+    /// duration — so that fallback is defensive, not a real migration path).
+    var htmlBody: String?
     var inReplyToMessageId: String?
     var references: [String]
     var attachments: [PendingAttachment]

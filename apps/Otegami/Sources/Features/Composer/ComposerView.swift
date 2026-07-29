@@ -160,12 +160,19 @@ struct ComposerView: View {
         ComposerSnapshot(to: toText, cc: ccText, bcc: bccText, subject: subject, body: bodySnapshotString)
     }
 
-    /// Task #129: an HTML rendering of `attributedBodyText`, used only as
-    /// `ComposerSnapshot.body`'s value — comparing the plain-text projection
-    /// alone (`bodyText`) would miss a purely-formatting edit (e.g.
-    /// selecting existing text and making it bold, with not a single
-    /// character added/removed), which should still count as "something to
-    /// lose" for `hasUnsavedChanges`'s save-or-discard prompt.
+    /// Task #129: an HTML rendering of `attributedBodyText`, originally
+    /// added only as `ComposerSnapshot.body`'s value — comparing the
+    /// plain-text projection alone (`bodyText`) would miss a purely-
+    /// formatting edit (e.g. selecting existing text and making it bold,
+    /// with not a single character added/removed), which should still
+    /// count as "something to lose" for `hasUnsavedChanges`'s save-or-
+    /// discard prompt.
+    ///
+    /// Task #156: `send()` reuses this exact same rendering as
+    /// `OutboxMessageRecord.htmlBody`/`PendingSendDraftSnapshot.htmlBody` —
+    /// it's already precisely "what the current body looks like as HTML",
+    /// which is exactly what the actual SMTP send (and a cancelled-send
+    /// restore) need too, no separate computation required.
     private var bodySnapshotString: String {
         RichTextHTMLCoder.encode(RichTextAttributedString.makeDocument(from: attributedBodyText))
     }
@@ -803,13 +810,25 @@ struct ComposerView: View {
     /// C7 送信キャンセル: restores every field a cancelled pending send had,
     /// synchronously — see `ComposerLaunchPayload.Kind.cancelledSend`'s doc
     /// comment.
+    ///
+    /// Task #156: restores formatting too when `snapshot.htmlBody` is
+    /// present (decode the HTML back to a `RichTextDocument`, then rebuild
+    /// the live `NSAttributedString` — `RichTextAttributedString
+    /// .makeAttributedString(from:)`'s doc comment) instead of always
+    /// falling back to the plain-text projection, so cancelling a formatted
+    /// send and reopening it doesn't silently strip the bold/italic/
+    /// underline/strikethrough/list/indent the user had applied.
     private func loadCancelledSend(_ snapshot: PendingSendDraftSnapshot) {
         selectedAccountId = snapshot.accountId
         toText = snapshot.toText
         ccText = snapshot.ccText
         bccText = snapshot.bccText
         subject = snapshot.subject
-        setPlainBody(snapshot.bodyText)
+        if let htmlBody = snapshot.htmlBody {
+            attributedBodyText = RichTextAttributedString.makeAttributedString(from: RichTextHTMLCoder.decode(html: htmlBody))
+        } else {
+            setPlainBody(snapshot.bodyText)
+        }
         inReplyToMessageId = snapshot.inReplyToMessageId
         references = snapshot.references
         pendingAttachments = snapshot.attachments
@@ -1281,6 +1300,7 @@ struct ComposerView: View {
                     bccAddresses: bccAddresses,
                     subject: subject,
                     plainTextBody: bodyText,
+                    htmlBody: bodySnapshotString,
                     inReplyToMessageId: inReplyToMessageId,
                     references: references,
                     draftServerMailboxId: draftServerMailboxId,
@@ -1320,6 +1340,7 @@ struct ComposerView: View {
             if let duration = SendCancelWindow(rawValue: sendCancelWindowRaw)?.duration ?? SendCancelSettingsStore.defaultWindow.duration {
                 let snapshot = PendingSendDraftSnapshot(
                     accountId: accountId, toText: toText, ccText: ccText, bccText: bccText, subject: subject, bodyText: bodyText,
+                    htmlBody: bodySnapshotString,
                     inReplyToMessageId: inReplyToMessageId, references: references,
                     attachments: pendingAttachments,
                     draftServerMailboxId: draftServerMailboxId, draftServerUid: draftServerUid, draftServerUidValidity: draftServerUidValidity

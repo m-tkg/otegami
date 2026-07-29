@@ -30,6 +30,22 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
     public var subject: String
     public var plainTextBody: String
 
+    /// Task #156 (作成画面リッチテキスト化のHTML送信配線): an HTML rendering of
+    /// the same body (`RichTextHTMLCoder.encode(RichTextAttributedString
+    /// .makeDocument(from:))`, computed by `ComposerView.send()`), or `nil`
+    /// for a send this row predates schema-wise (there is no migration
+    /// backfill — see `AppDatabase`'s v32 migration doc comment). Read by
+    /// `OpQueueProcessor`'s `.send` replay to set `ComposeDraft.htmlBody`,
+    /// which makes `MailCoreMessageBuilder.build` emit a
+    /// `multipart/alternative` message (`plainTextBody` fallback + this HTML
+    /// part) instead of a bare `text/plain` one — the actual SMTP send now
+    /// carries the same bold/italic/underline/strikethrough/list/indent
+    /// formatting the Composer's rich text editor shows on screen, closing
+    /// the gap `PENDING.md`'s Task #129 follow-up section described (the
+    /// formatting used to only affect what `saveDraft()`'s local snapshot
+    /// compared, never what actually left over SMTP).
+    public var htmlBody: String?
+
     /// The `Message-ID` of the message being replied to, if any. `nil` for
     /// a new (non-reply) message.
     public var inReplyToMessageId: String?
@@ -74,6 +90,7 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
         bccAddresses: [EmailAddress] = [],
         subject: String,
         plainTextBody: String,
+        htmlBody: String? = nil,
         inReplyToMessageId: String? = nil,
         references: [String] = [],
         draftServerMailboxId: Int64? = nil,
@@ -89,6 +106,7 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
         self.bccAddresses = bccAddresses
         self.subject = subject
         self.plainTextBody = plainTextBody
+        self.htmlBody = htmlBody
         self.inReplyToMessageId = inReplyToMessageId
         self.references = references
         self.draftServerMailboxId = draftServerMailboxId
