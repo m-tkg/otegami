@@ -1377,6 +1377,10 @@ green。`OtegamiTranslationFoundationModelsTests`(実機オンデバイスモデ
 
 ### 入力の組み立て
 
+**Task #160で`threadSummarySourceText()`は`threadSummarySourceEntries()`
+に置き換わった** (下記の抽出ロジック自体は不変、戻り値の形だけが
+「改行連結済みの1本の`String`」から「`ThreadDigestMessage`の配列」に
+変わった — 詳細はTask #160節参照)。以下はTask #153当時の記述:
 `ThreadDetailView.threadSummarySourceText()`が、時系列順
 (`ThreadQuery.messages(threadId:db:)`の`ORDER BY internalDate, uid`) に
 並んだ`messages`の各メッセージについて`"[日時] 差出人: 新規本文"`という
@@ -1410,6 +1414,11 @@ green。`OtegamiTranslationFoundationModelsTests`(実機オンデバイスモデ
   常に一意に読み取れる方を優先した。
 
 ### 要約呼び出し: `summarizeThread`/`summarizeThreadDigest`
+
+**Task #160で`summarizeThread`のmap段(文字数ベースの`TranslationChunker`
+分割)はメッセージ単位の固定マップに置き換わった** — `summarizeThreadDigest`
+(reduce段) 自体は下記の記述のまま不変。以下はTask #153当時の
+`summarizeThread`の設計記述 (詳細・現行の実装はTask #160節参照):
 
 既存の`summarizeLongText`(単一メッセージ、■要約/■伝えたいこと/
 ■アクションの3パート) はチャンクの reduce 段が常に3パート構造化
@@ -1681,6 +1690,112 @@ have」の範囲、時間の都合で見送り)。実機での確認ポイント
   (2) 言語パック未ダウンロード時にダウンロード誘導が実際に走ること、
   (3) 明らかに英語なのに`detectedLanguage`が英語以外に誤判定される
   メール (Okta 通知など) で自動翻訳が正しく起動・実行されること。
+
+## スレッド全体のAI要約: メッセージ単位のmap段への改修 (Task #160)
+
+**背景**: Task #153のスレッド要約は、実機フィードバック (2026-07-29) で
+「■経緯/■現状が短すぎるし内容も少し変」と指摘された。原因は
+`summarizeThread`のmap段が`TranslationChunker.chunk`の**文字数ベース**の
+境界で回っていたこと — 短いスレッド (合計の新規本文が
+`TranslationChunker.defaultMaxChunkLength`未満、実際のスレッドの
+ほとんどがこれに該当) では`summarizePlain`を1回も呼ばず、丸ごと1回の
+`summarizeThreadDigest`呼び出しに全てを委ねていた。Task #153の実FM確認
+ログ (上記節) の6メッセージスレッドが「■経緯/■現状合計5〜6文」にしか
+ならなかったのはこのため — メッセージ数に関係なく、文字数が閾値を
+超えないかぎりモデル呼び出しは常に1回だけだった。
+
+ユーザー指示: **「複数回 FoundationModel 実行していいから、時系列で経緯を
+まとめて欲しい」**。
+
+### 実装: mapをメッセージ単位に固定
+
+`TranslationService.summarizeThread(_:targetLanguage:onProgress:)`
+(protocol extension) のシグネチャを、単一の結合済み`String`から
+`[ThreadDigestMessage]`(新設の`public struct`、`header`と`text`を別々に
+持つ) へ変更した:
+
+- **`ThreadDigestMessage.header`**: `"[日時] 差出人:"` — 呼び出し元
+  (`ThreadDetailView.threadSummarySourceEntries()`) が信頼できるメタ
+  データから組み立てる、確定文字列。
+- **`ThreadDigestMessage.text`**: そのメッセージの新規本文のみ (引用除去
+  済み)。
+
+`summarizeThread`は`messages`の各要素を**必ず1回ずつ**ループし、`text`
+だけを`summarizePlain`へ渡して1-3文へ圧縮 → その結果の前に`header`を
+機械的に前置きして`"\(header) \(compact)"`という行を作る → 全メッセージ
+分の行を改行で連結して`summarizeThreadDigest`へ1回だけ渡す (reduce段は
+Task #153から不変)。`TranslationChunker`の文字数境界はもう使わない —
+1メッセージの本文単体が`defaultMaxChunkLength`を超える場合だけ、内部の
+`compactThreadMessageText(_:targetLanguage:)`が`summarizeLongText`と
+同じチャンク分割の安全網を通す (通常のメッセージはこの分岐に入らない)。
+
+**`header`をmap段のモデル入力に含めない理由**: `summarizePlainInstructions`
+は「本文中に差出人・宛先名が出てきても主語にせず『この返信』を主語に
+する」設計 (Task #122/#134) のため、`"[日時] 差出人:"`をモデルへの入力に
+混ぜると、その名前・日時をモデルが不確実な言い回しで本文に混ぜて返す
+(二重に言及される、あるいは不正確に言い換えられる) リスクがある。
+`header`を常にコード側で確定させることで、reduce段の指示文
+(`summarizeThreadInstructions`の【入力の構造】) が前提とする
+`"[日時] 差出人: 本文"`という行フォーマットを型として保証できる。
+
+### 進捗表示
+
+メッセージ数が多いスレッドほどモデル実行回数(=生成時間)が増えるため、
+`summarizeThread`に`onProgress: (@MainActor @Sendable (Int, Int) ->
+Void)?`パラメータを追加した — `Optional`のクロージャ引数は暗黙に
+`@escaping`になる (`AccountSyncer.performInitialSync(auth:onProgress:)`
+の`onProgress`と同じ理由でSendable化が要る)、加えて`@MainActor`も付けた
+のは`ThreadDetailView`(`View`、MainActor隔離) がこのクロージャを`self`
+キャプチャ込みでそのまま書けるようにするため (`@MainActor`隔離自体が
+`Sendable`の求める安全性の裏付けになる)。`ThreadDetailView`は
+`threadSummaryProgress: (current: Int, total: Int)?`という別の`@State`
+(`threadSummaryState`本体とは独立) にこれを受け、生成中シートに
+「n/m 通目を要約中…」を表示する。
+
+### テスト
+
+`TranslationServiceSummarizeThreadTests`を新API向けに全面書き換え:
+`summarizePlain`がメッセージ数ぶんちょうど1回ずつ・`summarizeThreadDigest`
+が最終段でちょうど1回 (短いスレッドでも0回にならない、Task #153時代との
+最大の違い)、空配列は両方0回、1メッセージの本文単体が閾値を超える場合の
+チャンク安全網が発火すること、`onProgress`が`(1, n)`から`(n, n)`まで
+メッセージ順に届くことの4ケース。`make test`/`make mac`/`make ios`
+green。
+
+**実FoundationModels確認** (`scratchpad/summary-repro`、`SUMMARY_REPRO_MODE
+=thread`のfixtureをTask #153と同じ6メッセージ架空スレッドのまま、
+`summarizeThread`の呼び出しだけ新APIへ追従): 3回実行、いずれも■経緯→
+■現状の2パート構造がちょうど1回ずつ、反復・指示文リークなし、人物名は
+入力の`田中太郎`/`佐藤花子`/`Alice Example`のみ。■経緯の分量はTask #153
+時代の「合計5〜6文」から明確に改善し、3回中2回は6メッセージに対して
+4〜6文 (ほぼ1通1行) となった。実際の出力例 (1回目、■経緯が6メッセージ
+ちょうど6文):
+
+```
+■経緯
+田中太郎が懇親会の会場として駅前の個室居酒屋と会社近くのイタリアンを提案を提案し、その後、佐藤花子が予算の具体的な金額を求めて質問をした。その後、田中太郎が予算1人あたり5000円程度でイタリアンのお店が収まりそうだと回答し、Alice Exampleが金曜の19時からの予約確認を求めた。その後、佐藤花子が金曜の19時に予約したいという要望を伝え、田中太郎が予約を金曜の19時に入れる旨を伝えた。
+
+■現状
+イタリアンのお店への予約が取れ次第、スレッドで共有する予定であり、具体的な予算金額についてはまだ合意に至っていない。
+```
+
+(この実行は「提案を提案し」という軽微な言い回しの重複と、■現状の
+「予算金額について合意に至っていない」という部分がやや不正確 — 実際は
+message 3で1人5000円程度と合意済み — という、モデル側の生成品質の
+揺らぎが残っている。3回中1回はこの種の細かい不正確さが出たが、■経緯/
+■現状の構造そのもの・差出人名の扱い・時系列の順序はいずれも正しく、
+Task #153由来の指示文防御 (差出人名は入力にある名前のみ・新規本文に
+無い内容を補わない) は機能し続けている。1メッセージの本文単体が
+チャンク閾値を超える安全網経路は`FakeTranslationService`での単体テスト
+のみ確認 — `summarizeLongText`がTask #122で実FM確認済みの同型ロジックの
+再利用のため、今回は実FM再確認を省略した)。
+
+`scratchpad/summary-repro`はリポジトリ外・非コミット (既存の慣例どおり)。
+
+**未確認**: 「n/m 通目を要約中…」の進捗表示はシミュレータ/実機での
+スクリーンショット確認をしていない (`PENDING.md`参照) — Foundation
+Modelsの実行自体がシミュレータで既知不調 (`docs/verify.md`) なため、
+生成中シート自体をタップ経由で開いて確認する新シナリオは追加していない。
 
 ## テスト
 

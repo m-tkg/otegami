@@ -175,6 +175,20 @@ struct ThreadDetailView: View {
     @State private var threadSummaryState: ThreadSummaryState = .none
     @State private var isShowingThreadSummarySheet = false
     @State private var threadSummaryTask: Task<Void, Never>?
+    /// Task #160 (実機フィードバック「複数回 FoundationModel 実行していい
+    /// から、時系列で経緯をまとめて欲しい」): `TranslationService
+    /// .summarizeThread(_:targetLanguage:onProgress:)`がメッセージ単位で
+    /// マップ段を回すようになった (`TranslationService.swift`のdoc comment
+    /// 参照) 分、メッセージ数が多いスレッドほど生成に時間がかかる —
+    /// `onProgress`が拾う「今n通目/m通中」を保持し、`threadSummarySheet`の
+    /// 生成中表示に出す。`threadSummaryState`とは別の`@State`にしている
+    /// のは、`ThreadSummaryState`自体は`Equatable`な4状態の列挙 (`.none`/
+    /// `.summarizing`/`.summarized`/`.failed`) のままにしておきたいため —
+    /// 進捗という「同じ`.summarizing`状態の中で連続的に変わる値」を
+    /// enumのケースに埋め込むと、その都度`ThreadSummaryState`ごと新しい
+    /// 値になり比較・関連コードが煩雑になる。`requestThreadSummary()`が
+    /// 生成開始時に`nil`へ戻す。
+    @State private var threadSummaryProgress: (current: Int, total: Int)?
 
     var body: some View {
         // `GeometryReader` here purely to hand `expandedMessageHeight(in:)`
@@ -639,12 +653,28 @@ struct ThreadDetailView: View {
                     case .none:
                         EmptyView()
                     case .summarizing:
-                        HStack {
-                            Spacer(minLength: 0)
+                        VStack(spacing: OtegamiSpacing.sm) {
                             ProgressView()
                                 .accessibilityIdentifier("threadDetail.summarySheet.loading")
-                            Spacer(minLength: 0)
+                            // Task #160: メッセージ単位でモデルを複数回
+                            // 実行するようになった分、生成に時間がかかる
+                            // ことがある — `threadSummaryProgress`が届き
+                            // 次第「今n通目/m通中」を出す (届く前の一瞬は
+                            // `ProgressView`だけ)。動的な数値の埋め込みで
+                            // 固定文言部分の意味は変わらないため、通常の
+                            // 文字列補間`Text`のままでよい (CLAUDE.mdが
+                            // `Text(verbatim:)`を求めているのはアカウント
+                            // 表示名・検索クエリのような外部由来の動的
+                            // 文字列がMarkdown解釈で事故る場合の話で、ここ
+                            // は整数2つだけ)。
+                            if let progress = threadSummaryProgress {
+                                Text("\(progress.current)/\(progress.total) 通目を要約中…")
+                                    .font(OtegamiFont.caption())
+                                    .foregroundStyle(OtegamiColor.inkSecondary)
+                                    .accessibilityIdentifier("threadDetail.summarySheet.progress")
+                            }
                         }
+                        .frame(maxWidth: .infinity)
                         .padding(.top, OtegamiSpacing.xl)
                     case .summarized(let text):
                         SummaryText(text: text)
@@ -687,21 +717,32 @@ struct ThreadDetailView: View {
     /// 「既に実行中なら二重起動しない」ガード、`TranslationServiceError`を
     /// `.userFacingMessage`へ変換する同じcatch) だが、対象は現在展開中の
     /// 1通ではなく`messages`全件 — ソーステキストは
-    /// `threadSummarySourceText()`、呼び出す先は`summarizeThread`
+    /// `threadSummarySourceEntries()`、呼び出す先は`summarizeThread`
     /// (■経緯/■現状の2パート、`TranslationService`のdoc comment参照)。
+    ///
+    /// Task #160: `onProgress`で「今n通目/m通中」を`threadSummaryProgress`
+    /// へ反映する — `summarizeThread`のdoc comment参照のとおり、この
+    /// クロージャは`@MainActor @Sendable`なので`self`(このView自身、
+    /// 非Sendableな`struct`)を直接キャプチャして`@State`へ書き込んでも
+    /// 安全 (MainActor隔離そのものがSendableが要求する安全性の裏付けに
+    /// なる)。
     private func requestThreadSummary() {
         guard threadSummaryTask == nil else { return }
         threadSummaryState = .summarizing
+        threadSummaryProgress = nil
         let translator = environment.translationService
         let targetLanguage: TranslationLanguage = LocalizationSettingsStore.effectiveLanguageCode == "en" ? .english : .japanese
         threadSummaryTask = Task {
-            guard let sourceText = await threadSummarySourceText() else {
+            let entries = await threadSummarySourceEntries()
+            guard !entries.isEmpty else {
                 threadSummaryState = .failed("本文を取得できませんでした。しばらくしてからもう一度お試しください。")
                 threadSummaryTask = nil
                 return
             }
             do {
-                let result = try await translator.summarizeThread(sourceText, targetLanguage: targetLanguage)
+                let result = try await translator.summarizeThread(entries, targetLanguage: targetLanguage) { current, total in
+                    threadSummaryProgress = (current, total)
+                }
                 guard !Task.isCancelled else { return }
                 threadSummaryState = .summarized(result)
             } catch {
@@ -712,17 +753,23 @@ struct ThreadDetailView: View {
                     threadSummaryState = .failed(error.localizedDescription)
                 }
             }
+            threadSummaryProgress = nil
             threadSummaryTask = nil
         }
     }
 
-    /// Task #153 (入力の組み立て): `messages`(時系列順、`ThreadQuery
-    /// .messages(threadId:db:)`の`ORDER BY internalDate, uid`のdoc comment
-    /// 参照)の各メッセージについて、`"[日時] 差出人: 新規本文"`という1行を
-    /// 組み立て、改行で連結する。`SummaryInputBuilder`は使わない — あれは
-    /// 単一メッセージ要約専用の「引用の有無だけを伝える注記」ラッパーで、
-    /// スレッド全体のダイジェストが必要とする「各メッセージの新規本文を
-    /// そのまま並べる」入力とは形が違う(タスク仕様どおり)。
+    /// Task #153 (入力の組み立て) → Task #160 (メッセージ単位のmap段への
+    /// 変更): `messages`(時系列順、`ThreadQuery.messages(threadId:db:)`の
+    /// `ORDER BY internalDate, uid`のdoc comment参照)の各メッセージに
+    /// ついて、`TranslationService.summarizeThread(_:targetLanguage:
+    /// onProgress:)`のマップ段が読む`ThreadDigestMessage`を1件組み立てる
+    /// — `header`は`"[日時] 差出人:"`(reduce段の入力行がそのまま使う、
+    /// モデルには決して生成させない確定文字列)、`text`はそのメッセージの
+    /// 新規本文のみ (`ThreadDigestMessage`のdoc comment参照 — マップ段の
+    /// モデル呼び出しは`text`だけを見る)。`SummaryInputBuilder`は使わない
+    /// — あれは単一メッセージ要約専用の「引用の有無だけを伝える注記」
+    /// ラッパーで、スレッド全体のダイジェストが必要とする「各メッセージの
+    /// 新規本文をそのまま並べる」入力とは形が違う(タスク仕様どおり)。
     ///
     /// 本文がまだローカルにキャッシュされていないメッセージ (`bodyState`が
     /// `.notFetched`のまま — このスレッドの「開いている1通」以外は
@@ -736,9 +783,9 @@ struct ThreadDetailView: View {
     /// いる名前のみ使用・推測禁止」を守るため、モデルに渡す文字列に
     /// アドレスを機械的に付加するようなことをせず、本文中の`From:`名前
     /// (無ければアドレスそのもの) だけをそのまま渡す。
-    private func threadSummarySourceText() async -> String? {
-        guard let accountId, let account = environment.accounts.first(where: { $0.id == accountId }) else { return nil }
-        var lines: [String] = []
+    private func threadSummarySourceEntries() async -> [ThreadDigestMessage] {
+        guard let accountId, let account = environment.accounts.first(where: { $0.id == accountId }) else { return [] }
+        var entries: [ThreadDigestMessage] = []
         for message in messages {
             guard let messageId = message.id else { continue }
             var bodyRecord = try? await Self.fetchBodyRecord(messageId: messageId, db: environment.database.dbWriter)
@@ -749,10 +796,9 @@ struct ThreadDetailView: View {
             guard let bodyRecord, let newText = Self.newTextForThreadSummary(bodyRecord: bodyRecord, isReply: message.inReplyTo != nil) else { continue }
             let senderName = message.fromAddresses.first?.name ?? message.fromAddresses.first?.address ?? "?"
             let dateText = (message.date ?? message.internalDate).formatted(.dateTime.year().month().day().hour().minute())
-            lines.append("[\(dateText)] \(senderName): \(newText)")
+            entries.append(ThreadDigestMessage(header: "[\(dateText)] \(senderName):", text: newText))
         }
-        guard !lines.isEmpty else { return nil }
-        return lines.joined(separator: "\n")
+        return entries
     }
 
     private nonisolated static func fetchBodyRecord(messageId: Int64, db dbWriter: any DatabaseWriter) async throws -> MessageBodyRecord? {
@@ -761,8 +807,8 @@ struct ThreadDetailView: View {
 
     /// `MessageView.fetchBodyOverNetwork(message:)`と同じ経路 (`SyncCoordinator
     /// .fetchBody(for:mailboxPath:account:auth:)`) だが、失敗を伝播せず
-    /// 常にベストエフォートで握り潰す — `threadSummarySourceText()`は取得
-    /// できなかったメッセージをそのままスキップして続行する契約のため。
+    /// 常にベストエフォートで握り潰す — `threadSummarySourceEntries()`は
+    /// 取得できなかったメッセージをそのままスキップして続行する契約のため。
     private func fetchBodyOverNetworkForThreadSummary(message: MessageRecord, account: AccountRecord) async {
         guard let auth = try? await environment.auth(for: account) else { return }
         guard let mailboxPath = try? await Self.mailboxPath(mailboxId: message.mailboxId, db: environment.database.dbWriter) else { return }

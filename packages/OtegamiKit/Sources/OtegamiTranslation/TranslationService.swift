@@ -132,58 +132,114 @@ extension TranslationService {
         return try await summarize(combined, targetLanguage: targetLanguage, sentenceCount: sentenceCount)
     }
 
-    /// Task #153 (スレッド全体のAI要約): a whole-thread digest, safe for an
-    /// arbitrarily long thread — the same map-reduce shape
-    /// `summarizeLongText` uses for a single long message, but reducing
-    /// through `summarizeThreadDigest` (■経緯/■現状, 2 parts) instead of
-    /// `summarize` (■要約/■伝えたいこと/■アクション, 3 parts). `text` is
-    /// expected to already be the `"[<date>] <sender>: <newText>"`-per-line
-    /// thread digest input (`ThreadDetailView`'s own builder) — this method
-    /// only handles the chunking, not building that input.
+    /// Task #153 (スレッド全体のAI要約) → Task #160 (実機フィードバック
+    /// 2026-07-29「■経緯/■現状が短すぎるし内容も少し変」、ユーザー指示
+    /// 「複数回 FoundationModel 実行していいから、時系列で経緯をまとめて
+    /// 欲しい」): 元の実装 (git history 参照) は`TranslationChunker.chunk`
+    /// の**文字数ベース**の境界でマップ段を回しており、短いスレッド
+    /// (合計の新規本文が`TranslationChunker.defaultMaxChunkLength`未満)
+    /// では丸ごと1回の`summarizeThreadDigest`呼び出しに委ねていた —
+    /// 実機で6通のスレッドが「■経緯が合計5〜6文」にしかならなかった原因
+    /// (`docs/translation.md`のTask #153節にある実FM確認ログ参照。文字数が
+    /// 閾値を超えないかぎりメッセージ数に関係なくモデル呼び出しは常に1回
+    /// だけだった)。
     ///
-    /// Short input (the common case: most threads' combined new-text easily
-    /// fits under `TranslationChunker.defaultMaxChunkLength`) is a single,
-    /// un-chunked `summarizeThreadDigest` call. Longer input chunks via
-    /// `TranslationChunker.chunk` and maps each chunk through the existing
-    /// unlabeled `summarizePlain` (reused as-is, no changes needed there —
-    /// same Task #122 rationale `summarizeLongText` already documents: the
-    /// map step must never be a structured call, or the structure gets
-    /// echoed back as input to the reduce step), then reduces the joined
-    /// partial summaries through exactly one final `summarizeThreadDigest`
-    /// call. `sentenceCount: 2` (not `summarizeLongText`'s `1`) for the map
-    /// step: a thread digest's reduce step wants noticeably more raw detail
-    /// per chunk than a single message's summary does, since it's
-    /// reassembling a multi-message narrative rather than compressing one
-    /// message's own text.
+    /// この改修でマップ段を**メッセージ単位**に固定する:
+    /// `TranslationChunker`の文字数境界はもう使わず、`messages`
+    /// (`ThreadDigestMessage`、呼び出し元 — `ThreadDetailView
+    /// .threadSummarySourceEntries()` — が時系列順に組み立てる配列) の
+    /// 各要素を必ず1回ずつ`summarizePlain`へ個別に渡し、1-3文へ圧縮する。
+    /// メッセージ数が多いほどモデル実行回数が増える (`onProgress`で「今
+    /// n通目/m通中」を呼び出し元へ伝えられる — `ThreadDetailView`が生成中
+    /// シートの進捗表示に使う) が、■経緯にスレッド内の**すべての**メッセ
+    /// ージが最低1行分は反映されることが、文字数がどうであれ保証される。
     ///
-    /// `TranslationChunker.chunk` already prefers splitting at line breaks
-    /// (`splitIntoUnits` treats every `"\n"`-terminated line as its own
-    /// unit before falling back to sentence punctuation, and only hard-
-    /// slices mid-unit when a single unit alone exceeds the chunk budget) —
-    /// since this method's input is line-per-message
-    /// (`"[date] sender: text"`), a chunk boundary lands between two
-    /// messages' lines in the overwhelmingly common case, not mid
-    /// `"[date] sender:"` prefix. The only way a boundary could still land
-    /// inside that prefix is a single message's own line exceeding
-    /// `TranslationChunker.defaultMaxChunkLength` (2000 characters) *before*
-    /// its first sentence-ending punctuation or line break — an unusually
-    /// long single unbroken message — which `TranslationChunker`'s existing
-    /// hard-slice fallback already has to handle for ordinary prose too;
-    /// no changes were made to `TranslationChunker` for this method, since
-    /// its existing line-preferring behavior already covers the common case
-    /// this doc comment's caution was raised against.
-    public func summarizeThread(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+    /// `"[日時] 差出人:"`ヘッダは**マップ段のモデル入力にもモデル出力にも
+    /// 含めない** — `summarizePlain`へ渡すのは`message.text`(新規本文)
+    /// だけで、reduce段 (`summarizeThreadDigest`) へ渡す各行のヘッダは常に
+    /// `message.header`(呼び出し元が信頼できるメタデータから組み立てた
+    /// 文字列) をこちら側で機械的に前置きする。`summarizePlainInstructions`
+    /// は「本文中に差出人・宛先名が出てきても主語にせず『この返信』を
+    /// 主語にする」設計 (Task #122/#134) のため、ヘッダをモデルへの入力に
+    /// 混ぜるとその名前・日時をモデルが不確実な言い回しで本文に混ぜて
+    /// 返す (二重に言及される、あるいは不正確に言い換えられる) リスクが
+    /// ある — ヘッダをコード側で確定させることで、reduce段の指示文
+    /// (`summarizeThreadInstructions`の【入力の構造】) が前提とする
+    /// `"[日時] 差出人: 本文"`という行フォーマットを型として保証できる。
+    ///
+    /// 1メッセージの本文単体が`TranslationChunker.defaultMaxChunkLength`
+    /// を超える場合だけ、`compactThreadMessageText(_:targetLanguage:)`
+    /// (下記) が`summarizeLongText`と同じ安全網 (チャンク分割 → 各チャン
+    /// クを`summarizePlain`で圧縮 → 結合してもう一度`summarizePlain`) を
+    /// 通す — 通常のメッセージはこの分岐に入らない。
+    ///
+    /// `onProgress` is `@MainActor @Sendable`, not plain `@Sendable` — an
+    /// `Optional` closure parameter is implicitly `@escaping` (a well-known
+    /// Swift quirk), and an escaping closure crossing this `async` method's
+    /// `await` points needs `Sendable` under strict concurrency
+    /// (`AccountSyncer.performInitialSync(auth:onProgress:)`'s identical
+    /// `@Sendable (Progress) -> Void)?` is the existing precedent for that
+    /// half). Pinning it to `@MainActor` as well is what actually lets
+    /// `ThreadDetailView` (a `View`, MainActor-isolated) form this closure
+    /// as a plain non-`Sendable`-capture-of-`self` literal — `@MainActor`
+    /// isolation is itself the safety proof `Sendable` asks for, so the two
+    /// annotations together are strictly more permissive for the caller
+    /// than `@Sendable` alone would be. Called with `await` below since
+    /// this method itself has no actor affinity.
+    public func summarizeThread(
+        _ messages: [ThreadDigestMessage],
+        targetLanguage: TranslationLanguage,
+        onProgress: (@MainActor @Sendable (_ current: Int, _ total: Int) -> Void)? = nil
+    ) async throws -> String {
+        guard !messages.isEmpty else { return "" }
+
+        var perMessageLines: [String] = []
+        perMessageLines.reserveCapacity(messages.count)
+        for (index, message) in messages.enumerated() {
+            await onProgress?(index + 1, messages.count)
+            let compact = try await compactThreadMessageText(message.text, targetLanguage: targetLanguage)
+            perMessageLines.append("\(message.header) \(compact)")
+        }
+        let combined = perMessageLines.joined(separator: "\n")
+        return try await summarizeThreadDigest(combined, targetLanguage: targetLanguage)
+    }
+
+    /// The oversized-single-message safety net `summarizeThread(_:targetLanguage:onProgress:)`'s
+    /// doc comment describes — the same map-reduce shape `summarizeLongText`
+    /// uses for a whole long mail, just scoped to one thread message's own
+    /// text instead. Ordinary messages (the overwhelming majority in
+    /// practice) never enter the chunking branch at all — a single
+    /// `summarizePlain` call handles them.
+    private func compactThreadMessageText(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
         guard text.count > TranslationChunker.defaultMaxChunkLength else {
-            return try await summarizeThreadDigest(text, targetLanguage: targetLanguage)
+            return try await summarizePlain(text, targetLanguage: targetLanguage, sentenceCount: 2)
         }
 
         let chunks = TranslationChunker.chunk(text)
         var partialSummaries: [String] = []
         partialSummaries.reserveCapacity(chunks.count)
         for chunk in chunks {
-            partialSummaries.append(try await summarizePlain(chunk, targetLanguage: targetLanguage, sentenceCount: 2))
+            partialSummaries.append(try await summarizePlain(chunk, targetLanguage: targetLanguage, sentenceCount: 1))
         }
-        let combined = partialSummaries.joined(separator: " ")
-        return try await summarizeThreadDigest(combined, targetLanguage: targetLanguage)
+        return try await summarizePlain(partialSummaries.joined(separator: " "), targetLanguage: targetLanguage, sentenceCount: 2)
+    }
+}
+
+/// Task #160: one thread message's map-stage input for
+/// `TranslationService.summarizeThread(_:targetLanguage:onProgress:)` —
+/// `header` (`"[<date>] <sender>:"`, already fully formatted by the caller
+/// from trusted metadata) and `text` (that message's own new, non-quoted
+/// body) travel separately so the map step can summarize `text` alone
+/// (never showing the model `header`, see `summarizeThread`'s doc comment
+/// for why) while the reduce step still gets a `"\(header) \(compact
+/// summary)"` line per message, exactly like `ThreadDetailView`'s previous
+/// single joined-string input did.
+public struct ThreadDigestMessage: Sendable, Equatable {
+    public let header: String
+    public let text: String
+
+    public init(header: String, text: String) {
+        self.header = header
+        self.text = text
     }
 }
