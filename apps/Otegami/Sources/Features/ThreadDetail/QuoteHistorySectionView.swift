@@ -23,14 +23,13 @@ struct QuoteHistorySectionView: View {
     /// the plain-text body's split, already known non-empty by the caller.
     let quotedText: String
 
-    /// Task #123's explicit spec: default *shown*, and this toggle never
-    /// persists across opens — every fresh `QuoteHistorySectionView` (a
-    /// newly opened message, or the same message reopened later) starts
-    /// back at `true`. Plain `@State`, not `@AppStorage`, gives exactly
-    /// that: it resets whenever this view is torn down and recreated, which
-    /// `MessageView.load()`'s `.task(id: messageId)` already does on every
-    /// message switch — no explicit reset code needed here.
-    @State private var isExpanded = true
+    /// Task #123 では「既定: 表示」で出したが、実機フィードバック
+    /// (2026-07-29「履歴はデフォルトで折りたたまれていて欲しい」) で
+    /// **既定: 折りたたみ**に反転した。トグルが opens をまたいで永続
+    /// しない設計はそのまま — plain `@State` なので view の再生成
+    /// (`MessageView.load()` の `.task(id: messageId)`) ごとに必ず
+    /// `false` へ戻る。
+    @State private var isExpanded = false
 
     private var parseResult: QuoteHistoryParser.ParseResult {
         QuoteHistoryParser.parse(quotedText)
