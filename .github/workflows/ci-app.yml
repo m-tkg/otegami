@@ -3,7 +3,17 @@ name: ci-app
 on:
   push:
     branches: [main]
+    # アプリに影響しない push (ドキュメントのみ・サーバのみ) ではスキップ。
+    # OtegamiKit はアプリのビルド/テスト対象なので除外しない。
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "server/**"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "server/**"
 
 # 連続 push 時に古い実行を自動キャンセルする (タグ実行はグループが別になる
 # だけでキャンセル対象の重複が起きない)。
