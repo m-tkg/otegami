@@ -69,6 +69,17 @@ struct ComposerView: View {
     /// `composer.cc`/`composer.bcc`を直接読むのはこの前提に依存している。
     @State private var isCcBccExpandedByUser = false
 
+    /// Task #161 (#129 第2段, 下部バーのSpark準拠再構成): whether
+    /// `RichTextFormattingBar` is currently shown, iOS only — the bar no
+    /// longer sits permanently above the body editor (`flatBodySection`
+    /// used to place it there unconditionally); `flatBottomActionBar`'s "T"
+    /// button toggles this instead, matching Spark's compose screen (書式
+    /// バーはタップで開閉する引き出し、常時表示ではない). macOS's `bodySection`
+    /// is untouched by this restructure (`bodySection`'s own doc comment).
+    #if os(iOS)
+    @State private var isFormattingBarVisible = false
+    #endif
+
     /// See `isCcBccExpandedByUser`'s doc comment.
     private var isShowingCcBcc: Bool {
         isCcBccExpandedByUser
@@ -650,11 +661,12 @@ struct ComposerView: View {
                 flatRecipientsSection
                 flatSubjectRow
                 flatBodySection
-                flatTemplateSection
                 flatSignatureRow
                 // Task #125 「添付UIの位置」: 添付ボタン/添付済み一覧は本文＋
                 // 署名の下 — 署名選択で本文末尾が変わっても、添付欄の位置が
-                // それに引きずられて動かないようにする。
+                // それに引きずられて動かないようにする。Task #161: 添付を
+                // "追加する"アクション自体 (`attachmentsMenu`) は下部バーに
+                // 移した — ここに残るのは追加済みファイルの一覧のみ。
                 flatAttachmentsSection
                 if let errorMessage {
                     Text(errorMessage)
@@ -668,6 +680,43 @@ struct ComposerView: View {
         }
         .background(OtegamiColor.background)
         .scrollDismissesKeyboard(.interactively)
+        .safeAreaInset(edge: .bottom) { flatBottomActionBar }
+    }
+
+    /// Task #161 (下部バーのSpark準拠再構成): pinned above the keyboard
+    /// (`.safeAreaInset(edge: .bottom)` on `flatContent`'s `ScrollView`, not
+    /// scrolling away with the rest of the form) — the formatting bar
+    /// itself (only while `isFormattingBarVisible`) stacked directly above
+    /// a persistent action row: 左に「T」(書式バーの開閉), その右にこれまで
+    /// 本文の下に置いていた添付/テンプレートの各アクション。Spark の作成画面の
+    /// 下部バー構成 (左にT、中央に添付/テンプレート群) に合わせた、既存の
+    /// flat デザイン (da4d3a9/8f29a4b) と同じトーンの`surface`背景+罫線。
+    ///
+    /// A `VStack` of two already-small pieces (a conditional
+    /// `RichTextFormattingBar` call, and a flat `HStack` of a handful of
+    /// buttons) — kept this shallow deliberately, same
+    /// type-check-timeout-avoidance reasoning as everywhere else in this
+    /// file's "MARK: -" doc comments.
+    private var flatBottomActionBar: some View {
+        VStack(spacing: 0) {
+            if isFormattingBarVisible {
+                RichTextFormattingBar(controller: richTextEditingController, hasSelection: bodySelectedRange.length > 0)
+                    .otegamiRowDivider()
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: OtegamiSpacing.sm) {
+                    FormatBarToggleButton(isActive: isFormattingBarVisible) {
+                        isFormattingBarVisible.toggle()
+                    }
+                    Divider().frame(height: 20)
+                    attachmentsMenu
+                    flatTemplateSection
+                }
+                .padding(.horizontal, OtegamiSpacing.lg)
+                .padding(.vertical, OtegamiSpacing.xs)
+            }
+        }
+        .background(OtegamiColor.surface)
     }
 
     /// 「差出人 (From アカウント) 行は現行機能を維持しつつ同トーンの控えめな
@@ -773,7 +822,6 @@ struct ComposerView: View {
     /// 入力されればプレースホルダ自体が消えるので実害は小さい）。
     private var flatBodySection: some View {
         VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
-            RichTextFormattingBar(controller: richTextEditingController)
             ZStack(alignment: .topLeading) {
                 if attributedBodyText.string.isEmpty {
                     Text("本文を入力してください")
@@ -1290,6 +1338,7 @@ struct ComposerView: View {
                     ccAddresses: ccAddresses,
                     subject: subject,
                     plainTextBody: bodyText,
+                    htmlBody: bodySnapshotString,
                     inReplyToMessageId: inReplyToMessageId,
                     references: references,
                     serverMailboxId: draftServerMailboxId,
