@@ -125,7 +125,14 @@ struct FolderListSheet: View {
                     ForEach(categoryOrder, id: \.self) { role in
                         categorySection(for: role)
                     }
-                    uncategorizedSection
+                    // Task #126, 3: 「その他」(role で分類できない = #119の
+                    // ロール補完後もなお未分類なフォルダ) の専用セクションは
+                    // 廃止した — 該当フォルダは下のアカウント別ツリー
+                    // (`accountSection(for:)`、全メールボックスを role 問わず
+                    // 表示) に引き続き現れるので、メニューから消えるわけでは
+                    // ない。旧`uncategorizedSection`/`categoryMailboxRow(for:)`
+                    // はもう存在しない — `docs/design-system.md`にこの判断を
+                    // 記録した。
                     ForEach(environment.accounts) { account in
                         accountSection(for: account)
                     }
@@ -134,15 +141,6 @@ struct FolderListSheet: View {
             .accessibilityIdentifier("folderSheet.list")
             .scrollContentBackground(.hidden)
             .background(OtegamiColor.background)
-            // 実機フィードバック: 設定ボタンはリストの最終行 (スクロールしないと
-            // 見えない) ではなく、スクロール位置に関わらず常に左下に浮いている
-            // フローティングボタンにする。`safeAreaInset` ではなく `overlay` を
-            // 使うのは「リストの上に浮いている」見た目の指定のため — リスト末尾
-            // が隠れないよう `contentMargins` で下端に余白を足す。
-            .overlay(alignment: .bottomLeading) {
-                floatingSettingsButton
-            }
-            .contentMargins(.bottom, OtegamiSpacing.xxl + OtegamiSpacing.lg, for: .scrollContent)
             .navigationTitle("フォルダ")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -163,6 +161,18 @@ struct FolderListSheet: View {
                     }
                     .labelStyle(.iconOnly)
                     .accessibilityIdentifier("folderSheet.closeButton")
+                }
+                // Task #126, 1: 設定ボタンをメニュー最下部の左下フローティング
+                // (旧`floatingSettingsButton`) から、ヘッダ右上 (歯車アイコン)
+                // へ移設した — `presentAfterClosingMenu`経由の「ドロワーを
+                // 閉じてから設定シートを開く」動線 (`onOpenSettings`) 自体は
+                // 変えていない、呼び出し元をこのツールバーボタンに変えただけ。
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(action: onOpenSettings) {
+                        Label("設定", systemImage: "gearshape")
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityIdentifier("folderSheet.settings")
                 }
             }
         }
@@ -227,15 +237,17 @@ struct FolderListSheet: View {
             expandedAccountIds.insert(entry.account.id)
             // 「該当roleのカテゴリにも属するならそちらも」— `matchesCategory`
             // は Gmail の All Mail→アーカイブ読み替え含め、実際にカテゴリ
-            // セクションがこのメールボックスをどう表示するかの唯一の判定
-            // 元 (`categorySection(for:)`/`uncategorizedSection`と同じ関数)
-            // なので、ここでも同じ関数で判定する。
-            for role in categoryOrder + [.none] where matchesCategory(mailbox: entry.mailbox, account: entry.account, role: role) {
+            // セクションがこのメールボックスをどう表示するかの唯一の判定元
+            // (`categorySection(for:)`と同じ関数) なので、ここでも同じ関数
+            // で判定する。Task #126: `.none`(未分類フォルダ)はもう独立した
+            // カテゴリセクションを持たない (`uncategorizedSection`削除済み)
+            // ため、`categoryOrder`のみを見ればよい。
+            for role in categoryOrder where matchesCategory(mailbox: entry.mailbox, account: entry.account, role: role) {
                 expandedRoles.insert(role.rawValue)
             }
         }
 
-        let allRoleValues = Set((categoryOrder + [.none]).map(\.rawValue))
+        let allRoleValues = Set(categoryOrder.map(\.rawValue))
         let allAccountIds = Set(environment.accounts.map(\.id))
 
         withAnimation(.default) {
@@ -277,30 +289,22 @@ struct FolderListSheet: View {
     @ViewBuilder
     private var statusSection: some View {
         Section {
-            Button {
-                onSelectUnified()
-            } label: {
-                HStack {
-                    Label("すべての受信トレイ", systemImage: "tray.2")
-                    Spacer()
-                    if unifiedInboxUnread > 0 {
-                        Text("\(unifiedInboxUnread)")
-                            .font(OtegamiFont.badge())
-                            .accessibilityIdentifier("folderSheet.unifiedInbox.unreadBadge")
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .listRowBackground(isUnifiedInboxSelected ? OtegamiColor.paleBase : nil)
-            .accessibilityIdentifier("folderSheet.unifiedInbox")
-
+            // Task #126 追加仕様: #110 以降「受信トレイ」カテゴリセクション
+            // 見出し行のタップが、この行と全く同じ統合受信トレイ選択
+            // (`onSelectUnified`) になったため、この専用のピン留め行は完全に
+            // 重複していた — 削除し、「受信トレイ」セクション行だけを残す。
+            // 選択中ハイライトも`categorySection(for:)`側 (role`.inbox`) に
+            // 移した — `isUnifiedInboxSelected`の消費先はそちらのみになった
+            // (`accessibilityIdentifier`の`folderSheet.unifiedInbox`はもう
+            // 存在しない — 参照 UITest がある場合は
+            // `folderSheet.category.inbox.header`側を見るよう更新すること)。
             if outboxCount > 0 {
                 Button {
                     onOpenOutbox()
                 } label: {
                     Label("送信待ち (\(outboxCount))", systemImage: "tray.and.arrow.up")
                 }
+                .otegamiMenuRowChrome()
                 .accessibilityIdentifier("folderSheet.outbox")
             }
             if draftCount > 0 {
@@ -309,6 +313,7 @@ struct FolderListSheet: View {
                 } label: {
                     Label("下書き (\(draftCount))", systemImage: "doc")
                 }
+                .otegamiMenuRowChrome()
                 .accessibilityIdentifier("folderSheet.drafts")
             }
             if failedOpCount > 0 {
@@ -318,6 +323,7 @@ struct FolderListSheet: View {
                     Label("同期エラー (\(failedOpCount))", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(OtegamiColor.destructive)
                 }
+                .otegamiMenuRowChrome()
                 .accessibilityIdentifier("folderSheet.failedOps")
             }
             if mailboxSyncFailureCount > 0 {
@@ -327,38 +333,16 @@ struct FolderListSheet: View {
                     Label("メールボックス同期エラー (\(mailboxSyncFailureCount))", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(OtegamiColor.destructive)
                 }
+                .otegamiMenuRowChrome()
                 .accessibilityIdentifier("folderSheet.mailboxSyncFailures")
             }
         }
     }
 
-    /// 新画面構成 (1)→実機フィードバック改: 設定はメニュー最下部の「行」では
-    /// なく、スクロール位置に関わらず常に見えている左下のフローティング
-    /// ボタン。丸い面 (カードと同じ radius 世界観) + 影で「浮いている」ことを
-    /// 示す。accessibilityIdentifier は旧実装から据え置き (XCUITest 互換)。
-    ///
-    /// Task #78 (ユーザー要望「アクセントブルーにするのは compose だけ
-    /// じゃなくて設定とか検索とか翻訳要約のフローティングも」):
-    /// `MailScreenView.floatingComposeButton`/`floatingSearchButton`と
-    /// 同じアクセント塗り+白アイコンへ統一 — 見た目は
-    /// `otegamiFloatingButtonChrome()`(既定`.neutral`トーン、
-    /// `OtegamiFloatingButton.swift`) に委譲。
-    private var floatingSettingsButton: some View {
-        Button {
-            onOpenSettings()
-        } label: {
-            // アイコンのみ (実機フィードバック: 文字は不要)。VoiceOver 向けの
-            // タイトルは Label が保持する — ハンバーガーの閉じるボタンと同じ
-            // .iconOnly パターン。
-            Label("設定", systemImage: "gearshape")
-                .labelStyle(.iconOnly)
-                .otegamiFloatingButtonChrome()
-        }
-        .buttonStyle(.plain)
-        .padding(.leading, OtegamiSpacing.lg)
-        .padding(.bottom, OtegamiSpacing.lg)
-        .accessibilityIdentifier("folderSheet.settings")
-    }
+    // Task #126, 1: 設定は左下のフローティングボタン (旧`floatingSettingsButton`)
+    // だった — メニュー最上部の右上、歯車アイコンのツールバーボタンに移設
+    // した (`body`の`.toolbar`内、`.confirmationAction`プレースメント)。
+    // `otegamiFloatingButtonChrome()`はもうこの画面では使わない。
 
     /// K (実機フィードバック第3弾): one account's collapsible mailbox-tree
     /// `Section` — the header itself is a tappable row
@@ -442,8 +426,22 @@ struct FolderListSheet: View {
             } header: {
                 CategorySectionHeader(
                     role: role,
-                    unreadCount: entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
+                    // Task #126 追加仕様: 削除した最上部「すべての受信トレイ」
+                    // 行が使っていた`unifiedInboxUnread`(`MessageQuery
+                    // .unifiedInboxUnreadCountObservation`由来、単純な
+                    // メールボックス単位の合算とは別の「統合受信トレイ」自身の
+                    // 未読数) を、`.inbox`カテゴリの見出しバッジへそのまま
+                    // 引き継ぐ — 他のroleは従来どおりメールボックス単位の合算。
+                    unreadCount: role == .inbox
+                        ? unifiedInboxUnread
+                        : entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
                     isCollapsed: isCollapsed,
+                    // Task #126 追加仕様: 削除した最上部「すべての受信トレイ」
+                    // 行が担っていた選択中ハイライトを、「受信トレイ」セクション
+                    // 見出し行自身に移した — `.inbox`は`isUnifiedInboxSelected`
+                    // (`onSelectUnified`と対になる状態)、他のroleは既存どおり
+                    // `selectedUnifiedRole`との一致で判定する。
+                    isSelected: role == .inbox ? isUnifiedInboxSelected : selectedUnifiedRole == role,
                     onSelectUnified: { selectUnifiedView(for: role) },
                     onToggle: { toggleCategoryCollapsed(role) }
                 )
@@ -472,10 +470,11 @@ struct FolderListSheet: View {
     /// フォルダ名 (`mailbox.displayPath`) 自体は表示しない — 同じカテゴリ内で
     /// は「どの役割か」はセクション見出しがすでに示しており、複数アカウントを
     /// 見分けたいだけの場面でフォルダの生パス名 (IMAP実装依存の命名, 例:
-    /// "[Gmail]/All Mail") を出すのはノイズという判断。role で分類できない
-    /// `.none`セクション (`uncategorizedSection`) は逆にフォルダ名こそが
-    /// 差分なので、そちらは引き続き`categoryMailboxRow(for:)`
-    /// (フォルダ名主表示 + アカウント名併記) を使う。
+    /// "[Gmail]/All Mail") を出すのはノイズという判断。
+    ///
+    /// Task #126, 3: role で分類できない (`.none`) フォルダ専用の「その他」
+    /// セクション (旧`uncategorizedSection`/`categoryMailboxRow(for:)`) は
+    /// 廃止した — この行はもう`.none`向けの呼び出し元を持たない。
     private func categoryAccountRow(for entry: MailboxEntry) -> some View {
         let mailboxSelection = MailboxSelection(accountId: entry.account.id, mailboxId: entry.mailboxId)
         let isSelected = selectedMailboxId == entry.mailboxId
@@ -488,58 +487,6 @@ struct FolderListSheet: View {
             isSelected: isSelected,
             onTap: { onSelectMailbox(mailboxSelection, entry.account.displayName) }
         )
-    }
-
-    /// role で分類**できない**メールボックス (`.none`、`uncategorizedSection`)
-    /// 専用、1メールボックスぶんの行 — アカウント優先モードの
-    /// `folderMailboxRow(for:in:)`と違い、複数アカウントが同じセクションに
-    /// 混ざるため、どのアカウントの行かを`accountLabelText`で併記する
-    /// (`FolderMailboxRow`のdoc comment参照)。role で分類できるセクション
-    /// (受信トレイ/アーカイブ等) は`categoryAccountRow(for:)`を使う —
-    /// 使い分けの理由はそちらのdoc comment参照。
-    private func categoryMailboxRow(for entry: MailboxEntry) -> some View {
-        let mailboxSelection = MailboxSelection(accountId: entry.account.id, mailboxId: entry.mailboxId)
-        let isSelected = selectedMailboxId == entry.mailboxId
-        return FolderMailboxRow(
-            accountId: entry.account.id,
-            mailbox: entry.mailbox,
-            unreadCount: unreadByMailboxId[entry.mailboxId],
-            isSelected: isSelected,
-            accountLabelText: entry.account.displayName,
-            onTap: { onSelectMailbox(mailboxSelection, entry.mailbox.displayPath) }
-        )
-    }
-
-    /// role で分類できないメールボックス (`.none` — ユーザーが作成した独自
-    /// フォルダ) をまとめる最終セクション。役割で束ねられないぶん「横断ビュー」
-    /// は作らず (アカウントを跨いで同じ意味を持つ folder ではないため)、各
-    /// アカウントの行をそのまま並べる。
-    @ViewBuilder
-    private var uncategorizedSection: some View {
-        let entries = mailboxEntries(for: .none)
-        if !entries.isEmpty {
-            let isCollapsed = collapsedCategoryRoles.contains(MailboxRoleRecord.none.rawValue)
-            Section {
-                if !isCollapsed {
-                    ForEach(entries) { entry in
-                        categoryMailboxRow(for: entry)
-                    }
-                }
-            } header: {
-                // Task #110: `.none`(ユーザー独自フォルダ)は複数アカウントを
-                // 横断する「統合ビュー」という概念自体が無い (`matchesCategory`
-                // 参照 — role で束ねられないぶん、そもそも同じ意味を持つ
-                // folder ではない) ため、`onSelectUnified: nil`のまま — 見出し
-                // 行タップは引き続き折りたたみ開閉を担う (現状維持)。
-                CategorySectionHeader(
-                    role: .none,
-                    unreadCount: entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
-                    isCollapsed: isCollapsed,
-                    onSelectUnified: nil,
-                    onToggle: { toggleCategoryCollapsed(.none) }
-                )
-            }
-        }
     }
 
     /// 全アカウントを横断して`role`のメールボックスを集める — `account`ごとに
@@ -760,6 +707,12 @@ private struct AccountSectionHeader: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Task #126, 2: これは`Section`の`header:`(List行そのものではない)
+        // なので`.listRowInsets`は効かない — `.frame(minHeight: 44)`だけ、
+        // タップターゲットの下限保証として付けている (`otegamiMenuRowChrome()`
+        // のdoc comment参照)。見出し自体の縦paddingはシステム既定のまま
+        // (元々行より控えめなため、詰める対象は主に繰り返し行の方)。
+        .frame(minHeight: 44)
         .accessibilityIdentifier("folderSheet.account.\(accountId).header")
         // VoiceOver: the chevron's rotation alone communicates nothing to
         // VoiceOver, so the collapsed/expanded state is spelled out in the
@@ -817,6 +770,7 @@ private struct CategoryAccountRow: View {
             }
         }
         .buttonStyle(.plain)
+        .otegamiMenuRowChrome()
         .listRowBackground(isSelected ? OtegamiColor.paleBase : nil)
         .accessibilityIdentifier("folderSheet.category.account.\(accountId).\(mailboxPath)")
     }
@@ -825,30 +779,24 @@ private struct CategoryAccountRow: View {
 /// One mailbox row inside `FolderListSheet` — see `SidebarView.MailboxRow`'s
 /// doc comment for why this is split out of the `ForEach` closure at all
 /// (same CI type-check rationale, independently re-applied to this file).
+///
+/// Task #126, 3: この行はもうアカウント優先モードの
+/// `folderMailboxRow(for:in:)`だけから使われる (カテゴリ優先モードの「その他」
+/// セクション向けだった旧`categoryMailboxRow(for:)`は削除済み) — アカウント
+/// 優先モードでは呼び出し元のアカウント自身がすでにSection見出しなので、
+/// 行の中に別アカウント名を併記する`accountLabelText`パラメータは常に`nil`
+/// にしかならなくなった。使われなくなったフィールドと表示分岐を削除した。
 private struct FolderMailboxRow: View {
     let accountId: String
     let mailbox: MailboxRecord
     let unreadCount: Int?
     let isSelected: Bool
-    /// 画面構造改修バッチ (Task #33, 3): カテゴリ優先モードでは複数アカウント
-    /// の行が同じセクションに混ざる (`FolderListSheet.categoryMailboxRow(for:)`)
-    /// ため、どのアカウントの行かをフォルダ名の下に小さく併記する —
-    /// アカウント優先モード (アカウント自身がすでにSection見出しになっている)
-    /// では`nil`のまま、見た目は変わらない。
-    var accountLabelText: String? = nil
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             HStack {
-                VStack(alignment: .leading, spacing: 1) {
-                    Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
-                    if let accountLabelText {
-                        Text(accountLabelText)
-                            .font(OtegamiFont.caption())
-                            .foregroundStyle(OtegamiColor.inkTertiary)
-                    }
-                }
+                Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
                 Spacer()
                 if let unreadCount, unreadCount > 0 {
                     Text("\(unreadCount)")
@@ -859,6 +807,7 @@ private struct FolderMailboxRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .otegamiMenuRowChrome()
         .listRowBackground(isSelected ? OtegamiColor.paleBase : nil)
         .accessibilityIdentifier("folderSheet.mailbox.\(accountId).\(mailbox.path)")
     }
@@ -925,41 +874,35 @@ private struct MailboxEntry: Identifiable {
 /// 「折りたたみ中も見えること」の要件は`AccountSectionHeader`と同じ理由で
 /// ここでも踏襲。
 ///
-/// Task #110 (ハンバーガーメニューの挙動変更): `onSelectUnified`が非`nil`
-/// (統合ビューを持つセクション — `.none`以外の`categoryOrder`全ロール) の
-/// 場合、見出し本体は折りたたみ開閉ではなく統合ビュー選択の`Button`になり、
-/// 折りたたみ開閉は右端の独立したシェブロン`Button`(`CategoryDisclosureChevron`)
-/// だけが担う (タップターゲットを44pt確保)。`nil`
-/// (`.none`セクション、統合ビュー概念自体が無い) の場合は旧来どおり見出し
-/// 全体が折りたたみ開閉の1つの`Button`のまま。
+/// Task #110 (ハンバーガーメニューの挙動変更): 見出し本体は折りたたみ開閉
+/// ではなく統合ビュー選択の`Button`(`onSelectUnified`) になり、折りたたみ
+/// 開閉は右端の独立したシェブロン`Button`(`CategoryDisclosureChevron`)だけが
+/// 担う (タップターゲットを44pt確保)。Task #126, 3で「その他」
+/// (`.none`、統合ビュー概念自体が無いセクション) を廃止したことで、この
+/// ビューの呼び出し元は常に`categoryOrder`のroleだけになった — 元は
+/// `onSelectUnified`が`nil`許容 (`.none`向け、見出し全体が折りたたみ開閉の
+/// 単一`Button`になる分岐) だったが、その分岐が到達不能になったため
+/// `(() -> Void)?`を非オプショナルに単純化した。
+///
+/// Task #126 追加仕様: 削除した最上部「すべての受信トレイ」行のハイライト
+/// (`isUnifiedInboxSelected`)/`selectedUnifiedRole`一致によるハイライトを
+/// この見出し行が引き継ぐ — `isSelected`が`true`のとき、他の選択中の行
+/// (`CategoryAccountRow`/`FolderMailboxRow`等) と同じ`OtegamiColor.paleBase`
+/// を背景に敷く。この見出しは`Section`の`header:`(`List`の行そのものでは
+/// ない) なので`.listRowBackground`は効かない — 他の行が使っている
+/// `.listRowBackground`ではなく、素の`.background`をこの`HStack`自身に
+/// 直接敷く。
 private struct CategorySectionHeader: View {
     let role: MailboxRoleRecord
     let unreadCount: Int
     let isCollapsed: Bool
-    let onSelectUnified: (() -> Void)?
+    let isSelected: Bool
+    let onSelectUnified: () -> Void
     let onToggle: () -> Void
 
     var body: some View {
-        if let onSelectUnified {
-            HStack(spacing: 0) {
-                Button(action: onSelectUnified) {
-                    HStack {
-                        Label(role.categoryDisplayName, systemImage: role.categorySystemImage)
-                        Spacer()
-                        if unreadCount > 0 {
-                            Text("\(unreadCount)")
-                                .font(OtegamiFont.badge())
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("folderSheet.category.\(role.rawValue).header")
-
-                CategoryDisclosureChevron(role: role, isCollapsed: isCollapsed, onToggle: onToggle)
-            }
-        } else {
-            Button(action: onToggle) {
+        HStack(spacing: 0) {
+            Button(action: onSelectUnified) {
                 HStack {
                     Label(role.categoryDisplayName, systemImage: role.categorySystemImage)
                     Spacer()
@@ -967,18 +910,21 @@ private struct CategorySectionHeader: View {
                         Text("\(unreadCount)")
                             .font(OtegamiFont.badge())
                     }
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-                        .accessibilityHidden(true)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // Task #126, 2: `AccountSectionHeader`と同じ理由 —
+            // `Section`の`header:`なので`.listRowInsets`は効かず、
+            // `.frame(minHeight: 44)`だけタップターゲットの下限保証として
+            // 付ける。
+            .frame(minHeight: 44)
             .accessibilityIdentifier("folderSheet.category.\(role.rawValue).header")
-            .accessibilityAddTraits(isCollapsed ? [] : .isSelected)
-            .accessibilityValue(isCollapsed ? "折りたたみ" : "展開")
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+
+            CategoryDisclosureChevron(role: role, isCollapsed: isCollapsed, onToggle: onToggle)
         }
+        .background(isSelected ? OtegamiColor.paleBase : Color.clear)
     }
 }
 
@@ -1008,5 +954,27 @@ private struct CategoryDisclosureChevron: View {
         .accessibilityLabel(Text(role.categoryDisplayName))
         .accessibilityAddTraits(isCollapsed ? [] : .isSelected)
         .accessibilityValue(isCollapsed ? "折りたたみ" : "展開")
+    }
+}
+
+/// Task #126, 2 (ハンバーガーメニュー各行の縦paddingを詰める): この画面の
+/// 行/見出し行 (`statusSection`のボタン群、`AccountSectionHeader`、
+/// `CategoryAccountRow`、`FolderMailboxRow`、`CategorySectionHeader`) が
+/// 共通で使うコンパクト化 — 縦方向の`.listRowInsets`を既存のシステム既定
+/// (目視でおおむね12pt前後) から`OtegamiSpacing.sm`(8pt、目安2/3程度)へ
+/// 詰める。フォントサイズは一切変えていない。水平方向の余白は
+/// `OtegamiSpacing.lg`(16pt) — この画面の見出し/他行との横位置を揃える。
+/// `.frame(minHeight: 44)`は縦paddingを詰めてもHIGの最小タップターゲット
+/// (44×44pt) を下回らないようにするための独立した保証 — 見た目の高さ
+/// (insetsで決まる) とタップ可能な高さ (この`frame`で決まる下限) を別々に
+/// 制御する。`private`なので同一ファイル内の型だけが使う。
+private extension View {
+    func otegamiMenuRowChrome() -> some View {
+        self
+            .frame(minHeight: 44)
+            .listRowInsets(EdgeInsets(
+                top: OtegamiSpacing.sm, leading: OtegamiSpacing.lg,
+                bottom: OtegamiSpacing.sm, trailing: OtegamiSpacing.lg
+            ))
     }
 }
