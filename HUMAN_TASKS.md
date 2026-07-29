@@ -243,12 +243,23 @@
       テストユーザー運用 (審査不要・100人上限) を継続する。将来申請する
       場合の前提 (ブランディング検証・プライバシーポリシー URL・デモ動画・
       制限付きスコープの CASA) は検証センターで確認済み。
-- [ ] **macOS ビルドの Developer ID 署名 + notarization** — `make mac-app`
-      で `dist/Otegami.app` は生成できるが、現状はアドホック署名のまま。
-      自分の Mac 以外に配る場合は Gatekeeper 対応 (Developer ID 署名 +
-      notarization) が必要。
-      優先度: 低 (配布を決めてから) / 所要時間: 半日程度 (初回のみ、
-      証明書取得含む) / 参照: [PENDING.md「公開時に必要な対応」](PENDING.md#公開時に必要な対応-まとめ)
+- [ ] **macOS ビルドの Developer ID 署名 + notarization (Task #143)** —
+      (2026-07-29 ワークフロー整備済み、次回タグで実地検証) tag push
+      (`v*`) / `workflow_dispatch` で GitHub Actions
+      (`.github/workflows/release-macos.yml`) が macOS を Archive →
+      Developer ID 署名 → notarization → GitHub Release 添付まで自動で
+      行うようになった。署名・notarize に必要な secrets (`SIGNING_IDENTITY`
+      等6つ) は登録済み。**このセッションではローカルで未署名ビルド・
+      手動 codesign の検証まで行ったが、実際の notarization・GitHub
+      Actions ランナー上での実行・iCloud KVS entitlement が配布ビルドで
+      実際に機能するかは未検証** — 次回タグを打つ (または先に
+      `workflow_dispatch` で単体実行する) 際に、Actions の run が緑に
+      なるか、Gatekeeper (`spctl -a -vvv`) を越えるか、iCloud アカウント
+      同期が動くかを確認してほしい。手順・確認ポイントの詳細は
+      [docs/release.md](docs/release.md)。
+      優先度: 低 (配布を決めてから、ただし着手自体は完了) / 所要時間:
+      次回タグ push 時に Actions の run を見るだけ (数分) / 参照:
+      [docs/release.md](docs/release.md)、[PENDING.md「公開時に必要な対応」](PENDING.md#公開時に必要な対応-まとめ)
 - [x] **サードパーティライセンス表記 (`NOTICE`) の確認** — (2026-07-29
       確認済み)。以後は依存を追加/更新する PR の際にエージェント側で
       NOTICE を追随させる運用 (人間の定期作業からは外す)。

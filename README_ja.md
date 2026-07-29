@@ -426,6 +426,11 @@ Otegami は Xcode Cloud でのビルド・TestFlight 配布にも対応してい
 テスターに対する Google OAuth 未検証アプリ警告) は
 [docs/xcode-cloud.md](docs/xcode-cloud.md) を参照してください。
 
+`v*` 形式の git tag を push すると `.github/workflows/release-macos.yml`
+も起動し、macOS アプリのビルド・Developer ID 署名・notarization・
+GitHub Release への添付までを自動で行います。詳細は
+[docs/release.md](docs/release.md) を参照してください。
+
 ## アーキテクチャ
 
 - `apps/Otegami/` — SwiftUI アプリ本体 (iOS + macOS)、XcodeGen

@@ -1,0 +1,221 @@
+name: release-macos
+
+# Task #143: tag push (or manual dispatch) builds the macOS app, signs it
+# with a Developer ID Application identity, notarizes it, and attaches the
+# notarized .zip to a GitHub Release. iOS ships separately via the existing
+# tag-triggered Xcode Cloud workflow (docs/xcode-cloud.md) — this workflow
+# never touches iOS.
+#
+# See docs/release.md for the full picture (secrets required, why the app
+# is signed with a bare `codesign` step instead of xcodebuild's own signing,
+# and what's still unverified until the first real tag push).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version string to use when run manually (not from a tag push,
+          e.g. via "Run workflow"). Ignored on an actual tag push, where the
+          tag itself is the version. A manual run never creates/attaches to
+          a GitHub Release — it only exercises the build/sign/notarize
+          steps and uploads the result as a workflow artifact, so this
+          workflow can be dry-run before ever pushing a real tag.
+        required: false
+        default: "0.0.0-dev"
+
+permissions:
+  contents: write
+
+env:
+  APP_DIR: apps/Otegami
+  APP_PROJECT: apps/Otegami/Otegami.xcodeproj
+  APP_SCHEME: Otegami
+  APP_NAME: Otegami
+
+jobs:
+  release:
+    # Same runner ci-app.yml already uses successfully for this app's
+    # macOS/iOS 26 deployment target (Xcode 27's SDKs) — see that
+    # workflow's own comment. Reusing it here means the "does the GitHub
+    # runner's Xcode support this app's deployment target" question this
+    # workflow would otherwise need to answer from scratch is already
+    # answered by ci-app.yml's green runs.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+            VERSION="${TAG#v}"
+            IS_TAG=true
+          else
+            TAG="$DISPATCH_VERSION"
+            VERSION="$TAG"
+            IS_TAG=false
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_tag=$IS_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: cd "$APP_DIR" && xcodegen generate
+
+      # Deliberately does NOT let xcodebuild do the signing itself.
+      # xcodebuild's own signing (Automatic or Manual style) validates the
+      # macOS target's iCloud KVS entitlement
+      # (apps/Otegami/Config/Otegami-macOS.entitlements) against an
+      # *installed provisioning profile* before it will even attempt to
+      # codesign — confirmed locally: `CODE_SIGN_STYLE=Manual
+      # CODE_SIGN_IDENTITY="Developer ID Application"` fails immediately
+      # with `"Otegami" requires a provisioning profile with the iCloud
+      # feature`, and Automatic style needs an authenticated Apple ID
+      # session (or an App Store Connect API key) to fetch/create one,
+      # neither of which this runner has — only a bare signing
+      # identity/certificate is provided (see docs/release.md). So this
+      # step builds fully unsigned instead, exactly like ci-app.yml's
+      # "Build macOS app (unsigned)" step (same flags, same reasoning),
+      # and a later step applies the Developer ID signature by hand with
+      # `codesign` — which does not require a provisioning profile at all.
+      - name: Build macOS app (unsigned)
+        run: |
+          xcodebuild \
+            -project "$APP_PROJECT" \
+            -scheme "$APP_SCHEME" \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+          echo "APP_PATH=$RUNNER_TEMP/build/Build/Products/Release/$APP_NAME.app" >> "$GITHUB_ENV"
+
+      - name: Check signing and notarization secrets
+        id: signing
+        env:
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+          P12: ${{ secrets.SIGNING_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+        run: |
+          if [ -z "$SIGNING_IDENTITY" ] || [ -z "$P12" ] || [ -z "$P12_PASSWORD" ] \
+            || [ -z "$NOTARY_APPLE_ID" ] || [ -z "$NOTARY_PASSWORD" ] || [ -z "$NOTARY_TEAM_ID" ]; then
+            echo "::error::Signing and notarization secrets are required (see docs/release.md)" >&2
+            exit 1
+          fi
+
+      - name: Import signing certificate
+        env:
+          P12_BASE64: ${{ secrets.SIGNING_CERTIFICATE_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE="$RUNNER_TEMP/signing.p12"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$P12_BASE64" | base64 --decode > "$CERTIFICATE"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERTIFICATE" -k "$KEYCHAIN" \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+          echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      # Config/Otegami-macOS.entitlements is the *source* xcconfig-style
+      # template — its iCloud KVS identifier is the literal, unexpanded
+      # macro string "$(TeamIdentifierPrefix)$(CFBundleIdentifier)".
+      # xcodebuild normally substitutes that at its own codesign time; a
+      # bare `codesign --entitlements` does not do any substitution, so
+      # signing straight from this file would embed that literal string
+      # and silently break iCloud KVS sync. Resolve it by hand first.
+      # TeamIdentifierPrefix expands to "<TEAMID>." (trailing dot
+      # included) — see Apple's build setting reference — and the bundle
+      # id is the repo's committed default (Config/Signing.xcconfig);
+      # GitHub Actions never has a Config/Local.xcconfig overriding it.
+      - name: Resolve macOS entitlements
+        env:
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+        run: |
+          RESOLVED="$RUNNER_TEMP/Otegami-macOS.resolved.entitlements"
+          sed \
+            -e "s/\$(TeamIdentifierPrefix)/${NOTARY_TEAM_ID}./" \
+            -e "s/\$(CFBundleIdentifier)/com.mtkg.otegami/" \
+            "$APP_DIR/Config/Otegami-macOS.entitlements" > "$RESOLVED"
+          echo "RESOLVED_ENTITLEMENTS=$RESOLVED" >> "$GITHUB_ENV"
+
+      - name: Sign app bundle (Developer ID)
+        env:
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+        run: |
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements "$RESOLVED_ENTITLEMENTS" \
+            --sign "$SIGNING_IDENTITY" \
+            "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+      - name: Notarize and staple
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+        run: |
+          ditto -c -k --keepParent "$APP_PATH" "$RUNNER_TEMP/$APP_NAME-notary.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/$APP_NAME-notary.zip" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+
+      - name: Create release archive
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$RUNNER_TEMP/$APP_NAME.zip"
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.is_tag == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes \
+            "$RUNNER_TEMP/$APP_NAME.zip"
+
+      # workflow_dispatch (no tag) skips the Release step above so a manual
+      # run never publishes anything — the built/signed/notarized .zip is
+      # still available as a downloadable workflow artifact for
+      # inspection.
+      - name: Upload build artifact (manual runs only)
+        if: steps.version.outputs.is_tag == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/${{ env.APP_NAME }}.zip
+          retention-days: 14
+
+      - name: Clean up signing keychain
+        if: always()
+        run: |
+          if [ -n "${SIGN_KEYCHAIN:-}" ]; then
+            security delete-keychain "$SIGN_KEYCHAIN" || true
+          fi

@@ -444,6 +444,11 @@ variables) — see [docs/xcode-cloud.md](docs/xcode-cloud.md) for the setup
 steps and known caveats (export compliance, APNs sandbox vs. production,
 Google OAuth's unverified-app warning for testers).
 
+Pushing a `v*` tag also triggers `.github/workflows/release-macos.yml`,
+which builds the macOS app, signs it with a Developer ID identity,
+notarizes it, and attaches the result to a GitHub Release — see
+[docs/release.md](docs/release.md).
+
 ## Architecture
 
 - `apps/Otegami/` — the SwiftUI app (iOS + macOS), XcodeGen `project.yml`.

@@ -313,3 +313,6 @@ TestFlight 内部テストを配る場合:
 - [docs/ci.md](ci.md) — GitHub Actions (`ci-app`/`ci-server`) 側の CI。
   Xcode Cloud はこれを置き換えるものではなく、TestFlight 配布に特化した
   別の CI パイプラインとして並行して使う。
+- [docs/release.md](release.md) — 同じ tag push で並行して走る macOS 側
+  のリリースパイプライン (Task #143、GitHub Actions →
+  Developer ID 署名 + notarization → GitHub Release 添付)。
