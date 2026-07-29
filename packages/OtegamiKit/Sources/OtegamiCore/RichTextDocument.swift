@@ -1,5 +1,92 @@
 import Foundation
 
+/// Task #161 (#129 第2段): a run's font size, as a small preset ladder rather
+/// than an arbitrary point/pixel value — matches the plan's "フォントサイズ
+/// 選択 (小/標準/大/特大 程度のプリセットで十分)". `.standard` is the baseline
+/// (whatever the body font's own size already is, no override) and is
+/// deliberately never emitted as an explicit `font-size` in HTML
+/// (`RichTextHTMLCoder.encodeRuns(_:)`) — only a non-standard pick produces
+/// an inline style, keeping the common case's markup exactly as small as
+/// before this task.
+public enum RichTextFontSize: String, Equatable, Sendable, Codable, CaseIterable {
+    case small
+    case standard
+    case large
+    case xlarge
+
+    /// The `font-size:Npx` value this size encodes to — also what
+    /// `nearestPixelSize(_:)` matches back against when decoding an
+    /// arbitrary `font-size` HTML wrote (this coder's own output always
+    /// round-trips exactly; a value in between two presets rounds to the
+    /// closer one rather than failing to decode at all).
+    public var pixelSize: Int {
+        switch self {
+        case .small: 13
+        case .standard: 16
+        case .large: 20
+        case .xlarge: 26
+        }
+    }
+
+    /// The nearest preset to an arbitrary pixel size (e.g. `20` from a
+    /// decoded `font-size:20px`) — nearest-neighbor on `pixelSize`, ties
+    /// broken toward the smaller preset.
+    public static func nearest(toPixelSize pixelSize: Int) -> RichTextFontSize {
+        allCases.min { lhs, rhs in
+            let lhsDelta = abs(lhs.pixelSize - pixelSize)
+            let rhsDelta = abs(rhs.pixelSize - pixelSize)
+            return lhsDelta == rhsDelta ? lhs.pixelSize < rhs.pixelSize : lhsDelta < rhsDelta
+        } ?? .standard
+    }
+}
+
+/// Task #161 (#129 第2段): a small preset palette for 文字色/背景色 (ハイライト)
+/// — "DesignSystem トークンと衝突しない、メール本文用の標準色" from the plan,
+/// i.e. deliberately *not* `OtegamiColor` (that palette is UI chrome, tied to
+/// light/dark appearance; a color the user explicitly paints onto body text
+/// has to render the same, unchanging way in every recipient's mail client,
+/// light or dark, this app or any other — the same reasoning `docs/design-
+/// system.md`'s dark-mode HTML-rendering notes give for why a message's own
+/// explicit colors are left alone). Same small set doubles as both the text-
+/// color and highlight/background-color swatch list (`RichTextFormattingBar`)
+/// — most simple rich text composers (Spark included) share one palette
+/// between the two pickers rather than maintaining two independent ones.
+public enum RichTextColor: String, Equatable, Sendable, Codable, CaseIterable {
+    case red
+    case orange
+    case yellow
+    case green
+    case blue
+    case purple
+    case gray
+
+    /// The exact `#rrggbb` this encodes to in HTML (`color:`/`background-
+    /// color:` inline style) — fixed hex, not derived from any `Color`/
+    /// `UIColor`/`NSColor` API, so it never shifts with system appearance.
+    public var hex: String {
+        switch self {
+        case .red: "#d93025"
+        case .orange: "#e8710a"
+        case .yellow: "#f9ab00"
+        case .green: "#1e8e3e"
+        case .blue: "#1a73e8"
+        case .purple: "#8430ce"
+        case .gray: "#5f6368"
+        }
+    }
+
+    /// The reverse of `hex` — used decoding a `color`/`background-color`
+    /// HTML wrote back into a preset, matching by exact hex string (case-
+    /// insensitive; this coder's own output is always lowercase, but a
+    /// defensive match costs nothing). `nil` for any hex this palette
+    /// doesn't contain — decoding falls back to dropping the color rather
+    /// than inventing a preset that isn't one of these seven.
+    public static func matching(hex: String) -> RichTextColor? {
+        let normalized = hex.lowercased()
+        return allCases.first { $0.hex == normalized }
+    }
+}
+
 /// Task #129 (作成画面リッチテキスト化): a neutral, `NSAttributedString`-free
 /// model of formatted body text — the "AttributedString" side of the
 /// AttributedString⇄HTML serialization the task calls for, kept as its own
@@ -26,25 +113,51 @@ public struct RichTextRun: Equatable, Sendable, Codable {
     public var isItalic: Bool
     public var isUnderline: Bool
     public var isStrikethrough: Bool
+    /// Task #161: `.standard` (the default) never emits a `font-size` —
+    /// see `RichTextFontSize`'s doc comment.
+    public var fontSize: RichTextFontSize
+    /// Task #161: `nil` = no explicit color (inherits whatever the reading
+    /// client's own default text color is) — matches `isBold`/etc.'s
+    /// "absence of the flag means untouched" shape rather than always
+    /// carrying some `RichTextColor` default.
+    public var textColor: RichTextColor?
+    /// Task #161: 背景色/ハイライト — same "`nil` = none" shape as `textColor`.
+    public var backgroundColor: RichTextColor?
+    /// Task #161: the URL this run links to, if any — plain `String` (not
+    /// `URL`) since an in-progress edit may briefly hold something that
+    /// isn't yet a valid URL, and the HTML encoder only needs to
+    /// attribute-escape it, never parse it.
+    public var linkURL: String?
 
     public init(
         text: String,
         isBold: Bool = false,
         isItalic: Bool = false,
         isUnderline: Bool = false,
-        isStrikethrough: Bool = false
+        isStrikethrough: Bool = false,
+        fontSize: RichTextFontSize = .standard,
+        textColor: RichTextColor? = nil,
+        backgroundColor: RichTextColor? = nil,
+        linkURL: String? = nil
     ) {
         self.text = text
         self.isBold = isBold
         self.isItalic = isItalic
         self.isUnderline = isUnderline
         self.isStrikethrough = isStrikethrough
+        self.fontSize = fontSize
+        self.textColor = textColor
+        self.backgroundColor = backgroundColor
+        self.linkURL = linkURL
     }
 
     /// Whether this run carries no formatting at all — used by the HTML
     /// encoder to skip wrapping plain runs in any inline tag, and by the
     /// plain-text deriver (nothing to strip either way).
-    var isPlain: Bool { !isBold && !isItalic && !isUnderline && !isStrikethrough }
+    var isPlain: Bool {
+        !isBold && !isItalic && !isUnderline && !isStrikethrough
+            && fontSize == .standard && textColor == nil && backgroundColor == nil && linkURL == nil
+    }
 }
 
 /// A paragraph's list membership — `none` for an ordinary paragraph,

@@ -141,6 +141,113 @@ import Testing
         #expect(RichTextHTMLCoder.decode(html: html) == document)
     }
 
+    // MARK: - Task #161 (#129 第2段): フォントサイズ/文字色/背景色/リンク
+
+    @Test func nonStandardFontSizeRoundTrips() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "large", fontSize: .large)]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p><span style=\"font-size:20px\">large</span></p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func standardFontSizeEmitsNoStyleAttribute() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "plain", fontSize: .standard)]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p>plain</p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func textColorRoundTrips() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "red", textColor: .red)]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p><span style=\"color:#d93025\">red</span></p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func backgroundColorRoundTrips() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "highlighted", backgroundColor: .yellow)]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p><span style=\"background-color:#f9ab00\">highlighted</span></p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func fontSizeColorAndBackgroundCombineIntoOneSpan() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [
+                RichTextRun(text: "styled", fontSize: .xlarge, textColor: .blue, backgroundColor: .yellow),
+            ]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p><span style=\"font-size:26px;color:#1a73e8;background-color:#f9ab00\">styled</span></p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func linkRoundTrips() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "click here", linkURL: "https://example.test/a?x=1&y=2")]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p><a href=\"https://example.test/a?x=1&amp;y=2\">click here</a></p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func linkWithColorPutsStyleDirectlyOnTheAnchor() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "styled link", textColor: .purple, linkURL: "https://example.test")]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p><a href=\"https://example.test\" style=\"color:#8430ce\">styled link</a></p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func everyInlineFormattingKindTogetherRoundTrips() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [
+                RichTextRun(
+                    text: "everything", isBold: true, isItalic: true, isUnderline: true, isStrikethrough: true,
+                    fontSize: .large, textColor: .green, backgroundColor: .gray, linkURL: "https://example.test/all"
+                ),
+            ]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func mixedNewAndOldFormattingWithinOneParagraphRoundTrips() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [
+                RichTextRun(text: "plain "),
+                RichTextRun(text: "bold", isBold: true),
+                RichTextRun(text: " and "),
+                RichTextRun(text: "a link", linkURL: "https://example.test"),
+                RichTextRun(text: " and "),
+                RichTextRun(text: "highlighted", backgroundColor: .yellow),
+            ]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func decodingAnArbitraryFontSizeRoundsToTheNearestPreset() {
+        let html = "<p><span style=\"font-size:22px\">near large</span></p>"
+        let decoded = RichTextHTMLCoder.decode(html: html)
+        #expect(decoded.paragraphs.first?.runs.first?.fontSize == .large)
+    }
+
+    @Test func decodingAnUnknownHexColorDropsItRatherThanGuessing() {
+        let html = "<p><span style=\"color:#123456\">unknown</span></p>"
+        let decoded = RichTextHTMLCoder.decode(html: html)
+        #expect(decoded.paragraphs.first?.runs.first?.textColor == nil)
+    }
+
     @Test func htmlSpecialCharactersAreEscapedAndRoundTrip() {
         let document = RichTextDocument(paragraphs: [
             RichTextParagraph(runs: [RichTextRun(text: "<script>alert(\"a & b\")</script>")]),
