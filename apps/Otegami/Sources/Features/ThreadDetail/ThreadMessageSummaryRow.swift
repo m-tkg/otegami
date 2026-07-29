@@ -2,65 +2,36 @@ import SwiftUI
 import OtegamiStore
 
 /// The one-line summary for a single message: sender (+ avatar), a snippet,
-/// date, and a disclosure/forward chevron. Originally `ThreadDetailView`'s
-/// private `ThreadMessageSummaryRow` (the collapsed/about-to-collapse row
-/// inside its accordion); pulled into its own shared file and generalized
-/// via `Mode` — 画面構造改修バッチ (Task #33, 1) reuses the exact same row
-/// look for `ThreadSelectionView`'s "which message do you want to open"
-/// list (指示: 「スレッド選択画面の行は一覧と同等の情報 — アイコン・プレビュー・
-/// 時刻」), rather than hand-rolling a second, visually-diverging row for
-/// what is fundamentally the same "one message, one line" content.
-///
-/// `mode` drives the three things that differ between the two call sites:
-/// - the leading accent rail + background tint (`ThreadDetailView`'s
-///   accordion highlights whichever message is currently expanded; a
-///   selection-list row has no such "currently open" concept, so it's
-///   always neutral)
-/// - whether the snippet shows (accordion: only while collapsed, since the
-///   expanded `MessageView` right below already shows the real body;
-///   selection list: always, since there's no expanded body to make it
-///   redundant)
-/// - the trailing chevron's direction (accordion: up/down, matching
-///   expand/collapse; selection list: `chevron.right`, matching "tap to
-///   push a new screen" the same way every other list row in this app
-///   does)
+/// date, and a disclosure chevron. Originally `ThreadDetailView`'s private
+/// `ThreadMessageSummaryRow` (the collapsed/about-to-collapse row inside its
+/// accordion); pulled into its own shared file so both `ThreadDetailView`
+/// and (画面構造改修バッチ Task #33, 1 → Task #136 で削除) the now-gone
+/// `ThreadSelectionView` could reuse it. Task #136 (実機フィードバック
+/// 「アコーディオンに戻してほしい」) removed `ThreadSelectionView` and, with
+/// it, this row's only other caller — collapsing the `Mode` enum
+/// (`.accordion(isExpanded:)`/`.list`) that used to switch between them back
+/// down to a plain `isExpanded: Bool`, `ThreadDetailView`'s own accordion
+/// row shape. See `docs/design-system.md`'s Task #136 節 for the full
+/// history.
 struct ThreadMessageSummaryRow: View {
     let message: MessageRecord
     let accountId: String?
     /// D「アカウントのラベル色を変更可能に」: `AccountRecord.labelColorKey` for
     /// `accountId`, forwarded to `SenderAvatar` as-is.
     let accountLabelColorKey: String?
-    let mode: Mode
-
-    enum Mode {
-        /// `ThreadDetailView`'s accordion row — `isExpanded` mirrors
-        /// exactly what that view's `expandedMessageId == messageId` check
-        /// already computed before this type existed.
-        case accordion(isExpanded: Bool)
-        /// `ThreadSelectionView`'s plain "pick a message" list — no
-        /// expand/collapse state at all, so every row renders the same way
-        /// regardless of its neighbors.
-        case list
-    }
+    /// `ThreadDetailView`'s `expandedMessageId == messageId` check, forwarded
+    /// straight through — drives three things: the leading accent rail +
+    /// background tint, whether the snippet shows (only while collapsed,
+    /// since the expanded `MessageView` right below already shows the real
+    /// body), and the trailing chevron's direction (up/down, matching
+    /// expand/collapse).
+    let isExpanded: Bool
 
     @AppStorage(ListDisplaySettingsStore.showAvatarInDetailKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatarInDetail
 
-    private var isExpanded: Bool {
-        if case .accordion(let expanded) = mode { return expanded }
-        return false
-    }
+    private var showsSnippet: Bool { !isExpanded }
 
-    private var showsSnippet: Bool {
-        if case .accordion(let expanded) = mode { return !expanded }
-        return true
-    }
-
-    private var chevronSystemImage: String {
-        switch mode {
-        case .accordion(let expanded): expanded ? "chevron.up" : "chevron.down"
-        case .list: "chevron.right"
-        }
-    }
+    private var chevronSystemImage: String { isExpanded ? "chevron.up" : "chevron.down" }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -72,9 +43,7 @@ struct ThreadMessageSummaryRow: View {
             // footer toolbar acts on" instead of "this row's account".
             // Laid out as a real (if empty-when-collapsed) leading element
             // rather than an `.overlay`, so it never shifts this row's own
-            // content horizontally when it appears/disappears. Always
-            // clear for `.list` — a selection-list row never has a
-            // "currently open" state to highlight.
+            // content horizontally when it appears/disappears.
             Rectangle()
                 .fill(isExpanded ? OtegamiColor.accent : Color.clear)
                 .frame(width: AccountColorRail.width)
@@ -127,8 +96,7 @@ struct ThreadMessageSummaryRow: View {
         // collapsed default `paleBase` — see the accent rail comment above
         // for why the expanded accordion row specifically needs to read as
         // visually distinct from its (also `paleBase`-tinted) collapsed
-        // siblings. A `.list` row is never "expanded", so it always gets
-        // the plain `paleBase` tint.
+        // siblings.
         .background(isExpanded ? OtegamiColor.paleBaseStrong : OtegamiColor.paleBase)
         .contentShape(Rectangle())
     }

@@ -44,20 +44,20 @@ struct ThreadDetailView: View {
     /// accordion stack. A real-device report ("スレッドをオフにしても
     /// スレッドになる") traced to this screen always loading the whole
     /// underlying thread regardless of the flat/grouped display setting.
-    /// Non-`nil` for two different reasons now — see `isFlatModeEntry`'s
-    /// doc comment for why that separate flag exists to tell them apart:
-    /// - **A flat-mode row, or a flat search result** (`ListDisplaySettingsStore
-    ///   .threadingKey` OFF — `MessageListView`'s doc comment on why a flat
-    ///   row still carries its *real* underlying `threadId`).
-    /// - **画面構造改修バッチ (Task #33, 1)**: a grouped-mode thread,
-    ///   resolved to one specific message by `ThreadEntryView` — either
-    ///   trivially (the thread only has 1 message) or via
-    ///   `ThreadSelectionView`, iOS's push-based navigation
-    ///   (`MailScreenView`/`SearchScreenView`) never shows the old
-    ///   multi-message accordion at all anymore.
     ///
-    /// `nil` only for macOS's 3-pane `detailColumn` (`OtegamiApp.swift`,
-    /// untouched by Task #33 — `CLAUDE.md`'s iOS-only scope for that batch)
+    /// Non-`nil` only for **a flat-mode row, or a flat search result**
+    /// (`ListDisplaySettingsStore.threadingKey` OFF — `MessageListView`'s
+    /// doc comment on why a flat row still carries its *real* underlying
+    /// `threadId`) — `ThreadEntryView` forwards it straight through as
+    /// `preselectedMessageId`. 画面構造改修バッチ (Task #33, 1) briefly had
+    /// a second, grouped-mode reason too (a multi-message thread resolved
+    /// to one message via the now-removed `ThreadSelectionView`); Task #136
+    /// (実機フィードバック「アコーディオンに戻してほしい」) reverted that —
+    /// `ThreadEntryView` no longer resolves a grouped-mode thread to any
+    /// single message, so every grouped-mode open is `nil` again, letting
+    /// this view's own full-thread accordion (below) render.
+    ///
+    /// `nil` also for macOS's 3-pane `detailColumn` (`OtegamiApp.swift`)
     /// showing a real grouped-mode thread directly, and for macOS's
     /// restored "last opened thread" (which only ever remembers a thread
     /// id, not a message id — see `RootView
@@ -67,21 +67,21 @@ struct ThreadDetailView: View {
     /// 画面構造改修バッチ (Task #33, 3の続きで発覚した回帰の修正): whether
     /// `singleMessageId` is non-`nil` *because this is fundamentally a
     /// flat-mode (one-message-per-row) entry* — a flat list row, or a flat
-    /// search result — as opposed to a **grouped**-mode multi-message
-    /// thread where the caller (`ThreadEntryView`) simply resolved *which*
-    /// message to show first (either trivially, a 1-message thread with
-    /// nothing to pick, or via `ThreadSelectionView`). Both cases render
-    /// identically (one message, no accordion), but `notifyThreadRemoved()`
-    /// needs to tell them apart: only a genuinely flat-mode entry should
-    /// suppress "次のメールを開く" (see that method's doc comment for why).
-    /// Before `ThreadSelectionView` existed, `singleMessageId != nil` alone
-    /// was a reliable proxy for "flat mode" — a grouped-mode open was
-    /// always `nil` (the whole thread's accordion). That's no longer true
-    /// once a grouped-mode thread can *also* resolve to a single message
-    /// via the selection screen, hence this separate, explicit flag.
-    /// Defaults to `true` — matching every pre-`ThreadSelectionView` call
-    /// site's implicit assumption ("non-`nil` singleMessageId always meant
-    /// flat mode"), so an unmodified caller keeps the exact same behavior.
+    /// search result. `notifyThreadRemoved()` reads this (not a plain
+    /// `singleMessageId == nil` check) to decide whether "次のメールを開く"
+    /// applies (see that method's doc comment for why). Task #136 reverted
+    /// the brief period (画面構造改修バッチ Task #33, 1 → Task #136) where a
+    /// **grouped**-mode thread could *also* carry a non-`nil`
+    /// `singleMessageId` (resolved via the now-removed `ThreadSelectionView`)
+    /// — every call site once again passes `isFlatModeEntry: singleMessageId
+    /// != nil` (`ThreadEntryView`/`OtegamiApp.detailColumn`), so this flag is
+    /// functionally redundant with that check again today. Kept as its own
+    /// explicit parameter anyway (rather than collapsing back to reading
+    /// `singleMessageId` directly at each use site) — it names the actual
+    /// semantic distinction `notifyThreadRemoved()` cares about, and keeps
+    /// that call site working unchanged if a future change ever reintroduces
+    /// a grouped-mode single-message resolution the way Task #33 briefly
+    /// did. Defaults to `true`, matching every existing call site.
     var isFlatModeEntry = true
     /// M5/design-phase-3: forwarded to each expanded `MessageView` — see
     /// its `onReply` doc comment.
@@ -728,14 +728,15 @@ struct ThreadDetailView: View {
     /// "メール一覧に戻る".
     ///
     /// Checks `isFlatModeEntry`, not `singleMessageId == nil` — see that
-    /// property's doc comment for why they stopped being equivalent once
-    /// `ThreadSelectionView` (画面構造改修バッチ Task #33, 1) could also
-    /// leave `singleMessageId` non-`nil` for a genuinely **grouped**-mode
-    /// thread. A grouped-mode entry (whether it skipped straight to a
-    /// 1-message thread or resolved via the selection screen) still very
-    /// much wants 「次のメールを開く」 to keep working — only a truly
-    /// flat-mode (or flat search-result) entry has the "which message
-    /// within the next thread" ambiguity this scope limit exists for.
+    /// property's doc comment: the two are functionally equivalent again
+    /// today (Task #136 reverted the brief `ThreadSelectionView`-era window
+    /// where they could disagree), but this still names the actual
+    /// distinction that matters here rather than relying on that equivalence
+    /// holding. A grouped-mode entry (a 1-message thread, or this view's own
+    /// multi-message accordion) still very much wants 「次のメールを開く」
+    /// to keep working — only a truly flat-mode (or flat search-result)
+    /// entry has the "which message within the next thread" ambiguity this
+    /// scope limit exists for.
     private func notifyThreadRemoved() {
         if let onThreadRemoved, !isFlatModeEntry {
             onThreadRemoved(threadId)
@@ -841,7 +842,7 @@ private struct ThreadMessageRow: View {
                 } label: {
                     ThreadMessageSummaryRow(
                         message: message, accountId: accountId, accountLabelColorKey: accountLabelColorKey,
-                        mode: .accordion(isExpanded: isExpanded)
+                        isExpanded: isExpanded
                     )
                 }
                 .buttonStyle(.plain)
@@ -887,9 +888,10 @@ private struct ThreadMessageRow: View {
     }
 }
 
-// `ThreadMessageSummaryRow` (the row's actual visual content, above) moved
-// to its own file, `ThreadMessageSummaryRow.swift`, and its `isExpanded`
-// parameter generalized into a `Mode` — 画面構造改修バッチ (Task #33, 1)
-// reuses it, unchanged in this accordion's own look, for
-// `ThreadSelectionView`'s "pick a message" rows too. See that file's doc
-// comment.
+// `ThreadMessageSummaryRow` (the row's actual visual content, above) lives
+// in its own file, `ThreadMessageSummaryRow.swift` — split out during
+// 画面構造改修バッチ (Task #33, 1) so the now-gone `ThreadSelectionView`
+// could also reuse it (its `isExpanded: Bool` was briefly generalized into a
+// `Mode` enum for that); Task #136 removed `ThreadSelectionView` and
+// collapsed `Mode` back down to the plain `isExpanded: Bool` this accordion
+// row always actually needed. See that file's doc comment.

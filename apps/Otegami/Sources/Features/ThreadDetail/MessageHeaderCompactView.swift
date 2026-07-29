@@ -9,8 +9,8 @@ import OtegamiStore
 ///
 /// 件名はここに出さない — ナビゲーションタイトルにも出さない既存のルール
 /// (`ThreadDetailView`の doc comment) と同じ理由に加え、この画面を開く前に
-/// 必ず経由する一覧/スレッド選択画面 (`MessageListRow`/`ThreadSelectionView`)
-/// で既に見えている情報の重複を避けるため。From/To のフルアドレスと秒単位の
+/// 必ず経由する一覧画面 (`MessageListRow`) で既に見えている情報の重複を
+/// 避けるため。From/To のフルアドレスと秒単位の
 /// 日時も削った — 詳細が要る場合はフッターツールバーの「情報」
 /// (`MessageHeaderInfoView`) が既に全項目を持っている。
 ///

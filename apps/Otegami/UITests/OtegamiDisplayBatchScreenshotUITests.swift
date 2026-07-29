@@ -40,34 +40,26 @@ final class OtegamiDisplayBatchScreenshotUITests: XCTestCase {
         XCTAssertTrue(list.waitForExistence(timeout: 20))
         Thread.sleep(forTimeInterval: 5)
 
-        // Phase 2: スレッド選択画面→本文画面 (画面構造改修バッチ Task #33, 1
-        // 以降、折りたたみ行のアイコン/プレビューは一覧・選択画面側に、本文
-        // 画面は常に単一メッセージ・ヘッダに件名を出さないことを確認) —
-        // 3通のスレッド「来週のランチ」を開く。
+        // Phase 2: スレッドのアコーディオン本文画面 (Task #136 — 画面構造改修
+        // バッチ Task #33, 1 が挟んでいた選択画面を廃止し、一覧タップで直接
+        // アコーディオンへ戻した。折りたたみ行のアイコン/プレビューは一覧側と
+        // このアコーディオンの折りたたみ行の両方に、本文画面はヘッダに件名を
+        // 出さないことを確認) — 3通のスレッド「来週のランチ」を開く。
         let threadRow = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "来週のランチ")).firstMatch
         XCTAssertTrue(waitForElementScrollingIfNeeded(threadRow, in: app), "Expected the 3-message thread row to be present")
         threadRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
-        // 2+メッセージのスレッドは選択画面を経由する — その行自体も一覧の行と
-        // 同等の情報 (アイコン・プレビュー・時刻) を持つ。
-        let selection = app.scrollViews["threadSelection.scrollView"]
-        XCTAssertTrue(selection.waitForExistence(timeout: 20), "Expected the thread selection screen to appear")
-        let selectionRows = selection.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadSelection.message."))
-        XCTAssertTrue(waitForCount(selectionRows, atLeast: 3, timeout: 20), "Expected 3 selection rows, found \(selectionRows.count)")
-        Thread.sleep(forTimeInterval: 4)
-        selectionRows.element(boundBy: selectionRows.count - 1).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
         let detail = app.scrollViews["threadDetail.scrollView"]
-        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected the message body screen to appear after tapping a selection row")
+        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected the thread to open straight into the accordion body screen")
         let headers = detail.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message."))
             .matching(NSPredicate(format: "identifier CONTAINS %@", ".header"))
-        XCTAssertTrue(waitForCount(headers, atLeast: 1, timeout: 20), "Expected the single message header row, found \(headers.count)")
-        XCTAssertEqual(headers.count, 1, "Expected no thread accordion/stack on the message body screen, found \(headers.count) header rows")
+        XCTAssertTrue(waitForCount(headers, atLeast: 3, timeout: 20), "Expected 3 header rows in the accordion, found \(headers.count)")
+        XCTAssertEqual(headers.count, 3, "Expected exactly 3 header rows (1 per message), found \(headers.count)")
         Thread.sleep(forTimeInterval: 6)
 
-        // 深さがスレッド選択画面ぶん1段増えた (一覧→選択→本文) —
-        // `popBackOnceIfNeeded`だと1段しか戻らないため、確実に一覧まで戻る
-        // `returnToMailTabRootIfNeeded`(最大3回戻る)を使う。
+        // 深さは一覧→本文の1段のみ (選択画面が無くなったため) —
+        // `popBackOnceIfNeeded`で十分だが、`returnToMailTabRootIfNeeded`
+        // (最大3回戻る) を使っても無害なのでそのまま踏襲する。
         returnToMailTabRootIfNeeded(in: app)
 
         // Phase 3: 作成画面の添付ボタン — 単一の統合ボタンとして存在すること

@@ -152,8 +152,15 @@ struct FolderListSheet: View {
             // 『フラグ付き』とかの高さが高い」): 行高そのものは 6257a0d で
             // 圧縮済み — 残っていた高さの正体はセクション見出し行の上下に
             // つく List 既定のセクション間余白。`.listSectionSpacing` で
-            // セクション間を最小に詰める。
+            // セクション間を最小に詰める。`FolderListSheet`自体は iOS 専用
+            // (`HamburgerMenuContainer`のドロワーとしてのみ使われる — macOS は
+            // 別の `SidebarView` を持つ) だが、この修飾子自体は macOS で
+            // `unavailable` なため `#if os(iOS)` で囲まないと `make mac` の
+            // ビルドを壊す (Swift はプラットフォーム間で未使用コードでも
+            // 全プラットフォーム分をコンパイルする)。
+            #if os(iOS)
             .listSectionSpacing(4)
+            #endif
             // `menuScrollTarget` の doc comment 参照 — 展開直後に見出しを
             // 上端へスクロール。`.onChange` は展開行の insert が同じ更新
             // サイクルで確定した後に発火するため、`scrollTo` 時点で行の

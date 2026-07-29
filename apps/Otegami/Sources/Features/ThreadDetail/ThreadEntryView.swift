@@ -1,123 +1,67 @@
 import SwiftUI
-import GRDB
-import os
 import OtegamiCore
 import OtegamiStore
 
-/// 画面構造改修バッチ (Task #33, 1): the destination iOS's push-based
-/// navigation (`MailScreenView`/`SearchScreenView`) actually pushes for
-/// "open this thread" now, instead of `ThreadDetailView` directly. Decides,
-/// once the thread's real message count is known, which of the two
-/// requirements applies:
-/// - **1 message**: skip straight to `ThreadDetailView` in single-message
-///   mode (`singleMessageId`) — no selection screen, matching "スレッドが
-///   1通だけなら選択画面をスキップして直接本文へ" (承認済み).
-/// - **2+ messages**: show `ThreadSelectionView` first; tapping a row then
-///   pushes to `ThreadDetailView`, also in single-message mode for the
-///   tapped message — so the body screen *never* shows the thread
-///   accordion/stack, regardless of entry path.
+/// Task #136 (実機フィードバック「スレッド表示 ON の本文画面をアコーディオンに
+/// 戻してほしい」): a thin pass-through to `ThreadDetailView` again — see
+/// `docs/design-system.md`'s Task #136 節 for the full before/after. This
+/// type used to (画面構造改修バッチ Task #33, 1) read the thread's message
+/// count itself and, for 2+ messages, interpose `ThreadSelectionView` (a
+/// separate "pick one message" screen) before ever reaching
+/// `ThreadDetailView`, which in turn only ever rendered that one picked
+/// message — the multi-message accordion `ThreadDetailView` itself already
+/// implements (`ThreadMessageRow`/`showsHeader`, still there — see its own
+/// doc comment) was reachable from iOS only for a degenerate 1-message
+/// thread. Real-device feedback asked for that accordion back as the direct
+/// landing screen, so this view no longer does any of its own message-count
+/// lookup or branching — it just decides *which* of `ThreadDetailView`'s two
+/// existing modes applies, from `preselectedMessageId` alone, and always did
+/// have to make exactly this decision even when `ThreadSelectionView`
+/// existed:
+/// - **`preselectedMessageId` non-`nil`**: a flat-mode row (or flat search
+///   result) that already knows exactly which single message it wants —
+///   `singleMessageId: preselectedMessageId, isFlatModeEntry: true` (see
+///   `ThreadDetailView.isFlatModeEntry`'s doc comment for why the flag is
+///   `true` here specifically — suppresses "次のメールを開く"'s ambiguity
+///   for a flat-mode close).
+/// - **`preselectedMessageId == nil`**: a grouped-mode thread (row or
+///   search result). `singleMessageId: nil, isFlatModeEntry: false` lets
+///   `ThreadDetailView.load()` take its live, whole-thread
+///   `ThreadQuery.messagesObservation(threadId:)` path — the same path
+///   macOS's `OtegamiApp.detailColumn` already uses directly (untouched by
+///   either this batch or Task #33, `CLAUDE.md`'s 1a-is-compact-only
+///   scoping) — which pins the thread's *newest* message expanded and
+///   collapses the rest, degenerating to "one row, always expanded, nothing
+///   to collapse" for a thread that only ever had 1 message (that view's own
+///   doc comment already documented this fallback; it just wasn't reachable
+///   from iOS's push navigation before this revert).
 ///
-/// macOS's 3-pane `detailColumn` (`OtegamiApp.swift`) keeps instantiating
-/// `ThreadDetailView` directly and is untouched by this type — `CLAUDE.md`'s
-/// "1a はコンパクト幅向けの設計であり、Macの広い画面には適用しない" reasoning
-/// extends naturally to this batch's item 1 too: a wide macOS detail pane
-/// doesn't have the "本文のエリアが狭い" problem this screen exists to solve,
-/// and inserting an extra selection pane there would be a bigger interaction
-/// change than this batch asked for.
+/// No longer touches `environment.database` at all — the message-count
+/// read this view used to do (`ThreadQuery.messages(threadId:db:)`, once,
+/// to decide 1-vs-2+) doesn't exist anymore; `ThreadDetailView.load()`
+/// already re-derives everything this view previously duplicated
+/// (`accountId`/`accountLabelColorKey` included, via `environment.accounts`
+/// inside its own `load()`/`messageRow(for:containerSize:)`).
 struct ThreadEntryView: View {
-    @Environment(AppEnvironment.self) private var environment
     let threadId: Int64
     /// A flat-mode row (`ListDisplaySettingsStore.threadingKey` OFF) already
     /// knows exactly which single message it wants open —
     /// `MessageListView.selectedMessageId`'s doc comment. Non-`nil` here
-    /// skips both the message-count lookup and the selection screen
-    /// entirely and goes straight to that message, exactly matching this
-    /// screen's pre-existing (pre-Task #33) flat-mode behavior.
+    /// selects `ThreadDetailView`'s flat/single-message mode directly, with
+    /// no further lookup.
     let preselectedMessageId: Int64?
     var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
     var onForward: (Int64) -> Void = { _ in }
     var onSearchFromSender: ((String) -> Void)?
     var onThreadRemoved: ((Int64) -> Void)?
 
-    @State private var accountId: String?
-    @State private var accountLabelColorKey: String?
-    @State private var messages: [MessageRecord] = []
-    @State private var isLoaded = false
-    @State private var selectedMessageId: Int64?
-
     var body: some View {
-        Group {
-            if let preselectedMessageId {
-                // 実機バグ報告「スレッド表示をオフにしてるのに、スレッドで
-                // 表示されることがある」の再発防止: この分岐はフラットモード
-                // (または検索のフラット結果) の行が「これが唯一のメッセージ」
-                // と既に確定済みで渡してきたケース — `isFlatModeEntry: true`
-                // (`ThreadDetailView`のdoc comment参照) で「次のメールを開く」
-                // を抑制する、これまでどおりの挙動。
-                detailView(singleMessageId: preselectedMessageId, isFlatModeEntry: true)
-            } else if !isLoaded {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(OtegamiColor.background)
-                    .accessibilityIdentifier("threadEntry.loadingIndicator")
-            } else if messages.count <= 1 {
-                // グループ化モードのスレッドが1通しか無かっただけ —
-                // `isFlatModeEntry: false`(既定)のまま。「次のメールを開く」
-                // は引き続き有効。
-                detailView(singleMessageId: messages.first?.id, isFlatModeEntry: false)
-            } else {
-                ThreadSelectionView(
-                    messages: messages, accountId: accountId, accountLabelColorKey: accountLabelColorKey,
-                    onSelect: { selectedMessageId = $0 }
-                )
-                .navigationDestination(item: $selectedMessageId) { messageId in
-                    // 同上 — 選択画面でどのメッセージを選んでも、これは
-                    // グループ化モードのスレッドのまま。
-                    detailView(singleMessageId: messageId, isFlatModeEntry: false)
-                }
-            }
-        }
-        .task(id: threadId) { await load() }
-        .onAppear {
-            // Task #105 続報の計装: cold launch 直後の初回タップだけ
-            // `preselectedMessageId` が nil で渡り、フラット設定なのに
-            // スレッド選択画面が出る実機報告の切り分け用 (notice — log
-            // collect のアーカイブに残るレベル)。
-            Self.entryLogger.notice(
-                "ThreadEntryView appear: threadId=\(threadId, privacy: .public) preselectedMessageId=\(preselectedMessageId.map(String.init) ?? "nil", privacy: .public)"
-            )
-        }
-    }
-
-    private static let entryLogger = Logger(subsystem: "com.mtkg.otegami", category: "ThreadEntry")
-
-    private func detailView(singleMessageId: Int64?, isFlatModeEntry: Bool) -> ThreadDetailView {
         ThreadDetailView(
-            threadId: threadId, singleMessageId: singleMessageId, isFlatModeEntry: isFlatModeEntry,
+            threadId: threadId,
+            singleMessageId: preselectedMessageId,
+            isFlatModeEntry: preselectedMessageId != nil,
             onReply: onReply, onForward: onForward,
             onSearchFromSender: onSearchFromSender, onThreadRemoved: onThreadRemoved
         )
-    }
-
-    /// A one-shot read (not a live `ValueObservation` like `ThreadDetailView
-    /// .load()`'s own message fetch) — this view only ever needs the
-    /// message count/list once, to decide which screen to show; the screen
-    /// it decides on (`ThreadDetailView` or `ThreadSelectionView`) is what
-    /// actually needs to stay live afterward, and `ThreadDetailView` already
-    /// does.
-    private func load() async {
-        guard preselectedMessageId == nil else { return }
-        isLoaded = false
-        messages = []
-
-        let thread = try? await environment.database.dbWriter.read { db in
-            try ThreadRecord.fetchOne(db, key: threadId)
-        }
-        accountId = thread?.accountId
-        accountLabelColorKey = accountId.flatMap { id in environment.accounts.first(where: { $0.id == id })?.labelColorKey }
-        messages = (try? await environment.database.dbWriter.read { db in
-            try ThreadQuery.messages(threadId: threadId, db: db)
-        }) ?? []
-        isLoaded = true
     }
 }

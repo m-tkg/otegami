@@ -908,6 +908,128 @@ final class AppEnvironment {
             self.uitestDirectOpenThreadId = capturedThreadId
         }
 
+        // Task #136 (実機フィードバック「スレッド表示 ON の本文画面を
+        // アコーディオンに戻してほしい」): same "insert a fully local,
+        // already-`.fetched` fake message" escape hatch as
+        // `OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE` above — `scripts/
+        // verify-screen.sh`'s only way to get a genuinely multi-message
+        // thread (`ThreadDetailView`'s accordion, one row per message) on
+        // screen without a real IMAP/threading round trip. Unlike every
+        // other fixture in this file, this one assembles its `ThreadRecord`
+        // and 3 `MessageRecord`s directly with a shared `threadId` (the same
+        // technique the Gmail archive-filter fixture's `inboxThread` above
+        // uses) rather than going through `ThreadAssigner.assignThread` —
+        // simpler and fully deterministic than getting `Threader`'s
+        // References/subject-matching heuristics to actually join 3
+        // messages the way a real reply chain would, when all this needs is
+        // "3 distinct messages, one thread, in order". One plain-text
+        // message in the middle of two HTML ones exercises both rendering
+        // paths across accordion row switches (the newest, HTML, is what
+        // opens expanded by default) — see `docs/design-system.md`'s
+        // Task #136 節 for why this matters (WKWebView height-reporting
+        // across repeated expand/collapse, previously only exercised by
+        // macOS's always-on accordion, never iOS's push navigation before
+        // this task).
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_MULTI_MESSAGE_THREAD"] == "1" {
+            let fakeAccountEmail = "uitest-fake-multi-message-thread@example.com"
+            let fakeAccount = AccountRecord(
+                displayName: "Fake Multi-Message Thread (UITest)",
+                email: fakeAccountEmail,
+                authType: .password,
+                kind: .generic,
+                imapHost: "127.0.0.1",
+                imapPort: 1,
+                imapSecurity: .plain,
+                imapUsername: fakeAccountEmail,
+                sortOrder: 1_003
+            )
+            var capturedThreadId: Int64?
+            try? database.dbWriter.write { db in
+                // Idempotent across repeated `app.launch()`s within the
+                // same install — same rationale/guard as the HTML fixture
+                // block above.
+                guard try AccountRecord.filter(Column("email") == fakeAccountEmail).fetchOne(db) == nil else { return }
+                try fakeAccount.insert(db)
+                var mailbox = MailboxRecord(accountId: fakeAccount.id, path: "INBOX", displayPath: "INBOX", role: .inbox, messageCount: 3)
+                try mailbox.insert(db)
+
+                let subject = "四半期振り返りミーティングの日程調整 (UITest)"
+                var thread = ThreadRecord(accountId: fakeAccount.id, normalizedSubject: subject, messageCount: 0, unreadCount: 0)
+                try thread.insert(db)
+                guard let threadId = thread.id else { return }
+
+                let now = Date()
+                // Task #51 と同じ理由 (同秒タイムスタンプの並び順不安定さ回避)
+                // — 1秒ずつずらす。oldest-first で insert する。
+                var original = MessageRecord(
+                    mailboxId: mailbox.id!, uid: 1,
+                    messageId: "<uitest-fake-multi-thread-1@otegami.test>",
+                    subject: subject, normalizedSubject: subject,
+                    fromAddresses: [EmailAddress(name: "田中花子", address: "tanaka@example.com")],
+                    toAddresses: [EmailAddress(address: fakeAccountEmail)],
+                    fromText: "田中花子 <tanaka@example.com>",
+                    internalDate: now.addingTimeInterval(-200),
+                    flagsRaw: MessageFlags.seen.rawValue,
+                    threadId: threadId,
+                    bodyState: .fetched,
+                    snippet: "来週の四半期振り返りミーティングですが、火曜または木曜の午後でご都合いかがでしょうか。"
+                )
+                try original.insert(db)
+                try MessageBodyRecord(
+                    messageId: original.id!,
+                    plainText: "来週の四半期振り返りミーティングですが、火曜または木曜の午後でご都合いかがでしょうか。\n\nよろしくお願いします。",
+                    html: nil, fetchedAt: Date()
+                ).insert(db)
+
+                var reply1 = MessageRecord(
+                    mailboxId: mailbox.id!, uid: 2,
+                    messageId: "<uitest-fake-multi-thread-2@otegami.test>",
+                    inReplyTo: "<uitest-fake-multi-thread-1@otegami.test>",
+                    subject: "Re: \(subject)", normalizedSubject: subject,
+                    fromAddresses: [EmailAddress(name: "佐藤次郎", address: "sato@example.com")],
+                    toAddresses: [EmailAddress(name: "田中花子", address: "tanaka@example.com")],
+                    fromText: "佐藤次郎 <sato@example.com>",
+                    internalDate: now.addingTimeInterval(-100),
+                    flagsRaw: MessageFlags.seen.rawValue,
+                    threadId: threadId,
+                    bodyState: .fetched,
+                    snippet: "木曜の午後14:00でお願いします。会議室は空いていますか。"
+                )
+                try reply1.insert(db)
+                try MessageBodyRecord(
+                    messageId: reply1.id!, plainText: nil,
+                    html: "<p>木曜の午後14:00でお願いします。会議室は空いていますか。</p>",
+                    fetchedAt: Date()
+                ).insert(db)
+
+                var reply2 = MessageRecord(
+                    mailboxId: mailbox.id!, uid: 3,
+                    messageId: "<uitest-fake-multi-thread-3@otegami.test>",
+                    inReplyTo: "<uitest-fake-multi-thread-2@otegami.test>",
+                    subject: "Re: \(subject)", normalizedSubject: subject,
+                    fromAddresses: [EmailAddress(name: "田中花子", address: "tanaka@example.com")],
+                    toAddresses: [EmailAddress(name: "佐藤次郎", address: "sato@example.com")],
+                    fromText: "田中花子 <tanaka@example.com>",
+                    internalDate: now,
+                    threadId: threadId,
+                    bodyState: .fetched,
+                    snippet: "承知しました、木曜14:00で確定します。会議室Aを予約してカレンダー招待を送ります。"
+                )
+                try reply2.insert(db)
+                try MessageBodyRecord(
+                    messageId: reply2.id!, plainText: nil,
+                    html: "<p>承知しました、木曜14:00で確定します。</p><p>会議室Aを予約してカレンダー招待を送ります。</p>",
+                    fetchedAt: Date()
+                ).insert(db)
+
+                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                capturedThreadId = threadId
+            }
+            if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_OPEN_MULTI_MESSAGE_THREAD_DIRECTLY"] == "1" {
+                self.uitestDirectOpenThreadId = capturedThreadId
+            }
+        }
+
         self.syncCoordinator = SyncCoordinator(
             database: database,
             sessionFactory: { config in MailCoreIMAPSession(config: config) },

@@ -33,26 +33,20 @@ final class OtegamiFeedbackBatch2ScreenshotUITests: XCTestCase {
         )
         Thread.sleep(forTimeInterval: 2)
 
-        // 画面構造改修バッチ (Task #33, 1) 以降、2通の「明日の打ち合わせに
-        // ついて」系スレッドはまずスレッド選択画面を経由する — E のときに
-        // ここで確認していた「アコーディオン化」自体は、複数メッセージの
-        // スレッドがもう本文画面にアコーディオン表示されなくなったため
-        // 消滅した。代わりに新しい選択画面→単一メッセージ本文の両方を
+        // E「アコーディオン化」— Task #33 が2通以上のスレッドの前にスレッド
+        // 選択画面を挟むよう変更していた期間もあったが、Task #136 (実機
+        // フィードバック「アコーディオンに戻してほしい」) でその選択画面を
+        // 廃止し、一覧タップで直接このアコーディオン本文画面へ戻した。2通の
+        // 「明日の打ち合わせについて」系スレッドを開き、アコーディオンを
         // ホールドしてスクリーンショット対象にする。
         let threadRow = app.collectionViews["messageList.list"].cells
             .containing(NSPredicate(format: "label CONTAINS %@", "打ち合わせ")).firstMatch
         if threadRow.waitForExistence(timeout: 10) {
             threadRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-            let selectionRows = app.scrollViews["threadSelection.scrollView"].buttons
-                .matching(NSPredicate(format: "identifier CONTAINS %@", "threadSelection.message."))
-            if app.scrollViews["threadSelection.scrollView"].waitForExistence(timeout: 10), selectionRows.count > 0 {
-                Thread.sleep(forTimeInterval: 2)
-                selectionRows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-            }
             _ = app.scrollViews["threadDetail.scrollView"].waitForExistence(timeout: 10)
             Thread.sleep(forTimeInterval: 2)
-            // 選択画面を経由した分、深さが最大2段増えている場合がある —
-            // `returnToMailTabRootIfNeeded`で確実に一覧まで戻る。
+            // 深さは一覧→本文の1段のみ — `returnToMailTabRootIfNeeded`は
+            // 無害な上位互換なのでそのまま踏襲する。
             returnToMailTabRootIfNeeded(in: app)
         }
 

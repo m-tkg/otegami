@@ -89,9 +89,6 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
         let firstRow = list.cells.firstMatch
         XCTAssertTrue(firstRow.waitForExistence(timeout: 20), "Expected at least one row in the message list")
         firstRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-        // 画面構造改修バッチ (Task #33, 1): whichever thread sorts first may
-        // now route through the selection screen first (2+ messages) — see
-        // `waitForThreadDetailPossiblyThroughSelectionScreen`'s doc comment.
         XCTAssertTrue(waitForThreadDetailPossiblyThroughSelectionScreen(in: app), "Expected tapping the top row to open its thread detail")
 
         // The reported layout-collapse symptom: the expanded message's
@@ -224,12 +221,8 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
         let row = list.cells.firstMatch
         XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected at least one row to open")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-        // 画面構造改修バッチ (Task #33, 1): whichever thread sorts first may
-        // now route through the selection screen first (2+ messages) — see
-        // `waitForThreadDetailPossiblyThroughSelectionScreen`'s doc comment.
-        // Depth back to the list can now be up to 2 levels, not just 1, so
-        // this uses `returnToMailTabRootIfNeeded` (up to 3 pops) instead of
-        // `popBackOnceIfNeeded` both times below.
+        // Task #136: see `waitForThreadDetailPossiblyThroughSelectionScreen`'s
+        // doc comment — this always opens straight into the accordion now.
         XCTAssertTrue(waitForThreadDetailPossiblyThroughSelectionScreen(in: app), "Expected the first tap to open the thread detail")
 
         returnToMailTabRootIfNeeded(in: app)

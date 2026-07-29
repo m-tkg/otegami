@@ -6333,3 +6333,116 @@ INBOX(未読)+Archive(既読)の2メールボックスにまたがるケース�
 各行の未読バッジがそのアカウントのアーカイブ内未読数と一致すること、
 (2) 受信トレイでスレッド4つ・未読メッセージ6件のような状態を作り、
 ヘッダのタイトル横が6になること。
+
+## Task #136: スレッド表示 ON の本文画面をアコーディオンに戻す (#33 の revert)
+
+実機フィードバック「スレッド表示 ON の本文画面をアコーディオンに戻して
+ほしい」— 画面構造改修バッチ (Task #33, 1、本ドキュメント「画面構造改修
+バッチ: スレッド選択画面・圧縮ヘッダ・カテゴリ優先メニュー」節) が
+2通以上のスレッドの前に挟んだ`ThreadSelectionView`(「どのメールを開くか
+選ぶ」一覧型の中間画面) を撤去し、一覧タップで直接アコーディオン本文画面
+(スレッド内の全メッセージを時系列で縦列挙、最新のみ展開、他は折りたたみ
+行) へ戻す revert。
+
+### 何が変わったか
+
+`ThreadDetailView`自身のアコーディオン実装 (`ThreadMessageRow`/
+`showsHeader`/`expandedMessageId`による厳密な単一展開など) は Task #33 の
+間も**削除されていなかった** — 削除されていたのは「そこへ辿り着く経路」
+だけで、iOS の push 型ナビゲーションだけが`ThreadSelectionView`経由の
+単一メッセージ表示に固定されていた (macOS の3ペイン`detailColumn`は
+Task #33の対象外のままこのアコーディオンを直接使い続けていた)。そのため
+今回の実装は「アコーディオンを作り直す」のではなく「そこへの経路を
+戻す」だけで完結した:
+
+- **`ThreadEntryView`** (`apps/Otegami/Sources/Features/ThreadDetail/
+  ThreadEntryView.swift`): メッセージ数を問い合わせて1通/2通以上で
+  分岐する自前の`load()`と`ThreadSelectionView`への分岐を全廃し、
+  `preselectedMessageId`の有無だけで`ThreadDetailView`の呼び方
+  (`singleMessageId`/`isFlatModeEntry`) を決めるだけの薄いラッパーに
+  縮小した。フラット行 (`preselectedMessageId`非nil) は従来どおり
+  `isFlatModeEntry: true`の単一メッセージモード、グループ化モード
+  (`preselectedMessageId == nil`) は常に`singleMessageId: nil,
+  isFlatModeEntry: false`——`ThreadDetailView.load()`の既存の全件
+  observation 分岐 (`ThreadQuery.messagesObservation(threadId:)`) が
+  そのまま復活する。`environment.database`への依存自体が無くなった。
+- **`ThreadSelectionView.swift`は削除**。
+- **`ThreadMessageSummaryRow`**: `ThreadSelectionView`という唯一の
+  もう一方の利用者が消えたので、`Mode`列挙 (`.accordion(isExpanded:)`/
+  `.list`) を元の`isExpanded: Bool`単一パラメータへ戻した
+  (`ThreadDetailView`の呼び出し側もそれに合わせて単純化)。
+- **`ThreadDetailView.isFlatModeEntry`**: 今回のrevertで「グループ化
+  モードの`singleMessageId`が非nilになる」ケース (Task #33が持ち込んだ
+  もの) が再び存在しなくなり、`isFlatModeEntry == (singleMessageId !=
+  nil)`という等価性が全呼び出し元で復活した。プロパティ自体は削除せず
+  残した——`notifyThreadRemoved()`が実際に問いたい意味 (「次のメールを
+  開く」を抑制すべきフラットモード起動かどうか) を名前で表す形に
+  しておく方が、`singleMessageId`の解釈が将来また変わっても壊れにくい
+  という判断。
+
+### 一覧側: 件数バッジの位置
+
+`ThreadRowView.swift`(`ThreadRowTextStack`): 件名の隣にあった数字だけの
+バッジ (画面構造改修バッチが選択画面と同時に持ち込んでいた表示) を廃止し、
+`ThreadRowTrailing`(日時・ピン留めインジケータと同じ右端の縦積み) の
+日時のすぐ下に「`square.stack`アイコン + 件数」(専用の`LabelStyle`で
+アイコン-テキスト間隔を詰めた`Label`) として移設した——本文画面が
+アコーディオンに戻り「複数通ある」ことが本文側でも見えるようになった
+のに合わせ、一覧側も数字だけでなくアイコンで明示する。2通以上のときのみ
+表示 (`summary.thread.messageCount > 1`) は変更なし。
+
+`ThreadQuery`への変更は不要だった——`ThreadSummary.thread.messageCount`
+(`ThreadRecord.messageCount`) は元々グループ化モード・フラットモード
+(`ThreadSummary.init(flatMessage:accountId:)`が`messageCount: 1`固定)
+の両方で正しい値を持っており、バッジ側は既存のこのフィールドを読むだけで
+済んだ。
+
+### WKWebView 高さ報告の複数インスタンス耐性
+
+`HTMLWebViewRepresentable.makeUIView`/`makeCoordinator`は呼び出しごとに
+新しい`WKWebView`/`HTMLWebViewCoordinator`を作る通常の`UIViewRepresentable`
+パターンで、共有される状態は`WKProcessPool`(実機フィードバック第3弾 (C)
+で意図的に共有、プロセス起動コストの話でメッセージ間の状態漏れとは無関係)
+だけ——`ThreadDetailView`のアコーディオンは展開中の1通だけが常に
+`MessageView`/`HTMLMessageView`をマウントする (`ThreadMessageRow.body`の
+`if isExpanded`) ので、同時に複数の`WKWebView`インスタンスが並存する
+ことはない。行を切り替えるたびに古いインスタンスは破棄され新しい
+インスタンスに置き換わるだけで、`measuredHTMLContentHeight`は
+`ThreadMessageRow`の`.onChange(of: isExpanded)`で展開解除のたびに`nil`へ
+リセットされる (Task #58の既存ロジック、無変更)。macOSの3ペイン
+`detailColumn`はTask #33以降ずっとこの経路を直接使い続けており、この
+「行を跨いだ複数インスタンスの入れ替わり」自体はこのタスクで新規に
+発生した状況ではない——`scripts/verify-screen.sh thread-accordion`
+(下記) で iOS 側でも問題なく高さが再計測されることを screenshot で確認
+した程度に留め、専用の防御コードは追加していない。
+
+### 検証
+
+- `scripts/verify-screen.sh`に`thread-list`(3通スレッドを一覧に挿入する
+  だけ——日時の下の件数バッジ確認用) と`thread-accordion`(同じ3通スレッド
+  を`-uitestsOpen...`系と同じ「タップ不要の直接遷移」で開く——最新
+  (HTML) 展開・残り2通 (プレーンテキスト1通+HTML1通) 折りたたみの
+  アコーディオン確認用) を追加。`AppEnvironment`に対応する
+  `OTEGAMI_UITEST_INSERT_FAKE_MULTI_MESSAGE_THREAD`/
+  `OTEGAMI_UITEST_OPEN_MULTI_MESSAGE_THREAD_DIRECTLY`挿入ブロックを新設
+  (`inboxThread`と同じ「`MessageRecord.threadId`を直接同一値で埋める」
+  方式——`ThreadAssigner.assignThread`の References/件名マッチングに
+  頼らず決定的に3通1スレッドを作る)。両シナリオともscreenshotで確認
+  済み: 一覧行は日時の下に「アイコン+3」、本文画面は3行のヘッダ
+  (最新のみ展開・本文表示、他2行は折りたたみ+チェブロン) が並ぶ。
+- `OtegamiUITests`側 (XCUITest、実機/シミュレータのタップ不達不調が
+  既知のため`make ios`のビルド確認のみでテスト実行はしていない):
+  `OtegamiM4ThreadDetailUITests`を書き直し (選択画面前提のアサーション
+  → アコーディオンの3ヘッダ行+厳密な単一展開の確認)、
+  `OtegamiDisplayBatchScreenshotUITests`/`OtegamiFeedbackBatch2
+  ScreenshotUITests`の選択画面依存コードを除去、共有ヘルパー
+  `DovecotAccountUITestHelpers.waitForThreadDetailPossiblyThroughSelectionScreen`
+  を「常に`threadDetail.scrollView`を待つだけ」に単純化 (呼び出し側は
+  無変更のまま動作を保つ)。
+- `make test`green (`MessageBuilderTests`の既知flakeのみ許容)。
+  `make mac`/`make ios`ともgreen (`xcodebuild build`/`build-for-testing`
+  で確認、UITestターゲットのコンパイルも含む)。副産物として、直前に
+  他エージェントが着手し未解決のまま残していた`make mac`のビルド break
+  (`FolderListSheet.swift`の`.listSectionSpacing(4)`——iOS専用の
+  `List`修飾子で`unavailable in macOS`、`#if os(iOS)`が抜けていた) も
+  同時に修正した——本タスクの変更とは独立の1行修正。

@@ -75,15 +75,12 @@ final class OtegamiQASweepUITests: XCTestCase {
             // this is exactly the symptom the List(selection:) livelock bug
             // produced.
             firstRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-            // 画面構造改修バッチ (Task #33, 1): whichever thread sorts first
-            // may now route through the selection screen first (2+
-            // messages) — see this helper's doc comment.
+            // Task #136: see `waitForThreadDetailPossiblyThroughSelectionScreen`'s
+            // doc comment — opens straight into the accordion now.
             XCTAssertTrue(waitForThreadDetailPossiblyThroughSelectionScreen(in: app), "cycle \(cycle): tapping the top row did not open a thread")
             // Pop back to the list before the next cycle's relaunch so we
             // don't accumulate state that changes what the *next* cold
-            // launch would show. Depth can now be up to 2 levels (list →
-            // selection → detail), not just 1, so this uses the
-            // up-to-3-pops helper instead of a single `popBackOnceIfNeeded`.
+            // launch would show.
             returnToMailTabRootIfNeeded(in: app)
             XCTAssertTrue(list.waitForExistence(timeout: 10), "cycle \(cycle): could not return to the message list")
         }
@@ -107,19 +104,15 @@ final class OtegamiQASweepUITests: XCTestCase {
             let firstRow = list.cells.firstMatch
             XCTAssertTrue(waitForElementScrollingIfNeeded(firstRow, in: app), "cycle \(cycle): no row to open")
             firstRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-            // 画面構造改修バッチ (Task #33, 1): see this helper's doc comment.
             XCTAssertTrue(waitForThreadDetailPossiblyThroughSelectionScreen(in: app), "cycle \(cycle): thread detail did not open")
 
             app.terminate()
             app.launch()
 
             // Cold relaunch must always land on the message list directly,
-            // never resume the detail pane (the originally-fixed bug) —
-            // nor the (also transient, non-restored) thread selection
-            // screen, its new intermediate step.
+            // never resume the detail pane (the originally-fixed bug).
             XCTAssertTrue(list.waitForExistence(timeout: 20), "cycle \(cycle): relaunch did not show the message list")
             XCTAssertFalse(app.scrollViews["threadDetail.scrollView"].exists, "cycle \(cycle): relaunch incorrectly restored the thread detail pane")
-            XCTAssertFalse(app.scrollViews["threadSelection.scrollView"].exists, "cycle \(cycle): relaunch incorrectly restored the thread selection screen")
         }
     }
 
@@ -186,7 +179,6 @@ final class OtegamiQASweepUITests: XCTestCase {
         let finalRow = list.cells.firstMatch
         XCTAssertTrue(finalRow.waitForExistence(timeout: 20))
         finalRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-        // 画面構造改修バッチ (Task #33, 1): see this helper's doc comment.
         XCTAssertTrue(waitForThreadDetailPossiblyThroughSelectionScreen(in: app), "opening a thread after rapid mashing failed")
     }
 

@@ -144,6 +144,21 @@
 #                                       キャッシュファイルに直接書き込んだ
 #                                       (プリウォーム済みの) 生ソースを
 #                                       タップ無しで表示する。
+#   thread-list                        Task #136 (実機フィードバック「スレッド
+#                                       表示 ON の本文画面をアコーディオンに
+#                                       戻してほしい」): 3通の合成スレッド
+#                                       (`OTEGAMI_UITEST_INSERT_FAKE_MULTI_
+#                                       MESSAGE_THREAD`) を一覧に挿入するだけ
+#                                       で直接遷移はしない — 一覧行の日時の
+#                                       下の「スレッドアイコン + 件数」バッジ
+#                                       の見た目確認用。
+#   thread-accordion                   Task #136: ↑と同じ3通スレッドを直接
+#                                       開く — `ThreadDetailView`のアコー
+#                                       ディオン (最新メッセージが展開済み、
+#                                       他2通は折りたたみ行) の見た目確認用。
+#                                       プレーンテキスト1通+HTML2通の混成
+#                                       (展開/折りたたみを跨ぐ複数WKWebView
+#                                       インスタンスの高さ再計測確認も兼ねる)。
 #   list                                統合受信トレイの一覧画面 (fakeメッセージ5件)
 #   list-fab-expanded                   Task #131 (一覧FABのspeed-dial化):
 #                                       ↑と同じ一覧画面を、
@@ -373,6 +388,22 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=0")
     launch_args+=("-uitestsOpenMessageSourceDirectly")
     default_out="message-source.png"
+    ;;
+  thread-list)
+    # Task #136: see this script's own header comment above — insertion
+    # only, no direct open, so the screenshot lands on the message list with
+    # the 3-message thread's row visible (count badge under the date).
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_MULTI_MESSAGE_THREAD=1")
+    default_out="thread-list.png"
+    ;;
+  thread-accordion)
+    # Task #136: same fixture as `thread-list`, plus
+    # `OTEGAMI_UITEST_OPEN_MULTI_MESSAGE_THREAD_DIRECTLY=1` so
+    # `AppEnvironment.uitestDirectOpenThreadId` is set and `MailScreenView`'s
+    # `.task` pushes straight into `ThreadEntryView`/`ThreadDetailView` with
+    # no tap — the accordion (newest message expanded, other 2 collapsed).
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_MULTI_MESSAGE_THREAD=1" "OTEGAMI_UITEST_OPEN_MULTI_MESSAGE_THREAD_DIRECTLY=1")
+    default_out="thread-accordion.png"
     ;;
   list)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")

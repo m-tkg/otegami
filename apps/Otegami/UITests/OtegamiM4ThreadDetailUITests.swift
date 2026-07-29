@@ -1,23 +1,22 @@
 import XCTest
 
 /// M4 verification, phase 2 (plan checkpoint (b): "スレッドを開くと 3 通、
-/// 最新のみ展開") — **rewritten for 画面構造改修バッチ (Task #33, 1)**, which
-/// deliberately replaced the behavior this suite originally checked. The
-/// user's own report ("メール本文のエリアが狭い。スレッド表示にする場合、
-/// スレッドを選ぶ画面を別で挟んで、メール本文の画面ではスレッドは出さない
-/// 方がいい") is the exact opposite of "開くと全メッセージがアコーディオンで
-/// 並ぶ" this file used to assert — a 2+ message thread now interposes
-/// `ThreadSelectionView` (`ThreadEntryView`'s doc comment) before
-/// `ThreadDetailView`, and `ThreadDetailView` itself never shows more than
-/// one message once reached this way (`singleMessageId`, not the full
-/// accordion). Each test below is self-contained (adds the account itself
-/// if genuinely starting from zero, `OtegamiQASweepUITests`'s
-/// `ensureDovecotTest1AccountExists(in:)` pattern) rather than assuming a
-/// separate setup phase already ran in this simulator install — this file
-/// used to assume `OtegamiM4SetupUITests` ran first, which only holds when
-/// the *entire* UITest target runs in file-declaration order; verifying
-/// just this file in isolation (e.g. `-only-testing:OtegamiUITests
-/// /OtegamiM4ThreadDetailUITests`) needs it to stand on its own.
+/// 最新のみ展開") — **rewritten again for Task #136** (実機フィードバック
+/// 「スレッド表示 ON の本文画面をアコーディオンに戻してほしい」), which
+/// reverted 画面構造改修バッチ (Task #33, 1)'s intermediate
+/// `ThreadSelectionView` step this file was rewritten to check at the time.
+/// A 2+ message thread once again opens straight into `ThreadDetailView`'s
+/// accordion — every message in the thread laid out vertically, newest
+/// expanded, the rest collapsed to a one-line summary — exactly what this
+/// file originally asserted before Task #33. Each test below is
+/// self-contained (adds the account itself if genuinely starting from zero,
+/// `OtegamiQASweepUITests`'s `ensureDovecotTest1AccountExists(in:)` pattern)
+/// rather than assuming a separate setup phase already ran in this
+/// simulator install — this file used to assume `OtegamiM4SetupUITests` ran
+/// first, which only holds when the *entire* UITest target runs in
+/// file-declaration order; verifying just this file in isolation (e.g.
+/// `-only-testing:OtegamiUITests/OtegamiM4ThreadDetailUITests`) needs it to
+/// stand on its own.
 final class OtegamiM4ThreadDetailUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -36,9 +35,10 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
     }
 
     /// The 3-message thread this suite has always used ("来週のランチ" /
-    /// "Re: 来週のランチ" ×2, newest body "駅前のカフェはどうでしょう") now
-    /// lands on the selection screen first, not the accordion detail view.
-    func testOpeningAMultiMessageThreadShowsSelectionScreenThenSingleMessage() throws {
+    /// "Re: 来週のランチ" ×2, newest body "駅前のカフェはどうでしょう") opens
+    /// directly into the accordion — one header row per message, the newest
+    /// expanded, the other two collapsed to their one-line summary.
+    func testOpeningAMultiMessageThreadShowsAccordionWithAllMessages() throws {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
@@ -59,48 +59,41 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
         )
         threadRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
-        // 画面構造改修バッチ (Task #33, 1): a thread with 2+ messages now
-        // opens `ThreadSelectionView` first — one row per message, same
-        // information a list row already shows (icon/preview/time).
-        let selection = app.scrollViews["threadSelection.scrollView"]
-        XCTAssertTrue(selection.waitForExistence(timeout: 20), "Expected the thread selection screen to appear for a 3-message thread")
-
-        let selectionRows = selection.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadSelection.message."))
-        XCTAssertTrue(
-            waitForCount(selectionRows, atLeast: 3, timeout: 20),
-            "Expected 3 rows on the thread selection screen, found \(selectionRows.count)"
-        )
-
-        // Tapping the newest row (last in the list, oldest-first per
-        // `ThreadSelectionView`'s doc comment) pushes straight to that one
-        // message's body — no selection UI carries over onto that screen.
-        let newestRow = selectionRows.element(boundBy: selectionRows.count - 1)
-        newestRow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
         let detail = app.scrollViews["threadDetail.scrollView"]
-        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected the message body screen to appear after tapping a selection row")
+        XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected the thread to open straight into the accordion body screen")
 
-        // 「本文画面ではスレッドのアコーディオン/スタックを出さない」— exactly
-        // one message header mounted, never the old 3-row accordion this
-        // test used to assert.
+        // Task #136: every message in the thread gets its own header row —
+        // no intermediate selection screen, no single-message-only body.
         let headers = detail.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message."))
             .matching(NSPredicate(format: "identifier CONTAINS %@", ".header"))
-        XCTAssertTrue(waitForCount(headers, atLeast: 1, timeout: 20), "Expected the single-message body screen to mount its one header row")
-        XCTAssertEqual(headers.count, 1, "Expected no thread accordion/stack on the message body screen, found \(headers.count) header rows")
+        XCTAssertTrue(waitForCount(headers, atLeast: 3, timeout: 20), "Expected 3 header rows in the accordion, found \(headers.count)")
+        XCTAssertEqual(headers.count, 3, "Expected exactly 3 header rows, found \(headers.count)")
 
+        // The newest message ("駅前のカフェ…") is pinned expanded on first
+        // load — its body should already be visible without any tap.
         let latestBody = detail.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "駅前のカフェ")).firstMatch
-        XCTAssertTrue(latestBody.waitForExistence(timeout: 20), "Expected the tapped (newest) message's body to be shown")
+        XCTAssertTrue(latestBody.waitForExistence(timeout: 20), "Expected the newest message's body to be shown expanded by default")
+
+        // Tapping the oldest (first) header collapses the newest and
+        // expands the oldest instead — a strict accordion, exactly one
+        // message expanded at a time.
+        let oldestHeader = headers.element(boundBy: 0)
+        oldestHeader.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+        let oldestBody = detail.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message."))
+            .matching(NSPredicate(format: "identifier CONTAINS %@", ".body"))
+        XCTAssertTrue(waitForCount(oldestBody, atLeast: 1, timeout: 20), "Expected tapping the oldest header to expand its body")
+        XCTAssertEqual(oldestBody.count, 1, "Expected exactly one expanded body at a time (strict accordion), found \(oldestBody.count)")
 
         // Hold the message open for the wrapping shell script's mid-test
         // screenshot (same technique as M6/M8).
         Thread.sleep(forTimeInterval: 4)
     }
 
-    /// A single-message thread ("ようこそ otegami へ", seed-0001) skips the
-    /// selection screen entirely and opens straight into the body — the
-    /// other half of 画面構造改修バッチ (Task #33, 1)'s approved behavior
-    /// ("スレッドが1通だけなら選択画面をスキップして直接本文へ").
-    func testOpeningASingleMessageThreadSkipsTheSelectionScreen() throws {
+    /// A single-message thread ("ようこそ otegami へ", seed-0001) still opens
+    /// straight into the body, rendering as "one row, always expanded" — the
+    /// same accordion view degenerating naturally to a single message, per
+    /// its own doc comment.
+    func testOpeningASingleMessageThreadShowsOneExpandedRow() throws {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
@@ -114,10 +107,6 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
 
         let detail = app.scrollViews["threadDetail.scrollView"]
         XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected a 1-message thread to open straight into the body screen")
-        XCTAssertFalse(
-            app.scrollViews["threadSelection.scrollView"].exists,
-            "Expected the selection screen to be skipped entirely for a 1-message thread"
-        )
 
         let headers = detail.buttons.matching(NSPredicate(format: "identifier CONTAINS %@", "threadDetail.message."))
             .matching(NSPredicate(format: "identifier CONTAINS %@", ".header"))

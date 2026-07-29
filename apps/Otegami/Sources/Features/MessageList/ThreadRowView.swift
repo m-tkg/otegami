@@ -172,14 +172,6 @@ private struct ThreadRowTextStack: View {
                         .foregroundStyle(OtegamiColor.inkTertiary)
                         .accessibilityHidden(true)
                 }
-                if summary.thread.messageCount > 1 {
-                    Text("\(summary.thread.messageCount)")
-                        .font(OtegamiFont.badge())
-                        .foregroundStyle(OtegamiColor.inkSecondary)
-                        .padding(.horizontal, OtegamiSpacing.xs)
-                        .background(OtegamiColor.paleBase)
-                        .accessibilityIdentifier("messageList.row.\(summary.id).countBadge")
-                }
             }
             if previewLineCount != .none, let snippet = summary.latestMessage?.snippet, !snippet.isEmpty {
                 Text(snippet)
@@ -201,7 +193,8 @@ private struct ThreadRowTextStack: View {
     }
 }
 
-/// 右端の日付 + ピン留めインジケータ + （統合受信トレイのみ）アカウント名ラベル。
+/// 右端の日付 + スレッド件数バッジ + ピン留めインジケータ + （統合受信トレイ
+/// のみ）アカウント名ラベル。
 private struct ThreadRowTrailing: View {
     let summary: ThreadSummary
     let accountDisplayName: String?
@@ -219,6 +212,29 @@ private struct ThreadRowTrailing: View {
                     .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.inkTertiary)
             }
+            // Task #136 (実機フィードバック「スレッド表示 ON の本文画面を
+            // アコーディオンに戻してほしい」の一覧側の対): 件名の隣にあった
+            // 数字だけのバッジ (画面構造改修バッチ以来) を、日時の下の
+            // 「スレッドアイコン + 件数」に置き換えた — 本文画面が
+            // アコーディオンに戻り複数通あることが本文側でも見えるように
+            // なったので、一覧側も「これは複数通ある」ことをアイコンで
+            // 明示する。`summary.thread.messageCount`はB3フラット表示
+            // (`ThreadSummary.init(flatMessage:accountId:)`) だと常に1に
+            // 固定されるので、フラットモードでは自然にこのバッジ自体が
+            // 出ない (`ThreadQuery`側の変更は不要 — `ThreadRecord
+            // .messageCount`はどちらのモードでも既に正しい値を持っている)。
+            if summary.thread.messageCount > 1 {
+                Label {
+                    Text("\(summary.thread.messageCount)")
+                } icon: {
+                    Image(systemName: "square.stack")
+                }
+                .labelStyle(.otegamiThreadCount)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkTertiary)
+                .accessibilityIdentifier("messageList.row.\(summary.id).countBadge")
+                .accessibilityLabel(Text("\(summary.thread.messageCount)通のスレッド"))
+            }
             if let accountDisplayName {
                 Text(accountDisplayName)
                     .font(OtegamiFont.badge())
@@ -228,4 +244,21 @@ private struct ThreadRowTrailing: View {
             }
         }
     }
+}
+
+/// `ThreadRowTrailing`の件数バッジ専用の`LabelStyle`— 既定の`Label`は
+/// アイコン→テキストの間隔がやや広く、他の`OtegamiSpacing`基準の詰まった
+/// レイアウトの中で浮いて見えたため、間隔だけ`OtegamiSpacing.xs`に詰める。
+private struct OtegamiThreadCountLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: OtegamiSpacing.xs) {
+            configuration.icon
+                .font(.caption2)
+            configuration.title
+        }
+    }
+}
+
+private extension LabelStyle where Self == OtegamiThreadCountLabelStyle {
+    static var otegamiThreadCount: OtegamiThreadCountLabelStyle { OtegamiThreadCountLabelStyle() }
 }
