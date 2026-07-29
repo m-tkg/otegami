@@ -118,6 +118,52 @@ struct TranslationServiceSummarizeThreadTests {
         #expect(result == "■経緯\n\(expectedCombined)\n\n\(expectedCurrentStatus)")
     }
 
+    @Test("an ungrounded first summarizeThreadDigest response triggers exactly one retry; a grounded retry is used")
+    func ungroundedFirstAttemptRetriesOnceThenSucceeds() async throws {
+        let service = FakeTranslationService()
+        let messages = [
+            ThreadDigestMessage(header: "[7/27] 田中:", text: "予算は5000円程度です。"),
+            ThreadDigestMessage(header: "[7/27] 鈴木:", text: "了解しました。"),
+        ]
+        // First response mentions a katakana word entirely absent from the
+        // per-message extracted input — deliberately ungrounded, mirroring
+        // the real-device report ("■現状に全然関係ない話が出てきた").
+        let ungrounded = "■現状\nミーティングの議事録を確認する必要がある。"
+        let grounded = "■現状\n予算は5000円程度で合意された。"
+        await service.configureSummarizeThreadDigestResponses([ungrounded, grounded])
+
+        let result = try await service.summarizeThread(messages, targetLanguage: .japanese)
+
+        #expect(await service.summarizeThreadDigestCallCount == 2)
+        #expect(result.hasSuffix(grounded))
+        #expect(!result.contains("ミーティング"))
+    }
+
+    @Test("both summarizeThreadDigest attempts being ungrounded falls back to the last message's own extracted line, never the hallucinated text")
+    func bothAttemptsUngroundedFallsBackToLastEntryLine() async throws {
+        let service = FakeTranslationService()
+        let messages = [
+            ThreadDigestMessage(header: "[7/27] 田中:", text: "予算は5000円程度です。"),
+            ThreadDigestMessage(header: "[7/27] 鈴木:", text: "了解しました。"),
+        ]
+        let ungrounded1 = "■現状\nミーティングの議事録を確認する必要がある。"
+        let ungrounded2 = "■現状\nプロジェクトのスケジュールを再確認したい。"
+        await service.configureSummarizeThreadDigestResponses([ungrounded1, ungrounded2])
+
+        let result = try await service.summarizeThread(messages, targetLanguage: .japanese)
+
+        // Both attempts were made (retried exactly once, not looped
+        // indefinitely) before falling back.
+        #expect(await service.summarizeThreadDigestCallCount == 2)
+        // Falls back to the last message's own already-fact-extracted line
+        // (header included) — mechanical, never wrong, per this feature's
+        // own "ハルシネーションを出すくらいなら保守的に" framing.
+        let expectedFallback = "■現状\n[7/27] 鈴木: [ja] 了解しました。"
+        #expect(result.hasSuffix(expectedFallback))
+        #expect(!result.contains("ミーティング"))
+        #expect(!result.contains("プロジェクト"))
+    }
+
     @Test("empty input short-circuits to an empty string without calling any step")
     func emptyInputSkipsEntirely() async throws {
         let service = FakeTranslationService()

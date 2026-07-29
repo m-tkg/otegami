@@ -72,6 +72,17 @@ public actor FakeTranslationService: TranslationService {
     /// contract without having to fail the *whole* engine (`behavior`),
     /// which would also fail the map step and `summarizeThreadDigest`.
     private var refineThreadEntriesShouldFail = false
+    /// Task #160フォローアップ4 (最優先実機フィードバック「■現状に全然
+    /// 関係ない話が出てきた」): the real engine's deterministic
+    /// `summarizeThreadDigest` behavior (echo the input verbatim, tagged
+    /// with the target language) can never produce anything
+    /// `ThreadDigestGroundingCheck`-ungrounded by construction — this
+    /// override exists purely so a test can force a specific (possibly
+    /// ungrounded) canned response, to exercise `TranslationService
+    /// .summarizeThread`'s retry/fallback path. Consumed one response per
+    /// call (`removeFirst()`); once exhausted, `summarizeThreadDigest`
+    /// falls back to its normal deterministic behavior.
+    private var summarizeThreadDigestResponseQueue: [String] = []
 
     public init(availability: TranslationAvailability = .available, behavior: Behavior = .success) {
         self.availabilityValue = availability
@@ -82,6 +93,12 @@ public actor FakeTranslationService: TranslationService {
     /// comment.
     public func configureRefineThreadEntriesFailure(_ shouldFail: Bool) {
         refineThreadEntriesShouldFail = shouldFail
+    }
+
+    /// Task #160フォローアップ4: see `summarizeThreadDigestResponseQueue`'s
+    /// doc comment.
+    public func configureSummarizeThreadDigestResponses(_ responses: [String]) {
+        summarizeThreadDigestResponseQueue = responses
     }
 
     /// Task #61: marks `texts` as guardrail-blocked for every subsequent
@@ -186,6 +203,13 @@ public actor FakeTranslationService: TranslationService {
     public func summarizeThreadDigest(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
         summarizeThreadDigestCallCount += 1
         try checkBehavior()
+        // Task #160フォローアップ4: see `summarizeThreadDigestResponseQueue`'s
+        // doc comment — a queued canned response (possibly deliberately
+        // ungrounded, for testing) takes priority over the normal
+        // deterministic echo-the-input behavior.
+        if !summarizeThreadDigestResponseQueue.isEmpty {
+            return summarizeThreadDigestResponseQueue.removeFirst()
+        }
         let translated = Self.deterministicTranslation(text, to: targetLanguage)
         return """
         \(ThreadDigestLabel.currentStatus)

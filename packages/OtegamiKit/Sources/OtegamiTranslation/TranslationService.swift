@@ -1,4 +1,5 @@
 import Foundation
+import OtegamiCore
 
 /// `TranslationService.summarizeThread(_:targetLanguage:onProgress:)`'s
 /// threshold below which the `refineThreadEntries` polish pass is skipped
@@ -304,8 +305,63 @@ extension TranslationService {
         // regardless of whether the refine pass ran, succeeded, or was
         // skipped. See this method's own doc comment on why that's
         // unchanged from before this pass existed.
-        let currentStatus = try await summarizeThreadDigest(combined, targetLanguage: targetLanguage)
+        //
+        // Task #160フォローアップ4 (最優先実機フィードバック「■現状に
+        // 全然関係ない話が出てきた」): `summarizeThreadDigest`の生応答を
+        // そのまま返さず、`groundedCurrentStatus(combined:lastEntryLine:
+        // targetLanguage:)`(下記) を経由する — グラウンディング検証・
+        // 1回だけの再生成・機械的フォールバックの多層防御。
+        let currentStatus = await groundedCurrentStatus(combined: combined, lastEntryLine: perMessageLines.last ?? "", targetLanguage: targetLanguage)
         return "\(progressSection)\n\n\(currentStatus)"
+    }
+
+    /// Task #160フォローアップ4 (最優先実機フィードバック「■現状に全然
+    /// 関係ない話が出てきた」— ハルシネーション): the root cause was almost
+    /// certainly `FoundationModelsTranslationService.currentStatusInstructions`'s
+    /// own 【出力例】 still using concrete themed content — the same
+    /// "instruction example leaks into unrelated output" failure this
+    /// feature had already hit twice before, just missed on this one
+    /// instruction (see that instructions builder's own doc comment for the
+    /// full account, and why its example is now fully abstract). That's the
+    /// primary fix; this method is the **second, independent layer**:
+    ///
+    /// 1. Call `summarizeThreadDigest` once (`combined` — the un-refined,
+    ///    per-message extracted facts — is always its input, see this
+    ///    method's caller's doc comment on why).
+    /// 2. If the result passes `ThreadDigestGroundingCheck.isLikelyGrounded`
+    ///    (every number/katakana/Latin token in the answer also appears
+    ///    literally in `combined`), return it — the overwhelming majority
+    ///    of calls end here.
+    /// 3. Otherwise, retry **exactly once** (task spec: "閾値未満なら1回
+    ///    だけ再生成") — a fresh `LanguageModelSession` on the retry may
+    ///    simply not repeat the same hallucination. If the retry also
+    ///    passes the grounding check, return it.
+    /// 4. If both attempts are ungrounded (or either one throws — `try?`
+    ///    treats a thrown error the same as "no good candidate yet", since
+    ///    a transient model failure here shouldn't sink the whole summary
+    ///    any more than an actual hallucination should), fall back to a
+    ///    **mechanical, guaranteed-grounded** `■現状`: the last message's
+    ///    own already-fact-extracted line verbatim (`lastEntryLine`,
+    ///    `"\(header) \(extracted)"` — the very last entry
+    ///    `perMessageLines` built). Task spec's own framing: "ハルシネー
+    ///    ションを出すくらいなら保守的に" — a plain restatement of the
+    ///    thread's last known fact is never *wrong*, even when it's not the
+    ///    ideal "current state" synthesis a fully-grounded model answer
+    ///    would have given.
+    ///
+    /// Never throws — every path above ends in a `String`, matching the
+    /// "this step must not be why the whole summary fails" philosophy
+    /// `refineThreadEntries`'s own fallback already established.
+    private func groundedCurrentStatus(combined: String, lastEntryLine: String, targetLanguage: TranslationLanguage) async -> String {
+        if let firstAttempt = try? await summarizeThreadDigest(combined, targetLanguage: targetLanguage),
+           ThreadDigestGroundingCheck.isLikelyGrounded(firstAttempt, in: combined) {
+            return firstAttempt
+        }
+        if let retryAttempt = try? await summarizeThreadDigest(combined, targetLanguage: targetLanguage),
+           ThreadDigestGroundingCheck.isLikelyGrounded(retryAttempt, in: combined) {
+            return retryAttempt
+        }
+        return "\(ThreadDigestLabel.currentStatus)\n\(lastEntryLine)"
     }
 
     /// The oversized-single-message safety net `summarizeThread(_:targetLanguage:onProgress:)`'s
