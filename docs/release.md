@@ -55,6 +55,28 @@ Gmail の「再認証」が常に `oauthUnavailable` で失敗していた
 (`ci_post_clone.sh`) 側は元々同種の変数マッピングを持っており、今回の
 変更はこのワークフロー側を追いつかせただけ。
 
+**`workflow_dispatch` dry-run で実地検証済み** (2026-07-30、両 secret 登録後):
+run [30500375015](https://github.com/m-tkg/otegami/actions/runs/30500375015)
+が緑で完走し、以下を確認した。
+
+- 「Generate Local.xcconfig from OAuth Client ID secrets」ステップが両方
+  「configured from ... secret」を報告し、後続の `Build macOS app` /
+  `Sign app bundle` / `Notarize and staple` / `Create release archive`
+  まですべて成功。
+- ジョブの全ログ (14,495行) を `gh run view --log` で走査し、Client ID の
+  値が一切出力されていないことを確認 (`env:` ブロックが GitHub 標準の
+  secret マスキングで `GOOGLE_CLIENT_ID: ***`/`MICROSOFT_CLIENT_ID: ***`
+  と表示されており、`::add-mask::` を含め二重に保護されている)。
+- Artifacts からビルド成果物をダウンロードして展開し、
+  `Contents/Info.plist` の `GOOGLE_OAUTH_CLIENT_ID`/
+  `OTEGAMI_MICROSOFT_CLIENT_ID` が両方とも空でも `$(...)` 未展開プレース
+  ホルダでもない、実際の値が埋め込まれていることを確認 (値そのものは
+  確認のみで記録・出力していない)。
+- ついでに `codesign --verify --deep --strict` (`valid on disk`) と
+  `spctl -a -vvv` (`accepted`, `source=Notarized Developer ID`) も
+  通ることを確認済み — これは下記「確認できていないこと」節の
+  notarization/Gatekeeper 項目も実質的にカバーする最初の実地確認。
+
 ## 署名の仕組み: なぜ `xcodebuild` 自身に署名させないか
 
 `ci-app.yml` と同様に **`xcodebuild build` は
