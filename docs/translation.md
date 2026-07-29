@@ -2042,6 +2042,12 @@ Modelsの実行自体がシミュレータで既知不調 (`docs/verify.md`) な
 
 ## スレッド要約の「仕上げ」パスでさらに簡潔化 (Task #160フォローアップ3)
 
+**撤去済み (Task #160フォローアップ5)**: この節が導入した`refineThreadEntries`
+(仕上げパス) は、ユーザー指示「スレッド要約の最終形への簡素化」により
+完全に撤去された — 詳細は「スレッド要約を最終形へ簡素化: mapのみの
+単一パイプラインに (Task #160フォローアップ5)」節参照。以下はTask #160
+フォローアップ3当時の設計記録として残す。
+
 **背景**: ユーザー要望「要約済みのものを再度読ませてさらに要約を挟ませて、
 もう少しシンプルにすることはできる?」— Task #160フォローアップ/フォロー
 アップ2で■経緯が per-message 抽出の無加工列挙 (メッセージ1通につき
@@ -2175,6 +2181,15 @@ refineの出力は複数行 (1行1トピック) なので、`strip(_:)`を**行�
 
 ## ■現状のハルシネーションを多層防御で根治 (Task #160フォローアップ4、最優先)
 
+**撤去済み (Task #160フォローアップ5)**: この節が対策した`■現状`生成段
+(`summarizeThreadDigest`) と、その検証に使った`ThreadDigestGroundingCheck`
+の呼び出しは、ユーザー指示「スレッド要約の最終形への簡素化」で`■現状`
+自体が撤去されたため無くなった — 詳細は「スレッド要約を最終形へ簡素化:
+mapのみの単一パイプラインに (Task #160フォローアップ5)」節参照。
+`ThreadDigestGroundingCheck`型自体は削除せず残してある (`OtegamiCore`
+の同名ファイルのdoc comment参照) が、現在これを呼ぶ箇所は無い。以下は
+Task #160フォローアップ4当時の設計記録として残す。
+
 **背景**: ユーザーからの最優先フィードバック「■現状に全然関係ない話が
 出てきた」。ユーザー本人からの明示指示「優先して対応してOTA配信して」。
 
@@ -2278,6 +2293,121 @@ refineの出力は複数行 (1行1トピック) なので、`strip(_:)`を**行�
 混じり形式は、いずれも今回のスコープ (ハルシネーション根治) とは別の
 軽微な体裁の問題として残っている。実機での違和感が改めて報告されれば
 対応する。
+
+## スレッド要約を最終形へ簡素化: mapのみの単一パイプラインに (Task #160フォローアップ5)
+
+**背景**: ユーザー指示 (2026-07-30)「スレッド要約の最終形への簡素化」。
+Task #160フォローアップ2〜4は、いずれも「per-message抽出結果をモデルに
+もう一段読ませて何かを書かせる」(旧`refineThreadEntries`の■経緯統合、
+旧`summarizeThreadDigest`の■現状生成) こと自体に起因する問題だった —
+指示文の例文の題材が出力に漏れる、入力に無い後続アクションを作り出す、
+■現状が入力と無関係な内容になる、等。ユーザーの最終判断は「その2段目
+自体が要らない」というもの: **per-messageの事実抽出結果
+(`summarizeThreadEntry`の出力) をそのまま時系列に並べるだけ**が最終形
+になった。
+
+### 実装
+
+`TranslationService.summarizeThread(_:targetLanguage:onProgress:)`から
+reduce/refine段を完全に撤去し、mapのみの単一段パイプラインにした:
+
+1. **撤去したもの**:
+   - `refineThreadEntries`(protocol requirement) とその実装
+     (`FoundationModelsTranslationService`の`refineThreadEntriesInstructions`
+     含む)、`FakeTranslationService`/`HybridTranslationService`の対応する
+     実装・カウンタ・テスト用フック (`configureRefineThreadEntriesFailure`)。
+   - `summarizeThreadDigest`(protocol requirement) とその実装
+     (`currentStatusInstructions`含む)、`FakeTranslationService`/
+     `HybridTranslationService`の対応する実装・カウンタ・テスト用フック
+     (`configureSummarizeThreadDigestResponses`)。
+   - `ThreadDigestGroundingCheck`の`summarizeThread`からの呼び出し (型自体
+     は`OtegamiCore`に残置 — 下記「今後の再利用可能性」参照)。
+   - `ThreadDigestLabel`(`"■経緯"`/`"■現状"`の定数enum) — ラベルを生成
+     する箇所が無くなったため丸ごと削除。
+   - `ThreadSummaryProgress`(`.extractingMessage`/`.refining`の2ケース
+     enum) — 「仕上げ中」の出番が無くなったため、`onProgress`の型を
+     Task #160時代の単純な`(current: Int, total: Int)`タプルに戻した。
+2. **残したもの**: `summarizeThreadEntry`(map段、事実抽出) は無変更 —
+   元々「削らずに書き出す」という、それ単体で完結した設計だったため、
+   2段目・3段目を外しても意味が変わらない。`ThreadEntryMetaCommentaryStripper`
+   もこの出力に対してそのまま適用され続ける (メタ言及調の除去は
+   per-message抽出そのものの品質の話であり、reduce/refine段の有無とは
+   無関係)。
+3. **出力形式**: `summarizeThread`は各メッセージについて
+   `"\(message.header) \(extracted)"`という行を組み立て、**メッセージの
+   間に空行を1行挟んで**(`"\n\n"`区切りで) 連結するだけ。ラベルは一切
+   付けない — `■経緯`/`■現状`という2パート構造の前提が無くなったので、
+   ラベル自体が不要になった。`ThreadDetailView`側の`SummaryText`
+   (`"■"`始まりの行を太字にするだけの汎用実装) は変更せずに再利用 —
+   ラベルが無くなった今は太字化が実質発火しないだけで、動作は壊れない。
+4. **進捗表示**: 「仕上げ中…」を削除し、「n/m 通目を要約中…」のみに
+   戻した (`ThreadDetailView.threadSummaryProgress`の型を`(current: Int,
+   total: Int)?`へ戻す)。
+
+### 今後の再利用可能性: `ThreadDigestGroundingCheck`
+
+型自体は削除せず`OtegamiCore`に残してある — 実装・テストとも既に検証
+済みで保守コストがほぼゼロ、かつ「生成結果が入力に接地しているか」を
+検証するニーズ (「モデルにもう一段何かを書かせる」設計) が将来別の
+機能で再発する可能性を考慮した判断。詳細な経緯は同ファイルのdoc comment
+参照。呼び出し元が無い状態でテスト (`ThreadDigestGroundingCheckTests`)
+だけは残しているので、将来再利用する際に既存の振る舞いが壊れていない
+ことを保証できる。
+
+### テスト
+
+`TranslationServiceSummarizeThreadTests`を最終形向けに全面書き換え
+(旧: refine閾値・グラウンディング再試行・フォールバックのテスト群を
+削除、新: mapのみのシンプルな契約を検証する6ケース — メッセージごとに
+`summarizeThreadEntry`がちょうど1回、圧縮系メソッド
+(`summarizePlain`/`summarize`) は0回、各行が空行区切りで連結されラベルが
+一切無いこと、1メッセージのみのスレッドで余分な空行が入らないこと、
+空入力、チャンク安全網、`onProgress`の順序)。`HybridTranslationServiceTests`
+から`summarizeThreadDigest`/`refineThreadEntries`の委譲テストを削除。
+`make test`/`make mac`/`make ios` green。
+
+**実FoundationModels確認** (`scratchpad/summary-repro`、軽め — パイプライン
+単純化そのものの確認なので1-2回で十分と判断): 6メッセージの標準フィク
+スチャで2回、短い(2通の)スレッドフィクスチャで3回、それぞれ空行区切り
+の見た目と抽出品質を確認した。いずれも、決定事項・数値・固有名詞が
+per-messageの各行にきちんと残り、ラベルは一切出現せず、行と行の間に
+実際に空行が入っていることを確認した — 実際の出力例 (6メッセージ
+フィクスチャ、run 1):
+
+```
+[07/20] 田中太郎: 駅前の個室居酒屋と会社近くのイタリアンの2つの会場候補について意見を求めている。
+
+[07/20] 佐藤花子: 予算の想定について、具体的な金額はまだ記載されていない。
+
+[07/20] 田中太郎: 予算は1人あたり5000円程度を考えている。 イタリアンのお店だとその予算内で収まりそうだ。
+
+[07/20] Alice Example: 来週の金曜19時からでよろしいでしょうか。
+
+[07/20] 佐藤花子: 金曜19時にイタリアンのお店を予約できるか確認したい。 予約の可否について回答を待っている。
+
+[07/20] 田中太郎: 来週金曜19時にイタリアンのお店で予約を入れる。 予約が取れ次第、改めてこのスレッドで共有する。
+```
+
+短いスレッド(2通)フィクスチャの出力例 (run 1、以前フォローアップ4で
+「入力に無い後続アクションを作る」問題が再現していた同じフィクスチャ):
+
+```
+[7/20] 田中太郎: 明日の定例は15時からで大丈夫か確認している。
+
+[7/20] 佐藤花子: 15時に決定された。
+```
+
+reduce/refine段が構造的に無くなったため、この短いフィクスチャでも
+（以前のように「担当者が確認を行い、結果が出次第共有する予定」のような）
+入力に無い内容が一切付け加わっていない — 2段目のモデル呼び出しが無い
+以上、原理的に付け加わりようがない。3回実行して3回とも同じ2行のみ。
+
+`scratchpad/summary-repro`はリポジトリ外・非コミット (既存の慣例どおり)。
+
+**未確認**: 空行区切りの見た目が`SummaryText`(`"■"`始まりの行を太字に
+するだけの汎用実装、ラベルが無くなった今は実質何も太字化されない) で
+実機上どう見えるかは、シミュレータ/実機でのスクリーンショット確認を
+していない (Foundation Modelsのシミュレータ既知不調のため)。
 
 ## テスト
 

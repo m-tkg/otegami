@@ -10,8 +10,8 @@ import Foundation
 /// before/after rationale): an explicit ban on message-self-referencing
 /// phrasing plus good/bad example pairs. Every other summarize-family
 /// instruction in this codebase already has a code-side backstop too
-/// (`SummaryOutputSanitizer` for `summarize`/`summarizeThreadDigest`'s
-/// label structure, Task #122's whole reason for existing) — this mirrors
+/// (`SummaryOutputSanitizer` for `summarize`'s label structure, Task #122's
+/// whole reason for existing) — this mirrors
 /// that same "instructions + implementation-side cleanup" pattern for the
 /// specific "describing the message about itself" register this feature's
 /// own real-device report named.
@@ -32,14 +32,19 @@ import Foundation
 /// negative cases, which is exactly what this feature's own spec asked
 /// this backstop to avoid ("正規表現ベースで過剰除去しないこと").
 public enum ThreadEntryMetaCommentaryStripper {
-    /// The message-self-referencing subjects `summarizeThreadEntryInstructions`/
-    /// `refineThreadEntriesInstructions` explicitly ban as an opener —
-    /// `"この経緯では"`/`"この経緯は"` covers the refine pass's own output
-    /// (Task #160フォローアップ3, which describes several merged messages
-    /// at once rather than a single one, so it talks about "この経緯"
-    /// rather than "この返信"/"このメール"). Order doesn't currently matter
-    /// (none is a prefix of another), kept as a plain list so a future
-    /// addition is a one-line change.
+    /// The message-self-referencing subjects `summarizeThreadEntryInstructions`
+    /// explicitly bans as an opener. `"この経緯では"`/`"この経緯は"` were
+    /// added for the now-removed `refineThreadEntries` pass (Task #160
+    /// フォローアップ3〜4, which described several merged messages at once
+    /// rather than a single one, so it talked about "この経緯" rather than
+    /// "この返信"/"このメール") — Task #160フォローアップ5 removed that pass
+    /// entirely (`TranslationService.summarizeThread`'s doc comment has the
+    /// full history), but these two entries are kept here: harmless (no
+    /// current caller's output should ever start this way, so they're
+    /// simply dead weight rather than a risk) and cheap defensive coverage
+    /// if a future feature reintroduces multi-message narration. Order
+    /// doesn't currently matter (none is a prefix of another), kept as a
+    /// plain list so a future addition is a one-line change.
     private static let openers = [
         "この返信では", "この返信は",
         "このメールでは", "このメールは",
@@ -68,18 +73,22 @@ public enum ThreadEntryMetaCommentaryStripper {
     /// with a single space — but **preserves every line break**, rejoining
     /// lines with `"\n"`.
     ///
-    /// This line-awareness matters for Task #160フォローアップ3's
-    /// `refineThreadEntries` (`FoundationModelsTranslationService`'s
-    /// conforming implementation), whose whole multi-line `"■経緯\n<line 1>
-    /// \n<line 2>\n..."` output this method now also runs over — an
-    /// earlier, non-line-aware version of this method would have collapsed
-    /// every one of those lines into a single space-joined blob, destroying
-    /// the very "fewer, chronological lines" structure that pass exists to
-    /// produce. `FoundationModelsTranslationService.summarizeThreadEntry`'s
+    /// This line-awareness was added for the now-removed `refineThreadEntries`
+    /// pass (Task #160フォローアップ3〜4), whose whole multi-line
+    /// `"■経緯\n<line 1>\n<line 2>\n..."` output this method used to also run
+    /// over — an earlier, non-line-aware version of this method would have
+    /// collapsed every one of those lines into a single space-joined blob,
+    /// destroying the very "fewer, chronological lines" structure that pass
+    /// existed to produce. Task #160フォローアップ5 removed that pass
+    /// entirely (`TranslationService.summarizeThread`'s doc comment has the
+    /// full history), so today's only caller is
+    /// `FoundationModelsTranslationService.summarizeThreadEntry`, whose
     /// input has no line breaks at all by the time it reaches here (it
-    /// collapses the model's own line breaks to spaces first), so for that
-    /// caller this method still behaves exactly as it always did — a single
-    /// "line" is the whole input.
+    /// collapses the model's own line breaks to spaces first) — for that
+    /// caller a single "line" is the whole input, so this method behaves
+    /// exactly as a simple sentence-level stripper would. The line-awareness
+    /// itself is kept (not reverted) since it's a strict superset of that
+    /// simpler behavior and costs nothing extra for the single-line case.
     ///
     /// Sentence-splitting logic mirrors `OtegamiTranslation.SentenceSplitter`
     /// (deliberately not shared code — that type's own doc comment already

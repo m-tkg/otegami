@@ -4,21 +4,22 @@ import Testing
 
 /// Task #153 (スレッド全体のAI要約) → Task #160 (map段をメッセージ単位に
 /// 固定) → Task #160フォローアップ (二重圧縮の根治) → Task #160フォロー
-/// アップ3 (ユーザー要望「要約済みのものを再度読ませてさらに要約を挟ませて
-/// シンプルにする」): covers `TranslationService.summarizeThread(_:
-/// targetLanguage:onProgress:)`'s full pipeline — map (`summarizeThreadEntry`,
-/// fact-extraction, exactly once per message) → optional refine
-/// (`refineThreadEntries`, condenses the per-message lines into `■経緯`,
-/// skipped for `messages.count <= 3` and falling back to the raw per-message
-/// list if it throws) → reduce (`summarizeThreadDigest`, `■現状` only,
-/// always reads the *un*-refined joined lines regardless of whether refine
-/// ran). `summarizePlain`/`summarize` (the single-message compression path)
-/// are never touched by any of this — compression and fact-extraction are
+/// アップ2〜4 (メタ言及調の除去、仕上げパスの追加、■現状のハルシネーション
+/// 対策) → **Task #160フォローアップ5 (ユーザー指示「スレッド要約の最終形
+/// への簡素化」、現行の設計)**: covers `TranslationService.summarizeThread
+/// (_:targetLanguage:onProgress:)`'s current, single-stage pipeline — map
+/// (`summarizeThreadEntry`, fact-extraction, exactly once per message, via
+/// `extractThreadEntryText`'s chunk safety net for an oversized single
+/// message) and nothing else. No reduce/refine step, no `■経緯`/`■現状`
+/// labels — the result is just each message's `"\(header) \(extracted)"`
+/// line, joined with a blank line between messages.
+/// `summarizePlain`/`summarize` (the single-message compression path) are
+/// never touched by any of this — compression and fact-extraction are
 /// separate protocol methods with separate call counters.
 @Suite("TranslationService.summarizeThread")
 struct TranslationServiceSummarizeThreadTests {
-    @Test("calls summarizeThreadEntry exactly once per message, then summarizeThreadDigest exactly once, never summarizePlain/summarize")
-    func mapsPerMessageThenReducesOnce() async throws {
+    @Test("calls summarizeThreadEntry exactly once per message, never summarizePlain/summarize")
+    func mapsPerMessageOnly() async throws {
         let service = FakeTranslationService()
         let messages = [
             ThreadDigestMessage(header: "[7/27] 田中:", text: "来週の定例会議の日程はいかがでしょうか。"),
@@ -29,152 +30,58 @@ struct TranslationServiceSummarizeThreadTests {
         _ = try await service.summarizeThread(messages, targetLanguage: .japanese)
 
         #expect(await service.summarizeThreadEntryCallCount == messages.count)
-        #expect(await service.summarizeThreadDigestCallCount == 1)
-        // 3 messages == the refine skip threshold, so refine never runs.
-        #expect(await service.refineThreadEntriesCallCount == 0)
-        // The whole point of this redesign: the map step is fact-extraction
-        // (`summarizeThreadEntry`), never the compression methods
-        // (`summarizePlain`/`summarize`) a single-message summary uses.
+        // The whole point of this redesign: the only model call is
+        // fact-extraction (`summarizeThreadEntry`), never the compression
+        // methods (`summarizePlain`/`summarize`) a single-message summary
+        // uses, and never a second (reduce/refine) pass over the results.
         #expect(await service.summarizePlainCallCount == 0)
         #expect(await service.summarizeCallCount == 0)
     }
 
-    @Test("assembles ■経緯 as an app-built bullet list (no refine, no reduce-step model call for it) below the refine threshold, then ■現状 from summarizeThreadDigest")
-    func assemblesProgressWithoutModelReductionBelowThreshold() async throws {
+    @Test("joins each message's own extracted line with a blank line between, no labels")
+    func joinsPerMessageLinesWithBlankLineBetween() async throws {
         let service = FakeTranslationService()
         let messages = [
             ThreadDigestMessage(header: "[7/27] 田中:", text: "来週の定例会議の日程はいかがでしょうか。"),
             ThreadDigestMessage(header: "[7/27] 鈴木:", text: "水曜14時でいかがでしょうか。"),
+            ThreadDigestMessage(header: "[7/27] 田中:", text: "水曜14時で問題ありません。"),
         ]
 
         let result = try await service.summarizeThread(messages, targetLanguage: .japanese)
 
         // `FakeTranslationService.summarizeThreadEntry` is a deterministic
         // "first 5 sentences, then tag with the target language" transform
-        // (same shape as `summarizePlain`'s "first N sentences") — each
-        // fixture message here is exactly one sentence, so the transform is
-        // the identity function plus the `"[ja] "` tag.
+        // — each fixture message here is exactly one sentence, so the
+        // transform is the identity function plus the `"[ja] "` tag.
         let expectedLine1 = "[7/27] 田中: [ja] 来週の定例会議の日程はいかがでしょうか。"
         let expectedLine2 = "[7/27] 鈴木: [ja] 水曜14時でいかがでしょうか。"
-        let expectedCombined = "\(expectedLine1)\n\(expectedLine2)"
-        // `FakeTranslationService.summarizeThreadDigest` returns
-        // `"■現状\n[ja] <its own input verbatim>"` — its input here is
-        // exactly `expectedCombined` (the same joined text `■経緯` displays,
-        // since refine is skipped below the threshold).
-        let expectedCurrentStatus = "■現状\n[ja] \(expectedCombined)"
-        let expected = "■経緯\n\(expectedCombined)\n\n\(expectedCurrentStatus)"
-
-        #expect(result == expected)
-        #expect(await service.refineThreadEntriesCallCount == 0)
+        let expectedLine3 = "[7/27] 田中: [ja] 水曜14時で問題ありません。"
+        // A blank line (i.e. `"\n\n"`) between each message's line — no
+        // `■経緯`/`■現状` label anywhere, no reduce/refine-step text.
+        #expect(result == "\(expectedLine1)\n\n\(expectedLine2)\n\n\(expectedLine3)")
+        #expect(!result.contains("■"))
     }
 
-    @Test("above the refine threshold, refineThreadEntries runs exactly once and its output becomes ■経緯 — summarizeThreadDigest still reads the unrefined combined text")
-    func refinesAboveThreshold() async throws {
-        let service = FakeTranslationService()
-        let messages = (1...4).map {
-            ThreadDigestMessage(header: "[7/2\($0)] 田中:", text: "メッセージ\($0)の内容。")
-        }
-
-        let result = try await service.summarizeThread(messages, targetLanguage: .japanese)
-
-        #expect(await service.summarizeThreadEntryCallCount == messages.count)
-        // 4 messages > the refine skip threshold (3), so refine runs
-        // exactly once.
-        #expect(await service.refineThreadEntriesCallCount == 1)
-        #expect(await service.summarizeThreadDigestCallCount == 1)
-
-        let expectedCombined = messages.map { "\($0.header) [ja] \($0.text)" }.joined(separator: "\n")
-        // `FakeTranslationService.refineThreadEntries` returns
-        // `"■経緯\n[ja] <its own input verbatim>"` — its input is exactly
-        // `expectedCombined`.
-        let expectedProgress = "■経緯\n[ja] \(expectedCombined)"
-        // `summarizeThreadDigest` (■現状) is fed the same *unrefined*
-        // `expectedCombined` — never the refined `■経緯` text.
-        let expectedCurrentStatus = "■現状\n[ja] \(expectedCombined)"
-        #expect(result == "\(expectedProgress)\n\n\(expectedCurrentStatus)")
-    }
-
-    @Test("a refineThreadEntries failure falls back to the raw per-message ■経緯 list instead of failing the whole summary")
-    func refineFailureFallsBackToRawList() async throws {
-        let service = FakeTranslationService()
-        await service.configureRefineThreadEntriesFailure(true)
-        let messages = (1...4).map {
-            ThreadDigestMessage(header: "[7/2\($0)] 田中:", text: "メッセージ\($0)の内容。")
-        }
-
-        let result = try await service.summarizeThread(messages, targetLanguage: .japanese)
-
-        // Refine was attempted (and failed) exactly once — the fallback
-        // doesn't retry it or skip calling it in the first place.
-        #expect(await service.refineThreadEntriesCallCount == 1)
-        // The overall call must still succeed (no error thrown) and still
-        // produce a complete, correct ■現状.
-        #expect(await service.summarizeThreadDigestCallCount == 1)
-
-        let expectedCombined = messages.map { "\($0.header) [ja] \($0.text)" }.joined(separator: "\n")
-        let expectedCurrentStatus = "■現状\n[ja] \(expectedCombined)"
-        // ■経緯 falls back to the app-built raw list — exactly what it would
-        // have been had refine been skipped entirely.
-        #expect(result == "■経緯\n\(expectedCombined)\n\n\(expectedCurrentStatus)")
-    }
-
-    @Test("an ungrounded first summarizeThreadDigest response triggers exactly one retry; a grounded retry is used")
-    func ungroundedFirstAttemptRetriesOnceThenSucceeds() async throws {
-        let service = FakeTranslationService()
-        let messages = [
-            ThreadDigestMessage(header: "[7/27] 田中:", text: "予算は5000円程度です。"),
-            ThreadDigestMessage(header: "[7/27] 鈴木:", text: "了解しました。"),
-        ]
-        // First response mentions a katakana word entirely absent from the
-        // per-message extracted input — deliberately ungrounded, mirroring
-        // the real-device report ("■現状に全然関係ない話が出てきた").
-        let ungrounded = "■現状\nミーティングの議事録を確認する必要がある。"
-        let grounded = "■現状\n予算は5000円程度で合意された。"
-        await service.configureSummarizeThreadDigestResponses([ungrounded, grounded])
-
-        let result = try await service.summarizeThread(messages, targetLanguage: .japanese)
-
-        #expect(await service.summarizeThreadDigestCallCount == 2)
-        #expect(result.hasSuffix(grounded))
-        #expect(!result.contains("ミーティング"))
-    }
-
-    @Test("both summarizeThreadDigest attempts being ungrounded falls back to the last message's own extracted line, never the hallucinated text")
-    func bothAttemptsUngroundedFallsBackToLastEntryLine() async throws {
-        let service = FakeTranslationService()
-        let messages = [
-            ThreadDigestMessage(header: "[7/27] 田中:", text: "予算は5000円程度です。"),
-            ThreadDigestMessage(header: "[7/27] 鈴木:", text: "了解しました。"),
-        ]
-        let ungrounded1 = "■現状\nミーティングの議事録を確認する必要がある。"
-        let ungrounded2 = "■現状\nプロジェクトのスケジュールを再確認したい。"
-        await service.configureSummarizeThreadDigestResponses([ungrounded1, ungrounded2])
-
-        let result = try await service.summarizeThread(messages, targetLanguage: .japanese)
-
-        // Both attempts were made (retried exactly once, not looped
-        // indefinitely) before falling back.
-        #expect(await service.summarizeThreadDigestCallCount == 2)
-        // Falls back to the last message's own already-fact-extracted line
-        // (header included) — mechanical, never wrong, per this feature's
-        // own "ハルシネーションを出すくらいなら保守的に" framing.
-        let expectedFallback = "■現状\n[7/27] 鈴木: [ja] 了解しました。"
-        #expect(result.hasSuffix(expectedFallback))
-        #expect(!result.contains("ミーティング"))
-        #expect(!result.contains("プロジェクト"))
-    }
-
-    @Test("empty input short-circuits to an empty string without calling any step")
+    @Test("empty input short-circuits to an empty string without calling summarizeThreadEntry")
     func emptyInputSkipsEntirely() async throws {
         let service = FakeTranslationService()
         let result = try await service.summarizeThread([], targetLanguage: .japanese)
         #expect(result.isEmpty)
         #expect(await service.summarizeThreadEntryCallCount == 0)
-        #expect(await service.summarizeThreadDigestCallCount == 0)
-        #expect(await service.refineThreadEntriesCallCount == 0)
     }
 
-    @Test("a single oversized message's text is chunked through summarizeThreadEntry, one call per chunk and no extra recombination call, refine skipped (1 message)")
+    @Test("a single-message thread is just that one message's own line — no blank-line joining artifact")
+    func singleMessageThreadIsJustThatLine() async throws {
+        let service = FakeTranslationService()
+        let messages = [ThreadDigestMessage(header: "[7/27] 田中:", text: "了解しました。")]
+
+        let result = try await service.summarizeThread(messages, targetLanguage: .japanese)
+
+        #expect(result == "[7/27] 田中: [ja] 了解しました。")
+        #expect(await service.summarizeThreadEntryCallCount == 1)
+    }
+
+    @Test("a single oversized message's text is chunked through summarizeThreadEntry, one call per chunk and no extra recombination call")
     func oversizedSingleMessageChunksWithoutRecombining() async throws {
         let service = FakeTranslationService()
         // Long enough to guarantee multiple `TranslationChunker` chunks for
@@ -193,24 +100,21 @@ struct TranslationServiceSummarizeThreadTests {
         // more), fact-extraction never re-runs a combining model call —
         // exactly `chunkCount` calls, not `chunkCount + 1`.
         #expect(await service.summarizeThreadEntryCallCount == chunkCount)
-        #expect(await service.summarizeThreadDigestCallCount == 1)
-        // 1 message <= the refine skip threshold.
-        #expect(await service.refineThreadEntriesCallCount == 0)
     }
 
-    @Test("onProgress reports .extractingMessage(1, n) through .extractingMessage(n, n), once per message in order, below the refine threshold")
-    func reportsProgressPerMessageBelowThreshold() async throws {
+    @Test("onProgress reports (1, n) through (n, n), once per message, in order")
+    func reportsProgressPerMessage() async throws {
         let service = FakeTranslationService()
-        let messages = (1...3).map { ThreadDigestMessage(header: "[7/2\($0)] 田中:", text: "メッセージ\($0)") }
+        let messages = (1...4).map { ThreadDigestMessage(header: "[7/2\($0)] 田中:", text: "メッセージ\($0)") }
 
         actor ProgressRecorder {
-            private(set) var events: [ThreadSummaryProgress] = []
-            func record(_ event: ThreadSummaryProgress) { events.append(event) }
+            private(set) var events: [[Int]] = []
+            func record(_ current: Int, _ total: Int) { events.append([current, total]) }
         }
         let recorder = ProgressRecorder()
 
-        _ = try await service.summarizeThread(messages, targetLanguage: .japanese) { event in
-            Task { await recorder.record(event) }
+        _ = try await service.summarizeThread(messages, targetLanguage: .japanese) { current, total in
+            Task { await recorder.record(current, total) }
         }
 
         // Give the detached recording `Task`s a chance to land before
@@ -220,38 +124,6 @@ struct TranslationServiceSummarizeThreadTests {
         // recorded by the actor).
         try await Task.sleep(nanoseconds: 50_000_000)
         let events = await recorder.events
-        #expect(events == [
-            .extractingMessage(current: 1, total: 3),
-            .extractingMessage(current: 2, total: 3),
-            .extractingMessage(current: 3, total: 3),
-        ])
-        // No `.refining` event — 3 messages is at the skip threshold.
-        #expect(!events.contains(.refining))
-    }
-
-    @Test("onProgress additionally reports .refining exactly once, after every .extractingMessage event, above the refine threshold")
-    func reportsRefiningEventAboveThreshold() async throws {
-        let service = FakeTranslationService()
-        let messages = (1...4).map { ThreadDigestMessage(header: "[7/2\($0)] 田中:", text: "メッセージ\($0)") }
-
-        actor ProgressRecorder {
-            private(set) var events: [ThreadSummaryProgress] = []
-            func record(_ event: ThreadSummaryProgress) { events.append(event) }
-        }
-        let recorder = ProgressRecorder()
-
-        _ = try await service.summarizeThread(messages, targetLanguage: .japanese) { event in
-            Task { await recorder.record(event) }
-        }
-
-        try await Task.sleep(nanoseconds: 50_000_000)
-        let events = await recorder.events
-        #expect(events == [
-            .extractingMessage(current: 1, total: 4),
-            .extractingMessage(current: 2, total: 4),
-            .extractingMessage(current: 3, total: 4),
-            .extractingMessage(current: 4, total: 4),
-            .refining,
-        ])
+        #expect(events == [[1, 4], [2, 4], [3, 4], [4, 4]])
     }
 }

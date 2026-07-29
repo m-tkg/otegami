@@ -1,15 +1,4 @@
 import Foundation
-import OtegamiCore
-
-/// `TranslationService.summarizeThread(_:targetLanguage:onProgress:)`'s
-/// threshold below which the `refineThreadEntries` polish pass is skipped
-/// entirely (task spec: "3通以下の短いスレッドは refine パスをスキップ") —
-/// a thread this short is already close to as compact as a refined one
-/// would be, so the extra model call isn't worth its latency. A file-scope
-/// `let` rather than a `static let` on the protocol extension itself:
-/// Swift doesn't support stored static properties in protocol extensions
-/// (no storage location to put them in).
-private let threadEntryRefinementSkipThreshold = 3
 
 /// The single seam between "otegami translates mail" and any particular
 /// engine that does the translating. Everything above this protocol
@@ -81,56 +70,31 @@ public protocol TranslationService: TranslationOnlyService {
     /// (`OtegamiCore`) is the remaining defense-in-depth layer.
     func summarizePlain(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int) async throws -> String
 
-    /// Task #153 (スレッド全体のAI要約) → Task #160フォローアップ (実機フィードバック
-    /// 「スレッド要約が雑すぎて内容がほとんど抜け落ちている」、二重圧縮の
-    /// 根治): 元々は`■経緯`(時系列の経緯) と`■現状`(現在の状態) の2パート
-    /// を1回のモデル呼び出しでまとめて生成していたが、reduce段でモデルが
-    /// per-message の抽出結果をもう一度圧縮してしまい (map段の圧縮と合わせ
-    /// て二重圧縮)、具体的な内容 (数値・固有名詞・決定事項) が経緯から
-    /// 抜け落ちる原因になっていた。Task #160フォローアップでこのメソッドの役割を
-    /// `■現状`(このスレッドが最終的にどうなったか・未決事項・次のアク
-    /// ション、2〜4文) 1パートだけへ縮小した — `■経緯`は
-    /// `summarizeThread`がこのメソッドを一切通さず、`summarizeThreadEntry`
-    /// (このprotocolの別のrequirement) の結果をアプリ側でそのまま時系列に
-    /// 並べるだけになった (`summarizeThread`のdoc comment参照) ので、
-    /// reduce段の情報損失はここでは原理的に発生しない。
-    ///
-    /// このメソッドは今も`summarize`とは別名・別シグネチャの
-    /// sibling — 出力が単一メッセージの3パート`summarize`とも、以前の
-    /// 2パート版とも異なる、`■現状`1パートだけの構造化出力である点は
-    /// 変わらない。
-    func summarizeThreadDigest(_ text: String, targetLanguage: TranslationLanguage) async throws -> String
-
     /// Task #160フォローアップ (二重圧縮の根治): `summarizeThread`のmap段 — 各メッセージ
     /// の新規本文から、削らずに具体的な内容(決定事項・依頼/質問・数値・
     /// 日付・固有名詞)を書き出す「事実抽出」。`summarizePlain`(こちらは
     /// 「圧縮」— 内容を削ってでも短くすることが目的) とは目的が正反対な
     /// ので使い分ける: `summarizePlain`をそのまま流用すると、その指示文
     /// 自体が「短く」を最優先しており、具体的な数値・固有名詞が真っ先に
-    /// 削られる (実機報告の直接の原因)。出力は`summarize`/
-    /// `summarizeThreadDigest`と違いラベルなしの地の文 — `summarizePlain`
-    /// と同じく`SummaryOutputSanitizer`を通さない (ラベル構造が無いので
-    /// 対象外)。
+    /// 削られる (実機報告の直接の原因)。出力はラベルなしの地の文 —
+    /// `summarizePlain`と同じく`SummaryOutputSanitizer`を通さない
+    /// (ラベル構造が無いので対象外) が、`ThreadEntryMetaCommentaryStripper`
+    /// (`OtegamiCore`) は通す — このメソッドの実装(`FoundationModelsTranslationService`)
+    /// のdoc comment参照。
+    ///
+    /// Task #160フォローアップ5 (ユーザー指示「スレッド要約の最終形への
+    /// 簡素化」): このメソッドが`summarizeThread`のパイプライン全体になった
+    /// — reduce段の`summarizeThreadDigest`(■現状) とその間の
+    /// `refineThreadEntries`(仕上げパス) は撤去済み。以前はmap
+    /// (このメソッド) → refine (任意の統合パス) → reduce (■現状生成)
+    /// という3段構成だったが、ユーザーからの一連の実機フィードバック
+    /// (Task #160フォローアップ2〜4、いずれもreduce/refine段の指示文が
+    /// 例文の題材を出力へ漏らしたり、入力に無い内容を作り出したりする
+    /// 「モデルにもう一段書かせる」ことそのものに起因する問題だった) を
+    /// 経て、「per-messageの事実抽出結果をそのまま時系列に並べるだけで
+    /// 十分」という結論に至った。このメソッド (map) だけが生き残った
+    /// のはそのため — `summarizeThread`のdoc comment参照。
     func summarizeThreadEntry(_ text: String, targetLanguage: TranslationLanguage) async throws -> String
-
-    /// Task #160フォローアップ3 (ユーザー要望「要約済みのものを再度読ませて
-    /// さらに要約を挟ませて、もう少しシンプルにする」): an optional
-    /// "polish" pass between `summarizeThreadEntry`'s per-message facts and
-    /// the final `■経緯` — `summarizeThread`'s doc comment has the full
-    /// rationale for why this is safe from the Task #160フォローアップ
-    /// double-compression bug (this consolidates already-extracted facts;
-    /// it never re-reads raw mail bodies). `text` is the same header-
-    /// prefixed, newline-joined per-message lines `summarizeThreadDigest`
-    /// (■現状) also reads. Output starts with the `ThreadDigestLabel
-    /// .progress` label on its own first line (mirrors `summarizeThreadDigest`'s
-    /// own `ThreadDigestLabel.currentStatus`-first contract) followed by
-    /// however many condensed, chronological lines it collapsed the input
-    /// into — unlike the per-message input lines, these no longer carry a
-    /// `"[date] sender:"` bracket prefix (a merged line can span several
-    /// original messages/dates/senders, so a single bracket wouldn't fit;
-    /// real names drawn only from the input are used inline instead when
-    /// attribution is needed).
-    func refineThreadEntries(_ text: String, targetLanguage: TranslationLanguage) async throws -> String
 }
 
 extension TranslationService {
@@ -183,185 +147,75 @@ extension TranslationService {
     }
 
     /// Task #153 (スレッド全体のAI要約) → Task #160 (map段をメッセージ単位
-    /// に固定) → Task #160フォローアップ (実機フィードバック「スレッド要約
-    /// が雑すぎて内容がほとんど抜け落ちている」、**二重圧縮の根治**):
-    /// Task #160はmap段を「文字数ベースのチャンク」から「メッセージ単位」
-    /// へ固定したが、それでも情報が抜け落ちる報告が続いた — 原因は
-    /// **二重圧縮**だった。(a) map段の`summarizePlain`は「短く」を最優先
-    /// する圧縮指示のため、具体的な数値・固有名詞・決定事項を真っ先に削る
-    /// (これ自体は単一メッセージの`summarizeLongText`が求める挙動として
-    /// 正しい)。(b) それでもなお、reduce段 (`summarizeThreadDigest`) が
-    /// 「per-message圧縮結果をまとめて経緯を書く」ため、もう一段モデルが
-    /// 圧縮し直していた。2段とも「短くする」方向のモデル呼び出しが直列に
-    /// 並んでいれば、情報が生き残る保証はどこにも無い。
+    /// に固定) → Task #160フォローアップ (二重圧縮の根治) → Task #160
+    /// フォローアップ2 (メタ言及調の除去) → Task #160フォローアップ3
+    /// (仕上げ=refineパスの追加) → Task #160フォローアップ4 (■現状の
+    /// ハルシネーション対策) → **Task #160フォローアップ5 (ユーザー指示
+    /// 「スレッド要約の最終形への簡素化」、このdoc commentが現行の設計)**:
     ///
-    /// この改修で構造を作り替えた:
+    /// これまでの経緯 (フォローアップ2〜4) は、いずれも
+    /// 「per-messageの事実抽出結果を、モデルにもう一段読ませて何かを
+    /// 書かせる」(旧`refineThreadEntries`の■経緯統合、旧
+    /// `summarizeThreadDigest`の■現状生成) こと自体に起因する問題
+    /// だった — 指示文の例文の題材が出力に漏れる、入力に無い後続アクション
+    /// を作り出す、■現状が入力と無関係な内容になる、等。ユーザーの最終
+    /// 判断は「その2段目自体が要らない」というもの: **per-messageの
+    /// 事実抽出結果 (`summarizeThreadEntry`の出力) をそのまま時系列に
+    /// 並べるだけ**が最終形になった。
     ///
-    /// 1. **map段: 圧縮(`summarizePlain`)ではなく事実抽出
-    ///    (`summarizeThreadEntry`)** — 新設の`summarizeThreadEntry`(この
-    ///    protocolの別のrequirement) は「削らずに書き出す」指示なので、
-    ///    決定事項・依頼/質問・数値・日付・固有名詞が生き残る。
-    /// 2. **■経緯はモデルで再圧縮しない** — 各メッセージの抽出結果を
-    ///    `message.header`(`"[M/d] 差出人:"`) と結合した行を、時系列の
-    ///    まま**そのままアプリ側で**箇条書きに整形する。ここにreduce段の
-    ///    モデル呼び出しは一切挟まらないので、原理的に情報損失が起きない
-    ///    — これが「二重圧縮の根治」の核心。
-    /// 3. **■現状だけモデル1回** — 抽出結果全体 (箇条書きと同じ`combined`)
-    ///    を入力に、`summarizeThreadDigest`(役割を「■現状のみ生成」へ縮小
-    ///    済み、そちらのdoc comment参照) を1回だけ呼ぶ。
+    /// 現在の実装はシンプルな1段のmapのみ:
+    /// `messages`の各メッセージについて`summarizeThreadEntry`(必ず削らず
+    /// 書き出す事実抽出、`extractThreadEntryText(_:targetLanguage:)`
+    /// 経由でチャンク安全網も適用) を1回ずつ呼び、
+    /// `"\(header) \(extracted)"`という行を組み立てて**空行区切りで**
+    /// 連結するだけ — reduce/refine段のモデル呼び出しは一切無い。
+    /// `■経緯`/`■現状`のようなラベルも付けない (ラベルは2パート構造を
+    /// 前提にしたUIだったが、今は単一の時系列リストなのでラベル自体が
+    /// 不要になった)。これにより、旧reduce/refine段が持っていた
+    /// 「モデルがもう一段何かを書く」ことに起因するあらゆるハルシネーション
+    /// 経路が構造的に消える — 出力に含まれる文はすべて、いずれかの
+    /// `summarizeThreadEntry`呼び出しが実際に返した文字列そのもの
+    /// (+ アプリ側が組み立てたヘッダ) でしかあり得ない。
     ///
     /// `"[M/d] 差出人:"`ヘッダは、Task #160の設計をそのまま踏襲して
     /// **map段のモデル入力にもモデル出力にも含めない** —
     /// `summarizeThreadEntry`へ渡すのは`message.text`(新規本文) だけで、
-    /// ■経緯の箇条書き・reduce段への入力どちらの行も`message.header`
-    /// (呼び出し元が信頼できるメタデータから組み立てた文字列) をこちら側
-    /// で機械的に前置きする。理由もTask #160と同じ:
-    /// `summarizeThreadEntryInstructions`は「差出人・宛先名を行為の主語に
-    /// しない」設計のため、ヘッダをモデルへの入力に混ぜるとその名前・日時を
-    /// モデルが不確実な言い回しで本文に混ぜて返すリスクがある。
+    /// 出力の各行のヘッダは`message.header`(呼び出し元が信頼できる
+    /// メタデータから組み立てた文字列) をこちら側で機械的に前置きする。
+    /// 理由もTask #160と同じ: `summarizeThreadEntryInstructions`は
+    /// 「差出人・宛先名を行為の主語にしない」設計のため、ヘッダをモデルへ
+    /// の入力に混ぜるとその名前・日時をモデルが不確実な言い回しで本文に
+    /// 混ぜて返すリスクがある。
     ///
-    /// 1メッセージの本文単体が`TranslationChunker.defaultMaxChunkLength`
-    /// を超える場合だけ、`extractThreadEntryText(_:targetLanguage:)`
-    /// (下記) がチャンク分割の安全網を通す — ただし`summarizeLongText`/
-    /// Task #160の`compactThreadMessageText`と違い、チャンクをまとめて
-    /// もう一度モデルへ通す「再圧縮」はしない (それ自体が二重圧縮の一種
-    /// になるため) — 各チャンクの抽出結果をそのまま連結するだけ。通常の
-    /// メッセージはこの分岐に入らない。
-    ///
-    /// `onProgress` is `@MainActor @Sendable`, not plain `@Sendable` — an
-    /// `Optional` closure parameter is implicitly `@escaping` (a well-known
-    /// Swift quirk), and an escaping closure crossing this `async` method's
-    /// `await` points needs `Sendable` under strict concurrency
-    /// (`AccountSyncer.performInitialSync(auth:onProgress:)`'s identical
-    /// `@Sendable (Progress) -> Void)?` is the existing precedent for that
-    /// half). Pinning it to `@MainActor` as well is what actually lets
-    /// `ThreadDetailView` (a `View`, MainActor-isolated) form this closure
-    /// as a plain non-`Sendable`-capture-of-`self` literal — `@MainActor`
-    /// isolation is itself the safety proof `Sendable` asks for, so the two
-    /// annotations together are strictly more permissive for the caller
-    /// than `@Sendable` alone would be. Called with `await` below since
-    /// this method itself has no actor affinity.
-    ///
-    /// Task #160フォローアップ3 (ユーザー要望「要約済みのものを再度読ませて
-    /// さらに要約を挟ませて、もう少しシンプルにする」): after the map step
-    /// builds `combined` exactly as before, an optional third pass —
-    /// `refineThreadEntries` — now runs over `combined` to condense it into
-    /// fewer, chronological lines before it becomes the displayed `■経緯`
-    /// (`summarizeThreadDigest`'s `■現状` call still reads the *un*-refined
-    /// `combined`, unchanged from Task #160フォローアップ — the "現行どおり"
-    /// this feature's own spec asked for). This is deliberately **not** a
-    /// third compressing pass over raw content (which is what Task #160
-    /// フォローアップ's whole redesign eliminated) — `combined` is already
-    /// every message's own extracted facts, so refining it is a
-    /// consolidation of already-fact-preserving text, one level up from
-    /// "compress the raw email", not a re-run of the same lossy operation.
-    ///
-    /// Two guards keep this pass from ever being the reason a summary
-    /// fails or gets thinner than before:
-    ///  - **Skipped entirely for `messages.count <=
-    ///    threadEntryRefinementSkipThreshold`** — a short thread's
-    ///    unrefined per-message bullet list is already about as short as a
-    ///    "refined" one would be, so there's nothing worth spending an
-    ///    extra model call to condense.
-    ///  - **Falls back to the unrefined `combined`(with the `■経緯` label
-    ///    prepended by this method itself, exactly like the pre-refine
-    ///    behavior) if `refineThreadEntries` throws** — a transient model
-    ///    error during this optional polish pass must never turn an
-    ///    otherwise-successful summary into a thrown error the user sees as
-    ///    total failure.
+    /// `onProgress`は「今n通目/m通中」だけを報告する — 旧
+    /// `ThreadSummaryProgress`(`.extractingMessage`/`.refining`の2ケース)
+    /// はrefine段の廃止に伴い不要になったので、Task #160時代の単純な
+    /// `(current: Int, total: Int)`タプルに戻した。`@MainActor @Sendable`
+    /// である理由は変わらない: `Optional`のクロージャ引数は暗黙に
+    /// `@escaping`になる (`AccountSyncer.performInitialSync(auth:onProgress:)`
+    /// の`onProgress`と同じ理由でSendable化が要る) 上、`@MainActor`も
+    /// 付けることで`ThreadDetailView`(`View`、MainActor隔離) がこの
+    /// クロージャを`self`キャプチャ込みでそのまま書けるようになる —
+    /// `@MainActor`隔離自体が`Sendable`の求める安全性の裏付けになる。
+    /// 呼び出し側 (下記) が`await`するのはこのため。
     public func summarizeThread(
         _ messages: [ThreadDigestMessage],
         targetLanguage: TranslationLanguage,
-        onProgress: (@MainActor @Sendable (_ event: ThreadSummaryProgress) -> Void)? = nil
+        onProgress: (@MainActor @Sendable (_ current: Int, _ total: Int) -> Void)? = nil
     ) async throws -> String {
         guard !messages.isEmpty else { return "" }
 
         var perMessageLines: [String] = []
         perMessageLines.reserveCapacity(messages.count)
         for (index, message) in messages.enumerated() {
-            await onProgress?(.extractingMessage(current: index + 1, total: messages.count))
+            await onProgress?(index + 1, messages.count)
             let extracted = try await extractThreadEntryText(message.text, targetLanguage: targetLanguage)
             perMessageLines.append("\(message.header) \(extracted)")
         }
-        let combined = perMessageLines.joined(separator: "\n")
-
-        let progressSection: String
-        if messages.count > threadEntryRefinementSkipThreshold {
-            await onProgress?(.refining)
-            do {
-                progressSection = try await refineThreadEntries(combined, targetLanguage: targetLanguage)
-            } catch {
-                // Best-effort: an unrefined `■経緯` is still a correct,
-                // complete summary — only this optional polish pass is
-                // lost, not the whole feature.
-                progressSection = "\(ThreadDigestLabel.progress)\n\(combined)"
-            }
-        } else {
-            progressSection = "\(ThreadDigestLabel.progress)\n\(combined)"
-        }
-
-        // Task #160フォローアップ: `summarizeThreadDigest`(■現状) always
-        // reads the *un*-refined `combined` — never `progressSection` —
-        // regardless of whether the refine pass ran, succeeded, or was
-        // skipped. See this method's own doc comment on why that's
-        // unchanged from before this pass existed.
-        //
-        // Task #160フォローアップ4 (最優先実機フィードバック「■現状に
-        // 全然関係ない話が出てきた」): `summarizeThreadDigest`の生応答を
-        // そのまま返さず、`groundedCurrentStatus(combined:lastEntryLine:
-        // targetLanguage:)`(下記) を経由する — グラウンディング検証・
-        // 1回だけの再生成・機械的フォールバックの多層防御。
-        let currentStatus = await groundedCurrentStatus(combined: combined, lastEntryLine: perMessageLines.last ?? "", targetLanguage: targetLanguage)
-        return "\(progressSection)\n\n\(currentStatus)"
-    }
-
-    /// Task #160フォローアップ4 (最優先実機フィードバック「■現状に全然
-    /// 関係ない話が出てきた」— ハルシネーション): the root cause was almost
-    /// certainly `FoundationModelsTranslationService.currentStatusInstructions`'s
-    /// own 【出力例】 still using concrete themed content — the same
-    /// "instruction example leaks into unrelated output" failure this
-    /// feature had already hit twice before, just missed on this one
-    /// instruction (see that instructions builder's own doc comment for the
-    /// full account, and why its example is now fully abstract). That's the
-    /// primary fix; this method is the **second, independent layer**:
-    ///
-    /// 1. Call `summarizeThreadDigest` once (`combined` — the un-refined,
-    ///    per-message extracted facts — is always its input, see this
-    ///    method's caller's doc comment on why).
-    /// 2. If the result passes `ThreadDigestGroundingCheck.isLikelyGrounded`
-    ///    (every number/katakana/Latin token in the answer also appears
-    ///    literally in `combined`), return it — the overwhelming majority
-    ///    of calls end here.
-    /// 3. Otherwise, retry **exactly once** (task spec: "閾値未満なら1回
-    ///    だけ再生成") — a fresh `LanguageModelSession` on the retry may
-    ///    simply not repeat the same hallucination. If the retry also
-    ///    passes the grounding check, return it.
-    /// 4. If both attempts are ungrounded (or either one throws — `try?`
-    ///    treats a thrown error the same as "no good candidate yet", since
-    ///    a transient model failure here shouldn't sink the whole summary
-    ///    any more than an actual hallucination should), fall back to a
-    ///    **mechanical, guaranteed-grounded** `■現状`: the last message's
-    ///    own already-fact-extracted line verbatim (`lastEntryLine`,
-    ///    `"\(header) \(extracted)"` — the very last entry
-    ///    `perMessageLines` built). Task spec's own framing: "ハルシネー
-    ///    ションを出すくらいなら保守的に" — a plain restatement of the
-    ///    thread's last known fact is never *wrong*, even when it's not the
-    ///    ideal "current state" synthesis a fully-grounded model answer
-    ///    would have given.
-    ///
-    /// Never throws — every path above ends in a `String`, matching the
-    /// "this step must not be why the whole summary fails" philosophy
-    /// `refineThreadEntries`'s own fallback already established.
-    private func groundedCurrentStatus(combined: String, lastEntryLine: String, targetLanguage: TranslationLanguage) async -> String {
-        if let firstAttempt = try? await summarizeThreadDigest(combined, targetLanguage: targetLanguage),
-           ThreadDigestGroundingCheck.isLikelyGrounded(firstAttempt, in: combined) {
-            return firstAttempt
-        }
-        if let retryAttempt = try? await summarizeThreadDigest(combined, targetLanguage: targetLanguage),
-           ThreadDigestGroundingCheck.isLikelyGrounded(retryAttempt, in: combined) {
-            return retryAttempt
-        }
-        return "\(ThreadDigestLabel.currentStatus)\n\(lastEntryLine)"
+        // Task #160フォローアップ5: 各メッセージの行の間に空行を1行挟んで
+        // 連結するだけ — reduce/refine段は無いので、これがそのまま最終的な
+        // 出力になる。
+        return perMessageLines.joined(separator: "\n\n")
     }
 
     /// The oversized-single-message safety net `summarizeThread(_:targetLanguage:onProgress:)`'s
@@ -391,42 +245,14 @@ extension TranslationService {
     }
 }
 
-/// Task #160フォローアップ (二重圧縮の根治): the `■経緯`/`■現状` label
-/// strings shared between `TranslationService.summarizeThread(_:targetLanguage:onProgress:)`
-/// (which prepends `progress` itself, in code, never asking a model to
-/// produce it) and `FoundationModelsTranslationService`'s
-/// `summarizeThreadDigest` instructions/`SummaryOutputSanitizer
-/// .sanitize(_:labels:)` call (which asks the model for exactly
-/// `currentStatus`) — kept in one place, in this lower-level target, so the
-/// two can never drift out of sync with each other (`FoundationModelsTranslationService`
-/// already depends on this target, never the other way around).
-public enum ThreadDigestLabel {
-    public static let progress = "■経緯"
-    public static let currentStatus = "■現状"
-}
-
-/// Task #160フォローアップ3: `summarizeThread(_:targetLanguage:onProgress:)`'s
-/// progress events — a plain `(current: Int, total: Int)` pair (Task #160's
-/// original shape) could only describe "which message is being extracted",
-/// with no way to signal that the run has moved into the `refineThreadEntries`
-/// polish pass afterward. `ThreadDetailView`'s generating sheet switches on
-/// this to show either "n/m 通目を要約中…" or "仕上げ中…".
-public enum ThreadSummaryProgress: Sendable, Equatable {
-    case extractingMessage(current: Int, total: Int)
-    case refining
-}
-
 /// Task #160: one thread message's map-stage input for
 /// `TranslationService.summarizeThread(_:targetLanguage:onProgress:)` —
 /// `header` (`"[<date>] <sender>:"`, already fully formatted by the caller
 /// from trusted metadata) and `text` (that message's own new, non-quoted
 /// body) travel separately so the map step can fact-extract `text` alone
 /// (never showing the model `header`, see `summarizeThread`'s doc comment
-/// for why) while both the app-built `■経緯` bullet list and the `■現状`
-/// reduce step's input still get a `"\(header) \(extracted facts)"` line
-/// per message (Task #160フォローアップ renamed this from "compact
-/// summary" to "extracted facts" — same struct shape, different map-step
-/// contract).
+/// for why), and the final output's per-message line is always
+/// `"\(header) \(extracted facts)"`.
 public struct ThreadDigestMessage: Sendable, Equatable {
     public let header: String
     public let text: String

@@ -1,31 +1,36 @@
 import Foundation
 
-/// Task #160フォローアップ4 (最優先実機フィードバック「■現状に全然関係
-/// ない話が出てきた」— ハルシネーション): a lightweight, code-side "does
-/// this look grounded in the input" check for
-/// `TranslationService.summarizeThread`'s `■現状` step
-/// (`summarizeThreadDigest`) — not full entailment/fact-checking (out of
-/// reach for a simple string utility), just a substring-overlap heuristic
-/// over the content-bearing tokens most likely to signal an invented
-/// proper noun or number: **digit runs**, **katakana runs** (length >= 2 —
-/// loanwords, foreign-style proper nouns), and **Latin-letter runs**
-/// (length >= 2 — English names, product names, abbreviations).
+/// **現在このユーティリティを呼んでいる箇所は無い (Task #160フォローアップ5、
+/// ユーザー指示「スレッド要約の最終形への簡素化」で撤去済み) — 意図的に
+/// 残してある。** 経緯: Task #160フォローアップ4 (最優先実機フィードバック
+/// 「■現状に全然関係ない話が出てきた」— ハルシネーション) で、
+/// `TranslationService.summarizeThread`の`■現状`生成段
+/// (`summarizeThreadDigest`、廃止済み) の出力を検証するために書かれた
+/// 軽量ヒューリスティックだった。その後のフォローアップ5で「per-message
+/// 抽出結果をそのまま時系列に並べるだけ」という最終形に簡素化され、
+/// `■現状`生成段そのものが撤去された結果、このユーティリティを呼ぶ
+/// 唯一の呼び出し元が消えた。
 ///
-/// The *root cause* of this feature's real-device report was almost
-/// certainly `FoundationModelsTranslationService.currentStatusInstructions`'s
-/// own 【出力例】 still using concrete themed content ("水曜14時に
-/// イタリアンの店で開催..."、"田中が予約を担当...") — exactly the same
-/// "instruction example leaks into unrelated output" failure family this
-/// feature had already hit twice before (`summarizeThreadEntryInstructions`/
-/// `refineThreadEntriesInstructions`'s own doc comments), just missed on
-/// this one instruction. That's fixed at the source (the example is now
-/// fully abstract, no digits/katakana/proper nouns at all). This type is
-/// the **second, independent layer** `TranslationService.summarizeThread`
-/// adds on top of that fix — even a correctly-worded instruction can't
-/// guarantee zero hallucination from a generative model, so a cheap
-/// code-side check plus a bounded retry plus a mechanical fallback (see
-/// that method's own doc comment) closes the loop without needing to trust
-/// the instructions alone.
+/// それでも削除せず残しているのは: (1) 実装・テストとも既に検証済みで
+/// 保守コストがほぼゼロ (このファイル単体で完結、他の型に依存しない)、
+/// (2) 「モデルにもう一段何かを書かせる」設計が将来また必要になった場合
+/// (例えば添付ファイルの自動タグ付けや、別の要約系機能) に、同じ
+/// 「生成結果が入力に接地しているか」を検証するニーズが再発する可能性が
+/// 現実的にある、(3) 実際に「例文の題材が出力に漏れる」バグを2回
+/// (Task #160フォローアップ2/4) 踏んだ経験から得た設計 (数値・カタカナ語・
+/// ラテン文字語という3カテゴリへの意図的な限定、漢字語を対象外にする
+/// 理由) 自体に再利用価値があるため。呼び出し元が現れたら、このdoc
+/// comment の冒頭2段落を新しい利用箇所の説明に置き換えること。
+///
+/// 以下は元の (Task #160フォローアップ4時点の) 設計意図の記録:
+///
+/// a lightweight, code-side "does this look grounded in the input" check —
+/// not full entailment/fact-checking (out of reach for a simple string
+/// utility), just a substring-overlap heuristic over the content-bearing
+/// tokens most likely to signal an invented proper noun or number: **digit
+/// runs**, **katakana runs** (length >= 2 — loanwords, foreign-style proper
+/// nouns), and **Latin-letter runs** (length >= 2 — English names, product
+/// names, abbreviations).
 ///
 /// **Deliberately narrow, matching this feature's own past lessons about
 /// over-broad heuristics**: kanji runs are not checked at all — an
