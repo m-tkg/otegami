@@ -3,489 +3,298 @@
 [![ci-app](https://github.com/m-tkg/otegami/actions/workflows/ci-app.yml/badge.svg)](https://github.com/m-tkg/otegami/actions/workflows/ci-app.yml)
 [![ci-server](https://github.com/m-tkg/otegami/actions/workflows/ci-server.yml/badge.svg)](https://github.com/m-tkg/otegami/actions/workflows/ci-server.yml)
 
-**[日本語版 README はこちら / Japanese README](README_ja.md)**
+オフラインファーストな iOS/macOS 向けメールクライアント（オープンソース）。
+Gmail・iCloud・Yahoo!メール・Yahoo!メール(JAPAN)・Outlook.com/Office365・
+任意の IMAP/SMTP アカウントに1つの同期エンジンで接続し、すべてのデータを
+ローカルの SQLite (GRDB) に保存して全文検索でき、英文メールは端末内で翻訳・
+要約でき、プッシュ通知用のリレーサーバーもセルフホストできます。
 
-An open-source, offline-first mail client for iOS and macOS. Connects to
-your existing Gmail, iCloud, or generic IMAP/SMTP account with a single
-sync engine, stores everything locally in SQLite (GRDB) with full-text
-search, translates English mail on-device, and can optionally run its own
-self-hosted push notification relay.
+iOS 26+ / macOS 26+ 対応、単一の SwiftUI コードベース。
 
-> **Status: work in progress / experimental.** See the [Status](#status)
-> section below before relying on this for real mail.
-
-<p align="center">
-  <img src="docs/assets/screenshot-ios-inbox-light.png" width="32%" alt="Unified inbox across two accounts, light mode (iOS)">
-  <img src="docs/assets/screenshot-ios-inbox-dark.png" width="32%" alt="Unified inbox, dark mode (iOS)">
-  <img src="docs/assets/screenshot-ios-compose.png" width="32%" alt="Composer with per-account sender picker (iOS)">
-</p>
-<p align="center">
-  <img src="docs/assets/screenshot-mac-inbox.png" width="49%" alt="Unified inbox with unread badges (macOS)">
-  <img src="docs/assets/screenshot-mac-thread.png" width="49%" alt="Thread view with reply (macOS)">
-</p>
-
-## Why otegami
-
-Two things this app is built around, more than any single feature list:
-
-1. **Multiple accounts, one inbox.** Gmail, iCloud, and any IMAP/SMTP
-   provider sync through the same engine and show up interleaved in one
-   unified inbox, with a tap to filter down to a single account.
-2. **On-device translation.** English mail gets translated to Japanese
-   (and back, for replies) entirely on-device via Apple's Foundation
-   Models framework — no server round-trip, no third-party translation
-   API ever sees your mail. See [Translation](#translation) below.
-
-## Features
-
-- **Accounts**: Gmail (OAuth2 + PKCE), iCloud (app-specific password), and
-  any generic IMAP/SMTP provider — one unified sync engine underneath.
-- **Offline-first**: every message, thread, and flag change lives in a
-  local SQLite database first; the app is fully usable with no network,
-  and reconnects replay a queue of pending changes (read/unread, delete,
-  archive, send) once back online. Archiving is provider-aware: Gmail has
-  no real "Archive" folder, so archiving there un-labels the message from
-  the source mailbox (Gmail keeps it in "All Mail" automatically) instead
-  of moving it; other providers move it to (or auto-create) an Archive
-  mailbox.
-- **On-device translation and AI summary** (Apple Foundation Models,
-  iOS/macOS 26+): an inline translation button, always enabled once a
-  message's body has loaded (no language detection gating it — a real
-  report of the button not appearing even for genuinely English mail
-  outweighed the value of hiding it for non-English mail) — but
-  translation only ever runs when you tap "Translate" (auto-translate
-  defaults **off**; turn it back on in Settings, and still only fires
-  automatically for confidently-detected English mail). Once translated,
-  a one-tap toggle switches back to the original. Plain-text messages let
-  you long-press a single paragraph to peek at just its source text; HTML
-  messages are translated in place, keeping tables/images/layout intact.
-  A separate "AI summary" bar (any message, any language) generates a
-  short on-device summary on tap. Nothing leaves the device — see
-  [`docs/translation.md`](docs/translation.md) for the engine design and
-  its one known Simulator-only limitation. Translation is proven working
-  end-to-end (2–5s per call) against the real on-device model.
-- **Threading**: Gmail `X-GM-THRID` when available, otherwise a JWZ-style
-  `References`/`In-Reply-To` union-find with a subject-based fallback,
-  batched for fast bulk (re-)threading (100k-message dataset: ~1.4s, see
-  [`docs/performance.md`](docs/performance.md)).
-- **Unified inbox with account filter chips**: every account's inbox
-  interleaved by date behind a "everything" chip, with per-account chips
-  to filter down; account color accents and per-mailbox/unified
-  unread-count badges throughout. Each account's color is auto-assigned
-  (deterministic per account id) but can be overridden from a fixed
-  8-color palette in that account's edit screen — the pick syncs across
-  devices via iCloud like the rest of the account's connection settings.
-- **App icon badge**: the unified inbox's unread count on the app icon
-  (on by default, toggle in Settings), kept live by the same sync/read
-  observation the in-app unread counts use; a push notification bumps it
-  immediately, self-correcting to the real count on the next sync.
-- **Full-text search**: SQLite FTS5 (trigram tokenizer) for 3+ character
-  queries, with a `LIKE` fallback for shorter queries — works for Japanese
-  and other scripts with no dictionary/segmenter dependency. Filter chips
-  (attachments / unread / English) and People vs. Mail result sections.
-- **HTML mail**: rendered in a sandboxed `WKWebView` (JavaScript disabled;
-  re-verified against real script-injection fixtures — `<script>` DOM
-  rewrites, `onerror` handlers, `iframe`s, `javascript:` links — all
-  confirmed inert). Fixed-width table layouts (600-800px-class marketing/
-  notification mail, e.g. a bank payment notice) are scaled to fit the
-  screen width instead of clipping at the right edge or rendering with
-  oversized text. A subtle "HTML" badge marks HTML messages, with a
-  one-tap switch to a plain-text rendering (or "always show as text" in
-  Settings). Messages with no content at all show a subtle "no content"
-  placeholder instead of a blank pane. Embedded images (inline `cid:` /
-  image attachments) default off; remote images default on with an
-  in-Settings note about the read-receipt tradeoff — both have their own
-  one-tap "show images" banner as a per-message override. Links can open in
-  an in-app browser (default, iOS only) or the system default browser,
-  configurable in Settings.
-- **Attachments**: send and receive, with QuickLook preview, inline
-  `cid:` image support, and RFC 2047/2231-aware filename decoding
-  (including Japanese filenames).
-- **Calendar invites**: a Google Calendar-style invite email (a
-  `text/calendar; method=REQUEST` MIME part) shows an invite card — title,
-  time (converted to your device's timezone), location, organizer — with
-  Accept/Decline/Maybe buttons. Tapping one sends a standard iTIP
-  `METHOD:REPLY` back to the organizer, the same mechanism any calendar
-  client uses, so Google Calendar updates your RSVP without needing any
-  calendar API access or OAuth scope. See
-  [docs/calendar-invites.md](docs/calendar-invites.md).
-- **Compose/reply**: a required sender picker to avoid cross-account
-  mistakes, plain-text quoting, an Outbox for offline sends, local draft
-  saving (with a save/discard confirmation on both platforms), and
-  drafts that sync both ways over IMAP. Attachments (files, photos, and —
-  on a real iOS device — a camera capture) share a single "Attach" menu.
-  On iOS, sending is durable and
-  cancellable: the message is queued to the local Outbox the instant you
-  tap Send (so it's never lost even if the app is killed), then held for
-  a configurable 5s/10s/no-delay window behind a countdown bar with a
-  "送信を取り消す" (undo send) button — leaving the app finalizes the send
-  immediately instead of continuing to count down in the background. See
-  [docs/settings.md](docs/settings.md).
-- **Templates**: reusable compose snippets, managed in Settings, each
-  optionally scoped to one account (unscoped ones are available from
-  every account). Insertable from the Composer's "テンプレートを挿入" menu —
-  fills both subject and body when starting a blank message, or appends
-  to the body otherwise (signature-style).
-- **Signature templates**: a separate feature from the templates above —
-  each signature can be assigned to *multiple* accounts, and each account
-  can have a default signature that's automatically appended when
-  composing a brand-new message (not for replies/forwards, to avoid
-  racing their own quoted-content prefill). Managed in Settings →
-  "署名テンプレート"; the Composer's "署名" picker lets you switch or clear
-  it manually at any time, replacing exactly what the previous pick
-  inserted.
-- **Default sending account**: choose which account the Composer
-  preselects for a brand-new message in Settings → "アカウントの設定"
-  (replies/forwards always use the original message's own account,
-  regardless of this setting).
-- **`mailto:` links and default mail app**: otegami registers the
-  `mailto` scheme (`CFBundleURLTypes`) on both platforms, so tapping/
-  clicking a `mailto:` link opens the Composer prefilled with the
-  decoded to/cc/bcc/subject/body (RFC 6068). On macOS this alone makes
-  otegami selectable as the default mail reader (Mail.app's own
-  Settings → General, or System Settings → Desktop & Dock). On iOS,
-  actually becoming the system-wide default additionally requires
-  Apple's `com.apple.developer.mail-client` entitlement, which is a
-  build-time opt-in flag (off by default so the app builds and archives
-  without it) — see [docs/default-mail-app.md](docs/default-mail-app.md).
-- **Configurable post-delete/archive behavior**: from the message view's
-  "…" menu, deleting/archiving/marking as junk can either return to the
-  list (default) or automatically open the next message in the current
-  list order — configurable in Settings → "メールビューア".
-- **Swipe actions & bulk select**: both left and right swipes have
-  independently configurable short/long actions (read/unread toggle,
-  archive, mark as junk, pin, delete), a deliberately tap-only delete/junk
-  to avoid accidental swipes, long-press multi-select with a bottom
-  action bar, and Undo toasts on delete/archive/junk. macOS (no swipe
-  gesture) exposes every action via the row's context menu instead.
-- **Pinning**: pin a message or thread to keep it at the top of the list,
-  local-only by default with an opt-in to mirror IMAP `\Flagged` so it
-  stays in sync with other clients.
-- **List display**: card-style rows (rounded corners, no outline — just
-  the surface color and spacing separate one card from the next) across
-  the unified inbox, per-mailbox lists, and search results; timestamps
-  read like a typical mail client (time only for today, date + time
-  otherwise). Conversation threading you can switch off (giving a flat,
-  one-row-per-message list), and a per-sender avatar next to each row and
-  each message's header. The avatar prefers, in order: a matching photo
-  from your on-device Contacts (looked up via the Contacts framework —
-  nothing ever leaves the device), a Gravatar image (looked up by a
-  SHA-256 hash of the sender's address sent to gravatar.com), a company
-  logo resolved from the sender's domain favicon (free-mail domains like
-  Gmail/iCloud are excluded so they never get treated as one company's
-  logo), then falls back to initials on a per-account color. Each
-  network-touching source can be turned off independently in Settings →
-  Mail List. A configurable
-  body-preview line count. A thread's collapsed rows show the same
-  avatar/preview treatment, styled distinctly (a softer tint, no card
-  background) so they read as "inside one thread" rather than the
-  top-level list.
-- **Thread reading, platform-appropriate**: on iOS, tapping a thread with
-  2+ messages opens a selection screen first (one row per message, same
-  icon/preview/time treatment as the list) — picking one pushes straight
-  to that single message's body, with no accordion/stack on screen at
-  all; a 1-message thread skips the selection screen entirely. macOS's
-  wider 3-pane layout keeps the original strict accordion instead —
-  exactly one message expanded at a time, tapping another message's
-  header collapses whatever was open and expands that one instead, with
-  the expanded row visually highlighted (an accent-colored rail, like the
-  account-color rail in the list). Either way, the message footer
-  toolbar's Reply/Forward/Search/Info always act on whichever message is
-  currently shown/expanded.
-- **Display language**: choose "Match System", Japanese, or English in
-  Settings — the app UI itself is localized via a String Catalog, covering
-  the great majority of screens (list, message view, compose, search, the
-  hamburger menu, every Settings screen including account setup/edit
-  forms, templates, signatures, and push notifications). Applying a
-  change requires a full quit-and-relaunch, not just returning to the
-  Home Screen (backgrounding doesn't restart the process) — the app
-  offers a "Quit Now" button right after you pick a language to make that
-  unambiguous. See [docs/localization.md](docs/localization.md) for exact
-  coverage and the mechanism.
-- **Settings, reorganized into five categories**: Account Settings
-  (add/remove accounts, default sending account), Mail Viewer (link
-  browser, post-delete/archive behavior, AI features on/off), Mail List
-  (avatars, preview lines, swipe actions), Signature Templates, and Other
-  (everything else — threading, pinning, send-cancel window, images, HTML
-  display, language, templates, iCloud sync, push notifications, app icon
-  badge, about). Same structure on iOS (hamburger menu → Settings) and
-  macOS (native Settings scene).
-- **Push notifications**: an optional, self-hostable relay server
-  (`server/otegami-relay`) watches your IMAP `INBOX` over IDLE and sends a
-  privacy-preserving APNs push (no subject/body on the wire — the app's
-  Notification Service Extension fetches the real content itself). Fully
-  opt-in; the app works identically without one configured. **Verified
-  end-to-end on a physical iPhone** — real APNs delivery, correct
-  sender/subject after the Notification Service Extension rewrite, and
-  clean teardown when disabled — see
-  [`docs/relay-deployment.md`](docs/relay-deployment.md).
-- **macOS**: native menu bar commands (⌘N new message, ⌘R reply, ⌘⌫
-  delete, ⌘⇧F focus search, ⌘]/⌘[ switch mailboxes), a native Settings
-  scene, its own compose windows (with the same save/discard-on-close
-  confirmation as iOS, including when closed from the titlebar button),
-  and the original three-pane `NavigationSplitView` layout.
-- **iCloud account sync**: add an account on one device (iOS/macOS, same
-  Apple ID) and it appears ready-to-sync on the others — credentials ride
-  iCloud Keychain, account metadata (including edits) syncs via
-  `NSUbiquitousKeyValueStore`; see
-  [docs/icloud-sync.md](docs/icloud-sync.md). Opt-out toggle in Settings.
-  Accounts are matched by email/IMAP host/username, not just their internal
-  id, so two devices adding "the same" mailbox never produce a duplicate —
-  and a device that already has a stale duplicate from before this fix
-  self-heals it automatically on next launch, without losing any local
-  mail, drafts, or templates. If that merge ever picks a survivor with no
-  working credential (e.g. its password ended up orphaned in the Keychain
-  under the merged-away account), the app detects and re-attaches it
-  automatically too, whenever it's unambiguous which credential belongs to
-  which account.
-- **Performance**: tested against a 100k-message synthetic mailbox — see
-  [docs/performance.md](docs/performance.md).
-
-## Design
-
-The UI follows a from-scratch design pass (see
-[`design_handoff_ios_mail/README.md`](design_handoff_ios_mail/README.md)
-for the original wireframe options and
-[`docs/design-system.md`](docs/design-system.md) for the resulting token
-system): flat, zero-corner-radius, 2pt rules, Archivo for Latin text with
-system fonts for Japanese, a pale-blue-on-white palette with a matching
-dark theme. iOS has a single always-visible mail screen (unified inbox +
-account filter chips + an unread-only toggle) with a hamburger-menu drawer
-for folder navigation and settings — folders group by category by default
-(Inbox/Archive/Sent/Drafts/... sections, each account listed inside, plus
-an "all accounts" cross-account row per category), switchable back to the
-original per-account tree via a segmented control — a floating search
-button (bottom-left)
-that opens a dedicated search screen (account chips, `from:`/`to:`/`cc:`/
-`subject:` search operators, search history), pull-to-refresh for
-resyncing, and a fixed footer toolbar on the message screen (reply/forward/
-search-from-sender/message info/more — mute, pin, archive, junk, delete,
-toolbar reordering); macOS keeps its three-pane `NavigationSplitView` — the
-compact layout doesn't fit the wider screen. Full component/token
-reference in [`docs/design-system.md`](docs/design-system.md).
+> **ステータス: 開発中・実験的段階。** 実際のメールで使う前に下記の
+> [ステータス](#ステータス) を確認してください。
 
 <p align="center">
-  <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="Cross-account search with account filter chips and search operators (iOS)">
-  <img src="docs/assets/screenshot-ios-thread-toolbar.png" width="32%" alt="Message screen with the footer toolbar: reply, forward, search, info, more (iOS)">
-  <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="Settings: accounts, swipe actions, translation (iOS)">
+  <img src="docs/assets/screenshot-ios-inbox-light.png" width="32%" alt="統合受信トレイ（ライト、iOS）">
+  <img src="docs/assets/screenshot-ios-inbox-dark.png" width="32%" alt="統合受信トレイ（ダーク、iOS）">
+  <img src="docs/assets/screenshot-ios-compose.png" width="32%" alt="差出人選択つき作成画面（iOS）">
+</p>
+<p align="center">
+  <img src="docs/assets/screenshot-mac-inbox.png" width="49%" alt="未読バッジつき統合受信トレイ（macOS）">
+  <img src="docs/assets/screenshot-mac-thread.png" width="49%" alt="スレッド表示と返信（macOS）">
 </p>
 
-## Translation
+## otegami の特徴
 
-otegami translates English mail to Japanese entirely on-device using
-Apple's Foundation Models framework (`LanguageModelSession`) — the same
-on-device model behind Apple Intelligence, so no mail content is ever
-sent to a translation API or any server. Highlights:
+個別の機能一覧より先に、このアプリが軸にしている2点を挙げます。
 
-- Per-message translation button, always enabled once the message body has
-  loaded — no language-detection gating (removed after repeated reports of
-  the button not appearing/tappable even for genuinely English mail) —
-  but only ever translating when you tap "Translate" (auto-translate
-  defaults off — flip it back on in Settings, and still only fires
-  automatically for confidently-detected English mail). Once translated, a
-  segmented control switches back to the original. Plain-text messages
-  support a per-paragraph long-press to peek at just that paragraph's
-  source; HTML messages translate in place, preserving tables/images/layout
-  instead of falling back to a plain-text rendering.
-- Paragraph-level caching keyed by an engine identifier, so re-opening a
-  translated message doesn't re-run the model.
-- Requires iOS/macOS 26+ with Apple Intelligence enabled. On unsupported
-  devices/OS versions the translation UI degrades gracefully and the
-  app is otherwise unaffected.
+1. **複数アカウントを1つの受信トレイで。** 対応する各種アカウントが同じ
+   同期エンジンの上で動き、1つの統合受信トレイに日付順で混ざって並びます。
+   タップ1つで特定アカウントだけに絞り込め、アカウント単位のダイジェスト
+   画面で横断的に見渡すこともできます。
+2. **端末内での翻訳・要約。** 英文メールは Apple の Foundation Models
+   framework によって端末内で日本語に翻訳・要約されます（返信も同様に
+   英訳可能）。詳細は下記の[AI要約・翻訳](#ai要約翻訳)を参照してください。
 
-Engine design, the 23 supported languages, context-window limits, and one
-known limitation (translation calls made from inside the iOS Simulator's
-sandboxed `.app` process reliably fail with
-`FoundationModels.LanguageModelError -1`, while the identical code
-succeeds every time from a plain `swift test` process on the same
-machine — a Simulator/toolchain quirk, not a code bug; real-device
-confirmation is the outstanding item in
-[PENDING.md](PENDING.md)) are documented in
-[`docs/translation.md`](docs/translation.md).
+## 対応アカウント
 
-## Status
+- **Gmail** — OAuth2 (Authorization Code + PKCE)
+- **iCloud** — アプリ用パスワード
+- **Yahoo!メール / Yahoo!メール(JAPAN)** — ホスト/ポート/セキュリティを
+  事前入力した専用の追加フォーム
+- **Outlook.com / Office365** — Microsoft OAuth2 (Authorization Code +
+  PKCE)
+- **Exchange** — 汎用 IMAP フォームへのプリセット
+- **上記以外の任意の IMAP/SMTP プロバイダ**
 
-Feature-complete through the M11 milestone (accounts, sync, threading,
-search, attachments, compose/reply/drafts, push relay, iCloud account
-sync, macOS polish, performance work) plus a full design refresh and
-on-device translation, with an automated test/verification suite
-(`make test`, the `scripts/verify-*.sh` checkpoints) that's green. Push
-notifications have been verified end-to-end against a physical iPhone
-(real APNs delivery via a self-hosted relay). That said, this is a solo,
-AI-assisted side project, not yet published to the App Store or used as
-anyone's daily driver for an extended period — treat it as experimental:
+Gmail・Outlook/Office365 は OAuth の Client ID を各自で発行する必要が
+あります（未設定でもボタンが無効化されるだけで他の機能は動作します）。
+手順は [docs/oauth-setup.md](docs/oauth-setup.md) を参照してください。
 
-- A few things are only verified against unit tests, mocks, the local dev
-  mail stack, or a single simulator so far, not fully against real
-  accounts/devices: real-account Gmail and iCloud sign-in end to end, a
-  real two-physical-device iCloud account sync round trip, and on-device
-  translation driven through the iOS Simulator's app UI (works from a
-  plain process on the same machine; see [Translation](#translation)
-  above). See [PENDING.md](PENDING.md) for exactly what's unverified,
-  why, and the steps to verify it with your own credentials/devices —
-  or [HUMAN_TASKS.md](HUMAN_TASKS.md) for the same list reorganized as a
-  plain action checklist (real-device checks, real-account sign-ins,
-  infra upkeep, release prerequisites).
-- [docs/roadmap.md](docs/roadmap.md) covers planned future work.
+## 主な機能
 
-## Platforms
+- **統合受信トレイ**: 全アカウントのメールを日付順に混ぜて表示する
+  「すべて」チップと、アカウントごとの絞り込みチップ。アカウント色の
+  アクセントと、メールボックス単位/統合の未読数バッジ。「未読のみ表示」
+  トグルあり。「アカウントでグループ化」ボタンからはダイジェスト画面
+  （アカウントごとに1行、色罫線+表示名+未読/件数バッジ+直近プレビュー
+  2〜3件、タップでそのアカウントに絞り込み、スワイプで一括処理）に
+  遷移できます。各アカウントの色は自動割り当てのほか固定8色パレットから
+  上書き可能で、iCloud 経由で他端末にも同期されます。
+- **オフラインファースト**: メッセージ・スレッド・フラグの変更はすべて
+  まずローカルの SQLite に反映されます。ネットワークが無くても使え、
+  再接続時には未送信の操作（既読/未読、削除、アーカイブ、送信）を自動的
+  にリプレイします。アーカイブの挙動はプロバイダごとに調整済み
+  （Gmail はラベルを外すだけ、それ以外は Archive メールボックスへ移動）。
+- **アバター**: 差出人ごとにアバターを表示します（端末の連絡先の写真・
+  外部ソースからの画像取得・送信元ドメインのロゴ・イニシャルの優先順で
+  解決、外部通信を伴うソースは設定 →「メール一覧」で個別にオフに
+  できます）。
+- **全文検索**: SQLite FTS5 による3文字以上のクエリ検索（短いクエリは
+  `LIKE` にフォールバック）。`from:`/`to:`/`cc:`/`subject:` の検索演算子、
+  アカウント絞り込みチップ、直近の検索履歴、そして**保存済み検索**
+  （履歴タブ・保存済みタブを切り替えられる検索画面）に対応しています。
+- **スレッド表示**: Gmail は `X-GM-THRID`、それ以外は `References`/
+  `In-Reply-To` の JWZ 方式 union-find + 件名フォールバックでスレッド化。
+  本文画面はアコーディオン形式（スレッド内の全メッセージを時系列に縦
+  列挙し、最新のみ展開・他は折りたたみ、ヘッダタップで展開先を切替）で
+  iOS・macOS 共通です。一覧側は複数メッセージのスレッドに件数バッジを
+  表示します。
+- **引用履歴の折りたたみ**: プレーンテキストの返信メールで、引用された
+  過去のやり取りを1通ずつのカードに分解して表示します。「履歴を表示/
+  非表示」で開閉可能（既定は表示、HTML メールは対象外）。
+- **AI要約・翻訳**: 詳細は[後述](#ai要約翻訳)。
+- **HTML メール**: サンドボックス化された `WKWebView` で描画
+  （JavaScript は無効）。固定幅テーブルのマーケティング/通知メールも
+  画面幅に収めて表示し、「HTML」バッジからワンタップでテキスト表示に
+  切り替え可能。埋め込み画像は既定オフ、リモート画像は既定オンで、
+  メールごとに「画像を表示」で一時的に上書きできます。本文内リンクは
+  アプリ内ブラウザ（既定、iOS のみ）かデフォルトブラウザかを選べます。
+- **ソース表示**: メッセージの生 RFC822 ソースをオンデマンドで取得
+  （ローカルにキャッシュ）し、表示・共有できます。表示崩れするメールの
+  調査などに使う機能です。
+- **添付ファイル**: 送受信・QuickLook プレビュー・インライン `cid:`
+  画像、RFC 2047/2231 のファイル名デコード（日本語ファイル名を含む）。
+- **カレンダー招待メール**: `text/calendar; method=REQUEST` を検出すると
+  招待カード（タイトル・日時・場所・主催者）を表示し、「承諾」「辞退」
+  「未定」で標準の iTIP `METHOD:REPLY` を主催者へ返信します。詳細は
+  [docs/calendar-invites.md](docs/calendar-invites.md)。
+- **作成/返信/転送**: 差出人選択必須、プレーンテキスト引用、オフライン
+  送信用の Outbox、下書きの保存/破棄確認と IMAP 経由の双方向同期。iOS の
+  送信は Outbox への即時保存＋5秒/10秒/なしの猶予＋取り消しボタン付き。
+  テンプレート（本文の定型文）と署名テンプレート（アカウントごとの
+  デフォルト署名）はどちらも設定画面で管理します。
+- **スワイプ操作・一括選択・ピン留め**: 左右それぞれの短い/長いスワイプ
+  に既読/未読・アーカイブ・迷惑メール・ピン留め・削除を個別設定可能。
+  長押しで一括選択モードと下部アクションバー、削除/アーカイブ/迷惑
+  メールには Undo トースト。ピン留めは既定ローカル限定、IMAP
+  `\Flagged` と連動させる設定もあります。macOS はスワイプの代わりに行の
+  コンテキストメニューを使います。
+- **メール本文フッターツールバー**: 返信/転送/検索/情報/その他（ミュート・
+  ピン留め・アーカイブ・迷惑メール・削除・要約・翻訳・ソース表示など
+  14アクション）を、設定から表示/非表示・並び替えできます。
+- **表示言語**: 日本語/English をローカライズ済み（String Catalog）。
+  表示言語の切替は iOS 標準の「設定 → このアプリ → 言語」に委ねています
+  （アプリ内蔵の言語ピッカーは廃止済み）。詳細は
+  [docs/localization.md](docs/localization.md)。
+- **設定**: 「アカウントの設定」「メールビューア」「メール一覧」
+  「メール作成」の4カテゴリ＋「このアプリについて」に整理されています。
+  全項目は [docs/settings.md](docs/settings.md) を参照してください。
+- **プッシュ通知**: 任意でセルフホストできるリレーサーバー
+  (`server/otegami-relay`) が IMAP `INBOX` を IDLE で監視し、件名/本文を
+  含まないプライバシー配慮の APNs プッシュを送信します（実際の内容は
+  Notification Service Extension が自分の IMAP 接続で取得）。実機の
+  iPhone でエンドツーエンドの動作を確認済み。完全にオプトインで、未設定
+  でもアプリは同様に動作します。詳細は
+  [docs/relay-deployment.md](docs/relay-deployment.md)。アプリアイコン
+  への未読数バッジ表示も設定でオン/オフできます。
+- **iCloud によるアカウント設定の同期**: 同じ Apple ID の別デバイスで
+  追加したアカウントが自動的に出現し、そのまま同期を始められます
+  （メール本文自体は各デバイスが自分の IMAP 接続で同期する設計で、
+  iCloud が同期するのは資格情報とアカウントのメタデータです）。詳細は
+  [docs/icloud-sync.md](docs/icloud-sync.md)。設定でオプトアウト可能。
+- **macOS**: ネイティブなメニューバーコマンド（⌘N 新規、⌘R 返信、⌘⌫
+  削除、⌘⇧F 検索フォーカス、⌘]/⌘[ メールボックス切替）、ネイティブな
+  Settings シーン、独立した作成ウィンドウ、そして3ペイン
+  `NavigationSplitView` レイアウト。
+- **パフォーマンス**: 10万通の合成メールボックスで検証済み — 詳細は
+  [docs/performance.md](docs/performance.md)。
 
-iOS 26+ and macOS 26+, single SwiftUI codebase (`apps/Otegami`, a
-multiplatform Xcode target). Swift 6, strict concurrency throughout.
+## デザイン
 
-## Building
+UI は一から見直した独自のデザインです（元のワイヤーフレームの選択肢は
+[`design_handoff_ios_mail/README.md`](design_handoff_ios_mail/README.md)、
+確定したトークン体系・各改修の経緯は
+[`docs/design-system.md`](docs/design-system.md) 参照）: フラット・角丸0・
+2pt の罫線、英字は Archivo・日本語はシステムフォント、薄い水色基調の
+ライトテーマとそれに対応するダークテーマ。
 
-Requires Xcode with the iOS 26 / macOS 26 SDKs (Xcode 26 or later), and
-[XcodeGen](https://github.com/yonaskolb/XcodeGen) to generate the Xcode
-project — install the latter first:
+- **iOS (compact 幅、iPhone)**: 統合受信トレイ＋アカウント絞り込み
+  チップ＋未読のみ表示トグルの常設1画面。左上のハンバーガーメニュー
+  （ドロワー）がフォルダ切替と設定を、左下フローティングの検索ボタンが
+  検索画面を、本文画面下部の固定フッターツールバーが返信/転送などを
+  担います。下部タブバーは廃止済みです。
+- **iOS (regular 幅、iPad 等)**: 左に一覧・右に本文の2ペイン
+  (`MailScreenView` のサイズクラス分岐)。
+- **macOS**: 従来通りの3ペイン `NavigationSplitView`。
+
+<p align="center">
+  <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="アカウント横断検索・フィルタチップ・検索演算子（iOS）">
+  <img src="docs/assets/screenshot-ios-thread-toolbar.png" width="32%" alt="メール本文画面のフッターツールバー: 返信・転送・検索・情報・その他（iOS）">
+  <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="設定: アカウント・スワイプ操作・翻訳（iOS）">
+</p>
+
+## AI要約・翻訳
+
+Apple の Foundation Models framework (`LanguageModelSession`) を使い、
+端末内で要約・翻訳を行います（iOS/macOS 26+、Apple Intelligence 有効な
+端末が必要。非対応環境では該当 UI が自動的に折りたたまれます）。
+
+- **AI要約**: メッセージごとにワンタップで生成する
+  ■要約/■伝えたいこと/■アクションの3パート構造の要約。返信メールでは
+  引用された過去のやり取りを要約対象から除外し、新しい本文だけを要約
+  します。「詳しく要約」で、より詳細なバージョンに再生成できます。
+- **翻訳**: 英文メールの翻訳ボタン（本文読み込み後は常に押せます）。
+  自動翻訳は既定オフで、オンにしても確信度の高い英文メールにのみ発火
+  します。訳文表示中はワンタップで原文に戻せます。プレーンテキストは
+  段落単位で原文を確認でき、HTML メールは表・画像・レイアウトを保った
+  まま本文だけ翻訳されます。段落単位のキャッシュがあるため再翻訳は
+  走りません。
+
+エンジンの設計、対応23言語、既知の制限（iOS Simulator の `.app`
+プロセスから呼ぶと `FoundationModels.LanguageModelError -1` で失敗する
+一方、同一マシン上の `swift test` プロセスからは成功するという
+Simulator/toolchain 固有の制限）は
+[`docs/translation.md`](docs/translation.md) にまとめています。
+
+## 使い方
+
+アカウントの追加からビューアの操作、検索、設定まで、機能ごとの使い方は
+[docs/usage.md](docs/usage.md) にまとめています。
+
+## ステータス
+
+自動テスト/検証スイート (`make test`、`scripts/verify-*.sh` の各チェック
+ポイント) が green な状態を保ちながら継続的に機能追加をしている、個人の
+AI 支援サイドプロジェクトです。App Store への公開や、誰かの日常のメイン
+クライアントとして長期間使われたことはまだありません。プッシュ通知は
+実機の iPhone に対してエンドツーエンドで検証済みですが、それ以外の一部
+項目（実アカウントでのサインイン、実機2台間での iCloud アカウント同期の
+往復など）はまだ実アカウント/実機で確認できていません。何が未検証かは
+[PENDING.md](PENDING.md)（同じ内容をチェックリスト化したものが
+[HUMAN_TASKS.md](HUMAN_TASKS.md)）を、今後の計画は
+[docs/roadmap.md](docs/roadmap.md) を参照してください。
+
+## 開発を始める
 
 ```sh
-brew install xcodegen
+brew install xcodegen   # Xcode プロジェクト生成に必要
+make mac                 # macOS アプリ (debug ビルド)
+make ios                 # iOS Simulator ビルド
+make test                # OtegamiKit の単体テスト
 ```
+
+Xcode（iOS 26 / macOS 26 SDK、Xcode 26 以降）が必要です。実機ビルドや
+Gmail/Outlook OAuth を試す場合の `Local.xcconfig` 設定、開発用メール
+スタック (Dovecot + Mailpit) の起動、`scripts/verify-screen.sh` を使った
+実機シミュレータでの画面確認まで含めた詳しい手順は
+[docs/development-setup.md](docs/development-setup.md) を参照してください。
+
+## テスト/動作検証
 
 ```sh
-make mac          # macOS app, debug build (xcodebuild)
-make mac-app       # macOS app, Release build bundled to dist/Otegami.app
-make ios           # iOS Simulator build (IOS_SIMULATOR ?= "iPhone 17 Pro Max")
-make ios-device    # iOS device build, signed with the registered team
-make test          # OtegamiKit unit tests (packages/OtegamiKit)
+make test               # OtegamiKit の単体テスト (速い、simulator 不要)
+scripts/verify-screen.sh <scenario> [output.png]  # tap-free スクリーンショット
+scripts/verify-relay.sh                            # otegami-relay の E2E 検証
 ```
 
-Opening `apps/Otegami/Otegami.xcodeproj` in Xcode after `xcodegen generate`
-(run automatically by every `make` target above) also works for day-to-day
-development.
+各チェックポイントの内容とシミュレータの既知不調は
+[docs/verify.md](docs/verify.md)、自動検証の方針は
+`.claude/skills/verify/SKILL.md` を参照してください。
 
-### Signing
+## アーキテクチャ
 
-`apps/Otegami/Config/Signing.xcconfig` ships with no `DEVELOPMENT_TEAM` (an
-OSS repo can't commit the author's). `make ios` (Simulator) and `make mac`
-build fine as-is — Simulator doesn't enforce provisioning, and `make mac`
-falls back to an unsigned build when there's no `Local.xcconfig`, same as
-CI. For `make ios-device` (a real device), a fully signed `make mac` (App
-Group/Keychain sharing with the Notification Service Extension actually
-working), or push notifications, copy `Config/Local.xcconfig.sample` to the
-untracked `Config/Local.xcconfig` and set your own `DEVELOPMENT_TEAM`
-there. You only need to also override `OTEGAMI_BUNDLE_ID` if the default
-`com.mtkg.otegami` is already registered as an App ID under someone
-else's team (Apple doesn't allow two teams to register the same explicit
-App ID) — see the comments in `Config/Local.xcconfig.sample`.
+- `apps/Otegami/` — SwiftUI アプリ本体 (iOS + macOS)、XcodeGen
+  `project.yml`。
+- `packages/OtegamiKit/` — プラットフォーム非依存のコア: `OtegamiCore`
+  (モデル・スレッド化)、`MailTransport`/`MailTransportMailCore`
+  (IMAP/SMTP、MailCore2 アダプタ)、`OtegamiStore` (GRDB スキーマ/
+  クエリ/FTS)、`SyncEngine` (同期・オフライン操作キュー)、
+  `GoogleOAuth`/`MicrosoftOAuth`、`PushRelayClient`、`OtegamiRelayAPI`
+  (サーバーと共有する DTO)、`OtegamiTranslation`/
+  `OtegamiTranslationFoundationModels`/`TranslationEngine` (端末内翻訳・
+  要約のスタック)。
+- `server/otegami-relay/` — プッシュリレー (Hummingbird 2、Linux 対応)。
+- `dev/mailstack/` — Dovecot + Mailpit の開発用スタック。
 
-### Gmail OAuth
+MailCore2 依存の同梱方法は [docs/build-mailcore2.md](docs/build-mailcore2.md)、
+性能検証は [docs/performance.md](docs/performance.md) を参照してください。
 
-The OSS build ships with no Google OAuth Client ID (it can't be
-committed). Without one, the "Gmail" account-type button is disabled but
-everything else works. See [docs/oauth-setup.md](docs/oauth-setup.md) to
-issue your own (no Google review needed for personal/dev use).
+## ドキュメント一覧
 
-## Development mail stack
+**使い方・機能**
+- [docs/usage.md](docs/usage.md) — 機能ごとの使い方ガイド
+- [docs/design-system.md](docs/design-system.md) — UI デザインシステムと各改修の経緯
+- [docs/settings.md](docs/settings.md) — 設定項目の全一覧
+- [docs/translation.md](docs/translation.md) — オンデバイス翻訳・要約エンジンの設計
+- [docs/calendar-invites.md](docs/calendar-invites.md) — カレンダー招待メール対応
+- [docs/icloud-sync.md](docs/icloud-sync.md) — iCloud によるアカウント設定同期
+- [docs/default-mail-app.md](docs/default-mail-app.md) — デフォルトのメールアプリ対応
+- [docs/qa-findings.md](docs/qa-findings.md) — 同期まわりのバグ調査記録
+- [docs/roadmap.md](docs/roadmap.md) — 今後の計画
 
-A local Dovecot (IMAP) + Mailpit (SMTP + web UI) stack is included (via
-Docker Compose — install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-or another Docker Compose-compatible runtime first), so you don't need a
-real mail account to work on sync/send code:
+**開発**
+- [docs/development-setup.md](docs/development-setup.md) — 開発環境のセットアップ
+- [docs/dev-mailstack.md](docs/dev-mailstack.md) — 開発用メールスタック (Dovecot + Mailpit)
+- [docs/build-mailcore2.md](docs/build-mailcore2.md) — MailCore2 依存の調達方法
+- [docs/localization.md](docs/localization.md) — アプリ UI のローカライズ
+- [docs/performance.md](docs/performance.md) — 性能検証
+- [docs/verify.md](docs/verify.md) — 動作検証の手順とシミュレータの既知不調
+- [docs/ci.md](docs/ci.md) — CI (GitHub Actions) の設定と既知の落とし穴
 
-```sh
-make mailstack-up     # start Dovecot + Mailpit
-make mailstack-seed   # load sample messages (Japanese + English fixtures)
-make mailstack-down   # stop the stack
-```
+**認証・配布**
+- [docs/oauth-setup.md](docs/oauth-setup.md) — Gmail/Microsoft OAuth の設定
+- [docs/relay-deployment.md](docs/relay-deployment.md) — プッシュ通知リレーのデプロイ
+- [docs/release.md](docs/release.md) — git tag push によるリリース (TestFlight/GitHub Release)
+- [docs/xcode-cloud.md](docs/xcode-cloud.md) — Xcode Cloud / TestFlight 配布
+- [docs/ota-deploy.md](docs/ota-deploy.md) — OTA (Ad Hoc) 配布
 
-Test accounts: `test1@otegami.test` / `test1234` and `test2@otegami.test` /
-`test1234` on `localhost:1143` (plain IMAP) / `localhost:1025` (plain
-SMTP, via [Mailpit](https://github.com/axllent/mailpit)'s web UI at
-`http://localhost:8025`). See [docs/dev-mailstack.md](docs/dev-mailstack.md).
+## 貢献
 
-## Testing / verification
+Issue・Pull Request を歓迎します — バグ報告・質問・小さな修正は特に
+歓迎です。開発環境のセットアップ・テストの実行方法・コミット/PR の規約
+は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。セキュリティ
+上の脆弱性は公開の Issue ではなく [SECURITY.md](SECURITY.md) の手順で
+報告してください。
 
-```sh
-make test                      # OtegamiKit unit tests (fast, no simulator)
-scripts/verify-ios-m1.sh       # ...through verify-ios-m9.sh, plus
-                                # verify-ios-icloud.sh / -account-edit.sh /
-                                # -drafts-sync.sh / -push-simulated.sh /
-                                # verify-macos-qa.sh / verify-qa-sweep-offline.sh:
-                                # automated XCUITest checkpoints per
-                                # milestone/feature, driven against the dev
-                                # mail stack
-scripts/verify-relay.sh        # otegami-relay end-to-end (real IMAP IDLE
-                                # → push) verification
-```
+## ライセンス
 
-See [docs/verify.md](docs/verify.md) for what each checkpoint covers and
-`.claude/skills/verify/SKILL.md` for the automated-verification approach
-this project follows (screenshots + XCUITest, judged by an agent, not a
-human in the loop).
+MIT — [LICENSE](LICENSE) を参照。
 
-## Push notification relay (optional)
+### サードパーティライセンス
 
-`server/otegami-relay` is a self-hostable Swift/Hummingbird 2 server that
-watches your IMAP `INBOX` over IDLE and forwards new-mail events to APNs.
-It never sees your mail's subject or body — only `accountId`/`uidNext`
-cross the wire; the app's Notification Service Extension fetches the real
-sender/subject itself over your own IMAP connection.
-
-```sh
-make server        # build otegami-relay
-make server-test    # run its test suite
-make relay-docker   # build the Docker image
-```
-
-See [docs/relay-deployment.md](docs/relay-deployment.md) for deployment
-(Docker Compose, APNs `.p8` key, HTTPS termination, including a
-private-CA/home-server example) and the app-side opt-in flow.
-
-`make deploy-ota` builds an Ad Hoc `.ipa` and publishes it for OTA install
-on a registered device over your own reverse proxy — see
-[docs/ota-deploy.md](docs/ota-deploy.md).
-
-Otegami also builds on Xcode Cloud for TestFlight distribution
-(`apps/Otegami/ci_scripts/ci_post_clone.sh` regenerates the XcodeGen
-project and injects per-builder config from workflow environment
-variables) — see [docs/xcode-cloud.md](docs/xcode-cloud.md) for the setup
-steps and known caveats (export compliance, APNs sandbox vs. production,
-Google OAuth's unverified-app warning for testers).
-
-Pushing a `v*` tag also triggers `.github/workflows/release-macos.yml`,
-which builds the macOS app, signs it with a Developer ID identity,
-notarizes it, and attaches the result to a GitHub Release — see
-[docs/release.md](docs/release.md).
-
-## Architecture
-
-- `apps/Otegami/` — the SwiftUI app (iOS + macOS), XcodeGen `project.yml`.
-- `packages/OtegamiKit/` — a Swift package with the platform-independent
-  core: `OtegamiCore` (models, threading), `MailTransport` (protocol
-  abstraction over IMAP/SMTP), `MailTransportMailCore` (the MailCore2
-  adapter), `OtegamiStore` (GRDB schema/queries/FTS), `SyncEngine` (sync
-  coordination, offline op queue), `GoogleOAuth`, `PushRelayClient`,
-  `OtegamiRelayAPI` (DTOs shared with the server), `OtegamiTranslation` /
-  `OtegamiTranslationFoundationModels` / `TranslationEngine` (the
-  on-device translation stack — protocol, Apple implementation, and
-  cache/orchestration layers, kept separate so the server and non-Apple
-  targets never pull in `FoundationModels`).
-- `server/otegami-relay/` — the push relay (Hummingbird 2, Linux-friendly).
-- `dev/mailstack/` — the Dovecot + Mailpit dev stack.
-
-See [docs/build-mailcore2.md](docs/build-mailcore2.md) for how the
-MailCore2 dependency is vendored, and [docs/performance.md](docs/performance.md)
-for the 100k-message performance pass (query indexes, pagination, measured
-numbers).
-
-## Contributing
-
-Issues and pull requests are welcome — bug reports, questions, and small
-fixes especially. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
-development setup, how to run tests, and commit/PR conventions. For
-security vulnerabilities, see [SECURITY.md](SECURITY.md) instead of
-opening a public issue.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-### Third-party licenses
-
-Otegami depends on several third-party open source packages via Swift
-Package Manager (GRDB.swift, a MailCore2 fork and its own C dependencies,
-Hummingbird, SwiftNIO, swift-crypto, and others) and bundles the Archivo
-typeface (SIL Open Font License) — see [NOTICE](NOTICE) for the full
-list, license types, and copyright attributions.
+Otegami は Swift Package Manager 経由でいくつかのサードパーティ製
+オープンソースパッケージに依存しており (GRDB.swift、MailCore2 の
+フォークとその C 依存関係、Hummingbird、SwiftNIO、swift-crypto 等)、
+Archivo フォント (SIL Open Font License) も同梱しています — 一覧・
+ライセンス種別・著作権表示は [NOTICE](NOTICE) を参照してください。
