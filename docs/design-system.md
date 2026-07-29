@@ -6054,6 +6054,12 @@ Microsoft アカウントが無いためこのセッションでは検証不可�
 署名が入る画面・返信画面で署名を選ぶ画面それぞれで、カーソルが仕様通り
 (署名の直前 / 引用と署名の上) にあることを目視で確認してほしい。
 
+**Task #162で撤去**: 「署名カーソル」機構一式 (`ComposerCursorPlacement.swift`
+とそのテスト、`ComposerView.updateSignatureText(newId:)`/`hasQuoteAboveSignature`)
+は Task #162 (実機フィードバック「署名が本文に混ざって編集しづらい」) で
+削除した — 署名を本文へ一切挿入しなくなったため、挿入直後のカーソル位置
+という概念自体が消滅した。詳細は Task #162 の節参照。
+
 ## Task #126: ハンバーガーメニュー3点バッチ (設定ボタン移設・行のコンパクト化・「その他」廃止)
 
 ユーザーからの追加仕様 (スクショ確認後): #110 以降「受信トレイ」カテゴリ
@@ -7313,3 +7319,107 @@ SemVer仕様書の例チェーンの丸ごとソート検証を含む)と
 ショット確認、および実際の`m-tkg/otegami`リポジトリ (`v1.1.0-beta`
 というpre-releaseタグが実在する) に対してoption有無で検出結果が
 変わることの実地確認。
+
+## Task #161: 作成画面リッチテキスト化 第2段 (フォントサイズ/文字色/背景色/リンク/引用) + 下部バーのSpark準拠再構成
+
+Task #129 (第1段: 太字/イタリック/下線/打ち消し線/リスト/インデント) の
+続き。詳細は各コミットのdoc commentを正とし、ここでは要点のみ:
+
+- **書式拡張**: `OtegamiCore.RichTextRun`に`fontSize`(小/標準/大/特大)/
+  `textColor`/`backgroundColor`(DesignSystemトークンと独立した7色hex
+  プリセット、`RichTextColor`)/`linkURL`を追加。`RichTextHTMLCoder`が
+  `font-size`/`color`/`background-color`インラインスタイルの`<span>`
+  (リンク付きランは`<a>`に直接) として符号化・復号する。書式バー
+  (`RichTextFormattingBar`) にフォントサイズメニュー/文字色・ハイライト
+  スウォッチメニュー/引用トグル/リンク挿入・編集・削除シートを追加。
+- **下部バーのSpark準拠再構成 (iOS)**: `RichTextFormattingBar`の常時表示を
+  やめ、下部バー (`flatBottomActionBar`) の「T」ボタンでトグル表示に。
+  添付・テンプレート挿入のアクションも下部バーへ移動。macOSは対象外
+  (`Form`+常時表示のバーのまま)。
+- **下書きの`htmlBody`対応**: `DraftMessageRecord.htmlBody`(v33
+  マイグレーション)、`saveDraft()`/`loadDraft()`で設定・復元、
+  `OpQueueProcessor`の`.saveDraft`レプレイにも配線 — Task #156が
+  意図的に対象外にしていた最後のギャップを解消。
+
+### 検証
+
+`make test`/`make mac`/`make ios` green。`RichTextHTMLCoderTests`に
+新書式のラウンドトリップ単体テストを追加 (27件)。`scripts/verify-screen.sh
+composer-richtext`/`composer-richtext-open`で下部バーの「閉」「開」
+状態をライト/ダーク各2枚スクリーンショット確認 — 各コントロールの
+アイコンが正しく描画されることを確認済み。**未検証**: フォントサイズ/
+文字色/ハイライト/リンク/引用の各コントロールを実際にタップして本文へ
+適用されること (シミュレータのXCUITestタップ不達のため、ビルド+
+スクリーンショットで出荷し実機確認を`PENDING.md`に委譲)。
+
+## Task #162: 署名を本文に混在させない (実機フィードバック)
+
+**フィードバック**: 「署名を選ぶと本文にそのまま挿入されて、本文と地続きに
+なってしまい編集しづらい」「差出人アカウントを切り替えるたびに毎回署名を
+選び直すのが面倒」「署名欄がいきなり『なし』とだけ表示されて何のことか
+分かりにくい」の3点。
+
+### 実装
+
+- **署名を本文へ挿入しない**: `selectedSignatureId`はもう`attributedBodyText`
+  を一切変更しない — 選んだ署名の内容は本文欄の下にグレー・編集不可の
+  プレビュー行 (`signatureBodyPreview`) として見せるだけ。実際に「本文 +
+  空行 + 署名」を結合するのは送信の瞬間 (`ComposerView.send()`) だけで、
+  `OtegamiCore.RichTextDocument.appendingSignature(_:)`という1つの純粋
+  関数に切り出した (plain/HTMLの両方をこの1つの結合済み`RichTextDocument`
+  から導出するので、2つの文字列を別々に組み立てて食い違う心配がない)。
+  この変更で、署名挿入直後にカーソルを署名の直前へ動かすためだけに存在
+  していた Task #125 の「署名カーソル」機構 (`ComposerCursorPlacement.swift`
+  とそのテスト、`ComposerView.updateSignatureText(newId:)`/
+  `hasQuoteAboveSignature`) が丸ごと不要になったため削除した。
+- **署名行のラベル**: 「署名: なし」「署名: <署名名>」形式に統一
+  (`selectedSignatureLabel`) — 以前は選択済みなら署名名のみ、未選択なら
+  「署名なし」で前置きが無く分かりにくかった。
+- **アカウント別の前回署名記憶**: `LastSignatureSettingsStore`
+  (`apps/Otegami/Sources/Support/`) がアカウントIDごとに最後の明示的な
+  選択を`UserDefaults`へ記録する (`Int64?`の二値では「未選択」と「明示的
+  に『なし』を選んだ」を区別できないため、`String`で3状態:
+  未記録/`"none"`/id文字列)。`ComposerView.loadAvailableSignatures()`が
+  From アカウントの読み込みのたびに「前回選択 > アカウント既定署名
+  (`defaultSignatureId`) > なし」の優先順位で自動選択する — Task #125
+  時代の「新規作成のみ自動選択」制限 (本文への署名挿入とreply/forwardの
+  引用プリフィルが競合するのを避けるための制限) は、署名がもう本文に
+  触れなくなったことで不要になったので撤廃し、返信/転送でもFrom
+  アカウントを切り替えれば追随するようにした。記録は`Picker`専用の
+  `selectedSignatureIdBinding`経由でのみ行う (`loadAvailableSignatures()`
+  自身の自動選択/クリアはこのbindingを経由しない直接代入なので、
+  アカウント切り替え時の一時的な中間値で記憶を壊さない)。
+- **整合性**: `DraftMessageRecord.signatureId`(v34マイグレーション)/
+  `PendingSendDraftSnapshot.signatureId`を追加し、下書き保存・再開/送信
+  キャンセル復元のどちらも「選択中の署名ID」だけを保持し本文には混ぜない
+  (`saveDraft()`/`loadDraft()`/`loadCancelledSend(_:)`)。旧下書き
+  (署名がまだ本文に literal text として挿入されていたもの) はそのまま
+  編集可能なプレーンテキストとして扱われる — 移行処理は行っていない
+  (`signatureId`は`nil`のまま、通常の自動選択チェーンにフォールバック
+  するだけ)。
+
+### 検証
+
+`make test`/`make mac`/`make ios` green。単体テスト:
+`RichTextHTMLCoderTests`に`appendingSignature(_:)`の4件 (空行1つで結合/
+`nil`で無変化/空文字列で無変化/HTML符号化後も空行1つ)。`DraftMessageRecordTests`
+は既存 (Task #161由来) のまま。Mailpit統合テスト
+(`OutboxHTMLSendIntegrationTests.bodyCombinedWithSignatureSendsWithABlankLineSeparator`)
+を1本追加し、`OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter
+OutboxHTMLSendIntegrationTests`で実際のDovecot/Mailpit相手に「本文の後に
+空行1つ、その後に署名」という構造がplain/HTMLの両パートで実際のSMTP送信
+を経ても壊れないことを確認済み (green)。
+
+`scripts/verify-screen.sh composer-signature`(新規、`AppEnvironment`に
+`OTEGAMI_UITEST_INSERT_FAKE_SIGNATURE`フィクスチャフラグを追加) で
+ビルド+スクリーンショットを取得したが、この直接遷移シナリオ
+(`-uitestsOpenComposerDirectly`)は`environment.accounts`の読み込み前に
+Composerを開いてしまう既存の (Task #161以前からの) タイミング上の癖が
+あり、From欄が「アカウントを選択」のまま残ってしまうため、署名プレビュー
+行そのものは今回のスクリーンショットには写っていない — この癖はこの
+タスク固有ではなく`composer-richtext`等でも既に発生していたもので、深追い
+していない。**未検証** (`PENDING.md`「Task #162」節参照): 実機で普通に
+(直接遷移フラグを使わず) 新規作成を開き、署名を選んで
+「署名: <名前>」ラベル+グレーのプレビューが出ること、アカウント切り替え
+で前回の署名に追随すること、送信したメールで実際に本文+空行+署名の構造
+がGmail等で再現されること。
