@@ -159,6 +159,13 @@
 #                                       プレーンテキスト1通+HTML2通の混成
 #                                       (展開/折りたたみを跨ぐ複数WKWebView
 #                                       インスタンスの高さ再計測確認も兼ねる)。
+#   thread-accordion-scroll            Task #146 (実機フィードバック「下の
+#                                       方の折りたたみ行を展開したとき気づき
+#                                       にくい」): ↑と同じスレッドを開いた後、
+#                                       一番下 (最古) の行をタップ無しで展開
+#                                       — `accordionScrollTarget`の自動
+#                                       スクロールでその行のヘッダが画面上部
+#                                       に来ていることの確認用。
 #   list                                統合受信トレイの一覧画面 (fakeメッセージ5件)
 #   list-fab-expanded                   Task #131 (一覧FABのspeed-dial化):
 #                                       ↑と同じ一覧画面を、
@@ -404,6 +411,18 @@ case "$SCENARIO" in
     # no tap — the accordion (newest message expanded, other 2 collapsed).
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_MULTI_MESSAGE_THREAD=1" "OTEGAMI_UITEST_OPEN_MULTI_MESSAGE_THREAD_DIRECTLY=1")
     default_out="thread-accordion.png"
+    ;;
+  thread-accordion-scroll)
+    # Task #146 (実機フィードバック「下の方の折りたたみ行を展開したとき、
+    # 開いたことに気づきにくい」): `thread-accordion`と同じ3通スレッドを
+    # 直接開いた上で、`-uitestsExpandOldestMessageDirectly`
+    # (`ThreadDetailView`の`hasPinnedInitialExpansion`-keyed`.onChange`)
+    # が一番下 (最古) の折りたたみ行をタップ無しで展開する —
+    # `accordionScrollTarget`の自動スクロールが効いていれば、その行の
+    # ヘッダが画面上部に来た状態でスクリーンショットが撮れる。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_MULTI_MESSAGE_THREAD=1" "OTEGAMI_UITEST_OPEN_MULTI_MESSAGE_THREAD_DIRECTLY=1")
+    launch_args+=("-uitestsExpandOldestMessageDirectly")
+    default_out="thread-accordion-scroll.png"
     ;;
   list)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")

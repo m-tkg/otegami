@@ -6626,3 +6626,53 @@ Gmail の有無に関わらず常に有効な概念のため。
 シナリオ変更は不要) でスクリーンショット確認: 「すべてのメール」
 セクションがアーカイブの隣に表示され、シェブロン展開でGmailアカウントの
 行が見える。
+
+## Task #146: アコーディオン展開時の自動スクロール
+
+実機フィードバック「下の方にある折りたたみ行を展開したとき、開いた
+ことに気づきにくい」— #136 のスレッドアコーディオン (`ThreadDetailView`)
+は展開行が画面外 (下方向) に伸びるだけで、ユーザーが自分でスクロール
+しない限り展開そのものが画面上まったく変化して見えなかった。
+
+**実装**: `FolderListSheet.menuScrollTarget`(実機フィードバック第2弾)と
+同じ方式をそのまま踏襲。
+
+- `ThreadDetailView`に`@State private var accordionScrollTarget: Int64?`
+  を追加。
+- `toggleExpanded(_:)`が実際に展開した (collapse ではない) ときだけ、
+  その`messageId`をここへ書き込む。
+- 各メッセージ行 (`ThreadMessageRow`) に`.id(messageId)`を付け、
+  `body`の`ScrollViewReader`に`.onChange(of: accordionScrollTarget)`を
+  追加 — 展開行のidが実在するタイミング (`.onChange`はForEach側の
+  insertが同じ更新サイクルで確定した後に発火する) で
+  `scrollProxy.scrollTo(target, anchor: .top)`し、直後に`nil`へ戻す。
+
+**WKWebViewの高さ非同期確定への対応**: 展開直後はHTMLメッセージの
+`WKWebView`がまだ実測高さを報告していない (`ThreadMessageRow
+.measuredHTMLContentHeight`が`nil`)。今回は追加の「高さ確定後もう一度
+scrollTo」は実装しなかった — 展開直後から`ThreadDetailView
+.expandedMessageHeight(in:)`のフォールバック固定高さ (Task #58) が
+既にその行へ割り当たっており、`anchor: .top`でヘッダを先頭に固定した
+後にWKWebViewの実測高さへ差し替わっても、変わるのはヘッダより*下*の
+高さだけ (ヘッダ自身の位置はそこから動かない) ため、単発の`scrollTo`
+で十分と判断した。
+
+**検証基盤**: `scripts/verify-screen.sh`に`thread-accordion-scroll`
+シナリオを追加 — `thread-accordion`と同じ3通スレッドを直接開いた後、
+`ThreadDetailView`に新しく足した`-uitestsExpandOldestMessageDirectly`
+起動引数 (`-uitestsOpenMessageSourceDirectly`と同じ「タップ不要の直接
+遷移」パターン、`hasPinnedInitialExpansion`-keyedな`.onChange`) が
+一番下 (最古) の折りたたみ行をタップ無しで`toggleExpanded(_:)`経由で
+展開する。
+
+`thread-accordion`(展開前: 最新メッセージのみ展開、最古の行は一覧
+最上部) と`thread-accordion-scroll`(展開後: 最古メッセージのヘッダが
+画面最上部に来ている) の2枚を見比べて確認済み — 自動スクロールが
+効いている。
+
+### 検証
+
+`make test`/`make ios`green。`scripts/verify-screen.sh thread-accordion`
+→`thread-accordion-scroll`のスクリーンショット比較で自動スクロールを
+実機 (シミュレータ) 確認済み — 最古メッセージ (田中花子、16:37) の
+ヘッダ行が画面上端まで来ている。

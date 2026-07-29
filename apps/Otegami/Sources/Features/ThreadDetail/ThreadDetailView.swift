@@ -135,6 +135,14 @@ struct ThreadDetailView: View {
     /// フッターツールバーの各アクションが安全にno-opする(そのdoc comment
     /// 参照、クラッシュしない)。
     @State private var expandedMessageId: Int64?
+    /// Task #146 (実機フィードバック「下の方の折りたたみ行を展開したとき、
+    /// 開いたことに気づきにくい」): `FolderListSheet.menuScrollTarget`と
+    /// 同じ方式 — `toggleExpanded(_:)`が実際に展開した (collapse ではない)
+    /// ときだけここへその`messageId`を入れ、`body`の`ScrollViewReader`の
+    /// `.onChange`が拾って`scrollTo(_:anchor: .top)`する。展開行は画面外
+    /// (下) に伸びるだけで、ユーザーが自分でスクロールしない限り何も動いて
+    /// 見えない問題への対策 — `menuScrollTarget`のdoc comment参照。
+    @State private var accordionScrollTarget: Int64?
     @State private var hasPinnedInitialExpansion = false
     @State private var isThreadPinned = false
     @State private var isThreadMuted = false
@@ -192,6 +200,31 @@ struct ThreadDetailView: View {
                 .onChange(of: hasPinnedInitialExpansion) { _, pinned in
                     guard pinned, let newestId = messages.last?.id else { return }
                     scrollProxy.scrollTo(newestId, anchor: .top)
+                }
+                // Task #146: `accordionScrollTarget`のdoc comment参照 —
+                // `toggleExpanded(_:)`が展開のたびここへ`messageId`を書き込み、
+                // このハンドラが拾って展開行のヘッダを画面上部へスクロール
+                // する。`.onChange`はForEach側の展開行insert (`isExpanded`
+                // 反映によるMessageViewのマウント) が同じ更新サイクルで確定
+                // した後に発火するため、`scrollTo`時点でその行のidが実在する
+                // — `FolderListSheet.menuScrollTarget`と同じ前提。
+                //
+                // WKWebViewの高さ確定が非同期 (展開直後は`ThreadMessageRow
+                // .measuredHTMLContentHeight`がまだ`nil`) な点は注意したが、
+                // 展開直後から`ThreadDetailView.expandedMessageHeight(in:)`
+                // のフォールバック固定高さ (Task #58) がすでにその行へ
+                // 割り当たっているため、`anchor: .top`でヘッダを先頭に置いた
+                // 後にWKWebViewの実測高さへ差し替わっても、変わるのはヘッダ
+                // より*下*の高さだけ — ヘッダ自身の位置はずれない。
+                // `scripts/verify-screen.sh thread-accordion-scroll`
+                // (`-uitestsExpandOldestMessageDirectly`、下の`.onChange`
+                // 参照) のスクリーンショットで確認済み。
+                .onChange(of: accordionScrollTarget) { _, target in
+                    guard let target else { return }
+                    withAnimation(.default) {
+                        scrollProxy.scrollTo(target, anchor: .top)
+                    }
+                    accordionScrollTarget = nil
                 }
                 // Task #59 had this outer `ScrollView` reserve blank space at
                 // its bottom (`.contentMargins(.bottom:)`) so its content
@@ -251,6 +284,17 @@ struct ThreadDetailView: View {
         .onChange(of: hasPinnedInitialExpansion) { _, pinned in
             guard pinned, ProcessInfo.processInfo.arguments.contains("-uitestsOpenMessageSourceDirectly") else { return }
             showingSource = true
+        }
+        // Task #146 (検証基盤): 上と同じ「タップ不要の直接遷移」パターン —
+        // `scripts/verify-screen.sh thread-accordion-scroll`から、一番下
+        // (最古) の折りたたみ行を`toggleExpanded(_:)`経由でタップ無しに
+        // 展開し、`accordionScrollTarget`のスクロール確認用スクリーン
+        // ショットを撮れるようにする。実機/通常起動ではこの引数が無いので
+        // 常にno-op。
+        .onChange(of: hasPinnedInitialExpansion) { _, pinned in
+            guard pinned, ProcessInfo.processInfo.arguments.contains("-uitestsExpandOldestMessageDirectly"),
+                  let oldestId = messages.first?.id else { return }
+            toggleExpanded(oldestId)
         }
     }
 
@@ -319,6 +363,11 @@ struct ThreadDetailView: View {
                 onToggleExpanded: toggleExpanded,
                 onAIFeaturesStateChange: { expandedAIFeaturesState = $0 }
             )
+            // Task #146: `accordionScrollTarget`のスクロール先ターゲット —
+            // ヘッダを含むこの行全体に付けておけば、`showsHeader`が`true`
+            // の通常ケースでは行の先頭 = ヘッダの先頭と一致する
+            // (`ThreadMessageRow.body`のVStackがヘッダから始まるため)。
+            .id(messageId)
             // Design system: a 1pt dashed row separator (`OtegamiStroke
             // .secondary`/`OtegamiColor.dividerSubtle`), matching the
             // handoff's "行間 1px dashed" spacing spec.
@@ -339,6 +388,13 @@ struct ThreadDetailView: View {
     private func toggleExpanded(_ messageId: Int64) {
         withAnimation(.default) {
             expandedMessageId = (expandedMessageId == messageId) ? nil : messageId
+        }
+        // Task #146: 展開したとき (collapse ではない) だけ自動スクロールを
+        // 起動する — `expandedMessageId`は直前の代入で*新しい*値になって
+        // いるので、ここでの一致チェックは「(旧値と比べてではなく) 結果と
+        // して今`messageId`が展開状態になったか」を素直に表す。
+        if expandedMessageId == messageId {
+            accordionScrollTarget = messageId
         }
     }
 
