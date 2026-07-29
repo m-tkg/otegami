@@ -338,10 +338,59 @@ extension MailCoreIMAPSession {
     /// on a freshly-parsed message), not `fetchMessageBody(partId:)`.
     static func bodyContent(from parser: MCOMessageParser) -> MessageBodyContent {
         MessageBodyContent(
-            plainText: nonEmpty(parser.plainTextBodyRendering()),
+            plainText: plainText(from: parser),
             html: nonEmpty(parser.htmlBodyRendering()),
             parts: parts(from: parser)
         )
+    }
+
+    /// Task #134 (実機のみで再現する「引用が要約に混入する」症状の根治):
+    /// `plainTextBodyRendering()`はmailcore2側の*描画*で、text/plainパート
+    /// が存在しない(HTMLのみの)メールに対してはHTMLタグを剥がして代用の
+    /// 平文を合成する — その合成結果は本物のtext/plainパートと似ているが
+    /// 同一ではなく、特に`QuoteStripper`の引用マーカー検出("> "などの
+    /// 行頭記号)は実機で観測された実際の`plainTextBodyRendering()`出力の
+    /// 形状に対して確実には一致しなかった (Mac上のeml再現・HTML剥がし
+    /// 近似のどちらでも問題が起きず「実機のmailcore2実描画特有の形状差」
+    /// が疑われた調査の結論)。メッセージが実際にtext/plainパートを持つ
+    /// 場合は、その*デコード済み生文字列*(引用の`>`をそのまま含む、MIME
+    /// が本来持っている形)を使う方が確実 — このメソッドはまず`parser
+    /// .mainPart()`をtext/plainのリーフパートを探して優先し、見つから
+    /// なければ(HTMLのみのメールなど)従来通り`plainTextBodyRendering()`
+    /// にフォールバックする。既存にキャッシュ済みの本文の移行は行わない
+    /// (次回フェッチ時から新しい経路に切り替わる)。
+    private static func plainText(from parser: MCOMessageParser) -> String? {
+        if let mainPart = parser.mainPart(),
+           let plainTextPart = firstPlainTextPart(mainPart),
+           let decoded = plainTextPart.decodedString(),
+           !decoded.isEmpty {
+            return decoded
+        }
+        return nonEmpty(parser.plainTextBodyRendering())
+    }
+
+    /// Depth-first search for the first non-attachment `text/plain` leaf
+    /// under `part` — mirrors how a typical `multipart/alternative`
+    /// (`[text/plain, text/html]`, in that order) lists its plain variant
+    /// first. Only descends into `MCOAbstractMultipart` containers
+    /// (`multipart/mixed`, `/alternative`, `/related`, ...); deliberately
+    /// does *not* descend into a `message/rfc822` embedded-message part
+    /// (`MCOAbstractMessagePart`/`MCOMessagePart`) — that would surface an
+    /// *attached* forwarded email's own body text as if it were this
+    /// message's body, which is a different bug than the one this method
+    /// fixes.
+    private static func firstPlainTextPart(_ part: MCOAbstractPart) -> MCOAttachment? {
+        if let multipart = part as? MCOAbstractMultipart {
+            for child in multipart.parts ?? [] {
+                if let found = firstPlainTextPart(child) {
+                    return found
+                }
+            }
+            return nil
+        }
+        guard let attachment = part as? MCOAttachment, !attachment.isAttachment else { return nil }
+        guard (attachment.mimeType ?? "").lowercased() == "text/plain" else { return nil }
+        return attachment
     }
 
     private static func nonEmpty(_ string: String?) -> String? {
