@@ -96,6 +96,17 @@ struct MessageListView: View {
     /// .onThreadRemoved`'s doc comment).
     var onSummariesChanged: ([Int64]) -> Void = { _ in }
 
+    // MARK: - macOS 操作体系再設計 (Task #165)
+
+    /// Forwarded straight to `MessageListRow`'s macOS-only context menu —
+    /// see that type's own `onReply`/`onReplyAll` doc comment. Default
+    /// no-ops so every existing iOS call site (`MailScreenView`) keeps
+    /// compiling unchanged; only `RootView`'s macOS `contentColumn` passes
+    /// real closures.
+    var onReply: (ThreadSummary) -> Void = { _ in }
+    var onReplyAll: (ThreadSummary) -> Void = { _ in }
+    var onForward: (ThreadSummary) -> Void = { _ in }
+
     /// ヘッダのタイトル横の件数表示 (`MailScreenView.toolbarContent`)を
     /// メッセージ単位の未読数に変更した際の追加コールバック (Task #74 の
     /// 「今表示されてる件数」だった旧仕様からの変更 — ユーザー指示「スレッド
@@ -189,7 +200,8 @@ struct MessageListView: View {
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
     /// M10: bound to `.searchFocused` — see the modifier's usage site below
-    /// for why (⌘⇧F's target, macOS only).
+    /// for why (⌘F's target, macOS only — Task #165 moved this off ⇧⌘F to
+    /// free that combination for "転送", see `OtegamiCommands`'s doc comment).
     @FocusState private var isSearchFieldFocused: Bool
 
     // MARK: - Bulk selection (1h, iOS only)
@@ -684,7 +696,7 @@ struct MessageListView: View {
         // all; see `SearchTabView`), still correct for macOS.
         .navigationTitle(title)
         .searchable(text: $searchText, prompt: "検索")
-        // M10: ⌘⇧F (`OtegamiCommands`) — `.searchFocused` is the modifier
+        // M10: ⌘F (`OtegamiCommands`, moved off ⇧⌘F by Task #165) — `.searchFocused` is the modifier
         // SwiftUI documents specifically for programmatically focusing the
         // field `.searchable` creates (there's no view identity to target
         // it with `@FocusState` the normal way, since `.searchable` doesn't
@@ -940,7 +952,10 @@ struct MessageListView: View {
                 onDelete: deleteThread,
                 onJunk: junkThread,
                 onPin: togglePin,
-                onAppear: loadMoreIfNeeded
+                onAppear: loadMoreIfNeeded,
+                onReply: onReply,
+                onReplyAll: onReplyAll,
+                onForward: onForward
             )
         }
     }

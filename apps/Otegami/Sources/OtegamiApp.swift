@@ -131,6 +131,28 @@ struct RootView: View {
         selectedMessageId = nil
     }
 
+    /// Task #165 (macOS 操作体系再設計): the macOS message-list row's
+    /// right-click "返信"/"全員に返信" (`MessageListRow`'s new macOS-only
+    /// context-menu entries) — targets `summary.latestMessage`, the same
+    /// message the row's own preview text already shows (`ThreadSummary
+    /// .latestMessage`'s doc comment: never `nil` in practice for a summary
+    /// an observation actually returned). Deliberately **not** `#if
+    /// os(macOS)`-gated, matching `handleThreadRemoved(_:)`'s own doc
+    /// comment right above: `contentColumn` (this method's only call site)
+    /// compiles on both platforms even though only macOS's `MessageListRow`
+    /// ever wires a non-default `onReply`/`onReplyAll` closure into it.
+    private func replySummary(_ summary: ThreadSummary, replyAll: Bool) {
+        guard let messageId = summary.latestMessage?.id else { return }
+        presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll))
+    }
+
+    /// Task #165: the macOS message-list row's right-click "転送" — see
+    /// `replySummary(_:replyAll:)`'s doc comment.
+    private func forwardSummary(_ summary: ThreadSummary) {
+        guard let messageId = summary.latestMessage?.id else { return }
+        presentComposer(.forward(originalMessageId: messageId))
+    }
+
     // Drives which column a compact-width device (iPhone) shows.
     // `NavigationSplitView` does *not* automatically push from `content`
     // to `detail` just because a `List(selection:)` binding changed value
@@ -276,15 +298,37 @@ struct RootView: View {
     }
     #endif
 
-    /// `navigationView` plus (macOS only) the five `focusedSceneValue`
-    /// calls that publish `OtegamiCommands`' menu actions — kept as its own
-    /// expression, separate from `body`'s `.sheet`/`.onChange` tail, since
-    /// this chain of five ternary-typed `focusedSceneValue` calls turned
-    /// out to be the single most expensive piece of the original combined
-    /// expression to type-check (measured independently while narrowing
-    /// down `body`'s 335ms total, `docs/ci.md`'s troubleshooting notes).
+    /// `navigationView` plus (macOS only) the `focusedSceneValue` calls that
+    /// publish `OtegamiCommands`' menu actions — kept as its own expression,
+    /// separate from `body`'s `.sheet`/`.onChange` tail, since this chain of
+    /// ternary-typed `focusedSceneValue` calls turned out to be the single
+    /// most expensive piece of the original combined expression to
+    /// type-check (measured independently while narrowing down `body`'s
+    /// 335ms total, `docs/ci.md`'s troubleshooting notes).
+    ///
+    /// Task #165 added four more actions (archive/toggleRead/replyAll/
+    /// forward) to what was originally a five-call chain — appending them
+    /// straight onto this same chain hit exactly the CI type-check timeout
+    /// `docs/ci.md` warns about (confirmed locally: `make mac` failed with
+    /// "the compiler is unable to type-check this expression in reasonable
+    /// time" pointing at this property once it grew to nine calls). Split
+    /// into this property (four calls) plus
+    /// `navigationViewWithPrimaryFocusedValues` (five) below — two smaller
+    /// expressions for the type-checker instead of one large one, the same
+    /// fix `docs/ci.md` documents elsewhere in this app for the identical
+    /// symptom.
     #if os(macOS)
     private var navigationViewWithFocusedValues: some View {
+        navigationViewWithPrimaryFocusedValues
+            .focusedSceneValue(\.archiveAction, selectedThreadId == nil ? nil : { archiveSelectedThread() })
+            .focusedSceneValue(\.toggleReadAction, selectedThreadId == nil ? nil : { toggleReadSelectedThread() })
+            .focusedSceneValue(\.nextMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: 1) })
+            .focusedSceneValue(\.previousMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: -1) })
+    }
+
+    /// See `navigationViewWithFocusedValues`'s doc comment for why this is
+    /// split out rather than one combined chain.
+    private var navigationViewWithPrimaryFocusedValues: some View {
         navigationView
             // M10: publishes the actions `OtegamiCommands`' menu items
             // invoke — `AppFocusedValues.swift`'s doc comment on why
@@ -295,9 +339,13 @@ struct RootView: View {
             // beyond the `nil`-vs-non-`nil` ternary).
             .focusedSceneValue(\.newMessageAction, environment.accounts.isEmpty ? nil : { presentComposer(.new) })
             .focusedSceneValue(\.replyAction, selectedThreadId == nil ? nil : { replyToSelectedThread() })
+            // Task #165: `replyAllAction`/`forwardAction` reuse
+            // `replyToSelectedThread`'s own target-message resolution (the
+            // flat-mode `selectedMessageId` when set, otherwise the
+            // thread's newest message) — see that method's doc comment.
+            .focusedSceneValue(\.replyAllAction, selectedThreadId == nil ? nil : { replyToSelectedThread(replyAll: true) })
+            .focusedSceneValue(\.forwardAction, selectedThreadId == nil ? nil : { forwardSelectedThread() })
             .focusedSceneValue(\.deleteAction, selectedThreadId == nil ? nil : { deleteSelectedThread() })
-            .focusedSceneValue(\.nextMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: 1) })
-            .focusedSceneValue(\.previousMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: -1) })
     }
     #else
     private var navigationViewWithFocusedValues: some View {
@@ -426,7 +474,16 @@ struct RootView: View {
                     selectedThreadId: $selectedThreadId,
                     selectedMessageId: $selectedMessageId,
                     onThreadSelected: { threadId, messageId in selectThread(threadId, messageId: messageId, under: selection) },
-                    onSummariesChanged: { currentThreadOrder = $0 }
+                    onSummariesChanged: { currentThreadOrder = $0 },
+                    // Task #165: only `MessageListRow`'s macOS-only
+                    // context-menu entries ever invoke these — the iOS row
+                    // has no equivalent (its swipe/long-press surface has no
+                    // room for a third destination action, and this task's
+                    // scope is macOS only per `CLAUDE.md`'s "iOS の挙動は
+                    // 一切変えない").
+                    onReply: { summary in replySummary(summary, replyAll: false) },
+                    onReplyAll: { summary in replySummary(summary, replyAll: true) },
+                    onForward: { summary in forwardSummary(summary) }
                 )
             } else {
                 ContentUnavailableView(
@@ -664,10 +721,13 @@ struct RootView: View {
     /// currently showing", which for that mode is unambiguous), falling
     /// back to the pre-existing "newest message in the thread" rule
     /// otherwise.
-    private func replyToSelectedThread() {
+    /// Task #165: `replyAll` defaults to `false` for ⌘R's own pre-existing
+    /// call site — ⇧⌘R (`replyAllAction`) is the only other caller, passing
+    /// `true` through to the exact same target-resolution below.
+    private func replyToSelectedThread(replyAll: Bool = false) {
         guard let selectedThreadId else { return }
         if let selectedMessageId {
-            presentComposer(.reply(originalMessageId: selectedMessageId, replyAll: false))
+            presentComposer(.reply(originalMessageId: selectedMessageId, replyAll: replyAll))
             return
         }
         Task {
@@ -675,7 +735,117 @@ struct RootView: View {
                 try ThreadQuery.messages(threadId: selectedThreadId, db: db)
             }) ?? []
             guard let newestMessageId = messages.last?.id else { return }
-            presentComposer(.reply(originalMessageId: newestMessageId, replyAll: false))
+            presentComposer(.reply(originalMessageId: newestMessageId, replyAll: replyAll))
+        }
+    }
+
+    /// ⇧⌘F: forwards the same "target message" `replyToSelectedThread(replyAll:)`
+    /// resolves — `selectedMessageId` for a flat-mode open, otherwise the
+    /// thread's newest message.
+    private func forwardSelectedThread() {
+        guard let selectedThreadId else { return }
+        if let selectedMessageId {
+            presentComposer(.forward(originalMessageId: selectedMessageId))
+            return
+        }
+        Task {
+            let messages = (try? await environment.database.dbWriter.read { db in
+                try ThreadQuery.messages(threadId: selectedThreadId, db: db)
+            }) ?? []
+            guard let newestMessageId = messages.last?.id else { return }
+            presentComposer(.forward(originalMessageId: newestMessageId))
+        }
+    }
+
+    /// Task #165 (macOS 操作体系再設計): ⌘E — routes through the same shared
+    /// `MessageRemoval.commit` layer `deleteSelectedThread()`/`ThreadDetailView
+    /// .commitRemoval(_:)`/`MessageListView.archiveThread(_:)` all use, so
+    /// this menu command gets the same Task #120 pending-relocation and
+    /// Task #163 pinned-thread guard behavior for free rather than
+    /// reimplementing a fourth, possibly-drifting copy. Reuses
+    /// `ThreadDetailView.threadSummary(threadId:singleMessageId:accountId:db:)`
+    /// (relaxed from `private` to internal for this call site — same module,
+    /// no behavior change) instead of duplicating that adapter a second time.
+    /// Unlike `MessageListView`'s row swipe/context-menu path, a pinned
+    /// thread's blocked archive has no toast here — this command surface has
+    /// none of that view's undo-toast infrastructure, so it just silently
+    /// no-ops, matching this method's own pre-existing best-effort `catch`.
+    private func archiveSelectedThread() {
+        guard let selectedThreadId else { return }
+        let targetMessageId = selectedMessageId
+        Task {
+            do {
+                let outcome: (removed: Bool, accountId: String)? = try await environment.database.dbWriter.write { db in
+                    guard let thread = try ThreadRecord.fetchOne(db, key: selectedThreadId) else { return nil }
+                    guard let summary = try ThreadDetailView.threadSummary(
+                        threadId: selectedThreadId, singleMessageId: targetMessageId, accountId: thread.accountId, db: db
+                    ) else { return (false, thread.accountId) }
+                    let removed = try MessageRemoval.commit(.archive, summary: summary, accountId: thread.accountId, db: db) != nil
+                    return (removed, thread.accountId)
+                }
+                guard let outcome, outcome.removed else { return }
+                if targetMessageId != nil {
+                    self.selectedThreadId = nil
+                    self.selectedMessageId = nil
+                } else {
+                    handleThreadRemoved(selectedThreadId)
+                }
+                guard let account = environment.accounts.first(where: { $0.id == outcome.accountId }) else { return }
+                guard let auth = try? await environment.auth(for: account) else { return }
+                _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+            } catch is MessageRemoval.ArchiveGuardError {
+                // Task #163: pinned — see this method's doc comment.
+            } catch {
+                // Best-effort, matching `deleteSelectedThread()`.
+            }
+        }
+    }
+
+    /// Task #165: ⇧⌘U — mirrors `MessageListView.toggleRead(_:)`'s own
+    /// direction rule (mark every targeted message read if any of them is
+    /// currently unread, mark them all unread otherwise) and its
+    /// `applyReadState(_:markingRead:)` write, reimplemented here for the
+    /// same reason `deleteSelectedThread()`'s doc comment already gives —
+    /// this view has no access to that sibling view's private method.
+    private func toggleReadSelectedThread() {
+        guard let selectedThreadId else { return }
+        let targetMessageId = selectedMessageId
+        Task {
+            do {
+                let accountId: String? = try await environment.database.dbWriter.write { db in
+                    guard let thread = try ThreadRecord.fetchOne(db, key: selectedThreadId) else { return nil }
+                    guard let summary = try ThreadDetailView.threadSummary(
+                        threadId: selectedThreadId, singleMessageId: targetMessageId, accountId: thread.accountId, db: db
+                    ) else { return nil }
+                    let markingRead = summary.thread.unreadCount > 0
+                    let messages = try ThreadQuery.actionTargets(for: summary, db: db)
+                    for var message in messages {
+                        if markingRead {
+                            guard !message.flags.contains(.seen) else { continue }
+                            message.flags.insert(.seen)
+                        } else {
+                            guard message.flags.contains(.seen) else { continue }
+                            message.flags.remove(.seen)
+                        }
+                        message.updatedAt = Date()
+                        try message.update(db)
+                        guard !message.isPendingRelocation,
+                              let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
+                        else { continue }
+                        try OpQueue.enqueueSetFlags(
+                            accountId: thread.accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                            uids: [UInt32(message.uid)], flags: message.flags, db: db
+                        )
+                    }
+                    try ThreadAssigner.recomputeAggregates(threadId: selectedThreadId, db: db)
+                    return thread.accountId
+                }
+                guard let accountId, let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
+                guard let auth = try? await environment.auth(for: account) else { return }
+                _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+            } catch {
+                // Best-effort, matching `deleteSelectedThread()`.
+            }
         }
     }
 

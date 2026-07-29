@@ -65,7 +65,11 @@ Settings/AccountsSettingsView.swift`）の UI。
 
 `SwipeActionSettingsStore.swift`。**iOS のみ表示** — macOS にはスワイプ
 ジェスチャー自体が無く、同等の操作はすべて行の右クリックコンテキスト
-メニュー (`MessageListRow.contextMenuContent`) に常時揃っている。
+メニュー (`MessageListRow.contextMenuContent`) に常時揃っている。Task #165
+(macOS 操作体系再設計) で返信/全員に返信/転送もこのメニューへ追加した
+(iOS のスワイプ設定にはこの3つの割り当て先が無い — 元々footerツールバー/
+FABにしかない機能なので、macOS 版はメニュー冒頭に常設)。詳細は
+`docs/design-system.md`のTask #165節の対応表を参照。
 
 左右それぞれに「短いスワイプ」「長いスワイプ」の2アクションを個別に
 割り当てられる。選べる操作は5つ:
@@ -327,10 +331,12 @@ Task #42「自分のプロフィール写真」(`people/me`) の結果が既に�
 と完全に一致させてある) / 「次のメールを開く」。
 
 - **適用範囲**: メール本文画面 (`ThreadDetailView`) の「…」メニューからの
-  削除・アーカイブ・迷惑メール操作、および macOS の ⌘⌫ (`RootView
-  .deleteSelectedThread()`)。**一覧画面のスワイプ/コンテキストメニュー/
-  一括選択からの削除・アーカイブには適用されない** — 一覧はその場で行が
-  消えるだけで「次に何を開くか」という問いがそもそも発生しないため。
+  削除・アーカイブ・迷惑メール操作、および macOS の ⌘⌫/⌘E (`RootView
+  .deleteSelectedThread()`/`.archiveSelectedThread()`、Task #165 で ⌘E
+  アーカイブを追加した際も同じ`handleThreadRemoved(_:)`経路に乗せた)。
+  **一覧画面のスワイプ/コンテキストメニュー/一括選択からの削除・アーカイブ
+  には適用されない** — 一覧はその場で行が消えるだけで「次に何を開くか」
+  という問いがそもそも発生しないため。
 - **「次のメールを開く」の判定**: `MessageListView` が最後に報告した
   画面上のスレッド順序 (`onSummariesChanged`) の中から、削除・アーカイブ
   したスレッドの次の行を開く。次が無ければ (リストの最後だった場合) 1つ

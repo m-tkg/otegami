@@ -133,10 +133,13 @@ Gmail・Outlook/Office365 は OAuth の Client ID を各自で発行する必要
   （メール本文自体は各デバイスが自分の IMAP 接続で同期する設計で、
   iCloud が同期するのは資格情報とアカウントのメタデータです）。詳細は
   [docs/icloud-sync.md](docs/icloud-sync.md)。設定でオプトアウト可能。
-- **macOS**: ネイティブなメニューバーコマンド（⌘N 新規、⌘R 返信、⌘⌫
-  削除、⌘⇧F 検索フォーカス、⌘]/⌘[ メールボックス切替）、ネイティブな
+- **macOS**: 右クリックのコンテキストメニュー（メール一覧行・スレッド内
+  メッセージ・下書き）、ネイティブなメニューバーコマンド（⌘N 新規、⌘R
+  返信、⇧⌘R 全員に返信、⇧⌘F 転送、⌘E アーカイブ、⇧⌘U 既読/未読切替、
+  ⌘⌫ 削除、⌘F 検索フォーカス、⌘]/⌘[ メールボックス切替）、ネイティブな
   Settings シーン、独立した作成ウィンドウ、そして3ペイン
-  `NavigationSplitView` レイアウト。
+  `NavigationSplitView` レイアウト。詳細は
+  [docs/design-system.md](docs/design-system.md#task-165-macos-操作体系再設計)。
 - **パフォーマンス**: 10万通の合成メールボックスで検証済み — 詳細は
   [docs/performance.md](docs/performance.md)。
 

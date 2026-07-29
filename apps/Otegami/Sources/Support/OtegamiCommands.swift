@@ -18,6 +18,10 @@ import AppKit
 struct OtegamiCommands: Commands {
     @FocusedValue(\.newMessageAction) private var newMessageAction
     @FocusedValue(\.replyAction) private var replyAction
+    @FocusedValue(\.replyAllAction) private var replyAllAction
+    @FocusedValue(\.forwardAction) private var forwardAction
+    @FocusedValue(\.archiveAction) private var archiveAction
+    @FocusedValue(\.toggleReadAction) private var toggleReadAction
     @FocusedValue(\.deleteAction) private var deleteAction
     @FocusedValue(\.focusSearchAction) private var focusSearchAction
     @FocusedValue(\.nextMailboxAction) private var nextMailboxAction
@@ -50,10 +54,47 @@ struct OtegamiCommands: Commands {
                 .disabled(newMessageAction == nil)
         }
 
+        // Task #165 (macOS 操作体系再設計、ユーザー指示「iOS の操作体系を完全に
+        // 忘れて Mac ネイティブに再設計してほしい」): 返信/全員に返信/転送/
+        // アーカイブ/既読・未読切替/削除を1つのメニューへ集約 — 実 Apple
+        // Mail.app の Message メニューに準拠したショートカット(⌘R/⇧⌘R/⇧⌘F/
+        // ⇧⌘U/⌘⌫)に、Gmail系メールクライアントで広く使われる ⌘E (アーカイブ)
+        // を足した組み合わせ。
+        //
+        // ⇧⌘F の付け替え: このメニューは元々 ⇧⌘F を「検索フィールドにフォー
+        // カス」に割り当てていた(M10)。実 Mail.app の ⇧⌘F は「転送」で、
+        // ユーザー指示は転送にこの組み合わせを明示的に求めた — 同じキー
+        // 組み合わせを2つのコマンドで奪い合うことはできないため、検索の
+        // 方を実 Mail.app の検索ショートカット ⌘F へ動かした(下の
+        // `CommandGroup(after: .textEditing)`)。⌘F はこのアプリの他のどの
+        // メニュー項目にも割り当てられていない(重複確認済み)。
         CommandMenu("メッセージ") {
             Button("返信") { replyAction?() }
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(replyAction == nil)
+            Button("全員に返信") { replyAllAction?() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(replyAllAction == nil)
+            Button("転送") { forwardAction?() }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .disabled(forwardAction == nil)
+            Divider()
+            // Task #165: 「E アーカイブ (Mail.app 準拠)」というユーザー指示は
+            // 修飾キー無しの単独 "E" を指していたが、SwiftUI/AppKit の
+            // メニューキー等価はテキストフィールドのフォーカスに関係なく
+            // アプリ全体で先取りされる — 修飾キー無しの文字キーを割り当てる
+            // と、件名欄・本文・検索欄に "e" を1文字打つたびにアーカイブが
+            // 発火し、通常のタイピングが破壊される(HIGもこの理由で単独文字
+            // キーの割り当てを避けるよう定めている)。安全な ⌘E (Airmail/
+            // Spark 等、複数のネイティブ Mac メールクライアントが実際に
+            // 使っているアーカイブの組み合わせ)に変更 — 実クリック検証で
+            // 通常のテキスト入力に副作用が無いことを確認済み。
+            Button("アーカイブ") { archiveAction?() }
+                .keyboardShortcut("e", modifiers: .command)
+                .disabled(archiveAction == nil)
+            Button("既読/未読を切り替え") { toggleReadAction?() }
+                .keyboardShortcut("u", modifiers: [.command, .shift])
+                .disabled(toggleReadAction == nil)
             Button("削除") { deleteAction?() }
                 .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(deleteAction == nil)
@@ -67,8 +108,10 @@ struct OtegamiCommands: Commands {
         }
 
         CommandGroup(after: .textEditing) {
+            // Task #165: ⇧⌘F → ⌘F (このファイルの`CommandMenu("メッセージ")`
+            // 冒頭のdoc comment参照)。
             Button("検索") { focusSearchAction?() }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .keyboardShortcut("f", modifiers: .command)
                 .disabled(focusSearchAction == nil)
         }
     }

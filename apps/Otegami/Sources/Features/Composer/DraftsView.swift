@@ -23,49 +23,23 @@ struct DraftsView: View {
     @State private var items: [DraftQuery.UnifiedRow] = []
     @State private var pendingDeletion: DraftQuery.UnifiedRow?
 
+    /// Task #165 (macOS 操作体系再設計、実機フィードバック「下書きの削除もで
+    /// きない」): iOS の`.swipeActions`(下の`draftRow(_:)`内)は macOS の
+    /// `List`では一切露出しない(スワイプというジェスチャー自体が存在しない)
+    /// — 下書きフォルダで削除する手段が macOS に文字通り無かった、という
+    /// のがこのバグの実体。`List(selection:)`でタグ付けした行を選択できる
+    /// ようにし、右クリックのコンテキストメニュー・ツールバーのゴミ箱
+    /// ボタン・⌫キー(`.onDeleteCommand`)の3経路すべてから同じ
+    /// `pendingDeletion`確認フロー(既存、iOSのスワイプ削除と共有)を起動
+    /// できるようにする。iOS 側はこのプロパティも`List(selection:)`も一切
+    /// 参照しない(`listBody`の`#if os(macOS)`分岐)ので、iOS の挙動は不変。
+    #if os(macOS)
+    @State private var macSelection: String?
+    #endif
+
     var body: some View {
         NavigationStack {
-            List {
-                if items.isEmpty {
-                    ContentUnavailableView("下書きはありません", systemImage: "doc")
-                        .accessibilityIdentifier("drafts.emptyState")
-                } else {
-                    ForEach(items) { item in
-                        Button {
-                            dismiss()
-                            open(item)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(item.subject.isEmpty ? "(件名なし)" : item.subject)
-                                    .font(.headline)
-                                    .foregroundStyle(.primary)
-                                if !item.toAddresses.isEmpty {
-                                    Text(item.toAddresses.map(\.description).joined(separator: ", "))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                if !item.snippet.isEmpty {
-                                    Text(item.snippet)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("drafts.row.\(item.id)")
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                pendingDeletion = item
-                            } label: {
-                                Label("削除", systemImage: "trash")
-                            }
-                            .accessibilityIdentifier("drafts.row.\(item.id).delete")
-                        }
-                    }
-                }
-            }
+            listBody
             .navigationTitle("下書き")
             .scrollContentBackground(.hidden)
             .background(OtegamiColor.background)
@@ -75,7 +49,15 @@ struct DraftsView: View {
                     Button("閉じる") { dismiss() }
                         .accessibilityIdentifier("drafts.closeButton")
                 }
+                #if os(macOS)
+                ToolbarItem {
+                    macDeleteToolbarButton
+                }
+                #endif
             }
+            #if os(macOS)
+            .onDeleteCommand { deleteSelectedViaKeyboard() }
+            #endif
             .alert(
                 "下書きを削除しますか？",
                 isPresented: Binding(
@@ -100,6 +82,115 @@ struct DraftsView: View {
         #endif
         .task(id: environment.accounts.map(\.id)) { await observe() }
     }
+
+    /// Split out of `body` per `docs/ci.md`'s "keep the `List`'s own
+    /// modifier chain and the platform-varying `List(selection:)` overload
+    /// itself as their own small expression" discipline — this file already
+    /// grew a `#if os(macOS)`-gated toolbar item/`.onDeleteCommand` above,
+    /// and `List(selection:)`/`List` are genuinely different initializer
+    /// overloads, not just a modifier difference, so they can't be unified
+    /// into one expression with a ternary the way most of this app's other
+    /// platform splits are.
+    @ViewBuilder
+    private var listBody: some View {
+        #if os(macOS)
+        List(selection: $macSelection) {
+            listRows
+        }
+        #else
+        List {
+            listRows
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private var listRows: some View {
+        if items.isEmpty {
+            ContentUnavailableView("下書きはありません", systemImage: "doc")
+                .accessibilityIdentifier("drafts.emptyState")
+        } else {
+            ForEach(items) { item in
+                draftRow(item)
+            }
+        }
+    }
+
+    /// One row — pulled out of `listRows` for the same "keep the `ForEach`
+    /// closure itself down to one call" reason `docs/ci.md` documents
+    /// everywhere else in this app (this row grew a `.tag`, `.swipeActions`,
+    /// and a macOS-only `.contextMenu`).
+    @ViewBuilder
+    private func draftRow(_ item: DraftQuery.UnifiedRow) -> some View {
+        Button {
+            dismiss()
+            open(item)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.subject.isEmpty ? "(件名なし)" : item.subject)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                if !item.toAddresses.isEmpty {
+                    Text(item.toAddresses.map(\.description).joined(separator: ", "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                if !item.snippet.isEmpty {
+                    Text(item.snippet)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("drafts.row.\(item.id)")
+        // macOS-only `List(selection: $macSelection)` needs this to know
+        // which row a click/arrow-key selects — a no-op on iOS (`listBody`'s
+        // plain, selection-less `List` there).
+        .tag(item.id)
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                pendingDeletion = item
+            } label: {
+                Label("削除", systemImage: "trash")
+            }
+            .accessibilityIdentifier("drafts.row.\(item.id).delete")
+        }
+        #if os(macOS)
+        .contextMenu {
+            Button("編集") {
+                dismiss()
+                open(item)
+            }
+            Button("削除", role: .destructive) {
+                pendingDeletion = item
+            }
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private var macDeleteToolbarButton: some View {
+        Button {
+            deleteSelectedViaKeyboard()
+        } label: {
+            Label("削除", systemImage: "trash")
+        }
+        .disabled(macSelection == nil)
+        .accessibilityIdentifier("drafts.toolbar.deleteButton")
+        .help("選択中の下書きを削除")
+    }
+
+    /// `.onDeleteCommand`(⌫キー)とツールバーのゴミ箱ボタン両方の実体 —
+    /// どちらも「今選択中の行を`pendingDeletion`へ渡して確認アラートを
+    /// 起動する」という同じことをするだけなので、1箇所にまとめてある。
+    private func deleteSelectedViaKeyboard() {
+        guard let macSelection, let item = items.first(where: { $0.id == macSelection }) else { return }
+        pendingDeletion = item
+    }
+    #endif
 
     private func open(_ item: DraftQuery.UnifiedRow) {
         switch item {

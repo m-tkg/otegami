@@ -125,6 +125,16 @@ struct MessageListRow: View {
     /// just the row's own `latestMessage`.
     let onPin: (ThreadSummary) -> Void
     let onAppear: (ThreadSummary) -> Void
+    /// Task #165 (macOS 操作体系再設計): the macOS-only context menu's
+    /// "返信"/"全員に返信"/"転送" entries — no iOS equivalent (this row's
+    /// swipe/long-press surface is already at capacity, and CLAUDE.md's
+    /// scope for this task is macOS only), but declared unconditionally
+    /// (not `#if os(macOS)`) so `MessageListView`'s single `threadRow(for:)`
+    /// call site doesn't need its own platform split just to omit three
+    /// arguments on iOS.
+    let onReply: (ThreadSummary) -> Void
+    let onReplyAll: (ThreadSummary) -> Void
+    let onForward: (ThreadSummary) -> Void
 
     #if os(iOS)
     /// Live horizontal offset of the tappable row content while a swipe
@@ -369,6 +379,14 @@ struct MessageListRow: View {
     /// requirement.
     @ViewBuilder
     private var contextMenuContent: some View {
+        // Task #165: 返信系を先頭に置く — 実 Mail.app の行コンテキストメニュー
+        // も返信/全員に返信/転送を最上段にまとめている。`ThreadSummary
+        // .latestMessage`宛て (`onReply`/`onReplyAll`/`onForward`のdoc
+        // comment、`RootView.replySummary(_:replyAll:)`参照)。
+        Button { onReply(summary) } label: { Label("返信", systemImage: "arrowshape.turn.up.left") }
+        Button { onReplyAll(summary) } label: { Label("全員に返信", systemImage: "arrowshape.turn.up.left.2") }
+        Button { onForward(summary) } label: { Label("転送", systemImage: "arrowshape.turn.up.right") }
+        Divider()
         ForEach(SwipeAction.allCases) { action in
             swipeButton(for: action)
         }

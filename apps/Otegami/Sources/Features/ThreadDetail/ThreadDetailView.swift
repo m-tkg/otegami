@@ -447,7 +447,27 @@ struct ThreadDetailView: View {
                     guard messageId == expandedMessageId else { return }
                     expandedAIFeaturesState = newState
                 },
-                isToolbarTarget: expandedMessageId == messageId
+                isToolbarTarget: expandedMessageId == messageId,
+                // Task #165 (macOS 操作体系再設計): this row's macOS-only
+                // context menu. Reply/forward target *this* row's own
+                // `messageId` — unlike `footerToolbar`'s reply/forward
+                // (always `targetMessage`, the currently-expanded message),
+                // right-clicking a collapsed row here lets the user reply to
+                // that specific message without expanding it first.
+                // Archive/junk/delete/pin/mark-unread stay thread-scoped —
+                // same "acts on the whole thread" convention every other
+                // removal/pin/read-state path in this app already follows
+                // (`MessageListView`'s flat-mode doc comment), reusing the
+                // exact same methods `footerToolbar` already calls so there's
+                // no second implementation to drift.
+                onReply: onReply,
+                onForward: onForward,
+                onArchive: archiveThread,
+                onJunk: junkThread,
+                onDelete: deleteThread,
+                isPinned: isThreadPinned,
+                onTogglePin: togglePin,
+                onMarkUnread: markUnread
             )
             // Task #146: `accordionScrollTarget`のスクロール先ターゲット —
             // ヘッダを含むこの行全体に付けておけば、`showsHeader`が`true`
@@ -1077,7 +1097,13 @@ struct ThreadDetailView: View {
     /// re-fetching it — `commit`/`actionTargets` only ever read
     /// `summary.thread.id`/`summary.singleMessageId` for a `nil`-
     /// `flatMessageId` summary, never `latestMessage` itself).
-    private nonisolated static func threadSummary(threadId: Int64, singleMessageId: Int64?, accountId: String, db: Database) throws -> ThreadSummary? {
+    /// Task #165: relaxed from `private` to internal (same module, no
+    /// behavior change) so `RootView`'s new ⌘E/⇧⌘U menu-command handlers
+    /// (`archiveSelectedThread()`/`toggleReadSelectedThread()`) can build the
+    /// same `ThreadSummary` adapter this view's own `commitRemoval(_:)`/
+    /// `applyReadState(markingRead:)`-equivalent logic needs, instead of
+    /// duplicating this construction a third time.
+    nonisolated static func threadSummary(threadId: Int64, singleMessageId: Int64?, accountId: String, db: Database) throws -> ThreadSummary? {
         guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
         if let singleMessageId {
             guard let message = try MessageRecord.fetchOne(db, key: singleMessageId) else { return nil }
@@ -1314,6 +1340,19 @@ private struct ThreadMessageRow: View {
     /// coincidence would be wrong.
     let isToolbarTarget: Bool
 
+    /// Task #165 (macOS 操作体系再設計): this row's macOS-only `.contextMenu`
+    /// — see `ThreadDetailView.messageRow(for:containerSize:)`'s call-site
+    /// doc comment for why reply/forward target this row's own `messageId`
+    /// while archive/junk/delete/pin/mark-unread stay thread-scoped.
+    let onReply: (Int64, Bool) -> Void
+    let onForward: (Int64) -> Void
+    let onArchive: () -> Void
+    let onJunk: () -> Void
+    let onDelete: () -> Void
+    let isPinned: Bool
+    let onTogglePin: () -> Void
+    let onMarkUnread: () -> Void
+
     /// Task #58 (根治): the real content height an HTML message's
     /// `WKWebView` measured — see `HTMLWebViewCoordinator.onHeightChange`'s
     /// doc comment for the whole chain this arrives through, and
@@ -1390,7 +1429,36 @@ private struct ThreadMessageRow: View {
             guard !expanded else { return }
             measuredHTMLContentHeight = nil
         }
+        #if os(macOS)
+        // Task #165: right-click anywhere on this message's row (header or
+        // expanded body) — mirrors `MessageListRow`'s existing macOS
+        // `.contextMenu` convention.
+        .contextMenu {
+            contextMenuContent
+        }
+        #endif
     }
+
+    #if os(macOS)
+    @ViewBuilder
+    private var contextMenuContent: some View {
+        Button { onReply(messageId, false) } label: { Label("返信", systemImage: "arrowshape.turn.up.left") }
+        Button { onReply(messageId, true) } label: { Label("全員に返信", systemImage: "arrowshape.turn.up.left.2") }
+        Button { onForward(messageId) } label: { Label("転送", systemImage: "arrowshape.turn.up.right") }
+        Divider()
+        Button { onMarkUnread() } label: { Label("未読にする", systemImage: "envelope.badge") }
+        Button { onTogglePin() } label: {
+            if isPinned {
+                Label("ピン留めを解除", systemImage: "pin.slash")
+            } else {
+                Label("ピン留め", systemImage: "pin")
+            }
+        }
+        Button { onJunk() } label: { Label("迷惑メールにする", systemImage: "exclamationmark.octagon") }
+        Button { onArchive() } label: { Label("アーカイブ", systemImage: "archivebox") }
+        Button(role: .destructive) { onDelete() } label: { Label("削除", systemImage: "trash") }
+    }
+    #endif
 }
 
 // `ThreadMessageSummaryRow` (the row's actual visual content, above) lives
