@@ -1932,3 +1932,85 @@ range ベース表現)を歩く方式に書き換え、`materializedUIDs(from:)`
   `PENDING.md`に推奨事項として記録。SEC-A の編集完了後に検討可能。
 - **F6 (HTMLTextExtractor の二次時間デコード)**・**F10 続き**などその他
   のCLAUDE-SECURITY所見: SEC-C/SEC-A が担当する別スコープ。
+
+## Task #168: 一覧のスレッド通数バッジが実際の通数と食い違う実機バグの調査と修正
+
+### 報告
+
+実機フィードバック (Gmail アカウント、Okta の通知メール): 一覧行の通数
+バッジが「3」なのに、そのスレッドを開くと実際は1通しかない。
+
+### 原因
+
+上の「スレッド詳細画面で Gmail のメッセージが2重表示される実機バグ」
+(a54f585) が土台。あの修正で`ThreadQuery.messages(threadId:db:)`(詳細
+画面が読む) と`ThreadAssigner`の2つの集計パス
+(`recomputeAggregates(threadId:db:)`/`apply(_:accountId:db:)`内の一括
+UPDATE) はどちらも同じ`ThreadQuery.deduplicate`相当の定義でGmailの
+INBOX+All Mail二重行を1通として数えるようになった — **ただしそれは
+以後この2つのパスのどちらかが実際に呼ばれてスレッドの保存値を書き直した
+時にしか効かない**。a54f585より前に書き込まれた`thread.messageCount`/
+`unreadCount`(重複込みの生の行数) は、そのスレッドのmembershipが何かの
+きっかけ (新着メッセージ・merge・削除など) で変わって`recomputeAggregates`
+/`apply`が再度呼ばれるまで、古い値のまま残り続ける。詳細画面のヘッダ
+(f7b623f「スレッド (N)」) は`messages.count`という**ライブに毎回
+再計算する**値を読むので常に正しいが、一覧バッジは`ThreadRowView`が
+読む保存列`summary.thread.messageCount`なので、この「取り残されたスレッド」
+では2つが食い違う。報告のOktaスレッドはまさにこの状態 (a54f585より前に
+同期され、以後membershipが変わっていなかった) だったと推測される。
+
+### 修正
+
+`packages/OtegamiKit/Sources/OtegamiStore/`
+
+1. **`ThreadAssigner.aggregateUpdateSQL(whereClause:)`** (新規、private):
+   `apply(_:accountId:db:)`内にあった単一UPDATE文 (dedup済み
+   `messageCount`/`unreadCount`/`lastMessageDate`/`isPinned`をSQLの
+   window関数で計算するもの) を、`WHERE`節を引数化した形で切り出した。
+   `apply`は`"WHERE thread.id IN (...)"`を渡す従来どおりの動きのまま。
+2. **`ThreadAssigner.recomputeAllAggregates(db:)`** (新規、`public`):
+   上記を空の`WHERE`節 (=全`thread`行対象) で呼ぶだけの、1文で終わる
+   全件バックフィル。数万スレッド規模でもチャンク分割不要 (`IN (...)`
+   による絞り込みが無いため)。
+3. **AppDatabase migration v35** (新規、データのみ・スキーマ変更なし):
+   `ThreadAssigner.recomputeAllAggregates(db:)`を1回だけ呼び、既存の
+   全スレッドの保存値をdedup済みの定義へ一括で直す。以後は
+   `recomputeAggregates`/`apply`の通常の書き込み経路がdedup済みの値を
+   保ち続けるので、このmigrationは一度だけで足りる。
+
+再発防止として、`messageCount`/`unreadCount`を書く経路が
+`ThreadAssigner`のこの3箇所 (+`recomputeAggregates`が使う`ThreadQuery
+.deduplicate`) 以外に無いかを横断 grep で確認 — `AccountDuplicateMerger`
+の重複メールボックスmerge処理も含め、すべて`ThreadAssigner
+.recomputeAggregates(threadId:db:)`/`.apply`経由で、直接`UPDATE thread
+SET messageCount`するような別経路は無かった。
+
+### テスト
+
+- `packages/OtegamiKit/Tests/OtegamiStoreTests/ThreadAggregateBackfillTests.swift`
+  (新規、6件): (a) Gmail重複による水増しされた保存値が
+  `recomputeAllAggregates`後にdedup済みの件数へ直ること、(b) 非Gmail
+  (messageIdでdedup) の同様のケース、(c) `messageId`/`gmailMessageId`
+  ともに`nil`の行は互いに重複排除されず個別カウントされること、
+  (d) `unreadCount`が「勝った」(role持ちメールボックス側の) 行の既読
+  状態を見ること (捨てられるAll Mail側の未読フラグに引きずられない
+  こと)、全スレッド・全アカウントを1パスで処理すること。
+- `packages/OtegamiKit/Tests/OtegamiStoreTests/AppDatabaseTests.swift`に
+  1件追加: v34相当のスキーマへ手動で重複込みの値を書き込んでから
+  migratorをv35まで進め、実際のmigration経路でも直ることを確認
+  (`v21RepairsDisplayPath`と同じ「凍結したスキーマに対して直接検証する」
+  形)。
+- `make test`green (全スイート成功)。
+
+### 保留
+
+`make mac`実行時、`MessageDetailFooterToolbar.swift`が別の並行エージェント
+(翻訳まわり、`TranslationServiceError`/`MessageTranslationState`への
+`.insufficientInput`ケース追加が作業中でuncommitted) の影響で
+`switch must be exhaustive`のビルドエラーになっていた — このタスクが
+触っているファイル (`ThreadAssigner.swift`/`AppDatabase.swift`とその
+テスト) とは無関係、共有ツリーでの他エージェントの作業中の状態。他人の
+ファイルには触れない方針のため`make mac`/`make ios`のフルアプリビルド
+確認とOTA配信は、その並行作業が完了しツリーが緑に戻ってから改めて
+行う必要がある。`make test`(OtegamiKitのユニットテスト) は今回の変更
+だけで完結しており green。
