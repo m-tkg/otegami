@@ -738,9 +738,17 @@ struct ThreadDetailView: View {
         guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
         if let singleMessageId {
             guard let message = try MessageRecord.fetchOne(db, key: singleMessageId) else { return nil }
-            return ThreadSummary(flatMessage: message, accountId: accountId)
+            var summary = ThreadSummary(flatMessage: message, accountId: accountId)
+            // Task #151: not read by `MessageRemoval.commit`/`actionTargets`
+            // today, but computed anyway so this adapter summary doesn't
+            // silently carry a stale `false` if a future caller starts
+            // reading it.
+            summary.isArchived = try ThreadQuery.isMessageArchived(messageId: singleMessageId, db: db)
+            return summary
         }
-        return ThreadSummary(thread: thread, latestMessage: nil)
+        var summary = ThreadSummary(thread: thread, latestMessage: nil)
+        summary.isArchived = try ThreadQuery.isThreadArchived(threadId: threadId, db: db)
+        return summary
     }
 
     /// Shared body for `archiveThread()`/`junkThread()`/`deleteThread()` —

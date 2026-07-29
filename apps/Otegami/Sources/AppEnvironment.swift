@@ -522,6 +522,13 @@ final class AppEnvironment {
                 smtpUsername: fakeGmailEmail,
                 sortOrder: nextSortOrder
             )
+            // Task #151: captured inside the write block below (mirrors
+            // `capturedThreadId`'s pattern elsewhere in this file), read
+            // afterward to set `self.uitestDirectOpenThreadId` — `self`
+            // isn't safely mutable *from inside* the `Database`-closure
+            // itself (same two-phase-init/actor-isolation reasoning as the
+            // other `captured*ThreadId` locals in this file).
+            var capturedArchivedThreadId: Int64?
             try? database.dbWriter.write { db in
                 // Task #52 追記: 同じ email の重複挿入を避ける — 元は
                 // `AccountEditView`のGmail専用「アバター診断」リンクの
@@ -556,9 +563,21 @@ final class AppEnvironment {
                     fromText: "Otegami QA <qa@example.com>",
                     internalDate: Date(),
                     gmailMessageId: 1,
-                    threadId: archivedThread.id
+                    threadId: archivedThread.id,
+                    // Task #151 (「アーカイブ済みの可視化」): `bodyState:
+                    // .fetched`+ a local `MessageBodyRecord` so
+                    // `-uitestsOpenGmailArchivedMessageDirectly` (below)
+                    // renders `MessageView`'s header immediately, instead of
+                    // attempting (and failing) a real network fetch against
+                    // this fake account's bogus IMAP host.
+                    bodyState: .fetched
                 )
                 try archivedMessage.insert(db)
+                try MessageBodyRecord(
+                    messageId: archivedMessage.id!, plainText: "このメールは Task #151 検証用の、すでにアーカイブ済みの fake フィクスチャです。",
+                    fetchedAt: Date()
+                ).insert(db)
+                capturedArchivedThreadId = archivedThread.id
 
                 // 「まだ受信トレイにある (未アーカイブ)」— 同じ物理メールが
                 // INBOX と All Mail の両方に (同じ`gmailMessageId`で) 存在する
@@ -588,6 +607,15 @@ final class AppEnvironment {
                     threadId: inboxThread.id
                 )
                 try allMailDuplicate.insert(db)
+            }
+            // Task #151 (「アーカイブ済みの可視化」検証): `scripts/
+            // verify-screen.sh archived-message-detail`向け — タップ無しで
+            // 上の「アーカイブ済みメール (UITest)」を直接開き、
+            // `MessageHeaderCompactView`の`ArchivedBadge`が出ることを確認
+            // する。`uitestDirectOpenThreadId`の既存の仕組み (`MailScreenView
+            // .task`) をそのまま再利用 — 新規の画面遷移コードは不要。
+            if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_OPEN_GMAIL_ARCHIVED_MESSAGE_DIRECTLY"] == "1" {
+                self.uitestDirectOpenThreadId = capturedArchivedThreadId
             }
         }
 

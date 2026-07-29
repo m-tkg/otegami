@@ -6894,3 +6894,77 @@ category == "TranslationGate"'`で「対象/非対象のどちらから何が届
 「同じ`messageId`の`MessageView`が2インスタンス同時に存在する」ケースに
 も同様に効く設計 (受け手側のガードは`messageId`の一致だけで判定する)
 ため、#150が解消しても#149の防御自体は独立して有効であり続ける。
+
+## Task #151: アーカイブ済みの可視化
+
+一覧行・本文ヘッダのどちらを見ても、そのメール/スレッドがアーカイブ
+済みかどうかが分からなかった (`ThreadSummary`自体がこの情報を持って
+いなかった)。「アーカイブ済み」の定義は Task #141 で`GmailArchiveFilter
+.excludeUnarchivedSQL`として既に実装済みの集合と同じにする、という
+判断: メールボックス`role == .archive`所属 (非Gmail)、または Gmail
+アカウントの All Mail (`role == .all`) 所属かつ INBOX/Sent/Drafts に
+同じ`gmailMessageId`で重複していないこと。
+
+**`ThreadSummary.isArchived`**: `packages/OtegamiKit/Sources/OtegamiStore
+/ThreadQuery.swift`の`ThreadSummary`に`public var isArchived: Bool =
+false`を追加。判定 SQL 自体は`MailboxRecord.swift`の`GmailArchiveFilter`
+に新設した`messageIsArchivedSQL`(`mailbox.role = 'archive' OR (mailbox
+.role = 'all' AND account.kind = 'gmail' AND excludeUnarchivedSQL)`) —
+既存の`excludeUnarchivedSQL`(「除外しない」ためのAND断片) とは別に、
+「このメッセージ自身がアーカイブ済みか」という真偽値そのものを返す。
+これを使う`ThreadQuery.isThreadArchived(threadId:db:)`(スレッド内の
+いずれかのメッセージが該当すれば`true`、`EXISTS`の per-thread クエリ)/
+`isMessageArchived(messageId:db:)`(フラット表示の1メッセージ単位版) の
+2関数を追加し、`ThreadSummary`を構築している既存の全経路
+(`ThreadQuery.summaries(forThreads:db:)`・`flatSummaries`・
+`unifiedInboxFlatSummaries`・`SearchQuery.flatMessageSummaries`・
+`ThreadDetailView.threadSummary(threadId:singleMessageId:accountId:db:)`)
+で構築後に呼んで値を実際に埋める — 既存クエリのSQL構造自体は変えず、
+新規カラム/関数の追加のみ (この期間`SyncEngine`配下を並行編集していた
+別タスクとの共有ワークツリー事故を避けるための制約)。`SearchQuery
+.threadSummaries`は`ThreadQuery.summaries(forThreads:db:)`を経由する
+既存実装のため変更不要だった。
+
+**一覧行**: `ThreadRowView`の`ThreadRowTrailing`(日時・スレッド件数
+バッジと同じ縦積みクラスタ) に、`summary.isArchived`のときだけ
+`archivebox`アイコン (`OtegamiFont.caption()`・`OtegamiColor
+.inkSecondary`、件数バッジと同じ控えめな見た目) を追加。
+
+**本文ヘッダ**: `MessageHeaderCompactView`に`isArchived: Bool`パラメータ
+を追加し、`HTMLBadge`の隣に新設の`ArchivedBadge`(`DesignSystem
+/Components/ArchivedBadge.swift`、`HTMLBadge`/`ENBadge`と同じ「Text +
+padding + 背景 + 角丸なし」の pill 型を踏襲) を控えめに表示する。値は
+`MessageView`側で計算 — スレッド集計ではなく、そのメッセージ自身の
+`mailboxId`に対する`ThreadQuery.isMessageArchived(messageId:db:)`を
+`load()`が`mailboxPath`と一緒に読み込む (`@State private var
+isArchived`) — 1スレッド内でメッセージごとにアーカイブ状態が異なりうる
+ため、スレッド集計値ではなくメッセージ単位の値を使う。
+
+### テスト
+
+`packages/OtegamiKit/Tests/OtegamiStoreTests/ThreadSummaryArchiveTests.swift`
+を新規追加 (8ケース): Gmail の genuinely-archived/INBOX重複の2パターン
+× グループ化パス (`summaries(forThreads:db:)`)/フラットパス
+(`flatSummaries`/`unifiedInboxFlatSummaries`) の組み合わせ、非Gmailの
+`.archive`/`.inbox`ロールの2パターン×グループ化/フラットパスの組み合わせ。
+`GmailArchiveFilterTests.swift`が持つ`excludeUnarchivedSQL`自体の検証と
+役割分担し、こちらは新設した`isArchived`という真偽値が`ThreadSummary`
+まで正しく届くかに絞った。`make test`green (新規8件含む、既知の
+`MessageBuilderTests`日本語往復フレークは今回のテスト実行では発生せず)。
+
+### 検証
+
+`make mac`green。`scripts/verify-screen.sh list-all-mail`(既存シナリオ、
+fake Gmail アカウントに「本当にアーカイブ済み」1件+「INBOXにまだ残って
+いる (未アーカイブ)」1件のフィクスチャを追加済み — Task #52 由来) の
+スクリーンショットで、「アーカイブ済みメール (UITest)」の行にだけ
+`archivebox`アイコンが付き、他の行 (Fake HTML Test アカウント側) には
+付かないことを目視確認。本文ヘッダ側は新規シナリオ`archived-message
+-detail`(`OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1`+新設の
+`OTEGAMI_UITEST_OPEN_GMAIL_ARCHIVED_MESSAGE_DIRECTLY=1`、
+`uitestDirectOpenThreadId`の既存の仕組みを再利用してタップ無しで
+アーカイブ済みメッセージを直接開く) を追加してスクリーンショット確認
+— 差出人名の隣に「アーカイブ済み」バッジが控えめに表示されることを
+確認した。`make ios`は今回未実施 (`verify-screen.sh`自体がiOSシミュ
+レータ向けビルドを内部で行うため、実質的に同等のビルド確認は済んでいる
+と判断)。

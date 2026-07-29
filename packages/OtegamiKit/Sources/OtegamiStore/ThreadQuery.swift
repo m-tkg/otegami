@@ -35,6 +35,18 @@ public struct ThreadSummary: Sendable, Equatable, Identifiable {
     /// see `MessageListView`'s doc comment) or the full accordion thread.
     public var singleMessageId: Int64? { flatMessageId }
 
+    /// Task #151 (「アーカイブ済みの可視化」): whether this thread (grouped
+    /// mode) or this single message (flat mode, `singleMessageId != nil`)
+    /// has at least one message in a mailbox that counts as "archived" —
+    /// see `GmailArchiveFilter.messageIsArchivedSQL`'s doc comment for the
+    /// exact per-mailbox predicate (non-Gmail `role == .archive`; Gmail
+    /// All Mail membership minus INBOX/Sent/Drafts duplicates). Defaults to
+    /// `false` here so every existing call site keeps compiling; the real
+    /// query call sites in this file (and `SearchQuery`) explicitly compute
+    /// and set it after construction — see `ThreadQuery.isThreadArchived`/
+    /// `isMessageArchived`.
+    public var isArchived: Bool = false
+
     public init(thread: ThreadRecord, latestMessage: MessageRecord?) {
         self.thread = thread
         self.latestMessage = latestMessage
@@ -217,8 +229,49 @@ public enum ThreadQuery {
                 .filter(Column("threadId") == threadId)
                 .order(Column("internalDate").desc, Column("uid").desc)
                 .fetchOne(db)
-            return ThreadSummary(thread: thread, latestMessage: latest)
+            var summary = ThreadSummary(thread: thread, latestMessage: latest)
+            summary.isArchived = try isThreadArchived(threadId: threadId, db: db)
+            return summary
         }
+    }
+
+    /// Task #151: per-thread "does at least one of this thread's messages
+    /// live in a mailbox that counts as archived" check, backing
+    /// `ThreadSummary.isArchived` for grouped-mode rows. One indexed EXISTS
+    /// probe per thread — same "fine at M4's scale" reasoning as the
+    /// per-thread `latestMessage` lookup in `summaries(forThreads:db:)`
+    /// just above, which already pays an equivalent per-thread query cost.
+    public static func isThreadArchived(threadId: Int64, db: Database) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+                SELECT EXISTS (
+                    SELECT 1 FROM message
+                    JOIN mailbox ON mailbox.id = message.mailboxId
+                    JOIN account ON account.id = mailbox.accountId
+                    WHERE message.threadId = ? AND \(GmailArchiveFilter.messageIsArchivedSQL)
+                )
+                """,
+            arguments: [threadId]
+        ) ?? false
+    }
+
+    /// Task #151: the flat-mode (1 row = 1 message) counterpart to
+    /// `isThreadArchived(threadId:db:)` — evaluates the same
+    /// `GmailArchiveFilter.messageIsArchivedSQL` predicate against just that
+    /// one message's own current mailbox membership rather than rolling up
+    /// a whole thread.
+    public static func isMessageArchived(messageId: Int64, db: Database) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+                SELECT \(GmailArchiveFilter.messageIsArchivedSQL) FROM message
+                JOIN mailbox ON mailbox.id = message.mailboxId
+                JOIN account ON account.id = mailbox.accountId
+                WHERE message.id = ?
+                """,
+            arguments: [messageId]
+        ) ?? false
     }
 
     /// `limit` (M10 pagination — `MessageListView`'s "load more on scroll",
@@ -280,7 +333,13 @@ public enum ThreadQuery {
             arguments.append(limit)
         }
         let messages = try MessageRecord.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
-        return messages.map { ThreadSummary(flatMessage: $0, accountId: accountId) }
+        return try messages.map { message in
+            var summary = ThreadSummary(flatMessage: message, accountId: accountId)
+            if let messageId = message.id {
+                summary.isArchived = try isMessageArchived(messageId: messageId, db: db)
+            }
+            return summary
+        }
     }
 
     public static func flatSummariesObservation(mailboxId: Int64, limit: Int? = nil, accountId: String, unreadOnly: Bool = false, pinnedOnly: Bool = false) -> ValueObservation<ValueReducers.Fetch<[ThreadSummary]>> {
@@ -343,7 +402,11 @@ public enum ThreadQuery {
         return try rows.map { row in
             let message = try MessageRecord(row: row)
             let accountId: String = row["accountId"]
-            return ThreadSummary(flatMessage: message, accountId: accountId)
+            var summary = ThreadSummary(flatMessage: message, accountId: accountId)
+            if let messageId = message.id {
+                summary.isArchived = try isMessageArchived(messageId: messageId, db: db)
+            }
+            return summary
         }
     }
 

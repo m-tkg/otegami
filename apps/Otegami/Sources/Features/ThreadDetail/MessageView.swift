@@ -155,6 +155,13 @@ struct MessageView: View {
     /// and `HTMLMessageView`'s cid image resolver don't each need to
     /// re-derive it.
     @State private var mailboxPath: String?
+    /// Task #151 (「アーカイブ済みの可視化」): whether `message` currently
+    /// lives in a mailbox that counts as archived — see `ThreadQuery
+    /// .isMessageArchived(messageId:db:)`'s doc comment for the exact
+    /// predicate. Loaded once in `load()` alongside `mailboxPath` (both are
+    /// derived from the same `message.mailboxId`), and forwarded to
+    /// `header(for:)`/`MessageHeaderCompactView`.
+    @State private var isArchived = false
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var attachments: [AttachmentRecord] = []
@@ -715,7 +722,8 @@ struct MessageView: View {
             showAvatar: showAvatarInDetail,
             isHTMLMessage: isHTMLMessage,
             isShowingHTML: isShowingHTML,
-            onToggleHTMLText: { manualPreferPlainText = isShowingHTML }
+            onToggleHTMLText: { manualPreferPlainText = isShowingHTML },
+            isArchived: isArchived
         )
     }
 
@@ -1214,6 +1222,7 @@ struct MessageView: View {
         bodyRecord = nil
         message = nil
         mailboxPath = nil
+        isArchived = false
         attachments = []
         attachmentErrorMessages = [:]
         previewURL = nil
@@ -1239,6 +1248,9 @@ struct MessageView: View {
         mailboxPath = try? await environment.database.dbWriter.read { db in
             try MailboxRecord.fetchOne(db, key: loadedMessage.mailboxId)?.path
         }
+        isArchived = (try? await environment.database.dbWriter.read { db in
+            try ThreadQuery.isMessageArchived(messageId: messageId, db: db)
+        }) ?? false
         attachments = (try? await fetchAttachmentRecords(messageId: messageId)) ?? []
 
         if loadedMessage.bodyState == .fetched, let existing = try? await fetchBodyRecord(messageId: messageId) {

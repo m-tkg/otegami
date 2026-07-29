@@ -63,6 +63,26 @@ enum GmailArchiveFilter {
             )
         )
         """
+
+    /// Task #151 (「アーカイブ済みの可視化」): a single message's own
+    /// archived-or-not boolean, for `ThreadSummary.isArchived` — distinct
+    /// from `excludeUnarchivedSQL` above (an AND-clause fragment meant to
+    /// *filter out* Gmail All Mail duplicates from a query already scoped
+    /// to an archive-representing mailbox) in that this evaluates the full
+    /// "does this row's own mailbox membership count as archived" predicate
+    /// on its own, regardless of what the enclosing query is scoped to.
+    /// Non-Gmail: `mailbox.role = 'archive'` directly. Gmail: the message's
+    /// mailbox is All Mail (`role = 'all'`) *and* it isn't also filed under
+    /// INBOX/Sent/Drafts (same `X-GM-MSGID` dedup `excludeUnarchivedSQL`
+    /// already does — reused verbatim rather than re-derived). Same
+    /// unaliased `message`/`mailbox`/`account` JOIN precondition as
+    /// `excludeUnarchivedSQL`.
+    static let messageIsArchivedSQL = """
+        (
+            mailbox.role = 'archive'
+            OR (mailbox.role = 'all' AND account.kind = 'gmail' AND \(excludeUnarchivedSQL))
+        )
+        """
 }
 
 /// A synced mailbox (IMAP folder). One row per `(accountId, path)`; upserted

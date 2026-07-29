@@ -26,6 +26,13 @@ struct MessageHeaderCompactView: View {
     let isHTMLMessage: Bool
     let isShowingHTML: Bool
     let onToggleHTMLText: () -> Void
+    /// Task #151 (「アーカイブ済みの可視化」): `MessageView`'s own
+    /// per-message check (`ThreadQuery.isMessageArchived(messageId:db:)`,
+    /// loaded alongside `mailboxPath` — see `MessageView.load()`) rather
+    /// than a thread-level aggregate, since this header always renders one
+    /// specific message, and a thread can (rarely) mix archived and
+    /// not-yet-archived messages across mailboxes.
+    var isArchived: Bool = false
 
     var body: some View {
         HStack(alignment: .top, spacing: OtegamiSpacing.sm) {
@@ -55,6 +62,12 @@ struct MessageHeaderCompactView: View {
                     // text rendering).
                     if isHTMLMessage {
                         HTMLBadge()
+                    }
+                    // Task #151: controlled, subdued — a small badge
+                    // alongside `HTMLBadge` rather than a banner, per the
+                    // task's own "控えめな「アーカイブ済み」表示" spec.
+                    if isArchived {
+                        ArchivedBadge()
                     }
                     Spacer(minLength: OtegamiSpacing.sm)
                     OtegamiDateFormat.listRowText(for: message.date ?? message.internalDate)

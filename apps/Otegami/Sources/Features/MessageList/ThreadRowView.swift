@@ -235,6 +235,19 @@ private struct ThreadRowTrailing: View {
                 .accessibilityIdentifier("messageList.row.\(summary.id).countBadge")
                 .accessibilityLabel(Text("\(summary.thread.messageCount)通のスレッド"))
             }
+            // Task #151 (「アーカイブ済みの可視化」): `summary.isArchived`
+            // (mailbox `role == .archive`membership; Gmail は All Mail
+            // かつ INBOX/Sent/Drafts非重複 — `GmailArchiveFilter
+            // .messageIsArchivedSQL`の doc comment参照) を、日時・件数
+            // バッジと同じ縦積みクラスタに小さく添える。件数バッジと
+            // 同様キャプションサイズ・`inkSecondary`で控えめに。
+            if summary.isArchived {
+                Image(systemName: "archivebox")
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                    .accessibilityIdentifier("messageList.row.\(summary.id).archivedIndicator")
+                    .accessibilityLabel(Text("アーカイブ済み"))
+            }
             if let accountDisplayName {
                 Text(accountDisplayName)
                     .font(OtegamiFont.badge())

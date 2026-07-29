@@ -228,6 +228,12 @@
 #                                       直接選択 — ヘッダタイトルが「すべて
 #                                       のすべてのメール」に二重化していない
 #                                       ことの確認用。
+#   archived-message-detail             Task #151 (「アーカイブ済みの
+#                                       可視化」): `list-all-mail`と同じ
+#                                       fake Gmail アカウントの「本当に
+#                                       アーカイブ済み」メッセージを直接
+#                                       開く — `MessageHeaderCompactView`
+#                                       の`ArchivedBadge`表示の確認用。
 #   settings                            設定画面 (SettingsSheetView)
 #   menu                                 ハンバーガーメニュー (FolderListSheet
 #                                       — 左下floatingSettingsButtonの
@@ -519,6 +525,14 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
     launch_args+=("-uitestsSelectAllMailDirectly")
     default_out="list-all-mail.png"
+    ;;
+  archived-message-detail)
+    # Task #151 (「アーカイブ済みの可視化」): `list-all-mail`と同じ fake
+    # Gmail アカウントフィクスチャの「本当にアーカイブ済み」メッセージを
+    # タップ無しで直接開く (`uitestDirectOpenThreadId`の既存の仕組み) —
+    # `MessageHeaderCompactView`の`ArchivedBadge`表示の確認用。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1" "OTEGAMI_UITEST_OPEN_GMAIL_ARCHIVED_MESSAGE_DIRECTLY=1")
+    default_out="archived-message-detail.png"
     ;;
   account-settings)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")

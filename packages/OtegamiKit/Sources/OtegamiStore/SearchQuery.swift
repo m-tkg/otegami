@@ -249,7 +249,14 @@ public enum SearchQuery {
         return try rows.map { row in
             let message = try MessageRecord(row: row)
             let accountId: String = row["accountId"]
-            return ThreadSummary(flatMessage: message, accountId: accountId)
+            var summary = ThreadSummary(flatMessage: message, accountId: accountId)
+            // Task #151: same per-message archived check `ThreadQuery`'s own
+            // flat-mode summaries use — see `ThreadQuery.isMessageArchived`'s
+            // doc comment.
+            if let messageId = message.id {
+                summary.isArchived = try ThreadQuery.isMessageArchived(messageId: messageId, db: db)
+            }
+            return summary
         }
     }
 
