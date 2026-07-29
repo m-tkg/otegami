@@ -5323,3 +5323,132 @@ macOS (`OtegamiApp.swift`の`RootView`)は`suppressInternalUndoToast`も
 留めた) — **未検証、実機確認ポイント**: メールを開いて一覧へ戻る
 (pop)動作を数回繰り返し、毎回ハンバーガーボタンが左上に固定されたまま
 であること (右側のトグル群に混ざらないこと)。
+
+## Task #111: 「ソースを表示」が数十KB級の実メールで空白になる (実機報告)
+
+実機報告: Task #103 の「ソースを表示」をタップすると画面が空白になる。
+シェアシートからの`.eml`書き出しは正常 — `MessageSourceLoader`側の取得
+(キャッシュファイルの読み書き) は成功しており、`MessageSourceView`の
+表示側だけの問題と分かっていた。数十KB級の実メールでのみ再現し、小さい
+フィクスチャ (html-0〜7、いずれも数KB) では気づかれていなかった。
+
+### 原因
+
+`MessageSourceView.sourceView(_:)`は、切り詰め後のプレビュー文字列
+(最大512KB、`MessageSourceLoader.previewByteLimit`) を`ScrollView(
+[.horizontal, .vertical])`の中で単一の`Text`に丸ごと渡していた。SwiftUI
+の`Text`を`ScrollView`にネストして巨大な多行文字列を渡すと、内部の
+レイアウト・ラスタライズ処理が Core Graphics のテクスチャサイズ上限
+相当に達し、クラッシュもエラーも出さず**無言で何も描画しない**という
+既知の挙動を踏む。ソースの取得自体は正常なため、シェアシートからの
+書き出しだけは正しく動いていた、という報告内容とも一致する。
+
+### 修正
+
+`Text`+`ScrollView`をやめ、`UITextView`(iOS)/`NSTextView`(macOS)
+(いずれも TextKit ベースで、大量テキストの保持・スクロール・選択の
+ために作られている) を薄くラップした`MonospaceSourceTextView`
+(`MessageSourceView.swift`) に置き換えた。`isEditable = false`/
+`isSelectable = true`でコピー機能 (旧`.textSelection(.enabled)`相当) を
+維持し、`textContainer`の幅追従を切って折り返し無し (旧
+`ScrollView([.horizontal, .vertical])`と同じ、ヘッダの長い行をそのまま
+横スクロールで見せる) にした。
+
+### 検証
+
+`AppEnvironment`に`uitestFakeLargeRawSourceQuotedHistory`(実データを
+含まない合成の引用チェーンテキスト、約90KB) を追加し、`message-source`
+シナリオ (`scripts/verify-screen.sh`) が開く html-0 フィクスチャの生
+ソースにだけ足した。修正前のコードに戻すと同シナリオが空白になることを
+確認した上で、修正後は約90KB (実機報告の「数十KB」、ユーザー提供の
+実メール約71KBより大きい) の生ソースがダークモードでも正しく描画され
+スクロール可能であることをスクリーンショットで確認した
+(`/tmp/otegami-verify/message-source-dark-task111.png`)。`make test`
+(既知の無関係flake以外は緑)・`make mac`・`make ios`とも成功を確認した。
+
+## Task #112: ダーク文字沈み #104 続報 (実 eml で再現・修正)
+
+Task #104 (直前の節) をリリースした後も、ユーザー提供の実メール
+(Readdle Documents のニュースレター) でダークモード時に本文の`#333333`
+系文字が暗背景に沈む再現が続いた。実 HTML を静的解析すると、隠しプリ
+ヘッダ・`<style>`ブロック経由の`#333333`/`rgb(51, 51, 51)`混在色・
+`u+.body`セレクタの`mix-blend-mode`ハックなど、複数の疑わしい要素が
+同時に存在していた。
+
+### 調査して分かったこと
+
+`HTMLMessageView.swift`の`decideDarkInversion`/`explicitDarkTextIsMajority`
+を読み、疑いポイントを順に確認した:
+
+1. **rgb()関数記法のパース漏れ (疑い、再現せず)**: `getComputedStyle`
+   経由で色を読む箇所は、著者が`#333333`と`rgb(51, 51, 51)`のどちらで
+   書いても常にブラウザ側で`rgb()`直列化に正規化されるため、実際には
+   問題なかった。ただし CSS Color 4 のスペース区切り記法
+   (`rgb(51 51 51 / .5)`) は`parseOpaqueColor`の`split(',')`一本槍だと
+   壊れることが分かったため、カンマ・スペースどちらの記法も受け付ける
+   よう頑健化した (実害があったわけではない予防的修正)。
+2. **分母の水増し (実バグ、確定)**: `explicitDarkTextIsMajority`が可視
+   本文と隠しテキスト (`color:transparent`/`visibility:hidden`/
+   `display:none`/`font-size:0` — 受信箱プレビュー文言を制御する定番の
+   隠しプリヘッダパターン。実物は不可視の結合文字を大量に含む数百文字
+   級のダミー行だった) を区別せず分母 (`totalLength`) に算入していた。
+   `isVisuallyHiddenText`を新設し、祖先チェーンの`display`/`opacity`と
+   直近の`visibility`/`font-size`/文字色の不透明度を見て、可視でない
+   テキストを分母・分子どちらからも除外するようにした。
+3. **`mix-blend-mode`ハックの誤検出 (疑い、再現せず)**: `u+.body
+   .gmail-screen { background:#000; ... }`はGmail側がDOMに`<u>`要素を
+   注入したときだけマッチするセレクタ — この WKWebView 環境では該当
+   要素が存在せず、静的に確認した限り一致しない。誤検出はしていない。
+4. **`@media`内ルールの走査漏れ (疑い、再現せず)**: `collectRulesInto`
+   は元々`@media`等のグルーピングルールへ条件を問わず再帰していた
+   (Task #104 時点で既に対応済み)。
+
+### 本当の根本原因
+
+上の4点はいずれも「疑い止まり」で、実際に効いていた根本原因は別にあった:
+`decideDarkInversion`は背景が見つかるかどうかで2つの経路に分かれており、
+Task #98/#104 で追加した`explicitDarkTextIsMajority`(スタイルシート
+クラス経由の色まで見る、文字数ベースの過半数判定) は**背景が見つから
+ない (`else`枝) ケースのフォールバックとしてしか呼ばれていなかった**。
+ところが実際の Readdle メールは`body`が白背景を明示する「背景あり」の
+ごく普通のニュースレター構造で、`if (background)`枝に入ると
+`representativeTextLuminance`(文書順で最初の6テキストノードの平均) しか
+見ていなかった。このメールは冒頭にヒーロー見出し (白文字、写真背景) が
+あり、その短い白文字がたまたま最初の6サンプルの大半を占めて「介入
+不要」に確定してしまい、後続の`#333333`系本文段落は一度も評価されない
+まま終わっていた — Task #104 の対策そのものは正しかったが、背景を持つ
+(＝日常的にありふれた) メールの大半でその対策コードに一度も到達して
+いなかったのが本当の原因だった。
+
+### 修正
+
+`if (background)`枝で`representativeTextLuminance`が「介入不要」と
+出た場合に限り、`else`枝と同じ`explicitDarkTextIsMajority`を
+フォールバックとして呼ぶよう1行追加した。上の「分母の水増し」修正
+(`isVisuallyHiddenText`) と合わせて、背景ありのメールでも文字数ベースの
+過半数判定が実際に機能するようになった。
+
+### 検証
+
+Readdle メール実物 (実名の宛先アドレス・購読解除トークン入りのため
+コミット禁止) と構造だけを模した匿名フィクスチャ (架空ブランド
+「ScribbleSync」、`example.com`のみ使用 — `body`の明示的な白背景、
+`u+.body`の`mix-blend-mode`ハック、不可視の結合文字を含む隠しプリ
+ヘッダ、`#111111`/`rgb(51, 51, 51)`混在の本文色) を`AppEnvironment
+.uitestFakeHTMLMessageBodyWhiteCardHeroNotice`として追加し、
+`scripts/verify-screen.sh`に`html-7`/`html-white-card-hero`シナリオを
+追加した。`make test`(既知の無関係flake以外は緑)・`make mac`・
+`make ios`とも成功を確認した。
+
+- **未検証**: この開発機のシミュレータで`html-7`シナリオを撮影しようと
+  したところ、`OTEGAMI_UITEST_DISABLE_NOTIFICATION_PERMISSION_REQUEST=1`
+  (`docs/verify.md`の既知不調4節) を付与していても OS の通知許可
+  ダイアログが最初のスクリーンショットに写り込み続け、本文の見た目を
+  隠してしまった (`message-source`シナリオでは同じ条件でも一部が透けて
+  実際に文字が描画されていることは確認できた — Task #111 の修正確認は
+  この手段で完了している)。この通知許可ダイアログの抑制自体はこの
+  タスクのスコープ外と判断し深追いしなかった。**実機確認ポイント**:
+  実際に届いた Readdle Documents (または類似の`<style>`ブロック+白背景
+  ヒーロー構造を持つニュースレター) をダークモードで開き、本文の濃グレー
+  文字が白カード上で明瞭に読めること、および同メールの「ソースを表示」
+  が空白にならず全文表示・横スクロールできること。

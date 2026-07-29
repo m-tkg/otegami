@@ -699,13 +699,25 @@ final class AppEnvironment {
                         // reason `OTEGAMI_UITEST_INSERT_FAKE_CALENDAR_INVITE`
                         // below writes its ICS straight to an
                         // `AttachmentRecord.localPath` file instead.
+                        //
+                        // Task #111 (実機報告: 「ソースを表示」が数十KB級の
+                        // 実メールで空白になる): `index == 0`のときだけ、
+                        // 合成の引用チェーン (`uitestFakeLargeRawSourceQuoted
+                        // History`、実データは含まない) を末尾に足して生
+                        // ソースを数十KB級まで水増しする — `message-source`
+                        // シナリオ (`scripts/verify-screen.sh`) は常にこの
+                        // index 0を開くので、実際にユーザーが再現した
+                        // サイズ級でこの画面を検証できる。他のindexの生
+                        // ソース (どのシナリオからも表示されない) はそのまま
+                        // 小さいまま。
+                        let sizeFiller = index == 0 ? "\n\n\(Self.uitestFakeLargeRawSourceQuotedHistory)" : ""
                         let rawSource = """
                             From: Example Security <security-noreply@example.com>\r
                             To: user@example.com\r
                             Subject: \(fixture.subject)\r
                             Content-Type: text/html; charset=UTF-8\r
                             \r
-                            \(fixture.html)
+                            \(fixture.html)\(sizeFiller)
                             """
                         try? MessageSourceFetcher.prewarmCache(
                             accountId: fakeAccount.id, messageId: message.id!, data: Data(rawSource.utf8)
@@ -2036,6 +2048,25 @@ final class AppEnvironment {
     /// avatar images the real `.eml` fixture loads via `cid:`.
     private static let uitestFakeHTMLMessagePlaceholderImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAH0lEQVR42mN4USVHFcQwatCoQaMGjRo0atCoQQNvEAD6qmAurCoQRgAAAABJRU5ErkJggg=="
 
+    /// Task #111 (実機報告: 「ソースを表示」をタップすると画面が空白 — 数十
+    /// KB級の実メールで再現、シェアシートからの`.eml`書き出しは正常。原因は
+    /// `MessageSourceView`の表示側 (`SwiftUI`の`Text`を`ScrollView`に
+    /// ネストして巨大な文字列を渡すとCore Graphicsのテクスチャサイズ上限
+    /// 相当に達し無言で空白になる、既知の挙動) だった): この定数はその
+    /// 再現・検証用の合成データ — ユーザー提供の実メール (実名の宛先
+    /// アドレス・購読解除トークンを含む、約54KB) は`docs/`規約により
+    /// リポジトリへコミットできないため、同程度のサイズ級を作れる意味の
+    /// ない引用チェーン (長く育った返信スレッドで実際によく見る形 —
+    /// 何段にも重なった`>`引用行) で代替する。`uitestFakeHTMLMessages[0]`
+    /// (html-0シナリオ) の生ソースにだけ足される
+    /// (`OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE`挿入ブロック参照) —
+    /// `message-source`シナリオ (`scripts/verify-screen.sh`) が常にこの
+    /// index 0を開くため。
+    private static let uitestFakeLargeRawSourceQuotedHistory: String = {
+        let line = "> このダミー引用行はメールソース表示のパフォーマンス検証 (Task #111) 用に生成した合成テキストです。実データは一切含みません。"
+        return Array(repeating: line, count: 500).joined(separator: "\r\n")
+    }()
+
     /// 実機フィードバック (MakerWorld実メールとの比較報告): 完全に透明な
     /// 背景の上に不透明な黒だけを描いた120x40のPNG (ロゴの線画部分を模した
     /// 単純な矩形3つ) — 上の `uitestFakeHTMLMessagePlaceholderImage` (ほぼ
@@ -2111,6 +2142,31 @@ final class AppEnvironment {
     ///   `explicitDarkTextIsMajority`がインライン`style`しか見ていなければ
     ///   (Task #98時点の実装) この過半を検出できず「介入不要」に誤って
     ///   倒れる、その取りこぼしを再現するケース。
+    /// - `whiteCardHeroNotice` (Task #112、ユーザー提供の実メール
+    ///   `readdle.eml`で再現・修正 — 上の6件と違う点が肝心): 上のケースは
+    ///   すべて`findEffectiveBackground`が`null`を返す「背景なし」の構造
+    ///   だったため、`explicitDarkTextIsMajority`(Task #98/#104)は
+    ///   `decideDarkInversion`の`else`枝 (背景なしフォールバック) からしか
+    ///   呼ばれないという実装のまま気づかれずにいた。実際の readdle.eml は
+    ///   `body`が明示的に白背景を持つ「背景あり」の構造 (ニュースレターとして
+    ///   ごく普通) で、この場合`decideDarkInversion`は`if (background)`枝の
+    ///   `representativeTextLuminance`(先頭6テキストノードの平均) だけしか
+    ///   見ておらず、`explicitDarkTextIsMajority`には一度も到達していな
+    ///   かった — Task #104 の対策が実際には多くの実メールで効いていな
+    ///   かった根本原因。このフィクスチャは`body`に明示的な白背景を持たせ
+    ///   た上で、文書冒頭にヒーロー領域 (背景画像+白文字の短い見出し2行、
+    ///   Gmail限定の`u+.body`セレクタ — このWKWebViewでは絶対にマッチしない
+    ///   ため無害 — による`mix-blend-mode`ハックも実物同様に含む) を置き、
+    ///   その後に本文カード (クラス経由の`#111111`/`rgb(51, 51, 51)`系の
+    ///   暗〜中間グレー文字を複数段落) を続ける — 先頭6サンプルがヒーロー
+    ///   側の明るい文字に偏って「介入不要」に落ち着いた後、本文の暗色
+    ///   段落が文字数で過半を占める構造を`explicitDarkTextIsMajority`側の
+    ///   フォールバックが拾えることを確認する。冒頭の隠しプリヘッダ
+    ///   (`display:none`/`visibility:hidden`/`font-size:0`と、実物同様の
+    ///   大量の不可視結合文字) も含めてあり、これが`explicitDarkText
+    ///   IsMajority`の分母を水増ししない (`isVisuallyHiddenText`) ことも
+    ///   同時に確認できる。色指定は実物の`#333333`/`rgb(51, 51, 51)`混在を
+    ///   模して両記法を使う。
     fileprivate struct UITestFakeHTMLMessage {
         let subject: String
         let snippet: String
@@ -2152,6 +2208,11 @@ final class AppEnvironment {
             subject: "FakeDocs Weekly Update (UITest)",
             snippet: "共同編集がさらに高速になりました",
             html: uitestFakeHTMLMessageBodyStyleBlockGrayTextNotice
+        ),
+        UITestFakeHTMLMessage(
+            subject: "ScribbleSync is now SOC 2 certified. (UITest)",
+            snippet: "ScribbleSync が SOC 2 認証を取得しました",
+            html: uitestFakeHTMLMessageBodyWhiteCardHeroNotice
         )
     ]
 
@@ -2413,6 +2474,52 @@ final class AppEnvironment {
       <p class="body-text">今回のアップデートには、コメント通知まわりの改善やモバイル版での表示速度向上も含まれています。詳しい変更点は以下のリンクからご確認いただけます。</p>
       <a class="cta" href="https://example.com/fakedocs-updates">アップデートの詳細を見る</a>
       <p class="footer-text">このメールは FakeDocs アカウントをお持ちの方にお送りしている週刊ニュースレターです。配信停止をご希望の場合は<a href="https://example.com/fakedocs-unsubscribe" style="color:#80868b;">こちら</a>から手続きできます。</p>
+    </div>
+    </body>
+    </html>
+    """
+
+    /// Task #112 — see the `UITestFakeHTMLMessage`配列のdoc comment
+    /// (`whiteCardHeroNotice`項) 参照。ユーザー提供の実メール `readdle.eml`
+    /// の構造 (白背景の本文カード、Gmail限定`u+.body`セレクタによる無害な
+    /// `mix-blend-mode`ハック、不可視の結合文字を含む隠しプリヘッダ、
+    /// インライン`style`と`<style>`ブロックの両方に混在する`#333333`/
+    /// `rgb(51, 51, 51)`系の低輝度文字色) を、架空ブランド・
+    /// `example.com`のみで再現したもの。実物とちがい `body`自身に明示的な
+    /// 白背景を与えている — `findEffectiveBackground`が
+    /// `opaqueBackgroundOf(document.body)`を最優先で信頼する
+    /// (`HTMLMessageView.swift`の`fitToWidthScript`参照) ので、実物のように
+    /// 面積30%ルールに賭けなくても確実に「背景あり」経路
+    /// (`decideDarkInversion`の`if (background)`枝) に入ることを保証できる。
+    fileprivate static let uitestFakeHTMLMessageBodyWhiteCardHeroNotice = """
+    <!doctype html>
+    <html>
+    <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="viewport" content="width=device-width">
+    <title>ScribbleSync is now SOC 2 certified. (UITest)</title>
+    <style type="text/css">
+      u+.body .gmail-screen { background: #000; mix-blend-mode: screen; }
+      u+.body .gmail-difference { background: #000; mix-blend-mode: difference; }
+      body { margin: 0; padding: 0; font-family: -apple-system, Helvetica, Arial, sans-serif; background-color: #ffffff; }
+      .card { max-width: 480px; margin: 0 auto; padding: 0 24px 24px 24px; }
+      .headline { color: #111111; font-size: 16px; font-weight: bold; margin: 0 0 12px 0; }
+      .body-text { color: rgb(51, 51, 51); font-size: 14px; line-height: 20px; margin: 0 0 16px 0; }
+      .footer-text { color: #333333; font-size: 11px; line-height: 16px; margin: 24px 0 0 0; }
+    </style>
+    </head>
+    <body class="body" style="margin:0;padding:0;background-color:#ffffff;">
+    <span style="display:none !important;font-size:0px;line-height:0;color:#ffffff;visibility:hidden;opacity:0;height:0;width:0;">ScribbleSync が SOC 2 認証を取得しました。詳しくは本文をご覧ください ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌ ‌</span>
+    <div style="background-image:url(\(uitestFakeHTMLMessagePlaceholderImage)); background-color:#0d1b2a; padding:50px 24px;">
+      <span class="gmail-screen"><span class="gmail-difference" style="color:#ffffff; font-size:14px;">What's new</span></span>
+      <h1 style="color:#ffffff; font-size:26px; margin:8px 0 0 0;">ScribbleSync is now SOC 2 certified</h1>
+    </div>
+    <div class="card">
+      <p class="headline">セキュリティに関する重要なお知らせ</p>
+      <p class="body-text">ScribbleSync は第三者機関による監査を経て、SOC 2 Type II 認証を取得しました。お客様のデータは引き続き高い水準で保護されており、今回の認証はその取り組みを第三者の立場から裏付けるものです。</p>
+      <p class="body-text">認証の詳細および監査レポートの請求方法については、以下のリンクからご確認いただけます。ご不明な点がございましたらサポートまでお問い合わせください。</p>
+      <a href="https://example.com/scribblesync-soc2" style="display:inline-block;background-color:#128cfc;color:#ffffff;font-size:14px;font-weight:bold;padding:10px 24px;border-radius:4px;text-decoration:none;">詳しく見る</a>
+      <p class="footer-text">このメールは ScribbleSync アカウントをお持ちの方にお送りしています。配信停止をご希望の場合は<a href="https://example.com/scribblesync-unsubscribe" style="color:#333333;">こちら</a>から手続きできます。</p>
     </div>
     </body>
     </html>

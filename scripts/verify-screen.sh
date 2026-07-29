@@ -76,6 +76,28 @@
 #                                       IsMajority`(Task #98版) だと検出漏れ
 #                                       する退行ケース。白カードで読める
 #                                       ことの確認用。
+#   html-7 / html-white-card-hero      Task #112 (実機報告続報 — ユーザー
+#                                       提供の実メール readdle.eml で再現・
+#                                       修正): html-5/html-6 と違い body
+#                                       自身が明示的な白背景を持つ「背景
+#                                       あり」構造 — decideDarkInversion の
+#                                       `if (background)`枝 (先頭6テキスト
+#                                       ノード平均だけの representativeText
+#                                       Luminance) にしか到達せず、Task #98/
+#                                       #104で追加した explicitDarkTextIs
+#                                       Majority (背景なしの`else`枝からしか
+#                                       呼ばれていなかった) が一度も効いて
+#                                       いなかった実際の根本原因を再現する。
+#                                       文書冒頭の白文字ヒーロー見出しに
+#                                       6サンプル平均が引っ張られた後でも、
+#                                       本文カードの暗〜中間グレー文字
+#                                       (#111111/rgb(51,51,51)混在) が文字数
+#                                       で過半を占めることを検出できるかの
+#                                       確認用。不可視の結合文字を含む隠し
+#                                       プリヘッダも実物同様に含み、それが
+#                                       過半判定の分母を水増ししないこと
+#                                       (isVisuallyHiddenText) も併せて確認
+#                                       する。白カードで読めることの確認用。
 #   calendar-invite                    Task #66: カレンダー招待メールの
 #                                       招待カード (36番フィクスチャ相当 —
 #                                       タイトル/日時/場所/主催者 +
@@ -146,12 +168,12 @@
 #                                       `list`と同じfakeメッセージ (件名に
 #                                       "UITest"を含む) がヒットする。
 #
-# 上7つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜6番目
+# 上8つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目
 # (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応) — 0〜4番目の実体は
 # `dev/mailstack/seed/fixtures/31/32/33/34-*.eml`と同内容のSwift文字列
 # リテラル (自前ダーク対応は.emlフィクスチャなし、AppEnvironment内にのみ
-# 存在)。5番目 (Task #98) と6番目 (Task #104) も.emlフィクスチャなし、
-# AppEnvironment内にのみ存在。
+# 存在)。5番目 (Task #98)・6番目 (Task #104)・7番目 (Task #112) も
+# .emlフィクスチャなし、AppEnvironment内にのみ存在。
 #
 # Env:
 #   IOS_SIMULATOR    Simulator name (default: iPhone 17 Pro Max)
@@ -254,6 +276,10 @@ case "$SCENARIO" in
   html-6|html-style-block-gray-text)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=6")
     default_out="html-6-style-block-gray-text.png"
+    ;;
+  html-7|html-white-card-hero)
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=7")
+    default_out="html-7-white-card-hero.png"
     ;;
   calendar-invite)
     # Task #66: `CalendarInviteSectionView`'s card (title/time/location/
