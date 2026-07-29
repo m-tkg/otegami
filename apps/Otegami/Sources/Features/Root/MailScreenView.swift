@@ -394,7 +394,7 @@ struct MailScreenView: View {
                 // Task #106 実機フィードバック: チップ行はダイジェスト表示中も
                 // 常時出す — 「すべて ▸ アカウント別」に切り替えた瞬間に
                 // チップ行ごと消えると「時系列」へ戻す手段が無くなるため。
-                if isUnifiedInboxSelected {
+                if showsAccountFilterChipRow {
                     AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
                 }
                 // 実機フィードバック (2026-07-29): ダイジェストの一括操作の
@@ -408,7 +408,7 @@ struct MailScreenView: View {
                     onPendingUndoChanged: { pendingUndoPayload = $0 }
                 )
             } else {
-                if isUnifiedInboxSelected {
+                if showsAccountFilterChipRow {
                     AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
                 }
                 MessageListView(
@@ -577,6 +577,27 @@ struct MailScreenView: View {
     private var isUnifiedInboxSelected: Bool {
         if case .unifiedInbox = mailSelection { return true }
         return false
+    }
+
+    /// チップ行 (`AccountFilterChipRow` — 「すべて ▸ 時系列/アカウント別」の
+    /// プルダウン + アカウント絞り込みチップ) を出すかどうか。
+    ///
+    /// 実機フィードバック (2026-07-30「受信トレイ以外にも、アカウントの個別
+    /// フォルダでない場合はこれを出して欲しい」): 元は
+    /// `isUnifiedInboxSelected` (統合受信トレイのみ) を条件にしていたため、
+    /// 「すべてのメール」/アーカイブ/ゴミ箱/送信済み/フラグ付き等の統合
+    /// ビュー (`.unifiedRole`) ではアカウント絞り込みも時系列↔アカウント別の
+    /// 切り替えもできなかった。複数アカウントを横断している以上、チップ行の
+    /// 意味は受信トレイと全く同じなので条件を`.unifiedRole`にも広げる。
+    /// 単一アカウントの個別フォルダ (`.mailbox`) だけは従来どおり出さない —
+    /// 絞り込む先が1つしか無く、`AccountDigestView`(アカウント別) も
+    /// `isAccountDigestEligible`で`false`になる選択なので、チップ行を置いても
+    /// 操作できるものが何も無い。
+    private var showsAccountFilterChipRow: Bool {
+        switch mailSelection {
+        case .unifiedInbox, .unifiedRole: true
+        case .mailbox: false
+        }
     }
 
     /// Task #77: 「アカウントでグループ化」ボタン自体を出すかどうか —
