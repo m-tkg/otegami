@@ -703,6 +703,13 @@ struct ComposerView: View {
             .accessibilityIdentifier("composer.fromPicker")
             Spacer(minLength: 0)
         }
+        // 実機フィードバック (2026-07-29「文字の一番下のラインが切れてる」):
+        // `otegamiRowDivider()`は行コンテンツの下端に重ねる overlay で、
+        // この行は`Menu`ラベルの`Text`高がコンテンツ高そのもの — 罫線が
+        // ちょうど descender (g 等の下部) に被る。`TextField`の行 (宛先など)
+        // は field 自身の内側余白で自然に逃げているので、この行だけ罫線の
+        // 内側に最小トークン分の余白を足して揃える。
+        .padding(.bottom, OtegamiSpacing.xs)
         .otegamiRowDivider()
         .padding(.bottom, OtegamiSpacing.sm)
     }
