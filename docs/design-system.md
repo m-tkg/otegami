@@ -6630,6 +6630,40 @@ Gmail の有無に関わらず常に有効な概念のため。
 非Gmail側の「全 mailbox 横断」が実際に効いていることの実測的な裏付けにも
 なった。
 
+### 実機フィードバック修正 (2026-07-29): ヘッダタイトルの二重化
+
+デプロイ後の実機報告:「すべてのメール」を選ぶと一覧ヘッダのタイトルが
+「すべてのすべてのメール」になる。原因は`MessageListView.title`/
+`MailScreenView.selectUnifiedRole(_:)`両方が持つ「すべての◯◯」テンプレート
+(`String(localized: "すべての\(role.categoryDisplayName)")`) —
+`.all`の`categoryDisplayName`自体がすでに「すべてのメール」(=「すべての」
+を含む語) なので、他role (「アーカイブ」→「すべてのアーカイブ」等) と
+同じテンプレートに通すと二重化する。英語ローカライズでも同型の "All All
+Mail" になりうる (`.all`の`categoryDisplayName`自体、実は英語訳が未登録
+だった — `.all`を`categoryOrder`に含めて実際にUIへ出すのは本タスクが
+初めてで、それまで`categoryDisplayName`/`categorySystemImage`は文字通り
+どこからも参照されないデッドコードだった)。
+
+修正: 両箇所とも`role == .all`のときはテンプレートを適用せず
+`role.categoryDisplayName`をそのまま使う三項演算子に変更。
+`Localizable.xcstrings`に「すべてのメール」→"All Mail"の英語訳を追加
+(このタスクで初めて出るようになった以上、放置すると英語UIで生の日本語
+文字列が出てしまうため)。メニューのセクション見出し
+(`FolderListSheet`の`CategorySectionHeader`)・`FolderCategoryOrder
+SettingsView`の並び替え行は元々`role.categoryDisplayName`を直接使って
+おりテンプレートを経由しないため、この二重化バグの影響を受けていない
+ことを確認済み。
+
+検証: `scripts/verify-screen.sh`に`list-all-mail`シナリオを追加 —
+`-uitestsSelectAllMailDirectly`(`MailScreenView`の`.task`ブロックに
+追加した「タップ不要の直接遷移」フック、`selectUnifiedRole(.all)`を
+直接呼ぶ) でヘッダ選択までタップ無しに到達する。修正後のスクリーン
+ショットでヘッダが "All Mail (11)" (二重化なし) と表示されることを確認
+— この端末のシミュレータは英語ロケールで動いており、"All Mail" が
+正しく英語訳されていることも同時に確認できた。`make test`/`make mac`
+green。日本語ロケールでの見た目は目視未確認だが、修正自体はロケール
+非依存の分岐 (三項演算子) なので同じロジックが適用される。
+
 ## Task #142: 一覧ヘッダにフラグ付きフィルタトグル
 
 「未読のみ表示」トグルの隣に「フラグ付きのみ表示」トグルを追加した —

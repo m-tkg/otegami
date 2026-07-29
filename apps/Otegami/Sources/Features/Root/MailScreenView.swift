@@ -237,6 +237,15 @@ struct MailScreenView: View {
             if ProcessInfo.processInfo.arguments.contains("-uitestsOpenAccountDigestDirectly") {
                 isGroupByAccount = true
             }
+            // Task #141 実機フィードバック検証用 (`scripts/verify-screen.sh
+            // list-all-mail`): 同じ「タップ不要の直接遷移」パターンで
+            // 「すべてのメール」(`.unifiedRole(.all)`) をタップ無しで直接選択
+            // し、ヘッダのタイトルが「すべてのすべてのメール」に二重化
+            // していないこと (`selectUnifiedRole(_:)`のdoc comment参照) を
+            // screenshotで確認できるようにする。
+            if ProcessInfo.processInfo.arguments.contains("-uitestsSelectAllMailDirectly") {
+                selectUnifiedRole(.all)
+            }
         }
     }
 
@@ -837,7 +846,11 @@ struct MailScreenView: View {
     /// `selectMailbox`/`selectUnifiedInbox`と同じ後始末を揃えておく)。
     private func selectUnifiedRole(_ role: MailboxRoleRecord) {
         mailSelection = .unifiedRole(role)
-        selectionTitle = String(localized: "すべての\(role.categoryDisplayName)")
+        // 実機フィードバック (Task #141): `MessageListView.title`の同じ
+        // 分岐のdoc comment参照 — `role == .all`の`categoryDisplayName`
+        // 自体が「すべてのメール」なので、テンプレートを適用すると
+        // 「すべてのすべてのメール」に二重化する。
+        selectionTitle = role == .all ? role.categoryDisplayName : String(localized: "すべての\(role.categoryDisplayName)")
         accountFilter = nil
         isMenuOpen = false
     }

@@ -61,6 +61,36 @@
         }
       }
     },
+    "フラグ付きのみ表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pinned Only"
+          }
+        }
+      }
+    },
+    "フラグ付きのメールはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Pinned Messages"
+          }
+        }
+      }
+    },
+    "未読かつフラグ付きのメールはありません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Unread Pinned Messages"
+          }
+        }
+      }
+    },
     "アカウントでグループ化": {
       "localizations": {
         "en": {
@@ -988,6 +1018,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "All Inboxes"
+          }
+        }
+      }
+    },
+    "すべてのメール": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All Mail"
           }
         }
       }

@@ -222,6 +222,12 @@
 #                                       (`pin.fill`) になっていること、一覧に
 #                                       ピン留め済みの1件だけが残ること
 #                                       (未ピンの1件は消えていること) の確認用。
+#   list-all-mail                        Task #141 実機フィードバック:
+#                                       `-uitestsSelectAllMailDirectly`で
+#                                       「すべてのメール」をタップ無しで
+#                                       直接選択 — ヘッダタイトルが「すべて
+#                                       のすべてのメール」に二重化していない
+#                                       ことの確認用。
 #   settings                            設定画面 (SettingsSheetView)
 #   menu                                 ハンバーガーメニュー (FolderListSheet
 #                                       — 左下floatingSettingsButtonの
@@ -503,6 +509,16 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
     launch_args+=("-uitestsOpenFolderMenuDirectly" "-uitestsExpandFolderMenuSectionsDirectly")
     default_out="menu-expanded.png"
+    ;;
+  list-all-mail)
+    # Task #141 実機フィードバック (2026-07-29「すべてのメールを選ぶと
+    # ヘッダが『すべてのすべてのメール』になる」): タップ無しで直接
+    # `.unifiedRole(.all)`を選択し (`-uitestsSelectAllMailDirectly`、
+    # `MailScreenView`の`.task`ブロック参照)、ヘッダタイトルが二重化して
+    # いないことをscreenshotで確認する用。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
+    launch_args+=("-uitestsSelectAllMailDirectly")
+    default_out="list-all-mail.png"
     ;;
   account-settings)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")

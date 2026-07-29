@@ -1133,7 +1133,14 @@ struct MessageListView: View {
             // から読む)が対象。iOS は`MailScreenView`自身が独立した
             // `selectionTitle`を持つため、この`title`は使わない
             // (`MailScreenView.selectUnifiedRole(_:)`が同じ文言を組み立てる)。
-            String(localized: "すべての\(role.categoryDisplayName)")
+            //
+            // 実機フィードバック (Task #141): `role == .all`の
+            // `categoryDisplayName`自体がすでに「すべてのメール」(=
+            // 「すべての」を含む語) なので、他roleと同じ「すべての◯◯」
+            // テンプレートに通すと「すべてのすべてのメール」に二重化する
+            // (英語ローカライズでも "All All Mail" になる) — `.all`だけは
+            // テンプレートを適用せず`categoryDisplayName`をそのまま使う。
+            role == .all ? role.categoryDisplayName : String(localized: "すべての\(role.categoryDisplayName)")
         }
     }
 
