@@ -759,17 +759,28 @@ struct ThreadDetailView: View {
     }
 
     /// Task #153 (入力の組み立て) → Task #160 (メッセージ単位のmap段への
-    /// 変更): `messages`(時系列順、`ThreadQuery.messages(threadId:db:)`の
-    /// `ORDER BY internalDate, uid`のdoc comment参照)の各メッセージに
-    /// ついて、`TranslationService.summarizeThread(_:targetLanguage:
-    /// onProgress:)`のマップ段が読む`ThreadDigestMessage`を1件組み立てる
-    /// — `header`は`"[日時] 差出人:"`(reduce段の入力行がそのまま使う、
-    /// モデルには決して生成させない確定文字列)、`text`はそのメッセージの
-    /// 新規本文のみ (`ThreadDigestMessage`のdoc comment参照 — マップ段の
-    /// モデル呼び出しは`text`だけを見る)。`SummaryInputBuilder`は使わない
-    /// — あれは単一メッセージ要約専用の「引用の有無だけを伝える注記」
-    /// ラッパーで、スレッド全体のダイジェストが必要とする「各メッセージの
-    /// 新規本文をそのまま並べる」入力とは形が違う(タスク仕様どおり)。
+    /// 変更) → Task #160フォローアップ (二重圧縮の根治、`header`の日付
+    /// フォーマットを短縮): `messages`(時系列順、`ThreadQuery
+    /// .messages(threadId:db:)`の`ORDER BY internalDate, uid`のdoc comment
+    /// 参照)の各メッセージについて、`TranslationService.summarizeThread(_:
+    /// targetLanguage:onProgress:)`のマップ段が読む`ThreadDigestMessage`を
+    /// 1件組み立てる — `header`は`"[M/d] 差出人:"`(モデルには決して生成
+    /// させない確定文字列。`summarizeThread`が組み立てる`■経緯`の箇条書き
+    /// と、`■現状`用モデル入力の各行、両方でそのまま使われる)、`text`は
+    /// そのメッセージの新規本文のみ (`ThreadDigestMessage`のdoc comment
+    /// 参照 — マップ段の`summarizeThreadEntry`モデル呼び出しは`text`だけを
+    /// 見る)。`SummaryInputBuilder`は使わない — あれは単一メッセージ要約
+    /// 専用の「引用の有無だけを伝える注記」ラッパーで、スレッド全体の
+    /// ダイジェストが必要とする「各メッセージの新規本文をそのまま並べる」
+    /// 入力とは形が違う(タスク仕様どおり)。
+    ///
+    /// **日付フォーマットをTask #160の`"yyyy/MM/dd HH:mm"`から`"M/d"`
+    /// (`.dateTime.month().day()`) へ短縮**: 以前は経緯パート自体もこの
+    /// フォーマットの行を並べたものをモデルへ渡すだけだったので日時の
+    /// 精度がそのまま経緯パートの精度になっていたが、今は`■経緯`が
+    /// アプリ側の箇条書き表示そのものであり、ユーザーが読む一覧として
+    /// 「月/日」程度の粒度の方が簡潔で読みやすい (`ThreadDetailView`の
+    /// 新しい`■経緯`はチャット風の箇条書きであり、時刻までは通常不要)。
     ///
     /// 本文がまだローカルにキャッシュされていないメッセージ (`bodyState`が
     /// `.notFetched`のまま — このスレッドの「開いている1通」以外は
@@ -795,7 +806,7 @@ struct ThreadDetailView: View {
             }
             guard let bodyRecord, let newText = Self.newTextForThreadSummary(bodyRecord: bodyRecord, isReply: message.inReplyTo != nil) else { continue }
             let senderName = message.fromAddresses.first?.name ?? message.fromAddresses.first?.address ?? "?"
-            let dateText = (message.date ?? message.internalDate).formatted(.dateTime.year().month().day().hour().minute())
+            let dateText = (message.date ?? message.internalDate).formatted(.dateTime.month().day())
             entries.append(ThreadDigestMessage(header: "[\(dateText)] \(senderName):", text: newText))
         }
         return entries

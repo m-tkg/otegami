@@ -43,6 +43,12 @@ public actor FakeTranslationService: TranslationService {
     /// map-reduceの形 (チャンク数分の`summarizePlain`呼び出し + reduce段の
     /// この呼び出しちょうど1回) を検証できるようにする。
     public private(set) var summarizeThreadDigestCallCount = 0
+    /// Task #160フォローアップ (二重圧縮の根治): `summarizeThread`のmap段
+    /// (`summarizeThreadEntry`) 呼び出し回数 — Task #160時代は
+    /// `summarizePlainCallCount`をそのまま流用していたが、`summarizePlain`
+    /// (単一メッセージの長文圧縮のmap段でも使う) と役割が分かれた今は
+    /// 独立カウントにしないと、両方を使うテストで数値の意味が混ざる。
+    public private(set) var summarizeThreadEntryCallCount = 0
     /// Task #61 (ガードレール誤発動の寛容化テスト用): exact input strings
     /// `translate(_:from:to:)` should fail with `TranslationServiceError
     /// .contentBlocked` for, independent of `behavior` — lets a test
@@ -153,23 +159,34 @@ public actor FakeTranslationService: TranslationService {
         return Self.deterministicTranslation(picked.isEmpty ? text : picked, to: targetLanguage)
     }
 
-    /// Task #153 (スレッド全体のAI要約): `summarizeThread`のreduce段が呼ぶ
-    /// 構造化要約 — `summarize`と同様、決定的な出力にするため実際の
-    /// ■経緯/■現状ラベル付き2パート構造をそのまま返す (本物の
-    /// `FoundationModelsTranslationService.summarizeThreadDigest`と同じ形
-    /// なので、`ThreadDetailView`側のUI/`SummaryOutputSanitizer`経由の
-    /// 表示ロジックをこのフェイクだけでテストできる)。
+    /// Task #153 (スレッド全体のAI要約) → Task #160フォローアップ (二重圧縮
+    /// の根治): `summarizeThread`のreduce段が呼ぶ構造化要約 — 以前は
+    /// ■経緯/■現状の2ラベルを返していたが、今は`■現状`1ラベルだけを
+    /// 返す (本物の`FoundationModelsTranslationService.summarizeThreadDigest`
+    /// と同じ形、`ThreadDigestLabel.currentStatus`を共有して drift を防ぐ)。
     public func summarizeThreadDigest(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
         summarizeThreadDigestCallCount += 1
         try checkBehavior()
         let translated = Self.deterministicTranslation(text, to: targetLanguage)
         return """
-        ■経緯
-        \(translated)
-
-        ■現状
+        \(ThreadDigestLabel.currentStatus)
         \(translated)
         """
+    }
+
+    /// Task #160フォローアップ (二重圧縮の根治): `summarizeThread`のmap段
+    /// — `summarizePlain`と同じ決定的な「先頭N文」動作だが、独立した
+    /// `summarizeThreadEntryCallCount`で追跡する (このメソッドのdoc comment
+    /// 参照)。文数はやや多め (5文) にしてある — 実物の
+    /// `summarizeThreadEntryInstructions`が「2〜5文/3〜8文」という圧縮
+    /// 目的ではない目安を使うことに軽く対応させたもので、フェイク側の
+    /// 決定的挙動としての意味は`summarizePlain`と変わらない。
+    public func summarizeThreadEntry(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+        summarizeThreadEntryCallCount += 1
+        try checkBehavior()
+        let sentences = Self.splitSentences(text)
+        let picked = sentences.prefix(5).joined(separator: " ")
+        return Self.deterministicTranslation(picked.isEmpty ? text : picked, to: targetLanguage)
     }
 
     private func checkBehavior() throws {

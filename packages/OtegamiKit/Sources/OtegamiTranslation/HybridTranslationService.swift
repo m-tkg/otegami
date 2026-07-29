@@ -61,4 +61,12 @@ public struct HybridTranslationService: TranslationService {
     public func summarizeThreadDigest(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
         try await summarizationEngine.summarizeThreadDigest(text, targetLanguage: targetLanguage)
     }
+
+    /// Task #160フォローアップ (二重圧縮の根治): `summarize`/`summarizePlain`/
+    /// `summarizeThreadDigest`と同じ理由でそのまま`summarizationEngine`へ
+    /// 委譲する — 要約系はすべて`FoundationModelsTranslationService`のまま
+    /// (Task #159)。
+    public func summarizeThreadEntry(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+        try await summarizationEngine.summarizeThreadEntry(text, targetLanguage: targetLanguage)
+    }
 }

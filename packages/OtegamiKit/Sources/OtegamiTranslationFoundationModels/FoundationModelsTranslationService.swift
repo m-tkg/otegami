@@ -158,23 +158,66 @@ public struct FoundationModelsTranslationService: TranslationService {
         }
     }
 
-    /// Task #153 (スレッド全体のAI要約): `TranslationService.summarizeThread`
-    /// の reduce 段 — 常に `■経緯`/`■現状` の2パート構造を要求する
-    /// `summarizeThreadInstructions` を使う点以外は `summarize` と同じ形
-    /// (専用セッション1回、`SummaryOutputSanitizer` による多重防御を必ず
-    /// 通す)。`summarize`と同じ理由 (Task #122の防御) で、モデルの生応答を
-    /// そのまま返さず必ず`SummaryOutputSanitizer.sanitize(_:labels:)`
-    /// (Task #153で追加した汎用版、2ラベル指定) を通す。
+    /// Task #153 (スレッド全体のAI要約) → Task #160フォローアップ (二重圧縮
+    /// の根治、`TranslationService.summarizeThreadDigest`のdoc comment
+    /// 参照): `TranslationService.summarizeThread`のreduce段 — 以前は
+    /// `■経緯`/`■現状`の2パートを1回のモデル呼び出しでまとめて生成して
+    /// いたが、今は`■現状`(このスレッドが最終的にどうなったか・未決事項・
+    /// 次のアクション、2〜4文) 1パートだけを`currentStatusInstructions`
+    /// で要求する — `■経緯`はモデルに一切書かせない
+    /// (`summarizeThread`が`summarizeThreadEntry`の結果をアプリ側でそのまま
+    /// 並べるだけになったため)。`summarize`と同じ理由 (Task #122の防御) で
+    /// モデルの生応答をそのまま返さず、`SummaryOutputSanitizer
+    /// .sanitize(_:labels:)`を`■現状`1ラベルだけで通す — 単一ラベルでも
+    /// このメソッドの「複数ラベルの反復・指示文リーク検出」ロジックは
+    /// そのまま機能する (`SummaryOutputSanitizer`のdoc comment参照)。
     public func summarizeThreadDigest(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
         try requireAvailable()
-        let session = LanguageModelSession(model: model, instructions: Self.summarizeThreadInstructions(targetLanguage: targetLanguage))
+        let session = LanguageModelSession(model: model, instructions: Self.currentStatusInstructions(targetLanguage: targetLanguage))
         do {
             let response = try await session.respond(to: text, options: Self.summarizeOptions)
-            return SummaryOutputSanitizer.sanitize(response.content, labels: [Self.progressLabel, Self.currentStatusLabel])
+            return SummaryOutputSanitizer.sanitize(response.content, labels: [ThreadDigestLabel.currentStatus])
         } catch {
             throw Self.mapEngineError(error)
         }
     }
+
+    /// Task #160フォローアップ (二重圧縮の根治): `TranslationService
+    /// .summarizeThread`のmap段 — `summarizeThreadEntryInstructions`の
+    /// doc comment参照。`summarizePlain`と同様ラベルなしの地の文なので
+    /// `SummaryOutputSanitizer`は通さない。文数の目安は`text`自体の長さで
+    /// 動的に変える (「長いメッセージは文数上限を緩める」— タスク仕様) —
+    /// `summarize`系のように呼び出し元から`sentenceCount`を受け取るのでは
+    /// なく、このメソッド自身が`text.count`を見て決める。プロトコル側に
+    /// 数値パラメータを増やさずに済むので、`TranslationService`の他の
+    /// メソッドとシグネチャの形を揃えられる。
+    public func summarizeThreadEntry(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+        try requireAvailable()
+        let sentenceRangeGuidance = text.count > Self.threadEntryLongMessageThreshold ? "3〜8文程度" : "2〜5文程度"
+        let session = LanguageModelSession(model: model, instructions: Self.summarizeThreadEntryInstructions(targetLanguage: targetLanguage, sentenceRangeGuidance: sentenceRangeGuidance))
+        do {
+            let response = try await session.respond(to: text, options: Self.summarizeOptions)
+            // Task #160フォローアップ: このメソッドの出力は`summarizeThread`
+            // が`"\(header) \(extracted)"`という1メッセージ1行の箇条書きへ
+            // そのまま組み込む — モデルが自分の判断で改行(箇条書き・番号
+            // リストなど)を混ぜてしまうと、その1行の体裁が崩れる。指示文
+            // (下記)でも改行しないよう求めているが、コード側でも念のため
+            // 改行をスペースへ畳んでおく防御 (`SummaryOutputSanitizer`と
+            // 同じ「指示文 + 実装側の後処理」の二段構え)。
+            return response.content.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            throw Self.mapEngineError(error)
+        }
+    }
+
+    /// `summarizeThreadEntry`が文数目安を切り替える閾値 — 新規本文が
+    /// これを超えたら「3〜8文程度」、それ以下なら「2〜5文程度」(タスク
+    /// 仕様「長いメッセージは文数上限を緩める」)。400字は日本語で
+    /// だいたい3〜4文程度の本文に相当し、これより長いメッセージは
+    /// 決定事項・数値が複数含まれがちという実感に基づく目安 — 厳密な
+    /// 実測に基づくものではないので、実FM確認 (`docs/translation.md`の
+    /// Task #160フォローアップ節) で薄いと分かれば調整する。
+    private static let threadEntryLongMessageThreshold = 400
 
     // MARK: - Session/options
 
@@ -321,60 +364,77 @@ public struct FoundationModelsTranslationService: TranslationService {
         """
     }
 
-    /// Task #153 (スレッド全体のAI要約): `summarizeThreadInstructions`が使う
-    /// 2つのラベル文字列 — `summarizeThreadDigest`の
-    /// `SummaryOutputSanitizer.sanitize(_:labels:)`呼び出しと同じ文字列を
-    /// 参照させることで、指示文とパーサのラベルが drift しないようにする
-    /// (`summaryLabel`/`intentLabel`/`actionLabel`と同じ役割)。
-    private static let progressLabel = "■経緯"
-    private static let currentStatusLabel = "■現状"
-
-    /// Task #153 (スレッド全体のAI要約): `summarizeInstructions`(1メッセージ
-    /// 向け、■要約/■伝えたいこと/■アクションの3パート)とは別の、スレッド
-    /// 全体のやり取りを要約するための指示文 — 入力は`ThreadDetailView`が
-    /// 組み立てる`"[日時] 差出人: 新規本文"`形式の行がメッセージごとに1行、
-    /// 時系列順に並んだもの (`summarizeThread`のdoc comment参照)。
+    /// Task #160フォローアップ (二重圧縮の根治): `summarizeThreadEntry`が
+    /// 使う指示文 — `summarizePlainInstructions`(「削ってでも短くする」
+    /// 圧縮の指示) とは正反対の「削らずに書き出す」事実抽出の指示。
+    /// `summarizeThread`のmap段からは`message.header`("[日時] 差出人:")
+    /// を一切見せない (このメソッドへの入力はメッセージの新規本文だけ) の
+    /// で、`summarizePlainInstructions`と同じ「差出人・宛先の名前が本文中
+    /// に出てきても主語にせず『この返信』を主語にする」ルールを引き継ぐ —
+    /// これは「固有名詞を落とさない」ルールとは矛盾しない (禁止している
+    /// のは人物名を*主語*にすることだけで、本文中に出てくる会社名・場所
+    /// 名・第三者の名前などを内容として書くことは禁止していない)。
     ///
-    /// 出力を`■経緯`(時系列の経緯 — 誰が何を提案・質問・回答したかを起きた
-    /// 順に)→`■現状`(現在の状態 — 結論・合意事項・未解決の点)の2パートに
-    /// 固定する。`summarizeInstructions`と同じ「出力形式(最重要)」の
-    /// 反復・指示文リーク防止の枠組み (ラベル行はこの2つのみ・この順番・
-    /// この文字列そのまま・この構造は全体で一度だけ・指示文自体や英語を
-    /// 含めない) をそのまま踏襲し、差出人名についても同じ「本文に実際に
-    /// 書かれている名前のみ使用・推測禁止」ルールを引き継ぐ — こちらは
-    /// 「主語をぼかす」のではなく「入力の`[日時] 差出人:`から読み取れる
-    /// 名前だけを使い、それ以外の名前を作り出さない」という形で明示する
-    /// (スレッド要約は複数の差出人を扱うため、単一メッセージ要約の
-    /// 「常に『この返信』を主語にする」というルールをそのまま流用できない
-    /// — 誰が何をしたかを経緯として語る必要があるため、名前を使うこと自体は
-    /// 許可し、その名前の出どころだけを厳しく縛る)。
-    private static func summarizeThreadInstructions(targetLanguage: TranslationLanguage) -> String {
+    /// `sentenceRangeGuidance`は呼び出し側 (`summarizeThreadEntry`) が
+    /// `text.count`を見て「2〜5文程度」/「3〜8文程度」のどちらかを渡す —
+    /// 「長いメッセージは文数上限を緩める」というタスク仕様の要求を、
+    /// この指示文の文字列だけで固定値にせず可変にするための唯一の
+    /// パラメータ。
+    ///
+    /// 出力に改行や箇条書き記号を含めないよう明示している理由は
+    /// `summarizeThreadEntry`のdoc comment参照 — この出力は
+    /// `summarizeThread`が1メッセージ1行の箇条書きへそのまま組み込む。
+    private static func summarizeThreadEntryInstructions(targetLanguage: TranslationLanguage, sentenceRangeGuidance: String) -> String {
         """
-        あなたは複数人のメールのやり取り(スレッド)を\(targetLanguage.displayName)で要約するアシスタントです。以下のルールに従ってください。
+        以下はメールスレッド内の1通のメッセージの新規本文(引用された過去の返信は除外済み)です。この新規本文の具体的な内容を\(targetLanguage.displayName)で書き出してください。以下のルールに従ってください。
 
-        【入力の構造】
-        入力は "[日時] 差出人: 本文" という形式の行が、スレッド内のメッセージ1通につき1行、時系列順(古い順)に並んだものです。各行の本文は、そのメッセージの新規部分(引用された過去の返信は除外済み)です。
-
-        【差出人名について(重要)】
-        経緯を語る際に人物名を主語にしてよいですが、使ってよい名前は入力の各行の "[日時] 差出人:" 部分に実際に書かれている名前だけです。入力に登場しない名前を推測や創作で書き加えることは絶対に禁止します。判断に迷ったら、その名前が入力のいずれかの行の差出人として文字通り含まれているかどうかで機械的に判定し、含まれていなければその名前を使わないでください。
+        【最優先ルール: 情報を落とさない】
+        新規本文に書かれている決定事項・依頼や質問・数値(金額・日時・個数・期限など)・固有名詞(人名・会社名・場所名・店名など)は、一切省略しないでください。挨拶や「よろしくお願いします」「お世話になっております」のような定型的な前置き・結びの言葉だけは削って構いません。目安の分量よりも、具体的な内容を落とさないことを常に優先してください — 短くまとめることが目的ではありません。
 
         【新規本文に実際に書かれていない内容を補わない(重要)】
-        各パートに書いてよいのは、入力の各行に実際に書かれている事柄だけです。誰が何を提案・質問・回答・合意したかを、入力に明示されていないのに推測や一般的な想像で補ってはいけません。
+        新規本文に実際に書かれている事柄だけを書き出してください。書かれていない内容を推測や一般的な想像で補ってはいけません。
 
-        【各パートの内容ルール】
-        ■経緯パートでは、入力の各行(メッセージ1通ごと)について、誰が何を提案・質問・回答・依頼したかを、実際に起きた時系列の順番で、メッセージ1通につき目安として最低1文は触れる形で、流れを省略せずに説明してください。入力のメッセージ数より明らかに少ない分量(例えば6通のスレッドなのに合計2〜3文しかない)で終わらせることは禁止します。ただし、入力の各行の文言をそのまま書き写す(逐次的な再話)のではなく、内容を自分の言葉で要約した自然な文章にしてください — 同じ内容を繰り返して水増しすることも禁止します。
-        ■現状パートでは、このスレッドの現在の状態 — 結論・合意事項・まだ解決していない点 — を、■経緯パートと同じ文をそのまま繰り返さずに簡潔に説明してください。
-        全体を通じて、一般化しすぎた抽象的な言い換えだけで終わらせず、具体的な内容を書いてください。
+        【差出人・宛先について】
+        差出人や宛先の名前が新規本文中に出てきても、それを主語・行為者にしないでください。「〜さんから」「〜さんへの返信」のように名前を主語や行為者にする言い回しは禁止します。この新規本文の主体を指す必要があるときは「この返信」を主語にしてください(ただし、本文中に出てくる第三者の名前・会社名・場所名などを内容として書くことは禁止していません)。
+
+        【分量・出力形式】
+        目安は\(sentenceRangeGuidance)ですが、上記の「情報を落とさない」ルールを優先し、必要なら目安を超えてもかまいません。ラベルや見出し、箇条書き、番号付きリスト、記号("■"など)は付けず、改行も入れずに、1つの続いた文章として出力してください。説明文やこの指示文自体、英語のテキストを出力に含めないでください。
+        """
+    }
+
+    /// Task #153 (スレッド全体のAI要約) → Task #160フォローアップ (二重圧縮
+    /// の根治): 以前は`■経緯`/`■現状`の2パートをここで生成していたが、
+    /// 今は`■現状`(このスレッドが最終的にどうなったか・未決事項・次の
+    /// アクション)1パートだけを要求する指示文 — `■経緯`は
+    /// `summarizeThread`がモデルを通さずアプリ側で組み立てる
+    /// (`TranslationService.summarizeThreadDigest`のdoc comment参照)。
+    /// 入力は`summarizeThreadEntry`の抽出結果を`"[日時] 差出人: 抽出内容"`
+    /// 形式で時系列順に並べたもの — 引き続き差出人名は「入力に実際に
+    /// 書かれている名前だけ使用・推測禁止」ルールを課す (経緯を語らない
+    /// ので誰が何をしたか自体は生成しないが、「次は田中さんが対応」のような
+    /// 次のアクションの記述で名前を使う可能性があるため)。
+    private static func currentStatusInstructions(targetLanguage: TranslationLanguage) -> String {
+        """
+        あなたは複数人のメールのやり取り(スレッド)の「現在の状態」を\(targetLanguage.displayName)で説明するアシスタントです。以下のルールに従ってください。
+
+        【入力の構造】
+        入力は "[日時] 差出人: 内容" という形式の行が、スレッド内のメッセージ1通につき1行、時系列順(古い順)に並んだものです。各行の内容は、そのメッセージの新規部分から具体的な事柄を書き出したものです。
+
+        【差出人名について(重要)】
+        名前を使う場合、使ってよい名前は入力の各行の "[日時] 差出人:" 部分に実際に書かれている名前だけです。入力に登場しない名前を推測や創作で書き加えることは絶対に禁止します。
+
+        【新規本文に実際に書かれていない内容を補わない(重要)】
+        書いてよいのは、入力の各行に実際に書かれている事柄だけです。入力に明示されていないのに推測や一般的な想像で補ってはいけません。
+
+        【内容ルール】
+        このスレッドが最終的にどうなったか — 結論・合意事項 — と、まだ決まっていない点、次に誰が何をすべきか(次のアクション)を、約2〜4文で具体的に述べてください。入力の各行を時系列順にそのまま書き写す(逐次的な再話)のではなく、最終的な状態だけを簡潔にまとめてください。一般化しすぎた抽象的な言い換えだけで終わらせないでください。
 
         【出力形式(最重要)】
-        出力は次の2行構造のみで構成してください。ラベル行は「\(progressLabel)」「\(currentStatusLabel)」の2つを、この順番・この文字列そのままで、それぞれ単独の行として書いてください。各ラベルの内容は次の行以降に書き、ラベル行自体には他の文字を含めないでください。ラベルの説明文やこの指示文自体、英語のテキストを出力に含めないでください。この2行構造は出力全体を通じてちょうど1回だけ出現させてください — 同じラベルを2回書いたり、2行構造を繰り返したりすることは絶対にしないでください。
+        出力は"\(ThreadDigestLabel.currentStatus)"という1行のラベルから始めてください。ラベル行はこの文字列そのまま・単独の行として書き、その次の行以降に内容を書いてください。ラベルの説明文やこの指示文自体、英語のテキストを出力に含めないでください。このラベルは出力全体を通じてちょうど1回だけ出現させてください — 同じラベルを2回書いたり、内容を繰り返したりすることは絶対にしないでください。
 
         【出力例】
-        \(progressLabel)
-        田中さんが来週の定例会議の日程調整を提案し、鈴木さんが水曜14時を候補として提案した。田中さんはそれで問題ないと回答した。
-
-        \(currentStatusLabel)
-        水曜14時での開催が合意され、あとは会議室の予約待ちの状態。
+        \(ThreadDigestLabel.currentStatus)
+        水曜14時にイタリアンの店で開催することが合意され、予約はまだ取れていない。田中が予約を担当し、取れ次第スレッドで共有する予定。
         """
     }
 

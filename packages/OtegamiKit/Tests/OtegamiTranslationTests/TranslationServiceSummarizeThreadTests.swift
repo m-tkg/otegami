@@ -2,33 +2,67 @@ import Foundation
 import Testing
 @testable import OtegamiTranslation
 
-/// Task #153 (スレッド全体のAI要約) → Task #160 (実機フィードバック「経緯が
-/// 短すぎる/内容が変」、map段をメッセージ単位に固定): covers
+/// Task #153 (スレッド全体のAI要約) → Task #160 (map段をメッセージ単位に
+/// 固定) → Task #160フォローアップ (実機フィードバック「スレッド要約が
+/// 雑すぎて内容がほとんど抜け落ちている」、二重圧縮の根治): covers
 /// `TranslationService.summarizeThread(_:targetLanguage:onProgress:)`'s
-/// per-message map-reduce shape — unlike the pre-#160 version (which mapped
-/// over character-count-based `TranslationChunker` chunks of one big joined
-/// string, calling `summarizePlain` zero times for a short thread), this
-/// method now calls `summarizePlain` exactly once per input
-/// `ThreadDigestMessage`, regardless of how short the thread is, then
-/// reduces through exactly one `summarizeThreadDigest` call.
+/// redesigned shape — the map step now calls `summarizeThreadEntry`
+/// (fact-extraction, not compression) exactly once per input
+/// `ThreadDigestMessage`, and `■経緯` is assembled by this method itself
+/// (never a model call) by joining `"\(header) \(extracted)"` lines in
+/// order; only `■現状` goes through one `summarizeThreadDigest` call, fed
+/// that same joined text. `summarizePlain`/`summarize` (the single-message
+/// compression path) are never touched by this method at all — that's the
+/// whole point of Task #160フォローアップ's redesign (compression and
+/// fact-extraction are now separate protocol methods with separate call
+/// counters).
 @Suite("TranslationService.summarizeThread")
 struct TranslationServiceSummarizeThreadTests {
-    @Test("calls summarizePlain exactly once per message, then summarizeThreadDigest exactly once")
+    @Test("calls summarizeThreadEntry exactly once per message, then summarizeThreadDigest exactly once, never summarizePlain/summarize")
     func mapsPerMessageThenReducesOnce() async throws {
         let service = FakeTranslationService()
         let messages = [
-            ThreadDigestMessage(header: "[2026/07/27 10:00] 田中:", text: "来週の定例会議の日程はいかがでしょうか。"),
-            ThreadDigestMessage(header: "[2026/07/27 11:00] 鈴木:", text: "水曜14時でいかがでしょうか。"),
-            ThreadDigestMessage(header: "[2026/07/27 12:00] 田中:", text: "水曜14時で問題ありません。"),
+            ThreadDigestMessage(header: "[7/27] 田中:", text: "来週の定例会議の日程はいかがでしょうか。"),
+            ThreadDigestMessage(header: "[7/27] 鈴木:", text: "水曜14時でいかがでしょうか。"),
+            ThreadDigestMessage(header: "[7/27] 田中:", text: "水曜14時で問題ありません。"),
         ]
 
         _ = try await service.summarizeThread(messages, targetLanguage: .japanese)
 
-        #expect(await service.summarizePlainCallCount == messages.count)
+        #expect(await service.summarizeThreadEntryCallCount == messages.count)
         #expect(await service.summarizeThreadDigestCallCount == 1)
-        // Independent counters: `summarizeThread` never touches the
-        // single-message reduce step (`summarize`/`summarizeCallCount`).
+        // The whole point of this redesign: the map step is fact-extraction
+        // (`summarizeThreadEntry`), never the compression methods
+        // (`summarizePlain`/`summarize`) a single-message summary uses.
+        #expect(await service.summarizePlainCallCount == 0)
         #expect(await service.summarizeCallCount == 0)
+    }
+
+    @Test("assembles ■経緯 as an app-built bullet list (no reduce-step model call for it), then ■現状 from summarizeThreadDigest")
+    func assemblesProgressWithoutModelReduction() async throws {
+        let service = FakeTranslationService()
+        let messages = [
+            ThreadDigestMessage(header: "[7/27] 田中:", text: "来週の定例会議の日程はいかがでしょうか。"),
+            ThreadDigestMessage(header: "[7/27] 鈴木:", text: "水曜14時でいかがでしょうか。"),
+        ]
+
+        let result = try await service.summarizeThread(messages, targetLanguage: .japanese)
+
+        // `FakeTranslationService.summarizeThreadEntry` is a deterministic
+        // "first 5 sentences, then tag with the target language" transform
+        // (same shape as `summarizePlain`'s "first N sentences") — each
+        // fixture message here is exactly one sentence, so the transform is
+        // the identity function plus the `"[ja] "` tag.
+        let expectedLine1 = "[7/27] 田中: [ja] 来週の定例会議の日程はいかがでしょうか。"
+        let expectedLine2 = "[7/27] 鈴木: [ja] 水曜14時でいかがでしょうか。"
+        let expectedCombined = "\(expectedLine1)\n\(expectedLine2)"
+        // `FakeTranslationService.summarizeThreadDigest` returns
+        // `"■現状\n[ja] <its own input verbatim>"` — its input here is
+        // exactly `expectedCombined` (the same joined text `■経緯` displays).
+        let expectedCurrentStatus = "■現状\n[ja] \(expectedCombined)"
+        let expected = "■経緯\n\(expectedCombined)\n\n\(expectedCurrentStatus)"
+
+        #expect(result == expected)
     }
 
     @Test("empty input short-circuits to an empty string without calling either step")
@@ -36,33 +70,36 @@ struct TranslationServiceSummarizeThreadTests {
         let service = FakeTranslationService()
         let result = try await service.summarizeThread([], targetLanguage: .japanese)
         #expect(result.isEmpty)
-        #expect(await service.summarizePlainCallCount == 0)
+        #expect(await service.summarizeThreadEntryCallCount == 0)
         #expect(await service.summarizeThreadDigestCallCount == 0)
     }
 
-    @Test("a single oversized message's text is chunked through summarizePlain before the final per-message compaction")
-    func oversizedSingleMessageChunksBeforeCompacting() async throws {
+    @Test("a single oversized message's text is chunked through summarizeThreadEntry, one call per chunk and no extra recombination call")
+    func oversizedSingleMessageChunksWithoutRecombining() async throws {
         let service = FakeTranslationService()
         // Long enough to guarantee multiple `TranslationChunker` chunks for
         // this one message's own text alone (chunker splits at
         // `defaultMaxChunkLength` == 2000 characters).
         let longText = Array(repeating: "これは長い1通のメッセージの一部です。", count: 110).joined(separator: "\n")
         #expect(longText.count > TranslationChunker.defaultMaxChunkLength)
+        let chunkCount = TranslationChunker.chunk(longText).count
+        #expect(chunkCount > 1)
 
-        let messages = [ThreadDigestMessage(header: "[2026/07/27 10:00] 田中:", text: longText)]
+        let messages = [ThreadDigestMessage(header: "[7/27] 田中:", text: longText)]
         _ = try await service.summarizeThread(messages, targetLanguage: .japanese)
 
-        // The chunked safety net calls `summarizePlain` once per chunk, then
-        // once more on the joined partials — always more than the 1-call-
-        // per-message baseline `mapsPerMessageThenReducesOnce` asserts.
-        #expect(await service.summarizePlainCallCount > 1)
+        // Task #160フォローアップ: unlike the old chunked-compression safety
+        // net (chunks summarized, then the joined partials summarized once
+        // more), fact-extraction never re-runs a combining model call —
+        // exactly `chunkCount` calls, not `chunkCount + 1`.
+        #expect(await service.summarizeThreadEntryCallCount == chunkCount)
         #expect(await service.summarizeThreadDigestCallCount == 1)
     }
 
     @Test("onProgress reports (1, n) through (n, n), once per message, in order")
     func reportsProgressPerMessage() async throws {
         let service = FakeTranslationService()
-        let messages = (1...4).map { ThreadDigestMessage(header: "[2026/07/27 10:0\($0)] 田中:", text: "メッセージ\($0)") }
+        let messages = (1...4).map { ThreadDigestMessage(header: "[7/2\($0)] 田中:", text: "メッセージ\($0)") }
 
         actor ProgressRecorder {
             private(set) var events: [[Int]] = []

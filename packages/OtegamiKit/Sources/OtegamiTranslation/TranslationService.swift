@@ -70,17 +70,37 @@ public protocol TranslationService: TranslationOnlyService {
     /// (`OtegamiCore`) is the remaining defense-in-depth layer.
     func summarizePlain(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int) async throws -> String
 
-    /// Task #153 (スレッド全体のAI要約): the single, structured "reduce" call
-    /// behind `summarizeThread`'s map-reduce (this method's own doc comment)
-    /// — always produces exactly two `■`-prefixed sections, `■経緯`
-    /// (chronological narrative) then `■現状` (current state), unlike
-    /// `summarize`'s single-message 3-part ■要約/■伝えたいこと/■アクション
-    /// shape. A sibling of `summarize`, not an overload of it: the two
-    /// produce genuinely different output structures for genuinely
-    /// different inputs (one message vs. a whole thread's digest), and
-    /// giving them distinct names keeps a caller's intent explicit at every
-    /// call site rather than relying on which overload got resolved.
+    /// Task #153 (スレッド全体のAI要約) → Task #160フォローアップ (実機フィードバック
+    /// 「スレッド要約が雑すぎて内容がほとんど抜け落ちている」、二重圧縮の
+    /// 根治): 元々は`■経緯`(時系列の経緯) と`■現状`(現在の状態) の2パート
+    /// を1回のモデル呼び出しでまとめて生成していたが、reduce段でモデルが
+    /// per-message の抽出結果をもう一度圧縮してしまい (map段の圧縮と合わせ
+    /// て二重圧縮)、具体的な内容 (数値・固有名詞・決定事項) が経緯から
+    /// 抜け落ちる原因になっていた。Task #160フォローアップでこのメソッドの役割を
+    /// `■現状`(このスレッドが最終的にどうなったか・未決事項・次のアク
+    /// ション、2〜4文) 1パートだけへ縮小した — `■経緯`は
+    /// `summarizeThread`がこのメソッドを一切通さず、`summarizeThreadEntry`
+    /// (このprotocolの別のrequirement) の結果をアプリ側でそのまま時系列に
+    /// 並べるだけになった (`summarizeThread`のdoc comment参照) ので、
+    /// reduce段の情報損失はここでは原理的に発生しない。
+    ///
+    /// このメソッドは今も`summarize`とは別名・別シグネチャの
+    /// sibling — 出力が単一メッセージの3パート`summarize`とも、以前の
+    /// 2パート版とも異なる、`■現状`1パートだけの構造化出力である点は
+    /// 変わらない。
     func summarizeThreadDigest(_ text: String, targetLanguage: TranslationLanguage) async throws -> String
+
+    /// Task #160フォローアップ (二重圧縮の根治): `summarizeThread`のmap段 — 各メッセージ
+    /// の新規本文から、削らずに具体的な内容(決定事項・依頼/質問・数値・
+    /// 日付・固有名詞)を書き出す「事実抽出」。`summarizePlain`(こちらは
+    /// 「圧縮」— 内容を削ってでも短くすることが目的) とは目的が正反対な
+    /// ので使い分ける: `summarizePlain`をそのまま流用すると、その指示文
+    /// 自体が「短く」を最優先しており、具体的な数値・固有名詞が真っ先に
+    /// 削られる (実機報告の直接の原因)。出力は`summarize`/
+    /// `summarizeThreadDigest`と違いラベルなしの地の文 — `summarizePlain`
+    /// と同じく`SummaryOutputSanitizer`を通さない (ラベル構造が無いので
+    /// 対象外)。
+    func summarizeThreadEntry(_ text: String, targetLanguage: TranslationLanguage) async throws -> String
 }
 
 extension TranslationService {
@@ -132,46 +152,52 @@ extension TranslationService {
         return try await summarize(combined, targetLanguage: targetLanguage, sentenceCount: sentenceCount)
     }
 
-    /// Task #153 (スレッド全体のAI要約) → Task #160 (実機フィードバック
-    /// 2026-07-29「■経緯/■現状が短すぎるし内容も少し変」、ユーザー指示
-    /// 「複数回 FoundationModel 実行していいから、時系列で経緯をまとめて
-    /// 欲しい」): 元の実装 (git history 参照) は`TranslationChunker.chunk`
-    /// の**文字数ベース**の境界でマップ段を回しており、短いスレッド
-    /// (合計の新規本文が`TranslationChunker.defaultMaxChunkLength`未満)
-    /// では丸ごと1回の`summarizeThreadDigest`呼び出しに委ねていた —
-    /// 実機で6通のスレッドが「■経緯が合計5〜6文」にしかならなかった原因
-    /// (`docs/translation.md`のTask #153節にある実FM確認ログ参照。文字数が
-    /// 閾値を超えないかぎりメッセージ数に関係なくモデル呼び出しは常に1回
-    /// だけだった)。
+    /// Task #153 (スレッド全体のAI要約) → Task #160 (map段をメッセージ単位
+    /// に固定) → Task #160フォローアップ (実機フィードバック「スレッド要約
+    /// が雑すぎて内容がほとんど抜け落ちている」、**二重圧縮の根治**):
+    /// Task #160はmap段を「文字数ベースのチャンク」から「メッセージ単位」
+    /// へ固定したが、それでも情報が抜け落ちる報告が続いた — 原因は
+    /// **二重圧縮**だった。(a) map段の`summarizePlain`は「短く」を最優先
+    /// する圧縮指示のため、具体的な数値・固有名詞・決定事項を真っ先に削る
+    /// (これ自体は単一メッセージの`summarizeLongText`が求める挙動として
+    /// 正しい)。(b) それでもなお、reduce段 (`summarizeThreadDigest`) が
+    /// 「per-message圧縮結果をまとめて経緯を書く」ため、もう一段モデルが
+    /// 圧縮し直していた。2段とも「短くする」方向のモデル呼び出しが直列に
+    /// 並んでいれば、情報が生き残る保証はどこにも無い。
     ///
-    /// この改修でマップ段を**メッセージ単位**に固定する:
-    /// `TranslationChunker`の文字数境界はもう使わず、`messages`
-    /// (`ThreadDigestMessage`、呼び出し元 — `ThreadDetailView
-    /// .threadSummarySourceEntries()` — が時系列順に組み立てる配列) の
-    /// 各要素を必ず1回ずつ`summarizePlain`へ個別に渡し、1-3文へ圧縮する。
-    /// メッセージ数が多いほどモデル実行回数が増える (`onProgress`で「今
-    /// n通目/m通中」を呼び出し元へ伝えられる — `ThreadDetailView`が生成中
-    /// シートの進捗表示に使う) が、■経緯にスレッド内の**すべての**メッセ
-    /// ージが最低1行分は反映されることが、文字数がどうであれ保証される。
+    /// この改修で構造を作り替えた:
     ///
-    /// `"[日時] 差出人:"`ヘッダは**マップ段のモデル入力にもモデル出力にも
-    /// 含めない** — `summarizePlain`へ渡すのは`message.text`(新規本文)
-    /// だけで、reduce段 (`summarizeThreadDigest`) へ渡す各行のヘッダは常に
-    /// `message.header`(呼び出し元が信頼できるメタデータから組み立てた
-    /// 文字列) をこちら側で機械的に前置きする。`summarizePlainInstructions`
-    /// は「本文中に差出人・宛先名が出てきても主語にせず『この返信』を
-    /// 主語にする」設計 (Task #122/#134) のため、ヘッダをモデルへの入力に
-    /// 混ぜるとその名前・日時をモデルが不確実な言い回しで本文に混ぜて
-    /// 返す (二重に言及される、あるいは不正確に言い換えられる) リスクが
-    /// ある — ヘッダをコード側で確定させることで、reduce段の指示文
-    /// (`summarizeThreadInstructions`の【入力の構造】) が前提とする
-    /// `"[日時] 差出人: 本文"`という行フォーマットを型として保証できる。
+    /// 1. **map段: 圧縮(`summarizePlain`)ではなく事実抽出
+    ///    (`summarizeThreadEntry`)** — 新設の`summarizeThreadEntry`(この
+    ///    protocolの別のrequirement) は「削らずに書き出す」指示なので、
+    ///    決定事項・依頼/質問・数値・日付・固有名詞が生き残る。
+    /// 2. **■経緯はモデルで再圧縮しない** — 各メッセージの抽出結果を
+    ///    `message.header`(`"[M/d] 差出人:"`) と結合した行を、時系列の
+    ///    まま**そのままアプリ側で**箇条書きに整形する。ここにreduce段の
+    ///    モデル呼び出しは一切挟まらないので、原理的に情報損失が起きない
+    ///    — これが「二重圧縮の根治」の核心。
+    /// 3. **■現状だけモデル1回** — 抽出結果全体 (箇条書きと同じ`combined`)
+    ///    を入力に、`summarizeThreadDigest`(役割を「■現状のみ生成」へ縮小
+    ///    済み、そちらのdoc comment参照) を1回だけ呼ぶ。
+    ///
+    /// `"[M/d] 差出人:"`ヘッダは、Task #160の設計をそのまま踏襲して
+    /// **map段のモデル入力にもモデル出力にも含めない** —
+    /// `summarizeThreadEntry`へ渡すのは`message.text`(新規本文) だけで、
+    /// ■経緯の箇条書き・reduce段への入力どちらの行も`message.header`
+    /// (呼び出し元が信頼できるメタデータから組み立てた文字列) をこちら側
+    /// で機械的に前置きする。理由もTask #160と同じ:
+    /// `summarizeThreadEntryInstructions`は「本文中に差出人・宛先名が
+    /// 出てきても主語にせず『この返信』を主語にする」設計のため、ヘッダを
+    /// モデルへの入力に混ぜるとその名前・日時をモデルが不確実な言い回しで
+    /// 本文に混ぜて返すリスクがある。
     ///
     /// 1メッセージの本文単体が`TranslationChunker.defaultMaxChunkLength`
-    /// を超える場合だけ、`compactThreadMessageText(_:targetLanguage:)`
-    /// (下記) が`summarizeLongText`と同じ安全網 (チャンク分割 → 各チャン
-    /// クを`summarizePlain`で圧縮 → 結合してもう一度`summarizePlain`) を
-    /// 通す — 通常のメッセージはこの分岐に入らない。
+    /// を超える場合だけ、`extractThreadEntryText(_:targetLanguage:)`
+    /// (下記) がチャンク分割の安全網を通す — ただし`summarizeLongText`/
+    /// Task #160の`compactThreadMessageText`と違い、チャンクをまとめて
+    /// もう一度モデルへ通す「再圧縮」はしない (それ自体が二重圧縮の一種
+    /// になるため) — 各チャンクの抽出結果をそのまま連結するだけ。通常の
+    /// メッセージはこの分岐に入らない。
     ///
     /// `onProgress` is `@MainActor @Sendable`, not plain `@Sendable` — an
     /// `Optional` closure parameter is implicitly `@escaping` (a well-known
@@ -197,43 +223,70 @@ extension TranslationService {
         perMessageLines.reserveCapacity(messages.count)
         for (index, message) in messages.enumerated() {
             await onProgress?(index + 1, messages.count)
-            let compact = try await compactThreadMessageText(message.text, targetLanguage: targetLanguage)
-            perMessageLines.append("\(message.header) \(compact)")
+            let extracted = try await extractThreadEntryText(message.text, targetLanguage: targetLanguage)
+            perMessageLines.append("\(message.header) \(extracted)")
         }
+        // Task #160フォローアップ: `■経緯`はここで組み立てたら終わり —
+        // このあと`summarizeThreadDigest`へ渡すのは`■現状`だけを生成させる
+        // ためで、その戻り値をこの`combined`の後ろに連結するだけ (モデルは
+        // 一度も`■経緯`の内容そのものを書き直さない)。
         let combined = perMessageLines.joined(separator: "\n")
-        return try await summarizeThreadDigest(combined, targetLanguage: targetLanguage)
+        let currentStatus = try await summarizeThreadDigest(combined, targetLanguage: targetLanguage)
+        return "\(ThreadDigestLabel.progress)\n\(combined)\n\n\(currentStatus)"
     }
 
     /// The oversized-single-message safety net `summarizeThread(_:targetLanguage:onProgress:)`'s
-    /// doc comment describes — the same map-reduce shape `summarizeLongText`
-    /// uses for a whole long mail, just scoped to one thread message's own
-    /// text instead. Ordinary messages (the overwhelming majority in
-    /// practice) never enter the chunking branch at all — a single
-    /// `summarizePlain` call handles them.
-    private func compactThreadMessageText(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+    /// doc comment describes — chunks via `TranslationChunker` and calls
+    /// `summarizeThreadEntry` once per chunk, exactly like
+    /// `summarizeLongText`'s map step does for `summarizePlain`, but
+    /// **does not** run the joined chunk results through one more model
+    /// call the way `summarizeLongText`/Task #160's `compactThreadMessageText`
+    /// did — that extra pass would itself be a second compression step,
+    /// re-introducing the exact double-compression this whole redesign
+    /// exists to remove. A simple concatenation of already-fact-preserving
+    /// chunk extractions is the correct combination here. Ordinary messages
+    /// (the overwhelming majority in practice) never enter this branch at
+    /// all — a single `summarizeThreadEntry` call handles them.
+    private func extractThreadEntryText(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
         guard text.count > TranslationChunker.defaultMaxChunkLength else {
-            return try await summarizePlain(text, targetLanguage: targetLanguage, sentenceCount: 2)
+            return try await summarizeThreadEntry(text, targetLanguage: targetLanguage)
         }
 
         let chunks = TranslationChunker.chunk(text)
-        var partialSummaries: [String] = []
-        partialSummaries.reserveCapacity(chunks.count)
+        var parts: [String] = []
+        parts.reserveCapacity(chunks.count)
         for chunk in chunks {
-            partialSummaries.append(try await summarizePlain(chunk, targetLanguage: targetLanguage, sentenceCount: 1))
+            parts.append(try await summarizeThreadEntry(chunk, targetLanguage: targetLanguage))
         }
-        return try await summarizePlain(partialSummaries.joined(separator: " "), targetLanguage: targetLanguage, sentenceCount: 2)
+        return parts.joined(separator: " ")
     }
+}
+
+/// Task #160フォローアップ (二重圧縮の根治): the `■経緯`/`■現状` label
+/// strings shared between `TranslationService.summarizeThread(_:targetLanguage:onProgress:)`
+/// (which prepends `progress` itself, in code, never asking a model to
+/// produce it) and `FoundationModelsTranslationService`'s
+/// `summarizeThreadDigest` instructions/`SummaryOutputSanitizer
+/// .sanitize(_:labels:)` call (which asks the model for exactly
+/// `currentStatus`) — kept in one place, in this lower-level target, so the
+/// two can never drift out of sync with each other (`FoundationModelsTranslationService`
+/// already depends on this target, never the other way around).
+public enum ThreadDigestLabel {
+    public static let progress = "■経緯"
+    public static let currentStatus = "■現状"
 }
 
 /// Task #160: one thread message's map-stage input for
 /// `TranslationService.summarizeThread(_:targetLanguage:onProgress:)` —
 /// `header` (`"[<date>] <sender>:"`, already fully formatted by the caller
 /// from trusted metadata) and `text` (that message's own new, non-quoted
-/// body) travel separately so the map step can summarize `text` alone
+/// body) travel separately so the map step can fact-extract `text` alone
 /// (never showing the model `header`, see `summarizeThread`'s doc comment
-/// for why) while the reduce step still gets a `"\(header) \(compact
-/// summary)"` line per message, exactly like `ThreadDetailView`'s previous
-/// single joined-string input did.
+/// for why) while both the app-built `■経緯` bullet list and the `■現状`
+/// reduce step's input still get a `"\(header) \(extracted facts)"` line
+/// per message (Task #160フォローアップ renamed this from "compact
+/// summary" to "extracted facts" — same struct shape, different map-step
+/// contract).
 public struct ThreadDigestMessage: Sendable, Equatable {
     public let header: String
     public let text: String
