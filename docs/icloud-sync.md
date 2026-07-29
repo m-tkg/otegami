@@ -843,17 +843,13 @@ CloudPayloadAlreadyExists` テストが既にカバーしており、Task #101 �
    # log stream --predicate '...' をデバイスに対して実行。
    ```
 
-### 積み残し (v2 移行)
+### 積み残し (v2 移行) → Task #144 で解消
 
-タスクの依頼どおり、ペイロード全体を1つの `updatedAt` で丸ごと
-上書きする現行方式 (`SettingsCloudPayload`) から、キー単位の
-`updatedAt` (per-key last-writer-wins、`settings.v2`、`v1` 読み取り
-互換) へ移行する案は見送った — 上記の pull 直前再チェックと
-デバウンス push で実害のあるレースは塞げており、v2 移行は
-「2台が同時刻に別々のキーを変更した場合、片方の変更が丸ごと消える」
-という現行方式の既知の設計限界 (`SettingsCloudPayload` のdoc comment
-参照) を根絶するためのより大きな工数のリファクタになる。優先度が
-上がったら着手する TODO として残す。
+当時見送った「ペイロード全体を1つの `updatedAt` で丸ごと上書きする
+現行方式から、キー単位の `updatedAt` (per-key last-writer-wins、
+`settings.v2`、v1 読み取り互換) へ移行する」案は、iPhone/iPad/Mac の
+複数デバイス運用を見据えて Task #144 で実施した。詳細は下の
+「Task #144」節参照。
 
 ### 検証
 
@@ -888,3 +884,110 @@ CloudPayloadAlreadyExists` テストが既にカバーしており、Task #101 �
      全デバイスが同じ値に収束することを確認 (`docs/icloud-sync.md`の
      この節が指す「last write wins」の既知の制約自体は変わっていない
      ので、同時刻に近い操作は最後に reconcile したデバイスの値が勝つ)。
+
+## Task #144: 設定 iCloud 同期の settings.v2 化 (キー単位マージ)
+
+### 動機
+
+上の Task #101 の「積み残し (v2 移行)」— iPhone/iPad/Mac を並行して
+使うユーザーが、2台それぞれで*別々の*設定を同時期に変えると、後から
+reconcile した方の push がペイロード全体を丸ごと上書きし、片方の変更が
+無かったことになる (`SettingsCloudPayload`の旧 doc comment が既知の
+設計限界として明記していた)。#101 の対症療法 (pull 直前再チェック、
+デバウンス push) はこの限界そのものを直してはいなかったため実施した。
+
+### 修正
+
+1. **`SettingsCloudPayload` のペイロード形式変更**
+   (`packages/OtegamiKit/Sources/AccountCloudSync/SettingsCloudPayload.swift`):
+   `values: [String: SettingsCloudValue]` + 1つの `updatedAt` という
+   旧形式 (v1) から、`entries: [String: SettingsCloudEntry]` (キーごとに
+   `value` + `updatedAt`、新設した `SettingsCloudEntry`) という形式
+   (v2) へ変更。`Codable` は手書きの `init(from:)`/`encode(to:)` で
+   **読み取りは `entries` (v2) → 無ければ `values`/`updatedAt` (v1、
+   全キーが同一 `updatedAt` を持つものとして `entries` へ変換) の順に
+   フォールバック、書き込みは常に v2 のみ**。既存コード/テストとの
+   後方互換のため、`values`/`updatedAt` は entries から導出する
+   computed property として残した (`values` = 各エントリの value を
+   集めた辞書、`updatedAt` = 全エントリ中最新の値) — `SettingsCloudPayload
+   (values:updatedAt:)` という v1 形式の初期化子も、全キーに同じ
+   `updatedAt` を割り当てる形で残してある。
+2. **KVS キー自体も `"settings.v1"` → `"settings.v2"` へ**
+   (`SettingsCloudSyncEngine.payloadKey`/`legacyPayloadKeyV1`):
+   同じキーのままスキーマだけ変えると、この変更が入った端末と
+   まだ入っていない端末 (同一ユーザーが iPhone だけ先にアップデート
+   した場合など) が同じキーを取り合い、互いのペイロードをデコード
+   できず「クラウドは空」と誤認してデフォルト値を push し合う恐れが
+   あったため、物理的なキーも分けた。`loadPayload()` は `"settings.v2"`
+   キーが無い場合のみ `"settings.v1"` を読む (`v1` キーへは二度と
+   書き込まない — 読み取り専用のフォールバック)。
+3. **`SettingsCloudSyncEngine.reconcile()` のキー単位マージ**
+   (`merge(cloudPayload:snapshot:)`、新規): これまでの
+   「ローカル未変更・クラウドが新しい → pull、それ以外 → push」という
+   ペイロード全体の二択を、`snapshot` (この端末が最後に同期した状態)
+   が存在する定常状態では**キーごとの last-writer-wins マージ**に
+   置き換えた。各キーについて:
+   - ライブ値が `snapshot` のそのキーと一致していれば「未変更」——
+     候補タイムスタンプは `snapshot` がそのキーに持つ `updatedAt`
+     (無ければ `.distantPast`)。
+   - 一致していなければ「この端末で変更された」——`UserDefaults`の
+     書き込みには per-key のフックが無い (`AppSettingsCloudDirectory`
+     のdoc comment) ため、正確な変更時刻は分からず、`now()` (=この
+     reconcile の実行時刻) を割り当てる。
+   - クラウド側のそのキーの `updatedAt` と比較し、新しい方が勝つ
+     (同点はローカル優先、タイブレーク)。
+   マージ結果は「ローカルの値と食い違うキーがあれば `local.apply(_:)`」
+   「クラウドの値/タイムスタンプと食い違うキーがあれば push」を
+   それぞれ独立に判定するため、**同じ1回の reconcile で pull と push が
+   両方起きうる** —— 新設した `SettingsReconcileResult.merged` がその
+   ケースを表す (両方=`.merged`、pullのみ=`.pulled`、pushのみ=`.pushed`、
+   どちらも無し=`.inSync`)。「一度も同期したことが無い端末」(再
+   インストール直後など、`snapshot == nil`) は従来どおりペイロード
+   全体の pull/push のまま (キー単位で比較する基準となる `snapshot` が
+   そもそも無いため) — #89 の「再インストール時はクラウド優先」は
+   無変更。
+   Task #101 の「pull 直前再チェック」は `merge(cloudPayload:snapshot:)`
+   自身が `local.currentValues()` を**関数の唯一の情報源として**その場で
+   読み直す形に一般化された (`reconcile()`が事前に読んだ値は一切信用
+   しない) —— 個別の再チェック分岐が要らなくなった。「一度も同期して
+   いない端末」の pull 経路 (`pull(_:becauseOfReason:observedLocalValues:)`)
+   は元々の再チェックのまま維持。
+4. **OSLog**: `log(_:reason:local:cloud:snapshot:)` の `diffKeys` は
+   `SettingsCloudPayload.values` (entries から導出) を経由するため
+   無改修で動作。`reason` にキー単位マージの適用キー一覧を含めるよう
+   `merge(cloudPayload:snapshot:)` 内で組み立てるようにした。
+
+### 検証
+
+- `SettingsCloudSyncEngineTests` に新規3本追加:
+  - `neverSyncedUnderV2FallsBackToReadingTheLegacyV1Payload`: `"settings.v1"`
+    キーだけに旧形式 (`values`/`updatedAt` の生 JSON、`SettingsCloudPayload`
+    経由ではなく手書きのミラー型でエンコード) を仕込み、新コードが
+    それを正しく読んで pull し、以後は `"settings.v2"` 側にだけ書く
+    ことを確認。
+  - `simultaneousChangesToDifferentKeysOnDifferentDevicesAreBothKept`:
+    2台がそれぞれ別々のキーを変更 → 後から reconcile した側が
+    `.merged` を返し、両方の変更が生き残ることを確認 (修正前の
+    ペイロード全体上書き方式に戻すと、どちらか一方が消えて失敗する)。
+  - `perKeyPingPongAcrossTwoKeysConvergesOnBothLatestValuesIndependently`:
+    2キー × 2ラウンドの往復で、両キーとも独立に最新値へ収束すること
+    (`twoDevicePingPongConvergesOnTheNewestValue`の複数キー版) を確認。
+  - 既存9本 (`firstDeviceEverPushesItsCurrentValuesAsTheInitialPayload`
+    ほか、Task #101 分含む) は `"settings.v1"` → `"settings.v2"` の
+    キー名をテストの assertion 側で置き換えただけで、シナリオ・
+    期待結果は無改修のまま全件グリーン。
+- `make test` (`packages/OtegamiKit`) で `AccountCloudSyncTests` 含め
+  全件グリーンを確認。
+- **実機での確認はこのセッションでは未実施** — iCloud KVS 自体が
+  シミュレータで不安定なため (`docs/verify.md`)。ユーザー側の確認手順:
+  1. iPhone と iPad (または Mac) で別々の設定 (例:
+     iPhone でスレッド表示、iPad で未読のみ表示) を短時間のうちに
+     変更する。
+  2. 両方が数秒〜次回起動までに reconcile した後、**両方の変更が
+     両方の端末に反映されている**こと (どちらか一方が消えていない
+     こと) を確認 —— これが #144 の主眼で、#101 までの実機確認手順
+     (単一キーのオン/オフが揮発しないこと) とは別に見るべき観点。
+  3. `log stream --predicate 'subsystem == "com.mtkg.otegami" &&
+     category == "SettingsCloudSync"'` で `reconcile -> merged` の行が
+     実際に出ること、`diffKeys` が想定どおりのキーになっていることを
+     確認。
