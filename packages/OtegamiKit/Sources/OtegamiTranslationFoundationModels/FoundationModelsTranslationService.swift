@@ -208,11 +208,32 @@ public struct FoundationModelsTranslationService: TranslationService {
     /// "don't borrow a quoted topic" rule is generalized into "don't
     /// invent detail the new text doesn't state" — no quoted text
     /// remains to borrow from, but the model could still fabricate detail
-    /// out of thin air, which this rule now covers too. The one-context-
-    /// sentence allowance (#97/#102) is retained but now explicitly scoped
-    /// to what the note line itself says ("this reply follows a prior
-    /// exchange") rather than to any specifics about what the prior
-    /// exchange contained, since none are available.
+    /// out of thin air, which this rule now covers too. The #97/#102
+    /// one-context-sentence allowance (open ■要約 with a short subordinate
+    /// clause referencing the prior exchange) is dropped outright, not just
+    /// re-scoped — a real-device-adjacent repro (`scratchpad/summary-repro`,
+    /// `mail_fixture_long_padded.txt`, the chunked `summarizeLongText` path
+    /// specifically) showed that even a scoped version of this allowance,
+    /// worded as an *example* subordinate clause ("過去のやり取りへの返信
+    /// として、"), got adopted by the model as the literal opening of
+    /// ■要約's content — consistently across repeated runs — with the
+    /// "■要約" label line itself dropped immediately before it, breaking
+    /// `SummaryOutputSanitizer`'s label-based parsing (its `sanitize`
+    /// requires finding a line that starts with "■要約"). This happened
+    /// even though the `combined` map-reduce input the final `summarize`
+    /// call actually received never contained the note line or any
+    /// reply-to-prior-thread signal at all (verified by printing `combined`
+    /// directly) — i.e. the model wasn't reacting to real input content,
+    /// it had internalized the *example phrasing itself* from this
+    /// instructions string as boilerplate to prepend unconditionally,
+    /// independent of whether the described condition ("注記行がある場合に
+    /// 限り") actually held. This is the same failure family Task #122
+    /// already named and defended against (instruction wording that reads
+    /// too much like plausible output content gets echoed) — a
+    /// concrete example phrase for a conditional rule is exactly that
+    /// shape. Removing the allowance entirely (■要約 never opens with a
+    /// reply-context clause, full stop) closed it in repeated re-runs of
+    /// the same fixture. See `docs/translation.md`'s Task #134 section.
     ///
     /// `sentenceCount` scopes only the ■要約 part (the content summary) —
     /// ■伝えたいこと and ■アクション are always short (about one sentence
@@ -240,7 +261,7 @@ public struct FoundationModelsTranslationService: TranslationService {
         ■要約に書いてよいのは、新規本文に実際に書かれている事柄だけです。話題・行為・固有名詞(依頼内容、待ち合わせ場所、日時、金額など)を、新規本文に明示されていないのに推測や一般的な想像で補ってはいけません。冒頭の注記行(過去のやり取りへの返信である旨)は入力に含まれていても、その過去のやり取りの具体的な内容は与えられていないため、それを推測して書き加えることも禁止です。判断に迷ったら、その語や話題が新規本文の文字列そのものに含まれているかどうかで機械的に判定し、含まれていなければ書かないでください。
 
         【各パートの内容ルール】
-        ■要約パートでは、約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")で、新規本文に実際に書かれている事柄を、書かれている順に漏れなく説明してください。一般化しすぎないでください — 例えば「感謝を伝える返信です」のような抽象的な言い換えだけで終わらせず、何について感謝しているのか、何を楽しみにしているのか、何を確認したいのかといった、新規本文に実際に書かれている具体的な内容まで書いてください。これが主要パートであり、主題は常に新規本文です。冒頭の注記行がある場合に限り、新規本文を理解する助けとして冒頭に短い従属節を一つだけ置いて「過去のやり取りへの返信である」旨に触れてもかまいません(例:「過去のやり取りへの返信として、」)が、その過去のやり取りが具体的に何だったかを述べてはいけません(内容が与えられていないため)。日付・時刻を推測で書くこと、および存在しない過去のメールを物語る言い回しは、この従属節の中であっても禁止します。新規本文が短い場合(挨拶や「了解です」「承知しました」のような一行の受領確認のみなど)は、水増しせず、このメールが何をしたかを新規本文に書かれている範囲で簡潔に述べてください。
+        ■要約パートでは、約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")で、新規本文に実際に書かれている事柄を、書かれている順に漏れなく説明してください。一般化しすぎないでください — 例えば「感謝を伝える返信です」のような抽象的な言い換えだけで終わらせず、何について感謝しているのか、何を楽しみにしているのか、何を確認したいのかといった、新規本文に実際に書かれている具体的な内容まで書いてください。これが主要パートであり、主題は常に新規本文です。冒頭の注記行の有無に関わらず、「過去のやり取りへの返信として」のような前置きの一文を書かず、新規本文の内容から直接書き始めてください。日付・時刻を推測で書くこと、および存在しない過去のメールを物語る言い回しは禁止します。新規本文が短い場合(挨拶や「了解です」「承知しました」のような一行の受領確認のみなど)は、水増しせず、このメールが何をしたかを新規本文に書かれている範囲で簡潔に述べてください。
         ■伝えたいことパートでは、約1文で、新規本文を書いた送信者の意図とトーン(お礼を伝えたい、確認を求めている、丁寧・カジュアルな調子など)を述べてください。■要約パートの内容を繰り返すのではなく、このメールが何を達成しようとしているかを述べてください。
         ■アクションパートでは、約1文で、新規本文が受信者に求める行動(返信・確認・日程調整・判断・情報提供など)を述べてください。何も求めていない場合は、このパートの内容を「特になし」の一語のみにしてください。
 
