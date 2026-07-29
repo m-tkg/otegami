@@ -860,8 +860,18 @@ struct MessageListView: View {
     /// for a grouped-mode row.
     private func handleThreadSelected(_ summary: ThreadSummary) {
         guard let threadId = summary.thread.id else { return }
-        selectedThreadId = threadId
+        // Task #105 続報: cold launch 直後の初回タップだけ `ThreadEntryView`
+        // に `preselectedMessageId=nil` が渡る実機ログが取れた (一覧クエリは
+        // フラットで正しい)。切り分けのため「タップした行が持っていた値」を
+        // ここで記録する (notice — log collect アーカイブに残るレベル)。
+        // また、`selectedThreadId` を先に書くと push の destination 評価が
+        // `selectedMessageId` の書き込みより先に走る可能性を排除するため、
+        // messageId を先に書いてから threadId を書く順序に変更。
+        Self.observeThreadsLogger.notice(
+            "handleThreadSelected: threadId=\(threadId, privacy: .public) singleMessageId=\(summary.singleMessageId.map(String.init) ?? "nil", privacy: .public)"
+        )
         selectedMessageId = summary.singleMessageId
+        selectedThreadId = threadId
         onThreadSelected(threadId, summary.singleMessageId)
     }
 
