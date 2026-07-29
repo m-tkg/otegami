@@ -1380,7 +1380,20 @@ final class AppEnvironment {
             store: SystemUbiquitousStore(),
             local: AppSettingsCloudDirectory(),
             isEnabled: { [cloudSyncSettings] in
+                #if os(macOS)
+                // ユーザー指示 (2026-07-29)「mac では、アカウント以外の
+                // 情報は iCloud 同期しなくて良い」: settings.v2 (表示・
+                // 操作設定、#89/#144のプッシュリレーURL含む) は iOS/
+                // iPadOS間でのみ同期し、macOSは読みも書きもしない
+                // (他端末の設定変更をmacOSに反映しない・macOSでの設定
+                // 変更を他端末へ流さない)。アカウント本体の同期
+                // (`accountCloudSync`) はこのゲートの対象外 — 引き続き
+                // 全プラットフォームで有効。`docs/icloud-sync.md`「macOS
+                // はアカウントのみ同期」参照。
+                false
+                #else
                 cloudSyncSettings.isEnabled && AppEnvironment.isCloudSyncPermittedOnThisBuild()
+                #endif
             }
         )
 
