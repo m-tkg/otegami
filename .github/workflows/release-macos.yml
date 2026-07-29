@@ -168,19 +168,32 @@ jobs:
           MACOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 }}
         run: |
           RESOLVED="$RUNNER_TEMP/Otegami-macOS.resolved.entitlements"
+          # $(OTEGAMI_KEYCHAIN_GROUP) は Shared.xcconfig の
+          # `$(DEVELOPMENT_TEAM).$(OTEGAMI_BUNDLE_ID).shared` — xcodebuild の
+          # 署名なら自動展開されるが、bare codesign はマクロを知らない。
+          # 展開し忘れるとリテラル文字列がそのまま entitlement に埋まり、
+          # Keychain 問い合わせが全部落ちる (2026-07-29 の macOS Keychain
+          # Access Group 共有対応で追加)。
           sed \
             -e "s/\$(TeamIdentifierPrefix)/${NOTARY_TEAM_ID}./" \
             -e "s/\$(CFBundleIdentifier)/com.mtkg.otegami/" \
+            -e "s/\$(OTEGAMI_KEYCHAIN_GROUP)/${NOTARY_TEAM_ID}.com.mtkg.otegami.shared/" \
             "$APP_DIR/Config/Otegami-macOS.entitlements" > "$RESOLVED"
           if [ -n "$MACOS_PROVISIONING_PROFILE_BASE64" ]; then
             echo "$MACOS_PROVISIONING_PROFILE_BASE64" | base64 -d \
               > "$APP_PATH/Contents/embedded.provisionprofile"
-            echo "provisioning profile embedded — keeping iCloud entitlement"
+            echo "provisioning profile embedded — keeping restricted entitlements"
           else
+            # keychain-access-groups も制限付き entitlement — profile 無しで
+            # 付けると iCloud KVS と同じ launchd 起動拒否 (POSIX 163) を踏む
+            # ため、iCloud KVS と一緒に落とす。
             /usr/libexec/PlistBuddy -c \
               "Delete :com.apple.developer.ubiquity-kvstore-identifier" \
               "$RESOLVED" || true
-            echo "no provisioning profile secret — stripped iCloud KVS entitlement"
+            /usr/libexec/PlistBuddy -c \
+              "Delete :keychain-access-groups" \
+              "$RESOLVED" || true
+            echo "no provisioning profile secret — stripped restricted entitlements"
           fi
           echo "RESOLVED_ENTITLEMENTS=$RESOLVED" >> "$GITHUB_ENV"
 
