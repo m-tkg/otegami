@@ -583,117 +583,103 @@ struct ThreadDetailView: View {
         }
     }
 
-    /// Enqueues one `archive` op per message, resolved at *replay* time (not
-    /// here) by `OpQueueProcessor` — same "self-heal against current server
-    /// state, and branch on `account.kind` for Gmail" behavior
-    /// `MessageListView.commitArchive(_:)` uses; see `OpQueueKind.archive`'s
-    /// doc comment for why a pre-resolved local Archive-role mailbox lookup
-    /// (this method's previous implementation) silently did nothing on a
-    /// real Gmail account.
-    private func archiveThread() {
-        guard let accountId else { return }
-        Task {
-            do {
-                let archived = try await environment.database.dbWriter.write { db -> Bool in
-                    let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
-                    var didArchiveAny = false
-                    for message in msgs {
-                        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
-                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId), mailbox.role != .archive else { continue }
-                        try OpQueue.enqueueArchive(
-                            accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                            uids: [uid], db: db
-                        )
-                        try FTSIndexer.delete(messageId: messageId, db: db)
-                        try MessageRecord.deleteOne(db, key: messageId)
-                        didArchiveAny = true
-                    }
-                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-                    return didArchiveAny
-                }
-                guard archived else { return }
-                // 実機報告 (数秒「メッセージが見つかりません」が見えてから
-                // 一覧に戻る): ここが元は `await replaySoon()` の**後**に
-                // `notifyThreadRemoved()` を呼んでいた。ローカル DB からの
-                // 削除は `dbWriter.write` が返った時点で確定済みで、その瞬間
-                // `messages` を購読している `ThreadQuery.messagesObservation`
-                // が空配列を配信し、`body` の `ContentUnavailableView`
-                // (空状態 placeholder) がすぐさま描画される。`notifyThread
-                // Removed()` (→ `MailScreenView.handleThreadRemoved` が次の
-                // スレッドを開くか pop する) が `replaySoon()` というネット
-                // ワーク I/O (opQueue の replay) の完了を待ってからでない
-                // と呼ばれなかったため、その間の数秒間だけ placeholder が
-                // 見え続けていた。`notifyThreadRemoved()` はローカル DB の
-                // 反映だけで完結する処理で `replaySoon()` の結果に依存しない
-                // ので、先に呼んで即座に遷移させ、`replaySoon()` はその後
-                // (同じ `Task` の続きとして、遷移をブロックせずに) 実行する
-                // — 空状態 placeholder は自分の操作では実質見えなくなり、
-                // 他クライアントでの削除などローカル操作を経由しない消滅の
-                // フォールバックとしてのみ残る。
-                notifyThreadRemoved()
-                await replaySoon()
-            } catch {
-                // Best-effort — the thread just stays if this fails.
-            }
+    /// Task #127 (実機報告フォローアップ — `PENDING.md`「Task #120」節の
+    /// follow-up 候補): archive/junk/delete used to be an independent,
+    /// hand-rolled enqueue-then-delete implementation here — unlike
+    /// `MessageListView`/`AccountDigestView`'s row actions, it never called
+    /// `SyncEngine.MessageRemoval.commit(_:summary:accountId:db:)`, so it
+    /// never got that method's Task #120 "pending relocation" behavior
+    /// (relocate the row into the already-known-locally destination mailbox
+    /// immediately, with a negative placeholder UID, instead of just
+    /// deleting it and waiting for that mailbox's own next sync to discover
+    /// the move) — archiving/deleting/junking straight from the message
+    /// body screen wouldn't show up in Archive/Trash/Junk until the next
+    /// pull-to-refresh, even though the exact same action from the list
+    /// (swipe) or the account digest already relocated instantly. Routing
+    /// through `MessageRemoval.commit` here closes that gap by construction
+    /// — any future change to that shared commit logic (relocation,
+    /// Gmail's no-Archive-mailbox special case, etc.) now automatically
+    /// applies to this screen too, instead of needing to be duplicated a
+    /// third time.
+    ///
+    /// Builds the same `ThreadSummary` shape `OtegamiStore.ThreadQuery
+    /// .actionTargets(for:db:)` expects: `ThreadSummary(flatMessage:
+    /// accountId:)` when `singleMessageId` is set (mirrors
+    /// `targetMessageRecords(threadId:singleMessageId:db:)`'s existing
+    /// single-message branch, used by `applyPinState`/`applyReadState`
+    /// above), or a plain `ThreadSummary(thread:latestMessage:)` for a
+    /// grouped-mode thread (`latestMessage` is `nil` here rather than
+    /// re-fetching it — `commit`/`actionTargets` only ever read
+    /// `summary.thread.id`/`summary.singleMessageId` for a `nil`-
+    /// `flatMessageId` summary, never `latestMessage` itself).
+    private nonisolated static func threadSummary(threadId: Int64, singleMessageId: Int64?, accountId: String, db: Database) throws -> ThreadSummary? {
+        guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
+        if let singleMessageId {
+            guard let message = try MessageRecord.fetchOne(db, key: singleMessageId) else { return nil }
+            return ThreadSummary(flatMessage: message, accountId: accountId)
         }
+        return ThreadSummary(thread: thread, latestMessage: nil)
+    }
+
+    /// Shared body for `archiveThread()`/`junkThread()`/`deleteThread()` —
+    /// see `threadSummary(threadId:singleMessageId:accountId:db:)`'s doc
+    /// comment for why this now delegates the actual removal to
+    /// `MessageRemoval.commit` instead of a hand-rolled per-`kind`
+    /// enqueue-then-delete. `commit` returns `nil` when nothing was
+    /// actually removed (e.g. re-archiving an already-archived message) —
+    /// `notifyThreadRemoved()`/`replaySoon()` are skipped entirely in that
+    /// case, matching `archiveThread()`'s pre-existing `didArchiveAny`
+    /// guard (junk/delete previously had no such guard; unifying on
+    /// `commit`'s own nil-check gives them the same, arguably more correct,
+    /// behavior for free).
+    private func commitRemoval(_ kind: MessageRemoval.Kind) async {
+        guard let accountId else { return }
+        do {
+            let removed = try await environment.database.dbWriter.write { db -> Bool in
+                guard let summary = try Self.threadSummary(threadId: threadId, singleMessageId: singleMessageId, accountId: accountId, db: db) else {
+                    return false
+                }
+                return try MessageRemoval.commit(kind, summary: summary, accountId: accountId, db: db) != nil
+            }
+            guard removed else { return }
+            // 実機報告 (数秒「メッセージが見つかりません」が見えてから一覧に
+            // 戻る): ここが元は `await replaySoon()` の**後**に
+            // `notifyThreadRemoved()` を呼んでいた。ローカル DB からの削除
+            // (今は `MessageRemoval.commit`) は `dbWriter.write` が返った
+            // 時点で確定済みで、その瞬間 `messages` を購読している
+            // `ThreadQuery.messagesObservation`/単一メッセージ observation
+            // が空を配信し、`body` の `ContentUnavailableView` (空状態
+            // placeholder) がすぐさま描画される。`notifyThreadRemoved()`
+            // (→ `MailScreenView.handleThreadRemoved` が次のスレッドを開く
+            // か pop する) が `replaySoon()` というネットワーク I/O
+            // (opQueue の replay) の完了を待ってからでないと呼ばれなかった
+            // ため、その間の数秒間だけ placeholder が見え続けていた。
+            // `notifyThreadRemoved()` はローカル DB の反映だけで完結する
+            // 処理で `replaySoon()` の結果に依存しないので、先に呼んで
+            // 即座に遷移させ、`replaySoon()` はその後 (同じ `Task` の続き
+            // として、遷移をブロックせずに) 実行する — 空状態 placeholder
+            // は自分の操作では実質見えなくなり、他クライアントでの削除
+            // などローカル操作を経由しない消滅のフォールバックとしてのみ
+            // 残る。Task #127: この順序 (`notifyThreadRemoved()` →
+            // `replaySoon()`) は archive/junk/delete の3操作全てで共有する
+            // このヘルパー1箇所にしか存在しないので、以後崩れようがない。
+            notifyThreadRemoved()
+            await replaySoon()
+        } catch {
+            // Best-effort — the thread just stays if this fails.
+        }
+    }
+
+    private func archiveThread() {
+        Task { await commitRemoval(.archive) }
     }
 
     private func junkThread() {
-        guard let accountId else { return }
-        Task {
-            do {
-                try await environment.database.dbWriter.write { db in
-                    let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
-                    for message in msgs {
-                        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
-                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
-                        try OpQueue.enqueueJunk(
-                            accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                            uids: [uid], db: db
-                        )
-                        try FTSIndexer.delete(messageId: messageId, db: db)
-                        try MessageRecord.deleteOne(db, key: messageId)
-                    }
-                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-                }
-                // `archiveThread()`'s doc comment (直前) の理由と同じ —
-                // ローカル DB 反映が確定した時点で即座に遷移させ、
-                // `replaySoon()` の完了は待たない。
-                notifyThreadRemoved()
-                await replaySoon()
-            } catch {
-                // Best-effort.
-            }
-        }
+        Task { await commitRemoval(.junk) }
     }
 
     private func deleteThread() {
-        guard let accountId else { return }
-        Task {
-            do {
-                try await environment.database.dbWriter.write { db in
-                    let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
-                    for message in msgs {
-                        guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
-                        guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
-                        try OpQueue.enqueueDelete(
-                            accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                            uids: [uid], db: db
-                        )
-                        try FTSIndexer.delete(messageId: messageId, db: db)
-                        try MessageRecord.deleteOne(db, key: messageId)
-                    }
-                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-                }
-                // `archiveThread()`'s doc comment (数行上) の理由と同じ —
-                // ローカル DB 反映が確定した時点で即座に遷移させ、
-                // `replaySoon()` の完了は待たない。
-                notifyThreadRemoved()
-                await replaySoon()
-            } catch {
-                // Best-effort.
-            }
-        }
+        Task { await commitRemoval(.delete) }
     }
 
     /// 実機フィードバック第3弾 (A): what "…" menu's archive/junk/delete
