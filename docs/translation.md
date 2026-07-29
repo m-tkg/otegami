@@ -1092,6 +1092,99 @@ end-to-end 再現。`make ios`/UITest ビルドは green。実機/シミュレ�
 は全実行を通じて崩れていない。`OtegamiTranslationFoundationModelsTests`
 (実機上のオンデバイスモデルに対する結合テスト)も green。
 
+## 要約品質: 引用本文をモデルに渡すのをやめる根治 (Task #134)
+
+**症状**: `#132` の指示チューニング後も、実機 (`scratchpad/yoyaku.eml` —
+機微、コミット禁止) で「気をつけて帰ってね」(新規本文の最後の行) 以降の
+過去のやり取りが要約に混入する症状が継続した。調査の結果:
+
+- 実機の `bodyRecord.plainText` は text/plain パートの内容そのものでは
+  なく mailcore2 の `plainTextBodyRendering()` (HTML優先タグ剥がし) 経由
+  になっており、`MailCoreIMAPSession+Mapping.swift:341` (旧実装) がこれを
+  常に使っていた。この合成レンダリングの形状は `QuoteStripper` の引用
+  マーカー検出と確実には一致しない疑いがあった (Task #134 の item 2、
+  下記「plainText 経路の修正」参照)。
+- `#132` 後の a43c07e で仕込んだ `TranslationGate`/`SummaryInput` の
+  診断ログが `.debug` レベルのままで、実機の `log collect` アーカイブに
+  残らず (`docs/verify.md` の新しい注記参照)、切り分けに使えなかった
+  (`#105`/`#122` と同じ罠を3度目に踏んだ)。
+
+**根治方針の転換**: `#62`〜`#132` は一貫して「引用部分の *内容* をどう
+モデルに提示するか」(ラベル付け・文字数上限・時系列順・語彙禁止) を
+チューニングし続けたが、実機での再発が示すのは「モデルに引用の内容を
+見せている限り、何らかの確率でそこから何かを拾ってしまう」という
+より根本的な問題だった。Task #134 では発想を変え、**引用の内容を一切
+モデルに渡さない**構造的な修正にした:
+
+- `SummaryInputBuilder.build` は `quotedText: String` の代わりに
+  `hasQuotedContext: Bool` を受け取るようになり、引用が存在する場合でも
+  固定のメタ1行 `(この返信は過去のやり取りへの返信。引用本文は省略
+  している)` を新規本文の前に置くだけになった。実際の引用テキストは
+  `MessageView.sourceTextForSummary()` からモデル入力へ一切渡らない。
+- `FoundationModelsTranslationService.summarizeInstructions` /
+  `summarizePlainInstructions` をこの新前提で整理。`#97` の時系列
+  並び替え規則は不要になった (2つ目のコンテンツセクションが無いため)。
+  `#132` の「引用の話題を借りない」規則は「新規本文に無い内容を補わ
+  ない」規則へ一般化。
+
+**再現用の回帰追加**: `mail_fixture_long.txt` は新規本文単体で1700字超
+となるよう作られていたが、引用部分 (最大600字) を入力から取り除いた
+結果、`TranslationChunker.defaultMaxChunkLength` (2000字) を単体では
+超えなくなり、`summarizeLongText` の map-reduce (チャンク分割) 経路を
+踏まなくなった。チャンク経路も引き続き検証できるよう、新規本文をさらに
+パディングした `mail_fixture_long_padded.txt` を追加した
+(`SummaryInput` が2000字をわずかに超えるよう調整、`TranslationChunker
+.chunk(input).count == 2`)。
+
+**実装中に見つけた回帰とその場での修正**: 当初案は `#97`/`#102` の
+「引用への返信である旨を示す短い従属節を冒頭に一つだけ置いてよい」
+規則を、内容ではなくメタ情報 (`quotedContextNoteLine`) 由来に再スコープ
+して残し、例示フレーズとして「過去のやり取りへの返信として、」を
+指示文に含めていた。`mail_fixture_long_padded.txt` (チャンク経路) を
+実FMで3回実行したところ、3回とも ■要約 の内容が「過去のやり取りへの
+返信として、」で始まりながら **■要約 ラベル行そのものが省略される**
+崩れた出力になることを確認した — `summarizeLongText` の reduce 段階の
+実際の入力 (`combined`、`summarizePlain` の部分要約を連結したもの) を
+デバッグ出力で確認したところ、`combined` 自体には過去のやり取りへの
+言及は一切含まれておらず、モデルが指示文中の例示フレーズをそのまま
+無条件の枕詞として採用していたと判断した (`#122` が既に名付けた
+「指示文中の出力に見える文言がそのまま出力に紛れ込む」失敗の一種)。
+この許可を完全に撤廃し、「■要約は前置きの一文を書かず新規本文の内容
+から直接書き始める」よう明示的に禁止する一文に置き換えたところ、
+同フィクスチャで3回連続グリーンになった (`FoundationModelsTranslationService
+.summarizeInstructions` の Task #134 doc comment参照)。
+
+### 検証
+
+`scratchpad/summary-repro` (`SUMMARY_REPRO_MAIL` で対象ファイルを切替)
+で以下を各3回以上実行し、いずれも「引用混入ゼロ」「■要約が新規本文の
+具体を保つ」「3行構造がちょうど1回」を確認 (実FM、修正後の最終版):
+
+- `mail_fixture.txt` (架空、非チャンク経路): 3回実行、3回とも引用混入
+  なし・「資料」「候補日を2〜3つ」「来週水曜」等の具体を保持。
+- `mail_fixture_long.txt` (架空、この修正で非チャンク経路化):
+  1回実行 (回帰なしの確認目的)、引用混入なし・具体を保持。
+- `mail_fixture_long_padded.txt` (架空、新規追加、チャンク経路):
+  4回実行 (指示文修正前1回で不具合発見、修正後3回連続グリーン)、
+  ■要約ラベル欠落の再発なし・具体を保持。
+- `yoyaku_padded.txt` (機微、実際の報告元、plain想定): 3回実行、3回とも
+  引用混入なし (`SummaryInput` が149字のメタ1行+新規本文のみになった
+  ことを確認済み)・新規本文の具体的な感情表現を保持。
+- `yoyaku_htmlderived.txt` (機微、HTML剥がし近似): 3回実行、3回とも
+  同様に引用混入なし・具体を保持。`QuoteStripper` の引用マーカー検出
+  もこの近似形状で引き続き機能 (`detectedMarker=japaneseSaidWroteAddressEnd`)
+  することを確認。
+
+`OtegamiTranslationFoundationModelsTests` (実機オンデバイスモデルへの
+結合テスト) も green。`make test`/`make mac`/`make ios` すべて green。
+
+**既知の残課題 (Task #134 の対象外、観測のみ)**: `mail_fixture.txt` の
+実行で、新規本文の宛名 (「佐藤さん」) が ■要約 の主語として誤って
+採用される (「佐藤さんから…依頼がありました」) ケースを複数回のうち
+数回observed — `#132` (c) が対象とした「差出人/宛先の誤った主語化」と
+同系統の問題で、`#134` はこれを対象にしていない (残存する既存の
+【差出人・宛先について】規則はそのまま維持)。
+
 ## テスト
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、
