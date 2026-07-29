@@ -105,8 +105,17 @@ struct FolderListSheet: View {
         FolderCategoryOrderStore.loadOrder(from: categoryOrderRaw)
     }
 
+    /// 実機フィードバック第2弾 (2026-07-29「一番下にある項目を開いたとき、
+    /// 開かれてることに気づきにくい」): セクションを展開した直後に、その
+    /// 見出しを画面上部へ自動スクロールするためのターゲット。トグル関数が
+    /// 展開時にセクション見出しの `.id` をここへ入れ、`ScrollViewReader` の
+    /// `.onChange` が拾って `scrollTo(_:anchor: .top)` する — 展開行が画面
+    /// 外 (下) に伸びるだけで何も動かないように見える問題への対策。
+    @State private var menuScrollTarget: String?
+
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             List {
                 if environment.accounts.isEmpty {
                     ContentUnavailableView {
@@ -139,6 +148,17 @@ struct FolderListSheet: View {
                 }
             }
             .accessibilityIdentifier("folderSheet.list")
+            // `menuScrollTarget` の doc comment 参照 — 展開直後に見出しを
+            // 上端へスクロール。`.onChange` は展開行の insert が同じ更新
+            // サイクルで確定した後に発火するため、`scrollTo` 時点で行の
+            // 実体が存在する。
+            .onChange(of: menuScrollTarget) { _, target in
+                guard let target else { return }
+                withAnimation(.default) {
+                    proxy.scrollTo(target, anchor: .top)
+                }
+                menuScrollTarget = nil
+            }
             .scrollContentBackground(.hidden)
             .background(OtegamiColor.background)
             .navigationTitle("フォルダ")
@@ -174,6 +194,7 @@ struct FolderListSheet: View {
                     .labelStyle(.iconOnly)
                     .accessibilityIdentifier("folderSheet.settings")
                 }
+            }
             }
         }
         .tint(OtegamiColor.accent)
@@ -364,6 +385,7 @@ struct FolderListSheet: View {
                 isCollapsed: isCollapsed,
                 onToggle: { toggleAccountCollapsed(account.id) }
             )
+            .id("menuSection-account-\(account.id)")
         }
     }
 
@@ -392,6 +414,10 @@ struct FolderListSheet: View {
         }
         FolderSectionCollapseStore.replaceAll(collapsedAccountIds: collapsedAccountIds)
         FolderCategoryCollapseStore.replaceAll(collapsedRoleRawValues: collapsedCategoryRoles)
+        if !collapsing {
+            // 展開に気づけるよう見出しを上端へ (`menuScrollTarget`参照)。
+            menuScrollTarget = "menuSection-account-\(accountId)"
+        }
     }
 
     // MARK: - 画面構造改修バッチ (Task #33, 3): カテゴリ優先グルーピング
@@ -445,6 +471,7 @@ struct FolderListSheet: View {
                     onSelectUnified: { selectUnifiedView(for: role) },
                     onToggle: { toggleCategoryCollapsed(role) }
                 )
+                .id("menuSection-role-\(role.rawValue)")
             }
         }
     }
@@ -533,6 +560,10 @@ struct FolderListSheet: View {
         }
         FolderCategoryCollapseStore.replaceAll(collapsedRoleRawValues: collapsedCategoryRoles)
         FolderSectionCollapseStore.replaceAll(collapsedAccountIds: collapsedAccountIds)
+        if !collapsing {
+            // 展開に気づけるよう見出しを上端へ (`menuScrollTarget`参照)。
+            menuScrollTarget = "menuSection-role-\(role.rawValue)"
+        }
     }
 
     /// Mirrors `SidebarView.mailboxRow(for:in:)`'s split (see its own doc
