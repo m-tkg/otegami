@@ -383,3 +383,100 @@ lookupの修正はしたが、検索フィールドの発見方法自体の書�
 ファイルは`swift build`(テスト抜き)の成功・変更ファイルの`swiftc -parse`
 通過・変更内容が文字列リテラル置き換え中心であることで個別に確認済み。
 詳細は`PENDING.md`のTask #145節参照。
+
+## Task #170: 言語設定不一致の総点検と自動チェックの導入 (2026-07)
+
+実機報告「macOS を英語設定にしているのに、アプリメニューが『About
+Otegami』(英語)と『アップデートを確認…』(日本語)の混在」を受けた棚卸し。
+Task #145 は「多言語対応自体はスコープ外、日本語UIの一貫性が目的」だった
+のに対し、このタスクの時点では英語UI (`Localizable.xcstrings`の`en`訳)
+が本格的に提供されている状態 — その上で、新規追加のたびに再発している
+「カタログ未登録の文字列」を体系的に潰し、二度と検知なく紛れ込まない
+ようにするのが目的。
+
+### 見つかった不一致 (計30件超)
+
+- **macOSメニューバー (`OtegamiCommands.swift`)**: Task #158/#165 で追加
+  された「アップデートを確認…」「新規メッセージ」「メッセージ」(Message
+  メニューのタイトル)「既読/未読を切り替え」「次/前のメールボックス」が
+  カタログに一件も登録されていなかった — 実機報告そのものの原因。
+- **ハンバーガーメニューのカテゴリ見出し (`MailboxRoleDisplay
+  .categoryDisplayName`)**: 「アーカイブ」「下書き」「すべてのメール」
+  「その他」は訳が入っていたのに、「受信トレイ」「フラグ付き」「送信済
+  み」「迷惑メール」「ゴミ箱」が未登録 — 表示言語を切り替えるとメニュー
+  内で言語が混在する、最も影響範囲の広い不具合だった。
+- **`Text(verbatim:)`が固定文言のフォールバックまで素通ししていたケース**
+  (`ComposerView.flatFromLabel`): 差出人未選択時のプレースホルダ「アカウ
+  ントを選択」が動的な値 (表示名/アドレス) と同じ`Text(verbatim:)`引数を
+  通っていたため常に日本語のままだった。`LocalizedStringKey(_:)`でラップ
+  し直し (`AccountFilterChip`が既に使っている手法、本ドキュメントの
+  「`Text(String)`は自動でローカライズされない」§3参照)、動的値の安全性
+  を保ったままフォールバックだけ訳を引けるようにした。
+- **`String(localized: "... \(x)")`形式の未登録エントリ**: `String
+  (localized:)`に文字列補間を渡すと、`String.LocalizationValue`が補間値
+  をフォーマット指定子 (`Int`なら`%lld`、`String`なら`%@`) に変換した
+  キーでカタログを引く — この挙動自体はこのアプリで以前から使われていた
+  (`"添付ファイル %lld 個"`, Task #76) が、本ドキュメントにこれまで明記
+  していなかった。今回3件見つかった: スレッド詳細のナビゲーションタイ
+  トル (`"スレッド (%lld)"`, Task #160台の派生)、統合ロールビューのタイ
+  トルテンプレート (`"すべての%@"`)、メール情報の宛先要約
+  (`"宛先: %@"`/`"宛先: %@ 他%lld名"`)。**この形は静的スキャナ
+  (下記) では検知できない** — インライン補間を含むリテラルは無条件で
+  スキップする実装のため。見つかったのはすべて英語ロケールでの実機/
+  シミュレータ目視確認 (`LOCALE=en scripts/verify-screen.sh
+  thread-accordion`) 経由。
+- 上記以外、Undo トースト・EN/HTML バッジ・アーカイブ済み表示・下書き/
+  送信待ち一覧の空状態・アップデート確認画面・カレンダー招待の応答済み
+  ラベル等、`DesignSystem`/`Composer`/`MessageList`/`Sidebar`/
+  `ThreadDetail`各所で単発の未登録エントリが多数 (詳細は該当コミット
+  `fix(localization): translate strings that leaked past
+  Localizable.xcstrings`参照)。
+- 逆方向 (英語リテラル直書きで常に英語表示になる): `OtegamiApp.swift`の
+  macOS用「メッセージ未選択」プレースホルダが`"No Message Selected"`の
+  英語リテラル直書きだった。`MailScreenView`のiPad regular幅で同じ空状態
+  に使っている日本語ソース文字列に統一し、1つの訳を両方が共有する形にした。
+
+### 自動チェック: `scripts/check-localizable-coverage.py`
+
+`make check-localization` (ci-app.yml にも組み込み済み) で実行。要点:
+
+- `apps/Otegami/Sources`配下を走査し、`Text`/`Button`/`Label`/`Toggle`/
+  `Menu`/`CommandMenu`/`TextField`/`SecureField`/
+  `ContentUnavailableView`/`NavigationLink`/`Section`/`Picker`と、
+  `.navigationTitle`/`.alert`/`confirmationDialog`/`.accessibilityLabel`/
+  `.accessibilityHint`/`.accessibilityValue`/`.help`、`String(localized:)`
+  に渡された文字列リテラルを抽出 (コメント/文字列リテラルを正しく認識
+  した上でスキャンするので、ドキュメントコメント中のサンプルコード
+  (`Section("見出し")`等) を誤検知しない)。
+- カタログ未登録のリテラル (日本語・「英語のUI文言らしき」英語の両方)
+  を fatal、`en`訳が空のキーを fatal、ソースから見つからないキーを
+  warning (削除候補) として報告。
+- ブランド名・プロトコル用語のホワイトリストは本ドキュメントの
+  Task #145 節の方針をそのまま踏襲 (`Cc`/`Bcc`等のRFC見出し語、
+  `IMAP`/`TLS`等、`Gmail`/`iCloud`/`Yahoo`/`Outlook`/`Office365`/
+  `Exchange`/`Microsoft`等のプロバイダ名)。
+- **既知の限界**: 文字列補間 (`\(...)`) を含むリテラルは全て無条件で
+  スキップする — 単純な`Text("... \(x)")`なら補間部分がデータなので
+  正しい挙動だが、上記の`String(localized: "... \(x)")`のように本来は
+  静的解決できるケースも一律スキップしてしまう。この種の見落としは
+  `grep -rn 'String(localized:.*\\(' apps/Otegami/Sources`で定期的に
+  手動監査するか、目視確認 (次項) で拾う必要がある。
+
+### 今後の運用ルール
+
+1. **ユーザー向け文字列は必ず`Localizable.xcstrings`経由にする** — 新しい
+   `Text`/`Button`/`.navigationTitle`等を書くときは、日本語リテラルを
+   そのまま書けばキー自体は自動的に機能する (本ドキュメント冒頭「仕組
+   み」参照)。`String`型のcomputed propertyやswitch文の分岐値を経由する
+   場合は`String(localized:)`か`LocalizedStringKey(_:)`ラップが要る
+   (本ドキュメント「`Text(String)`は自動でローカライズされない」節)。
+2. **新規追加時は`scripts/generate-localizable.py`の`translations`辞書に
+   ja→enを1行足して`python3 scripts/generate-localizable.py`を実行** —
+   カタログを直接手編集した場合は同じコミットで辞書側にも反映する
+   (Task #145の既存ルールを継続)。
+3. **コミット/PR前に`make check-localization`を実行** — ci-app.yml で
+   自動的にも走るが、ローカルで先に潰しておく方が速い。
+4. **`String(localized: "... \(x)")`は自動チェックの死角** — 補間を使う
+   場合は上記grepで手動確認するか、`LOCALE=en scripts/verify-screen.sh
+   <scenario>` / macOSはローカルビルドを`-AppleLanguages '(en)'`付きで
+   起動して目視確認する。
