@@ -201,6 +201,21 @@ struct FolderListSheet: View {
     /// 折りたたむ。`.unifiedInbox`が選択中 (どちらの入力も`nil`) の場合は
     /// 展開対象が無い = 全折りたたみになる。
     private func resetCollapseStateToCurrentSelection() {
+        // Task #110 検証用: `scripts/verify-screen.sh`の`menu-expanded`
+        // シナリオが、タップ (シェブロン操作) 無しで「セクション行タップ =
+        // 統合ビュー選択、シェブロンは開閉専用」の見た目 (展開状態) を
+        // screenshot するための直接遷移フラグ — `-uitestsOpenSettingsDirectly`
+        // 等と同じ「実機/通常起動では引数に無いので常にno-op」パターン。
+        if ProcessInfo.processInfo.arguments.contains("-uitestsExpandFolderMenuSectionsDirectly") {
+            withAnimation(.default) {
+                collapsedCategoryRoles = []
+                collapsedAccountIds = []
+            }
+            FolderCategoryCollapseStore.replaceAll(collapsedRoleRawValues: collapsedCategoryRoles)
+            FolderSectionCollapseStore.replaceAll(collapsedAccountIds: collapsedAccountIds)
+            return
+        }
+
         var expandedRoles: Set<String> = []
         var expandedAccountIds: Set<String> = []
 
@@ -401,6 +416,18 @@ struct FolderListSheet: View {
     /// roleごとにセクションを作り、その中に各アカウントを並べる + 横断ビュー」。
     /// どの account にも `role` のメールボックスが1つも無ければセクション自体を
     /// 出さない (空の「送信済み」セクション等が並ぶのを避ける)。
+    /// Task #110 (ハンバーガーメニューの挙動変更): 統合ビューを持つセクション
+    /// (`.inbox`/`.flagged`/`.archive`/`.sent`/`.drafts`/`.junk`/`.trash` —
+    /// `categoryOrder`のすべて) は、以前は「セクション見出し行タップ =
+    /// 折りたたみ開閉」「見出し配下の専用行 (`categoryUnifiedRow`、旧実装)
+    /// タップ = 統合ビュー選択」の2手段が併存していた。ユーザー要望により
+    /// 見出し行本体のタップを統合ビュー選択そのものに変更し (`onSelectUnified`
+    /// を渡す)、折りたたみ開閉は見出し右端のシェブロンだけが担うようにした
+    /// (`onToggle`)。これにより専用行が完全に冗長になったため削除した —
+    /// 旧`categoryUnifiedRow(for:entries:)`はもう存在しない。「開いた時は
+    /// 選択中のセクションだけ展開」という既存の初期状態
+    /// (`resetCollapseStateToCurrentSelection()`) はシェブロンの開閉状態と
+    /// して変わらず維持する。
     @ViewBuilder
     private func categorySection(for role: MailboxRoleRecord) -> some View {
         let entries = mailboxEntries(for: role)
@@ -408,14 +435,6 @@ struct FolderListSheet: View {
             let isCollapsed = collapsedCategoryRoles.contains(role.rawValue)
             Section {
                 if !isCollapsed {
-                    // 複数アカウントが同じ role を持つ場合だけ「横断ビュー」を
-                    // 出す — 1アカウントしか無ければ、直後に並ぶそのアカウント
-                    // 自身の行と全く同じ中身になり冗長 (`showsAccountAccent`が
-                    // `MessageListView`で同じ理由により`environment.accounts
-                    // .count > 1`を要求しているのと同じ判断)。
-                    if environment.accounts.count > 1 {
-                        categoryUnifiedRow(for: role, entries: entries)
-                    }
                     ForEach(entries) { entry in
                         categoryAccountRow(for: entry)
                     }
@@ -425,35 +444,25 @@ struct FolderListSheet: View {
                     role: role,
                     unreadCount: entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
                     isCollapsed: isCollapsed,
+                    onSelectUnified: { selectUnifiedView(for: role) },
                     onToggle: { toggleCategoryCollapsed(role) }
                 )
             }
         }
     }
 
-    /// カテゴリ優先セクション内、role単位の「横断ビュー」行 —
-    /// 「全アカウントの該当roleをまとめて見る」。`SidebarSelection
-    /// .unifiedRole(role)`を選択する — `MessageListView`側の観測は
-    /// `ThreadQuery.unifiedInboxSummariesObservation(accountIds:role:...)`
-    /// (既定`role: .inbox`を一般化したもの)。
-    private func categoryUnifiedRow(for role: MailboxRoleRecord, entries: [MailboxEntry]) -> some View {
-        let unreadTotal = entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) }
-        return Button {
+    /// Task #110: 「受信トレイ」セクション見出しのタップは、統合受信トレイ
+    /// トップ行 (`statusSection`の「すべての受信トレイ」、`onSelectUnified`
+    /// → `mailSelection = .unifiedInbox`) と全く同じ選択にする — 受信トレイ
+    /// 以外のセクション (アーカイブ/送信済み/下書き/迷惑メール/ゴミ箱/
+    /// フラグ付き) は元々トップレベルの専用行を持たないため、`onSelectUnifiedRole
+    /// (role)` (`mailSelection = .unifiedRole(role)`) をそのまま使う。
+    private func selectUnifiedView(for role: MailboxRoleRecord) {
+        if role == .inbox {
+            onSelectUnified()
+        } else {
             onSelectUnifiedRole(role)
-        } label: {
-            HStack {
-                Label(String(localized: "すべての\(role.categoryDisplayName)"), systemImage: role.categorySystemImage)
-                Spacer()
-                if unreadTotal > 0 {
-                    Text("\(unreadTotal)")
-                        .font(OtegamiFont.badge())
-                }
-            }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .listRowBackground(selectedUnifiedRole == role ? OtegamiColor.paleBase : nil)
-        .accessibilityIdentifier("folderSheet.category.\(role.rawValue).unified")
     }
 
     /// role で分類できるカテゴリセクション (受信トレイ/アーカイブ/送信済み
@@ -517,10 +526,16 @@ struct FolderListSheet: View {
                     }
                 }
             } header: {
+                // Task #110: `.none`(ユーザー独自フォルダ)は複数アカウントを
+                // 横断する「統合ビュー」という概念自体が無い (`matchesCategory`
+                // 参照 — role で束ねられないぶん、そもそも同じ意味を持つ
+                // folder ではない) ため、`onSelectUnified: nil`のまま — 見出し
+                // 行タップは引き続き折りたたみ開閉を担う (現状維持)。
                 CategorySectionHeader(
                     role: .none,
                     unreadCount: entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
                     isCollapsed: isCollapsed,
+                    onSelectUnified: nil,
                     onToggle: { toggleCategoryCollapsed(.none) }
                 )
             }
@@ -909,30 +924,88 @@ private struct MailboxEntry: Identifiable {
 /// `AccountSectionHeader`のrole版 — カテゴリ優先モードの1セクション見出し。
 /// 「折りたたみ中も見えること」の要件は`AccountSectionHeader`と同じ理由で
 /// ここでも踏襲。
+///
+/// Task #110 (ハンバーガーメニューの挙動変更): `onSelectUnified`が非`nil`
+/// (統合ビューを持つセクション — `.none`以外の`categoryOrder`全ロール) の
+/// 場合、見出し本体は折りたたみ開閉ではなく統合ビュー選択の`Button`になり、
+/// 折りたたみ開閉は右端の独立したシェブロン`Button`(`CategoryDisclosureChevron`)
+/// だけが担う (タップターゲットを44pt確保)。`nil`
+/// (`.none`セクション、統合ビュー概念自体が無い) の場合は旧来どおり見出し
+/// 全体が折りたたみ開閉の1つの`Button`のまま。
 private struct CategorySectionHeader: View {
     let role: MailboxRoleRecord
     let unreadCount: Int
+    let isCollapsed: Bool
+    let onSelectUnified: (() -> Void)?
+    let onToggle: () -> Void
+
+    var body: some View {
+        if let onSelectUnified {
+            HStack(spacing: 0) {
+                Button(action: onSelectUnified) {
+                    HStack {
+                        Label(role.categoryDisplayName, systemImage: role.categorySystemImage)
+                        Spacer()
+                        if unreadCount > 0 {
+                            Text("\(unreadCount)")
+                                .font(OtegamiFont.badge())
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("folderSheet.category.\(role.rawValue).header")
+
+                CategoryDisclosureChevron(role: role, isCollapsed: isCollapsed, onToggle: onToggle)
+            }
+        } else {
+            Button(action: onToggle) {
+                HStack {
+                    Label(role.categoryDisplayName, systemImage: role.categorySystemImage)
+                    Spacer()
+                    if unreadCount > 0 {
+                        Text("\(unreadCount)")
+                            .font(OtegamiFont.badge())
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("folderSheet.category.\(role.rawValue).header")
+            .accessibilityAddTraits(isCollapsed ? [] : .isSelected)
+            .accessibilityValue(isCollapsed ? "折りたたみ" : "展開")
+        }
+    }
+}
+
+/// Task #110: `CategorySectionHeader`の折りたたみ開閉専用シェブロン —
+/// 見出し行本体が統合ビュー選択に変わったため、開閉操作をここへ切り出した。
+/// SF Symbols のグリフ自体は小さいが、タップターゲットは HIG の最小
+/// 44×44pt を`.frame(minWidth:minHeight:)`で確保する (ユーザー指示
+/// 「シェブロンのタップターゲットは十分広く」)。折りたたみ状態の
+/// アクセシビリティ表現 (`.isSelected`トレイト＋`.accessibilityValue`) も、
+/// 折りたたみ開閉の実体がここへ移ったことに合わせてここへ移した
+/// (旧`CategorySectionHeader`本体が持っていたのと同じ表現)。
+private struct CategoryDisclosureChevron: View {
+    let role: MailboxRoleRecord
     let isCollapsed: Bool
     let onToggle: () -> Void
 
     var body: some View {
         Button(action: onToggle) {
-            HStack {
-                Label(role.categoryDisplayName, systemImage: role.categorySystemImage)
-                Spacer()
-                if unreadCount > 0 {
-                    Text("\(unreadCount)")
-                        .font(OtegamiFont.badge())
-                }
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-                    .accessibilityHidden(true)
-            }
-            .contentShape(Rectangle())
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("folderSheet.category.\(role.rawValue).header")
+        .accessibilityIdentifier("folderSheet.category.\(role.rawValue).chevron")
+        .accessibilityLabel(Text(role.categoryDisplayName))
         .accessibilityAddTraits(isCollapsed ? [] : .isSelected)
         .accessibilityValue(isCollapsed ? "折りたたみ" : "展開")
     }

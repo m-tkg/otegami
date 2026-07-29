@@ -2303,12 +2303,13 @@ XCUITest 側: `mail.chip.addAccount`を直接参照していた
 
 ### 実装
 
-- **しきい値**: `shortSwipeThreshold` (72pt)・`longSwipeThreshold`
-  (152pt)、`MessageListRow` の `private let`。ドラッグ量がどちらの符号
-  (正=leading、負=trailing) かでどちらの辺のアクションかを、しきい値との
-  比較で短い/長いどちらのアクションかを決める (`reveal(for:)`)。
-  `longSwipeThreshold + 40pt` でクランプし、指を大きく動かしても行が
-  画面外まで滑っていかないようにしている。
+- **しきい値**: `shortSwipeThreshold` (72pt、固定) ・`longSwipeThreshold`
+  (`MessageListRow`)。ドラッグ量がどちらの符号 (正=leading、負=trailing)
+  かでどちらの辺のアクションかを、しきい値との比較で短い/長いどちらの
+  アクションかを決める (`reveal(for:)`)。`longSwipeThreshold +
+  maxDragOvershoot(40pt)` でクランプし、指を大きく動かしても行が画面外
+  まで滑っていかないようにしている。**Task #114 で `longSwipeThreshold`
+  自体を行幅の相対値に変更** — 下記「Task #114」節参照。
 - **プレビュー**: ドラッグが `DragGesture(minimumDistance: 20)` の
   しきい値を超えた瞬間から、行の下に色付きの背景 + アイコン (`SwipeRevealBackground`)
   が現れる — `shortSwipeThreshold` 未満でもここでは短い方のアクションを
@@ -2410,6 +2411,38 @@ iOS/macOS 両方でビルド可能な `#if os(iOS)` 分岐に閉じている)。
 コードとしては揃えたが、この制約により今回のセッションでは実行完了
 (green) を確認できていない — 次回セッションでシミュレータ/mailstack の
 状態が回復し次第、優先して再実行し結果をここに追記すること。
+
+### Task #114: 長いスワイプの閾値を行幅の約75%に
+
+実機フィードバック2件のうちの1つ (もう1つはツールバーのカスタマイズ関連
+— `docs/settings.md`「メール本文フッターツールバーの表示/非表示・並び順」
+節の Task #113 参照)。ユーザー指示: 長いスワイプの判定を今より長く、
+具体的には**行幅の約75%**にしてほしい。
+
+- `longSwipeThreshold` を固定 152pt から `rowWidth *
+  longSwipeThresholdFraction` (`rowWidth` は `swipeableRow` の
+  `GeometryReader` 背景が実測する、このロー自身の幅) の計算プロパティに
+  変更した。`longSwipeThresholdFraction` (0.75) を`private static let`
+  として定数化し、この値の由来 (Task #114、ユーザー指示「75%」) を
+  doc comment に残した。
+- **固定 152pt だった旧実装の問題**: 端末幅に対する割合が一定でなかった
+  — 画面の狭い端末では長いスワイプに届きやすすぎ (＝短いスワイプとの
+  差が体感しにくい)、iPad 等の広い端末では逆に指を大きく動かさないと
+  長いスワイプに届かなかった。行幅の相対値にすることで、どの端末幅でも
+  「約75%」という一貫した体感になる。
+- **短いスワイプ (`shortSwipeThreshold`, 72pt) は現状維持** — 指示どおり
+  長いスワイプの閾値だけを変更した。
+- アニメーション (`cancelSwipe`/`commitRemoval` の spring 設定) とスワイプ
+  スロットへのアクション割り当て (`SwipeActionSettingsStore`) は無変更。
+- `rowWidth` の既定プレースホルダ (400pt、初回レイアウト前用) だと
+  `longSwipeThreshold` は 300pt — 旧固定値 152pt より確実に長く
+  なっており、「現状より長く」というユーザー指示とも整合する。
+- **未検証 (シミュレータの既知不調)**: スワイプ操作はタップ/ドラッグの
+  実ジェスチャーに依存し、`docs/verify.md` の tap-free 標準経路
+  (`verify-screen.sh`) の対象外。`make test`/`make ios` のビルド緑までは
+  確認したが、実機でのスワイプ体感確認はユーザー分業 — 「メール一覧の
+  行を横にスワイプし、長いスワイプ (アーカイブ/削除等) が発火するまでの
+  距離が以前よりはっきり長くなっている」ことを確認してもらうこと。
 
 ## 実機報告: アーカイブ後の「元に戻す」が効かない (根本原因と修正)
 
@@ -5452,3 +5485,90 @@ Readdle メール実物 (実名の宛先アドレス・購読解除トークン�
   ヒーロー構造を持つニュースレター) をダークモードで開き、本文の濃グレー
   文字が白カード上で明瞭に読めること、および同メールの「ソースを表示」
   が空白にならず全文表示・横スクロールできること。
+
+## Task #110: ハンバーガーメニューのフォルダセクション — 見出し行タップ=統合ビュー選択、シェブロンは開閉専用
+
+ハンバーガーメニュー (`FolderListSheet`) のカテゴリ優先セクション (受信
+トレイ/フラグ付き/アーカイブ/送信済み/下書き/迷惑メール/ゴミ箱 —
+`MailboxRoleRecord.categoryOrder`) には、見出し行本体タップで折りたたみ
+開閉する機能と、見出し配下に「すべての受信トレイ」等の専用行 (旧
+`categoryUnifiedRow`) をタップして統合ビューを選ぶ機能の2つが併存して
+いた。ユーザー報告 (スクリーンショット添付) により、この2手段が紛らわ
+しい (「受信トレイ」を選びたくて見出しをタップしても展開されるだけで
+遷移しない) と指摘され、次のとおり整理した。
+
+### 変更内容
+
+- **見出し行本体のタップ = 統合ビュー選択**: 「受信トレイ」の見出しを
+  タップすると、`statusSection`の「すべての受信トレイ」行 (`onSelectUnified`
+  → `mailSelection = .unifiedInbox`) と全く同じ選択になり、メニューを
+  閉じて統合受信トレイへ遷移する。受信トレイ以外の6セクション (フラグ
+  付き/アーカイブ/送信済み/下書き/迷惑メール/ゴミ箱) は、元々トップ
+  レベルの専用行を持たないため`onSelectUnifiedRole(role)`
+  (`mailSelection = .unifiedRole(role)`) をそのまま使う
+  (`FolderListSheet.selectUnifiedView(for:)`)。
+- **展開はシェブロンだけ**: 折りたたみ開閉は見出し右端の独立した
+  シェブロン`Button`(`CategoryDisclosureChevron`) だけが担う。タップ
+  ターゲットは`.frame(minWidth: 44, minHeight: 44)`でHIG最小サイズを
+  確保した。
+- **専用行の削除**: 上記により見出し配下の「すべてのX」専用行
+  (`categoryUnifiedRow(for:entries:)`) が完全に冗長になったため削除
+  した — 展開すると各アカウントの行 (`categoryAccountRow`) が直接並ぶ。
+- **統合ビューを持たないセクション (`.none`、`uncategorizedSection`)
+  は現状維持**: ユーザーが作成した独自フォルダをまとめるこのセクション
+  には「複数アカウントを横断してまとめて見る」という概念自体が無い
+  (`matchesCategory`参照 — role で束ねられないぶん、そもそも同じ意味を
+  持つ folder ではない) ため、`CategorySectionHeader(onSelectUnified: nil)`
+  のまま — 見出し行タップは従来どおり折りたたみ開閉を担う。
+- **アカウント優先ツリー (`accountSection`/`AccountSectionHeader`) も
+  現状維持**: これは「1アカウントのメールボックス一覧」であって統合
+  ビューという概念を持たないため、今回のスコープ外 (見出しタップ=
+  折りたたみ開閉のまま)。
+- **「開いた時は選択中のセクションだけ展開」(Task #73) は維持**: 上記の
+  変更はシェブロンの初期開閉状態 (`resetCollapseStateToCurrentSelection()`)
+  には影響しない — ドロワーを開いた瞬間のロジックはそのまま。
+
+### アクセシビリティ
+
+折りたたみ状態を表す`.accessibilityAddTraits(.isSelected)`/
+`.accessibilityValue("折りたたみ"/"展開")`は、開閉操作の実体が見出し
+本体からシェブロンへ移ったことに合わせて`CategoryDisclosureChevron`側へ
+移した (`folderSheet.category.<role>.chevron`という新しい
+accessibilityIdentifier)。見出し本体 (`folderSheet.category.<role>.header`)
+の identifier 自体は変えていない — 意味が「折りたたみ開閉」から「統合
+ビュー選択」に変わった点に注意。
+
+### 検証用の直接遷移フラグ
+
+`scripts/verify-screen.sh`のタップ不要経路で「展開後にセクション内から
+専用行が消えていること」を screenshot 確認するため、`-uitestsExpandFolderMenuSectionsDirectly`
+(`FolderListSheet.resetCollapseStateToCurrentSelection()`が読む、他の
+`-uitestsOpen*Directly`と同じ「実機/通常起動では引数に無いので常に
+no-op」パターン) と、それを使う`menu-expanded`シナリオを追加した。
+
+### 検証
+
+`make test`(既知の無関係flake — `MessageBuilderTests`日本語ラウンド
+トリップ — 以外は緑)・`make mac`・`make ios`とも成功。`scripts/verify-screen.sh
+menu-expanded`で2アカウント (fake HTML + fake Gmail) 構成をタップ無しで
+展開状態のまま screenshot し、「受信トレイ」見出し配下に「すべての
+受信トレイ」行が無く、各アカウント行 (Fake Gmail (UITest) / Fake HTML
+Test (UITest)) が直接並んでいること、見出し右端にシェブロンがあること
+を確認した。
+
+- **未検証**: 同じシミュレータで、`html-7`(Task #112 節) と同様に OS の
+  通知許可ダイアログが screenshot の中央〜下部 (アーカイブ以降のセク
+  ション) を隠してしまい、「受信トレイ」セクション以外の見た目は目視
+  確認できていない。リトライ (`WAIT_SECONDS`を延ばして再実行) も同じ
+  結果だった — 既知の抑制不能な問題として深追いしなかった (Task #112
+  節の教訓と同じ)。またタップ挙動 (見出し行タップで即座にメニューが
+  閉じて統合ビューへ遷移すること、シェブロンタップでは遷移せず開閉の
+  みが起きること) はタップ操作そのものの確認が要るため、この開発機の
+  tap-free 検証経路では確認していない。**実機確認ポイント**:
+  1) 「受信トレイ」等フォルダセクションの見出し行 (シェブロン部分を除く)
+     をタップすると、即座にメニューが閉じて対応する統合ビューへ遷移
+     すること (受信トレイは既存の「すべての受信トレイ」と同じ画面)。
+  2) シェブロン部分をタップすると画面遷移せず、そのセクションだけが
+     展開/折りたたみされること。
+  3) 展開したセクション内に「すべてのX」のような専用行が無く、各
+     アカウントの行が直接並んでいること。

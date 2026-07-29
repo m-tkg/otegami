@@ -38,13 +38,16 @@ final class OtegamiTask73HamburgerMenuCollapseUITests: XCTestCase {
         app.buttons["mail.hamburgerButton"].tap()
         XCTAssertTrue(app.collectionViews["folderSheet.list"].waitForExistence(timeout: 10), "ハンバーガーメニューが開かなかった")
 
-        let inboxCategoryHeader = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier CONTAINS %@", "folderSheet.category.inbox.header"))
+        // Task #110: 折りたたみ開閉の accessibility state は見出し行本体
+        // (`.header` — 統合ビュー選択のタップ対象に変わった) ではなく、
+        // 独立したシェブロン (`.chevron`) 側が持つ。
+        let inboxCategoryChevron = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier CONTAINS %@", "folderSheet.category.inbox.chevron"))
             .firstMatch
-        XCTAssertTrue(inboxCategoryHeader.waitForExistence(timeout: 10), "「受信トレイ」カテゴリ見出しが見つからない")
+        XCTAssertTrue(inboxCategoryChevron.waitForExistence(timeout: 10), "「受信トレイ」カテゴリのシェブロンが見つからない")
         XCTAssertTrue(
-            isCollapsedValue(inboxCategoryHeader.value as? String),
-            "「すべての受信トレイ」選択中は「受信トレイ」カテゴリも折りたたまれているべき — value=\(String(describing: inboxCategoryHeader.value))"
+            isCollapsedValue(inboxCategoryChevron.value as? String),
+            "「すべての受信トレイ」選択中は「受信トレイ」カテゴリも折りたたまれているべき — value=\(String(describing: inboxCategoryChevron.value))"
         )
 
         let accountHeader = app.descendants(matching: .any)
@@ -107,22 +110,23 @@ final class OtegamiTask73HamburgerMenuCollapseUITests: XCTestCase {
             "選択中メールボックスの属する account セクションは展開されているべき — value=\(String(describing: reopenedAccountHeader.value))"
         )
 
-        let reopenedInboxCategoryHeader = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier CONTAINS %@", "folderSheet.category.inbox.header"))
+        // Task #110: 折りたたみ開閉の accessibility state は`.chevron`側。
+        let reopenedInboxCategoryChevron = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier CONTAINS %@", "folderSheet.category.inbox.chevron"))
             .firstMatch
-        XCTAssertTrue(reopenedInboxCategoryHeader.waitForExistence(timeout: 10), "再オープン後、「受信トレイ」カテゴリ見出しが見つからない")
+        XCTAssertTrue(reopenedInboxCategoryChevron.waitForExistence(timeout: 10), "再オープン後、「受信トレイ」カテゴリのシェブロンが見つからない")
         XCTAssertTrue(
-            isExpandedValue(reopenedInboxCategoryHeader.value as? String),
-            "選択中メールボックスの role (受信トレイ) に対応するカテゴリも展開されているべき — value=\(String(describing: reopenedInboxCategoryHeader.value))"
+            isExpandedValue(reopenedInboxCategoryChevron.value as? String),
+            "選択中メールボックスの role (受信トレイ) に対応するカテゴリも展開されているべき — value=\(String(describing: reopenedInboxCategoryChevron.value))"
         )
 
-        let reopenedArchiveCategoryHeader = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier CONTAINS %@", "folderSheet.category.archive.header"))
+        let reopenedArchiveCategoryChevron = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier CONTAINS %@", "folderSheet.category.archive.chevron"))
             .firstMatch
-        XCTAssertTrue(reopenedArchiveCategoryHeader.waitForExistence(timeout: 10), "再オープン後、「アーカイブ」カテゴリ見出しが見つからない")
+        XCTAssertTrue(reopenedArchiveCategoryChevron.waitForExistence(timeout: 10), "再オープン後、「アーカイブ」カテゴリのシェブロンが見つからない")
         XCTAssertTrue(
-            isCollapsedValue(reopenedArchiveCategoryHeader.value as? String),
-            "選択と無関係なカテゴリ (アーカイブ) は折りたたまれたままであるべき — value=\(String(describing: reopenedArchiveCategoryHeader.value))"
+            isCollapsedValue(reopenedArchiveCategoryChevron.value as? String),
+            "選択と無関係なカテゴリ (アーカイブ) は折りたたまれたままであるべき — value=\(String(describing: reopenedArchiveCategoryChevron.value))"
         )
 
         // スクリーンショット用に画面を保持する (この後に要素解決/アクションは

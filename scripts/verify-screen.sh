@@ -142,6 +142,17 @@
 #   menu                                 ハンバーガーメニュー (FolderListSheet
 #                                       — 左下floatingSettingsButtonの
 #                                       アクセント塗り確認用)
+#   menu-expanded                        Task #110 (フォルダセクションの
+#                                       挙動変更: 見出し行タップ=統合ビュー
+#                                       選択、シェブロンだけが折りたたみ
+#                                       開閉): 2アカウント (fake HTML + fake
+#                                       Gmail) を注入し、`-uitestsExpandFolder
+#                                       MenuSectionsDirectly`で全セクション
+#                                       展開状態のまま直接screenshotする —
+#                                       「すべての受信トレイ」等の専用行が
+#                                       セクション内から消え、見出し行+右端
+#                                       シェブロンの構成になっていることの
+#                                       確認用。
 #   account-settings                    Task #72: 設定→アカウントの設定
 #                                       (fake Gmail アカウント1件を挿入、
 #                                       一覧行の色ドットを確認)
@@ -337,6 +348,17 @@ case "$SCENARIO" in
     # メニューをタップ無しで直接開く。
     launch_args+=("-uitestsOpenFolderMenuDirectly")
     default_out="menu.png"
+    ;;
+  menu-expanded)
+    # Task #110: フォルダセクション(受信トレイ/アーカイブ/送信済み等)の
+    # 見出し行タップ=統合ビュー選択、開閉はシェブロン専用、という新しい
+    # 挙動の見た目確認用 — 2アカウント (`list-2accounts`と同じ組み合わせ)
+    # を注入し、`-uitestsExpandFolderMenuSectionsDirectly`
+    # (`FolderListSheet.resetCollapseStateToCurrentSelection()`) で全
+    # セクションを展開状態のまま直接開く。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
+    launch_args+=("-uitestsOpenFolderMenuDirectly" "-uitestsExpandFolderMenuSectionsDirectly")
+    default_out="menu-expanded.png"
     ;;
   account-settings)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
