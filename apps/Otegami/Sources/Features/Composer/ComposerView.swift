@@ -681,19 +681,43 @@ struct ComposerView: View {
             Text("差出人:")
                 .font(OtegamiFont.subheadline())
                 .foregroundStyle(OtegamiColor.inkSecondary)
-            Picker("差出人", selection: $selectedAccountId) {
-                ForEach(environment.accounts) { account in
-                    Text("\(account.displayName) <\(account.email)>")
-                        .tag(Optional(account.id))
+            // 実機フィードバック (2026-07-29「アカウント選択が崩れてる」):
+            // `.pickerStyle(.menu)`は選択中の行`Text`をそのままラベルに使う
+            // ため、「表示名 <アドレス>」が長いと行内で3行に折り返れて崩れる。
+            // `Menu`+`Picker`の入れ子 (選択チェックマークは`Picker`が維持) に
+            // し、閉じた状態のラベルだけ1行・中間省略で描く。
+            Menu {
+                Picker("差出人", selection: $selectedAccountId) {
+                    ForEach(environment.accounts) { account in
+                        Text("\(account.displayName) <\(account.email)>")
+                            .tag(Optional(account.id))
+                    }
                 }
+            } label: {
+                Text(verbatim: flatFromLabel)
+                    .font(OtegamiFont.body())
+                    .foregroundStyle(OtegamiColor.accent)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
             .accessibilityIdentifier("composer.fromPicker")
             Spacer(minLength: 0)
         }
         .otegamiRowDivider()
         .padding(.bottom, OtegamiSpacing.sm)
+    }
+
+    /// `flatFromRow`の閉じた状態のラベル文字列。表示名とアドレスが同じ
+    /// (表示名未設定でアドレスがそのまま入っている) アカウントでは
+    /// 「a@example.com <a@example.com>」と冗長になるのでアドレス1本にする。
+    private var flatFromLabel: String {
+        guard let account = environment.accounts.first(where: { $0.id == selectedAccountId }) else {
+            return "アカウントを選択"
+        }
+        if account.displayName.isEmpty || account.displayName == account.email {
+            return account.email
+        }
+        return "\(account.displayName) <\(account.email)>"
     }
 
     /// 宛先行 (常に表示) + 「Cc: Bcc:」ピルボタン (`isShowingCcBcc`が`false`の
