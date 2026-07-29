@@ -1892,12 +1892,12 @@
         }
       }
     },
-    "例: 会社用の署名": {
+    "例: あいさつ用の署名": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "e.g. Work Signature"
+            "value": "e.g. Greeting Signature"
           }
         }
       }

@@ -61,6 +61,12 @@ struct ComposerView: View {
     @State private var bccText = ""
     @State private var subject = ""
     @State private var bodyText = ""
+    /// Task #125 「署名カーソル」: bound to `bodySection`'s `TextEditor` —
+    /// only ever *written* by `updateSignatureText(newId:)` right after it
+    /// mutates `bodyText` (`ComposerCursorPlacement.cursorIndex`'s result).
+    /// Left untouched the rest of the time, so normal typing/selection isn't
+    /// interfered with.
+    @State private var bodySelection: TextSelection?
 
     // Resolved once, from the original message, when `payload.kind` is
     // `.reply` — carried straight into the enqueued `OutboxMessageRecord`
@@ -211,9 +217,12 @@ struct ComposerView: View {
                 addressSection
                 subjectSection
                 bodySection
-                attachmentsSection
                 templateSection
                 signatureSection
+                // Task #125 「添付UIの位置」: 添付ボタン/添付済み一覧は本文＋
+                // 署名の下 — 署名選択で本文末尾が変わっても、添付欄の位置が
+                // それに引きずられて動かないようにする。
+                attachmentsSection
                 if let translateErrorMessage {
                     Section {
                         Text(translateErrorMessage)
@@ -377,7 +386,11 @@ struct ComposerView: View {
 
     private var bodySection: some View {
         Section("本文") {
-            TextEditor(text: $bodyText)
+            // Task #125 「署名カーソル」: `selection:` バインディングを追加
+            // したのは`updateSignatureText(newId:)`がカーソル位置を明示的に
+            // 制御するため — 通常の編集ではこのバインディングへの書き込みは
+            // 発生しない (`bodySelection`のdoc comment参照)。
+            TextEditor(text: $bodyText, selection: $bodySelection)
                 .frame(minHeight: 240)
                 .accessibilityIdentifier("composer.body")
         }
@@ -587,6 +600,16 @@ struct ComposerView: View {
     /// auto-select path funnel through here (the latter only ever *sets*
     /// `selectedSignatureId`, never touches `bodyText` directly), so there's
     /// exactly one insertion/removal code path to reason about.
+    ///
+    /// Task #125 「署名カーソル」: after (re)inserting, also repositions
+    /// `bodySelection` via `ComposerCursorPlacement.cursorIndex` — without
+    /// this, `TextEditor` is free to leave the cursor wherever it happened
+    /// to be (typically the very end, right after the just-appended
+    /// signature), which is exactly where a user would *not* want to keep
+    /// typing. Picking "なし" (removal-only, `newId == nil`) doesn't move
+    /// the cursor — there's no fresh insertion point to jump to, and
+    /// leaving the selection alone matches how removing text normally
+    /// behaves.
     private func updateSignatureText(newId: Int64?) {
         if let insertedSignatureText, bodyText.hasSuffix(insertedSignatureText) {
             bodyText.removeLast(insertedSignatureText.count)
@@ -597,6 +620,25 @@ struct ComposerView: View {
         let insertion = separator + signature.body
         bodyText += insertion
         insertedSignatureText = insertion
+        let cursorIndex = ComposerCursorPlacement.cursorIndex(
+            in: bodyText, signatureBody: signature.body, hasQuoteAboveSignature: hasQuoteAboveSignature
+        )
+        bodySelection = TextSelection(insertionPoint: cursorIndex)
+    }
+
+    /// Task #125 「署名カーソル」: whether `bodyText` already carries a
+    /// quoted block above wherever `updateSignatureText(newId:)` appends a
+    /// signature (always at the very end) — true for `.reply`/`.forward`,
+    /// both of which prefill `bodyText` with a `> `-quoted original message
+    /// (`prefillReply`/`prefillForward`) before the user ever gets to pick a
+    /// signature. See `ComposerCursorPlacement`'s doc comment for why this
+    /// collapses the "above quote" and "above signature" cases into one
+    /// (quote is always above signature) cursor position.
+    private var hasQuoteAboveSignature: Bool {
+        switch payload.kind {
+        case .reply, .forward: true
+        case .new, .draft, .serverDraft, .cancelledSend, .mailto: false
+        }
     }
 
     private var navigationTitle: String {

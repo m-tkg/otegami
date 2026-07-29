@@ -61,7 +61,9 @@ struct SignatureTemplateEditView: View {
 
     private var nameSection: some View {
         Section("名前") {
-            TextField("例: 会社用の署名", text: $name)
+            // Task #125: 「会社用の署名」は用途の分類名で名前欄の入力例として
+            // 少しかたい — より自然な「あいさつ」系の例に変更。
+            TextField("例: あいさつ用の署名", text: $name)
                 .accessibilityIdentifier("signatureEdit.name")
         }
     }
