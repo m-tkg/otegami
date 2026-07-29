@@ -192,4 +192,14 @@ enum MailpitClient {
         let (data, _) = try await URLSession.shared.data(from: url)
         return try JSONDecoder().decode(MessagesResponse.self, from: data).messages
     }
+
+    /// Task #124: counts how many of Mailpit's captured messages have a
+    /// subject containing `marker` — `pollForMessage` only ever needs "did
+    /// at least one arrive", but proving `OpQueueProcessor`'s idempotency
+    /// guard actually prevents a duplicate *delivery* (not just a duplicate
+    /// local DB row) needs the real count, checked against the real SMTP
+    /// receiver rather than a `FakeSMTPSession` recorder.
+    static func countMessages(withSubjectContaining marker: String) async throws -> Int {
+        try await fetchMessages().filter { $0.subject.contains(marker) }.count
+    }
 }

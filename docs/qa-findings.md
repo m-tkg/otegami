@@ -1188,3 +1188,141 @@ delete/junk/unarchive の共通ローカル反映ロジック、`MessageListView
   delete は今回このタスクでは仮配置に対応させていない (独自実装の
   重複、unarchive アクション自体が無い) — 別 follow-up の余地として
   `PENDING.md` に記録。
+
+## Task #124: 送信の二重送信・「送信待ち」スタックの原因調査と修正
+
+### 報告 (実機、2026-07-29)
+
+(a) 送信時に送信キャンセルのカウントダウンバー (`SendCountdownBar`、C7)
+が表示されないことがあり、そのケースで同じメールが2通送信された。
+(b) 別の送信ではバーは出たが、バー消滅後「送信待ち」のままスタック。
+続報: アプリを再起動したら数秒後に送信され、1通だけ届いた — 送信 op は
+opQueue に正しく積まれ、起動時 replay は正常。
+
+### 原因: 3つの独立した問題が絡んでいた
+
+**1. 二重送信の本体: `OpQueueProcessor.replay(account:auth:)` に
+アカウント単位の直列化が無かった**
+
+`replayOpQueue(for:auth:)` はこのアプリのほぼ全ての操作 (スワイプ、
+フォアグラウンド復帰、IDLE ループの受信後コールバック、
+`PendingSendCoordinator` のカウントダウン満了、送信直後の即時リプレイ
+など、grep で15箇所以上) から日和見的に呼ばれる。`OpQueueProcessor` は
+`actor` だが、`replay(account:auth:)` 本体は `await` を複数回挟む
+(IMAP `connect`、各 op の適用、DB 読み書き) — actor の reentrancy に
+より、同じアカウントに対する2回目の `replay` 呼び出しが1回目の
+`await` の隙間に割り込める。従来の実装は毎回「まだ処理していない
+`opQueue` 行を全部読む → 1件ずつ適用 → 成功したら削除」という手順
+だったため、2つの `replay` 呼び出しが同じ `.send` op をどちらも
+「まだ削除されていない」状態で読み、**どちらも SMTP へ送信してしまう**
+競合状態が普通に起こり得た。カウントダウンバーの満了 (`finalizeNow`)
+と、たまたま同時に発生した別トリガー (フォアグラウンド復帰の
+`syncAllAccountsOnce`、IDLE ループの再接続など) が重なれば再現する —
+実機の間欠的な報告 (a) と整合する。
+
+**2. `PendingSendCoordinator.schedule()` が前回の pendingSend を
+サイレントに孤立させていた**
+
+`schedule()` は毎回 `countdownTask?.cancel()` してから新しい
+`pendingSend`/`countdownTask` で上書きしていた。「1セッション中の送信は
+常に1つ」という前提コメントはあるが、実際にはそれを強制する仕組みが
+無く、カウントダウン中 (5〜10秒) に Composer を再度開いてもう1通送る
+ことは普通に可能。その場合、前回のカウントダウン `Task` (finalizeNow を
+呼ぶ唯一の経路) がキャンセルされるだけで、前回の送信を確定させる処理は
+一切走らない。前回の送信自体は durable (`outboxMessage`/`opQueue` 行は
+残る) なので消失はしないが、「そのセッション内で replay がトリガー
+されない」— まさに報告 (b) の追跡調査コメントの記述と一致する。他の
+opportunistic replay (スワイプ操作など) が偶然発生しない限り、次回
+起動時まで送信が確定しない。
+
+**3. `SendCountdownBar` がスレッド詳細画面の裏に隠れる**
+
+`SendCountdownBar` は `MailScreenView.content` (iPhone の compact 幅では
+`NavigationStack` の**ルート**) の最上部に置かれている。スレッドを開いた
+状態 (`selectedRoute` が非 `nil`、スタックに push 済み) から返信して
+送信すると、カウントダウン自体は正常に走るが、バーはルートの裏に隠れて
+一切見えない — スレッドを開いて返信する、というごく普通の導線で
+再現する。これが報告 (a) の「バーが表示されないことがある」の少なくとも
+一因。
+
+### 修正
+
+1. **`OpQueueProcessor` にアカウント単位の直列化ガードを追加**
+   (`packages/OtegamiKit/Sources/SyncEngine/OpQueueProcessor.swift`):
+   `inFlightAccountIds: Set<String>` を actor 内に持ち、
+   `replay(account:auth:)` の先頭で `insert(accountId).inserted` を
+   チェック — 既に同じアカウントの replay が進行中なら即座に空の
+   `ReplayResult` を返して no-op (先行呼び出しが同じ due ops を処理
+   済みのため安全)。挿入/削除は `await` を挟まない箇所でのみ行うため、
+   セット自体への競合は発生しない。
+2. **`outboxMessage.sendStartedAt` による DB 永続の冪等ガード**
+   (migration v30、`AppDatabase.swift`/`OutboxMessageRecord.swift`):
+   `.send` op の適用は SMTP 送信の**直前**に `sendStartedAt` を
+   `NULL → 現在時刻` へ CAS 的に更新するトランザクションでクレームを
+   取得し、失敗したら (=既に他の試行がクレーム済み) 送信をスキップして
+   エラーを投げる (`recordFailure` の通常経路に乗り、最終的に
+   `FailedOperationsView` の「同期エラー」に「手動で確認・再送」できる
+   形で surfaced される) — プロセスクラッシュで前回の試行が
+   `sendStartedAt` を残したまま終わった場合の再送を防ぐ、#1 の
+   in-process ガードの背後の第二防衛線。SMTP 呼び出し自体が**その場で**
+   例外を返した (=ローカルに失敗が確定した) 場合のみクレームを解放し、
+   次回リプレイでの通常の再試行を許す — 「送信できたか不明」なケース
+   (プロセスがクラッシュして解放されなかった場合) とを明確に区別する。
+3. **`PendingSendCoordinator.schedule()` が前回の pendingSend を
+   必ず finalize してから上書きするよう修正** (`schedule` を `async`
+   化し、冒頭で `await finalizeNow()`): 前回の送信が孤立する経路を
+   除去。呼び出し元の `ComposerView.send()` も `await` を追加。
+4. **`SendCountdownBar` の可視性修正**
+   (`MailScreenView.swift`、compact 幅の `NavigationStack` のみ):
+   新しい `pendingSend` が発行された瞬間に `selectedRoute = nil` で
+   ルートへ pop するよう `.onChange` を追加 — スレッド詳細から返信した
+   場合でもバー (と「送信を取り消す」ボタン) が必ず見える位置に戻る。
+5. **OSLog 計装** (category `PendingSend`、`com.mtkg.otegami` サブ
+   システム。`OpQueueProcessor`/`PendingSendCoordinator`/`ComposerView`
+   で共有): enqueue、カウントダウン開始・満了、finalize、replay
+   キック・完了 (succeeded/retrying/permanentlyFailed の内訳)・失敗、
+   SMTP 開始・成功・失敗、Sent APPEND 成功・失敗、outbox 行削除の
+   各ポイントに追加。`PendingSendCoordinator.replay(accountId:)` の
+   `auth(for:)`/`replayOpQueue` の失敗は従来 `try?` で完全にサイレント
+   だった (報告 (b) の「スタック」の実際の原因になり得た箇所) — ログを
+   出すよう変更 (挙動自体は変えていない: どちらにしても durable な
+   outbox 行/opQueue op は残るので、他の opportunistic replay か次回
+   起動時の `syncAllAccountsOnce` が拾う)。
+
+### 検証
+
+- `swift test`(`packages/OtegamiKit` フルスイート) 全件グリーン
+  (既知 flake の `MessageBuilderTests` 日本語ラウンドトリップ1件を除く、
+  このタスクの変更とは無関係)。
+- 新規追加 (`OpQueueProcessorTests.swift`、"Task #124" セクション):
+  - `overlappingReplayCallsSendExactlyOnce` — 同一アカウントに対する
+    2つの `replay()` を `async let` で同時発行し、SMTP 送信呼び出しが
+    厳密に1回だけであることを確認 (actor の同期プレフィックス実行順序
+    により、タイマー等に依存せず決定的に再現できる)。
+  - `alreadyClaimedSendIsNotResent` — `sendStartedAt` を事前にセット
+    (=前回試行のクラッシュを模擬) した状態で `replay` を呼び、SMTP が
+    一切呼ばれず、op が `retrying` 扱いになることを確認。
+  - `cleanSMTPFailureAllowsSubsequentRetryToSucceed` — クリーンな SMTP
+    失敗の後に `sendStartedAt` が解放され、次のリプレイパスで正常に
+    送信できることを確認 (回帰防止: 冪等ガードが既存の
+    「SMTP失敗→リトライ」経路を壊していないこと)。
+- `make mac` / `make ios` ビルド成功を確認。
+- **実際の SMTP (Mailpit) に対する「1回だけ届く」統合テストも実施・
+  グリーン**: `OpQueueProcessorSendIntegrationTests.swift` (新規、
+  `packages/OtegamiKit/Tests/MailTransportMailCoreTests/`) —
+  `MailCoreIMAPSession`/`MailCoreSMTPSession`(実装、Fake ではない) を
+  使い、同一アカウントに対する2つの `replay()` を `async let` で同時
+  発行し、dev mailstack の実 Mailpit に届いたメッセージ数を REST API
+  (`MailpitClient.countMessages`、`SMTPIntegrationTests.swift` に追加)
+  で数えて厳密に1通であることを確認 (`OTEGAMI_TEST_IMAP_HOST=localhost
+  swift test --filter OpQueueProcessorSendIntegrationTests`、
+  `make mailstack-up` 済みの状態で実行、3.4秒でパス)。ローカルの
+  `FakeSMTPSession` 記録だけでなく、実サーバーが実際に受け取った通数で
+  検証できたのは大きい。
+- **実機での確認はこのセッションでは未実施**: (1) スレッドを開いた状態から返信して
+  送信 → カウントダウンバーが (スレッド詳細の裏に隠れず) 表示される、
+  (2) バー満了後、そのセッション内で実際に送信される (再起動不要)、
+  (3) 同じメールが2通届かない、(4) カウントダウン中にアプリを
+  バックグラウンドへ送っても、復帰後に (またはバックグラウンド中に)
+  正しく1回だけ送信される、(5) カウントダウン中に別のメールをもう1通
+  送っても両方とも最終的に (2重送信せずに) 届く。

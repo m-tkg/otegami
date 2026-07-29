@@ -35,6 +35,30 @@
   後に、設定済みのプッシュ通知リレー URL が自動的に復元されるか (per-
   account watch・deviceSecret はデバイス固有のまま残る想定)。
 
+## Task #124: 送信の二重送信・「送信待ち」スタック — 実機/実 SMTP での最終確認
+
+**実装状況**: 原因 (アカウント単位の直列化が無い `OpQueueProcessor
+.replay`、前回 pendingSend を孤立させる `schedule()`、スレッド詳細の裏に
+隠れる `SendCountdownBar`) を特定し修正済み。`FakeSMTPSession` を使った
+ユニットテスト (`OpQueueProcessorTests.swift` の "Task #124" セクション:
+同時 `replay()` 2本で送信1回のみ、クラッシュ模擬からの再送拒否、クリーン
+失敗後の正常リトライ) に加え、**実 SMTP (dev mailstack の Mailpit) に
+対する統合テストも実施・グリーン** (`OpQueueProcessorSendIntegrationTests
+.swift` — 同時 `replay()` 2本を実サーバーに対して発行し、Mailpit の REST
+API で受信数が厳密に1通であることを確認)。`make test`/`make mac`/
+`make ios` も全てグリーン。詳細は `docs/qa-findings.md`「Task #124」節。
+
+**残っているのは実機での最終確認のみ**:
+
+- スレッドを開いた状態から返信して送信 → カウントダウンバーが (スレッド
+  詳細の裏に隠れず) 表示されるか。
+- バー満了後、そのセッション内で実際に送信されるか (アプリ再起動不要)。
+- カウントダウン中にアプリをバックグラウンドへ送っても、復帰後に (また
+  はバックグラウンド中に) 正しく1回だけ送信されるか。
+- カウントダウン中に別のメールをもう1通送っても、両方とも最終的に
+  (2重送信せずに) 届くか (`schedule()` の finalize-before-overwrite 修正の
+  確認)。
+
 ## Task #116: アカウント追加画面のプロバイダ拡充 — 実接続・Azure アプリ登録待ち
 
 **実装状況**: 第1段 (Yahoo/Yahoo! JAPAN/Exchange のホスト/ポートプリセット)・

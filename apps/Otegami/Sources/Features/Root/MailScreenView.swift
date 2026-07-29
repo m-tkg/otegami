@@ -260,6 +260,19 @@ struct MailScreenView: View {
                         onThreadRemoved: handleThreadRemoved
                     )
                 }
+                // Task #124 実機フィードバック「送信キャンセルのカウントダウン
+                // バーが表示されないことがある」: `SendCountdownBar` lives in
+                // `content` — this stack's *root* — so replying from an
+                // already-pushed thread (a very common flow) leaves it
+                // completely occluded behind that pushed `ThreadEntryView`;
+                // the countdown still runs (nothing was actually lost), it
+                // was just never visible, and with it "送信を取り消す" was
+                // never reachable either. Popping back to the root the
+                // instant a new send starts counting down fixes both.
+                .onChange(of: environment.pendingSendCoordinator.pendingSend?.id) { _, newValue in
+                    guard newValue != nil else { return }
+                    selectedRoute = nil
+                }
         }
     }
 

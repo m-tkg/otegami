@@ -850,6 +850,23 @@ extension AppDatabase {
             try db.create(index: "savedSearch_on_createdAt", on: "savedSearch", columns: ["createdAt"])
         }
 
+        // v30 (Task #124, 二重送信防止): `OutboxMessageRecord.sendStartedAt`
+        // — `OpQueueProcessor`'s `.send` replay claims this column
+        // (`NULL` → now) in one serialized `dbWriter.write` transaction
+        // immediately before actually handing the message to SMTP, and
+        // only proceeds if it won that claim. That makes a still-`NULL`
+        // row the ground truth for "never attempted", and a non-`NULL` row
+        // mean "some attempt already owns this send" — a second concurrent
+        // `replay()` (or a resumed one after a crash mid-send) sees the
+        // claim already taken and refuses to resend rather than risking a
+        // duplicate delivery. `NULL` for every existing row: nothing
+        // in-flight has actually started until a replay pass claims it.
+        migrator.registerMigration("v30") { db in
+            try db.alter(table: "outboxMessage") { t in
+                t.add(column: "sendStartedAt", .datetime)
+            }
+        }
+
         return migrator
     }
 }

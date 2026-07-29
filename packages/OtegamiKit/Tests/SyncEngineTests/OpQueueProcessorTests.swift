@@ -753,6 +753,155 @@ struct OpQueueProcessorTests {
         #expect(username.isEmpty, "Expected a blank SMTP username (no smtpUsername configured), not the IMAP auth's username")
     }
 
+    // MARK: Task #124 — 二重送信防止 (idempotency guard + per-account serialization)
+
+    /// Reproduces the actual reported bug's mechanism directly: two
+    /// `replay(account:auth:)` calls for the *same* account, overlapping
+    /// in time (this app's real call sites — swipe actions, foreground
+    /// sync, the IDLE loop, `PendingSendCoordinator`'s countdown finalize —
+    /// routinely do exactly this while a `.send` op is pending). Without
+    /// `OpQueueProcessor.inFlightAccountIds`, both calls would fetch the
+    /// same still-pending `.send` op before either deleted it and both
+    /// hand it to SMTP. `async let` here doesn't need any artificial
+    /// delay to force the race: an actor only runs one call's synchronous
+    /// prefix at a time, so the first call's `inFlightAccountIds.insert`
+    /// (which happens before its first `await`) is guaranteed to have run
+    /// before the second call's own guard checks it — deterministic, not
+    /// timing-dependent.
+    @Test("two overlapping replay() calls for the same account send the message exactly once")
+    func overlappingReplayCallsSendExactlyOnce() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database, account: makeAccountWithSMTP())
+        let outbox = try await insertOutboxMessage(accountId: account.id, database: database)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: outbox.id!, db: db)
+        }
+
+        let smtpRecorder = FakeSMTPSession.CallRecorder()
+        let processor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script(), recorder: nil) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: FakeSMTPSession.Script(), recorder: smtpRecorder) },
+            messageBuilder: fakeMessageBuilder
+        )
+
+        async let first = processor.replay(account: account, auth: auth)
+        async let second = processor.replay(account: account, auth: auth)
+        let (firstResult, secondResult) = try await (first, second)
+
+        #expect(smtpRecorder.sendCalls.count == 1, "the message must be sent exactly once, not twice")
+        #expect(firstResult.succeeded + secondResult.succeeded == 1)
+
+        let remainingOutbox = try await database.dbWriter.read { db in try OutboxMessageRecord.fetchAll(db) }
+        #expect(remainingOutbox.isEmpty)
+        let remainingOps = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
+        #expect(remainingOps.isEmpty)
+    }
+
+    /// Simulates a process that crashed *after* a previous replay pass
+    /// claimed the send (`OutboxMessageRecord.sendStartedAt` already set)
+    /// but *before* it could confirm success or failure — the one case a
+    /// fresh process (a brand-new `OpQueueProcessor` actor, so
+    /// `inFlightAccountIds` starts out empty and can't help here) must
+    /// still refuse to blindly resend, since whether the previous attempt
+    /// actually reached the SMTP server is unknown. This is the "安全側に
+    /// 倒す" behavior Task #124 calls for: no resend, the op stays pending
+    /// (surfacing via `FailedOperationsView` once it exhausts its
+    /// retries) rather than risking a duplicate delivery.
+    @Test("a send already claimed by a prior (crashed) attempt is never resent")
+    func alreadyClaimedSendIsNotResent() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database, account: makeAccountWithSMTP())
+        let outbox = try await insertOutboxMessage(accountId: account.id, database: database)
+        let outboxId = try #require(outbox.id)
+
+        // Simulates the crash: a previous replay pass's claim survived
+        // (the row's own doc comment on `sendStartedAt`), but the row was
+        // never deleted because the process died before that could
+        // happen.
+        try await database.dbWriter.write { db in
+            guard var row = try OutboxMessageRecord.fetchOne(db, key: outboxId) else { return }
+            row.sendStartedAt = Date()
+            try row.update(db)
+        }
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: outboxId, db: db)
+        }
+
+        let smtpRecorder = FakeSMTPSession.CallRecorder()
+        let processor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script(), recorder: nil) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: FakeSMTPSession.Script(), recorder: smtpRecorder) },
+            messageBuilder: fakeMessageBuilder
+        )
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.retrying == 1)
+        #expect(smtpRecorder.sendCalls.isEmpty, "must never resend a claim it didn't win")
+
+        // Still pending, still showing "送信待ち" — discarding it (not
+        // retrying it forever) is the user's explicit call via
+        // `FailedOperationsView`'s 破棄 button once it's surfaced there.
+        let remainingOutbox = try await database.dbWriter.read { db in try OutboxMessageRecord.fetchAll(db) }
+        #expect(remainingOutbox.count == 1)
+        let remainingOps = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
+        let sendOp = try #require(remainingOps.first { $0.kind == OpQueueKind.send.rawValue })
+        #expect(sendOp.attempts == 1)
+    }
+
+    /// A *clean* SMTP failure (the send call throws locally, not a crash)
+    /// must still release the claim so a later replay pass can retry
+    /// normally — proving the idempotency guard added for Task #124 didn't
+    /// regress the pre-existing "SMTP失敗→リトライ" retry path
+    /// (`sendFailureRetriesWithoutAbortingBatch` above covers the first
+    /// failed pass; this covers the second, successful one).
+    @Test("a clean SMTP failure releases the claim so the next replay pass can send successfully")
+    func cleanSMTPFailureAllowsSubsequentRetryToSucceed() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database, account: makeAccountWithSMTP())
+        let outbox = try await insertOutboxMessage(accountId: account.id, database: database)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: outbox.id!, db: db)
+        }
+
+        let failingSMTPScript = FakeSMTPSession.Script(failSend: .serverError(underlyingDescription: "temporary failure"))
+        let failingProcessor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script(), recorder: nil) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: failingSMTPScript) },
+            messageBuilder: fakeMessageBuilder
+        )
+        let firstResult = try await failingProcessor.replay(account: account, auth: auth)
+        #expect(firstResult.retrying == 1)
+
+        let afterFailure = try await database.dbWriter.read { db in try OutboxMessageRecord.fetchOne(db, key: outbox.id!) }
+        #expect(afterFailure?.sendStartedAt == nil, "a clean failure must release the claim, not leave it stuck")
+
+        // Clear the backoff window so the retry is immediately due, same
+        // as `sendFailureRetriesWithoutAbortingBatch`'s own pattern.
+        try await database.dbWriter.write { db in
+            try db.execute(sql: "UPDATE opQueue SET nextRetryAt = NULL")
+        }
+
+        let smtpRecorder = FakeSMTPSession.CallRecorder()
+        let succeedingProcessor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script(), recorder: nil) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: FakeSMTPSession.Script(), recorder: smtpRecorder) },
+            messageBuilder: fakeMessageBuilder
+        )
+        let secondResult = try await succeedingProcessor.replay(account: account, auth: auth)
+        #expect(secondResult.succeeded == 1)
+        #expect(smtpRecorder.sendCalls.count == 1)
+
+        let remainingOutbox = try await database.dbWriter.read { db in try OutboxMessageRecord.fetchAll(db) }
+        #expect(remainingOutbox.isEmpty)
+    }
+
     // MARK: M8 — outbox attachments
 
     /// Writes `data` to a fresh temp file and inserts an `outboxAttachment`

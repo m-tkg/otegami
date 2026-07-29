@@ -4,6 +4,7 @@ import MailTransport
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
+import os
 #if os(iOS)
 import UIKit
 #endif
@@ -60,6 +61,11 @@ final class PendingSendCoordinator {
 
     private(set) var pendingSend: PendingSend?
 
+    /// Task #124 — shared with `OpQueueProcessor`/`ComposerView` so one
+    /// send's whole enqueue → schedule → finalize → replay → SMTP lifecycle
+    /// reads as a single interleaved stream in Console.app.
+    private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "PendingSend")
+
     @ObservationIgnored private var countdownTask: Task<Void, Never>?
     /// Set once, right after `AppEnvironment.init()` constructs this
     /// coordinator — `weak` since `AppEnvironment` owns this coordinator
@@ -73,15 +79,32 @@ final class PendingSendCoordinator {
         self.environment = environment
     }
 
-    /// Starts (or restarts, cancelling whatever was already pending —
+    /// Starts the countdown for an already-durably-written send — normally
     /// there is only ever one composer session's send in flight at a time
-    /// in this app) the countdown for an already-durably-written send.
-    func schedule(outboxMessageId: Int64, accountId: String, duration: TimeInterval, snapshot: PendingSendDraftSnapshot) {
-        countdownTask?.cancel()
+    /// (the doc comment above), but nothing actually prevents a user from
+    /// reopening Composer and sending a *second* message while the first's
+    /// countdown bar is still showing. Task #124: a naive "just overwrite
+    /// `pendingSend`" here used to silently orphan that first send —
+    /// `countdownTask?.cancel()` killed the only `Task` that would ever
+    /// have called `finalizeNow()` for it, so the message stayed durably
+    /// queued but with nothing left to trigger its replay until some
+    /// *unrelated* opportunistic replay call (a swipe action, the next
+    /// foreground, ...) happened to pick it up — exactly the "カウントダウン
+    /// 満了後、そのセッション内でreplayがトリガーされない" symptom reported. Calling
+    /// `finalizeNow()` first (a fast no-op guard return in the ordinary
+    /// single-send case) guarantees whatever was pending before this call
+    /// is fully handed off to replay before it's ever overwritten below.
+    func schedule(outboxMessageId: Int64, accountId: String, duration: TimeInterval, snapshot: PendingSendDraftSnapshot) async {
+        if pendingSend != nil {
+            Self.logger.notice("schedule() called while a previous pendingSend is still active — finalizing it before overwriting (Task #124)")
+        }
+        await finalizeNow()
+        Self.logger.notice("countdown scheduled: outboxMessageId=\(outboxMessageId, privacy: .public) accountId=\(accountId, privacy: .private) duration=\(duration, privacy: .public)s")
         pendingSend = PendingSend(outboxMessageId: outboxMessageId, accountId: accountId, startedAt: Date(), duration: duration, snapshot: snapshot)
         countdownTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(duration))
             guard !Task.isCancelled else { return }
+            Self.logger.notice("countdown elapsed naturally: outboxMessageId=\(outboxMessageId, privacy: .public)")
             await self?.finalizeNow()
         }
     }
@@ -96,6 +119,7 @@ final class PendingSendCoordinator {
         countdownTask?.cancel()
         countdownTask = nil
         pendingSend = nil
+        Self.logger.notice("send cancelled by user: outboxMessageId=\(pending.outboxMessageId, privacy: .public)")
 
         guard let environment else { return pending.snapshot }
         await Self.deleteOutboxMessage(id: pending.outboxMessageId, accountId: pending.accountId, database: environment.database)
@@ -113,12 +137,20 @@ final class PendingSendCoordinator {
         countdownTask?.cancel()
         countdownTask = nil
         pendingSend = nil
+        Self.logger.notice("finalizing: outboxMessageId=\(pending.outboxMessageId, privacy: .public) accountId=\(pending.accountId, privacy: .private)")
         await replay(accountId: pending.accountId)
     }
 
     private func replay(accountId: String) async {
-        guard let environment else { return }
-        guard let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
+        Self.logger.notice("replay kicked for accountId=\(accountId, privacy: .private)")
+        guard let environment else {
+            Self.logger.error("replay aborted: no AppEnvironment configured")
+            return
+        }
+        guard let account = environment.accounts.first(where: { $0.id == accountId }) else {
+            Self.logger.error("replay aborted: accountId=\(accountId, privacy: .private) not found among environment.accounts")
+            return
+        }
 
         #if os(iOS)
         // The network send this triggers may start right as the app is
@@ -143,8 +175,25 @@ final class PendingSendCoordinator {
         }
         #endif
 
-        guard let auth = try? await environment.auth(for: account) else { return }
-        _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+        // Task #124: both of these were plain `try?`, silently swallowing
+        // the error on failure — a real observed symptom ("送信待ちのまま
+        // スタックし、次回起動でようやく送信された") was consistent with `auth(for:)`
+        // failing right here (e.g. a token refresh hiccup at exactly the
+        // moment the app is backgrounding) and nothing in this session ever
+        // finding out. Logging on both failure paths doesn't change the
+        // best-effort behavior (the durable outbox row + opQueue op are
+        // untouched either way — a later opportunistic replay, or the next
+        // launch's own foreground-active replay pass, still picks it up —
+        // see `OtegamiApp.syncAllAccountsOnce()`), but makes a repeat of
+        // this failure mode diagnosable from device logs instead of only
+        // reproducible by luck.
+        do {
+            let auth = try await environment.auth(for: account)
+            let result = try await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
+            Self.logger.notice("replay finished for accountId=\(accountId, privacy: .private): succeeded=\(result.succeeded) retrying=\(result.retrying) permanentlyFailed=\(result.permanentlyFailed)")
+        } catch {
+            Self.logger.error("replay failed for accountId=\(accountId, privacy: .private): \(String(describing: error)) — the durable outbox row/opQueue op are untouched, a later opportunistic replay or the next foreground will still pick it up")
+        }
     }
 
     /// Reverses the durable write `ComposerView.send()` made: deletes the

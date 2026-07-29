@@ -3,6 +3,7 @@ import GRDB
 import MailTransport
 import OtegamiCore
 import OtegamiStore
+import os
 
 /// Replays queued offline operations (`opQueue`) against the server, FIFO,
 /// over one connection per `replay(account:auth:)` call. Owns no
@@ -36,6 +37,12 @@ public actor OpQueueProcessor {
         public var permanentlyFailed = 0
     }
 
+    /// Task #124 shared logging category — `PendingSendCoordinator` and
+    /// `ComposerView` use the same category so the whole enqueue → schedule
+    /// → finalize → replay → SMTP → Sent-append lifecycle for one send can
+    /// be read as a single interleaved stream in Console.app.
+    static let logger = Logger(subsystem: "com.mtkg.otegami", category: "PendingSend")
+
     private let database: AppDatabase
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     /// M5: opens the SMTP connection a `.send` op replays over. Separate
@@ -51,6 +58,24 @@ public actor OpQueueProcessor {
     /// stays independent of any specific MIME-building backend (the app
     /// wires the real one; tests inject a trivial pure-Swift stand-in).
     private let messageBuilder: @Sendable (ComposeDraft) -> BuiltMessage
+
+    /// Task #124 (二重送信防止): `replay(account:auth:)` is called
+    /// opportunistically from a dozen+ independent triggers — swipe
+    /// actions, foreground sync, the IDLE loop's post-push callback,
+    /// `PendingSendCoordinator`'s countdown finalize — any of which can
+    /// overlap for the *same* account. Because this type is an `actor`,
+    /// two overlapping calls can still interleave at any `await` inside
+    /// `replay(account:auth:)` (actor reentrancy): without this guard,
+    /// both could fetch the same still-pending `.send` op before either
+    /// had deleted it, and both hand it to SMTP — the actual mechanism
+    /// behind the reported "同じメールが2通送信された" bug. Mutating this set
+    /// only ever happens at non-suspending points (right at
+    /// `replay(account:auth:)`'s entry/exit), so no further race is
+    /// possible on the set itself; it makes `replay(account:auth:)` this
+    /// actor's single execution owner per account — a second call for an
+    /// account already in flight is a safe no-op, since the in-flight call
+    /// will pick up the exact same due ops this second call would have.
+    private var inFlightAccountIds: Set<String> = []
 
     public init(
         database: AppDatabase,
@@ -76,6 +101,19 @@ public actor OpQueueProcessor {
     /// batch, so one bad op can't jam every op enqueued after it.
     @discardableResult
     public func replay(account: AccountRecord, auth: MailAuth) async throws -> ReplayResult {
+        guard inFlightAccountIds.insert(account.id).inserted else {
+            // Task #124: another `replay(account:auth:)` call for this same
+            // account is already running this actor's fetch-due-ops →
+            // apply → delete cycle — see `inFlightAccountIds`'s doc comment
+            // for why racing a second pass through that cycle is exactly
+            // how a `.send` op gets handed to SMTP twice. That in-flight
+            // call already covers whatever this call would have done, so
+            // this one is a safe, cheap no-op.
+            Self.logger.notice("replay(accountId: \(account.id, privacy: .private)) skipped — already in flight (Task #124 per-account serialization)")
+            return ReplayResult()
+        }
+        defer { inFlightAccountIds.remove(account.id) }
+
         var result = ReplayResult()
 
         let now = Date()
@@ -297,6 +335,21 @@ public actor OpQueueProcessor {
             let built = messageBuilder(draft)
             let recipients = outbox.toAddresses + outbox.ccAddresses + outbox.bccAddresses
 
+            // Task #124 (二重送信防止): claim exclusive right to actually
+            // transmit this outboxMessage *immediately before* touching
+            // SMTP at all — see `claimSendStart(outboxMessageId:)`'s doc
+            // comment. This is the second, durable line of defense behind
+            // `inFlightAccountIds` (which only protects against overlap
+            // *within one still-running process*): if the process was
+            // killed mid-send on a previous run, `sendStartedAt` survived
+            // that crash and this claim fails here too, refusing to resend
+            // a message whose previous delivery outcome is unknown rather
+            // than risking a duplicate.
+            guard try await claimSendStart(outboxMessageId: payload.outboxMessageId) else {
+                Self.logger.error("send blocked: outboxMessageId \(payload.outboxMessageId) already claimed by another attempt — refusing to resend (Task #124 safety net)")
+                throw MailTransportError.serverError(underlyingDescription: "送信を開始済みのため再送信をスキップしました(二重送信防止)。「同期エラー」から内容を確認し、必要なら手動で再送してください。")
+            }
+
             // SMTP failures here must never be reclassified as
             // connection-level (which would abort the *whole* replay batch,
             // including unrelated setFlags/move/delete ops that still have
@@ -306,6 +359,7 @@ public actor OpQueueProcessor {
             // リトライ残る" behavior the plan calls for.
             do {
                 let smtpSession = smtpSessionFactory(smtpConfig)
+                Self.logger.info("SMTP send starting for outboxMessageId \(payload.outboxMessageId)")
                 try await smtpSession.connect(auth: Self.smtpAuth(imapAuth: auth, account: account))
                 defer {
                     let smtpSession = smtpSession
@@ -313,8 +367,16 @@ public actor OpQueueProcessor {
                 }
                 try await smtpSession.sendMessage(messageData: built.data, from: draft.from, recipients: recipients)
             } catch {
+                // The attempt is definitively known to have failed locally
+                // (this call returned control to us with an error, rather
+                // than the process dying mid-await) — release the claim so
+                // a later replay pass can retry normally, same as before
+                // this task's idempotency guard existed.
+                Self.logger.error("SMTP send failed for outboxMessageId \(payload.outboxMessageId): \(String(describing: error))")
+                await releaseSendClaim(outboxMessageId: payload.outboxMessageId)
                 throw MailTransportError.serverError(underlyingDescription: "SMTP send failed: \(error)")
             }
+            Self.logger.info("SMTP send succeeded for outboxMessageId \(payload.outboxMessageId)")
 
             // The message has now genuinely been sent — from here on,
             // *nothing* is allowed to cause this op to be retried (a retry
@@ -327,7 +389,12 @@ public actor OpQueueProcessor {
             // next differential sync notices it — not a reason to fail
             // this op.
             if account.kind != .gmail, let sent = try await sentMailbox(accountId: account.id) {
-                _ = try? await session.append(mailboxPath: sent.path, messageData: built.data, flags: .seen)
+                do {
+                    _ = try await session.append(mailboxPath: sent.path, messageData: built.data, flags: .seen)
+                    Self.logger.info("Sent APPEND succeeded for outboxMessageId \(payload.outboxMessageId)")
+                } catch {
+                    Self.logger.error("Sent APPEND failed (best-effort, not retried) for outboxMessageId \(payload.outboxMessageId): \(String(describing: error))")
+                }
             }
 
             // Drafts IMAP sync: if this send was composed by resuming a
@@ -350,6 +417,7 @@ public actor OpQueueProcessor {
             }
 
             try await deleteOutboxMessage(id: payload.outboxMessageId)
+            Self.logger.info("outbox row deleted (send complete) for outboxMessageId \(payload.outboxMessageId)")
             return .applied
 
         case .saveDraft:
@@ -759,6 +827,53 @@ public actor OpQueueProcessor {
 
     private func outboxMessage(id: Int64) async throws -> OutboxMessageRecord? {
         try await database.dbWriter.read { db in try OutboxMessageRecord.fetchOne(db, key: id) }
+    }
+
+    /// Task #124 (二重送信防止): atomically claims the exclusive right to
+    /// actually transmit `outboxMessageId` over SMTP — sets
+    /// `OutboxMessageRecord.sendStartedAt` only if it was still `nil`,
+    /// using one serialized `dbWriter.write` transaction as the
+    /// compare-and-swap (GRDB's single writer connection means this
+    /// fetch-check-update can't interleave with any other write, in this
+    /// process or — since the writer is the SQLite file's actual serial
+    /// lock — any other process either). Returns `true` if this call won
+    /// the claim, `false` if another attempt already holds it (a
+    /// concurrent replay racing on the same op — belt-and-suspenders
+    /// behind `inFlightAccountIds`, which normally rules this out already
+    /// — or a previous attempt that claimed this row and then never
+    /// reached `releaseSendClaim`/the outbox row's own deletion before the
+    /// process died).
+    private func claimSendStart(outboxMessageId: Int64) async throws -> Bool {
+        try await database.dbWriter.write { db in
+            guard var outbox = try OutboxMessageRecord.fetchOne(db, key: outboxMessageId) else {
+                // Row already gone (a previous pass finished the send and
+                // deleted it) — nothing to claim; the caller's own
+                // `outboxMessage(id:)` guard normally catches this first,
+                // but stay defensive here too.
+                return false
+            }
+            guard outbox.sendStartedAt == nil else { return false }
+            outbox.sendStartedAt = Date()
+            try outbox.update(db, columns: [Column("sendStartedAt")])
+            return true
+        }
+    }
+
+    /// Releases a claim `claimSendStart(outboxMessageId:)` won, for when
+    /// the SMTP attempt itself is *definitively* known to have failed (a
+    /// local exception returned control to this actor before/during
+    /// `sendMessage`, rather than the process dying mid-await with no
+    /// chance to run this at all) — letting a later replay pass retry
+    /// normally, same as before this task's idempotency guard existed.
+    /// Never called once `sendMessage` has actually succeeded — see the
+    /// `.send` case's own comment for why the claim staying set from that
+    /// point on is intentional.
+    private func releaseSendClaim(outboxMessageId: Int64) async {
+        try? await database.dbWriter.write { db in
+            guard var outbox = try OutboxMessageRecord.fetchOne(db, key: outboxMessageId) else { return }
+            outbox.sendStartedAt = nil
+            try outbox.update(db, columns: [Column("sendStartedAt")])
+        }
     }
 
     private func outboxAttachments(outboxMessageId: Int64) async throws -> [OutboxAttachmentRecord] {

@@ -52,6 +52,20 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
 
     public var createdAt: Date
 
+    /// Task #124 (二重送信防止): `nil` until some `OpQueueProcessor.replay`
+    /// pass actually claims the right to hand this row to SMTP (see
+    /// `OpQueueProcessor.claimSendStart(outboxMessageId:)`'s doc comment).
+    /// Non-`nil` means "an attempt owns this send" — a concurrent or
+    /// crash-resumed replay pass must not resend while this is set, only
+    /// clearing it back to `nil` if *that same claiming attempt* observes
+    /// its own SMTP call fail cleanly (so a later attempt may retry
+    /// normally). Left set forever once the SMTP call actually succeeds —
+    /// moot at that point since the row is deleted in the same replay pass
+    /// right after, but exactly what protects a crash between "SMTP
+    /// accepted the message" and "the row got deleted" from resending on
+    /// the next launch.
+    public var sendStartedAt: Date?
+
     public init(
         id: Int64? = nil,
         accountId: String,
@@ -65,7 +79,8 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
         draftServerMailboxId: Int64? = nil,
         draftServerUid: Int64? = nil,
         draftServerUidValidity: Int64? = nil,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        sendStartedAt: Date? = nil
     ) {
         self.id = id
         self.accountId = accountId
@@ -80,6 +95,7 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
         self.draftServerUid = draftServerUid
         self.draftServerUidValidity = draftServerUidValidity
         self.createdAt = createdAt
+        self.sendStartedAt = sendStartedAt
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

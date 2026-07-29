@@ -6,6 +6,7 @@ import OtegamiStore
 import OtegamiTranslation
 import SyncEngine
 import UniformTypeIdentifiers
+import os
 #if os(iOS)
 import PhotosUI
 import UIKit
@@ -23,6 +24,11 @@ import UIKit
 struct ComposerView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
+
+    /// Task #124 — shared category with `PendingSendCoordinator`/
+    /// `OpQueueProcessor` so one send's whole lifecycle reads as a single
+    /// interleaved stream in Console.app.
+    private static let pendingSendLogger = Logger(subsystem: "com.mtkg.otegami", category: "PendingSend")
 
     let payload: ComposerLaunchPayload
 
@@ -1257,6 +1263,7 @@ struct ComposerView: View {
             // Composer the instant the local write succeeds.
             dismiss()
             guard let outboxId else { return }
+            Self.pendingSendLogger.notice("enqueued: outboxMessageId=\(outboxId, privacy: .public) accountId=\(accountId, privacy: .private)")
 
             #if os(iOS)
             // iOS only (`SendCancelWindow`'s doc comment covers the "why
@@ -1272,7 +1279,7 @@ struct ComposerView: View {
                     translateToEnglishBeforeSend: translateToEnglishBeforeSend, attachments: pendingAttachments,
                     draftServerMailboxId: draftServerMailboxId, draftServerUid: draftServerUid, draftServerUidValidity: draftServerUidValidity
                 )
-                environment.pendingSendCoordinator.schedule(outboxMessageId: outboxId, accountId: accountId, duration: duration, snapshot: snapshot)
+                await environment.pendingSendCoordinator.schedule(outboxMessageId: outboxId, accountId: accountId, duration: duration, snapshot: snapshot)
                 return
             }
             #endif
