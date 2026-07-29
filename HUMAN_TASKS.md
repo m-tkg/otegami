@@ -244,28 +244,19 @@
 
 ## 4. 公開・配布に向けて (App Store / TestFlight を目指す場合)
 
-- [ ] **Google OAuth の審査を申請する** — 各自の Client ID でのテスト
-      利用自体は審査不要 (自分を「テストユーザー」に追加すればよい)。
-      配布ビルド (App Store/TestFlight) を出す場合のみ Google の OAuth
-      審査が必要になる。`contacts.other.readonly`・`contacts.readonly`
-      (Google プロフィール写真) はどちらも機密性の高いスコープなので、
-      審査時にこの2スコープの使用目的の申告が追加で必要になる
-      (`docs/oauth-setup.md`「`contacts.other.readonly`・`contacts.readonly`」
-      節)。
-      優先度: 低 (配布を決めてから) / 所要時間: 申請自体は1時間程度、
-      審査待ちは数日〜数週間 / 参照: [docs/oauth-setup.md](docs/oauth-setup.md)
+- [x] **Google OAuth の審査** — (2026-07-29 決定) 申請しない方針。
+      テストユーザー運用 (審査不要・100人上限) を継続する。将来申請する
+      場合の前提 (ブランディング検証・プライバシーポリシー URL・デモ動画・
+      制限付きスコープの CASA) は検証センターで確認済み。
 - [ ] **macOS ビルドの Developer ID 署名 + notarization** — `make mac-app`
       で `dist/Otegami.app` は生成できるが、現状はアドホック署名のまま。
       自分の Mac 以外に配る場合は Gatekeeper 対応 (Developer ID 署名 +
       notarization) が必要。
       優先度: 低 (配布を決めてから) / 所要時間: 半日程度 (初回のみ、
       証明書取得含む) / 参照: [PENDING.md「公開時に必要な対応」](PENDING.md#公開時に必要な対応-まとめ)
-- [ ] **サードパーティライセンス表記 (`NOTICE`) の定期確認** — 依存を
-      追加/更新するたびに `Package.resolved` と突き合わせて記載漏れが
-      無いか確認する。実バイナリを配布する際は Apache-2.0 系依存のライ
-      センス全文同梱も必要になる (現状はソース配布のみなので `NOTICE`
-      ファイルでの記載に留めている)。
-      優先度: 低 (依存更新のたびに) / 所要時間: 10分
+- [x] **サードパーティライセンス表記 (`NOTICE`) の確認** — (2026-07-29
+      確認済み)。以後は依存を追加/更新する PR の際にエージェント側で
+      NOTICE を追随させる運用 (人間の定期作業からは外す)。
 - [x] **`com.apple.developer.mail-client` entitlement の申請・承認後の (申請済み 2026-07-28、承認待ち)
       有効化 (Task #48)** — まだ申請していなければ
       [Request a Mail App Entitlement](https://developer.apple.com/contact/request/default-mail-client/)
