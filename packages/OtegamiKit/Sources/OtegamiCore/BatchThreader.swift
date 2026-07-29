@@ -120,9 +120,18 @@ public enum BatchThreader {
             while let next = parent[root] {
                 root = next
             }
+            // Path compression: every node walked in the first loop above is
+            // guaranteed to still have a `parent` entry (that's exactly what
+            // made the first loop keep walking past it) until `current`
+            // reaches `root` itself, so this force-unwrapped in the original
+            // implementation. Task #118 (単発クラッシュ報告、低確度候補):
+            // guarding it anyway costs nothing — a `nil` here only means
+            // this pass compresses fewer links than it could (a future
+            // `find` just walks one more hop), never a wrong `root`, since
+            // `root` was already fully resolved above before this loop runs.
             var current = id
             while current != root {
-                let next = parent[current]!
+                guard let next = parent[current] else { break }
                 parent[current] = root
                 current = next
             }
@@ -303,8 +312,22 @@ public enum BatchThreader {
         func target(for root: Int64) -> ThreadTarget {
             if root > maxExistingThreadId {
                 // Every virtual id that's still a root at the end must have
-                // survived (by definition of "root"), so it's always found.
-                return .new(indexByVirtualId[root]!)
+                // survived (by definition of "root"), so it's always found —
+                // but Task #118 (単発クラッシュ報告、低確度候補) prefers a
+                // defensive fallback here over a force unwrap regardless: if
+                // this invariant were ever violated by a future edit,
+                // `.existing(root)` is technically wrong (a virtual id was
+                // never a real `ThreadRecord.id`, so `ThreadAssigner.apply`
+                // would assign the affected message(s) a `threadId` matching
+                // no local `thread` row — an orphaned-but-harmless local
+                // inconsistency the next full resync/`recomputeAggregates`
+                // pass self-heals), but that beats crashing the whole sync
+                // pass over one force unwrap.
+                guard let index = indexByVirtualId[root] else {
+                    assertionFailure("BatchThreader: virtual thread id \(root) missing from indexByVirtualId")
+                    return .existing(root)
+                }
+                return .new(index)
             }
             return .existing(root)
         }

@@ -1005,3 +1005,79 @@ navigation item 以外の state を読まない — push に必要な文脈は�
 item に載せる。#61 (WKWebView 再生成) / #94 (`.task` キャンセル) に続く
 「SwiftUI の view identity/クロージャ更新タイミングに依存した状態受け渡し
 は cold launch 初回に壊れる」系の 3 例目。
+
+## Task #119: ハンバーガーメニューに「ゴミ箱 → Gmail」の統合セクションがある一方、別に「その他 → Trash」も出る
+
+### 報告
+
+実機報告: ハンバーガーメニューのカテゴリ優先グルーピングに、「ゴミ箱」
+セクション配下の Gmail アカウントとは別に、「その他」セクション配下に
+生名の `Trash` フォルダが出る — どこかのアカウント (iCloud か汎用 IMAP)
+のゴミ箱が RFC 6154 `SPECIAL-USE` の `\Trash` として認識されず、
+`MailboxRole.none` のまま「その他」に落ちていた。
+
+### 原因
+
+`MailCoreIMAPSession+Mapping.role(for:path:displayPath:)` (旧
+`role(for:path:)`) は `MCOIMAPFolderFlag` の SPECIAL-USE 系フラグ
+(`.trash`/`.spam`/`.sentMail`/`.drafts`/`.archive`/`.allMail`/`.starred`)
+だけを見て role を決めていた。フォールバックは「path が大文字小文字
+無視で `INBOX` と一致すれば `.inbox`」の1つだけで、それ以外に何の
+名前ベースの推測も無かった。Gmail・開発用 mailstack の Dovecot は
+SPECIAL-USE を広告するため問題にならないが、iCloud や多くの汎用/自前
+ホスト IMAP サーバーは Trash/Junk/Sent/Drafts/Archive の一部または
+全部について SPECIAL-USE を広告しない実装が珍しくなく、そのメールボックス
+は無条件に `MailboxRole.none` → メニューの「その他」セクション
+(`FolderListSheet.uncategorizedSection`) に落ちる。
+
+### 修正
+
+1. **名前ベースのフォールバック追加**
+   (`packages/OtegamiKit/Sources/MailTransport/MailboxRoleNameInference.swift`,
+   新規): `MailboxRole.inferred(fromDisplayPath:)` — 英語圏の慣用名
+   (Trash/Deleted Messages/Deleted Items/Bin, Junk/Junk E-Mail/Spam,
+   Sent/Sent Mail/Sent Messages/Sent Items, Drafts/Draft,
+   Archive/Archives/All Mail) と日本語名 (ゴミ箱/ごみ箱, 迷惑メール,
+   送信済み/送信済みメール/送信済みアイテム, 下書き, アーカイブ) を
+   `displayPath` の最終パス要素 (大小文字無視) と比較する。`displayPath`
+   はサーバーの階層区切り文字を `/` に正規化済みなので、Courier 系の
+   `INBOX.Trash` のようなネームスペース付きパスも `INBOX/Trash` →
+   最終要素 `Trash` として同じロジックで拾える。判定表は
+   `MailTransportTests`
+   (`packages/OtegamiKit/Tests/MailTransportTests/MailboxRoleNameInferenceTests.swift`)
+   にユニットテストで固定 — MailCore2 リンクも実 IMAP サーバーも不要な
+   純粋関数として `MailTransport` (Linux 互換層) 側に置いた。`.inbox`
+   はこの名前テーブルに含めない (「Archive/INBOX」のようなネストした
+   同名フォルダを誤って受信トレイ扱いしないため) — 既存の
+   raw path 完全一致チェックのみが `.inbox` を許可する。
+   `role(for:path:displayPath:)` は SPECIAL-USE のどの属性にも一致せず
+   `INBOX` 完全一致でもない場合に、最後の手段としてこの関数を呼ぶ。
+2. **既存 DB の role の再評価**: `AccountSyncer.upsertMailboxes` は元々
+   毎回の同期パス (initial/incremental 問わず) で全メールボックスを
+   再 list ・再 upsert しており、`role` 列は (`isHidden`/`uidValidity`等
+   と違い) `.noOverwrite` の対象になっていなかった — つまり上記1の
+   ロジック修正だけで、既存の `role == .none` な行も次回同期で
+   自動的に是正される。挙動を固定するユニットテスト
+   (`AccountSyncerTests.mailboxRoleIsReevaluatedOnResync`) を追加:
+   `uidValidity` 不変のまま2回目の `performIncrementalSync` を通し、
+   1回目 `.none` で保存された行が2回目で `.trash` に上書きされることを
+   確認。
+3. **単発クラッシュ報告 #118 の低確度候補への防御的修正**:
+   `BatchThreader.swift` の `UnionFind.find` (path compression 中の
+   `parent[current]!`) と `target(for:)` (`indexByVirtualId[root]!`) を
+   ガード付きに変更。どちらも既存のアルゴリズム不変条件下では元々安全
+   だったが (ロジック上クラッシュしうる入力は無い)、force unwrap を
+   ガードへ置き換えても意味が変わらない箇所なので、念のため防御的に
+   修正した。`ThreadAssigner`/`BatchThreader` の既存テスト
+   (`OtegamiStoreTests`, ランダム化データセットでの batched-vs-sequential
+   同値性テスト含む) は変更後も全件グリーン。
+
+### 検証
+
+- `swift test --filter MailTransportTests` / `--filter AccountSyncerTests`
+  / `--filter OtegamiStoreTests` / `--filter OtegamiCoreTests`: 全件グリーン。
+- `make test` で他パッケージと合わせて確認。
+- **実機での確認はこのセッションでは未実施** — 「その他」セクションから
+  Trash が消え、「ゴミ箱」セクションに正しいアカウントとして現れるかは
+  iCloud または SPECIAL-USE 非広告の汎用 IMAP アカウントを実際に追加
+  した実機/シミュレータでの確認が必要。

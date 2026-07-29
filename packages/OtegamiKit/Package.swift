@@ -45,6 +45,14 @@ let package = Package(
             dependencies: ["OtegamiCore"]
         ),
 
+        // Task #119: pure-logic tests for `MailboxRole.inferred(fromDisplayPath:)`
+        // (the SPECIAL-USE-less name-based fallback) — no MailCore2 or real
+        // IMAP server needed, unlike MailTransportMailCoreTests below.
+        .testTarget(
+            name: "MailTransportTests",
+            dependencies: ["MailTransport"]
+        ),
+
         // GRDB-backed local store (schema, DAOs, FTS indexer).
         .target(
             name: "OtegamiStore",

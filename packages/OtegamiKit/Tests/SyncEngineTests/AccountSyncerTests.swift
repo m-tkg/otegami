@@ -528,12 +528,81 @@ struct AccountSyncerTests {
         #expect(archiveAfter?.isHidden == true, "A resync must not silently un-hide a mailbox")
     }
 
+    // MARK: - Task #119 (実機報告「その他 → Trash」)
+
+    /// The other half of Task #119's fix: `MailboxRole.inferred(fromDisplayPath:)`
+    /// (`packages/OtegamiKit/Sources/MailTransport/MailboxRoleNameInference.swift`)
+    /// only fixes mailboxes discovered *after* the fix ships — a mailbox
+    /// that was already stored locally with `role == .none` (from before
+    /// this app version existed, back when a SPECIAL-USE-less Trash always
+    /// fell through to "その他") also needs to self-heal on its own, without
+    /// requiring `uidValidity` to change or the user to do anything special.
+    /// `upsertMailboxes` (unlike `Column("isHidden").noOverwrite` right
+    /// above) deliberately does *not* protect `role` from being overwritten
+    /// on every sync pass — this test locks that in: a mailbox stored with
+    /// the pre-fix `role: .none` gets corrected to `.trash` the very next
+    /// time `performIncrementalSync` re-lists mailboxes, same `uidValidity`
+    /// throughout.
+    @Test("a locally-stored role is re-evaluated (not frozen) on every later mailbox re-sync")
+    func mailboxRoleIsReevaluatedOnResync() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        // Simulates a mailbox this app previously discovered before Task
+        // #119's name-based fallback existed: no SPECIAL-USE attribute the
+        // old `role(for:path:)` recognized, so it was stored as `.none`.
+        let trash = MailboxInfo(path: "Trash", displayPath: "Trash", role: .none, attributes: [])
+
+        let initialSyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox, trash],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Trash": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                ]
+            ))
+        }
+        _ = try await initialSyncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+        let trashMailboxId = try #require(
+            try await database.dbWriter.read { db in
+                try MailboxRecord.filter(Column("accountId") == account.id && Column("path") == "Trash").fetchOne(db)?.id
+            }
+        )
+        let trashBefore = try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db, key: trashMailboxId) }
+        // `MailboxRoleRecord.none` explicitly, not bare `.none` — the latter
+        // resolves to `Optional<MailboxRoleRecord>.none` (nil) instead of
+        // `.some(.none)` in this `T?`-typed comparison, the classic Swift
+        // "wrapped type also has a case named `none`" footgun.
+        #expect(trashBefore?.role == MailboxRoleRecord.none, "precondition: this test simulates a mailbox stored before the name-based fallback existed")
+
+        // A later sync pass re-lists the same mailbox, this time with the
+        // fixed role-inference logic reporting `.trash` — same `uidValidity`
+        // (1), so this doesn't take the uidValidity-changed full-resync path
+        // at all; it's the ordinary `upsertMailboxes` re-upsert every
+        // incremental sync already does.
+        let fixedTrash = MailboxInfo(path: "Trash", displayPath: "Trash", role: .trash, attributes: [])
+        let resyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox, fixedTrash],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Trash": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                ]
+            ))
+        }
+        _ = try await resyncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let trashAfter = try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db, key: trashMailboxId) }
+        #expect(trashAfter?.role == .trash, "a stale locally-stored role must be corrected by the next mailbox re-sync, not frozen at its first-ever value")
+    }
+
     // MARK: - Task #44 (実機バグ: Gmail の「すべてのメール」に新着が反映されない)
 
     /// Locks in the exact scenario from the real-device bug report at the
     /// `FakeIMAPSession` level: a `role: .all` mailbox (what this app maps
     /// Gmail's IMAP `\All` SPECIAL-USE "すべてのメール" to —
-    /// `MailCoreIMAPSession+Mapping.role(for:path:)`), synced via
+    /// `MailCoreIMAPSession+Mapping.role(for:path:displayPath:)`), synced via
     /// `.mailbox(path:)` — exactly what `MessageListView.refresh()`'s
     /// `.mailbox` case (pull-to-refresh, and now also the "開いた時" sync
     /// `MessageListView.syncSelectedMailboxOnAppear()` added) does for a

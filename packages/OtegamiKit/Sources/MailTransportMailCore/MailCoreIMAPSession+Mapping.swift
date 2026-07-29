@@ -134,12 +134,19 @@ extension MailCoreIMAPSession {
             path: path,
             displayPath: displayPath,
             delimiter: delimiter,
-            role: role(for: flags, path: path),
+            role: role(for: flags, path: path, displayPath: displayPath),
             attributes: attributes
         )
     }
 
-    private static func role(for flags: MCOIMAPFolderFlag, path: String) -> MailboxRole {
+    /// Task #119 (実機報告「その他 → Trash」): SPECIAL-USE (`flags`) is always
+    /// authoritative when the server advertises it, but plenty of real-world
+    /// servers (iCloud among them) don't advertise it for every standard
+    /// mailbox, or at all. `MailboxRole.inferred(fromDisplayPath:)` is the
+    /// name-based fallback for exactly that gap — see its own doc comment for
+    /// the matched name list and why it lives in `MailTransport` rather than
+    /// here.
+    private static func role(for flags: MCOIMAPFolderFlag, path: String, displayPath: String) -> MailboxRole {
         if flags.contains(.inbox) { return .inbox }
         if flags.contains(.sentMail) { return .sent }
         if flags.contains(.drafts) { return .drafts }
@@ -152,7 +159,7 @@ extension MailCoreIMAPSession {
         // them): fall back to the one name IMAP itself guarantees the
         // meaning of.
         if path.caseInsensitiveCompare("INBOX") == .orderedSame { return .inbox }
-        return .none
+        return MailboxRole.inferred(fromDisplayPath: displayPath)
     }
 
     static func mailboxStatus(from info: MCOIMAPFolderInfo) -> MailboxStatus {
