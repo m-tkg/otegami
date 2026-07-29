@@ -148,6 +148,21 @@ struct MessageView: View {
     /// unambiguous in `log stream` output.
     private static let translationWiringLogger = Logger(subsystem: "com.mtkg.otegami", category: "HTMLTranslationDiagnostic")
 
+    /// Task #128 (実機報告「英語メールなのに翻訳ボタンが押せない」— Okta の
+    /// サインオン通知メール): `syncAIFeaturesState()`'s `showsTranslationButton`
+    /// gate has three independent conditions (`bodyRecord != nil`,
+    /// `shouldShowTranslationBar`, かつての `htmlControllerReadyIfNeeded`)
+    /// and, before this task, none of their individual values were ever
+    /// logged — a report of "ボタンが出ない" gave no way to tell *which*
+    /// condition was actually false without attaching a debugger. Every call
+    /// to `syncAIFeaturesState()` now logs all three (plus the inputs that
+    /// feed them: `detectedLanguage`/`isHTMLMessage`/`isShowingHTML`) at
+    /// `.debug` — cheap enough to leave on permanently (this runs on every
+    /// message open and every AI-features-toggle flip, not just on failure),
+    /// and `log stream --predicate 'category == "TranslationGate"'` turns a
+    /// "ボタンが出ない" report into an immediate answer instead of a guess.
+    private static let translationGateLogger = Logger(subsystem: "com.mtkg.otegami", category: "TranslationGate")
+
     /// Task #90: real-device follow-up to the Task #62 fix — a report that
     /// summaries could still read like a recap of quoted reply history
     /// ("まだ、要約において過去の引用のみが要約されてたりする") is otherwise
@@ -453,19 +468,41 @@ struct MessageView: View {
         // fetch was still in flight (`message` already set, `bodyRecord`
         // not yet).
         aiState.showsSummaryButton = bodyRecord != nil && aiFeaturesEnabled
-        // Task #64 (根治の一環、「ボタンが出ている＝翻訳可能を保証」): for an
-        // HTML message currently shown as HTML, tapping 翻訳 goes through
-        // `htmlTranslationController` (`requestTranslation`'s HTML branch) —
-        // requiring it to already be connected here means the button itself
-        // never shows in the (now much shorter, post-identity-fix) window
-        // before that happens, rather than showing it optimistically and
-        // relying on `requestTranslation`'s own nil-guard to catch a tap
-        // that would otherwise fail. Irrelevant (always `true`) for a
-        // plain-text body or an HTML message switched to text view — that
-        // path never touches `htmlTranslationController` at all.
+        // Task #64 (根治の一環、「ボタンが出ている＝翻訳可能を保証」) had this
+        // also require `htmlTranslationController != nil` for an HTML
+        // message shown as HTML — reasoning that showing the button before
+        // the controller connects would let a tap hit `requestTranslation`'s
+        // nil-guard and fail. Task #128 (実機報告「英語メールなのに翻訳ボタン
+        // が押せない」— Okta のサインオン通知メール) found the flip side of
+        // that tradeoff: if the controller *never* connects for some
+        // message's particular HTML (a fresh #61/#64-shaped hole, or simply
+        // a slow-to-appear `HTMLMessageView`), this gate hides the button
+        // permanently, with no visible failure at all — indistinguishable
+        // from "not an English message" from the user's side, and
+        // undiagnosable without exactly this method's own state. Rather than
+        // keep hiding the button on that gamble, `requestTranslation` below
+        // now falls back to the plain-text translation path (`sourceTextForTranslation()`,
+        // which doesn't touch `WKWebView` at all) whenever the controller
+        // turns out to still be `nil` at tap time — so the button can safely
+        // show as soon as the body's ready, same as the summary button just
+        // above, and a stuck controller costs only the HTML-layout-preserving
+        // presentation (1i), not translation itself.
         let htmlControllerReadyIfNeeded = !isHTMLMessage || !isShowingHTML || htmlTranslationController != nil
-        aiState.showsTranslationButton = bodyRecord != nil && shouldShowTranslationBar && htmlControllerReadyIfNeeded
+        let hasBody = bodyRecord != nil
+        aiState.showsTranslationButton = hasBody && shouldShowTranslationBar
         aiState.isTranslationAvailable = environment.isTranslationAvailable
+        // Task #128 (a): the three conditions the old `showsTranslationButton`
+        // gate combined, logged individually — see `translationGateLogger`'s
+        // doc comment for why every call logs, not just failures.
+        Self.translationGateLogger.debug("""
+        syncAIFeaturesState: messageId=\(messageId, privacy: .public) hasBody=\(hasBody, privacy: .public) \
+        shouldShowTranslationBar=\(shouldShowTranslationBar, privacy: .public) \
+        htmlControllerReadyIfNeeded=\(htmlControllerReadyIfNeeded, privacy: .public) \
+        showsTranslationButton=\(aiState.showsTranslationButton, privacy: .public) \
+        detectedLanguage=\(message?.detectedLanguage ?? "nil", privacy: .public) \
+        isHTMLMessage=\(isHTMLMessage, privacy: .public) isShowingHTML=\(isShowingHTML, privacy: .public) \
+        htmlTranslationControllerConnected=\(htmlTranslationController != nil, privacy: .public)
+        """)
         aiState.onSummarize = { [self] in
             guard let message else { return }
             requestSummary(message: message)
@@ -1243,12 +1280,11 @@ struct MessageView: View {
         return normalized.isEmpty ? nil : normalized
     }
 
-    /// Opportunistically fills in `message.detectedLanguage` for a message
-    /// whose body was already fetched (so no network call needed here —
-    /// just local text already in `body`) but whose language was never
-    /// detected, or was detected before this field existed. Real-device
-    /// report (design-phase-3 follow-up): the translation bar/button never
-    /// appeared for genuinely English mail, traced to exactly this —
+    /// Opportunistically fills in (or corrects) `message.detectedLanguage`
+    /// for a message whose body was already fetched (so no network call
+    /// needed here — just local text already in `body`). Real-device report
+    /// (design-phase-3 follow-up): the translation bar/button never appeared
+    /// for genuinely English mail, traced to exactly this —
     /// `SyncEngine.BodyFetcher` only sets `detectedLanguage` at the moment
     /// a body is *first* fetched, and never re-runs for a message whose
     /// `bodyState` is already `.fetched` (`prefetchRecent`'s `notFetched`
@@ -1258,13 +1294,31 @@ struct MessageView: View {
     /// open, using the same `MessageLanguageDetector`
     /// `SyncEngine.BodyFetcher` itself uses, and persists the result so
     /// later opens (and list-level features keyed on `detectedLanguage`,
-    /// e.g. `SearchFilterOption`) see the same backfilled value. A no-op
-    /// (returns `message` unchanged) when `detectedLanguage` is already
-    /// set — including to something other than English — since a
-    /// confidently-non-English message shouldn't be re-guessed every time
-    /// it's opened.
+    /// e.g. `SearchFilterOption`) see the same backfilled value.
+    ///
+    /// Task #128 (実機報告「英語メールなのに翻訳ボタンが押せない」— Okta の
+    /// サインオン通知メール, hypothesis (2)): this used to be a strict no-op
+    /// whenever `detectedLanguage` was already non-`nil`, on the reasoning
+    /// that "a confidently-non-English message shouldn't be re-guessed every
+    /// time it's opened". That reasoning has a gap: `detectedLanguage` being
+    /// non-`nil` only ever meant *some* past detection ran and committed a
+    /// value — not that the value was actually correct. A build that stored
+    /// a wrong non-`nil` guess (e.g. an early version whose sample text
+    /// wasn't yet cleaned the same way `resolvePlainText`/this method's own
+    /// `sample` below are — a stray HTML/CSS-heavy sample can plausibly
+    /// throw `NLLanguageRecognizer` off) would leave that wrong value stuck
+    /// forever, indistinguishable from a *correctly* detected non-English
+    /// message — exactly the same permanently-hidden-button symptom as the
+    /// `nil` case this method already existed to fix, just with a non-`nil`
+    /// value instead of a missing one. Now always re-detects from the
+    /// current body text and only writes back when the fresh result
+    /// actually *disagrees* with what's stored — a no-op (same `update`
+    /// skip, same "don't hammer the DB every open") for the overwhelmingly
+    /// common case where the stored value already matches, and self-healing
+    /// for the mismatched case without needing a full re-sync or app
+    /// reinstall.
     private func backfillDetectedLanguageIfNeeded(message: MessageRecord, body: MessageBodyRecord) async -> MessageRecord {
-        guard message.detectedLanguage == nil, message.id != nil else { return message }
+        guard message.id != nil else { return message }
 
         let sample: String?
         if let plainText = body.plainText, !plainText.isEmpty {
@@ -1275,7 +1329,12 @@ struct MessageView: View {
         } else {
             sample = nil
         }
-        guard let sample, let detected = Self.detectLanguageLocally(sample) else { return message }
+        // A failed re-detection (`sample == nil`, or the recognizer itself
+        // couldn't commit to a language this time) never overwrites an
+        // existing value — only a confident, *different* result does.
+        guard let sample, let detected = Self.detectLanguageLocally(sample), detected != message.detectedLanguage else {
+            return message
+        }
 
         var updated = message
         updated.detectedLanguage = detected
@@ -1335,40 +1394,19 @@ struct MessageView: View {
     /// 1i「HTMLメールもレイアウトを保持したまま翻訳」: branches on the same
     /// `isHTMLMessage`/`isShowingHTML` pair `content` uses to decide which
     /// body view to render at all — an HTML message currently shown as HTML
-    /// collects its DOM text nodes via `htmlTranslationController` and goes
-    /// through `translateHTMLTextNodes`; everything else (plain-text body,
-    /// or an HTML message the user switched to text view) goes through the
-    /// original flattened-string `translate` path unchanged.
+    /// *and* whose `htmlTranslationController` is actually connected
+    /// collects its DOM text nodes and goes through `translateHTMLTextNodes`;
+    /// everything else (plain-text body, an HTML message switched to text
+    /// view, or — Task #128 — an HTML message whose controller never
+    /// connected) goes through the original flattened-string `translate`
+    /// path. See the `htmlTranslationController`-nil branch below for why
+    /// that last case is a fallback rather than a failure now.
     private func requestTranslation(message: MessageRecord) {
         guard translateTask == nil else { return }
         let messageId = messageId
         let translator = environment.messageTranslator
 
-        if isHTMLMessage, isShowingHTML {
-            // Task #61 (実機フィードバック「HTMLメールの翻訳ボタンが無反応」
-            // の一因): `htmlTranslationController` がまだ `nil` (`HTMLMessageView
-            // .onAppear`がまだ発火していない、ごく短い窓) の間にタップされた
-            // 場合、以前はここで無言で `return` していた — ボタンが
-            // `.translating` にすら遷移しないので、ユーザーからは本当に
-            // 「タップしても何も起きない」ように見えていた。ユーザー可視の
-            // 失敗状態にして「再試行」で再度タップできるようにする。
-            guard let htmlTranslationController else {
-                // Task #64 (根治): this branch means the wiring itself is
-                // broken (`onTranslationControllerReady` never reported a
-                // non-`nil` controller for this message, or reported `nil`
-                // after — see `MessageView.body`'s `.frame` fix's doc
-                // comment for the identity-teardown bug that used to cause
-                // exactly this, persistently, on every retry) — distinct
-                // from `extractTranslatableTexts()` returning `nil` below
-                // (DOM extraction itself failing on a *connected* web view).
-                // Logged (unlike the ordinary "not ready yet" case this
-                // guard used to only cover before the identity fix) since a
-                // real occurrence now points at a wiring regression, not a
-                // one-frame race.
-                Self.translationWiringLogger.error("requestTranslation: htmlTranslationController is nil for messageId=\(messageId, privacy: .public) — controller never connected or was disconnected")
-                aiState.translationState = .failed(message: "本文の準備がまだ完了していません（内部エラー）。もう一度お試しください。")
-                return
-            }
+        if isHTMLMessage, isShowingHTML, let htmlTranslationController {
             aiState.translationState = .translating
             translateTask = Task {
                 // `extractTranslatableTexts()` always runs even when
@@ -1385,7 +1423,16 @@ struct MessageView: View {
                 // array here used to make `translateHTMLTextNodes` "succeed"
                 // translating zero paragraphs, which looked identical to a
                 // dead tap (no visible change, no error) from the user's
-                // side. Surface it as a real failure instead.
+                // side. Task #128: unlike the (now-removed) "controller is
+                // nil" case below, a *connected* web view whose extraction
+                // itself fails doesn't get the plain-text fallback — a DOM
+                // walk failing on a live web view is a genuinely unexpected
+                // condition (`HTMLTranslationController.translationLogger`
+                // already logs the JS-side detail), not the "never even
+                // connected" case the fallback below targets, so this still
+                // surfaces a real, visible failure instead of silently
+                // downgrading to a different (layout-losing) translation
+                // path the user didn't ask for.
                 guard let texts = await htmlTranslationController.extractTranslatableTexts() else {
                     guard !Task.isCancelled else { return }
                     aiState.translationState = .failed(message: "本文の読み込みに失敗しました。もう一度お試しください。")
@@ -1403,20 +1450,41 @@ struct MessageView: View {
                 aiState.translationState = result
                 translateTask = nil
             }
-        } else {
-            guard let sourceText = sourceTextForTranslation() else { return }
-            aiState.translationState = .translating
-            translateTask = Task {
-                let result = await translator.translate(
-                    messageId: messageId,
-                    sourceText: sourceText,
-                    sourceLanguage: .english,
-                    targetLanguage: .japanese
-                )
-                guard !Task.isCancelled else { return }
-                aiState.translationState = result
-                translateTask = nil
-            }
+            return
+        }
+        if isHTMLMessage, isShowingHTML {
+            // Task #61/#64 originally landed here whenever `htmlTranslationController`
+            // was still `nil` (`HTMLMessageView.onAppear` hadn't fired yet, a
+            // brief race — or, after #64's identity fix, a genuine wiring
+            // regression) and just showed a fixed, dead-end failure message.
+            // Task #128 (実機報告「英語メールなのに翻訳ボタンが押せない」—
+            // Okta のサインオン通知メール): `syncAIFeaturesState()` no longer
+            // hides the translate button while waiting for this controller
+            // (see its doc comment), so this path is now reachable on a
+            // genuine tap, not just a theoretical race — and there's a
+            // strictly better option than failing outright:
+            // `sourceTextForTranslation()` flattens `bodyRecord.html` via
+            // `HTMLTextExtractor` exactly the way the plain-text branch below
+            // already does, entirely independent of `WKWebView`/
+            // `HTMLTranslationController`. Falling back to it here means a
+            // controller that never connects (or connects too slowly) costs
+            // only the layout-preserving HTML overlay (1i) — the message
+            // still gets translated, just as a flattened block of text
+            // instead of in place.
+            Self.translationWiringLogger.error("requestTranslation: htmlTranslationController is nil for messageId=\(messageId, privacy: .public) — falling back to plain-text translation")
+        }
+        guard let sourceText = sourceTextForTranslation() else { return }
+        aiState.translationState = .translating
+        translateTask = Task {
+            let result = await translator.translate(
+                messageId: messageId,
+                sourceText: sourceText,
+                sourceLanguage: .english,
+                targetLanguage: .japanese
+            )
+            guard !Task.isCancelled else { return }
+            aiState.translationState = result
+            translateTask = nil
         }
     }
 

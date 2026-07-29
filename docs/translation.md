@@ -923,6 +923,88 @@ Foundation Models のガードレールは誤発動することがあり (Apple 
 複数文チャンクはチャンク単位1回のエンジン呼び出しのままで、文単位
 リトライの経路が余計に走らないこと（非退行）。
 
+## 実機フィードバック: 英語メールなのに翻訳ボタンが押せない (Task #128)
+
+**症状**: 明らかに英語の通知メール (実例: Okta のサインオン通知。実アドレス
+入りのため `.eml` はコミットせず、匿名化フィクスチャで再現) を開いても
+翻訳バー/ボタンが一切表示されない。事前調査でそのメールの本文を
+`MessageLanguageDetector.detect` に直接かけると `en` (信頼度 0.96) と
+正常に判定されており、判定エンジン自体は壊れていない — にもかかわらず
+アプリ上ではボタンが出ないという食い違いだった。
+
+`MessageView.syncAIFeaturesState()` の翻訳ボタン表示条件
+(`bodyRecord != nil && shouldShowTranslationBar && htmlControllerReadyIfNeeded`)
+には3つの独立した条件があり、修正前はどれが false になっているのか
+ログから判別する手段が無かった。疑い順に2つの仮説を立てて対応した:
+
+1. **仮説(1) — HTML 表示中の `htmlTranslationController` 未接続の恒久化**
+   (Task #61/#64 で塞いだはずの穴の再発、あるいはこの種の HTML での
+   接続失敗): `htmlControllerReadyIfNeeded` は「HTML メッセージを HTML
+   表示中で、かつ `htmlTranslationController` が接続済み」でない限り
+   ボタン自体を隠していた。接続が何らかの理由で恒久的に失敗する HTML が
+   あれば、ボタンは永久に出ない — しかもエラー表示すら無い「無反応」に
+   見える。
+2. **仮説(2) — 保存済み `detectedLanguage` が不正な非 `nil` 値のまま固定化**
+   `backfillDetectedLanguageIfNeeded` は `detectedLanguage == nil` の
+   ときだけ再判定していた。旧ビルドが (今の `resolvePlainText` 相当の
+   クリーンな抽出を経ない、HTML/CSS混じりのサンプルなどから) 誤った
+   非`nil`値を一度でも保存していれば、その値は「確定した非英語判定」と
+   区別できず永久に固定化する。
+
+いずれも実機の Console ログでしか最終的な切り分けはできない (このセッション
+では実 `.eml` を再現に使えなかった) ため、両方を防御的に修正した:
+
+### 変更
+
+1. **計装**: `MessageView.translationGateLogger`
+   (`Logger(subsystem: "com.mtkg.otegami", category: "TranslationGate")`)
+   を追加し、`syncAIFeaturesState()` が毎回、3条件の評価値
+   (`hasBody`/`shouldShowTranslationBar`/`htmlControllerReadyIfNeeded`/
+   `showsTranslationButton`) と、それらの入力
+   (`detectedLanguage`/`isHTMLMessage`/`isShowingHTML`/
+   `htmlTranslationControllerConnected`) を `.debug` で記録するようにした。
+   `log stream --predicate 'category == "TranslationGate"'` で「ボタンが
+   出ない」報告を即座に切り分けられる。
+2. **仮説(1)の対応 — HTML controller 不通時はテキスト翻訳へフォールバック**:
+   `showsTranslationButton` はもう `htmlControllerReadyIfNeeded` を条件に
+   含めない (`hasBody && shouldShowTranslationBar` のみ、要約ボタンと同じ
+   粒度) — 本文の読み込みが終わり次第、翻訳可能なら常にボタンを出す。
+   代わりに `requestTranslation(message:)` 側で、HTML表示中なのに
+   `htmlTranslationController` が `nil` (未接続) だった場合、
+   従来のように固定の失敗メッセージを出すのではなく
+   `sourceTextForTranslation()` (WKWebView に依存しない、`bodyRecord.html`
+   を `HTMLTextExtractor` で平文化する経路 — プレーンテキスト翻訳と共通)
+   へフォールバックするようにした。レイアウト保持翻訳 (1i) は諦めるが、
+   「翻訳そのものができない」よりはるかにまし、という判断。`extractTranslatableTexts()`
+   自体の失敗 (接続済みの WebView 上での DOM 抽出失敗) は引き続き
+   ユーザー可視の失敗として扱う — 「未接続」と「接続済みだが抽出失敗」は
+   異なる異常であり、後者まで黙ってフォールバックするのはやり過ぎと判断
+   したため区別している。
+3. **仮説(2)の対応 — 再判定を非`nil`値にも拡張**:
+   `backfillDetectedLanguageIfNeeded` はもう `detectedLanguage == nil` を
+   厳密な前提にしない — 毎回本文から再判定し、結果が**保存値と食い違う
+   場合だけ**上書きする。再判定が失敗した (サンプルが取れない、または
+   `NLLanguageRecognizer` が確信を持てない) 場合は既存値を保持する
+   フェイルセーフは維持。保存値と再判定結果が一致する (圧倒的多数派の)
+   場合は DB 書き込み自体が発生しないので、「毎回再判定する」ことによる
+   実質的なコストは開いた瞬間の `NLLanguageRecognizer` 呼び出し1回分のみ。
+
+### 検証
+
+匿名化フィクスチャ (`AppEnvironment.uitestFakeHTMLMessageBodySSONotice`
+— 架空ブランド名のみの SSO 通知メール、実データは一切含まない) を
+`uitestFakeHTMLMessages` に追加し、`detectedLanguage: "fr"` という
+意図的に誤った値付きで挿入できるようにした
+(`AppEnvironment.UITestFakeHTMLMessage.detectedLanguage`)。
+`OtegamiHTMLTranslationUITests
+.testEnglishMessageWithStaleWrongDetectedLanguageStillShowsTranslateButton`
+が `OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX` の tap-free 直接遷移経路
+(Task #56 と同じ) でこのメッセージを開き、保存値が不正なまま始まっても
+最終的に翻訳ボタンが表示されることを確認する — 上記「仮説(2)の対応」の
+end-to-end 再現。`make ios`/UITest ビルドは green。実機/シミュレータでの
+このテスト自体の実行結果は `docs/verify.md` の既知不調 (2) (XCUITest の
+タップ/要素検出不達) の影響を受けうるため未確定 — `PENDING.md` に記載。
+
 ## テスト
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、

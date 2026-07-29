@@ -70,6 +70,64 @@ final class OtegamiHTMLTranslationUITests: XCTestCase {
         add(attachment)
     }
 
+    /// Task #128 (実機報告「英語メールなのに翻訳ボタンが押せない」— Okta の
+    /// サインオン通知メール, hypothesis (2)): reproduces the *stale wrong
+    /// `detectedLanguage`* scenario with an anonymized fixture
+    /// (`AppEnvironment.uitestFakeHTMLMessageBodySSONotice`, index 8 of
+    /// `uitestFakeHTMLMessages`, seeded with `detectedLanguage: "fr"` —
+    /// standing in for an old build's incorrect detection, not an actually
+    /// French message) rather than the real (uncommittable) `.eml`.
+    /// `MessageView.load()`'s `backfillDetectedLanguageIfNeeded` (relaxed by
+    /// this task to re-detect and correct a *disagreeing* non-`nil` value,
+    /// not just a missing one) should re-detect English from this fixture's
+    /// genuinely-English body and overwrite the wrong stored value — so the
+    /// 翻訳 bar/button should end up visible and tappable despite the bad
+    /// starting state, exactly the behavior a real user hitting this bug
+    /// would need to see fixed. Uses the same `OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`
+    /// tap-free direct-open path `OtegamiSecurityNoticeDarkModeUITests`
+    /// already established (Task #56) for the same "row tap unreliable on
+    /// this simulator/toolchain" reason.
+    func testEnglishMessageWithStaleWrongDetectedLanguageStillShowsTranslateButton() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        app.launchEnvironment["OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE"] = "1"
+        app.launchEnvironment["OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX"] = "8"
+        app.launch()
+
+        for _ in 0..<4 {
+            allowNotificationPermissionIfNeeded(timeout: 2)
+            dismissContactsPermissionPromptIfNeeded(timeout: 2)
+        }
+
+        XCTAssertTrue(waitForMessageDetailToAppear(in: app, timeout: 20), "Expected the direct-open path to land on the message detail view (htmlWebView never appeared)")
+        assertBodyContains(text: "New sign-in to Example App", in: app)
+
+        // The actual bug this test locks in: despite the fixture's stored
+        // `detectedLanguage` starting out wrong ("fr"), the translate button
+        // must still appear once the body's finished loading and the
+        // re-detection in `load()` has run.
+        let translateButton = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "翻訳")).firstMatch
+        XCTAssertTrue(translateButton.waitForExistence(timeout: 20), "Expected the 翻訳 button to appear despite a stale, wrong stored detectedLanguage")
+
+        screenshotCurrentScreen(named: "translate-button-visible-despite-stale-detected-language", in: app)
+    }
+
+    private func waitForMessageDetailToAppear(in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let webView = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier CONTAINS %@", "messageDetail.htmlWebView")
+        ).firstMatch
+        return webView.waitForExistence(timeout: timeout)
+    }
+
+    private func screenshotCurrentScreen(named name: String, in app: XCUIApplication) {
+        Thread.sleep(forTimeInterval: 2)
+        let screenshot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private func openMessage(subject: String, in app: XCUIApplication) {
         let list = app.collectionViews["messageList.list"]
         let predicate = NSPredicate(format: "label CONTAINS %@", subject)

@@ -696,7 +696,8 @@ final class AppEnvironment {
                         fromText: "Example Security <security-noreply@example.com>",
                         internalDate: now.addingTimeInterval(-Double(index)),
                         bodyState: .fetched,
-                        snippet: fixture.snippet
+                        snippet: fixture.snippet,
+                        detectedLanguage: fixture.detectedLanguage
                     )
                     try message.insert(db)
                     let body = MessageBodyRecord(messageId: message.id!, plainText: nil, html: fixture.html, fetchedAt: Date())
@@ -2409,6 +2410,12 @@ final class AppEnvironment {
         let subject: String
         let snippet: String
         let html: String
+        /// Task #128: `nil` (the default — every pre-existing fixture) seeds
+        /// the row with no `detectedLanguage` at all, same as a message this
+        /// app has never opened before. `uitestFakeHTMLMessageBodySSONotice`
+        /// below is the one fixture that sets this to a deliberately *wrong*
+        /// non-`nil` value — see its own doc comment for why.
+        var detectedLanguage: String? = nil
     }
 
     fileprivate static let uitestFakeHTMLMessages: [UITestFakeHTMLMessage] = [
@@ -2451,6 +2458,21 @@ final class AppEnvironment {
             subject: "ScribbleSync is now SOC 2 certified. (UITest)",
             snippet: "ScribbleSync が SOC 2 認証を取得しました",
             html: uitestFakeHTMLMessageBodyWhiteCardHeroNotice
+        ),
+        // Task #128 (実機報告「英語メールなのに翻訳ボタンが押せない」— Okta の
+        // サインオン通知メール、hypothesis (2)): `detectedLanguage: "fr"` は
+        // 実際にはフランス語のメールではなく、古いビルドが誤った言語を検出
+        // して保存してしまったケースの再現 — 修正前の
+        // `backfillDetectedLanguageIfNeeded`は`detectedLanguage != nil`な
+        // ら常にスキップしていたので、この誤った値が永久に固定化し、
+        // 明らかに英語の本文でも翻訳バー/ボタンが二度と現れなかった。
+        // `MessageView.load()`が本文読み込み直後に呼ぶ再判定 (修正後) が
+        // 本文から"en"を再検出し、この誤った"fr"を上書きすることを検証する。
+        UITestFakeHTMLMessage(
+            subject: "New sign-in to Example App (UITest)",
+            snippet: "We noticed a new sign-in to your Example App account. If this was you, no action is needed.",
+            html: uitestFakeHTMLMessageBodySSONotice,
+            detectedLanguage: "fr"
         )
     ]
 
@@ -2759,6 +2781,55 @@ final class AppEnvironment {
       <a href="https://example.com/scribblesync-soc2" style="display:inline-block;background-color:#128cfc;color:#ffffff;font-size:14px;font-weight:bold;padding:10px 24px;border-radius:4px;text-decoration:none;">詳しく見る</a>
       <p class="footer-text">このメールは ScribbleSync アカウントをお持ちの方にお送りしています。配信停止をご希望の場合は<a href="https://example.com/scribblesync-unsubscribe" style="color:#333333;">こちら</a>から手続きできます。</p>
     </div>
+    </body>
+    </html>
+    """
+
+    /// Task #128 (実機報告「英語メールなのに翻訳ボタンが押せない」— Okta の
+    /// サインオン通知メール, scratchpad/signon.eml — 実アドレス入りのため
+    /// コミット不可): 実物と同じ「英語のみ・テーブルベースの構造化レイアウト・
+    /// SSO/認証プロバイダ系の通知テンプレート」という形を、架空ブランド名
+    /// (Example App / IdP) だけで再現したもの。実物の文面・ロゴ・宛先は一切
+    /// 含まない — このフィクスチャ自体は翻訳ボタンの表示条件バグ (この上の
+    /// `uitestFakeHTMLMessages`配列でこのフィクスチャに付けている
+    /// `detectedLanguage: "fr"`が本題) を再現するための入れ物で、HTML の
+    /// 構造そのもの (どこかで抽出/接続が壊れるような特殊なマークアップ) を
+    /// 疑う調査は本タスクの範囲では実機ログでしか確定できなかった
+    /// (`MessageView.translationGateLogger`のdoc comment参照) ため、ここでは
+    /// 「一見して英語だと分かる、ごく普通のテーブルベースSSO通知」という
+    /// 現実的な最小形にとどめている。
+    fileprivate static let uitestFakeHTMLMessageBodySSONotice = """
+    <!doctype html>
+    <html>
+    <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="viewport" content="width=device-width">
+    <title>New sign-in to Example App (UITest)</title>
+    </head>
+    <body style="margin:0;padding:0;background-color:#f4f4f4;font-family:Helvetica,Arial,sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f4;">
+    <tr><td align="center" style="padding:32px 16px;">
+    <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff; border-radius:4px;">
+    <tr><td style="padding:24px; border-bottom:1px solid #e0e0e0;">
+      <span style="color:#1c1c1c; font-size:18px; font-weight:bold;">Example App</span>
+    </td></tr>
+    <tr><td style="padding:24px;">
+      <p style="color:#1c1c1c; font-size:16px; margin:0 0 16px 0;">New sign-in to Example App</p>
+      <p style="color:#4a4a4a; font-size:14px; line-height:20px; margin:0 0 16px 0;">We noticed a new sign-in to your Example App account. If this was you, no action is needed.</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%; margin:0 0 16px 0;">
+        <tr><td style="color:#767676; font-size:13px; padding:4px 0;">Browser</td><td style="color:#1c1c1c; font-size:13px; padding:4px 0;" align="right">Example Browser</td></tr>
+        <tr><td style="color:#767676; font-size:13px; padding:4px 0;">Location</td><td style="color:#1c1c1c; font-size:13px; padding:4px 0;" align="right">Example City, Example Country</td></tr>
+        <tr><td style="color:#767676; font-size:13px; padding:4px 0;">Date</td><td style="color:#1c1c1c; font-size:13px; padding:4px 0;" align="right">August 3, 2026, 9:00 AM UTC</td></tr>
+      </table>
+      <p style="color:#4a4a4a; font-size:14px; line-height:20px; margin:0 0 16px 0;">If you don't recognize this activity, please secure your account immediately by resetting your password.</p>
+      <a href="https://example.com/account/security" style="display:inline-block;background-color:#0066cc;color:#ffffff;font-size:14px;font-weight:bold;padding:10px 24px;border-radius:4px;text-decoration:none;">Secure my account</a>
+    </td></tr>
+    <tr><td style="padding:16px 24px; border-top:1px solid #e0e0e0;">
+      <p style="color:#9a9a9a; font-size:11px; line-height:16px; margin:0;">This is an automated message from Example App. Please do not reply to this email.</p>
+    </td></tr>
+    </table>
+    </td></tr>
+    </table>
     </body>
     </html>
     """

@@ -17,6 +17,32 @@
 > **すべてクリア**と報告済み。以下の個別節の「未確認」記述のうちこの
 > 日付以前のものは、この一括確認で解消済みとして読むこと。
 
+## Task #128: 「英語メールなのに翻訳ボタンが押せない」修正 — 実機/UITest実行確認
+
+**実装状況**: 原因の2仮説 (HTML controller未接続の恒久化／保存済み
+`detectedLanguage`の不正値固定化) の両方に防御的な修正を実施し、
+OSLog計装 (`TranslationGate`カテゴリ) も追加済み。`make test`/`make ios`
+(UITestターゲット含むtest-without-buildingビルド) は green。詳細は
+`docs/translation.md`「実機フィードバック: 英語メールなのに翻訳ボタンが
+押せない (Task #128)」節参照。
+
+**残っているのは以下2点の実機/実行確認**:
+- 追加した `OtegamiHTMLTranslationUITests
+  .testEnglishMessageWithStaleWrongDetectedLanguageStillShowsTranslateButton`
+  は、このセッションの2回のシミュレータ実行いずれも
+  `messageDetail.htmlWebView`が現れず失敗した — ただしこれは
+  `OtegamiSecurityNoticeDarkModeUITests.testBetaTestingNoticeRendersFullyWithoutOverlap`
+  の doc comment が既に記録している、この直接遷移経路自体の既知の
+  シミュレータ/ツールチェーン不調と同じ症状 (`docs/verify.md`の既知不調
+  (2)) で、今回の変更が原因という証拠はない。実機、または安定した
+  シミュレータ環境での再実行が必要。
+- 実際の Okta サインオン通知メール (仮説(1)(2)のどちらが実際の原因
+  だったか) での end-to-end 確認 — このセッションでは元の `.eml`
+  (`scratchpad/signon.eml`、実アドレス入りのため repo に無い) を使えず、
+  匿名化フィクスチャでの防御的修正止まり。次に同じ報告が来た場合は、
+  まず `log stream --predicate 'category == "TranslationGate"'` で
+  3条件の実測値を見て、どちらの仮説が実際に効いていたか確定させること。
+
 ## Task #119/#120/#121: 実機での最終確認
 
 実装・単体テスト (`make test`)・`make mac` ビルドは完了済み。以下は実機/
