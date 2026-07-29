@@ -7209,3 +7209,107 @@ macOSには無いため、この回では scratchpad に `driver.swift`
 実際に効くか」という動作そのものを実クリックで検証できた)。iOS 側は
 `scripts/verify-screen.sh` の `settings`/`account-settings`/
 `toolbar-customize` シナリオで回帰なしを確認。
+
+## Task #158: macOS「アップデートを確認」機能
+
+GitHub Releases (`https://api.github.com/repos/m-tkg/otegami/releases`、
+認証不要・public repo) を見て、現行の`CFBundleShortVersionString`より
+新しいタグがあれば知らせる、macOS 専用の軽量アップデートチェッカー。
+自動ダウンロード・自動インストールはしない — 「ダウンロードページを
+開く」ボタンで Release ページを`NSWorkspace`(`openURL`環境値経由)で
+開くだけ。iOS には出さない (App Store/TestFlight 経由の配布のため、
+`#if os(macOS)`で全ファイルを丸ごとガード)。
+
+### バージョン比較: `OtegamiCore`に`SemanticVersion`/`UpdateAvailability`を新設
+
+比較ロジックは Linux互換の`OtegamiCore`(依存ゼロの純Swift層)に置き、
+ネットワーク層 (macOSのみ) から完全に独立させた —
+`SemanticVersionTests`/`UpdateAvailabilityTests`(`OtegamiCoreTests`)が
+プラットフォームAPIなしで`swift test`だけで回る。
+
+- **`SemanticVersion`** (`SemanticVersion.swift`): `v`接頭辞・`+`以降の
+  ビルドメタデータを許容しつつ、major.minor.patch + ドット区切り
+  pre-release識別子をパースする最小限のSemVer実装。`Comparable`は
+  SemVer §11の優先順位規則をそのまま実装 — 数値識別子は数値比較、
+  英数字識別子はASCII比較、数値は英数字より常に低順位、同じ
+  major.minor.patchでは「pre-releaseなし」が「pre-releaseあり」より
+  常に高順位 (`1.1.0-beta < 1.1.0`)、識別子列が相手の真の接頭辞なら
+  短い方が低順位。フルテストとして、SemVer仕様書自身の例
+  (`1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-alpha.beta < 1.0.0-beta <
+  1.0.0-beta.2 < 1.0.0-beta.11 < 1.0.0-rc.1 < 1.0.0`) をそのままソート
+  順序として検証している。
+- **`GitHubRelease`** (`GitHubRelease.swift`): releases APIの応答から
+  このアプリが実際に使うフィールドだけを取り出す`Codable` DTO
+  (`tag_name`/`name`/`body`/`html_url`/`prerelease`/`draft`)。
+- **`UpdateAvailability.check(currentVersionString:releases:includePrereleases:)`**:
+  draftは常に除外、pre-releaseは`includePrereleases`が`false`なら除外
+  した上で、残った候補のうち`SemanticVersion`最大のものが現行バージョン
+  より新しければ`.updateAvailable`、そうでなければ (パース不能・候補
+  ゼロも含め)`.upToDate`を返す。現行バージョン自体がパースできない
+  異常系も`.upToDate`扱いにして、幽霊アップデート通知よりは「何も
+  言わない」方に倒した。
+
+### ネットワーク層・UI: `apps/Otegami/Sources/Features/Updates/`
+
+`OtegamiKit`の`PushRelayClient`が確立した「`URLSession`を注入可能にし、
+`URLProtocol`スタブでテストする」形と同じ発想だが、あえて`OtegamiKit`
+本体には置かず、アプリ層の新規ディレクトリに閉じた —
+この機能はアプリ以外どこからも参照されず、`Package.swift`は当時
+Task #159 (翻訳エンジン差し替え) が並行編集中で、無関係な変更で
+その共有マニフェストへの手を増やしたくなかったため。
+
+- **`GitHubReleaseClient`**: `URLSession`直で releases APIを叩く。
+  GitHub REST APIは`User-Agent`ヘッダ無しのリクエストを403で拒否する
+  ため、これだけは明示的に付与している。
+- **`UpdateCheckRequest`**: メニュー項目が`openWindow(id: "updateCheck",
+  value:)`に渡す`Codable`/`Hashable`ペイロード。`includePrereleases`に
+  加えて毎回新しいUUIDを持たせている — `WindowGroup(for:)`は同じ値の
+  ウィンドウが既に開いていれば新規作成せず前面に出すだけという標準
+  挙動があるため、UUIDを変えないと「もう一度確認」のつもりのクリックが
+  古い結果ウィンドウを再表示するだけになってしまう。
+- **`UpdateCheckView`**: 独自の`WindowGroup`(`OtegamiApp.swift`、
+  作成/返信ウィンドウと同じ「アクションごとに専用ウィンドウ」の形)
+  として開く。`Commands`のメニュー項目はどのウィンドウにも紐付いて
+  いない (`OtegamiCommands`自身のdoc comment) ため、既存ウィンドウへの
+  シート表示という形は取れず、composerウィンドウと同じ設計をそのまま
+  踏襲した。確認中/最新版/更新あり(バージョン+本文先頭6行+「ダウンロード
+  ページを開く」ボタン)/失敗、の4状態を`enum LoadState`で表現。
+
+### メニュー配置・option判定: `OtegamiCommands.swift`
+
+「Otegami」アプリメニューの`CommandGroup(after: .appInfo)`(標準の
+「Otegamiについて」の直後) に「アップデートを確認…」を追加。他の
+メニュー項目 (返信・削除・メールボックス移動) と違い`@FocusedValue`
+を使わない — この機能はどのウィンドウが前面にあるかに関係なく常に
+使えるべきなので、`@Environment(\.openWindow)`を直接呼ぶ。
+
+仕様通り、通常クリックは安定版のみ・optionキーを押しながらのクリック
+はpre-releaseも対象。判定は`NSEvent.modifierFlags.contains(.option)`を
+ボタンのaction closure内 (＝実際にクリックが確定した瞬間) で読むだけ
+のシンプルな実装 — 多くのmacOSアプリがoption修飾メニュー項目に使う
+のと同じ手法。
+
+### 検証
+
+`OtegamiCoreTests`に`SemanticVersionTests`(21件、パース・優先順位・
+SemVer仕様書の例チェーンの丸ごとソート検証を含む)と
+`UpdateAvailabilityTests`(10件、安定/pre-release混在・同値・draft除外・
+パース不能値の扱いを網羅) を新設、`swift test`でgreen。
+
+`make mac`は、このタスクと並行してTask #159が`AppEnvironment.swift`を
+編集中 (`summarizationService`まわりの初期化順序が一時的に壊れた
+未コミット状態) だったため、フルビルドは最後まで通らなかった —
+ただしビルドログを個別に確認し、新設/変更した5ファイル
+(`GitHubReleaseClient.swift`/`UpdateCheckRequest.swift`/
+`UpdateCheckView.swift`/`OtegamiApp.swift`/`OtegamiCommands.swift`)
+はどれもコンパイルエラーを一切出しておらず、エラーは全て
+`AppEnvironment.swift`側の行番号に限定されていることを確認した。
+`make test`も同様に自分の変更に起因しない既知flaky
+(`MessageBuilderTests`日本語ラウンドトリップ、Task #157の検証節で
+既出) 以外はgreen。
+
+**未検証** (`PENDING.md`「Task #158」節参照): Task #159のマージ後、
+実際にdebugビルドを起動してメニュー項目・ダイアログのスクリーン
+ショット確認、および実際の`m-tkg/otegami`リポジトリ (`v1.1.0-beta`
+というpre-releaseタグが実在する) に対してoption有無で検出結果が
+変わることの実地確認。

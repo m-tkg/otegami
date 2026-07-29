@@ -1137,6 +1137,36 @@ composer-richtext`でライト/ダーク両方スクリーンショット確認�
 
 実機で新規作成画面を開き、上記4点をタップ操作で確認すること。
 
+## Task #158: macOS「アップデートを確認」機能 — フルビルド・実機確認が残る
+
+**実装状況**: GitHub Releases APIを見てアップデートの有無を知らせる
+macOS専用機能を実装済み。バージョン比較 (`SemanticVersion`/
+`UpdateAvailability`、`OtegamiCore`) は`swift test`で単体テストがgreen
+(パース・SemVer優先順位・stable/pre-release混在・draft除外を網羅)。
+ネットワーク層・UI (`apps/Otegami/Sources/Features/Updates/`) とメニュー
+配線 (`OtegamiCommands.swift`の「アップデートを確認…」、`OtegamiApp.swift`
+の専用`WindowGroup`) も実装済み。詳細は`docs/design-system.md`「Task
+#158」節参照。
+
+**未検証な理由**: 実装中、並行してTask #159 (翻訳エンジン差し替え) が
+`AppEnvironment.swift`を編集中で、`summarizationService`まわりの初期化
+順序が一時的に壊れた未コミット状態だった。そのため`make mac`のフル
+ビルドが最後まで通らなかった — ビルドログを個別確認し、このタスクで
+新設/変更した5ファイルはどれもコンパイルエラーを出しておらず、エラーは
+全て`AppEnvironment.swift`側 (Task #159の作業途中状態) に限定されている
+ことは確認済み。
+
+**次にやること** (Task #159がコミットされ`make mac`がgreenに戻ってから):
+- debugビルドをローカル起動し、「Otegami」アプリメニューに
+  「アップデートを確認…」が出ること、クリックしてダイアログ (確認中/
+  最新版/更新あり/失敗) が正しく表示されることをスクリーンショットで
+  確認する。
+- 実際の`m-tkg/otegami`リポジトリには`v1.1.0-beta`というpre-releaseタグ
+  が存在する。通常クリック (安定版のみ) では検出されず、optionキーを
+  押しながらのクリックでは検出される、という仕様どおりの挙動差を実地
+  確認する。
+- 「ダウンロードページを開く」ボタンで実際にRelease ページが開くこと。
+
 ## Task #129/#156: 作成画面リッチテキスト化 — HTML送信配線は完了、実機確認が残る
 
 **実装状況 (#129 第1段)**: 本文エディタを SwiftUI `TextEditor` から

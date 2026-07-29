@@ -51,6 +51,19 @@ struct OtegamiApp: App {
         .defaultSize(width: 560, height: 520)
         #endif
         #if os(macOS)
+        // Task #158 (macOS「アップデートを確認」機能): its own window, same
+        // "one window per action" shape as the composer `WindowGroup` right
+        // above — `OtegamiCommands`'s "アップデートを確認…" menu item calls
+        // `openWindow(id: "updateCheck", value:)` rather than presenting a
+        // sheet, since a `Commands` menu item has no specific window to
+        // attach a sheet to (see `UpdateCheckView`'s doc comment).
+        WindowGroup("アップデートを確認", id: "updateCheck", for: UpdateCheckRequest.self) { $request in
+            UpdateCheckView(request: request ?? UpdateCheckRequest(includePrereleases: false))
+        }
+        .defaultSize(width: 420, height: 320)
+        .windowResizability(.contentSize)
+        #endif
+        #if os(macOS)
         // M10: the native Settings scene (⌘,/App menu → Settings…) —
         // `OtegamiSettingsView`'s doc comment explains why it wraps rather
         // than replaces the existing gear-icon sheet.

@@ -1,6 +1,10 @@
 import SwiftUI
 
 #if os(macOS)
+import AppKit
+#endif
+
+#if os(macOS)
 /// M10 macOS polish (plan: "macOS メニュー/ショートカット: ⌘N 新規メール、⌘R 返信、
 /// ⌘⇧F 検索フォーカス、⌘⌫ 削除、メールボックス移動。Commands API"). Reads the
 /// currently-published actions via `@FocusedValue` (`AppFocusedValues.swift`)
@@ -18,8 +22,28 @@ struct OtegamiCommands: Commands {
     @FocusedValue(\.focusSearchAction) private var focusSearchAction
     @FocusedValue(\.nextMailboxAction) private var nextMailboxAction
     @FocusedValue(\.previousMailboxAction) private var previousMailboxAction
+    // Task #158 (macOS「アップデートを確認」機能): unlike every other action
+    // here, this one is independent of whatever window/view currently has
+    // focus (`@FocusedValue`はここでは使わない) — it should always be
+    // available from the app menu, account state or open thread aside, so
+    // it opens its own dedicated window via `openWindow` directly instead.
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            // Spec: 通常クリック = 安定版のみ、option キーを押しながら
+            // クリック = pre-release も対象。`NSEvent.modifierFlags` reads
+            // the *current* global keyboard modifier state at the moment
+            // this action closure runs (when the click/keyboard-shortcut
+            // that selected this menu item completes) — same technique
+            // several system apps use for an option-modified menu item,
+            // and exactly what the task spec calls for.
+            Button("アップデートを確認…") {
+                let includePrereleases = NSEvent.modifierFlags.contains(.option)
+                openWindow(id: "updateCheck", value: UpdateCheckRequest(includePrereleases: includePrereleases))
+            }
+        }
+
         CommandGroup(replacing: .newItem) {
             Button("新規メッセージ") { newMessageAction?() }
                 .keyboardShortcut("n", modifiers: .command)
