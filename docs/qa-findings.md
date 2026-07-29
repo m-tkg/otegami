@@ -1555,3 +1555,68 @@ mailbox変更ロジックを持たない。そのため:
 `op enqueued` → `replay completed` → `targeted resync requested` →
 `targeted resync completed`の一連が2-3秒デバウンス+実際のIMAP往復
 時間内に収まっているか。
+
+## Task #154: ハンバーガーメニューのゴミ箱カテゴリに Gmail が2行出る (#119 の副作用)
+
+### 報告
+
+実機スクショ確認済み: ハンバーガーメニューのカテゴリ優先グルーピングで
+「ゴミ箱」セクションを展開すると、Gmail アカウントの行が2つ出る。
+
+### 原因
+
+#119 で追加した名前ベースのフォールバック
+(`MailboxRole.inferred(fromDisplayPath:)`) は各メールボックスを完全に
+独立して評価する — 同じアカウント内の他のメールボックスがすでに
+SPECIAL-USE で同じ role を持っているかどうかを一切見ない。そのため、
+SPECIAL-USE `\Trash` を持つ Gmail の `[Gmail]/Trash` に加えて、同じ
+アカウント内に「Trash」という*生の名前*の別フォルダ (ユーザー作成、
+あるいはロケール要因) が存在すると、そちらも名前一致で `role == .trash`
+に解決されてしまう。`FolderListSheet.mailboxEntries(for:)`
+(`matchesCategory(mailbox:account:role:)`) はアカウント内で `role`
+が一致する mailbox をすべて展開行にするため、同一アカウントが「ゴミ箱」
+カテゴリに2行出る。
+
+### 修正 (二層)
+
+1. **根治 (`MailTransport.MailboxInfo.roleIsAuthoritative` +
+   `AccountSyncer.upsertMailboxes`)**: `MailboxInfo`に、role が
+   SPECIAL-USE / IMAP 保証の `"INBOX"` パス由来 (`true`) か #119 の
+   名前推測フォールバック由来 (`false`) かを示す
+   `roleIsAuthoritative: Bool` を追加
+   (`MailCoreIMAPSession+Mapping.role(for:path:displayPath:)`が両方
+   返すよう変更)。`AccountSyncer.upsertMailboxes`は、この値をアカウント
+   内の全 mailbox 分集計し、「`roleIsAuthoritative == true`の mailbox
+   が存在する role」と同じ role を持つ非authoritative (名前推測由来)
+   mailbox を`.none`へ降格してから`mailbox`テーブルへ書き込む。
+   `MailboxRecord`にも同名の列 (migration v31、`.noOverwrite`対象外=
+   `role`自身と同じく毎同期上書きで自然回復) を追加し、
+   `FolderListSheet`側の防御層 (下記2) が参照できるようにした。
+   既存 DB は次回同期で`role`列ごと自然回復する (#119 と同じ理由 —
+   `upsertMailboxes`は`role`/`roleIsAuthoritative`列を`.noOverwrite`に
+   していない)。
+2. **防御 (`FolderListSheet.mailboxEntries(for:)` /
+   `dedupedByAccount(_:)`)**: 根治後もまだ同期していない既存インストール
+   の残存データに備え、同一アカウント内でカテゴリに一致する mailbox が
+   複数あれば`roleIsAuthoritative`優先 (次点は`id`昇順の安定選択) で
+   1つへ畳んでから展開行にする。ゴミ箱に限らず全カテゴリ (受信トレイ/
+   アーカイブ/送信済み/下書き/迷惑メール/フラグ付き/すべてのメール)
+   に同じロジックが効く。
+
+### 検証
+
+- `AccountSyncerTests.duplicateNameGuessedRoleIsDowngraded`: SPECIAL-USE
+  `\Trash` + 別の生の名前 "Trash" フォルダを`FakeIMAPSession`で用意し、
+  同期後に SPECIAL-USE 側だけが`role == .trash`で残り、名前推測側が
+  `.none`へ降格することを確認。
+- `AccountSyncerTests.twoAuthoritativeMailboxesWithSameRoleAreNotDowngraded`:
+  両方 authoritative な場合は降格しない (根治ロジックが名前推測由来だけを
+  狙い撃ちすることの確認)。
+- `make test`: 既存 `SyncEngineTests`/`OtegamiStoreTests` 全件グリーン
+  (このセッション時点で並行実装中の Task #151 関連の
+  `ThreadSummaryArchiveTests`1件のみ、このタスクと無関係な理由で
+  赤 — 触っていない共有ファイルの作業中コードによるもの)。
+- **実機スクショ (`scripts/verify-screen.sh`の`menu-expanded`シナリオ)
+  はこのセッションでは未実施** — 実機で確認するポイント: ハンバーガー
+  メニューの「ゴミ箱」セクションを展開し、Gmail アカウントの行が1行に
+  なっていること。

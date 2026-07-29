@@ -640,6 +640,7 @@ public actor OpQueueProcessor {
                 displayPath: info.displayPath,
                 delimiter: info.delimiter,
                 role: MailboxRoleRecord(info.role),
+                roleIsAuthoritative: info.roleIsAuthoritative,
                 attributesRaw: info.attributes.rawValue
             )
             return try record.upsertAndFetch(db, onConflict: ["accountId", "path"]) { _ in

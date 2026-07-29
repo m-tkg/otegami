@@ -867,6 +867,17 @@ extension AppDatabase {
             }
         }
 
+        // v31 (Task #154, 実機報告「ゴミ箱カテゴリに Gmail が2行出る」):
+        // `MailboxRecord.roleIsAuthoritative`'s doc comment has the full
+        // picture — `false` for every existing mailbox until the next sync
+        // re-`upsertMailboxes`es it with a real value (same self-healing
+        // shape as `role` itself, which this migration doesn't touch).
+        migrator.registerMigration("v31") { db in
+            try db.alter(table: "mailbox") { t in
+                t.add(column: "roleIsAuthoritative", .boolean).notNull().defaults(to: false)
+            }
+        }
+
         return migrator
     }
 }

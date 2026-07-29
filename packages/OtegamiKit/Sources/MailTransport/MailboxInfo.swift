@@ -62,18 +62,36 @@ public struct MailboxInfo: Sendable, Codable, Hashable {
     public var role: MailboxRole
     public var attributes: MailboxAttributes
 
+    /// Task #154 (実機報告「ゴミ箱カテゴリに Gmail が2行出る」): `true` only
+    /// when `role` came from an authoritative source — RFC 6154
+    /// `SPECIAL-USE` attribute, or IMAP's own guaranteed-meaning `"INBOX"`
+    /// path — as opposed to `MailboxRole.inferred(fromDisplayPath:)`'s
+    /// best-effort name guess (`false`). `role == .none` always pairs with
+    /// `false` (there's no source to be authoritative about). `AccountSyncer
+    /// .upsertMailboxes` uses this to detect the #119 name-guess fallback
+    /// mis-firing a second time for an account that already has an
+    /// authoritative mailbox with the same role (e.g. a SPECIAL-USE
+    /// `\Trash` mailbox *and* a separate, literally-named "Trash" folder)
+    /// and downgrade the non-authoritative duplicate back to `.none` before
+    /// it ever reaches the `mailbox` table. Defaults to `false` so every
+    /// existing call site (test doubles that never cared about this
+    /// distinction) keeps compiling unchanged.
+    public var roleIsAuthoritative: Bool
+
     public init(
         path: String,
         displayPath: String,
         delimiter: String? = nil,
         role: MailboxRole,
-        attributes: MailboxAttributes
+        attributes: MailboxAttributes,
+        roleIsAuthoritative: Bool = false
     ) {
         self.path = path
         self.displayPath = displayPath
         self.delimiter = delimiter
         self.role = role
         self.attributes = attributes
+        self.roleIsAuthoritative = roleIsAuthoritative
     }
 }
 

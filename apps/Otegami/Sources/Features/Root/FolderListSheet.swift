@@ -571,14 +571,41 @@ struct FolderListSheet: View {
     /// 独立して保持している`mailboxesByAccountId`から、この画面のカテゴリ優先
     /// セクションが必要とする形 (どのアカウントの、どのメールボックスか) へ
     /// フラット化する。
+    ///
+    /// Task #154 (実機報告「ゴミ箱カテゴリに Gmail が2行出る」防御層):
+    /// 根治 (`AccountSyncer.upsertMailboxes`) は次回同期以降のDBを正すが、
+    /// まだ同期していない既存インストールの残存データ (旧DB) に対しては
+    /// このメニュー自体でも同一アカウント内の重複行を1つへ畳む —
+    /// `dedupedByAccount(_:)`参照。
     private func mailboxEntries(for role: MailboxRoleRecord) -> [MailboxEntry] {
         environment.accounts.flatMap { account -> [MailboxEntry] in
-            (mailboxesByAccountId[account.id] ?? [])
+            let matches = (mailboxesByAccountId[account.id] ?? [])
                 .filter { matchesCategory(mailbox: $0, account: account, role: role) }
-                .compactMap { mailbox in
-                    mailbox.id.map { MailboxEntry(account: account, mailbox: mailbox, mailboxId: $0) }
-                }
+            return dedupedByAccount(matches).compactMap { mailbox in
+                mailbox.id.map { MailboxEntry(account: account, mailbox: mailbox, mailboxId: $0) }
+            }
         }
+    }
+
+    /// Task #154: collapses `matches` (one account's mailboxes already
+    /// filtered to a single category role) down to at most one —
+    /// `AccountSyncer.upsertMailboxes`'s root fix means this is normally
+    /// already a 0-or-1-element array by the time this runs, but a device
+    /// that hasn't resynced since upgrading (or a server situation the root
+    /// fix doesn't cover) can still hand this more than one. Prefers a
+    /// SPECIAL-USE/IMAP-guaranteed mailbox (`roleIsAuthoritative == true`,
+    /// `MailboxRecord.roleIsAuthoritative`'s doc comment) over a name-guessed
+    /// one; among equally-authoritative candidates (shouldn't normally
+    /// happen), picks the lowest `id` for a deterministic, stable choice
+    /// rather than whatever order the observation happened to return.
+    private func dedupedByAccount(_ matches: [MailboxRecord]) -> [MailboxRecord] {
+        guard let winner = matches.min(by: { lhs, rhs in
+            if lhs.roleIsAuthoritative != rhs.roleIsAuthoritative {
+                return lhs.roleIsAuthoritative && !rhs.roleIsAuthoritative
+            }
+            return (lhs.id ?? .max) < (rhs.id ?? .max)
+        }) else { return [] }
+        return [winner]
     }
 
     /// Task #52, 2: Gmail は`\Archive`special-useフォルダを持たないため、

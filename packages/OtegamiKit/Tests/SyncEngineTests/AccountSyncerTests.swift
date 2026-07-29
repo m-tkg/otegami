@@ -597,6 +597,99 @@ struct AccountSyncerTests {
         #expect(trashAfter?.role == .trash, "a stale locally-stored role must be corrected by the next mailbox re-sync, not frozen at its first-ever value")
     }
 
+    // MARK: - Task #154 (実機報告: ハンバーガーメニューのゴミ箱カテゴリに Gmail が2行出る)
+
+    /// Locks in the #154 root fix: a server that already advertises
+    /// SPECIAL-USE `\Trash` for one mailbox (`roleIsAuthoritative: true`)
+    /// must not also let a *different*, literally "Trash"-named mailbox in
+    /// the same account keep `role == .trash` from #119's name-guess
+    /// fallback (`roleIsAuthoritative: false`) — `AccountSyncer
+    /// .upsertMailboxes` downgrades the non-authoritative duplicate to
+    /// `.none` before either ever reaches the `mailbox` table, so the
+    /// hamburger menu's role-based category section only ever shows one row
+    /// for this account's ゴミ箱.
+    @Test("a name-guessed role duplicate is downgraded to .none when this account already has an authoritative mailbox with the same role")
+    func duplicateNameGuessedRoleIsDowngraded() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [], roleIsAuthoritative: true)
+        // SPECIAL-USE `\Trash` — the account's real, server-designated Trash.
+        let specialUseTrash = MailboxInfo(
+            path: "[Gmail]/Trash", displayPath: "[Gmail]/ゴミ箱", role: .trash, attributes: [], roleIsAuthoritative: true
+        )
+        // A separate, plain user-visible mailbox that just happens to be
+        // named "Trash" — no SPECIAL-USE attribute of its own, resolved to
+        // `.trash` only by #119's name-guess fallback.
+        let nameGuessedTrash = MailboxInfo(
+            path: "Trash", displayPath: "Trash", role: .trash, attributes: [], roleIsAuthoritative: false
+        )
+
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox, specialUseTrash, nameGuessedTrash],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "[Gmail]/Trash": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Trash": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                ]
+            ))
+        }
+        _ = try await syncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let mailboxes = try await database.dbWriter.read { db in
+            try MailboxRecord.filter(Column("accountId") == account.id).fetchAll(db)
+        }
+        let specialUseRecord = try #require(mailboxes.first { $0.path == "[Gmail]/Trash" })
+        let nameGuessedRecord = try #require(mailboxes.first { $0.path == "Trash" })
+
+        #expect(specialUseRecord.role == .trash)
+        #expect(specialUseRecord.roleIsAuthoritative == true)
+        #expect(nameGuessedRecord.role == .none, "the name-guessed duplicate must be downgraded, not left duplicating the SPECIAL-USE mailbox's role")
+        #expect(nameGuessedRecord.roleIsAuthoritative == false)
+
+        let trashRoleCount = mailboxes.filter { $0.role == .trash }.count
+        #expect(trashRoleCount == 1, "exactly one mailbox in this account may carry role == .trash")
+    }
+
+    /// Two mailboxes with a SPECIAL-USE-derived (`roleIsAuthoritative: true`)
+    /// role for the *same* account are left alone even though it's the same
+    /// duplicate-role shape — this shouldn't normally happen (a well-behaved
+    /// server never advertises the same SPECIAL-USE attribute twice), but
+    /// the downgrade rule only ever targets non-authoritative name guesses,
+    /// never another authoritative mailbox, so this locks in that the fix
+    /// doesn't overreach.
+    @Test("two authoritative mailboxes with the same role are both left untouched")
+    func twoAuthoritativeMailboxesWithSameRoleAreNotDowngraded() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [], roleIsAuthoritative: true)
+        let trashA = MailboxInfo(path: "TrashA", displayPath: "TrashA", role: .trash, attributes: [], roleIsAuthoritative: true)
+        let trashB = MailboxInfo(path: "TrashB", displayPath: "TrashB", role: .trash, attributes: [], roleIsAuthoritative: true)
+
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox, trashA, trashB],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "TrashA": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "TrashB": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                ]
+            ))
+        }
+        _ = try await syncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let mailboxes = try await database.dbWriter.read { db in
+            try MailboxRecord.filter(Column("accountId") == account.id).fetchAll(db)
+        }
+        let trashRecords = mailboxes.filter { $0.path == "TrashA" || $0.path == "TrashB" }
+        #expect(trashRecords.count == 2)
+        #expect(trashRecords.allSatisfy { $0.role == .trash && $0.roleIsAuthoritative })
+    }
+
     // MARK: - Task #44 (実機バグ: Gmail の「すべてのメール」に新着が反映されない)
 
     /// Locks in the exact scenario from the real-device bug report at the

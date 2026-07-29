@@ -81,6 +81,17 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     public var displayPath: String
     public var delimiter: String?
     public var role: MailboxRoleRecord
+    /// Task #154 (migration v31): mirrors `MailTransport.MailboxInfo
+    /// .roleIsAuthoritative` — `true` when `role` came from a SPECIAL-USE
+    /// attribute or IMAP's guaranteed `"INBOX"` path, `false` when it came
+    /// from `MailboxRole.inferred(fromDisplayPath:)`'s name-guess fallback
+    /// (or `role == .none`). `AccountSyncer.upsertMailboxes` writes this
+    /// fresh on every sync (no `.noOverwrite`, unlike `isHidden`) so it
+    /// self-heals the same way `role` itself does. `FolderListSheet
+    /// .mailboxEntries(for:)` uses it to prefer an authoritative mailbox
+    /// when the #119 name-guess fallback still mis-fires a second match for
+    /// the same role within one account (see that method's doc comment).
+    public var roleIsAuthoritative: Bool
     /// `MailTransport.MailboxAttributes.rawValue`.
     public var attributesRaw: Int
 
@@ -131,6 +142,7 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         displayPath: String,
         delimiter: String? = nil,
         role: MailboxRoleRecord,
+        roleIsAuthoritative: Bool = false,
         attributesRaw: Int = 0,
         uidValidity: Int64 = 0,
         uidNext: Int64 = 0,
@@ -147,6 +159,7 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.displayPath = displayPath
         self.delimiter = delimiter
         self.role = role
+        self.roleIsAuthoritative = roleIsAuthoritative
         self.attributesRaw = attributesRaw
         self.uidValidity = uidValidity
         self.uidNext = uidNext

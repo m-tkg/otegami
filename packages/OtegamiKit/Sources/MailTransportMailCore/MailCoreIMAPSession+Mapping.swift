@@ -130,12 +130,14 @@ extension MailCoreIMAPSession {
         if flags.contains(.marked) { attributes.insert(.marked) }
         if flags.contains(.unmarked) { attributes.insert(.unmarked) }
 
+        let (role, roleIsAuthoritative) = role(for: flags, path: path, displayPath: displayPath)
         return MailboxInfo(
             path: path,
             displayPath: displayPath,
             delimiter: delimiter,
-            role: role(for: flags, path: path, displayPath: displayPath),
-            attributes: attributes
+            role: role,
+            attributes: attributes,
+            roleIsAuthoritative: roleIsAuthoritative
         )
     }
 
@@ -146,20 +148,26 @@ extension MailCoreIMAPSession {
     /// name-based fallback for exactly that gap — see its own doc comment for
     /// the matched name list and why it lives in `MailTransport` rather than
     /// here.
-    private static func role(for flags: MCOIMAPFolderFlag, path: String, displayPath: String) -> MailboxRole {
-        if flags.contains(.inbox) { return .inbox }
-        if flags.contains(.sentMail) { return .sent }
-        if flags.contains(.drafts) { return .drafts }
-        if flags.contains(.trash) { return .trash }
-        if flags.contains(.spam) { return .junk }
-        if flags.contains(.archive) { return .archive }
-        if flags.contains(.allMail) { return .all }
-        if flags.contains(.starred) { return .flagged }
+    ///
+    /// Task #154: also reports whether the returned role came from one of
+    /// the authoritative checks above (SPECIAL-USE flags, or the guaranteed
+    /// `"INBOX"` path) rather than the name-guess fallback — see
+    /// `MailboxInfo.roleIsAuthoritative`'s doc comment for why `AccountSyncer`
+    /// needs this distinction.
+    private static func role(for flags: MCOIMAPFolderFlag, path: String, displayPath: String) -> (role: MailboxRole, isAuthoritative: Bool) {
+        if flags.contains(.inbox) { return (.inbox, true) }
+        if flags.contains(.sentMail) { return (.sent, true) }
+        if flags.contains(.drafts) { return (.drafts, true) }
+        if flags.contains(.trash) { return (.trash, true) }
+        if flags.contains(.spam) { return (.junk, true) }
+        if flags.contains(.archive) { return (.archive, true) }
+        if flags.contains(.allMail) { return (.all, true) }
+        if flags.contains(.starred) { return (.flagged, true) }
         // SPECIAL-USE-less servers (the dev mailstack's Dovecot among
         // them): fall back to the one name IMAP itself guarantees the
         // meaning of.
-        if path.caseInsensitiveCompare("INBOX") == .orderedSame { return .inbox }
-        return MailboxRole.inferred(fromDisplayPath: displayPath)
+        if path.caseInsensitiveCompare("INBOX") == .orderedSame { return (.inbox, true) }
+        return (MailboxRole.inferred(fromDisplayPath: displayPath), false)
     }
 
     static func mailboxStatus(from info: MCOIMAPFolderInfo) -> MailboxStatus {

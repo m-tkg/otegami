@@ -376,15 +376,41 @@ public actor AccountSyncer {
     /// surviving through this call so they have something to diff
     /// against.)
     private func upsertMailboxes(_ mailboxInfos: [MailboxInfo]) async throws -> [String: MailboxRecord] {
-        try await database.dbWriter.write { [account] db -> [String: MailboxRecord] in
+        // Task #154 (実機報告「ゴミ箱カテゴリに Gmail が2行出る」): #119's
+        // name-guess fallback (`MailboxRole.inferred(fromDisplayPath:)`)
+        // resolves each mailbox independently, with no visibility into its
+        // siblings — so a server that already advertises SPECIAL-USE
+        // `\Trash` for one mailbox can still leave a *different*, literally
+        // "Trash"-named mailbox in this same account name-guessed to
+        // `.trash` too, giving the hamburger menu's role-based category
+        // section two rows for one account. `roleIsAuthoritative` (see
+        // `MailboxInfo`'s doc comment) is authoritative-over-name-guess
+        // *within one mailbox*; this set extends that to "authoritative
+        // across this whole account's mailboxes for a given role" — any
+        // non-authoritative (name-guessed) mailbox whose role also has an
+        // authoritative source elsewhere in this same `mailboxInfos` batch
+        // gets downgraded to `.none` below, before it ever reaches the
+        // `mailbox` table. `.none` is excluded: there's no "authoritative
+        // .none" to defer to, and every uncategorized mailbox already
+        // legitimately shares that role.
+        let authoritativeRoles = Set(
+            mailboxInfos.filter { $0.roleIsAuthoritative && $0.role != .none }.map(\.role)
+        )
+
+        return try await database.dbWriter.write { [account] db -> [String: MailboxRecord] in
             var records: [String: MailboxRecord] = [:]
             for info in mailboxInfos {
+                let isDuplicateNameGuess = !info.roleIsAuthoritative
+                    && info.role != .none
+                    && authoritativeRoles.contains(info.role)
+                let effectiveRole = isDuplicateNameGuess ? .none : info.role
                 var record = MailboxRecord(
                     accountId: account.id,
                     path: info.path,
                     displayPath: info.displayPath,
                     delimiter: info.delimiter,
-                    role: MailboxRoleRecord(info.role),
+                    role: MailboxRoleRecord(effectiveRole),
+                    roleIsAuthoritative: isDuplicateNameGuess ? false : info.roleIsAuthoritative,
                     attributesRaw: info.attributes.rawValue
                 )
                 record = try record.upsertAndFetch(db, onConflict: ["accountId", "path"]) { _ in
