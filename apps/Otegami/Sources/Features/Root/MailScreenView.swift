@@ -152,9 +152,6 @@ struct MailScreenView: View {
     @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
     /// Task #142: 「未読のみ表示」の隣に並ぶ「フラグ付きのみ表示」トグル —
-    /// `isUnreadOnly`と全く同じ設計 (`ListDisplaySettingsStore.pinnedOnlyKey`
-    /// のdoc comment参照)、`unreadOnlyKey`同様検索画面には影響させない。
-    @AppStorage(ListDisplaySettingsStore.pinnedOnlyKey) private var isPinnedOnly = ListDisplaySettingsStore.defaultPinnedOnly
 
     /// Task #77 (ユーザー要望「アカウントごとにグルーピングする設定」): 元は
     /// 未読のみトグルの隣に置いた「アカウントでグループ化」ヘッダボタンの
@@ -193,6 +190,10 @@ struct MailScreenView: View {
         // no-op (`environment.uitestDirectOpenThreadId == nil`) on every
         // real launch.
         .task {
+            // Task #142 撤去の後始末: トグル UI 削除前に ON へ倒していた
+            // 端末が「ピン留めのみ」で固定される事故を防ぐため、起動時に
+            // 保存値を必ず消す (UI が無い間は常に OFF 相当)。
+            UserDefaults.standard.removeObject(forKey: ListDisplaySettingsStore.pinnedOnlyKey)
             if let threadId = environment.uitestDirectOpenThreadId {
                 selectedRoute = ThreadRoute(threadId: threadId, messageId: nil)
             }
@@ -641,9 +642,11 @@ struct MailScreenView: View {
                 // Task #106: 「アカウントでグループ化」ボタンはここから廃止
                 // — 1a の「すべて」チップのプルダウン (`AccountFilterChipRow
                 // .AllModeFilterChip`) に統合した。
-                // Task #142: 「フラグ付きのみ表示」を「未読のみ表示」の隣に追加。
+                // Task #142 のピン留めフィルタトグルは実機フィードバック
+                // (2026-07-29「メール一覧のピン留めボタンを削除して」) で
+                // 撤去した — 絞り込み設定キー/クエリ側 (`pinnedOnlyKey`) は
+                // 残っているが、この画面からの切替 UI は無い (常に OFF)。
                 unreadOnlyToggleButton
-                pinnedOnlyToggleButton
             }
         }
     }
@@ -678,28 +681,6 @@ struct MailScreenView: View {
         .accessibilityAddTraits(isUnreadOnly ? .isSelected : [])
     }
 
-    /// Task #142: 「フラグ付きのみ表示」トグル — `unreadOnlyToggleButton`と
-    /// 同じ視覚言語 (アイコンの塗り分けでON/OFFを示す、`.buttonStyle(.plain)`
-    /// が必須な理由も同じ、そのdoc comment参照)。アイコンは一覧行のピン
-    /// 表示 (`ThreadRowView`の`pin.fill`) に揃えたピン系SF Symbol —
-    /// 「フラグ付き」の実体はこのアプリのピン留め (`ListDisplaySettingsStore
-    /// .pinnedOnlyKey`のdoc comment参照) なので、アプリ内の他のピン表現と
-    /// 記号を統一する。
-    private var pinnedOnlyToggleButton: some View {
-        Button {
-            isPinnedOnly.toggle()
-        } label: {
-            Label("フラグ付きのみ表示", systemImage: isPinnedOnly ? "pin.fill" : "pin")
-                .labelStyle(.iconOnly)
-                .font(OtegamiFont.body())
-                .foregroundStyle(isPinnedOnly ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
-                .padding(OtegamiSpacing.xs)
-                .background(isPinnedOnly ? OtegamiColor.paleBaseStrong : Color.clear, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("mail.pinnedOnlyToggle")
-        .accessibilityAddTraits(isPinnedOnly ? .isSelected : [])
-    }
 
     /// Task #131 (一覧FABのspeed-dial化): 旧・左下`floatingSearchButton`+
     /// 右下`floatingComposeButton`の2個独立配置を統合した、右下1個の
