@@ -7,65 +7,48 @@ import Foundation
 /// summaries still read like a recap of quoted reply history rather than
 /// what the current message itself says).
 ///
-/// When there's quoted context to include, the two are combined into a
-/// structured, labeled string so
-/// `FoundationModelsTranslationService.summarizeInstructions` can tell the
-/// model to weight them differently — summarize the new part, use the
-/// quoted part only as background. When there's no quoted context (the
-/// common case: no quote marker found), `newText` is returned unchanged —
-/// there's nothing to label.
-///
-/// Task #97: the quoted section is presented **first**, the new-text
-/// section **second** — the reverse of Task #62's original ordering. A
-/// real-device report said summaries narrated events out of chronological
-/// order ("summarizes the new reply, then belatedly mentions the quoted
-/// history") — an email's own new text is chronologically the *latest*
-/// event, while the quote beneath it is the *earlier* history, so an LLM
-/// asked to narrate "what happened" from input presented new-then-old tends
-/// to reproduce that same backwards order in its output. Putting the quote
-/// (earlier) before the new text (later) lines the input order up with
-/// story order, so the model's natural "read top to bottom, narrate top to
-/// bottom" tendency produces a chronologically-ordered summary instead of
-/// fighting it. This is purely an input-ordering change — which section is
-/// the *primary subject* of the summary is unchanged (still the new text;
-/// see `FoundationModelsTranslationService.summarizeInstructions`).
+/// Task #134 (根治): every earlier revision of this type (#62 through #132)
+/// tried to fix quote leakage by changing *how* the quoted text was
+/// presented to the model — truncating it, labeling it, reordering it
+/// relative to the new text, telling the model in ever more specific
+/// language not to summarize it. A real-device repro (the mail behind
+/// Task #132, continuing to leak quoted content even after #132's
+/// instruction hardening) traced the actual root cause one level lower:
+/// no amount of prompt wording reliably stops an on-device model from
+/// treating *some* fragment of real prior-thread text as summarizable
+/// content once that text is present in its input at all. The fix here is
+/// structural instead of another wording iteration — stop handing the
+/// model the quoted text's content in the first place. When there *is* a
+/// quoted prior thread underneath the new text, `build` now includes only
+/// `quotedContextNoteLine`, a fixed one-line note that this reply follows
+/// a prior exchange whose text has been omitted — nothing left to leak,
+/// borrow a topic from, or narrate out of chronological order (obsoleting
+/// the #97 section-ordering concern along with it). See
+/// `FoundationModelsTranslationService.summarizeInstructions`'s doc
+/// comment for how the model is told to use (and not overuse) that note.
 public enum SummaryInputBuilder {
-    /// Character cap applied to the quoted-context section — it's
-    /// background, not the thing being summarized, so a long reply chain
-    /// shouldn't be allowed to balloon the model input indefinitely the way
-    /// the (unbounded) new-text section is allowed to (that side is safe
-    /// because `summarizeLongText` already map-reduces oversized input via
-    /// `TranslationChunker`). A character count, not an exact token budget,
-    /// matching `TranslationChunker.defaultMaxChunkLength`'s own
-    /// character-based heuristic.
-    public static let quotedContextCharacterLimit = 600
-
-    /// The section labels the model is told about in
-    /// `FoundationModelsTranslationService.summarizeInstructions` — kept
-    /// here as the single source of truth so the builder and the
-    /// instructions can't drift apart. Reworded for Task #97 to spell out
-    /// each section's *role* (context vs. summary target) rather than just
-    /// its chronological position ("新規部分"/"過去のやり取り"), since the
-    /// two sections no longer appear in "new, then old" reading order.
-    public static let newTextSectionLabel = "■これが今回届いた返信 (要約対象)"
-    public static let quotedTextSectionLabel = "■これは過去のやり取り (文脈参照用)"
+    /// The fixed note appended ahead of `newText` when the message had a
+    /// quoted prior thread underneath it. Deliberately contains no content
+    /// from the quote itself — see this type's doc comment (Task #134).
+    /// Kept here as the single source of truth so `build` and
+    /// `FoundationModelsTranslationService.summarizeInstructions` (which
+    /// references this exact string so it can tell the model how to treat
+    /// it) can't drift apart.
+    public static let quotedContextNoteLine = "(この返信は過去のやり取りへの返信。引用本文は省略している)"
 
     /// - Parameters:
     ///   - newText: the mail's own new text. Returned unchanged when
-    ///     `quotedText` is empty.
-    ///   - quotedText: prior-thread quote to include as context, truncated
-    ///     to `characterLimit`. Passing an empty string is the same as
-    ///     having no quote at all.
-    ///   - characterLimit: override point for tests; production call sites
-    ///     use the default.
-    public static func build(newText: String, quotedText: String, characterLimit: Int = quotedContextCharacterLimit) -> String {
-        guard !quotedText.isEmpty else { return newText }
-        let truncatedQuote = String(quotedText.prefix(characterLimit))
+    ///     `hasQuotedContext` is false.
+    ///   - hasQuotedContext: whether the message had a quoted prior thread
+    ///     underneath its new text (`QuoteStripper.SeparatedText.quotedText`
+    ///     non-empty). Task #134: callers no longer need to hand over that
+    ///     quoted text's actual content — only whether it existed — since
+    ///     `build` never embeds it.
+    public static func build(newText: String, hasQuotedContext: Bool) -> String {
+        guard hasQuotedContext else { return newText }
         return """
-        \(quotedTextSectionLabel):
-        \(truncatedQuote)
+        \(quotedContextNoteLine)
 
-        \(newTextSectionLabel):
         \(newText)
         """
     }

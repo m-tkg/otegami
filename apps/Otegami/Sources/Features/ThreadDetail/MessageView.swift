@@ -1597,28 +1597,18 @@ struct MessageView: View {
     /// 完全には無視しなくていいけど、そういう流れがある上で、どういう
     /// メールなのかを要約するようにして欲しい」)。
     ///
-    /// Task #46時点は`QuoteStripper.strippingQuotedText`で引用を単純に
-    /// 破棄していたが、それでも「引用そのものを要約している」という実機
-    /// フィードバックが#62で来た — 完全に無視するのではなく、返信の流れを
-    /// 踏まえた上でこのメール自体が何を伝えているかを要約してほしいという
-    /// 要望。そこで`QuoteStripper.separatingQuotedText`(新規部分と引用を
-    /// 分離して両方返すAPI、`QuoteStripper.SeparatedText`のdoc comment
-    /// 参照)に切り替え、`SummaryInputBuilder.build`で構造化テキストとして
-    /// モデルに渡す: 「■これは過去のやり取り (文脈参照用)」「■これが今回
-    /// 届いた返信 (要約対象)」の2セクション、この順(引用側は
-    /// `SummaryInputBuilder.quotedContextCharacterLimit`で切り詰め)。
-    /// この2セクションの並び順(引用が先・新規部分が後)は Task #97 で
-    /// 「引用→新規」の時系列順に揃えたもの — 元は Task #62 時点で逆順
-    /// (新規部分が先)だったが、実機報告「返信メールの要約で叙述順が時系列
-    /// と逆になる」を受けて入れ替えた。詳細は`SummaryInputBuilder`の
+    /// Task #134 (根治): #62〜#132 は`QuoteStripper.separatingQuotedText`で
+    /// 分離した引用部分の*内容*を、ラベル付き・文字数上限付き・時系列順
+    /// (#97)でモデルへ渡し続けていた — それでも実機で引用内容の要約への
+    /// 混入が再発した (`docs/translation.md`の#132節)。ここで渡していた
+    /// のがまさに漏れの原因だったため、`SummaryInputBuilder.build`には
+    /// もう引用の*内容*を渡さない — `separated.quotedText`が空かどうか
+    /// (`hasQuotedContext`)だけを伝え、実際の引用テキストは
+    /// `HTMLTextExtractor`にかけることすらしない (以前はここでも処理
+    /// していたが、内容を使わない以上不要)。引用が無い場合は従来通り
+    /// 単一テキストのまま渡る (`SummaryInputBuilder.build`の
+    /// `hasQuotedContext == false`分岐)。詳細は`SummaryInputBuilder`の
     /// doc comment参照。
-    /// `FoundationModelsTranslationService.summarizeInstructions`にはこの
-    /// 2セクションを「新規部分を主対象に、引用は文脈として使う」よう指示
-    /// する文言(Task #97でさらに「出力も時系列順に」という指示を追加)を
-    /// 追加済み。引用が無い(または新規部分がほぼ無くフォール
-    /// バックが発動した)場合は従来通り単一テキストのまま渡す
-    /// (`SummaryInputBuilder.build`が空の`quotedText`を`newText`そのまま
-    /// 返す形で処理する)。
     ///
     /// `sourceTextForTranslation()`を直接書き換えず専用メソッドに分けたのは、
     /// あのメソッドは翻訳とも共有されており、翻訳・本文表示は引用を含めた
@@ -1635,27 +1625,34 @@ struct MessageView: View {
     private func sourceTextForSummary() -> String? {
         guard let bodyRecord else { return nil }
         let isReply = message?.inReplyTo != nil
+        // Task #134: 実機でのみ`bodyRecord.plainText`がmailcore2の
+        // `plainTextBodyRendering()`(HTML優先タグ剥がし)経由になり、Mac
+        // 上の再現とは異なる形状になっていた疑いがある(#132の実機不再現の
+        // 原因調査)— どちらの経路を辿ったかを`sourceKind`としてログへ残す。
+        let sourceKind: String
         let separated: QuoteStripper.SeparatedText?
         if let plainText = bodyRecord.plainText, !plainText.isEmpty {
             separated = QuoteStripper.separatingQuotedText(fromPlainText: plainText, isReply: isReply)
+            sourceKind = "plain"
         } else if let html = bodyRecord.html, !html.isEmpty {
             separated = QuoteStripper.separatingQuotedText(fromHTML: html)
+            sourceKind = "html"
         } else {
             separated = nil
+            sourceKind = "none"
         }
         guard let separated else { return nil }
-        Self.summaryInputLogger.debug("sourceTextForSummary: messageId=\(messageId, privacy: .public) isReply=\(isReply, privacy: .public) newTextLength=\(separated.newText.count, privacy: .public) quotedTextLength=\(separated.quotedText.count, privacy: .public) detectedMarker=\(separated.detectedMarker ?? "none", privacy: .public)")
+        // Task #134: #105/#122/#128で3度踏んだ罠(`.debug`/`.info`は`log
+        // collect`のアーカイブに残らない — `docs/verify.md`参照)を避け、
+        // 切り分け用ログは`.notice`で書く。
+        Self.summaryInputLogger.notice("sourceTextForSummary: messageId=\(messageId, privacy: .public) source=\(sourceKind, privacy: .public) isReply=\(isReply, privacy: .public) newTextLength=\(separated.newText.count, privacy: .public) quotedTextLength=\(separated.quotedText.count, privacy: .public) detectedMarker=\(separated.detectedMarker ?? "none", privacy: .public)")
         // `sourceTextForTranslation()`と同じ安全網: `QuoteStripper`のHTML
         // 経路はすでに`HTMLTextExtractor`を通しているが、プレーンテキスト
         // 側は生のマークアップが混じっていた場合に備えてもう一度通す
         // (no-opになるのが通常ケース)。
         let newText = HTMLTextExtractor.plainText(fromHTML: separated.newText)
         guard !newText.isEmpty else { return nil }
-        guard !separated.quotedText.isEmpty else { return newText }
-
-        let quotedText = HTMLTextExtractor.plainText(fromHTML: separated.quotedText)
-        guard !quotedText.isEmpty else { return newText }
-        return SummaryInputBuilder.build(newText: newText, quotedText: quotedText)
+        return SummaryInputBuilder.build(newText: newText, hasQuotedContext: !separated.quotedText.isEmpty)
     }
 
     /// `AISummaryBar`の「要約」/「再生成」ボタンの行き先 — ソーステキストは

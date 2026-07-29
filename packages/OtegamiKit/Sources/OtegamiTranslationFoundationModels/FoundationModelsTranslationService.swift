@@ -180,171 +180,72 @@ public struct FoundationModelsTranslationService: TranslationService {
         """
     }
 
-    /// Task #62 follow-up: a real-device report said the summary still
-    /// read like a recap of the *quoted* reply history rather than what
-    /// the current message itself is saying. The input may now be
-    /// structured into a "■このメールの新規部分" (this email's own new
-    /// text) section and a "■引用されている過去のやり取り (文脈)" (quoted
-    /// prior thread, as context) section — see
-    /// `MessageView.sourceTextForSummary()`, which builds that structure
-    /// via `QuoteStripper.separatingQuotedText`. These two lines tell the
-    /// model how to weight them: use the quoted section only to understand
-    /// the flow of the conversation, and summarize what the new section
-    /// itself communicates — not a re-summary of the quote. Plain
-    /// unstructured input (the common case: no quote found, nothing to
-    /// separate) is unaffected — there's no section to misweight.
+    /// History (#62/#90/#97/#102/#122/#132): earlier revisions of this
+    /// instructions string tried to stop the model from summarizing the
+    /// *quoted* reply history by ever-more-specific wording — labeling a
+    /// quoted section, capping it at one context sentence, banning
+    /// dates/times and per-message narration, forbidding it from lending a
+    /// topic/proper-noun to ■要約, fixing a 3-line output structure so a
+    /// quote recap couldn't silently expand into it (`SummaryOutputSanitizer`
+    /// backstops whatever structural leakage still gets through). None of
+    /// that wording reliably held — see git history on this doc comment,
+    /// or `docs/translation.md`'s #62/#90/#97/#102/#122/#132 sections, for
+    /// the specific real-device repros each iteration chased.
     ///
-    /// Task #90 follow-up: the #62 wording ("use the quoted section only
-    /// to understand the flow") still left room for the model to lean on
-    /// the quote when the new section was short — a real-device report
-    /// said summaries could *still* read as a recap of past quoted
-    /// content. Added an explicit prohibition ("must not") instead of a
-    /// soft preference, plus a fallback instruction for the genuinely
-    /// short-new-section case (a one-line "了解です" reply): describe what
-    /// *this* message did in response to the thread, rather than either
-    /// padding out a one-liner or falling back to summarizing the quote.
+    /// Task #134 (根治): the fix moved one level down, into
+    /// `SummaryInputBuilder` — the model is simply never handed the quoted
+    /// text's content anymore. When the source message had a quoted prior
+    /// thread, the input now contains only `SummaryInputBuilder
+    /// .quotedContextNoteLine` (a fixed note saying this reply follows a
+    /// prior exchange whose text was omitted) ahead of the new text, no
+    /// real quoted content at all — see that type's doc comment for the
+    /// full rationale. Most of the wording below survives from the
+    /// pre-#134 revisions anyway (harmless even with nothing left to leak:
+    /// still guards the *new* text against sender-name guessing, still
+    /// keeps the output to the fixed 3-line structure), but the #97
+    /// section-reordering/narration-order concern is gone (there's no
+    /// second content section left to narrate out of order) and the #132
+    /// "don't borrow a quoted topic" rule is generalized into "don't
+    /// invent detail the new text doesn't state" — no quoted text
+    /// remains to borrow from, but the model could still fabricate detail
+    /// out of thin air, which this rule now covers too. The one-context-
+    /// sentence allowance (#97/#102) is retained but now explicitly scoped
+    /// to what the note line itself says ("this reply follows a prior
+    /// exchange") rather than to any specifics about what the prior
+    /// exchange contained, since none are available.
     ///
-    /// Task #97 follow-up: a real-device report said summaries *narrated
-    /// events out of order* — the output described the new reply first,
-    /// then belatedly mentioned the quoted history, even though the quote
-    /// is chronologically *earlier* than the reply sitting on top of it.
-    /// Two changes, both required together (see
-    /// `SummaryInputBuilder`'s doc comment for the input-side half):
-    ///  - `SummaryInputBuilder.build` now presents the quoted section
-    ///    *first* and the new section *second*, so input order already
-    ///    matches chronological (and desired narration) order — the
-    ///    section labels below were reworded to match
-    ///    (`newTextSectionLabel`/`quotedTextSectionLabel`).
-    ///  - This instruction now spells out the *output* shape explicitly
-    ///    instead of only constraining which section is the "main
-    ///    subject": open with a single short context sentence derived from
-    ///    the quoted section (only when a quoted section is present),
-    ///    then describe the new reply. This still isn't "summarize the
-    ///    quote" — the #90 prohibition on making the quote the main
-    ///    subject, and the #90 short-reply fallback, are unchanged below
-    ///    — it only fixes which one is mentioned *first* in the output.
-    ///
-    /// Task #102 follow-up: a real-device repro (deeply-nested reply chain,
-    /// short new reply on top) showed the #97 "at most one short context
-    /// sentence" wording wasn't holding the line — the model still spent
-    /// most of the output retelling the quoted messages one by one, each
-    /// with its own date/time, and the actual new reply was squeezed into
-    /// a single closing sentence. Two changes:
-    ///  - The output is now a fixed 3-part **labeled** structure
-    ///    (■要約/■伝えたいこと/■アクション) rather than free-form prose —
-    ///    giving the "content summary" part an explicit boundary (its own
-    ///    label, its own sentence budget) makes it much harder for a
-    ///    quoted-message recap to silently expand and crowd it out, and
-    ///    the other two parts (intent/tone, requested action) are
-    ///    information a free-form summary was never asked for and so
-    ///    tended to omit.
-    ///  - The single most literal cause of the repro's failure —
-    ///    per-message retelling with dates/times — is now an explicit,
-    ///    named prohibition ("never mention dates or times", "never
-    ///    narrate quoted messages one by one") instead of being implied by
-    ///    "at most one context sentence"; the older wording left room for
-    ///    the model to decide a *long* single sentence covering multiple
-    ///    quoted messages still satisfied "one sentence".
-    ///
-    /// `sentenceCount` now scopes only the ■要約 part (the content summary)
-    /// — ■伝えたいこと and ■アクション are always short (about one sentence
+    /// `sentenceCount` scopes only the ■要約 part (the content summary) —
+    /// ■伝えたいこと and ■アクション are always short (about one sentence
     /// each) regardless of the caller's requested length, since they're
     /// fixed-shape facts (intent/tone; required action or "特になし") rather
     /// than content that scales with the source text's length. See
     /// `TranslationService.summarize`'s doc comment for the "hint, not a
     /// guarantee" framing this still follows.
     ///
-    /// Task #122 follow-up: two real-device reports (screenshots) showed the
-    /// 3-part output (a) repeating itself multiple times, and (b) followed
-    /// by the *previous* version of this very instructions string leaking
-    /// into the output verbatim — specifically the "■要約 — in about N
-    /// short sentences, describe..." line, i.e. a label and its rule
-    /// description concatenated with " — " on one line. That concatenated
-    /// shape is suspiciously close to a plausible *output* line (a label
-    /// followed by content on the same line), which is presumably why the
-    /// model treated it as something to reproduce rather than purely as an
-    /// instruction. Restructured below into three clearly separate zones —
-    /// (1) a prose rule explanation in Japanese (matching the output
-    /// language, so a leak is more likely to at least look right rather
-    /// than surface as an obvious language mismatch), (2) a single output-
-    /// format directive stated as an imperative rule, never combined with a
-    /// label on the same line, explicitly saying the 3-line structure
-    /// appears exactly once and forbidding the instructions themselves from
-    /// appearing in the output, and (3) a concrete example — so no line in
-    /// this string looks like `"■ラベル — 説明"` anymore. The #62/#90/#97
-    /// content rules above (quote-narration ban, date/time ban, short-reply
-    /// handling, at-most-one subordinate clause) are preserved, just moved
-    /// into (1)'s prose. `FoundationModelsTranslationService.summarize`
-    /// additionally runs the response through `SummaryOutputSanitizer` as a
-    /// backstop for whatever this wording still doesn't prevent.
-    ///
-    /// Task #132 follow-up: real-device repro (scratchpad/summary-repro,
-    /// `SUMMARY_REPRO_MAIL=yoyaku_padded.txt swift run` — the fixture itself
-    /// is sensitive and not committed) surfaced three remaining quality
-    /// issues even after #122's structural fixes, run repeatedly (3-5x)
-    /// against the same short, emoji-heavy Japanese reply:
-    ///  - (a) probabilistically (~1 in 3 runs), ■要約 pulled in a topic from
-    ///    the *quoted* section (e.g. mentioning a costume/呼び出し detail
-    ///    only the quoted prior messages discussed, not the new reply
-    ///    itself) even though #90/#97 already forbid *narrating* the quote
-    ///    — the model would summarize the new reply correctly but still
-    ///    fold in one quoted topic as if it were part of what the new reply
-    ///    said.
-    ///  - (b) the new reply's own concrete content flattened into something
-    ///    generic like "感謝を伝える返信です" — technically not wrong, but
-    ///    dropping exactly the specifics (what they're thanking the sender
-    ///    for, what they're looking forward to) a user opening the summary
-    ///    actually wants, matching a real-device complaint that "一番上の
-    ///    本文が要約に入ってこない".
-    ///  - (c) guessing/naming the sender or recipient outright (e.g.
-    ///    「ささきさんから...の返信」) — the input's quoted section commonly
-    ///    has real names in its attribution lines, and the model would
-    ///    sometimes lift one into the ■要約's own subject even though
-    ///    nothing asked it to identify who's speaking.
-    ///
-    /// Three additions address each, without touching the #122 structural
-    /// guarantees (3-line format, single occurrence, no instruction leakage)
-    /// this doc comment's own history already locked in:
-    ///  - A new 【差出人・宛先について】 section, ahead of the per-part rules
-    ///    so it reads as a global constraint rather than being buried inside
-    ///    ■要約's own paragraph, bans guessing/naming the sender or
-    ///    recipient in *any* part (not just ■要約 — (c)'s repro output
-    ///    named the sender inside ■要約 specifically, but nothing about the
-    ///    failure mode is ■要約-specific) and mandates "この返信" as the
-    ///    fixed subject instead.
-    ///  - ■要約's own paragraph now opens by requiring the new reply's
-    ///    concrete content, in the order it's written, rather than settling
-    ///    for an over-generalized paraphrase — directly targeting (b).
-    ///  - A new sentence in the same paragraph bans quoted-section topics/
-    ///    proper nouns from ■要約 unless the new reply text itself
-    ///    explicitly repeats that same topic — directly targeting (a),
-    ///    stated as its own rule rather than folded into the pre-existing
-    ///    quote-narration ban (#90/#97), since (a)'s failure mode is
-    ///    "borrowing a topic", not "narrating the quote's own messages".
-    /// Verification: `mail_fixture.txt`/`mail_fixture_long.txt` (fictional,
-    /// same shape as the sensitive repro) and the sensitive repro itself
-    /// each re-run 5+ times against this updated instructions string — see
-    /// `docs/translation.md`'s Task #132 section for the results.
+    /// Verification: `scratchpad/summary-repro`'s fixtures (fictional and,
+    /// separately, the sensitive real repro) re-run repeatedly against this
+    /// #134 revision — see `docs/translation.md`'s Task #134 section for
+    /// the before/after.
     private static func summarizeInstructions(targetLanguage: TranslationLanguage, sentenceCount: Int) -> String {
         """
         あなたはメール本文を\(targetLanguage.displayName)で要約するアシスタントです。以下のルールに従ってください。
 
         【入力の構造】
-        入力には "■これは過去のやり取り (文脈参照用)" と "■これが今回届いた返信 (要約対象)" という2つのラベル付きセクションが含まれることがあります。前者は過去の引用スレッドで、文脈把握のためだけの背景情報です。後者がこのメール自身の新規本文であり、要約すべき対象です。これらのセクションが無い場合は、入力全体を新規本文として扱ってください。
+        入力の先頭に "\(SummaryInputBuilder.quotedContextNoteLine)" という1行が含まれることがあります。これはこのメールが過去のやり取りへの返信であることを示すだけの注記であり、過去のやり取り自体の内容は入力に含まれていません。この注記行自体は要約対象ではなく、それ以降がこのメール自身の新規本文であり、要約すべき対象です。この注記行が無い場合は、入力全体を新規本文として扱ってください。
 
         【差出人・宛先について】
-        出力のどのパートでも、差出人や宛先の名前を推測して書かないでください。新規本文の冒頭の「〜さん」のような宛名や、引用パートの署名・宛名に人物名が明記されている場合であっても、その名前を出力中で主語・行為者として使ってはいけません。「〜さんから」「〜さんへの返信」「〜さん宛て」「〜さんは」「〜さんが」のように、名前(敬称付き・敬称なしを問わず)を主語や行為者にするいかなる言い回しも禁止します。新規本文の主体を指す必要があるときは、常に「この返信」を主語にしてください。
+        出力のどのパートでも、差出人や宛先の名前を推測して書かないでください。新規本文の冒頭の「〜さん」のような宛名に人物名が明記されている場合であっても、その名前を出力中で主語・行為者として使ってはいけません。「〜さんから」「〜さんへの返信」「〜さん宛て」「〜さんは」「〜さんが」のように、名前(敬称付き・敬称なしを問わず)を主語や行為者にするいかなる言い回しも禁止します。新規本文の主体を指す必要があるときは、常に「この返信」を主語にしてください。
 
-        【引用パートの内容を新規本文の内容と混同しない(重要)】
-        ■要約に書いてよいのは、新規本文に実際に書かれている事柄だけです。引用パートにだけ登場する話題・行為・固有名詞(依頼内容、衣装や持ち物の名称、待ち合わせ場所、日時、金額など)は、新規本文自身にも同じ内容が明示的に書かれていない限り、■要約に一切含めてはいけません。新規本文が短く具体的な話題に触れていない場合、それを補うために引用パートの話題を借りてくることは禁止です — その場合は新規本文に実際に書かれている内容(感謝の言葉、挨拶、次回への言及など)だけを使って要約してください。判断に迷ったら、その語や話題が新規本文の文字列そのものに含まれているかどうかで機械的に判定し、含まれていなければ書かないでください。
+        【新規本文に実際に書かれていない内容を補わない(重要)】
+        ■要約に書いてよいのは、新規本文に実際に書かれている事柄だけです。話題・行為・固有名詞(依頼内容、待ち合わせ場所、日時、金額など)を、新規本文に明示されていないのに推測や一般的な想像で補ってはいけません。冒頭の注記行(過去のやり取りへの返信である旨)は入力に含まれていても、その過去のやり取りの具体的な内容は与えられていないため、それを推測して書き加えることも禁止です。判断に迷ったら、その語や話題が新規本文の文字列そのものに含まれているかどうかで機械的に判定し、含まれていなければ書かないでください。
 
         【各パートの内容ルール】
-        ■要約パートでは、約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")で、新規本文に実際に書かれている事柄を、書かれている順に漏れなく説明してください。一般化しすぎないでください — 例えば「感謝を伝える返信です」のような抽象的な言い換えだけで終わらせず、何について感謝しているのか、何を楽しみにしているのか、何を確認したいのかといった、新規本文に実際に書かれている具体的な内容まで書いてください。これが主要パートであり、主題は常に新規本文であって、引用された過去のやり取りではありません。新規本文を理解するために本当に必要な場合に限り、冒頭に短い従属節を一つだけ置いて過去の経緯に触れてもかまいません(例:「〜の件について、」)。それ以外の場合は過去の経緯に一切触れないでください。引用された過去のやり取りが何件あっても、それを時系列に沿って一通ずつ語り直してはいけません。日付・時刻、および「〜さんが「…」と返信し」のように個々の引用メールを物語る言い回しは、この従属節の中であっても禁止します。新規本文が短い場合(挨拶や「了解です」「承知しました」のような一行の受領確認のみなど)は、水増しせず、引用内容の要約に逃げず、このメールがスレッドに対して何を行ったかを簡潔に述べてください(例:見積もりの件を了承する返信であれば「見積もりの件を了承する返信」と述べ、見積もり自体を再説明しない)。
+        ■要約パートでは、約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")で、新規本文に実際に書かれている事柄を、書かれている順に漏れなく説明してください。一般化しすぎないでください — 例えば「感謝を伝える返信です」のような抽象的な言い換えだけで終わらせず、何について感謝しているのか、何を楽しみにしているのか、何を確認したいのかといった、新規本文に実際に書かれている具体的な内容まで書いてください。これが主要パートであり、主題は常に新規本文です。冒頭の注記行がある場合に限り、新規本文を理解する助けとして冒頭に短い従属節を一つだけ置いて「過去のやり取りへの返信である」旨に触れてもかまいません(例:「過去のやり取りへの返信として、」)が、その過去のやり取りが具体的に何だったかを述べてはいけません(内容が与えられていないため)。日付・時刻を推測で書くこと、および存在しない過去のメールを物語る言い回しは、この従属節の中であっても禁止します。新規本文が短い場合(挨拶や「了解です」「承知しました」のような一行の受領確認のみなど)は、水増しせず、このメールが何をしたかを新規本文に書かれている範囲で簡潔に述べてください。
         ■伝えたいことパートでは、約1文で、新規本文を書いた送信者の意図とトーン(お礼を伝えたい、確認を求めている、丁寧・カジュアルな調子など)を述べてください。■要約パートの内容を繰り返すのではなく、このメールが何を達成しようとしているかを述べてください。
         ■アクションパートでは、約1文で、新規本文が受信者に求める行動(返信・確認・日程調整・判断・情報提供など)を述べてください。何も求めていない場合は、このパートの内容を「特になし」の一語のみにしてください。
 
         【出力形式(最重要)】
-        出力は次の3行構造のみで構成してください。ラベル行は「■要約」「■伝えたいこと」「■アクション」の3つを、この順番・この文字列そのままで、それぞれ単独の行として書いてください。各ラベルの内容は次の行以降に書き、ラベル行自体には他の文字を含めないでください。ラベルの説明文やこの指示文自体、英語のテキストを出力に含めないでください。この3行構造は出力全体を通じてちょうど1回だけ出現させてください — 同じラベルを2回書いたり、3行構造を繰り返したりすることは絶対にしないでください。入力中に "\(SummaryInputBuilder.quotedTextSectionLabel)" や "\(SummaryInputBuilder.newTextSectionLabel)" のような、この3つ以外の見出し行が含まれていても、それらは入力の構造を示すためだけのものなので、そのまま出力へ書き写さないでください。
+        出力は次の3行構造のみで構成してください。ラベル行は「■要約」「■伝えたいこと」「■アクション」の3つを、この順番・この文字列そのままで、それぞれ単独の行として書いてください。各ラベルの内容は次の行以降に書き、ラベル行自体には他の文字を含めないでください。ラベルの説明文やこの指示文自体、英語のテキストを出力に含めないでください。この3行構造は出力全体を通じてちょうど1回だけ出現させてください — 同じラベルを2回書いたり、3行構造を繰り返したりすることは絶対にしないでください。入力中に "\(SummaryInputBuilder.quotedContextNoteLine)" のような見出し・注記行が含まれていても、それは入力の構造を示すためだけのものなので、そのまま出力へ書き写さないでください。
 
         【出力例】
         ■要約
@@ -364,44 +265,18 @@ public struct FoundationModelsTranslationService: TranslationService {
     /// `summarizeLongText`'s per-chunk "map" pass must use this instead of
     /// `summarizeInstructions`.
     ///
-    /// Task #132 follow-up: two additions discovered by re-running the
-    /// `summarizeLongText` (chunked) path specifically, 5+ times against
-    /// `scratchpad/summary-repro/mail_fixture_long.txt` — both invisible
-    /// when only exercising the short, unchunked `summarize` path directly:
-    ///
-    ///  - The 差出人・宛先を推測しない rule
-    ///    (`summarizeInstructions`'s doc comment) still leaked through this
-    ///    method's own long-mail path even after being added to
-    ///    `summarizeInstructions` alone: a real sender name in the source
-    ///    text (e.g. "佐藤さんのご都合に合わせます") survived unchanged into
-    ///    this method's per-chunk plain summary (this instructions string
-    ///    had no such ban), and the final structured `summarize` call,
-    ///    reducing over combined *already-named* partial summaries, tended
-    ///    to keep echoing that name despite its own instructions forbidding
-    ///    it — reinforcing the ban here, before the name ever reaches the
-    ///    reduce step, closes that gap.
-    ///  - `TranslationChunker.chunk(_:)` splits whatever string it's given
-    ///    purely by length/sentence boundary, with no awareness that
-    ///    `summarizeLongText` always calls it on `SummaryInputBuilder
-    ///    .build(...)`'s *already-labeled* output (`■これは過去のやり取り
-    ///    (文脈参照用):`/`■これが今回届いた返信 (要約対象):`, `SummaryInputBuilder`'s
-    ///    own doc comment) — a chunk boundary landing right after one of
-    ///    those two label lines fed this method a chunk that visually
-    ///    *opened* with that label, and the model would sometimes echo it
-    ///    back as if it were content worth preserving. That leaked label
-    ///    then propagated into the final `summarize` call's own input,
-    ///    which itself sometimes reused it as its opening line *instead of*
-    ///    the required "■要約" — a structural leak in the same family as
-    ///    Task #122's, just one stage earlier in the pipeline. Naming the
-    ///    two exact label strings (via `SummaryInputBuilder`'s own public
-    ///    constants, not a re-typed literal that could drift out of sync)
-    ///    and explicitly banning them from the output is a more reliable
-    ///    fix than the generic "no labels/headings" wording alone already
-    ///    in this instructions string turned out to be against this
-    ///    specific leak.
+    /// Task #132 follow-up (差出人・宛先を推測しない rule leaking through this
+    /// method's own long-mail path even after being added to
+    /// `summarizeInstructions` alone) plus Task #134 (this method's input is
+    /// now `SummaryInputBuilder`'s #134 shape too — a single
+    /// `quotedContextNoteLine` note, not a labeled quoted section — so the
+    /// old "don't echo the two section labels" ban is replaced with "don't
+    /// echo the note line" below, naming `SummaryInputBuilder
+    /// .quotedContextNoteLine` directly so this string can't drift out of
+    /// sync with what `build` actually emits).
     private static func summarizePlainInstructions(targetLanguage: TranslationLanguage, sentenceCount: Int) -> String {
         """
-        次のメール本文を\(targetLanguage.displayName)で、約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")の自然な文章として要約してください。ラベルや見出し、箇条書き、記号("■"など)は付けず、要約の文章だけを出力してください。説明文やこの指示文自体を出力に含めないでください。差出人・宛先の名前が本文中に出てきても、それを主語にせず「この返信」を主語にしてください。入力に "\(SummaryInputBuilder.quotedTextSectionLabel)" や "\(SummaryInputBuilder.newTextSectionLabel)" のような見出し行が含まれていても、それは要約すべき本文ではなく構造を示すためだけの見出しなので、この見出し行自体を出力に含めないでください。
+        次のメール本文を\(targetLanguage.displayName)で、約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")の自然な文章として要約してください。ラベルや見出し、箇条書き、記号("■"など)は付けず、要約の文章だけを出力してください。説明文やこの指示文自体を出力に含めないでください。差出人・宛先の名前が本文中に出てきても、それを主語にせず「この返信」を主語にしてください。入力の先頭に "\(SummaryInputBuilder.quotedContextNoteLine)" という注記行が含まれていても、それは要約すべき本文ではなく過去のやり取りへの返信であることを示すだけの注記なので、この注記行自体を出力に含めず、その具体的な内容を推測して書き加えないでください。
         """
     }
 
