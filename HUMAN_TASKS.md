@@ -75,18 +75,11 @@
       確認する (以前は Gmail に `\Archive` special-use フォルダが無いため
       アーカイブが無言で失敗していた実バグの修正)。
       優先度: 中 / 所要時間: 5分 / 詳細: [PENDING.md「実機フィードバック第2弾: Gmail アーカイブ修正の実アカウント確認」](PENDING.md#実機フィードバック第2弾-gmail-アーカイブ修正の実アカウント確認)
-- [ ] **スレッド表示オフが再起動直後の一覧に反映されるか (Task #105)** —
-      スレッド表示をオフにし、設定画面でオフ表示になることを確認した上
-      でアプリスイッチャーから完全に kill して再起動し、一覧が正しく
-      フラット表示 (スレッドグループ化なし) になっていることを確認する。
-      #82 (06c1062) の防御的修正後もなお実機で再発した報告への追加修正
-      (`CFPreferencesAppSynchronize`による起動直後の強制リロード) — この
-      シミュレータではバグ自体を再現できず、修正の効果を確認できていない。
-      直らない場合は`log stream --predicate 'subsystem ==
-      "com.mtkg.otegami" && (category == "ListDisplaySettings" ||
-      category == "MessageListQueryMode")'`を起動から流しっぱなしにして
-      再現させたログを教えてほしい。
-      優先度: 高 / 所要時間: 5分 / 詳細: [PENDING.md「Task #105」](PENDING.md)、[docs/qa-findings.md「Task #105」節](docs/qa-findings.md)
+- [x] **スレッド表示オフが再起動直後の一覧に反映されるか (Task #105)** —
+      (2026-07-29 実機確認済み) 実機ログ採取で真因を
+      `.navigationDestination(item:)` destination クロージャの stale
+      capture と確定し、`ThreadRoute` 導入 (`c1804f4`) で解決。経緯は
+      [docs/qa-findings.md「Task #105」節の「決着」](docs/qa-findings.md)。
 - [ ] **実機フィードバック第2弾の新機能を数日実際に使ってみる** —
       アカウントのラベル色・署名テンプレート・デフォルトのアカウント・
       削除/アーカイブ後の挙動・カード状一覧の角丸・スレッド詳細の

@@ -9,41 +9,13 @@
 知りたい場合はこのファイル、次に何をやればいいかだけ知りたい場合は
 `HUMAN_TASKS.md` を見ること。
 
-## Task #105: スレッド表示オフなのに再起動直後の一覧だけスレッド表示になるバグ — 実機での再現・修正確認
+## Task #105: スレッド表示オフなのに再起動直後だけスレッド挙動 — 解決済み (2026-07-29)
 
-**実装状況**: 実機報告 (動画あり、再現性100%): スレッド表示の設定は
-オフ (設定画面でもオフ表示のまま) なのに、アプリを再起動すると一覧の
-挙動が必ずスレッド表示になる。トグルを一度オン→オフすると直る。#101
-(値の巻き戻し) とは別物 — 値は正しくオフのまま、起動時の一覧だけが
-設定値と違う挙動をする「初期読み取り経路のバグ」。#82 (06c1062、
-`@AppStorage`のper-viewキャッシュを避けて`UserDefaults.standard`を
-直読みする防御的修正) を入れた後もなお実機で再発した報告。
-
-コードレビューでは`MessageListView`/`ListDisplaySettingsStore`の
-実装に矛盾を見つけられなかった。有力な仮説として「プロセス起動直後の
-`UserDefaults.standard`自身のインメモリキャッシュが、ディスクの内容と
-まだ同期し切れていない」を立て、`CFPreferencesAppSynchronize`による
-プロセス起動時の強制リロード (`ListDisplaySettingsStore
-.forceReloadFromDiskOnce()`、`AppEnvironment.init()`の最冒頭で呼び出し)
-とOSLog計装 (`log stream --predicate 'subsystem == "com.mtkg.otegami" &&
-(category == "ListDisplaySettings" || category == "MessageListQueryMode")'`)
-を追加。詳細は `docs/qa-findings.md`「Task #105」節参照。
-
-**未確認**: このシミュレータ/開発機ではこのバグ自体を再現できず
-(`defaults write`→`simctl terminate`→`simctl launch`で試したが、修正の
-有無に関わらず最初の読み出しから一貫して正しい値が返る — 06c1062・
-Task #101のときと同じ既知の限界)、今回の修正が実際に実機の症状を
-解消するかは**未検証**。都合の良いときに実機で以下を確認してほしい:
-
-1. スレッド表示をオフにする (設定画面でオフ表示になることを確認)。
-2. アプリスイッチャーから完全に kill し、再起動する。
-3. 一覧が正しくフラット表示になっていることを確認 (これまでの報告
-   どおりスレッド表示になっていないか)。
-4. 直らない場合は上記の`log stream`コマンドを起動直後から流しっぱなしに
-   した状態でもう一度再現させ、`persistedBool(listDisplay.threading)`
-   の最初の値と`observeThreads: isFlatMode=...`の値のログを教えてほしい
-   — それでもなお症状が出るなら、今回の仮説 (`cfprefsd`同期ラグ) 自体が
-   外れていることになり、別の原因を切り分ける材料になる。
+実機の OSLog 採取で真因を確定し、`c1804f4` (`ThreadRoute` 導入) で修正、
+実機でユーザー確認済み。`CFPreferencesAppSynchronize` 仮説は棄却 —
+実際は `.navigationDestination(item:)` の destination クロージャの
+stale capture (cold launch 初回 push 限定)。経緯と教訓は
+`docs/qa-findings.md`「Task #105」節の「決着」参照。
 
 ## Task #89: 表示設定の iCloud 同期 — 実機での再インストール後復元確認
 
