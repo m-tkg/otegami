@@ -150,15 +150,38 @@ jobs:
       # included) — see Apple's build setting reference — and the bundle
       # id is the repo's committed default (Config/Signing.xcconfig);
       # GitHub Actions never has a Config/Local.xcconfig overriding it.
+      # v1.1.0-beta の実地で判明した落とし穴: iCloud KVS
+      # (`com.apple.developer.ubiquity-kvstore-identifier`) は「制限付き」
+      # entitlement で、provisioning profile が埋め込まれていない Developer
+      # ID アプリに付けると **macOS が起動自体を拒否する** (launchd spawn
+      # failed / POSIX 163 — Gatekeeper は通るのに開けない)。対処は二択:
+      # - `MACOS_PROVISIONING_PROFILE_BASE64` secret (Developer ID 用
+      #   provisioning profile、iCloud capability 付き) が登録されていれば
+      #   `Contents/embedded.provisionprofile` として埋め込み、entitlement
+      #   を保ったまま署名する (iCloud 同期が Release ビルドでも機能する)。
+      # - 無ければ iCloud entitlement を落として署名する (起動はするが
+      #   macOS Release ビルドの iCloud アカウント同期は無効 —
+      #   docs/release.md 参照)。
       - name: Resolve macOS entitlements
         env:
           NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          MACOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 }}
         run: |
           RESOLVED="$RUNNER_TEMP/Otegami-macOS.resolved.entitlements"
           sed \
             -e "s/\$(TeamIdentifierPrefix)/${NOTARY_TEAM_ID}./" \
             -e "s/\$(CFBundleIdentifier)/com.mtkg.otegami/" \
             "$APP_DIR/Config/Otegami-macOS.entitlements" > "$RESOLVED"
+          if [ -n "$MACOS_PROVISIONING_PROFILE_BASE64" ]; then
+            echo "$MACOS_PROVISIONING_PROFILE_BASE64" | base64 -d \
+              > "$APP_PATH/Contents/embedded.provisionprofile"
+            echo "provisioning profile embedded — keeping iCloud entitlement"
+          else
+            /usr/libexec/PlistBuddy -c \
+              "Delete :com.apple.developer.ubiquity-kvstore-identifier" \
+              "$RESOLVED" || true
+            echo "no provisioning profile secret — stripped iCloud KVS entitlement"
+          fi
           echo "RESOLVED_ENTITLEMENTS=$RESOLVED" >> "$GITHUB_ENV"
 
       - name: Sign app bundle (Developer ID)
