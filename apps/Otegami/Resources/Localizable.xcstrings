@@ -4011,6 +4011,16 @@
           }
         }
       }
+    },
+    "詳しく要約": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Summarize in Detail"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

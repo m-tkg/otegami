@@ -133,6 +133,44 @@ struct SummaryOutputSanitizerTests {
         """)
     }
 
+    @Test("Task #148: drops a repeated label sandwiched between two real ones")
+    func dropsRepeatedLabelBetweenRealParts() {
+        // Shaped after a real FM repro (`scratchpad/summary-repro`,
+        // `mail_fixture_long.txt`, Task #148's detailed-length branch,
+        // `SUMMARY_REPRO_SENTENCE_COUNTS=10`): the model produced a genuine
+        // ■要約 and ■アクション, but wrote **two** "■伝えたいこと" blocks in
+        // between with different content — unlike (a)'s repro (a full
+        // second 3-part block trailing the first), this repeat sits
+        // *inside* the single block, between two labels the sanitizer was
+        // already asked to keep.
+        let text = """
+        ■要約
+        新規本文の要約です。
+
+        ■伝えたいこと
+        正しい伝えたいこと。
+
+        ■伝えたいこと
+        重複した別バージョン。
+
+        ■アクション
+        特になし
+        """
+        let sanitized = SummaryOutputSanitizer.sanitize(text)
+        #expect(sanitized == """
+        ■要約
+        新規本文の要約です。
+
+        ■伝えたいこと
+        正しい伝えたいこと。
+
+        ■アクション
+        特になし
+        """)
+        #expect(!sanitized.contains("重複した別バージョン"))
+        #expect(sanitized.components(separatedBy: SummaryOutputSanitizer.intentLabel).count == 2)
+    }
+
     @Test("handles the label and its content sharing the same line")
     func handlesLabelAndContentOnSameLine() {
         let text = """

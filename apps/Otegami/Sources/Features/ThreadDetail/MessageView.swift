@@ -677,12 +677,26 @@ struct MessageView: View {
                     Button("閉じる") { isShowingSummarySheet = false }
                         .accessibilityIdentifier("messageDetail.summarySheet.closeButton")
                 }
+                // Task #148 (「詳しく要約」): 「再生成」を`Menu`化し、通常の
+                // 再生成 (現行、sentenceCount既定=2) に加えて「詳しく要約」
+                // (■要約パートをsentenceCount=10相当で、`detailed: true`)
+                // を選べるようにした。モード自体は保持しない — この`Menu`
+                // は常に同じ2択を毎回提示するだけで、直前にどちらを選んだ
+                // かを覚えて次回のデフォルトを変えたりはしない (指示どおり)。
                 ToolbarItem(placement: .confirmationAction) {
                     if aiState.summaryState.isSummarizing {
                         ProgressView()
                     } else if let message {
-                        Button("再生成") { requestSummary(message: message) }
-                            .accessibilityIdentifier("messageDetail.summarySheet.regenerateButton")
+                        Menu {
+                            Button("再生成") { requestSummary(message: message) }
+                                .accessibilityIdentifier("messageDetail.summarySheet.regenerateButton")
+                            Button("詳しく要約") { requestSummary(message: message, detailed: true) }
+                                .accessibilityIdentifier("messageDetail.summarySheet.regenerateDetailedButton")
+                        } label: {
+                            Label("再生成", systemImage: "arrow.clockwise")
+                                .labelStyle(.titleOnly)
+                        }
+                        .accessibilityIdentifier("messageDetail.summarySheet.regenerateMenu")
                     }
                 }
             }
@@ -1871,6 +1885,17 @@ struct MessageView: View {
         return SummaryInputBuilder.build(newText: newText, hasQuotedContext: !separated.quotedText.isEmpty)
     }
 
+    /// Task #148: `summarySheet`の「再生成」Menuの2択が渡す`sentenceCount`
+    /// (■要約パートのみに効く — `FoundationModelsTranslationService
+    /// .summarizeInstructions`のdoc comment参照)。通常側は`summarizeLongText`
+    /// 自身のデフォルト(2)と同じ値をここでも明示しておく — 「詳しく要約」の
+    /// `detailedSummarySentenceCount`と対で並べておいた方が、この2つが
+    /// 対応する2択であることがコード上でも分かりやすいため。`10`は
+    /// `summarizeInstructions`側の`detailedSentenceCountThreshold`(6)を
+    /// 超える値 — 詳細版向けの文言分岐が確実に効く。
+    private static let standardSummarySentenceCount = 2
+    private static let detailedSummarySentenceCount = 10
+
     /// `AISummaryBar`の「要約」/「再生成」ボタンの行き先 — ソーステキストは
     /// `sourceTextForSummary()`(`sourceTextForTranslation()`に`QuoteStripper`
     /// を足したもの、そのdoc comment参照)。翻訳と違って結果を永続キャッシュ
@@ -1884,11 +1909,17 @@ struct MessageView: View {
     /// 上限を超えて失敗する翻訳と同じ問題を要約も踏みうるため
     /// (`TranslationChunker`のdoc comment参照)、事前分割+map-reduceで
     /// 安全な長さに保つ。
-    private func requestSummary(message: MessageRecord) {
+    ///
+    /// Task #148 (「詳しく要約」): `detailed`は`summarySheet`のMenuの2番目
+    /// の選択肢からのみ`true`で渡る。この`Bool`自体はどこにも永続化しない
+    /// (指示どおり「モードは保持しない」) — 次にこのメッセージを開いた
+    /// ときや、次に「再生成」を押したときは常に既定 (通常) から始まる。
+    private func requestSummary(message: MessageRecord, detailed: Bool = false) {
         guard summaryTask == nil else { return }
         aiState.summaryState = .summarizing
         let translator = environment.translationService
         let targetLanguage: TranslationLanguage = LocalizationSettingsStore.effectiveLanguageCode == "en" ? .english : .japanese
+        let sentenceCount = detailed ? Self.detailedSummarySentenceCount : Self.standardSummarySentenceCount
         summaryTask = Task {
             // Task #138 追加報告: `showsSummaryButton`は本文取得が失敗した
             // 状態(`bodyRecord == nil`, `errorMessage != nil`)でも出る
@@ -1904,7 +1935,7 @@ struct MessageView: View {
                 return
             }
             do {
-                let result = try await translator.summarizeLongText(sourceText, targetLanguage: targetLanguage)
+                let result = try await translator.summarizeLongText(sourceText, targetLanguage: targetLanguage, sentenceCount: sentenceCount)
                 guard !Task.isCancelled else { return }
                 aiState.summaryState = .summarized(result)
             } catch {

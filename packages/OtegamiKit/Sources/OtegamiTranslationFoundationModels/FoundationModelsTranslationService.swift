@@ -243,10 +243,33 @@ public struct FoundationModelsTranslationService: TranslationService {
     /// `TranslationService.summarize`'s doc comment for the "hint, not a
     /// guarantee" framing this still follows.
     ///
+    /// Task #148 (「詳しく要約」— `MessageView.summarySheet`の「再生成」を
+    /// Menu化し、通常の`sentenceCount`(2)に加えて約10文の詳細版を追加):
+    /// naively embedding a large `sentenceCount` into the original "約N文
+    /// 程度で" phrasing reads unnaturally to the model at N=10 — a single
+    /// unbroken "約10文程度で" run-on paragraph — so ■要約's length
+    /// guidance branches at `detailedSentenceCountThreshold`. The detailed
+    /// wording additionally allows (not requires) breaking ■要約 into
+    /// chronological paragraphs when the new text naturally has multiple
+    /// topics/stages, while still explicitly forbidding padding content the
+    /// new text doesn't state — the same "新規本文に実際に書かれていない
+    /// 内容を補わない" rule below still applies regardless of which length
+    /// guidance was used.
+    private static let detailedSentenceCountThreshold = 6
+
+    private static func summaryLengthGuidance(sentenceCount: Int) -> String {
+        if sentenceCount >= detailedSentenceCountThreshold {
+            return "目安として約\(sentenceCount)文程度の分量で、新規本文に実際に書かれている事柄を、書かれている順に漏れなく詳しく説明してください。内容の区切りが自然な場合は、時系列に沿って段落分けしてもかまいません(段落は空行で区切ってください)。ただし、段落を分けることを理由に新規本文に無い内容を水増ししてはいけません。"
+        }
+        return "約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")で、新規本文に実際に書かれている事柄を、書かれている順に漏れなく説明してください。"
+    }
+
     /// Verification: `scratchpad/summary-repro`'s fixtures (fictional and,
     /// separately, the sensitive real repro) re-run repeatedly against this
     /// #134 revision — see `docs/translation.md`'s Task #134 section for
-    /// the before/after.
+    /// the before/after. Task #148's detailed-length branch above was
+    /// verified the same way with `SUMMARY_REPRO_SENTENCE_COUNTS=10` — see
+    /// `docs/translation.md`'s Task #148 section.
     private static func summarizeInstructions(targetLanguage: TranslationLanguage, sentenceCount: Int) -> String {
         """
         あなたはメール本文を\(targetLanguage.displayName)で要約するアシスタントです。以下のルールに従ってください。
@@ -261,7 +284,7 @@ public struct FoundationModelsTranslationService: TranslationService {
         ■要約に書いてよいのは、新規本文に実際に書かれている事柄だけです。話題・行為・固有名詞(依頼内容、待ち合わせ場所、日時、金額など)を、新規本文に明示されていないのに推測や一般的な想像で補ってはいけません。冒頭の注記行(過去のやり取りへの返信である旨)は入力に含まれていても、その過去のやり取りの具体的な内容は与えられていないため、それを推測して書き加えることも禁止です。判断に迷ったら、その語や話題が新規本文の文字列そのものに含まれているかどうかで機械的に判定し、含まれていなければ書かないでください。
 
         【各パートの内容ルール】
-        ■要約パートでは、約\(sentenceCount)文\(sentenceCount == 1 ? "" : "程度")で、新規本文に実際に書かれている事柄を、書かれている順に漏れなく説明してください。一般化しすぎないでください — 例えば「感謝を伝える返信です」のような抽象的な言い換えだけで終わらせず、何について感謝しているのか、何を楽しみにしているのか、何を確認したいのかといった、新規本文に実際に書かれている具体的な内容まで書いてください。これが主要パートであり、主題は常に新規本文です。冒頭の注記行の有無に関わらず、「過去のやり取りへの返信として」のような前置きの一文を書かず、新規本文の内容から直接書き始めてください。日付・時刻を推測で書くこと、および存在しない過去のメールを物語る言い回しは禁止します。新規本文が短い場合(挨拶や「了解です」「承知しました」のような一行の受領確認のみなど)は、水増しせず、このメールが何をしたかを新規本文に書かれている範囲で簡潔に述べてください。
+        ■要約パートでは、\(summaryLengthGuidance(sentenceCount: sentenceCount))一般化しすぎないでください — 例えば「感謝を伝える返信です」のような抽象的な言い換えだけで終わらせず、何について感謝しているのか、何を楽しみにしているのか、何を確認したいのかといった、新規本文に実際に書かれている具体的な内容まで書いてください。これが主要パートであり、主題は常に新規本文です。冒頭の注記行の有無に関わらず、「過去のやり取りへの返信として」のような前置きの一文を書かず、新規本文の内容から直接書き始めてください。日付・時刻を推測で書くこと、および存在しない過去のメールを物語る言い回しは禁止します。新規本文が短い場合(挨拶や「了解です」「承知しました」のような一行の受領確認のみなど)は、水増しせず、このメールが何をしたかを新規本文に書かれている範囲で簡潔に述べてください。
         ■伝えたいことパートでは、約1文で、新規本文を書いた送信者の意図とトーン(お礼を伝えたい、確認を求めている、丁寧・カジュアルな調子など)を述べてください。■要約パートの内容を繰り返すのではなく、このメールが何を達成しようとしているかを述べてください。
         ■アクションパートでは、約1文で、新規本文が受信者に求める行動(返信・確認・日程調整・判断・情報提供など)を述べてください。何も求めていない場合は、このパートの内容を「特になし」の一語のみにしてください。
 

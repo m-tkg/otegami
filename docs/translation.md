@@ -1254,6 +1254,91 @@ nil`(「読み込み試行が完了した」)をゲートに変え、取得失�
 (`syncAIFeaturesState()`ごとの`hasBody`/`hasError`/`showsSummaryButton`)
 も追加した。
 
+## 「詳しく要約」: 再生成のプルダウン化と詳細版サマリー (Task #148)
+
+**要望**: AI要約シートの「再生成」ボタンを、通常の再生成に加えて
+「詳しく要約」(■要約パートを約10文相当に増やす) も選べる`Menu`にしたい。
+3パート構造 (Task #102)・引用排除 (Task #134) は両モードで維持する。
+モード自体は保持しない — シートを開き直す/次に「再生成」する際は常に
+既定 (通常) から始まる。
+
+### 変更
+
+- `MessageView.summarySheet`のツールバー右上を`Button("再生成")`から
+  `Menu`化。中身は「再生成」(`requestSummary(message:)`、既定の
+  `sentenceCount`はこれまでと同じ2) と「詳しく要約」
+  (`requestSummary(message:detailed:true)`、`sentenceCount`は10) の2択。
+  アクセシビリティ識別子は`messageDetail.summarySheet.regenerateMenu`
+  (Menu自体)・`...regenerateButton`(既存、再生成)・
+  `...regenerateDetailedButton`(新規、詳しく要約)。
+- `FoundationModelsTranslationService.summarizeInstructions`の■要約
+  パートの分量指示 (`summaryLengthGuidance(sentenceCount:)`) を分岐:
+  `sentenceCount >= detailedSentenceCountThreshold`(6) のときは「目安
+  として約N文程度の分量で…詳しく説明してください。内容の区切りが
+  自然な場合は、時系列に沿って段落分けしてもかまいません(空行区切り)。
+  ただし段落を分けることを理由に新規本文に無い内容を水増ししては
+  いけません」という詳細版向けの文言に切り替える。素の「約10文程度で」
+  という指示のままだと、そもそも新規本文の分量に対して不自然に長い
+  要求になったり、1つの塊に無理やり詰め込もうとして読みにくくなったり
+  する懸念があったため、「段落分けしてよい (必須ではない)」という
+  逃げ道と、「水増し禁止」という既存ルール (`#132`(b)由来) の再強調を
+  セットにした。通常 (`sentenceCount < 6`、既定2) の文言は変更なし。
+
+### 実装中に見つけた回帰とその場での修正: `SummaryOutputSanitizer`の
+### 新しい漏れパターン
+
+`scratchpad/summary-repro`の`mail_fixture_long.txt`(架空フィクスチャ、
+非チャンク経路) を`SUMMARY_REPRO_SENTENCE_COUNTS=10`で実FM実行した際、
+■要約と■アクションの間に**本来無いはずの2つ目の「■伝えたいこと」
+ラベルが挟まる**出力を観測した — Task #122の`SummaryOutputSanitizer`は
+「完全な3パートブロックの*後ろ*に反復/リークが続く」パターン (a)(b) は
+防いでいたが、このケースはパーツの*間*に割り込む反復という新しい形で、
+既存実装の`content(label:...)`が「次に見つかる*必須*ラベル行の直前まで
+全部」を内容として拾ってしまうため、割り込んだ2つ目のラベルとその内容
+がまるごと1つ目の「■伝えたいこと」の内容に混入していた。
+
+`actionContentEnd`(既存、■アクションの後続をトリムする箇所) がすでに
+使っていた「次に現れる*任意の*■始まり行までを内容境界とする」という
+探索を、■要約・■伝えたいことの内容境界にも同じ方針で適用する形で修正
+(`SummaryOutputSanitizer.swift`)。壊れていない通常の出力では「次の
+任意の■始まり行」がそのまま「次の必須ラベル行」と一致するため、既存の
+挙動は変えていない。回帰テスト
+(`SummaryOutputSanitizerTests.dropsRepeatedLabelBetweenRealParts`)
+をこの実FM repro を模した形で追加。
+
+### 検証
+
+`scratchpad/summary-repro`(`SUMMARY_REPRO_MAIL`/`SUMMARY_REPRO_SENTENCE_COUNTS`
+を切り替えて実FMで実行) で以下を確認:
+
+- `mail_fixture.txt`(架空、短文・非チャンク経路): `sentenceCount=2,10`を
+  同一実行で比較。`2`は変更前と同じ簡潔な要約。`10`は■要約が複数行に
+  分かれ、新規本文の具体的な内容 (資料の分かりやすさ、開催形式の確認、
+  候補日の依頼) をより多く保持しつつ、無い内容の水増しは無し (短い
+  新規本文に対して不自然に間延びしない)。3回実行、3回ともラベル反復・
+  引用混入なし。
+- `mail_fixture_long.txt`(架空、長文・非チャンク経路、
+  `SummaryInput`が1762字でチャンク閾値2000字未満): `sentenceCount=10`を
+  3回実行。**サニタイザ修正前の1回目でラベル反復 (■伝えたいこと重複)
+  を検出**、上記修正後の3回 (再修正後の1回含め計3回) はいずれもラベル
+  反復なし・■要約が新規本文のほぼ全項目 (背景・提案骨子3本・
+  スケジュール・予算・体制・リスク・セキュリティ・テスト計画・
+  サポート体制・コスト) を漏れなく列挙する詳細な内容になることを確認。
+- `mail_fixture_long_padded.txt`(架空、`TranslationChunker.chunk(input)
+  .count == 2`のmap-reduce経路): `sentenceCount=10`を1回実行、3行構造
+  ちょうど1回・引用混入なし・ラベル反復なしを確認。map-reduce経路では
+  reduce段階の入力 (`combined`、各チャンクを`summarizePlain`で1文へ
+  圧縮したもの) 自体が短いため、■要約の詳しさは非チャンク経路ほど
+  伸びない — 既存のmap-reduceアーキテクチャの制約であり、Task #148が
+  新たに悪化させたものではない (通常の`sentenceCount=2`でも同じ制約を
+  受ける)。
+
+`make test`(`SummaryOutputSanitizerTests`の新規回帰含め全green)/`make mac`
+green。`OtegamiTranslationFoundationModelsTests`(実機オンデバイスモデルへ
+の結合テスト) は本タスクでは未実行 — 上記`scratchpad/summary-repro`での
+実FM確認で代替した。実機シミュレータでの「詳しく要約」タップ→
+シート表示の目視確認は`PENDING.md`「Task #148」節参照。
+
 ## テスト
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、

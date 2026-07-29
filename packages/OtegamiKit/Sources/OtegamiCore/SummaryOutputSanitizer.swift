@@ -57,9 +57,25 @@ public enum SummaryOutputSanitizer {
         }
 
         let actionContentEnd = firstLineIndex(ofLabel: "■", in: lines, from: actionLineIndex + 1) ?? lines.count
+        // Task #148 (実FM出力で発見: `scratchpad/summary-repro`の
+        // `mail_fixture_long.txt`をTask #148の詳細版sentenceCount=10で
+        // 実行した際、■要約/■アクションの間に本来無いはずの2つ目の
+        // 「■伝えたいこと」ラベルが挟まった — 元の実装は「■伝えたいこと の
+        // 内容は次に見つかる■アクション行の直前まで全部」という前提だった
+        // ため、この割り込んだ2つ目の「■伝えたいこと」行とその内容
+        // (別バージョンの言い換え) がまるごと1つ目の「■伝えたいこと」の
+        // 内容に混入してしまっていた — Task #122が防いでいた「末尾への
+        // 反復」とは違う、パーツの*間*に挟まる反復という新しいパターン。
+        // `actionContentEnd`(この直前の行)がすでに使っている「次に現れる
+        // 任意の■始まり行」という探索を、summary/intentのcontentEndにも
+        // 同じ方針で適用する — 通常の(壊れていない)出力では次の必須
+        // ラベル行がまさにその「最初の■始まり行」なので、`intentLineIndex`/
+        // `actionLineIndex`をそのまま使っていたときと結果は変わらない。
+        let summaryContentEnd = firstLineIndex(ofLabel: "■", in: lines, from: summaryLineIndex + 1) ?? intentLineIndex
+        let intentContentEnd = firstLineIndex(ofLabel: "■", in: lines, from: intentLineIndex + 1) ?? actionLineIndex
 
-        let summaryContent = content(label: summaryLabel, labelLineIndex: summaryLineIndex, in: lines, contentEnd: intentLineIndex)
-        let intentContent = content(label: intentLabel, labelLineIndex: intentLineIndex, in: lines, contentEnd: actionLineIndex)
+        let summaryContent = content(label: summaryLabel, labelLineIndex: summaryLineIndex, in: lines, contentEnd: summaryContentEnd)
+        let intentContent = content(label: intentLabel, labelLineIndex: intentLineIndex, in: lines, contentEnd: intentContentEnd)
         let actionContent = content(label: actionLabel, labelLineIndex: actionLineIndex, in: lines, contentEnd: actionContentEnd)
 
         return """
