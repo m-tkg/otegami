@@ -352,13 +352,57 @@ public enum ThreadAssigner {
             )
         }
 
+        // Gmail 二重ラベル対策の重複排除: `messageCount`/`unreadCount`は
+        // `ThreadQuery.deduplicate(_:db:)`と同じ「同一物理メールが INBOX と
+        // All Mail に別 message 行として存在する」ケースを二重カウントしない
+        // よう、ここも同じ同一性定義 (gmailMessageId優先、無ければmessageId、
+        // 両方nilなら重複排除しない) で数える。この一括パスは初回同期/レガシー
+        // アカウントの一括バックフィル (数千スレッド規模になりうる —
+        // `assignAllUnthreaded`のdoc comment参照) からも呼ばれるため、スレッド
+        // ごとにSwiftへ取得し直す (`ThreadAssigner.recomputeAggregates(threadId:
+        // db:)`) 方式だとこのバッチ化がそもそも解決したかった「1メッセージ
+        // ごとに何往復もする」遅さへ逆戻りしかねない — 単一UPDATE文の中で
+        // SQLのwindow関数を使い、`ThreadQuery.deduplicate`と同じ「role持ちの
+        // メールボックスをAll Mail相当より優先」というタイブレークをSQL側に
+        // 再現する。`messageCount`は同一性キーの distinct 件数を数えるだけで
+        // 済む (どちらの行が「勝つ」かはcountに影響しない) が、`unreadCount`は
+        // 各グループの「勝った」行の既読状態だけを見る必要があるため
+        // (同じメールでもINBOX側とAll Mail側で`\Seen`フラグが食い違うことが
+        // ありうる) `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)`で
+        // グループ内の代表行 (rn = 1) を選び出す。`lastMessageDate`/`isPinned`
+        // は元々MAXベースで重複に対して安全なため (指示どおり) 変更しない。
+        let identityKeySQL = """
+            CASE
+                WHEN message.gmailMessageId IS NOT NULL THEN 'g:' || message.gmailMessageId
+                WHEN message.messageId IS NOT NULL THEN 'm:' || message.messageId
+                ELSE 'u:' || message.id
+            END
+            """
+        let roleBearingRankSQL = """
+            CASE WHEN mailbox.role IN ('inbox', 'sent', 'drafts', 'trash', 'junk', 'archive') THEN 1 ELSE 0 END
+            """
         for chunk in Array(touchedThreadIds).chunked(into: 400) {
             let idPlaceholders = chunk.map { _ in "?" }.joined(separator: ",")
             try db.execute(
                 sql: """
                 UPDATE thread SET
-                    messageCount = (SELECT COUNT(*) FROM message WHERE message.threadId = thread.id),
-                    unreadCount = (SELECT COUNT(*) FROM message WHERE message.threadId = thread.id AND (message.flagsRaw & \(MessageFlags.seen.rawValue)) = 0),
+                    messageCount = (
+                        SELECT COUNT(DISTINCT \(identityKeySQL))
+                        FROM message WHERE message.threadId = thread.id
+                    ),
+                    unreadCount = (
+                        SELECT COUNT(*) FROM (
+                            SELECT message.flagsRaw AS flagsRaw,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY \(identityKeySQL)
+                                       ORDER BY \(roleBearingRankSQL) DESC, message.uid DESC
+                                   ) AS rn
+                            FROM message
+                            JOIN mailbox ON mailbox.id = message.mailboxId
+                            WHERE message.threadId = thread.id
+                        )
+                        WHERE rn = 1 AND (flagsRaw & \(MessageFlags.seen.rawValue)) = 0
+                    ),
                     lastMessageDate = (SELECT MAX(COALESCE(message.date, message.internalDate)) FROM message WHERE message.threadId = thread.id),
                     isPinned = (SELECT COALESCE(MAX(message.isPinnedLocal), 0) FROM message WHERE message.threadId = thread.id)
                 WHERE thread.id IN (\(idPlaceholders))
@@ -376,16 +420,22 @@ public enum ThreadAssigner {
     /// member's `\Seen` flag: message insert/re-thread (handled internally
     /// by `assignThread`), flag toggle, and message deletion.
     public static func recomputeAggregates(threadId: Int64, db: Database) throws {
-        let messages = try MessageRecord.filter(Column("threadId") == threadId).fetchAll(db)
-        guard !messages.isEmpty else {
+        let rawMessages = try MessageRecord.filter(Column("threadId") == threadId).fetchAll(db)
+        guard !rawMessages.isEmpty else {
             try ThreadRecord.deleteOne(db, key: threadId)
             return
         }
         guard var thread = try ThreadRecord.fetchOne(db, key: threadId) else { return }
+        // `messageCount`/`unreadCount`はGmail二重ラベル対策の重複排除後の件数
+        // (`ThreadQuery.deduplicate(_:db:)` — 一括パスの `apply` 内SQLと同じ
+        // 同一性定義/タイブレークを共有する、単一の実装)。`lastMessageDate`/
+        // `isPinned`はMAXベースで重複に対してそもそも安全なため、指示どおり
+        // 生の`rawMessages`のまま計算する。
+        let messages = try ThreadQuery.deduplicate(rawMessages, db: db)
         thread.messageCount = messages.count
         thread.unreadCount = messages.filter { !$0.flags.contains(.seen) }.count
-        thread.lastMessageDate = messages.compactMap { $0.date ?? $0.internalDate }.max()
-        thread.isPinned = messages.contains { $0.isPinnedLocal }
+        thread.lastMessageDate = rawMessages.compactMap { $0.date ?? $0.internalDate }.max()
+        thread.isPinned = rawMessages.contains { $0.isPinnedLocal }
         try thread.update(db)
     }
 

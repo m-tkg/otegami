@@ -1620,3 +1620,92 @@ SPECIAL-USE `\Trash` を持つ Gmail の `[Gmail]/Trash` に加えて、同じ
   はこのセッションでは未実施** — 実機で確認するポイント: ハンバーガー
   メニューの「ゴミ箱」セクションを展開し、Gmail アカウントの行が1行に
   なっていること。
+
+## スレッド詳細画面で Gmail のメッセージが2重表示される実機バグの調査と修正
+
+（チケット番号は明示されていないため付番なし。#150「スレッド一覧で同じ
+メールが2個ずつ表示される」の調査時には見つからなかった行複製バグの、
+実際の所在 — 一覧画面ではなくスレッド詳細画面のアコーディオンだった、
+という位置づけ。#152 の targeted resync 修正とは無関係。）
+
+### 報告
+
+実機報告 (iPad、Gmail アカウント、最新ビルド): スレッド詳細画面の
+アコーディオンを開くと、同じ送信者・同じ日時のメッセージが1通ずつでは
+なく2通ずつ (同じ内容が連続して2回) 表示される。
+
+### 原因
+
+Gmail の IMAP モデル (二重ラベリング) では、1通の物理メールが所属する
+特別用途フォルダ (INBOX 等) だけでなく必ず All Mail (`role == .all`) にも
+同時に存在する。このアプリはメールボックスごとに独立して同期するため、
+同じ物理メールが `(mailboxId, uid)` の異なる2行の`message`レコードとして
+ローカル DB に入る — 両者は同じ`gmailMessageId`(Gmail の`X-GM-MSGID`、
+`message_on_gmailMessageId`インデックス済み、`AppDatabase.swift:812`)を
+持つが`mailboxId`が異なる。Task #141 で「すべてのメール」(All Mail) の
+同期・参照範囲を広げたことで、この既存の構造がスレッド詳細画面で初めて
+可視化された。#150 の調査でスレッド*一覧*クエリ (`ThreadQuery.request`/
+`unifiedInboxRequest`他) には行複製が無いと確認済みだったのは、この一覧
+クエリが`thread`テーブルを`EXISTS`述語1個で1行1スレッドとして返す構造
+だから (複製の余地が構造的に無い) — 一方スレッド*詳細*の
+`ThreadQuery.messages(threadId:db:)`は`message`テーブルを`threadId`で
+素直に`fetchAll`するだけで、同じスレッドに属するINBOX行・All Mail行の
+両方をそのまま返していた。これが今回見つかった、#150 とは別経路の複製源。
+
+### 修正
+
+`packages/OtegamiKit/Sources/OtegamiStore/`
+
+1. **`ThreadQuery.deduplicate(_:db:)`** (新規、`ThreadQuery.swift`):
+   同一性キーは`gmailMessageId`優先、無ければ`messageId`— 両方`nil`の
+   行同士は同一性の確証が無いため一切重複排除しない。同一キーが複数行に
+   現れた場合は role を持つメールボックス (inbox/sent/drafts/trash/junk/
+   archive) の行を All Mail (`.all`)/無role の行より優先 (`GmailArchiveFilter`
+   が他所で使っている「role優先」という考え方と同じ)。それでも複数残れば
+   `uid`の大きい方 → 入力順で先に出た方、という決め打ちのタイブレーク
+   (意味は「決定的に1つ選ぶ」以上ではない)。入力の並び順は保持する。
+   `ThreadQuery.messages(threadId:db:)`はこのdedupを通してから返すよう
+   変更 — シグネチャは変更なし。
+2. **`ThreadAssigner.recomputeAggregates(threadId:db:)`**: `messageCount`/
+   `unreadCount`を上記と同じ`deduplicate(_:db:)`を通した件数で計算する
+   よう変更 (`lastMessageDate`/`isPinned`はMAXベースで元々重複に対して
+   安全なため、指示通り生の行のまま)。
+3. **`ThreadAssigner`の一括集計パス (`assignAllUnthreaded`が使う
+   `apply(_:accountId:db:)`内のUPDATE文)**: 初回同期/レガシーアカウントの
+   一括バックフィルでは数千スレッド規模になりうる (このバッチ化自体が
+   「メッセージ1件ごとに何往復もする」旧実装の遅さを解消するために存在
+   する — スレッドごとにSwiftへ取得し直す方式は同じ遅さへの逆戻りになる
+   ため不採用) — 単一UPDATE文の中でSQLの`ROW_NUMBER() OVER (PARTITION
+   BY ... ORDER BY ...)`を使い、同じ同一性キー/role優先のタイブレークを
+   SQL側に再現した。`messageCount`は同一性キーの`COUNT(DISTINCT ...)`
+   だけで済む(勝者がどちらでもカウントには影響しない)が、`unreadCount`は
+   各グループの「勝った」行(role優先→uid降順で1位)の既読状態だけを見る
+   必要がある — 同じメールでもINBOX側とAll Mail側で`\Seen`フラグが
+   食い違うことがありうるため。
+4. `ThreadDetailView.swift`のスレッド要約 (#153, `668386c`) は`messages:
+   [MessageRecord]`という同じ`ThreadQuery.messages`/`messagesObservation`
+   経由の状態を読むだけなので、コード変更無しで自動的に修正の恩恵を受ける
+   ことを確認した (`ThreadDetailView.swift:119`の`@State private var
+   messages`、`ThreadQuery.messagesObservation(threadId:)`/
+   `loadSingleMessage`以外の代入経路が無いことを読んで確認)。
+
+### 検証
+
+- `packages/OtegamiKit/Tests/OtegamiStoreTests/ThreadDuplicateMessageDedupTests.swift`
+  (新規、5件): INBOX/All Mail重複を`messages(threadId:db:)`が1行に畳み
+  INBOX側が残ること、`recomputeAggregates(threadId:db:)`が畳んだ件数を
+  数えること、`assignAllUnthreaded`経由の一括SQLパスも同じ件数・
+  「勝った行」の既読状態を返すこと、`gmailMessageId`の無い非Gmailスレッド
+  (メッセージIDが別々) には一切影響しないこと、両方 role 無し (All Mail
+  同士) という防御的ケースでもクラッシュせず`uid`の大きい方を決定的に
+  選ぶこと — をそれぞれ検証。`make test`green (既知でこのタスクと無関係
+  な`MessageBuilderTests`の日本語ラウンドトリップ1件のみ赤、それ以外は
+  全件成功)。`make mac`もBUILD SUCCEEDED。
+- **実機スクショ (`scripts/verify-screen.sh duplicate-thread-detail`、
+  新設シナリオ)**: #151 で追加済みの fake Gmail アカウントフィクスチャ
+  (`AppEnvironment.swift`、INBOX/All Mailに同じ`gmailMessageId`で重複した
+  メッセージを持つスレッド)を`OTEGAMI_UITEST_OPEN_GMAIL_DUPLICATE_THREAD_DIRECTLY`
+  でタップ無しで直接開き、実際にシミュレータで撮影して確認 — アコーディオン
+  に「Otegami QA」の行が1つだけ表示され、2重表示になっていないことを
+  目視確認済み (本文取得失敗の赤文字は fake アカウントに実 OAuth トークンが
+  無いための無関係な表示)。

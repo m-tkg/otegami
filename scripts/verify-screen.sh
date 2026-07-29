@@ -234,6 +234,15 @@
 #                                       アーカイブ済み」メッセージを直接
 #                                       開く — `MessageHeaderCompactView`
 #                                       の`ArchivedBadge`表示の確認用。
+#   duplicate-thread-detail              Gmail 二重ラベルによるスレッド内
+#                                       メッセージ重複バグ (実機報告):
+#                                       `archived-message-detail`と同じ
+#                                       fake Gmail アカウントの「INBOX/All
+#                                       Mail の両方に同じ`gmailMessageId`で
+#                                       重複したメッセージ」スレッドを直接
+#                                       開く — アコーディオンに1通だけ
+#                                       表示され、2通に重複していないことの
+#                                       確認用。
 #   settings                            設定画面 (SettingsSheetView)
 #   menu                                 ハンバーガーメニュー (FolderListSheet
 #                                       — 左下floatingSettingsButtonの
@@ -545,6 +554,16 @@ case "$SCENARIO" in
     # `MessageHeaderCompactView`の`ArchivedBadge`表示の確認用。
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1" "OTEGAMI_UITEST_OPEN_GMAIL_ARCHIVED_MESSAGE_DIRECTLY=1")
     default_out="archived-message-detail.png"
+    ;;
+  duplicate-thread-detail)
+    # Gmail 二重ラベルによるスレッド内メッセージ重複バグ (実機報告):
+    # 同じfake Gmailアカウントフィクスチャの「INBOX/All Mailの両方に同じ
+    # gmailMessageIdで重複したメッセージ」スレッド(`capturedDuplicateThreadId`、
+    # `AppEnvironment.swift`)をタップ無しで直接開く — `ThreadQuery
+    # .messages(threadId:db:)`の重複排除後、アコーディオンに1通だけ表示
+    # されることの確認用。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1" "OTEGAMI_UITEST_OPEN_GMAIL_DUPLICATE_THREAD_DIRECTLY=1")
+    default_out="duplicate-thread-detail.png"
     ;;
   account-settings)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")

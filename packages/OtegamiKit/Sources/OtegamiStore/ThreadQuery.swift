@@ -414,13 +414,123 @@ public enum ThreadQuery {
         ValueObservation.tracking { db in try unifiedInboxFlatSummaries(accountIds: accountIds, role: role, limit: limit, unreadOnly: unreadOnly, pinnedOnly: pinnedOnly, db: db) }
     }
 
-    /// Every message in `threadId`, oldest first — what `ThreadDetailView`
-    /// lays out vertically, collapsing everything but the newest.
+    /// Every message in `threadId`, oldest first, deduplicated — what
+    /// `ThreadDetailView` lays out vertically, collapsing everything but the
+    /// newest. See `deduplicate(_:db:)`'s doc comment for why a Gmail thread
+    /// can otherwise show the same physical email twice (real-device report:
+    /// Gmail's dual mailbox membership, INBOX + All Mail, each synced as its
+    /// own `message` row sharing one `gmailMessageId`).
     public static func messages(threadId: Int64, db: Database) throws -> [MessageRecord] {
-        try MessageRecord
+        let raw = try MessageRecord
             .filter(Column("threadId") == threadId)
             .order(Column("internalDate"), Column("uid"))
             .fetchAll(db)
+        return try deduplicate(raw, db: db)
+    }
+
+    /// Collapses rows that represent the *same physical message* synced
+    /// twice under different `mailboxId`s — Gmail's dual-labeling model
+    /// means every message lives in All Mail (`mailbox.role == .all`) *and*
+    /// in whichever other special-use folder(s) apply (e.g. INBOX), and this
+    /// app syncs each membership as its own `message` row. Both rows share
+    /// the same `gmailMessageId` (`X-GM-MSGID`, already indexed —
+    /// `message_on_gmailMessageId` in `AppDatabase.swift`) but different
+    /// `mailboxId`, which without this step means a thread's accordion (and
+    /// its message/unread counts, see `ThreadAssigner`) shows/counts the
+    /// same email twice.
+    ///
+    /// Identity for dedup purposes: `gmailMessageId` when non-`nil` (the
+    /// reliable Gmail-issued per-account-unique id — same reasoning
+    /// `GmailArchiveFilter`'s doc comment gives for preferring it over the
+    /// RFC 822 `Message-ID` header), else `messageId` (the RFC 822 header
+    /// string) when *that* is non-`nil`. Rows where **both** are `nil` are
+    /// never deduplicated against anything (including each other) — there's
+    /// no safe signal that two such rows are the same message, so treating
+    /// them as duplicates risks silently dropping genuinely distinct mail.
+    ///
+    /// When two or more rows share a non-`nil` identity key, this keeps
+    /// exactly one: prefer a row sitting in a mailbox with a real role
+    /// (`inbox`/`sent`/`drafts`/`trash`/`junk`/`archive`) over one in
+    /// Gmail's catch-all All Mail (role `.all`, or the absence of any
+    /// recognized role) — a role-bearing folder is the more natural one to
+    /// display/act on, mirroring the "role over All Mail" preference
+    /// `GmailArchiveFilter` already applies elsewhere. If more than one
+    /// role-bearing (or more than one non-role-bearing) candidate remains —
+    /// not expected in practice, but handled defensively rather than
+    /// crashing — the tie-break is: greater `uid` wins; if `uid` also ties,
+    /// the row encountered first (in the input list's order) wins. This
+    /// tie-break has no meaning beyond "pick one deterministically" — don't
+    /// depend on it as behavior.
+    ///
+    /// Preserves the input list's relative order: surviving rows keep the
+    /// position of their first occurrence, so callers that already sorted
+    /// (e.g. `messages(threadId:db:)`'s `internalDate`, `uid` order) don't
+    /// need to re-sort afterward.
+    static func deduplicate(_ messages: [MessageRecord], db: Database) throws -> [MessageRecord] {
+        guard messages.count > 1 else { return messages }
+
+        let mailboxIds = Set(messages.map(\.mailboxId))
+        let roleByMailboxId: [Int64: MailboxRoleRecord] = try Dictionary(
+            uniqueKeysWithValues: MailboxRecord
+                .filter(mailboxIds.contains(Column("id")))
+                .fetchAll(db)
+                .compactMap { mailbox in mailbox.id.map { ($0, mailbox.role) } }
+        )
+
+        func isRoleBearing(_ mailboxId: Int64) -> Bool {
+            switch roleByMailboxId[mailboxId] {
+            case .some(.inbox), .some(.sent), .some(.drafts), .some(.trash), .some(.junk), .some(.archive):
+                return true
+            case .some(.all), .some(.none), .some(.flagged), Optional<MailboxRoleRecord>.none:
+                return false
+            }
+        }
+
+        func identityKey(_ message: MessageRecord) -> String? {
+            if let gmailMessageId = message.gmailMessageId { return "gmail:\(gmailMessageId)" }
+            if let messageId = message.messageId { return "msgid:\(messageId)" }
+            return nil
+        }
+
+        // Pass 1: decide, per identity key, which row's `id` survives.
+        var winnerIdForKey: [String: Int64] = [:]
+        for message in messages {
+            guard let key = identityKey(message), let id = message.id else { continue }
+            guard let existingId = winnerIdForKey[key] else {
+                winnerIdForKey[key] = id
+                continue
+            }
+            guard let existing = messages.first(where: { $0.id == existingId }) else {
+                winnerIdForKey[key] = id
+                continue
+            }
+            let existingPreferred = isRoleBearing(existing.mailboxId)
+            let candidatePreferred = isRoleBearing(message.mailboxId)
+            if candidatePreferred != existingPreferred {
+                if candidatePreferred { winnerIdForKey[key] = id }
+            } else if message.uid > existing.uid {
+                winnerIdForKey[key] = id
+            }
+        }
+
+        // Pass 2: filter the original list, keeping every key-less row (or a
+        // keyed row that was never registered above because its own `id`
+        // was somehow `nil` — always true in practice since these are
+        // records fetched back from the database, but kept here rather
+        // than risk silently dropping a row) and exactly the chosen winner
+        // for each key — in the input's order.
+        var result: [MessageRecord] = []
+        result.reserveCapacity(messages.count)
+        for message in messages {
+            guard let key = identityKey(message), let id = message.id else {
+                result.append(message)
+                continue
+            }
+            if winnerIdForKey[key] == id {
+                result.append(message)
+            }
+        }
+        return result
     }
 
     public static func messagesObservation(threadId: Int64) -> ValueObservation<ValueReducers.Fetch<[MessageRecord]>> {

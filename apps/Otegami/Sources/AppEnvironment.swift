@@ -529,6 +529,13 @@ final class AppEnvironment {
             // itself (same two-phase-init/actor-isolation reasoning as the
             // other `captured*ThreadId` locals in this file).
             var capturedArchivedThreadId: Int64?
+            // Gmail 二重ラベルによるスレッド内メッセージ重複バグの検証用
+            // (実機報告: 同じメールが INBOX と All Mail の両方に同期され、
+            // スレッド詳細画面で二重表示される) — 下で挿入する`inboxThread`
+            // (INBOX/All Mail に同じ`gmailMessageId`で重複した2行) を
+            // `OTEGAMI_UITEST_OPEN_GMAIL_DUPLICATE_THREAD_DIRECTLY`が立って
+            // いれば`capturedArchivedThreadId`と同じ仕組みで直接開く。
+            var capturedDuplicateThreadId: Int64?
             try? database.dbWriter.write { db in
                 // Task #52 追記: 同じ email の重複挿入を避ける — 元は
                 // `AccountEditView`のGmail専用「アバター診断」リンクの
@@ -607,6 +614,7 @@ final class AppEnvironment {
                     threadId: inboxThread.id
                 )
                 try allMailDuplicate.insert(db)
+                capturedDuplicateThreadId = inboxThread.id
             }
             // Task #151 (「アーカイブ済みの可視化」検証): `scripts/
             // verify-screen.sh archived-message-detail`向け — タップ無しで
@@ -616,6 +624,8 @@ final class AppEnvironment {
             // .task`) をそのまま再利用 — 新規の画面遷移コードは不要。
             if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_OPEN_GMAIL_ARCHIVED_MESSAGE_DIRECTLY"] == "1" {
                 self.uitestDirectOpenThreadId = capturedArchivedThreadId
+            } else if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_OPEN_GMAIL_DUPLICATE_THREAD_DIRECTLY"] == "1" {
+                self.uitestDirectOpenThreadId = capturedDuplicateThreadId
             }
         }
 
