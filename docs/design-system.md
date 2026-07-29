@@ -5572,3 +5572,86 @@ Test (UITest)) が直接並んでいること、見出し右端にシェブロ�
      展開/折りたたみされること。
   3) 展開したセクション内に「すべてのX」のような専用行が無く、各
      アカウントの行が直接並んでいること。
+
+## Task #115: ツールバーからアーカイブ後「メッセージが見つかりません」が数秒表示される
+
+実機報告: メール本文画面 (`ThreadDetailView`) のフッターツールバーから
+アーカイブすると、「メッセージが見つかりません」の空状態
+(`ContentUnavailableView`、`body`の`.overlay`) が数秒表示されてから
+一覧/次のメールへ遷移する。この数秒は不要。
+
+### 原因
+
+`archiveThread()`/`junkThread()`/`deleteThread()` (すべて同じ形):
+
+```swift
+try await environment.database.dbWriter.write { db in
+    // ローカル DB からメッセージ行を削除・ThreadAssigner.recomputeAggregates
+}
+await replaySoon()       // ← ネットワーク I/O (opQueue の replay)
+notifyThreadRemoved()    // ← 遷移 (onThreadRemoved / dismiss())
+```
+
+ローカル DB からの削除は`dbWriter.write`が返った時点で確定済みで、その
+瞬間`messages`を購読している`ThreadQuery.messagesObservation`(または
+`loadSingleMessage`の`ValueObservation`) が空配列を配信し、空状態
+placeholder がすぐに描画される。ところが実際の画面遷移を担う
+`notifyThreadRemoved()`(→`MailScreenView.handleThreadRemoved`が「次の
+メールへ進む」設定を解決してpush/pop) は、その前に置かれた
+`await replaySoon()`(=IMAP へ実際に opQueue を replay するネットワーク
+往復) の完了を待ってから初めて呼ばれていた。ローカル削除は一瞬でも、
+`replaySoon()`は実機のネットワーク条件次第で数秒かかることがあり、その
+間ずっと空状態 placeholder が見えたままになっていた。
+
+### 修正
+
+`notifyThreadRemoved()`は`replaySoon()`の結果に一切依存しない (ローカル
+DB の反映だけで完結する) ので、3操作 (`archiveThread`/`junkThread`/
+`deleteThread`) すべてで呼び出し順序を入れ替え、ローカル書き込みが確定
+した直後に`notifyThreadRemoved()`を呼び、`replaySoon()`はその後 (同じ
+`Task`の続きとして、遷移をブロックせずに) 実行するようにした
+(`apps/Otegami/Sources/Features/ThreadDetail/ThreadDetailView.swift`)。
+`Task { }`は`.task`修飾子と違って画面が閉じても自動キャンセルされない
+ので、遷移後も`replaySoon()`自体は最後まで実行され、サーバへの反映は
+これまでどおり行われる。
+
+これは指示にあった設計 (「自分の操作による消滅は placeholder を経由
+しない — 操作ハンドラの完了時点で直接 onThreadRemoved 経路をトリガー
+し即時遷移。観測の空検出 → placeholder は外部要因のフォールバックとし
+て残す」) を、既存のコード構造 (アーカイブ/削除/迷惑メールはもともと
+ハンドラの最後で明示的に`notifyThreadRemoved()`を呼んでいた) に対する
+最小差分で実現したもの — 空状態 placeholder 自体
+(`messages.isEmpty`の`.overlay`) は変更していないので、他クライアント
+での削除など、この画面のハンドラを経由しない消滅が起きた場合のフォー
+ルバックとして引き続き機能する。
+
+### 回帰確認
+
+`targetMessageRecords(threadId:singleMessageId:db:)`経由で対象を絞る
+仕組み (フラットモード/グループモード共通) や、
+`MessagePostActionSettingsStore`が解決する「次のメールへ進む」設定の
+分岐 (`MailScreenView.handleThreadRemoved`) 自体には触れていない —
+3操作それぞれの`notifyThreadRemoved()`呼び出し位置を動かしただけなの
+で、削除・迷惑メール・スレッド (グループ) 表示モードのいずれでも同じ
+効果になる。
+
+### 検証
+
+`make test`(既知の無関係flake — `MessageBuilderTests`日本語ラウンド
+トリップ — 以外は緑)・`make mac`・`make ios`とも成功。
+
+**未検証**: この修正はツールバーの実タップ (アーカイブ/削除/迷惑メール
+ボタン) と実際のネットワーク往復 (`replaySoon()`) の両方に依存する挙動
+で、`docs/verify.md`の既知不調 (2) によりこの開発機のシミュレータでは
+タップ経路の検証ができない。**実機確認ポイント**:
+1) メール本文画面のフッターツールバーから「アーカイブ」をタップし、
+   「メッセージが見つかりません」が (一瞬でも) 目に見える形で表示され
+   ず、即座に一覧または次のメールへ遷移すること。
+2) 「削除」「迷惑メールにする」でも同様に即座に遷移すること。
+3) 「次のメールへ進む」設定 (削除/アーカイブ時の挙動) の各選択肢
+   (次のメールを開く/一覧に戻る) で遷移先が正しいこと。
+4) スレッド (グループ) 表示モード ON の複数メッセージスレッドでも同じ
+   即時遷移になること。
+5) 遅いネットワーク環境でも (アーカイブ自体は即座に反映されるはずなの
+   で) サーバ側に最終的にアーカイブ/削除/迷惑メール操作が反映される
+   こと (`replaySoon()`が遷移後もバックグラウンドで完走することの確認)。
