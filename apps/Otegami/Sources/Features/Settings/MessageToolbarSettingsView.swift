@@ -26,6 +26,14 @@ import SwiftUI
 struct MessageToolbarSettingsView: View {
     @State private var items: [MessageToolbarItemSetting] = MessageToolbarSettingsStore.loadItems()
 
+    /// Task #113 (2) (実機フィードバック「ボタンのラベルを表示」トグル):
+    /// `@AppStorage`で直接 — `MessageDetailFooterToolbar`の`rawOrder`
+    /// (`@AppStorage(MessageToolbarSettingsStore.orderKey)`) と同じ理由で、
+    /// このビュー自身は読み取るだけ (書き込みは`Toggle`のバインディングが
+    /// 直接`UserDefaults`へ行う) なので他の状態のような`persist(_:)`経由の
+    /// 手動保存は不要。
+    @AppStorage(MessageToolbarSettingsStore.showsLabelsKey) private var showsLabels = MessageToolbarSettingsStore.defaultShowsLabels
+
     /// 「その他」を除いた6アクション — 表示/非表示トグル・ドラッグ並び替え
     /// の対象。ストア側の不変条件 (`MessageToolbarPreferencesCoding`) により
     /// `items`の末尾は常に`more`なので、単純に末尾を除けばよい。
@@ -35,6 +43,18 @@ struct MessageToolbarSettingsView: View {
 
     var body: some View {
         List {
+            // Task #113 (2): 表示/非表示・並び替えのセクションより上に置く —
+            // アイコン一覧の見た目そのもの (ラベルの有無) を決める設定な
+            // ので、個別アイコンのトグル・並び替えより先に目に入る位置。
+            Section {
+                Toggle(isOn: $showsLabels) {
+                    Text("ボタンのラベルを表示")
+                }
+                .accessibilityIdentifier("messageToolbarSettings.showsLabels")
+            } footer: {
+                Text("オフにすると、ツールバーのボタンがアイコンだけになり、高さも詰まります。")
+            }
+
             Section {
                 ForEach(reorderableItems) { item in
                     MessageToolbarSettingsRow(item: item, onToggleVisibility: { toggleVisibility(item.action, isVisible: $0) })

@@ -64,7 +64,11 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
         AvatarSourceSettingsStore.showCompanyLogoKey: AvatarSourceSettingsStore.defaultShowCompanyLogo,
         TranslationSettingsStore.autoTranslateEnglishKey: TranslationSettingsStore.defaultAutoTranslateEnglish,
         TranslationSettingsStore.showListSummaryKey: false,
-        AIFeaturesSettingsStore.enabledKey: AIFeaturesSettingsStore.defaultEnabled
+        AIFeaturesSettingsStore.enabledKey: AIFeaturesSettingsStore.defaultEnabled,
+        // Task #113 (2): 「ボタンのラベルを表示」トグル — 他のツールバー
+        // カスタマイズ設定 (`stringDefaults`の`MessageToolbarSettingsStore
+        // .orderKey`) と同じ、見た目の好みを同期する対象。
+        MessageToolbarSettingsStore.showsLabelsKey: MessageToolbarSettingsStore.defaultShowsLabels
     ]
 
     /// Every synced `String`-valued setting (a `RawRepresentable` enum's

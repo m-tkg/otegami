@@ -3651,6 +3651,26 @@
           }
         }
       }
+    },
+    "ボタンのラベルを表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Button Labels"
+          }
+        }
+      }
+    },
+    "オフにすると、ツールバーのボタンがアイコンだけになり、高さも詰まります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When off, toolbar buttons show icons only, and the bar becomes more compact."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -139,3 +139,25 @@ public enum MessageToolbarPreferencesCoding {
         items.filter { !$0.isVisible && $0.id != pinnedTrailingID }.map(\.id)
     }
 }
+
+/// Task #113 (2) (実機フィードバック「ボタンのラベルを表示」トグル): pure
+/// layout policy for whether the footer toolbar's icon+label buttons
+/// (`MessageDetailFooterToolbar.toolbarIcon`/`toolbarAIIcon`, both
+/// platforms) render their title `Text` alongside the icon, or collapse to
+/// icon-only. Deliberately not `UserDefaults` access — that stays a plain
+/// `Bool` key on the app-target `MessageToolbarSettingsStore`, same as
+/// every other simple on/off preference in that file (no parsing/migration
+/// needed for a fresh key with no legacy format) — this is just the one
+/// bit of shared *rendering* math (the icon/label gap) worth covering with
+/// `swift test`, since `apps/Otegami` itself has no unit test target (only
+/// XCUITest, which needs a simulator — see `docs/verify.md`).
+public enum MessageToolbarIconLayout {
+    /// The `VStack` spacing between a toolbar icon and its label. `0` (not
+    /// merely omitting the `Text`) once labels are off, so turning labels
+    /// off also closes the gap they left behind — the Task #113 spec's
+    /// "高さも詰める" (compact the row's height too, not just hide the
+    /// text) requirement.
+    public static func iconLabelSpacing(showsLabels: Bool) -> Double {
+        showsLabels ? 2 : 0
+    }
+}

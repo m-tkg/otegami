@@ -168,6 +168,16 @@ struct MessageToolbarItemSetting: Identifiable, Equatable, Sendable {
 enum MessageToolbarSettingsStore {
     static let orderKey = "messageToolbar.order"
 
+    /// Task #113 (2) (実機フィードバック「ボタンのラベルを表示」トグル):
+    /// off にすると`MessageDetailFooterToolbar`のツールバーアイコンが
+    /// アイコンのみになる (`Text`自体を出さず、`MessageToolbarIconLayout
+    /// .iconLabelSpacing`で高さも詰める)。他の単純な on/off 設定と同じ
+    /// 「素の`UserDefaults`キー、複雑なロジックは無し」方針 — 新規キーで
+    /// 旧形式からの移行も不要 (`orderKey`のような後方互換の話が無い)。
+    /// 既定は ON: 既存ユーザーの見た目を変えない。
+    static let showsLabelsKey = "messageToolbar.showsLabels"
+    static let defaultShowsLabels = true
+
     // Task #88: 要約/翻訳は「返信/転送/検索/情報」という既存メッセージ操作
     // 群のすぐ後ろに置く — フローティング時代の見た目の並び (要約が上、
     // 翻訳がその下) をそのまま左→右の順序に対応させた。2026-07-29:

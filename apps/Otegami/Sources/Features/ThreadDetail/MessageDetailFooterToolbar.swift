@@ -1,4 +1,5 @@
 import SwiftUI
+import OtegamiCore
 import OtegamiStore
 import TranslationEngine
 
@@ -80,6 +81,12 @@ struct MessageDetailFooterToolbar: View {
     // `MessageToolbarSettingsStore.saveItems(_:)`で同じキーに書き込んだ
     // 瞬間、シートを閉じずともこのツールバーが即座に切り替わる。
     @AppStorage(MessageToolbarSettingsStore.orderKey) private var rawOrder: String = ""
+
+    // Task #113 (2) (実機フィードバック「ボタンのラベルを表示」トグル):
+    // `rawOrder`と同じ理由で`@AppStorage` — `MessageToolbarSettingsView`が
+    // このキーへ書き込んだ瞬間、シートを閉じずともこのツールバーが即座に
+    // アイコンのみ/アイコン+ラベルを切り替える。
+    @AppStorage(MessageToolbarSettingsStore.showsLabelsKey) private var showsLabels = MessageToolbarSettingsStore.defaultShowsLabels
 
     private var items: [MessageToolbarItemSetting] { MessageToolbarSettingsStore.items(fromRawValue: rawOrder) }
 
@@ -491,7 +498,23 @@ struct MessageDetailFooterToolbar: View {
                     .accessibilityIdentifier("messageDetail.toolbar.more.hidden.draftEnglishReply")
             }
         case .delete:
-            Button(role: .destructive) { onDelete() } label: { Label(action.title, systemImage: action.systemImage) }
+            // 実機フィードバック (Task #113 (1)):「ツールバーをカスタマイズ」
+            // ショートカット (`moreMenuButton`末尾固定) が、状態によって
+            // メニュー内の位置がずれる報告があった。原因は`role:
+            // .destructive`— iOS は`Menu`内の破壊的操作ボタンをコード上の
+            // 位置に関わらず自動的に他の項目より下 (メニュー本当の最後尾)
+            // へ移動する。「削除」がここ (「その他」入り、既定でここに
+            // いる) に来ると、コード上その後ろにある「ツールバーを
+            // カスタマイズ」ボタンより「削除」の方が下に描画されてしまい
+            // (「オフ項目数」= ここに「削除」を含むかどうかで発生有無が
+            // 変わる、というのがまさに実機報告の「状態で順序が変わる」の
+            // 実体)、「カスタマイズ」が最下部でなくなる。`role:
+            // .destructive`を外し、赤い見た目だけを`.tint`で再現すること
+            // で、この自動並び替えの対象から外し、コード上の並び (=常に
+            // `hiddenActionMenuItems`の末尾) がそのまま最終的な見た目の
+            // 順序になるようにした。
+            Button { onDelete() } label: { Label(action.title, systemImage: action.systemImage) }
+                .tint(OtegamiColor.destructive)
                 .accessibilityIdentifier("messageDetail.toolbar.more.hidden.delete")
         case .viewSource:
             Button { onViewSource() } label: { Label(action.title, systemImage: action.systemImage) }
@@ -531,7 +554,12 @@ struct MessageDetailFooterToolbar: View {
         systemImage: String? = nil,
         tint: Color = OtegamiColor.accent
     ) -> some View {
-        VStack(spacing: 2) {
+        // Task #113 (2): `showsLabels`が off の間は`Text`自体を出さない
+        // (アイコンのみ) — `VStack`の`spacing`も`MessageToolbarIconLayout
+        // .iconLabelSpacing`経由で0に詰め、ラベルが無くなった分の余白が
+        // 残らないようにする (`OtegamiCore`側のdoc comment「高さも詰める」
+        // 参照)。
+        VStack(spacing: CGFloat(MessageToolbarIconLayout.iconLabelSpacing(showsLabels: showsLabels))) {
             Image(systemName: systemImage ?? action.systemImage)
                 .font(.system(size: 18))
             // `.lineLimit(1)`: 横スクロールへのフォールバック
@@ -543,9 +571,11 @@ struct MessageDetailFooterToolbar: View {
             // 続ける。1行固定にすることで理想幅がラベルの実サイズを正しく
             // 反映するようになり、収まらない場合に`scrollableRow`へ確実に
             // フォールバックする。
-            Text(title ?? action.title)
-                .font(OtegamiFont.badge())
-                .lineLimit(1)
+            if showsLabels {
+                Text(title ?? action.title)
+                    .font(OtegamiFont.badge())
+                    .lineLimit(1)
+            }
         }
         .foregroundStyle(tint)
         .otegamiMinimumTappable()
@@ -585,7 +615,9 @@ struct MessageDetailFooterToolbar: View {
 
     @ViewBuilder
     private func toolbarAIIcon(_ action: MessageToolbarAction, isLoading: Bool, tone: AIToolbarTone) -> some View {
-        VStack(spacing: 2) {
+        // Task #113 (2): `toolbarIcon(_:title:systemImage:tint:)`と同じ
+        // ラベル表示/非表示の扱い。
+        VStack(spacing: CGFloat(MessageToolbarIconLayout.iconLabelSpacing(showsLabels: showsLabels))) {
             if isLoading {
                 ProgressView()
                     .accessibilityIdentifier("messageDetail.toolbar.\(action.rawValue).loading")
@@ -597,9 +629,11 @@ struct MessageDetailFooterToolbar: View {
             // 同名の doc comment と同じ理由 — 要約/翻訳も`fixedRow`/
             // `scrollableRow`の判定対象なので、ここだけラベルの折り返しを
             // 許すと横スクロールへ切り替わるべき場面を見逃す。
-            Text(action.title)
-                .font(OtegamiFont.badge())
-                .lineLimit(1)
+            if showsLabels {
+                Text(action.title)
+                    .font(OtegamiFont.badge())
+                    .lineLimit(1)
+            }
         }
         .foregroundStyle(tone.color)
         .otegamiMinimumTappable()

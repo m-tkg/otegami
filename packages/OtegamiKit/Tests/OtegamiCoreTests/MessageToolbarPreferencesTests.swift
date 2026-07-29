@@ -210,3 +210,17 @@ struct MessageToolbarPreferencesTests {
         #expect(items.first { $0.id == "archive" }?.isVisible == true)
     }
 }
+
+/// Task #113 (2) ("ボタンのラベルを表示" トグル).
+@Suite("MessageToolbarIconLayout")
+struct MessageToolbarIconLayoutTests {
+    @Test("labels on keeps the icon/label gap")
+    func labelsOnKeepsGap() {
+        #expect(MessageToolbarIconLayout.iconLabelSpacing(showsLabels: true) == 2)
+    }
+
+    @Test("labels off closes the gap, not just the text")
+    func labelsOffClosesGap() {
+        #expect(MessageToolbarIconLayout.iconLabelSpacing(showsLabels: false) == 0)
+    }
+}
