@@ -3,12 +3,13 @@ import XCTest
 /// design-phase-3 verification (1i/1k): the translation bar actually
 /// translating a real English seed message end-to-end on-device (Apple
 /// Intelligence via the host Mac backing the Simulator — `docs/translation.md`'s
-/// "シミュレータでの Foundation Models" note), and the "英語で返信を下書き"
-/// entry point opening the Composer with its translate toggle pre-enabled.
-/// Builds on top of whatever `OtegamiM4UnifiedInboxUITests`/earlier phases
-/// already established (test1 account added, seed messages present) — same
-/// "each phase is its own `-only-testing:` invocation against the same
-/// simulator install" pattern as M3+ (`docs/verify.md`).
+/// "シミュレータでの Foundation Models" note). Builds on top of whatever
+/// `OtegamiM4UnifiedInboxUITests`/earlier phases already established (test1
+/// account added, seed messages present) — same "each phase is its own
+/// `-only-testing:` invocation against the same simulator install" pattern
+/// as M3+ (`docs/verify.md`). The "英語で返信を下書き" entry point this file
+/// used to also cover (`OtegamiTranslationDraftEnglishReplyUITests`) was
+/// removed in Task #139 along with the feature itself.
 final class OtegamiTranslationSetupUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -127,55 +128,13 @@ final class OtegamiTranslationBarUITests: XCTestCase {
     }
 }
 
-final class OtegamiTranslationDraftEnglishReplyUITests: XCTestCase {
-    override func setUpWithError() throws {
-        continueAfterFailure = false
-    }
-
-    func testDraftEnglishReplyOpensComposerWithTranslateToggleOn() throws {
-        let app = XCUIApplication()
-        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
-        app.launch()
-
-        let list = app.collectionViews["messageList.list"]
-        let row = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "Quarterly report and next steps")).firstMatch
-        XCTAssertTrue(waitForElementScrollingIfNeeded(row, in: app), "Expected the English seed message row to appear")
-        row.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
-        // 新画面構成: "英語で返信を下書き" moved into `ThreadDetailView`'s footer
-        // toolbar "…" menu (指示どおり — 返信/全員に返信 とは別の場所).
-        let moreMenuButton = app.buttons["messageDetail.toolbar.more"]
-        XCTAssertTrue(moreMenuButton.waitForExistence(timeout: 20), "Expected the footer toolbar's … button")
-        moreMenuButton.tap()
-        // 2026-07-29 追加仕様: 「その他」ネイティブ項目を一級の
-        // `MessageToolbarAction`へ昇格した際、非表示状態 (既定) のときの
-        // 識別子は他の非表示アクションと同じ `more.hidden.*` 系列に統一
-        // された (`MessageDetailFooterToolbar.hiddenActionMenuItem(for:)`)。
-        let draftEnglishReplyButton = app.buttons["messageDetail.toolbar.more.hidden.draftEnglishReply"]
-        XCTAssertTrue(draftEnglishReplyButton.waitForExistence(timeout: 5), "Expected the 英語で返信を下書き menu item")
-        draftEnglishReplyButton.tap()
-
-        let composerSheet = app.otherElements["composer.sheet"]
-        XCTAssertTrue(composerSheet.waitForExistence(timeout: 15), "Expected the Composer to open")
-
-        // Not `waitForElementScrollingIfNeeded` — that helper's scroll
-        // fallback is hardcoded to `messageList.list` (the mail tab's own
-        // list), which doesn't exist inside the Composer sheet at all;
-        // using it here just fails looking for the wrong element entirely.
-        // A plain `app.swipeUp()` against the Composer's own `Form`
-        // (translation is one of the last sections, below a 240pt-minimum
-        // body `TextEditor`) is the right generic scroll here instead.
-        let toggle = app.switches["composer.translateToEnglishToggle"]
-        var toggleFound = toggle.waitForExistence(timeout: 10)
-        var swipeAttempts = 0
-        while !toggleFound, swipeAttempts < 5 {
-            app.swipeUp()
-            toggleFound = toggle.waitForExistence(timeout: 2)
-            swipeAttempts += 1
-        }
-        XCTAssertTrue(toggleFound, "Expected the 英語に翻訳して送る toggle to be present")
-        XCTAssertEqual(toggle.value as? String, "1", "Expected the toggle to start on, since this Composer opened via 英語で返信を下書き")
-
-        Thread.sleep(forTimeInterval: 3)
-    }
-}
+// `OtegamiTranslationDraftEnglishReplyUITests` (「英語で返信を下書き」
+// フッターツールバーの「…」メニュー項目 → Composer を「英語に翻訳して
+// 送る」トグル on で開く、というエンドツーエンド確認) was removed in
+// Task #139 along with the feature itself — see
+// `MessageToolbarSettingsStore`/`MessageDetailFooterToolbar`/
+// `ComposerLaunchPayload`/`ComposerView`'s Task #139 doc comments. The
+// toolbar action, `ComposerLaunchPayload.Kind.reply`'s `translateToEnglish`
+// field, and the Composer's send-time "英語に翻訳して送る" toggle it used to
+// pre-enable are all gone (翻訳ボタンの常時有効化 #138 もあり冗長と判断
+// された)。

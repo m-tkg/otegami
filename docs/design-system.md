@@ -1192,6 +1192,22 @@ green、Phase 3 以降の Mailpit 到達確認は上記の背景遷移タイミ�
 であって、「英語で返信を下書き」という特定の入口から起動する機能自体
 ではない。
 
+**Task #139 追記**: 上記「内部の状態と`send()`の翻訳ロジック自体は残した」
+は本節時点の判断だった — Task #139 で「英語で返信を下書き」自体を
+`MessageToolbarAction`から撤去した (ほぼ使われておらず、翻訳ボタンの
+常時有効化 (#138) もあり冗長と判断された)。この撤去により
+`translateToEnglishBeforeSend`/`translateErrorMessage`(`ComposerView`)、
+`ComposerLaunchPayload.Kind.reply`の`translateToEnglish`フィールド、
+`PendingSendDraftSnapshot.translateToEnglishBeforeSend`は「唯一の
+セット手段が消えた」ことで完全に不要になり、まとめて削除した。
+`MessageDetailFooterToolbar.onDraftEnglishReply`、`ThreadDetailView
+.draftEnglishReplyToTarget`、`onReply`クロージャの第3引数 (英語下書き
+フラグ) も連鎖して撤去 (`OtegamiRootView`/`MailScreenView`/
+`SearchScreenView`/`ThreadEntryView`/`OtegamiApp`の呼び出し側すべて)。
+保存済みツールバー設定に残った`draftEnglishReply` id は
+`MessageToolbarPreferencesCoding.parse`が未知idとして安全に無視する
+(既存の設計どおり、回帰なし)。
+
 ### 7. 添付ボタンの統合 + カメラ
 
 `ComposerView.attachmentsMenu` — 「ファイルを追加」「写真を追加」の
@@ -6446,3 +6462,89 @@ Task #33の対象外のままこのアコーディオンを直接使い続けて
   (`FolderListSheet.swift`の`.listSectionSpacing(4)`——iOS専用の
   `List`修飾子で`unavailable in macOS`、`#if os(iOS)`が抜けていた) も
   同時に修正した——本タスクの変更とは独立の1行修正。
+
+## Task #138: 翻訳ボタンの常時有効化 + キャッシュ済み本文の要約/引用救済
+
+**(1) 翻訳ボタン常時有効化 (ユーザー指示による仕様変更)**:
+`MessageView.shouldShowTranslationBar`から言語判定を完全に撤去した——
+`isEnglishMessage`(旧: `message.detectedLanguage == "en" || nil`)と
+`LocalizationSettingsStore.effectiveLanguageCode != "en"`の両方を削除し、
+`aiFeaturesEnabled`だけのゲートにした。design-phase-3以降`#90`/`#128`と
+繰り返し「英語メールなのに翻訳ボタンが出ない/押せない」実機報告が続いた
+根本原因が言語判定そのものの信頼性だったため、表示条件から判定自体を
+なくす方針転換。`isEnglishMessage`プロパティは削除。自動翻訳の起動条件
+(`kickoffTranslationIfNeeded`の`detectedLanguage == "en"`確信ガード)は
+誤爆防止としてそのまま維持——変わるのは*ボタンの表示/有効*条件だけ。
+`#128`のHTML controller未接続時プレーンテキスト翻訳フォールバックも維持。
+
+**(2) 要約/引用カードのキャッシュ済み本文フォールバック**: 実機の
+予約メールで`SummaryInput`ログが`source=plain, quotedTextLength=0,
+detectedMarker=none`(分離できず全文が要約対象になり引用だらけの要約に
+なる)を記録。原因は`#134`より前にキャッシュされた行の
+`MessageBodyRecord.plainText`がmailcore2の`plainTextBodyRendering()`
+(HTML優先タグ剥がし)由来の合成テキストで、`QuoteStripper`の引用マーカー
+検出パターンと確実には一致しない形をしていたこと (`#134`自身は「次回
+フェッチ時から新しい経路に切り替わる」設計で既存キャッシュは移行しない
+方針だった)。`MessageBodyRecord.html`は常に`MCOMessageParser
+.htmlBodyRendering()`由来でこの問題の影響を受けないため、ランタイム側の
+救済策として`QuoteStripper`に2つの関数を追加した:
+`separatingQuotedText(plainText:html:isReply:)`(plainを先に試し、マーカー
+が見つからなければhtmlでも試す——`MessageView.sourceTextForSummary()`が
+使用)と、対になる`separatingQuotedHTML(html:plainText:isReply:)`
+(`MessageView.htmlQuoteHistorySplit`、#133の引用折りたたみカードが使用
+——ただし*htmlを先に*試す、健全なメッセージでタグ保持の短縮表示を
+毎回捨てる回帰を避けるため、あえて順序を逆にしている)。詳細は
+`docs/translation.md`の「翻訳ボタンの常時有効化・要約/引用カードの
+キャッシュ救済 (Task #138)」節参照。
+
+**(3) 追加報告への対応**: 要約ボタンも同型の構造的バグを持っていた——
+`syncAIFeaturesState()`の`showsSummaryButton`ゲートが`bodyRecord != nil`
+のみで、本文取得が失敗すると`bodyRecord`が`nil`のまま二度と呼ばれず
+永久に非表示固定されていた。`bodyRecord != nil || errorMessage != nil`
+(読み込み試行が完了した)に変え、取得失敗後もボタン自体は出すようにし、
+タップ時に一度だけ再取得を試みるフォールバックを追加。`TranslationGate`
+と対になる`SummaryGate`ログも追加。
+
+### 検証
+
+`QuoteStripperTests.swift`に「plain分離不能・html分離可能」「html分離
+不能・plain分離可能」「両方失敗」の各ケースをユニットテスト追加、
+`make test`green。`make mac`/`make ios`ともgreen。実機の
+`yoyaku_htmlderived.txt`相当データでの再検証は本タスクのセッションでは
+未実施 (機微フィクスチャが手元に無いため)。
+
+## Task #139: 「英語で返信を下書き」の撤去
+
+`MessageToolbarAction.draftEnglishReply`を含む機能一式を撤去した——
+ほぼ使われておらず、翻訳ボタンの常時有効化 (#138) もあり冗長と判断
+された。撤去範囲:
+
+- `MessageToolbarAction`から`case draftEnglishReply`(title/systemImage/
+  `defaultOrder`)を削除。15→14アクション。
+- `MessageDetailFooterToolbar`の`onDraftEnglishReply`プロパティ、
+  `draftEnglishReplyButton`、「その他」メニューの対応ケースを削除。
+- `ThreadDetailView.draftEnglishReplyToTarget()`と、`onReply`クロージャ
+  の第3引数 (英語下書きフラグ) を削除——`(Int64, Bool, Bool) -> Void`から
+  `(Int64, Bool) -> Void`へ。連鎖する呼び出し側 (`ThreadEntryView`/
+  `SearchScreenView`/`MailScreenView`/`OtegamiRootView`/`OtegamiApp`)
+  すべてを合わせて更新。
+- `ComposerLaunchPayload.Kind.reply`の`translateToEnglish`フィールドを
+  削除。この唯一のセット手段が消えたことで、`ComposerView`側の
+  `translateToEnglishBeforeSend`/`translateErrorMessage`(状態・UI・
+  `send()`の翻訳ロジック)と`PendingSendDraftSnapshot
+  .translateToEnglishBeforeSend`も完全に不要になり、まとめて削除した
+  (詳細経緯は上記「6. 『英語に翻訳して送る』の削除」節の追記参照)。
+- `OtegamiTranslationUITests.swift`の
+  `OtegamiTranslationDraftEnglishReplyUITests`(この機能専用のエンド
+  ツーエンドUIテスト)を削除。
+
+**後方互換**: `MessageToolbarPreferencesCoding.parse`は未知idを安全に
+無視する既存設計 (`docs/settings.md`参照) — 保存済み設定に残った
+`draftEnglishReply` idも次回起動時に自動的に落ちる、マイグレーション
+コード不要。`MessageToolbarPreferencesTests
+.preTask139SaveDropsRemovedDraftEnglishReplyID`で回帰確認。
+
+### 検証
+
+`make test`/`make mac`/`make ios`すべてgreen。README/README_ja.mdの
+機能説明からも「英語で返信を下書き」の記述を削除。

@@ -37,7 +37,7 @@ struct MailScreenView: View {
     var onCompose: () -> Void
     var onOpenDraft: (Int64) -> Void
     var onOpenServerDraft: (Int64) -> Void
-    var onReply: (Int64, Bool, Bool) -> Void
+    var onReply: (Int64, Bool) -> Void
     /// 新画面構成 (3): メール本文画面フッターツールバーの「転送」。
     var onForward: (Int64) -> Void
     /// C7: reopens the Composer with a just-cancelled pending send's fields

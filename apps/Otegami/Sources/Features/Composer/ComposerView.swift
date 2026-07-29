@@ -98,21 +98,6 @@ struct ComposerView: View {
     /// C7 「送信取り消し」猶予 — see `SendCancelSettingsStore`'s doc comment.
     @AppStorage(SendCancelSettingsStore.windowKey) private var sendCancelWindowRaw = SendCancelSettingsStore.defaultWindow.rawValue
 
-    // MARK: - Translation (design-phase-3, 1k)
-
-    /// 表示・操作改善バッチ「『英語に翻訳して送る』を削除」: the *generic*,
-    /// user-facing "英語に翻訳して送る" toggle (available on every
-    /// composition, new mail or reply alike) is gone — see this file's
-    /// removed `translationSection`. This flag itself, and the `send()`
-    /// logic that reads it, stay: they're what "英語で返信を下書き"
-    /// (`MessageDetailFooterToolbar`'s "…" menu, kept per this task's
-    /// instructions) still relies on — that entry point sets
-    /// `payload.kind`'s `translateToEnglish` (`prepare()`'s `.reply` case
-    /// below), which is the only remaining way this ever becomes `true`;
-    /// there's no longer a UI control that flips it directly.
-    @State private var translateToEnglishBeforeSend = false
-    @State private var translateErrorMessage: String?
-
     // MARK: - Draft saving (M10)
 
     /// Captured at the end of `prepare()` (after any reply-quote/draft
@@ -223,13 +208,6 @@ struct ComposerView: View {
                 // 署名の下 — 署名選択で本文末尾が変わっても、添付欄の位置が
                 // それに引きずられて動かないようにする。
                 attachmentsSection
-                if let translateErrorMessage {
-                    Section {
-                        Text(translateErrorMessage)
-                            .foregroundStyle(OtegamiColor.destructive)
-                            .accessibilityIdentifier("composer.translateErrorMessage")
-                    }
-                }
                 if let errorMessage {
                     Section {
                         Text(errorMessage)
@@ -647,7 +625,7 @@ struct ComposerView: View {
         // ローカライズする。
         switch payload.kind {
         case .new: String(localized: "新規作成")
-        case .reply(_, let replyAll, _): replyAll ? String(localized: "全員に返信") : String(localized: "返信")
+        case .reply(_, let replyAll): replyAll ? String(localized: "全員に返信") : String(localized: "返信")
         case .forward: String(localized: "転送")
         case .draft, .serverDraft: String(localized: "下書き")
         case .cancelledSend: String(localized: "新規作成")
@@ -675,8 +653,7 @@ struct ComposerView: View {
         switch payload.kind {
         case .new:
             break
-        case .reply(let originalMessageId, let replyAll, let translateToEnglish):
-            translateToEnglishBeforeSend = translateToEnglish
+        case .reply(let originalMessageId, let replyAll):
             isLoadingReplyContext = true
             defer { isLoadingReplyContext = false }
             await prefillReply(toOriginalMessageId: originalMessageId, replyAll: replyAll)
@@ -780,7 +757,6 @@ struct ComposerView: View {
         bodyText = snapshot.bodyText
         inReplyToMessageId = snapshot.inReplyToMessageId
         references = snapshot.references
-        translateToEnglishBeforeSend = snapshot.translateToEnglishBeforeSend
         pendingAttachments = snapshot.attachments
         draftServerMailboxId = snapshot.draftServerMailboxId
         draftServerUid = snapshot.draftServerUid
@@ -1231,34 +1207,6 @@ struct ComposerView: View {
         isSending = true
         defer { isSending = false }
 
-        translateErrorMessage = nil
-        if translateToEnglishBeforeSend, environment.isTranslationAvailable,
-           !bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            do {
-                // Replaces `bodyText` itself (not a hidden local copy) —
-                // see this property's doc comment on why: what gets sent
-                // should stay visible/editable, not translated invisibly
-                // behind the send button. A failure here aborts the send
-                // entirely (`return`, not "fall back to the untranslated
-                // Japanese text") since silently sending the wrong language
-                // after the user explicitly asked for English would be
-                // worse than making them retry.
-                bodyText = try await environment.translationService.translate(bodyText, from: .japanese, to: .english)
-                // The toggle's job (translate the draft once, so the
-                // result is visible/editable before sending) is done —
-                // `bodyText` is now the English output, not the Japanese
-                // input. Clearing this here (not just leaving it `true`)
-                // matters for C7: if this send ends up cancelled and the
-                // Composer reopens from `PendingSendDraftSnapshot`, leaving
-                // it `true` would re-translate the *already-English* body
-                // as if it were still Japanese input on the next send.
-                translateToEnglishBeforeSend = false
-            } catch {
-                translateErrorMessage = "本文の翻訳に失敗しました: \(error)"
-                return
-            }
-        }
-
         do {
             // M8: stage each pending attachment's bytes onto disk *before*
             // the DB transaction below — `OutboxAttachmentRecord.localPath`
@@ -1318,7 +1266,7 @@ struct ComposerView: View {
                 let snapshot = PendingSendDraftSnapshot(
                     accountId: accountId, toText: toText, ccText: ccText, bccText: bccText, subject: subject, bodyText: bodyText,
                     inReplyToMessageId: inReplyToMessageId, references: references,
-                    translateToEnglishBeforeSend: translateToEnglishBeforeSend, attachments: pendingAttachments,
+                    attachments: pendingAttachments,
                     draftServerMailboxId: draftServerMailboxId, draftServerUid: draftServerUid, draftServerUidValidity: draftServerUidValidity
                 )
                 await environment.pendingSendCoordinator.schedule(outboxMessageId: outboxId, accountId: accountId, duration: duration, snapshot: snapshot)

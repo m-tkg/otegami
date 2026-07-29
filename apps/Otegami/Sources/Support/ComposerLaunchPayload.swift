@@ -11,15 +11,13 @@ import Foundation
 struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
     enum Kind: Codable, Hashable, Sendable {
         case new
-        /// `translateToEnglish`: design-phase-3's 1i "英語で返信を下書き" button
-        /// (`MessageView`) sets this `true` instead of routing through the
-        /// ordinary "返信" — `ComposerView.prepare()` reads it once to
-        /// pre-enable the same "英語に翻訳して送る" toggle its own 1k bottom
-        /// toolbar exposes (see that view's doc comment), so the two entry
-        /// points share one underlying mechanism rather than duplicating
-        /// translate-on-send logic. `false` for every other call site
-        /// (plain "返信"/"全員に返信", ⌘R, ...).
-        case reply(originalMessageId: Int64, replyAll: Bool, translateToEnglish: Bool)
+        /// design-phase-3's 1i "英語で返信を下書き" button (`MessageView`)
+        /// used to carry a `translateToEnglish` flag here that pre-enabled
+        /// the Composer's "英語に翻訳して送る" toggle — that button (and the
+        /// toggle it drove) was removed in Task #139 (冗長判断、翻訳ボタンの
+        /// 常時有効化 #138 もあり), so this case is back to just the plain
+        /// "返信"/"全員に返信" fields.
+        case reply(originalMessageId: Int64, replyAll: Bool)
         /// 新画面構成 (3): メール本文画面フッターツールバーの「転送」—
         /// `ComposerView.prepare()` prefixes the subject with `Fwd: `,
         /// quotes the original body (same `> ` quoting `.reply` uses), and
@@ -86,8 +84,8 @@ struct ComposerLaunchPayload: Identifiable, Codable, Hashable, Sendable {
     // identity.
     static var new: ComposerLaunchPayload { ComposerLaunchPayload(kind: .new) }
 
-    static func reply(originalMessageId: Int64, replyAll: Bool, translateToEnglish: Bool = false) -> ComposerLaunchPayload {
-        ComposerLaunchPayload(kind: .reply(originalMessageId: originalMessageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
+    static func reply(originalMessageId: Int64, replyAll: Bool) -> ComposerLaunchPayload {
+        ComposerLaunchPayload(kind: .reply(originalMessageId: originalMessageId, replyAll: replyAll))
     }
 
     static func forward(originalMessageId: Int64) -> ComposerLaunchPayload {
@@ -143,7 +141,6 @@ struct PendingSendDraftSnapshot: Codable, Hashable, Sendable {
     var bodyText: String
     var inReplyToMessageId: String?
     var references: [String]
-    var translateToEnglishBeforeSend: Bool
     var attachments: [PendingAttachment]
     var draftServerMailboxId: Int64?
     var draftServerUid: Int64?

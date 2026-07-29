@@ -40,7 +40,7 @@ import SyncEngine
 struct SearchScreenView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
-    var onReply: (Int64, Bool, Bool) -> Void
+    var onReply: (Int64, Bool) -> Void
     /// Set by a caller that already knows what to search for (メール本文
     /// 画面の「検索」ツールバーボタン) — applied once, on appear, then this
     /// view's own `searchText` state takes over.

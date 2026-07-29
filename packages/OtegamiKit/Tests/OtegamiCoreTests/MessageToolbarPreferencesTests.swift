@@ -209,6 +209,39 @@ struct MessageToolbarPreferencesTests {
         let items = MessageToolbarPreferencesCoding.parse(raw: raw, defaults: Self.mixedVisibilityDefaults, pinnedTrailingID: Self.pinnedTrailingID)
         #expect(items.first { $0.id == "archive" }?.isVisible == true)
     }
+
+    // MARK: - 「英語で返信を下書き」撤去 (Task #139)
+
+    /// 現行の`MessageToolbarSettingsStore.defaultOrder`を模した、
+    /// `draftEnglishReply`を含まない defaults セット — Task #139 でこの
+    /// アクション自体を`MessageToolbarAction`から削除した後の実際の形。
+    static let postTask139Defaults: [MessageToolbarItemPreference] =
+        ["reply", "forward", "search", "info", "summarize", "translate",
+         "mute", "pin", "markUnread", "archive", "junk", "delete", "viewSource"]
+            .map { MessageToolbarItemPreference(id: $0, isVisible: ["reply", "forward", "search", "info", "summarize", "translate"].contains($0)) }
+            + [MessageToolbarItemPreference(id: "more", isVisible: true)]
+
+    @Test("a raw value saved before Task #139 with draftEnglishReply still in it drops that id safely")
+    func preTask139SaveDropsRemovedDraftEnglishReplyID() {
+        // `MessageToolbarPreferencesCoding.parse`'s general "unknown ids from
+        // a future or removed action are dropped" behavior (see
+        // `unknownIDsAreDropped` above) already covers this mechanically —
+        // this test pins down the *specific* real-world case Task #139
+        // introduces: a user who customized their toolbar (moved
+        // `draftEnglishReply` to visible, reordered `archive` first) before
+        // the action was removed from `MessageToolbarAction` entirely.
+        let preTask139Raw = "reply:1,forward:1,search:1,info:1,summarize:1,translate:1,archive:1,draftEnglishReply:1,more:1"
+        let items = MessageToolbarPreferencesCoding.parse(raw: preTask139Raw, defaults: Self.postTask139Defaults, pinnedTrailingID: Self.pinnedTrailingID)
+        #expect(items.map(\.id).contains("draftEnglishReply") == false)
+        // The user's other customization (moving `archive` to visible)
+        // survives untouched — only the since-removed id is dropped.
+        #expect(MessageToolbarPreferencesCoding.visibleOrder(items) ==
+            ["reply", "forward", "search", "info", "summarize", "translate", "archive", "more"])
+        // Every remaining default id (mute/pin/markUnread/junk/delete/
+        // viewSource) is still present, just appended per its own default
+        // (hidden) visibility — nothing crashes or silently vanishes.
+        #expect(Set(items.map(\.id)) == Set(Self.postTask139Defaults.map(\.id)))
+    }
 }
 
 /// Task #113 (2) ("ボタンのラベルを表示" トグル).

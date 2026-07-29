@@ -84,8 +84,10 @@ struct ThreadDetailView: View {
     /// did. Defaults to `true`, matching every existing call site.
     var isFlatModeEntry = true
     /// M5/design-phase-3: forwarded to each expanded `MessageView` — see
-    /// its `onReply` doc comment.
-    var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
+    /// its `onReply` doc comment. Task #139 dropped the third `Bool`
+    /// (「英語で返信を下書き」フラグ、`ComposerLaunchPayload
+    /// .translateToEnglish`へ連鎖していた) — この撤去に伴い削除。
+    var onReply: (Int64, Bool) -> Void = { _, _ in }
     /// 新画面構成 (3): フッターツールバーの「転送」— see
     /// `ComposerLaunchPayload.Kind.forward`'s doc comment.
     var onForward: (Int64) -> Void = { _ in }
@@ -420,7 +422,6 @@ struct ThreadDetailView: View {
             onForward: forwardTarget,
             onSearch: onSearchFromSender.map { callback in { openSearchFromTargetSender(callback) } },
             onInfo: { showingInfo = true },
-            onDraftEnglishReply: environment.isTranslationAvailable ? { draftEnglishReplyToTarget() } : nil,
             isMuted: isThreadMuted,
             onToggleMute: toggleMute,
             onMarkUnread: markUnread,
@@ -460,12 +461,7 @@ struct ThreadDetailView: View {
 
     private func replyToTarget(replyAll: Bool) {
         guard let id = targetMessage?.id else { return }
-        onReply(id, replyAll, false)
-    }
-
-    private func draftEnglishReplyToTarget() {
-        guard let id = targetMessage?.id else { return }
-        onReply(id, false, true)
+        onReply(id, replyAll)
     }
 
     private func forwardTarget() {

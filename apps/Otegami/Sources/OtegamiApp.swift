@@ -237,8 +237,8 @@ struct RootView: View {
             onCompose: { presentComposer(.new) },
             onOpenDraft: { draftId in presentComposer(.draft(draftId: draftId)) },
             onOpenServerDraft: { messageId in presentComposer(.serverDraft(messageId: messageId)) },
-            onReply: { messageId, replyAll, translateToEnglish in
-                presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
+            onReply: { messageId, replyAll in
+                presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll))
             },
             onForward: { messageId in presentComposer(.forward(originalMessageId: messageId)) },
             onOpenCancelledSend: { snapshot in presentComposer(.cancelledSend(snapshot)) }
@@ -426,8 +426,8 @@ struct RootView: View {
                     // ならフラット行」という判断をそのままここで明示的に渡す
                     // (`ThreadDetailView.isFlatModeEntry`のdoc comment参照)。
                     isFlatModeEntry: selectedMessageId != nil,
-                    onReply: { messageId, replyAll, translateToEnglish in
-                        presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll, translateToEnglish: translateToEnglish))
+                    onReply: { messageId, replyAll in
+                        presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll))
                     },
                     onForward: { messageId in presentComposer(.forward(originalMessageId: messageId)) },
                     // onSearchFromSender: macOS ではまだ配線していない — 新しい

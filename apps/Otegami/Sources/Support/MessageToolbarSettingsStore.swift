@@ -12,7 +12,9 @@ import OtegamiCore
 /// `MessageDetailFooterToolbar.onCustomizeToolbar`が開く「ツールバーを
 /// カスタマイズ」— これは操作対象のメッセージに対する操作ではなく設定への
 /// ショートカットなので`MessageToolbarAction`化していない、常に「その他」
-/// メニュー末尾固定)。
+/// メニュー末尾固定)。Task #139 で「英語で返信を下書き」
+/// (`draftEnglishReply`) を撤去し15→14になった — 実際にはほぼ使われて
+/// おらず、翻訳ボタンが常時有効になった (#138) こともあり冗長と判断された。
 ///
 /// Task #100 (「フッターツールバーのカスタマイズ」) 以降、ユーザーが変えられる
 /// のは並び順に加えて**表示/非表示のトグル**: 非表示にしたアクションは
@@ -28,10 +30,6 @@ import OtegamiCore
 /// それは「ユーザーが明示的に非表示にした」とは別の話 — 表示オンのままの
 /// 状態を指す (アイコン自体は出したまま`MessageDetailFooterToolbar`側で
 /// グレーアウト表示にするに留める、`MessageDetailAIFeaturesState`経由)。
-/// 同様に`draftEnglishReply`は端末が翻訳非対応なら`onDraftEnglishReply`が
-/// `nil`になり、表示オンでもアイコン自体を出さない
-/// (`MessageDetailFooterToolbar`の該当箇所参照) — これも「非表示に設定した」
-/// とは別の話。
 enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable {
     case reply
     case forward
@@ -44,7 +42,6 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
     case markUnread
     case archive
     case junk
-    case draftEnglishReply
     case delete
     /// Task #103 ("ソースを表示" — 表示崩れメールの eml を受け渡す調査経路):
     /// 生 RFC822 ソースをモノスペース表示 + シェアで `.eml` として書き出す。
@@ -86,7 +83,6 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
         case .markUnread: String(localized: "未読にする")
         case .archive: String(localized: "アーカイブ")
         case .junk: String(localized: "迷惑メールにする")
-        case .draftEnglishReply: String(localized: "英語で返信を下書き")
         case .delete: String(localized: "削除")
         case .viewSource: String(localized: "ソースを表示")
         case .more: String(localized: "その他")
@@ -112,7 +108,6 @@ enum MessageToolbarAction: String, CaseIterable, Identifiable, Codable, Sendable
         case .markUnread: "envelope.badge"
         case .archive: "archivebox"
         case .junk: "exclamationmark.octagon"
-        case .draftEnglishReply: "globe"
         case .delete: "trash"
         case .viewSource: "doc.plaintext"
         case .more: "ellipsis.circle"
@@ -186,7 +181,7 @@ enum MessageToolbarSettingsStore {
     // .moreMenuButton`の旧実装) をそのまま踏襲している。
     static let defaultOrder: [MessageToolbarAction] = [
         .reply, .forward, .search, .info, .summarize, .translate,
-        .mute, .pin, .markUnread, .archive, .junk, .draftEnglishReply, .delete,
+        .mute, .pin, .markUnread, .archive, .junk, .delete,
         .viewSource,
         .more
     ]

@@ -29,13 +29,12 @@ import TranslationEngine
 /// にフォールバックする — `body`の`ViewThatFits`のdoc comment参照。
 ///
 /// 「返信」は返信/全員に返信の2択を持つ `Menu` (design-phase-3 の「返信/
-/// 全員に返信/英語で返信を下書き」ボタン群のうち、返信系2つをここに統合)。
+/// 全員に返信/英語で返信を下書き」ボタン群のうち、返信系2つをここに統合。
+/// 「英語で返信を下書き」自体は Task #139 で撤去済み — 翻訳ボタンの
+/// 常時有効化 (#138) もあり冗長と判断された)。
 ///
-/// `onSearch`/`onDraftEnglishReply` が `nil` のときはそのアイコン/メニュー
-/// 項目自体を出さない (`onSearch` は macOS 側で配線していない — 新しい検索
-/// 画面は iOS のみのインフラのため。`onDraftEnglishReply` は
-/// `AppEnvironment.isTranslationAvailable` が `false` な端末では出さない、
-/// design-phase-3 の既存方針を踏襲)。
+/// `onSearch` が `nil` のときはそのアイコン自体を出さない (macOS 側で
+/// 配線していない — 新しい検索画面は iOS のみのインフラのため)。
 ///
 /// Task #88 (「要約と翻訳のボタンをフローティングをやめてツールバーに入れて」):
 /// `aiFeaturesState`が要約/翻訳の2アイコンの唯一の状態源 — `MessageView`が
@@ -52,7 +51,6 @@ struct MessageDetailFooterToolbar: View {
     var onForward: () -> Void
     var onSearch: (() -> Void)?
     var onInfo: () -> Void
-    var onDraftEnglishReply: (() -> Void)?
     var isMuted: Bool
     var onToggleMute: () -> Void
     var onMarkUnread: () -> Void
@@ -163,7 +161,6 @@ struct MessageDetailFooterToolbar: View {
         case .markUnread: markUnreadButton
         case .archive: archiveButton
         case .junk: junkButton
-        case .draftEnglishReply: draftEnglishReplyButton
         case .delete: deleteButton
         case .viewSource: viewSourceButton
         case .more: moreMenuButton
@@ -245,14 +242,6 @@ struct MessageDetailFooterToolbar: View {
     private var junkButton: some View {
         Button(action: onJunk) { toolbarIcon(.junk) }
             .accessibilityIdentifier("messageDetail.toolbar.junk")
-    }
-
-    @ViewBuilder
-    private var draftEnglishReplyButton: some View {
-        if let onDraftEnglishReply {
-            Button(action: onDraftEnglishReply) { toolbarIcon(.draftEnglishReply) }
-                .accessibilityIdentifier("messageDetail.toolbar.draftEnglishReply")
-        }
     }
 
     /// 削除だけは`role: .destructive`＋`OtegamiColor.destructive`で赤く
@@ -492,11 +481,6 @@ struct MessageDetailFooterToolbar: View {
         case .junk:
             Button { onJunk() } label: { Label(action.title, systemImage: action.systemImage) }
                 .accessibilityIdentifier("messageDetail.toolbar.more.hidden.junk")
-        case .draftEnglishReply:
-            if let onDraftEnglishReply {
-                Button { onDraftEnglishReply() } label: { Label(action.title, systemImage: action.systemImage) }
-                    .accessibilityIdentifier("messageDetail.toolbar.more.hidden.draftEnglishReply")
-            }
         case .delete:
             // 実機フィードバック (Task #113 (1)):「ツールバーをカスタマイズ」
             // ショートカット (`moreMenuButton`末尾固定) が、状態によって

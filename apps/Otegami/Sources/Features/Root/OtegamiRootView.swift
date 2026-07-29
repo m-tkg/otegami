@@ -19,7 +19,7 @@ struct OtegamiRootView: View {
     var onCompose: () -> Void
     var onOpenDraft: (Int64) -> Void
     var onOpenServerDraft: (Int64) -> Void
-    var onReply: (Int64, Bool, Bool) -> Void
+    var onReply: (Int64, Bool) -> Void
     /// 新画面構成 (3): メール本文画面フッターツールバーの「転送」— see
     /// `ComposerLaunchPayload.Kind.forward`'s doc comment.
     var onForward: (Int64) -> Void

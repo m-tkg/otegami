@@ -50,7 +50,7 @@ struct ThreadEntryView: View {
     /// selects `ThreadDetailView`'s flat/single-message mode directly, with
     /// no further lookup.
     let preselectedMessageId: Int64?
-    var onReply: (Int64, Bool, Bool) -> Void = { _, _, _ in }
+    var onReply: (Int64, Bool) -> Void = { _, _ in }
     var onForward: (Int64) -> Void = { _ in }
     var onSearchFromSender: ((String) -> Void)?
     var onThreadRemoved: ((Int64) -> Void)?

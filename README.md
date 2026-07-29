@@ -49,20 +49,21 @@ Two things this app is built around, more than any single feature list:
   of moving it; other providers move it to (or auto-create) an Archive
   mailbox.
 - **On-device translation and AI summary** (Apple Foundation Models,
-  iOS/macOS 26+): an inline translation bar, shown when a message's
-  detected language differs from the app's own display language — but
+  iOS/macOS 26+): an inline translation button, always enabled once a
+  message's body has loaded (no language detection gating it — a real
+  report of the button not appearing even for genuinely English mail
+  outweighed the value of hiding it for non-English mail) — but
   translation only ever runs when you tap "Translate" (auto-translate
-  defaults **off**; turn it back on in Settings). Once translated, a
-  one-tap toggle switches back to the original. Plain-text messages let
+  defaults **off**; turn it back on in Settings, and still only fires
+  automatically for confidently-detected English mail). Once translated,
+  a one-tap toggle switches back to the original. Plain-text messages let
   you long-press a single paragraph to peek at just its source text; HTML
   messages are translated in place, keeping tables/images/layout intact.
   A separate "AI summary" bar (any message, any language) generates a
-  short on-device summary on tap. "Draft a reply in English" opens the
-  composer with translate-on-send already armed. Nothing leaves the
-  device — see [`docs/translation.md`](docs/translation.md) for the
-  engine design and its one known Simulator-only limitation. Translation
-  is proven working end-to-end (2–5s per call) against the real
-  on-device model.
+  short on-device summary on tap. Nothing leaves the device — see
+  [`docs/translation.md`](docs/translation.md) for the engine design and
+  its one known Simulator-only limitation. Translation is proven working
+  end-to-end (2–5s per call) against the real on-device model.
 - **Threading**: Gmail `X-GM-THRID` when available, otherwise a JWZ-style
   `References`/`In-Reply-To` union-find with a subject-based fallback,
   batched for fast bulk (re-)threading (100k-message dataset: ~1.4s, see
@@ -276,20 +277,16 @@ Apple's Foundation Models framework (`LanguageModelSession`) — the same
 on-device model behind Apple Intelligence, so no mail content is ever
 sent to a translation API or any server. Highlights:
 
-- Per-message translation bar, shown for English mail but only ever
-  translating when you tap "Translate" (auto-translate defaults off —
-  flip it back on in Settings). Once translated, a segmented control
-  switches back to the original. Plain-text messages support a
-  per-paragraph long-press to peek at just that paragraph's source; HTML
-  messages translate in place, preserving tables/images/layout instead of
-  falling back to a plain-text rendering.
-- "Draft a reply in English" opens the composer with translate-on-send
-  already armed, translating your own reply draft in place (so you can
-  see and edit the English result before it's sent, never a silent
-  background translation). This is the only entry point for it — an
-  earlier, more general "translate to English before sending" toggle that
-  any compose screen exposed was removed in favor of this single,
-  intentional entry point.
+- Per-message translation button, always enabled once the message body has
+  loaded — no language-detection gating (removed after repeated reports of
+  the button not appearing/tappable even for genuinely English mail) —
+  but only ever translating when you tap "Translate" (auto-translate
+  defaults off — flip it back on in Settings, and still only fires
+  automatically for confidently-detected English mail). Once translated, a
+  segmented control switches back to the original. Plain-text messages
+  support a per-paragraph long-press to peek at just that paragraph's
+  source; HTML messages translate in place, preserving tables/images/layout
+  instead of falling back to a plain-text rendering.
 - Paragraph-level caching keyed by an engine identifier, so re-opening a
   translated message doesn't re-run the model.
 - Requires iOS/macOS 26+ with Apple Intelligence enabled. On unsupported

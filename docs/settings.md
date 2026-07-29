@@ -471,21 +471,24 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 「プッシュ通知」から有効化。詳細は
 [docs/relay-deployment.md](relay-deployment.md)。
 
-## メール本文フッターツールバーの表示/非表示・並び順 (新画面構成、Task #88 で7アイコンに、Task #100 でカスタマイズ機能に、2026-07-29 追加仕様で14アクションに、Task #103 で15アクションに、Task #113 でラベル表示トグル追加+その他メニューの順序不安定バグ修正)
+## メール本文フッターツールバーの表示/非表示・並び順 (新画面構成、Task #88 で7アイコンに、Task #100 でカスタマイズ機能に、2026-07-29 追加仕様で14アクションに、Task #103 で15アクションに、Task #113 でラベル表示トグル追加+その他メニューの順序不安定バグ修正、Task #139 で「英語で返信を下書き」撤去により14アクションに)
 
 `MessageToolbarSettingsStore.swift`(アプリターゲット)。メール本文画面
-(`ThreadDetailView`) 下部のフッターツールバーに出せる15アクション
+(`ThreadDetailView`) 下部のフッターツールバーに出せる14アクション
 (返信/転送/検索/情報/要約/翻訳/ミュート/ピン留め/未読にする/アーカイブ/
-迷惑メールにする/英語で返信を下書き/削除/ソースを表示/その他) の表示/
-非表示と並び順。
+迷惑メールにする/削除/ソースを表示/その他) の表示/非表示と並び順。
 要約/翻訳の2つは Task #88 (「要約と翻訳のボタンをフローティングをやめて
 ツールバーに入れて」) で、旧フローティングボタン
 (`AISummaryFloatingButton`/`TranslationFloatingButton`) から移設した。
-ミュート以降の7つは2026-07-29の追加仕様で、旧「その他」メニューが
-ネイティブに (トグル不可・常設で) 持っていた操作を一級のアクションへ
-昇格したもの — 下記「その他」ネイティブ項目の一級化」節参照。「ソースを
-表示」は Task #103 で追加した15番目のアクション — 下記「Task #103」節
-参照。
+ミュート以降の6つ (元は「英語で返信を下書き」を含む7つ) は2026-07-29の
+追加仕様で、旧「その他」メニューがネイティブに (トグル不可・常設で)
+持っていた操作を一級のアクションへ昇格したもの — 下記「その他」ネイティブ
+項目の一級化」節参照。「ソースを表示」は Task #103 で追加したアクション —
+下記「Task #103」節参照。「英語で返信を下書き」は Task #139 で撤去済み
+(翻訳ボタンの常時有効化 #138 もあり冗長と判断された) — 保存済み設定に
+この id が残っていても`MessageToolbarPreferencesCoding.parse`が安全に
+無視する (`MessageToolbarPreferencesTests.preTask139SaveDropsRemovedDraftEnglishReplyID`
+参照)。
 
 設定画面 (`MessageToolbarSettingsView`) への入口は2つ:
 - メール本文画面の「…」メニュー →「ツールバーをカスタマイズ」
@@ -517,7 +520,7 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 
 | キー | 既定値 |
 | --- | --- |
-| `messageToolbar.order` | `reply:1,forward:1,search:1,info:1,summarize:1,translate:1,mute:0,pin:0,markUnread:0,archive:0,junk:0,draftEnglishReply:0,delete:0,viewSource:0,more:1` (カンマ区切り、`id:1`が表示・`id:0`が非表示。`viewSource`は Task #103 で追加、既定非表示) |
+| `messageToolbar.order` | `reply:1,forward:1,search:1,info:1,summarize:1,translate:1,mute:0,pin:0,markUnread:0,archive:0,junk:0,delete:0,viewSource:0,more:1` (カンマ区切り、`id:1`が表示・`id:0`が非表示。`viewSource`は Task #103 で追加、既定非表示。`draftEnglishReply`は Task #139 で撤去済み) |
 
 要約/翻訳がメッセージ次第で意味を持たないことがある (本文未読込・この
 端末で AI 機能が使えない・翻訳不要な言語、等) という話は上記の「表示/
