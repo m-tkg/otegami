@@ -1529,6 +1529,159 @@ actionLabel])`を呼ぶだけの薄いラッパーになった。
 have」の範囲、時間の都合で見送り)。実機での確認ポイントは
 `PENDING.md`参照。
 
+## 翻訳を Apple Translation フレームワークの専用 NMT へ切替 (Task #159)
+
+**背景**: それまでの翻訳 (`translate`/`translateParagraphs`/`translateStream`)
+は要約 (`summarize`系) と同じ `FoundationModelsTranslationService` (汎用
+オンデバイス LLM) が担っていた。ユーザー指示により、翻訳だけを Apple
+`Translation` フレームワーク (`TranslationSession` — iOS 18+/macOS 15+ の
+専用 NMT モデル。本アプリの対応OSは既に 26+ なので利用可) に切り替え、
+**要約系は `FoundationModelsTranslationService` のまま維持**する。
+
+### アーキテクチャ
+
+1. **`TranslationService` を2分割**: `OtegamiTranslation` の
+   `TranslationService` protocol から `translate`/`translateParagraphs`/
+   `translateStream`/`availability` の4つを `TranslationOnlyService`
+   という新しい protocol に切り出し、`TranslationService` はそれを
+   refine (要約系3メソッドのみ追加宣言) するように変更した。
+   `FakeTranslationService`/`FoundationModelsTranslationService` はどちら
+   も既に全メソッドを実装済みだったため、この分割自体はどちらのファイル
+   にも変更を必要としなかった。
+2. **`AppleTranslationService`** (新パッケージ
+   `OtegamiTranslationApple`): `TranslationOnlyService` の実装。
+   `Translation.TranslationSession` を使う。
+3. **`HybridTranslationService`** (`OtegamiTranslation`、Apple 依存なしの
+   純粋な合成): `translate`系を`TranslationOnlyService`実装
+   (`AppleTranslationService`) へ、`summarize`系を `any TranslationService`
+   (`FoundationModelsTranslationService`) へ振り分けるだけの薄いラッパー。
+   `AppEnvironment.translationService` が実際に保持するのはこの型のイン
+   スタンス — `MessageTranslator`/`ThreadDetailView.requestThreadSummary`
+   など既存の呼び出し側は、この型がどちらのメソッド群をどこへ転送してい
+   るか一切知る必要がなく、無変更で動く。
+4. **`MessageTranslator.EngineIdentifier.appleTranslation`**
+   (`"apple-translation"`) を新設し、`foundation-models`とは別の識別子に
+   した — `MessageTranslationRecord`のキャッシュ有効性チェック
+   (`isStillValid`) がエンジン識別子の一致を見るため、切替後の初回オープ
+   ンでは旧エンジンのキャッシュが自動的に無効化され、新エンジンで再翻訳
+   される。
+
+### `TranslationSession` の橋渡し (SwiftUI 依存を切り離す設計)
+
+`TranslationSession`には public な initializer が無く (iOS 26.0+の
+`TranslationSession(installedSource:target:)` は例外だが、「既にダウン
+ロード済みのペア」前提の convenience initializer で、未ダウンロード時の
+ダウンロード誘導 UI を伴わないため今回は使っていない)、Apple が唯一サ
+ポートしているのは SwiftUI の `.translationTask(_:action:)` view modifier
+経由での取得である。一方 `AppleTranslationService`/`MessageTranslator`
+はビューを持たないサービス層のコードなので、両者を橋渡しする
+`TranslationSessionCoordinator` (`OtegamiTranslationApple`、`@MainActor
+@Observable`) を新設した:
+
+- `AppEnvironment` が1つだけ保持する (`translationSessionCoordinator`)。
+- `apps/Otegami` 側の `TranslationSessionHostView` (`ThreadDetailView`の
+  ルートに `.background` で常駐、0サイズ・非表示) が
+  `coordinator.configuration` を読んで `.translationTask` に渡す。
+- `AppleTranslationService.translate`/`translateParagraphs` は
+  `coordinator.translate(_:to:)`/`translateBatch(_:to:)` を呼び、内部で
+  `configuration` を更新 → SwiftUI が新しい `TranslationSession` を
+  action closure 経由で返す → `coordinator.attach(_:)` がそれを受け取り、
+  待機していた `async` 呼び出し元へ渡す、という一往復を待つ。
+- 同じ target 言語のセッションは使い回す (`FoundationModelsTranslationService`
+  が「呼び出しごとに新しい `LanguageModelSession`」を選ぶのとは対照的 —
+  そちらは会話履歴混入を避けるためだが、`TranslationSession`には会話履歴
+  という概念自体が無いため使い回して問題ない。言語パックのダウンロード
+  プロンプトが起動ごとに複数回出るのも避けられる)。
+
+**`Translation.TranslationSession` は `Sendable` ではない** (実SDKの
+`.swiftinterface` で確認済み) ため、`TranslationSessionCoordinator` の
+公開 API は `session(to:) -> TranslationSession` のような「セッション
+そのものを返す」形にはせず、`translate(_:to:) -> String`/
+`translateBatch(_:to:) -> [String]`/`prepareTranslation(to:)` という
+「セッションを内部で使い切って `Sendable` な結果だけ返す」形にした —
+セッションの生存期間を丸ごと `@MainActor` 内に閉じ込めることで、
+`TranslationOnlyService: Sendable` の要件を満たしたまま actor 境界を越え
+させずに済む設計にしている。
+
+### 言語パック未ダウンロード時の扱い (要件3)
+
+`AppleTranslationService.translate`/`translateParagraphs` は実際の翻訳呼
+び出し前に:
+
+1. `LanguageAvailability().status(from:to:)` で名目上の言語ペア (呼び出
+   し元が渡す `source`/`target`) の対応状況を確認 — `.unsupported` な
+   ら「この端末は…への翻訳に対応していません」で即座に失敗させる。
+2. `TranslationSessionCoordinator.prepareTranslation(to:)`
+   (→ `session.prepareTranslation()`) を呼ぶ。Apple 公式のダウンロード
+   誘導トリガーで、既にダウンロード済みなら no-op。
+
+`Translation.TranslationError` (`.notInstalled`/`.unsupportedSourceLanguage`
+等、実SDKで確認済みのケース) は `mapEngineError` で個別に
+`TranslationServiceError` へマッピングし、「翻訳用の言語データが未ダウン
+ロードです。設定 > 一般 > 言語と地域 から翻訳言語をダウンロードしてくだ
+さい」のような具体的な文言にしている。**翻訳ボタン自体は #138 の方針
+(常時有効) を維持** — `AppleTranslationService.availability` は常に
+`.available` を返し (フレームワーク自体は本アプリの対応OSで常に存在す
+るため)、未ダウンロードは「ボタンが押せない」ではなく「押した結果のエ
+ラー文言」として表面化する。
+
+### 自動翻訳の言語判定 (要件4、実機報告「Okta のサインオン通知メールが
+`NLLanguageRecognizer`に`pl`と誤判定される」)
+
+2つの独立した変更で対応した:
+
+1. **自動翻訳の起動ゲート (`MessageView.kickoffTranslationIfNeeded`)**:
+   `message.detectedLanguage == "en"`の完全一致条件を、`!= "ja"`
+   (確信を持って日本語と判定されていない限り起動を試みる) へ緩和した。
+   `docs/translation.md`の Task #138節が別のゲート
+   (`shouldShowTranslationBar`) に対して既に確立した「過度に厳しい言語
+   ゲートを緩める」という前例をそのまま踏襲したもの。`NLLanguageRecognizer`
+   自体の置き換えは行っていない — Translation フレームワークには単独の
+   「この文章の言語を判定する」API が存在せず (`LanguageAvailability`は
+   言語ペアの対応状況のみ、`TranslationSession.Configuration(source: nil,
+   ...)`は「翻訳時に内部で自動判定する」機能であって判定結果を単独で問
+   い合わせる手段ではない)、この起動ゲート自体を Translation 側へ丸ごと
+   置き換える手段が無かったため。
+2. **実際の翻訳呼び出し (根治)**: `AppleTranslationService`は呼び出し元
+   が渡す`source`(このアプリでは常に`.english`固定)をセッションの
+   `Configuration`にそのまま使わず、常に`source: nil`(Translation フレー
+   ムワーク自身による自動判定)で構成する。これにより、起動ゲートが
+   (1の緩和によって、あるいは既存の誤判定によって) 誤って通過した場合で
+   も、実際の翻訳エンジンが本当の原文言語を判定してから翻訳する —
+   旧`FoundationModelsTranslationService`のように「`source: .english`だ
+   と決め打ちで LLM に指示する」ことによる誤訳リスクがなくなる。
+
+**検証できていない点 (重要)**: 上記の「Okta メールが実際に正しく自動翻
+訳されるようになったか」は実機/シミュレータでの動作確認ができておらず
+未検証。`TranslationSession.Response.sourceLanguage`(実SDKで存在を確認
+済み、自動判定時に実際に使われた言語を返す)を使って「起動ゲートを完全
+に Translation 側の判定結果だけで決める」設計も検討したが、そのために
+は`MessageTranslator`/`MessageView`側に新しい状態受け渡し (「この自動翻
+訳は実際には言語不一致でスキップすべきだった」という事後判定) を追加す
+る必要があり、今回のタスク範囲では見送った — 将来の改善候補として
+`PENDING.md`に記録する。
+
+### 検証状況とシミュレータの既知不調領域 (要件・ルール)
+
+- `make test`/`make mac`/`make ios` はいずれも緑 (エラー0件)。
+- `OtegamiTranslationApple`パッケージの protocol 境界のユニットテスト
+  (`HybridTranslationServiceTests`: 翻訳系呼び出しは翻訳エンジンのみに、
+  要約系呼び出しは要約エンジンのみに届くこと、`availability`が翻訳エン
+  ジン由来であることを2つの`FakeTranslationService`で検証) は追加済み。
+- **`AppleTranslationService`の実エンジン部分 (`TranslationSession`本体
+  を使う翻訳呼び出し) は自動テスト不可** — `FoundationModelsTranslationService`
+  同様、実機/シミュレータでの動作が前提であり、`docs/translation.md`
+  冒頭「design-phase-3: iOS Simulator の `.app` プロセスから呼んだとき
+  の既知の制限」節が記録した Foundation Models 固有の Simulator 不調
+  (`error -1`) と同じ「シミュレータ既知不調」領域に、Translation フレー
+  ムワークも該当する可能性が高いと判断し、本タスクでは`scripts/verify-screen.sh`
+  によるシミュレータでの Translation 動作確認を試みていない (`docs/verify.md`
+  の「シミュレータでエラーが出たら粘らない」方針どおり)。
+- 実機での確認ポイント: (1) 英語メール本文の翻訳ボタンが機能すること、
+  (2) 言語パック未ダウンロード時にダウンロード誘導が実際に走ること、
+  (3) 明らかに英語なのに`detectedLanguage`が英語以外に誤判定される
+  メール (Okta 通知など) で自動翻訳が正しく起動・実行されること。
+
 ## テスト
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、
@@ -1536,7 +1689,12 @@ have」の範囲、時間の都合で見送り)。実機での確認ポイント
   `MessageLanguageDetector`（英文/和文/混在/短文/記号のみ）、
   `TranslationChunker`（上限内はそのまま・文境界優先分割・句読点の無い
   長文の強制分割・日本語の句点対応）、`SentenceSplitter`（ASCII/日本語
-  終端・改行のみ・終端なし1文・空白トリム・空入力、上記 Task #81 節参照）。
+  終端・改行のみ・終端なし1文・空白トリム・空入力、上記 Task #81 節参照）、
+  `HybridTranslationService`（翻訳/要約それぞれが対応するエンジンだけに
+  委譲されること、`availability`が翻訳エンジン由来であること、上記
+  Task #159 節参照）。
+- `OtegamiTranslationAppleTests`: `TranslationLanguage.locale`のマッピング
+  のみ（実エンジンは実機依存のため自動テスト不可、上記 Task #159 節参照）。
 - `TranslationEngineTests`: `MessageTranslator` のキャッシュヒット/ミス、
   エンジン識別子が変わった場合の再翻訳、失敗時の状態、`invalidate()`、
   上限を超える段落がチャンク分割されたうえで1つの `TranslatedParagraph`
