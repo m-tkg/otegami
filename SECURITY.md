@@ -3,7 +3,7 @@
 otegami is a mail client: it handles IMAP/SMTP credentials, OAuth tokens,
 and renders HTML mail from arbitrary senders, so security reports are
 taken seriously even though this is a solo/experimental project (see
-[README.md](README.md#status)).
+[README.md](README.md#ステータス)).
 
 ## Reporting a vulnerability
 

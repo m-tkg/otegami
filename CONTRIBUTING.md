@@ -9,8 +9,9 @@ implementation.
 
 ## Development environment
 
-See [README.md](README.md#building) for the full prerequisites and build
-commands (Xcode, XcodeGen, `make mac`/`make ios`/`make ios-device`).
+See [docs/development-setup.md](docs/development-setup.md) for the full
+prerequisites and build commands (Xcode, XcodeGen, `make mac`/`make ios`/
+`make ios-device`, `Local.xcconfig`).
 
 Most day-to-day work happens against the local dev mail stack, so you
 don't need a real Gmail/iCloud account:
