@@ -20,6 +20,12 @@ struct SignatureTemplatesSettingsView: View {
     var body: some View {
         settingsContainer
             .navigationTitle("署名テンプレート")
+            #if os(macOS)
+            // Task #155 follow-up: see `MacSettingsBackButton`'s doc
+            // comment — this screen is pushed from
+            // `MailComposeSettingsView`.
+            .macSettingsBackButton()
+            #endif
             .task { await loadSignatures() }
             .sheet(isPresented: $isAddingNew, onDismiss: { Task { await loadSignatures() } }) {
                 SignatureTemplateEditView(signature: nil)

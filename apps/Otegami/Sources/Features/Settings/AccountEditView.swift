@@ -225,6 +225,12 @@ struct AccountEditView: View {
         .tint(OtegamiColor.accent)
         #endif
         .accessibilityIdentifier("accountEdit.screen")
+        #if os(macOS)
+        // Task #155 follow-up: `MacSettingsBackButton`'s doc comment —
+        // this screen is what the 2026-07-29 実機報告 ("戻るボタンが
+        // タイトルの真下・中央に浮いている") was filed against.
+        .macSettingsBackButton()
+        #endif
         .task { await loadAvailableSignatures() }
         .task { await refreshScopeDiagnosis() }
     }
@@ -664,7 +670,14 @@ struct AccountEditView: View {
 
     private var kindLabel: String {
         switch account.kind {
-        case .generic: "その他 (IMAP)"
+        // 実機観察 (2026-07-29、macOS): システム言語を英語にすると画面の
+        // タイトル等は英語になるのに、この値だけ日本語のまま混在していた
+        // — 原因はこの`switch`が生の`String`リテラルを返しており、他の
+        // 画面の`Text(String)`と違って`String(localized:)`を経由しない
+        // ため String Catalog を一切引かなかったこと (`Localizable
+        // .xcstrings`には既に"その他 (IMAP)" → "Other (IMAP)"のエントリが
+        // 存在済み、単にこの呼び出しが使っていなかっただけ)。
+        case .generic: String(localized: "その他 (IMAP)")
         case .gmail: "Gmail"
         case .microsoft: "Microsoft"
         case .icloud: "iCloud"

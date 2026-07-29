@@ -33,10 +33,13 @@ struct FolderCategoryOrderSettingsView: View {
         #if os(macOS)
         // Task #155: see `MessageToolbarSettingsView`'s identical doc
         // comment — この画面もドラッグ並び替え (`.onMove`) が主目的なので
-        // `List`のまま (`Form`には切り替えない)。`.modifier(EmptyModifier())`
-        // はSwiftの「`#if`/`#else`の一方だけmodifierが空だと型推論に失敗
-        // する」問題を避けるためのダミー (見た目には無関係)。
-        .modifier(EmptyModifier())
+        // `List`のまま (`Form`には切り替えない)。
+        // Task #155 follow-up: `.macSettingsBackButton()` (see its doc
+        // comment) also serves as this branch's required non-empty
+        // modifier (`#if`/`#else`のどちらかが空だと型推論に失敗する問題を
+        // 避ける、という元の`.modifier(EmptyModifier())`の役目もこれで
+        // 兼ねる) — this screen is pushed from `MailListSettingsView`.
+        .macSettingsBackButton()
         #else
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)

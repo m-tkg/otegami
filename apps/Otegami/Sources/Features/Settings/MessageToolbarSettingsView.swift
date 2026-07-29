@@ -94,6 +94,11 @@ struct MessageToolbarSettingsView: View {
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         #endif
+        #if os(macOS)
+        // Task #155 follow-up: see `MacSettingsBackButton`'s doc comment —
+        // this screen is pushed from `MailViewerSettingsView`.
+        .macSettingsBackButton()
+        #endif
         .accessibilityIdentifier("messageToolbarSettings.list")
     }
 
