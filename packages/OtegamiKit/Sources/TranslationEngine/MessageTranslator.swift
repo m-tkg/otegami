@@ -28,6 +28,14 @@ public actor MessageTranslator {
     /// matched back to a known implementation.
     public enum EngineIdentifier {
         public static let foundationModels = "foundation-models"
+        /// Task #159 (メール翻訳を Apple Translation フレームワークの専用 NMT
+        /// へ切替): `AppleTranslationService`/`HybridTranslationService`'s
+        /// identifier — deliberately distinct from `foundationModels` above
+        /// (not reused) so `isStillValid`'s engine-identifier check treats
+        /// every pre-existing `foundation-models`-cached translation as
+        /// stale on next open and regenerates it through the new engine,
+        /// rather than serving a cached result from a since-replaced engine.
+        public static let appleTranslation = "apple-translation"
         public static let fake = "fake"
     }
 

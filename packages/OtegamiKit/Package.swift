@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "AccountCloudSync", targets: ["AccountCloudSync"]),
         .library(name: "OtegamiTranslation", targets: ["OtegamiTranslation"]),
         .library(name: "OtegamiTranslationFoundationModels", targets: ["OtegamiTranslationFoundationModels"]),
+        .library(name: "OtegamiTranslationApple", targets: ["OtegamiTranslationApple"]),
         .library(name: "TranslationEngine", targets: ["TranslationEngine"]),
         .library(name: "BIMI", targets: ["BIMI"]),
     ],
@@ -265,6 +266,34 @@ let package = Package(
         .testTarget(
             name: "OtegamiTranslationFoundationModelsTests",
             dependencies: ["OtegamiTranslationFoundationModels", "OtegamiTranslation"]
+        ),
+
+        // Task #159 (メール翻訳を Apple Translation フレームワークの専用 NMT
+        // へ切替): `AppleTranslationService`, backed by `Translation
+        // .TranslationSession` — mirrors `OtegamiTranslationFoundationModels`'
+        // own doc comment shape (Apple-only, iOS 18+/macOS 15+ here since
+        // that's this framework's actual floor, never imported by
+        // `OtegamiTranslation` itself). Depends on `OtegamiTranslation` only
+        // for the `TranslationOnlyService`/`TranslationLanguage`/
+        // `TranslationServiceError` types it conforms to/throws — summarize
+        // methods live on `FoundationModelsTranslationService` unchanged,
+        // recombined via `OtegamiTranslation`'s own `HybridTranslationService`
+        // (not this target, since that composition needs no Apple-only
+        // dependency at all).
+        .target(
+            name: "OtegamiTranslationApple",
+            dependencies: ["OtegamiTranslation"]
+        ),
+
+        // Task #159: `TranslationLanguage.locale` mapping only — the actual
+        // engine needs a live `TranslationSession`, obtainable only via a
+        // hosting SwiftUI view's `.translationTask`, which no plain
+        // `swift test` process can provide (see the test file's own doc
+        // comment for the full reasoning, mirroring
+        // `OtegamiTranslationFoundationModelsTests`' real-device gating).
+        .testTarget(
+            name: "OtegamiTranslationAppleTests",
+            dependencies: ["OtegamiTranslationApple", "OtegamiTranslation"]
         ),
 
         // Cache-aware orchestration that ties `TranslationService` to
