@@ -7003,3 +7003,86 @@ green)/`make mac` green。`scripts/verify-screen.sh thread-accordion`
 (生成中/完成/失敗の各表示) のスクリーンショット確認は今回のセッションで
 は見送った (`PENDING.md`「Task #153」節参照 — 実機での確認ポイントを
 記載済み)。
+
+## Task #157: アカウント色の再々調整 — 参考画像と厳密一致 + 最後の1色を白に
+
+Task #75 で「Spark のピッカーに近いビビッドな配色」へ再調整した後の
+実機フィードバック。今回はユーザー自身が Spark ピッカーのスクリーン
+ショットを直接添付し、20色それぞれの hex 値を厳密に指定してきた —
+Task #75 が「説明文からビビッドな方向へ近づける」という近似だったのに
+対し、今回は値そのものを合わせにいく。加えて新しい要件: グリッド最後
+の1色 (参考画像の右下) は色相ではなく**白**。
+
+### `OtegamiAccountColor.swift`: 19色を新hexに、最後の1色を白に
+
+`PaletteColor`の宣言順・`rawValue`(＝保存済み`labelColorKey`との互換性)
+は Task #72/#75 と同じくそのまま — 変えたのは各caseが指す`Color`の値
+だけ。ユーザー提示のhexはダークモード値として扱い、ライトモード値は
+既存コードの慣習 (同じ色相・同じ彩度付近を保ったまま、明度を約13ポイント
+落とす) に合わせて機械的に導出した (HSV変換スクリプトで一括生成、個別
+の手調整はしていない)。
+
+`rose` (グリッド20番目/最後のcase) だけは色相ではなく白
+(`Color(light: 0xFFFFFF, dark: 0xFFFFFF)`) にした。白は「色相」を持た
+ないため、自動割当まわりの前提が壊れる — 対応した変更点3つ:
+
+1. **`autoAssignableCases`**: `PaletteColor.allCases`から`.rose`を除いた
+   19色の配列を新設(`.rose`が宣言順で最後であることに依存し、
+   `dropLast()`で切り出す)。FNV-1aハッシュのフォールバック
+   (`paletteIndex(for:)`, 19で mod) と `resolvedPaletteColor(for:override:)`
+   のインデックス先を、20色の`allCases`からこの19色の配列に差し替えた
+   — 新規アカウントがハッシュの巡り合わせで白 (＝実質「色なし」に見える)
+   に割り当てられることがなくなった。
+2. **`PaletteColor.wheelIndex`**: 戻り値を`Int`から`Int?`に変更し、
+   `autoAssignableCases`内での位置を返す。`.rose`自身に対しては`nil`
+   ——白は色相環上の位置を持たないので、位置を返しようがない。
+3. **`leastUsedColorKey(avoiding:)`**: 候補範囲・円環距離の計算を
+   `allCases`(20)から`autoAssignableCases`(19)に変更。`existingAccountColors`
+   に`.rose`(誰かが明示的に白を選んだ既存アカウント)が含まれていても、
+   `wheelIndex`が`nil`なので`compactMap`で自然に無視される — 白は
+   「距離計算に影響しない/候補にもならない」の両方が成立する。
+
+いずれも white は**ピッカーでの明示タップでのみ**到達可能— 自動割当
+(新規アカウント作成時のハッシュ/最遠色提案) が白を返すことは無い。
+
+### `AccountLabelColorPicker.swift`: 白スワッチのみhairline枠
+
+白スワッチ (`.rose`) は他の19色と違い、ピッカー自身の背景 (特にライト
+モード) に対してほぼ同化して見えなくなる。他の19色は変更せず、白の
+スワッチにだけ`OtegamiColor.divider`/`OtegamiStroke.secondary`の細い枠
+を追加した (選択中を示す既存の太い`OtegamiColor.ink`リングとは別の
+`overlay`)。
+
+### 描画箇所の確認 (白選択時)
+
+仕様で確認対象に挙げられた3箇所のうち:
+
+- **`AccountColorRail`** (3pxの左罫線、一覧行と`FolderListSheet`両方で
+  共用): 白を選んだ場合ライトモードの白背景に対して視覚的に消える。
+  仕様の指示どおり、**ここは対策なしで許容** — ユーザーが白を明示的に
+  選んだ結果であり、罫線自体に常に枠を足すと他19色の見た目まで変わって
+  しまうため。
+- **`FolderListSheet`のアカウント色**: 内部的に同じ`AccountColorRail`を
+  再利用しているだけで、独自の描画コードは持たない — 上と同じ扱い。
+- **`SenderAvatar`のイニシャル背景**: Task #93 で既にアカウント色との
+  連動を廃止済み (`OtegamiColor.avatarImageBackdrop`という固定の
+  ダークグレー背景に統一) — 今回の白の再割当てが最初から影響しない
+  箇所だったため、対応不要と確認した。
+
+### 検証
+
+`apps/Otegami/DesignSystemCatalog`の`swift test`(`OtegamiAccountColorTests`)
+に、白除外を検証するケースを追加してgreen (「全19色を2周分使い切っても
+白は返らない」「既存アカウントが白を選んでいても距離計算は白を無視した
+場合と同じ結果になる」「ハッシュフォールバックがどんなaccount idでも
+白を返さない」の3件を新設、既存4件も19色ベースの期待値に更新)。
+`make test`(既知flakyの`MessageBuilderTests`日本語ラウンドトリップ以外
+green、Composer/SyncEngine領域で並行作業中の別エージェントの影響と
+みられ本タスクの変更とは無関係)/`make mac`/`make ios` green。
+
+`scripts/verify-screen.sh account-edit`を`APPEARANCE=light`/`dark`双方で
+撮影し確認: 白スワッチはどちらの外観でも hairline 枠のおかげでピッカー
+背景から視認できる状態で表示された。「自動」ピルの色は同じアカウント
+でも実行のたびに変わって見えたが、これは各実行がシミュレータへの
+fresh installでランダムなアカウントIDを新規生成しているためで
+(FNV-1aハッシュ自体はaccount id固定なら決定的)、今回の変更とは無関係。

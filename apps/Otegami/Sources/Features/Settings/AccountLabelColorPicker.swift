@@ -59,12 +59,24 @@ struct AccountLabelColorPicker: View {
     @ViewBuilder
     private func swatch(for paletteColor: OtegamiAccountColor.PaletteColor) -> some View {
         let isSelected = selection == paletteColor
+        // Task #157: `.rose` now resolves to plain white (the reference
+        // picker's grid-bottom-right swatch), which would otherwise
+        // disappear against this view's own light-mode background — every
+        // other swatch stays exactly as before (a hairline is only drawn
+        // here, not universally, since a colored swatch already reads
+        // fine against either background).
+        let isWhiteSwatch = paletteColor == .rose
         Button {
             selection = paletteColor
         } label: {
             Circle()
                 .fill(paletteColor.color)
                 .frame(width: 28, height: 28)
+                .overlay {
+                    if isWhiteSwatch {
+                        Circle().strokeBorder(OtegamiColor.divider, lineWidth: OtegamiStroke.secondary)
+                    }
+                }
                 .overlay {
                     Circle().strokeBorder(OtegamiColor.ink, lineWidth: isSelected ? 2 : 0)
                 }

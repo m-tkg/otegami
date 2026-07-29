@@ -6,22 +6,33 @@ import Testing
 /// *nearest* used entry is largest. See `docs/design-system.md`'s "Task #72"
 /// section for why this test lives in this standalone package rather than
 /// `packages/OtegamiKit` or an app-target Xcode test target.
+///
+/// Task #157 (実機フィードバック): the palette's last stop (`.rose`) now
+/// resolves to white instead of a hue, and white must never be handed out
+/// automatically — only picked explicitly. `autoAssignableColors` below is
+/// every case *except* `.rose`, matching production's own exclusion
+/// (`OtegamiAccountColor.autoAssignableCases`, not exposed outside the
+/// module, so the tests rebuild the same 19-entry set from `allCases`).
 struct OtegamiAccountColorTests {
     private typealias PaletteColor = OtegamiAccountColor.PaletteColor
+
+    /// Every case eligible for automatic assignment — all of `allCases`
+    /// except `.rose` (white), which sits last in declaration order.
+    private static var autoAssignableColors: [PaletteColor] {
+        Array(PaletteColor.allCases.dropLast())
+    }
 
     @Test("No existing accounts: falls back to the first palette entry (red)")
     func noExistingAccounts() {
         #expect(OtegamiAccountColor.leastUsedColorKey(avoiding: []) == .red)
     }
 
-    @Test("One existing account: picks the color on the opposite side of the wheel")
+    @Test("One existing account: picks the color on the opposite side of the 19-hue wheel")
     func oneExistingAccount() {
-        // `.red` is wheelIndex 0 on a 20-entry wheel; the farthest point is
-        // 10 slots away. `.allCases` is declared in hue order, so index 10
-        // is whatever the 11th case is — resolve it the same way production
-        // code does rather than hardcoding a name that'd silently go stale
-        // if the palette were reordered.
-        let expected = PaletteColor.allCases[10]
+        // `.red` is wheelIndex 0 on the 19-entry auto-assignable wheel
+        // (white excluded); the farthest point on an odd-sized circle is
+        // floor(19/2) = 9 slots away, ties resolving to the lower index.
+        let expected = Self.autoAssignableColors[9]
         #expect(OtegamiAccountColor.leastUsedColorKey(avoiding: [.red]) == expected)
     }
 
@@ -46,10 +57,49 @@ struct OtegamiAccountColorTests {
 
     @Test("A color already used twice doesn't get picked a third time before an unused one")
     func prefersUnusedOverRepeated() {
-        // Every color used except one — the picker must return that one
-        // unused color, no matter how many times the others repeat.
-        let allButLast = Array(PaletteColor.allCases.dropLast())
+        // Every auto-assignable color used except one — the picker must
+        // return that one unused color, no matter how many times the
+        // others repeat. Deliberately built from `autoAssignableColors`
+        // (19 hues), not `PaletteColor.allCases` (20) — with `.rose`/white
+        // excluded from the pool entirely, "all but the last one" here
+        // means all but the last *hue*, not all but white.
+        let allButLast = Array(Self.autoAssignableColors.dropLast())
         let saturating = allButLast + allButLast // each used twice
-        #expect(OtegamiAccountColor.leastUsedColorKey(avoiding: saturating) == PaletteColor.allCases.last)
+        #expect(OtegamiAccountColor.leastUsedColorKey(avoiding: saturating) == Self.autoAssignableColors.last)
+    }
+
+    @Test("Never auto-assigns white (.rose), even when every hue is already saturated")
+    func neverReturnsWhite() {
+        // Every auto-assignable hue used twice over, with no unused hue
+        // left at all — the old (pre-Task #157) algorithm would have had
+        // nothing left to prefer and could only fall back to whatever
+        // came next in `allCases`, which is `.rose`. The white-exclusion
+        // must hold regardless: the result is some already-used hue, never
+        // white.
+        let saturating = Self.autoAssignableColors + Self.autoAssignableColors
+        let picked = OtegamiAccountColor.leastUsedColorKey(avoiding: saturating)
+        #expect(picked != .rose)
+    }
+
+    @Test("An existing account manually painted white doesn't skew hue-distance math")
+    func existingWhiteDoesNotAffectDistance() {
+        // `.rose` (white) has no position on the hue wheel, so including it
+        // in `existingAccountColors` (as if some other account picked white
+        // explicitly) must be a no-op for the distance calculation — same
+        // result as if that account were omitted entirely.
+        let withoutWhite = OtegamiAccountColor.leastUsedColorKey(avoiding: [.red])
+        let withWhite = OtegamiAccountColor.leastUsedColorKey(avoiding: [.red, .rose])
+        #expect(withoutWhite == withWhite)
+    }
+
+    @Test("The FNV-1a hash fallback never assigns white to a brand-new account")
+    func hashFallbackNeverAssignsWhite() {
+        // `resolvedPaletteColor(for:override:)` with no override exercises
+        // the hash fallback directly; white must be unreachable through it
+        // for any account id.
+        let sampleIds = ["a@example.com", "b@example.com", "someone@otegami.test", "", "z"]
+        for id in sampleIds {
+            #expect(OtegamiAccountColor.resolvedPaletteColor(for: id) != .rose)
+        }
     }
 }

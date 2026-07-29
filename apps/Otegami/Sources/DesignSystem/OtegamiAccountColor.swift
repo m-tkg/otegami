@@ -66,31 +66,47 @@ public enum OtegamiAccountColor {
     /// `docs/design-system.md`). Only the case *names* (and therefore
     /// already-saved `labelColorKey` strings) are stable; the `Color`
     /// each name resolves to is not.
-    private static let red = Color(light: 0xCC3325, dark: 0xEB3423)
-    private static let coral = Color(light: 0xD96227, dark: 0xF26924)
-    private static let amber = Color(light: 0xD98F21, dark: 0xF29B18)
-    private static let mustard = Color(light: 0xC79F1E, dark: 0xE6B822)
-    private static let yellow = Color(light: 0xD9C621, dark: 0xF2DE24)
-    private static let sage = Color(light: 0x66A632, dark: 0x7DCC3D)
-    private static let green = Color(light: 0x29A62E, dark: 0x2DCC32)
-    private static let emerald = Color(light: 0x29A65B, dark: 0x2ED16F)
-    private static let mint = Color(light: 0x2BAD82, dark: 0x36D9A3)
-    private static let teal = Color(light: 0x21A694, dark: 0x2AD1BB)
-    private static let cyan = Color(light: 0x26ABBF, dark: 0x2ECDE6)
-    private static let slateBlue = Color(light: 0x396FBF, dark: 0x4082E6)
-    private static let indigo = Color(light: 0x3850C7, dark: 0x425EEB)
-    private static let periwinkle = Color(light: 0x4A39CC, dark: 0x5542EB)
-    private static let violet = Color(light: 0x6D32C7, dark: 0x7E39E6)
-    private static let plum = Color(light: 0x8C32B2, dark: 0xAA3DD9)
-    private static let lavender = Color(light: 0xC649D1, dark: 0xDA57E6)
-    private static let magenta = Color(light: 0xC728A4, dark: 0xE62EBE)
-    private static let pink = Color(light: 0xD93685, dark: 0xEB3B90)
-    private static let rose = Color(light: 0xD12E4C, dark: 0xEB2F51)
-
-    private static let palette: [Color] = [
-        red, coral, amber, mustard, yellow, sage, green, emerald, mint, teal,
-        cyan, slateBlue, indigo, periwinkle, violet, plum, lavender, magenta, pink, rose,
-    ]
+    ///
+    /// Task #157 (実機フィードバック): a second re-tune, this time to match
+    /// hex-for-hex the user's own reference screenshot of Spark's picker
+    /// (Task #75 approximated "vivid, closer to Spark" from a description;
+    /// this one uses the exact values). Same rule as Task #75 applies —
+    /// case names/rawValues unchanged, only the resolved `Color`s move.
+    /// New wrinkle: the reference picker's 20th/last swatch (grid
+    /// bottom-right) is plain white, not another hue, so `rose` (the case
+    /// occupying that slot) now resolves to white in both appearances
+    /// instead of a dark-pink hue. White can't be auto-assigned or treated
+    /// as a point on the hue wheel — see `autoAssignableCases`,
+    /// `wheelIndex`, and `paletteIndex(for:)` below, all updated to exclude
+    /// it; it's reachable only via an explicit picker tap
+    /// (`AccountLabelColorPicker`, which also gives its swatch a hairline
+    /// border so it doesn't disappear against the picker's own background).
+    private static let red = Color(light: 0xBA3229, dark: 0xDB3B30)
+    private static let coral = Color(light: 0xC74527, dark: 0xE8502E)
+    private static let amber = Color(light: 0xCA6320, dark: 0xEB7325)
+    private static let mustard = Color(light: 0xCD7F29, dark: 0xEE9330)
+    private static let yellow = Color(light: 0xCF9A28, dark: 0xF0B32E)
+    private static let sage = Color(light: 0xD4B737, dark: 0xF5D440)
+    private static let green = Color(light: 0x42A42A, dark: 0x4FC532)
+    private static let emerald = Color(light: 0x3E8E59, dark: 0x4CAF6E)
+    private static let mint = Color(light: 0x50AE8B, dark: 0x5FCFA5)
+    private static let teal = Color(light: 0x4BACCF, dark: 0x57C8F0)
+    private static let cyan = Color(light: 0x3F81C7, dark: 0x4A97E8)
+    private static let slateBlue = Color(light: 0x285FCA, dark: 0x2F6FEB)
+    private static let indigo = Color(light: 0x2B48BF, dark: 0x3355E0)
+    private static let periwinkle = Color(light: 0x492CDE, dark: 0x5433FF)
+    private static let violet = Color(light: 0x6A39DE, dark: 0x7A42FF)
+    private static let plum = Color(light: 0x791FBA, dark: 0x8E24DB)
+    private static let lavender = Color(light: 0xA26BBF, dark: 0xBE7EE0)
+    private static let magenta = Color(light: 0xBA2995, dark: 0xDB30B0)
+    private static let pink = Color(light: 0xB1275D, dark: 0xD22E6E)
+    /// Task #157 (実機フィードバック): the reference picker's 20th swatch
+    /// (grid bottom-right) is plain white, not another hue — kept as its
+    /// own `Color` constant (rather than inlining `.white`) so it reads the
+    /// same as every other named stop above and so a future re-tune can
+    /// find it by scanning this list. Same in light and dark: white doesn't
+    /// need a dimmer light-mode variant the way a saturated hue does.
+    private static let rose = Color(light: 0xFFFFFF, dark: 0xFFFFFF)
 
     /// D「アカウントのラベル色を変更可能に」: a named, stable identifier for
     /// each palette entry — `AccountRecord.labelColorKey` stores this
@@ -99,8 +115,9 @@ public enum OtegamiAccountColor {
     /// comment), and `AccountCloudSync`'s snapshot carries the same raw
     /// string so a manually-picked color travels between devices exactly
     /// like every other account field `docs/icloud-sync.md` syncs.
-    /// `CaseIterable`'s order matches `palette`'s (ascending hue), which is
-    /// what backs `AccountEditView`'s picker grid and `wheelIndex` below.
+    /// Declared in ascending hue order (matching the `let`s above), which
+    /// is what backs `AccountEditView`'s picker grid and `wheelIndex`
+    /// below.
     ///
     /// Existing case names (`teal`…`coral`, the original 8) keep their
     /// rawValues unchanged — renaming a case would silently reinterpret
@@ -136,13 +153,31 @@ public enum OtegamiAccountColor {
             }
         }
 
-        /// This case's position in the hue-ascending `allCases` order —
-        /// used only for the circular hue-distance estimate in
-        /// `leastUsedColorKey(avoiding:)`. Force-`!` is safe: `self` is
-        /// always one of `Self.allCases` by construction.
-        var wheelIndex: Int {
-            Self.allCases.firstIndex(of: self)!
+        /// This case's position in the hue-ascending, white-excluded wheel
+        /// (`autoAssignableCases`) — used only for the circular hue-distance
+        /// estimate in `leastUsedColorKey(avoiding:)`. `nil` for `.rose`
+        /// (white, Task #157): white isn't a point on a hue wheel, so it
+        /// has no position to return, and both call sites below must treat
+        /// an existing white pick as having no bearing on hue distance
+        /// rather than crashing on it.
+        var wheelIndex: Int? {
+            OtegamiAccountColor.autoAssignableCases.firstIndex(of: self)
         }
+    }
+
+    /// Every `PaletteColor` eligible for *automatic* assignment — i.e. all
+    /// of `allCases` except `.rose` (white). Task #157: white must only
+    /// ever be reached by an explicit picker tap
+    /// (`AccountLabelColorPicker`), never handed out by the FNV-1a hash
+    /// fallback (`paletteIndex(for:)`) or recommended by
+    /// `leastUsedColorKey(avoiding:)` — a hash landing a brand-new account
+    /// on "no color" by chance would look like a bug, and white has no hue
+    /// to compare against other accounts' colors anyway. Relies on `.rose`
+    /// being the last case declared in `PaletteColor` (see that enum's doc
+    /// comment on ordering); `dropLast()` over recomputing a filter keeps
+    /// this a cheap array slice rather than an `O(n)` scan on every call.
+    private static var autoAssignableCases: [PaletteColor] {
+        Array(PaletteColor.allCases.dropLast())
     }
 
     /// The color assigned to `accountId`, honoring a manually-picked
@@ -167,7 +202,7 @@ public enum OtegamiAccountColor {
         if let overrideKey, let picked = PaletteColor(rawValue: overrideKey) {
             return picked
         }
-        return PaletteColor.allCases[paletteIndex(for: accountId)]
+        return autoAssignableCases[paletteIndex(for: accountId)]
     }
 
     /// Task #72「自動割当の改善」: which `PaletteColor` a *brand-new*
@@ -186,17 +221,24 @@ public enum OtegamiAccountColor {
     /// (`resolvedPaletteColor(for:override:)`, not just the ones with an
     /// explicit override) — an auto-assigned account still occupies a
     /// color slot that a new account shouldn't collide with. Returns
-    /// `PaletteColor.allCases.first` (red) when there are no existing
+    /// `autoAssignableCases.first` (red) when there are no existing
     /// accounts to avoid, so the very first account added gets a fixed,
     /// predictable color rather than whatever its id happens to hash to.
+    ///
+    /// Task #157: both the candidate range and the hue-distance math run
+    /// over `autoAssignableCases` (19 hues, `.rose`/white excluded) instead
+    /// of `allCases` (20) — this function must never *return* white, and
+    /// an existing account someone manually painted white contributes no
+    /// `wheelIndex` (`nil`, dropped by `compactMap`) since white has no
+    /// position on the hue wheel to measure distance from.
     public static func leastUsedColorKey(avoiding existingAccountColors: [PaletteColor]) -> PaletteColor {
-        let usedIndices = existingAccountColors.map(\.wheelIndex)
-        guard !usedIndices.isEmpty else { return PaletteColor.allCases[0] }
+        let usedIndices = existingAccountColors.compactMap(\.wheelIndex)
+        guard !usedIndices.isEmpty else { return autoAssignableCases[0] }
 
-        let wheelSize = PaletteColor.allCases.count
+        let wheelSize = autoAssignableCases.count
         // Shortest hop between two positions on a `wheelSize`-slot circle —
-        // e.g. on a 20-slot wheel, positions 1 and 18 are 3 apart (through
-        // 0), not 17.
+        // e.g. on a 19-slot wheel, positions 1 and 17 are 3 apart (through
+        // 0), not 16.
         func circularDistance(_ a: Int, _ b: Int) -> Int {
             let direct = abs(a - b)
             return min(direct, wheelSize - direct)
@@ -210,11 +252,15 @@ public enum OtegamiAccountColor {
             let distanceB = usedIndices.map { circularDistance(candidateB, $0) }.min() ?? 0
             return distanceA < distanceB
         }!
-        return PaletteColor.allCases[farthestIndex]
+        return autoAssignableCases[farthestIndex]
     }
 
+    /// Task #157: mods against `autoAssignableCases.count` (19), not the
+    /// full 20-case palette — the hash fallback must never land a new
+    /// account on white (`.rose`), which is reachable only by an explicit
+    /// picker tap.
     static func paletteIndex(for accountId: String) -> Int {
-        Int(fnv1aHash(accountId) % UInt64(palette.count))
+        Int(fnv1aHash(accountId) % UInt64(autoAssignableCases.count))
     }
 
     /// FNV-1a, 64-bit. Not cryptographic — doesn't need to be, this only
