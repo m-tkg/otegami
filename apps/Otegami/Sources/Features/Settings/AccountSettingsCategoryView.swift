@@ -142,6 +142,25 @@ struct AccountSettingsCategoryView: View {
                             .tint(OtegamiColor.destructive)
                             .accessibilityIdentifier("settings.account.\(account.id).delete")
                         }
+                        #if os(macOS)
+                        // 実機バグ修正 (2026-07-29「アカウントの削除ができ
+                        // ない」): `.swipeActions`はmacOS(AppKitホスト)では
+                        // 効かない — `SwipeActionSettingsStore`の doc
+                        // comment・`MessageListRow.contextMenuContent`が
+                        // 既に確立している「macOSは右クリックの
+                        // `.contextMenu`で同じアクションを出す」という
+                        // このアプリの標準パターンをこの画面にも適用する。
+                        // これがないと、上のswipeActionsだけではmacOSに
+                        // 削除する手段が一切無かった。
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                pendingDeletion = account
+                            } label: {
+                                Label("削除", systemImage: "trash")
+                            }
+                            .accessibilityIdentifier("settings.account.\(account.id).contextDelete")
+                        }
+                        #endif
                     }
                     .onMove(perform: moveAccounts)
                 }
