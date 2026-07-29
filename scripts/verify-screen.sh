@@ -283,18 +283,25 @@
 #                                       アカウント) と結果一覧の見た目確認用。
 #                                       `list`と同じfakeメッセージ (件名に
 #                                       "UITest"を含む) がヒットする。
-#   composer-richtext                    Task #129 (作成画面リッチテキスト化):
-#                                       `-uitestsOpenComposerDirectly`
+#   composer-richtext                    Task #129→#161 (作成画面リッチ
+#                                       テキスト化): `-uitestsOpenComposerDirectly`
 #                                       (`OtegamiApp`の`.task`ブロック参照)
 #                                       で新規作成Composerをタップ無しで
-#                                       直接開く — `RichTextEditor`の本文
-#                                       欄とその`inputAccessoryView`
-#                                       (`RichTextFormattingBar`、太字/
-#                                       イタリック/下線/打ち消し線/リスト/
-#                                       インデント/書式クリア) の見た目確認
-#                                       用。`list`と同じfake HTMLアカウント
-#                                       を挿入しておく (Fromピッカーに実際の
+#                                       直接開く — Task #161の下部バー
+#                                       Spark準拠再構成後の「閉」状態
+#                                       (書式バー非表示、下部に「T」+添付+
+#                                       テンプレートの操作行だけが見える)。
+#                                       `list`と同じfake HTMLアカウントを
+#                                       挿入しておく (Fromピッカーに実際の
 #                                       アカウントが出る状態にするため)。
+#   composer-richtext-open               上記と同じ画面を「開」状態
+#                                       (`-uitestsShowFormattingBarDirectly`
+#                                       で`RichTextFormattingBar`をタップ
+#                                       無しで開いた状態にする) で開く —
+#                                       太字/イタリック/下線/打ち消し線/
+#                                       フォントサイズ/文字色/ハイライト/
+#                                       リスト/引用/インデント/リンク/書式
+#                                       クリアの全コントロールの見た目確認用。
 #
 # 上9つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目・
 # 9番目 (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応、8番目だけ
@@ -602,15 +609,23 @@ case "$SCENARIO" in
     default_out="search-active.png"
     ;;
   composer-richtext)
-    # Task #129 (作成画面リッチテキスト化): see this script's own header
-    # comment above — `-uitestsOpenComposerDirectly` opens a brand-new
-    # Composer with no "作成" button tap, so the formatting bar
-    # (`RichTextFormattingBar`, docked as the body `RichTextEditor`'s
-    # `inputAccessoryView`) is visible in the screenshot without any
-    # tap-dependent navigation.
+    # Task #129→#161: see this script's own header comment above —
+    # `-uitestsOpenComposerDirectly` opens a brand-new Composer with no
+    # "作成" button tap. This is the "閉" (formatting bar collapsed) state
+    # of Task #161's Spark-style bottom bar — see `composer-richtext-open`
+    # for the "開" state.
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
     launch_args+=("-uitestsOpenComposerDirectly")
     default_out="composer-richtext.png"
+    ;;
+  composer-richtext-open)
+    # Task #161: same Composer as `composer-richtext`, but with
+    # `-uitestsShowFormattingBarDirectly` pre-expanding `RichTextFormattingBar`
+    # (`ComposerView.isFormattingBarVisible`'s doc comment) — tap-free
+    # "開" state, no dependency on a "T" button tap actually registering.
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
+    launch_args+=("-uitestsOpenComposerDirectly" "-uitestsShowFormattingBarDirectly")
+    default_out="composer-richtext-open.png"
     ;;
   *)
     echo "error: unknown scenario '$SCENARIO' — see this script's header comment for the list" >&2

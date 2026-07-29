@@ -76,8 +76,13 @@ struct ComposerView: View {
     /// button toggles this instead, matching Spark's compose screen (書式
     /// バーはタップで開閉する引き出し、常時表示ではない). macOS's `bodySection`
     /// is untouched by this restructure (`bodySection`'s own doc comment).
+    // `-uitestsShowFormattingBarDirectly` (verify-screen.sh's
+    // `composer-richtext-open` scenario): pre-expands the bar so the
+    // "open" screenshot doesn't depend on a "T" button tap — same
+    // tap-free direct-nav convention as `MailScreenView.isFabExpanded`'s
+    // `-uitestsExpandFabDirectly`.
     #if os(iOS)
-    @State private var isFormattingBarVisible = false
+    @State private var isFormattingBarVisible = ProcessInfo.processInfo.arguments.contains("-uitestsShowFormattingBarDirectly")
     #endif
 
     /// See `isCcBccExpandedByUser`'s doc comment.
