@@ -198,6 +198,19 @@ struct RootView: View {
             .sheet(item: $composerPayload) { payload in
                 ComposerView(payload: payload)
             }
+            // Task #129 (作成画面リッチテキスト化): same "tap-free direct
+            // navigation" pattern as `MailScreenView`'s
+            // `-uitestsOpenSettingsDirectly`/`-uitestsOpenSearchDirectly`/etc.
+            // — lets `scripts/verify-screen.sh composer-richtext` open a
+            // brand-new Composer directly (formatting bar visible) with no
+            // "作成" button tap, via a plain launch argument. Always absent
+            // outside of that one verification scenario, so this is a no-op
+            // on every real launch.
+            .task {
+                if ProcessInfo.processInfo.arguments.contains("-uitestsOpenComposerDirectly") {
+                    presentComposer(.new)
+                }
+            }
             #endif
             // Foreground IDLE (M3, plan: "アプリ active 中、INBOX を IDLE"):
             // start every account's IDLE loop (plus one immediate opQueue

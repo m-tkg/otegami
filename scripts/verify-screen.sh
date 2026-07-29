@@ -274,6 +274,18 @@
 #                                       アカウント) と結果一覧の見た目確認用。
 #                                       `list`と同じfakeメッセージ (件名に
 #                                       "UITest"を含む) がヒットする。
+#   composer-richtext                    Task #129 (作成画面リッチテキスト化):
+#                                       `-uitestsOpenComposerDirectly`
+#                                       (`OtegamiApp`の`.task`ブロック参照)
+#                                       で新規作成Composerをタップ無しで
+#                                       直接開く — `RichTextEditor`の本文
+#                                       欄とその`inputAccessoryView`
+#                                       (`RichTextFormattingBar`、太字/
+#                                       イタリック/下線/打ち消し線/リスト/
+#                                       インデント/書式クリア) の見た目確認
+#                                       用。`list`と同じfake HTMLアカウント
+#                                       を挿入しておく (Fromピッカーに実際の
+#                                       アカウントが出る状態にするため)。
 #
 # 上9つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目・
 # 9番目 (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応、8番目だけ
@@ -569,6 +581,17 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_SEARCH_PRESET_QUERY=UITest")
     launch_args+=("-uitestsOpenSearchDirectly")
     default_out="search-active.png"
+    ;;
+  composer-richtext)
+    # Task #129 (作成画面リッチテキスト化): see this script's own header
+    # comment above — `-uitestsOpenComposerDirectly` opens a brand-new
+    # Composer with no "作成" button tap, so the formatting bar
+    # (`RichTextFormattingBar`, docked as the body `RichTextEditor`'s
+    # `inputAccessoryView`) is visible in the screenshot without any
+    # tap-dependent navigation.
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
+    launch_args+=("-uitestsOpenComposerDirectly")
+    default_out="composer-richtext.png"
     ;;
   *)
     echo "error: unknown scenario '$SCENARIO' — see this script's header comment for the list" >&2

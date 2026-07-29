@@ -60,13 +60,40 @@ struct ComposerView: View {
     /// cancelled-send restore) *does* carry it, since that's in-memory only.
     @State private var bccText = ""
     @State private var subject = ""
-    @State private var bodyText = ""
-    /// Task #125 「署名カーソル」: bound to `bodySection`'s `TextEditor` —
+    /// Task #129 (作成画面リッチテキスト化): the body editor's real state —
+    /// replaces the M1-era plain `bodyText: String` now that `bodySection`
+    /// is a `RichTextEditor` (`UITextView`/`NSTextView` +
+    /// `NSAttributedString`, not SwiftUI's `TextEditor`). `bodyText` below
+    /// is kept as a computed plain-text projection so every read site from
+    /// before #129 (persistence into `plainTextBody`, emptiness checks,
+    /// `hasSuffix`) keeps working unchanged; every *write* site now goes
+    /// through `setPlainBody(_:)`/`appendPlainBody(_:)` instead (plain text
+    /// in, exactly like before — only newly-typed/selected text ever picks
+    /// up formatting from the formatting bar).
+    @State private var attributedBodyText = RichTextAttributedString.plainAttributedString("")
+    /// Task #125 「署名カーソル」: bound to `bodySection`'s `RichTextEditor` —
     /// only ever *written* by `updateSignatureText(newId:)` right after it
-    /// mutates `bodyText` (`ComposerCursorPlacement.cursorIndex`'s result).
-    /// Left untouched the rest of the time, so normal typing/selection isn't
-    /// interfered with.
-    @State private var bodySelection: TextSelection?
+    /// mutates `attributedBodyText` (`ComposerCursorPlacement.cursorIndex`'s
+    /// result, converted to an `NSRange`). Left untouched the rest of the
+    /// time, so normal typing/selection isn't interfered with.
+    @State private var bodySelectedRange = NSRange(location: 0, length: 0)
+    /// Task #129: created once, handed to both `bodySection`'s
+    /// `RichTextEditor` and its formatting bar — see
+    /// `RichTextEditingController`'s doc comment.
+    @StateObject private var richTextEditingController = RichTextEditingController()
+
+    /// See `attributedBodyText`'s doc comment.
+    private var bodyText: String { attributedBodyText.string }
+
+    private func setPlainBody(_ text: String) {
+        attributedBodyText = RichTextAttributedString.plainAttributedString(text)
+    }
+
+    private func appendPlainBody(_ text: String) {
+        let mutable = NSMutableAttributedString(attributedString: attributedBodyText)
+        mutable.append(RichTextAttributedString.plainAttributedString(text))
+        attributedBodyText = mutable
+    }
 
     // Resolved once, from the original message, when `payload.kind` is
     // `.reply` — carried straight into the enqueued `OutboxMessageRecord`
@@ -130,7 +157,17 @@ struct ComposerView: View {
     }
 
     private var currentSnapshot: ComposerSnapshot {
-        ComposerSnapshot(to: toText, cc: ccText, bcc: bccText, subject: subject, body: bodyText)
+        ComposerSnapshot(to: toText, cc: ccText, bcc: bccText, subject: subject, body: bodySnapshotString)
+    }
+
+    /// Task #129: an HTML rendering of `attributedBodyText`, used only as
+    /// `ComposerSnapshot.body`'s value — comparing the plain-text projection
+    /// alone (`bodyText`) would miss a purely-formatting edit (e.g.
+    /// selecting existing text and making it bold, with not a single
+    /// character added/removed), which should still count as "something to
+    /// lose" for `hasUnsavedChanges`'s save-or-discard prompt.
+    private var bodySnapshotString: String {
+        RichTextHTMLCoder.encode(RichTextAttributedString.makeDocument(from: attributedBodyText))
     }
 
     /// Whether closing now would silently lose something the user typed.
@@ -364,13 +401,20 @@ struct ComposerView: View {
 
     private var bodySection: some View {
         Section("本文") {
-            // Task #125 「署名カーソル」: `selection:` バインディングを追加
-            // したのは`updateSignatureText(newId:)`がカーソル位置を明示的に
-            // 制御するため — 通常の編集ではこのバインディングへの書き込みは
-            // 発生しない (`bodySelection`のdoc comment参照)。
-            TextEditor(text: $bodyText, selection: $bodySelection)
-                .frame(minHeight: 240)
-                .accessibilityIdentifier("composer.body")
+            // Task #129 (作成画面リッチテキスト化): `RichTextEditor` (a real
+            // `UITextView`/`NSTextView` bound to `NSAttributedString`) replaces
+            // the M1-era SwiftUI `TextEditor` — see `attributedBodyText`'s doc
+            // comment. `RichTextFormattingBar` sits directly above it on both
+            // platforms (see that view's own doc comment for why an inline
+            // bar rather than a keyboard `inputAccessoryView`).
+            RichTextFormattingBar(controller: richTextEditingController)
+            RichTextEditor(
+                attributedText: $attributedBodyText,
+                selectedRange: $bodySelectedRange,
+                controller: richTextEditingController,
+                accessibilityIdentifier: "composer.body"
+            )
+            .frame(minHeight: 240)
         }
     }
 
@@ -490,11 +534,11 @@ struct ComposerView: View {
             && bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if isBlankComposition, let templateSubject = template.subject, !templateSubject.isEmpty {
             subject = templateSubject
-            bodyText = template.body
+            setPlainBody(template.body)
         } else if bodyText.isEmpty {
-            bodyText = template.body
+            setPlainBody(template.body)
         } else {
-            bodyText += "\n\n" + template.body
+            appendPlainBody("\n\n" + template.body)
         }
     }
 
@@ -590,18 +634,29 @@ struct ComposerView: View {
     /// behaves.
     private func updateSignatureText(newId: Int64?) {
         if let insertedSignatureText, bodyText.hasSuffix(insertedSignatureText) {
-            bodyText.removeLast(insertedSignatureText.count)
+            // Task #129: removal has to go through the attributed string
+            // directly (not `String.removeLast(_:)`) — `NSRange` counts
+            // UTF-16 units, not `Character`s, so the length to delete is
+            // measured the same way.
+            let mutable = NSMutableAttributedString(attributedString: attributedBodyText)
+            let removeLength = (insertedSignatureText as NSString).length
+            mutable.deleteCharacters(in: NSRange(location: mutable.length - removeLength, length: removeLength))
+            attributedBodyText = mutable
         }
         insertedSignatureText = nil
         guard let newId, let signature = availableSignatures.first(where: { $0.id == newId }) else { return }
         let separator = bodyText.isEmpty ? "" : "\n\n"
         let insertion = separator + signature.body
-        bodyText += insertion
+        appendPlainBody(insertion)
         insertedSignatureText = insertion
         let cursorIndex = ComposerCursorPlacement.cursorIndex(
             in: bodyText, signatureBody: signature.body, hasQuoteAboveSignature: hasQuoteAboveSignature
         )
-        bodySelection = TextSelection(insertionPoint: cursorIndex)
+        // `ComposerCursorPlacement` works in `String.Index` terms;
+        // `NSRange(_:in:)` converts that to the UTF-16-based `NSRange`
+        // `RichTextEditor`'s `UITextView`/`NSTextView` selection expects.
+        let nsIndex = NSRange(cursorIndex..<cursorIndex, in: bodyText)
+        bodySelectedRange = NSRange(location: nsIndex.location, length: 0)
     }
 
     /// Task #125 「署名カーソル」: whether `bodyText` already carries a
@@ -685,7 +740,7 @@ struct ComposerView: View {
             ccText = prefill.cc.joined(separator: ", ")
             bccText = prefill.bcc.joined(separator: ", ")
             subject = prefill.subject
-            bodyText = prefill.body
+            setPlainBody(prefill.body)
         }
         // Baseline for `hasUnsavedChanges` — captured last, after whatever
         // prefill above (reply quoting, or a resumed draft's saved text)
@@ -729,7 +784,7 @@ struct ComposerView: View {
         toText = draft.toAddresses.map(\.description).joined(separator: ", ")
         ccText = draft.ccAddresses.map(\.description).joined(separator: ", ")
         subject = draft.subject
-        bodyText = draft.plainTextBody
+        setPlainBody(draft.plainTextBody)
         inReplyToMessageId = draft.inReplyToMessageId
         references = draft.references
         draftServerMailboxId = draft.serverMailboxId
@@ -754,7 +809,7 @@ struct ComposerView: View {
         ccText = snapshot.ccText
         bccText = snapshot.bccText
         subject = snapshot.subject
-        bodyText = snapshot.bodyText
+        setPlainBody(snapshot.bodyText)
         inReplyToMessageId = snapshot.inReplyToMessageId
         references = snapshot.references
         pendingAttachments = snapshot.attachments
@@ -835,11 +890,11 @@ struct ComposerView: View {
         }
 
         if let plainText = context.bodyRecord?.plainText, !plainText.isEmpty {
-            bodyText = plainText
+            setPlainBody(plainText)
         } else if let html = context.bodyRecord?.html, !html.isEmpty {
-            bodyText = HTMLTextExtractor.plainText(fromHTML: html)
+            setPlainBody(HTMLTextExtractor.plainText(fromHTML: html))
         } else {
-            bodyText = ""
+            setPlainBody("")
         }
 
         if let account, let auth {
@@ -1074,7 +1129,7 @@ struct ComposerView: View {
             toText = context.message.fromAddresses.map(\.description).joined(separator: ", ")
         }
 
-        bodyText = "\n\n" + quotedBody(from: context.bodyRecord)
+        setPlainBody("\n\n" + quotedBody(from: context.bodyRecord))
     }
 
     /// Plain-text quoting (plan: "本文に`> `引用"). Falls back to
@@ -1147,7 +1202,7 @@ struct ComposerView: View {
             }) ?? context.attachments
         }
 
-        bodyText = "\n\n" + forwardHeaderBlock(for: context.message) + "\n\n" + quotedBody(from: context.bodyRecord)
+        setPlainBody("\n\n" + forwardHeaderBlock(for: context.message) + "\n\n" + quotedBody(from: context.bodyRecord))
 
         var someAttachmentFailedToCarryOver = false
         if let account, let auth {
@@ -1170,7 +1225,7 @@ struct ComposerView: View {
             someAttachmentFailedToCarryOver = true
         }
         if someAttachmentFailedToCarryOver {
-            bodyText += "\n\n(元メールの添付ファイルを一部引き継げませんでした。必要であれば改めて添付してください。)"
+            appendPlainBody("\n\n(元メールの添付ファイルを一部引き継げませんでした。必要であれば改めて添付してください。)")
         }
     }
 
