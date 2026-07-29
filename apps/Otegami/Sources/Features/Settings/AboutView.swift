@@ -5,6 +5,14 @@ import SwiftUI
 /// (`MARKETING_VERSION`/`CURRENT_PROJECT_VERSION`, `Config/Shared.xcconfig`)
 /// rather than hardcoding a string here, so this view never needs editing
 /// just because the version number changed.
+///
+/// Task #155 (2026-07-29): macOS の`OtegamiSettingsView`が「設定」/「情報」
+/// の2タブ`TabView`からサイドバー+detailの`NavigationSplitView`に作り
+/// 直された際、「情報」タブ (この`AboutView`の表示先) を廃止した —
+/// サイドバー構成に自然に収まる場所が無く、同等の情報はメニューバーの
+/// 「Otegami」→「Otegamiについて」(標準の About panel) で代替できるため。
+/// その結果、この型はどこからも呼ばれなくなった (`#Preview`のみ) —
+/// 今後 iOS 側などで再利用する可能性を考え、ファイル自体は削除していない。
 struct AboutView: View {
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"

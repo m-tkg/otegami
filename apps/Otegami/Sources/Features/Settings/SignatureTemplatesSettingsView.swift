@@ -18,48 +18,68 @@ struct SignatureTemplatesSettingsView: View {
     @State private var pendingDeletion: SignatureTemplateRecord?
 
     var body: some View {
+        settingsContainer
+            .navigationTitle("署名テンプレート")
+            .task { await loadSignatures() }
+            .sheet(isPresented: $isAddingNew, onDismiss: { Task { await loadSignatures() } }) {
+                SignatureTemplateEditView(signature: nil)
+            }
+            .sheet(item: $editingSignature, onDismiss: { Task { await loadSignatures() } }) { signature in
+                SignatureTemplateEditView(signature: signature)
+            }
+            .alert(
+                "署名テンプレートを削除しますか？",
+                isPresented: Binding(
+                    get: { pendingDeletion != nil },
+                    set: { if !$0 { pendingDeletion = nil } }
+                ),
+                presenting: pendingDeletion
+            ) { signature in
+                Button("削除", role: .destructive) {
+                    Task { await deleteSignature(signature) }
+                }
+                .accessibilityIdentifier("settings.signatures.confirmDeleteButton")
+                Button("キャンセル", role: .cancel) {}
+            } message: { signature in
+                Text("「\(signature.name)」を削除します。デフォルト署名に設定しているアカウントがあれば、その設定も解除されます。")
+            }
+    }
+
+    /// Task #155: see `MailListSettingsView`'s identical doc comment on
+    /// this same property.
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(macOS)
+        Form {
+            sections
+        }
+        .formStyle(.grouped)
+        .toggleStyle(.switch)
+        #else
         List {
-            if signatures.isEmpty {
-                Text("署名テンプレートがありません。")
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("settings.signatures.emptyState")
-            } else {
-                ForEach(signatures) { signature in
-                    signatureRow(signature)
-                }
-            }
-            Section {
-                Button {
-                    isAddingNew = true
-                } label: {
-                    Label("署名テンプレートを追加", systemImage: "plus")
-                }
-                .accessibilityIdentifier("settings.signatures.addButton")
+            sections
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
+        if signatures.isEmpty {
+            Text("署名テンプレートがありません。")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("settings.signatures.emptyState")
+        } else {
+            ForEach(signatures) { signature in
+                signatureRow(signature)
             }
         }
-        .navigationTitle("署名テンプレート")
-        .task { await loadSignatures() }
-        .sheet(isPresented: $isAddingNew, onDismiss: { Task { await loadSignatures() } }) {
-            SignatureTemplateEditView(signature: nil)
-        }
-        .sheet(item: $editingSignature, onDismiss: { Task { await loadSignatures() } }) { signature in
-            SignatureTemplateEditView(signature: signature)
-        }
-        .alert(
-            "署名テンプレートを削除しますか？",
-            isPresented: Binding(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ),
-            presenting: pendingDeletion
-        ) { signature in
-            Button("削除", role: .destructive) {
-                Task { await deleteSignature(signature) }
+        Section {
+            Button {
+                isAddingNew = true
+            } label: {
+                Label("署名テンプレートを追加", systemImage: "plus")
             }
-            .accessibilityIdentifier("settings.signatures.confirmDeleteButton")
-            Button("キャンセル", role: .cancel) {}
-        } message: { signature in
-            Text("「\(signature.name)」を削除します。デフォルト署名に設定しているアカウントがあれば、その設定も解除されます。")
+            .accessibilityIdentifier("settings.signatures.addButton")
         }
     }
 

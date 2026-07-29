@@ -17,48 +17,68 @@ struct TemplatesSettingsView: View {
     @State private var pendingDeletion: MailTemplateRecord?
 
     var body: some View {
+        settingsContainer
+            .navigationTitle("テンプレート")
+            .task { await loadTemplates() }
+            .sheet(isPresented: $isAddingNew, onDismiss: { Task { await loadTemplates() } }) {
+                TemplateEditView(template: nil)
+            }
+            .sheet(item: $editingTemplate, onDismiss: { Task { await loadTemplates() } }) { template in
+                TemplateEditView(template: template)
+            }
+            .alert(
+                "テンプレートを削除しますか？",
+                isPresented: Binding(
+                    get: { pendingDeletion != nil },
+                    set: { if !$0 { pendingDeletion = nil } }
+                ),
+                presenting: pendingDeletion
+            ) { template in
+                Button("削除", role: .destructive) {
+                    Task { await deleteTemplate(template) }
+                }
+                .accessibilityIdentifier("settings.templates.confirmDeleteButton")
+                Button("キャンセル", role: .cancel) {}
+            } message: { template in
+                Text("「\(template.name)」を削除します。")
+            }
+    }
+
+    /// Task #155: see `MailListSettingsView`'s identical doc comment on
+    /// this same property.
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(macOS)
+        Form {
+            sections
+        }
+        .formStyle(.grouped)
+        .toggleStyle(.switch)
+        #else
         List {
-            if templates.isEmpty {
-                Text("テンプレートがありません。")
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("settings.templates.emptyState")
-            } else {
-                ForEach(templates) { template in
-                    templateRow(template)
-                }
-            }
-            Section {
-                Button {
-                    isAddingNew = true
-                } label: {
-                    Label("テンプレートを追加", systemImage: "plus")
-                }
-                .accessibilityIdentifier("settings.templates.addButton")
+            sections
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
+        if templates.isEmpty {
+            Text("テンプレートがありません。")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("settings.templates.emptyState")
+        } else {
+            ForEach(templates) { template in
+                templateRow(template)
             }
         }
-        .navigationTitle("テンプレート")
-        .task { await loadTemplates() }
-        .sheet(isPresented: $isAddingNew, onDismiss: { Task { await loadTemplates() } }) {
-            TemplateEditView(template: nil)
-        }
-        .sheet(item: $editingTemplate, onDismiss: { Task { await loadTemplates() } }) { template in
-            TemplateEditView(template: template)
-        }
-        .alert(
-            "テンプレートを削除しますか？",
-            isPresented: Binding(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ),
-            presenting: pendingDeletion
-        ) { template in
-            Button("削除", role: .destructive) {
-                Task { await deleteTemplate(template) }
+        Section {
+            Button {
+                isAddingNew = true
+            } label: {
+                Label("テンプレートを追加", systemImage: "plus")
             }
-            .accessibilityIdentifier("settings.templates.confirmDeleteButton")
-            Button("キャンセル", role: .cancel) {}
-        } message: { template in
-            Text("「\(template.name)」を削除します。")
+            .accessibilityIdentifier("settings.templates.addButton")
         }
     }
 

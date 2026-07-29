@@ -7086,3 +7086,126 @@ green、Composer/SyncEngine領域で並行作業中の別エージェントの�
 でも実行のたびに変わって見えたが、これは各実行がシミュレータへの
 fresh installでランダムなアカウントIDを新規生成しているためで
 (FNV-1aハッシュ自体はaccount id固定なら決定的)、今回の変更とは無関係。
+
+## macOS 設定画面の注意点 (Task #155)
+
+実機報告「v1.1.0-beta の macOS 設定画面が使い物にならないくらい崩れて
+いる」の調査・修正記録。直近の「設定画面の5カテゴリ化」(iOS 向けに、
+`AccountsListContent` のカテゴリ一覧 + `NavigationLink` push で作った
+構造) を macOS の `Settings` シーン (`OtegamiSettingsView`) にもそのまま
+持ち込んだ結果、複数の崩れが発生していた。
+
+### 見つかった不具合
+
+1. **`TabView` にホストされた `NavigationStack` は push したら戻れない**
+   (最重要・致命的): 「設定」/「情報」の2タブの `TabView`、「設定」タブ
+   の中身がカテゴリ一覧からさらに push する構造だったが、実機で CGEvent/
+   Accessibility 経由の本物のクリックを合成して検証したところ、
+   `NavigationLink` を1段 push すると、自動生成される戻るボタンをクリック
+   しても、明示的に `@Environment(\.dismiss)` を呼ぶボタンを追加しても
+   まったく pop が起きないことを確認した。一度カテゴリを開くと二度と
+   戻れず、ウィンドウを閉じる (`Settings` シーンごと終了する) しかなく
+   なる。カテゴリが「アカウント一覧」1つだけだった頃はこの経路をほぼ
+   使わなかったため気づかれていなかった。
+2. **`Form` の既定スタイル (`.automatic`) でラベル列がはみ出す**:
+   `AccountEditView` の「新しいパスワード」のような長いラベルが、macOS の
+   既定 `Form` スタイルでは他の短いラベル (「ホスト」「ポート」等) に
+   合わせたラベル列幅を超え、ウィンドウ左端の外へはみ出して表示された
+   (実機スクリーンショットで再現・確認済み)。
+3. **ウィンドウが不必要に大きく、空白だらけ**: カテゴリ一覧画面が
+   900×508 まで自動拡大される一方、実際のコンテンツ幅は280px程度しか
+   なく、大半が空白のまま表示されていた。
+
+### 修正方針と実装
+
+- **(1) への対応**: macOS の設定画面を、iOS のカテゴリ一覧 + push という
+  構造から、`NavigationSplitView` (左にカテゴリのサイドバー、右に detail)
+  という mac らしいサイドバー構成に作り直した (`OtegamiSettingsView.swift`
+  の `MacSettingsSplitView`)。`NavigationSplitView` はそもそも
+  `NavigationStack` を `TabView` にネストしないので、上の不具合が起きる
+  構造自体が無くなる。detail 側のさらに奥の遷移 (アカウント編集・
+  ツールバーカスタマイズ等) は detail 側の独立した `NavigationStack` の
+  push であり、`TabView` の外にあるので影響を受けない (`AccountsSettingsView`
+  のシート — ハンバーガーメニュー経由 — と同じ形であり、そちらは実機で
+  問題なく動くことを確認済み)。「情報」(`AboutView`) タブは廃止した —
+  サイドバー構成に自然に収まる場所が無く、同等の情報はメニューバーの
+  「Otegami」→「Otegamiについて」(標準の About panel) で代替できるため。
+  `AboutView` 自体は削除していない (`#Preview` のみから参照) — 今後 iOS
+  側などで再利用する可能性を考慮。
+- **(2) への対応**: `Form` を使う画面 (`AccountEditView`/
+  `GoogleAvatarDiagnosticsView`/`PushNotificationSettingsView`) に macOS
+  限定で `.formStyle(.grouped)` (macOS の「システム設定」が使うスタイル、
+  ラベル列の幅をフォーム全体で揃えて計算する) を適用し、はみ出しを解消。
+- **(3) への対応 + 実機フィードバック第2弾「Apple 標準の見た目に揃えて
+  欲しい」**: `List` を使っていたカテゴリ画面
+  (`AccountSettingsCategoryView`/`MailListSettingsView`/
+  `MailViewerSettingsView`/`MailComposeSettingsView`/
+  `MailboxVisibilityView`/`DefaultMailAppSettingsView`/
+  `TemplatesSettingsView`/`SignatureTemplatesSettingsView`) を、macOS
+  限定で `Form` + `.formStyle(.grouped)` に切り替えた。`OtegamiColor`
+  の独自背景色・アクセント塗り (`.scrollContentBackground(.hidden)`/
+  `.background(OtegamiColor.background)`/`.tint(OtegamiColor.accent)`)
+  は macOS には適用せず、AppKit 標準の外観に任せる — iOS はこれらの
+  画面の見た目を一切変えていない (`#if os(macOS)`/`#else` で分岐)。
+  `Toggle` は macOS 限定で `.toggleStyle(.switch)` を適用し、System
+  Settings と同じスイッチ見た目にした (既定のチェックボックス見た目は
+  使わない)。
+- **例外 (`List` のまま残した画面)**: `AccountSettingsCategoryView`
+  (アカウントの並び替え)・`MessageToolbarSettingsView`(ツールバーの
+  並び替え)・`FolderCategoryOrderSettingsView`(カテゴリの並び替え) の
+  3画面は、macOS でも `List` のまま残している — ドラッグ並び替え
+  (`.onMove`) は macOS の `List` 固有のホバーで出るドラッグハンドルに
+  依存しており、`Form` に切り替えるとこの並び替え体験そのものが失われる
+  懸念があったため (未検証のまま置き換えるリスクを避けた)。この3画面も
+  `.toggleStyle(.switch)`/背景色ストリップは他画面と揃えている。
+
+### 各画面での実装パターン
+
+```swift
+var body: some View {
+    settingsContainer
+        .navigationTitle("...")
+}
+
+@ViewBuilder
+private var settingsContainer: some View {
+    #if os(macOS)
+    Form { sections }
+        .formStyle(.grouped)
+        .toggleStyle(.switch)
+    #else
+    List { sections }
+        .scrollContentBackground(.hidden)
+        .background(OtegamiColor.background)
+        .tint(OtegamiColor.accent)
+    #endif
+}
+
+@ViewBuilder
+private var sections: some View {
+    Section { ... } header: { ... } footer: { ... }
+    ...
+}
+```
+
+既存の `Section`/`Toggle`/`Picker`/`LabeledContent` 等の中身は無改造 —
+コンテナ (`List`/`Form`) だけをプラットフォームで分岐させている。
+
+**教訓: `#if os(macOS)` の分岐をmodifierチェーンの途中に挟むとき、
+一方の分岐を完全に空にしてはいけない** — Swift の型推論が
+`cannot infer contextual base` エラーで落ちる (`FolderCategoryOrderSettingsView`
+で実際に踏んだ)。両分岐とも最低1つの modifier を書く。何もしたくない
+場合は `.modifier(EmptyModifier())` をダミーとして使う。
+
+### 検証
+
+`scripts/verify-macos-qa.sh`のようなXCUITestを介さない実機検証手段が
+macOSには無いため、この回では scratchpad に `driver.swift`
+(`CGEvent`でクリック/ドラッグ/スクロールを合成、`AXUIElement`で
+ウィンドウ/ボタンの位置を問い合わせ) を新設し、`screencapture`+`sips`
+でクロップしたスクリーンショットと組み合わせて、全カテゴリ・アカウント
+編集・ツールバーカスタマイズまで実際にクリックして遷移・戻る操作を
+確認した (単なる見た目のスクリーンショットだけでなく、「戻るボタンが
+実際に効くか」という動作そのものを実クリックで検証できた)。iOS 側は
+`scripts/verify-screen.sh` の `settings`/`account-settings`/
+`toolbar-customize` シナリオで回帰なしを確認。

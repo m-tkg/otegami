@@ -37,80 +37,104 @@ struct MailListSettingsView: View {
     #endif
 
     var body: some View {
-        List {
-            Section {
-                // 実機フィードバック (2026-07-29): アイコン系 5 トグル
-                // (プロフィールアイコン/連絡先の写真/Google プロフィール
-                // 写真/Gravatar/企業ロゴ) を 1 トグルに集約し、外部通信の
-                // 注意書き footer も削除した。ON でこの 1 トグルが全ソース
-                // (連絡先→Google→Gravatar→企業ロゴ→イニシャル) をまとめて
-                // 有効化する — 個別ソースの保存キー
-                // (`AvatarSourceSettingsStore`) は解決チェーン側がそのまま
-                // 読むため残っており、この画面から書き分ける UI を無くした
-                // だけ。
-                Toggle("送信者のプロフィールアイコンを表示", isOn: $showAvatar)
-                    .accessibilityIdentifier("settings.list.showAvatarToggle")
-                    .onChange(of: showAvatar) { _, isOn in
-                        // 1 トグル化に伴い、個別ソースも一括で追随させる
-                        // (OFF→ON で「前に一部だけ切っていた」状態が残ると
-                        // 1 トグルの見た目と実挙動がずれるため)。
-                        showContactPhoto = isOn
-                        showGoogleProfilePhoto = isOn
-                        showGravatar = isOn
-                        showCompanyLogo = isOn
-                    }
-                Picker("本文プレビューの行数", selection: $previewLineCountRaw) {
-                    ForEach(PreviewLineCount.allCases) { count in
-                        Text(count.title).tag(count.rawValue)
-                    }
-                }
-                .pickerStyle(.menu)
-                .accessibilityIdentifier("settings.list.previewLineCountPicker")
-            } header: {
-                Text("表示")
-            }
+        settingsContainer
+            .navigationTitle("メール一覧")
+    }
 
-            // Task #52, 3: ハンバーガーメニューのカテゴリセクション (受信
-            // トレイ/アーカイブ/送信済み等) の並び替え — 一覧そのものではなく
-            // 一覧に辿り着くまでのフォルダメニューの設定だが、「一覧の並び方/
-            // まとめ方」というこのカテゴリの既存項目 (下のスレッド表示等) と
-            // 同じ性質と判断してここに置いた。
-            Section {
-                NavigationLink {
-                    FolderCategoryOrderSettingsView()
-                } label: {
-                    Label("カテゴリの並び替え", systemImage: "arrow.up.arrow.down")
-                }
-                .accessibilityIdentifier("settings.list.categoryOrderLink")
-            } footer: {
-                Text("フォルダメニューに並ぶ「受信トレイ」「アーカイブ」などカテゴリの表示順を変更できます。")
-            }
-
-            #if os(iOS)
-            swipeSection
-            #endif
-
-            // 実機フィードバック第3弾 (I): 旧「その他」から移設。
-            Section {
-                Toggle("スレッド表示", isOn: $isThreadingEnabled)
-                    .accessibilityIdentifier("settings.list.threadingToggle")
-            } footer: {
-                Text("ONで一覧を会話単位にまとめます。OFFにすると一覧がメール単位になります。")
-            }
-
-            Section {
-                Toggle("サーバーのフラグと連動", isOn: $pinSyncWithFlagged)
-                    .accessibilityIdentifier("settings.pinSyncWithFlaggedToggle")
-            } header: {
-                Text("ピン留め")
-            } footer: {
-                Text("既定ではピン留めはこの端末・このアプリだけのローカルな印です。ONにすると、ピン留め/解除のたびに IMAP の \\Flagged フラグも更新し、他のメールクライアントでのフラグ操作も読み取ってピン留めに反映します。")
-            }
+    /// Task #155 (macOS 設定画面フィードバック 2026-07-29): macOS は
+    /// `Form` + `.formStyle(.grouped)` (System Settings と同じ標準スタイル)
+    /// で表示する — `List`独自の`OtegamiColor`背景・アクセント塗りは
+    /// macOS からは外し、AppKit 標準の見た目に任せる。`.toggleStyle(.switch)`
+    /// で`Toggle`もチェックボックスでなく標準のスイッチにする。iOS は
+    /// 元の`List`のまま (見た目変更なし)。
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(macOS)
+        Form {
+            sections
         }
-        .navigationTitle("メール一覧")
+        .formStyle(.grouped)
+        .toggleStyle(.switch)
+        #else
+        List {
+            sections
+        }
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
+        Section {
+            // 実機フィードバック (2026-07-29): アイコン系 5 トグル
+            // (プロフィールアイコン/連絡先の写真/Google プロフィール
+            // 写真/Gravatar/企業ロゴ) を 1 トグルに集約し、外部通信の
+            // 注意書き footer も削除した。ON でこの 1 トグルが全ソース
+            // (連絡先→Google→Gravatar→企業ロゴ→イニシャル) をまとめて
+            // 有効化する — 個別ソースの保存キー
+            // (`AvatarSourceSettingsStore`) は解決チェーン側がそのまま
+            // 読むため残っており、この画面から書き分ける UI を無くした
+            // だけ。
+            Toggle("送信者のプロフィールアイコンを表示", isOn: $showAvatar)
+                .accessibilityIdentifier("settings.list.showAvatarToggle")
+                .onChange(of: showAvatar) { _, isOn in
+                    // 1 トグル化に伴い、個別ソースも一括で追随させる
+                    // (OFF→ON で「前に一部だけ切っていた」状態が残ると
+                    // 1 トグルの見た目と実挙動がずれるため)。
+                    showContactPhoto = isOn
+                    showGoogleProfilePhoto = isOn
+                    showGravatar = isOn
+                    showCompanyLogo = isOn
+                }
+            Picker("本文プレビューの行数", selection: $previewLineCountRaw) {
+                ForEach(PreviewLineCount.allCases) { count in
+                    Text(count.title).tag(count.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("settings.list.previewLineCountPicker")
+        } header: {
+            Text("表示")
+        }
+
+        // Task #52, 3: ハンバーガーメニューのカテゴリセクション (受信
+        // トレイ/アーカイブ/送信済み等) の並び替え — 一覧そのものではなく
+        // 一覧に辿り着くまでのフォルダメニューの設定だが、「一覧の並び方/
+        // まとめ方」というこのカテゴリの既存項目 (下のスレッド表示等) と
+        // 同じ性質と判断してここに置いた。
+        Section {
+            NavigationLink {
+                FolderCategoryOrderSettingsView()
+            } label: {
+                Label("カテゴリの並び替え", systemImage: "arrow.up.arrow.down")
+            }
+            .accessibilityIdentifier("settings.list.categoryOrderLink")
+        } footer: {
+            Text("フォルダメニューに並ぶ「受信トレイ」「アーカイブ」などカテゴリの表示順を変更できます。")
+        }
+
+        #if os(iOS)
+        swipeSection
+        #endif
+
+        // 実機フィードバック第3弾 (I): 旧「その他」から移設。
+        Section {
+            Toggle("スレッド表示", isOn: $isThreadingEnabled)
+                .accessibilityIdentifier("settings.list.threadingToggle")
+        } footer: {
+            Text("ONで一覧を会話単位にまとめます。OFFにすると一覧がメール単位になります。")
+        }
+
+        Section {
+            Toggle("サーバーのフラグと連動", isOn: $pinSyncWithFlagged)
+                .accessibilityIdentifier("settings.pinSyncWithFlaggedToggle")
+        } header: {
+            Text("ピン留め")
+        } footer: {
+            Text("既定ではピン留めはこの端末・このアプリだけのローカルな印です。ONにすると、ピン留め/解除のたびに IMAP の \\Flagged フラグも更新し、他のメールクライアントでのフラグ操作も読み取ってピン留めに反映します。")
+        }
     }
 
     #if os(iOS)

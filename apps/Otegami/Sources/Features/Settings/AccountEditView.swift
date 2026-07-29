@@ -204,9 +204,25 @@ struct AccountEditView: View {
             }
         }
         .navigationTitle("アカウントを編集")
+        #if os(macOS)
+        // Task #155 (macOS 設定画面が崩れている): macOS の既定 `Form`
+        // スタイル (`.automatic`) は、ラベル列の幅をこの画面のセクション
+        // ごとに計算し、「新しいパスワード」のような長いラベルが「ホスト」
+        // 「ポート」等の短いラベルより大きく育たず、ウィンドウ左端の外へ
+        // ラベルがはみ出す (実機で確認・screenshot で再現済み)。
+        // `.formStyle(.grouped)` (macOS の「システム設定」が使うスタイル)
+        // はラベル列の幅をフォーム全体で揃えて計算するため、この崩れを
+        // 解消する。iOSの`Form`は元から意図通りなのでmacOSのみに適用。
+        .formStyle(.grouped)
+        // 実機フィードバック (2026-07-29): macOS は System Settings 標準の
+        // 見た目に揃える方針 — `OtegamiColor`の独自背景/アクセント塗りは
+        // macOS には適用せず、AppKit 標準の外観に任せる (iOS は従来どおり)。
+        .toggleStyle(.switch)
+        #else
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
+        #endif
         .accessibilityIdentifier("accountEdit.screen")
         .task { await loadAvailableSignatures() }
         .task { await refreshScopeDiagnosis() }

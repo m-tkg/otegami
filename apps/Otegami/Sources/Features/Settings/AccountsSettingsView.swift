@@ -63,17 +63,26 @@ struct AccountsSettingsView: View {
 /// - **メール作成** (`MailComposeSettingsView`、新設) ← テンプレート・
 ///   署名テンプレート・送信キャンセルの猶予。
 /// - **このアプリについて** (`AboutView`) — ルート直下 (iOS のみ。macOS は
-///   `OtegamiSettingsView`の独立した「情報」タブに既にあるため、ここに
-///   重複させない)。
+///   ここを一切経由しない — 下の Task #155 の追記参照)。
 ///
-/// `AccountsListContent`という型名は維持している (`OtegamiSettingsView`
-/// (macOS Settings シーン) がこの型を直接埋め込む既存の配線を変更せずに
-/// 済むため) が、中身は「アカウント一覧」ではなく「カテゴリ一覧」に
-/// 変わった — M10 時点のこの型の doc comment (nested `NavigationStack`が
-/// macOS `TabView`と衝突する話) はそのまま有効: このルートも各カテゴリも
-/// 独自の`NavigationStack`を持たず、埋め込まれた側の`NavigationStack`
-/// (`AccountsSettingsView`の、または`OtegamiSettingsView`の"設定"タブの)
-/// にそのまま`NavigationLink`で積み上がる。
+/// `AccountsListContent`という型名は維持している (`AccountsSettingsView`
+/// の既存の配線を変更せずに済むため) が、中身は「アカウント一覧」では
+/// なく「カテゴリ一覧」に変わった — M10 時点のこの型の doc comment
+/// (nested `NavigationStack`が macOS `TabView`と衝突する話) はそのまま
+/// 有効: このルートも各カテゴリも独自の`NavigationStack`を持たず、
+/// 埋め込まれた側 (`AccountsSettingsView`) の`NavigationStack`にそのまま
+/// `NavigationLink`で積み上がる。
+///
+/// Task #155 (2026-07-29, 実機報告「macOS の設定画面が崩れている」):
+/// macOS はこの型 (`AccountsListContent`) をもう使わない —
+/// `OtegamiSettingsView`が独自の`NavigationSplitView`(サイドバー+detail)
+/// に作り直されたため。理由は同ファイルの doc comment 参照: 旧
+/// `TabView`(「設定」/「情報」の2タブ、「設定」タブの中はこの
+/// `AccountsListContent`のカテゴリ一覧からpush) に、実機検証で
+/// 「`TabView`にホストされた`NavigationStack`はpushしたら戻るボタンも
+/// `dismiss()`も一切効かない」という致命的な不具合が見つかった。
+/// このコメント自身とこの型は iOS 専用 (`AccountsSettingsView`の
+/// シート・`SettingsSheetView`) として引き続き使われている。
 struct AccountsListContent: View {
     /// Task #72: tap-free navigation for `scripts/verify-screen.sh`,
     /// mirroring `MailScreenView`'s `-uitestsOpenSettingsDirectly` hook

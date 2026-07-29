@@ -106,10 +106,15 @@ struct PushNotificationSettingsView: View {
             }
         }
         .navigationTitle("プッシュ通知")
+        #if os(macOS)
+        // Task #155: see `AccountEditView`'s doc comment on this same
+        // modifier.
+        .formStyle(.grouped)
+        .toggleStyle(.switch)
+        #else
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
-        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .onAppear {

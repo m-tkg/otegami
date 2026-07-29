@@ -29,24 +29,44 @@ struct MailboxVisibilityView: View {
     @State private var mailboxes: [MailboxRecord] = []
 
     var body: some View {
-        List {
-            Section {
-                ForEach(mailboxes) { mailbox in
-                    MailboxVisibilityRow(
-                        mailbox: mailbox,
-                        onToggle: { isVisible in toggleVisibility(mailbox: mailbox, isVisible: isVisible) }
-                    )
-                }
-            } footer: {
-                Text("非表示にしたメールボックスは、ハンバーガーメニュー/サイドバーの一覧と統合受信トレイの集計に出なくなり、同期も止まります（電池・通信の節約のためです）。メールの移動先としては引き続き選べます。")
-            }
+        settingsContainer
+            .navigationTitle("メールボックスの表示設定")
+            .accessibilityIdentifier("mailboxVisibility.screen")
+            .task { await observeMailboxes() }
+    }
+
+    /// Task #155: see `MailListSettingsView`'s identical doc comment on
+    /// this same property.
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(macOS)
+        Form {
+            sections
         }
-        .navigationTitle("メールボックスの表示設定")
+        .formStyle(.grouped)
+        .toggleStyle(.switch)
+        #else
+        List {
+            sections
+        }
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
-        .accessibilityIdentifier("mailboxVisibility.screen")
-        .task { await observeMailboxes() }
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
+        Section {
+            ForEach(mailboxes) { mailbox in
+                MailboxVisibilityRow(
+                    mailbox: mailbox,
+                    onToggle: { isVisible in toggleVisibility(mailbox: mailbox, isVisible: isVisible) }
+                )
+            }
+        } footer: {
+            Text("非表示にしたメールボックスは、ハンバーガーメニュー/サイドバーの一覧と統合受信トレイの集計に出なくなり、同期も止まります（電池・通信の節約のためです）。メールの移動先としては引き続き選べます。")
+        }
     }
 
     private func observeMailboxes() async {

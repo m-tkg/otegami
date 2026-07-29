@@ -88,9 +88,18 @@ struct GoogleAvatarDiagnosticsView: View {
             }
         }
         .navigationTitle("アバター診断")
+        #if os(macOS)
+        // Task #155: see `AccountEditView`'s doc comment on this same
+        // modifier — 長いラベルの`LabeledContent`行 (「最終構築時刻」等)
+        // が既定の macOS `Form`スタイルでは崩れうるので、他の`Form`
+        // 画面と同じく `.grouped` にしている。
+        .formStyle(.grouped)
+        .toggleStyle(.switch)
+        #else
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
+        #endif
         .accessibilityIdentifier("googleAvatarDiagnostics.screen")
         .task { await refresh() }
     }

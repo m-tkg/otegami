@@ -38,22 +38,41 @@ struct DefaultMailAppSettingsView: View {
     }
 
     var body: some View {
-        List {
-            Section {
-                Text("Otegami を既定のメールアプリに設定すると、他のアプリの「メールで送信」リンクや mailto: リンクを開いたときに Otegami が開くようになります。")
-                    .foregroundStyle(.secondary)
-            }
+        settingsContainer
+            .navigationTitle("既定のメールアプリ")
+    }
 
-            #if os(iOS)
-            iOSSection
-            #else
-            macOSSection
-            #endif
+    /// Task #155: see `MailListSettingsView`'s identical doc comment on
+    /// this same property.
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(macOS)
+        Form {
+            sections
         }
-        .navigationTitle("既定のメールアプリ")
+        .formStyle(.grouped)
+        #else
+        List {
+            sections
+        }
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
+        Section {
+            Text("Otegami を既定のメールアプリに設定すると、他のアプリの「メールで送信」リンクや mailto: リンクを開いたときに Otegami が開くようになります。")
+                .foregroundStyle(.secondary)
+        }
+
+        #if os(iOS)
+        iOSSection
+        #else
+        macOSSection
+        #endif
     }
 
     #if os(iOS)

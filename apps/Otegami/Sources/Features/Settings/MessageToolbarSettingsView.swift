@@ -80,9 +80,20 @@ struct MessageToolbarSettingsView: View {
         .environment(\.editMode, .constant(.active))
         #endif
         .navigationTitle("ツールバーの編集")
+        #if os(macOS)
+        // Task #155 (macOS 設定画面フィードバック 2026-07-29): この画面は
+        // 他の設定画面 (`Form`+`.formStyle(.grouped)`) と違い、意図的に
+        // `List`のまま残している — ドラッグ並び替え (`.onMove`) はmacOSの
+        // `List`固有のホバーで出るドラッグハンドルに依存しており (上の
+        // doc comment参照)、`Form`に切り替えるとこの並び替え体験そのものが
+        // 失われる懸念があるため。`.toggleStyle(.switch)`だけ他画面と
+        // 揃え、独自の背景色/アクセント塗りは外して標準の外観に任せる。
+        .toggleStyle(.switch)
+        #else
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
+        #endif
         .accessibilityIdentifier("messageToolbarSettings.list")
     }
 

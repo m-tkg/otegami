@@ -30,9 +30,18 @@ struct FolderCategoryOrderSettingsView: View {
         .navigationTitle("カテゴリの並び替え")
         .accessibilityIdentifier("folderCategoryOrderSettings.list")
         .onChange(of: order) { _, newValue in FolderCategoryOrderStore.saveOrder(newValue) }
+        #if os(macOS)
+        // Task #155: see `MessageToolbarSettingsView`'s identical doc
+        // comment — この画面もドラッグ並び替え (`.onMove`) が主目的なので
+        // `List`のまま (`Form`には切り替えない)。`.modifier(EmptyModifier())`
+        // はSwiftの「`#if`/`#else`の一方だけmodifierが空だと型推論に失敗
+        // する」問題を避けるためのダミー (見た目には無関係)。
+        .modifier(EmptyModifier())
+        #else
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
+        #endif
     }
 
     private func move(from source: IndexSet, to destination: Int) {

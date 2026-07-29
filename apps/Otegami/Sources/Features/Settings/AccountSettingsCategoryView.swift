@@ -34,7 +34,93 @@ struct AccountSettingsCategoryView: View {
     @AppStorage(DefaultAccountSettingsStore.defaultAccountIdKey) private var defaultAccountId = ""
 
     var body: some View {
+        settingsContainer
+            .navigationTitle("アカウントの設定")
+            #if os(iOS)
+            // アカウントの並び替え: iOS は`EditButton`で編集モードに入ってから
+            // ドラッグハンドルが出る通常の流儀 (`MessageToolbarSettingsView`の
+            // doc comment が記録している「常時編集モード」の代替) —
+            // このリストは並び替え専用画面ではなく `NavigationLink`
+            // (`AccountEditView`への遷移) とスワイプ削除も同居しているため、
+            // 常時編集モードにすると遷移・スワイプ操作を潰してしまう。
+            // macOS はもとから編集モードなしでドラッグ並び替えできる
+            // (`MessageToolbarSettingsView`と同じ理由) ので不要。
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    EditButton()
+                        .accessibilityIdentifier("settings.accounts.editButton")
+                }
+            }
+            #endif
+            .alert(
+                "アカウントを削除しますか？",
+                isPresented: Binding(
+                    get: { pendingDeletion != nil },
+                    set: { if !$0 { pendingDeletion = nil } }
+                ),
+                presenting: pendingDeletion
+            ) { account in
+                Button("削除", role: .destructive) {
+                    Task { await environment.deleteAccount(account) }
+                }
+                .accessibilityIdentifier("settings.confirmDeleteButton")
+                Button("キャンセル", role: .cancel) {}
+            } message: { account in
+                Text("\(account.displayName) (\(account.email)) を削除すると、ローカルに保存されたメールもすべて削除されます。")
+            }
+            .sheet(item: $accountEntryRoute) { route in
+                accountEntryDestination(for: route, binding: $accountEntryRoute)
+            }
+            .navigationDestination(item: $passwordEntryAccountId) { accountId in
+                if let account = environment.accounts.first(where: { $0.id == accountId }) {
+                    AccountEditView(account: account)
+                }
+            }
+            // Task #72: tap-free navigation for `scripts/verify-screen.sh` —
+            // same idea as `AccountsListContent`'s
+            // `-uitestsOpenAccountSettingsDirectly` hook, one screen deeper.
+            // Reuses `passwordEntryAccountId`'s existing `navigationDestination
+            // (item:)` above rather than adding a second one; a no-op on every
+            // real launch. Both `.task` (covers the case `environment.accounts`
+            // is already populated by the time this view appears) *and*
+            // `.onChange` (covers the more common case: this view appears
+            // before `environment`'s GRDB `ValueObservation` has delivered its
+            // first `accounts` array, so the `.task` body's own read sees an
+            // still-empty list) — a single `.task` alone missed the fixture
+            // account the first time this was tried, since `.task` never
+            // re-runs once `accounts` later updates.
+            .task { openFirstAccountEditForUITestIfNeeded() }
+            .onChange(of: environment.accounts.map(\.id)) { _, _ in
+                openFirstAccountEditForUITestIfNeeded()
+            }
+    }
+
+    /// Task #155 (macOS 設定画面フィードバック 2026-07-29): 他の設定画面
+    /// (`Form`+`.formStyle(.grouped)`) と違い、この画面は意図的に`List`の
+    /// まま残している — アカウントの並び替え (`.onMove`) は
+    /// `MessageToolbarSettingsView`の doc comment が説明するmacOSの`List`
+    /// 固有のホバードラッグハンドルに依存しており、`Form`に切り替えると
+    /// この並び替えが失われる懸念があるため。`.toggleStyle(.switch)`は
+    /// 他画面と揃え、独自の背景色/アクセント塗りは外して標準の外観に任せる。
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(macOS)
         List {
+            sections
+        }
+        .toggleStyle(.switch)
+        #else
+        List {
+            sections
+        }
+        .scrollContentBackground(.hidden)
+        .background(OtegamiColor.background)
+        .tint(OtegamiColor.accent)
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
             Section("アカウント") {
                 if environment.accounts.isEmpty {
                     Text("アカウントがありません。")
@@ -131,68 +217,6 @@ struct AccountSettingsCategoryView: View {
                 }
                 .accessibilityIdentifier("settings.defaultMailAppLink")
             }
-        }
-        .navigationTitle("アカウントの設定")
-        #if os(iOS)
-        // アカウントの並び替え: iOS は`EditButton`で編集モードに入ってから
-        // ドラッグハンドルが出る通常の流儀 (`MessageToolbarSettingsView`の
-        // doc comment が記録している「常時編集モード」の代替) —
-        // このリストは並び替え専用画面ではなく `NavigationLink`
-        // (`AccountEditView`への遷移) とスワイプ削除も同居しているため、
-        // 常時編集モードにすると遷移・スワイプ操作を潰してしまう。
-        // macOS はもとから編集モードなしでドラッグ並び替えできる
-        // (`MessageToolbarSettingsView`と同じ理由) ので不要。
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                EditButton()
-                    .accessibilityIdentifier("settings.accounts.editButton")
-            }
-        }
-        #endif
-        .alert(
-            "アカウントを削除しますか？",
-            isPresented: Binding(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ),
-            presenting: pendingDeletion
-        ) { account in
-            Button("削除", role: .destructive) {
-                Task { await environment.deleteAccount(account) }
-            }
-            .accessibilityIdentifier("settings.confirmDeleteButton")
-            Button("キャンセル", role: .cancel) {}
-        } message: { account in
-            Text("\(account.displayName) (\(account.email)) を削除すると、ローカルに保存されたメールもすべて削除されます。")
-        }
-        .sheet(item: $accountEntryRoute) { route in
-            accountEntryDestination(for: route, binding: $accountEntryRoute)
-        }
-        .navigationDestination(item: $passwordEntryAccountId) { accountId in
-            if let account = environment.accounts.first(where: { $0.id == accountId }) {
-                AccountEditView(account: account)
-            }
-        }
-        // Task #72: tap-free navigation for `scripts/verify-screen.sh` —
-        // same idea as `AccountsListContent`'s
-        // `-uitestsOpenAccountSettingsDirectly` hook, one screen deeper.
-        // Reuses `passwordEntryAccountId`'s existing `navigationDestination
-        // (item:)` above rather than adding a second one; a no-op on every
-        // real launch. Both `.task` (covers the case `environment.accounts`
-        // is already populated by the time this view appears) *and*
-        // `.onChange` (covers the more common case: this view appears
-        // before `environment`'s GRDB `ValueObservation` has delivered its
-        // first `accounts` array, so the `.task` body's own read sees an
-        // still-empty list) — a single `.task` alone missed the fixture
-        // account the first time this was tried, since `.task` never
-        // re-runs once `accounts` later updates.
-        .task { openFirstAccountEditForUITestIfNeeded() }
-        .onChange(of: environment.accounts.map(\.id)) { _, _ in
-            openFirstAccountEditForUITestIfNeeded()
-        }
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
-        .tint(OtegamiColor.accent)
     }
 
     /// One account row's content — see `AccountsListContent`'s previous

@@ -17,47 +17,67 @@ struct MailComposeSettingsView: View {
     #endif
 
     var body: some View {
-        List {
-            // C8「メール作成のテンプレート」.
-            Section {
-                NavigationLink {
-                    TemplatesSettingsView()
-                } label: {
-                    Label("テンプレート", systemImage: "doc.on.doc")
-                }
-                .accessibilityIdentifier("settings.templatesLink")
-            }
+        settingsContainer
+            .navigationTitle("メール作成")
+    }
 
-            // F「署名テンプレート」— 実機フィードバック第3弾 (I) でルート
-            // 直下からこのカテゴリへ移設。
-            Section {
-                NavigationLink {
-                    SignatureTemplatesSettingsView()
-                } label: {
-                    Label("署名テンプレート", systemImage: "signature")
-                }
-                .accessibilityIdentifier("settings.signaturesLink")
-            }
-
-            #if os(iOS)
-            Section {
-                Picker("送信取り消しの猶予", selection: $sendCancelWindowRaw) {
-                    ForEach(SendCancelWindow.allCases) { window in
-                        Text(window.title).tag(window.rawValue)
-                    }
-                }
-                .pickerStyle(.menu)
-                .accessibilityIdentifier("settings.sendCancelWindowPicker")
-            } header: {
-                Text("送信キャンセル")
-            } footer: {
-                Text("「送信」をタップしてから実際にサーバーへ送るまでの猶予時間です。この間は「送信を取り消す」で送信をキャンセルできます。アプリをバックグラウンドに切り替えると、残り時間に関わらず即座に送信されます。")
-            }
-            #endif
+    /// Task #155: see `MailListSettingsView`'s identical doc comment on
+    /// this same property.
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(macOS)
+        Form {
+            sections
         }
-        .navigationTitle("メール作成")
+        .formStyle(.grouped)
+        .toggleStyle(.switch)
+        #else
+        List {
+            sections
+        }
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
+        // C8「メール作成のテンプレート」.
+        Section {
+            NavigationLink {
+                TemplatesSettingsView()
+            } label: {
+                Label("テンプレート", systemImage: "doc.on.doc")
+            }
+            .accessibilityIdentifier("settings.templatesLink")
+        }
+
+        // F「署名テンプレート」— 実機フィードバック第3弾 (I) でルート
+        // 直下からこのカテゴリへ移設。
+        Section {
+            NavigationLink {
+                SignatureTemplatesSettingsView()
+            } label: {
+                Label("署名テンプレート", systemImage: "signature")
+            }
+            .accessibilityIdentifier("settings.signaturesLink")
+        }
+
+        #if os(iOS)
+        Section {
+            Picker("送信取り消しの猶予", selection: $sendCancelWindowRaw) {
+                ForEach(SendCancelWindow.allCases) { window in
+                    Text(window.title).tag(window.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("settings.sendCancelWindowPicker")
+        } header: {
+            Text("送信キャンセル")
+        } footer: {
+            Text("「送信」をタップしてから実際にサーバーへ送るまでの猶予時間です。この間は「送信を取り消す」で送信をキャンセルできます。アプリをバックグラウンドに切り替えると、残り時間に関わらず即座に送信されます。")
+        }
+        #endif
     }
 }

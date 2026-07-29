@@ -42,7 +42,40 @@ struct MailViewerSettingsView: View {
     @State private var uitestShowToolbarCustomizeDirectly = false
 
     var body: some View {
+        settingsContainer
+            .navigationDestination(isPresented: $uitestShowToolbarCustomizeDirectly) {
+                MessageToolbarSettingsView()
+            }
+            .task {
+                if ProcessInfo.processInfo.arguments.contains("-uitestsOpenToolbarCustomizeDirectly") {
+                    uitestShowToolbarCustomizeDirectly = true
+                }
+            }
+            .navigationTitle("メールビューア")
+    }
+
+    /// Task #155: see `MailListSettingsView`'s identical doc comment on
+    /// this same property.
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(macOS)
+        Form {
+            sections
+        }
+        .formStyle(.grouped)
+        .toggleStyle(.switch)
+        #else
         List {
+            sections
+        }
+        .scrollContentBackground(.hidden)
+        .background(OtegamiColor.background)
+        .tint(OtegamiColor.accent)
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
             #if os(iOS)
             Section {
                 Picker("リンクを開く方法", selection: $openInAppBrowser) {
@@ -161,18 +194,5 @@ struct MailViewerSettingsView: View {
                 // 列挙する形はやめて成長に強い一般的な文言にした。
                 Text("メール本文画面下部に並ぶアイコンの表示/非表示と順序を変更できます。非表示にしたアイコンは「その他」メニューから引き続き使えます。")
             }
-        }
-        .navigationDestination(isPresented: $uitestShowToolbarCustomizeDirectly) {
-            MessageToolbarSettingsView()
-        }
-        .task {
-            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenToolbarCustomizeDirectly") {
-                uitestShowToolbarCustomizeDirectly = true
-            }
-        }
-        .navigationTitle("メールビューア")
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
-        .tint(OtegamiColor.accent)
     }
 }
