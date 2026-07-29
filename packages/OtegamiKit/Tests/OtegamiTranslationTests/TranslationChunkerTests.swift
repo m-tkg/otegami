@@ -60,4 +60,34 @@ struct TranslationChunkerTests {
         }
         #expect(chunks.joined() == text)
     }
+
+    // MARK: - Phase 5 (2026-07-30, real-device log `dd58453`): blank/invisible
+    // input must chunk to `[]` the same as literal empty input, not just
+    // Swift's `isEmpty` — sending the Translation engine a "paragraph" with
+    // nothing to identify a language from failed as `TranslationErrorDomain
+    // Code=21` ("Client asked to translate batch of 0 inputs") on-device.
+
+    @Test("whitespace-only input returns no chunks, same as empty input")
+    func whitespaceOnlyInputReturnsNoChunks() {
+        #expect(TranslationChunker.chunk("   ", maxLength: 200) == [])
+        #expect(TranslationChunker.chunk("\n\t\n", maxLength: 200) == [])
+    }
+
+    @Test("a lone zero-width space returns no chunks — non-empty by String.isEmpty but no actual translatable content")
+    func zeroWidthSpaceOnlyInputReturnsNoChunks() {
+        #expect(TranslationChunker.chunk("\u{200B}", maxLength: 200) == [])
+    }
+
+    @Test("other invisible/format characters (word joiner, soft hyphen, BOM) also return no chunks")
+    func otherInvisibleCharactersReturnNoChunks() {
+        #expect(TranslationChunker.chunk("\u{2060}", maxLength: 200) == [])
+        #expect(TranslationChunker.chunk("\u{00AD}", maxLength: 200) == [])
+        #expect(TranslationChunker.chunk("\u{FEFF}", maxLength: 200) == [])
+        #expect(TranslationChunker.chunk(" \u{200B}\n\u{00AD} ", maxLength: 200) == [])
+    }
+
+    @Test("a real (even very short) word alongside invisible characters is still returned")
+    func shortRealContentIsNotTreatedAsBlank() {
+        #expect(TranslationChunker.chunk("\u{200B}Hi", maxLength: 200) == ["\u{200B}Hi"])
+    }
 }

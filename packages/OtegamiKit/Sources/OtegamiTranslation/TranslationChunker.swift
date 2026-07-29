@@ -37,9 +37,9 @@ public enum TranslationChunker {
     /// mid-sentence when avoidable. Returns `[text]` unchanged when it
     /// already fits — the common case, so callers translating a normal-
     /// length paragraph never pay any splitting cost. Returns `[]` for
-    /// empty input.
+    /// empty *or blank* input (see `isBlank(_:)`).
     public static func chunk(_ text: String, maxLength: Int = defaultMaxChunkLength) -> [String] {
-        guard !text.isEmpty else { return [] }
+        guard !isBlank(text) else { return [] }
         guard text.count > maxLength else { return [text] }
 
         let units = splitIntoUnits(text)
@@ -101,6 +101,34 @@ public enum TranslationChunker {
         let trailing = current.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trailing.isEmpty { units.append(trailing) }
         return units
+    }
+
+    /// True when `text` has no actually-translatable content — not just
+    /// Swift's `isEmpty`, but whitespace-only *and* invisible-Unicode-only
+    /// text (zero-width space/joiners, word joiner, soft hyphen, BOM,
+    /// control characters). Real-device root-cause finding (2026-07-30,
+    /// Phase 5, log `dd58453`): mail HTML occasionally has bare DOM text
+    /// nodes that are non-empty by Swift's `isEmpty` (and pass a JS
+    /// `.trim().length > 0` check, since `trim()` doesn't strip zero-width
+    /// characters either) yet contain nothing a human would call text —
+    /// layout-spacer hacks and Outlook/MSO artifacts are common sources.
+    /// Sending such a "paragraph" straight to `TranslationSession.translate`
+    /// gives the engine's language-identification step nothing to work
+    /// with, which fails at the OS level (`TranslationErrorDomain Code=21`,
+    /// "Client asked to translate batch of 0 inputs" / "Can't resolve
+    /// source locale since there's no source strings to use with LID") —
+    /// this used to get misdiagnosed further upstream as "language pack not
+    /// downloaded". Treating blank input the same as literal empty input
+    /// here (`chunk` returning `[]`) stops that malformed request from ever
+    /// being sent, at the one place both `MessageTranslator.translate`
+    /// (prose paragraphs) and `.translateHTMLTextNodes` (DOM text nodes)
+    /// funnel through.
+    static func isBlank(_ text: String) -> Bool {
+        text.unicodeScalars.allSatisfy { scalar in
+            CharacterSet.whitespacesAndNewlines.contains(scalar)
+                || scalar.properties.generalCategory == .format
+                || scalar.properties.generalCategory == .control
+        }
     }
 
     /// Last-resort hard split at `maxLength`-character (not byte) boundaries

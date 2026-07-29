@@ -1155,12 +1155,20 @@ final class HTMLTranslationController {
                   let data = jsonString.data(using: .utf8),
                   let texts = try? JSONDecoder().decode([String].self, from: data)
             else {
-                Self.translationLogger.error("extractTranslatableTexts: unexpected result shape \(String(describing: result), privacy: .public)")
+                // F15-adjacent (security scan follow-up, 2026-07-30): when
+                // `evaluateJavaScript` succeeds but JSON-decoding still
+                // fails, `result` here is the actual JSON string
+                // `extractScript` returned — i.e. every extracted mail-body
+                // text node, verbatim. Logging that at `.public` would leak
+                // real mail content into Console.app/sysdiagnose the same
+                // way F15 (`MessageTranslator.swift`) did; dropped to the
+                // default `.private` redaction.
+                Self.translationLogger.error("extractTranslatableTexts: unexpected result shape \(String(describing: result))")
                 return nil
             }
             return texts
         } catch {
-            Self.translationLogger.error("extractTranslatableTexts failed: \(String(describing: error), privacy: .public)")
+            Self.translationLogger.error("extractTranslatableTexts failed: \(String(describing: error))")
             return nil
         }
     }

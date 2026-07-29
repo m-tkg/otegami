@@ -1,6 +1,7 @@
 import Foundation
 import OtegamiTranslation
 import Translation
+import os
 
 /// Task #159 (メール翻訳を Apple Translation フレームワークの専用 NMT へ切替):
 /// the `TranslationOnlyService` conformer backed by `Translation
@@ -73,13 +74,18 @@ public struct AppleTranslationService: TranslationOnlyService {
 
     public func translate(_ text: String, from source: TranslationLanguage, to target: TranslationLanguage) async throws -> String {
         guard source != target else { return text }
-        try await ensureLanguagePairSupported(from: source, to: target)
-        try await prepareTranslationOrThrow(to: target)
+        // 2026-07-30 (Phase 5, 実機ログ dd58453 で確定した真因の切り分け用):
+        // 本文そのものは出さず、件数/文字数だけを記録 — F15 の趣旨を新規ログ
+        // にも適用。
+        Self.logger.notice("translate: chars=\(text.count, privacy: .public) source=\(source.rawValue, privacy: .public) target=\(target.rawValue, privacy: .public)")
+        let needsDownload = try await ensureLanguagePairSupported(from: source, to: target)
+        try await prepareTranslationOrThrow(to: target, knownNotDownloaded: needsDownload)
         do {
             return try await coordinator.translate(text, to: target.locale)
         } catch let error as TranslationServiceError {
             throw error
         } catch {
+            Self.logError(error, at: "translate")
             throw Self.mapEngineError(error)
         }
     }
@@ -96,13 +102,23 @@ public struct AppleTranslationService: TranslationOnlyService {
     public func translateParagraphs(_ paragraphs: [String], from source: TranslationLanguage, to target: TranslationLanguage) async throws -> [String] {
         guard !paragraphs.isEmpty else { return [] }
         guard source != target else { return paragraphs }
-        try await ensureLanguagePairSupported(from: source, to: target)
-        try await prepareTranslationOrThrow(to: target)
+        // 2026-07-30 (Phase 5): 実機ログ dd58453 で確認された真因は「翻訳対象
+        // 0件の配列をそのままバッチ翻訳へ渡していた」こと (`com.apple
+        // .Translation:TextAPI`: "Client asked to translate batch of 0
+        // inputs" → preflight失敗 → `TranslationErrorDomain Code=21`)。ここは
+        // `!paragraphs.isEmpty`で0件を弾いているので直接の再発はしないが、
+        // 空白/不可視文字だけの要素が混ざったまま渡ると `TranslationChunker
+        // .chunk`側の対応漏れで同じ症状が起きうる — 呼び出し時点の件数/文字数
+        // を記録しておく (本文そのものは出さない、F15参照)。
+        Self.logger.notice("translateParagraphs: count=\(paragraphs.count, privacy: .public) totalChars=\(paragraphs.reduce(0) { $0 + $1.count }, privacy: .public) source=\(source.rawValue, privacy: .public) target=\(target.rawValue, privacy: .public)")
+        let needsDownload = try await ensureLanguagePairSupported(from: source, to: target)
+        try await prepareTranslationOrThrow(to: target, knownNotDownloaded: needsDownload)
         do {
             return try await coordinator.translateBatch(paragraphs, to: target.locale)
         } catch let error as TranslationServiceError {
             throw error
         } catch {
+            Self.logError(error, at: "translateParagraphs")
             throw Self.mapEngineError(error)
         }
     }
@@ -138,15 +154,38 @@ public struct AppleTranslationService: TranslationOnlyService {
     /// both just return, letting `TranslationSessionCoordinator
     /// .prepareTranslation(to:)` (called right after, at each call site)
     /// handle an install that hasn't finished yet.
-    private func ensureLanguagePairSupported(from source: TranslationLanguage, to target: TranslationLanguage) async throws {
+    /// Returns whether the pair is confirmed *not yet downloaded*
+    /// (`status == .supported`) — the one signal `prepareTranslationOrThrow`
+    /// below is allowed to treat as a genuine "needs download" case if the
+    /// download prompt it triggers still fails. Throws only for `.unsupported`
+    /// (no amount of downloading would help).
+    private func ensureLanguagePairSupported(from source: TranslationLanguage, to target: TranslationLanguage) async throws -> Bool {
         let status = await LanguageAvailability().status(from: source.locale, to: target.locale)
+        // Phase 5 (2026-07-30): this is now the *only* place in this type
+        // allowed to claim "language pack not downloaded" — see
+        // `TranslationUnavailableReason.languagePackNotDownloaded`'s doc
+        // comment for why a translate-time engine failure must never make
+        // that claim on its own. Logged at notice so a future report can
+        // confirm whether this check itself is what's wrong (e.g. reporting
+        // `.supported` for a pair the system's own Translate app already
+        // shows as installed) versus something failing downstream of it.
+        Self.logger.notice("languagePairStatus: source=\(source.rawValue, privacy: .public) target=\(target.rawValue, privacy: .public) status=\(String(describing: status), privacy: .public)")
         switch status {
         case .unsupported:
-            throw TranslationServiceError.unavailable(.other("この端末は\(source.displayName)から\(target.displayName)への翻訳に対応していません"))
-        case .installed, .supported:
-            return
+            throw TranslationServiceError.unavailable(.languagePairUnsupported)
+        case .installed:
+            return false
+        case .supported:
+            // Not yet installed — deliberately not treated as a failure
+            // here. `prepareTranslationOrThrow` right after this call is
+            // what turns that into the system's own visible download
+            // prompt, which is a strictly better experience than a dead-end
+            // error message (Task #159 point 3). The caller still learns
+            // this via the returned `true`, in case that prompt itself
+            // fails.
+            return true
         @unknown default:
-            return
+            return false
         }
     }
 
@@ -155,15 +194,32 @@ public struct AppleTranslationService: TranslationOnlyService {
     /// prompt — is a no-op if the pack is already installed, so this costs
     /// nothing in the common (already-downloaded) case and turns a first-use
     /// download into an explicit, visible OS flow instead of a confusing
-    /// mid-translation failure. Wraps any failure into a specific,
-    /// actionable message (rather than falling through to `mapEngineError`'s
-    /// generic one) since this is the one step in the pipeline that's
-    /// actually *about* language-pack readiness.
-    private func prepareTranslationOrThrow(to target: TranslationLanguage) async throws {
+    /// mid-translation failure.
+    ///
+    /// 2026-07-30 (Phase 5, real-device log `dd58453`): this used to
+    /// unconditionally wrap *any* failure here as "language data needs
+    /// downloading" plus a hardcoded Settings path — both wrong on the
+    /// device that reported it (the language pack was already installed,
+    /// and the Settings path had already moved in a previous iOS release).
+    /// Now the "needs download" claim is only made when `knownNotDownloaded`
+    /// (from `ensureLanguagePairSupported`'s own `LanguageAvailability`
+    /// check, the sole source of truth for that claim — see
+    /// `TranslationUnavailableReason.languagePackNotDownloaded`'s doc
+    /// comment) says so; any other failure here gets the same neutral
+    /// mapping every other engine-call failure uses, so it's never a more
+    /// confident (and potentially wrong) claim than `translate`/
+    /// `translateParagraphs` themselves would make.
+    private func prepareTranslationOrThrow(to target: TranslationLanguage, knownNotDownloaded: Bool) async throws {
         do {
             try await coordinator.prepareTranslation(to: target.locale)
+        } catch let error as TranslationServiceError {
+            throw error
         } catch {
-            throw TranslationServiceError.unavailable(.other("翻訳用の言語データのダウンロードが必要です（\(error.localizedDescription)）。設定 > 一般 > 言語と地域 から翻訳言語をダウンロードしてください"))
+            Self.logError(error, at: "prepareTranslation")
+            if knownNotDownloaded {
+                throw TranslationServiceError.unavailable(.languagePackNotDownloaded)
+            }
+            throw Self.mapEngineError(error)
         }
     }
 
@@ -179,7 +235,7 @@ public struct AppleTranslationService: TranslationOnlyService {
     private static func mapEngineError(_ error: Error) -> TranslationServiceError {
         switch error {
         case TranslationError.unsupportedSourceLanguage, TranslationError.unsupportedTargetLanguage, TranslationError.unsupportedLanguagePairing:
-            return .unavailable(.other("この端末はこの言語の翻訳に対応していません"))
+            return .unavailable(.languagePairUnsupported)
         case TranslationError.unableToIdentifyLanguage:
             return .failed(message: "翻訳元の言語を判定できませんでした")
         case TranslationError.nothingToTranslate:
@@ -187,18 +243,37 @@ public struct AppleTranslationService: TranslationOnlyService {
         default:
             break
         }
-        // `.notInstalled`/`.alreadyCancelled` are themselves `@available(iOS
-        // 26.0, macOS 26.0, *)` cases on an otherwise iOS 18/macOS 15 type —
-        // this app's floor is already 26+ (`project.yml`) so this branch
-        // always runs in practice, but the `#available` guard keeps this
-        // file honest about what this package's own (lower) platform floor
-        // actually guarantees, mirroring
-        // `FoundationModelsTranslationService.mapEngineError`'s same
-        // "declared floor vs. this app's actual floor" split.
-        if #available(iOS 26.0, macOS 26.0, *), case TranslationError.notInstalled = error {
-            return .unavailable(.other("翻訳用の言語データが未ダウンロードです。設定 > 一般 > 言語と地域 から翻訳言語をダウンロードしてください"))
-        }
-        return .failed(message: error.localizedDescription)
+        // 2026-07-30 (Phase 5, real-device log `dd58453`): this branch used
+        // to special-case `TranslationError.notInstalled` (`@available` iOS
+        // 26/macOS 26, this app's actual floor) as "language pack not
+        // downloaded" with a hardcoded Settings path. The captured device
+        // log showed that case firing for a completely unrelated failure —
+        // an empty-input preflight error (`TranslationErrorDomain Code=21`,
+        // "Client asked to translate batch of 0 inputs") — on a device
+        // where both languages were already confirmed "Available Offline".
+        // Apple's `.notInstalled` evidently isn't a reliable enough signal
+        // on its own to justify telling the user their language pack is
+        // missing when it might not be; `ensureLanguagePairSupported`'s own
+        // `LanguageAvailability` check above is the only place in this type
+        // still allowed to make that specific claim (see
+        // `TranslationUnavailableReason.languagePackNotDownloaded`'s doc
+        // comment). Everything that reaches here — including
+        // `.notInstalled` — gets the same neutral, retry-oriented message
+        // instead of a possibly-wrong diagnosis.
+        return .failed(message: "翻訳に失敗しました（時間をおいて再試行してください）")
+    }
+
+    // MARK: - Diagnostics (Phase 5, 2026-07-30)
+
+    /// notice レベル固定 (`docs/verify.md`: debug/info は `log collect`/
+    /// sysdiagnose に残らない) — 本文は一切含めない (F15 の趣旨)。domain/code
+    /// だけで、実機ログ1本から失敗の種類を切り分けられるようにするための
+    /// もの。
+    private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "AppleTranslationService")
+
+    private static func logError(_ error: Error, at site: String) {
+        let nsError = error as NSError
+        logger.notice("\(site, privacy: .public) failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) type=\(String(describing: Swift.type(of: error)), privacy: .public)")
     }
 }
 

@@ -79,7 +79,12 @@ public enum TranslationServiceError: Error, Sendable, Equatable, LocalizedError 
     public var userFacingMessage: String {
         switch self {
         case .unavailable(let reason):
-            return "この端末では翻訳を利用できません（\(reason)）"
+            // 2026-07-30 訂正: 以前はここで `reason` を生のまま文字列補間して
+            // いた (`other("...")` がそのまま画面に出る、読解不能かつ内容が
+            // 誤診断のケースがあった実機報告) — `TranslationUnavailableReason
+            // .userFacingMessage`側でケースごとに管理された短い日本語文言を
+            // 使う。
+            return reason.userFacingMessage
         case .tooLong:
             return "本文が長すぎるため処理できませんでした"
         case .failed(let message):

@@ -1,0 +1,72 @@
+import Testing
+@testable import OtegamiTranslation
+
+/// Phase 5 (2026-07-30, real-device report: a raw `other("...")` dump
+/// reached the user as a garbled, self-contradictory, un-actionable toast —
+/// see `TranslationServiceError.userFacingMessage`'s doc comment). These
+/// cover the one property this whole task exists to fix: every case must
+/// produce a short, fixed, curated Japanese string — never an interpolation
+/// of an engine's raw error text or a case's own `String(describing:)`
+/// dump.
+@Suite("TranslationServiceError.userFacingMessage")
+struct TranslationServiceErrorTests {
+    @Test("every TranslationUnavailableReason case has its own short, fixed Japanese message — never a raw enum/string dump")
+    func unavailableReasonsHaveDedicatedMessages() {
+        let cases: [TranslationUnavailableReason] = [
+            .deviceNotEligible,
+            .appleIntelligenceNotEnabled,
+            .modelNotReady,
+            .languagePairUnsupported,
+            .languagePackNotDownloaded,
+            .other("some internal engine detail that must never reach the user verbatim"),
+        ]
+        for reason in cases {
+            let message = TranslationServiceError.unavailable(reason).userFacingMessage
+            #expect(!message.isEmpty)
+            // The whole point of this task: the raw Swift enum description
+            // (`other("...")`, `deviceNotEligible`, ...) must never leak
+            // into the user-facing string.
+            #expect(!message.contains("other("))
+            #expect(!message.contains(String(describing: reason)) || String(describing: reason).count < 4)
+        }
+    }
+
+    @Test(".other's internal detail string never appears in the user-facing message")
+    func otherReasonDoesNotLeakItsInternalString() {
+        let internalDetail = "TranslationErrorDomain Code=21, batch of 0 inputs"
+        let message = TranslationServiceError.unavailable(.other(internalDetail)).userFacingMessage
+        #expect(!message.contains(internalDetail))
+        #expect(!message.contains("Code=21"))
+    }
+
+    @Test("none of the fixed unavailable-reason messages hardcode an OS Settings navigation path")
+    func noHardcodedSettingsPath() {
+        // 2026-07-30 correction: a previous version of this wording hardcoded
+        // "設定 > 一般 > 言語と地域", which had already moved on the reporting
+        // user's actual device (this exact menu has relocated across iOS
+        // versions before) — no wording anywhere in this type may name a
+        // specific menu path again.
+        let cases: [TranslationUnavailableReason] = [
+            .deviceNotEligible, .appleIntelligenceNotEnabled, .modelNotReady,
+            .languagePairUnsupported, .languagePackNotDownloaded, .other("x"),
+        ]
+        for reason in cases {
+            let message = reason.userFacingMessage
+            #expect(!message.contains(">"))
+            #expect(!message.contains("一般"))
+            #expect(!message.contains("言語と地域"))
+        }
+    }
+
+    @Test("languagePackNotDownloaded reads as a confirmed, actionable download message")
+    func languagePackNotDownloadedMessage() {
+        #expect(TranslationUnavailableReason.languagePackNotDownloaded.userFacingMessage == "翻訳用の言語データが未ダウンロードです")
+    }
+
+    @Test("other falls back to a neutral retry message, not a confident-but-possibly-wrong diagnosis")
+    func otherReasonIsNeutral() {
+        let message = TranslationUnavailableReason.other("anything").userFacingMessage
+        #expect(!message.contains("ダウンロード"))
+        #expect(message.contains("再試行") || message.contains("時間をおいて"))
+    }
+}

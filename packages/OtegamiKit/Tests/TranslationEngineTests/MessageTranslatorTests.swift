@@ -384,4 +384,96 @@ struct MessageTranslatorTests {
         }
         #expect(persisted == nil)
     }
+
+    // MARK: - Phase 5 (2026-07-30, real-device log `dd58453`): empty/blank
+    // input must never reach the engine as an empty batch — that's what
+    // produced `TranslationErrorDomain Code=21` ("Client asked to translate
+    // batch of 0 inputs") on a device where the language packs were
+    // actually already downloaded, which then got misdiagnosed further
+    // upstream as "language pack not downloaded".
+
+    @Test("empty source text resolves to a clear 'nothing to translate' failure without calling the engine")
+    func emptySourceTextDoesNotCallEngine() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let state = await translator.translate(messageId: messageId, sourceText: "", sourceLanguage: .english, targetLanguage: .japanese)
+
+        #expect(state == .failed(message: "翻訳できる本文が見つかりませんでした"))
+        #expect(await service.translateCallCount == 0)
+    }
+
+    @Test("whitespace-only source text resolves to the same 'nothing to translate' failure without calling the engine")
+    func whitespaceOnlySourceTextDoesNotCallEngine() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let state = await translator.translate(messageId: messageId, sourceText: "   \n\t  ", sourceLanguage: .english, targetLanguage: .japanese)
+
+        #expect(state == .failed(message: "翻訳できる本文が見つかりませんでした"))
+        #expect(await service.translateCallCount == 0)
+    }
+
+    @Test("an empty HTML text-node array resolves to the same failure without calling the engine")
+    func emptyHTMLTextNodesDoesNotCallEngine() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let state = await translator.translateHTMLTextNodes(messageId: messageId, texts: [], sourceLanguage: .english, targetLanguage: .japanese)
+
+        #expect(state == .failed(message: "翻訳できる本文が見つかりませんでした"))
+        #expect(await service.translateCallCount == 0)
+    }
+
+    @Test("HTML text nodes that are all whitespace/invisible-only resolve to the same failure without calling the engine")
+    func blankOnlyHTMLTextNodesDoesNotCallEngine() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        // A single zero-width space is exactly the real-device shape (a bare
+        // DOM text node that's non-empty by Swift's `isEmpty` and passes a
+        // JS `.trim().length > 0` check, but has no actual translatable
+        // content) that produced `TranslationErrorDomain Code=21` on-device.
+        let state = await translator.translateHTMLTextNodes(messageId: messageId, texts: ["\u{200B}", "  ", "\n"], sourceLanguage: .english, targetLanguage: .japanese)
+
+        #expect(state == .failed(message: "翻訳できる本文が見つかりませんでした"))
+        #expect(await service.translateCallCount == 0)
+    }
+
+    @Test("HTML text nodes mixing real content with blank/invisible ones only translate the real ones, keeping alignment")
+    func mixedBlankAndRealHTMLTextNodesTranslatesOnlyRealOnes() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let messageId = try await makeMessageId(database: database)
+        let service = FakeTranslationService()
+        let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
+
+        let state = await translator.translateHTMLTextNodes(
+            messageId: messageId,
+            texts: ["Hello", "\u{200B}", "World"],
+            sourceLanguage: .english,
+            targetLanguage: .japanese
+        )
+
+        guard case .translated(let record) = state else {
+            Issue.record("expected .translated, got \(state)")
+            return
+        }
+        #expect(record.paragraphs == [
+            TranslatedParagraph(original: "Hello", translated: "[ja] Hello"),
+            TranslatedParagraph(original: "\u{200B}", translated: ""),
+            TranslatedParagraph(original: "World", translated: "[ja] World"),
+        ])
+        // Only the two real-content nodes ever reach the engine — the
+        // zero-width-space node contributes zero chunks (`TranslationChunker
+        // .chunk`'s `isBlank` check) and is never sent as a translate call.
+        #expect(await service.translateCallCount == 2)
+    }
 }

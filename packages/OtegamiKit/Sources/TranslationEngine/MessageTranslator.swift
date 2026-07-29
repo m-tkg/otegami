@@ -154,6 +154,13 @@ public actor MessageTranslator {
                 return .translated(cached)
             }
 
+            // Phase 5 (2026-07-30, 実機ログ dd58453): 本文そのものは出さず、
+            // 件数/文字数/由来 (`.html-nodes`サフィックスの有無でHTML経由か
+            // 判別できる) だけを記録 — 次に「翻訳が失敗する」報告が来た時、
+            // 実機ログ1本から「入力が0件/空白だけだったか」を即座に切り分け
+            // られるようにするためのもの (F15の趣旨を新規ログにも適用)。
+            Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) engine=\(cacheEngineIdentifier, privacy: .public) paragraphCount=\(paragraphs.count, privacy: .public) totalChars=\(paragraphs.reduce(0) { $0 + $1.count }, privacy: .public) source=\(sourceLanguage.rawValue, privacy: .public) target=\(targetLanguage.rawValue, privacy: .public)")
+
             // design-phase-3: a paragraph that's itself longer than the
             // engine's context window (`TranslationChunker`'s doc comment —
             // the real-device "translation works for some mail, not
@@ -174,6 +181,23 @@ public actor MessageTranslator {
                 let pieces = TranslationChunker.chunk(paragraph)
                 chunks.append(contentsOf: pieces)
                 chunkCounts.append(pieces.count)
+            }
+
+            // Phase 5 (2026-07-30, 実機ログ dd58453 で確定した真因): 空 (また
+            // は空白/不可視文字だけ) の要素だけからなる`paragraphs`を
+            // フィルタせずそのままエンジンへ渡すと、`TranslationSession`側の
+            // 言語自動判定 (LID) に渡す文字列が実質0件になり
+            // `TranslationErrorDomain Code=21`("Client asked to translate
+            // batch of 0 inputs") で失敗する — これが誤って「言語データ未
+            // ダウンロード」と診断されていた実機不具合の本当の原因。
+            // `TranslationChunker.chunk`が空白/不可視文字のみの段落を`[]`に
+            // 潰す (このタスクでの修正、そのファイルのdoc comment参照) ため
+            // `chunks`はここで初めて「翻訳すべき実体が本当に1つも無い」を
+            // 判定できる、意味のある空チェックになる — エンジンを一切呼ばず
+            // 中立な「見つかりませんでした」を返す。
+            guard !chunks.isEmpty else {
+                Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) aborting — no translatable content after chunking (paragraphCount=\(paragraphs.count, privacy: .public))")
+                return .failed(message: "翻訳できる本文が見つかりませんでした")
             }
 
             // Task #61 (実機フィードバック「無害なマーケティングメールなのに
@@ -207,7 +231,15 @@ public actor MessageTranslator {
                 do {
                     translatedChunks.append(try await service.translate(chunk, from: sourceLanguage, to: targetLanguage))
                 } catch let error as TranslationServiceError where error.isContentBlocked {
-                    Self.logger.notice("chunk \(index) content-blocked, retrying by sentence: \(Self.logPrefix(chunk), privacy: .public)")
+                    // F15 (2026-07-29 security scan): dropped `privacy:
+                    // .public` — this interpolates a mail-content fragment
+                    // (`logPrefix`), and `.public` persists it un-redacted
+                    // into Console.app/sysdiagnose captures outside the
+                    // app's sandbox, potentially including OTP/2FA codes.
+                    // Default (`.private`) still redacts it in production
+                    // while remaining visible to a debug-build/Xcode-
+                    // attached session.
+                    Self.logger.notice("chunk \(index) content-blocked, retrying by sentence: \(Self.logPrefix(chunk))")
                     let retry = try await retryBlockedChunkBySentence(chunk, sourceLanguage: sourceLanguage, targetLanguage: targetLanguage)
                     translatedChunks.append(retry.text)
                     chunkHasBlockedContent[index] = retry.hasBlockedContent
@@ -257,8 +289,11 @@ public actor MessageTranslator {
             // the user instead of a generic failure — see that property's
             // doc comment for why the mapping has to happen here rather
             // than in the UI layer.
+            Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             return .failed(message: error.userFacingMessage)
         } catch {
+            let nsError = error as NSError
+            Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) failed (non-TranslationServiceError): domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public)")
             return .failed(message: error.localizedDescription)
         }
     }
@@ -293,7 +328,9 @@ public actor MessageTranslator {
     ) async throws -> (text: String, hasBlockedContent: Bool, fullyBlocked: Bool) {
         let sentences = SentenceSplitter.split(chunk)
         guard sentences.count > 1 else {
-            Self.logger.notice("chunk has no further sentence boundary, kept original: \(Self.logPrefix(chunk), privacy: .public)")
+            // F15: see the identical note above — dropped `privacy: .public`
+            // on this mail-content fragment too.
+            Self.logger.notice("chunk has no further sentence boundary, kept original: \(Self.logPrefix(chunk))")
             return (chunk, true, true)
         }
 
@@ -304,7 +341,9 @@ public actor MessageTranslator {
             do {
                 translatedSentences.append(try await service.translate(sentence, from: sourceLanguage, to: targetLanguage))
             } catch let error as TranslationServiceError where error.isContentBlocked {
-                Self.logger.notice("sentence content-blocked, kept original: \(Self.logPrefix(sentence), privacy: .public)")
+                // F15: see the identical note above — dropped `privacy:
+                // .public` on this mail-content fragment too.
+                Self.logger.notice("sentence content-blocked, kept original: \(Self.logPrefix(sentence))")
                 translatedSentences.append(sentence)
                 blockedCount += 1
             }
