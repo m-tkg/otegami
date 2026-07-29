@@ -2,6 +2,12 @@ import Foundation
 import MailTransport
 import MailTransportMailCore
 import OtegamiStore
+import os
+
+/// 接続テスト失敗の実機切り分け用 (Yahoo! JAPAN ログイン失敗報告、2026-07-29)。
+/// `docs/verify.md` の教訓どおり notice 未満は `log collect` に残らないため、
+/// 生エラーを notice で記録する — パスワードは絶対にログへ含めない。
+private let connectionTestLogger = Logger(subsystem: "com.mtkg.otegami", category: "ConnectionTest")
 
 /// The outcome of `testIMAPConnection`/`testSMTPConnection` below: a
 /// success flag plus a user-facing message, ready to feed straight into a
@@ -32,6 +38,7 @@ func testIMAPConnection(
         await session.disconnect()
         return AccountConnectionTestResult(succeeded: true, message: "接続に成功しました。")
     } catch {
+        connectionTestLogger.notice("IMAP connect test failed: host=\(host, privacy: .public):\(port) user=\(username, privacy: .private(mask: .hash)) error=\(String(describing: error), privacy: .public)")
         return AccountConnectionTestResult(
             succeeded: false,
             message: mailTransportUserFacingMessage(for: error, prefix: "接続に失敗しました")
@@ -58,6 +65,7 @@ func testSMTPConnection(
         await session.disconnect()
         return AccountConnectionTestResult(succeeded: true, message: "SMTP接続に成功しました。")
     } catch {
+        connectionTestLogger.notice("SMTP connect test failed: host=\(host, privacy: .public):\(port) user=\(username, privacy: .private(mask: .hash)) error=\(String(describing: error), privacy: .public)")
         return AccountConnectionTestResult(
             succeeded: false,
             message: mailTransportUserFacingMessage(for: error, prefix: "SMTP接続に失敗しました")
