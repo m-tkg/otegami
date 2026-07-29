@@ -5,6 +5,7 @@
 #   make ios              iOS Simulator app build (xcodebuild)
 #   make ios-device       iOS device build (signed with the registered team)
 #   make test             OtegamiKit `swift test`
+#   make check-localization  Localizable.xcstrings coverage check (Task #170)
 #   make server           build the otegami-relay server
 #   make server-test      run the otegami-relay server test suite
 #   make relay-docker     build the otegami-relay Docker image
@@ -43,7 +44,7 @@ else
 MAC_SIGNING_FLAGS :=
 endif
 
-.PHONY: all mac mac-app ios ios-device app-project test server server-test relay-docker \
+.PHONY: all mac mac-app ios ios-device app-project test check-localization server server-test relay-docker \
 	mailstack-up mailstack-down mailstack-seed deploy-ota clean
 
 all: mac ios test
@@ -104,6 +105,21 @@ ios-device: app-project
 
 test:
 	cd $(KIT_DIR) && swift test
+
+# Task #170: guards against apps/Otegami/Sources string literals that never
+# got a Localizable.xcstrings entry (always render in the source language,
+# ja, regardless of the device's language setting) or that only got a ja
+# entry (render in English always) — see scripts/check-localizable-
+# coverage.py's docstring for the full rationale. Regenerating the catalog
+# first also catches generate-localizable.py's `translations` dict drifting
+# out of sync with a hand-edit made directly in Xcode's String Catalog
+# editor (docs/localization.md's Task #145 note on this drift class) —
+# `git diff --exit-code` fails the check if regenerating produces anything
+# different from what's committed.
+check-localization:
+	python3 scripts/generate-localizable.py
+	git diff --exit-code apps/Otegami/Resources/Localizable.xcstrings
+	python3 scripts/check-localizable-coverage.py
 
 server:
 	cd $(SERVER_DIR) && swift build

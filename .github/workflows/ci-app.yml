@@ -87,3 +87,14 @@ jobs:
 
       - name: Test OtegamiKit
         run: cd packages/OtegamiKit && swift test
+
+      # Task #170: apps/Otegami/Sources string literals that never got a
+      # Localizable.xcstrings entry (always render in Japanese regardless
+      # of the device's language setting) or a hardcoded English literal
+      # bypassing the catalog (the reverse — always renders in English) —
+      # see scripts/check-localizable-coverage.py's docstring. Also
+      # reconfirms scripts/generate-localizable.py's `translations` dict
+      # hasn't drifted from the committed catalog (docs/localization.md's
+      # Task #145 note on that drift class).
+      - name: Check localization coverage
+        run: make check-localization
