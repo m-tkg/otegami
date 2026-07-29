@@ -504,8 +504,12 @@ struct MessageView: View {
         aiState.isTranslationAvailable = environment.isTranslationAvailable
         // Task #128 (a): the three conditions the old `showsTranslationButton`
         // gate combined, logged individually — see `translationGateLogger`'s
-        // doc comment for why every call logs, not just failures.
-        Self.translationGateLogger.debug("""
+        // doc comment for why every call logs, not just failures. Task #134:
+        // `.debug` → `.notice` — a43c07e's #128 instrumentation was still
+        // `.debug` and, per `docs/verify.md`'s new note, `.debug`/`.info`
+        // never survive into a `log collect` archive (the same #105/#122
+        // trap, hit a third time here).
+        Self.translationGateLogger.notice("""
         syncAIFeaturesState: messageId=\(messageId, privacy: .public) hasBody=\(hasBody, privacy: .public) \
         shouldShowTranslationBar=\(shouldShowTranslationBar, privacy: .public) \
         htmlControllerReadyIfNeeded=\(htmlControllerReadyIfNeeded, privacy: .public) \
