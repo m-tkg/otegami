@@ -1,30 +1,88 @@
 import SwiftUI
 import MailTransport
 import MailTransportMailCore
+import OtegamiCore
 import OtegamiStore
 import SyncEngine
+
+/// Task #116「アカウント追加画面のプロバイダ拡充」: which flavor of the
+/// generic IMAP form `AccountSetupView` renders as. `.other` is the
+/// original M1 behavior (fully blank, port defaults 993/587, TLS/STARTTLS)
+/// — unchanged. `.exchange` is a thin preset on top of the exact same form
+/// (plan: "汎用 IMAP フォームのプリセット... オンプレ Exchange の IMAP
+/// 有効環境向けという注記") rather than a separate view type: the only
+/// things that differ are the initial IMAP security value, an info banner,
+/// and the navigation title — host stays blank either way (never knowable
+/// ahead of time for an on-prem server), so there was nothing else to
+/// duplicate into its own file.
+enum GenericIMAPFormPreset {
+    case other
+    case exchange
+
+    var navigationTitle: LocalizedStringKey {
+        switch self {
+        case .other: "アカウントを追加"
+        case .exchange: "Exchange アカウントを追加"
+        }
+    }
+
+    var infoBannerText: LocalizedStringKey? {
+        switch self {
+        case .other: nil
+        case .exchange: "社内 (オンプレミス) の Exchange サーバーで IMAP アクセスが有効になっている環境向けです。ホスト名はシステム管理者に確認してください。Microsoft 365 / Outlook.com は「アカウントを追加」→「Outlook」または「Office365」からサインインしてください。"
+        }
+    }
+
+    var initialImapPortText: String {
+        MailProviderPresets.exchange.imap.port.description
+    }
+
+    var initialImapSecurity: ConnectionSecurityRecord {
+        switch self {
+        case .other: .tls
+        case .exchange: MailProviderPresets.exchange.imap.security.connectionSecurityRecord
+        }
+    }
+
+    var initialSmtpPortText: String {
+        MailProviderPresets.exchange.smtp.port.description
+    }
+
+    var initialSmtpSecurity: ConnectionSecurityRecord {
+        switch self {
+        case .other: .startTLS
+        case .exchange: MailProviderPresets.exchange.smtp.security.connectionSecurityRecord
+        }
+    }
+}
 
 /// Generic IMAP account setup form (plan: "汎用 IMAP 手入力フォーム") — the "その他
 /// (IMAP)" option on `AccountTypeSelectionView` (M6; before M6 this was the
 /// only account-creation flow, reached directly). Host/port/security/
 /// username/password entered by hand; SMTP fields are collected but unused
 /// until M5 — kept optional so leaving them blank doesn't block saving.
+///
+/// Task #116: also doubles as the Exchange entry point (`preset: .exchange`)
+/// — see `GenericIMAPFormPreset`'s doc comment for why that's a preset on
+/// this same form rather than a new file.
 struct AccountSetupView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
+
+    let preset: GenericIMAPFormPreset
 
     @State private var displayName = ""
     @State private var email = ""
 
     @State private var imapHost = ""
-    @State private var imapPortText = "993"
-    @State private var imapSecurity: ConnectionSecurityRecord = .tls
+    @State private var imapPortText: String
+    @State private var imapSecurity: ConnectionSecurityRecord
     @State private var imapUsername = ""
     @State private var password = ""
 
     @State private var smtpHost = ""
-    @State private var smtpPortText = "587"
-    @State private var smtpSecurity: ConnectionSecurityRecord = .startTLS
+    @State private var smtpPortText: String
+    @State private var smtpSecurity: ConnectionSecurityRecord
     @State private var smtpUsername = ""
 
     @State private var isTesting = false
@@ -40,16 +98,25 @@ struct AccountSetupView: View {
     @State private var smtpTestSucceeded = false
     @State private var smtpTestResultMessage: String?
 
+    init(preset: GenericIMAPFormPreset = .other) {
+        self.preset = preset
+        _imapPortText = State(initialValue: preset.initialImapPortText)
+        _imapSecurity = State(initialValue: preset.initialImapSecurity)
+        _smtpPortText = State(initialValue: preset.initialSmtpPortText)
+        _smtpSecurity = State(initialValue: preset.initialSmtpSecurity)
+    }
+
     var body: some View {
         NavigationStack {
             Form {
+                infoBannerSection
                 accountSection
                 imapSection
                 smtpSection
                 testResultSection
                 actionsSection
             }
-            .navigationTitle("アカウントを追加")
+            .navigationTitle(preset.navigationTitle)
             .scrollContentBackground(.hidden)
             .background(OtegamiColor.background)
             .tint(OtegamiColor.accent)
@@ -66,6 +133,22 @@ struct AccountSetupView: View {
         // NavigationStack{Form{...}}-shaped sheet in this app needs this.
         .frame(minWidth: 480, minHeight: 560)
         #endif
+    }
+
+    // Task #116: `.exchange`だけが表示 (`.other`は`nil`) — オンプレ
+    // Exchange 向けの注記。`@ViewBuilder`にしているのは、この`Section`
+    // 自体を丸ごと出し分ける必要があるため (中身だけ`if`で分岐すると
+    // 空の`Section`が残ってしまう)。
+    @ViewBuilder
+    private var infoBannerSection: some View {
+        if let infoBannerText = preset.infoBannerText {
+            Section {
+                Text(infoBannerText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("accountSetup.infoBanner")
+            }
+        }
     }
 
     // H (実機フィードバック第3弾): each field now carries a persistent

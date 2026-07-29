@@ -5703,3 +5703,69 @@ Gravatar が解決される見た目 (アバター情報源を無効化しない
 **実機確認ポイント**: 設定 →「アカウントの設定」で、Gmail アカウントに
 Google プロフィール写真が設定されていれば、そのアカウント行の左端に
 その写真が円形で表示されること (一覧の送信者アバターと同じ見た目)。
+
+## Task #116: アカウント追加画面のプロバイダ拡充 (第1段: ホスト/ポートのプリセット)
+
+「アカウントを追加」の選択肢を Gmail / iCloud / その他 (IMAP) の3つから
+Yahoo・Yahoo! JAPAN・Exchange を加えた6つに拡充した (Outlook/Office365
+は Microsoft OAuth が必要な第2段で別途追加)。
+
+### 実装
+
+- `packages/OtegamiKit/Sources/OtegamiCore/MailProviderPreset.swift`
+  (新規): Yahoo (`imap.mail.yahoo.com:993`/`smtp.mail.yahoo.com:465`、
+  いずれも TLS)・Yahoo! JAPAN (`imap.mail.yahoo.co.jp:993`/
+  `smtp.mail.yahoo.co.jp:465`、TLS)・Exchange (ホストは空欄のまま、
+  ポート初期値 IMAP 993 / SMTP 587、STARTTLS 想定) の3プリセットを
+  `OtegamiCore` (Linux 互換・GRDB 非依存のpure-logic層、`FreeMailDomains`
+  と同じ置き場) に定義した。Gmail/iCloud の既存プリセットは
+  `GmailAccountSetupView`/`ICloudAccountSetupView`にハードコードされた
+  ままで、このタスクでは意図的に移行していない (差分をこのタスクが
+  追加する分だけに絞るため)。`MailProviderPresetTests`でホスト/ポート/
+  セキュリティの値をユニットテスト済み (`make test`で実行される)。
+- `YahooAccountSetupView.swift`/`YahooJapanAccountSetupView.swift`
+  (新規): `ICloudAccountSetupView`と全く同じ構造 (メールアドレス+
+  パスワード入力、ホスト/ポートは固定プリセットで編集不可)。Yahoo は
+  「アプリのパスワード」必須のガイダンス文言+
+  `login.yahoo.com/myaccount/security`へのリンク、Yahoo! JAPAN は
+  「メールソフトでの利用設定 (IMAP アクセス) を有効にする」ガイダンス
+  文言 (深い階層への直リンクは変更されやすいため、Yahoo!メールの
+  トップページのみリンク)。保存する`AccountRecord.kind`はどちらも
+  `.generic` — `AccountKind`に専用ケースを追加すると
+  `AccountEditView`の複数箇所にある網羅的な`switch`全てに手を入れる
+  必要が生じるため、Gmail 専用分岐が一切不要なこの2プロバイダでは
+  あえて追加しなかった (保存後は「その他 (IMAP)」と同じパスワード
+  認証アカウントとして振る舞うだけで実害はない)。
+- `AccountSetupView.swift`: Exchange は独立した新規ファイルにせず、
+  既存の「その他 (IMAP)」フォームに`GenericIMAPFormPreset`(`.other`/
+  `.exchange`)という`init`パラメータを追加しただけ — ホストは
+  ユーザー入力のまま (オンプレサーバーは事前に知りようがない) で、
+  変わるのは IMAP セキュリティの初期値 (STARTTLS) とナビゲーション
+  タイトル、それに Exchange 選択時だけ出る案内バナー
+  (「社内 (オンプレミス) の Exchange サーバーで IMAP アクセスが有効に
+  なっている環境向け」+ Microsoft 365/Outlook.com への誘導) のみ。
+- `AccountTypeSelectionView.swift`: 6つのボタンをそれぞれ独立した
+  computed property に分割 (`docs/ci.md`の型チェックタイムアウト対策 —
+  ボタンが3個から6個 (第2段で7個) に増えるため)。`AccountEntryRoute`
+  に`.yahoo`/`.yahooJapan`/`.exchange`を追加。
+- `apps/Otegami/Sources/Support/MailProviderPresetMapping.swift`
+  (新規): `OtegamiCore.MailConnectionSecurityKind` ↔
+  `OtegamiStore.ConnectionSecurityRecord`の変換を1箇所に集約
+  (両モジュールの依存方向上、プリセット定義自体はこの型を使えない
+  ため)。
+- `Localizable.xcstrings`: 新規文言15件を手パッチ (スクリプトでの
+  全再生成はしていない — `scripts/generate-localizable.py`のdoc
+  comment が警告する既知のドリフトを悪化させないため)。
+
+### 検証
+
+`make test`(新規`MailProviderPresetTests`含め green)・`make mac`・
+`make ios`とも成功。**未検証**: 実際に Yahoo/Yahoo! JAPAN/オンプレ
+Exchange サーバーへの接続テスト (実アカウント/実サーバーが無いため
+このセッションでは検証できない — iCloud プリセット追加時と同じ制約、
+`PENDING.md`参照)。**実機確認ポイント**: 「アカウントを追加」を開き、
+Yahoo/Yahoo! JAPAN/Exchange の各ボタンから遷移するフォームで、案内
+文言・ホスト/ポートのプリセット表示が正しいこと。可能であれば実際の
+Yahoo/Yahoo! JAPAN アカウント (アプリ用パスワード発行/IMAP アクセス
+有効化済み) で「接続テスト」→「保存して同期開始」まで通ることを
+確認してほしい。

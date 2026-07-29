@@ -17,44 +17,25 @@ struct AccountTypeSelectionView: View {
 
     var onSelectGmail: () -> Void
     var onSelectICloud: () -> Void
+    var onSelectYahoo: () -> Void
+    var onSelectYahooJapan: () -> Void
+    var onSelectExchange: () -> Void
     var onSelectOther: () -> Void
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    Button {
-                        onSelectGmail()
-                    } label: {
-                        Label("Gmail", systemImage: "envelope.badge")
-                    }
-                    .accessibilityIdentifier("accountTypeSelection.gmailButton")
-                    .disabled(!environment.isGmailOAuthConfigured)
-
-                    if !environment.isGmailOAuthConfigured {
-                        Text("この配布ビルドには Google OAuth Client ID が設定されていません。docs/oauth-setup.md を参照して各自 Client ID を発行し、Config/Local.xcconfig に設定してください。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .accessibilityIdentifier("accountTypeSelection.gmailDisabledHint")
-                    }
-
-                    Button {
-                        onSelectICloud()
-                    } label: {
-                        Label("iCloud", systemImage: "icloud")
-                    }
-                    .accessibilityIdentifier("accountTypeSelection.icloudButton")
-
-                    Button {
-                        onSelectOther()
-                    } label: {
-                        Label("その他 (IMAP)", systemImage: "server.rack")
-                    }
-                    .accessibilityIdentifier("accountTypeSelection.otherButton")
+                    gmailButton
+                    icloudButton
+                    yahooButton
+                    yahooJapanButton
+                    exchangeButton
+                    otherButton
                 } header: {
                     Text("アカウントの種類")
                 } footer: {
-                    Text("Gmail と iCloud はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。")
+                    Text("Gmail・iCloud・Yahoo・Yahoo! JAPAN・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。")
                 }
             }
             .navigationTitle("アカウントを追加")
@@ -84,6 +65,76 @@ struct AccountTypeSelectionView: View {
         .frame(minWidth: 480, minHeight: 420)
         #endif
     }
+
+    // Task #116: split into per-button computed properties (docs/ci.md's
+    // "SwiftUI ビューは小さく保つこと") — this `Section` grew from 3 buttons
+    // to 6 (7 once 第2段 adds Outlook/Office365), and a flat `Button { ... }
+    // .modifier() .modifier()` chain repeated inline for each one risks the
+    // same CI type-check timeout `AccountSetupView`'s own split already
+    // guards against.
+    private var gmailButton: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                onSelectGmail()
+            } label: {
+                Label("Gmail", systemImage: "envelope.badge")
+            }
+            .accessibilityIdentifier("accountTypeSelection.gmailButton")
+            .disabled(!environment.isGmailOAuthConfigured)
+
+            if !environment.isGmailOAuthConfigured {
+                Text("この配布ビルドには Google OAuth Client ID が設定されていません。docs/oauth-setup.md を参照して各自 Client ID を発行し、Config/Local.xcconfig に設定してください。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("accountTypeSelection.gmailDisabledHint")
+            }
+        }
+    }
+
+    private var icloudButton: some View {
+        Button {
+            onSelectICloud()
+        } label: {
+            Label("iCloud", systemImage: "icloud")
+        }
+        .accessibilityIdentifier("accountTypeSelection.icloudButton")
+    }
+
+    private var yahooButton: some View {
+        Button {
+            onSelectYahoo()
+        } label: {
+            Label("Yahoo", systemImage: "envelope.badge")
+        }
+        .accessibilityIdentifier("accountTypeSelection.yahooButton")
+    }
+
+    private var yahooJapanButton: some View {
+        Button {
+            onSelectYahooJapan()
+        } label: {
+            Label("Yahoo! JAPAN", systemImage: "envelope.badge")
+        }
+        .accessibilityIdentifier("accountTypeSelection.yahooJapanButton")
+    }
+
+    private var exchangeButton: some View {
+        Button {
+            onSelectExchange()
+        } label: {
+            Label("Exchange", systemImage: "building.2")
+        }
+        .accessibilityIdentifier("accountTypeSelection.exchangeButton")
+    }
+
+    private var otherButton: some View {
+        Button {
+            onSelectOther()
+        } label: {
+            Label("その他 (IMAP)", systemImage: "server.rack")
+        }
+        .accessibilityIdentifier("accountTypeSelection.otherButton")
+    }
 }
 
 /// Drives the single `.sheet(item:)` `SidebarView`/`AccountsSettingsView`
@@ -96,6 +147,9 @@ enum AccountEntryRoute: String, Identifiable {
     case typeSelection
     case gmail
     case icloud
+    case yahoo
+    case yahooJapan
+    case exchange
     case other
 
     var id: String { rawValue }
@@ -114,12 +168,21 @@ func accountEntryDestination(for route: AccountEntryRoute, binding: Binding<Acco
         AccountTypeSelectionView(
             onSelectGmail: { binding.wrappedValue = .gmail },
             onSelectICloud: { binding.wrappedValue = .icloud },
+            onSelectYahoo: { binding.wrappedValue = .yahoo },
+            onSelectYahooJapan: { binding.wrappedValue = .yahooJapan },
+            onSelectExchange: { binding.wrappedValue = .exchange },
             onSelectOther: { binding.wrappedValue = .other }
         )
     case .gmail:
         GmailAccountSetupView()
     case .icloud:
         ICloudAccountSetupView()
+    case .yahoo:
+        YahooAccountSetupView()
+    case .yahooJapan:
+        YahooJapanAccountSetupView()
+    case .exchange:
+        AccountSetupView(preset: .exchange)
     case .other:
         AccountSetupView()
     }

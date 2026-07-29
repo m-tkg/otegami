@@ -3671,6 +3671,156 @@
           }
         }
       }
+    },
+    "Yahoo": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yahoo"
+          }
+        }
+      }
+    },
+    "Yahoo! JAPAN": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yahoo! JAPAN"
+          }
+        }
+      }
+    },
+    "Exchange": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exchange"
+          }
+        }
+      }
+    },
+    "Gmail・iCloud・Yahoo・Yahoo! JAPAN・Exchange はホスト設定が自動で入力されます。それ以外のプロバイダは「その他」から手動で設定してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Gmail, iCloud, Yahoo, Yahoo! JAPAN, and Exchange have their server settings filled in automatically. For other providers, use “Other” to set them up manually."
+          }
+        }
+      }
+    },
+    "Yahoo のアカウント管理で発行した「アプリのパスワード」が必要です。Yahoo のパスワードそのものではログインできません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You need an app password issued from Yahoo Account Security. Your regular Yahoo password won’t work."
+          }
+        }
+      }
+    },
+    "Yahoo のアカウント管理でアプリのパスワードを発行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get an app password from Yahoo Account Security"
+          }
+        }
+      }
+    },
+    "Yahoo メールアドレス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yahoo Email Address"
+          }
+        }
+      }
+    },
+    "アプリのパスワード": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Password"
+          }
+        }
+      }
+    },
+    "Yahoo アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Yahoo Account"
+          }
+        }
+      }
+    },
+    "Yahoo!メールの設定で「メールソフトでの利用設定 (IMAP アクセス)」を有効にしておく必要があります。無効のままだと、正しいパスワードでも接続できません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You need to enable “Mail Software Access (IMAP Access)” in Yahoo! Mail settings first. Without it, connecting will fail even with the correct password."
+          }
+        }
+      }
+    },
+    "Yahoo!メールを開く": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Yahoo! Mail"
+          }
+        }
+      }
+    },
+    "Yahoo!メールアドレス": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Yahoo! Mail Address"
+          }
+        }
+      }
+    },
+    "Yahoo! JAPAN アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Yahoo! JAPAN Account"
+          }
+        }
+      }
+    },
+    "Exchange アカウントを追加": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add Exchange Account"
+          }
+        }
+      }
+    },
+    "社内 (オンプレミス) の Exchange サーバーで IMAP アクセスが有効になっている環境向けです。ホスト名はシステム管理者に確認してください。Microsoft 365 / Outlook.com は「アカウントを追加」→「Outlook」または「Office365」からサインインしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "For an on-premises Exchange server with IMAP access enabled. Ask your system administrator for the hostname. For Microsoft 365 / Outlook.com, use “Add Account” → “Outlook” or “Office365” instead."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

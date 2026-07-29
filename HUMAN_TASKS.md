@@ -201,6 +201,16 @@
       注入でのみ検証済み) を確認する。
       優先度: 中 / 所要時間: 30〜60分 (2台の実機/Mac が必要) / 手順:
       [PENDING.md「M11: iCloudアカウント同期の実機2台間確認」](PENDING.md#m11-icloud-アカウント同期の実機-2-台間確認)、[docs/icloud-sync.md「重複挿入バグとその修正」](docs/icloud-sync.md)
+- [ ] **Task #116 (第1段): Yahoo / Yahoo! JAPAN / Exchange の実接続確認** —
+      「アカウントを追加」に追加した3つのプリセットは実アカウント/実
+      サーバーが無く未検証。(1) Yahoo: アプリ用パスワードを発行して
+      追加し、「接続テスト」→「保存して同期開始」まで通ることを確認する
+      (`login.yahoo.com/myaccount/security`)。(2) Yahoo! JAPAN: Yahoo!
+      メールの設定で「メールソフトでの利用設定 (IMAP アクセス)」を有効
+      にしてから同様に確認する。(3) Exchange: 社内など IMAP が有効な
+      オンプレ Exchange サーバーがあれば、ホスト名を入力して接続テストの
+      通り方を確認する (無ければスキップで構わない)。
+      優先度: 中 / 所要時間: 20分 / 詳細: [docs/design-system.md「Task #116」節](docs/design-system.md)
 
 ## 3. インフラ・運用まわり
 
