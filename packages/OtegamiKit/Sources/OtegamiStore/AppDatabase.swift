@@ -893,6 +893,17 @@ extension AppDatabase {
             }
         }
 
+        // v33 (Task #161, #129/#156のPENDING.mdフォローアップ「下書きの
+        // htmlBody未対応」を解消): `DraftMessageRecord.htmlBody`'s doc
+        // comment has the full picture — same "NULL for every existing
+        // row, no backfill needed" shape as v32's identical column on
+        // `outboxMessage`.
+        migrator.registerMigration("v33") { db in
+            try db.alter(table: "draftMessage") { t in
+                t.add(column: "htmlBody", .text)
+            }
+        }
+
         return migrator
     }
 }

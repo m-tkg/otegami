@@ -478,6 +478,7 @@ public actor OpQueueProcessor {
                 cc: draft.ccAddresses,
                 subject: draft.subject,
                 plainTextBody: draft.plainTextBody,
+                htmlBody: draft.htmlBody,
                 inReplyTo: draft.inReplyToMessageId,
                 references: draft.references,
                 attachments: composeAttachments

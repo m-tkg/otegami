@@ -48,6 +48,22 @@ public struct DraftMessageRecord: Codable, Equatable, Sendable, FetchableRecord,
     public var subject: String
     public var plainTextBody: String
 
+    /// Task #161 (#129 第2段): an HTML rendering of the same body
+    /// (`ComposerView.bodySnapshotString`), the same field
+    /// `OutboxMessageRecord.htmlBody` already carries for a send — see that
+    /// property's doc comment for the full "why HTML alongside plain text"
+    /// picture. `nil` for a row this schema predates (v33 migration, no
+    /// backfill) or for a draft saved before this task, in which case
+    /// resuming it just falls back to the plain-text projection, same as
+    /// every draft before this task did. Read by `OpQueueProcessor`'s
+    /// `.saveDraft` replay to set `ComposeDraft.htmlBody`, closing the one
+    /// gap `PENDING.md`'s Task #129/#156 follow-up section left open on
+    /// purpose ("下書きテーブルは他エージェントの担当領域と重ならないよう明示的に
+    /// 対象外にした") — resuming a saved draft and pushing it straight to the
+    /// server's Drafts mailbox (without reopening it in the Composer first)
+    /// now carries formatting there too, not just plain text.
+    public var htmlBody: String?
+
     /// Same meaning as `OutboxMessageRecord.inReplyToMessageId`/`.references`
     /// — preserved so resuming a saved reply draft still sends with the
     /// right threading headers, instead of silently degrading into a
@@ -79,6 +95,7 @@ public struct DraftMessageRecord: Codable, Equatable, Sendable, FetchableRecord,
         ccAddresses: [EmailAddress] = [],
         subject: String,
         plainTextBody: String,
+        htmlBody: String? = nil,
         inReplyToMessageId: String? = nil,
         references: [String] = [],
         serverMailboxId: Int64? = nil,
@@ -93,6 +110,7 @@ public struct DraftMessageRecord: Codable, Equatable, Sendable, FetchableRecord,
         self.ccAddresses = ccAddresses
         self.subject = subject
         self.plainTextBody = plainTextBody
+        self.htmlBody = htmlBody
         self.inReplyToMessageId = inReplyToMessageId
         self.references = references
         self.serverMailboxId = serverMailboxId

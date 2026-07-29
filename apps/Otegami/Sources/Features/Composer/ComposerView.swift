@@ -1119,7 +1119,18 @@ struct ComposerView: View {
         toText = draft.toAddresses.map(\.description).joined(separator: ", ")
         ccText = draft.ccAddresses.map(\.description).joined(separator: ", ")
         subject = draft.subject
-        setPlainBody(draft.plainTextBody)
+        // Task #161: restore formatting when this draft has an
+        // `htmlBody` (every draft saved from here on) — same decode
+        // path `loadCancelledSend(_:)` already uses for C7's cancelled-
+        // send restore. Falls back to the plain-text projection for a
+        // draft saved before this task (schema predates `htmlBody`, or
+        // resumed from a `.serverDraft` this Composer session itself
+        // hasn't re-saved yet).
+        if let htmlBody = draft.htmlBody {
+            attributedBodyText = RichTextAttributedString.makeAttributedString(from: RichTextHTMLCoder.decode(html: htmlBody))
+        } else {
+            setPlainBody(draft.plainTextBody)
+        }
         inReplyToMessageId = draft.inReplyToMessageId
         references = draft.references
         draftServerMailboxId = draft.serverMailboxId
