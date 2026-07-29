@@ -34,6 +34,14 @@ public enum MailTransportError: Error, Sendable {
     /// (e.g. IDLE, CONDSTORE `changedSince`, APPEND, MOVE) but this adapter
     /// does not implement it yet.
     case notImplemented(String)
+
+    /// Task #167 / F9: an `EmailAddress.address`/`.name` bound for this
+    /// transport contains a CR, LF, or NUL byte. Backends that hand
+    /// addresses to a line-oriented wire protocol (SMTP's `MAIL FROM`/
+    /// `RCPT TO`) throw this rather than letting an embedded CRLF become a
+    /// second, attacker-controlled protocol command — see
+    /// `MailCoreSMTPSession.sendMessage`'s doc comment.
+    case invalidAddress(underlyingDescription: String)
 }
 
 extension MailTransportError: CustomStringConvertible {
@@ -55,6 +63,8 @@ extension MailTransportError: CustomStringConvertible {
             "cancelled"
         case .notImplemented(let what):
             "notImplemented: \(what)"
+        case .invalidAddress(let message):
+            "invalidAddress: \(message)"
         }
     }
 }

@@ -124,8 +124,31 @@ public enum MailtoURLParser {
     private static func addressList(from raw: Substring) -> [String] {
         raw.split(separator: ",", omittingEmptySubsequences: true).compactMap { piece in
             guard let decoded = decode(piece)?.trimmingCharacters(in: .whitespaces), !decoded.isEmpty else { return nil }
+            // Task #167 / F9 (CLAUDE-SECURITY-20260729-134850/
+            // CLAUDE-SECURITY-RESULTS.md): `.whitespaces` doesn't include
+            // CR/LF, so a `%0D%0A`-encoded piece (e.g.
+            // `mailto:bob@example.com%3E%0D%0ARCPT%20TO:%3Cattacker@evil.test`)
+            // survives decode()+trim with its embedded newline intact. Left
+            // alone, that string would reach `MailCoreSMTPSession
+            // .sendMessage`'s `MCOAddress` construction and become a
+            // second, attacker-controlled SMTP command line once sent. The
+            // transport layer is the authoritative fix (it validates every
+            // address regardless of origin, including ones from a
+            // server's `ENVELOPE`), but this parser drops the offending
+            // piece too — defense in depth, and consistent with this
+            // parser's existing "silently drop what it can't make sense
+            // of" tolerance for a malformed percent-escape just above.
+            guard !containsControlInjection(decoded) else { return nil }
             return decoded
         }
+    }
+
+    /// `true` if `value` contains a CR, LF, or NUL anywhere — not just at
+    /// the ends (a leading/trailing one would already be gone after
+    /// `.trimmingCharacters(in: .whitespaces)`... except `.whitespaces`
+    /// itself doesn't cover CR/LF, which is exactly the gap this guards).
+    private static func containsControlInjection(_ value: String) -> Bool {
+        value.unicodeScalars.contains { $0 == "\r" || $0 == "\n" || $0 == "\u{0}" }
     }
 
     /// `nil` on a malformed percent-escape (e.g. a lone `%` or `%zz`) —

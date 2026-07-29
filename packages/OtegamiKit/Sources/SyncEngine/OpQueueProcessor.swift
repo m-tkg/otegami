@@ -958,7 +958,7 @@ public actor OpQueueProcessor {
         switch error {
         case .connectionFailed, .notConnected, .cancelled, .authenticationFailed:
             true
-        case .serverError, .malformedResponse, .mailboxNotFound, .notImplemented:
+        case .serverError, .malformedResponse, .mailboxNotFound, .notImplemented, .invalidAddress:
             false
         }
     }

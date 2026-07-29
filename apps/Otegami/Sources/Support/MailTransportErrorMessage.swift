@@ -27,7 +27,7 @@ extension MailTransportError {
             "サーバーに接続できません。ホスト名・ポート・接続方式を確認してください。(\(description))"
         case .mailboxNotFound(let path):
             "メールボックスが見つかりません: \(path)"
-        case .notConnected, .cancelled, .malformedResponse, .serverError, .notImplemented:
+        case .notConnected, .cancelled, .malformedResponse, .serverError, .notImplemented, .invalidAddress:
             description
         }
     }

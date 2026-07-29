@@ -183,8 +183,29 @@ public actor MailCoreSMTPSession: SMTPSessionProtocol {
         session.cancelAllOperations()
     }
 
+    /// Task #167 / F9 (`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md`):
+    /// this is the trust boundary between this app's `EmailAddress` values
+    /// — which can originate from a `mailto:` URL another app handed us
+    /// (`MailtoURLParser`, itself hardened as defense in depth but not the
+    /// only source) or from an adversarial/compromised IMAP server's
+    /// `ENVELOPE` addresses copied into a reply's prefilled recipients —
+    /// and MailCore2/libetpan's line-oriented SMTP wire protocol.
+    /// `MCOAddress`'s `mailbox()`/`displayName()` reach libetpan's
+    /// `snprintf(command, SMTP_STRING_SIZE, "RCPT TO:<%s>%s\r\n", to,
+    /// notify_str)` (and the equivalent `MAIL FROM`) completely unescaped:
+    /// an embedded CR/LF in either becomes a second, attacker-controlled
+    /// SMTP command line sent over the *user's own already-authenticated*
+    /// session. Validating here — before any `MCOAddress` gets built —
+    /// means every call path through this actor (both `ComposerView` sends
+    /// and `OpQueueProcessor`'s replay of a queued send) is covered by one
+    /// check, rather than needing every future caller to remember to
+    /// validate first.
     public func sendMessage(messageData: Data, from: EmailAddress, recipients: [EmailAddress]) async throws {
         guard connected else { throw MailTransportError.notConnected }
+        try Self.validateForSMTP(from)
+        for recipient in recipients {
+            try Self.validateForSMTP(recipient)
+        }
         let fromAddress = Self.mcoAddress(from)
         let recipientAddresses = recipients.map(Self.mcoAddress)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -219,6 +240,30 @@ public actor MailCoreSMTPSession: SMTPSessionProtocol {
             session.OAuth2Token = accessToken
             session.authType = .XOAuth2
         }
+    }
+
+    /// Rejects an `EmailAddress` whose `address` or `name` contains CR, LF,
+    /// or NUL — see `sendMessage`'s doc comment for why this runs before
+    /// `mcoAddress(_:)` builds anything MailCore2/libetpan will see. NUL is
+    /// included alongside CR/LF because libetpan's `snprintf`-based command
+    /// construction (`%s`-formatted) would otherwise truncate the command
+    /// at the embedded NUL — not itself an injection, but not a value this
+    /// transport should silently mangle either.
+    static func validateForSMTP(_ address: EmailAddress) throws {
+        guard !Self.containsSMTPUnsafeBytes(address.address) else {
+            throw MailTransportError.invalidAddress(
+                underlyingDescription: "address contains CR/LF/NUL"
+            )
+        }
+        if let name = address.name, Self.containsSMTPUnsafeBytes(name) {
+            throw MailTransportError.invalidAddress(
+                underlyingDescription: "display name contains CR/LF/NUL"
+            )
+        }
+    }
+
+    static func containsSMTPUnsafeBytes(_ value: String) -> Bool {
+        value.unicodeScalars.contains { $0 == "\r" || $0 == "\n" || $0 == "\u{0}" }
     }
 
     private static func mcoAddress(_ address: EmailAddress) -> MCOAddress {

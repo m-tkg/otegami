@@ -164,4 +164,33 @@ struct MailtoURLParserTests {
         let url = try #require(URL(string: string))
         #expect(MailtoURLParser.parse(url) == MailtoURLParser.parse(string))
     }
+
+    // MARK: - Task #167 / F9: CRLF injection defense in depth
+    // (CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md). The
+    // authoritative fix lives at the SMTP transport boundary
+    // (`MailCoreSMTPSession.validateForSMTP`); these confirm this parser
+    // also drops a `%0D%0A`-smuggled CRLF rather than passing it through to
+    // whatever eventually builds an `EmailAddress` from `to`/`cc`/`bcc`.
+
+    @Test("a %0D%0A-smuggled CRLF in a path address is dropped, not passed through")
+    func crlfSmuggledInPathAddressIsDropped() {
+        let result = MailtoURLParser.parse(
+            "mailto:bob@example.com%3E%0D%0ARCPT%20TO:%3Cattacker@evil.test%3E,good@example.com"
+        )
+        #expect(result?.to == ["good@example.com"])
+    }
+
+    @Test("a %0D%0A-smuggled CRLF in a 'to' hfield address is dropped, not passed through")
+    func crlfSmuggledInToHfieldIsDropped() {
+        let result = MailtoURLParser.parse(
+            "mailto:good@example.com?to=bob@example.com%3E%0D%0ARCPT%20TO:%3Cattacker@evil.test%3E"
+        )
+        #expect(result?.to == ["good@example.com"])
+    }
+
+    @Test("a bare (unencoded) CR or LF in an address is also dropped")
+    func bareControlCharacterInAddressIsDropped() {
+        let result = MailtoURLParser.parse("mailto:a@example.com\r\nRCPT%20TO:%3Cattacker@evil.test%3E,good@example.com")
+        #expect(result?.to == ["good@example.com"])
+    }
 }
