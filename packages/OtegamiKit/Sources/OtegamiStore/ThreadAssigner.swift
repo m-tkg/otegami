@@ -352,25 +352,43 @@ public enum ThreadAssigner {
             )
         }
 
-        // Gmail 二重ラベル対策の重複排除: `messageCount`/`unreadCount`は
-        // `ThreadQuery.deduplicate(_:db:)`と同じ「同一物理メールが INBOX と
-        // All Mail に別 message 行として存在する」ケースを二重カウントしない
-        // よう、ここも同じ同一性定義 (gmailMessageId優先、無ければmessageId、
-        // 両方nilなら重複排除しない) で数える。この一括パスは初回同期/レガシー
-        // アカウントの一括バックフィル (数千スレッド規模になりうる —
-        // `assignAllUnthreaded`のdoc comment参照) からも呼ばれるため、スレッド
-        // ごとにSwiftへ取得し直す (`ThreadAssigner.recomputeAggregates(threadId:
-        // db:)`) 方式だとこのバッチ化がそもそも解決したかった「1メッセージ
-        // ごとに何往復もする」遅さへ逆戻りしかねない — 単一UPDATE文の中で
-        // SQLのwindow関数を使い、`ThreadQuery.deduplicate`と同じ「role持ちの
-        // メールボックスをAll Mail相当より優先」というタイブレークをSQL側に
-        // 再現する。`messageCount`は同一性キーの distinct 件数を数えるだけで
-        // 済む (どちらの行が「勝つ」かはcountに影響しない) が、`unreadCount`は
-        // 各グループの「勝った」行の既読状態だけを見る必要があるため
-        // (同じメールでもINBOX側とAll Mail側で`\Seen`フラグが食い違うことが
-        // ありうる) `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)`で
-        // グループ内の代表行 (rn = 1) を選び出す。`lastMessageDate`/`isPinned`
-        // は元々MAXベースで重複に対して安全なため (指示どおり) 変更しない。
+        for chunk in Array(touchedThreadIds).chunked(into: 400) {
+            let idPlaceholders = chunk.map { _ in "?" }.joined(separator: ",")
+            try db.execute(
+                sql: aggregateUpdateSQL(whereClause: "WHERE thread.id IN (\(idPlaceholders))"),
+                arguments: StatementArguments(chunk)
+            )
+        }
+    }
+
+    // Gmail 二重ラベル対策の重複排除: `messageCount`/`unreadCount`は
+    // `ThreadQuery.deduplicate(_:db:)`と同じ「同一物理メールが INBOX と
+    // All Mail に別 message 行として存在する」ケースを二重カウントしない
+    // よう、ここも同じ同一性定義 (gmailMessageId優先、無ければmessageId、
+    // 両方nilなら重複排除しない) で数える。この一括パスは初回同期/レガシー
+    // アカウントの一括バックフィル (数千スレッド規模になりうる —
+    // `assignAllUnthreaded`のdoc comment参照) や `recomputeAllAggregates`の
+    // 全件バックフィル (Task #168) からも呼ばれるため、スレッドごとに
+    // Swiftへ取得し直す (`ThreadAssigner.recomputeAggregates(threadId:
+    // db:)`) 方式だとこのバッチ化がそもそも解決したかった「1メッセージ
+    // ごとに何往復もする」遅さへ逆戻りしかねない — 単一UPDATE文の中で
+    // SQLのwindow関数を使い、`ThreadQuery.deduplicate`と同じ「role持ちの
+    // メールボックスをAll Mail相当より優先」というタイブレークをSQL側に
+    // 再現する。`messageCount`は同一性キーの distinct 件数を数えるだけで
+    // 済む (どちらの行が「勝つ」かはcountに影響しない) が、`unreadCount`は
+    // 各グループの「勝った」行の既読状態だけを見る必要があるため
+    // (同じメールでもINBOX側とAll Mail側で`\Seen`フラグが食い違うことが
+    // ありうる) `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)`で
+    // グループ内の代表行 (rn = 1) を選び出す。`lastMessageDate`/`isPinned`
+    // は元々MAXベースで重複に対して安全なため (指示どおり) 変更しない。
+    //
+    // `whereClause`はどの`thread`行を更新するかを絞る節 (呼び出し側が
+    // "WHERE thread.id IN (...)"を渡すか、`recomputeAllAggregates`のように
+    // 空文字列を渡して全スレッドを対象にするか)。`identityKeySQL`/
+    // `roleBearingRankSQL`/このUPDATE文自体を`apply`と`recomputeAllAggregates`
+    // の2箇所で定義し直さず、この1箇所にまとめておくことで定義が散らばって
+    // 食い違う事故を防ぐ。
+    private static func aggregateUpdateSQL(whereClause: String) -> String {
         let identityKeySQL = """
             CASE
                 WHEN message.gmailMessageId IS NOT NULL THEN 'g:' || message.gmailMessageId
@@ -381,35 +399,50 @@ public enum ThreadAssigner {
         let roleBearingRankSQL = """
             CASE WHEN mailbox.role IN ('inbox', 'sent', 'drafts', 'trash', 'junk', 'archive') THEN 1 ELSE 0 END
             """
-        for chunk in Array(touchedThreadIds).chunked(into: 400) {
-            let idPlaceholders = chunk.map { _ in "?" }.joined(separator: ",")
-            try db.execute(
-                sql: """
-                UPDATE thread SET
-                    messageCount = (
-                        SELECT COUNT(DISTINCT \(identityKeySQL))
-                        FROM message WHERE message.threadId = thread.id
-                    ),
-                    unreadCount = (
-                        SELECT COUNT(*) FROM (
-                            SELECT message.flagsRaw AS flagsRaw,
-                                   ROW_NUMBER() OVER (
-                                       PARTITION BY \(identityKeySQL)
-                                       ORDER BY \(roleBearingRankSQL) DESC, message.uid DESC
-                                   ) AS rn
-                            FROM message
-                            JOIN mailbox ON mailbox.id = message.mailboxId
-                            WHERE message.threadId = thread.id
-                        )
-                        WHERE rn = 1 AND (flagsRaw & \(MessageFlags.seen.rawValue)) = 0
-                    ),
-                    lastMessageDate = (SELECT MAX(COALESCE(message.date, message.internalDate)) FROM message WHERE message.threadId = thread.id),
-                    isPinned = (SELECT COALESCE(MAX(message.isPinnedLocal), 0) FROM message WHERE message.threadId = thread.id)
-                WHERE thread.id IN (\(idPlaceholders))
-                """,
-                arguments: StatementArguments(chunk)
-            )
-        }
+        return """
+            UPDATE thread SET
+                messageCount = (
+                    SELECT COUNT(DISTINCT \(identityKeySQL))
+                    FROM message WHERE message.threadId = thread.id
+                ),
+                unreadCount = (
+                    SELECT COUNT(*) FROM (
+                        SELECT message.flagsRaw AS flagsRaw,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY \(identityKeySQL)
+                                   ORDER BY \(roleBearingRankSQL) DESC, message.uid DESC
+                               ) AS rn
+                        FROM message
+                        JOIN mailbox ON mailbox.id = message.mailboxId
+                        WHERE message.threadId = thread.id
+                    )
+                    WHERE rn = 1 AND (flagsRaw & \(MessageFlags.seen.rawValue)) = 0
+                ),
+                lastMessageDate = (SELECT MAX(COALESCE(message.date, message.internalDate)) FROM message WHERE message.threadId = thread.id),
+                isPinned = (SELECT COALESCE(MAX(message.isPinnedLocal), 0) FROM message WHERE message.threadId = thread.id)
+            \(whereClause)
+            """
+    }
+
+    /// One-time full-table recompute of every thread's `messageCount`/
+    /// `unreadCount`/`lastMessageDate`/`isPinned`, using the exact same
+    /// dedup-aware SQL `apply`'s per-batch aggregate refresh uses (see
+    /// `aggregateUpdateSQL`'s doc comment) — just with no `WHERE thread.id
+    /// IN (...)` restriction, so it's a single `UPDATE` statement covering
+    /// every row in `thread` regardless of table size, not a chunked loop.
+    ///
+    /// Exists for the v35 migration (Task #168, 実機フィードバック「一覧の
+    /// スレッド通数バッジが実際の通数と食い違う」): a54f585 made
+    /// `messageCount`/`unreadCount` dedup-aware (Gmail's INBOX/All Mail
+    /// 二重行を除外) for every *future* write to those columns, but never
+    /// backfilled threads whose stored value was already written with the
+    /// old (non-dedup) count before that fix shipped — those stayed wrong
+    /// until something else changed that thread's membership and triggered
+    /// a fresh `recomputeAggregates`/`apply` write. Safe to call outside a
+    /// migration too (e.g. from a diagnostics path) since it's read-derived
+    /// and idempotent.
+    public static func recomputeAllAggregates(db: Database) throws {
+        try db.execute(sql: aggregateUpdateSQL(whereClause: ""))
     }
 
     /// Recomputes `messageCount`/`unreadCount`/`lastMessageDate` for

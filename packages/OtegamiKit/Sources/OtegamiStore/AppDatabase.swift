@@ -914,6 +914,30 @@ extension AppDatabase {
             }
         }
 
+        // v35 (Task #168, 実機フィードバック「一覧のスレッド通数バッジが
+        // 実際の通数と食い違う」（Gmail、Oktaの通知メール）): a54f585 made
+        // `thread.messageCount`/`unreadCount` dedup-aware (Gmail の INBOX と
+        // All Mail の二重行を1通として数える) for every future write to
+        // those columns via `ThreadAssigner.recomputeAggregates(threadId:
+        // db:)`/`.apply(_:accountId:db:)`, but never backfilled threads
+        // whose stored value was already written with the old (dedup前の)
+        // count before that fix shipped — a thread stays wrong until its
+        // membership changes again and triggers a fresh write. This
+        // migration recomputes every existing thread's aggregates once,
+        // via `ThreadAssigner.recomputeAllAggregates(db:)` (a single `UPDATE
+        // thread SET ...` statement reusing the exact same dedup SQL
+        // `apply`'s per-batch path already uses — one definition, not three).
+        // Raw SQL inside that helper, not `ThreadRecord`/`MessageRecord`
+        // fetch-then-update — deliberately, for the same "frozen schema vs.
+        // live Codable struct shape" reason v21's migration documents:
+        // every column this UPDATE touches (`thread.messageCount`,
+        // `message.gmailMessageId`, `mailbox.role`, etc.) already existed
+        // well before v34, so referencing them by raw column name here is
+        // safe regardless of columns added by migrations after this one.
+        migrator.registerMigration("v35") { db in
+            try ThreadAssigner.recomputeAllAggregates(db: db)
+        }
+
         return migrator
     }
 }

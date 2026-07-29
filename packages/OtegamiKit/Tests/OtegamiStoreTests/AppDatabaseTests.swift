@@ -323,6 +323,65 @@ struct AppDatabaseTests {
         #expect(sortOrders["third"] == 2)
     }
 
+    @Test("v35 migration backfills stale (pre-dedup) thread.messageCount/unreadCount values")
+    func v35BackfillsDeduplicatedThreadAggregates() throws {
+        // Same "hand-insert against a frozen pre-migration schema, then
+        // migrate the rest of the way" shape as `v21RepairsDisplayPath` —
+        // exercises the migration's backfill, not just `ThreadAssigner
+        // .recomputeAllAggregates(db:)` called directly (already covered
+        // unit-level by `ThreadAggregateBackfillTests`). Record-based
+        // inserts (not raw SQL) are safe here specifically because v35
+        // itself adds no columns — `AccountRecord`/`MailboxRecord`
+        // /`MessageRecord`/`ThreadRecord`'s Swift shape already matches the
+        // schema exactly as it stood at v34 (the last migration to alter
+        // any of those tables' columns), unlike `v21RepairsDisplayPath`'s
+        // hand-inserted `mailbox` row, which predates `mailbox.isHidden`
+        // (added in v26).
+        let dbQueue = try DatabaseQueue()
+        let migrator = AppDatabase.migrator
+        try migrator.migrate(dbQueue, upTo: "v34")
+
+        let account = AccountRecord(
+            displayName: "Gmail", email: "g@example.test", authType: .oauth2, kind: .gmail,
+            imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls, imapUsername: "g@example.test"
+        )
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let threadId = try dbQueue.write { db -> Int64 in
+            try account.insert(db)
+            var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            inbox = try inbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var allMail = MailboxRecord(accountId: account.id, path: "[Gmail]/All Mail", displayPath: "All Mail", role: .all)
+            allMail = try allMail.upsertAndFetch(db, onConflict: ["accountId", "path"])
+
+            // `messageCount: 3`/`unreadCount: 3` — a pre-a54f585 raw
+            // row-count write for what's actually one physical, unread
+            // email synced into both INBOX and All Mail (the real-device
+            // report this migration fixes: badge said 3, thread had 1).
+            var thread = ThreadRecord(accountId: account.id, lastMessageDate: base, messageCount: 3, unreadCount: 3)
+            try thread.insert(db)
+            var allMailMessage = MessageRecord(
+                mailboxId: allMail.id!, uid: 1, date: base, internalDate: base,
+                flagsRaw: 0, gmailMessageId: 42, threadId: thread.id
+            )
+            try allMailMessage.insert(db)
+            var inboxMessage = MessageRecord(
+                mailboxId: inbox.id!, uid: 1, date: base, internalDate: base,
+                flagsRaw: 0, gmailMessageId: 42, threadId: thread.id
+            )
+            try inboxMessage.insert(db)
+            return thread.id!
+        }
+
+        try migrator.migrate(dbQueue)
+
+        let (messageCount, unreadCount) = try dbQueue.read { db -> (Int, Int) in
+            let row = try Row.fetchOne(db, sql: "SELECT messageCount, unreadCount FROM thread WHERE id = ?", arguments: [threadId])!
+            return (row["messageCount"], row["unreadCount"])
+        }
+        #expect(messageCount == 1, "the INBOX/All-Mail duplicate must collapse to one message after the v35 backfill")
+        #expect(unreadCount == 1)
+    }
+
     @Test("sortOrder round-trips, and a fresh account defaults to 0")
     func roundTripsAccountSortOrder() throws {
         let database = try AppDatabase.makeInMemory()
