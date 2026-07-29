@@ -85,10 +85,24 @@ struct MailScreenView: View {
     /// doc comment: the most recently observed on-screen thread order,
     /// refreshed on every `MessageListView` re-render, consulted by
     /// `handleThreadRemoved(_:)` to resolve "next message" navigation.
-    /// Task #74 でも二つ目の消費者として使う: `.count`をタイトル横の件数表示
-    /// (`toolbarContent`) にそのまま流用する — 新規の観測を増やさずに済む
-    /// (詳細はその使用箇所のdoc comment参照)。
+    ///
+    /// Task #74 は`.count`をタイトル横の件数表示 (`toolbarContent`) にも
+    /// 流用していた ("今表示されてる件数" = ページングで切られた読み込み
+    /// 済み行数) が、ユーザー指示 (2026-07-29) でその表示は
+    /// `currentUnreadCount` (メッセージ単位・現在のボックススコープの
+    /// 未読数、`MessageListView.onUnreadCountChanged`) に置き換えた —
+    /// この`currentThreadOrder`自体はG「削除・アーカイブ時の挙動」用の
+    /// 唯一の消費者に戻っている。
     @State private var currentThreadOrder: [Int64] = []
+    /// Task #74 → ヘッダ件数表示のメッセージ単位未読数化 (ユーザー指示、
+    /// 2026-07-29、#137 と同じバッチ): タイトル横の件数
+    /// (`toolbarContent`)が実際に表示する値 — `MessageListView
+    /// .onUnreadCountChanged`から流れてくる、現在の`mailSelection`
+    /// (と`accountFilter`)スコープのメッセージ単位未読数。スレッド数でも
+    /// 「今読み込み済みの行数」でもなく、スレッドを畳んでいても展開して
+    /// いても (スレッド表示 ON/OFF どちらでも) 同じ定義 — 例えばスレッドが
+    /// 4つでもその中の未読メッセージが6件あればここは6になる。
+    @State private var currentUnreadCount = 0
     /// Task #108: see `MessageListView.suppressInternalUndoToast`'s doc
     /// comment — the undo toast's actual rendering lives here (in an
     /// `.overlay` applied *after* the floating search/compose buttons
@@ -312,10 +326,9 @@ struct MailScreenView: View {
         }
     }
 
-    /// 右ペイン — Task #70要件3「スレッド選択画面(2通以上)は右ペイン内で
-    /// 選択画面→本文のpush」: `ThreadEntryView`自身が持つ
-    /// `.navigationDestination(item:)`(`ThreadSelectionView`→
-    /// `ThreadDetailView`) がこの`NavigationStack`の中で完結する。
+    /// 右ペイン — Task #70要件3「スレッド本文はこの右ペイン内で完結する」:
+    /// `ThreadEntryView`(→`ThreadDetailView`、Task #136 以降は常にこの1画面
+    /// — 選択画面は介在しない) がこの`NavigationStack`の中で描画される。
     private var detailColumn: some View {
         NavigationStack {
             Group {
@@ -371,6 +384,7 @@ struct MailScreenView: View {
                     selectedMessageId: selectedMessageIdBinding,
                     onSelectionModeChanged: { isSelecting = $0 },
                     onSummariesChanged: { currentThreadOrder = $0 },
+                    onUnreadCountChanged: { currentUnreadCount = $0 },
                     suppressInternalUndoToast: true,
                     onPendingUndoChanged: { pendingUndoPayload = $0 }
                 )
@@ -535,23 +549,26 @@ struct MailScreenView: View {
                 hamburgerButton
             }
             ToolbarItem(placement: .principal) {
-                // Task #74: タイトル横に「今表示されてる件数」— 新規の観測を
-                // 増やさず、G「削除・アーカイブ時の挙動」用に元々
-                // `onSummariesChanged`から受け取っている`currentThreadOrder`
-                // (スレッド集約時はスレッド数、フラット表示時はメッセージ数、
-                // 未読のみトグルON時はその絞り込み後の件数 — `MessageListView
-                // .summaries`をそのまま映した配列なので、要件の3ケースすべて
-                // 追加コード無しで満たす) の件数をそのまま流用する。ページング
-                // (`MessageListView.pageLimit`)で切られた「現在読み込み済みの
-                // 件数」であって、メールボックス全体の総件数ではない — 「今
-                // 表示されてる件数」という要件そのものなので、これで正しい。
+                // Task #74 → ヘッダ件数表示のメッセージ単位未読数化
+                // (ユーザー指示、2026-07-29): タイトル横の数字は元々
+                // `currentThreadOrder.count`(「今表示されてる件数」— スレッド
+                // 集約時はスレッド数、ページングで切られた読み込み済み行数)
+                // だったが、「スレッド表示 ON のとき、スレッド数ではなく
+                // メッセージ単位の未読数を出したい (スレッドが4つでも未読が
+                // 6件ならヘッダは6)」という要望で`currentUnreadCount`
+                // (`MessageListView.onUnreadCountChanged`、現在の
+                // `mailSelection`スコープのメッセージ単位未読数 — ページング・
+                // 未読のみ表示・スレッド/フラット表示のどれにも左右されない)
+                // に置き換えた。0件でも非表示にはしない — 元の実装が
+                // `environment.accounts.isEmpty`だけをゲートにしていた挙動を
+                // そのまま踏襲。
                 HStack(spacing: OtegamiSpacing.xs) {
                     Text(selectionTitle)
                         .font(OtegamiFont.headline())
                         .foregroundStyle(OtegamiColor.ink)
                         .accessibilityIdentifier("mail.title")
                     if !environment.accounts.isEmpty {
-                        Text("(\(currentThreadOrder.count))")
+                        Text("(\(currentUnreadCount))")
                             .font(OtegamiFont.caption())
                             .foregroundStyle(OtegamiColor.inkSecondary)
                             .accessibilityIdentifier("mail.title.count")

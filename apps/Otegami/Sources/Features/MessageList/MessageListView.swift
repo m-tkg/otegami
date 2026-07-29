@@ -96,6 +96,20 @@ struct MessageListView: View {
     /// .onThreadRemoved`'s doc comment).
     var onSummariesChanged: ([Int64]) -> Void = { _ in }
 
+    /// ヘッダのタイトル横の件数表示 (`MailScreenView.toolbarContent`)を
+    /// メッセージ単位の未読数に変更した際の追加コールバック (Task #74 の
+    /// 「今表示されてる件数」だった旧仕様からの変更 — ユーザー指示「スレッド
+    /// 表示 ON のとき、スレッド数ではなくメッセージ単位の未読数を出す」)。
+    /// `onSummariesChanged`の`currentThreadOrder.count`は「今画面に読み込み
+    /// 済みの行数」(ページングで切られる、スレッド集約時はスレッド数)
+    /// だったのに対し、これは`selection`(と`unifiedInboxAccountFilter`)が
+    /// 表す "今のボックススコープ" 全体のメッセージ単位未読数
+    /// (`observeUnreadCountInScope()`) — ページング・未読のみ表示・
+    /// スレッド/フラット表示のどれにも左右されない一つの定義。`summaries`
+    /// とは独立した`.task(id:)`で観測するので (下の`UnreadCountObservationKey`)、
+    /// ページング用の`pageLimit`が変わっても不要な再クエリは起きない。
+    var onUnreadCountChanged: (Int) -> Void = { _ in }
+
     /// Task #108 (実機報告「元に戻すトーストが検索・新規作成 FAB の背面に
     /// 描画され重なる」): `MailScreenView`のフローティングボタン
     /// (`floatingSearchButton`/`floatingComposeButton`) はこの`View`より
@@ -253,6 +267,19 @@ struct MessageListView: View {
         var isFlatMode: Bool
         var isThreadingEnabled: Bool
         var unreadOnly: Bool
+    }
+
+    /// `onUnreadCountChanged`'s own `.task(id:)` key — deliberately *not*
+    /// `ObservationKey` above: this count doesn't depend on `pageLimit`
+    /// (unread-in-scope isn't paginated the way the visible row list is)
+    /// or `isFlatMode`/`unreadOnly` (see `onUnreadCountChanged`'s doc
+    /// comment — one definition regardless of display mode), so reusing
+    /// `ObservationKey` would restart this observation on every page-load
+    /// scroll for no reason.
+    private struct UnreadCountObservationKey: Hashable {
+        var selection: SidebarSelection
+        var accountFilter: String?
+        var accountIds: [String]
     }
 
     // MARK: - フラット表示 (B3)
@@ -693,6 +720,11 @@ struct MessageListView: View {
         }
         .task(id: ObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id), pageLimit: pageLimit, isFlatMode: isFlatMode, isThreadingEnabled: isThreadingEnabled, unreadOnly: persistedUnreadOnly)) {
             await observeThreads()
+        }
+        // `onUnreadCountChanged`'s doc comment — independent of the
+        // observation right above (own key, own task).
+        .task(id: UnreadCountObservationKey(selection: selection, accountFilter: unifiedInboxAccountFilter, accountIds: environment.accounts.map(\.id))) {
+            await observeUnreadCountInScope()
         }
         // Task #44: see `syncSelectedMailboxOnAppear()`'s doc comment —
         // keyed on `selection` alone (not the `ObservationKey` above, which
@@ -1152,6 +1184,47 @@ struct MessageListView: View {
             } catch {
                 // Same as above.
             }
+        }
+    }
+
+    /// `onUnreadCountChanged`'s doc comment — the message-level, role-scoped
+    /// unread count for whatever `selection` currently is, independent of
+    /// `observeThreads()`'s own paginated/threaded/unread-only-filtered row
+    /// list. `.mailbox` uses `MessageQuery.unreadCountObservation`, backed
+    /// by the same per-mailbox grouped query the folder list's own unread
+    /// badges read (already includes the Gmail All-Mail archive definition
+    /// via `GmailArchiveFilter`, since that only ever depends on the target
+    /// mailbox's own `role`/`account.kind`, not on which entry point opened
+    /// it — see that query's doc comment). `.unifiedInbox`/`.unifiedRole`
+    /// use `MessageQuery.unifiedInboxUnreadCount(accountIds:role:)` — the
+    /// same query `AccountDigestQuery.digests(accountIds:role:recentLimit:db:)`
+    /// was fixed to use for Task #137's per-account badge, reused here
+    /// summed across every account in scope instead of one at a time.
+    private func observeUnreadCountInScope() async {
+        do {
+            switch selection {
+            case .mailbox(let mailboxSelection):
+                let observation = MessageQuery.unreadCountObservation(mailboxId: mailboxSelection.mailboxId, accountId: mailboxSelection.accountId)
+                for try await count in observation.values(in: environment.database.dbWriter) {
+                    onUnreadCountChanged(count)
+                }
+            case .unifiedInbox:
+                let accountIds = unifiedInboxAccountFilter.map { [$0] } ?? environment.accounts.map(\.id)
+                let observation = MessageQuery.unifiedInboxUnreadCountObservation(accountIds: accountIds)
+                for try await count in observation.values(in: environment.database.dbWriter) {
+                    onUnreadCountChanged(count)
+                }
+            case .unifiedRole(let role):
+                let accountIds = unifiedInboxAccountFilter.map { [$0] } ?? environment.accounts.map(\.id)
+                let observation = MessageQuery.unifiedInboxUnreadCountObservation(accountIds: accountIds, role: role)
+                for try await count in observation.values(in: environment.database.dbWriter) {
+                    onUnreadCountChanged(count)
+                }
+            }
+        } catch {
+            // A failing observation just stops the badge from updating
+            // further — matches every other `observation.values(in:)` loop
+            // in this file (`observeThreads()`).
         }
     }
 

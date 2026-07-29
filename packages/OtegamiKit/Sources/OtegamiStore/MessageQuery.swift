@@ -89,6 +89,22 @@ public enum MessageQuery {
         ValueObservation.tracking { db in try unreadCounts(accountId: accountId, db: db) }
     }
 
+    /// One mailbox's unread count, out of ``unreadCounts(accountId:db:)``'s
+    /// per-account grouped result — for a caller that only cares about a
+    /// single mailbox (e.g. `MessageListView`'s header unread badge for a
+    /// `.mailbox` selection, ヘッダ件数表示のメッセージ単位未読数化) and
+    /// would otherwise have to inline the same "missing key means zero"
+    /// lookup itself. Still one grouped query under the hood, not a
+    /// per-mailbox `COUNT(*)` — cheap enough that a caller observing one
+    /// mailbox doesn't need its own narrower SQL.
+    public static func unreadCount(mailboxId: Int64, accountId: String, db: Database) throws -> Int {
+        try unreadCounts(accountId: accountId, db: db)[mailboxId] ?? 0
+    }
+
+    public static func unreadCountObservation(mailboxId: Int64, accountId: String) -> ValueObservation<ValueReducers.Fetch<Int>> {
+        ValueObservation.tracking { db in try unreadCount(mailboxId: mailboxId, accountId: accountId, db: db) }
+    }
+
     /// Total unread count across every `role`-role mailbox of `accountIds` —
     /// the badge for "すべての受信トレイ" (`role == .inbox`, the default), and
     /// 画面構造改修バッチ (Task #33, 3) の「横断ビュー」row's own unread badge

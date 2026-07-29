@@ -6253,3 +6253,83 @@ text/html 14KB、Gmailの`gmail_quote`構造、4段ネスト) を一時的に
 間に合わず新規部分が一瞬空白になる事象を観測したが、待ち時間を伸ばして
 再実行すると正しく描画された — タイミングの揺らぎであり、実装のバグでは
 ないと判断 (`WAIT_SECONDS`を増やしたリトライで再現しなくなることを確認)。
+
+## Task #137: アカウント別ダイジェストのバッジを「現在のボックス内の未読数」に (+ ヘッダ件数のメッセージ単位未読数化)
+
+**実機報告 (スクショ確認済み)**: 「すべてのアーカイブ」のアカウント別
+ダイジェスト (`AccountDigestView`/`AccountDigestRow`) で、各行のバッジが
+ボックス無関係の値になっていた。
+
+### 原因
+
+`AccountDigestQuery.digests(accountIds:role:recentLimit:db:)`は`role`
+引数 (Task #92 で導入済み、`MailScreenView.digestRole`が`.unifiedInbox`
+→`.inbox`/`.unifiedRole(let role)`→その`role`を渡す)自体は正しく
+`ThreadQuery.unifiedInboxRequest`へ通していた — `totalCount`(スレッド数)
+はこの`role`で正しくスコープされていた。壊れていたのは`unreadCount`の
+方: `threads.reduce(0) { $0 + $1.unreadCount }`で`ThreadRecord.unreadCount`
+(スレッド内の全メッセージを通した未読数の集計、mailbox/role非依存)を
+そのまま合計していた。`ThreadQuery.unifiedInboxRequest`自身のdoc comment
+が記録している通り「スレッドは複数メールボックスにまたがりうる (例:
+Inbox + Sent)」——Gmail のラベルモデルではさらに一般的で、同じスレッドが
+INBOX に未読のまま残りつつ、そのうちの1通は既に All Mail (アーカイブ)
+側にも見えている、というケースが普通に起きる。この場合そのスレッドは
+`totalCount`としてはアーカイブ側にも数えられる (EXISTS による所属判定は
+正しい) が、`unreadCount`はINBOX側の未読までアーカイブ側の集計に
+漏れ込んでいた — 「ボックス無関係の値」という報告どおりの症状。
+
+### 修正
+
+`packages/OtegamiKit/Sources/OtegamiStore/AccountDigestQuery.swift`:
+`unreadCount`の算出を`MessageQuery.unifiedInboxUnreadCount(accountIds:
+[accountId], role: role, db:)`(メッセージ単位・role スコープ・Gmail の
+All Mail アーカイブ定義込み — フォルダ一覧の未読バッジと同じクエリ)に
+差し替え。`totalCount`(スレッド数)は変更なし — 元々`role`で正しく
+スコープされていた。`AccountDigestQueryTests.swift`に、1スレッドが
+INBOX(未読)+Archive(既読)の2メールボックスにまたがるケースを追加
+(`digestsScopesUnreadCountToRole`) — 修正前はアーカイブ側の
+`unreadCount`が1(誤り、INBOX側の未読が漏れ込む)になり落ちるテスト。
+
+### 追加スコープ: ヘッダ件数表示のメッセージ単位未読数化 (ユーザー指示、2026-07-29)
+
+同じバッチで、一覧ヘッダのタイトル横の件数表示 (`MailScreenView
+.toolbarContent`、Task #74)の定義も変更した。元は`currentThreadOrder
+.count`(=`MessageListView`から`onSummariesChanged`で受け取る「今表示
+されてる件数」——スレッド集約時はスレッド数、ページングで切られた
+読み込み済み行数)だったが、「スレッド表示 ON のとき、スレッド数では
+なくメッセージ単位の未読数を出したい (スレッドが4つでも未読メッセージが
+6件あればヘッダは6)」という要望を受け、`MessageListView`に新しい
+`onUnreadCountChanged`コールバックを追加し、`observeUnreadCountInScope()`
+という独立した`.task(id:)`(`UnreadCountObservationKey`——`pageLimit`/
+`isFlatMode`/`unreadOnly`に依存しない、この件数は表示モードに関わらず
+一つの定義であるため)でこの値を観測するようにした。
+
+- `.mailbox`選択中: `MessageQuery.unreadCountObservation(mailboxId:
+  accountId:)`(新規、`unreadCounts(accountId:db:)`の単一メールボックス
+  版)。
+- `.unifiedInbox`/`.unifiedRole`選択中: `MessageQuery
+  .unifiedInboxUnreadCountObservation(accountIds:role:)`——上の
+  `AccountDigestQuery`の修正で使ったのと同じ関数を、1アカウントずつ
+  ではなくスコープ内の全アカウント合算で呼ぶだけ。
+
+`currentThreadOrder`自体はG「削除・アーカイブ時の挙動」
+(`MessagePostActionSettingsStore.nextThreadId`)用の消費者としてそのまま
+残っている——タイトル横の表示だけが新しい`currentUnreadCount`に切り替わった。
+0件でも非表示にはしない(元の`environment.accounts.isEmpty`ゲートのみ、
+という挙動をそのまま踏襲)。
+
+### 検証
+
+`swift test --filter AccountDigestQueryTests`(新規テスト含め5件)green。
+`packages/OtegamiKit`全体の`swift test`も既知flake (`MessageBuilderTests`
+日本語ラウンドトリップ)以外green。`swift build`(パッケージ単体)・
+`xcodebuild`(macOS、`Otegami`スキーム)とも、このタスクで変更した
+`MessageListView.swift`/`MailScreenView.swift`/`AccountDigestQuery.swift`/
+`MessageQuery.swift`にエラーが出ないことを確認——並行して別エージェントが
+`FolderListSheet.swift`/`ThreadDetailView.swift`等を編集中で共有ワーク
+ツリーが一時的にビルド不能だったため、フルグリーンの`make mac`/
+`make ios`はこのセッションでは確認できていない。実機/シミュレータでの
+確認はユーザー分業: (1)「すべてのアーカイブ」のアカウント別ダイジェストで
+各行の未読バッジがそのアカウントのアーカイブ内未読数と一致すること、
+(2) 受信トレイでスレッド4つ・未読メッセージ6件のような状態を作り、
+ヘッダのタイトル横が6になること。

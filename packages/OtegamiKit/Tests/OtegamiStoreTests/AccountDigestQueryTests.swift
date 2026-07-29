@@ -97,6 +97,48 @@ struct AccountDigestQueryTests {
         #expect(digests[0].recentSummaries.map(\.thread.id) == newestTwo)
     }
 
+    /// Task #137 (実機報告「『すべてのアーカイブ』のダイジェストで、各行の
+    /// バッジがボックス無関係の値」): a single *thread* that spans two
+    /// mailboxes of different roles — one message still unread in INBOX,
+    /// one already-read message in Archive — matches
+    /// `ThreadQuery.unifiedInboxRequest`'s own doc comment ("a thread can
+    /// span mailboxes, e.g. Inbox + Sent"). Before the fix, `AccountDigest
+    /// .unreadCount` summed `ThreadRecord.unreadCount` (a thread-wide
+    /// aggregate that would count this thread's INBOX-side unread message
+    /// even for the *archive* digest, since the thread also has a message
+    /// in Archive and so qualifies for that scope's `totalCount`) — this
+    /// pins the fixed, message-level/role-scoped behavior instead: the
+    /// archive digest sees 0 unread (its own message is read), the inbox
+    /// digest sees 1 (its own message is unread), even though both digests
+    /// report the same thread in their `totalCount`.
+    @Test("digests(accountIds:role:) scopes unreadCount to the role's own messages, not the whole thread")
+    func digestsScopesUnreadCountToRole() throws {
+        let (database, accountId, inboxId, archiveId) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try database.dbWriter.write { db in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 2, unreadCount: 1)
+            try thread.insert(db)
+            var inboxMessage = MessageRecord(mailboxId: inboxId, uid: 1, subject: "A", date: base, internalDate: base, threadId: thread.id)
+            // Unread (no .seen bit) — still sitting in INBOX.
+            try inboxMessage.insert(db)
+            var archiveMessage = MessageRecord(mailboxId: archiveId, uid: 1, subject: "A", date: base.addingTimeInterval(60), internalDate: base.addingTimeInterval(60), threadId: thread.id)
+            archiveMessage.flagsRaw |= MessageQuery.seenFlagBit // Already read in Archive.
+            try archiveMessage.insert(db)
+        }
+
+        let archiveDigests = try database.dbWriter.read { db in
+            try AccountDigestQuery.digests(accountIds: [accountId], role: .archive, db: db)
+        }
+        let inboxDigests = try database.dbWriter.read { db in
+            try AccountDigestQuery.digests(accountIds: [accountId], role: .inbox, db: db)
+        }
+
+        #expect(archiveDigests[0].totalCount == 1)
+        #expect(archiveDigests[0].unreadCount == 0)
+        #expect(inboxDigests[0].totalCount == 1)
+        #expect(inboxDigests[0].unreadCount == 1)
+    }
+
     @Test("allSummaries(accountId:role:) returns every thread in scope, newest first")
     func allSummariesReturnsEveryThread() throws {
         let (database, accountId, inboxId, archiveId) = try makeDatabase()

@@ -22,11 +22,33 @@ public struct AccountDigest: Sendable, Equatable, Identifiable {
     /// (`onSelectAccount`) still respects that toggle exactly as before —
     /// only this overview's own counts are deliberately unfiltered by it.
     public var totalCount: Int
-    /// Sum of `ThreadRecord.unreadCount` across every thread in scope (not
-    /// "number of threads with any unread message") — closer to what a
-    /// notification-style badge conventionally means ("12 unread
-    /// messages"), and distinct from `totalCount` (a thread/conversation
-    /// count).
+    /// The number of *unread messages whose own mailbox is in this digest's
+    /// `role` scope* — closer to what a notification-style badge
+    /// conventionally means ("12 unread messages"), and distinct from
+    /// `totalCount` (a thread/conversation count).
+    ///
+    /// Task #137 (実機報告「『すべてのアーカイブ』のダイジェストで、各行の
+    /// バッジがボックス無関係の値」): this used to be
+    /// `ThreadRecord.unreadCount` summed across `threads` — but that field
+    /// is a **thread-wide** aggregate (`ThreadRecord.unreadCount`'s own doc
+    /// comment: "how many of this thread's messages are currently unread",
+    /// counted over *every* mailbox the thread has a message in, not just
+    /// the one this digest is scoped to). `ThreadQuery.unifiedInboxRequest`'s
+    /// own doc comment records that a thread "can span mailboxes, e.g.
+    /// Inbox + Sent" — Gmail's label model makes this common (the same
+    /// message appears in INBOX and, once archived, only in All Mail, but a
+    /// reply the user sent stays in Sent while the rest of the thread moves
+    /// to Archive). So a thread with one unread message still sitting in
+    /// INBOX and one already-read message in Archive would count toward
+    /// the *archive* digest's `unreadCount` too (the thread qualifies for
+    /// the archive scope via the EXISTS membership check `unifiedInboxRequest`
+    /// uses for `totalCount`), even though nothing in the archive itself is
+    /// unread — exactly "a value unrelated to this box" the report
+    /// described. Fixed by counting unread *messages* directly scoped to
+    /// this `role` (`MessageQuery.unifiedInboxUnreadCount`, the same
+    /// message-level/role-scoped/Gmail-All-Mail-aware query the folder
+    /// list's own unread badges use) instead of summing the thread-wide
+    /// aggregate.
     public var unreadCount: Int
     /// The newest `recentLimit` threads (same ordering as
     /// `ThreadQuery.unifiedInboxRequest`: pinned first, then by
@@ -63,7 +85,11 @@ public enum AccountDigestQuery {
     public static func digests(accountIds: [String], role: MailboxRoleRecord = .inbox, recentLimit: Int = defaultRecentLimit, db: Database) throws -> [AccountDigest] {
         try accountIds.map { accountId in
             let threads = try ThreadQuery.unifiedInboxRequest(accountIds: [accountId], role: role).fetchAll(db)
-            let unreadCount = threads.reduce(0) { $0 + $1.unreadCount }
+            // Task #137: message-level, role-scoped unread count — see
+            // `AccountDigest.unreadCount`'s doc comment for why this can't
+            // be `threads.reduce(0) { $0 + $1.unreadCount }` (that field is
+            // a thread-wide aggregate, not scoped to this `role`).
+            let unreadCount = try MessageQuery.unifiedInboxUnreadCount(accountIds: [accountId], role: role, db: db)
             let recentSummaries = try ThreadQuery.summaries(forThreads: Array(threads.prefix(recentLimit)), db: db)
             return AccountDigest(accountId: accountId, totalCount: threads.count, unreadCount: unreadCount, recentSummaries: recentSummaries)
         }
