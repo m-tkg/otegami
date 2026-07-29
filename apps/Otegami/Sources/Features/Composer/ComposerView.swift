@@ -893,27 +893,33 @@ struct ComposerView: View {
     /// タップで既存の署名選択。署名選択済みなら署名内容をその下にプレビュー
     /// 表示 (`signatureBodyPreview`)。」実機フィードバック「いきなり『なし』
     /// だけだと分かりにくい」を受けて、ラベルは常に「署名: 」を前置きする
-    /// (`selectedSignatureLabel`)。`Picker(selection:label:)`にカスタム
-    /// ラベルを渡し`.pickerStyle(.menu)`にする、という標準のSwiftUIパターン —
-    /// ラベルがそのままタップ可能な行の見た目になり、タップすると
-    /// `availableSignatures`のメニューが開く。選択そのもの
-    /// (`selectedSignatureId`、`selectedSignatureIdBinding`経由) はmacOS側の
-    /// `signatureSection`と完全に同じ状態を共有している。
+    /// (`selectedSignatureLabel`)。
+    ///
+    /// 実機フィードバック続報 (2026-07-29「まだ『署名』という項目名がない」):
+    /// 当初の `Picker(selection:label:)` + `.pickerStyle(.menu)` は、iOS では
+    /// カスタムラベルを無視して**選択中の選択肢の`Text`(「なし」) をそのまま
+    /// 表示する** — `flatFromRow`の差出人行が踏んだのと同じ落とし穴。同じ
+    /// 修正 (`Menu`+`Picker`入れ子 — 選択チェックマークは内側の`Picker`が
+    /// 維持し、閉じた状態の見た目は`Menu`の`label:`が完全に支配する) を
+    /// 適用した。選択そのもの (`selectedSignatureId`、
+    /// `selectedSignatureIdBinding`経由) はmacOS側の`signatureSection`と
+    /// 完全に同じ状態を共有している。
     @ViewBuilder
     private var flatSignatureRow: some View {
         if !availableSignatures.isEmpty {
             VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
-                Picker(selection: selectedSignatureIdBinding) {
-                    Text("なし").tag(Int64?.none)
-                    ForEach(availableSignatures) { signature in
-                        Text(signature.name).tag(Optional(signature.id))
-                    }
+                Menu {
+                    Picker(selection: selectedSignatureIdBinding) {
+                        Text("なし").tag(Int64?.none)
+                        ForEach(availableSignatures) { signature in
+                            Text(signature.name).tag(Optional(signature.id))
+                        }
+                    } label: { EmptyView() }
                 } label: {
                     Text(selectedSignatureLabel)
                         .font(OtegamiFont.subheadline())
                         .foregroundStyle(OtegamiColor.inkTertiary)
                 }
-                .pickerStyle(.menu)
                 .accessibilityIdentifier("composer.signaturePicker")
                 signatureBodyPreview
             }
