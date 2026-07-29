@@ -79,19 +79,33 @@ private struct AllModeFilterChip: View {
     let onSelectMode: () -> Void
 
     var body: some View {
-        Menu {
-            Button {
-                selectMode(groupByAccount: false)
-            } label: {
-                Label("時系列", systemImage: "clock")
+        // Task #106 実機フィードバック: プルダウンは「すべて」が**既に選択
+        // されている状態**でのみ開く。個別アカウント絞り込み中にタップした
+        // 場合は、メニューを挟まず即「すべて」(保存済みモードのまま) へ
+        // 戻る — 絞り込み解除のワンタップ動線にメニューが割り込むと邪魔、
+        // という指摘への対応。
+        Group {
+            if isSelected {
+                Menu {
+                    Button {
+                        selectMode(groupByAccount: false)
+                    } label: {
+                        Label("時系列", systemImage: "clock")
+                    }
+                    Button {
+                        selectMode(groupByAccount: true)
+                    } label: {
+                        Label("アカウント別", systemImage: "person.2")
+                    }
+                } label: {
+                    label
+                }
+            } else {
+                Button(action: onSelectMode) {
+                    label
+                }
+                .buttonStyle(.plain)
             }
-            Button {
-                selectMode(groupByAccount: true)
-            } label: {
-                Label("アカウント別", systemImage: "person.2")
-            }
-        } label: {
-            label
         }
         .accessibilityIdentifier("mail.chip.all")
     }
