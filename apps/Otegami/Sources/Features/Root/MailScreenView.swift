@@ -121,12 +121,24 @@ struct MailScreenView: View {
     @State private var showingMailboxSyncFailures = false
     @State private var showingSettings = false
 
-    /// 新画面構成 (2): ヘッダの検索ボタン、またはメール本文画面フッターツール
-    /// バーの「検索」(差出人でプリセット) から開く。`searchPresetQuery` が
-    /// non-nil のときだけ `SearchScreenView` に初期値として渡す — 通常の検索
-    /// ボタンは常に `nil` (空の状態で開く)。
-    @State private var showingSearch = false
-    @State private var searchPresetQuery: String?
+    /// Task #140 (実機報告「ツールバー検索の `from:` プリセットが不発になる
+    /// ことがある」): 元は`showingSearch: Bool` + `searchPresetQuery:
+    /// String?`という**2つの独立した`@State`**だった — `openSearch(presetQuery:)`
+    /// がこの2つを同じ関数内で連続して書き込み (`searchPresetQuery = ...`
+    /// の直後に`showingSearch = true`)、`.sheet(isPresented:)`はその
+    /// トレーリングクロージャの中で兄弟`@State`(`searchPresetQuery`)を
+    /// 直接読む形だった。`ThreadRoute`のdoc comment (このファイル下部)
+    /// が同じ理由で警告している「destination クロージャが兄弟 state を
+    /// 読むと stale capture が起きる」パターンそのもので、2回連続した
+    /// `@State`書き込みが必ず同じ描画パスにまとまる保証はSwiftUI側には
+    /// 無い — `isPresented`がfalse→trueへ遷移した*その瞬間*の
+    /// `searchPresetQuery`がまだ古い値(前回のクエリ、または`onDismiss`で
+    /// リセットされた`nil`)のままシートへ渡ることがあり、これが「毎回では
+    /// なく時々`from:`が入らない」という実機報告の形と一致する。
+    /// `SearchSheetRoute`(下記)に両方の値を1つの`Identifiable`へ束ね、
+    /// `.sheet(item:)`で受け渡すことで、この種の競合を構造的に起こり
+    /// 得なくした — `ThreadRoute`/`accountEntryRoute`と同じ設計。
+    @State private var searchRoute: SearchSheetRoute?
 
     /// ヘッダの「未読のみ表示」トグル — `ListDisplaySettingsStore.unreadOnlyKey`
     /// を`MessageListView`と共有する (どちらも同じ`UserDefaults`キーへの
@@ -209,10 +221,8 @@ struct MailScreenView: View {
             // と同じ仕組み) でクエリ入力済みの「結果表示中」状態も、タップ
             // 無しで直接screenshotできる。
             if ProcessInfo.processInfo.arguments.contains("-uitestsOpenSearchDirectly") {
-                if let preset = ProcessInfo.processInfo.environment["OTEGAMI_UITEST_SEARCH_PRESET_QUERY"], !preset.isEmpty {
-                    searchPresetQuery = preset
-                }
-                showingSearch = true
+                let preset = ProcessInfo.processInfo.environment["OTEGAMI_UITEST_SEARCH_PRESET_QUERY"]
+                openSearch(presetQuery: (preset?.isEmpty ?? true) ? nil : preset)
             }
             // Task #92 (アカウントダイジェスト画面)、Task #99 でトグル化:
             // 同じ「タップ不要の直接遷移」パターンで`isGroupByAccount`を
@@ -251,8 +261,8 @@ struct MailScreenView: View {
         .sheet(isPresented: $showingFailedOps) { FailedOperationsView() }
         .sheet(isPresented: $showingMailboxSyncFailures) { MailboxSyncFailuresView() }
         .sheet(isPresented: $showingSettings) { SettingsSheetView() }
-        .sheet(isPresented: $showingSearch, onDismiss: { searchPresetQuery = nil }) {
-            SearchScreenView(onReply: onReply, presetQuery: searchPresetQuery)
+        .sheet(item: $searchRoute) { route in
+            SearchScreenView(onReply: onReply, presetQuery: route.presetQuery)
         }
     }
 
@@ -415,10 +425,24 @@ struct MailScreenView: View {
         // 縦位置もFABの上端 (フローティングボタンの直径+底からの余白) を
         // 確実に超える位置まで持ち上げ、重なり自体を無くす
         // (`MessageListView`が以前担っていたクリアランス計算をここに集約した
-        // — `pendingUndoPayload`のdoc comment参照)。展開中のspeed-dial子
-        // ボタンはトースト表示中には両立しない (子ボタンをタップした瞬間に
-        // 畳んでからアクションを実行する`collapseAndPerform(_:)`) ため、
-        // このクリアランス計算は畳んだ状態の1個ぶんの直径のままで正しい。
+        // — `pendingUndoPayload`のdoc comment参照)。
+        //
+        // **実機報告 (2026-07-29)**: 「元に戻す」トーストがFABに重なって押せ
+        // ないことがある。上のコメントは元々「展開中のspeed-dial子ボタンは
+        // トースト表示中には両立しない (子ボタンをタップした瞬間に畳んで
+        // からアクションを実行する`collapseAndPerform(_:)`)」という前提で
+        // クレランスを畳んだ状態の1個ぶんの直径のまま固定していたが、これは
+        // 誤りだった — `pendingUndoPayload`はFAB経由の操作 (`collapseAndPerform`)
+        // 以外からも立つ (`MessageListView`の行スワイプでのアーカイブ等、
+        // `onPendingUndoChanged`はFABの状態と完全に無関係)。「…」をタップして
+        // FABを展開したまま (`isFabExpanded == true`)、その状態で(FABの子
+        // ボタンを一切介さず)行をスワイプアーカイブすると、畳んだ状態1個分
+        // のクレランスのままトーストが浮くため、実際に3個ぶん(検索/新規作成/
+        // 「…」)積み上がった展開中FABの上部と重なってしまう。`floatingButtonClearance`
+        // 自体を`isFabExpanded`に応じて可変にし、展開中は子ボタン2個ぶん
+        // (直径+`VStack`の`spacing`) を追加で確保するよう修正した — z順序
+        // (このoverlayが後述のため常に手前) 自体は元から問題なかったので
+        // そのまま、縦方向のクレランス計算だけを両状態に対応させた。
         .overlay(alignment: .bottom) {
             if let pendingUndoPayload {
                 UndoToast(message: pendingUndoPayload.message, onUndo: pendingUndoPayload.onUndo)
@@ -427,6 +451,20 @@ struct MailScreenView: View {
                     .padding(.bottom, floatingButtonClearance)
                     #endif
                     .zIndex(1)
+            }
+        }
+        // 実機報告 (2026-07-29) への追記: `floatingButtonClearance`の可変化
+        // (上記) に加え、トースト自体が立った瞬間にFABを畳んでおく —
+        // 「展開中FAB + トースト」という組み合わせをそもそも作らない、
+        // より直接的な対処。`onUndo`/自動消滅どちらでトーストが消えても
+        // `isFabExpanded`はfalseのままなので、ユーザーが望めばまた
+        // タップして展開し直せる (再展開の妨げにはならない)。
+        // `UndoToastPayload`自体は`onUndo`クロージャを持つため`Equatable`
+        // ではない — `nil`かどうかの`Bool`だけを追跡すれば
+        // 「トーストが(何も無い状態から)出現した」変化を拾うのに十分。
+        .onChange(of: pendingUndoPayload == nil) { _, isNil in
+            if !isNil {
+                isFabExpanded = false
             }
         }
     }
@@ -439,9 +477,19 @@ struct MailScreenView: View {
     /// `OtegamiFloatingButtonChromeModifier`の`frame`(`.xl + .xs`)と
     /// `padding`(`.md + .xs`を両側)の合計、そこにボタン自身の下端余白
     /// (`.lg`)と、トーストとの間に一呼吸ぶんの余白 (`.sm`)を足す。
+    ///
+    /// **実機報告 (2026-07-29) への追記**: Task #131 の speed-dial 化以降、
+    /// この円1個ぶんの高さは「畳んだ状態」のFABにしか正しくない —
+    /// `isFabExpanded`が`true`の間は`speedDialFAB`の`VStack`が検索/新規作成
+    /// の子ボタン2個ぶん (同じ円の直径 + `VStack(spacing: .md)`の間隔) を
+    /// 追加で積み上げるため、畳んだ状態基準の固定値のままだとトーストが
+    /// その分だけFABに重なる (`.overlay`のdoc comment参照)。展開中は子ボタン
+    /// 1個につき「直径 + `spacing`」ぶんを追加する。
     private var floatingButtonClearance: CGFloat {
         let circleDiameter = (OtegamiSpacing.xl + OtegamiSpacing.xs) + 2 * (OtegamiSpacing.md + OtegamiSpacing.xs)
-        return circleDiameter + OtegamiSpacing.lg + OtegamiSpacing.sm
+        let childButtonCount = isFabExpanded ? 2 : 0
+        let expandedChildrenHeight = CGFloat(childButtonCount) * (circleDiameter + OtegamiSpacing.md)
+        return circleDiameter + expandedChildrenHeight + OtegamiSpacing.lg + OtegamiSpacing.sm
     }
 
     /// Task #99: 一覧領域をダイジェスト表示に切り替えるかどうか —
@@ -808,8 +856,14 @@ struct MailScreenView: View {
     }
 
     private func openSearch(presetQuery: String? = nil) {
-        searchPresetQuery = presetQuery
-        showingSearch = true
+        // Task #140: a single atomic `@State` write — see `searchRoute`'s
+        // doc comment for why this replaced the old two-separate-`@State`
+        // (`showingSearch`/`searchPresetQuery`) shape. A fresh `SearchSheetRoute`
+        // every call (not reusing an existing non-nil one) also means two
+        // "search from sender" taps in a row for *different* senders always
+        // present as a genuinely new sheet identity, even on the rare chance
+        // both resolve to the same `presetQuery` string.
+        searchRoute = SearchSheetRoute(presetQuery: presetQuery)
     }
 
     /// "送信を取り消す" tapped on `SendCountdownBar`: undoes the durable local
@@ -872,4 +926,20 @@ private struct ThreadRoute: Hashable, Identifiable {
     let threadId: Int64
     let messageId: Int64?
     var id: Int64 { threadId }
+}
+
+/// Task #140: `MailScreenView.searchRoute`'s item type — bundles
+/// `presetQuery` into the same value that drives `.sheet(item:)`'s
+/// presentation, the same "everything the destination needs travels in the
+/// item itself" idiom `ThreadRoute`'s doc comment above establishes (that
+/// one for `.navigationDestination(item:)`, this one for a `.sheet`). A
+/// fresh `UUID` per `SearchSheetRoute(presetQuery:)` call (not derived from
+/// `presetQuery` itself) is deliberate: `.sheet(item:)` only re-presents
+/// when the item's `id` actually changes, and two consecutive "search from
+/// sender" taps could otherwise resolve to the *same* `presetQuery` string
+/// (same sender, tapped twice) — an id keyed off content would then fail to
+/// trigger a second presentation at all.
+private struct SearchSheetRoute: Identifiable {
+    let id = UUID()
+    let presetQuery: String?
 }

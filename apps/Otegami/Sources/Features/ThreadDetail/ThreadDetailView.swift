@@ -21,7 +21,8 @@ import os
 /// 新画面構成 (3): owns the screen-level footer toolbar
 /// (`MessageDetailFooterToolbar`, `.safeAreaInset(edge: .bottom)`) that
 /// replaced `MessageView`'s old per-message 返信/全員に返信/英語で返信を
-/// 下書き row. "返信"/"転送"/"検索" all act on **whichever message is
+/// 下書き row (「英語で返信を下書き」自体は Task #139 で撤去済み).
+/// "返信"/"転送"/"検索" all act on **whichever message is
 /// currently expanded** (`targetMessage`) — 実機フィードバック第2弾 (E)
 /// made this unambiguous by turning message expansion into a strict
 /// accordion (`expandedMessageId`, exactly one message expanded at a time),
@@ -118,10 +119,21 @@ struct ThreadDetailView: View {
     /// expanded at a time, unlike the previous `Set<Int64>` (which let
     /// several rows stay independently expanded, Gmail/Apple-Mail-style).
     /// Tapping a collapsed message's header expands it and collapses
-    /// whatever was expanded before (`toggleExpanded(_:)`); tapping the
-    /// already-expanded message's header is a no-op — this app never shows
-    /// zero expanded messages once a thread has loaded (`load()` always
-    /// pins one), so "collapse the last one open" isn't a reachable state.
+    /// whatever was expanded before (`toggleExpanded(_:)`).
+    ///
+    /// **実機報告 (2026-07-29、Task #140 と同時期の追加報告)**: 展開中
+    /// メッセージ自身の「^」(上向きシェブロン、`ThreadMessageSummaryRow
+    /// .chevronSystemImage`) をタップしても畳めなかった — 元は「tapping
+    /// the already-expanded message's header is a no-op」設計で、
+    /// `toggleExpanded(_:)`が同じidへのタップを弾いていたため。「全閉じは
+    /// 到達しない状態」という前提を仕様変更し、`nil`(全メッセージ折り
+    /// たたみ、ヘッダ行だけ並ぶ「見渡し」用の状態)を明示的に許可した —
+    /// `load()`が初回に1通だけpinする挙動 (`hasPinnedInitialExpansion`)
+    /// はそのまま(初回は必ず最新の1通が開く)、以降はユーザーが「^」で
+    /// いつでも全閉じにでき、別の行をタップすればいつもどおりその1通だけ
+    /// が開く(「常に最大1通」制約は維持)。`targetMessage`が`nil`のときは
+    /// フッターツールバーの各アクションが安全にno-opする(そのdoc comment
+    /// 参照、クラッシュしない)。
     @State private var expandedMessageId: Int64?
     @State private var hasPinnedInitialExpansion = false
     @State private var isThreadPinned = false
@@ -318,26 +330,36 @@ struct ThreadDetailView: View {
     }
 
     /// `ThreadMessageRow.onToggleExpanded`'s target — 実機フィードバック第2弾
-    /// (E)「アコーディオン化」: expanding `messageId` always collapses
-    /// whatever was expanded before (a plain assignment, not the previous
-    /// insert-or-remove-from-a-`Set` toggle). Tapping the already-expanded
-    /// row's own header is a no-op (see `expandedMessageId`'s doc comment
-    /// for why "nothing expanded" is never a state this screen wants).
+    /// (E)「アコーディオン化」: expanding a collapsed `messageId` always
+    /// collapses whatever was expanded before (a plain assignment, not the
+    /// previous insert-or-remove-from-a-`Set` toggle). Tapping the
+    /// already-expanded row's own header (its "^" chevron) now collapses it
+    /// to `nil` — see `expandedMessageId`'s doc comment for the 2026-07-29
+    /// change from the original "always exactly one expanded" design.
     private func toggleExpanded(_ messageId: Int64) {
-        guard expandedMessageId != messageId else { return }
         withAnimation(.default) {
-            expandedMessageId = messageId
+            expandedMessageId = (expandedMessageId == messageId) ? nil : messageId
         }
     }
 
     /// 新画面構成 (3) → 実機フィードバック第2弾 (E): "返信"/"転送"/"検索"/「情報」
     /// が対象にするメッセージ — 常に**現在展開中の1通** (accordion なので曖昧
-    /// さがない)。`expandedMessageId` に対応する `MessageRecord` が
-    /// `messages` の読み込みタイミングの隙間でまだ見つからない場合だけ、
+    /// さがない)。`expandedMessageId`が`nil`の`MessageRecord`が
+    /// `messages`の読み込みタイミングの隙間でまだ見つからない場合だけ、
     /// スレッド内最新へフォールバックする (`RootView`'s macOS ⌘R が使う規則
     /// と同じ — その doc comment 参照)。
+    ///
+    /// **2026-07-29 追記**: `expandedMessageId`自身が`nil`のとき
+    /// (`toggleExpanded(_:)`のdoc comment参照 — ユーザーが「^」で全閉じ
+    /// した状態、または`load()`の初回pinがまだ走っていない一瞬) は、
+    /// このフォールバックを使わずそのまま`nil`を返す — 全閉じ中はツール
+    /// バーの返信/転送/検索/情報/ソース表示アクションが安全に対象なし
+    /// (no-op) になる。上記の「見つからない場合だけ」のフォールバックは
+    /// `expandedMessageId`が非`nil`なのに一致する行が見つからない、別の
+    /// (本当に一時的な) ケースのためのもの。
     private var targetMessage: MessageRecord? {
-        messages.first(where: { $0.id == expandedMessageId }) ?? messages.last
+        guard let expandedMessageId else { return nil }
+        return messages.first(where: { $0.id == expandedMessageId }) ?? messages.last
     }
 
     private func load() async {
@@ -421,7 +443,10 @@ struct ThreadDetailView: View {
             onReplyAll: { replyToTarget(replyAll: true) },
             onForward: forwardTarget,
             onSearch: onSearchFromSender.map { callback in { openSearchFromTargetSender(callback) } },
-            onInfo: { showingInfo = true },
+            // 2026-07-29 (全閉じ許可の追記): `targetMessage == nil`(全閉じ
+            // 中)なら開かない — 開けても`infoSheet`が`EmptyView`を返すだけの
+            // 空シートになってしまうため。
+            onInfo: { guard targetMessage != nil else { return }; showingInfo = true },
             isMuted: isThreadMuted,
             onToggleMute: toggleMute,
             onMarkUnread: markUnread,
@@ -430,7 +455,9 @@ struct ThreadDetailView: View {
             isPinned: isThreadPinned,
             onTogglePin: togglePin,
             onDelete: deleteThread,
-            onViewSource: { showingSource = true },
+            // 2026-07-29 (全閉じ許可の追記): 同上 — `sourceSheet`も対象なしの
+            // 空シートを避ける。
+            onViewSource: { guard targetMessage != nil else { return }; showingSource = true },
             onCustomizeToolbar: { showingToolbarSettings = true },
             aiFeaturesState: expandedAIFeaturesState
         )
@@ -469,10 +496,33 @@ struct ThreadDetailView: View {
         onForward(id)
     }
 
+    /// Task #140 (実機報告「ツールバー検索の `from:` プリセットが不発になる
+    /// ことがある」): この`guard`自体が無言で失敗するケースは無いはずだと
+    /// 調査で確認した — `targetMessage`が読む`messages`は`ThreadQuery
+    /// .messagesObservation`が`MessageRecord.fetchAll`で毎回*フルの行*を
+    /// 取得したもの (部分プロジェクションではない) なので、`messages`が
+    /// 一度でも読み込まれていれば`fromAddresses`は常に埋まっている。実際の
+    /// 原因は`MailScreenView`側の`.sheet(isPresented:)` + 兄弟`@State`の
+    /// 競合だった (`MailScreenView.searchRoute`のdoc comment参照、
+    /// `.sheet(item:)`へ切り替えて解消) — この`guard`自体は変更していない
+    /// が、万一実機で本当にここが原因なら`log stream --predicate 'category
+    /// == "SearchFromSenderGate"'`で切り分けられるようログを足した。
     private func openSearchFromTargetSender(_ callback: (String) -> Void) {
-        guard let address = targetMessage?.fromAddresses.first?.address else { return }
+        guard let address = targetMessage?.fromAddresses.first?.address else {
+            Self.searchFromSenderGateLogger.notice("""
+            openSearchFromTargetSender: no address — \
+            targetMessageId=\(targetMessage?.id.map(String.init) ?? "nil", privacy: .public) \
+            fromAddressesCount=\(targetMessage?.fromAddresses.count ?? -1, privacy: .public) \
+            messagesCount=\(messages.count, privacy: .public) expandedMessageId=\(expandedMessageId.map(String.init) ?? "nil", privacy: .public)
+            """)
+            return
+        }
         callback("from:\(address)")
     }
+
+    /// Task #140 diagnostic instrumentation — see `openSearchFromTargetSender`'s
+    /// doc comment.
+    private static let searchFromSenderGateLogger = Logger(subsystem: "com.mtkg.otegami", category: "SearchFromSenderGate")
 
     // MARK: - 新画面構成 (3): スレッド操作 ("…" メニュー)
     //
