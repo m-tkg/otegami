@@ -314,6 +314,13 @@ struct MailScreenView: View {
                 // 埋め込み`AccountDigestView`に差し替える — ヘッダ
                 // (`toolbarContent`) やフローティングボタンはこの`content`
                 // の外側/overlayのままなので変わらず表示され続ける。
+                //
+                // Task #106 実機フィードバック: チップ行はダイジェスト表示中も
+                // 常時出す — 「すべて ▸ アカウント別」に切り替えた瞬間に
+                // チップ行ごと消えると「時系列」へ戻す手段が無くなるため。
+                if isUnifiedInboxSelected {
+                    AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
+                }
                 AccountDigestView(role: digestRole, onSelectAccount: selectDigestAccount)
             } else {
                 if isUnifiedInboxSelected {

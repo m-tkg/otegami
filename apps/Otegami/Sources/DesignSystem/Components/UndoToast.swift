@@ -26,7 +26,11 @@ public struct UndoToast: View {
             Button(action: onUndo) {
                 Text("元に戻す")
                     .font(OtegamiFont.subheadline())
-                    .foregroundStyle(OtegamiColor.accentText)
+                    .fontWeight(.semibold)
+                    // Task #108 続報: `ink` 背景上では `accentText` が沈む —
+                    // 反転面専用の `accentTextOnInk` を使う (トークン側の
+                    // doc comment 参照)。
+                    .foregroundStyle(OtegamiColor.accentTextOnInk)
             }
             // Task #108 (c): 「元に戻す」のタップ領域を44pt以上に拡大 —
             // `AccountFilterChip`と同じ`otegamiMinimumTappable()`を使い、

@@ -86,6 +86,15 @@ public enum OtegamiColor {
     /// 壊れる。
     public static let accentFloating = Color(light: 0x235A73, dark: 0x3D7F9E)
 
+    /// Task #108 続報 (実機フィードバック「undo トーストの『元に戻す』の色が
+    /// 薄くて見えづらい」): `ink` を背景にした要素 (トースト等、周囲の
+    /// モードと明暗が反転した面) の上に載せるアクセント文字色。`accentText`
+    /// はあくまで通常背景上のコントラスト用にモードへ追随するトークンなので、
+    /// 反転面に載せると常に沈む — こちらはモードに対して逆向き
+    /// (ライトモード = 暗い ink の上なので明るい水色、ダークモード = 明るい
+    /// ink の上なので深い青) に振れる。
+    public static let accentTextOnInk = Color(light: 0x9AD6EC, dark: 0x2A6B88)
+
     // MARK: 破壊的操作 (destructive)
 
     /// Delete/discard actions — the one color carried over unchanged from
