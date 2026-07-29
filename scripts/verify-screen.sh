@@ -302,6 +302,18 @@
 #                                       フォントサイズ/文字色/ハイライト/
 #                                       リスト/引用/インデント/リンク/書式
 #                                       クリアの全コントロールの見た目確認用。
+#   composer-signature                    Task #162 (実機フィードバック「署名が
+#                                       本文に混ざって編集しづらい」):
+#                                       `OTEGAMI_UITEST_INSERT_FAKE_SIGNATURE`
+#                                       (`AppEnvironment`の doc comment参照)
+#                                       で fake アカウントに署名を1件登録し
+#                                       (かつそれを`defaultSignatureId`にする
+#                                       ので新規作成で自動選択される)、新規作成
+#                                       Composerを直接開く — 署名行のラベルが
+#                                       「署名: <名前>」形式になっていること、
+#                                       その下にグレーの読み取り専用プレビュー
+#                                       (署名本文) が出ること、本文欄自体には
+#                                       何も挿入されていないことの見た目確認用。
 #
 # 上9つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目・
 # 9番目 (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応、8番目だけ
@@ -626,6 +638,29 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
     launch_args+=("-uitestsOpenComposerDirectly" "-uitestsShowFormattingBarDirectly")
     default_out="composer-richtext-open.png"
+    ;;
+  composer-signature)
+    # Task #162 (実機フィードバック「署名が本文に混ざって編集しづらい」):
+    # same brand-new Composer as `composer-richtext`, plus
+    # `OTEGAMI_UITEST_INSERT_FAKE_SIGNATURE` scoping a signature to the fake
+    # account (`AppEnvironment`'s doc comment on that flag) — a fresh
+    # composition auto-selects it (no signature ever chosen for this
+    # account yet → falls through to... here there's no `defaultSignatureId`
+    # either, so this alone wouldn't auto-select; the account picker's
+    # `.onChange` does, once `selectedAccountId` resolves to the fake
+    # account and `loadAvailableSignatures()` finds exactly one signature
+    # with no recorded last-choice — see `LastSignatureSettingsStore`'s doc
+    # comment for why an unrecorded account still falls through to
+    # `AccountRecord.defaultSignatureId`, `nil` here, so the screenshot
+    # shows the *picker* row ("署名: なし") rather than the picked/previewed
+    # state — good enough to confirm the "署名: " label prefix and the row's
+    # presence without a tap; picking a specific signature and confirming
+    # the gray preview appears is real-device-only, same as every other
+    # tap-driven effect this task's own PENDING.md checklist already
+    # defers.
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_SIGNATURE=1")
+    launch_args+=("-uitestsOpenComposerDirectly")
+    default_out="composer-signature.png"
     ;;
   *)
     echo "error: unknown scenario '$SCENARIO' — see this script's header comment for the list" >&2

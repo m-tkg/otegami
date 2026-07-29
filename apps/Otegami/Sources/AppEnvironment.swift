@@ -856,6 +856,39 @@ final class AppEnvironment {
             self.uitestDirectOpenThreadId = capturedDirectOpenThreadId
         }
 
+        // Task #162 (実機フィードバック「署名が本文に混ざって編集しづらい」):
+        // `scripts/verify-screen.sh composer-signature` insert the fake HTML
+        // account above (`OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE`) to
+        // populate the Composer's From picker, but that account has no
+        // signature of its own — this flag additionally scopes a signature
+        // to it and sets it as the account's default (`defaultSignatureId`),
+        // so `ComposerView.loadAvailableSignatures()`'s auto-select actually
+        // picks it for a brand-new composition (no prior
+        // `LastSignatureSettingsStore` entry exists for this fake account
+        // either, so the priority chain falls through to exactly this) —
+        // the same tap-free scenario can then screenshot the Composer's
+        // "署名: <名前>" label *and* its read-only body preview, not just
+        // the picker itself, without a real IMAP round trip or any
+        // tap-driven Settings navigation to create/select one.
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_SIGNATURE"] == "1" {
+            let fakeAccountEmail = "uitest-fake-html@example.com"
+            try? database.dbWriter.write { db in
+                // Idempotent across repeated `app.launch()`s within the
+                // same install — same rationale/guard as the HTML fixture
+                // block above.
+                guard var fakeAccount = try AccountRecord.filter(Column("email") == fakeAccountEmail).fetchOne(db) else { return }
+                guard try SignatureTemplateRecord.filter(Column("name") == "UITest署名").fetchOne(db) == nil else { return }
+                var signature = SignatureTemplateRecord(
+                    name: "UITest署名",
+                    body: "よろしくお願いいたします。\nUITest 太郎",
+                    accountIds: [fakeAccount.id]
+                )
+                try signature.insert(db)
+                fakeAccount.defaultSignatureId = signature.id
+                try fakeAccount.update(db)
+            }
+        }
+
         // Task #66 (カレンダー招待メール対応): same "insert a fully local,
         // already-`.fetched` fake message" escape hatch as
         // `OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE` above and for the same
