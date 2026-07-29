@@ -79,6 +79,7 @@ struct AccountDigestView: View {
                 AccountDigestRow(
                     digest: digest,
                     accountDisplayName: accountDisplayNames[digest.accountId] ?? digest.accountId,
+                    accountEmail: accountEmails[digest.accountId] ?? digest.accountId,
                     labelColorKey: accountLabelColorKeys[digest.accountId],
                     onSelect: { selectAccount(digest.accountId) },
                     onRequestBulkAction: { action in pendingBulkAction = PendingBulkAction(accountId: digest.accountId, action: action) }
@@ -140,6 +141,14 @@ struct AccountDigestView: View {
 
     private var accountDisplayNames: [String: String] {
         Dictionary(uniqueKeysWithValues: environment.accounts.map { ($0.id, $0.displayName) })
+    }
+
+    /// Task #130, 1「アカウント別のアバターを表示」: `SenderAvatar`の
+    /// `address`引数用 — `AccountSettingsCategoryView.accountRow(for:)`
+    /// (Task #117) と同じ「自分のアドレスをそのまま解決チェーンに渡す」
+    /// 発想を、この画面のダイジェスト行にも適用する。
+    private var accountEmails: [String: String] {
+        Dictionary(uniqueKeysWithValues: environment.accounts.map { ($0.id, $0.email) })
     }
 
     private var accountLabelColorKeys: [String: String] {

@@ -3,8 +3,9 @@ import OtegamiStore
 
 /// Task #92 (アカウントダイジェスト画面): one row of `AccountDigestView` —
 /// `AccountColorRail` (1d の3pxアカウント色罫線、既存トークンをそのまま
-/// 再利用) + アカウント表示名 + 未読/件数バッジ、続けて直近2-3件の「差出人・
-/// 件名」プレビュー行。タップでそのアカウントに絞り込んだ一覧へ
+/// 再利用) + Task #130 で追加したこのアカウント自身の`SenderAvatar` +
+/// アカウント表示名 + 未読/件数バッジ、続けて直近2-3件の「差出人・件名」
+/// プレビュー行。タップでそのアカウントに絞り込んだ一覧へ
 /// (`AccountDigestView.onSelect`、1a のアカウント絞り込みチップと同じ
 /// `MailScreenView.accountFilter`機構を再利用)。
 ///
@@ -33,6 +34,13 @@ struct AccountDigestRow: View {
     /// アドレスそのものの場合、`LocalizedStringKey`経由だとSwiftUIが自動
     /// リンク化し、タップで`mailto:`が開く実機バグを踏む。
     let accountDisplayName: String
+    /// Task #130, 1「アカウント別のアバターを表示」: `SenderAvatar`に渡す
+    /// このアカウント自身のアドレス — `AccountSettingsCategoryView
+    /// .accountRow(for:)` (Task #117) と全く同じ経路 (`account.email`を
+    /// `address`としてそのまま渡すだけで、連絡先写真→Googleプロフィール
+    /// 写真→Gravatar→企業ロゴ→イニシャルの既存優先順位チェーンに乗る) を
+    /// このダイジェスト行にも再利用する。
+    let accountEmail: String
     let labelColorKey: String?
     let onSelect: () -> Void
     /// 実行前の確認ダイアログは`AccountDigestView`側が持つ(複数行から
@@ -45,7 +53,13 @@ struct AccountDigestRow: View {
             content
         }
         .buttonStyle(.plain)
-        .listRowInsets(EdgeInsets())
+        // Task #130, 2「アカウント行(カード)の間に縦の隙間」: 元は
+        // `EdgeInsets()`(ゼロ)で行が隙間なく連続し、`otegamiCardBackground`
+        // の角丸/背景だけがカードの境目を示していた (特にiOS — 角丸0で
+        // 完全に地続き) — 上下だけ`OtegamiSpacing.xs`(4pt、既存トークンの
+        // 中で最小) の余白を入れてカード間に隙間を作る。左右は`0`のまま
+        // (iOSの全幅カード表示は維持)。
+        .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: 0, bottom: OtegamiSpacing.xs, trailing: 0))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
         #if os(iOS)
@@ -96,6 +110,15 @@ struct AccountDigestRow: View {
     private var content: some View {
         HStack(spacing: 0) {
             AccountColorRail(accountId: digest.accountId, labelColorKey: labelColorKey)
+            // Task #130, 1: 色罫線の隣にこのアカウント自身のアバター —
+            // `AccountSettingsCategoryView.accountRow(for:)` (Task #117) と
+            // 同じ`diameter: 36`を使い、アプリ内で「アカウント自身の
+            // アバター」の見た目を揃える。
+            SenderAvatar(
+                displayName: accountDisplayName, address: accountEmail, accountId: digest.accountId,
+                labelColorKey: labelColorKey, diameter: 36
+            )
+            .padding(.leading, OtegamiSpacing.sm)
             VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
                 header
                 ForEach(digest.recentSummaries) { summary in
