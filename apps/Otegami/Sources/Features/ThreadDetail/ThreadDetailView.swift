@@ -316,6 +316,12 @@ struct ThreadDetailView: View {
                   let oldestId = messages.first?.id else { return }
             toggleExpanded(oldestId)
         }
+        // Task #159: mounts the one `.translationTask` anchor this screen's
+        // translate calls depend on — see `TranslationSessionHostView`'s doc
+        // comment. `.background` keeps it out of layout entirely (the view
+        // itself is already zero-sized, this is just extra insurance against
+        // it ever affecting this screen's own sizing).
+        .background(TranslationSessionHostView(coordinator: environment.translationSessionCoordinator))
     }
 
     /// A real-device layout bug (observed on iPhone 17 Pro/iOS 26: the top

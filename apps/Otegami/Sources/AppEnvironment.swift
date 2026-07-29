@@ -9,6 +9,7 @@ import OtegamiCore
 import OtegamiRelayAPI
 import OtegamiStore
 import OtegamiTranslation
+import OtegamiTranslationApple
 import OtegamiTranslationFoundationModels
 import PushRelayClient
 import SyncEngine
@@ -141,22 +142,60 @@ final class AppEnvironment {
     /// call it more than once).
     @ObservationIgnored private var hasRequestedBadgeAuthorization = false
 
-    /// design-phase-3 (1i/1k, `docs/translation.md`): the raw engine, for
-    /// one-off translations not tied to a stored message (`ComposerView`'s
-    /// "英語に翻訳して送る" — there's no `messageId` for a draft still being
-    /// typed, so `MessageTranslator`'s per-message cache doesn't apply).
-    /// `FoundationModelsTranslationService` in every normal build — this
-    /// app's deployment target is already iOS/macOS 26 (`project.yml`), so
-    /// the type itself is unconditionally available at compile time;
-    /// whether it can actually translate on *this* device/Apple
-    /// Intelligence configuration is a runtime question
-    /// `isTranslationAvailable` answers by reading `availability`. `init()`'s
-    /// `OTEGAMI_UITEST_FAKE_TRANSLATION` check is the one exception — swaps
-    /// in `FakeTranslationService` (normally a tests/previews-only type,
-    /// `OtegamiTranslation`'s own doc comment) purely so 1i's HTML-
-    /// preserving translation display can still be verified end-to-end on a
-    /// Simulator where Foundation Models itself doesn't run.
+    /// design-phase-3 (1i/1k, `docs/translation.md`); Task #159 (メール翻訳を
+    /// Apple Translation フレームワークの専用 NMT へ切替): the raw engine —
+    /// `HybridTranslationService` (`OtegamiTranslation`) in every normal
+    /// build, which routes `translate`/`translateParagraphs`/`translateStream`
+    /// to `AppleTranslationService` (`OtegamiTranslationApple`, backed by
+    /// `Translation.TranslationSession`) and `summarize`/`summarizePlain`/
+    /// `summarizeThreadDigest` to `FoundationModelsTranslationService`
+    /// unchanged (a general-purpose on-device LLM remains the right tool for
+    /// summarization; a dedicated NMT model is not — see
+    /// `HybridTranslationService`'s own doc comment). `ComposerView`'s old
+    /// "英語に翻訳して送る" one-off use of this property (no `messageId` for a
+    /// draft still being typed, so `MessageTranslator`'s per-message cache
+    /// didn't apply) was itself removed by Task #139
+    /// (`ComposerLaunchPayload`'s own doc comment) — this app's deployment
+    /// target being iOS/macOS 26+ (`project.yml`) still means both engines
+    /// are unconditionally available at *compile* time regardless. Whether
+    /// translation can actually run on *this* device/language-pack state is
+    /// a runtime question `isTranslationAvailable` below answers by reading
+    /// `availability`, which `HybridTranslationService` forwards from its
+    /// translation engine specifically, not its summarization one — see
+    /// `isSummarizationAvailable` for the separate (Foundation Models-only)
+    /// question. `init()`'s `OTEGAMI_UITEST_FAKE_TRANSLATION` check is the
+    /// one exception — swaps in `FakeTranslationService` (normally a tests/
+    /// previews-only type, `OtegamiTranslation`'s own doc comment) for
+    /// *both* translate and summarize, purely so 1i's HTML-preserving
+    /// translation display can still be verified end-to-end on a Simulator
+    /// where neither Foundation Models nor (likely — unverified, see
+    /// `docs/translation.md`'s Task #159 section) the Translation framework
+    /// itself runs.
     @ObservationIgnored let translationService: any TranslationService
+    /// Task #159: `FoundationModelsTranslationService`'s own `availability`,
+    /// read directly (not through `translationService`, whose `availability`
+    /// now answers for the *translation* engine only — see that property's
+    /// doc comment) — what `isSummarizationAvailable` below reports.
+    /// `OTEGAMI_UITEST_FAKE_TRANSLATION` swaps this for `FakeTranslationService`
+    /// too, in lockstep with `translationService`, so a UITest run gates the
+    /// summarize button the same fake-availability way it already gated the
+    /// translate button before this task.
+    @ObservationIgnored let summarizationService: any TranslationService
+    /// Task #159: the bridge `AppleTranslationService` uses to obtain a live
+    /// `Translation.TranslationSession` — `TranslationSession` has no public
+    /// initializer, so this coordinator's `configuration` has to be read by
+    /// an actual SwiftUI view's `.translationTask(_:action:)` somewhere in
+    /// the tree (`TranslationSessionHostView`, mounted once at
+    /// `ThreadDetailView`'s root) for a session to ever come back at all.
+    /// One instance for the whole app (not per-thread-detail-screen): a
+    /// second `ThreadDetailView` instance reusing the same coordinator just
+    /// means both share the one already-obtained session for a given target
+    /// language rather than each needing its own — see
+    /// `TranslationSessionCoordinator`'s own doc comment. Constructed
+    /// unconditionally (even under `OTEGAMI_UITEST_FAKE_TRANSLATION`, which
+    /// never actually uses it) so `TranslationSessionHostView` always has a
+    /// non-optional coordinator to read from.
+    @ObservationIgnored let translationSessionCoordinator = TranslationSessionCoordinator()
     /// The cached, per-message-persisted counterpart (`docs/translation.md`'s
     /// "キャッシュ方針") — what `MessageView`'s translation bar (1i) actually
     /// calls, so opening the same English message twice doesn't re-run the
@@ -181,13 +220,33 @@ final class AppEnvironment {
     /// protocol just for it.
     @ObservationIgnored let googleProfilePhotoAvatarResolver: GoogleProfilePhotoAvatarResolver
 
-    /// Drives the translation bar's visibility/enabled state and the
-    /// Composer's "英語に翻訳して送る" toggle — `false` covers every
-    /// `TranslationUnavailableReason` (device not eligible, Apple
-    /// Intelligence off, model not ready) with one check, matching how
-    /// `isGmailOAuthConfigured` above collapses its own availability
-    /// question to a single `Bool` for view code.
+    /// Drives the translation bar's/toolbar button's enabled state — `false`
+    /// covers every `TranslationUnavailableReason` the *translation* engine
+    /// (`AppleTranslationService`, since Task #159) reports with one check,
+    /// matching how `isGmailOAuthConfigured` above collapses its own
+    /// availability question to a single `Bool` for view code.
+    /// `AppleTranslationService.availability` always reports `.available`
+    /// (its own doc comment — Task #159 point 3, "翻訳ボタンは常時有効の現仕様
+    /// 維持") except through `OTEGAMI_UITEST_FAKE_TRANSLATION`'s
+    /// `FakeTranslationService`, so this is effectively always `true` in a
+    /// normal build now — an undownloaded language pack surfaces as a
+    /// `TranslationServiceError` from an actual translate attempt instead,
+    /// not as this flag going false.
     var isTranslationAvailable: Bool { translationService.availability.isAvailable }
+
+    /// Task #159: the *summarization* engine's own availability
+    /// (`FoundationModelsTranslationService.availability`, unchanged —
+    /// `SystemLanguageModel.default.availability`, a real device-eligibility
+    /// check), read from `summarizationService` directly rather than through
+    /// `translationService` — before this task, one `TranslationService`
+    /// backed both features, so a single `isTranslationAvailable` flag
+    /// correctly gated both the summarize and translate buttons
+    /// (`MessageDetailFooterToolbar.isSummarizeEnabled`/`isTranslateEnabled`
+    /// both read it). Now that translation and summarization are two
+    /// different engines with two different availability stories, they need
+    /// two different flags — `isSummarizeEnabled` was updated to read this
+    /// one instead.
+    var isSummarizationAvailable: Bool { summarizationService.availability.isAvailable }
 
     init() {
         // Task #105 (実機報告「スレッド表示はオフのまま (設定画面も含め)
@@ -1160,7 +1219,16 @@ final class AppEnvironment {
         // duplicate-account-merge block's comment on why.
 
         // design-phase-3: see `translationService`/`messageTranslator`'s
-        // doc comments.
+        // doc comments. Task #159 (メール翻訳を Apple Translation フレーム
+        // ワークの専用 NMT へ切替): `translationService` is now
+        // `HybridTranslationService` — `AppleTranslationService` (this
+        // engine's `translate`/`translateParagraphs`/`translateStream`) needs
+        // `translationSessionCoordinator` below, bridged into a live
+        // `Translation.TranslationSession` by `TranslationSessionHostView`
+        // (mounted in `ThreadDetailView`); `summarize`/`summarizePlain`/
+        // `summarizeThreadDigest` still go to `FoundationModelsTranslationService`
+        // unchanged, kept separately as `summarizationService` too (for
+        // `isSummarizationAvailable`'s own doc comment).
         //
         // `OTEGAMI_UITEST_FAKE_TRANSLATION`: this project's Simulator/host
         // combination can't actually run Foundation Models from inside the
@@ -1169,25 +1237,38 @@ final class AppEnvironment {
         // there, confirmed not a code bug — the identical call succeeds in
         // 2-5s run instead as a plain `swift test` process on the same host;
         // `docs/translation.md`'s "既知の制限" section has the full
-        // writeup). That makes the HTML-preserving translation display path
-        // (1i) impossible to verify end-to-end via a real on-device
-        // translation on this Simulator — this flag substitutes
-        // `FakeTranslationService` (deterministic `"[ja] ..."` output, no
-        // Apple Intelligence dependency) so a UITest/manual verify run can
-        // still drive the actual DOM-rewrite/layout-preservation code path,
-        // matching this file's other `OTEGAMI_UITEST_*` launch-environment
-        // overrides (`deleteCredentialIfUITestRequested`'s doc comment in
-        // `MessageView`, `OTEGAMI_UITEST_DISABLE_CLOUD_SYNC` below).
+        // writeup) — and, per that same doc's Task #159 section, likely
+        // can't run the Translation framework either (unverified — no
+        // Simulator repro attempted yet, same category of known Simulator
+        // unreliability). That makes the HTML-preserving translation display
+        // path (1i) impossible to verify end-to-end via either real on-
+        // device engine on this Simulator — this flag substitutes
+        // `FakeTranslationService` for *both* translate and summarize
+        // (deterministic `"[ja] ..."` output, no Apple Intelligence/
+        // Translation-framework dependency) so a UITest/manual verify run
+        // can still drive the actual DOM-rewrite/layout-preservation code
+        // path, matching this file's other `OTEGAMI_UITEST_*` launch-
+        // environment overrides (`deleteCredentialIfUITestRequested`'s doc
+        // comment in `MessageView`, `OTEGAMI_UITEST_DISABLE_CLOUD_SYNC`
+        // below).
         let translationService: any TranslationService
+        let summarizationService: any TranslationService
         let translationEngineIdentifier: String
         if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_FAKE_TRANSLATION"] == "1" {
             translationService = FakeTranslationService()
+            summarizationService = translationService
             translationEngineIdentifier = MessageTranslator.EngineIdentifier.fake
         } else {
-            translationService = FoundationModelsTranslationService()
-            translationEngineIdentifier = MessageTranslator.EngineIdentifier.foundationModels
+            let foundationModelsService = FoundationModelsTranslationService()
+            translationService = HybridTranslationService(
+                translationEngine: AppleTranslationService(coordinator: translationSessionCoordinator),
+                summarizationEngine: foundationModelsService
+            )
+            summarizationService = foundationModelsService
+            translationEngineIdentifier = MessageTranslator.EngineIdentifier.appleTranslation
         }
         self.translationService = translationService
+        self.summarizationService = summarizationService
         self.messageTranslator = MessageTranslator(
             database: database,
             service: translationService,

@@ -226,6 +226,8 @@ targets:
       - package: OtegamiKit
         product: OtegamiTranslationFoundationModels
       - package: OtegamiKit
+        product: OtegamiTranslationApple
+      - package: OtegamiKit
         product: TranslationEngine
       - package: OtegamiKit
         product: BIMI

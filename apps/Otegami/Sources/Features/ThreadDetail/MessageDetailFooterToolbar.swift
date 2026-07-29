@@ -43,7 +43,9 @@ import TranslationEngine
 /// る (`MessageDetailAIFeaturesState`のdoc comment、以前の
 /// `MessageDetailFloatingButtons`と同じ仕組み)。`nil`(まだ何も展開されて
 /// いない、アコーディオン切替の谷間)、または`showsSummaryButton`/
-/// `showsTranslationButton`/`isTranslationAvailable`が偽の間は、アイコン
+/// `showsTranslationButton`/`isSummarizationAvailable`/`isTranslationAvailable`
+/// (Task #159 で要約と翻訳が別エンジンになったため availability も2つに分離
+/// — `isSummarizeEnabled`/`isTranslateEnabled`参照) が偽の間は、アイコン
 /// 自体を消さず**グレーアウト**して並びを安定させる (指示どおり)。
 struct MessageDetailFooterToolbar: View {
     var onReply: () -> Void
@@ -271,8 +273,15 @@ struct MessageDetailFooterToolbar: View {
     /// 使えない — いずれかならグレーアウトして`disabled`にする。旧
     /// `AISummaryFloatingButton.isAvailable`と同じ2条件をここでまとめて
     /// 「表示するかどうか」ではなく「押せるかどうか」に読み替えている。
+    /// Task #159: reads `isSummarizationAvailable` (Foundation Models'
+    /// own availability), not `isTranslationAvailable` — before this task,
+    /// one `TranslationService` backed both translate and summarize, so a
+    /// single availability flag correctly gated both buttons; now that
+    /// they're two different engines (`FoundationModelsTranslationService`/
+    /// `AppleTranslationService`) with two different availability stories,
+    /// this button needs the summarization-specific one.
     private var isSummarizeEnabled: Bool {
-        aiFeaturesState?.showsSummaryButton == true && aiFeaturesState?.isTranslationAvailable == true
+        aiFeaturesState?.showsSummaryButton == true && aiFeaturesState?.isSummarizationAvailable == true
     }
 
     private var isTranslateEnabled: Bool {

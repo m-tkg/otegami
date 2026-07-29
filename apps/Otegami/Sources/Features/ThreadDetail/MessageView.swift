@@ -609,6 +609,12 @@ struct MessageView: View {
         let hasBody = bodyRecord != nil
         aiState.showsTranslationButton = hasBody && shouldShowTranslationBar
         aiState.isTranslationAvailable = environment.isTranslationAvailable
+        // Task #159: separate from `isTranslationAvailable` above now that
+        // translation (`AppleTranslationService`) and summarization
+        // (`FoundationModelsTranslationService`) are two different engines
+        // with two different availability stories — see
+        // `AppEnvironment.isSummarizationAvailable`'s doc comment.
+        aiState.isSummarizationAvailable = environment.isSummarizationAvailable
         // Task #128 (a): the three conditions the old `showsTranslationButton`
         // gate combined, logged individually — see `translationGateLogger`'s
         // doc comment for why every call logs, not just failures. Task #134:
@@ -1674,15 +1680,36 @@ struct MessageView: View {
         // design-phase-3: deliberately *stricter* than `shouldShowTranslationBar`
         // (Task #138: that gate dropped its language check entirely — the
         // bar now shows for every message, language-independent — see its
-        // doc comment). Auto-translating on a mere "maybe English, couldn't
-        // tell" guess (or a confirmed-non-English message) would silently
-        // run the on-device model against possibly-non-English text with no
-        // way for the user to have opted out first; showing the bar and
-        // letting them tap "翻訳" themselves for that ambiguous/non-English
-        // case is the safer default, while a *confirmed*
-        // English message still auto-translates exactly as before.
+        // doc comment). Auto-translating on a confirmed-non-English message
+        // would silently run the engine against text the user never asked
+        // to have translated; showing the bar and letting them tap "翻訳"
+        // themselves for that case is the safer default.
+        //
+        // Task #159 (実機報告「明らかに英語の Okta 通知メールが
+        // `NLLanguageRecognizer`に`pl`(ポーランド語)と誤判定される」):
+        // before this task, this guard required an *exact* `detectedLanguage
+        // == "en"` match — a confident-but-wrong non-English guess (this
+        // real-device report's `"pl"`) silently suppressed auto-translate
+        // for a genuinely English mail, with no visible error (the always-
+        // enabled manual button was the only way to get exactly the same
+        // translation regardless of this gate's outcome — `requestTranslation`
+        // itself hardcodes `sourceLanguage: .english` unconditionally,
+        // never actually reading `detectedLanguage`). Loosened to "anything
+        // *other than* a confident Japanese guess" — the same "loosen an
+        // over-strict language gate" fix already established in this
+        // codebase for a different gate (`docs/translation.md`'s "翻訳可能
+        // 判定の緩和" — `isEnglishMessage`'s `"en"`-or-`nil` relaxation), and
+        // now safe here too in a way it wasn't before Task #159:
+        // `AppleTranslationService` auto-detects the *real* source language
+        // at the moment it actually translates (`source: nil` — that
+        // type's own doc comment, Task #159 point 4), so a false-positive
+        // kickoff on genuinely non-English, non-Japanese text no longer
+        // risks a silently-mistranslated result the way blindly assuming
+        // English with the old Foundation Models engine would have — worst
+        // case is a redundant translate attempt whose real detected source
+        // just isn't English, handled the same as any other translation.
         guard aiFeaturesEnabled else { return }
-        guard message.detectedLanguage == "en" else { return }
+        guard message.detectedLanguage != "ja" else { return }
         guard LocalizationSettingsStore.effectiveLanguageCode != "en" else { return }
         guard environment.isTranslationAvailable else { return }
         guard autoTranslateEnglish else { return }
@@ -2101,6 +2128,13 @@ final class MessageDetailAIFeaturesState {
     /// moved out of `MessageView`.
     var translationShowOriginal = false
     var isTranslationAvailable = false
+    /// Task #159: `AppEnvironment.isSummarizationAvailable`, mirrored here
+    /// the same way `isTranslationAvailable` above already is —
+    /// `MessageDetailFooterToolbar.isSummarizeEnabled` reads this instead of
+    /// `isTranslationAvailable` now that the two features are backed by
+    /// different engines (`FoundationModelsTranslationService` vs.
+    /// `AppleTranslationService`) with different availability stories.
+    var isSummarizationAvailable = false
     var onSummarize: () -> Void = {}
     var onShowSummary: () -> Void = {}
     var onTranslate: () -> Void = {}
