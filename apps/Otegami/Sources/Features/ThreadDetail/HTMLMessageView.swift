@@ -1764,12 +1764,24 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         }
         return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
       }
+      // Task #112 (実機報告 — ダークモードで実メール本文の暗色文字が沈む
+      // 再現続報): `getComputedStyle(...).color`/`.backgroundColor` は
+      // ソースが `#333333` (16進) でも `rgb(51, 51, 51)` (関数記法) でも
+      // ブラウザ側で常にこの `rgb()`/`rgba()` 直列化に正規化されるため、
+      // このパース自体はどちらの記法で著者が書いていても元々同じ結果になる
+      // — 「16進しか対応していないのでは」という当初の疑いはここでは
+      // 再現しなかった。とはいえ CSS Color 4 のスペース区切り記法
+      // (`rgb(51 51 51 / 0.5)`、カンマなし・任意でスラッシュの後にアルファ)
+      // をこの正規表現の`split(',')`一本槍では拾えなかった (パース失敗)
+      // ため、カンマ区切り・スペース区切りのどちらも受け付けるよう
+      // 頑健化しておく。
       function parseOpaqueColor(cssColor) {
         if (!cssColor) { return null; }
         var match = cssColor.match(/rgba?\\(([^)]+)\\)/);
         if (!match) { return null; }
-        var parts = match[1].split(',').map(function (part) { return parseFloat(part); });
-        var alpha = parts.length > 3 ? parts[3] : 1;
+        var alphaSplit = match[1].split('/');
+        var parts = alphaSplit[0].split(/[\\s,]+/).filter(function (part) { return part.length > 0; }).map(function (part) { return parseFloat(part); });
+        var alpha = alphaSplit.length > 1 ? parseFloat(alphaSplit[1]) : (parts.length > 3 ? parts[3] : 1);
         if (!(alpha > 0)) { return null; }
         return { r: parts[0], g: parts[1], b: parts[2] };
       }
@@ -1946,6 +1958,35 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
       // node) via `collectExplicitColorSelectors` and threaded through to
       // `nearestExplicitColorAncestor` — cheap relative to the 4000-node cap
       // above it, and keeps the stylesheet walk out of the hot per-node loop.
+      // Task #112 (実機報告続報 — 実メールで再現): プリヘッダの隠しダミー
+      // テキスト (`color:transparent; visibility:hidden; font-size:0px`
+      // 等、メール配信ツールが受信箱プレビュー文言を制御するために埋め込む
+      // 定番パターン — 実際の readdle.eml の例では不可視の結合文字を
+      // 大量に含む数百文字級のダミー行だった) が、可視本文と区別なく
+      // `explicitDarkTextIsMajority` の分母 (`totalLength`) に算入されて
+      // いた。可視本文がどれだけ暗色主体でも、この巨大な不可視テキストが
+      // 分母を水増しして過半数判定 (`> totalLength / 2`) を割ってしまい
+      // うる — 実機で再現した「本文が沈む」の一因。`display:none` は
+      // 継承されないため祖先チェーンを歩いて確認し、`visibility`/
+      // `font-size`/文字色の不透明度は継承されるので直近の親だけで判定
+      // すれば十分 (`opacity` は継承されないので同じ祖先チェーンで見る)。
+      function isVisuallyHiddenText(parentEl, boundary) {
+        var node = parentEl;
+        while (node) {
+          var ancestorStyle = getComputedStyle(node);
+          if (ancestorStyle.display === 'none') { return true; }
+          var opacity = parseFloat(ancestorStyle.opacity);
+          if (!isNaN(opacity) && opacity <= 0) { return true; }
+          if (node === boundary) { break; }
+          node = node.parentElement;
+        }
+        var style = getComputedStyle(parentEl);
+        if (style.visibility === 'hidden') { return true; }
+        var fontSize = parseFloat(style.fontSize);
+        if (!isNaN(fontSize) && fontSize <= 0) { return true; }
+        if (parseOpaqueColor(style.color) === null) { return true; }
+        return false;
+      }
       function explicitDarkTextIsMajority(inner) {
         var selectors = collectExplicitColorSelectors();
         var walker = document.createTreeWalker(inner, NodeFilter.SHOW_TEXT, null);
@@ -1959,9 +2000,10 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
           if (!text) { continue; }
           var trimmed = text.trim();
           if (trimmed.length === 0) { continue; }
-          totalLength += trimmed.length;
           var parentEl = node.parentElement;
           if (!parentEl) { continue; }
+          if (isVisuallyHiddenText(parentEl, inner)) { continue; }
+          totalLength += trimmed.length;
           var colorEl = nearestExplicitColorAncestor(parentEl, inner, selectors);
           if (!colorEl) { continue; }
           var color = parseOpaqueColor(getComputedStyle(parentEl).color);
@@ -1998,6 +2040,25 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
           if (backgroundLuminance > 0.5) {
             var textLuminance = representativeTextLuminance(inner);
             shouldIntervene = textLuminance === null || textLuminance < backgroundLuminance;
+            // Task #112 (実機報告続報 — 明るい背景を持つ実メールでも本文が
+            // 沈む再現): `representativeTextLuminance` は文書順で最初に
+            // 見つかった非空白テキストノード最大6件の平均でしかない。
+            // readdle.eml のような「上部にヒーロー見出し (白文字・写真背景)
+            // → その後に本文段落 (#333333 系の暗色文字)」という構成の
+            // メールでは、その6件の大半または全部がヒーロー側の明るい文字
+            // に偏り、後続の暗色本文が一度もサンプリングされないまま
+            // 「介入不要」に確定してしまっていた — Task #98/#104 で追加した
+            // `explicitDarkTextIsMajority` (可視テキスト全体を文字数ベースで
+            // 走査する、こちらの方が頑健) はこれまで背景が見つからない
+            // (`else`側) ケースのフォールバックとしてしか呼ばれておらず、
+            // 背景ありのこの分岐には一度も届いていなかった — Task #104 の
+            // 修正が実際には多くの実メール (背景色を持つのが普通) で
+            // 効いていなかった根本原因。6サンプル平均が「介入不要」と
+            // 出た場合のみ、同じ全文走査をここでもフォールバックとして
+            // 試す。
+            if (!shouldIntervene) {
+              shouldIntervene = explicitDarkTextIsMajority(inner);
+            }
           }
         } else {
           // Task #56 (実機フィードバック: TestFlight通知メール — 背景色を
