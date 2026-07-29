@@ -601,8 +601,26 @@ struct ThreadDetailView: View {
                     return didArchiveAny
                 }
                 guard archived else { return }
-                await replaySoon()
+                // 実機報告 (数秒「メッセージが見つかりません」が見えてから
+                // 一覧に戻る): ここが元は `await replaySoon()` の**後**に
+                // `notifyThreadRemoved()` を呼んでいた。ローカル DB からの
+                // 削除は `dbWriter.write` が返った時点で確定済みで、その瞬間
+                // `messages` を購読している `ThreadQuery.messagesObservation`
+                // が空配列を配信し、`body` の `ContentUnavailableView`
+                // (空状態 placeholder) がすぐさま描画される。`notifyThread
+                // Removed()` (→ `MailScreenView.handleThreadRemoved` が次の
+                // スレッドを開くか pop する) が `replaySoon()` というネット
+                // ワーク I/O (opQueue の replay) の完了を待ってからでない
+                // と呼ばれなかったため、その間の数秒間だけ placeholder が
+                // 見え続けていた。`notifyThreadRemoved()` はローカル DB の
+                // 反映だけで完結する処理で `replaySoon()` の結果に依存しない
+                // ので、先に呼んで即座に遷移させ、`replaySoon()` はその後
+                // (同じ `Task` の続きとして、遷移をブロックせずに) 実行する
+                // — 空状態 placeholder は自分の操作では実質見えなくなり、
+                // 他クライアントでの削除などローカル操作を経由しない消滅の
+                // フォールバックとしてのみ残る。
                 notifyThreadRemoved()
+                await replaySoon()
             } catch {
                 // Best-effort — the thread just stays if this fails.
             }
@@ -627,8 +645,11 @@ struct ThreadDetailView: View {
                     }
                     try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
                 }
-                await replaySoon()
+                // `archiveThread()`'s doc comment (直前) の理由と同じ —
+                // ローカル DB 反映が確定した時点で即座に遷移させ、
+                // `replaySoon()` の完了は待たない。
                 notifyThreadRemoved()
+                await replaySoon()
             } catch {
                 // Best-effort.
             }
@@ -653,8 +674,11 @@ struct ThreadDetailView: View {
                     }
                     try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
                 }
-                await replaySoon()
+                // `archiveThread()`'s doc comment (数行上) の理由と同じ —
+                // ローカル DB 反映が確定した時点で即座に遷移させ、
+                // `replaySoon()` の完了は待たない。
                 notifyThreadRemoved()
+                await replaySoon()
             } catch {
                 // Best-effort.
             }

@@ -199,15 +199,57 @@ public struct FoundationModelsTranslationService: TranslationService {
     ///    quote" — the #90 prohibition on making the quote the main
     ///    subject, and the #90 short-reply fallback, are unchanged below
     ///    — it only fixes which one is mentioned *first* in the output.
+    ///
+    /// Task #102 follow-up: a real-device repro (deeply-nested reply chain,
+    /// short new reply on top) showed the #97 "at most one short context
+    /// sentence" wording wasn't holding the line — the model still spent
+    /// most of the output retelling the quoted messages one by one, each
+    /// with its own date/time, and the actual new reply was squeezed into
+    /// a single closing sentence. Two changes:
+    ///  - The output is now a fixed 3-part **labeled** structure
+    ///    (■要約/■伝えたいこと/■アクション) rather than free-form prose —
+    ///    giving the "content summary" part an explicit boundary (its own
+    ///    label, its own sentence budget) makes it much harder for a
+    ///    quoted-message recap to silently expand and crowd it out, and
+    ///    the other two parts (intent/tone, requested action) are
+    ///    information a free-form summary was never asked for and so
+    ///    tended to omit.
+    ///  - The single most literal cause of the repro's failure —
+    ///    per-message retelling with dates/times — is now an explicit,
+    ///    named prohibition ("never mention dates or times", "never
+    ///    narrate quoted messages one by one") instead of being implied by
+    ///    "at most one context sentence"; the older wording left room for
+    ///    the model to decide a *long* single sentence covering multiple
+    ///    quoted messages still satisfied "one sentence".
+    ///
+    /// `sentenceCount` now scopes only the ■要約 part (the content summary)
+    /// — ■伝えたいこと and ■アクション are always short (about one sentence
+    /// each) regardless of the caller's requested length, since they're
+    /// fixed-shape facts (intent/tone; required action or "特になし") rather
+    /// than content that scales with the source text's length. See
+    /// `TranslationService.summarize`'s doc comment for the "hint, not a
+    /// guarantee" framing this still follows.
     private static func summarizeInstructions(targetLanguage: TranslationLanguage, sentenceCount: Int) -> String {
         """
-        Summarize the user's email content in \(targetLanguage.displayName), in about \(sentenceCount) short sentence\(sentenceCount == 1 ? "" : "s").
-        The input sometimes contains two labeled sections: "■これは過去のやり取り (文脈参照用)" (quoted history from the prior thread, given only as context) and "■これが今回届いた返信 (要約対象)" (this email's own new text — the thing to summarize).
-        When both sections are present: you must not summarize only the content of the quoted section. The main subject of your summary must be the new reply section. Use the quoted section only as background to understand the flow of the conversation.
-        When both sections are present, structure your output in chronological order, not input-label order: start with at most one short sentence giving context from the quoted history (only if needed to understand the reply), then describe what the new reply says. Do not describe the new reply first and mention the quoted history as an afterthought — the quoted history happened earlier, so it comes first in your narration too.
-        If the new reply section is very short (e.g. just a greeting or a one-line acknowledgment like "了解です"/"承知しました"), do not pad it out and do not fall back to summarizing the quote instead — in 1-2 sentences, state what this email did in response to the quoted thread (e.g. "見積もりの件を了承する返信" rather than a recap of the quoted estimate itself).
-        When there are no such labeled sections, just summarize the text as given.
-        Output ONLY the summary itself — no preamble, no explanation.
+        Summarize the user's email content in \(targetLanguage.displayName), as exactly this 3-part labeled structure — three labels below, each on its own line, each followed by its own content on the next line(s). Do not add any other section, heading, preamble, or explanation, and do not omit any of the three labels even when a part's content is minimal.
+
+        ■要約
+        (content summary goes here)
+
+        ■伝えたいこと
+        (sender's intent/tone goes here)
+
+        ■アクション
+        (requested action, or 特になし, goes here)
+
+        The input sometimes contains two labeled sections: "■これは過去のやり取り (文脈参照用)" (quoted history from the prior thread, given only as context) and "■これが今回届いた返信 (要約対象)" (this email's own new text — the thing to summarize). All three output parts below describe the NEW reply section; the quoted section is background only, never itself the subject of any part.
+
+        ■要約 — in about \(sentenceCount) short sentence\(sentenceCount == 1 ? "" : "s"), describe what this email's own new reply says. This is the main part and its primary subject must always be the new reply, never the quoted history. If — and only if — understanding the reply genuinely requires it, you may open with at most one short subordinate clause referencing the quoted history (e.g. "〜の件について、"); otherwise skip any reference to the quoted history entirely. Regardless of how many messages the quoted history contains, you must NEVER retell it as a sequence of past messages, and you must NEVER mention dates, times, or phrases like "〜さんが「…」と返信し" that narrate an individual quoted message — that narration style is forbidden even inside the single permitted subordinate clause. If the new reply is very short (e.g. just a greeting or a one-line acknowledgment like "了解です"/"承知しました"), do not pad it out and do not fall back to summarizing the quote instead — state briefly what this reply did in response to the thread (e.g. "見積もりの件を了承する返信" rather than a recap of the quoted estimate itself).
+        ■伝えたいこと — in about one sentence, describe the sender's intent and tone in writing the new reply (e.g. お礼を伝えたい、確認を求めている、丁寧な／カジュアルな調子など). This is not a repeat of ■要約's content — it's what the message is trying to accomplish, not what it says.
+        ■アクション — state in about one sentence what action, if any, the new reply asks the recipient to take (a reply, a confirmation, scheduling, a decision, providing information, etc.). If the new reply asks for nothing, output exactly "特になし" and nothing else for this part.
+
+        When there are no such labeled input sections (no quoted history at all), apply the same three parts to the whole text as given.
+        Output ONLY the 3-part structure above — no preamble, no explanation, no text before ■要約 or after the ■アクション content.
         """
     }
 
