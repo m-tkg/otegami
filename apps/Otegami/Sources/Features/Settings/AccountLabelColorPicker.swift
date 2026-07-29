@@ -1,12 +1,19 @@
 import SwiftUI
 
 /// D「アカウントのラベル色を変更可能に」/ Task #72: a grid of tappable
-/// swatches (all `OtegamiAccountColor.PaletteColor` entries, in hue order)
-/// plus a leading "自動" (auto) option, used by `AccountEditView`. Selection
-/// state (`nil` == 自動) lives in the caller — this view is purely
-/// presentational, matching the rest of this app's row-shaped `View`s
-/// (`ThreadRowView`/`MessageListRow`, per `docs/ci.md`'s "keep row-shaped
-/// views small" discipline, applied here to the grid's per-swatch cell).
+/// swatches (all `OtegamiAccountColor.PaletteColor` entries, in hue order),
+/// used by `AccountEditView`. Selection state lives in the caller — this
+/// view is purely presentational, matching the rest of this app's
+/// row-shaped `View`s (`ThreadRowView`/`MessageListRow`, per `docs/ci.md`'s
+/// "keep row-shaped views small" discipline, applied here to the grid's
+/// per-swatch cell).
+///
+/// 実機フィードバック (2026-07-29「自動、はいらない」): the leading "自動"
+/// pill (`nil` selection, resolving to the FNV-1a hash assignment) was
+/// removed — the grid is now exactly the 20 reference swatches. A `nil`
+/// selection can still *arrive* here (legacy accounts saved before every
+/// creation path started assigning an explicit color); it just renders as
+/// no swatch selected until the user picks one.
 ///
 /// Task #72 switched this from a single horizontally-scrolling `HStack` row
 /// to a `LazyVGrid` — with the palette grown from 8 to 20 colors, a single
@@ -16,44 +23,17 @@ import SwiftUI
 /// swatch on screen at once at the same 28pt size the old row used.
 struct AccountLabelColorPicker: View {
     @Binding var selection: OtegamiAccountColor.PaletteColor?
-    /// The color "自動" would currently resolve to (the FNV-1a assignment
-    /// for this account's id) — shown as the auto pill's own swatch so a
-    /// user picking "自動" can see what they're getting, not just an empty
-    /// placeholder.
-    let autoColor: Color
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: OtegamiSpacing.sm), count: 5)
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: OtegamiSpacing.sm) {
-            autoSwatch
             ForEach(OtegamiAccountColor.PaletteColor.allCases, id: \.self) { paletteColor in
                 swatch(for: paletteColor)
             }
         }
         .padding(.vertical, OtegamiSpacing.xs)
         .accessibilityIdentifier("accountEdit.labelColorPicker")
-    }
-
-    private var autoSwatch: some View {
-        Button {
-            selection = nil
-        } label: {
-            VStack(spacing: OtegamiSpacing.xs) {
-                Circle()
-                    .fill(autoColor)
-                    .frame(width: 28, height: 28)
-                    .overlay {
-                        Circle().strokeBorder(OtegamiColor.ink, lineWidth: selection == nil ? 2 : 0)
-                    }
-                Text("自動")
-                    .font(OtegamiFont.caption())
-                    .foregroundStyle(OtegamiColor.inkSecondary)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("accountEdit.labelColor.auto")
-        .accessibilityAddTraits(selection == nil ? .isSelected : [])
     }
 
     @ViewBuilder

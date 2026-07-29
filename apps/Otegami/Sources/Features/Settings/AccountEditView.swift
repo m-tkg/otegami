@@ -81,11 +81,11 @@ struct AccountEditView: View {
     /// ユーザーの実機確認手順 (`docs/oauth-setup.md`) にちょうど対応する。
     @State private var scopeDiagnosis: GoogleScopeDiagnosisState = .checking
 
-    /// D「アカウントのラベル色を変更可能に」— `nil` means "自動" (the existing
-    /// FNV-1a assignment stays in effect). Decoded from `account
-    /// .labelColorKey` up front; an unrecognized raw string (should not
-    /// normally happen — see that property's doc comment) falls back to
-    /// `nil`/自動 rather than crashing.
+    /// D「アカウントのラベル色を変更可能に」— decoded from `account
+    /// .labelColorKey` up front. 実機フィードバック (2026-07-29「自動、は
+    /// いらない」) でピッカーの「自動」ピルを廃止したため、`nil` (未設定の
+    /// レガシーアカウント) は FNV-1a のハッシュ割当が現に解決している色を
+    /// 初期選択として見せる — 保存すればそれが明示色として固定される。
     @State private var labelColorKey: OtegamiAccountColor.PaletteColor?
 
     /// F「デフォルト署名（アカウントごと）」— every signature currently scoped
@@ -105,7 +105,8 @@ struct AccountEditView: View {
         _smtpPortText = State(initialValue: account.smtpPort.map(String.init) ?? "587")
         _smtpSecurity = State(initialValue: account.smtpSecurity ?? .startTLS)
         _smtpUsername = State(initialValue: account.smtpUsername ?? "")
-        _labelColorKey = State(initialValue: account.labelColorKey.flatMap(OtegamiAccountColor.PaletteColor.init(rawValue:)))
+        _labelColorKey = State(initialValue: account.labelColorKey.flatMap(OtegamiAccountColor.PaletteColor.init(rawValue:))
+            ?? OtegamiAccountColor.resolvedPaletteColor(for: account.id))
         _defaultSignatureId = State(initialValue: account.defaultSignatureId)
     }
 
@@ -142,7 +143,7 @@ struct AccountEditView: View {
             }
 
             Section("ラベル色") {
-                AccountLabelColorPicker(selection: $labelColorKey, autoColor: OtegamiAccountColor.color(for: account.id))
+                AccountLabelColorPicker(selection: $labelColorKey)
             }
 
             Section {
