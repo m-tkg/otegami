@@ -34,6 +34,16 @@ final class RichTextEditingController: ObservableObject {
     func toggleList(_ style: RichTextListStyle) { target?.toggleList(style) }
     func indent() { target?.changeIndent(by: 1) }
     func outdent() { target?.changeIndent(by: -1) }
+    /// Task #161 (#129 第2段): 引用ブロック — see `RichTextAttributedString
+    /// .applyBlockquote(to:range:)`'s doc comment for why this is its own
+    /// toggle, not just another call to `indent()`.
+    func toggleBlockquote() { target?.toggleBlockquote() }
+    func setFontSize(_ size: RichTextFontSize) { target?.setFontSize(size) }
+    func setTextColor(_ color: RichTextColor?) { target?.setTextColor(color) }
+    func setBackgroundColor(_ color: RichTextColor?) { target?.setBackgroundColor(color) }
+    /// `urlString == nil` removes the link — see `RichTextAttributedString
+    /// .applyLink(_:to:range:)`'s doc comment.
+    func setLink(_ urlString: String?) { target?.setLink(urlString) }
     func clearFormatting() { target?.clearFormatting() }
 }
 
@@ -45,6 +55,11 @@ protocol RichTextEditingTarget: AnyObject {
     func toggleStrikethrough()
     func toggleList(_ style: RichTextListStyle)
     func changeIndent(by delta: Int)
+    func toggleBlockquote()
+    func setFontSize(_ size: RichTextFontSize)
+    func setTextColor(_ color: RichTextColor?)
+    func setBackgroundColor(_ color: RichTextColor?)
+    func setLink(_ urlString: String?)
     func clearFormatting()
 }
 
@@ -246,16 +261,87 @@ extension RichTextEditor {
             }
         }
 
+        func toggleBlockquote() {
+            withSelection { _, storage, range in
+                RichTextAttributedString.applyBlockquote(to: storage, range: range)
+            }
+        }
+
+        func setFontSize(_ size: RichTextFontSize) {
+            withSelection { textView, storage, range in
+                if range.length > 0 {
+                    RichTextAttributedString.applyFontSize(size, to: storage, range: range)
+                } else {
+                    setTypingAttribute(on: textView) { font in RichTextAttributedString.settingFontSize(size, on: font) }
+                }
+            }
+        }
+
+        func setTextColor(_ color: RichTextColor?) {
+            withSelection { textView, storage, range in
+                if range.length > 0 {
+                    RichTextAttributedString.applyTextColor(color, to: storage, range: range)
+                } else {
+                    var attrs = textView.typingAttributes
+                    if let color {
+                        attrs[.foregroundColor] = color.platformColor
+                    } else {
+                        attrs.removeValue(forKey: .foregroundColor)
+                    }
+                    textView.typingAttributes = attrs
+                }
+            }
+        }
+
+        func setBackgroundColor(_ color: RichTextColor?) {
+            withSelection { textView, storage, range in
+                if range.length > 0 {
+                    RichTextAttributedString.applyBackgroundColor(color, to: storage, range: range)
+                } else {
+                    var attrs = textView.typingAttributes
+                    if let color {
+                        attrs[.backgroundColor] = color.platformColor
+                    } else {
+                        attrs.removeValue(forKey: .backgroundColor)
+                    }
+                    textView.typingAttributes = attrs
+                }
+            }
+        }
+
+        /// Task #161: unlike every other command here, a collapsed
+        /// selection isn't simply "apply to future typing" — a link needs
+        /// actual text to wrap. If the cursor sits inside an existing link
+        /// (`existingLinkRange(in:at:)`), this edits/removes *that* run
+        /// instead; otherwise a collapsed selection is a no-op (the
+        /// formatting bar only enables its link button when there's a
+        /// non-empty selection or the cursor is already inside a link —
+        /// see `RichTextFormattingBar`'s doc comment).
+        func setLink(_ urlString: String?) {
+            withSelection { _, storage, range in
+                if range.length > 0 {
+                    RichTextAttributedString.applyLink(urlString, to: storage, range: range)
+                } else if let existingRange = RichTextAttributedString.existingLinkRange(in: storage, at: range.location) {
+                    RichTextAttributedString.applyLink(urlString, to: storage, range: existingRange)
+                }
+            }
+        }
+
         func clearFormatting() {
             withSelection { textView, storage, range in
                 RichTextAttributedString.clearFormatting(to: storage, range: range)
                 if range.length == 0 {
                     var attrs = textView.typingAttributes
                     if let font = attrs[.font] as? PlatformFont {
-                        attrs[.font] = RichTextAttributedString.settingItalic(false, on: RichTextAttributedString.settingBold(false, on: font))
+                        var plain = RichTextAttributedString.settingItalic(false, on: RichTextAttributedString.settingBold(false, on: font))
+                        plain = RichTextAttributedString.settingFontSize(.standard, on: plain)
+                        attrs[.font] = plain
                     }
                     attrs.removeValue(forKey: .underlineStyle)
                     attrs.removeValue(forKey: .strikethroughStyle)
+                    attrs.removeValue(forKey: .foregroundColor)
+                    attrs.removeValue(forKey: .backgroundColor)
+                    attrs.removeValue(forKey: .link)
                     textView.typingAttributes = attrs
                 }
             }

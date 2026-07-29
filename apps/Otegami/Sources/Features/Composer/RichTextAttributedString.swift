@@ -8,8 +8,10 @@ import AppKit
 
 #if os(iOS)
 typealias PlatformFont = UIFont
+typealias PlatformColor = UIColor
 #else
 typealias PlatformFont = NSFont
+typealias PlatformColor = NSColor
 #endif
 
 /// Task #129 (作成画面リッチテキスト化): everything that bridges the real
@@ -114,7 +116,11 @@ enum RichTextAttributedString {
                 isBold: font.map(isBold) ?? false,
                 isItalic: font.map(isItalic) ?? false,
                 isUnderline: underline != 0,
-                isStrikethrough: strikethrough != 0
+                isStrikethrough: strikethrough != 0,
+                fontSize: documentFontSize(from: font),
+                textColor: (attributes[.foregroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
+                backgroundColor: (attributes[.backgroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
+                linkURL: linkURLString(from: attributes[.link])
             ))
         }
         return RichTextParagraph(runs: runs, listStyle: listStyle, indentLevel: indentLevel)
@@ -158,9 +164,19 @@ enum RichTextAttributedString {
                 guard !run.text.isEmpty else { continue }
                 var font = settingBold(run.isBold, on: bodyFont)
                 font = settingItalic(run.isItalic, on: font)
+                font = settingFontSize(run.fontSize, on: font)
                 var attributes: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: style]
                 if run.isUnderline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
                 if run.isStrikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+                if let textColor = run.textColor { attributes[.foregroundColor] = textColor.platformColor }
+                if let backgroundColor = run.backgroundColor { attributes[.backgroundColor] = backgroundColor.platformColor }
+                if let linkURL = run.linkURL {
+                    if let url = URL(string: linkURL) {
+                        attributes[.link] = url
+                    } else {
+                        attributes[.link] = linkURL
+                    }
+                }
                 result.append(NSAttributedString(string: run.text, attributes: attributes))
             }
         }
@@ -185,6 +201,37 @@ enum RichTextAttributedString {
         font.fontDescriptor.symbolicTraits.contains(.traitItalic)
         #else
         font.fontDescriptor.symbolicTraits.contains(.italic)
+        #endif
+    }
+
+    /// Task #161: which `RichTextFontSize` preset `font`'s point size is
+    /// closest to — `.standard` for anything within half a point of
+    /// `bodyFont.pointSize` (the un-overridden baseline), otherwise the
+    /// nearest of the three explicit-size presets. `font == nil` (no
+    /// `.font` attribute at all — shouldn't normally happen given
+    /// `plainAttributedString(_:)` always sets one, but matches every
+    /// other `font.map(...) ?? false`-style fallback in this file) also
+    /// resolves to `.standard`.
+    static func documentFontSize(from font: PlatformFont?) -> RichTextFontSize {
+        guard let font else { return .standard }
+        if abs(font.pointSize - bodyFont.pointSize) < 0.5 { return .standard }
+        let overrides: [RichTextFontSize] = [.small, .large, .xlarge]
+        return overrides.min { lhs, rhs in
+            abs((lhs.pointSizeOverride ?? bodyFont.pointSize) - font.pointSize)
+                < abs((rhs.pointSizeOverride ?? bodyFont.pointSize) - font.pointSize)
+        } ?? .standard
+    }
+
+    /// Returns `font` at `size`'s point size (or `bodyFont`'s own size for
+    /// `.standard`), preserving every symbolic trait (bold/italic) already
+    /// on `font` — the same "rebuild the descriptor, keep everything else"
+    /// shape `settingBold(_:on:)`/`settingItalic(_:on:)` use.
+    static func settingFontSize(_ size: RichTextFontSize, on font: PlatformFont) -> PlatformFont {
+        let pointSize = size.pointSizeOverride ?? bodyFont.pointSize
+        #if os(iOS)
+        return UIFont(descriptor: font.fontDescriptor, size: pointSize)
+        #else
+        return NSFont(descriptor: font.fontDescriptor, size: pointSize) ?? font
         #endif
     }
 
@@ -244,6 +291,84 @@ enum RichTextAttributedString {
     }
 }
 
+// MARK: - Font size / color bridging (Task #161, #129 第2段)
+
+extension RichTextFontSize {
+    /// The explicit point size this preset forces on the live
+    /// `NSAttributedString` — `nil` for `.standard`, meaning "no override,
+    /// keep whatever the base body font's own size already is" (so
+    /// `.standard` stays Dynamic-Type-following, unlike the other three
+    /// presets, which are fixed sizes by design — a deliberate, explicit
+    /// choice the user made to size text away from the system default).
+    /// Chosen to match `RichTextFontSize.pixelSize`'s HTML values 1:1
+    /// (13/20/26pt ≈ 13/20/26px) — not a rigorous CSS px→pt conversion, but
+    /// close enough that a formatted email looks the same size relationship
+    /// on screen here as it will once sent.
+    var pointSizeOverride: CGFloat? {
+        switch self {
+        case .standard: nil
+        case .small: 13
+        case .large: 20
+        case .xlarge: 26
+        }
+    }
+}
+
+extension RichTextColor {
+    /// The live `UIColor`/`NSColor` this preset paints onto the
+    /// `NSAttributedString` — built from `hex` (never from a `Color`/
+    /// `OtegamiColor` asset), so it never shifts with system appearance;
+    /// see `RichTextColor`'s doc comment for why.
+    var platformColor: PlatformColor {
+        let sanitized = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        var rgb: UInt64 = 0
+        Scanner(string: sanitized).scanHexInt64(&rgb)
+        return PlatformColor(
+            red: CGFloat((rgb & 0xFF0000) >> 16) / 255,
+            green: CGFloat((rgb & 0x00FF00) >> 8) / 255,
+            blue: CGFloat(rgb & 0x0000FF) / 255,
+            alpha: 1
+        )
+    }
+
+    /// The reverse of `platformColor` — which preset (if any) `color`
+    /// matches, compared component-by-component with a small tolerance
+    /// (rather than object/pointer equality) since a color read back off
+    /// `NSAttributedString` may have round-tripped through a different
+    /// `NSColor`/`UIColor` color space than the one `platformColor` built
+    /// it in. `nil` for any color that isn't one of this palette's seven —
+    /// e.g. `nil` (no color) itself, never reached this far.
+    static func matching(_ color: PlatformColor) -> RichTextColor? {
+        allCases.first { candidate in colorsApproximatelyEqual(candidate.platformColor, color) }
+    }
+}
+
+private func colorsApproximatelyEqual(_ lhs: PlatformColor, _ rhs: PlatformColor) -> Bool {
+    #if os(iOS)
+    var lr: CGFloat = 0, lg: CGFloat = 0, lb: CGFloat = 0, la: CGFloat = 0
+    var rr: CGFloat = 0, rg: CGFloat = 0, rb: CGFloat = 0, ra: CGFloat = 0
+    guard lhs.getRed(&lr, green: &lg, blue: &lb, alpha: &la), rhs.getRed(&rr, green: &rg, blue: &rb, alpha: &ra) else { return false }
+    #else
+    guard let lhsConverted = lhs.usingColorSpace(.deviceRGB), let rhsConverted = rhs.usingColorSpace(.deviceRGB) else { return false }
+    let lr = lhsConverted.redComponent, lg = lhsConverted.greenComponent, lb = lhsConverted.blueComponent
+    let rr = rhsConverted.redComponent, rg = rhsConverted.greenComponent, rb = rhsConverted.blueComponent
+    #endif
+    let tolerance: CGFloat = 0.02
+    return abs(lr - rr) < tolerance && abs(lg - rg) < tolerance && abs(lb - rb) < tolerance
+}
+
+/// Task #161: the `.link` attribute's value can legitimately be either a
+/// `URL` or a bare `String` (`NSAttributedString.Key.link`'s documented
+/// contract) — `applyLink(_:to:range:)` always writes a `URL` when the
+/// string parses as one, but this reads either shape back, since a
+/// collapsed-selection edit (`existingLinkRange(in:at:)`) reads whatever's
+/// already there.
+private func linkURLString(from value: Any?) -> String? {
+    if let url = value as? URL { return url.absoluteString }
+    if let string = value as? String, !string.isEmpty { return string }
+    return nil
+}
+
 // MARK: - Formatting commands (formatting bar → live NSMutableAttributedString)
 
 extension RichTextAttributedString {
@@ -263,13 +388,26 @@ extension RichTextAttributedString {
         guard length > 0 else { return RichTextTypingState() }
         if selectedRange.length > 0 {
             let (listStyle, indentLevel) = paragraphListStyleAndIndent(at: selectedRange.location, in: attributedString)
+            // Task #161: fontSize/textColor/backgroundColor/linkURL read at
+            // the selection's *start* only, same as `listStyle`/
+            // `indentLevel` just above — not a whole-selection-uniform
+            // check the way the four boolean inline traits below are. A
+            // mixed-formatting selection just reflects its first
+            // character's state, which is what the formatting bar then
+            // highlights; harmless since applying a new value overwrites
+            // the whole selection uniformly regardless.
+            let attributes = attributedString.attributes(at: selectedRange.location, effectiveRange: nil)
             return RichTextTypingState(
                 isBold: isBoldUniform(in: attributedString, range: selectedRange),
                 isItalic: isItalicUniform(in: attributedString, range: selectedRange),
                 isUnderline: isUnderlineUniform(in: attributedString, range: selectedRange),
                 isStrikethrough: isStrikethroughUniform(in: attributedString, range: selectedRange),
                 listStyle: listStyle,
-                indentLevel: indentLevel
+                indentLevel: indentLevel,
+                fontSize: documentFontSize(from: attributes[.font] as? PlatformFont),
+                textColor: (attributes[.foregroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
+                backgroundColor: (attributes[.backgroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
+                linkURL: linkURLString(from: attributes[.link])
             )
         }
         let index = selectedRange.location > 0 ? selectedRange.location - 1 : 0
@@ -285,7 +423,11 @@ extension RichTextAttributedString {
             isUnderline: underline != 0,
             isStrikethrough: strikethrough != 0,
             listStyle: listStyle,
-            indentLevel: indentLevel
+            indentLevel: indentLevel,
+            fontSize: documentFontSize(from: font),
+            textColor: (attributes[.foregroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
+            backgroundColor: (attributes[.backgroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
+            linkURL: linkURLString(from: attributes[.link])
         )
     }
 
@@ -374,20 +516,100 @@ extension RichTextAttributedString {
         }
     }
 
+    // MARK: - Font size / color / link (Task #161, #129 第2段)
+
+    static func applyFontSize(_ size: RichTextFontSize, to attributedString: NSMutableAttributedString, range: NSRange) {
+        guard range.length > 0 else { return }
+        attributedString.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
+            let font = (value as? PlatformFont) ?? bodyFont
+            attributedString.addAttribute(.font, value: settingFontSize(size, on: font), range: subrange)
+        }
+    }
+
+    static func applyTextColor(_ color: RichTextColor?, to attributedString: NSMutableAttributedString, range: NSRange) {
+        guard range.length > 0 else { return }
+        if let color {
+            attributedString.addAttribute(.foregroundColor, value: color.platformColor, range: range)
+        } else {
+            attributedString.removeAttribute(.foregroundColor, range: range)
+        }
+    }
+
+    static func applyBackgroundColor(_ color: RichTextColor?, to attributedString: NSMutableAttributedString, range: NSRange) {
+        guard range.length > 0 else { return }
+        if let color {
+            attributedString.addAttribute(.backgroundColor, value: color.platformColor, range: range)
+        } else {
+            attributedString.removeAttribute(.backgroundColor, range: range)
+        }
+    }
+
+    /// `urlString == nil` (or blank) removes the link from `range` instead
+    /// of setting one. When adding a link, also forces underline on and —
+    /// only where `range` doesn't already carry an explicit text color —
+    /// defaults the color to `.blue`: the usual link affordance, expressed
+    /// here as ordinary `RichTextRun` fields rather than a hidden
+    /// "this-is-a-link-so-render-it-blue" special case elsewhere (the HTML
+    /// encoder and every other reader of `RichTextDocument` just sees
+    /// `isUnderline`/`textColor` like any other formatted run). Removing a
+    /// link leaves whatever underline/color it had — same "leaves the rest
+    /// of the formatting alone" contract `applyList`/`clearFormatting`
+    /// already follow for their own attributes.
+    static func applyLink(_ urlString: String?, to attributedString: NSMutableAttributedString, range: NSRange) {
+        guard range.length > 0 else { return }
+        guard let urlString, !urlString.trimmingCharacters(in: .whitespaces).isEmpty else {
+            attributedString.removeAttribute(.link, range: range)
+            return
+        }
+        if let url = URL(string: urlString) {
+            attributedString.addAttribute(.link, value: url, range: range)
+        } else {
+            attributedString.addAttribute(.link, value: urlString, range: range)
+        }
+        attributedString.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+        attributedString.enumerateAttribute(.foregroundColor, in: range, options: []) { value, subrange, _ in
+            guard value == nil else { return }
+            attributedString.addAttribute(.foregroundColor, value: RichTextColor.blue.platformColor, range: subrange)
+        }
+    }
+
+    /// The full effective range of the `.link` attribute at (or, failing
+    /// that, immediately before) `location` — lets a collapsed selection
+    /// (just a cursor) still edit/remove the link it's sitting inside,
+    /// mirroring `typingState(in:selectedRange:)`'s own "check one
+    /// character back too" cursor convention. `nil` when there's no link at
+    /// either position — `setLink(_:)`'s collapsed-selection branch then
+    /// has nothing to apply to and no-ops.
+    static func existingLinkRange(in attributedString: NSAttributedString, at location: Int) -> NSRange? {
+        guard attributedString.length > 0 else { return nil }
+        let clamped = min(max(0, location), attributedString.length - 1)
+        var effectiveRange = NSRange(location: 0, length: 0)
+        if attributedString.attribute(.link, at: clamped, effectiveRange: &effectiveRange) != nil {
+            return effectiveRange
+        }
+        guard clamped > 0, attributedString.attribute(.link, at: clamped - 1, effectiveRange: &effectiveRange) != nil else { return nil }
+        return effectiveRange
+    }
+
     /// Strips every inline/paragraph formatting this feature applies from
-    /// `range` — bold/italic/underline/strikethrough, and (for whichever
-    /// paragraphs `range` touches) list membership and indent. Leaves the
-    /// text itself, and the font's base size/family, untouched.
+    /// `range` — bold/italic/underline/strikethrough/font size/text color/
+    /// background color/link, and (for whichever paragraphs `range`
+    /// touches) list membership and indent. Leaves the text itself, and
+    /// the font's base family, untouched.
     static func clearFormatting(to attributedString: NSMutableAttributedString, range: NSRange) {
         if range.length > 0 {
             attributedString.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
                 let font = (value as? PlatformFont) ?? bodyFont
                 var plain = settingBold(false, on: font)
                 plain = settingItalic(false, on: plain)
+                plain = settingFontSize(.standard, on: plain)
                 attributedString.addAttribute(.font, value: plain, range: subrange)
             }
             attributedString.removeAttribute(.underlineStyle, range: range)
             attributedString.removeAttribute(.strikethroughStyle, range: range)
+            attributedString.removeAttribute(.foregroundColor, range: range)
+            attributedString.removeAttribute(.backgroundColor, range: range)
+            attributedString.removeAttribute(.link, range: range)
         }
         guard attributedString.length > 0 else { return }
         for paragraphRange in paragraphRanges(coveringSelection: range, in: attributedString) {
@@ -424,6 +646,29 @@ extension RichTextAttributedString {
         for paragraphRange in paragraphRanges(coveringSelection: range, in: attributedString) {
             let (listStyle, indentLevel) = paragraphListStyleAndIndent(at: paragraphRange.location, in: attributedString)
             let newLevel = max(0, indentLevel + delta)
+            attributedString.addAttribute(.paragraphStyle, value: paragraphStyle(listStyle: listStyle, indentLevel: newLevel), range: paragraphRange)
+        }
+    }
+
+    /// Task #161: dedicated 引用ブロック toggle, distinct from the numeric
+    /// `applyIndent(by:)` stepper above even though both ultimately drive
+    /// the same `indentLevel` storage (`RichTextHTMLCoder`'s doc comment on
+    /// why `indentLevel` already renders as nested `<blockquote>`) — this
+    /// one is a single on/off toggle (all touched paragraphs go to
+    /// `indentLevel` 0 if every one of them is already quoted, or to 1
+    /// otherwise), the same "not-yet-uniform → apply, already-uniform →
+    /// remove" convention `applyList(_:to:range:)` uses, rather than
+    /// incrementing/decrementing by one level per tap.
+    static func applyBlockquote(to attributedString: NSMutableAttributedString, range: NSRange) {
+        guard attributedString.length > 0 else { return }
+        let paragraphRanges = paragraphRanges(coveringSelection: range, in: attributedString)
+        guard !paragraphRanges.isEmpty else { return }
+        let allAlreadyQuoted = paragraphRanges.allSatisfy { paragraphRange in
+            paragraphListStyleAndIndent(at: paragraphRange.location, in: attributedString).1 > 0
+        }
+        let newLevel = allAlreadyQuoted ? 0 : 1
+        for paragraphRange in paragraphRanges {
+            let listStyle = paragraphListStyleAndIndent(at: paragraphRange.location, in: attributedString).0
             attributedString.addAttribute(.paragraphStyle, value: paragraphStyle(listStyle: listStyle, indentLevel: newLevel), range: paragraphRange)
         }
     }

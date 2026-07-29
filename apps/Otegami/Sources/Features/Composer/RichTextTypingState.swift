@@ -14,4 +14,16 @@ struct RichTextTypingState: Equatable {
     var isStrikethrough = false
     var listStyle: RichTextListStyle = .none
     var indentLevel = 0
+    /// Task #161 (#129 第2段): mirrors `listStyle`/`indentLevel`'s "read at
+    /// the selection/cursor's start location" convention (not a
+    /// whole-selection-uniform check the way bold/italic/underline/
+    /// strikethrough are) — see `RichTextAttributedString.typingState(in:
+    /// selectedRange:)`'s doc comment for why.
+    var fontSize: RichTextFontSize = .standard
+    var textColor: RichTextColor?
+    var backgroundColor: RichTextColor?
+    /// Non-`nil` while the cursor/selection sits inside an existing link —
+    /// lets the formatting bar's link button switch to "編集"/"削除" instead
+    /// of "追加" without requiring the user to re-select the linked text.
+    var linkURL: String?
 }

@@ -446,10 +446,10 @@ struct ComposerView: View {
             // Task #129 (作成画面リッチテキスト化): `RichTextEditor` (a real
             // `UITextView`/`NSTextView` bound to `NSAttributedString`) replaces
             // the M1-era SwiftUI `TextEditor` — see `attributedBodyText`'s doc
-            // comment. `RichTextFormattingBar` sits directly above it on both
-            // platforms (see that view's own doc comment for why an inline
-            // bar rather than a keyboard `inputAccessoryView`).
-            RichTextFormattingBar(controller: richTextEditingController)
+            // comment. `RichTextFormattingBar` sits directly above it on
+            // macOS (unlike iOS's Task #161 toggle-controlled bottom bar —
+            // this platform's scope wasn't touched by that restructure).
+            RichTextFormattingBar(controller: richTextEditingController, hasSelection: bodySelectedRange.length > 0)
             RichTextEditor(
                 attributedText: $attributedBodyText,
                 selectedRange: $bodySelectedRange,
