@@ -218,10 +218,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # v1.2.0-beta の実地で判明: pre-release suffix 付きタグを
+          # --prerelease 無しで公開すると GitHub 上は「安定版」扱いになり、
+          # アプリ内アップデートチェック (Task #158、通常クリック=安定版のみ)
+          # がベータを安定版として案内してしまう。suffix (ハイフン) の有無で
+          # フラグを出し分ける。
+          PRERELEASE_FLAG=""
+          case "${{ steps.version.outputs.version }}" in
+            *-*) PRERELEASE_FLAG="--prerelease" ;;
+          esac
           gh release create "${{ steps.version.outputs.tag }}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes \
+            $PRERELEASE_FLAG \
             "$RUNNER_TEMP/$APP_NAME.zip"
 
       # workflow_dispatch (no tag) skips the Release step above so a manual
