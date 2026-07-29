@@ -261,6 +261,56 @@
         }
       }
     },
+    "スレッド": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thread"
+          }
+        }
+      }
+    },
+    "スレッドの要約": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Thread Summary"
+          }
+        }
+      }
+    },
+    "スレッドを要約": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Summarize Thread"
+          }
+        }
+      }
+    },
+    "スレッドの要約を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Thread Summary"
+          }
+        }
+      }
+    },
+    "スレッドの要約を再試行": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry Thread Summary"
+          }
+        }
+      }
+    },
     "テキストで表示": {
       "localizations": {
         "en": {

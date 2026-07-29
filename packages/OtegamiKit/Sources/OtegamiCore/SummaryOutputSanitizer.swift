@@ -46,48 +46,61 @@ public enum SummaryOutputSanitizer {
     /// guess at a malformed response's structure, a summary this broken
     /// should surface as-is (so it's visible for debugging) instead of
     /// being silently emptied or partially reassembled.
+    ///
+    /// Task #153: now a thin wrapper over `sanitize(_:labels:)` — see that
+    /// method's doc comment for the generalized logic (unchanged behavior,
+    /// same 8 test cases in `SummaryOutputSanitizerTests` still pass).
     public static func sanitize(_ text: String) -> String {
+        sanitize(text, labels: [summaryLabel, intentLabel, actionLabel])
+    }
+
+    /// Task #153 (スレッド全体のAI要約、■経緯/■現状の2ラベル出力): generalizes
+    /// `sanitize(_:)`'s 3-label logic to an arbitrary, ordered `labels` list
+    /// — the whole-thread digest wants exactly two labels (■経緯/■現状) in
+    /// place of the single-message 3-part ■要約/■伝えたいこと/■アクション,
+    /// and duplicating this parser's logic a second time for a different
+    /// label count would just be a second place for Task #122/#148's
+    /// hard-won anti-repetition/anti-leak fixes to drift out of sync.
+    ///
+    /// For each label in `labels`, finds its line index (in order, each
+    /// search starting after the previous label's own line — mirrors the
+    /// original's `from: summaryLineIndex + 1`-style chaining) and falls
+    /// back to `text` trimmed of surrounding whitespace, unchanged, the
+    /// moment any label can't be found — same "don't guess at a malformed
+    /// response's structure" fallback semantics as `sanitize(_:)` always
+    /// had. Each label's content-end is the next `■`-prefixed line found
+    /// after it, or (if none) the next label's own line index — falling
+    /// back to `lines.count` for the last label — exactly the `zip
+    /// (labelIndices, labelIndices.dropFirst() + [lines.count])` pairing the
+    /// doc comment on this method's call sites describes: this is the
+    /// Task #148 fix (a repeated/leaked `■`-prefixed line sandwiched
+    /// *between* two real labels must not be swallowed into the preceding
+    /// label's content) generalized over however many labels are given,
+    /// still using the label-agnostic `content(label:labelLineIndex:in:
+    /// contentEnd:)`/`trailingContent(afterLabel:in:)` primitives unchanged.
+    /// Reassembles with the same blank-line-between-parts convention
+    /// `sanitize(_:)` always used.
+    public static func sanitize(_ text: String, labels: [String]) -> String {
         let lines = text.components(separatedBy: "\n")
-        guard
-            let summaryLineIndex = firstLineIndex(ofLabel: summaryLabel, in: lines, from: 0),
-            let intentLineIndex = firstLineIndex(ofLabel: intentLabel, in: lines, from: summaryLineIndex + 1),
-            let actionLineIndex = firstLineIndex(ofLabel: actionLabel, in: lines, from: intentLineIndex + 1)
-        else {
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var labelIndices: [Int] = []
+        var searchStart = 0
+        for label in labels {
+            guard let index = firstLineIndex(ofLabel: label, in: lines, from: searchStart) else {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            labelIndices.append(index)
+            searchStart = index + 1
         }
 
-        let actionContentEnd = firstLineIndex(ofLabel: "■", in: lines, from: actionLineIndex + 1) ?? lines.count
-        // Task #148 (実FM出力で発見: `scratchpad/summary-repro`の
-        // `mail_fixture_long.txt`をTask #148の詳細版sentenceCount=10で
-        // 実行した際、■要約/■アクションの間に本来無いはずの2つ目の
-        // 「■伝えたいこと」ラベルが挟まった — 元の実装は「■伝えたいこと の
-        // 内容は次に見つかる■アクション行の直前まで全部」という前提だった
-        // ため、この割り込んだ2つ目の「■伝えたいこと」行とその内容
-        // (別バージョンの言い換え) がまるごと1つ目の「■伝えたいこと」の
-        // 内容に混入してしまっていた — Task #122が防いでいた「末尾への
-        // 反復」とは違う、パーツの*間*に挟まる反復という新しいパターン。
-        // `actionContentEnd`(この直前の行)がすでに使っている「次に現れる
-        // 任意の■始まり行」という探索を、summary/intentのcontentEndにも
-        // 同じ方針で適用する — 通常の(壊れていない)出力では次の必須
-        // ラベル行がまさにその「最初の■始まり行」なので、`intentLineIndex`/
-        // `actionLineIndex`をそのまま使っていたときと結果は変わらない。
-        let summaryContentEnd = firstLineIndex(ofLabel: "■", in: lines, from: summaryLineIndex + 1) ?? intentLineIndex
-        let intentContentEnd = firstLineIndex(ofLabel: "■", in: lines, from: intentLineIndex + 1) ?? actionLineIndex
-
-        let summaryContent = content(label: summaryLabel, labelLineIndex: summaryLineIndex, in: lines, contentEnd: summaryContentEnd)
-        let intentContent = content(label: intentLabel, labelLineIndex: intentLineIndex, in: lines, contentEnd: intentContentEnd)
-        let actionContent = content(label: actionLabel, labelLineIndex: actionLineIndex, in: lines, contentEnd: actionContentEnd)
-
-        return """
-        \(summaryLabel)
-        \(summaryContent)
-
-        \(intentLabel)
-        \(intentContent)
-
-        \(actionLabel)
-        \(actionContent)
-        """
+        let nextBoundaries = Array(labelIndices.dropFirst()) + [lines.count]
+        let parts = zip(labels, zip(labelIndices, nextBoundaries)).map { label, indices -> String in
+            let (labelLineIndex, nextBoundary) = indices
+            let contentEnd = firstLineIndex(ofLabel: "■", in: lines, from: labelLineIndex + 1) ?? nextBoundary
+            let partContent = content(label: label, labelLineIndex: labelLineIndex, in: lines, contentEnd: contentEnd)
+            return "\(label)\n\(partContent)"
+        }
+        return parts.joined(separator: "\n\n")
     }
 
     /// The index of the first line (at or after `start`) whose

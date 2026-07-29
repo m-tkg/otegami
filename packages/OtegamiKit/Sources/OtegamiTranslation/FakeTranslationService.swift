@@ -37,6 +37,12 @@ public actor FakeTranslationService: TranslationService {
     /// call per `TranslationChunker` chunk, then exactly one `summarize`
     /// call for the final structured pass.
     public private(set) var summarizePlainCallCount = 0
+    /// Task #153 (スレッド全体のAI要約): `summarizeThread`(`TranslationService`
+    /// のprotocol extension)のreduce段呼び出し回数 — `summarizeCallCount`
+    /// (単一メッセージの3パート要約) とは別カウントで追跡し、テストが
+    /// map-reduceの形 (チャンク数分の`summarizePlain`呼び出し + reduce段の
+    /// この呼び出しちょうど1回) を検証できるようにする。
+    public private(set) var summarizeThreadDigestCallCount = 0
     /// Task #61 (ガードレール誤発動の寛容化テスト用): exact input strings
     /// `translate(_:from:to:)` should fail with `TranslationServiceError
     /// .contentBlocked` for, independent of `behavior` — lets a test
@@ -145,6 +151,25 @@ public actor FakeTranslationService: TranslationService {
         let sentences = Self.splitSentences(text)
         let picked = sentences.prefix(max(0, sentenceCount)).joined(separator: " ")
         return Self.deterministicTranslation(picked.isEmpty ? text : picked, to: targetLanguage)
+    }
+
+    /// Task #153 (スレッド全体のAI要約): `summarizeThread`のreduce段が呼ぶ
+    /// 構造化要約 — `summarize`と同様、決定的な出力にするため実際の
+    /// ■経緯/■現状ラベル付き2パート構造をそのまま返す (本物の
+    /// `FoundationModelsTranslationService.summarizeThreadDigest`と同じ形
+    /// なので、`ThreadDetailView`側のUI/`SummaryOutputSanitizer`経由の
+    /// 表示ロジックをこのフェイクだけでテストできる)。
+    public func summarizeThreadDigest(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+        summarizeThreadDigestCallCount += 1
+        try checkBehavior()
+        let translated = Self.deterministicTranslation(text, to: targetLanguage)
+        return """
+        ■経緯
+        \(translated)
+
+        ■現状
+        \(translated)
+        """
     }
 
     private func checkBehavior() throws {

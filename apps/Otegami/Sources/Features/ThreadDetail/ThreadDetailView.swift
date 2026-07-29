@@ -3,6 +3,8 @@ import GRDB
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
+import MailTransport
+import OtegamiTranslation
 import os
 
 /// M4's thread reading view: every message in the thread laid out
@@ -166,6 +168,13 @@ struct ThreadDetailView: View {
     /// (removed by Task #88; see `MessageDetailAIFeaturesState`'s doc comment
     /// for the full history of why this state has to live up here at all).
     @State private var expandedAIFeaturesState: MessageDetailAIFeaturesState?
+    /// Task #153 (スレッド全体のAI要約): `ThreadSummaryState`のdoc comment
+    /// 参照 — このスレッド全体 (`messages`全件) を対象にしたAI要約の進行
+    /// 状態。単一メッセージの`expandedAIFeaturesState.summaryState`とは
+    /// 完全に独立 (別のツールバーボタン・別のシート・別の生成呼び出し)。
+    @State private var threadSummaryState: ThreadSummaryState = .none
+    @State private var isShowingThreadSummarySheet = false
+    @State private var threadSummaryTask: Task<Void, Never>?
 
     var body: some View {
         // `GeometryReader` here purely to hand `expandedMessageHeight(in:)`
@@ -252,7 +261,18 @@ struct ThreadDetailView: View {
         // (`ThreadMessageSummaryRow`/`MessageView.header(for:)`), so
         // repeating it in the navigation bar was pure duplication —
         // replaced with a generic screen title.
-        .navigationTitle("メール")
+        .navigationTitle(navigationTitleText)
+        // Task #153 (スレッド全体のAI要約): 見出しの隣に置くトグルボタン —
+        // グループ化/アコーディオン表示 (`!isFlatModeEntry`) のときだけ出す。
+        // `threadSummarizeToolbarButton`のdoc comment参照。
+        .toolbar {
+            if !isFlatModeEntry {
+                ToolbarItem {
+                    threadSummarizeToolbarButton
+                }
+            }
+        }
+        .sheet(isPresented: $isShowingThreadSummarySheet) { threadSummarySheet }
         .task(id: threadId) { await load() }
         // Task #55/#59/#60/#85 had a top-level `.overlay(alignment:
         // .bottomTrailing)` here rendering `MessageDetailFloatingButtons` —
@@ -418,6 +438,23 @@ struct ThreadDetailView: View {
         }
     }
 
+    /// Task #153: "スレッド" for grouped/accordion display (`!isFlatModeEntry`
+    /// — every grouped-mode open, whether the thread currently has 1 or
+    /// many messages), "メール" (unchanged, pre-existing literal) for a
+    /// genuinely flat single-message entry point (`isFlatModeEntry`'s own
+    /// doc comment). A computed `String` property with `String(localized:)`
+    /// per branch, not a ternary of two string literals passed straight to
+    /// `.navigationTitle(_:)` — mirrors `ComposerView.navigationTitle`'s own
+    /// doc comment on this exact trap: a ternary of two literals resolves
+    /// to the `String` overload of `.navigationTitle(_:)`, not
+    /// `LocalizedStringKey`, so each branch needs its own explicit
+    /// `String(localized:)` to still pick up its String Catalog entry
+    /// rather than rendering the raw Japanese unconditionally regardless of
+    /// the device's language.
+    private var navigationTitleText: String {
+        isFlatModeEntry ? String(localized: "メール") : String(localized: "スレッド")
+    }
+
     /// 新画面構成 (3) → 実機フィードバック第2弾 (E): "返信"/"転送"/"検索"/「情報」
     /// が対象にするメッセージ — 常に**現在展開中の1通** (accordion なので曖昧
     /// さがない)。`expandedMessageId`が`nil`の`MessageRecord`が
@@ -537,6 +574,209 @@ struct ThreadDetailView: View {
             onCustomizeToolbar: { showingToolbarSettings = true },
             aiFeaturesState: expandedAIFeaturesState
         )
+    }
+
+    // MARK: - Task #153: スレッド全体のAI要約
+
+    /// ナビゲーションタイトル横のトグルボタン (`!isFlatModeEntry`のときだけ
+    /// `body`の`.toolbar`から呼ばれる) — アイコンは`MessageToolbarAction
+    /// .summarize`と同じ`"sparkles"`(`MessageDetailFooterToolbar
+    /// .summarizeButton`と見た目を揃える一貫性のため)。単一メッセージの
+    /// `summarizeButton`と違い有効/無効の複雑な条件は無く、`messages`が
+    /// まだ空 (スレッド読み込み中) の間だけ無効化する。
+    private var threadSummarizeToolbarButton: some View {
+        Button(action: handleThreadSummarizeTap) {
+            if threadSummaryState.isSummarizing {
+                ProgressView()
+            } else {
+                Image(systemName: "sparkles")
+            }
+        }
+        .disabled(messages.isEmpty)
+        .accessibilityIdentifier("threadDetail.toolbar.summarizeThread")
+        .accessibilityLabel(Text(threadSummarizeAccessibilityLabel))
+    }
+
+    /// `MessageDetailFooterToolbar.handleSummarizeTap()`と同じ形 — 未生成/
+    /// 失敗時は生成を起動し、いずれの状態でも (生成中・生成済みも含め)
+    /// シートを開く。
+    private func handleThreadSummarizeTap() {
+        switch threadSummaryState {
+        case .none, .failed:
+            requestThreadSummary()
+        case .summarizing, .summarized:
+            break
+        }
+        isShowingThreadSummarySheet = true
+    }
+
+    private var threadSummarizeAccessibilityLabel: String {
+        switch threadSummaryState {
+        case .none: String(localized: "スレッドを要約")
+        case .summarizing: String(localized: "要約中")
+        case .summarized: String(localized: "スレッドの要約を表示")
+        case .failed: String(localized: "スレッドの要約を再試行")
+        }
+    }
+
+    /// `MessageView.summarySheet`と同じ構造 (生成中/完成/失敗の3状態 +
+    /// 「再生成」) — 単一メッセージ版と違い「詳しく要約」の2択は無い
+    /// (Task #153の範囲外)。`SummaryText`(`MessageView.swift`、Task #153で
+    /// `private`を外して共有化) をそのまま再利用: `"■"`始まりの行を太字に
+    /// するだけの汎用的な整形で、ラベルが■経緯/■現状であっても変更なしで
+    /// そのまま動く。
+    private var threadSummarySheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: OtegamiSpacing.md) {
+                    switch threadSummaryState {
+                    case .none:
+                        EmptyView()
+                    case .summarizing:
+                        HStack {
+                            Spacer(minLength: 0)
+                            ProgressView()
+                                .accessibilityIdentifier("threadDetail.summarySheet.loading")
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.top, OtegamiSpacing.xl)
+                    case .summarized(let text):
+                        SummaryText(text: text)
+                            .accessibilityIdentifier("threadDetail.summarySheet.text")
+                    case .failed(let failureMessage):
+                        // `MessageView.summarySheet`と同じ理由で非ローカライズ
+                        // (実行時の値を含むため)。
+                        Text("要約に失敗しました: \(failureMessage)")
+                            .font(OtegamiFont.subheadline())
+                            .foregroundStyle(OtegamiColor.destructive)
+                            .accessibilityIdentifier("threadDetail.summarySheet.footnote")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+            .navigationTitle("スレッドの要約")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("閉じる") { isShowingThreadSummarySheet = false }
+                        .accessibilityIdentifier("threadDetail.summarySheet.closeButton")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if threadSummaryState.isSummarizing {
+                        ProgressView()
+                    } else {
+                        Button("再生成") { requestThreadSummary() }
+                            .accessibilityIdentifier("threadDetail.summarySheet.regenerateButton")
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    /// `MessageView.requestSummary(message:)`と同じ形 (`summaryTask`と同じ
+    /// 「既に実行中なら二重起動しない」ガード、`TranslationServiceError`を
+    /// `.userFacingMessage`へ変換する同じcatch) だが、対象は現在展開中の
+    /// 1通ではなく`messages`全件 — ソーステキストは
+    /// `threadSummarySourceText()`、呼び出す先は`summarizeThread`
+    /// (■経緯/■現状の2パート、`TranslationService`のdoc comment参照)。
+    private func requestThreadSummary() {
+        guard threadSummaryTask == nil else { return }
+        threadSummaryState = .summarizing
+        let translator = environment.translationService
+        let targetLanguage: TranslationLanguage = LocalizationSettingsStore.effectiveLanguageCode == "en" ? .english : .japanese
+        threadSummaryTask = Task {
+            guard let sourceText = await threadSummarySourceText() else {
+                threadSummaryState = .failed("本文を取得できませんでした。しばらくしてからもう一度お試しください。")
+                threadSummaryTask = nil
+                return
+            }
+            do {
+                let result = try await translator.summarizeThread(sourceText, targetLanguage: targetLanguage)
+                guard !Task.isCancelled else { return }
+                threadSummaryState = .summarized(result)
+            } catch {
+                guard !Task.isCancelled else { return }
+                if let serviceError = error as? TranslationServiceError {
+                    threadSummaryState = .failed(serviceError.userFacingMessage)
+                } else {
+                    threadSummaryState = .failed(error.localizedDescription)
+                }
+            }
+            threadSummaryTask = nil
+        }
+    }
+
+    /// Task #153 (入力の組み立て): `messages`(時系列順、`ThreadQuery
+    /// .messages(threadId:db:)`の`ORDER BY internalDate, uid`のdoc comment
+    /// 参照)の各メッセージについて、`"[日時] 差出人: 新規本文"`という1行を
+    /// 組み立て、改行で連結する。`SummaryInputBuilder`は使わない — あれは
+    /// 単一メッセージ要約専用の「引用の有無だけを伝える注記」ラッパーで、
+    /// スレッド全体のダイジェストが必要とする「各メッセージの新規本文を
+    /// そのまま並べる」入力とは形が違う(タスク仕様どおり)。
+    ///
+    /// 本文がまだローカルにキャッシュされていないメッセージ (`bodyState`が
+    /// `.notFetched`のまま — このスレッドの「開いている1通」以外は
+    /// `MessageView`の`load()`が走っていないため、まだ未取得のことがある)
+    /// は、`MessageView.retryBodyFetchForSummary(message:)`と同じ考え方で
+    /// 一度だけネットワーク越しの取得を試みる — 失敗すればそのメッセージは
+    /// 静かにスキップする (ベストエフォート、スレッド全体の要約自体は
+    /// 取得できた分だけで続行する)。差出人名は`message.fromAddresses.first?
+    /// .name ?? .address ?? "?"` — `EmailAddress.description`(`"名前
+    /// <address>"`形式)は使わない: タスク仕様「差出人名は入力に書かれて
+    /// いる名前のみ使用・推測禁止」を守るため、モデルに渡す文字列に
+    /// アドレスを機械的に付加するようなことをせず、本文中の`From:`名前
+    /// (無ければアドレスそのもの) だけをそのまま渡す。
+    private func threadSummarySourceText() async -> String? {
+        guard let accountId, let account = environment.accounts.first(where: { $0.id == accountId }) else { return nil }
+        var lines: [String] = []
+        for message in messages {
+            guard let messageId = message.id else { continue }
+            var bodyRecord = try? await Self.fetchBodyRecord(messageId: messageId, db: environment.database.dbWriter)
+            if bodyRecord == nil {
+                await fetchBodyOverNetworkForThreadSummary(message: message, account: account)
+                bodyRecord = try? await Self.fetchBodyRecord(messageId: messageId, db: environment.database.dbWriter)
+            }
+            guard let bodyRecord, let newText = Self.newTextForThreadSummary(bodyRecord: bodyRecord, isReply: message.inReplyTo != nil) else { continue }
+            let senderName = message.fromAddresses.first?.name ?? message.fromAddresses.first?.address ?? "?"
+            let dateText = (message.date ?? message.internalDate).formatted(.dateTime.year().month().day().hour().minute())
+            lines.append("[\(dateText)] \(senderName): \(newText)")
+        }
+        guard !lines.isEmpty else { return nil }
+        return lines.joined(separator: "\n")
+    }
+
+    private nonisolated static func fetchBodyRecord(messageId: Int64, db dbWriter: any DatabaseWriter) async throws -> MessageBodyRecord? {
+        try await dbWriter.read { db in try MessageBodyRecord.fetchOne(db, key: messageId) }
+    }
+
+    /// `MessageView.fetchBodyOverNetwork(message:)`と同じ経路 (`SyncCoordinator
+    /// .fetchBody(for:mailboxPath:account:auth:)`) だが、失敗を伝播せず
+    /// 常にベストエフォートで握り潰す — `threadSummarySourceText()`は取得
+    /// できなかったメッセージをそのままスキップして続行する契約のため。
+    private func fetchBodyOverNetworkForThreadSummary(message: MessageRecord, account: AccountRecord) async {
+        guard let auth = try? await environment.auth(for: account) else { return }
+        guard let mailboxPath = try? await Self.mailboxPath(mailboxId: message.mailboxId, db: environment.database.dbWriter) else { return }
+        try? await environment.syncCoordinator.fetchBody(for: message, mailboxPath: mailboxPath, account: account, auth: auth)
+    }
+
+    private nonisolated static func mailboxPath(mailboxId: Int64, db dbWriter: any DatabaseWriter) async throws -> String? {
+        try await dbWriter.read { db in try MailboxRecord.fetchOne(db, key: mailboxId)?.path }
+    }
+
+    /// `MessageView.sourceTextForSummary()`と同じ「新規/引用分離 → 安全網
+    /// としてもう一度`HTMLTextExtractor`」の経路だが、`SummaryInputBuilder`
+    /// は経由しない (このメソッドのdoc comment参照) — `newText`をそのまま
+    /// 返す。
+    private nonisolated static func newTextForThreadSummary(bodyRecord: MessageBodyRecord, isReply: Bool) -> String? {
+        guard let separated = QuoteStripper.separatingQuotedText(plainText: bodyRecord.plainText, html: bodyRecord.html, isReply: isReply) else {
+            return nil
+        }
+        let newText = HTMLTextExtractor.plainText(fromHTML: separated.newText)
+        return newText.isEmpty ? nil : newText
     }
 
     @ViewBuilder

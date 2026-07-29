@@ -1339,6 +1339,196 @@ green。`OtegamiTranslationFoundationModelsTests`(実機オンデバイスモデ
 実FM確認で代替した。実機シミュレータでの「詳しく要約」タップ→
 シート表示の目視確認は`PENDING.md`「Task #148」節参照。
 
+## スレッド全体のAI要約 (Task #153)
+
+**背景**: それまでの「AI要約」は常に現在展開中の**1通のメッセージ**が
+対象 (`MessageDetailFooterToolbar.summarizeButton` → `MessageView
+.requestSummary`)。スレッド全体 (アコーディオン表示、複数メッセージ) を
+一気に把握したいという要望に対応し、`ThreadDetailView`自身に「スレッド
+全体を要約する」別のボタン・別の状態・別のシートを追加した。単一メッセ
+ージの要約とは完全に独立した経路 — `MessageDetailAIFeaturesState
+.summaryState`には一切触れない。
+
+### 表示側の変更
+
+- **ナビゲーションタイトル**: `ThreadDetailView`の`.navigationTitle`が、
+  グループ化/アコーディオン表示 (`!isFlatModeEntry` — 実際のメッセージ数
+  に関わらず) では「スレッド」、真に1通のみのフラット表示
+  (`isFlatModeEntry == true`) では従来どおり「メール」を表示するように
+  なった。三項演算子の各分岐を`String(localized:)`で明示 —
+  `ComposerView.navigationTitle`と同じ理由 (`docs/localization.md`の
+  「`Text(String)`は自動でローカライズされない」節参照): 2つの文字列
+  リテラルの三項演算子をそのまま`.navigationTitle(_:)`に渡すと`String`
+  オーバーロードに解決され、`LocalizedStringKey`経由の自動ローカライズ
+  が効かない。
+- **ツールバーボタン**: グループ化/アコーディオン表示のときだけ、
+  ナビゲーションタイトルの隣に`"sparkles"`アイコン (単一メッセージの
+  「要約」ボタン`MessageToolbarAction.summarize`と同じアイコンで見た目
+  を統一) のトグルボタンを追加。タップすると生成 (未生成/失敗時のみ)
+  してシートを開く — `MessageDetailFooterToolbar.handleSummarizeTap()`
+  と同じ形。生成中はボタン自体が`ProgressView`に差し替わる。
+- **シート**: `MessageView.summarySheet`と同じ構造 (生成中/完成/失敗の
+  3状態 + 「再生成」)。単一メッセージ版と違い「詳しく要約」の2択メニュー
+  は無い (このタスクの範囲外、通常の1択のみ)。本文の描画は`SummaryText`
+  (`MessageView.swift`) をそのまま再利用 — 元々`private`だったが、
+  「`"■"`始まりの行を太字にするだけ」という汎用的な整形でラベル文字列
+  自体には依存していないため、`private`を外して`ThreadDetailView`からも
+  呼べるようにした (ラベルが■経緯/■現状であっても無変更で動く)。
+
+### 入力の組み立て
+
+`ThreadDetailView.threadSummarySourceText()`が、時系列順
+(`ThreadQuery.messages(threadId:db:)`の`ORDER BY internalDate, uid`) に
+並んだ`messages`の各メッセージについて`"[日時] 差出人: 新規本文"`という
+1行を組み立て、改行で連結する。
+
+- **新規本文の抽出**: 各メッセージの`MessageBodyRecord`に対して
+  `QuoteStripper.separatingQuotedText(plainText:html:isReply:)`
+  (Task #138のplain優先・htmlフォールバック) で`.newText`を取り出し、
+  `MessageView.sourceTextForSummary()`と同じ安全網として
+  `HTMLTextExtractor.plainText(fromHTML:)`をもう一度通す。単一メッセージ
+  要約が使う`SummaryInputBuilder`(「引用の有無だけを注記する」ラッパー)
+  はここでは使わない — スレッド全体のダイジェストは各メッセージの新規
+  本文をそのまま並べたいので、あのラッパーの前提と形が違う。
+- **本文が未取得のメッセージ**: このスレッドの「現在展開中の1通」以外は
+  `MessageView.load()`が走っていないため、`MessageBodyRecord`がまだ
+  ローカルに無いことがある。`MessageView.retryBodyFetchForSummary
+  (message:)`と同じ考え方で、ローカルに無い場合だけ1回ネットワーク越しの
+  取得 (`SyncCoordinator.fetchBody(for:mailboxPath:account:auth:)`) を
+  試み、失敗すればそのメッセージは静かにスキップする (ベストエフォート
+  — スレッド全体の要約自体は取得できた分だけで続行する)。
+- **差出人名**: `message.fromAddresses.first?.name ?? .address ?? "?"` —
+  `EmailAddress.description`(`"名前 <address>"`形式) は使わない。「差出人
+  名は入力に書かれている名前のみ使用・推測禁止」という後段のモデル指示を
+  裏付けるため、モデルへ渡す文字列自体にアドレスを機械的に付加するような
+  ことをせず、本文中の`From:`名前 (無ければアドレスそのもの) だけを渡す。
+- **日時**: `(message.date ?? message.internalDate).formatted(.dateTime
+  .year().month().day().hour().minute())` — `OtegamiDateFormat
+  .listRowText(for:)`(一覧行用、今日なら時刻のみに省略) ではなく、常に
+  年月日+時刻のフルフォーマット。モデルへの入力であって UI 表示ではない
+  ため省略の必要が無く、複数日にまたがるスレッドでも各メッセージの日付が
+  常に一意に読み取れる方を優先した。
+
+### 要約呼び出し: `summarizeThread`/`summarizeThreadDigest`
+
+既存の`summarizeLongText`(単一メッセージ、■要約/■伝えたいこと/
+■アクションの3パート) はチャンクの reduce 段が常に3パート構造化
+`summarize`を呼ぶ作りで、スレッドダイジェスト向けの2パート
+(■経緯/■現状) 出力にはそのまま使えない。`TranslationService`に
+`summarizeLongText`と並ぶ、同じ形の map-reduce を持つ新メソッドを追加:
+
+- **`summarizeThreadDigest(_:targetLanguage:)`** (protocol requirement,
+  単発・構造化): `summarize`の2パート版に相当。
+  `FoundationModelsTranslationService`側は新設の
+  `summarizeThreadInstructions(targetLanguage:)`で、■経緯 (時系列の経緯
+  — 誰が何を提案・質問・回答したかを起きた順に) → ■現状 (現在の状態 —
+  結論・合意事項・未解決の点) の2ラベル構造を要求する。Task #122由来の
+  反復・指示文リーク防止の枠組み (ラベルはこの2つのみ・この順番・この
+  文字列そのまま・全体で一度だけ・指示文自体や英語を含めない) と、
+  「差出人名は入力に実際に書かれている名前のみ使用・推測禁止」ルールを
+  そのまま踏襲 — ただし単一メッセージ版の「常に『この返信』を主語に
+  する」は使えない (スレッド要約は複数の差出人が主体になり得るため)、
+  代わりに「使ってよい名前は入力の`[日時] 差出人:`部分に実際にある名前
+  だけ、それ以外は禁止」という形に言い換えた。モデルの生応答は
+  `summarize`と同じく必ず`SummaryOutputSanitizer.sanitize(_:labels:)`
+  (下記) を通してから返す。`FakeTranslationService`にも決定的な
+  ■経緯/■現状出力を返す実装を追加 (`summarizeThreadDigestCallCount`で
+  呼び出し回数を独立追跡)。
+- **`summarizeThread(_:targetLanguage:)`** (protocol extension,
+  map-reduce): `summarizeLongText`と同じ形 — 短文
+  (`TranslationChunker.defaultMaxChunkLength`以下) は
+  `summarizeThreadDigest`を1回呼ぶだけ、長文は`TranslationChunker.chunk`
+  で分割し各チャンクを既存の`summarizePlain`(変更なし、そのまま再利用)
+  で圧縮、結合した結果を最後に`summarizeThreadDigest`へ1回だけ通す。
+  `TranslationChunker.chunk`は変更していない — 既存の`splitIntoUnits`が
+  `"\n"`区切りの行を優先的にユニット境界にする実装のため、本メソッドの
+  入力 (1メッセージ1行の`"[日時] 差出人: 本文"`形式) では通常チャンク
+  境界がメッセージとメッセージの間に来る。境界が`"[日時] 差出人:"`の
+  途中に来るのは、1メッセージの本文単体がチャンク閾値 (2000字) を超えて
+  なおかつ文末句読点も改行も無い場合のみで、これは通常の英文プローズに
+  対しても既存のhard-slice フォールバックがもともと引き受けている稀な
+  ケース — 本タスクのために`TranslationChunker`へ手を入れる必要は無いと
+  判断した。
+
+### `SummaryOutputSanitizer`の2ラベル対応汎用化
+
+`SummaryOutputSanitizer.sanitize(_:)`(3ラベル固定) のロジックを
+`sanitize(_:labels:)`(任意個数のラベル) へ一般化した。各ラベルの行位置を
+順に探し (見つからなければ既存と同じ「トリムした原文をそのまま返す」
+フォールバック)、各パートの内容境界を「次に現れる任意の`■`始まり行、
+無ければ次のラベルの行 (最後のラベルなら`lines.count`)」で決める — Task
+#148がバグ修正で追加した「反復/リークが**パーツの間**に挟まる」パターン
+への防御を、`zip(labelIndices, labelIndices.dropFirst() + [lines.count])`
+という一般形に書き直しただけで、3ラベルの場合の挙動は完全に不変
+(既存`content(label:labelLineIndex:in:contentEnd:)`/`trailingContent
+(afterLabel:in:)`はそもそもラベル文字列に依存しない実装だったため無変更)。
+既存の`sanitize(_:)`は`sanitize(_:labels: [summaryLabel, intentLabel,
+actionLabel])`を呼ぶだけの薄いラッパーになった。
+
+### 検証
+
+**単体テスト** (`packages/OtegamiKit`):
+
+- `SummaryOutputSanitizerTests`: 既存8ケース (3ラベル) は無変更のまま
+  green、新たに2ラベル (■経緯/■現状) 版を5ケース追加 (正常透過・末尾
+  反復除去・指示文リーク除去・ラベル欠落時フォールバック・複数行内容の
+  保持) — 3ラベル版の対応ケースをそのまま2ラベルへ写した形。
+- `TranslationServiceSummarizeThreadTests`(新規、既存の
+  `TranslationServiceSummarizeLongTextTests`と対の構成): 短文入力は
+  `summarizeThreadDigest`を1回だけ・`summarizePlain`は0回、長文入力は
+  `summarizePlain`をチャンク数分・`summarizeThreadDigest`を最終段で
+  ちょうど1回だけ呼ぶことを`FakeTranslationService`の独立カウンタで確認。
+- `make test` green (`MessageBuilderTests`の既知flaky日本語ラウンド
+  トリップ以外)。`make mac` green。
+
+**実FoundationModels確認** (`scratchpad/summary-repro`、既存の再現ランナー
+に`SUMMARY_REPRO_MODE=thread`/`thread-long`を追加): 架空の6メッセージ
+スレッド (田中太郎・佐藤花子・Alice Example という架空名、社内懇親会の
+会場・予算・日程調整という当たり障りのない題材、実在の人物・会社・
+メールアドレスとは無関係) を`"[日時] 差出人: 本文"`形式で組み立て、
+`summarizeThread`を実行:
+
+- 非チャンク経路 (`TranslationChunker.chunk(input).count == 1`) を3回
+  実行。3回とも`■経緯`→`■現状`の2パート構造がちょうど1回ずつ、反復・
+  指示文リークなし。出力に登場する人物名は`田中太郎`/`佐藤花子`/`Alice
+  Example`のみ (入力に無い名前の創作なし)。分量はいずれも合計5〜6文
+  程度で、タスク仕様の「5〜10文」の範囲内。実際の出力例 (1回目):
+
+  ```
+  ■経緯
+  田中太郎さんが会場の候補を提案し、佐藤花子が予算の確認と日程の提案を
+  行いました。その後、Alice Exampleさんが日程の確認と店舗の決定に賛成
+  し、佐藤花子が予約の依頼をしました。田中太郎さんが予約の承諾と予約の
+  確保を伝え、予約が取れ次第共有すると回答しました。
+
+  ■現状
+  イタリアン店での開催が決定され、予約の確保待ちの状態です。予約が
+  取れ次第、スレッドで共有される予定です。
+  ```
+
+- チャンク分割経路 (`SUMMARY_REPRO_MODE=thread-long`、同じ6メッセージを
+  日付違いで6周・入力3,119字・`TranslationChunker.chunk(input).count ==
+  2`) を1回実行。map (`summarizePlain`を2チャンク分) → reduce
+  (`summarizeThreadDigest`1回) の経路を実際に通した上で、■経緯/■現状の
+  2パート構造がちょうど1回、反復・リークなしを確認。分量は合計約4文と
+  やや短め (人工的に同じ内容を反復させたフィクスチャのため、map段階での
+  圧縮が効きやすかったことが原因と見られる — 実際のスレッドで内容が
+  メッセージごとに異なっていればこの制約は緩和されるはず。既存の
+  `summarizeLongText`が同じmap-reduce構造上すでに抱える制約であり、
+  本タスクが新たに悪化させたものではない)。
+
+以上、計4回の実FM実行いずれも`SummaryOutputSanitizer`の2ラベル版が実際の
+モデル出力を正しく整形できることを確認した。`scratchpad/summary-repro`は
+リポジトリ外・非コミット (このドキュメント自身が示す既存の慣例どおり)。
+
+**未確認**: スクリーンショットでの目視確認は「ナビゲーションタイトルが
+『スレッド』になっている」「新設のツールバーボタンが表示されている」の
+2点のみ (`docs/design-system.md`のTask #153節参照) — シート自体
+(生成中/完成/失敗の各表示、「再生成」ボタン) をタップ経由でスクリーン
+ショット確認する新シナリオは追加していない (Part 7の「任意・nice-to-
+have」の範囲、時間の都合で見送り)。実機での確認ポイントは
+`PENDING.md`参照。
+
 ## テスト
 
 - `OtegamiTranslationTests`: `FakeTranslationService` の状態遷移、

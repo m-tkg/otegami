@@ -2032,7 +2032,12 @@ private extension View {
 /// this file (`AccountFilterChip`'s doc comment): a dynamic string routed
 /// through `LocalizedStringKey` gets Markdown-interpreted, which turns a
 /// bare email address into a `mailto:` link.
-private struct SummaryText: View {
+/// Task #153: no longer `private` — `ThreadDetailView`'s whole-thread
+/// summary sheet reuses this same view as-is for its own ■経緯/■現状 output
+/// (a different label set, but the same "bold any `■`-prefixed line, plain
+/// text otherwise" rendering applies unchanged since it only checks the
+/// generic `"■"` prefix, not any specific label string).
+struct SummaryText: View {
     let text: String
 
     var body: some View {

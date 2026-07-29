@@ -97,6 +97,18 @@ public protocol TranslationService: Sendable {
     /// repeated-structure input that triggered this; `SummaryOutputSanitizer`
     /// (`OtegamiCore`) is the remaining defense-in-depth layer.
     func summarizePlain(_ text: String, targetLanguage: TranslationLanguage, sentenceCount: Int) async throws -> String
+
+    /// Task #153 (スレッド全体のAI要約): the single, structured "reduce" call
+    /// behind `summarizeThread`'s map-reduce (this method's own doc comment)
+    /// — always produces exactly two `■`-prefixed sections, `■経緯`
+    /// (chronological narrative) then `■現状` (current state), unlike
+    /// `summarize`'s single-message 3-part ■要約/■伝えたいこと/■アクション
+    /// shape. A sibling of `summarize`, not an overload of it: the two
+    /// produce genuinely different output structures for genuinely
+    /// different inputs (one message vs. a whole thread's digest), and
+    /// giving them distinct names keeps a caller's intent explicit at every
+    /// call site rather than relying on which overload got resolved.
+    func summarizeThreadDigest(_ text: String, targetLanguage: TranslationLanguage) async throws -> String
 }
 
 extension TranslationService {
@@ -146,5 +158,60 @@ extension TranslationService {
         // it's always safely under the chunk threshold — no risk of *this*
         // call recursing into another split.
         return try await summarize(combined, targetLanguage: targetLanguage, sentenceCount: sentenceCount)
+    }
+
+    /// Task #153 (スレッド全体のAI要約): a whole-thread digest, safe for an
+    /// arbitrarily long thread — the same map-reduce shape
+    /// `summarizeLongText` uses for a single long message, but reducing
+    /// through `summarizeThreadDigest` (■経緯/■現状, 2 parts) instead of
+    /// `summarize` (■要約/■伝えたいこと/■アクション, 3 parts). `text` is
+    /// expected to already be the `"[<date>] <sender>: <newText>"`-per-line
+    /// thread digest input (`ThreadDetailView`'s own builder) — this method
+    /// only handles the chunking, not building that input.
+    ///
+    /// Short input (the common case: most threads' combined new-text easily
+    /// fits under `TranslationChunker.defaultMaxChunkLength`) is a single,
+    /// un-chunked `summarizeThreadDigest` call. Longer input chunks via
+    /// `TranslationChunker.chunk` and maps each chunk through the existing
+    /// unlabeled `summarizePlain` (reused as-is, no changes needed there —
+    /// same Task #122 rationale `summarizeLongText` already documents: the
+    /// map step must never be a structured call, or the structure gets
+    /// echoed back as input to the reduce step), then reduces the joined
+    /// partial summaries through exactly one final `summarizeThreadDigest`
+    /// call. `sentenceCount: 2` (not `summarizeLongText`'s `1`) for the map
+    /// step: a thread digest's reduce step wants noticeably more raw detail
+    /// per chunk than a single message's summary does, since it's
+    /// reassembling a multi-message narrative rather than compressing one
+    /// message's own text.
+    ///
+    /// `TranslationChunker.chunk` already prefers splitting at line breaks
+    /// (`splitIntoUnits` treats every `"\n"`-terminated line as its own
+    /// unit before falling back to sentence punctuation, and only hard-
+    /// slices mid-unit when a single unit alone exceeds the chunk budget) —
+    /// since this method's input is line-per-message
+    /// (`"[date] sender: text"`), a chunk boundary lands between two
+    /// messages' lines in the overwhelmingly common case, not mid
+    /// `"[date] sender:"` prefix. The only way a boundary could still land
+    /// inside that prefix is a single message's own line exceeding
+    /// `TranslationChunker.defaultMaxChunkLength` (2000 characters) *before*
+    /// its first sentence-ending punctuation or line break — an unusually
+    /// long single unbroken message — which `TranslationChunker`'s existing
+    /// hard-slice fallback already has to handle for ordinary prose too;
+    /// no changes were made to `TranslationChunker` for this method, since
+    /// its existing line-preferring behavior already covers the common case
+    /// this doc comment's caution was raised against.
+    public func summarizeThread(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+        guard text.count > TranslationChunker.defaultMaxChunkLength else {
+            return try await summarizeThreadDigest(text, targetLanguage: targetLanguage)
+        }
+
+        let chunks = TranslationChunker.chunk(text)
+        var partialSummaries: [String] = []
+        partialSummaries.reserveCapacity(chunks.count)
+        for chunk in chunks {
+            partialSummaries.append(try await summarizePlain(chunk, targetLanguage: targetLanguage, sentenceCount: 2))
+        }
+        let combined = partialSummaries.joined(separator: " ")
+        return try await summarizeThreadDigest(combined, targetLanguage: targetLanguage)
     }
 }

@@ -222,4 +222,94 @@ struct SummaryOutputSanitizerTests {
         let sanitized = SummaryOutputSanitizer.sanitize(text)
         #expect(sanitized.contains("1行目。\n2行目。"))
     }
+
+    // MARK: - Task #153 (スレッド全体のAI要約、■経緯/■現状の2ラベル)
+
+    private static let threadLabels = ["■経緯", "■現状"]
+
+    @Test("2ラベル: passes a single well-formed 2-part block through unchanged")
+    func threadDigestWellFormedBlockPassesThrough() {
+        let text = """
+        ■経緯
+        田中さんが来週の定例会議の日程を尋ね、鈴木さんが水曜14時を提案した。
+
+        ■現状
+        水曜14時での開催が合意され、会議室の予約待ちの状態。
+        """
+        #expect(SummaryOutputSanitizer.sanitize(text, labels: Self.threadLabels) == text)
+    }
+
+    @Test("2ラベル: drops a second, repeated 2-part block")
+    func threadDigestDropsRepeatedBlock() {
+        let text = """
+        ■経緯
+        田中さんが来週の定例会議の日程を尋ね、鈴木さんが水曜14時を提案した。
+
+        ■現状
+        水曜14時での開催が合意され、会議室の予約待ちの状態。
+
+        ■経緯
+        もう一度、田中さんが日程を尋ねた。
+
+        ■現状
+        もう一度、水曜14時で合意した。
+        """
+        let sanitized = SummaryOutputSanitizer.sanitize(text, labels: Self.threadLabels)
+        #expect(sanitized == """
+        ■経緯
+        田中さんが来週の定例会議の日程を尋ね、鈴木さんが水曜14時を提案した。
+
+        ■現状
+        水曜14時での開催が合意され、会議室の予約待ちの状態。
+        """)
+        #expect(!sanitized.contains("もう一度"))
+    }
+
+    @Test("2ラベル: drops leaked instruction text after the real answer")
+    func threadDigestDropsLeakedInstructionText() {
+        let text = """
+        ■経緯
+        田中さんが来週の定例会議の日程を尋ね、鈴木さんが水曜14時を提案した。
+
+        ■現状
+        水曜14時での開催が合意され、会議室の予約待ちの状態。
+
+        ■経緯 — チャットの流れを時系列で説明してください。
+        田中さんが尋ねた。
+        ■現状 — 現在の状態を説明してください。
+        合意済み。
+        """
+        let sanitized = SummaryOutputSanitizer.sanitize(text, labels: Self.threadLabels)
+        #expect(sanitized == """
+        ■経緯
+        田中さんが来週の定例会議の日程を尋ね、鈴木さんが水曜14時を提案した。
+
+        ■現状
+        水曜14時での開催が合意され、会議室の予約待ちの状態。
+        """)
+        #expect(!sanitized.contains("説明してください"))
+    }
+
+    @Test("2ラベル: falls back to trimmed original when a label is missing")
+    func threadDigestFallsBackWhenLabelMissing() {
+        let text = """
+        ■経緯
+        田中さんが日程を尋ねた。
+        """
+        #expect(SummaryOutputSanitizer.sanitize(text, labels: Self.threadLabels) == text)
+    }
+
+    @Test("2ラベル: multi-line content per section is preserved")
+    func threadDigestPreservesMultiLineContent() {
+        let text = """
+        ■経緯
+        1行目。
+        2行目。
+
+        ■現状
+        現在の状態。
+        """
+        let sanitized = SummaryOutputSanitizer.sanitize(text, labels: Self.threadLabels)
+        #expect(sanitized.contains("1行目。\n2行目。"))
+    }
 }

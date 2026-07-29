@@ -54,6 +54,17 @@ translations = {
 
     # --- スレッド詳細 (ThreadDetailView / MessageView / footer toolbar / bars) ---
     "メール": "Mail",
+    # Task #153 (スレッド全体のAI要約): 現時点でこのスクリプトを再実行して
+    # いない (ファイル冒頭のKNOWN DRIFT注記どおり — 未解消のドリフトがある
+    # 間は再実行禁止) ため、これらのエントリは `apps/Otegami/Resources
+    # /Localizable.xcstrings` に直接手で追記済み。ドリフト解消時にこの辞書
+    # から再生成しても消えないよう、ここにも同じ4件+ナビゲーションタイトル
+    # の計5件を記録しておく。
+    "スレッド": "Thread",
+    "スレッドの要約": "Thread Summary",
+    "スレッドを要約": "Summarize Thread",
+    "スレッドの要約を表示": "Show Thread Summary",
+    "スレッドの要約を再試行": "Retry Thread Summary",
     "テキストで表示": "Show as Text",
     "HTMLで表示": "Show as HTML",
     "添付ファイル": "Attachment",

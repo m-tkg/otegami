@@ -158,6 +158,24 @@ public struct FoundationModelsTranslationService: TranslationService {
         }
     }
 
+    /// Task #153 (スレッド全体のAI要約): `TranslationService.summarizeThread`
+    /// の reduce 段 — 常に `■経緯`/`■現状` の2パート構造を要求する
+    /// `summarizeThreadInstructions` を使う点以外は `summarize` と同じ形
+    /// (専用セッション1回、`SummaryOutputSanitizer` による多重防御を必ず
+    /// 通す)。`summarize`と同じ理由 (Task #122の防御) で、モデルの生応答を
+    /// そのまま返さず必ず`SummaryOutputSanitizer.sanitize(_:labels:)`
+    /// (Task #153で追加した汎用版、2ラベル指定) を通す。
+    public func summarizeThreadDigest(_ text: String, targetLanguage: TranslationLanguage) async throws -> String {
+        try requireAvailable()
+        let session = LanguageModelSession(model: model, instructions: Self.summarizeThreadInstructions(targetLanguage: targetLanguage))
+        do {
+            let response = try await session.respond(to: text, options: Self.summarizeOptions)
+            return SummaryOutputSanitizer.sanitize(response.content, labels: [Self.progressLabel, Self.currentStatusLabel])
+        } catch {
+            throw Self.mapEngineError(error)
+        }
+    }
+
     // MARK: - Session/options
 
     private func makeSession(from source: TranslationLanguage, to target: TranslationLanguage) -> LanguageModelSession {
@@ -300,6 +318,63 @@ public struct FoundationModelsTranslationService: TranslationService {
 
         ■アクション
         来週水曜までに希望日を返信する。
+        """
+    }
+
+    /// Task #153 (スレッド全体のAI要約): `summarizeThreadInstructions`が使う
+    /// 2つのラベル文字列 — `summarizeThreadDigest`の
+    /// `SummaryOutputSanitizer.sanitize(_:labels:)`呼び出しと同じ文字列を
+    /// 参照させることで、指示文とパーサのラベルが drift しないようにする
+    /// (`summaryLabel`/`intentLabel`/`actionLabel`と同じ役割)。
+    private static let progressLabel = "■経緯"
+    private static let currentStatusLabel = "■現状"
+
+    /// Task #153 (スレッド全体のAI要約): `summarizeInstructions`(1メッセージ
+    /// 向け、■要約/■伝えたいこと/■アクションの3パート)とは別の、スレッド
+    /// 全体のやり取りを要約するための指示文 — 入力は`ThreadDetailView`が
+    /// 組み立てる`"[日時] 差出人: 新規本文"`形式の行がメッセージごとに1行、
+    /// 時系列順に並んだもの (`summarizeThread`のdoc comment参照)。
+    ///
+    /// 出力を`■経緯`(時系列の経緯 — 誰が何を提案・質問・回答したかを起きた
+    /// 順に)→`■現状`(現在の状態 — 結論・合意事項・未解決の点)の2パートに
+    /// 固定する。`summarizeInstructions`と同じ「出力形式(最重要)」の
+    /// 反復・指示文リーク防止の枠組み (ラベル行はこの2つのみ・この順番・
+    /// この文字列そのまま・この構造は全体で一度だけ・指示文自体や英語を
+    /// 含めない) をそのまま踏襲し、差出人名についても同じ「本文に実際に
+    /// 書かれている名前のみ使用・推測禁止」ルールを引き継ぐ — こちらは
+    /// 「主語をぼかす」のではなく「入力の`[日時] 差出人:`から読み取れる
+    /// 名前だけを使い、それ以外の名前を作り出さない」という形で明示する
+    /// (スレッド要約は複数の差出人を扱うため、単一メッセージ要約の
+    /// 「常に『この返信』を主語にする」というルールをそのまま流用できない
+    /// — 誰が何をしたかを経緯として語る必要があるため、名前を使うこと自体は
+    /// 許可し、その名前の出どころだけを厳しく縛る)。
+    private static func summarizeThreadInstructions(targetLanguage: TranslationLanguage) -> String {
+        """
+        あなたは複数人のメールのやり取り(スレッド)を\(targetLanguage.displayName)で要約するアシスタントです。以下のルールに従ってください。
+
+        【入力の構造】
+        入力は "[日時] 差出人: 本文" という形式の行が、スレッド内のメッセージ1通につき1行、時系列順(古い順)に並んだものです。各行の本文は、そのメッセージの新規部分(引用された過去の返信は除外済み)です。
+
+        【差出人名について(重要)】
+        経緯を語る際に人物名を主語にしてよいですが、使ってよい名前は入力の各行の "[日時] 差出人:" 部分に実際に書かれている名前だけです。入力に登場しない名前を推測や創作で書き加えることは絶対に禁止します。判断に迷ったら、その名前が入力のいずれかの行の差出人として文字通り含まれているかどうかで機械的に判定し、含まれていなければその名前を使わないでください。
+
+        【新規本文に実際に書かれていない内容を補わない(重要)】
+        各パートに書いてよいのは、入力の各行に実際に書かれている事柄だけです。誰が何を提案・質問・回答・合意したかを、入力に明示されていないのに推測や一般的な想像で補ってはいけません。
+
+        【各パートの内容ルール】
+        ■経緯パートでは、スレッド全体を通じて誰が何を提案・質問・回答・依頼したかを、実際に起きた時系列の順番で説明してください。
+        ■現状パートでは、このスレッドの現在の状態 — 結論・合意事項・まだ解決していない点 — を説明してください。
+        全体を通じて目安として約5〜10文程度の分量で、内容を漏れなく具体的に説明してください — 一般化しすぎた抽象的な言い換えだけで終わらせないでください。
+
+        【出力形式(最重要)】
+        出力は次の2行構造のみで構成してください。ラベル行は「\(progressLabel)」「\(currentStatusLabel)」の2つを、この順番・この文字列そのままで、それぞれ単独の行として書いてください。各ラベルの内容は次の行以降に書き、ラベル行自体には他の文字を含めないでください。ラベルの説明文やこの指示文自体、英語のテキストを出力に含めないでください。この2行構造は出力全体を通じてちょうど1回だけ出現させてください — 同じラベルを2回書いたり、2行構造を繰り返したりすることは絶対にしないでください。
+
+        【出力例】
+        \(progressLabel)
+        田中さんが来週の定例会議の日程調整を提案し、鈴木さんが水曜14時を候補として提案した。田中さんはそれで問題ないと回答した。
+
+        \(currentStatusLabel)
+        水曜14時での開催が合意され、あとは会議室の予約待ちの状態。
         """
     }
 
