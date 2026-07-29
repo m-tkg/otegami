@@ -102,4 +102,59 @@ struct ThreadEntryMetaCommentaryStripperTests {
         let input = "この返信ではが述べられている。"
         #expect(ThreadEntryMetaCommentaryStripper.strip(input) == input)
     }
+
+    // MARK: - Task #160フォローアップ6 (実機フィードバック「メールで当日の
+    // 感想について書いてあるのにこんなまとめ方をされてしまっていて、感想
+    // についての要約がない」)
+
+    @Test("drops the two exact category-commentary sentences from the real-device report")
+    func dropsExactReportedCategoryCommentarySentences() {
+        // Each of these is the *entire* input, so with nothing else to keep
+        // the stripper falls back to the original text unchanged (its own
+        // "never make things worse" contract — see
+        // `openerPlusSuffixWithNoRemainingContentIsReturnedUnchanged`'s
+        // analogous case above) rather than emptying it outright.
+        let reported1 = "具体的な内容：特に記載されている決定事項・依頼や質問・数値・固有名詞は存在しない。"
+        let reported2 = "決定事項・依頼・質問・数値・固有名詞は含まれていない。"
+        #expect(ThreadEntryMetaCommentaryStripper.strip(reported1) == reported1)
+        #expect(ThreadEntryMetaCommentaryStripper.strip(reported2) == reported2)
+    }
+
+    @Test("drops a category-commentary sentence when it's mixed with a real, substantive sentence, keeping only the real one")
+    func dropsCategoryCommentarySentenceAmongRealContent() {
+        let input = "当日は天候にも恵まれ、参加者から好評でした。決定事項・依頼や質問・数値・固有名詞は含まれていない。"
+        let result = ThreadEntryMetaCommentaryStripper.strip(input)
+        #expect(result == "当日は天候にも恵まれ、参加者から好評でした。")
+        #expect(!result.contains("決定事項"))
+    }
+
+    @Test("recognizes a differently-phrased category-commentary sentence (も…も…ない, not the exact reported wording)")
+    func recognizesRephrasedCategoryCommentary() {
+        let input = "感想を共有します。決定事項も依頼もない。"
+        let result = ThreadEntryMetaCommentaryStripper.strip(input)
+        #expect(result == "感想を共有します。")
+    }
+
+    @Test("leaves a sentence that merely mentions one category word as ordinary content, not a verdict, completely untouched")
+    func leavesSingleCategoryMentionUntouched() {
+        // Below the "at least two category words" threshold — an ordinary
+        // sentence, not the multi-category checklist shape this failure
+        // mode actually produces.
+        let input = "決定事項は来週まとめます。"
+        #expect(ThreadEntryMetaCommentaryStripper.strip(input) == input)
+    }
+
+    @Test("leaves a sentence that mixes two category words with real, substantive content completely untouched")
+    func leavesTwoCategoryWordsWithRealContentUntouched() {
+        // The real point: mentioning categories isn't itself the problem —
+        // only a sentence that reduces to *nothing but* the category
+        // vocabulary once real content is accounted for should be dropped.
+        let inputs = [
+            "依頼と数値の確認を進めています。",
+            "田中さんへの依頼として、来月の予算(数値)を再検討してほしいとのことです。",
+        ]
+        for input in inputs {
+            #expect(ThreadEntryMetaCommentaryStripper.strip(input) == input)
+        }
+    }
 }

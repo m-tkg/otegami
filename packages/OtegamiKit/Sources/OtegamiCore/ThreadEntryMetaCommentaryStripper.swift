@@ -103,7 +103,24 @@ public enum ThreadEntryMetaCommentaryStripper {
     private static func stripLine(_ line: String) -> String {
         let units = splitIntoUnits(line)
         guard !units.isEmpty else { return line }
-        return units.map(rewriteUnitIfNeeded).joined(separator: " ")
+        // Task #160フォローアップ6 (実機フィードバック「感想が書いてある
+        // のに『決定事項・依頼や質問・数値・固有名詞は存在しない』という
+        // まとめ方をされる」): a sentence that's *purely* a category-
+        // presence commentary (see `isCategoryCommentarySentence`'s doc
+        // comment) is dropped entirely, not just rewritten — unlike the
+        // opener-based meta-commentary above, there's no "real content
+        // once the wrapper is peeled off" for these; the whole sentence
+        // *is* the wrapper.
+        let kept = units.map(rewriteUnitIfNeeded).filter { !isCategoryCommentarySentence($0) }
+        // If every unit in this line was pure category commentary, there's
+        // nothing left to keep — return the original line untouched rather
+        // than an empty string, the same "never make things worse" fallback
+        // `rewriteUnitIfNeeded` already uses for its own edge case. This
+        // should be rare in practice: `summarizeThreadEntryInstructions`'s
+        // primary fix (its own doc comment) should stop the model from ever
+        // producing an entry that's *only* this kind of sentence.
+        guard !kept.isEmpty else { return line }
+        return kept.joined(separator: " ")
     }
 
     /// Returns `unit` unchanged unless it opens with one of `openers` — the
@@ -136,6 +153,93 @@ public enum ThreadEntryMetaCommentaryStripper {
         // the original unit untouched rather than an empty/truncated
         // fragment, matching this type's "never make things worse" contract.
         return trimmedBody.isEmpty ? unit : trimmedBody + trailingPunctuation
+    }
+
+    /// Task #160フォローアップ6: the category nouns
+    /// `summarizeThreadEntryInstructions` names as "don't drop if present"
+    /// examples — 実機報告 (2026-07-30) showed the model echoing this exact
+    /// vocabulary back as a *verdict* on the message ("決定事項・依頼や
+    /// 質問・数値・固有名詞は存在しない") instead of summarizing what the
+    /// message actually says (a report on an event, feelings about it,
+    /// etc.) — see `isCategoryCommentarySentence`'s doc comment.
+    private static let categoryCommentaryCategoryWords = ["決定事項", "依頼", "質問", "数値", "固有名詞"]
+
+    /// Filler phrases/particles a category-commentary sentence is built
+    /// from besides the category words themselves — longer, more specific
+    /// phrases listed first so e.g. `"記載されていない"` matches before the
+    /// bare `"ない"` would only partially consume it (same ordering
+    /// discipline as `metaVerbSuffixes` above).
+    private static let categoryCommentaryFillerPhrases = [
+        "具体的な内容",
+        "記載されていない", "記載されている",
+        "含まれていない", "含まれている",
+        "存在しない", "存在する",
+        "見当たらない", "特にない",
+        "特に", "ない",
+    ]
+
+    /// Particles/connectors a category-commentary sentence is built from —
+    /// deliberately generic (not specific to this failure mode) since the
+    /// safety net here isn't "only remove known connectors", it's "a real
+    /// verb/noun the model actually used will never be in this list, so it
+    /// always survives and blocks removal" (see this method's own doc
+    /// comment).
+    private static let categoryCommentaryConnectors = ["、", "・", "や", "と", "も", "は", "が", "の", "を", "に", "で", "：", ":"]
+
+    /// Task #160フォローアップ6 (実機フィードバック「メールで当日の感想に
+    /// ついて書いてあるのにこんなまとめ方をされてしまっていて、感想に
+    /// ついての要約がない」): detects a sentence that is **purely a verdict
+    /// on which categories are/aren't present** — e.g. the two sentences
+    /// from the actual report, `"具体的な内容：特に記載されている決定事項・
+    /// 依頼や質問・数値・固有名詞は存在しない。"` and `"決定事項・依頼・
+    /// 質問・数値・固有名詞は含まれていない。"` — as opposed to a sentence
+    /// that actually summarizes what the message says. The *primary* fix is
+    /// `summarizeThreadEntryInstructions` itself (its own doc comment has
+    /// the full before/after): reframing "summarize the message" as the
+    /// goal and demoting "don't drop decisions/numbers/proper nouns *if
+    /// present*" to a secondary condition, plus an explicit ban on writing
+    /// this exact kind of category-presence verdict. This is the backstop.
+    ///
+    /// **Deliberately conservative, same anti-over-removal discipline as
+    /// the opener-based rewrite above**: a sentence only counts as category
+    /// commentary when, after removing an optional leading `"具体的な内容"`
+    /// marker, every one of its filler phrases/particles/category words,
+    /// **nothing is left over**. A real verb or noun phrase (e.g.
+    /// `"確認した"`, `"進めています"`, any actual summarized content) is
+    /// never in `categoryCommentaryFillerPhrases`/`categoryCommentaryConnectors`,
+    /// so any sentence that mixes category words with real content always
+    /// leaves a non-empty residual and is left completely untouched — e.g.
+    /// `"依頼と数値の確認を進めています。"` survives intact (see
+    /// `ThreadEntryMetaCommentaryStripperTests`'s negative cases). Also
+    /// requires **at least two** category-word occurrences before even
+    /// attempting the residual check, since a single incidental mention
+    /// (`"決定事項は来週まとめます"`) is ordinary content, not the
+    /// multi-category checklist shape this failure mode actually produces.
+    private static func isCategoryCommentarySentence(_ sentence: String) -> Bool {
+        var body = sentence
+        let terminators = CharacterSet(charactersIn: ".!?。．！？")
+        while let last = body.unicodeScalars.last, terminators.contains(last) {
+            body.removeLast()
+        }
+        body = body.trimmingCharacters(in: .whitespaces)
+        guard !body.isEmpty else { return false }
+
+        let categoryWordOccurrences = categoryCommentaryCategoryWords.reduce(0) { total, word in
+            total + max(0, body.components(separatedBy: word).count - 1)
+        }
+        guard categoryWordOccurrences >= 2 else { return false }
+
+        var residual = body
+        for phrase in categoryCommentaryFillerPhrases {
+            residual = residual.replacingOccurrences(of: phrase, with: "")
+        }
+        for word in categoryCommentaryCategoryWords {
+            residual = residual.replacingOccurrences(of: word, with: "")
+        }
+        for connector in categoryCommentaryConnectors {
+            residual = residual.replacingOccurrences(of: connector, with: "")
+        }
+        return residual.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private static func splitIntoUnits(_ text: String) -> [String] {
