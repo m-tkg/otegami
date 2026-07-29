@@ -1450,3 +1450,108 @@ All Mail メールボックスが『アーカイブ』と『すべてのメー�
 どの表示設定 (スレッドまとめ表示 or フラット表示、未読のみ/フラグ付き
 のみトグルの状態) で見えたか」を確認してから絞り込むのが効率的。
 `PENDING.md` に確認事項として追記予定。
+
+## Task #152: 実機報告「フラグ/アーカイブ操作後、他の受信箱一覧への反映が
+遅い」— 操作アカウントの優先 targeted resync
+
+**症状** (実機報告): フラグ (ピン/`\Flagged`・既読/未読) やアーカイブ/
+アーカイブ解除/迷惑メール化/削除を行った後、統合受信トレイやダイジェスト
+など「操作した一覧以外」への反映が遅い。
+
+**1. ローカル反映 (ValueObservation) の点検 — 問題なし、コード変更なし**:
+`Explore` サブエージェントに、通常一覧 (`MessageListView.swift:1171`)・
+すべてのメール/統合受信トレイ (#141, `MessageListView.swift:1184`)・
+アカウントダイジェスト (#92, `AccountDigestView.swift:171`)・ハンバーガー
+メニューの未読バッジ (`FolderListSheet.swift:663,730`。ついでにアプリ
+アイコンバッジ `AppEnvironment.swift:1421` も) の4系統について、GRDB の
+`ValueObservation` が書き込みトランザクションと同じテーブル/カラムを
+正しく追跡しているか調査させた。結論: **どの observation も
+`.trackingConstantRegion`/事前に固定した `region:` を使っておらず**、
+毎回フレッシュに追跡領域を再計算する通常の `ValueObservation.tracking`
+形なので、`mailboxId`が変わって新たにスコープに入ってきた行も含めて
+正しく再発火する。書き込み側 (`MessageListView.applyReadState`/
+`applyPinState`、`SyncEngine.MessageRemoval.commit`) も、メッセージ行の
+更新 (`flags`/`isPinnedLocal`/`mailboxId`) と `ThreadAssigner
+.recomputeAggregates` (スレッド集計列の更新) を同一 `db.write`
+トランザクション内で行っており、GRDB の観測は1回のコミットで確実に
+発火する。**この経路にバグは見つからなかった** — 「反映が遅い」の実体は
+(2) のサーバ側リプレイ/再同期のタイミングだったと判断し、ローカル反映層
+へのコード変更はしていない。
+
+**2. 操作アカウントの優先 targeted resync (実装)**:
+- `packages/OtegamiKit/Sources/SyncEngine/OpQueueProcessor.swift`:
+  `ReplayResult` に `affectedMailboxIds: Set<Int64>` を追加。`setFlags`/
+  `move`/`delete`/`junk`/`archive`/`unarchive` の各 `.applied` が、実際に
+  触った mailbox (source と、self-heal/resolve された destination —
+  例: `.archive`ならINBOX + Archive、`.delete`ならINBOX + Trash) を
+  返すようにした。`send`/`saveDraft`/`deleteDraft` はスコープ外 (このタスク
+  の「他の受信箱一覧への反映」とは無関係、#124 の二重送信防止ガードとも
+  無関係)。
+- `packages/OtegamiKit/Sources/SyncEngine/AccountSyncer.swift`:
+  `SyncScope` に `.mailboxes(paths: Set<String>)` を追加 —
+  `.mailbox(path:)` をループで複数回呼ぶと1回ごとに再接続/再`listMailboxes`
+  してしまうため、1回の接続で複数 mailbox をまとめて差分同期できる
+  バッチ版を新設 (既存の `MailboxSyncer.incrementalSync` 経路をそのまま
+  再利用 — 新しい同期ロジックは無い)。
+- `packages/OtegamiKit/Sources/SyncEngine/TargetedResyncScheduler.swift`
+  (新規): デバウンス/合流のスケジューリング判断を持つ**純粋な値型**。
+  `request(accountId:mailboxIds:now:)`/`due(now:)`/`nextFireAt` のみで
+  構成され、`Task.sleep`/actor に一切依存しないので `Date` を差し替える
+  だけでユニットテストできる。2.5秒デバウンス (要件の「2-3秒」の中間) —
+  同一アカウントへの連続操作は fire 時刻をリセットしつつ mailboxId を
+  合流 (union) する。
+- `packages/OtegamiKit/Sources/SyncEngine/SyncCoordinator.swift`:
+  `replayOpQueue(for:auth:)` が `succeeded > 0 &&
+  !affectedMailboxIds.isEmpty` のとき `scheduleTargetedResync` を呼ぶ
+  ように変更。バックグラウンドの `runTargetedResyncLoop` が
+  `TargetedResyncScheduler` の `nextFireAt` まで `Task.sleep` し、due に
+  なったアカウントを `SyncScope.mailboxes(paths:)` で `syncAccountIncrementally`
+  (`autoRetry: false`, `forceReconcileVanishedUIDs: false` — 高頻度・
+  ベストエフォートな背景トリガーという位置づけで、IDLE wake 等の既存の
+  低優先度パスと同じ扱い) する。**全アカウント巡回の定期再同期
+  (`OtegamiApp.syncAllAccountsOnce`) は一切変更していない** — targeted
+  resync はそれとは独立に、操作されたアカウントだけを先回りする追加経路。
+
+**3. 計測ログ (OSLog, category `OpReflect`, notice レベル)**:
+`OpQueue.opReflectLogger` (enqueue 時)、`OpQueueProcessor`
+(`replay completed accountId=... succeeded=... affectedMailboxCount=...`)、
+`SyncCoordinator` (`targeted resync requested/starting/completed
+accountId=... elapsedMs=...`) の3箇所。`notice` レベル固定 (`docs/verify.md`
+の「`debug`は`log collect`に残らない」の教訓どおり) — 実機で
+`log collect`後、`category == "OpReflect"`でフィルタすれば1操作の
+enqueue → replay完了 → targeted resync完了までの経過時間が追える。
+
+**4. 回帰確認**: targeted resync は既存の `syncAccountIncrementally`/
+`MailboxSyncer.incrementalSync`経路をそのまま呼ぶだけで、新しい
+mailbox変更ロジックを持たない。そのため:
+- #124 (送信replay直列化・冪等ガード): `.send`は`affectedMailboxIds`に
+  含めていないため、`.send`op がtargeted resyncをトリガすることはない。
+  `inFlightAccountIds`/`claimSendStart`のガードは無変更。
+- #83 (強制UID SEARCH): targeted resyncは`forceReconcileVanishedUIDs:
+  false`で呼ぶ (高頻度パス扱い) — 既存の `pull-to-refresh`/5分自動
+  resync の`true`呼び出しとは独立。
+- #120 (placeholder照合): `SyncScope.mailboxes(paths:)`は`MailboxSyncer
+  .incrementalSync`をそのまま経由するため、`AccountSyncer
+  .reconcilePendingRelocation`による placeholder UID の解決ロジックは
+  無変更で効く。
+
+**5. テスト**: `TargetedResyncSchedulerTests.swift` (新規、8ケース —
+デバウンスリセット/合流/アカウント独立/`due`の非重複/空集合no-op/
+`nextFireAt`など、純粋にDateを差し替えて検証)。
+`OpQueueProcessorTests.swift`に`ReplayResult.affectedMailboxIds`用の
+ケースを5本追加 (setFlags/archive/move/stale discard/sendが空である
+こと)。`SyncCoordinatorTests.swift`に統合テスト2本 —
+`.archive`opのreplay後、1回の追加接続 (`.mailboxes(paths:)`のバッチ化
+を検証) でINBOX/Archive両方の`lastSyncedAt`が更新されること、および
+キューが空のときはtargeted resyncそのものがトリガされないこと。
+`make test`green (142件のSyncEngineTests含む)。
+
+**検証ギャップ (実機未検証)**: 上記はすべてユニット/統合テスト
+(`FakeIMAPSession`) での検証であり、実機での「操作 → 数秒以内に他の
+一覧へ反映される」体感速度そのものは確認していない。実機確認ポイント:
+(a) OTA配信後、あるアカウントのメールをアーカイブ/フラグ操作した直後に
+「すべてのメール」やダイジェスト画面を見て、変更が反映されるまでの
+体感時間、(b) `log collect`で`category == "OpReflect"`をフィルタし、
+`op enqueued` → `replay completed` → `targeted resync requested` →
+`targeted resync completed`の一連が2-3秒デバウンス+実際のIMAP往復
+時間内に収まっているか。

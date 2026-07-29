@@ -35,6 +35,20 @@ public actor OpQueueProcessor {
         /// Just crossed `maxAttempts` on this pass; won't be retried again
         /// automatically.
         public var permanentlyFailed = 0
+        /// Task #152: every mailbox id a `.applied` `.setFlags`/`.move`/
+        /// `.delete`/`.junk`/`.archive`/`.unarchive` op touched this pass —
+        /// its source mailbox *and*, when the op resolved one (a move's
+        /// destination, or a self-healed Trash/Junk/Archive/INBOX), the
+        /// destination too. `SyncCoordinator.replayOpQueue` feeds this
+        /// straight into `scheduleTargetedResync` so the mailbox(es) an
+        /// offline action just touched get a prioritized resync instead of
+        /// waiting for their turn in the periodic full-account sweep
+        /// (`OtegamiApp.syncAllAccountsOnce`, unchanged by this task).
+        /// Deliberately not populated for `.send`/`.saveDraft`/
+        /// `.deleteDraft` — those aren't the "他の受信箱一覧への反映が遅い"
+        /// complaint this task addresses, and `.send`'s own Task #124
+        /// idempotency guard is unrelated to mailbox-list reflection.
+        public var affectedMailboxIds: Set<Int64> = []
     }
 
     /// Task #124 shared logging category — `PendingSendCoordinator` and
@@ -42,6 +56,12 @@ public actor OpQueueProcessor {
     /// → finalize → replay → SMTP → Sent-append lifecycle for one send can
     /// be read as a single interleaved stream in Console.app.
     static let logger = Logger(subsystem: "com.mtkg.otegami", category: "PendingSend")
+
+    /// Task #152: same "OpReflect" category `OpQueue.opReflectLogger`
+    /// (enqueue) and `SyncCoordinator` (targeted resync) use — see
+    /// `OpQueue.opReflectLogger`'s doc comment for the full lifecycle this
+    /// stitches together in Console.app/`log collect`.
+    private static let opReflectLogger = Logger(subsystem: "com.mtkg.otegami", category: "OpReflect")
 
     private let database: AppDatabase
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
@@ -140,9 +160,10 @@ public actor OpQueueProcessor {
         for op in dueOps {
             do {
                 switch try await apply(op: op, account: account, session: session, auth: auth) {
-                case .applied:
+                case .applied(let affectedMailboxIds):
                     try await delete(op: op)
                     result.succeeded += 1
+                    result.affectedMailboxIds.formUnion(affectedMailboxIds)
                 case .staleDiscarded:
                     try await delete(op: op)
                     result.discardedStale += 1
@@ -158,11 +179,15 @@ public actor OpQueueProcessor {
                 }
             }
         }
+        Self.opReflectLogger.notice("replay completed accountId=\(account.id, privacy: .private) succeeded=\(result.succeeded) discardedStale=\(result.discardedStale) retrying=\(result.retrying) permanentlyFailed=\(result.permanentlyFailed) affectedMailboxCount=\(result.affectedMailboxIds.count)")
         return result
     }
 
     private enum ApplyOutcome {
-        case applied
+        /// Task #152: carries every mailbox id this op actually touched
+        /// (source, plus a resolved destination when there is one) — see
+        /// `ReplayResult.affectedMailboxIds`'s doc comment.
+        case applied(affectedMailboxIds: Set<Int64>)
         case staleDiscarded
     }
 
@@ -185,7 +210,7 @@ public actor OpQueueProcessor {
                 uidValidity: UInt32(truncatingIfNeeded: payload.uidValidity)
             )
             try await session.store(mailboxPath: mailbox.path, change: change)
-            return .applied
+            return .applied(affectedMailboxIds: [payload.mailboxId])
 
         case .move:
             let payload = try JSONDecoder().decode(MoveOpPayload.self, from: op.payload)
@@ -196,7 +221,7 @@ public actor OpQueueProcessor {
                 return .staleDiscarded
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: destination.path)
-            return .applied
+            return .applied(affectedMailboxIds: [payload.sourceMailboxId, payload.destinationMailboxId])
 
         case .delete:
             let payload = try JSONDecoder().decode(DeleteOpPayload.self, from: op.payload)
@@ -215,7 +240,7 @@ public actor OpQueueProcessor {
                 throw MailTransportError.mailboxNotFound(path: "(no Trash-role mailbox known)")
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: trash.path)
-            return .applied
+            return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, trash.id].compactMap { $0 }))
 
         case .junk:
             let payload = try JSONDecoder().decode(JunkOpPayload.self, from: op.payload)
@@ -229,7 +254,7 @@ public actor OpQueueProcessor {
                 throw MailTransportError.mailboxNotFound(path: "(no Junk-role mailbox known)")
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: junk.path)
-            return .applied
+            return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, junk.id].compactMap { $0 }))
 
         case .archive:
             let payload = try JSONDecoder().decode(ArchiveOpPayload.self, from: op.payload)
@@ -250,7 +275,7 @@ public actor OpQueueProcessor {
                 )
                 try await session.store(mailboxPath: source.path, change: change)
                 try await session.expunge(mailboxPath: source.path)
-                return .applied
+                return .applied(affectedMailboxIds: [payload.sourceMailboxId])
             }
             guard let archive = try await resolveOrCreateArchiveMailbox(accountId: account.id, session: session) else {
                 // Same "leave the op pending rather than silently dropping
@@ -259,7 +284,7 @@ public actor OpQueueProcessor {
                 throw MailTransportError.mailboxNotFound(path: "(no Archive-role mailbox known)")
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: archive.path)
-            return .applied
+            return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, archive.id].compactMap { $0 }))
 
         case .unarchive:
             let payload = try JSONDecoder().decode(UnarchiveOpPayload.self, from: op.payload)
@@ -281,14 +306,14 @@ public actor OpQueueProcessor {
                 // the message must stay in All Mail exactly as it already
                 // is.
                 try await session.copy(mailboxPath: source.path, uids: UIDSet(payload.uids), to: inbox.path)
-                return .applied
+                return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, inbox.id].compactMap { $0 }))
             }
             // Every other provider: the reverse of `.archive`'s own
             // `session.move(...)` call just above — a real move back to
             // INBOX from wherever it currently sits (its Archive-role
             // mailbox).
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: inbox.path)
-            return .applied
+            return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, inbox.id].compactMap { $0 }))
 
         case .send:
             let payload = try JSONDecoder().decode(SendOpPayload.self, from: op.payload)
@@ -418,7 +443,7 @@ public actor OpQueueProcessor {
 
             try await deleteOutboxMessage(id: payload.outboxMessageId)
             Self.logger.info("outbox row deleted (send complete) for outboxMessageId \(payload.outboxMessageId)")
-            return .applied
+            return .applied(affectedMailboxIds: [])
 
         case .saveDraft:
             let payload = try JSONDecoder().decode(SaveDraftOpPayload.self, from: op.payload)
@@ -505,7 +530,7 @@ public actor OpQueueProcessor {
                 updated.updatedAt = Date()
                 try updated.update(db)
             }
-            return .applied
+            return .applied(affectedMailboxIds: [])
 
         case .deleteDraft:
             let payload = try JSONDecoder().decode(DeleteDraftOpPayload.self, from: op.payload)
@@ -513,7 +538,7 @@ public actor OpQueueProcessor {
                 return .staleDiscarded
             }
             try await deleteMessage(mailboxPath: mailbox.path, uid: payload.uid, uidValidity: payload.uidValidity, session: session)
-            return .applied
+            return .applied(affectedMailboxIds: [])
 
         case nil:
             // An unrecognized kind (e.g. a newer app version's op being

@@ -1,6 +1,7 @@
 import Foundation
 import MailTransport
 import OtegamiStore
+import os
 
 /// Top-level sync entry point, owned by `AppEnvironment`. Manages one
 /// `AccountSyncer` per account (created on first sync, reused afterward) so
@@ -33,6 +34,31 @@ public actor SyncCoordinator {
     /// parameters.
     private let messageSourceFetcher = MessageSourceFetcher()
     private let opQueueProcessor: OpQueueProcessor
+    /// Task #152: the pure debounce/coalesce policy behind
+    /// `scheduleTargetedResync` — see `TargetedResyncScheduler`'s own doc
+    /// comment. Its `debounceInterval` is injectable (`targetedResync
+    /// DebounceInterval` below) purely so tests don't have to wait through
+    /// several real seconds per case; every production call site leaves it
+    /// at the default.
+    private var targetedResyncScheduler: TargetedResyncScheduler
+    /// Account/auth captured alongside each `targetedResyncScheduler
+    /// .request` call, keyed by accountId — the scheduler itself only knows
+    /// mailbox ids/timing (see its doc comment for why), so this is where
+    /// `performTargetedResync` gets what it needs to actually open a
+    /// connection once an account's debounce window elapses. Last-write-wins
+    /// per account: within one short debounce window the account/auth pair
+    /// a burst of ops supplies is for all practical purposes identical, so
+    /// there's no need to track more than the most recent one.
+    private var targetedResyncContext: [String: (account: AccountRecord, auth: MailAuth)] = [:]
+    /// The long-lived loop `ensureTargetedResyncLoopRunning` starts on the
+    /// first `scheduleTargetedResync` call and that same loop clears back to
+    /// `nil` once nothing is pending — `nil` here just means "no burst is
+    /// currently being waited out", not "this feature is off".
+    private var targetedResyncLoopTask: Task<Void, Never>?
+    /// Task #152's OSLog category — see `OpQueue.opReflectLogger`'s doc
+    /// comment for the full enqueue → replay → targeted-resync lifecycle
+    /// this is the last leg of.
+    private static let opReflectLogger = Logger(subsystem: "com.mtkg.otegami", category: "OpReflect")
 
     public init(
         database: AppDatabase,
@@ -40,7 +66,8 @@ public actor SyncCoordinator {
         smtpSessionFactory: @escaping @Sendable (SMTPConfig) -> any SMTPSessionProtocol = { config in NotImplementedSMTPSession(config: config) },
         messageBuilder: @escaping @Sendable (ComposeDraft) -> BuiltMessage = { _ in
             BuiltMessage(data: Data(), messageId: "<unbuilt@otegami.local>")
-        }
+        },
+        targetedResyncDebounceInterval: TimeInterval = TargetedResyncScheduler.defaultDebounceInterval
     ) {
         self.database = database
         self.sessionFactory = sessionFactory
@@ -54,6 +81,7 @@ public actor SyncCoordinator {
             smtpSessionFactory: smtpSessionFactory,
             messageBuilder: messageBuilder
         )
+        self.targetedResyncScheduler = TargetedResyncScheduler(debounceInterval: targetedResyncDebounceInterval)
     }
 
     /// Runs initial sync for `account` (creating its `AccountSyncer` if
@@ -294,9 +322,25 @@ public actor SyncCoordinator {
     /// moves/deletes) against the server. Cheap to call opportunistically
     /// — a no-op (no connection opened) when the queue is empty or
     /// nothing is due yet; see `OpQueueProcessor.replay`.
+    ///
+    /// Task #152 (実機報告「フラグ/アーカイブ操作後、他の受信箱一覧への反映が
+    /// 遅い」): when at least one op actually applied, schedules a
+    /// prioritized targeted resync of exactly the mailbox(es) it touched
+    /// (`result.affectedMailboxIds`) via `scheduleTargetedResync` — see that
+    /// method's doc comment. Scheduled, not awaited inline: this call
+    /// already made its own IMAP round trip for the replay itself, and the
+    /// resync fires after a short debounce anyway (`TargetedResyncScheduler
+    /// .defaultDebounceInterval`) to coalesce a burst of consecutive
+    /// operations, so blocking this call on it would both slow down every
+    /// existing caller (swipe actions, foreground sync, IDLE wake) and
+    /// contradict the debounce itself.
     @discardableResult
     public func replayOpQueue(for account: AccountRecord, auth: MailAuth) async throws -> OpQueueProcessor.ReplayResult {
-        try await opQueueProcessor.replay(account: account, auth: auth)
+        let result = try await opQueueProcessor.replay(account: account, auth: auth)
+        if result.succeeded > 0, !result.affectedMailboxIds.isEmpty {
+            scheduleTargetedResync(account: account, auth: auth, mailboxIds: result.affectedMailboxIds)
+        }
+        return result
     }
 
     /// Starts `account`'s foreground `IDLE` loop: on each server push,
@@ -747,6 +791,110 @@ public actor SyncCoordinator {
             }
         }
         return fetchedCount
+    }
+
+    // MARK: - Task #152: post-replay targeted resync
+
+    /// Records a targeted-resync request for `account`/`mailboxIds` (see
+    /// `TargetedResyncScheduler`'s doc comment for the debounce/coalesce
+    /// policy this defers to) and makes sure the loop that will eventually
+    /// act on it is running. Cheap and non-blocking — never opens a
+    /// connection itself, just updates in-memory state and, at most, starts
+    /// one background `Task` the first time this account (or any account)
+    /// has a pending request.
+    private func scheduleTargetedResync(account: AccountRecord, auth: MailAuth, mailboxIds: Set<Int64>) {
+        guard !mailboxIds.isEmpty else { return }
+        let now = Date()
+        targetedResyncContext[account.id] = (account, auth)
+        targetedResyncScheduler.request(accountId: account.id, mailboxIds: mailboxIds, now: now)
+        Self.opReflectLogger.notice("targeted resync requested accountId=\(account.id, privacy: .private) mailboxCount=\(mailboxIds.count) debounceUntil=\(now.addingTimeInterval(self.targetedResyncScheduler.debounceInterval).timeIntervalSince1970)")
+        ensureTargetedResyncLoopRunning()
+    }
+
+    /// Starts `runTargetedResyncLoop()` if it isn't already running — a
+    /// no-op when a loop from an earlier `scheduleTargetedResync` call is
+    /// still alive (it will pick up this newest request too, since it reads
+    /// `targetedResyncScheduler`/`targetedResyncContext` fresh on every
+    /// pass). The loop naturally exits (and this goes back to `nil`) once
+    /// `targetedResyncScheduler.nextFireAt` is `nil` — nothing left pending
+    /// — rather than running forever in the background.
+    private func ensureTargetedResyncLoopRunning() {
+        guard targetedResyncLoopTask == nil else { return }
+        targetedResyncLoopTask = Task { [weak self] in
+            await self?.runTargetedResyncLoop()
+        }
+    }
+
+    /// Sleeps until the next pending request's debounce window elapses,
+    /// fires every account that's due as of then, and repeats — exits (back
+    /// to `targetedResyncLoopTask = nil`) once nothing is pending, so a
+    /// quiet app doesn't keep a `Task` alive doing nothing between bursts of
+    /// operations. Actor-isolated like every other method here, so reading/
+    /// mutating `targetedResyncScheduler`/`targetedResyncContext` across the
+    /// `await Task.sleep` below is race-free — a `scheduleTargetedResync`
+    /// call that arrives mid-sleep just updates the same in-memory state
+    /// this loop re-reads the next time it wakes.
+    private func runTargetedResyncLoop() async {
+        while true {
+            guard let nextFireAt = targetedResyncScheduler.nextFireAt else { break }
+            let interval = nextFireAt.timeIntervalSinceNow
+            if interval > 0 {
+                try? await Task.sleep(for: .seconds(interval))
+            }
+            let due = targetedResyncScheduler.due(now: Date())
+            for (accountId, mailboxIds) in due {
+                guard let context = targetedResyncContext.removeValue(forKey: accountId) else { continue }
+                await performTargetedResync(account: context.account, auth: context.auth, mailboxIds: mailboxIds)
+            }
+        }
+        targetedResyncLoopTask = nil
+    }
+
+    /// The actual prioritized resync: resolves `mailboxIds` to their current
+    /// paths and syncs exactly that set over one connection
+    /// (`SyncScope.mailboxes(paths:)`), reusing the same `MailboxSyncer`
+    /// path every other incremental sync goes through — no bespoke
+    /// mailbox-mutation logic here, so this can't diverge from (or race)
+    /// Task #83's forced-UID-SEARCH reconciliation or Task #120's
+    /// placeholder-relocation matching, both of which already live inside
+    /// that shared path. `autoRetry: false` and
+    /// `forceReconcileVanishedUIDs: false`: this is a frequent, best-effort,
+    /// already-debounced background trigger — the same reasoning
+    /// `syncAccountIncrementally`'s own doc comment gives for why its IDLE-
+    /// wake/post-sync-prefetch call sites leave `forceReconcileVanishedUIDs`
+    /// at `false`, and Task #69's automatic-retry policy exists for
+    /// longer-lived sync passes, not a short, frequently-repeated targeted
+    /// nudge like this one — a failure here just means the next opQueue
+    /// replay (or the periodic full-account sweep, unchanged by this task)
+    /// eventually catches it up instead.
+    private func performTargetedResync(account: AccountRecord, auth: MailAuth, mailboxIds: Set<Int64>) async {
+        let start = Date()
+        let paths: [String]
+        do {
+            paths = try await database.dbWriter.read { db in
+                try MailboxRecord.filter(keys: mailboxIds).fetchAll(db).map(\.path)
+            }
+        } catch {
+            return
+        }
+        guard !paths.isEmpty else { return }
+        Self.opReflectLogger.notice("targeted resync starting accountId=\(account.id, privacy: .private) mailboxCount=\(paths.count)")
+        _ = try? await syncAccountIncrementally(
+            account, auth: auth, scope: .mailboxes(paths: Set(paths)),
+            autoRetry: false, forceReconcileVanishedUIDs: false
+        )
+        Self.opReflectLogger.notice("targeted resync completed accountId=\(account.id, privacy: .private) elapsedMs=\(Int(Date().timeIntervalSince(start) * 1000))")
+    }
+
+    /// Test-only synchronization hook (not `public` — reachable only via
+    /// `@testable import SyncEngine`, same pattern as `waitForPendingPost
+    /// SyncPrefetchForTesting()` above): awaits the targeted-resync loop
+    /// `Task` if one is currently running, so a test can assert on its
+    /// effects deterministically instead of racing a detached background
+    /// loop production code deliberately never awaits inline. A no-op
+    /// (returns immediately) if nothing is pending.
+    func waitForPendingTargetedResyncForTesting() async {
+        await targetedResyncLoopTask?.value
     }
 
     private func syncer(for account: AccountRecord) -> AccountSyncer {

@@ -1386,6 +1386,120 @@ struct OpQueueProcessorTests {
         #expect(draftDeleteCall.change.flags == .deleted)
         #expect(imapRecorder.expungeCalls.contains(drafts.path))
     }
+
+    // MARK: - Task #152: ReplayResult.affectedMailboxIds
+
+    @Test("ReplayResult.affectedMailboxIds reports just the mailbox a setFlags op touched")
+    func replayResultAffectedMailboxIdsForSetFlags() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [42], flags: .seen, db: db
+            )
+        }
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script())
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(result.affectedMailboxIds == [inbox.id!])
+    }
+
+    @Test("ReplayResult.affectedMailboxIds reports both the source and self-healed destination for an archive op")
+    func replayResultAffectedMailboxIdsForArchive() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
+        let archiveId = try await database.dbWriter.write { db -> Int64 in
+            var record = MailboxRecord(accountId: account.id, path: "Archive", displayPath: "Archive", role: .archive)
+            try record.insert(db)
+            try OpQueue.enqueueArchive(
+                accountId: account.id, sourceMailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [9], db: db
+            )
+            return record.id!
+        }
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script())
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(result.affectedMailboxIds == Set([inbox.id!, archiveId]))
+    }
+
+    @Test("ReplayResult.affectedMailboxIds reports both mailboxes for a plain move op")
+    func replayResultAffectedMailboxIdsForMove() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
+        let otherId = try await database.dbWriter.write { db -> Int64 in
+            var record = MailboxRecord(accountId: account.id, path: "Other", displayPath: "Other", role: .none)
+            try record.insert(db)
+            try OpQueue.enqueueMove(
+                accountId: account.id, sourceMailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [3], destinationMailboxId: record.id!, db: db
+            )
+            return record.id!
+        }
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script())
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(result.affectedMailboxIds == Set([inbox.id!, otherId]))
+    }
+
+    @Test("ReplayResult.affectedMailboxIds is empty for a discarded (stale) op")
+    func replayResultAffectedMailboxIdsEmptyForStaleDiscard() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
+        try await database.dbWriter.write { db in
+            // A `uidValidity` that no longer matches `inbox.uidValidity` —
+            // discarded as stale rather than applied.
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: inbox.id!, uidValidity: inbox.uidValidity + 1,
+                uids: [42], flags: .seen, db: db
+            )
+        }
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script())
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 0)
+        #expect(result.discardedStale == 1)
+        #expect(result.affectedMailboxIds.isEmpty)
+    }
+
+    @Test("ReplayResult.affectedMailboxIds does not include a .send op's outbox/SMTP plumbing")
+    func replayResultAffectedMailboxIdsEmptyForSend() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database, account: makeAccountWithSMTP())
+        let outbox = try await database.dbWriter.write { db -> OutboxMessageRecord in
+            var outbox = OutboxMessageRecord(
+                accountId: account.id, toAddresses: [EmailAddress(address: "recipient@otegami.test")],
+                subject: "件名", plainTextBody: "本文"
+            )
+            try outbox.insert(db)
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: outbox.id!, db: db)
+            return outbox
+        }
+        _ = outbox
+
+        let processor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script()) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: FakeSMTPSession.Script(), recorder: nil) },
+            messageBuilder: fakeMessageBuilder
+        )
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(result.affectedMailboxIds.isEmpty, "send/saveDraft/deleteDraft are outside Task #152's targeted-resync scope — see ReplayResult.affectedMailboxIds's doc comment")
+    }
 }
 
 /// A minimal `IMAPSessionProtocol` double, separate from `FakeIMAPSession`,

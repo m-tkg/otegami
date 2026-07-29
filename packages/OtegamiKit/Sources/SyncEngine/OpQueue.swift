@@ -3,6 +3,7 @@ import GRDB
 import MailTransport
 import OtegamiCore
 import OtegamiStore
+import os
 
 /// The operation kinds `OpQueueProcessor` knows how to replay, stored
 /// verbatim as `OpQueueRecord.kind`. `markRead`/`markUnread` aren't
@@ -348,8 +349,18 @@ public enum OpQueue {
         try enqueue(kind: .deleteDraft, accountId: accountId, payload: payload, db: db)
     }
 
+    /// Task #152 (実機報告「フラグ/アーカイブ操作後、他の受信箱一覧への反映が
+    ///遅い」) diagnostics: notice-level (not debug — `docs/verify.md`'s "debug
+    /// は log collect に残らない" lesson) OSLog trace of every op this app
+    /// enqueues, so a real-device log pull can reconstruct the full
+    /// enqueue → replay → targeted-resync timeline for one operation
+    /// (`OpQueueProcessor.replay`/`SyncCoordinator.performTargetedResync`
+    /// log the later stages under the same "OpReflect" category).
+    static let opReflectLogger = Logger(subsystem: "com.mtkg.otegami", category: "OpReflect")
+
     private static func enqueue(kind: OpQueueKind, accountId: String, payload: some Encodable, db: Database) throws {
         var record = OpQueueRecord(accountId: accountId, kind: kind.rawValue, payload: try JSONEncoder().encode(payload))
         try record.insert(db)
+        opReflectLogger.notice("op enqueued kind=\(kind.rawValue, privacy: .public) accountId=\(accountId, privacy: .private) opId=\(record.id ?? -1)")
     }
 }

@@ -29,6 +29,17 @@ public enum SyncScope: Sendable, Equatable {
     /// One specific mailbox, by its raw IMAP path — a sidebar selection or
     /// that mailbox's own manual-refresh button.
     case mailbox(path: String)
+    /// Task #152 (実機報告「フラグ/アーカイブ操作後、他の受信箱一覧への反映が
+    /// 遅い」): a specific *set* of mailbox paths, synced over one shared
+    /// connection — `SyncCoordinator`'s post-`opQueue`-replay targeted
+    /// resync uses this for "the mailbox an offline action touched plus
+    /// wherever it self-healed a destination to" (e.g. an archive's source
+    /// INBOX and its Archive-role destination), rather than looping
+    /// `.mailbox(path:)` once per affected mailbox — each call to that case
+    /// alone reconnects and re-`listMailboxes`, which is fine for a single
+    /// sidebar selection but wasteful for a batch of 2+ mailboxes from one
+    /// op replay.
+    case mailboxes(paths: Set<String>)
     /// Every selectable (non-`\Noselect`) mailbox — a full manual refresh.
     case all
 }
@@ -657,6 +668,8 @@ public actor AccountSyncer {
             targets = [Self.inbox(among: mailboxInfos), Self.drafts(among: mailboxInfos)].compactMap { $0 }
         case .mailbox(let path):
             targets = mailboxInfos.filter { $0.path == path }
+        case .mailboxes(let paths):
+            targets = mailboxInfos.filter { paths.contains($0.path) }
         case .all:
             // メールボックス単位の非表示: a hidden mailbox is excluded from a
             // full manual refresh too (`docs/settings.md`'s "同期も止める"
