@@ -232,6 +232,63 @@ struct MessageBuilderTests {
         #expect(rawMessage.contains("method=REPLY") || rawMessage.contains("method=\"REPLY\""))
     }
 
+    // MARK: - Task #129 (作成画面リッチテキスト化): multipart/alternative
+
+    @Test("a draft with htmlBody produces a multipart/alternative message carrying both a text/plain fallback and the HTML")
+    func htmlBodyProducesMultipartAlternative() throws {
+        let draft = ComposeDraft(
+            from: sender, to: [recipient],
+            subject: "Formatted", plainTextBody: "plain fallback",
+            htmlBody: "<p><b>formatted</b> body</p>"
+        )
+        let built = MailCoreMessageBuilder.build(draft)
+        let rawMessage = String(decoding: built.data, as: UTF8.self)
+        #expect(rawMessage.localizedCaseInsensitiveContains("multipart/alternative"))
+        #expect(rawMessage.localizedCaseInsensitiveContains("text/plain"))
+        #expect(rawMessage.localizedCaseInsensitiveContains("text/html"))
+        // The literal `text/plain` fallback part's own content — verified
+        // against the raw wire bytes rather than `MCOMessageParser
+        // .plainTextBodyRendering()`, which (when both parts are present)
+        // renders the *HTML* part down to plain text instead of returning
+        // the separate `text/plain` alternative's own literal content.
+        #expect(rawMessage.contains("plain fallback"))
+
+        let parser = MCOMessageParser(data: built.data)
+        let htmlRendering = try #require(parser.htmlBodyRendering())
+        #expect(htmlRendering.contains("formatted"))
+        #expect(htmlRendering.localizedCaseInsensitiveContains("<b>"))
+    }
+
+    @Test("a draft with no htmlBody stays a single text/plain part, unchanged from before Task #129")
+    func noHtmlBodyStaysPlainTextOnly() throws {
+        let draft = ComposeDraft(from: sender, to: [recipient], subject: "Plain only", plainTextBody: "just text")
+        let built = MailCoreMessageBuilder.build(draft)
+        let rawMessage = String(decoding: built.data, as: UTF8.self)
+        #expect(!rawMessage.localizedCaseInsensitiveContains("multipart/alternative"))
+        #expect(!rawMessage.localizedCaseInsensitiveContains("text/html"))
+
+        let parser = MCOMessageParser(data: built.data)
+        let plainRendering = try #require(parser.plainTextBodyRendering())
+        #expect(plainRendering.contains("just text"))
+    }
+
+    @Test("an htmlBody message can still carry an attachment alongside the multipart/alternative body")
+    func htmlBodyWithAttachmentStillCarriesTheAttachment() throws {
+        let draft = ComposeDraft(
+            from: sender, to: [recipient],
+            subject: "Formatted with attachment", plainTextBody: "plain fallback",
+            htmlBody: "<p>formatted</p>",
+            attachments: [ComposeAttachment(filename: "note.txt", mimeType: "text/plain", data: Data("note".utf8))]
+        )
+        let built = MailCoreMessageBuilder.build(draft)
+        let parser = MCOMessageParser(data: built.data)
+        let attachments = try #require(parser.attachments())
+        #expect(attachments.count == 1)
+        #expect((attachments.first as? MCOAttachment)?.filename == "note.txt")
+        let htmlRendering = try #require(parser.htmlBodyRendering())
+        #expect(htmlRendering.contains("formatted"))
+    }
+
     /// `MCOMessageHeader.to`/`.cc`/`.bcc` are declared as bare `NSArray *`
     /// (the `MCOAddress` element type is only documented in a comment, not
     /// expressed via Objective-C lightweight generics), so the Swift

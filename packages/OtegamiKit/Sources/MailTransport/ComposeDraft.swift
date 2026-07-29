@@ -18,6 +18,18 @@ public struct ComposeDraft: Sendable, Equatable {
     public var bcc: [EmailAddress]
     public var subject: String
     public var plainTextBody: String
+    /// Task #129 (作成画面リッチテキスト化): the rendered HTML for the same
+    /// body `plainTextBody` already carries as plain text — `nil` for every
+    /// pre-#129 caller (`CalendarInviteLoader`'s iTIP reply, any plain-text
+    /// send) and for a composer body with no formatting applied. When
+    /// non-`nil`, `MailCoreMessageBuilder.build` sets `MCOMessageBuilder
+    /// .htmlBody` alongside `.textBody`, which makes MailCore2 render the
+    /// message as `multipart/alternative` (plain-text fallback + HTML) —
+    /// `plainTextBody` is never derived *from* this (the two are computed
+    /// independently by the caller, from `RichTextDocument.plainText`/
+    /// `RichTextHTMLCoder.encode(_:)` in `ComposerView`'s case), so a client
+    /// that ignores HTML parts still gets a legible plain-text body.
+    public var htmlBody: String?
     /// The `Message-ID` of the message being replied to, if any —
     /// written to the `In-Reply-To` header. `nil` for a new (non-reply)
     /// message.
@@ -40,6 +52,7 @@ public struct ComposeDraft: Sendable, Equatable {
         bcc: [EmailAddress] = [],
         subject: String,
         plainTextBody: String,
+        htmlBody: String? = nil,
         inReplyTo: String? = nil,
         references: [String] = [],
         attachments: [ComposeAttachment] = []
@@ -50,6 +63,7 @@ public struct ComposeDraft: Sendable, Equatable {
         self.bcc = bcc
         self.subject = subject
         self.plainTextBody = plainTextBody
+        self.htmlBody = htmlBody
         self.inReplyTo = inReplyTo
         self.references = references
         self.attachments = attachments

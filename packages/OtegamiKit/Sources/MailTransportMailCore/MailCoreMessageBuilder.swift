@@ -4,8 +4,13 @@ import MailTransport
 import OtegamiCore
 
 /// Renders a `ComposeDraft` into a full RFC 822 message via `MCOMessageBuilder`
-/// (M5). Plain text body only — HTML composition is still out of scope;
-/// file attachments (M8) are supported via `ComposeDraft.attachments`.
+/// (M5). Task #129 (作成画面リッチテキスト化) added `multipart/alternative`
+/// support: when `draft.htmlBody` is set, the built message carries both a
+/// `text/plain` fallback and a `text/html` part — see `draft.htmlBody`'s doc
+/// comment. `plainTextBody`-only drafts (every pre-#129 caller, and any
+/// composer body with no formatting applied) still produce the same
+/// single-part `text/plain` message as before. File attachments (M8) are
+/// supported via `ComposeDraft.attachments`.
 /// Japanese subject/body encoding is left entirely to MailCore2's own MIME
 /// writer (RFC 2047 encoded-words for the subject, a suitable
 /// `Content-Transfer-Encoding` for the body), the same "let MailCore2 handle
@@ -38,6 +43,17 @@ public enum MailCoreMessageBuilder {
             builder.header.references = draft.references
         }
         builder.textBody = draft.plainTextBody
+        // Task #129 (作成画面リッチテキスト化): setting both `textBody` and
+        // `htmlBody` is what makes MailCore2 render this as
+        // `multipart/alternative` (plain-text fallback + HTML) rather than
+        // a single `text/plain` part — confirmed by
+        // `MessageBuilderTests.htmlBodyProducesMultipartAlternative`. Left
+        // unset (MailCore2's own default) when `draft.htmlBody` is `nil`,
+        // so every pre-#129 plain-text-only draft keeps producing the exact
+        // same single-part message it always has.
+        if let htmlBody = draft.htmlBody {
+            builder.htmlBody = htmlBody
+        }
 
         // M8: plain (non-inline) attachments only — a reply never carries
         // the original's inline `cid:` images forward either (plan: "返信時
