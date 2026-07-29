@@ -58,9 +58,15 @@ final class OtegamiMailtoUITests: XCTestCase {
     /// custom scheme, so this isn't a `simctl`-only artifact — it's the
     /// realistic path a real link tap goes through too, just happening to
     /// be host-triggered here instead of user-triggered.
+    /// Task #145: locale-robust label match (this system alert's "Open"
+    /// button reads "開く" when the simulator's system language is
+    /// Japanese) — same pattern as `DovecotAccountUITestHelpers
+    /// .allowNotificationPermissionIfNeeded`'s `NSPredicate` OR.
     private func dismissSpringboardOpenInOtegamiAlertIfPresent() {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let openButton = springboard.buttons["Open"]
+        let openButton = springboard.buttons.matching(
+            NSPredicate(format: "label == %@ OR label == %@", "Open", "開く")
+        ).firstMatch
         if openButton.waitForExistence(timeout: 5) {
             openButton.tap()
         }

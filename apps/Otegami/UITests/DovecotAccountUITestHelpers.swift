@@ -162,15 +162,26 @@ extension XCTestCase {
         return false
     }
 
+    /// Task #145: this used to look up only the English label ("Not Now") —
+    /// the same locale-fragile pattern `allowNotificationPermissionIfNeeded`
+    /// above already guards against for its own system prompt. Widened to
+    /// the same "match either locale's label" `NSPredicate` (best-effort:
+    /// the exact Japanese wording of this system-owned AutoFill sheet isn't
+    /// pinned down by anything in this repo, so this OR's a couple of
+    /// plausible candidates rather than asserting one).
     func dismissSavePasswordPromptIfNeeded(timeout: TimeInterval = 3) {
+        let notNowPredicate = NSPredicate(
+            format: "label == %@ OR label == %@ OR label == %@",
+            "Not Now", "今はしない", "あとで"
+        )
         let app = XCUIApplication()
-        let inAppNotNow = app.buttons["Not Now"]
+        let inAppNotNow = app.buttons.matching(notNowPredicate).firstMatch
         if inAppNotNow.waitForExistence(timeout: timeout) {
             inAppNotNow.tap()
             return
         }
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let springboardNotNow = springboard.buttons["Not Now"]
+        let springboardNotNow = springboard.buttons.matching(notNowPredicate).firstMatch
         if springboardNotNow.waitForExistence(timeout: timeout) {
             springboardNotNow.tap()
         }

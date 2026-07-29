@@ -176,7 +176,13 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
             searchField.typeText(query)
             Thread.sleep(forTimeInterval: 1) // clear the 300ms debounce plus query time
 
-            let emptyState = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "No Results")).firstMatch
+            // Task #145: was `app.staticTexts.matching(... "No Results" ...)`
+            // — `ContentUnavailableView.search(text:)` is a stock SwiftUI/
+            // Apple-localized view, so that text flips with system locale.
+            // `MessageListView` already tags it with an identifier
+            // (`messageList.search.emptyState`) precisely so tests don't
+            // have to match its localized copy — use that instead.
+            let emptyState = app.otherElements["messageList.search.emptyState"]
             let loading = app.otherElements["messageList.search.loading"]
             let anyCell = list.cells.firstMatch
             let settled = emptyState.waitForExistence(timeout: 8) || anyCell.waitForExistence(timeout: 2)
@@ -187,7 +193,12 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
         }
 
         // Clear back to a normal state for anything that runs after this.
-        let cancelButton = app.buttons["Cancel"]
+        // Task #145: `.searchable`'s system-provided Cancel button reads
+        // "キャンセル" when the simulator's system language is Japanese —
+        // OR both labels rather than assuming English.
+        let cancelButton = app.buttons.matching(
+            NSPredicate(format: "label == %@ OR label == %@", "Cancel", "キャンセル")
+        ).firstMatch
         if cancelButton.waitForExistence(timeout: 3) {
             cancelButton.tap()
         } else if let clearButton = searchField.buttons.firstMatch as XCUIElement?, clearButton.exists {
