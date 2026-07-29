@@ -69,6 +69,18 @@ struct AccountDigestView: View {
     }
     @State private var pendingUndo: PendingUndo?
     @State private var pendingUndoTask: Task<Void, Never>?
+
+    /// 実機フィードバック (2026-07-29「アーカイブ時のトーストがまだ最前面に
+    /// 来てない」): この画面の一括アーカイブのトーストが `MailScreenView` の
+    /// FAB (`.overlay` チェーンで後から重なる) の背面に描画されていた —
+    /// `MessageListView` が Task #108 で踏んだのと同じ問題。同じ解決策を
+    /// そのまま移植する: 親 (`MailScreenView`) がこのフラグを立てて
+    /// `onPendingUndoChanged` で受け取り、FAB より後の overlay で自ら描く。
+    /// macOS (`RootView`) は渡さないので従来どおり内部描画。
+    var suppressInternalUndoToast = false
+    /// See `suppressInternalUndoToast` — fires with the current pending
+    /// undo (`nil` when cleared) every time it changes.
+    var onPendingUndoChanged: (MessageListView.UndoToastPayload?) -> Void = { _ in }
     /// `MessageListView.undoWindow`と同じ値 — 別画面だが同じ「元に戻す」
     /// という体験である以上、猶予秒数も揃えておく。
     private static let undoWindow: Duration = .seconds(5)
@@ -104,7 +116,10 @@ struct AccountDigestView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let pendingUndo {
+            // `suppressInternalUndoToast` の doc comment 参照 — iOS の
+            // `MailScreenView` 配下では親が FAB より手前に描くのでここでは
+            // 描画しない。
+            if !suppressInternalUndoToast, let pendingUndo {
                 UndoToast(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo))
                     .animation(.default, value: pendingUndo.message)
             }
@@ -344,11 +359,14 @@ struct AccountDigestView: View {
         if let previous = pendingUndo {
             Task { await replayOpQueueSoon(accountId: previous.accountId) }
         }
-        pendingUndo = PendingUndo(accountId: accountId, message: message, undo: undo)
+        let pending = PendingUndo(accountId: accountId, message: message, undo: undo)
+        pendingUndo = pending
+        onPendingUndoChanged(MessageListView.UndoToastPayload(message: message, onUndo: undoButtonAction(for: pending)))
         pendingUndoTask = Task {
             try? await Task.sleep(for: Self.undoWindow)
             guard !Task.isCancelled else { return }
             pendingUndo = nil
+            onPendingUndoChanged(nil)
             await replayOpQueueSoon(accountId: accountId)
         }
     }
@@ -357,6 +375,7 @@ struct AccountDigestView: View {
         pendingUndoTask?.cancel()
         guard let pendingUndo, let undo = pendingUndo.undo else { return }
         self.pendingUndo = nil
+        onPendingUndoChanged(nil)
         Task { await undo() }
     }
 

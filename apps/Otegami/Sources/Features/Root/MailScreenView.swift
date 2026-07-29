@@ -397,7 +397,16 @@ struct MailScreenView: View {
                 if isUnifiedInboxSelected {
                     AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
                 }
-                AccountDigestView(role: digestRole, onSelectAccount: selectDigestAccount)
+                // 実機フィードバック (2026-07-29): ダイジェストの一括操作の
+                // トーストも `MessageListView` と同じ委譲でこの画面の
+                // FAB より手前に描く (`AccountDigestView
+                // .suppressInternalUndoToast` の doc comment 参照)。
+                AccountDigestView(
+                    role: digestRole,
+                    onSelectAccount: selectDigestAccount,
+                    suppressInternalUndoToast: true,
+                    onPendingUndoChanged: { pendingUndoPayload = $0 }
+                )
             } else {
                 if isUnifiedInboxSelected {
                     AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
