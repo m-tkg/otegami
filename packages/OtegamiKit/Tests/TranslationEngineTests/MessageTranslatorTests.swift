@@ -508,15 +508,22 @@ struct MessageTranslatorTests {
         #expect(await service.translateCallCount == 2)
     }
 
-    @Test("an engine-reported insufficient-input failure (e.g. can't identify source language) propagates as .insufficientInput, not .failed")
+    @Test("a TranslationService-reported .insufficientInput propagates through translateAligned unchanged, not collapsed into .failed")
     func engineInsufficientInputFailurePropagatesAsInsufficientInput() async throws {
         let database = try AppDatabase.makeInMemory()
         let messageId = try await makeMessageId(database: database)
-        // The engine itself reporting it couldn't work with the input
-        // (Apple's `TranslationError.unableToIdentifyLanguage`, mapped by
-        // `AppleTranslationService.mapEngineError`) — the reactive
-        // detection path this task adds, independent of any pre-emptive
-        // Swift-side length guard.
+        // 2026-07-30 (Phase 5再訂正): `AppleTranslationService` itself no
+        // longer ever throws `.insufficientInput` (three rounds of trying
+        // to infer it from `TranslationError`/raw NSError codes each turned
+        // out wrong on the next real device — see `AppleTranslationService
+        // .mapEngineError`'s doc comment) — the only remaining source is
+        // `MessageTranslator.translateAligned`'s own pre-check
+        // (`chunks.isEmpty`, tested elsewhere in this file). This test
+        // instead exercises `translateAligned`'s classification logic
+        // directly via `FakeTranslationService`, confirming that *if* some
+        // `TranslationService` conformer ever does throw this case, it
+        // still propagates through as `.insufficientInput`, not flattened
+        // to `.failed`.
         let service = FakeTranslationService(behavior: .insufficientInput(message: "翻訳元の言語を判定できませんでした"))
         let translator = MessageTranslator(database: database, service: service, engineIdentifier: MessageTranslator.EngineIdentifier.fake)
 
