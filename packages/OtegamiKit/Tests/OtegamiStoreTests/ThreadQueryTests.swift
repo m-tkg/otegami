@@ -453,6 +453,66 @@ struct ThreadQueryTests {
         #expect(thread?.isMuted == false)
     }
 
+    // MARK: - Task #150 repro: a thread spanning multiple mailboxes must not duplicate
+
+    @Test("unifiedInboxRequest doesn't duplicate a thread that has messages in two different mailboxes")
+    func unifiedInboxRequestDoesNotDuplicateThreadSpanningMailboxes() throws {
+        let (database, accountId, inboxId, archiveId) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let threadId = try database.dbWriter.write { db -> Int64 in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base.addingTimeInterval(60), messageCount: 2)
+            try thread.insert(db)
+            var inboxMessage = MessageRecord(mailboxId: inboxId, uid: 1, date: base, internalDate: base, threadId: thread.id)
+            try inboxMessage.insert(db)
+            var archiveMessage = MessageRecord(mailboxId: archiveId, uid: 1, date: base.addingTimeInterval(60), internalDate: base.addingTimeInterval(60), threadId: thread.id)
+            try archiveMessage.insert(db)
+            return thread.id!
+        }
+
+        for pinnedOnly in [false, true] {
+            let threadIds = try database.dbWriter.read { db in
+                try ThreadQuery.unifiedInboxRequest(accountIds: [accountId], role: .inbox, pinnedOnly: pinnedOnly).fetchAll(db).map(\.id)
+            }
+            if pinnedOnly {
+                #expect(threadIds.isEmpty, "pinnedOnly with no pinned messages should exclude the thread")
+            } else {
+                #expect(threadIds == [threadId], "Expected the thread exactly once, not duplicated across its two mailboxes")
+            }
+        }
+
+        let allRoleIds = try database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxRequest(accountIds: [accountId], role: .all).fetchAll(db).map(\.id)
+        }
+        #expect(allRoleIds == [threadId], "role .all (non-Gmail any-mailbox scope) must still return the thread once, not once per mailbox it has a message in")
+
+        let archiveRoleIds = try database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxRequest(accountIds: [accountId], role: .archive).fetchAll(db).map(\.id)
+        }
+        #expect(archiveRoleIds == [threadId])
+    }
+
+    @Test("summaries(forThreads:) attaches exactly one summary per thread even when it spans mailboxes")
+    func summariesDoNotDuplicateThreadSpanningMailboxes() throws {
+        let (database, accountId, inboxId, archiveId) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let threadId = try database.dbWriter.write { db -> Int64 in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base.addingTimeInterval(60), messageCount: 2)
+            try thread.insert(db)
+            var inboxMessage = MessageRecord(mailboxId: inboxId, uid: 1, date: base, internalDate: base, threadId: thread.id)
+            try inboxMessage.insert(db)
+            var archiveMessage = MessageRecord(mailboxId: archiveId, uid: 1, date: base.addingTimeInterval(60), internalDate: base.addingTimeInterval(60), threadId: thread.id)
+            try archiveMessage.insert(db)
+            return thread.id!
+        }
+
+        let summaries = try database.dbWriter.read { db in
+            try ThreadQuery.summaries(
+                forThreads: ThreadQuery.unifiedInboxRequest(accountIds: [accountId], role: .all).fetchAll(db), db: db
+            )
+        }
+        #expect(summaries.map(\.id) == [threadId])
+    }
+
     @Test("setMuted on a nonexistent thread id is a no-op, not an error")
     func setMutedOnMissingThreadIsNoOp() throws {
         let (database, _, _, _) = try makeDatabase()

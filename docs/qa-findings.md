@@ -1376,3 +1376,77 @@ iOS では `threadingKey` の変更を SwiftUI が一切観測しておらず、
 `.task(id:)` 依存関係は単体テストで再現できない) — `make mac`/`make ios`
 のビルド成功のみで検証、実機/シミュレータでの「設定でスレッド表示
 on/off → 閉じる → 一覧が即座に切り替わる」確認はユーザー分業。
+
+## Task #150: OTA c93bec3 直後の実機報告「スレッド一覧で同じメールが
+2個ずつ表示される」の調査 (原因未特定 — 候補は棄却)
+
+**症状** (実機報告、OTA `c93bec3` 配信直後): スレッド一覧で同じメールが
+2個ずつ表示される。直前に入った変更として2件が疑われた —
+- #141 (`65a27c5`): `role == .all` (「すべてのメール」) のとき、非Gmail
+  アカウントで `ThreadQuery.unifiedInboxRequest`/`unifiedInboxFlatSummaries`/
+  `MessageQuery.unifiedInboxUnreadCount` の `mailbox.role` 一致条件を外す。
+- #142 (`932da48`): `ThreadQuery` の `request`/`unifiedInboxRequest`/
+  `flatSummaries`/`unifiedInboxFlatSummaries` (+ Observation 版) に
+  `pinnedOnly` パラメータを追加。
+
+**調査したが再現しなかった**: 両コミットの diff を精査し、行複製が起き
+うる経路として (a) `pinnedOnly` がスレッド単位クエリに新しい `JOIN` を
+足していないか、(b) `role == .all` の非Gmail緩和で同一スレッドが複数
+mailbox 分カウントされて `unifiedInboxRequest`/`unifiedInboxFlatSummaries`
+が同じスレッド/メッセージを2回返していないか、の2点を具体的に検証した:
+
+- `ThreadQuery.request`/`unifiedInboxRequest` は M10 で `SELECT thread.*
+  FROM thread WHERE ... AND EXISTS (...)` という「`thread` テーブルを直接
+  1行1スレッドで返す」形に書き換え済み (`ThreadQuery.request`のdoc
+  comment参照) — `pinnedOnly`/`unreadOnly` はどちらも `thread.isPinned`/
+  `thread.unreadCount` という**既存の集計列へのフィルタ条件を1個 `AND` す
+  るだけ**で、新しい `JOIN` は一切追加していない。`EXISTS` はブール述語
+  なので、サブクエリ内の条件がどれだけ複雑でも外側の `thread` 行が複製
+  されることは構造的にありえない。
+- `role == .all` の非Gmail緩和も同じ `EXISTS` サブクエリ内の `OR` 条件を
+  1本増やしているだけで、`FROM` 句・外側の行本体は変えていない — 同一
+  スレッドが INBOX と Archive の両方にメッセージを持っていても、EXISTS
+  は真偽1個を返すだけなので `thread` 行は1回しか出ない。
+- `flatSummaries`/`unifiedInboxFlatSummaries` (1行1メッセージのフラット
+  表示) も `pinnedOnly` は `message.isPinnedLocal`/`isPinnedLocal` への
+  直接フィルタで新規 `JOIN` 無し、`role == .all` 緩和も `message JOIN
+  mailbox JOIN account` という既存の1:1 JOIN 構造 (`message.mailboxId`→
+  `mailbox`、`mailbox.accountId`→`account`、どちらもfan-outしない) の
+  `WHERE` 条件を変えているだけ。
+
+これを実際に固定するため、`ThreadQueryTests.swift` に「同一スレッドが
+INBOX と Archive の両方にメッセージを持つ」フィクスチャを追加し、
+`unifiedInboxRequest(role: .inbox/.archive/.all, pinnedOnly: true/false)`
+と `summaries(forThreads:)` がそのスレッドを重複させずちょうど1回だけ
+返すことを検証するテスト2本
+(`unifiedInboxRequestDoesNotDuplicateThreadSpanningMailboxes`/
+`summariesDoNotDuplicateThreadSpanningMailboxes`) を追加 — **`main` に
+対してそのまま green** で、失敗する再現テストは作れなかった。既存の
+`ThreadQueryTests`/`GmailArchiveFilterTests` (#141/#142 が追加した分含む)
+も全件 green。
+
+`scripts/verify-screen.sh list`(デフォルトの統合受信トレイ) と
+`list-all-mail`(#141 で新設された「すべてのメール」) の両方のスクリーン
+ショットも目視確認したが、重複行は描画されていない。
+
+**棄却した副次的な発見**: `65a27c5` は `FolderListSheet
+.matchesCategory(mailbox:account:role:)` の doc comment で「Gmail の
+All Mail メールボックスが『アーカイブ』と『すべてのメール』の両カテゴリ
+の展開行に**重複して現れる**ことを、このタスクでは意図的に許容する」と
+明記している — が、これはハンバーガーメニュー (フォルダピッカー) の
+「同じ物理メールボックスへの入り口が2箇所ある」という設計上のトレード
+オフであって、1つの一覧画面内でメール行そのものが複製されるバグとは
+別物 (メニューのどちらの入り口から入っても、開くのは同じメールボックス
+の同じメッセージ一覧)。実機報告の文言 (「スレッド一覧で同じメールが
+2個ずつ表示される」) と一致しないと判断し、修正対象からは外した。
+
+**現状**: `ThreadQuery`/`MessageQuery` の SQL 層に #141/#142 由来の行
+複製バグは見つからなかった (テスト・スクリーンショットの両方で反証)。
+実アプリコードへの変更は行っていない — 追加したのは回帰テスト2本のみ。
+実機での再現には、この調査で試した以外の条件 (具体的な一覧モード:
+グループ化 or フラット表示、フィルタトグルの状態、選択中のカテゴリ、
+アカウントの種類・数) が絡んでいる可能性が高く、次に調査するなら
+報告者に「どの画面 (統合受信トレイ/特定カテゴリ/すべてのメール)・
+どの表示設定 (スレッドまとめ表示 or フラット表示、未読のみ/フラグ付き
+のみトグルの状態) で見えたか」を確認してから絞り込むのが効率的。
+`PENDING.md` に確認事項として追記予定。
