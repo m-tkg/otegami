@@ -56,6 +56,16 @@
    (`BadgeCenter.requestAuthorizationIfNeeded()`参照) で同様に回避する。
    どちらも`scripts/verify-screen.sh`が既定で付与するので、この2つの
    フラグを手で意識する必要は通常ない。
+   **2026-07-30 追記 (Task #176)**: `push-settings`シナリオを3回試した
+   ところ、いずれも`simctl privacy <udid> grant contacts com.mtkg.otegami`
+   のプロセス自体がハングし (エラーで即座に失敗するのではなく無期限に
+   応答が返らない)、スクリプト全体が先へ進まなかった (`ps aux`で30分以上
+   居座っているのを確認)。上記の対策フラグは付与済みだったので原因は
+   フラグ漏れではなく、この`grant`コマンド自体の不安定性の一形態と見られる
+   (このセッションでは他のxcodebuildジョブが並行実行中で、CoreSimulator
+   デーモンへの負荷が高かった可能性はあるが未確定)。ユーザー指示通り
+   3回まででリトライを打ち切り、`make test`/`make ios`/`make mac`緑を
+   もって出荷、この画面のスクリーンショットは未検証のまま報告した。
 4. **Foundation Modelsをシミュレータの`.app`プロセスから呼ぶと
    `LanguageModelError error -1`になる** — エンジン層自体はホストmacOS
    プロセスとしての`swift test`からは毎回正常に翻訳できる
