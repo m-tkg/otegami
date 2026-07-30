@@ -46,6 +46,21 @@
 // レットを要求しない既定設定なら何も変わらない)。
 // OTEGAMI_RELAY_REGISTRATION_SECRET = your-relay-registration-secret
 
+// 自分でホストした otegami-relay の URL 本体 (Task #173 follow-up,
+// docs/relay-deployment.md 参照)。これを設定すると、アプリの「プッシュ
+// 通知」画面から URL 入力欄が消え、「有効にする」ボタンだけになる
+// (Google/Microsoft の OAuth Client ID と同じ仕組み — 未設定のビルドは
+// ボタンが無効になり、有効化できない)。https:// が必須 (ローカル開発
+// 時のみ http://localhost/http://127.0.0.1 が使える)。
+//
+// 注意: xcconfig は `//` をコメント開始として扱うため、
+// `OTEGAMI_PUSH_RELAY_URL = https://relay.example.test` とそのまま書くと
+// 値が `https:` で切れてしまう。Config/Shared.xcconfig で定義済みの
+// OTEGAMI_URL_SLASHES ($(OTEGAMI_URL_SLASH)$(OTEGAMI_URL_SLASH) — 単一の
+// `/` はコメント扱いされないので、マクロ展開後にだけ `//` になる) を
+// 使って書くこと:
+// OTEGAMI_PUSH_RELAY_URL = https:$(OTEGAMI_URL_SLASHES)relay.example.test
+
 // デフォルトのメールアプリ対応 (Task #48, docs/default-mail-app.md):
 // `com.apple.developer.mail-client` entitlement の有効化スイッチ。Apple から
 // この entitlement の許可を受け、Developer portal でこの App ID の capability

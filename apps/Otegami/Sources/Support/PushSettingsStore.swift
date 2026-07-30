@@ -17,17 +17,20 @@ import Security
 // `@unchecked Sendable`: `UserDefaults` is documented as thread-safe but
 // isn't declared `Sendable` in this SDK snapshot.
 struct PushSettingsStore: @unchecked Sendable {
-    /// Task #121 (実機報告「別端末/再インストールでリレー URL が消える」):
-    /// this one key is *not* device-specific the way the rest of this
-    /// store's state is — it's just a hostname the user typed once, so
-    /// losing it on reinstall (or never seeing it on a second device)
-    /// forces re-typing the same URL for no benefit. `internal` (not
-    /// `private`) so `AppSettingsCloudDirectory` can allowlist it directly
-    /// rather than this store needing its own `SettingsCloudValue`-shaped
-    /// accessor — see that type's `stringDefaults` and
-    /// `docs/icloud-sync.md`'s settings-sync table for the rationale this
-    /// key alone crossed over while `deviceId`/`accountWatchMap`/
-    /// `deviceSecret` stayed device-local.
+    /// Task #121 originally made this one key sync via iCloud (not
+    /// device-specific the way the rest of this store's state is — it was
+    /// just a hostname the user typed once). Task #173 follow-up (実機
+    /// フィードバック 2026-07-30 「リレー URL は今の固定 URL という話をした
+    /// よ」) moved the relay URL itself to a build-time value
+    /// (`RelayURLConfig`, same mechanism as `RelayRegistrationSecretConfig`)
+    /// — there's no user-typed value left to sync, so this key is neither
+    /// read nor written by current code anymore. Kept only so
+    /// `deleteLegacyRelayURLIfPresent()` can clean up whatever a device
+    /// that upgraded from an earlier build still has stored here (and so
+    /// `AppSettingsCloudDirectory` no longer references it at all — see
+    /// that type's doc comment). Safe to delete this constant (and that
+    /// method) once enough time has passed that no supported install could
+    /// still be carrying a leftover value.
     static let relayURLKey = "push.relayURLString"
     private static let deviceIdKey = "push.deviceId"
     private static let enabledKey = "push.enabled"
@@ -63,11 +66,6 @@ struct PushSettingsStore: @unchecked Sendable {
     init(defaults: UserDefaults = .standard, accessGroup: String? = nil) {
         self.defaults = defaults
         self.accessGroup = accessGroup
-    }
-
-    var relayURLString: String? {
-        get { defaults.string(forKey: Self.relayURLKey) }
-        nonmutating set { defaults.set(newValue, forKey: Self.relayURLKey) }
     }
 
     var isEnabled: Bool {
@@ -170,6 +168,19 @@ struct PushSettingsStore: @unchecked Sendable {
         try? deleteSecret(services: [Self.legacyRegistrationSecretKeychainService])
     }
 
+    // MARK: - Relay URL cleanup (UserDefaults)
+
+    /// One-time best-effort cleanup for the `UserDefaults` value
+    /// `relayURLKey` used to hold — see that constant's doc comment (Task
+    /// #173 follow-up moved the relay URL to a build-time value,
+    /// `RelayURLConfig`). Called once per app launch from
+    /// `AppEnvironment.init()`, same unconditional-every-launch style as
+    /// `deleteLegacyRegistrationSecretIfPresent()` right above (a call
+    /// after the key is already gone is just a no-op).
+    func deleteLegacyRelayURLIfPresent() {
+        defaults.removeObject(forKey: Self.relayURLKey)
+    }
+
     private func setSecret(_ secret: String, service: String) throws {
         let data = Data(secret.utf8)
         let query = baseQuery(service: service)
@@ -201,13 +212,13 @@ struct PushSettingsStore: @unchecked Sendable {
         if let lastError { throw lastError }
     }
 
-    /// Clears every bit of local push state — relay URL, device id/secret,
-    /// enabled flag, and the accountId→watchId map. Called after
-    /// successfully deleting every watch server-side
+    /// Clears every bit of local push state — device id/secret, enabled
+    /// flag, and the accountId→watchId map (the relay URL itself is no
+    /// longer part of this state — see `relayURLKey`'s doc comment).
+    /// Called after successfully deleting every watch server-side
     /// (`AppEnvironment.disablePushNotifications()`), so nothing local
     /// still points at server state that no longer exists.
     func reset() {
-        relayURLString = nil
         deviceId = nil
         isEnabled = false
         accountWatchMap = [:]

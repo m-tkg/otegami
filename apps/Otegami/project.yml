@@ -106,6 +106,15 @@ targets:
         # treats empty/unset as "omit the Authorization header on device
         # registration" (unchanged default behavior).
         OTEGAMI_RELAY_REGISTRATION_SECRET: $(OTEGAMI_RELAY_REGISTRATION_SECRET)
+        # Task #173 follow-up: self-hosted push relay's URL itself, same
+        # xcconfig-sourced build-time mechanism as
+        # OTEGAMI_RELAY_REGISTRATION_SECRET just above (`Config/Shared.xcconfig`
+        # defines it empty; `Config/Local.xcconfig`, git-ignored, is where a
+        # self-hoster sets their own — see docs/relay-deployment.md).
+        # `RelayURLConfig` reads this key at runtime and treats empty/unset
+        # as "no relay configured in this build", disabling
+        # PushNotificationSettingsView's enable button.
+        OTEGAMI_PUSH_RELAY_URL: $(OTEGAMI_PUSH_RELAY_URL)
         # M9: read by AppEnvironment/KeychainCredentialStore/AppDatabase at
         # runtime — see Config/Shared.xcconfig's doc comment on why these
         # are composed from xcconfig variables instead of hardcoded.

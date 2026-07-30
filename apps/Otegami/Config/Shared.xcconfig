@@ -83,3 +83,27 @@ OTEGAMI_IOS_ENTITLEMENTS_FILE = $(OTEGAMI_IOS_ENTITLEMENTS_FILE_$(OTEGAMI_MAIL_C
 // `PushRelayClient.registerDevice`'s existing default behavior, so a
 // build that never sets this is unaffected.
 OTEGAMI_RELAY_REGISTRATION_SECRET =
+
+// Task #173 follow-up (実機フィードバック 2026-07-30 「リレー URL は今の
+// 固定 URL という話をしたよ」): the self-hosted push relay's URL itself,
+// same empty-by-default/git-ignored-Local.xcconfig-override mechanism as
+// OTEGAMI_RELAY_REGISTRATION_SECRET just above — an ordinary user of the
+// app never types a "relay URL" either now; only the relay's operator
+// sets this, once, in their own build. `RelayURLConfig` (app code) treats
+// empty/unset as "no relay configured in this build" and
+// `PushNotificationSettingsView` disables its "有効にする" button and
+// explains why (see docs/relay-deployment.md).
+//
+// xcconfig pitfall: `//` starts a *comment* in xcconfig syntax, so writing
+// this value directly as e.g. `OTEGAMI_PUSH_RELAY_URL = https://host` would
+// silently truncate to `https:` (nothing after `//` gets parsed as part of
+// the value). The standard workaround: a *single* `/` doesn't trigger
+// comment parsing, and macro expansion (`$(...)`) happens only *after*
+// comment-stripping — so building `//` out of two single-slash macro
+// references means the literal two-character sequence `//` never appears
+// anywhere in this file's (or Local.xcconfig's) source text at all.
+// `OTEGAMI_URL_SLASHES` below exists for exactly this — see
+// Config/Local.xcconfig.sample for how a self-hoster uses it.
+OTEGAMI_URL_SLASH = /
+OTEGAMI_URL_SLASHES = $(OTEGAMI_URL_SLASH)$(OTEGAMI_URL_SLASH)
+OTEGAMI_PUSH_RELAY_URL =

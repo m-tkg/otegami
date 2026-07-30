@@ -94,6 +94,14 @@ jobs:
           # never-logged treatment as the two OAuth Client ID secrets
           # above.
           RELAY_REGISTRATION_SECRET: ${{ secrets.OTEGAMI_RELAY_REGISTRATION_SECRET }}
+          # Task #173 follow-up (build-time relay URL — see
+          # Config/Shared.xcconfig's doc comment on OTEGAMI_PUSH_RELAY_URL).
+          # Same optional/masked/never-logged treatment as the secrets
+          # above. Expected to be a plain URL (e.g.
+          # https://relay.example.test), rewritten below into the
+          # `https:$(OTEGAMI_URL_SLASHES)...` form the xcconfig `//`-is-a-
+          # comment pitfall requires (see that doc comment).
+          PUSH_RELAY_URL: ${{ secrets.OTEGAMI_PUSH_RELAY_URL }}
         run: |
           LOCAL_XCCONFIG="$APP_DIR/Config/Local.xcconfig"
           LINES=()
@@ -117,6 +125,19 @@ jobs:
             echo "Push relay registration secret: configured from OTEGAMI_RELAY_REGISTRATION_SECRET secret"
           else
             echo "Push relay registration secret: OTEGAMI_RELAY_REGISTRATION_SECRET secret not set — this build sends no registration secret to the relay"
+          fi
+          if [ -n "$PUSH_RELAY_URL" ]; then
+            echo "::add-mask::$PUSH_RELAY_URL"
+            # xcconfig treats `//` as a comment start (Config/Shared.xcconfig's
+            # OTEGAMI_URL_SLASHES doc comment) — rewrite the plain URL's
+            # `://` into `:$(OTEGAMI_URL_SLASHES)` so the generated
+            # Local.xcconfig line never contains a literal `//`.
+            RELAY_URL_SCHEME="${PUSH_RELAY_URL%%://*}"
+            RELAY_URL_REST="${PUSH_RELAY_URL#*://}"
+            LINES+=("OTEGAMI_PUSH_RELAY_URL = ${RELAY_URL_SCHEME}:\$(OTEGAMI_URL_SLASHES)${RELAY_URL_REST}")
+            echo "Push relay URL: configured from OTEGAMI_PUSH_RELAY_URL secret"
+          else
+            echo "Push relay URL: OTEGAMI_PUSH_RELAY_URL secret not set — this build has no push relay configured"
           fi
           if [ "${#LINES[@]}" -gt 0 ]; then
             printf '%s\n' "${LINES[@]}" > "$LOCAL_XCCONFIG"
