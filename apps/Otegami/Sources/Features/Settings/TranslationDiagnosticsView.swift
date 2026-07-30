@@ -36,7 +36,17 @@ struct TranslationDiagnosticsView: View {
     var body: some View {
         settingsContainer
             .navigationTitle("翻訳の診断")
-            .task { await refreshLanguagePairStatus() }
+            .task {
+                await refreshLanguagePairStatus()
+                // 2026-07-30: `scripts/verify-screen.sh`のタップ不要経路用
+                // — Translationはシミュレータで動かないため、これは
+                // 「スピナーが止まりエラー表示になる (=ハングしない)」
+                // ことをスクリーンショットで確認するためのフック。実機/
+                // 通常起動ではこの引数が無いので常にno-op。
+                if ProcessInfo.processInfo.arguments.contains("-uitestsRunTestTranslationDirectly") {
+                    await runTestTranslation()
+                }
+            }
     }
 
     @ViewBuilder

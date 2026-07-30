@@ -617,6 +617,16 @@ case "$SCENARIO" in
     launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenMailViewerSettingsDirectly" "-uitestsOpenTranslationDiagnosticsDirectly")
     default_out="translation-diagnostics.png"
     ;;
+  translation-diagnostics-test-run)
+    # 2026-07-30 (実機フィードバック — 退行「テスト翻訳を実行」がスピナーの
+    # まま無反応): 上の`translation-diagnostics`に加え
+    # `-uitestsRunTestTranslationDirectly`でタップ無しに「テスト翻訳を
+    # 実行」相当を起動する。シミュレータではTranslation自体が動かないため
+    # 「言語ペア未対応」等のエラーで止まるのが期待挙動 — 目的はハングせず
+    # スピナーが止まりエラー表示になることの確認。
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenMailViewerSettingsDirectly" "-uitestsOpenTranslationDiagnosticsDirectly" "-uitestsRunTestTranslationDirectly")
+    default_out="translation-diagnostics-test-run.png"
+    ;;
   search)
     # Task #86: 空状態 (クエリ未入力、履歴タブ) — トップバー/タブの見た目
     # 確認用。アカウントが無くても`SearchScreenView`自体は開けるが、

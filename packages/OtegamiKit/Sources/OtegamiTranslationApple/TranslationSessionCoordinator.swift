@@ -99,27 +99,51 @@ public final class TranslationSessionCoordinator {
 
     /// Read by `TranslationSessionHostView.body` and passed straight to
     /// `.translationTask(_:action:)` — `private(set)` because only
-    /// `drainIfNeeded()` below decides when a new session is actually
-    /// needed; nothing outside this type should be able to force a reset.
+    /// `requestQueue`'s internal draining decides when a new session is
+    /// actually needed; nothing outside this type should be able to force
+    /// a reset.
     public private(set) var configuration: TranslationSession.Configuration?
 
-    /// One queued unit of session-using work, run by `attach(_:)` — never
-    /// by the caller that created it. See this type's doc comment for why.
-    private struct QueueItem {
-        let target: Locale.Language
-        let operation: @MainActor (TranslationSession) async -> Void
-    }
+    /// 2026-07-30 (実機フィードバック — 退行): 設定内の「翻訳の診断」画面
+    /// (`TranslationSessionHostView`がマウントされていない画面ツリー)
+    /// から`translate`を呼ぶと、`attach(_:)`が一度も呼ばれずに待機中の
+    /// リクエストが**永久に**解決されず、「テスト翻訳を実行」ボタンの
+    /// スピナーが回り続けたまま止まらない、という構造的な穴があった。
+    /// 根本原因 (ホストビューがアプリのどの画面からも常に1つ供給される
+    /// 場所に無かったこと) は`TranslationSessionHostView`のマウント位置を
+    /// `OtegamiApp`のルートへ移すことで解消済みだが、それとは**独立**に、
+    /// この型自体が「供給元がどんな理由であれ現れなかった場合」を構造的に
+    /// 無限待機にしない責任を持つ — ホストビュー側の配線ミス・SwiftUI
+    /// 側の未知の挙動・将来また同じクラスの穴が空いても、ここでは必ず
+    /// 有限時間で終わる (`SupplyGatedRequestQueue`のdoc comment参照 —
+    /// この仕組み自体は`TranslationSession`に依存しない汎用型として
+    /// 切り出してあり、`SupplyGatedRequestQueueTests`が`Fake`な
+    /// `Target`/`Session`で「供給が一切来ないケース」「二重resumeが
+    /// 起きないこと」「並行リクエストが両方とも必ず終わること」を直接
+    /// 検証している — `TranslationSession`自体は公開イニシャライザが
+    /// 無くテストプロセス内で構築できないため)。
+    private static let sessionTimeoutSeconds: UInt64 = 10
 
-    private var queue: [QueueItem] = []
-    /// `true` from the moment `configuration` is set for the item currently
-    /// at the front of the queue until `attach(_:)` finishes running that
-    /// item's `operation` — i.e. "a `.translationTask` invocation is
-    /// currently owed to us and hasn't happened yet, or is in progress".
-    /// While `true`, `drainIfNeeded()` must not set `configuration` again
-    /// (see this type's doc comment on why that would silently drop a
-    /// request).
-    private var isDraining = false
-    private var pendingOperation: (@MainActor (TranslationSession) async -> Void)?
+    /// `lazy`, not assigned in `init`: `requestSupply` below needs to
+    /// capture `self` (to write `configuration`), which Swift only allows
+    /// once `self` is fully initialized — a `lazy var` initializer runs on
+    /// first access (always after `init` returns), not during `init`
+    /// itself, so this sidesteps that restriction cleanly rather than
+    /// needing a two-phase "construct with a placeholder closure, then
+    /// patch it" dance. `@ObservationIgnored`: `@Observable`'s macro
+    /// rewrites stored properties into tracked computed ones, which is
+    /// incompatible with `lazy` — this property is plumbing, not UI state
+    /// SwiftUI needs to watch (only `configuration` is), so opting it out
+    /// of that transform is also the semantically correct choice, not just
+    /// a workaround.
+    @ObservationIgnored
+    private lazy var requestQueue: SupplyGatedRequestQueue<Locale.Language, TranslationSession> = SupplyGatedRequestQueue(
+        timeoutSeconds: Self.sessionTimeoutSeconds,
+        timeoutError: { TranslationServiceError.failed(message: "翻訳セッションを取得できませんでした") },
+        requestSupply: { [weak self] target in
+            self?.configuration = TranslationSession.Configuration(source: nil, target: target)
+        }
+    )
 
     /// Translates `text`, auto-detecting the source language (`Configuration
     /// (source: nil, target:)` — see `AppleTranslationService`'s doc comment,
@@ -127,7 +151,7 @@ public final class TranslationSessionCoordinator {
     /// plain translated string — `TranslationSession.Response` itself never
     /// leaves this method, let alone this type.
     public func translate(_ text: String, to target: Locale.Language) async throws -> String {
-        try await performInSession(target: target) { session in
+        try await requestQueue.perform(target: target) { session in
             try await session.translate(text).targetText
         }
     }
@@ -143,7 +167,7 @@ public final class TranslationSessionCoordinator {
     /// (a genuine engine-level anomaly, not expected in practice).
     public func translateBatch(_ texts: [String], to target: Locale.Language) async throws -> [String] {
         guard !texts.isEmpty else { return [] }
-        return try await performInSession(target: target) { session in
+        return try await requestQueue.perform(target: target) { session in
             let responses = try await session.translations(from: Self.makeRequests(for: texts))
             var byIndex: [Int: String] = [:]
             byIndex.reserveCapacity(responses.count)
@@ -180,61 +204,20 @@ public final class TranslationSessionCoordinator {
     /// visible OS flow rather than a confusing mid-translation failure (Task
     /// #159 point 3).
     public func prepareTranslation(to target: Locale.Language) async throws {
-        try await performInSession(target: target) { session in
+        try await requestQueue.perform(target: target) { session in
             try await session.prepareTranslation()
         }
-    }
-
-    /// Runs `operation` with a `TranslationSession` for `target`, entirely
-    /// from inside the `.translationTask` action-closure invocation that
-    /// session belongs to (see this type's doc comment) — `operation` itself
-    /// must not stash `session` anywhere that outlives this call.
-    private func performInSession<T: Sendable>(
-        target: Locale.Language,
-        operation: @escaping @MainActor (TranslationSession) async throws -> T
-    ) async throws -> T {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
-            enqueue(target: target) { session in
-                do {
-                    let result = try await operation(session)
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    private func enqueue(target: Locale.Language, operation: @escaping @MainActor (TranslationSession) async -> Void) {
-        queue.append(QueueItem(target: target, operation: operation))
-        drainIfNeeded()
-    }
-
-    /// Starts the next queued item, if any, *only* when no `.translationTask`
-    /// invocation is currently owed to us — see `isDraining`'s doc comment.
-    private func drainIfNeeded() {
-        guard !isDraining, !queue.isEmpty else { return }
-        isDraining = true
-        let item = queue.removeFirst()
-        pendingOperation = item.operation
-        // A fresh `Configuration` value every time, deliberately never
-        // reused across calls even for the same `target` — see this type's
-        // doc comment for why session reuse across separate closure
-        // invocations was the actual root cause this rewrite fixes.
-        configuration = TranslationSession.Configuration(source: nil, target: item.target)
     }
 
     /// Called by `TranslationSessionHostView`'s `.translationTask` action
     /// closure (`await`ed there, not fire-and-forgotten — see this type's
     /// doc comment for why staying on that closure's own `Task` for the
-    /// full duration of `operation`'s work is the entire point) with the
+    /// full duration of the resulting work is the entire point) with the
     /// session SwiftUI just created for whatever `configuration` this
-    /// coordinator most recently set.
+    /// coordinator most recently set. Forwards straight to `requestQueue`
+    /// — see `SupplyGatedRequestQueue.supply(_:)`'s doc comment for why a
+    /// late/unmatched call here is a safe no-op, not a crash.
     public func attach(_ session: TranslationSession) async {
-        guard let operation = pendingOperation else { return }
-        pendingOperation = nil
-        await operation(session)
-        isDraining = false
-        drainIfNeeded()
+        await requestQueue.supply(session)
     }
 }

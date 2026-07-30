@@ -21,6 +21,24 @@ struct OtegamiApp: App {
                 // `EnvironmentValues` key instead — see
                 // `AvatarImageResolving.swift`'s doc comment.
                 .environment(\.avatarImageResolver, environment.avatarImageResolver)
+                // 2026-07-30 (実機フィードバック: 「テスト翻訳を実行」が
+                // スピナーのまま無反応・メール本文画面でも翻訳できなく
+                // なった、というb24876d適用後の退行): 以前は
+                // `ThreadDetailView`だけに`.background`でマウントしていた
+                // — `.translationTask`のセッション供給元がその画面にしか
+                // 無いため、設定内の「翻訳の診断」画面など別画面から
+                // `TranslationSessionCoordinator.translate`/
+                // `prepareTranslation`を呼ぶと供給元が存在せず、
+                // `attach(_:)`が永遠に呼ばれない (=`performInSession`の
+                // continuationが永遠に解決されない) 構造的な穴だった。
+                // アプリの主ウィンドウの`WindowGroup`直下 (このルート) へ
+                // 1箇所だけマウントする — iOS の設定画面はこの同じ
+                // ウィンドウ内のシートなので届く。macOS の`Settings`シーン
+                // (⌘,) は別ウィンドウだが、この主ウィンドウ自体は裏で
+                // 開いたまま生き続ける (閉じられない) ので、ここにマウント
+                // した`.translationTask`は`Settings`ウィンドウでの呼び出し
+                // にも引き続き反応する。
+                .background(TranslationSessionHostView(coordinator: environment.translationSessionCoordinator))
         }
         #if os(macOS)
         // M10: menu bar (⌘N/⌘R/⌘⌫/⌘⇧F/⌘]/⌘[) — `OtegamiCommands` reads its
