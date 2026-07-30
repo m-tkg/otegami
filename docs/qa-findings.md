@@ -2608,6 +2608,119 @@ flakeを実際に観測した)。
 タイミング依存、`docs/verify.md`の既知不調とも合わせて`PENDING.md`に
 確認手順を追記した)。
 
+## Task #194: Pull to refresh が長すぎて終わらない — 進捗表示・キャンセル・非CONDSTORE経路の見直し
+
+**報告**: 「Pull to refresh が長すぎて終わらない。どのくらい進んでいるのか
+のバーを出せるなら出したい。またキャンセルもできるようにして欲しい。」
+過去にも同じ症状で「同期が終わらずアプリを強制終了した」ことがあり、
+Task #193 のデータ破損 (フェッチ時サーバー日付が「今」に化ける) を
+悪化させていた一因と見られる。
+
+**実測して分かった根本原因 (推測ではなく計測で確認)**:
+`MailboxSyncer.refetchAndDiffFlags` (非CONDSTORE サーバー向けのフラグ
+同期/消滅検出経路) が `session.fetchEnvelopes(uids: .from(minUID),
+batchSize: 100)` を呼んでいたが、**渡していた `UIDRange` が open-ended
+(`upperBound: nil`) だったため、`MailCoreIMAPSession.chunk` が
+「バッチサイズで分割する術がない」として一切チャンク化せず、ローカルに
+持っている UID 全域を1本の `FETCH` コマンドで丸ごと投げていた** —
+`batchSize` を渡していたのに実質無視されていたバグ。1本の巨大な
+`FETCH` は完了するまで何のデータも返らない (進捗を出しようがない) 上、
+Swift の協調的キャンセルのチェックポイントも無く、途中で止める手段が
+無かった。これが「終わらない」の主因と判断した。
+
+**実測**: dev mailstack (Dovecot) に 300 通投入し、同一メッセージ集合に
+対する
+- 旧経路相当 (`fetchEnvelopes` を bound なしで1回呼ぶ、ENVELOPE +
+  BODYSTRUCTURE + internalDate + size を含むフル取得):
+  **約 26–28ms**
+- 新経路 (`fetchFlags` を 100 件ずつチャンクして FLAGS のみ取得):
+  **約 3.5–5.3ms** (約 5–7倍)
+
+を計測した (`packages/OtegamiKit/Tests/MailTransportMailCoreTests`
+に一時的なベンチマークテストを追加して実行、確認後に削除 —
+`OTEGAMI_TEST_IMAP_HOST=localhost swift test` で再現可能)。
+**注意**: dev mailstack の Dovecot は `CONDSTORE` **と** `QRESYNC` の
+両方を広告する (`capabilities()` で確認済み) ため、`refetchAndDiffFlags`
+経路そのものは dev mailstack では通らない — 上記の計測は
+`fetchEnvelopes`/`fetchFlags` を直接呼んで payload サイズの差を測った
+もので、実際の低速さ (ネットワーク往復遅延 × 未チャンク化) を再現できて
+いるわけではない。**非CONDSTORE の実プロバイダでの実機計測は未確認**
+(`docs/verify.md`/`docs/roadmap.md`が既に記録している既知の限界と同じ —
+Gmail は CONDSTORE 対応 (QRESYNC 非対応)、iCloud/Yahoo!/その他汎用
+IMAP プロバイダのどれが CONDSTORE 非対応かは未確認)。`MailboxSyncer
+.incrementalSync`に `flagSync: <mailboxPath> condstore=<bool>` の
+OSLog notice を追加したので、実機の Console ログを見れば各アカウントが
+どちらの経路を通っているか確認できる。
+
+**実装した対策**:
+1. **チャンク化 + 有界化**: `refetchAndDiffFlags`自身が `UIDRange`を
+   `status.uidNext`で有界化してから`AccountSyncer.fetchBatchSize`
+   (100件)ずつ手動でチャンクし、チャンクごとに`Task.checkCancellation()`
+   を挟む。
+2. **FLAGS のみ取得**: 新設の`IMAPSessionProtocol.fetchFlags(mailboxPath:
+   uids:)` (`MCOIMAPMessagesRequestKind.flags`のみ要求、ENVELOPE/
+   BODYSTRUCTURE/internalDate/sizeを含まない) を使い、フラグが実際に
+   変わったUIDだけ`MessageRecord.flagsRaw`を直接UPDATEする
+   (`applyFlagsOnly`) — 変化の無いメッセージは`FTSIndexer.reindex`も
+   `ThreadAssigner.recomputeAggregates`も一切走らせない。従来は
+   再取得した**全件**に対して`AccountSyncer.upsert`(フル書き換え+
+   FTS再インデックス+スレッド再集計)を無条件に実行していた。
+3. **進捗表示**: `MailboxSyncer.SyncProgressUpdate`(`newMail`/
+   `flagSync`/`reconcile`/`fullResync`の4フェーズ、`completed`/`total`)
+   を`incrementalSync`→`AccountSyncer.performIncrementalSync`→
+   `SyncCoordinator.syncAccountIncrementally`まで`onProgress`引数として
+   通し、`MessageListView.refresh()`が`SyncProgressBanner`
+   (`apps/Otegami/Sources/DesignSystem/Components/`)に反映する。
+   `.flagSync`は総チャンク数が事前に分かるため`ProgressView(value:
+   total:)`の実パーセンテージ、それ以外 (`.newMail`など、`fetchEnvelopes`
+   の内部チャンク化が進捗を外に出さないため) は不定形スピナー — 指示
+   通り「総量が分かる段階は割合表示、分からない段階は不定形」。
+4. **キャンセル**: `MessageListView.refresh()`が実際の同期処理を子`Task`
+   (`activeSyncTask`)として起動し、`SyncProgressBanner`のキャンセル
+   ボタンが`activeSyncTask?.cancel()`を呼ぶ。`AccountSyncer`に
+   `FailureClass.cancelled`を追加し、`CancellationError`を
+   `.suspended`(Task #192)と同様「リトライしない・`lastSyncError`に
+   記録しない」扱いに分離 — キャンセルが通常の同期失敗として誤ってUIに
+   出たりリトライされたりしないようにした。各チャンクは自分のトランザク
+   ションで確定するため、途中でキャンセルしてもそこまでの変更は保持され、
+   消滅判定 (`deleteMessages`) はチャンクの全走査が完了した場合のみ実行
+   する — 中断時にデータが壊れないことをテストで確認 (後述)。
+
+**実装中に見つけて直したリグレッション (Task #120 との衝突)**:
+最初の実装は「ローカルに存在しないUIDだけフル`ENVELOPE`再取得+
+`AccountSyncer.upsert`」という判定にしていたが、`MessageRelocation
+ReconciliationTests`の「pending relocation row が既存の重複行に
+マージされる」テストが落ちた。原因: `AccountSyncer.upsert`内の
+`reconcilePendingRelocation`(Task #120: ローカルで先に移動させた
+プレースホルダ行をサーバー確定UIDへ`messageId`一致で回収する処理)は
+`messageId`が無いと動けないが、**確定UIDが既にローカルの別の実行 (重複)
+として存在するケース**では「ローカルに存在しないUID」ではなく
+「ローカルに存在する（が実は無関係の重複行）」に見えてしまい、
+FLAGSのみの高速経路が`upsert`を一切呼ばずプレースホルダ行を永久に
+孤立させてしまっていた。**対策**: `refetchAndDiffFlags`の先頭で
+そのメールボックスに`uid <= 0`(プレースホルダ)行が1件でもあるかを
+安価にチェックし、あれば`legacyFullRefetchAndDiffFlags`
+(Task #194以前と同じ、フル`ENVELOPE`再取得+`upsert`)にフォールバック
+する。プレースホルダ行はローカル移動からサーバー確定までの短い間しか
+存在しない一時的なものなので、この経路が実際に選ばれる頻度は低いと
+見込んでいる。
+
+**テスト**: `MailboxSyncerTests`に3件追加 —
+チャンク化 (150通・batchSize超え・チャンク境界を跨いだフラグ変更/
+消滅検出の両立)、進捗コールバック (`.flagSync`が`completed`1..チャンク
+数を報告)、キャンセル (1チャンク完了後にキャンセル→未完了チャンクの
+消滅判定は実行されない・既に適用済みのフラグ変更は残る・
+`CancellationError`が伝播する)。既存の`MessageRelocationReconciliation
+Tests`・`AccountSyncerTests`・`OpQueueProcessorTests`含め全件green。
+
+**検証**: `make test`/`make check-localization`/`swift build`
+(macOS destination) すべて green。`SyncProgressBanner`の実描画は
+**未検証** — シミュレータの既知不調 (IMAP接続不能) により pull-to-
+refresh を実機同然に再現できず、`scripts/verify-screen.sh`のDB直接
+注入方式も「進行中の同期」という一過性の状態を再現する仕組みが無い
+ため、tap-free経路では検証できなかった。`PENDING.md`に確認手順を
+追記した。
+
 ## Task #201: Yahoo! JAPAN の断続的な認証失敗の真因 — ポーリング中の切断による5分毎の再ログイン
 
 Task #187 で「認証失敗時の再試行を30分間隔にする」対処を入れたが、それは
