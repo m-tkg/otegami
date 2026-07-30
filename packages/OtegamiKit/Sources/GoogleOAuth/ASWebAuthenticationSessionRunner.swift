@@ -37,20 +37,61 @@ public final class ASWebAuthenticationSessionRunner: NSObject, AuthorizationSess
 
     public func run(authorizationURL: URL, callbackURLScheme: String) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
+            let box = ContinuationResumeBox(continuation)
             let session = ASWebAuthenticationSession(
                 url: authorizationURL,
                 callbackURLScheme: callbackURLScheme
-            ) { [weak self] callbackURL, error in
-                self?.activeSession = nil
+            ) { @Sendable [weak self] callbackURL, error in
+                // `ASWebAuthenticationSession` does *not* guarantee this
+                // completion handler runs on the main thread — on macOS it
+                // was observed firing synchronously on the
+                // `com.apple.SafariLaunchAgent` XPC reply queue (from
+                // `_endSessionWithCallbackURL:error:`), not main.
+                //
+                // `@Sendable` on this closure literal is load-bearing, not
+                // decorative: this is an `@escaping (URL?, Error?) -> Void`
+                // parameter (an imported ObjC block type) with no actor
+                // annotation, and it's written textually inside this
+                // `@MainActor`-isolated method. Swift 6's closure-isolation
+                // inference (SE-0420) therefore infers this closure as
+                // MainActor-isolated by default and inserts a *dynamic*
+                // isolation check at its entry to assert that assumption
+                // holds at runtime — that inserted check
+                // (`swift_task_isCurrentExecutorWithFlagsImpl` /
+                // `_dispatch_assert_queue_fail`) is what actually trapped
+                // in production, before any of this closure's own code
+                // ever ran: wrapping just the `activeSession` mutation
+                // below in a `Task { @MainActor in }` hop (an earlier,
+                // insufficient version of this fix) did *not* help, because
+                // the trap fires at closure entry regardless of what the
+                // body does. iOS happened not to expose this (its delivery
+                // queue is main more often, though never contractually
+                // guaranteed) but macOS did. Marking the closure
+                // `@Sendable` makes it explicitly nonisolated — matching
+                // reality — so the compiler has nothing to assert and
+                // doesn't insert the check. Do *not* use
+                // `MainActor.assumeIsolated` instead: we're genuinely not
+                // on the main actor here, so that would just relocate the
+                // same false assumption.
+                if let self {
+                    Task { @MainActor in
+                        self.activeSession = nil
+                    }
+                }
+                // Resuming the continuation itself is thread-safe from any
+                // queue; `ContinuationResumeBox` just guards the (now
+                // possible, since we no longer serialize everything onto
+                // the main actor) case of this firing more than once from
+                // guaranteeing only the first resume wins.
                 if let callbackURL {
-                    continuation.resume(returning: callbackURL)
+                    box.resume(returning: callbackURL)
                     return
                 }
                 if let authError = error as? ASWebAuthenticationSessionError, authError.code == .canceledLogin {
-                    continuation.resume(throwing: GoogleOAuthError.userCancelled)
+                    box.resume(throwing: GoogleOAuthError.userCancelled)
                     return
                 }
-                continuation.resume(throwing: error ?? GoogleOAuthError.missingAuthorizationCode)
+                box.resume(throwing: error ?? GoogleOAuthError.missingAuthorizationCode)
             }
             session.presentationContextProvider = presentationContextProvider
             // Ephemeral: doesn't share cookies/state with the user's
@@ -61,9 +102,40 @@ public final class ASWebAuthenticationSessionRunner: NSObject, AuthorizationSess
             activeSession = session
             guard session.start() else {
                 activeSession = nil
-                continuation.resume(throwing: GoogleOAuthError.userCancelled)
+                box.resume(throwing: GoogleOAuthError.userCancelled)
                 return
             }
         }
+    }
+}
+
+/// Thread-safe once-only `CheckedContinuation` resume guard. Deliberately
+/// *not* `@MainActor` (unlike `OtegamiTranslationApple.ResumeBox`, which
+/// this mirrors the intent of) — `ASWebAuthenticationSessionRunner`'s
+/// completion handler can fire off the main actor (see its doc comment
+/// above), so guarding "already resumed" must not itself require hopping
+/// onto the main actor first.
+private final class ContinuationResumeBox<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+
+    init(_ continuation: CheckedContinuation<T, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(returning value: T) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(returning: value)
+    }
+
+    func resume(throwing error: Error) {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(throwing: error)
     }
 }
