@@ -2520,10 +2520,24 @@ final class AppEnvironment {
     /// relay that's unreachable at the moment shouldn't leave the user
     /// stuck unable to turn push back off locally) and clears all local
     /// push state.
+    ///
+    /// Task #174 (実機バグ2 followup): "disable" is meant to fully undo
+    /// this device's relay footprint, so it fetches this device's actual
+    /// watch list from the relay (`GET /v1/watches`, ground truth —
+    /// already device-scoped server-side) rather than trusting only the
+    /// local `accountWatchMap`, which can drift (a previous register/
+    /// reregister call may have created a watch on the relay but never
+    /// got as far as persisting its id locally). See
+    /// `WatchReconciler.watchIdsToDeleteForDisable`'s doc comment.
     func disablePushNotifications() async {
         if let baseURL = RelayURLConfig.value,
            let deviceSecret = try? pushSettings.deviceSecret() {
-            for (_, watchId) in pushSettings.accountWatchMap {
+            let serverWatches = (try? await pushRelayClient.listWatches(baseURL: baseURL, deviceSecret: deviceSecret)) ?? []
+            let watchIdsToDelete = WatchReconciler.watchIdsToDeleteForDisable(
+                serverWatches: serverWatches,
+                localWatchMap: pushSettings.accountWatchMap
+            )
+            for watchId in watchIdsToDelete {
                 try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: watchId)
             }
         }
@@ -2651,6 +2665,19 @@ final class AppEnvironment {
     /// されていません"/"認証情報が見つかりません" button tap —
     /// `PushNotificationSettingsView` surfaces the failure instead of
     /// leaving the row looking like nothing happened.
+    ///
+    /// Task #174 (実機バグ2: 再登録後もリレー側に古い watch が孤児として
+    /// 残る): a 実機 test of the Task #173 re-register button reconnected
+    /// successfully, but the relay ended up with 3 watches for 2 apps-known
+    /// accounts — the old, now-stopped watch never got deleted. The bug
+    /// was that this method only ever deleted `pushSettings
+    /// .accountWatchMap[account.id]` — the *local* record — which can lose
+    /// track of a watch the relay still has (see
+    /// `WatchReconciler.watchIdsToDelete(forReregisteringAccountId:...)`'s
+    /// doc comment for why). Fixed by asking the relay itself
+    /// (`GET /v1/watches`) which watch(es) it has for this account before
+    /// deleting, falling back to the local map too so a failed/unreachable
+    /// list call still cleans up at least as much as before this fix.
     func reregisterWatch(for account: AccountRecord) async throws {
         guard isPushEnabled else { throw PushError.relayNotConfigured }
         guard account.authType == .password else { throw PushError.relayNotConfigured }
@@ -2660,10 +2687,21 @@ final class AppEnvironment {
             throw ReregisterWatchError.credentialUnavailable
         }
 
-        if let existingWatchId = pushSettings.accountWatchMap[account.id] {
-            try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: existingWatchId)
-            pushSettings.setWatchId(nil, forAccountId: account.id)
+        let serverWatches = (try? await pushRelayClient.listWatches(baseURL: baseURL, deviceSecret: deviceSecret)) ?? []
+        let watchIdsToDelete = WatchReconciler.watchIdsToDelete(
+            forReregisteringAccountId: account.id,
+            serverWatches: serverWatches,
+            localWatchId: pushSettings.accountWatchMap[account.id]
+        )
+        for watchId in watchIdsToDelete {
+            // Best-effort, same as `unregisterWatch` — a delete failure
+            // here means (at worst) one more orphan for a future
+            // `reconcilePushWatchesIfNeeded()` pass to clean up, not a
+            // reason to block the user from getting a working watch back.
+            try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: watchId)
         }
+        pushSettings.setWatchId(nil, forAccountId: account.id)
+
         guard await registerWatch(for: account, baseURL: baseURL, deviceSecret: deviceSecret) else {
             throw ReregisterWatchError.relayRejectedWatch
         }

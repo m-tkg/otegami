@@ -81,4 +81,87 @@ struct WatchReconcilerTests {
         let plan = WatchReconciler.plan(localPasswordAccountIds: [], localWatchMap: [:], serverWatches: [])
         #expect(plan.isEmpty)
     }
+
+    // MARK: - watchIdsToDelete(forReregisteringAccountId:serverWatches:localWatchId:)
+
+    @Test("reregister: the relay's own watch for this account is queued for deletion even with no local record of it")
+    func reregisterDeletesOrphanedServerWatchWithNoLocalRecord() {
+        // The actual Task #174 orphan: a previous register/reregister
+        // attempt created a watch on the relay but the app never
+        // persisted its id locally (crash, kill, or a `try?`-swallowed
+        // failure elsewhere) — `localWatchId` is `nil`, but the relay
+        // list still has it.
+        let watchIds = WatchReconciler.watchIdsToDelete(
+            forReregisteringAccountId: "a1",
+            serverWatches: [summary(watchId: "w1-orphan", accountId: "a1")],
+            localWatchId: nil
+        )
+        #expect(watchIds == ["w1-orphan"])
+    }
+
+    @Test("reregister: only watches for the target account are selected, other accounts' watches are left alone")
+    func reregisterIgnoresOtherAccountsWatches() {
+        let watchIds = WatchReconciler.watchIdsToDelete(
+            forReregisteringAccountId: "a1",
+            serverWatches: [summary(watchId: "w1", accountId: "a1"), summary(watchId: "w2", accountId: "a2")],
+            localWatchId: nil
+        )
+        #expect(watchIds == ["w1"])
+    }
+
+    @Test("reregister: the local map's watch id is included even if the relay list doesn't have it (e.g. a failed GET /v1/watches)")
+    func reregisterFallsBackToLocalWatchId() {
+        let watchIds = WatchReconciler.watchIdsToDelete(
+            forReregisteringAccountId: "a1",
+            serverWatches: [],
+            localWatchId: "w1-local-only"
+        )
+        #expect(watchIds == ["w1-local-only"])
+    }
+
+    @Test("reregister: a duplicate server watch and the local map's watch id for the same account are unioned, not double-counted")
+    func reregisterUnionsServerAndLocalWatchIds() {
+        let watchIds = WatchReconciler.watchIdsToDelete(
+            forReregisteringAccountId: "a1",
+            serverWatches: [summary(watchId: "w1", accountId: "a1"), summary(watchId: "w1-dup", accountId: "a1")],
+            localWatchId: "w1"
+        )
+        #expect(watchIds == ["w1", "w1-dup"])
+    }
+
+    @Test("reregister: nothing to delete when neither the relay nor the local map knows of a watch for this account")
+    func reregisterNoWatchesToDeleteWhenNoneExist() {
+        let watchIds = WatchReconciler.watchIdsToDelete(
+            forReregisteringAccountId: "a1",
+            serverWatches: [],
+            localWatchId: nil
+        )
+        #expect(watchIds.isEmpty)
+    }
+
+    // MARK: - watchIdsToDeleteForDisable(serverWatches:localWatchMap:)
+
+    @Test("disable: every relay watch for this device is included, even ones the local map never learned about")
+    func disableIncludesEveryServerWatch() {
+        let watchIds = WatchReconciler.watchIdsToDeleteForDisable(
+            serverWatches: [summary(watchId: "w1", accountId: "a1"), summary(watchId: "w2-orphan", accountId: "a2")],
+            localWatchMap: ["a1": "w1"]
+        )
+        #expect(watchIds == ["w1", "w2-orphan"])
+    }
+
+    @Test("disable: the local map's watch ids are still included when the relay list call failed (empty serverWatches)")
+    func disableFallsBackToLocalWatchMap() {
+        let watchIds = WatchReconciler.watchIdsToDeleteForDisable(
+            serverWatches: [],
+            localWatchMap: ["a1": "w1", "a2": "w2"]
+        )
+        #expect(watchIds == ["w1", "w2"])
+    }
+
+    @Test("disable: nothing to delete when both the relay and the local map are empty")
+    func disableNoWatchesToDeleteWhenNoneExist() {
+        let watchIds = WatchReconciler.watchIdsToDeleteForDisable(serverWatches: [], localWatchMap: [:])
+        #expect(watchIds.isEmpty)
+    }
 }

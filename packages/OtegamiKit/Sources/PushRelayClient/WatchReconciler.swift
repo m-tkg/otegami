@@ -118,4 +118,53 @@ public enum WatchReconciler {
             accountIdsToForgetLocally: accountIdsToForgetLocally
         )
     }
+
+    /// Task #174 (実機バグ2: 再登録後もリレー側に古い watch が孤児として
+    /// 残る): which relay watchIds `AppEnvironment.reregisterWatch(for:)`
+    /// should `DELETE` before creating a fresh watch for `accountId`.
+    ///
+    /// Prefers `serverWatches` (`GET /v1/watches`, ground truth) filtered
+    /// down to this account — this is what actually catches the orphan:
+    /// the local `accountWatchMap` only ever remembers the *last*
+    /// watchId a successful `createWatch` call persisted, so any earlier
+    /// watch for the same account that a previous register/reregister
+    /// attempt created but never got around to deleting (crash, kill,
+    /// `try?`-swallowed delete failure) is invisible to a local-map-only
+    /// lookup, even though the relay still has it. `localWatchId` is
+    /// unioned in too so a transient/failed `GET /v1/watches` (the caller
+    /// passes `nil` on any failure, matching this whole file's
+    /// best-effort posture) still deletes at least the one watch the app
+    /// itself remembers — no worse than the pre-#174 behavior.
+    public static func watchIdsToDelete(
+        forReregisteringAccountId accountId: String,
+        serverWatches: [WatchSummary],
+        localWatchId: String?
+    ) -> Set<String> {
+        var watchIds = Set(serverWatches.filter { $0.accountId == accountId }.map(\.watchId))
+        if let localWatchId {
+            watchIds.insert(localWatchId)
+        }
+        return watchIds
+    }
+
+    /// Task #174: every relay watchId `AppEnvironment
+    /// .disablePushNotifications()` should `DELETE` — "disable" is meant
+    /// to fully undo this device's relay footprint, so it should reach
+    /// every watch the relay has for this device, not just the ones the
+    /// local `accountWatchMap` happens to still remember. `serverWatches`
+    /// (`GET /v1/watches`) is already device-scoped server-side
+    /// (`WatchRoutes` resolves the owning deviceId from the
+    /// `deviceSecret` used to authenticate the call), so every id it
+    /// returns is safe to delete unconditionally. `localWatchMap`'s
+    /// values are unioned in for the same "the relay list call itself
+    /// might have failed" reason as `watchIdsToDelete
+    /// (forReregisteringAccountId:...)` above.
+    public static func watchIdsToDeleteForDisable(
+        serverWatches: [WatchSummary],
+        localWatchMap: [String: String]
+    ) -> Set<String> {
+        var watchIds = Set(serverWatches.map(\.watchId))
+        watchIds.formUnion(localWatchMap.values)
+        return watchIds
+    }
 }
