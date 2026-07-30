@@ -2,7 +2,10 @@ import XCTest
 
 /// Shared steps for driving `SearchScreenView`'s search field — opened as a
 /// sheet from `MailScreenView`'s header search button (macOS still searches
-/// in place on `MessageListView`'s own `.searchable`, unchanged).
+/// in place, via `MessageListView`'s own `MacListSearchBar` row above the
+/// list — a plain `TextField`, not the system `.searchable`, since Task
+/// #197 — unchanged from this UITest's point of view either way: none of
+/// these helpers ever drove macOS).
 ///
 /// **検索画面再構成 (Task #86)**: `SearchScreenView`'s top bar
 /// (`SearchTopBar`) replaced the system `.searchable` search bar with a

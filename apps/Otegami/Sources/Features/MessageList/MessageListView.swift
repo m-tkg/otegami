@@ -14,17 +14,20 @@ import os
 /// "すべての受信トレイ" unified inbox (`SidebarSelection.unifiedInbox`, plan:
 /// "アカウント境界を跨いだスレッド結合はしない" — each row is still one
 /// account's thread, just interleaved by date across accounts). Refreshing —
-/// pull-to-refresh on iOS, pull-to-refresh or the toolbar button on macOS
-/// (新画面構成: iOS 側のヘッダ再読込ボタンは廃止、pull-to-refresh に一本化) —
-/// is what triggers `SyncCoordinator` to talk to the server; with no network
-/// the list still renders whatever's already stored.
+/// pull-to-refresh on iOS, pull-to-refresh or `MacListSearchBar`'s refresh
+/// button on macOS (新画面構成: iOS 側のヘッダ再読込ボタンは廃止、
+/// pull-to-refresh に一本化) — is what triggers `SyncCoordinator` to talk to
+/// the server; with no network the list still renders whatever's already
+/// stored.
 ///
 /// Design-phase-2 (1a/1d/1g/1h): the platforms now diverge more than they
 /// used to. macOS keeps everything from before this pass unchanged — its
-/// own `.navigationTitle`, `.searchable` search bar (M7), and swipe/context
-/// menu semantics. iOS drops `.navigationTitle`/`.searchable` from this view
-/// entirely (the enclosing `MailTabView` owns the tappable folder-picker
-/// title instead, and search moved to its own tab — `SearchTabView`) and
+/// own `.navigationTitle` and swipe/context menu semantics. Its search bar
+/// (M7) moved off the system `.searchable` and into its own `MacListSearchBar`
+/// row (Task #197, this file's `body` doc comment). iOS drops
+/// `.navigationTitle`/search from this view entirely (the enclosing
+/// `MailTabView` owns the tappable folder-picker title instead, and search
+/// moved to its own tab — `SearchTabView`) and
 /// gains 1g's redesigned swipe actions, 1h's long-press bulk-selection mode,
 /// and an undo toast for the two destructive bulk-capable actions (delete,
 /// archive). Every macOS-only addition/removal below is behind `#if
@@ -616,6 +619,52 @@ struct MessageListView: View {
     }
 
     var body: some View {
+        // Task #197 (実機フィードバック「更新ボタンと検索欄をメールビュー
+        // 側から一覧側へ移して欲しい」): macOS だけ、この一覧自身の上に
+        // 検索欄+更新ボタンの行 (`macListSearchBar`) を重ねる薄い`VStack`で
+        // 包む。以前は同じ`refresh()`/`searchText`が`messageListCore`の
+        // `.searchable`/`.toolbar`(システムのウィンドウ共通ツールバー) に
+        // 乗っていて、コード上はこの一覧の`.toolbar`だったにもかかわらず、
+        // 3ペインの`NavigationSplitView`ではその共通ツールバーの検索欄が
+        // ウィンドウ右端 (＝実質メールビュー側の真上) に描画され、
+        // 「メールビューに検索欄がある」ように見えてしまっていた
+        // (実機スクリーンショットで確認、詳細は`docs/design-system.md`の
+        // Task #197 節)。`VStack`で一覧のすぐ上に直接描画すれば、
+        // どのペイン幅でも必ず一覧の真上に来ることが保証できる。
+        // iOS は無変更 (`messageListCore`をそのまま返す) — iOS はそもそも
+        // この`List`に`.searchable`を付けていない (検索は`SearchScreenView`
+        // という別画面、`messageListCore`の doc comment参照)。
+        #if os(macOS)
+        VStack(spacing: 0) {
+            macListSearchBar
+            messageListCore
+        }
+        #else
+        messageListCore
+        #endif
+    }
+
+    #if os(macOS)
+    /// `MacListSearchBar`型自体へ検索/更新まわりの状態を橋渡しするだけの
+    /// 薄いラッパー — `body`の`VStack`を単純な式に保つため、初期化子呼び
+    /// 出し自体をここへ追い出した。
+    private var macListSearchBar: some View {
+        MacListSearchBar(
+            searchText: $searchText,
+            searchScope: $searchScope,
+            availableScopes: availableScopes,
+            isFieldFocused: $isSearchFieldFocused,
+            isSyncing: isSyncing,
+            onRefresh: { Task { await refresh() } }
+        )
+    }
+    #endif
+
+    /// `body`本体 — 以前はこれが`body`そのものだった (`.searchable`/
+    /// `refreshToolbarItem`を含む) が、Task #197 でmacOS専用の検索欄+
+    /// 更新ボタン行 (`macListSearchBar`) を`body`側の`VStack`に外出しした
+    /// ため、この一覧単体をここへ切り出した。
+    private var messageListCore: some View {
         List {
             listContent
         }
@@ -690,34 +739,19 @@ struct MessageListView: View {
             }
         }
         #if os(macOS)
-        // No `.accessibilityIdentifier` chained after `.searchable` here —
-        // doing so doesn't tag the search field with its own identifier
-        // the way it would for a plain child view; it *replaces* whatever
-        // identifier the preceding modifier chain already set on this same
-        // `List` ("messageList.list", set above), which broke XCUITest's
-        // ability to find the list at all (discovered running
-        // `OtegamiM7SetupUITests`, back when this view was shared by both
-        // platforms). `.searchable`'s system search bar is reliably the
-        // only one on screen, so an XCUITest would locate it via
-        // `app.searchFields.firstMatch` instead (`SearchUITestHelpers
-        // .typeSearchQuery`) — moot for iOS now (no `.searchable` here at
-        // all; see `SearchTabView`), still correct for macOS.
+        // Task #197 より前はここに`.searchable`/`.searchFocused`/
+        // `.searchScopes`が付いていた — システムのウィンドウ共通ツール
+        // バーに検索欄を差し込む方式で、`accessibilityIdentifier`の
+        // 上書き注意点などここに長いコメントが付いていたが、Task #197 で
+        // `body`の`VStack`側に自前の`macListSearchBar`(`MacListSearchBar`
+        // 型) を置く方式へ切り替えたため丸ごと不要になった (検索欄自体は
+        // 独立した`View`なので"messageList.list"の識別子を上書きする心配も
+        // 無い)。`⌘F`(`OtegamiCommands`) でのフォーカスは`isSearchFieldFocused`
+        // への`.focusedSceneValue`をそのまま残し、`MacListSearchBar`側の
+        // `TextField`に`.focused($isFieldFocused)`で束ねることで維持して
+        // いる。
         .navigationTitle(title)
-        .searchable(text: $searchText, prompt: "検索")
-        // M10: ⌘F (`OtegamiCommands`, moved off ⇧⌘F by Task #165) — `.searchFocused` is the modifier
-        // SwiftUI documents specifically for programmatically focusing the
-        // field `.searchable` creates (there's no view identity to target
-        // it with `@FocusState` the normal way, since `.searchable` doesn't
-        // expose one).
-        .searchFocused($isSearchFieldFocused)
         .focusedSceneValue(\.focusSearchAction, { isSearchFieldFocused = true })
-        .searchScopes($searchScope) {
-            ForEach(availableScopes) { scope in
-                Text(scope.title)
-                    .tag(scope)
-                    .accessibilityIdentifier("messageList.search.scope.\(scope.rawValue)")
-            }
-        }
         .onChange(of: searchText) { _, _ in scheduleSearch() }
         .onChange(of: searchScope) { _, _ in scheduleSearch() }
         // 実機バグ報告「スレッド表示をオフ/オンにした直後、検索結果だけ
@@ -823,8 +857,6 @@ struct MessageListView: View {
         #if os(iOS)
         // 一覧ヘッダの再読込ボタンは iOS では廃止 — pull-to-refresh
         // (`.refreshable`、下の `#if os(iOS)` ブロック) がその役目を持つ。
-        // macOS には pull-to-refresh 相当が無いため `refreshToolbarItem` を
-        // そのまま残す (`#else` 側)。
         if isSelecting {
             ToolbarItem(placement: .cancellationAction) {
                 Button("キャンセル") { exitSelectionMode() }
@@ -841,24 +873,12 @@ struct MessageListView: View {
             }
         }
         #else
-        refreshToolbarItem
+        // Task #197: macOS の更新ボタンはウィンドウ共通ツールバーの
+        // `ToolbarItem`から`macListSearchBar`内の`MacListSearchBar`の
+        // 自前ボタンへ移した (`body`のdoc comment参照) — この分岐に
+        // 出す項目はもう無い。
+        ToolbarItemGroup {}
         #endif
-    }
-
-    private var refreshToolbarItem: some ToolbarContent {
-        ToolbarItem {
-            Button {
-                Task { await refresh() }
-            } label: {
-                if isSyncing {
-                    ProgressView()
-                } else {
-                    Label("再同期", systemImage: "arrow.clockwise")
-                }
-            }
-            .accessibilityIdentifier("messageList.refreshButton")
-            .disabled(isSyncing)
-        }
     }
 
     #if os(iOS)

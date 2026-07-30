@@ -8157,3 +8157,82 @@ macOS標準動作を打ち消すには`List`の行レンダリングそのもの
 `FolderListSheet`側は無改修、macOS専用の`#if os(macOS)`ブロックのみの
 変更のため)。**iOS 側は無改修** — `SidebarView`の`#if os(macOS)`
 ブロック外には触れていない。
+
+## Task #197: macOS の更新ボタン・検索欄を一覧側へ移す
+
+**実機フィードバック**: 「mac 版において、添付の画像の項目をメール一覧
+側に置いてほしい。今はメールビューに置いてある」— スクリーンショットに
+写っていたのは更新ボタン (円形の矢印) と検索欄が横に並んだ行。
+
+### 現状把握: コード上は既に一覧側だったが、見た目はメールビュー側だった
+
+`MessageListView`(中央の一覧ペイン) の`List`に`.searchable(text:
+$searchText, prompt: "検索")`と`refreshToolbarItem`(`.toolbar`) が付いて
+おり、コード上は間違いなく一覧の付属物だった。ところが macOS の
+`NavigationSplitView`(3ペイン) は、こうしたウィンドウ共通ツールバー項目
+(`.searchable`が生成する検索欄、`ToolbarItem`) を**ウィンドウの単一の
+ツールバーバー**にまとめて描画する — 検索欄はその中でも既定でウィンドウ
+右端に寄る。3ペイン構成では右端は「detail」列 (メールビュー) の真上に
+あたるため、コード上は「content」列 (一覧) の付属物であっても、実機では
+「メールビューの真上に検索欄・更新ボタンがある」ように見えてしまって
+いた。`osascript`+`screencapture`で実際に起動して確認して初めて気づいた
+挙動で、コードレビューだけでは見抜けなかった。
+
+### 実装: システムの`.searchable`/`.toolbar`をやめ、自前の行を`List`の
+### 直上に直接描画する
+
+- 新規`MacListSearchBar`(`Sources/Features/MessageList/MacListSearchBar.swift`、
+  macOS専用) — 検索アイコン+`TextField`+クリア(x)ボタンをカプセル型の
+  フィールドにまとめ、選択肢が2個以上あるときだけ`.segmented`のスコープ
+  切替、右端に更新ボタンを置く1行。iOS の`SearchTopBar`(Task #86) が
+  同じ理由で確立した「`OtegamiRadius`の『カードだけ角丸』方針の意図的な
+  例外としてこのフィールドだけ`Capsule()`を使う」という前例にそのまま
+  倣った。
+- `MessageListView.body`を macOS だけ`VStack(spacing: 0) { macListSearchBar;
+  messageListCore }`で包む — `List`(`messageListCore`) の**直前**に
+  `macListSearchBar`を置くことで、ウィンドウ幅・ペイン幅に関わらず必ず
+  一覧の真上に描画されることを保証した。以前の`List`+全modifierを
+  `messageListCore`という別プロパティへそのまま切り出しただけで、
+  `.searchable`/`.searchScopes`/`.searchFocused`/`refreshToolbarItem`を
+  削っただけ — 中身のロジック (`scheduleSearch()`/`refresh()`/`isSyncing`
+  等) は無改修。iOS は`messageListCore`をそのまま返すだけで無変更。
+- ⌘F (`OtegamiCommands`) でのフォーカスは`.focusedSceneValue(\.
+  focusSearchAction, ...)`をそのまま残し、`MacListSearchBar`の`TextField`
+  に`.focused(isFieldFocused)`で束ねることで維持した。
+- スコープ切替 (「すべて」/「このメールボックス」) は旧`.searchScopes`の
+  プレーン置き換え — 選択肢が2個以下なので`.pickerStyle(.segmented)`で
+  十分コンパクトと判断した。
+
+### 縦の並び順の根拠
+
+`contentColumn`(`OtegamiApp.swift`) は元々
+`AccountFilterChipRow`(Task #181、統合ビュー選択時だけ) →`MessageListView`
+という縦積みだった。`macListSearchBar`は`MessageListView`自身の`body`の
+中、つまり**チップ行のさらに下・一覧の真上**に入る。チップ行 (どの
+アカウントを含めるか、広い絞り込み) → 検索欄 (その結果の中をさらに
+絞り込む/検索する、狭い絞り込み) → 一覧本体、という「絞り込みが狭く
+なっていく」順序が自然だと判断した。
+
+### 挙動の変化 (ユーザー向けに明記)
+
+- 検索欄の見た目がシステム標準の`.searchable`の丸角検索欄から、この
+  アプリ独自のカプセル型`TextField`に変わった。虫眼鏡アイコン・
+  プレースホルダ「検索」・クリア(x)ボタンは維持したが、フォント/背景色は
+  システム標準ではなく`OtegamiColor`/`OtegamiFont`トークンになった。
+- 検索欄・更新ボタンの位置がウィンドウ右上 (実質メールビューの真上) から
+  一覧ペインの、アカウント絞り込みチップ行のすぐ下へ移った。
+- スコープ切替 (「すべて」/「このメールボックス」) の見た目が
+  `.searchScopes`のタブ風から`.segmented`ピッカーに変わった。
+- 機能面の後退は無い: 検索クエリ・スコープの状態管理・デバウンス
+  (`scheduleSearch()`)・空/検索結果のオーバーレイ表示は完全に無改修。
+
+### 検証
+
+`make mac`でビルドし実際に起動、`osascript`(`System Events`のAX API
+経由でテキストフィールドへ値を設定) + `screencapture`で確認: 検索欄・
+更新ボタンが一覧ペイン (チップ行の下、リストの上) に描画され、メール
+ビュー側には何も残らないこと、検索欄に入力すると一覧が絞り込まれること
+(`OpenAI`で検索し該当スレッドのみに絞り込まれることを確認)、クリア
+ボタンが入力時にのみ表示されることを確認した。iOS 側は`messageListCore`
+を素通しするだけの分岐のため未検証だが、コード上は無改修
+(`#if os(macOS)`の外に一切触れていない)。

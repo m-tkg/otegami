@@ -160,6 +160,12 @@ translations = {
     "未読": "Unread",
     "すべて": "All",
     "このメールボックス": "This Mailbox",
+    # Task #197: macOS の一覧ヘッダ検索欄 (`MacListSearchBar`) — スコープ
+    # ピッカー自体は`.labelsHidden()`で非表示だが、VoiceOver/カバレッジ
+    # チェック用に文言は必要。「クリア」は`SearchTopBar`の閉じるボタンとは
+    # 役割が違う (検索クエリだけを消す) ため専用の文言にした。
+    "検索範囲": "Search Scope",
+    "検索文字列をクリア": "Clear Search Text",
 
     # --- 検索画面再構成 (Task #86, Sparkハンドオフ): トップバー (角丸
     # フィールド+星+丸い閉じるボタン)、「履歴」/「保存済み」タブ、保存済み
@@ -768,6 +774,11 @@ translations = {
     # needed to pick up the translation).
     "カテゴリの並び替え": "Reorder Categories",
     "サーバーのフラグと連動": "Sync with Server Flag",
+    # Task #190: 「アカウントでグループ化」表示の一括操作 (スワイプ/
+    # コンテキストメニュー) の確認ダイアログ ON/OFF (`MailListSettingsView`)。
+    "一括操作の前に確認する": "Confirm Before Bulk Actions",
+    "「アカウントでグループ化」表示でアカウント行をスワイプ（またはコンテキストメニュー）から一括操作するとき、実行前に確認ダイアログを出します。OFFにしても実行後5秒は取り消せます。":
+        "Shows a confirmation dialog before running a bulk action from swiping (or the context menu) on an account row in “Group by Account” view. Even when off, you can still undo for 5 seconds after it runs.",
     "このビルドには Google OAuth Client ID が設定されていないため、Google 認証は行えません。詳細は docs/oauth-setup.md を参照してください。":
         "This build has no Google OAuth Client ID configured, so Google sign-in isn't available. See docs/oauth-setup.md for details.",
     "このビルドには Microsoft OAuth Client ID が設定されていないため、Microsoft 認証は行えません。詳細は docs/oauth-setup.md を参照してください。":

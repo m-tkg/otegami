@@ -951,6 +951,26 @@
         }
       }
     },
+    "検索範囲": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search Scope"
+          }
+        }
+      }
+    },
+    "検索文字列をクリア": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Search Text"
+          }
+        }
+      }
+    },
     "履歴": {
       "localizations": {
         "en": {
