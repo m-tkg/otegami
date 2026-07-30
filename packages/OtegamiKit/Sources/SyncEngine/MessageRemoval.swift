@@ -304,6 +304,13 @@ public enum MessageRemoval {
     /// other opQueue-enqueuing/db-mutating path in this file: a failure
     /// just leaves the delete/archive/relocation applied, same as if
     /// "元に戻す" had never been tapped.
+    ///
+    /// Task #183: the "still exists (relocated)" branch above no longer
+    /// blindly writes `original`'s `(mailboxId, uid)` back onto the row —
+    /// see the guard inside the loop below and `MessageRelocationConflict`
+    /// for why a different row can already occupy that slot by the time
+    /// undo runs, and how that's resolved without tripping `message`'s
+    /// `(mailboxId, uid)` uniqueness constraint.
     public static func undo(_ snapshot: Snapshot, db: Database) throws {
         try OpQueueRecord.deleteAll(db, keys: snapshot.opQueueIds)
         guard let threadId = snapshot.thread.id else { return }
@@ -312,10 +319,33 @@ public enum MessageRemoval {
             var restoredThread = snapshot.thread
             try restoredThread.insert(db)
         }
+        var extraAffectedThreadIds: Set<Int64> = []
         for original in snapshot.messages {
             guard let messageId = original.id else { continue }
             if var current = try MessageRecord.fetchOne(db, key: messageId) {
                 guard current.mailboxId != original.mailboxId || current.uid != original.uid else { continue }
+                // Task #183: guard the destination `(mailboxId, uid)` slot
+                // the same way `AccountSyncer.reconcilePendingRelocation`/
+                // `AccountDuplicateMerger.mergeCollidingMailbox` do, rather
+                // than blindly writing back `original`'s pre-commit
+                // position — a *different* row can have genuinely landed
+                // there since (most plausibly the mailbox's `uidValidity`
+                // reset and a full resync placed an unrelated message at
+                // this same `uid`) while this row sat relocated elsewhere.
+                // If so, this restore can't recreate the original slot
+                // without colliding: fold this row's local-only state
+                // forward into whatever's occupying it and discard this
+                // row instead of crashing (same accepted trade-off
+                // `MessageRelocationConflict` already documents).
+                if var occupant = try MessageRecord
+                    .filter(Column("mailboxId") == original.mailboxId)
+                    .filter(Column("uid") == original.uid)
+                    .fetchOne(db), occupant.id != messageId {
+                    extraAffectedThreadIds.formUnion(
+                        try MessageRelocationConflict.mergeAndDiscard(mover: current, into: &occupant, db: db)
+                    )
+                    continue
+                }
                 current.mailboxId = original.mailboxId
                 current.uid = original.uid
                 current.updatedAt = Date()
@@ -328,6 +358,9 @@ public enum MessageRemoval {
         }
         if threadStillExists {
             try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+        }
+        for extraThreadId in extraAffectedThreadIds where extraThreadId != threadId {
+            try ThreadAssigner.recomputeAggregates(threadId: extraThreadId, db: db)
         }
     }
 }

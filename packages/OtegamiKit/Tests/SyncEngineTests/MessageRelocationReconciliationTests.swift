@@ -231,4 +231,210 @@ struct MessageRelocationReconciliationTests {
         }
         #expect(archiveThreadsAfterSync == [threadId])
     }
+
+    /// Task #183 (実機報告「iCloud の Archive メールボックスの同期が毎回
+    /// `UNIQUE constraint failed: message.mailboxId, message.uid` で失敗する」):
+    /// the destination `(mailboxId, uid)` a pending-relocation row is about
+    /// to adopt can already be occupied by a *genuine*, independently-
+    /// synced row for the exact same message — e.g. another client already
+    /// completed the same archive server-side, and this device's own
+    /// Archive sync happened to observe that real row before this device's
+    /// own local relocation got a chance to reconcile. Before this task,
+    /// `AccountSyncer.reconcilePendingRelocation` blindly rewrote the
+    /// pending row's `uid` onto the real one regardless, tripping the
+    /// uniqueness constraint every single sync pass thereafter (no self-
+    /// heal — the pending row was never cleaned up). This locks in the fix:
+    /// the sync must not throw, must not leave a visible duplicate, and
+    /// must carry the pending row's local-only pin state forward onto the
+    /// survivor.
+    @Test("a pending relocation row reconciles onto an already-real duplicate at the destination without duplicating or crashing")
+    func pendingRelocationConflictingWithAlreadyRealRowMergesWithoutDuplicating() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let (inboxId, archiveId) = try await database.dbWriter.write { db -> (Int64, Int64) in
+            var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox, uidValidity: 1, uidNext: 1)
+            try inbox.insert(db)
+            var archive = MailboxRecord(accountId: account.id, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1, uidNext: 43)
+            try archive.insert(db)
+            return (inbox.id!, archive.id!)
+        }
+
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let sharedMessageId = "<dup-conflict-repro@otegami.test>"
+
+        // The message this device is about to (locally) archive, pinned so
+        // the merge-forward of local-only state is actually exercised.
+        let (threadId, pendingMessageId) = try await database.dbWriter.write { db -> (Int64, Int64) in
+            var thread = ThreadRecord(accountId: account.id, lastMessageDate: date, messageCount: 1)
+            try thread.insert(db)
+            var message = MessageRecord(
+                mailboxId: inboxId, uid: 5, messageId: sharedMessageId,
+                subject: "重複合流テスト", date: date, internalDate: date, threadId: thread.id,
+                isPinnedLocal: true
+            )
+            try message.insert(db)
+            return (thread.id!, message.id!)
+        }
+
+        // Local archive: relocates `pendingMessageId` into Archive with a
+        // placeholder UID, same as the other tests in this file. Committed
+        // *before* the already-real duplicate below is inserted — this
+        // thread has only one message at this point, so `MessageRemoval
+        // .commit`'s own `ThreadQuery.actionTargets`/`deduplicate` (which
+        // already collapses same-`messageId` rows *within a thread* before
+        // any action runs) never gets a chance to hide either row from the
+        // other; the point of this test is the sync-time reconciliation
+        // race, not that pre-existing action-target dedup.
+        let summary = try await database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: pendingMessageId)
+            )
+        }
+        _ = try await database.dbWriter.write { db in
+            try MessageRemoval.commit(.archive, summary: summary, accountId: account.id, db: db)
+        }
+        let pendingRow = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: pendingMessageId) }
+        #expect(pendingRow?.mailboxId == archiveId)
+        #expect(pendingRow?.isPendingRelocation == true)
+
+        // A genuine, already-synced copy of the *same* message now sitting
+        // at the real destination UID (42) in Archive — the "some other
+        // sync already caught up" half of the race, arriving only now
+        // (e.g. this device's own initial/full sync of Archive completing
+        // independently) so it can't have been deduplicated away above.
+        let realArchiveMessageId = try await database.dbWriter.write { db -> Int64 in
+            var already = MessageRecord(
+                mailboxId: archiveId, uid: 42, messageId: sharedMessageId,
+                subject: "重複合流テスト", date: date, internalDate: date, threadId: threadId
+            )
+            try already.insert(db)
+            return already.id!
+        }
+
+        // The server confirms the same real UID (42) the independently-
+        // synced copy already has — before this task's fix, reconciling the
+        // pending row onto `uid: 42` here threw the uniqueness violation.
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let archiveInfo = MailboxInfo(path: "Archive", displayPath: "Archive", role: .archive, attributes: [])
+        let realEnvelope = FetchedEnvelope(
+            uid: 42, messageId: sharedMessageId, inReplyTo: nil, references: [],
+            subject: "重複合流テスト", from: [], to: [], cc: [], bcc: [], replyTo: [],
+            date: date, internalDate: date, flags: [], size: 100
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inboxInfo, archiveInfo],
+                envelopesByPath: ["Archive": [realEnvelope]],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Archive": MailboxStatus(uidValidity: 1, uidNext: 43, highestModSeq: 0, messageCount: 1),
+                ]
+            ))
+        }
+        _ = try await syncer.performIncrementalSync(
+            auth: .password(username: account.imapUsername, password: "test1234"), scope: .mailbox(path: "Archive")
+        )
+
+        let archiveMessagesAfterSync = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == archiveId).filter(Column("messageId") == sharedMessageId).fetchAll(db)
+        }
+        #expect(archiveMessagesAfterSync.count == 1, "must not duplicate — the pending row merges into the already-real one instead of colliding with it")
+        #expect(archiveMessagesAfterSync.first?.id == realArchiveMessageId, "the already-real row survives; the pending one is discarded")
+        #expect(archiveMessagesAfterSync.first?.uid == 42)
+        #expect(archiveMessagesAfterSync.first?.isPinnedLocal == true, "the discarded pending row's local-only pin state is merged forward onto the survivor")
+
+        let pendingRowAfterSync = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: pendingMessageId) }
+        #expect(pendingRowAfterSync == nil, "the redundant pending row is gone rather than left orphaned")
+    }
+
+    /// Task #183: a device that already hit the bug above before this fix
+    /// shipped can be left with more than one leftover pending-relocation
+    /// row for the same message (e.g. one crashed reconciliation attempt
+    /// per subsequent sync pass, each leaving its own placeholder behind).
+    /// Locks in that the very next sync after upgrading self-heals: every
+    /// matching pending row collapses onto a single real row rather than
+    /// the sync continuing to fail forever.
+    @Test("two leftover pending relocation rows for the same message collapse onto one real row on the next sync")
+    func twoLeftoverPendingRelocationRowsCollapseOnNextSync() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let archiveId = try await database.dbWriter.write { db -> Int64 in
+            var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox, uidValidity: 1, uidNext: 1)
+            try inbox.insert(db)
+            var archive = MailboxRecord(accountId: account.id, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1, uidNext: 6)
+            try archive.insert(db)
+            return archive.id!
+        }
+
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let sharedMessageId = "<dup-pending-repro@otegami.test>"
+
+        let (threadId, firstPendingId) = try await database.dbWriter.write { db -> (Int64, Int64) in
+            var thread = ThreadRecord(accountId: account.id, lastMessageDate: date, messageCount: 1)
+            try thread.insert(db)
+            var message = MessageRecord(
+                mailboxId: archiveId, uid: -1, messageId: sharedMessageId,
+                subject: "多重仮配置行テスト", date: date, internalDate: date, threadId: thread.id
+            )
+            try message.insert(db)
+            return (thread.id!, message.id!)
+        }
+        // A second, leftover placeholder for the exact same message — the
+        // "device already hit this bug before" leftover this task's
+        // self-heal must clean up. Pinned, so the merge-forward is
+        // actually exercised on this branch too.
+        let secondPendingId = try await database.dbWriter.write { db -> Int64 in
+            var stale = MessageRecord(
+                mailboxId: archiveId, uid: -2, messageId: sharedMessageId,
+                subject: "多重仮配置行テスト", date: date, internalDate: date, threadId: threadId,
+                isPinnedLocal: true
+            )
+            try stale.insert(db)
+            return stale.id!
+        }
+
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let archiveInfo = MailboxInfo(path: "Archive", displayPath: "Archive", role: .archive, attributes: [])
+        let realEnvelope = FetchedEnvelope(
+            uid: 42, messageId: sharedMessageId, inReplyTo: nil, references: [],
+            subject: "多重仮配置行テスト", from: [], to: [], cc: [], bcc: [], replyTo: [],
+            date: date, internalDate: date, flags: [], size: 100
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inboxInfo, archiveInfo],
+                envelopesByPath: ["Archive": [realEnvelope]],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Archive": MailboxStatus(uidValidity: 1, uidNext: 43, highestModSeq: 0, messageCount: 1),
+                ]
+            ))
+        }
+        // Before this task's fix, this threw the very first time it hit
+        // whichever pending row's rewrite happened to collide with the
+        // other's placeholder having already been promoted — the recovery
+        // this test exists for.
+        _ = try await syncer.performIncrementalSync(
+            auth: .password(username: account.imapUsername, password: "test1234"), scope: .mailbox(path: "Archive")
+        )
+
+        let archiveMessagesAfterSync = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == archiveId).filter(Column("messageId") == sharedMessageId).fetchAll(db)
+        }
+        #expect(archiveMessagesAfterSync.count == 1, "both pending rows collapse onto a single real row")
+        #expect(archiveMessagesAfterSync.first?.uid == 42)
+        #expect(archiveMessagesAfterSync.first?.isPendingRelocation == false)
+        #expect(archiveMessagesAfterSync.first?.isPinnedLocal == true, "the discarded duplicate's local-only pin state survives the merge")
+
+        let survivorId = archiveMessagesAfterSync.first?.id
+        #expect(survivorId == firstPendingId || survivorId == secondPendingId, "the survivor is one of the two original rows, not a third fresh insert")
+
+        let threadAfterSync = try await database.dbWriter.read { db in try ThreadRecord.fetchOne(db, key: threadId) }
+        #expect(threadAfterSync?.messageCount == 1, "collapsing the duplicate must not leave the thread double-counting it")
+    }
 }

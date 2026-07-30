@@ -2266,3 +2266,129 @@ XPC応答キュー上のスレッドで発生)。
 
 `382802b`をpush後、OTA配信してmanifest.plistの`bundle-version`が
 `382802b`と一致することを確認した。
+
+## Task #183: iCloud Archive の同期が毎回 `UNIQUE constraint failed:
+message.mailboxId, message.uid` で失敗し続けるバグ
+
+### 報告
+
+実機報告: iCloud アカウントの Archive メールボックスの同期が毎回
+`UNIQUE constraint failed: message.mailboxId, message.uid` で失敗し、
+自然回復しない (再起動・pull-to-refresh を挟んでも同じ箇所で失敗し
+続ける)。
+
+### 原因
+
+Task #120 の「仮配置 (pending relocation)」機構 — archive/unarchive/
+junk/delete が移動先メールボックスを既に知っていれば、対象の
+`message` 行を削除する代わりに同じ行 `id` のまま `mailboxId`/`uid`
+(仮 UID は `uid <= 0`) だけ書き換えて即座に移動先へ"仮配置"し、その
+メールボックスの次回同期が実エンベロープを取得した時点で
+`AccountSyncer.reconcilePendingRelocation` が仮配置行の `uid` を実
+UID に付け替えて確定する — の**書き込み先チェック漏れ**が根本原因
+だった。
+
+`reconcilePendingRelocation`は、`messageId` (Message-ID ヘッダ) が
+一致する仮配置行 (`uid <= 0`) を1件`fetchOne`で探し、その`uid`を
+無条件に`envelope.uid` (実UID) へ書き換えていた。しかし、書き込み
+先の`(mailboxId, envelope.uid)`が**既に別の行で埋まっている**ケース
+を一切確認していなかった:
+
+- 同じ物理メッセージの**既に本物として同期済みの行**(別 id) が、
+  同じ `mailboxId` の同じ実 UID に既に存在するケース (例: この端末
+  自身の Archive フル/初回同期が独立に先に取り込んでいた、または
+  ローカルの古いキャッシュ経由でユーザーが再度アーカイブ操作をした
+  ことで仮配置行が新たに作られた) — この場合、仮配置行の`uid`書き
+  換えが`(mailboxId, uid)`の一意制約に**必ず**違反する。
+- 一度クラッシュが起きると、仮配置行を掃除する経路が存在しない
+  ため、**次の同期でも全く同じ行の組み合わせに対して同じ書き換えを
+  試み、同じ場所で毎回失敗し続ける** — 自然回復しない実機報告の
+  「自然回復しない」の直接の原因。
+
+`SyncEngine.MessageRemoval.undo` (元に戻す) 側にも同種のガード漏れが
+あった: 仮配置された行がまだ存在する分岐 (`undo`のdoc commentが言う
+「Still exists (relocated)」) は、スナップショット時点の元の
+`(mailboxId, uid)`を無条件に書き戻していた — その元のスロットが
+仮配置されている間に (最も現実的には該当メールボックスの
+`uidValidity`リセット後のフル再同期で) 別の本物のメッセージに
+再利用されていた場合、同じ一意制約違反を起こしうる。
+
+### 修正
+
+`packages/OtegamiKit/Sources/SyncEngine/MessageRelocationConflict.swift`
+に、この2箇所が共有する衝突解決ポリシーを1箇所に切り出した
+(`AccountDuplicateMerger.mergeCollidingMailbox`
+(`packages/OtegamiKit/Sources/OtegamiStore/AccountDuplicateMerger.swift:235-290`)
+が「同じ物理メッセージを表す2行」という同種の問題に対して既に確立
+していたポリシーと同じ思想 — 生き残る側(`survivor`)は書き込み先に
+既にいた行、移動しようとした側(`mover`)のローカル専用状態
+(`isPinnedLocal`・フラグ・`detectedLanguage`) を`survivor`側へ
+マージしてから`mover`を破棄する。`mover`自身のキャッシュ済み本文/
+添付/翻訳は移行せず単純に破棄する — 意図的な受容範囲であり、
+`mergeCollidingMailbox`が既に同じトレードオフを受け入れているのに
+倣った):
+
+1. **`AccountSyncer.reconcilePendingRelocation`**
+   (`AccountSyncer.swift`): `fetchOne`を`fetchAll`に変え、一致する
+   仮配置行を**全件**取得するように変更。書き込み先
+   `(mailboxId, envelope.uid)`に既に本物の行が存在する場合は、
+   マッチした仮配置行全てをその行へマージ・破棄する (自己回復 —
+   既にバグに遭遇していた端末の残留仮配置行もこの経路で掃除される)。
+   存在しない場合 (通常の非破損ケース) は、マッチした仮配置行のうち
+   最も`updatedAt`が新しいものを勝者として実UIDへ昇格させ、残りは
+   勝者へマージ・破棄する (仮配置行が複数ある場合の回復)。
+2. **`MessageRemoval.undo`**
+   (`MessageRemoval.swift:307`以降、ガード自体は`317`行目付近):
+   行がまだ存在する分岐で、元の`(mailboxId, uid)`へ書き戻す前に
+   その組が既に**別の行**に占有されていないか確認するようになった。
+   占有されていれば`MessageRelocationConflict`の同じポリシーで
+   マージ・破棄する。
+
+### 検証
+
+- 新規回帰テスト3本 (指示どおり最低限のシナリオ):
+  - `MessageRelocationReconciliationTests
+    .pendingRelocationConflictingWithAlreadyRealRowMergesWithoutDuplicating`
+    — 移動先に同じ Message-ID の実行が既にある状態で
+    `performIncrementalSync`しても衝突せず、行が重複せず、仮配置行の
+    ローカル専用状態 (pin) が生存側へマージされることを確認。
+  - `MessageRelocationReconciliationTests
+    .twoLeftoverPendingRelocationRowsCollapseOnNextSync` —
+    同一メッセージに対する仮配置行が2行残った (=修正前に一度バグに
+    遭遇した端末を模した) 状態から、次の同期1回で1行に収束すること
+    を確認 (自己回復の直接の回帰テスト)。
+  - `MessageRemovalTests.undoCollisionWithReoccupiedSlotMergesInsteadOfCrashing`
+    — `undo`側: 元の`(mailboxId, uid)`スロットが別メッセージに再利用
+    された状態からの`undo`がクラッシュせず、占有していた行が生存し、
+    ピン状態がマージされ、空になった元スレッドが片付くことを確認。
+  - 3本とも、修正後のコードを書いた**後に**、修正した2ファイル
+    (`AccountSyncer.swift`/`MessageRemoval.swift`、および新規
+    `MessageRelocationConflict.swift`) だけを`git checkout`/退避で
+    一時的に修正前の状態へ戻し、テストファイルはそのままで再実行して
+    赤くなることを確認 (指示の「可能なら…確認してから直す」を、実装後
+    に修正前へ戻す形で満たした)。結果は2種類に分かれた:
+    - `undo`側 (`undoCollisionWithReoccupiedSlotMergesInsteadOfCrashing`)
+      は報告と文字どおり同じ`SQLite error 19: UNIQUE constraint
+      failed: message.mailboxId, message.uid`を実際に投げて失敗した。
+    - 同期側の2本 (`AccountSyncer.reconcilePendingRelocation`経由) は
+      同じDB例外を内部で起こしてはいるものの、`AccountSyncer`の
+      `SyncRetryPolicy`が transient エラーとして数回リトライしてから
+      諦める既存の仕組みに飲み込まれ、テスト自身は「クラッシュ」では
+      なく「同期が (数十秒かけて) 失敗し、行が重複したまま/仮配置の
+      ままになる」という形の expectation 失敗で赤くなった —
+      「毎回失敗し、自然回復しない」という実機報告の文言とも整合する
+      挙動。修正を戻して確認後、同じ3ファイルを直後にfixed版へ復元し、
+      17件全てgreenに戻ったことを再確認済み。
+- `swift test --package-path packages/OtegamiKit --filter
+  "MessageRelocationReconciliationTests|MessageRemovalTests"`
+  green (17 tests)。
+- `make test` (packages/OtegamiKit フルスイート) green。
+  `MailTransportMailCoreTests`の`MailCoreMessageBuilder`スイートで
+  並列実行時のみ再現する既知の flake (Task #168 (SEC-C) の「検証」
+  節に既に記録済みの同じ不調) を1回観測したが、このタスクが一切
+  触れていないファイル (`packages/MailTransport/`) 由来であり、
+  同テストを単独 (`--filter MessageBuilderTests`) で複数回実行して
+  green・クリーンな別クローンでの`make test`フル実行でも green を
+  それぞれ確認済みで無関係。
+- 実機シミュレータでの確認は未実施 (方針どおり)。`PENDING.md`に
+  未検証事項を追記した。

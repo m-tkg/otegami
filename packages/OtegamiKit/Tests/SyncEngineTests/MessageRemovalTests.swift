@@ -501,4 +501,88 @@ struct MessageRemovalTests {
         #expect(messageStillThere != nil)
         #expect(opCount == 0)
     }
+
+    // MARK: undo vs. a reoccupied original slot (Task #183)
+
+    /// Task #183 (実機報告「iCloud の Archive メールボックスの同期が毎回
+    /// `UNIQUE constraint failed: message.mailboxId, message.uid` で失敗する」):
+    /// `undo`'s "still exists (relocated)" branch used to write `original`'s
+    /// pre-commit `(mailboxId, uid)` straight back onto the relocated row
+    /// without checking whether some *other* row had genuinely landed at
+    /// that exact slot in the meantime (most plausibly a `uidValidity`
+    /// reset re-syncing an unrelated message into it) — tripping the same
+    /// `(mailboxId, uid)` uniqueness constraint `reconcilePendingRelocation`
+    /// could. This locks in the fix: undo must not crash, the row already
+    /// occupying the slot survives, and the row that couldn't reclaim its
+    /// slot has its local-only pin state merged forward before being
+    /// discarded (`MessageRelocationConflict`'s policy, mirroring
+    /// `AccountDuplicateMerger.mergeCollidingMailbox`).
+    @Test("undo after the original slot got reoccupied merges local state into the occupant instead of crashing")
+    func undoCollisionWithReoccupiedSlotMergesInsteadOfCrashing() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let archiveId = try database.dbWriter.write { db -> Int64 in
+            var archive = MailboxRecord(accountId: accountId, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1)
+            try archive.insert(db)
+            return archive.id!
+        }
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: date, messageCount: 1)
+            try thread.insert(db)
+            var message = MessageRecord(
+                mailboxId: inboxId, uid: 1, date: date, internalDate: date,
+                threadId: thread.id, isPinnedLocal: true
+            )
+            try message.insert(db)
+            return (thread.id!, message.id!)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(thread: try ThreadRecord.fetchOne(db, key: threadId)!, latestMessage: try MessageRecord.fetchOne(db, key: messageId))
+        }
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.archive, summary: summary, accountId: accountId, db: db)
+        }
+        let snapshot2 = try #require(snapshot)
+
+        // Task #120: `archiveId` is known locally, so this relocated
+        // (same row id, placeholder UID) rather than deleted.
+        let relocated = try database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: messageId) }
+        #expect(relocated?.mailboxId == archiveId)
+        #expect(relocated?.isPendingRelocation == true)
+
+        // The original slot — `(inboxId, uid: 1)` — gets reoccupied by a
+        // genuinely different message while this row sat relocated in
+        // Archive (e.g. a `uidValidity` reset resyncing INBOX from
+        // scratch).
+        let (occupantThreadId, occupantMessageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            var occupantThread = ThreadRecord(accountId: accountId, lastMessageDate: date, messageCount: 1)
+            try occupantThread.insert(db)
+            var occupant = MessageRecord(
+                mailboxId: inboxId, uid: 1, messageId: "<reoccupant@otegami.test>",
+                date: date, internalDate: date, threadId: occupantThread.id
+            )
+            try occupant.insert(db)
+            return (occupantThread.id!, occupant.id!)
+        }
+
+        // Before this task's fix, this threw `UNIQUE constraint failed:
+        // message.mailboxId, message.uid` writing `messageId`'s original
+        // `(inboxId, uid: 1)` straight back onto it.
+        try database.dbWriter.write { db in try MessageRemoval.undo(snapshot2, db: db) }
+
+        let (archivedRowAfterUndo, archivedThreadAfterUndo, occupantAfterUndo, occupantThreadAfterUndo) = try database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: messageId),
+                try ThreadRecord.fetchOne(db, key: threadId),
+                try MessageRecord.fetchOne(db, key: occupantMessageId),
+                try ThreadRecord.fetchOne(db, key: occupantThreadId)
+            )
+        }
+        #expect(archivedRowAfterUndo == nil, "the row that couldn't reclaim its original slot is discarded rather than left duplicated")
+        #expect(archivedThreadAfterUndo == nil, "its now-empty original thread is cleaned up the same way any other empty thread is")
+        #expect(occupantAfterUndo != nil, "the row already occupying the slot survives")
+        #expect(occupantAfterUndo?.isPinnedLocal == true, "the discarded row's local-only pin state is merged forward onto the survivor")
+        #expect(occupantThreadAfterUndo?.messageCount == 1)
+    }
 }

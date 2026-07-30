@@ -975,15 +975,60 @@ public actor AccountSyncer {
     /// .isPendingRelocation`'s doc comment for the accepted-limitation call
     /// sites that already treat a placeholder gracefully rather than
     /// crashing on it).
+    ///
+    /// Task #183 (実機報告「iCloud の Archive メールボックスの同期が毎回
+    /// `UNIQUE constraint failed: message.mailboxId, message.uid` で失敗する」):
+    /// this used to blindly rewrite the single matching pending row's `uid`
+    /// onto `envelope.uid` without first checking whether that exact
+    /// `(mailboxId, uid)` slot was already occupied by a genuine, already-
+    /// reconciled (or independently-synced) row for the same message —
+    /// tripping the uniqueness constraint every single sync pass once that
+    /// happened, with no way for the device to self-heal (the pending row
+    /// was never cleaned up, so the very next sync hit the exact same
+    /// conflict again). Now handled two ways, both delegating the actual
+    /// merge/discard policy to `MessageRelocationConflict` (the same policy
+    /// `AccountDuplicateMerger.mergeCollidingMailbox` already established):
+    /// - A genuine row already sits at `(mailboxId, envelope.uid)`: every
+    ///   matching pending row is a redundant leftover placeholder (self-
+    ///   heals a device that already hit this bug before this fix shipped
+    ///   and so already has one or more orphaned pending rows) — merged
+    ///   forward into that row and discarded, no `uid` rewrite attempted.
+    /// - No genuine row there yet (the common, non-broken case): among the
+    ///   (usually exactly one, but possibly more on an already-broken
+    ///   device) matching pending rows, the most recently updated one wins
+    ///   the real `uid`; any others are merged into it and discarded first.
     private static func reconcilePendingRelocation(envelope: FetchedEnvelope, mailboxId: Int64, db: Database) throws {
         guard let messageId = envelope.messageId, !messageId.isEmpty else { return }
-        guard var pending = try MessageRecord
+        let pendingRows = try MessageRecord
             .filter(Column("mailboxId") == mailboxId)
             .filter(Column("uid") <= 0)
             .filter(Column("messageId") == messageId)
-            .fetchOne(db)
-        else { return }
-        pending.uid = Int64(envelope.uid)
-        try pending.update(db, columns: [Column("uid")])
+            .fetchAll(db)
+        guard !pendingRows.isEmpty else { return }
+
+        let realUID = Int64(envelope.uid)
+        var affectedThreadIds: Set<Int64> = []
+
+        if var existing = try MessageRecord
+            .filter(Column("mailboxId") == mailboxId)
+            .filter(Column("uid") == realUID)
+            .fetchOne(db) {
+            for pending in pendingRows {
+                affectedThreadIds.formUnion(try MessageRelocationConflict.mergeAndDiscard(mover: pending, into: &existing, db: db))
+            }
+        } else {
+            // `pendingRows` is non-empty (checked above), so `max` never
+            // returns `nil` here.
+            var winner = pendingRows.max { $0.updatedAt < $1.updatedAt }!
+            for pending in pendingRows where pending.id != winner.id {
+                affectedThreadIds.formUnion(try MessageRelocationConflict.mergeAndDiscard(mover: pending, into: &winner, db: db))
+            }
+            winner.uid = realUID
+            try winner.update(db, columns: [Column("uid"), Column("isPinnedLocal"), Column("flagsRaw"), Column("detectedLanguage")])
+        }
+
+        for threadId in affectedThreadIds {
+            try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+        }
     }
 }
