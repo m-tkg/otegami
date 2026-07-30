@@ -97,12 +97,6 @@
 
 ## 4. 公開・配布に向けて (App Store / TestFlight を目指す場合)
 
-- [ ] **macOS ビルドの Developer ID 署名 + notarization (Task #143)** —
-      GitHub Actions ワークフロー (`.github/workflows/release-macos.yml`)
-      は整備済み、次回タグ push (または `workflow_dispatch`) の際に
-      Actions の run が緑になるか、Gatekeeper (`spctl -a -vvv`) を越える
-      か、iCloud 同期が動くかを確認する。参照:
-      [docs/release.md](docs/release.md)。
 - [ ] **`com.apple.developer.mail-client` entitlement — 承認後の有効化
       (Task #48)** — 申請済み (2026-07-28)、Apple の承認待ち。承認され
       たら (1) Developer Portal で対象 App ID の Mail capability を
