@@ -139,9 +139,11 @@ OSLog計装 (`TranslationGate`カテゴリ) も追加済み。`make test`/`make 
     機構の対象外のまま — 統合すれば同じ即時反映を得られるが、Task #115
     で慎重に直した `notifyThreadRemoved()`/`replaySoon()`の順序を崩さない
     よう別タスクとして着手すること。
-- **Task #121 (リレー URL の iCloud 同期)**: 別端末または再インストール
-  後に、設定済みのプッシュ通知リレー URL が自動的に復元されるか (per-
-  account watch・deviceSecret はデバイス固有のまま残る想定)。
+- **Task #121 (リレー URL の iCloud 同期) — Task #173 follow-up で撤回・
+  解消済み**: リレー URL 自体がビルド時埋め込み値 (`RelayURLConfig`) に
+  変わり、ユーザーが入力する値そのものが無くなったため、iCloud 同期の
+  対象から外した (`docs/icloud-sync.md` 参照)。この pending 項目は
+  もう検証不要。
 
 ## Task #124: 送信の二重送信・「送信待ち」スタック — 実機/実 SMTP での最終確認
 

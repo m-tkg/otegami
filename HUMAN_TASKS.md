@@ -326,6 +326,31 @@
       優先度: 中 (既存デプロイのままなら不要 — シークレット未設定の
       リレーは従来どおり無認証で動く) / 所要時間: 経路あたり2分 / 参照:
       [docs/relay-deployment.md](docs/relay-deployment.md)
+- [ ] **リレー URL 自体もビルド設定に登録する (Task #173 follow-up、
+      2026-07-30「リレー URL は今の固定 URL という話をしたよ」) —
+      `OTEGAMI_RELAY_REGISTRATION_SECRET` と同じ仕組み、同じ3経路**:
+      - ローカルでビルドする場合: `apps/Otegami/Config/Local.xcconfig`
+        (git 管理外) に、`//` がコメント扱いされる xcconfig の落とし穴
+        (`Config/Shared.xcconfig`の`OTEGAMI_URL_SLASHES`doc comment/
+        `Config/Local.xcconfig.sample`参照) に注意して2行で追記:
+        ```
+        OTEGAMI_PUSH_RELAY_URL = https:$(OTEGAMI_URL_SLASHES)relay.example.test
+        ```
+      - macOS リリース (`.github/workflows/release-macos.yml`): GitHub
+        リポジトリの Secrets に `OTEGAMI_PUSH_RELAY_URL` を**素の URL**
+        (`https://relay.example.test`のような通常の形式、`$(...)`は不要)
+        で登録する — ワークフロー側が自動でこの形式に変換して書き出す。
+      - iOS/TestFlight リリース (Xcode Cloud):
+        `apps/Otegami/ci_scripts/ci_post_clone.sh` が読む環境変数
+        `OTEGAMI_PUSH_RELAY_URL` を、同じく**素の URL**のまま Xcode
+        Cloud のワークフロー設定の環境変数 (Secret 種別) に登録する
+        (`docs/xcode-cloud.md`)。
+      未設定のビルドは「プッシュ通知」画面の「有効にする」ボタンが無効
+      になり、その旨が表示される (壊れるのではなく、意図した縮退)。
+      優先度: 高 (これを設定しないと配布ビルドでプッシュ通知が一切
+      有効化できない) / 所要時間: 経路あたり2分 / 参照:
+      [docs/relay-deployment.md](docs/relay-deployment.md)「アプリ側の
+      設定」節
 
 ## 4. 公開・配布に向けて (App Store / TestFlight を目指す場合)
 

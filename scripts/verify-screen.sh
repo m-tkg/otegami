@@ -264,13 +264,28 @@
 #   account-edit                        Task #72: ↑からさらに1画面 (先頭
 #                                       アカウントの編集画面 — ラベル色の
 #                                       グリッドピッカーを確認)
-#   push-settings                       Task #171: 設定→アカウントの設定→
-#                                       「プッシュ通知」を直接開く — 2026-07-30
-#                                       follow-up で「登録シークレット」欄を
-#                                       削除した (ビルド時埋め込み方式に変更、
-#                                       RelayRegistrationSecretConfig 参照)。
-#                                       この画面がリレー URL 欄以外に何も
-#                                       求めないことの確認用 (iOS 専用画面)
+#   push-settings                       Task #171/#173: 設定→アカウントの
+#                                       設定→「プッシュ通知」を直接開く —
+#                                       登録シークレット・リレー URL とも
+#                                       ビルド時埋め込み方式 (それぞれ
+#                                       RelayRegistrationSecretConfig/
+#                                       RelayURLConfig 参照) になり、この
+#                                       画面がユーザー入力を一切求めない
+#                                       (「有効にする」ボタンのみ) ことの
+#                                       確認用 (iOS 専用画面)。押す前の
+#                                       未有効化状態のみ — 有効化後の状態は
+#                                       push-settings-watches 参照。
+#   push-settings-watches               Task #173: push-settings と同じ
+#                                       画面を、アカウント別 watch 状態
+#                                       (`PushWatchStatusSection`) が
+#                                       populated な状態で開く —
+#                                       登録済み/停止(認証失敗)/未登録/
+#                                       対象外(Gmail) の4状態を1画面に
+#                                       並べたフィクスチャ (実リレー接続は
+#                                       使わない、`AppEnvironment
+#                                       .fetchPushWatchSummaries()`の
+#                                       `OTEGAMI_UITEST_FIXED_PUSH_WATCH_
+#                                       SUMMARIES`分岐参照)。
 #   toolbar-customize                   Task #100: 設定→メールビューア→
 #                                       「ツールバーのカスタマイズ」
 #                                       (`MessageToolbarSettingsView`) を
@@ -617,6 +632,22 @@ case "$SCENARIO" in
     # と同じ「1段深いところまで一気に」パターン)。iOS専用画面。
     launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenPushNotificationsDirectly")
     default_out="push-settings.png"
+    ;;
+  push-settings-watches)
+    # Task #173: 同じ画面を、`PushWatchStatusSection`(アカウント別 watch
+    # 状態一覧)が populated な状態で開く。実リレーへは繋がず、
+    # `AppEnvironment.init()`/`.fetchPushWatchSummaries()`のUITest専用
+    # フィクスチャ分岐 (3つの偽`.password`アカウント挿入 + push有効化を
+    # 強制 + 固定`WatchSummary`2件を返す) を使う — 実際のリレー登録・
+    # APNsトークン取得は一切発生しない。
+    launch_env+=(
+      "OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1"
+      "OTEGAMI_UITEST_INSERT_FAKE_PUSH_WATCH_ACCOUNTS=1"
+      "OTEGAMI_UITEST_FORCE_PUSH_ENABLED=1"
+      "OTEGAMI_UITEST_FIXED_PUSH_WATCH_SUMMARIES=1"
+    )
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenPushNotificationsDirectly")
+    default_out="push-settings-watches.png"
     ;;
   toolbar-customize)
     # Task #100: 設定 → メールビューア → 「ツールバーのカスタマイズ」を

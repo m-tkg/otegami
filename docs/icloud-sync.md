@@ -691,9 +691,9 @@ allowlist が唯一の情報源:
 
 | 同期される | 同期されない |
 |---|---|
-| 一覧: スレッド表示・未読のみ・フラグ付きのみ (Task #142)・アカウントでグループ化 (`ListDisplaySettingsStore`) | 通知系のうちデバイス固有の部分 (`PushSettingsStore` の device id・per-account watch map・enabled フラグ・deviceSecret・registrationSecret — 後者2つは Keychain、Task #171 で追加した registrationSecret も同じ理由で対象外) |
+| 一覧: スレッド表示・未読のみ・フラグ付きのみ (Task #142)・アカウントでグループ化 (`ListDisplaySettingsStore`) | 通知系のうちデバイス固有の部分 (`PushSettingsStore` の device id・per-account watch map・enabled フラグ・deviceSecret — Keychain) |
 | ビューア: 背景を常に白・ダーク反転オプトイン (`HTMLDisplaySettingsStore`)、画像自動表示2種 (`ImageSettingsStore`) | UITest/verify 系フラグ (`OTEGAMI_UITEST_*`/`-otegami*` は環境変数・起動引数であり、そもそも `UserDefaults` キーではない) |
-| Task #121: プッシュ通知のリレー URL (`PushSettingsStore.relayURLKey`) — ユーザーが入力しただけのホスト名でデバイス固有ではないため、これだけ他の通知系設定と切り離して同期対象にした | — |
+| — | Task #171 の registrationSecret、Task #173 follow-up でリレー URL 自体も同じ扱いに変更: どちらもビルド時埋め込み (`RelayRegistrationSecretConfig`/`RelayURLConfig`) になり、ユーザーが入力する値そのものが存在しなくなったため同期対象から除外 (Task #121 は撤回 — `PushSettingsStore.relayURLKey` は旧値の一度きりの後始末用にのみ残っている) |
 | スワイプ割り当て4スロット (`SwipeActionSettingsStore`)、フッターツールバーの表示/非表示・並び順 (`MessageToolbarSettingsStore`、Task #100 で表示/非表示を追加 — 詳細は `docs/settings.md`)、ハンバーガーメニューのカテゴリ並び順 (`FolderCategoryOrderStore`) | `CloudSyncSettingsStore.isEnabled` 自身 (この同期に参加するか自体がデバイスごとの選択 — その doc comment参照) |
 | アバターソース4種 (`AvatarSourceSettingsStore`)、翻訳自動実行・一覧要約表示 (`TranslationSettingsStore`)、AI 機能マスタースイッチ (`AIFeaturesSettingsStore`) | ピン留め (`PinSettingsKeys` — 端末ごとの一時的な整理という性質が強く、複数デバイスで強制する意味が薄い) |
 
@@ -1133,9 +1133,10 @@ self.settingsCloudSync = SettingsCloudSyncEngine(
   `settings.cloudSyncToggle`) はラベルどおりアカウント同期
   (`accountCloudSync`) 専用のまま — この変更で意味が変わったわけでは
   ない。
-- Task #121 でプッシュリレー URL を「設定」側の同期対象に含めた分も、
-  macOS ではこのゲートにより同期対象外になる (ユーザー指示「アカウント
-  以外は同期しない」のとおり)。
+- Task #121 でプッシュリレー URL を「設定」側の同期対象に含めていたが、
+  Task #173 follow-up でリレー URL 自体がビルド時埋め込み
+  (`RelayURLConfig`) に変わり、同期対象から除外済み — この節はもはや
+  macOS 固有の話ではなく iOS 間でも同期しない。
 
 ### 検証
 

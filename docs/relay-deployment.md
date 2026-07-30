@@ -120,8 +120,41 @@ Tunnel 等) を置いて TLS を終端すること。IMAP 資格情報を平文�
 
 ### アプリ側の設定
 
-アプリの「設定」→「プッシュ通知」で、上記でデプロイしたリレーの URL
-(例 `https://relay.example.com`) を入力し、「有効化」を押す。同意文言
+**Task #173 follow-up (実機フィードバック 2026-07-30「リレー URL は今の
+固定 URL という話をしたよ」) でリレー URL 自体もビルド時埋め込みに変更
+した** — Task #171 で登録シークレットをビルド時埋め込みにしたのに URL
+の入力欄だけ残っていたのは中途半端、という指摘を受けての変更。今は
+Google/Microsoft の OAuth Client ID・`RELAY_DEVICE_REGISTRATION_SECRET`
+と同じ仕組みで、`Config/Local.xcconfig` の `OTEGAMI_PUSH_RELAY_URL` (自分の
+ビルドをローカルでビルドする場合)・GitHub Actions の
+`OTEGAMI_PUSH_RELAY_URL` secret (macOS リリース)・Xcode Cloud の同名の
+環境変数 (TestFlight/iOS リリース) のいずれかに運用者自身が設定し、
+ビルドのたびに `Info.plist` 経由で `RelayURLConfig` が読み取る。ユーザー
+自身がリレー URL を入力する項目は無くなった —
+`PushNotificationSettingsView` には「有効にする」/「無効にする」ボタン
+と (Task #173) アカウント別の watch 状態一覧しか残らない。この値が
+未設定のビルドは「有効にする」ボタンが無効になり、その旨を画面に表示
+する。
+
+**xcconfig の `//` コメント問題に注意**: xcconfig 構文は `//` を
+コメント開始として扱うため、`OTEGAMI_PUSH_RELAY_URL = https://relay.
+example.test` とそのまま書くと値が `https:` で切れてしまう。
+`Config/Shared.xcconfig` が定義済みの `OTEGAMI_URL_SLASHES`
+(`$(OTEGAMI_URL_SLASH)$(OTEGAMI_URL_SLASH)` — 単一の `/` はコメント扱い
+されず、マクロ展開はコメント除去の後に走るため、ソース上に `//` という
+並びが一度も現れない) を使って
+`OTEGAMI_PUSH_RELAY_URL = https:$(OTEGAMI_URL_SLASHES)relay.example.test`
+の形式で書くこと — `Config/Local.xcconfig.sample` に実例がある。CI 側
+(`ci_scripts/ci_post_clone.sh`/`.github/workflows/release-macos.yml`) は
+secret に入れた素の URL からこの形式を自動生成するので、secret 自体は
+普通の URL のままでよい。
+
+有効化前に一度、実際に `Info.plist` へ正しく値が入ることを
+`xcodebuild -showBuildSettings`/ビルド後の `Info.plist` を `plutil -p`
+で確認しておくと安全 (`https:` で切れていないこと)。
+
+アプリの「設定」→「プッシュ通知」→「有効にする」を押すと、ビルドに
+埋め込まれたリレー URL に対して登録が始まる。同意文言
 (下記の脅威モデル参照) を確認した上で:
 
 1. 通知の認可 (`UNUserNotificationCenter`) をリクエスト
@@ -146,6 +179,27 @@ Tunnel 等) を置いて TLS を終端すること。IMAP 資格情報を平文�
 accountId→watchId マップの修復を行う (`AppEnvironment
 .reconcilePushWatchesIfNeeded()`、詳細は `docs/verify.md`「プッシュ
 通知まわりの恒久修正2件」参照)。
+
+**アカウント別の watch 状態表示 (Task #173)**: 実機で「3 件の watch の
+うち 1 件が IMAP 認証失敗を繰り返して停止した」というリレー側ログが
+あっても、アプリの設定画面には*どのアカウント*が止まったのか分かる
+手段が無かった。`GET /v1/watches` のレスポンス (`WatchSummary`) に
+`status` (`active`/`stopped`)・`lastConnectedAt`・`lastErrorKind`
+(`authFailure`/`connectionError`)・`lastErrorAt` を追加し、
+`PushNotificationSettingsView` がアカウントごとに「登録済み/未登録/
+停止(認証失敗)/対象外」を一覧表示するようにした。`WatcherPool` が
+IMAP ログイン成功時に `status=active`+`lastConnectedAt` を、
+`maxConsecutiveAuthFailures` (既定 3 回) 到達で `status=stopped`+
+`lastErrorKind=authFailure` を、それ以外の接続エラー時は (停止せず)
+`lastErrorKind=connectionError` のみを都度 `RelayStore` に永続化する。
+停止したアカウントの行から「再登録」を押すと、そのアカウントの watch
+だけ削除→作り直し (資格情報を再送信) する — IMAP パスワードや
+メール本文がこの API 経由で返ることは一切無い (項目 11 参照)。
+2026-07-30 以前の (この機能を持たない) 古いリレーと通信した場合、
+`WatchSummary.status` はデコード時に `active` へフォールバックする
+(`OtegamiRelayAPI`のドキュメントコメント参照) — 実際には状態を
+追跡していない旧リレーの挙動をそのまま反映しているだけで、アプリが
+誤情報を作り出すわけではない。
 
 ## 脅威モデル
 
@@ -255,6 +309,15 @@ accountId→watchId マップの修復を行う (`AppEnvironment
     行へ書き込む直前) の 2 箇所で拒否 (エスケープではなく 400/接続
     エラー) する。IMAP の `quoted-string` 文法はそもそも CR/LF を運べ
     ないため、エスケープではなく拒否が正しい対処。
+11. **`GET /v1/watches` の状態フィールド追加公開範囲 (Task #173)**:
+    `status`/`lastConnectedAt`/`lastErrorKind`/`lastErrorAt` はいずれも
+    「watch がいつ・どう繋がらなかったか」という粗い分類情報のみで、
+    IMAP 資格情報・メール本文・件名を一切含まない (`WatchSummary` の
+    フィールド一覧そのものが上限 — 項目 3 の「デバイス認証」と同じ
+    Bearer deviceSecret 認証・自デバイスの watch のみ返す制約もそのまま
+    引き継ぐ)。`WatchRoutesTests`/`RelayStoreTests` で「自分の watch
+    だけ返る」「他 device の watch は返らない」「未認証は 401」を検証
+    済み。
 
 ## モニタリング / ログ
 

@@ -86,6 +86,27 @@
    確認している。`calendar-invite`シナリオ自体は残してあるので、この
    不調が解消すれば (あるいは実機で) そのまま`scripts/verify-screen.sh
    calendar-invite`が使える。
+6. **(Task #173、原因未確定・要再現確認) `scripts/verify-screen.sh` の
+   `xcodebuild build` ステップが、エージェントハーネスのバックグラウンド
+   タスク経由で実行すると出力が一切流れず数分止まって見えることがあった**
+   — シミュレータ起動確認 (`Device already booted`) までは即座に進むが、
+   そこから先の `xcodebuild` の進捗行が出力ファイルに一切書かれず、
+   `ps aux`で見ても`xcodebuild`/`simctl`プロセス自体が存在しない (＝
+   終了もしていない) という奇妙な状態が複数回発生した。**このとき
+   同じマシン上で別の (本タスクとは無関係な) `xcodebuild`プロセスが
+   長時間 (2時間以上) 動いていた** ため、`DERIVED_DATA_PATH`
+   (`/tmp/otegami-verify-screen-derived-data`、スクリプト内で固定・
+   全シナリオ共有) を巡るリソース競合/ロック待ちだった可能性が高いが、
+   `xcodebuild`を直接 (バックグラウンドタスク経由でなく) 実行した単発
+   確認では正常に進行した (`CreateBuildRequest`まで20秒で到達) ため、
+   環境自体が壊れているとは断定できていない。**回避/現状**: この回では
+   1〜2回の再試行で解消しなかったため深追いを止め、`make test`/
+   `make ios`/`make mac` (いずれも緑) をリリース基準とし、
+   `scripts/verify-screen.sh`でのスクリーンショット確認は「未検証」と
+   明記して見送った (`.claude/skills/verify/SKILL.md`の「頑張りすぎない」
+   節の手順どおり)。次に踏んだ人は、まず`pgrep -x xcodebuild`が空である
+   ことを確認してから (=他プロセスとの共有derived data競合を除外して
+   から) 再試行するとよい。
 
 ### 実機切り分け用の OSLog は `.notice` 以上で書く (Task #134)
 
