@@ -736,6 +736,30 @@ translations = {
         "Change the order categories like “Inbox” and “Archive” appear in the folder menu.",
     "プロフィールアイコンは、差出人のイニシャル+アカウント色を基本に、連絡先の写真・Google プロフィール写真・Gravatar・企業ロゴを優先順に探して表示します。どの情報源を使うか (外部への問い合わせを含む) は「メール一覧」設定の同名のトグルで個別にオフにできます。":
         "Avatars try, in order, the sender's matching contact photo, Google profile photo, Gravatar, and company logo, falling back to the sender's initials and the account's color. Which sources are used (including which ones contact an external service) can be turned off individually from the matching toggles in the Message List settings.",
+
+    # --- Pre-existing gap found while getting `make check-localization`
+    # green for Task #171 (unrelated to that task itself): `TranslationDiagnosticsView`
+    # (`MailViewerSettingsView`'s "翻訳の診断" entry point) landed on main
+    # without ever being folded into this dict, so the coverage check was
+    # already failing before this task touched anything. Filled in here
+    # rather than left broken, since the task's own verification gate is
+    # `make check-localization` green.
+    "翻訳の診断": "Translation Diagnostics",
+    "言語データの状態": "Language Data Status",
+    "メール翻訳が実際に使う言語ペア (英語→日本語) について、Apple の Translation フレームワークに直接問い合わせた結果です。":
+        "The result of asking Apple's Translation framework directly about the language pair (English → Japanese) that mail translation actually uses.",
+    "セッション供給の状況": "Session Supply Status",
+    "「設定要求」はこの端末が新しい翻訳セッションを要求した回数、「セッション供給」はホストビューが実際にセッションを渡してきた回数です。前者だけ増え続けて後者が増えない場合、セッションの供給経路自体が機能していません。":
+        "“Configuration Requests” counts how many times this device has requested a new translation session; “Session Supplied” counts how many times the host view actually delivered one. If only the former keeps rising while the latter doesn't, the session supply path itself isn't working.",
+    "テスト翻訳を実行": "Run Test Translation",
+    "テスト翻訳": "Test Translation",
+    "まだ記録がありません。メールを開いて翻訳を試すか、上の「テスト翻訳を実行」をお試しください。":
+        "No records yet. Open a mail to try translation, or use “Run Test Translation” above.",
+    "直近の翻訳試行 (最大5件)": "Recent Translation Attempts (up to 5)",
+    "実際にメールを翻訳しようとした際の記録です。件数・文字数・文字の種類の比率のみを表示し、メール本文そのものは表示しません。":
+        "A record of actual mail-translation attempts. Shows only counts, character totals, and the ratio of character types — never the mail body itself.",
+    "成功": "Success",
+    "失敗": "Failure",
 }
 
 # Disambiguation comments for a handful of short/reused source strings —
