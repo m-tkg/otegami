@@ -17,12 +17,16 @@ import TranslationEngine
 /// (`MailViewerSettingsView`、他の表示設定と同じ場所にまとまっている
 /// 一貫性優先) — どちらも同じ画面を開くだけで、状態は
 /// `MessageToolbarSettingsStore`に一本化されている。表示オフのアクション
-/// はこのツールバーには描画せず、`moreMenuButton`の「その他」メニュー内に
-/// 項目として追加表示する (`hiddenActionMenuItems`) — つまり「その他」の
-/// 中身は「ユーザーが非表示にしたアクション」で完全に説明できる。「その他」
-/// 自身と、この画面自体を開く「ツールバーをカスタマイズ」ショートカット
-/// (`onCustomizeToolbar`、メッセージへの操作ではないためアクション化して
-/// いない) は非表示にできず常に最後尾・末尾固定。表示オンのアクションが
+/// はこのツールバーには描画せず、`moreMenuButton`の「その他」メニュー内の
+/// サブメニュー`hiddenActionsMenu`に項目として追加表示する
+/// (`hiddenActionMenuItems`) — つまり「その他」の中身は「ユーザーが非表示に
+/// したアクション」で完全に説明できる。「その他」自身と、この画面自体を
+/// 開く「ツールバーをカスタマイズ」ショートカット (`onCustomizeToolbar`、
+/// メッセージへの操作ではないためアクション化していない) は非表示にできず
+/// 常に最後尾・末尾固定 — Task #188 以降「ツールバーをカスタマイズ」は
+/// 可変長になり得る`hiddenActionsMenu`とは別階層のトップレベル項目になって
+/// おり、その分離自体が位置安定化の実装 (`moreMenuButton`のdoc comment
+/// 参照)。表示オンのアクションが
 /// 画面幅に収まらない場合 (大きな文字サイズ設定・狭い端末幅・多くの
 /// アクションを表示オンにした場合等) は、既定の均等配置 (`fixedRow`) の
 /// 代わりにインジケータ非表示・左端起点の横スクロール (`scrollableRow`)
@@ -452,18 +456,17 @@ struct MessageDetailFooterToolbar: View {
 
     // MARK: - Task #100: 非表示にしたアクションを「その他」メニューへ移動
 
-    /// `hiddenActions`それぞれをメニュー項目として並べ、1件以上あれば末尾に
-    /// 区切り線を足す (唯一残った固定項目「ツールバーをカスタマイズ」と
-    /// 視覚的に分ける — `moreMenuButton`参照)。`.reply`は元がサブメニュー
-    /// (返信/全員に返信の2択) なので、非表示時は2つのフラットな項目に
-    /// 展開する。
+    /// `hiddenActions`それぞれをメニュー項目として並べる。`.reply`は元が
+    /// サブメニュー (返信/全員に返信の2択) なので、非表示時は2つのフラット
+    /// な項目に展開する。Task #188 以降、このリストは`moreMenuButton`
+    /// 直下ではなく`hiddenActionsMenu`(専用のサブメニュー) の中身— 末尾に
+    /// 区切り線を足していた旧実装 (「ツールバーをカスタマイズ」と同じ階層
+    /// に並んでいた頃の名残) はもう不要 (`moreMenuButton`のdoc comment
+    /// 参照)。
     @ViewBuilder
     private var hiddenActionMenuItems: some View {
         ForEach(hiddenActions) { action in
             hiddenActionMenuItem(for: action)
-        }
-        if !hiddenActions.isEmpty {
-            Divider()
         }
     }
 
@@ -545,14 +548,57 @@ struct MessageDetailFooterToolbar: View {
         }
     }
 
-    /// 「その他」メニューの中身は、もう固定項目をほとんど持たない —
-    /// 非表示にした13アクションすべてが`hiddenActionMenuItems`経由で動的に
-    /// 並ぶ。唯一の固定項目「ツールバーをカスタマイズ」はメッセージへの
-    /// 操作ではなく設定画面へのショートカットなので、
-    /// `MessageToolbarAction`化せずここに直書きしたまま (指示どおり)。
+    /// Task #188 (実機報告「『ツールバーをカスタマイズ』の位置が一番下に
+    /// なることがある。たぶんアイコンが多くてスクロールする状態だと発生
+    /// する」): 「その他」メニューの中身は2つの階層に分離してある。
+    ///
+    /// - 表示オフにしたアクション (0〜13件、可変長) は`hiddenActionsMenu`
+    ///   という*別のMenuインスタンス (サブメニュー)* にまとめて格納する。
+    /// - 「ツールバーをカスタマイズ」は、その可変長サブメニューとは独立に、
+    ///   このトップレベル`Menu`に常に固定1件だけ並ぶ項目として直書きする
+    ///   (メッセージへの操作ではなく設定画面へのショートカットなので、
+    ///   元から`MessageToolbarAction`化していない — 指示どおり)。
+    ///
+    /// **なぜ分離したか**: Task #113 (1) は「削除」の`role: .destructive`
+    /// が自動的にメニュー最後尾へ移動させられることが原因だった
+    /// (`hiddenActionMenuItem(for:)`の`.delete`ケースのdoc comment参照) —
+    /// それを取り除けば直った、という対症療法。ところが同じ症状が
+    /// Task #188 でも再発しており、`.destructive`に類する属性は他に無い
+    /// (このファイル内を全探索済み) ので、今回は個別のケースを潰す対症
+    /// 療法ではなく構造で対処した。このメニューは常にフッターツールバー
+    /// (画面最下部) の1アイコンから開くため常に**上向き**に開き、かつ
+    /// 表示オフのアクション数が多いと画面の高さに収まらず**スクロール
+    /// 可能なリスト**になる — 「上向きに開く」+「スクロールが要る」が
+    /// 重なったときにどの項目がどこに描画されるかは iOS の`UIMenu`内部
+    /// レイアウト (非公開) 任せで、コードのソース順だけからは保証できない
+    /// というのが実機報告の実体だと判断した (`docs/settings.md`「Task
+    /// #188」節に詳細)。
+    ///
+    /// この修正は「その組み合わせで具体的に何が起きるか」を突き止めて
+    /// 個別に潰すのではなく、**そもそも可変長・スクロール対象になり得る
+    /// リストと、常に固定1件・スクロール不要な項目を、同じ`Menu`の中に
+    /// 並べない**という構造に変えることで、この「上向き+スクロール」の
+    /// 組み合わせ自体をこのトップレベル`Menu`から取り除く — トップレベル
+    /// は常に高々2件 (`hiddenActionsMenu`が1件＋「ツールバーをカスタマイズ」
+    /// が1件、非表示アクションが1つも無ければ後者だけの1件) で、画面の
+    /// 高さに対して常に十分小さくスクロールが発生しない。可変長になり
+    /// 得るのは`hiddenActionsMenu`という別階層の`Menu`インスタンスの中身
+    /// だけであり、そのサブメニュー自身が (開く向き・スクロールの有無を
+    /// 含め) どう描画されるかは、親である本メニューの項目数にも「ツール
+    /// バーをカスタマイズ」の位置にも一切影響しない。
+    ///
+    /// **未確認事項**: 「上向きに開く」「スクロールが要る」の具体的な組み
+    /// 合わせが実際に描画順を入れ替えていることをこのセッションでは実機/
+    /// シミュレータで再現・確認できていない (シミュレータのビルドが
+    /// 完了しなかった — `docs/verify.md`の「粘らない」方針どおり打ち切り)。
+    /// 上記の構造変更はメカニズムを特定せずとも「トップレベルの項目数を
+    /// 常に固定・小さくする」ことで問題のクラス自体を消す設計になっている
+    /// ため機能はするはずだが、実機での見た目確認は`PENDING.md`に残した。
     private var moreMenuButton: some View {
         Menu {
-            hiddenActionMenuItems
+            if !hiddenActions.isEmpty {
+                hiddenActionsMenu
+            }
 
             Button { onCustomizeToolbar() } label: { Label("ツールバーをカスタマイズ", systemImage: "slider.horizontal.3") }
                 .accessibilityIdentifier("messageDetail.toolbar.more.customize")
@@ -560,6 +606,19 @@ struct MessageDetailFooterToolbar: View {
             toolbarIcon(.more)
         }
         .accessibilityIdentifier("messageDetail.toolbar.more")
+    }
+
+    /// 表示オフにした0〜13件のアクションをまとめるサブメニュー。中身
+    /// (`hiddenActionMenuItems`) 自体は無変更 — ハンドラも各項目の
+    /// accessibility identifier もそのまま。`moreMenuButton`のdoc comment
+    /// のとおり、この階層分離自体がTask #188の修正の要。
+    private var hiddenActionsMenu: some View {
+        Menu {
+            hiddenActionMenuItems
+        } label: {
+            Label("メールの操作", systemImage: "list.bullet")
+        }
+        .accessibilityIdentifier("messageDetail.toolbar.more.hiddenActions")
     }
 
     /// - Parameters:
