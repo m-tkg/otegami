@@ -458,11 +458,8 @@ struct MessageDetailFooterToolbar: View {
 
     /// `hiddenActions`それぞれをメニュー項目として並べる。`.reply`は元が
     /// サブメニュー (返信/全員に返信の2択) なので、非表示時は2つのフラット
-    /// な項目に展開する。Task #188 以降、このリストは`moreMenuButton`
-    /// 直下ではなく`hiddenActionsMenu`(専用のサブメニュー) の中身— 末尾に
-    /// 区切り線を足していた旧実装 (「ツールバーをカスタマイズ」と同じ階層
-    /// に並んでいた頃の名残) はもう不要 (`moreMenuButton`のdoc comment
-    /// 参照)。
+    /// な項目に展開する。`moreMenuButton`直下に並び、その末尾で
+    /// 「ツールバーをカスタマイズ」と区切り線で分かれる。
     @ViewBuilder
     private var hiddenActionMenuItems: some View {
         ForEach(hiddenActions) { action in
@@ -549,76 +546,38 @@ struct MessageDetailFooterToolbar: View {
     }
 
     /// Task #188 (実機報告「『ツールバーをカスタマイズ』の位置が一番下に
-    /// なることがある。たぶんアイコンが多くてスクロールする状態だと発生
-    /// する」): 「その他」メニューの中身は2つの階層に分離してある。
+    /// なることがある」): 原因は`.menuOrder`の既定値`.automatic`。
     ///
-    /// - 表示オフにしたアクション (0〜13件、可変長) は`hiddenActionsMenu`
-    ///   という*別のMenuインスタンス (サブメニュー)* にまとめて格納する。
-    /// - 「ツールバーをカスタマイズ」は、その可変長サブメニューとは独立に、
-    ///   このトップレベル`Menu`に常に固定1件だけ並ぶ項目として直書きする
-    ///   (メッセージへの操作ではなく設定画面へのショートカットなので、
-    ///   元から`MessageToolbarAction`化していない — 指示どおり)。
+    /// iOS の`.automatic`は**メニューが開く向きに合わせて項目順を反転
+    /// させる** — ボタンに近い側を先頭にするための挙動で、下向きに開けば
+    /// ソース順、上向きに開けば逆順に描画される。このメニューはフッター
+    /// ツールバー (画面最下部) から開くので通常は上向きだが、詳細画面の
+    /// スクロール位置や項目数によって実際の開く向きは変わり、そのたびに
+    /// 並びが丸ごとひっくり返る。実機のスクリーンショット2枚で、
+    /// 「Search→…→区切り線→ツールバーをカスタマイズ」と
+    /// 「ツールバーをカスタマイズ→区切り線→…→Search」の**完全な逆順**が
+    /// 確認されている (「ツールバーをカスタマイズ」だけが動くのではなく
+    /// メニュー全体が反転する、というのが症状の実体)。
     ///
-    /// **なぜ分離したか**: Task #113 (1) は「削除」の`role: .destructive`
-    /// が自動的にメニュー最後尾へ移動させられることが原因だった
-    /// (`hiddenActionMenuItem(for:)`の`.delete`ケースのdoc comment参照) —
-    /// それを取り除けば直った、という対症療法。ところが同じ症状が
-    /// Task #188 でも再発しており、`.destructive`に類する属性は他に無い
-    /// (このファイル内を全探索済み) ので、今回は個別のケースを潰す対症
-    /// 療法ではなく構造で対処した。このメニューは常にフッターツールバー
-    /// (画面最下部) の1アイコンから開くため常に**上向き**に開き、かつ
-    /// 表示オフのアクション数が多いと画面の高さに収まらず**スクロール
-    /// 可能なリスト**になる — 「上向きに開く」+「スクロールが要る」が
-    /// 重なったときにどの項目がどこに描画されるかは iOS の`UIMenu`内部
-    /// レイアウト (非公開) 任せで、コードのソース順だけからは保証できない
-    /// というのが実機報告の実体だと判断した (`docs/settings.md`「Task
-    /// #188」節に詳細)。
+    /// `.menuOrder(.fixed)`は、この自動反転を止めてソース順を常に維持
+    /// する。項目数にも開く向きにも依存しなくなる。
     ///
-    /// この修正は「その組み合わせで具体的に何が起きるか」を突き止めて
-    /// 個別に潰すのではなく、**そもそも可変長・スクロール対象になり得る
-    /// リストと、常に固定1件・スクロール不要な項目を、同じ`Menu`の中に
-    /// 並べない**という構造に変えることで、この「上向き+スクロール」の
-    /// 組み合わせ自体をこのトップレベル`Menu`から取り除く — トップレベル
-    /// は常に高々2件 (`hiddenActionsMenu`が1件＋「ツールバーをカスタマイズ」
-    /// が1件、非表示アクションが1つも無ければ後者だけの1件) で、画面の
-    /// 高さに対して常に十分小さくスクロールが発生しない。可変長になり
-    /// 得るのは`hiddenActionsMenu`という別階層の`Menu`インスタンスの中身
-    /// だけであり、そのサブメニュー自身が (開く向き・スクロールの有無を
-    /// 含め) どう描画されるかは、親である本メニューの項目数にも「ツール
-    /// バーをカスタマイズ」の位置にも一切影響しない。
-    ///
-    /// **未確認事項**: 「上向きに開く」「スクロールが要る」の具体的な組み
-    /// 合わせが実際に描画順を入れ替えていることをこのセッションでは実機/
-    /// シミュレータで再現・確認できていない (シミュレータのビルドが
-    /// 完了しなかった — `docs/verify.md`の「粘らない」方針どおり打ち切り)。
-    /// 上記の構造変更はメカニズムを特定せずとも「トップレベルの項目数を
-    /// 常に固定・小さくする」ことで問題のクラス自体を消す設計になっている
-    /// ため機能はするはずだが、実機での見た目確認は`PENDING.md`に残した。
+    /// なお Task #113 (1) の「削除が最後尾へ飛ぶ」は`role: .destructive`
+    /// による別の並べ替え (`hiddenActionMenuItem(for:)`の`.delete`ケース
+    /// のdoc comment参照)。そちらは対処済みで、今回のとは別の仕組み。
     private var moreMenuButton: some View {
         Menu {
+            hiddenActionMenuItems
             if !hiddenActions.isEmpty {
-                hiddenActionsMenu
+                Divider()
             }
-
             Button { onCustomizeToolbar() } label: { Label("ツールバーをカスタマイズ", systemImage: "slider.horizontal.3") }
                 .accessibilityIdentifier("messageDetail.toolbar.more.customize")
         } label: {
             toolbarIcon(.more)
         }
+        .menuOrder(.fixed)
         .accessibilityIdentifier("messageDetail.toolbar.more")
-    }
-
-    /// 表示オフにした0〜13件のアクションをまとめるサブメニュー。中身
-    /// (`hiddenActionMenuItems`) 自体は無変更 — ハンドラも各項目の
-    /// accessibility identifier もそのまま。`moreMenuButton`のdoc comment
-    /// のとおり、この階層分離自体がTask #188の修正の要。
-    private var hiddenActionsMenu: some View {
-        Menu {
-            hiddenActionMenuItems
-        } label: {
-            Label("メールの操作", systemImage: "list.bullet")
-        }
-        .accessibilityIdentifier("messageDetail.toolbar.more.hiddenActions")
     }
 
     /// - Parameters:

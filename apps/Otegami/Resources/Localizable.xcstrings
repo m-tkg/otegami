@@ -391,16 +391,6 @@
         }
       }
     },
-    "メールの操作": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Mail Actions"
-          }
-        }
-      }
-    },
     "訳文": {
       "localizations": {
         "en": {

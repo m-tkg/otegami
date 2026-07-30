@@ -93,7 +93,6 @@ translations = {
     "ツールバーをカスタマイズ": "Customize Toolbar",
     # Task #188: 「その他」メニュー内、表示オフのアクションをまとめる
     # サブメニュー (`MessageDetailFooterToolbar.hiddenActionsMenu`) のラベル。
-    "メールの操作": "Mail Actions",
     "訳文": "Translation",
     "原文": "Original",
     "再試行": "Retry",
