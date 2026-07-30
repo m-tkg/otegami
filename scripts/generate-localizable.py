@@ -430,6 +430,16 @@ translations = {
     "状態を取得できません": "Status Unavailable",
     "最終接続: %@": "Last connected: %@",
     "最終試行: %@": "Last attempt: %@",
+    # Task #176 (実機フィードバック 2026-07-30「通知にタイトル、差出人、本文の
+    # 一部を出すかどうかの設定を追加して」): the 3 content toggles
+    # (`NotificationContentSettingsStore`/`NotificationEnrichment`) plus this
+    # new section's header/footer.
+    "通知の内容": "Notification Content",
+    "差出人を表示": "Show Sender",
+    "件名を表示": "Show Subject",
+    "本文プレビューを表示": "Show Body Preview",
+    "OS の「設定 → 通知 → プレビューを表示」とは別の設定です。こちらは、このアプリが通知に載せる内容そのものを選びます（両方が有効な場合のみ、選んだ内容が実際に表示されます）。すべてオフにすると「新着メールがあります」のような内容を伴わない通知になります。":
+        "This is separate from the OS's Settings → Notifications → Show Previews. This chooses what this app itself puts into a notification's content (both have to be on for what you choose here to actually show). With everything off, a notification looks like “You have new mail” with no further content.",
     # Task #171 originally had a "登録シークレット" SecureField/header/footer
     # here (self-hosted relay's optional RELAY_DEVICE_REGISTRATION_SECRET,
     # typed in by the user). Removed in the 2026-07-30 follow-up — see

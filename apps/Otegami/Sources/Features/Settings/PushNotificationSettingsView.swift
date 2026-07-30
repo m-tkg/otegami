@@ -56,9 +56,27 @@ struct PushNotificationSettingsView: View {
     /// optional id is enough).
     @State private var reregisteringAccountId: String?
 
+    /// Task #176 (実機フィードバック 2026-07-30「通知にタイトル、差出人、
+    /// 本文の一部を出すかどうかの設定を追加して」): the 3 content toggles —
+    /// `@AppStorage`, same pattern as every other `*SettingsStore`-backed
+    /// toggle in this app (`MailViewerSettingsView`'s bindings, e.g.), bound
+    /// to `NotificationContentSettingsStore`'s keys. Each one's `onChange`
+    /// below re-mirrors the current value into the shared App Group suite
+    /// `NotificationService` actually reads — see that type's doc comment
+    /// for why a plain `UserDefaults.standard` write alone isn't enough.
+    @AppStorage(NotificationContentSettingsStore.showsSenderKey)
+    private var showsSenderInNotification = NotificationContentSettingsStore.defaultShowsSender
+    @AppStorage(NotificationContentSettingsStore.showsSubjectKey)
+    private var showsSubjectInNotification = NotificationContentSettingsStore.defaultShowsSubject
+    @AppStorage(NotificationContentSettingsStore.showsBodyPreviewKey)
+    private var showsBodyPreviewInNotification = NotificationContentSettingsStore.defaultShowsBodyPreview
+
     var body: some View {
         Form {
             statusSection
+            if RelayURLConfig.isConfigured {
+                notificationContentSection
+            }
             if environment.isPushEnabled {
                 PushWatchStatusSection(
                     rows: watchRows,
@@ -131,6 +149,38 @@ struct PushNotificationSettingsView: View {
         } footer: {
             Text("この配布ビルドにはプッシュ中継サーバーが設定されていません。自分のリレーを使う場合は docs/relay-deployment.md を参照して Config/Local.xcconfig に設定してください。")
                 .accessibilityIdentifier("settings.push.relayNotConfiguredHint")
+        }
+    }
+
+    /// Task #176: shown whenever this build even has a relay configured
+    /// (`RelayURLConfig.isConfigured`, same gate `statusSection` itself
+    /// uses to decide whether to show anything push-related at all) —
+    /// deliberately *not* gated on `environment.isPushEnabled` in addition,
+    /// so a user can set these up before ever tapping "有効にする" and have
+    /// them already in place the first time a notification actually
+    /// arrives, rather than needing to remember to come back afterward.
+    private var notificationContentSection: some View {
+        Section {
+            Toggle("差出人を表示", isOn: $showsSenderInNotification)
+                .accessibilityIdentifier("settings.push.showsSenderToggle")
+                .onChange(of: showsSenderInNotification) { _, _ in NotificationContentSettingsStore.mirrorToAppGroup() }
+            Toggle("件名を表示", isOn: $showsSubjectInNotification)
+                .accessibilityIdentifier("settings.push.showsSubjectToggle")
+                .onChange(of: showsSubjectInNotification) { _, _ in NotificationContentSettingsStore.mirrorToAppGroup() }
+            Toggle("本文プレビューを表示", isOn: $showsBodyPreviewInNotification)
+                .accessibilityIdentifier("settings.push.showsBodyPreviewToggle")
+                .onChange(of: showsBodyPreviewInNotification) { _, _ in NotificationContentSettingsStore.mirrorToAppGroup() }
+        } header: {
+            Text("通知の内容")
+        } footer: {
+            // 実機フィードバック 2026-07-30 の要望文そのもの — OS 側の
+            // 「設定 → 通知 → プレビューを表示」(ロック画面などでその場に
+            // プレビューを出すかどうかの OS 全体設定) と、ここでの3つの
+            // トグル (このアプリが通知の中身として何を渡すか) は別物、かつ
+            // 混同しやすいため明記する。すべてオフの場合は「新着メールが
+            // あります」のような内容を伴わない通知になる。
+            Text("OS の「設定 → 通知 → プレビューを表示」とは別の設定です。こちらは、このアプリが通知に載せる内容そのものを選びます（両方が有効な場合のみ、選んだ内容が実際に表示されます）。すべてオフにすると「新着メールがあります」のような内容を伴わない通知になります。")
+                .accessibilityIdentifier("settings.push.notificationContentHint")
         }
     }
 

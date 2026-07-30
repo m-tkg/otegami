@@ -1,6 +1,7 @@
 import GRDB
 import MailTransport
 import MailTransportMailCore
+import OtegamiCore
 import OtegamiRelayAPI
 import OtegamiStore
 import Security
@@ -15,21 +16,59 @@ import UserNotifications
 ///
 /// Flow:
 /// 1. Decode `accountId`/`uidNext` from `userInfo`.
-/// 2. Open the shared `AppDatabase` (App Group container, read-only in
-///    practice — see `AppDatabase.makeShared(appGroupIdentifier:)`'s doc
-///    comment) and look up that account's `AccountRecord`.
-/// 3. Read its IMAP password from the shared Keychain Access Group
-///    (`.password`-auth accounts only — v1 of the relay only supports
-///    password auth, plan: "LOGIN/XOAUTH2 なし可: password のみ v1", so a
-///    `.gmail`/`.oauth2` account can't have a watch in the first place;
-///    this Extension never even tries XOAUTH2).
-/// 4. Connect, `SELECT` the watched mailbox, `FETCH` the envelope for UID
-///    `uidNext - 1` (the just-arrived message), and fill in the
-///    notification's title (sender) / body (subject).
-/// 5. Any failure at any step (account not found, no password, IMAP
+/// 2. Read this device's `NotificationContentPreferences` (Task #176: the
+///    3 `PushNotificationSettingsView` toggles) from the shared App Group
+///    `UserDefaults` suite — see `notificationContentPreferences()`'s doc
+///    comment. If every one is off, stop right here: no account lookup, no
+///    Keychain read, no IMAP connection at all (Task #176's own "無駄な
+///    通信を避ける" ask) — the notification is left exactly as `didReceive`
+///    already set it (`NotificationEnrichment.genericTitle`/`genericBody`).
+/// 3. Otherwise, open the shared `AppDatabase` (App Group container,
+///    read-only in practice — see `AppDatabase.makeShared(appGroupIdentifier:)`'s
+///    doc comment) and look up that account's `AccountRecord`.
+/// 4. Read its IMAP password from the shared Keychain Access Group
+///    (`.password`-auth accounts only). Task #175 gave Gmail/Outlook
+///    (`.oauth2`) accounts a relay watch too (an OAuth refresh token
+///    instead of a password), but this Extension was **not** extended to
+///    match — it still only knows how to read a Keychain password and
+///    plain-`LOGIN`, never XOAUTH2. A push for a `.oauth2` account's watch
+///    therefore always falls through step 6's generic fallback (the
+///    notification still shows, just without sender/subject enrichment) —
+///    same degraded-but-not-broken behavior as any other lookup/connect
+///    failure here. Extending this Extension to refresh an access token
+///    and authenticate via XOAUTH2 (mirroring `MinimalIMAPClient
+///    .authenticateXOAuth2` on the relay side) is tracked as a follow-up,
+///    not part of Task #175's scope.
+/// 5. Connect, `SELECT` the watched mailbox, `FETCH` the envelope for UID
+///    `uidNext - 1` (the just-arrived message) — and, only if
+///    `showsBodyPreview` is on, that same message's body too (a
+///    `FETCH`-the-whole-message operation, meaningfully heavier than the
+///    envelope-only fetch, so it's skipped whenever the user has that
+///    toggle off, same "don't fetch what nothing will use" reasoning as
+///    step 2) — and fill in the notification's title/body according to
+///    `NotificationEnrichment`.
+/// 6. Any failure at any step (account not found, no password, IMAP
 ///    connect/auth/fetch failure) falls back to a generic "新着メールが
 ///    あります" body — the notification still shows, just without the
-///    enrichment — rather than dropping the notification.
+///    enrichment — rather than dropping the notification. A body-fetch
+///    failure specifically (step 5's second fetch) only drops the body
+///    preview line, not the whole enrichment — the envelope-derived
+///    title/subject (if any) still applies.
+///
+/// **On "件数のみ" for the all-off case**: Task #176's own request text
+/// floated "新着メールがあります/複数件なら件数のみ" as an example of what
+/// an all-toggles-off notification could look like. This deliberately
+/// always uses the plain generic text instead, never a "N件" count: the
+/// push payload here carries only one `accountId`/`uidNext` pair (no
+/// message count), and the only two ways to get one — an extra IMAP round
+/// trip just to count, or reading the locally-synced unread count out of
+/// the shared `AppDatabase` — are both wrong for this specific case. The
+/// former defeats the entire point of skipping the fetch. The latter would
+/// be *stale*: this Extension never inserts the new message into the local
+/// database itself (see the badge-increment doc comment on `Task` below),
+/// so a DB-read count reflects only messages already synced *before* this
+/// push arrived — not the new arrival(s) that triggered it — which would
+/// be actively misleading rather than merely imprecise.
 ///
 /// `serviceExtensionTimeWillExpire()` delivers whatever's on hand
 /// (best-effort — the generic fallback, if step 4 hasn't completed yet)
@@ -126,6 +165,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private static let sharedBadgeCountKey = "badge.sharedCount"
 
     private func enrich(payload: PushNotificationPayload) async {
+        let preferences = Self.notificationContentPreferences()
+        // Task #176: every toggle off -> nothing below would ever be used,
+        // so skip the account/Keychain lookup and the IMAP connection
+        // entirely — see this type's doc comment, step 2.
+        guard NotificationEnrichment.needsFetch(preferences: preferences) else { return }
+
         guard let account = try? await Self.lookupAccount(id: payload.accountId) else { return }
         guard account.authType == .password,
               let password = try? Self.password(forAccountId: account.id)
@@ -140,12 +185,24 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             let envelopes = try await session.fetchEnvelopes(mailboxPath: mailbox, uids: .uid(latestUID), batchSize: 1)
 
             if let envelope = envelopes.first {
-                if let sender = envelope.from.first {
-                    bestAttemptContent?.title = NotificationEnrichment.title(senderName: sender.name, senderAddress: sender.address)
+                // Only pay for the (meaningfully heavier) whole-message
+                // fetch when `showsBodyPreview` is actually on — see this
+                // type's doc comment, step 5. `try?`, not part of the outer
+                // `do`/`catch`: a body-fetch failure here should only drop
+                // the preview line, not the envelope-derived title/subject
+                // this call already has in hand.
+                var bodyPreviewSourceText: String?
+                if preferences.showsBodyPreview {
+                    bodyPreviewSourceText = try? await session.fetchBody(mailboxPath: mailbox, uid: latestUID).plainText
                 }
-                if let body = NotificationEnrichment.body(subject: envelope.subject) {
-                    bestAttemptContent?.body = body
-                }
+
+                let sender = envelope.from.first
+                bestAttemptContent?.title = NotificationEnrichment.title(
+                    preferences: preferences, senderName: sender?.name, senderAddress: sender?.address
+                )
+                bestAttemptContent?.body = NotificationEnrichment.body(
+                    preferences: preferences, subject: envelope.subject, bodyPreviewSourceText: bodyPreviewSourceText
+                )
             }
         } catch {
             // Leave the generic fallback content in place — see the type's
@@ -153,6 +210,28 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             // surfacing the error anywhere a user could see it.
         }
         await session.disconnect()
+    }
+
+    /// Task #176: this device's current `NotificationContentPreferences`,
+    /// read from the shared App Group `UserDefaults` suite —
+    /// `NotificationContentSettingsStore.mirrorToAppGroup()` (app-side) is
+    /// what keeps that suite's copy of these 3 keys up to date; this
+    /// Extension only ever reads them, never writes. Falls back to
+    /// `.allEnabled` (today's pre-#176 behavior) when the App Group
+    /// container isn't reachable at all, or a key was never written there
+    /// yet (a device that upgraded to this app version but hasn't launched
+    /// the main app even once since — `AppEnvironment.init()`'s unconditional
+    /// launch-time mirror call is what normally prevents that gap, but this
+    /// Extension can in principle run before the containing app ever has).
+    private static func notificationContentPreferences() -> NotificationContentPreferences {
+        guard let appGroupIdentifier, let defaults = UserDefaults(suiteName: appGroupIdentifier) else {
+            return .allEnabled
+        }
+        return NotificationContentPreferences(
+            showsSender: (defaults.object(forKey: NotificationContentPreferences.showsSenderKey) as? Bool) ?? true,
+            showsSubject: (defaults.object(forKey: NotificationContentPreferences.showsSubjectKey) as? Bool) ?? true,
+            showsBodyPreview: (defaults.object(forKey: NotificationContentPreferences.showsBodyPreviewKey) as? Bool) ?? true
+        )
     }
 
     // MARK: - Payload / account lookup
@@ -204,6 +283,26 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     }
 }
 
+/// Mirrored copy of `PushRelayClient.NotificationContentPreferences`
+/// (Task #176) — see `NotificationEnrichment`'s own doc comment right below
+/// for why this target keeps a separately-compiled copy instead of an
+/// `import PushRelayClient`. The 3 key names must match
+/// `apps/Otegami/Sources/Support/NotificationContentSettingsStore.swift`'s
+/// (and by extension `AppSettingsCloudDirectory`'s allowlist entries for
+/// them) byte-for-byte — `notificationContentPreferences()` above is the
+/// only reader of these 3 strings on this side.
+private struct NotificationContentPreferences {
+    static let showsSenderKey = "notification.showsSender"
+    static let showsSubjectKey = "notification.showsSubject"
+    static let showsBodyPreviewKey = "notification.showsBodyPreview"
+
+    var showsSender: Bool
+    var showsSubject: Bool
+    var showsBodyPreview: Bool
+
+    static let allEnabled = NotificationContentPreferences(showsSender: true, showsSubject: true, showsBodyPreview: true)
+}
+
 /// Mirrored copy of `PushRelayClient.NotificationEnrichment`
 /// (`packages/OtegamiKit/Sources/PushRelayClient/NotificationEnrichment
 /// .swift`) — see that type's doc comment for why this target has its own
@@ -211,17 +310,40 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 /// reasoning as `OtegamiAppGroup.swift`'s existing duplication). The
 /// algorithm is unit-tested there (`NotificationEnrichmentTests`); this
 /// copy is intentionally kept tiny and byte-for-byte identical so it needs
-/// no independent test coverage of its own.
+/// no independent test coverage of its own. Reuses `OtegamiCore
+/// .SnippetBuilder` directly (rather than re-deriving its truncation
+/// algorithm too) since `OtegamiCore` is already a real dependency of this
+/// extension target (`project.yml`), unlike `PushRelayClient` itself.
 private enum NotificationEnrichment {
-    static func title(senderName: String?, senderAddress: String) -> String {
-        if let senderName, !senderName.isEmpty {
-            return senderName
-        }
-        return senderAddress
+    static let genericTitle = "Otegami"
+    static let genericBody = "新着メールがあります"
+
+    static func needsFetch(preferences: NotificationContentPreferences) -> Bool {
+        preferences.showsSender || preferences.showsSubject || preferences.showsBodyPreview
     }
 
-    static func body(subject: String?) -> String? {
-        guard let subject, !subject.isEmpty else { return nil }
-        return subject
+    static func title(preferences: NotificationContentPreferences, senderName: String?, senderAddress: String?) -> String {
+        guard preferences.showsSender else { return genericTitle }
+        if let senderName, !senderName.isEmpty { return senderName }
+        if let senderAddress, !senderAddress.isEmpty { return senderAddress }
+        return genericTitle
+    }
+
+    static func body(
+        preferences: NotificationContentPreferences,
+        subject: String?,
+        bodyPreviewSourceText: String?,
+        bodyPreviewMaxLength: Int = 120
+    ) -> String {
+        var lines: [String] = []
+        if preferences.showsSubject, let subject, !subject.isEmpty {
+            lines.append(subject)
+        }
+        if preferences.showsBodyPreview,
+           let preview = SnippetBuilder.make(from: bodyPreviewSourceText, maxLength: bodyPreviewMaxLength) {
+            lines.append(preview)
+        }
+        guard !lines.isEmpty else { return genericBody }
+        return lines.joined(separator: "\n")
     }
 }

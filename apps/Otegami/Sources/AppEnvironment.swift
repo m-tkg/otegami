@@ -1329,6 +1329,16 @@ final class AppEnvironment {
         pushSettings.deleteLegacyRegistrationSecretIfPresent()
         pushSettings.deleteLegacyRelayURLIfPresent()
 
+        // Task #176: unconditional/every-launch, same style as the two
+        // cleanup calls right above — guarantees the App Group mirror
+        // `NotificationService` actually reads is never more than one
+        // launch stale, even for a device that upgraded to this app
+        // version without ever opening `PushNotificationSettingsView` or
+        // receiving a settings.v2 pull (`NotificationContentSettingsStore`'s
+        // doc comment has the other 2 call sites that keep it fresh after
+        // this).
+        NotificationContentSettingsStore.mirrorToAppGroup()
+
         // Task #173 (`scripts/verify-screen.sh`'s `push-settings-watches`
         // scenario): screenshotting `PushWatchStatusSection`'s populated
         // states needs push "enabled" and a non-empty, varied watch list —

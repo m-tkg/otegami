@@ -135,10 +135,14 @@ let package = Package(
 
         // M9: HTTP client for the app<->otegami-relay push relay API.
         // Apple-only by convention (see the target's own doc comment) —
-        // depends only on OtegamiRelayAPI.
+        // depends only on OtegamiRelayAPI. Task #176 added OtegamiCore too,
+        // so `NotificationEnrichment.body(preferences:...)` can reuse
+        // `SnippetBuilder.make(from:maxLength:)` (already `public`, already
+        // depended on by half this package) for the body-preview snippet's
+        // length limit instead of re-deriving that truncation logic here.
         .target(
             name: "PushRelayClient",
-            dependencies: ["OtegamiRelayAPI"]
+            dependencies: ["OtegamiRelayAPI", "OtegamiCore"]
         ),
 
         // `URLProtocol`-stubbed request/response and error-mapping tests —

@@ -2663,6 +2663,56 @@
         }
       }
     },
+    "通知の内容": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notification Content"
+          }
+        }
+      }
+    },
+    "差出人を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Sender"
+          }
+        }
+      }
+    },
+    "件名を表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Subject"
+          }
+        }
+      }
+    },
+    "本文プレビューを表示": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Body Preview"
+          }
+        }
+      }
+    },
+    "OS の「設定 → 通知 → プレビューを表示」とは別の設定です。こちらは、このアプリが通知に載せる内容そのものを選びます（両方が有効な場合のみ、選んだ内容が実際に表示されます）。すべてオフにすると「新着メールがあります」のような内容を伴わない通知になります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This is separate from the OS's Settings → Notifications → Show Previews. This chooses what this app itself puts into a notification's content (both have to be on for what you choose here to actually show). With everything off, a notification looks like “You have new mail” with no further content."
+          }
+        }
+      }
+    },
     "IMAP": {
       "localizations": {
         "en": {

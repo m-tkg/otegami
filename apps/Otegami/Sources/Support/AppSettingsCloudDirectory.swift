@@ -33,6 +33,18 @@ import Foundation
 ///   `RelayRegistrationSecretConfig`) instead, so there's no user-typed
 ///   value left to sync at all; this key is no longer part of either
 ///   `boolDefaults`/`stringDefaults` below.
+/// - **`NotificationContentSettingsStore`'s 3 keys (Task #176) are the
+///   opposite case, deliberately included below**: "差出人/件名/本文
+///   プレビューを表示" is a content-privacy *preference*, not device-specific
+///   state like the bullet above — there's no reason a user who doesn't
+///   want a subject line on their iPhone's lock screen would want it on
+///   their iPad's either. The App Group mirroring those 3 keys separately
+///   need for `NotificationService` to actually read them
+///   (`NotificationContentSettingsStore`'s own doc comment) is unaffected
+///   by whether they're *also* synced here — that mirroring always copies
+///   *this* device's own current `UserDefaults.standard` value into its own
+///   App Group suite, regardless of whether that value just arrived via
+///   `apply(_:)` below or was set locally.
 /// - **UITest 系フラグ**: every `OTEGAMI_UITEST_*`/`-otegami*` escape hatch
 ///   this codebase uses is a launch environment variable/argument, never a
 ///   `UserDefaults` key, so none of them could end up in this allowlist by
@@ -78,7 +90,14 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
         // Task #113 (2): 「ボタンのラベルを表示」トグル — 他のツールバー
         // カスタマイズ設定 (`stringDefaults`の`MessageToolbarSettingsStore
         // .orderKey`) と同じ、見た目の好みを同期する対象。
-        MessageToolbarSettingsStore.showsLabelsKey: MessageToolbarSettingsStore.defaultShowsLabels
+        MessageToolbarSettingsStore.showsLabelsKey: MessageToolbarSettingsStore.defaultShowsLabels,
+        // Task #176: the 3 push-notification content toggles — see this
+        // type's doc comment ("`NotificationContentSettingsStore`'s 3 keys")
+        // for why these are synced despite living next to other, deliberately
+        // *un*-synced push settings.
+        NotificationContentSettingsStore.showsSenderKey: NotificationContentSettingsStore.defaultShowsSender,
+        NotificationContentSettingsStore.showsSubjectKey: NotificationContentSettingsStore.defaultShowsSubject,
+        NotificationContentSettingsStore.showsBodyPreviewKey: NotificationContentSettingsStore.defaultShowsBodyPreview
     ]
 
     /// Every synced `String`-valued setting (a `RawRepresentable` enum's
@@ -132,6 +151,13 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
                 UserDefaults.standard.set(stringValue, forKey: key)
             }
         }
+        // Task #176: a pull that changed any of `NotificationContentSettingsStore`'s
+        // 3 keys (or none — this call is cheap either way) needs its App
+        // Group mirror refreshed too, or another device's more restrictive
+        // choice wouldn't take effect on this device's own notifications
+        // until something else happened to trigger it (this device's own
+        // toggle, or the next full relaunch) — see that type's doc comment.
+        NotificationContentSettingsStore.mirrorToAppGroup()
     }
 }
 

@@ -477,6 +477,60 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 「プッシュ通知」から有効化。詳細は
 [docs/relay-deployment.md](relay-deployment.md)。
 
+### 通知の内容 (Task #176)
+
+実機フィードバック 2026-07-30「通知にタイトル、差出人、本文の一部を出す
+かどうかの設定を追加して」。`NotificationContentSettingsStore.swift`
+(アプリターゲット)、`PushNotificationSettingsView` の「通知の内容」
+セクション。
+
+| 項目 | キー | 既定値 |
+| --- | --- | --- |
+| 差出人を表示 | `notification.showsSender` | ON |
+| 件名を表示 | `notification.showsSubject` | ON |
+| 本文プレビューを表示 | `notification.showsBodyPreview` | ON |
+
+3つとも ON が既定 — Task #176 以前の挙動 (常に差出人・件名を表示、本文
+プレビューは無し) を壊さないよう、少なくとも表示内容を「減らす」方向の
+変更にはならない。footer に明記した通り、これは **OS 側の「設定 →
+通知 → プレビューを表示」とは別物**: OS 側はロック画面等でその場に
+プレビューを出すかどうかの全体設定、こちらは「このアプリが通知の中身
+として何を渡すか」の設定で、両方が有効な場合にのみ実際に表示される。
+
+**すべて OFF の場合**: 内容を伴わない通知 (「新着メールがあります」) に
+なる。`NotificationService.enrich(payload:)` はこの場合 IMAP フェッチは
+おろかアカウント/Keychain 参照すら行わない — 3トグルすべて OFF なら
+結果を使う場所が無いと分かった時点で早期 return する
+(`NotificationEnrichment.needsFetch(preferences:)`)。「複数件なら件数
+のみ」は採用しなかった — push payload は `accountId`/`uidNext` のみで
+件数を持たず、件数を得る手段は (a) 件数を数えるためだけの追加 IMAP
+往復 (フェッチを丸ごとスキップする本来の目的と矛盾) か (b) ローカル DB
+の既読/未読数を読む、のどちらかだが、(b) はこの Extension がプッシュで
+届いた新着メッセージ自体をまだ DB に挿入していない (`NotificationService
+.swift` の doc comment 参照) ため、プッシュ到着**前**に同期済みだった
+件数を返すだけで、今回の新着を反映しない不正確な値になる。両方とも
+「N件」を実装する価値に見合わないと判断し、常に固定文言にした。
+
+**Extension からの読み取り経路 (App Group)**: `NotificationService`
+Extension は本体アプリと別プロセスなので `UserDefaults.standard` を
+共有しない。`NotificationContentSettingsStore.mirrorToAppGroup()` が
+この3キーの現在値を共有 App Group の `UserDefaults(suiteName:)` へ
+コピーし、Extension 側はそれだけを読む (`OtegamiAppGroup.swift`の
+`badge.sharedCount`と同じ仕組み)。呼び出し箇所は3つ: (1)
+`PushNotificationSettingsView` の各トグルの `onChange`、(2)
+`AppSettingsCloudDirectory.apply(_:)` (他デバイスからの settings.v2
+pull 後)、(3) `AppEnvironment.init()` (起動毎、無条件) — 設定変更が
+次回のプッシュ到着までに確実に反映されるようにするため。
+
+**iCloud 同期**: 対象に含めた (`AppSettingsCloudDirectory.boolDefaults`)。
+これは「見た目の好み」であり `PushSettingsStore` のデバイス固有部分
+(デバイス id・per-account watch map・enabled フラグ) とは性質が違う
+— iPhone でプレビューを隠したいユーザーが iPad では隠したくない理由は
+薄い。macOS は 2026-07-29 のユーザー指示で settings.v2 同期そのものが
+無効 (`AppEnvironment.init()`の`settingsCloudSync`の`isEnabled`分岐)
+なので実質 iOS/iPadOS 間のみで同期される。macOS には現状
+`NotificationService` が無い (M9 スコープ外) ので影響なし。
+
 ## メール本文フッターツールバーの表示/非表示・並び順 (新画面構成、Task #88 で7アイコンに、Task #100 でカスタマイズ機能に、2026-07-29 追加仕様で14アクションに、Task #103 で15アクションに、Task #113 でラベル表示トグル追加+その他メニューの順序不安定バグ修正、Task #139 で「英語で返信を下書き」撤去により14アクションに)
 
 `MessageToolbarSettingsStore.swift`(アプリターゲット)。メール本文画面
