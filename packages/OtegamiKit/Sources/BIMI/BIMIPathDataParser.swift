@@ -17,6 +17,13 @@ import Foundation
 /// than read from `d` — no approximation risk, this is exact per the SVG
 /// spec, unlike the genuinely-different math `Q`/`T`/`A` would need.
 enum BIMIPathDataParser {
+    /// Sender-domain-controlled BIMI logo `d` values are already capped
+    /// at `BIMISVGSafety.maxByteSize` (64KB) upstream, but that's a size
+    /// limit on the whole SVG document, not a limit on how many commands
+    /// a `d` value can decode to — cap it independently here too, purely
+    /// as defense in depth (Task #168 / SEC-C, `CLAUDE-SECURITY` F7).
+    private static let maxCommands = 200_000
+
     static func parse(_ d: String, transform: Affine) -> [BIMIPathCommand]? {
         var scanner = Scanner(d)
         var commands: [BIMIPathCommand] = []
@@ -50,6 +57,17 @@ enum BIMIPathDataParser {
             scanner.skipSeparators()
             guard !scanner.isAtEnd else { break }
 
+            // Every iteration must consume at least one character from
+            // the scanner. Without this guard, `Z`/`z` (the only command
+            // that reads no arguments) could be implicitly repeated
+            // forever when the character right after it is neither a
+            // separator nor a command letter — e.g. `d="M0 0Z0"` — since
+            // nothing about that repetition path advances `scanner`
+            // (Task #168 / SEC-C, `CLAUDE-SECURITY` F7: this used to be
+            // an unbounded `while true` with `commands` growing without
+            // limit, hanging the calling actor and eventually OOMing).
+            let iterationStartIndex = scanner.currentIndex
+
             let command: Character
             if let letter = scanner.peekLetter() {
                 command = letter
@@ -60,6 +78,13 @@ enum BIMIPathDataParser {
                 // e.g. "M0,0 10,10 20,20" — the second/third pairs are
                 // implicit lineto). A repeated `M`/`m` becomes implicit
                 // `L`/`l` per spec.
+                //
+                // `Z`/`z` (closepath) takes no parameters per the SVG
+                // spec, so there is nothing valid to implicitly repeat —
+                // a bare token right after a `Z`/`z` that isn't itself a
+                // new command letter is malformed; fail closed rather
+                // than loop.
+                guard last != "Z", last != "z" else { return nil }
                 command = (last == "M") ? "L" : (last == "m") ? "l" : last
             } else {
                 return nil // numbers with no command at all — malformed.
@@ -114,6 +139,9 @@ enum BIMIPathDataParser {
                 previousCubicControl2 = nil
             }
             lastCommand = command
+
+            guard scanner.currentIndex > iterationStartIndex else { return nil } // no progress — fail closed rather than loop.
+            guard commands.count <= maxCommands else { return nil } // defense in depth; see maxCommands's doc comment.
         }
         return commands
     }
@@ -132,6 +160,11 @@ enum BIMIPathDataParser {
         }
 
         var isAtEnd: Bool { index >= characters.count }
+
+        /// Exposed only so the caller can assert that each loop
+        /// iteration consumed at least one character (Task #168 / SEC-C
+        /// fix for F7 — see `parse`'s per-iteration progress guard).
+        var currentIndex: Int { index }
 
         mutating func skipSeparators() {
             while index < characters.count, characters[index] == " " || characters[index] == "," || characters[index] == "\n" || characters[index] == "\t" || characters[index] == "\r" {

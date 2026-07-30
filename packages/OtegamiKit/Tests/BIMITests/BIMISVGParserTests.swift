@@ -190,6 +190,37 @@ struct BIMISVGParserTests {
         #expect(BIMISVGParser.parse("<g><path d=\"M0 0Z\"/></g>") == nil)
     }
 
+    /// Regression bound for Task #168 (SEC-C, `CLAUDE-SECURITY` F12):
+    /// `tokenize`'s regex had four adjacent groups that could all match
+    /// the same whitespace run, so an unterminated tag followed by a
+    /// long space run (well within the 64KB BIMI logo size cap) made the
+    /// engine enumerate every way to split that run before failing.
+    /// Confirmed via a standalone repro that the pre-fix regex was still
+    /// running after 15s on this exact payload; post-fix it completes in
+    /// milliseconds.
+    @Test("an unterminated tag followed by tens of thousands of spaces does not hang tokenizing")
+    func tokenizeDoesNotHangOnAnUnterminatedTagWithALongWhitespaceRun() {
+        let payload = "<svg viewBox=\"0 0 8 8\"/><g" + String(repeating: " ", count: 50_000)
+        let start = Date()
+        let tokens = BIMISVGParser.tokenize(payload)
+        #expect(Date().timeIntervalSince(start) < 5)
+        #expect(tokens == nil)
+    }
+
+    @Test("an XML declaration prologue before the <svg> root is skipped, not fatal")
+    func tokenizeSkipsAnXMLDeclarationPrologue() throws {
+        // A real published BIMI logo (PayPal's — see this file's other
+        // PayPal fixtures) is served with a leading `<?xml ...?>`
+        // declaration. `tokenize`'s hand-written scanner must skip
+        // constructs that aren't `<name...>`/`</name...>` (this one
+        // starts with `?`, not a letter) rather than failing the whole
+        // document, matching the original regex-based implementation's
+        // behavior (which simply never matched the declaration as a tag).
+        let svg = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><svg viewBox=\"0 0 10 10\"><path d=\"M0 0Z\" fill=\"#000\"/></svg>"
+        let image = try #require(BIMISVGParser.parse(svg))
+        #expect(image.shapes.count == 1)
+    }
+
     // MARK: - BIMIPathDataParser
 
     @Test
@@ -237,6 +268,22 @@ struct BIMISVGParserTests {
             .moveTo(x: 5, y: 5),
             .curveTo(cx1: 5, cy1: 5, cx2: 20, cy2: 10, x: 20, y: 20),
         ])
+    }
+
+    /// Regression bound for Task #168 (SEC-C, `CLAUDE-SECURITY` F7):
+    /// `Z`/`z` had no argument, so when the character right after it was
+    /// neither a separator nor a command letter, the parser's implicit
+    /// command-repetition path re-selected `Z` forever without consuming
+    /// any input — a true `while true` infinite loop with `commands`
+    /// growing without bound, confirmed via a standalone repro (not
+    /// exercised through this file's own history) to still be running
+    /// after 10s pre-fix. Post-fix this returns `nil` immediately.
+    @Test("a Z immediately followed by a non-separator, non-letter token fails closed instead of looping forever")
+    func pathDataParserDoesNotHangOnAnImplicitZRepetition() {
+        let start = Date()
+        let result = BIMIPathDataParser.parse("M0 0Z0", transform: .identity)
+        #expect(Date().timeIntervalSince(start) < 5)
+        #expect(result == nil)
     }
 
     @Test

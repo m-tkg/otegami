@@ -178,38 +178,89 @@ public enum BIMISVGParser {
     }
 
     /// `nil` if the text contains anything that doesn't look like a
-    /// well-formed sequence of tags (e.g. a stray unmatched `<`/`>`) — fail
+    /// well-formed sequence of tags (e.g. an unterminated tag) — fail
     /// closed rather than guess.
+    ///
+    /// **Hand-written linear scanner, not a regex** (Task #168 / SEC-C,
+    /// `CLAUDE-SECURITY` F12): this used to be one `NSRegularExpression`
+    /// whose trailing `\s+`, `[^<>]*?`, `\s*`, `\s*` groups could all
+    /// match the same run of whitespace, so an unterminated tag followed
+    /// by a long space run (an attacker-controlled BIMI logo's `<g` plus
+    /// tens of thousands of spaces, still under the 64KB size cap) made
+    /// the engine enumerate every way to split that run before failing —
+    /// catastrophic backtracking, tying up the resolver actor's thread.
+    /// The scanner below finds each tag's terminating `>` with a single
+    /// forward scan that stops early at the *next* `<` too (real HTML/SVG
+    /// never nests one inside a tag) — that early stop is what keeps
+    /// total work linear: without it, an unterminated tag would still
+    /// scan all the way to the next real `>` (or the end of input) on
+    /// every attempt, and that cost would be paid again from the next
+    /// `<`, recreating the same quadratic blowup by another route.
     static func tokenize(_ text: String) -> [Token]? {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"<\s*(/?)\s*([A-Za-z][\w:-]*)((?:\s+[^<>]*?)?)\s*(/?)\s*>"#,
-            options: [.dotMatchesLineSeparators]
-        ) else { return nil }
-        let nsText = text as NSString
-        let range = NSRange(location: 0, length: nsText.length)
+        let chars = Array(text)
+        let n = chars.count
         var tokens: [Token] = []
-        var consumed = 0
-        for match in regex.matches(in: text, range: range) {
-            // Anything between the previous tag and this one should be pure
-            // whitespace/text content — `BIMISVGParser` doesn't support text
-            // nodes with actual content (shapes only), but stray text is
-            // harmless to ignore rather than a reason to fail the whole
-            // document (e.g. an XML declaration or whitespace formatting).
-            consumed = match.range.location + match.range.length
+        var i = 0
 
-            let isClosing = nsText.substring(with: match.range(at: 1)) == "/"
-            let name = nsText.substring(with: match.range(at: 2))
-            let attributesString = nsText.substring(with: match.range(at: 3))
-            let isSelfClosing = nsText.substring(with: match.range(at: 4)) == "/"
+        while i < n {
+            guard chars[i] == "<" else {
+                i += 1
+                continue
+            }
+
+            var k = i + 1
+            while k < n, chars[k] != "<", chars[k] != ">" {
+                k += 1
+            }
+            guard k < n, chars[k] == ">" else { return nil } // unterminated tag — fail closed.
+
+            var j = i + 1
+            while j < k, chars[j].isWhitespace { j += 1 }
+            var isClosing = false
+            if j < k, chars[j] == "/" {
+                isClosing = true
+                j += 1
+                while j < k, chars[j].isWhitespace { j += 1 }
+            }
+            guard j < k, chars[j].isLetter else {
+                // A well-terminated `<...>` span that isn't `<name...>`/
+                // `</name...>` — an XML declaration (`<?xml ... ?>`), a
+                // doctype (`<!DOCTYPE ...>`), or a comment that slipped
+                // past `stripComments`. Not a tag this parser understands,
+                // but (matching this function's original regex-based
+                // behavior, which real-world fixtures — the PayPal BIMI
+                // logo's `<?xml ...?>` prologue — depend on) that's not
+                // grounds to fail the *whole* document: skip past it with
+                // no token, same as the `defs`/`title`/`desc` skip-depth
+                // handling in `parse(_:)` for content this parser doesn't
+                // render.
+                i = k + 1
+                continue
+            }
+            let nameStart = j
+            while j < k, chars[j].isLetter || chars[j].isNumber || chars[j] == "_" || chars[j] == ":" || chars[j] == "-" {
+                j += 1
+            }
+            let name = String(chars[nameStart..<j])
+
+            var attrEnd = k
+            var isSelfClosing = false
+            while attrEnd > j, chars[attrEnd - 1].isWhitespace { attrEnd -= 1 }
+            if attrEnd > j, chars[attrEnd - 1] == "/" {
+                isSelfClosing = true
+                attrEnd -= 1
+                while attrEnd > j, chars[attrEnd - 1].isWhitespace { attrEnd -= 1 }
+            }
 
             if isClosing {
                 tokens.append(.close(name: name))
             } else {
+                let attributesString = String(chars[j..<attrEnd])
                 guard let attributes = Self.parseAttributes(attributesString) else { return nil }
                 tokens.append(.open(name: name, attributes: attributes, selfClosing: isSelfClosing))
             }
+            i = k + 1
         }
-        _ = consumed
         return tokens
     }
 
