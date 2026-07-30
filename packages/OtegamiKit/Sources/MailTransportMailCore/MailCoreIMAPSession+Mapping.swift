@@ -347,9 +347,78 @@ extension MailCoreIMAPSession {
     static func bodyContent(from parser: MCOMessageParser) -> MessageBodyContent {
         MessageBodyContent(
             plainText: plainText(from: parser),
-            html: nonEmpty(parser.htmlBodyRendering()),
+            html: html(from: parser),
             parts: parts(from: parser)
         )
+    }
+
+    /// 2026-07-30 (実機フィードバック: Okta通知メールがOS標準の翻訳シート
+    /// 「言語を自動判定できません」に陥り、候補が Indonesian/Polish という
+    /// 無関係な言語だった調査): 実際の eml (アップロード添付、機微情報の
+    /// ためコミットしない) を `MCOMessageParser(data:)` へ通し、
+    /// `MailCoreIMAPSession.bodyContent(from:)` が実際に生成する
+    /// `plainText`/`html` をダンプして比較したところ —
+    ///
+    /// - `plainText` (既にTask #134で同じ理由により`decodedString()`優先に
+    ///   直してある) はクリーン: quoted-printableの残骸(`=`+改行の
+    ///   ソフト改行未処理、`=XX`16進残骸) は一切無い。
+    /// - **`nonEmpty(parser.htmlBodyRendering())`(このメソッドが直していた
+    ///   場所) は汚染されていた**: 生の eml では
+    ///   `<td style="...line-height:22px"=` + 改行 + `>PLAID,inc - New
+    ///   sign-on detected...` (`=`のソフト改行はタグの`"`と`>`の間) だった
+    ///   ものが、`htmlBodyRendering()`の出力では
+    ///   `>PLAID,inc` + **改行が本来無いはずの位置** + `- New sign-on
+    ///   detected...` という、文中に脈絡なく改行が挿入された形になって
+    ///   いた — ソフト改行のマーカー(`=`)そのものは正しく消えているが、
+    ///   後続の改行を正しい位置 (タグ境界) で消化せず、本文の途中に
+    ///   ずれ込ませてしまう再現性のあるバグ (mailcore2側の描画/再整形
+    ///   処理由来と見られる、Task #134の`plainTextBodyRendering()`と
+    ///   同系統の問題)。同じ eml の `text/html` リーフパートを
+    ///   `firstHTMLPart`経由で直接取り出し`.decodedString()`した結果は
+    ///   `PLAID,inc - New sign-on detected...`と正しく1行に繋がって
+    ///   おり、汚染は無かった。
+    ///
+    /// これは翻訳失敗の直接原因の一つ — 文中に混入した改行が、Apple
+    /// Translationの言語自動判定 (特に`TranslationSession.Configuration
+    /// (source: nil, ...)`の1回だけの判定、あるいは複数段落をまとめて
+    /// バッチ送信する`translateBatch`の集約判定) を混乱させ、"Indonesian/
+    /// Polish"のような無関係な候補が出る一因になっていたと考えられる
+    /// (`AppleTranslationService`のOS標準翻訳シートへのフォールバック
+    /// 経路がこのケースで作動していた)。
+    ///
+    /// `plainText(from:)`と全く同じ方針で修正: `parser.mainPart()`から
+    /// text/htmlのリーフパートを優先的に探し、見つかればその
+    /// `.decodedString()`(=既にトランスファーエンコーディング/文字コード
+    /// をmailcore2がデコード済みの生文字列、`htmlBodyRendering()`のような
+    /// 再整形を経ない)を使う。見つからない場合(text/htmlパートが実在
+    /// しない、HTMLがどこか別のパートから合成されるような稀なケース)だけ
+    /// 従来通り`parser.htmlBodyRendering()`にフォールバックする。
+    private static func html(from parser: MCOMessageParser) -> String? {
+        if let mainPart = parser.mainPart(),
+           let htmlPart = firstHTMLPart(mainPart),
+           let decoded = htmlPart.decodedString(),
+           !decoded.isEmpty {
+            return decoded
+        }
+        return nonEmpty(parser.htmlBodyRendering())
+    }
+
+    /// Depth-first search for the first non-attachment `text/html` leaf
+    /// under `part` — mirrors `firstPlainTextPart` immediately below
+    /// (same traversal rules: only descends into `MCOAbstractMultipart`
+    /// containers, never into a nested `message/rfc822` part).
+    private static func firstHTMLPart(_ part: MCOAbstractPart) -> MCOAttachment? {
+        if let multipart = part as? MCOAbstractMultipart {
+            for child in multipart.parts ?? [] {
+                if let found = firstHTMLPart(child) {
+                    return found
+                }
+            }
+            return nil
+        }
+        guard let attachment = part as? MCOAttachment, !attachment.isAttachment else { return nil }
+        guard (attachment.mimeType ?? "").lowercased() == "text/html" else { return nil }
+        return attachment
     }
 
     /// Task #134 (実機のみで再現する「引用が要約に混入する」症状の根治):

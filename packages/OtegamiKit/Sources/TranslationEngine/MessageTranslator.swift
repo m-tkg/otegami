@@ -168,7 +168,16 @@ public actor MessageTranslator {
             // 判別できる) だけを記録 — 次に「翻訳が失敗する」報告が来た時、
             // 実機ログ1本から「入力が0件/空白だけだったか」を即座に切り分け
             // られるようにするためのもの (F15の趣旨を新規ログにも適用)。
-            Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) engine=\(cacheEngineIdentifier, privacy: .public) paragraphCount=\(paragraphs.count, privacy: .public) totalChars=\(paragraphs.reduce(0) { $0 + $1.count }, privacy: .public) source=\(sourceLanguage.rawValue, privacy: .public) target=\(targetLanguage.rawValue, privacy: .public)")
+            //
+            // Phase 5続報3 (2026-07-30, 実機再現で確定: quoted-printable
+            // ソフト改行の消化漏れが `MailCoreIMAPSession+Mapping.swift`
+            // の`html(from:)`で修正された — この特定バグは直ったが、同種の
+            // 「入力自体は非空だが実は壊れている(=の残骸・記号だらけ)」を
+            // 次回も本文を出さずに見分けられるよう、文字種の比率を追加で
+            // 記録する。`=`の比率が高い/英字比率が極端に低いといった形は
+            // quoted-printableの残骸を含む文字列の特徴的なシグナル。
+            let charStats = Self.characterClassStats(paragraphs)
+            Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) engine=\(cacheEngineIdentifier, privacy: .public) paragraphCount=\(paragraphs.count, privacy: .public) totalChars=\(paragraphs.reduce(0) { $0 + $1.count }, privacy: .public) source=\(sourceLanguage.rawValue, privacy: .public) target=\(targetLanguage.rawValue, privacy: .public) \(charStats, privacy: .public)")
 
             // design-phase-3: a paragraph that's itself longer than the
             // engine's context window (`TranslationChunker`'s doc comment —
@@ -397,6 +406,39 @@ public actor MessageTranslator {
     /// mail content to the system log.
     private static func logPrefix(_ text: String) -> String {
         String(text.prefix(20))
+    }
+
+    /// 2026-07-30 (Phase 5続報3): character-class ratios across every
+    /// element of `paragraphs`, combined — never the text itself (F15) —
+    /// so a future device log can distinguish "genuinely short/foreign
+    /// text" from "input that's structurally broken" (e.g. leftover
+    /// quoted-printable: a high `=` ratio, or an unusually low letter
+    /// ratio relative to symbol/digit noise) without needing the real
+    /// content. Percentages, rounded to whole numbers, of a combined
+    /// character count across all paragraphs.
+    private static func characterClassStats(_ paragraphs: [String]) -> String {
+        var letters = 0
+        var digits = 0
+        var equalsSigns = 0
+        var otherSymbols = 0
+        var total = 0
+        for paragraph in paragraphs {
+            for scalar in paragraph.unicodeScalars {
+                total += 1
+                if scalar == "=" {
+                    equalsSigns += 1
+                } else if CharacterSet.letters.contains(scalar) {
+                    letters += 1
+                } else if CharacterSet.decimalDigits.contains(scalar) {
+                    digits += 1
+                } else if !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    otherSymbols += 1
+                }
+            }
+        }
+        guard total > 0 else { return "charStats=(empty)" }
+        func pct(_ n: Int) -> Int { Int((Double(n) / Double(total) * 100).rounded()) }
+        return "charStats=(letters=\(pct(letters))% digits=\(pct(digits))% equals=\(pct(equalsSigns))% otherSymbols=\(pct(otherSymbols))%)"
     }
 
     /// Drops `messageId`'s cached translation, if any — for a future

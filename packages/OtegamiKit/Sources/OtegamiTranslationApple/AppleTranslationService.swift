@@ -289,7 +289,14 @@ public struct AppleTranslationService: TranslationOnlyService {
         if knownNotDownloaded {
             return .unavailable(.languagePackNotDownloaded)
         }
-        return .failed(message: "翻訳に失敗しました（時間をおいて再試行してください）")
+        // 2026-07-30 (実機フィードバック): not "翻訳に失敗しました（…）" —
+        // `MessageDetailFooterToolbar.translateFootnote` already prepends
+        // "翻訳に失敗しました: " to whatever this becomes, and repeating the
+        // same clause here produced a real-device-reported literal
+        // duplicate ("翻訳に失敗しました: 翻訳に失敗しました（…）"). See
+        // `TranslationUnavailableReason.other`'s identical fix for the
+        // same reason.
+        return .failed(message: "時間をおいて再試行してください")
     }
 
     // MARK: - Diagnostics (Phase 5, 2026-07-30)

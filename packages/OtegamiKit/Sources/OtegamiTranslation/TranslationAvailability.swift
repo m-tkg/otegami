@@ -83,7 +83,15 @@ public enum TranslationUnavailableReason: Sendable, Equatable {
         case .languagePackNotDownloaded:
             "翻訳用の言語データが未ダウンロードです"
         case .other:
-            "翻訳に失敗しました（時間をおいて再試行してください）"
+            // 2026-07-30 (実機フィードバック): これ単体では自然な文だが、
+            // 表示側 (`MessageDetailFooterToolbar.translateFootnote`) が
+            // 「翻訳に失敗しました: 」という prefix を付けて表示するため、
+            // ここでも同じ書き出しにすると「翻訳に失敗しました: 翻訳に
+            // 失敗しました…」という二重表示になる実機バグがあった —
+            // prefix 側だけが「失敗した」という前置きを担い、ここは
+            // 続く具体的な案内 (「時間をおいて再試行してください」) だけ
+            // を返す。
+            "時間をおいて再試行してください"
         }
     }
 }

@@ -55,7 +55,7 @@ struct AppleTranslationServiceMapEngineErrorTests {
         // `languagePairStatus` had already confirmed `.installed`
         // (`knownNotDownloaded: false`) — must NOT claim "not downloaded".
         let prepareShapedError = NSError(domain: "Translation.TranslationError", code: 1)
-        #expect(AppleTranslationService.mapEngineError(prepareShapedError, knownNotDownloaded: false) == .failed(message: "翻訳に失敗しました（時間をおいて再試行してください）"))
+        #expect(AppleTranslationService.mapEngineError(prepareShapedError, knownNotDownloaded: false) == .failed(message: "時間をおいて再試行してください"))
         // Only when this app's own `LanguageAvailability` check already
         // confirmed the pair as `.supported` (not yet installed) does an
         // unclassified failure afterward get attributed to that.

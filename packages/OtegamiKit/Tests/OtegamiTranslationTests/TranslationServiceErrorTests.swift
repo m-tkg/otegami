@@ -91,4 +91,38 @@ struct TranslationServiceErrorTests {
     func insufficientInputMessagePassthrough() {
         #expect(TranslationServiceError.insufficientInput(message: "翻訳元の言語を判定できませんでした").userFacingMessage == "翻訳元の言語を判定できませんでした")
     }
+
+    // MARK: - Phase 5続報2 (2026-07-30): real-device report of a literal
+    // doubled toast — "翻訳に失敗しました: 翻訳に失敗しました（時間をおいて
+    // 再試行してください）". `MessageDetailFooterToolbar.translateFootnote`
+    // is the one place that prepends "翻訳に失敗しました: " to whatever
+    // `MessageTranslationState.failureMessage` becomes (that prepending
+    // itself isn't unit-testable — it's a private computed property on a
+    // SwiftUI View — so this locks in the other half of the fix instead:
+    // no message this package hands to that prefix may itself start with
+    // the same clause).
+
+    @Test("no TranslationUnavailableReason message starts with the footer UI's own '翻訳に失敗しました' prefix clause")
+    func noReasonMessageStartsWithTheFooterPrefix() {
+        let cases: [TranslationUnavailableReason] = [
+            .deviceNotEligible, .appleIntelligenceNotEnabled, .modelNotReady,
+            .languagePairUnsupported, .languagePackNotDownloaded, .other("x"),
+        ]
+        for reason in cases {
+            #expect(!reason.userFacingMessage.hasPrefix("翻訳に失敗しました"))
+        }
+    }
+
+    @Test("TranslationServiceError.failed/.insufficientInput/.tooLong/.contentBlocked messages never start with the footer UI's own prefix clause either")
+    func noErrorCaseMessageStartsWithTheFooterPrefix() {
+        let cases: [TranslationServiceError] = [
+            .failed(message: "時間をおいて再試行してください"),
+            .insufficientInput(message: "翻訳できる本文が見つかりませんでした"),
+            .tooLong(message: "x"),
+            .contentBlocked(message: "x"),
+        ]
+        for error in cases {
+            #expect(!error.userFacingMessage.hasPrefix("翻訳に失敗しました"))
+        }
+    }
 }
