@@ -39,6 +39,13 @@ func registerDeviceRoutes(mux *http.ServeMux, s deviceStore, registrationSecret 
 			writeError(w, err)
 			return
 		}
+		// Swift's Codable decoding rejects an unknown enum raw value with
+		// a 400 — Go's string-typed Environment accepts anything, so
+		// validate explicitly for identical behavior.
+		if !validEnvironment(body.Environment) {
+			writeError(w, badRequest("invalid JSON request body"))
+			return
+		}
 		resp, err := s.CreateDevice(r.Context(), body.ApnsToken, body.Environment)
 		if err != nil {
 			writeError(w, badRequest("could not create device"))
@@ -63,6 +70,10 @@ func registerDeviceRoutes(mux *http.ServeMux, s deviceStore, registrationSecret 
 			writeError(w, err)
 			return
 		}
+		if !validEnvironment(body.Environment) {
+			writeError(w, badRequest("invalid JSON request body"))
+			return
+		}
 		err := s.UpdateDeviceToken(r.Context(), deviceID, body.ApnsToken, body.Environment)
 		if errors.Is(err, store.ErrDeviceNotFound) {
 			writeError(w, notFound("device not found"))
@@ -74,6 +85,13 @@ func registerDeviceRoutes(mux *http.ServeMux, s deviceStore, registrationSecret 
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+// validEnvironment mirrors Swift Codable's enum raw-value validation for
+// RegisterDeviceRequest.Environment — an unrecognized value is a decode
+// failure (400) there, so it must be here too.
+func validEnvironment(e api.Environment) bool {
+	return e == api.EnvironmentSandbox || e == api.EnvironmentProduction
 }
 
 // authorizeRegistration mirrors DeviceRoutes.authorizeRegistration — see

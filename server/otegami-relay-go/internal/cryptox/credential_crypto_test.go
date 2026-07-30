@@ -189,3 +189,24 @@ func TestDecryptsSwiftEncryptedFixtureOAuthRefreshToken(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, wantPlaintext)
 	}
 }
+
+func TestDecryptRejectsNonUTF8Plaintext(t *testing.T) {
+	// Swift's CredentialCrypto.decrypt fails when the decrypted bytes are
+	// not valid UTF-8 (String(data:encoding:) returns nil) — encrypt raw
+	// invalid-UTF-8 bytes with the same primitives and require Decrypt to
+	// reject them the same way.
+	key := make([]byte, 32)
+	c, err := New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := c.aead()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, nonceSize)
+	combined := aead.Seal(nonce, nonce, []byte{0xFF, 0xFE, 0x80}, nil)
+	if _, err := c.Decrypt(combined); err == nil {
+		t.Fatal("expected non-UTF-8 plaintext to be rejected")
+	}
+}

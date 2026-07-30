@@ -20,6 +20,7 @@ package security
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -71,8 +72,9 @@ func FromEnvironment(getenv func(string) string) NetworkPolicy {
 	if extra := getenv("RELAY_EXTRA_IMAP_PORTS"); extra != "" {
 		for _, token := range strings.Split(extra, ",") {
 			token = strings.TrimSpace(token)
-			var value int
-			if _, err := fmt.Sscanf(token, "%d", &value); err == nil && value >= 1 && value <= 65535 {
+			// strconv.Atoi (not fmt.Sscanf, which tolerates trailing
+			// garbage like "993x") — matches Swift's strict Int.init.
+			if value, err := strconv.Atoi(token); err == nil && value >= 1 && value <= 65535 {
 				ports[value] = true
 			}
 		}

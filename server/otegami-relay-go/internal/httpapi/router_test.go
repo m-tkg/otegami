@@ -531,3 +531,65 @@ func TestCreateWatchAcceptsUUIDAccountID(t *testing.T) {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// --- Stage-1 review parity fixes: Swift's Codable decoding rejects
+// unknown enum raw values / missing keys with a 400; these tests pin the
+// explicit validation this Go port needs to behave identically. ---
+
+func TestRegisterDeviceRejectsUnknownEnvironment(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	rec := do(router, "POST", "/v1/devices", `{"apnsToken":"tok","environment":"staging"}`, "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestUpdateDeviceTokenRejectsUnknownEnvironment(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	device := registerDevice(t, router)
+	rec := do(router, "PUT", "/v1/devices/"+device.DeviceID+"/token",
+		`{"apnsToken":"tok","environment":"staging"}`, device.DeviceSecret)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateWatchRejectsUnknownAuthType(t *testing.T) {
+	router, s, _ := newTestRouter(t)
+	device := registerDevice(t, router)
+	body := `{"accountId":"a1","imapHost":"` + testNet3Host + `","imapPort":993,"imapUseTLS":true,` +
+		`"imapUsername":"u@example.com","auth":{"type":"ntlm","secret":"pw"},"mailbox":"INBOX"}`
+	rec := do(router, "POST", "/v1/watches", body, device.DeviceSecret)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	records, err := s.ListWatches(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatal("nothing should have been persisted")
+	}
+}
+
+func TestCreateWatchRejectsUnknownProvider(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	device := registerDevice(t, router)
+	body := `{"accountId":"a1","imapHost":"` + testNet3Host + `","imapPort":993,"imapUseTLS":true,` +
+		`"imapUsername":"u@example.com","auth":{"type":"oauth","secret":"rt","provider":"yahoo"},"mailbox":"INBOX"}`
+	rec := do(router, "POST", "/v1/watches", body, device.DeviceSecret)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateWatchRejectsMissingMailbox(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	device := registerDevice(t, router)
+	body := `{"accountId":"a1","imapHost":"` + testNet3Host + `","imapPort":993,"imapUseTLS":true,` +
+		`"imapUsername":"u@example.com","auth":{"type":"password","secret":"pw"}}`
+	rec := do(router, "POST", "/v1/watches", body, device.DeviceSecret)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+}

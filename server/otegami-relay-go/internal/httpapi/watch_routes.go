@@ -42,6 +42,22 @@ func registerWatchRoutes(mux *http.ServeMux, s watchStore, pool watcherPool, net
 			writeError(w, err)
 			return
 		}
+		// Swift's Codable decoding rejects an unknown auth.type/provider
+		// raw value, and a missing mailbox key, with a 400 — Go's
+		// string-typed enums and zero values accept them, so validate
+		// explicitly for identical behavior.
+		if body.Auth.Type != api.WatchAuthPassword && body.Auth.Type != api.WatchAuthOAuth {
+			writeError(w, badRequest("invalid JSON request body"))
+			return
+		}
+		if body.Auth.Provider != nil && *body.Auth.Provider != api.ProviderGoogle && *body.Auth.Provider != api.ProviderMicrosoft {
+			writeError(w, badRequest("invalid JSON request body"))
+			return
+		}
+		if body.Mailbox == "" {
+			writeError(w, badRequest("invalid JSON request body"))
+			return
+		}
 		if body.ImapHost == "" || body.ImapUsername == "" || body.Auth.Secret == "" {
 			writeError(w, badRequest("imapHost, imapUsername, and auth.secret are required"))
 			return

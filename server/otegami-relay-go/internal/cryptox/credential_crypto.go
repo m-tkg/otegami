@@ -31,6 +31,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 )
 
 // nonceSize and tagSize match AES-GCM's standard sizes, which is what both
@@ -135,6 +136,12 @@ func (c *CredentialCrypto) Decrypt(combined []byte) (string, error) {
 	ciphertextAndTag := combined[nonceSize:]
 	plaintext, err := aead.Open(nil, nonce, ciphertextAndTag, nil)
 	if err != nil {
+		return "", ErrDecryptionFailed
+	}
+	// Swift's CredentialCrypto.decrypt fails when the plaintext isn't
+	// valid UTF-8 (String(data:encoding:) returning nil) — Go strings can
+	// carry arbitrary bytes, so check explicitly for identical behavior.
+	if !utf8.Valid(plaintext) {
 		return "", ErrDecryptionFailed
 	}
 	return string(plaintext), nil
