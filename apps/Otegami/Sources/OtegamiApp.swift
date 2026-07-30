@@ -69,16 +69,23 @@ struct OtegamiApp: App {
         .defaultSize(width: 560, height: 520)
         #endif
         #if os(macOS)
-        // Task #158 (macOS「アップデートを確認」機能): its own window, same
-        // "one window per action" shape as the composer `WindowGroup` right
-        // above — `OtegamiCommands`'s "アップデートを確認…" menu item calls
-        // `openWindow(id: "updateCheck", value:)` rather than presenting a
-        // sheet, since a `Commands` menu item has no specific window to
-        // attach a sheet to (see `UpdateCheckView`'s doc comment).
-        WindowGroup("アップデートを確認", id: "updateCheck", for: UpdateCheckRequest.self) { $request in
-            UpdateCheckView(request: request ?? UpdateCheckRequest(includePrereleases: false))
+        // Task #182 (macOS アプリ内アップデート、実機フィードバック「update
+        // のチェックができる画面は About に移動してほしい」): replaces the
+        // standard "Otegamiについて" About panel — `OtegamiCommands`'s
+        // `CommandGroup(replacing: .appInfo)` calls `openWindow(id:
+        // "about")` rather than presenting a sheet, since a `Commands` menu
+        // item has no specific window to attach a sheet to. Supersedes
+        // Task #158's `updateCheck` `WindowGroup` (deleted along with
+        // `UpdateCheckView`/`UpdateCheckRequest` — their functionality now
+        // lives inside `AboutUpdateSection`, folded into this same window).
+        // `WindowGroup(id:)` with no `for:` payload behaves as a singleton,
+        // matching a native About panel: reopening while already open just
+        // brings the existing window forward instead of spawning a second
+        // one.
+        WindowGroup("Otegamiについて", id: "about") {
+            AboutView()
         }
-        .defaultSize(width: 420, height: 320)
+        .defaultSize(width: 420, height: 480)
         .windowResizability(.contentSize)
         #endif
         #if os(macOS)
@@ -109,6 +116,15 @@ struct RootView: View {
     @Environment(\.openWindow) private var openWindow
     #endif
     @State private var selection: SidebarSelection?
+    /// 実機フィードバック (2026-07-30「統合ビューを選んだ時、iOS と同じ
+    /// アカウント絞り込みチップ行が macOS でも欲しい」, Task #181): iOS の
+    /// `MailScreenView.accountFilter`と同じ役割 — `AccountFilterChipRow`で
+    /// 選ばれた1アカウントに`MessageListView`を絞り込む
+    /// (`contentColumn`の`unifiedInboxAccountFilter:`引数)。`selection`が
+    /// 変わるたび`nil`にリセットする (`navigationView`の`.onChange(of:
+    /// selection)`) — iOS の`selectMailbox`/`selectUnifiedRole`等が毎回
+    /// `accountFilter = nil`するのと同じ後始末。
+    @State private var accountFilter: String?
     // M5: which composer to show. Only actually drives a `.sheet` on iOS
     // (macOS opens `openWindow(id: "composer", ...)` instead and never sets
     // this) — see `presentComposer(_:)`.
@@ -412,6 +428,12 @@ struct RootView: View {
         .onChange(of: selection) { oldValue, newValue in
             selectedThreadId = nil
             selectedMessageId = nil
+            // Task #181: `accountFilter`(アカウント絞り込みチップの選択) は
+            // `selection`が指すボックス自体に対する絞り込みなので、
+            // ボックス自体が変わったら必ずリセットする — iOS の
+            // `MailScreenView.selectMailbox`/`selectUnifiedRole`等が毎回
+            // `accountFilter = nil`しているのと同じ後始末。
+            accountFilter = nil
             if newValue == nil {
                 preferredColumn = .sidebar
             } else if oldValue == nil, uiTestsShouldAutoAdvanceToContent {
@@ -487,22 +509,39 @@ struct RootView: View {
     private var contentColumn: some View {
         Group {
             if let selection {
-                MessageListView(
-                    selection: selection,
-                    selectedThreadId: $selectedThreadId,
-                    selectedMessageId: $selectedMessageId,
-                    onThreadSelected: { threadId, messageId in selectThread(threadId, messageId: messageId, under: selection) },
-                    onSummariesChanged: { currentThreadOrder = $0 },
-                    // Task #165: only `MessageListRow`'s macOS-only
-                    // context-menu entries ever invoke these — the iOS row
-                    // has no equivalent (its swipe/long-press surface has no
-                    // room for a third destination action, and this task's
-                    // scope is macOS only per `CLAUDE.md`'s "iOS の挙動は
-                    // 一切変えない").
-                    onReply: { summary in replySummary(summary, replyAll: false) },
-                    onReplyAll: { summary in replySummary(summary, replyAll: true) },
-                    onForward: { summary in forwardSummary(summary) }
-                )
+                // Task #181 (実機フィードバック「統合ビューを選んだ時、iOS と
+                // 同じアカウント絞り込みチップ行が macOS でも欲しい」):
+                // 中央ペイン (メール一覧) の上部にチップ行を置く — 3ペイン
+                // 構成の中で、絞り込み対象の一覧そのものの直上が自然という
+                // 判断 (`showsAccountFilterChipRow`のdoc comment参照)。
+                // iOS の`MailScreenView`は「アカウント別」ダイジェスト表示
+                // (`AccountDigestView`) 中もチップ行を出し続けるが、macOS は
+                // ダイジェスト自体を実装しない判断をしたため
+                // (`showsAccountFilterChipRow`のdoc comment/`docs/design-
+                // system.md`のTask #181節参照)、このチップ行は常に
+                // `MessageListView`の直上に固定で置くだけでよい。
+                VStack(spacing: 0) {
+                    if showsAccountFilterChipRow(for: selection) {
+                        AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter, showsModePicker: false)
+                    }
+                    MessageListView(
+                        selection: selection,
+                        unifiedInboxAccountFilter: accountFilter,
+                        selectedThreadId: $selectedThreadId,
+                        selectedMessageId: $selectedMessageId,
+                        onThreadSelected: { threadId, messageId in selectThread(threadId, messageId: messageId, under: selection) },
+                        onSummariesChanged: { currentThreadOrder = $0 },
+                        // Task #165: only `MessageListRow`'s macOS-only
+                        // context-menu entries ever invoke these — the iOS row
+                        // has no equivalent (its swipe/long-press surface has no
+                        // room for a third destination action, and this task's
+                        // scope is macOS only per `CLAUDE.md`'s "iOS の挙動は
+                        // 一切変えない").
+                        onReply: { summary in replySummary(summary, replyAll: false) },
+                        onReplyAll: { summary in replySummary(summary, replyAll: true) },
+                        onForward: { summary in forwardSummary(summary) }
+                    )
+                }
             } else {
                 ContentUnavailableView(
                     "メールボックスを選択してください",
@@ -511,6 +550,20 @@ struct RootView: View {
                 )
                 .navigationTitle("受信トレイ")
             }
+        }
+    }
+
+    /// Task #181: `MailScreenView.showsAccountFilterChipRow`のmacOS版 —
+    /// 統合ビュー (`.unifiedInbox`/`.unifiedRole`、複数アカウントを横断する
+    /// 選択) の間だけチップ行を出す。単一アカウントの個別フォルダ
+    /// (`.mailbox`) は絞り込む先が1つしか無いため出さない — iOS と同じ
+    /// 判断。iOS 版と違い「アカウント別」ダイジェスト表示の有無は考慮しない
+    /// (macOS はダイジェスト自体を実装しない判断、`contentColumn`のdoc
+    /// comment参照) ため、この条件だけで十分。
+    private func showsAccountFilterChipRow(for selection: SidebarSelection) -> Bool {
+        switch selection {
+        case .unifiedInbox, .unifiedRole: true
+        case .mailbox: false
         }
     }
 

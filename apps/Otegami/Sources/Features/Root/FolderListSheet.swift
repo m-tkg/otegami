@@ -509,22 +509,18 @@ struct FolderListSheet: View {
         }
     }
 
-    /// Task #141: 「すべてのメール」セクション見出しの未読バッジ —
-    /// 他カテゴリの`entries`ベース集計 (`categorySection(for:)`参照) と
-    /// 違い、Gmail以外のアカウントは`mailboxEntries(for: .all)`に現れない
-    /// (per-account 展開行を持たない — `matchesCategory`のdoc comment参照)
-    /// ので、その分をアカウントの全 mailbox 横断で別途足し込む。Gmail
-    /// アカウントは`entries`(All Mail mailboxのみ) に含まれる値をそのまま
-    /// 使う (`mailboxesByAccountId`から二重に拾って二重計上しないため)。
-    private func unreadCountForAllMailCategory(entries: [MailboxEntry]) -> Int {
-        let gmailTotal = entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) }
-        let nonGmailTotal = environment.accounts
-            .filter { $0.kind != .gmail }
-            .reduce(0) { total, account in
-                let mailboxIds = (mailboxesByAccountId[account.id] ?? []).compactMap(\.id)
-                return total + mailboxIds.reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) }
-            }
-        return gmailTotal + nonGmailTotal
+    /// Task #141: 「すべてのメール」セクション見出しの未読バッジ。
+    /// Task #181: 実体は`MailboxCategoryGrouping.unreadCountForAllMailCategory
+    /// (entries:accounts:mailboxesByAccountId:unreadByMailboxId:)`へ抽出した
+    /// (`SidebarView`のmacOSカテゴリ見出しも同じ集計を使う) — このラッパーは
+    /// この画面自身の`@State`を渡すだけ。
+    private func unreadCountForAllMailCategory(entries: [MailboxCategoryEntry]) -> Int {
+        MailboxCategoryGrouping.unreadCountForAllMailCategory(
+            entries: entries,
+            accounts: environment.accounts,
+            mailboxesByAccountId: mailboxesByAccountId,
+            unreadByMailboxId: unreadByMailboxId
+        )
     }
 
     /// Task #110: 「受信トレイ」セクション見出しのタップは、統合受信トレイ
@@ -553,7 +549,7 @@ struct FolderListSheet: View {
     /// Task #126, 3: role で分類できない (`.none`) フォルダ専用の「その他」
     /// セクション (旧`uncategorizedSection`/`categoryMailboxRow(for:)`) は
     /// 廃止した — この行はもう`.none`向けの呼び出し元を持たない。
-    private func categoryAccountRow(for entry: MailboxEntry) -> some View {
+    private func categoryAccountRow(for entry: MailboxCategoryEntry) -> some View {
         let mailboxSelection = MailboxSelection(accountId: entry.account.id, mailboxId: entry.mailboxId)
         let isSelected = selectedMailboxId == entry.mailboxId
         return CategoryAccountRow(
@@ -567,73 +563,18 @@ struct FolderListSheet: View {
         )
     }
 
-    /// 全アカウントを横断して`role`のメールボックスを集める — `account`ごとに
-    /// 独立して保持している`mailboxesByAccountId`から、この画面のカテゴリ優先
-    /// セクションが必要とする形 (どのアカウントの、どのメールボックスか) へ
-    /// フラット化する。
+    /// 全アカウントを横断して`role`のメールボックスを集める — この画面の
+    /// カテゴリ優先セクションが必要とする形 (どのアカウントの、どの
+    /// メールボックスか) へフラット化する。
     ///
-    /// Task #154 (実機報告「ゴミ箱カテゴリに Gmail が2行出る」防御層):
-    /// 根治 (`AccountSyncer.upsertMailboxes`) は次回同期以降のDBを正すが、
-    /// まだ同期していない既存インストールの残存データ (旧DB) に対しては
-    /// このメニュー自体でも同一アカウント内の重複行を1つへ畳む —
-    /// `dedupedByAccount(_:)`参照。
-    private func mailboxEntries(for role: MailboxRoleRecord) -> [MailboxEntry] {
-        environment.accounts.flatMap { account -> [MailboxEntry] in
-            let matches = (mailboxesByAccountId[account.id] ?? [])
-                .filter { matchesCategory(mailbox: $0, account: account, role: role) }
-            return dedupedByAccount(matches).compactMap { mailbox in
-                mailbox.id.map { MailboxEntry(account: account, mailbox: mailbox, mailboxId: $0) }
-            }
-        }
-    }
-
-    /// Task #154: collapses `matches` (one account's mailboxes already
-    /// filtered to a single category role) down to at most one —
-    /// `AccountSyncer.upsertMailboxes`'s root fix means this is normally
-    /// already a 0-or-1-element array by the time this runs, but a device
-    /// that hasn't resynced since upgrading (or a server situation the root
-    /// fix doesn't cover) can still hand this more than one. Prefers a
-    /// SPECIAL-USE/IMAP-guaranteed mailbox (`roleIsAuthoritative == true`,
-    /// `MailboxRecord.roleIsAuthoritative`'s doc comment) over a name-guessed
-    /// one; among equally-authoritative candidates (shouldn't normally
-    /// happen), picks the lowest `id` for a deterministic, stable choice
-    /// rather than whatever order the observation happened to return.
-    private func dedupedByAccount(_ matches: [MailboxRecord]) -> [MailboxRecord] {
-        guard let winner = matches.min(by: { lhs, rhs in
-            if lhs.roleIsAuthoritative != rhs.roleIsAuthoritative {
-                return lhs.roleIsAuthoritative && !rhs.roleIsAuthoritative
-            }
-            return (lhs.id ?? .max) < (rhs.id ?? .max)
-        }) else { return [] }
-        return [winner]
-    }
-
-    /// Task #52, 2: Gmail は`\Archive`special-useフォルダを持たないため、
-    /// 「アーカイブ」カテゴリの実体を Gmail アカウントに限り All Mail
-    /// (role`.all`)とする — メニュー表示側 (どのメールボックスを「アーカイブ」
-    /// 行として出すか) のマッピング。対になる`OtegamiStore.MailboxRoleRecord
-    /// .gmailArchiveQueryRole`/`GmailArchiveFilter`は、その行を実際に開いた
-    /// 時のスレッド一覧側の定義 (`docs/design-system.md`記載の Gmail 検索式
-    /// と等価な集合、単純な All Mail 全件ではない) を担う — 役割が違うので
-    /// 別々に実装している。
-    ///
-    /// Task #141: `MailboxRoleRecord.categoryOrder`が`.all`(「すべてのメール」)
-    /// を独立カテゴリとして持つようになった後も、この関数自体は無変更 ——
-    /// `role == .all`で呼ばれた場合、`mailbox.role == role`の等価チェックが
-    /// そのまま Gmail の All Mail メールボックスに一致する (`.all == .all`)。
-    /// 結果として Gmail の All Mail は「アーカイブ」と「すべてのメール」の
-    /// 両カテゴリの展開行に重複して現れる — Task #52, 2 時点で避けていた
-    /// 重複をこのタスクでは許容する判断 (`docs/design-system.md`参照)。
-    /// 非Gmailアカウントは`\All` special-useを持つことがまず無いため、
-    /// この等価チェックだけでは「すべてのメール」の展開行に現れない ——
-    /// それは仕様どおりで、`categorySection(for:)`のdoc comment/
-    /// `docs/design-system.md`が記録する「非Gmailは統合ビュー (セクション
-    /// 見出しタップ) からのみ到達— 個別アカウント行は持たない」という
-    /// 判断による。
-    private func matchesCategory(mailbox: MailboxRecord, account: AccountRecord, role: MailboxRoleRecord) -> Bool {
-        if mailbox.role == role { return true }
-        if role == .archive, mailbox.role == .all, account.kind == .gmail { return true }
-        return false
+    /// Task #181: 実体 (Gmail のアーカイブ特例・重複排除を含む) は
+    /// `MailboxCategoryGrouping.entries(for:accounts:mailboxesByAccountId:)`
+    /// へ抽出した (`SidebarView`のmacOSカテゴリ構造と共有 — `docs/design-
+    /// system.md`のTask #181節参照)。以前この画面だけが持っていた
+    /// `matchesCategory(mailbox:account:role:)`/`dedupedByAccount(_:)`は
+    /// その共有型の中に移った。
+    private func mailboxEntries(for role: MailboxRoleRecord) -> [MailboxCategoryEntry] {
+        MailboxCategoryGrouping.entries(for: role, accounts: environment.accounts, mailboxesByAccountId: mailboxesByAccountId)
     }
 
     /// `toggleAccountCollapsed(_:)` の doc comment 参照 (アコーディオン動作)。
@@ -982,20 +923,6 @@ enum FolderCategoryCollapseStore {
     static func replaceAll(collapsedRoleRawValues: Set<String>) {
         UserDefaults.standard.set(Array(collapsedRoleRawValues), forKey: collapsedRolesKey)
     }
-}
-
-/// カテゴリ優先モードの1行ぶん — どのアカウントの、どのメールボックスか
-/// (`FolderListSheet.mailboxEntries(for:)`が`mailboxesByAccountId`から
-/// フラット化して作る)。`mailboxId`を`Identifiable`の`id`に使う —
-/// `MailboxRecord.id`自体は`Int64?`(未保存の場合`nil`)だが、この画面が
-/// 扱うのは常にDBから読み込み済みの(=idを持つ)行なので、`mailboxEntries(for:)`
-/// 側で`nil`を弾いてから渡す。
-private struct MailboxEntry: Identifiable {
-    let account: AccountRecord
-    let mailbox: MailboxRecord
-    let mailboxId: Int64
-
-    var id: Int64 { mailboxId }
 }
 
 /// `AccountSectionHeader`のrole版 — カテゴリ優先モードの1セクション見出し。

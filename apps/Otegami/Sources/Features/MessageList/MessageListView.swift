@@ -33,14 +33,22 @@ import os
 struct MessageListView: View {
     @Environment(AppEnvironment.self) private var environment
     let selection: SidebarSelection
-    /// 1a's account filter chips, iOS only: when `selection == .unifiedInbox`
-    /// and this is non-`nil`, only that one account's inbox-role mailboxes
-    /// are observed (the "仕事"/"個人"-style chip) instead of every account
-    /// (the "全部" chip). `nil` on every macOS call site — that platform has
-    /// no chip row at all (`CLAUDE.md`: 1a is iOS-only structure) — and
-    /// `nil` also for iOS's own "全部" chip, so this parameter doesn't
-    /// change `ThreadQuery.unifiedInboxSummariesObservation`'s existing
+    /// 1a's account filter chips: when `selection` is `.unifiedInbox`/
+    /// `.unifiedRole` and this is non-`nil`, only that one account's
+    /// matching mailboxes are observed (the "仕事"/"個人"-style chip)
+    /// instead of every account (the "すべて" chip). `nil` for the "すべて"
+    /// chip itself and for `.mailbox` selections (a single mailbox has
+    /// nothing to filter further), so this parameter doesn't change
+    /// `ThreadQuery.unifiedInboxSummariesObservation`'s existing
     /// accountIds-across-every-account behavior unless a caller opts in.
+    ///
+    /// Task #181 (実機フィードバック「統合ビューを選んだ時、iOS と同じ
+    /// アカウント絞り込みチップ行が macOS でも欲しい」): それまでは常に
+    /// `nil`だった macOS 呼び出し元 (`RootView.contentColumn`) も、この
+    /// タスク以降は自前の`accountFilter`をここへ渡す — `1a`(この doc
+    /// comment) が指す機能自体は iOS の情報設計から来たものだが、この
+    /// パラメータ自体はもう「iOS専用」ではない (`docs/design-system.md`
+    /// のTask #181節参照)。
     var unifiedInboxAccountFilter: String? = nil
     // By id (`ThreadRecord` isn't `Hashable` in the `List(selection:)`
     // sense this project uses — see M2's doc note on why rows are plain

@@ -5,9 +5,24 @@ import SyncEngine
 
 /// Unified inbox + account/mailbox tree, backed by live `ValueObservation`s.
 /// One mailbox observation per visible account (started/stopped as accounts
-/// appear — `.task(id:)` handles that automatically). "すべての受信トレイ" (M4)
-/// sits above every account's section and stays visible whenever at least
-/// one account exists, regardless of how many.
+/// appear — `.task(id:)` handles that automatically).
+///
+/// Task #181 (実機フィードバック「macOS のサイドバーにも iOS と同じ統合
+/// フォルダのグルーピングが欲しい」): macOS では本文が `#if os(macOS)` の
+/// 専用ブランチを持ち、iOS の `FolderListSheet` と同じカテゴリ優先グルー
+/// ピング (受信トレイ/アーカイブ/送信済み等の role ごとのセクション、開くと
+/// アカウント別に分かれる) を、`List` + `DisclosureGroup` という macOS
+/// ネイティブな見せ方で描く。カテゴリの定義・重複排除・Gmail アーカイブ
+/// 特例は `FolderListSheet` と共有 (`MailboxCategoryGrouping`、
+/// `Support/MailboxCategoryEntries.swift`) — 複製していない。トップの
+/// "すべての受信トレイ" 単独行 (M4) は macOS では廃止し、「受信トレイ」
+/// カテゴリの見出し (`categoryOrder`の先頭) がタップでその選択を兼ねる
+/// (iOS の `FolderListSheet` が Task #126 で行った統合と同じ判断)。iOS
+/// (`#else`分岐) は旧来どおり — この型自体は `OtegamiApp.swift.RootView`
+/// の macOS 専用 `NavigationSplitView` からしか実際には描画されない
+/// (`OtegamiRootView`の doc comment参照) が、明示的に `#if os(macOS)` で
+/// 分岐しておくことで「iOS の挙動は変えない」という要件をソース上でも
+/// 保証する。
 struct SidebarView: View {
     @Environment(AppEnvironment.self) private var environment
     @Binding var selection: SidebarSelection?
@@ -64,6 +79,35 @@ struct SidebarView: View {
     @State private var unreadByMailboxId: [Int64: Int] = [:]
     @State private var unifiedInboxUnread = 0
 
+    #if os(macOS)
+    /// Task #181: どのカテゴリ (role) セクションが折りたたまれているか —
+    /// `FolderListSheet.collapsedCategoryRoles`と同じ発想だが、永続キーは
+    /// 別 (`SidebarCategoryCollapseStore`)。iOS のドロワーは開くたびに
+    /// 「選択中のセクションだけ展開」へリセットする特別な挙動を持つ
+    /// (`FolderListSheet.resetCollapseStateToCurrentSelection()`) が、この
+    /// サイドバーは常設表示でその種のリセット契機が無いため、単純に
+    /// ユーザーの最後の開閉状態をそのまま復元する。デフォルト (未設定) は
+    /// 全展開 — 追加前は折りたたみという概念自体が無く常に全部見えていた
+    /// ので、既定値を「全展開」にすることで既存ユーザーの見え方を後退
+    /// させない。
+    @State private var collapsedCategoryRoles: Set<String> = SidebarCategoryCollapseStore.collapsedRoleRawValues
+    /// Task #181: `collapsedCategoryRoles`のアカウント別ツリー版 —
+    /// `FolderListSheet.collapsedAccountIds`と同じ発想、永続キーは別
+    /// (`SidebarAccountCollapseStore`)。
+    @State private var collapsedAccountIds: Set<String> = SidebarAccountCollapseStore.collapsedAccountIds
+    /// カテゴリセクションの並び順 — 設定画面 (`FolderCategoryOrderSettingsView`)
+    /// で変更できる、iOS のハンバーガーメニューと共有の永続設定
+    /// (`FolderCategoryOrderStore`) をそのまま使う。同じアカウント構成に
+    /// 対する「見せ方の好み」なので、プラットフォームごとに別の順序を
+    /// 持たせる理由が無いと判断した。`FolderListSheet`と同じ理由
+    /// (`@AppStorage`で生の文字列を直接監視することで、常設マウントの
+    /// このビューも設定変更に反応的に追従する) で`@AppStorage`を直接使う。
+    @AppStorage(FolderCategoryOrderStore.key) private var categoryOrderRaw = ""
+    private var categoryOrder: [MailboxRoleRecord] {
+        FolderCategoryOrderStore.loadOrder(from: categoryOrderRaw)
+    }
+    #endif
+
     var body: some View {
         // A plain `List`, not `List(selection:)` — selection is driven
         // explicitly by each row's own `Button` action below, the same
@@ -96,6 +140,14 @@ struct SidebarView: View {
                 }
             } else {
                 Section {
+                    // Task #181: macOS はこの単独行を廃止し、下の「受信トレイ」
+                    // カテゴリ見出し (`categoryOrder`の先頭、`macCategorySection
+                    // (for: .inbox)`) がタップで全く同じ選択を兼ねる — iOS の
+                    // `FolderListSheet`が Task #126 で行った統合と同じ判断
+                    // (重複した入口を残さない)。iOS (この`#if`の対象ではない、
+                    // 実際には未到達コード — 型doc comment参照) はこの単独行を
+                    // 引き続き持つ。
+                    #if os(iOS)
                     Button {
                         selection = .unifiedInbox
                         onSelected(.unifiedInbox)
@@ -113,6 +165,7 @@ struct SidebarView: View {
                     .buttonStyle(.plain)
                     .listRowBackground(selection == .unifiedInbox ? OtegamiColor.paleBase : nil)
                     .accessibilityIdentifier("sidebar.unifiedInbox")
+                    #endif
 
                     if outboxCount > 0 {
                         Button {
@@ -153,7 +206,21 @@ struct SidebarView: View {
                     }
                 }
 
+                // Task #181: macOS はカテゴリセクション (受信トレイ/アーカイブ/
+                // 送信済み等、`FolderListSheet`と共通の`categoryOrder`) を
+                // アカウント別ツリーの**上**に積む — iOS の `FolderListSheet`
+                // が Task #52 追記で確立した「カテゴリ群 (上) → アカウント群
+                // (下)」の縦積み構成と同じ並びにする。
+                #if os(macOS)
+                ForEach(categoryOrder, id: \.self) { role in
+                    macCategorySection(for: role)
+                }
+                #endif
+
                 ForEach(environment.accounts) { account in
+                    #if os(macOS)
+                    macAccountSection(for: account)
+                    #else
                     Section(account.displayName) {
                         ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
                             mailboxRow(for: mailbox, in: account)
@@ -165,6 +232,7 @@ struct SidebarView: View {
                     .task(id: account.id) {
                         await observeUnreadCounts(accountId: account.id)
                     }
+                    #endif
                 }
             }
         }
@@ -267,6 +335,157 @@ struct SidebarView: View {
         selection = newSelection
         onSelected(newSelection)
     }
+
+    // MARK: - Task #181: macOS のカテゴリ優先グルーピング
+
+    #if os(macOS)
+    /// 1 role分のセクション — `FolderListSheet.categorySection(for:)`の
+    /// macOS版。見出し (`macCategoryHeaderLabel(for:entries:)`) 自身が
+    /// タップで統合ビュー選択を兼ね、`DisclosureGroup`のネイティブな
+    /// 三角形が展開/折りたたみだけを担う (iOS のように見出しとシェブロンを
+    /// 別ボタンへ手動で分割する必要が macOS の`DisclosureGroup`には無い)。
+    /// どの account にも`role`のメールボックスが1つも無ければセクション
+    /// 自体を出さない (`.all`だけは例外 — `FolderListSheet`と同じ理由、
+    /// `MailboxCategoryGrouping`のdoc comment参照)。
+    @ViewBuilder
+    private func macCategorySection(for role: MailboxRoleRecord) -> some View {
+        let entries = MailboxCategoryGrouping.entries(for: role, accounts: environment.accounts, mailboxesByAccountId: mailboxesByAccountId)
+        if !entries.isEmpty || role == .all {
+            DisclosureGroup(isExpanded: macCategoryExpandedBinding(for: role)) {
+                ForEach(entries) { entry in
+                    macCategoryAccountRow(for: entry)
+                }
+            } label: {
+                macCategoryHeaderLabel(for: role, entries: entries)
+            }
+            .listRowBackground(isCategorySelected(role) ? OtegamiColor.paleBase : nil)
+        }
+    }
+
+    /// カテゴリ見出しのラベル内容 — role名 + アイコン + 未読バッジ、タップで
+    /// 統合ビュー選択 (`handleMailboxSelected(_:)`、`.inbox`だけ`.unifiedInbox`
+    /// でそれ以外は`.unifiedRole(role)`、`FolderListSheet.selectUnifiedView
+    /// (for:)`と同じ判断)。
+    private func macCategoryHeaderLabel(for role: MailboxRoleRecord, entries: [MailboxCategoryEntry]) -> some View {
+        Button {
+            handleMailboxSelected(role == .inbox ? .unifiedInbox : .unifiedRole(role))
+        } label: {
+            HStack {
+                Label(role.categoryDisplayName, systemImage: role.categorySystemImage)
+                Spacer()
+                let unread = macCategoryUnreadCount(for: role, entries: entries)
+                if unread > 0 {
+                    UnreadCountBadge(count: unread)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("sidebar.category.\(role.rawValue).header")
+    }
+
+    /// `.inbox`は`unifiedInboxUnread`(メールボックス単位の合算とは別の、
+    /// 統合受信トレイ自身の未読数)、`.all`は`MailboxCategoryGrouping
+    /// .unreadCountForAllMailCategory(_:)`(Gmail以外のアカウント分も含む
+    /// 特別な集計)、それ以外は`entries`のメールボックス単位の合算 —
+    /// `FolderListSheet.categorySection(for:)`の未読集計と同じ判断。
+    private func macCategoryUnreadCount(for role: MailboxRoleRecord, entries: [MailboxCategoryEntry]) -> Int {
+        switch role {
+        case .inbox:
+            unifiedInboxUnread
+        case .all:
+            MailboxCategoryGrouping.unreadCountForAllMailCategory(
+                entries: entries, accounts: environment.accounts,
+                mailboxesByAccountId: mailboxesByAccountId, unreadByMailboxId: unreadByMailboxId
+            )
+        default:
+            entries.reduce(0) { $0 + (unreadByMailboxId[$1.mailboxId] ?? 0) }
+        }
+    }
+
+    private func isCategorySelected(_ role: MailboxRoleRecord) -> Bool {
+        if role == .inbox, selection == .unifiedInbox { return true }
+        if case .unifiedRole(let selectedRole) = selection { return selectedRole == role }
+        return false
+    }
+
+    /// 1カテゴリ内、1アカウントぶんの行 — `FolderListSheet.CategoryAccountRow`
+    /// の macOS版 (`AccountColorRail`を同じく再利用)。フォルダ名自体は出さ
+    /// ない (同じ理由、`FolderListSheet.categoryAccountRow(for:)`のdoc
+    /// comment参照)。
+    private func macCategoryAccountRow(for entry: MailboxCategoryEntry) -> some View {
+        let mailboxSelection = SidebarSelection.mailbox(MailboxSelection(accountId: entry.account.id, mailboxId: entry.mailboxId))
+        let isSelected = selection == mailboxSelection
+        return Button {
+            handleMailboxSelected(mailboxSelection)
+        } label: {
+            HStack(spacing: 0) {
+                AccountColorRail(accountId: entry.account.id, labelColorKey: entry.account.labelColorKey)
+                HStack {
+                    Text(verbatim: entry.account.displayName)
+                    Spacer()
+                    if let count = unreadByMailboxId[entry.mailboxId], count > 0 {
+                        UnreadCountBadge(count: count)
+                    }
+                }
+                .padding(.leading, OtegamiSpacing.sm)
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(isSelected ? OtegamiColor.paleBase : nil)
+        .accessibilityIdentifier("sidebar.category.account.\(entry.account.id).\(entry.mailbox.path)")
+    }
+
+    /// アカウント別ツリー1本ぶん — 既存の`Section(account.displayName)`を
+    /// `DisclosureGroup`に置き換え、折りたたみ (`collapsedAccountIds`) を
+    /// 追加しただけで、中身 (`mailboxRow(for:in:)`) 自体・観測タスクの
+    /// アタッチ先は無変更。
+    @ViewBuilder
+    private func macAccountSection(for account: AccountRecord) -> some View {
+        DisclosureGroup(isExpanded: macAccountExpandedBinding(for: account.id)) {
+            ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
+                mailboxRow(for: mailbox, in: account)
+            }
+        } label: {
+            Text(verbatim: account.displayName)
+        }
+        .task(id: account.id) {
+            await observeMailboxes(accountId: account.id)
+        }
+        .task(id: account.id) {
+            await observeUnreadCounts(accountId: account.id)
+        }
+    }
+
+    private func macCategoryExpandedBinding(for role: MailboxRoleRecord) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedCategoryRoles.contains(role.rawValue) },
+            set: { isExpanded in
+                if isExpanded {
+                    collapsedCategoryRoles.remove(role.rawValue)
+                } else {
+                    collapsedCategoryRoles.insert(role.rawValue)
+                }
+                SidebarCategoryCollapseStore.replaceAll(collapsedCategoryRoles)
+            }
+        )
+    }
+
+    private func macAccountExpandedBinding(for accountId: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedAccountIds.contains(accountId) },
+            set: { isExpanded in
+                if isExpanded {
+                    collapsedAccountIds.remove(accountId)
+                } else {
+                    collapsedAccountIds.insert(accountId)
+                }
+                SidebarAccountCollapseStore.replaceAll(collapsedAccountIds)
+            }
+        )
+    }
+    #endif
 
     private func observeFailedOpCount() async {
         let accountIds = environment.accounts.map(\.id)
@@ -498,3 +717,37 @@ private struct UnreadCountBadge: View {
             .background(Capsule().fill(OtegamiColor.accent))
     }
 }
+
+#if os(macOS)
+// MARK: - Task #181: macOS サイドバーの折りたたみ状態の永続化
+
+/// `FolderListSheet.FolderCategoryCollapseStore`のmacOSサイドバー版 —
+/// 同じ役割 (role単位の折りたたみ) だが、iOS のドロワーとは開閉の意味付け
+/// (常設 vs. 開くたびリセット) が違うため、永続キーは独立させている
+/// (`SidebarView`のdoc comment参照)。
+enum SidebarCategoryCollapseStore {
+    static let key = "sidebar.mac.collapsedCategoryRoles"
+
+    static var collapsedRoleRawValues: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+    }
+
+    static func replaceAll(_ collapsedRoleRawValues: Set<String>) {
+        UserDefaults.standard.set(Array(collapsedRoleRawValues), forKey: key)
+    }
+}
+
+/// `FolderListSheet.FolderSectionCollapseStore`のmacOSサイドバー版 — 同じ
+/// 理由で永続キーを独立させている。
+enum SidebarAccountCollapseStore {
+    static let key = "sidebar.mac.collapsedAccountIds"
+
+    static var collapsedAccountIds: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+    }
+
+    static func replaceAll(_ collapsedAccountIds: Set<String>) {
+        UserDefaults.standard.set(Array(collapsedAccountIds), forKey: key)
+    }
+}
+#endif
