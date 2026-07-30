@@ -207,6 +207,29 @@ struct BIMISVGParserTests {
         #expect(tokens == nil)
     }
 
+    /// Found and fixed alongside F12 (not itself a numbered
+    /// `CLAUDE-SECURITY` finding, but the same class of bug in the same
+    /// file): `parseAttributes`' regex had a greedy identifier
+    /// immediately followed by a required `=` that might never appear,
+    /// which made `NSRegularExpression.matches(in:)` retry a shrinking
+    /// suffix of the same non-matching identifier from every subsequent
+    /// starting position — real, attacker-reachable quadratic cost
+    /// (confirmed via a standalone repro to take upward of 8s on 500,000
+    /// bytes of a single repeated letter with no `=` anywhere).
+    @Test("a long attribute-position span with no '=' anywhere does not hang parseAttributes")
+    func parseAttributesDoesNotHangOnALongRunWithNoEquals() {
+        let payload = String(repeating: "a", count: 500_000)
+        let start = Date()
+        _ = BIMISVGParser.parseAttributes(payload)
+        #expect(Date().timeIntervalSince(start) < 5)
+    }
+
+    @Test("parseAttributes still reads ordinary double- and single-quoted attributes")
+    func parseAttributesStillParsesOrdinaryAttributes() {
+        let attributes = BIMISVGParser.parseAttributes(" d=\"M0 0Z\" fill=\"#336699\" transform='translate(1,1)' ")
+        #expect(attributes == ["d": "M0 0Z", "fill": "#336699", "transform": "translate(1,1)"])
+    }
+
     @Test("an XML declaration prologue before the <svg> root is skipped, not fatal")
     func tokenizeSkipsAnXMLDeclarationPrologue() throws {
         // A real published BIMI logo (PayPal's — see this file's other

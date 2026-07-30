@@ -265,22 +265,57 @@ public enum BIMISVGParser {
     }
 
     /// Parses `key="value"` (or `key='value'`) pairs from a tag's raw
-    /// attribute string. `nil` for malformed attribute syntax (unterminated
-    /// quote) — fail closed.
+    /// attribute string.
+    ///
+    /// **Hand-written linear scanner, not a regex** (Task #168 / SEC-C:
+    /// found and fixed alongside F12 while hardening this file's other
+    /// regex-based scanner). The original regex's greedy
+    /// `[A-Za-z_:][\w:.-]*` name, immediately followed by a required `=`
+    /// that might not appear anywhere in the rest of the string, made
+    /// `NSRegularExpression.matches(in:)` retry a shrinking suffix of
+    /// every non-matching identifier from every subsequent starting
+    /// position too — confirmed via a standalone repro to take upward of
+    /// 8s on 500,000 bytes of a single repeated letter with no `=` at
+    /// all anywhere. Not exponential like F12's tag tokenizer, but still
+    /// real and attacker-reachable: a single tag's attribute span can be
+    /// most of the 64KB `BIMISVGSafety` cap. The scanner below finds
+    /// each attribute name in one forward pass with no backtracking, and
+    /// stops entirely — rather than resuming character-by-character,
+    /// which would reopen the same quadratic risk — on an unterminated
+    /// quote.
     static func parseAttributes(_ raw: String) -> [String: String]? {
+        let chars = Array(raw)
+        let n = chars.count
         var attributes: [String: String] = [:]
-        guard let regex = try? NSRegularExpression(pattern: #"([A-Za-z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')"#) else { return nil }
-        let nsRaw = raw as NSString
-        let range = NSRange(location: 0, length: nsRaw.length)
-        for match in regex.matches(in: raw, range: range) {
-            let key = nsRaw.substring(with: match.range(at: 1))
-            let value: String
-            if match.range(at: 2).location != NSNotFound {
-                value = nsRaw.substring(with: match.range(at: 2))
-            } else {
-                value = nsRaw.substring(with: match.range(at: 3))
+        var i = 0
+
+        while i < n {
+            while i < n, !(chars[i].isLetter || chars[i] == "_" || chars[i] == ":") {
+                i += 1
             }
-            attributes[key] = value
+            guard i < n else { break }
+            let nameStart = i
+            while i < n, chars[i].isLetter || chars[i].isNumber || chars[i] == "_" || chars[i] == ":" || chars[i] == "." || chars[i] == "-" {
+                i += 1
+            }
+            let name = String(chars[nameStart..<i])
+
+            var j = i
+            while j < n, chars[j].isWhitespace { j += 1 }
+            guard j < n, chars[j] == "=" else { continue } // no '=' — not an attribute; resume past the name.
+            j += 1
+            while j < n, chars[j].isWhitespace { j += 1 }
+            guard j < n, chars[j] == "\"" || chars[j] == "'" else { continue } // no quoted value — resume past the name.
+            let quote = chars[j]
+            j += 1
+            let valueStart = j
+            while j < n, chars[j] != quote {
+                j += 1
+            }
+            guard j < n else { break } // unterminated quote — stop, rather than reopen the quadratic scan this rewrite removes.
+
+            attributes[name] = String(chars[valueStart..<j])
+            i = j + 1
         }
         return attributes
     }
