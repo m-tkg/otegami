@@ -1,9 +1,12 @@
 import GRDB
+import GoogleOAuth
 import MailTransport
 import MailTransportMailCore
+import MicrosoftOAuth
 import OtegamiCore
 import OtegamiRelayAPI
 import OtegamiStore
+import PushRelayClient
 import Security
 import SyncEngine
 import UserNotifications
@@ -26,19 +29,24 @@ import UserNotifications
 /// 3. Otherwise, open the shared `AppDatabase` (App Group container,
 ///    read-only in practice — see `AppDatabase.makeShared(appGroupIdentifier:)`'s
 ///    doc comment) and look up that account's `AccountRecord`.
-/// 4. Read its IMAP password from the shared Keychain Access Group
-///    (`.password`-auth accounts only). Task #175 gave Gmail/Outlook
-///    (`.oauth2`) accounts a relay watch too (an OAuth refresh token
-///    instead of a password), but this Extension was **not** extended to
-///    match — it still only knows how to read a Keychain password and
-///    plain-`LOGIN`, never XOAUTH2. A push for a `.oauth2` account's watch
-///    therefore always falls through step 6's generic fallback (the
-///    notification still shows, just without sender/subject enrichment) —
-///    same degraded-but-not-broken behavior as any other lookup/connect
-///    failure here. Extending this Extension to refresh an access token
-///    and authenticate via XOAUTH2 (mirroring `MinimalIMAPClient
-///    .authenticateXOAuth2` on the relay side) is tracked as a follow-up,
-///    not part of Task #175's scope.
+/// 4. Resolve credentials for `account.authType`:
+///    - `.password`: read the IMAP password from the shared Keychain
+///      Access Group, same as always.
+///    - `.oauth2` (Task #177 — Gmail/Outlook accounts, following up on
+///      Task #175's relay-side OAuth watch support): read the stored OAuth
+///      refresh token from the shared Keychain (`GoogleOAuth.TokenStore`/
+///      `MicrosoftOAuth.TokenStore`, the exact same types
+///      `AppEnvironment.auth(for:)` already uses for a foregrounded sync —
+///      see `oauthAccessToken(for:)`) and exchange it for a fresh access
+///      token, racing that exchange against `oauthTokenFetchTimeout`
+///      (`PushOAuthAccessTokenResolution`) so a slow/hanging token
+///      endpoint can't consume this Extension's entire ~30 second OS
+///      budget and leave no time for the IMAP half below. Any failure at
+///      any point (build has no Client ID configured, no refresh token
+///      stored, the refresh itself failing, or the timeout firing) is
+///      collapsed into "no credential" and falls straight through to step
+///      6's generic fallback — same degraded-but-not-broken behavior as a
+///      `.password` account with no Keychain entry.
 /// 5. Connect, `SELECT` the watched mailbox, `FETCH` the envelope for UID
 ///    `uidNext - 1` (the just-arrived message) — and, only if
 ///    `showsBodyPreview` is on, that same message's body too (a
@@ -172,13 +180,11 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         guard NotificationEnrichment.needsFetch(preferences: preferences) else { return }
 
         guard let account = try? await Self.lookupAccount(id: payload.accountId) else { return }
-        guard account.authType == .password,
-              let password = try? Self.password(forAccountId: account.id)
-        else { return }
+        guard let auth = await Self.resolveAuth(for: account) else { return }
 
         let session = MailCoreIMAPSession(config: account.imapConfig)
         do {
-            try await session.connect(auth: .password(username: account.imapUsername, password: password))
+            try await session.connect(auth: auth)
             let mailbox = "INBOX"
             _ = try await session.select(mailbox)
             let latestUID = UInt32(max(payload.uidNext - 1, 1))
@@ -270,6 +276,98 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         return String(data: data, encoding: .utf8)
     }
 
+    // MARK: - Task #177: OAuth (`.oauth2`) account credentials
+
+    /// The `MailAuth` `enrich(payload:)` connects with, for either
+    /// `authType` — `.password`'s existing Keychain-password lookup, or
+    /// (Task #177) `.oauth2`'s Keychain-refresh-token-to-access-token
+    /// exchange (`oauthAccessToken(for:)`). `nil` on any failure, meaning
+    /// "no usable credential" — the caller's existing generic-fallback
+    /// behavior applies identically regardless of which branch failed.
+    private static func resolveAuth(for account: AccountRecord) async -> MailAuth? {
+        switch account.authType {
+        case .password:
+            guard let password = try? Self.password(forAccountId: account.id) else { return nil }
+            return .password(username: account.imapUsername, password: password)
+        case .oauth2:
+            guard let accessToken = await Self.oauthAccessToken(for: account) else { return nil }
+            return .xoauth2(username: account.imapUsername, accessToken: accessToken)
+        }
+    }
+
+    /// Well under the ~30 second OS budget for this Extension process's
+    /// entire `didReceive(_:withContentHandler:)` call — leaves comfortable
+    /// room for the IMAP connect/`SELECT`/envelope-fetch (and, if
+    /// `showsBodyPreview` is on, the body fetch) that follows once a token
+    /// is in hand. `oauthAccessToken(for:)` bounds *both* the transport
+    /// level (the `URLSession` used for the token-endpoint request) and the
+    /// overall exchange (`PushOAuthAccessTokenResolution`'s race) to this
+    /// same value, so a hung TCP connection can't itself be the thing that
+    /// silently burns the whole budget before the race even gets a chance
+    /// to fire.
+    private static let oauthTokenFetchTimeout: TimeInterval = 10
+
+    /// A currently-valid XOAUTH2 access token for `account` (`.oauth2`-kind
+    /// only — Gmail/Outlook), or `nil` on any failure: this build has no
+    /// Client ID configured for `account.kind`'s provider (`OAuthConfig`),
+    /// no refresh token is stored for this account (never signed in via
+    /// this provider, or a previous `invalid_grant` already wiped it —
+    /// see `GoogleOAuth.TokenStore`/`MicrosoftOAuth.TokenStore`'s own doc
+    /// comments), the refresh itself failed, or it simply took longer than
+    /// `oauthTokenFetchTimeout` (`PushOAuthAccessTokenResolution`).
+    ///
+    /// Uses the exact same `TokenStore`/OAuth client types
+    /// `AppEnvironment.auth(for:)` uses for a foregrounded `.oauth2` sync
+    /// (`AppEnvironment.swift`'s "Auth resolution" section) — a fresh
+    /// `TokenStore` instance per call (this Extension is a short-lived,
+    /// per-push process; there's no long-lived `AppEnvironment` to hold
+    /// one), backed by the same default `KeychainRefreshTokenStore` (no
+    /// explicit access group — see this file's doc comment on why that
+    /// alone is already enough to read what the main app wrote: both
+    /// targets' entitlements list the same single Keychain Access Group,
+    /// which is therefore each process's *default* group too). A
+    /// successful refresh here that hits `invalid_grant` has the exact
+    /// same side effect it would in the main app: `TokenStore` wipes the
+    /// now-dead refresh token from that same shared Keychain, so the next
+    /// time the main app itself calls `auth(for:)` it correctly reports
+    /// "要再認証" rather than retrying a token Google has already rejected.
+    private static func oauthAccessToken(for account: AccountRecord) async -> String? {
+        guard account.kind == .gmail || account.kind == .microsoft else { return nil }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = oauthTokenFetchTimeout
+        configuration.timeoutIntervalForResource = oauthTokenFetchTimeout
+        let urlSession = URLSession(configuration: configuration)
+        let sessionRunner = UnreachableAuthorizationSessionRunner()
+
+        switch account.kind {
+        case .gmail:
+            guard let clientId = OAuthConfig.googleClientId else { return nil }
+            let client = GoogleOAuthClient(
+                endpoints: .standard(clientId: clientId),
+                sessionRunner: sessionRunner,
+                urlSession: urlSession
+            )
+            let tokenStore = GoogleOAuth.TokenStore(refresher: client)
+            return await PushOAuthAccessTokenResolution.resolve(timeout: oauthTokenFetchTimeout) {
+                try await tokenStore.accessToken(for: account.id)
+            }
+        case .microsoft:
+            guard let clientId = OAuthConfig.microsoftClientId else { return nil }
+            let client = MicrosoftOAuthClient(
+                endpoints: .standard(clientId: clientId),
+                sessionRunner: sessionRunner,
+                urlSession: urlSession
+            )
+            let tokenStore = MicrosoftOAuth.TokenStore(refresher: client)
+            return await PushOAuthAccessTokenResolution.resolve(timeout: oauthTokenFetchTimeout) {
+                try await tokenStore.accessToken(for: account.id)
+            }
+        case .generic, .icloud:
+            return nil
+        }
+    }
+
     /// `Bundle.main` here is the Extension's own bundle (not the
     /// containing app's) — see `apps/Otegami/Sources/Support
     /// /OtegamiAppGroup.swift`'s doc comment on why this is a separate,
@@ -283,10 +381,61 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     }
 }
 
+/// Task #177: mirrors `GoogleOAuthConfig`/`MicrosoftOAuthConfig`
+/// (`apps/Otegami/Sources/Features/Settings/Auth/`) — reads the same two
+/// xcconfig-sourced Client ID `Info.plist` keys those two enums read, but
+/// against *this* target's own `Bundle.main` (this Extension's bundle, not
+/// the containing app's — same reasoning `appGroupIdentifier`/
+/// `keychainAccessGroup` above already document, and why this is a small
+/// separate copy rather than an import: those two enums live in the
+/// `Otegami` app target itself, which an app extension target can't depend
+/// on). `project.yml`'s `NotificationService` target now declares both
+/// `GOOGLE_OAUTH_CLIENT_ID`/`OTEGAMI_MICROSOFT_CLIENT_ID` in its own
+/// `info.properties` to make that possible.
+private enum OAuthConfig {
+    static var googleClientId: String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "GOOGLE_OAUTH_CLIENT_ID") as? String,
+              !value.isEmpty,
+              !value.hasPrefix("$(")
+        else { return nil }
+        return value
+    }
+
+    static var microsoftClientId: String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: "OTEGAMI_MICROSOFT_CLIENT_ID") as? String,
+              !value.isEmpty,
+              !value.hasPrefix("$(")
+        else { return nil }
+        return value
+    }
+}
+
+/// `GoogleOAuthClient`/`MicrosoftOAuthClient` both require a concrete
+/// `AuthorizationSessionRunning` conformer at `init`, but this Extension
+/// only ever calls `TokenStore.accessToken(for:)` — a plain silent refresh,
+/// never the interactive `requestAuthorization()` flow that's the only
+/// caller of `sessionRunner.run(authorizationURL:callbackURLScheme:)`.
+/// Satisfies both packages' identically-shaped (but distinct) protocols
+/// with one throwing implementation, so a latent bug that somehow *did*
+/// reach this path degrades to "this account's push falls back to the
+/// generic notification body" (same as every other failure in
+/// `oauthAccessToken(for:)`) rather than crashing the Extension process —
+/// there is no UI to present a web authentication session from here even
+/// if it were somehow reached.
+private struct UnreachableAuthorizationSessionRunner: GoogleOAuth.AuthorizationSessionRunning, MicrosoftOAuth.AuthorizationSessionRunning {
+    struct UnexpectedCallError: Error {}
+
+    func run(authorizationURL: URL, callbackURLScheme: String) async throws -> URL {
+        throw UnexpectedCallError()
+    }
+}
+
 /// Mirrored copy of `PushRelayClient.NotificationContentPreferences`
 /// (Task #176) — see `NotificationEnrichment`'s own doc comment right below
-/// for why this target keeps a separately-compiled copy instead of an
-/// `import PushRelayClient`. The 3 key names must match
+/// for why this type stays a separately-compiled copy even though Task
+/// #177 added a real `import PushRelayClient` to this target (for
+/// `PushOAuthAccessTokenResolution` only — see `oauthAccessToken(for:)`).
+/// The 3 key names must match
 /// `apps/Otegami/Sources/Support/NotificationContentSettingsStore.swift`'s
 /// (and by extension `AppSettingsCloudDirectory`'s allowlist entries for
 /// them) byte-for-byte — `notificationContentPreferences()` above is the
@@ -305,15 +454,21 @@ private struct NotificationContentPreferences {
 
 /// Mirrored copy of `PushRelayClient.NotificationEnrichment`
 /// (`packages/OtegamiKit/Sources/PushRelayClient/NotificationEnrichment
-/// .swift`) — see that type's doc comment for why this target has its own
-/// separately-compiled copy instead of an `import PushRelayClient` (same
-/// reasoning as `OtegamiAppGroup.swift`'s existing duplication). The
+/// .swift`) — kept as its own separately-compiled copy even though Task
+/// #177 added a real `import PushRelayClient` to this target (for
+/// `PushOAuthAccessTokenResolution` only, a type this file's Task #176
+/// era predates). Switching this pre-existing, already-tested duplicate
+/// over to the real import too was deliberately left out of Task #177's
+/// scope — no behavior here needed to change, so there was nothing to
+/// gain from touching it beyond the risk of a subtle regression (same
+/// reasoning `OtegamiAppGroup.swift`'s existing duplication doc comment
+/// gives for the *App Group id*/*Keychain Access Group* copies). The
 /// algorithm is unit-tested there (`NotificationEnrichmentTests`); this
 /// copy is intentionally kept tiny and byte-for-byte identical so it needs
 /// no independent test coverage of its own. Reuses `OtegamiCore
 /// .SnippetBuilder` directly (rather than re-deriving its truncation
 /// algorithm too) since `OtegamiCore` is already a real dependency of this
-/// extension target (`project.yml`), unlike `PushRelayClient` itself.
+/// extension target (`project.yml`).
 private enum NotificationEnrichment {
     static let genericTitle = "Otegami"
     static let genericBody = "新着メールがあります"

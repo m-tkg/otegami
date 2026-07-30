@@ -300,6 +300,17 @@ targets:
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
         OtegamiAppGroupIdentifier: $(OTEGAMI_APP_GROUP)
         OtegamiKeychainAccessGroup: $(OTEGAMI_KEYCHAIN_GROUP)
+        # Task #177 (`.oauth2` account push enrichment): this Extension's
+        # own `Bundle.main` is its own bundle, not the containing app's —
+        # same reasoning `OtegamiAppGroupIdentifier`/`OtegamiKeychainAccessGroup`
+        # above already rely on — so it needs its own copies of the two
+        # OAuth Client ID keys the `Otegami` target declares above
+        # (`GOOGLE_OAUTH_CLIENT_ID`/`OTEGAMI_MICROSOFT_CLIENT_ID`'s own doc
+        # comments there explain the xcconfig-sourced mechanism; unchanged
+        # here). `NotificationService.swift`'s `OAuthConfig` enum is what
+        # reads these two keys back out at runtime.
+        GOOGLE_OAUTH_CLIENT_ID: $(GOOGLE_OAUTH_CLIENT_ID)
+        OTEGAMI_MICROSOFT_CLIENT_ID: $(OTEGAMI_MICROSOFT_CLIENT_ID)
     entitlements:
       path: Generated/NotificationService.entitlements
       properties:
@@ -326,6 +337,20 @@ targets:
         product: OtegamiRelayAPI
       - package: OtegamiKit
         product: SyncEngine
+      # Task #177: `GoogleOAuth.TokenStore`/`MicrosoftOAuth.TokenStore` (the
+      # same refresh-token-to-access-token exchange `AppEnvironment.auth(for:)`
+      # already uses for a foregrounded `.oauth2` sync) plus
+      # `PushRelayClient.PushOAuthAccessTokenResolution` (the timeout-racing
+      # wrapper around that exchange — see its own doc comment for why this
+      # target needs the dependency now, unlike the pre-existing
+      # `NotificationEnrichment`/`NotificationContentPreferences` mirrored
+      # copies still private to NotificationService.swift).
+      - package: OtegamiKit
+        product: GoogleOAuth
+      - package: OtegamiKit
+        product: MicrosoftOAuth
+      - package: OtegamiKit
+        product: PushRelayClient
 
   # iOS-only: drives the real app (XCUIApplication) against the dev
   # mailstack for M1's automated simulator verification. See
