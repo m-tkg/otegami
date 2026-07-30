@@ -277,33 +277,36 @@ extension RichTextEditor {
             }
         }
 
+        /// Task #178: the collapsed-cursor branch writes an explicit
+        /// `defaultTextColor` for "デフォルト" instead of `removeValue(forKey:)`
+        /// — `textView.typingAttributes` (unlike a plain attribute lookup on
+        /// the text storage) resynthesizes its own non-dynamic default for a
+        /// missing `.foregroundColor` key, which is exactly the mechanism
+        /// behind the real-device "デフォルトにすると黒くなる" bug this task
+        /// fixes (see `RichTextAttributedString.defaultTextColor`'s doc
+        /// comment).
         func setTextColor(_ color: RichTextColor?) {
             withSelection { textView, storage, range in
                 if range.length > 0 {
                     RichTextAttributedString.applyTextColor(color, to: storage, range: range)
                 } else {
                     var attrs = textView.typingAttributes
-                    if let color {
-                        attrs[.foregroundColor] = color.platformColor
-                    } else {
-                        attrs.removeValue(forKey: .foregroundColor)
-                    }
+                    attrs[.foregroundColor] = color?.platformColor ?? RichTextAttributedString.defaultTextColor
                     textView.typingAttributes = attrs
                 }
             }
         }
 
+        /// Task #178: same "always explicit, never remove" reasoning as
+        /// `setTextColor(_:)`, using `defaultBackgroundColor` (`.clear`) for
+        /// "ハイライトなし".
         func setBackgroundColor(_ color: RichTextColor?) {
             withSelection { textView, storage, range in
                 if range.length > 0 {
                     RichTextAttributedString.applyBackgroundColor(color, to: storage, range: range)
                 } else {
                     var attrs = textView.typingAttributes
-                    if let color {
-                        attrs[.backgroundColor] = color.platformColor
-                    } else {
-                        attrs.removeValue(forKey: .backgroundColor)
-                    }
+                    attrs[.backgroundColor] = color?.platformColor ?? RichTextAttributedString.defaultBackgroundColor
                     textView.typingAttributes = attrs
                 }
             }
@@ -339,8 +342,10 @@ extension RichTextEditor {
                     }
                     attrs.removeValue(forKey: .underlineStyle)
                     attrs.removeValue(forKey: .strikethroughStyle)
-                    attrs.removeValue(forKey: .foregroundColor)
-                    attrs.removeValue(forKey: .backgroundColor)
+                    // Task #178: explicit sentinels, not `removeValue` —
+                    // same reasoning as `setTextColor(_:)`/`setBackgroundColor(_:)`.
+                    attrs[.foregroundColor] = RichTextAttributedString.defaultTextColor
+                    attrs[.backgroundColor] = RichTextAttributedString.defaultBackgroundColor
                     attrs.removeValue(forKey: .link)
                     textView.typingAttributes = attrs
                 }

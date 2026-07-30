@@ -51,6 +51,12 @@ public enum RichTextFontSize: String, Equatable, Sendable, Codable, CaseIterable
 /// color and highlight/background-color swatch list (`RichTextFormattingBar`)
 /// — most simple rich text composers (Spark included) share one palette
 /// between the two pickers rather than maintaining two independent ones.
+/// Task #178 (実機フィードバック「白と黒を選べるようにして」): added `.black`/
+/// `.white` — genuinely opaque, fixed colors a user can explicitly choose,
+/// distinct from `nil` ("デフォルト", the OS's own dynamic label color — see
+/// `RichTextAttributedString.defaultTextColor`'s doc comment for how the live
+/// editor keeps these two straight even though `.black` can resolve to the
+/// exact same RGB as the dynamic default in light mode).
 public enum RichTextColor: String, Equatable, Sendable, Codable, CaseIterable {
     case red
     case orange
@@ -59,6 +65,8 @@ public enum RichTextColor: String, Equatable, Sendable, Codable, CaseIterable {
     case blue
     case purple
     case gray
+    case black
+    case white
 
     /// The exact `#rrggbb` this encodes to in HTML (`color:`/`background-
     /// color:` inline style) — fixed hex, not derived from any `Color`/
@@ -72,6 +80,8 @@ public enum RichTextColor: String, Equatable, Sendable, Codable, CaseIterable {
         case .blue: "#1a73e8"
         case .purple: "#8430ce"
         case .gray: "#5f6368"
+        case .black: "#000000"
+        case .white: "#ffffff"
         }
     }
 

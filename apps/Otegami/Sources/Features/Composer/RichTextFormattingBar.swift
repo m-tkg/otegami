@@ -1,5 +1,10 @@
 import SwiftUI
 import OtegamiCore
+#if os(iOS)
+import UIKit
+#else
+import AppKit
+#endif
 
 /// Task #129 (作成画面リッチテキスト化)/#161 (第2段): the formatting bar for
 /// `ComposerView`'s body editor — 太字/イタリック/下線/打ち消し線/フォント
@@ -170,12 +175,13 @@ private struct FontSizeMenuButton: View {
 }
 
 /// Task #161: 文字色/背景色(ハイライト) — one reusable `Menu` shared by both
-/// (`RichTextColor`'s doc comment on why one seven-color palette serves
-/// both pickers). `currentColor == nil` (デフォルト/ハイライトなし) is always
-/// the first item; each preset shows as a colored swatch (a tinted SF
-/// Symbol circle, not a raw `Color` swatch view, so this stays a single
-/// `Label` per row rather than a custom `HStack` — keeps this control's own
-/// `body` just as flat as `RichTextFormattingBar`'s).
+/// (`RichTextColor`'s doc comment on why one palette serves both pickers).
+/// `currentColor == nil` (デフォルト/ハイライトなし) is always the first item;
+/// each preset shows as a colored swatch (`RichTextColor.swatchImage`, not a
+/// tinted SF Symbol — see that property's doc comment for why a *tinted*
+/// symbol doesn't actually show any color once it's inside this `Menu`), so
+/// this stays a single `Label` per row rather than a custom `HStack` — keeps
+/// this control's own `body` just as flat as `RichTextFormattingBar`'s.
 private struct RichTextColorMenuButton: View {
     let systemImage: String
     let accessibilityIdentifier: String
@@ -198,11 +204,18 @@ private struct RichTextColorMenuButton: View {
                 Button {
                     onSelect(color)
                 } label: {
+                    // Task #178 (実機フィードバック「選ぶ前にどんな色か分から
+                    // ない」/「チェックボックスもその色に」): the selection
+                    // mark moved from the icon slot (a colored checkmark
+                    // icon hits the exact same Menu-item-icon-recoloring
+                    // limitation `swatchImage` works around) into the title
+                    // itself — a leading "✓ " — so the icon slot is free to
+                    // always show this row's own actual color swatch,
+                    // selected or not.
                     Label {
-                        Text(color.displayName)
+                        Text(currentColor == color ? "\u{2713} \(color.displayName)" : color.displayName)
                     } icon: {
-                        Image(systemName: currentColor == color ? "checkmark.circle.fill" : "circle.fill")
-                            .foregroundStyle(color.swiftUIColor)
+                        color.swatchImage
                     }
                 }
             }
@@ -284,18 +297,92 @@ private extension RichTextColor {
         case .blue: "青"
         case .purple: "紫"
         case .gray: "グレー"
+        case .black: "黒"
+        case .white: "白"
         }
     }
 
     /// Bridges `platformColor` (`RichTextAttributedString`'s `UIColor`/
     /// `NSColor`, built from `hex`) into SwiftUI — used only for this
-    /// picker's own swatch rendering, never for anything that ends up
+    /// picker's own toolbar-button tint (`RichTextColorMenuButton`'s own
+    /// `label:`, a plain SwiftUI view, not a `Menu` row — that one *does*
+    /// honor `.foregroundStyle` normally), never for anything that ends up
     /// persisted or sent (the HTML encoder works from `hex` directly).
     var swiftUIColor: Color {
         #if os(iOS)
         Color(uiColor: platformColor)
         #else
         Color(nsColor: platformColor)
+        #endif
+    }
+
+    /// Task #178 (実機フィードバック「選ぶ前にどんな色か分からない」): a small
+    /// filled-circle `Image` for this preset's `Menu` row icon, with the
+    /// color baked directly into the bitmap's pixels and the image marked
+    /// "original" rather than "template".
+    ///
+    /// `Menu`'s rows are backed by a native `UIMenu`/`NSMenu` on both
+    /// platforms, and both re-tint *template* icons (which is what a plain
+    /// `Image(systemName:)` is, and what `.foregroundStyle(_:)` on one
+    /// inside a `Label` cannot override once it's inside a `Menu`) to a
+    /// single system color — silently discarding whatever custom color the
+    /// SF Symbol was given in SwiftUI. Confirmed on-device (実機フィード
+    /// バック 2026-07-30): every row's icon rendered as a plain, uncolored
+    /// dot no matter which preset it belonged to, even though the SwiftUI
+    /// code (this file, before this task) looked like it should have shown
+    /// one. Baking the color into the pixels themselves sidesteps the
+    /// limitation entirely — the menu then just draws whatever's actually
+    /// in the image instead of re-tinting it.
+    ///
+    /// `.white`/`.black` (this task's other addition to the palette) also
+    /// get a thin hairline ring baked in, so the swatch doesn't disappear
+    /// against a same-toned menu background — the same "見えなくならない
+    /// ように" reasoning `AccountLabelColorPicker`'s `.rose` (also plain
+    /// white) swatch already applies.
+    var swatchImage: Image {
+        RichTextColorSwatch.image(color: platformColor, hairline: self == .white || self == .black)
+    }
+}
+
+/// Task #178: the bitmap renderer behind `RichTextColor.swatchImage` — kept
+/// as its own small type rather than inline in the extension above just to
+/// keep the platform `#if` branching self-contained in one place.
+private enum RichTextColorSwatch {
+    static let diameter: CGFloat = 18
+
+    static func image(color: PlatformColor, hairline: Bool) -> Image {
+        #if os(iOS)
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: diameter, height: diameter))
+        let rendered = renderer.image { _ in
+            let inset: CGFloat = hairline ? 1.5 : 1
+            let rect = CGRect(x: inset, y: inset, width: diameter - inset * 2, height: diameter - inset * 2)
+            let path = UIBezierPath(ovalIn: rect)
+            color.setFill()
+            path.fill()
+            if hairline {
+                UIColor(OtegamiColor.divider).setStroke()
+                path.lineWidth = 1
+                path.stroke()
+            }
+        }
+        return Image(uiImage: rendered.withRenderingMode(.alwaysOriginal))
+        #else
+        let size = NSSize(width: diameter, height: diameter)
+        let rendered = NSImage(size: size, flipped: false) { rect in
+            let inset: CGFloat = hairline ? 1.5 : 1
+            let ovalRect = rect.insetBy(dx: inset, dy: inset)
+            let path = NSBezierPath(ovalIn: ovalRect)
+            color.setFill()
+            path.fill()
+            if hairline {
+                NSColor(OtegamiColor.divider).setStroke()
+                path.lineWidth = 1
+                path.stroke()
+            }
+            return true
+        }
+        rendered.isTemplate = false
+        return Image(nsImage: rendered)
         #endif
     }
 }

@@ -50,17 +50,95 @@ enum RichTextAttributedString {
         #endif
     }
 
+    /// Task #178 (実機フィードバック「デフォルトにすると黒い文字になる」): the
+    /// OS's own dynamic default text color — explicitly written into the
+    /// live `NSAttributedString`/`typingAttributes` wherever `RichTextRun
+    /// .textColor == nil` ("デフォルトの文字色"), rather than leaving the
+    /// `.foregroundColor` attribute entirely absent (this file's approach
+    /// before this task). Leaving it absent turned out not to survive a
+    /// round trip through `UITextView`/`NSTextView`'s `typingAttributes` on
+    /// device — once the user had touched `RichTextEditingController
+    /// .setTextColor(_:)` at all, that API resynthesizes its own (non-
+    /// dynamic) default for a missing `.foregroundColor` key instead of
+    /// leaving it missing, so an attribute-less run could end up drawn in
+    /// flat black even in Dark Mode. Writing this sentinel explicitly
+    /// sidesteps that entirely — `.label`/`.labelColor` redraws correctly in
+    /// either appearance no matter which code path last touched the
+    /// attribute, and (unlike literal black) is never emitted as an HTML
+    /// `color:` — `RichTextHTMLCoder.styleDeclaration(for:)` only fires for
+    /// a non-`nil` `RichTextRun.textColor`, and `documentTextColor(from:)`
+    /// below maps this sentinel back to `nil` before that ever happens.
+    ///
+    /// Distinguishing this sentinel from a user's *explicit* choice of
+    /// `.black`/`.white` (Task #178 also added those two presets) relies on
+    /// `PlatformColor.isEqual` comparing the dynamic *provider* itself, not
+    /// a resolved snapshot in the current trait collection — this sentinel
+    /// and a literal opaque black/white `UIColor`/`NSColor` never compare
+    /// equal via `isEqual`, even though they can resolve to the identical
+    /// RGB in a given appearance (light mode's `.label` is black; dark
+    /// mode's is white). `documentTextColor(from:)` checks `isEqual` against
+    /// this sentinel *first*, before ever falling through to `RichTextColor
+    /// .matching(_:)`'s RGB-tolerance comparison, so this ambiguity never
+    /// actually surfaces.
+    static var defaultTextColor: PlatformColor {
+        #if os(iOS)
+        .label
+        #else
+        .labelColor
+        #endif
+    }
+
+    /// Task #178: same reasoning as `defaultTextColor`, for 背景色/ハイライト's
+    /// "ハイライトなし" — `.clear` written explicitly rather than an absent
+    /// `.backgroundColor` attribute. No real-device report of a highlight-
+    /// specific version of the text-color bug surfaced, but the same
+    /// `typingAttributes` mechanism underlies both, so leaving this one
+    /// implicit would be an unnecessary (and equally fragile) asymmetry.
+    static var defaultBackgroundColor: PlatformColor { .clear }
+
+    /// The reverse of writing `defaultTextColor`/a preset's `platformColor`
+    /// onto `.foregroundColor` — what `RichTextRun.textColor`/`RichTextTypingState
+    /// .textColor` should read back from a live attribute value. `nil` both
+    /// when the attribute is entirely absent (defensive — every write site in
+    /// this file always sets *something*, but decoded-then-rebuilt or
+    /// otherwise externally-constructed attributed strings might not) and
+    /// when it's this file's own `defaultTextColor` sentinel; falls through
+    /// to `RichTextColor.matching(_:)` for anything else.
+    ///
+    /// Task #178: an *old* cancelled-send/draft snapshot that predates this
+    /// task can legitimately carry a literal opaque black `.foregroundColor`
+    /// — either because the user really had picked black under some other
+    /// path, or as a fossil of the very `typingAttributes` bug this task
+    /// fixes (see `defaultTextColor`'s doc comment). Once `.black` is a real
+    /// preset, restoring that snapshot reads it back as `.black`, not `nil`
+    /// — there is no way to tell those two histories apart after the fact,
+    /// and treating it as the user's explicit choice (rather than silently
+    /// "fixing" it back to default, which could just as easily undo a
+    /// genuine choice) is the safer default.
+    static func documentTextColor(from color: PlatformColor?) -> RichTextColor? {
+        guard let color, !color.isEqual(defaultTextColor) else { return nil }
+        return RichTextColor.matching(color)
+    }
+
+    /// The `.backgroundColor` counterpart of `documentTextColor(from:)`.
+    static func documentBackgroundColor(from color: PlatformColor?) -> RichTextColor? {
+        guard let color, !color.isEqual(defaultBackgroundColor) else { return nil }
+        return RichTextColor.matching(color)
+    }
+
     /// Every prefill/quote/template/signature insertion point in
     /// `ComposerView` that used to just set a plain `String` now builds its
-    /// replacement text through this — a single explicit `.font` (this
-    /// feature's baseline) across the whole string, no bold/italic/
-    /// underline/strikethrough/list/indent. Explicit rather than leaving
-    /// `.font` unset: every formatting toggle below reads the *current*
-    /// font at a location to decide the next trait set, and an unset
-    /// attribute would need special-casing everywhere instead of a single
-    /// known baseline.
+    /// replacement text through this — a single explicit `.font`/
+    /// `.foregroundColor` (this feature's baseline) across the whole string,
+    /// no bold/italic/underline/strikethrough/list/indent. Explicit rather
+    /// than leaving these unset: every formatting toggle below reads the
+    /// *current* font/color at a location to decide the next value, and an
+    /// unset attribute would need special-casing everywhere instead of a
+    /// single known baseline — `.foregroundColor` joined `.font` here in
+    /// Task #178 for exactly that reason (see `defaultTextColor`'s doc
+    /// comment).
     static func plainAttributedString(_ text: String) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [.font: bodyFont])
+        NSAttributedString(string: text, attributes: [.font: bodyFont, .foregroundColor: defaultTextColor])
     }
 
     // MARK: - NSAttributedString → RichTextDocument (send-time HTML encode)
@@ -118,8 +196,8 @@ enum RichTextAttributedString {
                 isUnderline: underline != 0,
                 isStrikethrough: strikethrough != 0,
                 fontSize: documentFontSize(from: font),
-                textColor: (attributes[.foregroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
-                backgroundColor: (attributes[.backgroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
+                textColor: documentTextColor(from: attributes[.foregroundColor] as? PlatformColor),
+                backgroundColor: documentBackgroundColor(from: attributes[.backgroundColor] as? PlatformColor),
                 linkURL: linkURLString(from: attributes[.link])
             ))
         }
@@ -168,8 +246,15 @@ enum RichTextAttributedString {
                 var attributes: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: style]
                 if run.isUnderline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
                 if run.isStrikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-                if let textColor = run.textColor { attributes[.foregroundColor] = textColor.platformColor }
-                if let backgroundColor = run.backgroundColor { attributes[.backgroundColor] = backgroundColor.platformColor }
+                // Task #178: always explicit (never left unset) — same
+                // "known baseline, no absent-attribute special-casing"
+                // reasoning as `plainAttributedString(_:)`, so a restored
+                // cancelled-send run with no explicit color redraws
+                // correctly in either appearance instead of risking the
+                // `typingAttributes` default-color bug `defaultTextColor`'s
+                // doc comment describes.
+                attributes[.foregroundColor] = run.textColor?.platformColor ?? defaultTextColor
+                attributes[.backgroundColor] = run.backgroundColor?.platformColor ?? defaultBackgroundColor
                 if let linkURL = run.linkURL {
                     if let url = URL(string: linkURL) {
                         attributes[.link] = url
@@ -336,7 +421,7 @@ extension RichTextColor {
     /// (rather than object/pointer equality) since a color read back off
     /// `NSAttributedString` may have round-tripped through a different
     /// `NSColor`/`UIColor` color space than the one `platformColor` built
-    /// it in. `nil` for any color that isn't one of this palette's seven —
+    /// it in. `nil` for any color that isn't one of this palette's presets —
     /// e.g. `nil` (no color) itself, never reached this far.
     static func matching(_ color: PlatformColor) -> RichTextColor? {
         allCases.first { candidate in colorsApproximatelyEqual(candidate.platformColor, color) }
@@ -351,10 +436,12 @@ private func colorsApproximatelyEqual(_ lhs: PlatformColor, _ rhs: PlatformColor
     #else
     guard let lhsConverted = lhs.usingColorSpace(.deviceRGB), let rhsConverted = rhs.usingColorSpace(.deviceRGB) else { return false }
     let lr = lhsConverted.redComponent, lg = lhsConverted.greenComponent, lb = lhsConverted.blueComponent
+    let la = lhsConverted.alphaComponent
     let rr = rhsConverted.redComponent, rg = rhsConverted.greenComponent, rb = rhsConverted.blueComponent
+    let ra = rhsConverted.alphaComponent
     #endif
     let tolerance: CGFloat = 0.02
-    return abs(lr - rr) < tolerance && abs(lg - rg) < tolerance && abs(lb - rb) < tolerance
+    return abs(lr - rr) < tolerance && abs(lg - rg) < tolerance && abs(lb - rb) < tolerance && abs(la - ra) < tolerance
 }
 
 /// Task #161: the `.link` attribute's value can legitimately be either a
@@ -405,8 +492,8 @@ extension RichTextAttributedString {
                 listStyle: listStyle,
                 indentLevel: indentLevel,
                 fontSize: documentFontSize(from: attributes[.font] as? PlatformFont),
-                textColor: (attributes[.foregroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
-                backgroundColor: (attributes[.backgroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
+                textColor: documentTextColor(from: attributes[.foregroundColor] as? PlatformColor),
+                backgroundColor: documentBackgroundColor(from: attributes[.backgroundColor] as? PlatformColor),
                 linkURL: linkURLString(from: attributes[.link])
             )
         }
@@ -425,8 +512,8 @@ extension RichTextAttributedString {
             listStyle: listStyle,
             indentLevel: indentLevel,
             fontSize: documentFontSize(from: font),
-            textColor: (attributes[.foregroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
-            backgroundColor: (attributes[.backgroundColor] as? PlatformColor).flatMap(RichTextColor.matching),
+            textColor: documentTextColor(from: attributes[.foregroundColor] as? PlatformColor),
+            backgroundColor: documentBackgroundColor(from: attributes[.backgroundColor] as? PlatformColor),
             linkURL: linkURLString(from: attributes[.link])
         )
     }
@@ -526,22 +613,24 @@ extension RichTextAttributedString {
         }
     }
 
+    /// Task #178: always writes an explicit value — `color`'s own
+    /// `platformColor`, or `defaultTextColor` for "デフォルト" (`nil`) —
+    /// rather than `removeAttribute`. Removing the attribute was this
+    /// method's original approach and looked correct on paper (an
+    /// attribute-less run *should* just inherit the text view's own default
+    /// color), but didn't survive a `typingAttributes` round trip on device;
+    /// see `defaultTextColor`'s doc comment for the full story (実機フィード
+    /// バック 2026-07-30, Task #178).
     static func applyTextColor(_ color: RichTextColor?, to attributedString: NSMutableAttributedString, range: NSRange) {
         guard range.length > 0 else { return }
-        if let color {
-            attributedString.addAttribute(.foregroundColor, value: color.platformColor, range: range)
-        } else {
-            attributedString.removeAttribute(.foregroundColor, range: range)
-        }
+        attributedString.addAttribute(.foregroundColor, value: color?.platformColor ?? defaultTextColor, range: range)
     }
 
+    /// Task #178: same "always explicit" reasoning as `applyTextColor(_:to:
+    /// range:)`, using `defaultBackgroundColor` (`.clear`) for "ハイライトなし".
     static func applyBackgroundColor(_ color: RichTextColor?, to attributedString: NSMutableAttributedString, range: NSRange) {
         guard range.length > 0 else { return }
-        if let color {
-            attributedString.addAttribute(.backgroundColor, value: color.platformColor, range: range)
-        } else {
-            attributedString.removeAttribute(.backgroundColor, range: range)
-        }
+        attributedString.addAttribute(.backgroundColor, value: color?.platformColor ?? defaultBackgroundColor, range: range)
     }
 
     /// `urlString == nil` (or blank) removes the link from `range` instead
@@ -567,8 +656,15 @@ extension RichTextAttributedString {
             attributedString.addAttribute(.link, value: urlString, range: range)
         }
         attributedString.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+        // Task #178: "doesn't already carry an explicit text color" now
+        // means `documentTextColor(from:)` resolves to `nil` (デフォルト),
+        // not `value == nil` — every run's `.foregroundColor` is always
+        // populated with *something* now (a preset or `defaultTextColor`),
+        // so a raw `nil` check here would never fire and every link would
+        // wrongly keep whatever non-color-explicit run it started from
+        // instead of picking up the usual blue link color.
         attributedString.enumerateAttribute(.foregroundColor, in: range, options: []) { value, subrange, _ in
-            guard value == nil else { return }
+            guard documentTextColor(from: value as? PlatformColor) == nil else { return }
             attributedString.addAttribute(.foregroundColor, value: RichTextColor.blue.platformColor, range: subrange)
         }
     }
@@ -607,8 +703,11 @@ extension RichTextAttributedString {
             }
             attributedString.removeAttribute(.underlineStyle, range: range)
             attributedString.removeAttribute(.strikethroughStyle, range: range)
-            attributedString.removeAttribute(.foregroundColor, range: range)
-            attributedString.removeAttribute(.backgroundColor, range: range)
+            // Task #178: explicit sentinels, not `removeAttribute` — same
+            // reasoning as `applyTextColor(_:to:range:)`/
+            // `applyBackgroundColor(_:to:range:)`.
+            attributedString.addAttribute(.foregroundColor, value: defaultTextColor, range: range)
+            attributedString.addAttribute(.backgroundColor, value: defaultBackgroundColor, range: range)
             attributedString.removeAttribute(.link, range: range)
         }
         guard attributedString.length > 0 else { return }

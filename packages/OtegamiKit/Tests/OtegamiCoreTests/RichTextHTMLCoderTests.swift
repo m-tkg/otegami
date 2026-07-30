@@ -179,6 +179,50 @@ import Testing
         #expect(RichTextHTMLCoder.decode(html: html) == document)
     }
 
+    // MARK: - Task #178 (実機フィードバック「白と黒を選べるように」)
+
+    @Test func blackTextColorRoundTrips() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "black", textColor: .black)]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p><span style=\"color:#000000\">black</span></p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func whiteTextColorRoundTrips() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "white", textColor: .white)]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p><span style=\"color:#ffffff\">white</span></p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    @Test func whiteBackgroundColorRoundTrips() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "highlighted", backgroundColor: .white)]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p><span style=\"background-color:#ffffff\">highlighted</span></p>")
+        #expect(RichTextHTMLCoder.decode(html: html) == document)
+    }
+
+    /// Task #178's core bug fix is in the live `NSAttributedString`
+    /// bridging layer (`RichTextAttributedString`, app-target only, not
+    /// `OtegamiCore`) — but this asserts the semantic contract that fix
+    /// relies on: `textColor == nil` ("デフォルト") must never itself emit a
+    /// `color:` declaration, so the recipient's own client always decides
+    /// how default-colored text renders, light or dark.
+    @Test func defaultTextColorEmitsNoColorStyle() {
+        let document = RichTextDocument(paragraphs: [
+            RichTextParagraph(runs: [RichTextRun(text: "default", textColor: nil)]),
+        ])
+        let html = RichTextHTMLCoder.encode(document)
+        #expect(html == "<p>default</p>")
+        #expect(!html.contains("color"))
+    }
+
     @Test func fontSizeColorAndBackgroundCombineIntoOneSpan() {
         let document = RichTextDocument(paragraphs: [
             RichTextParagraph(runs: [
