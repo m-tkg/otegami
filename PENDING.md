@@ -17,6 +17,40 @@
 
 ## 実機・実アカウントでの確認待ち
 
+### Task #194 (Pull to refresh の進捗表示・キャンセル・非CONDSTORE経路の高速化): 実機での目視・体感確認が未実施
+
+「Pull to refresh が長すぎて終わらない」への対応。非CONDSTORE フラグ
+同期の未チャンク化バグ (`open-ended UIDRange`がチャンク化されず全件を
+1本の`FETCH`で取っていた) を修正し、FLAGSのみのチャンク取得+進捗表示
+(`SyncProgressBanner`)+キャンセル (`Task.checkCancellation()`ベース) を
+実装した。`make test`/`make check-localization`/`swift build`(macOS)は
+green。詳細・実測値 (dev mailstack 300通での payload サイズ比較):
+`docs/qa-findings.md`「Task #194」節、UI設計: `docs/design-system.md`
+「Task #194」節。
+
+未検証:
+- **`SyncProgressBanner`の実描画**: 同期中にのみ表示される一過性の
+  ランタイム状態のため、`scripts/verify-screen.sh`のDB直接注入方式では
+  再現できず、シミュレータのIMAP接続不能という既知不調もあり未確認。
+  実機で pull-to-refresh (または macOS の「再同期」ボタン) を引いた際、
+  一覧上部に進捗バナーが出ること・進捗が動くこと (非CONDSTOREアカウント
+  ならパーセンテージ、それ以外は不定形スピナー)・「キャンセル」ボタンで
+  同期が止まりバナーが消えること・キャンセル後にエラーアラートが出ない
+  ことを確認してほしい。
+- **非CONDSTORE経路の実プロバイダでの体感速度**: dev mailstack の
+  Dovecot は CONDSTORE 対応 (QRESYNC も対応) のため、今回の主対象である
+  `refetchAndDiffFlags`経路そのものは dev mailstack では一度も通らない。
+  Gmail は CONDSTORE 対応 (QRESYNC 非対応、別経路) と既知だが、iCloud/
+  Yahoo!/その他汎用IMAPプロバイダのどれが非CONDSTOREかは未確認。該当
+  する非CONDSTOREアカウントをお持ちなら、大きめのメールボックス
+  (数百〜数千通) でpull-to-refreshし、修正前後の体感速度差・Console の
+  `flagSync: <mailbox> condstore=false`ログを確認してほしい。
+- **キャンセル後の再同期が正しく再開すること**: 同期を途中でキャンセル
+  した直後にもう一度pull-to-refreshし、キャンセル前に確定済みのフラグ
+  変更が失われていないこと・キャンセルで打ち切った範囲が2回目の同期で
+  正しく処理されることを確認してほしい (単体テストでは`FakeIMAPSession`
+  で再現・確認済みだが、実サーバーでの再確認)。
+
 ### Task #190 (アカウントダイジェストの一括操作確認を`.alert`に変更、設定でオフ可能に): 画面の目視確認未達成
 
 `AccountDigestView`(「アカウントでグループ化」表示) のスワイプ/コンテキスト

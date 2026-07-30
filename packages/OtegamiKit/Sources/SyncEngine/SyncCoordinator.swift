@@ -301,14 +301,16 @@ public actor SyncCoordinator {
         auth: MailAuth,
         scope: SyncScope = .inboxOnly,
         autoRetry: Bool = true,
-        forceReconcileVanishedUIDs: Bool = false
+        forceReconcileVanishedUIDs: Bool = false,
+        onProgress: (@Sendable (MailboxSyncer.SyncProgressUpdate) -> Void)? = nil
     ) async throws -> MailboxSyncer.Progress {
         let syncer = syncer(for: account)
         let progress = try await syncer.performIncrementalSync(
             auth: auth,
             scope: scope,
             autoRetry: autoRetry,
-            forceReconcileVanishedUIDs: forceReconcileVanishedUIDs
+            forceReconcileVanishedUIDs: forceReconcileVanishedUIDs,
+            onProgress: onProgress
         )
         // Task #63: "各メールボックスの同期完了後にも1回" — see
         // `schedulePostSyncPrefetchIfNeeded(for:auth:)`'s doc comment. Only

@@ -53,6 +53,11 @@ translations = {
     "選択解除": "Deselect All",
     "全選択": "Select All",
     "再同期": "Refresh",
+    # Task #194 (SyncProgressBanner — pull-to-refresh progress/cancel):
+    "新着メールを確認中…": "Checking for new mail…",
+    "既読・削除状態を同期中…": "Syncing read/deleted status…",
+    "整合性を確認中…": "Checking for changes…",
+    "メールボックスを再取得中…": "Refreshing mailbox…",
     "同期中…": "Syncing…",
     "再同期を試してください。": "Try refreshing.",
     "メッセージがありません": "No Messages",

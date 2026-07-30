@@ -107,6 +107,26 @@ public protocol IMAPSessionProtocol: Sendable {
     /// full picture).
     func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32>
 
+    /// `UID FETCH ... (FLAGS)` for `uids` in `mailboxPath` (already
+    /// `select`ed) — just the flags, none of `fetchEnvelopes`'s headers/
+    /// `BODYSTRUCTURE`/size. Task #194 (「Pull to refresh が長すぎて終わらない」):
+    /// `MailboxSyncer.refetchAndDiffFlags`'s non-`CONDSTORE` flag-sync/
+    /// expunge-detection path used to call `fetchEnvelopes` for this —
+    /// paying for a full envelope re-fetch (headers, `BODYSTRUCTURE`, Gmail
+    /// extension attributes, ...) of every locally-known UID on *every*
+    /// sync pass, for a server that doesn't support `CONDSTORE`, just to
+    /// learn which flags changed and which UIDs vanished. This is the
+    /// lighter-weight fetch that path uses instead — one caller-chosen
+    /// range per call (no internal `batchSize` chunking, unlike
+    /// `fetchEnvelopes`): `MailboxSyncer` does its own chunking so it can
+    /// report progress and check `Task.checkCancellation()` between
+    /// chunks, which a single opaque batched call wouldn't allow. Returns
+    /// only the UIDs the server actually has within `uids` — a UID present
+    /// locally but absent from this result (across every chunk covering
+    /// it) is exactly `refetchAndDiffFlags`'s "vanished" signal, the same
+    /// as before.
+    func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags]
+
     /// Downloads and parses the full message body (M2): fetches the raw
     /// RFC 822 content and hands it to the backend's own MIME parser,
     /// returning already-decoded plain text / HTML plus a flattened list

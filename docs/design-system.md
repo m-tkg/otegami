@@ -8467,3 +8467,60 @@ macOS のツールバーでは珍しくなく (例: Apple Mail自体のツール
 リトライしてまで確認する必要は無いと判断した。スクリーンショットは
 実アカウントの実データを含むため docs には含めていない (`CLAUDE.md`の
 方針どおり)。
+
+## Task #194: 同期進捗バナー (`SyncProgressBanner`) — pull-to-refresh の進捗表示・キャンセル
+
+「Pull to refresh が長すぎて終わらない。どのくらい進んでいるのかのバーを
+出せるなら出したい。またキャンセルもできるようにして欲しい」への対応
+(実装の詳細・実測値は `docs/qa-findings.md` の Task #194 節)。
+
+### 採用した見た目・置き場所
+
+既存の同期状態表示 (サイドバーの `MailboxSyncFailuresView`、`.alert`
+ベースの`syncErrorMessage`) と乱立させないよう、新規コンポーネントは
+`apps/Otegami/Sources/DesignSystem/Components/SyncProgressBanner.swift`
+に1つだけ追加した — トークンは既存の`UndoToast`と同じ並び
+(`OtegamiSpacing`/`OtegamiColor`/`OtegamiFont`/`OtegamiStroke`) を
+そのまま流用し、新しい色は追加していない。
+
+`MessageListView`の`.safeAreaInset(edge: .top)`に配置 (`UndoToast`が
+使う`.overlay(alignment: .bottom)`とは別レイヤー — 上下で衝突しない)。
+iOS の`.refreshable`が提供する引っ張りスピナーは**そのまま残し**、
+置き換えていない — 指が離れて跳ね返った時点で消える引っ張りスピナーと
+違い、このバナーは同期が実際に終わるまで表示され続ける必要があるため
+(このタスクの前提そのもの)。macOS には引っ張りジェスチャ自体が無い
+(ツールバーの「再同期」ボタン) ので、macOS では実質このバナーだけが
+進捗表示になる。
+
+### 決定形式・不定形の出し分け
+
+指示通り「総量が事前に分かる段階は割合表示、分からない段階は不定形の
+表示」を`MailboxSyncer.SyncProgressUpdate.total`(`Int?`)でそのまま
+表現: `total`が分かる場合 (非CONDSTOREフラグ同期のチャンク数) は
+`ProgressView(value:total:)`の実パーセンテージ、`nil`の場合は
+`ProgressView()`の不定形スピナー。フェーズごとの文言
+(「新着メールを確認中…」「既読・削除状態を同期中…」等) は固定の
+UI文言なので`Text(verbatim:)`ではなく通常の`Text("…")`
+(`LocalizedStringKey`経由) にした — `CLAUDE.md`の`Text(verbatim:)`
+指示は「動的な文字列 (アカウント表示名・検索クエリ等)」向けで、
+switch文で選ぶだけの固定文言セットまで`verbatim`にすると英語化の
+対象から外れてしまう (`scripts/check-localizable-coverage.py`が実際に
+検出した — 詳細は`scripts/generate-localizable.py`のTask #194エントリ)。
+
+### キャンセルボタン
+
+`MessageListView`が同期処理を子`Task`として起動し保持
+(`activeSyncTask`)、バナーのキャンセルボタンはそれを`.cancel()`する
+だけ — バナー自体はどのTaskを持っているか関知しない、単なる
+`onCancel: () -> Void`コールバック。
+
+### 検証
+
+`make mac` (このタスク開始時点)・`swift build`/`swift test`
+(`OtegamiKit`パッケージ単体) はgreen。**実描画のスクリーンショット
+確認は未実施** — このバナーは「同期が進行中」という一過性のランタイム
+状態にのみ表示され、`scripts/verify-screen.sh`が使うDB直接注入+
+直接遷移の方式では再現できない (静的なフィクスチャ画面の切り替えしか
+扱えない)。かつシミュレータのIMAP接続不能という既知不調
+(`docs/verify.md`) により実際の同期を走らせて再現することもできない。
+`PENDING.md`に実機での確認手順を追記した。

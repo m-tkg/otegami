@@ -270,7 +270,10 @@ extension MailCoreIMAPSession {
         raw.hasPrefix("<") && raw.hasSuffix(">") ? raw : "<\(raw)>"
     }
 
-    private static func messageFlags(from flags: MCOMessageFlag) -> MessageFlags {
+    /// Not `private`: `MailCoreIMAPSession.fetchFlagsBatch` (a different
+    /// file, same module) reuses this directly for Task #194's flags-only
+    /// fetch rather than duplicating the bit-mapping.
+    static func messageFlags(from flags: MCOMessageFlag) -> MessageFlags {
         var result: MessageFlags = []
         if flags.contains(.seen) { result.insert(.seen) }
         if flags.contains(.answered) { result.insert(.answered) }

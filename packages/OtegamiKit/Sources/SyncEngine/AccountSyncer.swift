@@ -414,6 +414,10 @@ public actor AccountSyncer {
                     }
                 }
             } catch {
+                // Task #194: a cancel should stop the whole initial sync,
+                // not just this one mailbox — same reasoning as
+                // `performIncrementalSync`'s identical guard.
+                if error is CancellationError { throw error }
                 continue
             }
         }
@@ -555,14 +559,28 @@ public actor AccountSyncer {
     /// way) while the database stays suspended, and eventually persisting a
     /// confusing "Database is suspended" `lastSyncError` once `maxAttempts`
     /// is reached.
-    private enum FailureClass {
+    private enum FailureClass: Equatable {
         case authentication
         case networkUnreachable
         case other
         case suspended
+        /// Task #194: a deliberate `Task.checkCancellation()`/`Task
+        /// .isCancelled`-driven stop (pull-to-refresh's cancel button, or
+        /// the enclosing `Task` being torn down some other way) — never a
+        /// server/network condition, so it must never be classified as
+        /// `.other` and retried. Checked first in `classify(_:)`, same
+        /// priority as `.suspended`: a raw `CancellationError` isn't a
+        /// `MailTransportError` at all, so without this case it would fall
+        /// into `.other`'s `guard let error = error as? MailTransportError
+        /// else { return .other }` and get retried with a sleeping backoff
+        /// — the exact opposite of "cancel this now".
+        case cancelled
     }
 
     private static func classify(_ error: Error) -> FailureClass {
+        if error is CancellationError {
+            return .cancelled
+        }
         if DatabaseSuspensionSupport.isSuspensionError(error) {
             return .suspended
         }
@@ -599,6 +617,9 @@ public actor AccountSyncer {
             do {
                 try await session.connect(auth: auth)
             } catch {
+                // Task #194: a user-initiated cancel is not a sync failure —
+                // see `FailureClass.cancelled`'s doc comment.
+                guard Self.classify(error) != .cancelled else { throw error }
                 await recordAccountSyncFailure(error: error)
                 throw error
             }
@@ -654,6 +675,11 @@ public actor AccountSyncer {
                     // (`OtegamiApp.syncAllAccountsOnce()`), so this just
                     // gives up on this attempt immediately.
                     throw error
+
+                case .cancelled:
+                    // Task #194: no retry, no `lastSyncError` record — see
+                    // `FailureClass.cancelled`'s doc comment.
+                    throw error
                 }
             }
         }
@@ -683,6 +709,9 @@ public actor AccountSyncer {
             do {
                 try await operation()
             } catch {
+                // Task #194: same "don't record a cancel as a sync failure"
+                // reasoning as `connectWithRetry`'s identical guard.
+                guard Self.classify(error) != .cancelled else { throw error }
                 await recordMailboxSyncFailure(mailboxId: mailboxId, error: error)
                 throw error
             }
@@ -726,6 +755,10 @@ public actor AccountSyncer {
                     // record" reasoning as `connectWithRetry`'s identical
                     // case — see `classify(_:)`'s doc comment.
                     throw error
+
+                case .cancelled:
+                    // Task #194: no retry, no `lastSyncError` record.
+                    throw error
                 }
             }
         }
@@ -767,7 +800,8 @@ public actor AccountSyncer {
         auth: MailAuth,
         scope: SyncScope = .inboxOnly,
         autoRetry: Bool = true,
-        forceReconcileVanishedUIDs: Bool = false
+        forceReconcileVanishedUIDs: Bool = false,
+        onProgress: (@Sendable (MailboxSyncer.SyncProgressUpdate) -> Void)? = nil
     ) async throws -> MailboxSyncer.Progress {
         // Task #69 dedup: see `isAutoRetrying`'s doc comment.
         if autoRetry {
@@ -816,6 +850,14 @@ public actor AccountSyncer {
 
         var combined = MailboxSyncer.Progress()
         for info in targets {
+            // Task #194: checked unguarded (not inside the `do` below) so a
+            // cancellation here propagates straight out of
+            // `performIncrementalSync` — stopping the remaining mailboxes in
+            // `targets` — rather than being swallowed by the per-mailbox
+            // `catch { continue }`'s "one mailbox failing shouldn't abort
+            // the others" reasoning, which is right for a genuine sync
+            // failure but wrong for a deliberate cancel.
+            try Task.checkCancellation()
             guard let record = mailboxRecordsByPath[info.path] else { continue }
             // Same reasoning as `performInitialSync`'s per-mailbox `do`/
             // `catch`: one mailbox failing to differentially sync
@@ -838,7 +880,8 @@ public actor AccountSyncer {
                         accountId: account.id,
                         session: session,
                         capabilities: capabilities,
-                        forceReconcileVanishedUIDs: forceReconcileVanishedUIDs
+                        forceReconcileVanishedUIDs: forceReconcileVanishedUIDs,
+                        onProgress: onProgress
                     )
                     progress = mailboxProgress
                 }
@@ -847,6 +890,10 @@ public actor AccountSyncer {
                 combined.deletedMessages += progress.deletedMessages
                 combined.didFullResync = combined.didFullResync || progress.didFullResync
             } catch {
+                // Task #194: same reasoning as the `Task.checkCancellation()`
+                // above this loop — a cancel must stop the whole pass, not
+                // just this one mailbox.
+                if error is CancellationError { throw error }
                 continue
             }
         }

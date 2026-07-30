@@ -15,6 +15,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 // FakeServer is a tiny scripted IMAP server: accepts connections, answers
@@ -37,12 +38,31 @@ type FakeServer struct {
 	// gets the RFC 7628 §3.2.2 continuation-then-tagged-failure dance.
 	// Empty accepts any well-formed XOAUTH2 request.
 	ExpectedXOAuth2AccessToken string
+	// InactivityTimeout, when non-zero, closes a connection that goes
+	// this long without receiving any client command — simulating the
+	// aggressive no-traffic disconnect real-world Yahoo Japan IMAP was
+	// observed doing in production (Task #201; see pool.go's pollWait
+	// doc comment). Zero (the default) never closes for inactivity,
+	// matching every other fake-server test's assumption of an
+	// otherwise-well-behaved peer.
+	InactivityTimeout time.Duration
 
 	mu         sync.Mutex
 	listener   net.Listener
 	clientConn net.Conn
 	exists     int
 	uidNext    int
+	loginCount int
+}
+
+// LoginCount returns how many LOGIN commands this server has received
+// across every connection so far — Task #201's polling-keepalive test
+// uses this to confirm a connection survives an InactivityTimeout window
+// without triggering the watcher pool's reconnect-and-relogin path.
+func (s *FakeServer) LoginCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loginCount
 }
 
 // NewFakeServer mirrors FakeIMAPServer.init's defaults (exists=5,
@@ -125,6 +145,23 @@ func (s *FakeServer) handleConn(conn net.Conn) {
 	defer conn.Close()
 	fmt.Fprintf(conn, "* OK fake IMAP ready\r\n")
 
+	// InactivityTimeout support (Task #201): the timer is armed the
+	// moment the connection is accepted (mirroring a real server's
+	// no-traffic clock starting at connect) and reset on every line
+	// received from the client — including NOOP, which is exactly what
+	// the watcher pool's polling keepalive now sends to keep this from
+	// firing.
+	var activityTimer *time.Timer
+	if s.InactivityTimeout > 0 {
+		activityTimer = time.AfterFunc(s.InactivityTimeout, func() { _ = conn.Close() })
+		defer activityTimer.Stop()
+	}
+	resetActivityTimer := func() {
+		if activityTimer != nil {
+			activityTimer.Reset(s.InactivityTimeout)
+		}
+	}
+
 	idling := false
 	pendingIdleTag := ""
 	awaitingXOAuth2FailureAck := false
@@ -133,6 +170,7 @@ func (s *FakeServer) handleConn(conn net.Conn) {
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
 	for scanner.Scan() {
+		resetActivityTimer()
 		line := strings.TrimRight(scanner.Text(), "\r")
 
 		if awaitingXOAuth2FailureAck {
@@ -157,11 +195,17 @@ func (s *FakeServer) handleConn(conn net.Conn) {
 
 		switch command {
 		case "LOGIN":
+			s.mu.Lock()
+			s.loginCount++
+			s.mu.Unlock()
 			if s.RejectsLogin {
 				fmt.Fprintf(conn, "%s NO [AUTHENTICATIONFAILED] authentication failed\r\n", tag)
 			} else {
 				fmt.Fprintf(conn, "%s OK LOGIN completed\r\n", tag)
 			}
+
+		case "NOOP":
+			fmt.Fprintf(conn, "%s OK NOOP completed\r\n", tag)
 
 		case "AUTHENTICATE":
 			if len(parts) < 3 {

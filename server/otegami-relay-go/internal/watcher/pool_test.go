@@ -206,6 +206,61 @@ func TestPollingFlowFiresPush(t *testing.T) {
 	}
 }
 
+func TestPollingKeepAliveSurvivesServerInactivityTimeout(t *testing.T) {
+	// Task #201 regression test: a non-IDLE server (like Yahoo Japan) that
+	// drops connections idle longer than InactivityTimeout must NOT force
+	// a reconnect-and-relogin every PollInterval cycle. PollInterval here
+	// is deliberately several multiples of InactivityTimeout — without
+	// the NOOP keepalive, connectAndWatch's single PollInterval sleep
+	// would leave the connection quiet well past InactivityTimeout, the
+	// fake server would close it, and every cycle would show up as a
+	// fresh LOGIN.
+	s := newTestStore(t)
+	server := imaptest.NewFakeServer()
+	server.SupportsIdle = false
+	server.SetInitialState(2, 3)
+	server.InactivityTimeout = 250 * time.Millisecond
+	port, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	sender := &fakePushSender{}
+	pool := New(s, sender, testLogger(), Options{
+		PollInterval:          500 * time.Millisecond,
+		PollKeepAliveInterval: 100 * time.Millisecond,
+		NetworkPolicy:         security.PermissiveForTesting(),
+	})
+	t.Cleanup(pool.Stop)
+	_, watchID := createWatch(t, s, port, "account-keepalive",
+		api.WatchAuth{Type: api.WatchAuthPassword, Secret: "password"},
+		api.EnvironmentSandbox, "keepalive-device-token")
+	pool.AddWatch(watchID)
+
+	// Let several PollInterval cycles elapse — long enough that, without
+	// the keepalive NOOPs, the connection would have gone quiet past
+	// InactivityTimeout multiple times over.
+	time.Sleep(2500 * time.Millisecond)
+
+	if got := server.LoginCount(); got != 1 {
+		t.Fatalf("expected exactly 1 LOGIN (connection kept alive via NOOP), got %d", got)
+	}
+
+	// The same long-lived connection must still detect new mail.
+	server.DeliverNewMail()
+	calls := waitForCalls(t, sender, 1, 5*time.Second)
+	if len(calls) != 1 {
+		t.Fatalf("got %d calls: %+v", len(calls), calls)
+	}
+	if calls[0].Payload.AccountID != "account-keepalive" || calls[0].Payload.UidNext != 4 {
+		t.Fatalf("got %+v", calls[0].Payload)
+	}
+	if got := server.LoginCount(); got != 1 {
+		t.Fatalf("expected still exactly 1 LOGIN after mail delivery, got %d", got)
+	}
+}
+
 func TestIdleTimeoutThenLaterMailStillFiresPush(t *testing.T) {
 	// Parity with the Swift regression test: a legitimate IDLE timeout
 	// (no mail within the window) must not break the connection — mail

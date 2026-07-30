@@ -2607,3 +2607,144 @@ flakeを実際に観測した)。
 すべて green。**実機での再現確認は困難** (バックグラウンド停止の
 タイミング依存、`docs/verify.md`の既知不調とも合わせて`PENDING.md`に
 確認手順を追記した)。
+
+## Task #201: Yahoo! JAPAN の断続的な認証失敗の真因 — ポーリング中の切断による5分毎の再ログイン
+
+Task #187 で「認証失敗時の再試行を30分間隔にする」対処を入れたが、それは
+症状 (ロックからの復帰待ち) への対処であって、**ロックを誘発している側の
+過剰な LOGIN 頻度そのものは直っていなかった**。本番リレー (Go 版) の
+ログを実際に見て真因を特定した。
+
+**実測で確定した事実 (推測ではない)**: 本番ログに以下のパターンが
+繰り返し出ていた (Yahoo Japan アカウントの watch、5分おき):
+
+```
+level=INFO msg="watch connected" watchId=... idle=false uidNext=161875
+level=WARN msg="watch connection error, reconnecting" watchId=...
+  error="write tcp <relayのIP>:<port>-><Yahoo側IP>:993: write: broken pipe"
+```
+
+(IP アドレスはこのリポジトリには書かない方針のため伏せてある — 実際の
+値はリレーのログにのみ残る。)
+
+- `idle=false` — Yahoo Japan の IMAP は **IDLE 非対応**。
+  `connectAndWatch`(`server/otegami-relay-go/internal/watcher/pool.go`)
+  はこの場合 STATUS ポーリングにフォールバックする
+  (`CapabilitiesIncludeIdle`が false を返す経路)。
+- 修正前のポーリング経路は「`PollInterval`(デフォルト5分) だけ丸ごと
+  スリープしてから`StatusUIDNext`を叩く」実装 (接続は張ったまま、何も
+  送らずに待つだけ) だった。**その5分の無通信区間の途中で Yahoo 側が
+  タイムアウトし、接続を切っていた** — 次の`StatusUIDNext`が
+  `broken pipe`で失敗し、`connectAndWatch`がエラーを返し、外側の
+  `runWatchLoop`が再接続 = **再 LOGIN** する。
+- 結果、**Yahoo Japan の watch は5分ごとに毎回 LOGIN が走っていた**
+  (1日あたり約288回/watch)。同一アカウントに watch が複数 (Task #175
+  以降、デバイスごとに1つ) あるため、アカウントごとに実質倍。
+- 同じ資格情報が、数分前まで成功していたのに`[AUTHENTICATIONFAILED]
+  Incorrect username or password.`で断続的に失敗する (Task #187 の
+  観測) という一見矛盾した挙動は、これで完全に説明がつく — 資格情報が
+  誤っているのではなく、**同じ IP から高頻度に LOGIN を繰り返すこと
+  自体が Yahoo 側の保護 (一時ロック) を誘発**しており、ロック中はどの
+  LOGIN も失敗し、ロックが外れればまた成功する、を繰り返していた。
+
+**Yahoo の実タイムアウト値**: 本番の Yahoo Japan アカウントは Task #187
+の保護がかかった状態のため、ロック中のアカウントに対してタイムアウトを
+実測で突き止める行為自体がさらなるロックを誘発しかねず、安全に実測
+できなかった。公開情報を調査した結果:
+
+- Mozilla Bugzilla #468490 (Thunderbird の IMAP IDLE 実装に関する報告)
+  ほか複数の独立した報告が、Yahoo の IMAP は **無通信5分程度で接続を
+  切る**、"idle reissue" を**4分程度**に設定しないと持たない、と
+  一致して述べている (yahoo.com 向けの報告が中心で、Yahoo Japan
+  固有の値を明記した一次情報は見つからなかったが、本番ログで観測した
+  「5分のポーリング待ちの途中で切れる」という事実と整合する)。
+- Yahoo Japan は K-9 Mail 等 Android クライアントのコミュニティでも
+  「IMAP IDLE 非対応」と広く報告されている (今回の`idle=false`の実測と
+  整合)。
+
+これらを踏まえ、**正確な閾値が非公開・実測不能なため決め打ちはせず**、
+報告されている閾値 (4〜5分) に対して十分な安全マージンを取った値を
+採用した。詳細は`server/otegami-relay-go/internal/watcher/pool.go`の
+`pollWait`関数の doc comment を参照。
+
+**対策 (commit は`git log`の Task #201 参照)**:
+
+- ポーリング経路 (`connectAndWatch`の非 IDLE 分岐) を、`PollInterval`
+  を丸ごとスリープする実装から、`PollKeepAliveInterval`(デフォルト
+  **2分**) ごとに IMAP `NOOP`を送りながら小刻みにスリープし、
+  `PollInterval`分の待ちを消化したら`StatusUIDNext`を叩く実装に変更
+  (`pool.go`の`pollWait`、`imapclient.Client.Noop`を新設)。
+  - 2分という値の根拠: 報告されている4〜5分の閾値に対して半分以下の
+    余裕を持たせつつ、NOOP 自体も通信なので過度に頻度を上げない
+    (コード中のコメントに同じ根拠を記載)。
+  - **IDLE 対応サーバ (iCloud/Gmail/Outlook) はこの分岐を通らない**
+    ため無関係 (`Idle()`でブロックし、`IdleMaxWait`(29分、RFC 2177の
+    推奨再発行間隔) で自律的に再発行する既存の経路のまま)。
+  - 接続が切れた場合の再接続 (ネットワーク断など本物の切断) は
+    従来どおり外側の`runWatchLoop`が担う — 変更なし。
+- 効果の見積もり: 接続が保てれば LOGIN は接続1本につき1回になり、
+  Yahoo Japan の watch 1本あたり「5分ごと288回/日」の再ログインが
+  ほぼゼロになる見込み (ネットワーク断由来の正当な再接続のみ残る)。
+
+**同一アカウントの watch 重複 (規模を見積もったが今回は実装しない)**:
+`watch`テーブルは`deviceId`を持つ1行が1接続に対応する設計
+(`server/otegami-relay-go/internal/store/store.go`の`CREATE TABLE
+watch`、`WatchRecord.DeviceID`) で、同じ IMAP アカウントでも
+デバイスごとに別の watch 行 = 別の IMAP 接続 = 別の LOGIN になる
+(2台なら2倍)。これを「同じ`imapHost`/`imapUsername`/`mailbox`は1接続に
+まとめ、新着時に複数デバイスへ配信する」形にすればログイン回数も
+接続数も半減できるが、見積もった結果**この Task の範囲では実装しない**
+と判断した:
+
+- `fire()`(`pool.go`) は`record.DeviceID`から`PushTarget`を1件引く
+  前提で書かれており、複数デバイスへの配信には watch 側のスキーマ
+  (現状「1 watch = 1 device」の1テーブル) を watch 本体とデバイス
+  紐付けの2テーブルに分離する設計変更が要る。
+- `CreateWatch`/`DeleteWatch`(`store.go`)は共に`(id, deviceId)`単位の
+  操作として書かれている。`DeleteWatch`は「このデバイスの登録だけ
+  外す」という現行の意味を、まとめた後も壊さずに保つ必要がある
+  (最後の1デバイスが外れたときだけ実際に IMAP 接続を止める、等)。
+- アプリ側 (`packages/OtegamiKit/Sources/PushRelayClient
+  /WatchReconciler.swift`) はデバイスごとにローカルの
+  accountId→watchId 対応を保持し、`GET /v1/watches`との突き合わせで
+  自己修復する設計 — 複数デバイスが同じ watchId を共有するようになると
+  この突き合わせロジックの前提 (watchId は自分がそのデバイスとして
+  作った/所有するもの) が崩れる。**既に配布済みのアプリのビルドが
+  この前提で動いている**ため、API 互換性を壊さずに移行する設計
+  (段階的移行、あるいはレスポンス形状はそのままで内部実装だけ共有化
+  する、等) を別途詰める必要がある。
+- デバイスごとに異なる資格情報が登録されている可能性 (ユーザーが
+  片方のデバイスだけパスワードを更新した、等) があり、まとめた1接続に
+  どちらの資格情報を使うかの方針 (最新の登録を優先する、等) も
+  未決定。
+
+以上の理由により、**watch 重複解消は別タスクとして切り出すことを
+提案する**。今回は1 (接続維持) のみ実装した。
+
+**ユニットテスト**: `TestPollingKeepAliveSurvivesServerInactivityTimeout`
+(`server/otegami-relay-go/internal/watcher/pool_test.go`) —
+`imaptest.FakeServer`に`InactivityTimeout`(無通信でこの時間が経つと
+接続を閉じる、Task #201 で追加) と`LoginCount()`を新設し、
+`PollInterval`を`InactivityTimeout`の数倍に設定した状態で数サイクル
+待っても`LoginCount()`が1のままであること (=NOOP キープアライブで
+接続が保たれ、再ログインが起きていないこと)、かつその接続のまま新着
+メールを検出できることを確認する。**修正前のコード
+(`pollWait`を呼ばず単純に`sleepCtx`するだけの実装) に戻すとこのテストが
+実際に落ちる (0 calls) ことを実装時に手動で確認済み** — 回帰検知の
+実効性を確認してある。`server/otegami-relay-go`は
+`go build ./...`/`go vet ./...`/`go test ./...`すべて green
+(134 tests)。
+
+**検証**: シミュレータ/実サーバでの確認は行っていない (このリレーは
+本番稼働中の Go 版で、変更の本番反映はメインセッションが行う)。
+**反映後にログで確認すべきこと**:
+
+- Yahoo Japan アカウントの watch で`watch connection error,
+  reconnecting`(特に`broken pipe`)の出現頻度が、反映前 (5分ごと) から
+  大きく下がっている (=ネットワーク断由来のみになっている) こと。
+- 同じ watch の`watch connected`(=LOGIN 成功、SELECT 完了) の出現間隔が
+  数時間〜日オーダーに伸びていること (5分ごとの再接続が無くなった
+  証拠)。
+- Task #187 で追加した`authFailureServerResponse`のログ
+  (`[AUTHENTICATIONFAILED]`) が、反映後は明らかに減っている
+  (ロックがそもそも誘発されなくなった証拠)。

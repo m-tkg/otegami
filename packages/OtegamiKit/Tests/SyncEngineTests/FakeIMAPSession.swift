@@ -55,6 +55,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// staleness), which must never be treated as confirmation that a
         /// UID is gone.
         public var failFetchEnvelopes: MailTransportError?
+        /// Task #194: when set, every `fetchFlags(mailboxPath:uids:)` call
+        /// throws this instead of consulting `envelopesByPath` — scripts a
+        /// dropped/timed-out flags-only `FETCH`, for `refetchAndDiffFlags`'s
+        /// non-destructive-on-failure guard the same way `failFetchEnvelopes`
+        /// does for the old full-envelope path.
+        public var failFetchFlags: MailTransportError?
         /// When set, `connect(auth:)` throws this instead of succeeding.
         public var failConnection: MailTransportError?
         /// What `capabilities()` reports — `MailboxSyncer`'s CONDSTORE
@@ -145,6 +151,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             failAttachmentFetch: MailTransportError? = nil,
             failFetchBody: [String: [UInt32: MailTransportError]] = [:],
             failFetchEnvelopes: MailTransportError? = nil,
+            failFetchFlags: MailTransportError? = nil,
             failConnection: MailTransportError? = nil,
             capabilitiesToReport: Set<IMAPCapability> = [],
             changedSinceEnvelopesByPath: [String: [FetchedEnvelope]] = [:],
@@ -167,6 +174,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.failAttachmentFetch = failAttachmentFetch
             self.failFetchBody = failFetchBody
             self.failFetchEnvelopes = failFetchEnvelopes
+            self.failFetchFlags = failFetchFlags
             self.failConnection = failConnection
             self.capabilitiesToReport = capabilitiesToReport
             self.changedSinceEnvelopesByPath = changedSinceEnvelopesByPath
@@ -321,6 +329,11 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     /// range, in call order — lets a test assert exactly which UID window
     /// `AccountSyncer` asked for, not just what came back.
     public private(set) var fetchedRanges: [(path: String, lowerBound: UInt32, upperBound: UInt32?)] = []
+    /// Task #194: every `fetchFlags(mailboxPath:uids:)` call's requested
+    /// range, in call order — same shape as `fetchedRanges` above, for
+    /// tests asserting `refetchAndDiffFlags` chunks its requests instead of
+    /// asking for the whole locally-synced window in one call.
+    public private(set) var fetchFlagsCalls: [(path: String, lowerBound: UInt32, upperBound: UInt32?)] = []
     /// Set once `createMailbox(path:)` succeeds and `script
     /// .mailboxRevealedAfterCreate` is non-nil — merged into
     /// `listMailboxes()`'s result from then on, modeling a real server
@@ -431,6 +444,28 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         }
         let scripted = script.existingUIDsByPath[mailboxPath] ?? []
         return scripted.filter { uids.contains($0) }
+    }
+
+    /// Task #194: derives its answer from `script.envelopesByPath` (the
+    /// same "what the server currently has" data `fetchEnvelopes` reads) —
+    /// a `FakeIMAPSession` script models one data set per mailbox, and
+    /// duplicating it into a separate flags-only fixture would risk the two
+    /// silently drifting apart across a test's scenario. `fetchFlagsCalls`
+    /// records each call the same way `fetchedRanges` does for
+    /// `fetchEnvelopes`, so a test can assert `refetchAndDiffFlags`
+    /// actually chunked its request rather than asking for the whole range
+    /// in one call.
+    public func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags] {
+        if let failFetchFlags = script.failFetchFlags {
+            throw failFetchFlags
+        }
+        fetchFlagsCalls.append((mailboxPath, uids.lowerBound, uids.upperBound))
+        let all = script.envelopesByPath[mailboxPath] ?? []
+        var result: [UInt32: MessageFlags] = [:]
+        for envelope in all where uids.contains(envelope.uid) {
+            result[envelope.uid] = envelope.flags
+        }
+        return result
     }
 
     public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {

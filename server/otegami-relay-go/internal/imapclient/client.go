@@ -400,6 +400,20 @@ func (c *Client) StatusUIDNext(mailbox string) (int, error) {
 	return 0, &UnexpectedResponseError{Line: strings.Join(untagged, " | ")}
 }
 
+// Noop issues a plain IMAP NOOP — the lightest possible round-trip that
+// still counts as client traffic to a server watching for inactivity.
+// Task #201: used by the watcher pool's polling fallback to keep a
+// connection to an IDLE-incapable server (Yahoo Japan) from being dropped
+// between STATUS checks.
+func (c *Client) Noop() error {
+	tag := c.nextTag()
+	if err := c.write(fmt.Sprintf("%s NOOP", tag)); err != nil {
+		return err
+	}
+	_, err := c.readUntilTagged(tag, 35*time.Second, 90*time.Second)
+	return err
+}
+
 // CapabilitiesIncludeIdle mirrors MinimalIMAPClient.capabilitiesIncludeIdle().
 func (c *Client) CapabilitiesIncludeIdle() (bool, error) {
 	tag := c.nextTag()

@@ -655,4 +655,203 @@ struct MailboxSyncerTests {
         let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
         #expect(messages.contains { $0.subject == "他クライアントの下書き" })
     }
+
+    // MARK: (c) Task #194 — chunked flags-only refetch, progress, cancellation
+
+    /// Thread-safe recorder for `onProgress` updates — mirrors
+    /// `FakeIMAPSession.CallRecorder`'s `NSLock`-based shape (an `actor`
+    /// would need every recording call to become `async`, which `onProgress`
+    /// — a plain `@Sendable (SyncProgressUpdate) -> Void` closure, called
+    /// synchronously from inside `MailboxSyncer`'s actor-isolated work —
+    /// can't do without an awkward fire-and-forget `Task` per update).
+    private final class ProgressRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _updates: [MailboxSyncer.SyncProgressUpdate] = []
+        func record(_ update: MailboxSyncer.SyncProgressUpdate) {
+            lock.lock()
+            _updates.append(update)
+            lock.unlock()
+        }
+        var updates: [MailboxSyncer.SyncProgressUpdate] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _updates
+        }
+    }
+
+    /// Same `SessionBox` shape `MessageBodiesPrefetchTests` uses to inspect
+    /// the `FakeIMAPSession` a session-factory closure actually built, after
+    /// the sync call that used it has already returned.
+    private final class SessionBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _session: FakeIMAPSession?
+        var session: FakeIMAPSession? {
+            get { lock.withLock { _session } }
+            set { lock.withLock { _session = newValue } }
+        }
+    }
+
+    @Test("non-CONDSTORE flag sync chunks a window larger than fetchBatchSize instead of one unbounded fetch, and still applies changes/deletions correctly across the chunk boundary")
+    func nonCondstoreFlagSyncChunksLargeWindow() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        // 150 locally-known UIDs: more than `AccountSyncer.fetchBatchSize`
+        // (100), so a correct chunking implementation issues 2 `fetchFlags`
+        // calls (1...100, 101...150) rather than the old un-chunked
+        // implementation's single open-ended fetch.
+        let seedEnvelopes = (1...150).map { makeEnvelope(uid: UInt32($0), subject: "msg \($0)") }
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": seedEnvelopes],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 151, highestModSeq: 0, messageCount: 150)]
+            )
+        )
+
+        // uid 75 (first chunk) gains \Seen; uid 150 (second chunk) vanishes
+        // server-side — exercises both the flag-change and deletion paths
+        // on either side of the chunk boundary in one pass.
+        var serverEnvelopes = seedEnvelopes.filter { $0.uid != 150 }
+        let changedIndex = serverEnvelopes.firstIndex { $0.uid == 75 }!
+        serverEnvelopes[changedIndex].flags = .seen
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": serverEnvelopes],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 151, highestModSeq: 0, messageCount: 149)],
+            capabilitiesToReport: []
+        )
+
+        let sessionBox = SessionBox()
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            let session = FakeIMAPSession(config: config, script: incrementalScript)
+            sessionBox.session = session
+            return session
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.deletedMessages == 1)
+
+        let fetchFlagsCalls = await sessionBox.session?.fetchFlagsCalls ?? []
+        #expect(fetchFlagsCalls.count == 2)
+        #expect(fetchFlagsCalls[0].lowerBound == 1)
+        #expect(fetchFlagsCalls[0].upperBound == 100)
+        #expect(fetchFlagsCalls[1].lowerBound == 101)
+        #expect(fetchFlagsCalls[1].upperBound == 150)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.count == 149)
+        #expect(!messages.contains { $0.uid == 150 })
+        #expect(messages.first { $0.uid == 75 }?.flags.contains(.seen) == true)
+    }
+
+    @Test("non-CONDSTORE flag sync reports .flagSync progress once per chunk, with an accurate total")
+    func nonCondstoreFlagSyncReportsProgress() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let seedEnvelopes = (1...150).map { makeEnvelope(uid: UInt32($0), subject: "msg \($0)") }
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": seedEnvelopes],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 151, highestModSeq: 0, messageCount: 150)]
+            )
+        )
+
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": seedEnvelopes],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 151, highestModSeq: 0, messageCount: 150)],
+            capabilitiesToReport: []
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        let recorder = ProgressRecorder()
+        _ = try await syncer.performIncrementalSync(
+            auth: .password(username: "test1@otegami.test", password: "test1234"),
+            onProgress: { recorder.record($0) }
+        )
+
+        let flagSyncUpdates = recorder.updates.filter { $0.phase == .flagSync }
+        #expect(flagSyncUpdates.map(\.completed) == [1, 2])
+        #expect(flagSyncUpdates.allSatisfy { $0.total == 2 })
+        #expect(flagSyncUpdates.allSatisfy { $0.mailboxPath == "INBOX" })
+    }
+
+    @Test("cancelling mid-flag-sync leaves already-applied chunks committed but skips vanished-UID deletion entirely")
+    func nonCondstoreFlagSyncCancellationIsSafe() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let seedEnvelopes = (1...150).map { makeEnvelope(uid: UInt32($0), subject: "msg \($0)") }
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": seedEnvelopes],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 151, highestModSeq: 0, messageCount: 150)]
+            )
+        )
+
+        // uid 25 (first chunk) gains \Seen; uid 150 (second chunk) vanishes
+        // server-side. The test cancels right after the *first* chunk's
+        // progress update — before the second chunk (and thus the vanished-
+        // UID inference, which needs every chunk) ever runs.
+        var serverEnvelopes = seedEnvelopes.filter { $0.uid != 150 }
+        let changedIndex = serverEnvelopes.firstIndex { $0.uid == 25 }!
+        serverEnvelopes[changedIndex].flags = .seen
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": serverEnvelopes],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 151, highestModSeq: 0, messageCount: 149)],
+            capabilitiesToReport: []
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+
+        final class CancelTrigger: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _cancel: (() -> Void)?
+            func arm(_ cancel: @escaping () -> Void) { lock.withLock { _cancel = cancel } }
+            func fire() { lock.withLock { _cancel }?() }
+        }
+        let trigger = CancelTrigger()
+
+        let task = Task {
+            try await syncer.performIncrementalSync(
+                auth: .password(username: "test1@otegami.test", password: "test1234"),
+                onProgress: { update in
+                    if update.phase == .flagSync, update.completed == 1 {
+                        trigger.fire()
+                    }
+                }
+            )
+        }
+        trigger.arm { task.cancel() }
+
+        do {
+            _ = try await task.value
+            Issue.record("expected the cancelled sync to throw")
+        } catch is CancellationError {
+            // Expected — Task #194's cooperative cancellation.
+        } catch {
+            Issue.record("expected CancellationError, got \(error)")
+        }
+
+        // The first chunk's flag change committed before cancellation was
+        // even observed (progress is only reported after a chunk's write
+        // lands — see `MailboxSyncer.refetchAndDiffFlags`'s doc comment).
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.count == 150, "cancellation must not delete anything — the full window was never confirmed")
+        #expect(messages.first { $0.uid == 25 }?.flags.contains(.seen) == true)
+        // uid 150 is still present: the second chunk (which would have
+        // discovered it missing) never ran, and a partial result must never
+        // be trusted as "confirmed vanished".
+        #expect(messages.contains { $0.uid == 150 })
+    }
 }

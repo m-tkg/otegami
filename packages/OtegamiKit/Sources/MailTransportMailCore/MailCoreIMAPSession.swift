@@ -238,6 +238,33 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
     }
 
+    /// Task #194: see `IMAPSessionProtocol.fetchFlags(mailboxPath:uids:)`'s
+    /// doc comment — a single `UID FETCH ... (FLAGS)` command for `uids`
+    /// (the caller, `MailboxSyncer`, is expected to have already chunked a
+    /// larger range into caller-sized pieces; unlike `fetchEnvelopes`/
+    /// `fetchRecentEnvelopes` above, this method issues exactly one
+    /// underlying operation per call rather than looping internally, so the
+    /// caller can check `Task.checkCancellation()`/report progress between
+    /// calls). Requests only `.flags` (not `.headers`/`.structure`/
+    /// `.internalDate`/`.size`) — the whole point of this method over
+    /// `fetchEnvelopes` is a much smaller `FETCH` response per message.
+    public func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags] {
+        let indexSet = Self.indexSet(for: uids)
+        return try await withCheckedThrowingContinuation { continuation in
+            session.fetchMessagesByUid(folder: mailboxPath, kind: .flags, uids: indexSet).start { error, messages, _ in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                var result: [UInt32: MessageFlags] = [:]
+                for message in messages ?? [] {
+                    result[message.uid] = Self.messageFlags(from: message.flags)
+                }
+                continuation.resume(returning: result)
+            }
+        }
+    }
+
     /// `CONDSTORE`-based flag-change fetch (RFC 7162 §3.1, `syncMessages`
     /// bridging `session.syncMessagesByUIDOperation`): messages whose
     /// metadata changed since `modSeq`, covering the whole mailbox

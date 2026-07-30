@@ -176,6 +176,21 @@ struct MessageListView: View {
     @State private var summaries: [ThreadSummary] = []
     @State private var isSyncing = false
     @State private var syncErrorMessage: String?
+    /// Task #194 (「Pull to refresh が長すぎて終わらない。どのくらい進んでいるのか
+    /// のバーを出せるなら出したい。またキャンセルもできるようにして欲しい」):
+    /// the most recent `MailboxSyncer.SyncProgressUpdate` from whichever
+    /// account/mailbox `refresh()` is currently syncing — `nil` whenever
+    /// `isSyncing` is `false`, or briefly while a sync is running but hasn't
+    /// reported anything yet. Drives `SyncProgressBanner` (shown alongside
+    /// SwiftUI's own `.refreshable` pull spinner, not replacing it — see
+    /// that view's doc comment for why this needs its own indicator at all).
+    @State private var syncProgress: MailboxSyncer.SyncProgressUpdate?
+    /// The `Task` actually driving the current `refresh()` call's sync work
+    /// — separate from whatever `Task` `.refreshable`/a toolbar button
+    /// itself created to call `refresh()`, so `SyncProgressBanner`'s
+    /// キャンセル button has something concrete to cancel. `nil` whenever
+    /// no sync is in flight.
+    @State private var activeSyncTask: Task<Void, Never>?
 
     // MARK: - Archive view detection (Task #87, 1)
 
@@ -787,6 +802,19 @@ struct MessageListView: View {
             }
         }
         #endif
+        // Task #194: shown for the whole duration of a pull-to-refresh/
+        // toolbar-button sync, on both platforms — not just while iOS's own
+        // `.refreshable` spinner is visible (that one stops as soon as the
+        // finger lifts, well before a slow sync actually finishes), and
+        // macOS's toolbar refresh button has no pull gesture/spinner of its
+        // own at all. See `SyncProgressBanner`'s doc comment.
+        .safeAreaInset(edge: .top) {
+            if isSyncing {
+                SyncProgressBanner(update: syncProgress) {
+                    activeSyncTask?.cancel()
+                }
+            }
+        }
         .overlay(alignment: .bottom) {
             // Task #108: `suppressInternalUndoToast`(`MailScreenView`が
             // 渡す)のときはここで描画せず、`onPendingUndoChanged`経由で
@@ -1504,10 +1532,47 @@ struct MessageListView: View {
     /// `AccountSyncer.SyncRetryPolicy`'s retry-then-suppress behavior there
     /// too is a strict improvement (a transient hiccup self-heals quietly
     /// instead of just waiting for the next 5-minute pass).
+    ///
+    /// Task #194: runs the actual sync work (`performRefreshSync`) in its
+    /// own child `Task`, kept in `activeSyncTask` for the duration — that's
+    /// what `SyncProgressBanner`'s キャンセル button (wired up in `body`)
+    /// cancels. A plain `await performRefreshSync(...)` right here (no
+    /// child `Task`) would leave nothing for a cancel button to target: a
+    /// SwiftUI `Button` action can't reach into the middle of an already-
+    /// running `async` call on this same `View` and cancel just that call
+    /// without a `Task` handle to call `.cancel()` on.
     private func refresh(surfaceErrors: Bool = true, autoRetry: Bool = false) async {
         isSyncing = true
-        defer { isSyncing = false }
+        syncProgress = nil
+        defer {
+            isSyncing = false
+            syncProgress = nil
+            activeSyncTask = nil
+        }
 
+        let task = Task {
+            await performRefreshSync(surfaceErrors: surfaceErrors, autoRetry: autoRetry)
+        }
+        activeSyncTask = task
+        await task.value
+    }
+
+    /// Task #194: applies one `MailboxSyncer.SyncProgressUpdate` to
+    /// `syncProgress`. `@MainActor` and called via `Task { @MainActor in
+    /// applySyncProgress(update) }` at every `onProgress:` call site below
+    /// — the closure itself runs on whatever actor
+    /// `AccountSyncer`/`MailboxSyncer` calls it from (not this view's own
+    /// `MainActor` isolation, even though the closure literal was created
+    /// here), so touching `@State` directly inside it would be unsafe.
+    /// Same shape as `AboutUpdateSection.applyPhase(_:)`'s identical
+    /// "progress callback from a background actor, hop back for `@State`"
+    /// pattern.
+    @MainActor
+    private func applySyncProgress(_ update: MailboxSyncer.SyncProgressUpdate) {
+        syncProgress = update
+    }
+
+    private func performRefreshSync(surfaceErrors: Bool, autoRetry: Bool) async {
         switch selection {
         case .mailbox(let mailboxSelection):
             guard let account = environment.accounts.first(where: { $0.id == mailboxSelection.accountId }) else { return }
@@ -1536,10 +1601,13 @@ struct MessageListView: View {
                 // `forceReconcileVanishedUIDs` doc comment for why that
                 // guard alone missed a real residual-message bug).
                 if let mailboxPath {
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .mailbox(path: mailboxPath), autoRetry: autoRetry, forceReconcileVanishedUIDs: true)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .mailbox(path: mailboxPath), autoRetry: autoRetry, forceReconcileVanishedUIDs: true, onProgress: syncProgressCallback)
                 } else {
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, autoRetry: autoRetry, forceReconcileVanishedUIDs: true)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, autoRetry: autoRetry, forceReconcileVanishedUIDs: true, onProgress: syncProgressCallback)
                 }
+            } catch is CancellationError {
+                // Task #194: a user-initiated cancel, not a sync failure —
+                // no alert.
             } catch {
                 if surfaceErrors { syncErrorMessage = "\(error)" }
             }
@@ -1560,7 +1628,13 @@ struct MessageListView: View {
                 do {
                     let auth = try await environment.auth(for: account)
                     _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly, autoRetry: autoRetry, forceReconcileVanishedUIDs: true)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .inboxOnly, autoRetry: autoRetry, forceReconcileVanishedUIDs: true, onProgress: syncProgressCallback)
+                } catch is CancellationError {
+                    // Task #194: stop refreshing the *remaining* accounts
+                    // too — a cancel means "stop now", not "skip just this
+                    // one account and move on" (the per-account failure
+                    // handling below is for genuine sync errors).
+                    break
                 } catch {
                     failures.append("\(account.email): \(error)")
                 }
@@ -1582,7 +1656,11 @@ struct MessageListView: View {
                 do {
                     let auth = try await environment.auth(for: account)
                     _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .all, autoRetry: autoRetry, forceReconcileVanishedUIDs: true)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .all, autoRetry: autoRetry, forceReconcileVanishedUIDs: true, onProgress: syncProgressCallback)
+                } catch is CancellationError {
+                    // Task #194: same reasoning as the `.unifiedInbox` case's
+                    // identical `break`.
+                    break
                 } catch {
                     failures.append("\(account.email): \(error)")
                 }
@@ -1590,6 +1668,16 @@ struct MessageListView: View {
             if surfaceErrors, !failures.isEmpty {
                 syncErrorMessage = failures.joined(separator: "\n")
             }
+        }
+    }
+
+    /// Task #194: shared `onProgress` closure for every `syncAccountIncrementally`
+    /// call in `performRefreshSync` above — hops to `@MainActor` via
+    /// `applySyncProgress(_:)` (see that method's doc comment for why this
+    /// closure can't just touch `syncProgress` directly).
+    private var syncProgressCallback: @Sendable (MailboxSyncer.SyncProgressUpdate) -> Void {
+        { update in
+            Task { @MainActor in applySyncProgress(update) }
         }
     }
 

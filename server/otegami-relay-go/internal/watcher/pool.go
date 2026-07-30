@@ -93,6 +93,12 @@ type Options struct {
 	// PollInterval: the STATUS-polling fallback interval for servers
 	// without IDLE (default 5 minutes).
 	PollInterval time.Duration
+	// PollKeepAliveInterval (Task #201): how often a NOOP is sent during
+	// a PollInterval wait to keep the connection from being dropped for
+	// inactivity before the next STATUS check — see pollWait's doc
+	// comment for why this exists and how the default was chosen.
+	// Default 2 minutes.
+	PollKeepAliveInterval time.Duration
 	// NetworkPolicy is re-validated on every (re)connect, not just once
 	// at watch creation (CLAUDE-SECURITY F2). Zero value is NOT strict —
 	// main() must pass the configured policy explicitly; tests that dial
@@ -136,6 +142,9 @@ func New(s *store.Store, sender push.Sender, logger *slog.Logger, opts Options) 
 	}
 	if opts.PollInterval == 0 {
 		opts.PollInterval = 5 * time.Minute
+	}
+	if opts.PollKeepAliveInterval == 0 {
+		opts.PollKeepAliveInterval = 2 * time.Minute
 	}
 	if opts.ConnectTimeout == 0 {
 		opts.ConnectTimeout = 15 * time.Second
@@ -412,7 +421,9 @@ func (p *Pool) connectAndWatch(
 				continue
 			}
 		} else {
-			sleepCtx(ctx, p.opts.PollInterval)
+			if err := p.pollWait(ctx, client); err != nil {
+				return err
+			}
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -428,6 +439,65 @@ func (p *Pool) connectAndWatch(
 		}
 	}
 	return ctx.Err()
+}
+
+// pollWait waits out one PollInterval before the next STATUS check (the
+// non-IDLE polling fallback used by servers that don't support IDLE — see
+// connectAndWatch's "idle" log field), sending an IMAP NOOP every
+// PollKeepAliveInterval along the way so the connection sees regular
+// traffic instead of going quiet for the full PollInterval.
+//
+// Why this exists (Task #201): production logs showed Yahoo Japan
+// (imap.mail.yahoo.co.jp, which answers CAPABILITY without IDLE, so every
+// watch on it takes this branch) severing the connection mid-wait with
+// "write: broken pipe" well before a single 5-minute PollInterval
+// elapsed. connectAndWatch's outer loop treats that as a plain connection
+// error and reconnects — which means a fresh LOGIN — so every watch on
+// Yahoo was re-authenticating roughly every 5 minutes around the clock
+// (doubled per account with two devices registered). Repeated LOGINs from
+// the same IP is exactly the pattern Yahoo's own abuse protection reacts
+// to with temporary lockouts, which is what Task #187's "[AUTHENTICATION
+// FAILED] Incorrect username or password" reports actually were — not a
+// wrong password, since the same credential kept succeeding again minutes
+// later.
+//
+// This relay cannot safely probe Yahoo's production timeout directly (an
+// account already flagged by their abuse protection is not a safe test
+// target), so the exact threshold isn't pinned to a measured number.
+// Independent third-party reports (e.g. Mozilla bug 468490 and other
+// client bug trackers, gathered while investigating this task) describe
+// Yahoo IMAP as dropping a connection after on the order of 5 minutes of
+// no traffic, and recommend refreshing at roughly the 4-minute mark to
+// keep it alive — consistent with what production logged here.
+// PollKeepAliveInterval defaults to 2 minutes: comfortably inside every
+// reported threshold with margin to spare, while still an order of
+// magnitude less chatty than actually polling that often. NOOP itself is
+// a real command the server has to answer, so this deliberately doesn't
+// go any more frequent than that margin requires.
+//
+// IDLE-capable servers (iCloud, Gmail, Outlook) never take this branch —
+// they block in Idle() instead, bounded by IdleMaxWait (29 minutes, RFC
+// 2177's own recommended re-issue interval) — so they're unaffected by
+// PollKeepAliveInterval entirely.
+func (p *Pool) pollWait(ctx context.Context, client *imapclient.Client) error {
+	remaining := p.opts.PollInterval
+	for remaining > 0 {
+		step := p.opts.PollKeepAliveInterval
+		if step <= 0 || step > remaining {
+			step = remaining
+		}
+		sleepCtx(ctx, step)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		remaining -= step
+		if remaining > 0 {
+			if err := client.Noop(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // authenticate mirrors runWatchLoop's authType switch: plain LOGIN for

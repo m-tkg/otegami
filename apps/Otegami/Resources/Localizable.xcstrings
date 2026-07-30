@@ -91,6 +91,46 @@
         }
       }
     },
+    "新着メールを確認中…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking for new mail…"
+          }
+        }
+      }
+    },
+    "既読・削除状態を同期中…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Syncing read/deleted status…"
+          }
+        }
+      }
+    },
+    "整合性を確認中…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Checking for changes…"
+          }
+        }
+      }
+    },
+    "メールボックスを再取得中…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refreshing mailbox…"
+          }
+        }
+      }
+    },
     "同期中…": {
       "localizations": {
         "en": {
