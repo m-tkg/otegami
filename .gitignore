@@ -13,3 +13,6 @@ server/otegami-relay/.env
 server/otegami-relay/secrets/
 # xcodegen-generated Info.plist (from the `info:` key in project.yml)
 apps/Otegami/Generated/
+# scripts/ の Python ツール (generate-localizable.py 等) が実行時に作る
+# バイトコードキャッシュ
+__pycache__/
