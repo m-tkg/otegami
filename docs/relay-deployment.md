@@ -513,10 +513,14 @@ OOM で落とせないよう、`MinimalIMAPClient` は以下を有界化して�
   password のみ v1")、Task #175 で `.oauth` (refresh token + XOAUTH2) を
   追加し、Gmail/Outlook アカウントもプッシュ通知の対象になった —
   脅威モデル項目12参照。iOS の `NotificationService` Extension
-  (差出人/件名の書き換え) 側はこのバッチでは対応しておらず、
-  `.oauth2` アカウントの push は汎用フォールバック表示のまま — これは
-  今後の課題として残っている (`NotificationService.swift`のdoc comment
-  参照)。
+  (差出人/件名の書き換え) 側は Task #175 時点では対応しておらず
+  `.oauth2` アカウントの push が汎用フォールバック表示のままだったが、
+  Task #177 でこれも解消済み — Extension 自身が
+  `GoogleOAuth.TokenStore`/`MicrosoftOAuth.TokenStore` で refresh token
+  をアクセストークンへ交換し XOAUTH2 で IMAP 認証する
+  (`NotificationService.swift`のdoc comment、`PENDING.md`のTask #177節
+  参照)。リレー側の `OAuthTokenExchanger`/`MinimalIMAPClient
+  .authenticateXOAuth2` はこの変更の対象外 (アプリ側のみの変更)。
 - IMAP 実装は最小限の自前クライアント (`MinimalIMAPClient`) — LOGIN/
   SELECT/STATUS/IDLE/LOGOUT のみ対応。採否の理由は
   `server/otegami-relay/Sources/OtegamiRelay/Watcher/MinimalIMAPClient.swift`

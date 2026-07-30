@@ -621,14 +621,50 @@ watch 照合掃除の説明を追記済み。
   ("対象外") は今後、Gmail/Outlook のどちらでもない `.oauth2` kind
   (実際には発生しないはずの防御的ケース) のみに残る。
 
-  **既知のスコープ外**: `NotificationService` Extension (push 到着時に
-  差出人/件名を書き換える処理) はこのバッチで対応していない — 依然として
-  IMAP パスワードの `LOGIN` しか知らず、`.oauth2` アカウントの watch から
-  届いた push は step 6 の汎用フォールバック (「新着メールがあります」の
-  まま) になる。通知自体は届く (壊れてはいない) が、差出人/件名の書き換え
-  だけが効かない。Extension 側で refresh token を読んでアクセストークンに
-  交換し XOAUTH2 認証する対応は別タスクとする (`NotificationService.swift`
-  の doc comment に同じ注記あり)。
+  **(解消 — Task #177) `NotificationService` Extension の OAuth 対応**:
+  上記の「既知のスコープ外」(`.oauth2` アカウントの push が汎用フォール
+  バックのままになる制約) を解消した。Extension は `account.authType`
+  で分岐し、`.oauth2` (Gmail/Microsoft) アカウントは `GoogleOAuth
+  .TokenStore`/`MicrosoftOAuth.TokenStore` (`AppEnvironment.auth(for:)`
+  が前景同期で使うのと同じ型) で共有 Keychain の refresh token をアクセス
+  トークンへ交換し、XOAUTH2 で IMAP 認証する。Extension の Keychain
+  Access Group は本体と1つしか宣言していない (8fcfab7) ため、
+  `KeychainRefreshTokenStore` が明示グループを指定しなくても既定で
+  同じグループを見に行く — 追加のグループ指定は不要だった。
+
+  **30 秒制限への対処**: トークン交換は `PushOAuthAccessTokenResolution`
+  (新規、`PushRelayClient`) で `oauthTokenFetchTimeout` (10秒) に対して
+  レースさせ、遅延/ハングした token endpoint が IMAP フェッチ分の予算を
+  食い潰さないようにした。`URLSessionConfiguration` 側のタイムアウトも
+  同じ値に設定済み。失敗 (Client ID 未設定・refresh token 未保存・交換
+  失敗・タイムアウトのいずれか) は全て `nil` に畳み込まれ、`.password`
+  アカウントの資格情報欠落と全く同じ「汎用フォールバックのまま」の扱いに
+  なる — 通知が出ないことは絶対にない。`invalid_grant` で refresh token
+  が失効した場合、`TokenStore` は本体と同じ副作用 (共有 Keychain からの
+  即時削除) を起こす — 次に本体が `auth(for:)` を呼んだときに正しく
+  「要再認証」を報告する。
+
+  **検証状況**: `PushOAuthAccessTokenResolutionTests` (新規4件、成功/
+  失敗/タイムアウト/ぎりぎり間に合うケース) で timeout レース自体は
+  決定的に検証済み。`make test`/`make ios`/`make mac`/
+  `make check-localization` は green (`NotificationService` Extension
+  ターゲットのコンパイルも `make ios` に含まれる)。**実機での動作確認は
+  このセッションでは未実施** — 実 Gmail/Outlook アカウント・実 push・
+  実 Extension プロセスでの検証が必要なため。実機確認ポイント:
+  1. Gmail/Outlook アカウントで新着メールの push 通知を受け取り、
+     差出人・件名 (トグルが on の設定で) が汎用文言でなく実際の内容に
+     なっていること。
+  2. 電波状況の悪い環境や、意図的に `Local.xcconfig` の Client ID を
+     一時的に空にした状態で受け取った push が、クラッシュも通知の
+     欠落もなく汎用文言で表示されること。
+  3. Gmail アカウントの refresh token を Google アカウント側から失効さ
+     せた状態で push を受け取った後、アプリを開いて該当アカウントが
+     「要再認証」表示になっていること (Extension 側の削除が実際に反映
+     されるか)。
+  4. 実際の所要時間 — token 交換 + IMAP 接続 + フェッチが 30 秒以内に
+     収まっているか (Xcode の Console.app 等でこの Extension プロセスの
+     生存時間を観察するか、`serviceExtensionTimeWillExpire()` が呼ばれて
+     いないかを確認)。
 - macOS 版のプッシュ通知: `NotificationService` Extension は iOS のみ
   (理由は `NotificationService.swift`/`Config/Otegami-iOS.entitlements`
   のコメント参照)。`AppEnvironment.enablePushNotifications` は macOS では
