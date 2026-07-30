@@ -73,7 +73,7 @@ XCFramework を生成するスクリプトではなく、上記の解決・ビ�
   `-create-xcframework` する手順が丸ごと不要になり、Xcode の通常の SPM 解決
   (`xcodegen generate` → `xcodebuild`) だけで完結する。
 - CI (`macos-26` ランナー、Xcode 27) でも特別な事前ビルドステップなしに動く見込み
-  (GitHub Actions 上での実行は本タスクでは未検証。理由は「実施内容」参照)。
+  (下記「CI への影響」参照)。
 
 ### トレードオフ・注意点
 
@@ -89,8 +89,8 @@ XCFramework を生成するスクリプトではなく、上記の解決・ビ�
   混在している。`MailCoreIMAPSession+Mapping.swift` のコメントに詳細と根拠を
   記載した。
 - ビルドは完全にソースからのコンパイルになるため、キャッシュが無い環境での初回
-  `swift build` は libetpan/ctemplate/tidy-html5/MailCore2 本体のフルビルドが走る
-  (このマシンでは初回でも十数秒〜数十秒程度で完了した — 予想よりかなり軽い)。
+  `swift build` は libetpan/ctemplate/tidy-html5/MailCore2 本体のフルビルドが走るが、
+  実測では十数秒〜数十秒程度で完了する (予想よりかなり軽い)。
 
 ## 既知の問題: SwiftPM のバイナリアーティファクトダウンロードがハングすることがある
 
@@ -132,10 +132,9 @@ XCFramework 成果物は生成しない (生成すべきものが無いため)�
   `MailTransportMailCoreTests` を含む OtegamiKit 全体をビルドする。MailCore2 は
   ソースから取得・ビルドされるため、XCFramework の欠如によるビルド breakage は
   そもそも発生しない (これが SPM ソースビルド方式を選んだ理由の一つでもある)。
-  ただし本タスクでは実際に GitHub Actions 上で実行して確認してはいない
-  (push しない方針のため)。ローカルでの macOS / Xcode 27 環境での `make test`
-  相当の実行では、`dev/mailstack` を使った統合テストも含めて全て green だった
-  (下記「MailTransportMailCoreTests」参照)。
+  `ci-app.yml` の実行結果は README 冒頭のバッジで確認できる。ローカルでの
+  macOS / Xcode 27 環境での `make test` 相当の実行では、`dev/mailstack` を
+  使った統合テストも含めて全て green (下記「統合テスト」参照)。
 - `.github/workflows/ci-server.yml` (ubuntu ランナー) は `server/otegami-relay`
   のみをビルドする独立した SwiftPM パッケージで、`packages/OtegamiKit` には一切
   依存しないため無関係。
@@ -161,8 +160,8 @@ cd ../..
 make mailstack-down
 ```
 
-実行結果 (このタスクで実施済み): 平文 (`localhost:1143`) ・TLS
-(`OTEGAMI_TEST_IMAP_TLS=1`, `localhost:1993`) の両方で 3 テスト全て green。
+平文 (`localhost:1143`) ・TLS (`OTEGAMI_TEST_IMAP_TLS=1`, `localhost:1993`)
+の両方で 3 テスト全て green。
 
 ### 実装中に見つかった Dovecot 側の設定不備 (修正済み)
 
