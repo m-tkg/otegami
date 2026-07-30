@@ -382,6 +382,25 @@
       [docs/relay-deployment.md](docs/relay-deployment.md)の環境変数表・
       脅威モデル項目12
 
+- [ ] **`scripts/deploy-ota.local.sh` を作成する (OTA 配信先の秘匿化)** —
+      並行作業 (コミット `fix(ota): externalize private OTA deploy target
+      from deploy-ota.sh`) で `scripts/deploy-ota.sh` から実際の配信先
+      ホスト名が撤去され、`scripts/deploy-ota.local.sh` (git 管理外、
+      `.gitignore` 済み) に切り出された。このマシンにはまだこのファイルが
+      存在せず、Task #178 (文字色/ハイライト修正) の OTA 配信が
+      `OTA_PI_HOST が未設定です` で失敗した。
+      ```
+      cp scripts/deploy-ota.local.sh.sample scripts/deploy-ota.local.sh
+      ```
+      をコピーし、`OTA_PI_HOST`/`OTA_PI_DIR`/`OTA_BASE_URL` の3変数に
+      実際の配信先 (SSH到達可能なホスト・アップロード先ディレクトリ・
+      そこを配信する HTTPS URL) を設定してほしい — 実際のホスト名/
+      認証情報はエージェントが知らない (知るべきでもない) ため代行できない。
+      設定後は通常通り `./scripts/deploy-ota.sh` で配信できるはず。
+      優先度: 高 (これが無いとどのタスクの OTA 配信も一切できない) /
+      所要時間: 数分 / 参照: [docs/ota-deploy.md](docs/ota-deploy.md)、
+      `scripts/deploy-ota.local.sh.sample`
+
 ## 4. 公開・配布に向けて (App Store / TestFlight を目指す場合)
 
 - [x] **Google OAuth の審査** — (2026-07-29 決定) 申請しない方針。
