@@ -1,0 +1,46 @@
+# Self-hosted deployment of the otegami push relay (Go port, Task #180).
+# Drop-in replacement for server/otegami-relay/docker-compose.yml — same
+# ports, same env vars, same volume layout, same SQLite schema, so an
+# existing deployment's .env and data volume carry over unchanged. See
+# docs/relay-deployment.md for the env var reference and threat model.
+#
+#   cp server/otegami-relay/.env.sample server/otegami-relay-go/.env
+#   # edit .env: set RELAY_MASTER_KEY (openssl rand -base64 32), optionally APNS_*
+#   docker compose -f server/otegami-relay-go/docker-compose.yml up -d
+services:
+  otegami-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      # Required. Generate with `openssl rand -base64 32`. Do not commit —
+      # set it in a local `.env` (git-ignored) instead.
+      - RELAY_MASTER_KEY=${RELAY_MASTER_KEY:?RELAY_MASTER_KEY is required — see docs/relay-deployment.md}
+      - RELAY_DATABASE_PATH=/app/data/otegami-relay.sqlite
+      - RELAY_PORT=8080
+      # Optional: real APNs delivery. Every one of these four must be set
+      # for the relay to use APNsSender instead of ConsoleSender.
+      - APNS_KEY_PATH=${APNS_KEY_PATH:-}
+      - APNS_KEY_ID=${APNS_KEY_ID:-}
+      - APNS_TEAM_ID=${APNS_TEAM_ID:-}
+      - APNS_BUNDLE_ID=${APNS_BUNDLE_ID:-}
+      # Optional SSRF-defense knobs (CLAUDE-SECURITY F2) — all blank by
+      # default. See docs/relay-deployment.md's threat model section.
+      - RELAY_DEVICE_REGISTRATION_SECRET=${RELAY_DEVICE_REGISTRATION_SECRET:-}
+      - RELAY_EXTRA_IMAP_PORTS=${RELAY_EXTRA_IMAP_PORTS:-}
+      - RELAY_ALLOW_PRIVATE_IMAP_HOSTS=${RELAY_ALLOW_PRIVATE_IMAP_HOSTS:-}
+      # Optional: OAuth watch support (Task #175) — Gmail/Outlook watches
+      # need the same client ids the app itself uses.
+      - RELAY_GOOGLE_CLIENT_ID=${RELAY_GOOGLE_CLIENT_ID:-}
+      - RELAY_MICROSOFT_CLIENT_ID=${RELAY_MICROSOFT_CLIENT_ID:-}
+    volumes:
+      - otegami-relay-data:/app/data
+      # Only meaningful if APNS_KEY_PATH is set to a path under here, e.g.
+      # APNS_KEY_PATH=/app/secrets/AuthKey_XXXXXXXXXX.p8
+      - ${APNS_KEY_DIR:-./secrets}:/app/secrets:ro
+    restart: unless-stopped
+
+volumes:
+  otegami-relay-data:
