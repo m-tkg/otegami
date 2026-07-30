@@ -56,6 +56,15 @@ targets:
         # Shared.xcconfig の既定値 (1) を上書きする — ローカル開発時は
         # Local.xcconfig にこの行が無いので既定値 1 のまま変わらない。
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # 2026-07-30 の実機フィードバック (「リリースを振る時はアプリの
+        # バージョンとタグを合わせたい」) を実装した際に発覚: `CFBundleVersion`
+        # と同じ落とし穴がこちらにもあり、**このキーを宣言していなかったため
+        # XcodeGen が固定リテラル `1.0` を生成していた** — `MARKETING_VERSION`
+        # (Config/Shared.xcconfig、および release-macos.yml がタグから注入する
+        # 値) を変えても表示バージョンは 1.0 のままだった。マクロ参照に
+        # することで xcconfig / xcodebuild 引数の値がそのまま埋め込まれる。
+        # release-macos.yml のビルド後検証ステップがこの不一致を検出した。
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         # Task #49: TestFlight へのアップロードは Export Compliance
         # (暗号化の輸出規制申告) の回答を要求する。このアプリが使う暗号化は
         # IMAP/SMTP over TLS (MailCore2)・HTTPS (URLSession, Google OAuth/
@@ -263,6 +272,10 @@ targets:
         # rejects an archive whose embedded extension's CFBundleVersion
         # doesn't match its containing app.
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        # 本体と同じ理由でこちらもマクロ参照にする (上の
+        # `CFBundleShortVersionString` の doc 参照) — 埋め込み extension の
+        # 表示バージョンが本体と食い違うのを避ける。
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
