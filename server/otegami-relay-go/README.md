@@ -95,6 +95,41 @@ Each package's doc comment names the exact Swift file it mirrors.
 
 ## Status
 
-See the most recent commits in this directory / the Task #180 completion
-report for exactly how far this port has progressed and what remains
-before the Swift relay can be retired.
+**Feature-complete and verified equivalent (2026-07-31).** All stages of
+Task #180 are implemented: HTTP API, SQLite store, credential crypto,
+SSRF network policy, IMAP client (IDLE + STATUS-polling fallback), OAuth
+token exchange, APNs sender (console fallback), watcher pool with status
+persistence, `main`, and the cross-compiling Dockerfile.
+
+Verification performed:
+
+- **123 Go tests** across 12 packages (Swift suite: 80 tests), including
+  `-race` runs for the IMAP client and watcher pool.
+- **Crypto compat**: Swift-generated AES-GCM fixtures decrypt under Go;
+  independently re-verified against Apple CryptoKit directly.
+- **Storage compat, live**: a running Swift relay created a device+watch;
+  the Go relay then opened the same SQLite file, authenticated the same
+  device secret, decrypted the Swift-encrypted credential, and connected
+  its IMAP watch. The reverse (Go-written rows read + decrypted by the
+  Swift relay — the rollback path) was also verified live.
+- **API compat**: identical JSON key sets/values and status codes
+  side-by-side against the running Swift relay (success and error
+  bodies), plus route tests mirroring the Swift `WatchRoutesTests`.
+- **Real Dovecot integration**: IDLE detects `doveadm save`-delivered
+  mail and fires exactly one push; an IDLE timeout does not break the
+  connection (the Swift relay's historical production bug — see
+  `docs/verify.md`). Run with `OTEGAMI_TEST_IMAP_HOST=localhost go test
+  ./internal/watcher/ -run RealDovecot`.
+- **Cross-compilation**: `docker buildx build --platform linux/arm64`
+  completes in ~40s with the build stage running natively
+  (`--platform=$BUILDPLATFORM` + `CGO_ENABLED=0`) — no QEMU; the
+  arm64 container boots and serves `/health`.
+
+Not verified (same as the Swift relay): real APNs delivery (no `.p8` key
+issued yet — `PENDING.md`), and XOAUTH2 against a real server
+(dev/mailstack Dovecot only offers `plain`; the RFC 7628 flow is covered
+by the fake-server tests, as in the Swift suite).
+
+The Swift relay (`server/otegami-relay`) stays in production until the
+operator switches over; deleting it is a user decision after the Go relay
+has run in production against real devices.
