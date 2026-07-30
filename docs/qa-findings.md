@@ -2151,9 +2151,25 @@ version="1.0" encoding="UTF-8"?>`前置き)がこの寛容さに依存してい�
 
 ### 配信
 
-最終コミット (`parseAttributes`修正込み) をpush後、OTA配信して
-manifest.plistの`bundle-version`が配信したコミットのSHAと一致すること
-を確認した (実際のSHAは本ファイルのコミット履歴参照)。
+`ef97d31` (`parseAttributes`修正込みの最終コミット) をpush後、OTA配信
+してmanifest.plistの`bundle-version`が`ef97d31`と一致することを確認
+した。
+
+なお、コミット作業中に共有ツリー特有の事故が1件発生し即座に復旧した
+記録: `git add <このタスクの3ファイル>`は正しく打ったが、直後の
+`git commit`(パス指定なし) がその時点でインデックスに残っていた
+**SEC-D (並行エージェント) の`server/otegami-relay/`配下の未コミット
+ステージ**を巻き込み、21ファイルのコミットになってしまった。push前に
+`git show --stat`で気づき、`git reset --soft HEAD~1`(作業ツリー・
+インデックスは変更しない安全なやり直し) → `git restore --staged
+server/otegami-relay/`等で自分の3ファイルだけ残す → 再コミット、で
+復旧。SEC-Dのファイルは全てpush前の「変更あり・未ステージ」の元の状態
+に戻っており、内容の破壊・巻き込みpushは無い (`git status`で確認済み)。
+教訓として、共有ツリーでは自分が`git add`した直後でも**他人が同じ瞬間
+にステージしたものが残っている可能性がある**ため、`git commit`前には
+必ず`git diff --cached --stat`(または`git show --stat`後の確認) を
+挟むべき — 今回は結果的にそれで検知できたが、コミットしてから気づく
+のではなく、コミット**前**に確認する方が安全。
 
 ### 未対応として残した点 (今回のスコープ外)
 
