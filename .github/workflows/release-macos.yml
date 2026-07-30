@@ -128,7 +128,19 @@ jobs:
       # "Build macOS app (unsigned)" step (same flags, same reasoning),
       # and a later step applies the Developer ID signature by hand with
       # `codesign` — which does not require a provisioning profile at all.
+      # 実機フィードバック (2026-07-30「mac 版で、リリースを振る時はアプリの
+      # バージョンとタグを合わせるようにしたい」): `Shared.xcconfig` の
+      # `MARKETING_VERSION` は固定値 (iOS/TestFlight が数値のみの版数を要求
+      # するため、そちらの都合で 1.2.0 のような形を保つ必要がある) なので、
+      # macOS のリリースビルドでだけタグ由来の版数で上書きする。これにより
+      # `CFBundleShortVersionString` がタグ (例 `v1.2.0-beta3` → `1.2.0-beta3`)
+      # と一致し、アプリ内アップデートチェック (Task #158) の SemVer 比較も
+      # 「配布物の版数 vs Release タグ」で正しく噛み合う (固定 1.2.0 のままだと
+      # beta を入れているのに 1.2.0 > 1.2.0-beta3 と判定されてしまう)。
+      # iOS 側 (Xcode Cloud) はこの workflow を通らないので影響しない。
       - name: Build macOS app (unsigned)
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           xcodebuild \
             -project "$APP_PROJECT" \
@@ -136,11 +148,26 @@ jobs:
             -configuration Release \
             -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/build" \
+            MARKETING_VERSION="$RELEASE_VERSION" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
           echo "APP_PATH=$RUNNER_TEMP/build/Build/Products/Release/$APP_NAME.app" >> "$GITHUB_ENV"
+
+      # 注入結果をここで確定的に確認する — 版数がタグと食い違ったまま配布
+      # されるのが元の不具合だったので、ビルド直後に突き合わせて違えば失敗
+      # させる (公証まで進んでから気付くと作り直しになる)。
+      - name: Verify bundle version matches the tag
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
+          echo "CFBundleShortVersionString=$BUNDLE_VERSION (expected $RELEASE_VERSION)"
+          if [ "$BUNDLE_VERSION" != "$RELEASE_VERSION" ]; then
+            echo "::error::CFBundleShortVersionString ($BUNDLE_VERSION) does not match the release version ($RELEASE_VERSION)" >&2
+            exit 1
+          fi
 
       - name: Check signing and notarization secrets
         id: signing

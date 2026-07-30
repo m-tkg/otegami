@@ -29,6 +29,29 @@ git tag vX.Y.Z && git push origin vX.Y.Z
   一度も打たずにこのパイプライン全体を検証できるようにするための
   仕組み** — 初回の実地検証はこちらを先に使うのが安全。
 
+## 表示バージョンはタグから注入される (macOS のみ)
+
+`apps/Otegami/Config/Shared.xcconfig` の `MARKETING_VERSION` は固定値
+(`1.2.0` 等)。iOS の TestFlight 配布は数値のみの版数を要求するため、
+リポジトリの既定値はその形を保つ必要がある。
+
+一方 macOS のリリースビルドでは、この workflow が
+`xcodebuild MARKETING_VERSION=<タグから導いた版数>` で上書きする —
+タグ `v1.2.0-beta3` なら `CFBundleShortVersionString` は `1.2.0-beta3` に
+なる。ビルド直後に Info.plist を読んで期待値と一致するか検証し、違えば
+その時点で失敗させる (公証まで進んでから気付くと作り直しになる)。
+
+理由は 2 つ:
+
+- 配布物の表示バージョンとタグが食い違うと、どのビルドを触っているのか
+  実機で判別できない (実機フィードバック 2026-07-30)。
+- アプリ内アップデートチェック (`docs/design-system.md` の Task #158) は
+  `CFBundleShortVersionString` と Release タグを SemVer 比較する。固定値
+  `1.2.0` のままだと `1.2.0 > 1.2.0-beta3` と判定され、beta を入れている
+  のに「最新版です」と表示されてしまう。
+
+iOS 側 (Xcode Cloud) はこの workflow を通らないので影響を受けない。
+
 ## 必要な GitHub Secrets
 
 以下は登録済み (`gh secret list` で名前だけ確認可能、値はここに書かない):
