@@ -92,6 +92,13 @@ public actor TokenStore {
     public func hasStoredRefreshToken(for accountId: String) -> Bool {
         (try? refreshTokenStore.read(accountId: accountId))?.isEmptyOrNil == false
     }
+
+    /// Task #175 (push relay OAuth watches) — mirrors `GoogleOAuth
+    /// .TokenStore.rawRefreshToken(for:)` exactly; see that doc comment.
+    public func rawRefreshToken(for accountId: String) -> String? {
+        guard let token = try? refreshTokenStore.read(accountId: accountId), !token.isEmpty else { return nil }
+        return token
+    }
 }
 
 private extension Optional where Wrapped == String {

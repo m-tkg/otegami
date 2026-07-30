@@ -7,9 +7,13 @@ import UIKit
 
 /// Settings → プッシュ通知 (M9, plan §7): opt-in flow for the self-hosted
 /// push relay. On "有効にする" (behind a consent alert — "資格情報がそのサーバへ
-/// 送信・保存される旨") requests notification authorization, obtains an APNs
-/// device token, and registers this device + every `.password`-auth
-/// account's watch with the relay. No relay-operator credential *or URL* is
+/// 送信・保存される旨", Task #175 follow-up: now also covers Gmail/Outlook
+/// sending their OAuth refresh token) requests notification authorization,
+/// obtains an APNs device token, and registers this device + every
+/// push-watch-eligible account's watch with the relay
+/// (`AppEnvironment.isPushWatchCandidate(_:)` — `.password` accounts send
+/// an IMAP password, `.oauth2` Gmail/Microsoft accounts send an OAuth
+/// refresh token instead). No relay-operator credential *or URL* is
 /// ever collected here — both the relay's optional device-registration
 /// secret (`RelayRegistrationSecretConfig`, Task #171) and the relay's URL
 /// itself (`RelayURLConfig`, Task #173 follow-up: 実機フィードバック
@@ -99,7 +103,7 @@ struct PushNotificationSettingsView: View {
             // 自動でローカライズされない」節が警告するパターンそのもの、
             // ただし連結演算子経由という気づきにくい形)。1つのリテラルに
             // まとめることで`LocalizedStringKey`解決に戻した。
-            Text("有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）がプッシュ中継サーバーへ送信され、暗号化して保存されます。Gmail (OAuth) アカウントは現バージョンでは対象外です。")
+            Text("有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）がプッシュ中継サーバーへ送信され、暗号化して保存されます。Gmail・Outlook（OAuth 認証）アカウントは、パスワードの代わりにアクセス権のリフレッシュトークンが同様に送信され、暗号化して保存されます。いずれもリレーの運用者を信頼できる場合のみ有効にしてください。")
         }
     }
 

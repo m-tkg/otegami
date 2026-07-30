@@ -26,11 +26,15 @@ struct PushWatchDisplayRow: Identifiable, Equatable {
         /// without one (shouldn't happen post-Task #173, but decoded
         /// leniently either way per `WatchSummary`'s doc comment).
         case stopped(reason: WatchSummary.ErrorKind?)
-        /// An OAuth2 account (Gmail/Outlook) — the relay only supports
-        /// password auth in v1 (`OtegamiRelayAPI.WatchAuth.Kind`'s doc
-        /// comment), so this account was never a candidate for a watch at
-        /// all. Distinct from `.notRegistered` so the UI doesn't suggest a
-        /// "re-register" action that could never work.
+        /// An account this build's relay integration has no way to watch
+        /// at all — as of Task #175 this is only a `.oauth2` account of
+        /// neither `.gmail` nor `.microsoft` `kind` (shouldn't occur in
+        /// practice; every `.oauth2` account this app creates is one of
+        /// those two). Before Task #175, every `.oauth2` account
+        /// (including Gmail/Microsoft) was `.unsupported` — the relay only
+        /// supported password auth in v1. Distinct from `.notRegistered`
+        /// so the UI doesn't suggest a "re-register" action that could
+        /// never work.
         case unsupported
         /// Push is enabled and this is a `.password` account, but the
         /// relay's current watch list couldn't be fetched at all (relay
@@ -53,14 +57,15 @@ struct PushWatchDisplayRow: Identifiable, Equatable {
     ///
     /// - Parameters:
     ///   - accounts: every locally configured account, `.password` and
-    ///     `.oauth2` alike (this function does the filtering/branching).
-    ///   - isPushEnabled: when `false`, every `.password` account is
+    ///     `.oauth2` alike (this function does the filtering/branching via
+    ///     `AppEnvironment.isPushWatchCandidate(_:)`).
+    ///   - isPushEnabled: when `false`, every push-watch-eligible account is
     ///     `.notRegistered` outright — there's no relay call to even
     ///     attempt, so `serverWatches` is irrelevant.
     ///   - serverWatches: `AppEnvironment.fetchPushWatchSummaries()`'s
     ///     result — `nil` means the fetch itself failed (relay
     ///     unreachable), which is exactly what `.unavailable` communicates
-    ///     for every `.password` account rather than defaulting to
+    ///     for every push-watch-eligible account rather than defaulting to
     ///     `.notRegistered` (a false "you have no watch" reading).
     static func build(
         accounts: [AccountRecord],
@@ -80,7 +85,7 @@ struct PushWatchDisplayRow: Identifiable, Equatable {
         }
 
         return accounts.map { account in
-            guard account.authType == .password else {
+            guard AppEnvironment.isPushWatchCandidate(account) else {
                 return PushWatchDisplayRow(accountId: account.id, displayName: account.displayName, status: .unsupported)
             }
             guard isPushEnabled else {

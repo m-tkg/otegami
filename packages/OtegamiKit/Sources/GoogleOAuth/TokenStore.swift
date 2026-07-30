@@ -149,6 +149,22 @@ public actor TokenStore {
     public func hasStoredRefreshToken(for accountId: String) -> Bool {
         (try? refreshTokenStore.read(accountId: accountId))?.isEmptyOrNil == false
     }
+
+    /// Task #175 (push relay OAuth watches): the raw, still-valid refresh
+    /// token itself — unlike `accessToken(for:)`, this never talks to
+    /// Google, and unlike `hasStoredRefreshToken(for:)`, it returns the
+    /// value rather than just whether one exists. `AppEnvironment
+    /// .watchAuth(for:)` uses this to hand the relay a refresh token when
+    /// registering a Gmail account's push watch — the relay needs its own
+    /// copy to exchange for access tokens on every (re)connect (see
+    /// `server/otegami-relay`'s `OAuthTokenExchanger`), the same way it
+    /// already needs a `.password` account's IMAP password. `nil` if
+    /// nothing is stored (mirrors `hasStoredRefreshToken(for:)`'s
+    /// `false` case).
+    public func rawRefreshToken(for accountId: String) -> String? {
+        guard let token = try? refreshTokenStore.read(accountId: accountId), !token.isEmpty else { return nil }
+        return token
+    }
 }
 
 private extension Optional where Wrapped == String {

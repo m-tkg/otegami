@@ -15,7 +15,15 @@ struct PushWatchStatusSection: View {
     var body: some View {
         Section {
             if rows.isEmpty {
-                Text("パスワード認証のアカウントがありません。")
+                // `PushWatchDisplayRow.build` returns one row per
+                // configured account regardless of its `authType`/`kind`
+                // (an ineligible account still gets a row, just
+                // `.unsupported` — see that type's doc comment) — this
+                // empty state is reached only when there are no accounts
+                // configured at all, not "no password accounts" (accurate
+                // before Task #175 widened watch eligibility to Gmail/
+                // Microsoft too).
+                Text("アカウントがありません。")
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("settings.push.watchStatus.empty")
             } else {
@@ -106,10 +114,22 @@ private struct PushWatchStatusRow: View {
             "停止（認証失敗）"
         case .stopped(.connectionError):
             "停止（接続失敗）"
+        case .stopped(.oauthTokenExpired):
+            // Task #175: distinct from `.authFailure` — the fix isn't
+            // "re-enter your password" but "re-authenticate this account"
+            // (アカウント編集の「再認証」), since the relay's copy of the
+            // refresh token is permanently dead.
+            "停止（再認証が必要）"
         case .stopped(nil):
             "停止"
         case .unsupported:
-            "対象外（Gmail/Outlook）"
+            // Task #175: Gmail/Outlook accounts are watch-eligible now —
+            // this only remains for the edge case
+            // `AppEnvironment.isPushWatchCandidate(_:)` still excludes
+            // (an `.oauth2` account of neither `.gmail` nor `.microsoft`
+            // kind, which shouldn't occur in practice), so the label no
+            // longer names a specific provider.
+            "対象外"
         case .unavailable:
             "状態を取得できません"
         }

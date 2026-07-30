@@ -2511,12 +2511,12 @@
         }
       }
     },
-    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）がプッシュ中継サーバーへ送信され、暗号化して保存されます。Gmail (OAuth) アカウントは現バージョンでは対象外です。": {
+    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）がプッシュ中継サーバーへ送信され、暗号化して保存されます。Gmail・Outlook（OAuth 認証）アカウントは、パスワードの代わりにアクセス権のリフレッシュトークンが同様に送信され、暗号化して保存されます。いずれもリレーの運用者を信頼できる場合のみ有効にしてください。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the push relay server, where it's stored encrypted. Gmail (OAuth) accounts aren't supported in this version."
+            "value": "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the push relay server, where it's stored encrypted. For Gmail/Outlook (OAuth) accounts, an access refresh token is sent and stored encrypted the same way instead of a password. Only enable this if you trust the relay's operator."
           }
         }
       }
@@ -2547,16 +2547,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Each account's push-notification watch status. A stopped account can be re-registered."
-          }
-        }
-      }
-    },
-    "パスワード認証のアカウントがありません。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "There are no password-authenticated accounts."
           }
         }
       }
@@ -2611,6 +2601,16 @@
         }
       }
     },
+    "停止（再認証が必要）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped (Re-authentication Required)"
+          }
+        }
+      }
+    },
     "停止": {
       "localizations": {
         "en": {
@@ -2621,12 +2621,12 @@
         }
       }
     },
-    "対象外（Gmail/Outlook）": {
+    "対象外": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Not Supported (Gmail/Outlook)"
+            "value": "Not Supported"
           }
         }
       }

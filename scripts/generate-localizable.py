@@ -394,22 +394,39 @@ translations = {
     "設定アプリを開く": "Open Settings App",
     "資格情報の送信について": "About Sending Credentials",
     "同意して有効にする": "Agree & Enable",
-    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）がプッシュ中継サーバーへ送信され、暗号化して保存されます。Gmail (OAuth) アカウントは現バージョンでは対象外です。":
-        "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the push relay server, where it's stored encrypted. Gmail (OAuth) accounts aren't supported in this version.",
+    # Task #175: Gmail/Outlook (OAuth) accounts became push-watch-eligible
+    # too (an OAuth refresh token is sent/stored encrypted the same way an
+    # IMAP password is for a `.password` account) — this consent text used
+    # to say those accounts were unsupported.
+    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）がプッシュ中継サーバーへ送信され、暗号化して保存されます。Gmail・Outlook（OAuth 認証）アカウントは、パスワードの代わりにアクセス権のリフレッシュトークンが同様に送信され、暗号化して保存されます。いずれもリレーの運用者を信頼できる場合のみ有効にしてください。":
+        "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the push relay server, where it's stored encrypted. For Gmail/Outlook (OAuth) accounts, an access refresh token is sent and stored encrypted the same way instead of a password. Only enable this if you trust the relay's operator.",
     "この配布ビルドにはプッシュ中継サーバーが設定されていません。自分のリレーを使う場合は docs/relay-deployment.md を参照して Config/Local.xcconfig に設定してください。":
         "This distribution build has no push relay server configured. If you're running your own relay, see docs/relay-deployment.md and set it in Config/Local.xcconfig.",
     # Task #173: per-account watch status list (`PushWatchStatusSection`).
     "アカウント別の状態": "Status by Account",
     "各アカウントのプッシュ通知 watch の状態です。停止しているアカウントは再登録できます。":
         "Each account's push-notification watch status. A stopped account can be re-registered.",
-    "パスワード認証のアカウントがありません。": "There are no password-authenticated accounts.",
+    # Task #175: the empty state here used to be its own "no password
+    # accounts" line ("パスワード認証のアカウントがありません。") — now that
+    # Gmail/Outlook accounts are watch-eligible too, this is reached only
+    # when there are no accounts at all, so it reuses the existing generic
+    # "アカウントがありません。" key (defined once, earlier in this dict) —
+    # no separate entry needed here.
     "再登録": "Re-register",
     "登録済み": "Registered",
     "未登録": "Not Registered",
     "停止（認証失敗）": "Stopped (Authentication Failed)",
     "停止（接続失敗）": "Stopped (Connection Failed)",
+    # Task #175: a `.oauth` watch whose refresh token was rejected
+    # (invalid_grant) — the fix is re-authenticating the account in the
+    # app, not re-entering a password, so this is a distinct label from
+    # `.authFailure`.
+    "停止（再認証が必要）": "Stopped (Re-authentication Required)",
     "停止": "Stopped",
-    "対象外（Gmail/Outlook）": "Not Supported (Gmail/Outlook)",
+    # Task #175: Gmail/Outlook became watch-eligible, so this label no
+    # longer names a specific provider — it's now only the rare edge case
+    # `AppEnvironment.isPushWatchCandidate(_:)` still excludes.
+    "対象外": "Not Supported",
     "状態を取得できません": "Status Unavailable",
     "最終接続: %@": "Last connected: %@",
     "最終試行: %@": "Last attempt: %@",

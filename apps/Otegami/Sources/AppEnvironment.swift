@@ -2459,13 +2459,15 @@ final class AppEnvironment {
     /// Requests notification authorization + an APNs device token,
     /// registers this device with the build's baked-in relay
     /// (`RelayURLConfig.value` — Task #173 follow-up), and creates a watch
-    /// for every currently-configured `.password`-auth account (Gmail/
-    /// `.oauth2` accounts are skipped — the relay only supports password
-    /// auth in v1, `OtegamiRelayAPI.WatchAuth.Kind`'s doc comment).
-    /// Persists everything via `pushSettings` as it goes, so a failure
-    /// partway through (e.g. the device registers fine but one account's
-    /// watch creation fails) still leaves whatever succeeded in place
-    /// rather than needing to be redone from scratch.
+    /// for every currently push-watch-eligible account
+    /// (`isPushWatchCandidate(_:)` — every `.password` account, plus
+    /// `.oauth2` Gmail/Microsoft accounts as of Task #175, which sends the
+    /// account's refresh token to the relay instead of an IMAP password;
+    /// see `watchAuth(for:)`'s doc comment for what that changes). Persists
+    /// everything via `pushSettings` as it goes, so a failure partway
+    /// through (e.g. the device registers fine but one account's watch
+    /// creation fails) still leaves whatever succeeded in place rather than
+    /// needing to be redone from scratch.
     func enablePushNotifications() async throws {
         guard let baseURL = RelayURLConfig.value else {
             throw PushError.relayNotConfigured
@@ -2508,7 +2510,7 @@ final class AppEnvironment {
 
         pushSettings.deviceId = deviceId
 
-        for account in accounts where account.authType == .password {
+        for account in accounts where Self.isPushWatchCandidate(account) {
             await registerWatch(for: account, baseURL: baseURL, deviceSecret: deviceSecret)
         }
 
@@ -2558,9 +2560,10 @@ final class AppEnvironment {
     /// Registers a watch for `account` if push is enabled and it doesn't
     /// already have one — called both from `enablePushNotifications` (for
     /// every existing account) and should be called again whenever a new
-    /// `.password` account is added while push is already enabled.
+    /// push-watch-eligible account (`isPushWatchCandidate(_:)`) is added
+    /// while push is already enabled.
     func registerWatchIfNeeded(for account: AccountRecord) async {
-        guard isPushEnabled, account.authType == .password else { return }
+        guard isPushEnabled, Self.isPushWatchCandidate(account) else { return }
         guard pushSettings.accountWatchMap[account.id] == nil else { return }
         guard let baseURL = RelayURLConfig.value,
               let deviceSecret = try? pushSettings.deviceSecret()
@@ -2568,16 +2571,32 @@ final class AppEnvironment {
         await registerWatch(for: account, baseURL: baseURL, deviceSecret: deviceSecret)
     }
 
+    /// Task #175: every account whose credential the relay could
+    /// meaningfully watch on this device's behalf — `.password` (an IMAP
+    /// password) or `.oauth2` Gmail/Microsoft (an OAuth refresh token,
+    /// `WatchAuth(type: .oauth, ...)`). A generic `.oauth2` account with
+    /// neither `kind` (shouldn't exist in practice — every `.oauth2`
+    /// account this app creates is `.gmail` or `.microsoft`) is excluded,
+    /// same as before Task #175.
+    nonisolated static func isPushWatchCandidate(_ account: AccountRecord) -> Bool {
+        switch account.authType {
+        case .password:
+            return true
+        case .oauth2:
+            return account.kind == .gmail || account.kind == .microsoft
+        }
+    }
+
     @discardableResult
     private func registerWatch(for account: AccountRecord, baseURL: URL, deviceSecret: String) async -> Bool {
-        guard let password = try? credentialStore.password(forAccountId: account.id) else { return false }
+        guard let auth = await watchAuth(for: account) else { return false }
         let request = CreateWatchRequest(
             accountId: account.id,
             imapHost: account.imapHost,
             imapPort: account.imapPort,
             imapUseTLS: account.imapSecurity != .plain,
             imapUsername: account.imapUsername,
-            auth: WatchAuth(secret: password),
+            auth: auth,
             mailbox: "INBOX"
         )
         guard let response = try? await pushRelayClient.createWatch(baseURL: baseURL, deviceSecret: deviceSecret, request: request) else {
@@ -2585,6 +2604,41 @@ final class AppEnvironment {
         }
         pushSettings.setWatchId(response.watchId, forAccountId: account.id)
         return true
+    }
+
+    /// Task #175: the `WatchAuth` the relay needs for `account`'s watch —
+    /// an IMAP password for `.password`, or an OAuth refresh token
+    /// (`type: .oauth`) for a Gmail/Microsoft `.oauth2` account. `nil` if
+    /// `account` isn't push-watch-eligible at all
+    /// (`isPushWatchCandidate(_:)`), or if the credential it needs isn't
+    /// actually available locally (Keychain password missing, or no
+    /// refresh token stored/no token store configured for this build —
+    /// e.g. `GOOGLE_OAUTH_CLIENT_ID` unset).
+    ///
+    /// **Sends the refresh token itself to the relay** — see
+    /// `docs/relay-deployment.md`'s threat model on what that changes
+    /// versus an IMAP password (both are credentials the relay operator
+    /// could misuse, but a live refresh token keeps working until revoked,
+    /// unlike a changed password).
+    private func watchAuth(for account: AccountRecord) async -> WatchAuth? {
+        switch account.authType {
+        case .password:
+            guard let password = try? credentialStore.password(forAccountId: account.id) else { return nil }
+            return WatchAuth(secret: password)
+        case .oauth2:
+            switch account.kind {
+            case .gmail:
+                guard let tokenStore, let refreshToken = await tokenStore.rawRefreshToken(for: account.id) else { return nil }
+                return WatchAuth(type: .oauth, secret: refreshToken, provider: .google)
+            case .microsoft:
+                guard let microsoftTokenStore,
+                      let refreshToken = await microsoftTokenStore.rawRefreshToken(for: account.id)
+                else { return nil }
+                return WatchAuth(type: .oauth, secret: refreshToken, provider: .microsoft)
+            case .generic, .icloud:
+                return nil
+            }
+        }
     }
 
     private func unregisterWatch(forAccountId accountId: String) async {
@@ -2680,10 +2734,16 @@ final class AppEnvironment {
     /// list call still cleans up at least as much as before this fix.
     func reregisterWatch(for account: AccountRecord) async throws {
         guard isPushEnabled else { throw PushError.relayNotConfigured }
-        guard account.authType == .password else { throw PushError.relayNotConfigured }
+        guard Self.isPushWatchCandidate(account) else { throw PushError.relayNotConfigured }
         guard let baseURL = RelayURLConfig.value else { throw PushError.relayNotConfigured }
         guard let deviceSecret = try? pushSettings.deviceSecret() else { throw PushError.relayNotConfigured }
-        guard (try? credentialStore.password(forAccountId: account.id)) != nil else {
+        // Task #175: `.credentialUnavailable` now also covers a Gmail/
+        // Microsoft account with no refresh token available locally (no
+        // token store configured for this build, or nothing stored) —
+        // `watchAuth(for:)` is the single source of truth for whether a
+        // usable credential exists, so this just previews its result
+        // rather than duplicating the per-authType logic here.
+        guard await watchAuth(for: account) != nil else {
             throw ReregisterWatchError.credentialUnavailable
         }
 
@@ -2739,9 +2799,10 @@ final class AppEnvironment {
     ///   - a relay watch for an account no longer known locally gets
     ///     `DELETE`d (fixes the actual bug: a deleted account's watch
     ///     that a prior best-effort delete failed to clean up).
-    ///   - a local `.password` account with no live relay watch gets a
-    ///     fresh one registered (the initial `createWatch` failed, or the
-    ///     local map fell out of sync some other way).
+    ///   - a local push-watch-eligible account (`isPushWatchCandidate(_:)`)
+    ///     with no live relay watch gets a fresh one registered (the
+    ///     initial `createWatch` failed, or the local map fell out of sync
+    ///     some other way).
     ///   - the local accountId→watchId map is repaired to match the
     ///     relay wherever it disagrees — no network call needed for that
     ///     part, just local bookkeeping.
@@ -2769,7 +2830,13 @@ final class AppEnvironment {
         // repeating, regardless of what it found.
         pushSettings.lastWatchReconcileDate = Date()
 
-        let localPasswordAccountIds = Set(accounts.filter { $0.authType == .password }.map(\.id))
+        // Task #175: despite the parameter's name (unchanged, to keep this
+        // diff scoped to `AppEnvironment` — `WatchReconciler` itself has no
+        // opinion on *why* an account is watch-eligible), this now also
+        // includes `.oauth2` Gmail/Microsoft accounts —
+        // `isPushWatchCandidate(_:)` is the single source of truth for
+        // "should this account have a relay watch at all".
+        let localPasswordAccountIds = Set(accounts.filter(Self.isPushWatchCandidate).map(\.id))
         let plan = WatchReconciler.plan(
             localPasswordAccountIds: localPasswordAccountIds,
             localWatchMap: pushSettings.accountWatchMap,
