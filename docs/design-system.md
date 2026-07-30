@@ -7620,3 +7620,88 @@ Otegami.app を通常起動して確認):
    単独キー化を避けた設計が効いているかの確認)。
 8. ⌘F で検索フィールドにフォーカスが移ること (⇧⌘F ではなく ⌘F に変更
    済み)。
+
+## Task #178: 文字色/ハイライト3点バッチ (実機フィードバック — 白黒追加/色見本/デフォルト黒化バグ)
+
+Task #161 (文字色/背景色/リンク等) 実装後の実機フィードバック3件。
+
+### 1・2: 白黒の追加 + 色見本の可視化
+
+- `OtegamiCore.RichTextColor` に `.black`(`#000000`)/`.white`(`#ffffff`)を
+  追加 (既存7色+2)。
+- **選ぶ前に色が分からない問題の真因**: `RichTextColorMenuButton`の各行は
+  `Menu`内の`Label`アイコンとして`Image(systemName:"circle.fill")
+  .foregroundStyle(color)`を使っていたが、`Menu`のrowはiOS/macOSとも
+  ネイティブ`UIMenu`/`NSMenu`に橋渡しされ、テンプレート画像 (SF Symbol)
+  への`foregroundStyle`はメニュー側の単色再着色で握りつぶされる —
+  実機で全項目が同じ無色の丸に見えていたのはこれが原因。**修正**: 色を
+  ピクセルへ焼き込んだビットマップ (`UIGraphicsImageRenderer`/
+  `NSImage(size:flipped:drawingHandler:)`) を"original"扱い
+  (`.withRenderingMode(.alwaysOriginal)`/`isTemplate = false`) で
+  `Image`化する`RichTextColor.swatchImage`を追加し、各行のアイコンを
+  それに差し替え (`RichTextFormattingBar.swift`)。選択マークは同じ理由で
+  アイコン上のチェックマークではなく、タイトル側の先頭"✓ "に変更
+  (`Text`は`Menu`行でも普通に描画されるため制約を受けない)。
+- 白・黒スウォッチには`AccountLabelColorPicker`の`.rose`(白)swatchと
+  同じ理由の hairline border (`OtegamiColor.divider`) を焼き込み、
+  同トーンの背景に埋もれないようにした。
+
+### 3: 「デフォルト」選択でダークモードの文字が黒くなるバグ
+
+**実機報告**: 「装飾せずに入力するとダークモードでは白い文字で書けるが、
+文字色を『デフォルト』にすると黒い文字になってしまう」。
+
+**調査結果**: 事前の想定 (「デフォルトが黒を明示的に設定している」) は
+実コードとは一致しなかった — 修正前の`RichTextAttributedString
+.applyTextColor(_:to:range:)`/`RichTextEditor.Coordinator.setTextColor(_:)`
+は`nil`(デフォルト)を選ぶと`.foregroundColor`属性を`removeAttribute`/
+`removeValue(forKey:)`していた。理屈の上では「属性なし → テキスト
+ビュー自身の既定色を継承」で正しいはずだが、これは
+`UITextView.typingAttributes`との相性が悪い —
+`typingAttributes`は選択変更のたびにリセットされ、欠けている
+`.foregroundColor`キーをOS側が独自に (非動的な) 既定値で補って返す/
+書き戻す挙動があり、一度でも文字色メニューを操作すると以降の入力が
+黒に固定されてしまう。「装飾せず入力」した文字が正しく白いのは、
+この`typingAttributes`の読み書きサイクルを一度も経由していないから、
+という非対称性で実機の2つの観察 (無操作は白、操作後は黒) の両方が
+説明できる。
+
+**修正方針**: 「属性を除去する」のをやめ、**常に明示的な値を書く**よう
+統一 (`RichTextAttributedString.defaultTextColor` = `.label`/
+`.labelColor`という「OS動的既定色」センチネルを新設)。`nil`(デフォルト)
+は常にこのセンチネルを書き込み、`.black`/`.white`という実在プリセットとは
+`PlatformColor.isEqual`(動的プロバイダそのものを比較するため、ライト
+モードで黒と同じRGBに解決されても取り違えない)で区別する
+(`documentTextColor(from:)`)。背景色 (ハイライト) 側も同じ理屈で
+`defaultBackgroundColor` = `.clear`を新設し、`removeAttribute`をやめて
+明示書き込みに統一 (ハイライト側は実機バグの報告こそ無かったが、同じ
+`typingAttributes`機構に依存しているため非対称に残す理由がなく、
+`applyTextColor`/`applyBackgroundColor`/`setTextColor`/`setBackgroundColor`/
+`clearFormatting`/`makeAttributedString(from:)`/`plainAttributedString(_:)`
+すべてで統一)。副次的な修正:
+- `applyLink(_:to:range:)`の「まだ明示色が付いていない選択範囲だけ青に
+  する」判定が`value == nil`のままだと(今後すべてのランが必ず何らかの
+  値を持つため)絶対に真にならず、リンクの既定青が付かなくなる —
+  `documentTextColor(from:) == nil`判定に変更。
+- `RichTextColor.matching(_:)`のRGB比較 (`colorsApproximatelyEqual`) に
+  アルファ成分の比較を追加 — `.clear`(0,0,0,0)が新設の`.black`
+  (0,0,0,1)とRGBだけでは一致してしまう潜在バグの手当て
+  (センチネルは`isEqual`で先にはじくため実害はないが、防御的に修正)。
+- 既存の下書き/送信キャンセル復元データに**旧実装由来の明示的な黒**が
+  残っている場合の扱い: そのまま黒として扱う (`documentTextColor(from:)`
+  のdoc comment参照) — ユーザーが本当に黒を選んだ場合と区別する手段が
+  無く、「バグの残骸だから」と黙って既定色に戻すと逆に本当の選択を
+  破壊しかねないため。
+
+### 検証
+
+`make test`(35件、`RichTextHTMLCoderTests`に黒/白ラウンドトリップ3件+
+デフォルトがcolor:を一切出力しないことの確認1件を追加)/`make mac`/
+`make ios`/`make check-localization` すべて green。
+
+**未検証**: 文字色メニューを実際にタップして「デフォルト」を選ぶ操作
+そのもの (シミュレータのXCUITestタップ不達のため)。`scripts/
+verify-screen.sh composer-richtext-open`でライト/ダーク各1枚、tap-free
+経路で本文プレースホルダ/書式バーの描画を確認したのみ — メニュー内の
+色見本・チェックマーク・デフォルト選択後の文字色は実機でのタップ確認が
+必要。`PENDING.md`に確認ポイントを追記。
