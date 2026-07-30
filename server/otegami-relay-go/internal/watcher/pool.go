@@ -29,8 +29,53 @@ import (
 // maxConsecutiveAuthFailures mirrors WatcherPool.maxConsecutiveAuthFailures
 // — consecutive login failures at which a watch gives up entirely rather
 // than continuing to retry (avoids hammering an IMAP server with
-// credentials that are simply wrong).
+// credentials that are simply wrong). Only applies to a watch whose
+// credential has *never* authenticated successfully (WatchRecord
+// .LastConnectedAt == nil) — see classifyAuthFailure's caller in
+// connectAndWatch and defaultAuthFailureRetryInterval's doc comment for the
+// watch that has succeeded before.
 const maxConsecutiveAuthFailures = 3
+
+// defaultAuthFailureRetryInterval / defaultAuthFailureRetryCap (Task #187):
+// how long a watch waits before retrying after an IMAP
+// AUTHENTICATIONFAILED-shaped rejection, for a watch whose credential has
+// authenticated successfully at least once before
+// (WatchRecord.LastConnectedAt != nil) — see connectAndWatch.
+//
+// Real-world trigger: Yahoo Japan (imap.mail.yahoo.co.jp) accounts observed
+// failing auth intermittently with the *same* credential that had
+// connected successfully earlier the same day. The relay's own tagged-
+// response logging (authFailureServerResponse) captured the server's exact
+// reply: `A1 NO [AUTHENTICATIONFAILED] Incorrect username or password.` —
+// not a `[LIMIT]`/`[UNAVAILABLE]`-shaped rate-limit response, but a stored
+// credential that worked minutes earlier cannot have simply become wrong.
+// Yahoo's own support guidance describes repeated authentication failures
+// triggering a temporary account lock, without stating its duration:
+// https://note.chiilabo.jp/2026-04/yahoo-japan-imap-external-access-change/
+//
+// No published duration exists to anchor this precisely, so 30 minutes is
+// chosen as comfortably longer than the "tens of minutes" lockout windows
+// commonly described for this class of protection, while still recovering
+// within the same day — and it matches this codebase's own existing
+// precedent for "back off a failed operation, cap the wait, try again
+// later" at this exact timescale: OpQueueProcessor.backoffCap (Swift side,
+// `packages/OtegamiKit/Sources/SyncEngine/OpQueueProcessor.swift`) already
+// caps its retry backoff at 30 minutes for the same class of problem
+// (a stuck operation that shouldn't be hammered). Doubles on further
+// consecutive failures (mirroring the connection-error backoff below) up
+// to defaultAuthFailureRetryCap so a credential that stays rejected for
+// hours doesn't get re-probed every 30 minutes forever — 6 hours keeps at
+// least 4 attempts within a day without ever going quiet for good (unlike
+// maxConsecutiveAuthFailures's permanent stop, which this path never
+// reaches; see classifyAuthFailure/connectAndWatch).
+//
+// Both are Options fields (not raw constants) so tests can drive them down
+// to milliseconds — same "Options carries the tunable, New() supplies the
+// production default" shape as IdleMaxWait/PollInterval/ConnectTimeout.
+const (
+	defaultAuthFailureRetryInterval = 30 * time.Minute
+	defaultAuthFailureRetryCap      = 6 * time.Hour
+)
 
 // errMissingOAuthProvider mirrors WatchAuthenticationError
 // .missingOAuthProvider — a watch record inconsistent with its own
@@ -61,6 +106,11 @@ type Options struct {
 	// oauth.Unconfigured (always fails, classified as connectionError) —
 	// harmless for .password-only deployments.
 	OAuth oauth.TokenExchanger
+	// AuthFailureRetryInterval / AuthFailureRetryCap (Task #187): see
+	// defaultAuthFailureRetryInterval's doc comment. Defaults to 30
+	// minutes / 6 hours; tests drive these down to milliseconds.
+	AuthFailureRetryInterval time.Duration
+	AuthFailureRetryCap      time.Duration
 }
 
 // Pool mirrors WatcherPool.
@@ -92,6 +142,12 @@ func New(s *store.Store, sender push.Sender, logger *slog.Logger, opts Options) 
 	}
 	if opts.OAuth == nil {
 		opts.OAuth = oauth.Unconfigured{}
+	}
+	if opts.AuthFailureRetryInterval == 0 {
+		opts.AuthFailureRetryInterval = defaultAuthFailureRetryInterval
+	}
+	if opts.AuthFailureRetryCap == 0 {
+		opts.AuthFailureRetryCap = defaultAuthFailureRetryCap
 	}
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	return &Pool{
@@ -196,6 +252,13 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 func (p *Pool) runWatchLoop(ctx context.Context, watchID string) {
 	consecutiveAuthFailures := 0
 	backoff := 2 * time.Second
+	// Task #187: a separate, much longer backoff for auth failures on a
+	// watch whose credential has succeeded before — see
+	// defaultAuthFailureRetryInterval's doc comment. Kept independent of
+	// `backoff` (the connection-error track) so a watch that alternates
+	// between the two failure kinds doesn't have one contaminate the
+	// other's timescale.
+	authBackoff := p.opts.AuthFailureRetryInterval
 
 	for ctx.Err() == nil {
 		record, err := p.store.Watch(ctx, watchID)
@@ -210,7 +273,7 @@ func (p *Pool) runWatchLoop(ctx context.Context, watchID string) {
 		// conn unblocks any in-flight read, including a mid-IDLE one.
 		stopAfterFunc := context.AfterFunc(ctx, func() { _ = client.Close() })
 
-		err = p.connectAndWatch(ctx, client, record, &consecutiveAuthFailures, &backoff)
+		err = p.connectAndWatch(ctx, client, record, &consecutiveAuthFailures, &backoff, &authBackoff)
 		stopAfterFunc()
 		_ = client.Close()
 
@@ -254,6 +317,7 @@ func (p *Pool) connectAndWatch(
 	record *store.WatchRecord,
 	consecutiveAuthFailures *int,
 	backoff *time.Duration,
+	authBackoff *time.Duration,
 ) error {
 	if err := client.Connect(record.ImapHost, record.ImapPort, record.ImapUseTLS, p.opts.ConnectTimeout, p.opts.NetworkPolicy); err != nil {
 		return err
@@ -279,19 +343,36 @@ func (p *Pool) connectAndWatch(
 			// for every other attacker-influenced string.
 			"serverResponse", authFailureServerResponse(err),
 		)
-		// Task #175: an invalid_grant (dead refresh token) or a locally-
-		// detected configuration problem stops the watch on the very
-		// first occurrence — retrying either can never succeed. Every
-		// other case (including a wrong password) retries up to
-		// maxConsecutiveAuthFailures times.
-		givingUp := stopsImmediately || *consecutiveAuthFailures >= maxConsecutiveAuthFailures
+		// Task #187: a watch whose credential has authenticated
+		// successfully before (WatchRecord.LastConnectedAt != nil) never
+		// gives up on a plain "wrong password"-shaped rejection (kind ==
+		// AuthFailure, stopsImmediately == false) — a credential that
+		// worked minutes/hours ago cannot have simply become wrong, so
+		// this is treated as a possible temporary lock (see
+		// defaultAuthFailureRetryInterval's doc comment) rather than
+		// confirmed-invalid credentials. `stopsImmediately` cases (dead
+		// OAuth refresh token, missing provider — structurally
+		// unrecoverable, nothing to do with a lock) always still stop
+		// regardless of history.
+		hasSucceededBefore := record.LastConnectedAt != nil
+		givingUp := shouldGiveUpAfterAuthFailure(stopsImmediately, hasSucceededBefore, *consecutiveAuthFailures)
 		// Task #173: persist this so GET /v1/watches can tell the app
-		// which account's watch actually stopped.
+		// which account's watch actually stopped. Task #187: `givingUp ==
+		// false` here also covers "proven-good credential, keep retrying
+		// at a long interval" — status stays whatever MarkWatchConnected
+		// last set (never forced to 'stopped'), so the watch resumes on
+		// its own the moment the lock clears, no manual re-registration
+		// needed.
 		_ = p.store.RecordWatchError(ctx, record.ID, kind, givingUp)
 		if givingUp {
 			p.logger.Error("watch stopped after authentication failure",
 				"watchId", record.ID, "kind", string(kind))
 			return errWatchStopped
+		}
+		if !stopsImmediately && kind == api.ErrorKindAuthFailure && hasSucceededBefore {
+			sleepCtx(ctx, *authBackoff)
+			*authBackoff = minDuration(*authBackoff*2, p.opts.AuthFailureRetryCap)
+			return nil
 		}
 		sleepCtx(ctx, *backoff)
 		*backoff = minDuration(*backoff*2, 5*time.Minute)
@@ -300,6 +381,7 @@ func (p *Pool) connectAndWatch(
 
 	*consecutiveAuthFailures = 0
 	*backoff = 2 * time.Second
+	*authBackoff = p.opts.AuthFailureRetryInterval
 	_ = p.store.MarkWatchConnected(ctx, record.ID)
 
 	selectResult, err := client.Select(record.Mailbox)
@@ -388,6 +470,35 @@ func (p *Pool) fire(ctx context.Context, record *store.WatchRecord, uidNext int)
 		p.logger.Warn("push send failed",
 			"watchId", record.ID, "error", push.SanitizeForLog(err.Error()))
 	}
+}
+
+// shouldGiveUpAfterAuthFailure (Task #187) decides whether a watch
+// permanently stops (status -> 'stopped', requires manual re-registration)
+// after this authentication failure, or keeps retrying. Pulled out as its
+// own pure function — no *Pool, no store, no IMAP client — so the
+// success-history judgment itself is unit-testable without spinning up a
+// fake IMAP server (see pool_test.go's TestShouldGiveUpAfterAuthFailure).
+//
+//   - stopsImmediately (from classifyAuthFailure: a dead OAuth refresh
+//     token, or a locally-detected configuration problem) always gives up
+//     on the first occurrence, regardless of history — retrying either can
+//     never succeed.
+//   - Otherwise, a credential that has authenticated successfully before
+//     (hasSucceededBefore) never gives up — see
+//     defaultAuthFailureRetryInterval's doc comment for why a "wrong
+//     password"-shaped rejection from a proven-good credential is treated
+//     as a possible temporary lock, not confirmed-invalid credentials.
+//   - A credential with no success on record gives up after
+//     maxConsecutiveAuthFailures — unchanged pre-Task-#187 behavior, since
+//     there's no prior success to make "this is just a lock" plausible.
+func shouldGiveUpAfterAuthFailure(stopsImmediately, hasSucceededBefore bool, consecutiveAuthFailures int) bool {
+	if stopsImmediately {
+		return true
+	}
+	if hasSucceededBefore {
+		return false
+	}
+	return consecutiveAuthFailures >= maxConsecutiveAuthFailures
 }
 
 // classifyAuthFailure mirrors WatcherPool.classifyAuthFailure(_:) — which

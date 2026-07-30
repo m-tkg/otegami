@@ -165,6 +165,64 @@ public actor AccountSyncer {
     /// mailbox's offline streak never affects another mailbox's, or the
     /// account-level `connect()`'s.
     private var mailboxNetworkFailureStreaks: [Int64: Int] = [:]
+    /// Task #187: when `runIdleLoop`'s reconnect hit `.authentication`
+    /// (IMAP AUTHENTICATIONFAILED), the timestamp of that failure — `nil`
+    /// once a connect succeeds again. In-memory, instance-lifetime, same
+    /// shape/reasoning as `accountNetworkFailureStreak` above (this
+    /// `AccountSyncer` outlives any one `idleTask`, so this survives a
+    /// `startIdleLoop` restart even though that resets `runIdleLoop`'s own
+    /// local `backoffSeconds` to 5 — see that method's doc comment for why
+    /// a restart alone must not also reset this).
+    private var lastAuthFailureAt: Date?
+
+    /// Task #187: how long `runIdleLoop` waits before attempting to
+    /// reconnect after an `.authentication` failure, instead of the
+    /// short 5s/10s/.../300s backoff it uses for every other error class.
+    ///
+    /// Real trigger: a foreground-resume restarts this loop via
+    /// `startIdleLoop` (`OtegamiApp.handleScenePhaseChange`'s `.active`
+    /// case calls `startIdleLoops(for:)` on every return to foreground),
+    /// which cancels and replaces `idleTask` — resetting `runIdleLoop`'s
+    /// local `backoffSeconds` back to 5 each time. Before this fix, an
+    /// account stuck in a Yahoo-Japan-style temporary auth lock
+    /// (`docs/qa-findings.md`, Task #187) would reconnect within 5s of
+    /// every foreground return *on top of* its own 5s–300s in-foreground
+    /// backoff loop — one of the "retries that likely extend the lock
+    /// ourselves" contributors alongside the relay's short backoff
+    /// (`server/otegami-relay-go/internal/watcher/pool.go`'s
+    /// `defaultAuthFailureRetryInterval`). `runIdleLoop` now checks
+    /// `lastAuthFailureAt` at the top of every iteration — including right
+    /// after a restart — and skips attempting to connect at all until this
+    /// cooldown has elapsed, regardless of how many times the loop itself
+    /// gets restarted in the meantime.
+    ///
+    /// Same 30-minute value as the relay's
+    /// `defaultAuthFailureRetryInterval` (see that constant's doc comment
+    /// for the Yahoo-Japan-lockout reasoning) — no growth/cap here since,
+    /// unlike the relay's watch, this loop only runs while the app is
+    /// foregrounded at all (backgrounding already stops it via
+    /// `stopAllIdleLoops`), so there's no "stuck rejecting for many hours"
+    /// scenario to grow the interval for. Also matches this codebase's own
+    /// existing precedent for the same class of problem:
+    /// `OpQueueProcessor.backoffCap` (30 minutes).
+    private static let authFailureCooldown: TimeInterval = 30 * 60
+
+    /// Task #187: pure decision — given the last `.authentication` failure
+    /// (if any) and the current time, how many seconds remain before
+    /// `runIdleLoop` should attempt to reconnect. `nil` means "no active
+    /// cooldown, attempt now" (either no failure on record, or the
+    /// cooldown has already elapsed). Pulled out of `runIdleLoop` itself so
+    /// the interval logic is unit-testable without actually waiting
+    /// through `Task.sleep`/real wall-clock time — not `private` (unlike
+    /// `authFailureCooldown` above) so `@testable import SyncEngine` can
+    /// reach it, same visibility reasoning as `isAutoRetryingForTesting()`'s
+    /// doc comment.
+    static func authFailureCooldownRemaining(lastAuthFailureAt: Date?, now: Date) -> TimeInterval? {
+        guard let lastAuthFailureAt else { return nil }
+        let remaining = authFailureCooldown - now.timeIntervalSince(lastAuthFailureAt)
+        return remaining > 0 ? remaining : nil
+    }
+
     /// Task #69 "リトライ中に新しい同期要求が来た場合の重複防止": set for the
     /// whole duration of an `autoRetry: true` `performInitialSync`/
     /// `performIncrementalSync` call (not just while a backoff sleep is in
@@ -794,6 +852,16 @@ public actor AccountSyncer {
     private func runIdleLoop(auth: MailAuth, onWake: @Sendable () async -> Void) async {
         var backoffSeconds: TimeInterval = 5
         while !Task.isCancelled {
+            // Task #187: if the last attempt (possibly from a since-
+            // restarted `idleTask` — see `authFailureCooldown`'s doc
+            // comment) failed on authentication and the cooldown hasn't
+            // elapsed, don't even attempt to reconnect yet. Slept in
+            // bounded chunks purely to keep re-checking cheap; `Task.sleep`
+            // itself already cancels promptly on `stopIdleLoop()`.
+            if let remaining = Self.authFailureCooldownRemaining(lastAuthFailureAt: lastAuthFailureAt, now: Date()) {
+                try? await Task.sleep(for: .seconds(min(remaining, 60)))
+                continue
+            }
             do {
                 // Task #69: `autoRetry: false` here on purpose — this loop
                 // already implements its *own* infinite reconnect-with-
@@ -805,6 +873,10 @@ public actor AccountSyncer {
                 // -level `lastSyncError` recorded/cleared around it same as
                 // always.
                 let session = try await connectWithRetry(auth: auth, autoRetry: false)
+                // Task #187: LOGIN just succeeded — proof the credential
+                // itself is fine, whatever caused an earlier `.authentication`
+                // failure (if any) has cleared.
+                lastAuthFailureAt = nil
                 let mailboxInfos = try await session.listMailboxes()
                 guard let inboxInfo = Self.inbox(among: mailboxInfos) else {
                     await session.disconnect()
@@ -821,6 +893,14 @@ public actor AccountSyncer {
                 }
                 await session.disconnect()
             } catch {
+                // Task #187: an `.authentication` failure gets the long
+                // cooldown above instead of the short backoff below — see
+                // `authFailureCooldown`'s doc comment for why a plain
+                // exponential backoff isn't enough on its own (it resets
+                // every foreground-triggered `startIdleLoop` restart).
+                if case .authentication = Self.classify(error) {
+                    lastAuthFailureAt = Date()
+                }
                 // Connection/auth error, or the idle stream itself threw —
                 // fall through to the backoff-and-retry below rather than
                 // giving up on IDLE for the rest of the foreground session.

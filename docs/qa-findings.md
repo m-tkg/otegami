@@ -2392,3 +2392,109 @@ UID に付け替えて確定する — の**書き込み先チェック漏れ**�
   それぞれ確認済みで無関係。
 - 実機シミュレータでの確認は未実施 (方針どおり)。`PENDING.md`に
   未検証事項を追記した。
+
+## Task #187: Yahoo! JAPAN の断続的な認証失敗 — 自己誘発ロックの疑いと再試行間隔の是正
+
+**実測済みの事実 (推測ではない)**: リレー側の切り分け用ログ (commit
+`5656c7b`、`authFailureServerResponse`) が、Yahoo Japan
+(`imap.mail.yahoo.co.jp`) アカウントの LOGIN 失敗時にサーバーの実際の
+タグ付き応答を記録した:
+
+```
+A1 NO [AUTHENTICATIONFAILED] Incorrect username or password.
+```
+
+`[LIMIT]`/`[UNAVAILABLE]`のようなレート制限を示す応答**ではない**。
+しかし同じ保存済み資格情報で、同日の少し前には接続に成功している —
+値そのものは正しい。Yahoo! JAPAN の公式ヘルプは「認証エラーが連続すると
+アカウントが一時的にロックされることがある」という記述はあるが、
+ロック期間は明記していない
+(<https://note.chiilabo.jp/2026-04/yahoo-japan-imap-external-access-change/>
+を WebFetch で確認済み — 具体的な分数の記載は無かった)。「同時接続数の
+超過」という当初仮説は、この応答内容 (レート制限特有のコードではない)
+から否定される。
+
+**洗い出した再試行経路**:
+
+1. **リレー (`server/otegami-relay-go/internal/watcher/pool.go`)
+   `runWatchLoop`/`connectAndWatch`**: 認証失敗を`2秒`から始めて倍々に
+   (`4s, 8s, ...`、上限`5分`) 再試行し、`maxConsecutiveAuthFailures`
+   (3回) で完全停止 (`status = 'stopped'`、以後はユーザーの手動再登録
+   まで復活しない)。1アカウントにつき watch が複数 (Task #175 以降、
+   push 対象アカウントごとに1つ) 同時に走るため、実質「12秒間に3回 ×
+   watch数」の再試行が同時多発していた。
+2. **アプリ本体 (`packages/OtegamiKit/Sources/SyncEngine/AccountSyncer
+   .swift`) `runIdleLoop`**: `.authenticationFailed`を含むあらゆる
+   エラーを一律`5秒`から倍々 (上限`5分`) で再接続し続ける — これ自体は
+   フォアグラウンド中ずっと動く設計だが、**`OtegamiApp
+   .handleScenePhaseChange`の`.active`ケース (フォアグラウンド復帰の
+   たび) が`startIdleLoops(for:)`経由でこのループを毎回`stopIdleLoop()`
+   → 新しい`Task`で再起動しており、ローカル変数`backoffSeconds`が
+   フォアグラウンド復帰のたびに`5秒`へリセットされていた** —
+   「フォアグラウンド復帰のたびに即再試行する経路」はここ。
+3. **`AccountSyncer.connectWithRetry`/`syncMailboxWithRetry`
+   (Task #69の`SyncRetryPolicy`)**: `.authentication`クラスの失敗は
+   そもそも**一切リトライしない** (即記録して`throw`) — 1回の
+   `performIncrementalSync`/`performInitialSync`呼び出し内では問題
+   ない。フォアグラウンド復帰のたびに`syncAllAccountsOnce()`が1回だけ
+   これを呼ぶのも「復帰ごとに1回」であって連続再試行ではないため、
+   ここは対象外と判断 (変更なし)。
+4. **`OpQueueProcessor`(op replay)**: `.authenticationFailed`は
+   `isConnectionLevel`として replay バッチ全体を中断し、`nextRetryAt`
+   をDBへ永続化した`backoffBase=30秒`〜`backoffCap=30分`のバックオフで
+   次回を待つ — これは元々1と2の問題を持たない設計だった (既存の
+   `30分`という値が、今回選んだ間隔の裏付けの一つにもなった)。
+
+**対策 (すべて`git log`の Task #187 コミット参照)**:
+
+- **リレー**: 認証失敗が`WatchRecord.LastConnectedAt != nil`
+  (=この watch の資格情報が過去に一度でも認証成功したことがある) の
+  場合、初回の再試行から`AuthFailureRetryInterval`
+  (デフォルト**30分**、失敗のたびに倍々、上限`AuthFailureRetryCap`
+  (**6時間**)) を空け、`maxConsecutiveAuthFailures`に関係なく**恒久停止
+  しない** (`shouldGiveUpAfterAuthFailure`、`pool.go`)。一度も成功して
+  いない watch (新規登録直後の設定ミス等) は従来どおり (2秒からの
+  バックオフ、3回で停止)。
+- **アプリ**: `AccountSyncer`に`lastAuthFailureAt`(インスタンス寿命、
+  `startIdleLoop`の再起動をまたいで生存) を追加し、`runIdleLoop`が
+  ループの先頭で`authFailureCooldownRemaining`(30分、固定) を確認して
+  経過するまで LOGIN 自体を試みないようにした。フォアグラウンド復帰で
+  ループが再起動されても、この状態は`AccountSyncer`インスタンス側に
+  残るため再試行されない。
+- **30分という値の根拠**: Yahoo! JAPAN 公式のロック期間が非公開のため、
+  (a) 一般的な Web メールの「連続認証失敗による一時ロック」が
+  「数十分」オーダーで語られることが多い点、(b) このリポジトリ自身の
+  既存実装 (`OpQueueProcessor.backoffCap` = 30分) が同種の問題に対して
+  既に採用している値であること、の2点から「数十分より確実に長く、
+  かつ即日中に回復する」値として30分を採用 (根拠はコード中のコメント
+  にも記載)。
+- **文言**: `MailTransportErrorMessage.swift`の
+  `.authenticationFailed`分岐に`hasSucceededBefore`引数を追加。
+  `AccountEditView`(既存アカウントの「接続テスト」再実行) は、
+  そのアカウントに`mailbox`行が1件でも存在するか (=過去に一度でも
+  LOGIN+`listMailboxes()`に成功した証拠) を見て、成功実績があれば
+  「ユーザー名またはパスワードを確認してください」ではなく「この資格情報は
+  過去に接続に成功しているため、一時的な制限の可能性がある」旨に文言を
+  差し替える。`AccountSetupView`/`ICloudAccountSetupView`(新規設定時、
+  実績があり得ない) は常に`false`のまま、従来どおり。ja/en とも
+  `Localizable.xcstrings`に追加、`make check-localization` green。
+
+**ユニットテスト**:
+
+- Go: `TestShouldGiveUpAfterAuthFailure` (純粋な成否判定テーブルテスト)、
+  `TestAuthFailureAfterPriorSuccessNeverStopsAndUsesLongBackoff`
+  (`store.MarkWatchConnected`で成功実績を模擬 → 認証拒否のまま
+  `WatchStatusStopped`に到達しないこと・`LastConnectedAt`が残ること
+  を確認)。`server/otegami-relay-go`は`go build ./...`/`go vet ./...`/
+  `go test ./...`すべて green (133 tests)。
+- Swift: `AccountSyncerTests`に`authFailureCooldownRemaining`の純粋
+  ロジックテスト4本 (未記録/直後/経過中/経過後) と、
+  `idleLoopDoesNotImmediatelyRetryAfterAuthFailure`
+  (`FakeIMAPSession`の`failConnection`で認証失敗を模擬し、2秒の観測窓で
+  `connect()`が2回目以降呼ばれないことを確認 — 修正前ならこの窓の間に
+  複数回再試行していたはずの経路の直接的な回帰テスト)。
+
+**検証**: `make test`/`make mac`/`make ios`/`make check-localization`
+すべて green。実 Yahoo! JAPAN アカウントでの実機確認 (ロック解除待ちの
+30分間隔が実際に有効か、文言が正しく出し分かるか) は`PENDING.md`に
+追記した (実機作業のため)。

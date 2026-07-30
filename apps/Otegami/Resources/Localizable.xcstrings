@@ -5163,6 +5163,16 @@
           }
         }
       }
+    },
+    "認証に失敗しました。ただし、この資格情報は過去に接続に成功しているため、パスワードの誤りではなく一時的な制限の可能性があります。しばらく時間をおいてから再度お試しください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authentication failed. However, since these credentials have connected successfully before, this may be a temporary restriction rather than an incorrect password. Please wait a while and try again."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -296,6 +296,116 @@ func TestRepeatedLoginFailuresStopTheWatchAndPersistStatus(t *testing.T) {
 	}
 }
 
+// TestShouldGiveUpAfterAuthFailure is Task #187's pure-logic unit test for
+// shouldGiveUpAfterAuthFailure's success-history judgment — no fake IMAP
+// server, no store, no sleeping.
+func TestShouldGiveUpAfterAuthFailure(t *testing.T) {
+	cases := []struct {
+		name                    string
+		stopsImmediately        bool
+		hasSucceededBefore      bool
+		consecutiveAuthFailures int
+		want                    bool
+	}{
+		{"stopsImmediately always gives up even with prior success", true, true, 1, true},
+		{"stopsImmediately always gives up on the very first attempt", true, false, 1, true},
+		{"never-succeeded credential retries below the cap", false, false, maxConsecutiveAuthFailures - 1, false},
+		{"never-succeeded credential gives up at the cap", false, false, maxConsecutiveAuthFailures, true},
+		{"never-succeeded credential gives up past the cap", false, false, maxConsecutiveAuthFailures + 5, true},
+		{"proven credential never gives up below the cap", false, true, maxConsecutiveAuthFailures - 1, false},
+		{"proven credential never gives up at the old cap", false, true, maxConsecutiveAuthFailures, false},
+		{"proven credential never gives up far past the old cap", false, true, maxConsecutiveAuthFailures * 100, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shouldGiveUpAfterAuthFailure(tc.stopsImmediately, tc.hasSucceededBefore, tc.consecutiveAuthFailures)
+			if got != tc.want {
+				t.Errorf("shouldGiveUpAfterAuthFailure(%v, %v, %d) = %v, want %v",
+					tc.stopsImmediately, tc.hasSucceededBefore, tc.consecutiveAuthFailures, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAuthFailureAfterPriorSuccessNeverStopsAndUsesLongBackoff is Task
+// #187's regression test: a watch whose credential has authenticated
+// successfully before (simulated here via store.MarkWatchConnected, rather
+// than toggling the fake server mid-test — see this test's doc comment on
+// why) must never reach WatchStatusStopped on a plain AUTHENTICATIONFAILED
+// rejection, must keep LastConnectedAt set (proof it once worked), and must
+// space its retries at Options.AuthFailureRetryInterval rather than the
+// short connection-error backoff — driven down to milliseconds here so the
+// test doesn't actually wait 30 minutes.
+func TestAuthFailureAfterPriorSuccessNeverStopsAndUsesLongBackoff(t *testing.T) {
+	s := newTestStore(t)
+	server := imaptest.NewFakeServer()
+	server.RejectsLogin = true
+	port, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	sender := &fakePushSender{}
+	pool := New(s, sender, testLogger(), Options{
+		IdleMaxWait:   3 * time.Second,
+		PollInterval:  200 * time.Millisecond,
+		NetworkPolicy: security.PermissiveForTesting(),
+		// Small enough that several retries fit in the test's deadline,
+		// large enough to clearly distinguish from the short
+		// connection-error backoff (starts at 2s in production).
+		AuthFailureRetryInterval: 150 * time.Millisecond,
+		AuthFailureRetryCap:      1 * time.Second,
+	})
+	t.Cleanup(pool.Stop)
+
+	deviceID, watchID := createWatch(t, s, port, "account-auth-fail-after-success",
+		api.WatchAuth{Type: api.WatchAuthPassword, Secret: "was-correct-password"},
+		api.EnvironmentSandbox, "tok")
+	// Simulate "this credential connected successfully earlier" without
+	// racing FakeServer.RejectsLogin (a plain bool field, not guarded for
+	// concurrent access — see FakeServer's doc comment) by setting it
+	// before the pool ever attempts a connection.
+	if err := s.MarkWatchConnected(t.Context(), watchID); err != nil {
+		t.Fatal(err)
+	}
+	pool.AddWatch(watchID)
+
+	// Poll for well over maxConsecutiveAuthFailures (3) worth of retries at
+	// the short-backoff timescale — if this watch used the old
+	// give-up-after-3 behavior, it would already be WatchStatusStopped
+	// long before this deadline.
+	deadline := time.Now().Add(3 * time.Second)
+	var lastSummary api.WatchSummary
+	sawAuthFailure := false
+	for time.Now().Before(deadline) {
+		summaries, err := s.ListWatchSummaries(t.Context(), deviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(summaries) != 1 {
+			t.Fatalf("got %d summaries", len(summaries))
+		}
+		lastSummary = summaries[0]
+		if lastSummary.Status == api.WatchStatusStopped {
+			t.Fatalf("watch stopped despite a prior successful connection: %+v", lastSummary)
+		}
+		if lastSummary.LastErrorKind != nil && *lastSummary.LastErrorKind == api.ErrorKindAuthFailure {
+			sawAuthFailure = true
+		}
+		if lastSummary.LastConnectedAt == nil {
+			t.Fatalf("lastConnectedAt should stay set from the earlier MarkWatchConnected: %+v", lastSummary)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !sawAuthFailure {
+		t.Fatal("watch never recorded an auth failure at all")
+	}
+	if lastSummary.Status != api.WatchStatusActive {
+		t.Fatalf("got %+v", lastSummary)
+	}
+}
+
 func TestRemovingWatchStopsFurtherPushes(t *testing.T) {
 	s := newTestStore(t)
 	server := imaptest.NewFakeServer()

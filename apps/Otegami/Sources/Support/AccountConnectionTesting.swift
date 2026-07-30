@@ -24,12 +24,19 @@ struct AccountConnectionTestResult {
 /// tests can't drift from each other (e.g. one forgetting
 /// `mailTransportUserFacingMessage`'s failure classification, which
 /// `ICloudAccountSetupView` did before this existed).
+///
+/// - Parameter hasSucceededBefore: Task #187 — forwarded to
+///   `mailTransportUserFacingMessage`; see that function's doc comment.
+///   Defaults to `false` (`AccountSetupView`/`ICloudAccountSetupView`'s
+///   brand-new accounts have no history to have); only `AccountEditView`
+///   passes `true` when applicable.
 func testIMAPConnection(
     host: String,
     port: Int,
     security: ConnectionSecurityRecord,
     username: String,
-    password: String
+    password: String,
+    hasSucceededBefore: Bool = false
 ) async -> AccountConnectionTestResult {
     let config = IMAPConfig(host: host, port: port, security: security.mailTransportSecurity)
     let session = MailCoreIMAPSession(config: config)
@@ -41,7 +48,7 @@ func testIMAPConnection(
         connectionTestLogger.notice("IMAP connect test failed: host=\(host, privacy: .public):\(port) user=\(username, privacy: .private(mask: .hash)) error=\(String(describing: error), privacy: .public)")
         return AccountConnectionTestResult(
             succeeded: false,
-            message: mailTransportUserFacingMessage(for: error, prefix: "接続に失敗しました")
+            message: mailTransportUserFacingMessage(for: error, prefix: "接続に失敗しました", hasSucceededBefore: hasSucceededBefore)
         )
     }
 }
@@ -51,12 +58,15 @@ func testIMAPConnection(
 /// equivalent (M6's `ICloudAccountSetupView` has no SMTP test button of its
 /// own; iCloud's SMTP host is a fixed preset never exercised independently
 /// of the IMAP one).
+///
+/// - Parameter hasSucceededBefore: see `testIMAPConnection`'s doc comment.
 func testSMTPConnection(
     host: String,
     port: Int,
     security: ConnectionSecurityRecord,
     username: String,
-    password: String
+    password: String,
+    hasSucceededBefore: Bool = false
 ) async -> AccountConnectionTestResult {
     let config = SMTPConfig(host: host, port: port, security: security.mailTransportSecurity)
     let session = MailCoreSMTPSession(config: config)
@@ -68,7 +78,7 @@ func testSMTPConnection(
         connectionTestLogger.notice("SMTP connect test failed: host=\(host, privacy: .public):\(port) user=\(username, privacy: .private(mask: .hash)) error=\(String(describing: error), privacy: .public)")
         return AccountConnectionTestResult(
             succeeded: false,
-            message: mailTransportUserFacingMessage(for: error, prefix: "SMTP接続に失敗しました")
+            message: mailTransportUserFacingMessage(for: error, prefix: "SMTP接続に失敗しました", hasSucceededBefore: hasSucceededBefore)
         )
     }
 }

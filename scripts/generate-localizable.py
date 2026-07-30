@@ -840,6 +840,21 @@ translations = {
     "現在のバージョン: %@": "Current version: %@",
     "現在: %@": "Current: %@",
     "GitHubへの問い合わせに失敗しました (HTTP %lld)": "Couldn't reach GitHub (HTTP %lld)",
+
+    # --- Task #187 (Yahoo! JAPAN 断続的認証失敗の誤誘導文言修正):
+    # `MailTransportErrorMessage.classification`'s `.authenticationFailed`
+    # branch when `hasSucceededBefore` is true (an existing account's
+    # `AccountEditView`「接続テスト」, not a brand-new
+    # `AccountSetupView`/`ICloudAccountSetupView` one) — the plain
+    # "ユーザー名またはパスワードを確認してください。" wording is misleading for a
+    # credential with a proven track record (`docs/qa-findings.md`).
+    # `(\(description))` is appended *outside* this literal in Swift (plain
+    # string concatenation, not interpolation inside the
+    # `String(localized:)` call) so this key stays a fixed sentence with no
+    # `%@` — see `check-localizable-coverage.py`'s doc comment on why an
+    # interpolated literal can't become a stable catalog key.
+    "認証に失敗しました。ただし、この資格情報は過去に接続に成功しているため、パスワードの誤りではなく一時的な制限の可能性があります。しばらく時間をおいてから再度お試しください。":
+        "Authentication failed. However, since these credentials have connected successfully before, this may be a temporary restriction rather than an incorrect password. Please wait a while and try again.",
 }
 
 # Disambiguation comments for a handful of short/reused source strings —

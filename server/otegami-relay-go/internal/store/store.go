@@ -53,6 +53,16 @@ type WatchRecord struct {
 	Secret       string // decrypted IMAP password or OAuth refresh token
 	Mailbox      string
 	CreatedAt    time.Time
+	// LastConnectedAt is non-nil iff this watch's credential has
+	// authenticated successfully at least once (set by MarkWatchConnected,
+	// never cleared by RecordWatchError — see that method's doc comment).
+	// Task #187: the watcher pool uses this to tell "this credential has
+	// simply always been wrong" apart from "this credential worked before
+	// and is now hitting what looks like a transient/lockout-shaped
+	// rejection" — only the latter gets the long retry-interval treatment
+	// and is spared the permanent give-up (pool.go's
+	// authFailureRetryInterval/classifyAuthFailure).
+	LastConnectedAt *time.Time
 }
 
 // DevicePushTarget mirrors RelayStore.DevicePushTarget.
@@ -367,7 +377,8 @@ func (s *Store) DeleteWatch(ctx context.Context, id, deviceID string) error {
 }
 
 const watchColumns = `id, deviceId, accountId, imapHost, imapPort, imapUseTLS,
-	imapUsername, authType, encryptedSecret, mailbox, createdAt, authProvider`
+	imapUsername, authType, encryptedSecret, mailbox, createdAt, authProvider,
+	lastConnectedAt`
 
 // ListWatches mirrors RelayStore.listWatches() — every watch across every
 // device, credentials decrypted.
@@ -406,10 +417,12 @@ func (s *Store) scanWatchRecords(rows *sql.Rows) ([]WatchRecord, error) {
 			imapPort, imapUseTLS                                                                int
 			encryptedSecret                                                                     []byte
 			authProvider                                                                        sql.NullString
+			lastConnectedAtRaw                                                                  sql.NullString
 		)
 		if err := rows.Scan(
 			&id, &deviceID, &accountID, &imapHost, &imapPort, &imapUseTLS,
 			&imapUsername, &authTypeRaw, &encryptedSecret, &mailbox, &createdAtRaw, &authProvider,
+			&lastConnectedAtRaw,
 		); err != nil {
 			return nil, err
 		}
@@ -428,19 +441,26 @@ func (s *Store) scanWatchRecords(rows *sql.Rows) ([]WatchRecord, error) {
 				provider = &p
 			}
 		}
+		var lastConnectedAt *time.Time
+		if lastConnectedAtRaw.Valid {
+			if t, ok := parseTime(lastConnectedAtRaw.String); ok {
+				lastConnectedAt = &t
+			}
+		}
 		out = append(out, WatchRecord{
-			ID:           id,
-			DeviceID:     deviceID,
-			AccountID:    accountID,
-			ImapHost:     imapHost,
-			ImapPort:     imapPort,
-			ImapUseTLS:   imapUseTLS != 0,
-			ImapUsername: imapUsername,
-			AuthType:     api.WatchAuthKind(authTypeRaw),
-			Provider:     provider,
-			Secret:       secret,
-			Mailbox:      mailbox,
-			CreatedAt:    createdAt,
+			ID:              id,
+			DeviceID:        deviceID,
+			AccountID:       accountID,
+			ImapHost:        imapHost,
+			ImapPort:        imapPort,
+			ImapUseTLS:      imapUseTLS != 0,
+			ImapUsername:    imapUsername,
+			AuthType:        api.WatchAuthKind(authTypeRaw),
+			Provider:        provider,
+			Secret:          secret,
+			Mailbox:         mailbox,
+			CreatedAt:       createdAt,
+			LastConnectedAt: lastConnectedAt,
 		})
 	}
 	return out, rows.Err()

@@ -538,6 +538,25 @@ struct AccountEditView: View {
 
     // MARK: - Actions
 
+    /// Task #187: whether `account`'s credential has authenticated
+    /// successfully at least once — approximated by "does this account
+    /// have any mailbox row at all". A `mailbox` row only exists after a
+    /// successful `listMailboxes()` call, which itself requires a
+    /// successful LOGIN first (`AccountSyncer.performInitialSync`/
+    /// `.performIncrementalSync`), so this is true for any account that
+    /// has ever completed even one sync pass — including one currently
+    /// failing every attempt. Deliberately *not* `account.lastSyncError ==
+    /// nil`: that only reflects the *most recent* attempt's outcome, which
+    /// is exactly wrong here (an account mid-lockout has a non-nil
+    /// `lastSyncError` right now, but may well have synced fine minutes
+    /// earlier) — see `MailTransportErrorMessage`'s `hasSucceededBefore`
+    /// doc comment for why the distinction matters for the message shown.
+    private func hasAccountEverSyncedSuccessfully() async -> Bool {
+        (try? await environment.database.dbWriter.read { db in
+            try MailboxRecord.filter(Column("accountId") == account.id).fetchCount(db) > 0
+        }) ?? false
+    }
+
     private func testConnectionTapped() async {
         isTesting = true
         testResultMessage = nil
@@ -562,7 +581,8 @@ struct AccountEditView: View {
             return
         }
 
-        let result = await testIMAPConnection(host: host, port: port, security: security, username: account.imapUsername, password: resolvedPassword)
+        let hasSucceededBefore = await hasAccountEverSyncedSuccessfully()
+        let result = await testIMAPConnection(host: host, port: port, security: security, username: account.imapUsername, password: resolvedPassword, hasSucceededBefore: hasSucceededBefore)
         testSucceeded = result.succeeded
         testResultMessage = result.message
     }
@@ -573,7 +593,8 @@ struct AccountEditView: View {
         smtpTestResultMessage = nil
         defer { isTestingSMTP = false }
 
-        let result = await testSMTPConnection(host: smtpHost, port: port, security: smtpSecurity, username: smtpUsername, password: resolvedPassword)
+        let hasSucceededBefore = await hasAccountEverSyncedSuccessfully()
+        let result = await testSMTPConnection(host: smtpHost, port: port, security: smtpSecurity, username: smtpUsername, password: resolvedPassword, hasSucceededBefore: hasSucceededBefore)
         smtpTestSucceeded = result.succeeded
         smtpTestResultMessage = result.message
     }
