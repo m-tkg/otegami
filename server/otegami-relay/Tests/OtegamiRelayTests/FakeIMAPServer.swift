@@ -20,12 +20,25 @@ final class FakeIMAPServer: @unchecked Sendable {
     private var exists: Int
     private var uidNext: Int
     let supportsIdle: Bool
+    /// Task #173 (`WatcherPoolTests`' auth-failure test): when `true`,
+    /// `LOGIN` always answers `NO` instead of `OK`, so a test can exercise
+    /// `WatcherPool`'s `maxConsecutiveAuthFailures` give-up path against a
+    /// real (if fake) IMAP round trip instead of only unit-testing
+    /// `RelayStore.recordWatchError` in isolation.
+    let rejectsLogin: Bool
 
-    init(eventLoopGroup: any EventLoopGroup, initialExists: Int = 5, initialUidNext: Int = 6, supportsIdle: Bool = true) {
+    init(
+        eventLoopGroup: any EventLoopGroup,
+        initialExists: Int = 5,
+        initialUidNext: Int = 6,
+        supportsIdle: Bool = true,
+        rejectsLogin: Bool = false
+    ) {
         self.eventLoopGroup = eventLoopGroup
         self.exists = initialExists
         self.uidNext = initialUidNext
         self.supportsIdle = supportsIdle
+        self.rejectsLogin = rejectsLogin
     }
 
     /// Starts listening on an ephemeral loopback port, returning it.
@@ -128,7 +141,11 @@ private final class FakeIMAPConnectionHandler: ChannelInboundHandler {
 
         switch command {
         case "LOGIN":
-            write(context: context, "\(tag) OK LOGIN completed")
+            if server.rejectsLogin {
+                write(context: context, "\(tag) NO [AUTHENTICATIONFAILED] authentication failed")
+            } else {
+                write(context: context, "\(tag) OK LOGIN completed")
+            }
 
         case "CAPABILITY":
             write(context: context, "* CAPABILITY IMAP4rev1\(server.supportsIdle ? " IDLE" : "")")

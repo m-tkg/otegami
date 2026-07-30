@@ -215,6 +215,57 @@ struct WatchRoutesTests {
         }
     }
 
+    @Test("GET /v1/watches reflects a stopped watch's status/lastErrorKind (Task #173)")
+    func listWatchesReflectsStoppedStatus() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "account-1",
+                        // TEST-NET-3 (RFC 5737) — see `createThenDelete`'s comment.
+                        imapHost: "203.0.113.10",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@example.com",
+                        auth: WatchAuth(secret: "app-password")
+                    )
+                )
+                var watchId = ""
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    let decoded = try TestSupport.jsonDecoder.decode(WatchResponse.self, from: response.body)
+                    watchId = decoded.watchId
+                }
+                // `WatcherPool` normally drives this transition (Task #173's
+                // `WatcherPoolTests.repeatedLoginFailuresStopTheWatchAndPersistStatus`
+                // covers that end-to-end) — here it's driven directly so
+                // this test only exercises the route/serialization, not
+                // real IMAP timing.
+                try await store.recordWatchError(id: watchId, kind: .authFailure, stopping: true)
+                await watcherPool.removeWatch(id: watchId)
+
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .get,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"]
+                ) { response in
+                    let decoded = try TestSupport.jsonDecoder.decode(ListWatchesResponse.self, from: response.body)
+                    #expect(decoded.watches.count == 1)
+                    #expect(decoded.watches[0].status == .stopped)
+                    #expect(decoded.watches[0].lastErrorKind == .authFailure)
+                    #expect(decoded.watches[0].lastErrorAt != nil)
+                }
+            }
+        }
+    }
+
     @Test("GET /v1/watches without a valid bearer secret is rejected")
     func listWatchesRequiresAuth() async throws {
         try await TestSupport.withStore { store, watcherPool, _ in

@@ -137,7 +137,15 @@ actor WatcherPool: Service {
                             "attempt": .stringConvertible(consecutiveAuthFailures),
                         ]
                     )
-                    if consecutiveAuthFailures >= maxConsecutiveAuthFailures {
+                    let givingUp = consecutiveAuthFailures >= maxConsecutiveAuthFailures
+                    // Task #173: persist this so `GET /v1/watches` can tell
+                    // the app which account's watch actually stopped —
+                    // previously this was only visible in the relay's own
+                    // logs, which is exactly the motivating 実機 report
+                    // (a relay-side "3 watches, 1 auth-failed" log line
+                    // with no way to tell *which* account from the app).
+                    try? await store.recordWatchError(id: watchId, kind: .authFailure, stopping: givingUp)
+                    if givingUp {
                         logger.error(
                             "watch stopped after repeated auth failures",
                             metadata: ["watchId": .string(watchId)]
@@ -151,6 +159,7 @@ actor WatcherPool: Service {
 
                 consecutiveAuthFailures = 0
                 backoffSeconds = 2
+                try? await store.markWatchConnected(id: watchId)
 
                 let selectResult = try await client.select(mailbox: record.mailbox)
                 var baselineUidNext: Int
@@ -193,6 +202,13 @@ actor WatcherPool: Service {
                     "watch connection error, reconnecting",
                     metadata: ["watchId": .string(watchId), "error": .string(String(describing: error))]
                 )
+                // Task #173: recorded for display only — never `stopping`.
+                // Unlike repeated auth failures, a connection/network
+                // blip is expected to recover on its own, so this loop
+                // keeps retrying with backoff regardless (unchanged
+                // behavior); only the "last known problem" the app can
+                // show changes.
+                try? await store.recordWatchError(id: watchId, kind: .connectionError, stopping: false)
                 try? await Task.sleep(for: .seconds(Int64(backoffSeconds)))
                 backoffSeconds = min(backoffSeconds * 2, 300)
             }

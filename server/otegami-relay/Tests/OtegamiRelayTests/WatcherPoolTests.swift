@@ -200,6 +200,62 @@ struct WatcherPoolTests {
         try await store.close()
     }
 
+    @Test("Task #173: repeated IMAP login failures stop the watch and persist status=stopped/authFailure")
+    func repeatedLoginFailuresStopTheWatchAndPersistStatus() async throws {
+        let eventLoopGroup = MultiThreadedEventLoopGroup.singleton
+        let store = try await TestSupport.makeStore(eventLoopGroup: eventLoopGroup)
+        let fakeServer = FakeIMAPServer(eventLoopGroup: eventLoopGroup, supportsIdle: true, rejectsLogin: true)
+        let port = try await fakeServer.start()
+        let pushSender = FakePushSender()
+        let watcherPool = WatcherPool(
+            store: store,
+            pushSender: pushSender,
+            eventLoopGroup: eventLoopGroup,
+            logger: Logger(label: "test"),
+            idleMaxWaitSeconds: 3,
+            pollInterval: .milliseconds(200),
+            // Loopback, same rationale as every other test in this file.
+            networkPolicy: .permissiveForTesting
+        )
+
+        let device = try await store.createDevice(apnsToken: "tok", environment: .sandbox)
+        let watch = try await store.createWatch(
+            deviceId: device.deviceId,
+            request: CreateWatchRequest(
+                accountId: "account-auth-fail",
+                imapHost: "127.0.0.1",
+                imapPort: port,
+                imapUseTLS: false,
+                imapUsername: "user@example.com",
+                auth: WatchAuth(secret: "wrong-password")
+            )
+        )
+        await watcherPool.addWatch(id: watch.watchId)
+
+        // `maxConsecutiveAuthFailures` (3) with the loop's own 2s/4s
+        // backoff between attempts — poll rather than a single fixed
+        // sleep to stay both correct and no slower than necessary.
+        var summary: WatchSummary?
+        for _ in 0..<100 {
+            let summaries = try await store.listWatchSummaries(deviceId: device.deviceId)
+            if summaries.first?.status == .stopped {
+                summary = summaries.first
+                break
+            }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+
+        #expect(summary?.status == .stopped)
+        #expect(summary?.lastErrorKind == .authFailure)
+        #expect(summary?.lastErrorAt != nil)
+        #expect(summary?.lastConnectedAt == nil, "login never succeeded, so this should never get set")
+        #expect(pushSender.calls.isEmpty)
+
+        await watcherPool.removeWatch(id: watch.watchId)
+        await fakeServer.stop()
+        try await store.close()
+    }
+
     @Test("deleting a watch stops its loop: further mail doesn't fire a push")
     func removingWatchStopsFurtherPushes() async throws {
         let eventLoopGroup = MultiThreadedEventLoopGroup.singleton

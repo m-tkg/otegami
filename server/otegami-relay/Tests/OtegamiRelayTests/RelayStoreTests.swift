@@ -152,6 +152,109 @@ struct RelayStoreTests {
         }
     }
 
+    // MARK: - Watch status (Task #173)
+
+    @Test("a freshly created watch defaults to active status with no error and no connection yet")
+    func newWatchDefaultsToActiveStatus() async throws {
+        try await TestSupport.withStore { store, _, _ in
+            let device = try await store.createDevice(apnsToken: "", environment: .sandbox)
+            let watch = try await store.createWatch(
+                deviceId: device.deviceId,
+                request: CreateWatchRequest(
+                    accountId: "acct",
+                    imapHost: "imap.watch-test.invalid",
+                    imapPort: 993,
+                    imapUseTLS: true,
+                    imapUsername: "user@example.com",
+                    auth: WatchAuth(secret: "password")
+                )
+            )
+            let summaries = try await store.listWatchSummaries(deviceId: device.deviceId)
+            #expect(summaries.count == 1)
+            #expect(summaries[0].watchId == watch.watchId)
+            #expect(summaries[0].status == .active)
+            #expect(summaries[0].lastConnectedAt == nil)
+            #expect(summaries[0].lastErrorKind == nil)
+            #expect(summaries[0].lastErrorAt == nil)
+        }
+    }
+
+    @Test("markWatchConnected records the connection time and clears any prior error")
+    func markWatchConnectedRecordsSuccess() async throws {
+        try await TestSupport.withStore { store, _, _ in
+            let device = try await store.createDevice(apnsToken: "", environment: .sandbox)
+            let watch = try await store.createWatch(
+                deviceId: device.deviceId,
+                request: CreateWatchRequest(
+                    accountId: "acct",
+                    imapHost: "imap.watch-test.invalid",
+                    imapPort: 993,
+                    imapUseTLS: true,
+                    imapUsername: "user@example.com",
+                    auth: WatchAuth(secret: "password")
+                )
+            )
+            // A connection error first, so this test also proves a later
+            // success clears it rather than just never setting it.
+            try await store.recordWatchError(id: watch.watchId, kind: .connectionError, stopping: false)
+            try await store.markWatchConnected(id: watch.watchId)
+
+            let summary = try await store.listWatchSummaries(deviceId: device.deviceId)[0]
+            #expect(summary.status == .active)
+            #expect(summary.lastConnectedAt != nil)
+            #expect(summary.lastErrorKind == nil)
+            #expect(summary.lastErrorAt == nil)
+        }
+    }
+
+    @Test("recordWatchError(stopping: false) records the error but leaves status active")
+    func recordWatchErrorNonStoppingStaysActive() async throws {
+        try await TestSupport.withStore { store, _, _ in
+            let device = try await store.createDevice(apnsToken: "", environment: .sandbox)
+            let watch = try await store.createWatch(
+                deviceId: device.deviceId,
+                request: CreateWatchRequest(
+                    accountId: "acct",
+                    imapHost: "imap.watch-test.invalid",
+                    imapPort: 993,
+                    imapUseTLS: true,
+                    imapUsername: "user@example.com",
+                    auth: WatchAuth(secret: "password")
+                )
+            )
+            try await store.recordWatchError(id: watch.watchId, kind: .connectionError, stopping: false)
+
+            let summary = try await store.listWatchSummaries(deviceId: device.deviceId)[0]
+            #expect(summary.status == .active)
+            #expect(summary.lastErrorKind == .connectionError)
+            #expect(summary.lastErrorAt != nil)
+        }
+    }
+
+    @Test("recordWatchError(stopping: true) flips status to stopped with the given reason")
+    func recordWatchErrorStoppingMarksStopped() async throws {
+        try await TestSupport.withStore { store, _, _ in
+            let device = try await store.createDevice(apnsToken: "", environment: .sandbox)
+            let watch = try await store.createWatch(
+                deviceId: device.deviceId,
+                request: CreateWatchRequest(
+                    accountId: "acct",
+                    imapHost: "imap.watch-test.invalid",
+                    imapPort: 993,
+                    imapUseTLS: true,
+                    imapUsername: "user@example.com",
+                    auth: WatchAuth(secret: "password")
+                )
+            )
+            try await store.recordWatchError(id: watch.watchId, kind: .authFailure, stopping: true)
+
+            let summary = try await store.listWatchSummaries(deviceId: device.deviceId)[0]
+            #expect(summary.status == .stopped)
+            #expect(summary.lastErrorKind == .authFailure)
+            #expect(summary.lastErrorAt != nil)
+        }
+    }
+
     @Test("watch credentials are never stored as plaintext")
     func credentialsAreEncryptedAtRest() async throws {
         try await TestSupport.withStore { store, _, _ in

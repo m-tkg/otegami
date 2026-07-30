@@ -108,13 +108,43 @@ actor RelayStore {
                 authType TEXT NOT NULL,
                 encryptedSecret BLOB NOT NULL,
                 mailbox TEXT NOT NULL,
-                createdAt TEXT NOT NULL
+                createdAt TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                lastConnectedAt TEXT,
+                lastErrorKind TEXT,
+                lastErrorAt TEXT
             )
             """
         )
         _ = try await connection.query(
             "CREATE INDEX IF NOT EXISTS watch_deviceId ON watch(deviceId)"
         )
+        // Task #173: a relay that's been running since before these
+        // columns existed has a `watch` table that `CREATE TABLE IF NOT
+        // EXISTS` above leaves untouched — add them the first time this
+        // (now-newer) binary runs against that database. Guarded by
+        // `PRAGMA table_info` rather than a fixed "schema version" counter
+        // because that's all this store has ever used for evolution so
+        // far, and a handful of `ADD COLUMN`s doesn't yet justify a
+        // heavier migration mechanism.
+        try await addWatchColumnsIfMissing()
+    }
+
+    private func addWatchColumnsIfMissing() async throws {
+        let existing = try await connection.query("PRAGMA table_info(watch)")
+        let existingNames = Set(existing.compactMap { $0.column("name")?.string })
+        if !existingNames.contains("status") {
+            _ = try await connection.query("ALTER TABLE watch ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        }
+        if !existingNames.contains("lastConnectedAt") {
+            _ = try await connection.query("ALTER TABLE watch ADD COLUMN lastConnectedAt TEXT")
+        }
+        if !existingNames.contains("lastErrorKind") {
+            _ = try await connection.query("ALTER TABLE watch ADD COLUMN lastErrorKind TEXT")
+        }
+        if !existingNames.contains("lastErrorAt") {
+            _ = try await connection.query("ALTER TABLE watch ADD COLUMN lastErrorAt TEXT")
+        }
     }
 
     // MARK: - Devices
@@ -279,7 +309,8 @@ actor RelayStore {
     func listWatchSummaries(deviceId: String) async throws -> [WatchSummary] {
         let rows = try await connection.query(
             """
-            SELECT id, accountId, imapHost, mailbox, createdAt
+            SELECT id, accountId, imapHost, mailbox, createdAt,
+                   status, lastConnectedAt, lastErrorKind, lastErrorAt
             FROM watch
             WHERE deviceId = ?
             ORDER BY createdAt ASC
@@ -296,7 +327,62 @@ actor RelayStore {
             else {
                 throw RelayStoreError.watchNotFound
             }
-            return WatchSummary(watchId: id, accountId: accountId, imapHost: imapHost, mailbox: mailbox, createdAt: createdAt)
+            // `status` has a `NOT NULL DEFAULT 'active'` column
+            // constraint, but an unrecognized value (shouldn't happen —
+            // only this file ever writes it — but a raw DB edit or a
+            // future rollback could produce one) falls back to `.active`
+            // rather than failing the whole listing.
+            let status = row.column("status")?.string.flatMap(WatchSummary.Status.init(rawValue:)) ?? .active
+            let lastConnectedAt = row.column("lastConnectedAt")?.string.flatMap(Self.iso8601.date(from:))
+            let lastErrorKind = row.column("lastErrorKind")?.string.flatMap(WatchSummary.ErrorKind.init(rawValue:))
+            let lastErrorAt = row.column("lastErrorAt")?.string.flatMap(Self.iso8601.date(from:))
+            return WatchSummary(
+                watchId: id,
+                accountId: accountId,
+                imapHost: imapHost,
+                mailbox: mailbox,
+                createdAt: createdAt,
+                status: status,
+                lastConnectedAt: lastConnectedAt,
+                lastErrorKind: lastErrorKind,
+                lastErrorAt: lastErrorAt
+            )
+        }
+    }
+
+    // MARK: - Watch status (Task #173)
+
+    /// Called by `WatcherPool` right after a watch's IMAP `LOGIN`/`SELECT`
+    /// succeeds — marks it `.active`, records the connection time, and
+    /// clears whatever error was previously recorded (a fresh success
+    /// supersedes it). A no-op if the watch has since been deleted (the
+    /// `WHERE id = ?` simply matches no rows).
+    func markWatchConnected(id: String) async throws {
+        _ = try await connection.query(
+            "UPDATE watch SET status = 'active', lastConnectedAt = ?, lastErrorKind = NULL, lastErrorAt = NULL WHERE id = ?",
+            [.text(Self.iso8601.string(from: Date())), .text(id)]
+        )
+    }
+
+    /// Called by `WatcherPool` on a failed connection/login attempt.
+    /// `stopping` marks the watch `.stopped` (currently only reached after
+    /// `maxConsecutiveAuthFailures` consecutive `.authFailure`s) — a
+    /// non-stopping call just records the error for display while the
+    /// loop keeps retrying on its own, matching `WatchSummary.ErrorKind`'s
+    /// doc comment on `.connectionError` never stopping the loop by
+    /// itself.
+    func recordWatchError(id: String, kind: WatchSummary.ErrorKind, stopping: Bool) async throws {
+        let now = Self.iso8601.string(from: Date())
+        if stopping {
+            _ = try await connection.query(
+                "UPDATE watch SET status = 'stopped', lastErrorKind = ?, lastErrorAt = ? WHERE id = ?",
+                [.text(kind.rawValue), .text(now), .text(id)]
+            )
+        } else {
+            _ = try await connection.query(
+                "UPDATE watch SET lastErrorKind = ?, lastErrorAt = ? WHERE id = ?",
+                [.text(kind.rawValue), .text(now), .text(id)]
+            )
         }
     }
 

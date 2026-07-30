@@ -162,23 +162,100 @@ public struct PushNotificationPayload: Codable, Equatable, Sendable {
 /// this device owns *except* its credential (never re-exposed over the
 /// API, per `docs/relay-deployment.md`'s threat model). `imapHost` (not
 /// present on `WatchResponse`) is included so a future debugging UI could
-/// show which server each watch is actually watching, but the app's own
-/// use of this today (M9 follow-up: reconciling the relay's watch list
-/// against local accounts on launch/foreground) only reads `watchId`/
-/// `accountId`.
+/// show which server each watch is actually watching. Originally only
+/// read `watchId`/`accountId` (M9 follow-up: reconciling the relay's
+/// watch list against local accounts on launch/foreground); Task #173
+/// added `status`/`lastConnectedAt`/`lastErrorKind`/`lastErrorAt` so the
+/// app's push-settings screen can show *which* account's watch actually
+/// stopped, instead of a relay operator being the only one who can see
+/// that in server logs.
 public struct WatchSummary: Codable, Equatable, Sendable {
+    /// Whether `WatcherPool`'s per-watch loop (`server/otegami-relay`) is
+    /// still actively trying to reach the IMAP server, or gave up.
+    public enum Status: String, Codable, Sendable {
+        /// Connected at least once and still retrying/idling normally —
+        /// includes the case where the *most recent* attempt failed but
+        /// the loop hasn't hit `maxConsecutiveAuthFailures` yet (see
+        /// `lastErrorKind` to tell those two apart).
+        case active
+        /// The watch loop gave up permanently (currently: repeated IMAP
+        /// login failures — `WatcherPool.maxConsecutiveAuthFailures`) and
+        /// will not retry on its own. Only a fresh watch (delete + create
+        /// — the app's "re-register" action) starts it again.
+        case stopped
+    }
+
+    /// Coarse classification of the most recent connection problem, kept
+    /// deliberately shallow (never a raw IMAP/network error string — those
+    /// can carry hostnames/usernames and this type is displayed straight
+    /// to the end user).
+    public enum ErrorKind: String, Codable, Sendable {
+        /// The IMAP server rejected the stored credential (`LOGIN`
+        /// failed). The most common reason a watch ends up `.stopped`.
+        case authFailure
+        /// A TCP/TLS/protocol-level failure reaching or talking to the
+        /// IMAP server — never by itself a reason the loop stops
+        /// permanently, it just keeps retrying with backoff.
+        case connectionError
+    }
+
     public var watchId: String
     public var accountId: String
     public var imapHost: String
     public var mailbox: String
     public var createdAt: Date
+    /// Defaults to `.active` when decoding a response that predates this
+    /// field (an app build newer than the relay it's talking to) — the
+    /// old relay never tracked this at all, so "active" (no known problem)
+    /// is the closest honest fallback.
+    public var status: Status
+    public var lastConnectedAt: Date?
+    public var lastErrorKind: ErrorKind?
+    /// Timestamp paired with `lastErrorKind` — `nil` exactly when
+    /// `lastErrorKind` is `nil`.
+    public var lastErrorAt: Date?
 
-    public init(watchId: String, accountId: String, imapHost: String, mailbox: String, createdAt: Date) {
+    public init(
+        watchId: String,
+        accountId: String,
+        imapHost: String,
+        mailbox: String,
+        createdAt: Date,
+        status: Status = .active,
+        lastConnectedAt: Date? = nil,
+        lastErrorKind: ErrorKind? = nil,
+        lastErrorAt: Date? = nil
+    ) {
         self.watchId = watchId
         self.accountId = accountId
         self.imapHost = imapHost
         self.mailbox = mailbox
         self.createdAt = createdAt
+        self.status = status
+        self.lastConnectedAt = lastConnectedAt
+        self.lastErrorKind = lastErrorKind
+        self.lastErrorAt = lastErrorAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case watchId, accountId, imapHost, mailbox, createdAt
+        case status, lastConnectedAt, lastErrorKind, lastErrorAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        watchId = try container.decode(String.self, forKey: .watchId)
+        accountId = try container.decode(String.self, forKey: .accountId)
+        imapHost = try container.decode(String.self, forKey: .imapHost)
+        mailbox = try container.decode(String.self, forKey: .mailbox)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        // See the type doc comment: an older relay's response simply
+        // won't have these keys, so decode leniently rather than failing
+        // the whole list.
+        status = try container.decodeIfPresent(Status.self, forKey: .status) ?? .active
+        lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
+        lastErrorKind = try container.decodeIfPresent(ErrorKind.self, forKey: .lastErrorKind)
+        lastErrorAt = try container.decodeIfPresent(Date.self, forKey: .lastErrorAt)
     }
 }
 
