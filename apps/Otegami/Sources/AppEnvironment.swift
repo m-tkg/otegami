@@ -41,6 +41,14 @@ final class AppEnvironment {
     var uitestDirectOpenThreadId: Int64? = nil
     /// C6/C7 送信キャンセル — see `PendingSendCoordinator`'s doc comment.
     let pendingSendCoordinator = PendingSendCoordinator()
+    /// Task #192 (実機クラッシュ 0xDEAD10CC 対策) — see
+    /// `suspendSharedDatabaseIfNeeded()`/`resumeSharedDatabaseIfNeeded()`'s
+    /// doc comments below and `DatabaseSuspensionTracker`'s for the dedup
+    /// this exists for. Not `#if os(iOS)`-gated itself (a plain, inert
+    /// value on macOS too) — only the two methods that actually post GRDB's
+    /// suspend/resume notifications are, matching `OtegamiAppGroup
+    /// .identifier`'s "App Group stays iOS-only" scoping.
+    @ObservationIgnored private let databaseSuspensionTracker = DatabaseSuspensionTracker()
     /// アバター強化バッチ「Google プロフィール写真」— see `GmailAccessTokenBridge`'s
     /// doc comment. Default-initialized here (no dependency on anything else
     /// in this class), same "wired to `self` at the very end of `init()`"
@@ -2953,6 +2961,52 @@ final class AppEnvironment {
             guard let self else { throw AuthResolutionError.missingCredential }
             return try await self.auth(for: account)
         }
+    }
+
+    /// Task #192 (実機クラッシュ解析: `EXC_CRASH`/`SIGKILL`,
+    /// `RUNNINGBOARD`/`0xDEAD10CC` — the shared App Group database's
+    /// `DatabasePool` held a lock while this app was suspended in the
+    /// background; see `AppDatabase.makeConfiguration
+    /// (observesSuspensionNotifications:)`'s doc comment for the full
+    /// analysis and `docs/qa-findings.md`'s matching entry). Posts GRDB's
+    /// `Database.suspendNotification`, which — because `makeShared`
+    /// enables `observesSuspensionNotifications` exactly when the database
+    /// actually lives in the App Group container — makes every
+    /// `DatabasePool` sharing that file (this process's, and whichever
+    /// `NotificationService` Extension instance happens to be alive right
+    /// now) refuse to acquire any *new* SQLite lock from this point on,
+    /// failing such an access with `SQLITE_INTERRUPT`/`SQLITE_ABORT`
+    /// instead — see `DatabaseSuspensionSupport.isSuspensionError(_:)`'s
+    /// doc comment for how `SyncEngine` treats that.
+    ///
+    /// Called from `RootView.handleScenePhaseChange`'s `.background`/
+    /// `.inactive` case, `#if os(iOS)`-gated there — macOS has no shared
+    /// App Group container to race a background suspend over in the first
+    /// place (`OtegamiAppGroup.identifier` always returns `nil` there), so
+    /// this method exists on both platforms (for `AppEnvironment`'s own
+    /// simplicity) but is only ever actually *called* on iOS.
+    /// `databaseSuspensionTracker` dedups so an ordinary `.active →
+    /// .inactive → .background` sequence — both legs of which map to
+    /// "suspend" in that same `handleScenePhaseChange` switch — doesn't
+    /// post this notification twice for one real suspend.
+    func suspendSharedDatabaseIfNeeded() async {
+        guard await databaseSuspensionTracker.markSuspended() else { return }
+        NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+    }
+
+    /// The `.active`-side counterpart to `suspendSharedDatabaseIfNeeded()`
+    /// — posts `Database.resumeNotification`, letting every `DatabasePool`
+    /// sharing the App Group database acquire new locks again. Called
+    /// first thing in `RootView.handleScenePhaseChange`'s `.active` case
+    /// (`#if os(iOS)`-gated there, same reasoning as
+    /// `suspendSharedDatabaseIfNeeded()`), before any of that case's own
+    /// database access (`startIdleLoops`/`syncAllAccountsOnce`/...) —
+    /// otherwise a foreground return immediately after a real suspend would
+    /// have those calls racing GRDB's still-active suspension and failing
+    /// with `SQLITE_INTERRUPT`/`SQLITE_ABORT` for no reason.
+    func resumeSharedDatabaseIfNeeded() async {
+        guard await databaseSuspensionTracker.markResumed() else { return }
+        NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
     }
 
     private func requestAPNsToken() async throws -> String {

@@ -2497,3 +2497,113 @@ A1 NO [AUTHENTICATIONFAILED] Incorrect username or password.
 すべて green。実 Yahoo! JAPAN アカウントでの実機確認 (ロック解除待ちの
 30分間隔が実際に有効か、文言が正しく出し分かるか) は`PENDING.md`に
 追記した (実機作業のため)。
+
+## Task #192: 実機クラッシュ `0xDEAD10CC` (RunningBoard によるバックグラウンド強制終了) の解析と対策
+
+**症状 (実機クラッシュログ、OTA ビルド)**:
+
+```
+exception: {"type": "EXC_CRASH", "signal": "SIGKILL"}
+termination: {"namespace": "RUNNINGBOARD", "code": 3735883980}
+```
+
+`3735883980` = `0xDEAD10CC` (「dead lock」の語呂合わせ) — iOS が
+「共有コンテナ内のファイル/SQLite のロックを握ったままバックグラウンドで
+停止されたアプリ」を強制終了するときの専用終了コード。OS が理由を
+名指ししている、推測ではなく確定した原因。
+
+**根本原因**: `packages/OtegamiKit/Sources/OtegamiStore/AppDatabase.swift`
+の `makeShared(appGroupIdentifier:)` は DB を App Group の共有コンテナに
+置く (`NotificationService` Extension と同じ DB ファイルを共有するため、
+M9 の設計)。しかし修正前の `makeConfiguration()` は `foreignKeysEnabled`
+しか設定しておらず、GRDB の中断通知 (`Configuration
+.observesSuspensionNotifications`) が有効になっていなかった —
+バックグラウンドで書き込み中に OS がプロセスを停止させると、保持中の
+SQLite ロックがそのまま残り、iOS がそれを検知して `0xDEAD10CC` で
+強制終了する。
+
+**対策 (GRDB 7.11.1 公式ドキュメント `Documentation.docc
+/DatabaseSharing.md` の "How to limit the 0xDEAD10CC exception" 節を
+実際に取得して確認した内容に従う — 記憶や推測ではない。バージョンは
+`packages/OtegamiKit/Package.resolved` の `grdb.swift` エントリで確認、
+`7.11.1`)**:
+
+1. **`AppDatabase.makeConfiguration(observesSuspensionNotifications:)`**:
+   `Configuration.observesSuspensionNotifications` を有効化。ただし
+   常に `true` にはしない — `makeShared(appGroupIdentifier:)` が実際に
+   App Group の共有コンテナへ解決できたとき (`sharedDirectory(...)`が
+   `isSharedContainer: true` を返したとき) だけ有効化する。macOS は
+   `OtegamiAppGroup.identifier` が常に `nil` を返す (App Group は
+   iOS 限定、`OtegamiAppGroup.swift`のdoc comment参照) ため、この機構は
+   自動的に iOS 限定になる。`makeInMemory()`(テスト/プレビュー) は
+   従来どおり無効のまま。
+2. **`OtegamiApp.handleScenePhaseChange`(iOS限定、`#if os(iOS)`)**:
+   `.background`/`.inactive`遷移の最初に`Database.suspendNotification`
+   を、`.active`遷移の最初に`Database.resumeNotification`を
+   `NotificationCenter.default`へpost (`AppEnvironment
+   .suspendSharedDatabaseIfNeeded()`/`.resumeSharedDatabaseIfNeeded()`)。
+   `DatabaseSuspensionTracker`(新規、`OtegamiStore`) が二重postを防ぐ
+   (`.active → .inactive → .background`のような遷移で1回の実質的な
+   suspendに対し2回postしてしまうのを防ぐ、純粋なdedup状態機械)。
+3. **中断中のエラー処理**: GRDBは中断中の新規ロック取得を
+   `SQLITE_INTERRUPT`/`SQLITE_ABORT` (`DatabaseError.isInterruptionError`
+   — GRDB自身が提供する判別ヘルパー) で失敗させる。この判定を
+   `DatabaseSuspensionSupport.isSuspensionError(_:)`(新規、
+   `OtegamiStore`) としてラップし、以下2箇所で使用:
+   - `AccountSyncer.classify(_:)`: 新しい`.suspended`ケースを追加し、
+     `.other`(通常のサーバエラー、5回まで指数バックオフで再試行) と
+     明確に分離。中断エラーは**リトライせず即座に諦め**、
+     `AccountRecord`/`MailboxRecord`の`lastSyncError`にも**記録しない**
+     — 中断は「本当の同期失敗」ではなく、次にフォアグラウンドへ戻った
+     瞬間に自然に再同期されるため、リトライも永続化されたエラー文言も
+     どちらも無意味かつユーザーを混乱させるだけ。
+   - `OpQueueProcessor.replay(account:auth:)`: per-op の`catch`ブロックに
+     中断エラー専用の分岐を追加。`recordFailure(op:error:)`自体が
+     `dbWriter.write`呼び出しであり、中断中はそれ自体も失敗する
+     (しかも既存コードでは`try?`で握りつぶされていなかった) ため、
+     対策前は`replay()`から意図しない形でエラーが伝播していた —
+     修正後は接続レベル障害と同じ扱いでバッチ全体を中断し、当該opの
+     `attempts`は消費しない。
+4. **`NotificationService` Extension の確認**: 同じ共有コンテナのDBを
+   開くが、`AccountRecord`を1件`read`するだけで**一切書き込まない**
+   ことを確認 — ロックを握ったまま停止されるリスクがそもそもない。
+   `database`はローカル変数で関数を抜けると GRDB自身の`deinit`で
+   クローズされる (GRDBの`DatabaseReader.close()`のdoc comment:
+   「明示的closeは通常不要、deinit時に自動クローズされる」) ため、
+   明示的な`close()`呼び出しは追加していない。`AppDatabase
+   .makeConfiguration`の変更はこのExtensionにも自動的に適用される
+   (同じ`makeShared`経由) が、書き込みが無いため実質的に無害。
+
+**確認した非自明な GRDB の挙動 (実装前に気づかず、テストで踏んだ)**:
+GRDB 7.11.1 の `DatabaseQueue.init(named:configuration:)` (インメモリ
+DB用の便利イニシャライザ、`AppDatabase.makeInMemory()`が使う経路) は
+`setupSuspension()`を一切呼ばない — `init(path:configuration:)`
+(ファイルバックエンドのみ) の方だけがサスペンション用の
+`NotificationCenter`オブザーバを登録する。本番コードは影響を受けない
+(`makeShared`は常にファイルバックエンドの`DatabasePool`を使う) が、
+中断挙動をユニットテストで検証する際はインメモリDBでは**何も起きない**
+(サイレントに無効) ことに注意が必要 — テストは一時ファイルバックエンドの
+`DatabaseQueue`を使うよう修正して確認した
+(`DatabaseSuspensionTests`/`AccountSyncerTests`/`OpQueueProcessorTests`)。
+
+**ユニットテスト**: `DatabaseSuspensionSupport.isSuspensionError(_:)`を
+実際に中断させた`DatabaseQueue`に対して検証 (ハンドビルドの
+`DatabaseError`ではなく、GRDB自身が投げるエラーで確認)。
+`DatabaseSuspensionTracker`の dedup 状態遷移。`AccountSyncer`/
+`OpQueueProcessor`それぞれで、実際にDBを中断させた状態でsync/replayを
+走らせ、「リトライしない」「`lastSyncError`/`opQueue.lastError`に
+記録されない」ことを確認する統合寄りのテスト (`IMAPSessionProtocol`の
+薄いラッパーで、スクリプト化されたIMAP応答が返った直後にDB中断を
+postするタイミング制御)。`Database.suspendNotification`は
+`NotificationCenter.default`経由のプロセス全体で共有される状態のため、
+`swift test`の並列実行下で他の中断系テストと競合し得る —
+`DatabaseSuspensionTestLock`(`flock`ベースのファイルロック、
+`OtegamiStoreTests`/`SyncEngineTests`それぞれに同一実装を複製、
+同じ一時ファイルパスを指すことでターゲットをまたいでも直列化) で
+シリアライズして解消 (修正前は`swift test`全体実行で低頻度に再現する
+flakeを実際に観測した)。
+
+**検証**: `make test`/`make mac`/`make ios`/`make check-localization`
+すべて green。**実機での再現確認は困難** (バックグラウンド停止の
+タイミング依存、`docs/verify.md`の既知不調とも合わせて`PENDING.md`に
+確認手順を追記した)。

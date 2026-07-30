@@ -246,6 +246,41 @@ green。実クリック検証は共有マシン環境でフォーカスが意図
 移った (誤操作のリスクを避けて中断)。詳細な8項目チェックリストは
 `docs/design-system.md`「Task #165」節参照。
 
+### Task #192: 実機クラッシュ `0xDEAD10CC` 対策 — 実機での再現・非再現確認が未実施
+
+詳細な原因分析・修正内容は `docs/qa-findings.md`「Task #192」節参照
+(`0xDEAD10CC`で検索可)。GRDB の中断通知
+(`Configuration.observesSuspensionNotifications`) を有効化し、
+`OtegamiApp.handleScenePhaseChange`から中断/復帰を送出、`SyncEngine`側
+(`AccountSyncer`/`OpQueueProcessor`) は中断エラーを「エラーではなく
+リトライ不要な一時停止」として扱うよう修正した。`make test`/`make mac`/
+`make ios`は green だが、**背景でバックグラウンド停止のタイミングに
+依存する不具合のため、シミュレータでの再現・非再現確認は困難**
+(`docs/verify.md`の既知不調4種のいずれにも該当しない、新種の環境依存)。
+
+実機で確認してほしいポイント:
+- **この修正が入る前のビルドで再現していた `0xDEAD10CC` クラッシュが、
+  この修正後は起きなくなること。** 具体的には、複数アカウント (できれば
+  push 通知有効なアカウント) を設定した状態で、メール一覧を開いたまま
+  ホームボタン/スワイプでバックグラウンドへ送り、数分〜数十分放置して
+  から再度フォアグラウンドへ戻す、を繰り返す。特に「バックグラウンドへ
+  送った直後 (opQueue replay や push 受信処理がまだ書き込み中の可能性が
+  ある瞬間)」を狙うと再現しやすいはず。
+- 上記の操作中、Xcode の Console.app (または `log stream --predicate
+  'subsystem == "com.mtkg.otegami"'`) で `SQLITE_ABORT`/`SQLITE_INTERRUPT`
+  や "Database is suspended" 関連のログが出ていないか (出ていても
+  クラッシュせずアプリが普通に動き続けていれば正常 — この修正の意図
+  どおり)。
+- フォアグラウンド復帰直後、同期が正常に再開する (受信トレイが更新
+  される、オフライン中の操作が反映される) こと — 中断状態のまま固まって
+  いないこと。
+- 実機のクラッシュログ (設定 → プライバシーとセキュリティ →
+  解析と改善 → 解析データ、または Xcode の Window → Devices and
+  Simulators → View Device Logs) に、この修正後は `RUNNINGBOARD`/
+  `0xDEAD10CC`起因のクラッシュが新規に増えていないこと。
+  **クラッシュログ本体は端末情報を含むためこのリポジトリにコミットしない
+  こと** (`CLAUDE.md`の注意点参照)。
+
 ## 環境・インフラの設定待ち (運用者作業)
 
 インフラ設定 (otegami-relay の再デプロイ、Client ID/Secret のビルド設定

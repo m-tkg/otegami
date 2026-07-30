@@ -57,19 +57,28 @@ public final class AppDatabase: Sendable {
     /// in), so this stays backward compatible for every caller that
     /// doesn't pass one.
     public static func makeShared(appGroupIdentifier: String? = nil) throws -> AppDatabase {
-        let directory = try sharedDirectory(appGroupIdentifier: appGroupIdentifier)
+        let (directory, isSharedContainer) = try sharedDirectory(appGroupIdentifier: appGroupIdentifier)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("otegami.sqlite")
-        let dbPool = try DatabasePool(path: url.path, configuration: makeConfiguration())
+        // Task #192 (実機クラッシュ 0xDEAD10CC): only a database that actually
+        // lives in the App Group's shared container is at risk of iOS
+        // killing this process for holding a lock on it while suspended —
+        // see `makeConfiguration(observesSuspensionNotifications:)`'s doc
+        // comment. `isSharedContainer` is `false` on macOS (no App Group
+        // entitlement — `OtegamiAppGroup.identifier` always returns `nil`
+        // there) and for every `swift test`/preview target, so this stays a
+        // no-op everywhere except the real iOS app and the `NotificationService`
+        // Extension, both of which open this exact same shared file.
+        let dbPool = try DatabasePool(path: url.path, configuration: makeConfiguration(observesSuspensionNotifications: isSharedContainer))
         return try AppDatabase(dbPool)
     }
 
-    private static func sharedDirectory(appGroupIdentifier: String?) throws -> URL {
+    private static func sharedDirectory(appGroupIdentifier: String?) throws -> (directory: URL, isSharedContainer: Bool) {
         if let appGroupIdentifier, !appGroupIdentifier.isEmpty,
            let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) {
-            return container.appendingPathComponent("otegami", isDirectory: true)
+            return (container.appendingPathComponent("otegami", isDirectory: true), true)
         }
-        return try applicationSupportDirectory()
+        return (try applicationSupportDirectory(), false)
     }
 
     /// An in-memory database (no file on disk), for tests and previews.
@@ -88,9 +97,35 @@ public final class AppDatabase: Sendable {
         return base.appendingPathComponent("otegami", isDirectory: true)
     }
 
-    private static func makeConfiguration() -> Configuration {
+    /// - Parameter observesSuspensionNotifications: Task #192 (実機クラッシュ
+    ///   解析: `EXC_CRASH`/`SIGKILL`, `RUNNINGBOARD` termination code
+    ///   `3735883980` = `0xDEAD10CC` — iOS's dedicated code for "killed this
+    ///   app for holding a file/SQLite lock while suspended in the
+    ///   background"). GRDB's official fix (`Documentation.docc
+    ///   /DatabaseSharing.md`'s "How to limit the 0xDEAD10CC exception"
+    ///   section, verified against the exact GRDB 7.11.1 tag this project
+    ///   pins in `Package.resolved` — not assumed from memory): set
+    ///   ``Configuration/observesSuspensionNotifications`` so this
+    ///   `DatabasePool` starts listening for ``Database/suspendNotification``/
+    ///   ``Database/resumeNotification``. Once suspended, GRDB refuses to
+    ///   acquire any *new* SQLite lock — the exact thing that can trigger
+    ///   `0xDEAD10CC` — and instead fails the access with
+    ///   `SQLITE_INTERRUPT`/`SQLITE_ABORT` (`DatabaseError.isInterruptionError`).
+    ///   `AppEnvironment.suspendSharedDatabaseIfNeeded()`/
+    ///   `.resumeSharedDatabaseIfNeeded()` (iOS-only — macOS has no shared
+    ///   App Group container to race a background suspend over, see
+    ///   `OtegamiAppGroup.identifier`'s doc comment) post those two
+    ///   notifications from `OtegamiApp.handleScenePhaseChange`;
+    ///   `SyncEngine`'s `AccountSyncer`/`OpQueueProcessor` treat the
+    ///   resulting interruption errors as "try again once resumed", not a
+    ///   real sync failure — see `DatabaseSuspensionSupport
+    ///   .isSuspensionError(_:)`'s doc comment. Defaults to `false` so
+    ///   `makeInMemory()` (tests/previews, and every target with no App
+    ///   Group entitlement) never pays for observers it has no use for.
+    private static func makeConfiguration(observesSuspensionNotifications: Bool = false) -> Configuration {
         var configuration = Configuration()
         configuration.foreignKeysEnabled = true
+        configuration.observesSuspensionNotifications = observesSuspensionNotifications
         return configuration
     }
 }
@@ -1038,6 +1073,28 @@ extension AppDatabase {
             // column has no `NOT NULL` constraint of its own.
             try db.create(index: "signatureTemplate_on_syncId", on: "signatureTemplate", columns: ["syncId"], unique: true)
             try db.create(index: "mailTemplate_on_syncId", on: "mailTemplate", columns: ["syncId"], unique: true)
+        }
+
+        // v38 (Task #193, 実機バグ「10年以上前に送った送信済みメールが、
+        // 6時間前くらいの日付で受信箱に表示される」): a MailCore2 bug this
+        // app used to inherit verbatim — `EnvelopeDateSentinel`'s doc
+        // comment has the full root cause — could stamp `message.date`
+        // with whatever moment a message was *fetched* rather than its real
+        // `Date:` header, for any message whose header was missing or
+        // malformed one. `MailCoreIMAPSession+Mapping.envelope(from:
+        // fetchedAt:)`'s fix stops this for every future fetch, but does
+        // nothing for a `date` already written that way, or for a thread a
+        // so-corrupted row already merged into via `Threader`'s subject-
+        // fallback pass (a years-old message that *looked* freshly sent
+        // easily lands inside that pass's 7-day window against whatever
+        // recent thread shares its subject and a participant). This
+        // migration runs `ThreadAssigner.repairSentinelDates(db:)` once for
+        // every existing install — see that function's doc comment for how
+        // it identifies an already-corrupted row (there's no stored
+        // "fetched at" moment to check against, only `updatedAt`) and how
+        // it re-threads it.
+        migrator.registerMigration("v38") { db in
+            try ThreadAssigner.repairSentinelDates(db: db)
         }
 
         return migrator

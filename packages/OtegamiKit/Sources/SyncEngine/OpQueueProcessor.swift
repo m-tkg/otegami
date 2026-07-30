@@ -170,6 +170,22 @@ public actor OpQueueProcessor {
                 }
             } catch let error as MailTransportError where Self.isConnectionLevel(error) {
                 throw error
+            } catch where DatabaseSuspensionSupport.isSuspensionError(error) {
+                // Task #192 (0xDEAD10CC 対策): the shared database is
+                // suspended — `recordFailure(op:error:)` right below is
+                // itself a `database.dbWriter.write` call, which would just
+                // fail the exact same way (and, unlike every other call site
+                // in this file, isn't wrapped in `try?`, so that failure
+                // would propagate out of this `catch` block uncaught).
+                // Every remaining op in `dueOps` would hit the same wall, so
+                // treat this like a connection-level failure and abort the
+                // whole batch — a normal replay picks the untouched queue
+                // back up once the app foregrounds and the database resumes
+                // (`OtegamiApp.handleScenePhaseChange`'s `.active` case
+                // already calls `replayOpQueue` on every foreground return).
+                // Deliberately not counted against `op.attempts`: this
+                // wasn't the op's fault.
+                throw error
             } catch {
                 let attempts = try await recordFailure(op: op, error: error)
                 if attempts >= OpQueueProcessor.maxAttempts {

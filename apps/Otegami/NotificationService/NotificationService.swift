@@ -249,6 +249,23 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         return PushNotificationPayload(accountId: accountId, uidNext: uidNext)
     }
 
+    /// Task #192 (0xDEAD10CC 対策の調査): this `DatabasePool` shares the same
+    /// App Group container/file the main app's `AppDatabase.makeShared`
+    /// opens, and `AppDatabase.makeConfiguration
+    /// (observesSuspensionNotifications:)` now enables GRDB's suspension
+    /// observing for *any* caller that resolves to that shared container —
+    /// including this Extension — so it would react correctly to a
+    /// `Database.suspendNotification` if one were ever posted here. In
+    /// practice none is needed: confirmed this Extension only ever reads
+    /// (`dbWriter.read` below — never `.write`), so it never holds a lock
+    /// capable of triggering `0xDEAD10CC` in the first place, and `database`
+    /// is a local variable that goes out of scope (closing the connection
+    /// via GRDB's own `deinit`, matching `DatabaseReader.close()`'s doc
+    /// comment — "you do not have to call this method... automatically
+    /// closed when they are deinitialized") the moment this function
+    /// returns, well before the OS could ever suspend this short-lived
+    /// Extension process. See `docs/qa-findings.md`'s Task #192 entry for
+    /// the full writeup.
     private static func lookupAccount(id: String) async throws -> AccountRecord? {
         let database = try AppDatabase.makeShared(appGroupIdentifier: appGroupIdentifier)
         return try await database.dbWriter.read { db in

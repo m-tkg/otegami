@@ -648,6 +648,14 @@ struct RootView: View {
     private func handleScenePhaseChange(_ phase: ScenePhase) async {
         switch phase {
         case .active:
+            // Task #192 (実機クラッシュ 0xDEAD10CC 対策): resumes the shared
+            // database *before* anything else in this case touches it — see
+            // `AppEnvironment.resumeSharedDatabaseIfNeeded()`'s doc comment.
+            // iOS-only: macOS has no shared App Group database to suspend in
+            // the first place (`OtegamiAppGroup.identifier`'s doc comment).
+            #if os(iOS)
+            await environment.resumeSharedDatabaseIfNeeded()
+            #endif
             await startIdleLoops(for: environment.accounts)
             await syncAllAccountsOnce()
             // G (実機フィードバック第3弾): the OS's notification settings
@@ -683,6 +691,18 @@ struct RootView: View {
             // the other half of that pair.
             await environment.settingsCloudSync.reconcile()
         case .background, .inactive:
+            // Task #192 (実機クラッシュ 0xDEAD10CC 対策): posts GRDB's
+            // suspend notification as the very first thing this case does
+            // — before `stopAllIdleLoops`/`finalizeNow` below, whose own
+            // database writes should already see the database as suspended
+            // if they race this exact transition (`AppEnvironment
+            // .suspendSharedDatabaseIfNeeded()`'s doc comment covers how
+            // `SyncEngine` handles the resulting `SQLITE_INTERRUPT`/
+            // `SQLITE_ABORT` gracefully — no crash, no error banner).
+            // iOS-only, same reasoning as the `.active` case's matching call.
+            #if os(iOS)
+            await environment.suspendSharedDatabaseIfNeeded()
+            #endif
             await environment.syncCoordinator.stopAllIdleLoops()
             // C7 「アプリを離脱したら即座に送信を確定」— cuts short whatever's
             // left of the countdown the instant the app leaves the

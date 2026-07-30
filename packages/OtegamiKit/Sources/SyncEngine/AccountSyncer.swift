@@ -542,13 +542,30 @@ public actor AccountSyncer {
     /// `IMAPSessionProtocol` method's documented failure mode is one of
     /// that enum's cases) falls into `.other` rather than crashing or
     /// silently never retrying.
+    ///
+    /// Task #192 (0xDEAD10CC 対策): `.suspended` is checked for *before* that
+    /// `MailTransportError` cast — a `select`/`fetchEnvelopes` failure is
+    /// always `MailTransportError`, but the `database.dbWriter.write { ... }`
+    /// calls this type's own sync body makes throw GRDB's `DatabaseError`
+    /// instead when the shared database is suspended (see
+    /// `DatabaseSuspensionSupport.isSuspensionError(_:)`'s doc comment) —
+    /// without this case, that error would silently fall through to `.other`
+    /// and get the same in-process sleep-then-retry treatment as a genuine
+    /// transient server hiccup, uselessly retrying (and failing the same
+    /// way) while the database stays suspended, and eventually persisting a
+    /// confusing "Database is suspended" `lastSyncError` once `maxAttempts`
+    /// is reached.
     private enum FailureClass {
         case authentication
         case networkUnreachable
         case other
+        case suspended
     }
 
     private static func classify(_ error: Error) -> FailureClass {
+        if DatabaseSuspensionSupport.isSuspensionError(error) {
+            return .suspended
+        }
         guard let error = error as? MailTransportError else { return .other }
         switch error {
         case .authenticationFailed:
@@ -626,6 +643,17 @@ public actor AccountSyncer {
                     let backoff = min(retryPolicy.backoffCap, retryPolicy.backoffBase * pow(2, Double(attempt - 1)))
                     await retryPolicy.sleep(backoff)
                     // Loop again — a fresh session/attempt.
+
+                case .suspended:
+                    // Task #192: no in-process retry (the database won't
+                    // un-suspend until the app foregrounds again, regardless
+                    // of how long this sleeps), and no `lastSyncError`
+                    // record — see `classify(_:)`'s doc comment. The next
+                    // `.active` scene-phase transition already resumes the
+                    // database and re-runs a normal sync
+                    // (`OtegamiApp.syncAllAccountsOnce()`), so this just
+                    // gives up on this attempt immediately.
+                    throw error
                 }
             }
         }
@@ -692,6 +720,12 @@ public actor AccountSyncer {
                     }
                     let backoff = min(retryPolicy.backoffCap, retryPolicy.backoffBase * pow(2, Double(attempt - 1)))
                     await retryPolicy.sleep(backoff)
+
+                case .suspended:
+                    // Task #192: same "give up immediately, no retry, no
+                    // record" reasoning as `connectWithRetry`'s identical
+                    // case — see `classify(_:)`'s doc comment.
+                    throw error
                 }
             }
         }
