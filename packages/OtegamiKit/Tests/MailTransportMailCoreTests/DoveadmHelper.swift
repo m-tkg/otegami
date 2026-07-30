@@ -50,9 +50,36 @@ enum DoveadmHelper {
     /// `dev/mailstack/seed/seed.sh` uses to load fixtures, since the
     /// `dovecot/dovecot` image ships no shell to `docker cp` a file into
     /// directly.
-    static func save(user: String, mailboxPath: String = "INBOX", content: String) throws {
-        try run(["doveadm", "save", "-u", user, "-m", mailboxPath], stdin: content)
+    ///
+    /// - Parameter receivedDate: Task #193 — `doveadm save -r <date>` sets
+    ///   the saved message's IMAP `INTERNALDATE` explicitly (server-assigned
+    ///   otherwise, to the moment of the `save`). Needed to reproduce a
+    ///   years-old message whose `Date:` header is missing/malformed against
+    ///   the real mailstack: without this, a freshly-`doveadm save`d message
+    ///   always gets a *current* `INTERNALDATE` regardless of its header
+    ///   content, which can't exercise `EnvelopeDateSentinel`'s "date close
+    ///   to fetch time, internalDate genuinely far from it" check — both
+    ///   would legitimately be "now". `nil` (the default) omits `-r`
+    ///   entirely, matching every existing call site's behavior exactly.
+    ///   Confirmed against this dev mailstack's Dovecot build: the accepted
+    ///   format is IMAP's own `INTERNALDATE` wire format (`dd-MMM-yyyy
+    ///   HH:mm:ss Z`, e.g. `01-Jan-2015 00:00:00 +0000`) — the more obvious
+    ///   `yyyy-MM-dd HH:mm:ss` reads back as `Fatal: Invalid received-date`.
+    static func save(user: String, mailboxPath: String = "INBOX", content: String, receivedDate: Date? = nil) throws {
+        var arguments = ["doveadm", "save", "-u", user, "-m", mailboxPath]
+        if let receivedDate {
+            arguments.insert(contentsOf: ["-r", Self.internalDateFormatter.string(from: receivedDate)], at: 2)
+        }
+        try run(arguments, stdin: content)
     }
+
+    private static let internalDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd-MMM-yyyy HH:mm:ss Z"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }()
 
     /// `doveadm flags add -u <user> <flag> mailbox <mailboxPath> all` —
     /// applies `flag` (e.g. `"\\Seen"`) to every message in the mailbox.

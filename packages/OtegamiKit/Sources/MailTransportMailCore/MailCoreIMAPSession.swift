@@ -172,13 +172,19 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
             kind.formUnion([.gmailThreadID, .gmailMessageID])
         }
         let indexSet = Self.indexSet(for: uids)
+        // Captured once for the whole batch (not per-message inside the
+        // completion block): `EnvelopeDateSentinel`'s reference moment for
+        // Task #193's sentinel-date detection — see
+        // `MailCoreIMAPSession+Mapping.envelope(from:fetchedAt:)`'s doc
+        // comment.
+        let fetchedAt = Date()
         return try await withCheckedThrowingContinuation { continuation in
             session.fetchMessagesByUid(folder: mailboxPath, kind: kind, uids: indexSet).start { error, messages, _ in
                 if let error {
                     continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
                     return
                 }
-                continuation.resume(returning: (messages ?? []).map(Self.envelope(from:)))
+                continuation.resume(returning: (messages ?? []).map { Self.envelope(from: $0, fetchedAt: fetchedAt) })
             }
         }
     }
@@ -220,13 +226,14 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
             kind.formUnion([.gmailThreadID, .gmailMessageID])
         }
         let indexSet = Self.indexSet(for: numbers)
+        let fetchedAt = Date()
         return try await withCheckedThrowingContinuation { continuation in
             session.fetchMessagesByNumber(folder: mailboxPath, kind: kind, numbers: indexSet).start { error, messages, _ in
                 if let error {
                     continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
                     return
                 }
-                continuation.resume(returning: (messages ?? []).map(Self.envelope(from:)))
+                continuation.resume(returning: (messages ?? []).map { Self.envelope(from: $0, fetchedAt: fetchedAt) })
             }
         }
     }
@@ -261,6 +268,7 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
             kind.formUnion([.gmailThreadID, .gmailMessageID])
         }
         let indexSet = Self.indexSet(for: .all)
+        let fetchedAt = Date()
         return try await withCheckedThrowingContinuation { continuation in
             session.syncMessages(folder: mailboxPath, kind: kind, uids: indexSet, modSeq: modSeq).start { error, messages, vanished in
                 if let error {
@@ -268,7 +276,7 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
                     return
                 }
                 continuation.resume(returning: ChangedSinceResult(
-                    envelopes: (messages ?? []).map(Self.envelope(from:)),
+                    envelopes: (messages ?? []).map { Self.envelope(from: $0, fetchedAt: fetchedAt) },
                     vanishedUIDs: Self.vanishedUIDs(from: vanished)
                 ))
             }

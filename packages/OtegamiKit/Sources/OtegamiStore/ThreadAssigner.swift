@@ -482,6 +482,90 @@ public enum ThreadAssigner {
         }
     }
 
+    // MARK: - Task #193 repair: already-stored sentinel dates
+
+    /// Task #193 (実機バグ「10年以上前に送った送信済みメールが、6時間前
+    /// くらいの日付で受信箱に表示される」): repairs `message` rows already
+    /// corrupted by the MailCore2 sentinel-date bug (`EnvelopeDateSentinel`'s
+    /// doc comment has the full mailcore2-side root cause) *before* the fix
+    /// in `MailCoreIMAPSession+Mapping.envelope(from:fetchedAt:)` shipped —
+    /// that fix only prevents the corruption on every future fetch; it does
+    /// nothing for a `date` already written, or for a thread a corrupted row
+    /// already merged into via `Threader`'s subject-fallback pass (§3: same
+    /// normalized subject, overlapping participants, within 7 days — a
+    /// years-old message whose `date` looked like "just now" easily lands
+    /// inside that window against whatever recent thread happens to share
+    /// its subject and a participant).
+    ///
+    /// The exact `fetchedAt` moment that produced a given corrupted `date`
+    /// isn't stored anywhere, so this reuses `message.updatedAt` — the
+    /// timestamp `AccountSyncer.upsert` stamps on *every* write — as the
+    /// best available stand-in: a genuinely corrupted row has `date` and
+    /// `updatedAt` written together in the very same upsert, so they're
+    /// exactly as close as a real `fetchedAt` would have made them; a
+    /// healthy row's `date` (matching `internalDate`, or legitimately
+    /// far from `updatedAt` for a long-since-synced message) doesn't
+    /// false-positive here for the same reasons `EnvelopeDateSentinel`'s
+    /// own doc comment explains for the real-time case.
+    ///
+    /// For every row this flags: clears `date` (letting every existing
+    /// `date ?? internalDate` reader fall back to the trustworthy
+    /// `internalDate` automatically, same as the ordinary "no `Date:`
+    /// header at all" case already does) and re-runs `assignThread` — which
+    /// may join a different (or brand new) thread now that `Threader` sees
+    /// its real date. The thread it's *leaving*, if any, gets its
+    /// aggregates recomputed too (and is deleted outright if this was its
+    /// last remaining message) — `assignThread` alone only ever settles the
+    /// thread a message *joins*.
+    ///
+    /// Returns the number of rows repaired. Safe to call unconditionally
+    /// (a no-op account with nothing corrupted just does one query and
+    /// returns `0`) — used both by the `AppDatabase` migration that runs
+    /// this once for every existing install, and available to call again
+    /// on demand (e.g. a future diagnostics path) since it's idempotent.
+    @discardableResult
+    public static func repairSentinelDates(db: Database) throws -> Int {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT message.id AS id, message.date AS date, message.internalDate AS internalDate,
+                       message.updatedAt AS updatedAt, message.threadId AS threadId, mailbox.accountId AS accountId
+                FROM message
+                JOIN mailbox ON mailbox.id = message.mailboxId
+                WHERE message.date IS NOT NULL
+                """
+        )
+
+        var repairedCount = 0
+        var vacatedThreadIds: Set<Int64> = []
+        for row in rows {
+            guard
+                let messageId: Int64 = row["id"],
+                let date: Date = row["date"],
+                let internalDate: Date = row["internalDate"],
+                let updatedAt: Date = row["updatedAt"],
+                let accountId: String = row["accountId"]
+            else { continue }
+            guard EnvelopeDateSentinel.isSuspicious(date: date, internalDate: internalDate, referenceTime: updatedAt) else {
+                continue
+            }
+
+            let oldThreadId: Int64? = row["threadId"]
+            try db.execute(sql: "UPDATE message SET date = NULL WHERE id = ?", arguments: [messageId])
+            let newThreadId = try assignThread(messageId: messageId, accountId: accountId, db: db)
+            if let oldThreadId, oldThreadId != newThreadId {
+                vacatedThreadIds.insert(oldThreadId)
+            }
+            repairedCount += 1
+        }
+
+        for threadId in vacatedThreadIds {
+            try recomputeAggregates(threadId: threadId, db: db)
+        }
+
+        return repairedCount
+    }
+
     // MARK: - Context building
 
     private static func participants(of message: MessageRecord) -> Set<String> {
