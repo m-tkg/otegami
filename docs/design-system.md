@@ -8340,3 +8340,62 @@ iOSシミュレータでの確認 (2アカウントのfakeフィクスチャ + �
 従い撤退)。この検証用UITestはコミットしていない (未完成のまま残すと
 別の意味で混乱を招くため削除した)。未検証の詳細と実機での確認ポイントは
 `PENDING.md`「Task #190」節参照。
+
+## Task #196: macOS の一覧に「未読のみ表示」トグルを追加
+
+**実機フィードバック**: 「mac 版において、iOS 版と同じようにメール一覧に
+未読のみ表示のボタンをつけてほしい」。
+
+### 現状把握: 絞り込み自体は元からプラットフォーム非依存だった
+
+`isUnreadOnly`(`@AppStorage(ListDisplaySettingsStore.unreadOnlyKey)`) は
+`MessageListView`自身が持ち、`observeThreads()`の`ThreadQuery`呼び出しと
+`emptyStateTitle`(0件時の文言) の両方が既にこの値を読んでいた — 欠けて
+いたのは切り替えボタンという見た目だけで、iOS の`MailScreenView`の
+ヘッダにしか無かった。Task #142 の「フラグ付きのみ表示」(`isPinnedOnly`)
+も同じ作りで隣にあるが、**ユーザーが求めたのは未読のみだけ**なので今回は
+未読のみトグルだけを追加し、フラグ付きのみは追加しなかった (macOS 側の
+切替 UI は今も無し、iOS 側も Task #142 の実機フィードバックで既に撤去
+済み — `MailScreenView.swift`の doc comment参照)。
+
+### 実装
+
+Task #197 で新設した`MacListSearchBar`(検索欄+更新ボタンの行、一覧の
+真上) に`isUnreadOnly: Binding<Bool>`を追加し、iOS の
+`MailScreenView.unreadOnlyToggleButton`と全く同じ見た目 (アイコン
+`envelope.badge`/`envelope.badge.fill`の塗り分け、ONのときだけ
+`OtegamiColor.paleBaseStrong`の丸背景) のボタンを検索欄と更新ボタンの
+間に置いた。新しい色トークンは追加していない (既存の
+`OtegamiColor.accentText`/`paleBaseStrong`をそのまま再利用)。
+
+### 判断した点
+
+1. **iCloud 同期への影響**: `unreadOnlyKey`は Task #89 の時点で既に
+   `ListDisplaySettingsStore`ごと iCloud 同期対象 (`docs/icloud-sync.md`
+   のTask #186節「スレッド表示・未読/フラグ付きのみ表示・アカウントで
+   グループ化 | 既に同期 (#89)」)。つまりこのボタンを追加したことで
+   「Mac で切り替えると iPhone 側も変わる」という挙動が新たに発生する。
+   **妥当と判断した** — これは同じ`UserDefaults`キーを2つのプラット
+   フォームが共有する設計だった以上、iOS 側に切替 UI があった時点で
+   Mac→iPhone 間の同期は既に(潜在的に)効いていた話であり、macOS に
+   ボタンを追加したことで初めて発生する挙動ではない。むしろ「一覧の
+   表示の好み」という Task #186 の分類 (スレッド表示・アカウントで
+   グループ化と同列) にも合致し、両プラットフォームで同じ絞り込みが
+   一致し続ける方が驚きが少ない。
+2. **フィルタが効いていることの見た目**: iOS と同じアイコン塗り分け+丸
+   背景のスタイルをそのまま踏襲したので、ON/OFF がひと目で分かる
+   (実機スクリーンショットで確認、後述)。
+3. **0件時の文言**: `emptyStateTitle`/`emptyStateDescription`は元々
+   プラットフォーム非依存 (`#if os`分岐なし) だったため、`isUnreadOnly`
+   がtrueのとき「未読のメールはありません」がmacOSでもそのまま出ることを
+   実機で確認した (コード変更不要)。
+
+### 検証
+
+`make mac`でビルドし実際に起動、`osascript`(AX API) でトグルボタンを
+クリックして確認: ON にすると一覧が未読メッセージだけに絞り込まれ、
+ボタン自体もアイコンが塗り潰し (`envelope.badge.fill`) +丸背景に変わる
+ことを screenshot で確認した。OFF に戻すと絞り込みが解除されることも
+確認した。文言追加は無い (iOS と全く同じ既存文言「未読のみ表示」
+`accessibilityLabel`/`help`を再利用) ため`Localizable.xcstrings`の変更も
+無い。iOS 側 (`MailScreenView`) は無改修。

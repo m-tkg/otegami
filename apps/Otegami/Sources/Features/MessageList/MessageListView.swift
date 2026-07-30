@@ -349,14 +349,16 @@ struct MessageListView: View {
     /// is about *what's shown*, not a new per-message operation model.
     @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
 
-    // MARK: - 未読のみ表示 (ヘッダのトグル、iOS only — see `ListDisplaySettingsStore
+    // MARK: - 未読のみ表示 (ヘッダのトグル — see `ListDisplaySettingsStore
     // .unreadOnlyKey`'s doc comment)
 
-    /// `MailScreenView`'s header toggle writes this same `UserDefaults` key
-    /// directly (its own `@AppStorage`, not a binding into this view) — see
-    /// that view's `unreadOnlyToggleButton` for why. Read here to build the
-    /// `ThreadQuery` calls in `observeThreads()` and to pick the empty-state
-    /// copy in `emptyStateTitle`.
+    /// iOS では`MailScreenView`の`unreadOnlyToggleButton`が、macOS では
+    /// Task #196 で追加した`MacListSearchBar.unreadOnlyToggleButton`
+    /// (`macListSearchBar`が`$isUnreadOnly`を直接束ねる) がこのトグルを
+    /// 持つ — iOS 側は今も`UserDefaults`キーを直接書く別の`@AppStorage`
+    /// 経由 (バインディングではない、iOS版のdoc comment参照)。読む側は
+    /// 共通で、ここで`ThreadQuery`呼び出し (`observeThreads()`) と
+    /// 空状態の文言 (`emptyStateTitle`) を決める。
     @AppStorage(ListDisplaySettingsStore.unreadOnlyKey) private var isUnreadOnly = ListDisplaySettingsStore.defaultUnreadOnly
 
     /// Task #82: the value `observeThreads()`/`ObservationKey` actually use
@@ -654,6 +656,7 @@ struct MessageListView: View {
             searchScope: $searchScope,
             availableScopes: availableScopes,
             isFieldFocused: $isSearchFieldFocused,
+            isUnreadOnly: $isUnreadOnly,
             isSyncing: isSyncing,
             onRefresh: { Task { await refresh() } }
         )

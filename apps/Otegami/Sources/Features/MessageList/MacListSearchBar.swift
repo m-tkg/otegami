@@ -22,6 +22,13 @@ struct MacListSearchBar: View {
     @Binding var searchScope: SearchScopeOption
     let availableScopes: [SearchScopeOption]
     var isFieldFocused: FocusState<Bool>.Binding
+    /// Task #196 (実機フィードバック「mac 版にも iOS 版と同じように一覧に
+    /// 未読のみ表示のボタンをつけてほしい」) — `MessageListView`の
+    /// `@AppStorage(ListDisplaySettingsStore.unreadOnlyKey)`をそのまま
+    /// 束ねる。永続化/絞り込みロジック自体は元々プラットフォーム非依存
+    /// だった (`MessageListView.persistedUnreadOnly`/`observeThreads()`)
+    /// ので、ここは見た目のボタンを足すだけ。
+    @Binding var isUnreadOnly: Bool
     let isSyncing: Bool
     let onRefresh: () -> Void
 
@@ -32,6 +39,7 @@ struct MacListSearchBar: View {
                 scopePicker
             }
             Spacer(minLength: OtegamiSpacing.sm)
+            unreadOnlyToggleButton
             refreshButton
         }
         .padding(.horizontal, OtegamiSpacing.md)
@@ -84,6 +92,26 @@ struct MacListSearchBar: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .fixedSize()
+    }
+
+    /// Task #196: iOS の`MailScreenView.unreadOnlyToggleButton`と同じ
+    /// 見た目 (アイコン塗り分け+ONのときだけ丸背景) をそのまま踏襲した
+    /// macOS 版 — 新しい色トークンは追加していない
+    /// (`OtegamiColor.accentText`/`paleBaseStrong`は既存)。
+    private var unreadOnlyToggleButton: some View {
+        Button {
+            isUnreadOnly.toggle()
+        } label: {
+            Image(systemName: isUnreadOnly ? "envelope.badge.fill" : "envelope.badge")
+                .foregroundStyle(isUnreadOnly ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
+                .padding(OtegamiSpacing.xs)
+                .background(isUnreadOnly ? OtegamiColor.paleBaseStrong : Color.clear, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("messageList.unreadOnlyToggle")
+        .accessibilityLabel("未読のみ表示")
+        .accessibilityAddTraits(isUnreadOnly ? .isSelected : [])
+        .help("未読のみ表示")
     }
 
     private var refreshButton: some View {
