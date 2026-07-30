@@ -88,6 +88,12 @@ jobs:
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.OTEGAMI_GOOGLE_CLIENT_ID }}
           MICROSOFT_CLIENT_ID: ${{ secrets.OTEGAMI_MICROSOFT_CLIENT_ID }}
+          # Task #171 follow-up (build-time relay registration secret —
+          # see Config/Shared.xcconfig's doc comment on
+          # OTEGAMI_RELAY_REGISTRATION_SECRET). Same optional/masked/
+          # never-logged treatment as the two OAuth Client ID secrets
+          # above.
+          RELAY_REGISTRATION_SECRET: ${{ secrets.OTEGAMI_RELAY_REGISTRATION_SECRET }}
         run: |
           LOCAL_XCCONFIG="$APP_DIR/Config/Local.xcconfig"
           LINES=()
@@ -104,6 +110,13 @@ jobs:
             echo "Microsoft OAuth: configured from OTEGAMI_MICROSOFT_CLIENT_ID secret"
           else
             echo "Microsoft OAuth: OTEGAMI_MICROSOFT_CLIENT_ID secret not set — this build will have Microsoft auth disabled"
+          fi
+          if [ -n "$RELAY_REGISTRATION_SECRET" ]; then
+            echo "::add-mask::$RELAY_REGISTRATION_SECRET"
+            LINES+=("OTEGAMI_RELAY_REGISTRATION_SECRET = $RELAY_REGISTRATION_SECRET")
+            echo "Push relay registration secret: configured from OTEGAMI_RELAY_REGISTRATION_SECRET secret"
+          else
+            echo "Push relay registration secret: OTEGAMI_RELAY_REGISTRATION_SECRET secret not set — this build sends no registration secret to the relay"
           fi
           if [ "${#LINES[@]}" -gt 0 ]; then
             printf '%s\n' "${LINES[@]}" > "$LOCAL_XCCONFIG"

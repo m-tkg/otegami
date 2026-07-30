@@ -37,6 +37,15 @@
 // "Outlook"/"Office365" add-account buttons stay disabled.
 // OTEGAMI_MICROSOFT_CLIENT_ID = your-azure-app-client-id
 
+// 自分でホストした otegami-relay の `RELAY_DEVICE_REGISTRATION_SECRET`
+// (Task #171 follow-up, docs/relay-deployment.md 参照)。自分のリレーで
+// このシークレットを設定した場合のみ、ビルドするたびに同じ値をここへ
+// 書いておく — アプリはこの値をビルドに埋め込んで `POST /v1/devices` に
+// 送るので、ユーザーに設定させる項目は無い (Google/Microsoft の OAuth
+// Client ID と同じ仕組み)。未設定のままで問題ない (リレーもこのシーク
+// レットを要求しない既定設定なら何も変わらない)。
+// OTEGAMI_RELAY_REGISTRATION_SECRET = your-relay-registration-secret
+
 // デフォルトのメールアプリ対応 (Task #48, docs/default-mail-app.md):
 // `com.apple.developer.mail-client` entitlement の有効化スイッチ。Apple から
 // この entitlement の許可を受け、Developer portal でこの App ID の capability

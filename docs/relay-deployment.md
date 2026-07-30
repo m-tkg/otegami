@@ -185,24 +185,46 @@ accountId→watchId マップの修復を行う (`AppEnvironment
    資格情報で IMAP サーバへの再試行を無限に繰り返し、アカウント
    ロックアウトを誘発することを避けるため。
 8. **デバイス登録の保護 (Task #169, CLAUDE-SECURITY F2 / アプリ側は
-   Task #171)**: `POST /v1/devices` は設計上 (デバイスが最初の資格情報
-   を得るための入口なので) 認証を要求できない。これを悪用すると、
-   リレーの HTTP ポートに到達できる誰でも `deviceSecret` を自己発行し、
-   以降の `POST /v1/watches` に到達できてしまう。
-   `RELAY_DEVICE_REGISTRATION_SECRET` を設定すると、この入口を運用者
-   共有シークレットの Bearer 認証で塞げる。未設定の間は従来どおり
-   無認証のままだが (既存デプロイを即座に壊さないため)、無認証の
-   登録が起きるたびにリレーが warning ログを出す。アプリ (Task #171)
-   は設定 → プッシュ通知の「登録シークレット」欄に入力された値を
-   Keychain に保存し、新規デバイス登録のたびに
-   `Authorization: Bearer <この値>` を送る — この値は iCloud で同期
-   されないため、**運用者がこの環境変数を設定する場合は、リレー側を
-   先に設定・再デプロイしてから、各端末のアプリに同じ値を入力する
-   こと** (逆順だと、その間は新規デバイス登録 — 新規のプッシュ通知
-   有効化や端末再インストール後の再登録 — が 401 で失敗する。既存の
-   登録済みデバイスのトークン更新・watch 操作には影響しない)。詳細は
-   `docs/icloud-sync.md`、運用者向け手順は `HUMAN_TASKS.md`「インフラ・
-   運用まわり」参照。
+   Task #171、2026-07-30 follow-up でビルド時埋め込み方式に変更)**:
+   `POST /v1/devices` は設計上 (デバイスが最初の資格情報を得るための
+   入口なので) 認証を要求できない。これを悪用すると、リレーの HTTP
+   ポートに到達できる誰でも `deviceSecret` を自己発行し、以降の
+   `POST /v1/watches` に到達できてしまう。`RELAY_DEVICE_REGISTRATION_SECRET`
+   を設定すると、この入口を運用者共有シークレットの Bearer 認証で
+   塞げる。未設定の間は従来どおり無認証のままだが (既存デプロイを
+   即座に壊さないため)、無認証の登録が起きるたびにリレーが warning
+   ログを出す。
+
+   **アプリ側の値はビルド時に埋め込む** (Task #171 follow-up): 当初は
+   設定 → プッシュ通知の「登録シークレット」欄にユーザー自身が値を
+   入力する UI だったが、実機フィードバック「通常のメールアプリは
+   そんな設定をユーザーに要求しない」を受けて廃止した。今は
+   Google/Microsoft の OAuth Client ID と同じ仕組みで、`Config
+   /Local.xcconfig` の `OTEGAMI_RELAY_REGISTRATION_SECRET` (自分の
+   ビルドをローカルでビルドする場合)・GitHub Actions の
+   `OTEGAMI_RELAY_REGISTRATION_SECRET` secret (macOS リリース)・Xcode
+   Cloud の同名の環境変数 (TestFlight/iOS リリース) のいずれかに
+   運用者自身が設定し、ビルドのたびに `Info.plist` 経由で
+   `RelayRegistrationSecretConfig` が読み取って新規デバイス登録
+   (`POST /v1/devices`) のたびに `Authorization: Bearer <この値>` を
+   送る。ユーザー自身が設定する項目は無い。**限界**: バイナリに
+   埋め込んだ値はリバースエンジニアリングで抽出可能なので、これは
+   「正当なユーザーだけを通す」決定的な認証ではなく、無認証で自動化
+   された大量デバイス登録を弾くための実務的な措置にとどまる —
+   IMAP 資格情報そのものを暗号化して守る 1〜4 番とは守っているものの
+   強度が異なる。
+
+   運用者がこの環境変数を設定する場合、**リレー側を先に設定・再
+   デプロイしてから、アプリのビルド設定 (Local.xcconfig/GitHub
+   secret/Xcode Cloud 環境変数) に同じ値を設定して次のビルドを配布
+   すること** (逆順だと、値が入っていない既存ビルドを使っている間は
+   新規デバイス登録 — 新規のプッシュ通知有効化や端末再インストール後
+   の再登録 — が 401 で失敗し、アプリは「このリレーは登録シークレット
+   を要求していますが、このビルドには設定されていません」と表示する。
+   既存の登録済みデバイスのトークン更新・watch 操作には影響しない)。
+   運用者向け手順は `HUMAN_TASKS.md`「インフラ・運用まわり」、
+   ビルド設定の一般的な仕組みは `docs/oauth-setup.md` の Client ID の
+   節 (同じ xcconfig パターン) 参照。
 9. **watch 作成時/接続時の SSRF 防御 (Task #169, CLAUDE-SECURITY F2)**:
    修正前は `POST /v1/watches` の `imapHost`/`imapPort` が検証なしで
    `ClientBootstrap.connect` に渡っており、リレーの HTTP ポートに到達

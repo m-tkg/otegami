@@ -515,38 +515,52 @@ watch 照合掃除の説明を追記済み。
 運用者がやるべき作業は `HUMAN_TASKS.md`「otegami-relay の再デプロイ」
 参照。
 
-**アプリ側対応済み (Task #171)**: `RELAY_DEVICE_REGISTRATION_SECRET`
-を運用者が設定した場合、アプリが `POST /v1/devices` に
-`Authorization: Bearer <registrationSecret>` を送るようになった。
+**アプリ側対応済み (Task #171、2026-07-30 follow-up でビルド時埋め込み
+方式に作り直し)**: `RELAY_DEVICE_REGISTRATION_SECRET` を運用者が設定
+した場合、アプリが `POST /v1/devices` に
+`Authorization: Bearer <registrationSecret>` を送る。
 
-- 設定 UI: `PushNotificationSettingsView` のリレー URL の下に「登録
-  シークレット」`SecureField` を追加 (任意入力)。
-- 保存先: Keychain (`PushSettingsStore.registrationSecret`/
-  `setRegistrationSecret`/`deleteRegistrationSecret` — `deviceSecret`
-  とは別の service 文字列)。`deviceSecret` と異なり
-  `PushSettingsStore.reset()` (無効化時) では消さない — 運用者の共有
-  シークレットは特定のデバイス登録に紐付かないため。
-- 送信: `PushRelayClient.registerDevice(...)` に `registrationSecret`
-  引数を追加 (既定 `nil` — ヘッダを送らない、これまでどおり)。新規
-  デバイス登録 (`AppEnvironment.enablePushNotifications` の初回登録
-  分岐) のときだけ使う。`updateDeviceToken`/`createWatch`/`listWatches`/
-  `deleteWatch` が使う `deviceSecret` とは別物 (混同しないよう
-  `PushRelayClient.swift` にコメントあり)。
+- **設計変更 (follow-up)**: 当初は `PushNotificationSettingsView` に
+  「登録シークレット」`SecureField` を常時表示していたが、実機
+  フィードバック「アプリ側でシークレット登録とかなしで通知を受けたい。
+  通常のメールアプリはそんなことをしない」を受けて UI を廃止した。
+  今は Google/Microsoft の OAuth Client ID と同じビルド時埋め込み方式
+  (`Config/Shared.xcconfig` の `OTEGAMI_RELAY_REGISTRATION_SECRET`、
+  git-ignored の `Config/Local.xcconfig` で運用者が値を設定) —
+  `RelayRegistrationSecretConfig` (app code) が `Info.plist` から読む。
+  ユーザー自身が設定する項目は無くなった。
+- 送信: `PushRelayClient.registerDevice(...)` の `registrationSecret`
+  引数 (既定 `nil` — ヘッダを送らない、これまでどおり) は変更なし。
+  `AppEnvironment.enablePushNotifications` が新規デバイス登録の分岐で
+  `RelayRegistrationSecretConfig.value` を渡す。
+  `updateDeviceToken`/`createWatch`/`listWatches`/`deleteWatch` が使う
+  `deviceSecret` とは別物 (混同しないよう `PushRelayClient.swift` に
+  コメントあり)。
 - エラー表示: `POST /v1/devices` が 401 を返すと
-  `AppEnvironment.PushError.registrationSecretRejected` を投げ、
-  `PushNotificationSettingsView` が「リレーの登録シークレットが
-  必要です。入力したシークレットが一致しないか、未入力の可能性が
-  あります。」と表示する (リレー側の内部エラー文言はそのまま出さない)。
-- iCloud 同期: リレー URL は #121 で同期対象だが、登録シークレットは
-  Keychain 所在のみで**端末間同期されない** (`docs/icloud-sync.md`)
-  — UI にもその旨のフッターを表示する。
+  `AppEnvironment.PushError.registrationSecretRejected` を投げる。
+  `PushNotificationSettingsView` は `isRelayRegistrationSecretConfigured`
+  で「このビルドに値が入っているのに拒否された (値の不一致)」と
+  「このビルドにそもそも値が入っていない」を切り分けて表示する
+  (リレー側の内部エラー文言はそのまま出さない)。
+- Keychain: `PushSettingsStore` の旧 `registrationSecret`/
+  `setRegistrationSecret`/`deleteRegistrationSecret` (ユーザー入力を
+  保存していたスロット) は削除した。旧バージョンで値を保存していた
+  端末向けに、`AppEnvironment.init()` が毎起動
+  `deleteLegacyRegistrationSecretIfPresent()` で後始末する
+  (`PushSettingsStore` のコメント参照)。
+- CI/配布: `.github/workflows/release-macos.yml` (GitHub secret
+  `OTEGAMI_RELAY_REGISTRATION_SECRET` → `Local.xcconfig`)、
+  `apps/Otegami/ci_scripts/ci_post_clone.sh` (Xcode Cloud の同名環境
+  変数 → `Local.xcconfig`、**Xcode Cloud 側の環境変数登録は運用者の
+  手作業**、`HUMAN_TASKS.md`参照)。
 - テスト: `PushRelayClientTests`
-  (`packages/OtegamiKit/Tests/PushRelayClientTests/`) にヘッダ有無・
-  401 応答のデコードを検証するケースを追加、`swift test` 緑。
-  `PushSettingsStore`/`AppEnvironment` の該当ロジックはアプリターゲット
-  側 (`apps/Otegami/Sources`) にあり `swift test` から到達できない
-  ため未検証 — 実機/シミュレータでの確認手順は `HUMAN_TASKS.md`
-  参照。
+  (`packages/OtegamiKit/Tests/PushRelayClientTests/`) のヘッダ有無・
+  401 応答のデコードのケースは変更なしで引き続き緑。
+  `RelayRegistrationSecretConfig`/`PushSettingsStore`/`AppEnvironment`
+  の該当ロジックはアプリターゲット側 (`apps/Otegami/Sources`) にあり
+  `swift test` から到達できないため未検証 (`GoogleOAuthConfig`/
+  `MicrosoftOAuthConfig` も同様に無テスト — 既存の慣行と同じ) —
+  実機/シミュレータでの確認手順は `HUMAN_TASKS.md` 参照。
 
 ### 既知の未検証事項 (優先度を下げた項目)
 

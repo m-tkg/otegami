@@ -265,9 +265,12 @@
 #                                       アカウントの編集画面 — ラベル色の
 #                                       グリッドピッカーを確認)
 #   push-settings                       Task #171: 設定→アカウントの設定→
-#                                       「プッシュ通知」を直接開く —
-#                                       リレー URL の下の「登録シークレット」
-#                                       欄の確認用 (iOS 専用画面)
+#                                       「プッシュ通知」を直接開く — 2026-07-30
+#                                       follow-up で「登録シークレット」欄を
+#                                       削除した (ビルド時埋め込み方式に変更、
+#                                       RelayRegistrationSecretConfig 参照)。
+#                                       この画面がリレー URL 欄以外に何も
+#                                       求めないことの確認用 (iOS 専用画面)
 #   toolbar-customize                   Task #100: 設定→メールビューア→
 #                                       「ツールバーのカスタマイズ」
 #                                       (`MessageToolbarSettingsView`) を
@@ -607,9 +610,10 @@ case "$SCENARIO" in
     default_out="account-edit.png"
     ;;
   push-settings)
-    # Task #171 (登録シークレット入力欄): 設定 → アカウントの設定 →
-    # 「プッシュ通知」をタップ無しで直接開く (`AccountSettingsCategoryView`
-    # の `-uitestsOpenPushNotificationsDirectly` フック、`account-settings`
+    # Task #171 follow-up (登録シークレット入力欄を削除): 設定 →
+    # アカウントの設定 → 「プッシュ通知」をタップ無しで直接開く
+    # (`AccountSettingsCategoryView` の
+    # `-uitestsOpenPushNotificationsDirectly` フック、`account-settings`
     # と同じ「1段深いところまで一気に」パターン)。iOS専用画面。
     launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenPushNotificationsDirectly")
     default_out="push-settings.png"

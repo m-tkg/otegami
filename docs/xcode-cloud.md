@@ -71,6 +71,7 @@ OTEGAMI_BUNDLE_ID=com.example.otegami.citest \
    | `OTEGAMI_DEVELOPMENT_TEAM` | `DEVELOPMENT_TEAM` | 実質必須 (無いと未署名ビルドにしかならず Archive できない) | Apple Developer の Team ID |
    | `OTEGAMI_BUNDLE_ID` | `OTEGAMI_BUNDLE_ID` | 任意 (既定 `com.mtkg.otegami` のまま) | 別の Team でこの Bundle ID が既に登録済みの場合のみ変更 |
    | `OTEGAMI_GOOGLE_CLIENT_ID` | `GOOGLE_OAUTH_CLIENT_ID` | 任意 (未設定なら Gmail 追加ボタンが無効なビルドになる) | `docs/oauth-setup.md` |
+   | `OTEGAMI_RELAY_REGISTRATION_SECRET` | `OTEGAMI_RELAY_REGISTRATION_SECRET` | 任意 (未設定なら自分のリレーの `POST /v1/devices` にシークレットを送らないビルドになる — リレー側がそれを要求していなければ無関係) | Task #171 follow-up、`docs/relay-deployment.md` |
    | `OTEGAMI_MAIL_CLIENT_ENTITLEMENT` | `OTEGAMI_MAIL_CLIENT_ENTITLEMENT` | 任意 (既定 `NO`) | Apple から entitlement 許可が下りてから `YES` |
 
    いずれも未設定なら該当行を書かず、コミット済みの既定値
@@ -79,10 +80,10 @@ OTEGAMI_BUNDLE_ID=com.example.otegami.citest \
    が動くのと同じフォールバック。
 
    **Xcode Cloud のワークフロー設定でこれらを追加する際は、
-   `OTEGAMI_DEVELOPMENT_TEAM`/`OTEGAMI_GOOGLE_CLIENT_ID` を "Secret" に
-   チェックして値をマスクすること** (App Store Connect の Xcode Cloud →
-   ワークフロー編集 → Environment → 環境変数追加画面にそのチェックボックス
-   がある)。
+   `OTEGAMI_DEVELOPMENT_TEAM`/`OTEGAMI_GOOGLE_CLIENT_ID`/
+   `OTEGAMI_RELAY_REGISTRATION_SECRET` を "Secret" にチェックして値を
+   マスクすること** (App Store Connect の Xcode Cloud → ワークフロー
+   編集 → Environment → 環境変数追加画面にそのチェックボックスがある)。
 3. **`CI_BUILD_NUMBER` → `CURRENT_PROJECT_VERSION`** — Xcode Cloud が
    ワークフロー実行ごとに払い出すビルド番号
    ([Environment variable reference](https://developer.apple.com/documentation/xcode/environment-variable-reference))。
@@ -271,7 +272,8 @@ TestFlight 内部テストを配る場合:
 4. **環境変数を設定する** — ワークフロー編集画面の「Environment」→
    「Environment Variables」で上表 (「`ci_post_clone.sh` がやっている
    こと」節) の変数を追加する。`OTEGAMI_DEVELOPMENT_TEAM`/
-   `OTEGAMI_GOOGLE_CLIENT_ID` は「Secret」にチェックを入れる。
+   `OTEGAMI_GOOGLE_CLIENT_ID`/`OTEGAMI_RELAY_REGISTRATION_SECRET` は
+   「Secret」にチェックを入れる。
 5. **署名 (cloud signing) を有効化する** — 初回のワークフロー作成時に
    Xcode Cloud が「Xcode Cloud が証明書/プロビジョニングプロファイルを
    自動管理してよいか」を確認するダイアログを出す。許可すると

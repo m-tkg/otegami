@@ -69,3 +69,17 @@ OTEGAMI_MAIL_CLIENT_ENTITLEMENT = NO
 OTEGAMI_IOS_ENTITLEMENTS_FILE_NO = Config/Otegami-iOS.entitlements
 OTEGAMI_IOS_ENTITLEMENTS_FILE_YES = Config/Otegami-iOS-MailClient.entitlements
 OTEGAMI_IOS_ENTITLEMENTS_FILE = $(OTEGAMI_IOS_ENTITLEMENTS_FILE_$(OTEGAMI_MAIL_CLIENT_ENTITLEMENT))
+
+// Task #171 follow-up (2026-07-30 実機フィードバック「アプリ側でシークレット
+// 登録とかなしで通知を受けたい。通常のメールアプリはそんなことをしない」):
+// Task #171 originally had every user type the self-hosted push relay's
+// optional `RELAY_DEVICE_REGISTRATION_SECRET` into a Settings SecureField
+// — the feedback is right that no ordinary mail app asks its users to
+// enter infra credentials. This value is now baked in at build time
+// instead, same empty-by-default/git-ignored-Local.xcconfig-override
+// mechanism as GOOGLE_OAUTH_CLIENT_ID/OTEGAMI_MICROSOFT_CLIENT_ID above —
+// see docs/relay-deployment.md. `RelayRegistrationSecretConfig` (app code)
+// treats an empty/unset value as "don't send the header," which is
+// `PushRelayClient.registerDevice`'s existing default behavior, so a
+// build that never sets this is unaffected.
+OTEGAMI_RELAY_REGISTRATION_SECRET =

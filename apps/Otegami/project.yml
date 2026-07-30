@@ -96,6 +96,16 @@ targets:
         # runtime and treats empty/unset as "Outlook/Office365 unavailable
         # in this build".
         OTEGAMI_MICROSOFT_CLIENT_ID: $(OTEGAMI_MICROSOFT_CLIENT_ID)
+        # Task #171 follow-up: self-hosted push relay's optional
+        # `RELAY_DEVICE_REGISTRATION_SECRET`, same xcconfig-sourced
+        # build-time-secret mechanism as GOOGLE_OAUTH_CLIENT_ID/
+        # OTEGAMI_MICROSOFT_CLIENT_ID just above (`Config/Shared.xcconfig`
+        # defines it empty; `Config/Local.xcconfig`, git-ignored, is where a
+        # self-hoster sets their own — see docs/relay-deployment.md).
+        # `RelayRegistrationSecretConfig` reads this key at runtime and
+        # treats empty/unset as "omit the Authorization header on device
+        # registration" (unchanged default behavior).
+        OTEGAMI_RELAY_REGISTRATION_SECRET: $(OTEGAMI_RELAY_REGISTRATION_SECRET)
         # M9: read by AppEnvironment/KeychainCredentialStore/AppDatabase at
         # runtime — see Config/Shared.xcconfig's doc comment on why these
         # are composed from xcconfig variables instead of hardcoded.

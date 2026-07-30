@@ -284,14 +284,18 @@
          よい。
       3. 任意 (推奨): `RELAY_DEVICE_REGISTRATION_SECRET` を設定すると
          `POST /v1/devices` (デバイス登録) を保護できる。**Task #171 で
-         アプリ側もこのヘッダを送信する実装が入った**ので、設定してよい
-         — ただし順序に注意: リレー側で先に設定・再デプロイしてから
-         各端末のアプリに同じ値を入力すること。**逆順 (アプリに未入力の
-         まま先にリレー側だけ設定) だと、その間は新規デバイス登録
-         (=新規のプッシュ通知有効化、または端末の再インストール後の
-         再登録) が一時的に失敗する** (401、アプリ側は「リレーの登録
-         シークレットが必要です」と表示する) — 既存の登録済みデバイスの
-         トークン更新・watch 操作には影響しない。
+         アプリ側もこのヘッダを送信する実装が入った** (2026-07-30
+         follow-up でユーザー入力 UI を廃止し、ビルド時埋め込み方式に
+         変更済み — 下の項目参照) ので、設定してよい — ただし順序に
+         注意: リレー側で先に設定・再デプロイしてから、アプリの
+         ビルド設定に同じ値を入れた次のビルドを配布すること。**逆順
+         (値の入っていない既存ビルドを配布したまま先にリレー側だけ
+         設定) だと、その間は新規デバイス登録 (=新規のプッシュ通知
+         有効化、または端末の再インストール後の再登録) が一時的に
+         失敗する** (401、アプリ側は「このリレーは登録シークレットを
+         要求していますが、このビルドには設定されていません」と表示
+         する) — 既存の登録済みデバイスのトークン更新・watch 操作には
+         影響しない。
       4. 再デプロイ後、`docker compose logs -f otegami-relay` で
          `RELAY_DEVICE_REGISTRATION_SECRET is not set` の warning が
          (未設定のままなら) 出ていること、または (設定した場合)
@@ -300,15 +304,27 @@
       優先度: 高 (公開運用中のリレーに対する実際の脆弱性修正) / 所要
       時間: 15分 / 参照: [docs/relay-deployment.md](docs/relay-deployment.md)
       の脅威モデル 8〜10 番
-- [ ] **`RELAY_DEVICE_REGISTRATION_SECRET` を設定した場合、各端末のアプリに
-      同じ値を入力する (Task #171)** — 設定 → プッシュ通知 →「登録
-      シークレット」欄 (リレー URL の下) に、リレー側で設定したのと同じ
-      値を入力してから「有効にする」を押す。Keychain 保存かつ**iCloud
-      では同期されない**ので、プッシュ通知を使う端末それぞれで入力が
-      必要 (`docs/icloud-sync.md`)。上の項目の手順3の順序 (リレー側が
-      先) を守ること。
+- [ ] **`RELAY_DEVICE_REGISTRATION_SECRET` を設定した場合、アプリの
+      ビルド設定に同じ値を入れる (Task #171、2026-07-30 follow-up —
+      各端末でアプリに入力する UI は廃止した)** — Google/Microsoft の
+      OAuth Client ID と同じ仕組み。以下のいずれか、使うビルド経路に
+      合わせて設定する:
+      - ローカルでビルドする場合:
+        `apps/Otegami/Config/Local.xcconfig` (git 管理外) に
+        `OTEGAMI_RELAY_REGISTRATION_SECRET = <値>` を追記。
+      - macOS リリース (`.github/workflows/release-macos.yml`): GitHub
+        リポジトリの Secrets に `OTEGAMI_RELAY_REGISTRATION_SECRET` を
+        登録する (Settings → Secrets and variables → Actions)。
+      - iOS/TestFlight リリース (Xcode Cloud):
+        `apps/Otegami/ci_scripts/ci_post_clone.sh` が読む環境変数
+        `OTEGAMI_RELAY_REGISTRATION_SECRET` を、Xcode Cloud のワーク
+        フロー設定の環境変数 (Secret 種別) に登録する
+        (`docs/xcode-cloud.md`)。
+      **順序**: リレー側 (上の項目の手順3) を先に設定・再デプロイして
+      から、こちらのビルド設定を入れた次のビルドを配布すること。逆順
+      だと新規デバイス登録が一時的に 401 で失敗する (上の項目参照)。
       優先度: 中 (既存デプロイのままなら不要 — シークレット未設定の
-      リレーは従来どおり無認証で動く) / 所要時間: 端末あたり2分 / 参照:
+      リレーは従来どおり無認証で動く) / 所要時間: 経路あたり2分 / 参照:
       [docs/relay-deployment.md](docs/relay-deployment.md)
 
 ## 4. 公開・配布に向けて (App Store / TestFlight を目指す場合)

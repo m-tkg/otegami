@@ -74,6 +74,13 @@ echo "==> ci_post_clone: writing $LOCAL_XCCONFIG"
   [ -n "${OTEGAMI_DEVELOPMENT_TEAM:-}" ] && echo "DEVELOPMENT_TEAM = ${OTEGAMI_DEVELOPMENT_TEAM}"
   [ -n "${OTEGAMI_BUNDLE_ID:-}" ] && echo "OTEGAMI_BUNDLE_ID = ${OTEGAMI_BUNDLE_ID}"
   [ -n "${OTEGAMI_GOOGLE_CLIENT_ID:-}" ] && echo "GOOGLE_OAUTH_CLIENT_ID = ${OTEGAMI_GOOGLE_CLIENT_ID}"
+  # Task #171 follow-up (build-time relay registration secret — see
+  # Config/Shared.xcconfig's doc comment on
+  # OTEGAMI_RELAY_REGISTRATION_SECRET). Registering this as an Xcode Cloud
+  # workflow environment variable (Secret type, so it's masked in logs) is
+  # a manual step for whoever operates the TestFlight release — see
+  # docs/xcode-cloud.md / HUMAN_TASKS.md.
+  [ -n "${OTEGAMI_RELAY_REGISTRATION_SECRET:-}" ] && echo "OTEGAMI_RELAY_REGISTRATION_SECRET = ${OTEGAMI_RELAY_REGISTRATION_SECRET}"
   [ -n "${OTEGAMI_MAIL_CLIENT_ENTITLEMENT:-}" ] && echo "OTEGAMI_MAIL_CLIENT_ENTITLEMENT = ${OTEGAMI_MAIL_CLIENT_ENTITLEMENT}"
   # CI_BUILD_NUMBER is an Xcode Cloud built-in (monotonically increasing
   # per workflow) — feeding it into CURRENT_PROJECT_VERSION here is what
