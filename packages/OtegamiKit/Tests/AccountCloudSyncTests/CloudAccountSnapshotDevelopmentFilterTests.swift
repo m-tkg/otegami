@@ -22,7 +22,7 @@ struct CloudAccountSnapshotDevelopmentFilterTests {
         "127.1.2.3",
         "10.0.0.1",
         "10.255.255.255",
-        "192.168.0.163", // the exact host docs/icloud-sync.md's duplicate-account report names
+        "192.168.0.2", // the exact host docs/icloud-sync.md's duplicate-account report names
         "192.168.1.1",
         "172.16.0.1",
         "172.31.255.255", // upper end of 172.16.0.0/12
@@ -59,7 +59,7 @@ struct CloudAccountSnapshotDevelopmentFilterTests {
 
     @Test
     func isDevelopmentAccountReflectsImapHost() {
-        let devAccount = CloudAccountSnapshot.fixture(imapHost: "192.168.0.163", updatedAt: epoch)
+        let devAccount = CloudAccountSnapshot.fixture(imapHost: "192.168.0.2", updatedAt: epoch)
         let realAccount = CloudAccountSnapshot.fixture(imapHost: "imap.gmail.com", updatedAt: epoch)
 
         #expect(devAccount.isDevelopmentAccount)

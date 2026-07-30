@@ -210,7 +210,7 @@ struct AccountCloudSyncEngineTests {
         let local = FakeLocalAccountDirectory()
         let engine = makeEngine(store: store, local: local)
 
-        await engine.pushLocalChange(.fixture(accountId: "dev-1", imapHost: "192.168.0.163", updatedAt: epoch))
+        await engine.pushLocalChange(.fixture(accountId: "dev-1", imapHost: "192.168.0.2", updatedAt: epoch))
 
         #expect(store.currentPayload() == nil)
         #expect(store.setCallCount == 0)
@@ -239,7 +239,7 @@ struct AccountCloudSyncEngineTests {
     func reconcilePurgesADevelopmentAccountFoundOnlyInTheCloudInsteadOfInsertingIt() async {
         let store = FakeUbiquitousStore()
         store.seed(AccountCloudPayload(accounts: [
-            .fixture(accountId: "contaminated-1", imapHost: "192.168.0.163", updatedAt: epoch),
+            .fixture(accountId: "contaminated-1", imapHost: "192.168.0.2", updatedAt: epoch),
             .fixture(accountId: "real-1", imapHost: "imap.gmail.com", updatedAt: epoch)
         ]))
         let local = FakeLocalAccountDirectory()
