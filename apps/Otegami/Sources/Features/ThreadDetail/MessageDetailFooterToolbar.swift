@@ -57,6 +57,18 @@ struct MessageDetailFooterToolbar: View {
     var onToggleMute: () -> Void
     var onMarkUnread: () -> Void
     var onArchive: () -> Void
+    /// Task #184 (「アーカイブ済みのメールの操作」実機フィードバック「アーカイブ
+    /// ボタンはアーカイブ解除ボタンにして欲しい」): `true` while the currently
+    /// displayed thread/message is already archived (`ThreadDetailView
+    /// .isThreadArchived`'s doc comment covers exactly how that's decided,
+    /// including the partially-archived-thread call). Swaps `archiveButton`'s
+    /// and its "その他"-menu counterpart's label/icon to "アーカイブ解除" the
+    /// same way `isMuted`/`isPinned` already swap `muteButton`/`pinButton` —
+    /// `onArchive` itself stays a single callback either way
+    /// (`ThreadDetailView.archiveThread()` is what actually decides
+    /// `.archive` vs. `.unarchive`), matching how `onToggleMute`/
+    /// `onTogglePin` already work.
+    var isArchived: Bool
     var onJunk: () -> Void
     var isPinned: Bool
     var onTogglePin: () -> Void
@@ -234,10 +246,18 @@ struct MessageDetailFooterToolbar: View {
             .accessibilityIdentifier("messageDetail.toolbar.markUnread")
     }
 
+    /// Task #184: state-dependent the same way `muteButton`/`pinButton` are —
+    /// see `isArchived`'s doc comment. "アーカイブ解除" uses `tray.and.arrow.up`
+    /// (a tray with an upward arrow, echoing "put it back"), the same icon
+    /// `MessageListRow.archiveLabel`'s already-shipped list-swipe equivalent
+    /// (Task #87 (1)) uses for the identical reversed action — so a user
+    /// who's already learned that icon from the list sees the same one here.
     @ViewBuilder
     private var archiveButton: some View {
-        Button(action: onArchive) { toolbarIcon(.archive) }
-            .accessibilityIdentifier("messageDetail.toolbar.archive")
+        Button(action: onArchive) {
+            toolbarIcon(.archive, title: isArchived ? "アーカイブ解除" : nil, systemImage: isArchived ? "tray.and.arrow.up" : nil)
+        }
+        .accessibilityIdentifier("messageDetail.toolbar.archive")
     }
 
     @ViewBuilder
@@ -488,8 +508,11 @@ struct MessageDetailFooterToolbar: View {
             Button { onMarkUnread() } label: { Label(action.title, systemImage: action.systemImage) }
                 .accessibilityIdentifier("messageDetail.toolbar.more.hidden.markUnread")
         case .archive:
-            Button { onArchive() } label: { Label(action.title, systemImage: action.systemImage) }
-                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.archive")
+            // Task #184: same state-dependent swap as `.mute`/`.pin` above.
+            Button { onArchive() } label: {
+                Label(isArchived ? "アーカイブ解除" : action.title, systemImage: isArchived ? "tray.and.arrow.up" : action.systemImage)
+            }
+            .accessibilityIdentifier("messageDetail.toolbar.more.hidden.archive")
         case .junk:
             Button { onJunk() } label: { Label(action.title, systemImage: action.systemImage) }
                 .accessibilityIdentifier("messageDetail.toolbar.more.hidden.junk")

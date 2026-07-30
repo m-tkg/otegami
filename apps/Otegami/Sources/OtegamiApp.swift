@@ -146,6 +146,17 @@ struct RootView: View {
     /// iOS's `MailScreenView`).
     @State private var currentThreadOrder: [Int64] = []
     @AppStorage(MessagePostActionSettingsStore.afterDeleteArchiveKey) private var postDeleteArchiveActionRaw = MessagePostActionSettingsStore.defaultAfterDeleteArchive.rawValue
+    /// Task #184: mirrors `ThreadDetailView.isThreadArchived` — kept up to
+    /// date by that view's own `onArchivedStateChanged` callback (`detailColumn`
+    /// below) rather than a second, independent query here, so this can
+    /// never disagree with what the detail screen's own footer toolbar is
+    /// showing for the same thread. Published to `OtegamiCommands`'s ⌘E menu
+    /// item via `.focusedSceneValue(\.isSelectedThreadArchived, ...)`
+    /// (`navigationViewWithFocusedValues`) only while `selectedThreadId !=
+    /// nil` — a stale `true` left over from a previously viewed thread is
+    /// harmless once `selectedThreadId` is `nil` again, since that
+    /// `nil`-gating unpublishes the whole key regardless of this value.
+    @State private var isSelectedThreadArchived = false
 
     /// G「削除・アーカイブ時の挙動」— see `MailScreenView.handleThreadRemoved(_:)`'s
     /// identical doc comment. Not `#if os(macOS)`-gated even though its only
@@ -355,6 +366,9 @@ struct RootView: View {
     private var navigationViewWithFocusedValues: some View {
         navigationViewWithPrimaryFocusedValues
             .focusedSceneValue(\.archiveAction, selectedThreadId == nil ? nil : { archiveSelectedThread() })
+            // Task #184: same `selectedThreadId == nil` gating as `archiveAction`
+            // itself — see `isSelectedThreadArchived`'s doc comment.
+            .focusedSceneValue(\.isSelectedThreadArchived, selectedThreadId == nil ? nil : isSelectedThreadArchived)
             .focusedSceneValue(\.toggleReadAction, selectedThreadId == nil ? nil : { toggleReadSelectedThread() })
             .focusedSceneValue(\.nextMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: 1) })
             .focusedSceneValue(\.previousMailboxAction, environment.accounts.isEmpty ? nil : { cycleMailboxSelection(by: -1) })
@@ -584,6 +598,11 @@ struct RootView: View {
                         presentComposer(.reply(originalMessageId: messageId, replyAll: replyAll))
                     },
                     onForward: { messageId in presentComposer(.forward(originalMessageId: messageId)) },
+                    // Task #184: keeps `isSelectedThreadArchived` (→ ⌘E's menu
+                    // label) in sync with this same thread's own live-tracked
+                    // archived state, instead of a second independent query —
+                    // see that property's doc comment.
+                    onArchivedStateChanged: { isSelectedThreadArchived = $0 },
                     // onSearchFromSender: macOS ではまだ配線していない — 新しい
                     // 検索画面 (`SearchScreenView`) は iOS 専用のインフラ
                     // (`MessageDetailFooterToolbar`'s doc comment)。macOS は
@@ -858,7 +877,12 @@ struct RootView: View {
                     guard let summary = try ThreadDetailView.threadSummary(
                         threadId: selectedThreadId, singleMessageId: targetMessageId, accountId: thread.accountId, db: db
                     ) else { return (false, thread.accountId) }
-                    let removed = try MessageRemoval.commit(.archive, summary: summary, accountId: thread.accountId, db: db) != nil
+                    // Task #184: `summary.isArchived` is already computed by
+                    // `threadSummary` (`ThreadDetailView.isThreadArchived`'s
+                    // doc comment covers the same OR-aggregate/per-message-
+                    // guard reasoning this reuses) — no second query needed.
+                    let kind: MessageRemoval.Kind = summary.isArchived ? .unarchive : .archive
+                    let removed = try MessageRemoval.commit(kind, summary: summary, accountId: thread.accountId, db: db) != nil
                     return (removed, thread.accountId)
                 }
                 guard let outcome, outcome.removed else { return }

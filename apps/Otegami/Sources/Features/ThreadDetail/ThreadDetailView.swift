@@ -98,6 +98,14 @@ struct ThreadDetailView: View {
     /// 絞り込まれた状態で開く"。`nil` だとアイコン自体を出さない
     /// (`MessageDetailFooterToolbar`'s doc comment — macOS では未配線)。
     var onSearchFromSender: ((String) -> Void)?
+    /// Task #184: called every time `isThreadArchived` is (re)computed —
+    /// lets a caller with its own macOS ⌘E menu label (`RootView
+    /// .isSelectedThreadArchived`, `OtegamiApp.swift`'s `detailColumn`) stay
+    /// in sync with this same thread's live archived state instead of
+    /// running a second, independent query. `nil` (the default — every
+    /// other call site, notably iOS's `ThreadEntryView`, which has no
+    /// equivalent menu-bar surface to update) is a plain no-op.
+    var onArchivedStateChanged: ((Bool) -> Void)?
     /// G「削除・アーカイブ時の挙動」: called (instead of always popping back)
     /// once `archiveThread()`/`junkThread()`/`deleteThread()` successfully
     /// removes this thread — the caller (whichever screen owns the
@@ -148,6 +156,40 @@ struct ThreadDetailView: View {
     @State private var hasPinnedInitialExpansion = false
     @State private var isThreadPinned = false
     @State private var isThreadMuted = false
+    /// Task #184 (「アーカイブ済みのメールの操作」): whether the footer
+    /// toolbar's archive slot should act as "アーカイブ解除" instead of
+    /// "アーカイブ" — grouped mode reads `ThreadQuery.isThreadArchived`
+    /// (Task #151's OR-aggregate: *at least one* message in the thread
+    /// already lives in an archived-counting mailbox), flat mode reads
+    /// `ThreadQuery.isMessageArchived` for just `singleMessageId`. Computed
+    /// at the same granularity `commitRemoval(_:)` actually acts on (the
+    /// whole thread for grouped mode, one message for flat mode — see
+    /// `threadSummary(threadId:singleMessageId:accountId:db:)`), and refreshed
+    /// on every live delivery from `load()`/`loadSingleMessage(_:)`'s
+    /// observations, not just once at open — an in-place edit elsewhere
+    /// (e.g. another client archiving/unarchiving this same thread) should
+    /// flip this screen's button the same way it already flips the list's
+    /// `ThreadRowView` badge (`summary.isArchived`).
+    ///
+    /// **一部だけアーカイブ済みの判定 (根拠)**: intentionally an OR, not an
+    /// AND, over the thread's messages — matching `ThreadSummary.isArchived`
+    /// /`ThreadRowView`'s existing "アーカイブ済みの可視化" badge (Task #151)
+    /// so this screen's button never disagrees with what the list already
+    /// showed for the same thread before it was opened. This is also exactly
+    /// the granularity `MessageRemoval.commit(.unarchive, ...)` itself
+    /// tolerates: its per-message loop only unarchives messages that are
+    /// actually sitting in an archived location and silently skips ones that
+    /// aren't (`MessageRemoval.Kind.unarchive`'s doc comment), so tapping
+    /// "アーカイブ解除" on a thread with, say, 1 archived + 2 still-active
+    /// messages correctly restores only the archived one and leaves the
+    /// other two exactly where they are — never a destructive "undo
+    /// everything" op. The accepted tradeoff: for that same mixed thread,
+    /// the two still-active messages can no longer be archived via this
+    /// screen's single archive slot until the already-archived one is
+    /// unarchived (or the thread splits) — a narrow edge case judged
+    /// acceptable rather than adding a second, AND-based "is this thread
+    /// *fully* archived" rule that would disagree with the list's own badge.
+    @State private var isThreadArchived = false
     @State private var showingInfo = false
     @State private var showingSource = false
     @State private var showingToolbarSettings = false
@@ -466,7 +508,10 @@ struct ThreadDetailView: View {
                 onDelete: deleteThread,
                 isPinned: isThreadPinned,
                 onTogglePin: togglePin,
-                onMarkUnread: markUnread
+                onMarkUnread: markUnread,
+                // Task #184: same thread-scoped state `footerToolbar` reads —
+                // see `isThreadArchived`'s doc comment.
+                isArchived: isThreadArchived
             )
             // Task #146: `accordionScrollTarget`のスクロール先ターゲット —
             // ヘッダを含むこの行全体に付けておけば、`showsHeader`が`true`
@@ -565,6 +610,7 @@ struct ThreadDetailView: View {
         hasPinnedInitialExpansion = false
         isThreadPinned = false
         isThreadMuted = false
+        isThreadArchived = false
 
         let thread = try? await environment.database.dbWriter.read { db in
             try ThreadRecord.fetchOne(db, key: threadId)
@@ -591,6 +637,7 @@ struct ThreadDetailView: View {
                     expandedMessageId = newestId
                     hasPinnedInitialExpansion = true
                 }
+                await refreshIsThreadArchived(messageId: nil)
             }
         } catch {
             // A failing observation just stops the view from updating
@@ -624,11 +671,30 @@ struct ThreadDetailView: View {
                     expandedMessageId = fetched.id
                     hasPinnedInitialExpansion = true
                 }
+                await refreshIsThreadArchived(messageId: messageId)
             }
         } catch {
             // Same as the grouped-mode path: a failing observation just
             // stops updating, it doesn't clear what's already shown.
         }
+    }
+
+    /// Task #184: shared by `load()`'s grouped-mode loop (`messageId: nil`)
+    /// and `loadSingleMessage(_:)`'s flat-mode loop (`messageId` set) —
+    /// see `isThreadArchived`'s doc comment for why each mode reads a
+    /// different `ThreadQuery` helper at a different granularity. Best-
+    /// effort like every other observation-driven read in this file: a
+    /// failing query just leaves `isThreadArchived` at its last known value
+    /// rather than throwing.
+    private func refreshIsThreadArchived(messageId: Int64?) async {
+        let archived = (try? await environment.database.dbWriter.read { db -> Bool in
+            if let messageId {
+                return try ThreadQuery.isMessageArchived(messageId: messageId, db: db)
+            }
+            return try ThreadQuery.isThreadArchived(threadId: threadId, db: db)
+        }) ?? isThreadArchived
+        isThreadArchived = archived
+        onArchivedStateChanged?(archived)
     }
 
     // MARK: - 新画面構成 (3): フッターツールバー
@@ -647,6 +713,9 @@ struct ThreadDetailView: View {
             onToggleMute: toggleMute,
             onMarkUnread: markUnread,
             onArchive: archiveThread,
+            // Task #184: state-dependent label/icon — see `isThreadArchived`'s
+            // doc comment.
+            isArchived: isThreadArchived,
             onJunk: junkThread,
             isPinned: isThreadPinned,
             onTogglePin: togglePin,
@@ -1195,8 +1264,14 @@ struct ThreadDetailView: View {
         }
     }
 
+    /// Task #184: routes to `.unarchive` instead of `.archive` whenever
+    /// `isThreadArchived` — the same single entry point `footerToolbar`'s
+    /// archive slot and every per-row macOS context menu already call, so
+    /// neither surface needs its own branch (`archiveButton`'s/
+    /// `contextMenuContent`'s doc comments only need to swap the *label/
+    /// icon*, not duplicate this decision).
     private func archiveThread() {
-        Task { await commitRemoval(.archive) }
+        Task { await commitRemoval(isThreadArchived ? .unarchive : .archive) }
     }
 
     private func junkThread() {
@@ -1360,6 +1435,11 @@ private struct ThreadMessageRow: View {
     let isPinned: Bool
     let onTogglePin: () -> Void
     let onMarkUnread: () -> Void
+    /// Task #184: whether `onArchive` currently means "アーカイブ解除" —
+    /// see `ThreadDetailView.isThreadArchived`'s doc comment. Swaps
+    /// `contextMenuContent`'s archive row's label/icon the same way
+    /// `isPinned` already swaps the pin row's.
+    let isArchived: Bool
 
     /// Task #58 (根治): the real content height an HTML message's
     /// `WKWebView` measured — see `HTMLWebViewCoordinator.onHeightChange`'s
@@ -1463,7 +1543,18 @@ private struct ThreadMessageRow: View {
             }
         }
         Button { onJunk() } label: { Label("迷惑メールにする", systemImage: "exclamationmark.octagon") }
-        Button { onArchive() } label: { Label("アーカイブ", systemImage: "archivebox") }
+        // Task #184: mirrors `pinLabel`'s state-dependent swap just above —
+        // "アーカイブ解除" (`tray.and.arrow.up`, echoing "put it back", the
+        // same icon `MessageListRow.archiveLabel` already uses for the same
+        // reversed action) while `isArchived`, the normal "アーカイブ"
+        // otherwise.
+        Button { onArchive() } label: {
+            if isArchived {
+                Label("アーカイブ解除", systemImage: "tray.and.arrow.up")
+            } else {
+                Label("アーカイブ", systemImage: "archivebox")
+            }
+        }
         Button(role: .destructive) { onDelete() } label: { Label("削除", systemImage: "trash") }
     }
     #endif

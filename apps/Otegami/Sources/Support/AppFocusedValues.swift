@@ -51,6 +51,20 @@ extension FocusedValues {
         typealias Value = () -> Void
     }
 
+    /// Task #184 (「アーカイブ済みのメールの操作」): whether `archiveAction`'s
+    /// target thread is already archived — lets `OtegamiCommands` swap the
+    /// "アーカイブ" menu item to "アーカイブ解除" the same way the row/message
+    /// context menus and the iOS footer toolbar already do (`ThreadDetailView
+    /// .isThreadArchived`'s doc comment covers how this is decided,
+    /// including the partially-archived-thread call). `Bool`, not `Bool?`,
+    /// once published — a genuinely unknown/no-selection state is expressed
+    /// by leaving this key unpublished entirely (`nil` from `@FocusedValue`),
+    /// mirroring `archiveAction`'s own "published only while a thread is
+    /// open" gating rather than needing a third state.
+    private struct IsSelectedThreadArchivedKey: FocusedValueKey {
+        typealias Value = Bool
+    }
+
     private struct FocusSearchActionKey: FocusedValueKey {
         typealias Value = () -> Void
     }
@@ -90,6 +104,12 @@ extension FocusedValues {
     var archiveAction: (() -> Void)? {
         get { self[ArchiveActionKey.self] }
         set { self[ArchiveActionKey.self] = newValue }
+    }
+
+    /// Task #184: see `IsSelectedThreadArchivedKey`'s doc comment.
+    var isSelectedThreadArchived: Bool? {
+        get { self[IsSelectedThreadArchivedKey.self] }
+        set { self[IsSelectedThreadArchivedKey.self] = newValue }
     }
 
     /// Task #165: published only while a thread is open. ⌘⇧U.

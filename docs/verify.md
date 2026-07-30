@@ -117,6 +117,19 @@
    節の手順どおり)。次に踏んだ人は、まず`pgrep -x xcodebuild`が空である
    ことを確認してから (=他プロセスとの共有derived data競合を除外して
    から) 再試行するとよい。
+   **2026-07-31 追記 (Task #184)**: 同じ症状を`archived-message-detail`
+   シナリオで3回再現した — 1回目はエージェントハーネスの`run_in_background`
+   経由 (出力0行のまま`ps aux`にプロセスなし)、2・3回目は`timeout 500`
+   付きの直接フォアグラウンド実行 (`pgrep -x xcodebuild`が空であることを
+   毎回確認済み) だったが、それでも`Device already booted, nothing to
+   do.`の直後で進捗が一切出ないまま`timeout`が`SIGTERM`で強制終了 (exit
+   124) するまで完全に無応答だった。他の`xcodebuild`プロセスとの
+   `DERIVED_DATA_PATH`競合という前回の仮説はこの回では排除できたことに
+   なるため、原因はまだ特定できていない — 少なくとも「他プロセスとの
+   ロック待ち」だけでは説明しきれない再現がある。ユーザー指示どおり
+   3回で打ち切り、`make test`/`make mac`/`make ios`/`make check-localization`
+   すべて green を出荷基準とし、この画面は未検証のまま報告した
+   (`PENDING.md`「Task #184」節に実機での確認ポイントを追記)。
 
 ### 実機切り分け用の OSLog は `.notice` 以上で書く (Task #134)
 

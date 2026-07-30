@@ -7705,3 +7705,115 @@ verify-screen.sh composer-richtext-open`でライト/ダーク各1枚、tap-free
 経路で本文プレースホルダ/書式バーの描画を確認したのみ — メニュー内の
 色見本・チェックマーク・デフォルト選択後の文字色は実機でのタップ確認が
 必要。`PENDING.md`に確認ポイントを追記。
+
+## Task #184: アーカイブ済みのメールの操作 (「アーカイブ解除」への切り替え)
+
+**実機フィードバック**: 「アーカイブ済みのメールの操作について、ツール
+バーにあるアーカイブボタンはアーカイブ解除ボタンにして欲しい。また、
+そのメールに対してのアーカイブスワイプ操作もアーカイブ解除操作にして
+欲しい。アイコンもそういうのがわかるデザインにして」。
+
+### 現状把握: 一覧のスワイプ/macOSコンテキストメニューは Task #87 (1) で
+### 既に対応済みだった
+
+`MessageListRow`(`isArchiveView`ベース、アーカイブ表示中の行は常に
+"アーカイブ解除"として振る舞う — `archiveLabel`/`effectiveSystemImage`/
+`effectiveTint`/`perform(_:)`) は、iOS のスワイプ・macOS の右クリック
+コンテキストメニュー (`swipeButton(for:)`) 双方ともすでにこの切り替えを
+実装済みだった (アイコンも今回追加するのと同じ `tray.and.arrow.up`、
+トーンも`accentText`で統一済み)。今回のTask #184で新規に対応したのは
+**スレッド詳細画面**側 (iOS フッターツールバー + 「その他」メニュー、
+macOS の行コンテキストメニュー) — こちらはこれまで常に「アーカイブ」
+固定で、状態に応じた切り替えが無かった。
+
+なお、ユーザー指示文中の「Task #181 で macOS の操作体系を再設計」は
+実際には **Task #165** (macOS 操作体系再設計 — スワイプ廃止・右クリック
+コンテキストメニュー導入) を指している。`git log`に Task #181 という
+コミットは無く、`MessageListRow`/`ThreadMessageRow`双方の`#if os(macOS)
+.contextMenu`が Task #165 由来。
+
+### 実装
+
+- `ThreadDetailView`に`@State private var isThreadArchived`を追加。
+  グループ表示 (`load()`) は`ThreadQuery.isThreadArchived(threadId:db:)`、
+  フラット表示 (`loadSingleMessage(_:)`) は`ThreadQuery
+  .isMessageArchived(messageId:db:)`を、それぞれのライブ観測ループの
+  たびに`refreshIsThreadArchived(messageId:)`経由で再計算する (flag変更
+  やmailbox移動など、他クライアント発の変化にも追従)。
+- `archiveThread()`が`isThreadArchived`を見て`MessageRemoval.commit`に
+  渡す`Kind`を`.archive`/`.unarchive`のどちらにするか決める、唯一の
+  分岐点 — フッターツールバー・「その他」メニュー・macOSコンテキスト
+  メニューはすべて同じ`archiveThread`/`onArchive`を呼ぶだけで、ラベル/
+  アイコンの見た目だけを`isArchived`で切り替える (`isMuted`/`isPinned`
+  と同じ設計)。
+- `MessageDetailFooterToolbar`に`isArchived: Bool`を追加。
+  `archiveButton`と「その他」メニュー内の対応項目
+  (`hiddenActionMenuItem(for: .archive)`) の両方で、`isArchived`のとき
+  ラベルを「アーカイブ解除」・アイコンを`tray.and.arrow.up`に切り替える
+  — アイコンは`MessageListRow.archiveLabel`(Task #87 (1)) が既に採用
+  済みのものと同じにして、一覧で学んだアイコンが本文画面でも同じ意味を
+  持つようにした。
+- `ThreadMessageRow`(macOS専用`.contextMenu`、Task #165) にも同じ
+  `isArchived: Bool`を追加し、`contextMenuContent`のアーカイブ行を同様に
+  切り替え。
+- `MessageRemoval`(`SyncEngine`) 自体は無改修 — `.unarchive`という
+  `Kind`と、Task #120 の仮配置 (INBOX-role mailboxへ即時relocate) は
+  Task #87 (1) の時点で既に実装済みで、そのまま再利用した。
+
+### 一部だけアーカイブ済みのスレッドの判定 (根拠)
+
+`ThreadQuery.isThreadArchived`は Task #151 由来の**OR集計**
+(スレッド内の**いずれか1通**でもアーカイブ済みのメールボックスに
+あれば`true`) — これをそのままTask #184のボタン切り替えにも使うと
+決めた。理由:
+
+1. **一覧の表示と矛盾させないため**: `ThreadRowView`の「アーカイブ済み」
+   バッジ (Task #151) も同じ`summary.isArchived`(同じOR集計) を表示
+   済み — 一覧で見えていたバッジと、開いた詳細画面のボタンの状態が
+   食い違うことがない。
+2. **`commitRemoval(_:)`が実際に作用する粒度と一致させるため**:
+   グループ表示のアーカイブ/アーカイブ解除は常にスレッド全体
+   (`ThreadQuery.actionTargets`) に対して行われる — ボタンの状態判定も
+   スレッド全体を見るのが自然な対応。
+3. **`MessageRemoval.commit(.unarchive, ...)`自体がメッセージ単位の
+   ガードを持つため安全**: 「1通アーカイブ済み+2通は現役」という混在
+   スレッドで「アーカイブ解除」を押しても、`commit`のループは実際に
+   アーカイブ場所にあるメッセージだけを解除し、現役の2通には一切触れ
+   ない (`MessageRemoval.Kind.unarchive`のdoc comment参照) — 「全部
+   まとめて解除」という壊れた/驚きのある挙動にはならない。
+
+**受け入れたトレードオフ**: 上記の混在スレッドでは、現役の2通を
+アーカイブしたくても、このボタン1つでは (先にアーカイブ済みの1通を
+解除するまで) できなくなる。AND集計 (スレッド全体がアーカイブ済みの
+ときだけ「解除」にする) にすればこの制約は無くなるが、その場合一覧の
+バッジ (OR集計) と詳細画面のボタン (AND集計) とで「アーカイブ済み」の
+定義が2つ併存してしまう — この不一致の方が実害が大きいと判断し、OR集計
+に統一した。
+
+### ピン留めメールの扱いとの整合性
+
+Task #163 の「ピン留め済みのメールはアーカイブできない」ガード
+(`MessageRemoval.ArchiveGuardError.pinned`) は`.archive`だけを対象に
+しており、`.unarchive`には掛からない (`MessageRemoval.commit`のdoc
+comment、既存仕様のまま無改修)。つまりピン留め済みのメールが
+アーカイブ済みだった場合 (他クライアントでピン留め→アーカイブされた等)
+でも「アーカイブ解除」は通常どおり成功する — 「アーカイブを妨げる」
+ガードと「元に戻す/解除する」操作は矛盾しない、という Task #163 時点
+からの既存整理を変えていない。
+
+### 検証
+
+`make test`/`make mac`/`make ios`/`make check-localization` すべて
+green。文言「アーカイブ解除」は Task #87 (1) で既に
+`Localizable.xcstrings`に登録済みのキーをそのまま再利用したため、
+カタログの追加登録は不要だった (`scripts/generate-localizable.py`再実行
+後も差分なし)。
+
+**未検証**: `scripts/verify-screen.sh archived-message-detail`(Task #151
+が用意した「実際にアーカイブ済みのfake Gmailメッセージを直接開く」
+シナリオ) で見た目を確認しようと3回試みたが、いずれも`docs/verify.md`
+の既知不調#6 (Task #173) と同じ症状 (`xcodebuild build`ステップが進捗を
+一切出さないまま無期限に応答しない) で完了しなかった (`docs/verify.md`
+のTask #184追記参照)。ユーザー指示どおりここで打ち切り、`make test`/
+`make mac`/`make ios`/`make check-localization`緑を出荷基準とした。
+実機での確認ポイントは`PENDING.md`「Task #184」節に追記した。

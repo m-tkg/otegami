@@ -17,6 +17,9 @@ struct OtegamiCommands: Commands {
     @FocusedValue(\.replyAllAction) private var replyAllAction
     @FocusedValue(\.forwardAction) private var forwardAction
     @FocusedValue(\.archiveAction) private var archiveAction
+    /// Task #184: see `AppFocusedValues.isSelectedThreadArchived`'s doc
+    /// comment.
+    @FocusedValue(\.isSelectedThreadArchived) private var isSelectedThreadArchived
     @FocusedValue(\.toggleReadAction) private var toggleReadAction
     @FocusedValue(\.deleteAction) private var deleteAction
     @FocusedValue(\.focusSearchAction) private var focusSearchAction
@@ -89,7 +92,11 @@ struct OtegamiCommands: Commands {
             // Spark 等、複数のネイティブ Mac メールクライアントが実際に
             // 使っているアーカイブの組み合わせ)に変更 — 実クリック検証で
             // 通常のテキスト入力に副作用が無いことを確認済み。
-            Button("アーカイブ") { archiveAction?() }
+            // Task #184: mirrors the row/message context menus' and the iOS
+            // footer toolbar's own state-dependent swap — `archiveAction`
+            // itself stays a single callback either way (`archiveSelectedThread()`
+            // is what actually decides `.archive` vs. `.unarchive`).
+            Button(isSelectedThreadArchived == true ? "アーカイブ解除" : "アーカイブ") { archiveAction?() }
                 .keyboardShortcut("e", modifiers: .command)
                 .disabled(archiveAction == nil)
             Button("既読/未読を切り替え") { toggleReadAction?() }
