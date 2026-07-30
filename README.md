@@ -247,7 +247,10 @@ scripts/verify-relay.sh                            # otegami-relay の E2E 検�
   (サーバーと共有する DTO)、`OtegamiTranslation`/
   `OtegamiTranslationFoundationModels`/`TranslationEngine` (端末内翻訳・
   要約のスタック)。
-- `server/otegami-relay/` — プッシュリレー (Hummingbird 2、Linux 対応)。
+- `server/otegami-relay/` — プッシュリレー (Swift、Hummingbird 2、Linux
+  対応)。`server/otegami-relay-go/` に、ワイヤ/ストレージ完全互換の Go
+  移植版もある (arm64 Docker イメージのビルドを高速化する目的、詳細は
+  [docs/relay-deployment.md](docs/relay-deployment.md))。
 - `dev/mailstack/` — Dovecot + Mailpit の開発用スタック。
 
 MailCore2 依存の同梱方法は [docs/build-mailcore2.md](docs/build-mailcore2.md)、
