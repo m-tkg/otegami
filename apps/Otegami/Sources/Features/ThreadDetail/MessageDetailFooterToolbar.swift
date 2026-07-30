@@ -130,6 +130,27 @@ struct MessageDetailFooterToolbar: View {
             fixedRow
             scrollableRow
         }
+        // Task #198 (実機フィードバック「メールビューでのアイコンが大きすぎる
+        // しバランスがおかしい。もっとコンパクトなアイコンにして」):
+        // 大きさの出どころは明示サイズでもパディングでもなく**ボタン
+        // スタイル**だった — このツールバーはどのボタン/`Menu`にも
+        // `.buttonStyle`/`.menuStyle`を指定していなかったため、macOS既定の
+        // bordered風スタイル (各アイコンごとに濃い角丸の背景を描く) が
+        // 適用されていた。実機スクリーンショットで確認: `toolbarIcon`
+        // 自体のサイズ指定 (アイコン18pt+`.otegamiMinimumTappable()`の
+        // 44×44) は iOS と共通で以前から変わっておらず、大きな角丸の
+        // 背景こそが macOS だけで見えていた"想定外の追加分"だった。
+        // `.buttonStyle(.plain)`(プレーンな`Button`用)+`.menuStyle
+        // (.borderlessButton)`(`replyMenuButton`/`moreMenuButton`の`Menu`
+        // 用、`.buttonStyle`は`Menu`には効かないため別指定が要る) を
+        // ここ1箇所に集約して環境経由で全ボタン/`Menu`へカスケードさせ、
+        // このアプリの他の場所と同じ「背景なし、素のアイコン」という
+        // ボーダーレスな見た目に揃えた。**iOS は無条件に無変更**
+        // (`#if os(macOS)`の外)。
+        #if os(macOS)
+        .buttonStyle(.plain)
+        .menuStyle(.borderlessButton)
+        #endif
         .padding(.horizontal, OtegamiSpacing.sm)
         .padding(.vertical, OtegamiSpacing.sm)
         .background(OtegamiColor.surface)
