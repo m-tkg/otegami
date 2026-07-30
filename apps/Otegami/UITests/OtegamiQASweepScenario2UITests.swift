@@ -10,10 +10,10 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
+    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) throws {
         let emptyStateButton = app.buttons["mail.addAccountButton"]
         if emptyStateButton.waitForExistence(timeout: 5) {
-            addDovecotTest1AccountWithSMTP(in: app)
+            try addDovecotTest1AccountWithSMTP(in: app)
             restartAppToRecoverTouchDelivery(app)
         }
         app.launchArguments.removeAll { $0 == "-uiTestsAutoAdvanceToContent" }
@@ -27,7 +27,7 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
     func testReplyWithClearedRecipientDisablesSend() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
@@ -95,7 +95,7 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
     func testDraftSaveReopenAndSend() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         returnToMailTabRootIfNeeded(in: app)
 
         let composeButton = app.buttons["mail.composeButton"]
@@ -158,7 +158,7 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
     func testBoundarySearchQueries() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
@@ -213,7 +213,7 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
     func testNoSubjectAndEmptyBodyMessagesDisplayGracefully() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
@@ -247,7 +247,7 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
     func testDeleteAccountThenReAddLeavesAWorkingAccount() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
 
         // Design-phase-2: "設定" is its own tab now, not a gear-icon sheet.
         openSettingsFromHamburgerMenu(in: app)
@@ -279,7 +279,7 @@ final class OtegamiQASweepScenario2UITests: XCTestCase {
         // now be back to the empty-account state (or at least no longer
         // show test1's mailboxes) — confirm re-adding works cleanly.
         returnToMailTabRootIfNeeded(in: app)
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         let list = app.collectionViews["messageList.list"]

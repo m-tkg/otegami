@@ -15,7 +15,7 @@ final class OtegamiM5SetupUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1AccountWithSMTP(in: app)
+        try addDovecotTest1AccountWithSMTP(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         // M10: `waitForSeededSubjectScrollingIfNeeded` — see its doc

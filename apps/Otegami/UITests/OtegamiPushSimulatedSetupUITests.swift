@@ -27,7 +27,7 @@ final class OtegamiPushSimulatedSetupUITests: XCTestCase {
 
         let emptyStateButton = app.buttons["mail.addAccountButton"]
         if emptyStateButton.waitForExistence(timeout: 5) {
-            addDovecotTest1Account(in: app)
+            try addDovecotTest1Account(in: app)
             restartAppToRecoverTouchDelivery(app)
         }
         // else: an account already exists from a previous run of this

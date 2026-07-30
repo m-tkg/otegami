@@ -26,10 +26,10 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
     /// identical doc comment — same reasoning, kept as this file's own
     /// copy per this UITest target's established "each file keeps its own
     /// small helpers" convention.
-    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
+    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) throws {
         let emptyStateButton = app.buttons["mail.addAccountButton"]
         if emptyStateButton.waitForExistence(timeout: 5) {
-            addDovecotTest1Account(in: app)
+            try addDovecotTest1Account(in: app)
             restartAppToRecoverTouchDelivery(app)
         }
     }
@@ -42,7 +42,7 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
 
         let list = app.collectionViews["messageList.list"]
         let threadRow = list.cells.containing(NSPredicate(format: "label CONTAINS %@", "来週のランチ")).firstMatch
@@ -97,7 +97,7 @@ final class OtegamiM4ThreadDetailUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
 
         let list = app.collectionViews["messageList.list"]
         let subject = "ようこそotegamiへ"

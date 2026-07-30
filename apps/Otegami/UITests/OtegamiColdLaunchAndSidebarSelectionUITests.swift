@@ -28,10 +28,10 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
     /// (docs/verify.md's M11 section) — a previous verify run's account
     /// routinely resurrects itself even after a fresh `simctl uninstall`,
     /// so "does the empty state ever show up" isn't reliable to gate on.
-    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
+    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) throws {
         let emptyStateButton = app.buttons["mail.addAccountButton"]
         if emptyStateButton.waitForExistence(timeout: 5) {
-            addDovecotTest1Account(in: app)
+            try addDovecotTest1Account(in: app)
             restartAppToRecoverTouchDelivery(app, legacyAutoAdvanceToContent: false)
         }
     }
@@ -53,7 +53,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "Expected the message list to be reachable")
         let list = app.collectionViews["messageList.list"]
 
@@ -125,7 +125,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "Expected the message list to be reachable")
         let list = app.collectionViews["messageList.list"]
 
@@ -156,7 +156,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
     func testColdRelaunchWithExistingAccountLandsOnTheMailTabMessageList() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
 
         app.terminate()
         app.launch()
@@ -183,7 +183,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
     func testReselectingTheAlreadyActiveFolderStillDismissesTheSheet() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "Expected the message list to be reachable")
         let list = app.collectionViews["messageList.list"]
 
@@ -214,7 +214,7 @@ final class OtegamiColdLaunchAndSidebarSelectionUITests: XCTestCase {
     func testRetappingTheSameMessageRowAfterPoppingBackNavigatesAgain() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         XCTAssertTrue(navigateToUnifiedInboxIfNeeded(in: app), "Expected the message list to be reachable")
         let list = app.collectionViews["messageList.list"]
 

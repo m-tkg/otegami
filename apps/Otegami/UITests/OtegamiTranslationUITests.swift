@@ -20,7 +20,7 @@ final class OtegamiTranslationSetupUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         XCTAssertTrue(

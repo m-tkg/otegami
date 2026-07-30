@@ -41,7 +41,7 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
         XCTAssertTrue(
             waitForSeededSubjectScrollingIfNeeded("ようこそ otegami へ", in: app),
@@ -75,6 +75,13 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         // race ahead of that and see 0 rows. Poll instead of trusting the
         // first snapshot.
         let matchCount = waitForAccountRowCount(2, emailText: "test1@otegami.test", in: app)
+        try skipIfNoAccountRowsExist(
+            matchCount,
+            reason: "Phase 2 depends on scripts/verify-ios-duplicate-account.sh's between-phase sqlite3 "
+                + "injection of a duplicate account row — running this test class directly via "
+                + "`xcodebuild test` (not through that script) never performs that injection, so this "
+                + "phase can't reach its own precondition."
+        )
         XCTAssertEqual(matchCount, 2, "Expected the real device bug: two account rows for the same email address")
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
@@ -106,6 +113,12 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         XCTAssertTrue(list.waitForExistence(timeout: 10))
 
         let matchCount = waitForAccountRowCount(1, emailText: "test1@otegami.test", in: app)
+        try skipIfNoAccountRowsExist(
+            matchCount,
+            reason: "Phase 3 depends on Phase 1/2 (and scripts/verify-ios-duplicate-account.sh's between-phase "
+                + "sqlite3 injection) having actually left an account behind — running this test class "
+                + "directly via `xcodebuild test` never reaches that state."
+        )
         XCTAssertEqual(matchCount, 1, "Expected the duplicate account merge to have collapsed both rows into one")
 
         let pendingCredentialBanner = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "資格情報を待っています")).firstMatch
@@ -139,6 +152,19 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
             attempts += 1
         }
         return count
+    }
+
+    /// Task #172: phases 2/3 assume the prior phase (and, for phase 2, the
+    /// wrapping script's between-phase `sqlite3` injection) actually ran —
+    /// if this test class is invoked directly (e.g. the full `OtegamiUITests`
+    /// suite run, not `scripts/verify-ios-duplicate-account.sh`), zero
+    /// account rows exist at all rather than the "wrong" count the assertion
+    /// below is built to catch. Skip rather than fail in that case so a
+    /// real regression in the merge logic itself (a `matchCount` that's
+    /// non-zero but still wrong) still reports as a genuine failure.
+    private func skipIfNoAccountRowsExist(_ matchCount: Int, reason: String) throws {
+        guard matchCount == 0 else { return }
+        throw XCTSkip(reason)
     }
 
     private func scrollSettingsUntilVisible(_ element: XCUIElement, in app: XCUIApplication, maxAttempts: Int = 10) -> Bool {

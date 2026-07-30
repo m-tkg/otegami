@@ -31,7 +31,7 @@ final class OtegamiDisplayBatchScreenshotUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         // Phase 1: 一覧 (カード状表示 + 時刻表示) — 直近のシード投入直後なので

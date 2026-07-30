@@ -18,7 +18,7 @@ final class OtegamiM3SetupUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         // 「明日の打ち合わせについて」 collapses into its "Re:" thread row under

@@ -50,7 +50,7 @@ final class OtegamiSwipeAutoFireUITests: XCTestCase {
     /// `OtegamiPinSwipeListDisplayUITests` already established, so every
     /// test method here can call this unconditionally regardless of which
     /// order XCTest happens to run them in.
-    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
+    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) throws {
         guard app.buttons["mail.addAccountButton"].waitForExistence(timeout: 5) else { return }
         let emptyStateButton = app.buttons["mail.addAccountButton"]
         emptyStateButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
@@ -61,7 +61,7 @@ final class OtegamiSwipeAutoFireUITests: XCTestCase {
 
         XCTAssertTrue(app.textFields["accountSetup.displayName"].waitForExistence(timeout: 5), "Account setup sheet did not appear")
         fillDovecotAccountForm(in: app)
-        runConnectionTest(in: app)
+        try runConnectionTest(in: app)
         saveAccount(in: app)
         dismissSavePasswordPromptIfNeeded()
     }
@@ -70,7 +70,7 @@ final class OtegamiSwipeAutoFireUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
         assignTrailingSwipeSlots(in: app)
 
@@ -88,7 +88,7 @@ final class OtegamiSwipeAutoFireUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
         assignTrailingSwipeSlots(in: app)
 
@@ -117,7 +117,7 @@ final class OtegamiSwipeAutoFireUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
         assignTrailingSwipeSlots(in: app)
 
@@ -146,7 +146,7 @@ final class OtegamiSwipeAutoFireUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
         assignTrailingSwipeSlots(in: app)
 
@@ -183,7 +183,7 @@ final class OtegamiSwipeAutoFireUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         let row = targetRow(in: app)

@@ -20,7 +20,7 @@ final class OtegamiImageSettingsUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15))
 
@@ -58,7 +58,7 @@ final class OtegamiImageSettingsUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15))
 

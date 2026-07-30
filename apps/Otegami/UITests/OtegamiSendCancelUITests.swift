@@ -28,7 +28,7 @@ final class OtegamiSendCancelUITests: XCTestCase {
     /// disappearing once the countdown elapses is what these tests
     /// actually assert; whether the *simulated* send then succeeds or
     /// fails server-side is orthogonal to what's being verified here.
-    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
+    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) throws {
         guard app.buttons["mail.addAccountButton"].waitForExistence(timeout: 5) else { return }
 
         app.buttons["mail.addAccountButton"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
@@ -38,7 +38,7 @@ final class OtegamiSendCancelUITests: XCTestCase {
 
         XCTAssertTrue(app.textFields["accountSetup.displayName"].waitForExistence(timeout: 5), "Account setup sheet did not appear")
         fillDovecotAccountForm(in: app)
-        runConnectionTest(in: app)
+        try runConnectionTest(in: app)
         saveAccount(in: app)
         dismissSavePasswordPromptIfNeeded()
     }
@@ -52,7 +52,7 @@ final class OtegamiSendCancelUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         app.terminate()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
@@ -104,7 +104,7 @@ final class OtegamiSendCancelUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         app.terminate()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()

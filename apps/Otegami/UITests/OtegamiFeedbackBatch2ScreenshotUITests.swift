@@ -22,7 +22,7 @@ final class OtegamiFeedbackBatch2ScreenshotUITests: XCTestCase {
         // このプロジェクトで最も実績のあるヘルパー (`addDovecotTest1Account`)
         // をそのまま使う。
         if app.buttons["mail.addAccountButton"].waitForExistence(timeout: 5) {
-            addDovecotTest1Account(in: app)
+            try addDovecotTest1Account(in: app)
             restartAppToRecoverTouchDelivery(app)
         }
 

@@ -22,7 +22,7 @@ final class OtegamiM1VerificationUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         assertSeededINBOXMessagesAppear(in: app)
     }
 

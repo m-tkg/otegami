@@ -1,8 +1,18 @@
 import XCTest
 
-/// アバター強化バッチ: 「連絡先の写真を表示」「Google プロフィール写真を
-/// 表示」「Gravatar の画像を表示」「企業ロゴを表示」の4トグルが設定 →
+/// アバター強化バッチ: 送信者プロフィールアイコンの表示トグルが設定 →
 /// 「メール一覧」に実際に現れ、操作できることを確認する軽量な検証。
+///
+/// Task #172 (2026-07-30): 実機フィードバック (2026-07-29,
+/// `MailListSettingsView`のコメント参照) で「連絡先の写真を表示」「Google
+/// プロフィール写真を表示」「Gravatar の画像を表示」「企業ロゴを表示」の
+/// 個別4トグルは`settings.list.showAvatarToggle`1つに集約され、この画面
+/// からは無くなった (`AvatarSourceSettingsStore`の個別キー自体は解決
+/// チェーン側がまだ読むため残っているが、この画面で書き分ける UI は無い)。
+/// 元のテストは集約前の4トグルを個別に探しており、この変更で
+/// `xcodebuild test`が長期間コンパイルすら通らなくなっていた間に UI 側
+/// だけ先に進んでいたぶん壊れていた — 現在の単一トグルの UI に合わせて
+/// 書き直した。
 ///
 /// アカウント追加・dev mailstack 同期を必要とする `OtegamiM1VerificationUITests`
 /// 等とは違い、この画面はアカウントが1件も無い状態でも到達できる
@@ -27,35 +37,17 @@ final class OtegamiAvatarSettingsUITests: XCTestCase {
         XCTAssertTrue(openSettingsFromHamburgerMenuRetrying(in: app), "設定シートが開かなかった")
         XCTAssertTrue(navigateToMailListSettingsCategory(in: app), "「メール一覧」カテゴリへ遷移できなかった")
 
-        let existingAvatarToggle = app.switches["settings.list.showAvatarToggle"]
-        XCTAssertTrue(existingAvatarToggle.waitForExistence(timeout: 10), "既存の「送信者のプロフィールアイコンを表示」トグルが見つからなかった")
-
-        let contactPhotoToggle = app.switches["settings.list.showContactPhotoToggle"]
-        XCTAssertTrue(contactPhotoToggle.waitForExistence(timeout: 5), "「連絡先の写真を表示」トグルが見つからなかった")
-        // 既定 ON — `AvatarSourceSettingsStore.defaultShowContactPhoto`.
-        XCTAssertEqual(contactPhotoToggle.value as? String, "1", "既定で ON になっているはず")
+        let avatarToggle = app.switches["settings.list.showAvatarToggle"]
+        XCTAssertTrue(avatarToggle.waitForExistence(timeout: 10), "「送信者のプロフィールアイコンを表示」トグルが見つからなかった")
+        // 既定 ON — `ListDisplaySettingsStore.defaultShowAvatar`.
+        XCTAssertEqual(avatarToggle.value as? String, "1", "既定で ON になっているはず")
 
         // 実際にタップできる (OFF に切り替えられる) ことも確認する — 見えて
-        // いるだけで操作できないトグルではないことの最低限の裏付け。
-        contactPhotoToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
-        // アバター強化バッチ「Google プロフィール写真」。
-        let googleProfilePhotoToggle = app.switches["settings.list.showGoogleProfilePhotoToggle"]
-        XCTAssertTrue(googleProfilePhotoToggle.waitForExistence(timeout: 5), "「Google プロフィール写真を表示」トグルが見つからなかった")
-        XCTAssertEqual(googleProfilePhotoToggle.value as? String, "1", "既定で ON になっているはず")
-        googleProfilePhotoToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
-        // アバター強化バッチ フェーズ2「Gravatar」。
-        let gravatarToggle = app.switches["settings.list.showGravatarToggle"]
-        XCTAssertTrue(gravatarToggle.waitForExistence(timeout: 5), "「Gravatar の画像を表示」トグルが見つからなかった")
-        XCTAssertEqual(gravatarToggle.value as? String, "1", "既定で ON になっているはず")
-        gravatarToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
-
-        // アバター強化バッチ フェーズ3「企業ロゴ (favicon)」。
-        let companyLogoToggle = app.switches["settings.list.showCompanyLogoToggle"]
-        XCTAssertTrue(companyLogoToggle.waitForExistence(timeout: 5), "「企業ロゴを表示」トグルが見つからなかった")
-        XCTAssertEqual(companyLogoToggle.value as? String, "1", "既定で ON になっているはず")
-        companyLogoToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
+        // いるだけで操作できないトグルではないことの最低限の裏付け。1トグル
+        // 化 (`MailListSettingsView.onChange(of: showAvatar)`) に伴い、
+        // これ1つで個別ソース (連絡先/Google/Gravatar/企業ロゴ) も一括で
+        // 追随する。
+        avatarToggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
 
         // M11「エラーTextFieldの.valueがすぐには追従しない」系の既知の挙動
         // (`.claude/skills/verify/SKILL.md`) と同種の理由で、タップ直後の

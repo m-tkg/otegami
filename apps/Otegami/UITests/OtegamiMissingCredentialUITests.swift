@@ -28,7 +28,7 @@ final class OtegamiMissingCredentialUITests: XCTestCase {
         app.launchEnvironment["OTEGAMI_UITEST_DELETE_CREDENTIAL"] = "1"
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15))
 

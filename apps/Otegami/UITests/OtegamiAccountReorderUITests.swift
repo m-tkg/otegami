@@ -38,9 +38,9 @@ final class OtegamiAccountReorderUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
-        addDovecotTest2Account(in: app)
+        try addDovecotTest2Account(in: app)
 
         openAccountSettingsCategory(in: app)
         let (test1SettingsY, test2SettingsY) = accountRowYPositions(in: app)

@@ -25,9 +25,9 @@ final class OtegamiMailListHeaderUITests: XCTestCase {
     /// 他のテストファイル (`OtegamiPinSwipeListDisplayUITests`等) と同じ
     /// 「アカウントが無ければ追加、あれば何もしない」流儀 — このテスト
     /// ファイル単体で実行してもスイート全体の一部として実行しても動く。
-    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
+    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) throws {
         guard app.buttons["mail.addAccountButton"].waitForExistence(timeout: 5) else { return }
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
     }
 
     /// 実装ルール: 「メール一覧での検索ボタンは左下にフローティングして
@@ -41,7 +41,7 @@ final class OtegamiMailListHeaderUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15), "一覧が表示されなかった")
@@ -70,7 +70,7 @@ final class OtegamiMailListHeaderUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 15), "一覧が表示されなかった")

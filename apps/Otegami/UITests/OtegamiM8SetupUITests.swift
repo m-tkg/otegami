@@ -16,7 +16,7 @@ final class OtegamiM8SetupUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1AccountWithSMTP(in: app)
+        try addDovecotTest1AccountWithSMTP(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         let list = app.collectionViews["messageList.list"]

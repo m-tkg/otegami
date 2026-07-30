@@ -32,10 +32,10 @@ final class OtegamiQASweepUITests: XCTestCase {
     /// leaves the app on the Mail tab's message list — reachable directly
     /// once an account exists (design-phase-2: no sidebar root to tap
     /// through anymore).
-    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
+    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) throws {
         let emptyStateButton = app.buttons["mail.addAccountButton"]
         if emptyStateButton.waitForExistence(timeout: 5) {
-            addDovecotTest1Account(in: app)
+            try addDovecotTest1Account(in: app)
             restartAppToRecoverTouchDelivery(app)
         }
         // See the identical line in `OtegamiColdLaunchAndSidebarSelectionUITests`
@@ -61,7 +61,7 @@ final class OtegamiQASweepUITests: XCTestCase {
     func testKillRestartCycleFromMessageList() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
@@ -96,7 +96,7 @@ final class OtegamiQASweepUITests: XCTestCase {
     func testKillRestartCycleFromThreadDetail() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
@@ -127,7 +127,7 @@ final class OtegamiQASweepUITests: XCTestCase {
     func testKillRestartCycleFromSearchInProgress() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
@@ -158,7 +158,7 @@ final class OtegamiQASweepUITests: XCTestCase {
     func testRapidOpenAndBackMashing() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
@@ -192,7 +192,7 @@ final class OtegamiQASweepUITests: XCTestCase {
     func testRapidMailboxSwitchingViaFolderSheet() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
@@ -226,7 +226,7 @@ final class OtegamiQASweepUITests: XCTestCase {
     func testSearchTypeCancelRetype() throws {
         let app = XCUIApplication()
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         let list = app.collectionViews["messageList.list"]
         XCTAssertTrue(list.waitForExistence(timeout: 20))
 
@@ -274,7 +274,7 @@ final class OtegamiQASweepUITests: XCTestCase {
         if emptyStateButton.waitForExistence(timeout: 5) {
             openAccountSetup(in: app)
             fillDovecotAccountForm(in: app)
-            runConnectionTest(in: app)
+            try runConnectionTest(in: app)
             saveAccount(in: app)
             // Deliberately do NOT wait for sync to settle — interact
             // immediately while it's still in flight. The post-save state
@@ -332,12 +332,12 @@ final class OtegamiQASweepUITests: XCTestCase {
             throw XCTSkip("An account already exists from a previous test in this run; this scenario needs a clean zero-account start.")
         }
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         // No settle wait — add the second account immediately while the
         // first's initial sync is presumably still running.
         restartAppToRecoverTouchDelivery(app)
         returnToMailTabRootIfNeeded(in: app)
-        addDovecotTest2Account(in: app)
+        try addDovecotTest2Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         // Both accounts should be present — design-phase-2: checked via

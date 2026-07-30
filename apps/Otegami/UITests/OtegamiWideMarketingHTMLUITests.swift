@@ -48,7 +48,7 @@ final class OtegamiWideMarketingHTMLUITests: XCTestCase {
         // re-check this one message's rendering.
         let list = app.collectionViews["messageList.list"]
         if !list.waitForExistence(timeout: 5) {
-            addDovecotTest1Account(in: app)
+            try addDovecotTest1Account(in: app)
             allowNotificationPermissionIfNeeded(timeout: 10)
             restartAppToRecoverTouchDelivery(app)
         }

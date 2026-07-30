@@ -23,7 +23,7 @@ final class OtegamiM4UnifiedInboxUITests: XCTestCase {
         // chip row's "＋" entry point.
         returnToMailTabRootIfNeeded(in: app)
 
-        addDovecotTest2Account(in: app)
+        try addDovecotTest2Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         // No pop needed here — the restart above is itself a fresh

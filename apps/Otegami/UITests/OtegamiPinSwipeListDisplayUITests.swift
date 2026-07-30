@@ -29,12 +29,12 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
     /// happens to run them in (alphabetical by default, not declaration
     /// order), rather than assuming a specific "setup" test always runs
     /// first.
-    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) {
+    private func ensureDovecotTest1AccountExists(in app: XCUIApplication) throws {
         guard app.buttons["mail.addAccountButton"].waitForExistence(timeout: 5) else { return }
-        addDovecotTest1AccountRobust(in: app)
+        try addDovecotTest1AccountRobust(in: app)
     }
 
-    private func addDovecotTest1AccountRobust(in app: XCUIApplication) {
+    private func addDovecotTest1AccountRobust(in app: XCUIApplication) throws {
         let emptyStateButton = app.buttons["mail.addAccountButton"]
         XCTAssertTrue(emptyStateButton.waitForExistence(timeout: 10), "\"add account\" button did not appear")
         emptyStateButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1)
@@ -45,7 +45,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
 
         XCTAssertTrue(app.textFields["accountSetup.displayName"].waitForExistence(timeout: 5), "Account setup sheet did not appear")
         fillDovecotAccountForm(in: app)
-        runConnectionTest(in: app)
+        try runConnectionTest(in: app)
         saveAccount(in: app)
         dismissSavePasswordPromptIfNeeded()
     }
@@ -54,7 +54,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         openSettingsFromHamburgerMenu(in: app)
@@ -83,7 +83,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         // Assign trailing-long to ピン留め so a revealed (tap-only) button is
@@ -149,7 +149,7 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
-        ensureDovecotTest1AccountExists(in: app)
+        try ensureDovecotTest1AccountExists(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         openSettingsFromHamburgerMenu(in: app)

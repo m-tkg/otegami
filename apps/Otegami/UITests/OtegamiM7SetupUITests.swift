@@ -19,7 +19,7 @@ final class OtegamiM7SetupUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         // No `popBackOnceIfNeeded` here (unlike the second account, below):
@@ -39,7 +39,7 @@ final class OtegamiM7SetupUITests: XCTestCase {
         )
 
         returnToMailTabRootIfNeeded(in: app)
-        addDovecotTest2Account(in: app)
+        try addDovecotTest2Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         XCTAssertTrue(app.collectionViews["messageList.list"].waitForExistence(timeout: 30))

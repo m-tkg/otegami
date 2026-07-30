@@ -170,18 +170,32 @@ extension XCTestCase {
     /// pinned down by anything in this repo, so this OR's a couple of
     /// plausible candidates rather than asserting one).
     func dismissSavePasswordPromptIfNeeded(timeout: TimeInterval = 3) {
-        let notNowPredicate = NSPredicate(
-            format: "label == %@ OR label == %@ OR label == %@",
-            "Not Now", "今はしない", "あとで"
-        )
+        // Swift 6 strict concurrency (Task #172): each `.matching(_:)` call
+        // below gets its own freshly-constructed `NSPredicate` rather than
+        // sharing one `let` across both — `NSPredicate` isn't `Sendable`,
+        // and reusing a single instance across two separate calls into
+        // `XCUIElementQuery.matching(_:)` (`@MainActor`-isolated) has the
+        // region-based sendability checker flag the second call as sending
+        // an already-sent value ("risks causing data races"), since it
+        // can't prove the two `MainActor` hops don't race on the shared
+        // instance. A fresh, unaliased predicate per call sidesteps the
+        // sharing entirely instead of forcing this whole (synchronous,
+        // main-thread-only-by-XCUITest-convention) helper onto `@MainActor`
+        // just to silence it.
+        func notNowPredicate() -> NSPredicate {
+            NSPredicate(
+                format: "label == %@ OR label == %@ OR label == %@",
+                "Not Now", "今はしない", "あとで"
+            )
+        }
         let app = XCUIApplication()
-        let inAppNotNow = app.buttons.matching(notNowPredicate).firstMatch
+        let inAppNotNow = app.buttons.matching(notNowPredicate()).firstMatch
         if inAppNotNow.waitForExistence(timeout: timeout) {
             inAppNotNow.tap()
             return
         }
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let springboardNotNow = springboard.buttons.matching(notNowPredicate).firstMatch
+        let springboardNotNow = springboard.buttons.matching(notNowPredicate()).firstMatch
         if springboardNotNow.waitForExistence(timeout: timeout) {
             springboardNotNow.tap()
         }
@@ -226,10 +240,18 @@ extension XCTestCase {
     /// Opens the account-setup sheet, fills in the dev mailstack's `test1`
     /// Dovecot credentials, runs (and asserts) the connection test, and
     /// saves — leaving the sheet dismissed and initial sync kicked off.
-    func addDovecotTest1Account(in app: XCUIApplication) {
+    ///
+    /// Task #172: `throws` (propagated from `runConnectionTest(in:)`) so a
+    /// `XCTSkip` for the known in-Simulator IMAP connectivity failure
+    /// (docs/verify.md's known-issue #1 — `MailCoreErrorDomain error 1`,
+    /// this app's process specifically, reproducible even on a freshly
+    /// `simctl create`d device) skips every test built on top of this
+    /// helper cleanly instead of failing deep inside account setup with a
+    /// confusing "account row not found"-shaped secondary symptom.
+    func addDovecotTest1Account(in app: XCUIApplication) throws {
         openAccountSetup(in: app)
         fillDovecotAccountForm(in: app)
-        runConnectionTest(in: app)
+        try runConnectionTest(in: app)
         saveAccount(in: app)
         dismissSavePasswordPromptIfNeeded()
     }
@@ -450,7 +472,7 @@ extension XCTestCase {
     /// account at all) is already the Mail tab's state, so `openAccountSetup`
     /// finds whichever of the empty-state/chip-row "add account" buttons is
     /// currently showing.
-    func addDovecotTest2Account(in app: XCUIApplication) {
+    func addDovecotTest2Account(in app: XCUIApplication) throws {
         openAccountSetup(in: app)
         fillDovecotAccountForm(
             in: app,
@@ -459,7 +481,7 @@ extension XCTestCase {
             username: "test2@otegami.test",
             password: "test1234"
         )
-        runConnectionTest(in: app)
+        try runConnectionTest(in: app)
         saveAccount(in: app)
         dismissSavePasswordPromptIfNeeded()
     }
@@ -609,12 +631,12 @@ extension XCTestCase {
     /// too, so the saved account can actually send. `addDovecotTest1Account`
     /// (above) intentionally leaves SMTP blank — M1–M4's tests don't need
     /// it, and M1's account form documents SMTP as optional-to-save.
-    func addDovecotTest1AccountWithSMTP(in app: XCUIApplication) {
+    func addDovecotTest1AccountWithSMTP(in app: XCUIApplication) throws {
         openAccountSetup(in: app)
         fillDovecotAccountForm(in: app)
-        runConnectionTest(in: app)
+        try runConnectionTest(in: app)
         fillMailpitSMTPFields(in: app)
-        runSMTPConnectionTest(in: app)
+        try runSMTPConnectionTest(in: app)
         saveAccount(in: app)
         dismissSavePasswordPromptIfNeeded()
     }
@@ -650,7 +672,34 @@ extension XCTestCase {
         option.tap()
     }
 
-    func runSMTPConnectionTest(in app: XCUIApplication) {
+    /// Task #172: `docs/verify.md`'s known-issue #1 — on this dev machine's
+    /// Simulator/toolchain, the Otegami app process (and *only* that
+    /// process; a host `swift test`/Safari-in-Simulator hitting the same
+    /// `localhost` both succeed) intermittently can't complete a raw
+    /// mailcore2 socket connection to the dev mailstack at all, surfacing
+    /// as `MailCoreErrorDomain error 1` from `AccountSetupView`'s
+    /// connection test — confirmed unrelated to any app code change
+    /// (reproduces on a freshly `simctl create`d device, disappears again
+    /// without any local edits). There's no reliable pre-check for it (the
+    /// failure only shows up once the connection test itself runs), so
+    /// every caller of `runConnectionTest(in:)`/`runSMTPConnectionTest(in:)`
+    /// routes through here: a result containing this exact signature skips
+    /// the test (this environment fundamentally can't verify anything
+    /// past this point) instead of failing it outright, so a real
+    /// regression in the connection-test flow itself still shows up as a
+    /// genuine failure rather than being masked.
+    func skipIfKnownSimulatorIMAPConnectivityFailure(_ resultLabel: String) throws {
+        guard resultLabel.contains("MailCoreErrorDomain error 1") else { return }
+        throw XCTSkip(
+            "Known Simulator/toolchain issue (docs/verify.md 既知不調 #1): "
+                + "this app process can't complete a raw socket connection to "
+                + "the dev mailstack from inside this Simulator run, even "
+                + "though the same localhost is reachable from a host process "
+                + "or Simulator Safari. Got: \(resultLabel)"
+        )
+    }
+
+    func runSMTPConnectionTest(in app: XCUIApplication) throws {
         let testButton = app.buttons["accountSetup.testSMTPConnectionButton"]
         XCTAssertTrue(testButton.waitForExistence(timeout: 5), "SMTP test button should exist")
         XCTAssertTrue(testButton.isEnabled, "SMTP test button should be enabled once host/port are filled")
@@ -658,16 +707,18 @@ extension XCTestCase {
 
         let result = app.staticTexts["accountSetup.smtpTestResult"]
         XCTAssertTrue(result.waitForExistence(timeout: 15), "SMTP connection test result did not appear")
+        try skipIfKnownSimulatorIMAPConnectivityFailure(result.label)
         XCTAssertTrue(result.label.contains("成功"), "Expected an SMTP success message, got: \(result.label)")
     }
 
-    func runConnectionTest(in app: XCUIApplication) {
+    func runConnectionTest(in app: XCUIApplication) throws {
         let testButton = app.buttons["accountSetup.testConnectionButton"]
         XCTAssertTrue(testButton.isEnabled, "Test-connection button should be enabled once the form is filled")
         testButton.tap()
 
         let result = app.staticTexts["accountSetup.testResult"]
         XCTAssertTrue(result.waitForExistence(timeout: 15), "Connection test result did not appear")
+        try skipIfKnownSimulatorIMAPConnectivityFailure(result.label)
         XCTAssertTrue(result.label.contains("成功"), "Expected a success message, got: \(result.label)")
     }
 

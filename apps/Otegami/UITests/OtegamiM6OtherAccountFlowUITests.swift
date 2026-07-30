@@ -19,7 +19,7 @@ final class OtegamiM6OtherAccountFlowUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         // M10: `waitForSeededSubjectScrollingIfNeeded` — see its doc

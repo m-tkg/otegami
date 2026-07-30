@@ -17,7 +17,7 @@ final class OtegamiDraftsSyncSetupUITests: XCTestCase {
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
         app.launch()
 
-        addDovecotTest1AccountWithSMTP(in: app)
+        try addDovecotTest1AccountWithSMTP(in: app)
         restartAppToRecoverTouchDelivery(app)
 
         XCTAssertTrue(

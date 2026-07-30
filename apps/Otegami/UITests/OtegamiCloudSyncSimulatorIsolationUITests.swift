@@ -36,7 +36,7 @@ final class OtegamiCloudSyncSimulatorIsolationUITests: XCTestCase {
         // the real device before this fix.
         app.launch()
 
-        addDovecotTest1Account(in: app)
+        try addDovecotTest1Account(in: app)
         restartAppToRecoverTouchDelivery(app)
         XCTAssertTrue(
             waitForSeededSubjectScrollingIfNeeded("ようこそ otegami へ", in: app),
