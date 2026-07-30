@@ -2451,36 +2451,6 @@
         }
       }
     },
-    "自分でホストしたプッシュ中継サーバ (otegami-relay) の URL を入力してください。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enter the URL of your self-hosted push relay server (otegami-relay)."
-          }
-        }
-      }
-    },
-    "リレー URL": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Relay URL"
-          }
-        }
-      }
-    },
-    "https:// が必須です（ローカル開発時のみ http://localhost を使用できます）。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "https:// is required (http://localhost is allowed for local development only)."
-          }
-        }
-      }
-    },
     "プッシュ通知は有効です": {
       "localizations": {
         "en": {
@@ -2541,12 +2511,154 @@
         }
       }
     },
-    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）が入力したリレー URL のサーバーへ送信され、暗号化して保存されます。リレーの運用者を信頼できる場合のみ有効にしてください。Gmail (OAuth) アカウントは現バージョンでは対象外です。": {
+    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）がプッシュ中継サーバーへ送信され、暗号化して保存されます。Gmail (OAuth) アカウントは現バージョンでは対象外です。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the server at the relay URL you entered, where it's stored encrypted. Only enable this if you trust the relay's operator. Gmail (OAuth) accounts aren't supported in this version."
+            "value": "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the push relay server, where it's stored encrypted. Gmail (OAuth) accounts aren't supported in this version."
+          }
+        }
+      }
+    },
+    "この配布ビルドにはプッシュ中継サーバーが設定されていません。自分のリレーを使う場合は docs/relay-deployment.md を参照して Config/Local.xcconfig に設定してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This distribution build has no push relay server configured. If you're running your own relay, see docs/relay-deployment.md and set it in Config/Local.xcconfig."
+          }
+        }
+      }
+    },
+    "アカウント別の状態": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Status by Account"
+          }
+        }
+      }
+    },
+    "各アカウントのプッシュ通知 watch の状態です。停止しているアカウントは再登録できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Each account's push-notification watch status. A stopped account can be re-registered."
+          }
+        }
+      }
+    },
+    "パスワード認証のアカウントがありません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There are no password-authenticated accounts."
+          }
+        }
+      }
+    },
+    "再登録": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-register"
+          }
+        }
+      }
+    },
+    "登録済み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Registered"
+          }
+        }
+      }
+    },
+    "未登録": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not Registered"
+          }
+        }
+      }
+    },
+    "停止（認証失敗）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped (Authentication Failed)"
+          }
+        }
+      }
+    },
+    "停止（接続失敗）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped (Connection Failed)"
+          }
+        }
+      }
+    },
+    "停止": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopped"
+          }
+        }
+      }
+    },
+    "対象外（Gmail/Outlook）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not Supported (Gmail/Outlook)"
+          }
+        }
+      }
+    },
+    "状態を取得できません": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Status Unavailable"
+          }
+        }
+      }
+    },
+    "最終接続: %@": {
+      "comment": "Task #173 PushWatchStatusSection row subtitle for a registered watch, e.g. \"最終接続: 3分前\" / \"Last connected: 3 minutes ago\" — %@ is a relative-time-formatted Date.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last connected: %@"
+          }
+        }
+      }
+    },
+    "最終試行: %@": {
+      "comment": "Task #173 PushWatchStatusSection row subtitle for a stopped watch, e.g. \"最終試行: 3分前\" / \"Last attempt: 3 minutes ago\" — %@ is a relative-time-formatted Date.",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last attempt: %@"
           }
         }
       }

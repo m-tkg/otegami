@@ -381,19 +381,38 @@ translations = {
         "Gmail and iCloud have their host settings filled in automatically. For any other provider, set it up manually via “Other.”",
 
     # --- PushNotificationSettingsView ---
-    "自分でホストしたプッシュ中継サーバ (otegami-relay) の URL を入力してください。":
-        "Enter the URL of your self-hosted push relay server (otegami-relay).",
-    "リレー URL": "Relay URL",
-    "https:// が必須です（ローカル開発時のみ http://localhost を使用できます）。":
-        "https:// is required (http://localhost is allowed for local development only).",
+    # Task #173 follow-up (実機フィードバック 2026-07-30 「リレー URL は今の
+    # 固定 URL という話をしたよ」): the relay-URL TextField (and its header/
+    # footer) was removed entirely — the URL is a build-time value now
+    # (`RelayURLConfig`), same as Task #171's registration secret — so the
+    # three entries that used to live here ("自分でホストしたプッシュ中継
+    # サーバ...", "リレー URL", "https:// が必須です...") are gone, and the
+    # consent alert's message below no longer mentions "入力したリレー URL".
     "プッシュ通知は有効です": "Push Notifications Are Enabled",
     "無効にする": "Disable",
     "有効にする": "Enable",
     "設定アプリを開く": "Open Settings App",
     "資格情報の送信について": "About Sending Credentials",
     "同意して有効にする": "Agree & Enable",
-    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）が入力したリレー URL のサーバーへ送信され、暗号化して保存されます。リレーの運用者を信頼できる場合のみ有効にしてください。Gmail (OAuth) アカウントは現バージョンでは対象外です。":
-        "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the server at the relay URL you entered, where it's stored encrypted. Only enable this if you trust the relay's operator. Gmail (OAuth) accounts aren't supported in this version.",
+    "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）がプッシュ中継サーバーへ送信され、暗号化して保存されます。Gmail (OAuth) アカウントは現バージョンでは対象外です。":
+        "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the push relay server, where it's stored encrypted. Gmail (OAuth) accounts aren't supported in this version.",
+    "この配布ビルドにはプッシュ中継サーバーが設定されていません。自分のリレーを使う場合は docs/relay-deployment.md を参照して Config/Local.xcconfig に設定してください。":
+        "This distribution build has no push relay server configured. If you're running your own relay, see docs/relay-deployment.md and set it in Config/Local.xcconfig.",
+    # Task #173: per-account watch status list (`PushWatchStatusSection`).
+    "アカウント別の状態": "Status by Account",
+    "各アカウントのプッシュ通知 watch の状態です。停止しているアカウントは再登録できます。":
+        "Each account's push-notification watch status. A stopped account can be re-registered.",
+    "パスワード認証のアカウントがありません。": "There are no password-authenticated accounts.",
+    "再登録": "Re-register",
+    "登録済み": "Registered",
+    "未登録": "Not Registered",
+    "停止（認証失敗）": "Stopped (Authentication Failed)",
+    "停止（接続失敗）": "Stopped (Connection Failed)",
+    "停止": "Stopped",
+    "対象外（Gmail/Outlook）": "Not Supported (Gmail/Outlook)",
+    "状態を取得できません": "Status Unavailable",
+    "最終接続: %@": "Last connected: %@",
+    "最終試行: %@": "Last attempt: %@",
     # Task #171 originally had a "登録シークレット" SecureField/header/footer
     # here (self-hosted relay's optional RELAY_DEVICE_REGISTRATION_SECRET,
     # typed in by the user). Removed in the 2026-07-30 follow-up — see
@@ -764,6 +783,8 @@ translations = {
 # `build()` below would otherwise silently drop them on the next
 # regeneration. Keyed by the same `ja` source string as `translations`.
 comments = {
+    "最終接続: %@": 'Task #173 PushWatchStatusSection row subtitle for a registered watch, e.g. "最終接続: 3分前" / "Last connected: 3 minutes ago" — %@ is a relative-time-formatted Date.',
+    "最終試行: %@": 'Task #173 PushWatchStatusSection row subtitle for a stopped watch, e.g. "最終試行: 3分前" / "Last attempt: 3 minutes ago" — %@ is a relative-time-formatted Date.',
     "添付ファイル %lld 個": 'Task #76 attachment card list header, e.g. "添付ファイル 2 個" / "Attachments (2)".',
     "予定への招待": "Task #66 calendar invite card header, above the event title/time/location.",
     "現在の回答: %@": 'Task #66 calendar invite card: shows the RSVP already recorded for this invite, e.g. "現在の回答: 参加" / "Your response: Accepted".',
