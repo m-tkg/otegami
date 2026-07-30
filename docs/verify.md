@@ -697,9 +697,8 @@ M1–M5 の検証はすべて「XCUITest 完了後にホストから撮る」パ
 
 - Gmail: `docs/oauth-setup.md` の「実機での最終確認手順」(Client ID 発行→
   実ログイン→送受信→トークン自動リフレッシュ→取り消し後の再認証バナー)。
-- iCloud: `PENDING.md` の「iCloud App 用パスワードでの実アカウント確認」
-  (実 App 用パスワードでの接続テスト・送受信、ユーザー名がフルアドレスで
-  良いかの確認)。
+- iCloud: 実 App 用パスワードでの接続テスト・送受信、ユーザー名がフル
+  アドレスで良いかの確認 — 実機で確認済み。
 
 ## iOS シミュレータ検証 (M7)
 
@@ -953,7 +952,7 @@ screenshot は `SCREENSHOT_DIR/m9-01-app-relaunch.png` (テスト完了後に
 実 APNs 配信・`NotificationService` による通知書き換え・実機でのエンド
 ツーエンド確認はこの自動スクリプトの対象外 (このスクリプトは `.p8` 無し
 でも回る範囲に留めている) — 実機での確認は別途手動で完了済み
-(`PENDING.md` の M9 節参照)。
+(セルフホスト手順は `docs/relay-deployment.md` 参照)。
 otegami-relay サーバー自体の IDLE→push 発火パイプラインは
 `scripts/verify-relay.sh` (実 Dovecot に対する統合検証) と
 `server/otegami-relay/Tests/OtegamiRelayTests/WatcherPoolTests.swift`
@@ -971,9 +970,8 @@ APNs を経由せずに `NotificationService` Extension (`apps/Otegami
 /NotificationService/NotificationService.swift`) を実プロセスとして起動させ、
 「OS 配信 → Extension 起動 → App Group 経由の GRDB 読み取り → 共有
 Keychain 読み取り → 実 IMAP ラウンドトリップ → 通知内容の書き換え」という
-経路をエンドツーエンドで検証する (PENDING.md の M9 節に残っていた
-「`xcrun simctl push` によるペイロード注入テスト・・・本セッションでは未実施」
-の後続)。
+経路をエンドツーエンドで検証する (実機での最終確認より前の段階で行う
+シミュレータでの近似検証)。
 
 1. `OtegamiPushSimulatedSetupUITests` — test1 の Dovecot アカウントを追加し、
    seed 済みメッセージが表示されることを確認してからアプリを `terminate()`
@@ -1042,8 +1040,8 @@ spawn されず、通知内容が (汎用フォールバックにすら) 書き�
 で確認済み。技術的な詳細・再現手順・確認したログの抜粋は
 `docs/qa-findings.md`「M9 追補2」節を参照。結果として、「差出人/件名の
 書き換え」までのシミュレータ上でのエンドツーエンド確認は、この開発機
-では依然として不可能なまま残っている — 実機での最終確認
-(PENDING.md M9 節) が引き続き唯一の手段。
+では依然として不可能なまま残っている — 実機での最終確認 (完了済み。
+セルフホスト手順は `docs/relay-deployment.md` 参照) が引き続き唯一の手段。
 
 ### 現状のブロッカー (この開発機で確認済み、本セッションでは未解消) [解消済み — 上の追記参照]
 
@@ -3274,9 +3272,10 @@ scripts/verify-ios-credential-recovery.sh
 `sqlite3` を使って DB に重複行を注入する既存の設計) で、アプリが
 実際には2行ある DB を0件として観測する現象を確認した。この修正セッション
 のコード変更を無効化しても同一症状が再現することを確認済みで、今回の
-変更が原因ではない (`PENDING.md`「開発環境: 連続する `xcodebuild test`
-単体実行の間でシミュレータの App Group DB が読めなくなることがある」
-節に詳細を記録)。上記の資格情報回復2フェーズは、`app.terminate()`/
+変更が原因ではない (原因未特定のシミュレータ固有の環境不調 — 別々の
+`xcodebuild test` 呼び出しをまたいでアプリを再インストールした直後にだけ
+再現し、単一の `xcodebuild test` 呼び出し内で完結するテストには影響
+しない)。上記の資格情報回復2フェーズは、`app.terminate()`/
 `app.launch()` を単一の `xcodebuild test` 呼び出し内で完結させる設計
 (`OtegamiCredentialRecoveryUITests` の既存パターン) のため、この制約の
 影響を受けず問題なく実行できた。
@@ -3298,10 +3297,8 @@ scripts/verify-ios-credential-recovery.sh
   完了直後にアプリがバックグラウンドへ遷移することがあり、C7 送信
   キャンセルのカウントダウン中にこれが起きると `opQueue` の `send` 行が
   `attempts=0` のまま次のフォアグラウンド化まで取り残される、という
-  既存機能 (C6/C7) 側の環境依存の挙動によるもの。`PENDING.md`「開発
-  環境: `xcodebuild test` 実行中にアプリがバックグラウンドへ遷移し、
-  C7 送信キャンセルの opQueue リプレイが取り残されることがある」節に
-  詳細を記録した。
+  既存機能 (C6/C7) 側の環境依存の挙動によるもの (原因未特定、次に
+  フォアグラウンドへ戻った瞬間に正しく送信されるためデータ消失は無い)。
 - `verify-ios-m4.sh`/`verify-ios-m7.sh` の mid-test スクリーンショット
   ウィンドウ (`screenshot_mid_test`/類似のインライン `sleep` ループ) を
   実測ベースで調整した — 検索/設定がタブの瞬時切り替えからシート表示に
@@ -3745,7 +3742,7 @@ iPad: 20/29/40/76/83.5pt の @1x/@2x、マーケティング 1024) に置き換�
   クラスの実際の pass/fail は今回のセッションでは未検証のまま**、
   ビルドが通ることの確認とコミットを優先して先へ進めた。
 
-**残件 (`PENDING.md`にも転記)**:
+**残件**:
 1. `OtegamiAvatarSettingsUITests`含む個々のテストクラスの実行時
    pass/fail は次回セッションで`xcodebuild test
    -only-testing:OtegamiUITests/<クラス名>`を、事前に`build-for-testing`
