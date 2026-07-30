@@ -30,9 +30,15 @@ actor RelayStore {
         var imapUseTLS: Bool
         var imapUsername: String
         var authType: WatchAuth.Kind
-        /// Decrypted IMAP secret — never logged, never re-exposed over the
-        /// API; only `WatcherPool` reads this, to open its own IMAP
-        /// connection.
+        /// Task #175: which OAuth provider `secret` belongs to when
+        /// `authType == .oauth`; `nil` for `.password`. `WatcherPool`
+        /// passes this to `OAuthTokenExchanger` to pick the right token
+        /// endpoint/client id.
+        var provider: WatchAuth.Provider?
+        /// Decrypted IMAP secret (`.password`) or OAuth refresh token
+        /// (`.oauth`) — never logged, never re-exposed over the API; only
+        /// `WatcherPool` reads this, to open its own IMAP connection (or,
+        /// for `.oauth`, to exchange it for an access token first).
         var secret: String
         var mailbox: String
         var createdAt: Date
@@ -145,6 +151,11 @@ actor RelayStore {
         if !existingNames.contains("lastErrorAt") {
             _ = try await connection.query("ALTER TABLE watch ADD COLUMN lastErrorAt TEXT")
         }
+        // Task #175 (OAuth watches): nullable — only `.oauth` rows ever
+        // set it, `.password` rows leave it NULL forever.
+        if !existingNames.contains("authProvider") {
+            _ = try await connection.query("ALTER TABLE watch ADD COLUMN authProvider TEXT")
+        }
     }
 
     // MARK: - Devices
@@ -241,8 +252,9 @@ actor RelayStore {
             """
             INSERT INTO watch (
                 id, deviceId, accountId, imapHost, imapPort, imapUseTLS,
-                imapUsername, authType, encryptedSecret, mailbox, createdAt
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                imapUsername, authType, encryptedSecret, mailbox, createdAt,
+                authProvider
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 .text(id),
@@ -256,6 +268,7 @@ actor RelayStore {
                 .blob(ByteBuffer(data: encrypted)),
                 .text(request.mailbox),
                 .text(Self.iso8601.string(from: createdAt)),
+                request.auth.provider.map { SQLiteData.text($0.rawValue) } ?? .null,
             ]
         )
         return WatchResponse(
@@ -390,7 +403,8 @@ actor RelayStore {
         let rows = try await connection.query(
             """
             SELECT id, deviceId, accountId, imapHost, imapPort, imapUseTLS,
-                   imapUsername, authType, encryptedSecret, mailbox, createdAt
+                   imapUsername, authType, encryptedSecret, mailbox, createdAt,
+                   authProvider
             FROM watch
             \(whereClause)
             """,
@@ -413,6 +427,12 @@ actor RelayStore {
             else {
                 throw RelayStoreError.watchNotFound
             }
+            // Task #175: `authProvider` is `NULL` for every `.password`
+            // row (and any pre-#175 row, via `addWatchColumnsIfMissing`'s
+            // migration) — decoded leniently as `nil` rather than failing
+            // the whole row, same posture as `status`/`lastErrorKind`
+            // above.
+            let provider = row.column("authProvider")?.string.flatMap(WatchAuth.Provider.init(rawValue:))
             let encryptedData = Data(buffer: encryptedBuffer)
             let secret = try crypto.decrypt(encryptedData)
             return WatchRecord(
@@ -424,6 +444,7 @@ actor RelayStore {
                 imapUseTLS: imapUseTLS != 0,
                 imapUsername: imapUsername,
                 authType: authType,
+                provider: provider,
                 secret: secret,
                 mailbox: mailbox,
                 createdAt: createdAt

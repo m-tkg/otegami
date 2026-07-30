@@ -96,12 +96,30 @@ struct OtegamiRelay {
 
         let httpClient = HTTPClient(eventLoopGroupProvider: .shared(eventLoopGroup))
         let pushSender = makePushSender(configuration: configuration, httpClient: httpClient, logger: logger)
+        // Task #175: shares the same `HTTPClient` `pushSender`'s
+        // `APNsSender` (when configured) uses — no reason for a second
+        // connection pool just for token-endpoint calls.
+        let oauthTokenExchanger = OAuthTokenExchanger(
+            transport: AsyncHTTPClientOAuthTransport(httpClient: httpClient),
+            googleClientId: configuration.googleOAuthClientId,
+            microsoftClientId: configuration.microsoftOAuthClientId
+        )
+        if configuration.googleOAuthClientId == nil, configuration.microsoftOAuthClientId == nil {
+            logger.info(
+                """
+                RELAY_GOOGLE_CLIENT_ID/RELAY_MICROSOFT_CLIENT_ID are not set — an .oauth \
+                watch (Gmail/Outlook) can be created but will never authenticate. See \
+                docs/relay-deployment.md.
+                """
+            )
+        }
         let watcherPool = WatcherPool(
             store: store,
             pushSender: pushSender,
             eventLoopGroup: eventLoopGroup,
             logger: logger,
-            networkPolicy: configuration.networkPolicy
+            networkPolicy: configuration.networkPolicy,
+            oauthTokenExchanger: oauthTokenExchanger
         )
 
         let router = buildRouter(

@@ -16,6 +16,19 @@ struct RelayConfiguration: Sendable {
     /// (unset `RELAY_DEVICE_REGISTRATION_SECRET`) keeps registration open;
     /// see `DeviceRoutes.authorizeRegistration`'s doc comment for why.
     var deviceRegistrationSecret: String?
+    /// Task #175: the app's Google OAuth Client ID (same value as the
+    /// app's `GOOGLE_OAUTH_CLIENT_ID`) — Google's "iOS" OAuth client type
+    /// needs the exact client id that issued a refresh token, but no
+    /// client secret, to refresh it (see `OAuthTokenExchanger`'s doc
+    /// comment). `nil` (unset `RELAY_GOOGLE_CLIENT_ID`) means a
+    /// `.oauth`/`.google` watch can never authenticate — `WatcherPool`
+    /// stops retrying it (`WatchSummary.ErrorKind.connectionError`)
+    /// rather than hammering a token endpoint that will never work.
+    var googleOAuthClientId: String?
+    /// Task #175: mirrors `googleOAuthClientId` for Microsoft/Outlook
+    /// (`RELAY_MICROSOFT_CLIENT_ID`, same value as the app's
+    /// `OTEGAMI_MICROSOFT_CLIENT_ID`).
+    var microsoftOAuthClientId: String?
 
     struct APNsConfig: Sendable {
         var keyPath: String
@@ -60,6 +73,8 @@ struct RelayConfiguration: Sendable {
         }
 
         let deviceRegistrationSecret = environment["RELAY_DEVICE_REGISTRATION_SECRET"].flatMap { $0.isEmpty ? nil : $0 }
+        let googleOAuthClientId = environment["RELAY_GOOGLE_CLIENT_ID"].flatMap { $0.isEmpty ? nil : $0 }
+        let microsoftOAuthClientId = environment["RELAY_MICROSOFT_CLIENT_ID"].flatMap { $0.isEmpty ? nil : $0 }
 
         return RelayConfiguration(
             masterKeyBase64: masterKey,
@@ -67,7 +82,9 @@ struct RelayConfiguration: Sendable {
             apns: apns,
             port: port,
             networkPolicy: .fromEnvironment(environment),
-            deviceRegistrationSecret: deviceRegistrationSecret
+            deviceRegistrationSecret: deviceRegistrationSecret,
+            googleOAuthClientId: googleOAuthClientId,
+            microsoftOAuthClientId: microsoftOAuthClientId
         )
     }
 }

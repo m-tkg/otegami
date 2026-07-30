@@ -70,24 +70,45 @@ public struct UpdateDeviceTokenRequest: Codable, Equatable, Sendable {
 }
 
 /// The IMAP credential the relay needs to open its own IDLE connection.
-/// `.password` is the only kind implemented in v1 (plan: "LOGIN/XOAUTH2
-/// なし可: password のみ v1") — `type` is still explicit so a future
-/// `.xoauth2` case can be added without a wire-format break.
+/// v1 supported `.password` only (plan: "LOGIN/XOAUTH2 なし可: password
+/// のみ v1"); Task #175 added `.oauth` so Gmail/Outlook (`.oauth2` local
+/// accounts) can get push watches too, at the cost of the relay holding a
+/// refresh token instead of an IMAP password — see
+/// `docs/relay-deployment.md`'s threat model for what that changes.
 public struct WatchAuth: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case password
+        /// XOAUTH2 — `secret` is an OAuth refresh token, `provider` says
+        /// which token endpoint the relay must exchange it at
+        /// (`WatcherPool`/`OAuthTokenExchanger`). Required to be paired
+        /// with a non-`nil` `provider` — `WatchRoutes` rejects a
+        /// `.oauth` request with no `provider` at creation time.
+        case oauth
+    }
+
+    /// Which OAuth provider issued `secret` when `type == .oauth` — the
+    /// relay needs this to pick the right token endpoint/client id
+    /// (`RelayConfiguration.googleOAuthClientId`/`microsoftOAuthClientId`).
+    /// Always `nil` for `.password`.
+    public enum Provider: String, Codable, Sendable {
+        case google
+        case microsoft
     }
 
     public var type: Kind
-    /// The IMAP password (or, for a future `.xoauth2` case, a refresh
-    /// token). Sent once over TLS at watch-creation time; the server
+    /// The IMAP password (`.password`) or an OAuth refresh token
+    /// (`.oauth`). Sent once over TLS at watch-creation time; the server
     /// encrypts it at rest (`CredentialCrypto`) and never echoes it back
     /// in any response.
     public var secret: String
+    /// Required (and validated by `WatchRoutes`) when `type == .oauth`;
+    /// otherwise `nil`.
+    public var provider: Provider?
 
-    public init(type: Kind = .password, secret: String) {
+    public init(type: Kind = .password, secret: String, provider: Provider? = nil) {
         self.type = type
         self.secret = secret
+        self.provider = provider
     }
 }
 
@@ -197,6 +218,16 @@ public struct WatchSummary: Codable, Equatable, Sendable {
         /// IMAP server — never by itself a reason the loop stops
         /// permanently, it just keeps retrying with backoff.
         case connectionError
+        /// Task #175 (OAuth watches): the stored refresh token was
+        /// rejected by the provider's token endpoint (`invalid_grant` —
+        /// revoked/expired) while exchanging it for an access token.
+        /// Unlike `.authFailure`, this stops the watch immediately rather
+        /// than after `maxConsecutiveAuthFailures` — a dead refresh token
+        /// never recovers on its own, so retrying gains nothing. Fixing
+        /// this requires re-authenticating the account in the app (which
+        /// mints a fresh refresh token), then re-registering the watch —
+        /// the same "再登録" flow `.authFailure` already uses.
+        case oauthTokenExpired
     }
 
     public var watchId: String

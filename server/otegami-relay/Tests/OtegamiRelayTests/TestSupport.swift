@@ -62,6 +62,41 @@ enum TestSupport {
     }
 }
 
+/// Task #175: a scripted `OAuthTokenExchanging` for `WatcherPoolTests`'
+/// OAuth-watch tests — either always succeeds with a fixed access token, or
+/// always throws a fixed `OAuthTokenExchangeError`, per `behavior`. Never
+/// makes a real network call, unlike `OAuthTokenExchanger` — that type's
+/// own HTTP-parsing logic is covered separately by
+/// `OAuthTokenExchangerTests` against a mocked `OAuthHTTPTransport`.
+final class FakeOAuthTokenExchanger: OAuthTokenExchanging, @unchecked Sendable {
+    enum Behavior {
+        case succeed(accessToken: String)
+        case fail(OAuthTokenExchangeError)
+    }
+
+    private let lock = NIOLock()
+    private var _calls: [(provider: WatchAuth.Provider, refreshToken: String)] = []
+    private let behavior: Behavior
+
+    var calls: [(provider: WatchAuth.Provider, refreshToken: String)] {
+        lock.withLock { _calls }
+    }
+
+    init(behavior: Behavior = .succeed(accessToken: "fake-access-token")) {
+        self.behavior = behavior
+    }
+
+    func accessToken(provider: WatchAuth.Provider, refreshToken: String) async throws -> String {
+        lock.withLock { _calls.append((provider, refreshToken)) }
+        switch behavior {
+        case .succeed(let accessToken):
+            return accessToken
+        case .fail(let error):
+            throw error
+        }
+    }
+}
+
 /// Records every call instead of sending anything — `WatcherPoolTests`
 /// assert against this rather than a real (or console-logging) sender.
 final class FakePushSender: PushSending, @unchecked Sendable {

@@ -304,4 +304,178 @@ struct WatcherPoolTests {
         await fakeServer.stop()
         try await store.close()
     }
+
+    @Test("Task #175: an .oauth watch exchanges its refresh token and authenticates via XOAUTH2, firing a push")
+    func oauthWatchAuthenticatesViaXOAuth2AndFiresPush() async throws {
+        let eventLoopGroup = MultiThreadedEventLoopGroup.singleton
+        let store = try await TestSupport.makeStore(eventLoopGroup: eventLoopGroup)
+        let fakeServer = FakeIMAPServer(
+            eventLoopGroup: eventLoopGroup,
+            initialExists: 5,
+            initialUidNext: 6,
+            supportsIdle: true,
+            expectedXOAuth2AccessToken: "fresh-access-token"
+        )
+        let port = try await fakeServer.start()
+        let pushSender = FakePushSender()
+        let oauthTokenExchanger = FakeOAuthTokenExchanger(behavior: .succeed(accessToken: "fresh-access-token"))
+        let watcherPool = WatcherPool(
+            store: store,
+            pushSender: pushSender,
+            eventLoopGroup: eventLoopGroup,
+            logger: Logger(label: "test"),
+            idleMaxWaitSeconds: 3,
+            pollInterval: .milliseconds(200),
+            networkPolicy: .permissiveForTesting,
+            oauthTokenExchanger: oauthTokenExchanger
+        )
+
+        let device = try await store.createDevice(apnsToken: "oauth-device-token", environment: .sandbox)
+        let watch = try await store.createWatch(
+            deviceId: device.deviceId,
+            request: CreateWatchRequest(
+                accountId: "oauth-account",
+                imapHost: "127.0.0.1",
+                imapPort: port,
+                imapUseTLS: false,
+                imapUsername: "user@gmail.example.test",
+                auth: WatchAuth(type: .oauth, secret: "stored-refresh-token", provider: .google),
+                mailbox: "INBOX"
+            )
+        )
+        await watcherPool.addWatch(id: watch.watchId)
+
+        try await Task.sleep(for: .milliseconds(300))
+        fakeServer.deliverNewMail()
+
+        var calls: [FakePushSender.Call] = []
+        for _ in 0..<50 {
+            calls = pushSender.calls
+            if !calls.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        #expect(calls.count == 1)
+        #expect(calls.first?.payload.accountId == "oauth-account")
+        #expect(oauthTokenExchanger.calls.first?.provider == .google)
+        #expect(oauthTokenExchanger.calls.first?.refreshToken == "stored-refresh-token")
+
+        let summaries = try await store.listWatchSummaries(deviceId: device.deviceId)
+        #expect(summaries.first?.status == .active)
+
+        await watcherPool.removeWatch(id: watch.watchId)
+        await fakeServer.stop()
+        try await store.close()
+    }
+
+    @Test("Task #175: an .oauth watch stops immediately (not after 3 attempts) when the refresh token is invalid_grant")
+    func oauthWatchStopsImmediatelyOnInvalidGrant() async throws {
+        let eventLoopGroup = MultiThreadedEventLoopGroup.singleton
+        let store = try await TestSupport.makeStore(eventLoopGroup: eventLoopGroup)
+        let fakeServer = FakeIMAPServer(eventLoopGroup: eventLoopGroup, supportsIdle: true)
+        let port = try await fakeServer.start()
+        let pushSender = FakePushSender()
+        let oauthTokenExchanger = FakeOAuthTokenExchanger(behavior: .fail(.invalidGrant))
+        let watcherPool = WatcherPool(
+            store: store,
+            pushSender: pushSender,
+            eventLoopGroup: eventLoopGroup,
+            logger: Logger(label: "test"),
+            idleMaxWaitSeconds: 3,
+            pollInterval: .milliseconds(200),
+            networkPolicy: .permissiveForTesting,
+            oauthTokenExchanger: oauthTokenExchanger
+        )
+
+        let device = try await store.createDevice(apnsToken: "oauth-dead-token", environment: .sandbox)
+        let watch = try await store.createWatch(
+            deviceId: device.deviceId,
+            request: CreateWatchRequest(
+                accountId: "oauth-dead-account",
+                imapHost: "127.0.0.1",
+                imapPort: port,
+                imapUseTLS: false,
+                imapUsername: "user@outlook.example.test",
+                auth: WatchAuth(type: .oauth, secret: "revoked-refresh-token", provider: .microsoft),
+                mailbox: "INBOX"
+            )
+        )
+        await watcherPool.addWatch(id: watch.watchId)
+
+        var summary: WatchSummary?
+        for _ in 0..<50 {
+            let summaries = try await store.listWatchSummaries(deviceId: device.deviceId)
+            if summaries.first?.status == .stopped {
+                summary = summaries.first
+                break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        #expect(summary?.status == .stopped)
+        #expect(summary?.lastErrorKind == .oauthTokenExpired)
+        // Stopped on the very first exchange attempt, not after
+        // `maxConsecutiveAuthFailures` (3) — an invalid_grant never
+        // recovers by retrying.
+        #expect(oauthTokenExchanger.calls.count == 1)
+        #expect(pushSender.calls.isEmpty)
+
+        await watcherPool.removeWatch(id: watch.watchId)
+        await fakeServer.stop()
+        try await store.close()
+    }
+
+    @Test("Task #175: a .password watch keeps using plain LOGIN unaffected by the OAuth exchanger being configured")
+    func passwordWatchIsUnaffectedByOAuthSupport() async throws {
+        let eventLoopGroup = MultiThreadedEventLoopGroup.singleton
+        let store = try await TestSupport.makeStore(eventLoopGroup: eventLoopGroup)
+        let fakeServer = FakeIMAPServer(eventLoopGroup: eventLoopGroup, initialExists: 1, initialUidNext: 2, supportsIdle: true)
+        let port = try await fakeServer.start()
+        let pushSender = FakePushSender()
+        // Configured to fail every OAuth exchange — proves a `.password`
+        // watch never even calls it.
+        let oauthTokenExchanger = FakeOAuthTokenExchanger(behavior: .fail(.invalidGrant))
+        let watcherPool = WatcherPool(
+            store: store,
+            pushSender: pushSender,
+            eventLoopGroup: eventLoopGroup,
+            logger: Logger(label: "test"),
+            idleMaxWaitSeconds: 3,
+            pollInterval: .milliseconds(200),
+            networkPolicy: .permissiveForTesting,
+            oauthTokenExchanger: oauthTokenExchanger
+        )
+
+        let device = try await store.createDevice(apnsToken: "password-tok", environment: .sandbox)
+        let watch = try await store.createWatch(
+            deviceId: device.deviceId,
+            request: CreateWatchRequest(
+                accountId: "password-account",
+                imapHost: "127.0.0.1",
+                imapPort: port,
+                imapUseTLS: false,
+                imapUsername: "user@example.com",
+                auth: WatchAuth(secret: "password"),
+                mailbox: "INBOX"
+            )
+        )
+        await watcherPool.addWatch(id: watch.watchId)
+
+        try await Task.sleep(for: .milliseconds(300))
+        fakeServer.deliverNewMail()
+
+        var calls: [FakePushSender.Call] = []
+        for _ in 0..<50 {
+            calls = pushSender.calls
+            if !calls.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        #expect(calls.count == 1)
+        #expect(oauthTokenExchanger.calls.isEmpty)
+
+        await watcherPool.removeWatch(id: watch.watchId)
+        await fakeServer.stop()
+        try await store.close()
+    }
 }

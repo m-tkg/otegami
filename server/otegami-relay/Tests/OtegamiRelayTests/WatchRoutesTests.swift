@@ -313,6 +313,83 @@ struct WatchRoutesTests {
         }
     }
 
+    // MARK: - Task #175: OAuth watches
+
+    @Test("Task #175: creating an .oauth watch with a provider succeeds and persists the refresh token encrypted")
+    func createOAuthWatchSucceeds() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "gmail-account",
+                        imapHost: "203.0.113.10",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@gmail.example.test",
+                        auth: WatchAuth(type: .oauth, secret: "a-refresh-token", provider: .google),
+                        mailbox: "INBOX"
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .created)
+                    let decoded = try TestSupport.jsonDecoder.decode(WatchResponse.self, from: response.body)
+                    #expect(decoded.accountId == "gmail-account")
+                }
+
+                let watches = try await store.listWatches()
+                #expect(watches.count == 1)
+                #expect(watches.first?.authType == .oauth)
+                #expect(watches.first?.provider == .google)
+                // Same guarantee `RelayStoreTests.credentialsAreEncryptedAtRest`
+                // makes for a `.password` secret — the refresh token is
+                // recoverable via the store's own decrypt path...
+                #expect(watches.first?.secret == "a-refresh-token")
+                // ...but never sits on disk as plaintext.
+                let rawEncrypted = try await store.rawEncryptedSecretForTesting()
+                #expect(rawEncrypted != "a-refresh-token")
+            }
+        }
+    }
+
+    @Test("Task #175: creating an .oauth watch without a provider is a 400, not persisted")
+    func createOAuthWatchWithoutProviderIsRejected() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "gmail-account",
+                        imapHost: "203.0.113.10",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@gmail.example.test",
+                        auth: WatchAuth(type: .oauth, secret: "a-refresh-token"),
+                        mailbox: "INBOX"
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .badRequest)
+                }
+                #expect(try await store.listWatches().isEmpty)
+            }
+        }
+    }
+
     // MARK: - CLAUDE-SECURITY F2: SSRF defense
 
     /// Loopback, RFC1918/link-local IPv4, and IPv6 equivalents — every

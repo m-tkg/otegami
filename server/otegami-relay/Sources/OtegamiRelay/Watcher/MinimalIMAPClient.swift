@@ -252,8 +252,8 @@ final class MinimalIMAPClient: @unchecked Sendable {
 
     func login(username: String, password: String) async throws {
         let tag = nextTag()
-        // v1 supports password auth only (plan: "LOGIN/XOAUTH2 なし可: password
-        // のみ v1") — quoted-string literals with embedded `"`/`\` are
+        // Plain `LOGIN` — the `.password`-auth path (`WatchAuth.Kind
+        // .password`). Quoted-string literals with embedded `"`/`\` are
         // escaped per RFC 3501 §9. `Self.quoted` throws rather than
         // escaping a CR/LF/NUL (CLAUDE-SECURITY F3) — RFC 3501's
         // quoted-string grammar simply cannot carry one.
@@ -261,6 +261,66 @@ final class MinimalIMAPClient: @unchecked Sendable {
         let quotedPassword = try Self.quoted(password)
         try await write("\(tag) LOGIN \(quotedUsername) \(quotedPassword)")
         _ = try await readUntilTagged(tag)
+    }
+
+    /// Task #175: the `.oauth`-auth path (Gmail/Outlook, `WatchAuth.Kind
+    /// .oauth`) — RFC 7628's initial-response SASL mechanism, sent inline
+    /// on the `AUTHENTICATE` command line (SASL-IR, RFC 4959) rather than
+    /// waiting for a `+` continuation first, exactly the shape both Gmail
+    /// and Outlook's IMAP servers expect for XOAUTH2. `accessToken` is a
+    /// short-lived access token `WatcherPool` just obtained from
+    /// `OAuthTokenExchanger` — this method never sees the refresh token
+    /// itself.
+    ///
+    /// CLAUDE-SECURITY F3: `username`/`accessToken` go through the exact
+    /// same control-character rejection `quoted(_:)` uses for `LOGIN` —
+    /// the SASL response is base64-encoded before it ever reaches the
+    /// wire, so a CR/LF embedded in either wouldn't actually break IMAP
+    /// command framing the way it would for `LOGIN`'s unescaped
+    /// quoted-string, but rejecting it here anyway costs nothing and keeps
+    /// this path's input validation posture identical to `login`'s rather
+    /// than quietly relying on base64 encoding being "safe enough".
+    func authenticateXOAuth2(username: String, accessToken: String) async throws {
+        try Self.validateNoControlCharacters(username, field: "imapUsername")
+        try Self.validateNoControlCharacters(accessToken, field: "OAuth access token")
+
+        let tag = nextTag()
+        // RFC 7628 §3.1's XOAUTH2 SASL response format, `\u{01}` (Ctrl-A)
+        // separated: `user=<email>\x01auth=Bearer <token>\x01\x01`.
+        let saslResponse = "user=\(username)\u{01}auth=Bearer \(accessToken)\u{01}\u{01}"
+        let encoded = Data(saslResponse.utf8).base64EncodedString()
+        try await write("\(tag) AUTHENTICATE XOAUTH2 \(encoded)")
+
+        // CLAUDE-SECURITY F4-style bound: this exchange is normally one or
+        // two lines (a tagged OK, or a `+` error-challenge continuation
+        // followed by the tagged failure after we answer it) — capping the
+        // loop keeps a misbehaving peer that never sends a tagged response
+        // from spinning this forever.
+        for _ in 0..<8 {
+            let line = try await nextLine(timeoutSeconds: 35)
+            if line.hasPrefix("+") {
+                // RFC 7628 §3.2.2 / Google's and Microsoft's documented
+                // XOAUTH2 profile: a rejected token gets a `+` continuation
+                // carrying a base64 JSON error payload, not an immediate
+                // tagged failure. The client must send an empty line to
+                // let the server complete the exchange with a tagged `NO`/
+                // `BAD` — this is that empty line, never retried with the
+                // same (already-rejected) access token.
+                try await write("")
+                continue
+            }
+            if line.hasPrefix("\(tag) ") {
+                guard line.hasPrefix("\(tag) OK") else {
+                    throw IMAPClientError.commandFailed(tag: tag, response: line)
+                }
+                return
+            }
+            // Untagged chatter some servers send around AUTHENTICATE
+            // (e.g. capability data) — ignored, mirroring
+            // `readUntilTagged`'s handling of untagged lines it doesn't
+            // otherwise need.
+        }
+        throw IMAPClientError.responseTooLarge
     }
 
     @discardableResult

@@ -19,6 +19,13 @@ enum WatchRoutes {
             guard !body.imapHost.isEmpty, !body.imapUsername.isEmpty, !body.auth.secret.isEmpty else {
                 throw RelayHTTPError.badRequest("imapHost, imapUsername, and auth.secret are required")
             }
+            // Task #175: `.oauth` must carry a `provider` — `WatcherPool`
+            // needs it to pick a token endpoint/client id, and there's no
+            // sensible default to fall back to (unlike `.password`, where
+            // there's only one way to authenticate).
+            if body.auth.type == .oauth, body.auth.provider == nil {
+                throw RelayHTTPError.badRequest("auth.provider is required when auth.type is oauth")
+            }
 
             // CLAUDE-SECURITY F3: reject (not escape) CR/LF/NUL/other
             // control characters before anything is persisted — the same

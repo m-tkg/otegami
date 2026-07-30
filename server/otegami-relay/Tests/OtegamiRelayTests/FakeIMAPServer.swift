@@ -1,3 +1,4 @@
+import Foundation
 import NIOCore
 import NIOConcurrencyHelpers
 import NIOExtras
@@ -26,19 +27,31 @@ final class FakeIMAPServer: @unchecked Sendable {
     /// real (if fake) IMAP round trip instead of only unit-testing
     /// `RelayStore.recordWatchError` in isolation.
     let rejectsLogin: Bool
+    /// Task #175 (`WatcherPoolTests`' OAuth/XOAUTH2 tests): when set,
+    /// `AUTHENTICATE XOAUTH2 <base64>` succeeds only if the decoded SASL
+    /// response's `auth=Bearer ` segment matches this exact access token —
+    /// anything else (including a well-formed request with the wrong
+    /// token) gets the RFC 7628 §3.2.2 continuation-then-tagged-failure
+    /// dance `MinimalIMAPClient.authenticateXOAuth2` expects a real
+    /// Gmail/Outlook server to use. `nil` (the default) accepts any
+    /// well-formed XOAUTH2 request — most tests don't care about the
+    /// token's exact value, only that XOAUTH2 itself works.
+    let expectedXOAuth2AccessToken: String?
 
     init(
         eventLoopGroup: any EventLoopGroup,
         initialExists: Int = 5,
         initialUidNext: Int = 6,
         supportsIdle: Bool = true,
-        rejectsLogin: Bool = false
+        rejectsLogin: Bool = false,
+        expectedXOAuth2AccessToken: String? = nil
     ) {
         self.eventLoopGroup = eventLoopGroup
         self.exists = initialExists
         self.uidNext = initialUidNext
         self.supportsIdle = supportsIdle
         self.rejectsLogin = rejectsLogin
+        self.expectedXOAuth2AccessToken = expectedXOAuth2AccessToken
     }
 
     /// Starts listening on an ephemeral loopback port, returning it.
@@ -110,6 +123,12 @@ private final class FakeIMAPConnectionHandler: ChannelInboundHandler {
     private unowned let server: FakeIMAPServer
     private var idling = false
     private var pendingIdleTag = ""
+    /// Task #175: set while waiting for the client's empty-line response to
+    /// a `+ <base64 error>` XOAUTH2 continuation (see `handleXOAuth2`) —
+    /// the very next line read is that empty ack, not a normal tagged
+    /// command, regardless of its content.
+    private var awaitingXOAuth2FailureAck = false
+    private var pendingXOAuth2FailureTag = ""
 
     init(server: FakeIMAPServer) {
         self.server = server
@@ -126,6 +145,11 @@ private final class FakeIMAPConnectionHandler: ChannelInboundHandler {
     }
 
     private func handle(line: String, context: ChannelHandlerContext) {
+        if awaitingXOAuth2FailureAck {
+            awaitingXOAuth2FailureAck = false
+            write(context: context, "\(pendingXOAuth2FailureTag) NO [AUTHENTICATIONFAILED] authentication failed")
+            return
+        }
         if idling {
             if line.uppercased() == "DONE" {
                 idling = false
@@ -146,6 +170,21 @@ private final class FakeIMAPConnectionHandler: ChannelInboundHandler {
             } else {
                 write(context: context, "\(tag) OK LOGIN completed")
             }
+
+        case "AUTHENTICATE":
+            // Task #175 (XOAUTH2/SASL-IR): `parts[2]` is `"XOAUTH2
+            // <base64>"` as a single string (the `maxSplits: 2` above
+            // already stopped splitting after the command word).
+            guard parts.count >= 3 else {
+                write(context: context, "\(tag) BAD missing AUTHENTICATE argument")
+                break
+            }
+            let mechanismAndPayload = parts[2].split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            guard mechanismAndPayload.count == 2, mechanismAndPayload[0].uppercased() == "XOAUTH2" else {
+                write(context: context, "\(tag) BAD unsupported AUTHENTICATE mechanism")
+                break
+            }
+            handleXOAuth2(tag: tag, base64Payload: String(mechanismAndPayload[1]), context: context)
 
         case "CAPABILITY":
             write(context: context, "* CAPABILITY IMAP4rev1\(server.supportsIdle ? " IDLE" : "")")
@@ -173,6 +212,39 @@ private final class FakeIMAPConnectionHandler: ChannelInboundHandler {
 
         default:
             write(context: context, "\(tag) BAD unknown command")
+        }
+    }
+
+    /// Task #175: decodes the XOAUTH2 SASL response
+    /// (`MinimalIMAPClient.authenticateXOAuth2`'s doc comment has the exact
+    /// format) and accepts/rejects per `server.expectedXOAuth2AccessToken`.
+    private func handleXOAuth2(tag: String, base64Payload: String, context: ChannelHandlerContext) {
+        guard let data = Data(base64Encoded: base64Payload),
+              let decoded = String(data: data, encoding: .utf8)
+        else {
+            write(context: context, "\(tag) BAD invalid XOAUTH2 payload")
+            return
+        }
+
+        let accepted: Bool
+        if let expected = server.expectedXOAuth2AccessToken {
+            accepted = decoded.contains("auth=Bearer \(expected)\u{01}")
+        } else {
+            accepted = decoded.hasPrefix("user=") && decoded.contains("auth=Bearer ")
+        }
+
+        if accepted {
+            write(context: context, "\(tag) OK AUTHENTICATE completed")
+        } else {
+            // RFC 7628 §3.2.2: a rejected token gets a `+`-continuation
+            // carrying a base64 JSON error challenge, not an immediate
+            // tagged failure — the client must answer with an empty line
+            // (handled at the top of `handle(line:context:)` via
+            // `awaitingXOAuth2FailureAck`) before the tagged `NO` arrives.
+            let errorChallenge = Data(#"{"status":"401","schemes":"bearer"}"#.utf8).base64EncodedString()
+            write(context: context, "+ \(errorChallenge)")
+            pendingXOAuth2FailureTag = tag
+            awaitingXOAuth2FailureAck = true
         }
     }
 
