@@ -258,6 +258,9 @@
 #                                       セクション内から消え、見出し行+右端
 #                                       シェブロンの構成になっていることの
 #                                       確認用。
+#   general-settings                     Task #189: 設定→一般 (iCloud 同期
+#                                       トグルが「アカウントの設定」から
+#                                       ここへ移設されたことの確認用)
 #   account-settings                    Task #72: 設定→アカウントの設定
 #                                       (fake Gmail アカウント1件を挿入、
 #                                       一覧行の色ドットを確認)
@@ -613,6 +616,13 @@ case "$SCENARIO" in
     # されることの確認用。
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1" "OTEGAMI_UITEST_OPEN_GMAIL_DUPLICATE_THREAD_DIRECTLY=1")
     default_out="duplicate-thread-detail.png"
+    ;;
+  general-settings)
+    # Task #189: 設定 → 「一般」をタップ無しで直接開く (`AccountsListContent`
+    # の `-uitestsOpenGeneralSettingsDirectly` フック) — iCloud 同期トグルが
+    # 「アカウントの設定」からここへ移設されたことの確認用。
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenGeneralSettingsDirectly")
+    default_out="general-settings.png"
     ;;
   account-settings)
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")

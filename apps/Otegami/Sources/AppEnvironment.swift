@@ -2054,7 +2054,10 @@ final class AppEnvironment {
         #endif
     }
 
-    /// `AccountsSettingsView`'s "iCloud でアカウントを同期" toggle. Flipping it
+    /// `GeneralSettingsView`'s "iCloud でアカウントを同期" toggle (moved
+    /// there from `AccountSettingsCategoryView` by Task #189; the identifier
+    /// string above is stale history, not this method's current call site).
+    /// Flipping it
     /// on runs a full `reconcile()` immediately (plan: "OFF→ON で full
     /// reconcile") rather than waiting for the next launch/external-change
     /// notification; flipping it off just persists the flag — every

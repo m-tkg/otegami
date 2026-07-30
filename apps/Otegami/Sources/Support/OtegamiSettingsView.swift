@@ -59,7 +59,12 @@ struct OtegamiSettingsView: View {
 /// macOS 設定画面のカテゴリ — サイドバーの各行とdetailの対応表。
 /// 一覧・並び順は iOS の`AccountsListContent`(実機フィードバック第4弾:
 /// アカウント→メール一覧→メールビューア→メール作成) と揃えている。
+///
+/// Task #189 (2026-07-31): 先頭に`.general`を追加した — iCloud 同期
+/// トグルの移設先。iOS 側 (`AccountsListContent`の doc comment の
+/// Task #189 追記) と同じ理由でこの並びの先頭に置く。
 private enum MacSettingsCategory: String, CaseIterable, Identifiable {
+    case general
     case accounts
     case mailList
     case mailViewer
@@ -69,6 +74,7 @@ private enum MacSettingsCategory: String, CaseIterable, Identifiable {
 
     var title: LocalizedStringKey {
         switch self {
+        case .general: "一般"
         case .accounts: "アカウントの設定"
         case .mailList: "メール一覧"
         case .mailViewer: "メールビューア"
@@ -78,6 +84,7 @@ private enum MacSettingsCategory: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .general: "gearshape"
         case .accounts: "person.crop.circle"
         case .mailList: "list.bullet"
         case .mailViewer: "envelope.open"
@@ -92,7 +99,10 @@ private enum MacSettingsCategory: String, CaseIterable, Identifiable {
 /// にネストされるだけで`TabView`の中には入らないため、押し込み
 /// (`NavigationLink`のpush) も戻る操作も通常どおり動く。
 private struct MacSettingsSplitView: View {
-    @State private var selection: MacSettingsCategory? = .accounts
+    // Task #189: 既定選択もサイドバー先頭の「一般」に揃えた (以前は
+    // `.accounts` — カテゴリ一覧の先頭が変わったことに合わせた変更で、
+    // それ以外の意図はない)。
+    @State private var selection: MacSettingsCategory? = .general
 
     var body: some View {
         NavigationSplitView {
@@ -112,7 +122,7 @@ private struct MacSettingsSplitView: View {
             // 「システム設定」でカテゴリを切り替えると常にそのカテゴリの
             // 先頭画面に戻る、という標準的な挙動に揃えている。
             NavigationStack {
-                detailView(for: selection ?? .accounts)
+                detailView(for: selection ?? .general)
             }
             .id(selection)
         }
@@ -122,6 +132,7 @@ private struct MacSettingsSplitView: View {
     @ViewBuilder
     private func detailView(for category: MacSettingsCategory) -> some View {
         switch category {
+        case .general: GeneralSettingsView()
         case .accounts: AccountSettingsCategoryView()
         case .mailList: MailListSettingsView()
         case .mailViewer: MailViewerSettingsView()

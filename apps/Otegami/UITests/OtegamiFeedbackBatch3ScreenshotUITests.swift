@@ -26,7 +26,9 @@ final class OtegamiFeedbackBatch3ScreenshotUITests: XCTestCase {
 
         openSettingsFromHamburgerMenu(in: app)
 
-        XCTAssertTrue(app.buttons["settings.category.accounts"].waitForExistence(timeout: 10))
+        // Task #189: 「一般」カテゴリが先頭に追加された.
+        XCTAssertTrue(app.buttons["settings.category.general"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["settings.category.accounts"].exists)
         XCTAssertTrue(app.buttons["settings.category.mailViewer"].exists)
         XCTAssertTrue(app.buttons["settings.category.mailList"].exists)
         XCTAssertTrue(app.buttons["settings.category.mailCompose"].exists)
@@ -37,8 +39,27 @@ final class OtegamiFeedbackBatch3ScreenshotUITests: XCTestCase {
         attachScreenshot(named: "I-settings-root-categories")
     }
 
-    /// E/I: 「アカウントの設定」カテゴリに iCloud 同期・プッシュ通知が
-    /// 移設されていることを確認 (旧「その他」カテゴリの項目)。
+    /// Task #189: 「一般」カテゴリに iCloud 同期トグルが移設されている
+    /// ことを確認 (旧「アカウントの設定」カテゴリの項目 — Task #186 で
+    /// 同期対象がアカウントの接続設定を超えて設定全般に広がったため、
+    /// 新設カテゴリへ再移設した)。
+    func testGeneralSettingsCategoryShowsCloudSyncToggle() throws {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
+        app.launch()
+
+        openSettingsFromHamburgerMenu(in: app)
+        XCTAssertTrue(navigateToGeneralSettingsCategory(in: app), "「一般」カテゴリへの遷移に失敗した")
+
+        XCTAssertTrue(app.switches["settings.cloudSyncToggle"].waitForExistence(timeout: 10))
+
+        attachScreenshot(named: "I-general-settings-category")
+    }
+
+    /// E/I: 「アカウントの設定」カテゴリにプッシュ通知が移設されている
+    /// ことを確認 (旧「その他」カテゴリの項目)。iCloud 同期は Task #189 で
+    /// 「一般」カテゴリへ再移設したので、ここではもう確認しない
+    /// (`testGeneralSettingsCategoryShowsCloudSyncToggle`参照)。
     func testAccountSettingsCategoryShowsMigratedItems() throws {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
@@ -47,7 +68,6 @@ final class OtegamiFeedbackBatch3ScreenshotUITests: XCTestCase {
         openSettingsFromHamburgerMenu(in: app)
         XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
 
-        XCTAssertTrue(app.switches["settings.cloudSyncToggle"].waitForExistence(timeout: 10))
         XCTAssertTrue(scrollSettingsUntilVisible(app.buttons["settings.pushNotificationsLink"], in: app))
 
         attachScreenshot(named: "I-account-settings-category")

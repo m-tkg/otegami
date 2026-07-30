@@ -1551,6 +1551,16 @@
         }
       }
     },
+    "一般": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "General"
+          }
+        }
+      }
+    },
     "アカウントの設定": {
       "localizations": {
         "en": {
@@ -4830,6 +4840,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Syncs the account's connection and display settings (list/viewer/swipe actions, etc.) with your other iOS/Mac devices signed into the same Apple ID. Passwords are synced separately via iCloud Keychain."
+          }
+        }
+      }
+    },
+    "同じ Apple ID の他の iOS/Mac デバイスと、アカウントの接続設定に加えて表示・翻訳・通知内容・署名・テンプレートなどの設定を同期します。パスワードは iCloud キーチェーンが別途同期し、メール本文などのキャッシュやプッシュ通知の設定など端末固有の項目は同期しません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Syncs account connection settings, along with display, translation, notification content, signature, and template settings, with your other iOS/Mac devices signed into the same Apple ID. Passwords are synced separately via iCloud Keychain; local caches such as message bodies and device-specific items like push notification settings are not synced."
           }
         }
       }

@@ -253,6 +253,9 @@ translations = {
     # --- 実機フィードバック第2弾: I 設定画面の再構成 (AccountsListContent /
     # AccountSettingsCategoryView / MailViewerSettingsView /
     # MailListSettingsView / OtherSettingsView) ---
+    # Task #189: 「一般」(GeneralSettingsView、新設カテゴリ) はこの節に
+    # 属していた話ではないが、既存カテゴリ名の並びと同じ場所に置く。
+    "一般": "General",
     "アカウントの設定": "Account Settings",
     "メールビューア": "Mail Viewer",
     "メール一覧": "Mail List",
@@ -772,6 +775,14 @@ translations = {
         "This build has no Microsoft OAuth Client ID configured, so Microsoft sign-in isn't available. See docs/oauth-setup.md for details.",
     "同じ Apple ID の他の iOS/Mac デバイスとアカウントの接続設定・表示設定 (一覧・ビューア・スワイプ操作など) を同期します。パスワードは iCloud キーチェーンが別途同期します。":
         "Syncs the account's connection and display settings (list/viewer/swipe actions, etc.) with your other iOS/Mac devices signed into the same Apple ID. Passwords are synced separately via iCloud Keychain.",
+    # Task #189: iCloud 同期トグルを「アカウントの設定」から新設「一般」
+    # (GeneralSettingsView) へ移設した際、Task #186 (設定全般が同期対象に
+    # 広がった) の実態に合わせて footer を書き直した — 上の2つの旧文言は
+    # もう Swift 側から参照されていないが、過去の screenshot 検証記録との
+    # 対応のため削除していない (未使用キーは check-localizable-coverage.py
+    # の警告のみ、fatalではない)。
+    "同じ Apple ID の他の iOS/Mac デバイスと、アカウントの接続設定に加えて表示・翻訳・通知内容・署名・テンプレートなどの設定を同期します。パスワードは iCloud キーチェーンが別途同期し、メール本文などのキャッシュやプッシュ通知の設定など端末固有の項目は同期しません。":
+        "Syncs account connection settings, along with display, translation, notification content, signature, and template settings, with your other iOS/Mac devices signed into the same Apple ID. Passwords are synced separately via iCloud Keychain; local caches such as message bodies and device-specific items like push notification settings are not synced.",
     "ドラッグして、フォルダメニューに並ぶカテゴリの表示順を変更できます。「その他」(独自フォルダ) は常に一番下に表示されます。":
         "Drag to reorder the categories shown in the folder menu. “Other” (custom folders) always stays at the bottom.",
     "フォルダメニューに並ぶ「受信トレイ」「アーカイブ」などカテゴリの表示順を変更できます。":

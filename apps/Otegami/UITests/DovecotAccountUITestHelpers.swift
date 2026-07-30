@@ -423,6 +423,18 @@ extension XCTestCase {
     /// doc comment has the full mapping), so every caller that used to
     /// navigate to "その他" now navigates to whichever category actually
     /// owns the control it's testing.
+    /// Task #189: 「一般」カテゴリ (`GeneralSettingsView`) — iCloud 同期
+    /// トグル (`settings.cloudSyncToggle`) はここへ移設された。旧
+    /// `navigateToAccountSettingsCategory(in:)`経由でこのトグルを探して
+    /// いたテストは、この helper に切り替える必要がある。
+    @discardableResult
+    func navigateToGeneralSettingsCategory(in app: XCUIApplication) -> Bool {
+        let link = app.buttons["settings.category.general"]
+        guard link.waitForExistence(timeout: 5) else { return false }
+        link.tap()
+        return true
+    }
+
     @discardableResult
     func navigateToAccountSettingsCategory(in app: XCUIApplication) -> Bool {
         let link = app.buttons["settings.category.accounts"]

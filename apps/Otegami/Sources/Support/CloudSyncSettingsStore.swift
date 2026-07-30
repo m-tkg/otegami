@@ -1,7 +1,9 @@
 import Foundation
 
 /// Persists the user-facing "iCloud でアカウントを同期" toggle
-/// (`AccountsSettingsView`, M11). Deliberately a plain `UserDefaults` flag,
+/// (M11; the toggle itself lives in `GeneralSettingsView` as of Task #189,
+/// having moved there from `AccountSettingsCategoryView`). Deliberately a
+/// plain `UserDefaults` flag,
 /// not synced through the KVS payload itself: whether *this* device
 /// participates in account sync is a per-device choice (a user might want
 /// their Mac to pick up iOS-added accounts but not the reverse, say), not

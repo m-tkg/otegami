@@ -7990,3 +7990,79 @@ ja/en を追加してから`Localizable.xcstrings`を再生成した。
 **未検証 (画面の見た目)**: 上記のとおりシミュレータでの実際のメニュー
 開閉確認は完了しなかった。実機での確認ポイントは`PENDING.md`
 「Task #188」節に追記した。
+
+## Task #189: 設定に「一般」カテゴリを新設し、iCloud 同期トグルを移設
+
+ユーザー要望「iCloud で色々同期するようになったんで、iCloud 同期の設定を
+アカウント設定から出して『一般』を新設してそこに移して」。直前の
+Task #186 で iCloud 同期の対象がアカウントの接続設定から設定全般 (表示・
+翻訳・通知・署名・テンプレート等) へ広がり、同期のオン/オフを「アカウント
+の設定」カテゴリに置いておく理由がなくなっていた。
+
+### 実装
+
+- `GeneralSettingsView` (新設、`apps/Otegami/Sources/Features/Settings/
+  GeneralSettingsView.swift`) — iCloud 同期トグル1つだけを持つカテゴリ。
+  既存カテゴリと同じ作り (macOS: `Form`+`.formStyle(.grouped)`、iOS:
+  `List`)。アクセシビリティ識別子`settings.cloudSyncToggle`は
+  `AccountSettingsCategoryView`時代のものをそのまま再利用 (UITest 互換、
+  ローカライズキーも既存の`"iCloud でアカウントを同期"`を再利用)。
+- `AccountSettingsCategoryView`からは同トグルの`Section`を丸ごと削除 —
+  移設元には残していない。
+- カテゴリ一覧への追加箇所は2つ:
+  - iOS: `AccountsSettingsView.swift`の`AccountsListContent` — 「一般」を
+    一覧の**先頭**に追加 (`settings.category.general`)。
+  - macOS: `OtegamiSettingsView.swift`の`MacSettingsCategory` — `.general`
+    を`CaseIterable`の**先頭**に追加し、サイドバーの既定選択も`.general`
+    に変更。
+- **並び順を先頭にした理由**: 既存4カテゴリ (アカウント→メール一覧→
+  メールビューア→メール作成) の並びは「実機フィードバック第4弾」で
+  決めた *アプリの利用フロー順* だった。iCloud 同期はそのどの段階にも
+  属さずアプリ全体に横断的に効く設定なので、フロー順の外側 (先頭) に
+  置く方が両立する。Apple 標準の「設定」アプリ/システム設定が「一般」を
+  機能固有カテゴリより手前に置く並びとも一致する。
+- footer の説明文を書き直した。旧文言 (「アカウントの接続設定・表示設定
+  (一覧・ビューア・スワイプ操作など) を同期します」) はアカウント視点の
+  ままだったため、Task #186 の同期範囲棚卸し (`docs/icloud-sync.md`「Task
+  #186」節) に基づき「アカウントの接続設定に加えて表示・翻訳・通知内容・
+  署名・テンプレートなどの設定を同期し、パスワード (iCloud キーチェーン
+  が別途) やメール本文などのキャッシュ・プッシュ通知の設定 (端末固有) は
+  同期しない」という趣旨に書き直した。旧文言のローカライズキー自体は
+  `scripts/generate-localizable.py`から削除していない (`check-localizable
+  -coverage.py`の未使用警告のみで fatal ではないため、過去の screenshot
+  検証記録との対応を優先した)。
+- `scripts/verify-screen.sh`に`general-settings`シナリオを追加
+  (`-uitestsOpenGeneralSettingsDirectly`、`AccountsListContent`側に対応
+  する tap-free hook を追加)。
+
+### 「一般」へ動かすのが自然だが今回は動かさなかった項目
+
+ユーザー指示「他に『一般』へ置くのが自然な既存項目があれば報告に挙げる
+だけ」に基づく所感 (未実施)。なお表示言語設定は既に OS 標準の「アプリ
+ごとの言語」に委ねられておりアプリ内に選択 UI 自体が存在しない
+(`LocalizationSettingsStore`の doc comment参照) ので対象外:
+
+- **デフォルトのメールアプリに設定** (`DefaultMailAppSettingsView`、現状
+  「アカウントの設定」カテゴリの最後にある) — 「メール」アプリとしての
+  基本的な OS 統合設定であり、特定アカウントに紐付かない点で iCloud 同期
+  トグルと同じ性質。ただし「アカウントの設定」の最後に置かれている経緯
+  (Task #48) があり、今回は移動しないでおく。
+- **プッシュ通知** (`PushNotificationSettingsView`、iOS のみ、「アカウント
+  の設定」に残置) — こちらはアカウントごとの push watch 登録という
+  「アカウントの接続に関する設定」の性質が強く、「一般」向きではない
+  と判断し今回は動かしていない (`AccountSettingsCategoryView`の doc
+  comment 参照)。
+
+### 検証
+
+`make test`/`make mac`/`make ios`/`make check-localization`すべて
+green。新規文言「一般」・footer文言は`scripts/generate-localizable.py`
+に ja/en を追加してから`Localizable.xcstrings`を再生成した。
+
+**未検証 (画面の見た目)**: `scripts/verify-screen.sh settings`/
+`general-settings`を2回試したが、いずれも起動シーケンスの`simctl privacy
+grant contacts`がハングし先へ進まなかった — Task #176 が既に記録済みの
+既知の不調 (`docs/verify.md`参照、このセッションでも他エージェント
+(#188) のxcodebuildが並行実行中だった)。ユーザー指示どおりリトライは
+2回で打ち切り、実機での確認ポイントは`PENDING.md`「Task #189」節に
+まとめた。

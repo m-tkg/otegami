@@ -16,6 +16,14 @@ import OtegamiStore
 /// 残る項目が「このアプリについて」だけになったため、`OtherSettingsView`
 /// 自体を廃止しルート一覧の直下リンクに格上げした
 /// (`AccountsListContent`の doc comment参照)。
+///
+/// Task #189 (2026-07-31): 上で移設した iCloud 同期トグルは、その後の
+/// Task #186 で同期対象がアカウントの接続設定から設定全般 (表示・翻訳・
+/// 通知・署名・テンプレート等) へ広がったことで「アカウントの設定」に
+/// 属する項目ではなくなったため、新設した`GeneralSettingsView`(「一般」
+/// カテゴリ) へ再度移設した — このカテゴリには残していない。プッシュ
+/// 通知は今回移設していない (アカウントごとの push watch 登録という
+/// 「アカウントの接続に関する設定」の性質が変わっていないため)。
 struct AccountSettingsCategoryView: View {
     @Environment(AppEnvironment.self) private var environment
 
@@ -215,20 +223,6 @@ struct AccountSettingsCategoryView: View {
                         .foregroundStyle(OtegamiColor.destructive)
                         .accessibilityIdentifier("settings.reauthErrorMessage")
                 }
-            }
-
-            // 実機フィードバック第3弾 (I): 旧「その他」カテゴリから移設。
-            Section {
-                Toggle(
-                    "iCloud でアカウントを同期",
-                    isOn: Binding(
-                        get: { environment.isCloudSyncEnabled },
-                        set: { newValue in Task { await environment.setCloudSyncEnabled(newValue) } }
-                    )
-                )
-                .accessibilityIdentifier("settings.cloudSyncToggle")
-            } footer: {
-                Text("同じ Apple ID の他の iOS/Mac デバイスとアカウントの接続設定・表示設定 (一覧・ビューア・スワイプ操作など) を同期します。パスワードは iCloud キーチェーンが別途同期します。")
             }
 
             // M9: iOS-only — `AppEnvironment.enablePushNotifications` throws

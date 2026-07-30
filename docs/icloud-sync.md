@@ -230,6 +230,16 @@ account 行が2つ、片方は資格情報なし — を直接作ることは同
 ## 「iCloud でアカウントを同期」トグル
 
 設定画面 (`AccountsSettingsView`) にトグルがあり、デフォルト ON。
+**2026-07-31 追記 (Task #189)**: このトグルの置き場所はその後2回移設
+されている — 実機フィードバック第3弾 (I) で「その他」から「アカウント
+の設定」(`AccountSettingsCategoryView`) へ、さらに Task #189 で新設
+「一般」カテゴリ (`GeneralSettingsView`、設定カテゴリ一覧の先頭) へ。
+移設したのはトグルの置き場所 (UI 上の画面) だけで、この節が説明する
+挙動 (OFF/OFF→ON/`UserDefaults`ローカル設定という性質) 自体は変わって
+いない。「一般」への移設理由は Task #186 で同期対象がアカウントの接続
+設定を超えて設定全般へ広がり、「アカウントの設定」に属する項目とは
+言えなくなったため — 詳細は本ドキュメント末尾の「Task #186」節、
+実装経緯は`docs/design-system.md`「Task #189」節参照。
 
 - **OFF**: ローカルでの新規アカウント追加時の push、起動時/通知時の
   reconcile が両方とも止まる。ローカルの同期・送受信動作自体には一切
@@ -1129,10 +1139,11 @@ self.settingsCloudSync = SettingsCloudSyncEngine(
 
 ### スコープ外だったもの
 
-- 「iCloud でアカウントを同期」トグル (`AccountSettingsCategoryView`の
-  `settings.cloudSyncToggle`) はラベルどおりアカウント同期
-  (`accountCloudSync`) 専用のまま — この変更で意味が変わったわけでは
-  ない。
+- 「iCloud でアカウントを同期」トグル (当時は`AccountSettingsCategoryView`
+  の`settings.cloudSyncToggle`、Task #189 で`GeneralSettingsView`へ移設
+  — 上の「「iCloud でアカウントを同期」トグル」節の追記参照) はラベルど
+  おりアカウント同期 (`accountCloudSync`) 専用のまま — この変更で意味が
+  変わったわけではない。
 - Task #121 でプッシュリレー URL を「設定」側の同期対象に含めていたが、
   Task #173 follow-up でリレー URL 自体がビルド時埋め込み
   (`RelayURLConfig`) に変わり、同期対象から除外済み — この節はもはや

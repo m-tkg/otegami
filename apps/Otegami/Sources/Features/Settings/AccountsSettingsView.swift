@@ -65,6 +65,18 @@ struct AccountsSettingsView: View {
 /// - **このアプリについて** (`AboutView`) — ルート直下 (iOS のみ。macOS は
 ///   ここを一切経由しない — 下の Task #155 の追記参照)。
 ///
+/// Task #189 (2026-07-31): 上の4カテゴリの先頭に**「一般」**
+/// (`GeneralSettingsView`、新設) を追加した。iCloud 同期トグルは
+/// 「アカウントの設定」からここへ再移設し、移設元には残していない —
+/// Task #186 で同期対象がアカウントの接続設定から設定全般 (表示・翻訳・
+/// 通知・署名・テンプレート等) へ広がり、「アカウントの設定」に属する
+/// 項目とは言えなくなったため。並び順を先頭にしたのは、既存4カテゴリの
+/// 順序が「アカウント→メール一覧→メールビューア→メール作成」という
+/// アプリの利用フロー順である一方、iCloud 同期はそのどの段階にも属さず
+/// アプリ全体に横断的に効く設定だから — フロー順の外側 (先頭) に置く方が
+/// 両立し、Apple 標準の「設定」アプリが「一般」を機能固有カテゴリより
+/// 手前に置く並びとも一致する。
+///
 /// `AccountsListContent`という型名は維持している (`AccountsSettingsView`
 /// の既存の配線を変更せずに済むため) が、中身は「アカウント一覧」では
 /// なく「カテゴリ一覧」に変わった — M10 時点のこの型の doc comment
@@ -99,13 +111,28 @@ struct AccountsListContent: View {
     /// customize screen) without a real tap on this row.
     @State private var uitestShowMailViewerSettingsDirectly = false
 
+    /// Task #189: same tap-free idea, for `scripts/verify-screen.sh`
+    /// screenshots of the new `GeneralSettingsView` without a real tap on
+    /// this row.
+    @State private var uitestShowGeneralSettingsDirectly = false
+
     var body: some View {
         List {
             // 実機フィードバック第4弾 (2026-07-29): 表示順を「アカウント →
             // メール一覧 → メールビューア → メール作成」に変更し、
             // 「このアプリについて」行は削除 (AboutView 自体は macOS の
             // 「情報」タブが引き続き使う)。
+            // Task #189 (2026-07-31): 先頭に「一般」を追加 — このファイル
+            // 冒頭の doc comment の Task #189 追記参照 (フロー順の外側に
+            // 置くのが自然という判断)。
             Section {
+                NavigationLink {
+                    GeneralSettingsView()
+                } label: {
+                    Label("一般", systemImage: "gearshape")
+                }
+                .accessibilityIdentifier("settings.category.general")
+
                 NavigationLink {
                     AccountSettingsCategoryView()
                 } label: {
@@ -141,12 +168,18 @@ struct AccountsListContent: View {
         .navigationDestination(isPresented: $uitestShowMailViewerSettingsDirectly) {
             MailViewerSettingsView()
         }
+        .navigationDestination(isPresented: $uitestShowGeneralSettingsDirectly) {
+            GeneralSettingsView()
+        }
         .task {
             if ProcessInfo.processInfo.arguments.contains("-uitestsOpenAccountSettingsDirectly") {
                 uitestShowAccountSettingsDirectly = true
             }
             if ProcessInfo.processInfo.arguments.contains("-uitestsOpenMailViewerSettingsDirectly") {
                 uitestShowMailViewerSettingsDirectly = true
+            }
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenGeneralSettingsDirectly") {
+                uitestShowGeneralSettingsDirectly = true
             }
         }
         .scrollContentBackground(.hidden)

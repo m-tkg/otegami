@@ -38,8 +38,13 @@ final class OtegamiTask43LocalizationUITests: XCTestCase {
         XCTAssertTrue(closeButton.waitForExistence(timeout: 10))
         attachScreenshot(named: "\(tagPrefix)-settings-root-with-xmark-close")
 
-        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」への遷移に失敗 (\(tagPrefix))")
+        // Task #189: iCloud 同期トグルは「一般」カテゴリへ移設された。
+        XCTAssertTrue(navigateToGeneralSettingsCategory(in: app), "「一般」への遷移に失敗 (\(tagPrefix))")
         XCTAssertTrue(app.switches["settings.cloudSyncToggle"].waitForExistence(timeout: 10))
+        attachScreenshot(named: "\(tagPrefix)-general-settings-category")
+        goBackToSettingsRoot(in: app)
+
+        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」への遷移に失敗 (\(tagPrefix))")
         attachScreenshot(named: "\(tagPrefix)-account-settings-category")
         goBackToSettingsRoot(in: app)
 
