@@ -2178,3 +2178,91 @@ server/otegami-relay/`等で自分の3ファイルだけ残す → 再コミッ�
 - `RichTextHTMLCoder.swift`にも同名の`parseAttributes`(別実装) が
   存在するが、今回のレポート・このタスクのスコープ (4ファイル限定) の
   対象外のため未調査。
+
+## 実機クラッシュ: macOS で Gmail 認証すると落ちる実バグの原因と修正 (v1.2.0-beta4)
+
+### 症状
+
+ユーザーからの実機フィードバック: macOS 版で Gmail 認証 (再認証) を
+行うとアプリが落ちる。クラッシュログは `EXC_BREAKPOINT` (`SIGTRAP`) で、
+スタックは `ASWebAuthenticationSessionRunner.run` の completion handler
+クロージャ内から `_dispatch_assert_queue_fail` /
+`swift_task_isCurrentExecutorWithFlagsImpl` に至るもの
+(`com.apple.NSXPCConnection.m-user.com.apple.SafariLaunchAgent`という
+XPC応答キュー上のスレッドで発生)。
+
+### 原因
+
+`ASWebAuthenticationSession`の completion handler は**メインスレッドで
+呼ばれる保証がない** — macOSでは`SafariLaunchAgent`のXPC応答キュー上で
+同期的に呼ばれることが実機で確認できた (iOSでは主にメインで配送される
+ため、この不整合が今まで露出していなかっただけ)。
+
+`GoogleOAuth`/`MicrosoftOAuth`双方の`ASWebAuthenticationSessionRunner`
+は、このcompletion handlerクロージャを`@MainActor`なメソッド
+(`run(authorizationURL:callbackURLScheme:)`) の内部に、明示的な
+`@Sendable`/isolation注釈なしで書いていた。渡す先の型
+(`@escaping (URL?, Error?) -> Void`、ObjC由来のブロック型でactor注釈
+なし) 自体はどのスレッドからでも呼ばれうるにもかかわらず、Swift 6の
+クロージャ隔離推論 (SE-0420) はこのクロージャを「囲むメソッドと同じ
+`@MainActor`隔離」と推論し、**クロージャの入り口に動的な隔離チェックを
+挿入していた**。macOSで実際にメインスレッド外から呼ばれた瞬間、この
+チェック自体がトラップした — クロージャ本体が`activeSession`(main-actor
+隔離のプロパティ) に触れる**前**の、入り口の時点で落ちていた。
+
+調査の過程で「`activeSession = nil`の代入だけを`Task { @MainActor in
+... }`で明示的にホップさせる」という一次修正を先に試したが、実機で
+再現したところ**同じ箇所で同じ形のクラッシュが再発した** — クロージャ
+入り口の隔離チェックはボディの中身と無関係に挿入されるため、ボディ内の
+特定行を直しても効果がないという教訓が得られた。
+
+### 修正
+
+`packages/OtegamiKit/Sources/GoogleOAuth/ASWebAuthenticationSessionRunner.swift`
+と、そのミラーコピーである
+`packages/OtegamiKit/Sources/MicrosoftOAuth/ASWebAuthenticationSessionRunner.swift`
+の両方 (片方だけ直すとOutlookで同じクラッシュが残るため) を修正:
+
+- completion handlerクロージャを`@Sendable [weak self] callbackURL,
+  error in ...`と明示的に`@Sendable`化。クロージャがコンパイラに
+  「本当にどのスレッドから呼ばれても構わない (非隔離)」と伝わるため、
+  入り口の動的隔離チェック自体が挿入されなくなる。
+- `activeSession = nil`はメインアクター隔離状態への書き込みなので、
+  `if let self { Task { @MainActor in self.activeSession = nil } }`で
+  引き続き明示的にホップする (`MainActor.assumeIsolated`は使わない —
+  実際に非メインの場合があるため、使うと同じ嘘を別の場所で繰り返す
+  だけになる)。
+- 継続 (`CheckedContinuation`) の二重resumeを防ぐため、
+  `OtegamiTranslationApple.ResumeBox`と同じ思想だが`@MainActor`では
+  ない (この完了ハンドラがメインアクター外から呼ばれうるため)
+  ロックベースの`ContinuationResumeBox`を各ファイルに追加した。
+
+### 検証
+
+- `make test`/`make mac`/`make ios`いずれも green
+  (`MailTransportMailCoreTests`のmailcore2並列実行flakeが1回だけ
+  発生したが、このタスクが一切触れていないファイル由来の既知不調
+  ―`--no-parallel`で全78件greenと`make test`単独再実行でのgreenの
+  両方で確認 ― であり無関係)。
+- **修正前のビルドで実機同等のクラッシュを実際に再現できた**: ローカル
+  debugビルドの macOS 版を起動し、既存のGmailアカウント (再認証待ち
+  状態) に対して「再認証」ボタンをアクセシビリティ経由でクリック →
+  `ASWebAuthenticationSession`がシステムの既定ブラウザ経由 (Ephemeral
+  セッションのため Incognitoウインドウ) でGoogleのサインイン画面を
+  提示 → そのウインドウを閉じてキャンセル操作を行った瞬間、修正前の
+  ビルドではアプリプロセスが実際に落ち、`~/Library/Logs/
+  DiagnosticReports/`に上記と同一のスタック (`closure #1 in closure #1
+  in ASWebAuthenticationSessionRunner.run` →
+  `_dispatch_assert_queue_fail`) を持つクラッシュレポートが生成される
+  ことを確認した。
+- **修正後は同じ手順 (再認証ボタン→キャンセル) で確認したところクラッ
+  シュせず**、アプリはEdit Account画面に戻って通常どおり動作を継続
+  した。同じ操作の直後に新しいクラッシュレポートが生成されないことも
+  確認済み。
+- クラッシュログ自体 (Crash Reporter Key・Team ID・デバイス識別子等の
+  実機固有情報を含む) はコミット・ドキュメントいずれにも含めていない。
+
+### 配信
+
+`382802b`をpush後、OTA配信してmanifest.plistの`bundle-version`が
+`382802b`と一致することを確認した。
