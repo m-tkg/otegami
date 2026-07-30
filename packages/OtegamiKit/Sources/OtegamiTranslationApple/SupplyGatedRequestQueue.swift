@@ -44,7 +44,7 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
     private var pendingOperation: (@MainActor (Session) async -> Void)?
 
     private let timeoutSeconds: UInt64
-    private let timeoutError: @Sendable () -> Error
+    private let timeoutError: @MainActor @Sendable () -> Error
     private let requestSupply: @MainActor (Target) -> Void
 
     /// - Parameters:
@@ -60,7 +60,7 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
     ///   - requestSupply: called (on the main actor) exactly once per
     ///     queue item, when it's that item's turn — the external
     ///     supplier's cue to eventually call `supply(_:)`.
-    init(timeoutSeconds: UInt64, timeoutError: @escaping @Sendable () -> Error, requestSupply: @escaping @MainActor (Target) -> Void) {
+    init(timeoutSeconds: UInt64, timeoutError: @escaping @MainActor @Sendable () -> Error, requestSupply: @escaping @MainActor (Target) -> Void) {
         self.timeoutSeconds = timeoutSeconds
         self.timeoutError = timeoutError
         self.requestSupply = requestSupply

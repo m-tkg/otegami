@@ -138,4 +138,52 @@ struct SupplyGatedRequestQueueTests {
         #expect(result == 1)
         #expect(callCount == 1)
     }
+
+    /// 2026-07-30, 実機フィードバック — 2度目の退行の核心: `TranslationSessionCoordinator`
+    /// の`requestSupply`実装が`TranslationSession.Configuration(source:
+    /// target:)`を毎回新規に作っていた — 同じ言語ペアなら2つの独立した
+    /// `Configuration`値は`==`で等価と判定される (実SDKで実測確認済み)
+    /// ため、`.translationTask(_:action:)`(`.task(id:)`と同じ意味論、値が
+    /// 「変化」した時だけ再発火) からは「同じ値の再代入」にしか見えず、
+    /// 2回目以降のリクエストで二度と`attach(_:)`が呼ばれなかった。
+    ///
+    /// `SupplyGatedRequestQueue`自体は`Target`の等価性を一切見ない —
+    /// キューから取り出した項目ごとに無条件で`requestSupply`を呼ぶだけ
+    /// (`drainIfNeeded()`参照)。このテストは**それ自体を固定する** —
+    /// 同じ`target`("ja")で2回連続リクエストしても、`requestSupply`が
+    /// 律儀に2回呼ばれ、両方とも独立に`supply(_:)`で完了できることを
+    /// 確認する。実際に壊れていたのは`TranslationSessionCoordinator`
+    /// 側の`Configuration`の値としての等価性であって、この汎用キュー側の
+    /// 「要求のたびに供給を求める」という契約自体は最初から健全だった、
+    /// という切り分けをテストとして残す。
+    @Test("requesting the exact same target twice in a row still calls requestSupply twice, and both requests complete")
+    func sameTargetRequestedTwiceInARowBothGetSupplied() async throws {
+        var requestedTargets: [String] = []
+        let queue = SupplyGatedRequestQueue<String, Int>(
+            timeoutSeconds: 5,
+            timeoutError: { TimeoutMarker() },
+            requestSupply: { target in requestedTargets.append(target) }
+        )
+
+        async let first = queue.perform(target: "ja") { session in session + 1 }
+        while requestedTargets.count < 1 {
+            await Task.yield()
+        }
+        #expect(requestedTargets == ["ja"])
+        await queue.supply(100)
+        let firstResult = try await first
+        #expect(firstResult == 101)
+
+        // Second request, same target as the first — must still trigger
+        // its own independent `requestSupply` call, not be silently
+        // skipped because the target "already matches" the previous one.
+        async let second = queue.perform(target: "ja") { session in session + 2 }
+        while requestedTargets.count < 2 {
+            await Task.yield()
+        }
+        #expect(requestedTargets == ["ja", "ja"])
+        await queue.supply(200)
+        let secondResult = try await second
+        #expect(secondResult == 202)
+    }
 }

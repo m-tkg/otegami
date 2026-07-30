@@ -46,6 +46,17 @@ struct TranslationDiagnosticsView: View {
                 if ProcessInfo.processInfo.arguments.contains("-uitestsRunTestTranslationDirectly") {
                     await runTestTranslation()
                 }
+                // 2026-07-30 (実機フィードバック — 2度目の退行「同じ
+                // Configurationの再代入はSwiftUIから見て変化なし」):
+                // 1回目のボタン操作の直後に発火する2回目のリクエストが
+                // ちゃんとホストビューを再度起動できることを確認する
+                // ためのフック — 1回目が完全に終わってから (`await`で
+                // 直列に) 2回目を実行する、実際の「もう一度押す」操作と
+                // 同じ順序。
+                if ProcessInfo.processInfo.arguments.contains("-uitestsRunTestTranslationTwiceDirectly") {
+                    await runTestTranslation()
+                    await runTestTranslation()
+                }
             }
     }
 
@@ -84,6 +95,21 @@ struct TranslationDiagnosticsView: View {
             Text("言語データの状態")
         } footer: {
             Text("メール翻訳が実際に使う言語ペア (英語→日本語) について、Apple の Translation フレームワークに直接問い合わせた結果です。")
+        }
+
+        Section {
+            SessionSupplyObservabilityView(coordinator: environment.translationSessionCoordinator)
+        } header: {
+            Text("セッション供給の状況")
+        } footer: {
+            // 2026-07-30 (実機フィードバック — 2度目の退行): 「設定要求」
+            // だけ増えて「セッション供給」が増えない/一度も無いなら、
+            // ホストビューの`.translationTask`クロージャが供給元から
+            // 一度も呼ばれていないことをこの画面だけで即断できる —
+            // 過去2回の退行 (ホストビュー未マウント、`Configuration`の
+            // 等価判定) はどちらもこの2組の数字を見れば1枚の
+            // スクリーンショットで切り分けられた。
+            Text("「設定要求」はこの端末が新しい翻訳セッションを要求した回数、「セッション供給」はホストビューが実際にセッションを渡してきた回数です。前者だけ増え続けて後者が増えない場合、セッションの供給経路自体が機能していません。")
         }
 
         Section {
@@ -181,6 +207,41 @@ private struct TestTranslationResultView: View {
             .accessibilityIdentifier("translationDiagnostics.testResult.failure")
         }
     }
+}
+
+/// 2026-07-30 (実機フィードバック — 2度目の退行「テスト翻訳を実行」が
+/// またタイムアウトした): `TranslationSessionCoordinator`の供給側
+/// カウンタをそのまま表示するだけの独立した`View`型 — 他の行と同じく
+/// 型チェック負荷を分散する目的もあるが、ここでは特に「この画面が
+/// `environment.translationSessionCoordinator`を直接観測できる」ことを
+/// 素直な形で示す。`@Observable`な`coordinator`を直接プロパティに持つ
+/// ので、`attach(_:)`/`requestNewConfiguration(target:)`が呼ばれるたびに
+/// 自動的に再描画される。
+private struct SessionSupplyObservabilityView: View {
+    let coordinator: TranslationSessionCoordinator
+
+    var body: some View {
+        LabeledContent("設定要求") {
+            Text(verbatim: "\(coordinator.configurationRequestCount)回" + lastTimeSuffix(coordinator.lastConfigurationRequestAt))
+        }
+        .accessibilityIdentifier("translationDiagnostics.configurationRequestCount")
+        LabeledContent("セッション供給") {
+            Text(verbatim: "\(coordinator.attachCallCount)回" + lastTimeSuffix(coordinator.lastAttachAt))
+        }
+        .accessibilityIdentifier("translationDiagnostics.attachCallCount")
+    }
+
+    private func lastTimeSuffix(_ date: Date?) -> String {
+        guard let date else { return "" }
+        return " / 最終 \(Self.dateFormatter.string(from: date))"
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .medium
+        return formatter
+    }()
 }
 
 /// 直近の翻訳試行1件分の表示 — `TranslationAttemptRow`として独立させた

@@ -627,6 +627,15 @@ case "$SCENARIO" in
     launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenMailViewerSettingsDirectly" "-uitestsOpenTranslationDiagnosticsDirectly" "-uitestsRunTestTranslationDirectly")
     default_out="translation-diagnostics-test-run.png"
     ;;
+  translation-diagnostics-test-run-twice)
+    # 2026-07-30 (実機フィードバック — 2度目の退行「同じConfigurationの
+    # 再代入はSwiftUIから見て変化なし」で2回目以降のリクエストが
+    # タイムアウトし続けた): 上と同じだが`-uitestsRunTestTranslationTwiceDirectly`
+    # で1回目が完全に終わってから2回目を直列に実行する — 「セッション
+    # 供給」カウンタが2まで増え、2回目もハングしないことの確認用。
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenMailViewerSettingsDirectly" "-uitestsOpenTranslationDiagnosticsDirectly" "-uitestsRunTestTranslationTwiceDirectly")
+    default_out="translation-diagnostics-test-run-twice.png"
+    ;;
   search)
     # Task #86: 空状態 (クエリ未入力、履歴タブ) — トップバー/タブの見た目
     # 確認用。アカウントが無くても`SearchScreenView`自体は開けるが、

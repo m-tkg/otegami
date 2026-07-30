@@ -78,14 +78,32 @@ import OtegamiTranslation
 /// dropping that request's continuation forever — the queue means at most
 /// one `configuration` change is ever "in flight" waiting for its `attach`.
 /// A fresh `Configuration(source:target:)` is now built per request rather
-/// than reused across calls for the same target (this SDK's own
-/// `Configuration` shape includes an internal identity/version field,
-/// confirmed by symbol inspection of the compiled `Translation.swiftmodule`
-/// — the framework's `invalidate()` method exists precisely to let a caller
-/// force a fresh session for the same source/target, which a brand-new
-/// `Configuration` value achieves the same way) — the previous "reuse the
+/// than reused across calls for the same target — the previous "reuse the
 /// session for an already-current target with no re-suspension" fast path
 /// is exactly what caused this bug and is gone.
+///
+/// **2026-07-30, second regression (実機フィードバック — 最初のホスト
+/// ビュー移設だけではまだ直っていなかった)**: the paragraph above's
+/// "build a fresh `Configuration` per request" turned out to be *not
+/// enough on its own* — verified directly against the real SDK (a plain
+/// Swift program constructing two `Configuration(source: nil, target:
+/// same)` values independently and comparing them): **they compare
+/// `==` equal**. `.translationTask(_:action:)` shares `.task(id:)`'s
+/// semantics — it only re-invokes its action closure when the value it's
+/// given actually *changes* — so a second request for the same language
+/// pair was, from SwiftUI's perspective, re-assigning an equal value,
+/// never triggering a new closure invocation, never calling `attach(_:)`,
+/// timing out every time after the first successful request (or, if the
+/// very first request happened to match a `Configuration` some earlier
+/// availability check had already set, from the very first request too —
+/// matching that exact real-device symptom). `requestNewConfiguration
+/// (target:)` below fixes this properly: when a `configuration` already
+/// exists, it mutates that *same* value's `target` and then calls
+/// `invalidate()` — confirmed against the real SDK to make the value
+/// compare unequal to its prior state even with identical `source`/
+/// `target` (this is `invalidate()`'s documented purpose: forcing a
+/// retranslation with the same configuration) — guaranteeing SwiftUI
+/// always sees a change and always re-invokes the closure.
 ///
 /// `@MainActor` (not an `actor`): `.translationTask`'s action closure and
 /// SwiftUI's own re-render of the hosting view both run on the main actor,
@@ -103,6 +121,58 @@ public final class TranslationSessionCoordinator {
     /// actually needed; nothing outside this type should be able to force
     /// a reset.
     public private(set) var configuration: TranslationSession.Configuration?
+
+    /// 2026-07-30 (実機フィードバック — 2度目の退行): アプリのルートへ
+    /// ホストビューを移した後もまだ実機でタイムアウトした。原因を
+    /// `.swiftinterface`相当の実機検証 (プレーンなSwiftプログラムで
+    /// `TranslationSession.Configuration`を2つ独立に構築して`==`比較)
+    /// で確定: **同じ`source`/`target`で作った`Configuration`同士は
+    /// 等価と判定される** (`a == b` → `true`)。`.translationTask(_:action:)`
+    /// は`.task(id:)`と同じ意味論で、渡した値が「変化」した時だけ
+    /// クロージャを再実行する — つまり以前の実装
+    /// (`TranslationSession.Configuration(source: nil, target: target)`を
+    /// 毎回新規に作って代入) は、**2回目以降、同じ言語ペアへのリクエスト
+    /// では実質「同じ値の再代入」になり、SwiftUIから見て変化なし**、
+    /// クロージャは二度と再発火しなかった。初回から失敗した実機報告も
+    /// これで説明できる — 起動直後の可用性チェック等で既に一度同じ
+    /// `Configuration`がセットされていれば、以後の代入は全て「変化なし」
+    /// になる。
+    ///
+    /// 修正: 毎回新規`Configuration`を作るのをやめ、既存の`configuration`
+    /// があればその場で`target`を書き換えた上で`invalidate()`を呼ぶ —
+    /// 同じ実機検証で`invalidate()`後は元の値と`==`で不一致になることを
+    /// 確認済み (Apple公式ドキュメント通り、同一設定での再翻訳を促す
+    /// ための専用API)。`configuration`が`nil`の場合だけ新規構築する。
+    /// これで「2回目以降のリクエストでも必ずクロージャが呼ばれる」ことが
+    /// 保証される — `SupplyGatedRequestQueueTests`の
+    /// `sameTargetRequestedTwiceInARowBothGetSupplied`が、この関係を
+    /// (Fakeな`Session`/`Target`で) 直接固定している。
+    private func requestNewConfiguration(target: Locale.Language) {
+        if var current = configuration {
+            current.target = target
+            current.invalidate()
+            configuration = current
+        } else {
+            configuration = TranslationSession.Configuration(source: nil, target: target)
+        }
+        configurationRequestCount += 1
+        lastConfigurationRequestAt = Date()
+    }
+
+    // MARK: - Diagnostics (2026-07-30, 実機フィードバック — 2度目の退行)
+
+    /// 「翻訳の診断」画面が表示する、供給側の可観測性 — `requestSupply`が
+    /// 呼ばれた (=新しいセッションを要求した) 回数・最終時刻と、
+    /// `attach(_:)`が実際に呼ばれた (=ホストビューの`.translationTask`
+    /// クロージャが本当に発火した) 回数・最終時刻。前者だけ増えて後者が
+    /// 増えない/一度も無いなら「クロージャが供給元から一度も呼ばれて
+    /// いない」ことがこの画面だけで即断できる — 前回の退行 (ホストビュー
+    /// 未マウント) も今回の退行 (`Configuration`の等価判定) も、どちらも
+    /// この2組の数字を見れば1枚のスクリーンショットで切り分けられていた。
+    public private(set) var configurationRequestCount = 0
+    public private(set) var lastConfigurationRequestAt: Date?
+    public private(set) var attachCallCount = 0
+    public private(set) var lastAttachAt: Date?
 
     /// 2026-07-30 (実機フィードバック — 退行): 設定内の「翻訳の診断」画面
     /// (`TranslationSessionHostView`がマウントされていない画面ツリー)
@@ -139,9 +209,21 @@ public final class TranslationSessionCoordinator {
     @ObservationIgnored
     private lazy var requestQueue: SupplyGatedRequestQueue<Locale.Language, TranslationSession> = SupplyGatedRequestQueue(
         timeoutSeconds: Self.sessionTimeoutSeconds,
-        timeoutError: { TranslationServiceError.failed(message: "翻訳セッションを取得できませんでした") },
+        timeoutError: { [weak self] in
+            // 2026-07-30: 「一度も供給が来ていない」(=`attachCallCount`が
+            // このリクエストの要求時点から増えていない) のか、それとも
+            // 何らかの理由で発火はしたが処理が止まったのか — 診断画面を
+            // 見ずともエラー文言自体からある程度切り分けられるよう、
+            // 現在の供給側カウンタをそのまま埋め込む。
+            let requestCount = self?.configurationRequestCount ?? -1
+            let attachCount = self?.attachCallCount ?? -1
+            if attachCount == 0 {
+                return TranslationServiceError.failed(message: "翻訳セッションを取得できませんでした（供給元が一度も応答していません: 設定要求\(requestCount)回 / セッション供給0回）")
+            }
+            return TranslationServiceError.failed(message: "翻訳セッションを取得できませんでした（設定要求\(requestCount)回 / セッション供給\(attachCount)回、いずれも今回のリクエストには届きませんでした）")
+        },
         requestSupply: { [weak self] target in
-            self?.configuration = TranslationSession.Configuration(source: nil, target: target)
+            self?.requestNewConfiguration(target: target)
         }
     )
 
@@ -218,6 +300,8 @@ public final class TranslationSessionCoordinator {
     /// — see `SupplyGatedRequestQueue.supply(_:)`'s doc comment for why a
     /// late/unmatched call here is a safe no-op, not a crash.
     public func attach(_ session: TranslationSession) async {
+        attachCallCount += 1
+        lastAttachAt = Date()
         await requestQueue.supply(session)
     }
 }

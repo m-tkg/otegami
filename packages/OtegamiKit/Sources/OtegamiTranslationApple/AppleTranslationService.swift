@@ -85,24 +85,39 @@ public struct AppleTranslationService: TranslationOnlyService {
         // 本文そのものは出さず、件数/文字数だけを記録 — F15 の趣旨を新規ログ
         // にも適用。
         Self.logger.notice("translate: chars=\(text.count, privacy: .public) source=\(source.rawValue, privacy: .public) target=\(target.rawValue, privacy: .public)")
-        let needsDownload = try await ensureLanguagePairSupported(from: source, to: target)
-        await prepareTranslationBestEffort(to: target)
+        // 2026-07-30 (実機フィードバック — 診断画面の「直近の翻訳試行」が
+        // 可用性チェック段階の失敗を記録していなかった穴): 以前は
+        // `ensureLanguagePairSupported`が投げた場合、この関数のdo/catchに
+        // 一度も入らずそのまま呼び出し元へ伝播していた — `LanguageAvailability
+        // .status`が`.unsupported`を返すケース (実機でも起き得る、
+        // シミュレータでは常にこうなる) が「まだ記録がありません」のまま
+        // 何も残らない穴になっていた。`ensureLanguagePairSupported`から
+        // 戻り値まで**単一の**do/catchで囲み、どの段階で失敗しても必ず
+        // ちょうど1件だけ記録する (段階ごとに別々のcatchへ分けて二重記録
+        // する形にはしない)。
         do {
-            let result = try await coordinator.translate(text, to: target.locale)
-            // Phase 5再訂正 (2026-07-30, 実機ログ 9e28ea5): 前回の実機報告は
-            // まさにこの行が一度もログに出ない (=呼ばれていない) ことが
-            // 盲点だった — `prepareTranslation`のベストエフォート化と
-            // セットで、次に何か起きた時に「本体は呼ばれて成功/失敗した」
-            // ことをログだけで確定できるようにする。
+            let needsDownload = try await ensureLanguagePairSupported(from: source, to: target)
+            await prepareTranslationBestEffort(to: target)
+            let result: String
+            do {
+                result = try await coordinator.translate(text, to: target.locale)
+            } catch let error as TranslationServiceError {
+                throw error
+            } catch {
+                Self.logError(error, at: "translate")
+                throw Self.mapEngineError(error, knownNotDownloaded: needsDownload)
+            }
+            // Phase 5再訂正 (2026-07-30, 実機ログ 9e28ea5): 前回の実機
+            // 報告はまさにこの行が一度もログに出ない (=呼ばれていない)
+            // ことが盲点だった — `prepareTranslation`のベストエフォート化
+            // とセットで、次に何か起きた時に「本体は呼ばれて成功/失敗
+            // した」ことをログだけで確定できるようにする。
             Self.logger.notice("translate: succeeded resultChars=\(result.count, privacy: .public)")
             await diagnostics.record(.init(kind: "translate", elementCount: 1, totalChars: text.count, characterClassSummary: Self.characterClassSummary([text]), outcome: .success(resultChars: result.count)))
             return result
-        } catch let error as TranslationServiceError {
-            throw error
         } catch {
-            Self.logError(error, at: "translate")
             await diagnostics.record(.init(kind: "translate", elementCount: 1, totalChars: text.count, characterClassSummary: Self.characterClassSummary([text]), outcome: Self.failureOutcome(error)))
-            throw Self.mapEngineError(error, knownNotDownloaded: needsDownload)
+            throw error
         }
     }
 
@@ -127,19 +142,27 @@ public struct AppleTranslationService: TranslationOnlyService {
         // .chunk`側の対応漏れで同じ症状が起きうる — 呼び出し時点の件数/文字数
         // を記録しておく (本文そのものは出さない、F15参照)。
         Self.logger.notice("translateParagraphs: count=\(paragraphs.count, privacy: .public) totalChars=\(paragraphs.reduce(0) { $0 + $1.count }, privacy: .public) source=\(source.rawValue, privacy: .public) target=\(target.rawValue, privacy: .public)")
-        let needsDownload = try await ensureLanguagePairSupported(from: source, to: target)
-        await prepareTranslationBestEffort(to: target)
+        // 2026-07-30: `translate(_:from:to:)`と同じ理由・同じ形 — 可用性
+        // チェック段階の失敗も含め、単一のdo/catchで必ずちょうど1件記録
+        // する。
         do {
-            let result = try await coordinator.translateBatch(paragraphs, to: target.locale)
+            let needsDownload = try await ensureLanguagePairSupported(from: source, to: target)
+            await prepareTranslationBestEffort(to: target)
+            let result: [String]
+            do {
+                result = try await coordinator.translateBatch(paragraphs, to: target.locale)
+            } catch let error as TranslationServiceError {
+                throw error
+            } catch {
+                Self.logError(error, at: "translateParagraphs")
+                throw Self.mapEngineError(error, knownNotDownloaded: needsDownload)
+            }
             Self.logger.notice("translateParagraphs: succeeded resultCount=\(result.count, privacy: .public)")
             await diagnostics.record(.init(kind: "translateParagraphs", elementCount: paragraphs.count, totalChars: paragraphs.reduce(0) { $0 + $1.count }, characterClassSummary: Self.characterClassSummary(paragraphs), outcome: .success(resultChars: result.reduce(0) { $0 + $1.count })))
             return result
-        } catch let error as TranslationServiceError {
-            throw error
         } catch {
-            Self.logError(error, at: "translateParagraphs")
             await diagnostics.record(.init(kind: "translateParagraphs", elementCount: paragraphs.count, totalChars: paragraphs.reduce(0) { $0 + $1.count }, characterClassSummary: Self.characterClassSummary(paragraphs), outcome: Self.failureOutcome(error)))
-            throw Self.mapEngineError(error, knownNotDownloaded: needsDownload)
+            throw error
         }
     }
 
