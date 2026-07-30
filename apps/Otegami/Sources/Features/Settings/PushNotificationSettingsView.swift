@@ -1,21 +1,22 @@
 import SwiftUI
 import OtegamiStore
+import OtegamiRelayAPI
 #if os(iOS)
 import UIKit
 #endif
 
 /// Settings → プッシュ通知 (M9, plan §7): opt-in flow for the self-hosted
-/// push relay. Collects the relay's URL (https required — `http://
-/// localhost`/`http://127.0.0.1` exempted for local dev, enforced by
-/// `AppEnvironment.validatedRelayURL(_:)`), shows the consent text the
-/// plan calls for ("資格情報がそのサーバへ送信・保存される旨"), then on
-/// "有効にする" requests notification authorization, obtains an APNs
+/// push relay. On "有効にする" (behind a consent alert — "資格情報がそのサーバへ
+/// 送信・保存される旨") requests notification authorization, obtains an APNs
 /// device token, and registers this device + every `.password`-auth
-/// account's watch with the relay. No relay-operator credential is ever
-/// collected here — a self-hosted relay's optional device-registration
-/// secret is a build-time value now (`RelayRegistrationSecretConfig`, see
-/// its doc comment for why an earlier version of this screen had a
-/// "登録シークレット" `SecureField` here and why that was removed).
+/// account's watch with the relay. No relay-operator credential *or URL* is
+/// ever collected here — both the relay's optional device-registration
+/// secret (`RelayRegistrationSecretConfig`, Task #171) and the relay's URL
+/// itself (`RelayURLConfig`, Task #173 follow-up: 実機フィードバック
+/// 2026-07-30 「リレー URL は今の固定 URL という話をしたよ」) are build-time
+/// values now — an ordinary user of this screen has nothing to type at all,
+/// just "有効にする"/"無効にする" and (Task #173) the per-account watch
+/// status list below.
 ///
 /// iOS only: `AppEnvironment.enablePushNotifications` throws
 /// `.unsupportedPlatform` on macOS (no `NotificationService` there yet —
@@ -30,7 +31,6 @@ struct PushNotificationSettingsView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
 
-    @State private var relayURLText: String = ""
     @State private var isProcessing = false
     @State private var errorMessage: String?
     @State private var showingConsent = false
@@ -40,75 +40,30 @@ struct PushNotificationSettingsView: View {
     /// (`UIApplication.openSettingsURLString`) actually helps, since iOS
     /// never re-shows the system permission prompt once denied.
     @State private var showsOpenSettingsButton = false
+    /// Task #173: this device's per-account watch status, refreshed via
+    /// `refreshWatchRows()` — see `PushWatchDisplayRow.build`'s doc comment.
+    @State private var watchRows: [PushWatchDisplayRow] = []
+    /// The one account currently being re-registered (if any) — drives
+    /// that row's "再登録中…" `ProgressView` and disables its button, same
+    /// single-in-flight-id shape as `MailboxSyncFailuresView
+    /// .retryingMailboxIds` (a `Set` there since several mailboxes can
+    /// retry independently; here only one re-register can be in flight at
+    /// a time since this whole screen is a single `Form`, so a single
+    /// optional id is enough).
+    @State private var reregisteringAccountId: String?
 
     var body: some View {
         Form {
-            Section {
-                Text("自分でホストしたプッシュ中継サーバ (otegami-relay) の URL を入力してください。")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                TextField("https://relay.example.com", text: relayURLBinding)
-                    .textContentType(.URL)
-                    #if os(iOS)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                    .autocorrectionDisabled()
-                    .disabled(environment.isPushEnabled || isProcessing)
-                    .accessibilityIdentifier("settings.push.relayURLField")
-            } header: {
-                Text("リレー URL")
-            } footer: {
-                Text("https:// が必須です（ローカル開発時のみ http://localhost を使用できます）。")
-            }
-
+            statusSection
             if environment.isPushEnabled {
-                Section {
-                    Label("プッシュ通知は有効です", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .accessibilityIdentifier("settings.push.enabledLabel")
-                    Button(role: .destructive) {
-                        Task { await disable() }
-                    } label: {
-                        if isProcessing {
-                            ProgressView()
-                        } else {
-                            Text("無効にする")
-                        }
-                    }
-                    .disabled(isProcessing)
-                    .accessibilityIdentifier("settings.push.disableButton")
-                }
-            } else {
-                Section {
-                    Button {
-                        showingConsent = true
-                    } label: {
-                        if isProcessing {
-                            ProgressView()
-                        } else {
-                            Text("有効にする")
-                        }
-                    }
-                    .disabled(isProcessing || AppEnvironment.validatedRelayURL(relayURLText) == nil)
-                    .accessibilityIdentifier("settings.push.enableButton")
-                }
+                PushWatchStatusSection(
+                    rows: watchRows,
+                    reregisteringAccountId: reregisteringAccountId,
+                    onReregister: { accountId in reregister(accountId) }
+                )
             }
-
             if let errorMessage {
-                Section {
-                    Text(errorMessage)
-                        .foregroundStyle(OtegamiColor.destructive)
-                        .accessibilityIdentifier("settings.push.errorMessage")
-                    if showsOpenSettingsButton {
-                        #if os(iOS)
-                        Button("設定アプリを開く") {
-                            openSystemSettings()
-                        }
-                        .accessibilityIdentifier("settings.push.openSystemSettingsButton")
-                        #endif
-                    }
-                }
+                errorSection(errorMessage)
             }
         }
         .navigationTitle("プッシュ通知")
@@ -128,9 +83,7 @@ struct PushNotificationSettingsView: View {
         // this screen is pushed from `AccountSettingsCategoryView`.
         .macSettingsBackButton()
         #endif
-        .onAppear {
-            relayURLText = environment.pushRelayURLString
-        }
+        .task(id: environment.isPushEnabled) { await refreshWatchRows() }
         .alert("資格情報の送信について", isPresented: $showingConsent) {
             Button("キャンセル", role: .cancel) {}
             Button("同意して有効にする") {
@@ -146,12 +99,86 @@ struct PushNotificationSettingsView: View {
             // 自動でローカライズされない」節が警告するパターンそのもの、
             // ただし連結演算子経由という気づきにくい形)。1つのリテラルに
             // まとめることで`LocalizedStringKey`解決に戻した。
-            Text("有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）が入力したリレー URL のサーバーへ送信され、暗号化して保存されます。リレーの運用者を信頼できる場合のみ有効にしてください。Gmail (OAuth) アカウントは現バージョンでは対象外です。")
+            Text("有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）がプッシュ中継サーバーへ送信され、暗号化して保存されます。Gmail (OAuth) アカウントは現バージョンでは対象外です。")
         }
     }
 
-    private var relayURLBinding: Binding<String> {
-        Binding(get: { relayURLText }, set: { relayURLText = $0 })
+    @ViewBuilder
+    private var statusSection: some View {
+        if !RelayURLConfig.isConfigured {
+            unconfiguredSection
+        } else if environment.isPushEnabled {
+            enabledSection
+        } else {
+            disabledSection
+        }
+    }
+
+    /// Task #173 follow-up: this build has no relay URL baked in
+    /// (`RelayURLConfig`) — same "disabled button + explanatory footnote"
+    /// shape as `AccountTypeSelectionView.gmailButton`'s
+    /// `accountTypeSelection.gmailDisabledHint` for an unconfigured Gmail
+    /// OAuth Client ID.
+    private var unconfiguredSection: some View {
+        Section {
+            Button {} label: { Text("有効にする") }
+                .disabled(true)
+                .accessibilityIdentifier("settings.push.enableButton")
+        } footer: {
+            Text("この配布ビルドにはプッシュ中継サーバーが設定されていません。自分のリレーを使う場合は docs/relay-deployment.md を参照して Config/Local.xcconfig に設定してください。")
+                .accessibilityIdentifier("settings.push.relayNotConfiguredHint")
+        }
+    }
+
+    private var enabledSection: some View {
+        Section {
+            Label("プッシュ通知は有効です", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .accessibilityIdentifier("settings.push.enabledLabel")
+            Button(role: .destructive) {
+                Task { await disable() }
+            } label: {
+                if isProcessing {
+                    ProgressView()
+                } else {
+                    Text("無効にする")
+                }
+            }
+            .disabled(isProcessing)
+            .accessibilityIdentifier("settings.push.disableButton")
+        }
+    }
+
+    private var disabledSection: some View {
+        Section {
+            Button {
+                showingConsent = true
+            } label: {
+                if isProcessing {
+                    ProgressView()
+                } else {
+                    Text("有効にする")
+                }
+            }
+            .disabled(isProcessing)
+            .accessibilityIdentifier("settings.push.enableButton")
+        }
+    }
+
+    private func errorSection(_ message: String) -> some View {
+        Section {
+            Text(message)
+                .foregroundStyle(OtegamiColor.destructive)
+                .accessibilityIdentifier("settings.push.errorMessage")
+            if showsOpenSettingsButton {
+                #if os(iOS)
+                Button("設定アプリを開く") {
+                    openSystemSettings()
+                }
+                .accessibilityIdentifier("settings.push.openSystemSettingsButton")
+                #endif
+            }
+        }
     }
 
     private func enable() async {
@@ -160,9 +187,10 @@ struct PushNotificationSettingsView: View {
         showsOpenSettingsButton = false
         defer { isProcessing = false }
         do {
-            try await environment.enablePushNotifications(relayURLString: relayURLText)
-        } catch AppEnvironment.PushError.invalidRelayURL {
-            errorMessage = "リレー URL が不正です。https:// から始まる URL を入力してください。"
+            try await environment.enablePushNotifications()
+            await refreshWatchRows()
+        } catch AppEnvironment.PushError.relayNotConfigured {
+            errorMessage = "この配布ビルドにはプッシュ中継サーバーが設定されていません。"
         } catch AppEnvironment.PushError.notificationPermissionDenied {
             errorMessage = "通知が許可されていません。設定アプリから許可してください。"
             showsOpenSettingsButton = true
@@ -172,9 +200,8 @@ struct PushNotificationSettingsView: View {
         } catch AppEnvironment.PushError.unsupportedPlatform {
             errorMessage = "この OS では未対応です（iOS のみ対応）。"
         } catch AppEnvironment.PushError.registrationSecretRejected {
-            // Task #171 follow-up: the registration secret is now a
-            // build-time value (`RelayRegistrationSecretConfig`), never
-            // something typed into this screen — see
+            // Task #171 follow-up: the registration secret is a build-time
+            // value (`RelayRegistrationSecretConfig`) — see
             // `isRelayRegistrationSecretConfigured`'s doc comment for why
             // the message differs depending on whether this build has one
             // baked in at all.
@@ -193,7 +220,45 @@ struct PushNotificationSettingsView: View {
         isProcessing = true
         defer { isProcessing = false }
         await environment.disablePushNotifications()
-        relayURLText = ""
+        watchRows = []
+    }
+
+    /// Task #173: rebuilds `watchRows` from the relay's current watch list
+    /// (`AppEnvironment.fetchPushWatchSummaries()`) — called on first
+    /// appearance, right after enabling, and after every re-register
+    /// attempt (success or failure — a failed attempt may still have
+    /// changed the relay's state, e.g. the old watch got deleted but the
+    /// new one failed to create).
+    private func refreshWatchRows() async {
+        guard environment.isPushEnabled else {
+            watchRows = []
+            return
+        }
+        let serverWatches = await environment.fetchPushWatchSummaries()
+        watchRows = PushWatchDisplayRow.build(
+            accounts: environment.accounts,
+            isPushEnabled: environment.isPushEnabled,
+            serverWatches: serverWatches
+        )
+    }
+
+    private func reregister(_ accountId: String) {
+        guard let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
+        reregisteringAccountId = accountId
+        Task {
+            defer { reregisteringAccountId = nil }
+            do {
+                try await environment.reregisterWatch(for: account)
+                errorMessage = nil
+            } catch AppEnvironment.ReregisterWatchError.credentialUnavailable {
+                errorMessage = "このアカウントのパスワードが見つかりません。アカウント設定でパスワードを再入力してください。"
+            } catch AppEnvironment.ReregisterWatchError.relayRejectedWatch {
+                errorMessage = "再登録に失敗しました。リレーに接続できないか、資格情報が拒否されました。"
+            } catch {
+                errorMessage = "再登録に失敗しました: \(error)"
+            }
+            await refreshWatchRows()
+        }
     }
 
     #if os(iOS)

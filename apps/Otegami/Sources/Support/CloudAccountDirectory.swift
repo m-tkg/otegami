@@ -210,8 +210,7 @@ struct CloudAccountDirectory: LocalAccountDirectory, @unchecked Sendable {
     private func registerWatchIfNeeded(for account: AccountRecord) async {
         guard pushSettings.isEnabled, account.authType == .password else { return }
         guard pushSettings.accountWatchMap[account.id] == nil else { return }
-        guard let relayURLString = pushSettings.relayURLString,
-              let baseURL = AppEnvironment.validatedRelayURL(relayURLString),
+        guard let baseURL = RelayURLConfig.value,
               let deviceSecret = try? pushSettings.deviceSecret(),
               let password = (try? credentialStore.password(forAccountId: account.id)) ?? nil
         else { return }
@@ -236,8 +235,7 @@ struct CloudAccountDirectory: LocalAccountDirectory, @unchecked Sendable {
     private func unregisterWatch(forAccountId accountId: String) async {
         guard let watchId = pushSettings.accountWatchMap[accountId] else { return }
         defer { pushSettings.setWatchId(nil, forAccountId: accountId) }
-        guard let relayURLString = pushSettings.relayURLString,
-              let baseURL = AppEnvironment.validatedRelayURL(relayURLString),
+        guard let baseURL = RelayURLConfig.value,
               let deviceSecret = try? pushSettings.deviceSecret()
         else { return }
         try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: watchId)

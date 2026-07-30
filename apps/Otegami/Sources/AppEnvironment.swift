@@ -49,14 +49,15 @@ final class AppEnvironment {
     /// below is built, well before `database`/`tokenStore` exist.
     @ObservationIgnored private let gmailAccessTokenBridge = GmailAccessTokenBridge()
     /// M9: push opt-in. `pushSettings` is the persistence layer
-    /// (`PushSettingsStore`'s doc comment); `isPushEnabled`/
-    /// `pushRelayURLString` mirror it into `@Observable` state so
-    /// `PushNotificationSettingsView` doesn't read `UserDefaults`
-    /// directly.
+    /// (`PushSettingsStore`'s doc comment); `isPushEnabled` mirrors it into
+    /// `@Observable` state so `PushNotificationSettingsView` doesn't read
+    /// `UserDefaults` directly. The relay *URL* itself is no longer part of
+    /// this state (Task #173 follow-up: `RelayURLConfig`, a build-time
+    /// value like `RelayRegistrationSecretConfig`) — see that type's doc
+    /// comment.
     let pushRelayClient = PushRelayClient()
     @ObservationIgnored let pushSettings: PushSettingsStore
     private(set) var isPushEnabled: Bool
-    private(set) var pushRelayURLString: String
 
     /// M11: iCloud account-definition sync. `accountCloudSync` reconciles
     /// the local `account` table against the `"accounts.v1"` iCloud KVS key
@@ -1317,14 +1318,69 @@ final class AppEnvironment {
         let pushSettings = PushSettingsStore(accessGroup: OtegamiAppGroup.keychainAccessGroup)
         self.pushSettings = pushSettings
         self.isPushEnabled = pushSettings.isEnabled
-        self.pushRelayURLString = pushSettings.relayURLString ?? ""
-        // Task #171 follow-up cleanup — see `PushSettingsStore
-        // .deleteLegacyRegistrationSecretIfPresent()`'s doc comment: wipes
-        // whatever a device that used the now-removed "登録シークレット"
-        // Settings field under an earlier build still has left in the
-        // Keychain. Unconditional/every-launch, not gated behind a
-        // one-time-only flag — cheap no-op once the item is actually gone.
+        // Task #171/#173 follow-up cleanup — see `PushSettingsStore
+        // .deleteLegacyRegistrationSecretIfPresent()`/
+        // `.deleteLegacyRelayURLIfPresent()`'s doc comments: wipes
+        // whatever a device that used the now-removed "登録シークレット"/
+        // relay-URL Settings fields under an earlier build still has left
+        // in the Keychain/UserDefaults. Unconditional/every-launch, not
+        // gated behind a one-time-only flag — cheap no-op once the item is
+        // actually gone.
         pushSettings.deleteLegacyRegistrationSecretIfPresent()
+        pushSettings.deleteLegacyRelayURLIfPresent()
+
+        // Task #173 (`scripts/verify-screen.sh`'s `push-settings-watches`
+        // scenario): screenshotting `PushWatchStatusSection`'s populated
+        // states needs push "enabled" and a non-empty, varied watch list —
+        // neither of which this dev machine can produce for real without
+        // either driving the full APNs/notification-permission flow (the
+        // Simulator can't get a device token at all, `PushTokenCenter`'s
+        // doc comment) or making a live request to whatever real relay
+        // this build happens to be configured against. Forcing
+        // `isPushEnabled` here is display-only — it never touches
+        // `pushSettings.isEnabled` (the persisted value `enable()`/
+        // `disable()` actually manage), so nothing about this survives a
+        // fresh, non-UITest launch.
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_FORCE_PUSH_ENABLED"] == "1" {
+            self.isPushEnabled = true
+        }
+        // Three fake `.password`-auth accounts covering the three
+        // relay-dependent statuses `PushWatchDisplayRow.Status` can be in
+        // (`.registered`/`.stopped`/`.notRegistered`) — paired with
+        // `OTEGAMI_UITEST_FIXED_PUSH_WATCH_SUMMARIES` below providing
+        // fixed `WatchSummary` entries for the first two, and simply
+        // having no entry at all for the third. The existing
+        // `OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT` fixture (used
+        // elsewhere) already covers `.unsupported`. Display-only: no
+        // Keychain password is stored for these, since nothing here ever
+        // calls `registerWatch`/hits the network.
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_INSERT_FAKE_PUSH_WATCH_ACCOUNTS"] == "1" {
+            let baseSortOrder = ((try? database.dbWriter.read { db in
+                try AccountRecord.fetchAll(db)
+            })?.map(\.sortOrder).max() ?? -1) + 1
+            let fixtures: [(id: String, displayName: String, email: String)] = [
+                ("uitest-fake-registered", "Fake Registered (UITest)", "uitest-fake-registered@otegami.test"),
+                ("uitest-fake-stopped", "Fake Stopped (UITest)", "uitest-fake-stopped@otegami.test"),
+                ("uitest-fake-notregistered", "Fake Not Registered (UITest)", "uitest-fake-notregistered@otegami.test"),
+            ]
+            try? database.dbWriter.write { db in
+                for (offset, fixture) in fixtures.enumerated() {
+                    guard try AccountRecord.filter(Column("id") == fixture.id).fetchOne(db) == nil else { continue }
+                    let account = AccountRecord(
+                        id: fixture.id,
+                        displayName: fixture.displayName,
+                        email: fixture.email,
+                        authType: .password,
+                        imapHost: "imap.example.test",
+                        imapPort: 993,
+                        imapSecurity: .tls,
+                        imapUsername: fixture.email,
+                        sortOrder: baseSortOrder + offset
+                    )
+                    try account.insert(db)
+                }
+            }
+        }
 
         if let endpoints = GoogleOAuthConfig.endpoints {
             let client = GoogleOAuthClient(
@@ -2354,9 +2410,15 @@ final class AppEnvironment {
     // MARK: - Push notifications (M9)
 
     enum PushError: Error, Equatable {
-        /// Relay URL failed `PushNotificationSettingsView`'s "https
-        /// required (http://localhost exempted for local dev)" check.
-        case invalidRelayURL
+        /// Task #173 follow-up: this *build* has no relay URL baked in
+        /// (`RelayURLConfig.value == nil`) — there's nowhere left for the
+        /// user to type one, so `enablePushNotifications()` refuses up
+        /// front rather than the old "type a bad URL" failure mode.
+        /// `PushNotificationSettingsView` disables its "有効にする" button
+        /// whenever `RelayURLConfig.isConfigured == false`, so reaching
+        /// this case in practice would mean the button's own guard had a
+        /// bug — kept as a safety net, not an expected user-facing path.
+        case relayNotConfigured
         /// `PushTokenCenter` never got a device token — always the case on
         /// the iOS Simulator (`PushTokenCenter`'s doc comment). No longer
         /// used for a denied notification-authorization prompt on a real
@@ -2394,19 +2456,19 @@ final class AppEnvironment {
         case registrationSecretRejected
     }
 
-    /// Validates `relayURLString`, requests notification authorization +
-    /// an APNs device token, registers this device with the relay, and
-    /// creates a watch for every currently-configured `.password`-auth
-    /// account (Gmail/`.oauth2` accounts are skipped — the relay only
-    /// supports password auth in v1, `OtegamiRelayAPI.WatchAuth.Kind`'s
-    /// doc comment). Persists everything via `pushSettings` as it goes, so
-    /// a failure partway through (e.g. the device registers fine but one
-    /// account's watch creation fails) still leaves whatever succeeded in
-    /// place rather than needing to be redone from scratch.
-    ///
-    func enablePushNotifications(relayURLString: String) async throws {
-        guard let baseURL = Self.validatedRelayURL(relayURLString) else {
-            throw PushError.invalidRelayURL
+    /// Requests notification authorization + an APNs device token,
+    /// registers this device with the build's baked-in relay
+    /// (`RelayURLConfig.value` — Task #173 follow-up), and creates a watch
+    /// for every currently-configured `.password`-auth account (Gmail/
+    /// `.oauth2` accounts are skipped — the relay only supports password
+    /// auth in v1, `OtegamiRelayAPI.WatchAuth.Kind`'s doc comment).
+    /// Persists everything via `pushSettings` as it goes, so a failure
+    /// partway through (e.g. the device registers fine but one account's
+    /// watch creation fails) still leaves whatever succeeded in place
+    /// rather than needing to be redone from scratch.
+    func enablePushNotifications() async throws {
+        guard let baseURL = RelayURLConfig.value else {
+            throw PushError.relayNotConfigured
         }
 
         let apnsToken = try await requestAPNsToken()
@@ -2444,9 +2506,7 @@ final class AppEnvironment {
             try pushSettings.setDeviceSecret(deviceSecret)
         }
 
-        pushSettings.relayURLString = relayURLString
         pushSettings.deviceId = deviceId
-        pushRelayURLString = relayURLString
 
         for account in accounts where account.authType == .password {
             await registerWatch(for: account, baseURL: baseURL, deviceSecret: deviceSecret)
@@ -2461,7 +2521,7 @@ final class AppEnvironment {
     /// stuck unable to turn push back off locally) and clears all local
     /// push state.
     func disablePushNotifications() async {
-        if let baseURL = Self.validatedRelayURL(pushSettings.relayURLString ?? ""),
+        if let baseURL = RelayURLConfig.value,
            let deviceSecret = try? pushSettings.deviceSecret() {
             for (_, watchId) in pushSettings.accountWatchMap {
                 try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: watchId)
@@ -2469,7 +2529,6 @@ final class AppEnvironment {
         }
         pushSettings.reset()
         isPushEnabled = false
-        pushRelayURLString = ""
     }
 
     /// Whether this *build* has a relay registration secret baked in (see
@@ -2489,14 +2548,15 @@ final class AppEnvironment {
     func registerWatchIfNeeded(for account: AccountRecord) async {
         guard isPushEnabled, account.authType == .password else { return }
         guard pushSettings.accountWatchMap[account.id] == nil else { return }
-        guard let baseURL = Self.validatedRelayURL(pushSettings.relayURLString ?? ""),
+        guard let baseURL = RelayURLConfig.value,
               let deviceSecret = try? pushSettings.deviceSecret()
         else { return }
         await registerWatch(for: account, baseURL: baseURL, deviceSecret: deviceSecret)
     }
 
-    private func registerWatch(for account: AccountRecord, baseURL: URL, deviceSecret: String) async {
-        guard let password = try? credentialStore.password(forAccountId: account.id) else { return }
+    @discardableResult
+    private func registerWatch(for account: AccountRecord, baseURL: URL, deviceSecret: String) async -> Bool {
+        guard let password = try? credentialStore.password(forAccountId: account.id) else { return false }
         let request = CreateWatchRequest(
             accountId: account.id,
             imapHost: account.imapHost,
@@ -2507,18 +2567,119 @@ final class AppEnvironment {
             mailbox: "INBOX"
         )
         guard let response = try? await pushRelayClient.createWatch(baseURL: baseURL, deviceSecret: deviceSecret, request: request) else {
-            return
+            return false
         }
         pushSettings.setWatchId(response.watchId, forAccountId: account.id)
+        return true
     }
 
     private func unregisterWatch(forAccountId accountId: String) async {
         guard let watchId = pushSettings.accountWatchMap[accountId] else { return }
         defer { pushSettings.setWatchId(nil, forAccountId: accountId) }
-        guard let baseURL = Self.validatedRelayURL(pushSettings.relayURLString ?? ""),
+        guard let baseURL = RelayURLConfig.value,
               let deviceSecret = try? pushSettings.deviceSecret()
         else { return }
         try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: watchId)
+    }
+
+    /// Task #173: fetches this device's current watch list straight from
+    /// the relay (`GET /v1/watches`) so `PushNotificationSettingsView` can
+    /// show *which* `.password` account's watch is stopped — the
+    /// motivating 実機 report was a relay-side log line ("3 watches, 1
+    /// auth-failed") with no way to tell which account from the app.
+    /// `nil` on any failure (relay unreachable, push not enabled, etc.) —
+    /// the view treats that as "status unavailable" rather than an error
+    /// dialog, matching this file's existing "best-effort, no user-facing
+    /// failure" posture for everything else push-related.
+    func fetchPushWatchSummaries() async -> [WatchSummary]? {
+        // `scripts/verify-screen.sh`'s `push-settings-watches` scenario —
+        // see `OTEGAMI_UITEST_FORCE_PUSH_ENABLED`'s doc comment in
+        // `init()` for why this exists: screenshotting every status
+        // `PushWatchDisplayRow` can render needs fixed data, not a live
+        // relay round trip this dev machine can't make safely/
+        // deterministically here.
+        if ProcessInfo.processInfo.environment["OTEGAMI_UITEST_FIXED_PUSH_WATCH_SUMMARIES"] == "1" {
+            return Self.uitestFixedPushWatchSummaries
+        }
+        guard isPushEnabled,
+              let baseURL = RelayURLConfig.value,
+              let deviceSecret = try? pushSettings.deviceSecret()
+        else { return nil }
+        return try? await pushRelayClient.listWatches(baseURL: baseURL, deviceSecret: deviceSecret)
+    }
+
+    /// Paired with `OTEGAMI_UITEST_INSERT_FAKE_PUSH_WATCH_ACCOUNTS`'s
+    /// fixture accounts in `init()` — one active, one stopped, and (by
+    /// omission) one account with no watch at all, covering
+    /// `.registered`/`.stopped`/`.notRegistered` between them.
+    private static var uitestFixedPushWatchSummaries: [WatchSummary] {
+        let now = Date()
+        return [
+            WatchSummary(
+                watchId: "uitest-watch-registered",
+                accountId: "uitest-fake-registered",
+                imapHost: "imap.example.test",
+                mailbox: "INBOX",
+                createdAt: now.addingTimeInterval(-3600),
+                status: .active,
+                lastConnectedAt: now.addingTimeInterval(-180)
+            ),
+            WatchSummary(
+                watchId: "uitest-watch-stopped",
+                accountId: "uitest-fake-stopped",
+                imapHost: "imap.example.test",
+                mailbox: "INBOX",
+                createdAt: now.addingTimeInterval(-3600),
+                status: .stopped,
+                lastErrorKind: .authFailure,
+                lastErrorAt: now.addingTimeInterval(-180)
+            ),
+        ]
+    }
+
+    /// Task #173: "re-register" a single stopped watch — deletes whatever
+    /// watch the relay currently has for this account (if any; best-effort,
+    /// same as `unregisterWatch`) and creates a fresh one, resending the
+    /// account's current IMAP credential. This is the one operation the
+    /// motivating 実機 report actually needed: a relay-side "watch stopped
+    /// after repeated auth failures" only recovers once the account's
+    /// password is fixed *and* something re-creates the watch — the relay
+    /// itself never retries a `.stopped` watch on its own.
+    ///
+    /// Throws rather than silently no-op'ing (unlike most of this file's
+    /// push plumbing) because this is a direct user action from a "有効化
+    /// されていません"/"認証情報が見つかりません" button tap —
+    /// `PushNotificationSettingsView` surfaces the failure instead of
+    /// leaving the row looking like nothing happened.
+    func reregisterWatch(for account: AccountRecord) async throws {
+        guard isPushEnabled else { throw PushError.relayNotConfigured }
+        guard account.authType == .password else { throw PushError.relayNotConfigured }
+        guard let baseURL = RelayURLConfig.value else { throw PushError.relayNotConfigured }
+        guard let deviceSecret = try? pushSettings.deviceSecret() else { throw PushError.relayNotConfigured }
+        guard (try? credentialStore.password(forAccountId: account.id)) != nil else {
+            throw ReregisterWatchError.credentialUnavailable
+        }
+
+        if let existingWatchId = pushSettings.accountWatchMap[account.id] {
+            try? await pushRelayClient.deleteWatch(baseURL: baseURL, deviceSecret: deviceSecret, watchId: existingWatchId)
+            pushSettings.setWatchId(nil, forAccountId: account.id)
+        }
+        guard await registerWatch(for: account, baseURL: baseURL, deviceSecret: deviceSecret) else {
+            throw ReregisterWatchError.relayRejectedWatch
+        }
+    }
+
+    enum ReregisterWatchError: Error, Equatable {
+        /// `KeychainCredentialStore` has no password for this account —
+        /// shouldn't happen for a `.password`-auth account in normal use,
+        /// but a Keychain item can vanish (e.g. an iCloud Keychain sync
+        /// glitch, or the item was deleted outside the app).
+        case credentialUnavailable
+        /// The relay reachable-but-rejected the new watch (bad
+        /// credentials, network error reaching the *IMAP* server isn't
+        /// checked synchronously here — `POST /v1/watches` itself failed
+        /// or the relay's SSRF/validation checks rejected the request).
+        case relayRejectedWatch
     }
 
     /// Throttle for `reconcilePushWatchesIfNeeded()` — see that method's
@@ -2559,7 +2720,7 @@ final class AppEnvironment {
         if let last = pushSettings.lastWatchReconcileDate, Date().timeIntervalSince(last) < Self.watchReconcileInterval {
             return
         }
-        guard let baseURL = Self.validatedRelayURL(pushSettings.relayURLString ?? ""),
+        guard let baseURL = RelayURLConfig.value,
               let deviceSecret = try? pushSettings.deviceSecret()
         else { return }
         guard let serverWatches = try? await pushRelayClient.listWatches(baseURL: baseURL, deviceSecret: deviceSecret) else {
