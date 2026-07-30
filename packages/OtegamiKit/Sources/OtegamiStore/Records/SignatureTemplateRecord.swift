@@ -36,6 +36,14 @@ public struct SignatureTemplateRecord: Codable, Equatable, Sendable, FetchableRe
     public var sortOrder: Int
     public var createdAt: Date
     public var updatedAt: Date
+    /// Task #186 (v37 migration): the cross-device-stable identity
+    /// `TemplateCloudSyncEngine` (`AccountCloudSync`) reconciles signatures
+    /// on — see the v37 migration's doc comment (`AppDatabase.swift`) for
+    /// why this exists separately from `id`. Generated once, here, the
+    /// moment a signature is first created (either locally or via
+    /// `CloudSignatureSnapshot.makeRecord()` for one arriving from another
+    /// device) and never changed again for that signature's lifetime.
+    public var syncId: String
 
     public init(
         id: Int64? = nil,
@@ -44,7 +52,8 @@ public struct SignatureTemplateRecord: Codable, Equatable, Sendable, FetchableRe
         accountIds: [String] = [],
         sortOrder: Int = 0,
         createdAt: Date = Date(),
-        updatedAt: Date? = nil
+        updatedAt: Date? = nil,
+        syncId: String = UUID().uuidString
     ) {
         self.id = id
         self.name = name
@@ -53,6 +62,7 @@ public struct SignatureTemplateRecord: Codable, Equatable, Sendable, FetchableRe
         self.sortOrder = sortOrder
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
+        self.syncId = syncId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

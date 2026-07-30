@@ -773,16 +773,22 @@ extension AppDatabase {
         // `onDelete: .cascade` pattern from v17, just with a different
         // action since an account's *default signature* going away should
         // leave the account itself intact, unlike a template that loses
-        // its owning account). **Deliberately not synced via iCloud**
-        // (`AccountCloudSync.CloudAccountSnapshot` has no
-        // `defaultSignatureId` field) — `signatureTemplate.id` is a
-        // device-local `AUTOINCREMENT` value with no cross-device meaning
-        // (unlike `AccountRecord.id`, a UUID chosen once and treated as the
-        // stable identity `docs/icloud-sync.md` syncs by), so syncing this
-        // column as-is would point at an unrelated or nonexistent row on
-        // another device. Syncing the signatures themselves is future work
-        // this batch doesn't attempt (`docs/settings.md`'s F section notes
-        // the scope decision).
+        // its owning account). **This column itself is still deliberately
+        // not synced via iCloud** (`AccountCloudSync.CloudAccountSnapshot`
+        // has no `defaultSignatureId` field) — `signatureTemplate.id` stays
+        // a device-local `AUTOINCREMENT` value with no cross-device meaning
+        // even after v37 below (unlike `AccountRecord.id`, a UUID chosen
+        // once and treated as the stable identity `docs/icloud-sync.md`
+        // syncs by), so syncing this column as-is would still point at an
+        // unrelated or nonexistent row on another device. **Update (Task
+        // #186, v37 below)**: "Syncing the signatures themselves is future
+        // work this batch doesn't attempt" — the deferral this comment used
+        // to end on — is no longer true; `signatureTemplate`/`mailTemplate`
+        // rows themselves (name/body/accountIds/subject) now sync via
+        // `TemplateCloudSyncEngine`, keyed on the new `syncId` column v37
+        // adds specifically because `id` can't serve that role. Only this
+        // per-account *pointer* to a signature (as opposed to the signature
+        // itself) remains unsynced.
         migrator.registerMigration("v24") { db in
             try db.alter(table: "account") { t in
                 t.add(column: "defaultSignatureId", .integer)
@@ -974,6 +980,64 @@ extension AppDatabase {
             try db.alter(table: "messageBody") { t in
                 t.add(column: "renderVersion", .integer).notNull().defaults(to: 0)
             }
+        }
+
+        // v37 (Task #186, iCloud で設定全般を同期): `signatureTemplate`/
+        // `mailTemplate` gain a `syncId` — a `UUID` string generated once
+        // per row, immutable for its lifetime — as the cross-device-stable
+        // identity `TemplateCloudSyncEngine` (`AccountCloudSync`) reconciles
+        // on. The existing `id` (`AUTOINCREMENT`, referenced by
+        // `account.defaultSignatureId`/`Composer`'s in-memory selection/
+        // `LastSignatureSettingsStore`'s per-account `UserDefaults` key)
+        // stays exactly what the v24 migration's comment above already
+        // explains it must stay — a device-local row number with no
+        // cross-device meaning — so it is deliberately *not* part of the
+        // synced payload; only `syncId` ever leaves this device. This
+        // finally implements the "Syncing the signatures themselves is
+        // future work this batch doesn't attempt" deferral that v24's
+        // comment flagged.
+        //
+        // Two-step `ADD COLUMN` (nullable first, backfill, no `NOT NULL`
+        // constraint added after) rather than a single `.notNull()` column
+        // definition: SQLite's `ADD COLUMN ... NOT NULL` requires a single
+        // *constant* default for every existing row, but each row needs its
+        // *own* fresh UUID — the same reason `v18`'s `toText`/`ccText`
+        // backfill above is a nullable column plus a Swift-side per-row
+        // loop, not a one-shot SQL default. A `UNIQUE` index (not a `NOT
+        // NULL` constraint) is what actually keeps this column populated
+        // going forward: `SignatureTemplateRecord.init`/`MailTemplateRecord
+        // .init` both default `syncId` to a fresh `UUID().uuidString`, so
+        // every row inserted after this migration always has one; the
+        // column stays nullable at the SQLite level purely so this
+        // migration doesn't need a same-transaction "add NOT NULL" step
+        // GRDB's `alter(table:)` doesn't expose directly.
+        migrator.registerMigration("v37") { db in
+            try db.alter(table: "signatureTemplate") { t in
+                t.add(column: "syncId", .text)
+            }
+            try db.alter(table: "mailTemplate") { t in
+                t.add(column: "syncId", .text)
+            }
+            // Raw SQL, not `SignatureTemplateRecord`/`MailTemplateRecord`'s
+            // `Codable` fetch — those Swift structs declare `syncId` as a
+            // non-optional `String` (matching every row *after* this
+            // migration finishes), but right after the `ADD COLUMN` above
+            // every existing row's `syncId` is still SQL `NULL`; decoding
+            // through the Codable record at that intermediate point would
+            // throw before this loop ever gets to backfill it.
+            for id in try Int64.fetchAll(db, sql: "SELECT id FROM signatureTemplate") {
+                try db.execute(sql: "UPDATE signatureTemplate SET syncId = ? WHERE id = ?", arguments: [UUID().uuidString, id])
+            }
+            for id in try Int64.fetchAll(db, sql: "SELECT id FROM mailTemplate") {
+                try db.execute(sql: "UPDATE mailTemplate SET syncId = ? WHERE id = ?", arguments: [UUID().uuidString, id])
+            }
+            // A `UNIQUE` index, not `NOT NULL` — see this migration's doc
+            // comment above for why the column itself stays nullable at the
+            // SQLite level. SQLite treats multiple `NULL`s in a `UNIQUE`
+            // index as non-conflicting, so this is safe even though the
+            // column has no `NOT NULL` constraint of its own.
+            try db.create(index: "signatureTemplate_on_syncId", on: "signatureTemplate", columns: ["syncId"], unique: true)
+            try db.create(index: "mailTemplate_on_syncId", on: "mailTemplate", columns: ["syncId"], unique: true)
         }
 
         return migrator

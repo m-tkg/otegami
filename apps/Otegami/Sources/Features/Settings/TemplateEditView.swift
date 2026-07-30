@@ -125,7 +125,10 @@ struct TemplateEditView: View {
         let editedFields = template ?? MailTemplateRecord(name: name, body: bodyText)
         let existingId = editedFields.id
 
-        try? await environment.database.dbWriter.write { db in
+        // See `SignatureTemplateEditView.save()`'s identical comment on why
+        // this is the closure's return value, not a captured `var` mutated
+        // from inside it.
+        let savedRecord = try? await environment.database.dbWriter.write { db -> MailTemplateRecord in
             var record = editedFields
             record.name = name
             record.subject = trimmedSubject.isEmpty ? nil : trimmedSubject
@@ -139,6 +142,12 @@ struct TemplateEditView: View {
             } else {
                 try record.update(db)
             }
+            return record
+        }
+        // Task #186: see `SignatureTemplateEditView.save()`'s identical
+        // comment.
+        if let savedRecord {
+            await environment.pushMailTemplateToCloud(savedRecord)
         }
         dismiss()
     }

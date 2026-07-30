@@ -138,7 +138,12 @@ struct SignatureTemplateEditView: View {
         let existingId = editedFields.id
         let accountIdsToSave = Array(selectedAccountIds)
 
-        try? await environment.database.dbWriter.write { db in
+        // Returned from the closure (not written into a captured `var` from
+        // inside it) — Swift 6 strict concurrency flags mutating a captured
+        // `var` inside this `@Sendable` closure (it runs on GRDB's own
+        // queue), same as `editedFields`/`existingId` above already avoid
+        // by being read-only `let`s captured into it.
+        let savedRecord = try? await environment.database.dbWriter.write { db -> SignatureTemplateRecord in
             var record = editedFields
             record.name = name
             record.body = bodyText
@@ -151,6 +156,13 @@ struct SignatureTemplateEditView: View {
             } else {
                 try record.update(db)
             }
+            return record
+        }
+        // Task #186: push right away rather than waiting for the next full
+        // `templateCloudSync.reconcile()` — same "immediate push after a
+        // local edit" shape `pushAccountToCloud` already uses for accounts.
+        if let savedRecord {
+            await environment.pushSignatureToCloud(savedRecord)
         }
         dismiss()
     }

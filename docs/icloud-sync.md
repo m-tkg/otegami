@@ -1153,3 +1153,209 @@ self.settingsCloudSync = SettingsCloudSyncEngine(
    ままであることを確認。
 4. アカウントの追加・削除・編集は、この変更後も引き続き macOS ⇔
    iOS/iPad 間で同期されることを確認 (今回のゲートの対象外)。
+
+## macOS でも設定を同期する (Task #186、方針の反転)
+
+ユーザー要望 (2026-07-30〜31)「iCloud でアカウントの設定以外も全て
+同期して欲しい」。上の「macOS は設定 (settings.v2) を同期対象から除外」
+節がまさに実装した挙動そのものを、ユーザー自身が明示的に覆した —
+**意図的な方針転換であり、バグ修正ではない**。今回の変更:
+
+- `AppEnvironment.init()` の `settingsCloudSync` の `isEnabled` から
+  `#if os(macOS) { false }` 分岐を削除し、`accountCloudSync`/
+  `templateCloudSync` (後述) と全く同じ `cloudSyncSettings.isEnabled &&
+  isCloudSyncPermittedOnThisBuild()` に統一した。macOS も iOS/iPadOS と
+  同じ条件で「iCloud でアカウントを同期」トグル1本にぶら下がる。
+- 上の節の実装・検証内容自体は削除・訂正しない (このセッションが実際に
+  何をどう直したかの記録として残す) — この新しい節が最新の挙動を上書き
+  する形。「アカウントのみ同期」節の「検証」項目にある確認手順 (macOS の
+  変更が他端末に伝播しないことの確認) は、今回の反転により**もはや
+  期待される挙動ではない**ので、実機確認時は無視してよい。
+
+### なぜ反転したか
+
+以前の指示は macOS の操作体系再設計 (ハンバーガーメニュー中心の新画面
+構成) の文脈で、「mac は元々ウィンドウが大きく複数アカウントを常時
+一覧できるので、iOS 側の細かい表示設定 (スレッド表示・スワイプなど)
+を持ち込む必要はない」という当時の判断だった。今回のユーザー要望は
+その判断自体を再検討した結果で、「同じ Apple ID なら Mac でも iPhone
+でも同じ見た目・同じ操作感であってほしい」を優先する方針に変わった。
+両立しない2つの指示が時系列で存在するので、**このドキュメントは両方の
+節を残し、どちらが最新かをこの節の位置 (ファイル末尾に近いほど新しい)
+と日付で判断できるようにする**。
+
+## Task #186: 設定全般の同期範囲の棚卸しと拡張
+
+### 棚卸し (ローカルに永続化されている設定・状態の全件)
+
+`apps/Otegami/Sources/Support/*SettingsStore.swift` の全ストア (App
+Group にミラーする `NotificationContentSettingsStore` を含む)、
+`packages/OtegamiKit/Sources/OtegamiStore/Records/` の signature/mail
+template テーブル、`CloudSyncSettingsStore.isEnabled` 自身、Keychain
+(資格情報)、GRDB のメール本体キャッシュを対象に洗い出した結果:
+
+| 項目 | ストア/テーブル | 同期 | 根拠 |
+|---|---|---|---|
+| スレッド表示・未読/フラグ付きのみ表示・アカウントでグループ化 | `ListDisplaySettingsStore` | 既に同期 (#89) | 表示の好み |
+| ビューア背景固定・ダーク反転 | `HTMLDisplaySettingsStore` | 既に同期 (#89) | 同上 |
+| 画像自動表示 (埋め込み/リモート) | `ImageSettingsStore` | 既に同期 (#89) | 同上 |
+| アバターソース4種 | `AvatarSourceSettingsStore` | 既に同期 (#89) | 同上 |
+| 翻訳自動実行・要約表示 | `TranslationSettingsStore` | 既に同期 (#89) | 同上 |
+| AI機能マスタースイッチ | `AIFeaturesSettingsStore` | 既に同期 (#89) | 同上 |
+| ツールバー表示/非表示・並び順 | `MessageToolbarSettingsStore` | 既に同期 (#89/#100/#113) | 同上 |
+| フォルダのカテゴリ並び順 | `FolderCategoryOrderStore` | 既に同期 (#89) | 同上 |
+| スワイプ割り当て4スロット | `SwipeActionSettingsStore` | 既に同期 (#89) | 同上 |
+| 通知の表示内容 (差出人/件名/本文プレビュー、Task #176) | `NotificationContentSettingsStore` | 既に同期 (#89フォローアップ) | コンテンツのプライバシー選好であり端末固有の秘密ではない |
+| **メール内リンクを開くブラウザ** | `LinkBrowserSettingsStore` | **今回追加** | 表示の好みと同種、iOS専用は表示条件の話でありUserDefaultsの値自体を切り分ける理由にならない |
+| **削除・アーカイブ後の挙動 (一覧に戻る/次のメールを開く)** | `MessagePostActionSettingsStore` | **今回追加** | 同上 |
+| **送信取り消しの猶予秒数** | `SendCancelSettingsStore` | **今回追加 (Int→文字列変換が必要、後述)** | 同上 |
+| **デフォルトのアカウント (新規作成時に選択される accountId)** | `DefaultAccountSettingsStore` | **今回追加** | 古い/存在しない id でも `ComposerView.prepare()` が先頭アカウントへフォールバックするため無害 |
+| **署名テンプレート本体 (名前・本文・対象アカウント)** | `SignatureTemplateRecord` (GRDB) | **今回追加 (新エンジン)** | ユーザー作成コンテンツ、資格情報でもキャッシュでもない |
+| **作成テンプレート本体 (C8, 名前・件名・本文・対象アカウント)** | `MailTemplateRecord` (GRDB) | **今回追加 (新エンジン)** | 同上 |
+| **アカウントごとの最後に選んだ署名** | `LastSignatureSettingsStore` (アカウントIDごとの動的キー) | **今回追加 (settings.v2 の動的キー機構)** | UXの継続性のための小さな好み。迷ったら同期に倒す方針どおり |
+| account のメタデータ全般 | `AccountRecord`/`accounts.v1` | 既に同期 (M11) | このドキュメントの本題 |
+| — | — | — | — |
+| IMAP/SMTP パスワード・OAuth リフレッシュトークン | Keychain | **同期しない (Keychain 自体が iCloud キーチェーンで別途同期)** | 資格情報。この同期機構の対象外という前提自体が本タスクの前提条件 |
+| デバイスの push トークン・per-account watch map・enabled フラグ・`deviceSecret` | `PushSettingsStore` | **同期しない** | 端末固有 (APNs トークンは端末ごとに別物、他端末に持たせても無意味) |
+| `registrationSecret`/リレー URL | ビルド時埋め込み設定 (`Config/*.xcconfig`) | **元から対象外** | ユーザーが入力する値自体が存在しない (Task #173) |
+| `CloudSyncSettingsStore.isEnabled` (このトグル自身) | `UserDefaults` | **同期しない** | 「この端末が同期に参加するか」自体が端末ごとの選択 |
+| ピン留め (`isPinnedLocal`との連動含む) | `PinSettingsStore`/`PinSettingsKeys` | **同期しない** | 一時的な端末ローカルの整理用の印という性質が強い (既存の判断を踏襲) |
+| メール本文・添付ファイルのキャッシュ | GRDB `messageBody`/`attachment` 等 | **同期しない** | IMAP から再取得できる、容量が大きい |
+| メールボックス一覧・フラグ・スレッド | GRDB `mailbox`/`message`/`thread` | **同期しない** | 同上、各端末が IMAP と直接同期する対象 |
+| `icloudSync.*LastSyncedSnapshot`/`lastSyncedSnapshot` 系のブックキーピングキー | `UserDefaults` | **同期しない (定義上不可能)** | 「この端末が最後に同期した時点」という値自体が端末ごとに異なって当然 |
+| ウィンドウ位置・サイドバー折り畳み状態 | (該当なし) | — | このコードベースは現在どちらも独自の `UserDefaults` キーを持たない (OS 標準のウィンドウ/シーン復元に委ねている) — 除外すべき対象自体が実在しないことを確認した |
+
+**分類の基本方針**: ユーザー確認済みの「同期しない」バケット (資格情報・
+キャッシュ・端末固有状態) に明確に該当するもの以外は同期する側に倒した。
+`CloudSyncSettingsStore.isEnabled`/ブックキーピングキーは定義上「この
+端末の同期参加状態そのもの」を表すため、これを同期対象に含めると
+自己言及的な矛盾になる (同期を切ったことを同期する、という無意味な
+操作になる) ので除外が妥当と判断した。
+
+### 実装: 3種類の対象それぞれに異なる同期粒度を採用
+
+1. **既存の固定キー (`AppSettingsCloudDirectory.boolDefaults`/
+   `stringDefaults`/新設の`intDefaults`)**: 今回追加した4項目は既存の
+   キー1個=設定1個という形にそのまま乗せた。`SendCancelSettingsStore
+   .windowKey`だけ`UserDefaults`上の実体が`Int` (`SendCancelWindow
+   .rawValue`) で、既存の`stringDefaults`(`UserDefaults.string(forKey:)`
+   で読む) には乗せられない — 新設した`intDefaults`辞書で`Int`として
+   読み書きしつつ、ワイヤー上は既存の`SettingsCloudValue.string`に
+   `String(Int)`として載せる (`AppSettingsCloudDirectory.intDefaults`の
+   doc comment に、`.int`ケースを素直に追加しなかった理由 — 未知の
+   enum caseがあると`[String: SettingsCloudEntry]`全体のdecodeが失敗する
+   ため — を書いた)。
+2. **`LastSignatureSettingsStore`の動的キー (`signature.
+   lastSelectedId.<accountId>`)**: アカウントIDの数だけキーが増減する
+   ため固定辞書に載らない。`AppSettingsCloudDirectory
+   .dynamicStringKeyPrefixes`にプレフィックスを登録し、
+   `currentValues()`/`apply(_:)`が`UserDefaults`の実キーをプレフィックス
+   一致で都度スキャンする方式にした。この機構を安全に使うために
+   `SettingsCloudSyncEngine.merge()`に一般化を1つ入れた: 従来は
+   `freshLocalValues`(この端末が今持っている値) にしか無いキーだけを
+   マージ後のペイロードに残していたため、**この端末が知らない動的キー
+   をcloudペイロードが持っていた場合、次にこの端末が何か別の理由で
+   pushした瞬間そのキーが黙って消える**という潜在バグがあった (固定
+   キーだけの世界では全端末が同じキー集合を常に持つため顕在化しな
+   かった)。`merge()`に「`freshLocalValues`に無いcloud側のキーはその
+   まま素通しで残す」ループを追加して解消した — 既存の固定キーだけの
+   テストには一切影響しない (対象になる差分が元々発生しないため)。
+3. **署名/作成テンプレート本体 — 新しい `templates.v1` エンジン**:
+   後述。
+
+### 署名・作成テンプレート本体の同期 (`TemplateCloudSyncEngine`)
+
+`account`同期(`AccountCloudSyncEngine`/`accounts.v1`)を**アーキテクチャ
+ごと再利用**する形で実装した (新しい仕組みを並立させない、というタスク
+の指示どおり): 同じ`UbiquitousStoring`抽象、同じ`isEnabled`注入 (この
+端末のトグル + シミュレータ/開発ビルドガード)、同じ`maxPayloadBytes`
+サイズガード、同じactor再入防止ロック、同じtombstoneベースの削除伝播。
+account同期との違いは識別子だけ:
+
+- `SignatureTemplateRecord`/`MailTemplateRecord`はどちらも`id`が
+  端末ローカルの`AUTOINCREMENT`で、`AccountRecord.id`のような作成時に
+  生成される安定UUIDを持っていなかった (v24移行の旧コメントが「同期は
+  将来課題」と明記して見送っていた理由そのもの)。v37移行で両テーブルに
+  `syncId`(UUID文字列、作成時に1回だけ生成、以後不変) を追加し、これを
+  `accountId`の代わりの同一性キーとして使う。
+- ペイロードは`accounts.v1`と同様1キー1JSONだが、`"templates.v1"`という
+  別のKVSキーの下にsignature/mail templateの両方の配列+tombstone配列を
+  同居させた (2つ目のKVSキーを増やすより、`didChangeExternally
+  Notification`のハンドラをもう1つ増やさずに済む方を選んだ)。
+- 突き合わせロジック自体は純粋関数`TemplateReconciler.plan(...)`に
+  切り出した (`packages/OtegamiKit/Sources/AccountCloudSync
+  /TemplateReconciler.swift`) — actor/GRDB/KVSに一切触れず、signature用
+  ・mail template用の両方が同じジェネリック関数を通る。
+  `TemplateReconcilerTests`がこの純粋関数だけを対象に、push/pull/
+  競合解決/tombstone削除/重複検出の全分岐を検証している
+  (「同期ロジックの純粋な部分を切り出してユニットテストを書く」という
+  タスクの指示に対応する部分)。`TemplateCloudSyncEngineTests`は
+  actorの配線 (フェイクの`LocalTemplateDirectory`/`UbiquitousStoring`
+  経由でreconcile/即時push/即時削除を一通り) だけを薄く確認する。
+
+**重複防止**: account同期の「重複挿入バグ」修正 (このドキュメント前半)
+と同じ設計を最初から組み込んだ — 2台の端末が同期前に独立して「同じ
+署名」(名前とbodyが一致) を作ってしまった場合、`identityKey`
+(signatureは`name.lowercased() + body`、mail templateは
+`name.lowercased() + subject.lowercased() + body`) で一致を検出し、
+2件目は挿入しない (cloud payload側のエントリ自体は消さない — account
+同期と同じ「データ喪失回避を優先」判断)。
+
+**即時push**: `SignatureTemplateEditView.save()`/`TemplateEditView
+.save()`はGRDBへの書き込み直後に`AppEnvironment.pushSignatureToCloud`/
+`.pushMailTemplateToCloud`を呼ぶ (accountの`pushAccountToCloud`と同じ
+パターン)。`SignatureTemplatesSettingsView.deleteSignature(_:)`/
+`TemplatesSettingsView.deleteTemplate(_:)`も同様に削除直後へ即時
+tombstone pushを追加した。
+
+### 競合解決方針 (端末Aと端末Bが同時に設定を変えた場合どうなるか)
+
+このタスクでは**項目の粒度によって解決方針が異なる**。それぞれの理由:
+
+1. **固定キーの表示・操作設定 (`AppSettingsCloudDirectory`の
+   boolDefaults/stringDefaults/intDefaults)**: Task #144で導入済みの
+   **キーごとの last-writer-wins** (`SettingsCloudSyncEngine.merge()`)。
+   端末Aが「送信取り消し」を、端末Bが「削除後の挙動」を同時に変えても
+   両方残る (`SettingsCloudEntry`が値ごとに`updatedAt`を持つため)。
+   同じキーを両端末が同時に変えた場合のみ、新しい`updatedAt`の方が勝つ
+   (どちらの端末で見ても最終的に同じ値に収束する)。
+2. **`LastSignatureSettingsStore`の動的キー**: 同じ機構に乗るので同じ
+   ルール — アカウントごとに独立したキーなので、端末Aがアカウント1の
+   署名選択を、端末Bがアカウント2の署名選択を同時に変えても両方残る。
+3. **署名/作成テンプレート本体 (`TemplateCloudSyncEngine`)**: **項目
+   (=1つの署名/テンプレート) ごとの last-writer-wins**、account同期と
+   全く同じ粒度。端末Aが署名Xを、端末Bが署名Yを同時に編集しても両方の
+   変更が残る。**同じ署名Xを両端末が同時に編集した場合のみ**、
+   `updatedAt`が新しい方が全体 (name/body/accountIds全フィールド) で
+   勝つ — フィールド単位のマージはしない (例: 端末Aが名前だけ、端末Bが
+   本文だけ変えても、勝った方の編集全体で負けた方の編集は失われる)。
+   これはaccount同期が最初から採用している粒度と同じであり、「項目
+   単位のマージはするが、1項目の中のフィールド単位までは踏み込まない」
+   という一貫した設計判断。フィールド単位のマージは検出可能な「本当の
+   競合」なのか「たまたま同時に別フィールドを触っただけ」なのかをUIで
+   説明するのが難しく、素朴な自動マージは意図しない組み合わせを生みうる
+   ため見送った。
+4. **アカウント削除**: `account`同期は資格情報付きの削除連鎖まで扱う
+   ため引き続き独自 (このドキュメント前半)。
+
+まとめると: **「値1個」に対しては値ごとのlast-writer-wins、「レコード
+1件」に対してはレコードごとのlast-writer-wins** — 粒度が違うだけで、
+どちらも同じ「最後に書いた方が勝つ、ただし単位を可能な限り細かく
+保って無関係な変更を巻き込まない」という一貫した思想。
+
+### 検証
+
+- 純粋ロジック: `TemplateReconcilerTests` (push/pull/新→旧・旧→新の
+  上書き/同時刻の扱い/tombstoneの即時削除と期限切れ後の掃除/重複検出
+  ×2パターン)。
+- actor配線: `TemplateCloudSyncEngineTests` (signature/mail template
+  両方のreconcile往復・即時push/即時削除・無効化時のno-op)。
+- `SettingsCloudSyncEngine.merge()`の一般化自体は既存の
+  `SettingsCloudSyncEngineTests`が全件グリーンのまま (新規の差分が
+  出るのは動的キーを使うテストのみで、今回は追加していない — 動的
+  キー自体の直接テストは`AppSettingsCloudDirectory`がアプリ層のため
+  `swift test`から到達できず、次点の`make ios`/`make mac`ビルドグリーン
+  と手動レビューで担保)。
+- `make test`/`make mac`/`make ios`/`make check-localization`全て緑。
+- **実 iCloud を使った2端末間の実地確認はこのセッションでは未実施**
+  (`PENDING.md`「Task #186」節に確認手順を追記)。

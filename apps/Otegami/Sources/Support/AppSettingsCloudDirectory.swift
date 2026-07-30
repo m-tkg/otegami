@@ -6,6 +6,18 @@ import Foundation
 /// — bridges its plain data operations to the real `UserDefaults.standard`
 /// keys the various `*SettingsStore` types in this directory already own.
 ///
+/// **Task #186 (「iCloud でアカウントの設定以外も全て同期して欲しい」)**:
+/// widened the allowlist below to every remaining `UserDefaults`-backed
+/// setting that isn't a credential, a cache, or genuinely device-local
+/// state (`docs/icloud-sync.md`'s Task #186 section has the full inventory
+/// and the "同期しない" rationale for each excluded item) —
+/// `DefaultAccountSettingsStore`/`LinkBrowserSettingsStore`/
+/// `MessagePostActionSettingsStore`/`SendCancelSettingsStore` joined the
+/// static allowlist exactly like every pre-existing entry; `LastSignature
+/// SettingsStore`'s per-account keys needed a different mechanism (see
+/// `dynamicStringKeyPrefixes` below) since a single compile-time constant
+/// key can't express "one key per account id".
+///
 /// **Why a foreground/background diff instead of a per-write push hook**:
 /// every `*SettingsStore` in this directory is read/written directly by
 /// `@AppStorage` at dozens of view call sites (`MailListSettingsView`,
@@ -54,6 +66,14 @@ import Foundation
 ///   (mirrors that store's own doc comment); pinned messages are a
 ///   transient, per-device organizational aid with no obvious "same on
 ///   every device" expectation.
+/// - **Task #186's remaining device-local exclusions**: `PushSettingsStore`'s
+///   device id/deviceSecret (already covered above); OS-level window/scene
+///   restoration (macOS's own window-frame/sidebar-collapse persistence —
+///   this codebase never stores a window frame or sidebar-collapsed flag in
+///   its *own* `UserDefaults` keys in the first place, so there is nothing
+///   here to allowlist or exclude either way); and, as always, Keychain
+///   credentials and cached mail bodies/attachments, neither of which lives
+///   in `UserDefaults` at all.
 struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
     /// Device-local bookkeeping key (never leaves this device — it lives
     /// entirely on the `UserDefaults` side, not the KVS side) recording the
@@ -97,7 +117,14 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
         // *un*-synced push settings.
         NotificationContentSettingsStore.showsSenderKey: NotificationContentSettingsStore.defaultShowsSender,
         NotificationContentSettingsStore.showsSubjectKey: NotificationContentSettingsStore.defaultShowsSubject,
-        NotificationContentSettingsStore.showsBodyPreviewKey: NotificationContentSettingsStore.defaultShowsBodyPreview
+        NotificationContentSettingsStore.showsBodyPreviewKey: NotificationContentSettingsStore.defaultShowsBodyPreview,
+        // Task #186: 「メール内リンクを開くブラウザ」— a content-handling
+        // preference exactly like the toggles above, not device-specific
+        // (iOS-only in *effect* — `LinkBrowserSettingsStore`'s doc comment
+        // — but that's a platform capability gate the UI already applies on
+        // its own, not a reason to keep the stored preference itself off a
+        // Mac's copy of this device's other settings).
+        LinkBrowserSettingsStore.openInAppBrowserKey: LinkBrowserSettingsStore.defaultOpenInAppBrowser
     ]
 
     /// Every synced `String`-valued setting (a `RawRepresentable` enum's
@@ -113,8 +140,83 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
         SwipeActionSettingsStore.trailingShortActionKey: SwipeActionSettingsStore.defaultTrailingShort.rawValue,
         SwipeActionSettingsStore.trailingLongActionKey: SwipeActionSettingsStore.defaultTrailingLong.rawValue,
         MessageToolbarSettingsStore.orderKey: MessageToolbarSettingsStore.encodedRawValue(for: MessageToolbarSettingsStore.defaultItems),
-        FolderCategoryOrderStore.key: FolderCategoryOrderStore.defaultOrder.map(\.rawValue).joined(separator: ",")
+        FolderCategoryOrderStore.key: FolderCategoryOrderStore.defaultOrder.map(\.rawValue).joined(separator: ","),
+        // Task #186: 「デフォルトのアカウント」— an `AccountRecord.id` (a
+        // UUID, empty string = unset). Syncing a *stale* id (an account
+        // deleted on this device but not yet reconciled on another, or vice
+        // versa) is harmless by construction — `DefaultAccountSettingsStore`'s
+        // own doc comment already documents that `ComposerView.prepare()`
+        // silently falls back to the first account whenever the stored id
+        // doesn't match any current one, so there is no "invalid state" this
+        // sync could ever produce, only "reverts to the pre-existing
+        // fallback until it resolves itself".
+        DefaultAccountSettingsStore.defaultAccountIdKey: "",
+        // Task #186: 「削除・アーカイブ時の挙動」— a UI preference exactly
+        // like the ones already synced above, no cross-device wrinkle.
+        MessagePostActionSettingsStore.afterDeleteArchiveKey: MessagePostActionSettingsStore.defaultAfterDeleteArchive.rawValue
     ]
+
+    /// Task #186: `SendCancelSettingsStore.windowKey` (`SendCancelWindow
+    /// .rawValue`, an `Int` — `0`/`5`/`10`) is stored in `UserDefaults` as a
+    /// native `Int` (`@AppStorage(Int)` at every call site), not a
+    /// `String`, so it can't share `stringDefaults`' read/write path:
+    /// `UserDefaults.string(forKey:)` doesn't coerce a stored `Int` the way
+    /// `integer(forKey:)`/`object(forKey:) as? Int` do, so reading it that
+    /// way would find nothing and silently sync the compiled-in default on
+    /// every device instead of the real value. The *wire* representation
+    /// still reuses `SettingsCloudValue.string` (the decimal string of the
+    /// `Int`, round-tripped in `currentValues()`/`apply(_:)` below) rather
+    /// than adding a dedicated `.int` case to that enum — `SettingsCloudValue`'s
+    /// own doc comment already flags that a new case is the right move for
+    /// "a future synced setting needs a different underlying type", but
+    /// Swift's synthesized `Decodable` for an enum with associated values
+    /// fails decoding the *entire* surrounding `[String: SettingsCloudEntry]`
+    /// dictionary the moment it hits one entry with an unrecognized case
+    /// (not just that one key) — so introducing `.int` now would mean any
+    /// device still running a pre-#186 build that ever sees a cloud payload
+    /// containing this key stops being able to decode *any* setting from
+    /// it at all, not just this one. One `Int`-shaped setting reusing
+    /// `.string` avoids that cliff entirely.
+    private static let intDefaults: [String: Int] = [
+        SendCancelSettingsStore.windowKey: SendCancelSettingsStore.defaultWindow.rawValue
+    ]
+
+    /// Task #186: `LastSignatureSettingsStore`'s per-account "最後に選んだ
+    /// 署名" keys (`"signature.lastSelectedId.<accountId>"`) can't join
+    /// `stringDefaults` above — that dictionary needs one compile-time-
+    /// constant key per setting, but this store has one key *per account*,
+    /// a set that only exists at runtime and differs across devices/time.
+    /// `currentValues()`/`apply(_:)` instead recognize any `UserDefaults`
+    /// key starting with this prefix as synced, whatever account id follows
+    /// it — no DB/account-list lookup needed, this device simply mirrors
+    /// whatever such keys it happens to already have.
+    ///
+    /// **No default-value fallback (unlike every `boolDefaults`/
+    /// `stringDefaults` entry)**: `currentValues()` only ever emits a key
+    /// here for an account this device has *actually* recorded a selection
+    /// for (mirroring `LastSignatureSettingsStore.lastSelection(forAccountId:)`'s
+    /// three-state "absent means never recorded, not なし" semantics — a
+    /// synthesized "" default would collide with that store's own
+    /// `noneSentinel` encoding). A key absent from `freshLocalValues` isn't
+    /// dropped from the cloud payload either: `SettingsCloudSyncEngine
+    /// .merge()`'s Task #186 addition (see that method's doc comment)
+    /// preserves any cloud entry this device has no opinion on, so another
+    /// device's recorded selection for an account this device doesn't even
+    /// have yet still survives this device's next push.
+    ///
+    /// **No tombstone/deletion path**: there is no UI action that clears a
+    /// recorded selection (`LastSignatureSettingsStore.recordSelection`'s
+    /// doc comment — only ever called from a real picker choice, including
+    /// choosing "なし" itself, which is a *value*, not an absence). The
+    /// only way such a key becomes orphaned is its owning account being
+    /// deleted entirely, at which point it is simply never read again
+    /// (`LastSignatureSettingsStore.lastSelection(forAccountId:)` is only
+    /// ever called with an id from the *current* account list) — a
+    /// harmless residual `UserDefaults`/KVS entry, the same accepted
+    /// class of leftover this codebase already tolerates elsewhere (e.g.
+    /// the legacy relay-URL key `PushSettingsStore.relayURLKey`'s doc
+    /// comment).
+    private static let dynamicStringKeyPrefixes = ["signature.lastSelectedId."]
 
     func currentValues() async -> [String: SettingsCloudValue] {
         var values: [String: SettingsCloudValue] = [:]
@@ -124,7 +226,36 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
         for (key, defaultValue) in Self.stringDefaults {
             values[key] = .string(UserDefaults.standard.string(forKey: key) ?? defaultValue)
         }
+        for (key, defaultValue) in Self.intDefaults {
+            let intValue = (UserDefaults.standard.object(forKey: key) as? Int) ?? defaultValue
+            values[key] = .string(String(intValue))
+        }
+        for (key, value) in Self.currentDynamicStringValues() {
+            values[key] = .string(value)
+        }
         return values
+    }
+
+    /// Every `UserDefaults.standard` key currently matching
+    /// `dynamicStringKeyPrefixes`, with its live string value — see that
+    /// property's doc comment for why this doesn't fall back to any default
+    /// for a key it doesn't find. `dictionaryRepresentation()` returns every
+    /// domain key (including unrelated system ones), so this always filters
+    /// down to just the prefix match before returning anything.
+    private static func currentDynamicStringValues() -> [String: String] {
+        var result: [String: String] = [:]
+        let all = UserDefaults.standard.dictionaryRepresentation()
+        for prefix in dynamicStringKeyPrefixes {
+            for (key, rawValue) in all where key.hasPrefix(prefix) {
+                guard let stringValue = rawValue as? String else { continue }
+                result[key] = stringValue
+            }
+        }
+        return result
+    }
+
+    private static func isDynamicStringKey(_ key: String) -> Bool {
+        dynamicStringKeyPrefixes.contains { key.hasPrefix($0) }
     }
 
     func lastSyncedSnapshot() async -> SettingsCloudPayload? {
@@ -139,16 +270,26 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
 
     func apply(_ payload: SettingsCloudPayload) async {
         for (key, value) in payload.values {
-            // Only ever write a key this device itself would sync — guards
-            // against a stale/foreign entry in a cloud payload (e.g. one
-            // written by a future app version with a since-removed key)
-            // ever creating an unrecognized `UserDefaults` entry here.
-            guard Self.boolDefaults[key] != nil || Self.stringDefaults[key] != nil else { continue }
-            switch value {
-            case .bool(let boolValue):
-                UserDefaults.standard.set(boolValue, forKey: key)
-            case .string(let stringValue):
-                UserDefaults.standard.set(stringValue, forKey: key)
+            // Only ever write a key this device itself would recognize as
+            // synced — guards against a stale/foreign entry in a cloud
+            // payload (e.g. one written by a future app version with a
+            // since-removed key) ever creating an unrecognized `UserDefaults`
+            // entry here. Each category below writes through its own native
+            // `UserDefaults` type (`Bool`/`String`/`Int`, the last decoded
+            // back out of the wire `.string` — `intDefaults`'s doc comment)
+            // rather than one generic `switch` over `value`, since
+            // `intDefaults`/dynamic keys need a decode step `boolDefaults`/
+            // `stringDefaults` don't.
+            if Self.boolDefaults[key] != nil {
+                if case .bool(let boolValue) = value { UserDefaults.standard.set(boolValue, forKey: key) }
+            } else if Self.stringDefaults[key] != nil {
+                if case .string(let stringValue) = value { UserDefaults.standard.set(stringValue, forKey: key) }
+            } else if Self.intDefaults[key] != nil {
+                if case .string(let stringValue) = value, let intValue = Int(stringValue) {
+                    UserDefaults.standard.set(intValue, forKey: key)
+                }
+            } else if Self.isDynamicStringKey(key) {
+                if case .string(let stringValue) = value { UserDefaults.standard.set(stringValue, forKey: key) }
             }
         }
         // Task #176: a pull that changed any of `NotificationContentSettingsStore`'s

@@ -144,6 +144,10 @@ struct SignatureTemplatesSettingsView: View {
             // cleanup needed.
             _ = try SignatureTemplateRecord.deleteOne(db, key: id)
         }
+        // Task #186: record the deletion as a tombstone right away — mirrors
+        // `AppEnvironment.pushAccountToCloud`'s "push after the local write"
+        // shape, just for a deletion instead of an add/edit.
+        await environment.pushSignatureDeletionToCloud(syncId: signature.syncId)
         await loadSignatures()
     }
 }

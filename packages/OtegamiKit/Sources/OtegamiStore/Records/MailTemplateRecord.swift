@@ -35,6 +35,10 @@ public struct MailTemplateRecord: Codable, Equatable, Sendable, FetchableRecord,
     public var sortOrder: Int
     public var createdAt: Date
     public var updatedAt: Date
+    /// Task #186 (v37 migration): mirrors `SignatureTemplateRecord.syncId`'s
+    /// doc comment exactly — the cross-device-stable identity
+    /// `TemplateCloudSyncEngine` reconciles mail templates on.
+    public var syncId: String
 
     public init(
         id: Int64? = nil,
@@ -44,7 +48,8 @@ public struct MailTemplateRecord: Codable, Equatable, Sendable, FetchableRecord,
         accountId: String? = nil,
         sortOrder: Int = 0,
         createdAt: Date = Date(),
-        updatedAt: Date? = nil
+        updatedAt: Date? = nil,
+        syncId: String = UUID().uuidString
     ) {
         self.id = id
         self.name = name
@@ -54,6 +59,7 @@ public struct MailTemplateRecord: Codable, Equatable, Sendable, FetchableRecord,
         self.sortOrder = sortOrder
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
+        self.syncId = syncId
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

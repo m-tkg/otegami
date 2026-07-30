@@ -147,6 +147,9 @@ struct TemplatesSettingsView: View {
         try? await environment.database.dbWriter.write { db in
             _ = try MailTemplateRecord.deleteOne(db, key: id)
         }
+        // Task #186: see `SignatureTemplatesSettingsView.deleteSignature(_:)`'s
+        // identical comment.
+        await environment.pushMailTemplateDeletionToCloud(syncId: template.syncId)
         await loadTemplates()
     }
 }

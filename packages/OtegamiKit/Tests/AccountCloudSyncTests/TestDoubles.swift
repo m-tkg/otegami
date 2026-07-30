@@ -245,6 +245,146 @@ actor AsyncGate {
     }
 }
 
+extension FakeUbiquitousStore {
+    /// `seed(_:key:)`'s counterpart for `TemplateCloudSyncEngineTests`.
+    /// Goes through the public `set(_:forKey:)` (not a direct `storage`
+    /// write like the account/settings overloads, which live inside
+    /// `FakeUbiquitousStore`'s own file and can reach its `private`
+    /// `storage`/`lock`) — this bumps `setCallCount` by one per call, which
+    /// no template test currently asserts an exact count against, so it's
+    /// harmless in practice.
+    func seed(_ payload: TemplateCloudPayload, key: String = "templates.v1") {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        set((try? encoder.encode(payload)) ?? Data(), forKey: key)
+    }
+
+    /// `currentPayload(key:)`'s `TemplateCloudPayload` counterpart.
+    func currentTemplatePayload(key: String = "templates.v1") -> TemplateCloudPayload? {
+        guard let data = data(forKey: key) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(TemplateCloudPayload.self, from: data)
+    }
+}
+
+/// A trivial in-memory `LocalTemplateDirectory` — no `AppDatabase` touched.
+/// Mirrors `FakeLocalAccountDirectory`'s shape closely, covering both
+/// signatures and mail templates in one fake (matching
+/// `LocalTemplateDirectory`'s own "one protocol, both kinds" design).
+final class FakeLocalTemplateDirectory: LocalTemplateDirectory, @unchecked Sendable {
+    private let lock = NSLock()
+    private var signatures: [String: CloudSignatureSnapshot] = [:]
+    private var mailTemplates: [String: CloudMailTemplateSnapshot] = [:]
+
+    private(set) var insertedSignatures: [CloudSignatureSnapshot] = []
+    private(set) var updatedSignatures: [CloudSignatureSnapshot] = []
+    private(set) var deletedSignatureIds: [String] = []
+    private(set) var insertedMailTemplates: [CloudMailTemplateSnapshot] = []
+    private(set) var updatedMailTemplates: [CloudMailTemplateSnapshot] = []
+    private(set) var deletedMailTemplateIds: [String] = []
+
+    func seedLocalSignature(_ snapshot: CloudSignatureSnapshot) {
+        lock.withLock { signatures[snapshot.syncId] = snapshot }
+    }
+
+    func seedLocalMailTemplate(_ snapshot: CloudMailTemplateSnapshot) {
+        lock.withLock { mailTemplates[snapshot.syncId] = snapshot }
+    }
+
+    func currentSignature(_ syncId: String) -> CloudSignatureSnapshot? {
+        lock.withLock { signatures[syncId] }
+    }
+
+    func currentMailTemplate(_ syncId: String) -> CloudMailTemplateSnapshot? {
+        lock.withLock { mailTemplates[syncId] }
+    }
+
+    func allSignatureSnapshots() async -> [CloudSignatureSnapshot] {
+        lock.withLock { Array(signatures.values) }
+    }
+
+    func insertSignatureFromCloud(_ snapshot: CloudSignatureSnapshot) async {
+        lock.withLock {
+            signatures[snapshot.syncId] = snapshot
+            insertedSignatures.append(snapshot)
+        }
+    }
+
+    func updateSignatureFromCloud(_ snapshot: CloudSignatureSnapshot) async {
+        lock.withLock {
+            signatures[snapshot.syncId] = snapshot
+            updatedSignatures.append(snapshot)
+        }
+    }
+
+    func deleteSignatureLocally(syncId: String) async {
+        lock.withLock {
+            signatures.removeValue(forKey: syncId)
+            deletedSignatureIds.append(syncId)
+        }
+    }
+
+    func allMailTemplateSnapshots() async -> [CloudMailTemplateSnapshot] {
+        lock.withLock { Array(mailTemplates.values) }
+    }
+
+    func insertMailTemplateFromCloud(_ snapshot: CloudMailTemplateSnapshot) async {
+        lock.withLock {
+            mailTemplates[snapshot.syncId] = snapshot
+            insertedMailTemplates.append(snapshot)
+        }
+    }
+
+    func updateMailTemplateFromCloud(_ snapshot: CloudMailTemplateSnapshot) async {
+        lock.withLock {
+            mailTemplates[snapshot.syncId] = snapshot
+            updatedMailTemplates.append(snapshot)
+        }
+    }
+
+    func deleteMailTemplateLocally(syncId: String) async {
+        lock.withLock {
+            mailTemplates.removeValue(forKey: syncId)
+            deletedMailTemplateIds.append(syncId)
+        }
+    }
+}
+
+extension CloudSignatureSnapshot {
+    /// A minimal, otherwise-arbitrary snapshot — mirrors `CloudAccountSnapshot.fixture(...)`.
+    static func fixture(
+        syncId: String = "signature-1",
+        name: String = "Test Signature",
+        body: String = "Best regards",
+        accountIds: [String] = [],
+        sortOrder: Int = 0,
+        updatedAt: Date
+    ) -> CloudSignatureSnapshot {
+        CloudSignatureSnapshot(
+            syncId: syncId, name: name, body: body, accountIds: accountIds,
+            sortOrder: sortOrder, createdAt: updatedAt, updatedAt: updatedAt
+        )
+    }
+}
+
+extension CloudMailTemplateSnapshot {
+    static func fixture(
+        syncId: String = "template-1",
+        name: String = "Test Template",
+        subject: String? = nil,
+        body: String = "Template body",
+        accountId: String? = nil,
+        sortOrder: Int = 0,
+        updatedAt: Date
+    ) -> CloudMailTemplateSnapshot {
+        CloudMailTemplateSnapshot(
+            syncId: syncId, name: name, subject: subject, body: body, accountId: accountId,
+            sortOrder: sortOrder, createdAt: updatedAt, updatedAt: updatedAt
+        )
+    }
+}
+
 extension CloudAccountSnapshot {
     /// A minimal, otherwise-arbitrary snapshot for tests that only care
     /// about `accountId`/`updatedAt` — every other field is filled with a

@@ -266,6 +266,30 @@ public actor SettingsCloudSyncEngine {
             }
         }
 
+        // Task #186: preserve any cloud entry this device has no opinion on
+        // at all — i.e. a key `freshLocalValues` never produced. Before
+        // Task #186 this branch was unreachable in practice: every synced
+        // key came from `AppSettingsCloudDirectory`'s *static* allowlist,
+        // which every device running the same app version evaluates
+        // identically (always present, real value or compiled-in default),
+        // so `freshLocalValues` and `cloudPayload.entries` always shared
+        // the exact same key set. Task #186 adds genuinely *dynamic* keys
+        // (`LastSignatureSettingsStore`'s per-account
+        // `"signature.lastSelectedId.<accountId>"` — one device may simply
+        // never have recorded a selection for an account another device
+        // has) where that invariant no longer holds. Without this loop, the
+        // pre-#186 code below (`SettingsCloudPayload(entries: mergedEntries)`)
+        // would silently *delete* any such foreign key the next time this
+        // device pushes for an unrelated reason — this device's `apply(_:)`
+        // already safely ignores a key it doesn't recognize
+        // (`AppSettingsCloudDirectory.apply(_:)`'s own guard), so simply
+        // echoing the cloud's entry back unchanged is always safe: it never
+        // gets written to this device's `UserDefaults`, and it isn't
+        // dropped for every other device that *does* care about it either.
+        for (key, cloudEntry) in cloudPayload.entries where mergedEntries[key] == nil {
+            mergedEntries[key] = cloudEntry
+        }
+
         let mergedPayload = SettingsCloudPayload(entries: mergedEntries)
 
         if !appliedKeys.isEmpty {

@@ -80,6 +80,14 @@ final class AppEnvironment {
     /// `UserDefaults` can't be trusted to survive" problem the account sync
     /// toggle already exists to address).
     @ObservationIgnored let settingsCloudSync: SettingsCloudSyncEngine
+    /// Task #186 (「iCloud でアカウントの設定以外も全て同期して欲しい」): the
+    /// signature/mail-template counterpart to `accountCloudSync` — syncs
+    /// `signatureTemplate`/`mailTemplate` rows through the `"templates.v1"`
+    /// KVS key (`TemplateCloudSyncEngine`, `docs/icloud-sync.md`'s Task
+    /// #186 section), gated by the exact same `cloudSyncSettings`/
+    /// `isCloudSyncPermittedOnThisBuild()` toggle as `accountCloudSync`/
+    /// `settingsCloudSync`.
+    @ObservationIgnored let templateCloudSync: TemplateCloudSyncEngine
     // `nonisolated(unsafe)`: only ever written once, from `init()` (already
     // `@MainActor`), and read once, from `deinit` — which Swift requires to
     // be `nonisolated` even on a `@MainActor` class, so this property can't
@@ -1459,20 +1467,27 @@ final class AppEnvironment {
             store: SystemUbiquitousStore(),
             local: AppSettingsCloudDirectory(),
             isEnabled: { [cloudSyncSettings] in
-                #if os(macOS)
-                // ユーザー指示 (2026-07-29)「mac では、アカウント以外の
-                // 情報は iCloud 同期しなくて良い」: settings.v2 (表示・
-                // 操作設定、#89/#144のプッシュリレーURL含む) は iOS/
-                // iPadOS間でのみ同期し、macOSは読みも書きもしない
-                // (他端末の設定変更をmacOSに反映しない・macOSでの設定
-                // 変更を他端末へ流さない)。アカウント本体の同期
-                // (`accountCloudSync`) はこのゲートの対象外 — 引き続き
-                // 全プラットフォームで有効。`docs/icloud-sync.md`「macOS
-                // はアカウントのみ同期」参照。
-                false
-                #else
+                // Task #186 (「iCloud でアカウントの設定以外も全て同期して
+                // 欲しい」) — ユーザー指示によりこのゲートを撤回した。旧
+                // 実装 (2026-07-29〜) は、macOS の操作体系再設計のときに
+                // 出た別の指示「mac では、アカウント以外の情報は iCloud
+                // 同期しなくて良い」を受けて settings.v2 を macOS だけ
+                // 読み書きしない `#if os(macOS) { false }` にしていた —
+                // 今回はその方針そのものが覆り、両プラットフォームで
+                // アカウント以外の設定も同期する形に統一する。反転の経緯
+                // は `docs/icloud-sync.md`「macOS でも設定を同期する
+                // (Task #186、方針の反転)」節参照。
                 cloudSyncSettings.isEnabled && AppEnvironment.isCloudSyncPermittedOnThisBuild()
-                #endif
+            }
+        )
+        self.templateCloudSync = TemplateCloudSyncEngine(
+            store: SystemUbiquitousStore(),
+            local: CloudTemplateDirectory(database: database),
+            isEnabled: { [cloudSyncSettings] in
+                // Task #186: same toggle, same guard, both platforms — no
+                // macOS-only gate here either (this engine post-dates the
+                // reversal above, so it never had one to begin with).
+                cloudSyncSettings.isEnabled && AppEnvironment.isCloudSyncPermittedOnThisBuild()
             }
         )
 
@@ -1538,9 +1553,14 @@ final class AppEnvironment {
         // transition-triggered diff stands in for a per-write push hook.
         let cloudSync = accountCloudSync
         let settingsSync = settingsCloudSync
+        // Task #186: `templateCloudSync` joins the same two trigger points
+        // as `settingsSync` — see this type's doc comment for why it shares
+        // `accountCloudSync`'s architecture but not its KVS key.
+        let templateSync = templateCloudSync
         Task {
             await cloudSync.reconcile()
             await settingsSync.reconcile()
+            await templateSync.reconcile()
         }
         cloudSyncNotificationObserver = NotificationCenter.default.addObserver(
             forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
@@ -1550,6 +1570,7 @@ final class AppEnvironment {
             Task {
                 await cloudSync.reconcile()
                 await settingsSync.reconcile()
+                await templateSync.reconcile()
             }
         }
         // Task #101: see `settingsChangeNotificationObserver`'s doc comment
@@ -2060,6 +2081,31 @@ final class AppEnvironment {
     /// below) instead of waiting for the next full `reconcile()`.
     func pushAccountToCloud(_ account: AccountRecord) async {
         await accountCloudSync.pushLocalChange(CloudAccountSnapshot(account: account))
+    }
+
+    /// Task #186: `pushAccountToCloud`'s counterpart for a locally-added or
+    /// -edited signature — called from `SignatureTemplateEditView.save()`
+    /// right after its `dbWriter.write` insert/update, instead of waiting
+    /// for the next full `templateCloudSync.reconcile()`.
+    func pushSignatureToCloud(_ signature: SignatureTemplateRecord) async {
+        await templateCloudSync.pushLocalSignatureChange(CloudSignatureSnapshot(record: signature))
+    }
+
+    /// Called from `SignatureTemplatesSettingsView.deleteSignature(_:)`
+    /// right after the local `deleteOne`.
+    func pushSignatureDeletionToCloud(syncId: String) async {
+        await templateCloudSync.pushLocalSignatureDeletion(syncId: syncId)
+    }
+
+    /// `pushSignatureToCloud`'s counterpart for mail templates (C8) —
+    /// called from `TemplateEditView.save()`.
+    func pushMailTemplateToCloud(_ template: MailTemplateRecord) async {
+        await templateCloudSync.pushLocalMailTemplateChange(CloudMailTemplateSnapshot(record: template))
+    }
+
+    /// Called from `TemplatesSettingsView.deleteTemplate(_:)`.
+    func pushMailTemplateDeletionToCloud(syncId: String) async {
+        await templateCloudSync.pushLocalMailTemplateDeletion(syncId: syncId)
     }
 
     /// A `.password`-kind account `CloudAccountDirectory.insertFromCloud`
