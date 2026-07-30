@@ -96,6 +96,11 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
         // のdoc comment参照)。
         ListDisplaySettingsStore.pinnedOnlyKey: ListDisplaySettingsStore.defaultPinnedOnly,
         ListDisplaySettingsStore.groupByAccountKey: ListDisplaySettingsStore.defaultGroupByAccount,
+        // Task #190: 「一括操作の前に確認する」— 他の表示・操作の好みと
+        // 同じ、端末固有の秘密でも巨大なキャッシュでもない UI 設定。
+        // 「迷ったら同期する側に倒す」方針 (`docs/icloud-sync.md`の
+        // Task #186節) どおり同期対象に含めた。
+        ListDisplaySettingsStore.confirmBulkActionKey: ListDisplaySettingsStore.defaultConfirmBulkAction,
         HTMLDisplaySettingsStore.forceLightBackgroundKey: HTMLDisplaySettingsStore.defaultForceLightBackground,
         HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey: HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode,
         ImageSettingsStore.autoShowEmbeddedImagesKey: ImageSettingsStore.defaultAutoShowEmbedded,

@@ -28,6 +28,11 @@ struct MailListSettingsView: View {
     // 実機フィードバック第3弾 (I) で旧「その他」から移設。
     @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
     @AppStorage(PinSettingsStore.syncWithFlaggedKey) private var pinSyncWithFlagged = false
+    // Task #190: 「アカウントでグループ化」表示 (`AccountDigestView`) の
+    // スワイプ/コンテキストメニュー一括操作の確認ダイアログ ON/OFF —
+    // 下の`swipeSection`(D8 スワイプ割り当て) のすぐ下に置く、この設定と
+    // 同じ「一括操作の挙動」を扱うため。
+    @AppStorage(ListDisplaySettingsStore.confirmBulkActionKey) private var confirmBulkAction = ListDisplaySettingsStore.defaultConfirmBulkAction
 
     #if os(iOS)
     @AppStorage(SwipeActionSettingsStore.leadingShortActionKey) private var leadingShortRaw = SwipeActionSettingsStore.defaultLeadingShort.rawValue
@@ -118,6 +123,20 @@ struct MailListSettingsView: View {
         #if os(iOS)
         swipeSection
         #endif
+
+        // Task #190 (実機フィードバック「グループのスワイプで出てくる
+        // 確認画面は設定でオフにできるようにして」): 「アカウントで
+        // グループ化」表示 (`AccountDigestView`) の一括操作 (iOSはスワイプ、
+        // macOSはコンテキストメニュー — どちらも同じ確認アラートを経由する)
+        // の確認をスキップするかどうか。iOS専用の`swipeSection`のすぐ下に
+        // 置いたが、この設定自体はmacOSのコンテキストメニュー一括操作にも
+        // 効くため`#if os(iOS)`では囲まない。
+        Section {
+            Toggle("一括操作の前に確認する", isOn: $confirmBulkAction)
+                .accessibilityIdentifier("settings.list.confirmBulkActionToggle")
+        } footer: {
+            Text("「アカウントでグループ化」表示でアカウント行をスワイプ（またはコンテキストメニュー）から一括操作するとき、実行前に確認ダイアログを出します。OFFにしても実行後5秒は取り消せます。")
+        }
 
         // 実機フィードバック第3弾 (I): 旧「その他」から移設。
         Section {

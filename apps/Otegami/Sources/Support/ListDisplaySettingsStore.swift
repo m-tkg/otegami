@@ -128,6 +128,22 @@ enum ListDisplaySettingsStore {
     static let groupByAccountKey = "listDisplay.groupByAccount"
     static let defaultGroupByAccount = false
 
+    /// Task #190 (実機フィードバック「グループのスワイプで出てくる確認画面は
+    /// 設定でオフにできるようにして」): `AccountDigestView`のスワイプ/
+    /// コンテキストメニュー一括操作 (アーカイブ/削除/迷惑メール/既読切替/
+    /// ピン留め、`AccountDigestRow`のスワイプ設定で選べる5アクション全部)
+    /// を実行する前に確認ダイアログを出すかどうか。`groupByAccountKey`の
+    /// すぐ隣に置いた — このキーが`true`(「アカウントでグループ化」表示中)
+    /// のときにしか出番のない`AccountDigestView`専用の設定であるため。
+    ///
+    /// Default on: 既存の挙動 (常に確認する) を変えない。OFFにした場合の
+    /// 誤操作対策は`AccountDigestView.scheduleUndo`の5秒Undoトースト
+    /// (`MessageListView`と同じ仕組み) がそのまま効く — 削除も含め、この
+    /// 画面の一括操作は最初から取り消し可能な設計になっている
+    /// (`AccountDigestView.performRemoval`のdoc comment参照)。
+    static let confirmBulkActionKey = "listDisplay.confirmAccountDigestBulkAction"
+    static let defaultConfirmBulkAction = true
+
     /// Task #82 (実機報告「OTAインストール後の起動で、設定はオフ表示なのに
     /// 一覧がスレッド表示。トグルをオン→オフすると直る」): reads `key`
     /// directly from `UserDefaults.standard`, bypassing whatever value a

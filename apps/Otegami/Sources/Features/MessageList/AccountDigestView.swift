@@ -54,6 +54,10 @@ struct AccountDigestView: View {
         var id: String { "\(accountId).\(action.rawValue)" }
     }
     @State private var pendingBulkAction: PendingBulkAction?
+    /// Task #190: `ListDisplaySettingsStore.confirmBulkActionKey`のdoc
+    /// comment参照 — OFFのときは`requestBulkAction`が確認ダイアログを
+    /// 経由せず即座に`performBulkAction`を呼ぶ。
+    @AppStorage(ListDisplaySettingsStore.confirmBulkActionKey) private var confirmBulkAction = ListDisplaySettingsStore.defaultConfirmBulkAction
 
     // MARK: - Undo (`MessageListView`と同じ「即時反映 + Undoトースト」方針)
 
@@ -99,7 +103,7 @@ struct AccountDigestView: View {
                     accountEmail: accountEmails[digest.accountId] ?? digest.accountId,
                     labelColorKey: accountLabelColorKeys[digest.accountId],
                     onSelect: { selectAccount(digest.accountId) },
-                    onRequestBulkAction: { action in pendingBulkAction = PendingBulkAction(accountId: digest.accountId, action: action) }
+                    onRequestBulkAction: { action in requestBulkAction(accountId: digest.accountId, action: action) }
                 )
             }
         }
@@ -124,17 +128,20 @@ struct AccountDigestView: View {
                     .animation(.default, value: pendingUndo.message)
             }
         }
-        .confirmationDialog(confirmationTitle, isPresented: isConfirmingBulkAction, titleVisibility: .visible) {
-            confirmationActions
-        }
-        .task(id: ObservationKey(accountIds: environment.accounts.map(\.id), role: role)) {
-            await observeDigests()
-        }
-    }
-
-    @ViewBuilder
-    private var confirmationActions: some View {
-        if let request = pendingBulkAction {
+        // Task #190 (実機フィードバック「グループのスワイプで出てくる確認
+        // 画面は…吹き出しっぽく確認が出るけどそうではなく真ん中に確認画面を
+        // 出して」): `.confirmationDialog`はiPhoneでは画面下からの
+        // アクションシートだが、iPad/macOSではソースに紐づく**ポップオーバー
+        // (吹き出し)** として出る — これが「吹き出しっぽく出る」の正体。
+        // `.alert`はiOS/macOSどちらも常に画面中央のモーダルで出るため、
+        // これに差し替えて解消した。`presenting: pendingBulkAction`で
+        // `request`を受け取るのは`AccountSettingsCategoryView`の削除確認
+        // アラートと同じ形。
+        .alert(
+            confirmationTitle,
+            isPresented: isConfirmingBulkAction,
+            presenting: pendingBulkAction
+        ) { request in
             Button(request.action.title, role: request.action == .delete ? .destructive : nil) {
                 pendingBulkAction = nil
                 Task { await performBulkAction(accountId: request.accountId, action: request.action) }
@@ -142,6 +149,15 @@ struct AccountDigestView: View {
             .accessibilityIdentifier("accountDigest.confirmButton")
             Button("キャンセル", role: .cancel) { pendingBulkAction = nil }
                 .accessibilityIdentifier("accountDigest.cancelButton")
+        } message: { request in
+            // `name`はアカウント表示名 — メールアドレスそのものの場合が
+            // あるため`Text(verbatim:)`必須(`AccountFilterChip.swift`の
+            // 教訓コメント参照、`LocalizedStringKey`経由の文字列補間だと
+            // SwiftUIが自動で`mailto:`リンク化する実バグ前例がある)。
+            Text(verbatim: confirmationMessage(for: request))
+        }
+        .task(id: ObservationKey(accountIds: environment.accounts.map(\.id), role: role)) {
+            await observeDigests()
         }
     }
 
@@ -149,14 +165,40 @@ struct AccountDigestView: View {
         Binding(get: { pendingBulkAction != nil }, set: { if !$0 { pendingBulkAction = nil } })
     }
 
-    /// 対象件数は表示中の`digests`スナップショット (`AccountDigest.totalCount`)
-    /// から見せるだけ — 実行時の対象確定は`performBulkAction`が
+    /// アラートの`title`— 対象件数を含む(「N件をアーカイブしますか？」の
+    /// ような文言、仕様「対象件数が分かる文言にすること」に対応)。
+    /// `.alert(_:isPresented:presenting:actions:message:)`の`title`引数は
+    /// `StringProtocol`型で`Text`/`LocalizedStringKey`を経由しないため、
+    /// 動的な数値を埋め込んでも`mailto:`自動リンク化のような文字列補間
+    /// バグの対象にはならない(アカウント表示名のような文字列そのものは
+    /// 下の`message`側で`Text(verbatim:)`を使う)。件数は表示中の
+    /// `digests`スナップショット (`AccountDigest.totalCount`) から見せる
+    /// だけ — 実行時の対象確定は`performBulkAction`が
     /// `AccountDigestQuery.allSummaries`で都度取り直すので、ここが多少
     /// 古くても実際に処理される件数がずれることはない(表示だけの問題)。
     private var confirmationTitle: String {
         guard let request = pendingBulkAction, let digest = digests.first(where: { $0.accountId == request.accountId }) else { return "" }
+        return "\(digest.totalCount)件を\(request.action.title)しますか？"
+    }
+
+    /// アラートの`message`— どのアカウントが対象かを補足する。
+    /// `accountDisplayNames`はメールアドレスそのものの場合があるため、
+    /// 呼び出し元の`Text(verbatim:)`でのみ表示する(このプロパティ自体は
+    /// 表示以外の用途がないので`String`のまま返して問題ない)。
+    private func confirmationMessage(for request: PendingBulkAction) -> String {
         let name = accountDisplayNames[request.accountId] ?? request.accountId
-        return "\(name)の\(digest.totalCount)件を\(request.action.title)しますか？"
+        return "\(name)が対象です。"
+    }
+
+    /// Task #190: `ListDisplaySettingsStore.confirmBulkActionKey`が
+    /// OFFのときは確認ダイアログを経由せず即座に実行する — ONのときは
+    /// これまでどおり`pendingBulkAction`をセットして`.alert`を出す。
+    private func requestBulkAction(accountId: String, action: SwipeAction) {
+        guard confirmBulkAction else {
+            Task { await performBulkAction(accountId: accountId, action: action) }
+            return
+        }
+        pendingBulkAction = PendingBulkAction(accountId: accountId, action: action)
     }
 
     private var accountDisplayNames: [String: String] {

@@ -8236,3 +8236,107 @@ $searchText, prompt: "検索")`と`refreshToolbarItem`(`.toolbar`) が付いて
 ボタンが入力時にのみ表示されることを確認した。iOS 側は`messageListCore`
 を素通しするだけの分岐のため未検証だが、コード上は無改修
 (`#if os(macOS)`の外に一切触れていない)。
+
+## Task #190: アカウントダイジェストの一括操作確認を `.alert` に変更 + 設定でオフ可能に
+
+**ユーザー要望**: 「グループのスワイプで出てくる確認画面は、設定でオフに
+できるようにして。また、吹き出しっぽく確認が出るけどそうではなく真ん中に
+確認画面を出して。」対象は`AccountDigestView`(1a「アカウントでグループ化」
+表示) の行スワイプ/コンテキストメニュー一括操作 (アーカイブ・削除・
+迷惑メール・既読切替・ピン留め) 前の確認。
+
+### 「吹き出しっぽく出る」の正体と修正
+
+`.confirmationDialog`はiPhoneでは画面下からのアクションシートだが、
+iPad/macOSでは**ソースに紐づくポップオーバー(吹き出し)**として出る —
+これが実機フィードバックの「吹き出しっぽく出る」の正体。`.alert`は
+iOS/macOSどちらも常に画面中央のモーダルで出るため、これに差し替えた
+(`AccountDigestView.body`)。
+
+- タイトルに対象件数を含める (「N件をアーカイブしますか？」) — 件数は
+  表示中の`digests`スナップショット (`AccountDigest.totalCount`) から。
+  `.alert(_:isPresented:presenting:actions:message:)`の`title`引数は
+  `StringProtocol`型で`Text`/`LocalizedStringKey`を経由しないため、動的な
+  数値を埋め込んでも`AccountFilterChip.swift`の教訓 (`mailto:`自動リンク化)
+  の対象にはならない。
+- `message`側にどのアカウントが対象かを`Text(verbatim:)`で表示 — アカウント
+  表示名はメールアドレスそのものの場合があるため、`CLAUDE.md`の既存
+  ルールどおり`Text(verbatim:)`のみで扱う。
+- 確定ボタンは`request.action == .delete`のときだけ`role: .destructive`、
+  キャンセルボタンは`role: .cancel`(`AccountSettingsCategoryView`の削除
+  確認アラートと同じ形、`presenting:`で`PendingBulkAction`を渡す)。
+  `.junk`はスワイプボタンの色 (`OtegamiColor.destructive`) こそ削除と同じ
+  だが、`role: .destructive`自体は元々`.delete`だけに付けている既存の
+  区別 (`AccountDigestRow.swipeButton`) をそのまま踏襲した。
+
+### 設定でオフにできるように
+
+- `ListDisplaySettingsStore.confirmBulkActionKey`
+  (`"listDisplay.confirmAccountDigestBulkAction"`) を新設、default `true`
+  (既存の挙動を変えない)。`AccountDigestView`は`confirmBulkAction`が`false`
+  のとき`requestBulkAction`が`pendingBulkAction`をセットせず、確認なしで
+  即座に`performBulkAction`を呼ぶ。
+- 置き場所は**「メール一覧」設定 (`MailListSettingsView`)** — 「一般」
+  (Task #189 で新設) ではなく、既存の D8 スワイプ設定セクション
+  (`swipeSection`) のすぐ下に「一括操作の前に確認する」トグルを追加した。
+  根拠: この確認は「一覧の操作 (アカウントでグループ化表示のスワイプ/
+  コンテキストメニュー一括操作) の挙動」そのものであり、同じカテゴリの
+  既存項目 (プレビュー行数・スワイプ割り当て・スレッド表示・ピン留めの
+  フラグ連動) と同じ「一覧をどう見せる/操作するか」の範疇にある。「一般」
+  はTask #189の doc comment のとおり「アプリ全体に横断的に効く」設定
+  (iCloud同期) 専用に新設したカテゴリで、この確認ダイアログのように
+  特定の一覧操作にだけ効く設定を置く場所ではないと判断した。
+  `swipeSection`自体はiOS専用 (`#if os(iOS)`) だが、この新トグルは
+  macOSのコンテキストメニュー一括操作 (`AccountDigestRow`のmacOS分岐)
+  にも効くため`#if os(iOS)`では囲んでいない。
+
+### iCloud 同期
+
+`AppSettingsCloudDirectory.boolDefaults`に追加し、他の表示・操作設定と
+同じく同期対象にした — Task #186 の「迷ったら同期する側に倒す」方針
+どおり、端末固有の秘密でも巨大なキャッシュでもない単純なUI好みの設定
+だから。
+
+### オフにしたときの安全性 (誤操作の取り消し)
+
+確認をオフにしても、一括操作 (アーカイブ/削除/迷惑メール) には
+`AccountDigestView.scheduleUndo`による**5秒間のUndoトースト**が既に
+実装済み (`MessageListView`と同じ「即時反映 + Undoトースト」方針、
+`AccountDigestView.performRemoval`のdoc comment参照) — 削除も含め、実行
+後5秒以内なら`UndoToast`のボタンで取り消せる。このタスクで新たにUndoの
+仕組みを追加する必要はないと判断した(新規実装はしていない)。既読切替/
+ピン留めは非破壊的操作なので元々Undoトーストの対象外 (トグルし直せば
+戻る)。
+
+### 検証
+
+`make test`/`make mac`/`make ios`/`make check-localization`はすべて
+green (新規文言「一括操作の前に確認する」とfooter文言は
+`scripts/generate-localizable.py`に追加してから`Localizable.xcstrings`を
+再生成)。`.alert`への差し替えは`AccountSettingsCategoryView`の既存の
+削除確認アラートと全く同じ形なので、実装パターンとしての新規リスクは
+低い。
+
+**画面の目視確認は未達成**: `AccountDigestView`(ひいてはこの確認
+ダイアログ) は`OtegamiRootView`(`MailScreenView`) 経由でのみ描画され、
+これは**iOS専用**(`OtegamiRootView`の doc comment: 「macOS keeps its
+three-pane `NavigationSplitView` layout unchanged... this type is
+iOS-only」) — macOSでは`AccountDigestRow`のmacOS分岐 (コンテキストメニュー)
+を書いてはいるものの、そもそもこの画面自体が実機・シミュレータどちらでも
+表示されない。そのため「少なくとも macOS では必ず確認する」という当初の
+検証方針はこの機能には適用できない。
+
+iOSシミュレータでの確認 (2アカウントのfakeフィクスチャ + 「アカウントで
+グループ化」表示を`-listDisplay.groupByAccount YES`起動引数で強制 + 行を
+`swipeLeft()`して現れるボタンをタップ、という新規UITestを作成して試行)
+は2回とも、スワイプ後に現れるはずのボタンが`waitForExistence`で見つから
+ず失敗した — `-swipeActions.trailingShort/Long delete`という同じ起動
+引数ドメインのテクニックで強制しても再現し、原因(テスト側の見落としか
+実環境の不調か)は未特定のまま切り分けを断念した。3回目の試行では
+シミュレータではなく**別エージェント (#192、`SyncEngine`まわり) の
+並行編集中の`MailboxSyncer.swift`がその時点でビルド不能な状態だった**
+ためビルド自体が失敗し、これ以上の追試を打ち切った (`docs/verify.md`
+「シミュレータ検証の既知の不調」/ユーザー指示「リトライは1-2回まで」に
+従い撤退)。この検証用UITestはコミットしていない (未完成のまま残すと
+別の意味で混乱を招くため削除した)。未検証の詳細と実機での確認ポイントは
+`PENDING.md`「Task #190」節参照。
