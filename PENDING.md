@@ -1716,7 +1716,12 @@ contacts`のハング (3回試行して打ち切り) により取得できなか
    置き換え) はこのセッションのスコープ外。次回、上記1・2の実行結果を
    見た上で判断すること。
 
-## Task #183: iCloud Archive の `UNIQUE constraint failed` 修正 — 実機での自己回復は未検証
+## Task #183: iCloud Archive の `UNIQUE constraint failed` 修正 — 実機で解決を確認済み
+
+**2026-07-31 追記: 実機で解決を確認した。** 実際にこのバグを踏んで壊れて
+いた端末に `30faa2e` を OTA 配信したところ、同期エラーが解消した (ユーザー
+報告)。下記「未検証」の項目 1 (自己回復) はこれで満たされた。項目 2 (Task
+#120 の対象操作全体の回帰) は引き続き通常利用の中で様子を見る。
 
 詳細は`docs/qa-findings.md`のTask #183節。
 `AccountSyncer.reconcilePendingRelocation`/`MessageRemoval.undo`の
