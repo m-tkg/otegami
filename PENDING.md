@@ -220,10 +220,6 @@ SMTP CRLFインジェクションの本修正はトランスポート境界
 - **Google OAuth の審査**: 各自の Client ID でのテスト利用には審査不要だが、
   作者本人が配布ビルド (App Store/TestFlight) を出す場合は Google の OAuth
   審査が必要になる (`docs/oauth-setup.md`)。
-- **macOS ビルドの配布**: Developer ID 署名 + notarization のワークフロー
-  (`.github/workflows/release-macos.yml`) は整備済み、次回タグ push 時に
-  Actions の run が緑になるか・Gatekeeper (`spctl -a -vvv`) を越えるかの
-  実地検証が必要 (`docs/release.md`)。
 - **サードパーティライセンス表記の保守**: 依存追加/更新時は `NOTICE`
   (ライセンス種別・著作権表示の一覧) の追記漏れがないか確認する。
 - **iOS でデフォルトのメールアプリになる (Task #48)**: `com.apple.developer
