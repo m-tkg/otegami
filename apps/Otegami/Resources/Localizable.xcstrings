@@ -2551,6 +2551,56 @@
         }
       }
     },
+    "運用者が発行したシークレット": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secret Issued by the Operator"
+          }
+        }
+      }
+    },
+    "登録シークレット": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Registration Secret"
+          }
+        }
+      }
+    },
+    "設定済みです（変更する場合のみ入力してください）": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Already set (enter a new value only to change it)"
+          }
+        }
+      }
+    },
+    "リレーの運用者が登録シークレットを設定している場合のみ入力してください。この値は Keychain に保存され、iCloud では同期されません — 端末ごとに入力する必要があります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only enter this if the relay's operator has set a registration secret. This value is stored in Keychain and isn't synced via iCloud — it must be entered separately on each device."
+          }
+        }
+      }
+    },
+    "リレーの登録シークレットが必要です。入力したシークレットが一致しないか、未入力の可能性があります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The relay requires a registration secret. The one entered doesn't match, or none was entered."
+          }
+        }
+      }
+    },
     "IMAP": {
       "localizations": {
         "en": {

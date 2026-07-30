@@ -45,6 +45,69 @@ struct PushRelayClientTests {
         #expect(response.deviceSecret == "s1")
     }
 
+    @Test("registerDevice sends no Authorization header when registrationSecret is nil (default)")
+    func registerDeviceNoRegistrationSecretByDefault() async throws {
+        let client = makeClient()
+        StubURLProtocol.handler = { request in
+            #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+            let body = try JSONEncoder().encode(RegisterDeviceResponse(deviceId: "d1", deviceSecret: "s1"))
+            return (jsonResponse(request.url!, status: 201, body: body), body)
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        _ = try await client.registerDevice(
+            baseURL: URL(string: "https://relay.example.com")!,
+            apnsToken: "device-token",
+            environment: .sandbox
+        )
+    }
+
+    @Test("registerDevice sends the registration secret as a Bearer token when provided (Task #171)")
+    func registerDeviceWithRegistrationSecret() async throws {
+        let client = makeClient()
+        StubURLProtocol.handler = { request in
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer op-secret")
+            let body = try JSONEncoder().encode(RegisterDeviceResponse(deviceId: "d1", deviceSecret: "s1"))
+            return (jsonResponse(request.url!, status: 201, body: body), body)
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        _ = try await client.registerDevice(
+            baseURL: URL(string: "https://relay.example.com")!,
+            apnsToken: "device-token",
+            environment: .sandbox,
+            registrationSecret: "op-secret"
+        )
+    }
+
+    @Test("registerDevice surfaces a 401 (relay's registration-secret gate rejected it) as .http, decodable by the app layer")
+    func registerDeviceRegistrationSecretRejected() async throws {
+        let client = makeClient()
+        StubURLProtocol.handler = { request in
+            let errorBody = try JSONEncoder().encode(
+                RelayErrorResponse(error: "unauthorized", message: "device registration requires a valid registration secret")
+            )
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: "HTTP/1.1", headerFields: nil)!,
+                errorBody
+            )
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        do {
+            _ = try await client.registerDevice(
+                baseURL: URL(string: "https://relay.example.com")!,
+                apnsToken: "t",
+                environment: .sandbox,
+                registrationSecret: "wrong-secret"
+            )
+            Issue.record("expected registerDevice to throw")
+        } catch let PushRelayClient.PushRelayClientError.http(status, body) {
+            #expect(status == 401)
+            #expect(body?.error == "unauthorized")
+        }
+    }
+
     @Test("registerDevice surfaces a non-201 response as .http with the decoded error body")
     func registerDeviceHTTPError() async throws {
         let client = makeClient()

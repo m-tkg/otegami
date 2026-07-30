@@ -28,6 +28,12 @@ struct AccountSettingsCategoryView: View {
     /// verbatim) for why this pushes straight to `AccountEditView` rather
     /// than just re-checking the Keychain.
     @State private var passwordEntryAccountId: String?
+    /// Task #171: tap-free navigation to `PushNotificationSettingsView`
+    /// for `scripts/verify-screen.sh` — same `-uitestsOpen*Directly`
+    /// pattern as `MailViewerSettingsView`'s
+    /// `uitestShowTranslationDiagnosticsDirectly`. A no-op (`false`, and
+    /// the `.task` below never flips it) on every real launch.
+    @State private var uitestShowPushNotificationsDirectly = false
 
     /// G「デフォルトのアカウント設定」— see `DefaultAccountSettingsStore`'s
     /// doc comment.
@@ -93,6 +99,16 @@ struct AccountSettingsCategoryView: View {
             .onChange(of: environment.accounts.map(\.id)) { _, _ in
                 openFirstAccountEditForUITestIfNeeded()
             }
+            #if os(iOS)
+            .navigationDestination(isPresented: $uitestShowPushNotificationsDirectly) {
+                PushNotificationSettingsView()
+            }
+            .task {
+                if ProcessInfo.processInfo.arguments.contains("-uitestsOpenPushNotificationsDirectly") {
+                    uitestShowPushNotificationsDirectly = true
+                }
+            }
+            #endif
     }
 
     /// Task #155 (macOS 設定画面フィードバック 2026-07-29): 他の設定画面

@@ -50,17 +50,27 @@ public actor PushRelayClient {
         self.urlSession = urlSession
     }
 
+    /// - Parameter registrationSecret: Task #171 — a *shared operator
+    ///   secret* (distinct from the per-device `deviceSecret` every other
+    ///   call here uses), sent only when the relay's operator configured
+    ///   `RELAY_DEVICE_REGISTRATION_SECRET` (see
+    ///   `DeviceRoutes.authorizeRegistration` on the server). `nil` (the
+    ///   default) omits the `Authorization` header entirely, which is what
+    ///   keeps this call working unchanged against every relay that hasn't
+    ///   set that env var — `authorizeRegistration` only checks the header
+    ///   when the operator opted in.
     public func registerDevice(
         baseURL: URL,
         apnsToken: String,
-        environment: RegisterDeviceRequest.Environment
+        environment: RegisterDeviceRequest.Environment,
+        registrationSecret: String? = nil
     ) async throws -> RegisterDeviceResponse {
         try await send(
             baseURL: baseURL,
             path: "v1/devices",
             method: "POST",
             body: RegisterDeviceRequest(apnsToken: apnsToken, environment: environment),
-            bearerToken: nil,
+            bearerToken: registrationSecret,
             expectedStatus: 201
         )
     }

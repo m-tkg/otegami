@@ -17,7 +17,7 @@
 | 同期される | 同期されない |
 |---|---|
 | account の表示名・メールアドレス・IMAP/SMTP ホスト/ポート/接続方式・ユーザー名・認証方式・作成/更新日時 | メール本文・添付ファイル・メールボックス一覧・フラグ・スレッド (すべてローカル GRDB のみ) |
-| IMAP/SMTP パスワード (Keychain, iCloud キーチェーン経由) | プッシュ通知の `deviceSecret` (APNs デバイストークンと対のデバイス固有の秘密。同期すると他デバイスがトークンなしの秘密を持つだけになり無意味なため意図的に対象外) |
+| IMAP/SMTP パスワード (Keychain, iCloud キーチェーン経由) | プッシュ通知の `deviceSecret` (APNs デバイストークンと対のデバイス固有の秘密。同期すると他デバイスがトークンなしの秘密を持つだけになり無意味なため意図的に対象外)、リレーの `registrationSecret` (Task #171: `RELAY_DEVICE_REGISTRATION_SECRET` を運用者が設定している場合に入力する共有シークレット。deviceSecret と同じく Keychain 保存だが `kSecAttrSynchronizable` を付けないため、プッシュ通知を使う端末それぞれで入力が必要) |
 | Gmail の OAuth リフレッシュトークン (Keychain, iCloud キーチェーン経由) | アクセストークン (`GoogleOAuth.TokenStore` の インメモリキャッシュのみ。各デバイスがリフレッシュトークンから自分で取得する) |
 | — | `needsReauth` (デバイスごとの「このデバイスにはまだ資格情報が届いていない/再認証が必要」状態そのもの) |
 
@@ -691,7 +691,7 @@ allowlist が唯一の情報源:
 
 | 同期される | 同期されない |
 |---|---|
-| 一覧: スレッド表示・未読のみ・フラグ付きのみ (Task #142)・アカウントでグループ化 (`ListDisplaySettingsStore`) | 通知系のうちデバイス固有の部分 (`PushSettingsStore` の device id・per-account watch map・enabled フラグ・deviceSecret) |
+| 一覧: スレッド表示・未読のみ・フラグ付きのみ (Task #142)・アカウントでグループ化 (`ListDisplaySettingsStore`) | 通知系のうちデバイス固有の部分 (`PushSettingsStore` の device id・per-account watch map・enabled フラグ・deviceSecret・registrationSecret — 後者2つは Keychain、Task #171 で追加した registrationSecret も同じ理由で対象外) |
 | ビューア: 背景を常に白・ダーク反転オプトイン (`HTMLDisplaySettingsStore`)、画像自動表示2種 (`ImageSettingsStore`) | UITest/verify 系フラグ (`OTEGAMI_UITEST_*`/`-otegami*` は環境変数・起動引数であり、そもそも `UserDefaults` キーではない) |
 | Task #121: プッシュ通知のリレー URL (`PushSettingsStore.relayURLKey`) — ユーザーが入力しただけのホスト名でデバイス固有ではないため、これだけ他の通知系設定と切り離して同期対象にした | — |
 | スワイプ割り当て4スロット (`SwipeActionSettingsStore`)、フッターツールバーの表示/非表示・並び順 (`MessageToolbarSettingsStore`、Task #100 で表示/非表示を追加 — 詳細は `docs/settings.md`)、ハンバーガーメニューのカテゴリ並び順 (`FolderCategoryOrderStore`) | `CloudSyncSettingsStore.isEnabled` 自身 (この同期に参加するか自体がデバイスごとの選択 — その doc comment参照) |

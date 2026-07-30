@@ -184,16 +184,25 @@ accountId→watchId マップの修復を行う (`AppEnvironment
    自動的に監視を停止する (`WatcherPool`) — パスワード変更後に古い
    資格情報で IMAP サーバへの再試行を無限に繰り返し、アカウント
    ロックアウトを誘発することを避けるため。
-8. **デバイス登録の保護 (Task #169, CLAUDE-SECURITY F2)**: `POST
-   /v1/devices` は設計上 (デバイスが最初の資格情報を得るための入口な
-   ので) 認証を要求できない。これを悪用すると、リレーの HTTP ポートに
-   到達できる誰でも `deviceSecret` を自己発行し、以降の `POST
-   /v1/watches` に到達できてしまう。`RELAY_DEVICE_REGISTRATION_SECRET`
-   を設定すると、この入口を運用者共有シークレットの Bearer 認証で
-   塞げる。未設定の間は従来どおり無認証のままだが (既存デプロイを
-   即座に壊さないため、かつアプリ側がまだこのヘッダを送る実装を
-   持たないため — `HUMAN_TASKS.md`/`PENDING.md` 参照)、無認証の
-   登録が起きるたびにリレーが warning ログを出す。
+8. **デバイス登録の保護 (Task #169, CLAUDE-SECURITY F2 / アプリ側は
+   Task #171)**: `POST /v1/devices` は設計上 (デバイスが最初の資格情報
+   を得るための入口なので) 認証を要求できない。これを悪用すると、
+   リレーの HTTP ポートに到達できる誰でも `deviceSecret` を自己発行し、
+   以降の `POST /v1/watches` に到達できてしまう。
+   `RELAY_DEVICE_REGISTRATION_SECRET` を設定すると、この入口を運用者
+   共有シークレットの Bearer 認証で塞げる。未設定の間は従来どおり
+   無認証のままだが (既存デプロイを即座に壊さないため)、無認証の
+   登録が起きるたびにリレーが warning ログを出す。アプリ (Task #171)
+   は設定 → プッシュ通知の「登録シークレット」欄に入力された値を
+   Keychain に保存し、新規デバイス登録のたびに
+   `Authorization: Bearer <この値>` を送る — この値は iCloud で同期
+   されないため、**運用者がこの環境変数を設定する場合は、リレー側を
+   先に設定・再デプロイしてから、各端末のアプリに同じ値を入力する
+   こと** (逆順だと、その間は新規デバイス登録 — 新規のプッシュ通知
+   有効化や端末再インストール後の再登録 — が 401 で失敗する。既存の
+   登録済みデバイスのトークン更新・watch 操作には影響しない)。詳細は
+   `docs/icloud-sync.md`、運用者向け手順は `HUMAN_TASKS.md`「インフラ・
+   運用まわり」参照。
 9. **watch 作成時/接続時の SSRF 防御 (Task #169, CLAUDE-SECURITY F2)**:
    修正前は `POST /v1/watches` の `imapHost`/`imapPort` が検証なしで
    `ClientBootstrap.connect` に渡っており、リレーの HTTP ポートに到達

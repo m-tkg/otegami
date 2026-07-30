@@ -2373,6 +2373,14 @@ final class AppEnvironment {
         /// (macOS) — push isn't implemented there yet (M9 scope: iOS-only
         /// `NotificationService`, plan/PENDING.md).
         case unsupportedPlatform
+        /// Task #171: `POST /v1/devices` came back 401 — the relay has
+        /// `RELAY_DEVICE_REGISTRATION_SECRET` configured and either no
+        /// registration secret was sent or the one sent doesn't match.
+        /// `PushNotificationSettingsView` surfaces this without repeating
+        /// the relay's own error text (`DeviceRoutes
+        /// .authorizeRegistration`'s message is an operator/debugging
+        /// detail, not something to show the end user verbatim).
+        case registrationSecretRejected
     }
 
     /// Validates `relayURLString`, requests notification authorization +
@@ -2384,9 +2392,24 @@ final class AppEnvironment {
     /// a failure partway through (e.g. the device registers fine but one
     /// account's watch creation fails) still leaves whatever succeeded in
     /// place rather than needing to be redone from scratch.
-    func enablePushNotifications(relayURLString: String) async throws {
+    ///
+    /// - Parameter registrationSecret: Task #171 — what
+    ///   `PushNotificationSettingsView`'s optional "登録シークレット" field
+    ///   collected, or `nil`/empty if the user left it blank. A non-empty
+    ///   value here is saved to `pushSettings` (Keychain) before use, the
+    ///   same "leave blank to keep what's already stored" shape as
+    ///   `AccountEditView`'s password field — so it only needs to be
+    ///   re-typed when the user is actually changing it, not on every
+    ///   enable. Only consulted on a *fresh* device registration (the
+    ///   `else` branch below): `updateDeviceToken` authenticates with the
+    ///   already-issued `deviceSecret` instead, which this relay-operator
+    ///   secret has nothing to do with.
+    func enablePushNotifications(relayURLString: String, registrationSecret: String? = nil) async throws {
         guard let baseURL = Self.validatedRelayURL(relayURLString) else {
             throw PushError.invalidRelayURL
+        }
+        if let registrationSecret, !registrationSecret.isEmpty {
+            try? pushSettings.setRegistrationSecret(registrationSecret)
         }
 
         let apnsToken = try await requestAPNsToken()
@@ -2408,7 +2431,18 @@ final class AppEnvironment {
             deviceId = existingId
             deviceSecret = existingSecret
         } else {
-            let response = try await pushRelayClient.registerDevice(baseURL: baseURL, apnsToken: apnsToken, environment: apnsEnvironment)
+            let storedRegistrationSecret = try? pushSettings.registrationSecret()
+            let response: RegisterDeviceResponse
+            do {
+                response = try await pushRelayClient.registerDevice(
+                    baseURL: baseURL,
+                    apnsToken: apnsToken,
+                    environment: apnsEnvironment,
+                    registrationSecret: storedRegistrationSecret
+                )
+            } catch let PushRelayClient.PushRelayClientError.http(status, _) where status == 401 {
+                throw PushError.registrationSecretRejected
+            }
             deviceId = response.deviceId
             deviceSecret = response.deviceSecret
             try pushSettings.setDeviceSecret(deviceSecret)
@@ -2440,6 +2474,15 @@ final class AppEnvironment {
         pushSettings.reset()
         isPushEnabled = false
         pushRelayURLString = ""
+    }
+
+    /// Whether this device already has a registration secret saved
+    /// (Task #171) — lets `PushNotificationSettingsView` show a "設定済み"
+    /// hint without ever reading the secret's actual value back out for
+    /// display (same never-prefill-a-secret posture as
+    /// `AccountEditView`'s password field).
+    var pushHasStoredRegistrationSecret: Bool {
+        (try? pushSettings.registrationSecret()) != nil
     }
 
     /// Registers a watch for `account` if push is enabled and it doesn't

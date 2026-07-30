@@ -264,6 +264,10 @@
 #   account-edit                        Task #72: ↑からさらに1画面 (先頭
 #                                       アカウントの編集画面 — ラベル色の
 #                                       グリッドピッカーを確認)
+#   push-settings                       Task #171: 設定→アカウントの設定→
+#                                       「プッシュ通知」を直接開く —
+#                                       リレー URL の下の「登録シークレット」
+#                                       欄の確認用 (iOS 専用画面)
 #   toolbar-customize                   Task #100: 設定→メールビューア→
 #                                       「ツールバーのカスタマイズ」
 #                                       (`MessageToolbarSettingsView`) を
@@ -601,6 +605,14 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_GMAIL_ACCOUNT=1")
     launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenFirstAccountEditDirectly")
     default_out="account-edit.png"
+    ;;
+  push-settings)
+    # Task #171 (登録シークレット入力欄): 設定 → アカウントの設定 →
+    # 「プッシュ通知」をタップ無しで直接開く (`AccountSettingsCategoryView`
+    # の `-uitestsOpenPushNotificationsDirectly` フック、`account-settings`
+    # と同じ「1段深いところまで一気に」パターン)。iOS専用画面。
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenPushNotificationsDirectly")
+    default_out="push-settings.png"
     ;;
   toolbar-customize)
     # Task #100: 設定 → メールビューア → 「ツールバーのカスタマイズ」を

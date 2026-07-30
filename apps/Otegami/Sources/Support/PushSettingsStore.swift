@@ -37,6 +37,17 @@ struct PushSettingsStore: @unchecked Sendable {
     /// /v1/watches` reconcile pass — not secret, just a throttle timestamp.
     private static let lastWatchReconcileDateKey = "push.lastWatchReconcileDate"
     private static let keychainService = "com.mtkg.otegami.push-device-secret"
+    /// Task #171: the relay operator's shared `RELAY_DEVICE_REGISTRATION_SECRET`
+    /// (see `server/otegami-relay/.../DeviceRoutes.authorizeRegistration`),
+    /// a *credential* the same way `deviceSecret` is (a bearer token this
+    /// device sends to the relay) — hence Keychain, not `UserDefaults`.
+    /// Deliberately a separate service string from `deviceSecret`'s: this
+    /// is one shared secret an operator hands out to every device they
+    /// approve, not something the relay issues per-device, so conflating
+    /// the two storage slots would make `deleteDeviceSecret()`/`reset()`
+    /// (which must invalidate a *device's* registration, not the
+    /// operator's secret) harder to reason about.
+    private static let registrationSecretKeychainService = "com.mtkg.otegami.push-registration-secret"
     /// Same rename hazard as `KeychainCredentialStore.legacyServices`
     /// (`52df393` changed this hardcoded default too) — kept here for
     /// symmetry/consistency even though a stale device secret is much
@@ -136,8 +147,50 @@ struct PushSettingsStore: @unchecked Sendable {
     // synced), so syncing just the secret to another device would leave it
     // holding a bearer credential with no matching token to actually use it.
     func setDeviceSecret(_ secret: String) throws {
+        try setSecret(secret, service: Self.keychainService)
+    }
+
+    func deleteDeviceSecret() throws {
+        try deleteSecret(services: [Self.keychainService] + Self.legacyKeychainServices)
+    }
+
+    // MARK: - Registration secret (Keychain)
+
+    /// Task #171: the relay's `RELAY_DEVICE_REGISTRATION_SECRET`, mirrored
+    /// into every `POST /v1/devices` call as `Authorization: Bearer
+    /// <this>` when the operator requires it — see
+    /// `AppEnvironment.enablePushNotifications(relayURLString:
+    /// registrationSecret:)`. `nil` (never set, or cleared) means "don't
+    /// send the header," which is the correct behavior against every relay
+    /// that hasn't opted into this gate.
+    ///
+    /// Unlike `deviceSecret`/`deviceId`/`relayURLString`, this is
+    /// deliberately *not* cleared by `reset()`: it's not tied to a
+    /// specific device registration (which `reset()` invalidates by
+    /// deleting every watch server-side) — it's the operator's shared
+    /// secret, which stays correct across a disable/re-enable cycle on
+    /// this same device. It's also — same as `deviceSecret` — never
+    /// `kSecAttrSynchronizable`, so it doesn't ride iCloud Keychain: each
+    /// device that talks to a gated relay has to have this typed in
+    /// locally (`docs/icloud-sync.md`).
+    func registrationSecret() throws -> String? {
+        if let data = try deviceSecretData(service: Self.registrationSecretKeychainService) {
+            return String(data: data, encoding: .utf8)
+        }
+        return nil
+    }
+
+    func setRegistrationSecret(_ secret: String) throws {
+        try setSecret(secret, service: Self.registrationSecretKeychainService)
+    }
+
+    func deleteRegistrationSecret() throws {
+        try deleteSecret(services: [Self.registrationSecretKeychainService])
+    }
+
+    private func setSecret(_ secret: String, service: String) throws {
         let data = Data(secret.utf8)
-        let query = baseQuery()
+        let query = baseQuery(service: service)
         let existsStatus = SecItemCopyMatching(query as CFDictionary, nil)
         switch existsStatus {
         case errSecSuccess:
@@ -154,9 +207,9 @@ struct PushSettingsStore: @unchecked Sendable {
         }
     }
 
-    func deleteDeviceSecret() throws {
+    private func deleteSecret(services: [String]) throws {
         var lastError: KeychainError?
-        for candidateService in [Self.keychainService] + Self.legacyKeychainServices {
+        for candidateService in services {
             let status = SecItemDelete(baseQuery(service: candidateService) as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else {
                 lastError = .unexpectedStatus(status)
@@ -170,7 +223,9 @@ struct PushSettingsStore: @unchecked Sendable {
     /// enabled flag, and the accountId→watchId map. Called after
     /// successfully deleting every watch server-side
     /// (`AppEnvironment.disablePushNotifications()`), so nothing local
-    /// still points at server state that no longer exists.
+    /// still points at server state that no longer exists. Deliberately
+    /// leaves `registrationSecret` alone — see that property's doc
+    /// comment.
     func reset() {
         relayURLString = nil
         deviceId = nil
@@ -178,10 +233,6 @@ struct PushSettingsStore: @unchecked Sendable {
         accountWatchMap = [:]
         lastWatchReconcileDate = nil
         try? deleteDeviceSecret()
-    }
-
-    private func baseQuery() -> [String: Any] {
-        baseQuery(service: Self.keychainService)
     }
 
     private func baseQuery(service: String) -> [String: Any] {

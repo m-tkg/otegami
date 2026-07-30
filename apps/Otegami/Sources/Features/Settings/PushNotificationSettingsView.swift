@@ -27,6 +27,14 @@ struct PushNotificationSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var relayURLText: String = ""
+    /// Task #171: optional `RELAY_DEVICE_REGISTRATION_SECRET` echo — never
+    /// pre-filled from Keychain (same posture as `AccountEditView`'s
+    /// password field: a secret already stored is never read back out just
+    /// to redisplay it). Leaving this blank on "有効にする" reuses whatever
+    /// is already saved (`AppEnvironment.enablePushNotifications`'s
+    /// `registrationSecret` parameter doc comment); typing a new value here
+    /// overwrites it.
+    @State private var registrationSecretText: String = ""
     @State private var isProcessing = false
     @State private var errorMessage: String?
     @State private var showingConsent = false
@@ -56,6 +64,22 @@ struct PushNotificationSettingsView: View {
                 Text("リレー URL")
             } footer: {
                 Text("https:// が必須です（ローカル開発時のみ http://localhost を使用できます）。")
+            }
+
+            Section {
+                SecureField("運用者が発行したシークレット", text: $registrationSecretText)
+                    .disabled(environment.isPushEnabled || isProcessing)
+                    .accessibilityIdentifier("settings.push.registrationSecretField")
+                if environment.pushHasStoredRegistrationSecret {
+                    Text("設定済みです（変更する場合のみ入力してください）")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("settings.push.registrationSecretStoredLabel")
+                }
+            } header: {
+                Text("登録シークレット")
+            } footer: {
+                Text("リレーの運用者が登録シークレットを設定している場合のみ入力してください。この値は Keychain に保存され、iCloud では同期されません — 端末ごとに入力する必要があります。")
             }
 
             if environment.isPushEnabled {
@@ -156,7 +180,11 @@ struct PushNotificationSettingsView: View {
         showsOpenSettingsButton = false
         defer { isProcessing = false }
         do {
-            try await environment.enablePushNotifications(relayURLString: relayURLText)
+            try await environment.enablePushNotifications(
+                relayURLString: relayURLText,
+                registrationSecret: registrationSecretText
+            )
+            registrationSecretText = ""
         } catch AppEnvironment.PushError.invalidRelayURL {
             errorMessage = "リレー URL が不正です。https:// から始まる URL を入力してください。"
         } catch AppEnvironment.PushError.notificationPermissionDenied {
@@ -167,6 +195,8 @@ struct PushNotificationSettingsView: View {
                 "実機で通知の許可を確認してください。"
         } catch AppEnvironment.PushError.unsupportedPlatform {
             errorMessage = "この OS では未対応です（iOS のみ対応）。"
+        } catch AppEnvironment.PushError.registrationSecretRejected {
+            errorMessage = "リレーの登録シークレットが必要です。入力したシークレットが一致しないか、未入力の可能性があります。"
         } catch {
             errorMessage = "有効化に失敗しました: \(error)"
         }
@@ -177,6 +207,7 @@ struct PushNotificationSettingsView: View {
         defer { isProcessing = false }
         await environment.disablePushNotifications()
         relayURLText = ""
+        registrationSecretText = ""
     }
 
     #if os(iOS)

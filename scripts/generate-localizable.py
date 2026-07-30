@@ -394,6 +394,16 @@ translations = {
     "同意して有効にする": "Agree & Enable",
     "有効にすると、パスワード認証で設定した各アカウントの IMAP 接続情報（サーバー・ユーザー名・パスワード）が入力したリレー URL のサーバーへ送信され、暗号化して保存されます。リレーの運用者を信頼できる場合のみ有効にしてください。Gmail (OAuth) アカウントは現バージョンでは対象外です。":
         "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the server at the relay URL you entered, where it's stored encrypted. Only enable this if you trust the relay's operator. Gmail (OAuth) accounts aren't supported in this version.",
+    # Task #171: optional RELAY_DEVICE_REGISTRATION_SECRET support — see
+    # AppEnvironment.PushError.registrationSecretRejected and
+    # PushSettingsStore.registrationSecret's doc comments.
+    "運用者が発行したシークレット": "Secret Issued by the Operator",
+    "登録シークレット": "Registration Secret",
+    "設定済みです（変更する場合のみ入力してください）": "Already set (enter a new value only to change it)",
+    "リレーの運用者が登録シークレットを設定している場合のみ入力してください。この値は Keychain に保存され、iCloud では同期されません — 端末ごとに入力する必要があります。":
+        "Only enter this if the relay's operator has set a registration secret. This value is stored in Keychain and isn't synced via iCloud — it must be entered separately on each device.",
+    "リレーの登録シークレットが必要です。入力したシークレットが一致しないか、未入力の可能性があります。":
+        "The relay requires a registration secret. The one entered doesn't match, or none was entered.",
 
     # --- 実機フィードバック第3弾 (E): 設定画面配下の未登録文字列を洗い出して
     # 追加。動的な値を埋め込む補間文字列 (例: アカウント削除確認ダイアログの
