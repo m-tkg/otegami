@@ -196,6 +196,12 @@ final class AppEnvironment {
     /// never actually uses it) so `TranslationSessionHostView` always has a
     /// non-optional coordinator to read from.
     @ObservationIgnored let translationSessionCoordinator = TranslationSessionCoordinator()
+    /// 2026-07-30 (実機フィードバック: ログ採取できない状況での端末内診断
+    /// 画面「翻訳の診断」): `AppleTranslationService`の直近の呼び出し記録
+    /// — `TranslationDiagnosticsStore`のdoc comment参照。コーディネータと
+    /// 同じくアプリ全体で1つ (UITest フェイク翻訳経路では書き込まれない
+    /// — 実エンジンだけが対象)。
+    @ObservationIgnored let translationDiagnostics = TranslationDiagnosticsStore()
     /// The cached, per-message-persisted counterpart (`docs/translation.md`'s
     /// "キャッシュ方針") — what `MessageView`'s translation bar (1i) actually
     /// calls, so opening the same English message twice doesn't re-run the
@@ -1294,7 +1300,7 @@ final class AppEnvironment {
         } else {
             let foundationModelsService = FoundationModelsTranslationService()
             translationService = HybridTranslationService(
-                translationEngine: AppleTranslationService(coordinator: translationSessionCoordinator),
+                translationEngine: AppleTranslationService(coordinator: translationSessionCoordinator, diagnostics: translationDiagnostics),
                 summarizationEngine: foundationModelsService
             )
             summarizationService = foundationModelsService

@@ -40,15 +40,26 @@ struct MailViewerSettingsView: View {
     /// pushes straight to `MessageToolbarSettingsView`. A no-op (`false`,
     /// and the `.task` below never flips it) on every real launch.
     @State private var uitestShowToolbarCustomizeDirectly = false
+    /// 2026-07-30: 同じパターンで`TranslationDiagnosticsView`(「翻訳の診断」)
+    /// へタップ無しで直接遷移する — Translation は実機でしか動かないため
+    /// (`docs/verify.md`)、シミュレータ確認は画面のレイアウト・エラー
+    /// 表示体裁までが目的。
+    @State private var uitestShowTranslationDiagnosticsDirectly = false
 
     var body: some View {
         settingsContainer
             .navigationDestination(isPresented: $uitestShowToolbarCustomizeDirectly) {
                 MessageToolbarSettingsView()
             }
+            .navigationDestination(isPresented: $uitestShowTranslationDiagnosticsDirectly) {
+                TranslationDiagnosticsView()
+            }
             .task {
                 if ProcessInfo.processInfo.arguments.contains("-uitestsOpenToolbarCustomizeDirectly") {
                     uitestShowToolbarCustomizeDirectly = true
+                }
+                if ProcessInfo.processInfo.arguments.contains("-uitestsOpenTranslationDiagnosticsDirectly") {
+                    uitestShowTranslationDiagnosticsDirectly = true
                 }
             }
             .navigationTitle("メールビューア")
@@ -130,6 +141,16 @@ struct MailViewerSettingsView: View {
                     Toggle("英文を自動で翻訳", isOn: $autoTranslateEnglish)
                         .accessibilityIdentifier("settings.autoTranslateToggle")
                 }
+                // 2026-07-30 (実機フィードバック: 翻訳が理由不明のまま失敗
+                // し続ける報告、かつユーザーが外出中で Mac が無くログ採取
+                // できない場面があった): `GoogleAvatarDiagnosticsView`と
+                // 同じ発想の入口。
+                NavigationLink {
+                    TranslationDiagnosticsView()
+                } label: {
+                    Label("翻訳の診断", systemImage: "stethoscope")
+                }
+                .accessibilityIdentifier("settings.mailViewer.translationDiagnostics")
             } header: {
                 Text("AI 機能")
             } footer: {

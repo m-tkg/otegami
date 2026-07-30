@@ -47,9 +47,16 @@ import os
 @available(iOS 18.0, macOS 15.0, *)
 public struct AppleTranslationService: TranslationOnlyService {
     private let coordinator: TranslationSessionCoordinator
+    /// 2026-07-30 (実機フィードバック: ログ採取できない状況での端末内診断
+    /// 画面): 呼び出しごとの件数/文字数/文字種比率/成否 (エラー時は
+    /// domain/code/型名/説明) を`TranslationDiagnosticsStore`へ記録する —
+    /// 設定の「翻訳の診断」画面がこれを読む。本文そのものは一切渡さない
+    /// (F15の趣旨)。
+    private let diagnostics: TranslationDiagnosticsStore
 
-    public init(coordinator: TranslationSessionCoordinator) {
+    public init(coordinator: TranslationSessionCoordinator, diagnostics: TranslationDiagnosticsStore) {
         self.coordinator = coordinator
+        self.diagnostics = diagnostics
     }
 
     /// Task #159 point 3: unlike `FoundationModelsTranslationService`
@@ -88,11 +95,13 @@ public struct AppleTranslationService: TranslationOnlyService {
             // セットで、次に何か起きた時に「本体は呼ばれて成功/失敗した」
             // ことをログだけで確定できるようにする。
             Self.logger.notice("translate: succeeded resultChars=\(result.count, privacy: .public)")
+            await diagnostics.record(.init(kind: "translate", elementCount: 1, totalChars: text.count, characterClassSummary: Self.characterClassSummary([text]), outcome: .success(resultChars: result.count)))
             return result
         } catch let error as TranslationServiceError {
             throw error
         } catch {
             Self.logError(error, at: "translate")
+            await diagnostics.record(.init(kind: "translate", elementCount: 1, totalChars: text.count, characterClassSummary: Self.characterClassSummary([text]), outcome: Self.failureOutcome(error)))
             throw Self.mapEngineError(error, knownNotDownloaded: needsDownload)
         }
     }
@@ -123,11 +132,13 @@ public struct AppleTranslationService: TranslationOnlyService {
         do {
             let result = try await coordinator.translateBatch(paragraphs, to: target.locale)
             Self.logger.notice("translateParagraphs: succeeded resultCount=\(result.count, privacy: .public)")
+            await diagnostics.record(.init(kind: "translateParagraphs", elementCount: paragraphs.count, totalChars: paragraphs.reduce(0) { $0 + $1.count }, characterClassSummary: Self.characterClassSummary(paragraphs), outcome: .success(resultChars: result.reduce(0) { $0 + $1.count })))
             return result
         } catch let error as TranslationServiceError {
             throw error
         } catch {
             Self.logError(error, at: "translateParagraphs")
+            await diagnostics.record(.init(kind: "translateParagraphs", elementCount: paragraphs.count, totalChars: paragraphs.reduce(0) { $0 + $1.count }, characterClassSummary: Self.characterClassSummary(paragraphs), outcome: Self.failureOutcome(error)))
             throw Self.mapEngineError(error, knownNotDownloaded: needsDownload)
         }
     }
@@ -310,6 +321,47 @@ public struct AppleTranslationService: TranslationOnlyService {
     private static func logError(_ error: Error, at site: String) {
         let nsError = error as NSError
         logger.notice("\(site, privacy: .public) failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code, privacy: .public) type=\(String(describing: Swift.type(of: error)), privacy: .public)")
+    }
+
+    /// `TranslationDiagnosticsStore.Attempt.Outcome.failure` from a raw
+    /// caught error — the same domain/code/type this method already logs
+    /// via `logError`, just also captured for the on-device diagnostics
+    /// screen (`TranslationDiagnosticsStore`'s doc comment).
+    /// `error.localizedDescription` is Apple's own description, not
+    /// anything derived from mail content.
+    private static func failureOutcome(_ error: Error) -> TranslationDiagnosticsStore.Attempt.Outcome {
+        let nsError = error as NSError
+        return .failure(domain: nsError.domain, code: nsError.code, type: String(describing: Swift.type(of: error)), description: error.localizedDescription)
+    }
+
+    /// Mirrors `MessageTranslator.characterClassStats`'s ratios (letters/
+    /// digits/`=`/other-symbol percentages, combined across every element)
+    /// — duplicated rather than shared across the module boundary (`TranslationEngine`
+    /// depends on this package indirectly, not the reverse) since it's a
+    /// small, self-contained, F15-safe utility either way.
+    private static func characterClassSummary(_ texts: [String]) -> String {
+        var letters = 0
+        var digits = 0
+        var equalsSigns = 0
+        var otherSymbols = 0
+        var total = 0
+        for text in texts {
+            for scalar in text.unicodeScalars {
+                total += 1
+                if scalar == "=" {
+                    equalsSigns += 1
+                } else if CharacterSet.letters.contains(scalar) {
+                    letters += 1
+                } else if CharacterSet.decimalDigits.contains(scalar) {
+                    digits += 1
+                } else if !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    otherSymbols += 1
+                }
+            }
+        }
+        guard total > 0 else { return "(empty)" }
+        func pct(_ n: Int) -> Int { Int((Double(n) / Double(total) * 100).rounded()) }
+        return "letters=\(pct(letters))% digits=\(pct(digits))% equals=\(pct(equalsSigns))% otherSymbols=\(pct(otherSymbols))%"
     }
 }
 

@@ -1276,7 +1276,18 @@ struct MessageView: View {
         }) ?? false
         attachments = (try? await fetchAttachmentRecords(messageId: messageId)) ?? []
 
-        if loadedMessage.bodyState == .fetched, let existing = try? await fetchBodyRecord(messageId: messageId) {
+        // 2026-07-30 (実機フィードバック: HTML本文の quoted-printable
+        // ソフト改行消化漏れ修正 — `MailCoreIMAPSession+Mapping.swift`の
+        // `html(from:)` — 後も、同じメールでまだ翻訳が失敗した): その修正は
+        // **新規フェッチにしか効かない**。既存の`messageBody`行は修正前の
+        // 壊れたhtmlをそのまま保持している (Task #134と同じ制約) —
+        // `renderVersion`が現行コードの版数と一致しない行は「本文キャッシュ
+        // 未取得」と同等に扱い、このメッセージを開いた今このタイミングで
+        // だけ (=遅延的に、一括再取得はせず) 下の`fetchBodyOverNetwork`へ
+        // 通す。`MessageBodyRecord.currentRenderVersion`のdoc comment参照。
+        if loadedMessage.bodyState == .fetched,
+           let existing = try? await fetchBodyRecord(messageId: messageId),
+           existing.renderVersion == MessageBodyRecord.currentRenderVersion {
             bodyRecord = existing
             let backfilledMessage = await backfillDetectedLanguageIfNeeded(message: loadedMessage, body: existing)
             markAsReadIfNeeded()

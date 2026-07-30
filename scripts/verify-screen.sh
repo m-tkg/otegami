@@ -610,6 +610,13 @@ case "$SCENARIO" in
     launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenMailViewerSettingsDirectly" "-uitestsOpenToolbarCustomizeDirectly")
     default_out="toolbar-customize.png"
     ;;
+  translation-diagnostics)
+    # 2026-07-30: 設定 → メールビューア → 「翻訳の診断」を直接開く —
+    # Translation はシミュレータで動かない (`docs/verify.md`) ので、実際の
+    # 判定/テスト翻訳結果ではなくレイアウト・エラー表示体裁の確認用。
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenMailViewerSettingsDirectly" "-uitestsOpenTranslationDiagnosticsDirectly")
+    default_out="translation-diagnostics.png"
+    ;;
   search)
     # Task #86: 空状態 (クエリ未入力、履歴タブ) — トップバー/タブの見た目
     # 確認用。アカウントが無くても`SearchScreenView`自体は開けるが、

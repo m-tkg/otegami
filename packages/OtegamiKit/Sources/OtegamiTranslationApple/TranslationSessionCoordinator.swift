@@ -25,7 +25,7 @@ import OtegamiTranslation
 /// dependency and shouldn't need one just to host one modifier call). That
 /// view's body reads `configuration` and passes it straight to
 /// `.translationTask(_:action:)`; whenever this coordinator changes it (from
-/// `obtainSession(target:)` below), SwiftUI notices (this class is
+/// `enqueue(target:operation:)` below), SwiftUI notices (this class is
 /// `@Observable`) and invokes the hosting view's action closure with a fresh
 /// `TranslationSession` shortly after, which the hosting view forwards here
 /// via `attach(_:)`.
@@ -41,14 +41,51 @@ import OtegamiTranslation
 /// main actor, satisfying `TranslationOnlyService: Sendable` without ever
 /// needing an unsafe cast or `@unchecked Sendable`.
 ///
-/// A session for a `target` language that's already current is reused
-/// immediately with no re-suspension — reused across every message
-/// translated in the same app session (not recreated per call the way
-/// `FoundationModelsTranslationService` deliberately creates a fresh
-/// `LanguageModelSession` per call, see that type's doc comment for why that
-/// engine wants the opposite) so the system's language-pack download
-/// prompt/`prepareTranslation()` overhead is paid at most once per language
-/// pair per app launch, not once per message.
+/// **2026-07-30 rewrite (実機フィードバック, 一連の「翻訳が理由不明のまま
+/// 失敗し続ける」報告の最終的な根治)**: the previous revision of this type
+/// *stored* the `TranslationSession` SwiftUI handed to `attach(_:)` (in a
+/// `currentSession` property) and reused it later, on demand, from whatever
+/// unrelated `Task` context called `translate(_:to:)`/`prepareTranslation
+/// (to:)` — i.e. *outside* the `.translationTask(_:action:)` action closure
+/// that originally produced it. That is explicitly unsupported: Apple's own
+/// guidance (WWDC24 "Meet the Translation API" + the framework's own
+/// documented pattern of building a batch of requests *inside* the closure
+/// and calling `session.translations(from:)` there) is that a session is
+/// only valid for the duration of the closure invocation that vends it —
+/// using it later either traps ("Attempted to use TranslationSession after
+/// the view it was attached to has disappeared") or, on this app's actual
+/// wiring (the hosting view never disappears — it's mounted for the whole
+/// thread-detail screen's lifetime, only the *closure invocation* that
+/// handed out a given session instance ends), throws a plain
+/// `TranslationError` — which matches every real-device report in this
+/// investigation: `prepareTranslation()` and `translate()` both failing
+/// with `domain=Translation.TranslationError code=1`, unconditionally,
+/// regardless of how clean the input text was.
+///
+/// The fix: never store a session past the closure invocation that vends
+/// it. Every public method below (`translate`/`translateBatch`/
+/// `prepareTranslation`) now *enqueues* the actual `session`-using work
+/// (`enqueue(target:operation:)`) instead of fetching a session and using it
+/// itself; `attach(_:)` — called from, and `await`ed by, the hosting view's
+/// own `.translationTask` action closure — is what actually runs that work,
+/// so every `session.translate(_:)`/`.translations(from:)`/
+/// `.prepareTranslation()` call now executes on the exact `Task` SwiftUI
+/// created for it, never after. Requests are serialized (`isDraining`/
+/// `queue`) rather than allowed to overlap: setting `configuration` again
+/// while a previous request's matching `attach(_:)` hasn't fired yet would
+/// cancel that still-pending `.translationTask` invocation before it ever
+/// ran (the same task-modifier semantics as `.task(id:)`), silently
+/// dropping that request's continuation forever — the queue means at most
+/// one `configuration` change is ever "in flight" waiting for its `attach`.
+/// A fresh `Configuration(source:target:)` is now built per request rather
+/// than reused across calls for the same target (this SDK's own
+/// `Configuration` shape includes an internal identity/version field,
+/// confirmed by symbol inspection of the compiled `Translation.swiftmodule`
+/// — the framework's `invalidate()` method exists precisely to let a caller
+/// force a fresh session for the same source/target, which a brand-new
+/// `Configuration` value achieves the same way) — the previous "reuse the
+/// session for an already-current target with no re-suspension" fast path
+/// is exactly what caused this bug and is gone.
 ///
 /// `@MainActor` (not an `actor`): `.translationTask`'s action closure and
 /// SwiftUI's own re-render of the hosting view both run on the main actor,
@@ -62,15 +99,27 @@ public final class TranslationSessionCoordinator {
 
     /// Read by `TranslationSessionHostView.body` and passed straight to
     /// `.translationTask(_:action:)` — `private(set)` because only
-    /// `obtainSession(target:)` below decides when a new session is
-    /// actually needed; nothing outside this type should be able to force a
-    /// reset.
+    /// `drainIfNeeded()` below decides when a new session is actually
+    /// needed; nothing outside this type should be able to force a reset.
     public private(set) var configuration: TranslationSession.Configuration?
 
-    private var currentSession: TranslationSession?
-    private var currentTarget: Locale.Language?
-    private var pendingTarget: Locale.Language?
-    private var pendingContinuations: [CheckedContinuation<TranslationSession, Never>] = []
+    /// One queued unit of session-using work, run by `attach(_:)` — never
+    /// by the caller that created it. See this type's doc comment for why.
+    private struct QueueItem {
+        let target: Locale.Language
+        let operation: @MainActor (TranslationSession) async -> Void
+    }
+
+    private var queue: [QueueItem] = []
+    /// `true` from the moment `configuration` is set for the item currently
+    /// at the front of the queue until `attach(_:)` finishes running that
+    /// item's `operation` — i.e. "a `.translationTask` invocation is
+    /// currently owed to us and hasn't happened yet, or is in progress".
+    /// While `true`, `drainIfNeeded()` must not set `configuration` again
+    /// (see this type's doc comment on why that would silently drop a
+    /// request).
+    private var isDraining = false
+    private var pendingOperation: (@MainActor (TranslationSession) async -> Void)?
 
     /// Translates `text`, auto-detecting the source language (`Configuration
     /// (source: nil, target:)` — see `AppleTranslationService`'s doc comment,
@@ -78,9 +127,9 @@ public final class TranslationSessionCoordinator {
     /// plain translated string — `TranslationSession.Response` itself never
     /// leaves this method, let alone this type.
     public func translate(_ text: String, to target: Locale.Language) async throws -> String {
-        let session = await obtainSession(target: target)
-        let response = try await session.translate(text)
-        return response.targetText
+        try await performInSession(target: target) { session in
+            try await session.translate(text).targetText
+        }
     }
 
     /// Batches every element of `texts` into one `session.translations(from:)`
@@ -94,18 +143,19 @@ public final class TranslationSessionCoordinator {
     /// (a genuine engine-level anomaly, not expected in practice).
     public func translateBatch(_ texts: [String], to target: Locale.Language) async throws -> [String] {
         guard !texts.isEmpty else { return [] }
-        let session = await obtainSession(target: target)
-        let responses = try await session.translations(from: Self.makeRequests(for: texts))
-        var byIndex: [Int: String] = [:]
-        byIndex.reserveCapacity(responses.count)
-        for response in responses {
-            guard let id = response.clientIdentifier, let index = Int(id) else { continue }
-            byIndex[index] = response.targetText
+        return try await performInSession(target: target) { session in
+            let responses = try await session.translations(from: Self.makeRequests(for: texts))
+            var byIndex: [Int: String] = [:]
+            byIndex.reserveCapacity(responses.count)
+            for response in responses {
+                guard let id = response.clientIdentifier, let index = Int(id) else { continue }
+                byIndex[index] = response.targetText
+            }
+            guard byIndex.count == texts.count else {
+                throw TranslationServiceError.failed(message: "translation response count mismatch (\(byIndex.count)/\(texts.count))")
+            }
+            return texts.indices.map { byIndex[$0] ?? "" }
         }
-        guard byIndex.count == texts.count else {
-            throw TranslationServiceError.failed(message: "translation response count mismatch (\(byIndex.count)/\(texts.count))")
-        }
-        return texts.indices.map { byIndex[$0] ?? "" }
     }
 
     /// `nonisolated`/`static`, deliberately: building `[TranslationSession
@@ -130,39 +180,61 @@ public final class TranslationSessionCoordinator {
     /// visible OS flow rather than a confusing mid-translation failure (Task
     /// #159 point 3).
     public func prepareTranslation(to target: Locale.Language) async throws {
-        let session = await obtainSession(target: target)
-        try await session.prepareTranslation()
+        try await performInSession(target: target) { session in
+            try await session.prepareTranslation()
+        }
     }
 
-    /// Returns the session for `target`, requesting source-language auto-
-    /// detection — reused immediately (no suspension) if already current for
-    /// this `target`; otherwise updates `configuration`, which causes
-    /// SwiftUI to invoke the hosting view's `.translationTask` action with a
-    /// fresh session shortly after, delivered back here via `attach(_:)`.
-    private func obtainSession(target: Locale.Language) async -> TranslationSession {
-        if let currentSession, currentTarget == target {
-            return currentSession
+    /// Runs `operation` with a `TranslationSession` for `target`, entirely
+    /// from inside the `.translationTask` action-closure invocation that
+    /// session belongs to (see this type's doc comment) — `operation` itself
+    /// must not stash `session` anywhere that outlives this call.
+    private func performInSession<T: Sendable>(
+        target: Locale.Language,
+        operation: @escaping @MainActor (TranslationSession) async throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+            enqueue(target: target) { session in
+                do {
+                    let result = try await operation(session)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
-        return await withCheckedContinuation { continuation in
-            pendingContinuations.append(continuation)
-            pendingTarget = target
-            configuration = TranslationSession.Configuration(source: nil, target: target)
-        }
+    }
+
+    private func enqueue(target: Locale.Language, operation: @escaping @MainActor (TranslationSession) async -> Void) {
+        queue.append(QueueItem(target: target, operation: operation))
+        drainIfNeeded()
+    }
+
+    /// Starts the next queued item, if any, *only* when no `.translationTask`
+    /// invocation is currently owed to us — see `isDraining`'s doc comment.
+    private func drainIfNeeded() {
+        guard !isDraining, !queue.isEmpty else { return }
+        isDraining = true
+        let item = queue.removeFirst()
+        pendingOperation = item.operation
+        // A fresh `Configuration` value every time, deliberately never
+        // reused across calls even for the same `target` — see this type's
+        // doc comment for why session reuse across separate closure
+        // invocations was the actual root cause this rewrite fixes.
+        configuration = TranslationSession.Configuration(source: nil, target: item.target)
     }
 
     /// Called by `TranslationSessionHostView`'s `.translationTask` action
-    /// closure with the session SwiftUI just created for whatever
-    /// `configuration` this coordinator most recently set. Resolves every
-    /// continuation currently queued for that target — ordinarily just one,
-    /// but `translateBatch`/two messages opened in quick succession could
-    /// enqueue a few before the first one resolves.
-    public func attach(_ session: TranslationSession) {
-        currentSession = session
-        currentTarget = pendingTarget
-        let continuations = pendingContinuations
-        pendingContinuations.removeAll()
-        for continuation in continuations {
-            continuation.resume(returning: session)
-        }
+    /// closure (`await`ed there, not fire-and-forgotten — see this type's
+    /// doc comment for why staying on that closure's own `Task` for the
+    /// full duration of `operation`'s work is the entire point) with the
+    /// session SwiftUI just created for whatever `configuration` this
+    /// coordinator most recently set.
+    public func attach(_ session: TranslationSession) async {
+        guard let operation = pendingOperation else { return }
+        pendingOperation = nil
+        await operation(session)
+        isDraining = false
+        drainIfNeeded()
     }
 }

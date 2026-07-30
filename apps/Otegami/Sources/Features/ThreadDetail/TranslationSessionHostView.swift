@@ -31,7 +31,13 @@ struct TranslationSessionHostView: View {
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
             .translationTask(coordinator.configuration) { session in
-                coordinator.attach(session)
+                // 2026-07-30 (実機フィードバック、`TranslationSessionCoordinator`
+                // の全面書き直し): `await` — fire-and-forget にしない。この
+                // クロージャの`Task`が実際に`session`を使い終わるまで
+                // 生き続けることそのものが、セッションをクロージャの外へ
+                // 持ち出さないための修正の要 — `TranslationSessionCoordinator`
+                // のdoc comment参照。
+                await coordinator.attach(session)
             }
     }
 }

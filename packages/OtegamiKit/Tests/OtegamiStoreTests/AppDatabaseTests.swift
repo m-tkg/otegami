@@ -382,6 +382,79 @@ struct AppDatabaseTests {
         #expect(unreadCount == 1)
     }
 
+    // MARK: - v36 (実機フィードバック: `MailCoreIMAPSession+Mapping.swift`
+    // の`html(from:)`修正 — quoted-printableソフト改行の消化漏れ — は
+    // 新規フェッチにしか効かず、既存の`messageBody`行は壊れたhtmlを保持
+    // したまま。`renderVersion`列を`DEFAULT 0`で追加し、`0 <
+    // MessageBodyRecord.currentRenderVersion`という関係を使って「本文
+    // キャッシュ未取得」と同等に扱わせ、メッセージを開いた時だけ遅延的に
+    // 再フェッチさせる。
+
+    @Test("v36 migration adds renderVersion=0 to every pre-existing messageBody row")
+    func v36BackfillsRenderVersionToZeroForExistingRows() throws {
+        // v35までは`MessageBodyRecord`の現行Swiftシェイプ(renderVersion
+        // 込み)ではまだ書けない — v36で列自体が生まれる前なので、その
+        // 行だけは生SQLで直接挿入する (`v21RepairsDisplayPath`と同じ
+        // 「凍結されたスキーマに対しては生SQL」の教訓)。
+        let dbQueue = try DatabaseQueue()
+        let migrator = AppDatabase.migrator
+        try migrator.migrate(dbQueue, upTo: "v35")
+
+        let account = AccountRecord(
+            displayName: "Test", email: "renderver@example.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "renderver@example.test"
+        )
+        let messageId = try dbQueue.write { db -> Int64 in
+            try account.insert(db)
+            var mailbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var message = MessageRecord(mailboxId: mailbox.id!, uid: 1, internalDate: Date())
+            try message.insert(db)
+            let messageId = message.id!
+            try db.execute(
+                sql: "INSERT INTO messageBody (messageId, plainText, html, fetchedAt) VALUES (?, ?, ?, ?)",
+                arguments: [messageId, "old plain", "old broken html", Date()]
+            )
+            return messageId
+        }
+
+        try migrator.migrate(dbQueue)
+
+        let renderVersion = try dbQueue.read { db -> Int in
+            let row = try Row.fetchOne(db, sql: "SELECT renderVersion FROM messageBody WHERE messageId = ?", arguments: [messageId])!
+            return row["renderVersion"]
+        }
+        #expect(renderVersion == 0)
+        #expect(0 < MessageBodyRecord.currentRenderVersion, "the migration's DEFAULT must stay older than whatever the current code writes")
+    }
+
+    @Test("a fresh MessageBodyRecord insert (as BodyFetcher writes) gets the current renderVersion, not the migration's stale default")
+    func freshMessageBodyRecordGetsCurrentRenderVersion() throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Test", email: "fresh@example.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "fresh@example.test"
+        )
+        let messageId = try database.dbWriter.write { db -> Int64 in
+            try account.insert(db)
+            var mailbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            var message = MessageRecord(mailboxId: mailbox.id!, uid: 1, internalDate: Date())
+            try message.insert(db)
+            // Mirrors `BodyFetcher.performFetch`'s insert exactly: no
+            // explicit `renderVersion` argument, relying on the
+            // initializer's default.
+            let body = MessageBodyRecord(messageId: message.id!, plainText: "hello", html: "<p>hello</p>", fetchedAt: Date())
+            try body.insert(db)
+            return message.id!
+        }
+
+        let fetched = try database.dbWriter.read { db in
+            try MessageBodyRecord.fetchOne(db, key: messageId)
+        }
+        #expect(fetched?.renderVersion == MessageBodyRecord.currentRenderVersion)
+    }
+
     @Test("sortOrder round-trips, and a fresh account defaults to 0")
     func roundTripsAccountSortOrder() throws {
         let database = try AppDatabase.makeInMemory()

@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import OtegamiCore
+import os
 
 /// The app's local GRDB database: schema migrations, and the single
 /// `DatabaseWriter` every DAO/query in `OtegamiStore` (and `SyncEngine`
@@ -21,6 +22,23 @@ public final class AppDatabase: Sendable {
     public init(_ dbWriter: any DatabaseWriter) throws {
         self.dbWriter = dbWriter
         try Self.migrator.migrate(dbWriter)
+        Self.logStaleMessageBodyRenderVersionCount(dbWriter)
+    }
+
+    /// 2026-07-30 (v36の`messageBody.renderVersion`導入時): 起動のたびに
+    /// 「まだ古い版数のまま=次に開いたら遅延再フェッチされる、本文キャッ
+    /// シュがどれだけ残っているか」を件数だけ (本文は一切出さない、F15の
+    /// 趣旨) notice ログへ — 一括再取得はしない設計なので、この件数は
+    /// ユーザーが実際にそのメッセージを開くまでゆっくり減っていく。運用側
+    /// が「まだ大量に残っているのに翻訳/表示の不具合報告が来る」ような
+    /// ギャップに気づけるようにするためのもの。失敗しても起動を止めない。
+    private static func logStaleMessageBodyRenderVersionCount(_ dbWriter: any DatabaseWriter) {
+        guard let count = try? dbWriter.read({ db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messageBody WHERE renderVersion < ?", arguments: [MessageBodyRecord.currentRenderVersion])
+        }) else { return }
+        guard count > 0 else { return }
+        Logger(subsystem: "com.mtkg.otegami", category: "AppDatabase")
+            .notice("messageBody: \(count, privacy: .public) row(s) still at a stale renderVersion (current=\(MessageBodyRecord.currentRenderVersion, privacy: .public)), pending lazy re-fetch on next open")
     }
 
     /// The shared on-disk database, at
@@ -936,6 +954,26 @@ extension AppDatabase {
         // safe regardless of columns added by migrations after this one.
         migrator.registerMigration("v35") { db in
             try ThreadAssigner.recomputeAllAggregates(db: db)
+        }
+
+        // v36 (実機フィードバック: HTML本文の quoted-printable ソフト改行
+        // 消化漏れ — `MailCoreIMAPSession+Mapping.swift`の`html(from:)`修正
+        // 後も、同じメールでまだ翻訳が失敗した): 修正は**新規フェッチにしか
+        // 効かない** — 既存の`messageBody`行には修正前の壊れたhtmlがその
+        // まま残っている (Task #134と全く同じ制約)。全件に`DEFAULT 0`で
+        // `renderVersion`列を足すだけで済ませる — SQLite側が既存行全てへ
+        // 自動適用するので、手動のfetch-then-updateバックフィルは不要
+        // (`MessageBodyRecord.currentRenderVersion`のdoc comment参照)。
+        // `0`は`MessageBodyRecord.currentRenderVersion`(1)より必ず古い値
+        // になるので、既存行は次にそのメッセージを開いた瞬間 `MessageView
+        // .load()`のキャッシュ利用ガードにより「本文キャッシュ未取得」と
+        // 同等に扱われ、遅延的に (そのメッセージだけ) 再フェッチされる —
+        // 起動時に全件を一括再取得することはしない (数千件規模になりうる
+        // ため)。
+        migrator.registerMigration("v36") { db in
+            try db.alter(table: "messageBody") { t in
+                t.add(column: "renderVersion", .integer).notNull().defaults(to: 0)
+            }
         }
 
         return migrator
