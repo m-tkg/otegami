@@ -67,38 +67,14 @@ iOS 側 (Xcode Cloud) はこの workflow を通らないので影響を受けな
 | `OTEGAMI_GOOGLE_CLIENT_ID` (任意) | Gmail OAuth の Client ID。登録済みなら「Generate Local.xcconfig from OAuth Client ID secrets」ステップがこの secret から `Config/Local.xcconfig` を生成し、配布ビルドで Gmail 認証が有効になる。**未登録でもビルドは失敗しない** — その場合は Gmail 認証ボタンが無効化された「素のビルド」になるだけ (`docs/oauth-setup.md`)。 |
 | `OTEGAMI_MICROSOFT_CLIENT_ID` (任意) | Outlook/Office365 OAuth の Client ID。上記と同じ仕組み・同じ「未登録でも失敗しない」挙動 (`docs/oauth-setup.md`)。 |
 
-実機フィードバック (v1.2.0-beta2): 上記2つの OAuth Client ID secret が
-未対応だったため、GitHub Release からインストールした macOS ビルドは
-Gmail の「再認証」が常に `oauthUnavailable` で失敗していた
+この2つの Client ID secret が未登録だと、GitHub Release からインストール
+した macOS ビルドは Gmail の「再認証」が常に `oauthUnavailable` で失敗する
 (パスワード認証の IMAP/SMTP アカウント・iCloud は元々問題なく使える)。
 「Generate Local.xcconfig from OAuth Client ID secrets」ステップ
-(`xcodegen generate` の直前) を追加して解消した — 値はジョブ内の
+(`xcodegen generate` の直前) が、登録済みの secret から値はジョブ内の
 `Config/Local.xcconfig` (git 管理外、コミットもアーティファクト化もしない)
-にのみ書き込み、`::add-mask::` でログへの出力も防いでいる。Xcode Cloud
-(`ci_post_clone.sh`) 側は元々同種の変数マッピングを持っており、今回の
-変更はこのワークフロー側を追いつかせただけ。
-
-**`workflow_dispatch` dry-run で実地検証済み** (2026-07-30、両 secret 登録後):
-run [30500375015](https://github.com/m-tkg/otegami/actions/runs/30500375015)
-が緑で完走し、以下を確認した。
-
-- 「Generate Local.xcconfig from OAuth Client ID secrets」ステップが両方
-  「configured from ... secret」を報告し、後続の `Build macOS app` /
-  `Sign app bundle` / `Notarize and staple` / `Create release archive`
-  まですべて成功。
-- ジョブの全ログ (14,495行) を `gh run view --log` で走査し、Client ID の
-  値が一切出力されていないことを確認 (`env:` ブロックが GitHub 標準の
-  secret マスキングで `GOOGLE_CLIENT_ID: ***`/`MICROSOFT_CLIENT_ID: ***`
-  と表示されており、`::add-mask::` を含め二重に保護されている)。
-- Artifacts からビルド成果物をダウンロードして展開し、
-  `Contents/Info.plist` の `GOOGLE_OAUTH_CLIENT_ID`/
-  `OTEGAMI_MICROSOFT_CLIENT_ID` が両方とも空でも `$(...)` 未展開プレース
-  ホルダでもない、実際の値が埋め込まれていることを確認 (値そのものは
-  確認のみで記録・出力していない)。
-- ついでに `codesign --verify --deep --strict` (`valid on disk`) と
-  `spctl -a -vvv` (`accepted`, `source=Notarized Developer ID`) も
-  通ることを確認済み — これは下記「確認できていないこと」節の
-  notarization/Gatekeeper 項目も実質的にカバーする最初の実地確認。
+へのみ書き込む — `::add-mask::` でログへの出力も防いでいる。Xcode Cloud
+(`ci_post_clone.sh`) 側も同種の変数マッピングを持つ。
 
 ## 署名の仕組み: なぜ `xcodebuild` 自身に署名させないか
 
@@ -145,80 +121,17 @@ Apple のビルド設定リファレンスどおり)、`$(CFBundleIdentifier)` �
 — GitHub Actions には `Config/Local.xcconfig` が存在しないので必ず
 この既定値になる) に置換してから署名する。
 
-## ローカルで確認したこと・確認できていないこと
+## 検証状況
 
-### 確認済み (このセッションでこのマシン上で再現)
+実タグ push による `release-macos` の実行は複数回グリーンで完走しており
+(`gh run list --workflow=release-macos.yml`)、公開された各 GitHub Release
+(`v1.2.0-beta2` 以降) には署名・notarize 済みの `Otegami.zip` が添付されて
+いる。`codesign --verify --deep --strict`/`spctl -a -vvv` (Gatekeeper 判定)
+も通ることを確認済み。
 
-- 未署名の `xcodebuild build` (Release, macOS destination) が成功する
-  こと (`ci-app.yml`/`make mac` と同じフラグ)。
-- `CODE_SIGN_STYLE=Manual` + Developer ID identity での署名は、
-  provisioning profile が無いと `xcodebuild` の時点で
-  `requires a provisioning profile with the iCloud feature` エラーに
-  なること (このマシンにインストール済みの実 Developer ID Application
-  証明書で再現)。
-- 未署名ビルドした `.app` に対し、実 Developer ID Application 証明書 +
-  マクロ解決済み entitlements で `codesign --force --deep --options
-  runtime --timestamp --entitlements ... --sign ...` を実行すると成功し、
-  `codesign --verify --deep --strict` が `valid on disk` /
-  `satisfies its Designated Requirement` を返すこと。
-- entitlements のマクロ置換ロジック (`sed` 2箇所) がダミーの Team ID で
-  期待通りの文字列 (`<TEAMID>.com.mtkg.otegami`) を生成すること。
-- ワークフロー YAML が構文的に妥当であること (`python3 -c
-  "import yaml; yaml.safe_load(...)"`。`actionlint` はこの環境に
-  未インストールで、未信頼の Homebrew tap 経由でしか入らなかったため
-  導入は見送った)。
-
-### 確認できていないこと (次回タグ push / workflow_dispatch で判明する)
-
-- **notarization そのもの** — `xcrun notarytool submit --wait` は
-  実際に Apple のサーバーと通信するため、この環境からは実行していない
-  (実 Apple ID・実 Team ID を使い、ユーザーの notarization クォータを
-  消費する操作になるため)。証明書のインポート (`security import` +
-  `set-key-partition-list`) 自体も GitHub Actions のキーチェーン方式は
-  `mytty` の実績パターンをそのまま踏襲しているが、この repo の証明書
-  では試していない。
-- **iCloud KVS entitlement が実際に「効く」か** — 上記の
-  署名手順は `codesign --verify` が通る (=署名として正しい形式) ことは
-  確認したが、embedded provisioning profile を持たない Developer ID
-  署名の非 Sandbox アプリに対して、macOS が実行時に iCloud KVS の
-  entitlement を実際に許可するかどうかは未確認。2つのシナリオが
-  考えられる:
-  1. 通常どおり動く — Developer ID・非 Sandbox アプリは多くの
-     entitlement について profile なしでも OS 側のチェックが緩い。
-  2. iCloud アカウント同期 (M11) だけがこの配布ビルドでは無言で
-     動かない — 現在「Team ID が空 (未署名)」のローカルビルドで
-     iCloud KVS が使えないのと同じ壊れ方で、アプリの他の機能
-     (メール送受信・翻訳等) には影響しない。
-  どちらであっても **notarization/Release 添付というパイプライン自体は
-  失敗しない** (notarytool は entitlement の妥当性ではなく hardened
-  runtime・タイムスタンプ・署名の整合性だけを見る) — あくまで
-  「配布した .app で iCloud アカウント同期が実際に動くか」という
-  アプリ機能面のリスクであり、リリース作業そのもののブロッカーには
-  ならない想定。
-- **GitHub Actions ランナー実機での挙動全般** — `runs-on: macos-26` は
-  `ci-app.yml` が同じ設定で緑を継続しているため SDK/ツールチェーン面は
-  流用できる想定だが、`release-macos.yml` 自体をこのランナー上で
-  実行したことはまだない。
-
-**次回タグを打つときの確認ポイント**:
-1. Actions タブで `release-macos` の run が最後まで緑になるか
-   (どのステップで落ちるかで切り分け — 証明書 import / codesign /
-   notarize / GitHub Release 添付のどこかまでは事前検証済み)。
-2. 緑になった場合、GitHub Release に添付された `Otegami.zip` を展開して
-   `codesign --verify --deep --strict`、`spctl -a -vvv Otegami.app`
-   (Gatekeeper 判定) が通るか。
-3. 実際に別の Mac (この配布用証明書を持たないマシン) にコピーして
-   起動できるか (Gatekeeper 越え = notarization が本当に効いている
-   ことの実地確認)。
-4. iCloud アカウント同期 (設定 → アカウント同期) が、この配布ビルドで
-   ローカル署名ビルドと同じように動くか — 上記「確認できていないこと」
-   の項目。動かない場合は entitlement 周りの追加対応 (例: Developer ID
-   用の provisioning profile を新しい secret として追加する) が
-   フォローアップとして必要になる。
-
-まず tag を打つ前に `workflow_dispatch` (手動実行) でこのワークフロー
-単体を一度試すことを推奨する — Release を作らずに同じビルド/署名/
-notarize 経路を確認できる。
+tag を打つ前に `workflow_dispatch` (手動実行) でこのワークフロー単体を
+一度試すこともできる — Release を作らずに同じビルド/署名/notarize 経路を
+確認できる。
 
 ## 失敗時の見方
 
@@ -317,15 +230,13 @@ notarize 経路を確認できる。
    閉じた場合、ユーザーが手動で再起動するまで新しいバージョンは使われ
    ない。
 
-**このセッションでの検証範囲**: `AppUpdateDownloadPolicy`/
-`ZipEntryPathValidator`/`CodeSignatureIdentity`はそれぞれ
-`OtegamiCoreTests`の単体テストで検証済み (ホスト許可リスト・zip slip
-判定・署名同一性比較の網羅的なケース)。実際のダウンロード→展開→入れ替え
-という一連の流れそのもの、および本物のアプリの差し替えは**このセッション
-では実行していない** (ユーザーの実アプリを壊すリスクがあるため) — About
-画面を開いてアップデート確認 (「最新版です」まで) が動くことのみ実機
-シミュレータで確認した。差し替え経路自体の実地確認は次のリリースで
-実際に新しいバージョンを配ってから行う。
+**検証状況**: `AppUpdateDownloadPolicy`/`ZipEntryPathValidator`/
+`CodeSignatureIdentity`はそれぞれ`OtegamiCoreTests`の単体テストで検証済み
+(ホスト許可リスト・zip slip判定・署名同一性比較の網羅的なケース)。About
+画面を開いてアップデート確認 (「最新版です」まで) が動くことは確認済み。
+実際のダウンロード→展開→入れ替えという一連の流れ、および本物のアプリの
+差し替えは、ユーザーの実アプリを壊すリスクがあるため未実行 — 詳細は
+[PENDING.md](../PENDING.md)「Task #182」節参照。
 
 ## 関連ドキュメント
 
