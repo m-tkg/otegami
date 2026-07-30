@@ -3671,3 +3671,64 @@ iPad: 20/29/40/76/83.5pt の @1x/@2x、マーケティング 1024) に置き換�
 **未確認**: 実機での見た目確認 (通知バナーのアイコンが実際に正しく
 表示されること) はユーザーに依頼— この場では`Assets.car`のレンディション
 存在をビルド成果物レベルで確認するところまで。
+
+## Task #172: `OtegamiUITests` が Swift 6 strict concurrency でコンパイル不能になっていた件の修復
+
+前任のセッションで`apps/Otegami/UITests/`配下 (`OtegamiUITests`スキーム
+ターゲット) 約40ファイルが Swift 6 strict concurrency 下でコンパイル
+できなくなっており、`xcodebuild test -only-testing:OtegamiUITests`が
+長期間まったく走っていなかった (UIテストが全滅した状態で放置)。この
+セッションでその修正一式を検証・コミットした。
+
+**修正の中身** (詳細はコミット`8037cce`/`ebfebab`参照):
+- `DovecotAccountUITestHelpers.swift`: `NSPredicate`(非`Sendable`)を
+  2つの`.matching(_:)`呼び出しで使い回さず、呼び出しごとに生成し直す
+  ヘルパー関数化。`addDovecotTest1Account`等の接続テスト系ヘルパーを
+  `throws`化し、この環境固有の既知不調 #1 (`MailCoreErrorDomain error
+  1`、上の「シミュレータ検証の既知の不調」節参照) を検出したら
+  `XCTSkip`で抜けるようにした (アカウント追加の途中で「行が見つからない」
+  という紛らわしい二次症状で落ちるのを防ぐ)。
+- 上記ヘルパーの`throws`化に伴い、呼び出し元テスト (約35ファイル) を
+  `try`付きに機械的に追従。
+- `OtegamiAvatarSettingsUITests`: アバター強化バッチの個別4トグル
+  (連絡先/Google/Gravatar/企業ロゴ) が`settings.list.showAvatarToggle`
+  1つに集約されたUI変更に追従しておらず存在しないトグルを探していた
+  ので、単一トグルを検証する内容に書き直し。
+- `OtegamiDuplicateAccountUITests`/`OtegamiAccountEditUITests`:
+  フェーズ2/3が前フェーズの手動`sqlite3`注入 (このファイル上の「実 2
+  台のデバイスを使わない再現方法」節) やフェーズ1の実行を前提にして
+  おり、`OtegamiUITests`スイート全体を1回の`xcodebuild test`でまとめて
+  走らせるとその前提が満たされない — 前提未達を検出したら`XCTAssert`
+  失敗ではなく`XCTSkip`で抜けるようにし、統合ロジック自体の本当の
+  リグレッションは引き続き失敗として検出されるようにした。
+
+**検証結果**:
+- `xcodebuild -project apps/Otegami/Otegami.xcodeproj -scheme Otegami
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max'
+  build-for-testing` — **TEST BUILD SUCCEEDED**。concurrency 関連の
+  警告も0件 (全体で無関係な警告1件のみ)。これでコンパイル修復の主張は
+  ビルドレベルで裏付けられている。
+- 実際に個別テスト (`OtegamiAvatarSettingsUITests` — アカウント不要で
+  実行できる想定の1本) を`xcodebuild test -only-testing:...`で走らせて
+  pass/fail まで確認しようと試みたが、この開発機ではフルクリーン
+  ビルド (直前の編集で`OtegamiUITests`モジュールが再コンパイル対象に
+  なったため) に数分以上かかり、複数回試行しても`ClangStatCache`/
+  ビルド記述生成のあたりで数分経過してもテスト実行フェーズまで
+  到達しなかった。ユーザーの明示指示 (粘りすぎない) に従い、**このテスト
+  クラスの実際の pass/fail は今回のセッションでは未検証のまま**、
+  ビルドが通ることの確認とコミットを優先して先へ進めた。
+
+**残件 (`PENDING.md`にも転記)**:
+1. `OtegamiAvatarSettingsUITests`含む個々のテストクラスの実行時
+   pass/fail は次回セッションで`xcodebuild test
+   -only-testing:OtegamiUITests/<クラス名>`を、事前に`build-for-testing`
+   だけ済ませた状態 (増分ビルドで済むようにする) から実行して確認
+   すること。
+2. 約40ファイルすべてを一括の`xcodebuild test -only-testing:OtegamiUITests`
+   (フィルタなしフルスイート) で流した場合にどれだけ pass/skip/fail
+   するかの全体像は未取得。account/mailstack 依存のクラスは既知不調 #1
+   でスキップされる想定だが、実際にその通りスキップとして報告される
+   ことまでは確認していない。
+3. 今回は大規模な整理・統廃合はスコープ外とし、コンパイル修復と現状の
+   可視化のみ実施。実行不能テストの削除/tap-free方式への置き換え
+   検討は別セッションで。

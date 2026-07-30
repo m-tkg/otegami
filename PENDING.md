@@ -1692,3 +1692,26 @@ contacts`のハング (3回試行して打ち切り) により取得できなか
    `color:`指定が付かず受信側の既定色で表示されること (送信元HTMLソースに
    `color:`が出ていないことは`make test`の単体テストで担保済みだが、
    実際のメールクライアントでの見た目は未確認)。
+
+## Task #172: `OtegamiUITests`コンパイル修復 — 実行 (pass/fail) は未検証
+
+前任セッションが直したコンパイル修復 (約40ファイル、詳細は
+`docs/verify.md`のTask #172節) をこのセッションでコミット
+(`8037cce`/`ebfebab`) し、`xcodebuild build-for-testing`で
+**TEST BUILD SUCCEEDED**まで確認した。
+
+**未検証 (次回セッションで確認すること)**:
+1. `OtegamiAvatarSettingsUITests`等、個別テストクラスを
+   `xcodebuild test -only-testing:OtegamiUITests/<クラス名>`で実際に
+   実行した pass/fail。このセッションでは複数回試みたが、直前の編集で
+   `OtegamiUITests`モジュールがフルリコンパイル対象になっており、
+   数分待っても`ClangStatCache`/ビルド記述生成の段階からテスト実行
+   フェーズまで到達しなかった (エラーではなく単に遅い/この開発機固有の
+   ビルドの重さ)。ユーザー指示 (シミュレータで粘りすぎない) に従い
+   打ち切った。
+2. `OtegamiUITests`スイート全体を1回で流した場合の pass/skip/fail の
+   全体像 (account/mailstack依存クラスが既知不調#1で意図通りskipされる
+   か、等) も未取得。
+3. 大規模な整理 (重複テストの統廃合、tap依存テストのtap-free方式への
+   置き換え) はこのセッションのスコープ外。次回、上記1・2の実行結果を
+   見た上で判断すること。
