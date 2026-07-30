@@ -8066,3 +8066,94 @@ grant contacts`がハングし先へ進まなかった — Task #176 が既に�
 (#188) のxcodebuildが並行実行中だった)。ユーザー指示どおりリトライは
 2回で打ち切り、実機での確認ポイントは`PENDING.md`「Task #189」節に
 まとめた。
+
+## Task #195: macOS サイドバーで開くグループを1つだけにする
+
+**実機フィードバック**: 「mac 版において、ハンバーガーメニューを iOS と
+同じように一つしか開かないようにしてほしい」。
+
+### 現状把握: iOS はどう「1つだけ」を実現しているか
+
+`FolderListSheet.resetCollapseStateToCurrentSelection()`(Task #73、
+2026-07-29 実機フィードバック第2弾で「常に1つだけ開かれてる状態にして」
+に対応済み) は、現在の選択 (`.unifiedRole`ならそのカテゴリ、`.mailbox`
+ならそのアカウント) 以外の**カテゴリ・アカウント全部**を畳む — カテゴリ
+同士/アカウント同士で別々に排他にするのではなく、**カテゴリとアカウント
+を合わせた全体で最大1つ**という設計。ただしこれは「ドロワーを開くたび」
+にしか効かない一度きりのリセットで、開いている間の手動開閉
+(`toggleAccountCollapsed`/`toggleCategoryCollapsed`) 自体は妨げていない
+(同ファイルの doc comment に明記)。
+
+macOS の`SidebarView`(Task #181) は常設マウントで「開く」という契機が
+無いため、この「開くたびにリセット」だけを移植しても意味がない —
+iOS と同じ「カテゴリ・アカウント全体で最大1つ」という**最終的な見た目**
+は揃えつつ、契機は「手動開閉のたびに排他を強制する」方式に置き換えた。
+
+### 実装
+
+- `macCategoryExpandedBinding(for:)`/`macAccountExpandedBinding(for:)`の
+  `Binding<Bool>`の`set`: `isExpanded == true`のときは`expandOnlyCategory
+  (_:)`/`expandOnlyAccount(_:)`に委譲し、対象以外の全カテゴリ・全
+  アカウントを畳む。`isExpanded == false`(自分を畳む) のときは単純に
+  自分だけを畳む — 「最大1つ」であって「必ず1つ」ではないので、全部
+  畳んで何も開いていない状態も許す。
+- 起動直後 (保存されていた展開状態がこのタスク以前の「複数同時展開可」
+  だった場合を含む) の正規化は`normalizeCollapseStateToSingleExpansion()`
+  — 現在の`selection`に対応するセクションだけを`expandOnlyCategory`/
+  `expandOnlyAccount`で開く。トリガーは`.task(id: selection)`にガード
+  変数`hasNormalizedInitialCollapseState`を組み合わせたもの。
+- **既存データの移行は不要と判断した**: 新しいキーは追加せず、既存の
+  `SidebarCategoryCollapseStore`/`SidebarAccountCollapseStore`をそのまま
+  使う。以前の「複数同時展開」状態が残っていても、起動直後の正規化と
+  以後の排他ロジックで自然に1つへ収束する。
+
+### ハマった点: `.task(id:)`の初回発火が「空のaccounts」を捉えてしまう
+
+最初`.task(id: environment.accounts.map(\.id))`をトリガーにしたところ、
+実機スクリーンショットで**カテゴリは全部畳まれるがアカウントツリーが
+複数同時に展開されたまま**という再現性のあるバグを踏んだ。原因:
+`.task(id:)`は`id`の初期値 (起動直後、`environment.accounts`がまだ空の
+一瞬) でも即座に1回発火する。そこで正規化を実行し
+`hasNormalizedInitialCollapseState`を立ててしまうと、`allAccountIds`が
+空集合のまま`collapsedAccountIds`に書き込まれ、後から実際のアカウントが
+`environment.accounts`に増えても「集合に含まれない」ので展開扱いの
+ままになり、以後正規化が二度と走らない (ガード済み) ため直らない —
+という実バグだった。
+
+`selection`の変化をトリガーに変更して解消した: `selection`は
+`observeMailboxes(accountId:)`がM4の「初回は`.unifiedInbox`を自動選択」
+を確定させるまで`nil`のままなので、`.task(id: selection)`は「選択が
+実際に決まった値」で初めて正規化を走らせる。空/不完全な状態で正規化
+してしまうリスクを避けられる。
+
+これは実際に `make mac` でビルドしたバイナリを起動し、`osascript`
+(`System Events`) でカテゴリ/アカウント行をクリックしながら
+`screencapture`で確認して見つけた — コードレビューだけでは気づかな
+かった (`allAccountIds`が空集合になる、という初期化順序のタイミング
+依存バグは静的には追いにくい)。
+
+### 検討したが採用しなかった案: カテゴリ見出しの「選択と展開が同時に
+### 起きる」挙動の分離
+
+作業中、カテゴリ見出し (`macCategoryHeaderLabel`) をクリックすると
+「統合ビューへの選択」と「そのカテゴリの展開」が**同じ1クリックで両方**
+起きることを実機確認で見つけた (`DisclosureGroup`のラベル部分が独自の
+`Button`を持っていても、SwiftUI/AppKitブリッジ側で行全体のクリックが
+開閉トグルとしても解釈されるため)。今回の排他ロジックにとっては
+無害 (どちらの効果が起きても最終的に「最大1つ」には収束する) だが、
+選択中のセクションをもう一度クリックすると閉じてしまう、という若干の
+驚きは残る。`DisclosureGroup`の「ラベル全体がトグル対象」という
+macOS標準動作を打ち消すには`List`の行レンダリングそのものに手を入れる
+必要があり、このタスクの排他化そのものとは別軸の変更になる (副作用の
+範囲も広い) と判断し、今回は見送った。
+
+### 検証
+
+`make mac`でビルドし、実際に起動して`osascript`+`screencapture`で
+カテゴリ見出し/アカウント見出しのクリックを繰り返し確認: カテゴリ
+→カテゴリ、カテゴリ→アカウント、アカウント→アカウントいずれの遷移でも
+直前に開いていたセクションが自動的に畳まれ、常に最大1つしか展開されない
+ことを確認した。`make test`/`make ios`はこのタスクでは未実行 (iOS の
+`FolderListSheet`側は無改修、macOS専用の`#if os(macOS)`ブロックのみの
+変更のため)。**iOS 側は無改修** — `SidebarView`の`#if os(macOS)`
+ブロック外には触れていない。

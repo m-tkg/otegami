@@ -82,14 +82,13 @@ struct SidebarView: View {
     #if os(macOS)
     /// Task #181: どのカテゴリ (role) セクションが折りたたまれているか —
     /// `FolderListSheet.collapsedCategoryRoles`と同じ発想だが、永続キーは
-    /// 別 (`SidebarCategoryCollapseStore`)。iOS のドロワーは開くたびに
-    /// 「選択中のセクションだけ展開」へリセットする特別な挙動を持つ
-    /// (`FolderListSheet.resetCollapseStateToCurrentSelection()`) が、この
-    /// サイドバーは常設表示でその種のリセット契機が無いため、単純に
-    /// ユーザーの最後の開閉状態をそのまま復元する。デフォルト (未設定) は
-    /// 全展開 — 追加前は折りたたみという概念自体が無く常に全部見えていた
-    /// ので、既定値を「全展開」にすることで既存ユーザーの見え方を後退
-    /// させない。
+    /// 別 (`SidebarCategoryCollapseStore`)。ここでは保存されていた最後の
+    /// 開閉状態をひとまず復元する (デフォルト = 全展開) が、初期値のまま
+    /// 使われることは無い — `body`の`.task(id:)`が表示直後に
+    /// `normalizeCollapseStateToSingleExpansion()`を一度呼び、Task #195
+    /// (「常に1つだけ開く」) の要件に沿って最大1セクションへ正規化する。
+    /// 以降の手動開閉は`macCategoryExpandedBinding(for:)`/
+    /// `macAccountExpandedBinding(for:)`の排他ロジックが担う。
     @State private var collapsedCategoryRoles: Set<String> = SidebarCategoryCollapseStore.collapsedRoleRawValues
     /// Task #181: `collapsedCategoryRoles`のアカウント別ツリー版 —
     /// `FolderListSheet.collapsedAccountIds`と同じ発想、永続キーは別
@@ -106,6 +105,12 @@ struct SidebarView: View {
     private var categoryOrder: [MailboxRoleRecord] {
         FolderCategoryOrderStore.loadOrder(from: categoryOrderRaw)
     }
+    /// Task #195 (実機フィードバック「mac 版でも iOS と同じようにハンバー
+    /// ガーメニューが一つしか開かないようにしてほしい」): `.task(id:)`の
+    /// ガードに使う一度きりのフラグ — `normalizeCollapseStateToSingleExpansion()`
+    /// をアカウント一覧が最初に埋まったタイミングで一度だけ走らせる
+    /// (`body`のコメント参照)。
+    @State private var hasNormalizedInitialCollapseState = false
     #endif
 
     var body: some View {
@@ -291,6 +296,39 @@ struct SidebarView: View {
         .task(id: environment.accounts.map(\.id)) { await observeFailedOpCount() }
         .task(id: environment.accounts.map(\.id)) { await observeMailboxSyncFailureCount() }
         .task(id: environment.accounts.map(\.id)) { await observeUnifiedInboxUnreadCount() }
+        #if os(macOS)
+        // Task #195: iOS のドロワー (`FolderListSheet`) は「開くたびに現在の
+        // 選択だけを展開状態にリセットする」ことで1つだけしか開かない見た目を
+        // 保っている (`.onChange(of: isMenuOpen)`)。macOS のサイドバーは常設
+        // 表示で「開く」という契機自体が無いため、代わりにビューが最初に実質
+        // 表示された瞬間に一度だけ同じ正規化をかけ、以降は
+        // `macCategoryExpandedBinding`/`macAccountExpandedBinding`側の排他
+        // ロジックで「常に1つだけ」を維持する (このタスク以前に保存されて
+        // いた「複数同時展開」状態が残っている端末でも、この一度きりの
+        // 正規化で矛盾なく1つに収束する — 明示的なマイグレーションは不要と
+        // 判断した)。
+        //
+        // トリガーは`environment.accounts`ではなく`selection`の変化 —
+        // 最初`environment.accounts.map(\.id)`をトリガーにしていたが、
+        // `.task(id:)`は`id`の初期値 (起動直後、`environment.accounts`が
+        // まだ空、または一部のアカウントしか読み込めていない一瞬) でも
+        // 即座に1回発火するため、その時点で`hasNormalizedInitialCollapse
+        // State`を立ててしまうと「実際に選択が確定した後の」実質1回目が
+        // 二度と来ない実バグを実機スクリーンショットで確認した (空/不完全な
+        // `environment.accounts`で正規化すると、まだ知らないアカウントの
+        // idが`collapsedAccountIds`に入らないまま以後更新されず、後から
+        // 読み込まれたアカウントのセクションが展開されっぱなしになる)。
+        // `selection`は`observeMailboxes(accountId:)`がM4の「初回は
+        // `.unifiedInbox`を自動選択」を確定させた後に初めて`nil`から
+        // 変わるため、これをトリガーにすれば「選択が実際に決まった値」で
+        // 正規化できる (`selectedCategoryRole`/`selectedAccountId`が
+        // 両方nilのまま正規化されて何も展開されない、という事態を避けられる)。
+        .task(id: selection) {
+            guard !hasNormalizedInitialCollapseState, selection != nil else { return }
+            hasNormalizedInitialCollapseState = true
+            normalizeCollapseStateToSingleExpansion()
+        }
+        #endif
     }
 
     /// Builds one `MailboxRow` for the inner `ForEach` in `body` — pulled
@@ -458,32 +496,109 @@ struct SidebarView: View {
         }
     }
 
+    /// Task #195: 開く方 (`isExpanded == true`) は`expandOnlyCategory(_:)`
+    /// に委譲して他の全セクション (カテゴリ・アカウント両方) を閉じる —
+    /// 「常に1つだけ」を保つのはここ (と`macAccountExpandedBinding`) の
+    /// 排他ロジックだけで、閉じる方 (`isExpanded == false`) は単純に自分
+    /// だけを畳む (誰も開いていない状態を許す — 「最大1つ」であって
+    /// 「必ず1つ」ではない)。
     private func macCategoryExpandedBinding(for role: MailboxRoleRecord) -> Binding<Bool> {
         Binding(
             get: { !collapsedCategoryRoles.contains(role.rawValue) },
             set: { isExpanded in
                 if isExpanded {
-                    collapsedCategoryRoles.remove(role.rawValue)
+                    expandOnlyCategory(role)
                 } else {
                     collapsedCategoryRoles.insert(role.rawValue)
+                    SidebarCategoryCollapseStore.replaceAll(collapsedCategoryRoles)
                 }
-                SidebarCategoryCollapseStore.replaceAll(collapsedCategoryRoles)
             }
         )
     }
 
+    /// `macCategoryExpandedBinding(for:)`のアカウント版 —
+    /// `expandOnlyAccount(_:)`に委譲する対称的な実装。
     private func macAccountExpandedBinding(for accountId: String) -> Binding<Bool> {
         Binding(
             get: { !collapsedAccountIds.contains(accountId) },
             set: { isExpanded in
                 if isExpanded {
-                    collapsedAccountIds.remove(accountId)
+                    expandOnlyAccount(accountId)
                 } else {
                     collapsedAccountIds.insert(accountId)
+                    SidebarAccountCollapseStore.replaceAll(collapsedAccountIds)
                 }
-                SidebarAccountCollapseStore.replaceAll(collapsedAccountIds)
             }
         )
+    }
+
+    /// Task #195: `role`のカテゴリセクションだけを展開し、それ以外の全
+    /// カテゴリ・全アカウントセクションを畳む — `FolderListSheet
+    /// .resetCollapseStateToCurrentSelection()`と同じ「1つだけ展開」の
+    /// 考え方を、macOS では手動タップのたびに (iOS の「ドロワーを開く」に
+    /// 相当する契機がここには無いため) 適用する。
+    private func expandOnlyCategory(_ role: MailboxRoleRecord) {
+        let allRoleValues = Set(categoryOrder.map(\.rawValue))
+        let allAccountIds = Set(environment.accounts.map(\.id))
+        withAnimation(.default) {
+            collapsedCategoryRoles = allRoleValues.subtracting([role.rawValue])
+            collapsedAccountIds = allAccountIds
+        }
+        SidebarCategoryCollapseStore.replaceAll(collapsedCategoryRoles)
+        SidebarAccountCollapseStore.replaceAll(collapsedAccountIds)
+    }
+
+    /// `expandOnlyCategory(_:)`のアカウント版。
+    private func expandOnlyAccount(_ accountId: String) {
+        let allRoleValues = Set(categoryOrder.map(\.rawValue))
+        let allAccountIds = Set(environment.accounts.map(\.id))
+        withAnimation(.default) {
+            collapsedCategoryRoles = allRoleValues
+            collapsedAccountIds = allAccountIds.subtracting([accountId])
+        }
+        SidebarCategoryCollapseStore.replaceAll(collapsedCategoryRoles)
+        SidebarAccountCollapseStore.replaceAll(collapsedAccountIds)
+    }
+
+    /// 現在の`selection`が属するカテゴリ (role) — `.unifiedInbox`は
+    /// `.inbox`として扱う (`FolderListSheet.selectUnifiedView(for:)`と同じ
+    /// 対応)。`normalizeCollapseStateToSingleExpansion()`専用。
+    private var selectedCategoryRole: MailboxRoleRecord? {
+        switch selection {
+        case .unifiedInbox: .inbox
+        case .unifiedRole(let role): role
+        case .mailbox, nil: nil
+        }
+    }
+
+    /// 現在の`selection`が特定のメールボックスなら、そのアカウントID。
+    /// `normalizeCollapseStateToSingleExpansion()`専用。
+    private var selectedAccountId: String? {
+        if case .mailbox(let mailboxSelection) = selection { return mailboxSelection.accountId }
+        return nil
+    }
+
+    /// Task #195: このビューが最初に実質表示されたタイミングで一度だけ
+    /// 呼ばれ、保存されていた展開状態を「最大1つ」に正規化する
+    /// (`body`の`.task(id:)`のコメント参照)。現在の選択があればそれに
+    /// 対応するセクションを開き (`FolderListSheet`のリセットと同じ判断)、
+    /// 選択がまだ無ければ (アカウント一覧が埋まった直後で`observeMailboxes
+    /// (accountId:)`がまだ`.unifiedInbox`を確定させていない一瞬) 何も開か
+    /// ずに畳むだけにする — この関数以前の保存値 (Task #195 以前は複数
+    /// 同時展開が可能だった) が複数展開を含んでいても矛盾なく収束する。
+    private func normalizeCollapseStateToSingleExpansion() {
+        if let role = selectedCategoryRole {
+            expandOnlyCategory(role)
+        } else if let accountId = selectedAccountId {
+            expandOnlyAccount(accountId)
+        } else {
+            let allRoleValues = Set(categoryOrder.map(\.rawValue))
+            let allAccountIds = Set(environment.accounts.map(\.id))
+            collapsedCategoryRoles = allRoleValues
+            collapsedAccountIds = allAccountIds
+            SidebarCategoryCollapseStore.replaceAll(collapsedCategoryRoles)
+            SidebarAccountCollapseStore.replaceAll(collapsedAccountIds)
+        }
     }
     #endif
 
