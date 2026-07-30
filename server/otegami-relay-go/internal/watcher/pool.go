@@ -270,6 +270,14 @@ func (p *Pool) connectAndWatch(
 			"watchId", record.ID,
 			"attempt", *consecutiveAuthFailures,
 			"kind", string(kind),
+			// Task #187: the server's own tagged response, so a rate limit
+			// or a policy block can be told apart from an actually-wrong
+			// password. Yahoo Japan accounts fail here intermittently and
+			// the collapsed "authFailure" classification hid why. A tagged
+			// response never echoes the command, so no credential can reach
+			// the log this way; SanitizeForLog is the same F16 backstop used
+			// for every other attacker-influenced string.
+			"serverResponse", authFailureServerResponse(err),
 		)
 		// Task #175: an invalid_grant (dead refresh token) or a locally-
 		// detected configuration problem stops the watch on the very
@@ -407,6 +415,31 @@ func classifyAuthFailure(err error) (kind api.WatchErrorKind, stopsImmediately b
 	// IMAP LOGIN/AUTHENTICATE itself was rejected (wrong password, or the
 	// IMAP server rejected an otherwise-valid access token).
 	return api.ErrorKindAuthFailure, false
+}
+
+// maxLoggedServerResponse caps the logged response so a hostile or broken
+// server cannot flood the log through this field. Real tagged responses are
+// far shorter than this.
+const maxLoggedServerResponse = 200
+
+// authFailureServerResponse extracts the IMAP server's own tagged response
+// from an authentication failure, for diagnosis (Task #187). Returns an
+// empty string when the failure did not come from a tagged NO/BAD — an
+// OAuth token exchange failure, say, has no IMAP response to report.
+//
+// Safe to log: a tagged response is the server talking, and IMAP servers do
+// not echo the command that failed, so the LOGIN line's password cannot
+// appear here. Sanitized and length-capped regardless.
+func authFailureServerResponse(err error) string {
+	var commandFailed *imapclient.CommandFailedError
+	if !errors.As(err, &commandFailed) {
+		return ""
+	}
+	response := commandFailed.Response
+	if len(response) > maxLoggedServerResponse {
+		response = response[:maxLoggedServerResponse]
+	}
+	return push.SanitizeForLog(response)
 }
 
 func minDuration(a, b time.Duration) time.Duration {
