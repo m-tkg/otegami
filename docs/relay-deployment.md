@@ -6,6 +6,63 @@ otegami のプッシュ通知は、セルフホストする「リレーサーバ
 運用する前提 (OSS で Apple Developer アカウント・APNs 認証情報を配布できない
 ため)。本書はそのデプロイ手順・環境変数・脅威モデルをまとめる。
 
+## 設定値の全体像 (どれを・どこに・いくつ)
+
+プッシュ通知まわりの設定は **リレー側 (`.env`)** と **アプリ側 (ビルド時に
+埋め込む)** に分かれ、アプリ側は配布経路ごとに 3 箇所へ同じ値を入れる必要が
+ある。個々の説明は後述の各節にあるが、まず全体像:
+
+### リレー側 — サーバの `.env`
+
+| 変数 | 必須 | 何のため |
+|---|---|---|
+| `RELAY_MASTER_KEY` | ○ | 預かった IMAP 資格情報 / リフレッシュトークンの暗号化 |
+| `APNS_KEY_PATH` / `APNS_KEY_ID` / `APNS_TEAM_ID` / `APNS_BUNDLE_ID` | - | 実 APNs 配信 (4 つ揃って初めて有効) |
+| `RELAY_DEVICE_REGISTRATION_SECRET` | - | デバイス登録を保護 (アプリ側の `OTEGAMI_RELAY_REGISTRATION_SECRET` と同じ値) |
+| `RELAY_GOOGLE_CLIENT_ID` | - | Gmail の watch (アプリ側の `GOOGLE_OAUTH_CLIENT_ID` と同じ値) |
+| `RELAY_MICROSOFT_CLIENT_ID` | - | Outlook の watch (アプリ側の `OTEGAMI_MICROSOFT_CLIENT_ID` と同じ値) |
+
+> **Docker Compose で運用する場合の落とし穴**: `.env` に書いただけでは
+> コンテナに渡らない。`docker-compose.yml` の当該サービスの `environment:`
+> が**必要なキーだけを明示列挙する**書き方 (`- RELAY_FOO=${RELAY_FOO:-}`)
+> になっているなら、**新しい変数を足すたびにその行も追加する**こと。実際に
+> 「`.env` に登録シークレットを書いたのに 401 にならない」で一度踏んでいる
+> (原因は compose 側の受け渡し漏れと、イメージが古くて機能自体が入って
+> いなかったことの二重)。
+
+### アプリ側 — ビルド時に埋め込む (3 箇所すべてに同じ値)
+
+ユーザーがアプリの画面で設定する項目は**無い**。すべてビルド時に埋め込む。
+
+| 値 | ローカル (OTA 配信用) | macOS リリース | TestFlight |
+|---|---|---|---|
+| リレー URL | `Config/Local.xcconfig` の `OTEGAMI_PUSH_RELAY_URL` | GitHub secret `OTEGAMI_PUSH_RELAY_URL` | Xcode Cloud 環境変数 `OTEGAMI_PUSH_RELAY_URL` |
+| 登録シークレット | 同 `OTEGAMI_RELAY_REGISTRATION_SECRET` | 同名の GitHub secret | 同名の Xcode Cloud 環境変数 |
+| Google Client ID | 同 `GOOGLE_OAUTH_CLIENT_ID` | GitHub secret `OTEGAMI_GOOGLE_CLIENT_ID` | Xcode Cloud `OTEGAMI_GOOGLE_CLIENT_ID` |
+| Microsoft Client ID | 同 `OTEGAMI_MICROSOFT_CLIENT_ID` | 同名の GitHub secret | 同名の Xcode Cloud 環境変数 |
+
+- **`Config/Local.xcconfig` に URL を書くときだけ形式が違う**: xcconfig は
+  `//` をコメント開始として扱うため、`https://…` をそのまま書くと値が
+  `https:` に切り詰められる。`Config/Local.xcconfig.sample` に載っている
+  `https:$(OTEGAMI_URL_SLASHES)…` の形で書くこと。GitHub secret と Xcode
+  Cloud には**素の URL をそのまま**登録する (ワークフロー側が変換する)。
+- 3 箇所のうち抜けがあると、その配布経路のビルドだけプッシュが使えない
+  (画面に「このビルドにはプッシュ中継サーバーが設定されていません」と出る)。
+- どれも未設定でもビルドは通り、プッシュ機能だけが無効になる — フォークや
+  他のビルダーが困らないようにするための設計。
+
+### 反映の順序
+
+アプリ側とリレー側で値が揃うまでの間、**新規のデバイス登録だけ**が失敗する
+(既に登録済みの watch は動き続ける)。安全な順序は:
+
+1. アプリ側の 3 箇所に値を入れる
+2. アプリを配布し直す (OTA / タグ)
+3. リレー側の `.env` に値を入れて再デプロイ
+
+逆順でも壊れはしないが、その間に初回有効化や再インストールをすると 401 に
+なる。
+
 ## 前提: APNs の `.p8` キーは未発行
 
 `PENDING.md` の「M9: APNs .p8 キー発行」参照。`.p8` キーがない状態でも、
