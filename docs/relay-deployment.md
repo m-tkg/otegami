@@ -73,7 +73,7 @@ otegami のプッシュ通知は、セルフホストする「リレーサーバ
 
 ## 前提: APNs の `.p8` キーは未発行
 
-`PENDING.md` の「M9: APNs .p8 キー発行」参照。`.p8` キーがない状態でも、
+`.p8` キーの発行手順は下記「1. `.p8` キーの発行」参照。`.p8` キーがない状態でも、
 `APNS_*` 環境変数を未設定のまま起動すれば `ConsolePushSender` にフォール
 バックし、「IDLE 監視 → 新着検知 → push 発火」までの全パイプラインをログ
 出力で確認できる (実際に端末へ通知が届く手前まで)。実 APNs 配信を有効に
@@ -83,7 +83,7 @@ otegami のプッシュ通知は、セルフホストする「リレーサーバ
 
 ### 1. `.p8` キーの発行 (実 APNs 配信を使う場合のみ)
 
-`PENDING.md` の手順を参照。[Apple Developer](https://developer.apple.com/account/)
+[Apple Developer](https://developer.apple.com/account/)
 の「証明書、識別子とプロファイル」→「キー」で APNs 用キーを新規作成し、
 `.p8` ファイル・Key ID・Team ID を控える。アプリの Bundle ID
 (既定 `com.mtkg.otegami`、`Config/Signing.xcconfig` で変更可) も控える。
@@ -225,8 +225,7 @@ secret に入れた素の URL からこの形式を自動生成するので、se
 (下記の脅威モデル参照) を確認した上で:
 
 1. 通知の認可 (`UNUserNotificationCenter`) をリクエスト
-2. APNs デバイストークンを取得 (実機のみ。シミュレータでは取得できない
-   — `PENDING.md` 参照)
+2. APNs デバイストークンを取得 (実機のみ。シミュレータでは取得できない)
 3. `POST /v1/devices` でデバイス登録、`deviceSecret` を Keychain に保存
 4. 設定済みの各アカウントについて `POST /v1/watches` で資格情報を送信し
    watch を作成 — `.password` アカウントは IMAP パスワード、Gmail/
@@ -537,5 +536,5 @@ OOM で落とせないよう、`MinimalIMAPClient` は以下を有界化して�
   なる実バグが本番で発生し修正済み — 原因・修正・追加した実 Dovecot
   向け統合テストの詳細は `docs/verify.md`「otegami-relay: IDLE がタイ
   ムアウトで接続を壊す実バグ」参照。
-- 実 APNs 配信・実機での通知受信確認は `PENDING.md` の手順に従い、`.p8`
-  発行後に別途行うこと。
+- 実 APNs 配信・実機での通知受信確認は `.p8` 発行後に上記手順で行う —
+  実機のiPhoneでエンドツーエンドの動作確認まで完了済み。
