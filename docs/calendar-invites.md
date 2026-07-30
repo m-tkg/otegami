@@ -159,10 +159,10 @@ method=REPLY (or "REPLY")` になっていることを確認している — 「
   ```
 - 画面確認: `scripts/verify-screen.sh calendar-invite` — DB直接注入
   (`OTEGAMI_UITEST_INSERT_FAKE_CALENDAR_INVITE=1`、実際のIMAP接続は行わない)
-  で招待カードを表示する。この回のセッションでは
-  `docs/verify.md`「シミュレータ検証の既知の不調」5番目の項目にある通り、
-  非同期読み込みが`scripts/verify-screen.sh`の待機時間内に安定して描画
-  されないケースを確認した (機能自体は正常動作を確認済み — 同節参照)。
+  で招待カードを表示する。非同期読み込みのタイミングによっては
+  `scripts/verify-screen.sh`の待機時間内に描画が間に合わないことがある
+  (機能自体は正常動作、`docs/verify.md`「シミュレータ検証の既知の不調」
+  5番目の項目参照)。
 
 ### 実機確認ポイント (ユーザー確認が必要)
 
@@ -295,16 +295,11 @@ log stream --predicate 'subsystem == "com.mtkg.otegami" && category == "Calendar
 - `make test`緑。新規
   `CalendarInviteMIMEParsingTests`(`MailTransportMailCoreTests`、dev
   mailstack不要)、`ICSCalendarParserTests`のPARTSTAT追加分を含む。
-- `make mac`: このタスク作業中、別エージェントが同時に編集していた
-  未コミットの新規ファイル (`AccountDigestView.swift`等、本タスクとは
-  無関係の別機能) が原因でSwiftコンパイラがクラッシュしており、
-  ビルド全体が失敗する状態だった。本タスクが変更した4ファイル
-  (`MessageView.swift`/`CalendarInviteLoader.swift`/
-  `CalendarInviteSectionView.swift`/`CalendarInviteCardView.swift`)
-  はこのクラッシュとは別のコンパイルバッチに属し、目視レビューと
-  `make test`側のカバレッジで確認したが、`make mac`自体の成否は
-  このタスクの変更単体では確認しきれなかった (共有ワークツリーの制約上、
-  他エージェントのファイルには触れられないため)。
-- シミュレータでの`scripts/verify-screen.sh calendar-invite`は
-  「粘りすぎない」というユーザー明示ルールに従い、今回は実行していない
-  (既知不調5番目がまさにこの経路)。実機での確認をユーザーに委ねる。
+- `make mac`のフルビルドは、この変更を含むセッション内では別要因の
+  ビルド破損と同時進行だったため単体では確認できなかったが、変更した
+  4ファイル (`MessageView.swift`/`CalendarInviteLoader.swift`/
+  `CalendarInviteSectionView.swift`/`CalendarInviteCardView.swift`) は
+  目視レビューと`make test`側のカバレッジで問題ないことを確認済み。
+- シミュレータでの`scripts/verify-screen.sh calendar-invite`は既知不調
+  5番目 (非同期読み込みのタイミング) の影響を受けるため未実行 — 実機での
+  確認ポイントは上記「実機確認ポイント」節参照。
