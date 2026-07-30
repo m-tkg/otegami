@@ -29,11 +29,19 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 # Runtime: debian slim with CA certificates (needed for TLS to APNs, the
 # OAuth token endpoints, and IMAPS hosts) and a non-root user, mirroring
 # the Swift image's runtime layout (/app, /app/data volume, port 8080).
+#
+# curl は deploy 先の compose healthcheck (CMD curl -f .../health) が
+# コンテナ内から実行するために必要。Swift 版でこれを入れ忘れ、healthcheck が
+# 常時 exit 127 で unhealthy になる事故が実際に起きている。
+#
+# uid を 10001 に固定するのも Swift 版と同じ理由: ホスト側の secrets
+# ディレクトリ (APNs の .p8) をこの数値に chown することで、非 root 実行の
+# まま読み取り権限を揃えられる。
 FROM debian:bookworm-slim AS run
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --create-home --home-dir /app --shell /usr/sbin/nologin otegami \
+    && useradd --system --uid 10001 --create-home --home-dir /app --shell /usr/sbin/nologin otegami \
     && mkdir -p /app/data && chown -R otegami:otegami /app
 WORKDIR /app
 COPY --from=build /out/otegami-relay ./otegami-relay
