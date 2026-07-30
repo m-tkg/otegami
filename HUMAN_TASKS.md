@@ -351,6 +351,36 @@
       有効化できない) / 所要時間: 経路あたり2分 / 参照:
       [docs/relay-deployment.md](docs/relay-deployment.md)「アプリ側の
       設定」節
+- [ ] **otegami-relay を再デプロイし、Gmail/Outlook のプッシュ通知
+      (Task #175) 用の環境変数を設定する** — リレーの `.oauth` watch
+      (refresh token をアクセストークンへ交換する経路、
+      `OAuthTokenExchanger`) を実際に使うには:
+      1. **リレーのコンテナイメージを再ビルドする必要がある**
+         (`server/otegami-relay/` に Swift コードの変更が入っている —
+         `docs/relay-deployment.md`「4. 起動 (Docker)」の
+         `make relay-docker` から。ARM ネイティブ環境でのビルドで
+         おおよそ7分程度)。
+      2. 再ビルドしたイメージで通常の再デプロイ手順を実行する。
+      3. Gmail の watch を使う場合は `.env` に
+         `RELAY_GOOGLE_CLIENT_ID` を、Outlook/Office365 の watch を
+         使う場合は `RELAY_MICROSOFT_CLIENT_ID` を設定する — どちらも
+         **アプリ側の同名 Client ID
+         (`GOOGLE_OAUTH_CLIENT_ID`/`OTEGAMI_MICROSOFT_CLIENT_ID`) と
+         同じ値**にすること (別の値だとトークン交換が必ず失敗する)。
+         使わないプロバイダは未設定のままでよい (そのプロバイダの
+         watch だけが認証に失敗して自動停止する — password watch や
+         もう一方のプロバイダには影響しない)。
+      4. 再デプロイ後、実際に Gmail/Outlook アカウントでプッシュ通知の
+         「有効にする」を実行し、設定画面のアカウント別状態が「登録済み」
+         になることを確認する。**このセッションでは実 Google/Microsoft
+         を使った動作確認ができていない** (実際のリフレッシュトークンが
+         必要) — 単体テスト (`OAuthTokenExchangerTests`、モック HTTP)
+         と `FakeIMAPServer` の XOAUTH2 応答での結線確認までは緑。
+      優先度: 高 (これを設定・再デプロイしないと Gmail/Outlook のプッシュ
+      通知は一切有効化できない) / 所要時間: 再ビルド7分 + 再デプロイ
+      10分 + 動作確認10分 / 参照:
+      [docs/relay-deployment.md](docs/relay-deployment.md)の環境変数表・
+      脅威モデル項目12
 
 ## 4. 公開・配布に向けて (App Store / TestFlight を目指す場合)
 

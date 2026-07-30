@@ -58,6 +58,8 @@ cp server/otegami-relay/.env.sample server/otegami-relay/.env
 | `RELAY_DEVICE_REGISTRATION_SECRET` | - | `POST /v1/devices` を保護する運用者共有シークレット。設定すると `Authorization: Bearer <この値>` が無い/不一致の登録要求を 401 にする。未設定 (既定) の場合は従来どおり無認証で登録できる — 詳細は下記脅威モデルの 8 番参照。 |
 | `RELAY_EXTRA_IMAP_PORTS` | - | `POST /v1/watches` が受理する IMAP ポートを既定の 143/993 に加えて広げる (カンマ区切り、例 `1143,2143`)。ポート転送した自宅サーバーなど非標準ポート運用のときのみ設定する。 |
 | `RELAY_ALLOW_PRIVATE_IMAP_HOSTS` | - | `1` にすると `POST /v1/watches` がループバック/リンクローカル/プライベート (RFC1918/ULA) の IMAP ホストを受理するようになる。IMAP サーバーがリレーと同じプライベートネットワーク上にある場合のみ設定する — 既定 (未設定) はこれらを拒否する。詳細は下記脅威モデルの 9 番参照。 |
+| `RELAY_GOOGLE_CLIENT_ID` | - | Task #175 (Gmail の push watch): Gmail の `.oauth` watch がリフレッシュトークンをアクセストークンへ交換する際に使う Google OAuth Client ID。アプリ側の `GOOGLE_OAUTH_CLIENT_ID`/`OTEGAMI_GOOGLE_CLIENT_ID` と**同じ値**を設定する (同じ Client ID が発行したリフレッシュトークンでないと交換できない)。未設定のままだと Gmail の watch は作成できても認証できず、`connectionError` で再試行を繰り返した末に停止する。 |
+| `RELAY_MICROSOFT_CLIENT_ID` | - | 同上、Outlook/Office365 用。アプリ側の `OTEGAMI_MICROSOFT_CLIENT_ID` と同じ値。 |
 
 ### 4. 起動 (Docker)
 
@@ -161,8 +163,11 @@ secret に入れた素の URL からこの形式を自動生成するので、se
 2. APNs デバイストークンを取得 (実機のみ。シミュレータでは取得できない
    — `PENDING.md` 参照)
 3. `POST /v1/devices` でデバイス登録、`deviceSecret` を Keychain に保存
-4. 設定済みの各アカウントについて `POST /v1/watches` で IMAP 資格情報を
-   送信し watch を作成
+4. 設定済みの各アカウントについて `POST /v1/watches` で資格情報を送信し
+   watch を作成 — `.password` アカウントは IMAP パスワード、Gmail/
+   Outlook (`.oauth2`) アカウントは Task #175 で OAuth refresh token
+   (`AppEnvironment.watchAuth(for:)`)。いずれのアカウント種別も
+   `AppEnvironment.isPushWatchCandidate(_:)` が対象を判定する。
 
 無効化すると、登録した全 watch を `DELETE /v1/watches/:id` で削除し、
 サーバ側の資格情報を即座に消去する。アカウント削除時も同様に連動して
@@ -257,11 +262,13 @@ watch にしかスコープされない設計(項目11参照)であり、それ�
 (パスワードまたは Gmail refresh token) を**平文で受け取り**、サーバ側で
 暗号化して保持する。以下はその設計上の前提と緩和策。
 
-1. **何を預かるか**: `POST /v1/watches` の `auth.secret` (IMAP パスワード、
-   将来的には OAuth refresh token)。件名・本文などのメール内容は一切
+1. **何を預かるか**: `POST /v1/watches` の `auth.secret` — `.password`
+   watch なら IMAP パスワード、`.oauth` watch (Task #175、Gmail/Outlook)
+   なら **OAuth refresh token**。件名・本文などのメール内容は一切
    扱わない — push ペイロードは `accountId`/`uidNext` のみで、
    `NotificationService` Extension が改めて IMAP に接続して差出人・件名
-   を取得する (プラン §7 のプライバシー設計)。
+   を取得する (プラン §7 のプライバシー設計)。項目 12 に `.oauth` watch
+   特有のリスクをまとめる。
 2. **保存時の扱い**: `RELAY_MASTER_KEY` による AES-256-GCM で暗号化して
    SQLite に保存する (`CredentialCrypto`)。鍵はプロセスの環境変数にしか
    存在せず、ディスクに書かれるのは暗号文のみ。DB ファイルが単独で
@@ -284,10 +291,17 @@ watch にしかスコープされない設計(項目11参照)であり、それ�
    可能」を前提にしているのはこのため。第三者が運用するリレーに登録
    する場合、その運用者を信頼できるかどうかを利用者自身が判断する
    必要がある(アプリの同意文言でもこの旨を明示する)。
-7. **認証失敗時の自動停止**: IMAP ログインが連続して失敗した watch は
-   自動的に監視を停止する (`WatcherPool`) — パスワード変更後に古い
-   資格情報で IMAP サーバへの再試行を無限に繰り返し、アカウント
-   ロックアウトを誘発することを避けるため。
+7. **認証失敗時の自動停止**: IMAP ログインが連続 (既定 3 回) して失敗した
+   watch は自動的に監視を停止する (`WatcherPool`) — パスワード変更後に
+   古い資格情報で IMAP サーバへの再試行を無限に繰り返し、アカウント
+   ロックアウトを誘発することを避けるため。Task #175 の `.oauth` watch
+   は、refresh token 自体が失効/取り消し済み (`invalid_grant`) と分かった
+   時点で**即座に** (3 回を待たずに) 停止する — 死んだ refresh token は
+   再試行しても絶対に復活しないため。`WatchSummary.ErrorKind
+   .oauthTokenExpired` として区別され、アプリの表示は「停止（再認証が
+   必要）」— 直すにはパスワードの再入力ではなく、アカウント編集の
+   「再認証」でその Gmail/Outlook アカウントを再接続し、新しい refresh
+   token で watch を再登録し直す必要がある。
 8. **デバイス登録の保護 (Task #169, CLAUDE-SECURITY F2 / アプリ側は
    Task #171、2026-07-30 follow-up でビルド時埋め込み方式に変更)**:
    `POST /v1/devices` は設計上 (デバイスが最初の資格情報を得るための
@@ -368,6 +382,40 @@ watch にしかスコープされない設計(項目11参照)であり、それ�
     引き継ぐ)。`WatchRoutesTests`/`RelayStoreTests` で「自分の watch
     だけ返る」「他 device の watch は返らない」「未認証は 401」を検証
     済み。
+12. **`.oauth` watch (Task #175: Gmail/Outlook のプッシュ対応) のリスク
+    増分**: v1 は IMAP パスワードのみを預かる設計だったが、Task #175 で
+    OAuth refresh token も同じ仕組み (`CredentialCrypto` による AES-256-
+    GCM 暗号化保存) で預かれるようになった。**このリレーが侵害された
+    場合の影響は、パスワード watch より大きい** — refresh token は
+    ユーザーがパスワードを変更しても失効しない (Google/Microsoft 側で
+    明示的にアクセスを取り消さない限り有効であり続ける) ため、侵害に
+    気づいてパスワードを変えるという通常の対処が効かない。侵害された
+    リレーは、取り消されるまで対象 Gmail/Outlook アカウントへの継続的な
+    読み取りアクセス (IMAP 経由) を持ち続けることになる。緩和策:
+    - 項目 8 の `RELAY_DEVICE_REGISTRATION_SECRET` (無許可のデバイス
+      自己登録を防ぐ) と項目 9 の SSRF 対策は `.oauth` watch にも同様に
+      適用される。
+    - 項目 4 の「即時ワイプ」(`DELETE /v1/watches/:id` で暗号化済み
+      refresh token ごと物理削除) はここでも同じセーフティネットになる
+      — 「無効にする」/アカウント削除は refresh token をリレーから即座に
+      消す。
+    - アクセストークンへの交換はメモリ上でのみ行い、リレーは refresh
+      token 以外の何も追加で永続化しない (`OAuthTokenExchanger`)。
+    - refresh token が失効した (`invalid_grant`) watch は項目 7 の通り
+      即座に停止する — 死んだトークンをリレーが持ち続けて交換を試み
+      続けることはない。
+    - 万一の侵害が疑われる場合、ユーザーは Google
+      ([myaccount.google.com/permissions](https://myaccount.google.com/permissions))/
+      Microsoft ([account.live.com/consent/Manage](https://account.live.com/consent/Manage))
+      の「サードパーティアプリのアクセス」からこのアプリのアクセスを
+      直接取り消せる — これは refresh token を持つ側 (リレー) に
+      連絡が取れない場合でも、ユーザー自身が確実に無効化できる手段。
+    - **根本的な緩和策は項目 6 の「信頼境界」と同じ**: `.oauth` watch は
+      「自分専用リレー」を前提にするほど安全性が増す。第三者が運用する
+      リレーに Gmail/Outlook アカウントの watch を登録することは、その
+      運用者に「取り消されるまで有効な、メールへの読み取りアクセス」を
+      渡すことに等しい — アプリの同意文言 (`PushNotificationSettingsView`)
+      でもこの点を明示している。
 
 ## モニタリング / ログ
 
@@ -404,9 +452,14 @@ OOM で落とせないよう、`MinimalIMAPClient` は以下を有界化して�
 
 ## 既知の制約 / 今後
 
-- v1 の `auth.type` は `password` のみ (plan: "LOGIN/XOAUTH2 なし可: password
-  のみ v1")。Gmail アカウントのプッシュ通知には refresh token 対応
-  (`xoauth2`) が必要で、M10 以降の課題。
+- v1 の `auth.type` は `password` のみだったが (plan: "LOGIN/XOAUTH2 なし可:
+  password のみ v1")、Task #175 で `.oauth` (refresh token + XOAUTH2) を
+  追加し、Gmail/Outlook アカウントもプッシュ通知の対象になった —
+  脅威モデル項目12参照。iOS の `NotificationService` Extension
+  (差出人/件名の書き換え) 側はこのバッチでは対応しておらず、
+  `.oauth2` アカウントの push は汎用フォールバック表示のまま — これは
+  今後の課題として残っている (`NotificationService.swift`のdoc comment
+  参照)。
 - IMAP 実装は最小限の自前クライアント (`MinimalIMAPClient`) — LOGIN/
   SELECT/STATUS/IDLE/LOGOUT のみ対応。採否の理由は
   `server/otegami-relay/Sources/OtegamiRelay/Watcher/MinimalIMAPClient.swift`

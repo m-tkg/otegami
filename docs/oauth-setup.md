@@ -79,6 +79,14 @@ GOOGLE_OAUTH_CLIENT_ID = 1234567890-abcdefg.apps.googleusercontent.com
 (`GoogleOAuthConfig.clientId`)。「アカウントを追加」→「Gmail」ボタンが
 有効になっていれば設定成功。
 
+**プッシュ通知 (Task #175) を使う場合**: Gmail アカウントの push watch
+はこの Client ID が発行した refresh token をリレーへ送信し、リレー側が
+同じ Client ID でアクセストークンに交換する — リレーを運用する側は
+`server/otegami-relay` の環境変数 `RELAY_GOOGLE_CLIENT_ID` に**ここと
+同じ値**を設定する必要がある (`docs/relay-deployment.md`の環境変数表
+参照)。設定を忘れても Gmail の watch 自体は作成できるが、認証に失敗し
+続けて自動停止する。
+
 ## リダイレクト URI について (登録不要)
 
 otegami は Client ID を逆順にした固定のカスタム URL スキーム
@@ -417,6 +425,10 @@ OTEGAMI_MICROSOFT_CLIENT_ID = your-azure-app-client-id
 `OTEGAMI_MICROSOFT_CLIENT_ID` キー経由でアプリが実行時に読み込む
 (`MicrosoftOAuthConfig.clientId`)。「アカウントを追加」→「Outlook」/
 「Office365」ボタンが有効になっていれば設定成功。
+
+**プッシュ通知 (Task #175) を使う場合**: Google と同様、リレー側の環境
+変数 `RELAY_MICROSOFT_CLIENT_ID` にここと同じ Client ID を設定する
+(`docs/relay-deployment.md`の環境変数表参照)。
 
 ## メールアドレスの取得方法 (Google との違い)
 

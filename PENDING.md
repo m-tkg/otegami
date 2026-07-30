@@ -586,14 +586,49 @@ watch 照合掃除の説明を追記済み。
   参照。このシミュレータ固有の制約は結局解消せず、**実機での確認が
   唯一の完全な検証手段のままだった** — 上記の通り、その実機確認は
   完了済み。
-- Gmail (`.oauth2`) アカウントのプッシュ通知: v1 のリレーは
-  `WatchAuth.Kind.password` のみ対応 (プラン: "LOGIN/XOAUTH2 なし可:
-  password のみ v1")。`AppEnvironment.enablePushNotifications` は
-  `.password` アカウントのみ watch を作成し、Gmail アカウントは黙って
-  スキップする — UI 上に「Gmail は現バージョン未対応」という文言は
-  `PushNotificationSettingsView` の同意ダイアログに含めたが、Gmail
-  アカウント一覧上で個別に無効化理由を出す UI までは実装していない。
-  XOAUTH2 対応 (refresh token を預かる形) は M10 以降の課題。
+- **(解消 — Task #175) Gmail/Outlook (`.oauth2`) アカウントのプッシュ通知**:
+  v1 のリレーは `WatchAuth.Kind.password` のみ対応していたが、実機
+  フィードバック (2026-07-30「Gmail は対象外なので届かない」) を受けて
+  ユーザー判断で refresh token を預ける方式を実装した。`WatchAuth.Kind
+  .oauth` + `WatchAuth.Provider` (`.google`/`.microsoft`) を追加し、
+  リレーは watch の (再)接続のたびに `OAuthTokenExchanger` で refresh
+  token をアクセストークンへ交換し (Google/Microsoft の token
+  endpoint、client_secret 不要 — アプリ側の `GoogleOAuthClient
+  .refresh(refreshToken:)`/`MicrosoftOAuthClient.refresh(refreshToken:)`
+  と同じ形)、`MinimalIMAPClient.authenticateXOAuth2` で XOAUTH2/SASL-IR
+  認証する。アプリ側は `AppEnvironment.watchAuth(for:)`/
+  `isPushWatchCandidate(_:)` が Gmail/Microsoft アカウントも watch 対象に
+  含め、`GoogleOAuth.TokenStore`/`MicrosoftOAuth.TokenStore` の新しい
+  `rawRefreshToken(for:)` で生の refresh token を取得して送る。refresh
+  token が失効 (`invalid_grant`) した watch は即座に停止し
+  (`WatchSummary.ErrorKind.oauthTokenExpired`、設定画面は「停止（再認証が
+  必要）」)、無駄な再試行を繰り返さない。
+
+  **検証状況**: `swift test` (server, 新規 `OAuthTokenExchangerTests` +
+  `WatcherPoolTests`の OAuth watch 3件 + `WatchRoutesTests`の oauth
+  watch 作成/バリデーション2件) は green — トークン交換は HTTP を
+  モックして検証しており、実 Google/Microsoft へは一切通信していない。
+  `make test`/`make ios`/`make mac`/`make check-localization` も green。
+  **実 Google/Microsoft アカウントでの動作確認はこのセッションでは未実施**
+  (実際の refresh token が必要なため) — `HUMAN_TASKS.md`「otegami-relay
+  を再デプロイし、Gmail/Outlook のプッシュ通知 (Task #175) 用の環境変数を
+  設定する」に手順をまとめた。リレー運用者は `RELAY_GOOGLE_CLIENT_ID`/
+  `RELAY_MICROSOFT_CLIENT_ID` を設定し、**リレーのコンテナイメージを
+  再ビルドしてから**再デプロイする必要がある (`docs/relay-deployment.md`
+  の環境変数表・脅威モデル項目12参照)。
+  UI 上「Gmail 一覧で個別に無効化理由を出す」という残課題自体は解消済み
+  (対象になったので無効化理由を出す必要がなくなった) — `.unsupported`
+  ("対象外") は今後、Gmail/Outlook のどちらでもない `.oauth2` kind
+  (実際には発生しないはずの防御的ケース) のみに残る。
+
+  **既知のスコープ外**: `NotificationService` Extension (push 到着時に
+  差出人/件名を書き換える処理) はこのバッチで対応していない — 依然として
+  IMAP パスワードの `LOGIN` しか知らず、`.oauth2` アカウントの watch から
+  届いた push は step 6 の汎用フォールバック (「新着メールがあります」の
+  まま) になる。通知自体は届く (壊れてはいない) が、差出人/件名の書き換え
+  だけが効かない。Extension 側で refresh token を読んでアクセストークンに
+  交換し XOAUTH2 認証する対応は別タスクとする (`NotificationService.swift`
+  の doc comment に同じ注記あり)。
 - macOS 版のプッシュ通知: `NotificationService` Extension は iOS のみ
   (理由は `NotificationService.swift`/`Config/Otegami-iOS.entitlements`
   のコメント参照)。`AppEnvironment.enablePushNotifications` は macOS では
