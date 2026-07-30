@@ -281,6 +281,44 @@ green。実クリック検証は共有マシン環境でフォーカスが意図
   **クラッシュログ本体は端末情報を含むためこのリポジトリにコミットしない
   こと** (`CLAUDE.md`の注意点参照)。
 
+### Task #193: 送信済みの古いメールが受信箱の最近のスレッドに混入する不具合 — 実機での確認が未実施
+
+実機報告「10年以上前に送った送信済みメールが、6時間前くらいの日付で、
+しかも受信箱に表示されている」に対応。原因は mailcore2 (pinned revision)
+の `MessageHeader` 既定コンストラクタが `Date:` ヘッダのパースに失敗した
+メッセージの日付を「フェッチした瞬間の時刻」で埋めてしまう既知の挙動
+(`packages/OtegamiKit/Sources/OtegamiCore/EnvelopeDateSentinel.swift`の
+doc comment に mailcore2 側ソースの該当箇所まで書いてある)。受信箱への
+混入は「日付が壊れて『今』に見えることで、件名フォールバックのスレッド化
+(件名一致+参加者重なり+7日以内) を通ってしまう」という因果で、**実機
+DB のデータでは確認できていない** (アクセス不可のため) — 代わりに
+(1) 実 Dovecot (`dev/mailstack`) に `Date:` ヘッダの無いメッセージを
+`doveadm save` で投入し、実際に pinned mailcore2 でフェッチして
+`date` がフェッチ時刻に化けること/修正後は `nil` (→ `internalDate` に
+フォールバック) になることを確認 (`EnvelopeDateSentinelIntegrationTests`)、
+(2) インメモリ DB 上で「日付が壊れた古い送信済みメール」が実際に最近の
+INBOX スレッドへ合流し、修復パスで解除されることを確認
+(`SentinelDateThreadRepairTests`) — の2経路で因果を裏取りしてから実装した
+(詳細はこれらのテストファイルの doc comment、および
+`EnvelopeDateSentinel.swift`/`MailCoreIMAPSession+Mapping.swift`/
+`ThreadAssigner.repairSentinelDates`の doc comment)。既存の壊れた
+`message.date`/誤ったスレッド割当を直す修復パス
+(`ThreadAssigner.repairSentinelDates`) は v38 マイグレーションとして
+既存インストール全件に自動適用される。`make test` green。
+
+未検証 (実機・実アカウントでの確認が必要):
+- 実際にこの不具合が報告された実機で、**該当の古い送信済みメールの表示
+  日付が正しい (元々の送信日時) 値に戻り、受信箱の最近のスレッドから
+  抜けて自分自身の (または元々あるべき) スレッドに移っていること**。
+  Xcode 経由でアプリを起動すると v38 マイグレーションが自動的に走るので、
+  起動後にその特定のメールを開いて日付・スレッド所属を確認する。
+- 修復後、同じアカウントを再同期 (pull-to-refresh 等) しても、その
+  メールの日付・スレッド所属が再び壊れないこと (非 CONDSTORE 経路の
+  再現防止確認)。
+- 可能であれば、修復前に該当メールが実際にどのスレッドに紛れ込んでいた
+  か (メッセージ数・件名などから推測できる範囲で) をスクリーンショット
+  等で記録しておくと、修復が正しい範囲だけに効いたことの確認に役立つ。
+
 ## 環境・インフラの設定待ち (運用者作業)
 
 インフラ設定 (otegami-relay の再デプロイ、Client ID/Secret のビルド設定
