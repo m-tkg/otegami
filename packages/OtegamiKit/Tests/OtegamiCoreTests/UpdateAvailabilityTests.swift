@@ -111,4 +111,30 @@ struct UpdateAvailabilityTests {
         }
         #expect(release.tagName == "v1.1.0")
     }
+
+    // MARK: - Task #182 (macOS アプリ内アップデート): GitHubRelease.zipAsset(named:)
+
+    @Test("zipAsset(named:) finds the exact-named asset among several")
+    func zipAssetFindsExactMatch() {
+        let release = GitHubRelease(
+            tagName: "v1.2.0", name: "v1.2.0", body: nil,
+            htmlURL: URL(string: "https://github.com/m-tkg/otegami/releases/tag/v1.2.0")!,
+            prerelease: false, draft: false,
+            assets: [
+                GitHubReleaseAsset(name: "Otegami.zip", browserDownloadURL: URL(string: "https://github.com/m-tkg/otegami/releases/download/v1.2.0/Otegami.zip")!),
+                GitHubReleaseAsset(name: "Otegami.zip.sha256", browserDownloadURL: URL(string: "https://github.com/m-tkg/otegami/releases/download/v1.2.0/Otegami.zip.sha256")!),
+            ]
+        )
+        #expect(release.zipAsset()?.name == "Otegami.zip")
+    }
+
+    @Test("zipAsset(named:) is nil when no asset matches")
+    func zipAssetNilWhenMissing() {
+        let release = GitHubRelease(
+            tagName: "v1.2.0", name: "v1.2.0", body: nil,
+            htmlURL: URL(string: "https://github.com/m-tkg/otegami/releases/tag/v1.2.0")!,
+            prerelease: false, draft: false, assets: []
+        )
+        #expect(release.zipAsset() == nil)
+    }
 }

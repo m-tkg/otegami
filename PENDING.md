@@ -17,6 +17,53 @@
 > **すべてクリア**と報告済み。以下の個別節の「未確認」記述のうちこの
 > 日付以前のものは、この一括確認で解消済みとして読むこと。
 
+## Task #182: macOS アプリ内アップデート (About 統合) — 実際の差し替え未確認
+
+**実装状況**: 実機フィードバック「mac 版で、update のチェックができる画面は
+About に移動してほしい。また、そこから update ボタンも置いて、自身の
+アップデートができるようにしてほしい」を受けて実装。メニューバーの
+「Otegami」→「Otegamiについて」(標準の About panel を置き換え) が開く
+`AboutView`にバージョン情報・著作権・アップデート確認/インストール UI
+(`AboutUpdateSection`) を統合した。Task #158 の独立ウィンドウ
+`UpdateCheckView`/`UpdateCheckRequest`は削除・統合済み。詳細な設計 (ダウン
+ロード元ホスト制限・zip slip 対策・署名同一性検証・書き込み権限フォール
+バック・入れ替え手順) は`docs/release.md`「アプリ内アップデート (macOS
+のみ、Task #182)」節参照。`make test`/`make mac`/`make ios`/
+`make check-localization` すべて green (単体テストは`AppUpdateDownloadPolicyTests`/
+`ZipEntryPathValidatorTests`/`CodeSignatureIdentityTests`ほか新規)。
+
+**このセッションで確認したこと**: 実際にビルドしたアプリを起動し、
+「Otegamiについて」→About ウィンドウを開いて「Check for Updates」を
+実際にクリック → 実 GitHub API に問い合わせて「You're Up to Date」まで
+表示されることを確認 (実機のシステム言語が英語のため英語表示だが、
+ローカライズ自体が正しく解決されている証拠でもある)。「Also Check
+Pre-releases」チェックボックスの on/off・再チェックも動作確認済み
+(現行タグより新しい安定版が無いため、この開発機では"新しいバージョンが
+あります"状態そのものの画面は未確認 — `AvailableUpdateRow`のレイアウトは
+目視未検証)。
+
+**未確認 (実機・実リリースでの確認が必要)**:
+1. **実際に新しいバージョンをリリースしてから**、「更新」ボタンを押した
+   ときの実際のダウンロード→展開→署名検証→入れ替え→再起動の一連の流れ。
+   このセッションでは**ユーザーの実アプリを壊すリスクがあるため実行して
+   いない** — 検証は`AppUpdateDownloadPolicy`/`ZipEntryPathValidator`/
+   `CodeSignatureIdentity`の単体テストと、`AppUpdateInstaller`のコード
+   レビューで担保している。
+2. 「新しいバージョンがあります」画面 (`AvailableUpdateRow`) 自体の見た目
+   (リリースノート抜粋のスクロール等)。
+3. `/Applications`に書き込み権限が無い環境 (通常ユーザー権限で
+   `/Applications`配下が管理者所有になっている等) での
+   `.noWritePermission`フォールバック (ダウンロードページを開く導線) の
+   実地確認。
+4. 「今すぐ再起動」ボタンで実際に新プロセスが起動し、旧プロセスが正しく
+   終了するか (`createsNewApplicationInstance = true`が意図通り機能する
+   か)。
+5. Gatekeeper 未承認・署名の異なるダミー zip を実際に用意して
+   `.signatureMismatch`/`.gatekeeperRejected`経路が実地でも発火するかの
+   確認 (単体テストは`CodeSignatureIdentity`の比較ロジックのみで、実際の
+   `codesign -dv`/`spctl -a`の出力フォーマットとの整合は次回リリース後の
+   実行で確認する)。
+
 ## Task #162: 署名を本文に混在させない (実機フィードバック) — 実機確認
 
 **実装状況**: 署名を選んでも本文には一切挿入しなくなった (プレビュー

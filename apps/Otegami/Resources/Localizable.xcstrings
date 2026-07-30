@@ -4644,16 +4644,6 @@
         }
       }
     },
-    "プレリリースを含めて確認中": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Including Pre-releases"
-          }
-        }
-      }
-    },
     "サイドバーを表示": {
       "localizations": {
         "en": {
@@ -4730,16 +4720,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Trash"
-          }
-        }
-      }
-    },
-    "アップデートを確認…": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Check for Updates…"
           }
         }
       }
@@ -4990,6 +4970,196 @@
           "stringUnit": {
             "state": "translated",
             "value": "Failure"
+          }
+        }
+      }
+    },
+    "Otegamiについて": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "About Otegami"
+          }
+        }
+      }
+    },
+    "プレリリースも確認する": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Also Check Pre-releases"
+          }
+        }
+      }
+    },
+    "更新": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update"
+          }
+        }
+      }
+    },
+    "検証しています…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying…"
+          }
+        }
+      }
+    },
+    "更新を適用しています…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installing Update…"
+          }
+        }
+      }
+    },
+    "更新が完了しました": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update Installed"
+          }
+        }
+      }
+    },
+    "今すぐ再起動": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restart Now"
+          }
+        }
+      }
+    },
+    "更新に失敗しました": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update Failed"
+          }
+        }
+      }
+    },
+    "ダウンロード中…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloading…"
+          }
+        }
+      }
+    },
+    "このリリースには配布ファイルが見つかりませんでした。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This release has no downloadable file."
+          }
+        }
+      }
+    },
+    "書き込み権限がありません。ダウンロードページから手動でインストールしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No write permission. Please install manually from the download page."
+          }
+        }
+      }
+    },
+    "検証に失敗しました。安全のため更新を中止しました。ダウンロードページから手動でインストールしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verification failed. The update was stopped for safety. Please install manually from the download page."
+          }
+        }
+      }
+    },
+    "ダウンロードに失敗しました。しばらくしてから再試行してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The download failed. Please try again later."
+          }
+        }
+      }
+    },
+    "更新の適用に失敗しました。元のバージョンのまま変更していません。ダウンロードページから手動でインストールしてください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installing the update failed. Nothing was changed — you're still on the original version. Please install manually from the download page."
+          }
+        }
+      }
+    },
+    "GitHubからの応答を解析できませんでした": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't parse the response from GitHub"
+          }
+        }
+      }
+    },
+    "オフラインか、GitHubに接続できませんでした": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You're offline, or couldn't reach GitHub"
+          }
+        }
+      }
+    },
+    "現在のバージョン: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current version: %@"
+          }
+        }
+      }
+    },
+    "現在: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current: %@"
+          }
+        }
+      }
+    },
+    "GitHubへの問い合わせに失敗しました (HTTP %lld)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't reach GitHub (HTTP %lld)"
           }
         }
       }

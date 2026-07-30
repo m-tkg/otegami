@@ -741,7 +741,6 @@ translations = {
     "新しいバージョンがあります": "A New Version Is Available",
     "ダウンロードページを開く": "Open Download Page",
     "確認できませんでした": "Couldn't Check for Updates",
-    "プレリリースを含めて確認中": "Including Pre-releases",
     "サイドバーを表示": "Show Sidebar",
     "メールボックスを選択してください": "Select a Mailbox",
     "左のサイドバーからアカウントを追加、またはメールボックスを選択してください。": "Add an account or select a mailbox from the sidebar on the left.",
@@ -750,7 +749,6 @@ translations = {
     "送信済み": "Sent",
     "迷惑メール": "Junk",
     "ゴミ箱": "Trash",
-    "アップデートを確認…": "Check for Updates…",
     "新規メッセージ": "New Message",
     "メッセージ": "Message",
     "既読/未読を切り替え": "Toggle Read/Unread",
@@ -801,6 +799,47 @@ translations = {
         "A record of actual mail-translation attempts. Shows only counts, character totals, and the ratio of character types — never the mail body itself.",
     "成功": "Success",
     "失敗": "Failure",
+
+    # --- Task #182 (macOS アプリ内アップデート、実機フィードバック「update
+    # のチェックができる画面は About に移動してほしい。そこから update
+    # ボタンも置いて、自身のアップデートができるようにしてほしい」):
+    # `AboutView`/`AboutUpdateSection` — Task #158 が追加した独立ウィンドウ
+    # `UpdateCheckView`の既存キー ("アップデートを確認"/"確認しています…"/
+    # "最新版です"/"新しいバージョンがあります"/"ダウンロードページを開く"/
+    # "確認できませんでした"、上のTask #145節にある) はそのまま再利用し、
+    # ここには新規追加分だけを列挙する。旧メニュー項目専用だった
+    # "アップデートを確認…"(省略記号付き)と、旧フッター注記
+    # "プレリリースを含めて確認中"はメニュー項目/自動チェック機構ごと
+    # 廃止したため、この節の追加と同時に上の節から削除した。
+    "Otegamiについて": "About Otegami",
+    "プレリリースも確認する": "Also Check Pre-releases",
+    "更新": "Update",
+    "検証しています…": "Verifying…",
+    "更新を適用しています…": "Installing Update…",
+    "更新が完了しました": "Update Installed",
+    "今すぐ再起動": "Restart Now",
+    "更新に失敗しました": "Update Failed",
+    "ダウンロード中…": "Downloading…",
+    "このリリースには配布ファイルが見つかりませんでした。": "This release has no downloadable file.",
+    "書き込み権限がありません。ダウンロードページから手動でインストールしてください。":
+        "No write permission. Please install manually from the download page.",
+    "検証に失敗しました。安全のため更新を中止しました。ダウンロードページから手動でインストールしてください。":
+        "Verification failed. The update was stopped for safety. Please install manually from the download page.",
+    "ダウンロードに失敗しました。しばらくしてから再試行してください。":
+        "The download failed. Please try again later.",
+    "更新の適用に失敗しました。元のバージョンのまま変更していません。ダウンロードページから手動でインストールしてください。":
+        "Installing the update failed. Nothing was changed — you're still on the original version. Please install manually from the download page.",
+    "GitHubからの応答を解析できませんでした": "Couldn't parse the response from GitHub",
+    "オフラインか、GitHubに接続できませんでした": "You're offline, or couldn't reach GitHub",
+    # `String(localized: "template \(x)")`-style interpolated entries — see
+    # `PushWatchStatusSection`'s own doc comment (Task #173) for why this
+    # class of literal needs a manual dict entry (the automated
+    # coverage-checker skips any literal containing Swift interpolation,
+    # but `String.LocalizationValue`'s own extraction still resolves it to
+    # a `%@`/`%lld` key at the framework level).
+    "現在のバージョン: %@": "Current version: %@",
+    "現在: %@": "Current: %@",
+    "GitHubへの問い合わせに失敗しました (HTTP %lld)": "Couldn't reach GitHub (HTTP %lld)",
 }
 
 # Disambiguation comments for a handful of short/reused source strings —

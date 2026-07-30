@@ -37,10 +37,13 @@ import SwiftUI
 ///
 /// 「情報」(`AboutView`) タブは廃止した — サイドバー構成に自然に収まる
 /// 場所が無く、「このアプリについて」的な情報はメニューバーの
-/// 「Otegami」→「Otegamiについて」(標準の`NSApplication`About panel、
-/// `CFBundleName`/`CFBundleShortVersionString`から自動生成) で代替
-/// 可能なため。`AboutView`自体は削除していない (今後iOS側で使うかもしれず、
-/// ファイルを消す積極的な理由もない) が、macOSからはもう参照しない。
+/// 「Otegami」→「Otegamiについて」で代替可能なため。この画面 (設定
+/// サイドバー) からは今も参照しない — Task #182 (macOS アプリ内アップ
+/// デート) で「Otegamiについて」の中身自体は標準の`NSApplication`About
+/// panel から`AboutView`(バージョン情報+アップデート確認/インストール
+/// UI) に差し替わったが、それは`OtegamiCommands`/`OtegamiApp`の
+/// `WindowGroup(id: "about")`が担う話であり、この設定画面の構成には
+/// 影響しない。
 struct OtegamiSettingsView: View {
     var body: some View {
         MacSettingsSplitView()

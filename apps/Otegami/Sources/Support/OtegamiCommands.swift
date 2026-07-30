@@ -1,10 +1,6 @@
 import SwiftUI
 
 #if os(macOS)
-import AppKit
-#endif
-
-#if os(macOS)
 /// M10 macOS polish (plan: "macOS メニュー/ショートカット: ⌘N 新規メール、⌘R 返信、
 /// ⌘⇧F 検索フォーカス、⌘⌫ 削除、メールボックス移動。Commands API"). Reads the
 /// currently-published actions via `@FocusedValue` (`AppFocusedValues.swift`)
@@ -26,7 +22,7 @@ struct OtegamiCommands: Commands {
     @FocusedValue(\.focusSearchAction) private var focusSearchAction
     @FocusedValue(\.nextMailboxAction) private var nextMailboxAction
     @FocusedValue(\.previousMailboxAction) private var previousMailboxAction
-    // Task #158 (macOS「アップデートを確認」機能): unlike every other action
+    // Task #182 (macOS アプリ内アップデート): unlike every other action
     // here, this one is independent of whatever window/view currently has
     // focus (`@FocusedValue`はここでは使わない) — it should always be
     // available from the app menu, account state or open thread aside, so
@@ -34,17 +30,21 @@ struct OtegamiCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
-        CommandGroup(after: .appInfo) {
-            // Spec: 通常クリック = 安定版のみ、option キーを押しながら
-            // クリック = pre-release も対象。`NSEvent.modifierFlags` reads
-            // the *current* global keyboard modifier state at the moment
-            // this action closure runs (when the click/keyboard-shortcut
-            // that selected this menu item completes) — same technique
-            // several system apps use for an option-modified menu item,
-            // and exactly what the task spec calls for.
-            Button("アップデートを確認…") {
-                let includePrereleases = NSEvent.modifierFlags.contains(.option)
-                openWindow(id: "updateCheck", value: UpdateCheckRequest(includePrereleases: includePrereleases))
+        // Task #182 (実機フィードバック「mac 版で、update のチェックができる
+        // 画面は About に移動してほしい」): replaces the standard "Otegami
+        // について" About panel with `AboutView` (`OtegamiApp`'s
+        // `WindowGroup(id: "about")`) instead of appending an item after it
+        // — Task #158's separate "アップデートを確認…" menu item (which used
+        // to sit in a `CommandGroup(after: .appInfo)` here) is gone entirely;
+        // its functionality moved into this same About window
+        // (`AboutUpdateSection`), so there's nothing left for a second menu
+        // item to do. The option-key pre-release toggle Task #158 read via
+        // `NSEvent.modifierFlags` at click time doesn't apply to a menu
+        // item anymore either — see `AboutUpdateSection`'s own doc comment
+        // for why that became a persistent checkbox instead.
+        CommandGroup(replacing: .appInfo) {
+            Button("Otegamiについて") {
+                openWindow(id: "about")
             }
         }
 

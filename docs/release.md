@@ -241,6 +241,92 @@ notarize 経路を確認できる。
   場合など (`gh release create` は既存タグに対して失敗する — 再実行する
   場合は先に `gh release delete` するか、新しいタグを打つ)。
 
+## アプリ内アップデート (macOS のみ、Task #182)
+
+実機フィードバック「mac 版で、update のチェックができる画面は About に
+移動してほしい。また、そこから update ボタンも置いて、自身のアップデート
+ができるようにしてほしい」を受けて実装。メニューバーの「Otegami」→
+「Otegamiについて」(`OtegamiCommands`の`CommandGroup(replacing: .appInfo)`、
+標準の`NSApplication`About panel を置き換え) が開く独立ウィンドウ
+(`AboutView`、`OtegamiApp`の`WindowGroup(id: "about")`) の中に、バージョン
+情報と並んでアップデート確認/インストール UI (`AboutUpdateSection`) が
+入っている。Task #158 で追加した独立ウィンドウ`UpdateCheckView`/
+`UpdateCheckRequest`はこの節で廃止・統合した。iOS はこの機能を持たない
+(App Store/TestFlight 配布) — 関連コードはすべて`#if os(macOS)`。
+
+**ユーザーの明示操作でのみ実行し、自動更新はしない** — About を開いても
+勝手にはチェックしない (`AboutUpdateSection`のトグル/ボタンはすべて
+ユーザー操作起点)。「更新」ボタンを押してからの手順:
+
+1. **ダウンロード** (`AppUpdateDownloader`): このワークフローが GitHub
+   Release に添付する`Otegami.zip`(上の「必要な GitHub Secrets」節などが
+   作る配布物そのもの) を一時ディレクトリへ取得する。ダウンロード元は
+   GitHub のホストのみに制限し (`OtegamiCore`の`AppUpdateDownloadPolicy`)、
+   **初回リクエストだけでなく `URLSessionTaskDelegate
+   .willPerformHTTPRedirection` で受け取る全てのリダイレクト hop でも**
+   同じチェックを通す — GitHub の Release アセットは実際には
+   `objects.githubusercontent.com`系の署名付き URL へ 302 されるため、
+   初回 URL だけの検証では不十分という前提。許可ホストは
+   `github.com`/`api.github.com`(完全一致)と`*.githubusercontent.com`
+   (サフィックス一致、ドット境界つき) のみで、`http`へのダウングレードも
+   拒否する。
+2. **検証** (`AppUpdateInstaller`、`OtegamiCore`の`ZipEntryPathValidator`/
+   `CodeSignatureIdentity`/既存の`FileSystemPathContainment`を利用):
+   - zip 展開前に `unzip -Z1` でエントリ名を列挙し、`../`を含む・絶対
+     パス・`~`始まりのエントリが1つでもあれば展開自体を中止する
+     (zip slip 対策 — SEC-A が添付ファイル名のパストラバーサルを直した
+     のと同じ観点)。安全と分かってから初めて`ditto -x -k`で展開する。
+   - 展開結果の `.app` バンドルのパスが、実際に展開先ディレクトリの
+     子孫であることを`FileSystemPathContainment.isDescendant`で再確認
+     する (SEC-A が同じ理由で追加したのと同じヘルパーの再利用 — 多層
+     防御であり`ditto`だけを信頼しない)。
+   - **署名の同一性**: 実行中のアプリ (`Bundle.main.bundleURL`) と展開後の
+     候補アプリの両方に対して`codesign -dv --verbose=4`を実行し (この
+     出力は**標準エラー**に出る点に注意)、`TeamIdentifier`と最初の
+     `Authority=`行を`CodeSignatureIdentity`で抽出して比較する。**両方
+     とも非nilで一致していること**が必須 — Team ID だけの一致では
+     不十分とし (証明書の失効・別チェーンでの再取得等を想定した多層
+     防御)、`Authority`文字列も合わせて見る。どちらかが unsigned/ad-hoc
+     署名なら即座に不一致として扱う。
+   - **Gatekeeper**: `spctl -a -vv --type execute`が候補アプリを受理する
+     ことも要求する。
+   - **これらのいずれかに失敗したら、一切コピー・置き換えを行わない**
+     (`AppUpdateInstaller.InstallError`を投げてダウンロード用の一時
+     ディレクトリごと破棄する)。
+3. **書き込み権限チェック**: 実行中のアプリの親ディレクトリ
+   (`/Applications`が典型) に書き込み権限が無ければ`.noWritePermission`
+   を投げる。認証ダイアログ (`AuthorizationExecuteWithPrivileges`相当) を
+   出す実装は複雑になるため今回は実装せず、**`AboutUpdateSection`側で
+   Release ページを開く導線へフォールバックする**判断とした (書き込み
+   権限が無い環境では、ユーザーに手動でのドラッグ&ドロップ更新を促す)。
+4. **入れ替え** (`AppUpdateInstaller.swap`): 実行中のアプリを同じ
+   ディレクトリ内の`<name>.old-<timestamp>`という一時名へ`moveItem`で
+   退避 → 検証済みの候補アプリを元のパスへ`moveItem` → 成功したら退避
+   コピーを削除、という順序。2番目の`moveItem`が失敗した場合は退避コピー
+   を元の位置へ戻し、**アプリが消えたままの状態には絶対にならない**よう
+   にしている。実行中のバンドルディレクトリ自体を丸ごと動かす操作は
+   macOS/Darwin では安全 (実行中プロセスは既に開いている実行ファイルの
+   ファイルディスクリプタ/マップ済みページをそのまま使い続けるため) —
+   Sparkle 系の macOS 用アップデータが使うのと同じ性質。
+5. **再起動**: 成功後、`AboutUpdateSection`が「今すぐ再起動」ボタンを
+   表示する。`NSWorkspace.shared.openApplication(at:configuration:)`に
+   `createsNewApplicationInstance = true`を指定して新しいプロセスを
+   起動してから`NSApplication.shared.terminate(nil)`する (このフラグが
+   無いと、同じ bundle identifier が「既に実行中」と判定され、まもなく
+   終了する旧プロセスの方が再アクティブ化されてしまう)。「あとで」で
+   閉じた場合、ユーザーが手動で再起動するまで新しいバージョンは使われ
+   ない。
+
+**このセッションでの検証範囲**: `AppUpdateDownloadPolicy`/
+`ZipEntryPathValidator`/`CodeSignatureIdentity`はそれぞれ
+`OtegamiCoreTests`の単体テストで検証済み (ホスト許可リスト・zip slip
+判定・署名同一性比較の網羅的なケース)。実際のダウンロード→展開→入れ替え
+という一連の流れそのもの、および本物のアプリの差し替えは**このセッション
+では実行していない** (ユーザーの実アプリを壊すリスクがあるため) — About
+画面を開いてアップデート確認 (「最新版です」まで) が動くことのみ実機
+シミュレータで確認した。差し替え経路自体の実地確認は次のリリースで
+実際に新しいバージョンを配ってから行う。
+
 ## 関連ドキュメント
 
 - [docs/xcode-cloud.md](xcode-cloud.md) — iOS 側 (Xcode Cloud →

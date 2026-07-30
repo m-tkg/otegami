@@ -23,14 +23,24 @@ public struct GitHubRelease: Codable, Sendable, Equatable {
     public let htmlURL: URL
     public let prerelease: Bool
     public let draft: Bool
+    /// Task #182 (macOS アプリ内アップデート): the release's attached files —
+    /// `release-macos.yml` uploads exactly one, `Otegami.zip`. Defaulted to
+    /// `[]` in the memberwise init below so every pre-existing call site
+    /// (unit test fixtures built before this task) keeps compiling unchanged;
+    /// `GitHubReleaseClient`'s real decode always gets GitHub's actual array.
+    public let assets: [GitHubReleaseAsset]
 
-    public init(tagName: String, name: String?, body: String?, htmlURL: URL, prerelease: Bool, draft: Bool) {
+    public init(
+        tagName: String, name: String?, body: String?, htmlURL: URL, prerelease: Bool, draft: Bool,
+        assets: [GitHubReleaseAsset] = []
+    ) {
         self.tagName = tagName
         self.name = name
         self.body = body
         self.htmlURL = htmlURL
         self.prerelease = prerelease
         self.draft = draft
+        self.assets = assets
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -40,6 +50,35 @@ public struct GitHubRelease: Codable, Sendable, Equatable {
         case htmlURL = "html_url"
         case prerelease
         case draft
+        case assets
+    }
+
+    /// The one asset `UpdateInstaller` (app layer) actually downloads —
+    /// looked up by exact file name rather than assuming array order/count,
+    /// since GitHub could in principle attach more files to a release later
+    /// (e.g. checksums) without this app needing to change.
+    public func zipAsset(named name: String = "Otegami.zip") -> GitHubReleaseAsset? {
+        assets.first { $0.name == name }
+    }
+}
+
+/// One file GitHub attached to a release
+/// ([list-release-assets](https://docs.github.com/en/rest/releases/assets)'s
+/// `browser_download_url` — a stable, permanent redirect that in practice
+/// lands on an `objects.githubusercontent.com`/`github-releases...` signed
+/// URL). Task #182 (macOS アプリ内アップデート).
+public struct GitHubReleaseAsset: Codable, Sendable, Equatable {
+    public let name: String
+    public let browserDownloadURL: URL
+
+    public init(name: String, browserDownloadURL: URL) {
+        self.name = name
+        self.browserDownloadURL = browserDownloadURL
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case browserDownloadURL = "browser_download_url"
     }
 }
 
