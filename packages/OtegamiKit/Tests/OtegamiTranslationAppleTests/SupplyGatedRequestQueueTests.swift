@@ -186,4 +186,130 @@ struct SupplyGatedRequestQueueTests {
         let secondResult = try await second
         #expect(secondResult == 202)
     }
+
+    /// 2026-07-30, 実機フィードバック — 3度目の退行の核心 (「テスト翻訳は
+    /// 成功するがメール翻訳は失敗する」、診断画面の記録: 3件連続の
+    /// `translate`呼び出しのうち3件目だけ「セッションを取得できません
+    /// でした」でタイムアウト): メール翻訳は本文を段落/チャンクごとに
+    /// **1件ずつ順次`translate`を呼ぶ**設計だったため、複数リクエストが
+    /// このキューへ次々積まれる。バグの核心は、`perform(target:operation:)`
+    /// が呼ばれた**瞬間** (=キューに並んだ瞬間、まだ自分の番が来ていない
+    /// かもしれない) からタイムアウトの時計を回し始めていたこと —
+    /// 先行リクエストの処理に時間がかかるほど、後続リクエストは**自分の
+    /// 番が来る前に**持ち時間を消費されてしまう。個々の処理自体は
+    /// 十分速くても、キューで待たされた時間だけでタイムアウトしうる、
+    /// という「行列に並んでいる間に自分の順番が来る前に受付終了時刻を
+    /// 過ぎてしまう」ような理不尽な飢餓状態。
+    ///
+    /// このテストは意図的に「後の方のリクエストほど自分の番が来るまでの
+    /// 累積待ち時間が長くなる」状況を再現する — 各リクエストの処理自体は
+    /// `timeoutSeconds`より十分短いが、複数件が連続することで後の方の
+    /// リクエストが実際に供給を求められる (=`requestSupply`が呼ばれる)
+    /// 時刻そのものが`timeoutSeconds`を超えてしまう。修正前のコードでは
+    /// このテストは**失敗する**(最後の方のリクエストがタイムアウトする)
+    /// — 修正後は、タイムアウトの時計が「実際に供給を求めた時刻」を
+    /// 起点にするため、全件が完了する。
+    @Test("many requests queued in a burst all eventually complete, even though later ones wait behind earlier ones long enough that an enqueue-time-scoped timeout would have starved them")
+    func manyQueuedRequestsAllCompleteDespiteCumulativeQueueingDelay() async throws {
+        // 1秒のタイムアウト予算に対し、1件あたり0.3秒かかる処理を5件 —
+        // 5件目が実際に供給を求められるのは(4件目までの処理が終わった)
+        // 約1.2秒後 — 「並んだ瞬間から1秒」ルールだったなら、5件目は
+        // 自分の番が来るずっと前 (1.0秒時点) に力尽きていたはずの状況。
+        let perItemDelayNanoseconds: UInt64 = 300_000_000
+        // `queueRef`は`queue`自身をまだ構築し終わる前にその
+        // `requestSupply`クロージャから参照される必要がある —
+        // 空のBoxを先に宣言し、`queue`を作った直後に中身を入れる
+        // (先に`let queue = ...`を書いてしまうと、まだ宣言されて
+        // いない`queueRef`をそのクロージャ内で forward reference
+        // することになりコンパイルエラーになる)。
+        let queueRef = Box<SupplyGatedRequestQueue<Int, Int>>()
+        let queue = SupplyGatedRequestQueue<Int, Int>(
+            timeoutSeconds: 1,
+            timeoutError: { TimeoutMarker() },
+            requestSupply: { [weak queueRef] target in
+                // 供給元 (実機では`.translationTask`のホストビュー) が
+                // 即座にではなく、いくらか時間をかけて応答する状況を
+                // シミュレートする — 実機ログの複数件連続翻訳と同じ形。
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: perItemDelayNanoseconds)
+                    await queueRef?.value?.supply(target)
+                }
+            }
+        )
+        queueRef.value = queue
+
+        // `withTaskGroup`'s `addTask` closure hit a compiler limitation
+        // ("pattern that the region-based isolation checker does not
+        // understand how to check") capturing this `@MainActor`-isolated
+        // `queue` — five explicit `async let`s (matching every other test
+        // in this file) sidestep it and are just as concurrent for this
+        // queue's purposes (all five `perform` calls start before any of
+        // them can possibly resolve).
+        func attempt(_ index: Int) async -> Result<Int, Error> {
+            do {
+                return .success(try await queue.perform(target: index) { session in session * 10 })
+            } catch {
+                return .failure(error)
+            }
+        }
+        async let r0 = attempt(0)
+        async let r1 = attempt(1)
+        async let r2 = attempt(2)
+        async let r3 = attempt(3)
+        async let r4 = attempt(4)
+        let (v0, v1, v2, v3, v4) = await (r0, r1, r2, r3, r4)
+        let results = [v0, v1, v2, v3, v4]
+
+        for (index, result) in results.enumerated() {
+            switch result {
+            case .success(let value):
+                #expect(value == index * 10, "request \(index) succeeded but with the wrong value")
+            case .failure(let error):
+                Issue.record("request \(index) starved in the queue instead of completing: \(error)")
+            }
+        }
+    }
+
+    /// The same "many requests, no starvation" guarantee, but issued one at
+    /// a time (each fully `await`ed before the next starts) — this is
+    /// `MessageTranslator.translateAligned`'s actual real-world calling
+    /// pattern (see that type's per-chunk loop) and, unlike the burst test
+    /// above, was never actually broken (no queueing delay accumulates when
+    /// nothing is queued ahead of a request) — kept as a companion so the
+    /// "N requests in a row" guarantee is pinned for both calling shapes.
+    @Test("many requests issued strictly sequentially all complete")
+    func manySequentialRequestsAllComplete() async throws {
+        let queueRef = Box<SupplyGatedRequestQueue<Int, Int>>()
+        let queue = SupplyGatedRequestQueue<Int, Int>(
+            timeoutSeconds: 5,
+            timeoutError: { TimeoutMarker() },
+            requestSupply: { [weak queueRef] target in
+                Task { @MainActor in
+                    await queueRef?.value?.supply(target)
+                }
+            }
+        )
+        queueRef.value = queue
+
+        for index in 0..<8 {
+            let result = try await queue.perform(target: index) { session in session + 1 }
+            #expect(result == index + 1)
+        }
+    }
+}
+
+/// Plain mutable reference box — `manyQueuedRequestsAllCompleteDespiteCumulativeQueueingDelay`/
+/// `manySequentialRequestsAllComplete` need `requestSupply`'s closure to
+/// call back into the very `queue` it's still being constructed as part
+/// of; a `weak` capture through this box (rather than capturing `queue`
+/// itself, which doesn't exist yet at closure-literal-evaluation time)
+/// sidesteps that ordering problem the same way `TranslationSessionCoordinator
+/// .init`'s `lazy var requestQueue` does for the identical reason. Starts
+/// empty (`init()`) so it can be declared *before* the object it will
+/// eventually hold, then filled in right after that object's own `init`
+/// returns.
+@MainActor
+private final class Box<T: AnyObject> {
+    weak var value: T?
+    init() {}
 }

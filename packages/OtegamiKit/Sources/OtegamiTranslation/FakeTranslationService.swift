@@ -97,6 +97,19 @@ public actor FakeTranslationService: TranslationService {
     public func translateParagraphs(_ paragraphs: [String], from source: TranslationLanguage, to target: TranslationLanguage) async throws -> [String] {
         guard !paragraphs.isEmpty else { return [] }
         translateParagraphsCallCount += 1
+        // 2026-07-30 (Phase 5続報4, `MessageTranslator.translateAligned`が
+        // 「まずバッチで1リクエスト、失敗したらチャンク単位へフォール
+        // バック」という形に変わった): `translate(_:from:to:)`と同じく
+        // `blockedTexts`を尊重する — 実バッチAPI (`session.translations
+        // (from:)`) が対象の1件でもガードレールに触れた場合にバッチ全体
+        // を失敗させる、という保守的な想定 (`AppleTranslationService`の
+        // doc comment参照) を、このFakeでも同じ形で再現しないと、
+        // 既存のガードレール系テスト (`blockedTexts`を設定してブロック
+        // されたチャンクの扱いを検証するもの) がバッチ経路に吸収されて
+        // フォールバック自体を一切運動させないまま素通りしてしまう。
+        if paragraphs.contains(where: { blockedTexts.contains($0) }) {
+            throw TranslationServiceError.contentBlocked(message: "fake guardrail violation (batch)")
+        }
         try checkBehavior()
         return paragraphs.map { Self.deterministicTranslation($0, to: target) }
     }

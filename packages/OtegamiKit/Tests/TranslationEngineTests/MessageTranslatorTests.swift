@@ -52,13 +52,14 @@ struct MessageTranslatorTests {
             TranslatedParagraph(original: "The report is attached.", translated: "[ja] The report is attached."),
         ])
         #expect(record.engineIdentifier == MessageTranslator.EngineIdentifier.fake)
-        // Task #61: `translateAligned` now calls `service.translate` once
-        // per chunk (not `translateParagraphs` once for the whole batch) so
-        // a single guardrail-blocked chunk can be tolerated without failing
-        // every other chunk — see `guardrailBlockedChunkIsToleratedAndOthersStillTranslate`
-        // below. Two short paragraphs here means two chunks, so two calls.
-        #expect(await service.translateCallCount == 2)
-        #expect(await service.translateParagraphsCallCount == 0)
+        // Phase 5続報4 (2026-07-30): `translateAligned` now tries
+        // `service.translateParagraphs` (one request for every chunk) first
+        // — with nothing guardrail-blocked, that single batch call succeeds
+        // and the per-chunk fallback (`service.translate`, one call per
+        // chunk — see `guardrailBlockedChunkIsToleratedAndOthersStillTranslate`
+        // below for when that path actually runs) never executes at all.
+        #expect(await service.translateCallCount == 0)
+        #expect(await service.translateParagraphsCallCount == 1)
 
         // Compared field-by-field rather than `persisted == record`:
         // `translatedAt` defaults to an unrounded `Date()`, and GRDB's
@@ -116,15 +117,13 @@ struct MessageTranslatorTests {
         // which then got rejoined into a single `TranslatedParagraph`.
         let longParagraphPieceCount = record.paragraphs[1].translated.components(separatedBy: "[ja] ").count - 1
         #expect(longParagraphPieceCount > 1)
-        // Task #61: `translateAligned` calls `service.translate` once per
-        // chunk (not `translateParagraphs` once for the whole batch, which
-        // is what let one guardrail-blocked chunk fail every other chunk —
-        // see `guardrailBlockedChunkIsToleratedAndOthersStillTranslate`
-        // below) — so the total call count is every chunk from every
-        // paragraph: the short intro's one chunk plus the long paragraph's
-        // `longParagraphPieceCount` pieces.
-        #expect(await service.translateCallCount == 1 + longParagraphPieceCount)
-        #expect(await service.translateParagraphsCallCount == 0)
+        // Phase 5続報4: no guardrail block configured, so the single batch
+        // `translateParagraphs` call (carrying every chunk from every
+        // paragraph — the short intro's one chunk plus the long paragraph's
+        // `longParagraphPieceCount` pieces — in one request) succeeds and
+        // the per-chunk fallback never runs.
+        #expect(await service.translateCallCount == 0)
+        #expect(await service.translateParagraphsCallCount == 1)
     }
 
     @Test("a second call for the same message is served from cache, not the engine")
@@ -142,11 +141,13 @@ struct MessageTranslatorTests {
         // from the cache-miss path, `second` is read back from the DB
         // (millisecond-rounded) on the cache-hit path — see the previous
         // test's doc comment on why an exact `Date` equality check would
-        // be spuriously flaky. The one call to the engine either way is
-        // the behavior actually under test.
+        // be spuriously flaky. The one batch call to the engine (cache miss
+        // on the first `translate`; the second is a cache hit and never
+        // reaches the engine at all) is the behavior actually under test.
         #expect(first.translatedRecord?.translatedText == second.translatedRecord?.translatedText)
         #expect(first.translatedRecord?.paragraphs == second.translatedRecord?.paragraphs)
-        #expect(await service.translateCallCount == 1)
+        #expect(await service.translateCallCount == 0)
+        #expect(await service.translateParagraphsCallCount == 1)
     }
 
     @Test("a cached row from a different engine is treated as a miss and re-translated")
@@ -166,7 +167,8 @@ struct MessageTranslatorTests {
             return
         }
         #expect(record.engineIdentifier == "engine-b")
-        #expect(await secondService.translateCallCount == 1)
+        #expect(await secondService.translateCallCount == 0)
+        #expect(await secondService.translateParagraphsCallCount == 1)
     }
 
     @Test("engine failure resolves to .failed rather than throwing")
@@ -200,7 +202,11 @@ struct MessageTranslatorTests {
         try await translator.invalidate(messageId: messageId)
         _ = await translator.translate(messageId: messageId, sourceText: "Hello.", sourceLanguage: .english, targetLanguage: .japanese)
 
-        #expect(await service.translateCallCount == 2)
+        // Two separate `translateAligned` calls (cache miss both times,
+        // thanks to `invalidate`), each with one short paragraph — one
+        // batch call per `translate`.
+        #expect(await service.translateCallCount == 0)
+        #expect(await service.translateParagraphsCallCount == 2)
     }
 
     @Test("a guardrail-blocked chunk keeps its original text and doesn't fail the other chunks")
@@ -233,9 +239,13 @@ struct MessageTranslatorTests {
         #expect(record.paragraphs[1] == TranslatedParagraph(original: "This one triggers the guardrail.", translated: "This one triggers the guardrail.", wasBlocked: true))
         #expect(record.paragraphs[2] == TranslatedParagraph(original: "Third paragraph is also fine.", translated: "[ja] Third paragraph is also fine.", wasBlocked: false))
         #expect(record.hasPartiallyBlockedContent)
-        // Every chunk was still individually attempted (the blocked one
-        // included) — only its *result* was substituted, the call itself
-        // wasn't skipped.
+        // Phase 5続報4: the batch `translateParagraphs` attempt (1 call)
+        // fails as a whole because one of the 3 chunks is blocked, so
+        // `translateAligned` falls back to the per-chunk path — every chunk
+        // is still individually attempted there (the blocked one included)
+        // — only its *result* was substituted, the call itself wasn't
+        // skipped.
+        #expect(await service.translateParagraphsCallCount == 1)
         #expect(await service.translateCallCount == 3)
     }
 
@@ -259,6 +269,10 @@ struct MessageTranslatorTests {
             try MessageTranslationRecord.fetchOne(db, key: messageId)
         }
         #expect(persisted == nil)
+        // The batch attempt (1 chunk, blocked) fails as a whole, falls back
+        // to the per-chunk path (1 call, also blocked) — same outcome.
+        #expect(await service.translateParagraphsCallCount == 1)
+        #expect(await service.translateCallCount == 1)
     }
 
     @Test("a guardrail-blocked chunk is retried sentence-by-sentence so only the actually-blocked sentence stays original")
@@ -295,7 +309,9 @@ struct MessageTranslatorTests {
         #expect(paragraph.translated == "[ja] First sentence is fine. This one triggers the guardrail. [ja] Third sentence is also fine.")
         #expect(paragraph.wasBlocked)
         #expect(record.hasPartiallyBlockedContent)
-        // 1 chunk-level call (blocked) + 3 sentence-level retry calls.
+        // 1 failed batch attempt, falls back to: 1 chunk-level call
+        // (blocked) + 3 sentence-level retry calls.
+        #expect(await service.translateParagraphsCallCount == 1)
         #expect(await service.translateCallCount == 4)
     }
 
@@ -329,8 +345,10 @@ struct MessageTranslatorTests {
         #expect(record.paragraphs[1] == TranslatedParagraph(original: blockedParagraph, translated: blockedParagraph, wasBlocked: true))
         #expect(record.paragraphs[2] == TranslatedParagraph(original: "Third paragraph is also fine.", translated: "[ja] Third paragraph is also fine.", wasBlocked: false))
         #expect(record.hasPartiallyBlockedContent)
-        // 3 chunk-level calls (one per paragraph) + 2 sentence-level retry
-        // calls for the fully-blocked paragraph's chunk.
+        // 1 failed batch attempt, falls back to: 3 chunk-level calls (one
+        // per paragraph) + 2 sentence-level retry calls for the
+        // fully-blocked paragraph's chunk.
+        #expect(await service.translateParagraphsCallCount == 1)
         #expect(await service.translateCallCount == 5)
     }
 
@@ -353,9 +371,11 @@ struct MessageTranslatorTests {
         #expect(!record.hasPartiallyBlockedContent)
         // Task #81's sentence-level retry only ever runs after a chunk-
         // level `.contentBlocked` — an ordinary chunk with no guardrail
-        // involvement at all is still translated as one whole chunk, one
-        // engine call, exactly as before Task #81 (non-regression).
-        #expect(await service.translateCallCount == 1)
+        // involvement at all is still translated as one whole chunk, via
+        // the single batch `translateParagraphs` call (Phase 5続報4), never
+        // falling back to the per-chunk/sentence path.
+        #expect(await service.translateCallCount == 0)
+        #expect(await service.translateParagraphsCallCount == 1)
     }
 
     @Test("availability forwards the underlying service's availability")
@@ -473,8 +493,10 @@ struct MessageTranslatorTests {
         ])
         // Only the two real-content nodes ever reach the engine — the
         // zero-width-space node contributes zero chunks (`TranslationChunker
-        // .chunk`'s `isBlank` check) and is never sent as a translate call.
-        #expect(await service.translateCallCount == 2)
+        // .chunk`'s `isBlank` check) and is never sent as part of the batch
+        // request.
+        #expect(await service.translateCallCount == 0)
+        #expect(await service.translateParagraphsCallCount == 1)
     }
 
     // MARK: - Phase 5続報 (2026-07-30, 実機フィードバック f7b623f 適用後):
@@ -505,7 +527,8 @@ struct MessageTranslatorTests {
             Issue.record("expected .translated, got \(state)")
             return
         }
-        #expect(await service.translateCallCount == 2)
+        #expect(await service.translateCallCount == 0)
+        #expect(await service.translateParagraphsCallCount == 1)
     }
 
     @Test("a TranslationService-reported .insufficientInput propagates through translateAligned unchanged, not collapsed into .failed")

@@ -22,9 +22,13 @@ import Foundation
 /// `operation`を実行してその結果を返す。
 @MainActor
 final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
+    /// `armTimeout` starts the item's own timeout clock — see
+    /// `drainIfNeeded()`'s doc comment (2026-07-30 追記) for why this has
+    /// to happen there, not in `perform(target:operation:)`.
     private struct QueueItem {
         let target: Target
         let operation: @MainActor (Session) async -> Void
+        let armTimeout: @MainActor () -> Void
     }
 
     private var queue: [QueueItem] = []
@@ -79,38 +83,61 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
     /// a `CheckedContinuation` traps if resumed twice and hangs forever if
     /// resumed zero times, and this method has two independent code paths
     /// racing to resolve the same one.
+    ///
+    /// 2026-07-30 (実機フィードバック — 3度目の退行, 「テスト翻訳は成功
+    /// するがメール翻訳は失敗する」): この関数自身はもう`Task.sleep`を
+    /// 直接スケジュールしない — 以前はここで即座にタイムアウトの時計を
+    /// 回し始めていたが、それは「`perform`が*呼ばれた瞬間*」であって
+    /// 「*このリクエストが実際にキューの先頭に来て供給を求められた瞬間*」
+    /// ではない。複数のリクエストが立て続けに積まれる (実機ログ通り —
+    /// メール翻訳は本文を段落ごとに1件ずつ`translate`を呼ぶ) と、後の方の
+    /// リクエストは先行リクエストの処理が終わるまでキューで待たされる
+    /// あいだにも持ち時間を消費され、自分の番が来る前に (あるいは来た
+    /// 直後に) タイムアウトしてしまっていた — `SupplyGatedRequestQueueTests
+    /// .manyQueuedRequestsAllCompleteDespiteCumulativeQueueingDelay`が
+    /// このバグを固定・再現する。タイムアウトを実際に開始する
+    /// (`armTimeout`) 責務は`drainIfNeeded()`へ移した — 「このリクエスト
+    /// に実際に`requestSupply`を呼んだ瞬間」を起点にすることで、キューで
+    /// 待たされた時間は一切タイムアウト予算を消費しない。
     func perform<T: Sendable>(target: Target, operation: @escaping @MainActor (Session) async throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
             let box = ResumeBox(continuation)
-            enqueue(target: target) { session in
-                do {
-                    let result = try await operation(session)
-                    box.resume(returning: result)
-                } catch {
-                    box.resume(throwing: error)
-                }
-            }
             let timeoutSeconds = self.timeoutSeconds
             let timeoutError = self.timeoutError
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
-                // `box.resume` reports whether *this* call actually
-                // resolved the continuation (`operation` hadn't already
-                // done so first) — only then may this timeout also advance
-                // the queue. Doing so unconditionally would, on the common
-                // "operation already finished normally, well before the
-                // timeout" path, blow away *a completely different, later*
-                // request's `pendingOperation` out from under it (this
-                // queue only ever tracks one at a time) — reintroducing
-                // the exact "request never completes" bug this type exists
-                // to prevent, just via the fix's own cleanup code instead
-                // of the original missing-supplier bug.
-                guard box.resume(throwing: timeoutError()) else { return }
-                guard let self else { return }
-                self.isDraining = false
-                self.pendingOperation = nil
-                self.drainIfNeeded()
-            }
+            enqueue(
+                target: target,
+                operation: { session in
+                    do {
+                        let result = try await operation(session)
+                        box.resume(returning: result)
+                    } catch {
+                        box.resume(throwing: error)
+                    }
+                },
+                armTimeout: { [weak self] in
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
+                        // `box.resume` reports whether *this* call actually
+                        // resolved the continuation (`operation` hadn't
+                        // already done so first) — only then may this
+                        // timeout also advance the queue. Doing so
+                        // unconditionally would, on the common "operation
+                        // already finished normally, well before the
+                        // timeout" path, blow away *a completely
+                        // different, later* request's `pendingOperation`
+                        // out from under it (this queue only ever tracks
+                        // one at a time) — reintroducing the exact
+                        // "request never completes" bug this type exists
+                        // to prevent, just via the fix's own cleanup code
+                        // instead of the original missing-supplier bug.
+                        guard box.resume(throwing: timeoutError()) else { return }
+                        guard let self else { return }
+                        self.isDraining = false
+                        self.pendingOperation = nil
+                        self.drainIfNeeded()
+                    }
+                }
+            )
         }
     }
 
@@ -128,19 +155,30 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
         drainIfNeeded()
     }
 
-    private func enqueue(target: Target, operation: @escaping @MainActor (Session) async -> Void) {
-        queue.append(QueueItem(target: target, operation: operation))
+    private func enqueue(target: Target, operation: @escaping @MainActor (Session) async -> Void, armTimeout: @escaping @MainActor () -> Void) {
+        queue.append(QueueItem(target: target, operation: operation, armTimeout: armTimeout))
         drainIfNeeded()
     }
 
     /// Starts the next queued item, if any, *only* when no supply is
     /// currently owed to us — see `isDraining`'s doc comment.
+    ///
+    /// 2026-07-30 (実機フィードバック — 3度目の退行): `item.armTimeout()`
+    /// を呼ぶのは**必ず`requestSupply(item.target)`の直後、この関数の中**
+    /// — その項目のタイムアウト予算は「実際にこの項目のために供給を
+    /// 求めた瞬間」から数え始める。以前は`perform`が呼ばれた瞬間 (=まだ
+    /// キューの先頭に来ていないかもしれない) から数えていたため、複数
+    /// リクエストが連続すると後の方の項目がキューで待たされた時間の分
+    /// だけ不当に持ち時間を削られていた
+    /// (`SupplyGatedRequestQueueTests
+    /// .manyQueuedRequestsAllCompleteDespiteCumulativeQueueingDelay`参照)。
     private func drainIfNeeded() {
         guard !isDraining, !queue.isEmpty else { return }
         isDraining = true
         let item = queue.removeFirst()
         pendingOperation = item.operation
         requestSupply(item.target)
+        item.armTimeout()
     }
 }
 

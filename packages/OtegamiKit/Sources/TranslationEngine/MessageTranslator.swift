@@ -234,48 +234,60 @@ public actor MessageTranslator {
 
             // Task #61 (実機フィードバック「無害なマーケティングメールなのに
             // "The model's safety guardrails were triggered." で翻訳全体が
-            // 失敗する」): 以前は `service.translateParagraphs` への一括呼び
-            // 出しがチャンク1つのガードレール誤発動で配列全体を巻き込んで
-            // 失敗していた。1チャンクずつ `service.translate` を呼び、
-            // `.contentBlocked` (ガードレール誤発動 — `TranslationServiceError
-            // .contentBlocked`のdoc comment参照) だけはそのチャンクの原文を
-            // そのまま採用して続行する。それ以外のエラー (`.tooLong`/
-            // `.unavailable`/その他の`.failed`) は `catch` に一致せずこの
-            // `do` ブロックの外側 (このメソッド自身の `catch` 節) へ素通り
-            // し、従来どおり全体を失敗させる — 意図的に「握り潰し」を
-            // ガードレール誤発動 1 種類だけに絞っている。
-            //
-            // Task #81 (実機フィードバック「MakerWorldのメールで翻訳が一部
-            // 効かない」): Task #61 のチャンク単位フォールバックは、ブロック
-            // されたチャンクに含まれる無害な文まで道連れで原文のまま残して
-            // いた。ブロックされたチャンクは `retryBlockedChunkBySentence`
-            // でさらに文単位に分割し、1文ずつ再翻訳する（再帰は1段まで —
-            // 文単位で再度ブロックされてもそれ以上は分割しない）。
-            // `chunkHasBlockedContent[i]` は「このチャンクに1文でも原文の
-            // まま残った」、`chunkFullyBlocked[i]` は「このチャンクは1文も
+            // 失敗する」): `.contentBlocked` (ガードレール誤発動 —
+            // `TranslationServiceError.contentBlocked`のdoc comment参照)
+            // だけはそのチャンクの原文をそのまま採用して続行したい。
+            // `chunkHasBlockedContent[i]`は「このチャンクに1文でも原文の
+            // まま残った」、`chunkFullyBlocked[i]`は「このチャンクは1文も
             // 翻訳できなかった」を表し、後者は「全チャンクがブロックされた
-            // 場合のみ失敗」判定に、前者は段落単位の `wasBlocked` に使う。
+            // 場合のみ失敗」判定に、前者は段落単位の`wasBlocked`に使う。
             var translatedChunks: [String] = []
             translatedChunks.reserveCapacity(chunks.count)
             var chunkHasBlockedContent = [Bool](repeating: false, count: chunks.count)
             var chunkFullyBlocked = [Bool](repeating: false, count: chunks.count)
-            for (index, chunk) in chunks.enumerated() {
-                do {
-                    translatedChunks.append(try await service.translate(chunk, from: sourceLanguage, to: targetLanguage))
-                } catch let error as TranslationServiceError where error.isContentBlocked {
-                    // F15 (2026-07-29 security scan): dropped `privacy:
-                    // .public` — this interpolates a mail-content fragment
-                    // (`logPrefix`), and `.public` persists it un-redacted
-                    // into Console.app/sysdiagnose captures outside the
-                    // app's sandbox, potentially including OTP/2FA codes.
-                    // Default (`.private`) still redacts it in production
-                    // while remaining visible to a debug-build/Xcode-
-                    // attached session.
-                    Self.logger.notice("chunk \(index) content-blocked, retrying by sentence: \(Self.logPrefix(chunk))")
-                    let retry = try await retryBlockedChunkBySentence(chunk, sourceLanguage: sourceLanguage, targetLanguage: targetLanguage)
-                    translatedChunks.append(retry.text)
-                    chunkHasBlockedContent[index] = retry.hasBlockedContent
-                    chunkFullyBlocked[index] = retry.fullyBlocked
+
+            // Phase 5続報4 (2026-07-30, 実機フィードバック — 「テスト翻訳は
+            // 成功するがメール翻訳は失敗する」、3件連続の`translate`呼び出し
+            // のうち3件目だけタイムアウト): 以前はここでチャンクごとに
+            // `service.translate`を個別に呼んでいた — チャンク数が多い
+            // メールほど`TranslationSessionCoordinator`(`SupplyGatedRequestQueue`)
+            // へ連続でリクエストが積まれ、後続リクエストがキューで待たされる
+            // 分だけ持ち時間を消費される飢餓状態を招いた実機不具合の直接
+            // 原因になっていた。そのキュー側自体の欠陥は
+            // `SupplyGatedRequestQueue.drainIfNeeded()`側で構造的に修正した
+            // (タイムアウトの起点を「並んだ瞬間」から「実際に供給を求めた
+            // 瞬間」へ変更) が、そもそも1メールあたりのリクエスト数を
+            // 減らす方が速く・安全 — まず`service.translateParagraphs`で
+            // 全チャンクを**1回のリクエスト**にまとめて試す。ガードレール
+            // 誤発動を含むどんな理由で失敗しても、既存の検証済みチャンク
+            // 単位フォールバック (Task #61/#81、下のループ) へそのまま
+            // 移行するので、正しさ (ガードレール誤発動の許容) は失わない —
+            // 失うのはあくまで「バッチが何らかの理由で失敗した場合だけ
+            // 追加のリクエストを払う」という後退で、成功する大多数の
+            // ケースでは1メール = 1リクエストになる。
+            do {
+                translatedChunks = try await service.translateParagraphs(chunks, from: sourceLanguage, to: targetLanguage)
+            } catch {
+                Self.logger.notice("translateAligned: messageId=\(messageId, privacy: .public) batch translateParagraphs failed (\(String(describing: type(of: error)), privacy: .public)), falling back to per-chunk requests")
+                translatedChunks = []
+                for (index, chunk) in chunks.enumerated() {
+                    do {
+                        translatedChunks.append(try await service.translate(chunk, from: sourceLanguage, to: targetLanguage))
+                    } catch let error as TranslationServiceError where error.isContentBlocked {
+                        // F15 (2026-07-29 security scan): dropped `privacy:
+                        // .public` — this interpolates a mail-content fragment
+                        // (`logPrefix`), and `.public` persists it un-redacted
+                        // into Console.app/sysdiagnose captures outside the
+                        // app's sandbox, potentially including OTP/2FA codes.
+                        // Default (`.private`) still redacts it in production
+                        // while remaining visible to a debug-build/Xcode-
+                        // attached session.
+                        Self.logger.notice("chunk \(index) content-blocked, retrying by sentence: \(Self.logPrefix(chunk))")
+                        let retry = try await retryBlockedChunkBySentence(chunk, sourceLanguage: sourceLanguage, targetLanguage: targetLanguage)
+                        translatedChunks.append(retry.text)
+                        chunkHasBlockedContent[index] = retry.hasBlockedContent
+                        chunkFullyBlocked[index] = retry.fullyBlocked
+                    }
                 }
             }
             // 全チャンクが1文も翻訳できなかった場合だけ失敗扱いにする —
