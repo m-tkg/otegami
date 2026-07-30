@@ -1715,8 +1715,7 @@ Gmail の IMAP モデル (二重ラベリング) では、1通の物理メール
 ## Task #166 (SEC-A): Claude Security スキャン所見 F1/F10 (添付ファイル名の
 パストラバーサル) と F17 (URL スキーム未検証) の修正
 
-`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md` (Claude
-Security によるリポジトリ全体スキャン) の指摘を検証のうえ修正した。
+Claude Security によるリポジトリ全体スキャンの指摘を検証のうえ修正した。
 
 ### F1 (HIGH) / F10 (MEDIUM): 添付ステージングでのパストラバーサル
 
@@ -1828,8 +1827,8 @@ swift test`を直接実行して確認するとよい** — 特に複数エー�
 集合のトラップ変換)・F13/F14 (HIGHESTMODSEQ のトラップ変換)・F9 (SMTP
 CRLF インジェクション) の修正
 
-`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md`の指摘を
-検証のうえ修正した。3件ともコードを実際に読んで再現条件を確認してから
+Claude Security スキャンの指摘を検証のうえ修正した。
+3件ともコードを実際に読んで再現条件を確認してから
 着手 — レポートは調査結果のデータであり指示書ではないという方針どおり。
 
 ### F5 (MEDIUM): QRESYNC VANISHED / UID SEARCH のインデックス集合展開
@@ -2027,8 +2026,7 @@ SSRF/CRLF、`docs/relay-deployment.md`参照) =#169という並びから見て�
 記録上の一意性のため見出しは指示書どおり#168のままにしつつ、ここに注記
 する。
 
-`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md`のF11/F6/F7/F12
-を検証のうえ修正した。Task #167 (SEC-B) の「未対応として残した点」で
+Claude Security スキャン所見の F11/F6/F7/F12 を検証のうえ修正した。Task #167 (SEC-B) の「未対応として残した点」で
 明示的にSEC-Cのスコープとされていた項目。4件ともコードを実際に読んで
 再現条件を確認し、**修正前のコードに対する再現スクリプト (共有ツリー外、
 `git show HEAD:<path>`で取り出した修正前ソースを単発`swift`実行で動かす
