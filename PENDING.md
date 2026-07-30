@@ -104,6 +104,17 @@ green。実エンジン呼び出し自体は自動テスト不可。詳細:
 未確認: 通常の翻訳成功、言語パック未ダウンロード時の誘導、誤判定メール
 (非日本語・非英語判定) での自動翻訳。
 
+### Task #44: Gmail「すべてのメール」新着反映バグ修正 — 実機確認
+
+メールボックス選択中に5分おきで自動差分同期を再試行する
+`syncSelectedMailboxOnAppear()`を追加し、Gmailの「すべてのメール」が
+サーバー側でINBOXよりやや遅れてインデックスされる挙動があっても、
+手動pull-to-refreshに頼らず自動的に反映されるようにした。詳細:
+`docs/qa-findings.md`「Task #44」節。
+
+未検証: 実 Gmail アカウントでの動作確認 (`FakeIMAPSession`/実Dovecot
+統合テストのみ検証済み)、実際のGmailインデックス遅延の実測値。
+
 ### Task #150: 「スレッド一覧で同じメールが2個ずつ表示される」— 原因未特定
 
 `ThreadQuery`/`MessageQuery`のrole×`pinnedOnly`全組み合わせの回帰テストを
