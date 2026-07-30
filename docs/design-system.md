@@ -7817,3 +7817,101 @@ green。文言「アーカイブ解除」は Task #87 (1) で既に
 のTask #184追記参照)。ユーザー指示どおりここで打ち切り、`make test`/
 `make mac`/`make ios`/`make check-localization`緑を出荷基準とした。
 実機での確認ポイントは`PENDING.md`「Task #184」節に追記した。
+
+## Task #185: メール詳細画面に件名が出ていない (実機フィードバック)
+
+### 何が欠けていたか
+
+ユーザー報告「メールビューで、メールのタイトルが表示されていないので、
+表示するようにして欲しい」を切り分けたところ、原因は**過去2つのバッチの
+判断が重なって、メール詳細画面 (`ThreadDetailView`) のどこにも件名が
+一切出ない状態になっていたこと**だった:
+
+1. 画面構造改修バッチ (Task #33, 2) が `MessageHeaderCompactView`
+   (Spark式の圧縮ヘッダ) を導入した際、旧ヘッダにあった件名 (title2) を
+   意図的に削除 — 理由は「この画面を開く前に必ず経由する一覧画面
+   (`MessageListRow`) で既に見えている情報の重複を避けるため」。
+2. 表示・操作改善バッチが `ThreadDetailView` のナビゲーションタイトルも
+   汎用文言 (「メール」/「スレッド」) に変更 — その際のdoc comment
+   (`ThreadDetailView.body`) は「件名は既に各メッセージ自身のヘッダ
+   (`ThreadMessageSummaryRow`/`MessageView.header(for:)`) に出ている」と
+   説明していたが、これは1.の変更後は**実際には誤り**だった (`grep -rn
+   "messageDetail.subject"` で確認 — 現在のコードにこの識別子の使用箇所
+   は無かった。`.claude/skills/verify/SKILL.md`のM4節に、この識別子が
+   かつて実在したことを示す2026年より前のテスト構築メモが残っている)。
+
+結果、一覧画面から一度でも件名を見た直後に開く分には気づきにくいが、
+通知/検索結果/スレッド内リンクなど別経路でこの画面に来た場合や、単純に
+一覧で見た件名を覚えていない場合、詳細画面のどこにも件名を確認する
+手段が無かった。
+
+### 確認した範囲
+
+iOS/macOS 両方とも `ThreadDetailView`/`MessageHeaderCompactView` を共有
+しており (`OtegamiApp.swift`の`detailColumn`がmacOS側の唯一のインスタンス
+化経路)、単一メッセージ表示 (`isFlatModeEntry`)・スレッドのアコーディオン
+表示のどちらも同じ`MessageHeaderCompactView`を経由するため、プラット
+フォーム/表示モードを問わず同じ欠落だった。
+
+### 直した内容
+
+`MessageHeaderCompactView`に件名を復活: 差出人/時刻/宛先行の**上**に、
+このヘッダ全体の1行目としてフル幅で配置 (`subjectView`という
+`@ViewBuilder`プロパティに分離 — `body`を長くしない CI 型チェック対策の
+一環、既存の`senderRow`も同様に切り出した)。
+
+- **フォント**: `OtegamiFont.title()` (22pt semibold) — Task #33
+  以前の旧ヘッダが使っていた「title2」相当のサイズ感を踏襲。差出人名
+  (`.headline()`, 17pt) より一段大きくして、この行が「読んでいるものの
+  タイトル」であることを視覚的に示す。
+- **スクロール挙動**: 固定 (pinned) にせず、他のヘッダ要素 (差出人/時刻/
+  宛先) と同じくスレッド全体の`ScrollView`/`LazyVStack`と一緒にスクロール
+  する。根拠: (1) 既存の差出人/時刻/宛先行も元から固定されておらず、件名
+  だけを固定にすると同じヘッダ内で挙動が割れる。(2) 固定化するには
+  `ThreadDetailView`の`LazyVStack`を`Section`+`.pinnedViews`へ再構成する
+  必要があり、`ThreadMessageRow`単位でヘッダの出し分け (`showsHeader`)
+  をしているアコーディオン構造 (実機フィードバック第2弾 (E)) との相性を
+  含めた設計変更になる — 件名を出す、という今回のスコープに対して
+  リスク・変更量が不釣り合いと判断した。(3) このアプリは同時並行で別
+  タスク (#184) が同じ`ThreadDetailView.swift`のツールバー周りを触って
+  おり、`LazyVStack`の構造自体を変えるとコンフリクトの表面積が増える。
+  判断根拠は`MessageHeaderCompactView.subjectView`のdoc commentにも
+  コードコメントとして残した。
+- **長い件名の折り返し・省略**: `.lineLimit(2)` + `.truncationMode(.tail)`
+  — 1行に収まらない件名も2行までは全文表示し、3行目以降は末尾を`…`で
+  省略する。1行だけにすると実際のニュースレター/通知メールの長い件名が
+  すぐ切れてしまい、逆に無制限にすると圧縮ヘッダ (Task #33の狙い) が
+  長い件名1件で旧ヘッダ相当まで縦に伸びてしまうため、2行を折衷案とした。
+- **未設定/空の件名**: `ThreadRowView.subjectText`と同じ
+  `"(件名なし)"`フォールバックに揃えた (一覧のバッジと表記が食い違わない
+  ように)。
+- **動的文字列の扱い**: `Text(verbatim:)` を使用 — 件名は送信者が自由に
+  設定できる非信頼な動的文字列であり、`LocalizedStringKey`経由だと
+  Markdown解釈が起きる (`AccountFilterChip.swift`のdoc commentが記録する
+  実バグ前例と同じクラスの罠)。
+- ナビゲーションタイトル (`ThreadDetailView.navigationTitleText`) は
+  変更していない — 上記1.のdoc commentが元々説明していた「件名は
+  メッセージ自身のヘッダ側に出す」という設計が、今回の修正で実態として
+  正しくなった。
+
+### 検証
+
+`make test`/`make mac`/`make ios`/`make check-localization` すべて
+green。フォールバック文言`"(件名なし)"`は既に`ThreadRowView`が使って
+いる既存カタログキーをそのまま再利用したため、`Localizable.xcstrings`
+への追加登録は不要だった (`scripts/generate-localizable.py`再実行後も
+差分なし)。
+
+**未検証 (画面の見た目)**: `scripts/verify-screen.sh html-0`で実際の
+レンダリングを確認しようとしたが、Task #184が`docs/verify.md`の既知
+不調#6として同日 (2026-07-31) 記録したのと同じ症状 —
+`xcrun simctl install`/`launch`/`xcodebuild build`のいずれかが
+`Device already booted, nothing to do.`の直後で無応答になり進捗が一切
+出ない — に3回 (verify-screen.sh経由2回、`make ios`が生成済みの
+`.app`を使った手動`simctl install`/`launch`1回) 遭遇し完了しなかった。
+このセッション中は`#184`・`#186`の2エージェントが同じ共有ツリー/
+シミュレータで並行してビルド・検証を行っていたため、Task #173の当初の
+仮説 (derived data ロック競合) と矛盾しない状況だった。ユーザー指示
+「シミュレータでエラーが出たら粘らない」に従い打ち切り、`make test`/
+`make mac`/`make ios`/`make check-localization`緑を出荷基準とした。
+実機での確認ポイントは`PENDING.md`「Task #185」節に追記した。

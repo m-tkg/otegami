@@ -130,6 +130,20 @@
    3回で打ち切り、`make test`/`make mac`/`make ios`/`make check-localization`
    すべて green を出荷基準とし、この画面は未検証のまま報告した
    (`PENDING.md`「Task #184」節に実機での確認ポイントを追記)。
+   **2026-07-31 追記 (Task #185、Task #184と同日)**: `html-0`シナリオで
+   同じ症状に再度遭遇 — `scripts/verify-screen.sh`経由2回に加え、今回は
+   「`make ios`が既に生成した`.app`を使って`verify-screen.sh`自身の
+   ビルドステップを丸ごと迂回し、`xcrun simctl install`/`launch`を直接
+   叩く」という第3の手も試したが、それも`Device already booted, nothing
+   to do.`の直後で無応答になった (`xcodebuild`を経由しない分、Task #173
+   の「`xcodebuild`のビルドロック競合」という仮説だけでは説明できない
+   再現)。このセッション中は本タスクと並行して`#184`・`#186`の2エージェ
+   ントが同じ共有ツリー/シミュレータで実際にビルド・検証を動かしていた
+   ため、`xcodebuild`のロックだけでなく`simctl`デーモン自体
+   (install/launchのキュー) の競合という、より広い仮説の方が今回の再現
+   (ビルドを経由しない手順でも無応答) とは整合する — ただし確証は無い。
+   `xcrun simctl list devices`のような軽い問い合わせ自体は競合中も即座に
+   応答した (デーモン自体は生きている) ことも合わせて記録しておく。
 
 ### 実機切り分け用の OSLog は `.notice` 以上で書く (Task #134)
 
