@@ -20,7 +20,12 @@ struct WatcherPoolTests {
             eventLoopGroup: eventLoopGroup,
             logger: Logger(label: "test"),
             idleMaxWaitSeconds: 3,
-            pollInterval: .milliseconds(200)
+            pollInterval: .milliseconds(200),
+            // `FakeIMAPServer` binds loopback on an OS-assigned ephemeral
+            // port — legitimate for this in-process test, not the SSRF
+            // threat `RelayNetworkPolicy.strict` (the production default)
+            // defends against. See RelayNetworkPolicy's doc comment.
+            networkPolicy: .permissiveForTesting
         )
 
         let device = try await store.createDevice(apnsToken: "device-token-abc", environment: .sandbox)
@@ -75,7 +80,12 @@ struct WatcherPoolTests {
             eventLoopGroup: eventLoopGroup,
             logger: Logger(label: "test"),
             idleMaxWaitSeconds: 3,
-            pollInterval: .milliseconds(200)
+            pollInterval: .milliseconds(200),
+            // `FakeIMAPServer` binds loopback on an OS-assigned ephemeral
+            // port — legitimate for this in-process test, not the SSRF
+            // threat `RelayNetworkPolicy.strict` (the production default)
+            // defends against. See RelayNetworkPolicy's doc comment.
+            networkPolicy: .permissiveForTesting
         )
 
         let device = try await store.createDevice(apnsToken: "poll-device-token", environment: .production)
@@ -141,7 +151,12 @@ struct WatcherPoolTests {
             eventLoopGroup: eventLoopGroup,
             logger: Logger(label: "test"),
             idleMaxWaitSeconds: 1,
-            pollInterval: .milliseconds(200)
+            pollInterval: .milliseconds(200),
+            // `FakeIMAPServer` binds loopback on an OS-assigned ephemeral
+            // port — legitimate for this in-process test, not the SSRF
+            // threat `RelayNetworkPolicy.strict` (the production default)
+            // defends against. See RelayNetworkPolicy's doc comment.
+            networkPolicy: .permissiveForTesting
         )
 
         let device = try await store.createDevice(apnsToken: "timeout-device-token", environment: .sandbox)
@@ -198,7 +213,12 @@ struct WatcherPoolTests {
             eventLoopGroup: eventLoopGroup,
             logger: Logger(label: "test"),
             idleMaxWaitSeconds: 3,
-            pollInterval: .milliseconds(200)
+            pollInterval: .milliseconds(200),
+            // `FakeIMAPServer` binds loopback on an OS-assigned ephemeral
+            // port — legitimate for this in-process test, not the SSRF
+            // threat `RelayNetworkPolicy.strict` (the production default)
+            // defends against. See RelayNetworkPolicy's doc comment.
+            networkPolicy: .permissiveForTesting
         )
 
         let device = try await store.createDevice(apnsToken: "tok", environment: .sandbox)

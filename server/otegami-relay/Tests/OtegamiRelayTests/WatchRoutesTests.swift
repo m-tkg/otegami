@@ -27,7 +27,11 @@ struct WatchRoutesTests {
 
                 let watchRequest = CreateWatchRequest(
                     accountId: "account-1",
-                    imapHost: "imap.watch-test.invalid",
+                    // TEST-NET-3 (RFC 5737) — a literal, documentation-only public IP so
+                    // `RelayNetworkPolicy.strict`'s host check passes without a real DNS
+                    // lookup (avoids CI network flakiness) while still exercising the
+                    // "allowed" path.
+                    imapHost: "203.0.113.10",
                     imapPort: 993,
                     imapUseTLS: true,
                     imapUsername: "user@example.com",
@@ -74,7 +78,8 @@ struct WatchRoutesTests {
                 let watchBody = try JSONEncoder().encode(
                     CreateWatchRequest(
                         accountId: "account-1",
-                        imapHost: "imap.watch-test.invalid",
+                        // TEST-NET-3 (RFC 5737) — see `createThenDelete`'s comment.
+                        imapHost: "203.0.113.10",
                         imapPort: 993,
                         imapUseTLS: true,
                         imapUsername: "user@example.com",
@@ -106,7 +111,8 @@ struct WatchRoutesTests {
                 let watchBody = try JSONEncoder().encode(
                     CreateWatchRequest(
                         accountId: "account-1",
-                        imapHost: "imap.watch-test.invalid",
+                        // TEST-NET-3 (RFC 5737) — see `createThenDelete`'s comment.
+                        imapHost: "203.0.113.10",
                         imapPort: 993,
                         imapUseTLS: true,
                         imapUsername: "user@example.com",
@@ -155,7 +161,8 @@ struct WatchRoutesTests {
                 let ownerWatchBody = try JSONEncoder().encode(
                     CreateWatchRequest(
                         accountId: "owner-account",
-                        imapHost: "imap.watch-test.invalid",
+                        // TEST-NET-3 (RFC 5737) — see `createThenDelete`'s comment.
+                        imapHost: "203.0.113.10",
                         imapPort: 993,
                         imapUseTLS: true,
                         imapUsername: "user@example.com",
@@ -174,7 +181,8 @@ struct WatchRoutesTests {
                 let otherWatchBody = try JSONEncoder().encode(
                     CreateWatchRequest(
                         accountId: "other-account",
-                        imapHost: "imap.watch-test.invalid",
+                        // TEST-NET-3 (RFC 5737) — see `createThenDelete`'s comment.
+                        imapHost: "203.0.113.10",
                         imapPort: 993,
                         imapUseTLS: true,
                         imapUsername: "user2@example.com",
@@ -199,7 +207,7 @@ struct WatchRoutesTests {
                     let decoded = try TestSupport.jsonDecoder.decode(ListWatchesResponse.self, from: response.body)
                     #expect(decoded.watches.count == 1)
                     #expect(decoded.watches[0].accountId == "owner-account")
-                    #expect(decoded.watches[0].imapHost == "imap.watch-test.invalid")
+                    #expect(decoded.watches[0].imapHost == "203.0.113.10")
                     // Never echoes the credential back.
                     #expect(String(buffer: response.body).contains("app-password") == false)
                 }
@@ -250,6 +258,287 @@ struct WatchRoutesTests {
                     #expect(response.status == .badRequest)
                 }
                 #expect(try await store.listWatches().isEmpty)
+            }
+        }
+    }
+
+    // MARK: - CLAUDE-SECURITY F2: SSRF defense
+
+    /// Loopback, RFC1918/link-local IPv4, and IPv6 equivalents — every
+    /// range `RelayNetworkPolicy.strict` (the production default, used by
+    /// `buildRouter`'s default `networkPolicy` here) is documented to
+    /// reject.
+    @Test(
+        "a private/loopback/link-local imapHost is rejected with 400, nothing persisted",
+        arguments: [
+            "127.0.0.1", // loopback
+            "10.0.0.5", // RFC1918
+            "172.16.0.1", // RFC1918
+            "192.168.1.1", // RFC1918
+            "169.254.1.1", // link-local
+            "0.0.0.0", // unspecified
+            "::1", // IPv6 loopback
+            "fe80::1", // IPv6 link-local
+            "fc00::1", // IPv6 unique local
+            "::ffff:127.0.0.1", // IPv4-mapped IPv6 loopback (must not bypass the IPv4 check)
+        ]
+    )
+    func createWatchRejectsPrivateHost(host: String) async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "account-1",
+                        imapHost: host,
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@example.com",
+                        auth: WatchAuth(secret: "app-password")
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .badRequest)
+                }
+                #expect(try await store.listWatches().isEmpty)
+            }
+        }
+    }
+
+    @Test("a public imapHost on the standard IMAPS port (993) is accepted")
+    func createWatchAcceptsPublicHostOnAllowedPort() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "account-1",
+                        imapHost: "203.0.113.10", // TEST-NET-3, RFC 5737 — literal public-looking IP
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@example.com",
+                        auth: WatchAuth(secret: "app-password")
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .created)
+                }
+                #expect(try await store.listWatches().count == 1)
+            }
+        }
+    }
+
+    @Test("an imapPort outside the allowed list is rejected with 400, nothing persisted")
+    func createWatchRejectsDisallowedPort() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "account-1",
+                        imapHost: "203.0.113.10",
+                        imapPort: 6379, // e.g. Redis — not an IMAP port
+                        imapUseTLS: false,
+                        imapUsername: "user@example.com",
+                        auth: WatchAuth(secret: "app-password")
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .badRequest)
+                }
+                #expect(try await store.listWatches().isEmpty)
+            }
+        }
+    }
+
+    // MARK: - CLAUDE-SECURITY F3: CRLF injection defense
+
+    @Test(
+        "a CR/LF/NUL in imapUsername, auth.secret, or mailbox is rejected with 400, nothing persisted",
+        arguments: [
+            "a\r\nRCPT TO:<attacker@evil.test>",
+            "a\nCONFIG SET dir /var/lib/redis",
+            "a\r\n",
+            "a\u{0000}b",
+        ]
+    )
+    func createWatchRejectsControlCharactersInUsername(poisoned: String) async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "account-1",
+                        imapHost: "203.0.113.10",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: poisoned,
+                        auth: WatchAuth(secret: "app-password")
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .badRequest)
+                }
+                #expect(try await store.listWatches().isEmpty)
+            }
+        }
+    }
+
+    @Test("a CR/LF in auth.secret is rejected with 400, nothing persisted")
+    func createWatchRejectsControlCharactersInSecret() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "account-1",
+                        imapHost: "203.0.113.10",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@example.com",
+                        auth: WatchAuth(secret: "pw\r\nHELO relay\r\nMAIL FROM:<a@b>")
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .badRequest)
+                }
+                #expect(try await store.listWatches().isEmpty)
+            }
+        }
+    }
+
+    @Test("a CR/LF in mailbox is rejected with 400, nothing persisted")
+    func createWatchRejectsControlCharactersInMailbox() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: "account-1",
+                        imapHost: "203.0.113.10",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@example.com",
+                        auth: WatchAuth(secret: "app-password"),
+                        mailbox: "INBOX\r\nA2 LOGOUT"
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .badRequest)
+                }
+                #expect(try await store.listWatches().isEmpty)
+            }
+        }
+    }
+
+    // MARK: - CLAUDE-SECURITY F16: accountId log-forgery defense
+
+    @Test(
+        "an accountId with control characters or outside the allowed charset is rejected with 400",
+        arguments: [
+            "a\r\n2026-07-29T00:00:00 info otegami-relay : forged log line",
+            "a\nb",
+            "has spaces",
+            "",
+            String(repeating: "a", count: 129),
+        ]
+    )
+    func createWatchRejectsInvalidAccountId(accountId: String) async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: accountId,
+                        imapHost: "203.0.113.10",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@example.com",
+                        auth: WatchAuth(secret: "app-password")
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .badRequest)
+                }
+                #expect(try await store.listWatches().isEmpty)
+            }
+        }
+    }
+
+    @Test("a UUID-shaped accountId (the app's real AccountRecord.id format) is accepted")
+    func createWatchAcceptsUUIDAccountId() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let device = try await registerDevice(client: client)
+                let watchBody = try JSONEncoder().encode(
+                    CreateWatchRequest(
+                        accountId: UUID().uuidString,
+                        imapHost: "203.0.113.10",
+                        imapPort: 993,
+                        imapUseTLS: true,
+                        imapUsername: "user@example.com",
+                        auth: WatchAuth(secret: "app-password")
+                    )
+                )
+                try await client.execute(
+                    uri: "/v1/watches",
+                    method: .post,
+                    headers: [.authorization: "Bearer \(device.deviceSecret)"],
+                    body: ByteBuffer(data: watchBody)
+                ) { response in
+                    #expect(response.status == .created)
+                }
             }
         }
     }

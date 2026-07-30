@@ -504,6 +504,35 @@ watch 照合掃除の説明を追記済み。
   最新ビルドをインストールし、プッシュ通知を1件発生させて確認する
   こと。
 
+### M9 追補4 (Task #169): SSRF/CRLFインジェクション等のセキュリティ修正 — サーバ側は完了、アプリ側は未着手
+
+`CLAUDE-SECURITY-20260729-134850/CLAUDE-SECURITY-RESULTS.md` の F2
+(HIGH)・F3・F4・F8・F16 (`server/otegami-relay/` 配下) を修正した。
+`swift test` (server) 緑、`RelayNetworkPolicyTests`/
+`WatchRoutesTests`/`MinimalIMAPClientLimitsTests`/
+`MinimalIMAPClientValidationTests`/`DeviceRoutesTests` に新規テスト
+追加済み。詳細は `docs/relay-deployment.md` の脅威モデル 8〜10 番、
+運用者がやるべき作業は `HUMAN_TASKS.md`「otegami-relay の再デプロイ」
+参照。
+
+**未着手 (アプリ側フォローアップ)**: `RELAY_DEVICE_REGISTRATION_SECRET`
+を運用者が設定した場合、`POST /v1/devices` に
+`Authorization: Bearer <registrationSecret>` を送る必要があるが、
+アプリの `PushRelayClient`/`PushNotificationSettingsView` はまだこの
+ヘッダを送信する実装を持たない。今回のタスクはサーバ専用スコープ
+だったため意図的に見送った。実装するときの論点:
+- リレー URL の設定 UI (`PushNotificationSettingsView`) に「登録
+  シークレット」入力欄を追加するか、URL のクエリ/フラグメントに
+  埋め込む方式にするか。
+- 保存先は Keychain (deviceSecret と同様)。
+- 未設定のリレー (`RELAY_DEVICE_REGISTRATION_SECRET` 未設定の既存
+  デプロイ) との後方互換 — ヘッダを送っても未設定のリレー側は単に
+  無視する (`DeviceRoutes.authorizeRegistration` は `registrationSecret
+  == nil` のときヘッダの有無を見ない) ので、常に送って問題ない。
+- 優先度は低 (デバイス登録のセルフサービス濫用は実害が限定的 — 本タスク
+  の SSRF/CRLF 修正で `POST /v1/watches` 自体は保護済みなので、
+  このシークレット無しでも今回の HIGH 指摘は解消している)。
+
 ### 既知の未検証事項 (優先度を下げた項目)
 
 - **(解消) 通知の許可を一度も要求していなかった実バグ**: 後続セッションで

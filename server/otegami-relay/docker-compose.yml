@@ -27,6 +27,11 @@ services:
       - APNS_KEY_ID=${APNS_KEY_ID:-}
       - APNS_TEAM_ID=${APNS_TEAM_ID:-}
       - APNS_BUNDLE_ID=${APNS_BUNDLE_ID:-}
+      # Optional SSRF-defense knobs (CLAUDE-SECURITY F2) — all blank by
+      # default. See docs/relay-deployment.md's threat model section.
+      - RELAY_DEVICE_REGISTRATION_SECRET=${RELAY_DEVICE_REGISTRATION_SECRET:-}
+      - RELAY_EXTRA_IMAP_PORTS=${RELAY_EXTRA_IMAP_PORTS:-}
+      - RELAY_ALLOW_PRIVATE_IMAP_HOSTS=${RELAY_ALLOW_PRIVATE_IMAP_HOSTS:-}
     volumes:
       - otegami-relay-data:/app/data
       # Only meaningful if APNS_KEY_PATH is set to a path under here, e.g.

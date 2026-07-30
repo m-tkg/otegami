@@ -100,4 +100,70 @@ struct DeviceRoutesTests {
             }
         }
     }
+
+    // MARK: - CLAUDE-SECURITY F2: optional device-registration secret
+
+    @Test("without RELAY_DEVICE_REGISTRATION_SECRET configured, registration stays open (historical behavior)")
+    func registrationOpenWhenSecretNotConfigured() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            // `deviceRegistrationSecret: nil` is `buildRouter`'s default —
+            // spelled out here anyway so this test documents the behavior
+            // it's asserting, not just relying on the default.
+            let router = buildRouter(store: store, watcherPool: watcherPool, deviceRegistrationSecret: nil)
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let registerBody = try JSONEncoder().encode(
+                    RegisterDeviceRequest(apnsToken: "tok", environment: .sandbox)
+                )
+                try await client.execute(uri: "/v1/devices", method: .post, body: ByteBuffer(data: registerBody)) { response in
+                    #expect(response.status == .created)
+                }
+            }
+        }
+    }
+
+    @Test("with RELAY_DEVICE_REGISTRATION_SECRET configured, registration without it is rejected and nothing is persisted")
+    func registrationRejectedWithoutSecretWhenConfigured() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool, deviceRegistrationSecret: "op-secret")
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let registerBody = try JSONEncoder().encode(
+                    RegisterDeviceRequest(apnsToken: "tok", environment: .sandbox)
+                )
+                try await client.execute(uri: "/v1/devices", method: .post, body: ByteBuffer(data: registerBody)) { response in
+                    #expect(response.status == .unauthorized)
+                }
+                try await client.execute(
+                    uri: "/v1/devices",
+                    method: .post,
+                    headers: [.authorization: "Bearer wrong-secret"],
+                    body: ByteBuffer(data: registerBody)
+                ) { response in
+                    #expect(response.status == .unauthorized)
+                }
+            }
+        }
+    }
+
+    @Test("with RELAY_DEVICE_REGISTRATION_SECRET configured, registration with the correct secret succeeds")
+    func registrationAcceptedWithCorrectSecret() async throws {
+        try await TestSupport.withStore { store, watcherPool, _ in
+            let router = buildRouter(store: store, watcherPool: watcherPool, deviceRegistrationSecret: "op-secret")
+            let app = Application(router: router)
+            try await app.test(.router) { client in
+                let registerBody = try JSONEncoder().encode(
+                    RegisterDeviceRequest(apnsToken: "tok", environment: .sandbox)
+                )
+                try await client.execute(
+                    uri: "/v1/devices",
+                    method: .post,
+                    headers: [.authorization: "Bearer op-secret"],
+                    body: ByteBuffer(data: registerBody)
+                ) { response in
+                    #expect(response.status == .created)
+                }
+            }
+        }
+    }
 }

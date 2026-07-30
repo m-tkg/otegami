@@ -88,7 +88,7 @@ struct APNsSender: PushSending {
                 "APNs push rejected",
                 metadata: [
                     "status": .stringConvertible(response.status.code),
-                    "accountId": .string(payload.accountId),
+                    "accountId": .string(Self.sanitizedForLog(payload.accountId)),
                     "deviceToken": .string(Self.redact(deviceToken)),
                     "body": .string(bodyText),
                 ]
@@ -98,7 +98,7 @@ struct APNsSender: PushSending {
         logger.info(
             "APNs push accepted",
             metadata: [
-                "accountId": .string(payload.accountId),
+                "accountId": .string(Self.sanitizedForLog(payload.accountId)),
                 "uidNext": .stringConvertible(payload.uidNext),
                 "deviceToken": .string(Self.redact(deviceToken)),
                 "environment": .string(environment.rawValue),
@@ -126,6 +126,18 @@ struct APNsSender: PushSending {
     private static func redact(_ token: String) -> String {
         guard token.count > 8 else { return String(repeating: "*", count: token.count) }
         return "\(token.prefix(4))…\(token.suffix(4))"
+    }
+
+    /// CLAUDE-SECURITY F16 (LOW, defense in depth) — see
+    /// `ConsolePushSender.sanitizedForLog`'s doc comment; same rationale,
+    /// duplicated rather than shared since these two small `PushSending`
+    /// conformances don't otherwise depend on each other.
+    private static func sanitizedForLog(_ value: String) -> String {
+        String(
+            value.unicodeScalars.map { scalar in
+                (scalar.value < 0x20 || scalar.value == 0x7F) ? "?" : Character(scalar)
+            }
+        )
     }
 
     /// Minimal payload shape (plan §7: "ペイロードは最小(mutable-content, loc-key

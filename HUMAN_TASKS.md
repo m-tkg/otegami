@@ -267,6 +267,34 @@
       優先度: 中 / 所要時間: 5分 / 参照: [docs/relay-deployment.md](docs/relay-deployment.md)
 - [x] **プライベート CA の秘密鍵 (rootCA.key 相当) を git 管理外に置く**
       — (2026-07-29 対応済み) 管理場所を変更したとユーザー確認。
+- [ ] **otegami-relay の再デプロイ (Task #169: SSRF/CRLF インジェクション等の
+      セキュリティ修正)** — `server/otegami-relay/` に SSRF (F2)・IMAP
+      CRLF インジェクション (F3)・メモリ枯渇 (F4/F8)・ログ偽造 (F16) の
+      修正が入った。実運用中のリレーに反映するには:
+      1. 通常の再デプロイ手順 (`docs/relay-deployment.md`「4. 起動
+         (Docker)」) を実行し、`main` の最新コミットで再ビルド・再起動
+         する。
+      2. **既存の watch は自動では壊れない** (この修正は新規 watch 作成
+         時のホスト/ポート検証と、再接続時の再検証のみ行う) が、現在
+         登録しているアカウントの IMAP ホストがループバック/リンク
+         ローカル/プライベートアドレス (RFC1918/ULA) の場合のみ、
+         `RELAY_ALLOW_PRIVATE_IMAP_HOSTS=1` を `.env` に追加してから
+         再起動すること。実 IMAP プロバイダ (Gmail/Fastmail 等の公開
+         ホスト、993 番ポート) を使っている通常運用では何もしなくて
+         よい。
+      3. 任意 (推奨): `RELAY_DEVICE_REGISTRATION_SECRET` を設定すると
+         `POST /v1/devices` (デバイス登録) を保護できるが、**アプリ側は
+         まだこのヘッダを送信する実装を持っていない** — 設定すると
+         アプリからの新規プッシュ通知有効化が失敗するようになるので、
+         アプリ側対応 (別タスク、`PENDING.md` 参照) が入るまでは未設定の
+         ままでよい。
+      4. 再デプロイ後、`docker compose logs -f otegami-relay` で
+         `RELAY_DEVICE_REGISTRATION_SECRET is not set` の warning が
+         出ていること (想定どおり) と、既存アカウントのプッシュ通知が
+         引き続き届くことを確認する。
+      優先度: 高 (公開運用中のリレーに対する実際の脆弱性修正) / 所要
+      時間: 15分 / 参照: [docs/relay-deployment.md](docs/relay-deployment.md)
+      の脅威モデル 8〜10 番
 
 ## 4. 公開・配布に向けて (App Store / TestFlight を目指す場合)
 

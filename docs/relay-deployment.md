@@ -55,6 +55,9 @@ cp server/otegami-relay/.env.sample server/otegami-relay/.env
 | `APNS_KEY_ID` | - | `.p8` の Key ID。 |
 | `APNS_TEAM_ID` | - | Apple Developer の Team ID。 |
 | `APNS_BUNDLE_ID` | - | アプリの Bundle ID (`apns-topic` として使う)。 |
+| `RELAY_DEVICE_REGISTRATION_SECRET` | - | `POST /v1/devices` を保護する運用者共有シークレット。設定すると `Authorization: Bearer <この値>` が無い/不一致の登録要求を 401 にする。未設定 (既定) の場合は従来どおり無認証で登録できる — 詳細は下記脅威モデルの 8 番参照。 |
+| `RELAY_EXTRA_IMAP_PORTS` | - | `POST /v1/watches` が受理する IMAP ポートを既定の 143/993 に加えて広げる (カンマ区切り、例 `1143,2143`)。ポート転送した自宅サーバーなど非標準ポート運用のときのみ設定する。 |
+| `RELAY_ALLOW_PRIVATE_IMAP_HOSTS` | - | `1` にすると `POST /v1/watches` がループバック/リンクローカル/プライベート (RFC1918/ULA) の IMAP ホストを受理するようになる。IMAP サーバーがリレーと同じプライベートネットワーク上にある場合のみ設定する — 既定 (未設定) はこれらを拒否する。詳細は下記脅威モデルの 9 番参照。 |
 
 ### 4. 起動 (Docker)
 
@@ -181,6 +184,46 @@ accountId→watchId マップの修復を行う (`AppEnvironment
    自動的に監視を停止する (`WatcherPool`) — パスワード変更後に古い
    資格情報で IMAP サーバへの再試行を無限に繰り返し、アカウント
    ロックアウトを誘発することを避けるため。
+8. **デバイス登録の保護 (Task #169, CLAUDE-SECURITY F2)**: `POST
+   /v1/devices` は設計上 (デバイスが最初の資格情報を得るための入口な
+   ので) 認証を要求できない。これを悪用すると、リレーの HTTP ポートに
+   到達できる誰でも `deviceSecret` を自己発行し、以降の `POST
+   /v1/watches` に到達できてしまう。`RELAY_DEVICE_REGISTRATION_SECRET`
+   を設定すると、この入口を運用者共有シークレットの Bearer 認証で
+   塞げる。未設定の間は従来どおり無認証のままだが (既存デプロイを
+   即座に壊さないため、かつアプリ側がまだこのヘッダを送る実装を
+   持たないため — `HUMAN_TASKS.md`/`PENDING.md` 参照)、無認証の
+   登録が起きるたびにリレーが warning ログを出す。
+9. **watch 作成時/接続時の SSRF 防御 (Task #169, CLAUDE-SECURITY F2)**:
+   修正前は `POST /v1/watches` の `imapHost`/`imapPort` が検証なしで
+   `ClientBootstrap.connect` に渡っており、リレーの HTTP ポートに到達
+   できる者がリレー自身のネットワーク (ループバック・Docker ブリッジ・
+   LAN・クラウドのメタデータ endpoint) へ任意の TCP 接続を張らせられた
+   (`MinimalIMAPClient` の CRLF インジェクション (項目 10 参照) と組み
+   合わせると、そこに任意の行プロトコルを送り込むブラインドな踏み台に
+   もなり得た)。`RelayNetworkPolicy` がこれを閉じる:
+   - `POST /v1/watches` 時点でホストを解決し、ループバック・リンク
+     ローカル (169.254.0.0/16, fe80::/10)・プライベート (RFC1918,
+     ULA fc00::/7)・マルチキャスト・未指定 (0.0.0.0/::) を拒否する
+     (既定。IPv4-mapped IPv6 表記での迂回も防ぐ)。
+   - ポートを 143/993 (+ `RELAY_EXTRA_IMAP_PORTS` で運用者が追加した
+     集合) に制限する。
+   - 接続のたびに (watch 作成時だけでなく再接続のたびに) 同じ検証を
+     再実行し、かつ検証した解決先アドレスへそのまま接続する (2 回目の
+     名前解決をしない) — DNS リバインディング対策。
+   - IMAP サーバーがリレーと同じプライベートネットワーク上にある構成
+     (本書「宅内サーバー」の例など) を使う場合は
+     `RELAY_ALLOW_PRIVATE_IMAP_HOSTS=1` で明示的にオプトインする。
+     既存の watch (この修正より前に作成されたもの) はこの検証の対象
+     外 — 起動時の再接続では引き続き動くが、次回以降の**新規**
+     watch 作成や、DNS 変更を伴う再接続では新しい制限を受ける。
+10. **IMAP コマンド行への CRLF インジェクション防御 (Task #169,
+    CLAUDE-SECURITY F3)**: `imapUsername`/`auth.secret`/`mailbox` に
+    埋め込まれた CR/LF/NUL などの制御文字は、`POST /v1/watches` の時点
+    (`WatchRoutes`) と `MinimalIMAPClient.quoted` (実際に IMAP コマンド
+    行へ書き込む直前) の 2 箇所で拒否 (エスケープではなく 400/接続
+    エラー) する。IMAP の `quoted-string` 文法はそもそも CR/LF を運べ
+    ないため、エスケープではなく拒否が正しい対処。
 
 ## モニタリング / ログ
 
@@ -192,6 +235,28 @@ accountId→watchId マップの修復を行う (`AppEnvironment
 は各 watch の接続確立・切断・再接続・認証失敗停止をログに残す。件名・
 本文・IMAP パスワードはログに一切出力しない (`ConsolePushSender`/
 `APNsSender` はどちらもデバイストークンを先頭/末尾 4 文字以外は伏せる)。
+`accountId` はログ出力前に制御文字を `?` に置換する
+(Task #169, CLAUDE-SECURITY F16) — `POST /v1/watches` 時点の検証済み
+値のはずだが、その検証を経ないパス (直接 `RelayStore.createWatch` を
+呼ぶテスト等) から来た値でもログレコード偽造ができないための二重の
+防御線。
+
+## メモリ枯渇対策 (Task #169, CLAUDE-SECURITY F4/F8)
+
+`imapHost`/`imapPort` で指定された IMAP サーバー (悪意ある、または単に
+壊れたピア) が応答を返さない/異常な応答を送り続けた場合にリレー全体を
+OOM で落とせないよう、`MinimalIMAPClient` は以下を有界化している:
+
+- コマンドごとに集める untagged (`*`) 行数と合計バイト数に上限
+  (既定 500 行 / 256KB)、コマンド全体の壁時計デッドライン (既定 90 秒)。
+- 行フレーミングの最大長 (既定 8KB) — 超過した接続は切断する。
+- 受信済みだが未消費の行を貯める内部バッファも上限あり (既定 2000 行 /
+  1MB) — `IDLE` の代わりに 5 分間隔で `STATUS` をポーリングする間の
+  「誰も読み出していない」窓を悪用されないため。
+
+いずれも超過時は接続をエラーで切断し、`WatcherPool` の通常の再接続
+バックオフに委ねる (watch 自体は自動停止しない — 一時的な相手側の
+不調と区別しないため)。
 
 ## 既知の制約 / 今後
 

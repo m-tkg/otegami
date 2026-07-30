@@ -34,6 +34,12 @@ actor WatcherPool: Service {
     /// `FakeIMAPServer` instead of actually waiting minutes.
     private let idleMaxWaitSeconds: Int64
     private let pollInterval: Duration
+    /// CLAUDE-SECURITY F2 — re-validated on every (re)connect, not just
+    /// once at watch creation; see `RelayNetworkPolicy`'s doc comment.
+    /// Defaults to `.strict`; tests that intentionally dial loopback
+    /// (`FakeIMAPServer`, dev-mailstack Dovecot on `localhost`) pass
+    /// `.permissiveForTesting` explicitly.
+    private let networkPolicy: RelayNetworkPolicy
 
     private var tasks: [String: Task<Void, Never>] = [:]
 
@@ -43,7 +49,8 @@ actor WatcherPool: Service {
         eventLoopGroup: any EventLoopGroup,
         logger: Logger,
         idleMaxWaitSeconds: Int64 = 29 * 60,
-        pollInterval: Duration = .seconds(5 * 60)
+        pollInterval: Duration = .seconds(5 * 60),
+        networkPolicy: RelayNetworkPolicy = .strict
     ) {
         self.store = store
         self.pushSender = pushSender
@@ -51,6 +58,7 @@ actor WatcherPool: Service {
         self.logger = logger
         self.idleMaxWaitSeconds = idleMaxWaitSeconds
         self.pollInterval = pollInterval
+        self.networkPolicy = networkPolicy
     }
 
     // MARK: - Service
@@ -111,7 +119,12 @@ actor WatcherPool: Service {
 
             let client = MinimalIMAPClient(eventLoopGroup: eventLoopGroup)
             do {
-                try await client.connect(host: record.imapHost, port: record.imapPort, useTLS: record.imapUseTLS)
+                try await client.connect(
+                    host: record.imapHost,
+                    port: record.imapPort,
+                    useTLS: record.imapUseTLS,
+                    networkPolicy: networkPolicy
+                )
                 do {
                     try await client.login(username: record.imapUsername, password: record.secret)
                 } catch {

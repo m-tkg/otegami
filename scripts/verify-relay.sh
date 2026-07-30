@@ -16,6 +16,15 @@
 #   RELAY_PORT   Port the relay listens on for this run (default: 8091)
 #   TIMEOUT_SECS How long to wait for the watch to connect / for the push
 #                to fire before giving up (default: 30 each)
+#
+# CLAUDE-SECURITY F2 note: this script's relay instance is started with
+# RELAY_ALLOW_PRIVATE_IMAP_HOSTS=1 and RELAY_EXTRA_IMAP_PORTS=1143, since it
+# deliberately points a watch at dev/mailstack's Dovecot on
+# localhost:1143 — a loopback host and nonstandard port that
+# RelayNetworkPolicy.strict (the production default) rejects on purpose.
+# That's fine here: this whole script only ever talks to a relay it just
+# started on the same machine, not the internet-facing deployment the
+# strict default protects.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,7 +64,9 @@ RELAY_MASTER_KEY="$(openssl rand -base64 32)"
 export RELAY_MASTER_KEY
 (
   cd "$RELAY_DIR" && \
-  RELAY_PORT="$RELAY_PORT" RELAY_DATABASE_PATH="$DB_FILE" swift run OtegamiRelay
+  RELAY_PORT="$RELAY_PORT" RELAY_DATABASE_PATH="$DB_FILE" \
+  RELAY_ALLOW_PRIVATE_IMAP_HOSTS=1 RELAY_EXTRA_IMAP_PORTS=1143 \
+  swift run OtegamiRelay
 ) >"$LOG_FILE" 2>&1 &
 RELAY_PID=$!
 

@@ -8,13 +8,19 @@ import SQLiteNIO
 /// Builds the router for the relay's HTTP API. Separated from `main` so
 /// tests can exercise it without binding a real socket (`HealthTests`,
 /// `DeviceRoutesTests`, `WatchRoutesTests`).
-func buildRouter(store: RelayStore, watcherPool: WatcherPool) -> Router<BasicRequestContext> {
+func buildRouter(
+    store: RelayStore,
+    watcherPool: WatcherPool,
+    networkPolicy: RelayNetworkPolicy = .strict,
+    deviceRegistrationSecret: String? = nil,
+    logger: Logger = Logger(label: "otegami-relay")
+) -> Router<BasicRequestContext> {
     let router = Router()
     router.get("/health") { _, _ in
         "ok"
     }
-    DeviceRoutes.register(on: router, store: store)
-    WatchRoutes.register(on: router, store: store, watcherPool: watcherPool)
+    DeviceRoutes.register(on: router, store: store, registrationSecret: deviceRegistrationSecret, logger: logger)
+    WatchRoutes.register(on: router, store: store, watcherPool: watcherPool, networkPolicy: networkPolicy)
     return router
 }
 
@@ -57,6 +63,28 @@ struct OtegamiRelay {
             throw error
         }
 
+        // CLAUDE-SECURITY F2: surfaced once at startup too (not just on
+        // every unauthenticated `POST /v1/devices`, see
+        // `DeviceRoutes.authorizeRegistration`) so it's visible even on a
+        // quiet relay nobody's actively probing yet.
+        if configuration.deviceRegistrationSecret == nil {
+            logger.warning(
+                """
+                RELAY_DEVICE_REGISTRATION_SECRET is not set — POST /v1/devices is open to \
+                anyone who can reach this relay. See docs/relay-deployment.md.
+                """
+            )
+        }
+        if configuration.networkPolicy.allowPrivateNetworks {
+            logger.warning(
+                """
+                RELAY_ALLOW_PRIVATE_IMAP_HOSTS is set — this relay will connect to \
+                loopback/link-local/private IMAP hosts requested by any authenticated \
+                watch. Only enable this if the relay's own network is trusted.
+                """
+            )
+        }
+
         let crypto = try CredentialCrypto(base64Key: configuration.masterKeyBase64)
         let eventLoopGroup = MultiThreadedEventLoopGroup.singleton
         let store = try await RelayStore.open(
@@ -68,9 +96,21 @@ struct OtegamiRelay {
 
         let httpClient = HTTPClient(eventLoopGroupProvider: .shared(eventLoopGroup))
         let pushSender = makePushSender(configuration: configuration, httpClient: httpClient, logger: logger)
-        let watcherPool = WatcherPool(store: store, pushSender: pushSender, eventLoopGroup: eventLoopGroup, logger: logger)
+        let watcherPool = WatcherPool(
+            store: store,
+            pushSender: pushSender,
+            eventLoopGroup: eventLoopGroup,
+            logger: logger,
+            networkPolicy: configuration.networkPolicy
+        )
 
-        let router = buildRouter(store: store, watcherPool: watcherPool)
+        let router = buildRouter(
+            store: store,
+            watcherPool: watcherPool,
+            networkPolicy: configuration.networkPolicy,
+            deviceRegistrationSecret: configuration.deviceRegistrationSecret,
+            logger: logger
+        )
         let app = Application(
             router: router,
             configuration: .init(address: .hostname("0.0.0.0", port: configuration.port)),

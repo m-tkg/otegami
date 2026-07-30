@@ -49,7 +49,11 @@ struct WatcherPoolRealDovecotIntegrationTests {
             eventLoopGroup: eventLoopGroup,
             logger: Logger(label: "test"),
             idleMaxWaitSeconds: 120,
-            pollInterval: .milliseconds(200)
+            pollInterval: .milliseconds(200),
+            // Dials dev/mailstack's Dovecot on `localhost` — a developer's
+            // own machine, not the SSRF threat `RelayNetworkPolicy.strict`
+            // defends against. See RelayNetworkPolicy's doc comment.
+            networkPolicy: .permissiveForTesting
         )
 
         let device = try await store.createDevice(apnsToken: "real-dovecot-token", environment: .sandbox)
@@ -118,7 +122,11 @@ struct WatcherPoolRealDovecotIntegrationTests {
             eventLoopGroup: eventLoopGroup,
             logger: Logger(label: "test"),
             idleMaxWaitSeconds: 3,
-            pollInterval: .milliseconds(200)
+            pollInterval: .milliseconds(200),
+            // Dials dev/mailstack's Dovecot on `localhost` — a developer's
+            // own machine, not the SSRF threat `RelayNetworkPolicy.strict`
+            // defends against. See RelayNetworkPolicy's doc comment.
+            networkPolicy: .permissiveForTesting
         )
 
         let device = try await store.createDevice(apnsToken: "real-dovecot-timeout-token", environment: .sandbox)

@@ -9,6 +9,13 @@ struct RelayConfiguration: Sendable {
     var databasePath: String
     var apns: APNsConfig?
     var port: Int
+    /// CLAUDE-SECURITY F2 — SSRF defense for `POST /v1/watches` and every
+    /// IMAP (re)connect. See `RelayNetworkPolicy`'s doc comment.
+    var networkPolicy: RelayNetworkPolicy
+    /// CLAUDE-SECURITY F2 — optional gate on `POST /v1/devices`. `nil`
+    /// (unset `RELAY_DEVICE_REGISTRATION_SECRET`) keeps registration open;
+    /// see `DeviceRoutes.authorizeRegistration`'s doc comment for why.
+    var deviceRegistrationSecret: String?
 
     struct APNsConfig: Sendable {
         var keyPath: String
@@ -52,11 +59,15 @@ struct RelayConfiguration: Sendable {
             apns = APNsConfig(keyPath: keyPath, keyId: keyId, teamId: teamId, bundleId: bundleId)
         }
 
+        let deviceRegistrationSecret = environment["RELAY_DEVICE_REGISTRATION_SECRET"].flatMap { $0.isEmpty ? nil : $0 }
+
         return RelayConfiguration(
             masterKeyBase64: masterKey,
             databasePath: databasePath,
             apns: apns,
-            port: port
+            port: port,
+            networkPolicy: .fromEnvironment(environment),
+            deviceRegistrationSecret: deviceRegistrationSecret
         )
     }
 }
