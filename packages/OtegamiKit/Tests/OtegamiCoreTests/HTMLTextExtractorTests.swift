@@ -1,8 +1,43 @@
+import Foundation
 import Testing
 @testable import OtegamiCore
 
 @Suite("HTMLTextExtractor")
 struct HTMLTextExtractorTests {
+    /// Regression bound for Task #168 (SEC-C, `CLAUDE-SECURITY` F11/F6):
+    /// `plainText(fromHTML:)` used to be a chain of backtracking regexes
+    /// plus an unbounded-rescan entity decoder, both worst-case quadratic
+    /// in input length. Confirmed against the pre-fix code (via a
+    /// standalone repro outside the shared work tree, not by mutating
+    /// this file's history) that these payloads did not complete within
+    /// 25s; post-fix they complete in well under 1s. The bound below is
+    /// generous on purpose — this asserts "doesn't hang for a very long
+    /// time", not a tight performance budget.
+    private static let maliciousInputTimeBound: TimeInterval = 10
+
+    @Test("a ~1MB unclosed <script> flood does not hang HTML→text extraction")
+    func scriptFloodDoesNotHang() {
+        let payload = String(repeating: "<script", count: 150_000) // ~1.05MB, never closed, no '>' at all.
+        let start = Date()
+        _ = HTMLTextExtractor.plainText(fromHTML: payload)
+        #expect(Date().timeIntervalSince(start) < Self.maliciousInputTimeBound)
+    }
+
+    @Test("a flood of '&' with a single trailing ';' does not hang entity decoding")
+    func entityFloodDoesNotHang() {
+        let payload = String(repeating: "&", count: 300_000) + ";"
+        let start = Date()
+        _ = HTMLTextExtractor.plainText(fromHTML: payload)
+        #expect(Date().timeIntervalSince(start) < Self.maliciousInputTimeBound)
+    }
+
+    @Test("input far beyond the internal length cap is still bounded and doesn't crash")
+    func oversizedInputIsCappedAndSafe() {
+        let payload = String(repeating: "<script", count: 2_000_000) // ~14MB, well past the internal cap.
+        let start = Date()
+        _ = HTMLTextExtractor.plainText(fromHTML: payload)
+        #expect(Date().timeIntervalSince(start) < Self.maliciousInputTimeBound)
+    }
     @Test("strips tags and preserves text")
     func stripsTags() {
         let html = "<p>Hello <b>World</b></p>"
