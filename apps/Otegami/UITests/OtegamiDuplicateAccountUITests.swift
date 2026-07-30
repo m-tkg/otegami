@@ -77,9 +77,9 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         let matchCount = waitForAccountRowCount(2, emailText: "test1@otegami.test", in: app)
         try skipIfNoAccountRowsExist(
             matchCount,
-            reason: "Phase 2 depends on scripts/verify-ios-duplicate-account.sh's between-phase sqlite3 "
-                + "injection of a duplicate account row — running this test class directly via "
-                + "`xcodebuild test` (not through that script) never performs that injection, so this "
+            reason: "Phase 2 depends on the manual between-phase sqlite3 injection of a duplicate account "
+                + "row documented in docs/verify.md (「実 2 台のデバイスを使わない再現方法」節) — running "
+                + "this test class directly via `xcodebuild test` never performs that injection, so this "
                 + "phase can't reach its own precondition."
         )
         XCTAssertEqual(matchCount, 2, "Expected the real device bug: two account rows for the same email address")
@@ -115,8 +115,8 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
         let matchCount = waitForAccountRowCount(1, emailText: "test1@otegami.test", in: app)
         try skipIfNoAccountRowsExist(
             matchCount,
-            reason: "Phase 3 depends on Phase 1/2 (and scripts/verify-ios-duplicate-account.sh's between-phase "
-                + "sqlite3 injection) having actually left an account behind — running this test class "
+            reason: "Phase 3 depends on Phase 1/2 (and the manual between-phase sqlite3 injection documented "
+                + "in docs/verify.md) having actually left an account behind — running this test class "
                 + "directly via `xcodebuild test` never reaches that state."
         )
         XCTAssertEqual(matchCount, 1, "Expected the duplicate account merge to have collapsed both rows into one")
@@ -155,13 +155,14 @@ final class OtegamiDuplicateAccountUITests: XCTestCase {
     }
 
     /// Task #172: phases 2/3 assume the prior phase (and, for phase 2, the
-    /// wrapping script's between-phase `sqlite3` injection) actually ran —
+    /// manual between-phase `sqlite3` injection documented in
+    /// docs/verify.md「実 2 台のデバイスを使わない再現方法」) actually ran —
     /// if this test class is invoked directly (e.g. the full `OtegamiUITests`
-    /// suite run, not `scripts/verify-ios-duplicate-account.sh`), zero
-    /// account rows exist at all rather than the "wrong" count the assertion
-    /// below is built to catch. Skip rather than fail in that case so a
-    /// real regression in the merge logic itself (a `matchCount` that's
-    /// non-zero but still wrong) still reports as a genuine failure.
+    /// suite run, not that documented manual procedure), zero account rows
+    /// exist at all rather than the "wrong" count the assertion below is
+    /// built to catch. Skip rather than fail in that case so a real
+    /// regression in the merge logic itself (a `matchCount` that's non-zero
+    /// but still wrong) still reports as a genuine failure.
     private func skipIfNoAccountRowsExist(_ matchCount: Int, reason: String) throws {
         guard matchCount == 0 else { return }
         throw XCTSkip(reason)
