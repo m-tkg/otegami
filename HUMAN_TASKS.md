@@ -1,502 +1,123 @@
 # HUMAN_TASKS — 人間 (ユーザー本人) がやる作業一覧
 
 このファイルは「人間の行動」視点で、otegami の開発を進める上でユーザー
-本人にしかできない作業をまとめたチェックリスト。完了したら `[ ]` を
-`[x]` に変えていく運用を想定している。
+本人にしかできない作業をまとめたチェックリスト。完了したら削除する
+運用 (完了項目の履歴は git log で追える)。
 
-## PENDING.md との関係
-
-[`PENDING.md`](PENDING.md) は「何が技術的に未検証で、なぜで、対応手順は
-何か」を機能単位で詳しく記録したドキュメント (実装側の視点)。この
-`HUMAN_TASKS.md` はその内容を「今日やることリスト」として行動単位に
-並べ替えたもの — 詳しい背景・理由・切り分けの経緯が知りたい項目は、
-各行から `PENDING.md` の該当節にリンクしている。逆に、ここに無い技術的
-な保留事項は無い (このファイルは PENDING.md の全項目 + ドキュメント
-全体から拾った確認待ち事項を漏れなく含む)。
+[`PENDING.md`](PENDING.md) は「何が技術的に未検証で、なぜか」を機能単位で
+詳しく記録したドキュメント (設計判断の理由は各機能の doc — 主に
+`docs/design-system.md`/`docs/qa-findings.md`/`docs/icloud-sync.md`/
+`docs/translation.md`/`docs/relay-deployment.md` — に記録)。このファイルは
+それを「今日やることリスト」として行動単位に並べ替えたもの。
 
 ---
 
 ## 1. 実機での確認 (シミュレータでは確認しきれなかったもの)
 
-- [ ] **スレッド要約が最終形 (mapのみ・空行区切りのリスト) で自然に見えるか**
-      — 複数往復のあるスレッド (できれば金額・日時・固有名詞など具体的な
-      内容を含むもの) を開き、ナビゲーションタイトル横の要約ボタンを
-      タップして「n/m 通目を要約中…」という進捗表示が出ること (「仕上げ
-      中…」はもう出ない)、生成完了後の結果が各メッセージ1件ずつ
-      `"[日付] 差出人: 内容"`の行として空行区切りで並んでいること、
-      `■経緯`/`■現状`のようなラベルが一切無いこと、各行の内容 (数値・
-      固有名詞・決定事項) が実際のメッセージと一致していて無関係な話題が
-      混ざっていないことを確認する。短い(2〜3通の)スレッドでも同様に
-      確認できるとなお良い。
-      優先度: 中 / 所要時間: 10分 / 詳細: [PENDING.md](PENDING.md)「Task #160: スレッド要約 — 最終形はmapのみの単一パイプライン」節
-- [x] **本文内リンクのブラウザオープン** (2026-07-28 確認済み) — 実際のHTMLメール (newsletter等、
-      `target="_blank"` を含むものが理想) を開き、リンクをタップして
-      設定通りのブラウザ (アプリ内ブラウザ/デフォルトブラウザ) が開くか
-      確認する。設定の「リンクを開く方法」を切り替えて両方確認。
-      優先度: 高 / 所要時間: 15分 / 詳細: [PENDING.md](PENDING.md)「表示・操作改善バッチ: リンクのブラウザオープン修正・添付メニューの実機確認」節
-- [x] **作成画面の添付メニュー** (2026-07-28 確認済み) — 「添付」ボタンをタップしてメニュー
-      (ファイルを選択/写真を選択/写真を撮る) が実際に開くか、「写真を
-      撮る」でカメラが起動し撮影した写真が添付されるか確認する
-      (シミュレータではカメラ非搭載のためグレーアウトのままで、実機でしか
-      検証できない)。
-      優先度: 高 / 所要時間: 10分 / 詳細: 上記と同じ節
-- [x] **端末内翻訳が実機で成功するか (HTML レイアウト保持翻訳を含む)** (2026-07-28 確認済み) —
-      実機 (Apple Intelligence 対応・有効) で英文メール
-      (`20-english-quarterly-report.eml` seed 済み) を開き、翻訳バーの
-      「翻訳」ボタンをタップして (自動翻訳は既定オフになった) 実際に
-      訳文を表示するか確認する。あわせて `30-fixed-width-notice-en.eml`
-      (固定幅テーブルの英語メール) でも翻訳し、表・画像・罫線のレイアウト
-      を保ったまま文字だけ日本語化されるか確認する。iOS Simulator の
-      `.app` プロセスからは `FoundationModels.LanguageModelError -1` で
-      一貫して失敗しており (同一コードが素の `swift test` プロセスからは
-      毎回成功)、実機でも同じエラーが出るならコード側の不具合の可能性が
-      高まるので、その場合は調査を再開する必要がある。
-      優先度: 高 / 所要時間: 10分 / 詳細: [PENDING.md「design-phase-3: 翻訳の実機確認」](PENDING.md#design-phase-3-翻訳の実機-simulator-でない-確認)、[docs/translation.md](docs/translation.md)
-- [x] **資格情報の自動救済が実際に効いたか** (2026-07-28 確認済み) — 起動時にローカル資格情報
-      (Keychain) が見つからない状況からの自動救済 (`AppEnvironment
-      .adoptOrphanedCredentialIfUnambiguous` 等) が実機でも動くか、
-      不具合報告があった場合に確認する。通常運用では踏まないパスなので
-      優先度は低いが、iCloud 同期がらみで資格情報が孤立した報告があれば
-      最優先で確認すること。
-      優先度: 低 (普段は不要、不具合報告時のみ) / 所要時間: 10分
-- [x] **新画面構成の使用感** (2026-07-28 確認済み) — ハンバーガーメニュー、ヘッダ検索、メール
-      本文フッターツールバー (返信/転送/検索/情報/その他) を数日実際に
-      使ってみて、動線に違和感が無いか確認する。自動テストではUI要素の
-      存在確認までしかできておらず、「使いやすいか」は人間の判断が必要。
-      優先度: 中 / 所要時間: 数日かけて日常使用
-- [x] **画面構造改修バッチ (スレッド選択画面・圧縮ヘッダ・カテゴリ優先 (2026-07-28 確認済み)
-      メニュー) の目視確認** — このバッチの実装セッションはシミュレータの
-      ネットワーク不調 (`MailCoreErrorDomain error 1`、翻訳バッチのときと
-      同じ既知の環境問題) でアカウント追加の接続テストが一貫して失敗し、
-      スクリーンショットによる目視確認が一切できなかった。2通以上の
-      スレッドをタップして選択画面が出ること・1通のスレッドはスキップ
-      されること・本文画面にアコーディオンが残っていないこと・本文ヘッダ
-      が約2行に収まっていること・ハンバーガーメニューがカテゴリ優先
-      (受信トレイ/アーカイブ/送信済み等のセクション+「すべての◯◯」
-      横断ビュー行) で表示されることを確認する。
-      優先度: 高 / 所要時間: 15分 / 詳細: [PENDING.md「画面構造改修バッチ (Task #33): スレッド選択画面・圧縮ヘッダ・カテゴリ優先メニューの実機目視確認」節](PENDING.md)
-- [x] **表示言語設定 (String Catalog) の見た目確認** (2026-07-28 確認済み) — 設定で「English」
-      に切り替えて再起動し、一覧・本文・作成・検索・ハンバーガーメニュー・
-      設定画面 (5カテゴリすべて) の英訳が不自然でないか、レイアウト崩れが
-      無いか確認する (`docs/localization.md` の確認方法参照 — 232エントリ、
-      アカウント追加/編集フォームや署名テンプレート等も対応済み)。
-      優先度: 低 / 所要時間: 10分
-- [x] **Gmail でのアーカイブ動作確認** (2026-07-27 確認済み) — 実 Gmail アカウントでメールを
-      アーカイブし、INBOX から消えて「すべてのメール」には残ることを
-      確認する (以前は Gmail に `\Archive` special-use フォルダが無いため
-      アーカイブが無言で失敗していた実バグの修正)。
-      優先度: 中 / 所要時間: 5分 / 詳細: [PENDING.md「実機フィードバック第2弾: Gmail アーカイブ修正の実アカウント確認」](PENDING.md#実機フィードバック第2弾-gmail-アーカイブ修正の実アカウント確認)
-- [x] **スレッド表示オフが再起動直後の一覧に反映されるか (Task #105)** —
-      (2026-07-29 実機確認済み) 実機ログ採取で真因を
-      `.navigationDestination(item:)` destination クロージャの stale
-      capture と確定し、`ThreadRoute` 導入 (`c1804f4`) で解決。経緯は
-      [docs/qa-findings.md「Task #105」節の「決着」](docs/qa-findings.md)。
-- [ ] **「スレッド一覧で同じメールが2個ずつ表示される」報告の詳細確認
-      (Task #150)** — OTA `c93bec3` 直後の実機報告。#141/#142 の
-      `ThreadQuery`/`MessageQuery` SQL を精査し回帰テストを追加したが
-      `main` に対して再現しなかった (`docs/qa-findings.md`「Task #150」
-      節/`PENDING.md`参照)。再現時の (a) 画面 (統合受信トレイ/カテゴリ
-      横断ビュー/すべてのメール/個別フォルダ)、(b) 一覧表示設定 (スレッド
-      まとめ or フラット表示)、(c) 未読のみ/フラグ付きのみトグルの状態、
-      (d) アカウントの種類・台数 を教えてもらえると絞り込める。
-      優先度: 高 (regression 報告のため) / 所要時間: 数分 / 詳細:
-      [PENDING.md「Task #150」](PENDING.md#task-150-スレッド一覧で同じメールが2個ずつ表示される-原因未特定)
-- [ ] **実機フィードバック第2弾の新機能を数日実際に使ってみる** —
-      アカウントのラベル色・署名テンプレート・デフォルトのアカウント・
-      削除/アーカイブ後の挙動・カード状一覧の角丸・スレッド詳細の
-      アコーディオン化・アプリアイコンの未読バッジ・再構成された設定
-      画面 (5カテゴリ) を実機で数日使い、使用感に違和感が無いか確認する。
-      優先度: 中 / 所要時間: 数日かけて日常使用
-- [x] **Gmail 再認証がワンタップでサイレントに完了するか (2026-07-28 確認済み) (Task #47: 「毎回
-      警告が出るのがつらい」)** — スコープを何も変えていない既存の Gmail
-      アカウントで「アカウント編集」→「再認証」を実行し、同意画面も
-      「アプリは確認されていません」警告も出ず、ブラウザシートが一瞬
-      開いてすぐ閉じるだけで完了することを確認する。逆に、`scope` に
-      新しいスコープが追加された直後でまだ再接続していないアカウント
-      (または一度もアクセス権を許可していない状態) では、従来通り同意
-      画面が出ることも確認する。実 Google での自動 E2E は不可なため、
-      分岐ロジック自体は `GoogleOAuthEndpointsTests`/`GoogleOAuthClientTests`/
-      `TokenStoreTests` の URLProtocol スタブで検証済み — この項目は
-      「実際に Google がサイレント承認するか」という実機体感の確認。
-      優先度: 高 / 所要時間: 5分 / 詳細:
-      [docs/oauth-setup.md「再認証時に同意画面を省略する (Task #47)」節](docs/oauth-setup.md#再認証時に同意画面を省略する-task-47-毎回警告が出るのがつらい)
-- [x] **送信キャンセル中にアプリが自動でバックグラウンドへ回る不具合の
-      実機再現確認** — (2026-07-29 解決) Task #124 (98d0990) でカウント
-      ダウン満了後の replay 未発火・二重送信を根治し、実機確認済み。
-- [ ] **mailto: リンクの実機確認 (Task #48)** — 実機/シミュレータで他の
-      アプリ (メモ、Safari 等) から `mailto:宛先?subject=...&body=...`
-      形式のリンクを開き、otegami の作成画面が to/cc/bcc/件名/本文を
-      プリフィルした状態で開くことを確認する (`xcrun simctl openurl` でも
-      代用可)。あわせて設定 →「アカウントの設定」→「デフォルトのメール
-      アプリに設定」の行を開き、entitlement 未承認ビルドでは「Apple の
-      承認待ちです」の案内が、承認済み・フラグ有効ビルドでは「設定 App で
-      既定のメールアプリを選ぶ」ボタンが実際に「設定」アプリの既定アプリ
-      選択画面を開くことを確認する。
-      優先度: 中 / 所要時間: 10分 / 詳細: [docs/default-mail-app.md](docs/default-mail-app.md)
-- [ ] **作成画面フラットデザイン (Task #156) のタップ操作を伴う見た目確認** —
-      新規作成画面を開き、(1) 宛先行の「Cc: Bcc:」ピルをタップして Cc/Bcc
-      行が展開されること、(2) 署名を1件以上登録した状態で本文下の
-      「署名なし」行をタップし、署名選択メニューが開いて選んだ署名名が
-      行に反映されること、(3) ファイルを1件以上添付し、行の表示と削除
-      ボタン (×) が機能すること、(4) 返信の「全員に返信」や mailto:
-      リンク経由で Cc/Bcc に値が入った状態で開いたとき、ピルをタップ
-      しなくても最初から Cc/Bcc 行が展開済みで見えることを確認する。
-      優先度: 中 / 所要時間: 10分 / 詳細: [PENDING.md「Task #156: 作成画面
-      iOS フラットデザイン化」節](PENDING.md#task-156-作成画面-ios-フラットデザイン化--ccbcc展開署名行添付行の実機確認)
+- [ ] **mailto: リンクの実機確認 (Task #48)** — 他のアプリ (メモ、Safari等)
+      から `mailto:` リンクを開き、作成画面に to/cc/bcc/件名/本文がプリ
+      フィルされること。設定 →「デフォルトのメールアプリに設定」の導線も
+      確認。詳細: [docs/default-mail-app.md](docs/default-mail-app.md)
+- [ ] **Task #150: スレッド一覧で同じメールが2個ずつ表示される報告の詳細
+      確認** — 再現しなかったため、実機で重複が見えたときの (a) 画面、
+      (b) 一覧表示設定 (スレッドまとめ/フラット)、(c) 未読のみ/フラグ付き
+      のみトグルの状態、(d) アカウントの種類・台数を教えてもらえると
+      絞り込める。詳細: [PENDING.md](PENDING.md)「Task #150」節。
+- [ ] **一連の新機能の画面確認 (Task #148/#156/#159/#160/#162/#165/#176/
+      #178/#182/#184/#185/#186)** — それぞれ実装・単体テストは完了して
+      いるが、タップ操作を伴う目視確認がシミュレータの既知不調で行え
+      なかった。項目ごとの確認ポイントは [PENDING.md](PENDING.md) の
+      該当節を参照。優先度が高いもの:
+      - Task #184 (アーカイブ済みメールの「アーカイブ解除」表示) / Task
+        #185 (件名表示) — 画面自体を一度も目視できていない。
+      - Task #178 (文字色/ハイライトのダークモード黒文字化バグ修正) —
+        ダークモードでの色選択→デフォルト復帰が核心の確認ポイント。
+      - Task #162 (署名を本文に混在させない) — 署名選択・切替の見た目。
+      - Task #129/#156/#161 (作成画面リッチテキスト化) — 書式バーの
+        タップ操作全般、実メールクライアントでの受信側表示。
 
 ## 2. 実アカウントでの確認 (自分の認証情報が必要)
 
-- [x] **Google OAuth Client ID を発行し、実 Gmail アカウントで確認** (2026-07-28 確認済み) —
-      Google Cloud Console でプロジェクト作成 → OAuth 同意画面設定 →
-      iOS 用 Client ID 発行 → `Config/Local.xcconfig` に設定 → 実際に
-      Gmail アカウントを追加し、INBOX 同期・送信 (Sent への二重保存が
-      起きないこと)・アクセストークン失効後の自動リフレッシュ・アクセス
-      取り消し後の「再認証」バナーからの復旧を確認する。**アバター強化
-      バッチ「Google プロフィール写真」で `contacts.other.readonly`・
-      `contacts.readonly` の2スコープを追加した** (どちらも機密性の高い
-      スコープ — 配布ビルドを出す場合のみ Google の OAuth 審査に影響、
-      `docs/oauth-setup.md`「`contacts.other.readonly`・`contacts.readonly`」
-      節参照)。新規追加アカウントは何もせず両スコープを持つ。
-      **済 (2026-07-27)**: People API の有効化・`contacts.other.readonly`
-      の同意画面へのスコープ追加・公開ステータスへの切替 (未検証のまま
-      運用、7日期限は解消)。**済 (追記時点)**: `contacts.readonly` も
-      同意画面のスコープに追加済み — 下の「保存済み連絡先を含む Google
-      プロフィール写真」項目の残作業 (OTA 反映 → 再認証 → 確認) 参照。
-      優先度: 高 (Gmail 対応を謳う以上、実接続確認は必須) / 所要時間: 30分
-      (Client ID 発行) + 20分 (確認項目一式) / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)、[PENDING.md「M6: Google OAuth Client ID の発行」](PENDING.md#m6-google-oauth-client-id-の発行)
-- [x] **`contacts.readonly` 対応ビルドを反映し、既存 Gmail アカウントを (2026-07-28 確認済み)
-      再接続して Google プロフィール写真 (保存済み連絡先を含む) を確認**
-      — Gravatar 未登録の差出人 (Gmail 公式アプリでは写真が出る人) の
-      写真が実機で出ない不具合の修正。原因は
-      (a) 旧実装の `otherContacts.search` が PROFILE ソース (相手の
-      Google アカウント自体のプロフィール写真) を取得できていなかった、
-      (b) 保存済み連絡先はそもそも `otherContacts` に含まれず別スコープ
-      (`contacts.readonly`) が要る、の2点。両方を修正した
-      (`otherContacts.list`/`people/me/connections` の索引方式への
-      書き換え、`contacts.readonly` スコープの追加)。
-      **済**: Google Cloud Console の OAuth 同意画面へ `contacts.readonly`
-      スコープを追加。
-      残作業:
-      1. この修正を含むビルドを OTA で端末に配信する。
-      2. 設定 → アカウント → 該当の Gmail アカウント →「再認証」で
-         再接続する (削除・再作成は不要、同じ OAuth フローの再実行で
-         新スコープが付与される)。
-      3. **再接続後、同じ画面を開き直して**「認証」節の「連絡先の写真:
-         許可済み (完全)」表示になっていることを確認する (「許可済み
-         (基本)」や「未許可」のままなら Console 側の設定がまだ反映されて
-         いない — 詳細と対処は `docs/oauth-setup.md`「実機バグ: 再接続
-         してもスコープが増えない場合」節)。
-      4. Gravatar 未登録の差出人 (保存済み連絡先の相手を含む) からの
-         メールで、一覧のプロフィールアイコンが Google のプロフィール
-         写真に変わることを確認する (「許可済み (完全)」にならない場合
-         でもアプリは問題なく動く — この情報源だけ一部/全部効かない
-         状態が続くだけ)。
-      優先度: 中 (既存ユーザー影響、実 Gmail アカウントでの動作確認は自動化
-      対象外) / 所要時間: 10分 / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)「`contacts.other.readonly`・`contacts.readonly`」節
-- [x] **`profile` スコープ対応ビルドを反映し、自分のプロフィール写真を (2026-07-28 確認済み)
-      確認 (Task #54)** — 実機の「アカウント編集」→「アバター診断」画面で
-      `people/me` が 403 `Request requires one of the following scopes:
-      [profile]` を返すことを確認済み (`otherContacts`/`connections` は
-      正常)。`GoogleOAuthEndpoints.scope` に `https://www.googleapis.com/auth/userinfo.profile`
-      を追加して修正した (`docs/oauth-setup.md`「Task #54 追記」節参照)。
-      残作業:
-      1. この修正を含むビルドを OTA で端末に配信する。
-      2. 設定 → アカウント → 該当の Gmail アカウント →「再認証」で
-         再接続する。
-      3. 再接続後、「アカウント編集」→「アバター診断」画面を開き直し、
-         `people/me` 行の HTTP ステータスが 200 になっていることを確認
-         する。
-      4. 差出人一覧・スレッド一覧で自分自身のメールアドレス宛/CC のメール
-         を開き、自分のプロフィール写真がアイコンに出ることを確認する。
-      優先度: 中 (既存ユーザー影響、実 Gmail アカウントでの動作確認は自動化
-      対象外) / 所要時間: 10分 / 手順: [docs/oauth-setup.md](docs/oauth-setup.md)「Task #54 追記」節
-- [x] **iCloud App用パスワードで実アカウント確認** (2026-07-28 確認済み) — appleid.apple.com
-      で App 用パスワードを発行し、iCloud メールアドレス + App用パスワード
-      でアカウントを追加、INBOX同期・送信・返信のスレッド接続を確認する。
-      ログインに失敗する場合、IMAP/SMTP ユーザー名が現在フルアドレス
-      (`user@icloud.com`) 実装になっている点を疑い、iCloud が短縮形
-      (`user` のみ) を要求する場合は `ICloudAccountSetupView` の実装を
-      切り替える (影響範囲は数行のみ)。
-      優先度: 高 / 所要時間: 15分 / 詳細: [PENDING.md「M6: iCloud App用パスワードでの実アカウント確認」](PENDING.md#m6-icloud-app-用パスワードでの実アカウント確認)
-- [x] **実2台間の iCloud アカウント同期確認 (同一 Apple ID)** (2026-07-28 確認済み) — iPhone実機
-      + Mac の両方に同じ署名設定でビルド・インストールし、(1) 片方で
-      追加したアカウントがもう片方に自動的に出現するか、(2) 逆方向も、
-      (3) 片方で削除したらもう片方でも消えるか、(4) 同期トグルを片方だけ
-      OFFにした時の挙動、(5) **両方のデバイスで独立に同じメールアカウント
-      を追加した場合に重複挿入されず1つに統合されるか** (重複挿入バグ
-      修正の実機2台間での最終確認、これまではシミュレータ1台への直接DB
-      注入でのみ検証済み) を確認する。
-      優先度: 中 / 所要時間: 30〜60分 (2台の実機/Mac が必要) / 手順:
-      [PENDING.md「M11: iCloudアカウント同期の実機2台間確認」](PENDING.md#m11-icloud-アカウント同期の実機-2-台間確認)、[docs/icloud-sync.md「重複挿入バグとその修正」](docs/icloud-sync.md)
-- [x] **Task #116 (第1段): Yahoo / Yahoo! JAPAN / Exchange の実接続確認** —
-      (2026-07-29 解決) Yahoo! JAPAN は IMAP アクセス有効化の上で実接続・
-      受信確認済み (当初の「アクセスできない」は Yahoo 側の IMAP 無効が
-      原因)。ユーザーの一括実機確認でクリア。
-- [ ] **Task #116 (第2段): Azure AD アプリ登録 + Outlook/Office365 の実接続確認** —
-      Microsoft OAuth (XOAUTH2) は実 Azure AD アプリでの E2E がこの
-      セッションでは未実施 (OSS Client ID 問題、Gmail と同じ制約)。
-      (1) [docs/oauth-setup.md](docs/oauth-setup.md)の「Microsoft OAuth
-      Client ID の取得」節に従い Azure Portal でアプリを登録し、
-      リダイレクト URI `com.mtkg.otegami.msauth://oauth2redirect` を
-      「モバイルアプリケーションおよびデスクトップアプリケーション」
-      プラットフォームに登録、「パブリック クライアント フローを許可
-      する」を有効化する。(2) 発行された Client ID を
-      `Config/Local.xcconfig`の`OTEGAMI_MICROSOFT_CLIENT_ID`に設定し、
-      `make ios`/`make mac`で再ビルド。(3)「アカウントを追加」→
-      「Outlook」(個人 Outlook.com/Hotmail アカウント) と「Office365」
-      (会社・学校の Microsoft 365 アカウント) の両方で実際にサインイン
-      し、INBOX 同期・送信・アクセストークン失効後の自動リフレッシュ・
-      アクセス取り消し後の「再認証」バナーからの復旧を確認する。
-      優先度: 中 (Outlook/Office365 対応を謳う前に必須、ただし配布判断は
-      別途) / 所要時間: 20分 (Azure アプリ登録) + 15分 (確認項目一式) /
-      詳細: [docs/oauth-setup.md「Microsoft OAuth Client ID の取得」節](docs/oauth-setup.md)
+- [ ] **Task #116 (第2段): Azure AD アプリ登録 + Outlook/Office365 の実接続
+      確認** — OSS のため Azure AD の Client ID をリポジトリに含めない
+      方針。手順:
+      1. [Azure Portal](https://portal.azure.com/) → Microsoft Entra ID
+         → 「アプリの登録」で新規登録。「認証」→ リダイレクト URI
+         `com.mtkg.otegami.msauth://oauth2redirect` を「モバイル
+         アプリケーションおよびデスクトップアプリケーション」プラット
+         フォームに登録し、「パブリック クライアント フローを許可する」
+         を有効化する (未登録だと `redirect_uri_mismatch` で失敗する)。
+      2. 発行された Client ID を `Config/Local.xcconfig` の
+         `OTEGAMI_MICROSOFT_CLIENT_ID` に設定し、`make ios`/`make mac`
+         で再ビルド。
+      3. 「アカウントを追加」→「Outlook」/「Office365」で実際にサイン
+         インし、INBOX 同期・送信・再認証・アクセス取り消し後の復旧を
+         確認する。
+      詳細: [docs/oauth-setup.md](docs/oauth-setup.md)「Microsoft OAuth
+      Client ID の取得」節。
+- [ ] **Task #175/#177: Gmail/Outlook アカウントのプッシュ通知を実機で確認**
+      — リレーの `.oauth` watch (refresh token 交換) と
+      `NotificationService` Extension の XOAUTH2 対応は実装・単体テスト
+      済みだが、実 Google/Microsoft アカウント・実 push でのエンド
+      ツーエンド確認はまだ。下記「3. インフラ・運用まわり」のリレー
+      再デプロイ後、実際に通知を受け取り、差出人/件名が正しく書き換わる
+      ことを確認する。詳細: [docs/relay-deployment.md](docs/relay-deployment.md)
+      「既知の制約 / 今後」節。
 
 ## 3. インフラ・運用まわり
 
-- [x] **CI の最新 run が緑か確認** (2026-07-28 確認済み) — `ci-app`/`ci-server` の GitHub
-      Actions ワークフロー、および自宅サーバー上でセルフホストしている
-      otegami 用の CI/自動化コンテナを使っている場合はその最新実行結果も
-      あわせて確認する (このリポジトリの GitHub Actions バッジは
-      README.md 冒頭のバッジで確認できる)。
-      優先度: 中 / 所要時間: 5分
-- [x] **APNs `.p8` キーのバックアップ** (2026-07-28 完了) — `.p8` キーは Apple から一度しか
-      ダウンロードできない (紛失すると Apple Developer 側で失効・再発行
-      が必要)。ダウンロードフォルダに置きっぱなしになっていないか確認し、
-      パスワードマネージャや暗号化ボリュームなど、より安全な場所に移動
-      する。
-      優先度: 中 / 所要時間: 5分 / 参照: [docs/relay-deployment.md](docs/relay-deployment.md)
-- [x] **プライベート CA の秘密鍵 (rootCA.key 相当) を git 管理外に置く**
-      — (2026-07-29 対応済み) 管理場所を変更したとユーザー確認。
-- [ ] **otegami-relay の再デプロイ (Task #169: SSRF/CRLF インジェクション等の
-      セキュリティ修正)** — `server/otegami-relay/` に SSRF (F2)・IMAP
-      CRLF インジェクション (F3)・メモリ枯渇 (F4/F8)・ログ偽造 (F16) の
-      修正が入った。実運用中のリレーに反映するには:
-      1. 通常の再デプロイ手順 (`docs/relay-deployment.md`「4. 起動
-         (Docker)」) を実行し、`main` の最新コミットで再ビルド・再起動
-         する。
-      2. **既存の watch は自動では壊れない** (この修正は新規 watch 作成
-         時のホスト/ポート検証と、再接続時の再検証のみ行う) が、現在
-         登録しているアカウントの IMAP ホストがループバック/リンク
-         ローカル/プライベートアドレス (RFC1918/ULA) の場合のみ、
-         `RELAY_ALLOW_PRIVATE_IMAP_HOSTS=1` を `.env` に追加してから
-         再起動すること。実 IMAP プロバイダ (Gmail/Fastmail 等の公開
-         ホスト、993 番ポート) を使っている通常運用では何もしなくて
-         よい。
-      3. 任意 (推奨): `RELAY_DEVICE_REGISTRATION_SECRET` を設定すると
-         `POST /v1/devices` (デバイス登録) を保護できる。**Task #171 で
-         アプリ側もこのヘッダを送信する実装が入った** (2026-07-30
-         follow-up でユーザー入力 UI を廃止し、ビルド時埋め込み方式に
-         変更済み — 下の項目参照) ので、設定してよい — ただし順序に
-         注意: リレー側で先に設定・再デプロイしてから、アプリの
-         ビルド設定に同じ値を入れた次のビルドを配布すること。**逆順
-         (値の入っていない既存ビルドを配布したまま先にリレー側だけ
-         設定) だと、その間は新規デバイス登録 (=新規のプッシュ通知
-         有効化、または端末の再インストール後の再登録) が一時的に
-         失敗する** (401、アプリ側は「このリレーは登録シークレットを
-         要求していますが、このビルドには設定されていません」と表示
-         する) — 既存の登録済みデバイスのトークン更新・watch 操作には
-         影響しない。
-      4. 再デプロイ後、`docker compose logs -f otegami-relay` で
-         `RELAY_DEVICE_REGISTRATION_SECRET is not set` の warning が
-         (未設定のままなら) 出ていること、または (設定した場合)
-         出ていないことを確認し、既存アカウントのプッシュ通知が
-         引き続き届くことを確認する。
-      優先度: 高 (公開運用中のリレーに対する実際の脆弱性修正) / 所要
-      時間: 15分 / 参照: [docs/relay-deployment.md](docs/relay-deployment.md)
-      の脅威モデル 8〜10 番
-- [ ] **`RELAY_DEVICE_REGISTRATION_SECRET` を設定した場合、アプリの
-      ビルド設定に同じ値を入れる (Task #171、2026-07-30 follow-up —
-      各端末でアプリに入力する UI は廃止した)** — Google/Microsoft の
-      OAuth Client ID と同じ仕組み。以下のいずれか、使うビルド経路に
-      合わせて設定する:
-      - ローカルでビルドする場合:
-        `apps/Otegami/Config/Local.xcconfig` (git 管理外) に
-        `OTEGAMI_RELAY_REGISTRATION_SECRET = <値>` を追記。
-      - macOS リリース (`.github/workflows/release-macos.yml`): GitHub
-        リポジトリの Secrets に `OTEGAMI_RELAY_REGISTRATION_SECRET` を
-        登録する (Settings → Secrets and variables → Actions)。
-      - iOS/TestFlight リリース (Xcode Cloud):
-        `apps/Otegami/ci_scripts/ci_post_clone.sh` が読む環境変数
-        `OTEGAMI_RELAY_REGISTRATION_SECRET` を、Xcode Cloud のワーク
-        フロー設定の環境変数 (Secret 種別) に登録する
-        (`docs/xcode-cloud.md`)。
-      **順序**: リレー側 (上の項目の手順3) を先に設定・再デプロイして
-      から、こちらのビルド設定を入れた次のビルドを配布すること。逆順
-      だと新規デバイス登録が一時的に 401 で失敗する (上の項目参照)。
-      優先度: 中 (既存デプロイのままなら不要 — シークレット未設定の
-      リレーは従来どおり無認証で動く) / 所要時間: 経路あたり2分 / 参照:
-      [docs/relay-deployment.md](docs/relay-deployment.md)
-- [ ] **リレー URL 自体もビルド設定に登録する (Task #173 follow-up、
-      2026-07-30「リレー URL は今の固定 URL という話をしたよ」) —
-      `OTEGAMI_RELAY_REGISTRATION_SECRET` と同じ仕組み、同じ3経路**:
-      - ローカルでビルドする場合: `apps/Otegami/Config/Local.xcconfig`
-        (git 管理外) に、`//` がコメント扱いされる xcconfig の落とし穴
-        (`Config/Shared.xcconfig`の`OTEGAMI_URL_SLASHES`doc comment/
-        `Config/Local.xcconfig.sample`参照) に注意して2行で追記:
-        ```
-        OTEGAMI_PUSH_RELAY_URL = https:$(OTEGAMI_URL_SLASHES)relay.example.test
-        ```
-      - macOS リリース (`.github/workflows/release-macos.yml`): GitHub
-        リポジトリの Secrets に `OTEGAMI_PUSH_RELAY_URL` を**素の URL**
-        (`https://relay.example.test`のような通常の形式、`$(...)`は不要)
-        で登録する — ワークフロー側が自動でこの形式に変換して書き出す。
-      - iOS/TestFlight リリース (Xcode Cloud):
-        `apps/Otegami/ci_scripts/ci_post_clone.sh` が読む環境変数
-        `OTEGAMI_PUSH_RELAY_URL` を、同じく**素の URL**のまま Xcode
-        Cloud のワークフロー設定の環境変数 (Secret 種別) に登録する
-        (`docs/xcode-cloud.md`)。
+- [ ] **otegami-relay の再デプロイ (Task #169: SSRF/CRLFインジェクション等の
+      セキュリティ修正、Task #175: Gmail/Outlook OAuth watch 対応)** —
+      `server/otegami-relay`(Swift) または `server/otegami-relay-go`(Go
+      移植版、Task #180 — ワイヤ/ストレージ完全互換) のいずれかで、
+      通常の再デプロイ手順 (`docs/relay-deployment.md`「4. 起動
+      (Docker)」) を実行し `main` の最新コミットで再ビルド・再起動する。
+      Gmail の watch を使うなら `.env` に `RELAY_GOOGLE_CLIENT_ID` を、
+      Outlook/Office365 なら `RELAY_MICROSOFT_CLIENT_ID` を設定する
+      (アプリ側の同名 Client ID と同じ値にすること)。
+      優先度: 高 (公開運用中のリレーに対する実際の脆弱性修正・Gmail/
+      Outlookのプッシュ通知を有効化するために必須) / 参照:
+      [docs/relay-deployment.md](docs/relay-deployment.md) の環境変数表・
+      脅威モデル。
+- [ ] **`RELAY_DEVICE_REGISTRATION_SECRET`/リレー URL をアプリのビルド設定
+      に登録する (Task #171/#173)** — Google/Microsoft の OAuth Client ID
+      と同じ仕組みで、配布経路ごとに3箇所 (`Config/Local.xcconfig`/
+      GitHub Secrets/Xcode Cloud 環境変数) へ同じ値を設定する。**順序に
+      注意**: リレー側を先に設定・再デプロイしてから、値を入れた次の
+      ビルドを配布すること (逆順だと新規デバイス登録が一時的に失敗する)。
       未設定のビルドは「プッシュ通知」画面の「有効にする」ボタンが無効
-      になり、その旨が表示される (壊れるのではなく、意図した縮退)。
-      優先度: 高 (これを設定しないと配布ビルドでプッシュ通知が一切
-      有効化できない) / 所要時間: 経路あたり2分 / 参照:
-      [docs/relay-deployment.md](docs/relay-deployment.md)「アプリ側の
-      設定」節
-- [ ] **otegami-relay を再デプロイし、Gmail/Outlook のプッシュ通知
-      (Task #175) 用の環境変数を設定する** — リレーの `.oauth` watch
-      (refresh token をアクセストークンへ交換する経路、
-      `OAuthTokenExchanger`) を実際に使うには:
-      1. **リレーのコンテナイメージを再ビルドする必要がある**
-         (`server/otegami-relay/` に Swift コードの変更が入っている —
-         `docs/relay-deployment.md`「4. 起動 (Docker)」の
-         `make relay-docker` から。ARM ネイティブ環境でのビルドで
-         おおよそ7分程度)。
-      2. 再ビルドしたイメージで通常の再デプロイ手順を実行する。
-      3. Gmail の watch を使う場合は `.env` に
-         `RELAY_GOOGLE_CLIENT_ID` を、Outlook/Office365 の watch を
-         使う場合は `RELAY_MICROSOFT_CLIENT_ID` を設定する — どちらも
-         **アプリ側の同名 Client ID
-         (`GOOGLE_OAUTH_CLIENT_ID`/`OTEGAMI_MICROSOFT_CLIENT_ID`) と
-         同じ値**にすること (別の値だとトークン交換が必ず失敗する)。
-         使わないプロバイダは未設定のままでよい (そのプロバイダの
-         watch だけが認証に失敗して自動停止する — password watch や
-         もう一方のプロバイダには影響しない)。
-      4. 再デプロイ後、実際に Gmail/Outlook アカウントでプッシュ通知の
-         「有効にする」を実行し、設定画面のアカウント別状態が「登録済み」
-         になることを確認する。**このセッションでは実 Google/Microsoft
-         を使った動作確認ができていない** (実際のリフレッシュトークンが
-         必要) — 単体テスト (`OAuthTokenExchangerTests`、モック HTTP)
-         と `FakeIMAPServer` の XOAUTH2 応答での結線確認までは緑。
-      優先度: 高 (これを設定・再デプロイしないと Gmail/Outlook のプッシュ
-      通知は一切有効化できない) / 所要時間: 再ビルド7分 + 再デプロイ
-      10分 + 動作確認10分 / 参照:
-      [docs/relay-deployment.md](docs/relay-deployment.md)の環境変数表・
-      脅威モデル項目12
-
-- [ ] **`scripts/deploy-ota.local.sh` を作成する (OTA 配信先の秘匿化)** —
-      並行作業 (コミット `fix(ota): externalize private OTA deploy target
-      from deploy-ota.sh`) で `scripts/deploy-ota.sh` から実際の配信先
-      ホスト名が撤去され、`scripts/deploy-ota.local.sh` (git 管理外、
-      `.gitignore` 済み) に切り出された。このマシンにはまだこのファイルが
-      存在せず、Task #178 (文字色/ハイライト修正) の OTA 配信が
-      `OTA_PI_HOST が未設定です` で失敗した。
-      ```
-      cp scripts/deploy-ota.local.sh.sample scripts/deploy-ota.local.sh
-      ```
-      をコピーし、`OTA_PI_HOST`/`OTA_PI_DIR`/`OTA_BASE_URL` の3変数に
-      実際の配信先 (SSH到達可能なホスト・アップロード先ディレクトリ・
-      そこを配信する HTTPS URL) を設定してほしい — 実際のホスト名/
-      認証情報はエージェントが知らない (知るべきでもない) ため代行できない。
-      設定後は通常通り `./scripts/deploy-ota.sh` で配信できるはず。
-      優先度: 高 (これが無いとどのタスクの OTA 配信も一切できない) /
-      所要時間: 数分 / 参照: [docs/ota-deploy.md](docs/ota-deploy.md)、
-      `scripts/deploy-ota.local.sh.sample`
+      になるだけで、壊れるのではなく意図した縮退。詳細:
+      [docs/relay-deployment.md](docs/relay-deployment.md)「設定値の
+      全体像」節。
 
 ## 4. 公開・配布に向けて (App Store / TestFlight を目指す場合)
 
-- [x] **Google OAuth の審査** — (2026-07-29 決定) 申請しない方針。
-      テストユーザー運用 (審査不要・100人上限) を継続する。将来申請する
-      場合の前提 (ブランディング検証・プライバシーポリシー URL・デモ動画・
-      制限付きスコープの CASA) は検証センターで確認済み。
 - [ ] **macOS ビルドの Developer ID 署名 + notarization (Task #143)** —
-      (2026-07-29 ワークフロー整備済み、次回タグで実地検証) tag push
-      (`v*`) / `workflow_dispatch` で GitHub Actions
-      (`.github/workflows/release-macos.yml`) が macOS を Archive →
-      Developer ID 署名 → notarization → GitHub Release 添付まで自動で
-      行うようになった。署名・notarize に必要な secrets (`SIGNING_IDENTITY`
-      等6つ) は登録済み。**このセッションではローカルで未署名ビルド・
-      手動 codesign の検証まで行ったが、実際の notarization・GitHub
-      Actions ランナー上での実行・iCloud KVS entitlement が配布ビルドで
-      実際に機能するかは未検証** — 次回タグを打つ (または先に
-      `workflow_dispatch` で単体実行する) 際に、Actions の run が緑に
-      なるか、Gatekeeper (`spctl -a -vvv`) を越えるか、iCloud アカウント
-      同期が動くかを確認してほしい。手順・確認ポイントの詳細は
+      GitHub Actions ワークフロー (`.github/workflows/release-macos.yml`)
+      は整備済み、次回タグ push (または `workflow_dispatch`) の際に
+      Actions の run が緑になるか、Gatekeeper (`spctl -a -vvv`) を越える
+      か、iCloud 同期が動くかを確認する。参照:
       [docs/release.md](docs/release.md)。
-      優先度: 低 (配布を決めてから、ただし着手自体は完了) / 所要時間:
-      次回タグ push 時に Actions の run を見るだけ (数分) / 参照:
-      [docs/release.md](docs/release.md)、[PENDING.md「公開時に必要な対応」](PENDING.md#公開時に必要な対応-まとめ)
-- [x] **GitHub Secrets に `OTEGAMI_GOOGLE_CLIENT_ID` / `OTEGAMI_MICROSOFT_CLIENT_ID`
-      を登録する (2026-07-30 登録済み・`gh secret list` で確認)** —
-      実機フィードバック: GitHub Release からインストールした macOS
-      ビルド (v1.2.0-beta2) は、この2つの secret が無いことが原因で
-      Gmail の「再認証」が常に `oauthUnavailable` になっていた。
-      `release-macos.yml` がビルド時にこの secret から
-      `Config/Local.xcconfig` を生成するようになったため、次回の
-      Release ビルドから Gmail/Microsoft 認証が有効になる見込み
-      (`workflow_dispatch` の dry-run で Local.xcconfig 生成・値の
-      非ログ出力までは確認済み — 詳細は [docs/release.md](docs/release.md#必要な-github-secrets))。
-      優先度: 高 (完了) / 所要時間: 完了済み / 参照:
-      [docs/oauth-setup.md](docs/oauth-setup.md)、[docs/release.md](docs/release.md)
-- [x] **サードパーティライセンス表記 (`NOTICE`) の確認** — (2026-07-29
-      確認済み)。以後は依存を追加/更新する PR の際にエージェント側で
-      NOTICE を追随させる運用 (人間の定期作業からは外す)。
-- [x] **`com.apple.developer.mail-client` entitlement の申請・承認後の (申請済み 2026-07-28、承認待ち)
-      有効化 (Task #48)** — まだ申請していなければ
-      [Request a Mail App Entitlement](https://developer.apple.com/contact/request/default-mail-client/)
-      から Account Holder ロールで申請する。承認されたら (1) Developer
-      Portal で対象 App ID の Mail capability を有効化、(2)
-      `Config/Local.xcconfig` に `OTEGAMI_MAIL_CLIENT_ENTITLEMENT = YES`
-      を追加、(3) 実機ビルドで「デフォルトのメールアプリに設定」からの
-      設定 App 遷移・実際にデフォルトとして選択できることを確認する。
-      申請日・承認状況は `PENDING.md` に追記して進捗を追えるようにする
-      こと。
-      優先度: 低 (申請自体は今すぐ着手可、以降は Apple の承認待ち) /
-      所要時間: 申請自体は30分程度、承認後の有効化は10分 / 参照:
-      [docs/default-mail-app.md](docs/default-mail-app.md)
-- [x] **Xcode Cloud のワークフローを作成する (Task #49)** (2026-07-28 完了) — App Store
-      Connect にアプリレコードを作成 (Bundle ID `com.mtkg.otegami`) →
-      Xcode の Report Navigator → Cloud タブからワークフローを作成し
-      リポジトリを接続 → Archive アクション + TestFlight (内部テスト)
-      の Post-Action を設定 → 環境変数
-      (`OTEGAMI_DEVELOPMENT_TEAM`/`OTEGAMI_GOOGLE_CLIENT_ID` は Secret
-      指定) を設定 → cloud signing (証明書/プロビジョニングプロファイル
-      の自動管理) を許可 → 初回ビルドが Archive 成功し TestFlight に
-      ビルドが表示されることを確認する。`ci_scripts/`・
-      `ITSAppUsesNonExemptEncryption`・`CFBundleVersion` の CI 連動は
-      実装・ローカル検証済みだが、実際の cloud signing・TestFlight 配信
-      はこの手順で人間が初めて確認することになる。
-      優先度: 中 (配布を決めてから) / 所要時間: 初回セットアップ1時間
-      程度、以降のビルドは自動 / 参照:
-      [docs/xcode-cloud.md](docs/xcode-cloud.md)
-- [ ] **対応済み — TestFlight ビルドで通知が届くことを確認する
-      (Task #57)** — TestFlight (Distribution 署名) のビルドは実際の
-      APNs 環境が production になるが、アプリは otegami-relay への
-      デバイス登録時に `environment: .sandbox` を固定で送っていたため、
-      TestFlight ビルドではプッシュ通知が届かなかった。実行時に
-      `embedded.mobileprovision` の `aps-environment` を読んで
-      sandbox/production を判定するよう修正済み
-      (`APNSEnvironmentDetector`、
-      `packages/OtegamiKit/Sources/PushRelayClient/
-      APNSEnvironmentDetector.swift`) — プロビジョニングプロファイルが
-      見つからない場合は production にフォールバックする。`server/
-      otegami-relay` 側は元々環境ごとの APNs 送信振り分けに対応済み
-      だったため変更不要。ユニットテスト
-      (`APNSEnvironmentDetectorTests`、`APNsSenderTests`) は追加済みだが、
-      **実際に TestFlight ビルドをインストールした端末にプッシュ通知が
-      届くかどうかは Apple 実機環境が必要でこの環境からは確認できない**
-      — 新しい TestFlight ビルドをインストールし、push を有効化した状態で
-      新着メールが届いた際に通知が表示されることを確認してほしい。
-      優先度: 中 (次回 TestFlight ビルド配布時に確認) / 所要時間: 数分
-      (既存の push 設定を一度無効化→再有効化して端末トークンを
-      production 用として再登録させる必要がある) / 参照:
-      [docs/xcode-cloud.md](docs/xcode-cloud.md)「既知の注意点」節、
-      [PENDING.md](PENDING.md#公開時に必要な対応-まとめ)
+- [ ] **`com.apple.developer.mail-client` entitlement — 承認後の有効化
+      (Task #48)** — 申請済み (2026-07-28)、Apple の承認待ち。承認され
+      たら (1) Developer Portal で対象 App ID の Mail capability を
+      有効化、(2) `Config/Local.xcconfig` に
+      `OTEGAMI_MAIL_CLIENT_ENTITLEMENT = YES` を追加、(3) 実機ビルドで
+      「デフォルトのメールアプリに設定」からの設定 App 遷移を確認する。
+      参照: [docs/default-mail-app.md](docs/default-mail-app.md)。
+- [ ] **TestFlight ビルドで通知が届くことを確認する (Task #57)** —
+      production/sandbox APNs 環境の自動判定は実装・単体テスト済みだが、
+      実際に TestFlight ビルドをインストールした端末にプッシュ通知が
+      届くかは Apple 実機環境が必要でこの環境からは確認できない。参照:
+      [docs/xcode-cloud.md](docs/xcode-cloud.md)「既知の注意点」節。
 
 ---
 
 ## 優先度の目安
 
 - **高**: 機能が「実際に動く」ことの確認そのものであり、未確認のままだと
-  README/PENDING の「未検証」表記を外せない項目。
+  README/PENDING の「未検証」表記を外せない項目、または公開運用中のリレー
+  に対する実際の脆弱性修正の適用。
 - **中**: 品質・体験に関わるが、今すぐ止める理由ではない項目。
 - **低**: 公開・配布を具体的に検討し始めてから、または不具合報告があった
   時にだけ着手すればよい項目。
