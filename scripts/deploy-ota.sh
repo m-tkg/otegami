@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Build otegami for iOS, export an Ad Hoc IPA, and publish it (+ the
-# itms-services manifest.plist + an install page) to the home Pi's nginx
-# so a registered iPhone can install it over Tailscale via
-# https://otegami.mtkg/ota/ . See docs/ota-deploy.md for the full picture.
+# itms-services manifest.plist + an install page) to a self-hosted server
+# so a registered iPhone can install it over the air. See
+# docs/ota-deploy.md for the full picture.
 #
 # Usage: scripts/deploy-ota.sh   (or `make deploy-ota`), run from anywhere
 # inside the repo. Requires apps/Otegami/Config/Local.xcconfig to exist
-# with a real DEVELOPMENT_TEAM (see README's "Signing" section) and SSH
-# access to the Pi (default masaki@miscpi.mtkg, override with OTA_PI_HOST).
+# with a real DEVELOPMENT_TEAM (see README's "Signing" section), SSH
+# access to the deploy target, and the OTA_* variables below to be set —
+# either as environment variables or in scripts/deploy-ota.local.sh
+# (git-ignored; copy scripts/deploy-ota.local.sh.sample to get started).
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -28,9 +30,18 @@ EXPORT_DIR="$BUILD_DIR/export"
 EXPORT_OPTIONS_PLIST="$BUILD_DIR/ExportOptions.plist"
 EXPORT_LOG="$BUILD_DIR/export.log"
 
-OTA_PI_HOST="${OTA_PI_HOST:-masaki@miscpi.mtkg}"
-OTA_PI_DIR="${OTA_PI_DIR:-miscpi-container/otegami-ota}"
-OTA_BASE_URL="${OTA_BASE_URL:-https://otegami.mtkg/ota}"
+# Per-developer deploy target: no hardcoded default (this varies per person
+# hosting their own OTA endpoint). Set as env vars, or once in
+# scripts/deploy-ota.local.sh (see scripts/deploy-ota.local.sh.sample).
+OTA_CONFIG_FILE="${OTA_CONFIG_FILE:-$REPO_ROOT/scripts/deploy-ota.local.sh}"
+if [ -f "$OTA_CONFIG_FILE" ]; then
+	# shellcheck source=/dev/null
+	source "$OTA_CONFIG_FILE"
+fi
+
+OTA_PI_HOST="${OTA_PI_HOST:-}"
+OTA_PI_DIR="${OTA_PI_DIR:-otegami-ota}"
+OTA_BASE_URL="${OTA_BASE_URL:-}"
 
 log() { printf '==> %s\n' "$1"; }
 fail() {
@@ -41,6 +52,9 @@ fail() {
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
+
+[ -n "$OTA_PI_HOST" ] || fail "OTA_PI_HOST が未設定です。scripts/deploy-ota.local.sh.sample を scripts/deploy-ota.local.sh (git 管理外) にコピーし、自分の配信先 (例: user@host.example.com) を設定してください。"
+[ -n "$OTA_BASE_URL" ] || fail "OTA_BASE_URL が未設定です。scripts/deploy-ota.local.sh で配信先の https URL (例: https://example.com/ota) を設定してください。"
 
 [ -f "$LOCAL_XCCONFIG" ] || fail "$LOCAL_XCCONFIG がありません。README の \"Signing\" 節のとおり Config/Local.xcconfig.sample をコピーして DEVELOPMENT_TEAM を設定してください。"
 
@@ -53,9 +67,9 @@ BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
 command -v xcodegen >/dev/null 2>&1 || fail "xcodegen が見つかりません。'brew install xcodegen' でインストールしてください。"
 command -v xcodebuild >/dev/null 2>&1 || fail "xcodebuild が見つかりません。Xcode をインストールしてください。"
 
-log "Pi (${OTA_PI_HOST}) への疎通を確認しています..."
+log "アップロード先 (${OTA_PI_HOST}) への疎通を確認しています..."
 ssh -o BatchMode=yes -o ConnectTimeout=8 "$OTA_PI_HOST" 'mkdir -p '"$OTA_PI_DIR" \
-	|| fail "ssh ${OTA_PI_HOST} に接続できませんでした (Tailscale の起動、SSH 鍵、ホスト名を確認してください)。"
+	|| fail "ssh ${OTA_PI_HOST} に接続できませんでした (VPN/ネットワーク接続、SSH 鍵、ホスト名を確認してください)。"
 
 # ---------------------------------------------------------------------------
 # Build
@@ -234,10 +248,10 @@ cat >"$BUILD_DIR/index.html" <<HTML
 HTML
 
 # ---------------------------------------------------------------------------
-# Upload to the Pi
+# Upload to the deploy target
 # ---------------------------------------------------------------------------
 
-log "Pi 上の旧 IPA を1世代だけ retire します"
+log "アップロード先の旧 IPA を1世代だけ retire します"
 ssh "$OTA_PI_HOST" '
 	set -e
 	cd '"$OTA_PI_DIR"'
@@ -249,7 +263,7 @@ ssh "$OTA_PI_HOST" '
 log "アップロード中 (${OTA_PI_HOST}:${OTA_PI_DIR})"
 scp "$BUILD_DIR/otegami.ipa" "$BUILD_DIR/manifest.plist" "$BUILD_DIR/index.html" \
 	"${OTA_PI_HOST}:${OTA_PI_DIR}/" \
-	|| fail "Pi へのアップロードに失敗しました (scp)。ネットワーク/ディスク容量を確認してください。"
+	|| fail "アップロードに失敗しました (scp)。ネットワーク/ディスク容量を確認してください。"
 
 log "完了。iPhone の Safari で ${OTA_BASE_URL}/ を開いてインストールしてください。"
 log "manifest: ${OTA_BASE_URL}/manifest.plist"

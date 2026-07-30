@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Copy this file to scripts/deploy-ota.local.sh (git-ignored) and fill in
+# your own OTA deploy target to use `make deploy-ota` / scripts/deploy-ota.sh.
+# See docs/ota-deploy.md for the full picture.
+#
+#   cp scripts/deploy-ota.local.sh.sample scripts/deploy-ota.local.sh
+#
+# All three variables are required (deploy-ota.sh fails with a clear error
+# if any is unset). They describe wherever you host the itms-services
+# manifest + .ipa over HTTPS — a home server, a VPS, anything reachable
+# from the iPhone you're installing to.
+
+# SSH destination deploy-ota.sh uploads the .ipa/manifest.plist/index.html
+# to (user@host form; must be reachable and accept the upload via `scp`).
+export OTA_PI_HOST="user@ota-host.example.com"
+
+# Directory on that host to upload into (created with `mkdir -p` if missing).
+export OTA_PI_DIR="otegami-ota"
+
+# Public HTTPS URL that directory is served at (itms-services requires
+# https:// — http:// will not start an install). This is what the iPhone's
+# Safari opens and what manifest.plist's software-package URL points into.
+export OTA_BASE_URL="https://ota-host.example.com/ota"
