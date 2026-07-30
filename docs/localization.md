@@ -355,8 +355,8 @@ Composer の`From`/`To`/`Cc`/`Bcc`(macOS版フォームとiOS版フラット行�
   に置き換え。同じテストの`"Cancel"`固定lookupも`"キャンセル"`とのOR述語
   に変更。
 
-見つけたが直さなかったもの (テスト自体が既存の検索UIと乖離している疑い)
-は`PENDING.md`のTask #145節に記録した — `OtegamiQASweepScenario2UITests`
+見つけたが直さなかったもの (テスト自体が既存の検索UIと乖離している疑い) —
+`OtegamiQASweepScenario2UITests`
 が対象にしている`app.searchFields.firstMatch`はiOS版では`.searchable`を
 使っていない (macOS専用) ため、そもそも見つからない可能性が高い。ロケール
 lookupの修正はしたが、検索フィールドの発見方法自体の書き直しはローカライ
@@ -382,7 +382,6 @@ lookupの修正はしたが、検索フィールドの発見方法自体の書�
 シグネチャ変更、未コミット) により作業時点で赤だった。このタスクの変更
 ファイルは`swift build`(テスト抜き)の成功・変更ファイルの`swiftc -parse`
 通過・変更内容が文字列リテラル置き換え中心であることで個別に確認済み。
-詳細は`PENDING.md`のTask #145節参照。
 
 ## Task #170: 言語設定不一致の総点検と自動チェックの導入 (2026-07)
 
