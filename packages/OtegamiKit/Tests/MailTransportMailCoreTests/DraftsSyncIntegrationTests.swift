@@ -51,7 +51,7 @@ struct DraftsSyncIntegrationTests {
     /// already-`SPECIAL-USE`-advertised Drafts mailbox this dev mailstack's
     /// Dovecot auto-creates) — the same step `AccountSetupView.saveAccount`
     /// always runs before an app user could ever reach a "save draft"/
-    /// "delete draft"/"send" action. `OpQueueProcessor.resolveOrCreateDraftsMailbox`'s
+    /// "delete draft"/"send" action. `MailboxRoleResolver.resolveOrCreate`'s
     /// `CREATE`-self-heal path only activates when *no local* `mailbox` row
     /// is known yet, which would otherwise collide with this server's
     /// already-existing `Drafts` mailbox (`CREATE` on an existing name

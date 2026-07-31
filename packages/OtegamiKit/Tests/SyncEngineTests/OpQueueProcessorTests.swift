@@ -1355,7 +1355,7 @@ struct OpQueueProcessorTests {
 
         let result = try await processor.replay(account: account, auth: auth)
         #expect(result.succeeded == 1)
-        #expect(recorder.createMailboxCalls == [OpQueueProcessor.draftsMailboxNameToCreate])
+        #expect(recorder.createMailboxCalls == ["Drafts"])
         #expect(recorder.appendCalls.first?.path == "Drafts")
     }
 

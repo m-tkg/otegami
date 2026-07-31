@@ -244,28 +244,13 @@ public actor SyncCoordinator {
         }
         let built = messageBuilder(draft)
         let smtpSession = smtpSessionFactory(smtpConfig)
-        try await smtpSession.connect(auth: Self.smtpAuth(imapAuth: auth, account: account))
+        try await smtpSession.connect(auth: SMTPAuthResolver.resolve(imapAuth: auth, account: account))
         defer {
             let smtpSession = smtpSession
             Task { await smtpSession.disconnect() }
         }
         let recipients = draft.to + draft.cc + draft.bcc
         try await smtpSession.sendMessage(messageData: built.data, from: draft.from, recipients: recipients)
-    }
-
-    /// Identical to `OpQueueProcessor`'s own private `smtpAuth(imapAuth:
-    /// account:)` — SMTP submission can require a different username than
-    /// IMAP (`AccountRecord.smtpUsername`), same rationale as that method's
-    /// doc comment. Kept as its own small copy here rather than exposing
-    /// `OpQueueProcessor`'s version, since `SyncCoordinator` doesn't
-    /// otherwise reach into that actor's internals.
-    private static func smtpAuth(imapAuth: MailAuth, account: AccountRecord) -> MailAuth {
-        switch imapAuth {
-        case .password(_, let password):
-            .password(username: account.smtpUsername ?? "", password: password)
-        case .xoauth2(let username, let accessToken):
-            .xoauth2(username: account.smtpUsername ?? username, accessToken: accessToken)
-        }
     }
 
     /// Differential sync (M3): only fetches what changed since the last
