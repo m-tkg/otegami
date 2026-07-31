@@ -112,6 +112,54 @@ import os
 /// 書き込みは選ばなかった理由) は `PushDiagnosticsRun`
 /// (`packages/OtegamiKit/Sources/PushRelayClient/PushDiagnosticsStore.swift`)
 /// のdoc commentを参照。
+///
+/// **`kSecAttrSynchronizable` 抜けのバグ修正 (Task #216)**: 実機の診断画面
+/// (Task #213) が、あるアカウントで「Resolving Credential 0ms 失敗:
+/// noCredential」— IMAP 接続にすら到達していない — を記録した。当初は
+/// Yahoo! 固有の事象と見えたが、その後**同じ端末で iCloud アカウントも
+/// 同じ症状**であることが判明し、一方 Gmail (OAuth) は正常だった。整理
+/// すると **`.password` 認証のアカウントは全滅、`.oauth2` 認証のアカウント
+/// だけ正常** — プロバイダの違いではなく認証方式の違いだった。Task #211/
+/// #215 が追った「Yahoo のレート制限/同時接続数」はこの件には無関係
+/// (ネットワークに一切触れる前の 0ms 失敗であることに加え、iCloud にまで
+/// 同じ症状が出ている時点でサーバー固有の問題ではあり得ない)。
+///
+/// 真因は `password(forAccountId:)` の Keychain クエリが
+/// `kSecAttrSynchronizable` を指定していなかったこと — 指定を省くと
+/// `SecItemCopyMatching` は **非同期化 (non-synchronizable) の項目しか
+/// 返さない** (Apple のドキュメント上の既定動作)。一方アプリ本体の
+/// `KeychainCredentialStore` は M11 (iCloud Keychain 同期) 以降、
+/// `setPassword` で書くすべての項目を `kSecAttrSynchronizable = true` に
+/// する——**新規アカウント作成時の最初の1回の保存から**すでにそうなる
+/// (`addSynchronizable`)。つまり M11 以降にセットアップされた `.password`
+/// 認証のアカウントは、プロバイダを問わず最初から全滅していたことになる
+/// (「以前は届いていた」という体感があるとすれば、それは pre-M11 の
+/// ビルドで作成されて以来一度も再保存されていない、たまたま非同期化の
+/// ままの項目が残っていたケース)。**この仮説を直接裏付ける対照実験が
+/// コードベース内にすでにある**: OAuth のリフレッシュトークンを保存する
+/// `GoogleOAuth.KeychainRefreshTokenStore`/`MicrosoftOAuth
+/// .KeychainRefreshTokenStore` (`packages/OtegamiKit/Sources/GoogleOAuth
+/// (Microsoft)/RefreshTokenStoring.swift`) は、アプリ本体とこの Extension
+/// の**両方から全く同じ型を経由して**読み書きされる (`oauthAccessToken(
+/// for:)`が呼ぶ`GoogleOAuth.TokenStore`/`MicrosoftOAuth.TokenStore`のデフォルト
+/// 実装がこれ) — そしてその`read(accountId:)`は最初から一貫して
+/// `anySynchronizableQuery`(`kSecAttrSynchronizableAny`)を使っている。
+/// これが Gmail/Outlook の通知だけ正常だった理由そのもの: OAuth 側は
+/// この Extension 専用の手書きクエリではなく、最初から同期状態を問わず
+/// マッチする既存の共有実装を使っていたから壊れようがなかった。
+///
+/// 詳細・検討過程は `docs/architecture.md` の Known pitfalls (j.) を参照。
+/// **読み取り側だけの修正で直る** — Keychain に保存されている値自体は
+/// 最初から正しいので、ユーザーがパスワードを入れ直す必要は無い。
+/// `password(forAccountId:)`は併せて `KeychainCredentialStore
+/// .legacyServices` 相当のフォールバックも追加した (このExtensionには
+/// 元々無かった)。`resolveAuth(for:)`/`oauthAccessToken(for:)`はこの
+/// 調査を機に、診断画面の`credential`段階が常に`noCredential`一色だった
+/// 問題も合わせて直した — 戻り値を`CredentialResolution`/
+/// `OAuthTokenOutcome`という列挙型にして、「項目が無い/Keychain読み取り
+/// エラー/Client ID未設定/トークン取得不可/想定外のkind」を診断画面の
+/// カテゴリとして区別できるようにしている (資格情報そのものは相変わらず
+/// 一切記録しない)。
 // `@unchecked Sendable`: `UNNotificationServiceExtension` doesn't itself
 // promise `didReceive(_:withContentHandler:)`/`serviceExtensionTimeWillExpire()`
 // run on any particular actor, so the compiler can't otherwise prove the
@@ -326,13 +374,17 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         recordStage(.accountLookup, outcome: .success, since: accountLookupStart)
 
         let credentialStart = Date()
-        guard let auth = await Self.resolveAuth(for: account) else {
-            Self.logger.notice("enrich: credential: no usable credential resolved (see preceding log line) — falling back to generic")
-            recordStage(.credential, outcome: .failure(category: "noCredential", looksRateLimited: false, logDetail: nil), since: credentialStart)
+        let auth: MailAuth
+        switch await Self.resolveAuth(for: account) {
+        case .success(let resolved):
+            auth = resolved
+            Self.logger.notice("enrich: credential: resolved, connecting")
+            recordStage(.credential, outcome: .success, since: credentialStart)
+        case .failure(let category, let logDetail):
+            Self.logger.notice("enrich: credential: no usable credential resolved category=\(category, privacy: .public) — falling back to generic")
+            recordStage(.credential, outcome: .failure(category: category, looksRateLimited: false, logDetail: logDetail), since: credentialStart)
             return
         }
-        Self.logger.notice("enrich: credential: resolved, connecting")
-        recordStage(.credential, outcome: .success, since: credentialStart)
 
         let session = MailCoreIMAPSession(config: account.imapConfig)
         let mailbox = "INBOX"
@@ -542,54 +594,143 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         }
     }
 
-    private static func password(forAccountId accountId: String) throws -> String? {
-        let query: [String: Any] = {
+    /// Task #216: what `password(forAccountId:)` found (or didn't) — one
+    /// level more specific than a plain `String?` so `resolveAuth(for:)` can
+    /// report *why* on the diagnostics screen (`CredentialResolution`'s doc
+    /// comment) instead of a single opaque `noCredential`. `keychainError`'s
+    /// `OSStatus` is a small numeric code (e.g.
+    /// `errSecInteractionNotAllowed`/`-25308`, meaning the item's data
+    /// protection class requires the device to be unlocked) — not the
+    /// password itself, so safe to surface (Task #211's same reasoning).
+    private enum PasswordLookupOutcome {
+        case found(String)
+        case notFound
+        case keychainError(OSStatus)
+    }
+
+    /// Real-device bug found investigating Task #216 (every `.password`-auth
+    /// account's `Resolving Credential` failing `noCredential` in 0ms — IMAP
+    /// never even attempted — while every `.oauth2` account worked fine):
+    /// this query never specified `kSecAttrSynchronizable`. Per Apple's
+    /// documented default ("if the key is not specified in a search, only
+    /// non-synchronizable items are returned" — exactly the reasoning
+    /// `KeychainCredentialStore.anySynchronizableQuery`'s own doc comment
+    /// already spells out for the *app* side), that made this query blind
+    /// to every item `KeychainCredentialStore.setPassword` writes as
+    /// synchronizable (`addSynchronizable`/`migrateToSynchronizableAndWrite`
+    /// both always set `kSecAttrSynchronizable = true` — M11, iCloud
+    /// Keychain sync), which is *every* password, from the very first save
+    /// (not just a later edit-screen re-save) — so this broke every
+    /// `.password`-auth account created since M11, regardless of provider.
+    /// The `.oauth2` side's untouched success is direct confirmation: its
+    /// refresh-token store (`oauthAccessToken(for:)`'s doc comment) has
+    /// always widened with the equivalent `anySynchronizableQuery`, so it
+    /// never had this bug to begin with. Widening this query with
+    /// `kSecAttrSynchronizableAny` (matching every app-side query and the
+    /// OAuth side) fixes this on the *read* side alone — no re-migration or
+    /// password re-entry needed, the item was always correctly stored. See
+    /// `docs/architecture.md`'s Known pitfalls (j.) for the full writeup.
+    ///
+    /// Also now falls back through `NotificationServiceKeychainQuery
+    /// .legacyServices` (mirrors `KeychainCredentialStore.legacyServices` —
+    /// the `52df393` service-name rename) — this Extension never did before
+    /// Task #216, for the same "an item from an even older rename is
+    /// otherwise permanently invisible" reason that store's own doc comment
+    /// gives. No "ignoring access group" fallback the way the app-side
+    /// macOS store needs: this Extension is iOS-only (no
+    /// `NotificationService` target on macOS — `OtegamiAppGroup.swift`'s
+    /// doc comment), and `project.yml` gives both the `Otegami` app target
+    /// and this one the exact same non-`nil` `OTEGAMI_KEYCHAIN_GROUP`
+    /// access group on iOS.
+    ///
+    /// Which service names to try, in what order, and whether to widen
+    /// matching to any synchronizable state (the actual Task #216 fix) is
+    /// `NotificationServiceKeychainQuery.attemptsInOrder(accountId:
+    /// accessGroup:)` (`PushRelayClient`, unit-tested) — a plain-value type
+    /// with no `Security` dependency, since `SecItemCopyMatching` itself
+    /// can't be exercised from `swift test` and this Extension target isn't
+    /// `swift test`-reachable either. This function is the thin glue that
+    /// turns each `Attempt` into the real `[String: Any]` CFDictionary.
+    private static func password(forAccountId accountId: String) -> PasswordLookupOutcome {
+        func query(for attempt: NotificationServiceKeychainQuery.Attempt) -> [String: Any] {
             var query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: "com.mtkg.otegami.account-password",
-                kSecAttrAccount as String: accountId,
+                kSecAttrService as String: attempt.service,
+                kSecAttrAccount as String: attempt.accountId,
                 kSecReturnData as String: true,
                 kSecMatchLimit as String: kSecMatchLimitOne,
             ]
-            if let keychainAccessGroup {
-                query[kSecAttrAccessGroup as String] = keychainAccessGroup
+            if attempt.matchesAnySynchronizableState {
+                query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+            }
+            if let accessGroup = attempt.accessGroup {
+                query[kSecAttrAccessGroup as String] = accessGroup
             }
             return query
-        }()
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else {
-            // `status` is a plain `OSStatus` (a numeric code, e.g.
-            // `errSecItemNotFound`/`-25300` vs. `errSecInteractionNotAllowed`
-            // /`-25308` — the latter meaning the Keychain item's data
-            // protection class requires the device to be unlocked, which
-            // this Extension can run before) — not the password itself, so
-            // safe to log (Task #211).
-            Self.logger.notice("auth: password branch: SecItemCopyMatching failed status=\(status, privacy: .public)")
-            return nil
         }
-        return String(data: data, encoding: .utf8)
+
+        let attempts = NotificationServiceKeychainQuery.attemptsInOrder(accountId: accountId, accessGroup: keychainAccessGroup)
+        for attempt in attempts {
+            var result: AnyObject?
+            let status = SecItemCopyMatching(query(for: attempt) as CFDictionary, &result)
+            if status == errSecSuccess, let data = result as? Data, let password = String(data: data, encoding: .utf8) {
+                return .found(password)
+            }
+            if status != errSecItemNotFound {
+                Self.logger.notice("auth: password branch: SecItemCopyMatching failed service=\(attempt.service, privacy: .public) status=\(status, privacy: .public)")
+                return .keychainError(status)
+            }
+        }
+        return .notFound
     }
 
     // MARK: - Task #177: OAuth (`.oauth2`) account credentials
 
+    /// Task #216: replaces this function's previous plain `MailAuth?`
+    /// return. Before, every failure of either `authType` branch collapsed
+    /// into the diagnostics screen's `credential` stage always showing the
+    /// same `noCredential` category (Task #213) — enough to know *that* it
+    /// failed, but not *why*, which is exactly what this account's bug
+    /// needed to get root-caused. `category` mirrors
+    /// `NotificationServiceDiagnostics.ErrorSummary.category`'s shape (an
+    /// opaque, log-safe string) without reusing that type itself — this
+    /// failure never comes from a `MailTransportError`, since no IMAP
+    /// connection is even attempted before this resolves.
+    private enum CredentialResolution {
+        case success(MailAuth)
+        case failure(category: String, logDetail: String?)
+    }
+
     /// The `MailAuth` `enrich(payload:)` connects with, for either
-    /// `authType` — `.password`'s existing Keychain-password lookup, or
-    /// (Task #177) `.oauth2`'s Keychain-refresh-token-to-access-token
-    /// exchange (`oauthAccessToken(for:)`). `nil` on any failure, meaning
-    /// "no usable credential" — the caller's existing generic-fallback
-    /// behavior applies identically regardless of which branch failed.
-    private static func resolveAuth(for account: AccountRecord) async -> MailAuth? {
+    /// `authType` — `.password`'s Keychain-password lookup (Task #216: see
+    /// `password(forAccountId:)`'s doc comment for the `kSecAttrSynchronizable`
+    /// bug this fixes), or (Task #177) `.oauth2`'s
+    /// Keychain-refresh-token-to-access-token exchange
+    /// (`oauthAccessToken(for:)`).
+    private static func resolveAuth(for account: AccountRecord) async -> CredentialResolution {
         switch account.authType {
         case .password:
-            guard let password = try? Self.password(forAccountId: account.id) else { return nil }
-            return .password(username: account.imapUsername, password: password)
-        case .oauth2:
-            guard let accessToken = await Self.oauthAccessToken(for: account) else {
-                Self.logger.notice("auth: oauth2 branch: no access token resolved (see preceding log line for which sub-reason)")
-                return nil
+            switch Self.password(forAccountId: account.id) {
+            case .found(let password):
+                return .success(.password(username: account.imapUsername, password: password))
+            case .notFound:
+                Self.logger.notice("auth: password branch: no Keychain item found for this account (checked current + legacy service names, any synchronizable state)")
+                return .failure(category: "passwordNotFound", logDetail: nil)
+            case .keychainError(let status):
+                return .failure(category: "passwordKeychainError", logDetail: "status=\(status)")
             }
-            return .xoauth2(username: account.imapUsername, accessToken: accessToken)
+        case .oauth2:
+            switch await Self.oauthAccessToken(for: account) {
+            case .token(let accessToken):
+                return .success(.xoauth2(username: account.imapUsername, accessToken: accessToken))
+            case .noClientId:
+                return .failure(category: "oauthNoClientId", logDetail: nil)
+            case .unavailable:
+                Self.logger.notice("auth: oauth2 branch: no access token resolved (see preceding log line for which sub-reason)")
+                return .failure(category: "oauthTokenUnavailable", logDetail: nil)
+            case .unsupportedAccountKind:
+                return .failure(category: "oauthUnsupportedAccountKind", logDetail: nil)
+            }
         }
     }
 
@@ -605,14 +746,32 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// to fire.
     private static let oauthTokenFetchTimeout: TimeInterval = 10
 
-    /// A currently-valid XOAUTH2 access token for `account` (`.oauth2`-kind
-    /// only — Gmail/Outlook), or `nil` on any failure: this build has no
-    /// Client ID configured for `account.kind`'s provider (`OAuthConfig`),
-    /// no refresh token is stored for this account (never signed in via
-    /// this provider, or a previous `invalid_grant` already wiped it —
-    /// see `GoogleOAuth.TokenStore`/`MicrosoftOAuth.TokenStore`'s own doc
-    /// comments), the refresh itself failed, or it simply took longer than
-    /// `oauthTokenFetchTimeout` (`PushOAuthAccessTokenResolution`).
+    /// Task #216: what `oauthAccessToken(for:)` resolved (or didn't) — see
+    /// `CredentialResolution`'s doc comment for why the diagnostics screen
+    /// benefits from more than a plain `String?` here. `.unavailable` still
+    /// collapses "no refresh token stored" / "refresh itself failed" /
+    /// "timed out" into one bucket, by design — `PushOAuthAccessTokenResolution`
+    /// deliberately never logs internally (its own doc comment), so there's
+    /// no finer-grained reason available here without changing that type's
+    /// contract, and the OSLog line right above each `.unavailable` return
+    /// below already says which provider (`gmail`/`microsoft`) was involved.
+    private enum OAuthTokenOutcome {
+        case token(String)
+        case noClientId
+        case unavailable
+        case unsupportedAccountKind
+    }
+
+    /// Resolves a currently-valid XOAUTH2 access token for `account`
+    /// (`.oauth2`-kind only — Gmail/Outlook). This build having no Client ID
+    /// configured for `account.kind`'s provider (`OAuthConfig`) returns
+    /// `.noClientId`; everything else that can go wrong — no refresh token
+    /// is stored for this account (never signed in via this provider, or a
+    /// previous `invalid_grant` already wiped it — see `GoogleOAuth
+    /// .TokenStore`/`MicrosoftOAuth.TokenStore`'s own doc comments), the
+    /// refresh itself failed, or it simply took longer than
+    /// `oauthTokenFetchTimeout` (`PushOAuthAccessTokenResolution`) — returns
+    /// `.unavailable`.
     ///
     /// Uses the exact same `TokenStore`/OAuth client types
     /// `AppEnvironment.auth(for:)` uses for a foregrounded `.oauth2` sync
@@ -629,10 +788,10 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// now-dead refresh token from that same shared Keychain, so the next
     /// time the main app itself calls `auth(for:)` it correctly reports
     /// "要再認証" rather than retrying a token Google has already rejected.
-    private static func oauthAccessToken(for account: AccountRecord) async -> String? {
+    private static func oauthAccessToken(for account: AccountRecord) async -> OAuthTokenOutcome {
         guard account.kind == .gmail || account.kind == .microsoft else {
             Self.logger.notice("auth: oauth2 branch: account.kind is neither gmail nor microsoft — unreachable in practice, no token")
-            return nil
+            return .unsupportedAccountKind
         }
 
         let configuration = URLSessionConfiguration.ephemeral
@@ -645,7 +804,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         case .gmail:
             guard let clientId = OAuthConfig.googleClientId else {
                 Self.logger.notice("auth: oauth2 branch (gmail): this build has no Google Client ID configured")
-                return nil
+                return .noClientId
             }
             let client = GoogleOAuthClient(
                 endpoints: .standard(clientId: clientId),
@@ -662,14 +821,15 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             // type never logs at all", so this is the closest this
             // Extension gets to knowing *that* the gmail branch lost
             // without ever touching the token value itself.
-            if token == nil {
+            guard let token else {
                 Self.logger.notice("auth: oauth2 branch (gmail): token resolution returned nil (no refresh token / refresh failed / timed out)")
+                return .unavailable
             }
-            return token
+            return .token(token)
         case .microsoft:
             guard let clientId = OAuthConfig.microsoftClientId else {
                 Self.logger.notice("auth: oauth2 branch (microsoft): this build has no Microsoft Client ID configured")
-                return nil
+                return .noClientId
             }
             let client = MicrosoftOAuthClient(
                 endpoints: .standard(clientId: clientId),
@@ -680,12 +840,13 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             let token = await PushOAuthAccessTokenResolution.resolve(timeout: oauthTokenFetchTimeout) {
                 try await tokenStore.accessToken(for: account.id)
             }
-            if token == nil {
+            guard let token else {
                 Self.logger.notice("auth: oauth2 branch (microsoft): token resolution returned nil (no refresh token / refresh failed / timed out)")
+                return .unavailable
             }
-            return token
+            return .token(token)
         case .generic, .icloud:
-            return nil
+            return .unsupportedAccountKind
         }
     }
 

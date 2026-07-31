@@ -1005,3 +1005,139 @@ fakeserver.go` に `RateLimitWindow`/`RateLimitWindowBudget` — 時間窓
   になる。**その場合は `PollInterval` をさらに延ばす前に、上記「さらなる
   保険が要る場合の逃げ道」(非 IDLE サーバーへの push 提供自体をやめる) を
   検討すること。**
+
+**追記 (Task #216: 訂正 — この節の「Yahoo のレート制限/同時接続数」という
+当初の仮説は、少なくとも1件の実機報告には当てはまらなかった)。** Task #211
+の追記は「`NotificationService` の Yahoo! 通知だけ差出人・件名が出ない」
+症状の原因候補として、この節で調べてきたレート制限・同時接続数の疑いを
+挙げていた。ところが端末内診断画面 (Task #213) が実際に記録した失敗は
+`Resolving Credential 0ms 失敗: noCredential` — **IMAP 接続を一度も試みる
+前の失敗**だった。レート制限も同時接続数の制限も IMAP サーバーとの通信が
+実際に発生して初めて起こり得る問題なので、この時系列の失敗にはそもそも
+当てはまらない (0ms という所要時間自体が「ネットワークに一切触れていない」
+ことの一次証拠)。**真因は全く別の場所 — 通知拡張の Keychain クエリの
+不備 — だった。** 詳細は下記 j. 節参照。この訂正の教訓: 「別の bug 調査で
+Yahoo! 関連の問題が続けて報告された」からといって同じ原因を疑い続けるのは
+早計で、診断画面 (Task #213) のような一次データが無ければ「症状は同じでも
+原因は毎回違う」を見落とす。
+
+### j. 通知拡張 (`NotificationService`) の Keychain クエリは `kSecAttrSynchronizable` 抜けで同期済みパスワードが見えない
+
+**実機で確定した事実 (Task #216)。** あるアカウントの通知が「新着メール
+があります」の汎用文言のまま出ない事象で、端末内診断画面 (Task #213) の
+記録:
+
+```
+2026/07/31 18:42:03                          36ms
+  Parsing Notification    0ms   成功
+  Reading Settings        0ms   成功
+  Resolving Account      33ms   成功
+  Resolving Credential    0ms   失敗: noCredential   ← ここ
+```
+
+同日の他アカウントの記録は本文取得まで全段階成功していた。アカウントの
+行は引けている (`Resolving Account` 成功) のに、対応する資格情報が
+拡張プロセスから見えていない — しかも `Resolving Credential` の所要時間が
+`0ms` で、これは IMAP 接続はおろか OAuth のネットワーク往復すら一切
+発生していないことを意味する (上記 i. 節の「訂正」参照 — レート制限・
+同時接続数はどちらもネットワーク通信が起きて初めて顕在化する問題であり、
+この失敗の説明にはならない)。
+
+**当初は Yahoo! 固有の事象に見えたが、調査中にユーザーから訂正が入った:
+同じ端末で iCloud アカウントも同じ症状 (`noCredential`) だった一方、
+Gmail (OAuth) は正常だった。** 整理すると症状は「プロバイダ」ではなく
+**「認証方式」で分かれていた** — `.password` 認証 (iCloud・Yahoo!) は
+全滅、`.oauth2` 認証 (Gmail) だけ正常。この訂正で「編集画面で再保存した
+Yahoo! アカウントだけ」という当初の見立ては外れたが、真因の特定自体は
+むしろこの訂正でより強く裏付けられた (下記)。
+
+**真因: `NotificationService.password(forAccountId:)`
+(`apps/Otegami/NotificationService/NotificationService.swift`) の
+`SecItemCopyMatching` クエリが `kSecAttrSynchronizable` を一切指定して
+いなかった。** Apple のドキュメント上、このキーを省略した場合の既定動作は
+「**非同期化 (non-synchronizable) の項目しか返さない**」——一方アプリ本体の
+`KeychainCredentialStore` (`apps/Otegami/Sources/Support/
+KeychainCredentialStore.swift`) は、M11 (iCloud Keychain 同期) 以降
+`setPassword` が書くすべての項目を `kSecAttrSynchronizable = true` にする
+(`addSynchronizable`/`migrateToSynchronizableAndWrite`) —
+**新規アカウント作成時の最初の1回の保存からすでにそうなる**、編集画面の
+再保存に限った話ではない。つまり:
+
+- **M11 以降にセットアップされた `.password` 認証のアカウントは、
+  プロバイダを問わず最初から (初回保存の時点で) この Extension から
+  見えなくなっていた。** 「以前は届いていた」という体感があるとすれば、
+  それは pre-M11 のビルドで作成されて以来一度も再保存されていない、
+  たまたま非同期化のままの項目が残っていたケースだと考えられる。
+- **この仮説を直接裏付ける対照実験がコードベース内にすでにあった。**
+  OAuth のリフレッシュトークンを保存する `GoogleOAuth
+  .KeychainRefreshTokenStore`/`MicrosoftOAuth.KeychainRefreshTokenStore`
+  (`packages/OtegamiKit/Sources/GoogleOAuth(Microsoft)/
+  RefreshTokenStoring.swift`) は、アプリ本体とこの Extension の**両方から
+  全く同じ型を経由して**読み書きされる (`oauthAccessToken(for:)` が呼ぶ
+  `GoogleOAuth.TokenStore`/`MicrosoftOAuth.TokenStore` のデフォルト実装が
+  これ) — そしてその `read(accountId:)` は最初から一貫して
+  `anySynchronizableQuery` (`kSecAttrSynchronizableAny`) を使っている。
+  **これが Gmail/Outlook の通知だけ正常だった理由そのもの**:
+  OAuth 側はこの Extension 専用の手書きクエリではなく、最初から同期状態を
+  問わずマッチする既存の共有実装を使っていたから、そもそも壊れようが
+  なかった。一方 `.password` 側の `password(forAccountId:)` は
+  `KeychainCredentialStore` を使わず独自に手書きされたクエリで、その
+  widening だけが漏れていた。
+- 検討した他の仮説 (保存時のアクセシビリティが `kSecAttrAccessibleAfterFirstUnlock`
+  以外/アカウント識別子の不一致/`authType` 判定違い/Keychain Access
+  Group の不一致) はいずれも否定できた — 特に Access Group は
+  `project.yml` の `OtegamiKeychainAccessGroup: $(OTEGAMI_KEYCHAIN_GROUP)`
+  がアプリ本体 (`Otegami` target) とこの Extension (`NotificationService`
+  target) の両方に同じ非 `nil` の値を渡しており、iOS では一致している
+  (かつ OAuth 側の `KeychainRefreshTokenStore` はそもそも Access Group を
+  一切指定していないのに正常に動いている時点で、Access Group の不一致が
+  今回の説明になり得ないことも分かる)。
+
+**修正は読み取り側だけで完結する。** `password(forAccountId:)` のクエリに
+`kSecAttrSynchronizable: kSecAttrSynchronizableAny` を追加し、同期化・
+非同期化どちらの項目にもマッチするよう広げた。Keychain に保存されている
+パスワード自体は最初から正しい値だったので、**ユーザーがパスワードを
+入れ直す必要は無い** — 次回の push 到達時から即座に直る。合わせて、
+アプリ本体の `KeychainCredentialStore.legacyServices` (`52df393` の
+サービス名リネームバグ) 相当のフォールバックもこの Extension に初めて
+追加した (元々一切無かった)。
+
+**クエリ構築の純粋なロジックはユニットテスト済み。** `SecItemCopyMatching`
+自体は `swift test` から呼べず、`NotificationService.swift` は
+Extension target で `swift test` 到達不能なため (`KeychainCredentialStore`
+のクエリ構築ロジックが同じ理由で「inspection で検証する」に留まっている
+前例と同じ制約)、「どのサービス名を・どういう順で・同期状態を問わず
+一致させるかどうか」という事実だけを `Security` に依存しない値として
+`PushRelayClient.NotificationServiceKeychainQuery`
+(`packages/OtegamiKit/Sources/PushRelayClient/
+NotificationServiceKeychainQuery.swift`) に切り出し、
+`NotificationServiceKeychainQueryTests.swift` でテストした。
+`NotificationService.password(forAccountId:)` はこの型が返す
+`Attempt` を実際の `[String: Any]` CFDictionary に変換するだけの薄い
+グルーになっている。
+
+**診断画面の失敗カテゴリも合わせて詳細化した (Task #216)。** それまで
+`credential` 段階の失敗は常に `noCredential` 一色で、Keychain 項目が
+無いのか・OAuth のクライアント ID が未設定なのか・トークン取得に失敗
+したのかを画面から区別できなかった。`resolveAuth(for:)`/
+`oauthAccessToken(for:)` の戻り値をそれぞれ `CredentialResolution`/
+`OAuthTokenOutcome` という列挙型にし、`passwordNotFound`/
+`passwordKeychainError`/`oauthNoClientId`/`oauthTokenUnavailable`/
+`oauthUnsupportedAccountKind` のいずれかを診断画面のカテゴリとして
+記録するようにした (資格情報そのものは相変わらず一切記録しない)。
+
+**実機での確認手順 (通知拡張はシミュレータで検証できない)。影響範囲が
+`.password` 認証のアカウント全部だったため、**iCloud・Yahoo! 双方**で
+確認すること (Gmail は元々正常だったので確認優先度は低い):**
+
+1. この修正を含むビルドを実機にインストールし、`.password` 認証の
+   各アカウント (iCloud・Yahoo! など) の push が実際に届く状態であること
+   を確認する (設定 → 一般 → プッシュ通知 → 「プッシュ通知の登録状況」で
+   `.stopped`/`.notRegistered` なら再登録する)。
+2. iCloud・Yahoo! それぞれに新着メールを実際に送るか待ち、通知が届いた
+   際に差出人・件名 (設定に応じて本文プレビュー) が表示されることを
+   確認する。
+3. 念のため設定 → 一般 → プッシュ通知 → 「プッシュ通知の診断」を開き、
+   iCloud・Yahoo! 双方の直近の実行が `Resolving Credential` を含む全段階
+   で成功していること、万一まだ失敗する場合はその `category` (今回追加
+   した詳細な文字列) を確認する。
