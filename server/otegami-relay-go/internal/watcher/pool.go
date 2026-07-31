@@ -464,7 +464,7 @@ func (p *Pool) connectAndWatch(
 // The interval was first set to 2 minutes based on third-party reports
 // (e.g. Mozilla bug 468490) describing Yahoo IMAP as dropping idle
 // connections after roughly 5 minutes. **Production disproved that.** With
-// a 2-minute keepalive, otegami.mtkg logged:
+// a 2-minute keepalive, a production deployment logged:
 //
 //	00:35:15  watch connected            (LOGIN succeeded)
 //	00:37:15  IMAP connection closed unexpectedly
