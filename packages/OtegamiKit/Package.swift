@@ -160,17 +160,44 @@ let package = Package(
             dependencies: ["PushRelayClient", "OtegamiRelayAPI"]
         ),
 
+        // Shared Apple-only OAuth plumbing factored out of `GoogleOAuth`/
+        // `MicrosoftOAuth` (previously five files — PKCE, `AuthorizationSessionRunning`,
+        // `ASWebAuthenticationSessionRunner`, `RefreshTokenStoring`,
+        // `TokenStore` — that were byte-identical between the two packages
+        // apart from type names/Keychain service defaults/doc comments).
+        // `GoogleOAuth`/`MicrosoftOAuth` now depend on this and keep only
+        // what's genuinely provider-specific (Endpoints/Client/Tokens/Error,
+        // and a thin per-provider `TokenStore` wrapper — see that type's own
+        // doc comment for why it isn't just a type alias to a generic
+        // specialization here). Apple-only (AuthenticationServices,
+        // CryptoKit, Security), like the two packages it was extracted from.
+        .target(
+            name: "OAuthKit"
+        ),
+
         // Gmail OAuth2 (Authorization Code + PKCE) client + `TokenStore`
         // (M6). Apple-only (AuthenticationServices, CryptoKit, Security) —
         // like MailTransportMailCore, this is never pulled into any
-        // Linux-compatible target. Has no dependency on any other target in
-        // this package (not even `MailTransport`): it only ever produces
-        // `MailAuth.xoauth2`'s two raw associated values (username, access
-        // token) as plain strings, letting the app layer construct the
-        // actual `MailAuth` — keeps this package's own dependency graph
-        // acyclic and this target trivially unit-testable in isolation.
+        // Linux-compatible target. Depends only on `OAuthKit` (not even
+        // `MailTransport`): it only ever produces `MailAuth.xoauth2`'s two
+        // raw associated values (username, access token) as plain strings,
+        // letting the app layer construct the actual `MailAuth` — keeps
+        // this package's own dependency graph acyclic and this target
+        // trivially unit-testable in isolation.
         .target(
-            name: "GoogleOAuth"
+            name: "GoogleOAuth",
+            dependencies: ["OAuthKit"]
+        ),
+
+        // Test doubles (`FakeAuthorizationFlow`, `FakeRefreshTokenStore`,
+        // `FakeTokenRefresher`, `StubURLProtocol`) shared between
+        // `GoogleOAuthTests` and `MicrosoftOAuthTests` — a plain (non-test)
+        // target so a `testTarget` can depend on it (SwiftPM doesn't allow
+        // test targets depending on other test targets). Depends only on
+        // `OAuthKit`, matching the split's production dependency shape.
+        .target(
+            name: "OAuthKitTestSupport",
+            dependencies: ["OAuthKit"]
         ),
 
         // PKCE known-vector tests, `GoogleOAuthClient` token-exchange/
@@ -180,22 +207,22 @@ let package = Package(
         // touched).
         .testTarget(
             name: "GoogleOAuthTests",
-            dependencies: ["GoogleOAuth"]
+            dependencies: ["GoogleOAuth", "OAuthKit", "OAuthKitTestSupport"]
         ),
 
         // Task #116 第2段「Outlook.com / Office365 (Microsoft OAuth)」:
         // Outlook.com/Office 365's Authorization Code + PKCE client +
         // `TokenStore`. Deliberately mirrors `GoogleOAuth` above (same
-        // Apple-only surface — AuthenticationServices/CryptoKit/Security —
-        // and the same "no dependency on any other target in this package"
-        // shape) rather than sharing code with it: keeping the two
-        // providers fully independent means either one can be dropped, or a
-        // third provider added the same way, without touching the other.
-        // See `MicrosoftOAuth`'s individual files for the "mirrors
-        // GoogleOAuth.X" doc comments that spell out what, if anything,
-        // differs from its Google counterpart.
+        // Apple-only surface, same `OAuthKit` dependency) — the two
+        // providers' *provider-specific* code (Endpoints/Client/Tokens/Error)
+        // stays fully independent so either one can be dropped, or a third
+        // provider added the same way, without touching the other; only the
+        // genuinely-shared plumbing lives in `OAuthKit`. See `MicrosoftOAuth`'s
+        // individual files for the "mirrors GoogleOAuth.X" doc comments that
+        // spell out what, if anything, differs from its Google counterpart.
         .target(
-            name: "MicrosoftOAuth"
+            name: "MicrosoftOAuth",
+            dependencies: ["OAuthKit"]
         ),
 
         // Mirrors `GoogleOAuthTests` — PKCE known-vector test (shared RFC
@@ -204,7 +231,7 @@ let package = Package(
         // tests, and `TokenStore` expiry/refresh/invalid_grant tests.
         .testTarget(
             name: "MicrosoftOAuthTests",
-            dependencies: ["MicrosoftOAuth"]
+            dependencies: ["MicrosoftOAuth", "OAuthKit", "OAuthKitTestSupport"]
         ),
 
         // iCloud account-definition sync (iCloud Keychain already syncs

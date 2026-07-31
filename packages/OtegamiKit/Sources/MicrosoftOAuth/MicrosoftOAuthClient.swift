@@ -1,4 +1,5 @@
 import Foundation
+import OAuthKit
 
 /// Orchestrates Outlook.com/Office 365's Authorization Code + PKCE (S256)
 /// flow end to end — mirrors `GoogleOAuth.GoogleOAuthClient`. See that

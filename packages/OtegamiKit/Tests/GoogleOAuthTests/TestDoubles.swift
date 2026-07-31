@@ -1,155 +1,47 @@
 import Foundation
+import OAuthKit
+import OAuthKitTestSupport
 @testable import GoogleOAuth
 
-/// Stands in for `ASWebAuthenticationSessionRunner` (the plan's
-/// "FakeAuthorizationFlow"): returns a canned callback URL (or throws a
-/// canned error) instead of presenting any real UI, so `GoogleOAuthClientTests`
-/// can drive `requestAuthorization()` end to end without
-/// `AuthenticationServices`/a presentation anchor.
-final class FakeAuthorizationFlow: AuthorizationSessionRunning, @unchecked Sendable {
-    enum Outcome {
-        case callback(URL)
-        case failure(Error)
-    }
+/// `FakeAuthorizationFlow`/`FakeRefreshTokenStore`/`FakeTokenRefresher`/
+/// `StubURLProtocol` now live in `OAuthKitTestSupport` (shared,
+/// byte-identical fakes between `GoogleOAuthTests` and
+/// `MicrosoftOAuthTests`) — these conformances/aliases are the only
+/// `GoogleOAuth`-specific glue left: `FakeAuthorizationFlow` conforms to the
+/// shared `OAuthKit.AuthorizationSessionRunning` base, but
+/// `GoogleOAuthClient` expects this module's own local refinement (see that
+/// protocol's doc comment for why it's a refinement, not a type alias).
+extension FakeAuthorizationFlow: GoogleOAuth.AuthorizationSessionRunning {}
 
-    var outcome: Outcome
-    /// Records what was actually requested, so a test can assert the
-    /// authorization URL carried the right PKCE challenge/state/scope
-    /// without needing `GoogleOAuthClient` to expose those internals
-    /// directly.
-    private(set) var lastAuthorizationURL: URL?
-    private(set) var lastCallbackURLScheme: String?
+/// `OAuthKitTestSupport.FakeTokenRefresher<Tokens>` is generic since
+/// `GoogleTokenRefreshing` lives in this package, not `OAuthKitTestSupport`
+/// (which can't depend on it without a circular dependency). This
+/// conditional conformance plus the type alias below reproduce the original
+/// concrete, non-generic `FakeTokenRefresher` every call site in this
+/// target already uses (`FakeTokenRefresher { _ in fatalError(...) }`) —
+/// fixing `Tokens` via the alias, rather than leaving every call site to
+/// infer it from a `fatalError`-bodied closure alone, is what keeps those
+/// call sites unchanged (a bare generic `FakeTokenRefresher { ... }` call
+/// can't infer `Tokens` from a closure whose body is just `fatalError(...)`).
+extension OAuthKitTestSupport.FakeTokenRefresher: GoogleTokenRefreshing where Tokens == GoogleOAuthTokens {}
+typealias FakeTokenRefresher = OAuthKitTestSupport.FakeTokenRefresher<GoogleOAuthTokens>
 
-    init(outcome: Outcome) {
-        self.outcome = outcome
-    }
-
-    func run(authorizationURL: URL, callbackURLScheme: String) async throws -> URL {
-        lastAuthorizationURL = authorizationURL
-        lastCallbackURLScheme = callbackURLScheme
-        switch outcome {
-        case .callback(let url): return url
-        case .failure(let error): throw error
-        }
-    }
-}
-
-/// A trivial in-memory `RefreshTokenStoring` — see that protocol's doc
-/// comment for why tests never exercise the real Keychain-backed
-/// `KeychainRefreshTokenStore`. `RefreshTokenStoring`'s methods are
-/// synchronous (matching `KeychainRefreshTokenStore`'s synchronous
-/// `Security` framework calls), so a plain lock-protected class is enough —
-/// no actor hop, no risk of the async-bridging deadlocks a semaphore-based
-/// actor wrapper could hit on the cooperative thread pool.
-final class FakeRefreshTokenStore: RefreshTokenStoring, @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [String: String] = [:]
-    private(set) var writeCount = 0
-    private(set) var deleteCount = 0
-
-    func write(_ refreshToken: String, accountId: String) throws {
-        lock.lock(); defer { lock.unlock() }
-        storage[accountId] = refreshToken
-        writeCount += 1
-    }
-
-    func read(accountId: String) throws -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return storage[accountId]
-    }
-
-    func delete(accountId: String) throws {
-        lock.lock(); defer { lock.unlock() }
-        storage[accountId] = nil
-        deleteCount += 1
-    }
-
-    func seed(_ refreshToken: String, accountId: String) {
-        lock.lock(); defer { lock.unlock() }
-        storage[accountId] = refreshToken
-    }
-
-    func currentValue(accountId: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return storage[accountId]
-    }
-}
-
-/// A closure-backed `GoogleTokenRefreshing` fake — lets `TokenStoreTests`
-/// script exactly what a `refresh(refreshToken:)` call should return/throw
-/// per invocation, without any `URLSession`/PKCE machinery.
-final class FakeTokenRefresher: GoogleTokenRefreshing, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _refreshCallCount = 0
-    var refreshCallCount: Int {
-        lock.withLock { _refreshCallCount }
-    }
-
-    var handler: @Sendable (String) async throws -> GoogleOAuthTokens
-
-    init(handler: @escaping @Sendable (String) async throws -> GoogleOAuthTokens) {
-        self.handler = handler
-    }
-
-    func refresh(refreshToken: String) async throws -> GoogleOAuthTokens {
-        lock.withLock { _refreshCallCount += 1 }
-        return try await handler(refreshToken)
-    }
-}
-
-/// A `URLProtocol` stub (plan: "ローカル HTTP スタブ (URLProtocol モック)") that
-/// dispatches each request to a per-test handler closure — used to script
-/// the token endpoint's/userinfo endpoint's responses in
-/// `GoogleOAuthClientTests` without touching real Google servers.
-final class StubURLProtocol: URLProtocol {
-    static let lock = NSLock()
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        StubURLProtocol.lock.lock()
-        let handler = StubURLProtocol.handler
-        StubURLProtocol.lock.unlock()
-
-        guard let handler else {
-            client?.urlProtocol(self, didFailWithError: URLError(.unknown))
-            return
-        }
-        do {
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch {
-            client?.urlProtocol(self, didFailWithError: error)
-        }
-    }
-
-    override func stopLoading() {}
-
-    static func makeSession() -> URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [StubURLProtocol.self]
-        return URLSession(configuration: configuration)
-    }
-}
-
-/// A second, independent `URLProtocol` stub — same shape as `StubURLProtocol`
-/// above, deliberately **not shared** with it. `StubURLProtocol.handler` is a
-/// single static var; `GoogleOAuthClientTests` and `GooglePeopleAvatarClientTests`
-/// both set/clear it per-test, and Swift Testing parallelizes test functions
-/// (including across different `@Suite`s in the same target) by default —
-/// two tests from the two different suites racing to set/read that one
-/// static produced real, reproducible cross-suite flakes (one test's request
-/// occasionally hit another test's handler, or a handler cleared by a
-/// `defer` mid-flight) when both suites used the same type. Giving
-/// `GooglePeopleAvatarClientTests` its own stub type with its own static
-/// `handler` removes the shared mutable state entirely, rather than trying
-/// to serialize two independently-`.serialized` suites against each other
-/// (Swift Testing's `.serialized` trait only orders a suite's own children,
-/// not other suites).
+/// A `URLProtocol` stub that dispatches each request to a per-test handler
+/// closure — used to script the token endpoint's/userinfo endpoint's
+/// responses in `GoogleOAuthClientTests` without touching real Google
+/// servers. Deliberately **not** the shared `OAuthKitTestSupport.StubURLProtocol`
+/// (used by `GoogleOAuthClientTests` itself) — this second, independent stub
+/// type exists solely for `GooglePeopleAvatarClientTests`. Swift Testing
+/// parallelizes test functions (including across different `@Suite`s in the
+/// same target) by default — two tests from the two different suites racing
+/// to set/read one shared static `handler` produced real, reproducible
+/// cross-suite flakes (one test's request occasionally hit another test's
+/// handler, or a handler cleared by a `defer` mid-flight) when both suites
+/// used the same type. Giving `GooglePeopleAvatarClientTests` its own stub
+/// type with its own static `handler` removes the shared mutable state
+/// entirely, rather than trying to serialize two independently-`.serialized`
+/// suites against each other (Swift Testing's `.serialized` trait only
+/// orders a suite's own children, not other suites).
 final class PeopleAPIStubURLProtocol: URLProtocol {
     static let lock = NSLock()
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?

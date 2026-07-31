@@ -1,9 +1,11 @@
 import Foundation
+import OAuthKit
 
 /// Mirrors `GoogleOAuth.GoogleOAuthError` — see that type's doc comment for
 /// the overall rationale (one flat enum since every call site needs the
-/// same small set of UI decisions).
-public enum MicrosoftOAuthError: Error, Equatable, Sendable {
+/// same small set of UI decisions), including why this conforms to
+/// `OAuthKit.OAuthFlowError`.
+public enum MicrosoftOAuthError: Error, Equatable, Sendable, OAuthFlowError {
     case userCancelled
     case stateMismatch
     case missingAuthorizationCode

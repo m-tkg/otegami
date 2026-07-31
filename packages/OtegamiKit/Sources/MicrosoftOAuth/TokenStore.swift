@@ -1,111 +1,68 @@
 import Foundation
+import OAuthKit
 
-/// Mirrors `GoogleOAuth.TokenStoreError`.
-public enum TokenStoreError: Error, Equatable, Sendable {
-    case missingRefreshToken
-    case reauthenticationRequired
-}
+/// Mirrors `OAuthKit.TokenStoreError` exactly — re-exported under
+/// `MicrosoftOAuth`'s own name so existing call sites
+/// (`MicrosoftOAuth.TokenStoreError.reauthenticationRequired`) need no
+/// changes.
+public typealias TokenStoreError = OAuthKit.TokenStoreError
+
+extension MicrosoftOAuthTokens: OAuthTokenRepresentable {}
 
 /// Owns Microsoft OAuth tokens for every connected Outlook/Office 365
-/// account — mirrors `GoogleOAuth.TokenStore` exactly (same refresh-window,
-/// same cache-then-refresh-then-cache shape, same `invalid_grant` →
-/// `.reauthenticationRequired` mapping). Kept as its own type (rather than
-/// making `GoogleOAuth.TokenStore` generic over a `TokenRefreshing`
-/// protocol and a token type) to keep `MicrosoftOAuth` fully independent of
-/// `GoogleOAuth` — see this package's `Package.swift` comment on the
-/// `MicrosoftOAuth` target.
+/// account. Mirrors `GoogleOAuth.TokenStore`'s own doc comment exactly: a
+/// thin, concrete wrapper around the shared
+/// `OAuthKit.TokenStore<MicrosoftOAuthTokens>` — the actual caching/
+/// refresh-window/invalid-grant bookkeeping lives there; this type only
+/// translates `MicrosoftTokenRefreshing` and `MicrosoftOAuthError.invalidGrant`
+/// into the plain closures the shared type takes, and defaults
+/// `refreshTokenStore` to this provider's own Keychain service string.
 public actor TokenStore {
-    private struct CachedAccessToken {
-        var value: String
-        var expiresAt: Date
-    }
+    private let core: OAuthKit.TokenStore<MicrosoftOAuthTokens>
 
-    static let refreshWindow: TimeInterval = 5 * 60
-
-    private let refresher: any MicrosoftTokenRefreshing
-    private let refreshTokenStore: any RefreshTokenStoring
-    private let now: @Sendable () -> Date
-    private var cache: [String: CachedAccessToken] = [:]
-
+    /// `refreshTokenStore`'s default is this provider's own Keychain
+    /// service string — unchanged from before this consolidation
+    /// (`"com.mtkg.otegami.oauth-refresh-token.microsoft"`, deliberately
+    /// distinct from `GoogleOAuth`'s). Passed explicitly here (rather than
+    /// as `KeychainRefreshTokenStore`'s own default argument, which it no
+    /// longer has now that the type is shared with `GoogleOAuth`) so
+    /// Microsoft accounts keep resolving their existing Keychain items and
+    /// never collide with Google's — changing this string would force every
+    /// user to re-authenticate.
     public init(
         refresher: any MicrosoftTokenRefreshing,
-        refreshTokenStore: any RefreshTokenStoring = KeychainRefreshTokenStore(),
+        refreshTokenStore: any RefreshTokenStoring = KeychainRefreshTokenStore(service: "com.mtkg.otegami.oauth-refresh-token.microsoft"),
         now: @escaping @Sendable () -> Date = Date.init
     ) {
-        self.refresher = refresher
-        self.refreshTokenStore = refreshTokenStore
-        self.now = now
+        core = OAuthKit.TokenStore(
+            refreshTokenStore: refreshTokenStore,
+            isInvalidGrant: { ($0 as? MicrosoftOAuthError) == .invalidGrant },
+            now: now,
+            refresh: { refreshToken in try await refresher.refresh(refreshToken: refreshToken) }
+        )
     }
 
-    public func storeInitialTokens(_ tokens: MicrosoftOAuthTokens, accountId: String) throws {
-        cache[accountId] = CachedAccessToken(value: tokens.accessToken, expiresAt: tokens.expiresAt)
-        guard let refreshToken = tokens.refreshToken else { return }
-        try refreshTokenStore.write(refreshToken, accountId: accountId)
+    public func storeInitialTokens(_ tokens: MicrosoftOAuthTokens, accountId: String) async throws {
+        try await core.storeInitialTokens(tokens, accountId: accountId)
     }
 
     public func accessToken(for accountId: String) async throws -> String {
-        if let cached = cache[accountId], cached.expiresAt.timeIntervalSince(now()) > Self.refreshWindow {
-            return cached.value
-        }
-        let tokens = try await refreshAndCache(accountId: accountId)
-        return tokens.accessToken
+        try await core.accessToken(for: accountId)
     }
 
-    /// Diagnostic-only counterpart to `accessToken(for:)` — mirrors
-    /// `GoogleOAuth.TokenStore.diagnosticScope(for:)`. Not currently wired
-    /// into any UI (`AccountEditView`'s "権限の診断" display is Gmail-only
-    /// today), kept for parity/future use since it costs nothing extra to
-    /// mirror.
     public func diagnosticScope(for accountId: String) async throws -> String? {
-        let tokens = try await refreshAndCache(accountId: accountId)
-        return tokens.scope
+        try await core.diagnosticScope(for: accountId)
     }
 
-    private func refreshAndCache(accountId: String) async throws -> MicrosoftOAuthTokens {
-        guard let refreshToken = try refreshTokenStore.read(accountId: accountId) else {
-            throw TokenStoreError.missingRefreshToken
-        }
-
-        do {
-            let tokens = try await refresher.refresh(refreshToken: refreshToken)
-            cache[accountId] = CachedAccessToken(value: tokens.accessToken, expiresAt: tokens.expiresAt)
-            if let rotatedRefreshToken = tokens.refreshToken {
-                try refreshTokenStore.write(rotatedRefreshToken, accountId: accountId)
-            }
-            return tokens
-        } catch MicrosoftOAuthError.invalidGrant {
-            try? refreshTokenStore.delete(accountId: accountId)
-            cache[accountId] = nil
-            throw TokenStoreError.reauthenticationRequired
-        }
+    public func clearTokens(for accountId: String) async throws {
+        try await core.clearTokens(for: accountId)
     }
 
-    public func clearTokens(for accountId: String) throws {
-        cache[accountId] = nil
-        try refreshTokenStore.delete(accountId: accountId)
+    public func hasStoredRefreshToken(for accountId: String) async -> Bool {
+        await core.hasStoredRefreshToken(for: accountId)
     }
 
-    /// Mirrors `GoogleOAuth.TokenStore.hasStoredRefreshToken(for:)` — used
-    /// by `AccountCloudSync.LocalAccountDirectory.hasCredential` for a
-    /// cloud-discovered `.microsoft`-kind account, same rationale as
-    /// Google's.
-    public func hasStoredRefreshToken(for accountId: String) -> Bool {
-        (try? refreshTokenStore.read(accountId: accountId))?.isEmptyOrNil == false
-    }
-
-    /// Task #175 (push relay OAuth watches) — mirrors `GoogleOAuth
-    /// .TokenStore.rawRefreshToken(for:)` exactly; see that doc comment.
-    public func rawRefreshToken(for accountId: String) -> String? {
-        guard let token = try? refreshTokenStore.read(accountId: accountId), !token.isEmpty else { return nil }
-        return token
-    }
-}
-
-private extension Optional where Wrapped == String {
-    var isEmptyOrNil: Bool {
-        switch self {
-        case .none: return true
-        case .some(let value): return value.isEmpty
-        }
+    public func rawRefreshToken(for accountId: String) async -> String? {
+        await core.rawRefreshToken(for: accountId)
     }
 }

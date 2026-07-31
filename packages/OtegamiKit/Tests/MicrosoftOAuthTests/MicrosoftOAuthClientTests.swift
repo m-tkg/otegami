@@ -1,4 +1,6 @@
 import Foundation
+import OAuthKit
+import OAuthKitTestSupport
 import Testing
 @testable import MicrosoftOAuth
 
@@ -8,7 +10,7 @@ struct MicrosoftOAuthClientTests {
     private let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
 
     private func makeClient(
-        sessionRunner: any AuthorizationSessionRunning,
+        sessionRunner: any MicrosoftOAuth.AuthorizationSessionRunning,
         pkce: PKCE = PKCE(verifier: "fixed-verifier", challenge: "fixed-challenge"),
         state: String = "fixed-state"
     ) -> MicrosoftOAuthClient {

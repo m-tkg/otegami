@@ -1,4 +1,5 @@
 import Foundation
+import OAuthKit
 
 /// Fixed OAuth2 endpoints + per-build configuration (client id, scope) for
 /// Outlook.com/Office 365's Authorization Code + PKCE flow — mirrors

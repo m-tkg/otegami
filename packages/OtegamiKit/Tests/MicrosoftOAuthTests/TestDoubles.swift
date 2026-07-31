@@ -1,124 +1,31 @@
 import Foundation
+import OAuthKit
+import OAuthKitTestSupport
 @testable import MicrosoftOAuth
 
-/// Mirrors `GoogleOAuthTests.TestDoubles.swift` — see that file's doc
-/// comments for the full rationale of each fake (identical here).
-final class FakeAuthorizationFlow: AuthorizationSessionRunning, @unchecked Sendable {
-    enum Outcome {
-        case callback(URL)
-        case failure(Error)
-    }
+/// `FakeAuthorizationFlow`/`FakeRefreshTokenStore`/`FakeTokenRefresher`/
+/// `StubURLProtocol` now live in `OAuthKitTestSupport` (shared,
+/// byte-identical fakes with `GoogleOAuthTests`'s previous copies — see
+/// that target's `TestDoubles.swift` for the full rationale of each). Only
+/// two pieces of glue are needed here:
+/// - `FakeAuthorizationFlow` conforms to the shared
+///   `OAuthKit.AuthorizationSessionRunning` base, but `MicrosoftOAuthClient`
+///   expects this module's own local refinement (see that protocol's doc
+///   comment for why it's a refinement, not a type alias).
+/// - `OAuthKitTestSupport.FakeTokenRefresher<Tokens>` is generic (since
+///   `MicrosoftTokenRefreshing` lives in this package, not
+///   `OAuthKitTestSupport`); fixing `Tokens` via a local type alias
+///   (rather than leaving every call site to infer it) is what keeps this
+///   target's existing `FakeTokenRefresher { _ in fatalError(...) }` call
+///   sites unchanged — a bare generic call can't infer `Tokens` from a
+///   closure whose body is just `fatalError(...)`.
+///
+/// `StubURLProtocol`/`FakeRefreshTokenStore` need no such glue — a plain
+/// `URLProtocol` subclass has no "redundant conformance" concern, and
+/// `RefreshTokenStoring` is already the same shared protocol both providers
+/// use (see `MicrosoftOAuth.RefreshTokenStoring`'s doc comment) — so this
+/// target uses `OAuthKitTestSupport`'s copies of both directly.
+extension FakeAuthorizationFlow: MicrosoftOAuth.AuthorizationSessionRunning {}
 
-    var outcome: Outcome
-    private(set) var lastAuthorizationURL: URL?
-    private(set) var lastCallbackURLScheme: String?
-
-    init(outcome: Outcome) {
-        self.outcome = outcome
-    }
-
-    func run(authorizationURL: URL, callbackURLScheme: String) async throws -> URL {
-        lastAuthorizationURL = authorizationURL
-        lastCallbackURLScheme = callbackURLScheme
-        switch outcome {
-        case .callback(let url): return url
-        case .failure(let error): throw error
-        }
-    }
-}
-
-final class FakeRefreshTokenStore: RefreshTokenStoring, @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [String: String] = [:]
-    private(set) var writeCount = 0
-    private(set) var deleteCount = 0
-
-    func write(_ refreshToken: String, accountId: String) throws {
-        lock.lock(); defer { lock.unlock() }
-        storage[accountId] = refreshToken
-        writeCount += 1
-    }
-
-    func read(accountId: String) throws -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return storage[accountId]
-    }
-
-    func delete(accountId: String) throws {
-        lock.lock(); defer { lock.unlock() }
-        storage[accountId] = nil
-        deleteCount += 1
-    }
-
-    func seed(_ refreshToken: String, accountId: String) {
-        lock.lock(); defer { lock.unlock() }
-        storage[accountId] = refreshToken
-    }
-
-    func currentValue(accountId: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return storage[accountId]
-    }
-}
-
-final class FakeTokenRefresher: MicrosoftTokenRefreshing, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _refreshCallCount = 0
-    var refreshCallCount: Int {
-        lock.withLock { _refreshCallCount }
-    }
-
-    var handler: @Sendable (String) async throws -> MicrosoftOAuthTokens
-
-    init(handler: @escaping @Sendable (String) async throws -> MicrosoftOAuthTokens) {
-        self.handler = handler
-    }
-
-    func refresh(refreshToken: String) async throws -> MicrosoftOAuthTokens {
-        lock.withLock { _refreshCallCount += 1 }
-        return try await handler(refreshToken)
-    }
-}
-
-/// `URLProtocol` stub — mirrors `GoogleOAuthTests.StubURLProtocol` (its own
-/// doc comment explains why `GooglePeopleAvatarClientTests` needed a
-/// *second*, independent stub type rather than sharing one: Swift Testing
-/// parallelizes test functions, and two suites racing on one static
-/// `handler` produced real flakes). `MicrosoftOAuthTests` is a separate
-/// target from `GoogleOAuthTests` already (so there's no cross-target
-/// static to share even if desired), but this type gets its own name here
-/// regardless, matching that established pattern.
-final class StubURLProtocol: URLProtocol {
-    static let lock = NSLock()
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        StubURLProtocol.lock.lock()
-        let handler = StubURLProtocol.handler
-        StubURLProtocol.lock.unlock()
-
-        guard let handler else {
-            client?.urlProtocol(self, didFailWithError: URLError(.unknown))
-            return
-        }
-        do {
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch {
-            client?.urlProtocol(self, didFailWithError: error)
-        }
-    }
-
-    override func stopLoading() {}
-
-    static func makeSession() -> URLSession {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [StubURLProtocol.self]
-        return URLSession(configuration: configuration)
-    }
-}
+extension OAuthKitTestSupport.FakeTokenRefresher: MicrosoftTokenRefreshing where Tokens == MicrosoftOAuthTokens {}
+typealias FakeTokenRefresher = OAuthKitTestSupport.FakeTokenRefresher<MicrosoftOAuthTokens>

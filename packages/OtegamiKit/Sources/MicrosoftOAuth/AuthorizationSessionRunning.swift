@@ -1,9 +1,11 @@
 import Foundation
+import OAuthKit
 
-/// Mirrors `GoogleOAuth.AuthorizationSessionRunning` — abstracts "present
-/// the authorization URL in a web browser and wait for the callback
-/// redirect" so `MicrosoftOAuthClientTests` can inject a fake flow instead
-/// of real `ASWebAuthenticationSession` UI.
-public protocol AuthorizationSessionRunning: Sendable {
-    func run(authorizationURL: URL, callbackURLScheme: String) async throws -> URL
-}
+/// `MicrosoftOAuth`'s own `AuthorizationSessionRunning` — mirrors
+/// `GoogleOAuth.AuthorizationSessionRunning` exactly: a zero-extra-requirement
+/// refinement of `OAuthKit.AuthorizationSessionRunning` rather than a plain
+/// type alias to it, so this stays a distinct nominal protocol from
+/// `GoogleOAuth`'s copy (see `OAuthKit.AuthorizationSessionRunning`'s doc
+/// comment for why — `NotificationService`'s
+/// `UnreachableAuthorizationSessionRunner` conforms to both simultaneously).
+public protocol AuthorizationSessionRunning: OAuthKit.AuthorizationSessionRunning {}

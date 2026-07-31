@@ -1,10 +1,18 @@
 import Foundation
+import OAuthKit
 
 /// Errors surfaced by `GoogleOAuthClient`/`TokenStore`. Kept as one flat
 /// enum (rather than per-type errors) since every call site that catches
 /// one of these needs to make the same small set of UI decisions
 /// (transient failure vs. "sign in again").
-public enum GoogleOAuthError: Error, Equatable, Sendable {
+///
+/// Conforms to `OAuthKit.OAuthFlowError` so the shared
+/// `OAuthKit.ASWebAuthenticationSessionRunner<GoogleOAuthError>` can throw
+/// `.userCancelled`/`.missingAuthorizationCode` without OAuthKit needing to
+/// know this type — the two cases already exist below and satisfy the
+/// protocol's `static var` requirements as-is (a no-payload enum case is a
+/// valid witness for a same-named `static var` requirement).
+public enum GoogleOAuthError: Error, Equatable, Sendable, OAuthFlowError {
     /// The user dismissed/cancelled the `ASWebAuthenticationSession` sheet.
     /// Not a failure worth surfacing as an error banner — the caller should
     /// just return to the account-type picker.

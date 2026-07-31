@@ -1,4 +1,5 @@
 import Foundation
+import OAuthKit
 
 /// Fixed OAuth2 endpoints + per-build configuration (client id, scope) for
 /// Gmail's Authorization Code + PKCE flow. Kept as its own value type

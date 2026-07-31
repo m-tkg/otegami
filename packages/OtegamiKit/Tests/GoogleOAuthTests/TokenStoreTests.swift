@@ -1,4 +1,5 @@
 import Foundation
+import OAuthKitTestSupport
 import Testing
 @testable import GoogleOAuth
 

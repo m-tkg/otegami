@@ -6,6 +6,11 @@ import Foundation
 /// でテスト"). Kept as a pure value type with no dependency on
 /// `AuthenticationServices`/`URLSession` so `PKCETests` can assert against
 /// known vectors without touching the network or a web view.
+///
+/// Shared by `GoogleOAuth`/`MicrosoftOAuth` (moved here from each package
+/// during the OAuthKit consolidation) — the PKCE algorithm itself (RFC 7636)
+/// has nothing provider-specific about it, so both `GoogleOAuthClient` and
+/// `MicrosoftOAuthClient` use this same type via `import OAuthKit`.
 public struct PKCE: Sendable, Equatable {
     /// The `code_verifier` sent at token-exchange time — a high-entropy
     /// random string, 43–128 characters of `[A-Za-z0-9-._~]` per RFC 7636
@@ -42,8 +47,12 @@ public struct PKCE: Sendable, Equatable {
 
     /// RFC 4648 §5 base64url, no padding — both the verifier's own encoding
     /// and its SHA-256 challenge use this, per RFC 7636 §4.2's
-    /// `BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))`.
-    static func base64URLEncode(_ data: Data) -> String {
+    /// `BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))`. `public` (rather
+    /// than the pre-consolidation `internal`) because
+    /// `GoogleOAuthClient.randomState()`/`MicrosoftOAuthClient.randomState()`
+    /// — in their own, now-separate modules — reuse this same base64url
+    /// encoding for the OAuth `state` parameter, not just for PKCE itself.
+    public static func base64URLEncode(_ data: Data) -> String {
         Data(data).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
