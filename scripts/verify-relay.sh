@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # M9: end-to-end verification of otegami-relay's IDLE watch pipeline
 # against a *real* IMAP server (dev/mailstack's Dovecot) — not a fake one.
-# Confirms the whole path actually works together: swift run OtegamiRelay
+# Confirms the whole path actually works together: go run ./cmd/otegami-relay
 # -> POST /v1/devices -> POST /v1/watches -> the relay opens a real IMAP
 # IDLE connection to Dovecot -> a new message injected via `doveadm save`
 # wakes that IDLE -> ConsolePushSender logs the push it would have sent,
 # with the right accountId. (FakeIMAPServer-driven unit coverage of the
 # IDLE/polling logic itself lives in
-# server/otegami-relay/Tests/OtegamiRelayTests/WatcherPoolTests.swift; this
+# server/otegami-relay-go/internal/watcher/pool_test.go; this
 # script is the "does it work against a real server" check the plan calls
 # for.)
 #
@@ -32,7 +32,7 @@ cd "$ROOT_DIR"
 
 RELAY_PORT="${RELAY_PORT:-8091}"
 TIMEOUT_SECS="${TIMEOUT_SECS:-30}"
-RELAY_DIR="server/otegami-relay"
+RELAY_DIR="server/otegami-relay-go"
 LOG_FILE="$(mktemp -t otegami-relay-verify.XXXXXX.log)"
 DB_FILE="$(mktemp -t otegami-relay-verify.XXXXXX.sqlite)"
 rm -f "$DB_FILE" # OtegamiRelay creates it; just need a unique path here
@@ -56,8 +56,8 @@ make mailstack-up
 sleep 3
 make mailstack-seed
 
-echo "==> building otegami-relay"
-(cd "$RELAY_DIR" && swift build)
+echo "==> building otegami-relay-go"
+(cd "$RELAY_DIR" && go build ./...)
 
 echo "==> starting otegami-relay on port $RELAY_PORT (log: $LOG_FILE)"
 RELAY_MASTER_KEY="$(openssl rand -base64 32)"
@@ -66,7 +66,7 @@ export RELAY_MASTER_KEY
   cd "$RELAY_DIR" && \
   RELAY_PORT="$RELAY_PORT" RELAY_DATABASE_PATH="$DB_FILE" \
   RELAY_ALLOW_PRIVATE_IMAP_HOSTS=1 RELAY_EXTRA_IMAP_PORTS=1143 \
-  swift run OtegamiRelay
+  go run ./cmd/otegami-relay
 ) >"$LOG_FILE" 2>&1 &
 RELAY_PID=$!
 

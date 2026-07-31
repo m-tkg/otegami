@@ -11,6 +11,8 @@ dev/mailstack/data/
 # otegami-relay (M9): local secrets, never committed.
 server/otegami-relay/.env
 server/otegami-relay/secrets/
+server/otegami-relay-go/.env
+server/otegami-relay-go/secrets/
 # scripts/deploy-ota.sh (OTA deploy target): per-developer, never committed.
 scripts/deploy-ota.local.sh
 # xcodegen-generated Info.plist (from the `info:` key in project.yml)

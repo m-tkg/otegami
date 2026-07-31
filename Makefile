@@ -9,6 +9,9 @@
 #   make server           build the otegami-relay server
 #   make server-test      run the otegami-relay server test suite
 #   make relay-docker     build the otegami-relay Docker image
+#   make relay-go         build the Go otegami-relay server
+#   make relay-go-test    run the Go otegami-relay server test suite
+#   make relay-go-docker  build the Go otegami-relay Docker image
 #   make mailstack-up     start the dev IMAP/SMTP mail stack (Dovecot + Mailpit)
 #   make mailstack-down   stop the dev mail stack
 #   make mailstack-seed   load sample messages into the dev mail stack
@@ -22,6 +25,7 @@ IOS_SIMULATOR ?= iPhone 17 Pro Max
 
 KIT_DIR := packages/OtegamiKit
 SERVER_DIR := server/otegami-relay
+RELAY_GO_DIR := server/otegami-relay-go
 MAILSTACK_DIR := dev/mailstack
 DIST_DIR := dist
 
@@ -45,6 +49,7 @@ MAC_SIGNING_FLAGS :=
 endif
 
 .PHONY: all mac mac-app ios ios-device app-project test check-localization server server-test relay-docker \
+	relay-go relay-go-test relay-go-docker \
 	mailstack-up mailstack-down mailstack-seed deploy-ota clean
 
 all: mac ios test
@@ -131,6 +136,15 @@ server-test:
 # doc comment for why (Package.swift depends on ../../packages/OtegamiKit).
 relay-docker:
 	docker build -f $(SERVER_DIR)/Dockerfile -t otegami-relay .
+
+relay-go:
+	cd $(RELAY_GO_DIR) && go build ./...
+
+relay-go-test:
+	cd $(RELAY_GO_DIR) && go test ./...
+
+relay-go-docker:
+	docker build -f $(RELAY_GO_DIR)/Dockerfile -t otegami-relay-go $(RELAY_GO_DIR)
 
 mailstack-up:
 	cd $(MAILSTACK_DIR) && docker compose up -d
