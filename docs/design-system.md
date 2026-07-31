@@ -371,7 +371,7 @@ Apple Foundation Models によるオンデバイス翻訳 (英語→日本語の
    も CI で落ちうる。ルール: `body` を短く保つ、`ForEach`/`List` の行の
    中身は独立した `View` 型に切り出す、タップハンドラは名前付きメソッド
    参照にする。詳細な事例と教訓は
-   [`docs/ci.md`](ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト-2026-07-25)
+   [`docs/ci.md`](ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト)
    と [CONTRIBUTING.md](../CONTRIBUTING.md#a-note-on-swiftui-views-and-ci)
    を参照。
 

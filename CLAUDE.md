@@ -32,7 +32,7 @@ iOS UI の構造・情報設計は [`docs/design-system.md`](docs/design-system.
 
 ## ビルド・テスト
 
-[CONTRIBUTING.md](CONTRIBUTING.md)/[README.md](README.md#building) が
+[CONTRIBUTING.md](CONTRIBUTING.md)/[README_ja.md](README_ja.md#開発を始める) が
 正。要点だけ:
 
 ```sh
