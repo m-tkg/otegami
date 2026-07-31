@@ -31,6 +31,11 @@ final class AppEnvironment {
     let database: AppDatabase
     let syncCoordinator: SyncCoordinator
     let credentialStore: KeychainCredentialStore
+    /// Task #200 (Composer 宛先サジェスト) — see `RecipientSuggestionSource`'s
+    /// doc comment for sourcing/caching. One shared instance so its cache
+    /// (built from a scan of message history) is reused across every
+    /// composer session in this launch, not rebuilt from scratch each time.
+    let recipientSuggestionSource: RecipientSuggestionSource
     /// Task #56 — see `OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`'s doc
     /// comment (inside the `OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE` block
     /// below). Non-nil only when that env var was set at launch; `nil` in
@@ -400,6 +405,7 @@ final class AppEnvironment {
             database = inMemory
         }
         self.database = database
+        self.recipientSuggestionSource = RecipientSuggestionSource(dbWriter: database.dbWriter)
 
         // Moved ahead of the duplicate-account merge below (it used to be
         // constructed much further down, alongside `syncCoordinator`) so

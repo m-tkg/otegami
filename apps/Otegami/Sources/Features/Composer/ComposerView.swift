@@ -59,6 +59,14 @@ struct ComposerView: View {
     /// (mailto: prefill, immediate send). `PendingSendDraftSnapshot` (C7
     /// cancelled-send restore) *does* carry it, since that's in-memory only.
     @State private var bccText = ""
+    /// Task #200 (Composer 宛先サジェスト): raw history for the To/Cc/Bcc
+    /// suggestion dropdowns (`RecipientInputField`) — loaded once per
+    /// compose session (`loadRecipientSuggestions()`, one of `body`'s
+    /// `.task` modifiers) from `environment.recipientSuggestionSource`,
+    /// which caches the underlying message-history scan across sessions.
+    /// Starts empty so opening the composer never waits on it; suggestions
+    /// simply have nothing to show until it lands.
+    @State private var recipientOccurrences: [RecipientOccurrence] = []
     /// 2026-07-29デザイン指示 (iOSフラットデザイン化): the iOS "宛先" row's
     /// "Cc: Bcc:" ピルボタンをタップした結果 — `true`になった後は元に戻らない
     /// (一度展開したCc/Bcc行を再び隠す操作はない、他のメールクライアントの
@@ -355,6 +363,7 @@ struct ComposerView: View {
                 .accessibilityIdentifier("composer.keepEditingButton")
         }
         .task { await prepare() }
+        .task { await loadRecipientSuggestions() }
         .task(id: selectedAccountId) { await loadAvailableTemplates() }
         .task(id: selectedAccountId) { await loadAvailableSignatures() }
         .fileImporter(isPresented: $isImportingFile, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
@@ -470,15 +479,18 @@ struct ComposerView: View {
 
     private var addressSection: some View {
         Section {
-            TextField("宛先:", text: $toText, prompt: Text("カンマ区切りで複数指定可"))
-                .textFieldAutocapitalizationNone()
-                .accessibilityIdentifier("composer.to")
-            TextField("Cc:", text: $ccText, prompt: Text("カンマ区切りで複数指定可"))
-                .textFieldAutocapitalizationNone()
-                .accessibilityIdentifier("composer.cc")
-            TextField("Bcc:", text: $bccText, prompt: Text("カンマ区切りで複数指定可"))
-                .textFieldAutocapitalizationNone()
-                .accessibilityIdentifier("composer.bcc")
+            RecipientInputField(
+                style: .labeled("宛先:"), text: $toText, prompt: Text("カンマ区切りで複数指定可"),
+                accessibilityIdentifier: "composer.to", occurrences: recipientOccurrences
+            )
+            RecipientInputField(
+                style: .labeled("Cc:"), text: $ccText, prompt: Text("カンマ区切りで複数指定可"),
+                accessibilityIdentifier: "composer.cc", occurrences: recipientOccurrences
+            )
+            RecipientInputField(
+                style: .labeled("Bcc:"), text: $bccText, prompt: Text("カンマ区切りで複数指定可"),
+                accessibilityIdentifier: "composer.bcc", occurrences: recipientOccurrences
+            )
         }
     }
 
@@ -635,6 +647,15 @@ struct ComposerView: View {
         }
     }
 
+    /// Task #200: one `db.read` (via `RecipientSuggestionSource`'s own
+    /// cache) per compose session, not per keystroke — see
+    /// `recipientOccurrences`'s doc comment and `RecipientSuggestionSource`
+    /// itself for why that's cheap enough to just await here.
+    private func loadRecipientSuggestions() async {
+        let ownAddresses = Set(environment.accounts.map { $0.email.lowercased() })
+        recipientOccurrences = await environment.recipientSuggestionSource.occurrences(excludingAddresses: ownAddresses)
+    }
+
     private func loadAvailableTemplates() async {
         guard let selectedAccountId else {
             availableTemplates = []
@@ -685,7 +706,8 @@ struct ComposerView: View {
     // カード的なグループ化をやめ、背景に直接フィールドが並ぶミニマムな
     // フラットデザインへ。区切りは`.otegamiRowDivider()`（罫線1本）か余白の
     // みで、見出しラベルは基本置かない — 差出人/宛先/Cc/Bccだけは「ラベル:
-    // フィールド」という最小限のインライン表記 (`ComposerFieldRow`) を使う。
+    // フィールド」という最小限のインライン表記 (宛先/Cc/Bccは Task #200
+    // で`RecipientInputField`の`.flat`スタイルへ置き換え済み) を使う。
     // 件名/本文はプレースホルダのみで、ラベル自体を出さない。
     //
     // このセクション全体を1つの`ScrollView`にまとめて`body`に直接書くと
@@ -838,20 +860,24 @@ struct ComposerView: View {
     /// `isShowingCcBcc`の doc comment 参照。
     private var flatRecipientsSection: some View {
         VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
-            HStack(spacing: OtegamiSpacing.sm) {
-                Text("宛先:")
-                    .font(OtegamiFont.subheadline())
-                    .foregroundStyle(OtegamiColor.inkSecondary)
-                TextField("", text: $toText)
-                    .textFieldAutocapitalizationNone()
-                    .accessibilityIdentifier("composer.to")
-                if !isShowingCcBcc {
-                    ComposerCcBccPillButton { isCcBccExpandedByUser = true }
+            RecipientInputField(
+                style: .flat("宛先:"), text: $toText,
+                accessibilityIdentifier: "composer.to", occurrences: recipientOccurrences,
+                trailing: {
+                    if !isShowingCcBcc {
+                        ComposerCcBccPillButton { isCcBccExpandedByUser = true }
+                    }
                 }
-            }
+            )
             if isShowingCcBcc {
-                ComposerFieldRow(label: "Cc:", text: $ccText, accessibilityIdentifier: "composer.cc")
-                ComposerFieldRow(label: "Bcc:", text: $bccText, accessibilityIdentifier: "composer.bcc")
+                RecipientInputField(
+                    style: .flat("Cc:"), text: $ccText,
+                    accessibilityIdentifier: "composer.cc", occurrences: recipientOccurrences
+                )
+                RecipientInputField(
+                    style: .flat("Bcc:"), text: $bccText,
+                    accessibilityIdentifier: "composer.bcc", occurrences: recipientOccurrences
+                )
             }
         }
         .otegamiRowDivider()
@@ -1946,28 +1972,6 @@ private struct AttachmentRow: View {
             }
         }
         .accessibilityIdentifier("composer.attachment.\(attachment.id)")
-    }
-}
-
-/// 2026-07-29デザイン指示: 宛先行の「ラベル: フィールド」という最小限の
-/// インライン表記 — Cc/Bcc両方に使う小さな共通行。`accessibilityIdentifier`
-/// は行全体ではなく`TextField`自体に付ける（既存のUITestが
-/// `app.textFields["composer.cc"]`のように`textFields`経由でクエリする
-/// ため、`HStack`側に付けても見つからない）。
-private struct ComposerFieldRow: View {
-    let label: String
-    @Binding var text: String
-    let accessibilityIdentifier: String
-
-    var body: some View {
-        HStack(spacing: OtegamiSpacing.sm) {
-            Text(label)
-                .font(OtegamiFont.subheadline())
-                .foregroundStyle(OtegamiColor.inkSecondary)
-            TextField("", text: $text)
-                .textFieldAutocapitalizationNone()
-                .accessibilityIdentifier(accessibilityIdentifier)
-        }
     }
 }
 

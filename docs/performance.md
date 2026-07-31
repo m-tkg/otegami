@@ -203,3 +203,52 @@ account2: 2万通・`assignAllUnthreaded` で一括スレッド化」という�
 
 10万通シードした DB に対して dev ビルドを起動し、統合Inbox一覧を
 スクロールしても目視でカクつきが無いことを確認済み。
+
+## Task #200: Composer 宛先サジェストの性能実測
+
+`RecipientHistoryQuery`(`packages/OtegamiKit/Sources/OtegamiStore/`)が
+`message`テーブルの`fromAddresses`/`toAddresses`/`ccAddresses`(JSON列)
+を最新`scanLimit`件だけデコードして`RecipientOccurrence`に平坦化し、
+`RecipientSuggestionEngine`(`OtegamiCore`、DB非依存の純粋関数)がキー
+ストロークのたびにそれを集計・ランキング・絞り込みする、という2段構成
+(詳細は`docs/design-system.md`「Task #200」節)。計測は専用の opt-in
+テストで行った:
+
+```sh
+cd packages/OtegamiKit
+OTEGAMI_PERF_TEST=1 swift test --filter RecipientHistoryQueryPerformanceTests
+```
+
+**データセット**: 5万通、送受信相手300人分の多様性、5件に1件はCcも
+付与、全通の`to`に自分自身のアドレスを含める(実際の受信箱同様、
+`excludingAddresses`の除外コストも計測に含めるため)。
+
+**結果** (Apple M3 Pro、実ファイル`DatabasePool`):
+
+| `scanLimit` | `RecipientHistoryQuery.occurrences()` | 得られたoccurrences数 |
+|---|---|---|
+| 1,000 | 55.6ms | 1,200 |
+| **3,000 (採用した既定値)** | **83.5ms** | 3,600 |
+| 10,000 | 202.9ms | 12,000 |
+
+`RecipientSuggestionEngine.suggestions()`(3,600件のoccurrencesに対する
+キーストローク1回分の集計・ランキング・絞り込み): **3.3ms**。
+
+**設計への反映**:
+
+- `RecipientSuggestionSource.defaultScanLimit = 3000`。83.5msは「作成
+  画面を開いた瞬間に1回だけ」発生するコストで(`RecipientSuggestionSource`
+  がコンポーズ画面のセッションを跨いで結果をキャッシュする — 詳細は
+  同型のdoc comment)、キーストロークのたびには走らない。3,000件は
+  よほどメールが多い環境でも直近半年〜1年程度の相関相手を十分カバー
+  できる規模と判断した。
+- キーストロークごとに実際に走るのは`RecipientSuggestionEngine
+  .suggestions()`側 (3.3ms) のみ — こちらは`OtegamiCoreTests`側でさらに
+  20,000件のoccurrencesという(このデータセットの相関相手数300人よりも
+  ずっと極端な)合成データでも実測しており(`RecipientSuggestionEngineTests
+  .performanceWithLargeHistory`)、キャッシュや差分計算などの追加の複雑さ
+  を導入する必要はないと判断した (「先回りして複雑にしない」方針)。
+- `scanLimit`を増やしても`RecipientHistoryQuery`のコストは(全表スキャン
+  にならず)ほぼ線形にしか増えない — `ORDER BY COALESCE(date,
+  internalDate) DESC LIMIT ?`が総メッセージ数に対して概ねフラットな
+  コストであることも同時に確認できた。

@@ -291,6 +291,19 @@ struct RootView: View {
                     presentComposer(.new)
                 }
             }
+            #else
+            // Task #200 (Composer 宛先サジェスト検証): macOS 版の同じ
+            // tap-free 直接遷移 — 上の iOS 版 `.task`と同じ起動引数、macOS
+            // 側は `presentComposer(_:)`が`openWindow(id: "composer", ...)`
+            // を呼ぶだけなので分岐は要らない。iOS 版と違い、それまで存在
+            // しなかった (macOS の検証はシミュレータ不調が無いぶん、通常は
+            // 実際に「作成」ボタンをクリックすれば足りていたため) —
+            // このタスクで初めて必要になった。
+            .task {
+                if ProcessInfo.processInfo.arguments.contains("-uitestsOpenComposerDirectly") {
+                    presentComposer(.new)
+                }
+            }
             #endif
             // Foreground IDLE (M3, plan: "アプリ active 中、INBOX を IDLE"):
             // start every account's IDLE loop (plus one immediate opQueue

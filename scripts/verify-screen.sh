@@ -339,6 +339,18 @@
 #                                       その下にグレーの読み取り専用プレビュー
 #                                       (署名本文) が出ること、本文欄自体には
 #                                       何も挿入されていないことの見た目確認用。
+#   composer-recipient-suggestion        Task #200 (Composer 宛先サジェスト):
+#                                       `OTEGAMI_UITEST_INSERT_FAKE_MULTI_
+#                                       MESSAGE_THREAD`で田中花子/佐藤次郎
+#                                       の履歴を投入した新規作成Composerを
+#                                       開く。タップ不要経路では宛先欄への
+#                                       入力自体はできないため、これは
+#                                       「候補ドロップダウンが出た状態」
+#                                       ではなく「空の宛先欄がレイアウト
+#                                       崩れなく描画されること」の確認用
+#                                       — 候補表示自体の確認は
+#                                       `docs/design-system.md`のTask #200節
+#                                       (macOSで実クリック確認済み) 参照。
 #
 # 上9つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目・
 # 9番目 (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応、8番目だけ
@@ -729,6 +741,18 @@ case "$SCENARIO" in
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1")
     launch_args+=("-uitestsOpenComposerDirectly" "-uitestsShowFormattingBarDirectly")
     default_out="composer-richtext-open.png"
+    ;;
+  composer-recipient-suggestion)
+    # Task #200 (Composer 宛先サジェスト): `OTEGAMI_UITEST_INSERT_FAKE_MULTI_MESSAGE_THREAD`
+    # (`AppEnvironment`のdoc comment) が挿入する田中花子/佐藤次郎の
+    # fromAddresses/toAddressesがそのまま`RecipientHistoryQuery`の材料に
+    # なる — 宛先欄が空の状態のスクリーンショット (タップ不要経路では
+    # フィールドへの入力そのものはできないため、候補ドロップダウンが
+    # 開いた状態は見せられない。macOS版はこのタスクで実際にクリック確認
+    # 済み、`docs/design-system.md`のTask #200節参照)。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_MULTI_MESSAGE_THREAD=1")
+    launch_args+=("-uitestsOpenComposerDirectly")
+    default_out="composer-recipient-suggestion.png"
     ;;
   composer-signature)
     # Task #162 (実機フィードバック「署名が本文に混ざって編集しづらい」):
