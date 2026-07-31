@@ -1,4 +1,4 @@
-# デフォルトのメールアプリ対応 (Task #48)
+# デフォルトのメールアプリ対応
 
 otegami を OS の「デフォルトのメールアプリ」に設定できるようにする対応の
 記録。仕組み、Apple への entitlement 申請手順、承認後の有効化手順、
@@ -82,8 +82,7 @@ xcrun simctl openurl booted 'mailto:a@otegami.test?to=b@otegami.test&cc=c@otegam
 作成画面が To に `a@otegami.test, b@otegami.test`、Cc に
 `c@otegami.test`、Bcc に `d@otegami.test`、件名に「mailtoテスト」、
 本文に「本文です」を入れた状態で開けば OK
-(`scripts/verify-ios-mailto.sh`/`OtegamiMailtoUITests` で自動検証済み —
-2026-07-28 実施、Simulator: iPhone 17 Pro Max)。
+(`scripts/verify-ios-mailto.sh`/`OtegamiMailtoUITests` で自動検証できる)。
 
 ## 2. `com.apple.developer.mail-client` entitlement (iOS/iPadOS)
 
@@ -127,8 +126,11 @@ provisioning profile の生成に失敗してビルド/署名が壊れる**
    で宣言していること (対応済み)、任意の宛先へ送信できること (対応済み)、
    任意の送信者からのメールを受信できること (対応済み — ユーザー制御の
    迷惑メールフィルタは許可されている)。
-3. 承認を待つ (Apple 側のリードタイムは案件による。参考:
-   [PENDING.md](../PENDING.md) に申請日/承認状況を記録する)。
+3. 承認を待つ (Apple 側のリードタイムは案件による)。**既知の制限**:
+   この entitlement は Apple の個別承認制であり、承認されるまで
+   `OTEGAMI_MAIL_CLIENT_ENTITLEMENT = YES` にした実機ビルドを配布する
+   ことはできない (Simulator ではフラグを立てるだけでローカルに動作
+   確認できる — 下記「動作確認」節参照)。
 
 ### 承認後の有効化手順
 
