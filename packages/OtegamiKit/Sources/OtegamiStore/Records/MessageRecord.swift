@@ -82,9 +82,9 @@ public struct MessageRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     public var snippet: String?
 
     /// ピン留め (E9): the single source of truth this app orders by — see
-    /// `AppDatabase`'s v16 migration doc comment for the full design
-    /// (local-only by default, optionally mirrored to/from IMAP `\Flagged`
-    /// per `PinSettingsStore.syncWithFlaggedKey`).
+    /// `AppDatabase`'s v16 migration doc comment for the full design. Task
+    /// #212: always mirrored to/from IMAP `\Flagged` (the former
+    /// `PinSettingsStore.syncWithFlaggedKey` opt-out toggle was removed).
     public var isPinnedLocal: Bool
 
     /// BCP-47 language code (e.g. `"en"`, `"ja"`) of the message body, set

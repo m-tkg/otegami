@@ -8,7 +8,9 @@ import SwiftUI
 /// 実機フィードバック第3弾 (I): 旧「その他」カテゴリからピン留めの
 /// フラグ連動設定・スレッド表示設定をここへ移設した — どちらも「一覧の
 /// 並び順/まとめ方」に関わる設定で、このカテゴリの既存項目 (プレビュー・
-/// スワイプ) と同じ「一覧をどう見せるか」の範疇にある。
+/// スワイプ) と同じ「一覧をどう見せるか」の範疇にある。ピン留めのフラグ
+/// 連動設定は Task #212 でトグルごと削除済み (常時 on の内部固定挙動へ
+/// 変更したため) — このカテゴリにはもう無い。
 struct MailListSettingsView: View {
     @AppStorage(ListDisplaySettingsStore.previewLineCountKey) private var previewLineCountRaw = ListDisplaySettingsStore.defaultPreviewLineCount.rawValue
     @AppStorage(ListDisplaySettingsStore.showAvatarKey) private var showAvatar = ListDisplaySettingsStore.defaultShowAvatar
@@ -27,7 +29,12 @@ struct MailListSettingsView: View {
     // ここでの宣言ごと撤去。
     // 実機フィードバック第3弾 (I) で旧「その他」から移設。
     @AppStorage(ListDisplaySettingsStore.threadingKey) private var isThreadingEnabled = ListDisplaySettingsStore.defaultThreading
-    @AppStorage(PinSettingsStore.syncWithFlaggedKey) private var pinSyncWithFlagged = false
+    // 「サーバーのフラグと連動」トグルは Task #212 (実機フィードバック
+    // 「サーバのフラグと連動は設定から消して、内部的には連動 on として
+    // 動いてほしい」) で削除 — ピン留めと IMAP `\Flagged` の連動は常時 on
+    // の内部固定挙動になったため、ここで選べる設定ではなくなった。保存
+    // キー (`pinning.syncWithFlagged`) は他所で参照していないため
+    // `PinSettingsStore`/`PinSettingsKeys`ごと撤去した。
     // Task #190: 「アカウントでグループ化」表示 (`AccountDigestView`) の
     // スワイプ/コンテキストメニュー一括操作の確認ダイアログ ON/OFF —
     // 下の`swipeSection`(D8 スワイプ割り当て) のすぐ下に置く、この設定と
@@ -144,15 +151,6 @@ struct MailListSettingsView: View {
                 .accessibilityIdentifier("settings.list.threadingToggle")
         } footer: {
             Text("ONで一覧を会話単位にまとめます。OFFにすると一覧がメール単位になります。")
-        }
-
-        Section {
-            Toggle("サーバーのフラグと連動", isOn: $pinSyncWithFlagged)
-                .accessibilityIdentifier("settings.pinSyncWithFlaggedToggle")
-        } header: {
-            Text("ピン留め")
-        } footer: {
-            Text("既定ではピン留めはこの端末・このアプリだけのローカルな印です。ONにすると、ピン留め/解除のたびに IMAP の \\Flagged フラグも更新し、他のメールクライアントでのフラグ操作も読み取ってピン留めに反映します。")
         }
     }
 

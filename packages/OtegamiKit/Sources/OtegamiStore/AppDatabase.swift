@@ -613,14 +613,18 @@ extension AppDatabase {
         // v16 (ピン留め): `message.isPinnedLocal` is the single source of
         // truth this app orders by — always updated the moment a user pins/
         // unpins a message (`MessageListView`/`ThreadDetailView`'s pin
-        // action), independent of whether IMAP `\Flagged` sync is on
-        // (`PinSettingsStore.syncWithFlaggedKey`, default off per the design
-        // decision: "既定はローカル独自のフラグ"). When that setting is on,
-        // `AccountSyncer.upsert` additionally mirrors the server's current
-        // `\Flagged` bit into this column on every resync (so another
-        // client's flag change surfaces here too), and the pin-toggle action
-        // itself also flips the IMAP flag via the existing `setFlags` opQueue
-        // path — see `PinSettingsStore`'s doc comment for the full design.
+        // action). `AccountSyncer.upsert` additionally mirrors the server's
+        // current `\Flagged` bit into this column on every resync (so
+        // another client's flag change surfaces here too), and the
+        // pin-toggle action itself also flips the IMAP flag via the
+        // existing `setFlags` opQueue path.
+        //
+        // Task #212 (実機フィードバック「サーバのフラグと連動は設定から
+        // 消して、内部的には連動 on として動いてほしい」): this used to be
+        // opt-in via a `PinSettingsStore.syncWithFlaggedKey` toggle (default
+        // off — "既定はローカル独自のフラグ"); that toggle and its
+        // Settings-UI row were removed, and the sync above is now
+        // unconditional.
         //
         // `thread.isPinned` is the OR-aggregate over its messages'
         // `isPinnedLocal` ("スレッド内の1通でもピン留めされたらそのスレッド自体が

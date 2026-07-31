@@ -82,8 +82,8 @@ enum ListDisplaySettingsStore {
     /// (アイコン形状のON/OFF切り替え+塗り背景) で「未読のみ表示」の隣に
     /// 置く。「フラグ付き」の実体はこのアプリの既存のピン留め表現
     /// (`ThreadRecord.isPinned`/`MessageRecord.isPinnedLocal` — ローカル
-    /// ピン+`PinSettingsStore.syncWithFlaggedKey`によるIMAP`\Flagged`との
-    /// 双方向同期、詳細はそれぞれのdoc comment参照) にそのまま乗る —
+    /// ピン+IMAP`\Flagged`との常時双方向同期 (Task #212)、詳細はそれぞれの
+    /// doc comment参照) にそのまま乗る —
     /// 新しい「フラグ」概念を別途作らず、一覧行のピンアイコン表示
     /// (`ThreadRowView`の`pin.fill`) と一致させる。`unreadOnlyKey`と同じく
     /// `unreadOnly`とAND併用可能 (`ThreadQuery`各関数の`pinnedOnly`

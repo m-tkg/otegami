@@ -1521,26 +1521,6 @@
         }
       }
     },
-    "既定ではピン留めはこの端末・このアプリだけのローカルな印です。ONにすると、ピン留め/解除のたびに IMAP の \\Flagged フラグも更新し、他のメールクライアントでのフラグ操作も読み取ってピン留めに反映します。": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "By default, pinning is a local marker for this app on this device only. When on, pinning/unpinning also updates the IMAP \\Flagged flag, and flag changes made in other mail clients are reflected back as pins."
-          }
-        }
-      }
-    },
-    "サーバーのフラグ (\\Flagged) と連動": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sync with Server Flag (\\Flagged)"
-          }
-        }
-      }
-    },
     "表示言語": {
       "localizations": {
         "en": {
@@ -4940,16 +4920,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Reorder Categories"
-          }
-        }
-      }
-    },
-    "サーバーのフラグと連動": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sync with Server Flag"
           }
         }
       }

@@ -699,8 +699,8 @@ public actor MailboxSyncer {
     /// .reindex` cares about, so skipping it here (unlike `upsert`, which
     /// always reindexes) is safe as long as this only ever runs for a
     /// genuinely flags-only diff. Mirrors `AccountSyncer.upsert`'s pin-sync
-    /// (E9) handling verbatim: `isPinnedLocal` only follows the server's
-    /// `\Flagged` bit when `PinSettingsKeys.syncWithFlaggedKey` is enabled.
+    /// (E9, Task #212 で常時オン化) handling verbatim: `isPinnedLocal`
+    /// always follows the server's `\Flagged` bit.
     /// A no-op if the row isn't found locally — possible only for a UID
     /// that arrived between step 1's new-mail fetch and this step's own
     /// snapshot of `localFlagsByUID` (a narrow race); that message simply
@@ -714,15 +714,10 @@ public actor MailboxSyncer {
         else { return }
 
         record.flagsRaw = flags.rawValue
-        var columns = [Column("flagsRaw"), Column("updatedAt")]
+        record.isPinnedLocal = flags.contains(.flagged)
         record.updatedAt = Date()
 
-        let pinSyncEnabled = UserDefaults.standard.bool(forKey: PinSettingsKeys.syncWithFlaggedKey)
-        if pinSyncEnabled {
-            record.isPinnedLocal = flags.contains(.flagged)
-            columns.append(Column("isPinnedLocal"))
-        }
-        try record.update(db, columns: columns)
+        try record.update(db, columns: [Column("flagsRaw"), Column("updatedAt"), Column("isPinnedLocal")])
 
         if let threadId = record.threadId {
             try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)

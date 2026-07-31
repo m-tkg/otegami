@@ -362,25 +362,22 @@ struct AccountDigestView: View {
     /// (`MessageListView.applyPinState`の複製、doc comment は同じ)。
     private func applyPinState(_ summary: ThreadSummary, pinning: Bool, accountId: String) async {
         guard let threadId = summary.thread.id else { return }
-        let syncEnabled = PinSettingsStore.isSyncWithFlaggedEnabled
         do {
             try await environment.database.dbWriter.write { db in
                 let messages = try ThreadQuery.actionTargets(for: summary, db: db)
                 for var message in messages {
                     guard message.isPinnedLocal != pinning else { continue }
                     message.isPinnedLocal = pinning
-                    if syncEnabled {
-                        if pinning {
-                            message.flags.insert(.flagged)
-                        } else {
-                            message.flags.remove(.flagged)
-                        }
+                    if pinning {
+                        message.flags.insert(.flagged)
+                    } else {
+                        message.flags.remove(.flagged)
                     }
                     message.updatedAt = Date()
                     try message.update(db)
                     // Task #120: same pending-relocation guard as
                     // `MessageListView.applyPinState(_:pinning:)`.
-                    guard syncEnabled, !message.isPendingRelocation,
+                    guard !message.isPendingRelocation,
                           let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
                     else { continue }
                     try OpQueue.enqueueSetFlags(
@@ -390,7 +387,7 @@ struct AccountDigestView: View {
                 }
                 try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
             }
-            if syncEnabled { await replayOpQueueSoon(accountId: accountId) }
+            await replayOpQueueSoon(accountId: accountId)
         } catch {
             // Best-effort, matching `MessageListView.applyPinState`.
         }

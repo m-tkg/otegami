@@ -62,15 +62,16 @@ final class OtegamiPinSwipeListDisplayUITests: XCTestCase {
         // 実機フィードバック第3弾 (I) 以降、これらのコントロールはすべて
         // 「メール一覧」カテゴリ1つにまとまっている — スワイプ/プロフィール
         // アイコン/プレビュー行数に加え、旧「その他」カテゴリにあった
-        // スレッド表示・ピン留め連動もここへ移設した
-        // (`AccountsListContent`の doc comment参照)。
+        // スレッド表示もここへ移設した (`AccountsListContent`の doc
+        // comment参照)。ピン留め連動 (`settings.pinSyncWithFlaggedToggle`)
+        // は Task #212 でトグルごと削除済み (常時 on の内部固定挙動へ変更
+        // したため、ここでの確認対象からも外した)。
         XCTAssertTrue(navigateToMailListSettingsCategory(in: app), "「メール一覧」カテゴリへの遷移に失敗した")
         XCTAssertTrue(app.buttons["settings.swipe.leadingShortPicker"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings.swipe.trailingLongPicker"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.switches["settings.list.showAvatarToggle"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["settings.list.previewLineCountPicker"].waitForExistence(timeout: 5))
         XCTAssertTrue(scrollSettingsUntilVisible(app.switches["settings.list.threadingToggle"], in: app))
-        XCTAssertTrue(scrollSettingsUntilVisible(app.switches["settings.pinSyncWithFlaggedToggle"], in: app))
 
         // Hold the screen up for the wrapping shell's mid-test screenshot.
         Thread.sleep(forTimeInterval: 3)

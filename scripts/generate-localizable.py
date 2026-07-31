@@ -253,9 +253,6 @@ translations = {
     "リンク": "Links",
     "メール本文内のリンクをタップしたときに、アプリ内のブラウザで開くか、端末のデフォルトブラウザで開くかを選べます。":
         "Choose whether tapping a link in a message opens it in the in-app browser or your device's default browser.",
-    "既定ではピン留めはこの端末・このアプリだけのローカルな印です。ONにすると、ピン留め/解除のたびに IMAP の \\Flagged フラグも更新し、他のメールクライアントでのフラグ操作も読み取ってピン留めに反映します。":
-        "By default, pinning is a local marker for this app on this device only. When on, pinning/unpinning also updates the IMAP \\Flagged flag, and flag changes made in other mail clients are reflected back as pins.",
-    "サーバーのフラグ (\\Flagged) と連動": "Sync with Server Flag (\\Flagged)",
     "表示言語": "Display Language",
     "アプリの表示言語を切り替えます。変更を反映するには、アプリを再起動してください。":
         "Switches the app's display language. Restart the app for the change to take effect.",
@@ -803,7 +800,6 @@ translations = {
     # those files just becomes this key — no edit to the owned files
     # needed to pick up the translation).
     "カテゴリの並び替え": "Reorder Categories",
-    "サーバーのフラグと連動": "Sync with Server Flag",
     # Task #190: 「アカウントでグループ化」表示の一括操作 (スワイプ/
     # コンテキストメニュー) の確認ダイアログ ON/OFF (`MailListSettingsView`)。
     "一括操作の前に確認する": "Confirm Before Bulk Actions",

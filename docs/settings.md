@@ -19,7 +19,7 @@ UI。iOS はハンバーガーメニュー →「設定」シート、macOS は 
 | 一般 | `GeneralSettingsView.swift` | iCloud 同期トグル、プッシュ通知 (Task #212 で移設) |
 | アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、デフォルトの送信アカウント |
 | メールビューア | `MailViewerSettingsView.swift` | リンクの開き方、削除/アーカイブ後の挙動、本文へのプロフィール画像表示、AI 機能 on/off、画像設定、HTML表示設定、フッターツールバーのカスタマイズへの入口 |
-| メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定、一覧に要約を出す、スレッド表示、ピン留めのフラグ連動 |
+| メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定、一覧に要約を出す、スレッド表示 |
 | メール作成 | `MailComposeSettingsView.swift` | テンプレート、署名テンプレート、送信キャンセルの猶予 |
 
 macOS は `OtegamiSettingsView` の「設定」タブが同じ `AccountsListContent`
@@ -240,11 +240,14 @@ on/off トグルは無く、**iOS の通知設定 (設定 → 通知 → otegami
 
 ## ピン留め
 
-`PinSettingsStore.swift`。iOS・macOS 共通。
-
-| 項目 | キー | 既定値 | 説明 |
-| --- | --- | --- | --- |
-| サーバーのフラグ (`\Flagged`) と連動 | `pinning.syncWithFlagged` | OFF | OFF の間、ピン留めは otegami だけのローカルな印。ON にすると、ピン留め/解除のたびに IMAP の `\Flagged` フラグも更新し、サーバー再同期のたびに現在の `\Flagged` を読み取ってピン留め状態に反映する (他クライアントでのフラグ操作も拾える)。 |
+iOS・macOS 共通。ピン留めは常に IMAP の `\Flagged` フラグと連動する
+(Task #212 — 実機フィードバック「サーバのフラグと連動は設定から消して、
+内部的には連動 on として動いてほしい」を受け、選択式のトグルだった設定
+項目を撤去し、常時 on の内部固定挙動にした。それ以前は `PinSettingsStore
+.swift`/`pinning.syncWithFlagged` という OFF 既定のトグルだったが、その
+UI・ストア・キーはすべて削除済み)。ピン留め/解除のたびに IMAP の
+`\Flagged` フラグも更新し、サーバー再同期のたびに現在の `\Flagged` を
+読み取ってピン留め状態に反映する (他クライアントでのフラグ操作も拾える)。
 
 ピン留めされたメール/スレッドは一覧の最上位に来る。スレッド内の1通でも
 ピン留めされていれば、スレッド自体が最上位になる。

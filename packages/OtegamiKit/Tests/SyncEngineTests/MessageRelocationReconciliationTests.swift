@@ -268,9 +268,20 @@ struct MessageRelocationReconciliationTests {
         let (threadId, pendingMessageId) = try await database.dbWriter.write { db -> (Int64, Int64) in
             var thread = ThreadRecord(accountId: account.id, lastMessageDate: date, messageCount: 1)
             try thread.insert(db)
+            // Task #212 (ピン留めとサーバーの `\Flagged` の常時連動化):
+            // `isPinnedLocal`単独でなく`.flagged`も一緒に立てておく —
+            // 常時連動下では`AccountSyncer.upsert`が毎回サーバーの
+            // `\Flagged`を`isPinnedLocal`へ無条件で反映するため、この
+            // fixture 自身がその不変条件 (ピンなら`.flagged`も立って
+            // いる) を満たしていないと、この後の再同期で
+            // `isPinnedLocal`が正規化されてしまい、このテストが検証
+            // したい「マージでローカル状態が引き継がれる」ことと無関係
+            // な理由で落ちる。
             var message = MessageRecord(
                 mailboxId: inboxId, uid: 5, messageId: sharedMessageId,
-                subject: "重複合流テスト", date: date, internalDate: date, threadId: thread.id,
+                subject: "重複合流テスト", date: date, internalDate: date,
+                flagsRaw: MessageFlags.flagged.rawValue,
+                threadId: thread.id,
                 isPinnedLocal: true
             )
             try message.insert(db)
@@ -318,10 +329,14 @@ struct MessageRelocationReconciliationTests {
         // pending row onto `uid: 42` here threw the uniqueness violation.
         let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
         let archiveInfo = MailboxInfo(path: "Archive", displayPath: "Archive", role: .archive, attributes: [])
+        // Task #212: `.flagged` set too (see the pinned fixture above's
+        // comment) — under always-on pin/flag sync, the server confirming
+        // this message is expected to also confirm the `\Flagged` bit that
+        // the earlier local pin's own `setFlags` op would have pushed.
         let realEnvelope = FetchedEnvelope(
             uid: 42, messageId: sharedMessageId, inReplyTo: nil, references: [],
             subject: "重複合流テスト", from: [], to: [], cc: [], bcc: [], replyTo: [],
-            date: date, internalDate: date, flags: [], size: 100
+            date: date, internalDate: date, flags: [.flagged], size: 100
         )
         let syncer = AccountSyncer(account: account, database: database) { config in
             FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
@@ -386,11 +401,21 @@ struct MessageRelocationReconciliationTests {
         // A second, leftover placeholder for the exact same message — the
         // "device already hit this bug before" leftover this task's
         // self-heal must clean up. Pinned, so the merge-forward is
-        // actually exercised on this branch too.
+        // actually exercised on this branch too. Task #212: `.flagged` set
+        // alongside `isPinnedLocal` (and the `realEnvelope` below also
+        // reports `.flagged`) — under always-on pin/flag sync,
+        // `AccountSyncer.upsert` unconditionally mirrors the server's
+        // `\Flagged` bit into `isPinnedLocal` on every resync, so this
+        // fixture has to satisfy that invariant itself or the post-merge
+        // resync would normalize `isPinnedLocal` back down for a reason
+        // unrelated to what this test is actually checking (the merge
+        // logic, not the resync's own flag-mirroring).
         let secondPendingId = try await database.dbWriter.write { db -> Int64 in
             var stale = MessageRecord(
                 mailboxId: archiveId, uid: -2, messageId: sharedMessageId,
-                subject: "多重仮配置行テスト", date: date, internalDate: date, threadId: threadId,
+                subject: "多重仮配置行テスト", date: date, internalDate: date,
+                flagsRaw: MessageFlags.flagged.rawValue,
+                threadId: threadId,
                 isPinnedLocal: true
             )
             try stale.insert(db)
@@ -402,7 +427,7 @@ struct MessageRelocationReconciliationTests {
         let realEnvelope = FetchedEnvelope(
             uid: 42, messageId: sharedMessageId, inReplyTo: nil, references: [],
             subject: "多重仮配置行テスト", from: [], to: [], cc: [], bcc: [], replyTo: [],
-            date: date, internalDate: date, flags: [], size: 100
+            date: date, internalDate: date, flags: [.flagged], size: 100
         )
         let syncer = AccountSyncer(account: account, database: database) { config in
             FakeIMAPSession(config: config, script: FakeIMAPSession.Script(

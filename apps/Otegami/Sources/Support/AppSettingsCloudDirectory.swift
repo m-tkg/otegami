@@ -61,11 +61,14 @@ import Foundation
 ///   this codebase uses is a launch environment variable/argument, never a
 ///   `UserDefaults` key, so none of them could end up in this allowlist by
 ///   accident in the first place.
-/// - **`CloudSyncSettingsStore.isEnabled`/`PinSettingsKeys`**: whether *this*
-///   device participates in cloud sync at all is itself a per-device choice
-///   (mirrors that store's own doc comment); pinned messages are a
-///   transient, per-device organizational aid with no obvious "same on
-///   every device" expectation.
+/// - **`CloudSyncSettingsStore.isEnabled`**: whether *this* device
+///   participates in cloud sync at all is itself a per-device choice
+///   (mirrors that store's own doc comment).
+/// - **旧 `PinSettingsKeys.syncWithFlaggedKey`**: Task #212 でこのトグル
+///   自体 (と裏の`PinSettingsStore`/`PinSettingsKeys`) を撤去し、ピン留め
+///   と IMAP `\Flagged` の連動を常時オンの内部固定挙動にしたため、そもそも
+///   同期するかどうかを選べる設定が存在しない (この allowlist に載せる/
+///   載せない以前の話)。
 /// - **Task #186's remaining device-local exclusions**: `PushSettingsStore`'s
 ///   device id/deviceSecret (already covered above); OS-level window/scene
 ///   restoration (macOS's own window-frame/sidebar-collapse persistence —

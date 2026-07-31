@@ -1075,16 +1075,13 @@ struct ThreadDetailView: View {
 
     private func applyPinState(pinning: Bool) async {
         guard let accountId else { return }
-        let syncEnabled = PinSettingsStore.isSyncWithFlaggedEnabled
         do {
             try await environment.database.dbWriter.write { db in
                 let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
                 for var message in msgs {
                     guard message.isPinnedLocal != pinning else { continue }
                     message.isPinnedLocal = pinning
-                    if syncEnabled {
-                        if pinning { message.flags.insert(.flagged) } else { message.flags.remove(.flagged) }
-                    }
+                    if pinning { message.flags.insert(.flagged) } else { message.flags.remove(.flagged) }
                     message.updatedAt = Date()
                     try message.update(db)
                     // Task #120: `message.isPendingRelocation` — see
@@ -1092,7 +1089,7 @@ struct ThreadDetailView: View {
                     // accepted-limitation rationale (no real server UID to
                     // enqueue a `setFlags` op against yet; the local write
                     // above still applies either way).
-                    guard syncEnabled, !message.isPendingRelocation,
+                    guard !message.isPendingRelocation,
                           let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
                     else { continue }
                     try OpQueue.enqueueSetFlags(
@@ -1102,7 +1099,7 @@ struct ThreadDetailView: View {
                 }
                 try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
             }
-            if syncEnabled { await replaySoon() }
+            await replaySoon()
         } catch {
             // Best-effort — the toolbar's pin state just doesn't flip.
         }
