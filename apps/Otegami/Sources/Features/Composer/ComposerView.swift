@@ -66,7 +66,7 @@ struct ComposerView: View {
     /// which caches the underlying message-history scan across sessions.
     /// Starts empty so opening the composer never waits on it; suggestions
     /// simply have nothing to show until it lands.
-    @State private var recipientOccurrences: [RecipientOccurrence] = []
+    @State var recipientOccurrences: [RecipientOccurrence] = []
     /// 2026-07-29デザイン指示 (iOSフラットデザイン化): the iOS "宛先" row's
     /// "Cc: Bcc:" ピルボタンをタップした結果 — `true`になった後は元に戻らない
     /// (一度展開したCc/Bcc行を再び隠す操作はない、他のメールクライアントの
@@ -117,11 +117,11 @@ struct ComposerView: View {
     /// `attributedBodyText`) was retired by Task #162 — signatures no
     /// longer touch the body at all, so there's no post-insertion cursor to
     /// place; see "MARK: - F 署名"'s doc comment.
-    @State private var bodySelectedRange = NSRange(location: 0, length: 0)
+    @State var bodySelectedRange = NSRange(location: 0, length: 0)
     /// Task #129: created once, handed to both `bodySection`'s
     /// `RichTextEditor` and its formatting bar — see
     /// `RichTextEditingController`'s doc comment.
-    @StateObject private var richTextEditingController = RichTextEditingController()
+    @StateObject var richTextEditingController = RichTextEditingController()
 
     /// See `attributedBodyText`'s doc comment.
     var bodyText: String { attributedBodyText.string }
@@ -269,7 +269,7 @@ struct ComposerView: View {
     /// (`.task(id: selectedAccountId)` below), not just once at `prepare()`
     /// time, so switching the `From` picker updates which templates are
     /// offered without needing to reopen the Composer.
-    @State private var availableTemplates: [MailTemplateRecord] = []
+    @State var availableTemplates: [MailTemplateRecord] = []
 
     // MARK: - F 署名
     //
@@ -294,7 +294,7 @@ struct ComposerView: View {
     /// SQL predicate, since `accountIds` is a JSON-encoded BLOB column
     /// GRDB can't filter inside SQL — this list is never large enough
     /// (a handful of signatures at most) for that to matter.
-    @State private var availableSignatures: [SignatureTemplateRecord] = []
+    @State var availableSignatures: [SignatureTemplateRecord] = []
     /// `nil` = "なし" (the picker's own first option). Auto-selected by
     /// `loadAvailableSignatures()` whenever this is still `nil` after a From
     /// account (re)load — priority "前回選択 (`LastSignatureSettingsStore`) >
@@ -438,110 +438,8 @@ struct ComposerView: View {
         #endif
     }
 
-    // MARK: - Form sections (macOS)
-    //
-    // `docs/ci.md`'s SwiftUI type-check-timeout pitfall, hit for real
-    // building this: a `Form { Section { ForEach { multi-line HStack } } }`
-    // all inline inside one `body` expression is exactly the "nested
-    // container + multi-argument view content + several modifier chains"
-    // shape that blew CI's type-checker budget (confirmed locally with
-    // `OTHER_SWIFT_FLAGS="-Xfrontend -warn-long-expression-type-checking=300"`
-    // — `body` itself was the flagged expression). Splitting each `Section`
-    // out into its own `@ViewBuilder`/computed property (mirroring
-    // `MessageListView`/`ThreadDetailView`'s row-splitting precedent) fixed
-    // it; `attachmentsSection`'s `ForEach` row further needed its own
-    // `AttachmentRow` type below, not just a smaller closure, since the row
-    // itself still had a multi-line `HStack`/`VStack`/two-`Text` shape.
-
-    // Task #164 (実機フィードバック「メール作成のUIがおかしい。ラベルが複数
-    // あるとか」): macOS の `Form` は `Section("見出し")` の見出しテキストと、
-    // 各コントロールの先頭引数 (`Picker`/`TextField` のタイトル、Form内では
-    // 左ラベルとして描画される) の両方が同時に見えるため、`Section("差出人")`
-    // + `Picker("From", ...)` のように見出しと行ラベルを両方付けると
-    // 「差出人」「From: <picker>」の二重表示になる (実機フィードバック
-    // スクリーンショットで確認)。以下の3セクションは見出しを外し、
-    // 行ラベル1本 (macOS 標準 Mail.app の「宛先: / Cc: / 件名:」に合わせた
-    // 日本語) に統一した。`Section`自体は見出しなしのままグルーピング目的で
-    // 残している (`Form`の区切り線はそのまま活きる)。
-    #if os(macOS)
-    private var fromSection: some View {
-        Section {
-            Picker("差出人:", selection: $selectedAccountId) {
-                ForEach(environment.accounts) { account in
-                    Text("\(account.displayName) <\(account.email)>")
-                        .tag(Optional(account.id))
-                }
-            }
-            .pickerStyle(.menu)
-            .accessibilityIdentifier("composer.fromPicker")
-        }
-    }
-
-    private var addressSection: some View {
-        Section {
-            RecipientInputField(
-                style: .labeled("宛先:"), text: $toText, prompt: Text("カンマ区切りで複数指定可"),
-                accessibilityIdentifier: "composer.to", occurrences: recipientOccurrences
-            )
-            RecipientInputField(
-                style: .labeled("Cc:"), text: $ccText, prompt: Text("カンマ区切りで複数指定可"),
-                accessibilityIdentifier: "composer.cc", occurrences: recipientOccurrences
-            )
-            RecipientInputField(
-                style: .labeled("Bcc:"), text: $bccText, prompt: Text("カンマ区切りで複数指定可"),
-                accessibilityIdentifier: "composer.bcc", occurrences: recipientOccurrences
-            )
-        }
-    }
-
-    private var subjectSection: some View {
-        Section {
-            TextField("件名:", text: $subject)
-                .accessibilityIdentifier("composer.subject")
-        }
-    }
-
-    private var bodySection: some View {
-        Section("本文") {
-            // Task #129 (作成画面リッチテキスト化): `RichTextEditor` (a real
-            // `UITextView`/`NSTextView` bound to `NSAttributedString`) replaces
-            // the M1-era SwiftUI `TextEditor` — see `attributedBodyText`'s doc
-            // comment. `RichTextFormattingBar` sits directly above it on
-            // macOS (unlike iOS's Task #161 toggle-controlled bottom bar —
-            // this platform's scope wasn't touched by that restructure).
-            RichTextFormattingBar(controller: richTextEditingController, hasSelection: bodySelectedRange.length > 0)
-            RichTextEditor(
-                attributedText: $attributedBodyText,
-                selectedRange: $bodySelectedRange,
-                controller: richTextEditingController,
-                accessibilityIdentifier: "composer.body"
-            )
-            .frame(minHeight: 240)
-        }
-    }
-
-    /// 表示・操作改善バッチ「添付ボタンの統合」: 従来はファイル/写真それぞれ独立
-    /// したボタンだったものを、1つの「添付」ボタン + メニュー ("ファイルを選択" /
-    /// "写真を選択" / "写真を撮る") にまとめた。「写真を撮る」は `CameraPicker`
-    /// （`UIImagePickerController`ラッパー、実機のみ）を別シートで開く。iOS
-    /// のみ (macOS にはカメラ/フォトピッカーの同等 API がない — 従来の
-    /// 「ファイルを追加」的な `fileImporter` のみ)。
-    private var attachmentsSection: some View {
-        Section("添付ファイル") {
-            ForEach(pendingAttachments) { attachment in
-                AttachmentRow(attachment: attachment)
-            }
-            .onDelete { offsets in
-                pendingAttachments.remove(atOffsets: offsets)
-            }
-
-            attachmentsMenu
-        }
-    }
-    #endif
-
     @ViewBuilder
-    private var attachmentsMenu: some View {
+    var attachmentsMenu: some View {
         #if os(iOS)
         Menu {
             Button {
@@ -599,32 +497,6 @@ struct ComposerView: View {
     }
     #endif
 
-    /// C8: only shown when at least one template is available to the
-    /// currently-selected `From` account (`availableTemplates`, kept in
-    /// sync by `.task(id: selectedAccountId)` in `body`) — an empty `Menu`
-    /// with nothing to pick would just be confusing. A `Menu` (not a
-    /// `Picker`) since applying a template is an *action* (inserts text
-    /// right away), not a persistent selection state.
-    #if os(macOS)
-    @ViewBuilder
-    private var templateSection: some View {
-        if !availableTemplates.isEmpty {
-            Section {
-                Menu {
-                    ForEach(availableTemplates) { template in
-                        Button(template.name) { applyTemplate(template) }
-                    }
-                } label: {
-                    Label("テンプレートを挿入", systemImage: "doc.on.doc")
-                }
-                .accessibilityIdentifier("composer.insertTemplateMenu")
-            } header: {
-                Text("テンプレート")
-            }
-        }
-    }
-    #endif
-
     /// C8: "署名的な使い方（本文の末尾に定型文）と、定型メール全体の両方に使える"
     /// — which of the two this does isn't a property of the template
     /// itself, just whether the Composer already has content: a
@@ -634,7 +506,7 @@ struct ComposerView: View {
     /// a subject, already typed some body text, or a template with no
     /// subject of its own) appends the template's body to whatever's
     /// already there — the signature-style case.
-    private func applyTemplate(_ template: MailTemplateRecord) {
+    func applyTemplate(_ template: MailTemplateRecord) {
         let isBlankComposition = subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if isBlankComposition, let templateSubject = template.subject, !templateSubject.isEmpty {
@@ -668,37 +540,6 @@ struct ComposerView: View {
                 .fetchAll(db)
         }) ?? []
     }
-
-    /// F「作成画面に署名選択欄」— unlike `templateSection`'s `Menu` (an
-    /// *action*), this is a `Picker` bound to persistent state
-    /// (`selectedSignatureId`, via `selectedSignatureIdBinding` so a genuine
-    /// user pick also records `LastSignatureSettingsStore`'s per-account
-    /// memory). Task #162: 本文への挿入はもうしない — 署名の内容自体は
-    /// `signatureBodyPreview`の読み取り専用プレビューで見せる。ラベルは常に
-    /// 「署名: <名前>」/「署名: なし」形式 (実機フィードバック「いきなり『なし』
-    /// だけだと分かりにくい」)。Only shown once at least one signature is
-    /// scoped to the selected account — an empty picker with nothing but
-    /// "なし" would be pointless chrome.
-    #if os(macOS)
-    @ViewBuilder
-    private var signatureSection: some View {
-        if !availableSignatures.isEmpty {
-            Section {
-                Picker("署名", selection: selectedSignatureIdBinding) {
-                    Text("なし").tag(Int64?.none)
-                    ForEach(availableSignatures) { signature in
-                        Text(signature.name).tag(Optional(signature.id))
-                    }
-                }
-                .pickerStyle(.menu)
-                .accessibilityIdentifier("composer.signaturePicker")
-                signatureBodyPreview
-            } header: {
-                Text("署名")
-            }
-        }
-    }
-    #endif
 
     // MARK: - iOS flat layout
     //
@@ -1018,7 +859,7 @@ struct ComposerView: View {
     /// 表示する — 本文欄には何も挿入しない代わりに、送信時にどう結合される
     /// かをここで見せる。署名が「なし」なら何も描画しない。
     @ViewBuilder
-    private var signatureBodyPreview: some View {
+    var signatureBodyPreview: some View {
         if let selectedSignature, !selectedSignature.body.isEmpty {
             Text(selectedSignature.body)
                 .font(OtegamiFont.caption())
@@ -1037,7 +878,7 @@ struct ComposerView: View {
     /// this binding entirely) never does — see that store's doc comment for
     /// why conflating the two would corrupt the memory during an account
     /// switch.
-    private var selectedSignatureIdBinding: Binding<Int64?> {
+    var selectedSignatureIdBinding: Binding<Int64?> {
         Binding(
             get: { selectedSignatureId },
             set: { newValue in
@@ -1295,45 +1136,6 @@ struct PendingAttachment: Identifiable, Equatable, Hashable, Codable, Sendable {
     var filename: String
     var mimeType: String
     var data: Data
-}
-
-/// One row inside `ComposerView.attachmentsSection`'s `ForEach` — pulled out
-/// into its own `View` type (not just a smaller closure) since it still has
-/// a multi-line `HStack`/`VStack`/two-`Text` shape; see `ComposerView`'s
-/// "MARK: - Form sections" doc comment for why this split was necessary.
-private struct AttachmentRow: View {
-    let attachment: PendingAttachment
-    /// 2026-07-29デザイン指示: iOSのフラットレイアウト (`ComposerView
-    /// .flatAttachmentsSection`) は`List`の外なので`.onDelete`のスワイプ
-    /// 削除が使えない — その代わりにこの行自身へ明示的な削除ボタンを渡す。
-    /// macOS側の`attachmentsSection`（`List`/`.onDelete`のまま）は`nil`の
-    /// ままなので見た目は変わらない。
-    var onRemove: (() -> Void)? = nil
-
-    var body: some View {
-        HStack {
-            Image(systemName: "paperclip")
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(attachment.filename)
-                    .font(.subheadline)
-                    .lineLimit(1)
-                Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.data.count), countStyle: .file))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if let onRemove {
-                Spacer(minLength: OtegamiSpacing.sm)
-                Button(action: onRemove) {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(OtegamiColor.inkTertiary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("composer.attachment.\(attachment.id).remove")
-            }
-        }
-        .accessibilityIdentifier("composer.attachment.\(attachment.id)")
-    }
 }
 
 /// 2026-07-29デザイン指示: 宛先行の右端に出す「Cc: Bcc:」丸角アウトライン
