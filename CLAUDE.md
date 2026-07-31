@@ -97,16 +97,27 @@ reasonable time」で落ちた前例がある。ローカルの Xcode より CI 
 未コミットのマイグレーションを巻き込んで main が一時的にビルド不能に
 なった)。「ファイル単位で `git add` すれば安全」は**誤り**。
 
-**対策: 作業の最初に自分専用のインデックスファイルを用意する。**
+**対策: 自分専用のインデックスファイルを使う。**
+
+**重要 — `export` は効かない。** エージェントのシェル呼び出しは 1 回ごとに
+新しいシェルなので、前の呼び出しで `export` した環境変数は次の呼び出しに
+引き継がれない。**固定パスを決めて、git コマンドを打つたびに毎回前置き
+する**こと。
 
 ```sh
-export GIT_INDEX_FILE="$(mktemp -t otegami-index)"
-git read-tree HEAD          # 自分専用インデックスを HEAD で初期化
-# 以降 add / add -p / commit はこのインデックスだけを見る
-git add -p path/to/file.swift
-git diff --cached            # 自分の変更だけか目で確認
-git commit -m "..."
+# 1. 最初に一度だけ (自分専用インデックスを HEAD で初期化)
+GIT_INDEX_FILE=/tmp/otegami-index-<自分の識別子> git read-tree HEAD
+
+# 2. 以降、git を打つたびに毎回前置きする
+GIT_INDEX_FILE=/tmp/otegami-index-<自分の識別子> git add -p path/to/file.swift
+GIT_INDEX_FILE=/tmp/otegami-index-<自分の識別子> git diff --cached
+GIT_INDEX_FILE=/tmp/otegami-index-<自分の識別子> git commit -m "..."
 ```
+
+同じ呼び出しの中で複数の git コマンドを打つなら、その中で
+`export GIT_INDEX_FILE=...` してからまとめて実行してもよい。**前置きを
+忘れた 1 回が共有インデックスを触ってしまう**ので、`git add` と
+`git commit` は同じ呼び出しにまとめるのが安全。
 
 これで他人のステージ内容が視界に入らなくなり、事故が構造的に起きなく
 なる。`git add -p` によるハンク単位の選択もそのまま使える。
