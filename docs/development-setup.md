@@ -126,9 +126,9 @@ OTEGAMI_TEST_IMAP_HOST=localhost swift test --filter MailCoreIMAPSessionIntegrat
 ## プッシュ通知リレー (otegami-relay) を触る場合
 
 ```sh
-make server         # otegami-relay をビルド
-make server-test     # otegami-relay の単体テスト
-make relay-docker    # Docker イメージをビルド
+make relay-go         # otegami-relay をビルド
+make relay-go-test    # otegami-relay の単体テスト
+make relay-go-docker  # Docker イメージをビルド
 ```
 
 セットアップ・デプロイの詳細は

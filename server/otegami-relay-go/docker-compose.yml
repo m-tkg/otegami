@@ -1,10 +1,7 @@
-# Self-hosted deployment of the otegami push relay (Go port, Task #180).
-# Drop-in replacement for server/otegami-relay/docker-compose.yml — same
-# ports, same env vars, same volume layout, same SQLite schema, so an
-# existing deployment's .env and data volume carry over unchanged. See
-# docs/relay-deployment.md for the env var reference and threat model.
+# Self-hosted deployment of the otegami push relay.
+# See docs/relay-deployment.md for the env var reference and threat model.
 #
-#   cp server/otegami-relay/.env.sample server/otegami-relay-go/.env
+#   cp server/otegami-relay-go/.env.sample server/otegami-relay-go/.env
 #   # edit .env: set RELAY_MASTER_KEY (openssl rand -base64 32), optionally APNS_*
 #   docker compose -f server/otegami-relay-go/docker-compose.yml up -d
 services:

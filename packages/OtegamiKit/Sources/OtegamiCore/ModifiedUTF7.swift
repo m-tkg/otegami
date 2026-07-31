@@ -15,9 +15,8 @@ import Foundation
 ///   empty run.
 ///
 /// Lives in `OtegamiCore` (Linux-compatible, no MailCore2/Foundation-beyond-
-/// `Data`-and-base64 dependency — `server/otegami-relay` links this target
-/// on Linux) rather than `MailTransportMailCore`, so it's usable and unit-
-/// testable independent of MailCore2. See `MailCoreIMAPSession
+/// `Data`-and-base64 dependency) rather than `MailTransportMailCore`, so
+/// it's usable and unit-testable independent of MailCore2. See `MailCoreIMAPSession
 /// .mailboxInfo(from:)` for the one call site that decodes `MailboxInfo
 /// .displayPath` from the server's raw path, and `AppDatabase`'s `v21`
 /// migration for the one-time repair of `displayPath` values written before

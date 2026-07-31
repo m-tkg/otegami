@@ -229,8 +229,8 @@ echo "    ACCOUNT_ID: $ACCOUNT_ID"
 
 make_payload() {
   # $1=output path, $2=accountId, $3=uidNext — mirrors
-  # server/otegami-relay/Sources/OtegamiRelay/Push/APNsSender.swift's
-  # `APNsBody` shape exactly (mutable-content + loc-key NEW_MAIL, accountId/
+  # server/otegami-relay-go/internal/push's APNs payload shape exactly
+  # (mutable-content + loc-key NEW_MAIL, accountId/
   # uidNext outside `aps`, nothing else — the plan's "本文/件名を含めない"
   # privacy design).
   cat > "$1" << EOF

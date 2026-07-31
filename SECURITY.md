@@ -35,7 +35,7 @@ already been considered:
   syncing (opt-in, see [docs/icloud-sync.md](docs/icloud-sync.md)) is the
   only cross-device credential transport; there is no server-side
   credential store on the app side.
-- **The optional push relay** (`server/otegami-relay`): if you self-host
+- **The optional push relay** (`server/otegami-relay-go`): if you self-host
   it, it holds your IMAP watch credentials (encrypted at rest with
   `RELAY_MASTER_KEY`, see
   [docs/relay-deployment.md](docs/relay-deployment.md)) so it can IDLE on

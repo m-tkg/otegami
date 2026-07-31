@@ -113,7 +113,7 @@ macOS は一覧画面自体の `.searchable` インライン検索を使う（�
 ## 通知
 
 - プッシュ通知は任意でセルフホストするリレーサーバー
-  (`server/otegami-relay`) を設定すると受け取れる。設定 →「アカウントの
+  (`server/otegami-relay-go`) を設定すると受け取れる。設定 →「アカウントの
   設定」からオプトインする。件名/本文はワイヤーに乗らず、実際の内容は
   端末の Notification Service Extension が自分の IMAP 接続で取得する
   （[docs/relay-deployment.md](relay-deployment.md)）。

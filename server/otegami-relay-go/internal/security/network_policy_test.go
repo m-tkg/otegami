@@ -2,8 +2,8 @@ package security
 
 import "testing"
 
-// Mirrors WatchRoutesTests.createWatchRejectsPrivateHost's arguments
-// (server/otegami-relay/Tests/OtegamiRelayTests/WatchRoutesTests.swift).
+// Mirrors the retired Swift relay's
+// WatchRoutesTests.createWatchRejectsPrivateHost arguments.
 func TestStrictRejectsPrivateLoopbackLinkLocalHosts(t *testing.T) {
 	hosts := []string{
 		"127.0.0.1",        // loopback

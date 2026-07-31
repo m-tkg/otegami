@@ -3066,7 +3066,7 @@ final class AppEnvironment {
     }
 
     /// `https://` required; `http://localhost`/`http://127.0.0.1` (any
-    /// port) exempted for local dev against a relay run with `swift run`
+    /// port) exempted for local dev against a relay run with `go run`
     /// on the same machine (plan: "リレー URL 入力 (https 必須、ローカル開発時
     /// のみ http://localhost 許可)"). Returns `nil` for anything else,
     /// including a URL that fails to parse at all.

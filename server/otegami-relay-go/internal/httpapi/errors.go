@@ -46,8 +46,8 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 func decodeJSON(r *http.Request, out any) *httpError {
-	// 2 MiB cap, matching Hummingbird's BasicRequestContext.maxUploadSize
-	// default the Swift relay relies on implicitly.
+	// 2 MiB cap, matching the Hummingbird BasicRequestContext default used
+	// implicitly by the retired Swift relay.
 	r.Body = http.MaxBytesReader(nil, r.Body, 2*1024*1024)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(out); err != nil {

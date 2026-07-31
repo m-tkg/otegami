@@ -14,10 +14,8 @@ import OtegamiRelayAPI
 /// `api.push.apple.com`). `AppEnvironment.enablePushNotifications` used to
 /// hardcode `.sandbox` for every build, which silently broke push once a
 /// TestFlight build's device token got registered against the relay's
-/// sandbox APNs client (`server/otegami-relay/Sources/OtegamiRelay/Push/
-/// APNsSender.swift` already dispatches per-device on `environment` — see
-/// its doc comment — so the relay needed no change, only the app sending
-/// the right value).
+/// sandbox APNs client. The relay already dispatches per-device on
+/// `environment`, so only the value sent by the app needed to change.
 ///
 /// iOS-only in practice: `AppEnvironment.requestAPNsToken()` throws
 /// `PushError.unsupportedPlatform` on macOS before this detector would ever

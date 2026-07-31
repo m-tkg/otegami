@@ -1,6 +1,5 @@
-// Command otegami-relay is the Go port of the otegami push relay server —
-// mirrors App.swift (server/otegami-relay/Sources/OtegamiRelay/App.swift):
-// read config from the environment, open the SQLite store, pick the push
+// Command otegami-relay runs the otegami push relay server: read config
+// from the environment, open the SQLite store, pick the push
 // sender (real APNs iff every APNS_* var is set, console fallback
 // otherwise), start the watcher pool alongside the HTTP API, and shut both
 // down gracefully on SIGTERM/SIGINT.

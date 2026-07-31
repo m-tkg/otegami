@@ -4,18 +4,15 @@ on:
   push:
     branches: [main]
     # サーバ関連の変更時だけ実行 (アプリだけの push では回さない)。
-    # 共有 DTO (OtegamiRelayAPI/OtegamiCore) はリレーのビルドに影響する
-    # ため含める。
+    # 共有 DTO (OtegamiRelayAPI) の変更もワイヤ契約に影響するため含める。
     paths:
       - "server/**"
       - "packages/OtegamiKit/Sources/OtegamiRelayAPI/**"
-      - "packages/OtegamiKit/Sources/OtegamiCore/**"
       - ".github/workflows/ci-server.yml"
   pull_request:
     paths:
       - "server/**"
       - "packages/OtegamiKit/Sources/OtegamiRelayAPI/**"
-      - "packages/OtegamiKit/Sources/OtegamiCore/**"
       - ".github/workflows/ci-server.yml"
 
 # 連続 push 時に古い実行を自動キャンセルする (タグ実行はグループが別になる
@@ -43,28 +40,3 @@ jobs:
 
       - name: Test
         run: go test ./...
-
-  server:
-    runs-on: ubuntu-latest
-    # otegami-relay's own Package.swift declares swift-tools-version:6.0,
-    # but its dependency graph transitively includes packages (GRDB.swift,
-    # Hummingbird, swift-nio, ...) whose manifests declare tools-version
-    # 6.1+ — SwiftPM has to *parse* every dependency's manifest to resolve
-    # the graph, even for products this server never actually builds (see
-    # Dockerfile's comment on OtegamiKit's manifest being resolved-but-not-
-    # built). A 6.0 toolchain can't parse a 6.1 manifest at all, so
-    # `swift build`/`swift test` fail during dependency resolution before
-    # compiling a single line of this repo's code. Match the Dockerfile's
-    # production image tag (swift:6.2-jammy) so CI and the shipped
-    # container use the same toolchain.
-    container: swift:6.2-jammy
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build
-        working-directory: server/otegami-relay
-        run: swift build
-
-      - name: Test
-        working-directory: server/otegami-relay
-        run: swift test

@@ -13,8 +13,8 @@ import (
 
 // deviceStore is the subset of *store.Store the device/watch routes need —
 // kept as an interface (rather than importing *store.Store directly in
-// signatures used by tests) purely for parity with the Swift relay's
-// dependency-injected RelayStore in HummingbirdTesting-based route tests.
+// signatures used by tests) purely for parity with the retired Swift
+// relay's dependency-injected RelayStore route tests.
 type deviceStore interface {
 	CreateDevice(ctx context.Context, apnsToken string, environment api.Environment) (api.RegisterDeviceResponse, error)
 	UpdateDeviceToken(ctx context.Context, id, apnsToken string, environment api.Environment) error

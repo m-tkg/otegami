@@ -2,9 +2,8 @@
 // on IDLE-capable servers, or (Task #215) reconnecting every PollInterval
 // for a short connect->SELECT->LOGOUT check on servers without IDLE — and
 // firing a push through push.Sender when UIDNEXT advances. Loosely mirrors
-// WatcherPool.swift (server/otegami-relay/Sources/OtegamiRelay/Watcher/
-// WatcherPool.swift), though the non-IDLE poll design has since diverged
-// from it — see runPollCycle's doc comment for why.
+// the retired Swift relay's WatcherPool, though the non-IDLE poll design has
+// since diverged from it — see runPollCycle's doc comment for why.
 //
 // Watch goroutines are tracked in a mutex-guarded map so the HTTP routes
 // can call AddWatch/RemoveWatch the moment a watch is created/deleted via

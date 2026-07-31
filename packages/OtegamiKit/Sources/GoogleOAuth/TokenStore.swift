@@ -157,7 +157,7 @@ public actor TokenStore {
     /// .watchAuth(for:)` uses this to hand the relay a refresh token when
     /// registering a Gmail account's push watch — the relay needs its own
     /// copy to exchange for access tokens on every (re)connect (see
-    /// `server/otegami-relay`'s `OAuthTokenExchanger`), the same way it
+    /// `server/otegami-relay-go/internal/oauth`), the same way it
     /// already needs a `.password` account's IMAP password. `nil` if
     /// nothing is stored (mirrors `hasStoredRefreshToken(for:)`'s
     /// `false` case).

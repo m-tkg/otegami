@@ -623,8 +623,8 @@ func TestOpensLegacyPerDeviceWatchSchemaAndDropsWatchTable(t *testing.T) {
 // TestOpensRealSwiftProducedDatabase was originally Task #180's strongest
 // compatibility check ("暗号化互換の検証結果 (最重要)" requirement):
 // testdata/legacy-swift-relay.sqlite is not a hand-built fixture — it was
-// produced by actually running the real Swift relay
-// (server/otegami-relay, unmodified) against a fresh RELAY_MASTER_KEY,
+// produced by running the now-retired Swift relay, unmodified, against a
+// fresh RELAY_MASTER_KEY,
 // then registering a device via `POST /v1/devices` and creating one
 // `.password` and one `.oauth` watch via `POST /v1/watches` over real
 // HTTP, exactly as a production deployment would. The master key below is

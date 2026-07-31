@@ -135,9 +135,9 @@ XCFramework 成果物は生成しない (生成すべきものが無いため)�
   `ci-app.yml` の実行結果は README 冒頭のバッジで確認できる。ローカルでの
   macOS / Xcode 27 環境での `make test` 相当の実行では、`dev/mailstack` を
   使った統合テストも含めて全て green (下記「統合テスト」参照)。
-- `.github/workflows/ci-server.yml` (ubuntu ランナー) は `server/otegami-relay`
-  のみをビルドする独立した SwiftPM パッケージで、`packages/OtegamiKit` には一切
-  依存しないため無関係。
+- `.github/workflows/ci-server.yml` (ubuntu ランナー) は Go 製の
+  `server/otegami-relay-go` のみを検証し、`packages/OtegamiKit` には依存
+  しないため無関係。
 - `packages/OtegamiKit` を Linux 上で素の `swift test` (フィルタなし) 実行すると、
   `MailTransportMailCoreTests`/`MailTransportMailCore` は Objective-C++ ソースを
   含むため恐らくビルドに失敗する。現状の CI 構成 (ci-app.yml は macOS のみ、

@@ -1,6 +1,4 @@
-// Package push delivers the relay's minimal new-mail notification to APNs
-// — mirrors the Swift relay's Push/ directory (PushSending.swift,
-// ConsolePushSender.swift, APNsSender.swift).
+// Package push delivers the relay's minimal new-mail notification to APNs.
 package push
 
 import (

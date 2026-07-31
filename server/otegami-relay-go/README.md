@@ -1,12 +1,13 @@
 # otegami-relay-go
 
-Go port of `server/otegami-relay` (Swift/Hummingbird), verified wire- and
-storage-compatible with it (see "Compatibility contract" below).
+The production otegami push relay. It replaced the original
+Swift/Hummingbird implementation after wire and storage compatibility was
+verified (see "Compatibility contract" below).
 
 ## Why port this to Go
 
-The Swift relay's container image targets `arm64` (Raspberry Pi). Building
-it on GitHub Actions' `x86_64` runners under QEMU takes **~2.5 hours**,
+The original Swift relay's container image targeted `arm64` (Raspberry Pi).
+Building it on GitHub Actions' `x86_64` runners under QEMU took **~2.5 hours**,
 which eats into the Free plan's 2,000 minutes/month for private
 repositories. Native `arm64` runners are free only for **public**
 repositories, so the build repo has been temporarily made public to cope —
@@ -14,14 +15,12 @@ the goal is to go back to private.
 
 Go cross-compiles to `arm64` natively (`GOARCH=arm64 go build`, no QEMU),
 builds in minutes, and produces a single static-ish binary. This directory
-is that port. The Swift relay (`server/otegami-relay`) stays in the repo
-and in production until this port is verified equivalent end to end; see
-"Status" below for what that means concretely.
+is that port and the only maintained relay implementation.
 
 ## Compatibility contract
 
-This is a **byte-for-byte wire and storage compatible** reimplementation,
-not a redesign:
+This was built as a **byte-for-byte wire and storage compatible**
+reimplementation of the retired Swift relay, not a redesign:
 
 - Same HTTP API (`POST /v1/devices`, `PUT /v1/devices/:id/token`, `POST
   /v1/watches`, `GET /v1/watches`, `DELETE /v1/watches/:id`, `GET
@@ -66,7 +65,8 @@ internal/push/           # APNs sender + console fallback (PushSending)
 internal/watcher/        # per-watch IDLE loop pool (WatcherPool)
 ```
 
-Each package's doc comment names the exact Swift file it mirrors.
+Package doc comments retain historical Swift type names where they explain
+the compatibility fixtures or porting decisions.
 
 ## Library choices
 
@@ -76,13 +76,12 @@ Each package's doc comment names the exact Swift file it mirrors.
   cross-compilation friction this port exists to eliminate.
 - **JWT (APNs ES256 token auth): `golang-jwt/jwt/v5`** — well-maintained,
   supports ES256 out of the box; the alternative (hand-rolling JWT header/
-  claims/signing the way the Swift relay does, since swift-crypto has no
+  claims/signing the way the retired Swift relay did, since swift-crypto has no
   JWT helper) was considered but a dedicated JWT library is the more
   idiomatic Go choice here and doesn't carry the cross-compilation
   concerns a C library would.
 - **IMAP: hand-rolled** (`internal/imapclient`), not `github.com/emersion/
-  go-imap`. Same rationale `MinimalIMAPClient.swift`'s doc comment gives
-  for the Swift side: the actual surface needed is `LOGIN`/`AUTHENTICATE
+  go-imap`. The actual surface needed is `LOGIN`/`AUTHENTICATE
   XOAUTH2`/`SELECT`/`STATUS`/`IDLE`/`LOGOUT` over plain CRLF-terminated
   lines (no IMAP literals ever appear in these commands' responses), and
   the CLAUDE-SECURITY F2/F3/F4/F8 defenses (SSRF re-validation on every
@@ -104,7 +103,7 @@ cross-compiling Dockerfile are all implemented.
 
 Verification performed:
 
-- **123 Go tests** across 12 packages (Swift suite: 80 tests), including
+- **146 Go tests** across 12 packages (retired Swift suite: 80 tests), including
   `-race` runs for the IMAP client and watcher pool.
 - **Crypto compat**: Swift-generated AES-GCM fixtures decrypt under Go;
   independently re-verified against Apple CryptoKit directly.
@@ -125,12 +124,13 @@ Verification performed:
   (`--platform=$BUILDPLATFORM` + `CGO_ENABLED=0`) — no QEMU; the
   arm64 container boots and serves `/health`.
 
-Not verified (same as the Swift relay, and a standing limitation of this
+Not verified (same as the retired Swift relay, and a standing limitation of this
 dev environment): real APNs delivery (requires a real `.p8` key), and
 XOAUTH2 against a real server
 (dev/mailstack Dovecot only offers `plain`; the RFC 7628 flow is covered
-by the fake-server tests, as in the Swift suite).
+by the fake-server tests, as in the retired Swift suite).
 
-The Swift relay (`server/otegami-relay`) stays in production until the
-operator switches over; deleting it is a user decision after the Go relay
-has run in production against real devices.
+The production cutover is complete and the Swift implementation has been
+removed. Swift-generated crypto and SQLite fixtures remain in
+`internal/cryptox` and `internal/store/testdata` to prevent compatibility
+regressions.

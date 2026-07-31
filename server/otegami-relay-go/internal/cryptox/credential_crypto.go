@@ -1,6 +1,5 @@
 // Package cryptox encrypts/decrypts IMAP credentials at rest, exactly
-// compatible with the Swift relay's CredentialCrypto
-// (server/otegami-relay/Sources/OtegamiRelay/Store/CredentialCrypto.swift).
+// compatible with the retired Swift relay's CredentialCrypto.
 //
 // Compatibility is the single most delicate part of this port (Task #180):
 // an existing SQLite database has `watch.encryptedSecret` BLOB columns
@@ -121,7 +120,7 @@ func (c *CredentialCrypto) Encrypt(plaintext string) ([]byte, error) {
 }
 
 // Decrypt reverses Encrypt (and, critically, any AES.GCM.seal-produced
-// combined representation from the Swift relay). Returns ErrDecryptionFailed
+// combined representation from the retired Swift relay). Returns ErrDecryptionFailed
 // on any authentication-tag mismatch, malformed input, or non-UTF-8
 // plaintext.
 func (c *CredentialCrypto) Decrypt(combined []byte) (string, error) {

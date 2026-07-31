@@ -198,7 +198,7 @@ Apple の仕様上の制約: `aps-environment` の実際の値は署名に使う
 デバイス登録呼び出し (`registerDevice`/`updateDeviceToken`) はこの判定
 結果を送る。
 
-`server/otegami-relay`/`server/otegami-relay-go` 自体はデバイスごとに
+`server/otegami-relay-go` 自体はデバイスごとに
 `sandbox`/`production` を切り替えられる設計 (`OtegamiRelayAPI
 .RegisterDeviceRequest.Environment`、`APNsSender.host(for:)`) なので、
 リレー側の変更は不要 — この判定はアプリ側だけで完結する。

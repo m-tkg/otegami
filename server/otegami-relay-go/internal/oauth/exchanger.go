@@ -1,8 +1,7 @@
 // Package oauth exchanges a stored OAuth refresh token for a short-lived
 // access token, right before an .oauth watch's IMAP AUTHENTICATE XOAUTH2 —
-// mirrors OAuthTokenExchanger.swift
-// (server/otegami-relay/Sources/OtegamiRelay/Watcher/OAuthTokenExchanger.swift,
-// Task #175). The access token is never persisted anywhere (the store only
+// mirrors the retired Swift relay's OAuthTokenExchanger (Task #175). The
+// access token is never persisted anywhere (the store only
 // ever holds the refresh token, encrypted, same as an IMAP password): each
 // (re)connect calls this again.
 //

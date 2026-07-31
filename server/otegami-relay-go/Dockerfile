@@ -11,7 +11,7 @@
 #     -f server/otegami-relay-go/Dockerfile -t otegami-relay-go \
 #     server/otegami-relay-go
 #
-# Unlike the Swift relay's Dockerfile, the build context is THIS directory
+# Unlike the retired Swift relay's Dockerfile, the build context is THIS directory
 # (the Go module is self-contained — no ../../packages dependency).
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
 ARG TARGETOS

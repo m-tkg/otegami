@@ -244,9 +244,7 @@ scripts/verify-relay.sh                            # otegami-relay の E2E 検�
   (サーバーと共有する DTO)、`OtegamiTranslation`/
   `OtegamiTranslationFoundationModels`/`TranslationEngine` (端末内翻訳・
   要約のスタック)。
-- `server/otegami-relay-go/` — プッシュリレー (Go、現行の本番実装)。
-  `server/otegami-relay/` に、ワイヤ/ストレージ完全互換の Swift 実装
-  (参照実装として維持) もある。
+- `server/otegami-relay-go/` — プッシュリレー (Go)。
 - `dev/mailstack/` — Dovecot + Mailpit の開発用スタック。
 
 モジュール間の依存方向・同期エンジンの設計・既知の落とし穴は
@@ -297,8 +295,9 @@ MIT — [LICENSE](LICENSE) を参照。
 
 ### サードパーティライセンス
 
-Otegami は Swift Package Manager 経由でいくつかのサードパーティ製
-オープンソースパッケージに依存しており (GRDB.swift、MailCore2 の
-フォークとその C 依存関係、Hummingbird、SwiftNIO、swift-crypto 等)、
-Archivo フォント (SIL Open Font License) も同梱しています — 一覧・
-ライセンス種別・著作権表示は [NOTICE](NOTICE) を参照してください。
+Otegami は Swift Package Manager 経由のサードパーティ製パッケージ
+(GRDB.swift、MailCore2 のフォークとその C 依存関係)、プッシュリレーの
+Go module に依存しており、Archivo フォント (SIL Open Font License) も
+同梱しています。ライセンス・著作権表示は [NOTICE](NOTICE)、リレーの
+module 一覧とバージョンは
+[`server/otegami-relay-go/go.mod`](server/otegami-relay-go/go.mod) を参照してください。

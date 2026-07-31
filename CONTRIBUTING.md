@@ -42,7 +42,7 @@ what CI (`ci-app.yml`/`ci-server.yml`) checks on every pull request. For
 changes to the push relay:
 
 ```sh
-make server-test               # otegami-relay unit tests
+make relay-go-test             # otegami-relay unit tests
 ```
 
 For app-level behavior changes (sync, threading, UI flows), the

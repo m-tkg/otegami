@@ -9,7 +9,7 @@ otegami のプッシュ通知はオプション機能で、セルフホストす
 挙動」参照)。
 
 コードベース全体の構成については [`docs/architecture.md`](architecture.md)
-の「`server/otegami-relay-go/` と `server/otegami-relay/`」節を参照。
+の「`server/otegami-relay-go/`」節を参照。
 
 ## リレーが何をするか
 
@@ -27,36 +27,23 @@ otegami のプッシュ通知はオプション機能で、セルフホストす
    預かるのは IMAP 資格情報 (パスワードまたは OAuth refresh token) のみ
    で、それも暗号化して保存する (詳細は下記「セキュリティ設計」)。
 
-## 実装: Go 版 (現行本番) と Swift 版 (参照実装)
+## 実装
 
-同じ HTTP API・同じ SQLite スキーマ・同じ暗号化・同じ環境変数でワイヤ/
-ストレージ完全互換の実装が2つある:
-
-- **`server/otegami-relay-go/`** — Go 実装。**現在の本番デプロイ対象**。
-  新規の機能追加・バグ修正は基本的にこちら側に入る。
-- **`server/otegami-relay/`** — Swift 実装。互換な参照実装として残して
-  ある。
-
-以下は Go 版のデプロイ手順を示す。Swift 版も同じ環境変数・同じ `.env`
-がそのまま使える (`server/otegami-relay-go/README.md` の「Compatibility
-contract」参照)。
+**`server/otegami-relay-go/`** が本番デプロイ対象。HTTP API・SQLite
+スキーマ・暗号化・環境変数の契約は同ディレクトリの README に記載する。
 
 ## デプロイ手順 (Docker)
 
 ```sh
-cp server/otegami-relay/.env.sample server/otegami-relay-go/.env
+cp server/otegami-relay-go/.env.sample server/otegami-relay-go/.env
 # .env を編集: RELAY_MASTER_KEY を必須で設定 (生成方法は次項)。他は任意。
 
 docker compose -f server/otegami-relay-go/docker-compose.yml up -d
 curl http://localhost:8080/health   # "ok" 相当が返れば起動成功
 ```
 
-`.env.sample` 自体は Go 版のディレクトリには置かれていない — Swift 版
-の `server/otegami-relay/.env.sample` と環境変数が完全互換なのでそちら
-を使い回す (`docker-compose.yml` 自身のコメントも同じ手順を示す)。
-`docker-compose.yml` はビルドコンテキストとしてこのディレクトリ自身を
-使う (Go モジュールが自己完結しているため、`server/otegami-relay` のよ
-うに `../../packages` への依存はない)。データは named volume
+`docker-compose.yml` はビルドコンテキストとして Go モジュールの
+ディレクトリ自身を使う。データは named volume
 (`otegami-relay-data:/app/data`) に永続化される。
 
 ### `RELAY_MASTER_KEY` の生成
@@ -116,8 +103,7 @@ go run ./cmd/otegami-relay
 
 ### リレー側 (`.env`)
 
-`server/otegami-relay-go/.env.sample`(または Swift 版と共通の
-`server/otegami-relay/.env.sample`) をコピーして編集する。
+`server/otegami-relay-go/.env.sample` をコピーして編集する。
 
 | 変数 | 必須 | 説明 |
 |---|---|---|
@@ -133,9 +119,7 @@ go run ./cmd/otegami-relay
 | `APNS_KEY_DIR` | - | (Docker Compose のみ) `.p8` を置くホスト側ディレクトリ。既定 `./secrets`。 |
 
 上記の変数名は `server/otegami-relay-go/internal/config/config.go` の
-`FromEnvironment` を実際のソースとして確認済み。Swift 版
-(`server/otegami-relay/Sources/OtegamiRelay/Config/RelayConfiguration.swift`)
-と完全に同じ名前・既定値を使う。
+`FromEnvironment` を実際のソースとして確認済み。
 
 ### アプリ側 (ビルド時に埋め込む)
 
@@ -314,8 +298,7 @@ accepted")・失敗時 ("APNs push rejected"、APNs が返す JSON エラー
 
 ## 既知の制約
 
-- IMAP 実装は最小限の自前クライアント (Go 版:
-  `internal/imapclient/`、Swift 版: `MinimalIMAPClient`) — LOGIN/
+- IMAP 実装は最小限の自前クライアント (`internal/imapclient/`) — LOGIN/
   AUTHENTICATE XOAUTH2/SELECT/STATUS/IDLE/LOGOUT のみ対応する。
 - IDLE 非対応サーバーへの polling 実装は、素朴な「スリープしてから
   コマンドを打つ」だけだと隠れた高頻度 LOGIN を生みアカウントロック

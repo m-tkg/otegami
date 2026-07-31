@@ -6,9 +6,8 @@
 // runner needs no C toolchain/QEMU, which is the entire motivation for
 // Task #180's Swift-to-Go port (see server/otegami-relay-go/README.md).
 //
-// Schema and semantics deliberately mirror the Swift relay's RelayStore
-// (server/otegami-relay/Sources/OtegamiRelay/Store/RelayStore.swift)
-// exactly: same table/column names and types, same migration-by-
+// Schema and semantics deliberately mirror the retired Swift relay's
+// RelayStore exactly: same table/column names and types, same migration-by-
 // PRAGMA-table_info approach — an existing production database must open
 // and read correctly under this binary with zero migration step (Task
 // #180's requirement).

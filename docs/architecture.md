@@ -17,7 +17,6 @@ otegami (offline-first の iOS/macOS メールクライアント) のコード�
 apps/Otegami/          SwiftUI アプリ本体 (iOS/macOS)
 packages/OtegamiKit/   同期・データモデル・翻訳などの共有ロジック (SwiftPM)
 server/otegami-relay-go/  push リレー (Go、現行の本番実装)
-server/otegami-relay/     push リレー (Swift、ワイヤ/ストレージ互換の参照実装)
 dev/mailstack/          開発用 Dovecot + Mailpit スタック
 scripts/                 ビルド・検証・OTA配信スクリプト
 ```
@@ -39,7 +38,7 @@ SwiftUI アプリターゲット本体。画面 (`Sources/Features/`)・デザ�
 同期エンジン・ローカルストア・認証・翻訳など、UI を持たないロジック全体を
 まとめた SwiftPM パッケージ。詳細は次節「パッケージ依存関係」。
 
-### `server/otegami-relay-go/` と `server/otegami-relay/`
+### `server/otegami-relay-go/`
 
 otegami の push 通知は、セルフホストする「push リレー」が対象アカウントの
 IMAP を監視 (IDLE、または非対応サーバーへの polling) し、新着を検知すると
@@ -47,18 +46,9 @@ APNs 経由でデバイスへ通知を送る構成で動く (OSS ビルドで Ap
 アカウント/APNs 認証情報を配布できないため、ビルド元が自分でこのサーバー
 を運用する前提)。
 
-同じ HTTP API・同じ SQLite スキーマ・同じ暗号化・同じ環境変数で **ワイヤ/
-ストレージ完全互換**の実装が2つある:
-
-- **`server/otegami-relay-go/`** — Go 実装。arm64 Docker イメージのビルド
-  を QEMU なしで完結させる目的で作られた移植版で、現在の本番デプロイは
-  こちら。commit の更新頻度もこちらが高い。
-- **`server/otegami-relay/`** — Swift 実装。互換な参照実装として残して
-  ある。
-
-新規の機能追加・バグ修正は基本的に `otegami-relay-go` 側に入る。両者の
-デプロイ手順・環境変数は [`docs/relay-deployment.md`](relay-deployment.md)
-参照。
+`server/otegami-relay-go/` が HTTP API、SQLite 永続化、資格情報暗号化、
+IMAP IDLE、APNs 配信を実装する。デプロイ手順・環境変数は
+[`docs/relay-deployment.md`](relay-deployment.md) 参照。
 
 ### `dev/mailstack/`
 

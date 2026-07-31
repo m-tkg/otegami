@@ -1,9 +1,9 @@
 import Foundation
 
-// DTOs shared between the app (`apps/Otegami`) and the push relay server
-// (`server/otegami-relay`). Linux-compatible (Foundation only) so the
-// server target — which builds and runs on Linux — can depend on this
-// package directly instead of hand-duplicating the wire format.
+// DTOs used by the app (`apps/Otegami`) to communicate with the Go push
+// relay (`server/otegami-relay-go`). Linux-compatible (Foundation only);
+// its Codable wire format is locked against the Go DTOs by
+// `OtegamiRelayAPITests`.
 //
 // API surface (plan §7):
 //   POST   /v1/devices           -> RegisterDeviceRequest / RegisterDeviceResponse
@@ -191,7 +191,7 @@ public struct PushNotificationPayload: Codable, Equatable, Sendable {
 /// stopped, instead of a relay operator being the only one who can see
 /// that in server logs.
 public struct WatchSummary: Codable, Equatable, Sendable {
-    /// Whether `WatcherPool`'s per-watch loop (`server/otegami-relay`) is
+    /// Whether the relay's per-watch loop (`server/otegami-relay-go`) is
     /// still actively trying to reach the IMAP server, or gave up.
     public enum Status: String, Codable, Sendable {
         /// Connected at least once and still retrying/idling normally —

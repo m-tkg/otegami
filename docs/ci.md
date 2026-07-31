@@ -1,7 +1,7 @@
 # CI (GitHub Actions)
 
 `.github/workflows/ci-app.yml` (macOS ランナー) と
-`.github/workflows/ci-server.yml` (Linux コンテナ) が `main` への push と
+`.github/workflows/ci-server.yml` (Linux ランナー) が `main` への push と
 全 pull request で走る。両方とも「ビルドが壊れていないこと」と
 「ネットワーク/Docker に依存しない単体テストが通ること」だけを検証する —
 実機/シミュレータでの UI 挙動や、実際のメールサーバーとの結合動作は別の
@@ -52,8 +52,8 @@ CI ランナーには配布用の証明書/プロビジョニングプロファ�
 
 ## ci-server が検証すること
 
-1. `swift build` (Debug) がコンテナ内で通ること。
-2. `swift test` が通ること。
+1. `go vet ./...` が通ること。
+2. `go test ./...` が通ること。
 
 ### ci-server が検証しないこと
 
@@ -72,16 +72,6 @@ CI ランナーには配布用の証明書/プロビジョニングプロファ�
   する。ビルド設定に `CODE_SIGNING_ALLOWED=NO` /
   `CODE_SIGNING_REQUIRED=NO` / `CODE_SIGN_IDENTITY=""` を渡し、署名を
   要求せずビルドの成否だけを見る。
-- **Swift ツールチェーンのバージョン**: `packages/OtegamiKit` が依存する
-  GRDB.swift・Hummingbird・swift-nio 等の推移的依存の `Package.swift` が
-  要求する `swift-tools-version` より古いツールチェーンだと、実際に使わ
-  ない依存であっても SwiftPM の依存解決自体が
-  `contains incompatible tools version` で失敗する。`server/otegami-relay`
-  自身は `OtegamiRelayAPI`/`OtegamiCore` しか使わなくても、SwiftPM は
-  依存グラフ全体のマニフェストを解決時にパースするため影響を受ける —
-  CI コンテナのタグは本番用 `Dockerfile` と同じ Swift バージョンに揃える
-  こと。
-
 ## 既知の落とし穴: SwiftUI ビューの型チェックタイムアウト
 
 `ci-app` は過去に、ローカルでは `make mac`/`make ios` が問題なく通り、

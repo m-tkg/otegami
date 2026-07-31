@@ -6,9 +6,6 @@
 #   make ios-device       iOS device build (signed with the registered team)
 #   make test             OtegamiKit `swift test`
 #   make check-localization  Localizable.xcstrings coverage check (Task #170)
-#   make server           build the otegami-relay server
-#   make server-test      run the otegami-relay server test suite
-#   make relay-docker     build the otegami-relay Docker image
 #   make relay-go         build the Go otegami-relay server
 #   make relay-go-test    run the Go otegami-relay server test suite
 #   make relay-go-docker  build the Go otegami-relay Docker image
@@ -24,7 +21,6 @@ APP_SCHEME := Otegami
 IOS_SIMULATOR ?= iPhone 17 Pro Max
 
 KIT_DIR := packages/OtegamiKit
-SERVER_DIR := server/otegami-relay
 RELAY_GO_DIR := server/otegami-relay-go
 MAILSTACK_DIR := dev/mailstack
 DIST_DIR := dist
@@ -48,7 +44,7 @@ else
 MAC_SIGNING_FLAGS :=
 endif
 
-.PHONY: all mac mac-app ios ios-device app-project test check-localization server server-test relay-docker \
+.PHONY: all mac mac-app ios ios-device app-project test check-localization \
 	relay-go relay-go-test relay-go-docker \
 	mailstack-up mailstack-down mailstack-seed deploy-ota clean
 
@@ -126,17 +122,6 @@ check-localization:
 	git diff --exit-code apps/Otegami/Resources/Localizable.xcstrings
 	python3 scripts/check-localizable-coverage.py
 
-server:
-	cd $(SERVER_DIR) && swift build
-
-server-test:
-	cd $(SERVER_DIR) && swift test
-
-# Build context is the repo root (not $(SERVER_DIR)) — see Dockerfile's
-# doc comment for why (Package.swift depends on ../../packages/OtegamiKit).
-relay-docker:
-	docker build -f $(SERVER_DIR)/Dockerfile -t otegami-relay .
-
 relay-go:
 	cd $(RELAY_GO_DIR) && go build ./...
 
@@ -163,5 +148,4 @@ deploy-ota:
 
 clean:
 	cd $(KIT_DIR) && swift package clean
-	cd $(SERVER_DIR) && swift package clean
 	rm -rf $(APP_PROJECT) dist

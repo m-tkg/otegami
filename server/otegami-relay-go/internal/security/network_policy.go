@@ -1,11 +1,9 @@
 // Package security is SSRF defense for the relay's one outbound network
 // primitive: opening a TCP/TLS connection to a caller-supplied
-// imapHost/imapPort (mirrors RelayNetworkPolicy.swift,
-// server/otegami-relay/Sources/OtegamiRelay/Watcher/RelayNetworkPolicy.swift
-// — see that file's doc comment for the full CLAUDE-SECURITY F2 background
-// this port must not regress).
+// imapHost/imapPort (mirrors the retired Swift relay's RelayNetworkPolicy;
+// this port must not regress its CLAUDE-SECURITY F2 defenses).
 //
-// Enforced in two places, same as the Swift relay:
+// Enforced in two places, same as the retired Swift relay:
 //   - POST /v1/watches (httpapi/watch_routes.go): validates both the port
 //     and the resolved address, rejecting the request outright (400)
 //     before anything is persisted or a connection is ever attempted.

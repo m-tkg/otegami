@@ -1,10 +1,8 @@
 // Package api holds the wire-format DTOs shared between the relay's HTTP
 // API and the app (apps/Otegami, packages/OtegamiKit/Sources/OtegamiRelayAPI
 // and PushRelayClient). Field names, JSON shapes, and the date encoding
-// below MUST stay byte-for-byte compatible with the Swift
-// OtegamiRelayAPI.swift package this mirrors — the app is not being
-// changed as part of this port (Task #180), so any drift here breaks a
-// client that's already shipped.
+// below MUST stay byte-for-byte compatible with the app's Swift
+// OtegamiRelayAPI.swift package; any drift here breaks a shipped client.
 package api
 
 import (
@@ -15,9 +13,8 @@ import (
 
 // wireTime formats/parses exactly like Swift's `JSONEncoder.dateEncodingStrategy
 // = .iso8601` / `JSONDecoder.dateDecodingStrategy = .iso8601`, which is what
-// Hummingbird's BasicRequestContext wires up for every JSON response/request
-// in the Swift relay (see Hummingbird's RequestContext.swift). That
-// strategy uses Foundation's ISO8601DateFormatter with the default
+// the app uses for relay responses and requests. That strategy uses
+// Foundation's ISO8601DateFormatter with the default
 // `.withInternetDateTime` options: "yyyy-MM-dd'T'HH:mm:ssZ" — no fractional
 // seconds, "Z" for UTC. This is exactly Go's time.RFC3339 format string.
 type WireTime struct {

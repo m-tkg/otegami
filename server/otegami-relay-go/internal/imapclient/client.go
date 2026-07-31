@@ -1,8 +1,7 @@
 // Package imapclient is a deliberately tiny IMAP client covering exactly
 // what the watcher pool needs: LOGIN, AUTHENTICATE XOAUTH2, SELECT, STATUS
-// (UIDNEXT), IDLE/DONE, LOGOUT. Mirrors MinimalIMAPClient.swift
-// (server/otegami-relay/Sources/OtegamiRelay/Watcher/MinimalIMAPClient.swift)
-// — see that file's doc comment for the full rationale on why this isn't
+// (UIDNEXT), IDLE/DONE, LOGOUT. Mirrors the retired Swift relay's
+// MinimalIMAPClient. This isn't
 // built on a general-purpose IMAP library (github.com/emersion/go-imap):
 // none of the commands here ever involve IMAP literals, so a plain
 // CRLF-line-oriented reader is sufficient, and the CLAUDE-SECURITY F2/F3/

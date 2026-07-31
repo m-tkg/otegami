@@ -338,7 +338,7 @@ XCUITest ターゲットが無いため、`screencapture`/CGEvent ベースの
 | `verify-ios-b-html-render.sh` / `verify-ios-html-height.sh` | 実機フィードバックで見つかった特定 HTML フィクスチャの描画確認 (幅・高さ)。`verify-screen.sh` の `html-N` シナリオと同じ構造のアドホックスクリプト。 |
 | `verify-qa-sweep-offline.sh` | オフライン状態での冷起動・既読化・削除など、雑な操作の組み合わせによる QA スイープ。 |
 | `verify-macos-qa.sh` | macOS 実行時 QA (起動確認・sheet 表示・タブ切替など、CGEvent 駆動)。 |
-| `verify-relay.sh` | otegami-relay の IDLE watch パイプラインを実 Dovecot に対してエンドツーエンドで検証 (`swift run` → `POST /v1/watches` → `doveadm save` → push ログ)。 |
+| `verify-relay.sh` | otegami-relay の IDLE watch パイプラインを実 Dovecot に対してエンドツーエンドで検証 (`go run` → `POST /v1/watches` → `doveadm save` → push ログ)。 |
 
 ## 関連ドキュメント
 

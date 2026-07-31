@@ -1,7 +1,6 @@
 // Package config reads everything the relay needs from the environment at
-// startup, mirroring RelayConfiguration.swift
-// (server/otegami-relay/Sources/OtegamiRelay/Config/RelayConfiguration.swift)
-// exactly — env var names and defaults must stay identical (Task #180's
+// startup, mirroring the retired Swift relay's RelayConfiguration exactly —
+// env var names and defaults must stay identical (Task #180's
 // requirement 9) so an operator's existing .env/docker-compose.yml works
 // unchanged against this binary.
 package config

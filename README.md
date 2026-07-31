@@ -255,9 +255,7 @@ the automated-verification approach used in this project.
   (DTOs shared with the server), `OtegamiTranslation`/
   `OtegamiTranslationFoundationModels`/`TranslationEngine` (the
   on-device translation/summarization stack).
-- `server/otegami-relay-go/` — the push relay (Go, the current
-  production implementation). `server/otegami-relay/` holds a
-  wire/storage-compatible Swift implementation, kept as a reference.
+- `server/otegami-relay-go/` — the push relay (Go).
 - `dev/mailstack/` — the Dovecot + Mailpit development stack.
 
 For module dependency direction, sync engine design, and known pitfalls,
@@ -310,7 +308,8 @@ MIT — see [LICENSE](LICENSE).
 ### Third-party licenses
 
 Otegami depends on several third-party open-source packages via Swift
-Package Manager (GRDB.swift, a MailCore2 fork and its C dependencies,
-Hummingbird, SwiftNIO, swift-crypto, and others), and bundles the
-Archivo font (SIL Open Font License). See [NOTICE](NOTICE) for the full
-list, license types, and copyright notices.
+Package Manager (GRDB.swift, a MailCore2 fork and its C dependencies),
+and Go modules for the push relay, and bundles the Archivo font (SIL Open
+Font License). See [NOTICE](NOTICE) for license and copyright notices, and
+[`server/otegami-relay-go/go.mod`](server/otegami-relay-go/go.mod) for the
+relay module list and versions.
