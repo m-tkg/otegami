@@ -28,6 +28,8 @@ struct MailViewerSettingsView: View {
     // B「画像の設定」— 実機フィードバック第3弾 (I) で旧「その他」から移設。
     @AppStorage(ImageSettingsStore.autoShowEmbeddedImagesKey) private var autoShowEmbeddedImages = ImageSettingsStore.defaultAutoShowEmbedded
     @AppStorage(ImageSettingsStore.autoShowRemoteImagesKey) private var autoShowRemoteImages = ImageSettingsStore.defaultAutoShowRemote
+    /// Task #207「保護されていない画像 (http)」.
+    @AppStorage(ImageSettingsStore.plaintextHTTPImagePolicyKey) private var plaintextHTTPImagePolicyRaw = ImageSettingsStore.defaultPlaintextHTTPImagePolicy.rawValue
     // A9「メールの表示」— 実機フィードバック第3弾 (I) で旧「その他」から移設。
     @AppStorage(HTMLDisplaySettingsStore.alwaysShowPlainTextKey) private var alwaysShowPlainText = HTMLDisplaySettingsStore.defaultAlwaysShowPlainText
     // Task #45「ダークモードで文字が読めない」.
@@ -163,10 +165,24 @@ struct MailViewerSettingsView: View {
                     .accessibilityIdentifier("settings.images.autoShowEmbeddedToggle")
                 Toggle("リモート画像を自動で読み込む", isOn: $autoShowRemoteImages)
                     .accessibilityIdentifier("settings.images.autoShowRemoteToggle")
+                // Task #207「保護されていない画像 (http)」— リモート画像の
+                // うち平文httpのものだけ、`https`と別に扱う設定。上の
+                // 「リモート画像を自動で読み込む」がオフの間は、そもそも
+                // リモート画像全部が既存の「画像を表示」バナーでブロック
+                // されているため、この設定自体が意味を持たない
+                // (`HTMLMessageView`のdoc comment参照)。
+                Picker("保護されていない画像 (http)", selection: $plaintextHTTPImagePolicyRaw) {
+                    ForEach(PlaintextHTTPImagePolicy.allCases) { policy in
+                        Text(policy.title).tag(policy.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(!autoShowRemoteImages)
+                .accessibilityIdentifier("settings.images.plaintextHTTPImagePolicyPicker")
             } header: {
                 Text("画像")
             } footer: {
-                Text("埋め込み画像はメールに直接添付・埋め込まれた画像（cid: インライン画像・画像添付）です。リモート画像は外部サーバーから読み込む画像で、自動で読み込むと送信者にメールを開いたことが伝わる場合があります（開封トラッキング）。いずれもオフの場合は、メール詳細画面の「画像を表示」ボタンでそのメールだけ一時的に表示できます。")
+                Text("埋め込み画像はメールに直接添付・埋め込まれた画像（cid: インライン画像・画像添付）です。リモート画像は外部サーバーから読み込む画像で、自動で読み込むと送信者にメールを開いたことが伝わる場合があります（開封トラッキング）。いずれもオフの場合は、メール詳細画面の「画像を表示」ボタンでそのメールだけ一時的に表示できます。暗号化されていない接続 (http) で読み込む画像は、経路上で内容が書き換えられる可能性があるため、リモート画像を自動で読み込む場合でも既定では読み込み前に確認します。この動作は「常に許可」「常に拒否」に変更できます。")
             }
 
             // A9「メールの表示」.

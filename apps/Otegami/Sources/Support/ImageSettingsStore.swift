@@ -38,13 +38,53 @@ enum ImageSettingsStore {
     /// works as a per-message opt-in for anyone who turns this off.
     static let autoShowRemoteImagesKey = "images.autoShowRemote"
     static let defaultAutoShowRemote = true
+
+    /// Task #207 (ユーザー要望「(平文httpの画像を)許可する方針でいいが、
+    /// 『http の画像があるけどいい?』的な確認ダイアログは出してほしい」):
+    /// `autoShowRemoteImagesKey`(B6、上記)とは独立した3値設定 — 平文
+    /// `http`(`https`は対象外) の画像は経路上で改竄されうるため、`https`と
+    /// 違い既定では読み込む前に確認する
+    /// (`HTMLMessageView.shouldOfferPlaintextHTTPImages`)。
+    /// `autoShowRemoteImagesKey`が false の間はこの設定自体が意味を持たない
+    /// — そもそもリモート画像全部が既存の「画像を表示」バナーでブロック
+    /// されており、平文httpだけを個別に扱う余地がない (`HTMLMessageView`
+    /// のdoc comment参照)。既定は`.ask`(ユーザー要望「今回の要望の趣旨」
+    /// どおり、確認するが既定)。
+    static let plaintextHTTPImagePolicyKey = "images.plaintextHTTPImagePolicy"
+    static let defaultPlaintextHTTPImagePolicy = PlaintextHTTPImagePolicy.ask
+}
+
+/// Task #207: `ImageSettingsStore.plaintextHTTPImagePolicyKey`の値の型 —
+/// `MessagePostActionSettingsStore.PostDeleteArchiveAction`と同じ
+/// 「`String, CaseIterable, Identifiable`のenumをそのまま`@AppStorage`の
+/// rawValueとして使う」パターン。
+enum PlaintextHTTPImagePolicy: String, CaseIterable, Identifiable {
+    /// 既定 — メールを開くたびに確認ダイアログを出す
+    /// (`HTMLMessageView.showPlaintextHTTPImagesAlert`)。
+    case ask
+    /// 確認せず常に読み込む (`https`の画像と同じ扱いになる)。
+    case alwaysAllow
+    /// 確認せず常にブロックしたまま (バナーも出さない — 「常に拒否」を
+    /// 選んだ人に毎回バナーで催促し続けるのは趣旨に反するため)。
+    case alwaysBlock
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .ask: String(localized: "確認する")
+        case .alwaysAllow: String(localized: "常に許可")
+        case .alwaysBlock: String(localized: "常に拒否")
+        }
+    }
 }
 
 extension UserDefaults {
     static func registerOtegamiImageDefaults() {
         standard.register(defaults: [
             ImageSettingsStore.autoShowEmbeddedImagesKey: ImageSettingsStore.defaultAutoShowEmbedded,
-            ImageSettingsStore.autoShowRemoteImagesKey: ImageSettingsStore.defaultAutoShowRemote
+            ImageSettingsStore.autoShowRemoteImagesKey: ImageSettingsStore.defaultAutoShowRemote,
+            ImageSettingsStore.plaintextHTTPImagePolicyKey: ImageSettingsStore.defaultPlaintextHTTPImagePolicy.rawValue
         ])
     }
 }

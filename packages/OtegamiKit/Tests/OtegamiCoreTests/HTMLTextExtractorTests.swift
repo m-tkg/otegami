@@ -165,3 +165,51 @@ struct HTMLExternalResourceScannerTests {
         #expect(!HTMLExternalResourceScanner.containsExternalResource(html: "Just some plain text, no HTML here."))
     }
 }
+
+/// Task #207: `containsPlaintextHTTPImage` — the narrower, image-only,
+/// http-only detector that gates the「保護されていない画像」confirmation
+/// (`HTMLMessageView`), distinct from the broader `containsExternalResource`
+/// above.
+@Suite("HTMLExternalResourceScanner.containsPlaintextHTTPImage")
+struct HTMLExternalResourceScannerPlaintextHTTPImageTests {
+    @Test("detects a plaintext http image src")
+    func detectsHTTPImage() {
+        let html = "<html><body><img src=\"http://example.com/x.png\"></body></html>"
+        #expect(HTMLExternalResourceScanner.containsPlaintextHTTPImage(html: html))
+    }
+
+    @Test("does not flag an https image src")
+    func doesNotFlagHTTPSImage() {
+        let html = "<html><body><img src=\"https://example.com/x.png\"></body></html>"
+        #expect(!HTMLExternalResourceScanner.containsPlaintextHTTPImage(html: html))
+    }
+
+    @Test("does not flag a plaintext http link (no image)")
+    func doesNotFlagHTTPLink() {
+        let html = "<html><body><a href=\"http://example.com\">click</a></body></html>"
+        #expect(!HTMLExternalResourceScanner.containsPlaintextHTTPImage(html: html))
+    }
+
+    @Test("detects a plaintext http CSS background-image url()")
+    func detectsHTTPBackgroundImage() {
+        let html = "<div style=\"background-image:url('http://example.com/bg.jpg')\"></div>"
+        #expect(HTMLExternalResourceScanner.containsPlaintextHTTPImage(html: html))
+    }
+
+    @Test("detects a plaintext http background attribute")
+    func detectsHTTPBackgroundAttribute() {
+        let html = "<td background=\"http://example.com/bg.gif\"></td>"
+        #expect(HTMLExternalResourceScanner.containsPlaintextHTTPImage(html: html))
+    }
+
+    @Test("does not flag inline cid: images")
+    func doesNotFlagInlineCID() {
+        let html = "<html><body><img src=\"cid:logo@otegami.test\"></body></html>"
+        #expect(!HTMLExternalResourceScanner.containsPlaintextHTTPImage(html: html))
+    }
+
+    @Test("does not flag plain text with no markup")
+    func doesNotFlagPlainText() {
+        #expect(!HTMLExternalResourceScanner.containsPlaintextHTTPImage(html: "Just some plain text, no HTML here."))
+    }
+}

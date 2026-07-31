@@ -303,6 +303,68 @@ Apple Foundation Models によるオンデバイス翻訳 (英語→日本語の
    修正後は正しいサイズのダイアログが開く)。iOS は `.sheet` が画面いっぱ
    いに広がる既定の挙動なのでこの問題自体が発生しない。
 
+### Task #207 (ユーザー要望: 平文 http の画像は許可する方針でよいが、
+確認ダイアログを出してほしい)
+
+Task #205 で `NSAllowsArbitraryLoadsInWebContent` を追加し、平文 `http`
+の画像も (ATS に弾かれず) 読み込めるようにした直後の要望。`http` は経路
+上で改竄されうるため、`https` と同じ「既定で自動表示」にはせず、メール
+ごとに「http の画像があるが読み込むか」を確認してから読み込む。
+
+- **既存の仕組みを拡張** — 新しい遮断機構を並立させず
+  `HTMLWebViewCoordinator` の `WKContentRuleList` に http 専用の追加
+  ルール (`^http://.*` を対象、`https://` は前方一致しないので除外不要)
+  を足しただけ。`allowsExternalContent`(既存、リモート画像全般の可否) が
+  false の間は従来どおり全リモート画像を一括ブロックし、true になって
+  初めて http 専用ルールが (`allowsPlaintextHTTPImages` が false の間)
+  効く — `https` の挙動・既定は一切変更していない。
+- **判定は画像限定・http 限定の狭いスキャナ**
+  (`HTMLExternalResourceScanner.containsPlaintextHTTPImage`、
+  `packages/OtegamiKit`) を新規に切り出した。既存の
+  `containsExternalResource`(バナー表示要否の判定に使う、`href` も含む
+  広い判定) とは別物 — `href` だけのメール (画像なし) で誤って確認
+  ダイアログを出さないよう、`src`/`background`/`poster` 属性と CSS の
+  `background-image: url(...)` だけを対象にした。ユニットテストは
+  `packages/OtegamiKit/Tests/OtegamiCoreTests/HTMLTextExtractorTests.swift`。
+- **確認の出し方**: 「画像を表示」バナーと同じ帯には混ぜず、意図的に
+  別立てのバナー (`plaintextHTTPImagesBanner`、警告色
+  `OtegamiColor.destructive`) をタップすると `.alert` (中央モーダル) が
+  開き、そこで初めて実際に許可する。Task #190 が一括操作の実行前確認を
+  `.confirmationDialog`(iPad/macOS でポップオーバー化する) から `.alert`
+  (常に画面中央) へ差し替えた方針と揃えた — 安全性に関わる確認である点
+  は共通で、吹き出しより中央モーダルの方が見落としにくいと判断した。
+  文言 (「保護されていない接続の画像を読み込みますか？」+ 「暗号化され
+  ていない接続 (http) …通信内容は経路上で書き換えられる可能性がありま
+  す。」) で平文であることそのものが伝わるようにした。
+- **許可の範囲**: 既存の「画像を表示」バナー
+  (`allowsExternalContent`/`allowsEmbeddedImages`) と同じ「そのメール
+  だけ、このアプリセッション中」— `HTMLMessageView` の `@State` はメッ
+  セージを開くたびに `init` から作り直されるため、別のメールを開く/
+  アプリを再起動すると既定 (設定の `PlaintextHTTPImagePolicy`) に戻る。
+  既存の設計にすでにある唯一のスコープなので、新しい粒度 (送信者ごと・
+  恒久的等) を増やさずこれに揃えた。
+- **設定 (画像設定「保護されていない画像 (http)」)**: 「確認する」(既定)
+  /「常に許可」/「常に拒否」の3値 (`ImageSettingsStore
+  .plaintextHTTPImagePolicyKey`、`PlaintextHTTPImagePolicy`)。「常に
+  拒否」はバナー自体を出さない (毎回のバナーが「常に拒否」を選んだ人へ
+  の催促になるのを避けるため)。「リモート画像を自動で読み込む」が OFF
+  の間はこの設定自体に意味が無い (既存の「画像を表示」バナーが先に全
+  リモート画像を覆っているため) — 設定画面でも `.disabled` にしている。
+- **検証**: `scripts/verify-screen.sh html-10`(平文 http 画像2枚を含む
+  Task #205 のフィクスチャ) で「保護されていない画像を確認」バナーが
+  出ること、ブロックされた画像がプレースホルダ表示になること
+  (＝実際に `WKContentRuleList` が該当リクエストを遮断していること) を
+  iOS シミュレータのタップ不要経路で確認済み。`html-0`(http 画像を含ま
+  ない既存フィクスチャ) でバナーが一切出ないこと、`https` 画像がこれ
+  までどおり自動表示されることも確認済み。**バナーをタップして `.alert`
+  自体が開き、「読み込む」で実際に画像が表示される一連の流れは実機/
+  シミュレータでのタップ操作で未確認** (macOS の CGEvent 駆動でのクリッ
+  クがこのセッションでは安定せず、`docs/verify.md` の「粘らない」方針
+  により打ち切った) — 状態遷移の実装自体は `allowsExternalContent`/
+  `allowsEmbeddedImages` の既存バナーと全く同じパターン
+  (`allowsPlaintextHTTPImages = true` → `reloadIfNeeded` → content rule
+  list 再適用) で、そちらは `OtegamiImageSettingsUITests` でカバー済み。
+
 ## ビジュアルスタイル
 
 - フラットデザイン。角丸は `OtegamiRadius.none` (0) が既定で、**カード

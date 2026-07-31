@@ -117,6 +117,27 @@ struct HTMLMessageView: View {
     /// to the right default even before any explicit write.
     @State private var allowsExternalContent: Bool
     @State private var allowsEmbeddedImages: Bool
+    /// Task #207 (ユーザー要望「(平文httpの画像を)許可する方針でいいが、
+    /// 確認ダイアログは出してほしい」): `allowsExternalContent`(B6、
+    /// リモート画像全般の可否) とは独立した、平文`http`だけの追加ゲート。
+    /// `allowsExternalContent`が false の間はそもそもリモート画像全部が
+    /// ブロックされておりこのフラグは無関係 (下の`shouldOfferPlaintextHTTP
+    /// Images`参照) — `allowsExternalContent`が true になって初めて意味を
+    /// 持つ。他の2つの画像フラグと同じ「メッセージを開くたびに`init`で
+    /// 現在の設定を読み直す」パターンだが、こちらは`ImageSettingsStore
+    /// .plaintextHTTPImagePolicyKey`が`.alwaysAllow`の場合だけ`true`で
+    /// 始まる (既定`.ask`では常に`false`で始まり、確認ダイアログで
+    /// 明示的に許可されるまでブロックのまま)。
+    @State private var allowsPlaintextHTTPImages: Bool
+    /// Task #207: 上の`allowsPlaintextHTTPImages`の初期値を決めるのに使った
+    /// のと同じ設定値 — バナー/ダイアログを出すかどうかの分岐
+    /// (`shouldOfferPlaintextHTTPImages`) にも必要なので保持しておく
+    /// (`.alwaysBlock`はバナーごと出さない、`.alwaysAllow`は最初から
+    /// ブロックされていないのでバナーの出番がない)。
+    @State private var plaintextHTTPImagePolicy: PlaintextHTTPImagePolicy
+    /// Task #207: 「保護されていない画像を確認」バナーをタップしたときだけ
+    /// `true`になる (`.alert(isPresented:)`)。
+    @State private var showPlaintextHTTPImagesAlert = false
     /// Task #45「ダークモードで文字が読めない」— seeded the same way as the
     /// two image settings above (see their doc comment; same reasoning:
     /// this bakes into the loaded document itself via `HTMLDocumentBuilder
@@ -163,6 +184,10 @@ struct HTMLMessageView: View {
         self.onHeightChange = onHeightChange
         _allowsExternalContent = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowRemoteImagesKey))
         _allowsEmbeddedImages = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowEmbeddedImagesKey))
+        let plaintextHTTPImagePolicyRaw = UserDefaults.standard.string(forKey: ImageSettingsStore.plaintextHTTPImagePolicyKey)
+        let plaintextHTTPImagePolicy = plaintextHTTPImagePolicyRaw.flatMap(PlaintextHTTPImagePolicy.init(rawValue:)) ?? ImageSettingsStore.defaultPlaintextHTTPImagePolicy
+        _plaintextHTTPImagePolicy = State(initialValue: plaintextHTTPImagePolicy)
+        _allowsPlaintextHTTPImages = State(initialValue: plaintextHTTPImagePolicy == .alwaysAllow)
         _autoAdjustColorsInDarkMode = State(initialValue: UserDefaults.standard.bool(forKey: HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey))
         _forceLightBackground = State(initialValue: UserDefaults.standard.bool(forKey: HTMLDisplaySettingsStore.forceLightBackgroundKey))
     }
@@ -173,6 +198,49 @@ struct HTMLMessageView: View {
 
     private var hasEmbeddedContent: Bool {
         CIDURLRewriter.containsCIDReference(html: html)
+    }
+
+    /// Task #207: `HTMLExternalResourceScanner.containsPlaintextHTTPImage`
+    /// のdoc comment参照 — `hasExternalContent`(上、`href`も含む広い判定)
+    /// とは別の、画像限定・httpのみの狭い判定。
+    private var hasPlaintextHTTPContent: Bool {
+        HTMLExternalResourceScanner.containsPlaintextHTTPImage(html: html)
+    }
+
+    /// Task #207: 「保護されていない画像を確認」バナー (下の
+    /// `plaintextHTTPImagesBanner`) を出すかどうか。`allowsExternalContent`
+    /// が false の間は既存の`imagesBanner`(「画像を表示」) がリモート画像
+    /// 全部を覆っており、平文httpだけを個別に案内する意味が無い (むしろ
+    /// 二重にバナーが並んで紛らわしい) ので対象外。`.alwaysBlock`は
+    /// 「常に拒否」を選んだ人への配慮 — 毎回バナーで催促し続けない
+    /// (`PlaintextHTTPImagePolicy`のdoc comment参照)。
+    private var shouldOfferPlaintextHTTPImages: Bool {
+        hasPlaintextHTTPContent
+            && allowsExternalContent
+            && !allowsPlaintextHTTPImages
+            && plaintextHTTPImagePolicy != .alwaysBlock
+    }
+
+    /// Task #207: 既存の`imagesBanner`(下) とは意図的に別立てのバナー —
+    /// 埋め込み/リモートの2択`Menu`にこれを混ぜると「安全でない接続の
+    /// 警告」という異なる重みの選択肢が並んでしまい紛れる。タップしても
+    /// 即座には許可せず、`.alert`(下の`body`) を開くだけ — 「確認ダイア
+    /// ログを出してほしい」というユーザー要望どおり、実際の許可は
+    /// ダイアログでの明示的な「読み込む」操作を経由する。
+    @ViewBuilder
+    private var plaintextHTTPImagesBanner: some View {
+        if shouldOfferPlaintextHTTPImages {
+            Button {
+                showPlaintextHTTPImagesAlert = true
+            } label: {
+                Label("保護されていない画像を確認", systemImage: "exclamationmark.shield")
+            }
+            .buttonStyle(.bordered)
+            .tint(OtegamiColor.destructive)
+            .padding(.horizontal)
+            .padding(.top, 4)
+            .accessibilityIdentifier("messageDetail.showPlaintextHTTPImagesBanner")
+        }
     }
 
     /// 画像バナー統合 (実機フィードバック追加分): 埋め込み画像とリモート画像を
@@ -248,10 +316,13 @@ struct HTMLMessageView: View {
         VStack(alignment: .leading, spacing: 8) {
             imagesBanner
 
+            plaintextHTTPImagesBanner
+
             HTMLWebViewRepresentable(
                 html: html,
                 allowsExternalContent: allowsExternalContent,
                 allowsEmbeddedImages: allowsEmbeddedImages,
+                allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
                 autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode,
                 forceLightBackground: forceLightBackground,
                 bottomContentInset: bottomContentInset,
@@ -291,6 +362,29 @@ struct HTMLMessageView: View {
                 await translationController.applyTranslations(translatedTexts)
                 await translationController.showTranslated()
             }
+        }
+        // Task #207 (ユーザー要望「『http の画像があるけどいい?』的な確認
+        // ダイアログは出してほしい」): Task #190 が「一括操作の実行前確認」
+        // を`.confirmationDialog`(iPad/macOSでポップオーバー化する) から
+        // `.alert`(常に画面中央のモーダル) へ差し替えた方針に揃える —
+        // 平文httpの画像読み込みも「経路上で改竄されうる」という安全性に
+        // 関わる確認である点は同じで、吹き出しよりも中央モーダルの方が
+        // 見落としにくい。許可の範囲は既存の「画像を表示」バナー
+        // (`allowsExternalContent`/`allowsEmbeddedImages`) と同じ「この
+        // メールだけ、このアプリセッション中」— このビューの`@State`は
+        // メッセージを開くたびに`init`から作り直されるので、別のメールを
+        // 開く/アプリを再起動すると自然に既定(`plaintextHTTPImagePolicy`)
+        // に戻る。
+        .alert(
+            "保護されていない接続の画像を読み込みますか？",
+            isPresented: $showPlaintextHTTPImagesAlert
+        ) {
+            Button("読み込む") { allowsPlaintextHTTPImages = true }
+                .accessibilityIdentifier("messageDetail.plaintextHTTPImagesAlert.load")
+            Button("キャンセル", role: .cancel) {}
+                .accessibilityIdentifier("messageDetail.plaintextHTTPImagesAlert.cancel")
+        } message: {
+            Text("このメールには暗号化されていない接続 (http) で読み込む画像が含まれています。通信内容は経路上で書き換えられる可能性があります。")
         }
     }
 
@@ -1345,6 +1439,9 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     let html: String
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
+    /// Task #207 — see `HTMLMessageView.allowsPlaintextHTTPImages`'s doc
+    /// comment.
+    let allowsPlaintextHTTPImages: Bool
     let autoAdjustColorsInDarkMode: Bool
     /// Task #71 — see `HTMLMessageView.forceLightBackground`'s doc comment.
     let forceLightBackground: Bool
@@ -1401,6 +1498,7 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
         webView.alpha = 0
         context.coordinator.load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
             autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
             bottomContentInset: bottomContentInset, into: webView
         )
@@ -1410,6 +1508,7 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         context.coordinator.reloadIfNeeded(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
             autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
             bottomContentInset: bottomContentInset,
             cidContext: cidContext, into: webView
@@ -1423,6 +1522,9 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     let html: String
     let allowsExternalContent: Bool
     let allowsEmbeddedImages: Bool
+    /// Task #207 — see `HTMLMessageView.allowsPlaintextHTTPImages`'s doc
+    /// comment.
+    let allowsPlaintextHTTPImages: Bool
     let autoAdjustColorsInDarkMode: Bool
     /// Task #71 — see `HTMLMessageView.forceLightBackground`'s doc comment.
     let forceLightBackground: Bool
@@ -1459,6 +1561,7 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
         webView.alphaValue = 0
         context.coordinator.load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
             autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
             bottomContentInset: bottomContentInset, into: webView
         )
@@ -1468,6 +1571,7 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.reloadIfNeeded(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
             autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
             bottomContentInset: bottomContentInset,
             cidContext: cidContext, into: webView
@@ -1490,6 +1594,35 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     """
 
     private static let ruleListIdentifier = "otegami.blockAllRemoteResources"
+
+    /// Task #207: blocks only plaintext `http://` subresource requests,
+    /// leaving `https://` untouched — confirmed feasible: `WKContentRuleList`
+    /// matches `url-filter` against the full request URL as a plain regex,
+    /// so anchoring on the literal scheme (`^http://`, no `s`) is sufficient
+    /// to exclude `https://` without a negative lookahead (an `https://` URL
+    /// can never match `^http://`, since the character right after `http` is
+    /// `s`, not `:`). Used instead of `blockAllRemoteResourcesRuleList`
+    /// whenever `allowsExternalContent` is already true (remote images in
+    /// general are allowed) but `allowsPlaintextHTTPImages` isn't yet — see
+    /// `RemoteContentBlockMode`/`load(...)` below for how the two rule lists
+    /// are chosen between.
+    private static let blockPlaintextHTTPResourcesRuleList = """
+    [{"trigger": {"url-filter": "^http://.*"}, "action": {"type": "block"}}]
+    """
+
+    private static let httpOnlyRuleListIdentifier = "otegami.blockPlaintextHTTPResources"
+
+    /// Task #207: which (if either) of the two rule lists above should be
+    /// active for the current combination of `allowsExternalContent`/
+    /// `allowsPlaintextHTTPImages`. `https` images stay governed by
+    /// `allowsExternalContent` alone, unchanged from before this task —
+    /// `.httpOnly` only ever narrows what's blocked relative to `.allRemote`,
+    /// it never blocks anything `.allRemote` wouldn't already have blocked.
+    private enum RemoteContentBlockMode: Equatable {
+        case none
+        case httpOnly
+        case allRemote
+    }
 
     /// M8: the `WKURLSchemeHandler` for `otegami-cid://`, created once
     /// (`WKWebViewConfiguration.setURLSchemeHandler` can only be called
@@ -1529,6 +1662,11 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     private var lastLoadedHTML: String?
     private var lastAllowsExternalContent: Bool?
     private var lastAllowsEmbeddedImages: Bool?
+    /// Task #207 — mirrors the two `lastAllows...` flags above, same
+    /// reasoning: tracked so `reloadIfNeeded` reloads (and re-applies the
+    /// content rule list) when only this flips, e.g. the user confirms the
+    /// "保護されていない画像を確認" alert mid-view.
+    private var lastAllowsPlaintextHTTPImages: Bool?
     /// Task #45 — mirrors the two `lastAllows...` flags above: needs to be
     /// tracked separately so `reloadIfNeeded` reloads the document when only
     /// this setting flips (e.g. the user toggles it in Settings while a
@@ -1599,6 +1737,10 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         if let html = lastLoadedHTML, let allowsExternalContent = lastAllowsExternalContent, let allowsEmbeddedImages = lastAllowsEmbeddedImages {
             load(
                 html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+                // Task #207: fail safe (block) rather than fail open if this
+                // is somehow ever nil — never re-show a plaintext-http image
+                // this recovery path didn't itself just decide to.
+                allowsPlaintextHTTPImages: lastAllowsPlaintextHTTPImages ?? false,
                 autoAdjustColorsInDarkMode: lastAutoAdjustColorsInDarkMode ?? HTMLDisplaySettingsStore.defaultAutoAdjustColorsInDarkMode,
                 forceLightBackground: lastForceLightBackground ?? HTMLDisplaySettingsStore.defaultForceLightBackground,
                 bottomContentInset: lastBottomContentInset ?? 0,
@@ -1609,7 +1751,8 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     }
 
     func reloadIfNeeded(
-        html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, autoAdjustColorsInDarkMode: Bool,
+        html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, allowsPlaintextHTTPImages: Bool,
+        autoAdjustColorsInDarkMode: Bool,
         forceLightBackground: Bool,
         bottomContentInset: CGFloat, cidContext: CIDResolutionContext, into webView: WKWebView
     ) {
@@ -1617,19 +1760,22 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         guard html != lastLoadedHTML
             || allowsExternalContent != lastAllowsExternalContent
             || allowsEmbeddedImages != lastAllowsEmbeddedImages
+            || allowsPlaintextHTTPImages != lastAllowsPlaintextHTTPImages
             || autoAdjustColorsInDarkMode != lastAutoAdjustColorsInDarkMode
             || forceLightBackground != lastForceLightBackground
             || bottomContentInset != lastBottomContentInset
         else { return }
         load(
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
             autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
             bottomContentInset: bottomContentInset, into: webView
         )
     }
 
     func load(
-        html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, autoAdjustColorsInDarkMode: Bool,
+        html: String, allowsExternalContent: Bool, allowsEmbeddedImages: Bool, allowsPlaintextHTTPImages: Bool = false,
+        autoAdjustColorsInDarkMode: Bool,
         forceLightBackground: Bool = false,
         bottomContentInset: CGFloat = 0, into webView: WKWebView
     ) {
@@ -1637,6 +1783,7 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
         lastLoadedHTML = html
         lastAllowsExternalContent = allowsExternalContent
         lastAllowsEmbeddedImages = allowsEmbeddedImages
+        lastAllowsPlaintextHTTPImages = allowsPlaintextHTTPImages
         lastAutoAdjustColorsInDarkMode = autoAdjustColorsInDarkMode
         lastForceLightBackground = forceLightBackground
         lastBottomContentInset = bottomContentInset
@@ -1657,25 +1804,34 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
             forceLightBackground: forceLightBackground, bottomContentInset: bottomContentInset
         )
 
-        applyContentRuleList(blocked: !allowsExternalContent, to: webView) { [weak webView] in
+        // Task #207: `https` stays governed by `allowsExternalContent`
+        // alone (unchanged) — the http-only rule list only ever applies
+        // once general remote images are already allowed, narrowing what's
+        // still blocked down to plaintext `http` specifically.
+        let blockMode: RemoteContentBlockMode = !allowsExternalContent
+            ? .allRemote
+            : (!allowsPlaintextHTTPImages ? .httpOnly : .none)
+        applyContentRuleList(mode: blockMode, to: webView) { [weak webView] in
             guard let webView else { return }
             webView.loadHTMLString(document, baseURL: nil)
         }
     }
 
-    private func applyContentRuleList(blocked: Bool, to webView: WKWebView, completion: @escaping () -> Void) {
+    private func applyContentRuleList(mode: RemoteContentBlockMode, to webView: WKWebView, completion: @escaping () -> Void) {
         let controller = webView.configuration.userContentController
         controller.removeAllContentRuleLists()
-        guard blocked else {
+        guard mode != .none else {
             completion()
             return
         }
+        let identifier = mode == .allRemote ? Self.ruleListIdentifier : Self.httpOnlyRuleListIdentifier
+        let encodedRuleList = mode == .allRemote ? Self.blockAllRemoteResourcesRuleList : Self.blockPlaintextHTTPResourcesRuleList
         WKContentRuleListStore.default().compileContentRuleList(
-            forIdentifier: Self.ruleListIdentifier,
-            encodedContentRuleList: Self.blockAllRemoteResourcesRuleList
+            forIdentifier: identifier,
+            encodedContentRuleList: encodedRuleList
         ) { ruleList, _ in
-            // A compile failure (shouldn't happen for this fixed, valid
-            // rule list) just means external content loads unblocked
+            // A compile failure (shouldn't happen for these fixed, valid
+            // rule lists) just means external content loads unblocked
             // rather than the message failing to render at all.
             if let ruleList {
                 controller.add(ruleList)

@@ -231,8 +231,23 @@ translations = {
     "埋め込み画像を自動表示": "Auto-Show Embedded Images",
     "リモート画像を自動で読み込む": "Auto-Load Remote Images",
     "画像": "Images",
-    "埋め込み画像はメールに直接添付・埋め込まれた画像（cid: インライン画像・画像添付）です。リモート画像は外部サーバーから読み込む画像で、自動で読み込むと送信者にメールを開いたことが伝わる場合があります（開封トラッキング）。いずれもオフの場合は、メール詳細画面の「画像を表示」ボタンでそのメールだけ一時的に表示できます。":
-        "Embedded images are attached directly inside the message (cid: inline images and image attachments). Remote images load from an external server, and loading them automatically can let the sender know you opened the message (open tracking). With either off, you can still show images for a single message using the “Show Images” button in the message view.",
+    # Task #207 (ユーザー要望「(平文httpの画像を)許可する方針でいいが、
+    # 確認ダイアログは出してほしい」): 元の文言 (「いずれもオフの場合は…
+    # 一時的に表示できます。」で終わっていた版) に、平文http画像の既定確認
+    # 動作の説明を追記した — 古いキーはもう`MailViewerSettingsView.swift`
+    # から参照されないのでこの辞書からも削除 (このファイル冒頭のdoc
+    # comment「Keeping this from drifting again」の指示どおり)。
+    "埋め込み画像はメールに直接添付・埋め込まれた画像（cid: インライン画像・画像添付）です。リモート画像は外部サーバーから読み込む画像で、自動で読み込むと送信者にメールを開いたことが伝わる場合があります（開封トラッキング）。いずれもオフの場合は、メール詳細画面の「画像を表示」ボタンでそのメールだけ一時的に表示できます。暗号化されていない接続 (http) で読み込む画像は、経路上で内容が書き換えられる可能性があるため、リモート画像を自動で読み込む場合でも既定では読み込み前に確認します。この動作は「常に許可」「常に拒否」に変更できます。":
+        "Embedded images are attached directly inside the message (cid: inline images and image attachments). Remote images load from an external server, and loading them automatically can let the sender know you opened the message (open tracking). With either off, you can still show images for a single message using the “Show Images” button in the message view. Images loaded over an unencrypted connection (http) can be altered in transit, so even with remote images loading automatically, they're confirmed before loading by default. This behavior can be changed to “Always Allow” or “Always Block”.",
+    "保護されていない画像 (http)": "Unprotected Images (http)",
+    "保護されていない画像を確認": "Review Unprotected Images",
+    "保護されていない接続の画像を読み込みますか？": "Load Images Over an Unprotected Connection?",
+    "このメールには暗号化されていない接続 (http) で読み込む画像が含まれています。通信内容は経路上で書き換えられる可能性があります。":
+        "This message contains images loaded over an unencrypted connection (http). The content could be altered in transit.",
+    "読み込む": "Load",
+    "確認する": "Ask Every Time",
+    "常に許可": "Always Allow",
+    "常に拒否": "Always Block",
     "アプリ内ブラウザ": "In-App Browser",
     "デフォルトブラウザ": "Default Browser",
     "リンク": "Links",
