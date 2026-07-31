@@ -141,3 +141,68 @@ CI ランナーは同じ Xcode/Swift ツールチェーンでもローカルよ�
 - 見た目やアクセシビリティ識別子を変えずに構造だけ変える場合は、既存の
   `scripts/verify-*.sh` をローカルで回して回帰がないか確認する
   ([docs/verify.md](verify.md) 参照)。
+
+## 既知の落とし穴: `withTaskGroup` のキャンセル待ちを経過時間で検証すると CI だけ落ちる (Task #204)
+
+`ci-app` が3回連続で
+`PushOAuthAccessTokenResolutionTests.returnsNilOnTimeout()` で落ちた
+(`elapsed → 8.369秒 < 2.0秒` 失敗、他に 4.137秒・4.603秒)。**ローカルの
+`make test`/`swift test` では常に通っていた** — 「ローカルで通るが CI
+だけ落ちる」の実例。
+
+対象実装 (`packages/OtegamiKit/Sources/PushRelayClient/
+PushOAuthAccessTokenResolution.swift` の `resolve(timeout:tokenFetch:)`)
+は `withTaskGroup` で本物の `tokenFetch` と `timeout` 分の `Task.sleep`
+を競争させ、先に終わった方を結果として採用し、`defer { group.cancelAll()
+}` で負けた側 (通常は `tokenFetch`) を中止する。テストは偽の `tokenFetch`
+を `timeout` よりずっと長く (5秒) 眠らせ、経過時間が短い (2秒未満) こと
+で「中止が効いて `tokenFetch` の完了を待たずに返った」ことを検証していた。
+
+**切り分けた結果、原因は実装のバグではなく、テストの検証方法だった**
+(1211個のテストが CI 上で並行実行される環境負荷が経過時間を押し上げて
+いた)。判定の decisive な実験:
+
+- 偽の待機を 5 秒のまま/60 秒に伸ばしても、非混雑環境では経過時間は
+  timeout (0.05秒) 程度のまま — `cancelAll()` は正しく効いており、
+  `Task.sleep` はキャンセルされると即座に `CancellationError` を投げる
+  (`try?` で握りつぶされ `nil` になる)。
+- **決定打**: `swift:6.1-jammy` の Docker コンテナを `--cpus=2` に制限し、
+  対象テストと一緒に「タイトな CPU ループを回すだけの `@Test` を 1200個」
+  並行実行させ (`ci-app` の約1211テスト並行実行を模した再現)、偽の
+  `tokenFetch` のクロージャに「`Task.sleep` を最後まで走り切ったか」を
+  記録する actor ベースのマーカーを仕込んで確認した。結果:
+  `elapsed=10.97秒` (2秒の閾値を大きく超過) だが
+  **`tokenFetchRanToCompletion=false`** — つまり中止は正しく効いていた。
+  経過時間が伸びたのは、協調スケジューラが CPU ループで飽和している間、
+  「キャンセル済みタスクの continuation が実際に再開されて
+  `withTaskGroup` の暗黙の待ち合わせが解けるまで」の待機列に並ばされて
+  いただけだった。
+- 本番の `tokenFetch` (`GoogleOAuth`/`MicrosoftOAuth` の
+  `TokenStore.accessToken(for:)` → `...Client.send(_:)`) は
+  `try await urlSession.data(for: request)` という `URLSession` の
+  async/await API を使っており、これは `Task` のキャンセルを観測して
+  実際に `URLSessionTask` を中断する。`withCheckedContinuation` で
+  ラップしたコールバック API ではないため、`NotificationService` の
+  30秒予算下でも「遅いトークン取得が中止されず走り続ける」実害はない
+  ことも確認済み。
+
+**教訓**:
+
+- `withTaskGroup`/`withThrowingTaskGroup` はクロージャが `return` した
+  後も、残っている子タスクの完了を暗黙に待ってから呼び出し元に戻る。
+  `cancelAll()` は「中止フラグを立てる」だけで、その子タスクの
+  continuation がいつ再開されるかはスケジューラの空き具合次第 — CPU が
+  他の並行タスクで飽和していると、キャンセル自体は一瞬で効いていても
+  `withTaskGroup` 全体の戻りは数秒遅れうる。
+- 「経過時間が短いこと」でキャンセルの成否を検証するテストは、CI の
+  並行テスト実行のような負荷下で本質的にフレーキーになる。**閾値を
+  緩めて誤魔化さない** — 経過時間ではなく「キャンセルされた側のクロー
+  ジャが最後まで走ったか」を actor 等の副作用で直接記録し、それを
+  assert する形に直すと環境負荷に左右されなくなる
+  (`PushOAuthAccessTokenResolutionTests.returnsNilOnTimeout()` の
+  `CompletionMarker` 参照)。
+- 「CI でだけ再現するタイミング系のバグ」を疑うときは、まずローカルで
+  意図的に極端な値 (今回は偽の待機を 5秒→60秒) にして「本当にバグなら
+  環境を問わず再現するはず」を確認し、次に CPU 制限付き Docker コンテナ
+  +大量の並行タスクで CI の並行負荷を模して再現を試みると、
+  「実装のバグ」と「テストの計測方法の問題」を高い確度で切り分けられる。
