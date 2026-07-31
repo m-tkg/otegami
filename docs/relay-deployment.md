@@ -220,11 +220,22 @@ secret/Xcode Cloud 環境変数) に同じ値を設定して次のビルドを�
 3. **デバイス認証**: `deviceSecret` はハッシュ (SHA-256) のみを保存し、
    平文はレスポンスで一度返した後サーバー側からは復元できない。以降の
    全リクエストは `Authorization: Bearer <deviceSecret>` で認証する。
-   watch は作成した device にのみ紐付き、他 device からの削除・参照は
-   できない。
-4. **即時ワイプ**: `DELETE /v1/watches/:id` は該当行を DB から物理削除
-   する (論理削除ではない) — 呼び出し直後、暗号化された資格情報ごと
-   サーバーから消える。アプリはアカウント削除時にもこれを呼ぶ。
+   `GET`/`DELETE /v1/watches/:id` は呼び出した device 自身の購読
+   (`watch_subscription` 行) だけを対象にし、他 device の購読を削除・
+   参照することはできない。**Task #208 以降の補足**: 同じ IMAP アカウン
+   ト (同一 host/port/TLS/username/authType/mailbox) を複数 device が
+   `watch` として登録すると、内部的には 1本の IMAP 接続 (`watch` 行) を
+   複数 device が共有する — device ごとの分離は「その device がその
+   watch を購読しているかどうか」の単位で保たれ、他 device の資格情報や
+   購読状況そのものは (元々 API で一切返されないため) やはり見えない。
+4. **削除のタイミング**: `DELETE /v1/watches/:id` は呼び出した device の
+   購読行を DB から物理削除する (論理削除ではない)。**Task #208 以降**:
+   その watch を購読している device が他にいなければ、この時点で暗号化
+   された資格情報ごと watch 行自体もサーバーから即時に消える。他 device
+   がまだ同じ watch を購読している場合は、資格情報は (その device が
+   引き続き必要とするため) 残り、削除した device の購読関係だけが消える
+   — 「即座に全消去」ではなく「最後の1台が削除した時点で全消去」に
+   なった点に注意。アプリはアカウント削除時にもこれを呼ぶ。
 5. **通信経路**: `POST /v1/watches` は資格情報を運ぶため、アプリ側は
    リレー URL に https を強制する (ローカル開発の `http://localhost` の
    み例外)。手前の TLS 終端は上記「HTTPS の終端」参照。
@@ -312,3 +323,18 @@ accepted")・失敗時 ("APNs push rejected"、APNs が返す JSON エラー
   [`docs/architecture.md`](architecture.md#c-idle-非対応の-imap-サーバーには-noop-キープアライブが必須)
   の Known pitfalls (c) を参照。
 - 実 APNs 配信・実機での通知受信確認は `.p8` 発行後、上記手順で行う。
+- **Task #208 (watch のデバイス間統合) をまたいでリレーをアップグレード
+  する場合**: `watch` テーブルのスキーマを変更した (`deviceId`/
+  `accountId` を watch 行から切り出し、複数 device が同一 IMAP 接続を
+  共有できるようにした) ため、Task #208 より前のバイナリが作った
+  `watch` 行は起動時に自動検出されテーブルごと破棄される (行ごとの移行
+  は行わない — 判断の理由は
+  [`docs/architecture.md`](architecture.md#i-imap-の-limit-応答は接続エラーではない--再接続すると別の障害を誘発する)
+  の Task #208 追記を参照)。影響を受けるのは既存の watch 登録のみで、
+  `device` 行 (deviceId/deviceSecret) は無傷 — アプリ側
+  `WatchReconciler` が次の起動/フォアグラウンド時に `GET /v1/watches`
+  を ground truth として全 watch を自動的に再登録するため、エンドユー
+  ザーの手動操作は不要。ただし次にアプリが起動するまでの間、新着メール
+  の push 通知が届かない空白期間が生じる。通信の形 (wire format) 自体は
+  変えていないので、アプリ側のアップデートは不要 — リレーだけを更新
+  すればよい。

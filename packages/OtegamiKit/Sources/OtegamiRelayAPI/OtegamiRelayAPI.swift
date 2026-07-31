@@ -282,11 +282,47 @@ public struct WatchSummary: Codable, Equatable, Sendable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         // See the type doc comment: an older relay's response simply
         // won't have these keys, so decode leniently rather than failing
-        // the whole list.
-        status = try container.decodeIfPresent(Status.self, forKey: .status) ?? .active
+        // the whole list. `status`/`lastErrorKind` go one step further
+        // (Task #208 fragility fix, see below): they tolerate a key that's
+        // *present* but holds a raw string this build doesn't recognize
+        // yet, not just a missing key.
+        status = try Self.decodeLenientRawEnum(Status.self, from: container, forKey: .status) ?? .active
         lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
-        lastErrorKind = try container.decodeIfPresent(ErrorKind.self, forKey: .lastErrorKind)
+        lastErrorKind = try Self.decodeLenientRawEnum(ErrorKind.self, from: container, forKey: .lastErrorKind)
         lastErrorAt = try container.decodeIfPresent(Date.self, forKey: .lastErrorAt)
+    }
+
+    /// Decodes a `String`-backed enum field leniently: missing key -> nil
+    /// (same as `decodeIfPresent`), key present but its value is a raw
+    /// string this build's enum doesn't recognize -> nil instead of
+    /// throwing.
+    ///
+    /// Plain `container.decodeIfPresent(SomeRawEnum.self, forKey:)` only
+    /// covers the "key absent" case — `RawRepresentable`'s synthesized
+    /// `init(from:)` still throws `DecodingError.dataCorrupted` for "key
+    /// present, but its string isn't one of the enum's cases", and that
+    /// error isn't swallowed by `decodeIfPresent`, so it fails the whole
+    /// `WatchSummary`, which in turn fails the whole `GET /v1/watches`
+    /// array decode (`JSONDecoder` has no per-element recovery). Before
+    /// this helper existed, that was a real constraint on the relay: Task
+    /// #206 explicitly avoided introducing a new `lastErrorKind` wire value
+    /// for exactly this reason (see docs/architecture.md's pitfall "i."),
+    /// because an already-shipped app talking to a newly-upgraded relay
+    /// would have its watch list reads start failing outright the moment
+    /// the relay returned a value this build had never heard of. Task #208
+    /// added this so a relay is free to introduce a new `status`/
+    /// `lastErrorKind` value in the future without that same constraint —
+    /// an unrecognized value just reads as "unknown" (nil) instead of
+    /// corrupting the whole response.
+    private static func decodeLenientRawEnum<T: RawRepresentable & Decodable>(
+        _ type: T.Type,
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) throws -> T? where T.RawValue == String {
+        guard let raw = try container.decodeIfPresent(String.self, forKey: key) else {
+            return nil
+        }
+        return T(rawValue: raw)
     }
 }
 

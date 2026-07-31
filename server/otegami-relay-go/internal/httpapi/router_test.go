@@ -258,6 +258,106 @@ func TestDeleteIsScopedToOwningDevice(t *testing.T) {
 	pool.RemoveWatch(created.WatchID) // test cleanup, mirrors the Swift test's comment
 }
 
+// TestCreateWatchFromSecondDeviceReusesSameWatchId is Task #208's
+// route-level dedup check: two devices registering the same IMAP
+// connection identity (host/port/username/mailbox) get back the same
+// watchId, each with its own accountId echoed back — not two independent
+// watches.
+func TestCreateWatchFromSecondDeviceReusesSameWatchId(t *testing.T) {
+	router, s, _ := newTestRouter(t)
+	device1 := registerDevice(t, router)
+	device2 := registerDevice(t, router)
+
+	rec := do(router, "POST", "/v1/watches", passwordWatchBody("account-1", testNet3Host, "shared@example.com", "same-password", "INBOX"), device1.DeviceSecret)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created1 api.WatchResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created1)
+
+	rec = do(router, "POST", "/v1/watches", passwordWatchBody("account-2", testNet3Host, "shared@example.com", "same-password", "INBOX"), device2.DeviceSecret)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created2 api.WatchResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created2)
+
+	if created1.WatchID != created2.WatchID {
+		t.Fatalf("expected both devices to share one watchId, got %q and %q", created1.WatchID, created2.WatchID)
+	}
+	if created1.AccountID != "account-1" || created2.AccountID != "account-2" {
+		t.Fatalf("expected each response to still echo back its own device's accountId, got %+v and %+v", created1, created2)
+	}
+
+	records, err := s.ListWatches(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one underlying watch, got %d: %+v", len(records), records)
+	}
+}
+
+// TestDeleteDoesNotStopSharedWatchUntilLastSubscriber is Task #208's
+// route-level check that DELETE /v1/watches/:id only calls
+// watcherPool.RemoveWatch once every subscribing device has deleted its
+// own registration — deleting device 1's registration must not interrupt
+// device 2's still-live subscription to the same shared IMAP connection.
+func TestDeleteDoesNotStopSharedWatchUntilLastSubscriber(t *testing.T) {
+	router, s, pool := newTestRouter(t)
+	device1 := registerDevice(t, router)
+	device2 := registerDevice(t, router)
+
+	rec := do(router, "POST", "/v1/watches", passwordWatchBody("account-1", testNet3Host, "shared@example.com", "same-password", "INBOX"), device1.DeviceSecret)
+	var created1 api.WatchResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created1)
+	rec = do(router, "POST", "/v1/watches", passwordWatchBody("account-2", testNet3Host, "shared@example.com", "same-password", "INBOX"), device2.DeviceSecret)
+	var created2 api.WatchResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created2)
+	if created1.WatchID != created2.WatchID {
+		t.Fatalf("expected a shared watchId, got %q and %q", created1.WatchID, created2.WatchID)
+	}
+	watchID := created1.WatchID
+
+	rec = do(router, "DELETE", "/v1/watches/"+watchID, "", device1.DeviceSecret)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("got %d", rec.Code)
+	}
+	for _, removed := range pool.removed {
+		if removed == watchID {
+			t.Fatal("device 2 is still subscribed, RemoveWatch must not have been called yet")
+		}
+	}
+	records, err := s.ListWatches(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected the shared watch to survive device 1's own delete, got %+v", records)
+	}
+
+	rec = do(router, "DELETE", "/v1/watches/"+watchID, "", device2.DeviceSecret)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("got %d", rec.Code)
+	}
+	found := false
+	for _, removed := range pool.removed {
+		if removed == watchID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected RemoveWatch to be called once the last subscriber deleted the watch")
+	}
+	records, err = s.ListWatches(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("expected the watch to be gone once both subscribers deleted it, got %+v", records)
+	}
+}
+
 func TestListWatchesScopedAndCredentialFree(t *testing.T) {
 	router, _, _ := newTestRouter(t)
 	owner := registerDevice(t, router)

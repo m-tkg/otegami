@@ -597,6 +597,45 @@ Yahoo! JAPAN (imap.mail.yahoo.co.jp) が `STATUS` コマンドに対して明示
 配布済みのアプリとの API 互換性を壊さない移行経路が要る規模のため、
 別タスクとして切り出すべきと判断した。
 
+**追記 (Task #208): 上記の統合を実装した。** `server/otegami-relay-go/
+internal/store/store.go` の `watch` テーブルを「(imapHost, imapPort,
+imapUseTLS, imapUsername, authType, authProvider, mailbox) の接続 identity
+1本」を表す行に変更し、`deviceId`/`accountId` は新設した
+`watch_subscription` テーブル (`watchId` × `deviceId` に一意制約、各行が
+その device 自身の accountId を持つ) に切り出した。`CreateWatch` は
+identity が一致する既存 `watch` 行があればそれを再利用し
+`watch_subscription` 行を追加するだけ (=2台目以降は IMAP 接続を増やさな
+い)。`fire()` はその watch の `watch_subscription` を全件引いて、購読して
+いる device 全員に (各自の accountId で) push する。`DELETE
+/v1/watches/:id` は呼び出した device の `watch_subscription` 行だけを削除
+し、購読者が0件になった時だけ `watch` 行自体を消して
+`watcherPool.RemoveWatch` を呼ぶ — 他 device がまだ購読していれば監視は
+続行する。
+
+**資格情報の統合条件**: identity が一致しても登録ごとに `auth.secret` が
+異なる場合がある (パスワード変更を一部端末にしか反映していない、
+OAuth refresh token を端末ごとに別々に取得している、等) ため、
+`CreateWatch` は複合を試みず「最後に登録した secret で上書きする」方式
+にした (`store.go` の `CreateWatch` doc comment 参照)。上書き時は
+`status`/`lastErrorKind`/`lastErrorAt` もリセットし、新しい資格情報に
+まっさらな状態で最初の接続を試させる。
+
+**この変更で「通信の形」(wire format: `POST/DELETE/GET /v1/watches` の
+リクエスト/レスポンス JSON 形状) 自体は変えていない** — `watchId` が複数
+device 間で共有され得るようになった点を除き、既存のエンドポイント契約は
+そのまま。そのためアプリ側 (`WatchReconciler.swift` 含む) の変更は不要
+で、**リレー単体を更新するだけでよい** (アプリの同時更新は不要)。
+
+**既存 watch 行の扱い**: 旧スキーマ (`watch` に `deviceId` 列がある形) を
+起動時に検出したら、行ごとの移行は行わずテーブルごと破棄する
+(`dropLegacyPerDeviceWatchTableIfPresent`)。個人のテスト用デプロイで
+全端末の再登録が許容できるという前提に基づく判断で、アプリ側
+`WatchReconciler` が起動/フォアグラウンド時に `GET /v1/watches` を
+ground truth として自動的に watch を再登録するため、ユーザーの手動操作
+は不要 — 次にアプリが起動するまでの間、新着メールの push 通知が届かない
+空白期間が生じるだけ。運用者がユーザーの操作を必要としない前提を置けない
+デプロイでは、この破棄が起きる旨を反映前に把握しておくこと。
+
 **新しい `WatchErrorKind` (wire 値) を安易に追加しないこと** — Swift 側
 の `OtegamiRelayAPI.WatchSummary.ErrorKind` は `String, Codable` の
 素朴な enum で、`decodeIfPresent` は「キーが無い」場合しか救わず、

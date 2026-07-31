@@ -15,7 +15,12 @@ import (
 type watchStore interface {
 	deviceStore
 	CreateWatch(ctx context.Context, deviceID string, req api.CreateWatchRequest) (api.WatchResponse, error)
-	DeleteWatch(ctx context.Context, id, deviceID string) error
+	// DeleteWatch's watchFullyRemoved return (Task #208) tells the route
+	// whether the underlying watch has no subscribers left at all (so the
+	// watcher pool loop should actually stop) or other devices still
+	// subscribe to the same shared IMAP connection (so it must keep
+	// running).
+	DeleteWatch(ctx context.Context, id, deviceID string) (watchFullyRemoved bool, err error)
 	ListWatchSummaries(ctx context.Context, deviceID string) ([]api.WatchSummary, error)
 }
 
@@ -117,7 +122,7 @@ func registerWatchRoutes(mux *http.ServeMux, s watchStore, pool watcherPool, net
 			return
 		}
 		watchID := r.PathValue("id")
-		err := s.DeleteWatch(r.Context(), watchID, deviceID)
+		watchFullyRemoved, err := s.DeleteWatch(r.Context(), watchID, deviceID)
 		if errors.Is(err, store.ErrWatchNotFound) {
 			writeError(w, notFound("watch not found"))
 			return
@@ -126,7 +131,12 @@ func registerWatchRoutes(mux *http.ServeMux, s watchStore, pool watcherPool, net
 			writeError(w, badRequest("could not delete watch"))
 			return
 		}
-		pool.RemoveWatch(watchID)
+		// Task #208: only stop the watcher pool's loop once nobody
+		// subscribes to it anymore — another device may still be relying
+		// on this exact same IMAP connection.
+		if watchFullyRemoved {
+			pool.RemoveWatch(watchID)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 

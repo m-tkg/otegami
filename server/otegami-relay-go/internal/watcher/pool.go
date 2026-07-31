@@ -618,20 +618,32 @@ func (p *Pool) authenticate(ctx context.Context, client *imapclient.Client, reco
 	}
 }
 
-// fire mirrors WatcherPool.fire(record:uidNext:).
+// fire mirrors WatcherPool.fire(record:uidNext:). Task #208: a `watch` row
+// no longer maps to a single device — every device subscribed to it (one
+// `watch_subscription` row each, sharing this one IMAP connection) gets its
+// own push, each carrying that device's own locally-meaningful accountId.
+// One subscriber with no push token yet, or a failed send, does not stop
+// the others from being notified.
 func (p *Pool) fire(ctx context.Context, record *store.WatchRecord, uidNext int) {
-	target, err := p.store.PushTarget(ctx, record.DeviceID)
-	if err != nil || target == nil {
-		p.logger.Debug("watch fired but device has no push token yet", "watchId", record.ID)
+	subscribers, err := p.store.WatchSubscribers(ctx, record.ID)
+	if err != nil {
+		p.logger.Warn("could not list watch subscribers", "watchId", record.ID, "error", err.Error())
 		return
 	}
-	err = p.sender.Send(ctx, target.ApnsToken, target.Environment, api.PushNotificationPayload{
-		AccountID: record.AccountID,
-		UidNext:   uidNext,
-	})
-	if err != nil {
-		p.logger.Warn("push send failed",
-			"watchId", record.ID, "error", push.SanitizeForLog(err.Error()))
+	for _, sub := range subscribers {
+		target, err := p.store.PushTarget(ctx, sub.DeviceID)
+		if err != nil || target == nil {
+			p.logger.Debug("watch fired but device has no push token yet", "watchId", record.ID)
+			continue
+		}
+		err = p.sender.Send(ctx, target.ApnsToken, target.Environment, api.PushNotificationPayload{
+			AccountID: sub.AccountID,
+			UidNext:   uidNext,
+		})
+		if err != nil {
+			p.logger.Warn("push send failed",
+				"watchId", record.ID, "error", push.SanitizeForLog(err.Error()))
+		}
 	}
 }
 

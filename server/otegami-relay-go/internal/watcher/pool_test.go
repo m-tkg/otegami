@@ -575,7 +575,7 @@ func TestRemovingWatchStopsFurtherPushes(t *testing.T) {
 	pool.AddWatch(watchID)
 	time.Sleep(300 * time.Millisecond)
 
-	if err := s.DeleteWatch(t.Context(), watchID, deviceID); err != nil {
+	if _, err := s.DeleteWatch(t.Context(), watchID, deviceID); err != nil {
 		t.Fatal(err)
 	}
 	pool.RemoveWatch(watchID)
@@ -673,6 +673,144 @@ func TestOAuthWatchStopsImmediatelyOnInvalidGrant(t *testing.T) {
 	}
 	if calls := sender.Calls(); len(calls) != 0 {
 		t.Fatalf("got %+v", calls)
+	}
+}
+
+// TestSharedWatchDeliversPushToEveryDeviceOnASingleConnection is Task
+// #208's core end-to-end regression test: two devices registering the same
+// IMAP connection identity (same host/port/username/mailbox — the ordinary
+// "this mailbox account is set up on two of my devices" case) must open
+// exactly ONE IMAP connection (LoginCount stays 1) yet still deliver a push
+// to BOTH devices, each carrying that device's own locally-meaningful
+// accountId, when new mail arrives. This is the fix for the production
+// problem docs/architecture.md's pitfall "i." describes: IMAP command
+// volume against the server used to scale with device count; after this
+// fix it scales with distinct mailbox count instead.
+func TestSharedWatchDeliversPushToEveryDeviceOnASingleConnection(t *testing.T) {
+	s := newTestStore(t)
+	server := imaptest.NewFakeServer()
+	server.SetInitialState(5, 6)
+	port, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	sender := &fakePushSender{}
+	pool := newTestPool(t, s, sender, nil)
+
+	auth := api.WatchAuth{Type: api.WatchAuthPassword, Secret: "password"}
+	_, watchID := createWatch(t, s, port, "account-on-device-1", auth, api.EnvironmentSandbox, "device-1-token")
+
+	// A second device registers the exact same connection identity
+	// (host/port/username/mailbox, same createWatch helper's fixed
+	// "user@example.com"/INBOX) with its own accountId — must resolve to
+	// the SAME watch rather than opening a second connection.
+	device2, err := s.CreateDevice(t.Context(), "device-2-token", api.EnvironmentProduction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch2, err := s.CreateWatch(t.Context(), device2.DeviceID, api.CreateWatchRequest{
+		AccountID: "account-on-device-2", ImapHost: "127.0.0.1", ImapPort: port, ImapUseTLS: false,
+		ImapUsername: "user@example.com", Auth: auth, Mailbox: "INBOX",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watch2.WatchID != watchID {
+		t.Fatalf("expected both devices to share one watch, got %q and %q", watch2.WatchID, watchID)
+	}
+
+	pool.AddWatch(watchID)
+	// Registering the second device's subscription doesn't need its own
+	// AddWatch call in production (the HTTP route calls it regardless, but
+	// AddWatch is a no-op for an id it's already tracking) — call it again
+	// here too, matching what the route actually does, to prove that
+	// doesn't start a second connection.
+	pool.AddWatch(watchID)
+
+	time.Sleep(300 * time.Millisecond)
+	server.DeliverNewMail()
+
+	calls := waitForCalls(t, sender, 2, 5*time.Second)
+	if len(calls) != 2 {
+		t.Fatalf("expected exactly one push per subscribed device, got %d: %+v", len(calls), calls)
+	}
+	byToken := map[string]pushCall{}
+	for _, c := range calls {
+		byToken[c.DeviceToken] = c
+	}
+	call1, ok1 := byToken["device-1-token"]
+	call2, ok2 := byToken["device-2-token"]
+	if !ok1 || !ok2 {
+		t.Fatalf("expected a push to both devices, got %+v", calls)
+	}
+	if call1.Payload.AccountID != "account-on-device-1" || call1.Environment != api.EnvironmentSandbox {
+		t.Fatalf("got %+v", call1)
+	}
+	if call2.Payload.AccountID != "account-on-device-2" || call2.Environment != api.EnvironmentProduction {
+		t.Fatalf("got %+v", call2)
+	}
+	if call1.Payload.UidNext != 7 || call2.Payload.UidNext != 7 {
+		t.Fatalf("expected both devices to report the same new uidNext (one shared connection), got %+v and %+v", call1, call2)
+	}
+
+	if got := server.LoginCount(); got != 1 {
+		t.Fatalf("expected exactly 1 LOGIN (one shared IMAP connection for both devices), got %d", got)
+	}
+}
+
+// TestDeletingOneDeviceSubscriptionKeepsPushingTheOther is Task #208's
+// regression test for the "who owns the shared watch" question at delete
+// time: when device A deletes its registration but device B is still
+// subscribed to the same connection identity, the watch must keep running
+// (and keep pushing device B) rather than stopping just because device A —
+// which happened to be the one that originally created the row — is gone.
+func TestDeletingOneDeviceSubscriptionKeepsPushingTheOther(t *testing.T) {
+	s := newTestStore(t)
+	server := imaptest.NewFakeServer()
+	server.SetInitialState(1, 2)
+	port, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	sender := &fakePushSender{}
+	pool := newTestPool(t, s, sender, nil)
+
+	auth := api.WatchAuth{Type: api.WatchAuthPassword, Secret: "password"}
+	deviceA, watchID := createWatch(t, s, port, "account-a", auth, api.EnvironmentSandbox, "device-a-token")
+	deviceB, err := s.CreateDevice(t.Context(), "device-b-token", api.EnvironmentSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateWatch(t.Context(), deviceB.DeviceID, api.CreateWatchRequest{
+		AccountID: "account-b", ImapHost: "127.0.0.1", ImapPort: port, ImapUseTLS: false,
+		ImapUsername: "user@example.com", Auth: auth, Mailbox: "INBOX",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pool.AddWatch(watchID)
+	time.Sleep(300 * time.Millisecond)
+
+	fullyRemoved, err := s.DeleteWatch(t.Context(), watchID, deviceA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fullyRemoved {
+		t.Fatal("device B is still subscribed, the watch must not be reported as fully removed")
+	}
+	// Mirrors what the HTTP route does: only call RemoveWatch when the
+	// store says the watch has no subscribers left at all.
+
+	server.DeliverNewMail()
+	calls := waitForCalls(t, sender, 1, 5*time.Second)
+	if len(calls) != 1 {
+		t.Fatalf("expected device B to still get pushed after device A's own delete, got %+v", calls)
+	}
+	if calls[0].DeviceToken != "device-b-token" || calls[0].Payload.AccountID != "account-b" {
+		t.Fatalf("got %+v", calls[0])
 	}
 }
 

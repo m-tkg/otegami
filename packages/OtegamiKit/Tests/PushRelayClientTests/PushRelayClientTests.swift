@@ -216,6 +216,47 @@ struct PushRelayClientTests {
         #expect(watches[0].imapHost == "imap.example.com")
     }
 
+    @Test("listWatches tolerates a lastErrorKind/status raw value this build doesn't recognize yet (Task #208 decode-lenience fix)")
+    func listWatchesTolerantOfUnknownEnumRawValues() async throws {
+        // Hand-built JSON (not round-tripped through WatchSummary's own
+        // encoder, which can only ever produce values this build already
+        // knows) simulating a relay that's ahead of this app build and
+        // started returning a `lastErrorKind`/`status` raw string this
+        // build has never heard of. Before the Task #208 fix, this would
+        // throw DecodingError partway through the array and the whole
+        // `listWatches` call would fail — see
+        // OtegamiRelayAPI.swift's `decodeLenientRawEnum` doc comment for
+        // why that's the exact constraint Task #206 had to route around
+        // instead of fixing.
+        let json = """
+        {"watches":[
+            {"watchId":"w1","accountId":"account-1","imapHost":"imap.example.com","mailbox":"INBOX",
+             "createdAt":"1970-01-01T00:00:00Z","status":"quarantined",
+             "lastErrorKind":"rateLimited","lastErrorAt":"1970-01-01T00:00:00Z"}
+        ]}
+        """.data(using: .utf8)!
+
+        let client = makeClient()
+        StubURLProtocol.handler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!, json)
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let watches = try await client.listWatches(baseURL: URL(string: "https://relay.example.com")!, deviceSecret: "s1")
+        #expect(watches.count == 1)
+        #expect(watches[0].watchId == "w1")
+        // Unrecognized raw values fall back to the safest reading rather
+        // than corrupting the whole response: `status` defaults to
+        // `.active` (same fallback already used for a missing key —
+        // "no known problem"), `lastErrorKind` decodes to nil (an
+        // unrecognized error kind is still "some non-nil error at
+        // lastErrorAt" information-wise, but nil is what every existing
+        // caller already treats as "nothing to show", which is the safe
+        // direction to fail in for a user-facing display value).
+        #expect(watches[0].status == .active)
+        #expect(watches[0].lastErrorKind == nil)
+    }
+
     @Test("deleteWatch DELETEs with the bearer secret")
     func deleteWatch() async throws {
         let client = makeClient()

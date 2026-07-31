@@ -40,10 +40,18 @@ var (
 
 // WatchRecord mirrors RelayStore.WatchRecord — a fully decrypted, in-memory
 // view of one `watch` row.
+//
+// Task #208: a `watch` row is now the shared IMAP-connection identity
+// (host/port/TLS/username/authType/mailbox) — no longer tied to a single
+// device or account. Which devices care about this watch, and which local
+// accountId each of them should see in its push payload, lives in the
+// separate `watch_subscription` table (see WatchSubscriber/WatchSubscribers)
+// so N devices watching the same mailbox share exactly one IMAP connection
+// instead of one each. See docs/architecture.md's pitfall "i." addendum for
+// the motivation (IMAP command volume scales with device count, not account
+// count, and Yahoo Japan's rate limiting made that bite in production).
 type WatchRecord struct {
 	ID           string
-	DeviceID     string
-	AccountID    string
 	ImapHost     string
 	ImapPort     int
 	ImapUseTLS   bool
@@ -63,6 +71,19 @@ type WatchRecord struct {
 	// and is spared the permanent give-up (pool.go's
 	// authFailureRetryInterval/classifyAuthFailure).
 	LastConnectedAt *time.Time
+}
+
+// WatchSubscriber is one device's interest in a shared `watch` row —
+// mirrors one `watch_subscription` row. AccountID is that device's own
+// local accountId (client-chosen, opaque to the relay — see
+// api.CreateWatchRequest.AccountID's doc comment), echoed back in the push
+// payload sent to DeviceID so the app knows which local account to re-sync.
+// Two devices watching the same mailbox can (and typically do) have
+// different AccountID values for it, since each app install mints its own
+// local ids independently.
+type WatchSubscriber struct {
+	DeviceID  string
+	AccountID string
 }
 
 // DevicePushTarget mirrors RelayStore.DevicePushTarget.
@@ -111,6 +132,9 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
+	if err := s.dropLegacyPerDeviceWatchTableIfPresent(ctx); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS device (
 			id TEXT PRIMARY KEY,
@@ -119,15 +143,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			environment TEXT NOT NULL DEFAULT 'sandbox',
 			createdAt TEXT NOT NULL
 		)`,
+		// Task #208: `watch` is now the shared IMAP-connection identity —
+		// one row per distinct (imapHost, imapPort, imapUseTLS,
+		// imapUsername, authType, authProvider, mailbox), no longer one row
+		// per device. Which devices are subscribed, and each one's own
+		// local accountId, lives in `watch_subscription` below.
 		`CREATE TABLE IF NOT EXISTS watch (
 			id TEXT PRIMARY KEY,
-			deviceId TEXT NOT NULL REFERENCES device(id) ON DELETE CASCADE,
-			accountId TEXT NOT NULL,
 			imapHost TEXT NOT NULL,
 			imapPort INTEGER NOT NULL,
 			imapUseTLS INTEGER NOT NULL,
 			imapUsername TEXT NOT NULL,
 			authType TEXT NOT NULL,
+			authProvider TEXT,
 			encryptedSecret BLOB NOT NULL,
 			mailbox TEXT NOT NULL,
 			createdAt TEXT NOT NULL,
@@ -136,7 +164,21 @@ func (s *Store) migrate(ctx context.Context) error {
 			lastErrorKind TEXT,
 			lastErrorAt TEXT
 		)`,
-		`CREATE INDEX IF NOT EXISTS watch_deviceId ON watch(deviceId)`,
+		`CREATE INDEX IF NOT EXISTS watch_identity ON watch(imapHost, imapPort, imapUseTLS, imapUsername, authType, mailbox)`,
+		// deviceId/accountId are NOT unique together: re-registering the
+		// same device for the same watch (CreateWatch called again before
+		// a matching DeleteWatch) upserts the existing row rather than
+		// erroring — see CreateWatch's doc comment.
+		`CREATE TABLE IF NOT EXISTS watch_subscription (
+			id TEXT PRIMARY KEY,
+			watchId TEXT NOT NULL REFERENCES watch(id) ON DELETE CASCADE,
+			deviceId TEXT NOT NULL REFERENCES device(id) ON DELETE CASCADE,
+			accountId TEXT NOT NULL,
+			createdAt TEXT NOT NULL,
+			UNIQUE(watchId, deviceId)
+		)`,
+		`CREATE INDEX IF NOT EXISTS watch_subscription_deviceId ON watch_subscription(deviceId)`,
+		`CREATE INDEX IF NOT EXISTS watch_subscription_watchId ON watch_subscription(watchId)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -144,6 +186,57 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	return s.addWatchColumnsIfMissing(ctx)
+}
+
+// dropLegacyPerDeviceWatchTableIfPresent (Task #208): a `watch` table from
+// before this task had `deviceId`/`accountId` columns directly on it (one
+// row per device per account). That shape is structurally incompatible with
+// the shared-connection-plus-subscriptions design below — there is no
+// meaningful per-row migration that doesn't also require deciding, for
+// credentials that may differ across the legacy per-device rows, which one
+// survives (see CreateWatch's doc comment for how a *live* registration
+// resolves that). Chosen instead, per this task's explicit brief for a
+// personal/test deployment that can re-register every device: drop the
+// legacy table outright and let it repopulate itself. The app's
+// WatchReconciler already treats GET /v1/watches as ground truth and
+// self-heals by re-registering any local account missing from that list on
+// its next launch/foreground (packages/OtegamiKit/Sources/PushRelayClient/
+// WatchReconciler.swift) — no manual re-registration step is required, only
+// a brief gap in push delivery until that next reconcile runs. The `device`
+// table (and its rows' deviceSecret-based auth) is untouched, so no device
+// needs to be re-registered, only its watches.
+func (s *Store) dropLegacyPerDeviceWatchTableIfPresent(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(watch)`)
+	if err != nil {
+		return err
+	}
+	hasLegacyDeviceIDColumn := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "deviceId" {
+			hasLegacyDeviceIDColumn = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if !hasLegacyDeviceIDColumn {
+		// Either no `watch` table exists yet (PRAGMA table_info on a
+		// missing table returns zero rows, not an error), or it's already
+		// the new shape from a prior run of this same binary.
+		return nil
+	}
+	_, err = s.db.ExecContext(ctx, `DROP TABLE watch`)
+	return err
 }
 
 // addWatchColumnsIfMissing mirrors RelayStore.addWatchColumnsIfMissing
@@ -325,58 +418,210 @@ func (s *Store) PushTarget(ctx context.Context, deviceID string) (*DevicePushTar
 
 // --- Watches ---
 
-// CreateWatch mirrors RelayStore.createWatch(deviceId:request:).
+// findMatchingWatch (Task #208) looks for an existing `watch` row with the
+// same connection identity as req — same server, same credential kind, same
+// mailbox — regardless of which device(s) already subscribe to it. Returns
+// found == false if no such row exists yet.
+func (s *Store) findMatchingWatch(ctx context.Context, req api.CreateWatchRequest) (id string, decryptedSecret string, found bool, err error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, authProvider, encryptedSecret FROM watch
+		WHERE imapHost = ? AND imapPort = ? AND imapUseTLS = ? AND imapUsername = ?
+			AND authType = ? AND mailbox = ?`,
+		req.ImapHost, req.ImapPort, boolToInt(req.ImapUseTLS), req.ImapUsername,
+		string(req.Auth.Type), req.Mailbox,
+	)
+	if err != nil {
+		return "", "", false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rowID string
+		var providerRaw sql.NullString
+		var encryptedSecret []byte
+		if err := rows.Scan(&rowID, &providerRaw, &encryptedSecret); err != nil {
+			return "", "", false, err
+		}
+		// authProvider is part of the identity too (an .oauth watch for the
+		// same mailbox under a different provider is not the same
+		// connection) — compared in Go rather than SQL to sidestep NULL
+		// comparison semantics for the common .password (provider == nil)
+		// case.
+		rowProvider := ""
+		if providerRaw.Valid {
+			rowProvider = providerRaw.String
+		}
+		reqProvider := ""
+		if req.Auth.Provider != nil {
+			reqProvider = string(*req.Auth.Provider)
+		}
+		if rowProvider != reqProvider {
+			continue
+		}
+		secret, err := s.crypto.Decrypt(encryptedSecret)
+		if err != nil {
+			return "", "", false, err
+		}
+		return rowID, secret, true, nil
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", false, err
+	}
+	return "", "", false, nil
+}
+
+// CreateWatch mirrors RelayStore.createWatch(deviceId:request:), extended
+// by Task #208 to deduplicate the underlying IMAP connection across
+// devices: if a `watch` row already exists for the exact same
+// (imapHost, imapPort, imapUseTLS, imapUsername, authType, authProvider,
+// mailbox) identity, this call reuses it — adding (or updating) only a
+// `watch_subscription` row for deviceID — instead of opening a second IMAP
+// connection to the same mailbox.
+//
+// Credential handling when reusing an existing watch: different devices
+// registering "the same account" may not always carry byte-identical
+// credentials (e.g. an IMAP app-password rotated on one device but not
+// re-entered on another yet, or two independently-obtained OAuth refresh
+// tokens for the same mailbox). This call compares the decrypted secret and,
+// if it differs from what's stored, overwrites the stored credential with
+// this (the most recently registering device's) secret and resets the
+// watch's error/backoff state to give the new credential a clean first
+// attempt — mirroring what already happens when a single device
+// deletes-then-recreates its own watch after a password change. This is a
+// deliberate "last registration wins" rule, not a merge: the previous
+// credential is simply discarded. It biases toward whichever device
+// registered most recently being right, which holds in the ordinary case
+// (a credential rotation reaching every device eventually) and does not
+// silently accept a *wrong* credential over a *working* one for longer than
+// one connection attempt — see connectAndWatch's auth-failure handling
+// (pool.go) for what happens if it guessed wrong.
 func (s *Store) CreateWatch(ctx context.Context, deviceID string, req api.CreateWatchRequest) (api.WatchResponse, error) {
-	id, err := RandomToken(16)
+	watchID, existingSecret, found, err := s.findMatchingWatch(ctx, req)
 	if err != nil {
 		return api.WatchResponse{}, err
 	}
-	createdAt := time.Now()
-	encrypted, err := s.crypto.Encrypt(req.Auth.Secret)
+	if !found {
+		watchID, err = RandomToken(16)
+		if err != nil {
+			return api.WatchResponse{}, err
+		}
+		encrypted, err := s.crypto.Encrypt(req.Auth.Secret)
+		if err != nil {
+			return api.WatchResponse{}, err
+		}
+		var providerValue any
+		if req.Auth.Provider != nil {
+			providerValue = string(*req.Auth.Provider)
+		}
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO watch (
+				id, imapHost, imapPort, imapUseTLS,
+				imapUsername, authType, encryptedSecret, mailbox, createdAt,
+				authProvider
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			watchID, req.ImapHost, req.ImapPort, boolToInt(req.ImapUseTLS),
+			req.ImapUsername, string(req.Auth.Type), encrypted, req.Mailbox, formatTime(time.Now()),
+			providerValue,
+		)
+		if err != nil {
+			return api.WatchResponse{}, err
+		}
+	} else if existingSecret != req.Auth.Secret {
+		encrypted, err := s.crypto.Encrypt(req.Auth.Secret)
+		if err != nil {
+			return api.WatchResponse{}, err
+		}
+		// A fresh credential deserves a fresh chance — clear any stopped/
+		// error state left by the old (possibly now-wrong) one, same as a
+		// brand-new watch starts clean. The watcher pool re-reads the
+		// record on its next loop iteration (store.Watch), so a live watch
+		// picks up the new credential without needing a restart.
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE watch SET encryptedSecret = ?, status = 'active', lastErrorKind = NULL, lastErrorAt = NULL WHERE id = ?`,
+			encrypted, watchID,
+		)
+		if err != nil {
+			return api.WatchResponse{}, err
+		}
+	}
+
+	subCreatedAt := time.Now()
+	subID, err := RandomToken(16)
 	if err != nil {
 		return api.WatchResponse{}, err
-	}
-	var providerValue any
-	if req.Auth.Provider != nil {
-		providerValue = string(*req.Auth.Provider)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO watch (
-			id, deviceId, accountId, imapHost, imapPort, imapUseTLS,
-			imapUsername, authType, encryptedSecret, mailbox, createdAt,
-			authProvider
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, deviceID, req.AccountID, req.ImapHost, req.ImapPort, boolToInt(req.ImapUseTLS),
-		req.ImapUsername, string(req.Auth.Type), encrypted, req.Mailbox, formatTime(createdAt),
-		providerValue,
+		`INSERT INTO watch_subscription (id, watchId, deviceId, accountId, createdAt)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(watchId, deviceId) DO UPDATE SET accountId = excluded.accountId, createdAt = excluded.createdAt`,
+		subID, watchID, deviceID, req.AccountID, formatTime(subCreatedAt),
 	)
 	if err != nil {
 		return api.WatchResponse{}, err
 	}
+
 	return api.WatchResponse{
-		WatchID:   id,
+		WatchID:   watchID,
 		AccountID: req.AccountID,
 		Mailbox:   req.Mailbox,
-		CreatedAt: api.NewWireTime(createdAt),
+		CreatedAt: api.NewWireTime(subCreatedAt),
 	}, nil
 }
 
-// DeleteWatch mirrors RelayStore.deleteWatch(id:deviceId:) — only deletes
-// if the watch belongs to deviceID.
-func (s *Store) DeleteWatch(ctx context.Context, id, deviceID string) error {
-	var exists string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM watch WHERE id = ? AND deviceId = ?`, id, deviceID).Scan(&exists)
+// DeleteWatch mirrors RelayStore.deleteWatch(id:deviceId:) — only removes
+// deviceID's own interest in the watch. Task #208: since a `watch` row can
+// now be shared by several devices, this only deletes the underlying watch
+// (and stops it for good) once its *last* subscribing device deletes it;
+// otherwise it just drops this device's `watch_subscription` row and the
+// watch keeps running for whoever else still subscribes to it.
+// watchFullyRemoved tells the caller (the HTTP route) whether to also call
+// watcherPool.RemoveWatch — never left running with no subscribers.
+func (s *Store) DeleteWatch(ctx context.Context, id, deviceID string) (watchFullyRemoved bool, err error) {
+	var subID string
+	err = s.db.QueryRowContext(ctx, `SELECT id FROM watch_subscription WHERE watchId = ? AND deviceId = ?`, id, deviceID).Scan(&subID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrWatchNotFound
+		return false, ErrWatchNotFound
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM watch WHERE id = ?`, id)
-	return err
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM watch_subscription WHERE id = ?`, subID); err != nil {
+		return false, err
+	}
+	var remaining int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM watch_subscription WHERE watchId = ?`, id).Scan(&remaining); err != nil {
+		return false, err
+	}
+	if remaining > 0 {
+		return false, nil
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM watch WHERE id = ?`, id); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-const watchColumns = `id, deviceId, accountId, imapHost, imapPort, imapUseTLS,
+// WatchSubscribers mirrors the `watch_subscription` rows for one watch —
+// used by the watcher pool's fire() (Task #208) to push every subscribing
+// device, each with its own locally-meaningful accountId, when one shared
+// IMAP connection sees new mail.
+func (s *Store) WatchSubscribers(ctx context.Context, watchID string) ([]WatchSubscriber, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT deviceId, accountId FROM watch_subscription WHERE watchId = ?`, watchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WatchSubscriber
+	for rows.Next() {
+		var sub WatchSubscriber
+		if err := rows.Scan(&sub.DeviceID, &sub.AccountID); err != nil {
+			return nil, err
+		}
+		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
+const watchColumns = `id, imapHost, imapPort, imapUseTLS,
 	imapUsername, authType, encryptedSecret, mailbox, createdAt, authProvider,
 	lastConnectedAt`
 
@@ -413,14 +658,14 @@ func (s *Store) scanWatchRecords(rows *sql.Rows) ([]WatchRecord, error) {
 	var out []WatchRecord
 	for rows.Next() {
 		var (
-			id, deviceID, accountID, imapHost, imapUsername, authTypeRaw, mailbox, createdAtRaw string
-			imapPort, imapUseTLS                                                                int
-			encryptedSecret                                                                     []byte
-			authProvider                                                                        sql.NullString
-			lastConnectedAtRaw                                                                  sql.NullString
+			id, imapHost, imapUsername, authTypeRaw, mailbox, createdAtRaw string
+			imapPort, imapUseTLS                                          int
+			encryptedSecret                                               []byte
+			authProvider                                                  sql.NullString
+			lastConnectedAtRaw                                            sql.NullString
 		)
 		if err := rows.Scan(
-			&id, &deviceID, &accountID, &imapHost, &imapPort, &imapUseTLS,
+			&id, &imapHost, &imapPort, &imapUseTLS,
 			&imapUsername, &authTypeRaw, &encryptedSecret, &mailbox, &createdAtRaw, &authProvider,
 			&lastConnectedAtRaw,
 		); err != nil {
@@ -449,8 +694,6 @@ func (s *Store) scanWatchRecords(rows *sql.Rows) ([]WatchRecord, error) {
 		}
 		out = append(out, WatchRecord{
 			ID:              id,
-			DeviceID:        deviceID,
-			AccountID:       accountID,
 			ImapHost:        imapHost,
 			ImapPort:        imapPort,
 			ImapUseTLS:      imapUseTLS != 0,
@@ -467,14 +710,21 @@ func (s *Store) scanWatchRecords(rows *sql.Rows) ([]WatchRecord, error) {
 }
 
 // ListWatchSummaries mirrors RelayStore.listWatchSummaries(deviceId:) —
-// GET /v1/watches's backing query. Never decrypts the credential.
+// GET /v1/watches's backing query. Never decrypts the credential. Task
+// #208: joins through `watch_subscription` since `watch` itself no longer
+// carries a deviceId/accountId — accountId and createdAt (the meaning of
+// "when did I register this" from this device's own point of view) both
+// come from the subscription row; everything else (connection identity,
+// status, error info) is shared across every subscriber and comes from the
+// `watch` row.
 func (s *Store) ListWatchSummaries(ctx context.Context, deviceID string) ([]api.WatchSummary, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, accountId, imapHost, mailbox, createdAt,
-			status, lastConnectedAt, lastErrorKind, lastErrorAt
-		FROM watch
-		WHERE deviceId = ?
-		ORDER BY createdAt ASC`,
+		`SELECT w.id, s.accountId, w.imapHost, w.mailbox, s.createdAt,
+			w.status, w.lastConnectedAt, w.lastErrorKind, w.lastErrorAt
+		FROM watch_subscription s
+		JOIN watch w ON w.id = s.watchId
+		WHERE s.deviceId = ?
+		ORDER BY s.createdAt ASC`,
 		deviceID,
 	)
 	if err != nil {
