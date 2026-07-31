@@ -245,8 +245,10 @@ struct MessageListView: View {
 
     // MARK: - Bulk selection (1h, iOS only)
 
-    @State private var isSelecting = false
-    @State private var selectedThreadIds: Set<Int64> = []
+    // Widened from `private` to internal: read/written from
+    // `MessageListView+Selection.swift`, a different file.
+    @State var isSelecting = false
+    @State var selectedThreadIds: Set<Int64> = []
 
     // MARK: - Undo (1h/1g: "即時反映＋Undo（トースト）")
 
@@ -466,7 +468,9 @@ struct MessageListView: View {
     /// shared between the search-results and normal-list cases — marking a
     /// search hit read or deleting it works exactly like it does from the
     /// normal list.
-    private var displayedSummaries: [ThreadSummary] {
+    // Widened from `private` to internal: read from
+    // `MessageListView+Selection.swift`, a different file.
+    var displayedSummaries: [ThreadSummary] {
         isSearchActive ? searchResults : summaries
     }
 
@@ -1056,101 +1060,10 @@ struct MessageListView: View {
         onThreadSelected(threadId, summary.singleMessageId)
     }
 
-    // MARK: - Bulk selection (1h)
-
-    private func enterSelectionMode(startingWith threadId: Int64) {
-        guard !isSelecting else { return }
-        isSelecting = true
-        selectedThreadIds = [threadId]
-        onSelectionModeChanged(true)
-    }
-
-    private func exitSelectionMode() {
-        guard isSelecting else { return }
-        isSelecting = false
-        selectedThreadIds = []
-        onSelectionModeChanged(false)
-    }
-
-    private func toggleSelection(_ threadId: Int64) {
-        if selectedThreadIds.contains(threadId) {
-            selectedThreadIds.remove(threadId)
-        } else {
-            selectedThreadIds.insert(threadId)
-        }
-    }
-
-    private var isAllVisibleSelected: Bool {
-        let visibleIds = Set(displayedSummaries.compactMap(\.thread.id))
-        return !visibleIds.isEmpty && visibleIds.isSubset(of: selectedThreadIds)
-    }
-
-    private func toggleSelectAll() {
-        let visibleIds = displayedSummaries.compactMap(\.thread.id)
-        if isAllVisibleSelected {
-            selectedThreadIds.subtract(visibleIds)
-        } else {
-            selectedThreadIds.formUnion(visibleIds)
-        }
-    }
-
-    private func selectedTargets() -> [ThreadSummary] {
-        let base = isSearchActive ? searchResults : summaries
-        return base.filter { summary in
-            guard let threadId = summary.thread.id else { return false }
-            return selectedThreadIds.contains(threadId)
-        }
-    }
-
-    private func markSelectedAsRead() {
-        let targets = selectedTargets()
-        exitSelectionMode()
-        Task {
-            for summary in targets {
-                await applyReadState(summary, markingRead: true)
-            }
-        }
-    }
-
-    /// Bulk "移動" — see `selectionBottomBar`'s doc comment for why this is
-    /// scoped to "アーカイブへ移動" rather than an arbitrary destination
-    /// picker. Each target thread's messages are moved (deleted locally,
-    /// `move` op enqueued) immediately, same as the swipe row's own
-    /// `archiveThread(_:)` — see `commitArchive`'s doc comment for why this
-    /// commits right away rather than waiting out the undo window first.
-    private func archiveSelected() {
-        let targets = selectedTargets()
-        let ids = selectedThreadIds
-        let accountIds = Set(targets.map(\.thread.accountId))
-        exitSelectionMode()
-        Task {
-            var snapshots: [MessageRemoval.Snapshot] = []
-            for summary in targets {
-                if let snapshot = await commitArchive(summary) { snapshots.append(snapshot) }
-            }
-            guard !snapshots.isEmpty else { return }
-            scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドをアーカイブしました", accountIds: accountIds) {
-                for snapshot in snapshots { await undoRemoval(snapshot) }
-            }
-        }
-    }
-
-    private func deleteSelected() {
-        let targets = selectedTargets()
-        let ids = selectedThreadIds
-        let accountIds = Set(targets.map(\.thread.accountId))
-        exitSelectionMode()
-        Task {
-            var snapshots: [MessageRemoval.Snapshot] = []
-            for summary in targets {
-                if let snapshot = await commitDelete(summary) { snapshots.append(snapshot) }
-            }
-            guard !snapshots.isEmpty else { return }
-            scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドを削除しました", accountIds: accountIds) {
-                for snapshot in snapshots { await undoRemoval(snapshot) }
-            }
-        }
-    }
+    // Bulk selection (enterSelectionMode/exitSelectionMode/toggleSelection/
+    // isAllVisibleSelected/toggleSelectAll/selectedTargets/
+    // markSelectedAsRead/archiveSelected/deleteSelected) lives in
+    // MessageListView+Selection.swift.
 
     // MARK: - Undo (1g/1h)
     //
