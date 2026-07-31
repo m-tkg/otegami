@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -278,6 +279,71 @@ func TestCreateWatchDedupesSameConnectionIdentityAcrossDevices(t *testing.T) {
 	records, _ = s.ListWatches(ctx)
 	if len(records) != 0 {
 		t.Fatal("watch should be gone once every subscriber has deleted it")
+	}
+}
+
+// TestConcurrentCreateWatchForSameIdentityStillProducesOneWatch is Task
+// #208's concurrency regression test: CreateWatch's "does a matching watch
+// already exist?" check and its insert/update are not atomic by
+// themselves, so many devices registering the exact same connection
+// identity at (as close as a test can get to) the same instant must still
+// converge on exactly one `watch` row — not one each, which would silently
+// defeat the entire point of this task. See CreateWatch's own doc comment
+// on the transaction it opens for why this is safe.
+func TestConcurrentCreateWatchForSameIdentityStillProducesOneWatch(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	const deviceCount = 8
+	var wg sync.WaitGroup
+	watchIDs := make([]string, deviceCount)
+	errs := make([]error, deviceCount)
+	for i := 0; i < deviceCount; i++ {
+		device, err := s.CreateDevice(ctx, fmt.Sprintf("tok%d", i), api.EnvironmentSandbox)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func(i int, deviceID string) {
+			defer wg.Done()
+			resp, err := s.CreateWatch(ctx, deviceID, api.CreateWatchRequest{
+				AccountID: fmt.Sprintf("account-%d", i),
+				ImapHost:  "203.0.113.10", ImapPort: 993, ImapUseTLS: true,
+				ImapUsername: "shared@example.com",
+				Auth:         api.WatchAuth{Type: api.WatchAuthPassword, Secret: "same-password"},
+				Mailbox:      "INBOX",
+			})
+			watchIDs[i] = resp.WatchID
+			errs[i] = err
+		}(i, device.DeviceID)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("device %d: %v", i, err)
+		}
+	}
+	for i := 1; i < deviceCount; i++ {
+		if watchIDs[i] != watchIDs[0] {
+			t.Fatalf("expected every device to converge on the same watch, got %+v", watchIDs)
+		}
+	}
+
+	records, err := s.ListWatches(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one underlying watch despite %d concurrent registrations, got %d: %+v", deviceCount, len(records), records)
+	}
+
+	subscribers, err := s.WatchSubscribers(ctx, watchIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subscribers) != deviceCount {
+		t.Fatalf("expected all %d devices as subscribers, got %d: %+v", deviceCount, len(subscribers), subscribers)
 	}
 }
 

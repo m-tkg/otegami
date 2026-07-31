@@ -418,12 +418,26 @@ func (s *Store) PushTarget(ctx context.Context, deviceID string) (*DevicePushTar
 
 // --- Watches ---
 
+// dbtx is the subset of *sql.DB / *sql.Tx that findMatchingWatch and
+// CreateWatch's own statements need — lets the same code run either
+// directly against the pool or against one transaction. Necessary here
+// (Task #208) because CreateWatch is check-then-act ("does a watch with
+// this identity already exist?" followed by an INSERT or UPDATE) and two
+// devices registering the same identity at nearly the same moment must not
+// race into creating two separate watch rows for it — exactly the
+// duplication this whole feature exists to eliminate.
+type dbtx interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // findMatchingWatch (Task #208) looks for an existing `watch` row with the
 // same connection identity as req — same server, same credential kind, same
 // mailbox — regardless of which device(s) already subscribe to it. Returns
 // found == false if no such row exists yet.
-func (s *Store) findMatchingWatch(ctx context.Context, req api.CreateWatchRequest) (id string, decryptedSecret string, found bool, err error) {
-	rows, err := s.db.QueryContext(ctx,
+func (s *Store) findMatchingWatch(ctx context.Context, tx dbtx, req api.CreateWatchRequest) (id string, decryptedSecret string, found bool, err error) {
+	rows, err := tx.QueryContext(ctx,
 		`SELECT id, authProvider, encryptedSecret FROM watch
 		WHERE imapHost = ? AND imapPort = ? AND imapUseTLS = ? AND imapUsername = ?
 			AND authType = ? AND mailbox = ?`,
@@ -495,7 +509,20 @@ func (s *Store) findMatchingWatch(ctx context.Context, req api.CreateWatchReques
 // one connection attempt — see connectAndWatch's auth-failure handling
 // (pool.go) for what happens if it guessed wrong.
 func (s *Store) CreateWatch(ctx context.Context, deviceID string, req api.CreateWatchRequest) (api.WatchResponse, error) {
-	watchID, existingSecret, found, err := s.findMatchingWatch(ctx, req)
+	// The find-then-insert-or-update below must run as one atomic unit —
+	// see dbtx's doc comment. Store.Open sets SetMaxOpenConns(1), so
+	// *sql.DB.BeginTx checks out the pool's one and only connection for the
+	// duration of the transaction: any other CreateWatch call (from another
+	// device, another goroutine) blocks trying to get a connection of its
+	// own until this one commits or rolls back, which is exactly the
+	// serialization needed here.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return api.WatchResponse{}, err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once Commit has succeeded
+
+	watchID, existingSecret, found, err := s.findMatchingWatch(ctx, tx, req)
 	if err != nil {
 		return api.WatchResponse{}, err
 	}
@@ -512,7 +539,7 @@ func (s *Store) CreateWatch(ctx context.Context, deviceID string, req api.Create
 		if req.Auth.Provider != nil {
 			providerValue = string(*req.Auth.Provider)
 		}
-		_, err = s.db.ExecContext(ctx,
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO watch (
 				id, imapHost, imapPort, imapUseTLS,
 				imapUsername, authType, encryptedSecret, mailbox, createdAt,
@@ -535,7 +562,7 @@ func (s *Store) CreateWatch(ctx context.Context, deviceID string, req api.Create
 		// brand-new watch starts clean. The watcher pool re-reads the
 		// record on its next loop iteration (store.Watch), so a live watch
 		// picks up the new credential without needing a restart.
-		_, err = s.db.ExecContext(ctx,
+		_, err = tx.ExecContext(ctx,
 			`UPDATE watch SET encryptedSecret = ?, status = 'active', lastErrorKind = NULL, lastErrorAt = NULL WHERE id = ?`,
 			encrypted, watchID,
 		)
@@ -549,13 +576,17 @@ func (s *Store) CreateWatch(ctx context.Context, deviceID string, req api.Create
 	if err != nil {
 		return api.WatchResponse{}, err
 	}
-	_, err = s.db.ExecContext(ctx,
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO watch_subscription (id, watchId, deviceId, accountId, createdAt)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(watchId, deviceId) DO UPDATE SET accountId = excluded.accountId, createdAt = excluded.createdAt`,
 		subID, watchID, deviceID, req.AccountID, formatTime(subCreatedAt),
 	)
 	if err != nil {
+		return api.WatchResponse{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
 		return api.WatchResponse{}, err
 	}
 
