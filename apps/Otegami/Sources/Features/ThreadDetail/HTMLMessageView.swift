@@ -420,6 +420,28 @@ struct CIDResolutionContext {
 /// なり、本文が途中で切れ、その下に大きな空白が残る) から発見。
 /// `extractHeadStyles(from:)` も参照 — 同じ B の変更が本文抽出と一緒に元
 /// `<head>` の `<style>` ブロックも丸ごと捨てていた副作用の修正。
+///
+/// **Task #205 (実機報告: Redis の実メンテナンス通知メールで幅・高さ両方が
+/// おかしい)**: `wrap(bodyHTML:)`の `<style>` の `*:not(img) { max-width:
+/// 100% !important; ... }`/`table { width: auto !important; }` が、img 向け
+/// に既に対策済みだった「著者の明示指定を踏み潰す」バグ (Task #56 の
+/// `img:not([style*="max-width" i])`/`img[style*="max-width" i]`ペア参照)
+/// を img 以外の要素・table では放置していた。実メールは
+/// `<table style="width:100%; max-width:700px;" align="center">` という
+/// 「幅いっぱいに広がるが700pxで頭打ち」の現代的なレスポンシブテーブルを
+/// 使っていたが、この `!important` 上限がその著者指定 (`max-width:700px`)
+/// を「100%＝ビューポート幅」で上書きし、かつ内側の `width="100%"`の
+/// モジュールテーブル群 (フッターの濃色帯を含む) は逆に `width: auto
+/// !important`で著者の「幅いっぱいに」という指定自体を無効化していた —
+/// 結果、フッターの帯が (700pxにも、ビューポート幅にも一致しない)
+/// 中途半端な内容依存の幅に縮み、右側に白い余白が残った (実機報告の
+/// 「フッターの濃い帯が途中で切れ、右側に白い領域が残る」)。ローカルの
+/// WKWebView 計測スクリプトで実メール構造の再現データを使い、900px
+/// ビューポートで再現 → 修正後に700px幅へ収まりセンター寄せされることを
+/// 確認済み。修正は img と同じ「著者の明示指定がある要素は非`!important`
+/// のフォールバックに倒す」形へ揃え、`table[width="100%"]`/`table[style*=
+/// "width:100%" i]`を明示的に100%へ戻す行を追加した — 詳細は下の各ルール
+/// のコメント、経緯は `docs/design-system.md` の Task #205 節参照。
 enum HTMLDocumentBuilder {
     /// Task #45「ダークモードで文字が読めない」→ Task #51 で条件を絞り
     /// 込んだ経緯:
@@ -701,9 +723,33 @@ enum HTMLDocumentBuilder {
              (下、`img { box-sizing: border-box; ... }` 以降) で個別に扱う
              — 理由はそちらのコメント参照 (この `!important` が著者の
              インライン `max-width` を問答無用で踏み潰していた実機バグの
-             修正)。 */
-          *:not(img) { max-width: 100% !important; box-sizing: border-box; }
-          video, table, iframe { max-width: 100% !important; height: auto !important; }
+             修正)。
+             Task #205 (実機報告: 実メール — Redis のメンテナンス通知 — で
+             フッターの濃い帯が右端で途切れ白い余白が残る): `img`と全く
+             同じ理由でこの `*:not(img)` 自体にも同じ「著者の明示指定を
+             踏み潰す」バグがあった。著者が `<table style="width:100%;
+             max-width:700px;">` のように自前で上限を指定しているのに、
+             この行の無条件 `max-width: 100% !important` がそれを (ビュー
+             ポート幅がその上限より広いとき) 100%＝ビューポート幅まで
+             上書きしてしまい、本来700px止まりであるべきテーブルが際限なく
+             広がっていた — `img`向けの`img:not([style*="max-width" i])`/
+             `img[style*="max-width" i]`ペア (下記) と同じ「著者が独自の
+             `max-width`を持たない要素だけに`!important`の100%上限をかけ、
+             持つ要素には非`!important`のフォールバックだけを与える」形に
+             揃えて修正 — ローカルの WKWebView 計測スクリプトで、900px
+             ビューポートに対しこの700px上限テーブルの実際のレンダリング
+             幅が900pxになってしまうこと (修正前) / 700pxに収まりセンター
+             寄せされること (修正後) を確認済み。 */
+          *:not(img):not([style*="max-width" i]) { max-width: 100% !important; box-sizing: border-box; }
+          *:not(img)[style*="max-width" i] { max-width: 100%; box-sizing: border-box; }
+          /* Task #205: `table`は下の`table { width: auto !important; }`
+             以降の専用ルール群で幅を扱うため、ここでは高さのリセットだけ
+             残す (以前はここで`max-width: 100% !important`も掛けていたが、
+             それは上の`*:not(img)`と重複するうえ、そちらが著者の`max-width`
+             を尊重するようになったのを`table`だけ迂回して踏み潰してしまう
+             ため、`table`をこの行の対象から外した)。 */
+          video, iframe { max-width: 100% !important; height: auto !important; }
+          table { height: auto !important; }
           /* Task #56「画像の巨大化禁止」(実機フィードバック: TestFlight
              通知メールのアプリアイコン ~120px 画像が画面幅いっぱいに
              引き伸ばされていた): 原因は責任分解の失敗 — メール側は
@@ -744,6 +790,25 @@ enum HTMLDocumentBuilder {
              フィットスケール以外に副作用がない (対象を明示指定なしの
              画像だけに絞っているため)。 */
           img:not([width]):not([style*="width" i]) { width: auto !important; }
+          /* Task #205: `fitToWidthScript`の`handleImageLoadFailure`が読み込み
+             失敗時に付与するクラス — WebKit既定の壊れたアイコン単体より
+             「元々ここに画像があった」ことが伝わるよう、薄い背景と破線枠を
+             敷く。埋め込んだプレースホルダ SVG 自体は `object-fit: contain`
+             で著者指定のサイズ (幅固定の広告バナー等) の中に収める — 拡大
+             せず中央に小さく収まる。開封トラッキング用の1x1透明画像 (実物の
+             Redis メールにも実在 — `width="1" height="1"`) にまでこの装飾を
+             敷くと、本来完全に不可視であるべきものが小さな破線ボックスとして
+             急に「見える化」してしまう副作用があるため、`width`/`height`
+             属性が数px以下と明示されている画像は対象から除外する (2px以下
+             という閾値は実際のトラッキングピクセルが1x1・稀に2x2で来る
+             実例に基づく実用的な線引き)。 */
+          img.otegami-image-load-failed { object-fit: contain; }
+          img.otegami-image-load-failed:not([width="0"]):not([width="1"]):not([width="2"]):not([height="0"]):not([height="1"]):not([height="2"]) {
+            background-color: color-mix(in srgb, CanvasText 8%, transparent);
+            border: 1px dashed color-mix(in srgb, CanvasText 25%, transparent);
+            box-sizing: border-box;
+            padding: 4px;
+          }
           /* 幅固定のマーケティングHTML (width="600"のテーブル等) 対策:
              max-width: 100% だけだと table-layout: auto のセル内容が要求
              する幅次第でテーブル自体がなおコンテナ幅を超えうる。width: auto
@@ -753,6 +818,20 @@ enum HTMLDocumentBuilder {
              崩れて見た目が壊れるケースがあるため見送った (「やり過ぎない
              範囲で」という指示どおりの選択)。 */
           table { width: auto !important; }
+          /* Task #205: この行だけだと、著者が明示的に `width="100%"`/
+             `style="width:100%"` を指定して「利用可能な幅いっぱいに
+             広がってほしい」意図で作ったテーブル (レスポンシブなメール
+             テンプレートの定石 — 直上の `max-width:700px` のセルより
+             さらに内側にネストする `width="100%"` の各モジュールテーブル
+             など) まで一律 `auto` (＝内容に応じた縮小フィット幅) にして
+             しまい、`table-layout: fixed` と組み合わさるとブラウザが
+             セル内容から一見無関係などっちつかずの幅を導出することがある
+             (実機/ローカル計測で確認: 700px超のコンテナ内で653px相当に
+             縮み、右側に白い余白が残った)。`width="100%"`/`style="width:
+             100%"` を持つテーブルだけ明示的に100%へ戻す — 直上の固定幅
+             テーブル対策 (幅を持たない/`px`指定のテーブルを`auto`に倒す)
+             とは互いに排他的な条件なので競合しない。 */
+          table[width="100%"], table[style*="width:100%" i], table[style*="width: 100%" i] { width: 100% !important; }
           td, th { min-width: 0 !important; }
           a { color: LinkText; }
           pre, code { white-space: pre-wrap; }
@@ -1770,15 +1849,50 @@ final class HTMLWebViewCoordinator: NSObject, WKNavigationDelegate {
     /// `docs/design-system.md`のTask #98節 (このTask #104の追記含む) 参照。
     private static let fitToWidthScript = """
     (function () {
+      /* Task #205 (実機報告: 壊れた画像アイコン — 枠線付きの箱に青い「?」
+         — がそのまま出るのは分かりにくい): 読み込みに失敗した `<img>` を、
+         WebKit 既定の壊れたアイコンのままにせず、意図の分かる中立な
+         プレースホルダ (画像アイコンに斜線を引いたもの、灰色) へ差し替える
+         — ATS/ネットワーク不調/リンク切れなど、失敗理由を問わず同じ扱い。
+         `#otegami-fit-inner img { ... }` (下の `<style>`) が
+         `.otegami-image-load-failed` に薄い背景・破線枠を敷き、「元々ここは
+         画像だった (けれど今は表示できない)」ことが伝わる見た目にする —
+         `alt` 属性はそのまま残すので、ホバー/VoiceOver 等の代替テキストは
+         従来どおり機能する。 */
+      var otegamiImagePlaceholderDataURL = (function () {
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">'
+          + '<circle cx="17" cy="17" r="4" fill="#9a9a9a"/>'
+          + '<path d="M6 34l11-11 8 8 6-6 11 11" fill="none" stroke="#9a9a9a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>'
+          + '<line x1="4" y1="44" x2="44" y2="4" stroke="#9a9a9a" stroke-width="2.5" stroke-linecap="round"/>'
+          + '</svg>';
+        return 'data:image/svg+xml,' + encodeURIComponent(svg);
+      })();
+      function handleImageLoadFailure(img) {
+        if (img.dataset.otegamiImageFailed) { return; }
+        img.dataset.otegamiImageFailed = '1';
+        img.classList.add('otegami-image-load-failed');
+        img.src = otegamiImagePlaceholderDataURL;
+      }
       function waitForImages() {
-        var pending = Array.prototype.slice.call(document.images).filter(function (img) { return !img.complete; });
+        var all = Array.prototype.slice.call(document.images);
+        // Task #205: an image that already finished (`complete === true`)
+        // *before* this script ever runs but never actually decoded any
+        // pixels (`naturalWidth === 0` — WebKit's own signal for "this URL
+        // failed", distinct from a same-size 0x0 image, which essentially
+        // never occurs in real mail) needs the same placeholder treatment —
+        // it's excluded from `pending` below (nothing to wait for), so it
+        // never reaches the `error` handler attached there.
+        all.forEach(function (img) {
+          if (img.complete && img.naturalWidth === 0) { handleImageLoadFailure(img); }
+        });
+        var pending = all.filter(function (img) { return !img.complete; });
         if (pending.length === 0) { return Promise.resolve(); }
         return Promise.all(pending.map(function (img) {
           return new Promise(function (resolve) {
             var settled = false;
             function finish() { if (!settled) { settled = true; resolve(); } }
             img.addEventListener('load', finish, { once: true });
-            img.addEventListener('error', finish, { once: true });
+            img.addEventListener('error', function () { handleImageLoadFailure(img); finish(); }, { once: true });
             setTimeout(finish, \(imageWaitTimeoutMs));
           });
         }));

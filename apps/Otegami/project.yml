@@ -163,6 +163,23 @@ targets:
         # "YES" or "NO" (same mechanism `GOOGLE_OAUTH_CLIENT_ID` above
         # already relies on) — compare against the string, not `as? Bool`.
         OtegamiMailClientEntitlementEnabled: $(OTEGAMI_MAIL_CLIENT_ENTITLEMENT)
+        # Task #205 (実機報告: HTML メール内の `http://` (非 `https`) 画像が
+        # 常に壊れたアイコンになる — mac/iOS 共通): App Transport Security は
+        # このキーが無い限り平文 `http` の読み込みを既定でブロックする。この
+        # アプリは `WKContentRuleList`/`ImageSettingsStore`
+        # (`HTMLMessageView.swift`) で「リモート画像を読み込むかどうか」を
+        # 既に自前でユーザーに選ばせている — ATS がその上にさらに `http` だけ
+        # 無条件ブロックすると、ユーザーが読み込みを許可した (既定 ON) 後です
+        # ら `http` 画像だけは常に読み込みに失敗し (`WKContentRuleList`は
+        # 効いていないので「遮断された」見た目の "画像を表示" バナーは出ず、
+        # ただ壊れたアイコンだけが残る)、「画像を表示」ボタンを追加しても
+        # 意味がない。`NSAllowsArbitraryLoadsInWebContent`は`WKWebView`が
+        # 読み込む コンテンツだけに ATS 制限を解除する Apple 公式のキー —
+        # このアプリ自身の通信 (IMAP/SMTP は MailCore2 独自のソケット層で
+        # ATS の対象外、OAuth/relay/iCloud は元から https のみ) には一切
+        # 影響しない、意図的にスコープを絞った緩和。
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoadsInWebContent: true
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

@@ -3283,6 +3283,15 @@ final class AppEnvironment {
             subject: "ご予約について (UITest)",
             snippet: "承知しました、21日の11時でお願いします。",
             html: uitestFakeHTMLMessageBodyGmailQuoteHistory
+        ),
+        // Task #205 (実機報告 — ユーザー提供の実メール、内容は伏せて構造だけ
+        // 再現): `html-10` — `uitestFakeHTMLMessageBodyResponsiveTableFooterNotice`
+        // のdoc comment参照 (幅いっぱいの `width="100%"` テーブル + `http:`
+        // 外部画像2枚 + 濃色背景フッター、というこのメールの実際の骨格)。
+        UITestFakeHTMLMessage(
+            subject: "Scheduled maintenance for subscription #0000000 (UITest)",
+            snippet: "Service maintenance for subscription #0000000 is now complete.",
+            html: uitestFakeHTMLMessageBodyResponsiveTableFooterNotice
         )
     ]
 
@@ -3662,6 +3671,89 @@ final class AppEnvironment {
     /// スクリーンショットで確認する用途。
     fileprivate static let uitestFakeHTMLMessageBodyGmailQuoteHistory = """
     <div dir="ltr"><div dir="auto">田中さん</div><div dir="auto">承知しました、21日の11時でお願いします。</div><div dir="auto">当日はよろしくお願いいたします。</div><div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">2026年7月20日(月) 15:00 田中花子 &lt;<a href="mailto:hanako@example.com">hanako@example.com</a>&gt;:</div><blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex"><div dir="auto">ご予約ありがとうございます。</div><div dir="auto">21日11時でお取りできます。</div><div dir="auto">前日までにお店へご確認のお電話をお願いいたします。</div><div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">2026年7月20日(月) 14:30 佐藤太郎 &lt;<a href="mailto:taro@example.com">taro@example.com</a>&gt;:</div><blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex"><div dir="auto">はじめまして、佐藤です。</div><div dir="auto">7月21日の11時に予約をお願いしたいのですが、空いていますでしょうか。</div><div dir="auto">よろしくお願いいたします。</div></blockquote></div></div></blockquote></div></div></div>
+    """
+
+    /// Task #205 (実機報告: `~/Downloads/` の実メール — サブスクリプション
+    /// メンテナンス完了通知、送信元はメール配信サービス — で「画像が出ない」
+    /// 「幅・高さが崩れる」「ソースを表示が空白」の3件が同時に報告された):
+    /// このフィクスチャは**その実メールの内容ではなく、症状の再現に必要な
+    /// 構造だけを架空の内容で書き起こしたもの** (実名・実メールアドレス・
+    /// 実サービス名は一切含まない — `CLAUDE.md`の実名混入禁止事項)。
+    ///
+    /// 再現に必要だった構造上の特徴 (3点とも実際にこの構造で再現・修正
+    /// 確認済み — `docs/design-system.md`のTask #205節参照):
+    /// 1. **画像2枚とも `https` ではなく `http`** (ロゴ画像 + 開封トラッキング
+    ///    用の1x1透明画像)、ホストは実在しない `.test` ドメイン (RFC 2606 —
+    ///    DNS解決が確実に失敗する、実ネットワークに依存しないフィクスチャに
+    ///    するため)。修正前の実機では、`http`の平文通信をこのアプリの
+    ///    Info.plist が ATS 例外を持たず既定でブロックしていたため
+    ///    「リモート画像を自動で読み込む」(既定 ON) であっても実際には
+    ///    読み込みに失敗し壊れたアイコンになる一方、「画像を表示」バナーは
+    ///    (このアプリ自身の`WKContentRuleList`は`allowsExternalContent==
+    ///    true`なので効いておらず) 出ない、という実機報告と一致する状態
+    ///    だった — この`.test`ドメインの構成では失敗の理由こそ ATS では
+    ///    なく DNS 解決不能だが、`<img>`の`error`イベントが発火して
+    ///    `fitToWidthScript`のプレースホルダ差し替え (Task #205) が働く
+    ///    という見た目は同じで、それ単体の確認には十分。ATS 例外
+    ///    (`NSAllowsArbitraryLoadsInWebContent`) 自体が実際に効くかの確認は
+    ///    実機/実ネットワーク越しの別途確認が必要 — `docs/design-system.md`
+    ///    のTask #205節参照。
+    /// 2. **`<table width="100%" ...>`** (ネストした複数階層) **と、その内側
+    ///    に `style="width:100%; max-width:700px;"` で上限を掛けた1枚** —
+    ///    「幅いっぱいに広がるが700pxで頭打ち」という現代的なレスポンシブ
+    ///    メールテーブルの定石。
+    /// 3. **濃色背景の `<td style="background-color:...">` を持つフッター
+    ///    テーブル** — 2の`width="100%"`テーブルの内側にネストしており、
+    ///    2の幅計算が壊れるとこのフッターの帯だけが中途半端な幅に縮み、
+    ///    右側に白い余白が残る (実機報告「フッターの濃い帯が途中で切れ、
+    ///    右側に白い領域が残る」の再現条件)。
+    fileprivate static let uitestFakeHTMLMessageBodyResponsiveTableFooterNotice = """
+    <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+    <html>
+    <body>
+    <center class="wrapper" bgcolor="#FFFFFF">
+    <table cellpadding="0" cellspacing="0" border="0" width="100%" class="wrapper" bgcolor="#FFFFFF">
+    <tr><td valign="top" bgcolor="#FFFFFF" width="100%">
+    <table width="100%" role="content-container" align="center" cellpadding="0" cellspacing="0" border="0">
+    <tr><td width="100%">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; max-width:700px;" align="center">
+    <tr><td style="padding:0px; color:#000000; text-align:left;" bgcolor="#ffffff" width="100%" align="left">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td style="padding:20px 0px 10px 40px;" valign="top" align="left">
+    <img border="0" style="display:block;" width="120" height="38" alt="Example" src="http://cdn.otegami.test/logo/240x75.png">
+    </td></tr>
+    </table>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td style="padding:0px 0px 1px 0px;" bgcolor="#b5babd" height="1"></td></tr>
+    </table>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td style="padding:10px 40px 10px 40px; line-height:32px;" valign="top"><span style="font-size:28px;">Example Maintenance Service</span></td></tr>
+    </table>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td style="padding:10px 40px 10px 40px; line-height:18px;" valign="top"><span style="font-size:14px;">Hi,<br><br>Service maintenance for subscription #0000000 (ExampleEcosystem) in account production is now complete.<br><br>Thank you,<br>Example</span></td></tr>
+    </table>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td style="padding:20px 40px 20px 40px; line-height:12px; background-color:#091A23;" valign="top" bgcolor="#091A23">
+    <div style="text-align:center;"><span style="font-size:9px; color:#7f7f7f;">&copy; 2026 Example, Inc. All Rights Reserved.</span></div>
+    <div style="text-align:center;"><span style="font-size:9px; color:#7f7f7f;">If you no longer wish to receive these emails, you may unsubscribe at any time (<a href="https://unsub.otegami.test/abc"><span style="color:#7f7f7f;"><u>Access Management</u></span></a>).</span></div>
+    </td></tr>
+    </table>
+    </td></tr>
+    </table>
+    </td></tr>
+    </table>
+    </td></tr>
+    </table>
+    </td></tr>
+    </table>
+    </td></tr>
+    </table>
+    </center>
+    <img src="http://track.otegami.test/wf/open?upn=uitest-fake" alt="" width="1" height="1" border="0" style="height:1px !important;width:1px !important;">
+    </body>
+    </html>
     """
 
     // MARK: - Task #66 (カレンダー招待メール対応) UITest fixture

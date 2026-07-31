@@ -240,6 +240,69 @@ Apple Foundation Models によるオンデバイス翻訳 (英語→日本語の
 - WebView は初期状態で透明にしておき、上記の判定が確定してから一度だけ
   フェードインする (読み込み中のチラつき防止)。
 
+### Task #205 (実機報告: 実メールで「画像が出ない」「幅・高さが崩れる」
+「ソースを表示が空白」の3件が同時発生)
+
+ユーザー提供の実メール (サブスクリプションのメンテナンス完了通知、
+`multipart/alternative`) を Mac 版で開いたときの報告。3つは互いに独立した
+別々のバグだった — 詳細な原因調査・修正は `HTMLMessageView.swift`/
+`MessageSourceView.swift` の Task #205 doc comment 参照。フィクスチャは
+`AppEnvironment.uitestFakeHTMLMessageBodyResponsiveTableFooterNotice`
+(`scripts/verify-screen.sh html-10`) — 内容は架空だが、再現に必要な構造
+(`http:` 外部画像2枚 / ネストした `width="100%"` レスポンシブテーブル /
+濃色背景フッター) は実メールと同じ。
+
+1. **`http:` (非 `https`) 画像が常に壊れたアイコンになる (iOS/macOS 共通)**:
+   「リモート画像を自動で読み込む」が既定 ON のため、このアプリ自身の
+   `WKContentRuleList` による遮断は効いておらず (＝「画像を表示」バナー
+   も出ない)、実際には読み込みを試みて **App Transport Security (ATS)**
+   が Info.plist に例外の無い平文 `http` を既定でブロックしていたために
+   毎回失敗していた。`project.yml` の Info.plist に
+   `NSAppTransportSecurity.NSAllowsArbitraryLoadsInWebContent: true` を
+   追加 — `WKWebView` が読み込むコンテンツだけに ATS 制限を解除する
+   Apple 公式のキーで、アプリ自身の通信 (IMAP/SMTP/OAuth/relay/iCloud)
+   には影響しない。あわせて、読み込みに失敗した `<img>` を WebKit 既定の
+   壊れたアイコン (枠線付きの箱に「?」) のままにせず、意図の分かる中立
+   なプレースホルダ (斜線入り画像アイコン、灰色破線枠) へ差し替える処理
+   を `HTMLWebViewCoordinator.fitToWidthScript` に追加 (`img`の`error`
+   イベント/`complete && naturalWidth===0`の両方を検知)。開封トラッキング
+   用の1x1透明画像のような極小画像 (`width`/`height`属性が2px以下) は
+   この装飾の対象から除外 — 敷くと「元は完全に不可視だったものが急に
+   見える化する」副作用があるため。
+2. **macOS で HTML 本文の幅・高さがおかしい**: `HTMLDocumentBuilder.wrap`
+   の CSS リセットに、img 向けには Task #56 で既に対策済みだった「著者の
+   明示指定 (`max-width`/`width:100%`) を `!important` で問答無用に踏み
+   潰す」バグが、img 以外の要素・`table` には残っていた。実メールは
+   `<table style="width:100%; max-width:700px;">` (幅いっぱいに広がるが
+   700pxで頭打ち) という現代的なレスポンシブテーブルを使っており、この
+   `max-width:700px` が `100%` (＝ビューポート幅) で上書きされる一方、
+   内側の `width="100%"` のモジュールテーブル (フッターの濃色帯を含む)
+   は逆に `width: auto !important` で無効化されていた — 結果、フッターの
+   帯が本来の700pxにも実ビューポート幅にも一致しない中途半端な内容依存
+   の幅に縮み、右側に白い余白が残っていた (「フッターの濃い帯が途中で
+   切れる」の正体)。img と同じ「著者が明示指定を持つ要素は非`!important`
+   のフォールバックに倒す」形に揃えて修正。ローカルの WKWebView 計測
+   スクリプト (再現メールと同じ構造、内容は架空に差し替えたもの) で
+   900pxビューポートに対し修正前は700pxキャップが効かず全幅まで広がる
+   こと/修正後は700pxに収まりセンター寄せされることを確認済み。「本文の
+   下に広い空白」の報告は、この幅計算バグと同時に発生していたが、実機
+   アプリで修正後に確認したところ内容に比例した高さに収まっており、
+   単独の別バグとしては再現しなかった (幅計算バグの副作用だった可能性が
+   高い)。
+3. **macOS で「ソースを表示」が空白 (iOS は無関係)**: `MessageSourceView`
+   が Task #103 で追加された際、M10 で確立済みだった「macOS の `.sheet`
+   は `NavigationStack { ... }` の中身の内在サイズから算出されない (中身
+   が `List` や柔軟なレイアウトだけだと、シートがタイトルバー＋ツール
+   バーだけのほぼ無に近い高さで開く)」という既知のパターン
+   (`AccountTypeSelectionView`等の doc comment 参照、`AccountSetupView`/
+   `AccountsSettingsView`/`ICloudAccountSetupView`等は既に対策済み) への
+   追従を1箇所だけ付け忘れていた、という単純な見落とし。`#if os(macOS)`
+   で `.frame(minWidth: 640, minHeight: 480)` を追加して解決 — 実機アプリ
+   で修正前後を確認済み (修正前はメニューから「ソースを表示」を選んでも
+   目に見える変化がなかった=シートがほぼ無に近い高さで開いていた、
+   修正後は正しいサイズのダイアログが開く)。iOS は `.sheet` が画面いっぱ
+   いに広がる既定の挙動なのでこの問題自体が発生しない。
+
 ## ビジュアルスタイル
 
 - フラットデザイン。角丸は `OtegamiRadius.none` (0) が既定で、**カード

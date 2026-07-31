@@ -123,6 +123,22 @@
 #                                       トグル+カード(#123と同じ
 #                                       `QuoteHistorySectionView`)に折り
 #                                       たたまれることの確認用。
+#   html-10 / html-responsive-table-footer  Task #205 (実機報告: ユーザー
+#                                       提供の実メールで「画像が出ない」
+#                                       「幅・高さが崩れる」「ソースを表示
+#                                       が空白」の3件): `http:` 外部画像2枚
+#                                       (ATS 例外なしでは既定ブロックされ
+#                                       壊れたアイコンになっていた) +
+#                                       `width="100%"`のネストしたレスポン
+#                                       シブテーブル (幅計算が壊れると内側の
+#                                       濃色フッターだけ中途半端な幅に縮み
+#                                       右に白余白が残っていた) という実物の
+#                                       骨格を、内容は架空のメンテナンス
+#                                       通知に差し替えて再現するフィクス
+#                                       チャ (`AppEnvironment
+#                                       .uitestFakeHTMLMessageBodyResponsive
+#                                       TableFooterNotice`)。画像/幅の見た目
+#                                       確認用。
 #   calendar-invite                    Task #66: カレンダー招待メールの
 #                                       招待カード (36番フィクスチャ相当 —
 #                                       タイトル/日時/場所/主催者 +
@@ -352,13 +368,14 @@
 #                                       `docs/design-system.md`のTask #200節
 #                                       (macOSで実クリック確認済み) 参照。
 #
-# 上9つの`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目・
-# 9番目 (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応、8番目だけ
-# 抜けているのは`html-9`の項目のdoc comment参照) — 0〜4番目の実体は
-# `dev/mailstack/seed/fixtures/31/32/33/34-*.eml`と同内容のSwift文字列
-# リテラル (自前ダーク対応は.emlフィクスチャなし、AppEnvironment内にのみ
-# 存在)。5番目 (Task #98)・6番目 (Task #104)・7番目 (Task #112)・9番目
-# (Task #133) も .emlフィクスチャなし、AppEnvironment内にのみ存在。
+# 上10個の`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目・
+# 9番目・10番目 (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応、
+# 8番目だけ抜けているのは`html-9`の項目のdoc comment参照) — 0〜4番目の
+# 実体は`dev/mailstack/seed/fixtures/31/32/33/34-*.eml`と同内容のSwift
+# 文字列リテラル (自前ダーク対応は.emlフィクスチャなし、AppEnvironment内
+# にのみ存在)。5番目 (Task #98)・6番目 (Task #104)・7番目 (Task #112)・
+# 9番目 (Task #133)・10番目 (Task #205) も .emlフィクスチャなし、
+# AppEnvironment内にのみ存在。
 #
 # Env:
 #   IOS_SIMULATOR    Simulator name (default: iPhone 17 Pro Max)
@@ -480,6 +497,17 @@ case "$SCENARIO" in
     # to 9).
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=9")
     default_out="html-9-gmail-quote-history.png"
+    ;;
+  html-10|html-responsive-table-footer)
+    # Task #205 (実機報告: 画像が出ない/幅・高さが崩れる/ソースを表示が
+    # 空白 — `AppEnvironment
+    # .uitestFakeHTMLMessageBodyResponsiveTableFooterNotice`のdoc comment
+    # 参照): `http:` 外部画像2枚 + `width="100%"`のネストしたレスポンシブ
+    # テーブル + 濃色背景フッターという実メールの骨格を再現。画像/幅の
+    # 見た目確認用 (「ソースを表示」自体はこのシナリオでは直接遷移して
+    # いない — `message-source`シナリオ参照)。
+    launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=10")
+    default_out="html-10-responsive-table-footer.png"
     ;;
   calendar-invite)
     # Task #66: `CalendarInviteSectionView`'s card (title/time/location/

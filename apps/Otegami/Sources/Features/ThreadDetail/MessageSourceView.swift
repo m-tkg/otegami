@@ -59,6 +59,24 @@ struct MessageSourceView: View {
             loader.load(messageId: messageId, accountId: accountId, subject: subject, environment: environment)
         }
         .accessibilityIdentifier("messageSource.navigationStack")
+        #if os(macOS)
+        // Task #205 (実機報告「mac 版では view source で何も表示されない」):
+        // M10 fix と同じ原因 — macOS は `.sheet` を `NavigationStack { ... }`
+        // 中身の内在サイズからは算出せず、この画面のように中身が
+        // `.frame(maxWidth: .infinity, maxHeight: .infinity)` だけの柔軟な
+        // レイアウト (このビューは `List` すら持たない) だと算出できる
+        // 内在サイズが無いに等しく、シートがタイトルバー＋ツールバーだけの
+        // ほぼ無に近い高さで開いていた (`AccountTypeSelectionView`等の doc
+        // comment参照 — `AccountSetupView`/`AccountsSettingsView`/
+        // `ICloudAccountSetupView`等、同じ形のシート全部に既に適用済みの
+        // 定番修正だが、Task #103 でこの画面を追加したときにこの1行だけ
+        // 付け忘れていた)。iOS は `.sheet` が画面いっぱいに広がる既定の
+        // 挙動なのでこの問題自体が起きない (`CLAUDE.md` 通り iOS の挙動は
+        // 変えていない)。生ソース (RFC822、長いヘッダ行を折り返さず表示—
+        // `MonospaceSourceTextView`のdoc comment参照) を読むための画面なので
+        // 他の設定シート (480x420) よりやや広めに確保する。
+        .frame(minWidth: 640, minHeight: 480)
+        #endif
     }
 
     private var loadingView: some View {
