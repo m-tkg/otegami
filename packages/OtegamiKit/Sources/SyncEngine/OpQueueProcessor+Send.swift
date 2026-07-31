@@ -75,7 +75,7 @@ extension OpQueueProcessor {
         // than risking a duplicate.
         guard try await claimSendStart(outboxMessageId: payload.outboxMessageId) else {
             Self.logger.error("send blocked: outboxMessageId \(payload.outboxMessageId) already claimed by another attempt — refusing to resend (Task #124 safety net)")
-            throw MailTransportError.serverError(underlyingDescription: "送信を開始済みのため再送信をスキップしました(二重送信防止)。「同期エラー」から内容を確認し、必要なら手動で再送してください。")
+            throw SyncEngineError.duplicateSendBlocked
         }
 
         // SMTP failures here must never be reclassified as

@@ -126,7 +126,7 @@ public actor SyncCoordinator {
         // would just reject it anyway (see its own doc comment), so there's
         // nothing a network round trip could accomplish here yet.
         guard !message.isPendingRelocation else {
-            throw MailTransportError.serverError(underlyingDescription: "message \(message.id.map(String.init) ?? "?") is pending local relocation; no server UID yet")
+            throw SyncEngineError.pendingRelocation(messageId: message.id)
         }
         let session = sessionFactory(account.imapConfig)
         try await session.connect(auth: auth)
@@ -157,7 +157,7 @@ public actor SyncCoordinator {
         // `fetchBody(for:mailboxPath:account:auth:)`'s identical guard
         // above; there's no real server UID to `UID FETCH` a part of yet.
         guard messageUID > 0 else {
-            throw MailTransportError.serverError(underlyingDescription: "message is pending local relocation; no server UID yet")
+            throw SyncEngineError.pendingRelocation(messageId: nil)
         }
         let session = sessionFactory(account.imapConfig)
         try await session.connect(auth: auth)
@@ -202,7 +202,7 @@ public actor SyncCoordinator {
         // Task #120: same "no real server UID yet" guard as
         // `fetchAttachment`/`fetchBody` above.
         guard messageUID > 0 else {
-            throw MailTransportError.serverError(underlyingDescription: "message \(messageId) is pending local relocation; no server UID yet")
+            throw SyncEngineError.pendingRelocation(messageId: messageId)
         }
         let session = sessionFactory(account.imapConfig)
         try await session.connect(auth: auth)

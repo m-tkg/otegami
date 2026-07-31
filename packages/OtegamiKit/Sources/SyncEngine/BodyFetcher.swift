@@ -112,7 +112,7 @@ public actor BodyFetcher {
         // failure lets the caller's existing retry affordance apply rather
         // than hanging or crashing.
         guard !message.isPendingRelocation else {
-            throw MailTransportError.serverError(underlyingDescription: "message \(messageId) is pending local relocation; no server UID yet")
+            throw SyncEngineError.pendingRelocation(messageId: messageId)
         }
 
         if let existing = inFlightFetches[messageId] {

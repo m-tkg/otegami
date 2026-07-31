@@ -25,7 +25,7 @@ extension OpQueueProcessor {
         guard let drafts = try await MailboxRoleResolver.resolveOrCreate(role: .drafts, accountId: account.id, session: session, database: database) else {
             // See the `.delete` case's identical shape: leave the op
             // pending rather than silently dropping a save.
-            throw MailTransportError.mailboxNotFound(path: "(no Drafts-role mailbox known)")
+            throw SyncEngineError.noRoleMailbox(role: .drafts)
         }
 
         // Same "rebuild attachments from disk at replay time" pattern

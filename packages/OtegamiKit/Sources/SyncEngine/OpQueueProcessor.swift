@@ -176,7 +176,7 @@ public actor OpQueueProcessor {
                     try await delete(op: op)
                     result.discardedStale += 1
                 }
-            } catch let error as MailTransportError where Self.isConnectionLevel(error) {
+            } catch let error as MailTransportError where SyncFailureClass.classify(error) == .connectionLevel {
                 throw error
             } catch where DatabaseSuspensionSupport.isSuspensionError(error) {
                 // Task #192 (0xDEAD10CC 対策): the shared database is
@@ -264,7 +264,7 @@ public actor OpQueueProcessor {
                 // whatever blocked `CREATE` is fixed server-side) can still
                 // complete it — rather than silently dropping a
                 // user-intended delete.
-                throw MailTransportError.mailboxNotFound(path: "(no Trash-role mailbox known)")
+                throw SyncEngineError.noRoleMailbox(role: .trash)
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: trash.path)
             return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, trash.id].compactMap { $0 }))
@@ -278,7 +278,7 @@ public actor OpQueueProcessor {
                 // Same "leave the op pending rather than silently dropping
                 // a user-intended action" shape as `.delete`'s identical
                 // Trash-resolution failure above.
-                throw MailTransportError.mailboxNotFound(path: "(no Junk-role mailbox known)")
+                throw SyncEngineError.noRoleMailbox(role: .junk)
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: junk.path)
             return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, junk.id].compactMap { $0 }))
@@ -308,7 +308,7 @@ public actor OpQueueProcessor {
                 // Same "leave the op pending rather than silently dropping
                 // a user-intended action" shape as `.delete`/`.junk`'s
                 // identical resolution failure.
-                throw MailTransportError.mailboxNotFound(path: "(no Archive-role mailbox known)")
+                throw SyncEngineError.noRoleMailbox(role: .archive)
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: archive.path)
             return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, archive.id].compactMap { $0 }))
@@ -324,7 +324,7 @@ public actor OpQueueProcessor {
                 // completed) — leave the op pending rather than silently
                 // dropping a user-intended "アーカイブ解除", same shape as
                 // every other `resolveOrCreate*`/lookup failure above.
-                throw MailTransportError.mailboxNotFound(path: "(no INBOX-role mailbox known)")
+                throw SyncEngineError.noRoleMailbox(role: .inbox)
             }
             if account.kind == .gmail {
                 // Gmail: restoring the INBOX label is "add it to INBOX
@@ -446,25 +446,23 @@ public actor OpQueueProcessor {
         try await database.dbWriter.write { db in
             var record = op
             record.attempts = attempts
-            record.lastError = String(describing: error)
+            // `SyncEngineError.userFacingMessage` rather than `String
+            // (describing:)` directly — preserves `FailedOperationsView`'s
+            // existing caption text for `.duplicateSendBlocked` (the one
+            // case with real UI copy, not just a technical description;
+            // see `SyncEngineError.userFacingMessage`'s doc comment).
+            // `String(describing:)` unchanged for every other error type
+            // (`MailTransportError`, GRDB's `DatabaseError`, ...).
+            record.lastError = (error as? SyncEngineError)?.userFacingMessage ?? String(describing: error)
             record.nextRetryAt = failed ? nil : Date().addingTimeInterval(backoff)
             try record.update(db)
         }
         return attempts
     }
 
-    /// Errors that mean "this connection/credential is broken", not "this
-    /// particular op is invalid" — worth aborting the whole replay batch
-    /// over rather than burning through every remaining op's attempts
-    /// budget on the same underlying cause.
-    private static func isConnectionLevel(_ error: MailTransportError) -> Bool {
-        switch error {
-        case .connectionFailed, .notConnected, .cancelled, .authenticationFailed:
-            true
-        case .serverError, .malformedResponse, .mailboxNotFound, .notImplemented, .invalidAddress:
-            false
-        }
-    }
+    // `isConnectionLevel(_:)` moved to `SyncFailureClass.classify(_:)` — see
+    // that type's doc comment for why it's a standalone type rather than
+    // reusing `AccountSyncer`'s own private `FailureClass`.
 }
 
 /// The default `smtpSessionFactory` for callers that never queue a `.send`
