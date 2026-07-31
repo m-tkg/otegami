@@ -16,8 +16,8 @@ UI。iOS はハンバーガーメニュー →「設定」シート、macOS は 
 
 | カテゴリ | 実装 | 内容 |
 | --- | --- | --- |
-| 一般 | `GeneralSettingsView.swift` | iCloud 同期トグルのみ |
-| アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、デフォルトの送信アカウント、プッシュ通知 |
+| 一般 | `GeneralSettingsView.swift` | iCloud 同期トグル、プッシュ通知 (Task #212 で移設) |
+| アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、デフォルトの送信アカウント |
 | メールビューア | `MailViewerSettingsView.swift` | リンクの開き方、削除/アーカイブ後の挙動、本文へのプロフィール画像表示、AI 機能 on/off、画像設定、HTML表示設定、フッターツールバーのカスタマイズへの入口 |
 | メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定、一覧に要約を出す、スレッド表示、ピン留めのフラグ連動 |
 | メール作成 | `MailComposeSettingsView.swift` | テンプレート、署名テンプレート、送信キャンセルの猶予 |
@@ -296,8 +296,8 @@ ON。同じ Apple ID の他デバイスと設定全般を同期する。設定�
 ## プッシュ通知
 
 `PushSettingsStore.swift` (Keychain 併用、`push.*` キー群)。設定 →
-「アカウントの設定」→「プッシュ通知」から有効化。詳細は
-[docs/relay-deployment.md](relay-deployment.md)。
+「一般」→「プッシュ通知」から有効化 (Task #212 で「アカウントの設定」
+から移設)。詳細は [docs/relay-deployment.md](relay-deployment.md)。
 
 ### 通知の内容
 

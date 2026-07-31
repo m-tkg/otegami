@@ -676,11 +676,14 @@ case "$SCENARIO" in
     ;;
   push-settings)
     # Task #171 follow-up (登録シークレット入力欄を削除): 設定 →
-    # アカウントの設定 → 「プッシュ通知」をタップ無しで直接開く
-    # (`AccountSettingsCategoryView` の
-    # `-uitestsOpenPushNotificationsDirectly` フック、`account-settings`
-    # と同じ「1段深いところまで一気に」パターン)。iOS専用画面。
-    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenPushNotificationsDirectly")
+    # 「一般」→「プッシュ通知」をタップ無しで直接開く
+    # (`GeneralSettingsView` の `-uitestsOpenPushNotificationsDirectly`
+    # フック、`account-settings` と同じ「1段深いところまで一気に」
+    # パターン)。iOS専用画面。Task #212 でこのフックの持ち主が
+    # `AccountSettingsCategoryView` から `GeneralSettingsView` へ
+    # 移設されたため、`-uitestsOpenAccountSettingsDirectly` の代わりに
+    # `-uitestsOpenGeneralSettingsDirectly` を積む。
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenGeneralSettingsDirectly" "-uitestsOpenPushNotificationsDirectly")
     default_out="push-settings.png"
     ;;
   push-settings-watches)
@@ -696,7 +699,7 @@ case "$SCENARIO" in
       "OTEGAMI_UITEST_FORCE_PUSH_ENABLED=1"
       "OTEGAMI_UITEST_FIXED_PUSH_WATCH_SUMMARIES=1"
     )
-    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenAccountSettingsDirectly" "-uitestsOpenPushNotificationsDirectly")
+    launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenGeneralSettingsDirectly" "-uitestsOpenPushNotificationsDirectly")
     default_out="push-settings-watches.png"
     ;;
   toolbar-customize)

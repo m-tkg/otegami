@@ -43,6 +43,11 @@ final class OtegamiFeedbackBatch3ScreenshotUITests: XCTestCase {
     /// ことを確認 (旧「アカウントの設定」カテゴリの項目 — Task #186 で
     /// 同期対象がアカウントの接続設定を超えて設定全般に広がったため、
     /// 新設カテゴリへ再移設した)。
+    ///
+    /// Task #212: プッシュ通知への入口も「一般」へ再移設された
+    /// (`GeneralSettingsView`の doc comment参照 — 以前は「アカウントの
+    /// 設定」カテゴリにあった。旧`testAccountSettingsCategoryShowsMigratedItems`
+    /// が確認していた内容はここへ統合し、そのテストは削除した)。
     func testGeneralSettingsCategoryShowsCloudSyncToggle() throws {
         let app = XCUIApplication()
         app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
@@ -52,25 +57,9 @@ final class OtegamiFeedbackBatch3ScreenshotUITests: XCTestCase {
         XCTAssertTrue(navigateToGeneralSettingsCategory(in: app), "「一般」カテゴリへの遷移に失敗した")
 
         XCTAssertTrue(app.switches["settings.cloudSyncToggle"].waitForExistence(timeout: 10))
-
-        attachScreenshot(named: "I-general-settings-category")
-    }
-
-    /// E/I: 「アカウントの設定」カテゴリにプッシュ通知が移設されている
-    /// ことを確認 (旧「その他」カテゴリの項目)。iCloud 同期は Task #189 で
-    /// 「一般」カテゴリへ再移設したので、ここではもう確認しない
-    /// (`testGeneralSettingsCategoryShowsCloudSyncToggle`参照)。
-    func testAccountSettingsCategoryShowsMigratedItems() throws {
-        let app = XCUIApplication()
-        app.launchArguments += ["-uiTestsAutoAdvanceToContent"]
-        app.launch()
-
-        openSettingsFromHamburgerMenu(in: app)
-        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
-
         XCTAssertTrue(scrollSettingsUntilVisible(app.buttons["settings.pushNotificationsLink"], in: app))
 
-        attachScreenshot(named: "I-account-settings-category")
+        attachScreenshot(named: "I-general-settings-category")
     }
 
     /// E/I: 「メールビューア」カテゴリに画像設定・HTML表示設定が

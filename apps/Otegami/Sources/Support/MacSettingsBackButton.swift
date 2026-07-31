@@ -33,14 +33,16 @@ import SwiftUI
 /// テキストは(戻るボタンと違い)正しくマージされることを確認済みなので、
 /// このモディファイアは戻るボタンの位置だけを直す。
 ///
-/// 適用対象: `AccountSettingsCategoryView`/`MailListSettingsView`/
-/// `MailComposeSettingsView`/`MailViewerSettingsView`(カテゴリ画面自体は
-/// detail の1段目 = プッシュされていないので対象外)から2段目以降に
-/// プッシュされる画面すべて — `AccountEditView`・
-/// `MailboxVisibilityView`・`GoogleAvatarDiagnosticsView`・
-/// `PushNotificationSettingsView`・`DefaultMailAppSettingsView`・
-/// `MessageToolbarSettingsView`(ツールバーカスタマイズ)・
-/// `SignatureTemplatesSettingsView`/`SignatureTemplateEditView`等。
+/// 適用対象: `GeneralSettingsView`/`AccountSettingsCategoryView`/
+/// `MailListSettingsView`/`MailComposeSettingsView`/
+/// `MailViewerSettingsView`(カテゴリ画面自体は detail の1段目 = プッシュ
+/// されていないので対象外)から2段目以降にプッシュされる画面すべて —
+/// `AccountEditView`・`MailboxVisibilityView`・
+/// `GoogleAvatarDiagnosticsView`・`PushNotificationSettingsView`(Task #212
+/// で`AccountSettingsCategoryView`から`GeneralSettingsView`配下へ移設)・
+/// `DefaultMailAppSettingsView`・`MessageToolbarSettingsView`
+/// (ツールバーカスタマイズ)・`SignatureTemplatesSettingsView`/
+/// `SignatureTemplateEditView`等。
 struct MacSettingsBackButton: ViewModifier {
     @Environment(\.dismiss) private var dismiss
 

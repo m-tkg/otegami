@@ -24,12 +24,49 @@ import SwiftUI
 /// は変えていない。footer の説明文だけは Task #186 で同期対象が広がった
 /// 実態に合わせて書き直した (旧文言は「アカウントの接続設定・表示設定」
 /// までしか触れていなかった)。
+///
+/// **Task #212 (実機フィードバック「push 通知の設定はアカウント設定
+/// じゃなくて一般に移した方がいいと思う」)**: `AccountSettingsCategoryView`
+/// にあった「プッシュ通知」への入口 (`PushNotificationSettingsView`への
+/// `NavigationLink`) をここへ移設した — 移設元には残していない。Task #189
+/// 時点の doc comment (このファイルの上の段落、および
+/// `AccountSettingsCategoryView`側) は「プッシュ通知はアカウントごとの
+/// push watch 登録という『アカウントの接続に関する設定』の性質が変わって
+/// いないため今回は移設しない」と判断していたが、今回の実機フィードバック
+/// でその判断がユーザー自身によって覆された — プッシュ通知は個々の
+/// アカウントの接続設定というより、iCloud 同期同様「アプリ全体に1つだけ
+/// ある」横断的な設定として扱ってほしいとのこと。
+///
+/// **並び順は iCloud 同期の下**: iCloud 同期トグルは即座に反映される単純な
+/// on/off で、この画面が新設されたときからの唯一の項目 — その定位置を
+/// 崩さずそのまま先頭に残し、プッシュ通知 (サブ画面へのドリルダウン、かつ
+/// iOS 専用) はその下の2番目のセクションとして追加した。
+/// `AccountSettingsCategoryView`側でも同じ「トグル系のセクションが先、
+/// サブ画面へ遷移する`NavigationLink`のセクションが後」という並びだった
+/// ため、この画面でも踏襲している。
 struct GeneralSettingsView: View {
     @Environment(AppEnvironment.self) private var environment
+
+    /// Task #212: tap-free navigation to `PushNotificationSettingsView` for
+    /// `scripts/verify-screen.sh` — `AccountSettingsCategoryView`が同じ
+    /// 目的で持っていたフックをそのままここへ移設した (`Task #171`由来)。
+    /// A no-op (`false`, and the `.task` below never flips it) on every
+    /// real launch.
+    @State private var uitestShowPushNotificationsDirectly = false
 
     var body: some View {
         settingsContainer
             .navigationTitle("一般")
+            #if os(iOS)
+            .navigationDestination(isPresented: $uitestShowPushNotificationsDirectly) {
+                PushNotificationSettingsView()
+            }
+            .task {
+                if ProcessInfo.processInfo.arguments.contains("-uitestsOpenPushNotificationsDirectly") {
+                    uitestShowPushNotificationsDirectly = true
+                }
+            }
+            #endif
     }
 
     /// Task #155: see `MailListSettingsView`'s identical doc comment on
@@ -69,5 +106,21 @@ struct GeneralSettingsView: View {
                 "同じ Apple ID の他の iOS/Mac デバイスと、アカウントの接続設定に加えて表示・翻訳・通知内容・署名・テンプレートなどの設定を同期します。パスワードは iCloud キーチェーンが別途同期し、メール本文などのキャッシュやプッシュ通知の設定など端末固有の項目は同期しません。"
             )
         }
+
+        // Task #212: `AccountSettingsCategoryView`から移設 — 元の
+        // `#if os(iOS)`ガードも含めそのまま持ってきた
+        // (`AppEnvironment.enablePushNotifications`はmacOSで
+        // `.unsupportedPlatform`を投げる、`PushNotificationSettingsView`の
+        // doc comment参照)。
+        #if os(iOS)
+        Section {
+            NavigationLink {
+                PushNotificationSettingsView()
+            } label: {
+                Label("プッシュ通知", systemImage: "bell.badge")
+            }
+            .accessibilityIdentifier("settings.pushNotificationsLink")
+        }
+        #endif
     }
 }

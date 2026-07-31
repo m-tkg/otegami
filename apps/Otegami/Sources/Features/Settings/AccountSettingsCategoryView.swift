@@ -22,8 +22,17 @@ import OtegamiStore
 /// 通知・署名・テンプレート等) へ広がったことで「アカウントの設定」に
 /// 属する項目ではなくなったため、新設した`GeneralSettingsView`(「一般」
 /// カテゴリ) へ再度移設した — このカテゴリには残していない。プッシュ
-/// 通知は今回移設していない (アカウントごとの push watch 登録という
-/// 「アカウントの接続に関する設定」の性質が変わっていないため)。
+/// 通知は当時は移設していなかった (アカウントごとの push watch 登録と
+/// いう「アカウントの接続に関する設定」の性質が変わっていないと判断した
+/// ため)。
+///
+/// Task #212 (実機フィードバック「push 通知の設定はアカウント設定じゃ
+/// なくて一般に移した方がいいと思う」): その判断がユーザー自身によって
+/// 覆り、プッシュ通知への入口も`GeneralSettingsView`へ移設した —
+/// このカテゴリにはもう残っていない (`settings.pushNotificationsLink`は
+/// `GeneralSettingsView`側にある)。アカウント別の push watch 状態表示
+/// (`PushWatchStatusSection`) は`PushNotificationSettingsView`の中身
+/// なので、画面ごと一緒に移動している。
 struct AccountSettingsCategoryView: View {
     @Environment(AppEnvironment.self) private var environment
 
@@ -36,12 +45,6 @@ struct AccountSettingsCategoryView: View {
     /// verbatim) for why this pushes straight to `AccountEditView` rather
     /// than just re-checking the Keychain.
     @State private var passwordEntryAccountId: String?
-    /// Task #171: tap-free navigation to `PushNotificationSettingsView`
-    /// for `scripts/verify-screen.sh` — same `-uitestsOpen*Directly`
-    /// pattern as `MailViewerSettingsView`'s
-    /// `uitestShowTranslationDiagnosticsDirectly`. A no-op (`false`, and
-    /// the `.task` below never flips it) on every real launch.
-    @State private var uitestShowPushNotificationsDirectly = false
 
     /// G「デフォルトのアカウント設定」— see `DefaultAccountSettingsStore`'s
     /// doc comment.
@@ -107,16 +110,6 @@ struct AccountSettingsCategoryView: View {
             .onChange(of: environment.accounts.map(\.id)) { _, _ in
                 openFirstAccountEditForUITestIfNeeded()
             }
-            #if os(iOS)
-            .navigationDestination(isPresented: $uitestShowPushNotificationsDirectly) {
-                PushNotificationSettingsView()
-            }
-            .task {
-                if ProcessInfo.processInfo.arguments.contains("-uitestsOpenPushNotificationsDirectly") {
-                    uitestShowPushNotificationsDirectly = true
-                }
-            }
-            #endif
     }
 
     /// Task #155 (macOS 設定画面フィードバック 2026-07-29): 他の設定画面
@@ -224,27 +217,6 @@ struct AccountSettingsCategoryView: View {
                         .accessibilityIdentifier("settings.reauthErrorMessage")
                 }
             }
-
-            // M9: iOS-only — `AppEnvironment.enablePushNotifications` throws
-            // `.unsupportedPlatform` on macOS (no `NotificationService`
-            // Extension there, see that type's doc comment), so this entry
-            // point led nowhere useful. 実機フィードバック (macOS,
-            // 2026-07-30):「mac 版にこの設定は不要なので隠して」— この
-            // `#if os(iOS)` 自体がその対応 (以前はこの Section が両 OS に
-            // 出ていた。`PushNotificationSettingsView`のドキュメントコメント
-            // が「macOS hides the entry point」と主張していたのは、リ
-            // ファクタでこの画面がここへ移設された際に更新し忘れていた
-            // stale な記述だった)。
-            #if os(iOS)
-            Section {
-                NavigationLink {
-                    PushNotificationSettingsView()
-                } label: {
-                    Label("プッシュ通知", systemImage: "bell.badge")
-                }
-                .accessibilityIdentifier("settings.pushNotificationsLink")
-            }
-            #endif
 
             // Task #48 (デフォルトメールアプリ対応) — see
             // `DefaultMailAppSettingsView`'s doc comment for what "既定"
