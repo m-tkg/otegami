@@ -231,14 +231,21 @@ extension ThreadDetailView {
         try await dbWriter.read { db in try MessageBodyRecord.fetchOne(db, key: messageId) }
     }
 
-    /// `MessageView.fetchBodyOverNetwork(message:)`と同じ経路 (`SyncCoordinator
-    /// .fetchBody(for:mailboxPath:account:auth:)`) だが、失敗を伝播せず
-    /// 常にベストエフォートで握り潰す — `threadSummarySourceEntries()`は
-    /// 取得できなかったメッセージをそのままスキップして続行する契約のため。
+    /// `MessageView.fetchBodyOverNetwork(message:)`と同じ経路
+    /// (`MessageBodyNetworkFetcher.fetch` — auth解決 → mailboxPath解決 →
+    /// `SyncCoordinator.fetchBody(for:mailboxPath:account:auth:)`、その型の
+    /// doc comment参照) だが、失敗を伝播せず常にベストエフォートで握り潰す
+    /// — `threadSummarySourceEntries()`は取得できなかったメッセージをその
+    /// まま スキップして続行する契約のため、`try?`一つで包むだけでよい。
     private func fetchBodyOverNetworkForThreadSummary(message: MessageRecord, account: AccountRecord) async {
-        guard let auth = try? await environment.auth(for: account) else { return }
-        guard let mailboxPath = try? await Self.mailboxPath(mailboxId: message.mailboxId, db: environment.database.dbWriter) else { return }
-        try? await environment.syncCoordinator.fetchBody(for: message, mailboxPath: mailboxPath, account: account, auth: auth)
+        try? await MessageBodyNetworkFetcher.fetch(
+            message: message,
+            account: account,
+            environment: environment,
+            resolveMailboxPath: {
+                try? await Self.mailboxPath(mailboxId: message.mailboxId, db: environment.database.dbWriter)
+            }
+        )
     }
 
     private nonisolated static func mailboxPath(mailboxId: Int64, db dbWriter: any DatabaseWriter) async throws -> String? {

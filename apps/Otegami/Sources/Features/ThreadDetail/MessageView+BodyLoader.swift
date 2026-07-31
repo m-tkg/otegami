@@ -294,14 +294,27 @@ extension MessageView {
         }
     }
 
+    /// Thin strict wrapper around `MessageBodyNetworkFetcher.fetch` — see
+    /// that type's doc comment for the auth-resolution → mailbox-path →
+    /// `fetchBody` core this shares with `ThreadDetailView
+    /// .fetchBodyOverNetworkForThreadSummary(message:account:)`. This call
+    /// site alone needs the account lookup itself (throwing `.notConnected`
+    /// when missing — `ThreadDetailView`'s caller already has its `account`
+    /// resolved and passes it in) and needs an auth failure rewritten into a
+    /// `MailTransportError.authenticationFailed`, every other failure
+    /// (missing mailbox path, `fetchBody` itself) propagating unwrapped.
     func fetchBodyOverNetwork(message: MessageRecord) async throws {
         guard let account = environment.accounts.first(where: { $0.id == accountId }) else {
             throw MailTransportError.notConnected
         }
-        let auth: MailAuth
         do {
-            auth = try await environment.auth(for: account)
-        } catch {
+            try await MessageBodyNetworkFetcher.fetch(
+                message: message,
+                account: account,
+                environment: environment,
+                resolveMailboxPath: { mailboxPath }
+            )
+        } catch let failure as MessageBodyNetworkFetcher.AuthResolutionFailure {
             // Bug fix: this used to discard whatever `auth(for:)` actually
             // threw and replace it with a fixed "資格情報が見つかりません",
             // which meant a Keychain read failure, an expired OAuth
@@ -315,17 +328,8 @@ extension MessageView {
             // still wrapped as a `MailTransportError.authenticationFailed`
             // (so existing call sites that only branch on the error *case*
             // keep working) while no longer hiding *why*.
-            throw MailTransportError.authenticationFailed(underlyingDescription: "\(error)")
+            throw MailTransportError.authenticationFailed(underlyingDescription: "\(failure.underlying)")
         }
-        guard let mailboxPath else {
-            throw MailTransportError.mailboxNotFound(path: "")
-        }
-        try await environment.syncCoordinator.fetchBody(
-            for: message,
-            mailboxPath: mailboxPath,
-            account: account,
-            auth: auth
-        )
     }
 
     /// Reflects `\Seen` in the local database immediately, then enqueues
