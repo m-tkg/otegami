@@ -1,7 +1,10 @@
-// Package watcher runs one IMAP connection per watch, IDLE-ing (or
-// STATUS-polling, for servers without IDLE) for new mail and firing a push
-// through push.Sender when UIDNEXT advances — mirrors WatcherPool.swift
-// (server/otegami-relay/Sources/OtegamiRelay/Watcher/WatcherPool.swift).
+// Package watcher runs one IMAP connection per watch, IDLE-ing for new mail
+// on IDLE-capable servers, or (Task #215) reconnecting every PollInterval
+// for a short connect->SELECT->LOGOUT check on servers without IDLE — and
+// firing a push through push.Sender when UIDNEXT advances. Loosely mirrors
+// WatcherPool.swift (server/otegami-relay/Sources/OtegamiRelay/Watcher/
+// WatcherPool.swift), though the non-IDLE poll design has since diverged
+// from it — see runPollCycle's doc comment for why.
 //
 // Watch goroutines are tracked in a mutex-guarded map so the HTTP routes
 // can call AddWatch/RemoveWatch the moment a watch is created/deleted via
@@ -106,15 +109,15 @@ type Options struct {
 	// IdleMaxWait: RFC 2177 wants IDLE reissued at least every 29
 	// minutes (the default).
 	IdleMaxWait time.Duration
-	// PollInterval: the STATUS-polling fallback interval for servers
-	// without IDLE (default 5 minutes).
+	// PollInterval (Task #215): for a server without IDLE, how long a
+	// watch stays disconnected between short connect -> SELECT -> LOGOUT
+	// cycles (default 20 minutes — see New()'s doc comment for why this
+	// value, specifically). See runPollCycle's doc comment for why this
+	// replaced the earlier "hold one connection open, NOOP to keep it
+	// alive, STATUS every PollInterval" design (Task #201/#206) — that
+	// design's own keepalive traffic was what tripped Yahoo Japan's
+	// hourly rate limit in production.
 	PollInterval time.Duration
-	// PollKeepAliveInterval (Task #201): how often a NOOP is sent during
-	// a PollInterval wait to keep the connection from being dropped for
-	// inactivity before the next STATUS check — see pollWait's doc
-	// comment for why this exists and how the default was chosen.
-	// Default 2 minutes.
-	PollKeepAliveInterval time.Duration
 	// NetworkPolicy is re-validated on every (re)connect, not just once
 	// at watch creation (CLAUDE-SECURITY F2). Zero value is NOT strict —
 	// main() must pass the configured policy explicitly; tests that dial
@@ -158,6 +161,18 @@ type Options struct {
 	// defaultAuthFailureRetryInterval).
 	RateLimitInitialWait time.Duration
 	RateLimitWaitCap     time.Duration
+	// IdleRateLimitKeepAliveInterval (Task #215): while an IDLE-capable
+	// connection waits out a `[LIMIT]` rejection (RateLimitInitialWait/
+	// RateLimitWaitCap above), how often a NOOP is sent to keep it from
+	// going quiet long enough for the server to drop it — see
+	// sleepWithKeepalive and connectAndWatch's isRateLimited branch.
+	// Default 45s, reusing the interval Task #201 measured as safely
+	// under Yahoo Japan's own no-traffic timeout (Yahoo doesn't support
+	// IDLE, so this specific branch has no production evidence of ever
+	// needing it, but the same principle applies regardless of which
+	// server eventually does: a connection held open through a wait must
+	// see traffic).
+	IdleRateLimitKeepAliveInterval time.Duration
 }
 
 // Pool mirrors WatcherPool.
@@ -182,10 +197,25 @@ func New(s *store.Store, sender push.Sender, logger *slog.Logger, opts Options) 
 		opts.IdleMaxWait = 29 * time.Minute
 	}
 	if opts.PollInterval == 0 {
-		opts.PollInterval = 5 * time.Minute
-	}
-	if opts.PollKeepAliveInterval == 0 {
-		opts.PollKeepAliveInterval = 45 * time.Second
+		// Task #215: 20 minutes — 3 reconnect cycles/hour, ~12
+		// commands/hour (LOGIN+CAPABILITY+SELECT+LOGOUT per cycle). This
+		// is more conservative than the 10-15 minute range the initial
+		// analysis settled on (see runPollCycle's doc comment): while
+		// this fix was in progress, the same production account's Yahoo
+		// lockout escalated from "push notifications stop" to "the app's
+		// own direct IMAP login stops working too" — the account-wide
+		// lock isn't scoped to just this relay's connection. With no
+		// published threshold to anchor against, and given that failure
+		// mode is far worse than a slower notification, 20 minutes trades
+		// away some of the original range's headroom for a bigger safety
+		// margin: ~7.7x under the ~92 commands/hour that tripped the rate
+		// limit, ~8x under the ~24 logins/hour that caused Task #187's
+		// lockout. If production still shows trouble at this cadence, the
+		// next step is disabling push for non-IDLE servers entirely
+		// (foreground sync only) rather than tuning this further on
+		// guesses — see docs/architecture.md pitfall "i." Task #215
+		// addendum.
+		opts.PollInterval = 20 * time.Minute
 	}
 	if opts.ConnectTimeout == 0 {
 		opts.ConnectTimeout = 15 * time.Second
@@ -207,6 +237,9 @@ func New(s *store.Store, sender push.Sender, logger *slog.Logger, opts Options) 
 	}
 	if opts.RateLimitWaitCap == 0 {
 		opts.RateLimitWaitCap = 30 * time.Minute
+	}
+	if opts.IdleRateLimitKeepAliveInterval == 0 {
+		opts.IdleRateLimitKeepAliveInterval = 45 * time.Second
 	}
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	return &Pool{
@@ -318,6 +351,15 @@ func (p *Pool) runWatchLoop(ctx context.Context, watchID string) {
 	// between the two failure kinds doesn't have one contaminate the
 	// other's timescale.
 	authBackoff := p.opts.AuthFailureRetryInterval
+	// Task #215: state for the non-IDLE poll design (runPollCycle) that
+	// must survive across reconnects, unlike the idle path's
+	// baselineUIDNext (which is fine living inside one connectAndWatch
+	// call, since that call spans the whole connection's life there).
+	// lastKnownUIDNext == 0 means "no poll cycle has completed yet" — a
+	// real UIDNEXT is always >= 1 (RFC 3501), so 0 safely means "don't
+	// fire on the very first cycle."
+	lastKnownUIDNext := 0
+	pollRateLimitWait := p.opts.RateLimitInitialWait
 
 	for ctx.Err() == nil {
 		record, err := p.store.Watch(ctx, watchID)
@@ -332,7 +374,7 @@ func (p *Pool) runWatchLoop(ctx context.Context, watchID string) {
 		// conn unblocks any in-flight read, including a mid-IDLE one.
 		stopAfterFunc := context.AfterFunc(ctx, func() { _ = client.Close() })
 
-		err = p.connectAndWatch(ctx, client, record, &consecutiveAuthFailures, &backoff, &authBackoff)
+		err = p.connectAndWatch(ctx, client, record, &consecutiveAuthFailures, &backoff, &authBackoff, &lastKnownUIDNext, &pollRateLimitWait)
 		stopAfterFunc()
 		_ = client.Close()
 
@@ -346,6 +388,14 @@ func (p *Pool) runWatchLoop(ctx context.Context, watchID string) {
 			continue
 		case errors.Is(err, errWatchStopped):
 			return
+		case errors.Is(err, errPollCycleComplete):
+			// Task #215: a non-IDLE watch's connect->check->LOGOUT cycle
+			// finished with no error — this is the *expected* shape of a
+			// poll cycle now (see runPollCycle), not a connection failure,
+			// so it must not touch backoff/authBackoff or get recorded as
+			// an error. Sleep the full interval, then reconnect fresh.
+			sleepCtx(ctx, p.opts.PollInterval)
+			continue
 		default:
 			p.logger.Warn("watch connection error, reconnecting",
 				"watchId", watchID, "error", push.SanitizeForLog(err.Error()))
@@ -363,11 +413,19 @@ func (p *Pool) runWatchLoop(ctx context.Context, watchID string) {
 var errWatchStopped = errors.New("watch stopped")
 
 // connectAndWatch performs one connection lifetime: connect, authenticate,
-// SELECT baseline, then IDLE/poll until an error or cancellation.
+// SELECT baseline, then (Task #215) either IDLE-loop until an error or
+// cancellation (IDLE-capable servers — iCloud/Gmail/Outlook, unaffected by
+// this task), or run exactly one poll cycle and hand back control so the
+// caller disconnects and waits out the next PollInterval (non-IDLE servers
+// — Yahoo Japan is the only one seen in production; see runPollCycle).
 // Returns:
 //   - errWatchStopped: give up permanently (already persisted).
 //   - nil: an auth failure was handled (recorded + backoff slept) and the
 //     outer loop should retry immediately.
+//   - errPollCycleComplete: a poll cycle (or an early rate-limit wait, see
+//     handleEarlyRateLimit) finished with no error — the outer loop sleeps
+//     PollInterval and reconnects, without touching backoff/authBackoff or
+//     recording an error.
 //   - any other error: a connection-level failure the outer loop records
 //     and retries with backoff.
 func (p *Pool) connectAndWatch(
@@ -377,6 +435,8 @@ func (p *Pool) connectAndWatch(
 	consecutiveAuthFailures *int,
 	backoff *time.Duration,
 	authBackoff *time.Duration,
+	lastKnownUIDNext *int,
+	pollRateLimitWait *time.Duration,
 ) error {
 	if err := client.Connect(record.ImapHost, record.ImapPort, record.ImapUseTLS, p.opts.ConnectTimeout, p.opts.NetworkPolicy); err != nil {
 		return err
@@ -386,6 +446,23 @@ func (p *Pool) connectAndWatch(
 		_ = client.Close()
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if isRateLimited(err) {
+			// Task #215: a `[LIMIT]` rejection of LOGIN itself says
+			// nothing about credential validity — classifyAuthFailure
+			// below has no way to tell this apart from a wrong password,
+			// and treating it as one would trigger Task #187's long
+			// authBackoff (30+ minutes in production) for what's actually
+			// a short-lived rate limit. Handle it exactly like a
+			// post-LOGIN rate limit instead (handleEarlyRateLimit): wait,
+			// retry immediately, no auth-failure bookkeeping touched. No
+			// production evidence of Yahoo rate-limiting LOGIN itself
+			// specifically (only STATUS — Task #206), but nothing rules
+			// it out either, and this fixture-driven test suite found the
+			// gap (TestPollDesignBacksOffWithoutRepeatedLoginsWhenRateLimited)
+			// under a tight enough window budget that LOGIN itself gets
+			// rejected on a retried connection.
+			return p.handleEarlyRateLimit(ctx, record, err, pollRateLimitWait, "LOGIN")
 		}
 		*consecutiveAuthFailures++
 		kind, stopsImmediately := classifyAuthFailure(err)
@@ -441,16 +518,30 @@ func (p *Pool) connectAndWatch(
 	*consecutiveAuthFailures = 0
 	*backoff = 2 * time.Second
 	*authBackoff = p.opts.AuthFailureRetryInterval
+	*pollRateLimitWait = p.opts.RateLimitInitialWait
 	_ = p.store.MarkWatchConnected(ctx, record.ID)
 
 	selectResult, err := client.Select(record.Mailbox)
 	if err != nil {
-		return err
+		return p.handleEarlyRateLimit(ctx, record, err, pollRateLimitWait, "SELECT")
 	}
-	var baselineUIDNext int
+	baselineUIDNext := 0
 	if selectResult.UidNext != nil {
 		baselineUIDNext = *selectResult.UidNext
-	} else if fromStatus, statusErr := client.StatusUIDNext(record.Mailbox); statusErr == nil {
+	} else {
+		// Rare fallback for a server whose SELECT response omits UIDNEXT.
+		// Task #215: this used to swallow statusErr entirely, silently
+		// leaving baselineUIDNext at its zero value — harmless for the old
+		// idle-only design (worst case, one spurious push on the first
+		// IDLE wake) but actively wrong for the new poll design, where
+		// this same value is compared against the *previous* cycle's
+		// UIDNEXT (see runPollCycle) — a silently-swallowed 0 here would
+		// look like the mailbox shrank, then make the next cycle's real
+		// value look like a huge (false) jump. Propagate it instead.
+		fromStatus, statusErr := client.StatusUIDNext(record.Mailbox)
+		if statusErr != nil {
+			return p.handleEarlyRateLimit(ctx, record, statusErr, pollRateLimitWait, "STATUS")
+		}
 		baselineUIDNext = fromStatus
 	}
 	idleSupported, err := client.CapabilitiesIncludeIdle()
@@ -461,6 +552,12 @@ func (p *Pool) connectAndWatch(
 	p.logger.Info("watch connected",
 		"watchId", record.ID, "idle", idleSupported, "uidNext", baselineUIDNext)
 
+	if !idleSupported {
+		// Task #215: a non-IDLE watch only ever runs one poll cycle per
+		// connection — see runPollCycle's doc comment for why.
+		return p.runPollCycle(ctx, record, baselineUIDNext, lastKnownUIDNext, pollRateLimitWait, client)
+	}
+
 	// Task #206: how long to wait, on this same connection, the next time
 	// STATUS comes back `[LIMIT]` — see isRateLimited's doc comment. Reset
 	// to the initial value after every STATUS that doesn't hit the limit,
@@ -468,21 +565,12 @@ func (p *Pool) connectAndWatch(
 	rateLimitWait := p.opts.RateLimitInitialWait
 
 	for ctx.Err() == nil {
-		if idleSupported {
-			gotExists, err := client.Idle(record.Mailbox, p.opts.IdleMaxWait)
-			if err != nil {
-				return err
-			}
-			if !gotExists {
-				continue
-			}
-		} else {
-			if err := p.pollWait(ctx, client); err != nil {
-				return err
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
+		gotExists, err := client.Idle(record.Mailbox, p.opts.IdleMaxWait)
+		if err != nil {
+			return err
+		}
+		if !gotExists {
+			continue
 		}
 
 		newUIDNext, err := client.StatusUIDNext(record.Mailbox)
@@ -507,7 +595,23 @@ func (p *Pool) connectAndWatch(
 				// already-`.active` watch keeps showing active while this
 				// resolves on its own.
 				_ = p.store.RecordWatchError(ctx, record.ID, api.ErrorKindConnectionError, false)
-				sleepCtx(ctx, rateLimitWait)
+				// Task #215 "problem 1" fix: the original version of this
+				// wait was a bare sleepCtx with no traffic on the
+				// connection at all — exactly the pattern that, on a
+				// non-IDLE server with a short inactivity timeout (Yahoo
+				// Japan), killed the connection mid-wait and got
+				// misclassified as a plain connection error, forcing an
+				// immediate reconnect (a fresh LOGIN) right back into the
+				// lockout this fix exists to avoid. This branch is only
+				// reached by an IDLE-capable server (no non-IDLE watch
+				// gets this far — see the runPollCycle branch above), so
+				// there's no production evidence of it actually dying
+				// mid-wait, but the same principle applies regardless of
+				// which server eventually hits it: a wait on a held-open
+				// connection must keep it alive, not go silent.
+				if err := sleepWithKeepalive(ctx, client, rateLimitWait, p.opts.IdleRateLimitKeepAliveInterval); err != nil {
+					return err
+				}
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -525,65 +629,132 @@ func (p *Pool) connectAndWatch(
 	return ctx.Err()
 }
 
-// pollWait waits out one PollInterval before the next STATUS check (the
-// non-IDLE polling fallback used by servers that don't support IDLE — see
-// connectAndWatch's "idle" log field), sending an IMAP NOOP every
-// PollKeepAliveInterval along the way so the connection sees regular
-// traffic instead of going quiet for the full PollInterval.
+// runPollCycle (Task #215) is the entire lifetime of a non-IDLE watch's
+// connection: the caller (connectAndWatch) has already connected,
+// authenticated, and observed the mailbox's current UIDNEXT via SELECT
+// (uidNext) — this fires a push if it advanced since the previous cycle
+// (lastKnownUIDNext, which — unlike a plain local variable — survives
+// across reconnects at the runWatchLoop level), sends LOGOUT, and returns
+// errPollCycleComplete so runWatchLoop closes the connection and sleeps a
+// full PollInterval before the next one.
 //
-// Why this exists (Task #201): production logs showed Yahoo Japan
-// (imap.mail.yahoo.co.jp, which answers CAPABILITY without IDLE, so every
-// watch on it takes this branch) severing the connection mid-wait with
-// "write: broken pipe" well before a single 5-minute PollInterval
-// elapsed. connectAndWatch's outer loop treats that as a plain connection
-// error and reconnects — which means a fresh LOGIN — so every watch on
-// Yahoo was re-authenticating roughly every 5 minutes around the clock
-// (doubled per account with two devices registered). Repeated LOGINs from
-// the same IP is exactly the pattern Yahoo's own abuse protection reacts
-// to with temporary lockouts, which is what Task #187's "[AUTHENTICATION
-// FAILED] Incorrect username or password" reports actually were — not a
-// wrong password, since the same credential kept succeeding again minutes
-// later.
+// Why disconnect between checks instead of holding one connection open
+// (see docs/architecture.md pitfall "i." Task #215 addendum for the full
+// narrative and production log excerpts): the Task #201/#206 design this
+// replaces needed ~92 IMAP commands/hour per watch to stay both connected
+// (a NOOP every 45s — Yahoo Japan's real inactivity timeout is under 2
+// minutes, measured in Task #201) and current (a STATUS every 5 minutes).
+// Production logs showed Yahoo answering STATUS with `[LIMIT]` at almost
+// exactly one hour after each LOGIN, twice, at exactly that command
+// volume — strong evidence of an hourly budget in that neighborhood. The
+// two goals were in tension on this specific server: the traffic needed to
+// keep the connection alive is itself what tripped the rate limit, so no
+// amount of retuning the keepalive/poll intervals within that design can
+// satisfy both at once (see Options.PollInterval's doc comment for why
+// the sibling idea — a much longer keepalive interval alone — was
+// rejected too: it can't outlast the sub-2-minute inactivity timeout).
 //
-// The interval was first set to 2 minutes based on third-party reports
-// (e.g. Mozilla bug 468490) describing Yahoo IMAP as dropping idle
-// connections after roughly 5 minutes. **Production disproved that.** With
-// a 2-minute keepalive, a production deployment logged:
+// Reconnecting every PollInterval sidesteps the tension instead of trying
+// to win it: nothing sits idle, so nothing needs a keepalive, and the
+// total cost per cycle is just LOGIN+CAPABILITY+SELECT+LOGOUT (4 commands,
+// every cycle — CAPABILITY is re-checked each time rather than cached, in
+// case a server's advertised capabilities ever change) — 3 connects/hour
+// and ~12 commands/hour at the default 20-minute interval, far under both
+// the ~92/hour budget that tripped the rate limit and the ~24 logins/hour
+// (576/day) that caused Task #187's separate auth lockout. See New()'s
+// doc comment for why the interval landed at 20 minutes specifically
+// (more conservative than this design's initial 10-15 minute analysis) —
+// production showed the same account's Yahoo lockout escalating to
+// blocking the app's own direct IMAP login, not just this relay's
+// connection, while this fix was still in progress. The cost is
+// notifications lagging up to one PollInterval (default 20 minutes)
+// behind actual delivery — see docs/architecture.md pitfall "i." Task
+// #215 addendum for the trade-off this was weighed against, including
+// the fallback considered if even this cadence turns out unsafe
+// (disabling push for non-IDLE servers entirely).
+func (p *Pool) runPollCycle(
+	ctx context.Context,
+	record *store.WatchRecord,
+	uidNext int,
+	lastKnownUIDNext *int,
+	pollRateLimitWait *time.Duration,
+	client *imapclient.Client,
+) error {
+	if *lastKnownUIDNext != 0 && uidNext > *lastKnownUIDNext {
+		p.fire(ctx, record, uidNext)
+	}
+	*lastKnownUIDNext = uidNext
+	*pollRateLimitWait = p.opts.RateLimitInitialWait
+	// Best-effort: the connection is being torn down by the caller
+	// regardless (runWatchLoop's client.Close() right after
+	// connectAndWatch returns), so a LOGOUT failure here changes nothing.
+	_ = client.Logout()
+	return errPollCycleComplete
+}
+
+// handleEarlyRateLimit (Task #215) checks whether err is a `[LIMIT]`
+// rejection of the SELECT (or its STATUS fallback) that runs immediately
+// after LOGIN, before connectAndWatch has even decided whether this watch
+// is IDLE-capable. Falling through to the generic connection-error path
+// here would have the outer loop reconnect — a fresh LOGIN — within a few
+// seconds (the connection-error backoff starts at 2s), risking exactly the
+// relogin storm Task #215 exists to avoid, for what would otherwise look
+// like an ordinary transient error. Any other error is returned unchanged.
 //
-//	00:35:15  watch connected            (LOGIN succeeded)
-//	00:37:15  IMAP connection closed unexpectedly
-//
-// — dead at exactly the 2-minute mark, i.e. the NOOP found a connection the
-// server had already dropped. Yahoo's real idle timeout is therefore well
-// under 2 minutes, and the 2-minute setting actively made things worse: it
-// reconnected (and re-LOGINed) every 2 minutes instead of the previous 5,
-// raising login volume from ~288/day to ~720/day on the very account whose
-// lockout this task exists to stop.
-//
-// The default is now 45 seconds, chosen from that measurement rather than
-// from reports: comfortably under the observed sub-2-minute threshold, with
-// enough margin that a slow round-trip doesn't straddle it. A NOOP is a
-// single cheap command — 80/hour per watch is negligible next to the full
-// TCP+TLS handshake and LOGIN it replaces. If production still shows
-// "connection closed unexpectedly" at the 45-second mark, shorten this
-// further; the log line above is exactly the evidence to look for.
-//
-// IDLE-capable servers (iCloud, Gmail, Outlook) never take this branch —
-// they block in Idle() instead, bounded by IdleMaxWait (29 minutes, RFC
-// 2177's own recommended re-issue interval) — so they're unaffected by
-// PollKeepAliveInterval entirely.
-func (p *Pool) pollWait(ctx context.Context, client *imapclient.Client) error {
-	remaining := p.opts.PollInterval
+// This connection is brand new (LOGIN just succeeded), so there is nothing
+// worth keeping alive here the way the IDLE path's rate-limit wait does —
+// simplest and safe is to close it and wait out rateLimitWait right here,
+// then return nil so the outer loop (runWatchLoop) retries immediately —
+// the wait already happened, so it must NOT also sleep PollInterval on top
+// (that was a real bug caught by this task's own
+// TestPollDesignBacksOffWithoutRepeatedLoginsWhenRateLimited: returning
+// errPollCycleComplete here made runWatchLoop add a second, much longer
+// sleep after this function's own, silently turning "back off
+// rateLimitWait" into "back off rateLimitWait + PollInterval").
+func (p *Pool) handleEarlyRateLimit(ctx context.Context, record *store.WatchRecord, err error, rateLimitWait *time.Duration, command string) error {
+	if !isRateLimited(err) {
+		return err
+	}
+	p.logger.Warn("watch rate limited by server right after connecting, backing off before retrying",
+		"watchId", record.ID, "command", command, "wait", rateLimitWait.String(),
+		"serverResponse", commandFailedServerResponse(err))
+	_ = p.store.RecordWatchError(ctx, record.ID, api.ErrorKindConnectionError, false)
+	sleepCtx(ctx, *rateLimitWait)
+	*rateLimitWait = minDuration(*rateLimitWait*2, p.opts.RateLimitWaitCap)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
+}
+
+// errPollCycleComplete (Task #215) signals runWatchLoop that a non-IDLE
+// watch's connect->check->LOGOUT cycle (runPollCycle) — or an early
+// rate-limit wait before that point (handleEarlyRateLimit) — finished with
+// no error. The outer loop sleeps PollInterval and reconnects, without
+// touching backoff/authBackoff or recording an error, since this is the
+// expected shape of a poll cycle, not a failure.
+var errPollCycleComplete = errors.New("poll cycle complete")
+
+// sleepWithKeepalive sleeps for d, sending a NOOP over client every step so
+// a connection held open through a long wait keeps seeing traffic instead
+// of going quiet for the whole duration (Task #215's "problem 1" fix for
+// connectAndWatch's IDLE-path isRateLimited branch — see that branch's
+// comment). Returns nil on ctx cancellation (the caller checks ctx.Err()
+// itself), or the NOOP's error if the connection dies anyway despite the
+// keepalive — the caller treats that exactly like any other connection
+// error.
+func sleepWithKeepalive(ctx context.Context, client *imapclient.Client, d, step time.Duration) error {
+	remaining := d
 	for remaining > 0 {
-		step := p.opts.PollKeepAliveInterval
-		if step <= 0 || step > remaining {
-			step = remaining
+		s := step
+		if s > remaining {
+			s = remaining
 		}
-		sleepCtx(ctx, step)
+		sleepCtx(ctx, s)
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return nil
 		}
-		remaining -= step
+		remaining -= s
 		if remaining > 0 {
 			if err := client.Noop(); err != nil {
 				return err
@@ -747,10 +918,13 @@ func commandFailedServerResponse(err error) string {
 // STATUS -> treated as a connection error -> reconnect -> LOGIN -> LOGIN
 // rejected (the account was now locked) -> ~30+ minute lockout wait ->
 // LOGIN eventually succeeds -> same command volume as before -> rate
-// limited again. See connectAndWatch's isRateLimited branch and
-// docs/architecture.md's "IDLE 非対応の IMAP サーバーには NOOP
-// キープアライブが必須" pitfall entry (Task #206 addendum) for the full
-// narrative and the production log excerpt this was diagnosed from.
+// limited again. See connectAndWatch's isRateLimited branch (still used by
+// the IDLE-capable path only, Task #215) and docs/architecture.md's "IDLE
+// 非対応の IMAP サーバーには NOOP キープアライブが必須" pitfall entry
+// (Task #206/#215 addenda) for the full narrative and the production log
+// excerpts this was diagnosed from — including why the Task #206/#201
+// keepalive-and-wait design this docstring describes was later replaced,
+// for non-IDLE servers, by runPollCycle's disconnect-between-checks design.
 func isRateLimited(err error) bool {
 	var commandFailed *imapclient.CommandFailedError
 	if !errors.As(err, &commandFailed) {

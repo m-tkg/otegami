@@ -365,6 +365,16 @@ STATUS (12回/時) を同一アカウントに watch 2本 (デバイス2台) 分
 と約184回/時になり、これ自体が Yahoo! JAPAN 側のコマンドレート制限を
 誘発した。詳細は下記 i. 参照。
 
+**追記 (Task #215): 上記の `pollWait`/`PollKeepAliveInterval` (NOOP
+キープアライブで接続を張りっぱなしにする設計) はその後廃止した。** Task
+#206 の「維持のための通信量そのものがレート制限の原因になる」という
+問題が、Task #208 のデバイス統合後もなお時間窓ベースで再発することが
+判明したため — 「維持しつつレート制限も避ける」は同じ接続を保持し続ける
+設計では両立しないという結論に至った。非 IDLE サーバーの polling は
+現在「`PollInterval` ごとに接続→SELECT→LOGOUT を繰り返す」設計
+(`runPollCycle`) に置き換わっている。詳細と実測根拠は下記 i. の
+「追記 (Task #215)」参照。
+
 ### d. open-ended な UID range は自動でチャンク化されない
 
 `MailCoreIMAPSession+Mapping.chunk(_:size:)`
@@ -787,3 +797,211 @@ comment (Task #192) が明記するとおり、この Extension は現状
 通知内容が出ない事象を再現した際、Mac 無しでこの画面を開いて段階・
 カテゴリ・レート制限の疑いを確認できるかどうかが、この機能自体の
 最終確認になる。
+
+**追記 (Task #215: Task #206 の対処後もなお断続的な認証エラーが継続、
+設計を「維持しながら待つ」から「維持せず短時間だけ繋ぐ」へ変更)。**
+Task #206 適用後の本番ログに、次のパターンが繰り返し出た:
+
+```
+05:35:28  watch connected (Yahoo, idle=false)
+06:35:31  WARN watch rate limited by server, waiting on the same connection instead of reconnecting
+          wait=5m0s serverResponse="A87 NO [LIMIT] STATUS Rate limit hit."
+06:41:16  WARN watch connection error, reconnecting
+          error="write tcp ...: write: broken pipe"
+06:41:21  WARN watch authentication failed
+          serverResponse="A1 NO [AUTHENTICATIONFAILED] Incorrect username or password."
+07:11:21  watch connected              (30分の認証バックオフ後)
+08:11:27  WARN rate limited, wait=5m0s (再び、接続からちょうど1時間後)
+08:17:12  WARN broken pipe → reconnecting
+08:17:17  WARN authentication failed
+```
+
+**判明した2つの問題:**
+
+1. **「同じ接続で待つ」対処 (Task #206) 自体が機能していなかった。**
+   `[LIMIT]` を受けて `RateLimitInitialWait` (5分) 待つ実装
+   (`sleepCtx(ctx, rateLimitWait)`) が、待っている間に一切 IMAP コマンド
+   を送っていなかった。Yahoo! JAPAN の無通信タイムアウトは上記 c. の実測
+   で2分未満と分かっている。結果、待機中に接続が死に (`broken pipe`)、
+   `runWatchLoop` がそれを「接続エラー」として即座に再接続 = 再 LOGIN
+   した — Task #206 が防ごうとした「再ログインの連鎖」に結局戻っていた。
+
+2. **「維持のための通信」自体が別の制限に当たっていた。** ログを見ると
+   `06:35:31` と `08:11:27` — **接続からちょうど1時間**で `[LIMIT]` が
+   出ている (差はそれぞれ1時間0分3秒、1時間0分6秒)。この間の実際の
+   コマンド量は 45秒ごとの NOOP (80回/時) + 5分ごとの STATUS (12回/時)
+   = 約92回/時。「ちょうど1時間で毎回再現する」という再現性の高さは、
+   接続開始 (または LOGIN) を起点とした時間窓ベースの予算制であることを
+   強く示唆する。**ただし** この観測だけでは「時間窓ベースの予算」と
+   「一定間隔のコマンドを一定回数打った結果として同じ経過時間で閾値に
+   達する回数ベースの予算」を完全に区別できない — 本テストで実装した
+   `RateLimitWindow`/`RateLimitWindowBudget` はどちらの仮説の下でも安全
+   側に倒すよう、**設計選択そのものは「まず総コマンド量を大きく減らす」
+   ことを軸にした**ため、この曖昧さは実害を生まない (根拠の限界を
+   正直に書く: これ以上の切り分けにはサーバ側の非公開仕様が要る)。
+
+いずれにせよ結論は同じ: **「接続を維持するための通信」自体が「レート
+制限に当たる原因」になっている。同じ接続を保持し続ける設計のままでは
+「制限を避けつつ維持もする」の両立ができない。**
+
+**検討した選択肢:**
+
+- **(a) 維持通信をやめ、問い合わせの間隔を延ばす。** `PollInterval`
+  ごとに接続→SELECT→LOGOUT を繰り返す。ロックを引き起こした当時
+  (`c.`の実測: 5分間隔で288回/日 = 12回/時、さらに2分間隔の誤設定で
+  720回/日 = 30回/時) より大幅に少ないログイン頻度に抑えられる。代償は
+  通知が最大 `PollInterval` 分遅れること。
+- **(b) 維持通信の間隔を大幅に延ばす。** Yahoo の無通信タイムアウトが
+  2分未満 (`c.`の実測) と分かっている以上、NOOP 間隔をそれより延ばすと
+  即座に接続が切れる。「維持しつつ間隔を延ばす」は物理的に両立しない
+  ため不採用。
+- **(c) `[LIMIT]` を受けたら待つ間も接続を維持する (問題1だけの対処)。**
+  必要だが単独では不十分 — 維持通信そのものが時間窓予算を食い潰す構図
+  (問題2) は残る。
+- **(d) サーバごとに戦略を変える (IDLE 対応はそのまま、非対応だけ
+  (a))。** 実装上は自然に得られる: 非 IDLE の polling 経路と IDLE 経路
+  はもともとコード分岐が別なので、「非 IDLE 側だけ (a) の設計にする」
+  だけで新しい設定を増やさずに (d) を満たせる (IDLE 対応サーバ
+  iCloud/Gmail/Outlook は元々この分岐を通らない)。
+
+**選んだ設計: (a) + (d) を、既存の分岐構造だけで実現。** 新しい
+Options フィールド (サーバ種別を選ぶような値) は追加していない —
+`Options.PollInterval` の意味を「STATUS 待機の間隔」から「接続サイクル
+の間隔」に変更しただけで、IDLE 対応/非対応の分岐自体は既存のまま。
+
+**実装 (`server/otegami-relay-go/internal/watcher/pool.go`):**
+
+- `connectAndWatch` は SELECT/CAPABILITY 後、非 IDLE サーバーなら
+  `runPollCycle` を呼んで即座に LOGOUT し、`errPollCycleComplete` を
+  返す。`runWatchLoop` はこれを見て `PollInterval` だけ寝てから再接続
+  する。`PollKeepAliveInterval` と `pollWait` は削除した (この設計には
+  もう存在しない概念のため)。**`PollInterval` のデフォルトは当初 12分
+  (10〜15分の範囲の中間) で実装したが、下記「追記: 実装中に app 側の
+  認証まで巻き込むロックが発生」を受けて最終的に 20分に引き上げた** —
+  1サイクルの通信は LOGIN+CAPABILITY+SELECT+LOGOUT の4コマンドなので、
+  20分間隔なら**1時間あたり3ログイン・約12コマンド**。実測でレート制限
+  に当たった約92コマンド/時に対して約7.7倍、Task #187 のロックを招いた
+  約24ログイン/時に対して約8倍の余裕を見た数値。
+- 直前の poll サイクルの UIDNEXT (`lastKnownUIDNext`) は、IDLE 経路の
+  `baselineUIDNext` と違って**接続をまたいで**保持する必要があるため、
+  `connectAndWatch` のローカル変数ではなく `runWatchLoop` に置いて
+  ポインタで渡している。
+- IDLE 対応サーバー (iCloud/Gmail/Outlook) はこれまで通り1本の接続を
+  保持し、`Idle()` でブロックし続ける — Task #215 はこの経路の挙動を
+  変えていない (レート制限の実測は全て Yahoo! JAPAN = 非 IDLE)。
+
+**問題1 (待つなら維持する、維持しないなら切断を前提に扱う) の対処:**
+
+- **非 IDLE の polling 経路**: 設計 (a) により、待ち時間の間そもそも
+  接続を保持しない — 毎サイクル明示的に LOGOUT/切断するため、「維持の
+  つもりが実は死んでいた」という事態自体が起きなくなる。切断は
+  `errPollCycleComplete` という正常系の値として扱われ、`backoff` も
+  `RecordWatchError` も一切触らない (`runWatchLoop` の対応する `case`
+  参照)。
+- **IDLE 対応経路の `[LIMIT]` 待ち (Task #206 が入れたコード、非 IDLE
+  では使われなくなった)**: こちらは引き続き同じ接続で待つ設計を維持する
+  ため、「維持する」を選んだ以上ちゃんと維持するよう修正した —
+  `sleepCtx` の生スリープを `sleepWithKeepalive` に置き換え、待機中も
+  `IdleRateLimitKeepAliveInterval` (デフォルト45秒、`c.`の実測を再利用)
+  ごとに NOOP を送るようにした。Yahoo! JAPAN は IDLE 非対応なのでこの
+  分岐を実際には通らず本番証拠は無いが、「保持する接続は必ず生かしておく」
+  という原則をコード全体で一貫させるための修正。
+- **LOGIN 自体が `[LIMIT]` を受けた場合の誤分類も修正した**: 再接続後の
+  LOGIN が偶然レート制限の時間窓に重なって拒否されるケースを本テスト
+  (`TestPollDesignBacksOffWithoutRepeatedLoginsWhenRateLimited`) で発見
+  した。従来のコードはこれを `classifyAuthFailure` 経由で「パスワードが
+  違う」系の認証失敗として扱い、Task #187 の30分バックオフに入ってしまう
+  — 誤りではあるが安全側 (再ログインの連打にはならない) だったものの、
+  意図とは異なる遅い回復だった。`connectAndWatch` の認証失敗パスの先頭で
+  `isRateLimited(err)` を先にチェックし、真なら
+  `RateLimitInitialWait`/`RateLimitWaitCap` の経路 (即座リトライ、
+  待ち時間は倍々) に回すよう修正した。
+
+**追記: 本タスクの実装中に、リレー接続だけでなく app 自身の IMAP
+ログインまで巻き込むロックが実際の本番アカウントで発生した。** 上記の
+`[LIMIT]` → 再接続 → `AUTHENTICATIONFAILED` の悪循環 (Task #206 適用後
+もなお発生していたもの、本追記冒頭のログ参照) が続いた結果、Yahoo! 側の
+ロックがこのリレーの接続だけでなく**同一アカウントに対する app 自身の
+直接 IMAP 接続の認証まで失敗させる**状態に発展し、ユーザーが app から
+Yahoo! のメールを受信できなくなった。オーケストレータが緊急対応として
+リレー側の Yahoo! watch を削除し (Gmail 3件・iCloud 1件のみ監視する状態
+に縮退)、Yahoo! への接続を完全に止めることでユーザーの受信を回復させる
+試みを行った。
+
+これは「通知が遅れる」対「通知が断続的に止まる」という当初のトレード
+オフの前提を変える — 正しくは**「通知が遅れる」対「メールが受信できなく
+なる」**という比較であり、後者の方がはるかに悪い。これを踏まえて
+`PollInterval` のデフォルトを 12分から**20分**に引き上げた (詳細は上記
+「実装」節)。それでも「絶対に安全」という保証は無い — Yahoo! 側の
+ロック条件は非公開であり、かつ今回の事象は「頻度」だけでなく「認証
+失敗を伴う再接続そのものの発生」がロックの引き金だった可能性を示唆して
+いる (本追記冒頭のログでは接続からの平均頻度は必ずしも高くなかったにも
+関わらずロックに至っている)。**問題1の修正 (意図しない再ログインの
+根絶) の方が、単なる間隔延長より本質的な対策**という位置づけであり、
+20分という数値そのものは実測に基づく安全マージンの見積もりに過ぎない。
+
+**さらなる保険が要る場合の逃げ道**: 今回の縮退運用 (Yahoo! watch を
+完全に削除し、app のフォアグラウンド同期だけに頼る) が示す通り、
+「非 IDLE サーバーには push を提供しない」という選択肢も現実的にあり
+得る。本番反映後もなお問題が再発するようなら、`PollInterval` をさらに
+延ばす前に、この設計そのもの (非 IDLE サーバーでの push watch 登録を
+やめるかどうか) をユーザー・オーケストレータと相談すべき — 通知を無理に
+成立させてメールが受信できなくなる方が明らかに悪い。
+
+**通知の即時性とのトレードオフ:** 非 IDLE サーバー (現状 Yahoo! JAPAN
+のみ) の通知は最大 `PollInterval` (デフォルト20分) 遅れる。断続的に
+数分〜数十分単位で完全に止まっていた従来の状態 (Task #206 適用後もなお
+1時間ごとに認証エラーへ転落し、最終的には app 自身の受信まで止まった)
+と比べれば、「確実に20分以内には届く」方がユーザー体験としては上と
+判断した。**設定として公開する項目は増やしていない** —
+`PollInterval` は既存の Options フィールドの意味を変えただけで、
+新しいユーザー向け設定は追加していない。
+
+**偽サーバでのテスト (`server/otegami-relay-go/internal/imaptest/
+fakeserver.go` に `RateLimitWindow`/`RateLimitWindowBudget` — 時間窓
+ベースのレート制限を追加、既存の `InactivityTimeout` と組み合わせ可能):**
+`server/otegami-relay-go/internal/watcher/pool_test.go` に以下を追加。
+
+- `TestPollDesignReconnectsEachCycleAndSurvivesAggressiveInactivityTimeout`:
+  無通信で切断するサーバ (`InactivityTimeout` をどんなコマンド往復より
+  短い50msに設定) の下で、新設計が複数回の再接続を続け、切断が
+  `.stopped` に落ちないことを確認。
+- `TestPollDesignStaysUnderHourlyRateLimitBudget`: 時間窓レート制限
+  サーバの下で、新設計のコマンド総量が予算内に収まり (`RejectedCount()
+  == 0`)、複数の擬似「1時間」を跨いでも新着メールを検出できることを
+  確認。
+- `TestPollDesignSurvivesRateLimitAndInactivityTimeoutTogether`:
+  上記**両方**を同時に持つサーバ (実際の Yahoo! JAPAN の状況を模す)
+  の下で watch が停止しないことを確認。
+- `TestPollDesignBacksOffWithoutRepeatedLoginsWhenRateLimited`: 予算を
+  極端に絞って毎サイクル `[LIMIT]` を受ける状況を作り、連続する LOGIN
+  試行の間隔が `RateLimitInitialWait` 以上空くこと (連打しないこと) を
+  検証 — 上記の LOGIN 誤分類バグを見つけたテスト。
+- `TestIdleRateLimitWaitKeepsConnectionAliveViaNoop`: Task #206 の
+  元テストを IDLE 経路向けに書き直し、`[LIMIT]` 待機中に NOOP
+  キープアライブが送られていること (無通信タイムアウトを生き延びる
+  ことで間接的に証明) を確認。
+
+**反映後にログで確認すべきこと (メインセッションが本番反映後に行う):**
+
+- **最重要**: Yahoo! JAPAN の watch が**1時間経っても `[LIMIT]` を出さ
+  ないこと**。これが出れば、今回の設計変更 (コマンド総量を1時間あたり
+  約92回→約12回に削減) が実際に効いている一次証拠になる。
+- **さらに重要**: **app 自身が Yahoo! アカウントで正常にログイン・受信
+  できること** — 今回の事象はリレーの watch だけでなく app 自身の認証
+  まで巻き込んだため、リレーのログが正常に見えても油断しないこと。
+  ユーザーに app からの受信を確認してもらうこと (`PENDING.md`/
+  `HUMAN_TASKS.md` 参照)。
+- `watch connected` (LOGIN) の頻度が `PollInterval` (20分) ごとに
+  なっていること — Yahoo! JAPAN の watch について `watch connected` の
+  間隔を見れば確認できる。
+- `watch authentication failed` (`[AUTHENTICATIONFAILED]`) が
+  Task #206 適用後より明確に減っていること。理想は0件。
+- 通知が実際に20分以内の遅延で届いていること (ユーザー体感での確認が
+  必要 — `PENDING.md`/`HUMAN_TASKS.md` 参照)。
+- 万一 `[LIMIT]` や `AUTHENTICATIONFAILED` が今回の設計後も観測された
+  場合は、その時刻と直前の `watch connected` からの経過時間を記録する
+  こと — 上記「時間窓ベースか回数ベースか」の切り分けに使える一次データ
+  になる。**その場合は `PollInterval` をさらに延ばす前に、上記「さらなる
+  保険が要る場合の逃げ道」(非 IDLE サーバーへの push 提供自体をやめる) を
+  検討すること。**

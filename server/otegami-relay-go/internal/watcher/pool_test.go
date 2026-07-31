@@ -206,20 +206,31 @@ func TestPollingFlowFiresPush(t *testing.T) {
 	}
 }
 
-func TestPollingKeepAliveSurvivesServerInactivityTimeout(t *testing.T) {
-	// Task #201 regression test: a non-IDLE server (like Yahoo Japan) that
-	// drops connections idle longer than InactivityTimeout must NOT force
-	// a reconnect-and-relogin every PollInterval cycle. PollInterval here
-	// is deliberately several multiples of InactivityTimeout — without
-	// the NOOP keepalive, connectAndWatch's single PollInterval sleep
-	// would leave the connection quiet well past InactivityTimeout, the
-	// fake server would close it, and every cycle would show up as a
-	// fresh LOGIN.
+// TestPollDesignReconnectsEachCycleAndSurvivesAggressiveInactivityTimeout
+// is Task #215's regression test for the redesigned non-IDLE poll path,
+// replacing the pre-#215 TestPollingKeepAliveSurvivesServerInactivityTimeout
+// (which asserted the *opposite* property: exactly one LOGIN, kept alive
+// via NOOP). That design — one held-open connection, NOOP every 45s to
+// survive Yahoo Japan's sub-2-minute inactivity timeout, STATUS every
+// PollInterval — is what production showed hitting a `[LIMIT]` rate limit
+// at almost exactly one hour after every LOGIN (docs/architecture.md
+// pitfall "i." Task #215 addendum): the very traffic needed to survive the
+// inactivity timeout is what tripped the rate limit. Task #215 replaces it
+// with a short connect->SELECT->LOGOUT cycle every PollInterval and no
+// held-open connection at all — so an aggressive InactivityTimeout no
+// longer matters (nothing is ever left idle on the wire), and each
+// disconnect between cycles is expected, not an error.
+func TestPollDesignReconnectsEachCycleAndSurvivesAggressiveInactivityTimeout(t *testing.T) {
 	s := newTestStore(t)
 	server := imaptest.NewFakeServer()
 	server.SupportsIdle = false
 	server.SetInitialState(2, 3)
-	server.InactivityTimeout = 250 * time.Millisecond
+	// Shorter than a single command round-trip would ever plausibly need
+	// to survive between cycles — proves this constraint simply no longer
+	// applies to the new design (the old design required NOOPs comfortably
+	// under this exact kind of value to survive; the new one doesn't
+	// interact with it at all).
+	server.InactivityTimeout = 50 * time.Millisecond
 	port, err := server.Start()
 	if err != nil {
 		t.Fatal(err)
@@ -228,57 +239,75 @@ func TestPollingKeepAliveSurvivesServerInactivityTimeout(t *testing.T) {
 
 	sender := &fakePushSender{}
 	pool := New(s, sender, testLogger(), Options{
-		PollInterval:          500 * time.Millisecond,
-		PollKeepAliveInterval: 100 * time.Millisecond,
-		NetworkPolicy:         security.PermissiveForTesting(),
+		PollInterval:  150 * time.Millisecond,
+		NetworkPolicy: security.PermissiveForTesting(),
 	})
 	t.Cleanup(pool.Stop)
-	_, watchID := createWatch(t, s, port, "account-keepalive",
+	deviceID, watchID := createWatch(t, s, port, "account-poll-reconnect",
 		api.WatchAuth{Type: api.WatchAuthPassword, Secret: "password"},
-		api.EnvironmentSandbox, "keepalive-device-token")
+		api.EnvironmentSandbox, "poll-reconnect-device-token")
 	pool.AddWatch(watchID)
 
-	// Let several PollInterval cycles elapse — long enough that, without
-	// the keepalive NOOPs, the connection would have gone quiet past
-	// InactivityTimeout multiple times over.
-	time.Sleep(2500 * time.Millisecond)
-
-	if got := server.LoginCount(); got != 1 {
-		t.Fatalf("expected exactly 1 LOGIN (connection kept alive via NOOP), got %d", got)
+	// Let several PollInterval cycles elapse. Poll throughout (rather than
+	// a single sleep-then-check) so a transient "stopped" status — which
+	// would mean a disconnect got misclassified as fatal — can't hide
+	// behind the next successful reconnect's MarkWatchConnected clearing
+	// it back to active.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		summaries, err := s.ListWatchSummaries(t.Context(), deviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(summaries) != 1 {
+			t.Fatalf("got %d summaries", len(summaries))
+		}
+		if summaries[0].Status == api.WatchStatusStopped {
+			t.Fatalf("watch stopped — a disconnect between poll cycles must never be treated as fatal: %+v", summaries[0])
+		}
+		if server.LoginCount() >= 3 {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if got := server.LoginCount(); got < 3 {
+		t.Fatalf("expected multiple reconnects (one LOGIN per poll cycle), got %d", got)
 	}
 
-	// The same long-lived connection must still detect new mail.
+	// New mail delivered between cycles (no client connected at the
+	// moment it's delivered) must still be picked up by the next cycle's
+	// SELECT.
 	server.DeliverNewMail()
 	calls := waitForCalls(t, sender, 1, 5*time.Second)
 	if len(calls) != 1 {
 		t.Fatalf("got %d calls: %+v", len(calls), calls)
 	}
-	if calls[0].Payload.AccountID != "account-keepalive" || calls[0].Payload.UidNext != 4 {
+	if calls[0].Payload.AccountID != "account-poll-reconnect" || calls[0].Payload.UidNext != 4 {
 		t.Fatalf("got %+v", calls[0].Payload)
-	}
-	if got := server.LoginCount(); got != 1 {
-		t.Fatalf("expected still exactly 1 LOGIN after mail delivery, got %d", got)
 	}
 }
 
-// TestRateLimitedStatusWaitsOnSameConnectionInsteadOfReconnecting is Task
-// #206's regression test: a non-IDLE server (like Yahoo Japan) that answers
-// STATUS with a `[LIMIT]` response code must be waited out on the very same
-// connection — not treated like a plain connection error, which would have
-// the outer loop tear the connection down and reconnect (a fresh LOGIN).
-// Repeated LOGINs are exactly what turns this rate limit into the separate
-// Task #187 auth lockout in production (see isRateLimited's doc comment).
-// LoginCount staying at 1 throughout is the proof no reconnect happened;
-// the eventual push after RateLimitStatusCount is exhausted proves the
-// watch actually resumed rather than getting stuck.
-func TestRateLimitedStatusWaitsOnSameConnectionInsteadOfReconnecting(t *testing.T) {
+// TestPollDesignStaysUnderHourlyRateLimitBudget is Task #215's core design
+// validation: run the poll design against a fake server that enforces a
+// time-windowed command budget (RateLimitWindow/RateLimitWindowBudget —
+// modeling the production evidence of an hourly budget, not a
+// per-connection count) sized so that the *pre-#215* design's ~92
+// commands/hour would have blown it, but the new design's ~4-6
+// connects/hour (LOGIN+CAPABILITY+SELECT+LOGOUT per cycle) comfortably
+// doesn't. Zero rejections over several simulated windows is the proof.
+func TestPollDesignStaysUnderHourlyRateLimitBudget(t *testing.T) {
 	s := newTestStore(t)
 	server := imaptest.NewFakeServer()
 	server.SupportsIdle = false
 	server.SetInitialState(2, 3)
-	// The first two STATUS calls hit the limit; the third (and every one
-	// after) succeeds normally.
-	server.RateLimitStatusCount = 2
+	// One simulated "hour" = 1 second. A budget of 40 in that window is
+	// well below what the old design's cadence would have used (scaled
+	// proportionally, ~92) but several times what the new design actually
+	// needs per window at the PollInterval below (4 commands/cycle *
+	// ~3-4 cycles/window ≈ 12-16) — deliberately not razor-thin, since
+	// the point is demonstrating headroom, not tuning to the wire.
+	server.RateLimitWindow = 1 * time.Second
+	server.RateLimitWindowBudget = 40
 	port, err := server.Start()
 	if err != nil {
 		t.Fatal(err)
@@ -287,14 +316,220 @@ func TestRateLimitedStatusWaitsOnSameConnectionInsteadOfReconnecting(t *testing.
 
 	sender := &fakePushSender{}
 	pool := New(s, sender, testLogger(), Options{
-		PollInterval:          150 * time.Millisecond,
-		PollKeepAliveInterval: 500 * time.Millisecond, // longer than PollInterval: never fires in this test
-		NetworkPolicy:         security.PermissiveForTesting(),
-		// Small enough that both rate-limit hits (150ms, then 300ms
-		// doubled) plus the normal PollInterval cycles between them fit
-		// comfortably inside the test's deadlines below.
-		RateLimitInitialWait: 150 * time.Millisecond,
+		PollInterval:  250 * time.Millisecond,
+		NetworkPolicy: security.PermissiveForTesting(),
+	})
+	t.Cleanup(pool.Stop)
+	_, watchID := createWatch(t, s, port, "account-budget",
+		api.WatchAuth{Type: api.WatchAuthPassword, Secret: "password"},
+		api.EnvironmentSandbox, "budget-device-token")
+	pool.AddWatch(watchID)
+
+	// Several simulated hours' worth of cycles.
+	time.Sleep(3500 * time.Millisecond)
+
+	if got := server.RejectedCount(); got != 0 {
+		t.Fatalf("expected the poll design to stay under the simulated hourly budget, got %d rejected commands", got)
+	}
+	if got := server.LoginCount(); got < 3 {
+		t.Fatalf("expected several reconnect cycles to have happened, got %d LOGINs", got)
+	}
+
+	// Mail delivered partway through must still be detected.
+	server.DeliverNewMail()
+	calls := waitForCalls(t, sender, 1, 5*time.Second)
+	if len(calls) != 1 {
+		t.Fatalf("got %d calls: %+v", len(calls), calls)
+	}
+	if calls[0].Payload.AccountID != "account-budget" || calls[0].Payload.UidNext != 4 {
+		t.Fatalf("got %+v", calls[0].Payload)
+	}
+	if got := server.RejectedCount(); got != 0 {
+		t.Fatalf("expected still zero rejected commands after mail delivery, got %d", got)
+	}
+}
+
+// TestPollDesignSurvivesRateLimitAndInactivityTimeoutTogether combines both
+// of Task #215's fake-server scenarios at once — a windowed rate limit AND
+// an aggressive inactivity timeout on the same server — mirroring the
+// actual production server (Yahoo Japan has both constraints
+// simultaneously). The poll design must keep working under both at once,
+// not just each individually.
+func TestPollDesignSurvivesRateLimitAndInactivityTimeoutTogether(t *testing.T) {
+	s := newTestStore(t)
+	server := imaptest.NewFakeServer()
+	server.SupportsIdle = false
+	server.SetInitialState(2, 3)
+	server.InactivityTimeout = 50 * time.Millisecond
+	server.RateLimitWindow = 1 * time.Second
+	server.RateLimitWindowBudget = 40
+	port, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	sender := &fakePushSender{}
+	pool := New(s, sender, testLogger(), Options{
+		PollInterval:  250 * time.Millisecond,
+		NetworkPolicy: security.PermissiveForTesting(),
+	})
+	t.Cleanup(pool.Stop)
+	deviceID, watchID := createWatch(t, s, port, "account-combined",
+		api.WatchAuth{Type: api.WatchAuthPassword, Secret: "password"},
+		api.EnvironmentSandbox, "combined-device-token")
+	pool.AddWatch(watchID)
+
+	deadline := time.Now().Add(3500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		summaries, err := s.ListWatchSummaries(t.Context(), deviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(summaries) == 1 && summaries[0].Status == api.WatchStatusStopped {
+			t.Fatalf("watch stopped under combined rate-limit + inactivity-timeout constraints: %+v", summaries[0])
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if got := server.RejectedCount(); got != 0 {
+		t.Fatalf("expected zero rejected commands under the simulated hourly budget, got %d", got)
+	}
+
+	server.DeliverNewMail()
+	calls := waitForCalls(t, sender, 1, 5*time.Second)
+	if len(calls) != 1 {
+		t.Fatalf("got %d calls: %+v", len(calls), calls)
+	}
+	if calls[0].Payload.AccountID != "account-combined" || calls[0].Payload.UidNext != 4 {
+		t.Fatalf("got %+v", calls[0].Payload)
+	}
+}
+
+// TestPollDesignBacksOffWithoutRepeatedLoginsWhenRateLimited deliberately
+// sets a tight-enough window budget that the poll design *does* hit
+// `[LIMIT]` (handleEarlyRateLimit, on the SELECT/STATUS right after LOGIN)
+// and proves the recovery is a wait-and-retry, never a rapid relogin
+// spiral — the exact pattern that turned Task #206's rate limit into
+// Task #187's hours-long auth lockout in production. Consecutive LOGIN
+// attempts after a rejection must be spaced at least RateLimitInitialWait
+// apart, and the watch must never stop.
+func TestPollDesignBacksOffWithoutRepeatedLoginsWhenRateLimited(t *testing.T) {
+	s := newTestStore(t)
+	server := imaptest.NewFakeServer()
+	server.SupportsIdle = false
+	server.SetInitialState(2, 3)
+	// A budget tight enough that LOGIN succeeds but the CAPABILITY/SELECT
+	// immediately after it does not — every cycle gets rate limited.
+	server.RateLimitWindow = 10 * time.Second
+	server.RateLimitWindowBudget = 1
+	port, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	sender := &fakePushSender{}
+	pool := New(s, sender, testLogger(), Options{
+		// PollInterval deliberately irrelevant here — every cycle is
+		// rejected before it ever reaches errPollCycleComplete's normal
+		// PollInterval sleep; RateLimitInitialWait governs the pacing.
+		PollInterval:         5 * time.Second,
+		NetworkPolicy:        security.PermissiveForTesting(),
+		RateLimitInitialWait: 300 * time.Millisecond,
 		RateLimitWaitCap:     1 * time.Second,
+	})
+	t.Cleanup(pool.Stop)
+	deviceID, watchID := createWatch(t, s, port, "account-spiral-guard",
+		api.WatchAuth{Type: api.WatchAuthPassword, Secret: "password"},
+		api.EnvironmentSandbox, "spiral-guard-device-token")
+	pool.AddWatch(watchID)
+
+	deadline := time.Now().Add(2500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		summaries, err := s.ListWatchSummaries(t.Context(), deviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(summaries) == 1 && summaries[0].Status == api.WatchStatusStopped {
+			t.Fatalf("watch stopped while merely rate limited: %+v", summaries[0])
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	attempts := server.LoginAttempts()
+	if len(attempts) < 2 {
+		t.Fatalf("expected at least 2 LOGIN attempts to compare spacing, got %d", len(attempts))
+	}
+	for i := 1; i < len(attempts); i++ {
+		gap := attempts[i].Sub(attempts[i-1])
+		// A little slack below the configured wait for scheduling jitter,
+		// but nowhere near the old 2-second connection-error backoff's
+		// starting point, let alone an immediate retry.
+		if gap < 250*time.Millisecond {
+			t.Fatalf("LOGIN attempts %d and %d only %s apart — rate limit recovery must back off, not spiral (attempts: %v)",
+				i-1, i, gap, attempts)
+		}
+	}
+}
+
+// TestIdleRateLimitWaitKeepsConnectionAliveViaNoop is Task #206's original
+// regression test, adapted for Task #215: the STATUS-after-IDLE-wake
+// `[LIMIT]` wait (connectAndWatch's isRateLimited branch, still used by the
+// IDLE-capable path — Yahoo Japan doesn't support IDLE, so it never took
+// this exact branch, but non-IDLE watches don't hold a connection open
+// through a wait at all anymore, see runPollCycle) must be waited out on
+// the very same connection rather than reconnecting (a fresh LOGIN would
+// risk the same relogin-storm lockout Task #187 diagnosed), AND — Task
+// #215's "problem 1" fix — must keep that connection alive with NOOP
+// keepalives while waiting, proven here by an aggressive InactivityTimeout
+// the wait must survive. Before this fix, the wait was a bare sleep with
+// no traffic at all, which is exactly the pattern that killed the
+// connection mid-wait on Yahoo Japan's non-IDLE path in production.
+//
+// StatusUIDNext on the IDLE path is only ever called in response to an
+// IDLE wake (an EXISTS arriving), not on a timer — so the retry after a
+// rate-limited wait needs its own fresh wake, which this test supplies as
+// a second DeliverNewMail after the wait has had time to resolve. LoginCount
+// staying at 1 throughout is the proof no reconnect happened; the eventual
+// push after RateLimitStatusCount is exhausted proves the watch actually
+// resumed rather than getting stuck.
+func TestIdleRateLimitWaitKeepsConnectionAliveViaNoop(t *testing.T) {
+	s := newTestStore(t)
+	server := imaptest.NewFakeServer()
+	server.SetInitialState(2, 3) // SupportsIdle defaults to true.
+	// A real IDLE session sends nothing at all from the client side while
+	// legitimately waiting for mail (RFC 2177 — that's the whole point of
+	// IDLE), so InactivityTimeout must comfortably outlast every ordinary
+	// silent IDLE gap in this test (connect/setup, and the second wake
+	// below); it's only the rate-limit *wait* — a distinct, non-IDLE phase
+	// free to send NOOP — that this value is deliberately shorter than, so
+	// the keepalive is what has to carry it.
+	server.InactivityTimeout = 500 * time.Millisecond
+	// The first STATUS call (after the IDLE wake below) hits the limit;
+	// the next one (after the second wake below) succeeds normally.
+	server.RateLimitStatusCount = 1
+	port, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	sender := &fakePushSender{}
+	pool := New(s, sender, testLogger(), Options{
+		IdleMaxWait:   5 * time.Second,
+		PollInterval:  150 * time.Millisecond,
+		NetworkPolicy: security.PermissiveForTesting(),
+		// Deliberately longer than InactivityTimeout above: without the
+		// keepalive fix, sitting silent for this whole wait would get the
+		// connection dropped well before it finishes.
+		RateLimitInitialWait: 1200 * time.Millisecond,
+		RateLimitWaitCap:     2 * time.Second,
+		// Comfortably under InactivityTimeout, and short enough relative
+		// to RateLimitInitialWait that several steps happen during the
+		// wait — proving the keepalive loop, not a lucky single NOOP, is
+		// what keeps the connection alive.
+		IdleRateLimitKeepAliveInterval: 100 * time.Millisecond,
 	})
 	t.Cleanup(pool.Stop)
 
@@ -303,9 +538,16 @@ func TestRateLimitedStatusWaitsOnSameConnectionInsteadOfReconnecting(t *testing.
 		api.EnvironmentSandbox, "rate-limited-device-token")
 	pool.AddWatch(watchID)
 
-	// Let the two rate-limited STATUS attempts happen and resolve, well
-	// before delivering mail — proves the watch is still alive and
-	// making progress (not stuck retrying forever, not reconnecting).
+	// Give the watch time to connect and enter IDLE, then wake it with new
+	// mail — the wake is what makes it call StatusUIDNext, which is where
+	// RateLimitStatusCount bites.
+	time.Sleep(150 * time.Millisecond)
+	server.DeliverNewMail() // exists=3, uidNext=4 — this STATUS gets rejected.
+
+	// Let the rate-limited STATUS attempt happen and resolve — proves the
+	// watch is still alive and making progress (not stuck retrying
+	// forever, not reconnecting, and — the InactivityTimeout above — not
+	// losing the connection to inactivity mid-wait).
 	deadline := time.Now().Add(5 * time.Second)
 	sawRateLimitError := false
 	for time.Now().Before(deadline) {
@@ -328,20 +570,27 @@ func TestRateLimitedStatusWaitsOnSameConnectionInsteadOfReconnecting(t *testing.
 		if sawRateLimitError {
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	if !sawRateLimitError {
 		t.Fatal("watch never recorded the rate-limit error")
 	}
 
-	// The connection must still be usable: new mail delivered after the
-	// rate limit clears should still fire a push, on the same connection.
-	server.DeliverNewMail()
+	// Give the rate-limit wait (started the moment sawRateLimitError went
+	// true, above) comfortably long enough to finish — RateLimitInitialWait
+	// plus a buffer — and the loop to be back inside a fresh Idle() call,
+	// then wake it again: this StatusUIDNext call succeeds
+	// (RateLimitStatusCount is exhausted), proving the watch actually
+	// resumed rather than getting stuck waiting for an EXISTS that already
+	// came and went.
+	time.Sleep(1500 * time.Millisecond)
+	server.DeliverNewMail() // exists=4, uidNext=5.
+
 	calls := waitForCalls(t, sender, 1, 5*time.Second)
 	if len(calls) != 1 {
 		t.Fatalf("got %d calls: %+v", len(calls), calls)
 	}
-	if calls[0].Payload.AccountID != "account-rate-limited" || calls[0].Payload.UidNext != 4 {
+	if calls[0].Payload.AccountID != "account-rate-limited" || calls[0].Payload.UidNext != 5 {
 		t.Fatalf("got %+v", calls[0].Payload)
 	}
 	if got := server.LoginCount(); got != 1 {

@@ -56,12 +56,33 @@ type FakeServer struct {
 	// same connection rather than triggering a reconnect+relogin.
 	RateLimitStatusCount int
 
-	mu         sync.Mutex
-	listener   net.Listener
-	clientConn net.Conn
-	exists     int
-	uidNext    int
-	loginCount int
+	// RateLimitWindow / RateLimitWindowBudget (Task #215), when both set,
+	// reject any command beyond RateLimitWindowBudget received within a
+	// RateLimitWindow-long period with `NO [LIMIT] <CMD> Rate limit hit.`
+	// — every command (including LOGIN) counts, across every connection,
+	// and the budget resets to zero every RateLimitWindow of wall-clock
+	// time regardless of connection boundaries. This models the
+	// production evidence behind Task #215 (docs/architecture.md pitfall
+	// "i." Task #215 addendum): Yahoo Japan hit `[LIMIT]` at almost
+	// exactly one hour after LOGIN, twice, at a command volume matching a
+	// fixed hourly budget — not a per-connection command count (unlike
+	// RateLimitStatusCount above, which is Task #206's narrower "the Nth
+	// STATUS on this one connection" fixture). LOGOUT is never rejected
+	// (a client giving up its connection shouldn't itself be rate
+	// limited).
+	RateLimitWindow       time.Duration
+	RateLimitWindowBudget int
+
+	mu              sync.Mutex
+	listener        net.Listener
+	clientConn      net.Conn
+	exists          int
+	uidNext         int
+	loginCount      int
+	windowStart     time.Time
+	windowCount     int
+	rejectedCount   int
+	loginAttemptLog []time.Time
 }
 
 // LoginCount returns how many LOGIN commands this server has received
@@ -72,6 +93,29 @@ func (s *FakeServer) LoginCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.loginCount
+}
+
+// RejectedCount returns how many commands so far were refused with
+// `[LIMIT]` under RateLimitWindow/RateLimitWindowBudget — Task #215's
+// tests use this to confirm the poll design's real-world command volume
+// stays under a simulated hourly budget (zero rejections) versus a
+// deliberately tight budget it must recover from without spiraling.
+func (s *FakeServer) RejectedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rejectedCount
+}
+
+// LoginAttempts returns the wall-clock time of every LOGIN command
+// received so far (accepted or rejected) — Task #215's rate-limit-recovery
+// test uses the gaps between these to confirm a rejected connection
+// attempt backs off rather than immediately retrying (the exact pattern
+// that turned a rate limit into an hours-long auth lockout in production —
+// see Options.RateLimitInitialWait's doc comment).
+func (s *FakeServer) LoginAttempts() []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Time(nil), s.loginAttemptLog...)
 }
 
 // NewFakeServer mirrors FakeIMAPServer.init's defaults (exists=5,
@@ -149,6 +193,39 @@ func (s *FakeServer) consumeRateLimitedStatus() bool {
 	return true
 }
 
+// admitCommand applies RateLimitWindow/RateLimitWindowBudget (Task #215):
+// reports whether the command currently being processed fits within the
+// current window's budget, resetting the window (and its count) the
+// moment RateLimitWindow has elapsed since it last reset. A zero
+// RateLimitWindow or RateLimitWindowBudget always admits (the default,
+// matching every test fixture that doesn't opt into this).
+func (s *FakeServer) admitCommand() bool {
+	if s.RateLimitWindow <= 0 || s.RateLimitWindowBudget <= 0 {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if s.windowStart.IsZero() || now.Sub(s.windowStart) >= s.RateLimitWindow {
+		s.windowStart = now
+		s.windowCount = 0
+	}
+	s.windowCount++
+	if s.windowCount > s.RateLimitWindowBudget {
+		s.rejectedCount++
+		return false
+	}
+	return true
+}
+
+// recordLoginAttempt appends now to loginAttemptLog — called for every
+// LOGIN received, accepted or rejected (see LoginAttempts's doc comment).
+func (s *FakeServer) recordLoginAttempt() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loginAttemptLog = append(s.loginAttemptLog, time.Now())
+}
+
 func (s *FakeServer) acceptLoop(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
@@ -213,6 +290,23 @@ func (s *FakeServer) handleConn(conn net.Conn) {
 		}
 		tag := parts[0]
 		command := strings.ToUpper(parts[1])
+
+		// Recorded regardless of admission below — Task #215's
+		// spiral-guard test needs the timestamp of every attempt,
+		// including ones the rate limiter itself goes on to reject.
+		if command == "LOGIN" {
+			s.recordLoginAttempt()
+		}
+
+		// Task #215: a rate-limited window applies to every command except
+		// LOGOUT (a client giving up its connection isn't the kind of load
+		// a rate limiter needs to punish) — checked before the normal
+		// per-command handling below, mirroring the real Yahoo Japan
+		// response shape regardless of which command triggered it.
+		if command != "LOGOUT" && !s.admitCommand() {
+			fmt.Fprintf(conn, "%s NO [LIMIT] %s Rate limit hit.\r\n", tag, command)
+			continue
+		}
 
 		switch command {
 		case "LOGIN":
