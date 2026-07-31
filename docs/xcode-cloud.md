@@ -1,4 +1,4 @@
-# Xcode Cloud / TestFlight 配布 (Task #49)
+# Xcode Cloud / TestFlight 配布
 
 Otegami を Xcode Cloud でビルドし、TestFlight の内部テストグループに
 配布できるようにするための設定・手順をまとめる。App Store Connect 側の
@@ -71,8 +71,8 @@ OTEGAMI_BUNDLE_ID=com.example.otegami.citest \
    | `OTEGAMI_DEVELOPMENT_TEAM` | `DEVELOPMENT_TEAM` | 実質必須 (無いと未署名ビルドにしかならず Archive できない) | Apple Developer の Team ID |
    | `OTEGAMI_BUNDLE_ID` | `OTEGAMI_BUNDLE_ID` | 任意 (既定 `com.mtkg.otegami` のまま) | 別の Team でこの Bundle ID が既に登録済みの場合のみ変更 |
    | `OTEGAMI_GOOGLE_CLIENT_ID` | `GOOGLE_OAUTH_CLIENT_ID` | 任意 (未設定なら Gmail 追加ボタンが無効なビルドになる) | `docs/oauth-setup.md` |
-   | `OTEGAMI_RELAY_REGISTRATION_SECRET` | `OTEGAMI_RELAY_REGISTRATION_SECRET` | 任意 (未設定なら自分のリレーの `POST /v1/devices` にシークレットを送らないビルドになる — リレー側がそれを要求していなければ無関係) | Task #171 follow-up、`docs/relay-deployment.md` |
-   | `OTEGAMI_PUSH_RELAY_URL` | `OTEGAMI_PUSH_RELAY_URL` | 任意 (未設定なら「プッシュ通知」画面の「有効にする」ボタンが無効なビルドになる) | Task #173 follow-up、`docs/relay-deployment.md`。**値は素の URL のまま登録する** (`https://relay.example.test`) — `ci_post_clone.sh` が xcconfig の `//` コメント問題を回避する形式に自動変換して書き出すので、この環境変数自体に `$(...)` 構文を含める必要はない |
+   | `OTEGAMI_RELAY_REGISTRATION_SECRET` | `OTEGAMI_RELAY_REGISTRATION_SECRET` | 任意 (未設定なら自分のリレーの `POST /v1/devices` にシークレットを送らないビルドになる — リレー側がそれを要求していなければ無関係) | `docs/relay-deployment.md` |
+   | `OTEGAMI_PUSH_RELAY_URL` | `OTEGAMI_PUSH_RELAY_URL` | 任意 (未設定なら「プッシュ通知」画面の「有効にする」ボタンが無効なビルドになる) | `docs/relay-deployment.md`。**値は素の URL のまま登録する** (`https://relay.example.test`) — `ci_post_clone.sh` が xcconfig の `//` コメント問題を回避する形式に自動変換して書き出すので、この環境変数自体に `$(...)` 構文を含める必要はない |
    | `OTEGAMI_MAIL_CLIENT_ENTITLEMENT` | `OTEGAMI_MAIL_CLIENT_ENTITLEMENT` | 任意 (既定 `NO`) | Apple から entitlement 許可が下りてから `YES` |
 
    いずれも未設定なら該当行を書かず、コミット済みの既定値
@@ -173,7 +173,7 @@ Apple Developer / App Store Connect 側の実際の操作が必要で、この�
 
 ## 既知の注意点
 
-### APNs が TestFlight (Distribution) では production 環境になる — 対応済み (Task #57)
+### APNs 環境の自動判定 (TestFlight は常に production)
 
 Apple の仕様上の制約: `aps-environment` の実際の値は署名に使う
 プロビジョニングプロファイルの種類で決まり、Development プロファイルは
@@ -181,25 +181,12 @@ Apple の仕様上の制約: `aps-environment` の実際の値は署名に使う
 は `production` しか持てない。`apps/Otegami/Config/Otegami-iOS.entitlements`
 の `aps-environment` ソース側の値は (Automatic signing の下では) 実際に
 割り当てられるプロファイルに応じて署名時に上書きされるため
-`development` 固定のままで構わない — 実際、この repo はタグ打ち →
-Xcode Cloud → TestFlight のアーカイブ・署名に既に複数回成功している
-(`ac42ada` 以降のコミット参照) ので、署名そのものがこの値と矛盾して
-失敗する、という当初懸念していたシナリオは発生しなかった。
+`development` 固定のままで構わない。
 
-残っていた実問題は署名ではなくアプリ側のロジックだった:
-`AppEnvironment.swift` の `enablePushNotifications(relayURLString:)` が
-otegami-relay へのデバイス登録時に **`environment: .sandbox` を固定で
-送っていた**ため、TestFlight (Distribution 署名 = 実際の APNs 環境は
-production) のデバイストークンが sandbox 環境宛てとして登録され、
-実際のプッシュは `api.push.apple.com` に送られるべきところ
-`api.sandbox.push.apple.com` に送られて配信されなかった
-(`server/otegami-relay/Sources/OtegamiRelay/Push/APNsSender.swift`
-の `environment` によるホスト切り替えを参照)。
-
-**修正**: ビルド設定 (Debug/Release) で分岐させる方式ではなく、
+アプリ側は、ビルド設定 (Debug/Release) で分岐させる方式ではなく、
 実行時にこのバイナリが実際にどちらの環境で署名されたかを
 `embedded.mobileprovision` の `Entitlements.aps-environment` を読んで
-判定する方式にした —
+判定する方式を採っている —
 `packages/OtegamiKit/Sources/PushRelayClient/APNSEnvironmentDetector.swift`
 (`APNSEnvironmentDetector.detectedEnvironment(bundle:)`)。埋め込み
 プロビジョニングプロファイルが存在しない/parse できない場合は
@@ -208,22 +195,21 @@ production) のデバイストークンが sandbox 環境宛てとして登録�
 ことがあるため、「見つからない = production」が安全なデフォルトになる
 (Debug/Ad Hoc ビルドは必ずプロファイルを同梱するので、このフォール
 バックが実際に踏まれるのは配布ビルドだけ)。`AppEnvironment.swift` の
-2箇所の登録呼び出し (`registerDevice`/`updateDeviceToken`) はこの判定
-結果を送るよう変更済み。
+デバイス登録呼び出し (`registerDevice`/`updateDeviceToken`) はこの判定
+結果を送る。
 
-`server/otegami-relay` 自体は元々デバイスごとに `sandbox`/`production`
-を切り替えられる設計だった (`OtegamiRelayAPI.RegisterDeviceRequest.
-Environment`、`APNsSender.host(for:)`) ため、リレー側の変更は不要
-だった — 変更はアプリ側のみで完結している。
+`server/otegami-relay`/`server/otegami-relay-go` 自体はデバイスごとに
+`sandbox`/`production` を切り替えられる設計 (`OtegamiRelayAPI
+.RegisterDeviceRequest.Environment`、`APNsSender.host(for:)`) なので、
+リレー側の変更は不要 — この判定はアプリ側だけで完結する。
 
-**検証**: `APNSEnvironmentDetectorTests`
+`APNSEnvironmentDetectorTests`
 (`packages/OtegamiKit/Tests/PushRelayClientTests/`) がプロビジョニング
 プロファイルのパース (development→sandbox / production→production /
-欠落・不正値→production フォールバック) をユニットテストで検証。
-`server/otegami-relay`側の sandbox/production ホスト切り替えは
-`APNsSenderTests`に回帰テストを追加。**実際に TestFlight ビルドで
-プッシュが届くことの確認 (E2E) は Apple 実機環境が必要なため
-`HUMAN_TASKS.md` にユーザー確認タスクとして残っている。**
+欠落・不正値→production フォールバック) をユニットテストで検証している。
+**既知の制限**: 実際に TestFlight ビルドでプッシュが届くことの確認
+(E2E) は Apple の実機・実インフラが必要で、この開発環境からは確認
+できない。TestFlight ビルドを配布した際は一度実機で確認すること。
 
 ### Google OAuth が「未検証アプリ」のまま TestFlight 内部テストで使われる
 
@@ -255,7 +241,6 @@ TestFlight 内部テストを配る場合:
 ## Apple Developer / App Store Connect 側の手順 (ユーザー本人が行う)
 
 このリポジトリの外側、App Store Connect の Web UI・Xcode の GUI 操作。
-`HUMAN_TASKS.md`にもチェックリストとして追記した。
 
 1. **App Store Connect にアプリレコードを作成する** — App Store Connect
    → 「マイ App」→ 「+」→「新規 App」。Bundle ID は
@@ -287,8 +272,8 @@ TestFlight 内部テストを配る場合:
 6. **初回ビルドを確認する** — ワークフローを保存すると初回ビルドが
    自動的にキックされる (または Xcode の Cloud タブから手動トリガー)。
 
-   > **このリポジトリの実運用 (2026-07-28 設定済み)**: リリース用
-   > ワークフローの開始条件は**git tag** に設定してある。リリース
+   > **このリポジトリの実運用**: リリース用ワークフローの開始条件は
+   > **git tag** に設定してある。リリース
    > したいコミットに tag を打って push すると Xcode Cloud が
    > Archive → TestFlight 配布を実行する。ブランチ push では
    > リリースビルドは走らない。開発中の即時配信は従来どおり
@@ -315,10 +300,10 @@ TestFlight 内部テストを配る場合:
   もう一つの配布経路 (Ad Hoc + itms-services)。Xcode Cloud/TestFlight
   とは独立に今後も使える。
 - [docs/default-mail-app.md](default-mail-app.md) —
-  `com.apple.developer.mail-client` entitlement (Task #48)。
+  `com.apple.developer.mail-client` entitlement。
 - [docs/ci.md](ci.md) — GitHub Actions (`ci-app`/`ci-server`) 側の CI。
   Xcode Cloud はこれを置き換えるものではなく、TestFlight 配布に特化した
   別の CI パイプラインとして並行して使う。
 - [docs/release.md](release.md) — 同じ tag push で並行して走る macOS 側
-  のリリースパイプライン (Task #143、GitHub Actions →
-  Developer ID 署名 + notarization → GitHub Release 添付)。
+  のリリースパイプライン (GitHub Actions → Developer ID 署名 +
+  notarization → GitHub Release 添付)。
