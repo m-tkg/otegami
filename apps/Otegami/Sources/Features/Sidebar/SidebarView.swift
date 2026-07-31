@@ -114,132 +114,39 @@ struct SidebarView: View {
     #endif
 
     var body: some View {
-        // A plain `List`, not `List(selection:)` — selection is driven
-        // explicitly by each row's own `Button` action below, the same
-        // pattern `MessageListView` already uses (its own doc comment: "By
-        // id... Set directly from a `Button` action per row"). This isn't
-        // stylistic parity for its own sake: `List(selection:)`'s binding
-        // is independently documented as flaky in this project's
-        // simulator/toolchain (M2's pitfall #2, `.claude/skills/verify/
-        // SKILL.md`) — a real-device investigation (docs/verify.md) traced
-        // an "sidebar → INBOX をタップすると一覧に何も出ない" bug all the way
-        // down to this: tapping a `List(selection:)`-tagged row here made
-        // `selection` oscillate through `nil` and back rather than
-        // settling once, which tore `MessageListView` down and rebuilt it
-        // (confirmed via a `CancellationError` on an in-flight database
-        // read, mid-rebuild) faster than its very first `ValueObservation`
-        // fetch could ever complete — a livelock, not a one-time glitch,
-        // that never resolved on its own. `List(selection:)` was
-        // previously *this* view's only remaining use of the pattern
-        // `MessageListView` had already worked around for the exact same
-        // reason.
+        sidebarList
+            .modifier(
+                SidebarSheetPresentationModifier(
+                    accountEntryRoute: $accountEntryRoute,
+                    showingSettings: $showingSettings,
+                    showingOutbox: $showingOutbox,
+                    showingDrafts: $showingDrafts,
+                    showingFailedOps: $showingFailedOps,
+                    showingMailboxSyncFailures: $showingMailboxSyncFailures,
+                    onOpenDraft: onOpenDraft,
+                    onOpenServerDraft: onOpenServerDraft
+                )
+            )
+            .task(id: environment.accounts.map(\.id)) { await observeOutbox() }
+            .task(id: environment.accounts.map(\.id)) { await observeDraftCount() }
+            .task(id: environment.accounts.map(\.id)) { await observeFailedOpCount() }
+            .task(id: environment.accounts.map(\.id)) { await observeMailboxSyncFailureCount() }
+            .task(id: environment.accounts.map(\.id)) { await observeUnifiedInboxUnreadCount() }
+            #if os(macOS)
+            .task(id: selection) { normalizeInitialCollapseStateIfNeeded() }
+            #endif
+    }
+
+    /// A plain `List`, not `List(selection:)` — selection is driven
+    /// explicitly by each row's own `Button` action, the same pattern
+    /// `MessageListView` already uses. `List(selection:)` is independently
+    /// documented as flaky in this project's simulator/toolchain (M2's
+    /// pitfall #2, `.claude/skills/verify/SKILL.md`): tapping a tagged row
+    /// made `selection` oscillate through `nil` and back, repeatedly tearing
+    /// down `MessageListView` before its first observation completed.
+    private var sidebarList: some View {
         List {
-            if environment.accounts.isEmpty {
-                ContentUnavailableView {
-                    Label("アカウントがありません", systemImage: "envelope.badge")
-                } description: {
-                    Text("メールアカウントを追加してください。")
-                } actions: {
-                    Button("アカウントを追加") { accountEntryRoute = .typeSelection }
-                        .accessibilityIdentifier("sidebar.addAccountButton")
-                }
-            } else {
-                Section {
-                    // Task #181: macOS はこの単独行を廃止し、下の「受信トレイ」
-                    // カテゴリ見出し (`categoryOrder`の先頭、`macCategorySection
-                    // (for: .inbox)`) がタップで全く同じ選択を兼ねる — iOS の
-                    // `FolderListSheet`が Task #126 で行った統合と同じ判断
-                    // (重複した入口を残さない)。iOS (この`#if`の対象ではない、
-                    // 実際には未到達コード — 型doc comment参照) はこの単独行を
-                    // 引き続き持つ。
-                    #if os(iOS)
-                    Button {
-                        selection = .unifiedInbox
-                        onSelected(.unifiedInbox)
-                    } label: {
-                        HStack {
-                            Label("すべての受信トレイ", systemImage: "tray.2")
-                            Spacer()
-                            if unifiedInboxUnread > 0 {
-                                UnreadCountBadge(count: unifiedInboxUnread)
-                                    .accessibilityIdentifier("sidebar.unifiedInbox.unreadBadge")
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .listRowBackground(selection == .unifiedInbox ? OtegamiColor.paleBase : nil)
-                    .accessibilityIdentifier("sidebar.unifiedInbox")
-                    #endif
-
-                    if outboxCount > 0 {
-                        Button {
-                            showingOutbox = true
-                        } label: {
-                            Label("送信待ち (\(outboxCount))", systemImage: "tray.and.arrow.up")
-                        }
-                        .accessibilityIdentifier("sidebar.outbox")
-                    }
-
-                    if draftCount > 0 {
-                        Button {
-                            showingDrafts = true
-                        } label: {
-                            Label("下書き (\(draftCount))", systemImage: "doc")
-                        }
-                        .accessibilityIdentifier("sidebar.drafts")
-                    }
-
-                    if failedOpCount > 0 {
-                        Button {
-                            showingFailedOps = true
-                        } label: {
-                            Label("同期エラー (\(failedOpCount))", systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(.orange)
-                        }
-                        .accessibilityIdentifier("sidebar.failedOps")
-                    }
-
-                    if mailboxSyncFailureCount > 0 {
-                        Button {
-                            showingMailboxSyncFailures = true
-                        } label: {
-                            Label("メールボックス同期エラー (\(mailboxSyncFailureCount))", systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(.orange)
-                        }
-                        .accessibilityIdentifier("sidebar.mailboxSyncFailures")
-                    }
-                }
-
-                // Task #181: macOS はカテゴリセクション (受信トレイ/アーカイブ/
-                // 送信済み等、`FolderListSheet`と共通の`categoryOrder`) を
-                // アカウント別ツリーの**上**に積む — iOS の `FolderListSheet`
-                // が Task #52 追記で確立した「カテゴリ群 (上) → アカウント群
-                // (下)」の縦積み構成と同じ並びにする。
-                #if os(macOS)
-                ForEach(categoryOrder, id: \.self) { role in
-                    macCategorySection(for: role)
-                }
-                #endif
-
-                ForEach(environment.accounts) { account in
-                    #if os(macOS)
-                    macAccountSection(for: account)
-                    #else
-                    Section(account.displayName) {
-                        ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
-                            mailboxRow(for: mailbox, in: account)
-                        }
-                    }
-                    .task(id: account.id) {
-                        await observeMailboxes(accountId: account.id)
-                    }
-                    .task(id: account.id) {
-                        await observeUnreadCounts(accountId: account.id)
-                    }
-                    #endif
-                }
-            }
+            sidebarListContent
         }
         .accessibilityIdentifier("sidebar.list")
         .navigationTitle("Otegami")
@@ -247,94 +154,143 @@ struct SidebarView: View {
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         .toolbar {
-            ToolbarItem {
-                Button {
-                    onCompose()
-                } label: {
-                    Label("作成", systemImage: "square.and.pencil")
+            SidebarToolbarContent(
+                isComposeDisabled: environment.accounts.isEmpty,
+                onCompose: onCompose,
+                onAddAccount: beginAccountEntry,
+                onOpenSettings: openSettings
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var sidebarListContent: some View {
+        if environment.accounts.isEmpty {
+            SidebarEmptyAccountsView(onAddAccount: beginAccountEntry)
+        } else {
+            Section {
+                #if os(iOS)
+                SidebarUnifiedInboxRow(
+                    isSelected: selection == .unifiedInbox,
+                    unreadCount: unifiedInboxUnread,
+                    onTap: selectUnifiedInbox
+                )
+                #endif
+
+                if outboxCount > 0 {
+                    SidebarStatusRow(
+                        title: "送信待ち (\(outboxCount))",
+                        systemImage: "tray.and.arrow.up",
+                        accessibilityIdentifier: "sidebar.outbox",
+                        isError: false,
+                        onTap: openOutbox
+                    )
                 }
-                .accessibilityIdentifier("sidebar.composeButton")
-                .disabled(environment.accounts.isEmpty)
-            }
-            ToolbarItem {
-                Button {
-                    accountEntryRoute = .typeSelection
-                } label: {
-                    Label("アカウントを追加", systemImage: "plus")
+                if draftCount > 0 {
+                    SidebarStatusRow(
+                        title: "下書き (\(draftCount))",
+                        systemImage: "doc",
+                        accessibilityIdentifier: "sidebar.drafts",
+                        isError: false,
+                        onTap: openDrafts
+                    )
                 }
-                .accessibilityIdentifier("sidebar.addAccountToolbarButton")
-            }
-            ToolbarItem {
-                Button {
-                    showingSettings = true
-                } label: {
-                    Label("設定", systemImage: "gearshape")
+                if failedOpCount > 0 {
+                    SidebarStatusRow(
+                        title: "同期エラー (\(failedOpCount))",
+                        systemImage: "exclamationmark.triangle",
+                        accessibilityIdentifier: "sidebar.failedOps",
+                        isError: true,
+                        onTap: openFailedOps
+                    )
                 }
-                .accessibilityIdentifier("sidebar.settingsButton")
+                if mailboxSyncFailureCount > 0 {
+                    SidebarStatusRow(
+                        title: "メールボックス同期エラー (\(mailboxSyncFailureCount))",
+                        systemImage: "exclamationmark.triangle",
+                        accessibilityIdentifier: "sidebar.mailboxSyncFailures",
+                        isError: true,
+                        onTap: openMailboxSyncFailures
+                    )
+                }
+            }
+
+            #if os(macOS)
+            ForEach(categoryOrder, id: \.self) { role in
+                macCategorySection(for: role)
+            }
+            #endif
+
+            ForEach(environment.accounts) { account in
+                accountSection(for: account)
             }
         }
-        .sheet(item: $accountEntryRoute) { route in
-            accountEntryDestination(for: route, binding: $accountEntryRoute)
-        }
-        .sheet(isPresented: $showingSettings) {
-            AccountsSettingsView()
-        }
-        .sheet(isPresented: $showingOutbox) {
-            OutboxView()
-        }
-        .sheet(isPresented: $showingDrafts) {
-            DraftsView(onOpenDraft: onOpenDraft, onOpenServerDraft: onOpenServerDraft)
-        }
-        .sheet(isPresented: $showingFailedOps) {
-            FailedOperationsView()
-        }
-        .sheet(isPresented: $showingMailboxSyncFailures) {
-            MailboxSyncFailuresView()
-        }
-        .task(id: environment.accounts.map(\.id)) { await observeOutbox() }
-        .task(id: environment.accounts.map(\.id)) { await observeDraftCount() }
-        .task(id: environment.accounts.map(\.id)) { await observeFailedOpCount() }
-        .task(id: environment.accounts.map(\.id)) { await observeMailboxSyncFailureCount() }
-        .task(id: environment.accounts.map(\.id)) { await observeUnifiedInboxUnreadCount() }
+    }
+
+    @ViewBuilder
+    private func accountSection(for account: AccountRecord) -> some View {
         #if os(macOS)
-        // Task #195: iOS のドロワー (`FolderListSheet`) は「開くたびに現在の
-        // 選択だけを展開状態にリセットする」ことで1つだけしか開かない見た目を
-        // 保っている (`.onChange(of: isMenuOpen)`)。macOS のサイドバーは常設
-        // 表示で「開く」という契機自体が無いため、代わりにビューが最初に実質
-        // 表示された瞬間に一度だけ同じ正規化をかけ、以降は
-        // `macCategoryExpandedBinding`/`macAccountExpandedBinding`側の排他
-        // ロジックで「常に1つだけ」を維持する (このタスク以前に保存されて
-        // いた「複数同時展開」状態が残っている端末でも、この一度きりの
-        // 正規化で矛盾なく1つに収束する — 明示的なマイグレーションは不要と
-        // 判断した)。
-        //
-        // トリガーは`environment.accounts`ではなく`selection`の変化 —
-        // 最初`environment.accounts.map(\.id)`をトリガーにしていたが、
-        // `.task(id:)`は`id`の初期値 (起動直後、`environment.accounts`が
-        // まだ空、または一部のアカウントしか読み込めていない一瞬) でも
-        // 即座に1回発火するため、その時点で`hasNormalizedInitialCollapse
-        // State`を立ててしまうと「実際に選択が確定した後の」実質1回目が
-        // 二度と来ない実バグを実機スクリーンショットで確認した (空/不完全な
-        // `environment.accounts`で正規化すると、まだ知らないアカウントの
-        // idが`collapsedAccountIds`に入らないまま以後更新されず、後から
-        // 読み込まれたアカウントのセクションが展開されっぱなしになる)。
-        // `selection`は`observeMailboxes(accountId:)`がM4の「初回は
-        // `.unifiedInbox`を自動選択」を確定させた後に初めて`nil`から
-        // 変わるため、これをトリガーにすれば「選択が実際に決まった値」で
-        // 正規化できる (`selectedCategoryRole`/`selectedAccountId`が
-        // 両方nilのまま正規化されて何も展開されない、という事態を避けられる)。
-        .task(id: selection) {
-            guard !hasNormalizedInitialCollapseState, selection != nil else { return }
-            hasNormalizedInitialCollapseState = true
-            normalizeCollapseStateToSingleExpansion()
+        macAccountSection(for: account)
+        #else
+        Section(account.displayName) {
+            ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
+                mailboxRow(for: mailbox, in: account)
+            }
+        }
+        .task(id: account.id) {
+            await observeMailboxes(accountId: account.id)
+        }
+        .task(id: account.id) {
+            await observeUnreadCounts(accountId: account.id)
         }
         #endif
     }
 
-    /// Builds one `MailboxRow` for the inner `ForEach` in `body` — pulled
-    /// out into its own `@ViewBuilder` method (not just an inline closure
+    private func beginAccountEntry() {
+        accountEntryRoute = .typeSelection
+    }
+
+    private func selectUnifiedInbox() {
+        selection = .unifiedInbox
+        onSelected(.unifiedInbox)
+    }
+
+    private func openSettings() {
+        showingSettings = true
+    }
+
+    private func openOutbox() {
+        showingOutbox = true
+    }
+
+    private func openDrafts() {
+        showingDrafts = true
+    }
+
+    private func openFailedOps() {
+        showingFailedOps = true
+    }
+
+    private func openMailboxSyncFailures() {
+        showingMailboxSyncFailures = true
+    }
+
+    #if os(macOS)
+    /// Task #195: normalize only after `selection` changes from `nil`.
+    /// Using the initially-empty account list as the task id previously
+    /// marked normalization complete before all account ids were known,
+    /// leaving later-loaded account sections expanded indefinitely.
+    private func normalizeInitialCollapseStateIfNeeded() {
+        guard !hasNormalizedInitialCollapseState, selection != nil else { return }
+        hasNormalizedInitialCollapseState = true
+        normalizeCollapseStateToSingleExpansion()
+    }
+    #endif
+
+    /// Builds one `MailboxRow` for the inner `ForEach` in `accountSection`,
+    /// pulled out into its own `@ViewBuilder` method (not just an inline closure
     /// body) so the `ForEach(mailboxesByAccountId[account.id] ?? []) {
-    /// mailbox in ... }` closure in `body` is a single trivial function
+    /// mailbox in ... }` closure in `accountSection` is a single trivial function
     /// call rather than an `if let` binding plus a multi-argument
     /// initializer call with an inline trailing closure. Splitting
     /// `SidebarView`/`MailboxRow` alone (this file's earlier fix) still
@@ -747,90 +703,6 @@ struct SidebarView: View {
         }
     }
 
-}
-
-/// One mailbox row inside an account's `Section` in `SidebarView`. Pulled
-/// out of `SidebarView.body`'s `ForEach` (which used to build this inline)
-/// specifically to keep the type-checker's job small: the inline version —
-/// nested `ForEach` + `Button` + `HStack` + a conditional badge + a chain of
-/// modifiers, all as one expression — compiled fine on a fast local Mac but
-/// exceeded the type-checker's time budget on CI's slower runner
-/// (`docs/ci.md`'s troubleshooting notes; the actual failure was `error:
-/// the compiler is unable to type-check this expression in reasonable
-/// time`). Splitting it into its own `View` gives each piece (this row,
-/// `SidebarView.body`) a small expression to check independently instead of
-/// one combinatorially large one. Visual output, accessibility identifiers,
-/// and tap behavior are unchanged from the inline version.
-private struct MailboxRow: View {
-    let accountId: String
-    let mailbox: MailboxRecord
-    let mailboxId: Int64
-    let isSelected: Bool
-    let unreadCount: Int?
-    /// Called with the row's own `SidebarSelection` on tap; `SidebarView`
-    /// both writes `selection` and invokes its `onSelected` callback from
-    /// here, mirroring what the inline `Button` action used to do directly.
-    let onTap: (SidebarSelection) -> Void
-
-    private var mailboxSelection: SidebarSelection {
-        .mailbox(MailboxSelection(accountId: accountId, mailboxId: mailboxId))
-    }
-
-    var body: some View {
-        Button {
-            onTap(mailboxSelection)
-        } label: {
-            HStack {
-                Label(mailbox.displayPath, systemImage: icon(for: mailbox.role))
-                Spacer()
-                if let unreadCount, unreadCount > 0 {
-                    UnreadCountBadge(count: unreadCount)
-                        .accessibilityIdentifier("sidebar.mailbox.\(accountId).\(mailbox.path).unreadBadge")
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .listRowBackground(isSelected ? OtegamiColor.paleBase : nil)
-        .accessibilityIdentifier("sidebar.mailbox.\(accountId).\(mailbox.path)")
-    }
-
-    private func icon(for role: MailboxRoleRecord) -> String {
-        switch role {
-        case .inbox: "tray"
-        case .sent: "paperplane"
-        case .drafts: "doc"
-        case .trash: "trash"
-        case .junk: "exclamationmark.octagon"
-        case .archive: "archivebox"
-        case .flagged: "flag"
-        case .all: "envelope.badge.fill"
-        case .none: "folder"
-        }
-    }
-}
-
-/// M10: unread-count pill for a sidebar row — matches the system Mail app's
-/// look (a filled capsule, not a plain number) closely enough to read as
-/// "standard" rather than a bespoke control. Caps the displayed text at
-/// "99+" rather than ever showing an unbounded number: a three-figure badge
-/// starts fighting the row's trailing edge for space, and "exactly how many
-/// hundred" isn't information worth that cost once it's already "a lot."
-private struct UnreadCountBadge: View {
-    let count: Int
-
-    private var displayText: String {
-        count > 99 ? "99+" : "\(count)"
-    }
-
-    var body: some View {
-        Text(displayText)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(OtegamiColor.accent))
-    }
 }
 
 #if os(macOS)
