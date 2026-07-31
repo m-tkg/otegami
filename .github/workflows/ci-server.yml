@@ -25,6 +25,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  relay-go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server/otegami-relay-go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/otegami-relay-go/go.mod
+          cache-dependency-path: server/otegami-relay-go/go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
   server:
     runs-on: ubuntu-latest
     # otegami-relay's own Package.swift declares swift-tools-version:6.0,
