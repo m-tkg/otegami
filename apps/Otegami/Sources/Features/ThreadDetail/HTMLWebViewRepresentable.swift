@@ -75,6 +75,41 @@ private func makeWebViewConfiguration(cidHandler: CIDSchemeHandler?) -> WKWebVie
     return configuration
 }
 
+/// Setup shared by `makeUIView`/`makeNSView` on both platforms: message
+/// handler registration, translation attachment, delegate wiring, and the
+/// initial content load. Platform-specific chrome (scroll behavior, link
+/// preview, background/opacity, initial hidden state — see
+/// `applyPlatformChrome(to:)` on each platform below) is applied by the
+/// caller *after* this returns; none of these steps depend on that chrome
+/// having been applied first, so the split is safe.
+@MainActor
+private func setUpWebView(
+    _ webView: WKWebView,
+    coordinator: HTMLWebViewCoordinator,
+    translationController: HTMLTranslationController,
+    html: String,
+    allowsExternalContent: Bool,
+    allowsEmbeddedImages: Bool,
+    allowsPlaintextHTTPImages: Bool,
+    autoAdjustColorsInDarkMode: Bool,
+    forceLightBackground: Bool,
+    bottomContentInset: CGFloat
+) {
+    webView.configuration.userContentController.add(coordinator, name: HTMLWebViewCoordinator.heightMessageHandlerName)
+    translationController.attach(to: webView)
+    webView.navigationDelegate = coordinator
+    // C7 バグ修正 (リンクがブラウザで開かない) — `HTMLWebViewCoordinator`
+    // のdoc comment参照。`target="_blank"`リンクの取りこぼし対策の
+    // `uiDelegate`はプラットフォーム共通で必要。
+    webView.uiDelegate = coordinator
+    coordinator.load(
+        html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+        allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
+        autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
+        bottomContentInset: bottomContentInset, into: webView
+    )
+}
+
 #if os(iOS)
 import UIKit
 
@@ -101,11 +136,24 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
+        setUpWebView(
+            webView, coordinator: context.coordinator, translationController: translationController,
+            html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
+            allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
+            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
+            bottomContentInset: bottomContentInset
+        )
+        applyPlatformChrome(to: webView)
+        return webView
+    }
+
+    /// iOS-only chrome applied on top of `setUpWebView`'s shared setup.
+    private func applyPlatformChrome(to webView: WKWebView) {
         // Task #58 (根治): this document's own real content height is now
-        // reported back (`otegamiHeight` message handler, registered below)
-        // and used to size this web view's *actual* frame, up at
-        // `ThreadMessageRow` — so this web view no longer needs (or should
-        // rely on) its own internal scroll surface. Two independent
+        // reported back (`otegamiHeight` message handler, registered by
+        // `setUpWebView`) and used to size this web view's *actual* frame,
+        // up at `ThreadMessageRow` — so this web view no longer needs (or
+        // should rely on) its own internal scroll surface. Two independent
         // scrollers used to be nested (this `WKWebView`'s own `UIScrollView`
         // inside `ThreadDetailView`'s outer `ScrollView`), and on this
         // toolchain the outer one always won the pan gesture, making
@@ -115,9 +163,6 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
         // actually fixes that (see `docs/design-system.md`'s Task #58 note
         // for the full root-cause writeup).
         webView.scrollView.isScrollEnabled = false
-        webView.configuration.userContentController.add(context.coordinator, name: HTMLWebViewCoordinator.heightMessageHandlerName)
-        translationController.attach(to: webView)
-        webView.navigationDelegate = context.coordinator
         // C7 バグ修正 (リンクがブラウザで開かない) — `HTMLWebViewCoordinator`
         // のdoc comment参照。real-device 固有と報告された不具合の有力な原因
         // の1つが `allowsLinkPreview`(既定 true): 実機の 3D/Haptic Touch が
@@ -128,7 +173,6 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
         // 説明と整合する。ピーク・プレビュー自体もこのアプリでは使っていな
         // い機能なので、明示的に無効化する。
         webView.allowsLinkPreview = false
-        webView.uiDelegate = context.coordinator
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.backgroundColor = .clear
@@ -139,13 +183,6 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
         // mechanism) and why hiding only here (this view's *first* load,
         // not every `reloadIfNeeded` reload) is deliberate.
         webView.alpha = 0
-        context.coordinator.load(
-            html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
-            allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
-            autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
-            bottomContentInset: bottomContentInset, into: webView
-        )
-        return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
@@ -184,31 +221,33 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
-        // Task #58 — see the iOS `makeUIView`'s identical comment (this
-        // repo's macOS layout doesn't nest `HTMLMessageView` inside its own
-        // accordion `ScrollView` the way `ThreadDetailView`'s iOS-shared
-        // implementation does today, but registering the same height
-        // channel here keeps both platforms on one code path and leaves
-        // room for macOS to opt into the same real-height sizing later
-        // without another round of WKWebView plumbing).
-        webView.configuration.userContentController.add(context.coordinator, name: HTMLWebViewCoordinator.heightMessageHandlerName)
-        translationController.attach(to: webView)
-        webView.navigationDelegate = context.coordinator
-        // C7 バグ修正 — `allowsLinkPreview`はiOS専用のプロパティなので
-        // macOSにはない。`target="_blank"`リンクの取りこぼし対策の
-        // `uiDelegate`はプラットフォーム共通で必要なので、iOS側と同じく
-        // ここでも設定する。
-        webView.uiDelegate = context.coordinator
-        webView.underPageBackgroundColor = .clear
-        // Task #80 — see the iOS `makeUIView`'s identical comment.
-        webView.alphaValue = 0
-        context.coordinator.load(
+        // Task #58 — see the iOS `applyPlatformChrome`'s identical comment
+        // (this repo's macOS layout doesn't nest `HTMLMessageView` inside
+        // its own accordion `ScrollView` the way `ThreadDetailView`'s
+        // iOS-shared implementation does today, but registering the same
+        // height channel via `setUpWebView` keeps both platforms on one
+        // code path and leaves room for macOS to opt into the same
+        // real-height sizing later without another round of WKWebView
+        // plumbing).
+        setUpWebView(
+            webView, coordinator: context.coordinator, translationController: translationController,
             html: html, allowsExternalContent: allowsExternalContent, allowsEmbeddedImages: allowsEmbeddedImages,
             allowsPlaintextHTTPImages: allowsPlaintextHTTPImages,
             autoAdjustColorsInDarkMode: autoAdjustColorsInDarkMode, forceLightBackground: forceLightBackground,
-            bottomContentInset: bottomContentInset, into: webView
+            bottomContentInset: bottomContentInset
         )
+        applyPlatformChrome(to: webView)
         return webView
+    }
+
+    /// macOS-only chrome applied on top of `setUpWebView`'s shared setup.
+    /// `allowsLinkPreview` and `uiDelegate` wiring are iOS-only /
+    /// platform-common respectively — see `setUpWebView`'s doc comment for
+    /// the `uiDelegate` note; macOS has no `allowsLinkPreview` property.
+    private func applyPlatformChrome(to webView: WKWebView) {
+        webView.underPageBackgroundColor = .clear
+        // Task #80 — see the iOS `applyPlatformChrome`'s identical comment.
+        webView.alphaValue = 0
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
