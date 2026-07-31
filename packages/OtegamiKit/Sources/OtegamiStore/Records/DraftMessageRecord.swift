@@ -57,7 +57,7 @@ public struct DraftMessageRecord: Codable, Equatable, Sendable, FetchableRecord,
     /// resuming it just falls back to the plain-text projection, same as
     /// every draft before this task did. Read by `OpQueueProcessor`'s
     /// `.saveDraft` replay to set `ComposeDraft.htmlBody`, closing the one
-    /// gap `PENDING.md`'s Task #129/#156 follow-up section left open on
+    /// gap the Task #129/#156 follow-up left open on
     /// purpose ("下書きテーブルは他エージェントの担当領域と重ならないよう明示的に
     /// 対象外にした") — resuming a saved draft and pushing it straight to the
     /// server's Drafts mailbox (without reopening it in the Composer first)

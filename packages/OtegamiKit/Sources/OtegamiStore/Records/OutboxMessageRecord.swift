@@ -41,7 +41,7 @@ public struct OutboxMessageRecord: Codable, Equatable, Sendable, FetchableRecord
     /// part) instead of a bare `text/plain` one — the actual SMTP send now
     /// carries the same bold/italic/underline/strikethrough/list/indent
     /// formatting the Composer's rich text editor shows on screen, closing
-    /// the gap `PENDING.md`'s Task #129 follow-up section described (the
+    /// the gap the Task #129 follow-up described (the
     /// formatting used to only affect what `saveDraft()`'s local snapshot
     /// compared, never what actually left over SMTP).
     public var htmlBody: String?

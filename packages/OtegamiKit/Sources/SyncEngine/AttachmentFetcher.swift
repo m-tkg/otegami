@@ -105,8 +105,8 @@ public actor AttachmentFetcher {
     /// Delegates to `OtegamiCore.AttachmentFilename.sanitize` — Task #166
     /// (SEC-A) pulled the logic there so `ComposerView.stageAttachments`
     /// (which found the same untrusted filename reaching `Data.write(to:)`
-    /// unsanitized on the outbox/draft-staging path — see F1/F10 in
-    /// `docs/qa-findings.md`) could share it instead of duplicating it.
+    /// unsanitized on the outbox/draft-staging path) could share it instead
+    /// of duplicating it.
     static func sanitizeFilename(_ filename: String) -> String {
         AttachmentFilename.sanitize(filename)
     }

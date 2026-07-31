@@ -17,8 +17,7 @@ import Foundation
 /// .zshrc"` on a message the victim later forwards could write attacker
 /// bytes anywhere the app process's user account can reach. Pulled out
 /// here (rather than left duplicated, or left only in `SyncEngine`) so
-/// both call sites share one implementation — see `docs/qa-findings.md`
-/// for the finding and fix writeup.
+/// both call sites share one implementation.
 ///
 /// This alone is defense-in-depth, not the whole fix: callers that write
 /// to disk using a sanitized name should *also* verify the resolved URL

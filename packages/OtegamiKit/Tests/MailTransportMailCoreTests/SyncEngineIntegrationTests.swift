@@ -219,8 +219,8 @@ struct SyncEngineIntegrationTests {
 
     @Test("a mailbox's sync failure is recorded against a real server SELECT failure and clears on the next successful sync")
     func mailboxSyncFailureRecordsAgainstRealServerAndClearsOnRecovery() async throws {
-        // docs/qa-findings.md's partial-sync-failure visibility follow-up,
-        // exercised against the real dev Dovecot rather than
+        // Partial-sync-failure visibility, exercised against the real dev
+        // Dovecot rather than
         // `FakeIMAPSession` (`AccountSyncerTests` already covers the same
         // behavior against the fake — this is the "does MailCoreIMAPSession's
         // real SELECT-failure error actually get caught and recorded"

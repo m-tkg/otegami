@@ -297,9 +297,9 @@ struct AccountSyncerTests {
         }
         #expect(threads.count == 1)
 
-        // docs/qa-findings.md's partial-sync-failure visibility follow-up:
-        // the Junk mailbox's SELECT failure above is no longer *silently*
-        // swallowed (bare `continue`) — it's recorded onto that mailbox's
+        // A mailbox SELECT failure (the Junk mailbox above) is no longer
+        // *silently* swallowed (bare `continue`) — it's recorded onto that
+        // mailbox's
         // own row so `MailboxSyncFailuresView`'s sidebar banner can surface
         // it. INBOX, which synced fine, must have neither field set.
         let junkRecord = try #require(

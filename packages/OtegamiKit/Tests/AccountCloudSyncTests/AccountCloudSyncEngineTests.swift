@@ -526,9 +526,9 @@ struct AccountCloudSyncEngineTests {
         #expect(store.currentPayload()?.tombstones.isEmpty == true)
     }
 
-    // MARK: - Actor-reentrancy race (docs/qa-findings.md: intermittent
-    // "just-added account briefly reverts" during back-to-back account
-    // adds)
+    // MARK: - Actor-reentrancy race (docs/architecture.md's Known pitfalls:
+    // intermittent "just-added account briefly reverts" during back-to-back
+    // account adds)
 
     /// Reproduces, deterministically, the lost-update race
     /// `AccountCloudSyncEngine`'s payload lock (see its doc comment) fixes:

@@ -4,7 +4,7 @@ import Testing
 import OtegamiCore
 @testable import OtegamiStore
 
-/// Task #161 (#129/#156のPENDING.mdフォローアップ「下書きのhtmlBody未対応」を
+/// Task #161 (#129/#156のフォローアップ「下書きのhtmlBody未対応」を
 /// 解消): `DraftMessageRecord.htmlBody` (v33 migration) round-trips through
 /// GRDB like every other column — same shape as
 /// `OutboxMessageRecordTests.swift`'s identical coverage for

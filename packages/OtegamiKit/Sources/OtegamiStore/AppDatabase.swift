@@ -488,8 +488,8 @@ extension AppDatabase {
             try db.execute(sql: "UPDATE account SET updatedAt = createdAt WHERE updatedAt IS NULL")
         }
 
-        // v12: per-mailbox sync failure visibility (`docs/qa-findings.md`'s
-        // "部分同期失敗の UI 可視化" follow-up). `AccountSyncer`'s per-mailbox
+        // v12: per-mailbox sync failure visibility (the "部分同期失敗の
+        // UI 可視化" follow-up). `AccountSyncer`'s per-mailbox
         // `do`/`catch` used to swallow one mailbox's sync failure entirely
         // (`continue`, no record anywhere) so the rest of the account's
         // mailboxes weren't blocked — see `MailboxRecord.lastSyncError`'s
@@ -952,7 +952,7 @@ extension AppDatabase {
             }
         }
 
-        // v33 (Task #161, #129/#156のPENDING.mdフォローアップ「下書きの
+        // v33 (Task #161, #129/#156のフォローアップ「下書きの
         // htmlBody未対応」を解消): `DraftMessageRecord.htmlBody`'s doc
         // comment has the full picture — same "NULL for every existing
         // row, no backfill needed" shape as v32's identical column on

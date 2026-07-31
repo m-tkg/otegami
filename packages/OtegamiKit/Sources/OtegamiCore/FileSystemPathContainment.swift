@@ -11,7 +11,7 @@ import Foundation
 /// regardless of what the filename looks like — it's checked immediately
 /// before the write, on the fully-resolved URL, rather than trusting that
 /// every filename-producing code path upstream got sanitization right
-/// (today, and in any future change). See `docs/qa-findings.md`.
+/// (today, and in any future change).
 public enum FileSystemPathContainment {
     /// `true` iff `url`, once standardized, is a strict descendant of
     /// `directory` (also standardized) — i.e. `directory`'s path is a

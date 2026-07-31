@@ -14,7 +14,7 @@ import OtegamiCore
 /// 帰ってね」以降の過去のやり取りが要約に混入する症状が a43c07e (Task
 /// #132のプロンプト強化) 後も継続した — 実機の`bodyRecord.plainText`が
 /// 本物のtext/plainパートの内容とは微妙に異なる形状の合成レンダリング
-/// だった疑いが濃厚 (`docs/qa-findings.md`参照)。
+/// だった疑いが濃厚。
 ///
 /// `CalendarInviteMIMEParsingTests`と同じ方針: `MCOMessageParser(data:)`が
 /// 生RFC822バイト列をネットワーク・dev mailstack無しでローカルに解析

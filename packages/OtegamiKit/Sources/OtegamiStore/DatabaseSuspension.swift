@@ -4,7 +4,8 @@ import GRDB
 /// Task #192 (実機クラッシュ解析: `EXC_CRASH`/`SIGKILL`,
 /// `RUNNINGBOARD`/`0xDEAD10CC` — see `AppDatabase.makeConfiguration
 /// (observesSuspensionNotifications:)`'s doc comment for the full
-/// root-cause writeup and `docs/qa-findings.md`'s matching entry).
+/// root-cause writeup and `docs/architecture.md`'s matching Known
+/// pitfalls entry).
 ///
 /// Once `Database.suspendNotification` has fired for a `DatabasePool`
 /// configured with `observesSuspensionNotifications = true`, GRDB fails any

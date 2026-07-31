@@ -119,8 +119,7 @@ struct MessageRelocationReconciliationTests {
         #expect(inboxThreadsAfterSync == [threadId])
     }
 
-    /// Task #127 (`PENDING.md`「Task #120」節の follow-up 候補、着手):
-    /// before this task, `ThreadDetailView`'s own archive/junk/delete
+    /// Task #127: before this task, `ThreadDetailView`'s own archive/junk/delete
     /// (本文画面フッターツールバーの "…" メニュー) was a separate,
     /// hand-rolled implementation that never called `MessageRemoval.commit`
     /// at all — so it never got this same immediate-relocation behavior.

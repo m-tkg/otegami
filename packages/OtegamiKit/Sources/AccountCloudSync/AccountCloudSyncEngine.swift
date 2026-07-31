@@ -116,7 +116,8 @@ public actor AccountCloudSyncEngine {
     /// already loaded (now stale) and overwrites the store with it,
     /// silently discarding the concurrent push. Confirmed as the root cause
     /// of the intermittent "just-added account briefly reverts to a stale
-    /// cloud copy" failures QA sweeping surfaced (`docs/qa-findings.md`) —
+    /// cloud copy" failures QA sweeping surfaced (see `docs/architecture.md`'s
+    /// Known pitfalls) —
     /// reproduced deterministically in
     /// `AccountCloudSyncEngineTests.concurrentPushDuringReconcileDoesNotLoseTheUpdate`
     /// by pausing a fake `local.allAccountSnapshots()` mid-`reconcile()` and

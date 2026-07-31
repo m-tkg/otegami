@@ -5,7 +5,7 @@ import OtegamiCore
 @testable import OtegamiStore
 
 /// Task #156 (作成画面リッチテキスト化のHTML送信配線): covers the schema-level
-/// piece of the follow-up `PENDING.md`'s Task #129 section described —
+/// piece of the Task #129 follow-up —
 /// `OutboxMessageRecord.htmlBody` (v32 migration) round-trips through GRDB
 /// like every other column, so `OpQueueProcessor`'s `.send` replay actually
 /// sees the HTML a formatted `ComposerView.send()` wrote, not a value lost

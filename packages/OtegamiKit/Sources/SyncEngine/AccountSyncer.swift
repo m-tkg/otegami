@@ -184,8 +184,8 @@ public actor AccountSyncer {
     /// case calls `startIdleLoops(for:)` on every return to foreground),
     /// which cancels and replaces `idleTask` — resetting `runIdleLoop`'s
     /// local `backoffSeconds` back to 5 each time. Before this fix, an
-    /// account stuck in a Yahoo-Japan-style temporary auth lock
-    /// (`docs/qa-findings.md`, Task #187) would reconnect within 5s of
+    /// account stuck in a Yahoo-Japan-style temporary auth lock (see
+    /// `docs/architecture.md`'s Known pitfalls, Task #187) would reconnect within 5s of
     /// every foreground return *on top of* its own 5s–300s in-foreground
     /// backoff loop — one of the "retries that likely extend the lock
     /// ourselves" contributors alongside the relay's short backoff
@@ -344,9 +344,9 @@ public actor AccountSyncer {
             // attempt with an immediate record-on-failure otherwise (manual
             // pull-to-refresh's `.all` scope). Either way, any failure that
             // ultimately propagates out of this `do` just moves on to the
-            // next mailbox (`docs/qa-findings.md`'s "部分同期失敗の UI可視化"
-            // — one mailbox's failure must not cost every other mailbox its
-            // threading pass below).
+            // next mailbox (partial-sync-failure visibility: one mailbox's
+            // failure must not cost every other mailbox its threading pass
+            // below).
             do {
                 try await syncMailboxWithRetry(mailboxId: mailboxId, autoRetry: autoRetry) {
                     progress.selectedMailboxPath = info.path

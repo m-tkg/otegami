@@ -249,9 +249,9 @@ public actor MailboxSyncer {
         // having CONDSTORE in the first place.
         try Task.checkCancellation()
         // Task #194: which path this pass actually takes is exactly what a
-        // real-device Console pull needs to confirm — see docs/qa-findings.md's
-        // Task #194 entry for why this can't be answered from the dev
-        // mailstack alone (Dovecot there advertises CONDSTORE).
+        // real-device Console pull needs to confirm — this can't be
+        // answered from the dev mailstack alone (Dovecot there advertises
+        // CONDSTORE).
         Self.logger.notice(
             "flagSync: \(mailboxPath, privacy: .public) condstore=\(capabilities.contains(.condstore), privacy: .public)"
         )

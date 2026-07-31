@@ -42,7 +42,7 @@ public protocol NotificationPermissionChecking: Sendable {
 /// previously the app never called `UNUserNotificationCenter
 /// .requestAuthorization` at all, so push notifications silently never
 /// displayed even once APNs delivered them; see `docs/verify.md`'s "M9
-/// 追補" section and `docs/qa-findings.md`):
+/// 追補" section):
 ///
 /// - `.authorized` (already granted — e.g. re-enabling push after an
 ///   earlier session, or notifications were authorized some other way):

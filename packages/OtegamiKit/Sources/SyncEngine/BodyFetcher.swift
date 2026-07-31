@@ -261,10 +261,11 @@ public actor BodyFetcher {
             // The existence check itself failed (disconnect, timeout, the
             // server rejecting `UID FETCH` outright, ...) — an inconclusive
             // check is never treated as confirmation of staleness. This is
-            // the safety condition a past incident (`docs/qa-findings.md`'s
-            // note on an empty refetch once wiping a whole mailbox) made
-            // load-bearing: only delete/repoint on a *successful* existence
-            // check that came back empty, never on "the check itself broke".
+            // the safety condition docs/architecture.md's Known pitfalls
+            // (an empty refetch must never be mistaken for "everything
+            // vanished") makes load-bearing: only delete/repoint on a
+            // *successful* existence check that came back empty, never on
+            // "the check itself broke".
             return .notApplicable
         }
         guard !stillExists else {

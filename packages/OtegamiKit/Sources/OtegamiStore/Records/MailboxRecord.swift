@@ -132,9 +132,9 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     /// later sync of this mailbox succeeds, so a lingering non-`nil` value
     /// always reflects the *current* state, not just history. Previously,
     /// per-mailbox sync failures were swallowed entirely (`AccountSyncer`'s
-    /// per-mailbox `do`/`catch` just `continue`d) — see `docs/qa-findings.md`
-    /// and `docs/verify.md` on why that made a real-device partial-sync bug
-    /// hard to diagnose. Surfaced to the user via `MailboxSyncFailuresView`
+    /// per-mailbox `do`/`catch` just `continue`d) — see `docs/verify.md` on
+    /// why that made a real-device partial-sync bug hard to diagnose.
+    /// Surfaced to the user via `MailboxSyncFailuresView`
     /// (sidebar banner), the same "record it, don't silently continue"
     /// pattern `opQueue.lastError`/`FailedOperationsView` already established
     /// for queued-operation failures.

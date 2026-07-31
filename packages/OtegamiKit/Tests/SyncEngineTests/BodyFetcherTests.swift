@@ -396,8 +396,8 @@ struct BodyFetcherTests {
         // The FETCH itself fails with a serverError shape, *and* the
         // follow-up existence check (`fetchEnvelopes`) can't complete
         // either — e.g. the connection dropped in between. This must never
-        // be read as "confirmed gone" — the docs/qa-findings.md incident
-        // this safety condition guards against is an empty refetch once
+        // be read as "confirmed gone" — the docs/architecture.md Known
+        // pitfall this safety condition guards against is an empty refetch
         // wiping out a whole mailbox.
         let script = FakeIMAPSession.Script(
             failFetchBody: ["INBOX": [9: .serverError(underlyingDescription: "NO [error 19]")]],
