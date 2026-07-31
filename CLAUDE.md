@@ -6,8 +6,9 @@
 
 ## UI デザイン方針
 
-iOS UI の構造・情報設計は [`design_handoff_ios_mail/README.md`](design_handoff_ios_mail/README.md)
-(Claude Design 作成のハンドオフ) を参照すること。**採用済みの選択**:
+iOS UI の構造・情報設計は [`docs/design-system.md`](docs/design-system.md)
+を参照すること (採用済みの情報設計・デザイントークンの使い方をまとめた
+現状のリファレンス)。**採用済みの選択**:
 
 - **情報設計: 1a** (統合受信トレイ＋アカウント絞り込みチップ)。iOS の
   compact 幅向け。**iOS の regular 幅 (iPad 等) は 2 ペイン
@@ -16,24 +17,18 @@ iOS UI の構造・情報設計は [`design_handoff_ios_mail/README.md`](design_
   **下部タブバー3つ (メール/検索/設定) は新画面構成で廃止済み** — 左上の
   ハンバーガーメニュー (`OtegamiRootView`/`MailScreenView`/
   `HamburgerMenuContainer`) がフォルダ切替＋設定を、ヘッダの検索ボタン
-  (`SearchScreenView`) が検索を担う。詳細・経緯は `docs/design-system.md`
-  の「新画面構成」節参照。
+  (`SearchScreenView`) が検索を担う。詳細は `docs/design-system.md` 参照。
 - **一覧レイアウト: 1d** (標準3行＋アカウント色の左罫線3px)
 - **操作モデル: 1g + 1h + 1i** (スワイプ割り当て／長押し一括選択／詳細
   画面の翻訳インタラクション)
-- **翻訳機能: 実装する** (Apple Foundation Models によるオンデバイス翻訳。
-  別フェーズで実装)
+- **翻訳機能: 実装済み** (Apple Foundation Models によるオンデバイス翻訳。
+  詳細は `docs/translation.md`)
 
-ワイヤーフレームは **lofi** (灰色バー＝テキスト、水色＝強調のプレース
-ホルダ)。実装時に参照してよいのはレイアウトと動線のみで、**スタイル
+実装時に UI コードで参照してよいのはレイアウトと動線であり、**スタイル
 (色・タイポ・余白・罫線) は `apps/Otegami/Sources/DesignSystem/` の
 トークンを使うこと。新しい色をその場で追加しない** — 必要な色が無い
 場合は先に `docs/design-system.md` を見て、無ければトークンを追加する
-議論をしてから使う。詳細は `docs/design-system.md` を参照。
-
-`design_handoff_ios_mail/` には元ハンドオフの `wireframes-standalone.html`
-(2.9MB) を意図的に含めていない — 理由は `design_handoff_ios_mail/NOTE.md`
-参照。
+議論をしてから使う。
 
 ## ビルド・テスト
 
@@ -58,7 +53,7 @@ make ios     # iOS Simulator ビルド
 reasonable time」で落ちた前例がある。ローカルの Xcode より CI ランナー
 の方が型チェックが遅く／挙動が異なることがあり、**ローカルで
 `-warn-long-expression-type-checking` の警告がゼロでも CI で落ちうる**。
-詳細と教訓は [`docs/ci.md`](docs/ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト-2026-07-25)
+詳細と教訓は [`docs/ci.md`](docs/ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト)
 と [CONTRIBUTING.md](CONTRIBUTING.md#a-note-on-swiftui-views-and-ci) 参照。
 
 実践的なルール:
@@ -87,6 +82,9 @@ reasonable time」で落ちた前例がある。ローカルの Xcode より CI 
   - 共有ファイルは `git add -p` (または個別パス指定) で自分のハンクのみ。
   - `git stash` / `git reset --hard` は使わない (配信用 worktree の定例
     reset は例外)。
+  - push は plain push。拒否されたら fetch して自分のコミットを載せ替え。
+- `run_in_background` 付きの Bash は `.claude/settings.json` の hook で
+  全面ブロックされる — すべてフォアグラウンドで実行し、完了を待つ。
 
 ### ステージ領域は共有されている — 自分専用のインデックスを使うこと
 
@@ -126,9 +124,6 @@ git commit --only -- path/to/file.swift
 
 **どちらの方式でも、コミット直前に `git diff --cached` を読んで自分の
 変更だけが入っていることを目で確認する。**
-  - push は plain push。拒否されたら fetch して自分のコミットを載せ替え。
-- `run_in_background` 付きの Bash は `.claude/settings.json` の hook で
-  全面ブロックされる — すべてフォアグラウンドで実行し、完了を待つ。
 
 ## 検証の実際 (シミュレータの既知不調)
 
@@ -162,17 +157,13 @@ git commit --only -- path/to/file.swift
 
 ## ユーザー確認・保留事項の運用
 
-- ユーザー本人にしかできない作業は `HUMAN_TASKS.md` に追記する。技術的な
-  未検証事項は `PENDING.md`。開発はそれらで止めない。
-- **どちらも「今アクティブな項目だけを残す」台帳** — 完了した項目は
-  チェックを付けたまま残さず削除する (履歴は git log で追える)。放置
-  すると数百〜千行超の完了済み経緯ログに肥大化し、Task #179 で一度
-  1900行超の `PENDING.md` を圧縮する羽目になった。新しい項目を追記する
-  ときも、要点 (何が未検証で次に何をすればいいか) だけを書き、設計判断の
-  理由・調査の経緯は `docs/design-system.md`/`docs/qa-findings.md` 等の
-  該当節に書いてそちらを参照させる。
+- `PENDING.md`/`HUMAN_TASKS.md` のような独立した「未確認事項」台帳は
+  運用しない — 放置すると数百〜千行超の完了済み経緯ログに肥大化しやすく、
+  実際そうなったため廃止した。本当に残すべき既知の制限・未検証事項は、
+  該当する `docs/*.md` に「既知の制限」として直接書く (履歴・調査経緯は
+  git log で追える)。
 - 実機での動作確認はユーザーの分業 — エージェントは確認ポイントを
-  具体的に渡す。
+  該当ドキュメントまたはコミットメッセージ/PR で具体的に渡す。
 
 ## このリポジトリでの注意
 
@@ -192,12 +183,13 @@ git commit --only -- path/to/file.swift
 
 ## 主要ドキュメントの地図
 
-- `docs/design-system.md` — UI の決定事項・各改修 (Task #NN) の経緯
+- `docs/architecture.md` — モノレポ構成・同期エンジンの設計・既知の落とし穴
+- `docs/design-system.md` — UI の情報設計・デザイントークンの使い方
 - `docs/verify.md` — 検証手順とシミュレータ既知不調
-- `docs/qa-findings.md` — 同期まわりのバグ調査記録 (expunge 検出等)
-- `docs/translation.md` — 翻訳・要約 (ガードレール寛容化、引用分離)
+- `docs/translation.md` — 翻訳・要約エンジンの設計 (ガードレール寛容化、引用分離)
 - `docs/icloud-sync.md` — アカウント iCloud 同期と実機汚染事故の教訓
-- `docs/oauth-setup.md` — Google OAuth (スコープ、再認証、診断画面)
+- `docs/oauth-setup.md` — Google/Microsoft OAuth (スコープ、再認証、診断画面)
+- `docs/relay-deployment.md` — プッシュ通知リレーのデプロイと設定値
 - `docs/xcode-cloud.md` — TestFlight 配布 (tag トリガー運用)
 - `docs/ota-deploy.md` — OTA 配信の仕組み
 - `docs/default-mail-app.md` — mailto / mail-client entitlement
