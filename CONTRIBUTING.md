@@ -108,6 +108,9 @@ of examples.
 - New behavior should come with test coverage (unit tests in
   `packages/OtegamiKit/Tests`, or a `scripts/verify-*.sh` addition for
   end-to-end app behavior) where practical.
+- If your change adds or updates a third-party dependency (Swift package,
+  vendored font, etc.), update [NOTICE](NOTICE) with its license type and
+  copyright notice in the same PR.
 
 ## Reporting bugs / security issues
 
