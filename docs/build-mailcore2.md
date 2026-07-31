@@ -163,14 +163,15 @@ make mailstack-down
 平文 (`localhost:1143`) ・TLS (`OTEGAMI_TEST_IMAP_TLS=1`, `localhost:1993`)
 の両方で 3 テスト全て green。
 
-### 実装中に見つかった Dovecot 側の設定不備 (修正済み)
+### Dovecot 側の設定について
 
-`dev/mailstack` の Dovecot はベースイメージの既定設定により、`disable_plaintext_auth`
-相当の設定 (Dovecot 2.4 系では設定名が `auth_allow_cleartext` に変更されている) が
-有効で、平文ポート (`1143`) での `LOGIN` が `NO [PRIVACYREQUIRED]` で拒否されていた。
-`docs/dev-mailstack.md` は「IMAP: localhost:1143」を平文で使える前提で書かれていた
-ため、`dev/mailstack/dovecot/conf.d/auth.conf` に `auth_allow_cleartext = yes` を
-追加して整合させた (TLS ポート `1993` は元々問題なく動作していた)。
+`dev/mailstack` の Dovecot はベースイメージの既定設定のままだと
+`disable_plaintext_auth` 相当の設定 (Dovecot 2.4 系では設定名が
+`auth_allow_cleartext`) が有効になり、平文ポート (`1143`) での `LOGIN` が
+`NO [PRIVACYREQUIRED]` で拒否される。`docs/dev-mailstack.md` が前提とする
+「IMAP: localhost:1143 で平文接続できる」を成立させるため、
+`dev/mailstack/dovecot/conf.d/auth.conf` に `auth_allow_cleartext = yes` を
+設定している (TLS ポート `1993` はこの設定に関係なく動作する)。
 
 ### MailCore2 アダプタ実装で踏んだ落とし穴 (`MailCoreIMAPSession+Mapping.swift` にも記載)
 
