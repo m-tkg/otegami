@@ -84,8 +84,7 @@ let package = Package(
 
         // DTOs shared between the app and the push relay server. Linux-compatible.
         .target(
-            name: "OtegamiRelayAPI",
-            dependencies: ["OtegamiCore"]
+            name: "OtegamiRelayAPI"
         ),
 
         // Locks the Foundation Codable wire format to the Go relay DTOs in
@@ -105,6 +104,7 @@ let package = Package(
         .target(
             name: "MailTransportMailCore",
             dependencies: [
+                "OtegamiCore",
                 "MailTransport",
                 .product(name: "MailCore", package: "mailcore2"),
             ]
