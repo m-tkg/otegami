@@ -164,4 +164,66 @@ struct WatchReconcilerTests {
         let watchIds = WatchReconciler.watchIdsToDeleteForDisable(serverWatches: [], localWatchMap: [:])
         #expect(watchIds.isEmpty)
     }
+
+    // MARK: - shouldAttemptReconcile(now:lastFailureDate:failureBackoffInterval:)
+    // Task #210: the daily `watchReconcileInterval` used to gate the `GET
+    // /v1/watches` fetch itself on staleness — exactly what let a relay-side
+    // watch wipe (Task #208's schema swap) go unrepaired for up to 24h,
+    // since there was no local signal anything was wrong (`accountWatchMap`
+    // stayed populated with now-dead watch ids) and nobody re-asked the
+    // relay in the meantime. These tests document the replacement: the
+    // fetch itself is attempted regardless of how recently the last
+    // *successful* pass ran ("前回実行から間もない" no longer appears as a
+    // parameter at all, by design — see `shouldAttemptReconcile`'s doc
+    // comment) — the "やることがある/ない" distinction is `WatchReconciler
+    // .plan`'s job (already covered above: `deletesOrphanedWatch`/
+    // `registersMissingWatch`/etc. are "やることがある", `noOpWhenEverythingAgrees`
+    // is "やることが無い" — `plan` runs unconditionally on every fetch this
+    // suite proves is unconditionally attempted). What's left to throttle is
+    // retrying a fetch that just failed, tested below.
+
+    @Test("no prior failure — always attempted, however recently the last successful pass ran")
+    func attemptsWhenNoPriorFailure() {
+        let now = Date()
+        #expect(WatchReconciler.shouldAttemptReconcile(now: now, lastFailureDate: nil, failureBackoffInterval: 300))
+    }
+
+    @Test("relay unreachable a moment ago — backed off, not attempted again immediately")
+    func doesNotAttemptRightAfterAFailure() {
+        let now = Date()
+        let justFailed = now.addingTimeInterval(-1)
+        #expect(!WatchReconciler.shouldAttemptReconcile(now: now, lastFailureDate: justFailed, failureBackoffInterval: 300))
+    }
+
+    @Test("relay unreachable, but the backoff interval has fully elapsed — attempted again")
+    func attemptsAgainOnceBackoffElapses() {
+        let now = Date()
+        let longAgo = now.addingTimeInterval(-301)
+        #expect(WatchReconciler.shouldAttemptReconcile(now: now, lastFailureDate: longAgo, failureBackoffInterval: 300))
+    }
+
+    @Test("failures keep repeating across an outage — each one re-arms the backoff so the next foreground still holds off")
+    func repeatedFailuresKeepBackingOff() {
+        // Simulates `AppEnvironment.reconcilePushWatchesIfNeeded()` across
+        // several foreground events during a relay outage: every attempt
+        // that's allowed to run fails, records `now` as the new
+        // `lastFailureDate`, and the very next foreground (arriving well
+        // inside the backoff window) must still be held off — an outage
+        // longer than one backoff window must not degrade into hitting the
+        // relay on every single foreground for its whole duration.
+        var lastFailureDate: Date?
+        let backoff: TimeInterval = 300
+        var simulatedNow = Date()
+
+        for _ in 0..<5 {
+            #expect(WatchReconciler.shouldAttemptReconcile(now: simulatedNow, lastFailureDate: lastFailureDate, failureBackoffInterval: backoff))
+            // The attempt runs and fails.
+            lastFailureDate = simulatedNow
+            // Next foreground arrives well before the backoff elapses.
+            simulatedNow = simulatedNow.addingTimeInterval(10)
+            #expect(!WatchReconciler.shouldAttemptReconcile(now: simulatedNow, lastFailureDate: lastFailureDate, failureBackoffInterval: backoff))
+            // Advance past the backoff window before the loop's next attempt.
+            simulatedNow = simulatedNow.addingTimeInterval(backoff)
+        }
+    }
 }

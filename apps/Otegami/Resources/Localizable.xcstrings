@@ -2691,12 +2691,12 @@
         }
       }
     },
-    "各アカウントのプッシュ通知 watch の状態です。停止しているアカウントは再登録できます。": {
+    "各アカウントのプッシュ通知 watch の状態です。停止しているアカウント、未登録のアカウントは登録し直せます。": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Each account's push-notification watch status. A stopped account can be re-registered."
+            "value": "Each account's push-notification watch status. A stopped or not-registered account can be re-registered."
           }
         }
       }
@@ -2707,6 +2707,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Re-register"
+          }
+        }
+      }
+    },
+    "登録": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Register"
           }
         }
       }

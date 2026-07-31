@@ -740,10 +740,13 @@ struct RootView: View {
             environment.refreshBadgeObservation()
             // M9 follow-up (実機バグ1): self-heals relay watch drift
             // (deleted-account watches left over from a failed best-effort
-            // `DELETE`, or a local account missing its watch) — throttled
-            // internally to ~once/day, so calling this unconditionally on
-            // every foreground is cheap (`AppEnvironment
-            // .reconcilePushWatchesIfNeeded()`'s doc comment).
+            // `DELETE`, or a local account missing its watch) — the `GET
+            // /v1/watches` fetch itself runs on every single foreground
+            // unconditionally (Task #210: a daily-only fetch left a
+            // relay-side watch wipe unrepaired for up to 24h — see
+            // `AppEnvironment.reconcilePushWatchesIfNeeded()`'s doc
+            // comment), throttled only against retrying a fetch that just
+            // failed.
             await environment.reconcilePushWatchesIfNeeded()
             // Task #31 (docs/roadmap.md, さっき読んだメールも起動し直すと読み込みが
             // 入る): background-prefetches bodies for the unified inbox's

@@ -167,4 +167,49 @@ public enum WatchReconciler {
         watchIds.formUnion(localWatchMap.values)
         return watchIds
     }
+
+    /// Task #210 (実機バグ3: Task #208 のリレー・スキーマ入れ替えで全 watch
+    /// が破棄された後、通知が最大24時間止まったまま): whether
+    /// `AppEnvironment.reconcilePushWatchesIfNeeded()` should attempt a
+    /// `GET /v1/watches` call right now.
+    ///
+    /// Deliberately has **no parameter for how recently the last
+    /// *successful* reconcile pass ran** — that was exactly Task #208's
+    /// bug. The old `watchReconcileInterval` (~once/day) gated the fetch
+    /// itself on staleness alone, so a relay that lost every watch (a
+    /// server-side schema migration, not any client-visible event) stayed
+    /// unrepaired until the throttle happened to expire, up to 24h later.
+    /// There is no way to know locally whether the relay still agrees with
+    /// this device without asking it — `AppEnvironment`'s local
+    /// `accountWatchMap` cache is exactly the kind of state a server-side
+    /// wipe leaves stale-but-populated (see `docs/architecture.md`'s Task
+    /// #210 note for why a local-only "is my map empty?" heuristic would
+    /// have missed this specific incident), so gating the fetch on
+    /// anything other than "did the last attempt just fail" reintroduces
+    /// the same class of bug.
+    ///
+    /// `GET /v1/watches` itself is treated as cheap enough to run on every
+    /// foreground unconditionally (same cadence as `syncAllAccountsOnce()`,
+    /// which does far more per foreground) — `WatchReconciler.plan` is a
+    /// pure, in-memory diff, so the only real cost is the one network round
+    /// trip, and an empty resulting `Plan` (the common, healthy case) costs
+    /// nothing further.
+    ///
+    /// What *does* still need throttling is retrying a fetch that just
+    /// failed: a relay that's unreachable right now (down, network error,
+    /// ...) shouldn't get hit again on every single foreground while the
+    /// user keeps unlocking/reopening the app during the outage — that's
+    /// what `lastFailureDate`/`failureBackoffInterval` are for. Each
+    /// failed attempt should re-record `lastFailureDate` as "now" (see
+    /// `AppEnvironment.reconcilePushWatchesIfNeeded()`), so consecutive
+    /// failures keep pushing the next retry back rather than retrying every
+    /// foreground for the whole duration of an outage.
+    public static func shouldAttemptReconcile(
+        now: Date,
+        lastFailureDate: Date?,
+        failureBackoffInterval: TimeInterval
+    ) -> Bool {
+        guard let lastFailureDate else { return true }
+        return now.timeIntervalSince(lastFailureDate) >= failureBackoffInterval
+    }
 }

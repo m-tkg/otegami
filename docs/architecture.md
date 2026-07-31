@@ -646,3 +646,58 @@ ground truth として自動的に watch を再登録するため、ユーザー
 いるのはこのため — 新しい種別が本当に必要なら、先にアプリ側の enum
 を `default: .connectionError` 相当のフォールバックを持つ形に変更して
 から、リレー側で新しい値を返し始めること。
+
+**追記 (Task #210: 実機バグ3、Task #208 配信で実際に通知が最大24時間
+止まった件)。** 上の「**既存 watch 行の扱い**」節が「アプリ側
+`WatchReconciler` が起動/フォアグラウンド時に `GET /v1/watches` を
+ground truth として自動的に watch を再登録するため、ユーザーの手動操作
+は不要」と書いていたのは楽観的すぎた。実際に Task #208 のスキーマ入れ
+替えをデプロイしたところ、ユーザーが両デバイスでアプリを開いても
+リレー側の `watch` テーブルが0件のまま (通知が届かない状態が継続) に
+なった。
+
+原因は `AppEnvironment.reconcilePushWatchesIfNeeded()` 側にあった:
+`GET /v1/watches` の呼び出しそのものを `watchReconcileInterval` (1日
+1回) で絞っていたため、前回成功した reconcile パスから24時間経つまで
+は次のフォアグラウンド復帰でも一切リレーに問い合わせず、結果として
+「リレー側で watch が全滅している」という異常状態にすら気づけなかった。
+ローカルの `accountWatchMap` (accountId→watchId のキャッシュ) は
+Task #208 のようなリレー側だけのスキーマ移行では一切更新されない
+ため、「ローカルの記録が空かどうか」だけを見る素朴なチェックでは
+この事象を検出できない — 移行後もローカルにはそれっぽい (だが実体は
+もう存在しない) watchId が残ったままになるため。
+
+**対策 (`packages/OtegamiKit/Sources/PushRelayClient/WatchReconciler
+.swift` の `shouldAttemptReconcile(now:lastFailureDate:
+failureBackoffInterval:)`、`apps/Otegami/Sources/AppEnvironment.swift`
+の `reconcilePushWatchesIfNeeded()`)**: `GET /v1/watches` の取得自体を
+毎回のフォアグラウンド復帰で無条件に行うよう変更し (`WatchReconciler
+.plan` は純粋関数でコストは通信1回だけ、`syncAllAccountsOnce()` が
+毎回のフォアグラウンドで行っている実作業に比べれば軽い、という判断)、
+古い「1日1回」の日次スロットルは撤去した。代わりに導入したのは
+「直前の取得が*失敗*した場合だけ」5分間バックオフする仕組み
+(`PushSettingsStore.lastWatchReconcileFailureDate`) — リレーが本当に
+落ちている間、フォアグラウンド復帰のたびに叩き続けて連打にならない
+ようにするための、性質の異なるスロットル。前回の**成功**からの経過
+時間はこの判断に一切関与しない (関数のシグネチャに意図的にそのような
+パラメータを持たせていない) — それこそが今回の不具合の原因だったため。
+
+**ローカルの `accountWatchMap` が空かどうかだけを見て日次スロットルを
+バイパスする」という狭い対策は採用しなかった** — 上述の通り、今回の
+実際のインシデントはローカルの記録が空ではなく (Task #208 はサーバ側
+だけの移行なので)、この対策では検出できなかったはず。「リレーに直接
+聞く」以外に ground truth を得る手段が無い以上、フェッチ自体を条件
+付きで省略するアプローチは根本的に同じ不具合を再発させ得ると判断した。
+
+**手動回復導線 (`PushWatchStatusSection`/`PushWatchStatusRow`,
+Task #173 由来)** も合わせて拡張した: 従来は `.stopped` 行にしか
+「再登録」ボタンが無く、`.notRegistered` (今回のようにリレー側の
+watch が全滅した直後、全アカウントがこの状態になる) には手動での
+回復手段が画面上に一切無かった。`reregisterWatch(for:)` は
+削除対象が無くても安全に動作するため、同じボタンを `.notRegistered`
+行にも表示するようにした (ラベルは「再登録」ではなく「登録」—
+リレーが一度も watch を持ったことが無い状態に「re-」は不適切なため)。
+これは同時に「見える化」も兼ねる: `PushNotificationSettingsView` は
+画面を開くたびに `GET /v1/watches` を取得し直して行を再構築するため、
+リレー側の watch 全滅は次にこの画面を開いた瞬間に全行が「未登録」と
+表示される形で既に可視化されている。

@@ -2853,10 +2853,13 @@ final class AppEnvironment {
         case relayRejectedWatch
     }
 
-    /// Throttle for `reconcilePushWatchesIfNeeded()` — see that method's
-    /// doc comment for why a full reconcile pass doesn't need to run on
-    /// every single foreground.
-    private static let watchReconcileInterval: TimeInterval = 60 * 60 * 24
+    /// Task #210 backoff after a *failed* `GET /v1/watches` attempt — see
+    /// `reconcilePushWatchesIfNeeded()`'s doc comment. Deliberately much
+    /// shorter than the old daily `watchReconcileInterval` this replaces:
+    /// this only protects against hammering a relay that's *currently*
+    /// unreachable across rapid foreground/background cycles, not against
+    /// running the (cheap) fetch itself when everything is healthy.
+    private static let watchReconcileFailureBackoffInterval: TimeInterval = 60 * 5
 
     /// M9 follow-up (実機バグ1: 削除済みアカウントの watch がリレーに残り
     /// 通知が届き続ける): `unregisterWatch`'s `DELETE` is (and stays)
@@ -2879,28 +2882,54 @@ final class AppEnvironment {
     ///   - the local accountId→watchId map is repaired to match the
     ///     relay wherever it disagrees — no network call needed for that
     ///     part, just local bookkeeping.
-    /// Throttled to roughly once a day (`PushSettingsStore
-    /// .lastWatchReconcileDate`) rather than running on every single
-    /// foreground — once healed, this shouldn't need to run often, and a
-    /// `GET` plus up to one request per drifted account on every
-    /// foreground would be wasteful. A relay that's unreachable right now
-    /// just means this quietly no-ops and tries again next time the
-    /// throttle allows it — same "best-effort, no user-visible failure"
-    /// posture as the rest of this file's push plumbing.
+    ///
+    /// **Task #210** (実機バグ3: Task #208 のリレー・スキーマ入れ替えで
+    /// リレー側の watch テーブルが空になった後、両デバイスとも通知が
+    /// 最大24時間止まったまま): this used to throttle the `GET /v1/watches`
+    /// fetch itself to roughly once a day (`PushSettingsStore
+    /// .lastWatchReconcileDate`), reasoning that once healed this shouldn't
+    /// need to run often. That reasoning missed the case where the *relay*
+    /// silently loses its watches independent of anything the client did —
+    /// the local `accountWatchMap` cache stayed populated (a server-side
+    /// migration doesn't touch it), so there was no local signal that
+    /// anything was wrong, and the daily gate meant nobody asked the relay
+    /// again for up to 24h. See `docs/architecture.md`'s Task #210 note for
+    /// the full incident and why a narrower "only bypass the throttle when
+    /// the local map looks empty" fix wouldn't have caught this specific
+    /// case either (the map wasn't empty, just stale).
+    ///
+    /// Fixed by no longer gating the fetch on staleness at all — `GET
+    /// /v1/watches` now runs on every foreground unconditionally, same
+    /// cadence as `syncAllAccountsOnce()` (which does far more real work
+    /// per foreground already). `WatchReconciler.plan` is a pure in-memory
+    /// diff, so an empty result (the common, healthy case) costs nothing
+    /// beyond that one request. What still needs throttling is retrying a
+    /// fetch that just *failed* — `WatchReconciler.shouldAttemptReconcile`
+    /// backs that off via `PushSettingsStore.lastWatchReconcileFailureDate`
+    /// so a relay outage doesn't get hit on every single foreground for as
+    /// long as it lasts.
     func reconcilePushWatchesIfNeeded() async {
         guard isPushEnabled else { return }
-        if let last = pushSettings.lastWatchReconcileDate, Date().timeIntervalSince(last) < Self.watchReconcileInterval {
-            return
-        }
+        guard WatchReconciler.shouldAttemptReconcile(
+            now: Date(),
+            lastFailureDate: pushSettings.lastWatchReconcileFailureDate,
+            failureBackoffInterval: Self.watchReconcileFailureBackoffInterval
+        ) else { return }
         guard let baseURL = RelayURLConfig.value,
               let deviceSecret = try? pushSettings.deviceSecret()
         else { return }
         guard let serverWatches = try? await pushRelayClient.listWatches(baseURL: baseURL, deviceSecret: deviceSecret) else {
+            // Records the failure so the next few foregrounds back off
+            // rather than re-hitting an unreachable relay immediately —
+            // same "best-effort, no user-visible failure" posture as the
+            // rest of this file's push plumbing, just no longer silent
+            // about *when* to retry.
+            pushSettings.lastWatchReconcileFailureDate = Date()
             return
         }
-        // Recorded even if `serverWatches` turns out empty/no drift —
-        // a successful `GET` is what the throttle is protecting against
-        // repeating, regardless of what it found.
+        pushSettings.lastWatchReconcileFailureDate = nil
+        // Diagnostic only now (Task #210) — see `lastWatchReconcileDateKey`'s
+        // doc comment; nothing branches on this anymore.
         pushSettings.lastWatchReconcileDate = Date()
 
         // Task #175: despite the parameter's name (unchanged, to keep this

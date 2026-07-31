@@ -38,7 +38,9 @@ struct PushWatchStatusSection: View {
         } header: {
             Text("アカウント別の状態")
         } footer: {
-            Text("各アカウントのプッシュ通知 watch の状態です。停止しているアカウントは再登録できます。")
+            // Task #210: mentions "未登録" too — before this, only
+            // "停止" rows had a way to fix themselves from this screen.
+            Text("各アカウントのプッシュ通知 watch の状態です。停止しているアカウント、未登録のアカウントは登録し直せます。")
         }
     }
 }
@@ -70,11 +72,27 @@ private struct PushWatchStatusRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if case .stopped = row.status {
+            if showsReregisterButton {
                 reregisterButton
             }
         }
         .accessibilityIdentifier("settings.push.watchStatus.row.\(row.accountId)")
+    }
+
+    /// Task #210: before this, only `.stopped` rows got a "再登録"/"登録"
+    /// button — `.notRegistered` had none at all, so a user looking at a
+    /// screen full of "未登録" rows (exactly what Task #208's relay-side
+    /// watch wipe produced on both devices) had no way to fix it from here
+    /// short of toggling push off/on. `reregisterWatch(for:)` already
+    /// handles this case fine (it deletes whatever the relay has for the
+    /// account, if anything, then creates fresh — a no-op delete when
+    /// there's nothing to delete), so this just widens which rows can call
+    /// it.
+    private var showsReregisterButton: Bool {
+        switch row.status {
+        case .stopped, .notRegistered: true
+        case .registered, .unsupported, .unavailable: false
+        }
     }
 
     private var statusLabel: some View {
@@ -95,7 +113,12 @@ private struct PushWatchStatusRow: View {
             if isReregistering {
                 ProgressView()
             } else {
-                Text("再登録")
+                // Task #210: "登録" (not "再登録") for `.notRegistered` —
+                // there's nothing to *re*-do when the relay never had a
+                // watch for this account in the first place, and implying
+                // otherwise would be confusing right after e.g. a relay-side
+                // watch wipe where every account shows this at once.
+                Text(row.status == .notRegistered ? "登録" : "再登録")
             }
         }
         .font(.caption)

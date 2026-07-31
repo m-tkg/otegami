@@ -36,9 +36,25 @@ struct PushSettingsStore: @unchecked Sendable {
     private static let enabledKey = "push.enabled"
     private static let watchMapKey = "push.accountWatchMap"
     /// M9 follow-up (実機バグ1): last time `AppEnvironment
-    /// .reconcilePushWatchesIfNeeded()` actually ran a full `GET
-    /// /v1/watches` reconcile pass — not secret, just a throttle timestamp.
+    /// .reconcilePushWatchesIfNeeded()` successfully completed a `GET
+    /// /v1/watches` reconcile pass — not secret, just a diagnostic
+    /// timestamp. Task #210: no longer used to throttle *whether* to
+    /// attempt a pass (see `lastWatchReconcileFailureDateKey` for what
+    /// throttling remains) — kept only so a future "最終確認" display could
+    /// show it, and because clearing it in `reset()` costs nothing.
     private static let lastWatchReconcileDateKey = "push.lastWatchReconcileDate"
+    /// Task #210 (実機バグ3: Task #208 のリレー・スキーマ入れ替えで通知が
+    /// 最大24時間止まったまま): last time a `GET /v1/watches` attempt from
+    /// `AppEnvironment.reconcilePushWatchesIfNeeded()` *failed* (relay
+    /// unreachable, network error, ...) — distinct from
+    /// `lastWatchReconcileDateKey` (which only records a *successful* pass).
+    /// This is the throttle: `WatchReconciler.shouldAttemptReconcile(now:
+    /// lastFailureDate:failureBackoffInterval:)` uses it to back off retrying
+    /// a fetch that just failed, rather than hitting an unreachable relay on
+    /// every single foreground for the whole duration of an outage. `nil`
+    /// (the default) means "no attempt has failed recently" — always
+    /// permits an attempt.
+    private static let lastWatchReconcileFailureDateKey = "push.lastWatchReconcileFailureDate"
     private static let keychainService = "com.mtkg.otegami.push-device-secret"
     /// Task #171 originally stored the relay operator's shared
     /// `RELAY_DEVICE_REGISTRATION_SECRET` here, entered by the user in
@@ -102,6 +118,12 @@ struct PushSettingsStore: @unchecked Sendable {
     var lastWatchReconcileDate: Date? {
         get { defaults.object(forKey: Self.lastWatchReconcileDateKey) as? Date }
         nonmutating set { defaults.set(newValue, forKey: Self.lastWatchReconcileDateKey) }
+    }
+
+    /// See `lastWatchReconcileFailureDateKey`'s doc comment.
+    var lastWatchReconcileFailureDate: Date? {
+        get { defaults.object(forKey: Self.lastWatchReconcileFailureDateKey) as? Date }
+        nonmutating set { defaults.set(newValue, forKey: Self.lastWatchReconcileFailureDateKey) }
     }
 
     func setWatchId(_ watchId: String?, forAccountId accountId: String) {
@@ -223,6 +245,7 @@ struct PushSettingsStore: @unchecked Sendable {
         isEnabled = false
         accountWatchMap = [:]
         lastWatchReconcileDate = nil
+        lastWatchReconcileFailureDate = nil
         try? deleteDeviceSecret()
     }
 

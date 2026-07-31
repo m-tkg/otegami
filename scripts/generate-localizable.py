@@ -435,8 +435,13 @@ translations = {
         "This distribution build has no push relay server configured. If you're running your own relay, see docs/relay-deployment.md and set it in Config/Local.xcconfig.",
     # Task #173: per-account watch status list (`PushWatchStatusSection`).
     "アカウント別の状態": "Status by Account",
-    "各アカウントのプッシュ通知 watch の状態です。停止しているアカウントは再登録できます。":
-        "Each account's push-notification watch status. A stopped account can be re-registered.",
+    # Task #210: widened from "停止しているアカウントは再登録できます。" —
+    # `.notRegistered` rows now also get a button (see
+    # `PushWatchStatusSection.showsReregisterButton`'s doc comment for why:
+    # before this, a relay that lost every watch — the exact Task #208/#210
+    # incident — left every row "未登録" with no way to fix it from here).
+    "各アカウントのプッシュ通知 watch の状態です。停止しているアカウント、未登録のアカウントは登録し直せます。":
+        "Each account's push-notification watch status. A stopped or not-registered account can be re-registered.",
     # Task #175: the empty state here used to be its own "no password
     # accounts" line ("パスワード認証のアカウントがありません。") — now that
     # Gmail/Outlook accounts are watch-eligible too, this is reached only
@@ -444,6 +449,11 @@ translations = {
     # "アカウントがありません。" key (defined once, earlier in this dict) —
     # no separate entry needed here.
     "再登録": "Re-register",
+    # Task #210: distinct from "再登録" — used for the same button on a
+    # `.notRegistered` row, where "re-" would misleadingly imply the relay
+    # once had a watch for this account (see `PushWatchStatusRow
+    # .reregisterButton`'s doc comment).
+    "登録": "Register",
     "登録済み": "Registered",
     "未登録": "Not Registered",
     "停止（認証失敗）": "Stopped (Authentication Failed)",
