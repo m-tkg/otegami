@@ -26,8 +26,8 @@ import os
 /// (M7) moved off the system `.searchable` and into its own `MacListSearchBar`
 /// row (Task #197, this file's `body` doc comment). iOS drops
 /// `.navigationTitle`/search from this view entirely (the enclosing
-/// `MailTabView` owns the tappable folder-picker title instead, and search
-/// moved to its own tab — `SearchTabView`) and
+/// `MailScreenView` owns the plain title and search opens in a
+/// `SearchScreenView` sheet) and
 /// gains 1g's redesigned swipe actions, 1h's long-press bulk-selection mode,
 /// and an undo toast for the two destructive bulk-capable actions (delete,
 /// archive). Every macOS-only addition/removal below is behind `#if
@@ -58,8 +58,8 @@ struct MessageListView: View {
     // `Button`s instead). Set directly from a `Button` action per row; the
     // compact-width column push to `ThreadDetailView` once this changes is
     // driven by `RootView`'s `preferredCompactColumn` (macOS's
-    // `NavigationSplitView`) or `MailTabView`'s own `.navigationDestination`
-    // (iOS).
+    // `NavigationSplitView`) or `MailScreenView.compactNavigationStack`'s
+    // `.navigationDestination` (iOS).
     @Binding var selectedThreadId: Int64?
     /// 実機フィードバック第3弾 (A): the tapped row's `singleMessageId` —
     /// `nil` for a grouped-mode row, the tapped message's own id for a
@@ -85,14 +85,14 @@ struct MessageListView: View {
     /// binding's value, so an `onChange(of: selectedThreadId)`-driven push
     /// of `preferredCompactColumn` never fires a second time
     /// (docs/verify.md, "メール本文 → 戻る → 一覧の「さっき見ていたスレッド」
-    /// 行だけタップ不能"). `RootView`/`MailTabView` use this unconditional
+    /// 行だけタップ不能"). `RootView`/`MailScreenView` use this unconditional
     /// callback to force the column/push forward every time instead. The
     /// second parameter is `summary.singleMessageId` (実機フィードバック
     /// 第3弾 (A)) — `nil` for a grouped-mode row.
     var onThreadSelected: (Int64, Int64?) -> Void = { _, _ in }
     /// 1h: fires whenever this view enters/exits bulk-selection mode, so an
-    /// iOS-only enclosing `MailTabView` can hide its own toolbar (folder
-    /// title button, compose button) while the selection nav/bottom bar
+    /// iOS-only enclosing `MailScreenView` can replace its toolbar and hide
+    /// its speed-dial FAB while the selection nav/bottom bar
     /// below take over. Never called on macOS (no long-press gesture there
     /// to trigger it in the first place).
     var onSelectionModeChanged: (Bool) -> Void = { _ in }

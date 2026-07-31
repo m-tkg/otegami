@@ -4,15 +4,15 @@ import OtegamiStore
 import UIKit
 #endif
 
-/// One row inside `MessageListView`'s `List` (and, unchanged, reused by
-/// `SearchTabView`'s result list) — the interactive wrapper around
+/// One row inside `MessageListView`'s `List` — the interactive wrapper around
 /// `ThreadRowView`: tap-to-open-or-toggle-selection, D8's swipe actions,
 /// 1h's long-press-to-select, and (macOS only) the right-click context
-/// menu. Pulled out of `MessageListView.swift` into its own file, on top of
-/// the `docs/ci.md` "keep row-shaped views small, and keep the `ForEach`
-/// call site itself down to one function call" discipline that file's own
-/// history already established — this row grew two swipe-related gesture
-/// layers, a long-press gesture, and a conditional context menu on top of
+/// menu. `SearchScreenView` reuses only the underlying `ThreadRowView`, not
+/// this list-management wrapper. Pulled out of `MessageListView.swift` into
+/// its own file under the `docs/ci.md` "keep row-shaped views small, and keep
+/// the `ForEach` call site itself down to one function call" discipline that
+/// file's own history already established — this row grew two swipe-related
+/// gesture layers, a long-press gesture, and a conditional context menu on top of
 /// what was already flagged as risky before design-phase-2, so isolating it
 /// in its own file keeps `MessageListView.swift`'s own body-adjacent code
 /// smaller too.

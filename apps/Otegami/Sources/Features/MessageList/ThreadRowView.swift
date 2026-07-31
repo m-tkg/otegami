@@ -7,7 +7,7 @@ import OtegamiStore
 /// previous `ThreadRow` (plain `.headline`/`.subheadline`/`.caption`
 /// system-font row with a bare `Circle` unread dot) — this type is the one
 /// design-phase-2 file that both `MessageListView` (the mail list) and
-/// `SearchTabView` (iOS's dedicated search tab) share, so a thread reads
+/// `SearchScreenView` (iOS's search sheet) share, so a thread reads
 /// identically in both places.
 ///
 /// Split into this thin top-level view plus `ThreadRowTextStack`/

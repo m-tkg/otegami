@@ -10,7 +10,7 @@ import SwiftUI
 ///   ままだと「シートからシートを開く」というこのアプリで既知の壊れ方
 ///   (`FolderListSheet.swift` の旧ドキュメントコメント参照) を踏む。ドロワー
 ///   ならメニュー自身はシートではないので、行タップで直接
-///   `showingOutbox = true` 等を立てるだけでよく、`MailTabView` 側の
+///   `showingOutbox = true` 等を立てるだけでよく、`MailScreenView` 側の
 ///   `onDismiss` 経由の間接呼び出し (旧 `pendingPostFolderAction`) が丸ごと
 ///   不要になった。
 /// - iOS の作法として、Gmail/多くのメールアプリのハンバーガーメニューは

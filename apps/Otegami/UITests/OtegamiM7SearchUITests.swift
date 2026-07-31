@@ -15,7 +15,7 @@ import XCTest
 /// section).
 ///
 /// Design-phase-2 moved search off `MessageListView`'s own `.searchable`
-/// bar and into its own tab (`SearchTabView`); 新画面構成 replaced that tab
+/// bar and into a dedicated search tab; 新画面構成 replaced that tab
 /// with `SearchScreenView`, opened as a sheet from `MailScreenView`'s
 /// header search button — every assertion below still reads from
 /// `search.list` rather than `messageList.list`, and each test opens the
