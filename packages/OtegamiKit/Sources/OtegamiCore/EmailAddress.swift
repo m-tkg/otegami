@@ -20,3 +20,24 @@ extension EmailAddress: CustomStringConvertible {
         return "\(name) <\(address)>"
     }
 }
+
+extension EmailAddress {
+    /// Parses a comma-separated address list, accepting either a bare
+    /// address (`"a@example.com"`) or a `"Name <a@example.com>"` form —
+    /// matches what `EmailAddress.description` (used to prefill a reply's
+    /// To/Cc fields) produces, so round-tripping through this field doesn't
+    /// lose the display name.
+    public static func parseAddresses(_ text: String) -> [EmailAddress] {
+        text.split(separator: ",").compactMap { raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return nil }
+            if let open = trimmed.firstIndex(of: "<"), let close = trimmed.firstIndex(of: ">"), open < close {
+                let name = trimmed[trimmed.startIndex..<open].trimmingCharacters(in: .whitespaces)
+                let address = trimmed[trimmed.index(after: open)..<close].trimmingCharacters(in: .whitespaces)
+                guard !address.isEmpty else { return nil }
+                return EmailAddress(name: name.isEmpty ? nil : name, address: address)
+            }
+            return EmailAddress(address: trimmed)
+        }
+    }
+}

@@ -18,7 +18,7 @@ import UIKit
 /// `ComposerLaunchPayload`.
 ///
 /// To/Cc are plain comma-separated text fields (plan: "トークン化はlater") —
-/// `parseAddresses(_:)` below turns `"Name <addr>, addr2"` back into
+/// `EmailAddress.parseAddresses(_:)` turns `"Name <addr>, addr2"` back into
 /// `[EmailAddress]` at send time; reply prefill goes the other direction via
 /// `EmailAddress.description`.
 struct ComposerView: View {
@@ -1439,8 +1439,8 @@ struct ComposerView: View {
     /// `.saveDraft` replay reads them back off that row at replay time.
     private func saveDraft() async {
         guard let accountId = selectedAccountId else { return }
-        let toAddresses = Self.parseAddresses(toText)
-        let ccAddresses = Self.parseAddresses(ccText)
+        let toAddresses = EmailAddress.parseAddresses(toText)
+        let ccAddresses = EmailAddress.parseAddresses(ccText)
         // Nothing at all to save (a blank "新規作成" opened and immediately
         // cancelled without `hasUnsavedChanges` ever going true reaches
         // `dismiss()` directly in `handleCloseRequested()`, so this handles
@@ -1724,13 +1724,13 @@ struct ComposerView: View {
               let account = environment.accounts.first(where: { $0.id == accountId })
         else { return }
 
-        let toAddresses = Self.parseAddresses(toText)
+        let toAddresses = EmailAddress.parseAddresses(toText)
         guard !toAddresses.isEmpty else {
             errorMessage = "宛先を入力してください。"
             return
         }
-        let ccAddresses = Self.parseAddresses(ccText)
-        let bccAddresses = Self.parseAddresses(bccText)
+        let ccAddresses = EmailAddress.parseAddresses(ccText)
+        let bccAddresses = EmailAddress.parseAddresses(bccText)
 
         isSending = true
         defer { isSending = false }
@@ -1827,25 +1827,6 @@ struct ComposerView: View {
             }
         } catch {
             errorMessage = "送信の準備に失敗しました: \(error)"
-        }
-    }
-
-    /// Parses a comma-separated address list, accepting either a bare
-    /// address (`"a@example.com"`) or a `"Name <a@example.com>"` form —
-    /// matches what `EmailAddress.description` (used to prefill a reply's
-    /// To/Cc fields) produces, so round-tripping through this field doesn't
-    /// lose the display name.
-    static func parseAddresses(_ text: String) -> [EmailAddress] {
-        text.split(separator: ",").compactMap { raw in
-            let trimmed = raw.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { return nil }
-            if let open = trimmed.firstIndex(of: "<"), let close = trimmed.firstIndex(of: ">"), open < close {
-                let name = trimmed[trimmed.startIndex..<open].trimmingCharacters(in: .whitespaces)
-                let address = trimmed[trimmed.index(after: open)..<close].trimmingCharacters(in: .whitespaces)
-                guard !address.isEmpty else { return nil }
-                return EmailAddress(name: name.isEmpty ? nil : name, address: address)
-            }
-            return EmailAddress(address: trimmed)
         }
     }
 
