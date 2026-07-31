@@ -6,29 +6,33 @@ import UIKit
 #endif
 
 /// Settings → プッシュ通知 (M9, plan §7): opt-in flow for the self-hosted
-/// push relay. On "有効にする" (behind a consent alert — "資格情報がそのサーバへ
-/// 送信・保存される旨", Task #175 follow-up: now also covers Gmail/Outlook
-/// sending their OAuth refresh token) requests notification authorization,
-/// obtains an APNs device token, and registers this device + every
-/// push-watch-eligible account's watch with the relay
-/// (`AppEnvironment.isPushWatchCandidate(_:)` — `.password` accounts send
-/// an IMAP password, `.oauth2` Gmail/Microsoft accounts send an OAuth
-/// refresh token instead). No relay-operator credential *or URL* is
-/// ever collected here — both the relay's optional device-registration
+/// push relay. Switching the toggle ON (behind a consent alert —
+/// "資格情報がそのサーバへ送信・保存される旨", Task #175 follow-up: now also
+/// covers Gmail/Outlook sending their OAuth refresh token; Task #212:
+/// this used to be a separate "有効にする"/"無効にする" button pair, replaced
+/// with a single standard `Toggle` — `pushEnabledBinding`'s doc comment)
+/// requests notification authorization, obtains an APNs device token, and
+/// registers this device + every push-watch-eligible account's watch with
+/// the relay (`AppEnvironment.isPushWatchCandidate(_:)` — `.password`
+/// accounts send an IMAP password, `.oauth2` Gmail/Microsoft accounts send
+/// an OAuth refresh token instead). No relay-operator credential *or URL*
+/// is ever collected here — both the relay's optional device-registration
 /// secret (`RelayRegistrationSecretConfig`, Task #171) and the relay's URL
 /// itself (`RelayURLConfig`, Task #173 follow-up: 実機フィードバック
 /// 2026-07-30 「リレー URL は今の固定 URL という話をしたよ」) are build-time
 /// values now — an ordinary user of this screen has nothing to type at all,
-/// just "有効にする"/"無効にする" and (Task #173) the per-account watch
-/// status list below.
+/// just the on/off toggle and (Task #173) the per-account watch status list
+/// below.
 ///
 /// iOS only: `AppEnvironment.enablePushNotifications` throws
 /// `.unsupportedPlatform` on macOS (no `NotificationService` there yet —
 /// M9 scope, see that Extension's own doc comment), which this view
 /// surfaces as an explanatory message rather than a raw error, on the
 /// platforms where the button can even be reached at all (macOS hides the
-/// entry point with `#if os(iOS)` in `AccountSettingsCategoryView` — 実機
-/// フィードバック 2026-07-30 で漏れていたことが判明し、そこで追加した —
+/// entry point with `#if os(iOS)` in `GeneralSettingsView` — 実機
+/// フィードバック 2026-07-30 で漏れていたことが判明し、そこで追加した;
+/// Task #212 でこの入口自体が`AccountSettingsCategoryView`から
+/// `GeneralSettingsView`へ移設されたが、`#if os(iOS)`ガードはそのまま —
 /// this view itself still compiles and works standalone, e.g. for
 /// previews, on both platforms).
 struct PushNotificationSettingsView: View {
@@ -71,6 +75,37 @@ struct PushNotificationSettingsView: View {
     @AppStorage(NotificationContentSettingsStore.showsBodyPreviewKey)
     private var showsBodyPreviewInNotification = NotificationContentSettingsStore.defaultShowsBodyPreview
 
+    /// Task #212 (実機フィードバック「iOS で Push の on/off は Enable/Disable
+    /// の文字ではなく通常の on/off トグルにして」): the single control that
+    /// replaced the old `enabledSection`/`disabledSection` button pair.
+    ///
+    /// `get` always mirrors `environment.isPushEnabled` — there is no local
+    /// "optimistic" state — so a tap that turns the toggle ON doesn't move
+    /// it at all yet; `set` only opens the consent alert
+    /// (`showingConsent`). The toggle visually flips ON only once `enable()`
+    /// actually succeeds and `environment.isPushEnabled` becomes `true`
+    /// (`OtegamiM9PushSettingsUITests` asserts the toggle reads OFF (`"0"`)
+    /// both before consenting and after a failed enable attempt — the
+    /// simulator's `.noDeviceToken` case being the one this suite can
+    /// actually exercise). If the user dismisses/cancels the consent
+    /// alert, nothing changed to begin with, so the toggle simply stays
+    /// where it was — that *is* "revert on cancel", for free.
+    ///
+    /// Turning the toggle OFF needs no such confirmation (nothing is sent
+    /// anywhere by disabling), so `set(false)` calls `disable()` directly.
+    private var pushEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { environment.isPushEnabled },
+            set: { newValue in
+                if newValue {
+                    showingConsent = true
+                } else {
+                    Task { await disable() }
+                }
+            }
+        )
+    }
+
     var body: some View {
         Form {
             statusSection
@@ -102,7 +137,8 @@ struct PushNotificationSettingsView: View {
         #endif
         #if os(macOS)
         // Task #155 follow-up: see `MacSettingsBackButton`'s doc comment —
-        // this screen is pushed from `AccountSettingsCategoryView`.
+        // this screen is pushed from `GeneralSettingsView` (moved there
+        // from `AccountSettingsCategoryView` by Task #212).
         .macSettingsBackButton()
         #endif
         .task(id: environment.isPushEnabled) { await refreshWatchRows() }
@@ -125,30 +161,55 @@ struct PushNotificationSettingsView: View {
         }
     }
 
+    /// Task #212: no longer a 3-way branch (`unconfiguredSection`/
+    /// `enabledSection`/`disabledSection`) — the toggle itself carries the
+    /// on/off distinction now, so this only decides *whether the toggle can
+    /// be interacted with at all* (a configured relay or not).
     @ViewBuilder
     private var statusSection: some View {
         if !RelayURLConfig.isConfigured {
             unconfiguredSection
-        } else if environment.isPushEnabled {
-            enabledSection
         } else {
-            disabledSection
+            pushToggleSection
         }
     }
 
-    /// Task #173 follow-up: this build has no relay URL baked in
-    /// (`RelayURLConfig`) — same "disabled button + explanatory footnote"
-    /// shape as `AccountTypeSelectionView.gmailButton`'s
+    /// Task #173 follow-up, Task #212: this build has no relay URL baked in
+    /// (`RelayURLConfig`) — a disabled, permanently-off toggle plus an
+    /// explanatory footnote, same "disabled control + footnote" shape as
+    /// `AccountTypeSelectionView.gmailButton`'s
     /// `accountTypeSelection.gmailDisabledHint` for an unconfigured Gmail
-    /// OAuth Client ID.
+    /// OAuth Client ID. Shares `pushToggleSection`'s accessibility
+    /// identifier so a UITest doesn't need to know which state a given
+    /// build is in to find the control.
     private var unconfiguredSection: some View {
         Section {
-            Button {} label: { Text("有効にする") }
+            Toggle("プッシュ通知を有効にする", isOn: .constant(false))
                 .disabled(true)
-                .accessibilityIdentifier("settings.push.enableButton")
+                .accessibilityIdentifier("settings.push.enabledToggle")
         } footer: {
             Text("この配布ビルドにはプッシュ中継サーバーが設定されていません。自分のリレーを使う場合は docs/relay-deployment.md を参照して Config/Local.xcconfig に設定してください。")
                 .accessibilityIdentifier("settings.push.relayNotConfiguredHint")
+        }
+    }
+
+    /// Task #212: the toggle itself, plus (while `isProcessing`) an inline
+    /// `ProgressView` — `enable()`/`disable()` both hit the network
+    /// (relay registration / watch teardown), so this covers the same
+    /// "show that something is happening" need the old buttons' inline
+    /// `ProgressView(in place of the label)` did.
+    private var pushToggleSection: some View {
+        Section {
+            Toggle("プッシュ通知を有効にする", isOn: pushEnabledBinding)
+                .disabled(isProcessing)
+                .accessibilityIdentifier("settings.push.enabledToggle")
+            if isProcessing {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                    Spacer()
+                }
+            }
         }
     }
 
@@ -156,8 +217,8 @@ struct PushNotificationSettingsView: View {
     /// (`RelayURLConfig.isConfigured`, same gate `statusSection` itself
     /// uses to decide whether to show anything push-related at all) —
     /// deliberately *not* gated on `environment.isPushEnabled` in addition,
-    /// so a user can set these up before ever tapping "有効にする" and have
-    /// them already in place the first time a notification actually
+    /// so a user can set these up before ever turning the toggle on and
+    /// have them already in place the first time a notification actually
     /// arrives, rather than needing to remember to come back afterward.
     private var notificationContentSection: some View {
         Section {
@@ -181,41 +242,6 @@ struct PushNotificationSettingsView: View {
             // あります」のような内容を伴わない通知になる。
             Text("OS の「設定 → 通知 → プレビューを表示」とは別の設定です。こちらは、このアプリが通知に載せる内容そのものを選びます（両方が有効な場合のみ、選んだ内容が実際に表示されます）。すべてオフにすると「新着メールがあります」のような内容を伴わない通知になります。")
                 .accessibilityIdentifier("settings.push.notificationContentHint")
-        }
-    }
-
-    private var enabledSection: some View {
-        Section {
-            Label("プッシュ通知は有効です", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-                .accessibilityIdentifier("settings.push.enabledLabel")
-            Button(role: .destructive) {
-                Task { await disable() }
-            } label: {
-                if isProcessing {
-                    ProgressView()
-                } else {
-                    Text("無効にする")
-                }
-            }
-            .disabled(isProcessing)
-            .accessibilityIdentifier("settings.push.disableButton")
-        }
-    }
-
-    private var disabledSection: some View {
-        Section {
-            Button {
-                showingConsent = true
-            } label: {
-                if isProcessing {
-                    ProgressView()
-                } else {
-                    Text("有効にする")
-                }
-            }
-            .disabled(isProcessing)
-            .accessibilityIdentifier("settings.push.enableButton")
         }
     }
 

@@ -72,7 +72,7 @@ OTEGAMI_BUNDLE_ID=com.example.otegami.citest \
    | `OTEGAMI_BUNDLE_ID` | `OTEGAMI_BUNDLE_ID` | 任意 (既定 `com.mtkg.otegami` のまま) | 別の Team でこの Bundle ID が既に登録済みの場合のみ変更 |
    | `OTEGAMI_GOOGLE_CLIENT_ID` | `GOOGLE_OAUTH_CLIENT_ID` | 任意 (未設定なら Gmail 追加ボタンが無効なビルドになる) | `docs/oauth-setup.md` |
    | `OTEGAMI_RELAY_REGISTRATION_SECRET` | `OTEGAMI_RELAY_REGISTRATION_SECRET` | 任意 (未設定なら自分のリレーの `POST /v1/devices` にシークレットを送らないビルドになる — リレー側がそれを要求していなければ無関係) | `docs/relay-deployment.md` |
-   | `OTEGAMI_PUSH_RELAY_URL` | `OTEGAMI_PUSH_RELAY_URL` | 任意 (未設定なら「プッシュ通知」画面の「有効にする」ボタンが無効なビルドになる) | `docs/relay-deployment.md`。**値は素の URL のまま登録する** (`https://relay.example.test`) — `ci_post_clone.sh` が xcconfig の `//` コメント問題を回避する形式に自動変換して書き出すので、この環境変数自体に `$(...)` 構文を含める必要はない |
+   | `OTEGAMI_PUSH_RELAY_URL` | `OTEGAMI_PUSH_RELAY_URL` | 任意 (未設定なら「プッシュ通知」画面の「プッシュ通知を有効にする」トグルが無効なビルドになる) | `docs/relay-deployment.md`。**値は素の URL のまま登録する** (`https://relay.example.test`) — `ci_post_clone.sh` が xcconfig の `//` コメント問題を回避する形式に自動変換して書き出すので、この環境変数自体に `$(...)` 構文を含める必要はない |
    | `OTEGAMI_MAIL_CLIENT_ENTITLEMENT` | `OTEGAMI_MAIL_CLIENT_ENTITLEMENT` | 任意 (既定 `NO`) | Apple から entitlement 許可が下りてから `YES` |
 
    いずれも未設定なら該当行を書かず、コミット済みの既定値

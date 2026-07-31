@@ -13,15 +13,15 @@ import Foundation
 /// as a `PushNotificationSettingsView` text field — half-finished, since an
 /// ordinary mail app user shouldn't need to know a "relay URL" is a thing
 /// either. This value now follows the same build-time path, so
-/// `PushNotificationSettingsView` has nothing left to type at all: just
-/// "有効にする"/"無効にする" plus (Task #173) the per-account watch status
-/// list.
+/// `PushNotificationSettingsView` has nothing left to type at all: just the
+/// ON/OFF toggle (Task #212 — a plain button pair before that) plus
+/// (Task #173) the per-account watch status list.
 enum RelayURLConfig {
     /// `nil` when unset/empty — the OSS-default state (no
     /// `Config/Local.xcconfig` override). `PushNotificationSettingsView`
-    /// disables its "有効にする" button and explains why when this is
-    /// `nil`, the same way `GoogleOAuthConfig.isConfigured == false`
-    /// disables the Gmail add-account button.
+    /// disables its enable toggle and explains why when this is `nil`, the
+    /// same way `GoogleOAuthConfig.isConfigured == false` disables the
+    /// Gmail add-account button.
     static var value: URL? {
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "OTEGAMI_PUSH_RELAY_URL") as? String,
               !raw.isEmpty,

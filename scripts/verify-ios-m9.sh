@@ -4,17 +4,20 @@
 # Runs OtegamiM9PushSettingsUITests (apps/Otegami/UITests/
 # OtegamiM9PushSettingsUITests.swift):
 #
-#   1. testEnableButtonDisabledForInvalidRelayURL — a non-https,
-#      non-localhost relay URL keeps "有効にする" disabled
-#      (AppEnvironment.validatedRelayURL).
-#   2. testEnablingPushOnSimulatorShowsGracefulDegradationMessage — a valid
-#      https:// URL enables the button; tapping it shows the credential-
-#      sharing consent alert; confirming it attempts
-#      AppEnvironment.enablePushNotifications, which on the simulator
-#      always fails with .noDeviceToken (simulators never issue real APNs
-#      device tokens — PushTokenCenter.swift's doc comment) — asserts that
-#      surfaces as a visible error message rather than a crash/hang, and
-#      that push never reports itself "enabled" as a result.
+#   testEnablingPushOnSimulatorShowsGracefulDegradationMessage — switching
+#   the "プッシュ通知を有効にする" toggle ON (Task #212: a standard Toggle,
+#   previously an "有効にする" button) shows the credential-sharing consent
+#   alert; confirming it attempts AppEnvironment.enablePushNotifications,
+#   which on the simulator always fails with .noDeviceToken (simulators
+#   never issue real APNs device tokens — PushTokenCenter.swift's doc
+#   comment) — asserts that surfaces as a visible error message rather than
+#   a crash/hang, and that the toggle never reports itself "enabled" as a
+#   result.
+#
+# (This suite used to have a second test, testEnableButtonDisabledForInvalidRelayURL,
+# covering a relay-URL TextField's validation — removed once that field
+# itself was removed, Task #173 follow-up: the relay URL became a
+# build-time value with nothing left for a user to type.)
 #
 # Neither scenario needs a mail account configured first (the enable
 # flow's "create a watch per .password account" step is a no-op with zero

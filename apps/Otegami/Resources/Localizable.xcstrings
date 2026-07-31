@@ -2581,32 +2581,12 @@
         }
       }
     },
-    "プッシュ通知は有効です": {
+    "プッシュ通知を有効にする": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Push Notifications Are Enabled"
-          }
-        }
-      }
-    },
-    "無効にする": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Disable"
-          }
-        }
-      }
-    },
-    "有効にする": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enable"
+            "value": "Enable Push Notifications"
           }
         }
       }

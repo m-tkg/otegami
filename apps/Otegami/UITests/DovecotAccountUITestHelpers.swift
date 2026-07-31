@@ -273,20 +273,27 @@ extension XCTestCase {
     /// `settings.push.errorMessage`) regardless — expected, and not what
     /// this helper's callers care about.
     ///
-    /// A no-op past the URL/enable-button check if push is already enabled
-    /// (`settings.push.enableButton` doesn't exist because
-    /// `settings.push.disableButton` is showing instead) — e.g. a re-run
-    /// against a simulator install this test suite already granted
-    /// permission on without an intervening `simctl erase`.
+    /// A no-op past the toggle check if push is already enabled (the
+    /// toggle already reads ON) — e.g. a re-run against a simulator install
+    /// this test suite already granted permission on without an
+    /// intervening `simctl erase`.
+    ///
+    /// Task #212: this used to type a relay URL into a `TextField` and tap
+    /// a separate "有効にする" button — both gone (`RelayURLConfig` made the
+    /// URL a build-time value, Task #173 follow-up; the button became a
+    /// standard `Toggle`, `PushNotificationSettingsView.pushEnabledBinding`'s
+    /// doc comment) — so this now just flips
+    /// `settings.push.enabledToggle` and answers the same consent alert.
     func grantNotificationPermissionViaPushSettings(in app: XCUIApplication) {
         // 新画面構成: "設定" is reached via the hamburger menu (bottom row,
         // `FolderListSheet.settingsSection`), not a tab bar or a gear-icon
         // sheet off the old sidebar.
         openSettingsFromHamburgerMenu(in: app)
-        // 実機フィードバック第3弾 (I): プッシュ通知は「アカウントの設定」
-        // カテゴリの下に移動した (旧「その他」カテゴリは廃止 —
-        // `AccountsListContent`の doc comment参照)。
-        XCTAssertTrue(navigateToAccountSettingsCategory(in: app), "「アカウントの設定」カテゴリへの遷移に失敗した")
+        // Task #212 (実機フィードバック「push 通知の設定はアカウント設定
+        // じゃなくて一般に移した方がいいと思う」): プッシュ通知は
+        // 「アカウントの設定」カテゴリから「一般」カテゴリへ再移設された
+        // (`GeneralSettingsView`の doc comment参照)。
+        XCTAssertTrue(navigateToGeneralSettingsCategory(in: app), "「一般」カテゴリへの遷移に失敗した")
         // ラベルテキストではなくアクセシビリティ識別子で検索 — ロケールに
         // 依存しない (`tapPlainSecurityMenuOption(in:)`のドキュメントコメント
         // が記録している「カタログ拡張で既存のラベル検索が壊れる」class の
@@ -295,21 +302,16 @@ extension XCTestCase {
         XCTAssertTrue(pushLink.waitForExistence(timeout: 10), "settings screen did not appear")
         pushLink.tap()
 
-        let relayURLField = app.textFields["settings.push.relayURLField"]
-        XCTAssertTrue(relayURLField.waitForExistence(timeout: 10), "push settings screen did not appear")
+        let enabledToggle = app.switches["settings.push.enabledToggle"]
+        XCTAssertTrue(enabledToggle.waitForExistence(timeout: 10), "push settings screen did not appear")
 
-        guard !app.staticTexts["settings.push.enabledLabel"].exists else {
+        guard enabledToggle.value as? String != "1" else {
             // Already enabled from an earlier, not-yet-erased run — the
             // permission prompt was already answered then too.
             return
         }
 
-        type("http://localhost:9", into: relayURLField)
-
-        let enableButton = app.buttons["settings.push.enableButton"]
-        XCTAssertTrue(enableButton.waitForExistence(timeout: 5))
-        XCTAssertTrue(enableButton.isEnabled, "enable button should be enabled once a valid URL is entered")
-        enableButton.tap()
+        enabledToggle.tap()
 
         let consentConfirm = app.buttons["settings.push.consentConfirmButton"].firstMatch
         XCTAssertTrue(consentConfirm.waitForExistence(timeout: 10), "expected the credential-sharing consent alert")

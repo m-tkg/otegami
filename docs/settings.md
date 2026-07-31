@@ -300,7 +300,13 @@ ON。同じ Apple ID の他デバイスと設定全般を同期する。設定�
 
 `PushSettingsStore.swift` (Keychain 併用、`push.*` キー群)。設定 →
 「一般」→「プッシュ通知」から有効化 (Task #212 で「アカウントの設定」
-から移設)。詳細は [docs/relay-deployment.md](relay-deployment.md)。
+から移設)。有効/無効は標準の `Toggle` (`settings.push.enabledToggle`) —
+以前は「有効にする」/「無効にする」の別ボタンだったが、Task #212 (実機
+フィードバック「iOS で Push の on/off は Enable/Disable の文字ではなく
+通常の on/off トグルにして」) で1つのトグルへ統合した。ON にする操作は
+資格情報送信への同意アラートを経由し、キャンセルするとトグルは元の
+OFF のまま (`PushNotificationSettingsView.pushEnabledBinding`の doc
+comment参照)。詳細は [docs/relay-deployment.md](relay-deployment.md)。
 
 ### 通知の内容
 

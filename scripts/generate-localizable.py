@@ -416,9 +416,11 @@ translations = {
     # three entries that used to live here ("自分でホストしたプッシュ中継
     # サーバ...", "リレー URL", "https:// が必須です...") are gone, and the
     # consent alert's message below no longer mentions "入力したリレー URL".
-    "プッシュ通知は有効です": "Push Notifications Are Enabled",
-    "無効にする": "Disable",
-    "有効にする": "Enable",
+    # Task #212 (実機フィードバック「iOS で Push の on/off は Enable/Disable
+    # の文字ではなく通常の on/off トグルにして」): replaced the old
+    # "有効にする"/"無効にする" button pair (and the separate "プッシュ通知は
+    # 有効です" status label) with a single standard `Toggle`.
+    "プッシュ通知を有効にする": "Enable Push Notifications",
     "設定アプリを開く": "Open Settings App",
     "資格情報の送信について": "About Sending Credentials",
     "同意して有効にする": "Agree & Enable",
