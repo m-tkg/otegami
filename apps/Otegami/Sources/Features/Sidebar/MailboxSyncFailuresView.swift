@@ -2,7 +2,7 @@ import SwiftUI
 import OtegamiStore
 import SyncEngine
 
-/// Partial-sync failure visibility (`docs/qa-findings.md`): before this,
+/// Partial-sync failure visibility: before this,
 /// `AccountSyncer`'s per-mailbox `do`/`catch` (both `performInitialSync` and
 /// `performIncrementalSync`) swallowed one mailbox's sync failure entirely
 /// (a bare `continue`, nothing recorded anywhere) so that *other* mailboxes
@@ -15,8 +15,8 @@ import SyncEngine
 /// property's doc comment) instead of only `continue`-ing past it; this view
 /// lists every mailbox currently in that state, following the same
 /// list/retry shape `FailedOperationsView` already established for
-/// `opQueue` failures — a deliberate stylistic match (`docs/qa-findings.md`
-/// asked for this: "既存の FailedOperationsView ... と流儀を揃える").
+/// `opQueue` failures — a deliberate stylistic match ("既存の
+/// FailedOperationsView ... と流儀を揃える").
 ///
 /// Unlike `FailedOperationsView`, there's no "破棄" (discard) action: a
 /// `MailboxRecord` isn't a retryable queued operation with a natural

@@ -2513,7 +2513,7 @@ final class AppEnvironment {
         case notificationPermissionDenied
         /// This build has no `UIApplication` to register with at all
         /// (macOS) — push isn't implemented there yet (M9 scope: iOS-only
-        /// `NotificationService`, plan/PENDING.md).
+        /// `NotificationService`).
         case unsupportedPlatform
         /// Task #171 (follow-up: build-time secret, see
         /// `RelayRegistrationSecretConfig`): `POST /v1/devices` came back
@@ -2974,7 +2974,8 @@ final class AppEnvironment {
     /// `DatabasePool` held a lock while this app was suspended in the
     /// background; see `AppDatabase.makeConfiguration
     /// (observesSuspensionNotifications:)`'s doc comment for the full
-    /// analysis and `docs/qa-findings.md`'s matching entry). Posts GRDB's
+    /// analysis and `docs/architecture.md`'s matching Known pitfalls
+    /// entry). Posts GRDB's
     /// `Database.suspendNotification`, which — because `makeShared`
     /// enables `observesSuspensionNotifications` exactly when the database
     /// actually lives in the App Group container — makes every

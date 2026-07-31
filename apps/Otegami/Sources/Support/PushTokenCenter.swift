@@ -8,8 +8,8 @@ import PushRelayClient
 /// (`PushSettingsStore.enable(...)` awaits this) — `AppDelegate` below
 /// forwards both the success and failure callbacks here.
 ///
-/// M9 bug fix (see `docs/verify.md`'s "M9 追補" section and
-/// `docs/qa-findings.md`): `requestToken()` used to call *only*
+/// M9 bug fix (see `docs/verify.md`'s "M9 追補" section):
+/// `requestToken()` used to call *only*
 /// `UIApplication.registerForRemoteNotifications()`, which registers for
 /// APNs device tokens but does **not** request the user-visible
 /// notification permission (`UNUserNotificationCenter`'s
@@ -24,7 +24,7 @@ import PushRelayClient
 /// `PushTokenError.notificationPermissionDenied` before ever touching
 /// `registerForRemoteNotifications()` if that's declined.
 ///
-/// M9 constraint (plan/PENDING.md) still holds independently of the above:
+/// M9 constraint still holds independently of the above:
 /// the iOS **simulator** never actually receives a device token —
 /// `UIApplication.registerForRemoteNotifications()` on a simulator either
 /// never calls back at all or (depending on OS version) calls the failure

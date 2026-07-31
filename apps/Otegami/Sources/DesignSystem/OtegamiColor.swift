@@ -8,7 +8,7 @@ import SwiftUI
 /// `docs/design-system.md`.
 ///
 /// Light values are the ones the design handoff shipped
-/// (`design_handoff_ios_mail/README.md`'s "Design Tokens" table) — they're
+/// (`docs/design-system.md`'s "Design Tokens" table) — they're
 /// explicitly *placeholders*, not final brand colors, but they're what the
 /// wireframes were built against, so they're the starting point here too.
 /// The handoff's own dark-mode guidance is "未設計。トークン化して両対応に

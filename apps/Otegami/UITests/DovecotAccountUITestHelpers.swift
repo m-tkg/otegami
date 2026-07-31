@@ -256,8 +256,8 @@ extension XCTestCase {
         dismissSavePasswordPromptIfNeeded()
     }
 
-    /// M9 bug fix follow-up (`docs/verify.md`'s "M9 追補" section,
-    /// `PENDING.md`): drives "設定 → プッシュ通知 → 有効にする" far enough to
+    /// M9 bug fix follow-up (`docs/verify.md`'s "M9 追補" section):
+    /// drives "設定 → プッシュ通知 → 有効にする" far enough to
     /// trigger `PushTokenCenter.requestToken()`'s new
     /// `UNUserNotificationCenter.requestAuthorization(...)` call and accept
     /// the resulting system prompt (`allowNotificationPermissionIfNeeded`) —

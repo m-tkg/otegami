@@ -1145,8 +1145,8 @@ struct ThreadDetailView: View {
         }
     }
 
-    /// Task #127 (実機報告フォローアップ — `PENDING.md`「Task #120」節の
-    /// follow-up 候補): archive/junk/delete used to be an independent,
+    /// Task #127 (実機報告フォローアップ、Task #120の follow-up):
+    /// archive/junk/delete used to be an independent,
     /// hand-rolled enqueue-then-delete implementation here — unlike
     /// `MessageListView`/`AccountDigestView`'s row actions, it never called
     /// `SyncEngine.MessageRemoval.commit(_:summary:accountId:db:)`, so it

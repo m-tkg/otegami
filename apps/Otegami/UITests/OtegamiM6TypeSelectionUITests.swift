@@ -9,7 +9,7 @@ import XCTest
 /// `environment.isGmailOAuthConfigured` behavior conditionally on the
 /// button's actual enabled state rather than assuming the client-ID-absent
 /// branch — it should pass either way. A real interactive Google sign-in is
-/// still out of automated-verification scope (see `PENDING.md`).
+/// still out of automated-verification scope.
 final class OtegamiM6TypeSelectionUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false

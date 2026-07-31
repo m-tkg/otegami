@@ -1,7 +1,6 @@
 import XCTest
 
-/// Exploratory QA sweep (see `docs/qa-findings.md` and the task that
-/// produced this file): mimics the kind of messy, non-scripted interaction
+/// Exploratory QA sweep: mimics the kind of messy, non-scripted interaction
 /// sequences that surfaced the four real-device bugs documented in
 /// `docs/verify.md` (VoIP socket, partial-sync thread-unassignment,
 /// empty-refetch mass-delete, cold-launch restoration/livelock) — all of

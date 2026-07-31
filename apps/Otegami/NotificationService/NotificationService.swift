@@ -264,8 +264,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// comment — "you do not have to call this method... automatically
     /// closed when they are deinitialized") the moment this function
     /// returns, well before the OS could ever suspend this short-lived
-    /// Extension process. See `docs/qa-findings.md`'s Task #192 entry for
-    /// the full writeup.
+    /// Extension process. See `docs/architecture.md`'s Known pitfalls
+    /// (Task #192) for the full writeup.
     private static func lookupAccount(id: String) async throws -> AccountRecord? {
         let database = try AppDatabase.makeShared(appGroupIdentifier: appGroupIdentifier)
         return try await database.dbWriter.read { db in

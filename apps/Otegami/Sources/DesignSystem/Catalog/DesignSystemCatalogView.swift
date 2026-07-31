@@ -38,7 +38,7 @@ public struct DesignSystemCatalogContent: View {
             Text("Otegami Design System")
                 .font(OtegamiFont.largeTitle())
                 .foregroundStyle(OtegamiColor.ink)
-            Text("design_handoff_ios_mail/README.md 準拠のトークンカタログ")
+            Text("docs/design-system.md 準拠のトークンカタログ")
                 .font(OtegamiFont.caption())
                 .foregroundStyle(OtegamiColor.inkTertiary)
         }

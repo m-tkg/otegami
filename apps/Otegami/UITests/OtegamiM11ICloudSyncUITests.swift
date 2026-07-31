@@ -3,7 +3,7 @@ import XCTest
 /// M11 (iCloud account sync, docs/icloud-sync.md) automated verification.
 ///
 /// A real two-device iCloud KVS round trip can't be driven from a single
-/// simulator (`PENDING.md` has the manual two-device checklist), so what
+/// simulator (a manual two-device check is needed for that), so what
 /// *is* automatable and matters most for regression purposes is: the app
 /// launches at all with the new `com.apple.developer.ubiquity-kvstore
 /// -identifier` entitlement in place (a launch-time crash here would be

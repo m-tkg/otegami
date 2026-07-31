@@ -1,7 +1,7 @@
 import CoreGraphics
 
 /// Stroke widths and corner radii. Originally a flat, angular Modernist
-/// base (design_handoff_ios_mail/README.md: "フラット、角丸0、2px罫") with
+/// base (`docs/design-system.md`: "フラット、角丸0、2px罫") with
 /// every radius pinned to `0` — **overturned for cards specifically** in
 /// the 実機フィードバック第2弾 batch (item C) at the user's explicit request:
 /// "角丸解禁" (角を丸くする). See `OtegamiRadius.card`'s doc comment for the

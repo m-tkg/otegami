@@ -1,6 +1,6 @@
 import XCTest
 
-/// Setup phase for `scripts/verify-ios-push-simulated.sh` (PENDING.md's M9
+/// Setup phase for `scripts/verify-ios-push-simulated.sh` (M9's
 /// "`xcrun simctl push` によるシミュレータへのペイロード注入テスト" follow-up):
 /// adds the dev mailstack's `test1@otegami.test` Dovecot account so its
 /// `AccountRecord.id`/Keychain password exist for the wrapping shell script

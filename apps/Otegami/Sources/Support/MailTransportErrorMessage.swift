@@ -41,7 +41,9 @@ extension MailTransportError {
                 // server's own response was a plain
                 // `[AUTHENTICATIONFAILED] Incorrect username or password.`,
                 // indistinguishable at the protocol level from an actually
-                // wrong password (`docs/qa-findings.md`). Asserting
+                // wrong password (see `docs/architecture.md`'s Known
+                // pitfalls on IDLE-unsupported servers and provider-side
+                // auth lockouts). Asserting
                 // "確認してください" here is misleading for a credential with
                 // a proven track record, and led a real user to doubt (and
                 // needlessly re-enter) settings that were already correct.

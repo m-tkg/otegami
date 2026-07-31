@@ -12,7 +12,7 @@ import XCTest
 ///
 /// A real two-device iCloud KVS round trip that would *organically*
 /// produce this can't be driven from a single simulator (`docs/icloud
-/// -sync.md`'s "制限" section, `PENDING.md`). What these three phases do
+/// -sync.md`'s "制限" section). What these three phases do
 /// instead is recreate the exact **end state** the bug leaves a device in
 /// — two local `account` rows for the same mailbox, one with a working
 /// Keychain credential and one `needsReauth` — by injecting a duplicate row

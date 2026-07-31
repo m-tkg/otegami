@@ -9,8 +9,8 @@ import UIKit
 /// `cid:` one, so the banner's absence demonstrates the inline image path
 /// is independent of (and unaffected by) the external-resource block, per
 /// the plan's "外部画像ブロックとは独立に動くこと" — and, since the fix for
-/// the M8/QA-sweep-era cid resolution bug (`docs/qa-findings.md`:
-/// `CIDURLRewriter`/`CIDSchemeHandler` mishandling a `Content-ID` containing
+/// the M8/QA-sweep-era cid resolution bug (`CIDURLRewriter`/
+/// `CIDSchemeHandler` mishandling a `Content-ID` containing
 /// `@`), actually verify the image *pixels* rendered rather than trusting
 /// the accessibility-tree-only checks that previously let a completely
 /// broken inline image pass unnoticed for several milestones. `<img>`
@@ -76,7 +76,7 @@ final class OtegamiM8CIDImageUITests: XCTestCase {
         // screenshot is a strong, automatable signal the `<img>` loaded its
         // actual bytes. This is exactly the check that would have caught
         // the M8-era `CIDURLRewriter`/`CIDSchemeHandler` `@`-in-Content-ID
-        // bug (`docs/qa-findings.md`) immediately, instead of it going
+        // bug immediately, instead of it going
         // unnoticed until a much later manual screenshot review.
         let screenshot = XCUIScreen.main.screenshot().image
         let matchingPixels = Self.countPixels(in: screenshot, approximatelyMatching: (r: 232, g: 122, b: 30), tolerance: 20)

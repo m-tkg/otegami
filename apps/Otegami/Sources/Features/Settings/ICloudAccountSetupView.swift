@@ -16,8 +16,8 @@ import OtegamiStore
 /// iCloud's IMAP/SMTP historically accept the full `user@icloud.com` (and
 /// reportedly also the bare `user` short-name) as the login — full address
 /// was chosen since it's unambiguous and is what Apple's own account-setup
-/// documentation shows; see `PENDING.md` for the real-account confirmation
-/// this still needs. If a real account turns out to need the bare
+/// documentation shows; this still needs confirmation against a real
+/// account. If a real account turns out to need the bare
 /// short-name instead, the fix is confined to `imapUsername`/`smtpUsername`
 /// below — everything else in this form is provider-agnostic.
 struct ICloudAccountSetupView: View {
@@ -147,10 +147,10 @@ struct ICloudAccountSetupView: View {
     /// form's connection test (which points at the dev mailstack's Dovecot,
     /// always reachable from CI), this always dials the real
     /// `imap.mail.me.com` — there's no throwaway iCloud account to test
-    /// against yet (see `PENDING.md`). The verify script only asserts the
+    /// against yet. The verify script only asserts the
     /// form itself renders with the right preset values; a human with a
     /// real iCloud App 用パスワード is expected to exercise this button
-    /// once, per `PENDING.md`'s follow-up instructions.
+    /// once, manually.
     private func testConnection() async {
         isTesting = true
         testResultMessage = nil

@@ -55,7 +55,7 @@ enum MicrosoftAccountProvider {
 /// `GmailAccountSetupView` — a real browser OAuth round trip needs a real
 /// Azure AD app registration and test account, neither of which exists in
 /// this repo (OSS Client ID problem, mirrors Gmail's — see
-/// `docs/oauth-setup.md`'s Microsoft section and `PENDING.md`).
+/// `docs/oauth-setup.md`'s Microsoft section).
 struct MicrosoftAccountSetupView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss

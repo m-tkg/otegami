@@ -16,7 +16,7 @@ import GoogleOAuth
 ///
 /// **Not exercised by `scripts/verify-ios-m6.sh`**: the plan is explicit
 /// that a real browser OAuth round trip is out of automated-verification
-/// scope (no throwaway Google test account exists — see `PENDING.md`), and
+/// scope (no throwaway Google test account exists), and
 /// `AccountTypeSelectionView` disables the Gmail button entirely whenever
 /// `GOOGLE_OAUTH_CLIENT_ID` is unset (the dev/CI default), so this view is
 /// unreachable in that state and the automated suite never has to drive it.

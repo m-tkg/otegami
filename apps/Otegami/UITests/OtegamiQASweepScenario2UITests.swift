@@ -3,8 +3,7 @@ import XCTest
 /// Continuation of the exploratory QA sweep (`OtegamiQASweepUITests` covers
 /// scenarios 1-3 from the task list; this file covers 4-7): offline/online
 /// transition combinations, Composer edge cases, boundary search data, and
-/// settings round-trips. See `docs/qa-findings.md` for anything found here
-/// that wasn't fixed outright.
+/// settings round-trips.
 final class OtegamiQASweepScenario2UITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false

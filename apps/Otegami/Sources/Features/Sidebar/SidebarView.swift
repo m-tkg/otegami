@@ -614,7 +614,7 @@ struct SidebarView: View {
         }
     }
 
-    /// `docs/qa-findings.md`'s partial-sync-failure visibility — see
+    /// Partial-sync-failure visibility — see
     /// `MailboxSyncFailuresView`'s doc comment for the full rationale.
     /// Separate `Section` row from `sidebar.failedOps` deliberately: an
     /// `opQueue` failure (a *user action* like a delete/flag-change that

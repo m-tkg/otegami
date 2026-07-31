@@ -9,7 +9,7 @@ import AppKit
 // MARK: - Dynamic (light/dark) color support
 
 /// `Color.init(light:dark:)` — the primitive every token in `OtegamiColor`
-/// is built from. The design handoff (`design_handoff_ios_mail/README.md`,
+/// is built from. The design handoff (`docs/design-system.md`,
 /// "Design Tokens" section) explicitly ships light-only placeholder values
 /// and says to "トークン化して両対応にすること" (tokenize so both light and
 /// dark are covered), since dark mode was never designed for the

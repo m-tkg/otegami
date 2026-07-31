@@ -5,8 +5,8 @@ import XCTest
 /// values are asserted — actually tapping "接続テスト"/"保存して同期開始" would
 /// dial the real `imap.mail.me.com` with fake credentials, which needs
 /// network access this environment doesn't guarantee and would just fail
-/// authentication anyway (there's no throwaway iCloud account yet — see
-/// `PENDING.md`'s "iCloud App 用パスワードでの実アカウント確認" entry).
+/// authentication anyway (there's no throwaway iCloud account yet to test
+/// against).
 final class OtegamiM6ICloudFormUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false

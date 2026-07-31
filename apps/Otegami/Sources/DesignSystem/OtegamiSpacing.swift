@@ -1,7 +1,7 @@
 import CoreGraphics
 
 /// Spacing scale — multiples of the handoff's 12pt base unit
-/// (design_handoff_ios_mail/README.md's "Design Tokens" table: "余白 12px
+/// (`docs/design-system.md`'s "Design Tokens" table: "余白 12px
 /// を基本単位（行 padding 11–13px）"). Named by size (`xs`…`xl`), not by
 /// where they're used, since the same value gets reused across unrelated
 /// components (a chip's internal padding and a section's outer margin can
