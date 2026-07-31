@@ -63,10 +63,10 @@ that built cleanly locally even with `-warn-long-expression-type-checking`
 turned down to a strict threshold, because the local dev machine ran a
 newer Xcode/Swift toolchain than `ci-app`'s runner — the type-checker
 itself behaves differently across versions, not just at different speeds.
-See [docs/ci.md](docs/ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト-2026-07-25)
-for the full incident, including why the first fix attempt (extracting a
-row into its own `View`) wasn't enough on its own and what the second
-pass had to do differently.
+See [docs/ci.md](docs/ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト)
+for the full story, including why the first fix attempt (extracting a
+row into its own `View`) wasn't enough on its own and what actually
+worked.
 
 A `ForEach`/`Button`/`HStack`/conditional/modifier-chain combo folded
 into one giant expression is the classic trigger. Keep SwiftUI views
