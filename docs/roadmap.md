@@ -1,6 +1,5 @@
 # ロードマップ (将来項目)
 
-M0〜M11、および design-phase-2/3 (デザイン刷新・端末内翻訳の実装) で
 実装しなかった/意図的にスコープ外にした項目、または実装中に見つかった
 既知の制約のうち、いつか手を付ける価値があるものをまとめる。優先順位は
 付けていない。各項目の背景・詳細は該当する参照先を見ること。
@@ -15,32 +14,30 @@ M0〜M11、および design-phase-2/3 (デザイン刷新・端末内翻訳の�
   ローカル通知、またはmacOS 版 push 拡張の設計) は未着手。
 - **スレッドミュートとプッシュ通知の連携**: `ThreadRecord.isMuted` は
   ローカル限定の表示意図フラグで、プッシュ通知は抑制しない
-  (`docs/design-system.md`「新画面構成」節)。relay 自体はスレッド/ミュート
+  (`docs/design-system.md`参照)。relay 自体はスレッド/ミュート
   という概念を持たずメールボックス単位で「新着があるか」しか watch しない
   ため、ミュート状態をクライアント→relay に伝える同期チャネルを新設する
   必要がある。
 - **iCloud のユーザー名短縮形**: `ICloudAccountSetupView` はフルアドレス
   (`user@icloud.com`) を IMAP/SMTP ユーザー名として使う実装。実 iCloud
-  アカウントでの確認 (`PENDING.md`) の結果次第で短縮形への切替が必要になる
-  可能性がある。
+  アカウントでの確認結果次第で短縮形への切替が必要になる可能性がある。
 
-## iCloud アカウント同期 (M11)
+## iCloud アカウント同期
 
-- **verify スクリプトの iCloud KVS/Keychain 汚染**: M11 で
+- **verify スクリプトの iCloud KVS/Keychain 汚染**:
   `scripts/verify-ios-m1.sh`/`verify-ios-m6.sh`/`verify-ios-icloud.sh` は
   `xcrun simctl uninstall` を `simctl erase` に置き換えた (この開発環境の
   シミュレータでは KVS/Keychain がアプリのアンインストールでは消えず、
   以前の verify 実行で cloud へ push されたアカウントが「フレッシュ
   インストール」のはずの状態に復活してしまうため —
-  `.claude/skills/verify/SKILL.md` の M11 節参照)。M2-M5/M7-M9 の
+  `.claude/skills/verify/SKILL.md` 参照)。他の
   verify スクリプトはまだ旧来の `simctl uninstall` のままなので、将来
   これらを実行する際に同じ現象で account 一覧の前提が崩れる可能性が残って
   いる。実際に踏んだら同じ `simctl erase` パターンに揃えること。
 - **Gmail アカウントの cloud 挿入パスの実機確認**: `.oauth2` kind の
   アカウントが cloud から新規挿入された場合の自動同期開始
   (`GoogleOAuth.TokenStore.hasStoredRefreshToken`/`.accessToken(for:)`
-  経由) は実 Google アカウントでの 2 台間確認をしていない
-  (`PENDING.md`)。
+  経由) は実 Google アカウントでの 2 台間確認をしていない。
 
 ## 同期・信頼性
 
@@ -50,8 +47,7 @@ M0〜M11、および design-phase-2/3 (デザイン刷新・端末内翻訳の�
   expunge との区別がつかないケース) までは防げていない。`VANISHED`
   (QRESYNC) によるサーバー明示の削除通知を使う、または
   `serverUIDs.count` と `status.messageCount` の整合性をより厳密に
-  チェックするなどの堅牢化の余地が残る (`docs/verify.md`「実機で残る
-  確認事項」節)。dev mailstack の Dovecot は CONDSTORE 対応のため、
+  チェックするなどの堅牢化の余地が残る。dev mailstack の Dovecot は CONDSTORE 対応のため、
   CONDSTORE 非対応/不安定な実プロバイダでの実機再確認もあわせて必要。
 - **`AccountSyncer` のメールボックスループ例外処理の実機再確認**:
   複数メールボックスを順に同期する途中で1つが失敗しても
@@ -60,7 +56,7 @@ M0〜M11、および design-phase-2/3 (デザイン刷新・端末内翻訳の�
   .laterMailboxFailureDoesNotBlockEarlierMailboxThreading` で検証)。
   ただし発覚時の実機 (Wi-Fi 経由でタイムアウト/瞬断が起きやすい経路)
   でこの修正がリアルタイムに効いているかは、その場では既に自己修復
-  していたため確認できていない (`docs/verify.md`「有力な根本原因」節)。
+  していたため確認できていない。
 
 ## UI/UX
 
@@ -100,49 +96,48 @@ M0〜M11、および design-phase-2/3 (デザイン刷新・端末内翻訳の�
   (「すべて」/「現在のメールボックス」の切替) を安定して XCUITest から
   操作する方法が未確立。単体テスト (`SearchQueryTests`) では
   `SearchScope.mailbox` をカバー済みだが、UI 操作の自動検証はスキップして
-  いる (`docs/verify.md` M7 節)。
+  いる。
 - **macOS Settings ウィンドウの「アカウント」タブの見た目**: `OtegamiSettingsView`
   は `AccountsListContent` (`AccountsSettingsView` から抽出) を直接埋め込む
-  ことで TabView のコンテンツ切替バグ (M10 で発見・修正) を回避しているが、
+  ことで TabView のコンテンツ切替バグを回避しているが、
   `AccountsSettingsView` 自体は依然としてシート専用の「閉じる」ボタン付き
   `NavigationStack` ラッパーのまま。将来的にアカウント一覧・設定全体を
   もう少し整理してもよい。
 - **`OtegamiColor` への `warning` 系トークン追加**: 同期エラーバナー等が
   今も標準の `.orange` (システムセマンティックカラー) のまま。デザイン
   システムに正式な警告色トークンを追加するかどうかは未検討
-  (`docs/design-system.md` design-phase-2 節)。
+  (`docs/design-system.md`参照)。
 - **一括操作の「移動」の汎用フォルダピッカー化**: 現状はアーカイブ固定
   (スワイプの 1g と同じ宛先)。任意フォルダへの移動 UI は未実装
-  (`docs/design-system.md` design-phase-2 節)。
+  (`docs/design-system.md`参照)。
 - **スワイプの「操作」設定の汎用化**: 設定の「スワイプのクイック操作」は
   現状「既読/未読 と アーカイブ、どちらが先か」の1軸のみ。翻訳/後で の
   スワイプスロットが実装された時点で、任意のアクションを任意のスロット
-  に割り当てる汎用レジストリへの拡張を再検討する (`docs/design-system.md`
-  design-phase-3 節)。
+  に割り当てる汎用レジストリへの拡張を再検討する (`docs/design-system.md`参照)。
 - **`AccountFilterChip` 横スクロール行の多アカウント時の見た目**: アカウント
   5つ以上でチップ列がどう見えるか、実機の多アカウント環境ではまだ確認
-  していない (`docs/design-system.md` design-phase-2 節)。
+  していない (`docs/design-system.md`参照)。
 
 ## 翻訳
 
 - **一覧に要約を出す設定 (1l) の実装**: 設定のトグル自体はあり永続化も
   するが、一覧行への反映は未実装。スクロール中の英文メール全件に対して
   いつ・どのタイミングで背景翻訳/要約を走らせるか (トリガー・キャッシュ
-  戦略) の設計が必要 (`docs/design-system.md` design-phase-3 節)。
+  戦略) の設計が必要 (`docs/design-system.md`参照)。
 - **翻訳のストリーミング表示**: `TranslationService.translateStream` は
   エンジン層に実装・実機検証済みだが、UI 側 (`TranslationBar`) は現状
   非ストリーミング版のみを呼んでいる。段落ごとの逐次更新表示は見送った
-  (`docs/translation.md`/`docs/design-system.md` design-phase-3 節)。
+  (`docs/translation.md`/`docs/design-system.md`参照)。
 - **返信の引用部分を除いた英訳**: 「英語に翻訳して送る」は `> ` 引用も
   含めて本文全体を丸ごと翻訳する。引用と新規入力を区別して新規入力分
   だけを翻訳するには本文の構造化が必要で見送った
-  (`docs/design-system.md` design-phase-3 節)。
+  (`docs/design-system.md`参照)。
 - **iOS Simulator の `.app` プロセスから呼んだ場合の
   `FoundationModels.LanguageModelError -1`**: エンジン層は同一マシンの
   `swift test` からは毎回成功するため、コード側の不具合ではなく
   Simulator/toolchain 固有の制限と見ているが、根本原因の調査（実機での
   再検証、または Apple 側の既知の制限の有無確認）はまだ済んでいない
-  (`docs/translation.md`/`PENDING.md`)。
+  (`docs/translation.md`参照)。
 
 ## パフォーマンス
 
@@ -157,5 +152,4 @@ M0〜M11、および design-phase-2/3 (デザイン刷新・端末内翻訳の�
   ビルドのみ必要) もこのタイミングで対応する。
 - **macOS ビルドの Developer ID 署名 + notarization**: `make mac-app` で
   `dist/Otegami.app` を生成できるが、現状はアドホック署名のまま。自分の
-  Mac 以外に配る場合は Gatekeeper 対応が必要 (`PENDING.md`「公開時に
-  必要な対応」参照)。
+  Mac 以外に配る場合は Gatekeeper 対応が必要。
