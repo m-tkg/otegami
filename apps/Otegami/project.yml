@@ -358,10 +358,8 @@ targets:
       # same refresh-token-to-access-token exchange `AppEnvironment.auth(for:)`
       # already uses for a foregrounded `.oauth2` sync) plus
       # `PushRelayClient.PushOAuthAccessTokenResolution` (the timeout-racing
-      # wrapper around that exchange — see its own doc comment for why this
-      # target needs the dependency now, unlike the pre-existing
-      # `NotificationEnrichment`/`NotificationContentPreferences` mirrored
-      # copies still private to NotificationService.swift).
+      # wrapper around that exchange), plus the shared notification content
+      # preference and enrichment policy used directly by the Extension.
       - package: OtegamiKit
         product: GoogleOAuth
       - package: OtegamiKit

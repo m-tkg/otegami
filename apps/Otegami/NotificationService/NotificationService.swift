@@ -326,9 +326,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
     /// Mirrored copy of `BadgeCenter.sharedCountKey`
     /// (`apps/Otegami/Sources/Support/BadgeCenter.swift`) — must match
-    /// byte-for-byte (same reasoning as `NotificationEnrichment` below:
-    /// this Extension target doesn't share source files with the app
-    /// target, per `OtegamiAppGroup.swift`'s doc comment).
+    /// byte-for-byte because this Extension target doesn't share source
+    /// files with the app target, per `OtegamiAppGroup.swift`'s doc comment.
     private static let sharedBadgeCountKey = "badge.sharedCount"
 
     private func enrich(payload: PushNotificationPayload) async {
@@ -920,78 +919,5 @@ private struct UnreachableAuthorizationSessionRunner: GoogleOAuth.AuthorizationS
 
     func run(authorizationURL: URL, callbackURLScheme: String) async throws -> URL {
         throw UnexpectedCallError()
-    }
-}
-
-/// Mirrored copy of `PushRelayClient.NotificationContentPreferences`
-/// (Task #176) — see `NotificationEnrichment`'s own doc comment right below
-/// for why this type stays a separately-compiled copy even though Task
-/// #177 added a real `import PushRelayClient` to this target (for
-/// `PushOAuthAccessTokenResolution` only — see `oauthAccessToken(for:)`).
-/// The 3 key names must match
-/// `apps/Otegami/Sources/Support/NotificationContentSettingsStore.swift`'s
-/// (and by extension `AppSettingsCloudDirectory`'s allowlist entries for
-/// them) byte-for-byte — `notificationContentPreferences()` above is the
-/// only reader of these 3 strings on this side.
-private struct NotificationContentPreferences {
-    static let showsSenderKey = "notification.showsSender"
-    static let showsSubjectKey = "notification.showsSubject"
-    static let showsBodyPreviewKey = "notification.showsBodyPreview"
-
-    var showsSender: Bool
-    var showsSubject: Bool
-    var showsBodyPreview: Bool
-
-    static let allEnabled = NotificationContentPreferences(showsSender: true, showsSubject: true, showsBodyPreview: true)
-}
-
-/// Mirrored copy of `PushRelayClient.NotificationEnrichment`
-/// (`packages/OtegamiKit/Sources/PushRelayClient/NotificationEnrichment
-/// .swift`) — kept as its own separately-compiled copy even though Task
-/// #177 added a real `import PushRelayClient` to this target (for
-/// `PushOAuthAccessTokenResolution` only, a type this file's Task #176
-/// era predates). Switching this pre-existing, already-tested duplicate
-/// over to the real import too was deliberately left out of Task #177's
-/// scope — no behavior here needed to change, so there was nothing to
-/// gain from touching it beyond the risk of a subtle regression (same
-/// reasoning `OtegamiAppGroup.swift`'s existing duplication doc comment
-/// gives for the *App Group id*/*Keychain Access Group* copies). The
-/// algorithm is unit-tested there (`NotificationEnrichmentTests`); this
-/// copy is intentionally kept tiny and byte-for-byte identical so it needs
-/// no independent test coverage of its own. Reuses `OtegamiCore
-/// .SnippetBuilder` directly (rather than re-deriving its truncation
-/// algorithm too) since `OtegamiCore` is already a real dependency of this
-/// extension target (`project.yml`).
-private enum NotificationEnrichment {
-    static let genericTitle = "Otegami"
-    static let genericBody = "新着メールがあります"
-
-    static func needsFetch(preferences: NotificationContentPreferences) -> Bool {
-        preferences.showsSender || preferences.showsSubject || preferences.showsBodyPreview
-    }
-
-    static func title(preferences: NotificationContentPreferences, senderName: String?, senderAddress: String?) -> String {
-        guard preferences.showsSender else { return genericTitle }
-        if let senderName, !senderName.isEmpty { return senderName }
-        if let senderAddress, !senderAddress.isEmpty { return senderAddress }
-        return genericTitle
-    }
-
-    static func body(
-        preferences: NotificationContentPreferences,
-        subject: String?,
-        bodyPreviewSourceText: String?,
-        bodyPreviewMaxLength: Int = 120
-    ) -> String {
-        var lines: [String] = []
-        if preferences.showsSubject, let subject, !subject.isEmpty {
-            lines.append(subject)
-        }
-        if preferences.showsBodyPreview,
-           let preview = SnippetBuilder.make(from: bodyPreviewSourceText, maxLength: bodyPreviewMaxLength) {
-            lines.append(preview)
-        }
-        guard !lines.isEmpty else { return genericBody }
-        return lines.joined(separator: "\n")
     }
 }

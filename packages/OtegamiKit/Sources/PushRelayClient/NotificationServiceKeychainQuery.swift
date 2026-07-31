@@ -53,8 +53,7 @@ public enum NotificationServiceKeychainQuery {
 
     /// `KeychainCredentialStore`の既定 `service` 文字列のミラー——
     /// `apps/Otegami/Sources`側は`swift test`到達不能なので、直接
-    /// importして共有する代わりに文字列リテラルを複製している (このファイル
-    /// の他の"mirrored copy"、`NotificationEnrichment`等と同じパターン)。
+    /// importして共有する代わりに文字列リテラルを複製している。
     public static let currentService = "com.mtkg.otegami.account-password"
 
     /// `KeychainCredentialStore.legacyServices`のミラー(`52df393`の

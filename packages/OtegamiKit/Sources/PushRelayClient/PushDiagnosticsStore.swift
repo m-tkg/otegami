@@ -101,9 +101,7 @@ public struct PushDiagnosticsRun: Sendable, Codable, Equatable, Identifiable {
 /// `NotificationService` (writer) and the app's `PushDiagnosticsStore`
 /// (reader) use — kept in this one package (both targets already link
 /// `PushRelayClient`, see `NotificationService.swift`'s existing `import
-/// PushRelayClient`) rather than duplicated as a "mirrored copy" the way
-/// `NotificationEnrichment`/`NotificationContentPreferences` are, since
-/// there's no cross-target source-sharing constraint to route around here.
+/// PushRelayClient`) rather than duplicated across the two targets.
 public enum PushDiagnosticsHistory {
     /// How many recent runs to keep. **20**, not 5 like
     /// `TranslationDiagnosticsStore` — a device can have several accounts

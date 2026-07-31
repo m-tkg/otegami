@@ -18,6 +18,12 @@ import OtegamiCore
 /// subject on their lock screen), which is exactly the "混同しやすい" gap
 /// `PushNotificationSettingsView`'s footer text calls out explicitly.
 public struct NotificationContentPreferences: Equatable, Sendable {
+    /// Stable keys shared by the app's settings store and Notification
+    /// Service Extension. Changing these would discard existing choices.
+    public static let showsSenderKey = "notification.showsSender"
+    public static let showsSubjectKey = "notification.showsSubject"
+    public static let showsBodyPreviewKey = "notification.showsBodyPreview"
+
     public var showsSender: Bool
     public var showsSubject: Bool
     public var showsBodyPreview: Bool
@@ -52,22 +58,9 @@ public struct NotificationContentPreferences: Equatable, Sendable {
 /// needs a full iOS Simulator + XCUITest + `xcrun simctl push` to drive for
 /// real, `docs/verify.md`'s `scripts/verify-ios-push-simulated.sh`).
 ///
-/// `NotificationService.swift` keeps a small **mirrored** private copy of
-/// these functions rather than importing this type directly — the
-/// app-extension target's `project.yml` dependency list doesn't currently
-/// include the `PushRelayClient` product (only `OtegamiCore`/`MailTransport`/
-/// `MailTransportMailCore`/`OtegamiStore`/`OtegamiRelayAPI`/`SyncEngine`),
-/// and this task's scope is intentionally limited to files under
-/// `apps/Otegami/NotificationService/`/`packages/OtegamiKit/Sources/
-/// {PushRelayClient,AccountCloudSync}/` — not `project.yml`. Same reasoning
-/// `OtegamiAppGroup.swift`'s doc comment already documents for why that type
-/// has an identical, separately-compiled copy in the extension target
-/// instead of a shared import: keep the algorithm itself defined once here
-/// (and unit-tested here), and let the mirrored copy be a small, easy-to-
-/// keep-in-sync-by-inspection duplicate. That mirrored copy *does* import
-/// `OtegamiCore` directly though (already a real dependency of the extension
-/// target, per `project.yml`) rather than re-deriving `SnippetBuilder`'s
-/// truncation algorithm a third time.
+/// `NotificationService.swift` imports this type directly through the
+/// extension target's `PushRelayClient` dependency. The policy therefore
+/// has one implementation shared by its unit tests and production caller.
 public enum NotificationEnrichment {
     /// Title/body shown when nothing enrichable is available — either every
     /// toggle in `NotificationContentPreferences` is off, or (unrelated to

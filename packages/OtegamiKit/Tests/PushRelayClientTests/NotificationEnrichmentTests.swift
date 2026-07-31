@@ -4,7 +4,7 @@ import Testing
 
 /// Unit coverage for `NotificationEnrichment`/`NotificationContentPreferences`
 /// — the pure title/body policy `NotificationService.swift`'s
-/// `enrich(payload:)` applies (see that type's own mirrored copy). Nothing
+/// `enrich(payload:)` applies. Nothing
 /// here touches IMAP/GRDB/Keychain/`UNMutableNotificationContent`; that
 /// end-to-end path (a real `NotificationService` process rewriting a real
 /// notification's content after `xcrun simctl push`) is
@@ -12,6 +12,13 @@ import Testing
 /// `docs/verify.md`.
 @Suite("NotificationEnrichment")
 struct NotificationEnrichmentTests {
+    @Test("shared preference keys preserve existing UserDefaults storage")
+    func sharedPreferenceKeysRemainStable() {
+        #expect(NotificationContentPreferences.showsSenderKey == "notification.showsSender")
+        #expect(NotificationContentPreferences.showsSubjectKey == "notification.showsSubject")
+        #expect(NotificationContentPreferences.showsBodyPreviewKey == "notification.showsBodyPreview")
+    }
+
     // MARK: - needsFetch
 
     @Test("needsFetch is true if any one of the 3 toggles is on")

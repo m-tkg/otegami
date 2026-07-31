@@ -38,9 +38,9 @@ import PushRelayClient
 ///   push, rather than waiting on the user to open this settings screen or
 ///   for iCloud sync to fire.
 enum NotificationContentSettingsStore {
-    static let showsSenderKey = "notification.showsSender"
-    static let showsSubjectKey = "notification.showsSubject"
-    static let showsBodyPreviewKey = "notification.showsBodyPreview"
+    static let showsSenderKey = NotificationContentPreferences.showsSenderKey
+    static let showsSubjectKey = NotificationContentPreferences.showsSubjectKey
+    static let showsBodyPreviewKey = NotificationContentPreferences.showsBodyPreviewKey
 
     /// Every toggle defaults to on — Task #176 must not change existing
     /// behavior for a user who never opens this settings screen at all.
