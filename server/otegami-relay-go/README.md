@@ -1,6 +1,7 @@
 # otegami-relay-go
 
-Go port of `server/otegami-relay` (Swift/Hummingbird) — Task #180.
+Go port of `server/otegami-relay` (Swift/Hummingbird), verified wire- and
+storage-compatible with it (see "Compatibility contract" below).
 
 ## Why port this to Go
 
@@ -95,11 +96,11 @@ Each package's doc comment names the exact Swift file it mirrors.
 
 ## Status
 
-**Feature-complete and verified equivalent (2026-07-31).** All stages of
-Task #180 are implemented: HTTP API, SQLite store, credential crypto,
-SSRF network policy, IMAP client (IDLE + STATUS-polling fallback), OAuth
-token exchange, APNs sender (console fallback), watcher pool with status
-persistence, `main`, and the cross-compiling Dockerfile.
+**Feature-complete and verified equivalent to the Swift relay.** HTTP API,
+SQLite store, credential crypto, SSRF network policy, IMAP client (IDLE +
+STATUS-polling fallback), OAuth token exchange, APNs sender (console
+fallback), watcher pool with status persistence, `main`, and the
+cross-compiling Dockerfile are all implemented.
 
 Verification performed:
 
@@ -117,16 +118,16 @@ Verification performed:
   bodies), plus route tests mirroring the Swift `WatchRoutesTests`.
 - **Real Dovecot integration**: IDLE detects `doveadm save`-delivered
   mail and fires exactly one push; an IDLE timeout does not break the
-  connection (the Swift relay's historical production bug — see
-  `docs/verify.md`). Run with `OTEGAMI_TEST_IMAP_HOST=localhost go test
+  connection. Run with `OTEGAMI_TEST_IMAP_HOST=localhost go test
   ./internal/watcher/ -run RealDovecot`.
 - **Cross-compilation**: `docker buildx build --platform linux/arm64`
   completes in ~40s with the build stage running natively
   (`--platform=$BUILDPLATFORM` + `CGO_ENABLED=0`) — no QEMU; the
   arm64 container boots and serves `/health`.
 
-Not verified (same as the Swift relay): real APNs delivery (no `.p8` key
-issued yet — `PENDING.md`), and XOAUTH2 against a real server
+Not verified (same as the Swift relay, and a standing limitation of this
+dev environment): real APNs delivery (requires a real `.p8` key), and
+XOAUTH2 against a real server
 (dev/mailstack Dovecot only offers `plain`; the RFC 7628 flow is covered
 by the fake-server tests, as in the Swift suite).
 
