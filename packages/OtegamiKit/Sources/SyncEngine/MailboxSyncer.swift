@@ -219,7 +219,7 @@ public actor MailboxSyncer {
             if !newEnvelopes.isEmpty {
                 try await database.dbWriter.write { db in
                     for envelope in newEnvelopes {
-                        try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                        try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
                     }
                 }
                 progress.newMessages = newEnvelopes.count
@@ -265,7 +265,7 @@ public actor MailboxSyncer {
                 if !result.envelopes.isEmpty {
                     try await database.dbWriter.write { db in
                         for envelope in result.envelopes {
-                            try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                            try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
                         }
                     }
                     progress.flagChanges = result.envelopes.count
@@ -365,7 +365,7 @@ public actor MailboxSyncer {
             )
             try await database.dbWriter.write { db in
                 for envelope in envelopes {
-                    try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                    try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
                 }
             }
         }
@@ -613,7 +613,7 @@ public actor MailboxSyncer {
                     let unknownSet = Set(unknownUIDs)
                     try await database.dbWriter.write { db in
                         for envelope in unknownEnvelopes where unknownSet.contains(envelope.uid) {
-                            try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                            try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
                         }
                     }
                 }
@@ -660,7 +660,7 @@ public actor MailboxSyncer {
 
         try await database.dbWriter.write { db in
             for envelope in refetched {
-                try AccountSyncer.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
             }
         }
 
