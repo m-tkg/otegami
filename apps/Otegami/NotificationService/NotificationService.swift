@@ -10,6 +10,7 @@ import PushRelayClient
 import Security
 import SyncEngine
 import UserNotifications
+import os
 
 /// Handles otegami-relay's `mutable-content` push (M9, plan §7's privacy
 /// design: the payload only ever carries `accountId`/`uidNext`, never
@@ -81,6 +82,23 @@ import UserNotifications
 /// `serviceExtensionTimeWillExpire()` delivers whatever's on hand
 /// (best-effort — the generic fallback, if step 4 hasn't completed yet)
 /// before the OS's ~30 second budget runs out.
+///
+/// **Diagnostic logging (Task #211)**: 実機で「通知は届くが差出人・件名が
+/// 出ない」報告があり (Gmail/iCloud は問題なし、Yahoo! JAPAN だけ)、この
+/// ファイルは以前どの段階で失敗しているか一切ログを残していなかった —
+/// `enrich(payload:)` のあらゆる失敗が同じ「無言で汎用文言のまま」に
+/// 見えてしまい、原因を切り分けられなかった。今は各段階
+/// (preferences/account lookup/credential/IMAP connect/select/envelope
+/// fetch/body fetch) の成否を `logger` (`os.Logger`, `.notice`以上) へ
+/// 記録する。`NotificationServiceDiagnostics.summarize(category:
+/// underlyingDescription:)` (`PushRelayClient`, ユニットテスト済み) が
+/// 実際のカテゴリ分類/レート制限検知/PII 除去を行い、ここは
+/// `MailTransportError` の `switch` とログ呼び出しだけを担う。**本文・
+/// 件名・差出人・資格情報は一切ログに出さない** — `authenticationFailed`
+/// の `underlyingDescription` (サーバーがログイン名をエコーし返す実装が
+/// あり得る) も意図的に落とす。実機での見方・既知の疑い (Yahoo の同時
+/// 接続/レート制限) は `docs/architecture.md` の落とし穴 i. の追記
+/// (Task #211) を参照。
 // `@unchecked Sendable`: `UNNotificationServiceExtension` doesn't itself
 // promise `didReceive(_:withContentHandler:)`/`serviceExtensionTimeWillExpire()`
 // run on any particular actor, so the compiler can't otherwise prove the
@@ -93,10 +111,25 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttemptContent: UNMutableNotificationContent?
 
+    /// Set once at the top of `didReceive`, read back by `deliver()` (from
+    /// either the normal completion path or `serviceExtensionTimeWillExpire()`)
+    /// to log how much of the ~30 second OS budget this run actually used —
+    /// see this type's "Diagnostic logging" doc comment. `nil` only if
+    /// `deliver()` is somehow reached before `didReceive` ever ran (doesn't
+    /// happen in practice; guards the log line, not correctness).
+    private var startedAt: Date?
+
+    /// Task #211 — see this type's "Diagnostic logging" doc comment for
+    /// what gets written here and why. `com.mtkg.otegami` matches every
+    /// other `Logger(subsystem:category:)` call site in the app target
+    /// (e.g. `AppDatabase.swift`).
+    private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "NotificationService")
+
     override func didReceive(
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
+        startedAt = Date()
         self.contentHandler = contentHandler
         let content = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
         content.title = "Otegami"
@@ -113,6 +146,11 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // `self` is what the compiler can't prove race-free, not `self`
         // alone (this class is `@unchecked Sendable`).
         let payload = Self.parsePayload(request.content.userInfo)
+        if let payload {
+            Self.logger.notice("didReceive: accountId=\(payload.accountId, privacy: .public) uidNext=\(payload.uidNext, privacy: .public)")
+        } else {
+            Self.logger.notice("didReceive: push carried no accountId/uidNext — nothing to enrich, leaving generic content")
+        }
 
         Task {
             if let payload {
@@ -146,12 +184,22 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // extension process runs out — deliver whatever's on hand (the
         // generic fallback body set in didReceive, if enrich(payload:)
         // hasn't finished) rather than let the notification disappear.
+        // Logged unconditionally (Task #211): the immediately-following
+        // `deliver()` log's `elapsedMs` tells a real device's next
+        // reproduction whether this run actually timed out (elapsedMs near
+        // 30000, this line present) versus finished normally well under
+        // budget (this line absent).
+        Self.logger.notice("serviceExtensionTimeWillExpire: OS budget about to run out — delivering best-effort content")
         deliver()
     }
 
     private func deliver() {
         guard let contentHandler, let bestAttemptContent else { return }
         self.contentHandler = nil
+        if let startedAt {
+            let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            Self.logger.notice("deliver: elapsedMs=\(elapsedMs, privacy: .public)")
+        }
         contentHandler(bestAttemptContent)
     }
 
@@ -177,45 +225,167 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // Task #176: every toggle off -> nothing below would ever be used,
         // so skip the account/Keychain lookup and the IMAP connection
         // entirely — see this type's doc comment, step 2.
-        guard NotificationEnrichment.needsFetch(preferences: preferences) else { return }
+        guard NotificationEnrichment.needsFetch(preferences: preferences) else {
+            Self.logger.notice("enrich: all 3 content toggles are off — skipping account lookup/IMAP entirely")
+            return
+        }
+        Self.logger.notice("""
+        enrich: preferences showsSender=\(preferences.showsSender, privacy: .public) \
+        showsSubject=\(preferences.showsSubject, privacy: .public) \
+        showsBodyPreview=\(preferences.showsBodyPreview, privacy: .public)
+        """)
 
-        guard let account = try? await Self.lookupAccount(id: payload.accountId) else { return }
-        guard let auth = await Self.resolveAuth(for: account) else { return }
+        let account: AccountRecord
+        do {
+            guard let found = try await Self.lookupAccount(id: payload.accountId) else {
+                Self.logger.notice("enrich: account lookup: no row for this accountId — falling back to generic")
+                return
+            }
+            account = found
+        } catch {
+            Self.logger.error("enrich: account lookup: shared AppDatabase read threw — falling back to generic: \(String(describing: error), privacy: .public)")
+            return
+        }
+        Self.logger.notice("""
+        enrich: account lookup: found kind=\(account.kind.rawValue, privacy: .public) \
+        authType=\(account.authType.rawValue, privacy: .public) host=\(account.imapHost, privacy: .public)
+        """)
+
+        guard let auth = await Self.resolveAuth(for: account) else {
+            Self.logger.notice("enrich: credential: no usable credential resolved (see preceding log line) — falling back to generic")
+            return
+        }
+        Self.logger.notice("enrich: credential: resolved, connecting")
 
         let session = MailCoreIMAPSession(config: account.imapConfig)
+        let mailbox = "INBOX"
+
         do {
             try await session.connect(auth: auth)
-            let mailbox = "INBOX"
-            _ = try await session.select(mailbox)
-            let latestUID = UInt32(max(payload.uidNext - 1, 1))
-            let envelopes = try await session.fetchEnvelopes(mailboxPath: mailbox, uids: .uid(latestUID), batchSize: 1)
-
-            if let envelope = envelopes.first {
-                // Only pay for the (meaningfully heavier) whole-message
-                // fetch when `showsBodyPreview` is actually on — see this
-                // type's doc comment, step 5. `try?`, not part of the outer
-                // `do`/`catch`: a body-fetch failure here should only drop
-                // the preview line, not the envelope-derived title/subject
-                // this call already has in hand.
-                var bodyPreviewSourceText: String?
-                if preferences.showsBodyPreview {
-                    bodyPreviewSourceText = try? await session.fetchBody(mailboxPath: mailbox, uid: latestUID).plainText
-                }
-
-                let sender = envelope.from.first
-                bestAttemptContent?.title = NotificationEnrichment.title(
-                    preferences: preferences, senderName: sender?.name, senderAddress: sender?.address
-                )
-                bestAttemptContent?.body = NotificationEnrichment.body(
-                    preferences: preferences, subject: envelope.subject, bodyPreviewSourceText: bodyPreviewSourceText
-                )
-            }
+            Self.logger.notice("enrich: connect: succeeded")
         } catch {
-            // Leave the generic fallback content in place — see the type's
-            // doc comment on why this is a silent no-op rather than
-            // surfacing the error anywhere a user could see it.
+            Self.log(error, stage: "connect")
+            await session.disconnect()
+            return
         }
+
+        do {
+            _ = try await session.select(mailbox)
+            Self.logger.notice("enrich: select: succeeded")
+        } catch {
+            Self.log(error, stage: "select")
+            await session.disconnect()
+            return
+        }
+
+        let latestUID = UInt32(max(payload.uidNext - 1, 1))
+        let envelopes: [FetchedEnvelope]
+        do {
+            envelopes = try await session.fetchEnvelopes(mailboxPath: mailbox, uids: .uid(latestUID), batchSize: 1)
+            Self.logger.notice("enrich: fetchEnvelope: succeeded count=\(envelopes.count, privacy: .public)")
+        } catch {
+            Self.log(error, stage: "fetchEnvelope")
+            await session.disconnect()
+            return
+        }
+
+        guard let envelope = envelopes.first else {
+            Self.logger.notice("""
+            enrich: fetchEnvelope: no results for uid=\(latestUID, privacy: .public) \
+            (uidNext=\(payload.uidNext, privacy: .public)) — already expunged/moved, \
+            or a uidNext/UID mismatch; falling back to generic
+            """)
+            await session.disconnect()
+            return
+        }
+
+        // Only pay for the (meaningfully heavier) whole-message fetch when
+        // `showsBodyPreview` is actually on — see this type's doc comment,
+        // step 5. A body-fetch failure here only drops the preview line,
+        // not the envelope-derived title/subject already in hand, so it's
+        // logged but never treated as this whole call failing.
+        var bodyPreviewSourceText: String?
+        if preferences.showsBodyPreview {
+            do {
+                bodyPreviewSourceText = try await session.fetchBody(mailboxPath: mailbox, uid: latestUID).plainText
+                Self.logger.notice("enrich: fetchBody: succeeded")
+            } catch {
+                Self.log(error, stage: "fetchBody")
+            }
+        }
+
+        let sender = envelope.from.first
+        bestAttemptContent?.title = NotificationEnrichment.title(
+            preferences: preferences, senderName: sender?.name, senderAddress: sender?.address
+        )
+        bestAttemptContent?.body = NotificationEnrichment.body(
+            preferences: preferences, subject: envelope.subject, bodyPreviewSourceText: bodyPreviewSourceText
+        )
+        Self.logger.notice("enrich: applied enrichment to notification content")
         await session.disconnect()
+    }
+
+    /// Classifies `error` (expected to be a `MailTransport.MailTransportError`
+    /// from one of `enrich(payload:)`'s IMAP calls, but handled defensively
+    /// for anything `Error`-shaped) and writes exactly one `.error`-level
+    /// OSLog line naming `stage` and the failure category — see this type's
+    /// "Diagnostic logging" doc comment. Only unwraps the
+    /// `MailTransportError` case here (a `switch`, not practically unit
+    /// testable — it's a straight one-to-one string mapping); the actual
+    /// redaction/rate-limit-detection logic lives in
+    /// `NotificationServiceDiagnostics.summarize(category:
+    /// underlyingDescription:)` (`PushRelayClient`), which is.
+    private static func log(_ error: Error, stage: String) {
+        let category: String
+        let underlyingDescription: String?
+        switch error {
+        case let transportError as MailTransportError:
+            switch transportError {
+            case .connectionFailed(let description):
+                category = "connectionFailed"
+                underlyingDescription = description
+            case .authenticationFailed(let description):
+                category = "authenticationFailed"
+                underlyingDescription = description
+            case .serverError(let description):
+                category = "serverError"
+                underlyingDescription = description
+            case .malformedResponse(let description):
+                category = "malformedResponse"
+                underlyingDescription = description
+            case .mailboxNotFound(let path):
+                category = "mailboxNotFound"
+                underlyingDescription = path
+            case .notConnected:
+                category = "notConnected"
+                underlyingDescription = nil
+            case .cancelled:
+                category = "cancelled"
+                underlyingDescription = nil
+            case .notImplemented(let description):
+                category = "notImplemented"
+                underlyingDescription = description
+            case .invalidAddress:
+                category = "invalidAddress"
+                underlyingDescription = nil
+            }
+        default:
+            category = "unknown"
+            underlyingDescription = String(describing: type(of: error))
+        }
+
+        let summary = NotificationServiceDiagnostics.summarize(category: category, underlyingDescription: underlyingDescription)
+        if let detail = summary.logDetail {
+            Self.logger.error("""
+            enrich: \(stage, privacy: .public) failed category=\(summary.category, privacy: .public) \
+            rateLimited=\(summary.looksRateLimited, privacy: .public) detail=\(detail, privacy: .public)
+            """)
+        } else {
+            Self.logger.error("""
+            enrich: \(stage, privacy: .public) failed category=\(summary.category, privacy: .public) \
+            rateLimited=\(summary.looksRateLimited, privacy: .public)
+            """)
+        }
     }
 
     /// Task #176: this device's current `NotificationContentPreferences`,
@@ -289,7 +459,16 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         }()
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        guard status == errSecSuccess, let data = result as? Data else {
+            // `status` is a plain `OSStatus` (a numeric code, e.g.
+            // `errSecItemNotFound`/`-25300` vs. `errSecInteractionNotAllowed`
+            // /`-25308` — the latter meaning the Keychain item's data
+            // protection class requires the device to be unlocked, which
+            // this Extension can run before) — not the password itself, so
+            // safe to log (Task #211).
+            Self.logger.notice("auth: password branch: SecItemCopyMatching failed status=\(status, privacy: .public)")
+            return nil
+        }
         return String(data: data, encoding: .utf8)
     }
 
@@ -307,7 +486,10 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             guard let password = try? Self.password(forAccountId: account.id) else { return nil }
             return .password(username: account.imapUsername, password: password)
         case .oauth2:
-            guard let accessToken = await Self.oauthAccessToken(for: account) else { return nil }
+            guard let accessToken = await Self.oauthAccessToken(for: account) else {
+                Self.logger.notice("auth: oauth2 branch: no access token resolved (see preceding log line for which sub-reason)")
+                return nil
+            }
             return .xoauth2(username: account.imapUsername, accessToken: accessToken)
         }
     }
@@ -349,7 +531,10 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// time the main app itself calls `auth(for:)` it correctly reports
     /// "要再認証" rather than retrying a token Google has already rejected.
     private static func oauthAccessToken(for account: AccountRecord) async -> String? {
-        guard account.kind == .gmail || account.kind == .microsoft else { return nil }
+        guard account.kind == .gmail || account.kind == .microsoft else {
+            Self.logger.notice("auth: oauth2 branch: account.kind is neither gmail nor microsoft — unreachable in practice, no token")
+            return nil
+        }
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = oauthTokenFetchTimeout
@@ -359,27 +544,47 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
         switch account.kind {
         case .gmail:
-            guard let clientId = OAuthConfig.googleClientId else { return nil }
+            guard let clientId = OAuthConfig.googleClientId else {
+                Self.logger.notice("auth: oauth2 branch (gmail): this build has no Google Client ID configured")
+                return nil
+            }
             let client = GoogleOAuthClient(
                 endpoints: .standard(clientId: clientId),
                 sessionRunner: sessionRunner,
                 urlSession: urlSession
             )
             let tokenStore = GoogleOAuth.TokenStore(refresher: client)
-            return await PushOAuthAccessTokenResolution.resolve(timeout: oauthTokenFetchTimeout) {
+            let token = await PushOAuthAccessTokenResolution.resolve(timeout: oauthTokenFetchTimeout) {
                 try await tokenStore.accessToken(for: account.id)
             }
+            // Collapses "no stored refresh token" / "refresh itself failed
+            // (e.g. invalid_grant)" / "timed out" into one line by design —
+            // `PushOAuthAccessTokenResolution`'s own doc comment: "this
+            // type never logs at all", so this is the closest this
+            // Extension gets to knowing *that* the gmail branch lost
+            // without ever touching the token value itself.
+            if token == nil {
+                Self.logger.notice("auth: oauth2 branch (gmail): token resolution returned nil (no refresh token / refresh failed / timed out)")
+            }
+            return token
         case .microsoft:
-            guard let clientId = OAuthConfig.microsoftClientId else { return nil }
+            guard let clientId = OAuthConfig.microsoftClientId else {
+                Self.logger.notice("auth: oauth2 branch (microsoft): this build has no Microsoft Client ID configured")
+                return nil
+            }
             let client = MicrosoftOAuthClient(
                 endpoints: .standard(clientId: clientId),
                 sessionRunner: sessionRunner,
                 urlSession: urlSession
             )
             let tokenStore = MicrosoftOAuth.TokenStore(refresher: client)
-            return await PushOAuthAccessTokenResolution.resolve(timeout: oauthTokenFetchTimeout) {
+            let token = await PushOAuthAccessTokenResolution.resolve(timeout: oauthTokenFetchTimeout) {
                 try await tokenStore.accessToken(for: account.id)
             }
+            if token == nil {
+                Self.logger.notice("auth: oauth2 branch (microsoft): token resolution returned nil (no refresh token / refresh failed / timed out)")
+            }
+            return token
         case .generic, .icloud:
             return nil
         }

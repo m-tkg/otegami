@@ -701,3 +701,43 @@ watch が全滅した直後、全アカウントがこの状態になる) には
 画面を開くたびに `GET /v1/watches` を取得し直して行を再構築するため、
 リレー側の watch 全滅は次にこの画面を開いた瞬間に全行が「未登録」と
 表示される形で既に可視化されている。
+
+**追記 (Task #211: 実機バグ4、通知の内容が Yahoo! JAPAN アカウントだけ
+出ない)。** Task #208 配信後の実機報告: 通知自体は Gmail/iCloud/Yahoo!
+JAPAN いずれも届くようになったが、**Yahoo! JAPAN だけ**差出人・件名が
+「新着メールがあります」という汎用文言のまま出ない (Gmail/iCloud は
+正常)。`NotificationService.swift`(`apps/Otegami/NotificationService/`)
+の `enrich(payload:)` は、この push を受け取った端末自身が別途 IMAP
+接続を張って最新メッセージのエンベロープ(と、設定が on なら本文)を
+取りに行く — つまり、この Extension の接続はリレーが watch のために
+持っている接続とは**別の**接続。Task #201 でリレーが Yahoo! への接続を
+張りっぱなしにするようになり (それ以前は2〜5分で切れていた)、
+Task #208 で同一アカウントの watch を1本に統合した後もなお症状が続いて
+いる。上記 i. の `[LIMIT]` (コマンドレート制限) に加えて、Yahoo! JAPAN
+は同時接続数の制限も持つ疑いがある — リレーの常時接続1本 + この
+Extension の一時接続がぶつかっている可能性。**現時点では未検証**
+(実機のログを取っていない)。
+
+**当面の対策はログの追加に留めた。** `enrich(payload:)` の各段階
+(preferences 判定/account lookup/credential 解決/IMAP connect/select/
+envelope fetch/body fetch) の成否を OSLog (`Logger(subsystem:
+"com.mtkg.otegami", category: "NotificationService")`, `.notice`
+以上) に記録するようにした — 特に IMAP 側の失敗は
+`NotificationServiceDiagnostics.summarize(category:underlyingDescription:)`
+(`packages/OtegamiKit/Sources/PushRelayClient/
+NotificationServiceDiagnostics.swift`、ユニットテスト済み) が
+`MailTransportError` の種別を分類し、`underlyingDescription` に
+`[LIMIT]` を含むかどうか (`looksRateLimited`) を判定する。
+`authenticationFailed` の `underlyingDescription` は意図的にログへ
+出さない (サーバーがログイン名をエコーし返す実装があり得るため —
+本文・件名・差出人・資格情報は一切ログに出さない、という既存の方針
+と同じ)。実機で再現した際に Console.app (Mac に接続して
+`log stream --predicate 'subsystem == "com.mtkg.otegami" &&
+category == "NotificationService"'`、または sysdiagnose) で
+`enrich:` 系のログを見れば、どの段階で・どのカテゴリ (`connectionFailed`
+/`authenticationFailed`/`serverError`/タイムアウトなら
+`serviceExtensionTimeWillExpire` が先に出る) で止まっているかが分かる
+はずで、**それを見てから初めて対策 (Extension 側の短い再試行/フォール
+バック文言の改善/リレー側の接続の持ち方の見直し、のいずれか) を選ぶ**。
+先に対策を決め打ちしなかったのは、上記 i. の教訓 (「サードパーティの
+報告値」より「自分の本番ログでの実測値」を優先すること) と同じ理由。
