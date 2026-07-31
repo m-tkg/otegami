@@ -144,7 +144,7 @@ func New(s *store.Store, sender push.Sender, logger *slog.Logger, opts Options) 
 		opts.PollInterval = 5 * time.Minute
 	}
 	if opts.PollKeepAliveInterval == 0 {
-		opts.PollKeepAliveInterval = 2 * time.Minute
+		opts.PollKeepAliveInterval = 45 * time.Second
 	}
 	if opts.ConnectTimeout == 0 {
 		opts.ConnectTimeout = 15 * time.Second
@@ -461,19 +461,28 @@ func (p *Pool) connectAndWatch(
 // wrong password, since the same credential kept succeeding again minutes
 // later.
 //
-// This relay cannot safely probe Yahoo's production timeout directly (an
-// account already flagged by their abuse protection is not a safe test
-// target), so the exact threshold isn't pinned to a measured number.
-// Independent third-party reports (e.g. Mozilla bug 468490 and other
-// client bug trackers, gathered while investigating this task) describe
-// Yahoo IMAP as dropping a connection after on the order of 5 minutes of
-// no traffic, and recommend refreshing at roughly the 4-minute mark to
-// keep it alive — consistent with what production logged here.
-// PollKeepAliveInterval defaults to 2 minutes: comfortably inside every
-// reported threshold with margin to spare, while still an order of
-// magnitude less chatty than actually polling that often. NOOP itself is
-// a real command the server has to answer, so this deliberately doesn't
-// go any more frequent than that margin requires.
+// The interval was first set to 2 minutes based on third-party reports
+// (e.g. Mozilla bug 468490) describing Yahoo IMAP as dropping idle
+// connections after roughly 5 minutes. **Production disproved that.** With
+// a 2-minute keepalive, otegami.mtkg logged:
+//
+//	00:35:15  watch connected            (LOGIN succeeded)
+//	00:37:15  IMAP connection closed unexpectedly
+//
+// — dead at exactly the 2-minute mark, i.e. the NOOP found a connection the
+// server had already dropped. Yahoo's real idle timeout is therefore well
+// under 2 minutes, and the 2-minute setting actively made things worse: it
+// reconnected (and re-LOGINed) every 2 minutes instead of the previous 5,
+// raising login volume from ~288/day to ~720/day on the very account whose
+// lockout this task exists to stop.
+//
+// The default is now 45 seconds, chosen from that measurement rather than
+// from reports: comfortably under the observed sub-2-minute threshold, with
+// enough margin that a slow round-trip doesn't straddle it. A NOOP is a
+// single cheap command — 80/hour per watch is negligible next to the full
+// TCP+TLS handshake and LOGIN it replaces. If production still shows
+// "connection closed unexpectedly" at the 45-second mark, shorten this
+// further; the log line above is exactly the evidence to look for.
 //
 // IDLE-capable servers (iCloud, Gmail, Outlook) never take this branch —
 // they block in Idle() instead, bounded by IdleMaxWait (29 minutes, RFC
