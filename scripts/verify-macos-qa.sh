@@ -15,8 +15,7 @@
 #   1. App launches without crashing (process stays alive).
 #   2. Composer titlebar close button, with unsaved text, does NOT close the
 #      window immediately (blocks on the save/discard confirmation) — the
-#      regression this script exists to catch. Fixed in this session;
-#      see docs/qa-findings.md.
+#      regression this script exists to catch. Fixed in this session.
 #   3. Composer titlebar close button, discard confirmed, DOES close the
 #      window (no confirmation-reopens-forever loop).
 #   4. A fresh ⌘N composer's To field starts empty (no leaked state from a
@@ -40,11 +39,11 @@
 #   - Context menu (right-click) on a message row shows 既読/未読にする・削除
 #     and actually applies (unread dot reappears/disappears).
 #   - HTML external-image banner and inline `cid:` image resolution. NOTE:
-#     the `cid:` image is a KNOWN-BROKEN case as of this writing — see
-#     docs/qa-findings.md's "インライン cid: 画像が macOS/iOS 共通で解決に失敗する"
-#     entry. Don't treat a broken-image placeholder there as a NEW macOS
-#     regression; it's a pre-existing, cross-platform bug this sweep found
-#     but did not fix (out of this session's macOS-only scope).
+#     the `cid:` image is a KNOWN-BROKEN case as of this writing — inline
+#     `cid:` image resolution fails on both macOS and iOS. Don't treat a
+#     broken-image placeholder there as a NEW macOS regression; it's a
+#     pre-existing, cross-platform bug this sweep found but did not fix
+#     (out of this session's macOS-only scope).
 #
 # Usage: scripts/verify-macos-qa.sh
 # Requires: `make mailstack-up && make mailstack-seed` already run, and a
@@ -286,8 +285,8 @@ shot "macos-qa-02-sidebar-retap" 1600 2400 120 120
 # and prints "x y w h" in logical points. Composer windows are NOT
 # guaranteed to reopen at the same screen position every time (SwiftUI's
 # default WindowGroup placement can vary run to run, and this script's own
-# QA sweep found that assuming a fixed frame made click coordinates flake
-# — see docs/qa-findings.md) — every composer interaction below resolves
+# QA sweep found that assuming a fixed frame made click coordinates flake)
+# — every composer interaction below resolves
 # the frame fresh right before clicking, rather than hardcoding one.
 composer_frame() {
     "$DRIVER" windows "$APP_PID" | grep -E "新規作成|返信|全員に返信|下書き" | head -1 \
@@ -396,8 +395,7 @@ else
         # the desktop is *shared* with other automated tools (this session
         # caught another tool's floating-terminal-panel window landing in a
         # `screencapture` crop mid-run, i.e. actual external interference,
-        # not a coordinate math bug — see docs/qa-findings.md's macOS QA
-        # entry for the full investigation). The dialog-appears check above
+        # not a coordinate math bug). The dialog-appears check above
         # and the fresh-composer check below don't share this sensitivity
         # (they don't depend on a *second* click landing precisely inside a
         # dialog that can be transiently obscured). If this ever legitimately

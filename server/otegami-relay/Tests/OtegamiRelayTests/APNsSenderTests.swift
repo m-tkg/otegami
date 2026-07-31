@@ -7,7 +7,7 @@ import Testing
 
 /// Exercises everything about `APNsSender` that doesn't require a live
 /// APNs connection — no `.p8` key has been issued for this project yet
-/// (`PENDING.md`, M9), so `send(deviceToken:environment:payload:)` itself
+/// (M9), so `send(deviceToken:environment:payload:)` itself
 /// is never called here. What *is* verified is the JWT this project would
 /// present to APNs: correct header/claims shape and a structurally valid
 /// ES256 signature, using a throwaway `P256` key generated in-test (APNs'

@@ -771,8 +771,8 @@ case "$SCENARIO" in
     # state — good enough to confirm the "署名: " label prefix and the row's
     # presence without a tap; picking a specific signature and confirming
     # the gray preview appears is real-device-only, same as every other
-    # tap-driven effect this task's own PENDING.md checklist already
-    # defers.
+    # tap-driven effect this task already defers to real-device
+    # verification.
     launch_env+=("OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1" "OTEGAMI_UITEST_INSERT_FAKE_SIGNATURE=1")
     launch_args+=("-uitestsOpenComposerDirectly")
     default_out="composer-signature.png"

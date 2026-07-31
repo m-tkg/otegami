@@ -56,7 +56,7 @@ enum DeviceRoutes {
     /// behavior rather than breaking it outright: this relay is already
     /// running in production for real deployments (see this repo's
     /// CLAUDE.md), the app doesn't send this header yet (no client-side
-    /// support has shipped — see `HUMAN_TASKS.md`/`PENDING.md`), and
+    /// support has shipped), and
     /// flipping the default to closed would silently brick every already-
     /// deployed install's "enable push notifications" flow with no
     /// migration path. Instead: log a warning on every unauthenticated

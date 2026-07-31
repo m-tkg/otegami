@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# M9 follow-up (PENDING.md: "xcrun simctl push によるシミュレータへのペイロード
-# 注入テスト...は本セッションでは未実施") — verifies NotificationService against
+# M9 follow-up — verifies NotificationService against
 # a *simulated* push, injected locally with `xcrun simctl push`, without any
 # `.p8` APNs key and without a real device. This exercises the real
 # extension process (`apps/Otegami/NotificationService/NotificationService
@@ -8,7 +7,7 @@
 # read -> Keychain read -> a real IMAP round trip against the dev
 # mailstack -> notification content rewrite. What it can't exercise is
 # anything upstream of `simctl push` itself (real APNs, a real device
-# token) — that remains the "実機での最終確認" PENDING.md item.
+# token) — that remains unverified on a real device ("実機での最終確認").
 #
 # Phases:
 #   1. OtegamiPushSimulatedSetupUITests   add the test1 Dovecot account,
@@ -83,9 +82,8 @@
 # ============================================================================
 #
 # NEW BLOCKER found once the above was fixed (this dev machine's iOS 27 beta
-# Simulator runtime specifically — see `docs/qa-findings.md`'s "M9 追補2"
-# for the full writeup): `simctl push` is now *accepted* (no more
-# `UNErrorDomain code=2003`), but `NotificationService`
+# Simulator runtime specifically — "M9 追補2"): `simctl push` is now
+# *accepted* (no more `UNErrorDomain code=2003`), but `NotificationService`
 # (`UNNotificationServiceExtension`) is never actually spawned by
 # `launchd_sim` in response — confirmed via `xcrun simctl spawn <udid> log
 # show --predicate 'process == "NotificationService"'` returning zero
@@ -101,7 +99,7 @@
 # script's own account/payload-construction phases); it means this specific
 # Simulator runtime's OS-level extension-dispatch pipeline isn't invoking
 # the extension at all, which is outside what any app-side code change can
-# fix. Real-device verification (`.p8` key, PENDING.md's M9 section) remains
+# fix. Real-device verification (a real `.p8` key) remains
 # the only way to confirm the enrichment end-to-end.
 # ============================================================================
 #

@@ -6,7 +6,7 @@ import OtegamiRelayAPI
 /// been sent instead of actually contacting APNs. Lets a self-hoster run
 /// the full watch → IDLE → "push fires" pipeline (and this repo's
 /// `scripts/verify-relay.sh`) end to end without an Apple Developer
-/// account or `.p8` key, per M9's constraint (`PENDING.md`).
+/// account or `.p8` key, per M9's constraint.
 struct ConsolePushSender: PushSending {
     let logger: Logger
 

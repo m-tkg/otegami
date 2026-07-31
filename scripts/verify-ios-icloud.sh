@@ -2,8 +2,8 @@
 # M11 (iCloud account sync) automated verification.
 #
 # A real two-device iCloud KVS round trip can't be driven from a single
-# simulator/CI environment (PENDING.md has the manual two-device
-# checklist). What this script *does* verify automatically:
+# simulator/CI environment (it requires a manual two-device check).
+# What this script *does* verify automatically:
 #
 #   1. The app launches at all with the new `com.apple.developer.ubiquity
 #      -kvstore-identifier` entitlement in place — the iOS/macOS
@@ -115,5 +115,5 @@ echo "Screenshots:"
 echo "  $SCREENSHOT_DIR/icloud-01-settings-toggle.png              (iCloud sync toggle, on by default)"
 echo "  $SCREENSHOT_DIR/icloud-02-inbox-after-toggle-roundtrip.png (account list survives a toggle off/on)"
 echo ""
-echo "Not covered here (see PENDING.md): a real two-device (iPhone + Mac,"
+echo "Not covered here: a real two-device (iPhone + Mac,"
 echo "same Apple ID) iCloud KVS round trip."

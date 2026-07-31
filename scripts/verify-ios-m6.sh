@@ -8,12 +8,12 @@
 # OtegamiM6OtherAccountFlowUITests (the "「その他」経路が従来通り動く"
 # regression check) needs it, same as M1's script.
 #
-# What this does NOT verify (see PENDING.md): a real interactive Google
+# What this does NOT verify: a real interactive Google
 # OAuth round trip, a real iCloud IMAP/SMTP connection. Both require a
 # throwaway account this environment doesn't have; docs/oauth-setup.md's
-# "実機での最終確認手順" is the human follow-up for the former, and
-# PENDING.md's "iCloud App 用パスワードでの実アカウント確認" entry for the
-# latter.
+# "実機での最終確認手順" is the human follow-up for the former, and a real
+# account confirmed with an iCloud app-specific password is the human
+# follow-up for the latter.
 #
 #   1. OtegamiM6TypeSelectionUITests    Gmail/iCloud/その他 all offered;
 #                                        Gmail disabled + docs/oauth-setup.md
@@ -152,7 +152,7 @@ Screenshots:
   $SCREENSHOT_DIR/m6-02-icloud-form.png              (iCloud form, presets visible)
   $SCREENSHOT_DIR/m6-03-other-imap-inbox.png         ("その他" regression, seeded inbox)
 
-Not covered here (see PENDING.md / docs/oauth-setup.md):
+Not covered here (see docs/oauth-setup.md):
   - a real interactive Gmail OAuth sign-in
   - a real iCloud IMAP/SMTP connection
 EOF

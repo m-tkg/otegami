@@ -26,7 +26,7 @@ func buildRouter(
 
 /// Picks the `PushSending` implementation: real APNs if every `APNS_*` env
 /// var is configured, otherwise `ConsolePushSender` — see M9's constraint
-/// on not having a `.p8` key yet (`PENDING.md`) and
+/// on not having a `.p8` key yet and
 /// `docker-compose.yml`/`docs/relay-deployment.md` for how a self-hoster
 /// opts into real delivery.
 func makePushSender(

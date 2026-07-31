@@ -59,8 +59,8 @@ struct RelayConfiguration: Sendable {
         let databasePath = environment["RELAY_DATABASE_PATH"] ?? "otegami-relay.sqlite"
         let port = environment["RELAY_PORT"].flatMap(Int.init) ?? 8080
 
-        // APNs is fully optional (M9 constraint: no `.p8` key exists yet —
-        // PENDING.md). Every field must be present for real APNs delivery
+        // APNs is fully optional (M9 constraint: no `.p8` key exists yet).
+        // Every field must be present for real APNs delivery
         // to be enabled; otherwise the relay falls back to
         // `ConsolePushSender` (see `App.swift`).
         var apns: APNsConfig?

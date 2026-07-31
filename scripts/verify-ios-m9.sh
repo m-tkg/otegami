@@ -21,8 +21,8 @@
 # accounts), so this is simpler than the M1-M8 scripts: no mailstack
 # dependency, no persisted-state phases to sequence.
 #
-# What this script does *not* cover (see PENDING.md's M9 section): real
-# APNs delivery, NotificationService content rewriting on a real push, and
+# What this script does *not* cover: real APNs delivery,
+# NotificationService content rewriting on a real push, and
 # anything requiring a physical device (no .p8 key has been issued for
 # this project yet). The relay server's own IDLE -> push pipeline against
 # a real IMAP server is scripts/verify-relay.sh's job, not this one's.

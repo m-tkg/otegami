@@ -9,7 +9,7 @@ import OtegamiRelayAPI
 
 /// Real APNs delivery over HTTP/2, token-based (`.p8`) authentication.
 /// **Never exercised against real APNs in this repo's test suite** — no
-/// `.p8` key has been issued yet (`PENDING.md`, M9). What *is* tested
+/// `.p8` key has been issued yet (M9). What *is* tested
 /// (`APNsSenderTests`) is everything that doesn't require a live server:
 /// JWT header/claims shape, ES256 signature format, and the request/body
 /// construction, using a throwaway `P256` key generated in the test itself

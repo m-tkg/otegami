@@ -33,7 +33,7 @@ type APNsConfig struct {
 // APNsSender mirrors APNsSender.swift: real APNs delivery over HTTP/2
 // (Go's net/http negotiates HTTP/2 via ALPN automatically for https),
 // token-based (.p8/ES256 JWT) authentication. Never exercised against real
-// APNs in this repo's test suite (no .p8 key has been issued — PENDING.md);
+// APNs in this repo's test suite (no .p8 key has been issued);
 // what IS tested is the JWT header/claims shape and ES256 signature format
 // (apns_test.go), same as the Swift APNsSenderTests.
 type APNsSender struct {

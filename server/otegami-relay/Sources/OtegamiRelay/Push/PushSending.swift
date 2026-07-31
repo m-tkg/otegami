@@ -1,8 +1,8 @@
 import OtegamiRelayAPI
 
 /// Abstraction over "deliver this payload to this device via APNs" — kept
-/// as a protocol (plan/M9 constraint: no real `.p8` key is available yet,
-/// see `PENDING.md`) so `WatcherPool` and its tests never depend on
+/// as a protocol (plan/M9 constraint: no real `.p8` key is available yet)
+/// so `WatcherPool` and its tests never depend on
 /// `APNsSender` specifically. Three implementations:
 ///
 /// - `APNsSender`: real token-based (.p8/JWT) HTTP/2 delivery. Untestable

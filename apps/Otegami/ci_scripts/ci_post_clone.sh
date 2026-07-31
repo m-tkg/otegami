@@ -79,15 +79,15 @@ echo "==> ci_post_clone: writing $LOCAL_XCCONFIG"
   # OTEGAMI_RELAY_REGISTRATION_SECRET). Registering this as an Xcode Cloud
   # workflow environment variable (Secret type, so it's masked in logs) is
   # a manual step for whoever operates the TestFlight release — see
-  # docs/xcode-cloud.md / HUMAN_TASKS.md.
+  # docs/xcode-cloud.md.
   [ -n "${OTEGAMI_RELAY_REGISTRATION_SECRET:-}" ] && echo "OTEGAMI_RELAY_REGISTRATION_SECRET = ${OTEGAMI_RELAY_REGISTRATION_SECRET}"
   # Task #173 follow-up (build-time relay URL — see Config/Shared.xcconfig's
   # doc comment on OTEGAMI_PUSH_RELAY_URL). Registering this as an Xcode
   # Cloud workflow environment variable (Secret type, so it's masked in
   # logs — the URL itself isn't secret, but a self-hoster's hostname
   # shouldn't end up in a public build log either) is a manual step for
-  # whoever operates the TestFlight release — see docs/xcode-cloud.md /
-  # HUMAN_TASKS.md. The value is expected to be a plain URL
+  # whoever operates the TestFlight release — see docs/xcode-cloud.md.
+  # The value is expected to be a plain URL
   # (`https://relay.example.test`); it's rewritten below into the
   # `https:$(OTEGAMI_URL_SLASHES)relay.example.test` form
   # Config/Shared.xcconfig's OTEGAMI_URL_SLASHES doc comment explains —

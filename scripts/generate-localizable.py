@@ -876,7 +876,7 @@ translations = {
     # `AccountEditView`「接続テスト」, not a brand-new
     # `AccountSetupView`/`ICloudAccountSetupView` one) — the plain
     # "ユーザー名またはパスワードを確認してください。" wording is misleading for a
-    # credential with a proven track record (`docs/qa-findings.md`).
+    # credential with a proven track record.
     # `(\(description))` is appended *outside* this literal in Swift (plain
     # string concatenation, not interpolation inside the
     # `String(localized:)` call) so this key stays a fixed sentence with no
