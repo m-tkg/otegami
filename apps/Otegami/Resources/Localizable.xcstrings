@@ -5074,6 +5074,46 @@
         }
       }
     },
+    "直近の言語判定 (最大5件)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent Language Detections (up to 5)"
+          }
+        }
+      }
+    },
+    "まだ記録がありません。メールを開くと記録されます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No records yet. Opening a mail records one."
+          }
+        }
+      }
+    },
+    "メールを開くたびに再判定した結果です。プレーンテキスト/HTML どちらの候補で判定できたか、文字の種類の比率のみを表示します。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The result of re-detecting the language every time a mail is opened. Shows only which candidate (plain text or HTML) succeeded, and the ratio of character types."
+          }
+        }
+      }
+    },
+    "判定できず": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undetermined"
+          }
+        }
+      }
+    },
     "時間をおいて再試行してください": {
       "localizations": {
         "en": {

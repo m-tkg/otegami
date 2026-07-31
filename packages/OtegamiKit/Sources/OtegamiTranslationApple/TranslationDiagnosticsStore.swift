@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OtegamiTranslation
 
 /// 2026-07-30 (実機フィードバック: 翻訳が理由不明のまま失敗し続ける報告が
 /// 連続し、しかもユーザーが外出中で Mac が無く実機ログを採取できない場面
@@ -50,9 +51,47 @@ public final class TranslationDiagnosticsStore {
         }
     }
 
+    /// 2026-07-30 (Task #203, 実機フィードバック「HTMLの構造が壊れている
+    /// メールで言語判定に失敗する」— Okta 通知メール): a second, independent
+    /// "recent attempts" record, alongside `Attempt` above but not merged
+    /// into it — `MessageLanguageDetector.detectWithFallback`'s outcome
+    /// shape (which of two *candidate texts* won, or neither) doesn't fit
+    /// `Attempt.Outcome`'s success/failure-with-engine-error shape (there's
+    /// no engine error here, just "no candidate was usable"). Reuses this
+    /// store/screen rather than a new one for the same reason `Attempt`
+    /// itself exists: "confirm from this screen, no `log collect` needed".
+    public struct LanguageDetectionAttempt: Sendable, Identifiable, Equatable {
+        public let id: UUID
+        public let date: Date
+        /// `MessageLanguageDetector.characterClassSummary` of the
+        /// `plainText` candidate, or `nil` when the message had none at
+        /// all (no `messageBody.plainText`).
+        public let plainTextSummary: String?
+        /// Same, for the HTML candidate *after* `HTMLTextExtractor`
+        /// extraction (i.e. what `detectWithFallback` actually fed the
+        /// recognizer, not the raw markup) — `nil` when the message had no
+        /// `messageBody.html`.
+        public let htmlSummary: String?
+        public let outcome: Outcome
+
+        public enum Outcome: Sendable, Equatable {
+            case detected(language: String, source: MessageLanguageDetector.TextSource)
+            case undetected
+        }
+
+        public init(date: Date = Date(), plainTextSummary: String?, htmlSummary: String?, outcome: Outcome) {
+            self.id = UUID()
+            self.date = date
+            self.plainTextSummary = plainTextSummary
+            self.htmlSummary = htmlSummary
+            self.outcome = outcome
+        }
+    }
+
     private static let maxAttempts = 5
 
     public private(set) var attempts: [Attempt] = []
+    public private(set) var languageDetectionAttempts: [LanguageDetectionAttempt] = []
 
     public init() {}
 
@@ -62,6 +101,16 @@ public final class TranslationDiagnosticsStore {
         attempts.insert(attempt, at: 0)
         if attempts.count > Self.maxAttempts {
             attempts.removeLast(attempts.count - Self.maxAttempts)
+        }
+    }
+
+    /// Same newest-first/`maxAttempts`-capped policy as `record(_:Attempt)`,
+    /// kept in its own array (see `LanguageDetectionAttempt`'s doc comment
+    /// for why it isn't merged into `attempts`).
+    public func recordLanguageDetection(_ attempt: LanguageDetectionAttempt) {
+        languageDetectionAttempts.insert(attempt, at: 0)
+        if languageDetectionAttempts.count > Self.maxAttempts {
+            languageDetectionAttempts.removeLast(languageDetectionAttempts.count - Self.maxAttempts)
         }
     }
 }

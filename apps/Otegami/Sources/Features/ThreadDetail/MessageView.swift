@@ -7,6 +7,7 @@ import SyncEngine
 import MailTransport
 import GRDB
 import OtegamiTranslation
+import OtegamiTranslationApple
 import TranslationEngine
 import os
 
@@ -1654,27 +1655,37 @@ struct MessageView: View {
     /// common case where the stored value already matches, and self-healing
     /// for the mismatched case without needing a full re-sync or app
     /// reinstall.
+    ///
+    /// Task #203 (実機フィードバック「HTMLの構造が壊れているメールで言語
+    /// 判定に失敗する」— Okta 通知メール, 「翻訳元の言語を判定できません
+    /// でした」): the manual plainText-else-HTML choice this used to make
+    /// only ever tried *one* candidate — if that one candidate's text was
+    /// markup-contaminated (or simply not confidently identifiable), there
+    /// was no retry even though the other candidate often exists and is
+    /// clean. Now delegates to `MessageLanguageDetector.detectWithFallback`,
+    /// which tries `plainText` first and falls back to an HTML extraction
+    /// only when needed (see that function's doc comment for the ordering
+    /// rationale and the markup-noise pre-filter it applies before ever
+    /// calling the recognizer). Every call here is also logged to
+    /// `environment.translationDiagnostics` (`recordLanguageDetectionDiagnostics`
+    /// below) — since this runs on every message open, opening the
+    /// affected message and then checking 設定→翻訳の診断 is enough to see
+    /// which candidate (if either) worked, without needing the real eml.
     private func backfillDetectedLanguageIfNeeded(message: MessageRecord, body: MessageBodyRecord) async -> MessageRecord {
         guard message.id != nil else { return message }
 
-        let sample: String?
-        if let plainText = body.plainText, !plainText.isEmpty {
-            sample = plainText
-        } else if let html = body.html, !html.isEmpty {
-            let extracted = HTMLTextExtractor.plainText(fromHTML: html)
-            sample = extracted.isEmpty ? nil : extracted
-        } else {
-            sample = nil
-        }
-        // A failed re-detection (`sample == nil`, or the recognizer itself
-        // couldn't commit to a language this time) never overwrites an
-        // existing value — only a confident, *different* result does.
-        guard let sample, let detected = Self.detectLanguageLocally(sample), detected != message.detectedLanguage else {
+        let outcome = MessageLanguageDetector.detectWithFallback(plainText: body.plainText, html: body.html)
+        recordLanguageDetectionDiagnostics(body: body, outcome: outcome)
+
+        // A failed re-detection (`outcome == nil`, or the recognizer
+        // committing to the same language already stored) never overwrites
+        // an existing value — only a confident, *different* result does.
+        guard let outcome, outcome.language != message.detectedLanguage else {
             return message
         }
 
         var updated = message
-        updated.detectedLanguage = detected
+        updated.detectedLanguage = outcome.language
         let toPersist = updated
         try? await environment.database.dbWriter.write { db in
             try toPersist.update(db)
@@ -1683,17 +1694,28 @@ struct MessageView: View {
         return updated
     }
 
-    /// See `SyncEngine.BodyFetcher.detectLanguage`'s identical helper —
-    /// duplicated rather than shared across the `SyncEngine`/app module
-    /// boundary purely to avoid a new cross-target dependency for one
-    /// `#if canImport(NaturalLanguage)` wrapper; both call the same
-    /// `MessageLanguageDetector.detect` underneath.
-    private static func detectLanguageLocally(_ text: String) -> String? {
-        #if canImport(NaturalLanguage)
-        MessageLanguageDetector.detect(text)
-        #else
-        nil
-        #endif
+    /// Logs which candidate(s) `backfillDetectedLanguageIfNeeded` tried and
+    /// which (if any) won, to the same on-device "翻訳の診断" screen the
+    /// translate path already logs to (`TranslationDiagnosticsStore`'s doc
+    /// comment: no `log collect`/sysdiagnose needed, screenshot-shareable).
+    /// F15 (本文非保持) の趣旨どおり `MessageLanguageDetector
+    /// .characterClassSummary` の比率のみを渡し、本文そのものは一切渡さない。
+    private func recordLanguageDetectionDiagnostics(body: MessageBodyRecord, outcome: MessageLanguageDetector.DetectionOutcome?) {
+        let plainTextSummary = body.plainText.map(MessageLanguageDetector.characterClassSummary)
+        let htmlSummary = body.html.map { HTMLTextExtractor.plainText(fromHTML: $0) }.map(MessageLanguageDetector.characterClassSummary)
+        let recordedOutcome: TranslationDiagnosticsStore.LanguageDetectionAttempt.Outcome
+        if let outcome {
+            recordedOutcome = .detected(language: outcome.language, source: outcome.source)
+        } else {
+            recordedOutcome = .undetected
+        }
+        environment.translationDiagnostics.recordLanguageDetection(
+            TranslationDiagnosticsStore.LanguageDetectionAttempt(
+                plainTextSummary: plainTextSummary,
+                htmlSummary: htmlSummary,
+                outcome: recordedOutcome
+            )
+        )
     }
 
     /// Called once per `load()`, after `bodyRecord` is populated (every

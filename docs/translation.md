@@ -82,6 +82,61 @@ import しているのは `OtegamiTranslationFoundationModels` の1ファイル�
 表示するか」の条件には使わない (後述) — 自動翻訳を起動するかどうかの
 判定にのみ使う。
 
+### HTML/プレーンテキストのフォールバック判定 (Task #203)
+
+**症状**: 一部のメール (実機報告: Okta のサインオン通知メール) で
+「翻訳元の言語を判定できませんでした」、あるいは `detectedLanguage` が
+判定できず翻訳ボタンの自動起動が働かない。
+
+**調査で分かったこと**: 判定本体
+(`OtegamiTranslation.MessageLanguageDetector.detect`) の呼び出し元は
+2箇所 (`SyncEngine.BodyFetcher`、`MessageView
+.backfillDetectedLanguageIfNeeded`) あり、どちらも本タスク以前から
+「`plainText` があればそれを、無ければ HTML を `HTMLTextExtractor` で
+テキスト化したものを」判定にかけていた — つまり**候補は1つしか試して
+いなかった**。多くのメールは `multipart/alternative` で `text/plain` と
+`text/html` の両方を持つが、選ばれた側のテキストが荒れていて
+`NLLanguageRecognizer` が確信を持てない (`nil`)、あるいは Task #159
+(下記) と同様に確信ありげに誤判定するケースがあっても、もう一方の
+候補を試すことがなかった。
+
+**対処**: `MessageLanguageDetector.detectWithFallback(plainText:html:)`
+を新設し、両呼び出し元をこれに統一した。
+
+- **既定は `plainText` を先に試し、`html` にフォールバックする**。
+  理由: 本物の MIME `text/plain` パートはデコード済みの生テキストで
+  劣化の余地が無いのに対し、HTML 由来のテキストは常に1段階余分な
+  変換 (タグ除去) を経ており、この変換自体が過去に2回問題を起こして
+  いる ── `MailCoreIMAPSession+Mapping.html(from:)` の doc comment
+  (mailcore2 の HTML 描画バグが本文中に脈絡のない改行を混入させた話)
+  と、`HTMLTextExtractor` 自身 (正規のパーサではない、線形スキャナ)。
+  両呼び出し元がこのタスク以前から同じ優先順位を採っていた既存の判断
+  を、一発勝負の選択から実際のリトライへ一般化した形。
+- **文字種比率によるノイズ足切り**: 診断画面の文字種比率
+  (`letters=NN% digits=NN% ...`) が実際に使える指標だと判断し、
+  `MessageLanguageDetector.isTooNoisyToTrust`/`minLetterRatio` として
+  取り込んだ。空白を除いた文字のうち「文字 (letter)」の割合が
+  30% 未満の候補は、`NLLanguageRecognizer` に確信ありげな結果を返され
+  ても信用しない。閾値 0.3 の根拠: 実機で報告された壊れた HTML 抽出
+  サンプルの比率が `letters=14%` だったのに対し、通常の英語/日本語の
+  文面は経験的に 6〜9 割が文字であるため、その中間で失敗サンプルより
+  十分高い値を選んだ。`detect` 自身の `nil` 判定だけに頼らない理由:
+  Task #159 (実機報告「明らかに英語の Okta 通知メールが
+  `NLLanguageRecognizer` に `pl` (ポーランド語) と誤判定される」) の
+  失敗は `nil` の逆 ── 確信ありげな誤判定だった。ノイズ量そのものを
+  `detect` に渡す前に足切りすることで、この種の誤判定も防げる。
+- **診断画面での可視化**: 「設定 → メールビューア → 翻訳の診断」に
+  「直近の言語判定 (最大5件)」セクションを追加し
+  (`TranslationDiagnosticsStore.LanguageDetectionAttempt`)、
+  メールを開くたびに再判定した際の `plainText`/`html` 各候補の文字種
+  比率と、どちら (あれば) が採用されたかを記録する。F15 の趣旨どおり
+  本文そのものは一切保持しない。`SyncEngine.BodyFetcher` 側の初回
+  フェッチ時判定はこの画面には記録しない (SyncEngine は UI 向け
+  診断ストアに依存しない設計のため) が、`MessageView` 側が毎回の
+  メール表示時に再判定・自己修復する既存の仕組み (Task #128) がある
+  ため、問題のメールを開いてからこの画面を確認すれば十分切り分けが
+  できる。
+
 ## 翻訳 UX
 
 - **翻訳ボタンは常時有効**: メッセージの本文が読み込まれていれば、検出

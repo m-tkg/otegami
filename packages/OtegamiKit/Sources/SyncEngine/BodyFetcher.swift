@@ -152,7 +152,17 @@ public actor BodyFetcher {
             // just happened doesn't meaningfully slow this down, and means
             // "is this an English message" is always already known by the
             // time any UI needs it.
-            let detectedLanguage = plainText.flatMap(Self.detectLanguage)
+            //
+            // Task #203: uses `content.plainText`/`content.html` directly
+            // (the raw MIME parts), not the already-resolved `plainText`
+            // local above — `MessageLanguageDetector.detectWithFallback`
+            // does its own plainText-then-HTML fallback (with a markup-
+            // noise pre-filter), so it needs both raw candidates rather
+            // than a single pre-picked one. `MessageView
+            // .backfillDetectedLanguageIfNeeded` re-runs this same
+            // fallback whenever a message is opened, so a wrong/missing
+            // guess made here self-heals then even if it doesn't here.
+            let detectedLanguage = Self.detectLanguage(plainText: content.plainText, html: content.html)
 
             try await database.dbWriter.write { db in
                 try MessageBodyRecord.deleteOne(db, key: messageId)
@@ -482,14 +492,21 @@ public actor BodyFetcher {
         return nil
     }
 
-    /// `MessageLanguageDetector.detect`, wrapped: that type's whole API is
-    /// itself `#if canImport(NaturalLanguage)`-gated (see its doc comment),
-    /// so this call site needs the same guard to keep compiling on a
-    /// hypothetical `NaturalLanguage`-less platform — `nil` there, same as
-    /// "the recognizer wasn't confident enough to commit to a language".
-    static func detectLanguage(_ plainText: String) -> String? {
+    /// `MessageLanguageDetector.detectWithFallback`, wrapped: that type's
+    /// whole API is itself `#if canImport(NaturalLanguage)`-gated (see its
+    /// doc comment), so this call site needs the same guard to keep
+    /// compiling on a hypothetical `NaturalLanguage`-less platform — `nil`
+    /// there, same as "no candidate was usable enough to commit to a
+    /// language". Only the language is kept here — `BodyFetcher` runs once
+    /// per fetched message with no UI-facing diagnostics store to log to
+    /// (that's `MessageView.backfillDetectedLanguageIfNeeded`'s job, see
+    /// its doc comment); logging every background fetch here would also
+    /// flood the diagnostics screen's fixed 5-attempt window with
+    /// sync-time noise instead of the specific message a user is actually
+    /// looking at when they open that screen.
+    static func detectLanguage(plainText: String?, html: String?) -> String? {
         #if canImport(NaturalLanguage)
-        MessageLanguageDetector.detect(plainText)
+        MessageLanguageDetector.detectWithFallback(plainText: plainText, html: html)?.language
         #else
         nil
         #endif

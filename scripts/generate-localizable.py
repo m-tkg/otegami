@@ -829,6 +829,16 @@ translations = {
     "成功": "Success",
     "失敗": "Failure",
 
+    # --- Task #203 (実機フィードバック「HTMLの構造が壊れているメールで
+    # 言語判定に失敗する」— Okta 通知メール): `TranslationDiagnosticsView`
+    # に「直近の言語判定」セクションを追加した分。
+    "直近の言語判定 (最大5件)": "Recent Language Detections (up to 5)",
+    "まだ記録がありません。メールを開くと記録されます。":
+        "No records yet. Opening a mail records one.",
+    "メールを開くたびに再判定した結果です。プレーンテキスト/HTML どちらの候補で判定できたか、文字の種類の比率のみを表示します。":
+        "The result of re-detecting the language every time a mail is opened. Shows only which candidate (plain text or HTML) succeeded, and the ratio of character types.",
+    "判定できず": "Undetermined",
+
     # --- Task #202 (実機フィードバック「一度成功した後は必ず翻訳が失敗
     # する」): `TranslationServiceError.sessionUnavailable`の
     # `userFacingMessage` — package層 (`packages/OtegamiKit/Sources

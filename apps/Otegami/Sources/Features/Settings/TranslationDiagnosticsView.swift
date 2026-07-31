@@ -149,6 +149,27 @@ struct TranslationDiagnosticsView: View {
         } footer: {
             Text("実際にメールを翻訳しようとした際の記録です。件数・文字数・文字の種類の比率のみを表示し、メール本文そのものは表示しません。")
         }
+
+        Section {
+            if environment.translationDiagnostics.languageDetectionAttempts.isEmpty {
+                Text("まだ記録がありません。メールを開くと記録されます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("translationDiagnostics.recentLanguageDetections.empty")
+            } else {
+                ForEach(environment.translationDiagnostics.languageDetectionAttempts) { attempt in
+                    LanguageDetectionAttemptRow(attempt: attempt)
+                }
+            }
+        } header: {
+            Text("直近の言語判定 (最大5件)")
+        } footer: {
+            // Task #203: プレーンテキスト/HTMLどちらの候補で言語判定できた
+            // (できなかった) かをここで確認できる — 「翻訳元の言語を判定
+            // できませんでした」のようなエラーの切り分け用。文字種比率のみ
+            // で本文そのものは表示しない。
+            Text("メールを開くたびに再判定した結果です。プレーンテキスト/HTML どちらの候補で判定できたか、文字の種類の比率のみを表示します。")
+        }
     }
 
     private func refreshLanguagePairStatus() async {
@@ -296,6 +317,64 @@ private struct TranslationAttemptRow: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .medium
+        return formatter
+    }()
+}
+
+/// 直近の言語判定1件分の表示 (Task #203) — `TranslationAttemptRow`と同じ
+/// 理由 (`CLAUDE.md`の型チェック負荷分散方針) で独立させた `View`。
+private struct LanguageDetectionAttemptRow: View {
+    let attempt: TranslationDiagnosticsStore.LanguageDetectionAttempt
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
+            HStack {
+                Text(verbatim: "言語判定")
+                    .font(.caption.bold())
+                Spacer()
+                Text(Self.dateFormatter.string(from: attempt.date))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            candidateSummaryView(label: "plainText", summary: attempt.plainTextSummary)
+            candidateSummaryView(label: "html", summary: attempt.htmlSummary)
+            outcomeView
+        }
+        .padding(.vertical, OtegamiSpacing.xs)
+        .accessibilityIdentifier("translationDiagnostics.languageDetectionAttempt")
+    }
+
+    @ViewBuilder
+    private func candidateSummaryView(label: String, summary: String?) -> some View {
+        // `summary`はAppleの文字種比率計算の生の文字列描画のため
+        // `Text(verbatim:)` (`AccountFilterChip.swift`の教訓どおり)。
+        Text(verbatim: "\(label): \(summary ?? "(候補なし)")")
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var outcomeView: some View {
+        switch attempt.outcome {
+        case .detected(let language, let source):
+            Label {
+                Text(verbatim: "判定成功: \(language) (使用したのは \(source.rawValue))")
+            } icon: {
+                Image(systemName: "checkmark.circle")
+            }
+            .font(.caption)
+            .foregroundStyle(OtegamiColor.accent)
+        case .undetected:
+            Label("判定できず", systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(OtegamiColor.destructive)
         }
     }
 
