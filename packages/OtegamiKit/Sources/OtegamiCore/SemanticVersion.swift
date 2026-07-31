@@ -13,6 +13,14 @@ import Foundation
 /// parsed away, per spec, since it never affects precedence). Does not claim
 /// full SemVer *validation* — `init?(parsing:)` is deliberately permissive
 /// about anything past the three required numeric components.
+///
+/// Task #214: `init?(parsing:)` also does one thing standard SemVer §11
+/// precedence does *not* — it splits a trailing digit run off an
+/// alphanumeric identifier (`beta9` → `["beta", "9"]`) so it compares
+/// numerically. See the comment at that call site for why: this project's
+/// actual tags are undotted (`v1.2.0-beta9`, not `v1.2.0-beta.9`), and
+/// without this, `beta13` sorts as *older* than `beta9` under a strict
+/// reading of the spec.
 public struct SemanticVersion: Sendable, Equatable, Comparable, CustomStringConvertible {
     public let major: Int
     public let minor: Int
@@ -52,6 +60,23 @@ public struct SemanticVersion: Sendable, Equatable, Comparable, CustomStringConv
             guard !prereleasePart.isEmpty else { return nil }
             prerelease = prereleasePart.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
             guard prerelease.allSatisfy({ !$0.isEmpty }) else { return nil }
+            // Task #214: this project's actual tag convention (docs/release.md,
+            // `git tag -l "v1.2.0-beta*"`) is undotted — `beta9`, `beta13`, not
+            // `beta.9`. Strict SemVer §11 treats `beta9` as a single alphanumeric
+            // identifier and compares it to `beta13` by ASCII order, where
+            // `"beta13" < "beta9"` (the byte '1' < '3' at the first differing
+            // position) — i.e. beta13 would rank as *older* than beta9. That is
+            // exactly the bug this task fixes (a real GitHub release comparison
+            // picked beta9 as "latest" over beta13).
+            //
+            // Deliberate departure from the spec: split a trailing run of digits
+            // off each identifier here, at parse time, so `beta9` becomes
+            // `["beta", "9"]` and `beta13` becomes `["beta", "13"]` — the same
+            // two identifiers `beta.13` would already produce. This makes the
+            // numeric tail compare numerically (13 > 9) regardless of whether
+            // the tag used a dot, so `v1.2.0-beta9`/`v1.2.0-beta.9` and
+            // `v1.2.0-beta13`/`v1.2.0-beta.13` always compare identically.
+            prerelease = prerelease.flatMap(Self.splittingTrailingDigits)
         }
         let parts = core.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3,
@@ -60,6 +85,27 @@ public struct SemanticVersion: Sendable, Equatable, Comparable, CustomStringConv
               let patch = Int(parts[2]), patch >= 0
         else { return nil }
         self.init(major: major, minor: minor, patch: patch, prereleaseIdentifiers: prerelease)
+    }
+
+    /// Splits a `"word" + trailing digits` identifier like `"beta9"` into
+    /// `["beta", "9"]`; anything else (already purely numeric, or with no
+    /// trailing digit run at all, e.g. `"beta"`/`"rc"`) is returned unchanged
+    /// as a single-element array. See the call site in `init?(parsing:)` for
+    /// why this exists — it's what makes `beta9` and `beta.9` parse to the
+    /// same identifier list.
+    private static func splittingTrailingDigits(_ identifier: String) -> [String] {
+        guard let lastNonDigitIndex = identifier.lastIndex(where: { !$0.isNumber }) else {
+            // Entirely digits already — a valid numeric identifier as-is,
+            // nothing to split (and splitting further would just yield an
+            // empty prefix).
+            return [identifier]
+        }
+        let digitsStart = identifier.index(after: lastNonDigitIndex)
+        guard digitsStart < identifier.endIndex else {
+            // No trailing digit run at all (e.g. "beta").
+            return [identifier]
+        }
+        return [String(identifier[identifier.startIndex..<digitsStart]), String(identifier[digitsStart...])]
     }
 
     public var description: String {

@@ -133,6 +133,73 @@ struct SemanticVersionTests {
         #expect(ordered == ordered.sorted())
     }
 
+    // MARK: - Precedence: Task #214 undotted pre-release identifiers (betaN)
+
+    /// This project's actual git tags are undotted (`v1.2.0-beta9`, not
+    /// `v1.2.0-beta.9` — `docs/release.md`, `git tag -l "v1.2.0-beta*"`).
+    /// Task #214: a strict SemVer §11 reading compares `beta9`/`beta13` as
+    /// single alphanumeric identifiers by ASCII order, where `"beta13" <
+    /// "beta9"` — so beta13 was ranking as *older* than beta9, and the
+    /// macOS update check was offering beta9 as "latest" even with beta13
+    /// already released. `init?(parsing:)` now splits a trailing digit run
+    /// off each identifier so this compares numerically instead.
+    @Test("undotted beta9 ranks below undotted beta13")
+    func undottedBeta9RanksBelowBeta13() {
+        #expect(SemanticVersion(parsing: "v1.2.0-beta9")! < SemanticVersion(parsing: "v1.2.0-beta13")!)
+    }
+
+    @Test("undotted beta2 ranks below undotted beta9")
+    func undottedBeta2RanksBelowBeta9() {
+        #expect(SemanticVersion(parsing: "v1.2.0-beta2")! < SemanticVersion(parsing: "v1.2.0-beta9")!)
+    }
+
+    @Test("undotted beta13 ranks below the release version")
+    func undottedBeta13RanksBelowRelease() {
+        #expect(SemanticVersion(parsing: "v1.2.0-beta13")! < SemanticVersion(parsing: "v1.2.0")!)
+    }
+
+    @Test("a release ranks below the next patch's pre-release")
+    func releaseRanksBelowNextPatchPrerelease() {
+        #expect(SemanticVersion(parsing: "v1.2.0")! < SemanticVersion(parsing: "v1.2.1-beta1")!)
+    }
+
+    @Test("undotted betaN and dotted beta.N parse to the same identifiers and compare equal")
+    func undottedAndDottedNotationCompareEqual() {
+        let undotted = SemanticVersion(parsing: "v1.2.0-beta13")!
+        let dotted = SemanticVersion(parsing: "v1.2.0-beta.13")!
+        #expect(undotted == dotted)
+        #expect(undotted.prereleaseIdentifiers == ["beta", "13"])
+        #expect(dotted.prereleaseIdentifiers == ["beta", "13"])
+    }
+
+    @Test("undotted and dotted notation cross-compare correctly across different numbers")
+    func undottedAndDottedNotationCrossCompare() {
+        #expect(SemanticVersion(parsing: "v1.2.0-beta9")! < SemanticVersion(parsing: "v1.2.0-beta.13")!)
+        #expect(SemanticVersion(parsing: "v1.2.0-beta.2")! < SemanticVersion(parsing: "v1.2.0-beta9")!)
+    }
+
+    @Test("the full v1.2.0-beta2...beta13 tag sequence sorts in numeric order")
+    func fullBetaTagSequenceSortsInOrder() {
+        let ordered = [
+            "v1.2.0-beta", "v1.2.0-beta2", "v1.2.0-beta3", "v1.2.0-beta4", "v1.2.0-beta5",
+            "v1.2.0-beta6", "v1.2.0-beta7", "v1.2.0-beta8", "v1.2.0-beta9", "v1.2.0-beta10",
+            "v1.2.0-beta11", "v1.2.0-beta12", "v1.2.0-beta13", "v1.2.0",
+        ].map { SemanticVersion(parsing: $0)! }
+        #expect(ordered == ordered.sorted())
+    }
+
+    @Test("a bare word identifier with no trailing digits is unaffected by the split")
+    func bareWordIdentifierUnaffectedBySplit() {
+        let version = SemanticVersion(parsing: "v1.2.0-beta")!
+        #expect(version.prereleaseIdentifiers == ["beta"])
+    }
+
+    @Test("a purely numeric identifier is unaffected by the split")
+    func purelyNumericIdentifierUnaffectedBySplit() {
+        let version = SemanticVersion(parsing: "v1.2.0-1")!
+        #expect(version.prereleaseIdentifiers == ["1"])
+    }
+
     // MARK: - description
 
     @Test("description round-trips a plain version")
