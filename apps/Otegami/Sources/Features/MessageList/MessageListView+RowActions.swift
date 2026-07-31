@@ -27,33 +27,9 @@ extension MessageListView {
         do {
             try await environment.database.dbWriter.write { db in
                 let messages = try ThreadQuery.actionTargets(for: summary, db: db)
-                for var message in messages {
-                    if markingRead {
-                        guard !message.flags.contains(.seen) else { continue }
-                        message.flags.insert(.seen)
-                    } else {
-                        guard message.flags.contains(.seen) else { continue }
-                        message.flags.remove(.seen)
-                    }
-                    message.updatedAt = Date()
-                    try message.update(db)
-                    // Task #120: `message.isPendingRelocation` — no real
-                    // server UID to enqueue a `setFlags` op against yet;
-                    // see `MessageReadMarker.markSeen`'s identical guard for
-                    // the accepted-limitation rationale (this optimistic
-                    // flag write can be silently superseded by that
-                    // mailbox's next resync if the window doesn't close in
-                    // time — the local write above still applies either
-                    // way).
-                    guard !message.isPendingRelocation,
-                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
-                    else { continue }
-                    try OpQueue.enqueueSetFlags(
-                        accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [UInt32(message.uid)], flags: message.flags, db: db
-                    )
-                }
-                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                try MessagePinReadState.applyReadState(
+                    markingRead: markingRead, messages: messages, threadId: threadId, accountId: accountId, db: db
+                )
             }
             await replayOpQueueSoon(accountId: accountId)
         } catch {
@@ -85,27 +61,9 @@ extension MessageListView {
         do {
             try await environment.database.dbWriter.write { db in
                 let messages = try ThreadQuery.actionTargets(for: summary, db: db)
-                for var message in messages {
-                    guard message.isPinnedLocal != pinning else { continue }
-                    message.isPinnedLocal = pinning
-                    if pinning {
-                        message.flags.insert(.flagged)
-                    } else {
-                        message.flags.remove(.flagged)
-                    }
-                    message.updatedAt = Date()
-                    try message.update(db)
-                    // Task #120: same pending-relocation guard as
-                    // `applyReadState(_:markingRead:)` just above.
-                    guard !message.isPendingRelocation,
-                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
-                    else { continue }
-                    try OpQueue.enqueueSetFlags(
-                        accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [UInt32(message.uid)], flags: message.flags, db: db
-                    )
-                }
-                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                try MessagePinReadState.applyPinState(
+                    pinning: pinning, messages: messages, threadId: threadId, accountId: accountId, db: db
+                )
             }
             await replayOpQueueSoon(accountId: accountId)
         } catch {

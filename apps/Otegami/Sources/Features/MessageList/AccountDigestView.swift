@@ -322,35 +322,20 @@ struct AccountDigestView: View {
     /// 「既読に」ボタンと同じく、現在の既読/未読状態を見て切り替えるのでは
     /// なく常に既読へ揃える(混在した集合を一括トグルすると結果が直感的で
     /// ない、というそのボタンの既存判断をそのまま踏襲)。破壊的操作では
-    /// ないためUndoトーストは出さない — `MessageListView.applyReadState`
-    /// と同じ実装をこの画面向けに複製している(どちらも薄いopQueue経由の
-    /// 書き込みで、切り出すほどの共通ロジックが無いための重複)。
+    /// ないためUndoトーストは出さない — フラグ更新/`OpQueue.enqueueSetFlags`/
+    /// `recomputeAggregates`の中核は`SyncEngine.MessagePinReadState
+    /// .applyReadState`が担う(`MessageListView.applyReadState`/
+    /// `ThreadDetailView`の同名メソッドと共有、その型のdoc comment参照) —
+    /// この画面固有なのは対象解決 (`ThreadQuery.actionTargets(for:db:)`) と
+    /// `replayOpQueueSoon`呼び出しだけの薄いラッパー。
     private func applyReadState(_ summary: ThreadSummary, markingRead: Bool, accountId: String) async {
         guard let threadId = summary.thread.id else { return }
         do {
             try await environment.database.dbWriter.write { db in
                 let messages = try ThreadQuery.actionTargets(for: summary, db: db)
-                for var message in messages {
-                    if markingRead {
-                        guard !message.flags.contains(.seen) else { continue }
-                        message.flags.insert(.seen)
-                    } else {
-                        guard message.flags.contains(.seen) else { continue }
-                        message.flags.remove(.seen)
-                    }
-                    message.updatedAt = Date()
-                    try message.update(db)
-                    // Task #120: same pending-relocation guard as
-                    // `MessageListView.applyReadState(_:markingRead:)`.
-                    guard !message.isPendingRelocation,
-                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
-                    else { continue }
-                    try OpQueue.enqueueSetFlags(
-                        accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [UInt32(message.uid)], flags: message.flags, db: db
-                    )
-                }
-                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                try MessagePinReadState.applyReadState(
+                    markingRead: markingRead, messages: messages, threadId: threadId, accountId: accountId, db: db
+                )
             }
             await replayOpQueueSoon(accountId: accountId)
         } catch {
@@ -358,34 +343,18 @@ struct AccountDigestView: View {
         }
     }
 
-    /// `.pin`の一括版 — 同じ理由で常に「ピン留めする」側へ揃える
-    /// (`MessageListView.applyPinState`の複製、doc comment は同じ)。
+    /// `.pin`の一括版 — 同じ理由で常に「ピン留めする」側へ揃える。
+    /// `applyReadState(_:markingRead:accountId:)`と同じく中核は
+    /// `SyncEngine.MessagePinReadState.applyPinState`共有、ここは対象解決 +
+    /// `replayOpQueueSoon`だけの薄いラッパー。
     private func applyPinState(_ summary: ThreadSummary, pinning: Bool, accountId: String) async {
         guard let threadId = summary.thread.id else { return }
         do {
             try await environment.database.dbWriter.write { db in
                 let messages = try ThreadQuery.actionTargets(for: summary, db: db)
-                for var message in messages {
-                    guard message.isPinnedLocal != pinning else { continue }
-                    message.isPinnedLocal = pinning
-                    if pinning {
-                        message.flags.insert(.flagged)
-                    } else {
-                        message.flags.remove(.flagged)
-                    }
-                    message.updatedAt = Date()
-                    try message.update(db)
-                    // Task #120: same pending-relocation guard as
-                    // `MessageListView.applyPinState(_:pinning:)`.
-                    guard !message.isPendingRelocation,
-                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
-                    else { continue }
-                    try OpQueue.enqueueSetFlags(
-                        accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [UInt32(message.uid)], flags: message.flags, db: db
-                    )
-                }
-                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                try MessagePinReadState.applyPinState(
+                    pinning: pinning, messages: messages, threadId: threadId, accountId: accountId, db: db
+                )
             }
             await replayOpQueueSoon(accountId: accountId)
         } catch {

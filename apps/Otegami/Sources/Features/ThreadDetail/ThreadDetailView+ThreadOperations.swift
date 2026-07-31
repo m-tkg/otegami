@@ -43,27 +43,10 @@ extension ThreadDetailView {
         guard let accountId else { return }
         do {
             try await environment.database.dbWriter.write { db in
-                let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
-                for var message in msgs {
-                    guard message.isPinnedLocal != pinning else { continue }
-                    message.isPinnedLocal = pinning
-                    if pinning { message.flags.insert(.flagged) } else { message.flags.remove(.flagged) }
-                    message.updatedAt = Date()
-                    try message.update(db)
-                    // Task #120: `message.isPendingRelocation` — see
-                    // `MessageReadMarker.markSeen`'s doc comment for the
-                    // accepted-limitation rationale (no real server UID to
-                    // enqueue a `setFlags` op against yet; the local write
-                    // above still applies either way).
-                    guard !message.isPendingRelocation,
-                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
-                    else { continue }
-                    try OpQueue.enqueueSetFlags(
-                        accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [UInt32(message.uid)], flags: message.flags, db: db
-                    )
-                }
-                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                let messages = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
+                try MessagePinReadState.applyPinState(
+                    pinning: pinning, messages: messages, threadId: threadId, accountId: accountId, db: db
+                )
             }
             await replaySoon()
         } catch {
@@ -79,28 +62,10 @@ extension ThreadDetailView {
         guard let accountId else { return }
         do {
             try await environment.database.dbWriter.write { db in
-                let msgs = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
-                for var message in msgs {
-                    if markingRead {
-                        guard !message.flags.contains(.seen) else { continue }
-                        message.flags.insert(.seen)
-                    } else {
-                        guard message.flags.contains(.seen) else { continue }
-                        message.flags.remove(.seen)
-                    }
-                    message.updatedAt = Date()
-                    try message.update(db)
-                    // Task #120: same pending-relocation guard as
-                    // `applyPinState(pinning:)` just above.
-                    guard !message.isPendingRelocation,
-                          let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
-                    else { continue }
-                    try OpQueue.enqueueSetFlags(
-                        accountId: accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                        uids: [UInt32(message.uid)], flags: message.flags, db: db
-                    )
-                }
-                try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                let messages = try Self.targetMessageRecords(threadId: threadId, singleMessageId: singleMessageId, db: db)
+                try MessagePinReadState.applyReadState(
+                    markingRead: markingRead, messages: messages, threadId: threadId, accountId: accountId, db: db
+                )
             }
             await replaySoon()
         } catch {
