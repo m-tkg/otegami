@@ -51,6 +51,30 @@ green。詳細・実測値 (dev mailstack 300通での payload サイズ比較):
   正しく処理されることを確認してほしい (単体テストでは`FakeIMAPSession`
   で再現・確認済みだが、実サーバーでの再確認)。
 
+### Task #200 (Composer 宛先サジェスト): iOS 実機でのタップ操作が未確認
+
+メール作成画面の To/Cc/Bcc に、過去のやり取り (メッセージ履歴の
+from/to/cc) から候補を出すサジェスト機能を実装した (`RecipientInputField`)。
+候補の抽出・並び替え・絞り込みは純粋関数 (`RecipientSuggestionEngine`)
+としてユニットテスト済み、`RecipientHistoryQuery`のDBスキャンも
+`RecipientHistoryQueryTests`で正当性・性能実測 (`docs/performance.md`)
+済み。`make test`/`make check-localization`/`make mac`/`make ios`は
+green。詳細: `docs/design-system.md`「Task #200」節。
+
+**macOSでは実際にビルドを起動し、宛先欄に入力→候補ドロップダウン表示→
+マウスクリックでの確定→上下矢印+Enterでの確定、の一連の動作を目視確認
+済み** (実際の開発機ローカルDBの本物のメール履歴からも正しく候補が
+出ることまで確認できた)。
+
+未検証:
+- **iOSシミュレータでのタップ確認は未実施** — `docs/verify.md`記載の
+  シミュレータ既知不調 (タップ不達) があり、`scripts/verify-screen.sh
+  composer-recipient-suggestion`のタップ不要経路では宛先欄への入力
+  そのものができないため、空状態のレイアウト崩れがないことのみ確認した
+  (ビルドgreenで担保)。実機またはstableな環境のシミュレータで、宛先欄に
+  入力して候補が出ること・タップで確定して次の入力へ続けられること・
+  Cc/Bccでも同様に動くことを確認してほしい。
+
 ### Task #190 (アカウントダイジェストの一括操作確認を`.alert`に変更、設定でオフ可能に): 画面の目視確認未達成
 
 `AccountDigestView`(「アカウントでグループ化」表示) のスワイプ/コンテキスト
