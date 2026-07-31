@@ -358,6 +358,13 @@ NOOP キープアライブのパターンに従うこと** — 素朴な「ス�
 コマンドを打つ」実装は、接続が長時間持たないサーバーに対して隠れた
 高頻度 LOGIN を生み、アカウントロックという形でユーザーに実害が出る。
 
+**追記 (Task #206): 上記の「接続維持を入れれば解決」は不完全だった。**
+接続の寿命 (切断→再LOGIN) の問題はこれで解けたが、**コマンドの総量**
+という別の問題が残っていた — 45秒ごとの NOOP (80回/時) + 5分ごとの
+STATUS (12回/時) を同一アカウントに watch 2本 (デバイス2台) 分実行する
+と約184回/時になり、これ自体が Yahoo! JAPAN 側のコマンドレート制限を
+誘発した。詳細は下記 i. 参照。
+
 ### d. open-ended な UID range は自動でチャンク化されない
 
 `MailCoreIMAPSession+Mapping.chunk(_:size:)`
@@ -523,3 +530,80 @@ ASWebAuthenticationSessionRunner.swift` とそのミラーコピーである
 なメソッドの内部に書くときは、常にこの推論のトラップを疑うこと** — 特に
 macOS/iOS でスレッド配送の実際の挙動が異なる API (ネイティブ
 Authentication/Web 系の completion handler など) は要注意。
+
+### i. IMAP の `[LIMIT]` 応答は接続エラーではない — 再接続すると別の障害を誘発する
+
+Task #201 で watch 接続の寿命を 2分 → 1時間に伸ばした後、本番ログに
+新しいパターンが出た:
+
+```
+03:10:18  WARN watch connection error, reconnecting
+          error="IMAP command A87 failed: A87 NO [LIMIT] STATUS Rate limit hit."
+03:10:23  WARN watch authentication failed
+          serverResponse="A1 NO [AUTHENTICATIONFAILED] Incorrect username or password."
+03:40:26  WARN watch authentication failed (attempt=2)
+```
+
+Yahoo! JAPAN (imap.mail.yahoo.co.jp) が `STATUS` コマンドに対して明示的に
+`[LIMIT]` 応答コードを返した — これは**コマンドのレート制限**であり、
+接続自体は生きたまま (TCP/TLS も認証も無事) で、拒否されたのはこの1コマ
+ンドだけ。ところが Task #206 以前の実装はこれを他のあらゆる IMAP コマ
+ンド失敗と同じ「接続エラー」として扱い、`runWatchLoop` が接続を閉じて
+再接続 = **再 LOGIN** した。その再 LOGIN が Task #187 の認証ロック
+(`AUTHENTICATIONFAILED`) を誘発し、悪循環になっていた:
+
+```
+レート制限 (STATUS) → 接続エラー扱いで再接続 → 再LOGIN
+  → LOGIN 拒否 (アカウントロック) → 30分+ 待つ → 成功
+  → 元と同じコマンド量 → 再びレート制限 → …
+```
+
+**対策 (`server/otegami-relay-go/internal/watcher/pool.go`):**
+`connectAndWatch` の `STATUS` 呼び出しで `isRateLimited(err)`
+(`CommandFailedError.Response` に `[LIMIT]` を含むかで判定) が真なら、
+接続を閉じずに**同じ接続のまま** `Options.RateLimitInitialWait`
+(デフォルトは `Options.PollInterval` = 5分。連続ヒットで倍々、
+`RateLimitWaitCap` = 30分で頭打ち) だけ待ってから `STATUS` をリトライ
+する。`RecordWatchError` で `lastErrorKind=connectionError` として
+表示用には記録するが `stopping=false` — ステータスは `active` のまま。
+
+**待ち時間を `PollInterval` 自身から導出した理由**:
+このレート制限からの回復時間について公開された数値は存在しない
+(Task #187 の認証ロックとは違い、Yahoo のサポート文書はコマンドレート
+制限の解除時間を明言していない)。本番ログから分かっている唯一の事実
+は「5分に1回の STATUS 頻度で制限に達した」ことだけなので、それより
+明らかに短い間隔で即座にリトライすることを正当化する根拠がない。
+**新しい数値を当て推量するのではなく、既に制限を誘発した頻度そのもの
+(`PollInterval`) を初期待機時間として再利用する**のが、実測に基づかな
+い決め打ちを避けつつ最も保守的な選択。上限の30分は、このファイル内で
+既に「一時的なブロック、期間不明」というまったく同じ状況に使っている
+`defaultAuthFailureRetryInterval`/`defaultAuthFailureRetryCap` の前例
+(30分/1時間) に合わせた。
+
+**コマンド総量そのものを減らす施策 (NOOP間隔・STATUS間隔のデフォルト
+短縮) は Task #206 では見送った。** NOOP の45秒はすでに Task #201 の
+実測 (2分間隔だと接続がその境界で切れる) に基づく下限値であり、これを
+広げる方向の変更は新たな実測なしには「決め打ち」になってしまう。
+上記の適応的バックオフ (`[LIMIT]` を受けた watch だけ、実際に必要な
+分だけ間隔が伸びる) の方が、全 watch のデフォルト間隔を当て推量で
+変更するより安全で、かつ Task の要求 (「`[LIMIT]` を返したサーバに
+対しては自動的に間隔を広げる」) にも直接応える。
+
+**同一アカウントの watch 重複解消 (デバイス2台分 → 1本の監視に統合し
+コマンド総量を半減させる) は Task #206 では見送った。** `fire()` が
+`WatchRecord.DeviceID` 1対1前提、`CreateWatch`/`DeleteWatch` が
+`(id, deviceId)` 単位、アプリ側 `WatchReconciler.swift` が watch を
+デバイス所有の資源とみなしている — この3点をまたぐ設計変更かつ、既に
+配布済みのアプリとの API 互換性を壊さない移行経路が要る規模のため、
+別タスクとして切り出すべきと判断した。
+
+**新しい `WatchErrorKind` (wire 値) を安易に追加しないこと** — Swift 側
+の `OtegamiRelayAPI.WatchSummary.ErrorKind` は `String, Codable` の
+素朴な enum で、`decodeIfPresent` は「キーが無い」場合しか救わず、
+「キーはあるが値が未知の文字列」は `DecodingError` で `WatchSummary`
+全体のデコードを失敗させる。既に配布済みのアプリが解釈できない値を
+リレーが返すと `GET /v1/watches` のレスポンス全体が壊れる。Task #206
+がレート制限を `lastErrorKind=connectionError` (既存の値) で記録して
+いるのはこのため — 新しい種別が本当に必要なら、先にアプリ側の enum
+を `default: .connectionError` 相当のフォールバックを持つ形に変更して
+から、リレー側で新しい値を返し始めること。

@@ -46,6 +46,15 @@ type FakeServer struct {
 	// matching every other fake-server test's assumption of an
 	// otherwise-well-behaved peer.
 	InactivityTimeout time.Duration
+	// RateLimitStatusCount, when > 0, makes the next that many STATUS
+	// commands answer `NO [LIMIT] STATUS Rate limit hit.` (mirroring the
+	// exact Yahoo Japan production response — Task #206) instead of the
+	// normal OK reply, decrementing by one per rejected STATUS. The
+	// connection itself is left open and otherwise fully functional
+	// throughout, matching the real server's behavior: this is used by
+	// the watcher pool test that confirms `[LIMIT]` is waited out on the
+	// same connection rather than triggering a reconnect+relogin.
+	RateLimitStatusCount int
 
 	mu         sync.Mutex
 	listener   net.Listener
@@ -126,6 +135,18 @@ func (s *FakeServer) currentState() (exists, uidNext int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.exists, s.uidNext
+}
+
+// consumeRateLimitedStatus decrements RateLimitStatusCount and reports
+// whether this STATUS call should be rejected with `[LIMIT]`.
+func (s *FakeServer) consumeRateLimitedStatus() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.RateLimitStatusCount <= 0 {
+		return false
+	}
+	s.RateLimitStatusCount--
+	return true
 }
 
 func (s *FakeServer) acceptLoop(ln net.Listener) {
@@ -256,6 +277,10 @@ func (s *FakeServer) handleConn(conn net.Conn) {
 			fmt.Fprintf(conn, "%s OK [READ-WRITE] SELECT completed\r\n", tag)
 
 		case "STATUS":
+			if s.consumeRateLimitedStatus() {
+				fmt.Fprintf(conn, "%s NO [LIMIT] STATUS Rate limit hit.\r\n", tag)
+				break
+			}
 			_, uidNext := s.currentState()
 			fmt.Fprintf(conn, "* STATUS INBOX (UIDNEXT %d)\r\n", uidNext)
 			fmt.Fprintf(conn, "%s OK STATUS completed\r\n", tag)

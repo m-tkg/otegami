@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,10 +46,12 @@ const maxConsecutiveAuthFailures = 3
 // Real-world trigger: Yahoo Japan (imap.mail.yahoo.co.jp) accounts observed
 // failing auth intermittently with the *same* credential that had
 // connected successfully earlier the same day. The relay's own tagged-
-// response logging (authFailureServerResponse) captured the server's exact
-// reply: `A1 NO [AUTHENTICATIONFAILED] Incorrect username or password.` —
-// not a `[LIMIT]`/`[UNAVAILABLE]`-shaped rate-limit response, but a stored
-// credential that worked minutes earlier cannot have simply become wrong.
+// response logging (commandFailedServerResponse) captured the server's
+// exact reply: `A1 NO [AUTHENTICATIONFAILED] Incorrect username or
+// password.` — not a `[LIMIT]`/`[UNAVAILABLE]`-shaped rate-limit response
+// (Task #206 later observed exactly that shape, but on STATUS, not LOGIN —
+// see isRateLimited), but a stored credential that worked minutes earlier
+// cannot have simply become wrong.
 // Yahoo's own support guidance describes repeated authentication failures
 // triggering a temporary account lock, without stating its duration:
 // https://note.chiilabo.jp/2026-04/yahoo-japan-imap-external-access-change/
@@ -130,6 +133,31 @@ type Options struct {
 	// minutes / 6 hours; tests drive these down to milliseconds.
 	AuthFailureRetryInterval time.Duration
 	AuthFailureRetryCap      time.Duration
+	// RateLimitInitialWait / RateLimitWaitCap (Task #206): how long a
+	// watch waits, on the same still-authenticated connection, after the
+	// server answers STATUS with a `[LIMIT]` response code before trying
+	// again — see isRateLimited's doc comment for why this must never
+	// become a reconnect. Doubles on consecutive hits (mirroring every
+	// other backoff in this file), resetting the moment a STATUS
+	// succeeds again.
+	//
+	// No published rate-limit-recovery duration exists for Yahoo Japan's
+	// IMAP (unlike the auth-lockout case, where Yahoo's own support
+	// guidance describes "tens of minutes" — see
+	// defaultAuthFailureRetryInterval's doc comment). The only real
+	// evidence available (docs/architecture.md "e." Task #206) is that
+	// STATUS was already being called no more than once per PollInterval
+	// (5 minutes) when the limit hit, so waiting less than that before
+	// retrying can't be justified by anything measured.
+	// RateLimitInitialWait therefore defaults to Options.PollInterval
+	// itself rather than an independently-guessed number — retrying "not
+	// appreciably faster than the cadence that was already being rate
+	// limited" is the most conservative response that doesn't require a
+	// new, unmeasured timescale. The cap reuses this file's existing
+	// 30-minute precedent for "temporary block, unknown duration" (see
+	// defaultAuthFailureRetryInterval).
+	RateLimitInitialWait time.Duration
+	RateLimitWaitCap     time.Duration
 }
 
 // Pool mirrors WatcherPool.
@@ -170,6 +198,15 @@ func New(s *store.Store, sender push.Sender, logger *slog.Logger, opts Options) 
 	}
 	if opts.AuthFailureRetryCap == 0 {
 		opts.AuthFailureRetryCap = defaultAuthFailureRetryCap
+	}
+	if opts.RateLimitInitialWait == 0 {
+		// Deliberately reuses the (already-defaulted, above) PollInterval
+		// rather than an independent constant — see the field's doc
+		// comment.
+		opts.RateLimitInitialWait = opts.PollInterval
+	}
+	if opts.RateLimitWaitCap == 0 {
+		opts.RateLimitWaitCap = 30 * time.Minute
 	}
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	return &Pool{
@@ -363,7 +400,7 @@ func (p *Pool) connectAndWatch(
 			// response never echoes the command, so no credential can reach
 			// the log this way; SanitizeForLog is the same F16 backstop used
 			// for every other attacker-influenced string.
-			"serverResponse", authFailureServerResponse(err),
+			"serverResponse", commandFailedServerResponse(err),
 		)
 		// Task #187: a watch whose credential has authenticated
 		// successfully before (WatchRecord.LastConnectedAt != nil) never
@@ -424,6 +461,12 @@ func (p *Pool) connectAndWatch(
 	p.logger.Info("watch connected",
 		"watchId", record.ID, "idle", idleSupported, "uidNext", baselineUIDNext)
 
+	// Task #206: how long to wait, on this same connection, the next time
+	// STATUS comes back `[LIMIT]` — see isRateLimited's doc comment. Reset
+	// to the initial value after every STATUS that doesn't hit the limit,
+	// so one isolated blip doesn't permanently slow this watch down.
+	rateLimitWait := p.opts.RateLimitInitialWait
+
 	for ctx.Err() == nil {
 		if idleSupported {
 			gotExists, err := client.Idle(record.Mailbox, p.opts.IdleMaxWait)
@@ -444,8 +487,36 @@ func (p *Pool) connectAndWatch(
 
 		newUIDNext, err := client.StatusUIDNext(record.Mailbox)
 		if err != nil {
+			if isRateLimited(err) {
+				// Task #206 core fix: the connection is still alive and
+				// authenticated — a `[LIMIT]` response is the server
+				// asking us to slow down, not a connection failure.
+				// Falling through to the generic `return err` below would
+				// have the caller (runWatchLoop) close this perfectly
+				// good connection and reconnect, forcing a fresh LOGIN —
+				// which is exactly what turned this rate limit into an
+				// hours-long auth lockout in production (see
+				// isRateLimited's doc comment). Wait it out right here and
+				// resume on the same connection instead.
+				p.logger.Warn("watch rate limited by server, waiting on the same connection instead of reconnecting",
+					"watchId", record.ID, "wait", rateLimitWait.String(),
+					"serverResponse", commandFailedServerResponse(err))
+				// Recorded for display only (mirrors the plain
+				// connection-error path just below this loop) —
+				// `stopping=false` never touches Status, so an
+				// already-`.active` watch keeps showing active while this
+				// resolves on its own.
+				_ = p.store.RecordWatchError(ctx, record.ID, api.ErrorKindConnectionError, false)
+				sleepCtx(ctx, rateLimitWait)
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				rateLimitWait = minDuration(rateLimitWait*2, p.opts.RateLimitWaitCap)
+				continue
+			}
 			return err
 		}
+		rateLimitWait = p.opts.RateLimitInitialWait
 		if newUIDNext > baselineUIDNext {
 			baselineUIDNext = newUIDNext
 			p.fire(ctx, record, newUIDNext)
@@ -625,15 +696,18 @@ func classifyAuthFailure(err error) (kind api.WatchErrorKind, stopsImmediately b
 // far shorter than this.
 const maxLoggedServerResponse = 200
 
-// authFailureServerResponse extracts the IMAP server's own tagged response
-// from an authentication failure, for diagnosis (Task #187). Returns an
-// empty string when the failure did not come from a tagged NO/BAD — an
-// OAuth token exchange failure, say, has no IMAP response to report.
+// commandFailedServerResponse extracts the IMAP server's own tagged
+// response from a failed command, for diagnosis. Originally written for
+// authentication failures (Task #187, hence the examples below), reused
+// as-is by isRateLimited's logging (Task #206) since the extraction logic
+// doesn't care which command failed. Returns an empty string when the
+// failure did not come from a tagged NO/BAD — an OAuth token exchange
+// failure, say, has no IMAP response to report.
 //
 // Safe to log: a tagged response is the server talking, and IMAP servers do
 // not echo the command that failed, so the LOGIN line's password cannot
 // appear here. Sanitized and length-capped regardless.
-func authFailureServerResponse(err error) string {
+func commandFailedServerResponse(err error) string {
 	var commandFailed *imapclient.CommandFailedError
 	if !errors.As(err, &commandFailed) {
 		return ""
@@ -643,6 +717,34 @@ func authFailureServerResponse(err error) string {
 		response = response[:maxLoggedServerResponse]
 	}
 	return push.SanitizeForLog(response)
+}
+
+// isRateLimited reports whether err is an IMAP tagged failure carrying a
+// `[LIMIT]` response code (Task #206) — observed from Yahoo Japan
+// (imap.mail.yahoo.co.jp) on STATUS: `A87 NO [LIMIT] STATUS Rate limit
+// hit.` This is NOT a connection-level problem: the TCP/TLS connection and
+// the IMAP session's authentication are both still perfectly good, only
+// this one command was refused.
+//
+// Why this needs its own branch rather than falling through to the generic
+// "connection error, reconnect" path: reconnecting means a fresh LOGIN, and
+// repeated LOGINs are exactly what triggers Yahoo's *separate*
+// authentication lockout (Task #187's defaultAuthFailureRetryInterval,
+// whose real-world trigger doc comment describes the same account). Before
+// this fix, production showed the resulting loop directly: rate limit on
+// STATUS -> treated as a connection error -> reconnect -> LOGIN -> LOGIN
+// rejected (the account was now locked) -> ~30+ minute lockout wait ->
+// LOGIN eventually succeeds -> same command volume as before -> rate
+// limited again. See connectAndWatch's isRateLimited branch and
+// docs/architecture.md's "IDLE 非対応の IMAP サーバーには NOOP
+// キープアライブが必須" pitfall entry (Task #206 addendum) for the full
+// narrative and the production log excerpt this was diagnosed from.
+func isRateLimited(err error) bool {
+	var commandFailed *imapclient.CommandFailedError
+	if !errors.As(err, &commandFailed) {
+		return false
+	}
+	return strings.Contains(strings.ToUpper(commandFailed.Response), "[LIMIT]")
 }
 
 func minDuration(a, b time.Duration) time.Duration {

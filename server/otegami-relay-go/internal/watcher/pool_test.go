@@ -261,6 +261,102 @@ func TestPollingKeepAliveSurvivesServerInactivityTimeout(t *testing.T) {
 	}
 }
 
+// TestRateLimitedStatusWaitsOnSameConnectionInsteadOfReconnecting is Task
+// #206's regression test: a non-IDLE server (like Yahoo Japan) that answers
+// STATUS with a `[LIMIT]` response code must be waited out on the very same
+// connection — not treated like a plain connection error, which would have
+// the outer loop tear the connection down and reconnect (a fresh LOGIN).
+// Repeated LOGINs are exactly what turns this rate limit into the separate
+// Task #187 auth lockout in production (see isRateLimited's doc comment).
+// LoginCount staying at 1 throughout is the proof no reconnect happened;
+// the eventual push after RateLimitStatusCount is exhausted proves the
+// watch actually resumed rather than getting stuck.
+func TestRateLimitedStatusWaitsOnSameConnectionInsteadOfReconnecting(t *testing.T) {
+	s := newTestStore(t)
+	server := imaptest.NewFakeServer()
+	server.SupportsIdle = false
+	server.SetInitialState(2, 3)
+	// The first two STATUS calls hit the limit; the third (and every one
+	// after) succeeds normally.
+	server.RateLimitStatusCount = 2
+	port, err := server.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	sender := &fakePushSender{}
+	pool := New(s, sender, testLogger(), Options{
+		PollInterval:          150 * time.Millisecond,
+		PollKeepAliveInterval: 500 * time.Millisecond, // longer than PollInterval: never fires in this test
+		NetworkPolicy:         security.PermissiveForTesting(),
+		// Small enough that both rate-limit hits (150ms, then 300ms
+		// doubled) plus the normal PollInterval cycles between them fit
+		// comfortably inside the test's deadlines below.
+		RateLimitInitialWait: 150 * time.Millisecond,
+		RateLimitWaitCap:     1 * time.Second,
+	})
+	t.Cleanup(pool.Stop)
+
+	deviceID, watchID := createWatch(t, s, port, "account-rate-limited",
+		api.WatchAuth{Type: api.WatchAuthPassword, Secret: "password"},
+		api.EnvironmentSandbox, "rate-limited-device-token")
+	pool.AddWatch(watchID)
+
+	// Let the two rate-limited STATUS attempts happen and resolve, well
+	// before delivering mail — proves the watch is still alive and
+	// making progress (not stuck retrying forever, not reconnecting).
+	deadline := time.Now().Add(5 * time.Second)
+	sawRateLimitError := false
+	for time.Now().Before(deadline) {
+		summaries, err := s.ListWatchSummaries(t.Context(), deviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(summaries) != 1 {
+			t.Fatalf("got %d summaries", len(summaries))
+		}
+		if summaries[0].Status == api.WatchStatusStopped {
+			t.Fatalf("watch stopped, should have kept retrying on the same connection: %+v", summaries[0])
+		}
+		if summaries[0].LastErrorKind != nil && *summaries[0].LastErrorKind == api.ErrorKindConnectionError {
+			sawRateLimitError = true
+		}
+		if server.LoginCount() > 1 {
+			t.Fatalf("expected exactly 1 LOGIN (rate limit handled without reconnecting), got %d", server.LoginCount())
+		}
+		if sawRateLimitError {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !sawRateLimitError {
+		t.Fatal("watch never recorded the rate-limit error")
+	}
+
+	// The connection must still be usable: new mail delivered after the
+	// rate limit clears should still fire a push, on the same connection.
+	server.DeliverNewMail()
+	calls := waitForCalls(t, sender, 1, 5*time.Second)
+	if len(calls) != 1 {
+		t.Fatalf("got %d calls: %+v", len(calls), calls)
+	}
+	if calls[0].Payload.AccountID != "account-rate-limited" || calls[0].Payload.UidNext != 4 {
+		t.Fatalf("got %+v", calls[0].Payload)
+	}
+	if got := server.LoginCount(); got != 1 {
+		t.Fatalf("expected still exactly 1 LOGIN after mail delivery, got %d", got)
+	}
+
+	summaries, err := s.ListWatchSummaries(t.Context(), deviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || summaries[0].Status != api.WatchStatusActive {
+		t.Fatalf("got %+v", summaries)
+	}
+}
+
 func TestIdleTimeoutThenLaterMailStillFiresPush(t *testing.T) {
 	// Parity with the Swift regression test: a legitimate IDLE timeout
 	// (no mail within the window) must not break the connection — mail
