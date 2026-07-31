@@ -99,6 +99,19 @@ import os
 /// あり得る) も意図的に落とす。実機での見方・既知の疑い (Yahoo の同時
 /// 接続/レート制限) は `docs/architecture.md` の落とし穴 i. の追記
 /// (Task #211) を参照。
+///
+/// **端末内診断画面 (Task #213)**: Task #211 のログは Mac に有線接続して
+/// Console.app/`log stream` を操作しないと読めず、実機での即時切り分けが
+/// できなかった。`recordStage(_:outcome:since:)` は上記と全く同じ各段階の
+/// 成否を、OSLog への書き込みに加えて `stageRecords` (インメモリ配列) にも
+/// 積む — `deliver()` が最後に**1回だけ** `PushDiagnosticsHistory
+/// .appending(_:toSuite:)` で共有 App Group の `UserDefaults` へ書き出し、
+/// アプリ側の「プッシュ通知の診断」画面
+/// (`apps/Otegami/Sources/Features/Settings/PushDiagnosticsView.swift`) が
+/// そこから読む。共有領域として `UserDefaults` を選んだ理由 (共有DBへの
+/// 書き込みは選ばなかった理由) は `PushDiagnosticsRun`
+/// (`packages/OtegamiKit/Sources/PushRelayClient/PushDiagnosticsStore.swift`)
+/// のdoc commentを参照。
 // `@unchecked Sendable`: `UNNotificationServiceExtension` doesn't itself
 // promise `didReceive(_:withContentHandler:)`/`serviceExtensionTimeWillExpire()`
 // run on any particular actor, so the compiler can't otherwise prove the
@@ -125,6 +138,28 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// (e.g. `AppDatabase.swift`).
     private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "NotificationService")
 
+    /// Task #213 — this run's stage results so far, appended to by
+    /// `recordStage(_:outcome:since:)` as `didReceive`/`enrich(payload:)`
+    /// progress, and persisted (JSON-encoded, one shared App Group
+    /// `UserDefaults` write) exactly once by `deliver()`. See this type's
+    /// "端末内診断画面" doc comment. Same single-in-flight-instance
+    /// reasoning as `bestAttemptContent`/`startedAt` above justifies
+    /// touching this directly from both `didReceive`'s synchronous prelude
+    /// and the `Task` it spawns.
+    private var stageRecords: [PushDiagnosticsRun.StageRecord] = []
+
+    /// Appends one stage result to `stageRecords` — no I/O here, just an
+    /// array append (`deliver()` is the only place that ever touches
+    /// `UserDefaults`, see this type's "端末内診断画面" doc comment on why
+    /// that split matters for the ~30 second budget). `since` is the
+    /// `Date()` captured right before the stage's work started; this
+    /// computes `elapsedMs` the same way `deliver()`'s own logging already
+    /// does for the whole run.
+    private func recordStage(_ stage: PushDiagnosticsRun.Stage, outcome: PushDiagnosticsRun.Outcome, since start: Date) {
+        let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
+        stageRecords.append(.init(stage: stage, outcome: outcome, elapsedMs: elapsedMs))
+    }
+
     override func didReceive(
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
@@ -145,11 +180,14 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // `UNMutableNotificationContent` instance both directly and via
         // `self` is what the compiler can't prove race-free, not `self`
         // alone (this class is `@unchecked Sendable`).
+        let parsePayloadStart = Date()
         let payload = Self.parsePayload(request.content.userInfo)
         if let payload {
             Self.logger.notice("didReceive: accountId=\(payload.accountId, privacy: .public) uidNext=\(payload.uidNext, privacy: .public)")
+            recordStage(.parsePayload, outcome: .success, since: parsePayloadStart)
         } else {
             Self.logger.notice("didReceive: push carried no accountId/uidNext — nothing to enrich, leaving generic content")
+            recordStage(.parsePayload, outcome: .skipped(reason: "no accountId/uidNext in push payload"), since: parsePayloadStart)
         }
 
         Task {
@@ -196,11 +234,36 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private func deliver() {
         guard let contentHandler, let bestAttemptContent else { return }
         self.contentHandler = nil
+        var totalElapsedMs: Int?
         if let startedAt {
             let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            totalElapsedMs = elapsedMs
             Self.logger.notice("deliver: elapsedMs=\(elapsedMs, privacy: .public)")
         }
+        persistDiagnostics(totalElapsedMs: totalElapsedMs)
         contentHandler(bestAttemptContent)
+    }
+
+    /// Task #213 — the single `UserDefaults` write this whole feature does
+    /// per push (see this type's "端末内診断画面" doc comment): guarded by
+    /// this `deliver()`'s own early-return-on-second-call above, so this
+    /// runs exactly once per `didReceive`, whether reached from normal
+    /// completion or `serviceExtensionTimeWillExpire()` (in which case
+    /// `stageRecords` simply holds whatever stages `enrich(payload:)`
+    /// managed to reach before the OS budget ran out — itself useful
+    /// diagnostic information, not an error case to special-case away).
+    /// A silent no-op with no App Group configured (matches
+    /// `incrementSharedBadgeCount()`'s existing same-shaped guard) or with
+    /// no stages recorded at all (shouldn't happen — `didReceive` always
+    /// records `.parsePayload` synchronously before this can be reached —
+    /// but guards against persisting an empty, useless run if it ever did).
+    private func persistDiagnostics(totalElapsedMs: Int?) {
+        guard !stageRecords.isEmpty,
+              let appGroupIdentifier = Self.appGroupIdentifier,
+              let defaults = UserDefaults(suiteName: appGroupIdentifier)
+        else { return }
+        let run = PushDiagnosticsRun(stages: stageRecords, totalElapsedMs: totalElapsedMs)
+        PushDiagnosticsHistory.appending(run, toSuite: defaults)
     }
 
     /// H「アプリアイコンの未読バッジ」— see the `Task` block's doc comment in
@@ -221,10 +284,17 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private static let sharedBadgeCountKey = "badge.sharedCount"
 
     private func enrich(payload: PushNotificationPayload) async {
+        let preferencesStart = Date()
         let preferences = Self.notificationContentPreferences()
         // Task #176: every toggle off -> nothing below would ever be used,
         // so skip the account/Keychain lookup and the IMAP connection
-        // entirely — see this type's doc comment, step 2.
+        // entirely — see this type's doc comment, step 2. Reading the
+        // toggles themselves can't fail (falls back to `.allEnabled`), so
+        // this stage always records `.success` — a run that stops right
+        // here (only `parsePayload`/`preferences` recorded, Task #213) is
+        // itself how "all 3 toggles were off" reads on the diagnostics
+        // screen, with no separate flag needed.
+        recordStage(.preferences, outcome: .success, since: preferencesStart)
         guard NotificationEnrichment.needsFetch(preferences: preferences) else {
             Self.logger.notice("enrich: all 3 content toggles are off — skipping account lookup/IMAP entirely")
             return
@@ -235,56 +305,71 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         showsBodyPreview=\(preferences.showsBodyPreview, privacy: .public)
         """)
 
+        let accountLookupStart = Date()
         let account: AccountRecord
         do {
             guard let found = try await Self.lookupAccount(id: payload.accountId) else {
                 Self.logger.notice("enrich: account lookup: no row for this accountId — falling back to generic")
+                recordStage(.accountLookup, outcome: .failure(category: "notFound", looksRateLimited: false, logDetail: nil), since: accountLookupStart)
                 return
             }
             account = found
         } catch {
             Self.logger.error("enrich: account lookup: shared AppDatabase read threw — falling back to generic: \(String(describing: error), privacy: .public)")
+            recordStage(.accountLookup, outcome: .failure(category: "dbReadError", looksRateLimited: false, logDetail: nil), since: accountLookupStart)
             return
         }
         Self.logger.notice("""
         enrich: account lookup: found kind=\(account.kind.rawValue, privacy: .public) \
         authType=\(account.authType.rawValue, privacy: .public) host=\(account.imapHost, privacy: .public)
         """)
+        recordStage(.accountLookup, outcome: .success, since: accountLookupStart)
 
+        let credentialStart = Date()
         guard let auth = await Self.resolveAuth(for: account) else {
             Self.logger.notice("enrich: credential: no usable credential resolved (see preceding log line) — falling back to generic")
+            recordStage(.credential, outcome: .failure(category: "noCredential", looksRateLimited: false, logDetail: nil), since: credentialStart)
             return
         }
         Self.logger.notice("enrich: credential: resolved, connecting")
+        recordStage(.credential, outcome: .success, since: credentialStart)
 
         let session = MailCoreIMAPSession(config: account.imapConfig)
         let mailbox = "INBOX"
 
+        let connectStart = Date()
         do {
             try await session.connect(auth: auth)
             Self.logger.notice("enrich: connect: succeeded")
+            recordStage(.connect, outcome: .success, since: connectStart)
         } catch {
-            Self.log(error, stage: "connect")
+            let summary = Self.log(error, stage: "connect")
+            recordStage(.connect, outcome: summary.asOutcome, since: connectStart)
             await session.disconnect()
             return
         }
 
+        let selectStart = Date()
         do {
             _ = try await session.select(mailbox)
             Self.logger.notice("enrich: select: succeeded")
+            recordStage(.select, outcome: .success, since: selectStart)
         } catch {
-            Self.log(error, stage: "select")
+            let summary = Self.log(error, stage: "select")
+            recordStage(.select, outcome: summary.asOutcome, since: selectStart)
             await session.disconnect()
             return
         }
 
         let latestUID = UInt32(max(payload.uidNext - 1, 1))
+        let fetchEnvelopeStart = Date()
         let envelopes: [FetchedEnvelope]
         do {
             envelopes = try await session.fetchEnvelopes(mailboxPath: mailbox, uids: .uid(latestUID), batchSize: 1)
             Self.logger.notice("enrich: fetchEnvelope: succeeded count=\(envelopes.count, privacy: .public)")
         } catch {
-            Self.log(error, stage: "fetchEnvelope")
+            let summary = Self.log(error, stage: "fetchEnvelope")
+            recordStage(.fetchEnvelope, outcome: summary.asOutcome, since: fetchEnvelopeStart)
             await session.disconnect()
             return
         }
@@ -295,23 +380,30 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             (uidNext=\(payload.uidNext, privacy: .public)) — already expunged/moved, \
             or a uidNext/UID mismatch; falling back to generic
             """)
+            recordStage(.fetchEnvelope, outcome: .failure(category: "noEnvelopeResult", looksRateLimited: false, logDetail: nil), since: fetchEnvelopeStart)
             await session.disconnect()
             return
         }
+        recordStage(.fetchEnvelope, outcome: .success, since: fetchEnvelopeStart)
 
         // Only pay for the (meaningfully heavier) whole-message fetch when
         // `showsBodyPreview` is actually on — see this type's doc comment,
         // step 5. A body-fetch failure here only drops the preview line,
         // not the envelope-derived title/subject already in hand, so it's
         // logged but never treated as this whole call failing.
+        let fetchBodyStart = Date()
         var bodyPreviewSourceText: String?
         if preferences.showsBodyPreview {
             do {
                 bodyPreviewSourceText = try await session.fetchBody(mailboxPath: mailbox, uid: latestUID).plainText
                 Self.logger.notice("enrich: fetchBody: succeeded")
+                recordStage(.fetchBody, outcome: .success, since: fetchBodyStart)
             } catch {
-                Self.log(error, stage: "fetchBody")
+                let summary = Self.log(error, stage: "fetchBody")
+                recordStage(.fetchBody, outcome: summary.asOutcome, since: fetchBodyStart)
             }
+        } else {
+            recordStage(.fetchBody, outcome: .skipped(reason: "showsBodyPreview off"), since: fetchBodyStart)
         }
 
         let sender = envelope.from.first
@@ -335,7 +427,13 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// redaction/rate-limit-detection logic lives in
     /// `NotificationServiceDiagnostics.summarize(category:
     /// underlyingDescription:)` (`PushRelayClient`), which is.
-    private static func log(_ error: Error, stage: String) {
+    ///
+    /// Returns the computed `ErrorSummary` (Task #213) so callers can also
+    /// feed it to `recordStage(_:outcome:since:)` via `ErrorSummary
+    /// .asOutcome` below, without re-deriving the same classification a
+    /// second time.
+    @discardableResult
+    private static func log(_ error: Error, stage: String) -> NotificationServiceDiagnostics.ErrorSummary {
         let category: String
         let underlyingDescription: String?
         switch error {
@@ -386,6 +484,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             rateLimited=\(summary.looksRateLimited, privacy: .public)
             """)
         }
+        return summary
     }
 
     /// Task #176: this device's current `NotificationContentPreferences`,
@@ -600,6 +699,17 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
     private static var keychainAccessGroup: String? {
         Bundle.main.object(forInfoDictionaryKey: "OtegamiKeychainAccessGroup") as? String
+    }
+}
+
+/// Task #213 — the one place `NotificationServiceDiagnostics.ErrorSummary`
+/// (OSLog-oriented) turns into `PushDiagnosticsRun.Outcome` (on-device
+/// screen-oriented); the two types carry the exact same 3 fields
+/// (category/looksRateLimited/logDetail) by design, so this is a plain
+/// field-for-field mapping, not a second classification.
+extension NotificationServiceDiagnostics.ErrorSummary {
+    fileprivate var asOutcome: PushDiagnosticsRun.Outcome {
+        .failure(category: category, looksRateLimited: looksRateLimited, logDetail: logDetail)
     }
 }
 

@@ -97,6 +97,21 @@ Dovecot 統合テストか、`make deploy-ota`/deploy-worktree 経由の実機�
    再現しやすい傾向がある (確証は無い)。上記の回避フラグを付与していても
    `push-settings`/`settings` 系シナリオでこの `grant` 自体を呼ぶ経路が
    残っていると踏み得る — 発生したら次節の「粘らない」運用に従う。
+
+   **裏付け (Task #213)**: 上記の疑いを裏付ける再現を確認した。新設した
+   `push-diagnostics`/`push-diagnostics-populated`シナリオ (`push-settings`
+   と同じく設定→一般→プッシュ通知経由) で、`OTEGAMI_UITEST_DISABLE_
+   NOTIFICATION_PERMISSION_REQUEST=1`を付与済みにも関わらず「"Otegami"
+   Would Like to Send You Notifications」ダイアログが2回連続で再現した。
+   念のため既存の(未変更の)`push-settings`シナリオでも同条件で再現する
+   ことを確認済み — このタスクで追加したコードが原因ではなく、
+   「プッシュ通知」設定画面 (`PushNotificationSettingsView`) 配下へ
+   タップ無し遷移するシナリオ全般に共通する既存の環境不調。ダイアログは
+   画面下部だけを覆い、上部の主要な要素 (ヘッダ・フッタ・最初の数行) は
+   隠れないため、スクリーンショットでの見た目確認自体は引き続き可能
+   だった (このタスクの`push-diagnostics-populated`のスクリーンショットも
+   ダイアログの外側に写った行だけで各`Outcome`ケースの表示を確認できた)。
+   根本原因の追跡は行っていない — 「粘らない」運用のとおり。
 4. **Foundation Models をシミュレータの `.app` プロセスから呼ぶと
    `LanguageModelError error -1` になる** — エンジン層自体はホスト macOS
    プロセスとしての `swift test` からは正常に動く。詳細・ガードレールの

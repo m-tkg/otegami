@@ -224,6 +224,12 @@ final class AppEnvironment {
     /// 同じくアプリ全体で1つ (UITest フェイク翻訳経路では書き込まれない
     /// — 実エンジンだけが対象)。
     @ObservationIgnored let translationDiagnostics = TranslationDiagnosticsStore()
+    /// Task #213: reads (never writes) the shared App Group `UserDefaults`
+    /// record of `NotificationService`'s recent runs — see
+    /// `PushDiagnosticsStore`'s own doc comment. One instance for the whole
+    /// app, same "single shared instance" shape as `translationDiagnostics`
+    /// right above.
+    @ObservationIgnored let pushDiagnostics = PushDiagnosticsStore()
     /// The cached, per-message-persisted counterpart (`docs/translation.md`'s
     /// "キャッシュ方針") — what `MessageView`'s translation bar (1i) actually
     /// calls, so opening the same English message twice doesn't re-run the

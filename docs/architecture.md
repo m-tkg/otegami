@@ -741,3 +741,49 @@ category == "NotificationService"'`、または sysdiagnose) で
 バック文言の改善/リレー側の接続の持ち方の見直し、のいずれか) を選ぶ**。
 先に対策を決め打ちしなかったのは、上記 i. の教訓 (「サードパーティの
 報告値」より「自分の本番ログでの実測値」を優先すること) と同じ理由。
+
+**追記 (Task #213: 端末内診断画面「プッシュ通知の診断」の追加)。**
+Task #211 のログは Mac に有線接続して Console.app/`log stream` を操作
+しないと読めず、実機での即時切り分けができなかった (このアプリの
+「翻訳の診断」画面と同じ課題感 — F15 の教訓どおり、Mac 無しでスクリーン
+ショット1枚から原因を確認できることが決め手になった前例がある)。
+そこで `NotificationService.enrich(payload:)` の各段階
+(`recordStage(_:outcome:since:)`) を、上記 OSLog への書き込みに加えて
+インメモリの `stageRecords` にも積み、`deliver()` の最後に **1回だけ**
+共有 App Group の `UserDefaults` (`PushDiagnosticsHistory
+.appending(_:toSuite:)`) へ JSON で書き出すようにした。アプリ側の
+設定 → 一般 → プッシュ通知 → 「プッシュ通知の診断」
+(`PushDiagnosticsView`) がそこから読む
+(`packages/OtegamiKit/Sources/PushRelayClient/PushDiagnosticsStore.swift`)。
+
+**共有領域に `UserDefaults` を選んだ理由 (共有 `AppDatabase` への書き込み
+は選ばなかった理由)**: `NotificationService.lookupAccount(id:)` の doc
+comment (Task #192) が明記するとおり、この Extension は現状
+`dbWriter.read` のみで一切 `.write` しないことが前提で「0xDEAD10CC を
+起こすロックを一度も持たない」という安全性を担保している。診断記録の
+ためだけに新しい `.write` 経路を追加すると、その前提を壊しかねない —
+記録する内容 (各段階の分類文字列・bool・整数、最大20件) はスキーマ管理の
+要る RDB を持ち出すには小さすぎることもあり、`BadgeCenter.setBadge
+(count:)`と同じ`UserDefaults(suiteName:)`前例に倣った。
+
+**保持件数は20件** (`TranslationDiagnosticsStore`の5件より多い) —
+複数アカウントがこの1つの履歴を共有するため、Yahoo! JAPAN 以外の
+アカウントのプッシュが間に挟まっても目的の記録が押し出されにくいよう
+余裕を持たせた。
+
+**書き込みが本来の処理を圧迫しないこと**: 各段階の結果はメモリ上の配列に
+追記するだけ (I/O なし)、実際の JSON エンコード + `UserDefaults` 書き込み
+は `deliver()` で1回だけ、`contentHandler`を呼ぶ直前に行う。
+
+**検証状況**: `scripts/verify-screen.sh push-diagnostics`/
+`push-diagnostics-populated` でシミュレータの画面自体 (空状態・
+`PushDiagnosticsRun.Outcome`の全ケース) の見た目は確認した
+(`docs/verify.md`の「シミュレータの既知の不調」3. 追記参照 —
+通知許可ダイアログが画面下部を覆うが主要要素は確認できた)。**共有
+`UserDefaults`への実際の書き込み・読み出しの往復 (`NotificationService`
+が本当に書き、アプリが本当に読む一連の流れ) は実機でしか検証できて
+いない** — シミュレータは実際の APNs push を一度も受け取らないため
+`NotificationService`自体が起動しない。実機で Yahoo! JAPAN アカウントの
+通知内容が出ない事象を再現した際、Mac 無しでこの画面を開いて段階・
+カテゴリ・レート制限の疑いを確認できるかどうかが、この機能自体の
+最終確認になる。

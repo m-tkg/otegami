@@ -59,6 +59,11 @@ struct PushNotificationSettingsView: View {
     /// a time since this whole screen is a single `Form`, so a single
     /// optional id is enough).
     @State private var reregisteringAccountId: String?
+    /// Task #213: tap-free navigation to `PushDiagnosticsView` for
+    /// `scripts/verify-screen.sh` — same pattern as `MailViewerSettingsView
+    /// .uitestShowTranslationDiagnosticsDirectly`. A no-op (`false`, and the
+    /// `.task` below never flips it) on every real launch.
+    @State private var uitestShowPushDiagnosticsDirectly = false
 
     /// Task #176 (実機フィードバック 2026-07-30「通知にタイトル、差出人、
     /// 本文の一部を出すかどうかの設定を追加して」): the 3 content toggles —
@@ -119,8 +124,17 @@ struct PushNotificationSettingsView: View {
                     onReregister: { accountId in reregister(accountId) }
                 )
             }
+            diagnosticsSection
             if let errorMessage {
                 errorSection(errorMessage)
+            }
+        }
+        .navigationDestination(isPresented: $uitestShowPushDiagnosticsDirectly) {
+            PushDiagnosticsView()
+        }
+        .task {
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenPushDiagnosticsDirectly") {
+                uitestShowPushDiagnosticsDirectly = true
             }
         }
         .navigationTitle("プッシュ通知")
@@ -242,6 +256,28 @@ struct PushNotificationSettingsView: View {
             // あります」のような内容を伴わない通知になる。
             Text("OS の「設定 → 通知 → プレビューを表示」とは別の設定です。こちらは、このアプリが通知に載せる内容そのものを選びます（両方が有効な場合のみ、選んだ内容が実際に表示されます）。すべてオフにすると「新着メールがあります」のような内容を伴わない通知になります。")
                 .accessibilityIdentifier("settings.push.notificationContentHint")
+        }
+    }
+
+    /// Task #213 (実機フィードバック: Yahoo! JAPAN アカウントだけ通知の内容
+    /// が出ない件を Mac 無しで切り分けたい): `MailViewerSettingsView`の
+    /// 「翻訳の診断」入口と同じ発想の`NavigationLink`。`RelayURLConfig
+    /// .isConfigured`に関わらず常に表示する — この配布ビルドにリレーが
+    /// 設定されていなくても、`NotificationService`自体は過去のビルドで
+    /// 記録した履歴を残している可能性があり、「記録がありません」という
+    /// 表示自体もこの画面で確認できる情報のうち。
+    private var diagnosticsSection: some View {
+        Section {
+            NavigationLink {
+                PushDiagnosticsView()
+            } label: {
+                Label("プッシュ通知の診断", systemImage: "stethoscope")
+            }
+            .accessibilityIdentifier("settings.push.diagnostics")
+        } header: {
+            Text("診断")
+        } footer: {
+            Text("通知は届くのに差出人・件名が表示されない場合など、Mac に接続してログを見なくてもこの端末だけで原因を確認できます。")
         }
     }
 

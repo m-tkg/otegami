@@ -305,6 +305,15 @@
 #                                       .fetchPushWatchSummaries()`の
 #                                       `OTEGAMI_UITEST_FIXED_PUSH_WATCH_
 #                                       SUMMARIES`分岐参照)。
+#   push-diagnostics                    Task #213: push-settings からさらに
+#                                       「プッシュ通知の診断」を開く —
+#                                       記録が空の状態の表示確認用
+#                                       (シミュレータでは実際の
+#                                       NotificationService 実行が無い)。
+#   push-diagnostics-populated          同じ画面を、固定フィクスチャ
+#                                       (成功1件・Yahooの[LIMIT]レート
+#                                       制限失敗1件) が populated な状態で
+#                                       開く。
 #   toolbar-customize                   Task #100: 設定→メールビューア→
 #                                       「ツールバーのカスタマイズ」
 #                                       (`MessageToolbarSettingsView`) を
@@ -701,6 +710,34 @@ case "$SCENARIO" in
     )
     launch_args+=("-uitestsOpenSettingsDirectly" "-uitestsOpenGeneralSettingsDirectly" "-uitestsOpenPushNotificationsDirectly")
     default_out="push-settings-watches.png"
+    ;;
+  push-diagnostics)
+    # Task #213 (実機フィードバック: Yahoo! JAPAN アカウントだけ通知の内容
+    # が出ない件を Mac 無しで切り分けたい): 設定→「一般」→「プッシュ通知」
+    # →「プッシュ通知の診断」を直接開く — `push-settings`と同じ「1段深い
+    # ところまで一気に」パターンにもう1段
+    # (`-uitestsOpenPushDiagnosticsDirectly`) 積む。記録が空の状態
+    # (シミュレータには本物の`NotificationService`実行が一度も無い) の
+    # 表示確認用。iOS専用画面。
+    launch_args+=(
+      "-uitestsOpenSettingsDirectly" "-uitestsOpenGeneralSettingsDirectly"
+      "-uitestsOpenPushNotificationsDirectly" "-uitestsOpenPushDiagnosticsDirectly"
+    )
+    default_out="push-diagnostics.png"
+    ;;
+  push-diagnostics-populated)
+    # 同じ画面を、固定フィクスチャ (`PushDiagnosticsStore
+    # .uitestFixedRuns` — 成功1件・Yahooの`[LIMIT]`レート制限失敗1件) が
+    # populated な状態で開く — `push-settings-watches`と同じ「UITest専用
+    # env varで固定データを返す」パターン
+    # (`OTEGAMI_UITEST_FIXED_PUSH_WATCH_SUMMARIES`の代わりに
+    # `OTEGAMI_UITEST_FIXED_PUSH_DIAGNOSTICS`)。
+    launch_env+=("OTEGAMI_UITEST_FIXED_PUSH_DIAGNOSTICS=1")
+    launch_args+=(
+      "-uitestsOpenSettingsDirectly" "-uitestsOpenGeneralSettingsDirectly"
+      "-uitestsOpenPushNotificationsDirectly" "-uitestsOpenPushDiagnosticsDirectly"
+    )
+    default_out="push-diagnostics-populated.png"
     ;;
   toolbar-customize)
     # Task #100: 設定 → メールビューア → 「ツールバーのカスタマイズ」を

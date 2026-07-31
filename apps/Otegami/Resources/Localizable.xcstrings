@@ -5363,6 +5363,146 @@
           }
         }
       }
+    },
+    "プッシュ通知の診断": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Push Notification Diagnostics"
+          }
+        }
+      }
+    },
+    "診断": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Diagnostics"
+          }
+        }
+      }
+    },
+    "通知は届くのに差出人・件名が表示されない場合など、Mac に接続してログを見なくてもこの端末だけで原因を確認できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "For cases like a notification arriving without a sender or subject, you can check the cause on this device alone — no need to connect to a Mac to view logs."
+          }
+        }
+      }
+    },
+    "通知を処理した端末自身の記録です。本文・件名・差出人・資格情報は一切記録しません。各段階の成否の種別と所要時間のみを保存します（最大20件）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This device's own record of processing notifications. It never records the body, subject, sender, or credentials — only each stage's outcome type and duration (up to 20 entries)."
+          }
+        }
+      }
+    },
+    "まだ記録がありません。通知が届くと記録されます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No records yet. A record appears once a notification arrives."
+          }
+        }
+      }
+    },
+    "直近の通知処理": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent Notification Runs"
+          }
+        }
+      }
+    },
+    "通知の解析": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parsing Notification"
+          }
+        }
+      }
+    },
+    "設定の読み取り": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reading Settings"
+          }
+        }
+      }
+    },
+    "アカウントの引き当て": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resolving Account"
+          }
+        }
+      }
+    },
+    "資格情報の取得": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resolving Credential"
+          }
+        }
+      }
+    },
+    "接続": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Connecting"
+          }
+        }
+      }
+    },
+    "メールボックス選択": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selecting Mailbox"
+          }
+        }
+      }
+    },
+    "見出し取得": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fetching Envelope"
+          }
+        }
+      }
+    },
+    "本文取得": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fetching Body"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

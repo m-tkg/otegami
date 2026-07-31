@@ -934,6 +934,30 @@ translations = {
     # interpolated literal can't become a stable catalog key.
     "認証に失敗しました。ただし、この資格情報は過去に接続に成功しているため、パスワードの誤りではなく一時的な制限の可能性があります。しばらく時間をおいてから再度お試しください。":
         "Authentication failed. However, since these credentials have connected successfully before, this may be a temporary restriction rather than an incorrect password. Please wait a while and try again.",
+
+    # --- Task #213 (実機フィードバック: Yahoo! JAPAN アカウントだけ通知の
+    # 内容が出ない件の切り分けに Mac が必要だった問題): 「プッシュ通知の
+    # 診断」画面 (`PushDiagnosticsView`) と、その入口
+    # (`PushNotificationSettingsView.diagnosticsSection`)。
+    "プッシュ通知の診断": "Push Notification Diagnostics",
+    "診断": "Diagnostics",
+    "通知は届くのに差出人・件名が表示されない場合など、Mac に接続してログを見なくてもこの端末だけで原因を確認できます。":
+        "For cases like a notification arriving without a sender or subject, you can check the cause on this device alone — no need to connect to a Mac to view logs.",
+    "通知を処理した端末自身の記録です。本文・件名・差出人・資格情報は一切記録しません。各段階の成否の種別と所要時間のみを保存します（最大20件）。":
+        "This device's own record of processing notifications. It never records the body, subject, sender, or credentials — only each stage's outcome type and duration (up to 20 entries).",
+    "まだ記録がありません。通知が届くと記録されます。": "No records yet. A record appears once a notification arrives.",
+    "直近の通知処理": "Recent Notification Runs",
+    # The 8 stages named in Task #213's own request text, in the order
+    # `NotificationService.enrich(payload:)` reaches them
+    # (`PushDiagnosticsRun.Stage`).
+    "通知の解析": "Parsing Notification",
+    "設定の読み取り": "Reading Settings",
+    "アカウントの引き当て": "Resolving Account",
+    "資格情報の取得": "Resolving Credential",
+    "接続": "Connecting",
+    "メールボックス選択": "Selecting Mailbox",
+    "見出し取得": "Fetching Envelope",
+    "本文取得": "Fetching Body",
 }
 
 # Disambiguation comments for a handful of short/reused source strings —
