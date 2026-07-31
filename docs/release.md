@@ -1,7 +1,7 @@
 # リリース (タグ push): iOS → TestFlight / macOS → GitHub Release
 
-Task #143。リリースしたいコミットに `v` から始まる git tag (`v1.2.3` 等)
-を打って push すると、2つの独立した CI パイプラインが並行して走る。
+リリースしたいコミットに `v` から始まる git tag (`v1.2.3` 等) を打って
+push すると、2つの独立した CI パイプラインが並行して走る。
 
 ```
 git tag vX.Y.Z && git push origin vX.Y.Z
@@ -44,8 +44,8 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 理由は 2 つ:
 
 - 配布物の表示バージョンとタグが食い違うと、どのビルドを触っているのか
-  実機で判別できない (実機フィードバック 2026-07-30)。
-- アプリ内アップデートチェック (`docs/design-system.md` の Task #158) は
+  実機で判別できない。
+- アプリ内アップデートチェック (下記「アプリ内アップデート」節) は
   `CFBundleShortVersionString` と Release タグを SemVer 比較する。固定値
   `1.2.0` のままだと `1.2.0 > 1.2.0-beta3` と判定され、beta を入れている
   のに「最新版です」と表示されてしまう。
@@ -86,7 +86,7 @@ iOS 側 (Xcode Cloud) はこの workflow を通らないので影響を受けな
 理由 (このセッションでローカル実機検証で確認済み): macOS ターゲットの
 entitlements (`apps/Otegami/Config/Otegami-macOS.entitlements`) は
 iCloud KVS (`com.apple.developer.ubiquity-kvstore-identifier`、
-M11 のアカウント iCloud 同期用) を含んでいる。`xcodebuild` 自身に
+アカウントの iCloud 同期に使う) を含んでいる。`xcodebuild` 自身に
 署名させようとすると:
 
 - **Manual 署名** (`CODE_SIGN_STYLE=Manual` + `CODE_SIGN_IDENTITY` に
@@ -154,18 +154,15 @@ tag を打つ前に `workflow_dispatch` (手動実行) でこのワークフロ�
   場合など (`gh release create` は既存タグに対して失敗する — 再実行する
   場合は先に `gh release delete` するか、新しいタグを打つ)。
 
-## アプリ内アップデート (macOS のみ、Task #182)
+## アプリ内アップデート (macOS のみ)
 
-実機フィードバック「mac 版で、update のチェックができる画面は About に
-移動してほしい。また、そこから update ボタンも置いて、自身のアップデート
-ができるようにしてほしい」を受けて実装。メニューバーの「Otegami」→
-「Otegamiについて」(`OtegamiCommands`の`CommandGroup(replacing: .appInfo)`、
-標準の`NSApplication`About panel を置き換え) が開く独立ウィンドウ
-(`AboutView`、`OtegamiApp`の`WindowGroup(id: "about")`) の中に、バージョン
-情報と並んでアップデート確認/インストール UI (`AboutUpdateSection`) が
-入っている。Task #158 で追加した独立ウィンドウ`UpdateCheckView`/
-`UpdateCheckRequest`はこの節で廃止・統合した。iOS はこの機能を持たない
-(App Store/TestFlight 配布) — 関連コードはすべて`#if os(macOS)`。
+メニューバーの「Otegami」→「Otegamiについて」(`OtegamiCommands`の
+`CommandGroup(replacing: .appInfo)`、標準の`NSApplication`About panel を
+置き換え) が開く独立ウィンドウ (`AboutView`、`OtegamiApp`の
+`WindowGroup(id: "about")`) の中に、バージョン情報と並んでアップデート
+確認/インストール UI (`AboutUpdateSection`) が入っている。iOS はこの機能
+を持たない (App Store/TestFlight 配布) — 関連コードはすべて
+`#if os(macOS)`。
 
 **ユーザーの明示操作でのみ実行し、自動更新はしない** — About を開いても
 勝手にはチェックしない (`AboutUpdateSection`のトグル/ボタンはすべて
@@ -234,9 +231,11 @@ tag を打つ前に `workflow_dispatch` (手動実行) でこのワークフロ�
 `CodeSignatureIdentity`はそれぞれ`OtegamiCoreTests`の単体テストで検証済み
 (ホスト許可リスト・zip slip判定・署名同一性比較の網羅的なケース)。About
 画面を開いてアップデート確認 (「最新版です」まで) が動くことは確認済み。
-実際のダウンロード→展開→入れ替えという一連の流れ、および本物のアプリの
-差し替えは、ユーザーの実アプリを壊すリスクがあるため未実行 — 詳細は
-[PENDING.md](../PENDING.md)「Task #182」節参照。
+**既知の制限**: 実際のダウンロード→展開→入れ替えという一連の流れ、
+および本物のアプリの差し替えは、ユーザーの実アプリを壊すリスクがある
+ため自動テストの対象外 — 新バージョンをリリースした際は、書き込み
+権限が無い環境でのフォールバック、Gatekeeper 未承認/署名不一致時の
+経路も含め、手動で一度確認すること。
 
 ## 関連ドキュメント
 
