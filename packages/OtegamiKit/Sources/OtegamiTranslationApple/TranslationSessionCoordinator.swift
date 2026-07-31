@@ -215,17 +215,46 @@ public final class TranslationSessionCoordinator {
             // 何らかの理由で発火はしたが処理が止まったのか — 診断画面を
             // 見ずともエラー文言自体からある程度切り分けられるよう、
             // 現在の供給側カウンタをそのまま埋め込む。
+            //
+            // Task #202: この詳細な (カウンタ入りの) 文言は`detail`として
+            // 診断向け (`errorDescription`/ログ/診断画面) にだけ残す —
+            // `.failed(message:)`だった以前は`userFacingMessage`が
+            // `message`をそのまま返すため、この生の開発者向け文言が
+            // 利用者向けの帯にもそのまま出てしまい、長すぎて画面外へ
+            // はみ出す実機バグの直接原因になっていた
+            // (`TranslationServiceError.sessionUnavailable`のdoc comment
+            // 参照)。`.sessionUnavailable`は固定の短い定型文を返す。
             let requestCount = self?.configurationRequestCount ?? -1
             let attachCount = self?.attachCallCount ?? -1
             if attachCount == 0 {
-                return TranslationServiceError.failed(message: "翻訳セッションを取得できませんでした（供給元が一度も応答していません: 設定要求\(requestCount)回 / セッション供給0回）")
+                return TranslationServiceError.sessionUnavailable(detail: "翻訳セッションを取得できませんでした（供給元が一度も応答していません: 設定要求\(requestCount)回 / セッション供給0回）")
             }
-            return TranslationServiceError.failed(message: "翻訳セッションを取得できませんでした（設定要求\(requestCount)回 / セッション供給\(attachCount)回、いずれも今回のリクエストには届きませんでした）")
+            return TranslationServiceError.sessionUnavailable(detail: "翻訳セッションを取得できませんでした（設定要求\(requestCount)回 / セッション供給\(attachCount)回、いずれも今回のリクエストには届きませんでした）")
         },
-        requestSupply: { [weak self] target in
+        requestSupply: { [weak self] target, ticket in
             self?.requestNewConfiguration(target: target)
+            self?.pendingTicket = ticket
         }
     )
+
+    /// Task #202: the `SupplyGatedRequestQueue.Ticket` for whichever request
+    /// `configuration` was most recently set for — read by
+    /// `TranslationSessionHostView.body` in the *same* render as
+    /// `configuration` itself (both are written together, synchronously, in
+    /// `requestQueue`'s `requestSupply` closure above) and threaded back
+    /// through to `attach(_:ticket:)`. This is what lets `requestQueue`
+    /// tell a genuine answer to the request that's current *right now*
+    /// apart from a late straggler answer to some earlier, already-
+    /// abandoned request — see `SupplyGatedRequestQueue`'s top-level doc
+    /// comment for the real-device bug this fixes and
+    /// `RequestTicket`'s doc comment alias just below.
+    public private(set) var pendingTicket: RequestTicket?
+
+    /// Alias for `TranslationSessionHostView` (which has no reason to know
+    /// this coordinator's queue is keyed by `Locale.Language`/
+    /// `TranslationSession` specifically) to spell the ticket type without
+    /// repeating that generic instantiation.
+    public typealias RequestTicket = SupplyGatedRequestQueue<Locale.Language, TranslationSession>.Ticket
 
     /// Translates `text`, auto-detecting the source language (`Configuration
     /// (source: nil, target:)` — see `AppleTranslationService`'s doc comment,
@@ -297,11 +326,22 @@ public final class TranslationSessionCoordinator {
     /// full duration of the resulting work is the entire point) with the
     /// session SwiftUI just created for whatever `configuration` this
     /// coordinator most recently set. Forwards straight to `requestQueue`
-    /// — see `SupplyGatedRequestQueue.supply(_:)`'s doc comment for why a
-    /// late/unmatched call here is a safe no-op, not a crash.
-    public func attach(_ session: TranslationSession) async {
+    /// — see `SupplyGatedRequestQueue.supply(_:for:)`'s doc comment for why
+    /// a late/unmatched call here is a safe no-op, not a crash.
+    ///
+    /// Task #202: `ticket` must be whatever `pendingTicket` held at the
+    /// exact moment the host view's `body` read `configuration` to set up
+    /// *this* `.translationTask` invocation (`TranslationSessionHostView
+    /// .body` captures both together, in the same synchronous render, for
+    /// exactly this reason) — it's what lets `requestQueue.supply(_:for:)`
+    /// reject a late answer from a closure invocation whose own item has
+    /// since timed out and been superseded by a later one, instead of
+    /// silently handing this `session` to that later item's operation. See
+    /// `SupplyGatedRequestQueue`'s top-level doc comment for the real-device
+    /// bug ("一度成功した後は必ず失敗する") this fixes.
+    public func attach(_ session: TranslationSession, ticket: RequestTicket) async {
         attachCallCount += 1
         lastAttachAt = Date()
-        await requestQueue.supply(session)
+        await requestQueue.supply(session, for: ticket)
     }
 }

@@ -386,10 +386,24 @@ struct MessageDetailFooterToolbar: View {
         // 無い — ボタン自身の真上に小さな吹き出しとして重ねることで、
         // 表示経路 (「一部の文は翻訳できませんでした」/「翻訳に失敗しま
         // した: …」) 自体は維持しつつ、隣のアイコンの幅には影響させない。
+        //
+        // Task #202 (実機フィードバック: 長いエラー文言の帯が画面右外へ
+        // はみ出し、末尾の数文字しか見えない): この場所にあった裸の
+        // `.fixedSize()` (両軸ともideal sizeを使う指定) が原因だった —
+        // `translateFootnoteCaption`内部の`.fixedSize(horizontal: false,
+        // vertical: true)`+`.frame(maxWidth: 200)`は「幅200ptで折り返す」
+        // つもりだったが、`.overlay`はデフォルトで中身に対して土台の
+        // ボタン (44pt) と同じ提案幅しか渡さないため、それを避けようと
+        // 追加されたこの外側の裸`.fixedSize()`が「提案幅を一切受け取らず
+        // 単一行の自然な幅で自己主張しろ」という指定になってしまい、
+        // 200ptでの折り返しを無効化していた — 結果、長文だとボタンの
+        // 位置 (並び替え可能なツールバーのため画面端に来ることがある)
+        // を中心に数百ptの帯ができ、画面外へ大きくはみ出していた。
+        // 削除して`translateFootnoteCaption`内部の指定 (折り返しは許可
+        // ・幅は200ptで頭打ち) だけに委ねる。
         .overlay(alignment: .top) {
             if let translateFootnote {
                 translateFootnoteCaption(translateFootnote)
-                    .fixedSize()
                     .offset(y: -(OtegamiSpacing.xl + OtegamiSpacing.xs))
             }
         }
@@ -463,15 +477,55 @@ struct MessageDetailFooterToolbar: View {
         return OtegamiColor.inkSecondary
     }
 
+    /// Task #202 (実機フィードバック: 帯が画面右外へはみ出し末尾しか見えない
+    /// — 根本原因は呼び出し元にあった裸`.fixedSize()`で、そちらは削除済み
+    /// (`translateButton`のdoc comment参照)。ここでの指定はそれを前提に、
+    /// 実際に「幅140〜190ptに収まる・それを超える分は折り返す」を成立
+    /// させるための組み合わせ — レンダリング比較用の一時スクリプト
+    /// (`ImageRenderer`で実際にPNG出力して確認、コミットはしていない)
+    /// で複数の幅/行数の組み合わせを試した上で決めた:
+    /// - `.fixedSize(horizontal: false, vertical: true)`: 横方向は「親から
+    ///   提案された幅を受け入れる」(=縮められる・折り返せる)、縦方向は
+    ///   「中身の折り返し後の行数ぶんだけ縦に伸びる」。
+    /// - `.frame(minWidth:maxWidth:alignment:)`: `.overlay(alignment: .top)`
+    ///   は既定でこの吹き出しに土台のアイコン (44pt) 相当の**狭い**幅しか
+    ///   提案してこない — `maxWidth`だけでは提案がそもそも140pt未満なら
+    ///   頭打ちが一度も効かず、`Text`は行あたり2〜3文字の縦に長い列に
+    ///   なってしまう (実機/レンダリング比較で確認済み)。`minWidth: 140`
+    ///   がこの狭い提案を底上げし、`maxWidth: 190`が逆に長い文言を
+    ///   頭打ちして折り返させる — 実際の利用者向け文言
+    ///   (`TranslationServiceError.userFacingMessage`、診断カウンタを
+    ///   含まない短い定型文に統一済み) はこの範囲で2〜3行に収まる。
+    /// - `.multilineTextAlignment(.center)`: 折り返して複数行になった
+    ///   場合に左詰めではなく中央揃えで読みやすくする。
+    /// - `.lineLimit(4)`: 保険 — 何らかの理由で極端に長い文言が来ても
+    ///   帯が縦に際限なく伸びず、超過分は`Text`既定の`.truncationMode
+    ///   (.tail)`で省略される。
+    ///
+    /// **既知の残存リスク**: ボタン中心アンカー方式のまま (アイコンの
+    /// 真上に表示する、という既存の設計意図を維持) のため、翻訳ボタンが
+    /// カスタマイズで画面の最も端 (先頭/末尾) に来た状態で失敗した場合、
+    /// 帯の左右の吹き出し部分 (中心から片側最大95pt) が画面端ぎりぎりで
+    /// わずかに切れる可能性はまだ理論上残る — ただし文言を短い定型文に
+    /// 揃えたことと合わせ、以前の「裸`.fixedSize()`で数百pt単位に膨張し
+    /// 画面の大半を覆う」規模の実害とは質的に別物 (数十pt程度の残存
+    /// リスク)。アイコン位置を検知して吹き出しの寄せ方向を動的に変える
+    /// (GeometryReader + PreferenceKeyでボタンの画面上位置を取得) までは
+    /// 本タスクではやらなかった — この吹き出しはエラー発生時のみ一時的に
+    /// 出る注記であり、常時表示のUIほど厳密な位置保証を要求しないと
+    /// 判断したため。今後さらに気になる実機報告があれば、その時点で
+    /// 動的アンカーへ拡張する。
     private func translateFootnoteCaption(_ text: String) -> some View {
         Text(text)
             .font(OtegamiFont.badge())
             .foregroundStyle(.white)
+            .multilineTextAlignment(.center)
+            .lineLimit(4)
             .padding(.horizontal, OtegamiSpacing.sm)
             .padding(.vertical, OtegamiSpacing.xs)
             .background(translateFootnoteTone, in: Capsule())
             .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: 200, alignment: .center)
+            .frame(minWidth: 140, maxWidth: 190, alignment: .center)
             .accessibilityIdentifier("messageDetail.toolbar.translate.footnote")
     }
 

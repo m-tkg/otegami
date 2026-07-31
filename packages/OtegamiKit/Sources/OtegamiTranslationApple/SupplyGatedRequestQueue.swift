@@ -1,5 +1,45 @@
 import Foundation
 
+/// Task #202 (実機フィードバック — 「一度翻訳が成功した後は、以後の翻訳が
+/// 必ず『翻訳セッションを取得できませんでした』でタイムアウトし続ける」、
+/// 診断画面のカウンタは「設定要求N回/セッション供給N回、いずれも今回の
+/// リクエストには届きませんでした」と、要求した数だけ`supply(_:)`が実際に
+/// 呼ばれているのにこの`perform`だけが毎回タイムアウトすることを示していた
+/// — 根本原因): `supply(_:)`は以前、引数の`session`が「今まさに
+/// `pendingOperation`にある項目」に対する応答だという保証を一切検証せずに
+/// 受け取っていた。`TranslationSessionHostView`の`.translationTask(_:action:)`
+/// クロージャは`id`(=`configuration`)が変わるとSwiftUIに**協調的に**
+/// キャンセルされる (`Task.isCancelled`をどこもチェックしていない) だけで、
+/// 実行そのものは止まらない — Appleのセッション確立自体に実機で数秒
+/// かかることは珍しくなく、その間にこの項目自身の`timeoutSeconds`が先に
+/// 尽きて`drainIfNeeded()`が次の項目へ進んでいることは十分あり得る。その
+/// 「もう誰も待っていないはずの」古いクロージャが後から`supply(_:)`を
+/// 呼んだとき、以前の実装は`pendingOperation`が(次の項目のものへ)
+/// 非nilに変わっていることを区別できず、**古いセッションで新しい項目の
+/// `operation`をそのまま実行してしまっていた** — 新しい項目からすれば
+/// 「要求はしたのに自分宛の供給が一度も届かない」状態になり、やがて
+/// **自分自身の**タイムアウトで諦める。これが「要求N回・供給N回なのに
+/// 毎回タイムアウトする」の正体: 供給は確かにN回起きているが、そのうち
+/// 実際に自分の項目へ届いたのは1回もない (常に1つ前の項目が「盗んで」
+/// いた) ということがあり得た。「最初の1回だけ成功し、以後は必ず失敗する」
+/// という実機パターンも符合する — アプリ起動後・このコーディネータの
+/// 生涯で最初の項目だけは先行する「古いクロージャ」が存在しえず、2件目
+/// 以降は常に「1つ前の項目のクロージャがまだ生きているかもしれない」
+/// 状態からスタートするため。
+///
+/// **修正**: `drainIfNeeded()`が項目をキューから取り出すたびに新しい
+/// `Ticket`を発行し、`requestSupply`にその項目の`target`と一緒に渡す。
+/// 外部の供給元 (`TranslationSessionCoordinator`) はこの`ticket`を
+/// 保持しておき、実際に供給する際 (`supply(_:for:)`) に添えて返す責任を
+/// 持つ。`supply(_:for:)`は`ticket`が**現在**`pendingOperation`が待って
+/// いるものと一致する場合にのみ処理し、一致しなければ (=古い項目からの
+/// 遅延応答) `pendingOperation`に一切触れずに安全に無視する — ちょうど
+/// 「タイムアウト後の遅延`supply`」と同じ「安全な no-op」の扱いを、
+/// 「タイムアウトはまだ起きていないが別の項目に取って代わられた」ケース
+/// にも拡張したもの。`SupplyGatedRequestQueueTests
+/// .lateSupplyForSupersededTicketDoesNotStealNewerItem`がこの具体的な
+/// レースを (Fakeな`Target`/`Session`で) 直接再現・固定している。
+///
 /// 2026-07-30 (実機フィードバック — 退行「テスト翻訳を実行」がスピナーの
 /// まま無反応、メール本文画面でも翻訳できなくなった): `TranslationSessionCoordinator`
 /// の「セッションを外部 (SwiftUI の `.translationTask` アクションクロージャ)
@@ -21,7 +61,24 @@ import Foundation
 /// その供給が届くまで (または`timeoutSeconds`が過ぎるまで) 待ち、
 /// `operation`を実行してその結果を返す。
 @MainActor
-final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
+public final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
+    /// Task #202: an opaque per-drain identifier, handed to `requestSupply`
+    /// alongside the `target` it's for, and required back on `supply(_:for:)`
+    /// — see this file's top-level doc comment for the exact race this
+    /// closes. Callers can't construct one themselves (`fileprivate` field,
+    /// only a synthesized `fileprivate` memberwise init), only receive and
+    /// echo back whatever `requestSupply` gave them; that's deliberate — a
+    /// `Ticket` a caller invented itself would defeat the whole point (it
+    /// could always "happen" to match). `public` (not `internal`, this
+    /// class's own default) purely so `TranslationSessionCoordinator` can
+    /// re-export it as `RequestTicket` for `apps/Otegami`'s
+    /// `TranslationSessionHostView` (a different module) to hold and pass
+    /// back to `attach(_:ticket:)` — this class's *construction*
+    /// (`init`) stays unexported, only ever built inside this module.
+    public struct Ticket: Sendable, Equatable {
+        fileprivate let rawValue: Int
+    }
+
     /// `armTimeout` starts the item's own timeout clock — see
     /// `drainIfNeeded()`'s doc comment (2026-07-30 追記) for why this has
     /// to happen there, not in `perform(target:operation:)`.
@@ -33,7 +90,7 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
 
     private var queue: [QueueItem] = []
     /// `true` from the moment `requestSupply` is called for the item
-    /// currently at the front of the queue until `supply(_:)` finishes
+    /// currently at the front of the queue until `supply(_:for:)` finishes
     /// running that item's `operation` (or the matching `perform` call's
     /// own timeout gives up first) — i.e. "a supply is currently owed to
     /// us and hasn't arrived yet, or is being processed". While `true`,
@@ -46,14 +103,22 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
     /// request it was for).
     private var isDraining = false
     private var pendingOperation: (@MainActor (Session) async -> Void)?
+    /// Task #202: which `Ticket` `pendingOperation` (if any) is actually
+    /// waiting for — `supply(_:for:)` only honors a call whose `ticket`
+    /// matches this exactly, so a late answer meant for an item that's
+    /// since been superseded (its own timeout fired, `drainIfNeeded()`
+    /// moved on) can never be mistaken for an answer to whatever's pending
+    /// *now*. `nil` whenever nothing is pending, matching `pendingOperation`.
+    private var pendingTicket: Ticket?
+    private var nextTicketValue = 0
 
     private let timeoutSeconds: UInt64
     private let timeoutError: @MainActor @Sendable () -> Error
-    private let requestSupply: @MainActor (Target) -> Void
+    private let requestSupply: @MainActor (Target, Ticket) -> Void
 
     /// - Parameters:
     ///   - timeoutSeconds: how long `perform(target:operation:)` waits for
-    ///     a matching `supply(_:)` call before giving up — structurally
+    ///     a matching `supply(_:for:)` call before giving up — structurally
     ///     guarantees no caller can wait forever, no matter what goes
     ///     wrong on the supply side (a missing/misconfigured supplier, a
     ///     bug in this type, ...).
@@ -63,8 +128,9 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
     ///     know about it.
     ///   - requestSupply: called (on the main actor) exactly once per
     ///     queue item, when it's that item's turn — the external
-    ///     supplier's cue to eventually call `supply(_:)`.
-    init(timeoutSeconds: UInt64, timeoutError: @escaping @MainActor @Sendable () -> Error, requestSupply: @escaping @MainActor (Target) -> Void) {
+    ///     supplier's cue to eventually call `supply(_:for:)` with a
+    ///     `Session` and the same `Ticket` it was given here.
+    init(timeoutSeconds: UInt64, timeoutError: @escaping @MainActor @Sendable () -> Error, requestSupply: @escaping @MainActor (Target, Ticket) -> Void) {
         self.timeoutSeconds = timeoutSeconds
         self.timeoutError = timeoutError
         self.requestSupply = requestSupply
@@ -134,6 +200,14 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
                         guard let self else { return }
                         self.isDraining = false
                         self.pendingOperation = nil
+                        // Task #202: also clear `pendingTicket` — if
+                        // `drainIfNeeded()` right below finds the queue
+                        // empty, nothing will overwrite it, and a stale
+                        // `supply(_:for:)` call for *this* (just abandoned)
+                        // ticket must not still match and re-run an
+                        // operation whose `perform` call already gave up
+                        // and returned.
+                        self.pendingTicket = nil
                         self.drainIfNeeded()
                     }
                 }
@@ -143,13 +217,26 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
 
     /// Called by the external supplier once it has a `Session` ready for
     /// whichever `target` this queue most recently asked for via
-    /// `requestSupply`. A safe no-op if there's no `pendingOperation` right
-    /// now — the matching request may have already timed out and moved
-    /// the queue forward itself (see `perform`'s timeout `Task`); a late
-    /// `supply(_:)` in that case must not crash or double-run anything.
-    func supply(_ session: Session) async {
-        guard let operation = pendingOperation else { return }
+    /// `requestSupply` — `ticket` must be the exact `Ticket` that specific
+    /// `requestSupply` call received (`TranslationSessionCoordinator`
+    /// threads it through `attach(_:ticket:)`). A safe no-op, not a crash,
+    /// whenever `ticket` doesn't match `pendingTicket` — covering *two*
+    /// distinct "this answer is stale" cases the same way:
+    /// - Nothing is pending at all (`pendingTicket == nil`) — the matching
+    ///   request already timed out and moved the queue forward with
+    ///   nothing behind it (the original, pre-Task #202 scenario this
+    ///   doc comment already covered).
+    /// - Something *is* pending, but it's a *different, newer* ticket
+    ///   (Task #202) — the request this `session` was actually meant for
+    ///   already timed out, `drainIfNeeded()` moved on to a later item,
+    ///   and this is a late straggler answer for the abandoned one. Without
+    ///   the ticket check this would silently run the *newer* item's
+    ///   `operation` with the *wrong* `session` and steal its slot — see
+    ///   this file's top-level doc comment for the full real-device trace.
+    func supply(_ session: Session, for ticket: Ticket) async {
+        guard ticket == pendingTicket, let operation = pendingOperation else { return }
         pendingOperation = nil
+        pendingTicket = nil
         await operation(session)
         isDraining = false
         drainIfNeeded()
@@ -176,8 +263,17 @@ final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> {
         guard !isDraining, !queue.isEmpty else { return }
         isDraining = true
         let item = queue.removeFirst()
+        // Task #202: a fresh ticket per drained item — see `Ticket`'s and
+        // `supply(_:for:)`'s doc comments for why this specific value
+        // (rather than `item.target`, which two in-flight requests can
+        // share, see `sameTargetRequestedTwiceInARowBothGetSupplied`) is
+        // what lets a late answer be told apart from an answer to *this*
+        // item.
+        let ticket = Ticket(rawValue: nextTicketValue)
+        nextTicketValue += 1
         pendingOperation = item.operation
-        requestSupply(item.target)
+        pendingTicket = ticket
+        requestSupply(item.target, ticket)
         item.armTimeout()
     }
 }

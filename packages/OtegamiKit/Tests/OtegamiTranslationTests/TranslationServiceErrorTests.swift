@@ -125,4 +125,41 @@ struct TranslationServiceErrorTests {
             #expect(!error.userFacingMessage.hasPrefix("翻訳に失敗しました"))
         }
     }
+
+    // MARK: - Task #202 (実機フィードバック「一度成功した後は必ず翻訳が
+    // 失敗する」、診断画面のカウンタがそのまま利用者向け帯にも表示され、
+    // 長すぎて画面外へはみ出していた実害): `.sessionUnavailable`は
+    // `TranslationSessionCoordinator`のタイムアウト時のみが投げる新規
+    // ケース — `detail`(診断向け、カウンタを含む) と`userFacingMessage`
+    // (利用者向け、固定の短い定型文) が完全に分離されていることを
+    // このケースについても他ケースと同列に固定する。
+
+    @Test(".sessionUnavailable's userFacingMessage never leaks its diagnostic detail (the counters that caused the real-device footer overflow)")
+    func sessionUnavailableDoesNotLeakItsDetail() {
+        let detail = "翻訳セッションを取得できませんでした（設定要求14回 / セッション供給14回、いずれも今回のリクエストには届きませんでした）"
+        let message = TranslationServiceError.sessionUnavailable(detail: detail).userFacingMessage
+        #expect(!message.contains(detail))
+        #expect(!message.contains("設定要求"))
+        #expect(!message.contains("セッション供給"))
+        #expect(!message.contains("14"))
+        // Task #202の実害そのもの: この短い定型文なら
+        // `MessageDetailFooterToolbar.translateFootnoteCaption`のwrap幅
+        // (140〜190pt) に収まる長さであることも合わせて確認する — 明確な
+        // 上限ではなく大まかな目安 (診断向けの`detail`は50文字を優に
+        // 超える) だが、「短い定型文である」という意図を最低限固定する。
+        #expect(message.count < 30)
+    }
+
+    @Test(".sessionUnavailable's userFacingMessage doesn't start with the footer UI's own prefix clause")
+    func sessionUnavailableDoesNotStartWithTheFooterPrefix() {
+        let message = TranslationServiceError.sessionUnavailable(detail: "x").userFacingMessage
+        #expect(!message.hasPrefix("翻訳に失敗しました"))
+    }
+
+    @Test(".sessionUnavailable's detail (not userFacingMessage) is what errorDescription/logging sees, preserving diagnosability")
+    func sessionUnavailableDetailReachesErrorDescription() {
+        let detail = "翻訳セッションを取得できませんでした（供給元が一度も応答していません: 設定要求6回 / セッション供給0回）"
+        let error = TranslationServiceError.sessionUnavailable(detail: detail)
+        #expect(error.errorDescription?.contains(detail) == true)
+    }
 }

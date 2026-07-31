@@ -20,12 +20,13 @@ struct SupplyGatedRequestQueueTests {
     func neverSuppliedTimesOutRatherThanHanging() async throws {
         // `timeoutSeconds: 0` — resolves almost immediately, so this test
         // itself stays fast; `requestSupply` deliberately never calls
-        // `supply(_:)`, simulating exactly the real-device bug (a screen
-        // with no `.translationTask` host mounted anywhere in its tree).
+        // `supply(_:for:)`, simulating exactly the real-device bug (a
+        // screen with no `.translationTask` host mounted anywhere in its
+        // tree).
         let queue = SupplyGatedRequestQueue<String, Int>(
             timeoutSeconds: 0,
             timeoutError: { TimeoutMarker() },
-            requestSupply: { _ in }
+            requestSupply: { _, _ in }
         )
 
         await #expect(throws: TimeoutMarker.self) {
@@ -36,14 +37,18 @@ struct SupplyGatedRequestQueueTests {
     @Test("a supply that arrives before the timeout resolves the request normally")
     func suppliedBeforeTimeoutSucceeds() async throws {
         var requestedTargets: [String] = []
-        // A generous timeout (5s) that the `supply(_:)` call below —
+        var tickets: [SupplyGatedRequestQueue<String, Int>.Ticket] = []
+        // A generous timeout (5s) that the `supply(_:for:)` call below —
         // driven manually once `requestSupply` confirms the request
         // actually reached the front of the queue — should never come
         // close to hitting.
         let queue = SupplyGatedRequestQueue<String, Int>(
             timeoutSeconds: 5,
             timeoutError: { TimeoutMarker() },
-            requestSupply: { target in requestedTargets.append(target) }
+            requestSupply: { target, ticket in
+                requestedTargets.append(target)
+                tickets.append(ticket)
+            }
         )
 
         let resultTask = Task {
@@ -53,7 +58,7 @@ struct SupplyGatedRequestQueueTests {
             await Task.yield()
         }
         #expect(requestedTargets == ["en"])
-        await queue.supply(42)
+        await queue.supply(42, for: tickets[0])
 
         let result = try await resultTask.value
         #expect(result == 84)
@@ -61,64 +66,90 @@ struct SupplyGatedRequestQueueTests {
 
     @Test("a supply that arrives after its request already timed out is a safe no-op, not a crash or a double-resume")
     func lateSupplyAfterTimeoutIsSafeNoOp() async throws {
+        var tickets: [SupplyGatedRequestQueue<String, Int>.Ticket] = []
         let queue = SupplyGatedRequestQueue<String, Int>(
             timeoutSeconds: 0,
             timeoutError: { TimeoutMarker() },
-            requestSupply: { _ in }
+            requestSupply: { _, ticket in tickets.append(ticket) }
         )
 
         await #expect(throws: TimeoutMarker.self) {
             _ = try await queue.perform(target: "en") { session in session }
         }
         // The request already timed out and moved on — this must not
-        // crash (a `CheckedContinuation` traps on double-resume) or throw.
-        await queue.supply(999)
+        // crash (a `CheckedContinuation` traps on double-resume) or throw,
+        // even though `ticket` (the one this now-abandoned request's own
+        // `requestSupply` call actually received) is exactly right — there
+        // is simply nothing pending anymore to match it against
+        // (`pendingTicket` was cleared by the timeout cleanup).
+        await queue.supply(999, for: tickets[0])
     }
 
-    @Test("two concurrent requests both eventually complete — neither waits forever behind the other")
+    @Test("two concurrent requests both eventually complete — neither waits forever behind the other, regardless of which the scheduler happens to start first")
     func concurrentRequestsBothEventuallyComplete() async throws {
         var requestedTargets: [String] = []
+        var ticketsByTarget: [String: SupplyGatedRequestQueue<String, Int>.Ticket] = [:]
         let queue = SupplyGatedRequestQueue<String, Int>(
             timeoutSeconds: 5,
             timeoutError: { TimeoutMarker() },
-            requestSupply: { target in
+            requestSupply: { target, ticket in
                 requestedTargets.append(target)
+                ticketsByTarget[target] = ticket
             }
         )
 
+        // `async let`'s two child tasks are both scheduled onto this
+        // `@MainActor`-isolated queue, but Swift makes *no* guarantee that
+        // "first" (declared textually before "second") is the one whose
+        // synchronous enqueue+drain prefix actually runs first — either
+        // interleaving is valid concurrent scheduling. A previous version
+        // of this test assumed `requestedTargets == ["en"]` after the
+        // first poll and `== ["en", "ja"]` after the second — i.e. it
+        // assumed declaration order matched drain order — and was
+        // empirically flaky because of it (observed failing roughly 1 run
+        // in 15 locally, `for i in 1..15; do swift test --filter
+        // SupplyGatedRequestQueueTests; done`). This version makes no such
+        // assumption: it discovers which target actually got requested
+        // first and supplies/asserts accordingly, so it's deterministic
+        // regardless of scheduling order while still checking the exact
+        // same guarantee (both requests complete, each with the session
+        // actually meant for it).
         async let first = queue.perform(target: "en") { session in session + 1 }
         async let second = queue.perform(target: "ja") { session in session + 2 }
 
-        // This queue processes one request at a time — give the first
-        // `perform` a moment to actually enqueue and call `requestSupply`
-        // before asserting on it (both `perform` calls above return
-        // immediately with unstarted work until awaited/scheduled; a tiny
-        // yield is enough since no real async work happens before the
-        // first `requestSupply` call).
         while requestedTargets.isEmpty {
             await Task.yield()
         }
-        #expect(requestedTargets == ["en"])
-        await queue.supply(10)
+        #expect(requestedTargets.count == 1)
+        let firstRequested = requestedTargets[0]
+        #expect(firstRequested == "en" || firstRequested == "ja")
+        try await queue.supply(10, for: #require(ticketsByTarget[firstRequested]))
 
         while requestedTargets.count < 2 {
             await Task.yield()
         }
-        #expect(requestedTargets == ["en", "ja"])
-        await queue.supply(20)
+        #expect(Set(requestedTargets) == Set(["en", "ja"]))
+        let secondRequested = requestedTargets[1]
+        try await queue.supply(20, for: #require(ticketsByTarget[secondRequested]))
 
         let (firstResult, secondResult) = try await (first, second)
-        #expect(firstResult == 11)
-        #expect(secondResult == 22)
+        if firstRequested == "en" {
+            #expect(firstResult == 11)  // "en"'s operation: 10 + 1
+            #expect(secondResult == 22) // "ja"'s operation: 20 + 2
+        } else {
+            #expect(firstResult == 21)  // "en"'s operation: 20 + 1
+            #expect(secondResult == 12) // "ja"'s operation: 10 + 2
+        }
     }
 
     @Test("supplying twice for the same pending request only runs the operation once")
     func doubleSupplyOnlyRunsOnce() async throws {
         var callCount = 0
+        var tickets: [SupplyGatedRequestQueue<String, Int>.Ticket] = []
         let queue = SupplyGatedRequestQueue<String, Int>(
             timeoutSeconds: 5,
             timeoutError: { TimeoutMarker() },
-            requestSupply: { _ in }
+            requestSupply: { _, ticket in tickets.append(ticket) }
         )
 
         let resultTask = Task {
@@ -127,12 +158,15 @@ struct SupplyGatedRequestQueueTests {
                 return session
             }
         }
-        await Task.yield()
-        await queue.supply(1)
-        // A second supply before anything else was enqueued must be a
-        // no-op (`pendingOperation` is already `nil` by then) — not a
-        // second invocation of the same operation.
-        await queue.supply(2)
+        while tickets.isEmpty {
+            await Task.yield()
+        }
+        await queue.supply(1, for: tickets[0])
+        // A second supply with the *same* (now-stale) ticket must be a
+        // no-op (`pendingTicket`/`pendingOperation` are already `nil` by
+        // then, matching `lateSupplyAfterTimeoutIsSafeNoOp`'s reasoning) —
+        // not a second invocation of the same operation.
+        await queue.supply(2, for: tickets[0])
 
         let result = try await resultTask.value
         #expect(result == 1)
@@ -151,18 +185,23 @@ struct SupplyGatedRequestQueueTests {
     /// キューから取り出した項目ごとに無条件で`requestSupply`を呼ぶだけ
     /// (`drainIfNeeded()`参照)。このテストは**それ自体を固定する** —
     /// 同じ`target`("ja")で2回連続リクエストしても、`requestSupply`が
-    /// 律儀に2回呼ばれ、両方とも独立に`supply(_:)`で完了できることを
-    /// 確認する。実際に壊れていたのは`TranslationSessionCoordinator`
-    /// 側の`Configuration`の値としての等価性であって、この汎用キュー側の
-    /// 「要求のたびに供給を求める」という契約自体は最初から健全だった、
-    /// という切り分けをテストとして残す。
-    @Test("requesting the exact same target twice in a row still calls requestSupply twice, and both requests complete")
+    /// 律儀に2回呼ばれ (それぞれ別の`Ticket`を伴って)、両方とも独立に
+    /// `supply(_:for:)`で完了できることを確認する。実際に壊れていたのは
+    /// `TranslationSessionCoordinator`側の`Configuration`の値としての
+    /// 等価性であって、この汎用キュー側の「要求のたびに供給を求める」
+    /// という契約自体は最初から健全だった、という切り分けをテストとして
+    /// 残す。
+    @Test("requesting the exact same target twice in a row still calls requestSupply twice with distinct tickets, and both requests complete")
     func sameTargetRequestedTwiceInARowBothGetSupplied() async throws {
         var requestedTargets: [String] = []
+        var tickets: [SupplyGatedRequestQueue<String, Int>.Ticket] = []
         let queue = SupplyGatedRequestQueue<String, Int>(
             timeoutSeconds: 5,
             timeoutError: { TimeoutMarker() },
-            requestSupply: { target in requestedTargets.append(target) }
+            requestSupply: { target, ticket in
+                requestedTargets.append(target)
+                tickets.append(ticket)
+            }
         )
 
         async let first = queue.perform(target: "ja") { session in session + 1 }
@@ -170,21 +209,172 @@ struct SupplyGatedRequestQueueTests {
             await Task.yield()
         }
         #expect(requestedTargets == ["ja"])
-        await queue.supply(100)
+        await queue.supply(100, for: tickets[0])
         let firstResult = try await first
         #expect(firstResult == 101)
 
         // Second request, same target as the first — must still trigger
-        // its own independent `requestSupply` call, not be silently
-        // skipped because the target "already matches" the previous one.
+        // its own independent `requestSupply` call (with its own,
+        // different `Ticket`), not be silently skipped because the target
+        // "already matches" the previous one.
         async let second = queue.perform(target: "ja") { session in session + 2 }
         while requestedTargets.count < 2 {
             await Task.yield()
         }
         #expect(requestedTargets == ["ja", "ja"])
-        await queue.supply(200)
+        #expect(tickets[0] != tickets[1])
+        await queue.supply(200, for: tickets[1])
         let secondResult = try await second
         #expect(secondResult == 202)
+    }
+
+    /// Task #202 (実機フィードバック — 「一度成功した後は必ず翻訳が失敗
+    /// する」、診断画面: 設定要求N回/セッション供給N回なのに、要求した
+    /// リクエスト自身には一度も届かないままタイムアウトし続ける): this is
+    /// the core regression test for the actual root cause found while
+    /// investigating that report — see `SupplyGatedRequestQueue`'s
+    /// top-level doc comment for the full real-device trace this
+    /// reproduces here with plain `String`/`Int` stand-ins.
+    ///
+    /// The scenario: item A's own supplier never responds in time (A times
+    /// out and the queue moves on to item B) — but the real-world
+    /// supplier *eventually* does respond to A anyway, well after the
+    /// fact (a `.translationTask` closure that kept running past its
+    /// `Task`'s cooperative cancellation, exactly as `TranslationSessionHostView`'s
+    /// closure — which never checks `Task.isCancelled` — can). Before
+    /// Task #202's ticket fix, `SupplyGatedRequestQueue.supply(_:)` had no
+    /// way to tell that late answer apart from a genuine answer to
+    /// whatever's pending *now* (B) — it would silently run B's operation
+    /// with A's stale session, permanently starving B's own real answer
+    /// (which arrives to find `pendingOperation` already `nil`, a no-op).
+    /// With the fix, the stale answer for A's (superseded) ticket is
+    /// correctly ignored, and B's own, later answer is what actually
+    /// resolves it.
+    @Test("a late supply answering a ticket that's already been superseded by a newer pending item must not be consumed by that newer item")
+    func lateSupplyForSupersededTicketDoesNotStealNewerItem() async throws {
+        var tickets: [String: SupplyGatedRequestQueue<String, Int>.Ticket] = [:]
+        let queue = SupplyGatedRequestQueue<String, Int>(
+            // Real, non-zero timeout — item A actually needs to sit
+            // "pending" for a moment while this test observes its ticket,
+            // and this same value governs item B below too (this queue has
+            // one shared `timeoutSeconds`, matching the one real
+            // `TranslationSessionCoordinator` instance backing every
+            // translation request in the app).
+            timeoutSeconds: 1,
+            timeoutError: { TimeoutMarker() },
+            requestSupply: { target, ticket in tickets[target] = ticket }
+        )
+
+        // Item A: nothing ever supplies it, so it times out for real
+        // (~1s) — simulating a `.translationTask` closure that's slow
+        // enough that the coordinator gives up waiting before a session
+        // ever arrives.
+        await #expect(throws: TimeoutMarker.self) {
+            _ = try await queue.perform(target: "A") { session in session }
+        }
+        let ticketForA = try #require(tickets["A"])
+
+        // Item B: a fresh, unrelated request, queued *after* A's timeout
+        // already fired and moved the queue forward.
+        async let bResult = queue.perform(target: "B") { session in session + 100 }
+        while tickets["B"] == nil {
+            await Task.yield()
+        }
+        let ticketForB = try #require(tickets["B"])
+        #expect(ticketForA != ticketForB)
+
+        // The stale, late answer for A finally shows up — this must be
+        // silently ignored, *not* consumed as if it were B's answer.
+        await queue.supply(999, for: ticketForA)
+
+        // B's own, genuine answer arrives next — this is the one that
+        // must actually resolve `bResult`.
+        await queue.supply(50, for: ticketForB)
+
+        let result = try await bResult
+        // 150 = 50 (B's real session) + 100. If the stale answer for A had
+        // (bug) been allowed to steal B's slot, this would instead be
+        // 1099 (= 999 + 100) — or, if B's own real answer had then further
+        // been silently dropped as a no-op (`pendingOperation` already
+        // consumed), `bResult` would still resolve to the stale 1099
+        // rather than hang, since the operation already ran once.
+        #expect(result == 150)
+    }
+
+    /// Task #202: the same race as `lateSupplyForSupersededTicketDoesNotStealNewerItem`,
+    /// but hammered with many staggered items and late/duplicate/out-of-
+    /// order `supply(_:for:)` calls thrown in — including answers for
+    /// tickets that never even correspond to any real item — under actual
+    /// concurrent scheduling (`async let` for every item, not a serial
+    /// loop). Every legitimately-supplied item must still resolve with
+    /// exactly its own session, and nothing must hang, crash, or accept a
+    /// mismatched session. This is the stress variant `PENDING.md`/Task
+    /// #202 asked for ("負荷をかけた状態でも確認する") — run this file's
+    /// whole suite in a loop (`for i in 1..10; do swift test --filter
+    /// SupplyGatedRequestQueueTests; done`) to additionally exercise
+    /// scheduler-order variance across repeated runs.
+    @Test("many items, interleaved with stray/late/mismatched supply calls, still each resolve with exactly their own session")
+    func manyItemsSurviveStraySuppliesUnderLoad() async throws {
+        let itemCount = 40
+        var ticketsByTarget: [Int: SupplyGatedRequestQueue<Int, Int>.Ticket] = [:]
+        let queueRef = Box<SupplyGatedRequestQueue<Int, Int>>()
+        let queue = SupplyGatedRequestQueue<Int, Int>(
+            timeoutSeconds: 5,
+            timeoutError: { TimeoutMarker() },
+            requestSupply: { [weak queueRef] target, ticket in
+                ticketsByTarget[target] = ticket
+                // Simulate a slow, jittery supplier (real-device session
+                // bootstrap latency) *and* — the actual point of this
+                // test — a handful of stray/mismatched answers arriving
+                // around the same time: an answer for a ticket that
+                // doesn't exist at all, and (once `target > 0`) a late
+                // answer for the *previous* target's ticket, both of
+                // which must be safely ignored rather than corrupting
+                // `target`'s own eventual, correct answer.
+                Task { @MainActor in
+                    if let staleTicket = ticketsByTarget[target - 1] {
+                        await queueRef?.value?.supply(-999, for: staleTicket)
+                    }
+                    try? await Task.sleep(nanoseconds: UInt64.random(in: 1_000_000...20_000_000))
+                    await queueRef?.value?.supply(target * 10, for: ticket)
+                }
+            }
+        )
+        queueRef.value = queue
+
+        func attempt(_ index: Int) async -> Result<Int, Error> {
+            do {
+                return .success(try await queue.perform(target: index) { session in session + 1 })
+            } catch {
+                return .failure(error)
+            }
+        }
+
+        // `withTaskGroup`'s `addTask` closure hit a compiler limitation
+        // capturing this `@MainActor`-isolated `queue` (same issue noted
+        // in `manyQueuedRequestsAllCompleteDespiteCumulativeQueueingDelay`
+        // below) — build the `async let`s programmatically isn't possible
+        // either (no variadic `async let`), so this loop starts each
+        // `Task` explicitly and collects them, which is equally concurrent
+        // for this queue's purposes (every `perform` call is issued before
+        // any of them can possibly resolve).
+        let tasks = (0..<itemCount).map { index in
+            Task { await attempt(index) }
+        }
+        var results: [Result<Int, Error>] = []
+        results.reserveCapacity(itemCount)
+        for task in tasks {
+            results.append(await task.value)
+        }
+
+        for (index, result) in results.enumerated() {
+            switch result {
+            case .success(let value):
+                #expect(value == index * 10 + 1, "item \(index) resolved with the wrong session (got a stray/mismatched one)")
+            case .failure(let error):
+                Issue.record("item \(index) starved instead of completing: \(error)")
+            }
+        }
     }
 
     /// 2026-07-30, 実機フィードバック — 3度目の退行の核心 (「テスト翻訳は
@@ -226,13 +416,13 @@ struct SupplyGatedRequestQueueTests {
         let queue = SupplyGatedRequestQueue<Int, Int>(
             timeoutSeconds: 1,
             timeoutError: { TimeoutMarker() },
-            requestSupply: { [weak queueRef] target in
+            requestSupply: { [weak queueRef] target, ticket in
                 // 供給元 (実機では`.translationTask`のホストビュー) が
                 // 即座にではなく、いくらか時間をかけて応答する状況を
                 // シミュレートする — 実機ログの複数件連続翻訳と同じ形。
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: perItemDelayNanoseconds)
-                    await queueRef?.value?.supply(target)
+                    await queueRef?.value?.supply(target, for: ticket)
                 }
             }
         )
@@ -283,9 +473,9 @@ struct SupplyGatedRequestQueueTests {
         let queue = SupplyGatedRequestQueue<Int, Int>(
             timeoutSeconds: 5,
             timeoutError: { TimeoutMarker() },
-            requestSupply: { [weak queueRef] target in
+            requestSupply: { [weak queueRef] target, ticket in
                 Task { @MainActor in
-                    await queueRef?.value?.supply(target)
+                    await queueRef?.value?.supply(target, for: ticket)
                 }
             }
         )
@@ -299,15 +489,15 @@ struct SupplyGatedRequestQueueTests {
 }
 
 /// Plain mutable reference box — `manyQueuedRequestsAllCompleteDespiteCumulativeQueueingDelay`/
-/// `manySequentialRequestsAllComplete` need `requestSupply`'s closure to
-/// call back into the very `queue` it's still being constructed as part
-/// of; a `weak` capture through this box (rather than capturing `queue`
-/// itself, which doesn't exist yet at closure-literal-evaluation time)
-/// sidesteps that ordering problem the same way `TranslationSessionCoordinator
-/// .init`'s `lazy var requestQueue` does for the identical reason. Starts
-/// empty (`init()`) so it can be declared *before* the object it will
-/// eventually hold, then filled in right after that object's own `init`
-/// returns.
+/// `manySequentialRequestsAllComplete`/`manyItemsSurviveStraySuppliesUnderLoad`
+/// need `requestSupply`'s closure to call back into the very `queue` it's
+/// still being constructed as part of; a `weak` capture through this box
+/// (rather than capturing `queue` itself, which doesn't exist yet at
+/// closure-literal-evaluation time) sidesteps that ordering problem the
+/// same way `TranslationSessionCoordinator.init`'s `lazy var requestQueue`
+/// does for the identical reason. Starts empty (`init()`) so it can be
+/// declared *before* the object it will eventually hold, then filled in
+/// right after that object's own `init` returns.
 @MainActor
 private final class Box<T: AnyObject> {
     weak var value: T?

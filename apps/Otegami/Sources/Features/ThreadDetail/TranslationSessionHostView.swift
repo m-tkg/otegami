@@ -27,17 +27,36 @@ struct TranslationSessionHostView: View {
     let coordinator: TranslationSessionCoordinator
 
     var body: some View {
+        // Task #202: read `configuration`/`ticket` together, once, into
+        // locals *before* `.translationTask` — both are written together,
+        // synchronously, by `TranslationSessionCoordinator`'s
+        // `requestSupply` closure, so reading them together here (rather
+        // than `coordinator.pendingTicket` freshly inside the closure
+        // below, which could by then have moved on to a *later* request)
+        // guarantees `ticket` is the one that actually corresponds to
+        // *this* render's `configuration` — see `attach(_:ticket:)`'s doc
+        // comment for why that correspondence is the whole fix.
+        let configuration = coordinator.configuration
+        let ticket = coordinator.pendingTicket
         Color.clear
             .frame(width: 0, height: 0)
             .accessibilityHidden(true)
-            .translationTask(coordinator.configuration) { session in
+            .translationTask(configuration) { session in
                 // 2026-07-30 (実機フィードバック、`TranslationSessionCoordinator`
                 // の全面書き直し): `await` — fire-and-forget にしない。この
                 // クロージャの`Task`が実際に`session`を使い終わるまで
                 // 生き続けることそのものが、セッションをクロージャの外へ
                 // 持ち出さないための修正の要 — `TranslationSessionCoordinator`
                 // のdoc comment参照。
-                await coordinator.attach(session)
+                //
+                // Task #202: `ticket`は`configuration`が`nil`でない限り
+                // 必ず非nil (`requestSupply`が両方を同じ瞬間にセットする、
+                // 上のコメント参照) — 万一`nil`ならこの呼び出し自体が
+                // どの要求にも対応しない (起こり得ないはずの) 状態なので、
+                // `SupplyGatedRequestQueue.supply(_:for:)`と同じ「安全な
+                // no-op」の方針でそのまま無視する。
+                guard let ticket else { return }
+                await coordinator.attach(session, ticket: ticket)
             }
     }
 }

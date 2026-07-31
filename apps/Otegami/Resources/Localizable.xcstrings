@@ -5074,6 +5074,16 @@
         }
       }
     },
+    "時間をおいて再試行してください": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Please try again in a moment."
+          }
+        }
+      }
+    },
     "Otegamiについて": {
       "localizations": {
         "en": {

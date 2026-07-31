@@ -264,6 +264,109 @@ Apple Foundation Models にはコンテンツの安全性ガードレールが�
    する — ガードレールの誤発動条件は Apple 側が公開しておらず再現性が
    低いため、実機ログから後追いで切り分けるための計装。
 
+## セッション供給の直列化 (`SupplyGatedRequestQueue`) と Task #202
+
+`Translation.TranslationSession` は公開イニシャライザを持たず、
+`.translationTask(_:action:)` という SwiftUI 専用の view modifier からしか
+得られない。`AppleTranslationService`/`MessageTranslator` は素の `async`
+API を要求するため、`TranslationSessionCoordinator` (`@MainActor`) が
+両者を橋渡しする — `apps/Otegami/Sources/Features/ThreadDetail
+/TranslationSessionHostView.swift` (アプリのルートに1つだけマウント) が
+`coordinator.configuration` を読んで `.translationTask` に渡し、SwiftUI が
+新しい `TranslationSession` を渡してくるとホストビューが
+`coordinator.attach(_:ticket:)` で送り返す、という一往復の非同期ハンド
+シェイクになっている。
+
+この橋渡し自体が、2026-07-30 の1日で3回連続の実機退行を経ている
+(いずれも実機フィードバック駆動で特定・修正、詳細は
+`TranslationSessionCoordinator.swift`/`SupplyGatedRequestQueue.swift`の
+doc comment参照):
+
+1. **ホストビュー未マウント**: 元々「翻訳の診断」画面だけがホストビューを
+   保持しており、他の画面から翻訳すると供給元が永久に現れなかった →
+   ホストビューをアプリのルートへ移設。
+2. **`Configuration` の値としての等価性**: `.translationTask(id:action:)`
+   は`.task(id:)`と同じ意味論で、`id`が「変化」した時だけクロージャを
+   再発火する。`TranslationSession.Configuration(source:target:)`を毎回
+   新規に作っていたが、同じ言語ペアなら独立した2つの値は`==`で等価と
+   判定される (実SDK検証済み) — 2回目以降のリクエストで再発火しなかった。
+   → 既存`configuration`があれば`target`を書き換えてから`invalidate()`を
+   呼ぶ方式に変更 (`invalidate()`後は`==`で不一致になることを実SDKで確認)。
+3. **キューイング遅延がタイムアウト予算を食う**: 本文翻訳は段落/チャンク
+   ごとに`translate`を順次呼ぶため、複数リクエストが立て続けにキューへ
+   積まれる。タイムアウトの時計を「`perform`が呼ばれた瞬間」から回して
+   いたため、後の方のリクエストはキューで待たされた時間の分だけ持ち時間
+   を消費され、自分の番が来る前に (あるいは来た直後に) タイムアウトして
+   いた。→ タイムアウトの起点を「実際に`requestSupply`が呼ばれた瞬間」
+   (`drainIfNeeded()`内) へ移動。
+
+**Task #202 (実機フィードバック「一度成功した後は必ず翻訳が失敗する」)**
+はこれらとは別の、4件目のバグだった。診断画面の記録: 同じ58文字の件名
+テキストが最初の1回だけ成功し、以後は「設定要求N回/セッション供給N回、
+いずれも今回のリクエストには届きませんでした」で毎回タイムアウト —
+要求した数だけ供給は起きているのに、その供給が**要求した本人には一度も
+届かない**という記録だった。
+
+根本原因: `SupplyGatedRequestQueue.supply(_:)`(旧シグネチャ) は、届いた
+`Session`が「今まさにキューが待っている項目」宛だという保証を一切検証
+せずに受け取っていた。`TranslationSessionHostView`の`.translationTask`
+クロージャは`Task.isCancelled`を一度もチェックしていないため、SwiftUI
+から見て「もう古い」とマークされたクロージャの実行自体は止まらない —
+Appleのセッション確立に実機で数秒かかることは珍しくなく、その間に当の
+項目自身のタイムアウトが先に尽きてキューが次の項目へ進んでいることは
+十分あり得る。その「もう誰も待っていないはずの」古いクロージャが後から
+`supply(_:)`を呼ぶと、次の (無関係な) 項目の`pendingOperation`をそのまま
+実行してしまい、次の項目からすれば「要求はしたのに自分宛の供給が一度も
+届かない」ことになる。以後も同じ理由でずれ続けるため、アプリ起動後
+最初の1回 (先行する古いクロージャが存在しない) だけが成功し、それ以降は
+恒常的に失敗し続ける、という実機の観測と正確に一致する。
+
+**修正**: `SupplyGatedRequestQueue`に`Ticket`(項目ごとに単調増加する不透明
+な識別子) を導入した。`drainIfNeeded()`が項目をキューから取り出すたびに
+新しい`Ticket`を発行して`requestSupply(target:ticket:)`で外部の供給元へ
+渡し、`supply(_:for:)`はその`ticket`が**現在**`pendingOperation`が待って
+いるものと一致する場合にのみ処理する。一致しなければ (=古い項目からの
+遅延応答) 何にも触れずに安全に無視する — 「タイムアウト後の遅延応答は
+無視する」という既存の安全策を、「タイムアウトはまだ起きていないが別の
+項目に取って代わられた」ケースにも一般化したもの。
+`TranslationSessionHostView.body`は`configuration`と`coordinator
+.pendingTicket`を同じ`body`評価の中で一緒に読み取り (`requestQueue`の
+`requestSupply`クロージャが両方を同じ瞬間に書き込むため対応が保証される)、
+`.translationTask`のクロージャが実際に発火した時にその`ticket`を
+`attach(_:ticket:)`へ渡す。
+
+`SupplyGatedRequestQueueTests`の
+`lateSupplyForSupersededTicketDoesNotStealNewerItem`(単発の再現) と
+`manyItemsSurviveStraySuppliesUnderLoad`(多数項目・負荷下でのストレス版)
+が、Fakeな`Target`/`Session` (`String`/`Int`) でこのレースを直接固定
+している。既存の`concurrentRequestsBothEventuallyComplete`は、2つの
+`async let`がこのキューへ到達する順序をSwiftが保証しないことに起因する
+既知のflakiness (declaration順を仮定した assertion が原因、ローカルで
+約1/15の頻度で失敗を確認) があったため、実際の到達順を動的に検出して
+検証する形に書き直した。
+
+**エラー表示**: このタイムアウトが投げていたエラーメッセージ (`設定要求
+N回/セッション供給N回…`という診断向けカウンタ入りの文字列) は
+`TranslationServiceError.failed(message:)`経由で**そのまま利用者向けの
+帯 (`MessageDetailFooterToolbar`) にも表示されていた** — 長すぎて画面外
+へはみ出し、末尾の数文字しか見えない実機バグの直接原因になっていた。
+`TranslationServiceError.sessionUnavailable(detail:)`という専用ケースを
+追加し、`detail`(カウンタ入り、診断画面/`errorDescription`/ログ向け) と
+`userFacingMessage`(固定の短い定型文「時間をおいて再試行してください」
+— `TranslationUnavailableReason.other`と同じ文言を意図的に再利用) を
+分離した。あわせて`MessageDetailFooterToolbar.translateFootnoteCaption`
+の呼び出し元にあった裸の`.fixedSize()`(両軸ともideal sizeを要求する
+指定) を削除した — `.overlay(alignment: .top)`はデフォルトで土台の
+アイコン (44pt) 相当の狭い幅しか提案してこないため、この裸`.fixedSize()`
+が「幅200ptで頭打ち」という内側の`.frame(maxWidth:)`指定を無効化して
+いた (提案幅を無視して単一行の自然な幅を要求してしまうため)。実機の
+「画面右外にはみ出し末尾しか見えない」という症状は、`ImageRenderer`で
+同じ modifier chain を実際にレンダリングして再現・確認済み — 修正後は
+`.frame(minWidth: 140, maxWidth: 190)`(狭い提案を底上げしつつ長い文言は
+折り返す) で画面内に収まる。詳細な検証手順・残存リスク (翻訳ボタンが
+ツールバーの最端に来た場合のわずかな余地) は`MessageDetailFooterToolbar
+.translateFootnoteCaption`のdoc comment参照。
+
 ## サポートする言語
 
 翻訳は**英語→日本語の一方向専用**に固定されている
@@ -329,7 +432,13 @@ Apple の on-device 推論ブローカーへの通信が、何らかの権限/�
   (翻訳/要約それぞれが対応するエンジンだけに委譲されること)。
 - `OtegamiTranslationAppleTests`: `TranslationLanguage.locale` の
   マッピング、`AppleTranslationService.mapEngineError` の分類ロジック
-  (実エンジンは実機依存のため自動テスト不可)。
+  (実エンジンは実機依存のため自動テスト不可)。`SupplyGatedRequestQueueTests`
+  は`TranslationSession`に一切依存しない (`Target`/`Session`をFakeな
+  `String`/`Int`にできる) 汎用キュー型として、供給が一切来ないケース・
+  二重resumeが起きないこと・並行リクエストが両方とも必ず終わること・
+  Task #202で見つかった「タイムアウト後に古い項目宛の遅延応答が新しい
+  項目を奪う」レースが再発しないことを直接検証する
+  (上の「セッション供給の直列化」節参照)。
 - `OtegamiTranslationFoundationModelsTests`: 実機のオンデバイスモデルに
   対する結合テスト（可用性に応じて自動スキップ）。
 - `TranslationEngineTests`: `MessageTranslator` のキャッシュヒット/

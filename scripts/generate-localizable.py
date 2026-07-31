@@ -829,6 +829,23 @@ translations = {
     "成功": "Success",
     "失敗": "Failure",
 
+    # --- Task #202 (実機フィードバック「一度成功した後は必ず翻訳が失敗
+    # する」): `TranslationServiceError.sessionUnavailable`の
+    # `userFacingMessage` — package層 (`packages/OtegamiKit/Sources
+    # /OtegamiTranslation/TranslationServiceError.swift`) からの唯一の
+    # `String(localized:)`呼び出し。このpackageは自前の`Localizable
+    # .xcstrings`を持たず、`check-localizable-coverage.py`もこのファイルは
+    # 対象外 (`apps/Otegami/Sources`のみ走査) だが、`String(localized:)`は
+    # 既定で`Bundle.main`(=アプリ本体) の string catalog を引くため、この
+    # 辞書へキーを登録しさえすれば実機では正しく解決される。固定・
+    # 補間なしの文字列なので、この辞書の他の静的UI文言と同じ扱いで問題
+    # ない (冒頭の「補間文字列は対象外」はこの文字列には当てはまらない)。
+    # `TranslationUnavailableReason.other`(同package、こちらは裸literalの
+    # まま — 呼び出し側が別の失敗理由と共有する定型文で、あちらは
+    # 新規のString(localized:)化が本タスクの範囲外) と全く同じ日本語
+    # 文言をあえて再利用しており、このキーは新規追加。
+    "時間をおいて再試行してください": "Please try again in a moment.",
+
     # --- Task #182 (macOS アプリ内アップデート、実機フィードバック「update
     # のチェックができる画面は About に移動してほしい。そこから update
     # ボタンも置いて、自身のアップデートができるようにしてほしい」):
