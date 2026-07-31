@@ -41,6 +41,31 @@ struct OtegamiApp: App {
                 .background(TranslationSessionHostView(coordinator: environment.translationSessionCoordinator))
         }
         #if os(macOS)
+        // Task #209 (実機フィードバック「mac で起動した時、ウインドウや各カラム
+        // のサイズを覚えるようにして欲しい。特に、初回起動時のメールビューが
+        // 狭すぎる」): AppKit/SwiftUI はこの `WindowGroup` のウインドウ位置・
+        // サイズも、下の `splitView`の `NavigationSplitView`のカラム幅も、
+        // **2回目以降の起動では既に自動で覚えている** — 実機で
+        // `defaults read <bundle id>`を見ると、この `WindowGroup`の中身の
+        // 型名をキーにした`NSWindow Frame ...`と`NSSplitView Subview Frames
+        // ...`が`~/Library/Preferences`に書かれており、ウインドウ移動・
+        // カラム幅ドラッグ直後に quit → 再起動しても復元されることを実機
+        // ビルド (`make mac-app`) で確認済み。つまり「記憶する」側は自前の
+        // 保存コードを書く必要が無い (`docs/design-system.md`のTask #209
+        // 節に検証手順の詳細)。
+        //
+        // 残る本当の問題は**初回起動時の既定値そのもの**: この
+        // `.defaultSize`が無いと初回はここが指定されておらず初期状態は
+        // 900×450 という実測値だった (`splitView`直下の3カラムに収めるには
+        // 明らかに狭い — ユーザー報告の「メールビューが狭すぎる」の直接
+        // 原因)。1200×800 は「サイドバー(min180/ideal220/max300) + 一覧
+        // (min260/ideal340/max460、`splitView`参照) を差し引いても本文側に
+        // 400pt 超が残る」を実機で目視確認して選んだ値 — 2回目以降の起動は
+        // この既定値ではなく上記の自動復元が優先されるので、ここは「復元
+        // すべき保存状態が無い最初の1回」だけに効く。
+        .defaultSize(width: 1200, height: 800)
+        #endif
+        #if os(macOS)
         // M10: menu bar (⌘N/⌘R/⌘⌫/⌘⇧F/⌘]/⌘[) — `OtegamiCommands` reads its
         // actions via `@FocusedValue` (`AppFocusedValues.swift`), published
         // by `RootView`/`MessageListView` below. Attached to this scene
@@ -475,15 +500,50 @@ struct RootView: View {
     }
 
     /// The bare three-column `NavigationSplitView`, with no modifiers
-    /// attached — split out of `body` (see its doc comment) so this and
-    /// each column closure below are their own expressions for the
-    /// type-checker rather than one combined with `body`'s whole modifier
-    /// chain.
+    /// attached besides the per-column width ranges below — split out of
+    /// `body` (see its doc comment) so this and each column closure below
+    /// are their own expressions for the type-checker rather than one
+    /// combined with `body`'s whole modifier chain.
+    ///
+    /// Task #209 (実機フィードバック「初回起動時のメールビューが狭すぎる」):
+    /// before this, no column had a `.navigationSplitViewColumnWidth` at
+    /// all — `NavigationSplitView`'s own layout heuristic (no min/max to
+    /// respect) already tended to give `detailColumn`(本文)the leftover
+    /// space at a comfortably large window size, confirmed by resizing an
+    /// unmodified build to 1280×832 and observing the message-list column
+    /// stay near its intrinsic content width while the detail column
+    /// absorbed the rest. But that heuristic has no floor or ceiling: this
+    /// same real dev machine's own `~/Library/Preferences` (accumulated
+    /// from earlier manual dragging during development, restored
+    /// automatically by AppKit per `OtegamiApp`'s `.defaultSize` doc
+    /// comment) had the message-list column dragged wide enough to leave
+    /// the detail column visibly cramped — exactly the "狭すぎる" symptom,
+    /// and exactly the "極端な値で保存されて戻せなくなる" failure mode
+    /// Task #209 asks to guard against. `sidebarColumn`/`contentColumn`
+    /// below get an explicit `min`/`max` for that reason: SwiftUI clamps
+    /// both live interactive drags *and* whatever a stale/degenerate
+    /// restored width says into that range, so this device's own
+    /// already-drifted state self-heals on the next launch, and no future
+    /// drag (however extreme) can wedge either column past a still-usable
+    /// bound again. `detailColumn` deliberately gets no explicit width — it
+    /// keeps absorbing whatever `sidebarColumn`/`contentColumn` don't claim,
+    /// same as before, and the `max` on those other two now doubles as
+    /// `detailColumn`'s effective floor (at the `.defaultSize(width: 1200,
+    /// ...)` this app now opens at, 1200 − 300 − 460 leaves it >400pt even
+    /// at both columns' worst-case `max` simultaneously).
     private var splitView: some View {
         NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredColumn) {
             sidebarColumn
+                // サイドバー (アカウント/メールボックス木): folder名の折り返し
+                // が要らない程度の下限、統合ビューの長いラベルでも余裕を持つ
+                // 上限 — 実機目視で選定。
+                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
         } content: {
             contentColumn
+                // 一覧 (差出人/件名/プレビュー3行): 3行プレビューが極端に
+                // 詰まらない下限、そして「一覧が本文を圧迫し続ける」上記の
+                // 実機汚染を再発させない上限 — どちらも実機目視で選定。
+                .navigationSplitViewColumnWidth(min: 260, ideal: 340, max: 460)
         } detail: {
             detailColumn
         }

@@ -38,7 +38,8 @@ UI の構造 (情報設計・一覧レイアウト・操作モデル) は、初�
   オーバーレイとして動作する。
 - **macOS**: 既存の `NavigationSplitView` 3ペイン (`SidebarView` / 一覧 /
   本文) を維持。iOS 側のレイアウト変更 (一覧のフルブリード化、iPad 2ペ
-  イン化など) は macOS には適用しない。
+  イン化など) は macOS には適用しない。ウインドウサイズ・カラム幅の既定
+  値と記憶の仕組みは Task #209 (下記「SwiftUI 実装上の落とし穴」6) 参照。
 - **メール本文画面**: `ThreadDetailView` が本文表示を担当し、下部に
   `MessageDetailFooterToolbar` (`.safeAreaInset(edge: .bottom)`) を常設
   する。既定で表示される操作は 返信/転送/検索/情報/要約/翻訳 の6つ (7つ
@@ -499,6 +500,51 @@ Task #205 で `NSAllowsArbitraryLoadsInWebContent` を追加し、平文 `http`
    [`docs/ci.md`](ci.md#既知の落とし穴-swiftui-ビューの型チェックタイムアウト)
    と [CONTRIBUTING.md](../CONTRIBUTING.md#a-note-on-swiftui-views-and-ci)
    を参照。
+6. **macOS の `WindowGroup`/`NavigationSplitView` は、ウインドウ位置・
+   サイズもカラム幅も AppKit がすでに自動で覚えている**: Task #209
+   (実機フィードバック「mac で起動した時、ウインドウや各カラムのサイズを
+   覚えるようにして欲しい。特に、初回起動時のメールビューが狭すぎる」)
+   で、自前の永続化コード (`@AppStorage`/`@SceneStorage` でウインドウ矩形
+   やカラム幅を保存する等) を書く前に実機ビルド (`make mac-app`) で検証
+   したところ、**何もしなくてもすでに記憶・復元されていた**: ウインドウ
+   を動かす/リサイズする、`NavigationSplitView` の仕切りをドラッグする
+   → quit → 再起動、で両方とも元通りになることを確認した。実体は AppKit
+   の状態復元機構で、`~/Library/Preferences/<bundle id>.plist` に
+   `NSWindow Frame <Scene の中身の型のマングル名>-1-AppWindow-1` と
+   `NSSplitView Subview Frames <同じ型名>-1-AppWindow-1, SidebarNavigation
+   SplitView` というキーで書かれる (`defaults read <bundle id>` で確認
+   可能)。**このキーは `WindowGroup { ... }` の中身に直接付けた修飾子の
+   型で決まる** — 逆に言うと、この `WindowGroup` のクロージャ内
+   (`OtegamiApp.body`) に新しい `.environment`/`.background` 等を足す/
+   減らす/並べ替えると型名が変わり、既存ユーザーの保存済み状態が1回だけ
+   孤立する (実害は小さいが要注意)。`.defaultSize`/`.commands` のような
+   **Scene 側の修飾子はこの型名に影響しない**ので安全に足せる。
+   Task #209 で実際にやったのはこの2つだけ:
+   - `OtegamiApp.body` の main `WindowGroup` に
+     `#if os(macOS) .defaultSize(width: 1200, height: 800) #endif` を追加
+     — 上記の自動復元は「保存済み状態が無い最初の1回」には効かず、それ
+     までの既定値は実測 900×450 と3ペインに収めるには明らかに狭かった
+     (「メールビューが狭すぎる」の直接原因)。1200×800 は3カラムの min/max
+     (次項) を引いても本文側に400pt超残ることを実機目視で確認して選んだ。
+   - `OtegamiApp.splitView` のサイドバー/一覧カラムに
+     `.navigationSplitViewColumnWidth(min:ideal:max:)` を追加 — 極端な
+     値で保存されて戻せなくなる事態 (要求③) への対策。この修飾子が無いと
+     カラム幅の自動復元に上限が無いため、開発中に一覧カラムを大きくド
+     ラッグしたまま忘れる、といった degenerate な状態が永続してしまう
+     (実際にこの開発機の `~/Library/Preferences` にその状態が残っていた
+     — 一覧カラムが本文を圧迫していた)。`min`/`max` を付けると、SwiftUI
+     がライブドラッグだけでなく**復元時の古い/壊れた値もこの範囲へ
+     クランプする**ことを、`NSSplitView Subview Frames` を意図的に極端な
+     値 (一覧1300pt・本文60pt) に書き換えてから再起動する実機検証で確認
+     した — 再起動後は範囲内に戻り、本文も再び読める幅になった。本文
+     (`detailColumn`) 自体には明示的な幅を付けていない (他2カラムの
+     `max` 引いた残り全部を受け取る、既存の挙動のまま)。
+   - 保存先はどちらも上記の通り AppKit 標準の `~/Library/Preferences`
+     ローカルファイルであり、`AppSettingsCloudDirectory` の同期対象
+     allowlist には一切含まれない (そもそも `UserDefaults` の自前キーで
+     すらない) — Task #186 の「ウインドウ位置・カラム幅は端末ごとに違っ
+     て自然なもの」という同期対象外の方針 (`docs/icloud-sync.md`) と
+     矛盾なく両立する。
 
 ## 関連ドキュメント
 
