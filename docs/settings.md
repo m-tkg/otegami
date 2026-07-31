@@ -1,85 +1,50 @@
 # 設定項目一覧
 
-## 設定画面の構成 (実機フィードバック第2弾: I → 第3弾: I で再編)
+otegami の設定項目の全一覧。実装は `apps/Otegami/Sources/Support/` 配下の
+各 `*SettingsStore` (プレーンな `UserDefaults` キーの集まり、`@AppStorage`
+で各 View から直接参照する) と、`AccountsListContent`
+(`apps/Otegami/Sources/Features/Settings/AccountsSettingsView.swift`) の
+UI。iOS はハンバーガーメニュー →「設定」シート、macOS は Settings シーン
+の「設定」タブから開く。両プラットフォームとも同じ`AccountsListContent`
+を共有するため、カテゴリ構造は自動的に揃う。
 
-設定画面 (iOS: ハンバーガーメニュー→「設定」シート、macOS: Settings シーン
-の「設定」タブ) のルートは、以前は全設定項目がフラットな1画面に並んで
-いたが、カテゴリへ再構成した。各カテゴリは`AccountsListContent`(設定
-ルート、`AccountsSettingsView.swift`) からの`NavigationLink`で、iOS・
-macOS 共通の実装 (`AccountsListContent`自体を両プラットフォームの
-`NavigationStack`が共有しているため、カテゴリ構造は自動的に両方に揃う)。
+## 画面構成
 
-実機フィードバック第3弾 (I): 当初の5分類 (アカウントの設定/メール
-ビューア/メール一覧/署名テンプレート/その他) を4分類 + ルート直下の
-「このアプリについて」に再編した。「その他」は雑多な置き場になっていた
-項目を性質の近い既存カテゴリへ再配置した結果空になったため廃止し
-(`OtherSettingsView.swift`自体を削除)、ルート直下の独立項目だった
-「署名テンプレート」は新設「メール作成」カテゴリへ統合した。
+設定のルートは5カテゴリ + ルート直下の「このアプリについて」
+(`AboutView`、iOS のみ — macOS は Settings シーンの独立した「情報」タブ
+に既にあるため重複させない):
 
 | カテゴリ | 実装 | 内容 |
 | --- | --- | --- |
-| アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、G「デフォルトのアカウント設定」、iCloud 同期、プッシュ通知 (いずれも実機フィードバック第3弾 (I) で「その他」から移設)。ラベル色 (D) は各アカウントの編集画面 (`AccountEditView`) 側 |
-| メールビューア | `MailViewerSettingsView.swift` | ブラウザの設定 (C7)、G「削除/アーカイブ時の挙動」、本文へのプロフィール画像表示、AI 機能 on/off (翻訳・要約をまとめて)、画像設定 (B)、HTML表示設定 (A9) (画像・HTML表示は実機フィードバック第3弾 (I) で「その他」から移設)、フッターツールバーのカスタマイズへの入口 (Task #100 で追加、詳細は下記「メール本文フッターツールバーの表示/非表示・並び順」節) |
-| メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定 (D8)、一覧に要約を出す、スレッド表示、ピン留めのフラグ連動 (スレッド表示・ピン留め連動は実機フィードバック第3弾 (I) で「その他」から移設) |
-| メール作成 | `MailComposeSettingsView.swift` (実機フィードバック第3弾 (I) で新設) | テンプレート (C8)、署名テンプレート (F、旧ルート直下から統合)、送信キャンセルの猶予 (C7、旧「その他」から移設) |
+| 一般 | `GeneralSettingsView.swift` | iCloud 同期トグルのみ |
+| アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、デフォルトの送信アカウント、プッシュ通知 |
+| メールビューア | `MailViewerSettingsView.swift` | リンクの開き方、削除/アーカイブ後の挙動、本文へのプロフィール画像表示、AI 機能 on/off、画像設定、HTML表示設定、フッターツールバーのカスタマイズへの入口 |
+| メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定、一覧に要約を出す、スレッド表示、ピン留めのフラグ連動 |
+| メール作成 | `MailComposeSettingsView.swift` | テンプレート、署名テンプレート、送信キャンセルの猶予 |
 
-「このアプリについて」(`AboutView`) はルート直下 (iOS のみ — macOS は
-`OtegamiSettingsView`の独立した「情報」タブに既にあるため重複させない)。
+macOS は `OtegamiSettingsView` の「設定」タブが同じ `AccountsListContent`
+をそのまま埋め込むため、iOS と全く同じカテゴリ構造になる (「このアプリ
+について」は例外 — 上記参照)。
 
-- **AI 機能 on/off (メールビューア)**: `AIFeaturesSettingsStore` (新規、
-  既定 ON) — `MessageView`の翻訳バー・AI要約バーの両方をまとめて表示/
-  非表示にするマスタースイッチ。OFF でも「英文を自動で翻訳」設定自体は
-  残るが、マスターが OFF の間は一切参照されない (バーそのものが出ない
-  ため)。作成画面 (Composer) の「英語に翻訳して送る」トグルはこのマスター
-  の対象外 (独立した、常時表示の機能のまま)。
-- **送信キャンセルの猶予**: `SendCancelSettingsStore`自体は表示・操作
-  改善バッチ (C7) で実装済みだったが、値を変更する`Picker` UI が第2弾の
-  再構成まで存在しなかった (`ComposerView`が既定値を読むだけの状態) —
-  その再構成のついでに配線し、第3弾 (I) で新設の「メール作成」カテゴリへ
-  移した。
-- **メール作成カテゴリへの「署名テンプレート」統合の判断**: テンプレート
-  (C8) と署名テンプレート (F) はどちらも「メールを書くときに使う設定」
-  という共通点があり、ルート一覧に似た名前の項目が2つ (このカテゴリへの
-  入口と、旧ルート直下の署名テンプレート) 並んで見えるより、1つのカテゴ
-  リの中に「テンプレート」「署名テンプレート」の2つの入口がある方が発見
-  しやすいと判断した。`SignatureTemplateRecord`のドキュメントコメントが
-  説明する「テンプレート (全文定型) と署名 (本文末尾への付加) は別機能・
-  別テーブル」という区別自体は変えていない — 設定画面上の置き場所だけの
-  統合。
-- **macOS**: `OtegamiSettingsView`の "設定" タブ (旧「アカウント」タブ、
-  中身がカテゴリ一覧に変わったためタブ名も変更) がこの`AccountsListContent`
-  をそのまま埋め込むため、iOS と全く同じカテゴリ構造になる (「このアプリ
-  について」は例外 — 上記参照)。
-
-otegami の設定項目を一箇所に整理したもの。2026-07-26 のユーザー要望
-バッチ（バグ修正・一覧表示・送信キャンセル・スワイプ設定・ピン留め）で
-設定項目が大きく増えたため新設。実装は `apps/Otegami/Sources/Support/`
-配下の各 `*SettingsStore` (プレーンな `UserDefaults` キーの集まり、
-`@AppStorage` で各 View から直接参照する — なぜ `AppEnvironment` 経由に
-していないかは各ファイルのドキュメントコメント参照) と、
-`AccountsListContent`（iOS の「設定」タブ / macOS Settings シーンの
-「アカウント」タブが共有する実体、`apps/Otegami/Sources/Features/
-Settings/AccountsSettingsView.swift`）の UI。
+- **iCloud 同期トグル**: アカウントの接続設定に加えて、表示・翻訳・通知
+  内容・署名・テンプレートなど設定全般を同期する ([docs/icloud-sync.md](icloud-sync.md))。
+- **AI 機能 on/off (メールビューア)**: `AIFeaturesSettingsStore` (既定
+  ON) — 翻訳バー・AI要約バーの両方をまとめて表示/非表示にするマスター
+  スイッチ。OFF でも「英文を自動で翻訳」設定自体は残るが、マスターが
+  OFF の間は参照されない (バーそのものが出ないため)。作成画面の「英語に
+  翻訳して送る」トグルはこのマスターの対象外 (独立した機能)。
 
 ## 操作 (スワイプの割り当て) — iOS のみ
 
 `SwipeActionSettingsStore.swift`。**iOS のみ表示** — macOS にはスワイプ
 ジェスチャー自体が無く、同等の操作はすべて行の右クリックコンテキスト
-メニュー (`MessageListRow.contextMenuContent`) に常時揃っている。Task #165
-(macOS 操作体系再設計) で返信/全員に返信/転送もこのメニューへ追加した
-(iOS のスワイプ設定にはこの3つの割り当て先が無い — 元々footerツールバー/
-FABにしかない機能なので、macOS 版はメニュー冒頭に常設)。詳細は
-`docs/design-system.md`のTask #165節の対応表を参照。
+メニュー (`MessageListRow.contextMenuContent`、返信/全員に返信/転送も
+メニュー冒頭に常設) に揃っている。詳細は `docs/design-system.md` の
+操作モデル節を参照。
 
 左右それぞれに「短いスワイプ」「長いスワイプ」の2アクションを個別に
-割り当てられる。選べる操作は5つ:
-
-- 既読/未読切替
-- アーカイブ
-- 迷惑メールにする (Junk ロールのメールボックスへ移動。無ければ Trash
-  と同じパターンで自動作成)
-- ピン留め
-- 削除
+割り当てられる。選べる操作は5つ (既読/未読切替・アーカイブ・迷惑メール
+にする・ピン留め・削除)。
 
 | キー | 既定値 |
 | --- | --- |
@@ -88,51 +53,18 @@ FABにしかない機能なので、macOS 版はメニュー冒頭に常設)。�
 | `swipeActions.trailingShort` | 削除 |
 | `swipeActions.trailingLong` | 削除 |
 
-既定値は変更前 (design-phase-3 まで) の固定割り当て「右短=既読/未読、
-右長=アーカイブ、左=削除」と完全に一致させてある。
+**しきい値で自動実行**: 指を離した瞬間、その時点のドラッグ量がしきい値を
+超えていればそのアクションが**その場で即座に実行される** — ボタンは無く、
+確認タップは要らない (削除・迷惑メールも対象。取り消したい場合は Undo
+トーストで戻せる)。しきい値未満で離すと行は元の位置に戻る。ドラッグ中は
+行の下から短いアクションの色 + アイコンが現れ、長いしきい値を超えると
+長いアクションのものに切り替わる (軽い触覚フィードバック付き)。
 
-**しきい値で自動実行バッチ**: ボタンをタップして確定する UI (SwiftUI 標準
-の `.swipeActions`) から、指を離した瞬間にその場でアクションが実行される
-カスタムジェスチャーに作り替えた (`MessageListRow` のドキュメントコメント
-に実装の全体像、`docs/design-system.md` の同名の節にしきい値の設計・
-検証記録がある)。
-
-- ドラッグ中は行の下から短いアクションの色 + アイコンが現れ、ドラッグ量が
-  長いしきい値を超えるとアイコン/色が長いアクションのものに切り替わる
-  (それぞれの切替時に軽い触覚フィードバック)。
-- 指を離した時点でしきい値を超えていれば、そのアクションが**その場で
-  即座に実行される** — ボタンは無く、確認タップは要らない。しきい値未満で
-  離すと行は元の位置に戻り、何も実行されない。
-- **削除・迷惑メールも自動実行の対象** — 従来あった「削除/迷惑メールは
-  常にタップ確定」というガード (`SwipeAction.isGuardedFromFullSwipe`) は
-  撤廃した。取り消したい場合は既存の Undo トースト (`MessageListView
-  .scheduleUndo`) が受け皿になる。
-- ピン留めスロットは、対象スレッドが既にピン留め済みのときはアイコンが
-  `pin.slash` (ピン解除) に、色も別トーンに変わる — 既読/未読切替の表示が
-  現在の状態に応じて切り替わる (`toggleReadLabel`) のと同じ流儀。
-- **アーカイブスロットはアーカイブ表示中「アーカイブ解除」になる**
-  (Task #87、1): アーカイブビュー (role `.archive`、Gmail は All Mail が
-  常にこの意味を持つ — `MailboxRoleRecord.gmailArchiveQueryRole`参照 —
-  および「すべてのアーカイブ」横断ビュー) を表示中は、割り当て済みの
-  スロットがどれであっても、アーカイブアクション自体がピン留めと同じ
-  「状態依存で見た目が変わる」流儀で「アーカイブ解除」(アイコン
-  `tray.and.arrow.up`、別トーン) に置き換わる — アーカイブ表示中の行は
-  定義上すべて既にアーカイブ済みなので、それ以外の意味を持ちようがない。
-  実行は既存の move/アーカイブ経路 (OpQueue) の逆方向: 通常サーバーは
-  Archive → INBOX へ move、Gmail は All Mail → INBOX への COPY (ラベル
-  追加のみ、All Mail からは消えない)。macOS のコンテキストメニュー
-  (スワイプが無い分の代替) も同じ文言に揃えている。Undo トースト
-  (「元に戻す」で再アーカイブ) も既存の削除/アーカイブと同じ仕組み。
-- スワイプでアクションが発火しても、その行のタップ (本文を開く) は発生
-  しない — ドラッグが認識された場合は `Button` 自身の既定タップより優先
-  される (`.highPriorityGesture`)。しきい値未満の本物のタップは今まで
-  どおり本文を開く。
-- **スワイプの滑らかさ改善**: 指への追従・離した後の挙動をスプリング
-  ベースにし、削除/アーカイブ/迷惑メールのようにスレッドが一覧から消える
-  操作は「行が画面外までスライドアウト→一覧の隙間が詰まる」までを1つの
-  連続したアニメーションにした (`docs/design-system.md` の「スワイプの
-  滑らかさ改善」節に実装の詳細)。既読/未読切替・ピン留めは行自体が消えな
-  いため、実行後はスプリングで元の位置へ戻るだけ。
+- ピン留め・アーカイブの各スロットは、対象の現在の状態に応じてアイコン/
+  色が切り替わる (ピン留め済みなら`pin.slash`、アーカイブ表示中なら
+  「アーカイブ解除」など) — 常に「今押したら何が起きるか」を表示する。
+- スワイプでアクションが発火した行はタップ (本文を開く) が発生しない。
+  しきい値未満の本物のタップは通常どおり本文を開く。
 
 ## 一覧・表示
 
@@ -140,268 +72,171 @@ FABにしかない機能なので、macOS 版はメニュー冒頭に常設)。�
 
 | 項目 | キー | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| スレッド表示 | `listDisplay.threading` | ON | ON で一覧を会話 (スレッド) 単位にまとめる。OFF にすると一覧がメール単位になる (`ThreadQuery.flatSummaries`/`unifiedInboxFlatSummaries`)。検索結果 (macOS のインライン検索・iOS の検索タブ) には適用されない — 検索は従来通りスレッド単位 (`MessageListView` のドキュメントコメント参照)。スワイプ/コンテキストメニューの各操作は、フラット表示の行から実行した場合でも**そのメールが属するスレッド全体**に対して働く (既存のグループ表示と同じ挙動に揃えてある)。 |
-| 送信者のプロフィールアイコンを表示 | `listDisplay.showAvatar` | ON | 一覧の各行に、差出人のアバター (`SenderAvatar`) を表示する。 |
-| 連絡先の写真を表示 | `avatarSource.showContactPhoto` | ON | アバター強化バッチ フェーズ1。差出人アドレスを `CNContactStore` (オンデバイス、Contacts framework) と照合し、一致する連絡先に写真があればイニシャルより優先して表示する。初回照合時に OS の連絡先アクセス許可ダイアログが出る (`NSContactsUsageDescription`)。拒否/未許可なら静かにイニシャル表示にフォールバックする。iOS 18+ の limited access (一部の連絡先のみ許可) にも対応 — 許可された範囲だけを照合する。照合結果はメモリ+ディスクにキャッシュし (`Caches/AvatarCache/Contacts/`)、連絡先の変更 (`CNContactStoreDidChange`) で丸ごと無効化する。外部には一切送信しない。 |
-| Gravatar の画像を表示 | `avatarSource.showGravatar` | ON | アバター強化バッチ フェーズ2。連絡先の写真が見つからなかった差出人について、アドレスを正規化 (trim + 小文字化) して SHA-256 ハッシュ化し `https://gravatar.com/avatar/<hash>?d=404&s=160` から画像を取得する (`d=404`: 登録が無ければ 404、デフォルトのシルエット画像は表示しない)。**差出人アドレスのハッシュが gravatar.com に送信される** — 設定画面にその旨の注記あり、いつでも OFF にできる。取得はスクロールをブロックしない非同期処理。アドレス単位でメモリ+ディスクキャッシュ (`Caches/AvatarCache/Gravatar/`)、TTL 7日 (見つかった/見つからなかったの両方に適用)。ネットワークエラー/タイムアウトは negative cache に書き込まず次回再試行する。 |
-| 企業ロゴを表示 | `avatarSource.showCompanyLogo` | ON | アバター強化バッチ フェーズ3 + Task #42。連絡先の写真・Gravatar のどちらも見つからなかった差出人について、まず BIMI (DNS TXT `default._bimi.<domain>` を DNS over HTTPS (`https://dns.google/resolve`) で引き、`v=BIMI1; l=<SVG URL>` の SVG を安全な subset のみパースして描画 — `BIMISVGSafety`/`BIMISVGParser`/`BIMISVGRenderer`、`docs/design-system.md`の Task #42 節参照) を試し、見つからない/安全でない/パース不能なら差出人ドメインの `https://<domain>/apple-touch-icon.png` → `/favicon.ico` の順にフォールバックする。gmail.com/icloud.com/yahoo.co.jp 等の主要フリーメールドメイン (`FreeMailDomains`) は BIMI/favicon いずれも対象外 — ネットワークにすら問い合わせない。ドメイン単位 (メールアドレス単位ではない) でメモリ+ディスクキャッシュ (`Caches/AvatarCache/CompanyLogo/`)、TTL 30日、negative cache 含む。デコードできない画像データ (favicon.ico が真の ICO 形式の場合など) は「見つからなかった」として扱う。ドメイン名が接続先サーバー (BIMI 判定時は Google の DoH エンドポイントにも) 送信される旨を設定画面に注記。 |
+| スレッド表示 | `listDisplay.threading` | ON | ON で一覧を会話 (スレッド) 単位にまとめる。OFF にすると一覧がメール単位になる。検索結果には適用されない (常にスレッド単位)。スワイプ/コンテキストメニューの各操作は、フラット表示の行から実行した場合でもそのメールが属する**スレッド全体**に対して働く。 |
+| 送信者のプロフィールアイコンを表示 | `listDisplay.showAvatar` | ON | 一覧の各行に差出人のアバターを表示する。 |
+| 連絡先の写真を表示 | `avatarSource.showContactPhoto` | ON | 差出人アドレスを端末の連絡先 (Contacts framework、オンデバイス) と照合し、一致する連絡先に写真があれば優先表示する。初回照合時に OS の連絡先アクセス許可ダイアログが出る。拒否/未許可ならイニシャル表示にフォールバックする。外部通信は無い。 |
+| Gravatar の画像を表示 | `avatarSource.showGravatar` | ON | 連絡先の写真が見つからなかった場合、アドレスを正規化してハッシュ化し Gravatar から画像を取得する。**差出人アドレスのハッシュが gravatar.com に送信される** (設定画面に注記あり)。 |
+| 企業ロゴを表示 | `avatarSource.showCompanyLogo` | ON | 連絡先の写真・Gravatar のどちらも見つからなかった場合、まず送信元ドメインの BIMI ロゴ (DNS 経由) を試し、無ければ `apple-touch-icon.png`/`favicon.ico` にフォールバックする。主要フリーメールドメインは対象外 (ネットワークに問い合わせない)。ドメイン名が接続先サーバーに送信される旨を設定画面に注記。 |
 | 本文プレビューの行数 | `listDisplay.previewLineCount` | 1行 | なし / 1行 / 2行 / 3行 から選択。 |
-| メール本文にも送信者アイコンを表示 | `listDisplay.showAvatarInDetail` | ON | 詳細画面 (スレッド内の各メッセージのヘッダ) にも同じ `SenderAvatar` を表示する。 |
+| メール本文にも送信者アイコンを表示 | `listDisplay.showAvatarInDetail` | ON | 詳細画面 (スレッド内の各メッセージのヘッダ) にも同じアバターを表示する。 |
+| 一覧に要約を出す | `translation.showListSummaryInList` | OFF | 設定項目のみ存在し、一覧側の実装はまだ無い。 |
 
-## メールの表示 (A9)
+各アバターソースは差出人アドレス単位 (企業ロゴのみドメイン単位) でメモリ
++ディスクにキャッシュし、取得はスクロールをブロックしない非同期処理。
+
+## メールの表示
 
 `HTMLDisplaySettingsStore.swift`。iOS・macOS 共通。
 
 | 項目 | キー | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| 常にテキストで表示 | `htmlDisplay.alwaysShowPlainText` | OFF | ON にすると、HTML メールを開いたときの既定表示がテキスト (`text/plain` パートがあればそれ、無ければ `HTMLTextExtractor` の抽出結果) になる。メール詳細画面の切替ボタン (件名の下、"テキストで表示"/"HTMLで表示") でメールごとに一時的に上書きできる — この上書きはそのメールを開いている間だけで、別のメールを開くとこの設定の既定に戻る。 |
-| ダークモードで暗い背景に反転 | `htmlDisplay.autoAdjustColorsInDarkMode` | OFF (**Task #80 で ON→OFF に変更**) | Task #45 → Task #51 → **Task #80** で判定方式・意味の両方が変わった。「メールがダークモードで読みにくくなりそうか」の実測判定 (`HTMLWebViewCoordinator.decideDarkInversion` — 実効背景色/文字色を実測、Task #56 の「背景なし+暗文字」拡張分岐含む) はこの設定と無関係に常に行う。この設定が実際に左右するのは、判定が「介入が要る」と出たときの対処の種類だけ: **OFF (新既定)** はメール本来の配色のまま (白カード) 見せる (`.otegami-keep-light-active`) — チラつき・反転特有のアーティファクト (Task #71 の白帯・ロゴ沈み) への実機フィードバックを受けた新しい既定。**ON** にすると、従来どおり `filter: invert(1) hue-rotate(180deg)` (NetNewsWire 等と同じ古典的な反転手法、`img`/`picture`/`video`/インライン`background-image`を持つ要素には同フィルタを再適用して元の色を維持) を適用する — 文字中心のメールで暗い背景を好むユーザー向けのオプトイン。メール自身が `<meta name="color-scheme">` や `prefers-color-scheme` メディアクエリで自前のダークモード対応を持つ場合、および色指定を一切持たないメール (ダークネイティブのまま) は、この設定に関わらずどちらの対処も行わない。`ImageSettingsStore`の2キーと同じ理由で `HTMLMessageView.init` が `UserDefaults.standard.bool(forKey:)` を直接読む (`@AppStorage`ではない)。既定値のみ変更したため、既に ON で保存済みの既存ユーザーの値はそのまま尊重される (キー自体は変えていない)。**Task #71 で追加した「メールの背景を常に白」と排他** — そちらが ON の間はこのトグル自体が無効化 (グレーアウト) される。 |
-| メールの背景を常に白（ライト表示） | `htmlDisplay.forceLightBackground` | OFF | Task #71 (実機フィードバック「メールの背景を常に白にしたい」)。ON にすると、ダークモード表示中でも本文を常にメール本来の配色 (Gmail の「ライト表示」相当) で見せる — 上の判定・対処は完全にスキップし、HTML は文書自体の `color-scheme`/背景を `!important` でライト固定、プレーンテキスト (訳文表示含む) は `.colorScheme(.light)` + 白背景で描画する。上の「暗い背景に反転」設定とは排他 — ON の間はそのトグル自体をグレーアウトする。**Task #80 の新既定との違い**: 新既定はダークモード中に**ライトデザインだと判定できたメールだけ**をライトのまま見せる (色指定のないメールはダークネイティブのまま) のに対し、この設定は**判定を一切行わず無条件**に全メール (色指定のないメールも含む) を常にライト固定にする、より強い・明示的な選択。実機フィードバック (MakerWorld実メールとの比較) で見つかったダーク反転の副作用 — 右端の縦の白帯・セクション間の色ムラ・透過PNGロゴが暗背景に沈む — の根本原因調査から生まれた設定で、それらの構造的な修正 (`html.otegami-invert-active`時のbody/html透明化・ロゴサイズ画像への白チップ背景、`docs/design-system.md`参照) と対になっている。 |
+| 常にテキストで表示 | `htmlDisplay.alwaysShowPlainText` | OFF | ON にすると、HTML メールを開いたときの既定表示がテキストになる。メール詳細画面の切替ボタンでメールごとに一時的に上書きできる (そのメールを開いている間だけ)。 |
+| ダークモードで暗い背景に反転 | `htmlDisplay.autoAdjustColorsInDarkMode` | OFF | 「メールがダークモードで読みにくくなりそうか」の実測判定 (実効背景色/文字色を実測) はこの設定と無関係に常に行う。この設定が左右するのは、判定が「介入が要る」と出たときの対処だけ: **OFF (既定)** はメール本来の配色のまま見せる。**ON** にすると `filter: invert(1) hue-rotate(180deg)` の反転フィルタを適用する (画像/動画には同フィルタを再適用して元の色を維持)。メール自身がダークモード対応を持つ場合、および色指定を一切持たないメールは、この設定に関わらずどちらの対処も行わない。下の「メールの背景を常に白」と排他 (そちらが ON の間はこのトグル自体が無効化される)。 |
+| メールの背景を常に白 (ライト表示) | `htmlDisplay.forceLightBackground` | OFF | ON にすると、ダークモード表示中でも本文を常にメール本来の配色で見せる — 上の判定・対処を完全にスキップし、HTML は背景をライト固定、プレーンテキストも白背景で描画する。上の設定とは排他。上の設定が「判定できたメールだけ」ライトのまま見せるのに対し、こちらは判定を行わず無条件に全メールをライト固定にする、より強い選択。 |
 
-HTML メールの詳細画面には、件名の隣に控えめな "HTML" バッジ (`HTMLBadge`、
-`ENBadge` と同じトークンを使った兄弟コンポーネント) が付く。実質的に
-空の HTML (可視テキストも `<img>` も無い、`MessageView.isHTMLMessage`
-参照) にはバッジも切替ボタンも出ない — 本文なしの表示 (下記) に譲る。
+HTML メールの詳細画面には件名の隣に控えめな "HTML" バッジが付く。実質的
+に空の HTML (可視テキストも画像も無い) にはバッジも切替ボタンも出ない。
+本文が完全に空の場合は「本文なし」という薄い文字を表示する。
 
-本文が完全に空 (HTML・テキストいずれも実質的な内容が無い) の場合は、
-本文の位置に薄い文字 ("本文なし"、`OtegamiColor.inkTertiary`) を表示する。
+## 画像
 
-## 画像 (B)
-
-`ImageSettingsStore.swift`。iOS・macOS 共通。**既定値が design-phase-3
-以前の挙動と逆になっている** — ユーザーと仕様を確定した上での意図的な
-変更。
+`ImageSettingsStore.swift`。iOS・macOS 共通。
 
 | 項目 | キー | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| 埋め込み画像を自動表示 | `images.autoShowEmbedded` | **OFF** | メールに直接埋め込まれた画像 (cid: インライン画像 / 画像添付)。以前は無条件で自動表示していたが、既定 OFF に変更。 |
-| リモート画像を自動で読み込む | `images.autoShowRemote` | **ON** | 外部サーバーから読み込む画像。以前は既定でブロック + バナー表示だったが、既定 ON に変更。設定画面に「開封トラッキング」の注意書きを表示。 |
+| 埋め込み画像を自動表示 | `images.autoShowEmbedded` | OFF | メールに直接埋め込まれた画像 (`cid:` インライン画像/画像添付)。 |
+| リモート画像を自動で読み込む | `images.autoShowRemote` | ON | 外部サーバーから読み込む画像。設定画面に「開封トラッキング」の注意書きを表示。 |
 
-いずれも `HTMLMessageView` の「画像を表示」系バナー (埋め込み用・
-リモート用の2つ、独立に動作) が手動解除手段として残る — 設定が OFF の
-メールでもバナーをタップすればそのメールだけ一時的に表示できる。バナーの
-状態はメールごと・アプリセッションの間だけで、別のメールを開く・
-アプリを再起動すると設定の既定値に戻る。
+いずれも「画像を表示」バナー (埋め込み用・リモート用の2つ、独立に動作)
+が手動解除手段として残る — 設定が OFF のメールでもバナーをタップすれば
+そのメールだけ一時的に表示できる。バナーの状態はメールごと・セッション
+中だけで、別のメールを開く/アプリを再起動すると設定の既定値に戻る。
 
-`HTMLMessageView` は `@AppStorage` ではなく `init` で
-`UserDefaults.standard.bool(forKey:)` を直接読む (`UserDefaults
-.registerOtegamiImageDefaults()` を `AppEnvironment.init()` から起動時に
-一度呼び、未設定キーでも正しい既定値に解決されるようにしてある) —
-理由は `HTMLMessageView` の doc comment 参照 (メールを開くたびに新しい
-インスタンスが作られるため、`@AppStorage` の「初回読み取り時だけ default
-引数が効く」という挙動と相性が悪い)。
-
-## リンク (C7)
+## リンク — iOS のみ
 
 `LinkBrowserSettingsStore.swift`。**iOS のみ** — `SFSafariViewController`
-(「アプリ内ブラウザ」) は iOS/iPadOS 専用の API のため、macOS にはこの
-設定自体が無く、メール内リンクは常にシステムのデフォルトブラウザで開く。
+は iOS/iPadOS 専用の API のため、macOS にはこの設定自体が無く、メール内
+リンクは常にシステムのデフォルトブラウザで開く。
 
 | 項目 | キー | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| リンクを開く方法 | `links.openInAppBrowser` | アプリ内ブラウザ | 「アプリ内ブラウザ」(`SFSafariViewController` を sheet 表示) か「デフォルトブラウザ」(`UIApplication.shared.open`) を選べる。HTML 本文・テキスト本文どちらのリンクにも適用される。 |
+| リンクを開く方法 | `links.openInAppBrowser` | アプリ内ブラウザ | 「アプリ内ブラウザ」(`SFSafariViewController` を sheet 表示) か「デフォルトブラウザ」を選べる。HTML 本文・テキスト本文どちらのリンクにも適用される。 |
 
-この開発機のシミュレータ/ツールチェーン (Xcode-beta.app, iOS 27 beta) では
-実リンクタップ時に `WKNavigationDelegate.decidePolicyFor`/`WKUIDelegate
-.createWebViewWith` が一切呼ばれないというプラットフォーム側の異常が
-あったが (実機でも再現確認済み)、`WKWebView.url` の KVO 監視による委譲
-非依存のフォールバック (`HTMLWebViewCoordinator.strayNavigationObservation`)
-で解決済み。詳細・検証結果は `docs/verify.md` の C7 節参照。
+## アカウントのラベル色
 
-## アカウントのラベル色 (実機フィードバック第2弾: D)
+`AccountRecord.labelColorKey`。設定 →「アカウントの設定」→ 各アカウント
+の編集画面の「ラベル色」セクションから、固定8色パレット +「自動」を
+選べる。iOS・macOS 共通、アカウント種別に関係なく編集可能。
 
-`AccountRecord.labelColorKey` (migration v22)。設定 →「アカウント」→ 各
-アカウントの編集画面 (`AccountEditView`) の「ラベル色」セクションから、
-`OtegamiAccountColor` の固定8色パレット (`OtegamiAccountColor.PaletteColor`)
-+「自動」を選べる。iOS・macOS 共通、Gmail/iCloud/その他 IMAP のどの `kind`
-でも編集可能 (アカウント種別に関係ない見た目の設定のため)。
-
-- **既定値・「自動」**: `nil`。既存の FNV-1a ハッシュによる固定パレット
-  割り当て (`OtegamiAccountColor.color(for:)`) がそのまま使われる — 移行
-  前のアカウント全件、およびユーザーが明示的に選び直していないアカウント
-  はこの状態のまま。
-- **反映範囲**: `AccountColorRail` (一覧のアカウント色罫線)・`SenderAvatar`
-  (一覧・スレッド詳細の送信者アイコン背景) の両方 —
-  `OtegamiAccountColor.color(for:override:)` を経由する箇所すべて。
-- **iCloud 同期**: `CloudAccountSnapshot.labelColorKey` として他の非秘匿
-  フィールドと同様に同期される (`docs/icloud-sync.md`) — 端末間で選んだ色
-  が揃う。
+- **既定値・「自動」**: `nil`。ハッシュによる固定パレット割り当てが
+  そのまま使われる。
+- **反映範囲**: 一覧のアカウント色罫線、送信者アイコン背景の両方。
+- iCloud 経由で端末間に同期される ([docs/icloud-sync.md](icloud-sync.md))。
 
 ## アカウントの並び替え
 
-`AccountRecord.sortOrder` (migration v25、既存アカウントは現在の表示順
-= createdAt 順で初期化)。設定 →「アカウントの設定」のアカウント一覧で
-ドラッグして並び替えられる — iOS は `EditButton` (`settings.accounts
-.editButton`) をタップして編集モードに入ってからドラッグハンドルが出る
-通常の流儀 (`MessageToolbarSettingsView`の「常時編集モード」とは違い、
-このリストは `NavigationLink`によるアカウント編集画面への遷移とスワイプ
-削除も同居しているため、常時編集モードにすると両方を潰してしまう)。
-macOS は元々編集モードなしでドラッグ並び替えできる (`List`+`.onMove`の
-プラットフォーム標準の挙動、`MessageToolbarSettingsView`のドキュメント
-コメント参照) ため `EditButton` は iOS のみ表示。
+`AccountRecord.sortOrder`。設定 →「アカウントの設定」のアカウント一覧で
+ドラッグして並び替えられる。iOS は編集モードに入ってからドラッグハンドル
+が出る (このリストは編集画面への遷移とスワイプ削除も同居しているため)。
+macOS は編集モードなしでそのままドラッグできる。
 
-- **反映範囲**: `AppEnvironment.accounts`(アカウント一覧を裏で支える
-  唯一の`ValueObservation`、`ORDER BY sortOrder, createdAt`)を経由する
-  画面すべて — 設定のアカウント一覧、ハンバーガーメニューのアカウント
-  セクション (`FolderListSheet`)、統合トレイのアカウント絞り込みチップ
-  (`AccountFilterChipRow`)、Composer の差出人ピッカー。個別の画面ごとに
-  並び替えロジックを持たせる必要はなく、`AppEnvironment.reorderAccounts
-  (_:)`がこの1クエリの元データを書き換えるだけで全画面に伝播する。
-- **新規アカウント**: `AppEnvironment.nextAccountSortOrder()`(現在の
-  最大値+1) を作成時に採番し、常に一覧の末尾に追加される (`AccountSetupView`
-  /`ICloudAccountSetupView`/`createGmailAccount`のいずれも)。
-- **iCloud 同期**: `CloudAccountSnapshot.sortOrder` として同期される
-  (`docs/icloud-sync.md`) — 端末間で並び順を揃えるのが自然な設定のため、
-  `labelColorKey`と同様に last-writer-wins の対象。`defaultSignatureId`
-  のようなデバイスローカルな id とは異なり、並び順は端末をまたいで意味を
-  持つ値のため同期対象にした。
+- **反映範囲**: アカウント一覧を裏で支える唯一のクエリを経由する画面
+  すべて — 設定のアカウント一覧、ハンバーガーメニューのアカウント
+  セクション、統合トレイのアカウント絞り込みチップ、作成画面の差出人
+  ピッカー。
+- **新規アカウント**: 常に一覧の末尾に追加される。
+- iCloud 経由で端末間に同期される (last-writer-wins)。
 
-## アカウント設定一覧の自分のアバター (Task #117)
+## アカウント設定一覧の自分のアバター
 
-設定 →「アカウントの設定」の各アカウント行の左端に、そのアカウント
-自身のアバター (`SenderAvatar`) を表示する
-(`AccountSettingsCategoryView.accountRow(for:)`) — 右端の既存の
-アカウント色ドット (`AccountRecord.labelColorKey`、上の「アカウントの
-ラベル色」節) と共存する配置。新規の解決 API は追加しておらず、メッセ
-ージ一覧・スレッド詳細と同じ`SenderAvatar`/`AvatarSourceSettingsStore`
-の優先順位チェーンに`account.email`を通すだけ — Gmail アカウントなら
-Task #42「自分のプロフィール写真」(`people/me`) の結果が既にこの索引
-に含まれているので、自分の Google プロフィール写真もそのまま解決され
-る。詳細な実装・検証は `docs/design-system.md`「Task #117」節参照。
+設定 →「アカウントの設定」の各アカウント行の左端に、そのアカウント自身
+のアバターを表示する — 右端の既存のアカウント色ドットと共存する配置。
+メッセージ一覧・スレッド詳細と同じアバター解決の優先順位チェーンに
+自分のアドレスを通すだけの実装で、専用の解決 API は無い。
 
-## アプリアイコンの未読バッジ (実機フィードバック第2弾: H → 第3弾: G で on/off トグルを削除)
+## アプリアイコンの未読バッジ
 
-統合受信トレイ基準 (`MessageQuery.unifiedInboxUnreadCountObservation`、
-既存のハンバーガーメニュー/macOS サイドバーの未読数表示と同じクエリを
-再利用) の未読数をアプリアイコンに表示する。
+統合受信トレイ基準の未読数をアプリアイコンに表示する。アプリ内蔵の
+on/off トグルは無く、**iOS の通知設定 (設定 → 通知 → otegami → バッジ)**
+に完全に従う — OS 側でバッジが無効なら未読監視自体を開始しない。この
+チェックはアプリがフォアグラウンドへ戻るたびに再実行される (OS の通知
+設定はバックグラウンド中にいつでも変更されうるため)。
 
-実機フィードバック第3弾 (G): アプリ内蔵の on/off トグル
-(`BadgeSettingsStore`、設定 →「その他」) を**廃止した** — 代わりに **iOS
-の通知設定 (設定 → 通知 → otegami → バッジ)** に完全に従う。
-`AppEnvironment.restartBadgeObservationIfNeeded(accountIds:)` が
-`UNUserNotificationCenter.current().notificationSettings().badgeSetting`
-を確認し、`.enabled`でなければ`BadgeCenter.setBadge(count: 0)`にして
-未読監視自体を開始しない — OS 側で有効なら常に未読数を反映する。この
-チェックはアプリがフォアグラウンドへ戻るたびにも再実行される
-(`RootView.handleScenePhaseChange(.active)` → `environment
-.refreshBadgeObservation()`) — OS の通知設定はこのアプリがバックグラウ
-ンドの間にいつでも変更されうり、変更を検知する通知の仕組みが無いため。
-`BadgeSettingsStore`自体は削除済み (`badge.enabled`キーの残骸は無視して
-問題ない)。
+- **通知許可**: プッシュ通知 (下記) とは独立に、バッジの権限だけを要求
+  する。セルフホストのリレーを使わないユーザーでも、ローカル同期だけで
+  バッジは機能する。
+- **プッシュ受信時のインクリメント**: Notification Service Extension は
+  新着プッシュのたびに共有ストレージのカウンタを+1する (Extension は
+  正確な未読数を計算できないため暫定的な+1。次にメインアプリの購読が
+  発火した時点で正しい数へ自己修正される)。
+- **macOS**: Dock アイコンのバッジラベル (権限不要)。通知設定の確認は
+  iOS 限定 — メインアプリプロセス内の購読だけで完結する。
 
-- **通知許可**: `PushTokenCenter` (プッシュ通知の opt-in、`[.alert, .badge,
-  .sound]`) とは独立に、`BadgeCenter.requestAuthorizationIfNeeded()` が
-  `.badge` のみを要求する。自宅サーバーの otegami-relay を使わないユーザー
-  でも、ローカル同期だけでバッジは機能する。
-- **更新契機**: `AppEnvironment` が `unifiedInboxUnreadCountObservation` を
-  常時購読しているため、既読操作・同期・フォアグラウンド復帰など未読数に
-  影響するすべての操作で自動的に更新される (専用のイベントハンドラ不要)。
-- **プッシュ受信時のインクリメント**: `NotificationService` Extension は
-  新着プッシュのたびに App Group 共有 `UserDefaults` (`badge.sharedCount`)
-  の値を+1し、通知の `content.badge` にセットする (Extension が直接
-  `setBadgeCount` を呼ぶのではなく、配信される通知の `badge` プロパティに
-  設定するのが Extension からバッジを更新する正規の方法)。Extension は
-  新着メッセージをローカル DB に書き込むわけではない (表示用の envelope
-  読み取りのみ) ため正確な未読数を計算できず、暫定的な+1に留まる —
-  次にメイン app 側の `ValueObservation` が発火した時点で正しい数へ
-  自己修正される。
-- **macOS**: `NSApplication.dockTile.badgeLabel` (権限不要) — 通知設定の
-  確認は iOS 限定 (`#if os(iOS)`)。App Group がそもそも存在しない
-  (`OtegamiAppGroup.identifier` が常に `nil`) ため Extension 連携の対象外
-  — メイン app プロセス内の同じ `ValueObservation` だけで完結する。
+## デフォルトのアカウント
 
-## デフォルトのアカウント (実機フィードバック第2弾: G)
+`DefaultAccountSettingsStore`。キー `account.defaultAccountId`、既定は
+未設定。未設定時、またはアカウント削除等で無効な値になっている時は
+「先頭のアカウント」にフォールバックする。
 
-`DefaultAccountSettingsStore`。キー `account.defaultAccountId`、既定は未設定
-(空文字列)。**未設定時、またはアカウント削除等で無効な値になっている時は
-従来どおり「先頭のアカウント」にフォールバックする** — 常に何らかの
-アカウントが選ばれている状態を保証する。
+作成画面の**新規メール作成時のみ**この設定を参照する — 返信・転送・
+下書きは元のメッセージ/下書きが属するアカウントを常に使う。
 
-`ComposerView` の**新規メール作成時のみ**この設定を参照する — 返信・転送・
-下書きは元のメッセージ/下書きが属するアカウントを常に使う (この設定より
-優先度が高い、そもそも「デフォルト」という概念が意味を持たない)。設定 UI
-は現状アカウント編集画面ではなく (D「ラベル色」/F「デフォルト署名」とは
-異なりアカウント単位の設定ではないため) 今後の設定画面再構成 (下記「設定
-画面の再構成」参照) の中に配置する。
-
-## メール削除/アーカイブ時の挙動 (実機フィードバック第2弾: G)
+## メール削除/アーカイブ時の挙動
 
 `MessagePostActionSettingsStore`。キー `messageAction.afterDeleteArchive`、
-選択肢は「メール一覧に戻る」(既定、この設定が導入される前からの唯一の挙動
-と完全に一致させてある) / 「次のメールを開く」。
+選択肢は「メール一覧に戻る」(既定) / 「次のメールを開く」。
 
-- **適用範囲**: メール本文画面 (`ThreadDetailView`) の「…」メニューからの
-  削除・アーカイブ・迷惑メール操作、および macOS の ⌘⌫/⌘E (`RootView
-  .deleteSelectedThread()`/`.archiveSelectedThread()`、Task #165 で ⌘E
-  アーカイブを追加した際も同じ`handleThreadRemoved(_:)`経路に乗せた)。
-  **一覧画面のスワイプ/コンテキストメニュー/一括選択からの削除・アーカイブ
-  には適用されない** — 一覧はその場で行が消えるだけで「次に何を開くか」
-  という問いがそもそも発生しないため。
-- **「次のメールを開く」の判定**: `MessageListView` が最後に報告した
-  画面上のスレッド順序 (`onSummariesChanged`) の中から、削除・アーカイブ
-  したスレッドの次の行を開く。次が無ければ (リストの最後だった場合) 1つ
-  前の行を開く。それも無ければ (リストにそのスレッドしか無かった場合)
-  一覧に戻る。iOS (`MailScreenView`)・macOS (`RootView` の3ペイン) の両方
-  に同じロジック (`MessagePostActionSettingsStore.nextThreadId(after:in:
-  action:)`) を適用している。検索結果画面 (`SearchScreenView`) から開いた
-  メール本文には適用されない (検索結果の順序は一覧とは別の並びであり、
-  このバッチのスコープ外と判断した)。
+- **適用範囲**: メール本文画面の「…」メニューからの削除・アーカイブ・
+  迷惑メール操作、および macOS の ⌘⌫/⌘E。**一覧画面のスワイプ/コンテキ
+  ストメニュー/一括選択からの削除・アーカイブには適用されない** — 一覧
+  はその場で行が消えるだけで「次に何を開くか」という問いが発生しない
+  ため。
+- **「次のメールを開く」の判定**: 画面上のスレッド順序の中から、削除・
+  アーカイブしたスレッドの次の行を開く。次が無ければ1つ前の行、それも
+  無ければ一覧に戻る。iOS・macOS 両方に同じロジックを適用。検索結果
+  画面から開いたメール本文には適用されない。
 
-## 署名テンプレート (実機フィードバック第2弾: F)
+## 署名テンプレート
 
-`SignatureTemplateRecord` (GRDB テーブル `signatureTemplate`、migration
-v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS・macOS 共通。C8
-の「テンプレート」(`MailTemplateRecord`) とは別機能・別テーブル — 詳細は
-`SignatureTemplateRecord` のドキュメントコメント参照 (テンプレートは全文
-定型、署名は本文末尾への付加。テンプレートの `accountId` は単一 optional
-だが、署名の `accountIds` は複数選択できる配列)。
+`SignatureTemplateRecord` (GRDB テーブル `signatureTemplate`)。設定 →
+「メール作成」→「署名テンプレート」で追加・編集・削除。iOS・macOS
+共通。「テンプレート」(`MailTemplateRecord`、下記) とは別機能・別テーブル
+— テンプレートは全文定型、署名は本文末尾への付加。テンプレートの
+`accountId` は単一 optional だが、署名の `accountIds` は複数選択できる
+配列。
 
 - **項目**: 名前、使用するアカウント (複数選択可)、本文。
-- **アカウント編集画面 (`AccountEditView`) の「デフォルト署名」**:
-  `AccountRecord.defaultSignatureId` (migration v24、参照先の署名が削除
-  されると `onDelete: .setNull` で自動的に `nil` に戻る)。そのアカウントに
-  使用可能として選択されている署名の中から選べる。**iCloud 同期の対象外**
-  — `signatureTemplate.id` は端末ローカルの自動採番値で、端末をまたいで
-  同じ意味を持たない (`AccountRecord.id` のような UUID とは異なる) ため、
-  そのまま同期すると別端末では無関係または存在しない行を指してしまう。
-  署名テンプレート自体の iCloud 同期は今回のスコープでは実装していない。
-- **Composer (作成画面) の「署名」欄**: 差出人アカウントに使用可能な署名が
-  1つ以上あるときだけ Picker が表示される (「なし」+ 各署名名)。選択すると
-  本文末尾に挿入され、別の署名に切り替えると直前に挿入した文字列だけを
-  正確に取り除いてから新しい署名を挿入する (`ComposerView
-  .updateSignatureText(newId:)`)。
-- **デフォルト署名の自動挿入は新規作成時のみ**: 返信・転送・下書き復元では
-  自動挿入しない (本文の非同期プリフィル処理と競合するリスクを避けるため
-  の意図的なスコープ判断)。返信・転送でも「署名」欄から手動で選べる。
+- **アカウント編集画面の「デフォルト署名」**: `AccountRecord
+  .defaultSignatureId` (参照先の署名が削除されると自動的に `nil` に
+  戻る)。**iCloud 同期の対象外** — 署名テンプレートの id は端末ローカル
+  の自動採番値で、端末をまたいで同じ意味を持たないため。署名テンプレート
+  自体の iCloud 同期は実装していない。
+- **作成画面の「署名」欄**: 差出人アカウントに使用可能な署名が1つ以上
+  あるときだけ Picker が表示される。選択すると本文末尾に挿入され、別の
+  署名に切り替えると直前に挿入した文字列だけを正確に取り除いてから新しい
+  署名を挿入する。
+- **デフォルト署名の自動挿入は新規作成時のみ** — 返信・転送・下書き復元
+  では自動挿入しない (本文の非同期プリフィル処理と競合するリスクを避け
+  るため)。返信・転送でも「署名」欄から手動で選べる。
 
-## テンプレート (C8)
+## テンプレート
 
-`MailTemplateRecord` (GRDB テーブル `mailTemplate`、migration v17)。設定 →
-「テンプレート」で追加・編集・削除。iOS・macOS 共通。
+`MailTemplateRecord` (GRDB テーブル `mailTemplate`)。設定 →「メール
+作成」→「テンプレート」で追加・編集・削除。iOS・macOS 共通。
 
-**設計判断: テンプレートは全体で1つのフラットなリストとして管理し、
-各テンプレートに任意で「使用するアカウント」を設定できる形にした**
-(`accountId` 列、`nil` = 全アカウントで使用可能)。「アカウントごとに設定
-できる」の2通りの解釈 (①各テンプレートが特定アカウント専用、②アカウント
-ごとにデフォルトテンプレートを持つ) のうち①寄りの実装だが、
-「アカウントを指定しない」を既定にすることで②の「全アカウント共通の
-署名的テンプレート」というニーズも1つの仕組みでカバーできる。②の
-「アカウントごとのデフォルト」(複数ある候補から自動選択) は、Composer
-を開くたびに毎回選び直す方式より複雑になる割に得られる価値が小さいと
-判断し見送った。
+全体で1つのフラットなリストとして管理し、各テンプレートに任意で「使用
+するアカウント」を設定できる (`accountId` 列、`nil` = 全アカウントで
+使用可能)。
 
 - **項目**: 名前、使用するアカウント (すべて/特定の1つ)、件名 (任意)、
   本文。
-- **Composer からの呼び出し**: 「添付ファイル」の下に「テンプレート」
+- **作成画面からの呼び出し**: 「添付ファイル」の下に「テンプレート」
   セクションが (使えるテンプレートが1つ以上あるときだけ) 出現し、
   「テンプレートを挿入」メニューから選ぶ。**件名・本文が両方空の状態
-  (新規作成直後) でテンプレートに件名があれば、件名・本文の両方が
-  そのテンプレートの内容に置き換わる (定型メール全体としての使い方)。
-  それ以外 (すでに何か書いている、またはテンプレートに件名が無い) の
-  場合は本文の末尾に追記される (署名的な使い方)。**
-- 選べるテンプレートは、Composer の「差出人」で選択中のアカウントに
-  応じて絞り込まれる (`accountId IS NULL OR accountId = <選択中の
-  アカウント>`) — 差出人を切り替えると一覧も追従する。
+  (新規作成直後) でテンプレートに件名があれば、件名・本文の両方がその
+  テンプレートの内容に置き換わる。それ以外の場合は本文の末尾に追記
+  される。**
+- 選べるテンプレートは、差出人で選択中のアカウントに応じて絞り込まれる。
 
 ## ピン留め
 
@@ -409,80 +244,65 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 
 | 項目 | キー | 既定値 | 説明 |
 | --- | --- | --- | --- |
-| サーバーのフラグ (`\Flagged`) と連動 | `pinning.syncWithFlagged` | OFF | OFF の間、ピン留めは otegami だけのローカルな印 (`MessageRecord.isPinnedLocal`)。ON にすると、ピン留め/解除のたびに IMAP の `\Flagged` フラグも更新し (`setFlags` opQueue 経由)、サーバー再同期のたびに現在の `\Flagged` を読み取ってピン留め状態に反映する (他クライアントでのフラグ操作も拾える)。 |
+| サーバーのフラグ (`\Flagged`) と連動 | `pinning.syncWithFlagged` | OFF | OFF の間、ピン留めは otegami だけのローカルな印。ON にすると、ピン留め/解除のたびに IMAP の `\Flagged` フラグも更新し、サーバー再同期のたびに現在の `\Flagged` を読み取ってピン留め状態に反映する (他クライアントでのフラグ操作も拾える)。 |
 
-ピン留めされたメール/スレッドは一覧の**最上位**に来る (`ThreadQuery` の
-`ORDER BY isPinned DESC, lastMessageDate DESC, ...`)。スレッド内の
-1通でもピン留めされていれば、スレッド自体が最上位になる
-(`ThreadRecord.isPinned` は所属メッセージの `isPinnedLocal` の OR
-集計、`ThreadAssigner.recomputeAggregates` が保守)。
+ピン留めされたメール/スレッドは一覧の最上位に来る。スレッド内の1通でも
+ピン留めされていれば、スレッド自体が最上位になる。
 
-## 送信キャンセル (iOS のみ)
+## 送信キャンセル — iOS のみ
 
-`SendCancelSettingsStore.swift`。**iOS のみ** — macOS の作成画面は
-シート化された iOS と違い独立ウィンドウで、常設のタブバーの上にバーを
-出す自然な置き場所が無いため、macOS は送信ボタンを押した時点で
-即座に送信される (design-phase-3 以前と同じ挙動)。
+`SendCancelSettingsStore.swift`。**iOS のみ** — macOS の作成画面は独立
+ウィンドウで、常設のバーを出す自然な置き場所が無いため、macOS は送信
+ボタンを押した時点で即座に送信される。
 
 | キー | 既定値 | 選択肢 |
 | --- | --- | --- |
 | `sendCancel.window` | 5秒 | なし / 5秒 / 10秒 |
 
-**30秒・60秒はあえて選択肢から外してある**: iOS はバックグラウンドに
-回ったアプリを任意のタイミングで凍結・一時停止できるため、
-`beginBackgroundTask` の猶予時間には確定的な保証が無い。長い待機時間を
-提示すると「キャンセル可能な時間が残っている」という約束を守れないこと
-があるため、確実に運用できる短い時間だけを提示している。
+**30秒・60秒は選択肢から外してある**: iOS はバックグラウンドに回った
+アプリを任意のタイミングで凍結・一時停止できるため、バックグラウンド
+猶予時間には確定的な保証が無い。確実に運用できる短い時間だけを提示して
+いる。
 
 **アプリを離れると即座に送信が確定する**: カウントダウン中にアプリを
 バックグラウンド/非アクティブへ切り替えると、残り時間に関わらずただちに
-送信処理へ進む (`PendingSendCoordinator.finalizeNow()`、
-`RootView.handleScenePhaseChange` から呼ばれる)。これは意図的な仕様
-— バックグラウンドでカウントダウンを継続する保証ができないため。
+送信処理へ進む (バックグラウンドでカウントダウンを継続する保証が無い
+ため)。
 
-**送信の消失防止**: 「送信」を押した瞬間に、下書きの内容はまず
-`outboxMessage` テーブル + `opQueue` の `send` オペレーションとして
-ローカル DB に確定保存される (この時点で `OutboxAttachmentRecord` も
-含め永続化済み)。カウントダウン・キャンセルの仕組みはすべて「いつ
-ネットワークに実際に投げるか」だけを制御しており、アプリがどのタイミング
-で終了・強制終了されても、次回起動時の通常の opQueue リプレイが未送信の
-メールを拾って送信する。カウントダウンが終わった瞬間 (または離脱で
-即時確定した瞬間) の実際の送信は iOS の `beginBackgroundTask` で
-バックグラウンド猶予を確保してから行う。
+**送信の消失防止**: 「送信」を押した瞬間、下書きの内容はまずローカル DB
+に確定保存される。カウントダウン・キャンセルの仕組みは「いつネットワーク
+に実際に投げるか」だけを制御しており、アプリがどのタイミングで終了・
+強制終了されても、次回起動時の通常のリプレイが未送信のメールを拾って
+送信する。
 
 **「送信を取り消す」**: カウントダウンバー上のボタンをタップすると、
-ローカルに書き込んだ `outboxMessage`/`outboxAttachment`/`opQueue` の
-`send` 行を削除し (真の取り消し — サーバーには一切送信されない)、
-同じ宛先・件名・本文・添付ファイルで Composer を再度開く
-(`ComposerLaunchPayload.Kind.cancelledSend`)。
+ローカルに書き込んだ送信予約を削除し (真の取り消し — サーバーには一切
+送信されない)、同じ宛先・件名・本文・添付ファイルで作成画面を再度開く。
 
-## 翻訳 (既存)
+## 翻訳
 
 `TranslationSettingsStore.swift`。
 
-| 項目 | キー | 既定値 |
-| --- | --- | --- |
-| 英文を自動で翻訳 | `translation.autoTranslateEnglish.v2` | **OFF** (実機フィードバック「翻訳機能は、勝手に実行しないで欲しい」を受けて design-phase-3 の ON から変更、キーも `.v2` にリネーム — `docs/translation.md`「実機フィードバック: 「勝手に翻訳しないで」「HTML はレイアウトを保って」」節参照。OFF でも翻訳バー自体は英文メールに表示され、「翻訳」ボタンを押した時だけ翻訳する) |
-| 一覧に要約を出す | `translation.showListSummaryInList` | OFF (設定項目のみ存在し、一覧側は現状未実装 — `docs/design-system.md` 参照) |
+| 項目 | キー | 既定値 | 説明 |
+| --- | --- | --- | --- |
+| 英文を自動で翻訳 | `translation.autoTranslateEnglish.v2` | OFF | OFF でも翻訳バー自体は英文メールに表示され、「翻訳」ボタンを押した時だけ翻訳する。詳細は [docs/translation.md](translation.md)。 |
 
-## iCloud アカウント同期 (既存)
+## iCloud アカウント同期
 
-`CloudSyncSettingsStore.swift`。キー `icloudSync.accountsEnabled`、
-既定 ON。同じ Apple ID の他デバイスとアカウントの接続設定 (パスワード
-以外) を同期する。詳細は [docs/icloud-sync.md](icloud-sync.md)。
+`CloudSyncSettingsStore.swift`。キー `icloudSync.accountsEnabled`、既定
+ON。同じ Apple ID の他デバイスと設定全般を同期する。設定画面では「一般」
+カテゴリに置かれている。詳細は [docs/icloud-sync.md](icloud-sync.md)。
 
-## プッシュ通知 (既存)
+## プッシュ通知
 
 `PushSettingsStore.swift` (Keychain 併用、`push.*` キー群)。設定 →
-「プッシュ通知」から有効化。詳細は
+「アカウントの設定」→「プッシュ通知」から有効化。詳細は
 [docs/relay-deployment.md](relay-deployment.md)。
 
-### 通知の内容 (Task #176)
+### 通知の内容
 
-実機フィードバック 2026-07-30「通知にタイトル、差出人、本文の一部を出す
-かどうかの設定を追加して」。`NotificationContentSettingsStore.swift`
-(アプリターゲット)、`PushNotificationSettingsView` の「通知の内容」
-セクション。
+`NotificationContentSettingsStore.swift`。`PushNotificationSettingsView`
+の「通知の内容」セクション。
 
 | 項目 | キー | 既定値 |
 | --- | --- | --- |
@@ -490,429 +310,122 @@ v23)。設定 →「署名テンプレート」で追加・編集・削除。iOS
 | 件名を表示 | `notification.showsSubject` | ON |
 | 本文プレビューを表示 | `notification.showsBodyPreview` | ON |
 
-3つとも ON が既定 — Task #176 以前の挙動 (常に差出人・件名を表示、本文
-プレビューは無し) を壊さないよう、少なくとも表示内容を「減らす」方向の
-変更にはならない。footer に明記した通り、これは **OS 側の「設定 →
-通知 → プレビューを表示」とは別物**: OS 側はロック画面等でその場に
-プレビューを出すかどうかの全体設定、こちらは「このアプリが通知の中身
-として何を渡すか」の設定で、両方が有効な場合にのみ実際に表示される。
+これは **OS 側の「設定 → 通知 → プレビューを表示」とは別物**: OS 側は
+ロック画面等でその場にプレビューを出すかどうかの全体設定、こちらは
+「このアプリが通知の中身として何を渡すか」の設定で、両方が有効な場合
+にのみ実際に表示される。
 
-**すべて OFF の場合**: 内容を伴わない通知 (「新着メールがあります」) に
-なる。`NotificationService.enrich(payload:)` はこの場合 IMAP フェッチは
-おろかアカウント/Keychain 参照すら行わない — 3トグルすべて OFF なら
-結果を使う場所が無いと分かった時点で早期 return する
-(`NotificationEnrichment.needsFetch(preferences:)`)。「複数件なら件数
-のみ」は採用しなかった — push payload は `accountId`/`uidNext` のみで
-件数を持たず、件数を得る手段は (a) 件数を数えるためだけの追加 IMAP
-往復 (フェッチを丸ごとスキップする本来の目的と矛盾) か (b) ローカル DB
-の既読/未読数を読む、のどちらかだが、(b) はこの Extension がプッシュで
-届いた新着メッセージ自体をまだ DB に挿入していない (`NotificationService
-.swift` の doc comment 参照) ため、プッシュ到着**前**に同期済みだった
-件数を返すだけで、今回の新着を反映しない不正確な値になる。両方とも
-「N件」を実装する価値に見合わないと判断し、常に固定文言にした。
+**すべて OFF の場合**: 内容を伴わない通知 (「新着メールがあります」)
+になる。この場合 Notification Service Extension は IMAP フェッチも
+アカウント/Keychain 参照も行わない (使う場所が無いと分かった時点で早期
+リターンする)。
 
-**Extension からの読み取り経路 (App Group)**: `NotificationService`
-Extension は本体アプリと別プロセスなので `UserDefaults.standard` を
-共有しない。`NotificationContentSettingsStore.mirrorToAppGroup()` が
-この3キーの現在値を共有 App Group の `UserDefaults(suiteName:)` へ
-コピーし、Extension 側はそれだけを読む (`OtegamiAppGroup.swift`の
-`badge.sharedCount`と同じ仕組み)。呼び出し箇所は3つ: (1)
-`PushNotificationSettingsView` の各トグルの `onChange`、(2)
-`AppSettingsCloudDirectory.apply(_:)` (他デバイスからの settings.v2
-pull 後)、(3) `AppEnvironment.init()` (起動毎、無条件) — 設定変更が
-次回のプッシュ到着までに確実に反映されるようにするため。
+**Extension からの読み取り経路**: Notification Service Extension は
+本体アプリと別プロセスなので `UserDefaults.standard` を共有しない。
+この3キーの現在値は共有 App Group の `UserDefaults` へミラーされ、
+Extension 側はそれだけを読む。iCloud 同期の対象にも含めている (見た目の
+好みであり、デバイス固有の設定とは性質が違うため)。
 
-**iCloud 同期**: 対象に含めた (`AppSettingsCloudDirectory.boolDefaults`)。
-これは「見た目の好み」であり `PushSettingsStore` のデバイス固有部分
-(デバイス id・per-account watch map・enabled フラグ) とは性質が違う
-— iPhone でプレビューを隠したいユーザーが iPad では隠したくない理由は
-薄い。macOS は 2026-07-29 のユーザー指示で settings.v2 同期そのものが
-無効 (`AppEnvironment.init()`の`settingsCloudSync`の`isEnabled`分岐)
-なので実質 iOS/iPadOS 間のみで同期される。macOS には現状
-`NotificationService` が無い (M9 スコープ外) ので影響なし。
+## メール本文フッターツールバーの表示/非表示・並び順
 
-## メール本文フッターツールバーの表示/非表示・並び順 (新画面構成、Task #88 で7アイコンに、Task #100 でカスタマイズ機能に、2026-07-29 追加仕様で14アクションに、Task #103 で15アクションに、Task #113 でラベル表示トグル追加+その他メニューの順序不安定バグ修正、Task #139 で「英語で返信を下書き」撤去により14アクションに、Task #188 で「その他」メニューの構造を階層化しさらに順序を安定化)
+`MessageToolbarSettingsStore.swift`。メール本文画面下部のフッター
+ツールバーに出せる14アクション (返信/転送/検索/情報/要約/翻訳/ミュート/
+ピン留め/未読にする/アーカイブ/迷惑メールにする/削除/ソースを表示/その他)
+の表示/非表示と並び順。macOS も含む両プラットフォームに存在する。
 
-`MessageToolbarSettingsStore.swift`(アプリターゲット)。メール本文画面
-(`ThreadDetailView`) 下部のフッターツールバーに出せる14アクション
-(返信/転送/検索/情報/要約/翻訳/ミュート/ピン留め/未読にする/アーカイブ/
-迷惑メールにする/削除/ソースを表示/その他) の表示/非表示と並び順。
-要約/翻訳の2つは Task #88 (「要約と翻訳のボタンをフローティングをやめて
-ツールバーに入れて」) で、旧フローティングボタン
-(`AISummaryFloatingButton`/`TranslationFloatingButton`) から移設した。
-ミュート以降の6つ (元は「英語で返信を下書き」を含む7つ) は2026-07-29の
-追加仕様で、旧「その他」メニューがネイティブに (トグル不可・常設で)
-持っていた操作を一級のアクションへ昇格したもの — 下記「その他」ネイティブ
-項目の一級化」節参照。「ソースを表示」は Task #103 で追加したアクション —
-下記「Task #103」節参照。「英語で返信を下書き」は Task #139 で撤去済み
-(翻訳ボタンの常時有効化 #138 もあり冗長と判断された) — 保存済み設定に
-この id が残っていても`MessageToolbarPreferencesCoding.parse`が安全に
-無視する (`MessageToolbarPreferencesTests.preTask139SaveDropsRemovedDraftEnglishReplyID`
-参照)。
+設定画面 (`MessageToolbarSettingsView`) への入口は2つ (どちらも同じ画面
+を開くだけ): メール本文画面の「…」メニュー →「ツールバーをカスタマイズ」、
+設定 →「メールビューア」→「ツールバーをカスタマイズ」。
 
-設定画面 (`MessageToolbarSettingsView`) への入口は2つ:
-- メール本文画面の「…」メニュー →「ツールバーをカスタマイズ」
-  (`MessageDetailFooterToolbar.onCustomizeToolbar`)。
-- 設定 →「メールビューア」→「ツールバーをカスタマイズ」
-  (`MailViewerSettingsView`の「フッターツールバー」セクション、
-  Task #100 で追加)。
-
-どちらも同じ画面を開くだけで、状態は`MessageToolbarSettingsStore`に
-一本化されている。macOS も含む両プラットフォームに存在する
-(`ThreadDetailView`はメール本文画面として iOS・macOS 共通で使われる)。
-
-### Task #100「フッターツールバーのカスタマイズ」
-
-それまでの「並び替えのみ」から、各アクションの**表示/非表示トグル**を
-追加した:
-
-- 表示オンの6アクション (「その他」を除く) はトグルで非表示にでき、
+- 表示オンの13アクション (「その他」を除く) はトグルで非表示にでき、
   表示オンのものだけドラッグで並び替えられる。
-- **非表示にしたアクションはツールバーから消えるのではなく、「その他」
-  メニューの中に項目として追加され、引き続き使える**
-  (`MessageDetailFooterToolbar.hiddenActionMenuItems`)。「返信」は元が
-  返信/全員に返信の2択を持つサブメニューなので、非表示時は2つのフラット
-  な項目に展開する。
+- **非表示にしたアクションはツールバーから消えるのではなく、「メールの
+  操作」という「その他」メニュー内のサブメニューにまとめられ、引き続き
+  使える** (「返信」は返信/全員に返信の2択を持つサブメニューなので、
+  非表示時は2つのフラットな項目に展開する)。
 - **「その他」自身だけは例外** — 非表示にできず、並び替えもできず、常に
-  最後尾固定。設定画面でも別セクション・グレーアウト表示にして、他の
-  6アクションとは扱いが違うことを見た目でも伝える
-  (`MessageToolbarSettingsPinnedRow`)。
+  「その他」メニューの最後尾に固定1件だけ並ぶ。トップレベルの「その他」
+  メニューは常に高々2件 (非表示アクションが1件以上なら「メールの操作」
+  サブメニュー+カスタマイズの2件、0件ならカスタマイズだけの1件) —
+  非表示アクション数が何件でもトップレベルの項目数・並びは変わらない
+  設計 (メニューの開閉挙動に依存する不安定さを避けるため)。設定画面でも
+  「その他」だけ別セクション・グレーアウト表示で区別する。
+- 「ボタンのラベルを表示」トグル (既定 ON) — OFF にするとフッター
+  ツールバーの各ボタンがアイコンのみになる。
 
 | キー | 既定値 |
 | --- | --- |
-| `messageToolbar.order` | `reply:1,forward:1,search:1,info:1,summarize:1,translate:1,mute:0,pin:0,markUnread:0,archive:0,junk:0,delete:0,viewSource:0,more:1` (カンマ区切り、`id:1`が表示・`id:0`が非表示。`viewSource`は Task #103 で追加、既定非表示。`draftEnglishReply`は Task #139 で撤去済み) |
-
-要約/翻訳がメッセージ次第で意味を持たないことがある (本文未読込・この
-端末で AI 機能が使えない・翻訳不要な言語、等) という話は上記の「表示/
-非表示」設定とは別軸 — その場合もアイコン自体は表示オンのまま
-グレーアウトするだけ (`MessageDetailAIFeaturesState`)。
-
-**パース・移行ロジックの実体は `OtegamiCore` の
-`MessageToolbarPreferencesCoding`** (`String` id ベースの純粋関数) —
-`apps/Otegami`にはこの種のロジックを unit test する手段が無い
-(`make test`が対象にするのは`packages/OtegamiKit`の`swift test`のみ、
-`apps/Otegami`は XCUITest しか無い) ため、テスト可能な
-`packages/OtegamiKit/Tests/OtegamiCoreTests/MessageToolbarPreferencesTests.swift`
-に実際のロジックを寄せ、アプリ側の`MessageToolbarSettingsStore`は
-`MessageToolbarAction`との変換と`UserDefaults`の読み書きだけを担う薄い
-ラッパーにした。
-
-**既存ユーザーの移行 (後方互換)**: キー名 (`messageToolbar.order`) は
-変えていない — Task #88 時点の「保存済みの並びに含まれないアクションは
-末尾に追記する」というロジックは維持しつつ、可視性の概念が無い旧形式
-(`"reply,forward,search,info,summarize,translate,more"`、`:0`/`:1`
-サフィックスが無い) もそのまま読める。可視性サフィックス無しのトークン
-は「表示」として扱われるので、既存ユーザーの保存済み並び順は**全項目
-表示のまま、その並びだけを引き継ぐ** (このバッチ以前は「非表示」という
-状態自体が存在しなかったので、これが唯一自然な解釈)。キー名を変えな
-かった理由はもう一つ — このキーは `AppSettingsCloudDirectory` の iCloud
-設定同期許可リスト対象 (下記「同期する設定」節) で、キー名を変えると
-「新形式で書く新バージョンの端末」と「旧形式のまま書き続ける旧バージョン
-の端末」が別々のキーを同期することになり、アプリを更新していない方の
-端末の変更が伝わらなくなる — 同じキーのまま、値のエンコード方法だけを
-拡張したことで、この移行期間中もどちらの方向の読み込みも安全に縮退する
-(不明なサフィックス/トークンは`MessageToolbarPreferencesCoding`が
-黙って無視し、既定順にフォールバックするだけでクラッシュしない)。
-
-### 2026-07-29 追加仕様 (1): 「その他」ネイティブ項目の一級化
-
-Task #100 リリース直後のユーザー指示。それまで「その他」メニューは
-ミュート・ピン留め・未読にする・アーカイブ・迷惑メールにする・英語で
-返信を下書き・削除の7操作を**トグル不可の常設項目**として直書きして
-いた (`MessageDetailFooterToolbar.moreMenuButton`の旧実装) — この7つを
-他の6アクションと全く同じ`MessageToolbarAction`ケースへ昇格し、
-「オフにしたアクションが「その他」に入る」という一貫ルールに統一した。
-「その他」の中身はこれで完全に「ユーザーが非表示にしたアクション」だけで
-説明できる。
-
-- 唯一の例外は「その他」メニュー最後の「ツールバーをカスタマイズ」
-  ショートカット自身 — これはメッセージへの操作ではなく設定画面への
-  入口なので、意図的に`MessageToolbarAction`化していない (常に「その他」
-  メニュー末尾固定)。
-- 既定構成は**アクション昇格前と見た目が変わらない**: 新規7アクションは
-  既定で非表示 (「その他」入り)、元の6アクション (+`more`) だけが既定で
-  ツールバー直接表示。
-- **既存ユーザーの移行**: `MessageToolbarPreferencesCoding.parse`は
-  「保存済みデータに無い id は、その id の`defaults`エントリ自身の
-  可視性で補う」という仕様 (単純な「無ければ可視」ではない) — この
-  バッチ以前から保存済みの並びを持つユーザーは、新規7アクションが
-  その*既定可視性 (非表示)* で末尾に追記される。Task #88 の
-  summarize/translate (新規に「可視」を既定にした) とは逆方向の既定値を
-  同じ移行ロジックで表現できることの実例。
-
-### 2026-07-29 追加仕様 (2): 表示オンのアクションが画面幅を超える場合の横スクロール
-
-`MessageDetailFooterToolbar.body`は`ViewThatFits(in: .horizontal)`で
-2つのレイアウト候補から選ぶ:
-
-1. `fixedRow` — 既存の均等配置 (`.frame(maxWidth: .infinity)`)。表示オン
-   のアクション全部の理想幅の合計が画面幅に収まる場合はこちらが選ばれ、
-   見た目は本バッチ以前と完全に同一 (iPhone 縦持ちの既定6アクション構成
-   では常にこちらのまま)。
-2. `scrollableRow` — インジケータ非表示・左端起点の
-   `ScrollView(.horizontal)`。収まらない場合の無条件フォールバック。
-
-大きな文字サイズ設定・多くのアクションを表示オンにした場合・狭い端末幅
-のいずれでも、切れたり歪んだりせず自然にスクロール可能な列へ切り替わる。
-`toolbarIcon`のラベルに`.lineLimit(1)`を付けた理由もこの判定の正確さの
-ため — ラベルの折り返しを許すと、大きな文字サイズ下で理想幅が小さいまま
-になってしまい (縦に折り返すことで横幅の逼迫を隠してしまう)、本来
-スクロールへ切り替わるべき場面でも`fixedRow`が選ばれ続けて崩れた見た目に
-なる。
-
-### 2026-07-29 追加仕様 (3): カスタマイズの即時反映
-
-実機報告: 「ツールバーをカスタマイズ」で設定を変えても、メール本文画面
-に戻る (画面遷移する) までツールバーの表示が切り替わらなかった。原因は
-`MessageDetailFooterToolbar`側が`@State`に一度だけ読み込み、`.onAppear`
-でしか読み直していなかったこと (`UserDefaults`の変更を購読していない)。
-`@AppStorage(MessageToolbarSettingsStore.orderKey)`に変更し、他の
-`*SettingsStore`群 (`ListDisplaySettingsStore`等) が設定画面側で使って
-いるのと同じ「`UserDefaults`の変更を`@AppStorage`が購読して自動的に
-再描画を起こす」仕組みをこちら (読み取り専用の購読者) にも適用した —
-`MessageToolbarSettingsView`が同じキーへ書き込んだ瞬間、シートを閉じずに
-即座にツールバーへ反映される。
-
-### Task #103「ソースを表示」
-
-表示崩れメールの調査経路として、生の RFC822 ソース (eml) をモノスペース
-表示 + シェアシートで `.eml` ファイルとして書き出せる機能。ツールバーの
-15番目のアクション (`.viewSource`、SF Symbol `doc.plaintext`) として
-追加 — 既定は**非表示** (「その他」メニュー内)、上記の表示/非表示・並び
-順トグルの対象。
-
-- **生ソース取得**: ローカル DB には解析済み本文しか保存していないため
-  (`MessageHeaderInfoView`の「生ヘッダ (Received チェーンを含む RFC822
-  ヘッダ全体) はこのアプリでは保存していない」という既存の scope 制限
-  参照)、IMAP `UID FETCH BODY.PEEK[]` でオンデマンド取得する。既存の
-  `IMAPSessionProtocol.fetchMessageBody(mailboxPath:uid:partId:)`を
-  `partId: nil`で呼ぶだけ — そのメソッドの doc comment が元々「`partId`
-  が`nil`なら全文の raw RFC822 バイト列」と定義済みで、
-  `MailCoreIMAPSession`の実装 (mailcore2 の`fetchMessageOperation`)
-  が内部で`BODY.PEEK[]`(`\Seen`を立てない`.PEEK`変種) を発行することを
-  ピン留めした mailcore2 リビジョンのソース (`MCIMAPSession.cpp`の
-  `fetch_rfc822`/`mailimap_fetch_att_new_body_peek_section`) で確認した
-  ため、`MailTransport`プロトコルへの新しいメソッド追加は不要だった。
-- **取得・キャッシュ**: `SyncEngine.MessageSourceFetcher`(新規actor) が
-  `<Application Support>/otegami/MessageSource/<accountId>/<messageId>.eml`
-  に保存 — `AttachmentFetcher`と同じ「ディスク上のファイルの存在自体が
-  キャッシュ」方式だが、`AttachmentRecord.localPath`のような DB カラムは
-  持たない (このためだけの新カラム/マイグレーションを避けた)。
-  `SyncCoordinator.fetchRawSource(messageId:messageUID:mailboxPath:
-  account:auth:)`はキャッシュ済みなら接続すら開かない — 一度見た
-  メッセージのソース再表示はオフラインでも動く。
-- **表示**: `MessageSourceView`(モノスペース `Text`、`OtegamiFont
-  .monospaceBody()`) + `MessageSourceLoader`(`@Observable`、Task #94 の
-  `CalendarInviteLoader`と同じ「プレーンな`Task`をロード側から起動、
-  SwiftUI の`.task`修飾子には依存しない」パターン)。表示は先頭512KBまで
-  (`MessageSourceLoader.previewByteLimit`) — 巨大メール対策。読み込み中
-  / エラー(オフライン等、再試行ボタン付き) / 表示、を常にどれか1つ描画し
-  無言で何も出ない状態を作らない。
-- **シェア**: `ShareLink`で`.eml`として書き出す。共有時のファイル名は
-  `OtegamiCore.MessageSourceFilename.sanitized(subject:)`が件名から生成
-  (記号除去・80文字まで切り詰め・空なら`"message"`) — キャッシュ済みの
-  生ファイルを`FileManager.temporaryDirectory`配下にその名前でコピーして
-  から共有する (キャッシュ本体のファイル名`<messageId>.eml`をそのまま
-  シェアシートに出さないため)。表示は512KBで切り詰めても、シェアされる
-  のは常に全文。
-
-### Task #113 実機フィードバック2件
-
-Task #100 とその追加分 (表示トグル+並び替え+横スクロール+その他項目
-一級化+即時反映) のリリース後の実機フィードバック。
-
-**(1) 「ツールバーをカスタマイズ」導線の位置固定**
-
-「その他」メニュー内で「ツールバーをカスタマイズ」の位置が状態によって
-変わる報告があった。原因は`role: .destructive`の自動並び替え — iOS の
-`Menu`は`role: .destructive`のボタンをコード上の位置に関わらず自動的に
-他の項目より下 (メニューの本当の最後尾) へ移動する。「削除」が非表示
-(「その他」入り、既定でここに入っている) の間、コード上「削除」より
-後ろにある「ツールバーをカスタマイズ」の方がこの自動移動によって
-「削除」より*上*に描画されてしまい、最下部固定にならなかった —
-どのアクションが非表示かという「状態」で発生有無が変わって見えたのは
-これが実体 (`MessageDetailFooterToolbar.hiddenActionMenuItem(for:)`の
-`.delete`ケースの doc comment参照)。
-
-修正: 「その他」メニュー内の「削除」項目から`role: .destructive`を外し、
-赤い見た目は`.tint(OtegamiColor.destructive)`で再現する形に変更した —
-自動並び替えの対象から外れ、コード上の並び (常に`hiddenActionMenuItems`
-の末尾) がそのまま最終的な表示順序になる。ツールバー直接表示の「削除」
-ボタン (`deleteButton`、`Menu`の外) は対象外・変更なし。
-
-**(2) 「ボタンのラベルを表示」設定**
-
-カスタマイズ画面 (`MessageToolbarSettingsView`) にトグルを追加した —
-オフにするとフッターツールバーの各ボタンがアイコンのみになり (ラベルの
-`Text`自体を出さない)、アイコン/ラベル間の`VStack`の spacing も0に
-詰めて高さも縮む (`OtegamiCore.MessageToolbarIconLayout
-.iconLabelSpacing(showsLabels:)`、`swift test`で単体テストされる —
-`apps/Otegami`自体は unit test target を持たないため、この1点の共有
-レイアウトロジックだけ`OtegamiCore`に切り出した)。デフォルトは ON
-(既存ユーザーの見た目は変わらない)。
-
-| キー | 既定値 |
-| --- | --- |
+| `messageToolbar.order` | `reply:1,forward:1,search:1,info:1,summarize:1,translate:1,mute:0,pin:0,markUnread:0,archive:0,junk:0,delete:0,viewSource:0,more:1` (カンマ区切り、`id:1`が表示・`id:0`が非表示) |
 | `messageToolbar.showsLabels` | `true` |
 
-`AppSettingsCloudDirectory`の iCloud 設定同期許可リストにも追加済み
-(他のツールバー表示設定と同じ「見た目の好みは同期する」対象)。
+要約/翻訳がメッセージ次第で意味を持たないことがある (本文未読込・この
+端末で AI 機能が使えない等) という話は上記の「表示/非表示」設定とは別軸
+— その場合もアイコン自体は表示オンのままグレーアウトするだけ。
 
-詳細・各アイコンの動作は `docs/design-system.md`「新画面構成」節参照。
+**「ソースを表示」**: 表示崩れメールの調査経路として、生の RFC822 ソース
+(eml) をモノスペース表示 + シェアシートで `.eml` ファイルとして書き出せる
+機能。既定は非表示 (「その他」メニュー内)。ローカル DB には解析済み本文
+しか保存していないため、IMAP `UID FETCH BODY.PEEK[]` でオンデマンド取得
+してキャッシュする (一度見たメッセージのソース再表示はオフラインでも
+動く)。表示は先頭512KBまで、シェアされるのは常に全文。
 
-### Task #188 実機フィードバック: 「ツールバーをカスタマイズ」位置の再発
+両キーとも iCloud 設定同期の対象 (見た目の好みとして同期する)。既存
+ユーザーの保存済み並び順・可視性サフィックスの無い旧形式も安全に読める
+後方互換パースになっている。
 
-実機報告「『ツールバーをカスタマイズ』の位置が一番下になることがある。
-たぶんツールアイコンが多くてスクロールする状態だと発生する」。
+## 表示言語
 
-**Task #113 (1) と同じ原因ではない**: 当時の原因 (「削除」項目の`role:
-.destructive`が iOS の`Menu`によって自動的にメニュー最後尾へ移動させ
-られる) は既に修正済みで、現在のコードにも残っていない
-(`hiddenActionMenuItem(for:)`の`.delete`ケースは`.tint`で赤色を再現して
-おり`role: .destructive`は使っていない — フッターツールバーに直接表示
-されている`deleteButton`だけが`role: .destructive`を持つが、これは
-どの`Menu`にも属さない単独の`Button`)。このセッションでは「メニューが
-上向きに開くと項目の並びが反転する」という当初の仮説を実機/シミュレータ
-で再現・確認できなかった (`docs/verify.md`「シミュレータ検証の既知の
-不調」節・既知不調#6 と同じ`xcodebuild test`無応答症状に阻まれ、1回の
-試行で打ち切り — 詳細は`docs/design-system.md`「実機報告: 『ツールバー
-をカスタマイズ』の位置が安定しない (Task #188)」節)。
+表示言語 (日本語/English) の切替はアプリ内には無く、**iOS 標準の
+「アプリごとの言語」** (設定アプリ → otegami → 言語) に委ねている —
+このアプリの `Info.plist` は `CFBundleLocalizations: [ja, en]` を宣言
+しており、OS 標準機能がこの用途のために存在する。OS 標準の言語切替は
+設定変更時に OS 自身がプロセスを再起動するため、アプリ内蔵ピッカーが
+抱えがちな「バックグラウンド復帰だけでは反映されない」という問題も
+構造的に発生しない。
 
-**修正方針**: 原因のメカニズムを特定せずに、問題が起き得る構造自体を
-無くした。`MessageDetailFooterToolbar.moreMenuButton`内で:
+`LocalizationSettingsStore.effectiveLanguageCode` (現在有効な表示言語を
+`Bundle.main.preferredLocalizations` から読む、読み取り専用の計算
+プロパティ) は残っている — 本文画面の翻訳ボタン表示条件・AI要約の出力
+言語判定 (「メールの言語 ≠ アプリの表示言語」の判定) に使う。詳細な
+仕組み・ローカライズのカバレッジ範囲は [docs/localization.md](localization.md)
+参照。
 
-- 表示オフにしたアクション (0〜13件、可変長) を`hiddenActionsMenu`と
-  いう別階層のサブメニュー (ラベル「メールの操作」) にまとめた。
-- 「ツールバーをカスタマイズ」は、その可変長サブメニューとは独立に、
-  トップレベルの「その他」`Menu`に常に固定1件だけ並ぶ項目のまま
-  (`MessageToolbarAction`化していない理由は変わらず — 上記「メッセージへ
-  の操作ではなく設定画面へのショートカット」のまま)。
+## ハンバーガーメニューのアカウントセクション折りたたみ — iOS のみ
 
-これにより、トップレベルの「その他」メニューは常に高々2件 (非表示
-アクションが1件以上ならサブメニュー+カスタマイズの2件、0件ならカスタ
-マイズだけの1件) — 表示オフのアクション数がいくつでもトップレベルの
-項目数・並びは変わらない。可変長になり得るのは`hiddenActionsMenu`と
-いう別の`Menu`インスタンスの中身だけで、その内部の描画 (開く向き・
-スクロールの有無を含む) は親メニューにも「ツールバーをカスタマイズ」の
-位置にも影響しない。
+`FolderSectionCollapseStore` (`FolderListSheet.swift` 内)。ハンバーガー
+メニューの各アカウントのメールボックスツリーは、アカウント名の行を
+タップして開閉できる。
 
-トレードオフ: 表示オフの個々のアクションへのアクセスに1タップ増える
-(「その他」→「メールの操作」→対象)。既定でツールバー直接表示される
-6アクション (返信/転送/検索/情報/要約/翻訳) は無影響。
+- 設定項目としてではなく `UserDefaults` 直書き (画面状態の記憶であり、
+  ユーザーが選ぶ「設定」ではないため設定画面には出てこない)。
+- 既定は展開。未読バッジは折りたたみ中も表示される (そのアカウントの
+  全メールボックスの未読数を合計)。
 
-新規文言「メールの操作」を`scripts/generate-localizable.py`に ja/en で
-追加。`make test`/`make mac`/`make ios`/`make check-localization`すべて
-green。**画面での実機/シミュレータ確認は完了していない** — 実機での
-確認ポイントは`PENDING.md`「Task #188」節参照。
+アカウント追加の入口はハンバーガーメニューには常設されていない (0件の
+ときの空状態にのみ「アカウントを追加」ボタンが出る) — 通常は設定 →
+「アカウントの設定」→「アカウントを追加」から行う。
 
-## 表示言語 (表示・操作改善バッチ → 実機フィードバック第3弾 F で廃止)
+## アカウント追加/編集フォームのフィールドラベル
 
-表示・操作改善バッチで追加したアプリ内蔵の「表示言語」設定 (システムに
-従う/日本語/English の3択ピッカー + 反映には再起動が必要という案内) は
-**廃止した**。代わりに **iOS 標準の「アプリごとの言語」** (設定アプリ →
-otegami → 言語) に委ねる — このアプリの `Info.plist` は元々
-`CFBundleLocalizations: [ja, en]` を宣言しており、OS 標準機能がまさに
-この用途のために存在する。OS 標準の言語切替は設定変更時に OS 自身が
-プロセスを再起動するため、旧実装が抱えていた「ホーム画面に戻っただけ
-では反映されない」という問題自体も構造的に解消される。
-
-`LocalizationSettingsStore.swift`は削除せず、`effectiveLanguageCode`
-(現在有効な表示言語を`Bundle.main.preferredLocalizations`から読む、読み
-取り専用の計算プロパティ) だけを残した — 本文画面の翻訳ボタン表示条件・
-AI要約の出力言語判定 (「メールの言語 ≠ アプリの表示言語」の判定) に
-引き続き必要な機能で、廃止対象は選択 **UI** のみ。
-
-**移行処理は削除した (タスク#43)**: 上記廃止と同時に「旧設定で明示的に
-「日本語」/「English」を選んでいた既存ユーザーの端末に残る`AppleLanguages`
-上書きを一度だけ削除する」移行処理 (`AppEnvironment.init()`から起動の
-たびに呼ぶ`LocalizationSettingsStore
-.migrateAwayFromLegacyAppleLanguagesOverrideIfNeeded()`) を入れていたが、
-これが**「起動し直すと言語設定が毎回英語に戻る」という重大な実機バグの
-原因**だった。iOS の「設定 → このアプリ → 言語」(OS 標準のアプリ単位
-言語設定) も内部的には同じ`AppleLanguages`キーを使って実現されている —
-「一度だけ削除」のつもりが実装には一度きり実行済みかを覚えるフラグが無く、
-このキーに値がある限り**毎起動**削除する実装になっていたため、ユーザーが
-OS 設定で選んだ言語を毎起動削除していた。
-「フラグを立てて一度だけ実行にする」対処も検討したが、旧ピッカーの
-存在期間はわずか約8時間 (2026-07-27 06:07 導入 → 同日13:53 廃止) で、
-その残骸は廃止直後の初回起動でとっくに一度消えている — フラグ化しても
-「今この瞬間まで壊れていた状態」を直す最後の一回の誤削除は避けられない
-ため、移行処理自体を削除するのが最も安全と判断した。廃止済み設定の選択値
-(`app.languageOption`キー) 自体は引き続き削除しない (無害な残骸)。
-
-詳細な仕組み・ローカライズのカバレッジ範囲は
-[docs/localization.md](localization.md) 参照。
-
-## ハンバーガーメニューのアカウントセクション折りたたみ (実機フィードバック第3弾: K) — iOS のみ
-
-`FolderSectionCollapseStore`(`FolderListSheet.swift`内)。ハンバーガー
-メニュー (`FolderListSheet`) の各アカウントのメールボックスツリーは、
-アカウント名の行 (セクションヘッダ) をタップして開閉できる。
-
-- **設定項目としてではなく `UserDefaults` 直書き**: `folderSheet
-  .collapsedAccountIds`キーに、折りたたみ中のアカウント ID の配列を
-  保存する。ユーザーが選ぶ「設定」ではなく画面状態の記憶なので、他の
-  `*SettingsStore`と違い設定画面には出てこない。
-- **既定は展開**: 一度も折りたたんだことのないアカウントは常に展開状態。
-- **未読バッジは折りたたみ中も表示**: `AccountSectionHeader`がそのアカ
-  ウントの全メールボックスの未読数を合計して表示するため、折りたたんで
-  受信トレイが見えなくなっても未読の有無は分かる。
-- **シェブロンの向きで状態を表現**: `chevron.right`を展開時に90°回転
-  (下向き) — `DisclosureGroup`の慣習を手動で再現したもの
-  (`AccountSectionHeader`のドキュメントコメント参照、`DisclosureGroup`
-  自体を使わなかった理由も記載)。
-
-`FolderListSheet`のツールバーに常設されていた「アカウントを追加」の
-「＋」ボタン (`folderSheet.addAccountToolbarButton`) は削除した — アカウント
-追加は設定 (「アカウントの設定」→「アカウントを追加」) から常にできるため、
-ハンバーガーメニューという別動線に同じ入口を重複させる必要がなかった。
-**例外**: アカウント0件のときの空状態に出る「アカウントを追加」ボタン
-(`folderSheet.addAccountButton`) は残した — 0件の状態で設定画面まで辿ら
-せるのは不親切なため。
-
-## アカウント追加/編集フォームのフィールドラベル (実機フィードバック第3弾: H)
-
-`AccountSetupView`/`AccountEditView`/`GmailAccountSetupView`/
-`ICloudAccountSetupView`の各テキストフィールド (表示名・メールアドレス・
-ホスト・ポート・ユーザー名・パスワード等) に、`LabeledContent`による
-永続的なラベルを付けた。以前は`TextField(プレースホルダ, text:)`のみで、
-値を入力するとプレースホルダが消えるため、埋まったフィールドが何を表す
-か分からなくなる問題があった。`AccountEditView`の「メールアドレス」/
-「種類」(既存の`LabeledContent`) と見た目を揃えている。
+各テキストフィールド (表示名・メールアドレス・ホスト・ポート・ユーザー
+名・パスワード等) には `LabeledContent` による永続的なラベルが付いて
+おり、値を入力してもプレースホルダが消えて何のフィールドか分からなく
+なる、ということがない。
 
 ## メールボックス単位の非表示
 
-`MailboxRecord.isHidden` (migration v26)。設定 →「アカウントの設定」→
-各アカウントの編集画面 (`AccountEditView`) →「メールボックスの表示設定」
-(`MailboxVisibilityView`、新規画面) から、そのアカウントのメールボックス
-一覧を表示/非表示に個別切替できる。iOS・macOS 共通。主用途は Gmail の
-`[Gmail]/すべてのメール`のような、INBOX と重複した内容を持つ大量フォルダ
-をハンバーガー/サイドバーのツリーから隠すこと。
+`MailboxRecord.isHidden`。設定 →「アカウントの設定」→ 各アカウントの
+編集画面 →「メールボックスの表示設定」から、そのアカウントのメール
+ボックス一覧を表示/非表示に個別切替できる。iOS・macOS 共通。主用途は
+Gmail の「すべてのメール」のような、INBOX と重複した内容を持つ大量
+フォルダをツリーから隠すこと。
 
-- **非表示にすると消える範囲**: ハンバーガーメニュー/サイドバーの
-  メールボックスツリー (`MailboxQuery.request(accountId:includeHidden:
-  false)` を `SidebarView`/`FolderListSheet` の両方が使う)、macOS の
-  ⌘]/⌘[ によるメールボックス切り替え循環 (`OtegamiApp
-  .cycleMailboxSelection`)、統合受信トレイの一覧・未読数集計
-  (`ThreadQuery.unifiedInboxRequest`/`unifiedInboxFlatSummaries`,
-  `MessageQuery.unifiedInboxUnreadCount` に `mailbox.isHidden = 0` 条件を
-  追加 — 実務上意味を持つのは inbox ロールのメールボックス自体を隠した
-  場合のみで、Gmail の「すべてのメール」(role `.all`) はそもそも統合
-  受信トレイの集計対象外)。
-- **同期も止める** (`AccountSyncer.performIncrementalSync`の`.all`スコープ
-  = 手動フル更新から除外。`.inboxOnly`/`.mailbox(path:)`はそもそも INBOX
-  や、ツリー経由で選ばれた=非表示ではないメールボックスしか対象にしない
-  ため個別のチェックは不要)。**判断理由**: 電池・通信の節約。「すべての
-  メール」のような巨大フォルダを同期し続ける実利が薄く、隠した以上は
-  差分同期の対象からも外すのが利用者の意図に合うと判断した。
-- **移動先ピッカーには出す (操作対象からは消さない)**: このアプリには
-  まだ汎用の「移動先」ピッカー自体が存在しない (`docs/design-system.md`
-  「次フェーズへの申し送り」参照) — 実装される際は`MailboxQuery
-  .request(accountId:)`の既定`includeHidden: true`のまま使う想定。
-  **判断理由**: 「表示したくない」と「操作対象として選べなくしたい」は
-  別の要求であり、後者まで一緒に潰すと「非表示にしたメールボックスへは
-  二度とメールを移動できない」という意図しない制約になってしまうため。
-- **サーバー側の再一覧化で消えない**: `AccountSyncer.upsertMailboxes`は
-  `IMAP LIST`のたびに全メールボックスを再 upsert するが、`isHidden`列は
-  `.noOverwrite`で保護しているため、次回同期でユーザーの選択が勝手に
-  戻ることはない。
+- **非表示にすると消える範囲**: ハンバーガーメニュー/サイドバーのツリー、
+  macOS の ⌘]/⌘[ によるメールボックス切り替え循環、統合受信トレイの
+  一覧・未読数集計。
+- **同期も止める** — 電池・通信の節約のため、隠したメールボックスは
+  手動フル更新の対象からも外す。
+- **移動先ピッカーには出す** (操作対象からは消さない) — 「表示したく
+  ない」と「操作対象として選べなくしたい」は別の要求のため。
+- **サーバー側の再一覧化で消えない** — `isHidden` の状態は上書き保護
+  されており、次回同期でユーザーの選択が勝手に戻ることはない。
