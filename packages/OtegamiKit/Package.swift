@@ -88,6 +88,13 @@ let package = Package(
             dependencies: ["OtegamiCore"]
         ),
 
+        // Locks the Foundation Codable wire format to the Go relay DTOs in
+        // server/otegami-relay-go/internal/api/dto.go.
+        .testTarget(
+            name: "OtegamiRelayAPITests",
+            dependencies: ["OtegamiRelayAPI"]
+        ),
+
         // MailCore2-backed adapter for MailTransport. Apple-only; MailCore2
         // itself (and its C/C++ dependencies) are only ever pulled in via
         // this target, so building any *other* single target/product (e.g.
