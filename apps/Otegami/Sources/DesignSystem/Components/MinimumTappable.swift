@@ -1,5 +1,15 @@
 import SwiftUI
 
+/// The platform HIG's minimum tappable dimension (44×44pt) as a single
+/// named constant, so every call site that needs "the 44pt rule" —
+/// `otegamiMinimumTappable()` below, but also e.g. `List`'s
+/// `defaultMinListRowHeight` environment value for a row-based menu
+/// (`FolderListSheet`, Task #191) — references the same token instead of
+/// re-typing a bare `44`.
+public enum OtegamiTapTarget {
+    public static let minimum: CGFloat = 44
+}
+
 /// Guarantees a view's tappable area is at least 44×44pt — the handoff's
 /// hard rule ("タップ領域は 44pt 以上を厳守", repeated for every
 /// interactive element in 1a/1g/1h/1i) — without changing how the view
@@ -18,15 +28,13 @@ public extension View {
 }
 
 private struct MinimumTappableModifier: ViewModifier {
-    static let minimumDimension: CGFloat = 44
-
     let alignment: Alignment
 
     func body(content: Content) -> some View {
         content
             .frame(
-                minWidth: Self.minimumDimension,
-                minHeight: Self.minimumDimension,
+                minWidth: OtegamiTapTarget.minimum,
+                minHeight: OtegamiTapTarget.minimum,
                 alignment: alignment
             )
             .contentShape(Rectangle())

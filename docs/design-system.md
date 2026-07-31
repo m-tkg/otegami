@@ -8649,3 +8649,121 @@ macOS は上下矢印キー+Enter (`.onKeyPress`)、iOS はタップで選択す
 出ることを目視確認済み。iOSは`docs/verify.md`記載のシミュレータ既知
 不調があるため、ビルドgreen(`make ios`)を確認した上で実機確認ポイント
 を`PENDING.md`に記載した(粘りすぎない方針)。
+
+## Task #191: ハンバーガーメニューの行が高すぎる (実機フィードバック)
+
+「各項目の高さが高すぎてスカスカ」— iOS の `FolderListSheet` は Task #126
+〜実機フィードバック第2弾/第3弾で既に何度も行高を詰めてきた
+(`otegamiMenuRowChrome()`の`.frame(minHeight: 32)`/縦inset `xs`(4pt)、
+見出し行`.frame(minHeight: 36)`、`.listSectionSpacing(4)`)。それでもなお
+「高すぎる」と再度報告が来た理由は、**それらの数値が一度も実際の行高に
+なったことが無かった**ため — 憶測で数値を変える前に
+`scripts/verify-screen.sh menu`/`menu-expanded`のスクリーンショットを
+ピクセル単位で計測 (行のカード境界・見出しグリフのy座標を実測) して
+切り分けた。
+
+### 高さの出どころ: 2つの別の原因
+
+1. **データ行**: `.frame(minHeight: 32)`+`.listRowInsets`を付けていたのに
+   実測は約51ptだった。原因は`List`(この画面は`.listStyle`を指定して
+   いなかった) が敷く行の最小高さ (`defaultMinListRowHeight`環境値) の
+   方が常に上回って勝っていたため。
+2. **セクション見出し (`AccountSectionHeader`/`CategorySectionHeader`)**:
+   もっと深刻だった。ユーザーが実際にメニューを開いた瞬間に見る
+   「全セクション折りたたみ済み」の初期状態
+   (`FolderListSheet.resetCollapseStateToCurrentSelection()`) は見出し行
+   だけが縦に並ぶので、「12行しか入らない」という報告はほぼこの見出し
+   行の高さの話だった。見出し自身のコンテンツは44ptで収まっているのに、
+   見出し1行が`List`内で専有する実際のピッチは約67pt (実測) — 差の23pt
+   は見出しの*外側*、`Section`境界に付く余白だった。
+
+この余白の正体を突き止めるため、`UIViewRepresentable`でビューツリーを
+実機ダンプして確認した: この iOS (Xcode-beta の iOS 27) では `List` は
+もう `UITableView` ではなく `UICollectionView`
+(`UpdateCoalescingCollectionView`/`ListRepresentable<CollectionViewList
+DataSource...>`) 裏打ちだった。つまり`UITableView.sectionHeaderTop
+Padding`のような UIKit 側の対症療法は効かない (該当する型が実機ツリー
+に存在しない)。`defaultMinListHeaderHeight`環境値も試したが、これは
+**最小値**保証にしかならず、見出し自身の必要サイズが既にそれを上回って
+いるこのケースには無力だった (実測して確認、値を変えても計測結果が
+変わらなかった)。`.listSectionSpacing`はある程度効くが、0まで下げても
+`Section`境界の余白を数pt縮める程度で、67pt→44ptのような大きな差は
+埋まらなかった。
+
+### 採用した対策: 折りたたみ中は`Section`そのものを使わない
+
+上記の調査で分かった本質: **`Section`境界に付く余白は SwiftUI/UIKit の
+公開APIでは制御できない固定コスト**。ならば、中身の行が0件の間
+(=折りたたみ中) はそもそも`Section`を使わなければ、この固定コストを
+払わずに済む。`FolderListSheet.accountSection(for:)`/
+`categorySection(for:)`を「折りたたみ中はただの1行 (`otegamiMenuHeader
+RowChrome()`) / 展開中だけ`Section`」という条件分岐にした
+(`isCollapsed`で`if/else`)。折りたたみ中の見出し行は他のデータ行と
+同じ`defaultMinListRowHeight`環境値 (44pt、後述) に従うため、実測
+67pt→約44ptまで縮む。展開中 (アコーディオンなので同時に最大1〜2個
+だけ) は引き続き`Section`を使い、白い「カード」外観を保つ — 展開中の
+`Section`境界コストは、そのグループが実際に開いている間だけ・高々
+1〜2箇所だけなので実害が小さいと判断した。
+
+`.listStyle(.plain)`も併せて明示指定した — `MessageListView`/
+`AccountDigestView`が既に同じ理由 (実機フィードバック第2弾以降の
+「フラット・エッジツーエッジ」デザイン) で使っている、このアプリ
+既存の標準スタイルへ揃えた形。ただしこれ単体では上記の`Section`境界
+コストは解消しない (計測して確認済み) — 主な効果は上記の`Section`
+分岐と組み合わせたときの見た目の一貫性。
+
+### タップ領域: `OtegamiTapTarget.minimum`(44pt) に一本化
+
+`MinimumTappable.swift`に`OtegamiTapTarget.minimum = 44`という公開定数を
+追加し (`otegamiMinimumTappable()`が使っていた`44`をこの定数に集約)、
+以下すべてをこれに揃えた:
+
+- `List`の`.environment(\.defaultMinListRowHeight, OtegamiTapTarget
+  .minimum)` — データ行の実際の高さ (`List`の1行は隣接セルとタップ判定
+  を奪い合うため、`otegamiMinimumTappable()`の`contentShape`拡張トリック
+  がここでは効かない = **見た目の行高がそのままタップ領域**)。
+- `AccountSectionHeader`/`CategorySectionHeader`本体の`.frame(minHeight:
+  36)`→`44`。特に`AccountSectionHeader`は自分の`.frame(minHeight:)`だけ
+  がタップ領域を決める唯一の値で、他の要素が44ptを底上げしてくれる
+  仕掛けが無かったため、36ptのままだと実際に HIG の44pt を下回って
+  いた (`CategorySectionHeader`は隣の`CategoryDisclosureChevron`が44×44
+  を強制するため実害は無かったが、`Button`本体自身のタップ判定領域は
+  自分の`.frame(minHeight:)`にしか従わないため、同様に36→44へ揃えた)。
+- `CategoryDisclosureChevron`の生の`44`もこの定数参照に直した。
+
+結果、以前の「44pt タップターゲットを見た目の行高が下回るがユーザーの
+明示指示によるトレードオフ」という説明 (実機フィードバック第2弾) は
+撤回した — その32ptは最初から一度も実際の行高になっていなかったので、
+このトレードオフは実在しなかった。
+
+### 実測結果 (`scripts/verify-screen.sh`のfake 2アカウントフィクスチャ)
+
+折りたたみ初期状態でのカテゴリ見出し行ピッチ (icon-to-icon、3x
+スクリーンショットのピクセル計測):
+
+| | 修正前 | 修正後 |
+|---|---|---|
+| カテゴリ見出し行ピッチ | 約68pt | 約43〜46pt |
+| データ行ピッチ (展開中) | 約51pt | 約43〜44pt |
+
+同じ画面 (iPhone 17 Pro Max, 2アカウント・4カテゴリ表示) で、折りたたみ
+状態の可視行数がおよそ1.5倍に増えた (実機の実アカウント構成 — 8カテゴリ
++ 複数アカウント — ではこの差はさらに積み上がる)。
+
+### macOS 側は対象外と判断
+
+`SidebarView`(macOS) は AppKit の`List`(サイドバーstyle) 裏打ちで、iOS の
+`UICollectionView`裏打ちの`List`が持つ`Section`境界の固定コストと同種の
+問題は実機ビルド (`make mac`) で目視・ピクセル計測して確認できなかった
+(折りたたみ行のピッチが約32pt相当で、iOS の68ptのような膨張が無い)。
+そのため`SidebarView.swift`は変更していない — CLAUDE.md/このタスクの
+「無ければ触らない」方針どおり。直前の Task #195 (mac サイドバーの排他
+展開化) の変更とも無関係。
+
+### 検証
+
+`make test`/`make mac`/`make ios`/`make check-localization` すべて
+green。`scripts/verify-screen.sh menu`/`menu-expanded`のスクリーンショット
+で見た目を確認済み (折りたたみ・展開の両方、`.otegamiMinimumTappable()`
+のあるチップ等の他要素に影響が無いことも確認)。macOS は実際に
+`make mac`でビルドし起動して`SidebarView`の見た目を確認した。

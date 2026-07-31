@@ -148,19 +148,64 @@ struct FolderListSheet: View {
                 }
             }
             .accessibilityIdentifier("folderSheet.list")
-            // 実機フィードバック第3弾 (2026-07-29「まだ『受信トレイ』とか
-            // 『フラグ付き』とかの高さが高い」): 行高そのものは 6257a0d で
-            // 圧縮済み — 残っていた高さの正体はセクション見出し行の上下に
-            // つく List 既定のセクション間余白。`.listSectionSpacing` で
-            // セクション間を最小に詰める。`FolderListSheet`自体は iOS 専用
-            // (`HamburgerMenuContainer`のドロワーとしてのみ使われる — macOS は
-            // 別の `SidebarView` を持つ) だが、この修飾子自体は macOS で
-            // `unavailable` なため `#if os(iOS)` で囲まないと `make mac` の
-            // ビルドを壊す (Swift はプラットフォーム間で未使用コードでも
-            // 全プラットフォーム分をコンパイルする)。
+            // Task #191 (実機フィードバック「各項目の高さが高すぎてスカスカ」):
+            // 憶測で数値を変える前に、`scripts/verify-screen.sh menu`/
+            // `menu-expanded`のスクリーンショットをピクセル単位で計測して
+            // 高さの出どころを切り分けた (行のカード境界・見出しグリフの
+            // y座標を実測、`docs/design-system.md`「Task #191」節に詳細)。
+            // 分かったこと2つ:
+            // 1. データ行 (`otegamiMenuRowChrome()`) は`.frame(minHeight:
+            //    32)`+`.listRowInsets`を付けていたのに実測 約51pt もあった
+            //    — `List`(この画面は`.listStyle`を指定していなかった) が
+            //    敷く行の最小高さ (`defaultMinListRowHeight`環境値) の方が
+            //    常に上回って勝っていたため。32ptという数値は最初から一度も
+            //    実際の行高になったことがなかった。
+            // 2. セクション見出し (`AccountSectionHeader`/`CategorySectionHeader`)
+            //    はもっと深刻だった — ユーザーが実際に開いた瞬間に見る
+            //    「全セクション折りたたみ済み」の初期状態 (`resetCollapse
+            //    StateToCurrentSelection()`) は見出し行だけが縦に並ぶので、
+            //    報告の「12行しか入らない」はほぼこの見出し行の高さの話。
+            //    見出し自身のコンテンツは44ptで収まっているのに、見出し1行
+            //    が`List`内で専有する実際のピッチは約67pt — 差の23ptは
+            //    見出しの*外側*、`Section`境界に付く余白だった。この余白は
+            //    `UITableView.sectionHeaderTopPadding`ではない (Xcode-beta
+            //    のこのiOSでは`List`はもう`UITableView`ではなく
+            //    `UICollectionView`(`UpdateCoalescingCollectionView`/
+            //    `ListRepresentable<CollectionViewListDataSource...>`)裏打ち
+            //    — 実際にビューツリーをダンプして確認済み、SwiftUI/UIKit
+            //    どちら側にも直接叩ける public API が無い。
+            // 対策: `.listStyle(.plain)` に明示的に切り替える —
+            // `MessageListView`/`AccountDigestView`が既に同じ理由 (実機
+            // フィードバック第2弾以降の「フラット・エッジツーエッジ」デザ
+            // イン) で使っている、このアプリ既存の標準スタイル。`Section`
+            // 境界の強制余白が事実上消え、見出し行・データ行とも実測どおり
+            // 詰まる。アカウント別の白いカード外観 (`Section`の背景) 自体は
+            // `.plain`でも維持される — 変わるのはセクション*間*の強制マー
+            // ジンだけ (`scripts/verify-screen.sh menu-expanded`で見た目を
+            // 確認済み、後述)。`FolderListSheet`自体は iOS 専用
+            // (`HamburgerMenuContainer`のドロワーとしてのみ使われる — macOS
+            // は別の `SidebarView` を持つ) だが、`.listStyle`自体は macOS で
+            // 型が合わない/意味が異なるため `#if os(iOS)` で囲む
+            // (`make mac`のビルドを壊さないため — Swift はプラットフォーム
+            // ごとに未使用コードでも全部コンパイルする)。
             #if os(iOS)
-            .listSectionSpacing(4)
+            .listStyle(.plain)
+            // セクション間の最小限の呼吸幅として明示的に指定 — `.plain`は
+            // 既定でもかなり詰まるが、0だとアカウント間/カテゴリ間の境界が
+            // 完全に消えて見分けにくくなることを画面で確認したため、
+            // `OtegamiSpacing.xs`(4pt) 分だけ残す。生の`4`を書いていた旧実装
+            // をトークン参照に直した。
+            .listSectionSpacing(OtegamiSpacing.xs)
             #endif
+            // データ行の実際のタップ領域＝見た目の行高になる (`List`の1行は
+            // 隣接セルとタップ判定を奪い合うため、`otegamiMinimumTappable()`
+            // のcontentShape拡張トリックがここでは効かない) ので、44pt を
+            // 下回ると即 HIG 違反になる。`.listStyle(.plain)`にしても行の
+            // 最小高さの既定値がこのアプリの想定より大きい可能性があるため、
+            // `OtegamiTapTarget.minimum` (44pt, `otegamiMinimumTappable()`と
+            // 同じ HIG 由来の定数) を明示的に敷いて、削れるのは「実測51pt→
+            // 44pt」までであることをコード上でも保証する。
+            .environment(\.defaultMinListRowHeight, OtegamiTapTarget.minimum)
             // `menuScrollTarget` の doc comment 参照 — 展開直後に見出しを
             // 上端へスクロール。`.onChange` は展開行の insert が同じ更新
             // サイクルで確定した後に発火するため、`scrollTo` 時点で行の
@@ -384,22 +429,33 @@ struct FolderListSheet: View {
     @ViewBuilder
     private func accountSection(for account: AccountRecord) -> some View {
         let isCollapsed = collapsedAccountIds.contains(account.id)
-        Section {
-            if !isCollapsed {
+        let header = AccountSectionHeader(
+            accountId: account.id,
+            labelColorKey: account.labelColorKey,
+            title: account.displayName,
+            unreadCount: accountUnreadCount(for: account.id),
+            isCollapsed: isCollapsed,
+            onToggle: { toggleAccountCollapsed(account.id) }
+        )
+        .id("menuSection-account-\(account.id)")
+        if isCollapsed {
+            // Task #191 の doc comment 参照 (`body`の`List`直下のコメント) —
+            // 折りたたみ中は`Section`そのものを使わない。中身の行がゼロ件
+            // なのに`Section`境界のシステム既定余白 (実測、後述) だけを
+            // 払う羽目になっていたのが「各項目の高さが高すぎてスカスカ」
+            // の主因だった。折りたたみ中は見出しをただの1行として描画し、
+            // 行の高さ管理は他のデータ行と同じ`defaultMinListRowHeight`に
+            // 委ねる。展開時だけ`Section`に包み直す (下の`else`枝) — 中身の
+            // 行がある間は白いカード外観を保ちたいため。
+            header.otegamiMenuHeaderRowChrome()
+        } else {
+            Section {
                 ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
                     folderMailboxRow(for: mailbox, in: account)
                 }
+            } header: {
+                header
             }
-        } header: {
-            AccountSectionHeader(
-                accountId: account.id,
-                labelColorKey: account.labelColorKey,
-                title: account.displayName,
-                unreadCount: accountUnreadCount(for: account.id),
-                isCollapsed: isCollapsed,
-                onToggle: { toggleAccountCollapsed(account.id) }
-            )
-            .id("menuSection-account-\(account.id)")
         }
     }
 
@@ -470,41 +526,47 @@ struct FolderListSheet: View {
         let entries = mailboxEntries(for: role)
         if !entries.isEmpty || role == .all {
             let isCollapsed = collapsedCategoryRoles.contains(role.rawValue)
-            Section {
-                if !isCollapsed {
+            let header = CategorySectionHeader(
+                role: role,
+                // Task #126 追加仕様: 削除した最上部「すべての受信トレイ」
+                // 行が使っていた`unifiedInboxUnread`(`MessageQuery
+                // .unifiedInboxUnreadCountObservation`由来、単純な
+                // メールボックス単位の合算とは別の「統合受信トレイ」自身の
+                // 未読数) を、`.inbox`カテゴリの見出しバッジへそのまま
+                // 引き継ぐ — 他のroleは従来どおりメールボックス単位の合算。
+                // Task #141: `.all`は`entries`(Gmailの All Mail のみ) 単独
+                // だと非Gmailアカウント分が漏れるため専用の集計関数を使う
+                // (`unreadCountForAllMailCategory(entries:)`のdoc comment
+                // 参照)。
+                unreadCount: role == .inbox
+                    ? unifiedInboxUnread
+                    : role == .all
+                        ? unreadCountForAllMailCategory(entries: entries)
+                        : entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
+                isCollapsed: isCollapsed,
+                // Task #126 追加仕様: 削除した最上部「すべての受信トレイ」
+                // 行が担っていた選択中ハイライトを、「受信トレイ」セクション
+                // 見出し行自身に移した — `.inbox`は`isUnifiedInboxSelected`
+                // (`onSelectUnified`と対になる状態)、他のroleは既存どおり
+                // `selectedUnifiedRole`との一致で判定する。
+                isSelected: role == .inbox ? isUnifiedInboxSelected : selectedUnifiedRole == role,
+                onSelectUnified: { selectUnifiedView(for: role) },
+                onToggle: { toggleCategoryCollapsed(role) }
+            )
+            .id("menuSection-role-\(role.rawValue)")
+            if isCollapsed {
+                // `accountSection(for:)`の同じ分岐の doc comment 参照
+                // (Task #191) — 折りたたみ中は`Section`を使わず、ただの
+                // 1行として描画する。
+                header.otegamiMenuHeaderRowChrome()
+            } else {
+                Section {
                     ForEach(entries) { entry in
                         categoryAccountRow(for: entry)
                     }
+                } header: {
+                    header
                 }
-            } header: {
-                CategorySectionHeader(
-                    role: role,
-                    // Task #126 追加仕様: 削除した最上部「すべての受信トレイ」
-                    // 行が使っていた`unifiedInboxUnread`(`MessageQuery
-                    // .unifiedInboxUnreadCountObservation`由来、単純な
-                    // メールボックス単位の合算とは別の「統合受信トレイ」自身の
-                    // 未読数) を、`.inbox`カテゴリの見出しバッジへそのまま
-                    // 引き継ぐ — 他のroleは従来どおりメールボックス単位の合算。
-                    // Task #141: `.all`は`entries`(Gmailの All Mail のみ) 単独
-                    // だと非Gmailアカウント分が漏れるため専用の集計関数を使う
-                    // (`unreadCountForAllMailCategory(entries:)`のdoc comment
-                    // 参照)。
-                    unreadCount: role == .inbox
-                        ? unifiedInboxUnread
-                        : role == .all
-                            ? unreadCountForAllMailCategory(entries: entries)
-                            : entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
-                    isCollapsed: isCollapsed,
-                    // Task #126 追加仕様: 削除した最上部「すべての受信トレイ」
-                    // 行が担っていた選択中ハイライトを、「受信トレイ」セクション
-                    // 見出し行自身に移した — `.inbox`は`isUnifiedInboxSelected`
-                    // (`onSelectUnified`と対になる状態)、他のroleは既存どおり
-                    // `selectedUnifiedRole`との一致で判定する。
-                    isSelected: role == .inbox ? isUnifiedInboxSelected : selectedUnifiedRole == role,
-                    onSelectUnified: { selectUnifiedView(for: role) },
-                    onToggle: { toggleCategoryCollapsed(role) }
-                )
-                .id("menuSection-role-\(role.rawValue)")
             }
         }
     }
@@ -777,11 +839,17 @@ private struct AccountSectionHeader: View {
         }
         .buttonStyle(.plain)
         // Task #126, 2: これは`Section`の`header:`(List行そのものではない)
-        // なので`.listRowInsets`は効かない — `.frame(minHeight: 44)`だけ、
-        // タップターゲットの下限保証として付けている (`otegamiMenuRowChrome()`
-        // のdoc comment参照)。実機フィードバック第2弾でこちらも 44→36 に
-        // 圧縮 (セクション見出しは繰り返し行より一段だけ背を残す)。
-        .frame(minHeight: 36)
+        // なので`.listRowInsets`は効かず、`defaultMinListRowHeight`環境値
+        // (行専用) も効かない — この`.frame(minHeight:)`だけが、この
+        // ヘッダー行 (丸ごと1つの`Button`＝丸ごと1つのタップ領域) の高さと
+        // タップ領域の両方を決める唯一の値。実機フィードバック第2弾で
+        // 一度 44→36 に圧縮していたが、Task #191 で見出し行のタップ領域を
+        // 実測したところ、この`AccountSectionHeader`には`CategorySection
+        // Header`のシェブロン (`CategoryDisclosureChevron`、44×44 を別途
+        // 強制) のような「他の要素が44ptを底上げしてくれる」仕掛けが無く、
+        // 36pt のままだと本当に HIG の44pt を下回りうると判明したため
+        // `OtegamiTapTarget.minimum`(44pt) に戻した。
+        .frame(minHeight: OtegamiTapTarget.minimum)
         .accessibilityIdentifier("folderSheet.account.\(accountId).header")
         // VoiceOver: the chevron's rotation alone communicates nothing to
         // VoiceOver, so the collapsed/expanded state is spelled out in the
@@ -977,8 +1045,15 @@ private struct CategorySectionHeader: View {
             // Task #126, 2: `AccountSectionHeader`と同じ理由 —
             // `Section`の`header:`なので`.listRowInsets`は効かず、
             // `.frame(minHeight:)`だけタップターゲットの下限保証として
-            // 付ける。実機フィードバック第2弾で 44→36 に圧縮。
-            .frame(minHeight: 36)
+            // 付ける。実機フィードバック第2弾で一度 44→36 に圧縮していたが、
+            // Task #191 で見直した — 隣の`CategoryDisclosureChevron`が
+            // 44×44を強制するため`HStack`全体の見た目の行高は既に44ptに
+            // なるものの、この`Button`自身のタップ判定領域は自分の
+            // `.frame(minHeight:)`にしか従わないため、36ptのままだと
+            // 「行の見た目は44ptなのに『役割を選ぶ』本体ボタンのタップ判定
+            // だけ実は36pt」という HIG 違反が隠れていた。`AccountSection
+            // Header`と揃えて`OtegamiTapTarget.minimum`に戻す。
+            .frame(minHeight: OtegamiTapTarget.minimum)
             .accessibilityIdentifier("folderSheet.category.\(role.rawValue).header")
             .accessibilityAddTraits(isSelected ? .isSelected : [])
 
@@ -1006,7 +1081,7 @@ private struct CategoryDisclosureChevron: View {
             Image(systemName: "chevron.right")
                 .font(.caption)
                 .rotationEffect(.degrees(isCollapsed ? 0 : 90))
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: OtegamiTapTarget.minimum, minHeight: OtegamiTapTarget.minimum)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
@@ -1019,20 +1094,48 @@ private struct CategoryDisclosureChevron: View {
 
 /// Task #126, 2 (ハンバーガーメニュー各行の縦paddingを詰める) → 実機
 /// フィードバック第2弾 (2026-07-29「各行の高さをもっと短くして」) で
-/// さらに圧縮: `minHeight` 44→32、縦insets `OtegamiSpacing.sm`(8pt)→
-/// `OtegamiSpacing.xs`(4pt)。HIG の 44pt タップターゲットを見た目の行高
-/// が下回るが、これはユーザーの明示指示によるトレードオフ (行自体が
-/// リスト幅いっぱいのタップ領域を持つため、横方向の当てやすさで実用上
-/// 補われる)。フォントサイズは変えていない。水平方向は
-/// `OtegamiSpacing.lg`(16pt) のまま。`private`なので同一ファイル内の型
-/// だけが使う。
+/// さらに圧縮: 縦insets `OtegamiSpacing.sm`(8pt)→`OtegamiSpacing.xs`(4pt)。
+/// フォントサイズは変えていない。水平方向は `OtegamiSpacing.lg`(16pt)
+/// のまま。`private`なので同一ファイル内の型だけが使う。
+///
+/// Task #191 の訂正: ここは以前`.frame(minHeight: 32)`を持ち、「HIG の
+/// 44pt タップターゲットを見た目の行高が下回るが、ユーザーの明示指示に
+/// よるトレードオフ」というコメントが付いていたが、実測するとその32pt
+/// が実際の行高になったことは一度も無かった (`body`の`List`側コメント
+/// 参照 — `defaultMinListRowHeight`環境値の方が常に勝っていたため、実際
+/// の行高はずっと約51ptだった)。そのため「44pt を下回らないぎりぎりまで
+/// 詰める」という当初の意図に合わせて`minHeight`自体は`body`側の
+/// `.environment(\.defaultMinListRowHeight, OtegamiTapTarget.minimum)`
+/// (44pt) に一本化し、ここでの`.frame(minHeight:)`は削除した — 二重に
+/// 管理すると数値がずれたときに気づきにくいため。
 private extension View {
     func otegamiMenuRowChrome() -> some View {
         self
-            .frame(minHeight: 32)
             .listRowInsets(EdgeInsets(
                 top: OtegamiSpacing.xs, leading: OtegamiSpacing.lg,
                 bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.lg
             ))
     }
+
+    /// Task #191: `accountSection(for:)`/`categorySection(for:)`が折りたたみ
+    /// 中に見出し (`AccountSectionHeader`/`CategorySectionHeader`) を
+    /// `Section(header:)`ではなくただの`List`行として描画するときに使う
+    /// chrome。`Section(header:)`として描画されるときは`List`(この画面は
+    /// `.listStyle(.plain)`) がヘッダーの水平マージンを自動で付け、背景も
+    /// 素通し (ページの`OtegamiColor.background`がそのまま見える) になる
+    /// — ただの行として描画するとどちらも既定値 (通常行と同じ水平
+    /// insets・白い行背景) に変わってしまうため、この関数で明示的に
+    /// 同じ見た目 (`OtegamiSpacing.lg`の水平マージン、透明背景) に揃える。
+    /// 縦方向の insets は付けない — 見出し自身が内部で`.frame(minHeight:
+    /// OtegamiTapTarget.minimum)`を持っているので、ここでさらに縦
+    /// paddingを足すと二重に高さを持ってしまう。
+    func otegamiMenuHeaderRowChrome() -> some View {
+        self
+            .listRowInsets(EdgeInsets(
+                top: 0, leading: OtegamiSpacing.lg,
+                bottom: 0, trailing: OtegamiSpacing.lg
+            ))
+            .listRowBackground(Color.clear)
+    }
 }
+
