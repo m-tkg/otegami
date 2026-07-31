@@ -557,15 +557,4 @@ public enum ThreadQuery {
         guard let threadId = summary.thread.id else { return [] }
         return try messages(threadId: threadId, db: db)
     }
-
-    /// 新画面構成: メール本文画面「…」メニューの「スレッドをミュート」/「ミュート
-    /// 解除」— see `ThreadRecord.isMuted`'s doc comment for what the flag
-    /// does (list dimming only, not push suppression). A no-op if the
-    /// thread no longer exists (e.g. a race with it being deleted).
-    public static func setMuted(threadId: Int64, muted: Bool, db: Database) throws {
-        guard var thread = try ThreadRecord.fetchOne(db, key: threadId) else { return }
-        guard thread.isMuted != muted else { return }
-        thread.isMuted = muted
-        try thread.update(db, columns: [Column("isMuted")])
-    }
 }
