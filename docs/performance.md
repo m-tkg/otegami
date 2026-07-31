@@ -1,4 +1,4 @@
-# 性能検証 (M10)
+# 性能検証
 
 10万通規模の合成データに対する計測結果と、そこから加えた改善のまとめ。
 計測は `packages/OtegamiKit/Tests/OtegamiStoreTests/PerformanceTests.swift`
@@ -204,15 +204,14 @@ account2: 2万通・`assignAllUnthreaded` で一括スレッド化」という�
 10万通シードした DB に対して dev ビルドを起動し、統合Inbox一覧を
 スクロールしても目視でカクつきが無いことを確認済み。
 
-## Task #200: Composer 宛先サジェストの性能実測
+## Composer 宛先サジェストの性能実測
 
 `RecipientHistoryQuery`(`packages/OtegamiKit/Sources/OtegamiStore/`)が
 `message`テーブルの`fromAddresses`/`toAddresses`/`ccAddresses`(JSON列)
 を最新`scanLimit`件だけデコードして`RecipientOccurrence`に平坦化し、
 `RecipientSuggestionEngine`(`OtegamiCore`、DB非依存の純粋関数)がキー
-ストロークのたびにそれを集計・ランキング・絞り込みする、という2段構成
-(詳細は`docs/design-system.md`「Task #200」節)。計測は専用の opt-in
-テストで行った:
+ストロークのたびにそれを集計・ランキング・絞り込みする、という2段構成。
+計測は専用の opt-in テストで行った:
 
 ```sh
 cd packages/OtegamiKit
