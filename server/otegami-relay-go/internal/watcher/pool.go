@@ -63,18 +63,31 @@ const maxConsecutiveAuthFailures = 3
 // caps its retry backoff at 30 minutes for the same class of problem
 // (a stuck operation that shouldn't be hammered). Doubles on further
 // consecutive failures (mirroring the connection-error backoff below) up
-// to defaultAuthFailureRetryCap so a credential that stays rejected for
-// hours doesn't get re-probed every 30 minutes forever — 6 hours keeps at
-// least 4 attempts within a day without ever going quiet for good (unlike
-// maxConsecutiveAuthFailures's permanent stop, which this path never
-// reaches; see classifyAuthFailure/connectAndWatch).
+// to defaultAuthFailureRetryCap.
+//
+// **The cap was 6 hours and is now 1 hour**, because the original reasoning
+// optimised the wrong side of the trade-off. The doubling exists so a
+// credential that is genuinely and permanently wrong isn't re-probed
+// forever; its cost is recovery latency once what expired is the *lock*,
+// not the credential. Production showed that cost is the one that bites: a
+// Yahoo account sat unreachable for hours after Task #201 cut the login
+// volume, because attempt N+1 was scheduled hours out even though the lock
+// itself clears on the order of minutes (that same account had
+// authenticated successfully earlier the same hour).
+//
+// At a 1-hour cap the worst case is 24 login attempts per day per watch.
+// Against the ~576/day that caused the lockout in the first place, that is
+// nowhere near enough volume to provoke anything, while bounding "the lock
+// expired but we haven't noticed" to an hour instead of six. A deployment
+// that needs the long tail back should raise this via Options rather than
+// changing the default.
 //
 // Both are Options fields (not raw constants) so tests can drive them down
 // to milliseconds — same "Options carries the tunable, New() supplies the
 // production default" shape as IdleMaxWait/PollInterval/ConnectTimeout.
 const (
 	defaultAuthFailureRetryInterval = 30 * time.Minute
-	defaultAuthFailureRetryCap      = 6 * time.Hour
+	defaultAuthFailureRetryCap      = 1 * time.Hour
 )
 
 // errMissingOAuthProvider mirrors WatchAuthenticationError
