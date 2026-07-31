@@ -128,14 +128,9 @@ public actor SyncCoordinator {
         guard !message.isPendingRelocation else {
             throw SyncEngineError.pendingRelocation(messageId: message.id)
         }
-        let session = sessionFactory(account.imapConfig)
-        try await session.connect(auth: auth)
-        defer {
-            let session = session
-            Task { await session.disconnect() }
+        try await withIMAPSession(account: account, auth: auth, selecting: mailboxPath) { session in
+            try await bodyFetcher.fetchBody(message: message, mailboxPath: mailboxPath, session: session)
         }
-        _ = try await session.select(mailboxPath)
-        try await bodyFetcher.fetchBody(message: message, mailboxPath: mailboxPath, session: session)
     }
 
     /// Fetches (and persists) one attachment's data on demand (M8) — the
@@ -159,20 +154,15 @@ public actor SyncCoordinator {
         guard messageUID > 0 else {
             throw SyncEngineError.pendingRelocation(messageId: nil)
         }
-        let session = sessionFactory(account.imapConfig)
-        try await session.connect(auth: auth)
-        defer {
-            let session = session
-            Task { await session.disconnect() }
+        return try await withIMAPSession(account: account, auth: auth, selecting: mailboxPath) { session in
+            try await attachmentFetcher.fetchAndStore(
+                attachment: attachment,
+                accountId: account.id,
+                messageUID: messageUID,
+                mailboxPath: mailboxPath,
+                session: session
+            )
         }
-        _ = try await session.select(mailboxPath)
-        return try await attachmentFetcher.fetchAndStore(
-            attachment: attachment,
-            accountId: account.id,
-            messageUID: messageUID,
-            mailboxPath: mailboxPath,
-            session: session
-        )
     }
 
     /// Task #103 ("ソースを表示" — 表示崩れメールの eml を受け渡す調査経路):
@@ -204,6 +194,38 @@ public actor SyncCoordinator {
         guard messageUID > 0 else {
             throw SyncEngineError.pendingRelocation(messageId: messageId)
         }
+        return try await withIMAPSession(account: account, auth: auth, selecting: mailboxPath) { session in
+            try await messageSourceFetcher.fetchAndStore(
+                messageId: messageId,
+                accountId: account.id,
+                messageUID: messageUID,
+                mailboxPath: mailboxPath,
+                session: session
+            )
+        }
+    }
+
+    /// Opens a short-lived IMAP session, `SELECT`s `mailboxPath`, runs
+    /// `body`, and always disconnects afterward — the exact "connect →
+    /// select → do the one on-demand thing → disconnect" shape `fetchBody`/
+    /// `fetchAttachment`/`fetchRawSource` above each used to repeat
+    /// byte-for-byte. Disconnect happens in a `defer`, same as before this
+    /// extraction: on any throw from `select`/`body`, the session is still
+    /// torn down.
+    ///
+    /// **Not** used by `runUnifiedInboxPrefetch`/`prefetchMessageBodies` —
+    /// both wrap their `connect` in `do/catch { continue }` *inside a loop
+    /// over multiple mailboxes/accounts*, a genuinely different control
+    /// flow (best-effort, skip-and-continue on failure, one connection
+    /// serving several `select`s) that this single-mailbox/single-body
+    /// helper doesn't fit. Forcing them onto this shape wasn't part of this
+    /// refactor's scope.
+    private func withIMAPSession<T>(
+        account: AccountRecord,
+        auth: MailAuth,
+        selecting mailboxPath: String,
+        body: (any IMAPSessionProtocol) async throws -> T
+    ) async throws -> T {
         let session = sessionFactory(account.imapConfig)
         try await session.connect(auth: auth)
         defer {
@@ -211,13 +233,7 @@ public actor SyncCoordinator {
             Task { await session.disconnect() }
         }
         _ = try await session.select(mailboxPath)
-        return try await messageSourceFetcher.fetchAndStore(
-            messageId: messageId,
-            accountId: account.id,
-            messageUID: messageUID,
-            mailboxPath: mailboxPath,
-            session: session
-        )
+        return try await body(session)
     }
 
     /// Sends a calendar invite RSVP (`ICSReplyBuilder.buildReply`'s
