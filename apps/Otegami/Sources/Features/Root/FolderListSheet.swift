@@ -71,13 +71,11 @@ struct FolderListSheet: View {
     /// 無いため)。`MailScreenView` が `isMenuOpen` を渡してドロワーを閉じる。
     var onClose: () -> Void
 
-    @State private var mailboxesByAccountId: [String: [MailboxRecord]] = [:]
-    @State private var outboxCount = 0
-    @State private var draftCount = 0
-    @State private var failedOpCount = 0
-    @State private var mailboxSyncFailureCount = 0
-    @State private var unreadByMailboxId: [Int64: Int] = [:]
-    @State private var unifiedInboxUnread = 0
+    /// The mailbox tree + badge counts this view shows — see
+    /// `MailboxCountsObserver`'s doc comment for why the observation logic
+    /// itself lives there rather than directly in this view (shared with
+    /// `SidebarView`, which owns its own separate instance).
+    @State private var countsObserver = MailboxCountsObserver()
     /// K (実機フィードバック第3弾): which accounts' mailbox trees are
     /// currently collapsed — seeded once from `FolderSectionCollapseStore`
     /// (persisted `UserDefaults`) so a relaunch remembers what the user
@@ -257,11 +255,21 @@ struct FolderListSheet: View {
         }
         .tint(OtegamiColor.accent)
         .accessibilityIdentifier("folderSheet.sheet")
-        .task(id: environment.accounts.map(\.id)) { await observeOutbox() }
-        .task(id: environment.accounts.map(\.id)) { await observeDraftCount() }
-        .task(id: environment.accounts.map(\.id)) { await observeFailedOpCount() }
-        .task(id: environment.accounts.map(\.id)) { await observeMailboxSyncFailureCount() }
-        .task(id: environment.accounts.map(\.id)) { await observeUnifiedInboxUnreadCount() }
+        .task(id: environment.accounts.map(\.id)) {
+            await countsObserver.observeOutbox(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+        }
+        .task(id: environment.accounts.map(\.id)) {
+            await countsObserver.observeDraftCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+        }
+        .task(id: environment.accounts.map(\.id)) {
+            await countsObserver.observeFailedOpCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+        }
+        .task(id: environment.accounts.map(\.id)) {
+            await countsObserver.observeMailboxSyncFailureCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+        }
+        .task(id: environment.accounts.map(\.id)) {
+            await countsObserver.observeUnifiedInboxUnreadCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+        }
         // 画面構造改修バッチ (Task #33, 3): これまで`accountSection(for:)`の
         // `.task(id: account.id)`としてアカウント単位のSectionにぶら下がって
         // いた2つの観測を、ここへ引き上げてある — Task #52 追記でカテゴリ群/
@@ -336,7 +344,7 @@ struct FolderListSheet: View {
     /// 専用のヘルパー。
     private func accountAndMailbox(forMailboxId mailboxId: Int64) -> (account: AccountRecord, mailbox: MailboxRecord)? {
         for account in environment.accounts {
-            if let mailbox = (mailboxesByAccountId[account.id] ?? []).first(where: { $0.id == mailboxId }) {
+            if let mailbox = (countsObserver.mailboxesByAccountId[account.id] ?? []).first(where: { $0.id == mailboxId }) {
                 return (account, mailbox)
             }
         }
@@ -346,7 +354,7 @@ struct FolderListSheet: View {
     private func observeAllMailboxes() async {
         await withTaskGroup(of: Void.self) { group in
             for account in environment.accounts {
-                group.addTask { await observeMailboxes(accountId: account.id) }
+                group.addTask { await countsObserver.observeMailboxes(accountId: account.id, dbWriter: environment.database.dbWriter) }
             }
         }
     }
@@ -354,7 +362,7 @@ struct FolderListSheet: View {
     private func observeAllUnreadCounts() async {
         await withTaskGroup(of: Void.self) { group in
             for account in environment.accounts {
-                group.addTask { await observeUnreadCounts(accountId: account.id) }
+                group.addTask { await countsObserver.observeUnreadCounts(accountId: account.id, dbWriter: environment.database.dbWriter) }
             }
         }
     }
@@ -371,39 +379,39 @@ struct FolderListSheet: View {
             // (`accessibilityIdentifier`の`folderSheet.unifiedInbox`はもう
             // 存在しない — 参照 UITest がある場合は
             // `folderSheet.category.inbox.header`側を見るよう更新すること)。
-            if outboxCount > 0 {
+            if countsObserver.outboxCount > 0 {
                 Button {
                     onOpenOutbox()
                 } label: {
-                    Label("送信待ち (\(outboxCount))", systemImage: "tray.and.arrow.up")
+                    Label("送信待ち (\(countsObserver.outboxCount))", systemImage: "tray.and.arrow.up")
                 }
                 .otegamiMenuRowChrome()
                 .accessibilityIdentifier("folderSheet.outbox")
             }
-            if draftCount > 0 {
+            if countsObserver.draftCount > 0 {
                 Button {
                     onOpenDrafts()
                 } label: {
-                    Label("下書き (\(draftCount))", systemImage: "doc")
+                    Label("下書き (\(countsObserver.draftCount))", systemImage: "doc")
                 }
                 .otegamiMenuRowChrome()
                 .accessibilityIdentifier("folderSheet.drafts")
             }
-            if failedOpCount > 0 {
+            if countsObserver.failedOpCount > 0 {
                 Button {
                     onOpenFailedOps()
                 } label: {
-                    Label("同期エラー (\(failedOpCount))", systemImage: "exclamationmark.triangle")
+                    Label("同期エラー (\(countsObserver.failedOpCount))", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(OtegamiColor.destructive)
                 }
                 .otegamiMenuRowChrome()
                 .accessibilityIdentifier("folderSheet.failedOps")
             }
-            if mailboxSyncFailureCount > 0 {
+            if countsObserver.mailboxSyncFailureCount > 0 {
                 Button {
                     onOpenMailboxSyncFailures()
                 } label: {
-                    Label("メールボックス同期エラー (\(mailboxSyncFailureCount))", systemImage: "exclamationmark.triangle")
+                    Label("メールボックス同期エラー (\(countsObserver.mailboxSyncFailureCount))", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(OtegamiColor.destructive)
                 }
                 .otegamiMenuRowChrome()
@@ -450,7 +458,7 @@ struct FolderListSheet: View {
             header.otegamiMenuHeaderRowChrome()
         } else {
             Section {
-                ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
+                ForEach(countsObserver.mailboxesByAccountId[account.id] ?? []) { mailbox in
                     folderMailboxRow(for: mailbox, in: account)
                 }
             } header: {
@@ -463,9 +471,9 @@ struct FolderListSheet: View {
     /// unread count summed, not just the inbox's, so collapsing an account
     /// never hides unread mail the way a single-mailbox badge would.
     private func accountUnreadCount(for accountId: String) -> Int {
-        (mailboxesByAccountId[accountId] ?? [])
+        (countsObserver.mailboxesByAccountId[accountId] ?? [])
             .compactMap(\.id)
-            .reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) }
+            .reduce(0) { $0 + (countsObserver.unreadByMailboxId[$1] ?? 0) }
     }
 
     /// 実機フィードバック第2弾 (2026-07-29): アコーディオン動作 — 展開する
@@ -539,10 +547,10 @@ struct FolderListSheet: View {
                 // (`unreadCountForAllMailCategory(entries:)`のdoc comment
                 // 参照)。
                 unreadCount: role == .inbox
-                    ? unifiedInboxUnread
+                    ? countsObserver.unifiedInboxUnread
                     : role == .all
                         ? unreadCountForAllMailCategory(entries: entries)
-                        : entries.compactMap(\.mailboxId).reduce(0) { $0 + (unreadByMailboxId[$1] ?? 0) },
+                        : entries.compactMap(\.mailboxId).reduce(0) { $0 + (countsObserver.unreadByMailboxId[$1] ?? 0) },
                 isCollapsed: isCollapsed,
                 // Task #126 追加仕様: 削除した最上部「すべての受信トレイ」
                 // 行が担っていた選択中ハイライトを、「受信トレイ」セクション
@@ -580,8 +588,8 @@ struct FolderListSheet: View {
         MailboxCategoryGrouping.unreadCountForAllMailCategory(
             entries: entries,
             accounts: environment.accounts,
-            mailboxesByAccountId: mailboxesByAccountId,
-            unreadByMailboxId: unreadByMailboxId
+            mailboxesByAccountId: countsObserver.mailboxesByAccountId,
+            unreadByMailboxId: countsObserver.unreadByMailboxId
         )
     }
 
@@ -619,7 +627,7 @@ struct FolderListSheet: View {
             mailboxPath: entry.mailbox.path,
             accountDisplayName: entry.account.displayName,
             labelColorKey: entry.account.labelColorKey,
-            unreadCount: unreadByMailboxId[entry.mailboxId],
+            unreadCount: countsObserver.unreadByMailboxId[entry.mailboxId],
             isSelected: isSelected,
             onTap: { onSelectMailbox(mailboxSelection, entry.account.displayName) }
         )
@@ -636,7 +644,7 @@ struct FolderListSheet: View {
     /// `matchesCategory(mailbox:account:role:)`/`dedupedByAccount(_:)`は
     /// その共有型の中に移った。
     private func mailboxEntries(for role: MailboxRoleRecord) -> [MailboxCategoryEntry] {
-        MailboxCategoryGrouping.entries(for: role, accounts: environment.accounts, mailboxesByAccountId: mailboxesByAccountId)
+        MailboxCategoryGrouping.entries(for: role, accounts: environment.accounts, mailboxesByAccountId: countsObserver.mailboxesByAccountId)
     }
 
     /// `toggleAccountCollapsed(_:)` の doc comment 参照 (アコーディオン動作)。
@@ -669,105 +677,13 @@ struct FolderListSheet: View {
             FolderMailboxRow(
                 accountId: account.id,
                 mailbox: mailbox,
-                unreadCount: unreadByMailboxId[mailboxId],
+                unreadCount: countsObserver.unreadByMailboxId[mailboxId],
                 isSelected: isSelected,
                 onTap: { onSelectMailbox(mailboxSelection, mailbox.displayPath) }
             )
         }
     }
 
-    private func observeMailboxes(accountId: String) async {
-        // メールボックス単位の非表示: `includeHidden: false` keeps a hidden
-        // mailbox out of the hamburger tree entirely — see
-        // `MailboxQuery.request(accountId:includeHidden:)`'s doc comment.
-        let observation = MailboxQuery.observation(accountId: accountId, includeHidden: false)
-        do {
-            for try await mailboxes in observation.values(in: environment.database.dbWriter) {
-                mailboxesByAccountId[accountId] = mailboxes
-            }
-        } catch {
-            // A failing observation for one account shouldn't take down the sheet.
-        }
-    }
-
-    private func observeUnreadCounts(accountId: String) async {
-        let observation = MessageQuery.unreadCountsObservation(accountId: accountId)
-        do {
-            for try await counts in observation.values(in: environment.database.dbWriter) {
-                for (mailboxId, count) in counts {
-                    unreadByMailboxId[mailboxId] = count
-                }
-                let staleMailboxIds = (mailboxesByAccountId[accountId] ?? [])
-                    .compactMap(\.id)
-                    .filter { counts[$0] == nil }
-                for mailboxId in staleMailboxIds {
-                    unreadByMailboxId.removeValue(forKey: mailboxId)
-                }
-            }
-        } catch {
-            // A failing observation just stops that account's badges from updating.
-        }
-    }
-
-    private func observeOutbox() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = OutboxQuery.observation(accountIds: accountIds)
-        do {
-            for try await pending in observation.values(in: environment.database.dbWriter) {
-                outboxCount = pending.count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
-    private func observeDraftCount() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = DraftQuery.unifiedObservation(accountIds: accountIds)
-        do {
-            for try await drafts in observation.values(in: environment.database.dbWriter) {
-                draftCount = drafts.count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
-    private func observeFailedOpCount() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = OpQueueQuery.failedOpsObservation(accountIds: accountIds, minAttempts: OpQueueProcessor.maxAttempts)
-        do {
-            for try await ops in observation.values(in: environment.database.dbWriter) {
-                failedOpCount = ops.count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
-    private func observeMailboxSyncFailureCount() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = MailboxQuery.syncFailuresObservation(accountIds: accountIds)
-        do {
-            for try await mailboxes in observation.values(in: environment.database.dbWriter) {
-                mailboxSyncFailureCount = mailboxes.count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
-    private func observeUnifiedInboxUnreadCount() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = MessageQuery.unifiedInboxUnreadCountObservation(accountIds: accountIds)
-        do {
-            for try await count in observation.values(in: environment.database.dbWriter) {
-                unifiedInboxUnread = count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
 }
 
 /// K (実機フィードバック第3弾): persists which accounts' mailbox trees are

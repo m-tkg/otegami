@@ -63,21 +63,11 @@ struct SidebarView: View {
     @State private var showingDrafts = false
     @State private var showingFailedOps = false
     @State private var showingMailboxSyncFailures = false
-    @State private var mailboxesByAccountId: [String: [MailboxRecord]] = [:]
-    @State private var outboxCount = 0
-    @State private var draftCount = 0
-    @State private var failedOpCount = 0
-    @State private var mailboxSyncFailureCount = 0
-    // M10: unread badges. `unreadByMailboxId` groups by mailbox id (spans
-    // every account — a plain `[Int64: Int]` is enough since `MailboxRecord
-    // .id` is a global autoincrement primary key, not scoped per account).
-    // `unifiedInboxUnread` is its own separately-observed total rather than
-    // derived by summing `unreadByMailboxId` client-side, since it's scoped
-    // to inbox-role mailboxes only (`MessageQuery.unifiedInboxUnreadCount`'s
-    // doc comment) — deriving it here would need this view to also know
-    // each mailbox's role, duplicating logic the query already encodes.
-    @State private var unreadByMailboxId: [Int64: Int] = [:]
-    @State private var unifiedInboxUnread = 0
+    /// The mailbox tree + badge counts this view shows — see
+    /// `MailboxCountsObserver`'s doc comment for why the observation logic
+    /// itself lives there rather than directly in this view (shared with
+    /// `FolderListSheet`, which owns its own separate instance).
+    @State private var countsObserver = MailboxCountsObserver()
 
     #if os(macOS)
     /// Task #181: どのカテゴリ (role) セクションが折りたたまれているか —
@@ -127,11 +117,21 @@ struct SidebarView: View {
                     onOpenServerDraft: onOpenServerDraft
                 )
             )
-            .task(id: environment.accounts.map(\.id)) { await observeOutbox() }
-            .task(id: environment.accounts.map(\.id)) { await observeDraftCount() }
-            .task(id: environment.accounts.map(\.id)) { await observeFailedOpCount() }
-            .task(id: environment.accounts.map(\.id)) { await observeMailboxSyncFailureCount() }
-            .task(id: environment.accounts.map(\.id)) { await observeUnifiedInboxUnreadCount() }
+            .task(id: environment.accounts.map(\.id)) {
+                await countsObserver.observeOutbox(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+            }
+            .task(id: environment.accounts.map(\.id)) {
+                await countsObserver.observeDraftCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+            }
+            .task(id: environment.accounts.map(\.id)) {
+                await countsObserver.observeFailedOpCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+            }
+            .task(id: environment.accounts.map(\.id)) {
+                await countsObserver.observeMailboxSyncFailureCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+            }
+            .task(id: environment.accounts.map(\.id)) {
+                await countsObserver.observeUnifiedInboxUnreadCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
+            }
             #if os(macOS)
             .task(id: selection) { normalizeInitialCollapseStateIfNeeded() }
             #endif
@@ -172,41 +172,41 @@ struct SidebarView: View {
                 #if os(iOS)
                 SidebarUnifiedInboxRow(
                     isSelected: selection == .unifiedInbox,
-                    unreadCount: unifiedInboxUnread,
+                    unreadCount: countsObserver.unifiedInboxUnread,
                     onTap: selectUnifiedInbox
                 )
                 #endif
 
-                if outboxCount > 0 {
+                if countsObserver.outboxCount > 0 {
                     SidebarStatusRow(
-                        title: "送信待ち (\(outboxCount))",
+                        title: "送信待ち (\(countsObserver.outboxCount))",
                         systemImage: "tray.and.arrow.up",
                         accessibilityIdentifier: "sidebar.outbox",
                         isError: false,
                         onTap: openOutbox
                     )
                 }
-                if draftCount > 0 {
+                if countsObserver.draftCount > 0 {
                     SidebarStatusRow(
-                        title: "下書き (\(draftCount))",
+                        title: "下書き (\(countsObserver.draftCount))",
                         systemImage: "doc",
                         accessibilityIdentifier: "sidebar.drafts",
                         isError: false,
                         onTap: openDrafts
                     )
                 }
-                if failedOpCount > 0 {
+                if countsObserver.failedOpCount > 0 {
                     SidebarStatusRow(
-                        title: "同期エラー (\(failedOpCount))",
+                        title: "同期エラー (\(countsObserver.failedOpCount))",
                         systemImage: "exclamationmark.triangle",
                         accessibilityIdentifier: "sidebar.failedOps",
                         isError: true,
                         onTap: openFailedOps
                     )
                 }
-                if mailboxSyncFailureCount > 0 {
+                if countsObserver.mailboxSyncFailureCount > 0 {
                     SidebarStatusRow(
-                        title: "メールボックス同期エラー (\(mailboxSyncFailureCount))",
+                        title: "メールボックス同期エラー (\(countsObserver.mailboxSyncFailureCount))",
                         systemImage: "exclamationmark.triangle",
                         accessibilityIdentifier: "sidebar.mailboxSyncFailures",
                         isError: true,
@@ -233,7 +233,7 @@ struct SidebarView: View {
         macAccountSection(for: account)
         #else
         Section(account.displayName) {
-            ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
+            ForEach(countsObserver.mailboxesByAccountId[account.id] ?? []) { mailbox in
                 mailboxRow(for: mailbox, in: account)
             }
         }
@@ -241,7 +241,7 @@ struct SidebarView: View {
             await observeMailboxes(accountId: account.id)
         }
         .task(id: account.id) {
-            await observeUnreadCounts(accountId: account.id)
+            await countsObserver.observeUnreadCounts(accountId: account.id, dbWriter: environment.database.dbWriter)
         }
         #endif
     }
@@ -309,7 +309,7 @@ struct SidebarView: View {
         if let mailboxId = mailbox.id {
             let mailboxSelection = SidebarSelection.mailbox(MailboxSelection(accountId: account.id, mailboxId: mailboxId))
             let isSelected = selection == mailboxSelection
-            let unreadCount = unreadByMailboxId[mailboxId]
+            let unreadCount = countsObserver.unreadByMailboxId[mailboxId]
             MailboxRow(
                 accountId: account.id,
                 mailbox: mailbox,
@@ -343,7 +343,7 @@ struct SidebarView: View {
     /// `MailboxCategoryGrouping`のdoc comment参照)。
     @ViewBuilder
     private func macCategorySection(for role: MailboxRoleRecord) -> some View {
-        let entries = MailboxCategoryGrouping.entries(for: role, accounts: environment.accounts, mailboxesByAccountId: mailboxesByAccountId)
+        let entries = MailboxCategoryGrouping.entries(for: role, accounts: environment.accounts, mailboxesByAccountId: countsObserver.mailboxesByAccountId)
         if !entries.isEmpty || role == .all {
             DisclosureGroup(isExpanded: macCategoryExpandedBinding(for: role)) {
                 ForEach(entries) { entry in
@@ -386,14 +386,14 @@ struct SidebarView: View {
     private func macCategoryUnreadCount(for role: MailboxRoleRecord, entries: [MailboxCategoryEntry]) -> Int {
         switch role {
         case .inbox:
-            unifiedInboxUnread
+            countsObserver.unifiedInboxUnread
         case .all:
             MailboxCategoryGrouping.unreadCountForAllMailCategory(
                 entries: entries, accounts: environment.accounts,
-                mailboxesByAccountId: mailboxesByAccountId, unreadByMailboxId: unreadByMailboxId
+                mailboxesByAccountId: countsObserver.mailboxesByAccountId, unreadByMailboxId: countsObserver.unreadByMailboxId
             )
         default:
-            entries.reduce(0) { $0 + (unreadByMailboxId[$1.mailboxId] ?? 0) }
+            entries.reduce(0) { $0 + (countsObserver.unreadByMailboxId[$1.mailboxId] ?? 0) }
         }
     }
 
@@ -418,7 +418,7 @@ struct SidebarView: View {
                 HStack {
                     Text(verbatim: entry.account.displayName)
                     Spacer()
-                    if let count = unreadByMailboxId[entry.mailboxId], count > 0 {
+                    if let count = countsObserver.unreadByMailboxId[entry.mailboxId], count > 0 {
                         UnreadCountBadge(count: count)
                     }
                 }
@@ -438,7 +438,7 @@ struct SidebarView: View {
     @ViewBuilder
     private func macAccountSection(for account: AccountRecord) -> some View {
         DisclosureGroup(isExpanded: macAccountExpandedBinding(for: account.id)) {
-            ForEach(mailboxesByAccountId[account.id] ?? []) { mailbox in
+            ForEach(countsObserver.mailboxesByAccountId[account.id] ?? []) { mailbox in
                 mailboxRow(for: mailbox, in: account)
             }
         } label: {
@@ -448,7 +448,7 @@ struct SidebarView: View {
             await observeMailboxes(accountId: account.id)
         }
         .task(id: account.id) {
-            await observeUnreadCounts(accountId: account.id)
+            await countsObserver.observeUnreadCounts(accountId: account.id, dbWriter: environment.database.dbWriter)
         }
     }
 
@@ -558,148 +558,24 @@ struct SidebarView: View {
     }
     #endif
 
-    private func observeFailedOpCount() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = OpQueueQuery.failedOpsObservation(accountIds: accountIds, minAttempts: OpQueueProcessor.maxAttempts)
-        do {
-            for try await ops in observation.values(in: environment.database.dbWriter) {
-                failedOpCount = ops.count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
-    /// Partial-sync-failure visibility — see
-    /// `MailboxSyncFailuresView`'s doc comment for the full rationale.
-    /// Separate `Section` row from `sidebar.failedOps` deliberately: an
-    /// `opQueue` failure (a *user action* like a delete/flag-change that
-    /// couldn't be applied) and a mailbox sync failure (the *background
-    /// list-refresh itself* not working for that mailbox) are different
-    /// problems with different retry semantics, so collapsing them into one
-    /// counter/sheet would blur what's actually wrong.
-    private func observeMailboxSyncFailureCount() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = MailboxQuery.syncFailuresObservation(accountIds: accountIds)
-        do {
-            for try await mailboxes in observation.values(in: environment.database.dbWriter) {
-                mailboxSyncFailureCount = mailboxes.count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
-    /// Drafts IMAP sync: counts the same unified list `DraftsView` shows
-    /// (local + server-origin, deduplicated) — `DraftQuery.observation`'s
-    /// local-only count would otherwise undercount whenever a
-    /// server-origin draft (written by another client) hasn't been opened/
-    /// saved in this app yet.
-    private func observeDraftCount() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = DraftQuery.unifiedObservation(accountIds: accountIds)
-        do {
-            for try await drafts in observation.values(in: environment.database.dbWriter) {
-                draftCount = drafts.count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
-    /// M10: the "すべての受信トレイ" badge — re-observed whenever the
-    /// account list changes (adding/removing an account widens/narrows
-    /// which inbox-role mailboxes count toward the total), same trigger
-    /// `observeOutbox()` already uses.
-    private func observeUnifiedInboxUnreadCount() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = MessageQuery.unifiedInboxUnreadCountObservation(accountIds: accountIds)
-        do {
-            for try await count in observation.values(in: environment.database.dbWriter) {
-                unifiedInboxUnread = count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
-    /// Per-mailbox unread badges for one account's section — runs
-    /// alongside `observeMailboxes(accountId:)` (same lifetime, via a
-    /// second `.task(id:)` on the same `Section`) rather than folded into
-    /// it, since the two observe different tables (`mailbox` vs. `message`)
-    /// and there's no reason a `mailbox` row change should wait on/block a
-    /// `message` count re-fetch or vice versa.
-    private func observeUnreadCounts(accountId: String) async {
-        let observation = MessageQuery.unreadCountsObservation(accountId: accountId)
-        do {
-            for try await counts in observation.values(in: environment.database.dbWriter) {
-                for (mailboxId, count) in counts {
-                    unreadByMailboxId[mailboxId] = count
-                }
-                // A mailbox that just went from "has unread" to "fully
-                // read" drops out of `counts` entirely (`MessageQuery
-                // .unreadCounts`'s doc comment) — without this, its badge
-                // would keep showing the last-known nonzero count forever.
-                let staleMailboxIds = (mailboxesByAccountId[accountId] ?? [])
-                    .compactMap(\.id)
-                    .filter { counts[$0] == nil }
-                for mailboxId in staleMailboxIds {
-                    unreadByMailboxId.removeValue(forKey: mailboxId)
-                }
-            }
-        } catch {
-            // A failing observation just stops that account's badges from updating.
-        }
-    }
-
-    private func observeOutbox() async {
-        let accountIds = environment.accounts.map(\.id)
-        let observation = OutboxQuery.observation(accountIds: accountIds)
-        do {
-            for try await pending in observation.values(in: environment.database.dbWriter) {
-                outboxCount = pending.count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
     /// Runs for as long as `SidebarView` shows `accountId`'s section
     /// (cancelled automatically by `.task(id:)` when the account
-    /// disappears from the list). Also claims "すべての受信トレイ" as the
-    /// *data* selection the first time any account's mailboxes appear (M4)
-    /// — so the content column is ready to show a populated, threaded list
-    /// the instant the user does navigate into it.
-    ///
-    /// Deliberately does **not** also navigate there (i.e. does not push
-    /// `preferredCompactColumn` forward) — that used to happen implicitly
-    /// via `RootView`'s `onChange(of: selection)`, and on a compact-width
-    /// device (iPhone) that meant a *cold launch* jumped straight past the
-    /// sidebar into the message list with no tap at all (docs/verify.md,
-    /// "コールドランチが統合受信トレイから始まる"): this same background
-    /// data-load path fires on every launch once an account exists, so
-    /// there was structurally no way to land on the sidebar root first.
-    /// `RootView.onSelected`/`SidebarView.onSelected` is the only path that
-    /// pushes the column forward now, and it only fires from a real row
-    /// tap — this auto-select stays data-only so macOS/iPadOS's
-    /// always-three-column layout (where there is no "column" to push,
-    /// `preferredCompactColumn` is simply ignored) is unaffected either
-    /// way.
+    /// disappears from the list) — thin wrapper over `MailboxCountsObserver
+    /// .observeMailboxes(accountId:dbWriter:onMailboxesLoaded:)` that
+    /// supplies the one bit of behavior specific to this view: claiming
+    /// "すべての受信トレイ" as the *data* selection the first time any
+    /// account's mailboxes appear (M4) — so the content column is ready to
+    /// show a populated, threaded list the instant the user does navigate
+    /// into it. See `MailboxCountsObserver.observeMailboxes(...)`'s doc
+    /// comment for the full rationale (including why this deliberately
+    /// does **not** also navigate there) — preserved there since
+    /// `FolderListSheet` calls the same observer method without this
+    /// closure and has none of this behavior.
     private func observeMailboxes(accountId: String) async {
-        // メールボックス単位の非表示: `includeHidden: false` keeps a hidden
-        // mailbox out of the sidebar tree entirely — see
-        // `MailboxQuery.request(accountId:includeHidden:)`'s doc comment.
-        let observation = MailboxQuery.observation(accountId: accountId, includeHidden: false)
-        do {
-            for try await mailboxes in observation.values(in: environment.database.dbWriter) {
-                mailboxesByAccountId[accountId] = mailboxes
-                if selection == nil {
-                    selection = .unifiedInbox
-                }
+        await countsObserver.observeMailboxes(accountId: accountId, dbWriter: environment.database.dbWriter) {
+            if selection == nil {
+                selection = .unifiedInbox
             }
-        } catch {
-            // A failing mailbox observation for one account shouldn't take
-            // down the sidebar; that account's section just stops updating.
         }
     }
 
