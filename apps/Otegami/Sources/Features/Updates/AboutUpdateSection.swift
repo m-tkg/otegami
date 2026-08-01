@@ -55,16 +55,27 @@ struct AboutUpdateSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
-            Toggle("プレリリースも確認する", isOn: $includePrereleases)
-                .toggleStyle(.checkbox)
-                .font(OtegamiFont.caption())
-                .foregroundStyle(OtegamiColor.inkSecondary)
-                .disabled(isBusy)
-                .accessibilityIdentifier("about.includePrereleasesToggle")
+            HStack {
+                Text("アップデート")
+                    .font(OtegamiFont.subheadline())
+                    .foregroundStyle(OtegamiColor.ink)
+                Spacer(minLength: OtegamiSpacing.sm)
+                Toggle("プレリリースも確認する", isOn: $includePrereleases)
+                    .toggleStyle(.checkbox)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                    .disabled(isBusy)
+                    .accessibilityIdentifier("about.includePrereleasesToggle")
+            }
 
             content
+                .frame(minHeight: 210, maxHeight: 210, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(OtegamiSpacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(OtegamiColor.surface)
+        .clipShape(RoundedRectangle(cornerRadius: OtegamiRadius.card, style: .continuous))
         .accessibilityIdentifier("about.updateSection")
     }
 
@@ -142,6 +153,11 @@ struct AboutUpdateSection: View {
             state = .installFailed(message: String(localized: "このリリースには配布ファイルが見つかりませんでした。"))
             return
         }
+        // Change the button row immediately. Waiting for URLSession's first
+        // progress callback leaves the enabled-looking "更新" button on
+        // screen during DNS, redirect, and response setup, making a valid
+        // click look ignored on a slower connection.
+        state = .downloading(fraction: 0)
         Task {
             let installer = AppUpdateInstaller()
             do {
@@ -332,9 +348,21 @@ private struct DownloadingUpdateRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
-            Text("ダウンロード中…")
-                .font(OtegamiFont.body())
-                .foregroundStyle(OtegamiColor.ink)
+            HStack(spacing: OtegamiSpacing.sm) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(fraction > 0 ? "ダウンロード中…" : "ダウンロードを開始しています…")
+                    .font(OtegamiFont.body())
+                    .foregroundStyle(OtegamiColor.ink)
+                Spacer(minLength: OtegamiSpacing.sm)
+                if fraction > 0 {
+                    Text(fraction, format: .percent.precision(.fractionLength(0)))
+                        .monospacedDigit()
+                        .font(OtegamiFont.caption())
+                        .foregroundStyle(OtegamiColor.inkSecondary)
+                        .accessibilityIdentifier("about.downloadPercentage")
+                }
+            }
             ProgressView(value: fraction)
                 .accessibilityIdentifier("about.downloadProgress")
         }

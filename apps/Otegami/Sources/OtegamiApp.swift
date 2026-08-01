@@ -110,7 +110,7 @@ struct OtegamiApp: App {
         WindowGroup("Otegamiについて", id: "about") {
             AboutView()
         }
-        .defaultSize(width: 420, height: 480)
+        .defaultSize(width: 460, height: 620)
         .windowResizability(.contentSize)
         #endif
         #if os(macOS)

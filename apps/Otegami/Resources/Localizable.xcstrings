@@ -5174,6 +5174,16 @@
         }
       }
     },
+    "アップデート": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updates"
+          }
+        }
+      }
+    },
     "プレリリースも確認する": {
       "localizations": {
         "en": {
@@ -5250,6 +5260,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Downloading…"
+          }
+        }
+      }
+    },
+    "ダウンロードを開始しています…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Starting Download…"
           }
         }
       }

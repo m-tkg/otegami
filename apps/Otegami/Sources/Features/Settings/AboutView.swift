@@ -51,16 +51,18 @@ struct AboutView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: OtegamiSpacing.lg) {
-                appIcon
+                HStack(spacing: OtegamiSpacing.lg) {
+                    appIcon
 
-                VStack(spacing: OtegamiSpacing.xs) {
-                    Text("Otegami")
-                        .font(OtegamiFont.title())
-                        .foregroundStyle(OtegamiColor.ink)
-                    Text(String(localized: "バージョン \(version) (\(build))"))
-                        .font(OtegamiFont.subheadline())
-                        .foregroundStyle(OtegamiColor.inkSecondary)
-                        .accessibilityIdentifier("about.version")
+                    VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
+                        Text("Otegami")
+                            .font(OtegamiFont.title())
+                            .foregroundStyle(OtegamiColor.ink)
+                        Text(String(localized: "バージョン \(version) (\(build))"))
+                            .font(OtegamiFont.subheadline())
+                            .foregroundStyle(OtegamiColor.inkSecondary)
+                            .accessibilityIdentifier("about.version")
+                    }
                 }
 
                 VStack(spacing: OtegamiSpacing.sm) {
@@ -69,20 +71,19 @@ struct AboutView: View {
                         .multilineTextAlignment(.center)
                         .foregroundStyle(OtegamiColor.inkSecondary)
 
-                    Link("GitHub リポジトリ", destination: Self.repositoryURL)
-                        .font(OtegamiFont.subheadline())
-                        .foregroundStyle(OtegamiColor.accentText)
-                        .accessibilityIdentifier("about.repositoryLink")
+                    HStack(spacing: OtegamiSpacing.md) {
+                        Link("GitHub リポジトリ", destination: Self.repositoryURL)
+                            .accessibilityIdentifier("about.repositoryLink")
 
-                    Text("ライセンス: MIT")
-                        .font(OtegamiFont.caption())
-                        .foregroundStyle(OtegamiColor.inkTertiary)
-                        .accessibilityIdentifier("about.license")
+                        Text("ライセンス: MIT")
+                            .foregroundStyle(OtegamiColor.inkTertiary)
+                            .accessibilityIdentifier("about.license")
 
-                    Link("サードパーティライセンス", destination: Self.noticeURL)
-                        .font(OtegamiFont.caption())
-                        .foregroundStyle(OtegamiColor.accentText)
-                        .accessibilityIdentifier("about.thirdPartyLicensesLink")
+                        Link("サードパーティライセンス", destination: Self.noticeURL)
+                            .accessibilityIdentifier("about.thirdPartyLicensesLink")
+                    }
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.accentText)
                 }
 
                 #if os(macOS)
@@ -94,10 +95,10 @@ struct AboutView: View {
                 AboutUpdateSection()
                 #endif
             }
-            .padding(OtegamiSpacing.xxl)
+            .padding(OtegamiSpacing.xl)
         }
-        .frame(width: 420)
-        .frame(minHeight: 340, idealHeight: 480, maxHeight: 640)
+        .frame(width: 460)
+        .frame(minHeight: 560, idealHeight: 620, maxHeight: 720)
         .background(OtegamiColor.background)
         .accessibilityIdentifier("about.view")
     }

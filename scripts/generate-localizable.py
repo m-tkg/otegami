@@ -891,6 +891,7 @@ translations = {
     # "プレリリースを含めて確認中"はメニュー項目/自動チェック機構ごと
     # 廃止したため、この節の追加と同時に上の節から削除した。
     "Otegamiについて": "About Otegami",
+    "アップデート": "Updates",
     "プレリリースも確認する": "Also Check Pre-releases",
     "更新": "Update",
     "検証しています…": "Verifying…",
@@ -899,6 +900,7 @@ translations = {
     "今すぐ再起動": "Restart Now",
     "更新に失敗しました": "Update Failed",
     "ダウンロード中…": "Downloading…",
+    "ダウンロードを開始しています…": "Starting Download…",
     "このリリースには配布ファイルが見つかりませんでした。": "This release has no downloadable file.",
     "書き込み権限がありません。ダウンロードページから手動でインストールしてください。":
         "No write permission. Please install manually from the download page.",
