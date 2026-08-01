@@ -385,17 +385,110 @@ targets:
     dependencies:
       - target: Otegami
 
+  # Phase 5 (テスト衛生): Otegami アプリ本体専用のユニットテストターゲット。
+  # `OtegamiUITests` と違い `XCUIApplication`/実機シミュレータには依存せず、
+  # 純粋ロジック関数 (`AppEnvironment.isPushWatchCandidate(_:)`) を
+  # `@testable import` で直接呼ぶだけの軽量テスト。
+  #
+  # `Otegami` (application) への `dependencies:` だけで XcodeGen が
+  # `TEST_HOST`/`BUNDLE_LOADER` を自動設定してくれる (生成された
+  # project.pbxproj で確認済み — Xcode の「ホストアプリケーション」選択と
+  # 同じ効果)。`NotificationService` (app-extension) はここに含めていない
+  # — extension は `Otegami.app` の実行バイナリの一部ではなく別バイナリ
+  # (`NotificationService.appex`) なので、`Otegami` をホストにしても
+  # extension 側のシンボルはリンクされず「Undefined symbols」でリンク
+  # エラーになる (実際に踏んだ)。extension 内のロジックは下の
+  # `NotificationServiceTests` に分けている。
+  #
+  # deploymentTarget を意図的に指定していない: `Otegami` は
+  # `supportedDestinations: [iOS, macOS]` のマルチプラットフォームターゲット
+  # で、この XcodeGen バージョン (2.45.4 時点) はマルチプラットフォーム
+  # ターゲットに `IPHONEOS_DEPLOYMENT_TARGET` を書き出さない (生成された
+  # project.pbxproj を確認済み — `Otegami` ターゲットの buildSettings に
+  # そのキー自体が存在しない)。そのため実際のビルドでは Xcode 側のデフォルト
+  # 解決に委ねられており、`@testable import Otegami` するこのターゲットの
+  # deploymentTarget を "26.0" のように明示指定すると、
+  # 「compiling for iOS 26.0, but module 'Otegami' has a minimum deployment
+  # target of iOS 27.0」のようなビルド環境依存のミスマッチで壊れうる (この
+  # ミスマッチの実際の値は Xcode のバージョンによって変わりうる)。ここも
+  # 明示指定を省略して同じ既定解決に委ねることで `Otegami` 側と常に一致させる。
+  OtegamiAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/OtegamiAppTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.mtkg.otegami.apptests
+    dependencies:
+      - target: Otegami
+
+  # Phase 5 (テスト衛生): `NotificationService` extension 専用のユニット
+  # テストターゲット。`OtegamiAppTests` (Otegami アプリ本体を TEST_HOST に
+  # 使う) と同じ手は使えない — extension は独立したバイナリなので
+  # `Otegami` をホストにしても `NotificationService.parsePayload(_:)` の
+  # シンボルは解決できない (未定義シンボルでリンクエラー、実際に確認済み)。
+  # `TEST_HOST`/`BUNDLE_LOADER` を `NotificationService.appex` 自身の
+  # バイナリ (埋め込み後・埋め込み前どちらの成果物パスでも試した) に
+  # 向ける方法も試したが、`xcodebuild test` は毎回「Could not find test
+  # host」でビルド前検証そのものに失敗した — Apple の TEST_HOST は
+  # 公式には application 型のホストのみをサポートしており、app-extension
+  # 型はそもそも対象外という制約に行き当たったと見られる。
+  #
+  # 採用した方法: `@testable import NotificationService` で別モジュールを
+  # クロスインポートするのではなく、`NotificationService.swift` 自身を
+  # このテストターゲットの `sources` にも追加してこのターゲット内で直接
+  # コンパイルする (ホスト不要・クロスモジュールリンク不要)。ソース
+  # ファイルを複数ターゲットが指すのは XcodeGen/Xcode の通常の使い方で、
+  # ファイル自体は変更していない。依存パッケージは
+  # `NotificationService` ターゲット自身の `dependencies:` と同じ一式を
+  # 複製する必要がある (同じファイルが同じ import 文を持つため)。
+  NotificationServiceTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/NotificationServiceTests
+      - path: NotificationService/NotificationService.swift
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.mtkg.otegami.notificationservicetests
+    dependencies:
+      - package: OtegamiKit
+        product: OtegamiCore
+      - package: OtegamiKit
+        product: MailTransport
+      - package: OtegamiKit
+        product: MailTransportMailCore
+      - package: OtegamiKit
+        product: OtegamiStore
+      - package: OtegamiKit
+        product: OtegamiRelayAPI
+      - package: OtegamiKit
+        product: SyncEngine
+      - package: OtegamiKit
+        product: GoogleOAuth
+      - package: OtegamiKit
+        product: MicrosoftOAuth
+      - package: OtegamiKit
+        product: PushRelayClient
+
 schemes:
   Otegami:
     build:
       targets:
         Otegami: all
         OtegamiUITests: [test]
+        OtegamiAppTests: [test]
+        NotificationServiceTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
         - OtegamiUITests
+        - OtegamiAppTests
+        - NotificationServiceTests
     archive:
       config: Release

@@ -562,7 +562,14 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
     // MARK: - Payload / account lookup
 
-    private static func parsePayload(_ userInfo: [AnyHashable: Any]) -> PushNotificationPayload? {
+    // Task (apps 層ユニットテストターゲット新設): private → internal に緩和 —
+    // `NotificationServiceTests` (`project.yml` の同ターゲットの doc comment
+    // 参照: `NotificationService.swift` 自体をテストターゲットの sources に
+    // も加えて同一モジュール内で直接コンパイルしている) がこの純粋ロジック
+    // だけを直接テストできるようにするため。Phase2d/Phase4 で確立済みの
+    // 「テスト到達のための private → internal 緩和」と同じパターンで、これ
+    // 以上の公開範囲拡大 (public 化等) はしていない。
+    static func parsePayload(_ userInfo: [AnyHashable: Any]) -> PushNotificationPayload? {
         guard let accountId = userInfo["accountId"] as? String,
               let uidNext = userInfo["uidNext"] as? Int
         else { return nil }

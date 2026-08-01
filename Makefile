@@ -4,6 +4,7 @@
 #   make mac-app          macOS Release build, bundled to dist/Otegami.app
 #   make ios              iOS Simulator app build (xcodebuild)
 #   make ios-device       iOS device build (signed with the registered team)
+#   make ios-apptests     apps 層ユニットテスト (OtegamiAppTests/NotificationServiceTests)
 #   make test             OtegamiKit `swift test`
 #   make check-localization  Localizable.xcstrings coverage check (Task #170)
 #   make relay-go         build the Go otegami-relay server
@@ -47,7 +48,7 @@ else
 MAC_SIGNING_FLAGS :=
 endif
 
-.PHONY: all mac mac-app ios ios-device app-project test check-localization \
+.PHONY: all mac mac-app ios ios-device ios-apptests app-project test check-localization \
 	relay-go relay-go-test relay-go-docker verify-% \
 	mailstack-up mailstack-down mailstack-seed deploy-ota clean
 
@@ -106,6 +107,21 @@ ios-device: app-project
 		-destination 'generic/platform=iOS' \
 		-allowProvisioningUpdates \
 		build
+
+# Phase 5 (テスト衛生): apps 層 (Otegami アプリ本体 / NotificationService
+# extension) のユニットテスト。`OtegamiUITests` (XCUIApplication ベースの
+# E2E、`ios`/`ios-device` の scheme test action にしか含めていない) とは
+# 別に、`-only-testing:` で明示的にこの2ターゲットだけを回す — シミュレータ
+# 起動・実アプリ操作を必要としない軽量テストなので、E2E を待たずに素早く
+# 回せる。
+ios-apptests: app-project
+	xcodebuild \
+		-project $(APP_PROJECT) \
+		-scheme $(APP_SCHEME) \
+		-destination 'platform=iOS Simulator,name=$(IOS_SIMULATOR)' \
+		-only-testing:OtegamiAppTests \
+		-only-testing:NotificationServiceTests \
+		test
 
 test:
 	cd $(KIT_DIR) && swift test
