@@ -3,7 +3,7 @@ import Foundation
 /// Task #152 (実機報告「フラグ/アーカイブ操作後、他の受信箱一覧への反映が
 /// 遅い」): the pure debounce/coalesce *policy* behind `SyncCoordinator`'s
 /// post-`opQueue`-replay targeted resync — decides only *when* a resync
-/// should fire for an account and *which* mailboxes it should cover, given
+/// should fire for an account and *which destination* mailboxes it should cover, given
 /// a stream of `request(accountId:mailboxIds:now:)` calls. Deliberately
 /// knows nothing about `AccountRecord`/`MailAuth`/actual IMAP sync —
 /// `SyncCoordinator` supplies its own wall clock (`Date()`) and pairs each
@@ -22,9 +22,10 @@ import Foundation
 ///   producing exactly one resync per burst rather than one per operation.
 /// - **Coalesce**: each `request`'s `mailboxIds` are *unioned* into
 ///   whatever's still pending for that account, so a burst touching
-///   different mailboxes (e.g. archiving from INBOX, then unarchiving a
-///   different thread back from Archive) resyncs every mailbox the burst
-///   actually touched in one pass, not just the most recent one.
+///   different destinations (e.g. archiving into Archive, then restoring a
+///   different thread into INBOX) resyncs every destination in one pass,
+///   not just the most recent one. Optimistic source mailboxes never reach
+///   this scheduler; see `OpQueueProcessor.ReplayResult`.
 /// - Per-account independence: one account's pending request/fire time
 ///   never affects another's — matches every other per-account loop in this
 ///   codebase (`SyncCoordinator.lastPostSyncPrefetchDateByAccount`,

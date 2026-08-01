@@ -35,15 +35,15 @@ public actor OpQueueProcessor {
         /// Just crossed `maxAttempts` on this pass; won't be retried again
         /// automatically.
         public var permanentlyFailed = 0
-        /// Task #152: every mailbox id a `.applied` `.setFlags`/`.move`/
-        /// `.delete`/`.junk`/`.archive`/`.unarchive` op touched this pass —
-        /// its source mailbox *and*, when the op resolved one (a move's
-        /// destination, or a self-healed Trash/Junk/Archive/INBOX), the
-        /// destination too. `SyncCoordinator.replayOpQueue` feeds this
-        /// straight into `scheduleTargetedResync` so the mailbox(es) an
-        /// offline action just touched get a prioritized resync instead of
-        /// waiting for their turn in the periodic full-account sweep
-        /// (`OtegamiApp.syncAllAccountsOnce`, unchanged by this task).
+        /// Task #152: destination mailbox ids that need a prioritized
+        /// post-operation resync. Source mailboxes are deliberately absent:
+        /// the UI has already applied the requested flag/removal locally,
+        /// and an immediate source refresh can observe an eventually-
+        /// consistent IMAP server's old state and visibly undo that update
+        /// until the next manual refresh. A pure `.setFlags` operation and
+        /// Gmail's source-only archive therefore leave this empty; moves and
+        /// relocations include only their destination. `SyncCoordinator
+        /// .replayOpQueue` feeds this into `scheduleTargetedResync`.
         /// Deliberately not populated for `.send`/`.saveDraft`/
         /// `.deleteDraft` — those aren't the "他の受信箱一覧への反映が遅い"
         /// complaint this task addresses, and `.send`'s own Task #124
@@ -211,8 +211,8 @@ public actor OpQueueProcessor {
     /// (`OpQueueProcessor+Send.swift`/`OpQueueProcessor+SaveDraft.swift`)
     /// return this too; see `database`'s doc comment above for why.
     enum ApplyOutcome {
-        /// Task #152: carries every mailbox id this op actually touched
-        /// (source, plus a resolved destination when there is one) — see
+        /// Task #152: carries the destination mailbox ids safe to refresh
+        /// immediately after this op (never its optimistic source) — see
         /// `ReplayResult.affectedMailboxIds`'s doc comment.
         case applied(affectedMailboxIds: Set<Int64>)
         case staleDiscarded
@@ -237,7 +237,7 @@ public actor OpQueueProcessor {
                 uidValidity: UInt32(truncatingIfNeeded: payload.uidValidity)
             )
             try await session.store(mailboxPath: mailbox.path, change: change)
-            return .applied(affectedMailboxIds: [payload.mailboxId])
+            return .applied(affectedMailboxIds: [])
 
         case .move:
             let payload = try JSONDecoder().decode(MoveOpPayload.self, from: op.payload)
@@ -248,7 +248,7 @@ public actor OpQueueProcessor {
                 return .staleDiscarded
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: destination.path)
-            return .applied(affectedMailboxIds: [payload.sourceMailboxId, payload.destinationMailboxId])
+            return .applied(affectedMailboxIds: [payload.destinationMailboxId])
 
         case .delete:
             let payload = try JSONDecoder().decode(DeleteOpPayload.self, from: op.payload)
@@ -267,7 +267,7 @@ public actor OpQueueProcessor {
                 throw SyncEngineError.noRoleMailbox(role: .trash)
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: trash.path)
-            return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, trash.id].compactMap { $0 }))
+            return .applied(affectedMailboxIds: Set([trash.id].compactMap { $0 }))
 
         case .junk:
             let payload = try JSONDecoder().decode(JunkOpPayload.self, from: op.payload)
@@ -281,7 +281,7 @@ public actor OpQueueProcessor {
                 throw SyncEngineError.noRoleMailbox(role: .junk)
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: junk.path)
-            return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, junk.id].compactMap { $0 }))
+            return .applied(affectedMailboxIds: Set([junk.id].compactMap { $0 }))
 
         case .archive:
             let payload = try JSONDecoder().decode(ArchiveOpPayload.self, from: op.payload)
@@ -302,7 +302,7 @@ public actor OpQueueProcessor {
                 )
                 try await session.store(mailboxPath: source.path, change: change)
                 try await session.expunge(mailboxPath: source.path)
-                return .applied(affectedMailboxIds: [payload.sourceMailboxId])
+                return .applied(affectedMailboxIds: [])
             }
             guard let archive = try await MailboxRoleResolver.resolveOrCreate(role: .archive, accountId: account.id, session: session, database: database) else {
                 // Same "leave the op pending rather than silently dropping
@@ -311,7 +311,7 @@ public actor OpQueueProcessor {
                 throw SyncEngineError.noRoleMailbox(role: .archive)
             }
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: archive.path)
-            return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, archive.id].compactMap { $0 }))
+            return .applied(affectedMailboxIds: Set([archive.id].compactMap { $0 }))
 
         case .unarchive:
             let payload = try JSONDecoder().decode(UnarchiveOpPayload.self, from: op.payload)
@@ -333,14 +333,14 @@ public actor OpQueueProcessor {
                 // the message must stay in All Mail exactly as it already
                 // is.
                 try await session.copy(mailboxPath: source.path, uids: UIDSet(payload.uids), to: inbox.path)
-                return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, inbox.id].compactMap { $0 }))
+                return .applied(affectedMailboxIds: Set([inbox.id].compactMap { $0 }))
             }
             // Every other provider: the reverse of `.archive`'s own
             // `session.move(...)` call just above — a real move back to
             // INBOX from wherever it currently sits (its Archive-role
             // mailbox).
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: inbox.path)
-            return .applied(affectedMailboxIds: Set([payload.sourceMailboxId, inbox.id].compactMap { $0 }))
+            return .applied(affectedMailboxIds: Set([inbox.id].compactMap { $0 }))
 
         case .send:
             // Moved to `OpQueueProcessor+Send.swift` (`applySend`) —

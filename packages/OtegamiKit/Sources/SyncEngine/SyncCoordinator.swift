@@ -327,10 +327,13 @@ public actor SyncCoordinator {
     /// nothing is due yet; see `OpQueueProcessor.replay`.
     ///
     /// Task #152 (実機報告「フラグ/アーカイブ操作後、他の受信箱一覧への反映が
-    /// 遅い」): when at least one op actually applied, schedules a
-    /// prioritized targeted resync of exactly the mailbox(es) it touched
-    /// (`result.affectedMailboxIds`) via `scheduleTargetedResync` — see that
-    /// method's doc comment. Scheduled, not awaited inline: this call
+    /// 遅い」): when an applied op has a destination mailbox, schedules a
+    /// prioritized targeted resync of that destination only
+    /// (`result.affectedMailboxIds`) via `scheduleTargetedResync`. The
+    /// optimistically-updated source is intentionally excluded; refreshing
+    /// it before an eventually-consistent server reflects the operation can
+    /// restore stale flags/messages and make the row briefly reappear.
+    /// Scheduled, not awaited inline: this call
     /// already made its own IMAP round trip for the replay itself, and the
     /// resync fires after a short debounce anyway (`TargetedResyncScheduler
     /// .defaultDebounceInterval`) to coalesce a burst of consecutive

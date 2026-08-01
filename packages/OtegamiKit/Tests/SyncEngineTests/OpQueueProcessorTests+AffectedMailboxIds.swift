@@ -116,6 +116,32 @@ struct OpQueueProcessorAffectedMailboxIdsTests {
         #expect(result.affectedMailboxIds == [archiveId])
     }
 
+    @Test("Gmail archive schedules no source resync because it has no destination mailbox")
+    func replayResultAffectedMailboxIdsEmptyForGmailArchive() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let gmail = AccountRecord(
+            displayName: "Gmail", email: "gmail@otegami.test", authType: .oauth2, kind: .gmail,
+            imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls,
+            imapUsername: "gmail@otegami.test"
+        )
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(
+            database: database, account: gmail
+        )
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueArchive(
+                accountId: account.id, sourceMailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [9], db: db
+            )
+        }
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script())
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(result.affectedMailboxIds.isEmpty)
+    }
+
     @Test("ReplayResult.affectedMailboxIds reports only the destination for a plain move op")
     func replayResultAffectedMailboxIdsForMove() async throws {
         let database = try AppDatabase.makeInMemory()
