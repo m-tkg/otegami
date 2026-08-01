@@ -36,22 +36,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/simulator.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/build.sh"
 
 IOS_SIMULATOR="${IOS_SIMULATOR:-iPhone 17 Pro Max}"
 SCREENSHOT_DIR="${SCREENSHOT_DIR:-/tmp/otegami-verify}"
 BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
 
 mkdir -p "$SCREENSHOT_DIR"
-
-run_test() {
-  local test_id="$1"
-  xcodebuild \
-    -project apps/Otegami/Otegami.xcodeproj \
-    -scheme Otegami \
-    -destination "platform=iOS Simulator,id=$UDID" \
-    -only-testing:"OtegamiUITests/$test_id" \
-    test-without-building
-}
 
 screenshot() {
   local name="$1"
@@ -61,15 +53,7 @@ screenshot() {
   xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
 }
 
-echo "==> Resolving simulator UDID for '$IOS_SIMULATOR'"
-UDID="$(xcrun simctl list devices available | awk -F '[()]' -v name="$IOS_SIMULATOR" '
-  $0 ~ name && $0 !~ /unavailable/ { print $2; exit }
-')"
-if [[ -z "$UDID" ]]; then
-  echo "error: no available simulator matching '$IOS_SIMULATOR'" >&2
-  exit 1
-fi
-echo "    UDID: $UDID"
+resolve_simulator_udid
 
 echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
 # M11: see verify-ios-m1.sh's identical step for why a plain `simctl
@@ -77,13 +61,11 @@ echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
 # state assertions a truly-empty starting account list — an account
 # another verify run pushed to iCloud KVS (with its Keychain password also
 # surviving the app's own uninstall) resurrects itself on next launch.
-xcrun simctl shutdown "$UDID" 2>/dev/null || true
-xcrun simctl erase "$UDID"
+erase_simulator
 
 echo "==> Booting simulator"
-xcrun simctl boot "$UDID" 2>/dev/null || true
-xcrun simctl bootstatus "$UDID" -b
-xcrun simctl privacy "$UDID" grant contacts "$BUNDLE_ID" 2>/dev/null || true  # アバター強化バッチ: Contacts の OS 権限ダイアログが自動検証中に出るのを防ぐ (docs/verify.mdの同種の対策と同じ理由)
+boot_simulator
+grant_contacts_privacy  # アバター強化バッチ: Contacts の OS 権限ダイアログが自動検証中に出るのを防ぐ (docs/verify.mdの同種の対策と同じ理由)
 
 echo "==> Starting dev mailstack and seeding fixtures (idempotent reseed)"
 make mailstack-up
@@ -91,12 +73,8 @@ sleep 3
 make mailstack-seed
 
 echo "==> Regenerating Xcode project and building for testing"
-(cd apps/Otegami && xcodegen generate)
-xcodebuild \
-  -project apps/Otegami/Otegami.xcodeproj \
-  -scheme Otegami \
-  -destination "platform=iOS Simulator,id=$UDID" \
-  build-for-testing
+xcodegen_generate
+build_for_testing
 
 screenshot_mid_test() {
   # Neither the account-type-selection sheet nor the iCloud form persist

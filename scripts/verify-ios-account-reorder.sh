@@ -36,22 +36,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/simulator.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/build.sh"
 
 IOS_SIMULATOR="${IOS_SIMULATOR:-iPhone 17 Pro Max}"
 SCREENSHOT_DIR="${SCREENSHOT_DIR:-/tmp/otegami-verify}"
 BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
 
 mkdir -p "$SCREENSHOT_DIR"
-
-run_test() {
-  local test_id="$1"
-  xcodebuild \
-    -project apps/Otegami/Otegami.xcodeproj \
-    -scheme Otegami \
-    -destination "platform=iOS Simulator,id=$UDID" \
-    -only-testing:"OtegamiUITests/$test_id" \
-    test-without-building
-}
 
 # See `scripts/verify-ios-account-edit.sh`'s identically-named helper for
 # why this overwrites the same PNG on a 1s loop for the whole phase rather
@@ -71,20 +63,11 @@ screenshot_during() {
   wait "$screenshot_pid" 2>/dev/null || true
 }
 
-echo "==> Resolving simulator UDID for '$IOS_SIMULATOR'"
-UDID="$(xcrun simctl list devices available | awk -F '[()]' -v name="$IOS_SIMULATOR" '
-  $0 ~ name && $0 !~ /unavailable/ { print $2; exit }
-')"
-if [[ -z "$UDID" ]]; then
-  echo "error: no available simulator matching '$IOS_SIMULATOR'" >&2
-  exit 1
-fi
-echo "    UDID: $UDID"
+resolve_simulator_udid
 
 echo "==> Booting simulator (if needed)"
-xcrun simctl boot "$UDID" 2>/dev/null || true
-xcrun simctl bootstatus "$UDID" -b
-xcrun simctl privacy "$UDID" grant contacts "$BUNDLE_ID" 2>/dev/null || true
+boot_simulator
+grant_contacts_privacy
 
 echo "==> Starting dev mailstack and seeding fixtures (idempotent reseed)"
 make mailstack-up
@@ -95,19 +78,13 @@ echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
 # M11 fix (docs/verify.md's "M11" note): a plain `simctl uninstall` doesn't
 # clear Keychain/NSUbiquitousKeyValueStore on this simulator/toolchain,
 # which could otherwise resurrect a stale account from a previous run.
-xcrun simctl shutdown "$UDID" 2>/dev/null || true
-xcrun simctl erase "$UDID"
-xcrun simctl boot "$UDID" 2>/dev/null || true
-xcrun simctl bootstatus "$UDID" -b
-xcrun simctl privacy "$UDID" grant contacts "$BUNDLE_ID" 2>/dev/null || true
+erase_simulator
+boot_simulator
+grant_contacts_privacy
 
 echo "==> Regenerating Xcode project and building for testing"
-(cd apps/Otegami && xcodegen generate)
-xcodebuild \
-  -project apps/Otegami/Otegami.xcodeproj \
-  -scheme Otegami \
-  -destination "platform=iOS Simulator,id=$UDID" \
-  build-for-testing
+xcodegen_generate
+build_for_testing
 
 echo "==> Phase 1/3: add test1 + test2, confirm default (creation) order everywhere"
 screenshot_during "OtegamiAccountReorderUITests/testDefaultOrderMatchesCreationOrderEverywhere" "account-reorder-01-default-order.png"

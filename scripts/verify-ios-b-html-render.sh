@@ -11,6 +11,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/simulator.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/build.sh"
 
 IOS_SIMULATOR="${IOS_SIMULATOR:-iPhone 17 Pro Max}"
 BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
@@ -19,24 +21,14 @@ OUT_NAME="${1:-b-html-marketing.png}"
 
 mkdir -p "$SCREENSHOT_DIR"
 
-echo "==> Resolving simulator UDID for '$IOS_SIMULATOR'"
-UDID="$(xcrun simctl list devices available | awk -F '[()]' -v name="$IOS_SIMULATOR" '
-  $0 ~ name && $0 !~ /unavailable/ { print $2; exit }
-')"
-if [[ -z "$UDID" ]]; then
-  echo "error: no available simulator matching '$IOS_SIMULATOR'" >&2
-  exit 1
-fi
-echo "    UDID: $UDID"
+resolve_simulator_udid
 
 echo "==> Erasing simulator content"
-xcrun simctl shutdown "$UDID" 2>/dev/null || true
-xcrun simctl erase "$UDID"
+erase_simulator
 
 echo "==> Booting simulator"
-xcrun simctl boot "$UDID" 2>/dev/null || true
-xcrun simctl bootstatus "$UDID" -b
-xcrun simctl privacy "$UDID" grant contacts "$BUNDLE_ID" 2>/dev/null || true  # アバター強化バッチ: Contacts の OS 権限ダイアログが自動検証中に出るのを防ぐ (docs/verify.mdの同種の対策と同じ理由)
+boot_simulator
+grant_contacts_privacy  # アバター強化バッチ: Contacts の OS 権限ダイアログが自動検証中に出るのを防ぐ (docs/verify.mdの同種の対策と同じ理由)
 
 if [[ "${SKIP_MAILSTACK_RESET:-0}" != "1" ]]; then
   echo "==> Starting dev mailstack and seeding fixtures (idempotent reseed)"
@@ -46,12 +38,8 @@ if [[ "${SKIP_MAILSTACK_RESET:-0}" != "1" ]]; then
 fi
 
 echo "==> Regenerating Xcode project and building for testing"
-(cd apps/Otegami && xcodegen generate)
-xcodebuild \
-  -project apps/Otegami/Otegami.xcodeproj \
-  -scheme Otegami \
-  -destination "platform=iOS Simulator,id=$UDID" \
-  build-for-testing
+xcodegen_generate
+build_for_testing
 
 screenshot_mid_test() {
   local test_id="$1"
@@ -85,12 +73,7 @@ screenshot_mid_test() {
     done
   ) &
   local screenshot_pid=$!
-  xcodebuild \
-    -project apps/Otegami/Otegami.xcodeproj \
-    -scheme Otegami \
-    -destination "platform=iOS Simulator,id=$UDID" \
-    -only-testing:"OtegamiUITests/$test_id" \
-    test-without-building
+  run_test "$test_id"
   # Kill the loop the instant xcodebuild returns (not `wait`, which would
   # block until the loop's own 150-iteration budget naturally runs out) —
   # anything captured *after* the test process exits is the home screen or

@@ -32,34 +32,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/simulator.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/build.sh"
 
 IOS_SIMULATOR="${IOS_SIMULATOR:-iPhone 17 Pro Max}"
 BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
 MAILSTACK_USER="test1@otegami.test"
 
-run_test() {
-  local test_id="$1"
-  xcodebuild \
-    -project apps/Otegami/Otegami.xcodeproj \
-    -scheme Otegami \
-    -destination "platform=iOS Simulator,id=$UDID" \
-    -only-testing:"OtegamiUITests/$test_id" \
-    test-without-building
-}
-
 doveadm() {
   docker compose -f "$ROOT_DIR/dev/mailstack/compose.yml" exec -T dovecot doveadm "$@"
 }
 
-echo "==> Resolving simulator UDID for '$IOS_SIMULATOR'"
-UDID="$(xcrun simctl list devices available | awk -F '[()]' -v name="$IOS_SIMULATOR" '
-  $0 ~ name && $0 !~ /unavailable/ { print $2; exit }
-')"
-if [[ -z "$UDID" ]]; then
-  echo "error: no available simulator matching '$IOS_SIMULATOR'" >&2
-  exit 1
-fi
-echo "    UDID: $UDID"
+resolve_simulator_udid
 
 echo "==> Ensuring mailstack is up and seeded for account setup"
 make mailstack-up
@@ -67,18 +51,17 @@ sleep 3
 make mailstack-seed
 
 echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
-xcrun simctl shutdown "$UDID" 2>/dev/null || true
-xcrun simctl erase "$UDID"
+erase_simulator
+# Note: unlike lib/simulator.sh's boot_simulator, this boot is deliberately
+# left unsuppressed (no `2>/dev/null || true`) — matches this script's
+# original behavior; left as-is rather than folded into boot_simulator to
+# avoid changing what a boot failure here does.
 xcrun simctl boot "$UDID"
 xcrun simctl bootstatus "$UDID" -b
 
 echo "==> Regenerating Xcode project and building for testing"
-(cd apps/Otegami && xcodegen generate)
-xcodebuild \
-  -project apps/Otegami/Otegami.xcodeproj \
-  -scheme Otegami \
-  -destination "platform=iOS Simulator,id=$UDID" \
-  build-for-testing
+xcodegen_generate
+build_for_testing
 
 echo "==> Phase 0: add the test1 account (mailstack up)"
 run_test "OtegamiM1VerificationUITests/testAddDovecotAccountAndSyncINBOX"

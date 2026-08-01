@@ -20,6 +20,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/simulator.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib/build.sh"
 
 IOS_SIMULATOR="${IOS_SIMULATOR:-iPhone 17 Pro Max}"
 SCREENSHOT_DIR="${SCREENSHOT_DIR:-/tmp/otegami-verify}"
@@ -27,15 +29,7 @@ BUNDLE_ID="${BUNDLE_ID:-com.mtkg.otegami}"
 
 mkdir -p "$SCREENSHOT_DIR"
 
-echo "==> Resolving simulator UDID for '$IOS_SIMULATOR'"
-UDID="$(xcrun simctl list devices available | awk -F '[()]' -v name="$IOS_SIMULATOR" '
-  $0 ~ name && $0 !~ /unavailable/ { print $2; exit }
-')"
-if [[ -z "$UDID" ]]; then
-  echo "error: no available simulator matching '$IOS_SIMULATOR'" >&2
-  exit 1
-fi
-echo "    UDID: $UDID"
+resolve_simulator_udid
 
 echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
 # M11: a plain `xcrun simctl uninstall` (what this step used to be) removes
@@ -50,13 +44,11 @@ echo "==> Erasing simulator content (clean local DB, Keychain, and iCloud KVS)"
 # full erase clears all three, giving every run of this script the same
 # truly-empty starting state `simctl uninstall` alone used to provide
 # before M11.
-xcrun simctl shutdown "$UDID" 2>/dev/null || true
-xcrun simctl erase "$UDID"
+erase_simulator
 
 echo "==> Booting simulator"
-xcrun simctl boot "$UDID" 2>/dev/null || true
-xcrun simctl bootstatus "$UDID" -b
-xcrun simctl privacy "$UDID" grant contacts "$BUNDLE_ID" 2>/dev/null || true  # アバター強化バッチ: Contacts の OS 権限ダイアログが自動検証中に出るのを防ぐ (docs/verify.mdの同種の対策と同じ理由)
+boot_simulator
+grant_contacts_privacy  # アバター強化バッチ: Contacts の OS 権限ダイアログが自動検証中に出るのを防ぐ (docs/verify.mdの同種の対策と同じ理由)
 
 if [[ "${SKIP_MAILSTACK_RESET:-0}" != "1" ]]; then
   echo "==> Starting dev mailstack and seeding fixtures"
@@ -66,12 +58,8 @@ if [[ "${SKIP_MAILSTACK_RESET:-0}" != "1" ]]; then
 fi
 
 echo "==> Regenerating Xcode project and building for testing"
-(cd apps/Otegami && xcodegen generate)
-xcodebuild \
-  -project apps/Otegami/Otegami.xcodeproj \
-  -scheme Otegami \
-  -destination "platform=iOS Simulator,id=$UDID" \
-  build-for-testing
+xcodegen_generate
+build_for_testing
 
 echo "==> Running M1 verification UI test (add account, connection test, INBOX sync)"
 # M10 fix: this used to be a blanket `-only-testing:OtegamiUITests` (the
@@ -86,12 +74,7 @@ echo "==> Running M1 verification UI test (add account, connection test, INBOX s
 # building M10: scoping this to just OtegamiM1VerificationUITests (matching
 # every later script's `-only-testing:OtegamiUITests/ClassName` pattern)
 # is what this script always meant to do.
-xcodebuild \
-  -project apps/Otegami/Otegami.xcodeproj \
-  -scheme Otegami \
-  -destination "platform=iOS Simulator,id=$UDID" \
-  -only-testing:OtegamiUITests/OtegamiM1VerificationUITests \
-  test-without-building
+run_test "OtegamiM1VerificationUITests"
 
 echo "==> Capturing online screenshot"
 xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" -uiTestsAutoAdvanceToContent >/dev/null
