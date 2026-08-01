@@ -413,8 +413,8 @@ struct AccountEditView: View {
 
         Section("認証") {
             Text("Google アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
             // アバター強化バッチ「Google プロフィール写真」: 新スコープ
             // (`contacts.other.readonly`、後に `contacts.readonly` も追加)
             // 追加前に接続したアカウントは、下の「再認証」ボタンで同じ
@@ -424,8 +424,8 @@ struct AccountEditView: View {
             // `needsReauth`の有無に関わらず常に出す (このヒントは「認証
             // 切れ」ではなく「新しい機能を有効にする」ための案内なので)。
             Text("再接続すると、差出人の Google プロフィール写真 (保存済み連絡先を含む) を表示できるようになります。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
             Button {
                 Task { await reauthenticate() }
             } label: {
@@ -444,7 +444,7 @@ struct AccountEditView: View {
             // 理由を明示する。
             if !environment.isGmailOAuthConfigured {
                 Text("このビルドには Google OAuth Client ID が設定されていないため、Google 認証は行えません。詳細は docs/oauth-setup.md を参照してください。")
-                    .font(.caption)
+                    .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.destructive)
                     .accessibilityIdentifier("accountEdit.gmailOAuthUnconfiguredHint")
             }
@@ -482,8 +482,8 @@ struct AccountEditView: View {
 
         Section("認証") {
             Text("Microsoft アカウントでの認証です。パスワードはこのアプリに保存されません。認証が切れた場合は「再認証」から再度サインインしてください。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
             Button {
                 Task { await reauthenticate() }
             } label: {
@@ -499,7 +499,7 @@ struct AccountEditView: View {
             // `oauthUnavailable` をそのまま見せない)。
             if !environment.isMicrosoftOAuthConfigured {
                 Text("このビルドには Microsoft OAuth Client ID が設定されていないため、Microsoft 認証は行えません。詳細は docs/oauth-setup.md を参照してください。")
-                    .font(.caption)
+                    .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.destructive)
                     .accessibilityIdentifier("accountEdit.microsoftOAuthUnconfiguredHint")
             }
@@ -800,31 +800,31 @@ struct GoogleScopeDiagnosisRow: View {
         case .checking:
             HStack {
                 Text("権限を確認中…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                 Spacer()
                 ProgressView()
             }
             .accessibilityIdentifier("accountEdit.scopeDiagnosis.checking")
         case .full:
             Label("連絡先の写真: 許可済み (完全)", systemImage: "checkmark.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
                 .accessibilityIdentifier("accountEdit.scopeDiagnosis.full")
         case .basic:
             Label("連絡先の写真: 許可済み (基本) — 保存済み連絡先には未対応。「再認証」をお試しください", systemImage: "checkmark.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
                 .accessibilityIdentifier("accountEdit.scopeDiagnosis.basic")
         case .notGranted:
             Label("連絡先の写真: 未許可 — 「再認証」をお試しください", systemImage: "exclamationmark.circle")
-                .font(.caption)
+                .font(OtegamiFont.caption())
                 .foregroundStyle(OtegamiColor.destructive)
                 .accessibilityIdentifier("accountEdit.scopeDiagnosis.notGranted")
         case .unknown:
             Label("権限を確認できませんでした", systemImage: "questionmark.circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
                 .accessibilityIdentifier("accountEdit.scopeDiagnosis.unknown")
         }
     }

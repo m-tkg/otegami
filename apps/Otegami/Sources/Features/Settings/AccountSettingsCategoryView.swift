@@ -141,7 +141,7 @@ struct AccountSettingsCategoryView: View {
             Section("アカウント") {
                 if environment.accounts.isEmpty {
                     Text("アカウントがありません。")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                 } else {
                     ForEach(environment.accounts) { account in
                         NavigationLink {
@@ -282,15 +282,15 @@ struct AccountSettingsCategoryView: View {
     private func accountRowContent(for account: AccountRecord) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(account.displayName)
-                .font(.headline)
-                .foregroundStyle(.primary)
+                .font(OtegamiFont.headline())
+                .foregroundStyle(OtegamiColor.ink)
             Text(account.email)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
 
             if let lastSyncError = account.lastSyncError {
                 Label(lastSyncError, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
+                    .font(OtegamiFont.caption())
                     .foregroundStyle(.orange)
                     .lineLimit(2)
                     .accessibilityIdentifier("settings.account.\(account.id).syncErrorBanner")
@@ -299,14 +299,14 @@ struct AccountSettingsCategoryView: View {
             if account.needsReauth, account.authType == .oauth2 {
                 HStack {
                     Label("再認証が必要です", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
+                        .font(OtegamiFont.caption())
                         .foregroundStyle(.orange)
                         .accessibilityIdentifier("settings.account.\(account.id).needsReauthBanner")
                     Spacer()
                     Button("再認証") {
                         Task { await reauthenticate(account) }
                     }
-                    .font(.caption)
+                    .font(OtegamiFont.caption())
                     .buttonStyle(.borderless)
                     .disabled(reauthenticatingAccountId == account.id)
                     .accessibilityIdentifier("settings.account.\(account.id).reauthButton")
@@ -316,14 +316,14 @@ struct AccountSettingsCategoryView: View {
             if account.needsReauth, account.authType == .password {
                 HStack {
                     Label("資格情報を待っています", systemImage: "icloud.and.arrow.down")
-                        .font(.caption)
+                        .font(OtegamiFont.caption())
                         .foregroundStyle(.orange)
                         .accessibilityIdentifier("settings.account.\(account.id).pendingCredentialBanner")
                     Spacer()
                     Button("パスワードを入力") {
                         passwordEntryAccountId = account.id
                     }
-                    .font(.caption)
+                    .font(OtegamiFont.caption())
                     .buttonStyle(.borderless)
                     .accessibilityIdentifier("settings.account.\(account.id).retryPendingCredentialButton")
                 }
