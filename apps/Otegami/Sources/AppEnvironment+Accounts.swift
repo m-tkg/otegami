@@ -74,7 +74,17 @@ extension AppEnvironment {
             do {
                 for try await accounts in observation.values(in: database.dbWriter) {
                     guard !Task.isCancelled else { return }
+                    let previousAccountIds = self.accounts.map(\.id)
                     setObservedAccounts(accounts)
+                    // Avatar resolution can start while the first account
+                    // observation is still being delivered. In that window
+                    // `GmailAccessTokenBridge.gmailAccountIds()` returns an
+                    // empty list, so the Google source quietly falls back
+                    // to initials. Re-run visible avatars once the live
+                    // account list is available (and when accounts change).
+                    if previousAccountIds != accounts.map(\.id) {
+                        invalidateAvatarImages()
+                    }
                     await restartBadgeObservationIfNeeded(accountIds: accounts.map(\.id))
                     // Backfill (M4): thread every not-yet-threaded message
                     // for each known account. Covers both a brand new
