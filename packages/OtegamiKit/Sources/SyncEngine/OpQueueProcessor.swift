@@ -100,10 +100,21 @@ public actor OpQueueProcessor {
     /// only ever happens at non-suspending points (right at
     /// `replay(account:auth:)`'s entry/exit), so no further race is
     /// possible on the set itself; it makes `replay(account:auth:)` this
-    /// actor's single execution owner per account — a second call for an
-    /// account already in flight is a safe no-op, since the in-flight call
-    /// will pick up the exact same due ops this second call would have.
+    /// actor's single execution owner per account. A second call for an
+    /// account already in flight requests one coalesced trailing pass via
+    /// `trailingReplayAccountIds`: the active pass may already have fetched
+    /// its queue snapshot, so treating the overlap as a no-op can otherwise
+    /// strand an operation enqueued after that snapshot until the next IDLE
+    /// wake, foreground transition, or manual refresh.
     private var inFlightAccountIds: Set<String> = []
+
+    /// Accounts whose in-flight replay received at least one overlapping
+    /// replay request. A set deliberately coalesces any number of triggers
+    /// into one additional pass; if another trigger arrives during that
+    /// trailing pass, the loop runs once more. This never retries failed or
+    /// backed-off operations on its own — each pass still applies the usual
+    /// `nextRetryAt` filtering.
+    private var trailingReplayAccountIds: Set<String> = []
 
     public init(
         database: AppDatabase,
@@ -130,18 +141,33 @@ public actor OpQueueProcessor {
     @discardableResult
     public func replay(account: AccountRecord, auth: MailAuth) async throws -> ReplayResult {
         guard inFlightAccountIds.insert(account.id).inserted else {
-            // Task #124: another `replay(account:auth:)` call for this same
-            // account is already running this actor's fetch-due-ops →
-            // apply → delete cycle — see `inFlightAccountIds`'s doc comment
-            // for why racing a second pass through that cycle is exactly
-            // how a `.send` op gets handed to SMTP twice. That in-flight
-            // call already covers whatever this call would have done, so
-            // this one is a safe, cheap no-op.
-            Self.logger.notice("replay(accountId: \(account.id, privacy: .private)) skipped — already in flight (Task #124 per-account serialization)")
+            trailingReplayAccountIds.insert(account.id)
+            Self.logger.notice("replay(accountId: \(account.id, privacy: .private)) coalesced — trailing pass requested")
             return ReplayResult()
         }
-        defer { inFlightAccountIds.remove(account.id) }
+        trailingReplayAccountIds.remove(account.id)
+        defer {
+            inFlightAccountIds.remove(account.id)
+            trailingReplayAccountIds.remove(account.id)
+        }
 
+        var combined = ReplayResult()
+        repeat {
+            let pass = try await replayPass(account: account, auth: auth)
+            combined.succeeded += pass.succeeded
+            combined.discardedStale += pass.discardedStale
+            combined.retrying += pass.retrying
+            combined.permanentlyFailed += pass.permanentlyFailed
+            combined.affectedMailboxIds.formUnion(pass.affectedMailboxIds)
+        } while trailingReplayAccountIds.remove(account.id) != nil
+        return combined
+    }
+
+    /// One queue snapshot → connection → apply/delete cycle. Ownership and
+    /// overlap coalescing live in `replay(account:auth:)`; keeping one pass
+    /// separate keeps each trailing pass on its own session and runs the
+    /// existing session-scoped disconnect cleanup at every pass boundary.
+    private func replayPass(account: AccountRecord, auth: MailAuth) async throws -> ReplayResult {
         var result = ReplayResult()
 
         let now = Date()
