@@ -9,6 +9,9 @@
 #   make relay-go         build the Go otegami-relay server
 #   make relay-go-test    run the Go otegami-relay server test suite
 #   make relay-go-docker  build the Go otegami-relay Docker image
+#   make verify-<scenario>  scripts/verify-screen.sh <scenario> (tap-free
+#                          screenshot; see that script's own header comment
+#                          for the scenario list, e.g. `make verify-list`)
 #   make mailstack-up     start the dev IMAP/SMTP mail stack (Dovecot + Mailpit)
 #   make mailstack-down   stop the dev mail stack
 #   make mailstack-seed   load sample messages into the dev mail stack
@@ -45,10 +48,10 @@ MAC_SIGNING_FLAGS :=
 endif
 
 .PHONY: all mac mac-app ios ios-device app-project test check-localization \
-	relay-go relay-go-test relay-go-docker \
+	relay-go relay-go-test relay-go-docker verify-% \
 	mailstack-up mailstack-down mailstack-seed deploy-ota clean
 
-all: mac ios test
+all: mac ios test check-localization
 
 # xcodegen keeps the Xcode project in sync with project.yml; regenerate
 # before every app build so new source files are always picked up.
@@ -121,6 +124,14 @@ check-localization:
 	python3 scripts/generate-localizable.py
 	git diff --exit-code apps/Otegami/Resources/Localizable.xcstrings
 	python3 scripts/check-localizable-coverage.py
+
+# Delegates to scripts/verify-screen.sh's tap-free screenshot capture —
+# `make verify-list` runs `scripts/verify-screen.sh list`, `make
+# verify-composer-richtext` runs `scripts/verify-screen.sh composer-richtext`,
+# etc. See that script's own header comment for the full scenario list and
+# env vars (IOS_SIMULATOR, SCREENSHOT_DIR, APPEARANCE, LOCALE, ...).
+verify-%:
+	./scripts/verify-screen.sh $*
 
 relay-go:
 	cd $(RELAY_GO_DIR) && go build ./...
