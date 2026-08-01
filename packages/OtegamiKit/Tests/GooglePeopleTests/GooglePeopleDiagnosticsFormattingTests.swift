@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import GoogleOAuth
+@testable import GooglePeople
 
 @Suite("GooglePeopleDiagnosticsFormatting")
 struct GooglePeopleDiagnosticsFormattingTests {

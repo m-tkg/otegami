@@ -1,5 +1,6 @@
 import Foundation
 import GoogleOAuth
+import GooglePeople
 
 /// Dependency `GoogleProfilePhotoAvatarResolver` needs to enumerate this
 /// device's Gmail accounts and fetch a currently-valid access token for one.

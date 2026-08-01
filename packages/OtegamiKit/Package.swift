@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "MailTransportMailCore", targets: ["MailTransportMailCore"]),
         .library(name: "GoogleOAuth", targets: ["GoogleOAuth"]),
         .library(name: "MicrosoftOAuth", targets: ["MicrosoftOAuth"]),
+        .library(name: "GooglePeople", targets: ["GooglePeople"]),
         .library(name: "PushRelayClient", targets: ["PushRelayClient"]),
         .library(name: "AccountCloudSync", targets: ["AccountCloudSync"]),
         .library(name: "OtegamiTranslation", targets: ["OtegamiTranslation"]),
@@ -232,6 +233,26 @@ let package = Package(
         .testTarget(
             name: "MicrosoftOAuthTests",
             dependencies: ["MicrosoftOAuth", "OAuthKit", "OAuthKitTestSupport"]
+        ),
+
+        // Google People API avatar-fetching client (`GooglePeopleAvatarClient`)
+        // + its diagnostics-display formatting, split out of `GoogleOAuth`
+        // into its own target: both files only ever depend on `Foundation`
+        // (access tokens are passed in as plain `String`s, not any
+        // `GoogleOAuth`-internal type), so there was no real reason for them
+        // to share a target — or a re-authentication risk — with the OAuth
+        // flow itself. No dependency on `GoogleOAuth`/`OAuthKit` at all.
+        .target(
+            name: "GooglePeople"
+        ),
+
+        // `GooglePeopleAvatarClient`'s `URLProtocol`-stubbed
+        // index-building/pagination/diagnostics tests, plus
+        // `GooglePeopleDiagnosticsFormatting`'s email-masking tests — moved
+        // from `GoogleOAuthTests` together with the target split above.
+        .testTarget(
+            name: "GooglePeopleTests",
+            dependencies: ["GooglePeople"]
         ),
 
         // iCloud account-definition sync (iCloud Keychain already syncs

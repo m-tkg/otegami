@@ -1,5 +1,6 @@
 import SwiftUI
 import GoogleOAuth
+import GooglePeople
 import OtegamiStore
 
 /// Task #42「アバター診断」(最優先): 実機で Google プロフィール写真が

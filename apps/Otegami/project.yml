@@ -263,6 +263,8 @@ targets:
       - package: OtegamiKit
         product: MicrosoftOAuth
       - package: OtegamiKit
+        product: GooglePeople
+      - package: OtegamiKit
         product: PushRelayClient
       - package: OtegamiKit
         product: AccountCloudSync

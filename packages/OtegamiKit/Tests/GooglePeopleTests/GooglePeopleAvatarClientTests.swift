@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import GoogleOAuth
+@testable import GooglePeople
 
 @Suite("GooglePeopleAvatarClient", .serialized)
 struct GooglePeopleAvatarClientTests {
