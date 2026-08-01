@@ -1,6 +1,6 @@
 #if canImport(NaturalLanguage)
 import Testing
-@testable import OtegamiTranslation
+@testable import OtegamiCore
 
 @Suite("MessageLanguageDetector")
 struct MessageLanguageDetectorTests {

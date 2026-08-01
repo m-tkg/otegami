@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import OtegamiCore
 import OtegamiTranslation
 
 /// 2026-07-30 (実機フィードバック: 翻訳が理由不明のまま失敗し続ける報告が

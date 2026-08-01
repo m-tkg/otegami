@@ -66,19 +66,21 @@ let package = Package(
         ),
 
         // Sync orchestration: SyncCoordinator / AccountSyncer / MailboxSyncer / opQueue.
-        // Depends on OtegamiTranslation (not the FoundationModels-backed
-        // target) only for `MessageLanguageDetector` — `BodyFetcher` runs it
-        // synchronously right after a body is fetched, so a message's
-        // English/Japanese-ness is known before any UI ever asks (see
-        // `MessageLanguageDetector`'s doc comment for why this needs no LLM
-        // and stays cheap enough to run inline).
+        // No dependency on OtegamiTranslation: `BodyFetcher` calls
+        // `MessageLanguageDetector` synchronously right after a body is
+        // fetched, so a message's English/Japanese-ness is known before any
+        // UI ever asks (see `MessageLanguageDetector`'s doc comment for why
+        // this needs no LLM and stays cheap enough to run inline) — but
+        // `MessageLanguageDetector` itself lives in `OtegamiCore`, not
+        // `OtegamiTranslation` (moved there since it needs no LLM and
+        // `OtegamiTranslation` is otherwise unrelated to sync), so
+        // `OtegamiCore` alone covers it.
         .target(
             name: "SyncEngine",
             dependencies: [
                 "OtegamiCore",
                 "MailTransport",
                 "OtegamiStore",
-                "OtegamiTranslation",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
@@ -280,15 +282,12 @@ let package = Package(
         // Linux-compatible like `MailTransport` — the `TranslationService`
         // protocol, its plain-data types, and `FakeTranslationService` (a
         // deterministic in-memory implementation used by tests and, later,
-        // previews) have no Apple-only dependency. `MessageLanguageDetector`
-        // is the one exception: it needs `NaturalLanguage`, so its whole
-        // file is wrapped in `#if canImport(NaturalLanguage)` rather than
-        // splitting it into its own target — `NaturalLanguage` has shipped
-        // on every Apple OS version this package targets (unlike
-        // `FoundationModels`, which is iOS/macOS 26+ only and gets its own
-        // target below), so gating at the file level is enough to keep a
-        // Linux `swift build` of this target a no-op-but-successful compile
-        // rather than a hard failure.
+        // previews) have no Apple-only dependency. (`MessageLanguageDetector`
+        // used to be this target's one exception to that — it needs
+        // `NaturalLanguage` — but it now lives in `OtegamiCore` instead, so
+        // `SyncEngine` doesn't need to depend on this whole target just for
+        // it; see `OtegamiCore`'s copy of the file for the `#if
+        // canImport(NaturalLanguage)` gating rationale.)
         .target(
             name: "OtegamiTranslation",
             dependencies: ["OtegamiCore"]

@@ -3,7 +3,6 @@ import GRDB
 import MailTransport
 import OtegamiCore
 import OtegamiStore
-import OtegamiTranslation
 
 /// Lazy body fetch (M2): downloads and persists one message's body via an
 /// already-connected `IMAPSessionProtocol` session, and prioritizes which

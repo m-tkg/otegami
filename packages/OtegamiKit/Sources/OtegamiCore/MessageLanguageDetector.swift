@@ -1,5 +1,4 @@
 import Foundation
-import OtegamiCore
 #if canImport(NaturalLanguage)
 import NaturalLanguage
 #endif
