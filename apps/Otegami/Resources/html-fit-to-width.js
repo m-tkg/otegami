@@ -311,6 +311,58 @@
     }
     return totalLength > 0 && explicitDarkLength > totalLength / 2;
   }
+  // 古いテーブル型メールには、ページ全体の背景を持たず、見出し行だけ
+  // `background-color:#e1edf3` のような明色を固定し、その中の文字色は
+  // ブラウザ既定に任せるものがある。Otegami の `CanvasText` はダーク時に
+  // 白へ適応するため、この組み合わせだけ「明背景に白文字」になる。
+  // `findEffectiveBackground` の30%面積条件では意図的に小さい局所背景を
+  // 無視するため、ページ全体判定とは別に局所的な配色不整合を調べる。
+  //
+  // 著者が色を明示した文字はライト固定にしても変化しないため対象外。
+  // また、明背景要素の内側に暗背景のヒーロー等がネストしている場合は、
+  // テキストから最も近い不透明背景が検査中の明背景自身であるときだけ
+  // 数える。これにより「白いbody内の暗いヒーロー＋白文字」を誤検出しない。
+  function nearestOpaqueBackgroundElement(el, boundary) {
+    var node = el;
+    while (node) {
+      if (opaqueBackgroundOf(node)) { return node; }
+      if (node === boundary) { break; }
+      node = node.parentElement;
+    }
+    return null;
+  }
+  function hasAdaptiveLightTextOnLightBackground(inner) {
+    var selectors = collectExplicitColorSelectors();
+    var elements = inner.querySelectorAll('*');
+    var limit = Math.min(elements.length, 800);
+    for (var i = 0; i < limit; i++) {
+      var backgroundElement = elements[i];
+      var background = opaqueBackgroundOf(backgroundElement);
+      if (!background || relativeLuminance(background) <= 0.5) { continue; }
+
+      var walker = document.createTreeWalker(backgroundElement, NodeFilter.SHOW_TEXT, null);
+      var node;
+      var visited = 0;
+      var adaptiveLightLength = 0;
+      while (visited < 200 && (node = walker.nextNode())) {
+        visited += 1;
+        var text = node.nodeValue;
+        if (!text) { continue; }
+        var trimmed = text.trim();
+        if (trimmed.length === 0) { continue; }
+        var parentEl = node.parentElement;
+        if (!parentEl || isVisuallyHiddenText(parentEl, inner)) { continue; }
+        if (nearestOpaqueBackgroundElement(parentEl, backgroundElement) !== backgroundElement) { continue; }
+        if (nearestExplicitColorAncestor(parentEl, inner, selectors)) { continue; }
+        var color = parseOpaqueColor(getComputedStyle(parentEl).color);
+        if (!color || relativeLuminance(color) <= 0.55) { continue; }
+        adaptiveLightLength += trimmed.length;
+        // 単独の記号・短いバッジではなく、実際の見出し行相当だけを拾う。
+        if (adaptiveLightLength >= 8) { return true; }
+      }
+    }
+    return false;
+  }
   function decideDarkInversion() {
     var outer = document.getElementById('otegami-fit-outer');
     var inner = document.getElementById('otegami-fit-inner');
@@ -381,6 +433,9 @@
       if (!shouldIntervene) {
         shouldIntervene = explicitDarkTextIsMajority(inner);
       }
+    }
+    if (!shouldIntervene) {
+      shouldIntervene = hasAdaptiveLightTextOnLightBackground(inner);
     }
     var shouldInvert = shouldIntervene && preferInvert;
     var shouldKeepLight = shouldIntervene && !preferInvert;
