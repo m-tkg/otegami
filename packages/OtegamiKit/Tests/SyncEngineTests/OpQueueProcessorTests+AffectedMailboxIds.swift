@@ -75,7 +75,7 @@ struct OpQueueProcessorAffectedMailboxIdsTests {
 
     // MARK: - Task #152: ReplayResult.affectedMailboxIds
 
-    @Test("ReplayResult.affectedMailboxIds reports just the mailbox a setFlags op touched")
+    @Test("ReplayResult.affectedMailboxIds excludes setFlags source to protect the optimistic local state")
     func replayResultAffectedMailboxIdsForSetFlags() async throws {
         let database = try AppDatabase.makeInMemory()
         let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
@@ -91,10 +91,10 @@ struct OpQueueProcessorAffectedMailboxIdsTests {
 
         let result = try await processor.replay(account: account, auth: auth)
         #expect(result.succeeded == 1)
-        #expect(result.affectedMailboxIds == [inbox.id!])
+        #expect(result.affectedMailboxIds.isEmpty)
     }
 
-    @Test("ReplayResult.affectedMailboxIds reports both the source and self-healed destination for an archive op")
+    @Test("ReplayResult.affectedMailboxIds reports only an archive destination, never its optimistic source")
     func replayResultAffectedMailboxIdsForArchive() async throws {
         let database = try AppDatabase.makeInMemory()
         let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
@@ -113,10 +113,10 @@ struct OpQueueProcessorAffectedMailboxIdsTests {
 
         let result = try await processor.replay(account: account, auth: auth)
         #expect(result.succeeded == 1)
-        #expect(result.affectedMailboxIds == Set([inbox.id!, archiveId]))
+        #expect(result.affectedMailboxIds == [archiveId])
     }
 
-    @Test("ReplayResult.affectedMailboxIds reports both mailboxes for a plain move op")
+    @Test("ReplayResult.affectedMailboxIds reports only the destination for a plain move op")
     func replayResultAffectedMailboxIdsForMove() async throws {
         let database = try AppDatabase.makeInMemory()
         let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
@@ -135,7 +135,7 @@ struct OpQueueProcessorAffectedMailboxIdsTests {
 
         let result = try await processor.replay(account: account, auth: auth)
         #expect(result.succeeded == 1)
-        #expect(result.affectedMailboxIds == Set([inbox.id!, otherId]))
+        #expect(result.affectedMailboxIds == [otherId])
     }
 
     @Test("ReplayResult.affectedMailboxIds is empty for a discarded (stale) op")
