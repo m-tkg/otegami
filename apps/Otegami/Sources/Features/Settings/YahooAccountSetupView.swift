@@ -44,8 +44,8 @@ struct YahooAccountSetupView: View {
             Form {
                 Section {
                     Text("Yahoo のアカウント管理で発行した「アプリのパスワード」が必要です。Yahoo のパスワードそのものではログインできません。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(OtegamiFont.subheadline())
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                     Link("Yahoo のアカウント管理でアプリのパスワードを発行", destination: URL(string: "https://login.yahoo.com/myaccount/security")!)
                         .accessibilityIdentifier("yahooAccountSetup.appPasswordLink")
                 }

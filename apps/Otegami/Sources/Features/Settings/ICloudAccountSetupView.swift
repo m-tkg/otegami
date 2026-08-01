@@ -47,8 +47,8 @@ struct ICloudAccountSetupView: View {
             Form {
                 Section {
                     Text("appleid.apple.com で発行した「App 用パスワード」が必要です。iCloud のパスワードそのものではログインできません。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(OtegamiFont.subheadline())
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                     Link("appleid.apple.com で App 用パスワードを発行", destination: URL(string: "https://appleid.apple.com/account/manage")!)
                         .accessibilityIdentifier("icloudAccountSetup.appPasswordLink")
                 }

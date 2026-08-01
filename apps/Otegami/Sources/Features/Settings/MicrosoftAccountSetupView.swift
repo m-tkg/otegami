@@ -71,8 +71,8 @@ struct MicrosoftAccountSetupView: View {
             Form {
                 Section {
                     Text(provider.explanationText)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(OtegamiFont.subheadline())
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                 }
 
                 Section("アカウント") {

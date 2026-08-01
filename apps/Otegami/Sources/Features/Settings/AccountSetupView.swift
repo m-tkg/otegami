@@ -144,8 +144,8 @@ struct AccountSetupView: View {
         if let infoBannerText = preset.infoBannerText {
             Section {
                 Text(infoBannerText)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(OtegamiFont.subheadline())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("accountSetup.infoBanner")
             }
         }
@@ -259,8 +259,8 @@ struct AccountSetupView: View {
             // the new behavior instead of instructing users to
             // clear the field.
             Text("空欄の場合は認証なしで接続します。サーバーが認証に対応していない場合は、ユーザー名を入力していても自動的に認証を省略します。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
 
             Button {
                 Task { await testSMTPConnectionTapped() }

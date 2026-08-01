@@ -89,7 +89,7 @@ struct AccountTypeSelectionView: View {
             if !environment.isGmailOAuthConfigured {
                 Text("この配布ビルドには Google OAuth Client ID が設定されていません。docs/oauth-setup.md を参照して各自 Client ID を発行し、Config/Local.xcconfig に設定してください。")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("accountTypeSelection.gmailDisabledHint")
             }
         }
@@ -139,7 +139,7 @@ struct AccountTypeSelectionView: View {
             if !environment.isMicrosoftOAuthConfigured {
                 Text("この配布ビルドには Microsoft OAuth Client ID が設定されていません。docs/oauth-setup.md を参照して各自 Client ID を発行し、Config/Local.xcconfig に設定してください。")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("accountTypeSelection.outlookDisabledHint")
             }
         }

@@ -64,11 +64,11 @@ struct YahooJapanAccountSetupView: View {
             Form {
                 Section {
                     Text("Yahoo!メールの「メールソフトでの利用設定 (IMAP/POP アクセス)」を有効にしておく必要があります。無効のままだと、正しいパスワードでも「メールサーバにアクセスできない」等のエラーで接続できません。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(OtegamiFont.subheadline())
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                     Text("手順: Yahoo!メールにログイン → 画面右上の歯車アイコン (設定) → 「メールの基本設定」→ 下の方にある「IMAP/POPアクセス」を「有効にする」に変更して保存。")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                     Link("Yahoo!メールを開く", destination: URL(string: "https://mail.yahoo.co.jp/")!)
                         .accessibilityIdentifier("yahooJapanAccountSetup.settingsLink")
                 }
@@ -105,7 +105,7 @@ struct YahooJapanAccountSetupView: View {
                 Section {
                     Text("通常はメールアドレスと同じログインIDで接続できます。接続テストが失敗する場合は、ログインIDを「@yahoo.co.jp より前の Yahoo! JAPAN ID」だけに変更して再度お試しください。")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                 }
 
                 Section("接続先 (自動設定)") {

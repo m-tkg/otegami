@@ -72,7 +72,7 @@ struct SignatureTemplatesSettingsView: View {
     private var sections: some View {
         if signatures.isEmpty {
             Text("署名テンプレートがありません。")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(OtegamiColor.inkSecondary)
                 .accessibilityIdentifier("settings.signatures.emptyState")
         } else {
             ForEach(signatures) { signature in
@@ -99,11 +99,11 @@ struct SignatureTemplatesSettingsView: View {
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(signature.name)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
+                    .font(OtegamiFont.headline())
+                    .foregroundStyle(OtegamiColor.ink)
                 Text(scopedAccountsSummary(signature))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .lineLimit(1)
             }
             .contentShape(Rectangle())

@@ -71,7 +71,7 @@ struct TemplatesSettingsView: View {
     private var sections: some View {
         if templates.isEmpty {
             Text("テンプレートがありません。")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(OtegamiColor.inkSecondary)
                 .accessibilityIdentifier("settings.templates.emptyState")
         } else {
             ForEach(templates) { template in
@@ -100,20 +100,20 @@ struct TemplatesSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
                     Text(template.name)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
+                        .font(OtegamiFont.headline())
+                        .foregroundStyle(OtegamiColor.ink)
                     if let scopedAccountName = accountName(for: template.accountId) {
                         Text(scopedAccountName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(OtegamiFont.caption())
+                            .foregroundStyle(OtegamiColor.inkSecondary)
                             .padding(.horizontal, OtegamiSpacing.xs)
                             .background(OtegamiColor.paleBase)
                     }
                 }
                 if let subject = template.subject, !subject.isEmpty {
                     Text(subject)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(OtegamiFont.caption())
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                         .lineLimit(1)
                 }
             }

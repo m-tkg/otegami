@@ -33,8 +33,8 @@ struct GmailAccountSetupView: View {
             Form {
                 Section {
                     Text("Google のログイン画面が表示されます。otegami はメールの送受信に必要な権限のみをリクエストします。")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(OtegamiFont.subheadline())
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                 }
 
                 Section("アカウント") {

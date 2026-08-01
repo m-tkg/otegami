@@ -71,7 +71,7 @@ struct DefaultMailAppSettingsView: View {
     private var sections: some View {
         Section {
             Text("Otegami を既定のメールアプリに設定すると、他のアプリの「メールで送信」リンクや mailto: リンクを開いたときに Otegami が開くようになります。")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(OtegamiColor.inkSecondary)
         }
 
         #if os(iOS)
@@ -99,7 +99,7 @@ struct DefaultMailAppSettingsView: View {
         } else {
             Section {
                 Label("Apple の承認待ちです", systemImage: "clock")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("settings.defaultMailApp.pendingApprovalNotice")
             } footer: {
                 Text("iOS で既定のメールアプリになるには、Apple から com.apple.developer.mail-client の権限を取得する必要があります。この機能は権限が承認され、このビルドで有効化された後に使えるようになります。")
@@ -110,7 +110,7 @@ struct DefaultMailAppSettingsView: View {
     private var macOSSection: some View {
         Section {
             Text("メニューバーの「メール」アプリ (Mail) を開き、「メール」→「設定」→「一般」の「デフォルトのメールアプリ」から Otegami を選べます。バージョンによっては「システム設定」→「デスクトップと Dock」の「メールアプリ」の項目からも変更できます。")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(OtegamiColor.inkSecondary)
         }
         .accessibilityIdentifier("settings.defaultMailApp.macOSInstructions")
     }

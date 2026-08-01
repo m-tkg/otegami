@@ -24,7 +24,7 @@ struct PushWatchStatusSection: View {
                 // before Task #175 widened watch eligibility to Gmail/
                 // Microsoft too).
                 Text("アカウントがありません。")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("settings.push.watchStatus.empty")
             } else {
                 ForEach(rows) { row in
@@ -57,7 +57,7 @@ private struct PushWatchStatusRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(verbatim: row.displayName)
-                .font(.body)
+                .font(OtegamiFont.body())
             statusLabel
             if let subtitle {
                 // `subtitle` embeds a formatted `Date` via
@@ -69,8 +69,8 @@ private struct PushWatchStatusRow: View {
                 // already-localized result as a `LocalizedStringKey` —
                 // same reasoning as `AccountFilterChip`'s doc comment.
                 Text(verbatim: subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
             }
             if showsReregisterButton {
                 reregisterButton
@@ -98,7 +98,7 @@ private struct PushWatchStatusRow: View {
     private var statusLabel: some View {
         Label {
             Text(statusText)
-                .font(.caption)
+                .font(OtegamiFont.caption())
         } icon: {
             Image(systemName: statusSystemImage)
         }
@@ -121,7 +121,7 @@ private struct PushWatchStatusRow: View {
                 Text(row.status == .notRegistered ? "登録" : "再登録")
             }
         }
-        .font(.caption)
+        .font(OtegamiFont.caption())
         .buttonStyle(.borderless)
         .disabled(isReregistering)
         .accessibilityIdentifier("settings.push.watchStatus.row.\(row.accountId).reregisterButton")
@@ -171,7 +171,7 @@ private struct PushWatchStatusRow: View {
     private var statusColor: Color {
         switch row.status {
         case .registered: .green
-        case .notRegistered, .unsupported, .unavailable: .secondary
+        case .notRegistered, .unsupported, .unavailable: OtegamiColor.inkSecondary
         case .stopped: OtegamiColor.destructive
         }
     }
