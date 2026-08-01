@@ -118,17 +118,27 @@ let package = Package(
             dependencies: ["OtegamiCore"]
         ),
 
+        // `DatabaseSuspensionTestLock` — the `flock()`-based cross-target
+        // serialization lock for real-GRDB-suspension tests — shared
+        // between `OtegamiStoreTests` and `SyncEngineTests`. A plain
+        // (non-test) target, since SwiftPM doesn't allow a `testTarget` to
+        // depend on another `testTarget`; mirrors `OAuthKitTestSupport`'s
+        // shape (see that target's own doc comment).
+        .target(
+            name: "OtegamiKitTestSupport"
+        ),
+
         // In-memory GRDB migration + envelope-persistence + query tests.
         .testTarget(
             name: "OtegamiStoreTests",
-            dependencies: ["OtegamiStore"]
+            dependencies: ["OtegamiStore", "OtegamiKitTestSupport"]
         ),
 
         // FakeIMAPSession-driven SyncEngine scenario tests (initial sync,
         // idempotent resync, >500-message windowing).
         .testTarget(
             name: "SyncEngineTests",
-            dependencies: ["SyncEngine", "MailTransport", "OtegamiStore"]
+            dependencies: ["SyncEngine", "MailTransport", "OtegamiStore", "OtegamiKitTestSupport"]
         ),
 
         // Integration tests against a real IMAP server (the dev mailstack's

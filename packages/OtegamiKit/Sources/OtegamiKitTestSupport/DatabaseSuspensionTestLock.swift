@@ -16,17 +16,21 @@ import Foundation
 /// A `flock()`-based file lock — not, say, an `actor` — because it also
 /// serializes across separate *processes* should `swift test` ever run
 /// test targets that way, not just concurrent `Task`s within one process.
-/// `SyncEngineTests` (`AccountSyncerTests`/`OpQueueProcessorTests`) has an
-/// identical copy of this same type, for the same reason `FailingStore
-/// Session`-style test doubles are duplicated per test target rather than
-/// shared — the two targets don't import each other's test code — pointed
-/// at the same well-known temp path so both actually serialize against one
-/// another too.
-enum DatabaseSuspensionTestLock {
+///
+/// Shared by `OtegamiStoreTests` (`DatabaseSuspensionTests`) and
+/// `SyncEngineTests` (`AccountSyncerTests`/`OpQueueProcessorTests`) via
+/// this `OtegamiKitTestSupport` target — a plain (non-test) target, since
+/// SwiftPM doesn't allow a `testTarget` to depend on another `testTarget`,
+/// mirroring `OAuthKitTestSupport`'s role of holding code shared between
+/// `GoogleOAuthTests` and `MicrosoftOAuthTests`. Both consuming test
+/// targets point at the same well-known temp path, so they actually
+/// serialize against one another too, not just against tests within their
+/// own target.
+public enum DatabaseSuspensionTestLock {
     private static let path = FileManager.default.temporaryDirectory
         .appendingPathComponent("otegami-database-suspension-test.lock").path
 
-    static func withLock<T>(_ body: () async throws -> T) async rethrows -> T {
+    public static func withLock<T>(_ body: () async throws -> T) async rethrows -> T {
         let fd = open(path, O_CREAT | O_RDWR, 0o600)
         precondition(fd >= 0, "failed to open the database-suspension test lock file at \(path)")
         defer { close(fd) }

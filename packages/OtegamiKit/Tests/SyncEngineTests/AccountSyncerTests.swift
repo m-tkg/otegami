@@ -3,6 +3,7 @@ import GRDB
 import Testing
 import MailTransport
 import OtegamiCore
+import OtegamiKitTestSupport
 import OtegamiStore
 @testable import SyncEngine
 

@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import Testing
+import OtegamiKitTestSupport
 @testable import OtegamiStore
 
 /// Task #192 (実機クラッシュ 0xDEAD10CC 対策). Two things are covered here:
