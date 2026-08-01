@@ -266,6 +266,7 @@ extension AppEnvironment {
         // スコープを得た直後でも次回起動までGoogleプロフィール写真の
         // 取得が永久にスキップされ続ける。
         await googleProfilePhotoAvatarResolver.clearScopeInsufficientMemory(for: account.id)
+        invalidateAvatarImages()
     }
 
     /// `AccountEditView`の「権限の診断」表示専用 — `account`の現在の
@@ -290,7 +291,9 @@ extension AppEnvironment {
     /// (呼び出し元がそもそもこの画面を出さない) には`nil`。
     func googleAvatarDiagnostics(for account: AccountRecord) async -> GoogleAvatarAccountDiagnostics? {
         guard account.authType == .oauth2 else { return nil }
-        return await googleProfilePhotoAvatarResolver.forceRebuildDiagnostics(accountId: account.id)
+        let diagnostics = await googleProfilePhotoAvatarResolver.forceRebuildDiagnostics(accountId: account.id)
+        invalidateAvatarImages()
+        return diagnostics
     }
 
     // MARK: - Microsoft sign-in (Task #116 第2段)

@@ -284,6 +284,14 @@ final class AppEnvironment {
     /// `DesignSystem`, which can't import this app-target type.
     @ObservationIgnored let avatarImageResolver: any AvatarImageResolving
 
+    /// Invalidates already-visible `SenderAvatar` tasks after authentication
+    /// or diagnostics rebuild changes the Google photo index.
+    private(set) var avatarImageRevision = 0
+
+    func invalidateAvatarImages() {
+        avatarImageRevision &+= 1
+    }
+
     /// The same instance `avatarImageResolver`'s `CompositeAvatarImageResolver`
     /// holds (type-erased there behind `any AvatarImageResolving`), kept
     /// here too under its concrete type so `reauthenticateGmailAccount(_:)`

@@ -70,6 +70,11 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
     private var memoryCache: [String: Data?] = [:]
     private var memoryCacheTimestamps: [String: Date] = [:]
     private var inFlight: [String: Task<Data?, Never>] = [:]
+    /// Incremented whenever authentication changes make a previously cached
+    /// "no photo" result stale. A task that started before invalidation may
+    /// still return from URLSession after cancellation; the generation check
+    /// prevents that obsolete result from recreating the cache entry.
+    private var addressCacheGeneration = 0
     private let cacheDirectory: URL
 
     /// Gravatar と同じ 7日 TTL (`GravatarAvatarResolver.ttl`のドキュメント
@@ -87,6 +92,7 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
     /// はプロセス再起動をまたいでこの鮮度を引き継ぐためのもの。
     private var accountIndexState: [String: (index: [String: URL], fetchedAt: Date)] = [:]
     private var indexFetchTasks: [String: Task<[String: URL]?, Never>] = [:]
+    private var accountIndexGenerations: [String: Int] = [:]
 
     /// 索引を「1日1回程度」構築し直す (プランの指示どおり)。写真バイト列
     /// 自体の`ttl` (7日) より短いのは、索引の構築コスト (最大`maxPages`
@@ -142,8 +148,10 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         otherContactsScopeInsufficientAccountIds.remove(accountId)
         connectionsScopeInsufficientAccountIds.remove(accountId)
         selfScopeInsufficientAccountIds.remove(accountId)
+        invalidateAccountIndexWork(accountId: accountId)
         accountIndexState[accountId] = nil
         deleteIndexDiskCache(accountId: accountId)
+        clearNegativeAddressCache()
     }
 
     /// Task #42「アバター診断」: `AccountEditView`の「アバター診断」画面が
@@ -162,6 +170,7 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
     /// する (成功なら記憶を消す、403/401ならその場で記憶する) ので、次回
     /// 以降の通常解決 (`fetchAndStoreIndex`) もこの診断の結果を引き継ぐ。
     public func forceRebuildDiagnostics(accountId: String) async -> GoogleAvatarAccountDiagnostics {
+        invalidateAccountIndexWork(accountId: accountId)
         guard let accessToken = try? await tokenProvider.accessToken(for: accountId) else {
             let unavailable = GooglePeopleIndexOutcome(result: .unavailable, diagnostics: GooglePeopleFetchDiagnostics())
             return GoogleAvatarAccountDiagnostics(
@@ -219,6 +228,7 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
             let fetchedAt = Date()
             accountIndexState[accountId] = (merged, fetchedAt)
             writeIndexDiskCache(accountId: accountId, index: merged, fetchedAt: fetchedAt)
+            clearNegativeAddressCache()
         }
 
         return GoogleAvatarAccountDiagnostics(
@@ -243,19 +253,22 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         }
         if let existing = inFlight[key] { return await existing.value }
 
+        let generation = addressCacheGeneration
         let task = Task<Data?, Never> { [weak self] in
             guard let self else { return nil }
-            return await self.loadAndCache(key: key)
+            return await self.loadAndCache(key: key, generation: generation)
         }
         inFlight[key] = task
         let result = await task.value
-        inFlight[key] = nil
+        if generation == addressCacheGeneration {
+            inFlight[key] = nil
+        }
         return result
     }
 
     // MARK: - Per-address photo byte cache
 
-    private func loadAndCache(key: String) async -> Data? {
+    private func loadAndCache(key: String, generation: Int) async -> Data? {
         if let (data, cachedAt) = readDiskCache(key: key), Date().timeIntervalSince(cachedAt) < ttl {
             memoryCache[key] = data
             memoryCacheTimestamps[key] = cachedAt
@@ -269,11 +282,13 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
                 // 書かない (次回また試す)。
                 return nil
             }
+            guard generation == addressCacheGeneration, !Task.isCancelled else { return nil }
             memoryCache[key] = data
             memoryCacheTimestamps[key] = Date()
             writeDiskCache(key: key, data: data)
             return data
         case .notFound:
+            guard generation == addressCacheGeneration, !Task.isCancelled else { return nil }
             memoryCache[key] = nil
             memoryCacheTimestamps[key] = Date()
             writeDiskCache(key: key, data: nil)
@@ -327,13 +342,16 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         }
         if let existing = indexFetchTasks[accountId] { return await existing.value }
 
+        let generation = accountIndexGenerations[accountId, default: 0]
         let task = Task<[String: URL]?, Never> { [weak self] in
             guard let self else { return nil }
-            return await self.fetchAndStoreIndex(accountId: accountId)
+            return await self.fetchAndStoreIndex(accountId: accountId, generation: generation)
         }
         indexFetchTasks[accountId] = task
         let result = await task.value
-        indexFetchTasks[accountId] = nil
+        if generation == accountIndexGenerations[accountId, default: 0] {
+            indexFetchTasks[accountId] = nil
+        }
         return result
     }
 
@@ -345,7 +363,7 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
     /// をそのまま返す** — 新しい索引が1件も得られなかったからといって
     /// 古い索引を`nil`で上書きすると、一時的なネットワーク不調のたびに
     /// それまで表示できていた写真まで消えてしまう。
-    private func fetchAndStoreIndex(accountId: String) async -> [String: URL]? {
+    private func fetchAndStoreIndex(accountId: String, generation: Int) async -> [String: URL]? {
         if let disk = readIndexDiskCache(accountId: accountId), Date().timeIntervalSince(disk.fetchedAt) < indexTTL {
             accountIndexState[accountId] = disk
             return disk.index
@@ -359,7 +377,9 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         var gotAnySuccess = false
 
         if !otherContactsScopeInsufficientAccountIds.contains(accountId) {
-            switch await client.fetchOtherContactsPhotoIndex(accessToken: accessToken) {
+            let result = await client.fetchOtherContactsPhotoIndex(accessToken: accessToken)
+            guard generation == accountIndexGenerations[accountId, default: 0], !Task.isCancelled else { return nil }
+            switch result {
             case .success(let index):
                 merged.merge(index) { _, new in new }
                 gotAnySuccess = true
@@ -371,7 +391,9 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         }
 
         if !connectionsScopeInsufficientAccountIds.contains(accountId) {
-            switch await client.fetchConnectionsPhotoIndex(accessToken: accessToken) {
+            let result = await client.fetchConnectionsPhotoIndex(accessToken: accessToken)
+            guard generation == accountIndexGenerations[accountId, default: 0], !Task.isCancelled else { return nil }
+            switch result {
             case .success(let index):
                 // 保存済み連絡先 (`connections`) はユーザー本人が明示的に
                 // 保存した情報なので、同じアドレスが`otherContacts`側にも
@@ -391,7 +413,9 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         // 関わらず常に試す (上の2つと違って「既に成功した」からスキップ
         // する理由が無い)。
         if !selfScopeInsufficientAccountIds.contains(accountId) {
-            switch await client.fetchSelfPhotoIndexOutcome(accessToken: accessToken).result {
+            let result = await client.fetchSelfPhotoIndexOutcome(accessToken: accessToken).result
+            guard generation == accountIndexGenerations[accountId, default: 0], !Task.isCancelled else { return nil }
+            switch result {
             case .success(let index):
                 merged.merge(index) { _, new in new }
                 gotAnySuccess = true
@@ -443,6 +467,12 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
         try? FileManager.default.removeItem(at: indexFileURL(for: accountId))
     }
 
+    private func invalidateAccountIndexWork(accountId: String) {
+        accountIndexGenerations[accountId, default: 0] &+= 1
+        indexFetchTasks[accountId]?.cancel()
+        indexFetchTasks[accountId] = nil
+    }
+
     private func indexFileURL(for accountId: String) -> URL {
         cacheDirectory.appendingPathComponent(AvatarCacheKey.sha256Hex(accountId) + ".index.json")
     }
@@ -482,6 +512,30 @@ public actor GoogleProfilePhotoAvatarResolver: AvatarImageResolving {
 
     private func noPhotoMarkerURL(for key: String) -> URL {
         cacheDirectory.appendingPathComponent(AvatarCacheKey.sha256Hex(key) + ".none")
+    }
+
+    /// Authentication can widen the People API index, turning an address
+    /// previously recorded as "no photo" into a hit. Positive photo bytes
+    /// remain valid, but every negative marker must be discarded because
+    /// those files are shared across Gmail accounts and cannot be attributed
+    /// safely to only the account that was reauthenticated.
+    private func clearNegativeAddressCache() {
+        addressCacheGeneration &+= 1
+        for task in inFlight.values { task.cancel() }
+        inFlight.removeAll()
+
+        let negativeMemoryKeys = memoryCacheTimestamps.keys.filter { memoryCache[$0] == nil }
+        for key in negativeMemoryKeys {
+            memoryCacheTimestamps[key] = nil
+        }
+
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for file in files where file.pathExtension == "none" {
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 }
 

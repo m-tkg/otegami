@@ -36,6 +36,7 @@ public struct SenderAvatar: View {
     private let diameter: CGFloat
 
     @Environment(\.avatarImageResolver) private var resolver
+    @Environment(\.avatarImageRevision) private var avatarImageRevision
     /// `nil` until (if ever) `resolver` resolves a non-`nil` image for
     /// `address` — the initials fallback renders unconditionally underneath
     /// this, so there is no loading spinner/placeholder state to represent
@@ -103,11 +104,16 @@ public struct SenderAvatar: View {
             // — keying the task to `address` restarts resolution (and clears
             // the previous address' stale `imageData`) whenever the address
             // this instance is showing actually changes.
-            .task(id: address) {
+            .task(id: AvatarResolutionRequest(address: address, revision: avatarImageRevision)) {
                 imageData = nil
                 guard let resolver, !address.isEmpty else { return }
                 imageData = await resolver.resolveAvatarImageData(displayName: displayName, address: address)
             }
+    }
+
+    private struct AvatarResolutionRequest: Equatable {
+        let address: String
+        let revision: Int
     }
 
     @ViewBuilder

@@ -28,6 +28,10 @@ private struct AvatarImageResolverKey: EnvironmentKey {
     static let defaultValue: (any AvatarImageResolving)? = nil
 }
 
+private struct AvatarImageRevisionKey: EnvironmentKey {
+    static let defaultValue = 0
+}
+
 extension EnvironmentValues {
     /// アプリ全体で1つのインスタンスを共有する想定 (`AppEnvironment
     /// .avatarImageResolver`、`OtegamiApp.swift` の各 `.environment(environment)`
@@ -40,5 +44,13 @@ extension EnvironmentValues {
     public var avatarImageResolver: (any AvatarImageResolving)? {
         get { self[AvatarImageResolverKey.self] }
         set { self[AvatarImageResolverKey.self] = newValue }
+    }
+
+    /// Changes after an operation such as Gmail reauthentication invalidates
+    /// cached resolution results. `SenderAvatar` includes this value in its
+    /// task identity so already-visible rows resolve again immediately.
+    public var avatarImageRevision: Int {
+        get { self[AvatarImageRevisionKey.self] }
+        set { self[AvatarImageRevisionKey.self] = newValue }
     }
 }

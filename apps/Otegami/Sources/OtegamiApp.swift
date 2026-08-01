@@ -21,6 +21,7 @@ struct OtegamiApp: App {
                 // `EnvironmentValues` key instead — see
                 // `AvatarImageResolving.swift`'s doc comment.
                 .environment(\.avatarImageResolver, environment.avatarImageResolver)
+                .environment(\.avatarImageRevision, environment.avatarImageRevision)
                 // 2026-07-30 (実機フィードバック: 「テスト翻訳を実行」が
                 // スピナーのまま無反応・メール本文画面でも翻訳できなく
                 // なった、というb24876d適用後の退行): 以前は
@@ -90,6 +91,7 @@ struct OtegamiApp: App {
                 // `EnvironmentValues` key instead — see
                 // `AvatarImageResolving.swift`'s doc comment.
                 .environment(\.avatarImageResolver, environment.avatarImageResolver)
+                .environment(\.avatarImageRevision, environment.avatarImageRevision)
         }
         .defaultSize(width: 560, height: 520)
         #endif
@@ -125,6 +127,7 @@ struct OtegamiApp: App {
                 // `EnvironmentValues` key instead — see
                 // `AvatarImageResolving.swift`'s doc comment.
                 .environment(\.avatarImageResolver, environment.avatarImageResolver)
+                .environment(\.avatarImageRevision, environment.avatarImageRevision)
         }
         #endif
     }
