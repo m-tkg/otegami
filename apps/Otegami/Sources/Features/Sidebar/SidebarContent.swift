@@ -106,7 +106,6 @@ struct SidebarSheetPresentationModifier: ViewModifier {
     @Binding var showingOutbox: Bool
     @Binding var showingDrafts: Bool
     @Binding var showingFailedOps: Bool
-    @Binding var showingMailboxSyncFailures: Bool
     let onOpenDraft: (Int64) -> Void
     let onOpenServerDraft: (Int64) -> Void
 
@@ -126,9 +125,6 @@ struct SidebarSheetPresentationModifier: ViewModifier {
             }
             .sheet(isPresented: $showingFailedOps) {
                 FailedOperationsView()
-            }
-            .sheet(isPresented: $showingMailboxSyncFailures) {
-                MailboxSyncFailuresView()
             }
     }
 }

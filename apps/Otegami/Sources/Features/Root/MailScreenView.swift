@@ -118,7 +118,6 @@ struct MailScreenView: View {
     @State private var showingOutbox = false
     @State private var showingDrafts = false
     @State private var showingFailedOps = false
-    @State private var showingMailboxSyncFailures = false
     @State private var showingSettings = false
 
     /// Task #140 (実機報告「ツールバー検索の `from:` プリセットが不発になる
@@ -274,7 +273,6 @@ struct MailScreenView: View {
             DraftsView(onOpenDraft: onOpenDraft, onOpenServerDraft: onOpenServerDraft)
         }
         .sheet(isPresented: $showingFailedOps) { FailedOperationsView() }
-        .sheet(isPresented: $showingMailboxSyncFailures) { MailboxSyncFailuresView() }
         .sheet(isPresented: $showingSettings) { SettingsSheetView() }
         .sheet(item: $searchRoute) { route in
             SearchScreenView(onReply: onReply, presetQuery: route.presetQuery)
@@ -815,7 +813,6 @@ struct MailScreenView: View {
             onOpenOutbox: { presentAfterClosingMenu { showingOutbox = true } },
             onOpenDrafts: { presentAfterClosingMenu { showingDrafts = true } },
             onOpenFailedOps: { presentAfterClosingMenu { showingFailedOps = true } },
-            onOpenMailboxSyncFailures: { presentAfterClosingMenu { showingMailboxSyncFailures = true } },
             onAddAccount: { presentAfterClosingMenu { accountEntryRoute = .typeSelection } },
             onOpenSettings: { presentAfterClosingMenu { showingSettings = true } },
             isMenuOpen: isMenuOpen,

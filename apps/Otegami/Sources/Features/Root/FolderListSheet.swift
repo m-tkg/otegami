@@ -53,7 +53,6 @@ struct FolderListSheet: View {
     var onOpenOutbox: () -> Void
     var onOpenDrafts: () -> Void
     var onOpenFailedOps: () -> Void
-    var onOpenMailboxSyncFailures: () -> Void
     var onAddAccount: () -> Void
     /// 新画面構成 (1): メニュー最下部の「設定」行。
     var onOpenSettings: () -> Void
@@ -265,9 +264,6 @@ struct FolderListSheet: View {
             await countsObserver.observeFailedOpCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
         }
         .task(id: environment.accounts.map(\.id)) {
-            await countsObserver.observeMailboxSyncFailureCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
-        }
-        .task(id: environment.accounts.map(\.id)) {
             await countsObserver.observeUnifiedInboxUnreadCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
         }
         // 画面構造改修バッチ (Task #33, 3): これまで`accountSection(for:)`の
@@ -406,16 +402,6 @@ struct FolderListSheet: View {
                 }
                 .otegamiMenuRowChrome()
                 .accessibilityIdentifier("folderSheet.failedOps")
-            }
-            if countsObserver.mailboxSyncFailureCount > 0 {
-                Button {
-                    onOpenMailboxSyncFailures()
-                } label: {
-                    Label("メールボックス同期エラー (\(countsObserver.mailboxSyncFailureCount))", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(OtegamiColor.destructive)
-                }
-                .otegamiMenuRowChrome()
-                .accessibilityIdentifier("folderSheet.mailboxSyncFailures")
             }
         }
     }
@@ -1054,4 +1040,3 @@ private extension View {
             .listRowBackground(Color.clear)
     }
 }
-

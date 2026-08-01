@@ -5,8 +5,8 @@ import SyncEngine
 
 /// The mailbox tree + badge counts `SidebarView` (macOS's permanent left
 /// column) and `FolderListSheet` (iOS's hamburger-menu drawer) each show —
-/// unified inbox unread, per-mailbox unread, outbox/draft/sync-error/
-/// mailbox-sync-error counts, and the mailbox tree itself — driven by the
+/// unified inbox unread, per-mailbox unread, outbox/draft/sync-error
+/// counts, and the mailbox tree itself — driven by the
 /// same GRDB `ValueObservation`s in both screens. The two screens stay
 /// separate `View` types (see `FolderListSheet`'s doc comment for why: they
 /// no longer share a rendering context, one is an always-visible
@@ -30,7 +30,6 @@ final class MailboxCountsObserver {
     private(set) var outboxCount = 0
     private(set) var draftCount = 0
     private(set) var failedOpCount = 0
-    private(set) var mailboxSyncFailureCount = 0
     // M10: unread badges. `unreadByMailboxId` groups by mailbox id (spans
     // every account — a plain `[Int64: Int]` is enough since `MailboxRecord
     // .id` is a global autoincrement primary key, not scoped per account).
@@ -152,25 +151,6 @@ final class MailboxCountsObserver {
         do {
             for try await ops in observation.values(in: dbWriter) {
                 failedOpCount = ops.count
-            }
-        } catch {
-            // A failing observation just stops the badge from updating.
-        }
-    }
-
-    /// Partial-sync-failure visibility — see `MailboxSyncFailuresView`'s
-    /// doc comment for the full rationale. Separate counter/sheet from
-    /// `failedOpCount` deliberately: an `opQueue` failure (a *user action*
-    /// like a delete/flag-change that couldn't be applied) and a mailbox
-    /// sync failure (the *background list-refresh itself* not working for
-    /// that mailbox) are different problems with different retry
-    /// semantics, so collapsing them into one counter/sheet would blur
-    /// what's actually wrong.
-    func observeMailboxSyncFailureCount(accountIds: [String], dbWriter: any DatabaseWriter) async {
-        let observation = MailboxQuery.syncFailuresObservation(accountIds: accountIds)
-        do {
-            for try await mailboxes in observation.values(in: dbWriter) {
-                mailboxSyncFailureCount = mailboxes.count
             }
         } catch {
             // A failing observation just stops the badge from updating.

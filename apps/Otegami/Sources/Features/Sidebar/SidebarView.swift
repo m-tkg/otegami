@@ -62,7 +62,6 @@ struct SidebarView: View {
     @State private var showingOutbox = false
     @State private var showingDrafts = false
     @State private var showingFailedOps = false
-    @State private var showingMailboxSyncFailures = false
     /// The mailbox tree + badge counts this view shows — see
     /// `MailboxCountsObserver`'s doc comment for why the observation logic
     /// itself lives there rather than directly in this view (shared with
@@ -112,7 +111,6 @@ struct SidebarView: View {
                     showingOutbox: $showingOutbox,
                     showingDrafts: $showingDrafts,
                     showingFailedOps: $showingFailedOps,
-                    showingMailboxSyncFailures: $showingMailboxSyncFailures,
                     onOpenDraft: onOpenDraft,
                     onOpenServerDraft: onOpenServerDraft
                 )
@@ -125,9 +123,6 @@ struct SidebarView: View {
             }
             .task(id: environment.accounts.map(\.id)) {
                 await countsObserver.observeFailedOpCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
-            }
-            .task(id: environment.accounts.map(\.id)) {
-                await countsObserver.observeMailboxSyncFailureCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
             }
             .task(id: environment.accounts.map(\.id)) {
                 await countsObserver.observeUnifiedInboxUnreadCount(accountIds: environment.accounts.map(\.id), dbWriter: environment.database.dbWriter)
@@ -204,15 +199,6 @@ struct SidebarView: View {
                         onTap: openFailedOps
                     )
                 }
-                if countsObserver.mailboxSyncFailureCount > 0 {
-                    SidebarStatusRow(
-                        title: "メールボックス同期エラー (\(countsObserver.mailboxSyncFailureCount))",
-                        systemImage: "exclamationmark.triangle",
-                        accessibilityIdentifier: "sidebar.mailboxSyncFailures",
-                        isError: true,
-                        onTap: openMailboxSyncFailures
-                    )
-                }
             }
 
             #if os(macOS)
@@ -269,10 +255,6 @@ struct SidebarView: View {
 
     private func openFailedOps() {
         showingFailedOps = true
-    }
-
-    private func openMailboxSyncFailures() {
-        showingMailboxSyncFailures = true
     }
 
     #if os(macOS)
