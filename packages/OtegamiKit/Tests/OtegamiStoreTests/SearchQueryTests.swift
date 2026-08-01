@@ -488,6 +488,48 @@ struct SearchQueryTests {
         }
     }
 
+    @Test("flatMessageSummaries collapses one Gmail message synced into INBOX and All Mail")
+    func flatMessageSummariesDeduplicatesGmailMailboxMemberships() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, inboxId) = try database.dbWriter.write { db in
+            try makeAccountAndMailbox(db: db, suffix: "gmail")
+        }
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let inboxMessageId = try database.dbWriter.write { db -> Int64 in
+            var allMail = MailboxRecord(
+                accountId: accountId, path: "[Gmail]/All Mail", displayPath: "All Mail", role: .all
+            )
+            allMail = try allMail.upsertAndFetch(db, onConflict: ["accountId", "path"])
+
+            var thread = ThreadRecord(
+                accountId: accountId, normalizedSubject: "領収書", lastMessageDate: base, messageCount: 1
+            )
+            try thread.insert(db)
+            var allMailMessage = MessageRecord(
+                mailboxId: allMail.id!, uid: 10, subject: "楽天 領収書", date: base,
+                internalDate: base, gmailMessageId: 42, threadId: thread.id
+            )
+            try allMailMessage.insert(db)
+            try FTSIndexer.reindex(messageId: allMailMessage.id!, db: db)
+
+            var inboxMessage = MessageRecord(
+                mailboxId: inboxId, uid: 20, subject: "楽天 領収書", date: base,
+                internalDate: base, gmailMessageId: 42, threadId: thread.id
+            )
+            try inboxMessage.insert(db)
+            try FTSIndexer.reindex(messageId: inboxMessage.id!, db: db)
+            return inboxMessage.id!
+        }
+
+        let results = try database.dbWriter.read { db in
+            try SearchQuery.flatMessageSummaries(
+                query: "楽天", scope: .allAccounts(accountIds: [accountId]), db: db
+            )
+        }
+
+        #expect(results.map(\.singleMessageId) == [inboxMessageId])
+    }
+
     @Test("flatMessageSummaries returns no rows for a non-matching query, and respects mailbox scope")
     func flatMessageSummariesRespectsScopeAndEmptyQuery() throws {
         let database = try AppDatabase.makeInMemory()

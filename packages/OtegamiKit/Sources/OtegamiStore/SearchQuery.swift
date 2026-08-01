@@ -234,21 +234,45 @@ public enum SearchQuery {
         // .unifiedInboxFlatSummaries`と同じ「`ThreadSummary(flatMessage:
         // accountId:)`が要求するaccountIdをRowから直接読む」パターン
         // (`MessageRecord`自身は`accountId`列を持たないため)。
-        var sql = """
+        let sql = """
             SELECT message.*, mailbox.accountId AS accountId FROM message
             JOIN mailbox ON mailbox.id = message.mailboxId
             WHERE message.id IN (\(messageIdsArray.map { _ in "?" }.joined(separator: ",")))
             ORDER BY message.isPinnedLocal DESC, COALESCE(message.date, message.internalDate) DESC, message.uid DESC
             """
-        var arguments: [(any DatabaseValueConvertible)?] = messageIdsArray
-        if let limit {
-            sql += " LIMIT ?"
-            arguments.append(limit)
-        }
-        let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
-        return try rows.map { row in
+        let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(messageIdsArray))
+        let candidates = try rows.map { row -> (message: MessageRecord, accountId: String) in
             let message = try MessageRecord(row: row)
             let accountId: String = row["accountId"]
+            return (message, accountId)
+        }
+
+        // Gmail stores one physical email as separate rows for each label
+        // membership (most visibly INBOX + All Mail). Thread detail already
+        // collapses those rows through `ThreadQuery.deduplicate`; flat search
+        // must apply the same rule. Deduplicate per account because both
+        // X-GM-MSGID and RFC Message-ID identities are only safe inside an
+        // account, then restore the query's global date/pin ordering.
+        var winnerIds = Set<Int64>()
+        for accountId in Set(candidates.map(\.accountId)) {
+            let accountMessages = candidates.lazy
+                .filter { $0.accountId == accountId }
+                .map(\.message)
+            winnerIds.formUnion(try ThreadQuery.deduplicate(Array(accountMessages), db: db).compactMap(\.id))
+        }
+        var deduplicated = candidates.filter { candidate in
+            guard let id = candidate.message.id else { return true }
+            return winnerIds.contains(id)
+        }
+        // Apply the result limit after collapsing duplicates; applying SQL
+        // LIMIT first could return fewer visible rows than requested.
+        if let limit, limit >= 0 {
+            deduplicated = Array(deduplicated.prefix(limit))
+        }
+
+        return try deduplicated.map { candidate in
+            let message = candidate.message
+            let accountId = candidate.accountId
             var summary = ThreadSummary(flatMessage: message, accountId: accountId)
             // Task #151: same per-message archived check `ThreadQuery`'s own
             // flat-mode summaries use — see `ThreadQuery.isMessageArchived`'s
