@@ -141,6 +141,10 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// `AccountSyncerTests`' mailbox-level retry scenarios exercise via
         /// `performInitialSync`. `nil` (default): no failure injected.
         public var flakyFetchRecentEnvelopes: FlakyCallController?
+        /// When set, every `store` call pauses after announcing that it
+        /// reached the server boundary, until the test opens the gate.
+        /// Used to deterministically overlap two op-queue replay calls.
+        public var storeGate: AsyncCallGate?
 
         public init(
             mailboxes: [MailboxInfo] = [],
@@ -164,7 +168,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             failCreateMailbox: MailTransportError? = nil,
             mailboxRevealedAfterCreate: MailboxInfo? = nil,
             appendReturnsUID: UInt32? = nil,
-            flakyFetchRecentEnvelopes: FlakyCallController? = nil
+            flakyFetchRecentEnvelopes: FlakyCallController? = nil,
+            storeGate: AsyncCallGate? = nil
         ) {
             self.mailboxes = mailboxes
             self.envelopesByPath = envelopesByPath
@@ -188,6 +193,39 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.mailboxRevealedAfterCreate = mailboxRevealedAfterCreate
             self.appendReturnsUID = appendReturnsUID
             self.flakyFetchRecentEnvelopes = flakyFetchRecentEnvelopes
+            self.storeGate = storeGate
+        }
+    }
+
+    /// A one-shot async gate for deterministic overlap tests. `wait()`
+    /// first wakes `waitUntilEntered()`, then suspends until `open()`.
+    public actor AsyncCallGate {
+        private var isOpen = false
+        private var entered = false
+        private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+        private var openWaiters: [CheckedContinuation<Void, Never>] = []
+
+        public init() {}
+
+        public func wait() async {
+            entered = true
+            let currentEntryWaiters = entryWaiters
+            entryWaiters.removeAll()
+            currentEntryWaiters.forEach { $0.resume() }
+            guard !isOpen else { return }
+            await withCheckedContinuation { openWaiters.append($0) }
+        }
+
+        public func waitUntilEntered() async {
+            guard !entered else { return }
+            await withCheckedContinuation { entryWaiters.append($0) }
+        }
+
+        public func open() {
+            isOpen = true
+            let currentOpenWaiters = openWaiters
+            openWaiters.removeAll()
+            currentOpenWaiters.forEach { $0.resume() }
         }
     }
 
@@ -493,6 +531,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func store(mailboxPath: String, change: FlagChange) async throws {
+        if let storeGate = script.storeGate {
+            await storeGate.wait()
+        }
         recorder?.recordStore(path: mailboxPath, change: change)
     }
 

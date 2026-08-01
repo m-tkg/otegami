@@ -111,6 +111,45 @@ struct OpQueueProcessorSetFlagsTests {
         #expect(remaining.isEmpty)
     }
 
+    @Test("an overlapping replay request drains operations enqueued after the active pass began")
+    func overlappingReplayDrainsNewOperation() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [41], flags: .seen, db: db
+            )
+        }
+
+        let gate = FakeIMAPSession.AsyncCallGate()
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(storeGate: gate)
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let activeReplay = Task { try await processor.replay(account: account, auth: auth) }
+        await gate.waitUntilEntered()
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [42], flags: .seen, db: db
+            )
+        }
+        let overlappingReplay = Task { try await processor.replay(account: account, auth: auth) }
+
+        await gate.open()
+        _ = try await activeReplay.value
+        _ = try await overlappingReplay.value
+
+        #expect(recorder.storeCalls.map { $0.change.uids.uids } == [[41], [42]])
+        let remaining = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
+        #expect(remaining.isEmpty)
+    }
+
     // MARK: (d) idempotent replay, generation-mismatch discard
 
     @Test("replaying the same absolute-flags op twice issues the same STORE each time (idempotent)")
