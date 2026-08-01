@@ -64,8 +64,8 @@ struct PushDiagnosticsView: View {
         Section {
             if environment.pushDiagnostics.runs.isEmpty {
                 Text("まだ記録がありません。通知が届くと記録されます。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("pushDiagnostics.empty")
             } else {
                 ForEach(environment.pushDiagnostics.runs) { run in
@@ -93,8 +93,8 @@ private struct PushDiagnosticsRunRow: View {
                 Spacer()
                 if let totalElapsedMs = run.totalElapsedMs {
                     Text(verbatim: "\(totalElapsedMs)ms")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(OtegamiFont.caption())
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                 }
             }
             ForEach(run.stages) { stage in
@@ -121,12 +121,12 @@ private struct PushDiagnosticsStageRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: OtegamiSpacing.xs) {
             stageLabel(for: stage.stage)
-                .font(.caption)
+                .font(OtegamiFont.caption())
             Spacer()
             if let elapsedMs = stage.elapsedMs {
                 Text(verbatim: "\(elapsedMs)ms")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
             }
             outcomeView
         }
@@ -170,7 +170,7 @@ private struct PushDiagnosticsStageRow: View {
                 Image(systemName: "arrow.forward.circle")
             }
             .font(.caption2)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(OtegamiColor.inkSecondary)
         case .failure(let category, let looksRateLimited, let logDetail):
             VStack(alignment: .trailing, spacing: 2) {
                 Label {
@@ -183,7 +183,7 @@ private struct PushDiagnosticsStageRow: View {
                 if let logDetail {
                     Text(verbatim: logDetail)
                         .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(OtegamiColor.inkSecondary)
                         .textSelection(.enabled)
                 }
             }

@@ -37,8 +37,8 @@ struct GoogleAvatarDiagnosticsView: View {
                 Section {
                     HStack {
                         Text("Google に問い合わせて索引を再構築中…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(OtegamiFont.caption())
+                            .foregroundStyle(OtegamiColor.inkSecondary)
                         Spacer()
                         ProgressView()
                     }
@@ -166,26 +166,26 @@ private struct GooglePeopleSourceDiagnosticsRow: View {
             // `LocalizedStringKey`解決になる方へ渡す。
             if let discardReason = outcome.diagnostics.discardReason {
                 Label(discardReason, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
+                    .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.destructive)
                     .accessibilityIdentifier("\(identifierPrefix).discarded")
             } else {
                 Label("索引の一部が破棄されました", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
+                    .font(OtegamiFont.caption())
                     .foregroundStyle(OtegamiColor.destructive)
                     .accessibilityIdentifier("\(identifierPrefix).discarded")
             }
         }
         if let networkError = outcome.diagnostics.networkErrorDescription {
             Text("ネットワークエラー: \(networkError)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OtegamiFont.caption())
+                .foregroundStyle(OtegamiColor.inkSecondary)
                 .accessibilityIdentifier("\(identifierPrefix).networkError")
         }
         if let snippet = outcome.diagnostics.errorBodySnippet {
             Text(GooglePeopleDiagnosticsFormatting.maskEmailAddresses(in: snippet))
                 .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(OtegamiColor.inkSecondary)
                 .accessibilityIdentifier("\(identifierPrefix).errorBodySnippet")
         }
     }

@@ -136,8 +136,8 @@ struct TranslationDiagnosticsView: View {
         Section {
             if environment.translationDiagnostics.attempts.isEmpty {
                 Text("まだ記録がありません。メールを開いて翻訳を試すか、上の「テスト翻訳を実行」をお試しください。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("translationDiagnostics.recentAttempts.empty")
             } else {
                 ForEach(environment.translationDiagnostics.attempts) { attempt in
@@ -153,8 +153,8 @@ struct TranslationDiagnosticsView: View {
         Section {
             if environment.translationDiagnostics.languageDetectionAttempts.isEmpty {
                 Text("まだ記録がありません。メールを開くと記録されます。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("translationDiagnostics.recentLanguageDetections.empty")
             } else {
                 ForEach(environment.translationDiagnostics.languageDetectionAttempts) { attempt in
@@ -277,14 +277,14 @@ private struct TranslationAttemptRow: View {
                     .font(.caption.bold())
                 Spacer()
                 Text(Self.dateFormatter.string(from: attempt.date))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
             }
             Text(verbatim: "要素数: \(attempt.elementCount) / 合計文字数: \(attempt.totalChars)")
-                .font(.caption)
+                .font(OtegamiFont.caption())
             Text(verbatim: attempt.characterClassSummary)
                 .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(OtegamiColor.inkSecondary)
             outcomeView
         }
         .padding(.vertical, OtegamiSpacing.xs)
@@ -296,7 +296,7 @@ private struct TranslationAttemptRow: View {
         switch attempt.outcome {
         case .success(let resultChars):
             Label("成功 (結果 \(resultChars) 文字)", systemImage: "checkmark.circle")
-                .font(.caption)
+                .font(OtegamiFont.caption())
                 .foregroundStyle(OtegamiColor.accent)
         case .failure(let domain, let code, let type, let description):
             VStack(alignment: .leading, spacing: 2) {
@@ -310,11 +310,11 @@ private struct TranslationAttemptRow: View {
                 } icon: {
                     Image(systemName: "xmark.octagon")
                 }
-                .font(.caption)
+                .font(OtegamiFont.caption())
                 .foregroundStyle(OtegamiColor.destructive)
                 Text(verbatim: description)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -340,8 +340,8 @@ private struct LanguageDetectionAttemptRow: View {
                     .font(.caption.bold())
                 Spacer()
                 Text(Self.dateFormatter.string(from: attempt.date))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
             }
             candidateSummaryView(label: "plainText", summary: attempt.plainTextSummary)
             candidateSummaryView(label: "html", summary: attempt.htmlSummary)
@@ -357,7 +357,7 @@ private struct LanguageDetectionAttemptRow: View {
         // `Text(verbatim:)` (`AccountFilterChip.swift`の教訓どおり)。
         Text(verbatim: "\(label): \(summary ?? "(候補なし)")")
             .font(.caption.monospaced())
-            .foregroundStyle(.secondary)
+            .foregroundStyle(OtegamiColor.inkSecondary)
     }
 
     @ViewBuilder
@@ -369,11 +369,11 @@ private struct LanguageDetectionAttemptRow: View {
             } icon: {
                 Image(systemName: "checkmark.circle")
             }
-            .font(.caption)
+            .font(OtegamiFont.caption())
             .foregroundStyle(OtegamiColor.accent)
         case .undetected:
             Label("判定できず", systemImage: "questionmark.circle")
-                .font(.caption)
+                .font(OtegamiFont.caption())
                 .foregroundStyle(OtegamiColor.destructive)
         }
     }
