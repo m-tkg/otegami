@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 import GoogleOAuth
 import MailTransport
@@ -11,6 +12,32 @@ import Security
 import SyncEngine
 import UserNotifications
 import os
+
+/// Serializes the race between enrichment completion, Otegami's short
+/// display deadline, and iOS's final extension-expiry callback. Once one
+/// path claims delivery, later content/stage mutations are rejected so a
+/// slow IMAP task can never mutate content already handed to the OS.
+final class NotificationDeliveryGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var delivered = false
+
+    @discardableResult
+    func withPending(_ mutation: () -> Void) -> Bool {
+        lock.withLock {
+            guard !delivered else { return false }
+            mutation()
+            return true
+        }
+    }
+
+    func claimDelivery() -> Bool {
+        lock.withLock {
+            guard !delivered else { return false }
+            delivered = true
+            return true
+        }
+    }
+}
 
 /// Handles otegami-relay's `mutable-content` push (M9, plan §7's privacy
 /// design: the payload only ever carries `accountId`/`uidNext`, never
@@ -79,9 +106,11 @@ import os
 /// push arrived — not the new arrival(s) that triggered it — which would
 /// be actively misleading rather than merely imprecise.
 ///
-/// `serviceExtensionTimeWillExpire()` delivers whatever's on hand
-/// (best-effort — the generic fallback, if step 4 hasn't completed yet)
-/// before the OS's ~30 second budget runs out.
+/// A five-second internal display deadline delivers whatever is already on
+/// hand (generic content, or sender/subject if the envelope completed) so
+/// slow OAuth/IMAP/body work never holds the notification until iOS's ~30
+/// second hard limit. `serviceExtensionTimeWillExpire()` remains the final
+/// OS-driven safety net.
 ///
 /// **Diagnostic logging (Task #211)**: 実機で「通知は届くが差出人・件名が
 /// 出ない」報告があり (Gmail/iCloud は問題なし、Yahoo! JAPAN だけ)、この
@@ -171,6 +200,15 @@ import os
 final class NotificationService: UNNotificationServiceExtension, @unchecked Sendable {
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttemptContent: UNMutableNotificationContent?
+    private var deliveryGate = NotificationDeliveryGate()
+    private var enrichmentTask: Task<Void, Never>?
+    private var deadlineTask: Task<Void, Never>?
+
+    /// Rich notification content is best-effort. Waiting for the OS's
+    /// roughly 30-second hard limit makes the notification itself feel
+    /// broken when OAuth/IMAP/body fetching is slow. Release the generic or
+    /// partially-enriched notification after five seconds instead.
+    private static let enrichmentDisplayBudget: Duration = .seconds(5)
 
     /// Set once at the top of `didReceive`, read back by `deliver()` (from
     /// either the normal completion path or `serviceExtensionTimeWillExpire()`)
@@ -205,13 +243,19 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// does for the whole run.
     private func recordStage(_ stage: PushDiagnosticsRun.Stage, outcome: PushDiagnosticsRun.Outcome, since start: Date) {
         let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
-        stageRecords.append(.init(stage: stage, outcome: outcome, elapsedMs: elapsedMs))
+        deliveryGate.withPending {
+            stageRecords.append(.init(stage: stage, outcome: outcome, elapsedMs: elapsedMs))
+        }
     }
 
     override func didReceive(
         _ request: UNNotificationRequest,
         withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void
     ) {
+        enrichmentTask?.cancel()
+        deadlineTask?.cancel()
+        deliveryGate = NotificationDeliveryGate()
+        stageRecords = []
         startedAt = Date()
         self.contentHandler = contentHandler
         let content = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
@@ -238,7 +282,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             recordStage(.parsePayload, outcome: .skipped(reason: "no accountId/uidNext in push payload"), since: parsePayloadStart)
         }
 
-        Task {
+        let enrichmentTask = Task { [weak self] in
+            guard let self else { return }
             if let payload {
                 // H「アプリアイコンの未読バッジ」— best-effort increment from
                 // whatever count `AppEnvironment.restartBadgeObservationIfNeeded`
@@ -263,6 +308,19 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             }
             deliver()
         }
+        self.enrichmentTask = enrichmentTask
+
+        deadlineTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.enrichmentDisplayBudget)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            Self.logger.notice("enrichment display budget expired — delivering best-effort content without waiting for remaining network work")
+            enrichmentTask.cancel()
+            deliver()
+        }
     }
 
     override func serviceExtensionTimeWillExpire() {
@@ -280,7 +338,11 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     }
 
     private func deliver() {
-        guard let contentHandler, let bestAttemptContent else { return }
+        guard let contentHandler, let bestAttemptContent, deliveryGate.claimDelivery() else { return }
+        deadlineTask?.cancel()
+        enrichmentTask?.cancel()
+        deadlineTask = nil
+        enrichmentTask = nil
         self.contentHandler = nil
         var totalElapsedMs: Int?
         if let startedAt {
@@ -288,7 +350,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             totalElapsedMs = elapsedMs
             Self.logger.notice("deliver: elapsedMs=\(elapsedMs, privacy: .public)")
         }
-        persistDiagnostics(totalElapsedMs: totalElapsedMs)
+        let completedStages = stageRecords
+        persistDiagnostics(stages: completedStages, totalElapsedMs: totalElapsedMs)
         contentHandler(bestAttemptContent)
     }
 
@@ -305,12 +368,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// no stages recorded at all (shouldn't happen — `didReceive` always
     /// records `.parsePayload` synchronously before this can be reached —
     /// but guards against persisting an empty, useless run if it ever did).
-    private func persistDiagnostics(totalElapsedMs: Int?) {
-        guard !stageRecords.isEmpty,
+    private func persistDiagnostics(stages: [PushDiagnosticsRun.StageRecord], totalElapsedMs: Int?) {
+        guard !stages.isEmpty,
               let appGroupIdentifier = Self.appGroupIdentifier,
               let defaults = UserDefaults(suiteName: appGroupIdentifier)
         else { return }
-        let run = PushDiagnosticsRun(stages: stageRecords, totalElapsedMs: totalElapsedMs)
+        let run = PushDiagnosticsRun(stages: stages, totalElapsedMs: totalElapsedMs)
         PushDiagnosticsHistory.appending(run, toSuite: defaults)
     }
 
@@ -321,7 +384,9 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         guard let appGroupIdentifier = Self.appGroupIdentifier, let defaults = UserDefaults(suiteName: appGroupIdentifier) else { return }
         let newCount = defaults.integer(forKey: Self.sharedBadgeCountKey) + 1
         defaults.set(newCount, forKey: Self.sharedBadgeCountKey)
-        bestAttemptContent?.badge = NSNumber(value: newCount)
+        deliveryGate.withPending {
+            bestAttemptContent?.badge = NSNumber(value: newCount)
+        }
     }
 
     /// Mirrored copy of `BadgeCenter.sharedCountKey`
@@ -437,6 +502,20 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         }
         recordStage(.fetchEnvelope, outcome: .success, since: fetchEnvelopeStart)
 
+        // Apply the cheap envelope-derived content immediately. If the
+        // heavier whole-body fetch below exceeds the display budget, the
+        // user still sees sender + subject instead of losing all
+        // enrichment to the generic fallback.
+        let sender = envelope.from.first
+        deliveryGate.withPending {
+            bestAttemptContent?.title = NotificationEnrichment.title(
+                preferences: preferences, senderName: sender?.name, senderAddress: sender?.address
+            )
+            bestAttemptContent?.body = NotificationEnrichment.body(
+                preferences: preferences, subject: envelope.subject, bodyPreviewSourceText: nil
+            )
+        }
+
         // Only pay for the (meaningfully heavier) whole-message fetch when
         // `showsBodyPreview` is actually on — see this type's doc comment,
         // step 5. A body-fetch failure here only drops the preview line,
@@ -457,14 +536,19 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             recordStage(.fetchBody, outcome: .skipped(reason: "showsBodyPreview off"), since: fetchBodyStart)
         }
 
-        let sender = envelope.from.first
-        bestAttemptContent?.title = NotificationEnrichment.title(
-            preferences: preferences, senderName: sender?.name, senderAddress: sender?.address
-        )
-        bestAttemptContent?.body = NotificationEnrichment.body(
-            preferences: preferences, subject: envelope.subject, bodyPreviewSourceText: bodyPreviewSourceText
-        )
-        Self.logger.notice("enrich: applied enrichment to notification content")
+        let applied = deliveryGate.withPending {
+            bestAttemptContent?.title = NotificationEnrichment.title(
+                preferences: preferences, senderName: sender?.name, senderAddress: sender?.address
+            )
+            bestAttemptContent?.body = NotificationEnrichment.body(
+                preferences: preferences, subject: envelope.subject, bodyPreviewSourceText: bodyPreviewSourceText
+            )
+        }
+        if applied {
+            Self.logger.notice("enrich: applied enrichment to notification content")
+        } else {
+            Self.logger.notice("enrich: completed after notification delivery; discarded late content update")
+        }
         await session.disconnect()
     }
 
@@ -740,16 +824,12 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         }
     }
 
-    /// Well under the ~30 second OS budget for this Extension process's
-    /// entire `didReceive(_:withContentHandler:)` call — leaves comfortable
-    /// room for the IMAP connect/`SELECT`/envelope-fetch (and, if
-    /// `showsBodyPreview` is on, the body fetch) that follows once a token
-    /// is in hand. `oauthAccessToken(for:)` bounds *both* the transport
-    /// level (the `URLSession` used for the token-endpoint request) and the
-    /// overall exchange (`PushOAuthAccessTokenResolution`'s race) to this
-    /// same value, so a hung TCP connection can't itself be the thing that
-    /// silently burns the whole budget before the race even gets a chance
-    /// to fire.
+    /// Bounds the OAuth request itself even though the independent five-
+    /// second notification display deadline normally wins first. Keeping a
+    /// transport-level bound matters because task cancellation is not a
+    /// promise that every underlying networking implementation stops
+    /// immediately; this prevents abandoned enrichment work from lingering
+    /// for the Extension process's entire lifetime.
     private static let oauthTokenFetchTimeout: TimeInterval = 10
 
     /// Task #216: what `oauthAccessToken(for:)` resolved (or didn't) — see
