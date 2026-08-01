@@ -23,6 +23,72 @@
     img.classList.add('otegami-image-load-failed');
     img.src = otegamiImagePlaceholderDataURL;
   }
+  // HTMLメールでも、送信者が`<a>`を付けず本文へ直接書いたhttp/https URLは
+  // タップ可能にする。HTML文字列への正規表現置換はタグ属性や既存リンクを
+  // 壊すため、パース済みDOMのテキストノードだけを対象にする。既存`a`と、
+  // URLをコード例として見せる`code`/`pre`等はそのまま維持する。
+  function linkifyBareHTTPURLs(root) {
+    if (!root || root.hasAttribute('data-otegami-auto-links-applied')) { return; }
+    root.setAttribute('data-otegami-auto-links-applied', '1');
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    var nodes = [];
+    var node;
+    while ((node = walker.nextNode())) {
+      var parent = node.parentElement;
+      if (!parent || parent.closest('a, script, style, textarea, code, pre, noscript')) { continue; }
+      if (/https?:\/\//i.test(node.nodeValue || '')) { nodes.push(node); }
+    }
+
+    nodes.forEach(function (textNode) {
+      var text = textNode.nodeValue || '';
+      var pattern = /https?:\/\/[^\s<>"']+/gi;
+      var fragment = document.createDocumentFragment();
+      var cursor = 0;
+      var changed = false;
+      var match;
+      while ((match = pattern.exec(text))) {
+        var candidate = trimURLTerminalPunctuation(match[0]);
+        if (!candidate || !isHTTPURL(candidate)) { continue; }
+        fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+        var link = document.createElement('a');
+        link.href = candidate;
+        link.textContent = candidate;
+        link.setAttribute('data-otegami-auto-link', '1');
+        link.setAttribute('rel', 'noopener noreferrer');
+        fragment.appendChild(link);
+        cursor = match.index + candidate.length;
+        changed = true;
+      }
+      if (!changed) { return; }
+      fragment.appendChild(document.createTextNode(text.slice(cursor)));
+      textNode.parentNode.replaceChild(fragment, textNode);
+    });
+  }
+  function isHTTPURL(value) {
+    try {
+      var url = new URL(value);
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch (e) {
+      return false;
+    }
+  }
+  function trimURLTerminalPunctuation(value) {
+    var result = value.replace(/[.,!?;:\u3001\u3002\uff01\uff1f\uff1b\uff1a]+$/g, '');
+    var pairs = [['(', ')'], ['[', ']'], ['{', '}'], ['\uff08', '\uff09'], ['\uff3b', '\uff3d'], ['\uff5b', '\uff5d']];
+    var changed = true;
+    while (changed && result.length > 0) {
+      changed = false;
+      for (var i = 0; i < pairs.length; i++) {
+        var openerCount = result.split(pairs[i][0]).length - 1;
+        var closerCount = result.split(pairs[i][1]).length - 1;
+        if (result.endsWith(pairs[i][1]) && closerCount > openerCount) {
+          result = result.slice(0, -1);
+          changed = true;
+        }
+      }
+    }
+    return result;
+  }
   function waitForImages() {
     var all = Array.prototype.slice.call(document.images);
     // Task #205: an image that already finished (`complete === true`)
@@ -637,6 +703,7 @@
     observer.observe(document.documentElement);
   }
   return waitForImages().then(function () {
+    linkifyBareHTTPURLs(document.getElementById('otegami-fit-inner'));
     decideDarkInversion();
     // Task #58 diagnostic instrumentation (temporary): stash the
     // measurement into a DOM attribute instead of returning it —

@@ -3,8 +3,47 @@ import WebKit
 @testable import Otegami
 
 @MainActor
-@Suite("HTML dark-mode rendering")
+@Suite("HTML message rendering")
 struct HTMLDarkModeRenderingTests {
+    @Test("bare HTTP URLs become links without nesting existing links")
+    func bareHTTPURLsBecomeLinks() async throws {
+        let messageHTML = """
+        <html><body>
+          <p>詳細: https://example.com/report/2026。</p>
+          <p><a href="https://example.com/existing">既存リンク</a></p>
+          <code>https://example.com/code-sample</code>
+        </body></html>
+        """
+        let document = HTMLDocumentBuilder.wrap(
+            bodyHTML: messageHTML,
+            autoAdjustColorsInDarkMode: false
+        )
+        let webView = WKWebView(frame: .init(x: 0, y: 0, width: 390, height: 844))
+        let navigation = NavigationWaiter()
+        webView.navigationDelegate = navigation
+
+        await navigation.load(document, in: webView)
+        HTMLWebViewCoordinator.applyFitToWidth(to: webView)
+        try await Task.sleep(for: .milliseconds(100))
+
+        let linkCount = try #require(
+            await webView.evaluateJavaScript("document.querySelectorAll('a').length") as? Int
+        )
+        let autoLinkHref = try #require(
+            await webView.evaluateJavaScript("document.querySelector('[data-otegami-auto-link]').href") as? String
+        )
+        let codeContainsLink = try #require(
+            await webView.evaluateJavaScript("document.querySelector('code a') !== null") as? Bool
+        )
+        let autoLinkDecoration = try #require(
+            await webView.evaluateJavaScript("getComputedStyle(document.querySelector('[data-otegami-auto-link]')).textDecorationLine") as? String
+        )
+        #expect(linkCount == 2)
+        #expect(autoLinkHref == "https://example.com/report/2026")
+        #expect(!codeContainsLink)
+        #expect(autoLinkDecoration == "underline")
+    }
+
     @Test("legacy mixed light palette stays on a light canvas")
     func legacyMixedLightPaletteKeepsLightCanvas() async throws {
         let messageHTML = """

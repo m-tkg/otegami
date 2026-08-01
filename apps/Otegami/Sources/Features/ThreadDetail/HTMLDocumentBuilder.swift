@@ -470,6 +470,10 @@ enum HTMLDocumentBuilder {
           table[width="100%"], table[style*="width:100%" i], table[style*="width: 100%" i] { width: 100% !important; }
           td, th { min-width: 0 !important; }
           a { color: LinkText; }
+          a[data-otegami-auto-link] {
+            color: LinkText !important;
+            text-decoration: underline !important;
+          }
           pre, code { white-space: pre-wrap; }
           /* fit-to-width の足場 (`HTMLWebViewCoordinator.fitToWidthScript`
              が JS から実際に幅・transform を設定する) — #otegami-fit-outer
