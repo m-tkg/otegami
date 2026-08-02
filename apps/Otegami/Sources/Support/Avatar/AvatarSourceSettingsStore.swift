@@ -76,5 +76,23 @@ extension UserDefaults {
             AvatarSourceSettingsStore.showGravatarKey: AvatarSourceSettingsStore.defaultShowGravatar,
             AvatarSourceSettingsStore.showCompanyLogoKey: AvatarSourceSettingsStore.defaultShowCompanyLogo
         ])
+
+        // The settings UI used to expose four independent source toggles.
+        // It is now one `listDisplay.showAvatar` toggle, but an upgrade keeps
+        // the old per-source values in UserDefaults. If any of those values
+        // were previously turned off, the new toggle can look ON while every
+        // network-backed source silently returns nil. Make the persisted
+        // source state follow the new single switch at launch.
+        let showAvatar = (standard.object(forKey: ListDisplaySettingsStore.showAvatarKey) as? Bool)
+            ?? ListDisplaySettingsStore.defaultShowAvatar
+        let keys = [
+            AvatarSourceSettingsStore.showContactPhotoKey,
+            AvatarSourceSettingsStore.showGoogleProfilePhotoKey,
+            AvatarSourceSettingsStore.showGravatarKey,
+            AvatarSourceSettingsStore.showCompanyLogoKey
+        ]
+        for key in keys {
+            standard.set(showAvatar, forKey: key)
+        }
     }
 }
