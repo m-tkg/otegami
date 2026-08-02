@@ -139,12 +139,14 @@ doveadm() {
 resolve_installed_app() {
   xcrun simctl listapps "$UDID" > "$SCREENSHOT_DIR/.listapps.plist"
   plutil -convert json -o "$SCREENSHOT_DIR/.listapps.json" "$SCREENSHOT_DIR/.listapps.plist"
-  # Filters on the app's *display name* ("Otegami" — stable regardless of
-  # which bundle id `Config/Local.xcconfig` happens to be set to on this
-  # machine), not just "has a GroupContainers entry" — several stock system
-  # apps (Reminders, Notes, ...) also use app groups for their widgets, so
-  # that alone isn't a unique enough signal (confirmed: an earlier version
-  # of this filter matched `com.apple.reminders` before this fix).
+  # Filters on the app's *display name* ("Otegami" or Debug's
+  # "Otegami-dev" — stable regardless of which bundle id
+  # `Config/Local.xcconfig` happens to be set to on this machine), not
+  # just "has a GroupContainers entry" — several stock system apps
+  # (Reminders, Notes, ...) also use app groups for their widgets, so
+  # that alone isn't a unique enough signal (confirmed: an earlier
+  # version of this filter matched `com.apple.reminders` before this
+  # fix).
   BUNDLE_ID="$(python3 -c "
 import json
 with open('$SCREENSHOT_DIR/.listapps.json') as f:
@@ -152,7 +154,8 @@ with open('$SCREENSHOT_DIR/.listapps.json') as f:
 for bundle_id, info in apps.items():
     if bundle_id.endswith('.uitests') or bundle_id.endswith('.xctrunner'):
         continue
-    if info.get('CFBundleDisplayName') == 'Otegami' and info.get('GroupContainers'):
+    name = info.get('CFBundleDisplayName')
+    if name in ('Otegami', 'Otegami-dev') and info.get('GroupContainers'):
         print(bundle_id)
         break
 ")"

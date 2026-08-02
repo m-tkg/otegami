@@ -42,7 +42,10 @@ targets:
     info:
       path: Generated/Info.plist
       properties:
-        CFBundleDisplayName: Otegami
+        # Debug → `Otegami-dev` / Release → `Otegami` (Config/Shared.xcconfig
+        # の `OTEGAMI_DISPLAY_NAME_*`)。ホーム画面でローカル起動ビルドと
+        # TestFlight/OTA のリリース版を見分けられるようにする。
+        CFBundleDisplayName: $(OTEGAMI_DISPLAY_NAME)
         # Task #49 (Xcode Cloud/TestFlight 整備, docs/xcode-cloud.md):
         # XcodeGen の `info.path` モードはこのキーを指定しない限り
         # CFBundleVersion に固定リテラル "1" を自動生成してしまい、
@@ -303,7 +306,8 @@ targets:
     info:
       path: Generated/NotificationService-Info.plist
       properties:
-        CFBundleDisplayName: Otegami
+        # 本体と同じ `OTEGAMI_DISPLAY_NAME` (Debug では `Otegami-dev`)。
+        CFBundleDisplayName: $(OTEGAMI_DISPLAY_NAME)
         # Task #49: keep in lockstep with the main app's CFBundleVersion
         # (same macro-reference reasoning as the Otegami target's own
         # CFBundleVersion above) — App Store Connect's build validation
