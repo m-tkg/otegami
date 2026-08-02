@@ -77,9 +77,18 @@ type apnsBody struct {
 	UidNext   int     `json:"uidNext"`
 }
 
+// notificationCategory is the aps.category value APNs delivers for
+// mutable-content mail pushes. Must match the UNNotificationCategory
+// identifier registered app-side in
+// apps/Otegami/Sources/Support/PushNotificationActionCategory.swift — that
+// registration is what makes iOS show the "既読にする"/"アーカイブ" action
+// buttons on a long-press of the notification.
+const notificationCategory = "NEW_MAIL_ACTIONS"
+
 type apnsAPS struct {
 	Alert          apnsAlert `json:"alert"`
 	MutableContent int       `json:"mutable-content"`
+	Category       string    `json:"category"`
 }
 
 type apnsAlert struct {
@@ -94,7 +103,7 @@ func (s *APNsSender) Send(ctx context.Context, deviceToken string, environment a
 	}
 
 	bodyData, err := json.Marshal(apnsBody{
-		Aps:       apnsAPS{Alert: apnsAlert{LocKey: "NEW_MAIL"}, MutableContent: 1},
+		Aps:       apnsAPS{Alert: apnsAlert{LocKey: "NEW_MAIL"}, MutableContent: 1, Category: notificationCategory},
 		AccountID: payload.AccountID,
 		UidNext:   payload.UidNext,
 	})

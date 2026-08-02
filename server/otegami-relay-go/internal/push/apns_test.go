@@ -148,16 +148,42 @@ func TestProductionRoutesToProductionHost(t *testing.T) {
 
 func TestAPNsBodyShape(t *testing.T) {
 	data, err := json.Marshal(apnsBody{
-		Aps:       apnsAPS{Alert: apnsAlert{LocKey: "NEW_MAIL"}, MutableContent: 1},
+		Aps:       apnsAPS{Alert: apnsAlert{LocKey: "NEW_MAIL"}, MutableContent: 1, Category: notificationCategory},
 		AccountID: "account-1",
 		UidNext:   42,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"aps":{"alert":{"loc-key":"NEW_MAIL"},"mutable-content":1},"accountId":"account-1","uidNext":42}`
+	want := `{"aps":{"alert":{"loc-key":"NEW_MAIL"},"mutable-content":1,"category":"NEW_MAIL_ACTIONS"},"accountId":"account-1","uidNext":42}`
 	if string(data) != want {
 		t.Fatalf("got %s", data)
+	}
+}
+
+// TestAPNsBodyHasNotificationActionsCategory guards the specific value:
+// this string must stay in sync with the UNNotificationCategory identifier
+// registered app-side (PushNotificationActionCategory.swift), or iOS won't
+// attach the "既読にする"/"アーカイブ" action buttons to the notification.
+func TestAPNsBodyHasNotificationActionsCategory(t *testing.T) {
+	data, err := json.Marshal(apnsBody{
+		Aps:       apnsAPS{Alert: apnsAlert{LocKey: "NEW_MAIL"}, MutableContent: 1, Category: notificationCategory},
+		AccountID: "account-1",
+		UidNext:   42,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	aps, ok := decoded["aps"].(map[string]any)
+	if !ok {
+		t.Fatalf("aps missing or wrong type: %+v", decoded)
+	}
+	if aps["category"] != "NEW_MAIL_ACTIONS" {
+		t.Fatalf("got category %+v", aps["category"])
 	}
 }
 

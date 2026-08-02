@@ -258,7 +258,7 @@ public actor OpQueueProcessor {
             }
             let change = FlagChange(
                 uids: UIDSet(payload.uids),
-                op: .replace,
+                op: payload.op,
                 flags: MessageFlags(rawValue: payload.flagsRaw),
                 uidValidity: UInt32(truncatingIfNeeded: payload.uidValidity)
             )

@@ -201,6 +201,7 @@ git commit --only -- path/to/file.swift
 - `docs/icloud-sync.md` — アカウント iCloud 同期と実機汚染事故の教訓
 - `docs/oauth-setup.md` — Google/Microsoft OAuth (スコープ、再認証、診断画面)
 - `docs/relay-deployment.md` — プッシュ通知リレーのデプロイと設定値
+- `docs/push-notification-actions.md` — 通知の「既読にする」「アーカイブ」アクション
 - `docs/xcode-cloud.md` — TestFlight 配布 (tag トリガー運用)
 - `docs/ota-deploy.md` — OTA 配信の仕組み
 - `docs/default-mail-app.md` — mailto / mail-client entitlement

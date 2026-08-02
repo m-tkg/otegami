@@ -100,12 +100,44 @@ public struct SetFlagsOpPayload: Codable, Sendable, Equatable {
     public var uidValidity: Int64
     public var uids: [UInt32]
     public var flagsRaw: Int
+    /// How `OpQueueProcessor` combines `flagsRaw` with the message's
+    /// existing server-side flags via IMAP `STORE` — see `FlagOp`'s doc
+    /// comment (`MailTransport`). Defaults to `.replace`, this payload's
+    /// original behavior: the caller already knows the message's full
+    /// local flag state and wants to write it back verbatim (safe when
+    /// the message is already synced). `.add`/`.remove` exist for callers
+    /// that only know one flag's *target* state — e.g. marking a message
+    /// read from a push notification, where the app has no local copy of
+    /// the message at all and a `.replace` would clobber server-side
+    /// `\Answered`/`\Flagged`/etc. this app never learned about.
+    public var op: FlagOp
 
-    public init(mailboxId: Int64, uidValidity: Int64, uids: [UInt32], flagsRaw: Int) {
+    public init(mailboxId: Int64, uidValidity: Int64, uids: [UInt32], flagsRaw: Int, op: FlagOp = .replace) {
         self.mailboxId = mailboxId
         self.uidValidity = uidValidity
         self.uids = uids
         self.flagsRaw = flagsRaw
+        self.op = op
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case mailboxId, uidValidity, uids, flagsRaw, op
+    }
+
+    /// Manual `init(from:)` (not the synthesized one) so an `opQueue` row
+    /// persisted before `op` existed — its JSON has no `op` key at all —
+    /// still decodes successfully, falling back to `.replace` (this
+    /// payload's original, only-ever behavior at the time such a row could
+    /// have been written). `encode(to:)` stays synthesized: every payload
+    /// written from now on always has all fields, so there's no matching
+    /// backward-compat concern on the encode side.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mailboxId = try container.decode(Int64.self, forKey: .mailboxId)
+        uidValidity = try container.decode(Int64.self, forKey: .uidValidity)
+        uids = try container.decode([UInt32].self, forKey: .uids)
+        flagsRaw = try container.decode(Int.self, forKey: .flagsRaw)
+        op = try container.decodeIfPresent(FlagOp.self, forKey: .op) ?? .replace
     }
 }
 
@@ -247,10 +279,11 @@ public enum OpQueue {
         uidValidity: Int64,
         uids: [UInt32],
         flags: MessageFlags,
+        op: FlagOp = .replace,
         db: Database
     ) throws {
         guard !uids.isEmpty else { return }
-        let payload = SetFlagsOpPayload(mailboxId: mailboxId, uidValidity: uidValidity, uids: uids, flagsRaw: flags.rawValue)
+        let payload = SetFlagsOpPayload(mailboxId: mailboxId, uidValidity: uidValidity, uids: uids, flagsRaw: flags.rawValue, op: op)
         try enqueue(kind: .setFlags, accountId: accountId, payload: payload, db: db)
     }
 

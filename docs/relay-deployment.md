@@ -9,7 +9,9 @@ otegami のプッシュ通知はオプション機能で、セルフホストす
 挙動」参照)。
 
 コードベース全体の構成については [`docs/architecture.md`](architecture.md)
-の「`server/otegami-relay-go/`」節を参照。
+の「`server/otegami-relay-go/`」節を参照。通知の長押し/左スワイプで出る
+「既読にする」「アーカイブ」アクションについては
+[`docs/push-notification-actions.md`](push-notification-actions.md) を参照。
 
 ## リレーが何をするか
 

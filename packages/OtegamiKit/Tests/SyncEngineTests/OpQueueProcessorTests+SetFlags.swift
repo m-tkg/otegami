@@ -215,4 +215,64 @@ struct OpQueueProcessorSetFlagsTests {
         let remaining = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
         #expect(remaining.isEmpty)
     }
+
+    // MARK: `op: FlagOp` (プッシュ通知からの既読化 — see `SetFlagsOpPayload`'s doc comment)
+
+    @Test("SetFlagsOpPayload round-trips op through JSON, defaulting to .replace when the key is absent")
+    func setFlagsOpPayloadCodingRoundTrips() throws {
+        let withAdd = SetFlagsOpPayload(mailboxId: 1, uidValidity: 1, uids: [42], flagsRaw: MessageFlags.seen.rawValue, op: .add)
+        let decodedAdd = try JSONDecoder().decode(SetFlagsOpPayload.self, from: try JSONEncoder().encode(withAdd))
+        #expect(decodedAdd == withAdd)
+        #expect(decodedAdd.op == .add)
+
+        // Simulates an `opQueue` row persisted before `op` existed: no
+        // `op` key in the JSON at all. Must still decode, falling back to
+        // `.replace` — the only behavior such a row could have meant.
+        let legacyJSON = Data(
+            """
+            {"mailboxId":1,"uidValidity":1,"uids":[42],"flagsRaw":\(MessageFlags.seen.rawValue)}
+            """.utf8
+        )
+        let decodedLegacy = try JSONDecoder().decode(SetFlagsOpPayload.self, from: legacyJSON)
+        #expect(decodedLegacy.op == .replace)
+        #expect(decodedLegacy.mailboxId == 1)
+        #expect(decodedLegacy.uids == [42])
+    }
+
+    @Test("replay issues +FLAGS (op: .add) instead of a full replace when the op was enqueued with op: .add")
+    func replayAppliesSetFlagsWithAddOp() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
+
+        // Simulates マーク-as-read from a push notification: no local
+        // message row exists yet, only a mailboxId/uid pair — enqueueing
+        // with op: .add so the STORE only sets \Seen without clobbering
+        // any other server-side flags on the message.
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [99], flags: .seen, op: .add, db: db
+            )
+        }
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(result.discardedStale == 0)
+
+        #expect(recorder.storeCalls.count == 1)
+        let call = try #require(recorder.storeCalls.first)
+        #expect(call.path == "INBOX")
+        #expect(call.change.uids.uids == [99])
+        #expect(call.change.op == .add)
+        #expect(call.change.flags == .seen)
+
+        let remaining = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
+        #expect(remaining.isEmpty)
+    }
 }
