@@ -153,6 +153,8 @@ struct RootView: View {
     /// selection)`) — iOS の`selectMailbox`/`selectUnifiedRole`等が毎回
     /// `accountFilter = nil`するのと同じ後始末。
     @State private var accountFilter: String?
+    /// iOS と同じ「時系列 / アカウント別」の永続表示設定。
+    @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
     // M5: which composer to show. Only actually drives a `.sheet` on iOS
     // (macOS opens `openWindow(id: "composer", ...)` instead and never sets
     // this) — see `presentComposer(_:)`.
@@ -604,33 +606,23 @@ struct RootView: View {
                 // 中央ペイン (メール一覧) の上部にチップ行を置く — 3ペイン
                 // 構成の中で、絞り込み対象の一覧そのものの直上が自然という
                 // 判断 (`showsAccountFilterChipRow`のdoc comment参照)。
-                // iOS の`MailScreenView`は「アカウント別」ダイジェスト表示
-                // (`AccountDigestView`) 中もチップ行を出し続けるが、macOS は
-                // ダイジェスト自体を実装しない判断をしたため
-                // (`showsAccountFilterChipRow`のdoc comment/`docs/design-
-                // system.md`のTask #181節参照)、このチップ行は常に
-                // `MessageListView`の直上に固定で置くだけでよい。
                 VStack(spacing: 0) {
                     if showsAccountFilterChipRow(for: selection) {
-                        AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter, showsModePicker: false)
+                        AccountFilterChipRow(accounts: environment.accounts, selectedAccountId: $accountFilter)
                     }
-                    MessageListView(
-                        selection: selection,
-                        unifiedInboxAccountFilter: accountFilter,
-                        selectedThreadId: $selectedThreadId,
-                        selectedMessageId: $selectedMessageId,
-                        onThreadSelected: { threadId, messageId in selectThread(threadId, messageId: messageId, under: selection) },
-                        onSummariesChanged: { currentThreadOrder = $0 },
-                        // Task #165: only `MessageListRow`'s macOS-only
-                        // context-menu entries ever invoke these — the iOS row
-                        // has no equivalent (its swipe/long-press surface has no
-                        // room for a third destination action, and this task's
-                        // scope is macOS only per `CLAUDE.md`'s "iOS の挙動は
-                        // 一切変えない").
-                        onReply: { summary in replySummary(summary, replyAll: false) },
-                        onReplyAll: { summary in replySummary(summary, replyAll: true) },
-                        onForward: { summary in forwardSummary(summary) }
-                    )
+                    if AccountDigestPresentation.isVisible(
+                        groupByAccount: isGroupByAccount,
+                        accountFilter: accountFilter,
+                        accountCount: environment.accounts.count,
+                        selection: selection
+                    ), let role = AccountDigestPresentation.role(for: selection) {
+                        AccountDigestView(
+                            role: role,
+                            onSelectAccount: { accountFilter = $0 }
+                        )
+                    } else {
+                        messageList(for: selection)
+                    }
                 }
             } else {
                 ContentUnavailableView(
@@ -643,13 +635,30 @@ struct RootView: View {
         }
     }
 
+    private func messageList(for selection: SidebarSelection) -> some View {
+        MessageListView(
+            selection: selection,
+            unifiedInboxAccountFilter: accountFilter,
+            selectedThreadId: $selectedThreadId,
+            selectedMessageId: $selectedMessageId,
+            onThreadSelected: { threadId, messageId in
+                selectThread(threadId, messageId: messageId, under: selection)
+            },
+            onSummariesChanged: { currentThreadOrder = $0 },
+            // Task #165: only `MessageListRow`'s macOS-only context-menu
+            // entries invoke these callbacks.
+            onReply: { summary in replySummary(summary, replyAll: false) },
+            onReplyAll: { summary in replySummary(summary, replyAll: true) },
+            onForward: { summary in forwardSummary(summary) }
+        )
+    }
+
     /// Task #181: `MailScreenView.showsAccountFilterChipRow`のmacOS版 —
     /// 統合ビュー (`.unifiedInbox`/`.unifiedRole`、複数アカウントを横断する
     /// 選択) の間だけチップ行を出す。単一アカウントの個別フォルダ
     /// (`.mailbox`) は絞り込む先が1つしか無いため出さない — iOS と同じ
-    /// 判断。iOS 版と違い「アカウント別」ダイジェスト表示の有無は考慮しない
-    /// (macOS はダイジェスト自体を実装しない判断、`contentColumn`のdoc
-    /// comment参照) ため、この条件だけで十分。
+    /// 判断。ダイジェスト表示中も「時系列」へ戻せるよう、表示モードには
+    /// 依存させない。
     private func showsAccountFilterChipRow(for selection: SidebarSelection) -> Bool {
         switch selection {
         case .unifiedInbox, .unifiedRole: true

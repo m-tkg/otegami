@@ -24,14 +24,6 @@ import OtegamiStore
 struct AccountFilterChipRow: View {
     let accounts: [AccountRecord]
     @Binding var selectedAccountId: String?
-    /// Task #181 (macOS サイドバーにも同じチップ行を追加): macOS はアカウント
-    /// 別「ダイジェスト」表示 (`AccountDigestView`) を実装しない判断をした
-    /// (macOS はサイドバーで既にアカウント別に辿れるため、iOS ほど価値が
-    /// 高くない — `docs/design-system.md`のTask #181節参照)。そのため
-    /// macOS では「すべて」チップに「時系列/アカウント別」を選ぶプルダウン
-    /// (`AllModeFilterChip`) 自体を出さず、単純な絞り込み解除チップにする。
-    /// デフォルト`true`(既存 iOS 呼び出し元の挙動は無変更)。
-    var showsModePicker: Bool = true
     @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
 
     var body: some View {
@@ -42,17 +34,7 @@ struct AccountFilterChipRow: View {
                 // 個別アカウントチップは1件だけになるが、それ自体は今回の
                 // 変更対象ではないのでそのまま残す。
                 if accounts.count > 1 {
-                    if showsModePicker {
-                        AllModeFilterChip(isSelected: selectedAccountId == nil, isGroupByAccount: $isGroupByAccount, onSelectMode: selectAll)
-                    } else {
-                        // macOS: プルダウンで切り替えるモード自体が無いので、
-                        // 「すべて」は他のチップと同じ`AccountFilterChip`の
-                        // ただの絞り込み解除ボタン。「すべて」は動的データ
-                        // ではない固定ラベルなので`isTitleLocalizable: true`
-                        // (`AccountFilterChip.label`のdoc comment参照)。
-                        AccountFilterChip(title: "すべて", isSelected: selectedAccountId == nil, isTitleLocalizable: true, action: selectAll)
-                            .accessibilityIdentifier("mail.chip.all")
-                    }
+                    AllModeFilterChip(isSelected: selectedAccountId == nil, isGroupByAccount: $isGroupByAccount, onSelectMode: selectAll)
                 }
                 ForEach(accounts) { account in
                     accountChip(for: account)
