@@ -17,7 +17,13 @@ import OtegamiCore
 /// actually crosses an isolation boundary `Sendable`, without needing
 /// MailCore2's (non-`Sendable`) classes to be `Sendable` themselves.
 public actor MailCoreIMAPSession: IMAPSessionProtocol {
-    private let session: MCOIMAPSession
+    // `nonisolated(unsafe)`: every other access to this property stays
+    // actor-isolated as normal; the only nonisolated access is `deinit`
+    // below, which by construction runs after the last strong reference
+    // (so no other isolation domain can be touching `session`
+    // concurrently) but still needs to read it from a nonisolated
+    // context to hand it to `SessionLingerBox`.
+    private nonisolated(unsafe) let session: MCOIMAPSession
     private var connected = false
 
     /// Whether the server advertised `X-GM-EXT-1` at connect time.
@@ -50,6 +56,27 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         session.isVoIPEnabled = false
         self.session = session
     }
+
+    /// MailCore2 finishes tearing down a session's internal
+    /// `OperationQueue` asynchronously — `OperationQueue
+    /// ::stoppedOnMainThread` is a `dispatch_async` back to the main
+    /// queue, not something `disconnectOperation()`'s completion handler
+    /// waits on. Every call site here connects a throwaway session and
+    /// disconnects it in a fire-and-forget `Task` (e.g. `SyncCoordinator
+    /// .withIMAPSession`'s `defer { Task { await session.disconnect() } }`),
+    /// so this actor — and the `MCOIMAPSession` it owns — can be
+    /// deallocated the instant that `Task` finishes, before MailCore2's
+    /// own teardown callback lands. When that happens, MailCore2 touches
+    /// freed memory from `queueStartRunning`/`stoppedOnMainThread` and
+    /// crashes with SIGSEGV (seen in production TestFlight crash
+    /// reports). Keeping a strong reference to `session` alive for a few
+    /// seconds past this actor's own deinit gives that callback somewhere
+    /// live to land instead of a freed C++ object.
+    deinit {
+        Self.lingerBox.linger(session)
+    }
+
+    private static let lingerBox = SessionLingerBox()
 
     // MARK: - Connection
 
@@ -653,5 +680,29 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
             defer { lock.unlock() }
             return flagged
         }
+    }
+}
+
+/// Thread-safe holder for `MCOIMAPSession`s kept alive briefly after their
+/// owning `MailCoreIMAPSession` actor deinits — see that `deinit`'s doc
+/// comment for why.
+private final class SessionLingerBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sessions: [ObjectIdentifier: MCOIMAPSession] = [:]
+
+    func linger(_ session: MCOIMAPSession) {
+        let key = ObjectIdentifier(session)
+        lock.lock()
+        sessions[key] = session
+        lock.unlock()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            self?.release(key)
+        }
+    }
+
+    private func release(_ key: ObjectIdentifier) {
+        lock.lock()
+        sessions.removeValue(forKey: key)
+        lock.unlock()
     }
 }
