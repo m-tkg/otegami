@@ -46,6 +46,15 @@ struct MailScreenView: View {
 
     @State private var mailSelection: SidebarSelection = .unifiedInbox
     @State private var accountFilter: String?
+    /// ユーザー要望 (2026-08-02「ヘッダの『すべての受信』を押すとハンバー
+    /// ガーメニューのアカウントごとじゃない項目 (横断ビュー) をプルダウンで
+    /// 選べるようにして欲しい」): ヘッダタイトルの`Menu`が並べる横断ビュー
+    /// の一覧・順序 — `FolderListSheet`のカテゴリセクションと同じ並び順に
+    /// 揃えるため、同じ`FolderCategoryOrderStore`をこの画面でも
+    /// `@AppStorage`で直接監視する (`FolderListSheet.categoryOrder`の
+    /// doc comment参照: `@AppStorage`は配列を直接扱えないので raw 文字列を
+    /// 監視し、都度`loadOrder(from:)`でデコードする)。
+    @AppStorage(FolderCategoryOrderStore.key) private var headerMenuCategoryOrderRaw = ""
     /// Task #131 (一覧FABのspeed-dial化): 右下の「…」FABが展開中かどうか —
     /// 展開状態は仕様どおり永続化しない (`@AppStorage`ではなくただの
     /// `@State`、アプリを再起動すれば常に畳んだ状態から始まる)。既定は
@@ -654,10 +663,7 @@ struct MailScreenView: View {
                 // `environment.accounts.isEmpty`だけをゲートにしていた挙動を
                 // そのまま踏襲。
                 HStack(spacing: OtegamiSpacing.xs) {
-                    Text(selectionTitle)
-                        .font(OtegamiFont.headline())
-                        .foregroundStyle(OtegamiColor.ink)
-                        .accessibilityIdentifier("mail.title")
+                    headerTitleMenu
                     if !environment.accounts.isEmpty {
                         Text("(\(currentUnreadCount))")
                             .font(OtegamiFont.caption())
@@ -676,6 +682,56 @@ struct MailScreenView: View {
                 // 残っているが、この画面からの切替 UI は無い (常に OFF)。
                 unreadOnlyToggleButton
             }
+        }
+    }
+
+    /// ユーザー要望 (2026-08-02「ヘッダの『すべての受信』などの部分を押すと、
+    /// プルダウンでハンバーガーメニューにあるアカウントごとじゃないやつを
+    /// 選べるようにして欲しい」): ヘッダタイトルをタップすると
+    /// `FolderListSheet`のカテゴリセクション見出しタップと同じ横断ビュー
+    /// (受信トレイ/フラグ付き/アーカイブ/すべてのメール/送信済み/下書き/
+    /// 迷惑メール/ゴミ箱) をその場で選べる`Menu`。個別メールボックス選択中
+    /// (`.mailbox`) でも常に出す — そこから他の横断ビューへ直接切り替えられ
+    /// た方が、一度ハンバーガーメニューを開き直すより便利なため。選択後の
+    /// 状態遷移は既存の`selectUnifiedInbox()`/`selectUnifiedRole(_:)`を
+    /// そのまま呼ぶだけ (ハンバーガーメニュー側の同じ行が呼んでいるのと同じ
+    /// 関数)。
+    private var headerTitleMenu: some View {
+        Menu {
+            ForEach(headerMenuCategoryOrder, id: \.self) { role in
+                HeaderCategoryMenuRow(
+                    role: role,
+                    isSelected: isHeaderMenuRoleSelected(role),
+                    action: { selectFromHeaderMenu(role) }
+                )
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Text(selectionTitle)
+                    .font(OtegamiFont.headline())
+                    .foregroundStyle(OtegamiColor.ink)
+                    .accessibilityIdentifier("mail.title")
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+            }
+        }
+        .accessibilityIdentifier("mail.titleMenu")
+    }
+
+    private var headerMenuCategoryOrder: [MailboxRoleRecord] {
+        FolderCategoryOrderStore.loadOrder(from: headerMenuCategoryOrderRaw)
+    }
+
+    private func isHeaderMenuRoleSelected(_ role: MailboxRoleRecord) -> Bool {
+        role == .inbox ? isUnifiedInboxSelected : selectedUnifiedRole == role
+    }
+
+    private func selectFromHeaderMenu(_ role: MailboxRoleRecord) {
+        if role == .inbox {
+            selectUnifiedInbox()
+        } else {
+            selectUnifiedRole(role)
         }
     }
 
@@ -949,6 +1005,26 @@ struct MailScreenView: View {
 /// ままに保つための切り出し。見た目は畳んだ状態の「…」ボタンと同じ
 /// `otegamiFloatingButtonChrome()`(`accentFloating`塗り+白アイコン) —
 /// 主/子で見た目のトーンを変える理由が無いため揃えている。
+/// `MailScreenView.headerTitleMenu`の`ForEach`中身 — `docs/ci.md`の
+/// SwiftUI body肥大化ルールどおり独立`View`に切り出す。選択中の行はアイコン
+/// を`checkmark`に差し替える (`FolderListSheet`のカテゴリ見出しが持つ選択
+/// ハイライトを、`Menu`項目としても分かるようにするための表現)。
+private struct HeaderCategoryMenuRow: View {
+    let role: MailboxRoleRecord
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: isSelected ? "checkmark" : role.categorySystemImage)
+        }
+    }
+
+    private var title: String {
+        role == .inbox ? String(localized: "すべての受信") : role.categoryDisplayName
+    }
+}
+
 private struct SpeedDialChildButton: View {
     let title: String
     let systemImage: String
