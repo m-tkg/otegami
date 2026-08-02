@@ -410,6 +410,12 @@ struct GooglePeopleAvatarClientTests {
 
         let alreadySized = URL(string: "https://lh3.googleusercontent.com/a/abc=s96-c")!
         #expect(GooglePeopleAvatarClient.sizedPhotoURL(alreadySized) == alreadySized)
+
+        let legacySized = URL(string: "https://lh3.googleusercontent.com/a/abc?sz=50")!
+        #expect(GooglePeopleAvatarClient.sizedPhotoURL(legacySized).absoluteString == "https://lh3.googleusercontent.com/a/abc?sz=160")
+
+        let queryURL = URL(string: "https://lh3.googleusercontent.com/a/abc?foo=bar")!
+        #expect(GooglePeopleAvatarClient.sizedPhotoURL(queryURL).absoluteString == "https://lh3.googleusercontent.com/a/abc=s160?foo=bar")
     }
 
     @Test

@@ -511,8 +511,26 @@ public actor GooglePeopleAvatarClient {
     /// ignored by the server or 404s and just falls back to `.unavailable`
     /// for that one download) isn't double-modified.
     static func sizedPhotoURL(_ url: URL) -> URL {
+        // People API has returned two URL formats over time:
+        // `...?sz=50` and the newer path suffix `...=s400`. Appending the
+        // suffix blindly to the former produces `...?sz=50=s160`, which
+        // Google rejects (and leaves every avatar on the initials fallback).
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        if var queryItems = components?.queryItems,
+           let index = queryItems.firstIndex(where: { $0.name == "sz" }) {
+            queryItems[index].value = "160"
+            components?.queryItems = queryItems
+            return components?.url ?? url
+        }
+
         let string = url.absoluteString
         guard !string.contains("=s") else { return url }
+        // Preserve a query string when using the newer suffix syntax.
+        if let queryStart = string.firstIndex(of: "?") {
+            let path = String(string[..<queryStart])
+            let query = String(string[queryStart...])
+            return URL(string: path + "=s160" + query) ?? url
+        }
         return URL(string: string + "=s160") ?? url
     }
 
