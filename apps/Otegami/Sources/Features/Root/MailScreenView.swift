@@ -861,11 +861,7 @@ struct MailScreenView: View {
     private var menuContent: some View {
         FolderListSheet(
             selectedMailboxId: selectedMailboxId,
-            isUnifiedInboxSelected: isUnifiedInboxSelected,
-            selectedUnifiedRole: selectedUnifiedRole,
-            onSelectUnified: selectUnifiedInbox,
             onSelectMailbox: selectMailbox,
-            onSelectUnifiedRole: selectUnifiedRole,
             onOpenOutbox: { presentAfterClosingMenu { showingOutbox = true } },
             onOpenDrafts: { presentAfterClosingMenu { showingDrafts = true } },
             onOpenFailedOps: { presentAfterClosingMenu { showingFailedOps = true } },
