@@ -44,6 +44,15 @@ import SwiftUI
 /// `AccountSettingsCategoryView`側でも同じ「トグル系のセクションが先、
 /// サブ画面へ遷移する`NavigationLink`のセクションが後」という並びだった
 /// ため、この画面でも踏襲している。
+///
+/// **2026-08-02: 「デフォルトのメールアプリに設定」も同じ理由で移設**:
+/// `AccountSettingsCategoryView`にあった`DefaultMailAppSettingsView`への
+/// 入口も、特定のアカウントに紐づく設定ではなくアプリ全体に1つだけ効く
+/// 横断的な設定という点で iCloud 同期・プッシュ通知と同じ性質のため、
+/// ここへ移設した — 移設元には残していない。プッシュ通知のセクション
+/// (iOS 専用) のさらに下に3番目のセクションとして追加している
+/// (`DefaultMailAppSettingsView`自体は iOS/macOS 両対応なので`#if
+/// os(iOS)`ガードは付けない)。
 struct GeneralSettingsView: View {
     @Environment(AppEnvironment.self) private var environment
 
@@ -122,5 +131,16 @@ struct GeneralSettingsView: View {
             .accessibilityIdentifier("settings.pushNotificationsLink")
         }
         #endif
+
+        // 2026-08-02: `AccountSettingsCategoryView`から移設 — see this
+        // type's doc comment.
+        Section {
+            NavigationLink {
+                DefaultMailAppSettingsView()
+            } label: {
+                Label("デフォルトのメールアプリに設定", systemImage: "envelope.badge")
+            }
+            .accessibilityIdentifier("settings.defaultMailAppLink")
+        }
     }
 }

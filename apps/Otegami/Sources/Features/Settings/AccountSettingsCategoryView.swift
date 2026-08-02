@@ -33,6 +33,12 @@ import OtegamiStore
 /// `GeneralSettingsView`側にある)。アカウント別の push watch 状態表示
 /// (`PushWatchStatusSection`) は`PushNotificationSettingsView`の中身
 /// なので、画面ごと一緒に移動している。
+///
+/// 2026-08-02: 「デフォルトのメールアプリに設定」への入口
+/// (`DefaultMailAppSettingsView`への`NavigationLink`) も同じ理由で
+/// `GeneralSettingsView`へ移設した — このカテゴリにはもう残っていない。
+/// iCloud 同期・プッシュ通知と同様、特定のアカウントに紐づく設定ではなく
+/// アプリ全体に1つだけ効く横断的な設定のため。
 struct AccountSettingsCategoryView: View {
     @Environment(AppEnvironment.self) private var environment
 
@@ -216,18 +222,6 @@ struct AccountSettingsCategoryView: View {
                         .foregroundStyle(OtegamiColor.destructive)
                         .accessibilityIdentifier("settings.reauthErrorMessage")
                 }
-            }
-
-            // Task #48 (デフォルトメールアプリ対応) — see
-            // `DefaultMailAppSettingsView`'s doc comment for what "既定"
-            // actually requires on each platform.
-            Section {
-                NavigationLink {
-                    DefaultMailAppSettingsView()
-                } label: {
-                    Label("デフォルトのメールアプリに設定", systemImage: "envelope.badge")
-                }
-                .accessibilityIdentifier("settings.defaultMailAppLink")
             }
     }
 

@@ -149,7 +149,7 @@ provisioning profile の生成に失敗してビルド/署名が壊れる**
 3. `xcodegen generate` (`make ios`/`make ios-device` が自動で実行する) →
    実機ビルド。`Config/Otegami-iOS-MailClient.entitlements` が署名される
    ようになる。
-4. 実機で確認: 設定 →「アカウントの設定」→「デフォルトのメールアプリに
+4. 実機で確認: 設定 →「一般」→「デフォルトのメールアプリに
    設定」→「設定 App で既定のメールアプリを選ぶ」から
    `UIApplication.openDefaultApplicationsSettingsURLString`
    (iOS 18.3+) で「設定」アプリの既定アプリ選択画面が開くこと、
@@ -168,7 +168,7 @@ otegami を `mailto:` ハンドラの候補として認識する。ユーザー�
 - **システム設定**: macOS のバージョンによっては「システム設定」→
   「デスクトップと Dock」の「メールアプリ」項目からも変更できる。
 
-`DefaultMailAppSettingsView` (設定 →「アカウントの設定」→「デフォルトの
+`DefaultMailAppSettingsView` (設定 →「一般」→「デフォルトの
 メールアプリに設定」) の macOS 側はこの案内文言を表示するだけ —
 `openDefaultApplicationsSettingsURLString` は UIKit (iOS/iPadOS/Mac
 Catalyst/tvOS/visionOS) のみで、素の AppKit ターゲットである otegami の
