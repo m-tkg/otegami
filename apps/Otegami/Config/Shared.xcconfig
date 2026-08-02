@@ -4,7 +4,7 @@
 
 SWIFT_VERSION = 6.0
 SWIFT_STRICT_CONCURRENCY = complete
-MARKETING_VERSION = 1.2.0
+MARKETING_VERSION = 1.3.0
 CURRENT_PROJECT_VERSION = 1
 
 // M6: Gmail OAuth Client ID. Empty by default (OSS: never checked into the
