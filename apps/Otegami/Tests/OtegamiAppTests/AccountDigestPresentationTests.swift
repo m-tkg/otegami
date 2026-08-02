@@ -4,6 +4,14 @@ import Testing
 
 @Suite("Account digest presentation")
 struct AccountDigestPresentationTests {
+    @Test("digest swipe actions use absolute bulk operations")
+    func digestSwipeActionsUseAbsoluteBulkOperations() {
+        #expect(AccountDigestBulkAction(.toggleRead) == .markRead)
+        #expect(AccountDigestBulkAction(.archive) == .archive)
+        #expect(AccountDigestBulkAction(.toggleRead).title == String(localized: "既読にする"))
+        #expect(AccountDigestBulkAction(.archive).title == String(localized: "アーカイブ"))
+    }
+
     @Test("grouped All shows the digest for cross-account selections")
     func groupedAllShowsDigest() {
         #expect(AccountDigestPresentation.isVisible(

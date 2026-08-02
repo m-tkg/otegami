@@ -1,6 +1,51 @@
 import SwiftUI
 import OtegamiStore
 
+/// A digest row always applies one absolute operation to the whole account.
+/// The configurable single-row swipe action remains a toggle, but its digest
+/// counterpart cannot represent "mark unread" or "unarchive".
+enum AccountDigestBulkAction: String, Identifiable {
+    case markRead
+    case archive
+    case junk
+    case pin
+    case delete
+
+    init(_ swipeAction: SwipeAction) {
+        switch swipeAction {
+        case .toggleRead: self = .markRead
+        case .archive: self = .archive
+        case .junk: self = .junk
+        case .pin: self = .pin
+        case .delete: self = .delete
+        }
+    }
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .markRead: String(localized: "既読にする")
+        case .archive: String(localized: "アーカイブ")
+        case .junk: String(localized: "迷惑メールにする")
+        case .pin: String(localized: "ピン留め")
+        case .delete: String(localized: "削除")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .markRead: "envelope.open"
+        case .archive: "archivebox"
+        case .junk: "exclamationmark.octagon"
+        case .pin: "pin"
+        case .delete: "trash"
+        }
+    }
+
+    var isDestructive: Bool { self == .delete }
+}
+
 /// Task #92 (アカウントダイジェスト画面): one row of `AccountDigestView` —
 /// `AccountColorRail` (1d の3pxアカウント色罫線、既存トークンをそのまま
 /// 再利用) + Task #130 で追加したこのアカウント自身の`SenderAvatar` +
@@ -46,7 +91,7 @@ struct AccountDigestRow: View {
     /// 実行前の確認ダイアログは`AccountDigestView`側が持つ(複数行から
     /// 一箇所にまとめるほうが`.confirmationDialog`の状態管理が単純になる
     /// ため) — このボタン/コンテキストメニュー行は要求するだけ。
-    let onRequestBulkAction: (SwipeAction) -> Void
+    let onRequestBulkAction: (AccountDigestBulkAction) -> Void
 
     var body: some View {
         Button(action: onSelect) {
@@ -71,7 +116,8 @@ struct AccountDigestRow: View {
         }
         #else
         .contextMenu {
-            ForEach(SwipeAction.allCases) { action in
+            ForEach(SwipeAction.allCases) { swipeAction in
+                let action = AccountDigestBulkAction(swipeAction)
                 Button {
                     onRequestBulkAction(action)
                 } label: {
@@ -97,8 +143,9 @@ struct AccountDigestRow: View {
     }
 
     @ViewBuilder
-    private func swipeButton(for action: SwipeAction) -> some View {
-        Button(role: action == .delete ? .destructive : nil) {
+    private func swipeButton(for swipeAction: SwipeAction) -> some View {
+        let action = AccountDigestBulkAction(swipeAction)
+        Button(role: action.isDestructive ? .destructive : nil) {
             onRequestBulkAction(action)
         } label: {
             Label(action.title, systemImage: action.systemImage)

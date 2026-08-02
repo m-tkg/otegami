@@ -50,7 +50,7 @@ struct AccountDigestView: View {
 
     private struct PendingBulkAction: Identifiable {
         var accountId: String
-        var action: SwipeAction
+        var action: AccountDigestBulkAction
         var id: String { "\(accountId).\(action.rawValue)" }
     }
     @State private var pendingBulkAction: PendingBulkAction?
@@ -142,7 +142,7 @@ struct AccountDigestView: View {
             isPresented: isConfirmingBulkAction,
             presenting: pendingBulkAction
         ) { request in
-            Button(request.action.title, role: request.action == .delete ? .destructive : nil) {
+            Button(request.action.title, role: request.action.isDestructive ? .destructive : nil) {
                 pendingBulkAction = nil
                 Task { await performBulkAction(accountId: request.accountId, action: request.action) }
             }
@@ -193,7 +193,7 @@ struct AccountDigestView: View {
     /// Task #190: `ListDisplaySettingsStore.confirmBulkActionKey`が
     /// OFFのときは確認ダイアログを経由せず即座に実行する — ONのときは
     /// これまでどおり`pendingBulkAction`をセットして`.alert`を出す。
-    private func requestBulkAction(accountId: String, action: SwipeAction) {
+    private func requestBulkAction(accountId: String, action: AccountDigestBulkAction) {
         guard confirmBulkAction else {
             Task { await performBulkAction(accountId: accountId, action: action) }
             return
@@ -243,7 +243,7 @@ struct AccountDigestView: View {
 
     // MARK: - 一括処理の実行
 
-    private func performBulkAction(accountId: String, action: SwipeAction) async {
+    private func performBulkAction(accountId: String, action: AccountDigestBulkAction) async {
         do {
             let summaries = try await environment.database.dbWriter.read { db in
                 try AccountDigestQuery.allSummaries(accountId: accountId, role: role, db: db)
@@ -252,7 +252,7 @@ struct AccountDigestView: View {
             switch action {
             case .archive, .delete, .junk:
                 await performRemoval(action, summaries: summaries, accountId: accountId)
-            case .toggleRead:
+            case .markRead:
                 for summary in summaries { await applyReadState(summary, markingRead: true, accountId: accountId) }
             case .pin:
                 for summary in summaries { await applyPinState(summary, pinning: true, accountId: accountId) }
@@ -273,13 +273,13 @@ struct AccountDigestView: View {
     /// 添え(「n件をアーカイブしました（m件はピン留めのためスキップ）」)、
     /// 全件ピン留めで1件も成功しなかった場合は元に戻す対象が無いので
     /// Undoボタン無しの通知のみを出す。
-    private func performRemoval(_ action: SwipeAction, summaries: [ThreadSummary], accountId: String) async {
+    private func performRemoval(_ action: AccountDigestBulkAction, summaries: [ThreadSummary], accountId: String) async {
         let kind: MessageRemoval.Kind
         switch action {
         case .archive: kind = .archive
         case .delete: kind = .delete
         case .junk: kind = .junk
-        case .toggleRead, .pin: return
+        case .markRead, .pin: return
         }
         var snapshots: [MessageRemoval.Snapshot] = []
         var pinnedSkipCount = 0
@@ -318,7 +318,7 @@ struct AccountDigestView: View {
         }
     }
 
-    /// `.toggleRead`の一括版 — `MessageListView.selectionBottomBar`の
+    /// `.markRead`の一括版 — `MessageListView.selectionBottomBar`の
     /// 「既読に」ボタンと同じく、現在の既読/未読状態を見て切り替えるのでは
     /// なく常に既読へ揃える(混在した集合を一括トグルすると結果が直感的で
     /// ない、というそのボタンの既存判断をそのまま踏襲)。破壊的操作では
