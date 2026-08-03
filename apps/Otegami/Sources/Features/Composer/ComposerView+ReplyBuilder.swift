@@ -114,7 +114,18 @@ extension ComposerView {
             auth = try? await environment.auth(for: account)
         }
 
-        if context.message.bodyState != .fetched, let account, let auth {
+        // Task #221: checks whether a `messageBody` row actually exists
+        // (not `context.message.bodyState != .fetched`) — `bodyState` can
+        // be unreliable in ways unrelated to whether a perfectly usable
+        // cached body is sitting right there (a resync sets it back to
+        // `.notFetched` on some older builds prior to `EnvelopePersister
+        // .upsert`'s Task #221 fix, or a process kill mid-fetch leaves it
+        // at `.fetching`) — same "trust the row, not the flag" contract
+        // `ThreadDetailView+ThreadSummary.swift` already uses for its own
+        // quoting-adjacent body fetch. No `renderVersion` check here (this
+        // call only quotes text, never re-renders HTML), unlike
+        // `BodyFetcher`'s own revert logic.
+        if context.bodyRecord == nil, let account, let auth {
             try? await environment.syncCoordinator.fetchBody(for: context.message, mailboxPath: context.mailboxPath, account: account, auth: auth)
             context.bodyRecord = try? await environment.database.dbWriter.read { db in try MessageBodyRecord.fetchOne(db, key: originalMessageId) }
             context.attachments = (try? await environment.database.dbWriter.read { db in

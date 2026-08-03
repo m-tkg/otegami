@@ -175,7 +175,11 @@ extension ComposerView {
             auth = try? await environment.auth(for: account)
         }
 
-        if context.message.bodyState != .fetched, let account, let auth {
+        // Task #221: checks whether a `messageBody` row actually exists
+        // (not `context.message.bodyState != .fetched`) — see
+        // `ComposerView+ReplyBuilder.swift`'s identical fetch's doc
+        // comment for why `bodyState` alone isn't trustworthy here.
+        if context.bodyRecord == nil, let account, let auth {
             try? await environment.syncCoordinator.fetchBody(for: context.message, mailboxPath: context.mailboxPath, account: account, auth: auth)
             context.bodyRecord = try? await environment.database.dbWriter.read { db in try MessageBodyRecord.fetchOne(db, key: messageId) }
             context.attachments = (try? await environment.database.dbWriter.read { db in
