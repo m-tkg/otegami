@@ -64,13 +64,24 @@ public actor PooledIMAPSessionFactory {
     private let idleTTL: TimeInterval
     private let underlyingFactory: SessionFactory
     private var idleEntries: [AccountKey: IdleEntry] = [:]
+    /// 失効タイマーの待機実装。`SyncRetryPolicy.sleep` と同じ「injected
+    /// clock/sleeper」パターン — CI ランナーの負荷で `Task.sleep` ベースの
+    /// タイマー発火が実時間から大きく遅れ、実時間待ちのテストが flaky に
+    /// なった実例 (ci-app、`PooledIMAPSessionFactoryTests` の TTL テスト)
+    /// への対処。プロダクションはデフォルトの実 `Task.sleep`、テストは
+    /// 即時 return する実装を注入して失効経路を決定的に検証する。
+    private let sleep: @Sendable (TimeInterval) async -> Void
 
     public init(
         sessionFactory: @escaping SessionFactory,
-        idleTTL: TimeInterval = PooledIMAPSessionFactory.defaultIdleTTL
+        idleTTL: TimeInterval = PooledIMAPSessionFactory.defaultIdleTTL,
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { seconds in
+            try? await Task.sleep(for: .seconds(seconds))
+        }
     ) {
         self.underlyingFactory = sessionFactory
         self.idleTTL = idleTTL
+        self.sleep = sleep
     }
 
     /// `SyncCoordinator.init(sessionFactory:)` にそのまま渡せるクロージャ。
@@ -114,8 +125,9 @@ public actor PooledIMAPSessionFactory {
         let entry = IdleEntry(session: session)
         idleEntries[key] = entry
         let ttl = idleTTL
+        let sleep = sleep
         entry.expireTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(ttl))
+            await sleep(ttl)
             guard !Task.isCancelled else { return }
             await self?.expireIfStillIdle(key: key, entry: entry)
         }

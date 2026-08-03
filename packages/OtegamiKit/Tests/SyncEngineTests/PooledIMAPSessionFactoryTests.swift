@@ -43,22 +43,26 @@ struct PooledIMAPSessionFactoryTests {
     @Test("an idle session past its TTL is disconnected for real, and the next connect starts fresh")
     func idleSessionExpiresAfterTTL() async throws {
         let recorder = PoolFakeSession.Recorder()
+        // 実時間の TTL 経過を待たない: `sleep` に即時 return する実装を
+        // 注入し、返却の瞬間に失効タイマーが「経過済み」として走るように
+        // する (`SyncRetryPolicy` の injected-sleeper パターン)。以前の
+        // 「TTL 0.05s + 実時間 1s 待ち」は、CI ランナーの負荷次第で
+        // `Task.sleep` ベースのタイマー発火が 9 秒以上遅れて flaky だった
+        // (ci-app の実失敗例)。
         let pool = PooledIMAPSessionFactory(
             sessionFactory: { config in PoolFakeSession(config: config, script: .init(), recorder: recorder) },
-            idleTTL: 0.05
+            idleTTL: 0.05,
+            sleep: { _ in }
         )
 
         let first = pool.makeSession(config: config)
         try await first.connect(auth: auth)
         await first.disconnect()
-        #expect(await pool.idleSessionCountForTesting == 1)
 
-        // Wait comfortably past the TTL for the expiry `Task` to fire — a
-        // generous 20x margin over `idleTTL` since `make test` runs many
-        // suites in parallel and CPU contention can delay a `Task.sleep`-
-        // based timer well past its nominal duration.
-        try await Task.sleep(for: .seconds(1))
-        #expect(await pool.idleSessionCountForTesting == 0)
+        // 失効は返却が起動する独立した `Task` — 即時 sleep でも「いつ
+        // スケジュールされるか」までは決定的でないので、固定待ちではなく
+        // 条件成立をポーリングで待つ。
+        try await waitUntil(timeout: .seconds(5)) { await pool.idleSessionCountForTesting == 0 }
         #expect(recorder.disconnectCount == 1)
 
         let second = pool.makeSession(config: config)
@@ -269,3 +273,19 @@ final actor PoolFakeSession: IMAPSessionProtocol {
         }
     }
 }
+
+/// `SyncCoordinatorTests+SessionPooling.swift` の同名ヘルパーと同じもの
+/// (どちらも `private` なファイルスコープ) — 非同期に完了する副作用を、
+/// 固定の flaky な `Task.sleep` ではなく条件成立のポーリングで待つ。
+/// `timeout` までに `condition` が真にならなければ throw。
+private func waitUntil(timeout: Duration, _ condition: () async -> Bool) async throws {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while !(await condition()) {
+        guard ContinuousClock.now < deadline else {
+            throw WaitUntilTimeoutError()
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+}
+
+private struct WaitUntilTimeoutError: Error {}
