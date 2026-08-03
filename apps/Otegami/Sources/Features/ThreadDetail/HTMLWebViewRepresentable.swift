@@ -198,6 +198,23 @@ struct HTMLWebViewRepresentable: UIViewRepresentable {
 #elseif os(macOS)
 import AppKit
 
+/// macOS実機報告 (「スクロールできない」): 素の `WKWebView` は自分自身の
+/// マウスホイールスクロール機構を持ち、`ThreadDetailView`側の外側
+/// `ScrollView`と競合する — iOS版が`webView.scrollView.isScrollEnabled
+/// = false`で内部スクロールを無効化し外側の`ScrollView`一本に統一して
+/// いるのと同じ理由 (`HTMLWebViewCoordinator`の`applyPlatformChrome`
+/// doc comment、Task #58 参照)。macOSのWKWebViewには`isScrollEnabled`
+/// 相当の公開APIが無いため、`scrollWheel(with:)`をこのサブクラスで
+/// オーバーライドし、常に`nextResponder`(responder chainを遡って
+/// 外側`NSScrollView`まで届く)へそのまま転送することで、この web view
+/// 自身は一切スクロールしない (外側の`ScrollView`だけが動く) という
+/// 同じ効果を得る。
+private final class NonScrollingWKWebView: WKWebView {
+    override func scrollWheel(with event: NSEvent) {
+        nextResponder?.scrollWheel(with: event)
+    }
+}
+
 struct HTMLWebViewRepresentable: NSViewRepresentable {
     let html: String
     let allowsExternalContent: Bool
@@ -220,7 +237,7 @@ struct HTMLWebViewRepresentable: NSViewRepresentable {
     func makeCoordinator() -> HTMLWebViewCoordinator { HTMLWebViewCoordinator(cidContext: cidContext, onOpenLink: onOpenLink, onHeightChange: onHeightChange) }
 
     func makeNSView(context: Context) -> WKWebView {
-        let webView = WKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
+        let webView = NonScrollingWKWebView(frame: .zero, configuration: makeWebViewConfiguration(cidHandler: context.coordinator.cidHandler))
         // Task #58 — see the iOS `applyPlatformChrome`'s identical comment
         // (this repo's macOS layout doesn't nest `HTMLMessageView` inside
         // its own accordion `ScrollView` the way `ThreadDetailView`'s
