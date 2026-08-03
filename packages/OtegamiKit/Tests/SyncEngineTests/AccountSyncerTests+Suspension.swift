@@ -176,8 +176,8 @@ private actor SuspendingEnvelopeFetchSession: IMAPSessionProtocol {
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope] {
         try await underlying.fetchEnvelopes(mailboxPath: mailboxPath, uids: uids, batchSize: batchSize)
     }
-    func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope] {
-        let result = try await underlying.fetchRecentEnvelopes(mailboxPath: mailboxPath, count: count, batchSize: batchSize)
+    func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int, status: MailboxStatus) async throws -> [FetchedEnvelope] {
+        let result = try await underlying.fetchRecentEnvelopes(mailboxPath: mailboxPath, count: count, batchSize: batchSize, status: status)
         onFetched()
         return result
     }

@@ -361,7 +361,8 @@ public actor MailboxSyncer {
             let envelopes = try await session.fetchRecentEnvelopes(
                 mailboxPath: mailboxPath,
                 count: Int(AccountSyncer.initialSyncWindow),
-                batchSize: AccountSyncer.fetchBatchSize
+                batchSize: AccountSyncer.fetchBatchSize,
+                status: status
             )
             try await database.dbWriter.write { db in
                 for envelope in envelopes {

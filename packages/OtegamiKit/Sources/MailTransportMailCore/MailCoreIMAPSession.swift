@@ -220,16 +220,17 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// batchSize:)` — see `IMAPSessionProtocol.fetchRecentEnvelopes`'s doc
     /// comment for why `AccountSyncer`/`MailboxSyncer` use this one for the
     /// initial-sync window instead.
-    public func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope] {
+    public func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int, status: MailboxStatus) async throws -> [FetchedEnvelope] {
         guard count > 0 else { return [] }
-        // A fresh STATUS rather than trusting a caller-supplied message
-        // count: `AccountSyncer`/`MailboxSyncer` always call this right
-        // after their own `select`, so this costs one cheap extra round
-        // trip in exchange for this method being correct on its own even if
-        // that assumption ever stops holding.
-        let currentStatus = try await status(mailboxPath)
-        guard currentStatus.messageCount > 0 else { return [] }
-        let upper = UInt32(currentStatus.messageCount)
+        // This used to re-derive `status` from its own fresh
+        // `STATUS`-equivalent round trip (`status(mailboxPath)`) rather than
+        // trusting the caller's — both `AccountSyncer.performInitialSync`
+        // and `MailboxSyncer.performWindowedResync` call this immediately
+        // after their own `select(_:)`/`status(_:)`, so that extra
+        // `folderInfoOperation` was a pure duplicate. See this method's doc
+        // comment on `IMAPSessionProtocol` for the full reasoning.
+        guard status.messageCount > 0 else { return [] }
+        let upper = UInt32(status.messageCount)
         let lower = upper > UInt32(count) ? upper - UInt32(count) + 1 : 1
         // Reuses `UIDRange`'s chunking/`MCOIndexSet` conversion for what are
         // semantically *sequence* numbers here, not UIDs — `MCOIndexSet`

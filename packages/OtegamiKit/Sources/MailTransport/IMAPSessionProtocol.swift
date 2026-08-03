@@ -84,7 +84,19 @@ public protocol IMAPSessionProtocol: Sendable {
     /// messages simply returns all of them. `batchSize` behaves like the
     /// UID-based overload's parameter. The mailbox must be selected via
     /// `select(_:)` first.
-    func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope]
+    ///
+    /// - Parameter status: The mailbox's current `MailboxStatus`, from the
+    ///   caller's own just-completed `select(_:)` (every call site —
+    ///   `AccountSyncer.performInitialSync`, `MailboxSyncer
+    ///   .performWindowedResync` — already has one in hand). This method
+    ///   used to derive the sequence-number window (`upper - count + 1
+    ///   ... upper`) from its own extra `STATUS`-equivalent round trip;
+    ///   accepting the caller's already-fresh `status` instead removes that
+    ///   duplicate `folderInfoOperation` call (`select`/`status` are the
+    ///   same underlying MailCore2 request — see `MailCoreIMAPSession
+    ///   .select`'s doc comment — so issuing both back to back doubled a
+    ///   round trip for information the caller already had).
+    func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int, status: MailboxStatus) async throws -> [FetchedEnvelope]
 
     /// `CONDSTORE`-based incremental fetch: envelopes for messages whose
     /// metadata changed since `modSeq` (RFC 7162), plus — when the server

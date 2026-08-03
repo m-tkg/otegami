@@ -474,7 +474,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     /// throughout, and deliberately UID-gap-agnostic (unlike the UID-range
     /// overload above) to match what the real `MailCoreIMAPSession`
     /// implementation guarantees.
-    public func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int) async throws -> [FetchedEnvelope] {
+    public func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int, status: MailboxStatus) async throws -> [FetchedEnvelope] {
         if let flaky = script.flakyFetchRecentEnvelopes, let error = flaky.nextResult() {
             throw error
         }
