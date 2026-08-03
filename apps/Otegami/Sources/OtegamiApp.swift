@@ -243,16 +243,20 @@ struct RootView: View {
     // 実機バグ (macOS: 狭いウィンドウでサイドバーに戻れない) — `splitView` used to
     // call the `preferredCompactColumn`-only `NavigationSplitView` initializer,
     // which leaves `columnVisibility` entirely to AppKit's own internal,
-    // unbound state. Confirmed on-device (macOS window narrowed below the
-    // three-column layout's minimum) that AppKit's automatic sidebar-toggle
-    // toolbar button is not reliably present once the sidebar has collapsed —
-    // with no binding to inspect or drive, this app had no way to offer its
-    // own recovery control. Owning `columnVisibility` here (via the combined
-    // `columnVisibility:preferredCompactColumn:` initializer below) gives
-    // `macSidebarToolbarContent` a deterministic signal ("is the sidebar
-    // hidden right now?") and a deterministic way to restore it — see that
-    // property's doc comment. Default `.all` matches the pre-fix look
-    // (sidebar+content+detail all visible) for every already-wide window.
+    // unbound state. Owning `columnVisibility` here (via the combined
+    // `columnVisibility:preferredCompactColumn:` initializer below) keeps a
+    // deterministic binding for AppKit's own standard sidebar-toggle toolbar
+    // button to read/drive — an app previously had its own recovery button
+    // here too (removed: 実機フィードバック「サイドバーを閉じるとツールバー
+    // にサイドバーアイコンが2つ並ぶ」— `NavigationSplitView`自体が同じ役目の
+    // 標準ボタンを自動でツールバーに追加しており、`.toolbar(removing:
+    // .sidebarToggle)`で標準ボタン側を消そうとしたが効果が無かったため、
+    // 自前ボタンを削除して標準ボタン1つに統一した。狭いウィンドウでの復帰
+    // 不能自体は、この`columnVisibility`バインディングと各カラムの
+    // `navigationSplitViewColumnWidth`の`min`制約により標準ボタンが常に
+    // 残ることを実機/ローカルで確認済み)。Default `.all` matches the
+    // pre-fix look (sidebar+content+detail all visible) for every
+    // already-wide window.
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     // Remembers the last thread opened per sidebar selection so that
@@ -552,41 +556,7 @@ struct RootView: View {
         } detail: {
             detailColumn
         }
-        .toolbar { macSidebarToolbarContent }
     }
-
-    /// 実機バグ修正 (macOS: 狭いウィンドウでサイドバーに戻れない) — an app-owned
-    /// "サイドバーを表示" button, shown only while `columnVisibility` isn't
-    /// `.all`. Deliberately *not* conditioned on window width/size class
-    /// (macOS has no compact size class the way iOS/iPadOS do — this app's
-    /// three-pane layout is unchanged there, `CLAUDE.md`) — conditioning on
-    /// `columnVisibility` itself covers both ways it can end up hidden: the
-    /// user manually toggling it away, or AppKit auto-collapsing it once the
-    /// window narrows past the layout's minimum. `#if os(macOS)`-gated
-    /// because iOS never renders `splitView` at all (`rootContent`'s doc
-    /// comment) and already has its own always-present hamburger menu
-    /// (`OtegamiRootView`/`MailScreenView`) for the same job.
-    #if os(macOS)
-    @ToolbarContentBuilder
-    private var macSidebarToolbarContent: some ToolbarContent {
-        if columnVisibility != .all {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    columnVisibility = .all
-                } label: {
-                    Label("サイドバーを表示", systemImage: "sidebar.leading")
-                }
-                .accessibilityIdentifier("mac.showSidebarButton")
-                .help("サイドバーを表示")
-            }
-        }
-    }
-    #else
-    @ToolbarContentBuilder
-    private var macSidebarToolbarContent: some ToolbarContent {
-        ToolbarItemGroup {}
-    }
-    #endif
 
     private var sidebarColumn: some View {
         SidebarView(
