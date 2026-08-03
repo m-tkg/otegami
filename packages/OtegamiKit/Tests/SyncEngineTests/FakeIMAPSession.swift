@@ -521,6 +521,31 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         )
     }
 
+    /// Derives its answer from the same `script.changedSinceEnvelopesByPath`
+    /// (and `failChangedSince`/`qresyncVanishedUIDsByPath`) the full-envelope
+    /// overload above reads — a script models one "what changed since
+    /// modSeq" answer per mailbox, and every existing CONDSTORE-path test
+    /// already scripts that shape; duplicating it into a separate
+    /// flags-only fixture would risk the two silently drifting apart. A UID
+    /// this maps needs a full envelope re-fetch for (this pass's "unknown to
+    /// the local snapshot" case) should also appear in `script
+    /// .envelopesByPath[mailboxPath]` — the data `fetchEnvelopes(uids:
+    /// batchSize:)` actually reads from — the same way it already does for
+    /// `refetchAndDiffFlags`'s non-CONDSTORE equivalent.
+    public func fetchFlags(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceFlagsResult {
+        if let failChangedSince = script.failChangedSince {
+            throw failChangedSince
+        }
+        var flagsByUID: [UInt32: MessageFlags] = [:]
+        for envelope in script.changedSinceEnvelopesByPath[mailboxPath] ?? [] {
+            flagsByUID[envelope.uid] = envelope.flags
+        }
+        return ChangedSinceFlagsResult(
+            flagsByUID: flagsByUID,
+            vanishedUIDs: script.qresyncVanishedUIDsByPath[mailboxPath]
+        )
+    }
+
     public func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32> {
         if let failSearchExistingUIDs = script.failSearchExistingUIDs {
             throw failSearchExistingUIDs

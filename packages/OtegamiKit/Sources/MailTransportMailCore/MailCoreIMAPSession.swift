@@ -353,6 +353,35 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
     }
 
+    /// `IMAPSessionProtocol.fetchFlags(mailboxPath:changedSince:)` — same
+    /// `syncMessages` operation as `fetchEnvelopes(mailboxPath:changedSince:)`
+    /// just above, requesting only `.flags` instead of the full `ENVELOPE`/
+    /// `BODYSTRUCTURE`/size `kind` set. Vanished-UID reporting is identical
+    /// (same operation, same `QRESYNC` precondition — see that method's doc
+    /// comment).
+    public func fetchFlags(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceFlagsResult {
+        guard cachedCapabilities.contains(.condstore) else {
+            throw MailTransportError.serverError(underlyingDescription: "Server does not support CONDSTORE")
+        }
+        let indexSet = Self.indexSet(for: .all)
+        return try await withCheckedThrowingContinuation { continuation in
+            session.syncMessages(folder: mailboxPath, kind: .flags, uids: indexSet, modSeq: modSeq).start { error, messages, vanished in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                var flagsByUID: [UInt32: MessageFlags] = [:]
+                for message in messages ?? [] {
+                    flagsByUID[message.uid] = Self.messageFlags(from: message.flags)
+                }
+                continuation.resume(returning: ChangedSinceFlagsResult(
+                    flagsByUID: flagsByUID,
+                    vanishedUIDs: Self.vanishedUIDs(from: vanished)
+                ))
+            }
+        }
+    }
+
     /// `UID SEARCH UID <uids>` (`MCOIMAPSearchExpression.searchUIDs`) — the
     /// subset of `uids` the server currently still has, with no envelope
     /// data fetched at all. Task #79's CONDSTORE-path fallback for

@@ -119,6 +119,115 @@ struct MessageRelocationReconciliationTests {
         #expect(inboxThreadsAfterSync == [threadId])
     }
 
+    /// CONDSTORE counterpart of `pendingRelocationConflictingWithAlreadyRealRowMergesWithoutDuplicating`
+    /// below — same collision (a pending relocation row's real UID already
+    /// occupied locally by a genuine, independently-synced duplicate), but
+    /// exercised through `MailboxSyncer.condstoreFlagChangeSync` rather than
+    /// the non-CONDSTORE `refetchAndDiffFlags`. This is exactly the risk
+    /// Phase 2 item 2.1 called out explicitly: naively switching the
+    /// CONDSTORE path to a flags-only fast path would see UID 42 as "known
+    /// locally" (the already-real row), diff its flags, and — whether or
+    /// not the flags actually changed — never call `EnvelopePersister
+    /// .upsert` (and therefore never `reconcilePendingRelocation`) for it at
+    /// all, since the flags-only fast path only re-fetches a full envelope
+    /// for UIDs it *doesn't* already recognize. Without the
+    /// `hasPendingRelocations` fallback this test locks in, the pending row
+    /// would sit there forever, orphaned, exactly the Task #183 bug this
+    /// mailbox's non-CONDSTORE equivalent (`refetchAndDiffFlags`) already
+    /// guards against.
+    @Test("CONDSTORE flags-only fast path falls back to a full envelope changedSince fetch when a pending relocation row collides with an already-real duplicate")
+    func condstorePendingRelocationConflictingWithAlreadyRealRowMergesWithoutDuplicating() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let (inboxId, archiveId) = try await database.dbWriter.write { db -> (Int64, Int64) in
+            var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox, uidValidity: 1, uidNext: 1)
+            try inbox.insert(db)
+            var archive = MailboxRecord(accountId: account.id, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1, uidNext: 43, highestModSeq: 0)
+            try archive.insert(db)
+            return (inbox.id!, archive.id!)
+        }
+
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let sharedMessageId = "<condstore-dup-conflict-repro@otegami.test>"
+
+        // The message this device is about to (locally) archive.
+        let (threadId, pendingMessageId) = try await database.dbWriter.write { db -> (Int64, Int64) in
+            var thread = ThreadRecord(accountId: account.id, lastMessageDate: date, messageCount: 1)
+            try thread.insert(db)
+            var message = MessageRecord(
+                mailboxId: inboxId, uid: 5, messageId: sharedMessageId,
+                subject: "重複合流テスト (CONDSTORE)", date: date, internalDate: date, threadId: thread.id
+            )
+            try message.insert(db)
+            return (thread.id!, message.id!)
+        }
+
+        let summary = try await database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: pendingMessageId)
+            )
+        }
+        _ = try await database.dbWriter.write { db in
+            try MessageRemoval.commit(.archive, summary: summary, accountId: account.id, db: db)
+        }
+        let pendingRow = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: pendingMessageId) }
+        #expect(pendingRow?.mailboxId == archiveId)
+        #expect(pendingRow?.isPendingRelocation == true)
+
+        // A genuine, already-synced copy of the *same* message already
+        // sitting at the real destination UID (42) in Archive — UID 42 is
+        // therefore already inside the mailbox's synced window
+        // (`uidNext: 43` above), so step 1's "new mail" window never
+        // touches it either; only `condstoreFlagChangeSync` (step 2) can
+        // discover it changed.
+        let realArchiveMessageId = try await database.dbWriter.write { db -> Int64 in
+            var already = MessageRecord(
+                mailboxId: archiveId, uid: 42, messageId: sharedMessageId,
+                subject: "重複合流テスト (CONDSTORE)", date: date, internalDate: date, threadId: threadId
+            )
+            try already.insert(db)
+            return already.id!
+        }
+
+        // The server reports UID 42's flags changed via CONDSTORE
+        // `changedSince` — modeling e.g. another client flagging it.
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let archiveInfo = MailboxInfo(path: "Archive", displayPath: "Archive", role: .archive, attributes: [])
+        let realEnvelope = FetchedEnvelope(
+            uid: 42, messageId: sharedMessageId, inReplyTo: nil, references: [],
+            subject: "重複合流テスト (CONDSTORE)", from: [], to: [], cc: [], bcc: [], replyTo: [],
+            date: date, internalDate: date, flags: [.flagged], size: 100
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inboxInfo, archiveInfo],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                    "Archive": MailboxStatus(uidValidity: 1, uidNext: 43, highestModSeq: 5, messageCount: 1),
+                ],
+                capabilitiesToReport: [.condstore, .qresync],
+                changedSinceEnvelopesByPath: ["Archive": [realEnvelope]],
+                qresyncVanishedUIDsByPath: ["Archive": []]
+            ))
+        }
+        _ = try await syncer.performIncrementalSync(
+            auth: .password(username: account.imapUsername, password: "test1234"), scope: .mailbox(path: "Archive")
+        )
+
+        let archiveMessagesAfterSync = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == archiveId).filter(Column("messageId") == sharedMessageId).fetchAll(db)
+        }
+        #expect(archiveMessagesAfterSync.count == 1, "must not duplicate — the pending row merges into the already-real one instead of colliding with it")
+        #expect(archiveMessagesAfterSync.first?.id == realArchiveMessageId, "the already-real row survives; the pending one is discarded")
+        #expect(archiveMessagesAfterSync.first?.uid == 42)
+
+        let pendingRowAfterSync = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: pendingMessageId) }
+        #expect(pendingRowAfterSync == nil, "the redundant pending row is gone rather than left orphaned forever")
+    }
+
     /// Task #127: before this task, `ThreadDetailView`'s own archive/junk/delete
     /// (本文画面フッターツールバーの "…" メニュー) was a separate,
     /// hand-rolled implementation that never called `MessageRemoval.commit`

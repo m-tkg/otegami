@@ -272,33 +272,17 @@ public actor MailboxSyncer {
         if capabilities.contains(.condstore) {
             var vanishedAlreadyHandled = false
             if status.highestModSeq > UInt64(mailboxRecord.highestModSeq) {
-                let result = try await session.fetchEnvelopes(
+                let (flagChanges, deletedMessages) = try await condstoreFlagChangeSync(
+                    mailboxId: mailboxId,
                     mailboxPath: mailboxPath,
-                    changedSince: UInt64(mailboxRecord.highestModSeq)
+                    accountId: accountId,
+                    session: session,
+                    status: status,
+                    sinceModSeq: UInt64(mailboxRecord.highestModSeq)
                 )
-                if !result.envelopes.isEmpty {
-                    try await database.dbWriter.write { db in
-                        for envelope in result.envelopes {
-                            try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
-                        }
-                    }
-                    progress.flagChanges = result.envelopes.count
-                }
-                if let vanishedUIDs = result.vanishedUIDs {
-                    progress.deletedMessages = try await deleteMessages(
-                        mailboxId: mailboxId,
-                        uids: Set(vanishedUIDs.map(Int64.init))
-                    )
-                    vanishedAlreadyHandled = true
-                } else {
-                    progress.deletedMessages = try await detectAndRemoveVanishedByUIDSearch(
-                        mailboxId: mailboxId,
-                        mailboxPath: mailboxPath,
-                        session: session,
-                        status: status
-                    )
-                    vanishedAlreadyHandled = true
-                }
+                progress.flagChanges = flagChanges
+                progress.deletedMessages = deletedMessages
+                vanishedAlreadyHandled = true
             }
             // Task #83: see `forceReconcileVanishedUIDs`'s doc comment —
             // `highestModSeq` staying put is not proof nothing was expunged
@@ -403,6 +387,113 @@ public actor MailboxSyncer {
             try record.update(db)
             return record
         }
+    }
+
+    /// CONDSTORE flag-change sync — `incrementalSync`'s step 2, called only
+    /// when `status.highestModSeq` actually advanced past `sinceModSeq`.
+    /// Flags-only by default (`IMAPSessionProtocol.fetchFlags(mailboxPath:
+    /// changedSince:)`, not the full `ENVELOPE`/`BODYSTRUCTURE`/size
+    /// `fetchEnvelopes(mailboxPath:changedSince:)` this used to call
+    /// unconditionally): splits the result via
+    /// `applyFlagsDiffAndReconcileUnknown` into "known locally, flags
+    /// differ" (a targeted flags-only update) vs. "unknown to this pass's
+    /// local snapshot" (a real, scoped envelope re-fetch — Task #120's
+    /// pending-relocation reconciliation needs `messageId`, which a
+    /// flags-only fetch never has) — the same split
+    /// `refetchAndDiffFlags` already does for the non-CONDSTORE path.
+    ///
+    /// Falls back to the full-envelope overload (unconditionally upserting
+    /// every returned envelope — this method's entire pre-flags-only-
+    /// optimization behavior) whenever this mailbox has *any*
+    /// pending-relocation row at all, exactly mirroring
+    /// `refetchAndDiffFlags`'s own `hasPendingRelocations` guard: a pending
+    /// row's real UID can coincide with a UID *already* known locally as a
+    /// genuine, independently-synced duplicate (this file's own
+    /// `MessageRelocationReconciliationTests` scenario), in which case the
+    /// flags-only fast path's "known locally, flags unchanged" branch would
+    /// never call `upsert` at all and the pending row would never
+    /// reconcile — silently leaving it orphaned. Pending rows are transient
+    /// and rare in practice (only exist in the narrow window between a
+    /// local move and the server confirming it), so trading this one pass's
+    /// payload size for guaranteed correctness costs little.
+    ///
+    /// Vanished-UID resolution (QRESYNC directly, else the `UID SEARCH`
+    /// fallback) is identical in both branches and unchanged from before
+    /// this method existed — see `incrementalSync`'s doc comment for the
+    /// full picture. Returns `(flagChanges, deletedMessages)`;
+    /// `vanishedAlreadyHandled` is always `true` on return (both branches
+    /// always resolve it one way or another).
+    private func condstoreFlagChangeSync(
+        mailboxId: Int64,
+        mailboxPath: String,
+        accountId: String,
+        session: any IMAPSessionProtocol,
+        status: MailboxStatus,
+        sinceModSeq: UInt64
+    ) async throws -> (flagChanges: Int, deletedMessages: Int) {
+        // Task #120: same reasoning as `refetchAndDiffFlags`'s identical
+        // check — see that method's `hasPendingRelocations` doc comment.
+        let hasPendingRelocations = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == mailboxId).filter(Column("uid") <= 0).fetchCount(db) > 0
+        }
+
+        var flagChanges = 0
+        let vanishedUIDs: Set<UInt32>?
+
+        if hasPendingRelocations {
+            Self.logger.notice(
+                "flagSync: \(mailboxPath, privacy: .public) has pending-relocation row(s) — using a full envelope changedSince fetch for this pass"
+            )
+            let result = try await session.fetchEnvelopes(mailboxPath: mailboxPath, changedSince: sinceModSeq)
+            if !result.envelopes.isEmpty {
+                try await database.dbWriter.write { db in
+                    for envelope in result.envelopes {
+                        try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                    }
+                }
+                flagChanges = result.envelopes.count
+            }
+            vanishedUIDs = result.vanishedUIDs
+        } else {
+            let result = try await session.fetchFlags(mailboxPath: mailboxPath, changedSince: sinceModSeq)
+            if !result.flagsByUID.isEmpty {
+                // `AND uid > 0` isn't strictly needed here (this branch only
+                // runs when there are no pending-relocation rows at all),
+                // but matches `refetchAndDiffFlags`'s identical query
+                // verbatim for consistency.
+                let localFlagsByUID = try await database.dbWriter.read { db -> [Int64: Int] in
+                    var localResult: [Int64: Int] = [:]
+                    let rows = try Row.fetchAll(db, sql: "SELECT uid, flagsRaw FROM message WHERE mailboxId = ? AND uid > 0", arguments: [mailboxId])
+                    for row in rows {
+                        localResult[row["uid"]] = row["flagsRaw"]
+                    }
+                    return localResult
+                }
+                flagChanges = try await applyFlagsDiffAndReconcileUnknown(
+                    mailboxId: mailboxId,
+                    mailboxPath: mailboxPath,
+                    accountId: accountId,
+                    session: session,
+                    fetchedFlags: result.flagsByUID,
+                    localFlagsByUID: localFlagsByUID,
+                    logContext: "flagSync"
+                )
+            }
+            vanishedUIDs = result.vanishedUIDs
+        }
+
+        let deletedMessages: Int
+        if let vanishedUIDs {
+            deletedMessages = try await deleteMessages(mailboxId: mailboxId, uids: Set(vanishedUIDs.map(Int64.init)))
+        } else {
+            deletedMessages = try await detectAndRemoveVanishedByUIDSearch(
+                mailboxId: mailboxId,
+                mailboxPath: mailboxPath,
+                session: session,
+                status: status
+            )
+        }
+        return (flagChanges, deletedMessages)
     }
 
     /// Non-CONDSTORE flag sync (Task #194 rewrite — 「Pull to refresh が
@@ -584,71 +675,21 @@ public actor MailboxSyncer {
 
             if !fetchedFlags.isEmpty {
                 serverUIDs.formUnion(fetchedFlags.keys.map(Int64.init))
-
-                // Split into "known locally, flags actually differ" (cheap
-                // — a targeted flags-only update) vs. "not in this pass's
-                // local snapshot at all". The latter should be rare: step 1
-                // already upserted every genuinely new UID
-                // (`newMailLowerBound...`) before this step ever runs, so a
-                // UID inside *this* fetch's range (bounded to the
-                // previously-synced window) that's still unknown locally is
-                // almost always Task #120's case instead — a
-                // `MessageRecord.isPendingRelocation` placeholder's real UID
-                // finally confirmed by the server. Reconciling that requires
-                // `AccountSyncer.upsert`'s `reconcilePendingRelocation` step,
-                // which matches by `messageId` — not available from a
-                // flags-only fetch — so this subset needs a real (small,
-                // scoped-to-just-these-UIDs) envelope re-fetch. Losing this
-                // would silently break Task #120: the placeholder would
-                // never reconcile, and `applyFlagsOnly` finding no local row
-                // to update would look like nothing happened at all rather
-                // than throwing — exactly the kind of silent bug this
-                // whole rewrite is supposed to avoid introducing.
-                var changedUIDs: [(uid: Int64, flags: MessageFlags)] = []
-                var unknownUIDs: [UInt32] = []
-                for (uid, flags) in fetchedFlags {
-                    let uid64 = Int64(uid)
-                    if let existingFlags = localFlagsByUID[uid64] {
-                        if existingFlags != flags.rawValue {
-                            changedUIDs.append((uid64, flags))
-                        }
-                    } else {
-                        unknownUIDs.append(uid)
-                    }
-                }
-
-                if !changedUIDs.isEmpty {
-                    // `let` snapshot: `DatabaseWriter.write`'s closure is
-                    // `@Sendable`, and capturing the `var` built by the loop
-                    // above directly is rejected under Swift 6 strict
-                    // concurrency (same reasoning as this file's other
-                    // `database.dbWriter.write` call sites' identical doc
-                    // comments).
-                    let changedUIDsSnapshot = changedUIDs
-                    try await database.dbWriter.write { db in
-                        for (uid64, flags) in changedUIDsSnapshot {
-                            try Self.applyFlagsOnly(mailboxId: mailboxId, uid: uid64, flags: flags, db: db)
-                        }
-                    }
-                }
-
-                if !unknownUIDs.isEmpty {
-                    Self.logger.notice(
-                        "refetchAndDiffFlags: \(mailboxPath, privacy: .public) reconciling \(unknownUIDs.count, privacy: .public) UID(s) unknown to this pass's local snapshot (pending-relocation confirmation or a gap in step 1)"
-                    )
-                    let unknownRange = UIDRange(lowerBound: unknownUIDs.min()!, upperBound: unknownUIDs.max()!)
-                    let unknownEnvelopes = try await session.fetchEnvelopes(
-                        mailboxPath: mailboxPath,
-                        uids: unknownRange,
-                        batchSize: AccountSyncer.fetchBatchSize
-                    )
-                    let unknownSet = Set(unknownUIDs)
-                    try await database.dbWriter.write { db in
-                        for envelope in unknownEnvelopes where unknownSet.contains(envelope.uid) {
-                            try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
-                        }
-                    }
-                }
+                // See `applyFlagsDiffAndReconcileUnknown`'s doc comment for
+                // the "known locally, flags differ" vs. "unknown to this
+                // pass's local snapshot" split this delegates to — shared
+                // with `MailboxSyncer.incrementalSync`'s CONDSTORE
+                // flags-only fast path, which needs the exact same Task
+                // #120 pending-relocation handling.
+                _ = try await applyFlagsDiffAndReconcileUnknown(
+                    mailboxId: mailboxId,
+                    mailboxPath: mailboxPath,
+                    accountId: accountId,
+                    session: session,
+                    fetchedFlags: fetchedFlags,
+                    localFlagsByUID: localFlagsByUID,
+                    logContext: "refetchAndDiffFlags"
+                )
             }
             // Reported only after this chunk's write has actually committed
             // — `completed: N` means "N chunks' worth of flag changes are
@@ -663,6 +704,84 @@ public actor MailboxSyncer {
 
         let deletedUIDs = Set(localFlagsByUID.keys).subtracting(serverUIDs)
         return try await deleteMessages(mailboxId: mailboxId, uids: deletedUIDs)
+    }
+
+    /// Shared by `refetchAndDiffFlags` (non-CONDSTORE) and
+    /// `condstoreFlagChangeSync` (CONDSTORE's own flags-only fast path):
+    /// given one batch of freshly-fetched `(uid → flags)` pairs and the
+    /// caller's already-loaded local flags snapshot, splits it into "known
+    /// locally, flags actually differ" (cheap — a targeted `applyFlagsOnly`
+    /// update) vs. "unknown to this pass's local snapshot at all". The
+    /// latter should be rare — almost always Task #120's case: a
+    /// `MessageRecord.isPendingRelocation` placeholder's real UID finally
+    /// confirmed by the server. Reconciling that requires
+    /// `EnvelopePersister.upsert`'s `reconcilePendingRelocation` step, which
+    /// matches by `messageId` — not available from a flags-only fetch — so
+    /// this subset gets a real (small, scoped-to-just-these-UIDs) envelope
+    /// re-fetch instead. Losing this would silently break Task #120: the
+    /// placeholder would never reconcile, and `applyFlagsOnly` finding no
+    /// local row to update would look like nothing happened at all rather
+    /// than throwing.
+    ///
+    /// Returns how many UIDs were touched (changed + reconciled), for a
+    /// caller that tracks a `flagChanges` count (`condstoreFlagChangeSync`
+    /// does; `refetchAndDiffFlags` doesn't and discards it, matching its
+    /// pre-existing behavior).
+    private func applyFlagsDiffAndReconcileUnknown(
+        mailboxId: Int64,
+        mailboxPath: String,
+        accountId: String,
+        session: any IMAPSessionProtocol,
+        fetchedFlags: [UInt32: MessageFlags],
+        localFlagsByUID: [Int64: Int],
+        logContext: String
+    ) async throws -> Int {
+        var changedUIDs: [(uid: Int64, flags: MessageFlags)] = []
+        var unknownUIDs: [UInt32] = []
+        for (uid, flags) in fetchedFlags {
+            let uid64 = Int64(uid)
+            if let existingFlags = localFlagsByUID[uid64] {
+                if existingFlags != flags.rawValue {
+                    changedUIDs.append((uid64, flags))
+                }
+            } else {
+                unknownUIDs.append(uid)
+            }
+        }
+
+        if !changedUIDs.isEmpty {
+            // `let` snapshot: `DatabaseWriter.write`'s closure is
+            // `@Sendable`, and capturing the `var` built by the loop above
+            // directly is rejected under Swift 6 strict concurrency (same
+            // reasoning as this file's other `database.dbWriter.write` call
+            // sites' identical doc comments).
+            let changedUIDsSnapshot = changedUIDs
+            try await database.dbWriter.write { db in
+                for (uid64, flags) in changedUIDsSnapshot {
+                    try Self.applyFlagsOnly(mailboxId: mailboxId, uid: uid64, flags: flags, db: db)
+                }
+            }
+        }
+
+        if !unknownUIDs.isEmpty {
+            Self.logger.notice(
+                "\(logContext, privacy: .public): \(mailboxPath, privacy: .public) reconciling \(unknownUIDs.count, privacy: .public) UID(s) unknown to this pass's local snapshot (pending-relocation confirmation or a gap in an earlier step)"
+            )
+            let unknownRange = UIDRange(lowerBound: unknownUIDs.min()!, upperBound: unknownUIDs.max()!)
+            let unknownEnvelopes = try await session.fetchEnvelopes(
+                mailboxPath: mailboxPath,
+                uids: unknownRange,
+                batchSize: AccountSyncer.fetchBatchSize
+            )
+            let unknownSet = Set(unknownUIDs)
+            try await database.dbWriter.write { db in
+                for envelope in unknownEnvelopes where unknownSet.contains(envelope.uid) {
+                    try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                }
+            }
+        }
+
+        return changedUIDs.count + unknownUIDs.count
     }
 
     /// Task #120 fallback path — see `refetchAndDiffFlags`'s

@@ -106,6 +106,14 @@ public protocol IMAPSessionProtocol: Sendable {
     /// comment).
     func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceResult
 
+    /// `CONDSTORE`-based incremental fetch requesting only `FLAGS`, not the
+    /// full `ENVELOPE`/`BODYSTRUCTURE`/size the overload above fetches for
+    /// every changed message. `MailboxSyncer.incrementalSync`'s CONDSTORE
+    /// branch uses this by default — see `ChangedSinceFlagsResult`'s doc
+    /// comment for the full reasoning and `IMAPCapability.condstore`
+    /// requirement (same as the full-envelope overload).
+    func fetchFlags(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceFlagsResult
+
     /// `UID SEARCH`es `mailboxPath` (already `select`ed) restricted to
     /// `uids`, returning just the subset the server currently still has —
     /// no envelope data fetched at all, only numbers. Task #79's

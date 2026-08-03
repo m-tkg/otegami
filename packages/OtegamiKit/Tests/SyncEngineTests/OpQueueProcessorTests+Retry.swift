@@ -200,6 +200,7 @@ private actor FailingStoreSession: IMAPSessionProtocol {
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope] { [] }
     func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int, status: MailboxStatus) async throws -> [FetchedEnvelope] { [] }
     func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceResult { ChangedSinceResult(envelopes: []) }
+    func fetchFlags(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceFlagsResult { ChangedSinceFlagsResult(flagsByUID: [:]) }
     func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32> { [] }
     func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags] { [:] }
     func fetchFlags(mailboxPath: String, uids: UIDSet) async throws -> [UInt32: MessageFlags] { [:] }
@@ -256,6 +257,9 @@ private actor SuspendingStoreSession: IMAPSessionProtocol {
     }
     func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceResult {
         try await underlying.fetchEnvelopes(mailboxPath: mailboxPath, changedSince: modSeq)
+    }
+    func fetchFlags(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceFlagsResult {
+        try await underlying.fetchFlags(mailboxPath: mailboxPath, changedSince: modSeq)
     }
     func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32> {
         try await underlying.searchExistingUIDs(mailboxPath: mailboxPath, uids: uids)
