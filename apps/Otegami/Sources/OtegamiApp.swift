@@ -814,13 +814,12 @@ struct RootView: View {
     /// becomes active — an IDLE loop only wakes on the *next* server push,
     /// so without this a device that went offline, had changes queued,
     /// and came back online wouldn't flush/pick anything up until the next
-    /// unrelated server event.
+    /// unrelated server event. Phase 3: the actual per-account work
+    /// (bounded parallelism across IMAP hosts, serialized within a host)
+    /// now lives in `AppEnvironment.syncAllAccountsOnce()` — see that
+    /// method's doc comment.
     private func syncAllAccountsOnce() async {
-        for account in environment.accounts {
-            guard let auth = try? await environment.auth(for: account) else { continue }
-            _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-            _ = try? await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth)
-        }
+        await environment.syncAllAccountsOnce()
     }
 
     /// Same-session-only convenience: reopens whatever thread was last
