@@ -157,6 +157,174 @@ struct BodyFetcherTests {
         #expect(updated?.hasAttachments == true)
     }
 
+    // MARK: - Phase 4a: bytes already in hand from the body fetch itself
+
+    /// This message's owning account's id — needed to predict/clean up
+    /// `AttachmentFetcher.storageURL`'s on-disk path, since `makeSyncedMessage`
+    /// itself only returns the `MessageRecord`.
+    private func accountId(database: AppDatabase, mailboxId: Int64) async throws -> String {
+        try await database.dbWriter.read { db in
+            try MailboxRecord.fetchOne(db, key: mailboxId)!.accountId
+        }
+    }
+
+    /// Mirrors `AttachmentFetcherTests.cleanUp(accountId:)`: there's no
+    /// in-memory filesystem equivalent to `AppDatabase.makeInMemory()`, so
+    /// whatever `AttachmentFetcher.storageURL`-based writes a test made must
+    /// be removed explicitly to avoid leaving files behind on the host.
+    private func cleanUpAttachmentFiles(accountId: String) {
+        guard let base = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: false
+        ) else { return }
+        let dir = base.appendingPathComponent("otegami/Attachments/\(accountId)", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    @Test("a part carrying data is written to disk and its AttachmentRecord.localPath is filled in immediately, without a separate on-demand fetch")
+    func attachmentDataFromBodyFetchIsWrittenToDiskAndLocalPathFilled() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let message = try await makeSyncedMessage(database: database, subject: "添付データ同梱")
+        let accountId = try await accountId(database: database, mailboxId: message.mailboxId)
+        defer { cleanUpAttachmentFiles(accountId: accountId) }
+
+        let payload = Data("inline-png-bytes".utf8)
+        let content = MessageBodyContent(
+            plainText: "本文です。",
+            parts: [
+                MIMEPartInfo(
+                    partId: "att-1", mimeType: "image", mimeSubtype: "png",
+                    contentId: "logo@otegami.test", isAttachment: false, size: payload.count,
+                    data: payload
+                ),
+            ]
+        )
+        // No `attachmentDataByPath` scripted at all: if `BodyFetcher` had to
+        // fall back to `AttachmentFetcher`'s on-demand
+        // `fetchMessageBody(partId:)` path for this part, the session would
+        // have nothing to serve and this test would fail differently
+        // (a thrown error, not a missing `localPath`) — proving the file
+        // came from the data already riding along with `fetchBody`.
+        let script = FakeIMAPSession.Script(bodiesByPath: ["INBOX": [UInt32(message.uid): content]])
+        let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: script)
+
+        try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: session)
+
+        let attachment = try #require(try await database.dbWriter.read { db in
+            try AttachmentRecord.filter(Column("messageId") == message.id).fetchOne(db)
+        })
+        let localPath = try #require(attachment.localPath)
+        #expect(FileManager.default.fileExists(atPath: localPath))
+        #expect(try Data(contentsOf: URL(fileURLWithPath: localPath)) == payload)
+    }
+
+    @Test("a part with no data (too large, or the backend didn't capture it) leaves AttachmentRecord.localPath nil, same as before this feature existed")
+    func attachmentWithoutDataLeavesLocalPathNil() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let message = try await makeSyncedMessage(database: database, subject: "添付データなし")
+        let content = MessageBodyContent(
+            plainText: "本文です。",
+            parts: [
+                MIMEPartInfo(partId: "att-1", mimeType: "application", mimeSubtype: "pdf", filename: "huge.pdf", isAttachment: true, size: 50_000_000),
+            ]
+        )
+        let script = FakeIMAPSession.Script(bodiesByPath: ["INBOX": [UInt32(message.uid): content]])
+        let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: script)
+
+        try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: session)
+
+        let attachment = try #require(try await database.dbWriter.read { db in
+            try AttachmentRecord.filter(Column("messageId") == message.id).fetchOne(db)
+        })
+        #expect(attachment.localPath == nil)
+    }
+
+    @Test("once a body fetch has filled localPath, AttachmentFetcher.fetchAndStore for that same attachment never touches the network")
+    func localPathFromBodyFetchLetsAttachmentFetcherSkipNetwork() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let message = try await makeSyncedMessage(database: database, subject: "添付データ同梱")
+        let accountId = try await accountId(database: database, mailboxId: message.mailboxId)
+        defer { cleanUpAttachmentFiles(accountId: accountId) }
+
+        let payload = Data("cid-image-bytes".utf8)
+        let content = MessageBodyContent(
+            html: "<img src=\"cid:logo@otegami.test\">",
+            parts: [
+                MIMEPartInfo(
+                    partId: "att-1", mimeType: "image", mimeSubtype: "png",
+                    contentId: "logo@otegami.test", isAttachment: false, size: payload.count,
+                    data: payload
+                ),
+            ]
+        )
+        let bodyFetchScript = FakeIMAPSession.Script(bodiesByPath: ["INBOX": [UInt32(message.uid): content]])
+        let bodyFetchSession = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: bodyFetchScript)
+        try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: bodyFetchSession)
+
+        let attachment = try #require(try await database.dbWriter.read { db in
+            try AttachmentRecord.filter(Column("messageId") == message.id).fetchOne(db)
+        })
+        #expect(attachment.localPath != nil)
+
+        // Deliberately no `attachmentDataByPath` scripted here: a network
+        // fetch for this part would throw (see `FakeIMAPSession.fetchMessageBody`'s
+        // "no scripted data" error) — the absence of a thrown error below
+        // is exactly what proves `AttachmentFetcher.fetchAndStore`'s
+        // existing "`localPath` already exists on disk? skip the network"
+        // shortcut engaged, driven by the `localPath` `BodyFetcher` just
+        // filled in.
+        let onDemandSession = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: FakeIMAPSession.Script())
+        let updated = try await AttachmentFetcher(database: database).fetchAndStore(
+            attachment: attachment, accountId: accountId, messageUID: message.uid,
+            mailboxPath: "INBOX", session: onDemandSession
+        )
+        #expect(updated.localPath == attachment.localPath)
+    }
+
+    @Test("re-fetching a message's body with a data-carrying part again doesn't leave the previous fetch's file orphaned on disk")
+    func refetchDoesNotOrphanPreviousAttachmentFile() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let message = try await makeSyncedMessage(database: database, subject: "添付データ同梱・再取得")
+        let accountId = try await accountId(database: database, mailboxId: message.mailboxId)
+        defer { cleanUpAttachmentFiles(accountId: accountId) }
+        let fetcher = BodyFetcher(database: database)
+
+        func fetch(payload: Data) async throws {
+            let content = MessageBodyContent(
+                plainText: "本文です。",
+                parts: [
+                    MIMEPartInfo(
+                        partId: "att-1", mimeType: "image", mimeSubtype: "png",
+                        contentId: "logo@otegami.test", isAttachment: false, size: payload.count,
+                        data: payload
+                    ),
+                ]
+            )
+            let script = FakeIMAPSession.Script(bodiesByPath: ["INBOX": [UInt32(message.uid): content]])
+            let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: script)
+            try await fetcher.fetchBody(message: message, mailboxPath: "INBOX", session: session)
+        }
+
+        try await fetch(payload: Data("first-fetch-bytes".utf8))
+        let firstLocalPath = try #require(try await database.dbWriter.read { db in
+            try AttachmentRecord.filter(Column("messageId") == message.id).fetchOne(db)
+        }?.localPath)
+        #expect(FileManager.default.fileExists(atPath: firstLocalPath))
+
+        try await fetch(payload: Data("second-fetch-bytes".utf8))
+        let secondLocalPath = try #require(try await database.dbWriter.read { db in
+            try AttachmentRecord.filter(Column("messageId") == message.id).fetchOne(db)
+        }?.localPath)
+
+        // A fresh `AttachmentRecord` row (new auto-incrementing id) means a
+        // different filename under the same message directory — the first
+        // fetch's file must be gone, not just unreferenced, or every
+        // re-open of this message would leak one more file forever.
+        #expect(secondLocalPath != firstLocalPath)
+        #expect(!FileManager.default.fileExists(atPath: firstLocalPath))
+        #expect(FileManager.default.fileExists(atPath: secondLocalPath))
+        #expect(try Data(contentsOf: URL(fileURLWithPath: secondLocalPath)) == Data("second-fetch-bytes".utf8))
+    }
+
     @Test("re-fetching a message replaces its body and attachments rather than duplicating")
     func refetchReplacesBody() async throws {
         let database = try AppDatabase.makeInMemory()

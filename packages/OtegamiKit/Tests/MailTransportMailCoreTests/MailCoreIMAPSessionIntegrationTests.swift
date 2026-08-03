@@ -189,6 +189,38 @@ struct MailCoreIMAPSessionIntegrationTests {
         #expect(!data.isEmpty)
     }
 
+    // MARK: Phase 4a — body fetch carries small parts' bytes along
+
+    @Test("fetchBody's PNG attachment part already carries its decoded bytes, matching a separate fetchMessageBody(partId:) round trip")
+    func fetchBodyCarriesAttachmentDataAlongside() async throws {
+        let env = try #require(TestIMAPEnvironment.primary)
+        let session = MailCoreIMAPSession(config: env.imapConfig)
+        try await session.connect(auth: env.auth)
+        defer { Task { await session.disconnect() } }
+
+        _ = try await session.select("INBOX")
+        let envelopes = try await session.fetchEnvelopes(mailboxPath: "INBOX", uids: .all, batchSize: 50)
+        let message = try #require(envelopes.first { $0.messageId == "<seed-0014@otegami.test>" })
+
+        let body = try await session.fetchBody(mailboxPath: "INBOX", uid: message.uid)
+        let attachmentPart = try #require(body.parts.first { $0.filename == "logo.png" })
+
+        // Phase 4a: `fetchBody`'s single `fetchParsedMessageOperation`
+        // round trip already parsed this part's bytes — `MailCoreBodyExtraction
+        // .mimePartInfo(from:)` should have carried them into `data`
+        // directly (well under `MIMEPartInfo.maxEmbeddedDataSize`), so
+        // `BodyFetcher` never needs `fetchMessageBody(partId:)`'s separate
+        // full-message re-download+re-parse just to get bytes it already
+        // had a moment earlier.
+        let embeddedData = try #require(attachmentPart.data)
+        #expect(embeddedData == Self.expectedPNGBytes)
+
+        // Cross-check against the existing on-demand path (`fetchesPNGAttachmentData`
+        // above) to confirm both routes agree on the exact same bytes.
+        let onDemandData = try await session.fetchMessageBody(mailboxPath: "INBOX", uid: message.uid, partId: attachmentPart.partId)
+        #expect(embeddedData == onDemandData)
+    }
+
     @Test("the cid inline-image seed message's part is detected as inline with a matching contentId")
     func detectsCIDInlineImage() async throws {
         let env = try #require(TestIMAPEnvironment.primary)

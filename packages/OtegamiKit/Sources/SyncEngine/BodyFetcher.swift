@@ -162,6 +162,17 @@ public actor BodyFetcher {
             // fallback whenever a message is opened, so a wrong/missing
             // guess made here self-heals then even if it doesn't here.
             let detectedLanguage = Self.detectLanguage(plainText: content.plainText, html: content.html)
+            // Phase 4a: looked up before the write transaction below (needs
+            // `await`, which a GRDB write closure's synchronous body can't
+            // do) so any part carrying `MIMEPartInfo.data` can be written to
+            // this account's `AttachmentFetcher.storageURL` alongside the
+            // metadata insert, rather than leaving `localPath` unset and
+            // forcing a redundant on-demand refetch later. `message
+            // .mailboxId` (not the possibly-stale value captured before a
+            // self-heal repoint, since `repoint` calls this method again
+            // with the already-repointed record) is always the row's
+            // *current* mailbox, which is always this same account's.
+            let accountId = await accountId(forMailboxId: message.mailboxId)
 
             try await database.dbWriter.write { db in
                 try MessageBodyRecord.deleteOne(db, key: messageId)
@@ -173,7 +184,26 @@ public actor BodyFetcher {
                 )
                 try body.insert(db)
 
+                // Phase 4a: a re-fetch (this method's "always refetch, even
+                // if already `.fetched`" contract) replaces every
+                // `AttachmentRecord` row for this message below — capture
+                // whichever ones already had a downloaded file on disk
+                // first, and remove those files once the rows are gone, so
+                // re-opening the same message repeatedly doesn't pile up
+                // orphaned files under this message's attachment directory
+                // (each fetch's freshly-inserted rows get new
+                // auto-incrementing ids, and `AttachmentFetcher.storageURL`
+                // bakes the id into the filename, so an old row's file is
+                // never reused/overwritten by a new one on its own).
+                let orphanedLocalPaths = try AttachmentRecord
+                    .filter(Column("messageId") == messageId)
+                    .fetchAll(db)
+                    .compactMap(\.localPath)
                 try AttachmentRecord.filter(Column("messageId") == messageId).deleteAll(db)
+                for orphanedPath in orphanedLocalPaths {
+                    try? FileManager.default.removeItem(atPath: orphanedPath)
+                }
+
                 for part in content.parts {
                     var attachment = AttachmentRecord(
                         messageId: messageId,
@@ -186,6 +216,42 @@ public actor BodyFetcher {
                         size: part.size
                     )
                     try attachment.insert(db)
+
+                    // Phase 4a: `part.data` is already the decoded bytes
+                    // `MCOMessageParser` had in memory at body-fetch time
+                    // (capped at `MIMEPartInfo.maxEmbeddedDataSize` — see
+                    // its doc comment) — write it out now, through the same
+                    // storage path `AttachmentFetcher.fetchAndStore` uses,
+                    // so that actor's existing "`localPath` already exists
+                    // on disk? skip the network" shortcut (and the cid
+                    // scheme handler's inline-image resolve, which goes
+                    // through the same actor) benefits immediately instead
+                    // of only after a user explicitly opens this part once.
+                    // A local disk-write problem here only drops *this*
+                    // part's `localPath` (same as if this feature didn't
+                    // exist) — it must never fail the body fetch as a
+                    // whole.
+                    if let data = part.data, let accountId, let attachmentId = attachment.id {
+                        do {
+                            let destination = try AttachmentFetcher.storageURL(
+                                accountId: accountId,
+                                messageId: messageId,
+                                attachmentId: attachmentId,
+                                filename: part.filename
+                            )
+                            try FileManager.default.createDirectory(
+                                at: destination.deletingLastPathComponent(),
+                                withIntermediateDirectories: true
+                            )
+                            try data.write(to: destination, options: .atomic)
+                            attachment.localPath = destination.path
+                            try attachment.update(db)
+                        } catch {
+                            // Best-effort: leave this part without a
+                            // `localPath`, exactly the pre-Phase-4a
+                            // behavior.
+                        }
+                    }
                 }
 
                 var record = message

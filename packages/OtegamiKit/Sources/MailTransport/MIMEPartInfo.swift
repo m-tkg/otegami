@@ -31,6 +31,36 @@ public struct MIMEPartInfo: Sendable, Codable, Hashable {
     /// Encoded size in bytes, as reported by `BODYSTRUCTURE`.
     public var size: Int
 
+    /// This part's raw, already-decoded bytes, when the backend happened to
+    /// have them on hand while building this `MIMEPartInfo` and the part is
+    /// small enough (see ``maxEmbeddedDataSize``) — `nil` otherwise.
+    ///
+    /// Body fetch (M2, `MailCoreIMAPSession.fetchBody` via
+    /// `fetchParsedMessageOperation`) downloads and parses the *entire*
+    /// RFC822 message, attachments included, so `MCOMessageParser` already
+    /// holds every part's bytes in memory by the time
+    /// `MailCoreBodyExtraction` builds this value — before Phase 4a,
+    /// `BodyFetcher` discarded that and stored metadata only, so opening an
+    /// attachment or a `cid:`-referenced inline image forced
+    /// `fetchMessageBody(partId:)` to re-download and re-parse the whole
+    /// message just to recover bytes that had already been on the wire a
+    /// moment earlier. Capped rather than unconditional so this stays a
+    /// "preview/inline-image" optimization and doesn't turn a lazy body
+    /// fetch into downloading every large attachment eagerly — those still
+    /// go through the on-demand `AttachmentFetcher.fetchAndStore` path
+    /// unchanged.
+    public var data: Data?
+
+    /// The largest ``data`` this type will carry — parts over this size
+    /// keep `data == nil` here and fall back to the on-demand
+    /// `AttachmentFetcher` fetch path, same as before this field existed.
+    /// 5 MB is generous for what `data` is actually for (an inline `cid:`
+    /// image, a quick preview thumbnail) while still cheap to hold for
+    /// every part of every fetched body; a genuinely large attachment
+    /// (video, disk image, ...) has no business riding along with a lazy
+    /// body fetch just because the bytes happened to already be in memory.
+    public static let maxEmbeddedDataSize = 5 * 1024 * 1024
+
     public init(
         partId: String,
         mimeType: String,
@@ -38,7 +68,8 @@ public struct MIMEPartInfo: Sendable, Codable, Hashable {
         filename: String? = nil,
         contentId: String? = nil,
         isAttachment: Bool,
-        size: Int
+        size: Int,
+        data: Data? = nil
     ) {
         self.partId = partId
         self.mimeType = mimeType
@@ -47,5 +78,6 @@ public struct MIMEPartInfo: Sendable, Codable, Hashable {
         self.contentId = contentId
         self.isAttachment = isAttachment
         self.size = size
+        self.data = data
     }
 }

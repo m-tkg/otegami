@@ -244,12 +244,21 @@ extension MailCoreIMAPSession {
         return MCOAbstractPart.getData(part)
     }
 
+    /// Phase 4a (`docs/architecture.md` の Known pitfalls 未収録の背景は
+    /// `BodyFetcher.performFetch` のコメント参照): `parser`はこの時点で
+    /// `part`のバイト列を既にメモリ上に持っている(`fetchParsedMessageOperation`
+    /// がRFC822全文をダウンロード・パース済み)ので、`MIMEPartInfo.data`に
+    /// 上限付きで詰めておく — `size`が`0`(空パート)や
+    /// `MIMEPartInfo.maxEmbeddedDataSize`超のときは`nil`のまま(従来通り
+    /// `AttachmentFetcher`のオンデマンド取得に委ねる)。
     private static func mimePartInfo(from part: MCOAbstractPart) -> MIMEPartInfo {
         let mimeType = part.mimeType ?? "application/octet-stream"
         let components = mimeType.split(separator: "/", maxSplits: 1)
         let type = components.first.map(String.init) ?? mimeType
         let subtype = components.count > 1 ? String(components[1]) : ""
-        let size = (part as? MCOAttachment)?.data?.count ?? 0
+        let rawData = (part as? MCOAttachment)?.data
+        let size = rawData?.count ?? 0
+        let embeddedData = (size > 0 && size <= MIMEPartInfo.maxEmbeddedDataSize) ? rawData : nil
 
         return MIMEPartInfo(
             partId: part.uniqueID ?? "",
@@ -258,7 +267,8 @@ extension MailCoreIMAPSession {
             filename: part.filename,
             contentId: part.contentID,
             isAttachment: part.isAttachment,
-            size: size
+            size: size,
+            data: embeddedData
         )
     }
 }
