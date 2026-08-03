@@ -293,6 +293,14 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// the Trash auto-create fallback actually asked the server to
         /// create the mailbox it then retried the move against.
         private var _createMailboxCalls: [String] = []
+        /// How many times `listMailboxes()` was actually called across
+        /// every `FakeIMAPSession` instance sharing this recorder — a fresh
+        /// `FakeIMAPSession` is built per `connect()` (see this type's own
+        /// doc comment), so `AccountSyncer.cachedMailboxListing`'s TTL cache
+        /// can only be observed from the outside by sharing one recorder
+        /// across the several sessions a multi-pass test's session factory
+        /// creates, the same way `_storeCalls`/etc. already are.
+        private var _listMailboxesCallCount = 0
 
         public init() {}
 
@@ -332,6 +340,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             lock.unlock()
         }
 
+        func recordListMailboxes() {
+            lock.lock()
+            _listMailboxesCallCount += 1
+            lock.unlock()
+        }
+
         public var storeCalls: [(path: String, change: FlagChange)] {
             lock.lock()
             defer { lock.unlock() }
@@ -366,6 +380,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             lock.lock()
             defer { lock.unlock() }
             return _createMailboxCalls
+        }
+
+        public var listMailboxesCallCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _listMailboxesCallCount
         }
     }
 
@@ -426,6 +446,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func listMailboxes() async throws -> [MailboxInfo] {
+        recorder?.recordListMailboxes()
         if let revealedMailbox {
             return script.mailboxes + [revealedMailbox]
         }

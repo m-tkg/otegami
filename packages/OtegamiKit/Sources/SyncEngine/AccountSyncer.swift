@@ -245,6 +245,53 @@ public actor AccountSyncer {
         isAutoRetrying
     }
 
+    /// `listMailboxes()`'s result, cached in-memory per
+    /// this `AccountSyncer` instance (one per account, cached for the app's
+    /// process lifetime — see this type's own doc comment) along with when
+    /// it was fetched. `performIncrementalSync` used to re-issue a fresh
+    /// `LIST` on *every* pass — IDLE wake, foreground resume, each of
+    /// `SyncScope.inboxOnly`'s frequent call sites — even though a new
+    /// server-side mailbox (the case this listing actually needs to catch:
+    /// `OpQueueProcessor`'s delete-op replay finding a self-healed Trash,
+    /// or the hamburger menu picking up a mailbox created from another
+    /// client) appears rarely. See `listMailboxesCached(session:
+    /// bypassCache:)` for how this is consulted/refreshed.
+    private var cachedMailboxListing: (fetchedAt: Date, infos: [MailboxInfo])?
+
+    /// How long `cachedMailboxListing` is trusted before a call that would
+    /// otherwise reuse it falls back to a real `LIST` anyway. 15 minutes:
+    /// long enough to remove the LIST round trip from the overwhelming
+    /// majority of IDLE-wake/foreground-resume incremental syncs (which
+    /// fire far more often than that), short enough that a newly-created
+    /// mailbox is never invisible for more than a quarter hour even on an
+    /// account that never triggers one of `listMailboxesCached`'s
+    /// `bypassCache: true` paths below.
+    private static let mailboxListingTTL: TimeInterval = 15 * 60
+
+    /// Returns the account's mailbox listing, reusing `cachedMailboxListing`
+    /// when it's still within `mailboxListingTTL` and `bypassCache` is
+    /// `false`; otherwise issues a real `listMailboxes()` and refreshes the
+    /// cache with its result (regardless of `bypassCache`, so a forced
+    /// real `LIST` still benefits the *next* cache-eligible call).
+    /// `bypassCache: true` is for the low-frequency, user-visible-refresh
+    /// paths where a stale listing would be a real (if rare) regression —
+    /// `performIncrementalSync` passes it for `forceReconcileVanishedUIDs`
+    /// (pull-to-refresh, `MessageListView`'s periodic mailbox-display
+    /// resync — see that parameter's own doc comment) and `SyncScope.all`
+    /// (a full manual refresh); `performInitialSync` and `runIdleLoop`'s
+    /// reconnect both call this too, the former always bypassing (a brand
+    /// new account has no cache yet to reuse anyway) and the latter never
+    /// (an IDLE reconnect is exactly the frequent, best-effort case this
+    /// cache exists for).
+    private func listMailboxesCached(session: any IMAPSessionProtocol, bypassCache: Bool) async throws -> [MailboxInfo] {
+        if !bypassCache, let cached = cachedMailboxListing, Date().timeIntervalSince(cached.fetchedAt) < Self.mailboxListingTTL {
+            return cached.infos
+        }
+        let infos = try await session.listMailboxes()
+        cachedMailboxListing = (Date(), infos)
+        return infos
+    }
+
     /// Task #221: `bodyFetcher` defaults to a fresh instance (unchanged
     /// behavior for every existing call site — in particular every test
     /// that constructs an `AccountSyncer` directly), but `SyncCoordinator
@@ -322,7 +369,10 @@ public actor AccountSyncer {
             Task { await session.disconnect() }
         }
 
-        let mailboxInfos = try await session.listMailboxes()
+        // Always a real LIST — a brand new account has no cache yet to
+        // reuse, and this result seeds `cachedMailboxListing` for
+        // `performIncrementalSync`'s later passes either way.
+        let mailboxInfos = try await listMailboxesCached(session: session, bypassCache: true)
         progress.mailboxesDiscovered = mailboxInfos.count
         onProgress?(progress)
 
@@ -834,7 +884,12 @@ public actor AccountSyncer {
         }
 
         let capabilities = try await session.capabilities()
-        let mailboxInfos = try await session.listMailboxes()
+        // `forceReconcileVanishedUIDs`/`scope == .all` both mean "a
+        // low-frequency, user-visible refresh" — see
+        // `listMailboxesCached(session:bypassCache:)`'s doc comment for why
+        // those bypass the cache while the far more frequent default
+        // (`.inboxOnly`, IDLE wake/foreground resume) doesn't.
+        let mailboxInfos = try await listMailboxesCached(session: session, bypassCache: forceReconcileVanishedUIDs || scope == .all)
         let mailboxRecordsByPath = try await upsertMailboxes(mailboxInfos)
 
         let targets: [MailboxInfo]
@@ -975,7 +1030,10 @@ public actor AccountSyncer {
                 // itself is fine, whatever caused an earlier `.authentication`
                 // failure (if any) has cleared.
                 lastAuthFailureAt = nil
-                let mailboxInfos = try await session.listMailboxes()
+                // A frequent, best-effort reconnect (exactly the case
+                // `listMailboxesCached` exists for) — never forces a real
+                // LIST, and only needs to know INBOX's path anyway.
+                let mailboxInfos = try await listMailboxesCached(session: session, bypassCache: false)
                 guard let inboxInfo = Self.inbox(among: mailboxInfos) else {
                     await session.disconnect()
                     return

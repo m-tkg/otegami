@@ -477,4 +477,93 @@ struct AccountSyncerIncrementalTests {
         }
         #expect(inboxMessages.count == 1, "INBOX must be untouched by a .mailbox(path:) scope targeting a different mailbox")
     }
+
+    // MARK: - listMailboxes() TTL cache
+
+    /// `AccountSyncer.listMailboxesCached(session:bypassCache:)`: a fresh
+    /// real `LIST` on the account's very first sync only, then the default
+    /// `.inboxOnly`/`forceReconcileVanishedUIDs: false` scope reuses the
+    /// same cached listing for a second incremental pass immediately after
+    /// — one `AccountSyncer` instance (so `cachedMailboxListing` actually
+    /// persists between calls) reused across both incremental syncs, with a
+    /// single `FakeIMAPSession.CallRecorder` shared across the several
+    /// `FakeIMAPSession` instances the session factory builds (one per
+    /// `connect()` — see that recorder's own doc comment).
+    @Test("two consecutive default-scope incremental syncs issue only one real listMailboxes() call")
+    func incrementalSyncReusesCachedMailboxListing() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let initialSyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0)]
+            ))
+        }
+        _ = try await initialSyncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0)],
+            capabilitiesToReport: [.condstore]
+        )
+        // One `AccountSyncer` — its `sessionFactory` closure is fixed at
+        // `init`, but `cachedMailboxListing` lives on the `AccountSyncer`
+        // instance itself, so reusing it (rather than building a second one,
+        // the way every other test in this file does) is exactly what lets
+        // the second call observe the first call's cache.
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(recorder.listMailboxesCallCount == 1)
+    }
+
+    /// Same setup, but every call opts into
+    /// `forceReconcileVanishedUIDs: true` (pull-to-refresh's shape) — the
+    /// cache must never be trusted on that path, so this asserts the exact
+    /// opposite outcome of `incrementalSyncReusesCachedMailboxListing`: one
+    /// real `listMailboxes()` per call.
+    @Test("forceReconcileVanishedUIDs bypasses the cached mailbox listing on every call")
+    func forceReconcileVanishedUIDsBypassesMailboxListingCache() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let initialSyncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0)]
+            ))
+        }
+        _ = try await initialSyncer.performInitialSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0)],
+            capabilitiesToReport: [.condstore]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        _ = try await syncer.performIncrementalSync(
+            auth: .password(username: "test1@otegami.test", password: "test1234"),
+            forceReconcileVanishedUIDs: true
+        )
+        _ = try await syncer.performIncrementalSync(
+            auth: .password(username: "test1@otegami.test", password: "test1234"),
+            forceReconcileVanishedUIDs: true
+        )
+
+        #expect(recorder.listMailboxesCallCount == 2)
+    }
 }
