@@ -2,6 +2,7 @@ import Foundation
 import MailCore
 import MailTransport
 import OtegamiCore
+import os
 
 /// `IMAPSessionProtocol` backed by MailCore2 (via the `MailCore` Swift
 /// package). One instance wraps one `MCOIMAPSession` (one physical
@@ -42,6 +43,27 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// between `MOVE`/`COPY`+`STORE`+`EXPUNGE` and CONDSTORE/full-refetch.
     private var cachedCapabilities: Set<IMAPCapability> = []
 
+    /// Phase 2 IMAP-roundtrip instrumentation: elapsed time + counts for
+    /// `connect`/`select`/`fetchEnvelopes`/`fetchFlags`/`fetchBody`, the
+    /// operations that dominate a sync pass's network cost. Same
+    /// subsystem/category-per-type convention as `MailboxSyncer.logger`
+    /// (`docs/architecture.md`'s existing OSLog precedent) — `.public` on
+    /// every interpolated value below is safe *only* because each one is a
+    /// count, a UID/byte number, an elapsed duration, or a mailbox path
+    /// (already logged `.public` elsewhere, e.g. `MailboxSyncer.logger`'s
+    /// call sites) — never a credential, message body, or subject.
+    private static let logger = Logger(subsystem: "com.mtkg.otegami", category: "IMAPSession")
+
+    /// Milliseconds elapsed since `startedAt`, rounded to the nearest whole
+    /// millisecond — every instrumentation call site above measures a
+    /// round trip that's expected to take anywhere from single-digit
+    /// milliseconds (a cheap `STATUS`) to several seconds (a large `FETCH`),
+    /// so sub-millisecond precision isn't useful and a plain `Int` keeps
+    /// the log line readable.
+    private static func elapsedMs(since startedAt: Date) -> Int {
+        Int((Date().timeIntervalSince(startedAt) * 1000).rounded())
+    }
+
     public init(config: IMAPConfig) {
         let session = MCOIMAPSession()
         session.hostname = config.host
@@ -81,11 +103,23 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     // MARK: - Connection
 
     public func connect(auth: MailAuth) async throws {
+        let startedAt = Date()
         Self.apply(auth, to: session)
-        try await runVoid(session.checkAccountOperation())
+        do {
+            try await runVoid(session.checkAccountOperation())
+        } catch {
+            Self.logger.notice(
+                "connect: failed elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+            )
+            throw error
+        }
         connected = true
         cachedCapabilities = try await fetchCapabilities()
         gmailExtensionsSupported = cachedCapabilities.contains(.gmailExtensions)
+        let capabilityCount = cachedCapabilities.count
+        Self.logger.notice(
+            "connect: succeeded capabilities=\(capabilityCount, privacy: .public) elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+        )
     }
 
     public func disconnect() async {
@@ -160,9 +194,16 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     }
 
     public func status(_ mailboxPath: String) async throws -> MailboxStatus {
-        try await withCheckedThrowingContinuation { continuation in
+        // Same underlying MailCore2 request `select(_:)` calls — see that
+        // method's doc comment — so this one log site covers both; the
+        // message says "select/status" rather than picking one name.
+        let startedAt = Date()
+        return try await withCheckedThrowingContinuation { continuation in
             session.folderInfoOperation(folder: mailboxPath).start { error, info in
                 if let error {
+                    Self.logger.notice(
+                        "select/status: \(mailboxPath, privacy: .public) failed elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+                    )
                     continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
                     return
                 }
@@ -172,7 +213,11 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
                     ))
                     return
                 }
-                continuation.resume(returning: Self.mailboxStatus(from: info))
+                let status = Self.mailboxStatus(from: info)
+                Self.logger.notice(
+                    "select/status: \(mailboxPath, privacy: .public) messageCount=\(status.messageCount, privacy: .public) uidNext=\(status.uidNext, privacy: .public) elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+                )
+                continuation.resume(returning: status)
             }
         }
     }
@@ -185,11 +230,16 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         // multiple sequential operations so a single huge mailbox can't
         // stall on one oversized command or force everything into memory
         // as a single server round trip.
+        let startedAt = Date()
+        let chunks = Self.chunk(uids, size: max(1, batchSize))
         var result: [FetchedEnvelope] = []
-        for chunk in Self.chunk(uids, size: max(1, batchSize)) {
+        for chunk in chunks {
             let batch = try await fetchEnvelopesBatch(mailboxPath: mailboxPath, uids: chunk)
             result.append(contentsOf: batch)
         }
+        Self.logger.notice(
+            "fetchEnvelopes: \(mailboxPath, privacy: .public) uids=\(uids.lowerBound, privacy: .public)-\(uids.upperBound.map(String.init) ?? "*", privacy: .public) chunks=\(chunks.count, privacy: .public) fetched=\(result.count, privacy: .public) elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+        )
         return result
     }
 
@@ -293,9 +343,14 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     }
 
     private func fetchFlagsBatch(mailboxPath: String, indexSet: MCOIndexSet) async throws -> [UInt32: MessageFlags] {
-        try await withCheckedThrowingContinuation { continuation in
+        let startedAt = Date()
+        let requested = indexSet.count()
+        return try await withCheckedThrowingContinuation { continuation in
             session.fetchMessagesByUid(folder: mailboxPath, kind: .flags, uids: indexSet).start { error, messages, _ in
                 if let error {
+                    Self.logger.notice(
+                        "fetchFlags: \(mailboxPath, privacy: .public) requested=\(requested, privacy: .public) failed elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+                    )
                     continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
                     return
                 }
@@ -303,6 +358,9 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
                 for message in messages ?? [] {
                     result[message.uid] = Self.messageFlags(from: message.flags)
                 }
+                Self.logger.notice(
+                    "fetchFlags: \(mailboxPath, privacy: .public) requested=\(requested, privacy: .public) fetched=\(result.count, privacy: .public) elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+                )
                 continuation.resume(returning: result)
             }
         }
@@ -417,9 +475,13 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// part selection, so re-deriving any of that here would just be a
     /// worse copy of what the library already does well.
     public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {
+        let startedAt = Date()
         let content: MessageBodyContent = try await withCheckedThrowingContinuation { continuation in
             session.fetchParsedMessageOperation(folder: mailboxPath, uid: uid).start { error, parser in
                 if let error {
+                    Self.logger.notice(
+                        "fetchBody: \(mailboxPath, privacy: .public) uid=\(uid, privacy: .public) failed elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+                    )
                     continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
                     return
                 }
@@ -432,6 +494,14 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
                 continuation.resume(returning: Self.bodyContent(from: parser))
             }
         }
+        // Byte counts, never the content itself: `plainText`/`html`
+        // character counts and the sum of `parts`' own reported `size` —
+        // enough to see "this fetch was unusually large/slow" from a
+        // Console pull without exposing message content.
+        let approxBytes = (content.plainText?.utf8.count ?? 0) + (content.html?.utf8.count ?? 0) + content.parts.reduce(0) { $0 + $1.size }
+        Self.logger.notice(
+            "fetchBody: \(mailboxPath, privacy: .public) uid=\(uid, privacy: .public) parts=\(content.parts.count, privacy: .public) approxBytes=\(approxBytes, privacy: .public) elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+        )
 
         // RFC 2231 fallback (docs/roadmap.md): the pinned mailcore2
         // revision's `MCOMessageParser` only understands RFC 2047
