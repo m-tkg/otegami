@@ -71,6 +71,15 @@ SCENARIO_OUT[html-10]="html-10-responsive-table-footer.png"
 SCENARIO_ENV[html-10]="OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1 OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=10"
 SCENARIO_ALIAS[html-responsive-table-footer]=html-10
 
+# 実機報告 (ユーザー提供の実メール rakuten.eml、内容は伏せて構造だけ再現):
+# 背景が最後まで解決しない一覧テーブル+縦長のデータ行 — `AppEnvironment
+# .uitestFakeHTMLMessageBodyFundPriceNotificationTallTable`のdoc comment
+# 参照。ダークモードの色判定と、展開時の固定高さバジェットを超える縦長
+# コンテンツのスクロール挙動の確認用。
+SCENARIO_OUT[html-11]="html-11-fund-price-notification-tall-table.png"
+SCENARIO_ENV[html-11]="OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1 OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX=11"
+SCENARIO_ALIAS[html-fund-price-notification]=html-11
+
 # Task #66: `CalendarInviteSectionView`'s card (title/time/location/
 # organizer + 承諾/辞退/未定 buttons) — see `AppEnvironment
 # .uitestFakeCalendarInviteICS`'s doc comment for why this reads the

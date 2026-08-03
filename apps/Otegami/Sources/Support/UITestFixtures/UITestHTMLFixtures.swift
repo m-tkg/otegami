@@ -244,6 +244,15 @@ enum UITestHTMLFixtures {
             subject: "Scheduled maintenance for subscription #0000000 (UITest)",
             snippet: "Service maintenance for subscription #0000000 is now complete.",
             html: uitestFakeHTMLMessageBodyResponsiveTableFooterNotice
+        ),
+        // 実機報告 (ユーザー提供の実メール rakuten.eml、内容は伏せて構造だけ
+        // 再現): `html-11` — `uitestFakeHTMLMessageBodyFundPriceNotificationTallTable`
+        // のdoc comment参照 (背景が最後まで解決しない一覧テーブル+縦長の
+        // データ行、というこのメールの実際の骨格)。
+        UITestFakeHTMLMessage(
+            subject: "投信基準価額メール (UITest)",
+            snippet: "基準価額のお知らせ",
+            html: uitestFakeHTMLMessageBodyFundPriceNotificationTallTable
         )
     ]
 
@@ -704,6 +713,105 @@ enum UITestHTMLFixtures {
     </table>
     </center>
     <img src="http://track.otegami.test/wf/open?upn=uitest-fake" alt="" width="1" height="1" border="0" style="height:1px !important;width:1px !important;">
+    </body>
+    </html>
+    """
+
+    /// 実機報告 (ユーザー提供の実メール rakuten.eml — 証券会社の投信基準
+    /// 価額通知、内容は伏せて構造だけ再現): 「ダークモードで色がおかしい」
+    /// 「macOSでスクロールできない」の2件を再現する構造 — `body`自身は
+    /// `text-align:center`だけで背景色を一切指定せず、複数の`<table>`に
+    /// 分かれた本文のうち一覧テーブルの見出し行だけが`background-color:
+    /// #e1edf3`(薄い水色)を明示指定、データ行自体は背景色指定なしで文字は
+    /// 全体を包む最初の`<tr style="color:#333;...">`からの継承のみ、という
+    /// 「背景が最後まで解決しない (`findEffectiveBackground`がnullを返す)
+    /// が、文字色は暗いグレーを明示的に継承している」ケース。ロゴ画像
+    /// (`600x92`) と10行超のデータ行を持つ縦長の表がテーブル本体の大半を
+    /// 占める — 展開時の固定高さバジェット (`ThreadDetailView
+    /// .expandedMessageHeight(in:)`) を優に超える長さで、macOS版の
+    /// `HTMLWebViewRepresentable`にiOS版と同じ内部スクロール無効化/高さ
+    /// 実測がなかった問題を再現する。
+    static let uitestFakeHTMLMessageBodyFundPriceNotificationTallTable = """
+    <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+    <html lang="ja">
+    <head>
+    <meta http-equiv="Content-Language" content="ja">
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+    <body style="text-align:center">
+    <div style="width:600px;">
+    <table style="border-collapse:collapse;">
+    <tr style="line-height:1.4em;color:#333;font-size:12px;"><td>
+    <h1 style="margin:0 0 15px 0;">
+    <img src="http://cdn.otegami.test/logo/fund-price-notice-600x92.gif" alt="投信基準価額メール" width="600" height="92"></h1>
+    <p style="margin:0 0 10px 0;">基準価額のお知らせ</p>
+    <p style="margin:0 0 10px 0;">◆基準価額メール対象ファンド一覧</p>
+    </td></tr></table>
+    <table style="width:600px;border-collapse:collapse;font-size:15px;text-align:right;">
+    <tr style="background-color:#e1edf3;margin:3px 4px 1px 4px;line-height:12.0pt;text-align:center;">
+    <th width="35%" style="border:solid 1px #c3c3c3;font-weight:normal;">ファンド名(委託会社)</th>
+    <th width="20%" style="border:solid 1px #c3c3c3;font-weight:normal;">基準価額</th>
+    <th width="20%" style="border:solid 1px #c3c3c3;font-weight:normal;">前週比較<br>金額(%)</th>
+    <th width="35%" style="border:solid 1px #c3c3c3;font-weight:normal;">リターン(年率)</th>
+    </tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">Example グローバル債券オープン(毎月決算型)<br><font size=-2>(Exampleアセットマネジメント)</font></td>
+    <td style="border:solid 1px #c3c3c3;">5,119円</td>
+    <td style="border:solid 1px #c3c3c3;">-45円<br>(-0.87%)</td>
+    <td style="border:solid 1px #c3c3c3;">31.09%</td></tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">Example Slim 新興国株式インデックス<br><font size=-2>(三井Example アセットマネジメント)</font></td>
+    <td style="border:solid 1px #c3c3c3;">25,394円</td>
+    <td style="border:solid 1px #c3c3c3;">-2,267円<br>(-8.2%)</td>
+    <td style="border:solid 1px #c3c3c3;">49.12%</td></tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">Example Slim 全世界株式(オール・カントリー)<br><font size=-2>(三井Example アセットマネジメント)</font></td>
+    <td style="border:solid 1px #c3c3c3;">37,521円</td>
+    <td style="border:solid 1px #c3c3c3;">-722円<br>(-1.89%)</td>
+    <td style="border:solid 1px #c3c3c3;">32.81%</td></tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">Example Slim 米国株式(S&P500)<br><font size=-2>(三井Example アセットマネジメント)</font></td>
+    <td style="border:solid 1px #c3c3c3;">43,950円</td>
+    <td style="border:solid 1px #c3c3c3;">-719円<br>(-1.61%)</td>
+    <td style="border:solid 1px #c3c3c3;">30.79%</td></tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">ExampleNEXT FANG+インデックス<br><font size=-2>(大和Example アセットマネジメント)</font></td>
+    <td style="border:solid 1px #c3c3c3;">91,805円</td>
+    <td style="border:solid 1px #c3c3c3;">-1,757円<br>(-1.88%)</td>
+    <td style="border:solid 1px #c3c3c3;">23.85%</td></tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">ExamplePlus 世界トレンド・テクノロジー株(Zテック20)<br><font size=-2>(大和Example アセットマネジメント)</font></td>
+    <td style="border:solid 1px #c3c3c3;">13,862円</td>
+    <td style="border:solid 1px #c3c3c3;">-578円<br>(-4%)</td>
+    <td style="border:solid 1px #c3c3c3;">37.96%</td></tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">example・プラス・S&P500インデックス・ファンド<br><font size=-2>(exampleグループ投資顧問)</font></td>
+    <td style="border:solid 1px #c3c3c3;">19,556円</td>
+    <td style="border:solid 1px #c3c3c3;">-319円<br>(-1.61%)</td>
+    <td style="border:solid 1px #c3c3c3;">30.77%</td></tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">example・プラス・オールカントリー株式インデックス・ファンド<br><font size=-2>(exampleグループ投資顧問)</font></td>
+    <td style="border:solid 1px #c3c3c3;">19,344円</td>
+    <td style="border:solid 1px #c3c3c3;">-361円<br>(-1.83%)</td>
+    <td style="border:solid 1px #c3c3c3;">32.73%</td></tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">example・全米株式インデックス・ファンド<br><font size=-2>(exampleグループ投資顧問)</font></td>
+    <td style="border:solid 1px #c3c3c3;">44,465円</td>
+    <td style="border:solid 1px #c3c3c3;">-717円<br>(-1.59%)</td>
+    <td style="border:solid 1px #c3c3c3;">31.08%</td></tr>
+    <tr><td style="border:solid 1px #c3c3c3;text-align:left;">年金積立 J グロース<br><font size=-2>(アモーヴィア・アセットマネジメント)</font></td>
+    <td style="border:solid 1px #c3c3c3;">73,161円</td>
+    <td style="border:solid 1px #c3c3c3;">-934円<br>(-1.26%)</td>
+    <td style="border:solid 1px #c3c3c3;">43.2%</td></tr>
+    </table>
+    <table style="border:white 0px solid;width:600px;border-collapse:collapse;">
+    <tr style="text-align:left;line-height:1.4em;width:600;color:#333;margin-left:auto;font-size:12px;margin-right:auto">
+    <td>
+    <p style="text-align:left;margin:0 0 10px 0;padding:0;">
+    ・本メールは、投資信託の基準価額について、下記の条件を満たすお客様にお送りしております。<br>
+    &nbsp;&nbsp;・当該ファンドを保有されているお客様<br>
+    &nbsp;&nbsp;・基準価額メールを設定されたお客様<br>
+    ・基準価額は営業日時点の数値を表示しております。<br>
+    ・リターン(年率)は、直近1年間の分配金込みの基準価額変動率を表示しております。<br>
+    </p>
+    </td></tr></table>
+    <table style="border:white 0px solid;width:600px;border-collapse:collapse;">
+    <tr style="text-align:left;line-height:1.4em;width:600px;color:#333;margin-left:auto;font-size:12px;margin-right:auto">
+    <td>
+    <p style="text-align:left;margin:0 0 10px 0;padding:0;">本メールはシステムにより自動配信されています。ご返信いただいてもお答えできませんのでご了承ください。</p>
+    </td></tr></table>
+    </div>
     </body>
     </html>
     """

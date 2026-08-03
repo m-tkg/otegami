@@ -139,6 +139,18 @@
 #                                       .uitestFakeHTMLMessageBodyResponsive
 #                                       TableFooterNotice`)。画像/幅の見た目
 #                                       確認用。
+#   html-11 / html-fund-price-notification  実機報告 (ユーザー提供の実メール
+#                                       rakuten.eml、内容は伏せて構造だけ
+#                                       再現): 背景が最後まで解決しない
+#                                       (見出し行だけ`background-color`明示、
+#                                       本文の大半は文字色継承のみ) 一覧
+#                                       テーブル+縦長のデータ行、というこの
+#                                       メールの実際の骨格 (`AppEnvironment
+#                                       .uitestFakeHTMLMessageBodyFundPrice
+#                                       NotificationTallTable`)。ダークモード
+#                                       の色判定と、展開時の固定高さバジェ
+#                                       ットを超える縦長コンテンツのスク
+#                                       ロール挙動の確認用。
 #   calendar-invite                    Task #66: カレンダー招待メールの
 #                                       招待カード (36番フィクスチャ相当 —
 #                                       タイトル/日時/場所/主催者 +
