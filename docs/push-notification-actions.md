@@ -84,6 +84,10 @@
    先に対象メールだけを読み込むための仕組み。資格情報が解決できない、
    同期そのものが失敗する、同期後も対象 UID が見つからない場合は `nil`
    が返り、遷移は行わない（通常どおり統合受信トレイが表示されるだけ）。
+   **`didReceive` の `completionHandler()` はこの解決を待たずに即座に
+   呼ぶ**（v1.3.8 のクラッシュ修正、次項「既知の制限」の直下参照）—
+   `resolveOpenTarget`/`fetchAndResolveOpenTarget` は `completionHandler()`
+   を呼んだ後も別 `Task` として継続し、完了後に `setPendingTarget` する。
 3. **SwiftUI 側への橋渡し**: `AppDelegate` は `AppEnvironment`（SwiftUI
    `App` の `@State`）に直接アクセスできないため、
    `PushNotificationOpenCoordinator`
@@ -123,6 +127,28 @@
   （push 到達から実際のメール到着までのタイムラグが大きい、対象メール
   ボックスが INBOX でない等）は遷移せず、通常どおり統合受信トレイが
   表示される。
+
+### v1.3.8 の実機クラッシュと修正（v1.3.9）
+
+v1.3.8（INBOX優先同期の初回導入）で、通知本体タップ直後に
+`UIApplication._updateStateRestorationArchiveForBackgroundEvent:...` の
+内部アサーションで実機クラッシュする不具合が報告された
+（`EXC_CRASH`/`SIGABRT`、クラッシュ時 `procRole` は `Foreground`）。原因:
+`didReceive(...):withCompletionHandler:` の `completionHandler()` を、
+IMAP接続を伴いうる `resolveOpenTarget`（優先同期込み）の完了まで待って
+から呼んでいた。通知本体タップは同時に (1) アプリをフォアグラウンド
+起動させつつ、(2) `UNUserNotificationCenter` 視点では
+`completionHandler()` が呼ばれるまで「バックグラウンド通知処理」が
+継続中という状態になる。IMAP接続で数秒かかる間この2つの状態が併存し、
+UIKit 側のフォアグラウンド/バックグラウンド状態保存処理と競合して
+クラッシュしたと推測される。
+
+v1.3.9 で修正: 通知本体タップの分岐だけ `completionHandler()` を即座に
+呼ぶよう変更し、対象解決（優先同期含む）はその後も別 `Task` として
+継続する設計にした（`PushTokenCenter.swift` の該当メソッドの doc
+comment参照）。「既読にする」「アーカイブ」ボタン側（アプリを
+フォアグラウンドに出さない）は影響を受けないため、従来どおり処理完了を
+待ってから `completionHandler()` を呼ぶ実装のまま。
 
 ## 実機での確認ポイント
 
