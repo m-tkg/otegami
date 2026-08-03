@@ -792,6 +792,7 @@ translations = {
     "新規メッセージ": "New Message",
     "メッセージ": "Message",
     "既読/未読を切り替え": "Toggle Read/Unread",
+    "新規メールを受信": "Check for New Mail",
     "次のメールボックス": "Next Mailbox",
     "前のメールボックス": "Previous Mailbox",
     # Task #170: found alongside the above, in settings screens owned by a

@@ -4874,6 +4874,16 @@
         }
       }
     },
+    "新規メールを受信": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check for New Mail"
+          }
+        }
+      }
+    },
     "次のメールボックス": {
       "localizations": {
         "en": {
