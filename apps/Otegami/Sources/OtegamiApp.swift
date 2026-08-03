@@ -360,9 +360,27 @@ struct RootView: View {
             // A newly-added account (mid-session, via AccountSetupView)
             // should also get an IDLE loop without waiting for the next
             // background/foreground transition.
-            .onChange(of: environment.accounts) { _, newAccounts in
+            //
+            // 空 → 非空の初回配信はコールドローンチそのもの:
+            // `.onChange(of: scenePhase, initial: true)` の `.active` は
+            // `AppEnvironment.startObservingAccounts()` の ValueObservation
+            // が最初のアカウントリストを届けるより先に発火するため、その
+            // 時点の `environment.accounts` は空で、`syncAllAccountsOnce()`
+            // は何もせずに終わっている。ここで初回配信を捕まえて新着確認
+            // (replay + incremental sync) を1回走らせないと、起動直後の
+            // 新規メール確認は次のフォアグラウンド復帰か IDLE のサーバー
+            // プッシュまで一切走らない。既にアカウントがある状態での増減
+            // (非空 → 非空) はここでは同期しない — アカウント追加フローが
+            // 自分で初回同期を走らせる。
+            .onChange(of: environment.accounts) { oldAccounts, newAccounts in
                 guard scenePhase == .active else { return }
-                Task { await startIdleLoops(for: newAccounts) }
+                let isColdLaunchFirstDelivery = oldAccounts.isEmpty && !newAccounts.isEmpty
+                Task {
+                    if isColdLaunchFirstDelivery {
+                        await syncAllAccountsOnce()
+                    }
+                    await startIdleLoops(for: newAccounts)
+                }
             }
             // Task #48 (デフォルトメールアプリ対応): the OS routes a tapped
             // `mailto:` link here once this app claims the scheme
@@ -730,8 +748,14 @@ struct RootView: View {
             #if os(iOS)
             await environment.resumeSharedDatabaseIfNeeded()
             #endif
-            await startIdleLoops(for: environment.accounts)
+            // 新着確認 (replay + incremental sync) を IDLE ループ確立より
+            // 先に走らせる: `startIdleLoops` は全アカウント分の TLS+LOGIN
+            // を await 直列で払うため、先に置くとアクティブ化から新着反映
+            // までの体感がその分丸ごと遅れる。IDLE は「この後の」サーバー
+            // プッシュを拾うための常設接続で即時性を要求されないのに対し、
+            // こちらは「今アクティブになった瞬間の」新規メール確認そのもの。
             await syncAllAccountsOnce()
+            await startIdleLoops(for: environment.accounts)
             // G (実機フィードバック第3弾): the OS's notification settings
             // (badge on/off) can change at any time while this app is
             // backgrounded, with no notification this app receives when it
