@@ -301,6 +301,19 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// across the several sessions a multi-pass test's session factory
         /// creates, the same way `_storeCalls`/etc. already are.
         private var _listMailboxesCallCount = 0
+        /// Phase 3 (IMAP 接続の再利用): every `connect(auth:)` call across
+        /// every `FakeIMAPSession` instance sharing this recorder, in call
+        /// order — lets `PooledIMAPSessionFactory` tests assert exactly how
+        /// many *real* connections the underlying factory actually made
+        /// (as opposed to how many `PooledIMAPSession` wrapper `connect`
+        /// calls happened, which may be more if some were served from the
+        /// pool without a real connect).
+        private var _connectCalls: [String] = []
+        /// Every `disconnect()` call across every instance sharing this
+        /// recorder, in call order — same rationale as `_connectCalls`,
+        /// for asserting the pool actually tore down (vs. kept pooling) a
+        /// given underlying session.
+        private var _disconnectCallCount = 0
 
         public init() {}
 
@@ -346,6 +359,18 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             lock.unlock()
         }
 
+        func recordConnect(username: String) {
+            lock.lock()
+            _connectCalls.append(username)
+            lock.unlock()
+        }
+
+        func recordDisconnect() {
+            lock.lock()
+            _disconnectCallCount += 1
+            lock.unlock()
+        }
+
         public var storeCalls: [(path: String, change: FlagChange)] {
             lock.lock()
             defer { lock.unlock() }
@@ -386,6 +411,25 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             lock.lock()
             defer { lock.unlock() }
             return _listMailboxesCallCount
+        }
+
+        /// Phase 3: every `connect(auth:)` call's username, in call order.
+        public var connectCalls: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return _connectCalls
+        }
+
+        public var connectCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _connectCalls.count
+        }
+
+        public var disconnectCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _disconnectCallCount
         }
     }
 
@@ -438,6 +482,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func connect(auth: MailAuth) async throws {
+        let username: String
+        switch auth {
+        case .password(let value, _): username = value
+        case .xoauth2(let value, _): username = value
+        }
+        recorder?.recordConnect(username: username)
         if let failConnection = script.failConnection {
             throw failConnection
         }
@@ -445,6 +495,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func disconnect() async {
+        recorder?.recordDisconnect()
         connected = false
     }
 

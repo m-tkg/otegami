@@ -14,6 +14,15 @@ import os
 public actor SyncCoordinator {
     private let database: AppDatabase
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+    /// Phase 3 (IMAP 接続の再利用): passed straight through to every
+    /// `AccountSyncer` this coordinator creates as *its*
+    /// `idleSessionFactory` — see that property's doc comment. Production
+    /// wiring (`AppEnvironment`) passes the raw, unpooled
+    /// `MailCoreIMAPSession` factory here while `sessionFactory` above goes
+    /// through `PooledIMAPSessionFactory`; defaults to `sessionFactory`
+    /// itself for every other caller (tests, and any future call site that
+    /// doesn't care about the distinction).
+    private let idleSessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     /// M5's SMTP session factory, retained here (not just forwarded to
     /// `opQueueProcessor`) for `sendCalendarReply(draft:account:auth:)`
     /// (Task #66) — a calendar RSVP reply sends immediately over its own
@@ -63,6 +72,7 @@ public actor SyncCoordinator {
     public init(
         database: AppDatabase,
         sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol,
+        idleSessionFactory: (@Sendable (IMAPConfig) -> any IMAPSessionProtocol)? = nil,
         smtpSessionFactory: @escaping @Sendable (SMTPConfig) -> any SMTPSessionProtocol = { config in NotImplementedSMTPSession(config: config) },
         messageBuilder: @escaping @Sendable (ComposeDraft) -> BuiltMessage = { _ in
             BuiltMessage(data: Data(), messageId: "<unbuilt@otegami.local>")
@@ -71,6 +81,7 @@ public actor SyncCoordinator {
     ) {
         self.database = database
         self.sessionFactory = sessionFactory
+        self.idleSessionFactory = idleSessionFactory ?? sessionFactory
         self.smtpSessionFactory = smtpSessionFactory
         self.messageBuilder = messageBuilder
         self.bodyFetcher = BodyFetcher(database: database)
@@ -912,7 +923,13 @@ public actor SyncCoordinator {
         // independent one — see `AccountSyncer.init`'s doc comment for why
         // that split used to fragment in-flight dedup/self-heal state
         // across the two.
-        let syncer = AccountSyncer(account: account, database: database, sessionFactory: sessionFactory, bodyFetcher: bodyFetcher)
+        let syncer = AccountSyncer(
+            account: account,
+            database: database,
+            sessionFactory: sessionFactory,
+            idleSessionFactory: idleSessionFactory,
+            bodyFetcher: bodyFetcher
+        )
         syncers[account.id] = syncer
         return syncer
     }

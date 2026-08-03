@@ -781,6 +781,12 @@ struct RootView: View {
             await environment.suspendSharedDatabaseIfNeeded()
             #endif
             await environment.syncCoordinator.stopAllIdleLoops()
+            // Phase 3 (IMAP 接続の再利用): `stopAllIdleLoops()` の直後、
+            // プールが保持しているアイドル接続 (返却後 TTL 内で接続済みの
+            // まま残っているもの) も実切断する — バックグラウンドに接続を
+            // 持ったまま入らない、という既存の IDLE ループの方針をプール
+            // 側にも揃える。
+            await environment.imapSessionPool.drainAll()
             // C7 「アプリを離脱したら即座に送信を確定」— cuts short whatever's
             // left of the countdown the instant the app leaves the
             // foreground, rather than letting it keep counting down

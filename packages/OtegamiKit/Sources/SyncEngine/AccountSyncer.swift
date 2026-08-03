@@ -140,6 +140,21 @@ public actor AccountSyncer {
     private let account: AccountRecord
     private let database: AppDatabase
     private let sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+    /// Phase 3 (IMAP 接続の再利用): the factory `runIdleLoop`'s own
+    /// `connectWithRetry` call uses — deliberately *not* the same value as
+    /// `sessionFactory` in production, where `SyncCoordinator` wires
+    /// `sessionFactory` through `PooledIMAPSessionFactory` (short-lived ops
+    /// benefit from reuse) but keeps this one pointing at the raw,
+    /// unpooled factory (a long-lived `IDLE` connection has nothing to
+    /// reuse *from* the pool — it holds its own connection open for as
+    /// long as the loop runs — and must never be checked back into the
+    /// pool's TTL bookkeeping). Defaults to `sessionFactory` itself when
+    /// the caller doesn't pass a separate one (every existing test/call
+    /// site that constructs an `AccountSyncer` directly), so this is a
+    /// behavior-preserving addition everywhere except the one production
+    /// wiring point (`SyncCoordinator.init`) that now passes a distinct
+    /// value.
+    private let idleSessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     private let bodyFetcher: BodyFetcher
     private let mailboxSyncer: MailboxSyncer
     /// Task #69: see `SyncRetryPolicy`'s doc comment.
@@ -312,12 +327,14 @@ public actor AccountSyncer {
         database: AppDatabase,
         retryPolicy: SyncRetryPolicy = .default,
         sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol,
+        idleSessionFactory: (@Sendable (IMAPConfig) -> any IMAPSessionProtocol)? = nil,
         bodyFetcher: BodyFetcher? = nil
     ) {
         self.account = account
         self.database = database
         self.retryPolicy = retryPolicy
         self.sessionFactory = sessionFactory
+        self.idleSessionFactory = idleSessionFactory ?? sessionFactory
         self.bodyFetcher = bodyFetcher ?? BodyFetcher(database: database)
         self.mailboxSyncer = MailboxSyncer(database: database)
     }
@@ -363,7 +380,7 @@ public actor AccountSyncer {
 
         var progress = Progress()
 
-        let session = try await connectWithRetry(auth: auth, autoRetry: autoRetry)
+        let session = try await connectWithRetry(auth: auth, autoRetry: autoRetry, sessionFactory: sessionFactory)
         defer {
             let session = session
             Task { await session.disconnect() }
@@ -678,7 +695,11 @@ public actor AccountSyncer {
     /// failure. `autoRetry: true` applies `SyncRetryPolicy`'s
     /// authentication/networkUnreachable/other classification — see
     /// `classify(_:)`/`SyncRetryPolicy`'s doc comments.
-    private func connectWithRetry(auth: MailAuth, autoRetry: Bool) async throws -> any IMAPSessionProtocol {
+    private func connectWithRetry(
+        auth: MailAuth,
+        autoRetry: Bool,
+        sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+    ) async throws -> any IMAPSessionProtocol {
         guard autoRetry else {
             let session = sessionFactory(account.imapConfig)
             do {
@@ -877,7 +898,7 @@ public actor AccountSyncer {
         }
         defer { if autoRetry { isAutoRetrying = false } }
 
-        let session = try await connectWithRetry(auth: auth, autoRetry: autoRetry)
+        let session = try await connectWithRetry(auth: auth, autoRetry: autoRetry, sessionFactory: sessionFactory)
         defer {
             let session = session
             Task { await session.disconnect() }
@@ -1025,7 +1046,12 @@ public actor AccountSyncer {
                 // pre-Task-#69 behavior: one attempt per reconnect, account
                 // -level `lastSyncError` recorded/cleared around it same as
                 // always.
-                let session = try await connectWithRetry(auth: auth, autoRetry: false)
+                // Phase 3: this loop always uses `idleSessionFactory`
+                // (the raw, unpooled factory) — never `sessionFactory` —
+                // see that property's doc comment for why a long-lived
+                // `IDLE` connection must not go through
+                // `PooledIMAPSessionFactory`'s checkout/TTL bookkeeping.
+                let session = try await connectWithRetry(auth: auth, autoRetry: false, sessionFactory: idleSessionFactory)
                 // Task #187: LOGIN just succeeded — proof the credential
                 // itself is fine, whatever caused an earlier `.authentication`
                 // failure (if any) has cleared.

@@ -29,6 +29,15 @@ import UserNotifications
 @Observable
 final class AppEnvironment {
     let database: AppDatabase
+    /// Phase 3 (IMAP 接続の再利用): `syncCoordinator` の `sessionFactory`
+    /// (IDLE 以外の全同期パス — `syncAccountIncrementally`/
+    /// `replayOpQueue`/本文・添付・cid画像取得/スレッド要約) が経由する
+    /// TTL 付き接続プール。バックグラウンド遷移時に `drainAll()` を呼んで
+    /// 保持中の接続を実切断するため、`syncCoordinator` と並んでここに
+    /// 保持しておく (`OtegamiApp.handleScenePhaseChange` の
+    /// `.background`/`.inactive` ケースから呼ばれる `drainIMAPSessionPool()`
+    /// 参照)。
+    let imapSessionPool: PooledIMAPSessionFactory
     let syncCoordinator: SyncCoordinator
     let credentialStore: KeychainCredentialStore
     /// Task #200 (Composer 宛先サジェスト) — see `RecipientSuggestionSource`'s
@@ -640,9 +649,19 @@ final class AppEnvironment {
 
         self.uitestDirectOpenThreadId = UITestSeeder.seedIfRequested(db: database.dbWriter)
 
+        // Phase 3: `sessionFactory` goes through `imapSessionPool` (every
+        // short-lived sync/fetch pass reuses a recently-returned
+        // connection when possible) while `idleSessionFactory` stays the
+        // raw, unpooled `MailCoreIMAPSession` factory — the foreground
+        // `IDLE` loop holds its own long-lived connection and must never
+        // be checked into/out of the pool's TTL bookkeeping (see
+        // `AccountSyncer.idleSessionFactory`'s doc comment).
+        let imapSessionPool = PooledIMAPSessionFactory(sessionFactory: { config in MailCoreIMAPSession(config: config) })
+        self.imapSessionPool = imapSessionPool
         self.syncCoordinator = SyncCoordinator(
             database: database,
-            sessionFactory: { config in MailCoreIMAPSession(config: config) },
+            sessionFactory: imapSessionPool.makeSessionFactory(),
+            idleSessionFactory: { config in MailCoreIMAPSession(config: config) },
             smtpSessionFactory: { config in MailCoreSMTPSession(config: config) },
             messageBuilder: { draft in MailCoreMessageBuilder.build(draft) }
         )
