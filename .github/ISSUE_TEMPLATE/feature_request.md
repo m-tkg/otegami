@@ -22,8 +22,6 @@ Any alternative solutions or workarounds you've considered.
 
 ## Anything else
 
-Check [docs/roadmap.md](../../docs/roadmap.md) first — your idea might
-already be planned. Mention here if it's related to something there, or
-if you'd be interested in implementing it yourself (worth opening this
-issue first to discuss approach, per
+Mention here if you'd be interested in implementing it yourself (worth
+opening this issue first to discuss approach, per
 [CONTRIBUTING.md](../../CONTRIBUTING.md)).

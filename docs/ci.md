@@ -22,6 +22,13 @@ TestFlight への配布は GitHub Actions ではなく Xcode Cloud を使う、�
 4. `packages/OtegamiKit` の `swift test` (`make test` と同じ内容。
    `MailTransportMailCoreTests` は `OTEGAMI_TEST_IMAP_HOST` 環境変数が
    無いと自動的に skip されるので、CI では実行されない)。
+5. `make check-localization` (`scripts/check-localizable-coverage.py` に
+   よるローカライズカバレッジ検査 — [docs/localization.md](localization.md))。
+
+このほか `.github/workflows/` には、タグ push で macOS アプリを署名・
+公証して GitHub Release に添付する `release-macos.yml` がある
+([docs/release.md](release.md) 参照 — ci-app/ci-server とは独立した
+リリース用ワークフロー)。
 
 macOS/iOS 両方のビルドステップには `OTHER_SWIFT_FLAGS="-Xfrontend
 -warn-long-expression-type-checking=300 -Xfrontend

@@ -63,7 +63,12 @@ Docker Compose で Dovecot (IMAP/SMTP) + Mailpit (SMTP 受信・Web UI) を
 ビルド (`build-mailcore2.sh`)・OTA 配信 (`deploy-ota.sh`)・ローカライズ
 カバレッジ確認 (`check-localizable-coverage.py`)、そして
 `verify-*.sh` 群 (機能ごとのシミュレータ実機検証スクリプト、
-`.claude/skills/verify/SKILL.md` から呼ばれる) を置く。
+`.claude/skills/verify/SKILL.md` から呼ばれる) を置く。検証スクリプトが
+共有する処理は `scripts/lib/` にある — シミュレータ起動/xcodebuild の
+共通ヘルパー (`simulator.sh`/`build.sh`)、`verify-screen.sh` のシナリオ
+定義テーブル (`verify-screen-scenarios.sh`)、macOS QA 用 CGEvent
+ドライバ (`verify-macos-qa-driver.swift`)。新しい検証スクリプトを書く
+ときは、まずここの既存関数を再利用する。
 
 ## パッケージ依存関係 (`packages/OtegamiKit`)
 
@@ -128,6 +133,16 @@ apps/Otegami
 - **`BIMI`** — 送信者ロゴ (BIMI, DNS-over-HTTPS レコード取得 + 安全な
   サブセットの SVG パース/検証)。Linux 互換 (実際のラスタライズは
   `apps/Otegami` 側の `CoreGraphics` コード)。
+
+### テストターゲット
+
+- `packages/OtegamiKit` の各モジュールのテストは `make test`
+  (`swift test`) で走る。複数テストターゲットが共有するテストダブル・
+  ヘルパーは `OtegamiKitTestSupport` ターゲットに集約されている
+  (2026-08-01 に重複定義を統合)。
+- apps 層にも単体テストターゲットがある: `OtegamiAppTests` (アプリ本体
+  のロジック) と `NotificationServiceTests` (通知拡張)。
+  `make ios-apptests` で実行する (シミュレータ向け `xcodebuild test`)。
 
 ## 同期エンジンの設計
 
@@ -460,7 +475,12 @@ actor の reentrancy により同じアカウントに対する2回目の `repla
 
 1. **in-process の直列化**: `OpQueueProcessor` が `inFlightAccountIds:
    Set<String>` を持ち、同じアカウントの `replay` が既に進行中なら
-   即座に no-op で返す。
+   自分ではキューを処理しない。ただし単純な no-op ではなく
+   `trailingAccountIds` に積んで、進行中の replay の完了後にもう1周
+   trailing pass を実行させる (2026-08-01 の "Drain queued operations
+   after replay overlap" — 進行中の replay がスナップショットを取った
+   **後**に積まれた op が、次のフォアグラウンド遷移や IDLE wake まで
+   取り残される穴を塞ぐため)。
 2. **DB 永続の冪等ガード**: `outboxMessage.sendStartedAt` を SMTP 送信
    **直前**に `NULL → 現在時刻` へ CAS 的に更新するトランザクションで
    クレームを取得し、失敗したら (既に他の試行がクレーム済み) 送信を
@@ -980,15 +1000,14 @@ fakeserver.go` に `RateLimitWindow`/`RateLimitWindowBudget` — 時間窓
 - **さらに重要**: **app 自身が Yahoo! アカウントで正常にログイン・受信
   できること** — 今回の事象はリレーの watch だけでなく app 自身の認証
   まで巻き込んだため、リレーのログが正常に見えても油断しないこと。
-  ユーザーに app からの受信を確認してもらうこと (`PENDING.md`/
-  `HUMAN_TASKS.md` 参照)。
+  ユーザーに app からの受信を確認してもらうこと。
 - `watch connected` (LOGIN) の頻度が `PollInterval` (20分) ごとに
   なっていること — Yahoo! JAPAN の watch について `watch connected` の
   間隔を見れば確認できる。
 - `watch authentication failed` (`[AUTHENTICATIONFAILED]`) が
   Task #206 適用後より明確に減っていること。理想は0件。
 - 通知が実際に20分以内の遅延で届いていること (ユーザー体感での確認が
-  必要 — `PENDING.md`/`HUMAN_TASKS.md` 参照)。
+  必要)。
 - 万一 `[LIMIT]` や `AUTHENTICATIONFAILED` が今回の設計後も観測された
   場合は、その時刻と直前の `watch connected` からの経過時間を記録する
   こと — 上記「時間窓ベースか回数ベースか」の切り分けに使える一次データ

@@ -16,11 +16,13 @@ UI。iOS はハンバーガーメニュー →「設定」シート、macOS は 
 
 | カテゴリ | 実装 | 内容 |
 | --- | --- | --- |
-| 一般 | `GeneralSettingsView.swift` | iCloud 同期トグル、プッシュ通知 (Task #212 で移設) |
+| 一般 | `GeneralSettingsView.swift` | iCloud 同期トグル、プッシュ通知 (Task #212 で移設)、デフォルトのメールアプリに設定 (2026-08-02 にアカウントの設定から移設、[docs/default-mail-app.md](default-mail-app.md)) |
 | アカウントの設定 | `AccountSettingsCategoryView.swift` | アカウントの追加削除、デフォルトの送信アカウント |
-| メールビューア | `MailViewerSettingsView.swift` | リンクの開き方、削除/アーカイブ後の挙動、本文へのプロフィール画像表示、AI 機能 on/off、画像設定、HTML表示設定、フッターツールバーのカスタマイズへの入口 |
 | メール一覧 | `MailListSettingsView.swift` | 一覧のプロフィール画像表示、プレビュー行数、スワイプ設定、一覧に要約を出す、スレッド表示 |
+| メールビューア | `MailViewerSettingsView.swift` | リンクの開き方、削除/アーカイブ後の挙動、本文へのプロフィール画像表示、AI 機能 on/off、画像設定、HTML表示設定、フッターツールバーのカスタマイズへの入口 |
 | メール作成 | `MailComposeSettingsView.swift` | テンプレート、署名テンプレート、送信キャンセルの猶予 |
+
+(表の並びは実際の設定画面のカテゴリ順と同じ。)
 
 macOS は `OtegamiSettingsView` の「設定」タブが同じ `AccountsListContent`
 をそのまま埋め込むため、iOS と全く同じカテゴリ構造になる (「このアプリ

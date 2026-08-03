@@ -66,6 +66,9 @@ iOS 側 (Xcode Cloud) はこの workflow を通らないので影響を受けな
 | `NOTARY_TEAM_ID` | Apple Developer Team ID。署名・notarize 両方および entitlements のチーム識別子解決 (下記) に使う |
 | `OTEGAMI_GOOGLE_CLIENT_ID` (任意) | Gmail OAuth の Client ID。登録済みなら「Generate Local.xcconfig from OAuth Client ID secrets」ステップがこの secret から `Config/Local.xcconfig` を生成し、配布ビルドで Gmail 認証が有効になる。**未登録でもビルドは失敗しない** — その場合は Gmail 認証ボタンが無効化された「素のビルド」になるだけ (`docs/oauth-setup.md`)。 |
 | `OTEGAMI_MICROSOFT_CLIENT_ID` (任意) | Outlook/Office365 OAuth の Client ID。上記と同じ仕組み・同じ「未登録でも失敗しない」挙動 (`docs/oauth-setup.md`)。 |
+| `OTEGAMI_RELAY_REGISTRATION_SECRET` (任意) | プッシュリレーの登録シークレット。登録済みなら同じ「Generate Local.xcconfig」ステップが `Local.xcconfig` に埋め込み、配布ビルドでプッシュ通知の有効化ボタンが使えるようになる (`docs/relay-deployment.md`)。 |
+| `OTEGAMI_PUSH_RELAY_URL` (任意) | プッシュリレーの URL。上記とセットで使う。 |
+| `MACOS_PROVISIONING_PROFILE_BASE64` (任意) | Developer ID 用 provisioning profile (`.provisionprofile`) の base64。登録済みなら「Resolve macOS entitlements」ステップが `embedded.provisionprofile` としてアプリに埋め込み、iCloud KVS entitlement を保持したまま署名する。未登録ならそのステップが entitlement を剥がして署名する (下記「entitlements と provisioning profile」参照)。 |
 
 この2つの Client ID secret が未登録だと、GitHub Release からインストール
 した macOS ビルドは Gmail の「再認証」が常に `oauthUnavailable` で失敗する
@@ -93,8 +96,9 @@ iCloud KVS (`com.apple.developer.ubiquity-kvstore-identifier`、
   Developer ID 証明書を指定) は、対応する provisioning profile が
   無いと `xcodebuild` が**ビルドを始める前に**
   `"Otegami" requires a provisioning profile with the iCloud feature`
-  で即失敗する (このリポジトリの secrets には provisioning profile は
-  含まれていないため、これは実際に踏む)。
+  で即失敗する (`MACOS_PROVISIONING_PROFILE_BASE64` secret が未登録の
+  場合はこれを実際に踏む — 登録済みなら「Resolve macOS entitlements」
+  ステップが profile を埋め込んで entitlement を保持する)。
 - **Automatic 署名** (project.yml の既定) は profile の自動発行/取得に
   ログイン済み Apple ID セッションか App Store Connect API キーを要求する
   — どちらも GitHub Actions のランナーには無い (`-allowProvisioningUpdates`

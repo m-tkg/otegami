@@ -257,6 +257,16 @@ XCUITest ターゲットが無いため、`screencapture`/CGEvent ベースの
   フルスクリーンの `screencapture` はユーザーの他のウィンドウ/ブラウザ
   タブを写し込むリスクがある。対象ウィンドウの位置/サイズを
   `osascript` で取得してから範囲指定キャプチャ (`-R`) を使うこと。
+- **macOS の検証起動は必ず `OTEGAMI_UITEST_DB_DIRECTORY` で DB を
+  隔離すること** — シミュレータと違い macOS のアプリプロセスはサンド
+  ボックスされておらず、素の起動は実ユーザーの
+  `~/Library/Application Support/otegami/otegami.sqlite` (この開発機では
+  実アカウントの実データ) を開く。`OTEGAMI_UITEST_INSERT_FAKE_*` 系の
+  フィクスチャ注入フラグを付けた検証起動が実データベースへ注入して
+  しまう事故が実際に起きた (2026-08-04)。`HOME` 環境変数の差し替えは
+  効かない (`FileManager` は環境変数ではなく実際のホームを返す) ため、
+  `AppDatabase.makeShared(explicitDirectory:)` に直結するこの env が
+  唯一の隔離手段。`OTEGAMI_UITEST_DISABLE_CLOUD_SYNC=1` も併用する。
 
 ## スクリーンショットの撮り方: 永続状態か、遷移状態か
 
@@ -275,6 +285,13 @@ XCUITest ターゲットが無いため、`screencapture`/CGEvent ベースの
 
 ## 検証スクリプトを書く/直すときの現行の注意点
 
+- **まず `scripts/lib/` の既存ヘルパーを再利用すること**: シミュレータ
+  起動/xcodebuild の共通処理は `scripts/lib/simulator.sh`・
+  `scripts/lib/build.sh` に抽出済みで、`verify-*.sh` 群はそこから
+  `source` する。`verify-screen.sh` のシナリオ定義は
+  `scripts/lib/verify-screen-scenarios.sh` のデータテーブル、macOS QA の
+  CGEvent ドライバは `scripts/lib/verify-macos-qa-driver.swift` にある。
+  新しいシナリオ/スクリプトはこれらへ追記する形で書く。
 - **`simctl uninstall` は「フレッシュインストール」の代わりにならない
   場合がある**: Keychain と iCloud KVS (`NSUbiquitousKeyValueStore`) は
   アプリのコンテナ外に保存されており、`simctl uninstall` では消えない。

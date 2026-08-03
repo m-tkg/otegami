@@ -22,8 +22,11 @@ iOS 26+ / macOS 26+ 対応、単一の SwiftUI コードベース。English READ
 </p>
 <p align="center">
   <img src="docs/assets/screenshot-mac-inbox.png" width="49%" alt="未読バッジつき統合受信トレイ（macOS）">
-  <img src="docs/assets/screenshot-mac-thread.png" width="49%" alt="スレッド表示と返信（macOS）">
+  <img src="docs/assets/screenshot-mac-thread.png" width="49%" alt="スレッドのアコーディオン表示とフッターツールバー（macOS）">
 </p>
+
+（スクリーンショットは開発用のフィクスチャアカウントで、実際のメールでは
+ありません。）
 
 ## otegami の特徴
 
@@ -57,11 +60,14 @@ Gmail・Outlook/Office365 は OAuth の Client ID を各自で発行する必要
 - **統合受信トレイ**: 全アカウントのメールを日付順に混ぜて表示する
   「すべて」チップと、アカウントごとの絞り込みチップ。アカウント色の
   アクセントと、メールボックス単位/統合の未読数バッジ。「未読のみ表示」
-  トグルあり。「アカウントでグループ化」ボタンからはダイジェスト画面
-  （アカウントごとに1行、色罫線+表示名+未読/件数バッジ+直近プレビュー
-  2〜3件、タップでそのアカウントに絞り込み、スワイプで一括処理）に
-  遷移できます。各アカウントの色は自動割り当てのほか固定8色パレットから
-  上書き可能で、iCloud 経由で他端末にも同期されます。
+  トグルあり。一覧ヘッダのタイトルをタップすると横断ビュー（受信トレイ/
+  フラグ付き/アーカイブ/すべてのメール/送信済み/下書き/迷惑メール/
+  ゴミ箱）を直接切り替えられます。「アカウントでグループ化」トグルからは
+  ダイジェスト表示（アカウントごとに1行、色罫線+表示名+未読/件数バッジ+
+  直近プレビュー2〜3件、タップでそのアカウントに絞り込み、スワイプで
+  一括処理）に切り替えられ、これは macOS でも使えます。各アカウントの
+  色は自動割り当てのほか固定8色パレットから上書き可能で、iCloud 経由で
+  他端末にも同期されます。
 - **オフラインファースト**: メッセージ・スレッド・フラグの変更はすべて
   まずローカルの SQLite に反映されます。ネットワークが無くても使え、
   再接続時には未送信の操作（既読/未読、削除、アーカイブ、送信）を自動的
@@ -118,16 +124,20 @@ Gmail・Outlook/Office365 は OAuth の Client ID を各自で発行する必要
   表示言語の切替は iOS 標準の「設定 → このアプリ → 言語」に委ねています
   （アプリ内蔵の言語ピッカーは廃止済み）。詳細は
   [docs/localization.md](docs/localization.md)。
-- **設定**: 「アカウントの設定」「メールビューア」「メール一覧」
-  「メール作成」の4カテゴリ＋「このアプリについて」に整理されています。
+- **設定**: 「一般」「アカウントの設定」「メール一覧」「メールビューア」
+  「メール作成」の5カテゴリ＋「このアプリについて」に整理されています。
   全項目は [docs/settings.md](docs/settings.md) を参照してください。
 - **プッシュ通知**: 任意でセルフホストできるリレーサーバー
   (`server/otegami-relay-go`) が IMAP `INBOX` を IDLE で監視し、件名/
   本文を含まないプライバシー配慮の APNs プッシュを送信します（実際の
   内容は Notification Service Extension が自分の IMAP 接続で取得）。
-  完全にオプトインで、未設定でもアプリは同様に動作します。詳細は
-  [docs/relay-deployment.md](docs/relay-deployment.md)。アプリアイコン
-  への未読数バッジ表示も設定でオン/オフできます。
+  完全にオプトインで、未設定でもアプリは同様に動作します。通知タップで
+  該当メールへ直接遷移し（ローカル未同期のメールは優先同期してから
+  開きます）、通知の長押しメニューからはアプリを開かずに「既読にする」
+  「アーカイブ」を実行できます。詳細は
+  [docs/relay-deployment.md](docs/relay-deployment.md) と
+  [docs/push-notification-actions.md](docs/push-notification-actions.md)。
+  アプリアイコンへの未読数バッジ表示も設定でオン/オフできます。
 - **iCloud によるアカウント設定の同期**: 同じ Apple ID の別デバイスで
   追加したアカウントが自動的に出現し、そのまま同期を始められます
   （メール本文自体は各デバイスが自分の IMAP 接続で同期する設計で、
@@ -138,7 +148,9 @@ Gmail・Outlook/Office365 は OAuth の Client ID を各自で発行する必要
   返信、⇧⌘R 全員に返信、⇧⌘F 転送、⌘E アーカイブ、⇧⌘U 既読/未読切替、
   ⌘⌫ 削除、⌘F 検索フォーカス、⌘]/⌘[ メールボックス切替）、ネイティブな
   Settings シーン、独立した作成ウィンドウ、そして3ペイン
-  `NavigationSplitView` レイアウト。
+  `NavigationSplitView` レイアウト。統合受信トレイの「アカウントで
+  グループ化」ダイジェスト表示も使え、グループ表示中も専用の検索バーで
+  検索できます。
 - **パフォーマンス**: 10万通の合成メールボックスで検証済み — 詳細は
   [docs/performance.md](docs/performance.md)。
 
@@ -151,18 +163,24 @@ UI は一から見直した独自のデザインです: フラット・角丸0�
 ださい。
 
 - **iOS (compact 幅、iPhone)**: 統合受信トレイ＋アカウント絞り込み
-  チップ＋未読のみ表示トグルの常設1画面。左上のハンバーガーメニュー
-  （ドロワー）がフォルダ切替と設定を、左下フローティングの検索ボタンが
-  検索画面を、本文画面下部の固定フッターツールバーが返信/転送などを
-  担います。下部タブバーは廃止済みです。
+  チップ＋未読のみ表示トグルの常設1画面。ヘッダタイトルのタップで
+  横断ビュー（受信トレイ/フラグ付き/アーカイブ/すべてのメール/
+  送信済み/下書き/迷惑メール/ゴミ箱）を切り替え、左上のハンバーガー
+  メニュー（ドロワー）がアカウント別のメールボックスツリーと下書き/
+  送信待ち/設定への入口を、フローティングの検索ボタンが検索画面を、
+  本文画面下部の固定フッターツールバーが返信/転送などを担います。
+  下部タブバーは廃止済みです。
 - **iOS (regular 幅、iPad 等)**: 左に一覧・右に本文の2ペイン
   (`MailScreenView` のサイズクラス分岐)。
 - **macOS**: 従来通りの3ペイン `NavigationSplitView`。
 
 <p align="center">
   <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="アカウント横断検索・フィルタチップ・検索演算子（iOS）">
-  <img src="docs/assets/screenshot-ios-thread-toolbar.png" width="32%" alt="メール本文画面のフッターツールバー: 返信・転送・検索・情報・その他（iOS）">
-  <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="設定: アカウント・スワイプ操作・翻訳（iOS）">
+  <img src="docs/assets/screenshot-ios-thread-toolbar.png" width="32%" alt="スレッドのアコーディオン表示とフッターツールバー（iOS）">
+  <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="設定カテゴリ（iOS）">
+</p>
+<p align="center">
+  <img src="docs/assets/screenshot-mac-digest.png" width="80%" alt="アカウント別ダイジェスト表示（macOS）">
 </p>
 
 ## AI要約・翻訳
@@ -202,8 +220,7 @@ AI 支援サイドプロジェクトです。App Store への公開や、誰か�
 アカウントでのサインイン、実機2台間での iCloud アカウント同期の往復など）
 は、シミュレータ上の自動テストでは確認しきれず、実アカウント/実機での
 確認が必要です — 各機能の既知の制限は該当する `docs/*.md` に記載して
-います。今後の計画は [docs/roadmap.md](docs/roadmap.md) を参照して
-ください。
+います。
 
 ## 開発を始める
 
@@ -214,7 +231,8 @@ make ios                 # iOS Simulator ビルド
 make test                # OtegamiKit の単体テスト
 ```
 
-Xcode（iOS 26 / macOS 26 SDK、Xcode 26 以降）が必要です。実機ビルドや
+Xcode（iOS 26 / macOS 26 SDK、Xcode 26 以降）が必要です。Debug ビルドは
+リリース版と見分けられるよう表示名が「Otegami-dev」になります。実機ビルドや
 Gmail/Outlook OAuth を試す場合の `Local.xcconfig` 設定、開発用メール
 スタック (Dovecot + Mailpit) の起動、`scripts/verify-screen.sh` を使った
 実機シミュレータでの画面確認まで含めた詳しい手順は
@@ -263,7 +281,7 @@ scripts/verify-relay.sh                            # otegami-relay の E2E 検�
 - [docs/calendar-invites.md](docs/calendar-invites.md) — カレンダー招待メール対応
 - [docs/icloud-sync.md](docs/icloud-sync.md) — iCloud によるアカウント設定同期
 - [docs/default-mail-app.md](docs/default-mail-app.md) — デフォルトのメールアプリ対応
-- [docs/roadmap.md](docs/roadmap.md) — 今後の計画
+- [docs/push-notification-actions.md](docs/push-notification-actions.md) — 通知タップ遷移と通知アクション
 
 **開発**
 - [docs/development-setup.md](docs/development-setup.md) — 開発環境のセットアップ

@@ -23,8 +23,10 @@ iOS 26+ / macOS 26+, a single SwiftUI codebase. 日本語版 README:
 </p>
 <p align="center">
   <img src="docs/assets/screenshot-mac-inbox.png" width="49%" alt="Unified inbox with unread badges (macOS)">
-  <img src="docs/assets/screenshot-mac-thread.png" width="49%" alt="Thread view and reply (macOS)">
+  <img src="docs/assets/screenshot-mac-thread.png" width="49%" alt="Thread accordion and footer toolbar (macOS)">
 </p>
+
+(The screenshots use development fixture accounts, not real mail.)
 
 ## What otegami focuses on
 
@@ -59,12 +61,15 @@ other feature works fine without it). See
 
 - **Unified inbox**: an "All" chip mixes every account's mail by date,
   plus per-account filter chips. Account-color accents and per-mailbox /
-  unified unread badges. An "unread only" toggle. The "Group by account"
-  button switches to a digest view (one row per account: color stripe,
-  display name, unread/count badge, a preview of the 2-3 most recent
-  messages; tap to filter to that account, swipe for bulk actions).
-  Account colors are auto-assigned or can be overridden from a fixed
-  8-color palette, and sync to other devices via iCloud.
+  unified unread badges. An "unread only" toggle. Tapping the header
+  title opens a menu that jumps straight to any cross-account view
+  (inbox, flagged, archive, all mail, sent, drafts, spam, trash). A
+  "Group by account" toggle switches to a digest view (one row per
+  account: color stripe, display name, unread/count badge, a preview of
+  the 2-3 most recent messages; tap to filter to that account, swipe for
+  bulk actions) — available on macOS too. Account colors are
+  auto-assigned or can be overridden from a fixed 8-color palette, and
+  sync to other devices via iCloud.
 - **Offline-first**: message, thread, and flag changes land in local
   SQLite first. The app works with no network and replays queued
   operations (read/unread, delete, archive, send) automatically on
@@ -124,16 +129,20 @@ other feature works fine without it). See
   Catalog). Language switching is delegated to iOS's standard Settings →
   This App → Language (there is no in-app picker). See
   [docs/localization.md](docs/localization.md).
-- **Settings**: organized into four categories — Accounts, Message
-  Viewer, Message List, Compose — plus About. Full item list in
+- **Settings**: organized into five categories — General, Accounts,
+  Message List, Message Viewer, Compose — plus About. Full item list in
   [docs/settings.md](docs/settings.md).
 - **Push notifications**: an optional, self-hostable relay server
   (`server/otegami-relay-go`) watches IMAP `INBOX` over IDLE and sends
   privacy-conscious APNs pushes that carry no subject/body (actual
   content is fetched by the Notification Service Extension over its own
-  IMAP connection). Fully opt-in — the app works the same without it. See
-  [docs/relay-deployment.md](docs/relay-deployment.md). The app icon can
-  also show an unread badge, toggleable in Settings.
+  IMAP connection). Fully opt-in — the app works the same without it.
+  Tapping a notification opens the message directly (syncing it first if
+  it hasn't arrived locally yet), and the notification's long-press menu
+  offers "Mark as read" and "Archive" actions that work without opening
+  the app. See [docs/relay-deployment.md](docs/relay-deployment.md) and
+  [docs/push-notification-actions.md](docs/push-notification-actions.md).
+  The app icon can also show an unread badge, toggleable in Settings.
 - **iCloud account sync**: accounts added on one device automatically
   appear on other devices signed into the same Apple ID and start
   syncing right away (mail bodies themselves are synced independently by
@@ -146,7 +155,8 @@ other feature works fine without it). See
   reply all, ⇧⌘F forward, ⌘E archive, ⇧⌘U toggle read/unread, ⌘⌫
   delete, ⌘F focus search, ⌘]/⌘[ switch mailbox), a native Settings
   scene, a standalone compose window, and a 3-pane
-  `NavigationSplitView` layout.
+  `NavigationSplitView` layout. The unified inbox's "Group by account"
+  digest view works here too, with its own inline search bar.
 - **Performance**: validated against a synthetic 100k-message mailbox —
   see [docs/performance.md](docs/performance.md).
 
@@ -159,19 +169,24 @@ light theme with a matching dark theme. See
 information architecture and how design tokens are used.
 
 - **iOS (compact width, iPhone)**: a single persistent screen — unified
-  inbox, account filter chips, and an unread-only toggle. A top-left
-  hamburger menu (drawer) handles folder switching and Settings, a
-  bottom-left floating search button opens Search, and a fixed footer
-  toolbar on the message screen handles reply/forward/etc. There is no
-  bottom tab bar.
+  inbox, account filter chips, and an unread-only toggle. Tapping the
+  header title switches between cross-account views (inbox, flagged,
+  archive, all mail, sent, drafts, spam, trash); the top-left hamburger
+  menu (drawer) holds each account's mailbox tree plus Drafts, Outbox,
+  and the Settings entry point; a floating search button opens Search;
+  and a fixed footer toolbar on the message screen handles
+  reply/forward/etc. There is no bottom tab bar.
 - **iOS (regular width, iPad, etc.)**: 2-pane — list on the left, detail
   on the right (`MailScreenView`'s size-class branch).
 - **macOS**: the classic 3-pane `NavigationSplitView`.
 
 <p align="center">
   <img src="docs/assets/screenshot-ios-search.png" width="32%" alt="Cross-account search, filter chips, and search operators (iOS)">
-  <img src="docs/assets/screenshot-ios-thread-toolbar.png" width="32%" alt="Message footer toolbar: reply, forward, search, info, more (iOS)">
-  <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="Settings: accounts, swipe actions, translation (iOS)">
+  <img src="docs/assets/screenshot-ios-thread-toolbar.png" width="32%" alt="Thread accordion and the message footer toolbar (iOS)">
+  <img src="docs/assets/screenshot-ios-settings.png" width="32%" alt="Settings categories (iOS)">
+</p>
+<p align="center">
+  <img src="docs/assets/screenshot-mac-digest.png" width="80%" alt="Group-by-account digest view (macOS)">
 </p>
 
 ## AI summary & translation
@@ -214,8 +229,7 @@ anyone's daily driver for an extended period yet. Some behavior (real
 account sign-in, two-device iCloud account sync round-trips, etc.) can't
 be fully exercised by simulator-based automated tests and needs
 confirmation on real accounts/devices — known limitations for each
-feature are documented in the relevant `docs/*.md`. See
-[docs/roadmap.md](docs/roadmap.md) for planned work.
+feature are documented in the relevant `docs/*.md`.
 
 ## Getting started
 
@@ -226,7 +240,9 @@ make ios                 # iOS Simulator build
 make test                # OtegamiKit unit tests
 ```
 
-Requires Xcode (iOS 26 / macOS 26 SDK, Xcode 26+). For device builds,
+Requires Xcode (iOS 26 / macOS 26 SDK, Xcode 26+). Debug builds show up
+as "Otegami-dev" so they're distinguishable from a release install on
+the same device. For device builds,
 Gmail/Outlook OAuth, the dev mail stack (Dovecot + Mailpit), and
 screenshot-based screen verification via `scripts/verify-screen.sh`, see
 [docs/development-setup.md](docs/development-setup.md).
@@ -275,7 +291,7 @@ testing, see [docs/performance.md](docs/performance.md).
 - [docs/calendar-invites.md](docs/calendar-invites.md) — calendar invite handling
 - [docs/icloud-sync.md](docs/icloud-sync.md) — iCloud account settings sync
 - [docs/default-mail-app.md](docs/default-mail-app.md) — default mail app support
-- [docs/roadmap.md](docs/roadmap.md) — planned work
+- [docs/push-notification-actions.md](docs/push-notification-actions.md) — notification tap-through and actions
 
 **Development**
 - [docs/development-setup.md](docs/development-setup.md) — dev environment setup

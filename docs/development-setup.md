@@ -65,6 +65,7 @@ make mac-app       # macOS アプリ、Release ビルドを dist/Otegami.app に
 make ios           # iOS Simulator ビルド (IOS_SIMULATOR ?= "iPhone 17 Pro Max")
 make ios-device    # 登録済みチームで署名した iOS 実機ビルド
 make test          # OtegamiKit の単体テスト (packages/OtegamiKit)
+make ios-apptests  # apps 層の単体テスト (OtegamiAppTests / NotificationServiceTests)
 ```
 
 `xcodegen generate` の後、`apps/Otegami/Otegami.xcodeproj` を Xcode で
@@ -103,6 +104,7 @@ XCUITest のタップ不達・連絡先権限ダイアログ・Foundation Models
 
 ```sh
 scripts/verify-screen.sh <scenario> [output-filename.png]
+make verify-<scenario>   # 同じものの Makefile ショートカット (例: make verify-list)
 ```
 
 内部では `xcodebuild build` でアプリだけをビルドし、`simctl install` →

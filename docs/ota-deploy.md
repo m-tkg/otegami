@@ -106,5 +106,13 @@ iPhone で「インストールできません」/ アプリが起動しない�
 
 `scripts/deploy-ota.sh` は Xcode のバージョンによって `-exportArchive` の
 `method` が `ad-hoc` と `release-testing` のどちらを要求するか変わりうる
-ことを踏まえ、両方を試して動く方を使う。両方失敗した場合はログ
+ことを踏まえ、両方を試して動く方を使う。両方が「No signing certificate」
+等の署名理由で失敗した場合は、さらに development 署名 (`debugging`
+method) へフォールバックする — 配布先の実機はいずれも開発デバイス
+登録済みなので、development 署名の IPA でも itms-services 経由で
+インストールできるという割り切り。3段階すべて失敗した場合はログ
 (`dist/ota/export.log`) にその時点のエラーがそのまま残る。
+
+アップロード時は、アップロード先に既にある `otegami.ipa` を
+`otegami-prev.ipa` へ1世代だけ退避してから新しい IPA を置く — 配信直後に
+問題が見つかったとき、直前のビルドへ手動で戻せるようにするため。

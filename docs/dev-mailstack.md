@@ -76,18 +76,18 @@ doveadm save` でメッセージを直接 Dovecot に保存しています (dove
 から投入するため、`make mailstack-seed` を何度実行しても同じ内容になります
 (重複しません)。
 
-投入されるメッセージ (`test1@otegami.test`):
-
-| ファイル | 内容 |
-|---|---|
-| `01-welcome.eml` | ようこそメール (plain) |
-| `02-thread-original.eml` | スレッド元メール (plain) |
-| `03-thread-reply.eml` | `02` への返信 (plain, In-Reply-To/References あり) |
-| `04-newsletter.eml` | ニュースレター (plain, 全角 "Ｆｗｄ：" 件名) |
-| `06-html-external-image.eml` | `multipart/alternative` (plain + HTML)、HTML 側に `http://example.com/...` の外部画像を含む — M2 の「画像を表示」バナー検証用 |
-| `07-html-only-japanese.eml` | `text/html` のみ (plain パート無し) の日本語本文 — M2 の HTML→テキスト抽出/表示検証用 |
-
-`test2@otegami.test` には `05-test2-welcome.eml` (plain) のみ投入されます。
+投入されるメッセージ: `dev/mailstack/seed/fixtures/01〜37-*.eml` のうち
+`08` (テスト中に doveadm で動的投入する用) を除く全ファイルが
+`test1@otegami.test` の INBOX に入ります (`05-test2-welcome.eml` のみ
+`test2@otegami.test` 宛)。内訳はファイル名が自己説明的です — 基本の
+plain/スレッド/ニュースレター (`01〜04`)、HTML と外部/インライン画像
+(`06`/`07`/`16`/`28`)、件名フォールバックのスレッド (`09〜13`)、
+日本語ファイル名を含む添付 (`14`/`15`/`19`/`35`)、件名なし/本文空
+(`17`/`18`)、英文メール (`20`/`30`)、セキュリティ検証 (script/iframe/
+`javascript:` リンク等の無害化確認、`21〜24`)、固定幅・マーケティング系
+HTML (`26`/`27`/`29`/`33`/`34`)、ダークモード配色検証 (`31`/`32`)、
+カレンダー招待 (`36`/`37`) など。正確な一覧と投入先は
+`dev/mailstack/seed/seed.sh` を参照してください。
 
 ## 停止
 
