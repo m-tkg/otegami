@@ -219,9 +219,27 @@ public actor BodyFetcher {
                 // gone. Just surface the new failure as-is.
                 throw newError
             case .notApplicable:
+                // Task #221: prefer reverting to `.fetched` over
+                // `.notFetched` when this message still has a usable
+                // cached body from a *previous* successful fetch — this
+                // attempt's failure (offline, a transient server hiccup,
+                // ...) shouldn't throw away a perfectly good cache just
+                // because a refresh of it didn't go through. Only a body
+                // at the current `renderVersion` counts as "usable" — a
+                // stale-format one is exactly what `MessageBodyRecord
+                // .currentRenderVersion`'s bump exists to force a re-fetch
+                // of, so falling back to `.notFetched` there is correct,
+                // not a regression. A message with no cached body at all
+                // (the on-open first-ever fetch failing) still reverts to
+                // `.notFetched` same as before.
                 try? await database.dbWriter.write { db in
                     var record = message
-                    record.bodyState = .notFetched
+                    if let cachedBody = try MessageBodyRecord.fetchOne(db, key: messageId),
+                       cachedBody.renderVersion == MessageBodyRecord.currentRenderVersion {
+                        record.bodyState = .fetched
+                    } else {
+                        record.bodyState = .notFetched
+                    }
                     try record.update(db)
                 }
                 throw error

@@ -909,9 +909,17 @@ final class AppEnvironment {
         // on every launch costs effectively nothing but guards against any
         // future code path that ever inserts a `message` row without going
         // through `AccountSyncer.upsert`/`BodyFetcher.fetchBody`.
+        //
+        // Task #221: alongside it, self-heal any `message.bodyState ==
+        // .fetching` row a process kill mid-fetch left stuck — see
+        // `BodyCacheStateReconciler.resetStuckFetchingStates`'s doc comment
+        // for why nothing else in this codebase ever revisits one on its
+        // own. Same launch-time, best-effort (`try?`) shape as the FTS
+        // backfill right next to it.
         Task { [database] in
             try? await database.dbWriter.write { db in
                 try FTSIndexer.backfillIfNeeded(db: db)
+                try BodyCacheStateReconciler.resetStuckFetchingStates(db: db)
             }
         }
 

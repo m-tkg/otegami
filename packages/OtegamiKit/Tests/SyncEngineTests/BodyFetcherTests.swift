@@ -191,11 +191,68 @@ struct BodyFetcherTests {
         #expect(attachments.isEmpty)
     }
 
-    @Test("a fetch failure reverts bodyState to notFetched")
+    @Test("a fetch failure with no cached body reverts bodyState to notFetched")
     func fetchFailureRevertsBodyState() async throws {
         let database = try AppDatabase.makeInMemory()
         let message = try await makeSyncedMessage(database: database)
         // No scripted body for this UID: FakeIMAPSession.fetchBody throws.
+        let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: FakeIMAPSession.Script())
+
+        await #expect(throws: (any Error).self) {
+            try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: session)
+        }
+
+        let updated = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: message.id) }
+        #expect(updated?.bodyState == .notFetched)
+    }
+
+    @Test("a refresh fetch failure with an existing current-renderVersion cached body reverts to fetched, not notFetched")
+    func fetchFailureWithCachedBodyRevertsToFetched() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let message = try await makeSyncedMessage(database: database)
+        try await database.dbWriter.write { db in
+            var record = message
+            record.bodyState = .fetched
+            try record.update(db)
+            var body = MessageBodyRecord(messageId: message.id!, plainText: "以前取得済みの本文")
+            try body.insert(db)
+        }
+
+        // No scripted body for this UID: a refresh attempt (e.g.
+        // `BodyFetcher.fetchBody`'s always-refetch contract, or a
+        // best-effort prefetch retry) fails, but the message already has a
+        // perfectly good cached body from a previous successful fetch —
+        // Task #221: that cache must survive the failed refresh rather
+        // than getting thrown away just because this particular retry
+        // didn't go through.
+        let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: FakeIMAPSession.Script())
+
+        await #expect(throws: (any Error).self) {
+            try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: session)
+        }
+
+        let updated = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: message.id) }
+        #expect(updated?.bodyState == .fetched)
+        let body = try await database.dbWriter.read { db in try MessageBodyRecord.fetchOne(db, key: message.id) }
+        #expect(body?.plainText == "以前取得済みの本文")
+    }
+
+    @Test("a refresh fetch failure with a stale-renderVersion cached body reverts to notFetched, not fetched")
+    func fetchFailureWithStaleRenderVersionCachedBodyRevertsToNotFetched() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let message = try await makeSyncedMessage(database: database)
+        try await database.dbWriter.write { db in
+            var record = message
+            record.bodyState = .fetched
+            try record.update(db)
+            // A pre-`renderVersion`-bump cached body — exactly the "stale
+            // format, must re-fetch" case `MessageBodyRecord
+            // .currentRenderVersion`'s doc comment describes, so this must
+            // not be treated as a usable cache.
+            var body = MessageBodyRecord(messageId: message.id!, plainText: "古い版のキャッシュ", renderVersion: MessageBodyRecord.currentRenderVersion - 1)
+            try body.insert(db)
+        }
+
         let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: FakeIMAPSession.Script())
 
         await #expect(throws: (any Error).self) {

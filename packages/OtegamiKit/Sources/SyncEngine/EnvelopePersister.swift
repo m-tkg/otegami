@@ -30,6 +30,22 @@ enum EnvelopePersister {
         // the same message would show up twice in this mailbox's list).
         try reconcilePendingRelocation(envelope: envelope, mailboxId: mailboxId, db: db)
 
+        // Task #221 (本文キャッシュ不当無効化バグ群): a resync (CONDSTORE's
+        // own \Seen mirror included) must never make an already-detected
+        // attachment disappear again — `BodyFetcher.performFetch` upgrades
+        // `hasAttachments` from `false` to `true` once the body's
+        // BODYSTRUCTURE parts are actually seen (envelope-time BODYSTRUCTURE
+        // is not always reliable/present depending on server/fetch mode).
+        // OR the existing row's value in *before* the upsert below runs
+        // (rather than a SQL-level `MAX(...)` in the `doUpdate` closure) —
+        // one extra indexed `(mailboxId, uid)` lookup, but keeps the
+        // decision in plain Swift and easy to unit test.
+        let existingHasAttachments = try MessageRecord
+            .filter(Column("mailboxId") == mailboxId)
+            .filter(Column("uid") == Int64(envelope.uid))
+            .select(Column("hasAttachments"), as: Bool.self)
+            .fetchOne(db) ?? false
+
         // ピン留め (E9, Task #212 で常時オン化): every resync mirrors the
         // server's current `\Flagged` bit into `MessageRecord.isPinnedLocal`
         // — see that column's doc comment for the full design. This used to
@@ -63,7 +79,7 @@ enum EnvelopePersister {
             size: envelope.size,
             gmailThreadId: envelope.gmailThreadId.map { Int64(bitPattern: $0) },
             gmailMessageId: envelope.gmailMessageId.map { Int64(bitPattern: $0) },
-            hasAttachments: envelope.hasAttachments,
+            hasAttachments: envelope.hasAttachments || existingHasAttachments,
             isPinnedLocal: envelope.flags.contains(.flagged),
             updatedAt: Date()
         )
@@ -72,8 +88,30 @@ enum EnvelopePersister {
         // `threadId` is also excluded: an already-threaded message's
         // thread assignment must survive a resync (only the code below,
         // via `ThreadAssigner`, is allowed to change it).
+        //
+        // Task #221: `bodyState`/`snippet`/`detectedLanguage` are also
+        // excluded — these three only ever move forward via
+        // `BodyFetcher.performFetch` (the actual body fetch) or the
+        // `.fetching`-reset self-heal (`BodyCacheStateReconciler
+        // .resetStuckFetchingStates`), never via an envelope-only resync.
+        // Before this fix, *any* envelope upsert of an already-`.fetched`
+        // row — most commonly CONDSTORE mirroring this device's own
+        // `\Seen` flip back down after reading a message — reset
+        // `bodyState` to `MessageRecord.init`'s default (`.notFetched`),
+        // silently discarding a perfectly good cached body: the next open
+        // (or the up-to-200-message prefetch pass) would then re-download
+        // it from scratch for no reason. `MailboxSyncer.applyFlagsOnly`'s
+        // column-limited `update(db, columns:)` never had this problem —
+        // this brings the CONDSTORE/full-envelope path up to the same
+        // "flags-only resync never touches body state" contract.
         record = try record.upsertAndFetch(db, onConflict: ["mailboxId", "uid"]) { _ in
-            [Column("createdAt").noOverwrite, Column("threadId").noOverwrite]
+            [
+                Column("createdAt").noOverwrite,
+                Column("threadId").noOverwrite,
+                Column("bodyState").noOverwrite,
+                Column("snippet").noOverwrite,
+                Column("detectedLanguage").noOverwrite,
+            ]
         }
         guard let messageId = record.id else { return }
 
