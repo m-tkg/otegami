@@ -403,6 +403,13 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     /// tests asserting `refetchAndDiffFlags` chunks its requests instead of
     /// asking for the whole locally-synced window in one call.
     public private(set) var fetchFlagsCalls: [(path: String, lowerBound: UInt32, upperBound: UInt32?)] = []
+    /// Every `fetchFlags(mailboxPath:uids: UIDSet)` call's exact requested
+    /// UID list, in call order — unlike `fetchFlagsCalls` (which records
+    /// this overload's calls too, as min/max bounds for backward
+    /// compatibility with range-based assertions), this preserves the full,
+    /// possibly-sparse set so a test can assert *which* UIDs were actually
+    /// requested per chunk, not just the span they fall within.
+    public private(set) var fetchFlagsSetCalls: [(path: String, uids: [UInt32])] = []
     /// Task #221: every `fetchBody(mailboxPath:uid:)` call, in call order —
     /// lets a test assert `BodyFetcher.prefetchRecent`'s fresh
     /// already-fetched recheck actually skipped a network fetch for a
@@ -539,6 +546,30 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         let all = script.envelopesByPath[mailboxPath] ?? []
         var result: [UInt32: MessageFlags] = [:]
         for envelope in all where uids.contains(envelope.uid) {
+            result[envelope.uid] = envelope.flags
+        }
+        return result
+    }
+
+    /// `UIDSet` overload (see `IMAPSessionProtocol.fetchFlags(mailboxPath:
+    /// uids:)`'s doc comment for the `UIDSet` variant) — records into the
+    /// same `fetchFlagsCalls` (as the requested set's min/max, matching what
+    /// a real `MCOIndexSet`-backed range chunk would report) so every
+    /// existing test asserting on that array keeps working unchanged for a
+    /// dense chunk, plus `fetchFlagsSetCalls` for tests that need the exact
+    /// (possibly sparse) UID set actually requested.
+    public func fetchFlags(mailboxPath: String, uids: UIDSet) async throws -> [UInt32: MessageFlags] {
+        if let failFetchFlags = script.failFetchFlags {
+            throw failFetchFlags
+        }
+        fetchFlagsSetCalls.append((mailboxPath, uids.uids))
+        if let minUID = uids.uids.min(), let maxUID = uids.uids.max() {
+            fetchFlagsCalls.append((mailboxPath, minUID, maxUID))
+        }
+        let uidSet = Set(uids.uids)
+        let all = script.envelopesByPath[mailboxPath] ?? []
+        var result: [UInt32: MessageFlags] = [:]
+        for envelope in all where uidSet.contains(envelope.uid) {
             result[envelope.uid] = envelope.flags
         }
         return result

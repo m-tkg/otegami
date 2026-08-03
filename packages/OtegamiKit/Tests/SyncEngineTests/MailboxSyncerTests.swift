@@ -793,6 +793,55 @@ struct MailboxSyncerTests {
         #expect(messages.first { $0.uid == 75 }?.flags.contains(.seen) == true)
     }
 
+    @Test("non-CONDSTORE flag sync chunks a sparse UID space by count of locally-known UIDs, not by numeric span")
+    func nonCondstoreFlagSyncChunksSparseUIDSpaceByCount() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        // 150 locally-known UIDs spaced 1000 apart (a Gmail-shaped mailbox
+        // with a huge numeric UID span but few surviving messages, e.g.
+        // after heavy archiving/expunging elsewhere) — spans ~150,000 UIDs.
+        // Chunking by *numeric range* at `fetchBatchSize` (100) would slice
+        // this into ~1,500 mostly-empty range chunks; chunking by *count* of
+        // the actual known UIDs must still produce exactly 2 chunks (100 +
+        // 50), the same as a dense window this size would.
+        let sparseUIDs: [UInt32] = (1...150).map { UInt32($0) * 1000 }
+        let seedEnvelopes = sparseUIDs.map { makeEnvelope(uid: $0, subject: "msg \($0)") }
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": seedEnvelopes],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 150_001, highestModSeq: 0, messageCount: 150)]
+            )
+        )
+
+        // Nothing changed server-side — isolates this test to just the
+        // chunking shape, not flag-change/deletion handling (already
+        // covered by `nonCondstoreFlagSyncChunksLargeWindow`).
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": seedEnvelopes],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 150_001, highestModSeq: 0, messageCount: 150)],
+            capabilitiesToReport: []
+        )
+        let sessionBox = SessionBox()
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            let session = FakeIMAPSession(config: config, script: incrementalScript)
+            sessionBox.session = session
+            return session
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.deletedMessages == 0)
+
+        let setCalls = await sessionBox.session?.fetchFlagsSetCalls ?? []
+        #expect(setCalls.count == 2, "must chunk by count of known UIDs, not by numeric span")
+        #expect(setCalls[0].uids.count == 100)
+        #expect(setCalls[1].uids.count == 50)
+        #expect(Set(setCalls[0].uids + setCalls[1].uids) == Set(sparseUIDs))
+    }
+
     @Test("non-CONDSTORE flag sync reports .flagSync progress once per chunk, with an accurate total")
     func nonCondstoreFlagSyncReportsProgress() async throws {
         let database = try AppDatabase.makeInMemory()

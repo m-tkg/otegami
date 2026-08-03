@@ -190,6 +190,9 @@ private actor SuspendingEnvelopeFetchSession: IMAPSessionProtocol {
     func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags] {
         try await underlying.fetchFlags(mailboxPath: mailboxPath, uids: uids)
     }
+    func fetchFlags(mailboxPath: String, uids: UIDSet) async throws -> [UInt32: MessageFlags] {
+        try await underlying.fetchFlags(mailboxPath: mailboxPath, uids: uids)
+    }
     func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {
         try await underlying.fetchBody(mailboxPath: mailboxPath, uid: uid)
     }

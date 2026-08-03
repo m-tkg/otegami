@@ -538,7 +538,24 @@ public actor MailboxSyncer {
             )
         }
 
-        let chunks = Self.chunkRange(fullRange, size: AccountSyncer.fetchBatchSize)
+        // Chunked by *count* of locally-known UIDs, not by numeric UID span
+        // (`fullRange`, still computed above purely for
+        // `legacyFullRefetchAndDiffFlags`'s bounded fallback fetch) — a
+        // sparse UID space (Gmail-shaped accounts especially, where
+        // archived/expunged messages leave large numeric gaps) can turn a
+        // few hundred locally-known messages spread across a huge UID range
+        // into many mostly-empty range-based chunks, each still a full round
+        // trip for a handful of UIDs. Chunking the actual known UIDs
+        // directly instead means every chunk (except possibly the last)
+        // always carries exactly `AccountSyncer.fetchBatchSize` UIDs
+        // worth of work regardless of how the UID space is laid out —
+        // `fetchFlags(mailboxPath:uids: UIDSet)` lets this address the
+        // scattered set directly, and `MCOIndexSet`
+        // still coalesces whatever contiguous runs a chunk happens to
+        // contain into IMAP range syntax on the wire, so a chunk that turns
+        // out dense costs no more than the old range-based chunk did.
+        let sortedLocalUIDs = localFlagsByUID.keys.sorted().map { UInt32(clamping: $0) }
+        let chunks = Self.chunkUIDs(sortedLocalUIDs, size: AccountSyncer.fetchBatchSize)
 
         // Task #194: real-device diagnostics for "Pull to refresh が長すぎて
         // 終わらない" — this is the path that used to make a single
@@ -563,7 +580,7 @@ public actor MailboxSyncer {
         var serverUIDs = Set<Int64>()
         for (index, chunk) in chunks.enumerated() {
             try Task.checkCancellation()
-            let fetchedFlags = try await session.fetchFlags(mailboxPath: mailboxPath, uids: chunk)
+            let fetchedFlags = try await session.fetchFlags(mailboxPath: mailboxPath, uids: UIDSet(chunk))
 
             if !fetchedFlags.isEmpty {
                 serverUIDs.formUnion(fetchedFlags.keys.map(Int64.init))
@@ -684,26 +701,24 @@ public actor MailboxSyncer {
         return try await deleteMessages(mailboxId: mailboxId, uids: deletedUIDs)
     }
 
-    /// Splits a closed (`upperBound != nil`) `UIDRange` into consecutive
-    /// sub-ranges of at most `size` UIDs. Same shape as (but independent
-    /// from) `MailTransportMailCore`'s private `MailCoreIMAPSession.chunk`
-    /// — duplicated here rather than shared because `SyncEngine` has no
-    /// dependency on that transport-specific module, and `refetchAndDiffFlags`
-    /// needs to drive the chunking itself (for its per-chunk progress/
-    /// cancellation checkpoints) rather than delegating to an opaque batched
-    /// call the way every other `fetchEnvelopes` call site does.
-    private static func chunkRange(_ range: UIDRange, size: Int) -> [UIDRange] {
-        guard let upperBound = range.upperBound, upperBound >= range.lowerBound else {
-            return [range]
-        }
-        var chunks: [UIDRange] = []
-        var start = range.lowerBound
-        let step = UInt32(clamping: max(1, size))
-        while start <= upperBound {
-            let end = min(start &+ step &- 1, upperBound)
-            chunks.append(UIDRange(lowerBound: start, upperBound: end))
-            if end == UInt32.max { break }
-            start = end + 1
+    /// Splits `uids` (expected sorted, though this doesn't require it) into
+    /// consecutive sub-arrays of at most `size` elements — the count-based
+    /// counterpart of the numeric-range chunking `MailTransportMailCore`'s
+    /// private `MailCoreIMAPSession.chunk` does for a dense `UIDRange`.
+    /// `refetchAndDiffFlags` uses this (rather than delegating to an opaque
+    /// batched call the way every other `fetchEnvelopes` call site does) so
+    /// it can drive its own per-chunk progress/cancellation checkpoints, and
+    /// so a sparse UID space doesn't inflate the chunk count the way
+    /// chunking by numeric span would (see that method's doc comment).
+    private static func chunkUIDs(_ uids: [UInt32], size: Int) -> [[UInt32]] {
+        guard !uids.isEmpty else { return [] }
+        let step = max(1, size)
+        var chunks: [[UInt32]] = []
+        var index = 0
+        while index < uids.count {
+            let end = min(index + step, uids.count)
+            chunks.append(Array(uids[index..<end]))
+            index = end
         }
         return chunks
     }

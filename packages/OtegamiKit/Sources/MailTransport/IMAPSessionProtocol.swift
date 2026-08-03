@@ -139,6 +139,23 @@ public protocol IMAPSessionProtocol: Sendable {
     /// as before.
     func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags]
 
+    /// Like `fetchFlags(mailboxPath:uids:)` above, but scoped to an
+    /// explicit, possibly non-contiguous set of UIDs rather than a closed
+    /// numeric range. `MailboxSyncer.refetchAndDiffFlags` chunks the
+    /// *locally-known UIDs themselves* by count (`AccountSyncer
+    /// .fetchBatchSize`) rather than by numeric UID span — a sparse UID
+    /// space (Gmail-shaped accounts especially, where archived/expunged
+    /// messages leave large gaps) can turn a few hundred locally-known
+    /// messages spread across a huge numeric range into many mostly-empty
+    /// range chunks via the `UIDRange` overload, each still worth one
+    /// round trip for a handful of UIDs. This overload lets that chunking
+    /// address the actual known UIDs directly; `MCOIndexSet` (this
+    /// package's `MailTransportMailCore` backend) still coalesces
+    /// contiguous runs within `uids` into IMAP range syntax on the wire, so
+    /// a chunk that happens to be dense costs no more than the `UIDRange`
+    /// overload would have.
+    func fetchFlags(mailboxPath: String, uids: UIDSet) async throws -> [UInt32: MessageFlags]
+
     /// Downloads and parses the full message body (M2): fetches the raw
     /// RFC 822 content and hands it to the backend's own MIME parser,
     /// returning already-decoded plain text / HTML plus a flattened list

@@ -277,8 +277,23 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// `.internalDate`/`.size`) — the whole point of this method over
     /// `fetchEnvelopes` is a much smaller `FETCH` response per message.
     public func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags] {
-        let indexSet = Self.indexSet(for: uids)
-        return try await withCheckedThrowingContinuation { continuation in
+        try await fetchFlagsBatch(mailboxPath: mailboxPath, indexSet: Self.indexSet(for: uids))
+    }
+
+    /// `IMAPSessionProtocol.fetchFlags(mailboxPath:uids:)`'s `UIDSet`
+    /// overload — see that method's doc comment. `Self.indexSet(for:
+    /// UIDSet)` already exists for `store`/`move`'s discrete-UID targets;
+    /// `MCOIndexSet` coalesces whatever contiguous runs `uids` happens to
+    /// contain into IMAP range syntax on the wire regardless of which
+    /// overload built it, so this is exactly as cheap as the `UIDRange`
+    /// overload for a dense chunk.
+    public func fetchFlags(mailboxPath: String, uids: UIDSet) async throws -> [UInt32: MessageFlags] {
+        guard !uids.uids.isEmpty else { return [:] }
+        return try await fetchFlagsBatch(mailboxPath: mailboxPath, indexSet: Self.indexSet(for: uids))
+    }
+
+    private func fetchFlagsBatch(mailboxPath: String, indexSet: MCOIndexSet) async throws -> [UInt32: MessageFlags] {
+        try await withCheckedThrowingContinuation { continuation in
             session.fetchMessagesByUid(folder: mailboxPath, kind: .flags, uids: indexSet).start { error, messages, _ in
                 if let error {
                     continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
