@@ -70,15 +70,20 @@
    `PushNotificationActionHandler.resolveOpenTarget(accountId:uidNext:)`
    （`apps/Otegami/Sources/Support/PushNotificationActionHandler.swift`）
    経由で `SyncEngine` の
-   `PushNotificationActionExecutor.resolveOpenTarget(accountId:uidNext:database:)`
+   `PushNotificationActionExecutor.fetchAndResolveOpenTarget(accountId:uidNext:database:auth:sessionFactory:)`
    （`packages/OtegamiKit/Sources/SyncEngine/PushNotificationActionExecutor.swift`）
    を呼ぶ。対象メッセージの特定方法（`uid = uidNext - 1` の推測、INBOX
-   固定）は上記「既読にする／アーカイブ」と同じ。この経路はローカル DB
-   の**読み取りのみ**で、書き込みは一切行わない。
-2. **未同期メッセージへのフォールバック**: 対象メッセージがまだローカル
-   DB に同期されていない場合は `nil` が返り、遷移は行わない（通常どおり
-   統合受信トレイが表示されるだけ）。同期済みメッセージのみが遷移対象
-   になる。
+   固定）は上記「既読にする／アーカイブ」と同じ。
+2. **未同期メッセージの優先取得**: 対象メッセージがまだローカル DB に
+   同期されていない場合、`fetchAndResolveOpenTarget` はその場でこの
+   アカウントの INBOX だけを対象にした差分同期（`SyncCoordinator
+   .syncAccountIncrementally(scope: .inboxOnly)`）を1回試み、完了後に
+   再度対象メッセージの解決を試みる。これは `OtegamiApp
+   .syncAllAccountsOnce()`（起動時の全アカウント・全メールボックス同期）
+   を待たない、独立した優先取得経路 — 通知をタップしてから他の通信より
+   先に対象メールだけを読み込むための仕組み。資格情報が解決できない、
+   同期そのものが失敗する、同期後も対象 UID が見つからない場合は `nil`
+   が返り、遷移は行わない（通常どおり統合受信トレイが表示されるだけ）。
 3. **SwiftUI 側への橋渡し**: `AppDelegate` は `AppEnvironment`（SwiftUI
    `App` の `@State`）に直接アクセスできないため、
    `PushNotificationOpenCoordinator`
@@ -112,9 +117,12 @@
 - **オフライン時は即座に反映されない**: 上記のとおりローカル DB への
   反映は即座に行われるが、実際の IMAP サーバーへの反映は次のオンライン
   復帰を待つ（ベストエフォート replay が失敗した場合）。
-- **通知本体タップの遷移は未同期メッセージだと発生しない**: 上記「通知
-  本体タップ」節のとおり、対象メッセージがまだローカル DB に無い場合は
-  遷移せず、通常どおり統合受信トレイが表示される。
+- **通知本体タップの遷移は優先取得後も見つからない場合は発生しない**:
+  上記「通知本体タップ」節のとおり、未同期メッセージへは INBOX 限定の
+  優先同期を1回試みるが、それでも対象メッセージが見つからない場合
+  （push 到達から実際のメール到着までのタイムラグが大きい、対象メール
+  ボックスが INBOX でない等）は遷移せず、通常どおり統合受信トレイが
+  表示される。
 
 ## 実機での確認ポイント
 
@@ -133,6 +141,9 @@
    （統合受信トレイ経由でのタップ操作なしで）。
 5. アプリがバックグラウンドで起動中の状態で新着メールの通知本体を
    タップした場合も、同様に該当メールのスレッド詳細画面へ遷移すること。
-6. 通知が届いてからしばらく経ってメッセージが同期される前にタップした
-   場合（同期が追いついていない場合）は、遷移せず統合受信トレイが
-   表示されること。
+6. 通知が届いた直後、まだメッセージがローカルに同期されていない状態で
+   タップした場合も、INBOX の優先同期が走ったうえで該当メールのスレッド
+   詳細画面へ遷移すること（同期に数秒かかる分、遷移が少し遅れることは
+   ある）。優先同期後も対象メッセージが見つからない場合（例: push 到達
+   から実際のメール到着までのタイムラグが極端に大きい）は、遷移せず
+   統合受信トレイが表示されること。

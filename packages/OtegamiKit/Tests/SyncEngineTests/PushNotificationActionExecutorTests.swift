@@ -264,4 +264,98 @@ struct PushNotificationActionExecutorTests {
         let target = await PushNotificationActionExecutor.resolveOpenTarget(accountId: "does-not-exist", uidNext: 10, database: database)
         #expect(target == nil)
     }
+
+    // MARK: fetchAndResolveOpenTarget — INBOX優先同期を伴う通知タップ
+
+    /// `resolveOpenTarget`の`FetchedEnvelope`版ヘルパー — サーバー側に
+    /// 存在するがローカル未同期のメッセージを`FakeIMAPSession.Script`で
+    /// 表現するために必要。`AccountSyncerTests+Incremental.swift`の
+    /// `makeInbox(uid:subject:)`と同じ最小限の envelope。
+    private func makeEnvelope(uid: UInt32) -> FetchedEnvelope {
+        FetchedEnvelope(
+            uid: uid,
+            messageId: "<seed-\(uid)@otegami.test>",
+            inReplyTo: nil,
+            references: [],
+            subject: "新着",
+            from: [EmailAddress(name: "Aiko", address: "aiko@otegami.test")],
+            to: [EmailAddress(address: "test1@otegami.test")],
+            cc: [], bcc: [], replyTo: [],
+            date: Date(timeIntervalSince1970: 1_700_000_000 + Double(uid)),
+            internalDate: Date(timeIntervalSince1970: 1_700_000_000 + Double(uid)),
+            flags: [], size: 512
+        )
+    }
+
+    @Test("fetchAndResolveOpenTarget already-synced message returns it without syncing")
+    func fetchAndResolveOpenTargetReturnsAlreadySyncedMessageWithoutSyncing() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox) = try await makeAccountWithInbox(database: database)
+        let (threadId, messageId) = try await insertSingleMessageThread(accountId: account.id, mailboxId: inbox.id!, uid: 42, database: database)
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
+            accountId: account.id, uidNext: 43, database: database,
+            auth: { _ in self.auth },
+            sessionFactory: { config in FakeIMAPSession(config: config, script: .init(mailboxes: [], statusByPath: [:]), recorder: recorder) }
+        )
+        #expect(target?.threadId == threadId)
+        #expect(target?.messageId == messageId)
+        #expect(recorder.storeCalls.isEmpty, "already-synced target must not trigger a sync connection")
+    }
+
+    @Test("fetchAndResolveOpenTarget syncs the INBOX and finds a message that just arrived")
+    func fetchAndResolveOpenTargetSyncsInboxForUnsyncedMessage() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _) = try await makeAccountWithInbox(database: database)
+
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inboxInfo],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 42)]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 43, highestModSeq: 0, messageCount: 1)]
+        )
+
+        let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
+            accountId: account.id, uidNext: 43, database: database,
+            auth: { _ in self.auth },
+            sessionFactory: { config in FakeIMAPSession(config: config, script: script) }
+        )
+
+        let target1 = try #require(target)
+        let message = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: target1.messageId) }
+        #expect(message?.uid == 42, "the priority INBOX sync should have pulled in the just-arrived message")
+    }
+
+    @Test("fetchAndResolveOpenTarget returns nil when credentials can't be resolved")
+    func fetchAndResolveOpenTargetReturnsNilWithoutAuth() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _) = try await makeAccountWithInbox(database: database)
+
+        let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
+            accountId: account.id, uidNext: 43, database: database,
+            auth: { _ in nil },
+            sessionFactory: { config in FakeIMAPSession(config: config, script: .init(mailboxes: [], statusByPath: [:])) }
+        )
+        #expect(target == nil)
+    }
+
+    @Test("fetchAndResolveOpenTarget returns nil when the target still isn't found after syncing")
+    func fetchAndResolveOpenTargetReturnsNilWhenStillNotFoundAfterSync() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _) = try await makeAccountWithInbox(database: database)
+
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inboxInfo],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0)]
+        )
+
+        let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
+            accountId: account.id, uidNext: 43, database: database,
+            auth: { _ in self.auth },
+            sessionFactory: { config in FakeIMAPSession(config: config, script: script) }
+        )
+        #expect(target == nil)
+    }
 }

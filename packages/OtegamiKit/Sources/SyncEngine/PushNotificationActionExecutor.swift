@@ -91,11 +91,47 @@ public enum PushNotificationActionExecutor {
         _ = try? await processor.replay(account: account, auth: resolvedAuth)
     }
 
+    /// `resolveOpenTarget`のローカル読み取りが `nil`(対象メッセージが
+    /// まだ未同期)を返した場合、そのアカウントのINBOXだけを対象にした
+    /// 優先的な差分同期を1回試みてから再度 `resolveOpenTarget` を呼び直す。
+    /// 「通知をタップしたら他の通信より先に対象メールを読み込んで開く」
+    /// ための経路 — 全アカウント・全メールボックスを回す通常の起動時同期
+    /// (`OtegamiApp.syncAllAccountsOnce()`)を待たず、この呼び出し自身が
+    /// 対象アカウントのINBOXだけを狙って同期する。
+    ///
+    /// 資格情報が解決できない、同期そのものが失敗する、同期後も対象UIDが
+    /// 見つからない、のいずれも `nil` — 呼び出し側は通常どおり遷移を諦め、
+    /// 統合受信トレイへフォールバックする（`resolveOpenTarget`と同じ
+    /// 「表示できるものだけ表示する」設計）。
+    public static func fetchAndResolveOpenTarget(
+        accountId: String,
+        uidNext: Int,
+        database: AppDatabase,
+        auth: @Sendable (AccountRecord) async -> MailAuth?,
+        sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+    ) async -> (threadId: Int64, messageId: Int64)? {
+        if let target = await resolveOpenTarget(accountId: accountId, uidNext: uidNext, database: database) {
+            return target
+        }
+
+        guard let account = try? await database.dbWriter.read({ db in
+            try AccountRecord.fetchOne(db, key: accountId)
+        }), let resolvedAuth = await auth(account) else { return nil }
+
+        let coordinator = SyncCoordinator(database: database, sessionFactory: sessionFactory)
+        _ = try? await coordinator.syncAccountIncrementally(
+            account, auth: resolvedAuth, scope: .inboxOnly, autoRetry: false
+        )
+
+        return await resolveOpenTarget(accountId: accountId, uidNext: uidNext, database: database)
+    }
+
     /// 通知の default action (本体タップ) 向け: `execute`と同じ `uidNext →
     /// uid = max(uidNext - 1, 1)` の推測でINBOXの対象メッセージを特定し、
     /// 既にローカル同期済みならその `threadId`/`id` を返す (書き込みなし、
     /// `OpQueue`への enqueue もしない)。未同期の場合は `nil` — 呼び出し側は
-    /// 遷移を諦めて通常の起動画面 (統合受信トレイ) にフォールバックする。
+    /// `fetchAndResolveOpenTarget`経由なら優先同期後に再試行、そうでなけ
+    /// れば遷移を諦めて通常の起動画面 (統合受信トレイ) にフォールバックする。
     public static func resolveOpenTarget(
         accountId: String,
         uidNext: Int,
