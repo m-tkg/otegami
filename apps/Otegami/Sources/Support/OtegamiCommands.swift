@@ -23,6 +23,7 @@ struct OtegamiCommands: Commands {
     @FocusedValue(\.toggleReadAction) private var toggleReadAction
     @FocusedValue(\.deleteAction) private var deleteAction
     @FocusedValue(\.focusSearchAction) private var focusSearchAction
+    @FocusedValue(\.refreshMessageListAction) private var refreshMessageListAction
     @FocusedValue(\.nextMailboxAction) private var nextMailboxAction
     @FocusedValue(\.previousMailboxAction) private var previousMailboxAction
     // Task #182 (macOS アプリ内アップデート): unlike every other action
@@ -106,6 +107,13 @@ struct OtegamiCommands: Commands {
                 .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(deleteAction == nil)
             Divider()
+            // ⌃R: 実 Mail.app の「新規メールを受信」は ⇧⌘N だが、ユーザー
+            // 指示は Ctrl+R を明示。⌘R は上の「返信」(Mail.app 準拠、
+            // Task #165) が使用済みのため衝突しない。同期中は
+            // `MessageListView` 側が unpublish して自動 disabled になる。
+            Button("新規メールを受信") { refreshMessageListAction?() }
+                .keyboardShortcut("r", modifiers: .control)
+                .disabled(refreshMessageListAction == nil)
             Button("次のメールボックス") { nextMailboxAction?() }
                 .keyboardShortcut("]", modifiers: .command)
                 .disabled(nextMailboxAction == nil)

@@ -69,6 +69,10 @@ extension FocusedValues {
         typealias Value = () -> Void
     }
 
+    private struct RefreshMessageListActionKey: FocusedValueKey {
+        typealias Value = () -> Void
+    }
+
     private struct NextMailboxActionKey: FocusedValueKey {
         typealias Value = () -> Void
     }
@@ -135,6 +139,15 @@ extension FocusedValues {
     var focusSearchAction: (() -> Void)? {
         get { self[FocusSearchActionKey.self] }
         set { self[FocusSearchActionKey.self] = newValue }
+    }
+
+    /// Published by `MessageListView` while it's on screen and not already
+    /// syncing — runs the same manual `refresh()` as the list header's
+    /// refresh button (`MacListSearchBar.onRefresh`). ⌃R (⌘R is taken by
+    /// `replyAction`, Mail.app parity — see `OtegamiCommands`).
+    var refreshMessageListAction: (() -> Void)? {
+        get { self[RefreshMessageListActionKey.self] }
+        set { self[RefreshMessageListActionKey.self] = newValue }
     }
 
     /// Published by `RootView` whenever at least one account exists —

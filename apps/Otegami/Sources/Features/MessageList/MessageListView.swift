@@ -672,6 +672,9 @@ struct MessageListView: View {
             macListSearchBar
             messageListCore
         }
+        // `messageListCore` 側のチェーンに足すと型チェックタイムアウトで
+        // CI が落ちる (docs/ci.md) ため、短いこちらの式に付ける。
+        .focusedSceneValue(\.refreshMessageListAction, refreshActionForMenu)
         #else
         messageListCore
         #endif
@@ -689,8 +692,21 @@ struct MessageListView: View {
             isFieldFocused: $isSearchFieldFocused,
             isUnreadOnly: $isUnreadOnly,
             isSyncing: isSyncing,
-            onRefresh: { Task { await refresh() } }
+            onRefresh: startManualRefresh
         )
+    }
+
+    /// 更新ボタン (`MacListSearchBar.onRefresh`) と ⌃R
+    /// (`refreshMessageListAction`) の共通ハンドラ。
+    private func startManualRefresh() {
+        Task { await refresh() }
+    }
+
+    /// 同期中は nil で unpublish → メニュー項目が自動 disabled
+    /// (`MacListSearchBar.refreshButton` の `.disabled(isSyncing)` と同挙動)。
+    private var refreshActionForMenu: (() -> Void)? {
+        if isSyncing { return nil }
+        return { startManualRefresh() }
     }
     #endif
 
