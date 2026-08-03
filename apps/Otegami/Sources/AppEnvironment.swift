@@ -444,7 +444,20 @@ final class AppEnvironment {
 
         let database: AppDatabase
         do {
-            database = try AppDatabase.makeShared(appGroupIdentifier: OtegamiAppGroup.identifier)
+            // `OTEGAMI_UITEST_DB_DIRECTORY`: this file's other
+            // `OTEGAMI_UITEST_*` escape hatches と同じ検証専用フック。
+            // macOS の画面検証 (`docs/verify.md`) はシミュレータと違い
+            // 実ユーザーの Application Support を共有するため、これを
+            // 指定しない検証起動はフィクスチャを実データベースへ注入して
+            // しまう — `AppDatabase.makeShared(explicitDirectory:)` の
+            // doc comment 参照。
+            let uitestDatabaseDirectory = ProcessInfo.processInfo
+                .environment["OTEGAMI_UITEST_DB_DIRECTORY"]
+                .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            database = try AppDatabase.makeShared(
+                appGroupIdentifier: OtegamiAppGroup.identifier,
+                explicitDirectory: uitestDatabaseDirectory
+            )
         } catch {
             // The on-disk database couldn't be opened (corrupt file, out of
             // disk space, ...). Falling back to in-memory keeps the app

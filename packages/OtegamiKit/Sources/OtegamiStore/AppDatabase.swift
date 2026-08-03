@@ -56,8 +56,21 @@ public final class AppDatabase: Sendable {
     /// true for `swift test`, previews, and any target that never opted
     /// in), so this stays backward compatible for every caller that
     /// doesn't pass one.
-    public static func makeShared(appGroupIdentifier: String? = nil) throws -> AppDatabase {
-        let (directory, isSharedContainer) = try sharedDirectory(appGroupIdentifier: appGroupIdentifier)
+    /// - Parameter explicitDirectory: places the database file in this
+    ///   directory instead of the App Group container / Application Support
+    ///   resolution above. macOS の検証起動 (`docs/verify.md`) が実ユーザーの
+    ///   Application Support 上の実データベースを開いてしまわないための
+    ///   escape hatch — シミュレータと違い macOS のプロセスはサンドボックス
+    ///   されておらず、`HOME` 環境変数を差し替えても `FileManager` は実際の
+    ///   ホームディレクトリを返すため、パス自体を明示的に上書きするしか
+    ///   分離する方法がない。
+    public static func makeShared(appGroupIdentifier: String? = nil, explicitDirectory: URL? = nil) throws -> AppDatabase {
+        let (directory, isSharedContainer): (URL, Bool)
+        if let explicitDirectory {
+            (directory, isSharedContainer) = (explicitDirectory, false)
+        } else {
+            (directory, isSharedContainer) = try sharedDirectory(appGroupIdentifier: appGroupIdentifier)
+        }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("otegami.sqlite")
         // Task #192 (実機クラッシュ 0xDEAD10CC): only a database that actually
