@@ -214,7 +214,7 @@ struct BodyFetcherTests {
             var record = message
             record.bodyState = .fetched
             try record.update(db)
-            var body = MessageBodyRecord(messageId: message.id!, plainText: "以前取得済みの本文")
+            let body = MessageBodyRecord(messageId: message.id!, plainText: "以前取得済みの本文")
             try body.insert(db)
         }
 
@@ -249,7 +249,7 @@ struct BodyFetcherTests {
             // format, must re-fetch" case `MessageBodyRecord
             // .currentRenderVersion`'s doc comment describes, so this must
             // not be treated as a usable cache.
-            var body = MessageBodyRecord(messageId: message.id!, plainText: "古い版のキャッシュ", renderVersion: MessageBodyRecord.currentRenderVersion - 1)
+            let body = MessageBodyRecord(messageId: message.id!, plainText: "古い版のキャッシュ", renderVersion: MessageBodyRecord.currentRenderVersion - 1)
             try body.insert(db)
         }
 
