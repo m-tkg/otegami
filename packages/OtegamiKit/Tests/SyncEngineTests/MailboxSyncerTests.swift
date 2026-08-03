@@ -100,6 +100,53 @@ struct MailboxSyncerTests {
         #expect(messages.contains { $0.subject == "新着4通目" })
     }
 
+    /// docs/architecture.md's Known pitfalls (d): an open-ended `UIDRange`
+    /// (`upperBound == nil`) is never chunked by `MailCoreIMAPSession
+    /// .chunk`, so a naive "new mail since `newMailLowerBound`" fetch that
+    /// leaves the upper bound open issues one unbounded `FETCH` regardless
+    /// of `batchSize`. This asserts the new-mail step instead bounds the
+    /// request to `status.uidNext - 1` (this pass's own just-fetched
+    /// server-reported upper limit) — `FakeIMAPSession.fetchedRanges`
+    /// records the exact range `MailboxSyncer` asked for.
+    @Test("incremental sync bounds the new-mail fetch to status.uidNext - 1 rather than leaving it open-ended")
+    func newMailFetchIsBounded() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "1通目")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+            )
+        )
+
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [
+                makeEnvelope(uid: 1, subject: "1通目"),
+                makeEnvelope(uid: 2, subject: "新着2通目"),
+            ]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 0, messageCount: 2)],
+            capabilitiesToReport: [.condstore]
+        )
+        let sessionBox = SessionBox()
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            let session = FakeIMAPSession(config: config, script: incrementalScript)
+            sessionBox.session = session
+            return session
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.newMessages == 1)
+
+        let fetchedRanges = await sessionBox.session?.fetchedRanges ?? []
+        #expect(fetchedRanges.count == 1)
+        #expect(fetchedRanges[0].lowerBound == 2)
+        #expect(fetchedRanges[0].upperBound == 2, "must be bounded to status.uidNext - 1, never open-ended")
+    }
+
     // MARK: (b) flag sync — CONDSTORE and non-CONDSTORE
 
     @Test("CONDSTORE flag sync applies a changedSince flag change without re-fetching everything")

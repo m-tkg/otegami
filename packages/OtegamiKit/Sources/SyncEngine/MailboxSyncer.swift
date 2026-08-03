@@ -211,9 +211,23 @@ public actor MailboxSyncer {
                 completed: 0,
                 total: Int(status.uidNext - newMailLowerBound)
             ))
+            // Bounded to `status.uidNext - 1` (this pass's own just-fetched
+            // upper limit), never open-ended — see docs/architecture.md's
+            // Known pitfalls (d): an open-ended `UIDRange` (`upperBound ==
+            // nil`, IMAP's `lowerBound:*`) is never chunked by
+            // `MailCoreIMAPSession.chunk`, so `batchSize` above would be
+            // silently ignored and this would issue one unbounded `FETCH`
+            // for every message that ever arrived since the last sync — no
+            // incremental progress, no cancellation checkpoint, on a mailbox
+            // that received a very large amount of new mail (a long-dormant
+            // account resuming sync, a mailing list, ...). The guard just
+            // above (`newMailLowerBound < status.uidNext`) already
+            // guarantees `newMailLowerBound <= status.uidNext - 1`, so this
+            // subtraction never underflows and the range is never degenerate
+            // here.
             let newEnvelopes = try await session.fetchEnvelopes(
                 mailboxPath: mailboxPath,
-                uids: .from(newMailLowerBound),
+                uids: UIDRange(lowerBound: newMailLowerBound, upperBound: status.uidNext - 1),
                 batchSize: AccountSyncer.fetchBatchSize
             )
             if !newEnvelopes.isEmpty {
