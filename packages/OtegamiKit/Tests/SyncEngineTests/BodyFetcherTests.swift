@@ -310,6 +310,78 @@ struct BodyFetcherTests {
         #expect(Set(fetchedMessages.map(\.uid)) == [10, 9, 8])
     }
 
+    @Test("prefetchRecent skips a candidate that a concurrent independent fetch already completed by the time its turn comes")
+    func prefetchRecentSkipsAlreadyFetchedCandidate() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Test", email: "test1@otegami.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "test1@otegami.test"
+        )
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let mailboxId = try await database.dbWriter.write { db -> Int64 in
+            var mailbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
+            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return mailbox.id!
+        }
+
+        // uid 1 sorts first (newer `internalDate`), uid 2 second — matches
+        // `prefetchRecent`'s newest-first candidate order.
+        let (_, message2) = try await database.dbWriter.write { db -> (MessageRecord, MessageRecord) in
+            var m1 = MessageRecord(mailboxId: mailboxId, uid: 1, subject: "msg-1", internalDate: Date(timeIntervalSince1970: 1_700_000_002))
+            try m1.insert(db)
+            var m2 = MessageRecord(mailboxId: mailboxId, uid: 2, subject: "msg-2", internalDate: Date(timeIntervalSince1970: 1_700_000_001))
+            try m2.insert(db)
+            return (m1, m2)
+        }
+
+        // `sessionA` (used by `prefetchRecent` itself) only has uid 1
+        // scripted, and gates every `fetchBody` call so the test can pause
+        // `prefetchRecent`'s in-loop fetch of uid 1 right after it reaches
+        // the "server boundary" — deterministically overlapping it with a
+        // separate, independent `fetchBody` call for uid 2 on `sessionB`
+        // finishing first, before letting uid 1's fetch (and so
+        // `prefetchRecent`'s own loop) resume.
+        let gate = FakeIMAPSession.AsyncCallGate()
+        let scriptA = FakeIMAPSession.Script(
+            bodiesByPath: ["INBOX": [1: MessageBodyContent(plainText: "body-1")]],
+            fetchBodyGate: gate
+        )
+        let sessionA = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: scriptA)
+        let scriptB = FakeIMAPSession.Script(bodiesByPath: ["INBOX": [2: MessageBodyContent(plainText: "body-2")]])
+        let sessionB = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: scriptB)
+
+        let fetcher = BodyFetcher(database: database)
+
+        let prefetchTask = Task {
+            try await fetcher.prefetchRecent(mailboxId: mailboxId, mailboxPath: "INBOX", limit: 2, session: sessionA)
+        }
+        await gate.waitUntilEntered()
+
+        // While uid 1's fetch sits blocked on the gate, a fully independent
+        // fetch of uid 2 (e.g. the on-open fetch, or another prefetch
+        // pass) runs to completion on the *same* `BodyFetcher` instance —
+        // actor reentrancy lets this proceed while `prefetchTask` is
+        // suspended.
+        try await fetcher.fetchBody(message: message2, mailboxPath: "INBOX", session: sessionB)
+
+        await gate.open()
+        let fetchedCount = try await prefetchTask.value
+
+        // `prefetchRecent` itself only ever fetched uid 1 — its fresh
+        // recheck saw uid 2 already `.fetched` by the time its loop got to
+        // it and skipped it, rather than re-fetching over `sessionA` (which
+        // has no scripted body for uid 2 and would have failed).
+        #expect(fetchedCount == 1)
+        let sessionACalledUIDs = await sessionA.fetchBodyCalls.map(\.uid)
+        #expect(sessionACalledUIDs == [1])
+
+        let updated2 = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: message2.id) }
+        #expect(updated2?.bodyState == .fetched)
+        let body2 = try await database.dbWriter.read { db in try MessageBodyRecord.fetchOne(db, key: message2.id) }
+        #expect(body2?.plainText == "body-2")
+    }
+
     // MARK: - Self-healing a stale (mailboxId, uid) — 実機報告
     // 「一部のメールで本文の取得に失敗し続ける (MailCoreErrorDomain error 19)」
 

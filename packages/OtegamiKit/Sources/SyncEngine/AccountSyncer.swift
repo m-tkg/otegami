@@ -245,17 +245,33 @@ public actor AccountSyncer {
         isAutoRetrying
     }
 
+    /// Task #221: `bodyFetcher` defaults to a fresh instance (unchanged
+    /// behavior for every existing call site — in particular every test
+    /// that constructs an `AccountSyncer` directly), but `SyncCoordinator
+    /// .syncer(for:)` passes its own shared `BodyFetcher` instead. Before
+    /// this, `AccountSyncer`'s post-initial-sync prefetch and
+    /// `SyncCoordinator`'s on-open/list-update prefetch/self-heal paths
+    /// each ran against a *separate* `BodyFetcher`, splitting both
+    /// `inFlightFetches` (per-message in-flight dedup) and
+    /// `selfHealAttempted` (the "confirm staleness once per message" gate)
+    /// across two independent instances that never knew about each
+    /// other's in-progress work — e.g. `AccountSyncer`'s prefetch and a
+    /// concurrent on-open fetch for the same message could each start
+    /// their own network fetch, and a message that failed self-healing
+    /// against one instance would retry the whole existence-check dance
+    /// again against the other. One shared instance closes that gap.
     public init(
         account: AccountRecord,
         database: AppDatabase,
         retryPolicy: SyncRetryPolicy = .default,
-        sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+        sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol,
+        bodyFetcher: BodyFetcher? = nil
     ) {
         self.account = account
         self.database = database
         self.retryPolicy = retryPolicy
         self.sessionFactory = sessionFactory
-        self.bodyFetcher = BodyFetcher(database: database)
+        self.bodyFetcher = bodyFetcher ?? BodyFetcher(database: database)
         self.mailboxSyncer = MailboxSyncer(database: database)
     }
 

@@ -145,6 +145,15 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// reached the server boundary, until the test opens the gate.
         /// Used to deterministically overlap two op-queue replay calls.
         public var storeGate: AsyncCallGate?
+        /// Task #221: same idea as `storeGate`, for `fetchBody` — pauses
+        /// every call after announcing it reached the server boundary,
+        /// until the test opens the gate. Lets `BodyFetcherTests`
+        /// deterministically overlap `BodyFetcher.prefetchRecent`'s
+        /// in-loop fetch of one candidate with a separate, independent
+        /// `fetchBody` call for a *different* candidate finishing first —
+        /// exactly the race `prefetchRecent`'s fresh already-fetched
+        /// recheck guards against.
+        public var fetchBodyGate: AsyncCallGate?
 
         public init(
             mailboxes: [MailboxInfo] = [],
@@ -169,7 +178,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             mailboxRevealedAfterCreate: MailboxInfo? = nil,
             appendReturnsUID: UInt32? = nil,
             flakyFetchRecentEnvelopes: FlakyCallController? = nil,
-            storeGate: AsyncCallGate? = nil
+            storeGate: AsyncCallGate? = nil,
+            fetchBodyGate: AsyncCallGate? = nil
         ) {
             self.mailboxes = mailboxes
             self.envelopesByPath = envelopesByPath
@@ -194,6 +204,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.appendReturnsUID = appendReturnsUID
             self.flakyFetchRecentEnvelopes = flakyFetchRecentEnvelopes
             self.storeGate = storeGate
+            self.fetchBodyGate = fetchBodyGate
         }
     }
 
@@ -372,6 +383,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     /// tests asserting `refetchAndDiffFlags` chunks its requests instead of
     /// asking for the whole locally-synced window in one call.
     public private(set) var fetchFlagsCalls: [(path: String, lowerBound: UInt32, upperBound: UInt32?)] = []
+    /// Task #221: every `fetchBody(mailboxPath:uid:)` call, in call order —
+    /// lets a test assert `BodyFetcher.prefetchRecent`'s fresh
+    /// already-fetched recheck actually skipped a network fetch for a
+    /// message another pass beat it to, rather than just asserting on the
+    /// (indirect) `successCount` return value.
+    public private(set) var fetchBodyCalls: [(path: String, uid: UInt32)] = []
     /// Set once `createMailbox(path:)` succeeds and `script
     /// .mailboxRevealedAfterCreate` is non-nil — merged into
     /// `listMailboxes()`'s result from then on, modeling a real server
@@ -507,6 +524,10 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {
+        fetchBodyCalls.append((mailboxPath, uid))
+        if let fetchBodyGate = script.fetchBodyGate {
+            await fetchBodyGate.wait()
+        }
         if let failure = script.failFetchBody[mailboxPath]?[uid] {
             throw failure
         }

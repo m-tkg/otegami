@@ -907,7 +907,12 @@ public actor SyncCoordinator {
         if let existing = syncers[account.id] {
             return existing
         }
-        let syncer = AccountSyncer(account: account, database: database, sessionFactory: sessionFactory)
+        // Task #221: shares this coordinator's own `bodyFetcher` rather
+        // than letting `AccountSyncer` default-construct a second,
+        // independent one — see `AccountSyncer.init`'s doc comment for why
+        // that split used to fragment in-flight dedup/self-heal state
+        // across the two.
+        let syncer = AccountSyncer(account: account, database: database, sessionFactory: sessionFactory, bodyFetcher: bodyFetcher)
         syncers[account.id] = syncer
         return syncer
     }

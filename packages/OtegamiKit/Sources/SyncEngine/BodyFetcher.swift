@@ -485,6 +485,23 @@ public actor BodyFetcher {
 
         var successCount = 0
         for message in candidates {
+            // Task #221: re-check fresh state right before fetching, not
+            // the (possibly already stale) `bodyState` `candidates`
+            // captured at query time above — something else (the on-open
+            // fetch, `SyncCoordinator.prefetchUnifiedInboxBodiesIfNeeded`'s
+            // own pass, another `prefetchRecent` call racing this one) may
+            // have already fetched this exact message by the time this
+            // loop reaches it. Same shape as `SyncCoordinator
+            // .runUnifiedInboxPrefetch`'s identical re-check — `fetchBody`
+            // itself always forces a fetch regardless of `bodyState`
+            // (`prefetchRecent`'s own re-fetch contract, see this method's
+            // doc comment), so this "already fetched? skip" belongs here,
+            // specific to this best-effort prefetch pass.
+            if let messageId = message.id,
+               let current = try? await database.dbWriter.read({ db in try MessageRecord.fetchOne(db, key: messageId) }),
+               current.bodyState == .fetched {
+                continue
+            }
             do {
                 try await fetchBody(message: message, mailboxPath: mailboxPath, session: session)
                 successCount += 1
