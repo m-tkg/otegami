@@ -539,6 +539,18 @@ struct ThreadDetailView: View {
         withAnimation(.default) {
             expandedMessageId = (expandedMessageId == messageId) ? nil : messageId
         }
+        // 実機フィードバック (iPad)「要約ボタンを押せない時がある」の全閉じ版:
+        // 「^」で全部畳むと、畳まれた行の `MessageView.onDisappear` が送る
+        // nil クリアは Task #149 のガード (`messageId == expandedMessageId`、
+        // このとき `expandedMessageId` は既に `nil`) に弾かれ、破棄済み
+        // インスタンスの handle がフッターに残る — 要約/翻訳ボタンが有効
+        // 表示のまま無反応になる。別の行への切替 (非 nil → 非 nil) は新しい
+        // 行の `.onAppear` が自分の state で上書きするので問題にならず、
+        // 上書きする者がいない「nil へ畳む」ケースだけ受け手側で明示的に
+        // 捨てる必要がある。`load()` 冒頭の同名リセットと同じ理屈。
+        if expandedMessageId == nil {
+            expandedAIFeaturesState = nil
+        }
         // Task #146: 展開したとき (collapse ではない) だけ自動スクロールを
         // 起動する — `expandedMessageId`は直前の代入で*新しい*値になって
         // いるので、ここでの一致チェックは「(旧値と比べてではなく) 結果と
@@ -607,6 +619,19 @@ struct ThreadDetailView: View {
         accountId = nil
         messages = []
         expandedMessageId = nil
+        // 実機フィードバック (iPad)「要約ボタンを押せない時がある」: iPad の
+        // regular 幅では `MailScreenView.detailColumn` が `ThreadEntryView` を
+        // `.id` 無しで差し替えるため、一覧で別スレッドを選んでもこの View は
+        // 同一 identity のまま `.task(id: threadId)` で `load()` だけが再走する
+        // (compact 幅の `.navigationDestination` は毎回作り直すので起きない —
+        // iPad のみで再現した理由)。ここで `expandedAIFeaturesState` を捨て
+        // ないと、旧スレッドの破棄済み `MessageView` が握らせた handle が
+        // フッターに残り続け、要約/翻訳ボタンが「有効に見えるのに押しても
+        // 死んだ `@State` に書くだけで何も起きない」状態になる。旧
+        // `MessageView` の `.onDisappear` による nil クリアは Task #149 の
+        // ガード (`onAIFeaturesStateChange` の `messageId == expandedMessageId`
+        // 照合) が弾いてしまうため、リセットはこの受け手側で行うしかない。
+        expandedAIFeaturesState = nil
         hasPinnedInitialExpansion = false
         isThreadPinned = false
         isThreadMuted = false

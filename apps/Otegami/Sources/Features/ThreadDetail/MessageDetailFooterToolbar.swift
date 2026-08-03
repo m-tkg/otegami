@@ -691,6 +691,19 @@ struct MessageDetailFooterToolbar: View {
         }
         .foregroundStyle(tint)
         .otegamiMinimumTappable()
+        // 実機フィードバック (iPad)「要約ボタンを押せない時がある」: ヒット
+        // 領域は`.otegamiMinimumTappable()`の 44pt (下限のみ) で決まる一方、
+        // `fixedRow`のスロットは`.frame(maxWidth: .infinity)`で等幅に広がる —
+        // iPhone ではスロット≈54pt で差は片側 5pt 程度だが、iPad の広い
+        // detail ペインではスロットが 100pt 超になり、アイコンの見た目の
+        // 「持ち分」の中に片側 30pt 以上のタップ不能地帯ができていた。
+        // ラベル側 (Buttonの内側) をスロット幅まで広げて`.contentShape`を
+        // 張り直すことで、スロット全域をヒット領域にする。`scrollableRow`
+        // では`ScrollView`が幅を提案しない (ideal で並べる) ため
+        // `maxWidth: .infinity`は効かず 44pt のまま — `ViewThatFits`の
+        // 判定基準である理想幅も変わらない (`body`のdoc comment参照)。
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
     }
 
     /// Task #88: 要約/翻訳だけが取りうる4状態 — 他の5アイコン (`toolbarIcon`)
@@ -749,6 +762,11 @@ struct MessageDetailFooterToolbar: View {
         }
         .foregroundStyle(tone.color)
         .otegamiMinimumTappable()
+        // `toolbarIcon(_:title:systemImage:tint:)`末尾の同名修正と同じ —
+        // iPad の広いスロットでのタップ不能地帯を無くす (そちらのdoc
+        // comment参照)。
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
     }
 }
 
