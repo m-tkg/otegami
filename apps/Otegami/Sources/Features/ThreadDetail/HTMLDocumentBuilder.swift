@@ -159,6 +159,7 @@ enum HTMLDocumentBuilder {
     static func wrap(bodyHTML: String, autoAdjustColorsInDarkMode: Bool, forceLightBackground: Bool = false, bottomContentInset: CGFloat = 0) -> String {
         let innerBody = extractBodyContent(from: bodyHTML)
         let originalHeadStyles = extractHeadStyles(from: bodyHTML)
+        let bodyPresentationalStyle = extractBodyPresentationalStyle(from: bodyHTML)
         // Task #51: この時点ではまだ「介入 (反転 or ライト維持) を検討して
         // よいか」までしか決めない — 実際にどちらの対処を行うか (あるいは
         // 何もしないか) は実測 (`fitToWidthScript`の`decideDarkInversion`)
@@ -486,6 +487,7 @@ enum HTMLDocumentBuilder {
              領域が縮小前の大きいままになってしまう。 */
           #otegami-fit-outer { overflow: hidden; }
         </style>
+        \(bodyPresentationalStyle)
         \(originalHeadStyles)
         \(darkModeInvertStyle)
         \(forceLightBackgroundStyle)
@@ -569,6 +571,110 @@ enum HTMLDocumentBuilder {
         let contentEnd = sanitized.range(of: "</body>", options: [.caseInsensitive, .backwards])?.lowerBound ?? sanitized.endIndex
         guard contentStart <= contentEnd else { return html }
         return String(sanitized[contentStart..<contentEnd])
+    }
+
+    /// 実機報告 (楽天証券のアンケート依頼メール — ダークモードで本文が
+    /// 「アプリの暗背景 + #333 文字」に沈む): 元メールは `<body
+    /// bgcolor="#ffffff">` で白背景を宣言し、`<style>` の `body, div, ...
+    /// { color: #333 }` で暗色文字を指定する、それ自体は整合した配色の
+    /// HTML。ところが `extractBodyContent(from:)` は `<body ...>` 開き
+    /// タグの**中身だけ**を取り出すため、開きタグ自身に書かれた表示系の
+    /// 宣言 (`bgcolor`/`text` 属性、`style` 属性の背景色・文字色) がそこで
+    /// 失われていた。`<style>` 経由の文字色は `extractHeadStyles(from:)`
+    /// が保持するので、「著者の背景宣言だけが消えて暗色文字だけが生き残る」
+    /// という最悪の組み合わせになる — 描画が壊れるだけでなく、
+    /// `fitToWidthScript` の背景解決 (`findEffectiveBackground` の
+    /// `document.body` tier) からも判定材料が消えるため、keep-light/反転の
+    /// 救済判定まで共倒れになっていた。
+    ///
+    /// この関数は元の `<body ...>` 開きタグから表示系の宣言だけを拾い、
+    /// `#otegami-fit-inner` (元 body の中身の新しい入れ物) 向けの
+    /// `<style>` ルールとして返す。`wrap` はこれを自分のベースリセットの
+    /// 後・`originalHeadStyles` の前に、`data-otegami-base-style` マーク
+    /// **無し**で差し込む — これは著者自身の色宣言なので、
+    /// `fitToWidthScript` の `collectExplicitColorSelectors` が「著者の
+    /// 明示色」として扱うのが正しい。インライン `style` ではなく
+    /// `<style>` ルールにするのは、`decideDarkInversion` が反転時の背景
+    /// 移し替えで `inner.style.backgroundColor` を読み書きし、非反転時
+    /// には `''` でクリアするため — インラインに書くとそのクリアで
+    /// 消されてしまう。レイアウト系 (`width`/`margin` 等) は意図的に
+    /// 移植しない — fit-to-width の足場を壊さないため。値は色として
+    /// 妥当な文字だけ通す軽い検証付き (HTML 属性値を CSS へ埋め直すので、
+    /// 変な文字列は素通しにしない)。
+    private static func extractBodyPresentationalStyle(from html: String) -> String {
+        let sanitized = stripHTMLComments(from: html)
+        guard let bodyTagRange = sanitized.range(of: "<body", options: [.caseInsensitive]),
+              let bodyTagCloseIndex = sanitized[bodyTagRange.lowerBound...].firstIndex(of: ">")
+        else { return "" }
+        let bodyTag = String(sanitized[bodyTagRange.lowerBound...bodyTagCloseIndex])
+        var declarations: [String] = []
+        if let bgcolor = attributeValue(named: "bgcolor", inTag: bodyTag).map(cssColorFromHTMLColorAttribute),
+           isPlausibleCSSColorValue(bgcolor) {
+            declarations.append("background-color: \(bgcolor);")
+        }
+        if let text = attributeValue(named: "text", inTag: bodyTag).map(cssColorFromHTMLColorAttribute),
+           isPlausibleCSSColorValue(text) {
+            declarations.append("color: \(text);")
+        }
+        if let style = attributeValue(named: "style", inTag: bodyTag) {
+            for declaration in style.split(separator: ";") {
+                let parts = declaration.split(separator: ":", maxSplits: 1)
+                guard parts.count == 2 else { continue }
+                let property = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard property == "background-color" || property == "background" || property == "color",
+                      isPlausibleCSSColorValue(value)
+                else { continue }
+                declarations.append("\(property): \(value);")
+            }
+        }
+        guard !declarations.isEmpty else { return "" }
+        return "<style>#otegami-fit-inner { \(declarations.joined(separator: " ")) }</style>"
+    }
+
+    /// `<body bgcolor=...>` の開きタグ (だけ) から属性値を取り出す。
+    /// 引用符付き (二重/単一) と裸値の両方に対応 — レガシーなメール
+    /// テンプレートは `bgcolor=ffffff` のような裸値も普通に使う。
+    /// このファイルの他の抽出と同じく、真の HTML パーサではなく実用的な
+    /// 正規表現 (対象は既に `<body ... >` の1タグ分に切り出された短い
+    /// 文字列なので、誤爆の余地はほぼない)。
+    private static func attributeValue(named name: String, inTag tag: String) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: "\\b\(name)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>\"']+))",
+            options: [.caseInsensitive]
+        ) else { return nil }
+        let range = NSRange(tag.startIndex..<tag.endIndex, in: tag)
+        guard let match = regex.firstMatch(in: tag, range: range) else { return nil }
+        for groupIndex in 1...3 {
+            guard let groupRange = Range(match.range(at: groupIndex), in: tag) else { continue }
+            let value = String(tag[groupRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { return value }
+        }
+        return nil
+    }
+
+    /// HTML のレガシー色属性は `bgcolor="ffffff"` のように `#` を省いた
+    /// 16進値を許す (ブラウザの属性パースはこれを色として解釈する) が、
+    /// CSS の `background-color` としてはそのままだと無効になるため、
+    /// 3桁/6桁の16進値だけ `#` を補う。それ以外 (`white` 等のキーワード、
+    /// `#` 付きの値、`rgb(...)`) はそのまま返す。
+    private static func cssColorFromHTMLColorAttribute(_ value: String) -> String {
+        // CSS 色キーワードとの衝突は心配しなくてよい — 3/6文字の
+        // キーワードで a-f だけからなるものは存在しない (`red` の `r`、
+        // `tan` の `t` は16進文字ではない)。
+        let isBareHex = (value.count == 3 || value.count == 6)
+            && value.allSatisfy { $0.isHexDigit }
+        return isBareHex ? "#\(value)" : value
+    }
+
+    /// `extractBodyPresentationalStyle` が HTML 属性値を CSS 宣言へ埋め
+    /// 直すときの軽い検証 — 色値として妥当な文字 (英数字・`#`・`()`,
+    /// `,`・`.`・`%`・空白・`-`) だけを通す。`url(...)` や式のような
+    /// 「色以外の何か」は `/` `:` 等がここで弾かれて素通りしない。
+    private static func isPlausibleCSSColorValue(_ value: String) -> Bool {
+        guard !value.isEmpty, value.count <= 64 else { return false }
+        let allowedPunctuation: Set<Character> = ["#", "(", ")", ",", ".", "%", " ", "-"]
+        return value.allSatisfy { $0.isLetter || $0.isNumber || allowedPunctuation.contains($0) }
     }
 
     /// HTML 表示の高さ問題の修正: B (`extractBodyContent(from:)`) が
