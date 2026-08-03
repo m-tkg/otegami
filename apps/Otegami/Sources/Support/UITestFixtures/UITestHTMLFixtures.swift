@@ -253,6 +253,15 @@ enum UITestHTMLFixtures {
             subject: "投信基準価額メール (UITest)",
             snippet: "基準価額のお知らせ",
             html: uitestFakeHTMLMessageBodyFundPriceNotificationTallTable
+        ),
+        // 実機報告 (証券会社のアンケート依頼メール、内容は伏せて構造だけ
+        // 再現): `html-12` — `uitestFakeHTMLMessageBodySurveyBodyBgcolor`
+        // のdoc comment参照 (`<body bgcolor="#ffffff">` + `<style>`経由の
+        // 暗色文字、というこのメールの実際の骨格)。
+        UITestFakeHTMLMessage(
+            subject: "アンケートにご協力ください (UITest)",
+            snippet: "アンケートを実施しております",
+            html: uitestFakeHTMLMessageBodySurveyBodyBgcolor
         )
     ]
 
@@ -812,6 +821,119 @@ enum UITestHTMLFixtures {
     <p style="text-align:left;margin:0 0 10px 0;padding:0;">本メールはシステムにより自動配信されています。ご返信いただいてもお答えできませんのでご了承ください。</p>
     </td></tr></table>
     </div>
+    </body>
+    </html>
+    """
+
+    /// 実機報告 (証券会社のアンケート依頼メール、内容は伏せて構造だけ
+    /// 再現): 「ダークモードで本文がアプリの暗背景 + #333 文字に沈む」を
+    /// 再現する構造 — `<body bgcolor="#ffffff">` の**属性**で白背景を宣言
+    /// し (インライン `style` や `<style>` の背景指定は一切無い)、文字色
+    /// は `<head>` の `<style>` の `body, div, ... { color: #333 }` 経由。
+    /// `HTMLDocumentBuilder.extractBodyContent` が `<body ...>` 開きタグ
+    /// の属性を捨てるため、著者の背景宣言だけが消えて暗色文字だけが
+    /// 生き残っていた (`extractBodyPresentationalStyle` のdoc comment参照)。
+    /// ネストした `bgcolor` 属性テーブル (枠色 + 白パネル) と `#ED4C6B`
+    /// の強調色も実メールの骨格どおり。
+    fileprivate static let uitestFakeHTMLMessageBodySurveyBodyBgcolor = """
+    <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+    <html>
+    <head>
+    <meta http-equiv="Content-Language" content="ja">
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <title>お知らせ</title>
+    <style type="text/css" media="screen">
+    body, div, h1, h2, h3, h4, h5, h6, strong {
+        margin: 0;
+        padding: 0;
+        color: #333;
+        font-size: 16px;
+        font-family: 'メイリオ', Meiryo, Osaka, sans-serif;
+    }
+    </style>
+    </head>
+    <body bgcolor="#ffffff" style="font-family: 'メイリオ', Meiryo, Osaka, sans-serif;">
+    <table width="99%" border="0" cellspacing="0" cellpadding="0">
+      <tr>
+        <td align="center">
+          <table width="550" border="0" cellspacing="0" cellpadding="0">
+            <tr>
+              <td><table bgcolor="#000000" width="100%" border="0" cellspacing="0" cellpadding="1">
+                  <tr>
+                    <td align="center" valign="middle"><table bgcolor="#FFFFFF" width="100%" border="0" cellspacing="0" cellpadding="2">
+                        <tr>
+                          <td align="left" style="font-size: 0; line-height: 0;"><img src="http://cdn.otegami.test/logo/brand-160x34.gif" alt="Example証券" width="160" height="34" border="0" style="width:160px;height:34px;"></td>
+                        </tr>
+                      </table></td>
+                  </tr>
+                </table></td>
+            </tr>
+            <tr>
+              <td align="right" style="font-size: 11px; line-height: 1.6; font-weight:bold;">2026年8月3日</td>
+            </tr>
+            <tr>
+              <td align="right" style="font-size: 12px; line-height: 1.6;"><a href="https://example.otegami.test/mail/change" target="_blank">＞ 配信先の確認・変更</a></td>
+            </tr>
+            <tr>
+              <td align="center"><img src="http://cdn.otegami.test/banner/survey-550x236.png" alt="アンケートにご協力ください" width="550" height="236" border="0"></td>
+            </tr>
+            <tr>
+              <td height="30" style="font-size: 0; line-height: 0;"></td>
+            </tr>
+            <tr>
+              <td align="left" style="font-size: 18px; line-height: 1.7;">平素よりご愛顧いただき、誠にありがとうございます。<br>
+                よりよいサービスをご提供するためにアンケートを実施しております。<br>
+                皆様からのご回答をお待ちしております。<br>
+                回答にご協力いただいたお客様には、<span style="color: #ED4C6B; font-weight:bold;">ポイントを5ポイント</span>進呈いたします。</td>
+            </tr>
+            <tr>
+              <td height="20" style="font-size: 0; line-height: 0;"></td>
+            </tr>
+            <tr>
+              <td><table bgcolor="#ED4C6B" width="550" border="0" cellspacing="0" cellpadding="1">
+                  <tr>
+                    <td align="center" valign="middle"><table bgcolor="#FFFFFF" width="546" border="0" cellspacing="0" cellpadding="2">
+                        <tr>
+                          <td align="center"><table width="520" border="0" cellspacing="0" cellpadding="0">
+                              <tr>
+                                <td align="left" style="font-size: 18px; line-height: 1.5; font-weight:bold; color: #ED4C6B;">■アンケートについて</td>
+                              </tr>
+                              <tr>
+                                <td valign="top" align="left" style="line-height: 1.5; font-size:16px;">・クイズ形式のアンケートにご回答いただきます。</td>
+                              </tr>
+                              <tr>
+                                <td valign="top" align="left" style="line-height: 1.5; font-size:16px;">・アンケートは提携サイト内で行います。</td>
+                              </tr>
+                              <tr>
+                                <td align="left" style="font-size: 18px; line-height: 1.5;">【所要時間】5分程度<br>
+                                  【最大設問数】7問<br>
+                                  <span style="color: #ED4C6B; font-weight:bold;">【回答期限】2026年8月31日（月）23時59分</span></td>
+                              </tr>
+                            </table></td>
+                        </tr>
+                      </table></td>
+                  </tr>
+                </table></td>
+            </tr>
+            <tr>
+              <td height="40" style="font-size: 0; line-height: 0;"></td>
+            </tr>
+            <tr>
+              <td align="left" style="font-size:13px;line-height:1.5;">各取扱商品等の取引には所定の手数料や諸経費等がかかります。<br>
+                掲載している内容は予告なしに変更または中止する場合がありますので、必ず最新の情報をご確認ください。</td>
+            </tr>
+            <tr>
+              <td><table width="100%" bgcolor="#ebebeb" border="0" cellspacing="0" cellpadding="0">
+                  <tr>
+                    <td align="left" style="line-height: 1.5; font-size:13px;">■本メールは送信専用のメールアドレスで送信しております。<br>
+                      発行元：Example証券株式会社</td>
+                  </tr>
+                </table></td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
     </body>
     </html>
     """

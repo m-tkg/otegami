@@ -151,6 +151,17 @@
 #                                       の色判定と、展開時の固定高さバジェ
 #                                       ットを超える縦長コンテンツのスク
 #                                       ロール挙動の確認用。
+#   html-12 / html-survey-body-bgcolor  実機報告 (証券会社のアンケート依頼
+#                                       メール、内容は伏せて構造だけ再現):
+#                                       `<body bgcolor="#ffffff">` の属性
+#                                       だけで白背景を宣言し、文字色は
+#                                       `<style>`の`color:#333`経由という
+#                                       構造 (`AppEnvironment
+#                                       .uitestFakeHTMLMessageBodySurvey
+#                                       BodyBgcolor`)。body 属性の背景宣言
+#                                       が wrap で失われダークモードで本文
+#                                       が沈んでいた件の確認用
+#                                       (`APPEARANCE=dark`で撮ること)。
 #   calendar-invite                    Task #66: カレンダー招待メールの
 #                                       招待カード (36番フィクスチャ相当 —
 #                                       タイトル/日時/場所/主催者 +
