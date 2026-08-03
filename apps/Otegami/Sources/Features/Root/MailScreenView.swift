@@ -255,7 +255,26 @@ struct MailScreenView: View {
             if ProcessInfo.processInfo.arguments.contains("-uitestsSelectAllMailDirectly") {
                 selectUnifiedRole(.all)
             }
+            // 通知タップからの起動 (コールドスタート) を拾う — ウォーム
+            // スタート側は下の `.onReceive` 参照。
+            applyPendingPushOpenTargetIfNeeded()
         }
+        // プッシュ通知の本体タップ (`AppDelegate.userNotificationCenter`)
+        // をアプリ起動中に受けた場合はこの`.task`は二度と走らないため、
+        // `PushNotificationOpenCoordinator.didUpdateNotification`購読で
+        // 拾う — `PushNotificationOpenCoordinator`のdoc comment参照。
+        .onReceive(NotificationCenter.default.publisher(for: PushNotificationOpenCoordinator.didUpdateNotification)) { _ in
+            applyPendingPushOpenTargetIfNeeded()
+        }
+    }
+
+    /// `PushNotificationOpenCoordinator`に積まれた「通知タップで開くべき
+    /// スレッド」を消費し、あれば`selectedRoute`へ反映する。`.task`(コール
+    /// ドスタート)と`.onReceive`(ウォームスタート)の両方から呼ばれる —
+    /// どちらが先に走ってもどちらか一方で確実に消費される。
+    private func applyPendingPushOpenTargetIfNeeded() {
+        guard let target = PushNotificationOpenCoordinator.shared.consumePendingTarget() else { return }
+        selectedRoute = ThreadRoute(threadId: target.threadId, messageId: target.messageId)
     }
 
     /// Task #70: `HamburgerMenuContainer`の`content`にはこの一つだけを渡す

@@ -234,4 +234,34 @@ struct PushNotificationActionExecutorTests {
         let opCount = try await database.dbWriter.read { db in try OpQueueRecord.fetchCount(db) }
         #expect(opCount == 0)
     }
+
+    // MARK: resolveOpenTarget — notification tap (default action) navigation
+
+    @Test("resolveOpenTarget returns the synced message's threadId/messageId")
+    func resolveOpenTargetReturnsSyncedMessage() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox) = try await makeAccountWithInbox(database: database)
+        // uidNext 43 → target uid 42, matching the same heuristic as `execute`.
+        let (threadId, messageId) = try await insertSingleMessageThread(accountId: account.id, mailboxId: inbox.id!, uid: 42, database: database)
+
+        let target = await PushNotificationActionExecutor.resolveOpenTarget(accountId: account.id, uidNext: 43, database: database)
+        #expect(target?.threadId == threadId)
+        #expect(target?.messageId == messageId)
+    }
+
+    @Test("resolveOpenTarget returns nil for a message not yet synced locally")
+    func resolveOpenTargetReturnsNilWhenNotSynced() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _) = try await makeAccountWithInbox(database: database)
+
+        let target = await PushNotificationActionExecutor.resolveOpenTarget(accountId: account.id, uidNext: 100, database: database)
+        #expect(target == nil)
+    }
+
+    @Test("resolveOpenTarget returns nil for an unknown accountId")
+    func resolveOpenTargetReturnsNilForUnknownAccount() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let target = await PushNotificationActionExecutor.resolveOpenTarget(accountId: "does-not-exist", uidNext: 10, database: database)
+        #expect(target == nil)
+    }
 }

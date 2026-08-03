@@ -145,35 +145,36 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 
     /// Handles a tap on one of `PushNotificationActionCategory`'s action
-    /// buttons. Only `MARK_READ`/`ARCHIVE` are acted on — the default action
-    /// identifier (`UNNotificationDefaultActionIdentifier`, tapping the
-    /// notification body itself) and the dismiss one
-    /// (`UNNotificationDismissActionIdentifier`, swiping it away) fall
-    /// through to the `nil` case in `action(for:)` and call
-    /// `completionHandler()` immediately, doing nothing else — this delegate
-    /// method isn't otherwise wired to open the app to a specific message.
+    /// buttons (`MARK_READ`/`ARCHIVE`), or a tap on the notification body
+    /// itself (`UNNotificationDefaultActionIdentifier`) — that default tap
+    /// resolves the target message's `threadId`/`messageId` (read-only,
+    /// `PushNotificationActionHandler.resolveOpenTarget`) and hands it to
+    /// `PushNotificationOpenCoordinator` so `MailScreenView` can navigate
+    /// straight to it once the app finishes launching/foregrounding. The
+    /// dismiss identifier (`UNNotificationDismissActionIdentifier`, swiping
+    /// it away) falls through to the `nil` case in `action(for:)` — same as
+    /// an unresolvable default-tap target — and just calls
+    /// `completionHandler()` immediately.
     ///
-    /// `completionHandler()` is deliberately *not* called until
-    /// `PushNotificationActionHandler.handle(...)` finishes — that call does
-    /// a local DB write plus a best-effort IMAP replay
-    /// (`PushNotificationActionExecutor.execute`'s doc comment), and the OS
-    /// only grants a background notification action a limited execution
-    /// window, not an unlimited one; calling back early would risk the
-    /// process being suspended mid-write. `nonisolated`: this protocol
-    /// requirement is itself `nonisolated` in the SDK overlay — an
-    /// `@MainActor`-isolated override can't satisfy a `nonisolated`
-    /// requirement (Swift 6 strict concurrency), and nothing in this body
-    /// needs main-actor isolation anyway (it only reads the immutable
-    /// `response`/`completionHandler` parameters and calls other
-    /// `nonisolated`/free-standing async work).
+    /// `completionHandler()` is deliberately *not* called until the
+    /// corresponding work finishes — `PushNotificationActionHandler
+    /// .handle(...)` does a local DB write plus a best-effort IMAP replay
+    /// (`PushNotificationActionExecutor.execute`'s doc comment), and the
+    /// default-tap path does a local DB read — and the OS only grants a
+    /// background notification handling call a limited execution window,
+    /// not an unlimited one; calling back early would risk the process
+    /// being suspended mid-work. `nonisolated`: this protocol requirement is
+    /// itself `nonisolated` in the SDK overlay — an `@MainActor`-isolated
+    /// override can't satisfy a `nonisolated` requirement (Swift 6 strict
+    /// concurrency), and nothing in this body needs main-actor isolation
+    /// anyway (it only reads the immutable `response`/`completionHandler`
+    /// parameters and calls other `nonisolated`/free-standing async work).
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        guard let action = Self.action(for: response.actionIdentifier),
-              let payload = Self.parsePayload(response.notification.request.content.userInfo)
-        else {
+        guard let payload = Self.parsePayload(response.notification.request.content.userInfo) else {
             completionHandler()
             return
         }
@@ -185,6 +186,21 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // synchronously, from whatever thread this delegate method already
         // ran on, so there is no real data race here to catch.
         let boxedCompletionHandler = NonSendableCompletionHandlerBox(completionHandler)
+
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            Task {
+                if let target = await PushNotificationActionHandler.resolveOpenTarget(accountId: payload.accountId, uidNext: payload.uidNext) {
+                    await PushNotificationOpenCoordinator.shared.setPendingTarget(threadId: target.threadId, messageId: target.messageId)
+                }
+                boxedCompletionHandler.value()
+            }
+            return
+        }
+
+        guard let action = Self.action(for: response.actionIdentifier) else {
+            completionHandler()
+            return
+        }
         Task {
             await PushNotificationActionHandler.handle(action: action, accountId: payload.accountId, uidNext: payload.uidNext)
             boxedCompletionHandler.value()

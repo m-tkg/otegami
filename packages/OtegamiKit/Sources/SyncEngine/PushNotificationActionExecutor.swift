@@ -91,6 +91,33 @@ public enum PushNotificationActionExecutor {
         _ = try? await processor.replay(account: account, auth: resolvedAuth)
     }
 
+    /// 通知の default action (本体タップ) 向け: `execute`と同じ `uidNext →
+    /// uid = max(uidNext - 1, 1)` の推測でINBOXの対象メッセージを特定し、
+    /// 既にローカル同期済みならその `threadId`/`id` を返す (書き込みなし、
+    /// `OpQueue`への enqueue もしない)。未同期の場合は `nil` — 呼び出し側は
+    /// 遷移を諦めて通常の起動画面 (統合受信トレイ) にフォールバックする。
+    public static func resolveOpenTarget(
+        accountId: String,
+        uidNext: Int,
+        database: AppDatabase
+    ) async -> (threadId: Int64, messageId: Int64)? {
+        guard let mailbox = try? await MailboxRoleResolver.mailbox(role: .inbox, accountId: accountId, database: database),
+              let mailboxId = mailbox.id
+        else { return nil }
+
+        let uid = UInt32(max(uidNext - 1, 1))
+        return try? await database.dbWriter.read { db in
+            guard let message = try MessageRecord
+                .filter(Column("mailboxId") == mailboxId)
+                .filter(Column("uid") == Int64(uid))
+                .fetchOne(db),
+                let threadId = message.threadId,
+                let messageId = message.id
+            else { return nil }
+            return (threadId, messageId)
+        }
+    }
+
     /// The local-DB half of `execute`, run inside a single write
     /// transaction: locates a local `MessageRecord` at `(mailbox.id, uid)`
     /// and, if found, applies `action` through the same shared logic swipe

@@ -46,6 +46,22 @@ enum PushNotificationActionHandler {
         )
     }
 
+    /// 通知の default action (本体タップ) 向け: `handle(action:...)`と同じ
+    /// 共有 `AppDatabase` を開き、`PushNotificationActionExecutor
+    /// .resolveOpenTarget` で対象メッセージの `threadId`/`messageId` を
+    /// 引く (書き込みなし)。この build に App Group が無い、共有DBが開けない、
+    /// あるいは対象メッセージがまだローカル未同期なら `nil` — 呼び出し側
+    /// (`AppDelegate`) はその場合遷移を諦め、通常の起動画面のまま何もしない。
+    static func resolveOpenTarget(accountId: String, uidNext: Int) async -> PushNotificationOpenTarget? {
+        guard let appGroupIdentifier = OtegamiAppGroup.identifier,
+              let database = try? AppDatabase.makeShared(appGroupIdentifier: appGroupIdentifier)
+        else { return nil }
+        guard let target = await PushNotificationActionExecutor.resolveOpenTarget(
+            accountId: accountId, uidNext: uidNext, database: database
+        ) else { return nil }
+        return PushNotificationOpenTarget(threadId: target.threadId, messageId: target.messageId)
+    }
+
     /// Mirrors `AppEnvironment.auth(for:)`'s branching (`AppEnvironment+
     /// Auth.swift`) minus its UI-facing side effects — see this type's doc
     /// comment. Returns `nil` (rather than throwing) on any failure: no

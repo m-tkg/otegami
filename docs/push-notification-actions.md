@@ -1,11 +1,12 @@
-# プッシュ通知のアクション（既読にする／アーカイブ）
+# プッシュ通知のアクション（既読にする／アーカイブ／タップで開く）
 
 プッシュ通知（`docs/relay-deployment.md`）を長押し、または左スワイプした
 際に表示される「既読にする」「アーカイブ」ボタンから、アプリを開かずに
-メールを操作できる機能。全体のプッシュ通知の仕組み（silent push →
+メールを操作できる機能と、通知本体をタップしてアプリを開いた際に該当
+メールへ直接遷移する機能。全体のプッシュ通知の仕組み（silent push →
 `NotificationService` Extension による内容の書き換え）は
 [`docs/relay-deployment.md`](relay-deployment.md) を参照。本ドキュメントは
-「通知アクションのボタンをタップしたときに何が起きるか」だけを扱う。
+「通知をタップ／操作したときに何が起きるか」だけを扱う。
 
 ## 仕組み
 
@@ -55,6 +56,43 @@
      ハンドラ自体はネットワーク到達性を気にする必要がない
      （オフラインファーストの設計、`docs/architecture.md` 参照）。
 
+## 通知本体タップ（アプリを開いて該当メールへ遷移）
+
+通知の「既読にする」「アーカイブ」ボタンではなく、通知本体（バナー／
+通知センターの行そのもの）をタップした場合の挙動。デフォルトの
+`actionIdentifier`（`UNNotificationDefaultActionIdentifier`）としてアプリ
+が起動または前面化した際、対象メールのスレッド詳細画面へ自動的に遷移
+する。
+
+1. **対象メッセージの解決**: `AppDelegate.userNotificationCenter(_:didReceive:withCompletionHandler:)`
+   （`apps/Otegami/Sources/Support/PushTokenCenter.swift`）が
+   `actionIdentifier == UNNotificationDefaultActionIdentifier` を検知すると、
+   `PushNotificationActionHandler.resolveOpenTarget(accountId:uidNext:)`
+   （`apps/Otegami/Sources/Support/PushNotificationActionHandler.swift`）
+   経由で `SyncEngine` の
+   `PushNotificationActionExecutor.resolveOpenTarget(accountId:uidNext:database:)`
+   （`packages/OtegamiKit/Sources/SyncEngine/PushNotificationActionExecutor.swift`）
+   を呼ぶ。対象メッセージの特定方法（`uid = uidNext - 1` の推測、INBOX
+   固定）は上記「既読にする／アーカイブ」と同じ。この経路はローカル DB
+   の**読み取りのみ**で、書き込みは一切行わない。
+2. **未同期メッセージへのフォールバック**: 対象メッセージがまだローカル
+   DB に同期されていない場合は `nil` が返り、遷移は行わない（通常どおり
+   統合受信トレイが表示されるだけ）。同期済みメッセージのみが遷移対象
+   になる。
+3. **SwiftUI 側への橋渡し**: `AppDelegate` は `AppEnvironment`（SwiftUI
+   `App` の `@State`）に直接アクセスできないため、
+   `PushNotificationOpenCoordinator`
+   （`apps/Otegami/Sources/Support/PushNotificationOpenCoordinator.swift`）
+   という共有 shared singleton（`PushTokenCenter`/`BadgeCenter` と同じ
+   パターン）を仲介させる。解決した `threadId`/`messageId` をここに積み、
+   `MailScreenView`（`apps/Otegami/Sources/Features/Root/MailScreenView.swift`）
+   が起動時の `.task`（コールドスタート — アプリが未起動の状態で通知を
+   タップした場合）と、
+   `PushNotificationOpenCoordinator.didUpdateNotification` の
+   `.onReceive`（ウォームスタート — アプリ起動中に通知をタップした場合）
+   の両方でこれを消費し、`selectedRoute` へ反映してスレッド詳細画面へ
+   遷移する。
+
 ## 既知の制限
 
 - **操作対象は「push が届いた時点での INBOX 最新1通」の推測**:
@@ -74,6 +112,9 @@
 - **オフライン時は即座に反映されない**: 上記のとおりローカル DB への
   反映は即座に行われるが、実際の IMAP サーバーへの反映は次のオンライン
   復帰を待つ（ベストエフォート replay が失敗した場合）。
+- **通知本体タップの遷移は未同期メッセージだと発生しない**: 上記「通知
+  本体タップ」節のとおり、対象メッセージがまだローカル DB に無い場合は
+  遷移せず、通常どおり統合受信トレイが表示される。
 
 ## 実機での確認ポイント
 
@@ -87,3 +128,11 @@
    該当メールが既読/アーカイブ済みになっていること。
 3. 機内モード等オフライン状態でタップした場合、その場では反映されなくても
    オンライン復帰後（アプリをフォアグラウンドに戻す等）に反映されること。
+4. アプリが完全に終了している状態で新着メールの通知本体をタップすると、
+   アプリが起動し該当メールのスレッド詳細画面が直接表示されること
+   （統合受信トレイ経由でのタップ操作なしで）。
+5. アプリがバックグラウンドで起動中の状態で新着メールの通知本体を
+   タップした場合も、同様に該当メールのスレッド詳細画面へ遷移すること。
+6. 通知が届いてからしばらく経ってメッセージが同期される前にタップした
+   場合（同期が追いついていない場合）は、遷移せず統合受信トレイが
+   表示されること。
