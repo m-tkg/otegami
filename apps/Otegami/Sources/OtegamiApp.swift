@@ -155,6 +155,14 @@ struct RootView: View {
     @State private var accountFilter: String?
     /// iOS と同じ「時系列 / アカウント別」の永続表示設定。
     @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
+    /// `AccountDigestSearchBar`(グループ表示中の検索バー入口)専用の状態。
+    /// 1文字でも入力された瞬間に`contentColumn`の`.onChange`が
+    /// `isGroupByAccount`を`false`に戻す — 実際の検索は切替後に現れる
+    /// `MessageListView`側の`MacListSearchBar`が担うため、このテキスト自体は
+    /// 切替のトリガーとしてのみ使う (`AccountDigestSearchBar`のdoc comment
+    /// 参照)。
+    @State private var groupSearchText = ""
+    @FocusState private var isGroupSearchFieldFocused: Bool
     // M5: which composer to show. Only actually drives a `.sheet` on iOS
     // (macOS opens `openWindow(id: "composer", ...)` instead and never sets
     // this) — see `presentComposer(_:)`.
@@ -586,6 +594,7 @@ struct RootView: View {
                         accountCount: environment.accounts.count,
                         selection: selection
                     ), let role = AccountDigestPresentation.role(for: selection) {
+                        AccountDigestSearchBar(searchText: $groupSearchText, isFieldFocused: $isGroupSearchFieldFocused)
                         AccountDigestView(
                             role: role,
                             onSelectAccount: { accountFilter = $0 }
@@ -602,6 +611,16 @@ struct RootView: View {
                 )
                 .navigationTitle("受信トレイ")
             }
+        }
+        // `AccountDigestSearchBar`に1文字でも入力された瞬間、グループ表示を
+        // 解除し時系列表示 (`MessageListView`+`MacListSearchBar`) へ切り替える
+        // — 実際の検索入力・実行はそちら側が担う (doc comment参照)。切替後は
+        // 次回また閲覧するときに前回の入力が残らないよう`groupSearchText`を
+        // 空へ戻す。
+        .onChange(of: groupSearchText) { _, newValue in
+            guard !newValue.isEmpty else { return }
+            isGroupByAccount = false
+            groupSearchText = ""
         }
     }
 
