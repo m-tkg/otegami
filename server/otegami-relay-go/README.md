@@ -47,7 +47,10 @@ reimplementation of the retired Swift relay, not a redesign:
   `RELAY_DEVICE_REGISTRATION_SECRET`, `RELAY_GOOGLE_CLIENT_ID`,
   `RELAY_MICROSOFT_CLIENT_ID`, `RELAY_EXTRA_IMAP_PORTS`,
   `RELAY_ALLOW_PRIVATE_IMAP_HOSTS`) — an operator's existing `.env`/
-  `docker-compose.yml` works unchanged.
+  `docker-compose.yml` works unchanged. `RELAY_CONTENT_PREVIEW` (new,
+  opt-in, defaults off) is this port's own addition, not part of the
+  Swift compatibility contract — see
+  [`docs/relay-deployment.md`](../../docs/relay-deployment.md#relay_content_preview-opt-in-の内容プレビュー).
 
 ## Layout
 
@@ -103,7 +106,9 @@ cross-compiling Dockerfile are all implemented.
 
 Verification performed:
 
-- **146 Go tests** across 12 packages (retired Swift suite: 80 tests), including
+- **145 Go tests** across 12 packages (retired Swift suite: 80 tests; plus
+  3 more gated `RealDovecot` tests that only run against a local
+  `dev/mailstack`, see below), including
   `-race` runs for the IMAP client and watcher pool.
 - **Crypto compat**: Swift-generated AES-GCM fixtures decrypt under Go;
   independently re-verified against Apple CryptoKit directly.

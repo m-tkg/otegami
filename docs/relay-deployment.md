@@ -22,12 +22,15 @@ otegami のプッシュ通知はオプション機能で、セルフホストす
    の Known pitfalls (c) を参照)。
 2. 新着を検知すると、件名・本文・差出人を含まない**内容なしの** silent
    push (`accountId`/`uidNext` のみ) を APNs 経由でデバイスに送る。
+   **`RELAY_CONTENT_PREVIEW=1` を設定した場合はこの既定の挙動が変わる**
+   — 詳細は下記「`RELAY_CONTENT_PREVIEW` (opt-in の内容プレビュー)」参照。
 3. 実際のメール内容 (差出人・件名・本文プレビュー) は、プッシュを受信
    した端末自身の Notification Service Extension
    (`apps/Otegami/NotificationService/`) が、その端末が持つ資格情報で
-   改めて IMAP に接続して取得する。リレーはメール内容を一度も扱わない —
-   預かるのは IMAP 資格情報 (パスワードまたは OAuth refresh token) のみ
-   で、それも暗号化して保存する (詳細は下記「セキュリティ設計」)。
+   改めて IMAP に接続して取得する。リレーは**既定では**メール内容を一度も
+   扱わない — 預かるのは IMAP 資格情報 (パスワードまたは OAuth refresh
+   token) のみで、それも暗号化して保存する (詳細は下記「セキュリティ
+   設計」)。
    この取得処理は OS が拡張に与える時間予算 (約30秒) の内側で自前の
    表示デッドラインを持ち、IMAP 取得や Gmail の追加エンリッチが間に
    合わない場合は内容なしの汎用通知のまま表示を確定する — 通知自体が
@@ -123,6 +126,7 @@ go run ./cmd/otegami-relay
 | `RELAY_ALLOW_PRIVATE_IMAP_HOSTS` | - | `1` にすると `POST /v1/watches` がループバック/リンクローカル/プライベート (RFC1918/ULA) の IMAP ホストを受理するようになる。IMAP サーバーがリレーと同じプライベートネットワーク上にある構成のときのみ設定する — 既定 (未設定) はこれらを拒否する。 |
 | `RELAY_GOOGLE_CLIENT_ID` | - | Gmail の OAuth watch がリフレッシュトークンをアクセストークンへ交換する際に使う Google OAuth Client ID。アプリ側の `GOOGLE_OAUTH_CLIENT_ID`/`OTEGAMI_GOOGLE_CLIENT_ID` と**同じ値**を設定する (同じ Client ID が発行したリフレッシュトークンでないと交換できない)。未設定のままだと Gmail の watch は作成できても認証に失敗し続けて停止する。 |
 | `RELAY_MICROSOFT_CLIENT_ID` | - | 同上、Outlook/Office 365 用。アプリ側の `OTEGAMI_MICROSOFT_CLIENT_ID` と同じ値。 |
+| `RELAY_CONTENT_PREVIEW` | - | `1`/`true`/`yes` (大文字小文字を区別しない) で opt-in する新着メール内容プレビュー機能。既定 (未設定) は off — リレーはこれまで通りメール内容を一切扱わない。詳細・プライバシー上の意味は下記「`RELAY_CONTENT_PREVIEW` (opt-in の内容プレビュー)」参照。 |
 | `APNS_KEY_DIR` | - | (Docker Compose のみ) `.p8` を置くホスト側ディレクトリ。既定 `./secrets`。 |
 
 上記の変数名は `server/otegami-relay-go/internal/config/config.go` の
@@ -200,10 +204,12 @@ secret/Xcode Cloud 環境変数) に同じ値を設定して次のビルドを�
 
 1. **何を預かるか**: `POST /v1/watches` の `auth.secret` — `.password`
    watch なら IMAP パスワード、`.oauth` watch (Gmail/Outlook) なら OAuth
-   refresh token。件名・本文などのメール内容は一切扱わない — push
-   ペイロードは `accountId`/`uidNext` のみで、実際の内容は
+   refresh token。**既定では**件名・本文などのメール内容は一切扱わない —
+   push ペイロードは `accountId`/`uidNext` のみで、実際の内容は
    `NotificationService` Extension が改めて IMAP に接続して取得する
-   (上記「リレーが何をするか」参照)。
+   (上記「リレーが何をするか」参照)。`RELAY_CONTENT_PREVIEW=1` を明示的に
+   設定した運用者のリレーはこの前提が変わる — 下記「`RELAY_CONTENT_PREVIEW`
+   (opt-in の内容プレビュー)」参照。
 2. **保存時の扱い**: `RELAY_MASTER_KEY` による AES-256-GCM で暗号化して
    SQLite に保存する。鍵はプロセスの環境変数にしか存在せず、ディスクに
    書かれるのは暗号文のみ。DB ファイルが単独で流出しても、環境変数
@@ -294,6 +300,72 @@ secret/Xcode Cloud 環境変数) に同じ値を設定して次のビルドを�
     それぞれ上限を持つ。超過時は接続をエラーで切断し、通常の再接続
     バックオフに委ねる (watch 自体は自動停止しない)。
 
+## `RELAY_CONTENT_PREVIEW` (opt-in の内容プレビュー)
+
+**既定は off**。設定しない限り、上記「リレーが何をするか」「セキュリティ
+設計」に書いた「リレーはメール内容を一度も扱わない」という前提はそのまま
+成り立つ。`RELAY_CONTENT_PREVIEW=1`/`true`/`yes` (大文字小文字を区別
+しない) を明示的に設定した運用者のリレーだけが、以下の挙動に変わる。
+
+### 何が変わるか
+
+1. 新着検知時 (IDLE/polling いずれの経路でも)、push を送る前に、その watch
+   の**既に認証済みの同一 IMAP 接続上**で `UID FETCH` を1回発行し、新しい
+   方から最大10通ぶんのヘッダー (From/Subject/Date/Message-ID/Content-Type
+   等) と本文の先頭 32KB を取得する。新しい接続は開かない。
+2. 取得できた中で最新の1通の差出人名・差出人アドレス・件名を push
+   ペイロードに同梱する (`latestFromName`/`latestFromAddress`/
+   `latestSubject`/`latestUid`/`previewCount`)。件名・差出人名は
+   UTF-8 境界を壊さずそれぞれ 100B/300B に切り詰めてから同梱する。
+   取得した全件 (最大10通) は下記の通り暗号化してキャッシュする。
+3. 新しい `GET /v1/messages?accountId=<id>&sinceUid=<n>` エンドポイント
+   (Bearer `deviceSecret` 認証、`watch_subscription` で自 device の
+   accountId にのみ解決) で、そのキャッシュを uid 降順で最大10件取得
+   できる。`RELAY_CONTENT_PREVIEW` が off のリレーではこのエンドポイントは
+   常に 404 を返す (未知の accountId と区別できない同じ 404 — 「見せる
+   ものがない」という点でどちらも同じであり、他 device の存在や機能の
+   on/off を推測させないための意図的な設計)。
+4. IMAP FETCH が失敗した場合 (タイムアウト、`[LIMIT]` レート制限応答を
+   含む) や、対象範囲に1件もプレビューが得られなかった場合は、ログに
+   残した上で `RELAY_CONTENT_PREVIEW` が off のときと同じ内容なし push に
+   フォールバックする — 内容プレビューの失敗が「新着を検知した」という
+   push 自体を失わせることはない。
+
+### 何が保存されるか、どう暗号化されるか
+
+SQLite の `message_preview` テーブル (`watchId`, `uid`, `encryptedContent`,
+`fetchedAt`) に、watch ごと最大50件・`fetchedAt` から48時間まで保持する
+キャッシュとして保存する (超過分は取得のたびに自動的に prune される)。
+`uid` はプルーニング/範囲検索のため平文で持つが、差出人名・差出人アドレス・
+件名・本文プレビュー・Message-ID・日付は `watch.encryptedSecret` と同じ
+`RELAY_MASTER_KEY` ベースの AES-256-GCM (`CredentialCrypto`) で暗号化して
+保存する — IMAP 資格情報と同じ鍵・同じ強度で、メール内容そのものも保護
+される。
+
+### プライバシー上の意味
+
+`RELAY_CONTENT_PREVIEW=1` を設定すると、このリレーの「信頼境界」
+(上記セキュリティ設計・項目6) が実質的に広がる — これまでは IMAP
+資格情報 (=事実上メールへのフルアクセス) だけを預かる設計だったが、
+この機能を有効にすると**新着メールの実内容 (差出人・件名・本文の一部)
+がリレーのディスク上に (暗号化された状態で) 一時的に複製される**。
+資格情報さえ預ければ運用者が原理的にいつでも内容を読めることは
+変わらないが、内容プレビューは「読もうと思えば読める」から「実際に
+処理・一時保存する」への変更であり、以下を運用者は理解した上で
+opt-in すること:
+- `RELAY_MASTER_KEY` が漏れた場合の実害が広がる (資格情報だけでなく、
+  直近のメール内容の一部も復号可能になる)。
+- push ペイロードにも差出人・件名の断片が乗るため、APNs 経由の配送
+  経路 (Apple のサーバーを含む) を通過する情報が増える。
+- セルフホストではなく第三者が運用するリレーを使っている場合、この
+  設定はその運用者側の判断であり、利用者は自分のリレーでない限り
+  on/off を選べない。
+
+有効にする前に、この機能を必要とする理由 (通知に内容プレビューを
+出したい) と上記のトレードオフを比較して判断すること。無効 (既定) の
+ままでも、通知タップ後にアプリを開けば通常通りメール内容は読める —
+この機能は「通知バナー/ロック画面に内容の一部を出す」ためだけのもの。
+
 ## モニタリング / ログ
 
 push 送信のたびに構造化ログを出す (`docker compose logs -f
@@ -309,7 +381,11 @@ accepted")・失敗時 ("APNs push rejected"、APNs が返す JSON エラー
 ## 既知の制約
 
 - IMAP 実装は最小限の自前クライアント (`internal/imapclient/`) — LOGIN/
-  AUTHENTICATE XOAUTH2/SELECT/STATUS/IDLE/LOGOUT のみ対応する。
+  AUTHENTICATE XOAUTH2/SELECT/STATUS/IDLE/LOGOUT に加え、
+  `RELAY_CONTENT_PREVIEW` 用の `UID FETCH` (IMAP literal 読み取り込み)
+  のみ対応する。ENVELOPE/BODYSTRUCTURE の括弧文法パーサは持たない —
+  `UID FETCH` 応答から UID アトムと2個の literal (ヘッダー/本文) の
+  対応付けだけをパースする設計 (`internal/imapclient/preview_parse.go`)。
 - IDLE 非対応サーバーへの polling 実装は、素朴な「スリープしてから
   コマンドを打つ」だけだと隠れた高頻度 LOGIN を生みアカウントロック
   という実害につながる — 現在の実装と教訓は
