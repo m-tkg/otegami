@@ -271,6 +271,71 @@ struct PushRelayClientTests {
         try await client.deleteWatch(baseURL: URL(string: "https://relay.example.com")!, deviceSecret: "s1", watchId: "w1")
     }
 
+    @Test("fetchMessagePreviews GETs with the bearer secret, accountId/sinceUid query params, a 5s timeout, and decodes the plain array")
+    func fetchMessagePreviews() async throws {
+        let client = makeClient()
+        StubURLProtocol.handler = { request in
+            #expect(request.httpMethod == "GET")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer s1")
+            #expect(request.timeoutInterval == PushRelayClient.messagePreviewFetchTimeout)
+
+            let components = try #require(URLComponents(url: request.url!, resolvingAgainstBaseURL: false))
+            #expect(components.path == "/v1/messages")
+            let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value) })
+            #expect(query["accountId"] == "account-1")
+            #expect(query["sinceUid"] == "40")
+
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            let body = try encoder.encode([
+                MessagePreview(
+                    uid: 41,
+                    from: MessagePreview.From(name: "Alice", address: "alice@example.test"),
+                    subject: "Hi",
+                    date: Date(timeIntervalSince1970: 0),
+                    messageId: "m41",
+                    bodyPreview: "hello"
+                ),
+            ])
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!, body)
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let previews = try await client.fetchMessagePreviews(
+            baseURL: URL(string: "https://relay.example.com")!,
+            deviceSecret: "s1",
+            accountId: "account-1",
+            sinceUid: 40
+        )
+        #expect(previews.count == 1)
+        #expect(previews[0].uid == 41)
+        #expect(previews[0].from.name == "Alice")
+        #expect(previews[0].bodyPreview == "hello")
+    }
+
+    @Test("fetchMessagePreviews surfaces a 404 as .http(status: 404, _), distinguishable by callers as \"feature off / no watch\"")
+    func fetchMessagePreviewsNotFound() async throws {
+        let client = makeClient()
+        StubURLProtocol.handler = { request in
+            let body = try JSONEncoder().encode(RelayErrorResponse(error: "not_found", message: "no watch registered for this device/accountId"))
+            return (HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: "HTTP/1.1", headerFields: nil)!, body)
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        do {
+            _ = try await client.fetchMessagePreviews(
+                baseURL: URL(string: "https://relay.example.com")!,
+                deviceSecret: "s1",
+                accountId: "account-1",
+                sinceUid: 0
+            )
+            Issue.record("expected fetchMessagePreviews to throw")
+        } catch let PushRelayClient.PushRelayClientError.http(status, body) {
+            #expect(status == 404)
+            #expect(body?.error == "not_found")
+        }
+    }
+
     @Test("a network-level failure surfaces as .network, not silently swallowed")
     func networkFailurePropagates() async throws {
         let client = makeClient()

@@ -135,6 +135,53 @@ public actor PushRelayClient {
         )
     }
 
+    /// Bounds every `fetchMessagePreviews` call — Phase 3 (NSE のリレー先読み
+    /// 統合): `NotificationService.enrich(payload:)` calls this from inside
+    /// its own 5 second notification-display budget, so this HTTP round
+    /// trip must never be the thing that blows through it. Set on the
+    /// individual `URLRequest` (`URLRequest.timeoutInterval`), not the
+    /// `URLSession`'s configuration, so it applies regardless of which
+    /// session a caller injected at `init` — the app's long-lived
+    /// `.shared`-backed instance and a short-lived Extension-side instance
+    /// both get the same bound on this one call without needing their own
+    /// dedicated `URLSessionConfiguration`.
+    public static let messagePreviewFetchTimeout: TimeInterval = 5
+
+    /// `GET /v1/messages` (`RELAY_CONTENT_PREVIEW`, opt-in, Phase 2/3) —
+    /// up to the newest 10 decrypted content previews the relay has cached
+    /// for this watch, uid descending, each `uid > sinceUid`.
+    /// `NotificationService.enrich(payload:)` is the one caller: it uses
+    /// this to show a body preview in the notification itself without
+    /// waiting for its own (heavier) IMAP-based sync to complete.
+    ///
+    /// A 404 means either this relay doesn't have `RELAY_CONTENT_PREVIEW`
+    /// enabled at all, or this device has no watch for `accountId` — the
+    /// two are indistinguishable by design (`message_routes.go`'s own doc
+    /// comment: the response either way is "nothing to show"), surfaced
+    /// here as an ordinary `PushRelayClientError.http(status: 404, body:)`
+    /// so a caller can pattern-match on that status to treat it as "the
+    /// feature isn't available right now" rather than a genuine failure.
+    public func fetchMessagePreviews(
+        baseURL: URL,
+        deviceSecret: String,
+        accountId: String,
+        sinceUid: Int
+    ) async throws -> [MessagePreview] {
+        try await send(
+            baseURL: baseURL,
+            path: "v1/messages",
+            method: "GET",
+            body: Optional<String>.none,
+            bearerToken: deviceSecret,
+            expectedStatus: 200,
+            queryItems: [
+                URLQueryItem(name: "accountId", value: accountId),
+                URLQueryItem(name: "sinceUid", value: String(sinceUid)),
+            ],
+            timeout: Self.messagePreviewFetchTimeout
+        )
+    }
+
     // MARK: - Plumbing
 
     private static var jsonDecoder: JSONDecoder {
@@ -149,7 +196,9 @@ public actor PushRelayClient {
         method: String,
         body: Body?,
         bearerToken: String?,
-        expectedStatus: Int
+        expectedStatus: Int,
+        queryItems: [URLQueryItem] = [],
+        timeout: TimeInterval? = nil
     ) async throws -> Response {
         let (data, _) = try await performRequest(
             baseURL: baseURL,
@@ -157,7 +206,9 @@ public actor PushRelayClient {
             method: method,
             body: body,
             bearerToken: bearerToken,
-            expectedStatus: expectedStatus
+            expectedStatus: expectedStatus,
+            queryItems: queryItems,
+            timeout: timeout
         )
         guard let decoded = try? Self.jsonDecoder.decode(Response.self, from: data) else {
             throw PushRelayClientError.invalidResponse
@@ -180,7 +231,9 @@ public actor PushRelayClient {
             method: method,
             body: body,
             bearerToken: bearerToken,
-            expectedStatus: expectedStatus
+            expectedStatus: expectedStatus,
+            queryItems: [],
+            timeout: nil
         )
     }
 
@@ -190,19 +243,27 @@ public actor PushRelayClient {
         method: String,
         body: Body?,
         bearerToken: String?,
-        expectedStatus: Int
+        expectedStatus: Int,
+        queryItems: [URLQueryItem] = [],
+        timeout: TimeInterval? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw PushRelayClientError.invalidBaseURL
         }
         let basePath = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
         components.path = "\(basePath)/\(path)"
+        if !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
         guard let url = components.url else {
             throw PushRelayClientError.invalidBaseURL
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = method
+        if let timeout {
+            request.timeoutInterval = timeout
+        }
         if let bearerToken {
             request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         }

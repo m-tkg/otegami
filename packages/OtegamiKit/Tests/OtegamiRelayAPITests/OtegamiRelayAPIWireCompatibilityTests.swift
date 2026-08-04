@@ -83,6 +83,72 @@ struct OtegamiRelayAPIWireCompatibilityTests {
         )
     }
 
+    @Test("PushNotificationPayload omits every Phase 2/3 field like Go omitempty when unset")
+    func pushNotificationPayloadOmitsOptionalFieldsWhenNil() throws {
+        // A pre-Phase-2 relay (RELAY_CONTENT_PREVIEW off, or simply an
+        // older build) never sends these keys at all — decoding that exact
+        // shape must still succeed and leave every new field nil.
+        let decoded = try decoder().decode(
+            PushNotificationPayload.self,
+            from: Data(#"{"accountId":"account-1","uidNext":42}"#.utf8)
+        )
+        #expect(decoded == PushNotificationPayload(accountId: "account-1", uidNext: 42))
+        #expect(decoded.latestUid == nil)
+        #expect(decoded.latestFromName == nil)
+        #expect(decoded.latestFromAddress == nil)
+        #expect(decoded.latestSubject == nil)
+        #expect(decoded.previewCount == nil)
+    }
+
+    @Test("PushNotificationPayload keys match Go when every Phase 2/3 field is populated")
+    func pushNotificationPayloadWithEnvelope() throws {
+        try assertWireCompatibility(
+            PushNotificationPayload(
+                accountId: "account-1",
+                uidNext: 42,
+                latestUid: 41,
+                latestFromName: "Alice",
+                latestFromAddress: "alice@example.test",
+                latestSubject: "Hello",
+                previewCount: 3
+            ),
+            json: #"""
+            {"accountId":"account-1","uidNext":42,"latestUid":41,"latestFromName":"Alice","latestFromAddress":"alice@example.test","latestSubject":"Hello","previewCount":3}
+            """#
+        )
+    }
+
+    @Test("MessagePreview keys and ISO 8601 date match Go")
+    func messagePreview() throws {
+        try assertWireCompatibility(
+            MessagePreview(
+                uid: 11,
+                from: MessagePreview.From(name: "Bob", address: "bob@example.test"),
+                subject: "Yo",
+                date: timestamp,
+                messageId: "m11",
+                bodyPreview: "body 11"
+            ),
+            json: #"""
+            {"uid":11,"from":{"name":"Bob","address":"bob@example.test"},"subject":"Yo","date":"2023-11-14T22:13:20Z","messageId":"m11","bodyPreview":"body 11"}
+            """#
+        )
+    }
+
+    @Test("GET /v1/messages's plain-array response shape decodes into [MessagePreview], uid descending")
+    func messagePreviewArrayResponse() throws {
+        let json = #"""
+        [{"uid":11,"from":{"name":"Bob","address":"bob@example.test"},"subject":"Yo","date":"2023-11-14T22:13:20Z","messageId":"m11","bodyPreview":"body 11"},
+         {"uid":10,"from":{"name":"","address":"carol@example.test"},"subject":"","date":"2023-11-14T22:13:20Z","messageId":"m10","bodyPreview":""}]
+        """#.data(using: .utf8)!
+
+        let decoded = try decoder().decode([MessagePreview].self, from: json)
+        #expect(decoded.count == 2)
+        #expect(decoded[0].uid == 11)
+        #expect(decoded[1].uid == 10)
+        #expect(decoded[1].from.name == "")
+    }
+
     @Test("WatchSummary keys, enum values, and ISO 8601 dates match Go")
     func watchSummary() throws {
         try assertWireCompatibility(

@@ -164,18 +164,69 @@ public struct WatchResponse: Codable, Equatable, Sendable {
     }
 }
 
-/// Body of the (minimal, privacy-preserving) push payload the relay sends
-/// to APNs, and that `NotificationService` parses back out of
-/// `content-available`/`mutable-content` `userInfo`. Deliberately excludes
-/// subject/sender/body (plan: "本文/件名を含めない") — the extension fetches
-/// those itself via a fresh IMAP round trip.
+/// Body of the push payload the relay sends to APNs, and that
+/// `NotificationService` parses back out of `content-available`/
+/// `mutable-content` `userInfo`. `accountId`/`uidNext` are the original
+/// content-free fields (plan: "本文/件名を含めない") and are never omitted;
+/// every other field is an opt-in addition (`RELAY_CONTENT_PREVIEW`,
+/// `docs/relay-deployment.md`) only ever populated when that relay-side
+/// feature is on and its cycle's UID FETCH succeeded — mirrors Go's
+/// `api.PushNotificationPayload` (`server/otegami-relay-go/internal/api/dto.go`)
+/// field-for-field, including which fields are `omitempty` there. Declaring
+/// these as plain `Optional` properties is enough for Swift's synthesized
+/// `Codable` to match Go's `omitempty` on encode (an `Optional` property
+/// encodes via `encodeIfPresent`, omitting the key entirely when `nil`) and
+/// to decode an older/newer peer leniently (a missing key decodes to `nil`
+/// via `decodeIfPresent` rather than throwing) — no custom `init(from:)`/
+/// `encode(to:)` needed, unlike `WatchSummary`'s hand-rolled leniency for
+/// unrecognized *enum* raw values.
+///
+/// Push 通知起点バックグラウンド受信 Phase 3 (リレー先読み統合):
+/// `NotificationService.enrich(payload:)` uses `latestFromName`/
+/// `latestFromAddress`/`latestSubject` to build the notification's title/
+/// body immediately, with zero network calls, before its usual sync-first
+/// work even starts — guaranteeing display within its 5 second budget even
+/// when the network is slow. `latestUid` is the anchor `GET /v1/messages`
+/// (`PushRelayClient.fetchMessagePreviews(...)`) uses to additionally fetch
+/// that same message's `bodyPreview`, and `previewCount` is diagnostic only
+/// (never read by the app). An older app build that only ever reads
+/// `accountId`/`uidNext` keeps working unmodified against a relay that has
+/// this feature enabled — and a build with this Phase 3 support keeps
+/// working unmodified against an older/`RELAY_CONTENT_PREVIEW`-off relay,
+/// which never sends these fields at all.
 public struct PushNotificationPayload: Codable, Equatable, Sendable {
     public var accountId: String
     public var uidNext: Int
+    /// The single newest message in this push cycle's fetched range — a
+    /// push payload has no room (APNs caps the whole JSON body at 4KB) for
+    /// a full list; `GET /v1/messages` is where the app fetches the rest
+    /// (`PushRelayClient.fetchMessagePreviews(...)`).
+    public var latestUid: Int64?
+    public var latestFromName: String?
+    public var latestFromAddress: String?
+    public var latestSubject: String?
+    /// How many messages this cycle's UID FETCH actually produced a
+    /// preview for (may be less than the new-mail count if some individual
+    /// messages failed to parse relay-side) — diagnostic only, `enrich(payload:)`
+    /// never reads this.
+    public var previewCount: Int?
 
-    public init(accountId: String, uidNext: Int) {
+    public init(
+        accountId: String,
+        uidNext: Int,
+        latestUid: Int64? = nil,
+        latestFromName: String? = nil,
+        latestFromAddress: String? = nil,
+        latestSubject: String? = nil,
+        previewCount: Int? = nil
+    ) {
         self.accountId = accountId
         self.uidNext = uidNext
+        self.latestUid = latestUid
+        self.latestFromName = latestFromName
+        self.latestFromAddress = latestFromAddress
+        self.latestSubject = latestSubject
+        self.previewCount = previewCount
     }
 }
 
@@ -339,6 +390,50 @@ public struct ListWatchesResponse: Codable, Equatable, Sendable {
 
     public init(watches: [WatchSummary]) {
         self.watches = watches
+    }
+}
+
+/// `GET /v1/messages`'s response is a plain JSON array of these — one
+/// decrypted, best-effort content preview per recently-seen message on the
+/// requested watch (`RELAY_CONTENT_PREVIEW`, opt-in). Mirrors Go's
+/// `api.MessagePreviewSummary` field-for-field (same file/package as
+/// `PushNotificationPayload`'s doc comment). Every field is required
+/// (non-`omitempty` on the Go side) — a preview the server includes at all
+/// always has all of these, even if some are empty strings (e.g. a message
+/// with no display name in its `From` header).
+public struct MessagePreview: Codable, Equatable, Sendable, Identifiable {
+    /// Mirrors Go's `api.MessagePreviewFrom` — deliberately its own small
+    /// type rather than reusing `OtegamiCore.EmailAddress` (whose `name` is
+    /// `String?`, `nil` meaning "no display name"): this package has no
+    /// dependency on `OtegamiCore` at all (this file's own doc comment,
+    /// "Linux-compatible (Foundation only)"), and the wire shape here is a
+    /// non-optional (possibly empty) `name` string, not an omittable one.
+    public struct From: Codable, Equatable, Sendable {
+        public var name: String
+        public var address: String
+
+        public init(name: String, address: String) {
+            self.name = name
+            self.address = address
+        }
+    }
+
+    public var uid: Int64
+    public var from: From
+    public var subject: String
+    public var date: Date
+    public var messageId: String
+    public var bodyPreview: String
+
+    public var id: Int64 { uid }
+
+    public init(uid: Int64, from: From, subject: String, date: Date, messageId: String, bodyPreview: String) {
+        self.uid = uid
+        self.from = from
+        self.subject = subject
+        self.date = date
+        self.messageId = messageId
+        self.bodyPreview = bodyPreview
     }
 }
 
