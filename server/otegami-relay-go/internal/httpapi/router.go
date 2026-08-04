@@ -19,10 +19,15 @@ import (
 // *store.Store in production, and by a lightweight fake in router tests.
 type Store interface {
 	watchStore
+	messageStore
 }
 
-// NewRouter builds the relay's *http.ServeMux, mirroring buildRouter(store:watcherPool:networkPolicy:deviceRegistrationSecret:logger:).
-func NewRouter(s Store, pool watcherPool, networkPolicy security.NetworkPolicy, deviceRegistrationSecret string, logger *slog.Logger) *http.ServeMux {
+// NewRouter builds the relay's *http.ServeMux, mirroring
+// buildRouter(store:watcherPool:networkPolicy:deviceRegistrationSecret:logger:).
+// contentPreviewEnabled mirrors config.Config.ContentPreviewEnabled
+// (RELAY_CONTENT_PREVIEW) — see registerMessageRoutes's doc comment for
+// how it gates GET /v1/messages.
+func NewRouter(s Store, pool watcherPool, networkPolicy security.NetworkPolicy, deviceRegistrationSecret string, contentPreviewEnabled bool, logger *slog.Logger) *http.ServeMux {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -33,5 +38,6 @@ func NewRouter(s Store, pool watcherPool, networkPolicy security.NetworkPolicy, 
 	})
 	registerDeviceRoutes(mux, s, deviceRegistrationSecret, logger)
 	registerWatchRoutes(mux, s, pool, networkPolicy)
+	registerMessageRoutes(mux, s, contentPreviewEnabled)
 	return mux
 }

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/m-tkg/otegami-relay-go/internal/api"
 	"github.com/m-tkg/otegami-relay-go/internal/cryptox"
@@ -50,7 +51,19 @@ func newTestRouter(t *testing.T) (*http.ServeMux, *store.Store, *fakePool) {
 	t.Helper()
 	s := newTestRouterStore(t)
 	pool := &fakePool{}
-	router := NewRouter(s, pool, security.Strict(), "", discardLogger())
+	router := NewRouter(s, pool, security.Strict(), "", false, discardLogger())
+	return router, s, pool
+}
+
+// newTestRouterWithContentPreview mirrors newTestRouter with
+// RELAY_CONTENT_PREVIEW's httpapi gate (contentPreviewEnabled) turned on
+// — used only by this file's GET /v1/messages tests; every other test in
+// this file exercises the (much more common) feature-off default.
+func newTestRouterWithContentPreview(t *testing.T) (*http.ServeMux, *store.Store, *fakePool) {
+	t.Helper()
+	s := newTestRouterStore(t)
+	pool := &fakePool{}
+	router := NewRouter(s, pool, security.Strict(), "", true, discardLogger())
 	return router, s, pool
 }
 
@@ -141,7 +154,7 @@ func TestUpdateTokenMissingAuthRejected(t *testing.T) {
 
 func TestRegistrationOpenWhenSecretNotConfigured(t *testing.T) {
 	s := newTestRouterStore(t)
-	router := NewRouter(s, &fakePool{}, security.Strict(), "", discardLogger())
+	router := NewRouter(s, &fakePool{}, security.Strict(), "", false, discardLogger())
 	body, _ := json.Marshal(api.RegisterDeviceRequest{ApnsToken: "tok", Environment: api.EnvironmentSandbox})
 	rec := do(router, "POST", "/v1/devices", string(body), "")
 	if rec.Code != http.StatusCreated {
@@ -151,7 +164,7 @@ func TestRegistrationOpenWhenSecretNotConfigured(t *testing.T) {
 
 func TestRegistrationRejectedWithoutSecretWhenConfigured(t *testing.T) {
 	s := newTestRouterStore(t)
-	router := NewRouter(s, &fakePool{}, security.Strict(), "op-secret", discardLogger())
+	router := NewRouter(s, &fakePool{}, security.Strict(), "op-secret", false, discardLogger())
 	body, _ := json.Marshal(api.RegisterDeviceRequest{ApnsToken: "tok", Environment: api.EnvironmentSandbox})
 
 	rec := do(router, "POST", "/v1/devices", string(body), "")
@@ -166,7 +179,7 @@ func TestRegistrationRejectedWithoutSecretWhenConfigured(t *testing.T) {
 
 func TestRegistrationAcceptedWithCorrectSecret(t *testing.T) {
 	s := newTestRouterStore(t)
-	router := NewRouter(s, &fakePool{}, security.Strict(), "op-secret", discardLogger())
+	router := NewRouter(s, &fakePool{}, security.Strict(), "op-secret", false, discardLogger())
 	body, _ := json.Marshal(api.RegisterDeviceRequest{ApnsToken: "tok", Environment: api.EnvironmentSandbox})
 	rec := do(router, "POST", "/v1/devices", string(body), "op-secret")
 	if rec.Code != http.StatusCreated {
@@ -690,6 +703,148 @@ func TestCreateWatchRejectsMissingMailbox(t *testing.T) {
 		`"imapUsername":"u@example.com","auth":{"type":"password","secret":"pw"}}`
 	rec := do(router, "POST", "/v1/watches", body, device.DeviceSecret)
 	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- GET /v1/messages (RELAY_CONTENT_PREVIEW, opt-in, Phase 2) ---
+
+func createWatchViaRouter(t *testing.T, router http.Handler, deviceSecret, accountID string) api.WatchResponse {
+	t.Helper()
+	body := passwordWatchBody(accountID, testNet3Host, "user@example.com", "app-password", "INBOX")
+	rec := do(router, "POST", "/v1/watches", body, deviceSecret)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created api.WatchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+func TestGetMessagesRequiresAuth(t *testing.T) {
+	router, _, _ := newTestRouterWithContentPreview(t)
+	rec := do(router, "GET", "/v1/messages?accountId=a1", "", "not-a-real-secret")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d", rec.Code)
+	}
+}
+
+func TestGetMessagesReturns404WhenContentPreviewDisabled(t *testing.T) {
+	router, s, _ := newTestRouter(t) // contentPreviewEnabled defaults to false
+	device := registerDevice(t, router)
+	watch := createWatchViaRouter(t, router, device.DeviceSecret, "account-1")
+	if err := s.UpsertMessagePreviews(t.Context(), watch.WatchID, []store.MessagePreview{{UID: 1, Subject: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(router, "GET", "/v1/messages?accountId=account-1", "", device.DeviceSecret)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetMessagesRequiresAccountIDParam(t *testing.T) {
+	router, _, _ := newTestRouterWithContentPreview(t)
+	device := registerDevice(t, router)
+	rec := do(router, "GET", "/v1/messages", "", device.DeviceSecret)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetMessagesReturnsPreviewsForOwnAccount(t *testing.T) {
+	router, s, _ := newTestRouterWithContentPreview(t)
+	device := registerDevice(t, router)
+	watch := createWatchViaRouter(t, router, device.DeviceSecret, "account-1")
+
+	date := time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
+	err := s.UpsertMessagePreviews(t.Context(), watch.WatchID, []store.MessagePreview{
+		{UID: 10, FromName: "Alice", FromAddress: "alice@example.test", Subject: "Hi", Date: date, MessageID: "m10", BodyPreview: "body 10"},
+		{UID: 11, FromName: "Bob", FromAddress: "bob@example.test", Subject: "Yo", Date: date, MessageID: "m11", BodyPreview: "body 11"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(router, "GET", "/v1/messages?accountId=account-1", "", device.DeviceSecret)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got []api.MessagePreviewSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %+v", got)
+	}
+	// Newest (highest uid) first.
+	if got[0].UID != 11 || got[0].From.Name != "Bob" || got[0].From.Address != "bob@example.test" ||
+		got[0].Subject != "Yo" || got[0].MessageID != "m11" || got[0].BodyPreview != "body 11" {
+		t.Fatalf("got %+v", got[0])
+	}
+	if got[1].UID != 10 {
+		t.Fatalf("got %+v", got[1])
+	}
+}
+
+func TestGetMessagesSinceUidFilters(t *testing.T) {
+	router, s, _ := newTestRouterWithContentPreview(t)
+	device := registerDevice(t, router)
+	watch := createWatchViaRouter(t, router, device.DeviceSecret, "account-1")
+	err := s.UpsertMessagePreviews(t.Context(), watch.WatchID, []store.MessagePreview{
+		{UID: 1, Subject: "one"},
+		{UID: 2, Subject: "two"},
+		{UID: 3, Subject: "three"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(router, "GET", "/v1/messages?accountId=account-1&sinceUid=1", "", device.DeviceSecret)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got []api.MessagePreviewSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].UID != 3 || got[1].UID != 2 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+// TestGetMessagesScopedToOwningDeviceAccount is this feature's
+// device-scoping check, mirroring TestDeleteIsScopedToOwningDevice for
+// watches: an intruder device authenticated with its own valid
+// deviceSecret must not be able to read another device's accountId's
+// message previews just by guessing/reusing that accountId string in the
+// query — it must get exactly the same 404 an unknown accountId gets, not
+// a distinguishable error (see WatchIDForDeviceAccount's doc comment).
+func TestGetMessagesScopedToOwningDeviceAccount(t *testing.T) {
+	router, s, _ := newTestRouterWithContentPreview(t)
+	owner := registerDevice(t, router)
+	intruder := registerDevice(t, router)
+	watch := createWatchViaRouter(t, router, owner.DeviceSecret, "account-1")
+	if err := s.UpsertMessagePreviews(t.Context(), watch.WatchID, []store.MessagePreview{{UID: 1, Subject: "secret"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(router, "GET", "/v1/messages?accountId=account-1", "", intruder.DeviceSecret)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "secret") {
+		t.Fatal("intruder must never see another device's message preview content")
+	}
+}
+
+func TestGetMessagesUnknownAccountIDReturns404(t *testing.T) {
+	router, _, _ := newTestRouterWithContentPreview(t)
+	device := registerDevice(t, router)
+	rec := do(router, "GET", "/v1/messages?accountId=no-such-account", "", device.DeviceSecret)
+	if rec.Code != http.StatusNotFound {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
 	}
 }
