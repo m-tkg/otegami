@@ -301,6 +301,54 @@ struct UnifiedInboxPrefetchTests {
 
     // MARK: - Task #63: post-sync trigger ("各メールボックスの同期完了後にも1回")
 
+    /// Push 通知起点バックグラウンド受信 Phase 1: `schedulesPostSyncPrefetch`
+    /// defaults to `true`, so every existing caller of `syncAccountIncrementally`
+    /// that doesn't pass it (every test/call site above and below this one)
+    /// keeps triggering the post-sync prefetch exactly as before — this test
+    /// exercises the opposite, explicit `false` case directly at the
+    /// `SyncCoordinator` level (`PushTriggeredInboxSyncTests` covers the
+    /// same suppression through its one real caller, `PushTriggeredInboxSync`).
+    @Test("schedulesPostSyncPrefetch: false suppresses the post-sync prefetch trigger entirely")
+    func schedulesPostSyncPrefetchFalseSuppressesTrigger() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount(id: "account-1", email: "a1@otegami.test")
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inboxInfo],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 1)],
+            bodiesByPath: ["INBOX": [1: MessageBodyContent(plainText: "本文")]]
+        )
+        let coordinator = SyncCoordinator(database: database) { config in FakeIMAPSession(config: config, script: script) }
+
+        _ = try await coordinator.syncAccount(account, auth: auth)
+        let mailboxId = try await database.dbWriter.read { db in
+            try MailboxRecord
+                .filter(Column("accountId") == account.id)
+                .filter(Column("path") == "INBOX")
+                .fetchOne(db)!
+                .id!
+        }
+        // A notFetched message that would otherwise be a valid prefetch
+        // candidate — same setup as `postSyncTriggerPrefetchesAfterIncrementalSync`
+        // just above, so if `schedulesPostSyncPrefetch: false` failed to
+        // suppress the trigger, `waitForPendingPostSyncPrefetchForTesting()`
+        // below would return `1` instead of `nil`.
+        try await database.dbWriter.write { db in
+            var message = MessageRecord(mailboxId: mailboxId, uid: 1, subject: "new mail", internalDate: Date())
+            try message.insert(db)
+        }
+
+        _ = try await coordinator.syncAccountIncrementally(account, auth: auth, schedulesPostSyncPrefetch: false)
+
+        let prefetchResult = await coordinator.waitForPendingPostSyncPrefetchForTesting()
+        #expect(prefetchResult == nil)
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.first { $0.subject == "new mail" }?.bodyState == .notFetched, "no prefetch ran, so the body must still be unfetched")
+    }
+
     @Test("a successful syncAccountIncrementally triggers a background prefetch of the newly-synced account's notFetched bodies")
     func postSyncTriggerPrefetchesAfterIncrementalSync() async throws {
         let database = try AppDatabase.makeInMemory()

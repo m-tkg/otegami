@@ -311,6 +311,21 @@ public actor SyncCoordinator {
     /// `false` only for the remaining high-frequency automatic paths
     /// (targeted resync, notification-tap priority sync) so they don't
     /// pay for an extra `UID SEARCH` per mailbox on every pass.
+    /// `schedulesPostSyncPrefetch` (push 通知起点バックグラウンド受信 Phase 1,
+    /// default `true`): whether a successful sync schedules the Task #63
+    /// post-sync prefetch trigger below. `PushTriggeredInboxSync` — called
+    /// from the `NotificationService` Extension on every push receipt — is
+    /// the one caller that passes `false`: `schedulePostSyncPrefetchIfNeeded`
+    /// fires a *detached* low-priority `Task` that keeps running after this
+    /// method returns (see that method's own doc comment), and an
+    /// Extension process has no guarantee it survives past the moment it
+    /// hands its `UNNotificationContent` back to the system — a detached
+    /// prefetch `Task` started there could be killed mid-flight, or open a
+    /// second IMAP connection to a mailbox this same call just finished
+    /// syncing right as the process is about to be torn down. Every other
+    /// caller (pull-to-refresh, IDLE wake, foreground/launch sync) runs
+    /// inside the long-lived app process the detached `Task` safely
+    /// outlives this call in, so they all keep the default.
     @discardableResult
     public func syncAccountIncrementally(
         _ account: AccountRecord,
@@ -318,6 +333,7 @@ public actor SyncCoordinator {
         scope: SyncScope = .inboxOnly,
         autoRetry: Bool = true,
         forceReconcileVanishedUIDs: Bool = false,
+        schedulesPostSyncPrefetch: Bool = true,
         onProgress: (@Sendable (MailboxSyncer.SyncProgressUpdate) -> Void)? = nil
     ) async throws -> MailboxSyncer.Progress {
         let syncer = syncer(for: account)
@@ -331,8 +347,12 @@ public actor SyncCoordinator {
         // Task #63: "各メールボックスの同期完了後にも1回" — see
         // `schedulePostSyncPrefetchIfNeeded(for:auth:)`'s doc comment. Only
         // scheduled after a *successful* sync (the `try await` above would
-        // have already thrown and returned early otherwise).
-        schedulePostSyncPrefetchIfNeeded(for: account, auth: auth)
+        // have already thrown and returned early otherwise), and only when
+        // the caller didn't ask to suppress it (see `schedulesPostSyncPrefetch`'s
+        // doc comment above).
+        if schedulesPostSyncPrefetch {
+            schedulePostSyncPrefetchIfNeeded(for: account, auth: auth)
+        }
         return progress
     }
 
