@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import Testing
 import OtegamiCore
+import OtegamiKitTestSupport
 @testable import OtegamiStore
 
 @Suite("AppDatabase")
@@ -25,6 +26,96 @@ struct AppDatabaseTests {
         // Re-running the migrator against an already-migrated database
         // (as happens on every app launch) must be a no-op, not an error.
         try AppDatabase.migrator.migrate(database.dbWriter)
+    }
+
+    /// Push 通知起点バックグラウンド受信 Phase 1: `makeConfiguration(
+    /// observesSuspensionNotifications: true)` — the shared-App-Group-
+    /// container config path `makeShared(appGroupIdentifier:)` uses when a
+    /// real App Group is available — sets `busyMode = .timeout(5.0)` (see
+    /// that method's own doc comment for why: `NotificationService` becomes
+    /// a real concurrent writer of this DB from this Phase on). This test
+    /// proves that config actually changes behavior, not just that the
+    /// property is set: two real `DatabasePool`s opened against the *same*
+    /// on-disk file, one holding a write transaction open while the other
+    /// tries to write concurrently. With GRDB's default `.immediateError`
+    /// busyMode the second write would fail immediately with `SQLITE_BUSY`;
+    /// with the timeout it waits out the first transaction's ~1s hold and
+    /// succeeds instead.
+    @Test("observesSuspensionNotifications: true sets a busyMode timeout that lets a concurrent write wait out another writer instead of failing immediately with SQLITE_BUSY")
+    func sharedContainerConfigurationTimesOutConcurrentWrites() async throws {
+        let configuration = AppDatabase.makeConfiguration(observesSuspensionNotifications: true)
+        // Sanity check on the configuration itself, before even touching a
+        // real file — `Database.BusyMode` isn't `Equatable` (its `.callback`
+        // case wraps a closure), so this pattern-matches instead.
+        if case .timeout(let interval) = configuration.busyMode {
+            #expect(interval == 5.0)
+        } else {
+            Issue.record("expected busyMode == .timeout, got \(configuration.busyMode)")
+        }
+
+        // `observesSuspensionNotifications = true` above also registers this
+        // pool with the process-global `Database.suspendNotification`/
+        // `.resumeNotification` `NotificationCenter` posts — serialize
+        // against every other test in this run that also opts into real
+        // suspension for the same reason `DatabaseSuspensionTests`/
+        // `AccountSyncerTests+Suspension` do (see `DatabaseSuspensionTestLock`'s
+        // doc comment): without this, a concurrently-running suspension test
+        // elsewhere in the process could suspend *this* test's pools out
+        // from under it mid-write, surfacing as a spurious `SQLITE_INTERRUPT`
+        // instead of the `SQLITE_BUSY`/timeout behavior actually under test.
+        try await DatabaseSuspensionTestLock.withLock {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("otegami-busymode-test-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let url = directory.appendingPathComponent("otegami.sqlite")
+
+            let poolA = try DatabasePool(path: url.path, configuration: configuration)
+            // Migrating via `AppDatabase.init` once is enough — the schema
+            // now exists on disk, so `poolB` below can open (and write to)
+            // the same file without migrating again.
+            let dbA = try AppDatabase(poolA)
+            let poolB = try DatabasePool(path: url.path, configuration: configuration)
+
+            func makeAccount(email: String) -> AccountRecord {
+                AccountRecord(
+                    displayName: "Test", email: email, authType: .password,
+                    imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: email
+                )
+            }
+
+            // Holds poolA's write transaction open (blocking any other
+            // writer) for slightly under the 5s timeout, well past the
+            // "head start" wait below — models the app's own writer racing
+            // the Extension's.
+            async let writerA: Void = Task.detached {
+                try dbA.dbWriter.write { db in
+                    let account = makeAccount(email: "a@otegami.test")
+                    try account.insert(db)
+                    Thread.sleep(forTimeInterval: 1.5)
+                }
+            }.value
+
+            // Gives `writerA` a head start to actually acquire the write
+            // lock before `writerB` attempts its own write.
+            try await Task.sleep(for: .milliseconds(200))
+
+            async let writerB: Void = Task.detached {
+                try poolB.write { db in
+                    let account = makeAccount(email: "b@otegami.test")
+                    try account.insert(db)
+                }
+            }.value
+
+            // Neither `await` should throw — without the busyMode timeout,
+            // `writerB` would fail immediately with `SQLITE_BUSY` instead of
+            // waiting out `writerA`'s ~1.5s hold.
+            try await writerA
+            try await writerB
+
+            let count = try await dbA.dbWriter.read { db in try AccountRecord.fetchCount(db) }
+            #expect(count == 2)
+        }
     }
 
     @Test("saves an account and reads it back")

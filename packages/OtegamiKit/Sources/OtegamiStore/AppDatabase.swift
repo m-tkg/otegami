@@ -135,10 +135,35 @@ public final class AppDatabase: Sendable {
     ///   .isSuspensionError(_:)`'s doc comment. Defaults to `false` so
     ///   `makeInMemory()` (tests/previews, and every target with no App
     ///   Group entitlement) never pays for observers it has no use for.
-    private static func makeConfiguration(observesSuspensionNotifications: Bool = false) -> Configuration {
+    ///
+    ///   push 通知起点バックグラウンド受信 Phase 1: `observesSuspensionNotifications`
+    ///   が `true` — つまり `makeShared`'s `isSharedContainer` 経路、共有 App
+    ///   Group コンテナ上の DB — の場合はあわせて `configuration.busyMode =
+    ///   .timeout(5.0)` も設定する。GRDB のデフォルトは `.immediateError`
+    ///   (`Configuration.busyMode`) で、他プロセスが書き込み中の SQLite ファイル
+    ///   への書き込みを即座に `SQLITE_BUSY` で失敗させる。この Phase から
+    ///   `NotificationService` Extension がこの共有 DB の実 writer になる
+    ///   (push 受信のたびに INBOX を差分同期して保存する) ため、アプリが前面で
+    ///   同時に書き込むタイミングと衝突しうる。その一撃で失敗する `SQLITE_BUSY`
+    ///   を、GRDB 7.11.1 の `Documentation.docc/DatabaseSharing.md`「How to
+    ///   limit the SQLITE_BUSY error」節が推奨するとおり `busyMode = .timeout`
+    ///   に変えて、SQLite 自身の busy-handler にリトライを任せる。5 秒は
+    ///   Extension 側の実行時間予算 (30 秒級) に対して十分小さく、アプリ側の
+    ///   UI をブロックする待ち時間としても許容範囲という判断。in-memory 経路
+    ///   (`makeInMemory()`、テスト/プレビュー) や `explicitDirectory` 指定時
+    ///   (検証用の単一プロセス起動) は複数プロセスが同じファイルを取り合う
+    ///   ことがないので、従来どおり素通り (`.immediateError` のまま) でよい。
+    ///
+    ///   `private` ではなく internal (`@testable import` から呼べる) —
+    ///   `AppDatabaseTests`がこの busyMode 設定そのものを、実ファイル2つの
+    ///   `DatabasePool`を同時に開いて検証するため。
+    static func makeConfiguration(observesSuspensionNotifications: Bool = false) -> Configuration {
         var configuration = Configuration()
         configuration.foreignKeysEnabled = true
         configuration.observesSuspensionNotifications = observesSuspensionNotifications
+        if observesSuspensionNotifications {
+            configuration.busyMode = .timeout(5.0)
+        }
         return configuration
     }
 }
