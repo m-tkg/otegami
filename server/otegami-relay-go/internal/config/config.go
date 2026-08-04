@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/m-tkg/otegami-relay-go/internal/security"
 )
@@ -39,6 +40,14 @@ type Config struct {
 	DeviceRegistrationSecret string
 	GoogleOAuthClientID      string
 	MicrosoftOAuthClientID   string
+	// ContentPreviewEnabled (RELAY_CONTENT_PREVIEW, Phase 2) opts into
+	// fetching and caching real message content (sender/subject/body
+	// snippet) on new-mail detection, and exposing it via GET
+	// /v1/messages and richer push payload fields. Defaults to false — the
+	// relay's existing design (docs/relay-deployment.md "リレーが何をする
+	// か") never touches mail content unless an operator explicitly opts
+	// in.
+	ContentPreviewEnabled bool
 }
 
 // FromEnvironment mirrors RelayConfiguration.fromEnvironment(_:). Pass
@@ -69,6 +78,12 @@ func FromEnvironment(getenv func(string) string) (Config, error) {
 		apns = &APNsConfig{KeyPath: keyPath, KeyID: keyID, TeamID: teamID, BundleID: bundleID}
 	}
 
+	// Same "1"/"true"/"yes", case-insensitive parsing as
+	// RELAY_ALLOW_PRIVATE_IMAP_HOSTS (security.FromEnvironment) — kept
+	// consistent across every relay boolean env var.
+	contentPreviewRaw := strings.ToLower(getenv("RELAY_CONTENT_PREVIEW"))
+	contentPreviewEnabled := contentPreviewRaw == "1" || contentPreviewRaw == "true" || contentPreviewRaw == "yes"
+
 	return Config{
 		MasterKeyBase64:          masterKey,
 		DatabasePath:             databasePath,
@@ -78,6 +93,7 @@ func FromEnvironment(getenv func(string) string) (Config, error) {
 		DeviceRegistrationSecret: getenv("RELAY_DEVICE_REGISTRATION_SECRET"),
 		GoogleOAuthClientID:      getenv("RELAY_GOOGLE_CLIENT_ID"),
 		MicrosoftOAuthClientID:   getenv("RELAY_MICROSOFT_CLIENT_ID"),
+		ContentPreviewEnabled:    contentPreviewEnabled,
 	}, nil
 }
 

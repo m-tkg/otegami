@@ -647,6 +647,30 @@ func (s *Store) DeleteWatch(ctx context.Context, id, deviceID string) (watchFull
 	return true, nil
 }
 
+// WatchIDForDeviceAccount resolves (deviceID, accountID) to the watchId
+// deviceID itself registered that accountId under, via its own
+// `watch_subscription` row — GET /v1/messages (RELAY_CONTENT_PREVIEW,
+// opt-in, Phase 2) uses this to scope a message-preview lookup to the
+// caller's own subscription, the same device-scoping every other
+// device-authenticated route already enforces (see e.g. DeleteWatch's doc
+// comment). Returns found == false if this device never registered that
+// accountId — including when it belongs to a different device entirely,
+// which must look identical to "unknown accountId" from the caller's point
+// of view (never leaking whether some *other* device has that accountId).
+func (s *Store) WatchIDForDeviceAccount(ctx context.Context, deviceID, accountID string) (watchID string, found bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT watchId FROM watch_subscription WHERE deviceId = ? AND accountId = ? LIMIT 1`,
+		deviceID, accountID,
+	).Scan(&watchID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return watchID, true, nil
+}
+
 // WatchSubscribers mirrors the `watch_subscription` rows for one watch —
 // used by the watcher pool's fire() (Task #208) to push every subscribing
 // device, each with its own locally-meaningful accountId, when one shared

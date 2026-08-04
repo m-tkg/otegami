@@ -89,12 +89,19 @@ func run() error {
 	}
 	exchanger := oauth.New(oauth.NewHTTPTransport(), cfg.GoogleOAuthClientID, cfg.MicrosoftOAuthClientID)
 
+	if cfg.ContentPreviewEnabled {
+		logger.Info("RELAY_CONTENT_PREVIEW is enabled — this relay will fetch and cache real " +
+			"message content (sender/subject/body snippet) on new-mail detection. See " +
+			"docs/relay-deployment.md's RELAY_CONTENT_PREVIEW section.")
+	}
+
 	pool := watcher.New(relayStore, pushSender, logger, watcher.Options{
-		NetworkPolicy: cfg.NetworkPolicy,
-		OAuth:         exchanger,
+		NetworkPolicy:         cfg.NetworkPolicy,
+		OAuth:                 exchanger,
+		ContentPreviewEnabled: cfg.ContentPreviewEnabled,
 	})
 
-	router := httpapi.NewRouter(relayStore, pool, cfg.NetworkPolicy, cfg.DeviceRegistrationSecret, logger)
+	router := httpapi.NewRouter(relayStore, pool, cfg.NetworkPolicy, cfg.DeviceRegistrationSecret, cfg.ContentPreviewEnabled, logger)
 	server := &http.Server{
 		Addr:              fmt.Sprintf("0.0.0.0:%d", cfg.Port),
 		Handler:           router,

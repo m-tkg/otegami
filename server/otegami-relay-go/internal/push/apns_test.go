@@ -187,6 +187,91 @@ func TestAPNsBodyHasNotificationActionsCategory(t *testing.T) {
 	}
 }
 
+func TestAPNsBodyIncludesContentPreviewFieldsWhenPresent(t *testing.T) {
+	data, err := buildAPNsBody(api.PushNotificationPayload{
+		AccountID:         "account-1",
+		UidNext:           42,
+		LatestUID:         41,
+		LatestFromName:    "Alice",
+		LatestFromAddress: "alice@example.test",
+		LatestSubject:     "Hello",
+		PreviewCount:      3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["latestUid"] != float64(41) || decoded["latestFromName"] != "Alice" ||
+		decoded["latestFromAddress"] != "alice@example.test" || decoded["latestSubject"] != "Hello" ||
+		decoded["previewCount"] != float64(3) {
+		t.Fatalf("got %+v", decoded)
+	}
+}
+
+func TestAPNsBodyOmitsContentPreviewFieldsWhenAbsent(t *testing.T) {
+	// A preview-disabled relay (or a cycle whose fetch failed) must
+	// produce byte-for-byte the same body shape as before this feature
+	// existed — an older app build only ever reads accountId/uidNext.
+	data, err := buildAPNsBody(api.PushNotificationPayload{AccountID: "account-1", UidNext: 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"aps":{"alert":{"loc-key":"NEW_MAIL"},"mutable-content":1,"category":"NEW_MAIL_ACTIONS"},"accountId":"account-1","uidNext":42}`
+	if string(data) != want {
+		t.Fatalf("got %s", data)
+	}
+}
+
+func TestAPNsBodyShrinksOversizedSubjectAndFromName(t *testing.T) {
+	data, err := buildAPNsBody(api.PushNotificationPayload{
+		AccountID:      "account-1",
+		UidNext:        42,
+		LatestFromName: strings.Repeat("な", 200), // multi-byte, so halving must not split a rune
+		LatestSubject:  strings.Repeat("件", 400),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > maxAPNsBodyBytes {
+		t.Fatalf("got %d bytes, want <= %d", len(data), maxAPNsBodyBytes)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("shrunk body is not valid JSON / not valid UTF-8: %v (%s)", err, data)
+	}
+	// accountId/uidNext/other scaffolding must never be sacrificed to make
+	// room — only the attacker-influenced text fields shrink.
+	if decoded["accountId"] != "account-1" || decoded["uidNext"] != float64(42) {
+		t.Fatalf("got %+v", decoded)
+	}
+}
+
+func TestAPNsBodyShrinkLoopTerminatesWithBothFieldsExhausted(t *testing.T) {
+	// A pathological case where even fully emptying both shrinkable
+	// fields still can't fit: buildAPNsBody must return rather than loop
+	// forever.
+	data, err := buildAPNsBody(api.PushNotificationPayload{
+		AccountID:         strings.Repeat("a", 128),
+		UidNext:           42,
+		LatestFromAddress: strings.Repeat("b", 4000), // not shrunk by design — see buildAPNsBody's doc comment
+		LatestSubject:     "s",
+		LatestFromName:    "n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("got invalid JSON: %v (%s)", err, data)
+	}
+	if decoded["latestSubject"] != nil || decoded["latestFromName"] != nil {
+		t.Fatalf("expected both shrinkable fields to have been emptied out, got %+v", decoded)
+	}
+}
+
 func TestRedact(t *testing.T) {
 	if got := Redact("abcdefghijkl"); got != "abcd…ijkl" {
 		t.Fatalf("got %q", got)

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/m-tkg/otegami-relay-go/internal/api"
 	"github.com/m-tkg/otegami-relay-go/internal/imapclient"
@@ -27,6 +28,32 @@ import (
 	"github.com/m-tkg/otegami-relay-go/internal/push"
 	"github.com/m-tkg/otegami-relay-go/internal/security"
 	"github.com/m-tkg/otegami-relay-go/internal/store"
+)
+
+// RELAY_CONTENT_PREVIEW (opt-in, Phase 2) tuning — see fireForNewMail's
+// doc comment for how these are used.
+const (
+	// maxContentPreviewFetchCount bounds how many of the newest new
+	// messages one new-mail event fetches previews for — a push payload
+	// only ever carries the single newest one anyway (apnsBody's 4KB
+	// ceiling), and GET /v1/messages caps its own response at the same
+	// count, so fetching (and caching) more than this per event has no
+	// consumer.
+	maxContentPreviewFetchCount = 10
+	// contentPreviewFetchTimeout bounds the UID FETCH this feature issues
+	// on the watch's already-authenticated connection — generous enough
+	// for up to 10 messages' headers plus a 32KB-capped body excerpt each,
+	// short enough that a slow/hanging IMAP server can't indefinitely
+	// delay the push a disabled-feature relay would have sent immediately.
+	contentPreviewFetchTimeout = 15 * time.Second
+	// maxEnvelopeNameBytes/maxEnvelopeSubjectBytes cap the push payload's
+	// latestFromName/latestFromAddress/latestSubject fields before they
+	// ever reach apns.go's own (much larger) 4KB backstop — keeping
+	// ordinary payloads small keeps push delivery latency low; apns.go's
+	// buildAPNsBody shrink loop exists only for the rare case even these
+	// caps aren't enough after JSON escaping.
+	maxEnvelopeNameBytes    = 100
+	maxEnvelopeSubjectBytes = 300
 )
 
 // maxConsecutiveAuthFailures mirrors WatcherPool.maxConsecutiveAuthFailures
@@ -172,6 +199,10 @@ type Options struct {
 	// server eventually does: a connection held open through a wait must
 	// see traffic).
 	IdleRateLimitKeepAliveInterval time.Duration
+	// ContentPreviewEnabled mirrors config.Config.ContentPreviewEnabled
+	// (RELAY_CONTENT_PREVIEW) — see fireForNewMail's doc comment. Defaults
+	// to false (zero value), same as the env var's own default.
+	ContentPreviewEnabled bool
 }
 
 // Pool mirrors WatcherPool.
@@ -621,8 +652,9 @@ func (p *Pool) connectAndWatch(
 		}
 		rateLimitWait = p.opts.RateLimitInitialWait
 		if newUIDNext > baselineUIDNext {
+			previousUIDNext := baselineUIDNext
 			baselineUIDNext = newUIDNext
-			p.fire(ctx, record, newUIDNext)
+			p.fireForNewMail(ctx, client, record, previousUIDNext, newUIDNext)
 		}
 	}
 	return ctx.Err()
@@ -680,7 +712,7 @@ func (p *Pool) runPollCycle(
 	client *imapclient.Client,
 ) error {
 	if *lastKnownUIDNext != 0 && uidNext > *lastKnownUIDNext {
-		p.fire(ctx, record, uidNext)
+		p.fireForNewMail(ctx, client, record, *lastKnownUIDNext, uidNext)
 	}
 	*lastKnownUIDNext = uidNext
 	*pollRateLimitWait = p.opts.RateLimitInitialWait
@@ -788,13 +820,28 @@ func (p *Pool) authenticate(ctx context.Context, client *imapclient.Client, reco
 	}
 }
 
+// pushEnvelope carries RELAY_CONTENT_PREVIEW's optional push-payload
+// enrichment: the single newest message this cycle fetched a preview for,
+// plus how many messages were fetched in total. nil (fire's normal case
+// when the feature is off, or fireForNewMail's fallback when the fetch
+// failed) means "content-free push", the original pre-Phase-2 shape.
+type pushEnvelope struct {
+	LatestUID         uint32
+	LatestFromName    string
+	LatestFromAddress string
+	LatestSubject     string
+	PreviewCount      int
+}
+
 // fire mirrors WatcherPool.fire(record:uidNext:). Task #208: a `watch` row
 // no longer maps to a single device — every device subscribed to it (one
 // `watch_subscription` row each, sharing this one IMAP connection) gets its
 // own push, each carrying that device's own locally-meaningful accountId.
 // One subscriber with no push token yet, or a failed send, does not stop
-// the others from being notified.
-func (p *Pool) fire(ctx context.Context, record *store.WatchRecord, uidNext int) {
+// the others from being notified. envelope, when non-nil, adds
+// RELAY_CONTENT_PREVIEW's optional fields to every subscriber's payload —
+// see fireForNewMail, the only caller that ever passes one.
+func (p *Pool) fire(ctx context.Context, record *store.WatchRecord, uidNext int, envelope *pushEnvelope) {
 	subscribers, err := p.store.WatchSubscribers(ctx, record.ID)
 	if err != nil {
 		p.logger.Warn("could not list watch subscribers", "watchId", record.ID, "error", err.Error())
@@ -806,15 +853,125 @@ func (p *Pool) fire(ctx context.Context, record *store.WatchRecord, uidNext int)
 			p.logger.Debug("watch fired but device has no push token yet", "watchId", record.ID)
 			continue
 		}
-		err = p.sender.Send(ctx, target.ApnsToken, target.Environment, api.PushNotificationPayload{
-			AccountID: sub.AccountID,
-			UidNext:   uidNext,
-		})
+		payload := api.PushNotificationPayload{AccountID: sub.AccountID, UidNext: uidNext}
+		if envelope != nil {
+			payload.LatestUID = int64(envelope.LatestUID)
+			payload.LatestFromName = envelope.LatestFromName
+			payload.LatestFromAddress = envelope.LatestFromAddress
+			payload.LatestSubject = envelope.LatestSubject
+			payload.PreviewCount = envelope.PreviewCount
+		}
+		err = p.sender.Send(ctx, target.ApnsToken, target.Environment, payload)
 		if err != nil {
 			p.logger.Warn("push send failed",
 				"watchId", record.ID, "error", push.SanitizeForLog(err.Error()))
 		}
 	}
+}
+
+// fireForNewMail is every "UIDNEXT advanced, a push is due" call site's
+// single entry point, replacing a direct call to fire. previousUIDNext is
+// the UIDNEXT last observed before this cycle (so [previousUIDNext,
+// newUIDNext-1] is exactly the new messages' UID range); newUIDNext is
+// this cycle's freshly observed value.
+//
+// With RELAY_CONTENT_PREVIEW off (the default), this is exactly the old
+// behavior: fire(ctx, record, newUIDNext, nil) — the content-free payload,
+// no IMAP traffic beyond what the caller already did.
+//
+// With it on, this issues one UID FETCH on client — the caller's own
+// still-authenticated connection, no new connection opened — for the
+// newest up to maxContentPreviewFetchCount messages in that range,
+// persists every fetched preview (Store.UpsertMessagePreviews, for GET
+// /v1/messages), and attaches the single newest one's sender/subject to
+// the push payload. Any failure along this path (the fetch erroring,
+// including an IMAP `[LIMIT]` rejection of the FETCH itself, or the fetch
+// succeeding with zero previews) falls back to the exact content-free push
+// the feature being off would have sent — a content-preview problem must
+// never cost a watch the "new mail was detected" push itself, matching
+// this feature's opt-in, best-effort design (docs/relay-deployment.md's
+// RELAY_CONTENT_PREVIEW section).
+func (p *Pool) fireForNewMail(ctx context.Context, client *imapclient.Client, record *store.WatchRecord, previousUIDNext, newUIDNext int) {
+	if !p.opts.ContentPreviewEnabled {
+		p.fire(ctx, record, newUIDNext, nil)
+		return
+	}
+
+	rangeEnd := newUIDNext - 1
+	rangeStart := previousUIDNext
+	if rangeEnd-rangeStart+1 > maxContentPreviewFetchCount {
+		rangeStart = rangeEnd - (maxContentPreviewFetchCount - 1)
+	}
+	if rangeStart < 1 {
+		rangeStart = 1
+	}
+	if rangeStart > rangeEnd {
+		// Shouldn't happen (the caller only reaches here when newUIDNext >
+		// previousUIDNext), but a defensive fallback costs nothing.
+		p.fire(ctx, record, newUIDNext, nil)
+		return
+	}
+
+	previews, err := client.UIDFetchPreviews(uint32(rangeStart), uint32(rangeEnd), contentPreviewFetchTimeout)
+	if err != nil {
+		if isRateLimited(err) {
+			p.logger.Warn("content preview fetch rate limited by server, skipping this cycle's preview",
+				"watchId", record.ID, "serverResponse", commandFailedServerResponse(err))
+		} else {
+			p.logger.Warn("content preview fetch failed, falling back to content-free push",
+				"watchId", record.ID, "error", push.SanitizeForLog(err.Error()))
+		}
+		p.fire(ctx, record, newUIDNext, nil)
+		return
+	}
+	if len(previews) == 0 {
+		p.fire(ctx, record, newUIDNext, nil)
+		return
+	}
+
+	stored := make([]store.MessagePreview, 0, len(previews))
+	latest := previews[0]
+	for _, preview := range previews {
+		stored = append(stored, store.MessagePreview{
+			UID:         preview.UID,
+			FromName:    preview.FromName,
+			FromAddress: preview.FromAddress,
+			Subject:     preview.Subject,
+			Date:        preview.Date,
+			MessageID:   preview.MessageID,
+			BodyPreview: preview.BodyPreview,
+		})
+		if preview.UID > latest.UID {
+			latest = preview
+		}
+	}
+	if err := p.store.UpsertMessagePreviews(ctx, record.ID, stored); err != nil {
+		p.logger.Warn("could not persist message previews", "watchId", record.ID, "error", err.Error())
+	}
+
+	p.fire(ctx, record, newUIDNext, &pushEnvelope{
+		LatestUID:         latest.UID,
+		LatestFromName:    truncateUTF8Bytes(latest.FromName, maxEnvelopeNameBytes),
+		LatestFromAddress: truncateUTF8Bytes(latest.FromAddress, maxEnvelopeNameBytes),
+		LatestSubject:     truncateUTF8Bytes(latest.Subject, maxEnvelopeSubjectBytes),
+		PreviewCount:      len(previews),
+	})
+}
+
+// truncateUTF8Bytes cuts s to at most maxBytes without splitting a
+// multi-byte rune — used for the push envelope's sender/subject fields
+// (maxEnvelopeNameBytes/maxEnvelopeSubjectBytes), which come from
+// attacker-influenced mail headers and must never grow the payload
+// unboundedly.
+func truncateUTF8Bytes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	s = s[:maxBytes]
+	for len(s) > 0 && !utf8.RuneStart(s[len(s)-1]) {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // shouldGiveUpAfterAuthFailure (Task #187) decides whether a watch

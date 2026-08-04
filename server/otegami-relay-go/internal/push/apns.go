@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/golang-jwt/jwt/v5"
 
@@ -67,14 +68,92 @@ func Host(environment api.Environment) string {
 	return "api.sandbox.push.apple.com"
 }
 
-// apnsBody mirrors APNsSender.APNsBody — the minimal payload shape (plan
-// §7: mutable-content, loc-key NEW_MAIL, accountId, uidNext — never
-// subject/sender/body). accountId/uidNext live outside aps at the top
-// level; NotificationService reads them from there.
+// apnsBody mirrors APNsSender.APNsBody — the original minimal payload
+// shape (plan §7: mutable-content, loc-key NEW_MAIL, accountId, uidNext)
+// plus, when RELAY_CONTENT_PREVIEW=1 and this cycle's fetch succeeded, the
+// api.PushNotificationPayload preview fields (latest message's sender/
+// subject/uid, previewCount) — see that type's doc comment for why only
+// the newest message's fields fit here at all. Every field but
+// accountId/uidNext is omitempty so a preview-disabled relay's payload
+// shape is byte-for-byte unchanged from before this feature existed.
+// accountId/uidNext live outside aps at the top level; NotificationService
+// reads them from there.
 type apnsBody struct {
-	Aps       apnsAPS `json:"aps"`
-	AccountID string  `json:"accountId"`
-	UidNext   int     `json:"uidNext"`
+	Aps               apnsAPS `json:"aps"`
+	AccountID         string  `json:"accountId"`
+	UidNext           int     `json:"uidNext"`
+	LatestUID         int64   `json:"latestUid,omitempty"`
+	LatestFromName    string  `json:"latestFromName,omitempty"`
+	LatestFromAddress string  `json:"latestFromAddress,omitempty"`
+	LatestSubject     string  `json:"latestSubject,omitempty"`
+	PreviewCount      int     `json:"previewCount,omitempty"`
+}
+
+// maxAPNsBodyBytes leaves headroom under APNs' 4KB (4096-byte) whole-JSON-
+// body limit for a push whose latestSubject/latestFromName came from an
+// attacker-influenced mail header (CLAUDE-SECURITY-adjacent: an absurdly
+// long subject, or one whose characters JSON-escape expensively, must
+// degrade this one push's content richness — via buildAPNsBody's shrink
+// loop — rather than fail the whole send).
+const maxAPNsBodyBytes = 3500
+
+// buildAPNsBody marshals payload into the APNs JSON body, halving
+// latestSubject then latestFromName (in that order — subject first, since
+// a device notification banner shows less of it anyway) until the result
+// fits under maxAPNsBodyBytes. The caller (Send) already sends a payload
+// whose subject/fromName were capped well under this limit at the source
+// (pool.go's fire()), so this is a defensive backstop, not the normal
+// path — it only bites when JSON-escaping (control characters, certain
+// Unicode) expands an already-capped field enough to matter.
+func buildAPNsBody(payload api.PushNotificationPayload) ([]byte, error) {
+	working := payload
+	for {
+		data, err := json.Marshal(apnsBody{
+			Aps:               apnsAPS{Alert: apnsAlert{LocKey: "NEW_MAIL"}, MutableContent: 1, Category: notificationCategory},
+			AccountID:         working.AccountID,
+			UidNext:           working.UidNext,
+			LatestUID:         working.LatestUID,
+			LatestFromName:    working.LatestFromName,
+			LatestFromAddress: working.LatestFromAddress,
+			LatestSubject:     working.LatestSubject,
+			PreviewCount:      working.PreviewCount,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(data) <= maxAPNsBodyBytes {
+			return data, nil
+		}
+		switch {
+		case working.LatestSubject != "":
+			working.LatestSubject = halveUTF8(working.LatestSubject)
+		case working.LatestFromName != "":
+			working.LatestFromName = halveUTF8(working.LatestFromName)
+		default:
+			// Nothing left worth shrinking (accountId is already capped to
+			// 128 chars at watch-creation time; fromAddress/messageId-shaped
+			// fields are never long enough on their own to matter) — give
+			// up and let this still-oversized body go to APNs, which will
+			// itself reject it. Looping forever is worse than one rejected
+			// push.
+			return data, nil
+		}
+	}
+}
+
+// halveUTF8 returns roughly the first half of s, never splitting a
+// multi-byte rune. Repeated halving (buildAPNsBody's shrink loop) always
+// terminates: a non-empty string strictly shrinks each call, reaching ""
+// in at most len(s) steps.
+func halveUTF8(s string) string {
+	if s == "" {
+		return s
+	}
+	b := s[:len(s)/2]
+	for len(b) > 0 && !utf8.RuneStart(b[len(b)-1]) {
+		b = b[:len(b)-1]
+	}
+	return b
 }
 
 // notificationCategory is the aps.category value APNs delivers for
@@ -102,11 +181,7 @@ func (s *APNsSender) Send(ctx context.Context, deviceToken string, environment a
 		return err
 	}
 
-	bodyData, err := json.Marshal(apnsBody{
-		Aps:       apnsAPS{Alert: apnsAlert{LocKey: "NEW_MAIL"}, MutableContent: 1, Category: notificationCategory},
-		AccountID: payload.AccountID,
-		UidNext:   payload.UidNext,
-	})
+	bodyData, err := buildAPNsBody(payload)
 	if err != nil {
 		return err
 	}

@@ -120,10 +120,32 @@ type WatchResponse struct {
 	CreatedAt WireTime `json:"createdAt"`
 }
 
-// PushNotificationPayload is the body of the (minimal) push payload.
+// PushNotificationPayload is the body of the push payload. AccountID/
+// UidNext are the original content-free fields (RELAY_CONTENT_PREVIEW
+// off, or the preview fetch failed this cycle — see
+// docs/relay-deployment.md's RELAY_CONTENT_PREVIEW section) and are never
+// omitted; every other field is optional and only ever populated when
+// RELAY_CONTENT_PREVIEW=1 and this cycle's UID FETCH succeeded. Existing
+// fields/shape are unchanged so an older app build (which only ever reads
+// accountId/uidNext) keeps working unmodified against a relay that has
+// this feature enabled.
 type PushNotificationPayload struct {
 	AccountID string `json:"accountId"`
 	UidNext   int    `json:"uidNext"`
+	// LatestUID/LatestFromName/LatestFromAddress/LatestSubject describe
+	// only the single newest message in this cycle's fetched range — a
+	// push payload has no room (APNs caps the whole JSON body at 4KB) for
+	// a full list; GET /v1/messages is where the app fetches the rest.
+	LatestUID         int64  `json:"latestUid,omitempty"`
+	LatestFromName    string `json:"latestFromName,omitempty"`
+	LatestFromAddress string `json:"latestFromAddress,omitempty"`
+	LatestSubject     string `json:"latestSubject,omitempty"`
+	// PreviewCount is how many messages this cycle's UID FETCH actually
+	// produced a preview for (may be less than the new-mail count if some
+	// individual messages failed to parse — see
+	// imapclient.UIDFetchPreviews's doc comment) — omitted (0) when
+	// content preview didn't run or produced nothing.
+	PreviewCount int `json:"previewCount,omitempty"`
 }
 
 // WatchStatus mirrors WatchSummary.Status.
@@ -159,6 +181,24 @@ type WatchSummary struct {
 // ListWatchesResponse is GET /v1/watches's response body.
 type ListWatchesResponse struct {
 	Watches []WatchSummary `json:"watches"`
+}
+
+// MessagePreviewFrom is MessagePreviewSummary's "from" field shape.
+type MessagePreviewFrom struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+}
+
+// MessagePreviewSummary is one entry of GET /v1/messages's response body
+// (RELAY_CONTENT_PREVIEW, opt-in, Phase 2) — a decrypted, best-effort
+// content preview for one recently-seen message on the requested watch.
+type MessagePreviewSummary struct {
+	UID         int64              `json:"uid"`
+	From        MessagePreviewFrom `json:"from"`
+	Subject     string             `json:"subject"`
+	Date        WireTime           `json:"date"`
+	MessageID   string             `json:"messageId"`
+	BodyPreview string             `json:"bodyPreview"`
 }
 
 // ErrorResponse is the uniform error body for every non-2xx relay response.
