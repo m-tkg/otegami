@@ -747,6 +747,17 @@ struct RootView: View {
             // the first place (`OtegamiAppGroup.identifier`'s doc comment).
             #if os(iOS)
             await environment.resumeSharedDatabaseIfNeeded()
+            // プッシュ通知起点バックグラウンド受信 Phase 1: recovers any
+            // `NotificationService` Darwin notification
+            // (`DatabaseChangeDarwinNotification`) this app missed while
+            // suspended in the background — see `AppEnvironment
+            // .notifyDatabaseChangesFromPush()`'s doc comment for why a
+            // Darwin-notification post alone can't guarantee this app ever
+            // saw it. iOS-only for the same reason
+            // `resumeSharedDatabaseIfNeeded()` right above is: macOS has no
+            // shared App Group database/`NotificationService` Extension to
+            // race in the first place.
+            await environment.notifyDatabaseChangesFromPush()
             #endif
             // 新着確認 (replay + incremental sync) を IDLE ループ確立より
             // 先に走らせる: `startIdleLoops` は全アカウント分の TLS+LOGIN

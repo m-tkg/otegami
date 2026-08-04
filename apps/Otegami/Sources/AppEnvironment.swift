@@ -70,6 +70,11 @@ final class AppEnvironment {
     /// what makes it safe to already be usable when `avatarImageResolver`
     /// below is built, well before `database`/`tokenStore` exist.
     @ObservationIgnored private let gmailAccessTokenBridge = GmailAccessTokenBridge()
+    /// プッシュ通知起点バックグラウンド受信 Phase 1 — see
+    /// `PushDatabaseChangeObserver`'s doc comment. Same default-initialized-
+    /// then-wired-last two-phase pattern as `gmailAccessTokenBridge` right
+    /// above.
+    @ObservationIgnored private let pushDatabaseChangeObserver = PushDatabaseChangeObserver()
     /// M9: push opt-in. `pushSettings` is the persistence layer
     /// (`PushSettingsStore`'s doc comment); `isPushEnabled` mirrors it into
     /// `@Observable` state so `PushNotificationSettingsView` doesn't read
@@ -919,6 +924,11 @@ final class AppEnvironment {
         // アバター強化バッチ「Google プロフィール写真」: same reasoning,
         // same timing — see `GmailAccessTokenBridge`'s doc comment.
         gmailAccessTokenBridge.configure(environment: self)
+        // プッシュ通知起点バックグラウンド受信 Phase 1: same reasoning, same
+        // timing — see `PushDatabaseChangeObserver`'s doc comment. Starts
+        // this app's Darwin notification observer (iOS only) right away, so
+        // it's live for the entire session, not just while foregrounded.
+        pushDatabaseChangeObserver.configure(environment: self)
 
         startObservingAccounts()
 

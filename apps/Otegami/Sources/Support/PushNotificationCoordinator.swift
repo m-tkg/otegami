@@ -598,6 +598,46 @@ extension AppEnvironment {
         NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
     }
 
+    /// プッシュ通知起点バックグラウンド受信 Phase 1: GRDB's own
+    /// "undetected database changes" API
+    /// (`Database.notifyChanges(in:)`) — tells every live `ValueObservation`
+    /// sharing this `DatabasePool` (mailbox/thread lists, unread counts,
+    /// ...) to re-check as if a write it could see directly had just
+    /// happened, even though the actual write came from a *different*
+    /// process (`NotificationService`'s Extension, writing through its own
+    /// separate `DatabasePool` handle onto the same App Group database
+    /// file) that GRDB's own change-tracking has no way to observe on its
+    /// own — GRDB's tracking is per-`DatabasePool`, not per-file.
+    ///
+    /// Called from two places (`PushDatabaseChangeObserver.handleDatabaseChanged()`
+    /// and `RootView.handleScenePhaseChange`'s `.active` case), covering the
+    /// two ways this app can miss the Extension's own best-effort Darwin
+    /// notification post (`NotificationService
+    /// .postDatabaseChangedDarwinNotification()`): no app process was alive
+    /// to observe it at all, or the app process was alive but suspended
+    /// (backgrounded) and never actually ran the observer's callback until
+    /// the next foreground return. `.fullDatabase` (rather than a narrower
+    /// region) since this app has no way to know from here which table(s)
+    /// the Extension's sync actually touched — this is a coarse, cheap
+    /// "just recheck everything" signal, not a precise diff.
+    ///
+    /// Best-effort (`try?`, matching every other push-adjacent write in
+    /// this file): a call that races this app's own suspended database
+    /// (e.g. this method somehow reached right as the app is backing off
+    /// into the background) simply does nothing — the next foreground
+    /// return's own call covers the gap, same as
+    /// `reconcilePushWatchesIfNeeded()`'s "every foreground is another
+    /// chance" posture elsewhere in this file. `db.notifyChanges(in:)`
+    /// itself requires a write-capable `Database` handle (a read-only
+    /// transaction is silently a no-op per GRDB's own doc comment on that
+    /// method), hence `dbWriter.write` rather than `.read` here even though
+    /// nothing is actually being written to a table.
+    func notifyDatabaseChangesFromPush() async {
+        _ = try? await database.dbWriter.write { db in
+            try db.notifyChanges(in: .fullDatabase)
+        }
+    }
+
     private func requestAPNsToken() async throws -> String {
         #if os(iOS)
         do {
