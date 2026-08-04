@@ -46,30 +46,6 @@ enum PushNotificationActionHandler {
         )
     }
 
-    /// 通知の default action (本体タップ) 向け: `handle(action:...)`と同じ
-    /// 共有 `AppDatabase` を開き、`PushNotificationActionExecutor
-    /// .fetchAndResolveOpenTarget` で対象メッセージの `threadId`/
-    /// `messageId` を引く。対象メッセージがまだローカル未同期の場合、
-    /// `fetchAndResolveOpenTarget`が対象アカウントのINBOXだけを優先的に
-    /// 差分同期してから再解決を試みる — 「通知タップ→他の通信より先に
-    /// 対象メールを読み込んで開く」ための経路。この build に App Group が
-    /// 無い、共有DBが開けない、優先同期後も対象メッセージが見つからない、
-    /// のいずれも `nil` — 呼び出し側 (`AppDelegate`) はその場合遷移を
-    /// 諦め、通常の起動画面のまま何もしない。
-    static func resolveOpenTarget(accountId: String, uidNext: Int) async -> PushNotificationOpenTarget? {
-        guard let appGroupIdentifier = OtegamiAppGroup.identifier,
-              let database = try? AppDatabase.makeShared(appGroupIdentifier: appGroupIdentifier)
-        else { return nil }
-        guard let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
-            accountId: accountId,
-            uidNext: uidNext,
-            database: database,
-            auth: { account in await resolveAuth(for: account) },
-            sessionFactory: { config in MailCoreIMAPSession(config: config) }
-        ) else { return nil }
-        return PushNotificationOpenTarget(threadId: target.threadId, messageId: target.messageId)
-    }
-
     /// Mirrors `AppEnvironment.auth(for:)`'s branching (`AppEnvironment+
     /// Auth.swift`) minus its UI-facing side effects — see this type's doc
     /// comment. Returns `nil` (rather than throwing) on any failure: no

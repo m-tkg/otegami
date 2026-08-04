@@ -1,8 +1,10 @@
 import Foundation
 import GRDB
+import MailTransport
 import OtegamiRelayAPI
 import OtegamiStore
 import PushRelayClient
+import SyncEngine
 
 @MainActor
 extension AppEnvironment {
@@ -499,6 +501,31 @@ extension AppEnvironment {
     /// low-priority, fire-and-forget `Task` — never awaited inline with
     /// user-visible sync/refresh, so a slow or offline prefetch pass can
     /// never delay them.
+    /// 通知の本体タップが指すメール (`PushNotificationOpenRequest`) を
+    /// ローカル DB 上の `threadId`/`messageId` へ解決する —
+    /// `PushNotificationOpenView` の `.task`/再試行から呼ばれる。実体は
+    /// `PushNotificationActionExecutor.fetchAndResolveOpenTarget` (ローカル
+    /// 照合 → 未同期なら対象アカウントの INBOX だけを優先的に差分同期 →
+    /// 再照合) で、ここは `prefetchRecentBodiesIfNeeded()` と同じ thin
+    /// wiring — `auth(for:)` と接続プール (`imapSessionPool`) を注入する
+    /// だけ。以前この解決は `AppDelegate` の裏 `Task` で行っていて、同期が
+    /// 終わるまで画面遷移が起きず・失敗すると何も表示されなかった —
+    /// ビュー側へ移したことでローディング表示と再試行が可能になった。
+    /// 優先同期後も見つからない・資格情報が解決できない等はすべて `nil`。
+    func resolvePushNotificationOpenTarget(accountId: String, uidNext: Int) async -> PushNotificationOpenTarget? {
+        guard let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
+            accountId: accountId,
+            uidNext: uidNext,
+            database: database,
+            auth: { [weak self] account in
+                guard let self else { return nil }
+                return try? await self.auth(for: account)
+            },
+            sessionFactory: imapSessionPool.makeSessionFactory()
+        ) else { return nil }
+        return PushNotificationOpenTarget(threadId: target.threadId, messageId: target.messageId)
+    }
+
     func prefetchRecentBodiesIfNeeded() async {
         _ = await syncCoordinator.prefetchUnifiedInboxBodiesIfNeeded(accounts: accounts) { [weak self] account in
             guard let self else { throw AuthResolutionError.missingCredential }

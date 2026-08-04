@@ -147,21 +147,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// Handles a tap on one of `PushNotificationActionCategory`'s action
     /// buttons (`MARK_READ`/`ARCHIVE`), or a tap on the notification body
     /// itself (`UNNotificationDefaultActionIdentifier`) — that default tap
-    /// resolves the target message's `threadId`/`messageId` (via
-    /// `PushNotificationActionHandler.resolveOpenTarget`, which may run an
-    /// INBOX-only priority sync — see that method's doc comment) and hands
-    /// it to `PushNotificationOpenCoordinator` so `MailScreenView` can
-    /// navigate straight to it once the app finishes launching/foregrounding.
+    /// hands the payload's `accountId`/`uidNext` straight to
+    /// `PushNotificationOpenCoordinator` so `MailScreenView` can navigate
+    /// to `PushNotificationOpenView` (a loading screen) the moment the app
+    /// finishes launching/foregrounding; resolving the target message (and
+    /// the INBOX-only priority sync a not-yet-synced message needs — see
+    /// `AppEnvironment.resolvePushNotificationOpenTarget`) happens inside
+    /// that view, with visible progress and a retry path, instead of here.
     /// The dismiss identifier (`UNNotificationDismissActionIdentifier`,
     /// swiping it away) falls through to the `nil` case in `action(for:)` —
-    /// same as an unresolvable default-tap target — and just calls
+    /// same as an unparseable payload — and just calls
     /// `completionHandler()` immediately.
     ///
     /// v1.3.8 production crash (`UIApplication
     /// ._updateStateRestorationArchiveForBackgroundEvent:...` asserting
     /// inside `_performBlockAfterCATransactionCommitSynchronizes:`, observed
     /// on a `Foreground`-role process): the default-tap branch used to await
-    /// `resolveOpenTarget` — by then already doing an IMAP round trip for
+    /// target resolution — by then already doing an IMAP round trip for
     /// the priority sync — before calling `completionHandler()`. A default
     /// tap simultaneously foregrounds the app (the whole point of tapping a
     /// notification body) *and* is, from `UNUserNotificationCenter`'s
@@ -169,17 +171,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// call until `completionHandler()` fires. Holding that background call
     /// open for a multi-second IMAP connect while the app was already
     /// foregrounding raced UIKit's own foreground/background state-restoration
-    /// bookkeeping and tripped an internal assertion. The fix: call
-    /// `completionHandler()` immediately for the default-tap branch (nothing
-    /// here needs the OS's background execution window — the app is already
-    /// coming to the foreground) and let target resolution (and its
-    /// possible priority sync) continue in a plain, unawaited `Task` — its
-    /// eventual `setPendingTarget` still reaches `MailScreenView` via
-    /// `PushNotificationOpenCoordinator`'s `.onReceive`/`.task`, same as
-    /// before, just without blocking the notification-handling callback on
-    /// it. The action-button branch below (`MARK_READ`/`ARCHIVE`) keeps
-    /// awaiting its work before calling back — those never foreground the
-    /// app, so there's no such race, and `PushNotificationActionHandler
+    /// bookkeeping and tripped an internal assertion. Since then the whole
+    /// resolution moved into `PushNotificationOpenView` (so a slow/failed
+    /// sync shows a loading/retry screen instead of silently opening
+    /// nothing), leaving this branch with nothing async at all: call
+    /// `completionHandler()` immediately and post the pending request. The
+    /// action-button branch below (`MARK_READ`/`ARCHIVE`) keeps awaiting
+    /// its work before calling back — those never foreground the app, so
+    /// there's no such race, and `PushNotificationActionHandler
     /// .handle(...)`'s local DB write + best-effort IMAP replay still needs
     /// the OS's background execution window to actually finish before the
     /// process risks being suspended.
@@ -202,13 +201,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
         if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
             // See this method's doc comment (v1.3.8 crash) for why this
-            // branch calls back immediately instead of awaiting
-            // `resolveOpenTarget` first.
+            // branch calls back immediately and does nothing async —
+            // target resolution lives in `PushNotificationOpenView` now.
             completionHandler()
-            Task {
-                if let target = await PushNotificationActionHandler.resolveOpenTarget(accountId: payload.accountId, uidNext: payload.uidNext) {
-                    await PushNotificationOpenCoordinator.shared.setPendingTarget(threadId: target.threadId, messageId: target.messageId)
-                }
+            Task { @MainActor in
+                PushNotificationOpenCoordinator.shared.setPendingRequest(accountId: payload.accountId, uidNext: payload.uidNext)
             }
             return
         }

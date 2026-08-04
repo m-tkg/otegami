@@ -486,6 +486,13 @@ translations = {
     # `RelayRegistrationSecretConfig`'s doc comment — in favor of a
     # build-time value, so this screen no longer has that Section at all.
 
+    # --- PushNotificationOpenView (通知タップ→ローディング→本文/失敗) ---
+    # 「再試行」は既存キーを再利用 (このdict前方で定義済み)。
+    "メールを読み込んでいます…": "Loading mail…",
+    "メールを読み込めませんでした": "Could Not Load Mail",
+    "通信できないか、サーバー上でメールが移動・削除された可能性があります。":
+        "You may be offline, or the mail may have been moved or deleted on the server.",
+
     # --- 実機フィードバック第3弾 (E): 設定画面配下の未登録文字列を洗い出して
     # 追加。動的な値を埋め込む補間文字列 (例: アカウント削除確認ダイアログの
     # "\(account.displayName) (\(account.email)) を削除すると...") は

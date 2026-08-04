@@ -84,6 +84,12 @@ struct MailScreenView: View {
     /// destination クロージャは **item 引数だけ**から画面を組み立てる —
     /// 兄弟 state を読まないので stale capture が構造的に起きない。
     @State private var selectedRoute: ThreadRoute?
+    /// 通知の本体タップで開く `PushNotificationOpenView` (ローディング→
+    /// 本文/失敗) の navigation item — `selectedRoute` とは独立した destination
+    /// にする (対象メールが未同期の時点では `threadId` が存在せず
+    /// `ThreadRoute` を作れないため)。`applyPendingPushOpenTargetIfNeeded()`
+    /// が設定し、compact では push、regular では右ペインの表示分岐が消費する。
+    @State private var pushOpenRoute: PushOpenRoute?
     /// `MessageListView` は互換のため従来どおり「messageId → threadId」の
     /// 順で2つの binding に書く — messageId の書き込みをここに一時保持し、
     /// threadId の書き込み時に `ThreadRoute` へ合成する (下の
@@ -255,6 +261,14 @@ struct MailScreenView: View {
             if ProcessInfo.processInfo.arguments.contains("-uitestsSelectAllMailDirectly") {
                 selectUnifiedRole(.all)
             }
+            // 通知タップ→ローディング画面 (`PushNotificationOpenView`) の
+            // 見た目確認用 — 同じ「タップ不要の直接遷移」パターン。存在
+            // しない accountId を指すダミー request なので、解決は即座に
+            // 失敗し loading → failed の両状態を screenshot できる
+            // (実機/通常起動では引数に無いので常に no-op)。
+            if ProcessInfo.processInfo.arguments.contains("-uitestsOpenPushLoadingDirectly") {
+                pushOpenRoute = PushOpenRoute(accountId: "uitest-push-open-missing-account", uidNext: 2)
+            }
             // 通知タップからの起動 (コールドスタート) を拾う — ウォーム
             // スタート側は下の `.onReceive` 参照。
             applyPendingPushOpenTargetIfNeeded()
@@ -266,15 +280,35 @@ struct MailScreenView: View {
         .onReceive(NotificationCenter.default.publisher(for: PushNotificationOpenCoordinator.didUpdateNotification)) { _ in
             applyPendingPushOpenTargetIfNeeded()
         }
+        .onChange(of: selectedRoute, handleSelectedRouteChanged)
     }
 
     /// `PushNotificationOpenCoordinator`に積まれた「通知タップで開くべき
-    /// スレッド」を消費し、あれば`selectedRoute`へ反映する。`.task`(コール
+    /// メール」(未解決の accountId/uidNext) を消費し、あれば`pushOpenRoute`
+    /// へ反映して`PushNotificationOpenView`(ローディング画面)へ即遷移する —
+    /// 対象の解決・優先同期はそのビューの中で行う。`.task`(コール
     /// ドスタート)と`.onReceive`(ウォームスタート)の両方から呼ばれる —
     /// どちらが先に走ってもどちらか一方で確実に消費される。
     private func applyPendingPushOpenTargetIfNeeded() {
-        guard let target = PushNotificationOpenCoordinator.shared.consumePendingTarget() else { return }
-        selectedRoute = ThreadRoute(threadId: target.threadId, messageId: target.messageId)
+        guard let request = PushNotificationOpenCoordinator.shared.consumePendingRequest() else { return }
+        pushOpenRoute = PushOpenRoute(accountId: request.accountId, uidNext: request.uidNext)
+    }
+
+    /// `PushNotificationOpenView`内の`ThreadEntryView`から届く
+    /// `onThreadRemoved` — 通知経由の画面をまず閉じてから、一覧経由と同じ
+    /// `handleThreadRemoved`(「次のスレッドへ」設定の解決)へ委譲する。
+    private func handlePushOpenThreadRemoved(_ threadId: Int64) {
+        pushOpenRoute = nil
+        handleThreadRemoved(threadId)
+    }
+
+    /// regular 幅で一覧から別スレッドをタップしたとき (`selectedRoute`が
+    /// 非nilへ変化) は通知経由の`PushNotificationOpenView`を閉じ、右ペイン
+    /// をタップしたスレッドへ譲る。compact では`PushNotificationOpenView`
+    /// がpush済みで一覧に触れないため実質no-op。
+    private func handleSelectedRouteChanged(_ oldValue: ThreadRoute?, _ newValue: ThreadRoute?) {
+        guard newValue != nil else { return }
+        pushOpenRoute = nil
     }
 
     /// Task #70: `HamburgerMenuContainer`の`content`にはこの一つだけを渡す
@@ -334,6 +368,19 @@ struct MailScreenView: View {
                         onThreadRemoved: handleThreadRemoved
                     )
                 }
+                // 通知の本体タップ (`pushOpenRoute`) — `selectedRoute`とは別の
+                // destination として push する (`pushOpenRoute`のdoc comment)。
+                .navigationDestination(item: $pushOpenRoute) { route in
+                    // `.id(route)`: push済みのまま別の通知をタップした場合
+                    // (item差し替えのin-place再描画) に、前のメールの解決
+                    // 済み`phase`(`@State`)を持ち越さず作り直すため。
+                    PushNotificationOpenView(
+                        accountId: route.accountId, uidNext: route.uidNext, onReply: onReply, onForward: onForward,
+                        onSearchFromSender: { query in openSearch(presetQuery: query) },
+                        onThreadRemoved: handlePushOpenThreadRemoved
+                    )
+                    .id(route)
+                }
                 // Task #124 実機フィードバック「送信キャンセルのカウントダウン
                 // バーが表示されないことがある」: `SendCountdownBar` lives in
                 // `content` — this stack's *root* — so replying from an
@@ -383,7 +430,17 @@ struct MailScreenView: View {
     private var detailColumn: some View {
         NavigationStack {
             Group {
-                if let selectedRoute {
+                if let pushOpenRoute {
+                    // 通知の本体タップ — 対象が未同期でもまずローディングを
+                    // 右ペインに出す。一覧タップ (`selectedRoute`変化) で
+                    // 閉じる (`handleSelectedRouteChanged`)。
+                    PushNotificationOpenView(
+                        accountId: pushOpenRoute.accountId, uidNext: pushOpenRoute.uidNext, onReply: onReply, onForward: onForward,
+                        onSearchFromSender: { query in openSearch(presetQuery: query) },
+                        onThreadRemoved: handlePushOpenThreadRemoved
+                    )
+                    .id(pushOpenRoute)
+                } else if let selectedRoute {
                     ThreadEntryView(
                         threadId: selectedRoute.threadId, preselectedMessageId: selectedRoute.messageId, onReply: onReply, onForward: onForward,
                         onSearchFromSender: { query in openSearch(presetQuery: query) },
@@ -1068,6 +1125,18 @@ private struct ThreadRoute: Hashable, Identifiable {
     let threadId: Int64
     let messageId: Int64?
     var id: Int64 { threadId }
+}
+
+/// `MailScreenView.pushOpenRoute`の navigation item — 通知の本体タップが
+/// 運ぶ**未解決**の対象 (`PushNotificationOpenRequest`と同じ accountId/
+/// uidNext)。`ThreadRoute`と同じ「destination が必要な値はすべて item 自身
+/// が運ぶ」idiom。`id`は内容から導出 — 同じ通知を (一度閉じてから) もう一度
+/// タップしたケースは binding が一旦 nil に戻っているので、同値でも再push
+/// される。
+private struct PushOpenRoute: Hashable, Identifiable {
+    let accountId: String
+    let uidNext: Int
+    var id: String { "\(accountId)#\(uidNext)" }
 }
 
 /// Task #140: `MailScreenView.searchRoute`'s item type — bundles

@@ -2833,6 +2833,36 @@
         }
       }
     },
+    "メールを読み込んでいます…": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading mail…"
+          }
+        }
+      }
+    },
+    "メールを読み込めませんでした": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could Not Load Mail"
+          }
+        }
+      }
+    },
+    "通信できないか、サーバー上でメールが移動・削除された可能性があります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You may be offline, or the mail may have been moved or deleted on the server."
+          }
+        }
+      }
+    },
     "IMAP": {
       "localizations": {
         "en": {
