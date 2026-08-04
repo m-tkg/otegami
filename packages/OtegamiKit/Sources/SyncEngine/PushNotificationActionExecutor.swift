@@ -92,12 +92,20 @@ public enum PushNotificationActionExecutor {
     }
 
     /// `resolveOpenTarget`のローカル読み取りが `nil`(対象メッセージが
-    /// まだ未同期)を返した場合、そのアカウントのINBOXだけを対象にした
-    /// 優先的な差分同期を1回試みてから再度 `resolveOpenTarget` を呼び直す。
+    /// まだ未同期)を返した場合、まず対象UID 1通だけを狙い撃ちで取得する
+    /// 高速経路 (`fetchTargetEnvelopeDirectly`) を試み、それでも解決でき
+    /// なければそのアカウントのINBOXだけを対象にした優先的な差分同期を
+    /// 1回試みてから再度 `resolveOpenTarget` を呼び直す。
     /// 「通知をタップしたら他の通信より先に対象メールを読み込んで開く」
     /// ための経路 — 全アカウント・全メールボックスを回す通常の起動時同期
     /// (`OtegamiApp.syncAllAccountsOnce()`)を待たず、この呼び出し自身が
-    /// 対象アカウントのINBOXだけを狙って同期する。
+    /// 対象メールだけを狙って取得する。
+    ///
+    /// 高速経路が先なのは実機報告「通知からメールを開くと表示まで数十秒
+    /// かかる」への対処: INBOX全体の差分同期は未同期の新着が溜まっている
+    /// ほど (数日ぶりの起動など) envelope 取得だけで数十秒かかりうるが、
+    /// 通知タップが今すぐ必要なのは対象の1通だけ。残りの新着はこの解決と
+    /// 無関係に走る通常の起動時同期が取り込む。
     ///
     /// 資格情報が解決できない、同期そのものが失敗する、同期後も対象UIDが
     /// 見つからない、のいずれも `nil` — 呼び出し側は通常どおり遷移を諦め、
@@ -118,12 +126,76 @@ public enum PushNotificationActionExecutor {
             try AccountRecord.fetchOne(db, key: accountId)
         }), let resolvedAuth = await auth(account) else { return nil }
 
+        if await fetchTargetEnvelopeDirectly(
+            account: account, uidNext: uidNext, database: database,
+            auth: resolvedAuth, sessionFactory: sessionFactory
+        ), let target = await resolveOpenTarget(accountId: accountId, uidNext: uidNext, database: database) {
+            return target
+        }
+
         let coordinator = SyncCoordinator(database: database, sessionFactory: sessionFactory)
         _ = try? await coordinator.syncAccountIncrementally(
             account, auth: resolvedAuth, scope: .inboxOnly, autoRetry: false
         )
 
         return await resolveOpenTarget(accountId: accountId, uidNext: uidNext, database: database)
+    }
+
+    /// 高速経路: ローカル既知のINBOXに対して `connect → select → 対象UID
+    /// 1通の envelope fetch → upsert` だけを行う。INBOX全体の差分同期
+    /// (listMailboxes・溜まった新着全件の取得・Drafts 同期) を一切伴わない
+    /// ので、新着が何百通溜まっていても所要時間は接続確立+1往復のまま。
+    ///
+    /// `false` を返して全体同期へフォールバックするのは:
+    /// - INBOXのメールボックス行がまだローカルに無い (初回同期前) —
+    ///   listMailboxes からやり直す必要がある。
+    /// - `SELECT` が返した uidValidity がローカル記録と不一致 — UIDが全て
+    ///   振り直されており、`(mailboxId, uid)` キーでの単発 upsert は別の
+    ///   メールを上書きしうるため、uidValidity 変化を正しく処理する
+    ///   `MailboxSyncer.incrementalSync` に任せる。
+    /// - 対象UIDの envelope がサーバーに無い (既に移動/削除、または
+    ///   `uidNext - 1` 推測が外れた) — 全体同期後の再照合に望みを残す。
+    /// - 接続・fetch・DB書き込みのいずれかが失敗。
+    private static func fetchTargetEnvelopeDirectly(
+        account: AccountRecord,
+        uidNext: Int,
+        database: AppDatabase,
+        auth: MailAuth,
+        sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+    ) async -> Bool {
+        guard let mailbox = try? await MailboxRoleResolver.mailbox(role: .inbox, accountId: account.id, database: database),
+              let mailboxId = mailbox.id
+        else { return false }
+
+        let uid = UInt32(max(uidNext - 1, 1))
+        let session = sessionFactory(account.imapConfig)
+        do {
+            try await session.connect(auth: auth)
+        } catch {
+            return false
+        }
+        defer {
+            let session = session
+            Task { await session.disconnect() }
+        }
+
+        guard let status = try? await session.select(mailbox.path),
+              Int64(status.uidValidity) == mailbox.uidValidity
+        else { return false }
+
+        guard let envelope = try? await session.fetchEnvelopes(
+            mailboxPath: mailbox.path, uids: UIDRange(lowerBound: uid, upperBound: uid), batchSize: 1
+        ).first(where: { $0.uid == uid }) else { return false }
+
+        let accountId = account.id
+        do {
+            try await database.dbWriter.write { db in
+                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+            }
+        } catch {
+            return false
+        }
+        return true
     }
 
     /// 通知の default action (本体タップ) 向け: `execute`と同じ `uidNext →

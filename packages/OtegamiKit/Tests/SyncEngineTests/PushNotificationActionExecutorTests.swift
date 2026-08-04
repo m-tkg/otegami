@@ -327,6 +327,62 @@ struct PushNotificationActionExecutorTests {
         #expect(message?.uid == 42, "the priority INBOX sync should have pulled in the just-arrived message")
     }
 
+    @Test("fetchAndResolveOpenTarget uses the single-UID fast path without listing mailboxes or syncing the whole INBOX")
+    func fetchAndResolveOpenTargetFastPathSkipsFullSync() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _) = try await makeAccountWithInbox(database: database)
+
+        // `mailboxes: []` — a full incremental sync could not even find the
+        // INBOX in this script, so a resolved target proves the fast path
+        // (local mailbox record + targeted single-UID fetch) did the work.
+        let script = FakeIMAPSession.Script(
+            mailboxes: [],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 42)]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 43, highestModSeq: 0, messageCount: 1)]
+        )
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
+            accountId: account.id, uidNext: 43, database: database,
+            auth: { _ in self.auth },
+            sessionFactory: { config in FakeIMAPSession(config: config, script: script, recorder: recorder) }
+        )
+
+        let target1 = try #require(target)
+        let message = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: target1.messageId) }
+        #expect(message?.uid == 42)
+        #expect(recorder.listMailboxesCallCount == 0, "the fast path must not pay for a LIST — the INBOX is already known locally")
+    }
+
+    @Test("fetchAndResolveOpenTarget falls back to a full INBOX sync when uidValidity changed")
+    func fetchAndResolveOpenTargetFallsBackOnUidValidityMismatch() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _) = try await makeAccountWithInbox(database: database)
+
+        // Local INBOX record has uidValidity 1 (makeAccountWithInbox), the
+        // server reports 2 — every UID was reassigned, so the fast path's
+        // single-UID upsert must not run; the full sync's uidValidity
+        // handling (windowed resync) takes over instead.
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inboxInfo],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 42)]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 2, uidNext: 43, highestModSeq: 0, messageCount: 1)]
+        )
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
+            accountId: account.id, uidNext: 43, database: database,
+            auth: { _ in self.auth },
+            sessionFactory: { config in FakeIMAPSession(config: config, script: script, recorder: recorder) }
+        )
+
+        let target1 = try #require(target)
+        let message = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: target1.messageId) }
+        #expect(message?.uid == 42)
+        #expect(recorder.listMailboxesCallCount > 0, "the uidValidity mismatch must have routed through the full sync")
+    }
+
     @Test("fetchAndResolveOpenTarget returns nil when credentials can't be resolved")
     func fetchAndResolveOpenTargetReturnsNilWithoutAuth() async throws {
         let database = try AppDatabase.makeInMemory()
