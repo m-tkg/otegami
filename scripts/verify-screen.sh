@@ -399,6 +399,16 @@
 #                                       — 候補表示自体の確認は
 #                                       `docs/design-system.md`のTask #200節
 #                                       (macOSで実クリック確認済み) 参照。
+#   push-open-failed                     通知の本体タップ→ローディング→
+#                                       失敗の遷移先 (`PushNotificationOpenView`)
+#                                       — `-uitestsOpenPushLoadingDirectly`で
+#                                       存在しないアカウントを指すダミー
+#                                       request を直接積み、解決失敗後の
+#                                       「メールを読み込めませんでした」+
+#                                       再試行ボタンの見た目を確認する
+#                                       (ローディング状態は一瞬で通過する
+#                                       ため、静止screenshotはこの失敗状態
+#                                       が対象)。
 #
 # 上10個の`html-*`は `AppEnvironment.uitestFakeHTMLMessages`の0〜7番目・
 # 9番目・10番目 (`OTEGAMI_UITEST_OPEN_HTML_MESSAGE_AT_INDEX`の値と対応、

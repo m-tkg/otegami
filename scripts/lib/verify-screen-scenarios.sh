@@ -377,3 +377,13 @@ SCENARIO_ARGS[composer-recipient-suggestion]="-uitestsOpenComposerDirectly"
 SCENARIO_OUT[composer-signature]="composer-signature.png"
 SCENARIO_ENV[composer-signature]="OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1 OTEGAMI_UITEST_INSERT_FAKE_SIGNATURE=1"
 SCENARIO_ARGS[composer-signature]="-uitestsOpenComposerDirectly"
+
+# push-open-failed — 通知タップ→`PushNotificationOpenView`の解決失敗状態。
+# `-uitestsOpenPushLoadingDirectly` は存在しない accountId のダミー request
+# を積むので、`resolvePushNotificationOpenTarget` は即 `nil` → 失敗表示
+# (「メールを読み込めませんでした」+ 再試行) に落ち着く。フィクスチャDBは
+# 不要 (一覧が空でも遷移自体は起きる) だが、背景の一覧が空っぽの
+# empty state にならないよう fake メッセージだけ入れておく。
+SCENARIO_OUT[push-open-failed]="push-open-failed.png"
+SCENARIO_ENV[push-open-failed]="OTEGAMI_UITEST_INSERT_FAKE_HTML_MESSAGE=1"
+SCENARIO_ARGS[push-open-failed]="-uitestsOpenPushLoadingDirectly"
