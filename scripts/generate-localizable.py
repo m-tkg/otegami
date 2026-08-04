@@ -964,6 +964,7 @@ translations = {
     "設定の読み取り": "Reading Settings",
     "アカウントの引き当て": "Resolving Account",
     "資格情報の取得": "Resolving Credential",
+    "受信箱の同期": "Syncing Inbox",
     "接続": "Connecting",
     "メールボックス選択": "Selecting Mailbox",
     "見出し取得": "Fetching Envelope",

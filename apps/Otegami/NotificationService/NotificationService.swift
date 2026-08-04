@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import GRDB
 import GoogleOAuth
@@ -189,6 +190,33 @@ final class NotificationDeliveryGate: @unchecked Sendable {
 /// エラー/Client ID未設定/トークン取得不可/想定外のkind」を診断画面の
 /// カテゴリとして区別できるようにしている (資格情報そのものは相変わらず
 /// 一切記録しない)。
+///
+/// **プッシュ通知起点バックグラウンド受信 Phase 1**: それまで`enrich(
+/// payload:)`は読み取り専用 (`fetchEnvelopes`/`fetchBody`、共有DBへは一切
+/// 書かない) で、通知の文言を組み立てるためだけに新着メールを再取得して
+/// いた — 取得した内容はこの Extension プロセスの生存期間限りで捨てられ、
+/// アプリが次に同期するまで共有DBには反映されない。Phase 1 はこの主経路を
+/// `SyncEngine.PushTriggeredInboxSync.run(...)` (`account/credential`解決
+/// はこのファイルの既存ロジックを流用しつつ、INBOX限定の差分同期を1回
+/// 実行して結果を共有DBへ永続化する) に置き換えた —
+/// `55e5405`でNSEがこのDBのwriterになれるよう共有DBにbusyMode timeoutが
+/// 追加済みなのが前提。通知の文言トグルが全部OFFでもこの同期自体は実行
+/// する (このExtensionの主目的が「共有DBへの永続化」に変わったため —
+/// 文言の組み立てだけがトグルでスキップされる)。同期が対象メッセージを
+/// 解決できなかった場合 (`PushTriggeredInboxSync.Outcome.message == nil`
+/// — アカウント未知/INBOX未解決/DB busy/ネットワーク失敗等、その型自身の
+/// doc comment通りどれも同じ一つの信号に潰れる) のみ、以前からある
+/// 読み取り専用の`legacyEnrich(account:auth:payload:preferences:)`
+/// (旧`enrich(payload:)`本体そのもの) にフォールバックする — 文言の
+/// 後退がゼロになるようにする設計。バッジは同期が真の未読数
+/// (`Outcome.unreadCount`) を返せた場合だけそれで上書きし
+/// (`applyTrueBadgeCount(_:)`)、返せなければ`incrementSharedBadgeCount()`
+/// の従来の "+1" 見積りのままにする。同期が実際にDBへ書いた場合のみ
+/// Darwin notification (`DatabaseChangeDarwinNotification.name`) を post
+/// し、フォアグラウンドのアプリ側 (`AppEnvironment`) がそれを合図に
+/// `Database.notifyChanges(in: .fullDatabase)`を1回実行して自分の
+/// `ValueObservation`を再発火させる — 詳細は
+/// `DatabaseChangeDarwinNotification`のdoc comment参照。
 // `@unchecked Sendable`: `UNNotificationServiceExtension` doesn't itself
 // promise `didReceive(_:withContentHandler:)`/`serviceExtensionTimeWillExpire()`
 // run on any particular actor, so the compiler can't otherwise prove the
@@ -208,6 +236,13 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// roughly 30-second hard limit makes the notification itself feel
     /// broken when OAuth/IMAP/body fetching is slow. Release the generic or
     /// partially-enriched notification after five seconds instead.
+    ///
+    /// Phase 1: this budget only bounds how long the notification's own
+    /// *display* waits — `enrichmentTask`'s underlying sync-first work
+    /// (`PushTriggeredInboxSync.run(...)`, a durable database write) is no
+    /// longer cancelled when this budget expires, and keeps running
+    /// best-effort for whatever's left of the OS's own much longer ~30
+    /// second budget. See the deadline `Task`'s closure in `didReceive`.
     private static let enrichmentDisplayBudget: Duration = .seconds(5)
 
     /// Set once at the top of `didReceive`, read back by `deliver()` (from
@@ -292,17 +327,20 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
                 // `UNUserNotificationCenter.setBadgeCount` from this
                 // Extension process) is the actual supported mechanism for
                 // an Extension to affect the badge — the OS applies it the
-                // moment this notification is delivered. This is
-                // deliberately just "+1", not the true unread count: the
-                // Extension never inserts the new message into the shared
-                // database itself (only `enrich(payload:)`'s own read-only
-                // envelope fetch, for display text), so it has no way to
-                // compute the *true* post-sync count here. The next time
-                // the main app runs its own live `ValueObservation` (any
-                // foreground/sync/read-toggle — `AppEnvironment
-                // .restartBadgeObservationIfNeeded`'s doc comment) it
-                // overwrites this with the real number, self-correcting
-                // any drift from multiple pushes arriving before that.
+                // moment this notification is delivered. Deliberately just
+                // "+1", not the true unread count: this call happens
+                // synchronously, before `enrich(payload:)` below has had any
+                // chance to run its (network-bound, potentially slow)
+                // sync-first pass — so a real count isn't available yet at
+                // this exact point. `enrich(payload:)`'s own
+                // `applyTrueBadgeCount(_:)` overwrites this with the real
+                // post-sync unread count (Phase 1: `PushTriggeredInboxSync
+                // .Outcome.unreadCount`) once that pass completes, if it
+                // resolved one; otherwise this "+1" estimate is what ships.
+                // Independently, the next time the main app runs its own
+                // live `ValueObservation` (any foreground/sync/read-toggle —
+                // `AppEnvironment.restartBadgeObservationIfNeeded`'s doc
+                // comment) it self-corrects to the real number regardless.
                 incrementSharedBadgeCount()
                 await enrich(payload: payload)
             }
@@ -318,7 +356,25 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             }
             guard let self, !Task.isCancelled else { return }
             Self.logger.notice("enrichment display budget expired — delivering best-effort content without waiting for remaining network work")
-            enrichmentTask.cancel()
+            // Phase 1 (push 通知起点バックグラウンド受信): deliberately does
+            // *not* cancel `enrichmentTask` here anymore — its sync-first
+            // work (`PushTriggeredInboxSync.run(...)`, this type's own doc
+            // comment) is a durable write to the shared database, not just
+            // display text, so it's worth letting it keep running
+            // best-effort for whatever's left of the ~30 second OS budget
+            // even after this budget-driven `deliver()` has already shown
+            // the notification. `enrichmentTask`'s own trailing `deliver()`
+            // call (at the end of the `Task` in `didReceive`) becomes a
+            // harmless no-op once this one has already claimed delivery
+            // (`NotificationDeliveryGate.claimDelivery()`'s guard) — every
+            // further `bestAttemptContent`/`stageRecords` mutation it
+            // attempts is silently dropped the same way, via
+            // `deliveryGate.withPending`. Only `serviceExtensionTimeWillExpire()`
+            // (the OS's own final callback, moments before this whole
+            // process is actually killed) still marks the practical end —
+            // there's no more budget left for anything to keep running
+            // through at that point regardless of whether this Task itself
+            // is ever explicitly cancelled.
             deliver()
         }
     }
@@ -340,9 +396,13 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private func deliver() {
         guard let contentHandler, let bestAttemptContent, deliveryGate.claimDelivery() else { return }
         deadlineTask?.cancel()
-        enrichmentTask?.cancel()
         deadlineTask = nil
-        enrichmentTask = nil
+        // Phase 1: `enrichmentTask` is deliberately left running here (not
+        // cancelled, not cleared) — see the deadline `Task`'s closure in
+        // `didReceive` for why. `didReceive`'s own top (`enrichmentTask?
+        // .cancel()`) still cancels whatever's left of it if another push
+        // arrives at this same process instance before it finishes on its
+        // own.
         self.contentHandler = nil
         var totalElapsedMs: Int?
         if let startedAt {
@@ -398,19 +458,16 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private func enrich(payload: PushNotificationPayload) async {
         let preferencesStart = Date()
         let preferences = Self.notificationContentPreferences()
-        // Task #176: every toggle off -> nothing below would ever be used,
-        // so skip the account/Keychain lookup and the IMAP connection
-        // entirely — see this type's doc comment, step 2. Reading the
-        // toggles themselves can't fail (falls back to `.allEnabled`), so
-        // this stage always records `.success` — a run that stops right
-        // here (only `parsePayload`/`preferences` recorded, Task #213) is
-        // itself how "all 3 toggles were off" reads on the diagnostics
-        // screen, with no separate flag needed.
+        // Phase 1: unlike before, reading preferences no longer gates the
+        // account/credential lookup or the sync below — this Extension's
+        // primary job now is persisting the new message into the shared
+        // database (`PushTriggeredInboxSync.run(...)`), which has to happen
+        // regardless of what this device's 3 notification-content toggles
+        // say. Those toggles still gate *display text* — see
+        // `legacyEnrich(account:auth:payload:preferences:)`'s own guard,
+        // and `syncFirstDecision(outcome:preferences:)` below — just no
+        // longer whether the IMAP/DB work happens at all.
         recordStage(.preferences, outcome: .success, since: preferencesStart)
-        guard NotificationEnrichment.needsFetch(preferences: preferences) else {
-            Self.logger.notice("enrich: all 3 content toggles are off — skipping account lookup/IMAP entirely")
-            return
-        }
         Self.logger.notice("""
         enrich: preferences showsSender=\(preferences.showsSender, privacy: .public) \
         showsSubject=\(preferences.showsSubject, privacy: .public) \
@@ -450,13 +507,208 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             return
         }
 
+        // Phase 1 sync-first path — see this type's own doc comment
+        // ("プッシュ通知起点バックグラウンド受信 Phase 1") for the full design.
+        let incrementalSyncStart = Date()
+        let syncOutcome = await Self.runIncrementalSync(
+            accountId: account.id, uidNext: payload.uidNext, fetchBodyPreview: preferences.showsBodyPreview, auth: auth
+        )
+        let decision = Self.syncFirstDecision(outcome: syncOutcome, preferences: preferences)
+
+        guard !decision.needsLegacyFallback else {
+            Self.logger.notice("enrich: incrementalSync: didn't resolve the pushed message — falling back to the legacy read-only IMAP fetch")
+            recordStage(.incrementalSync, outcome: .failure(category: "noMessageResolved", looksRateLimited: false, logDetail: nil), since: incrementalSyncStart)
+            await legacyEnrich(account: account, auth: auth, payload: payload, preferences: preferences)
+            return
+        }
+        Self.logger.notice("enrich: incrementalSync: succeeded, message persisted to the shared database")
+        recordStage(.incrementalSync, outcome: .success, since: incrementalSyncStart)
+
+        if let title = decision.title, let body = decision.body {
+            let applied = deliveryGate.withPending {
+                bestAttemptContent?.title = title
+                bestAttemptContent?.body = body
+            }
+            if applied {
+                Self.logger.notice("enrich: applied sync-first content to notification")
+            } else {
+                Self.logger.notice("enrich: incrementalSync completed after delivery; discarded late content update")
+            }
+        }
+        if let badgeCount = decision.badgeCount {
+            applyTrueBadgeCount(badgeCount)
+        }
+        // Only posted once the sync above actually persisted a row — a run
+        // that fell back to `legacyEnrich` (read-only, this type's own doc
+        // comment) never reaches this line, since it `return`s above first.
+        postDatabaseChangedDarwinNotification()
+    }
+
+    /// Task (Phase 1 バッジ整合): overwrites whatever `incrementSharedBadgeCount()`'s
+    /// "+1" estimate already applied with the real post-sync unread count —
+    /// `PushTriggeredInboxSync.Outcome.unreadCount`, computed by
+    /// `OtegamiStore.MessageQuery.unreadCount` right after this push's
+    /// incremental sync completed. Mirrors `incrementSharedBadgeCount()`'s
+    /// own shared-`UserDefaults` write (`BadgeCenter.sharedCountKey`'s doc
+    /// comment on why both processes keep that key in sync) so the main
+    /// app's next `BadgeCenter.setBadge(count:)` self-correction starts
+    /// from an already-accurate baseline instead of this Extension's stale
+    /// "+1" — a difference that matters if several pushes land in a row
+    /// before the app is ever foregrounded again. Uses `deliveryGate
+    /// .withPending` the same way `incrementSharedBadgeCount()` does, so a
+    /// late call (the sync finishing after the 5-second display budget
+    /// already delivered the notification) only updates the shared
+    /// baseline, not a `UNMutableNotificationContent` the OS has already
+    /// been handed.
+    private func applyTrueBadgeCount(_ count: Int) {
+        guard let appGroupIdentifier = Self.appGroupIdentifier, let defaults = UserDefaults(suiteName: appGroupIdentifier) else { return }
+        defaults.set(count, forKey: Self.sharedBadgeCountKey)
+        deliveryGate.withPending {
+            bestAttemptContent?.badge = NSNumber(value: count)
+        }
+    }
+
+    /// Task (Phase 1 クロスプロセス反映): tells the app's own foreground
+    /// process (if any is running) that this Extension just durably wrote a
+    /// new message into the shared App Group database — see
+    /// `DatabaseChangeDarwinNotification`'s doc comment for the full
+    /// cross-process design and why a Darwin notification (not
+    /// `NotificationCenter.default`) is what reaches it. Best-effort and
+    /// fire-and-forget like everything else in this Extension: if no app
+    /// process happens to be alive to observe it right now, this is simply
+    /// a no-op — the app's own `scenePhase == .active` handler
+    /// (`OtegamiApp.handleScenePhaseChange`) independently re-runs the same
+    /// `notifyChanges(in:)` write once on every foreground return, which is
+    /// what actually guarantees eventual consistency for a suspended app
+    /// that missed this specific post.
+    private func postDatabaseChangedDarwinNotification() {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(DatabaseChangeDarwinNotification.name as CFString),
+            nil,
+            nil,
+            true
+        )
+    }
+
+    /// Task (Phase 1): runs `SyncEngine.PushTriggeredInboxSync.run(...)` for
+    /// `accountId` — the actual "pull the new message into the shared
+    /// database" work `enrich(payload:)`'s sync-first path is built on. A
+    /// `static` function (not an instance method) with no dependency on
+    /// `self`, matching `lookupAccount(id:)`/`resolveAuth(for:)` right below
+    /// — `database` is a purely local variable here, so its `DatabasePool`
+    /// closes (GRDB's own `deinit`) the moment this function returns, well
+    /// before `deliver()` ever runs, same 0xDEAD10CC-avoidance reasoning
+    /// `lookupAccount(id:)`'s own doc comment (Task #192) already spells
+    /// out. `sessionFactory` mirrors `enrich`'s own historical direct
+    /// `MailCoreIMAPSession(config:)` construction — this Extension is a
+    /// short-lived, per-push process, so there's no connection pool to
+    /// reuse across calls the way `AppEnvironment.imapSessionPool` is for
+    /// the long-lived app process.
+    private static func runIncrementalSync(
+        accountId: String,
+        uidNext: Int,
+        fetchBodyPreview: Bool,
+        auth: MailAuth
+    ) async -> PushTriggeredInboxSync.Outcome {
+        guard let database = try? AppDatabase.makeShared(appGroupIdentifier: appGroupIdentifier) else {
+            return PushTriggeredInboxSync.Outcome(message: nil, unreadCount: nil)
+        }
+        return await PushTriggeredInboxSync.run(
+            accountId: accountId,
+            uidNext: uidNext,
+            fetchBodyPreview: fetchBodyPreview,
+            database: database,
+            auth: auth,
+            sessionFactory: { config in MailCoreIMAPSession(config: config) }
+        )
+    }
+
+    /// Task (Phase 1) — the pure "what should `enrich(payload:)` do with a
+    /// `PushTriggeredInboxSync.Outcome`" policy, factored out (mirroring
+    /// `NotificationEnrichment`'s own "no `UNMutableNotificationContent`/
+    /// GRDB/IMAP involvement" split) so it's exercisable by
+    /// `NotificationServiceTests` without a real shared database or IMAP
+    /// session — same "private → internal for tests" pattern
+    /// `parsePayload(_:)` already established for this file.
+    struct SyncFirstDecision: Equatable {
+        /// The notification's title/body built from the just-synced
+        /// message, or both `nil` when either the sync needs the legacy
+        /// fallback (`needsLegacyFallback`) or every content-preference
+        /// toggle is off (Task #176's "全部OFFなら文言を組み立てない" rule
+        /// applies here exactly as it always has for the legacy path — the
+        /// database write itself still happened, there's just nothing to
+        /// show).
+        let title: String?
+        let body: String?
+        /// The real post-sync unread count, when the sync could compute
+        /// one — `nil` means "leave whatever `incrementSharedBadgeCount()`'s
+        /// existing +1 estimate already applied alone".
+        let badgeCount: Int?
+        /// `true` when `outcome.message` is `nil` — the sync didn't resolve
+        /// the pushed message at all (unknown account, no INBOX known yet,
+        /// the sync itself failing for any reason — `PushTriggeredInboxSync
+        /// .Outcome`'s own doc comment on why none of those are
+        /// distinguishable from here), so `enrich(payload:)` falls back to
+        /// `legacyEnrich(account:auth:payload:preferences:)` — the
+        /// pre-Phase-1 read-only IMAP envelope/body fetch, unchanged —
+        /// rather than showing the plain generic fallback text.
+        let needsLegacyFallback: Bool
+    }
+
+    static func syncFirstDecision(
+        outcome: PushTriggeredInboxSync.Outcome,
+        preferences: NotificationContentPreferences
+    ) -> SyncFirstDecision {
+        guard let message = outcome.message else {
+            return SyncFirstDecision(title: nil, body: nil, badgeCount: nil, needsLegacyFallback: true)
+        }
+        guard NotificationEnrichment.needsFetch(preferences: preferences) else {
+            return SyncFirstDecision(title: nil, body: nil, badgeCount: outcome.unreadCount, needsLegacyFallback: false)
+        }
+        let sender = message.fromAddresses.first
+        let title = NotificationEnrichment.title(preferences: preferences, senderName: sender?.name, senderAddress: sender?.address)
+        let body = NotificationEnrichment.body(preferences: preferences, subject: message.subject, bodyPreviewSourceText: message.snippet)
+        return SyncFirstDecision(title: title, body: body, badgeCount: outcome.unreadCount, needsLegacyFallback: false)
+    }
+
+    /// The pre-Phase-1 `enrich(payload:)` itself, unchanged apart from
+    /// taking its already-resolved `account`/`auth` as parameters instead
+    /// of resolving them again — `enrich(payload:)` now only reaches this
+    /// when `PushTriggeredInboxSync.run(...)` didn't resolve the pushed
+    /// message (`SyncFirstDecision.needsLegacyFallback`), so this remains
+    /// the read-only IMAP re-fetch this type's own doc comment (steps 4-6)
+    /// describes: connect, `SELECT INBOX`, `FETCH` the envelope for the
+    /// inferred UID, and (only if `showsBodyPreview`) that message's body
+    /// too — filling in the notification's title/body directly from IMAP
+    /// rather than the shared database. Guarantees zero text regression
+    /// from before Phase 1: any account/preference/IMAP condition that used
+    /// to produce enriched content still does, now just after one extra
+    /// (best-effort) sync attempt first.
+    private func legacyEnrich(
+        account: AccountRecord,
+        auth: MailAuth,
+        payload: PushNotificationPayload,
+        preferences: NotificationContentPreferences
+    ) async {
+        // Task #176: every toggle off -> nothing below would ever be used,
+        // so skip the IMAP connection entirely — see this type's doc
+        // comment, step 2. (Unlike before Phase 1, this guard no longer
+        // also skips the account/credential lookup — `enrich(payload:)`
+        // already did those unconditionally, since the sync-first path
+        // needs them regardless of these toggles.)
+        guard NotificationEnrichment.needsFetch(preferences: preferences) else {
+            Self.logger.notice("legacyEnrich: all 3 content toggles are off — nothing to enrich, skipping the IMAP fallback fetch")
+            return
+        }
+
         let session = MailCoreIMAPSession(config: account.imapConfig)
         let mailbox = "INBOX"
 
         let connectStart = Date()
         do {
             try await session.connect(auth: auth)
-            Self.logger.notice("enrich: connect: succeeded")
+            Self.logger.notice("legacyEnrich: connect: succeeded")
             recordStage(.connect, outcome: .success, since: connectStart)
         } catch {
             let summary = Self.log(error, stage: "connect")
@@ -468,7 +720,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         let selectStart = Date()
         do {
             _ = try await session.select(mailbox)
-            Self.logger.notice("enrich: select: succeeded")
+            Self.logger.notice("legacyEnrich: select: succeeded")
             recordStage(.select, outcome: .success, since: selectStart)
         } catch {
             let summary = Self.log(error, stage: "select")
@@ -482,7 +734,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         let envelopes: [FetchedEnvelope]
         do {
             envelopes = try await session.fetchEnvelopes(mailboxPath: mailbox, uids: .uid(latestUID), batchSize: 1)
-            Self.logger.notice("enrich: fetchEnvelope: succeeded count=\(envelopes.count, privacy: .public)")
+            Self.logger.notice("legacyEnrich: fetchEnvelope: succeeded count=\(envelopes.count, privacy: .public)")
         } catch {
             let summary = Self.log(error, stage: "fetchEnvelope")
             recordStage(.fetchEnvelope, outcome: summary.asOutcome, since: fetchEnvelopeStart)
@@ -492,7 +744,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
 
         guard let envelope = envelopes.first else {
             Self.logger.notice("""
-            enrich: fetchEnvelope: no results for uid=\(latestUID, privacy: .public) \
+            legacyEnrich: fetchEnvelope: no results for uid=\(latestUID, privacy: .public) \
             (uidNext=\(payload.uidNext, privacy: .public)) — already expunged/moved, \
             or a uidNext/UID mismatch; falling back to generic
             """)
@@ -526,7 +778,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         if preferences.showsBodyPreview {
             do {
                 bodyPreviewSourceText = try await session.fetchBody(mailboxPath: mailbox, uid: latestUID).plainText
-                Self.logger.notice("enrich: fetchBody: succeeded")
+                Self.logger.notice("legacyEnrich: fetchBody: succeeded")
                 recordStage(.fetchBody, outcome: .success, since: fetchBodyStart)
             } catch {
                 let summary = Self.log(error, stage: "fetchBody")
@@ -545,9 +797,9 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             )
         }
         if applied {
-            Self.logger.notice("enrich: applied enrichment to notification content")
+            Self.logger.notice("legacyEnrich: applied enrichment to notification content")
         } else {
-            Self.logger.notice("enrich: completed after notification delivery; discarded late content update")
+            Self.logger.notice("legacyEnrich: completed after notification delivery; discarded late content update")
         }
         await session.disconnect()
     }

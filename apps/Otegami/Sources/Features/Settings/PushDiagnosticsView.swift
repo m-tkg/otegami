@@ -133,9 +133,13 @@ private struct PushDiagnosticsStageRow: View {
         .accessibilityIdentifier("pushDiagnostics.stage")
     }
 
-    /// 8段階それぞれの日本語表示名 — Task #213 の依頼文そのままの語彙
-    /// (通知の解析/設定の読み取り/アカウントの引き当て/資格情報の取得/
-    /// 接続/メールボックス選択/見出し取得/本文取得)。ローカライズ対象
+    /// 9段階それぞれの日本語表示名 — 最初の8つはTask #213の依頼文そのままの
+    /// 語彙 (通知の解析/設定の読み取り/アカウントの引き当て/資格情報の取得/
+    /// 接続/メールボックス選択/見出し取得/本文取得)。「受信箱の同期」は
+    /// プッシュ通知起点バックグラウンド受信 Phase 1 で追加した
+    /// `PushDiagnosticsRun.Stage.incrementalSync` — `credential`成功後、
+    /// `connect`以降のIMAPフォールバック段階より前に記録される
+    /// (`PushDiagnosticsRun.Stage`のdoc comment参照)。ローカライズ対象
     /// (`scripts/generate-localizable.py`にエントリあり)。
     @ViewBuilder
     private func stageLabel(for stage: PushDiagnosticsRun.Stage) -> some View {
@@ -144,6 +148,7 @@ private struct PushDiagnosticsStageRow: View {
         case .preferences: Text("設定の読み取り")
         case .accountLookup: Text("アカウントの引き当て")
         case .credential: Text("資格情報の取得")
+        case .incrementalSync: Text("受信箱の同期")
         case .connect: Text("接続")
         case .select: Text("メールボックス選択")
         case .fetchEnvelope: Text("見出し取得")

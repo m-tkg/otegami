@@ -71,11 +71,29 @@ public struct PushDiagnosticsRun: Sendable, Codable, Equatable, Identifiable {
     /// The 8 stages named in Task #213's own request text, in the order
     /// `enrich(payload:)` reaches them — `parsePayload`/`preferences` are
     /// checked before any account/IMAP work even starts.
+    ///
+    /// **`incrementalSync`** (push 通知起点バックグラウンド受信 Phase 1):
+    /// added once `enrich(payload:)`'s primary path became
+    /// `PushTriggeredInboxSync.run(...)` — a full INBOX-only incremental
+    /// sync (not just an envelope re-fetch) that durably persists the new
+    /// message into the shared database before the notification shows.
+    /// Recorded right after `credential` succeeds and before any of the
+    /// `connect`/`select`/`fetchEnvelope`/`fetchBody` stages below, which
+    /// now only run as a **fallback** when this stage's own sync didn't
+    /// resolve the pushed message (`Outcome.message == nil` — an unknown
+    /// account/no-INBOX/busy-database/network failure inside
+    /// `PushTriggeredInboxSync.run` all collapse into that same one signal,
+    /// since that type's own doc comment explains it deliberately never
+    /// exposes *why* it gave up). `.success` here means the sync-first path
+    /// alone produced this run's notification content and this run's badge
+    /// count is the real post-sync unread count, not the legacy "+1"
+    /// estimate — see `NotificationService.applyTrueBadgeCount(_:)`.
     public enum Stage: String, Sendable, Codable, CaseIterable {
         case parsePayload
         case preferences
         case accountLookup
         case credential
+        case incrementalSync
         case connect
         case select
         case fetchEnvelope
