@@ -22,6 +22,10 @@ struct MessageSourceView: View {
     let subject: String?
 
     @State private var loader = MessageSourceLoader()
+    /// ソース内検索 UI の表示要求。インクリメントのたびに
+    /// `PlatformMonospaceTextView` が検索バーを提示する (iOS は
+    /// `UIFindInteraction`、macOS は `NSTextView` の find bar)。
+    @State private var findToken = 0
 
     var body: some View {
         NavigationStack {
@@ -44,8 +48,16 @@ struct MessageSourceView: View {
                     Button("閉じる") { dismiss() }
                         .accessibilityIdentifier("messageSource.closeButton")
                 }
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItemGroup(placement: .confirmationAction) {
                     if case .loaded(let source) = loader.state {
+                        #if os(iOS)
+                        // macOS は Cmd+F (ハードウェアキーボード標準) に
+                        // 寄せるためボタンは iOS のみ。シェアの左に置く。
+                        Button(action: requestFind) {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .accessibilityIdentifier("messageSource.findButton")
+                        #endif
                         ShareLink(item: source.shareURL) {
                             Image(systemName: "square.and.arrow.up")
                         }
@@ -120,7 +132,8 @@ struct MessageSourceView: View {
     /// 表示・選択・スクロールのために作られている) を薄くラップした
     /// `MonospaceSourceTextView`に置き換えることでこの上限を回避する。
     private func sourceView(_ source: MessageSourceLoader.DisplaySource) -> some View {
-        MonospaceSourceTextView(text: source.previewText)
+        MonospaceSourceTextView(text: source.previewText, findToken: findToken)
+        .background(findShortcutButton)
         .safeAreaInset(edge: .bottom) {
             if source.isTruncated {
                 Text("表示は先頭512KBまでです。全文はシェアで書き出せます。")
@@ -133,6 +146,21 @@ struct MessageSourceView: View {
             }
         }
         .accessibilityIdentifier("messageSource.content")
+    }
+
+    /// Cmd+F でソース内検索を開くための不可視ボタン。SwiftUI アプリの
+    /// 既定メインメニューには Find 項目が無く、`NSTextView` が first
+    /// responder でも Cmd+F が find bar に届かないため、シート内に
+    /// ショートカット付きボタンを置いて自前で配線する。iOS でも
+    /// ハードウェアキーボードの Cmd+F がそのまま効く。
+    private var findShortcutButton: some View {
+        Button(action: requestFind) { EmptyView() }
+            .keyboardShortcut("f", modifiers: .command)
+            .hidden()
+    }
+
+    private func requestFind() {
+        findToken += 1
     }
 
     private func retry() {
@@ -155,9 +183,11 @@ struct MessageSourceView: View {
 /// than the original.
 struct MonospaceSourceTextView: View {
     let text: String
+    /// 変化するたびに検索 UI を提示する (呼び出し側がインクリメント)。
+    var findToken: Int = 0
 
     var body: some View {
-        PlatformMonospaceTextView(text: text)
+        PlatformMonospaceTextView(text: text, findToken: findToken)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -165,9 +195,19 @@ struct MonospaceSourceTextView: View {
 #if os(iOS)
 private struct PlatformMonospaceTextView: UIViewRepresentable {
     let text: String
+    let findToken: Int
+
+    final class Coordinator {
+        var lastFindToken = 0
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
+        // ソース内検索 (ツールバーの虫眼鏡ボタン / ハードウェア Cmd+F)。
+        view.isFindInteractionEnabled = true
+        context.coordinator.lastFindToken = findToken
         view.isEditable = false
         view.isSelectable = true
         view.isScrollEnabled = true
@@ -192,14 +232,29 @@ private struct PlatformMonospaceTextView: UIViewRepresentable {
         if uiView.text != text {
             uiView.text = text
         }
+        if context.coordinator.lastFindToken != findToken {
+            context.coordinator.lastFindToken = findToken
+            uiView.findInteraction?.presentFindNavigator(showingReplace: false)
+        }
     }
 }
 #elseif os(macOS)
 private struct PlatformMonospaceTextView: NSViewRepresentable {
     let text: String
+    let findToken: Int
+
+    final class Coordinator {
+        var lastFindToken = 0
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSScrollView {
         let textView = NSTextView()
+        // Cmd+F でスクロールビュー上部に find bar を出す (パネルでなく)。
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
+        context.coordinator.lastFindToken = findToken
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
@@ -229,6 +284,20 @@ private struct PlatformMonospaceTextView: NSViewRepresentable {
         if textView.string != text {
             textView.string = text
         }
+        if context.coordinator.lastFindToken != findToken {
+            context.coordinator.lastFindToken = findToken
+            presentFindBar(in: textView)
+        }
+    }
+
+    /// find bar 表示。`performTextFinderAction(_:)` は sender の `tag` で
+    /// アクションを判別するため、`NSTextFinder.Action` の rawValue を
+    /// 載せたダミーの `NSMenuItem` を渡す (AppKit の標準イディオム)。
+    private func presentFindBar(in textView: NSTextView) {
+        textView.window?.makeFirstResponder(textView)
+        let sender = NSMenuItem()
+        sender.tag = NSTextFinder.Action.showFindInterface.rawValue
+        textView.performTextFinderAction(sender)
     }
 }
 #endif
