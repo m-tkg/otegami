@@ -303,10 +303,14 @@ public actor SyncCoordinator {
     /// to `AccountSyncer.performIncrementalSync`/`MailboxSyncer
     /// .incrementalSync` — see that parameter's doc comment. `true` for
     /// `MessageListView`'s pull-to-refresh and its 5-minute mailbox-display
-    /// auto-resync (both low-frequency, user-visible-mailbox-scoped);
-    /// left at `false` here (and for the `IDLE`-wake call below) so the
-    /// higher-frequency automatic paths don't all pay for an extra `UID
-    /// SEARCH` per mailbox on every pass.
+    /// auto-resync, the launch/foreground-resume pass
+    /// (`AppEnvironment.syncAllAccountsOnce`) and the `IDLE`-wake call
+    /// below (実機バグ「別クライアントで全部アーカイブ→アプリを切り替えて
+    /// 戻すと未読メールが復活」— all of those are exactly the moments a
+    /// vanished-elsewhere message must disappear locally too); left at
+    /// `false` only for the remaining high-frequency automatic paths
+    /// (targeted resync, notification-tap priority sync) so they don't
+    /// pay for an extra `UID SEARCH` per mailbox on every pass.
     @discardableResult
     public func syncAccountIncrementally(
         _ account: AccountRecord,
@@ -371,7 +375,16 @@ public actor SyncCoordinator {
         let syncer = syncer(for: account)
         await syncer.startIdleLoop(auth: auth) { [weak self] in
             guard let self else { return }
-            _ = try? await self.syncAccountIncrementally(account, auth: auth)
+            // `forceReconcileVanishedUIDs: true`: an `IDLE` wake *is* the
+            // server saying "something changed in this mailbox" — and one of
+            // the things that can have changed is another client expunging
+            // messages (archive-elsewhere). Gmail doesn't reliably bump
+            // HIGHESTMODSEQ for those (Task #83), so without the forced
+            // reconcile an idle-wake sync would leave the vanished messages
+            // sitting locally (still unread) until the 5-minute display
+            // loop happens to catch them. One extra `UID SEARCH` per actual
+            // server push is proportionate to that signal.
+            _ = try? await self.syncAccountIncrementally(account, auth: auth, forceReconcileVanishedUIDs: true)
             _ = try? await self.replayOpQueue(for: account, auth: auth)
         }
     }

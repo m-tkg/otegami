@@ -49,7 +49,17 @@ extension AppEnvironment {
                     for account in nextGroup {
                         guard let auth = authByAccountId[account.id] else { continue }
                         _ = try? await syncCoordinator.replayOpQueue(for: account, auth: auth)
-                        _ = try? await syncCoordinator.syncAccountIncrementally(account, auth: auth)
+                        // `forceReconcileVanishedUIDs: true` (実機バグ「別クライアント
+                        // で全部アーカイブ→アプリを切り替えて戻すと未読メールが復活」):
+                        // Gmail は他クライアントの EXPUNGE で HIGHESTMODSEQ を上げない
+                        // ことがあり (Task #83、`MailboxSyncer.incrementalSync` の
+                        // `forceReconcileVanishedUIDs` doc comment)、デフォルトの
+                        // `false` だとフォアグラウンド復帰同期がサーバー側で消えた
+                        // メッセージをローカルから削除できず、未読のまま残り続ける。
+                        // この呼び出しは起動/フォアグラウンド復帰時の1回きり・
+                        // INBOX スコープなので、追加コストはアカウントあたり
+                        // `UID SEARCH` 1回で済む。
+                        _ = try? await syncCoordinator.syncAccountIncrementally(account, auth: auth, forceReconcileVanishedUIDs: true)
                     }
                 }
             }
