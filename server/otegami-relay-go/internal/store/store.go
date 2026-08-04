@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -178,6 +179,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS watch_subscription_deviceId ON watch_subscription(deviceId)`,
 		`CREATE INDEX IF NOT EXISTS watch_subscription_watchId ON watch_subscription(watchId)`,
+		// message_preview (RELAY_CONTENT_PREVIEW, opt-in, Phase 2): a small
+		// cache of recently-fetched message content previews per watch, so
+		// GET /v1/messages can answer without re-touching IMAP. Only ever
+		// written/read when RELAY_CONTENT_PREVIEW=1 — see
+		// UpsertMessagePreviews/MessagePreviewsSince. uid is stored in the
+		// clear (not sensitive, and needed for range queries/pruning);
+		// everything else is encrypted the same way watch.encryptedSecret
+		// is (see MessagePreview's doc comment).
+		`CREATE TABLE IF NOT EXISTS message_preview (
+			watchId TEXT NOT NULL REFERENCES watch(id) ON DELETE CASCADE,
+			uid INTEGER NOT NULL,
+			encryptedContent BLOB NOT NULL,
+			fetchedAt TEXT NOT NULL,
+			PRIMARY KEY (watchId, uid)
+		)`,
+		`CREATE INDEX IF NOT EXISTS message_preview_watchId_fetchedAt ON message_preview(watchId, fetchedAt)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -863,4 +880,149 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// --- Message previews (RELAY_CONTENT_PREVIEW, opt-in, Phase 2) ---
+
+// maxMessagePreviewsPerWatch / messagePreviewRetention bound how much
+// content-preview cache this feature keeps per watch, and for how long —
+// this is a display cache the app can always re-derive by re-fetching
+// IMAP itself, not a system of record, so pruning aggressively costs
+// nothing but disk.
+const (
+	maxMessagePreviewsPerWatch = 50
+	messagePreviewRetention    = 48 * time.Hour
+)
+
+// MessagePreview is one decrypted `message_preview` row — deliberately a
+// separate type from imapclient.MessagePreview rather than importing that
+// package here: store stays decoupled from the IMAP wire client the same
+// way it already stays decoupled from api's HTTP DTOs (WatchRecord isn't
+// api.CreateWatchRequest either). The watcher pool, which already imports
+// both packages, converts between the two.
+type MessagePreview struct {
+	UID         uint32
+	FromName    string
+	FromAddress string
+	Subject     string
+	Date        time.Time
+	MessageID   string
+	BodyPreview string
+}
+
+// messagePreviewPayload is the JSON shape encrypted into
+// message_preview.encryptedContent — everything about MessagePreview
+// except UID, which is its own (unencrypted) column.
+type messagePreviewPayload struct {
+	FromName    string    `json:"fromName"`
+	FromAddress string    `json:"fromAddress"`
+	Subject     string    `json:"subject"`
+	Date        time.Time `json:"date"`
+	MessageID   string    `json:"messageId"`
+	BodyPreview string    `json:"bodyPreview"`
+}
+
+// UpsertMessagePreviews encrypts and persists previews for watchID,
+// replacing any existing row for the same (watchId, uid), then prunes:
+// keeps only the newest maxMessagePreviewsPerWatch rows (by uid, the
+// closest available proxy for "most recently arrived" — see this
+// function's pruning query) for this watch, and drops any row older than
+// messagePreviewRetention regardless of watch. A no-op if previews is
+// empty.
+func (s *Store) UpsertMessagePreviews(ctx context.Context, watchID string, previews []MessagePreview) error {
+	if len(previews) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once Commit has succeeded
+
+	now := formatTime(time.Now())
+	for _, p := range previews {
+		raw, err := json.Marshal(messagePreviewPayload{
+			FromName:    p.FromName,
+			FromAddress: p.FromAddress,
+			Subject:     p.Subject,
+			Date:        p.Date,
+			MessageID:   p.MessageID,
+			BodyPreview: p.BodyPreview,
+		})
+		if err != nil {
+			return err
+		}
+		encrypted, err := s.crypto.Encrypt(string(raw))
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO message_preview (watchId, uid, encryptedContent, fetchedAt)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(watchId, uid) DO UPDATE SET encryptedContent = excluded.encryptedContent, fetchedAt = excluded.fetchedAt`,
+			watchID, p.UID, encrypted, now,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM message_preview WHERE watchId = ? AND uid NOT IN (
+			SELECT uid FROM message_preview WHERE watchId = ? ORDER BY uid DESC LIMIT ?
+		)`,
+		watchID, watchID, maxMessagePreviewsPerWatch,
+	); err != nil {
+		return err
+	}
+	cutoff := formatTime(time.Now().Add(-messagePreviewRetention))
+	if _, err := tx.ExecContext(ctx, `DELETE FROM message_preview WHERE fetchedAt < ?`, cutoff); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// MessagePreviewsSince returns up to limit previews for watchID with uid >
+// sinceUID (0 means "no lower bound"), newest (highest uid) first. A row
+// whose encryptedContent fails to decrypt or unmarshal (corrupted, or
+// encrypted under a since-rotated RELAY_MASTER_KEY) is skipped rather than
+// failing the whole call — this is a best-effort display cache, not a
+// system of record.
+func (s *Store) MessagePreviewsSince(ctx context.Context, watchID string, sinceUID uint32, limit int) ([]MessagePreview, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT uid, encryptedContent FROM message_preview WHERE watchId = ? AND uid > ? ORDER BY uid DESC LIMIT ?`,
+		watchID, sinceUID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []MessagePreview{}
+	for rows.Next() {
+		var uid uint32
+		var encrypted []byte
+		if err := rows.Scan(&uid, &encrypted); err != nil {
+			return nil, err
+		}
+		plaintext, err := s.crypto.Decrypt(encrypted)
+		if err != nil {
+			continue
+		}
+		var payload messagePreviewPayload
+		if err := json.Unmarshal([]byte(plaintext), &payload); err != nil {
+			continue
+		}
+		out = append(out, MessagePreview{
+			UID:         uid,
+			FromName:    payload.FromName,
+			FromAddress: payload.FromAddress,
+			Subject:     payload.Subject,
+			Date:        payload.Date,
+			MessageID:   payload.MessageID,
+			BodyPreview: payload.BodyPreview,
+		})
+	}
+	return out, rows.Err()
 }

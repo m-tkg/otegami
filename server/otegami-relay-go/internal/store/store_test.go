@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -690,5 +692,234 @@ func TestOpensRealSwiftProducedDatabase(t *testing.T) {
 	}
 	if !ok || deviceID != "ivwEgjYel_znk2CwH7U-4A" {
 		t.Fatalf("got deviceID=%q ok=%v", deviceID, ok)
+	}
+}
+
+// --- message_preview (RELAY_CONTENT_PREVIEW, opt-in, Phase 2) ---
+
+func createTestWatch(t *testing.T, s *Store) string {
+	t.Helper()
+	ctx := context.Background()
+	device, err := s.CreateDevice(ctx, "tok", api.EnvironmentSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := s.CreateWatch(ctx, device.DeviceID, api.CreateWatchRequest{
+		AccountID:    "account-1",
+		ImapHost:     "203.0.113.10",
+		ImapPort:     993,
+		ImapUseTLS:   true,
+		ImapUsername: "user@example.com",
+		Auth:         api.WatchAuth{Type: api.WatchAuthPassword, Secret: "app-password"},
+		Mailbox:      "INBOX",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.WatchID
+}
+
+func TestUpsertAndReadMessagePreviewsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	watchID := createTestWatch(t, s)
+
+	date := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	err := s.UpsertMessagePreviews(ctx, watchID, []MessagePreview{
+		{UID: 10, FromName: "Alice", FromAddress: "alice@example.test", Subject: "Hi", Date: date, MessageID: "m10", BodyPreview: "body 10"},
+		{UID: 11, FromName: "Bob", FromAddress: "bob@example.test", Subject: "Yo", Date: date, MessageID: "m11", BodyPreview: "body 11"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.MessagePreviewsSince(ctx, watchID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %+v", got)
+	}
+	// Newest (highest uid) first.
+	if got[0].UID != 11 || got[1].UID != 10 {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].FromName != "Bob" || got[0].FromAddress != "bob@example.test" || got[0].Subject != "Yo" || got[0].MessageID != "m11" || got[0].BodyPreview != "body 11" {
+		t.Fatalf("got %+v", got[0])
+	}
+	if !got[0].Date.Equal(date) {
+		t.Fatalf("got date %v, want %v", got[0].Date, date)
+	}
+
+	// encryptedContent is not stored in the clear.
+	var raw []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT encryptedContent FROM message_preview WHERE watchId = ? AND uid = 11`, watchID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "Bob") || strings.Contains(string(raw), "body 11") {
+		t.Fatal("preview content leaked to storage in the clear")
+	}
+}
+
+func TestMessagePreviewsSinceFiltersByUID(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	watchID := createTestWatch(t, s)
+
+	err := s.UpsertMessagePreviews(ctx, watchID, []MessagePreview{
+		{UID: 1, BodyPreview: "one"},
+		{UID: 2, BodyPreview: "two"},
+		{UID: 3, BodyPreview: "three"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MessagePreviewsSince(ctx, watchID, 1, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].UID != 3 || got[1].UID != 2 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestMessagePreviewsSinceRespectsLimit(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	watchID := createTestWatch(t, s)
+
+	var previews []MessagePreview
+	for uid := uint32(1); uid <= 5; uid++ {
+		previews = append(previews, MessagePreview{UID: uid, BodyPreview: fmt.Sprintf("body %d", uid)})
+	}
+	if err := s.UpsertMessagePreviews(ctx, watchID, previews); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MessagePreviewsSince(ctx, watchID, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].UID != 5 || got[1].UID != 4 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestUpsertMessagePreviewsPrunesToNewest50(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	watchID := createTestWatch(t, s)
+
+	var previews []MessagePreview
+	for uid := uint32(1); uid <= 60; uid++ {
+		previews = append(previews, MessagePreview{UID: uid, BodyPreview: "body"})
+	}
+	if err := s.UpsertMessagePreviews(ctx, watchID, previews); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM message_preview WHERE watchId = ?`, watchID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != maxMessagePreviewsPerWatch {
+		t.Fatalf("got %d rows, want %d", count, maxMessagePreviewsPerWatch)
+	}
+	// The surviving rows must be the newest (highest uid) ones.
+	got, err := s.MessagePreviewsSince(ctx, watchID, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].UID != 60 {
+		t.Fatalf("got %+v", got)
+	}
+	var minUID int
+	if err := s.db.QueryRowContext(ctx, `SELECT MIN(uid) FROM message_preview WHERE watchId = ?`, watchID).Scan(&minUID); err != nil {
+		t.Fatal(err)
+	}
+	if minUID != 11 {
+		t.Fatalf("got min uid %d, want 11 (60 rows pruned to the newest 50: 11..60)", minUID)
+	}
+}
+
+func TestUpsertMessagePreviewsPrunesOlderThan48Hours(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	watchID := createTestWatch(t, s)
+
+	if err := s.UpsertMessagePreviews(ctx, watchID, []MessagePreview{{UID: 1, BodyPreview: "stale"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Backdate the row's fetchedAt past the retention window directly —
+	// UpsertMessagePreviews itself always stamps "now", so this simulates
+	// the passage of time.
+	old := formatTime(time.Now().Add(-49 * time.Hour))
+	if _, err := s.db.ExecContext(ctx, `UPDATE message_preview SET fetchedAt = ? WHERE watchId = ? AND uid = 1`, old, watchID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second, unrelated upsert is what actually triggers pruning (see
+	// UpsertMessagePreviews's doc comment: pruning runs on insert).
+	if err := s.UpsertMessagePreviews(ctx, watchID, []MessagePreview{{UID: 2, BodyPreview: "fresh"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.MessagePreviewsSince(ctx, watchID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].UID != 2 {
+		t.Fatalf("expected only the fresh row to survive, got %+v", got)
+	}
+}
+
+func TestMessagePreviewsCascadeDeletedWithWatch(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	device, err := s.CreateDevice(ctx, "tok", api.EnvironmentSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := s.CreateWatch(ctx, device.DeviceID, api.CreateWatchRequest{
+		AccountID:    "account-1",
+		ImapHost:     "203.0.113.10",
+		ImapPort:     993,
+		ImapUseTLS:   true,
+		ImapUsername: "user@example.com",
+		Auth:         api.WatchAuth{Type: api.WatchAuthPassword, Secret: "app-password"},
+		Mailbox:      "INBOX",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertMessagePreviews(ctx, resp.WatchID, []MessagePreview{{UID: 1, BodyPreview: "body"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.DeleteWatch(ctx, resp.WatchID, device.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM message_preview WHERE watchId = ?`, resp.WatchID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected message_preview rows to cascade-delete with their watch, got %d", count)
+	}
+}
+
+func TestUpsertMessagePreviewsEmptyIsNoop(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	watchID := createTestWatch(t, s)
+	if err := s.UpsertMessagePreviews(ctx, watchID, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MessagePreviewsSince(ctx, watchID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %+v", got)
 	}
 }
