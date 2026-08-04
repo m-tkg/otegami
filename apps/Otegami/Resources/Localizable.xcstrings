@@ -5524,6 +5524,16 @@
         }
       }
     },
+    "本文プレビュー先読み": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prefetching Body Preview"
+          }
+        }
+      }
+    },
     "受信箱の同期": {
       "localizations": {
         "en": {

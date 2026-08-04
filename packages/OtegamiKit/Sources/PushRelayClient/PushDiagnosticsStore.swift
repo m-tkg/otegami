@@ -88,11 +88,28 @@ public struct PushDiagnosticsRun: Sendable, Codable, Equatable, Identifiable {
     /// alone produced this run's notification content and this run's badge
     /// count is the real post-sync unread count, not the legacy "+1"
     /// estimate — see `NotificationService.applyTrueBadgeCount(_:)`.
+    /// **`relayPreview`** (push 通知起点バックグラウンド受信 Phase 3: NSE の
+    /// リレー先読み統合): recorded right after `credential` succeeds (before
+    /// `incrementalSync`) whenever the payload carries an envelope
+    /// (`OtegamiRelayAPI.PushNotificationPayload.latestUid`) and
+    /// `showsBodyPreview` is on — `enrich(payload:)` calls `PushRelayClient
+    /// .fetchMessagePreviews(...)` (`GET /v1/messages`) to get a body
+    /// preview it can show *before* the (slower, IMAP-based)
+    /// `incrementalSync` stage below even starts. `.skipped` covers every
+    /// reason this stage was reached but not actually attempted (no
+    /// envelope in the payload, `showsBodyPreview` off, no relay URL/device
+    /// secret configured) or attempted but the relay had no matching entry;
+    /// a 404 (feature off relay-side, or no watch for this account) is also
+    /// `.skipped`, not `.failure` — it's an expected, unremarkable outcome,
+    /// not something gone wrong. Either way, this stage's own outcome never
+    /// blocks or changes `incrementalSync`/the rest of `enrich(payload:)` —
+    /// it only affects how quickly a body preview can appear on screen.
     public enum Stage: String, Sendable, Codable, CaseIterable {
         case parsePayload
         case preferences
         case accountLookup
         case credential
+        case relayPreview
         case incrementalSync
         case connect
         case select

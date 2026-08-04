@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import MailTransport
+import OtegamiCore
 import OtegamiStore
 
 /// Push 通知起点バックグラウンド受信 Phase 1: the entry point the
@@ -151,5 +152,40 @@ public enum PushTriggeredInboxSync {
         }
 
         return Outcome(message: message, unreadCount: unreadCount)
+    }
+
+    /// Push 通知起点バックグラウンド受信 Phase 3 (NSE のリレー先読み統合):
+    /// best-effort write-back for a body preview `NotificationService
+    /// .enrich(payload:)` fetched from the relay (`PushRelayClient
+    /// .fetchMessagePreviews(...)`, `GET /v1/messages`) *before* this type's
+    /// own `run(...)` above finished its IMAP-based sync — called only
+    /// after that sync succeeded and actually resolved `messageId`'s row.
+    ///
+    /// Writes `message.snippet` **only when it's currently `nil`** — a
+    /// relay-side body preview is a truncated, best-effort rendering
+    /// (`bodyPreview`), strictly worse than the real snippet
+    /// `SyncEngine.BodyFetcher` builds from the message's actual fetched
+    /// body (`SnippetBuilder.make(from:)`, same helper used here). If the
+    /// row already has a snippet — from this exact sync's own
+    /// `fetchBodyPreview: true` IMAP body fetch, or from a previous sync —
+    /// that one wins and this is a silent no-op.
+    ///
+    /// **Never touches `bodyState`.** Setting `bodyState = .fetched` here
+    /// would be a lie: this only ever writes a short preview string, never
+    /// the message's actual body/attachments (`MessageBodyRecord` stays
+    /// untouched) — and `BodyFetcher`/`SyncCoordinator`'s on-open lazy
+    /// fetch treat `bodyState == .fetched` as "nothing left to fetch,"
+    /// skipping the real body fetch forever. Marking a message fetched
+    /// when only its snippet is known would permanently strand it with no
+    /// full body, no attachments, and no way to self-heal short of a
+    /// forced re-fetch elsewhere in the app.
+    public static func writeSnippetIfMissing(messageId: Int64, bodyPreview: String, database: AppDatabase) async {
+        guard let snippet = SnippetBuilder.make(from: bodyPreview) else { return }
+        _ = try? await database.dbWriter.write { db in
+            guard var record = try MessageRecord.fetchOne(db, key: messageId), record.snippet == nil else { return }
+            record.snippet = snippet
+            record.updatedAt = Date()
+            try record.update(db)
+        }
     }
 }

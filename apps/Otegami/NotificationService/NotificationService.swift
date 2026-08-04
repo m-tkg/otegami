@@ -217,6 +217,52 @@ final class NotificationDeliveryGate: @unchecked Sendable {
 /// `Database.notifyChanges(in: .fullDatabase)`を1回実行して自分の
 /// `ValueObservation`を再発火させる — 詳細は
 /// `DatabaseChangeDarwinNotification`のdoc comment参照。
+///
+/// **プッシュ通知起点バックグラウンド受信 Phase 3 (NSE のリレー先読み統合)**:
+/// Phase 1 の sync-first 経路は正確だが、IMAP 接続を1回挟む分だけ5秒の
+/// 表示予算をよく使い切ってしまう — 遅いネットワーク/サーバーでは
+/// `deadlineTask`が先に発火し、汎用文言のまま配信されることも珍しくな
+/// かった。Phase 2 (リレー側) が push payload に新着メッセージの
+/// 差出人/件名 (`OtegamiRelayAPI.PushNotificationPayload.latestFromName`/
+/// `latestFromAddress`/`latestSubject`/`latestUid`) を同梱するように
+/// なったのを受け、Phase 3 は`enrich(payload:)`の先頭近くでそれを
+/// **ネットワークに一切触れずに**即座に適用する
+/// (`envelopeContentDecision(payload:preferences:bodyPreview:)`) —
+/// これだけで5秒予算内の表示がほぼ保証される。本文プレビュー設定
+/// (`showsBodyPreview`) が on の場合はさらに、リレーの
+/// `GET /v1/messages` (`PushRelayClient.fetchMessagePreviews(...)`,
+/// `fetchRelayBodyPreview(accountId:latestUid:)`) から本文プレビューを
+/// 取得して同じ経路で再適用する — これもIMAP接続を経由しない軽量な
+/// HTTPリクエスト1回で完結する。どちらも取得元は"リレーが直近に見た
+/// 新着メッセージの内容"であり、Phase 1 の sync-first 経路
+/// (`PushTriggeredInboxSync.run(...)`、唯一のIMAP接続・唯一のDB書き込み
+/// 経路) はこれまでどおり無変更で実行され、そちらが完了すれば
+/// (`syncFirstDecision(outcome:preferences:)`)その内容で上書きする
+/// (`deliveryGate`がすでに配信済みなら黙って捨てる、既存の仕組みのまま)。
+///
+/// 同期が成功した後、取得できていたリレー由来の本文プレビューは
+/// 対象メッセージ行の`snippet`列へ**`snippet`がまだ`nil`のときだけ**
+/// 書き戻す (`writeBackRelaySnippetIfNeeded(messageId:bodyPreview:)` →
+/// `PushTriggeredInboxSync.writeSnippetIfMissing(messageId:bodyPreview:
+/// database:)`)。**`bodyState`は絶対に変更しない** — 本文プレビューは
+/// 本文全体でも添付でもない切り詰め文字列でしかなく、`.fetched`扱いに
+/// すると`BodyFetcher`/`SyncCoordinator`のオンオープン遅延取得が「もう
+/// 取得済み」と誤認して本文全体の取得を永久にスキップしてしまう。
+///
+/// payload に envelope フィールドが1つも無い場合 (旧リレー、または
+/// `RELAY_CONTENT_PREVIEW` が off のリレー) は、この Phase 3 の経路は
+/// 何もせず (`envelopeContentDecision`が`nil`を返す)、Phase 1 の
+/// sync-first + `legacyEnrich`フォールバックのみが動く従来どおりの挙動
+/// になる — 既存の"通知文言が後退しない"保証をそのまま維持する。
+///
+/// リレーURL/端末のデバイスシークレットはこの Extension 独自の
+/// `pushRelayBaseURL`/`pushRelayDeviceSecret()`で読む — アプリ本体の
+/// `RelayURLConfig`/`PushSettingsStore`はこのExtensionからは
+/// importできない別ターゲットのため、`Bundle.main`/`Keychain`から
+/// それぞれ小さな複製として読み直している (このファイルの
+/// `appGroupIdentifier`/`keychainAccessGroup`/`OAuthConfig`がすでに
+/// 同じ理由で行っている複製と同じパターン)。取得試行/成否は診断
+/// Stage `.relayPreview` (`PushDiagnosticsRun.Stage`) に記録する。
 // `@unchecked Sendable`: `UNNotificationServiceExtension` doesn't itself
 // promise `didReceive(_:withContentHandler:)`/`serviceExtensionTimeWillExpire()`
 // run on any particular actor, so the compiler can't otherwise prove the
@@ -474,6 +520,26 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         showsBodyPreview=\(preferences.showsBodyPreview, privacy: .public)
         """)
 
+        // Phase 3 (NSE のリレー先読み統合), step 1: if the relay already sent
+        // this push's envelope (`payload.latestFromName`/`latestFromAddress`/
+        // `latestSubject` — `RELAY_CONTENT_PREVIEW`, opt-in relay-side),
+        // apply it to the notification *right now* — zero network calls,
+        // before account lookup/credential/sync even start. This alone
+        // guarantees sender+subject display within the 5 second budget even
+        // if everything below stalls or fails; every following step in this
+        // function only ever has a chance to *improve* on this (a body
+        // preview, then the fully-synced content), never regress below it,
+        // since a `return` on any failure path leaves whatever this applied
+        // in place. No-op (returns `nil`) when the payload carries no
+        // envelope at all — an older/`RELAY_CONTENT_PREVIEW`-off relay.
+        if let envelopeDecision = Self.envelopeContentDecision(payload: payload, preferences: preferences) {
+            let applied = deliveryGate.withPending {
+                bestAttemptContent?.title = envelopeDecision.title
+                bestAttemptContent?.body = envelopeDecision.body
+            }
+            Self.logger.notice("enrich: applied relay-prefetched envelope content immediately applied=\(applied, privacy: .public)")
+        }
+
         let accountLookupStart = Date()
         let account: AccountRecord
         do {
@@ -505,6 +571,52 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             Self.logger.notice("enrich: credential: no usable credential resolved category=\(category, privacy: .public) — falling back to generic")
             recordStage(.credential, outcome: .failure(category: category, looksRateLimited: false, logDetail: logDetail), since: credentialStart)
             return
+        }
+
+        // Phase 3, step 2: fetch a body preview from the relay
+        // (`GET /v1/messages`) and, if one comes back, re-apply the
+        // notification content with it — still zero IMAP round trips, so
+        // this typically finishes well before the (heavier) incremental
+        // sync below does. Only attempted when `showsBodyPreview` is on and
+        // the payload actually named a target message (`latestUid`) — see
+        // `shouldFetchRelayPreview(payload:preferences:)`. `relayBodyPreview`
+        // (if non-nil) is also handed to the snippet write-back after the
+        // sync below succeeds — see this function's tail.
+        var relayBodyPreview: String?
+        if Self.shouldFetchRelayPreview(payload: payload, preferences: preferences), let latestUid = payload.latestUid {
+            let relayPreviewStart = Date()
+            switch await Self.fetchRelayBodyPreview(accountId: account.id, latestUid: latestUid) {
+            case .success(let bodyPreview):
+                relayBodyPreview = bodyPreview
+                if let bodyPreview {
+                    Self.logger.notice("enrich: relayPreview: fetched a body preview")
+                    recordStage(.relayPreview, outcome: .success, since: relayPreviewStart)
+                    if let envelopeDecision = Self.envelopeContentDecision(payload: payload, preferences: preferences, bodyPreview: bodyPreview) {
+                        let applied = deliveryGate.withPending {
+                            bestAttemptContent?.title = envelopeDecision.title
+                            bestAttemptContent?.body = envelopeDecision.body
+                        }
+                        Self.logger.notice("enrich: relayPreview: applied body preview to notification applied=\(applied, privacy: .public)")
+                    }
+                } else {
+                    Self.logger.notice("enrich: relayPreview: relay had no preview matching this uid — leaving envelope-only content")
+                    recordStage(.relayPreview, outcome: .skipped(reason: "no matching preview in relay response"), since: relayPreviewStart)
+                }
+            case .notConfigured:
+                recordStage(.relayPreview, outcome: .skipped(reason: "no relay URL/device secret configured"), since: relayPreviewStart)
+            case .notFound:
+                Self.logger.notice("enrich: relayPreview: relay returned 404 (feature off relay-side, or no watch for this account)")
+                recordStage(.relayPreview, outcome: .skipped(reason: "relay returned 404 (feature off, or no watch)"), since: relayPreviewStart)
+            case .failure(let logDetail):
+                Self.logger.notice("enrich: relayPreview: fetch failed — leaving whatever content is already applied in place")
+                recordStage(.relayPreview, outcome: .failure(category: "fetchFailed", looksRateLimited: false, logDetail: logDetail), since: relayPreviewStart)
+            }
+        } else {
+            recordStage(
+                .relayPreview,
+                outcome: .skipped(reason: payload.latestUid == nil ? "no envelope in payload" : "showsBodyPreview off"),
+                since: Date()
+            )
         }
 
         // Phase 1 sync-first path — see this type's own doc comment
@@ -542,6 +654,22 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // that fell back to `legacyEnrich` (read-only, this type's own doc
         // comment) never reaches this line, since it `return`s above first.
         postDatabaseChangedDarwinNotification()
+
+        // Phase 3, step 4: write the relay-fetched body preview back into
+        // the just-synced row's `snippet` — but *only* if step 2 actually
+        // got one, and only as a fallback for whatever `syncOutcome`
+        // already resolved. `writeSnippetIfMissing` itself is the one that
+        // enforces "only if `snippet` is still nil" and "never touch
+        // `bodyState`" — see its own doc comment in `PushTriggeredInboxSync`
+        // for why the latter matters (marking a preview-only row `.fetched`
+        // would permanently strand it with no real body). Best-effort, same
+        // as everything else in this Extension: `syncOutcome.message` is
+        // guaranteed non-nil here (`decision.needsLegacyFallback` already
+        // `return`ed above when it wasn't), but a missing `id` or a busy/
+        // suspended database just silently skips this.
+        if let relayBodyPreview, let messageId = syncOutcome.message?.id {
+            await Self.writeBackRelaySnippetIfNeeded(messageId: messageId, bodyPreview: relayBodyPreview)
+        }
     }
 
     /// Task (Phase 1 バッジ整合): overwrites whatever `incrementSharedBadgeCount()`'s
@@ -671,6 +799,198 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         let body = NotificationEnrichment.body(preferences: preferences, subject: message.subject, bodyPreviewSourceText: message.snippet)
         return SyncFirstDecision(title: title, body: body, badgeCount: outcome.unreadCount, needsLegacyFallback: false)
     }
+
+    // MARK: - Phase 3 (NSE のリレー先読み統合)
+
+    /// The title/body `enrich(payload:)`'s Phase 3 step 1 (and, once a body
+    /// preview arrives, step 2) apply — built purely from `payload`'s own
+    /// relay-prefetched envelope fields plus this device's content
+    /// preferences, with no IMAP/GRDB/Keychain involvement, so it's
+    /// exercisable by `NotificationServiceTests` the same way
+    /// `SyncFirstDecision` is (this file's "private → internal for tests"
+    /// convention, `parsePayload(_:)`'s doc comment).
+    struct EnvelopeContentDecision: Equatable {
+        let title: String
+        let body: String
+    }
+
+    /// `nil` when `payload` carries no envelope at all (`latestFromName`/
+    /// `latestFromAddress`/`latestSubject` all `nil` — an older app build's
+    /// relay, or `RELAY_CONTENT_PREVIEW` off relay-side) — the caller
+    /// applies nothing in that case, leaving whatever content is already on
+    /// `bestAttemptContent` (the plain generic fallback, at step 1's call
+    /// site) untouched. `bodyPreview` is `nil` for step 1 (nothing fetched
+    /// yet) and the relay-fetched preview text for step 2's re-application;
+    /// either way this defers entirely to `NotificationEnrichment.title(
+    /// preferences:senderName:senderAddress:)`/`.body(preferences:subject:
+    /// bodyPreviewSourceText:)` for what the preferences toggles do to the
+    /// result — same policy the sync-first/legacy paths already use, so a
+    /// user who turned a toggle off sees the exact same generic fallback
+    /// here as everywhere else in this file.
+    static func envelopeContentDecision(
+        payload: PushNotificationPayload,
+        preferences: NotificationContentPreferences,
+        bodyPreview: String? = nil
+    ) -> EnvelopeContentDecision? {
+        guard payload.latestFromName != nil || payload.latestFromAddress != nil || payload.latestSubject != nil else {
+            return nil
+        }
+        return EnvelopeContentDecision(
+            title: NotificationEnrichment.title(
+                preferences: preferences, senderName: payload.latestFromName, senderAddress: payload.latestFromAddress
+            ),
+            body: NotificationEnrichment.body(
+                preferences: preferences, subject: payload.latestSubject, bodyPreviewSourceText: bodyPreview
+            )
+        )
+    }
+
+    /// Whether `enrich(payload:)` should even attempt the relay body-preview
+    /// prefetch (`fetchRelayBodyPreview(accountId:latestUid:)`,
+    /// `GET /v1/messages`) at all: both `showsBodyPreview` must be on (same
+    /// "don't fetch what nothing will use" reasoning `legacyEnrich`'s own
+    /// guard already applies to its IMAP body fetch) and `payload` must
+    /// actually name a target message (`latestUid` — without it there's
+    /// nothing to ask the relay for a preview *of*). Pure so it's directly
+    /// testable without a real relay/Keychain.
+    static func shouldFetchRelayPreview(payload: PushNotificationPayload, preferences: NotificationContentPreferences) -> Bool {
+        preferences.showsBodyPreview && payload.latestUid != nil
+    }
+
+    /// What `fetchRelayBodyPreview(accountId:latestUid:)` resolved — one
+    /// level more specific than a plain `String??` so `enrich(payload:)`
+    /// can record a precise diagnostics `.relayPreview` stage outcome the
+    /// same way `CredentialResolution`/`OAuthTokenOutcome` let `credential`
+    /// do (those types' own doc comments explain why a flat `nil` isn't
+    /// enough for this screen to be useful).
+    private enum RelayPreviewFetchOutcome {
+        /// The relay call itself succeeded; `bodyPreview` is the matching
+        /// entry's preview text, or `nil` if the relay's response simply
+        /// didn't include this exact `latestUid` (e.g. it already aged out
+        /// of the relay's small per-watch cache).
+        case success(bodyPreview: String?)
+        /// No relay URL configured for this build, or no device secret in
+        /// the Keychain (push not enabled/never completed registration on
+        /// this device) — never even attempted the HTTP call.
+        case notConfigured
+        /// `GET /v1/messages` returned 404 — `PushRelayClient
+        /// .fetchMessagePreviews(...)`'s own doc comment: this relay
+        /// doesn't have `RELAY_CONTENT_PREVIEW` enabled, or this device has
+        /// no watch for this accountId. Treated as a normal, unremarkable
+        /// outcome (`.skipped`, not `.failure`, in the diagnostics stage),
+        /// not a real error.
+        case notFound
+        /// Any other failure (network error, unexpected status, ...).
+        case failure(logDetail: String?)
+    }
+
+    /// Phase 3 step 2's actual relay call: `GET /v1/messages` for
+    /// `accountId`, `sinceUid: max(latestUid - 1, 0)` — matching the
+    /// task's own "latestUid - 1 相当" framing, this asks for every
+    /// preview with `uid > sinceUid`, i.e. `uid >= latestUid`, which always
+    /// includes the exact message this push is about (if the relay still
+    /// has it cached). Picks out that one entry by `uid == latestUid`
+    /// specifically, rather than just taking the response's first (highest-
+    /// uid) entry, so a body preview never gets attached to the wrong
+    /// message if the relay's response ever contains more than one.
+    private static func fetchRelayBodyPreview(accountId: String, latestUid: Int64) async -> RelayPreviewFetchOutcome {
+        guard let baseURL = pushRelayBaseURL else { return .notConfigured }
+        guard let deviceSecret = pushRelayDeviceSecret() else { return .notConfigured }
+        let client = PushRelayClient()
+        do {
+            let previews = try await client.fetchMessagePreviews(
+                baseURL: baseURL, deviceSecret: deviceSecret, accountId: accountId, sinceUid: Int(max(latestUid - 1, 0))
+            )
+            return .success(bodyPreview: previews.first(where: { $0.uid == latestUid })?.bodyPreview)
+        } catch let PushRelayClient.PushRelayClientError.http(status, _) where status == 404 {
+            return .notFound
+        } catch {
+            return .failure(logDetail: String(describing: error))
+        }
+    }
+
+    /// Phase 3 step 4: best-effort write-back of the relay-fetched body
+    /// preview into the just-synced message's `snippet` column — thin glue
+    /// around `PushTriggeredInboxSync.writeSnippetIfMissing(messageId:
+    /// bodyPreview:database:)`, which is where the actual "only if `nil`"/
+    /// "never touch `bodyState`" policy lives (see that function's own doc
+    /// comment). A fresh `AppDatabase.makeShared` call, same reasoning
+    /// `lookupAccount(id:)`/`runIncrementalSync(...)` already give for why a
+    /// short-lived local `database` handle here is safe (Task #192): it
+    /// closes when this function returns, well before the OS could ever
+    /// suspend this Extension process. Silently does nothing if the shared
+    /// database can't be opened at all.
+    private static func writeBackRelaySnippetIfNeeded(messageId: Int64, bodyPreview: String) async {
+        guard let database = try? AppDatabase.makeShared(appGroupIdentifier: appGroupIdentifier) else { return }
+        await PushTriggeredInboxSync.writeSnippetIfMissing(messageId: messageId, bodyPreview: bodyPreview, database: database)
+    }
+
+    /// Own small copy of the app target's `RelayURLConfig` (`apps/Otegami
+    /// /Sources/Support/RelayURLConfig.swift`) — same "`Bundle.main` inside
+    /// an Extension is its own bundle, not the containing app's" reasoning
+    /// `appGroupIdentifier`/`keychainAccessGroup`/`OAuthConfig` below already
+    /// document, and the same reason this can't just import that type (it
+    /// lives in the `Otegami` app target, which this Extension target can't
+    /// depend on). `project.yml`'s `NotificationService` target declares
+    /// `OTEGAMI_PUSH_RELAY_URL` in its own `info.properties` to make this
+    /// possible, mirroring `GOOGLE_OAUTH_CLIENT_ID`/`OTEGAMI_MICROSOFT_CLIENT_ID`'s
+    /// existing precedent there. Validation (`https://` required;
+    /// `http://localhost`/`http://127.0.0.1` exempted for local dev) is a
+    /// small duplicate of `AppEnvironment.validatedRelayURL(_:)` for the
+    /// same "can't depend on the app target" reason — kept in sync with it
+    /// by hand since there's no shared home either type could move to
+    /// without pulling `SyncEngine`/`OtegamiStore`-shaped app dependencies
+    /// into this Extension.
+    private static var pushRelayBaseURL: URL? {
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: "OTEGAMI_PUSH_RELAY_URL") as? String,
+              !raw.isEmpty,
+              !raw.hasPrefix("$(")
+        else { return nil }
+        guard let components = URLComponents(string: raw), let url = components.url else { return nil }
+        if components.scheme == "https" { return url }
+        if components.scheme == "http", let host = components.host, host == "localhost" || host == "127.0.0.1" {
+            return url
+        }
+        return nil
+    }
+
+    /// Mirrors `PushSettingsStore`'s (`apps/Otegami/Sources/Support/Settings
+    /// /PushSettingsStore.swift`) Keychain service/account strings for this
+    /// device's relay-issued bearer secret — that type can't be imported
+    /// here either (same app-target-only reasoning as `pushRelayBaseURL`),
+    /// so this is a small read-only counterpart, following the exact same
+    /// "hand-rolled `SecItemCopyMatching` query, current service then
+    /// legacy fallback" shape `password(forAccountId:)` above already
+    /// establishes for IMAP passwords. Unlike that query, this one does
+    /// *not* widen with `kSecAttrSynchronizableAny` — `PushSettingsStore
+    /// .setDeviceSecret(_:)`'s own doc comment: this secret is deliberately
+    /// *never* written as `kSecAttrSynchronizable` (it's paired 1:1 with
+    /// this device's own APNs token, which never syncs either), so the
+    /// default "non-synchronizable items only" query behavior is already
+    /// correct here — there is no synchronizable copy to fail to find.
+    private static func pushRelayDeviceSecret() -> String? {
+        let services = [Self.pushRelayDeviceSecretKeychainService] + Self.pushRelayDeviceSecretLegacyKeychainServices
+        for service in services {
+            var query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: Self.pushRelayDeviceSecretKeychainAccount,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+            ]
+            if let keychainAccessGroup { query[kSecAttrAccessGroup as String] = keychainAccessGroup }
+            var result: AnyObject?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            if status == errSecSuccess, let data = result as? Data, let secret = String(data: data, encoding: .utf8) {
+                return secret
+            }
+        }
+        return nil
+    }
+
+    private static let pushRelayDeviceSecretKeychainService = "com.mtkg.otegami.push-device-secret"
+    private static let pushRelayDeviceSecretLegacyKeychainServices = ["com.m-tkg.otegami.push-device-secret"]
+    private static let pushRelayDeviceSecretKeychainAccount = "device"
 
     /// The pre-Phase-1 `enrich(payload:)` itself, unchanged apart from
     /// taking its already-resolved `account`/`auth` as parameters instead
@@ -905,11 +1225,31 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     // だけを直接テストできるようにするため。Phase2d/Phase4 で確立済みの
     // 「テスト到達のための private → internal 緩和」と同じパターンで、これ
     // 以上の公開範囲拡大 (public 化等) はしていない。
+    // Phase 3 (NSE のリレー先読み統合): `latestUid`/`latestFromName`/
+    // `latestFromAddress`/`latestSubject`/`previewCount` are all optional,
+    // relay-side-opt-in fields (`OtegamiRelayAPI.PushNotificationPayload`'s
+    // doc comment) — every one is simply absent from `userInfo` on a
+    // legacy relay/older push, and each `as?` below yields `nil` for a
+    // missing key exactly like every other optional cast here, so this
+    // stays exactly as lenient as before for `accountId`/`uidNext`.
+    // `latestUid` arrives from APNs' JSON→plist bridging as an `NSNumber`
+    // (same as `uidNext`, just held as `Int64` on the Swift side since a
+    // UID can in principle exceed `Int32.max`) — `NSNumber.int64Value`
+    // handles both an integral and (defensively) a non-integral JSON number
+    // the same way `as? Int` already does for `uidNext`.
     static func parsePayload(_ userInfo: [AnyHashable: Any]) -> PushNotificationPayload? {
         guard let accountId = userInfo["accountId"] as? String,
               let uidNext = userInfo["uidNext"] as? Int
         else { return nil }
-        return PushNotificationPayload(accountId: accountId, uidNext: uidNext)
+        return PushNotificationPayload(
+            accountId: accountId,
+            uidNext: uidNext,
+            latestUid: (userInfo["latestUid"] as? NSNumber)?.int64Value,
+            latestFromName: userInfo["latestFromName"] as? String,
+            latestFromAddress: userInfo["latestFromAddress"] as? String,
+            latestSubject: userInfo["latestSubject"] as? String,
+            previewCount: userInfo["previewCount"] as? Int
+        )
     }
 
     /// Task #192 (0xDEAD10CC 対策の調査): this `DatabasePool` shares the same

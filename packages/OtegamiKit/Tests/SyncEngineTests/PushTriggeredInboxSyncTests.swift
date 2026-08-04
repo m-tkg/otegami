@@ -259,4 +259,52 @@ struct PushTriggeredInboxSyncTests {
         let bodyRow = try await database.dbWriter.read { db in try MessageBodyRecord.fetchOne(db, key: messageId) }
         #expect(bodyRow == nil)
     }
+
+    // MARK: (g) writeSnippetIfMissing — push 通知起点バックグラウンド受信 Phase 3
+
+    @Test("writeSnippetIfMissing writes a snippet built from bodyPreview when the row's snippet is nil, without touching bodyState")
+    func writeSnippetIfMissingWritesWhenNil() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (_, inbox) = try await makeAccountWithInbox(database: database)
+        let messageId = try await database.dbWriter.write { db -> Int64 in
+            var record = MessageRecord(
+                mailboxId: inbox.id!, uid: 42,
+                internalDate: Date(timeIntervalSince1970: 1_700_000_042), bodyState: .notFetched
+            )
+            try record.insert(db)
+            return record.id!
+        }
+
+        await PushTriggeredInboxSync.writeSnippetIfMissing(messageId: messageId, bodyPreview: "  相手からの本文プレビューです  \n続き", database: database)
+
+        let stored = try #require(try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: messageId) })
+        #expect(stored.snippet == "相手からの本文プレビューです 続き")
+        #expect(stored.bodyState == .notFetched, "must never mark a preview-only row as .fetched — see writeSnippetIfMissing's doc comment")
+    }
+
+    @Test("writeSnippetIfMissing leaves an existing snippet alone — the real fetched snippet always wins over a relay preview")
+    func writeSnippetIfMissingSkipsWhenAlreadySet() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (_, inbox) = try await makeAccountWithInbox(database: database)
+        let messageId = try await database.dbWriter.write { db -> Int64 in
+            var record = MessageRecord(
+                mailboxId: inbox.id!, uid: 42,
+                internalDate: Date(timeIntervalSince1970: 1_700_000_042), bodyState: .fetched, snippet: "既存のスニペット"
+            )
+            try record.insert(db)
+            return record.id!
+        }
+
+        await PushTriggeredInboxSync.writeSnippetIfMissing(messageId: messageId, bodyPreview: "リレーからのプレビュー", database: database)
+
+        let stored = try #require(try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: messageId) })
+        #expect(stored.snippet == "既存のスニペット")
+    }
+
+    @Test("writeSnippetIfMissing is a silent no-op for an unknown messageId")
+    func writeSnippetIfMissingUnknownMessageId() async throws {
+        let database = try AppDatabase.makeInMemory()
+        await PushTriggeredInboxSync.writeSnippetIfMissing(messageId: 999, bodyPreview: "プレビュー", database: database)
+        // No throw, no crash — nothing to assert beyond "didn't blow up".
+    }
 }

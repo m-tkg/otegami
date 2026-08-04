@@ -334,6 +334,15 @@ targets:
         # reads these two keys back out at runtime.
         GOOGLE_OAUTH_CLIENT_ID: $(GOOGLE_OAUTH_CLIENT_ID)
         OTEGAMI_MICROSOFT_CLIENT_ID: $(OTEGAMI_MICROSOFT_CLIENT_ID)
+        # Phase 3 (NSE のリレー先読み統合): `NotificationService.swift`'s own
+        # `pushRelayBaseURL` reads this back out — same "own bundle, own
+        # copy of the app's `RelayURLConfig`" reasoning as the two Client ID
+        # keys right above. Sourced from the same `OTEGAMI_PUSH_RELAY_URL`
+        # xcconfig build setting the `Otegami` target's own Info.plist
+        # already exposes (`Config/Shared.xcconfig`/`Config/Local.xcconfig`
+        # — see `RelayURLConfig.swift`'s doc comment), so a self-hoster's
+        # single xcconfig value covers both targets.
+        OTEGAMI_PUSH_RELAY_URL: $(OTEGAMI_PUSH_RELAY_URL)
     entitlements:
       path: Generated/NotificationService.entitlements
       properties:

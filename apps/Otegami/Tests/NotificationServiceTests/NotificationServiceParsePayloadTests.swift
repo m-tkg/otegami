@@ -45,4 +45,45 @@ struct NotificationServiceParsePayloadTests {
         let userInfo: [AnyHashable: Any] = ["accountId": "account-1", "uidNext": "42"]
         #expect(NotificationService.parsePayload(userInfo) == nil)
     }
+
+    // MARK: Phase 3 (NSE のリレー先読み統合) — envelope フィールド
+
+    @Test
+    func parsesEnvelopeFieldsWhenAllPresent() {
+        let userInfo: [AnyHashable: Any] = [
+            "accountId": "account-1",
+            "uidNext": 42,
+            "latestUid": 41,
+            "latestFromName": "Alice",
+            "latestFromAddress": "alice@example.test",
+            "latestSubject": "Hello",
+            "previewCount": 3,
+        ]
+
+        let payload = NotificationService.parsePayload(userInfo)
+
+        #expect(payload?.latestUid == 41)
+        #expect(payload?.latestFromName == "Alice")
+        #expect(payload?.latestFromAddress == "alice@example.test")
+        #expect(payload?.latestSubject == "Hello")
+        #expect(payload?.previewCount == 3)
+    }
+
+    @Test
+    func envelopeFieldsAreNilWhenAbsent_legacyRelayOrFeatureOff() {
+        // 旧リレー、あるいは RELAY_CONTENT_PREVIEW が off のリレーは
+        // accountId/uidNext しか送らない — この場合も accountId/uidNext
+        // だけは今までどおり解決できる。
+        let userInfo: [AnyHashable: Any] = ["accountId": "account-1", "uidNext": 42]
+
+        let payload = NotificationService.parsePayload(userInfo)
+
+        #expect(payload?.accountId == "account-1")
+        #expect(payload?.uidNext == 42)
+        #expect(payload?.latestUid == nil)
+        #expect(payload?.latestFromName == nil)
+        #expect(payload?.latestFromAddress == nil)
+        #expect(payload?.latestSubject == nil)
+        #expect(payload?.previewCount == nil)
+    }
 }
