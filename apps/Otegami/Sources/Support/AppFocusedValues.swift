@@ -91,7 +91,8 @@ extension FocusedValues {
 
     /// Published only while a thread is open (`RootView.selectedThreadId
     /// != nil`) — replies to that thread's newest message, the same
-    /// message `ThreadDetailView` expands by default. ⌘R.
+    /// message `ThreadDetailView` expands by default. ⇧⌘R (was ⌘R until
+    /// the user reassigned ⌘R to refresh — see `OtegamiCommands`).
     var replyAction: (() -> Void)? {
         get { self[ReplyActionKey.self] }
         set { self[ReplyActionKey.self] = newValue }
@@ -122,7 +123,7 @@ extension FocusedValues {
         set { self[ToggleReadActionKey.self] = newValue }
     }
 
-    /// Task #165: published only while a thread is open. ⌘⇧R.
+    /// Task #165: published only while a thread is open. ⌥⇧⌘R.
     var replyAllAction: (() -> Void)? {
         get { self[ReplyAllActionKey.self] }
         set { self[ReplyAllActionKey.self] = newValue }
@@ -135,7 +136,8 @@ extension FocusedValues {
     }
 
     /// Published by `MessageListView` while it's on screen — focuses its
-    /// `.searchable` field via `.searchFocused(_:)`. ⌘⇧F.
+    /// `.searchable` field via `.searchFocused(_:)`. ⌘F (Task #165 —
+    /// ⇧⌘F went to `forwardAction`).
     var focusSearchAction: (() -> Void)? {
         get { self[FocusSearchActionKey.self] }
         set { self[FocusSearchActionKey.self] = newValue }
@@ -143,8 +145,9 @@ extension FocusedValues {
 
     /// Published by `MessageListView` while it's on screen and not already
     /// syncing — runs the same manual `refresh()` as the list header's
-    /// refresh button (`MacListSearchBar.onRefresh`). ⌃R (⌘R is taken by
-    /// `replyAction`, Mail.app parity — see `OtegamiCommands`).
+    /// refresh button (`MacListSearchBar.onRefresh`). ⌘R (browser-reload
+    /// parity per user request; `replyAction` moved to ⇧⌘R — see
+    /// `OtegamiCommands`).
     var refreshMessageListAction: (() -> Void)? {
         get { self[RefreshMessageListActionKey.self] }
         set { self[RefreshMessageListActionKey.self] = newValue }

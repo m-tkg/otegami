@@ -33,7 +33,7 @@ import os
 /// could *also* be expanded independently (a Gmail/Apple-Mail-style
 /// multi-expand thread view), so the footer toolbar's target was pinned to
 /// the thread's newest message regardless of which row(s) were actually
-/// open — `RootView`'s macOS ⌘R shortcut still documents that older
+/// open — `RootView`'s macOS ⇧⌘R shortcut still documents that older
 /// "newest message" rule for its own, `ThreadDetailView`-independent
 /// implementation (`RootView.replyToSelectedThread()`'s doc comment).
 struct ThreadDetailView: View {
@@ -599,7 +599,7 @@ struct ThreadDetailView: View {
     /// が対象にするメッセージ — 常に**現在展開中の1通** (accordion なので曖昧
     /// さがない)。`expandedMessageId`が`nil`の`MessageRecord`が
     /// `messages`の読み込みタイミングの隙間でまだ見つからない場合だけ、
-    /// スレッド内最新へフォールバックする (`RootView`'s macOS ⌘R が使う規則
+    /// スレッド内最新へフォールバックする (`RootView`'s macOS ⇧⌘R が使う規則
     /// と同じ — その doc comment 参照)。
     ///
     /// **2026-07-29 追記**: `expandedMessageId`自身が`nil`のとき

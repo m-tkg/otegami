@@ -61,9 +61,15 @@ struct OtegamiCommands: Commands {
         // Task #165 (macOS 操作体系再設計、ユーザー指示「iOS の操作体系を完全に
         // 忘れて Mac ネイティブに再設計してほしい」): 返信/全員に返信/転送/
         // アーカイブ/既読・未読切替/削除を1つのメニューへ集約 — 実 Apple
-        // Mail.app の Message メニューに準拠したショートカット(⌘R/⇧⌘R/⇧⌘F/
-        // ⇧⌘U/⌘⌫)に、Gmail系メールクライアントで広く使われる ⌘E (アーカイブ)
-        // を足した組み合わせ。
+        // Mail.app の Message メニューに準拠したショートカット(⇧⌘F/⇧⌘U/⌘⌫)
+        // に、Gmail系メールクライアントで広く使われる ⌘E (アーカイブ) を
+        // 足した組み合わせ。
+        //
+        // 返信系の付け替え (実機フィードバック「⌘R は受信にしたい」):
+        // Task #165 は Mail.app 準拠で ⌘R=返信/⇧⌘R=全員に返信 だったが、
+        // ユーザー指示により ⌘R をブラウザのリロード相当の「新規メールを
+        // 受信」へ明け渡し、返信=⇧⌘R / 全員に返信=⌥⇧⌘R へ1段ずつ玉突き
+        // した。Mail.app の割当とは意図的に異なる。
         //
         // ⇧⌘F の付け替え: このメニューは元々 ⇧⌘F を「検索フィールドにフォー
         // カス」に割り当てていた(M10)。実 Mail.app の ⇧⌘F は「転送」で、
@@ -74,10 +80,10 @@ struct OtegamiCommands: Commands {
         // メニュー項目にも割り当てられていない(重複確認済み)。
         CommandMenu("メッセージ") {
             Button("返信") { replyAction?() }
-                .keyboardShortcut("r", modifiers: .command)
+                .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(replyAction == nil)
             Button("全員に返信") { replyAllAction?() }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .keyboardShortcut("r", modifiers: [.command, .shift, .option])
                 .disabled(replyAllAction == nil)
             Button("転送") { forwardAction?() }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
@@ -107,12 +113,14 @@ struct OtegamiCommands: Commands {
                 .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(deleteAction == nil)
             Divider()
-            // ⌃R: 実 Mail.app の「新規メールを受信」は ⇧⌘N だが、ユーザー
-            // 指示は Ctrl+R を明示。⌘R は上の「返信」(Mail.app 準拠、
-            // Task #165) が使用済みのため衝突しない。同期中は
-            // `MessageListView` 側が unpublish して自動 disabled になる。
+            // ⌘R: 実 Mail.app の「新規メールを受信」は ⇧⌘N だが、ユーザー
+            // 指示はブラウザのリロード相当の ⌘R を明示 (当初 ⌃R で実装した
+            // ところ「⌘R にしたい」との実機フィードバックで変更)。元の
+            // 住人だった「返信」は ⇧⌘R へ玉突き (このメニュー冒頭の doc
+            // comment 参照)。同期中は `MessageListView` 側が unpublish して
+            // 自動 disabled になる。
             Button("新規メールを受信") { refreshMessageListAction?() }
-                .keyboardShortcut("r", modifiers: .control)
+                .keyboardShortcut("r", modifiers: .command)
                 .disabled(refreshMessageListAction == nil)
             Button("次のメールボックス") { nextMailboxAction?() }
                 .keyboardShortcut("]", modifiers: .command)

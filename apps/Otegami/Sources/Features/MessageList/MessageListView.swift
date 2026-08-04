@@ -696,7 +696,7 @@ struct MessageListView: View {
         )
     }
 
-    /// 更新ボタン (`MacListSearchBar.onRefresh`) と ⌃R
+    /// 更新ボタン (`MacListSearchBar.onRefresh`) と ⌘R
     /// (`refreshMessageListAction`) の共通ハンドラ。
     private func startManualRefresh() {
         Task { await refresh() }

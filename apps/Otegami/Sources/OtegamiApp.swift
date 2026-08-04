@@ -73,7 +73,7 @@ struct OtegamiApp: App {
         // (not the "composer" `WindowGroup`) since Commands apply
         // app-wide regardless of which scene declares them; a composer
         // window intentionally doesn't publish any of these focused values
-        // itself, so e.g. ⌘R inside a composer window just stays disabled
+        // itself, so e.g. ⇧⌘R inside a composer window just stays disabled
         // rather than trying to "reply to a reply."
         .commands { OtegamiCommands() }
         #endif
@@ -455,7 +455,7 @@ struct RootView: View {
             // invoke — `AppFocusedValues.swift`'s doc comment on why
             // `FocusedSceneValue` rather than passing closures some other
             // way. `replyAction`/`deleteAction` are only published while a
-            // thread is actually open, so ⌘R/⌘⌫ disable themselves
+            // thread is actually open, so ⇧⌘R/⌘⌫ disable themselves
             // automatically otherwise (no extra bookkeeping needed here
             // beyond the `nil`-vs-non-`nil` ternary).
             .focusedSceneValue(\.newMessageAction, environment.accounts.isEmpty ? nil : { presentComposer(.new) })
@@ -935,7 +935,7 @@ struct RootView: View {
     #if os(macOS)
     // MARK: - Menu commands (M10)
 
-    /// ⌘R: replies to `selectedThreadId`'s newest message — the same
+    /// ⇧⌘R: replies to `selectedThreadId`'s newest message — the same
     /// message `ThreadDetailView` expands by default, so this matches
     /// "reply to whatever's currently showing expanded", not an arbitrary
     /// message within the thread.
@@ -944,9 +944,10 @@ struct RootView: View {
     /// currently showing", which for that mode is unambiguous), falling
     /// back to the pre-existing "newest message in the thread" rule
     /// otherwise.
-    /// Task #165: `replyAll` defaults to `false` for ⌘R's own pre-existing
-    /// call site — ⇧⌘R (`replyAllAction`) is the only other caller, passing
-    /// `true` through to the exact same target-resolution below.
+    /// Task #165: `replyAll` defaults to `false` for the reply shortcut's
+    /// own pre-existing call site — ⌥⇧⌘R (`replyAllAction`) is the only
+    /// other caller, passing `true` through to the exact same
+    /// target-resolution below.
     private func replyToSelectedThread(replyAll: Bool = false) {
         guard let selectedThreadId else { return }
         if let selectedMessageId {
