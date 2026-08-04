@@ -27,6 +27,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"regexp"
 	"strconv"
@@ -42,6 +43,45 @@ const (
 	maxLineLength              = 8192
 	maxUntaggedLinesPerCommand = 500
 	maxUntaggedBytesPerCommand = 262_144
+)
+
+// CLAUDE-SECURITY F4/F8 bounds for UIDFetchPreviews (RELAY_CONTENT_PREVIEW,
+// opt-in) — the only command this client issues that can carry IMAP
+// literals. Kept separate from maxUntaggedBytesPerCommand/
+// maxUntaggedLinesPerCommand above (every other command this client speaks
+// stays on the original, smaller bound — see readUntilTagged's now-
+// parameterized bounds) since a handful of message previews (headers +
+// 32KB-capped body excerpts each) legitimately needs a larger budget than
+// the plain STATUS/SELECT/CAPABILITY responses those bounds were sized
+// for.
+const (
+	// maxLiteralBytes caps a single IMAP literal ({N}\r\n<N bytes>) this
+	// client will read. Comfortably above the ~32KB BODY.PEEK[TEXT]<0.32768>
+	// range this client itself requests, with headroom for the
+	// HEADER.FIELDS literal alongside it; a server claiming a larger N is
+	// refused outright before any read is attempted (CLAUDE-SECURITY F8 —
+	// no allocation sized by unchecked attacker input).
+	maxLiteralBytes = 65_536
+	// maxFetchBytesPerCommand bounds the total bytes (plain-text response
+	// lines plus every literal's payload) read across one whole UID FETCH
+	// command's untagged responses.
+	maxFetchBytesPerCommand = 524_288
+	// maxFetchRecordsPerCommand bounds how many untagged "* n FETCH (...)"
+	// responses one UIDFetchPreviews call collects — the watcher pool never
+	// requests more than a handful of UIDs at once, so this is a generous
+	// ceiling against a misbehaving/hostile peer claiming far more.
+	maxFetchRecordsPerCommand = 200
+	// maxLiteralsPerLogicalLine bounds how many literals a single untagged
+	// FETCH response line may contain before this client gives up on it —
+	// this client's own FETCH command only ever requests two (the header
+	// fields literal, then the body-text literal), so anything past a
+	// small multiple of that is unambiguously a misbehaving peer, not a
+	// slow/fragmented legitimate response. Without this bound, a peer that
+	// keeps ending physical lines in a valid-but-tiny "{1}\r\nX" literal
+	// spec forever could otherwise make readLiteralAwareLine loop
+	// unbounded — each iteration is itself time- and size-bounded, but the
+	// iteration count was not.
+	maxLiteralsPerLogicalLine = 8
 )
 
 var (
@@ -243,8 +283,22 @@ func (c *Client) nextLine(timeout time.Duration) (string, error) {
 // collecting every untagged (*) line seen along the way. Mirrors
 // MinimalIMAPClient.readUntilTagged's three-way bound (CLAUDE-SECURITY
 // F4): untagged line count, total untagged bytes, and overall wall-clock
-// deadline.
+// deadline. Thin wrapper over readUntilTaggedBounded fixing the bounds
+// every command except UIDFetchPreviews uses.
 func (c *Client) readUntilTagged(tag string, perLineTimeout, overallDeadline time.Duration) ([]string, error) {
+	return c.readUntilTaggedBounded(tag, perLineTimeout, overallDeadline, maxUntaggedLinesPerCommand, maxUntaggedBytesPerCommand)
+}
+
+// readUntilTaggedBounded is readUntilTagged with the line-count/byte
+// bounds taken as arguments rather than the maxUntaggedLinesPerCommand/
+// maxUntaggedBytesPerCommand constants directly — pulled out so
+// UIDFetchPreviews's larger maxFetchRecordsPerCommand/
+// maxFetchBytesPerCommand bounds (RELAY_CONTENT_PREVIEW's handful of
+// message previews legitimately needs more room than a plain STATUS/
+// SELECT response) can share this exact bounding logic instead of
+// duplicating it, without loosening the bound every other command still
+// gets.
+func (c *Client) readUntilTaggedBounded(tag string, perLineTimeout, overallDeadline time.Duration, maxLines, maxBytes int) ([]string, error) {
 	var untagged []string
 	totalBytes := 0
 	deadline := time.Now().Add(overallDeadline)
@@ -271,7 +325,7 @@ func (c *Client) readUntilTagged(tag string, perLineTimeout, overallDeadline tim
 		}
 		untagged = append(untagged, line)
 		totalBytes += len(line)
-		if len(untagged) > maxUntaggedLinesPerCommand || totalBytes > maxUntaggedBytesPerCommand {
+		if len(untagged) > maxLines || totalBytes > maxBytes {
 			return nil, ErrResponseTooLarge
 		}
 	}
@@ -500,6 +554,191 @@ func (c *Client) Logout() error {
 	}
 	_, err := c.readUntilTagged(tag, 5*time.Second, 5*time.Second)
 	return err
+}
+
+// literalSuffixPattern matches an IMAP literal spec ("{123}") trailing a
+// response line whose terminator has already been stripped by nextLine —
+// RFC 3501 §4.3: a literal is introduced by "{octet-count}" immediately
+// followed by CRLF, then exactly that many raw octets (which may contain
+// anything, including CR/LF/NUL — this is IMAP's only length-prefixed,
+// binary-safe framing, unlike every other line this client parses).
+var literalSuffixPattern = regexp.MustCompile(`\{(\d+)\}$`)
+
+// fetchRecord is one untagged "* n FETCH (...)" response's parsed shape,
+// as read by readFetchResponses: the plain-text portions of the line
+// (with literal spans removed) plus the literal byte blobs found, in the
+// order they appeared. This package deliberately does not parse IMAP's
+// full parenthesized-list response grammar (no ENVELOPE/BODYSTRUCTURE
+// parser here) — UIDFetchPreviews only ever asks for UID plus two
+// specific BODY.PEEK literals, so pairing "the Nth literal seen" with
+// "which BODY.PEEK[...] item requested it" by request order is sufficient
+// and far simpler than a general parser.
+type fetchRecord struct {
+	Text     string
+	Literals [][]byte
+}
+
+// readLiteralBytes reads exactly n raw bytes directly off the buffered
+// connection reader — unlike nextLine, this must not stop at any
+// embedded CR/LF/NUL, since a literal's payload is arbitrary MIME bytes
+// (RFC 3501 §4.3). n is always pre-validated by the caller against
+// maxLiteralBytes before this is called (CLAUDE-SECURITY F8: no
+// allocation sized directly by unchecked attacker input).
+func (c *Client) readLiteralBytes(n int, timeout time.Duration) ([]byte, error) {
+	conn := c.currentConn()
+	if conn == nil {
+		return nil, ErrNotConnected
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(c.reader, buf); err != nil {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			return nil, ErrTimedOut
+		}
+		return nil, ErrConnectionClosed
+	}
+	return buf, nil
+}
+
+// readLiteralAwareLine reads one IMAP "logical line" — a plain nextLine
+// read that, if it ends in a literal spec ("{N}"), is followed by reading
+// exactly N raw literal bytes and then resuming line-reading for the
+// remainder of the same logical response, repeating until a physical line
+// is read that does NOT end in a literal spec (RFC 3501 §4.3: nothing
+// distinguishes "the line is over" from "a literal follows" until you've
+// looked at its last token). Bounded per literal (maxLiteralBytes, checked
+// before any read is attempted) and per logical line (
+// maxLiteralsPerLogicalLine — see that constant's doc comment for why an
+// iteration bound is needed here that plain nextLine calls don't need).
+func (c *Client) readLiteralAwareLine(timeout time.Duration) (string, [][]byte, error) {
+	var text strings.Builder
+	var literals [][]byte
+	for {
+		line, err := c.nextLine(timeout)
+		if err != nil {
+			return "", nil, err
+		}
+		if m := literalSuffixPattern.FindStringSubmatch(line); m != nil {
+			n, convErr := strconv.Atoi(m[1])
+			if convErr != nil || n < 0 || n > maxLiteralBytes {
+				return "", nil, ErrResponseTooLarge
+			}
+			text.WriteString(line[:len(line)-len(m[0])])
+			data, err := c.readLiteralBytes(n, timeout)
+			if err != nil {
+				return "", nil, err
+			}
+			literals = append(literals, data)
+			if len(literals) > maxLiteralsPerLogicalLine {
+				return "", nil, ErrResponseTooLarge
+			}
+			continue
+		}
+		text.WriteString(line)
+		return text.String(), literals, nil
+	}
+}
+
+// readFetchResponses reads UID FETCH's untagged responses until tag's
+// tagged completion, using readLiteralAwareLine instead of plain nextLine
+// for each response — the only place in this client where that's
+// necessary, since BODY.PEEK[...] literals are the only literals this
+// client's own commands ever provoke a server into sending. Bounded like
+// readUntilTaggedBounded (record count, total bytes including every
+// literal payload, overall wall-clock deadline) but via its own
+// maxRecords/maxTotalBytes so UIDFetchPreviews can use a larger budget
+// than every other command without loosening theirs (CLAUDE-SECURITY
+// F4/F8).
+func (c *Client) readFetchResponses(tag string, perLineTimeout, overallDeadline time.Duration, maxRecords, maxTotalBytes int) ([]fetchRecord, error) {
+	var records []fetchRecord
+	totalBytes := 0
+	deadline := time.Now().Add(overallDeadline)
+	for {
+		if time.Now().After(deadline) || time.Now().Equal(deadline) {
+			return nil, ErrTimedOut
+		}
+		remaining := time.Until(deadline)
+		if remaining > perLineTimeout {
+			remaining = perLineTimeout
+		}
+		if remaining <= 0 {
+			remaining = time.Millisecond
+		}
+		text, literals, err := c.readLiteralAwareLine(remaining)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(text, tag+" ") {
+			if !strings.HasPrefix(text, tag+" OK") {
+				return nil, &CommandFailedError{Tag: tag, Response: text}
+			}
+			return records, nil
+		}
+		totalBytes += len(text)
+		for _, l := range literals {
+			totalBytes += len(l)
+		}
+		records = append(records, fetchRecord{Text: text, Literals: literals})
+		if len(records) > maxRecords || totalBytes > maxTotalBytes {
+			return nil, ErrResponseTooLarge
+		}
+	}
+}
+
+// fetchUIDPattern extracts the "UID <n>" atom from an untagged FETCH
+// response's plain-text portion. Requires a literal space right after
+// "UID" so this can never accidentally match an unrelated atom sharing
+// the prefix (there is none in this client's own FETCH response, but the
+// guard costs nothing).
+var fetchUIDPattern = regexp.MustCompile(`\bUID (\d+)`)
+
+// UIDFetchPreviews issues one `UID FETCH <start>:<end> (UID
+// BODY.PEEK[HEADER.FIELDS (...)] BODY.PEEK[TEXT]<0.32768>)` (RELAY_CONTENT_
+// PREVIEW's content-preview fetch — see MessagePreview/preview_parse.go)
+// and returns one MessagePreview per untagged FETCH response this client
+// could make sense of. A response missing its UID atom or either expected
+// literal is skipped rather than failing the whole batch — a handful of
+// new messages arriving between the watcher's UIDNEXT check and this FETCH
+// (or an unrelated FETCH flag-update line some servers interleave) should
+// not cost every other message's preview. The caller (watcher pool) treats
+// a wholly empty result the same as an error: fall back to the
+// content-free push payload for this cycle.
+func (c *Client) UIDFetchPreviews(start, end uint32, timeout time.Duration) ([]MessagePreview, error) {
+	tag := c.nextTag()
+	cmd := fmt.Sprintf(
+		"%s UID FETCH %d:%d (UID BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] BODY.PEEK[TEXT]<0.32768>)",
+		tag, start, end,
+	)
+	if err := c.write(cmd); err != nil {
+		return nil, err
+	}
+	perLine := timeout
+	if perLine > 35*time.Second {
+		perLine = 35 * time.Second
+	}
+	records, err := c.readFetchResponses(tag, perLine, timeout, maxFetchRecordsPerCommand, maxFetchBytesPerCommand)
+	if err != nil {
+		return nil, err
+	}
+	previews := make([]MessagePreview, 0, len(records))
+	for _, rec := range records {
+		m := fetchUIDPattern.FindStringSubmatch(rec.Text)
+		if m == nil {
+			continue
+		}
+		uid, err := strconv.ParseUint(m[1], 10, 32)
+		if err != nil {
+			continue
+		}
+		if len(rec.Literals) < 2 {
+			continue
+		}
+		previews = append(previews, parsePreview(uint32(uid), rec.Literals[0], rec.Literals[1]))
+	}
+	return previews, nil
 }
 
 // quoted mirrors MinimalIMAPClient.quoted(_:) — RFC 3501 §9 quoted-string

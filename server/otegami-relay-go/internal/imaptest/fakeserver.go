@@ -13,6 +13,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +75,13 @@ type FakeServer struct {
 	RateLimitWindow       time.Duration
 	RateLimitWindowBudget int
 
+	// Messages backs UID FETCH (RELAY_CONTENT_PREVIEW's content-preview
+	// fetch, Task-#-less Phase 2 addition): a FakeMessage per UID this
+	// server will answer a "UID FETCH a:b (...)" range query for, keyed by
+	// UID. Tests populate this directly (no IMAP APPEND support here) —
+	// see AddMessage.
+	Messages map[uint32]FakeMessage
+
 	mu              sync.Mutex
 	listener        net.Listener
 	clientConn      net.Conn
@@ -83,6 +92,29 @@ type FakeServer struct {
 	windowCount     int
 	rejectedCount   int
 	loginAttemptLog []time.Time
+}
+
+// FakeMessage is one UID FETCH-able message this server knows about —
+// enough to answer the exact FETCH shape UIDFetchPreviews
+// (internal/imapclient/client.go) sends: `UID FETCH a:b (UID
+// BODY.PEEK[HEADER.FIELDS (...)] BODY.PEEK[TEXT]<0.32768>)`. HeaderFields
+// and Text are sent back as IMAP literals ({N}\r\n<N bytes>), same as a
+// real server would for this FETCH shape — this is the one command this
+// fake server needs literal support for.
+type FakeMessage struct {
+	HeaderFields string // raw header block this server returns verbatim for HEADER.FIELDS
+	Text         string // raw body text this server returns verbatim for BODY.PEEK[TEXT]<0.32768>
+}
+
+// AddMessage registers uid as UID FETCH-able, returning HeaderFields/Text
+// verbatim as literals when a client's UID FETCH range includes it.
+func (s *FakeServer) AddMessage(uid uint32, msg FakeMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Messages == nil {
+		s.Messages = map[uint32]FakeMessage{}
+	}
+	s.Messages[uid] = msg
 }
 
 // LoginCount returns how many LOGIN commands this server has received
@@ -388,10 +420,76 @@ func (s *FakeServer) handleConn(conn net.Conn) {
 			fmt.Fprintf(conn, "* BYE logging out\r\n")
 			fmt.Fprintf(conn, "%s OK LOGOUT completed\r\n", tag)
 
+		case "UID":
+			if len(parts) < 3 {
+				fmt.Fprintf(conn, "%s BAD missing UID argument\r\n", tag)
+				break
+			}
+			rest := strings.TrimSpace(parts[2])
+			if !strings.HasPrefix(strings.ToUpper(rest), "FETCH ") {
+				fmt.Fprintf(conn, "%s BAD unsupported UID subcommand\r\n", tag)
+				break
+			}
+			s.handleUIDFetch(conn, tag, strings.TrimSpace(rest[len("FETCH "):]))
+
 		default:
 			fmt.Fprintf(conn, "%s BAD unknown command\r\n", tag)
 		}
 	}
+}
+
+// handleUIDFetch answers the one UID FETCH shape UIDFetchPreviews
+// (internal/imapclient/client.go) ever sends — `<range> (UID
+// BODY.PEEK[HEADER.FIELDS (...)] BODY.PEEK[TEXT]<0.32768>)` — by returning
+// every registered Messages entry within <range> as an untagged FETCH
+// response carrying two IMAP literals (HeaderFields, then Text), mirroring
+// a real server's literal framing exactly (RFC 3501 §4.3: "{N}\r\n"
+// followed by N raw octets). Doesn't attempt to parse the requested item
+// list beyond the range — this fake server always answers with both
+// literals regardless of exactly which BODY.PEEK items were named, since
+// the one client that talks to it only ever asks for these two.
+func (s *FakeServer) handleUIDFetch(conn net.Conn, tag, fetchArgs string) {
+	rangeStr := fetchArgs
+	if idx := strings.IndexAny(fetchArgs, " \t"); idx >= 0 {
+		rangeStr = fetchArgs[:idx]
+	}
+	bounds := strings.SplitN(rangeStr, ":", 2)
+	start, err := strconv.ParseUint(bounds[0], 10, 32)
+	end := start
+	if err == nil && len(bounds) == 2 {
+		if bounds[1] == "*" {
+			end = ^uint64(0)
+		} else {
+			end, err = strconv.ParseUint(bounds[1], 10, 32)
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(conn, "%s BAD malformed UID FETCH range\r\n", tag)
+		return
+	}
+
+	s.mu.Lock()
+	var uids []uint32
+	for uid := range s.Messages {
+		if uint64(uid) >= start && uint64(uid) <= end {
+			uids = append(uids, uid)
+		}
+	}
+	messages := s.Messages
+	s.mu.Unlock()
+	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
+
+	for seq, uid := range uids {
+		msg := messages[uid]
+		header := []byte(msg.HeaderFields)
+		text := []byte(msg.Text)
+		fmt.Fprintf(conn, "* %d FETCH (UID %d BODY[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] {%d}\r\n", seq+1, uid, len(header))
+		conn.Write(header)
+		fmt.Fprintf(conn, " BODY[TEXT]<0.32768> {%d}\r\n", len(text))
+		conn.Write(text)
+		fmt.Fprintf(conn, ")\r\n")
+	}
+	fmt.Fprintf(conn, "%s OK UID FETCH completed\r\n", tag)
 }
 
 // FloodingMode selects FloodingServer's misbehavior, mirroring
