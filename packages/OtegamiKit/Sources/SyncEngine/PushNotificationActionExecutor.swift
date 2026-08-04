@@ -39,6 +39,28 @@ public enum PushNotificationAction: Sendable {
 /// specific transport/credential backend, letting the app wire the real
 /// ones while tests inject fakes.
 public enum PushNotificationActionExecutor {
+    /// The "uidNext → target uid" heuristic this type's own doc comment
+    /// describes (`uid = max(uidNext - 1, 1)`), factored out so `execute`/
+    /// `resolveOpenTarget` and `PushTriggeredInboxSync` (push 通知起点
+    /// バックグラウンド受信 Phase 1 — same `accountId`/`uidNext` payload
+    /// shape, same "the newest UID a `uidNext` observation implies" target)
+    /// don't each carry their own copy of the exact same expression.
+    static func inferredTargetUID(uidNext: Int) -> UInt32 {
+        UInt32(max(uidNext - 1, 1))
+    }
+
+    /// The local `(mailboxId, uid)` lookup `apply`/`resolveOpenTarget` below
+    /// both do, factored out for the same reason as `inferredTargetUID(
+    /// uidNext:)` above — also reused by `PushTriggeredInboxSync`, which
+    /// needs the full `MessageRecord` (not just its `threadId`/`id`, the way
+    /// `resolveOpenTarget` narrows it) to report back to its caller.
+    static func fetchMessage(mailboxId: Int64, uid: UInt32, db: Database) throws -> MessageRecord? {
+        try MessageRecord
+            .filter(Column("mailboxId") == mailboxId)
+            .filter(Column("uid") == Int64(uid))
+            .fetchOne(db)
+    }
+
     /// Applies `action` for the message a push notification identifies
     /// (`accountId`/`uidNext`) to the local database — updating a
     /// already-synced local copy directly (`MessagePinReadState`/
@@ -74,7 +96,7 @@ public enum PushNotificationActionExecutor {
         // Mirrors `NotificationService.enrich(...)`'s identical heuristic
         // (`NotificationService.swift:480`) for inferring the target
         // message from a bare `uidNext` observation.
-        let uid = UInt32(max(uidNext - 1, 1))
+        let uid = inferredTargetUID(uidNext: uidNext)
 
         let applied: Bool
         do {
@@ -213,12 +235,9 @@ public enum PushNotificationActionExecutor {
               let mailboxId = mailbox.id
         else { return nil }
 
-        let uid = UInt32(max(uidNext - 1, 1))
+        let uid = inferredTargetUID(uidNext: uidNext)
         return try? await database.dbWriter.read { db in
-            guard let message = try MessageRecord
-                .filter(Column("mailboxId") == mailboxId)
-                .filter(Column("uid") == Int64(uid))
-                .fetchOne(db),
+            guard let message = try Self.fetchMessage(mailboxId: mailboxId, uid: uid, db: db),
                 let threadId = message.threadId,
                 let messageId = message.id
             else { return nil }
@@ -245,10 +264,7 @@ public enum PushNotificationActionExecutor {
     ) throws -> Bool {
         guard let mailboxId = mailbox.id else { return false }
 
-        if let message = try MessageRecord
-            .filter(Column("mailboxId") == mailboxId)
-            .filter(Column("uid") == Int64(uid))
-            .fetchOne(db) {
+        if let message = try Self.fetchMessage(mailboxId: mailboxId, uid: uid, db: db) {
             guard let threadId = message.threadId else { return false }
             switch action {
             case .markRead:
