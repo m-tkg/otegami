@@ -205,7 +205,12 @@ final class PendingSendCoordinator {
     /// unlink after" order `OpQueueProcessor.deleteOutboxMessage` uses, for
     /// the same reason (the FK cascade removes the rows that would
     /// otherwise identify the files).
-    private static func deleteOutboxMessage(id outboxMessageId: Int64, accountId: String, database: AppDatabase) async {
+    ///
+    /// Not `private` (as it was before the "送信失敗"操作 task added
+    /// `OutboxView`'s own "削除" button): the same "undo `ComposerView
+    /// .send()`'s write" logic is exactly what a permanently-failed row's
+    /// delete needs too — no reason to duplicate it a second time.
+    static func deleteOutboxMessage(id outboxMessageId: Int64, accountId: String, database: AppDatabase) async {
         try? await database.dbWriter.write { db in
             let attachmentPaths = try OutboxAttachmentRecord
                 .filter(Column("outboxMessageId") == outboxMessageId)
