@@ -1,9 +1,13 @@
 package imapclient
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/japanese"
 
 	"github.com/m-tkg/otegami-relay-go/internal/imaptest"
 )
@@ -277,6 +281,167 @@ func TestUIDFetchPreviewsHTMLOnlyFallsBackToStrippedText(t *testing.T) {
 	}
 	if len(previews) != 1 || previews[0].BodyPreview != "Hello world" {
 		t.Fatalf("got %+v", previews)
+	}
+}
+
+// encodeISO2022JP / encodeShiftJIS produce real Japanese-charset byte
+// sequences for body-charset fixtures with the same x/text encoders the
+// production decode path reverses — no hand-crafted byte strings.
+func encodeISO2022JP(t *testing.T, s string) string {
+	t.Helper()
+	out, err := japanese.ISO2022JP.NewEncoder().String(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func encodeShiftJIS(t *testing.T, s string) string {
+	t.Helper()
+	out, err := japanese.ShiftJIS.NewEncoder().String(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestUIDFetchPreviewsISO2022JPQuotedPrintableBody reproduces the confirmed
+// production bug behind the 2026-08-06 Sony Bank notification: a text/plain
+// body with charset=ISO-2022-JP and Content-Transfer-Encoding:
+// quoted-printable. decodeBodyBytes reversed the QP layer but nothing
+// transcoded the charset, so the push notification showed the raw
+// escape-sequence text ("$B%=%K!<..." — the ESC bytes themselves get eaten
+// by iOS's notification rendering, everything else is printable ASCII and
+// sailed straight through truncateUTF8's ToValidUTF8).
+func TestUIDFetchPreviewsISO2022JPQuotedPrintableBody(t *testing.T) {
+	server := imaptest.NewFakeServer()
+	const want = "ソニー銀行からのお知らせ"
+	// QP-encode the ISO-2022-JP bytes: ESC (0x1B) is the only byte outside
+	// the printable-ASCII range QP passes through literally.
+	qpBody := strings.ReplaceAll(encodeISO2022JP(t, want), "\x1b", "=1B")
+	server.AddMessage(1, imaptest.FakeMessage{
+		HeaderFields: headerFields("a@example.test", "s", "", "", "text/plain; charset=ISO-2022-JP", "quoted-printable"),
+		Text:         qpBody,
+	})
+	c := connectToFake(t, server)
+	if err := c.Login("u", "p"); err != nil {
+		t.Fatal(err)
+	}
+	previews, err := c.UIDFetchPreviews(1, 1, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(previews) != 1 || previews[0].BodyPreview != want {
+		t.Fatalf("got %+v, want body %q", previews, want)
+	}
+}
+
+func TestUIDFetchPreviewsShiftJISBase64Body(t *testing.T) {
+	server := imaptest.NewFakeServer()
+	const want = "こんにちは、世界"
+	b64Body := base64.StdEncoding.EncodeToString([]byte(encodeShiftJIS(t, want)))
+	server.AddMessage(1, imaptest.FakeMessage{
+		HeaderFields: headerFields("a@example.test", "s", "", "", "text/plain; charset=Shift_JIS", "base64"),
+		Text:         b64Body,
+	})
+	c := connectToFake(t, server)
+	if err := c.Login("u", "p"); err != nil {
+		t.Fatal(err)
+	}
+	previews, err := c.UIDFetchPreviews(1, 1, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(previews) != 1 || previews[0].BodyPreview != want {
+		t.Fatalf("got %+v, want body %q", previews, want)
+	}
+}
+
+func TestUIDFetchPreviewsMultipartISO2022JPPlainPart(t *testing.T) {
+	server := imaptest.NewFakeServer()
+	const want = "円リッチプログラム上乗せ金利のご案内"
+	body := "" +
+		"--BOUNDARY\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n\r\n" +
+		"<p>html version</p>\r\n" +
+		"--BOUNDARY\r\n" +
+		"Content-Type: text/plain; charset=ISO-2022-JP\r\n\r\n" +
+		encodeISO2022JP(t, want) + "\r\n" +
+		"--BOUNDARY--\r\n"
+	server.AddMessage(1, imaptest.FakeMessage{
+		HeaderFields: headerFields("a@example.test", "s", "", "", `multipart/alternative; boundary="BOUNDARY"`, ""),
+		Text:         body,
+	})
+	c := connectToFake(t, server)
+	if err := c.Login("u", "p"); err != nil {
+		t.Fatal(err)
+	}
+	previews, err := c.UIDFetchPreviews(1, 1, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(previews) != 1 || previews[0].BodyPreview != want {
+		t.Fatalf("got %+v, want body %q", previews, want)
+	}
+}
+
+// TestUIDFetchPreviewsUnknownBodyCharsetLeftAlone pins the degrade path:
+// a charset resolveCharset can't map returns the CTE-decoded bytes
+// unchanged (for an all-ASCII body that means an intact preview), exactly
+// the pre-transcodeBody behavior — un-decoded beats mis-decoded.
+func TestUIDFetchPreviewsUnknownBodyCharsetLeftAlone(t *testing.T) {
+	server := imaptest.NewFakeServer()
+	server.AddMessage(1, imaptest.FakeMessage{
+		HeaderFields: headerFields("a@example.test", "s", "", "", "text/plain; charset=x-mystery-charset", "7bit"),
+		Text:         "plain ascii body",
+	})
+	c := connectToFake(t, server)
+	if err := c.Login("u", "p"); err != nil {
+		t.Fatal(err)
+	}
+	previews, err := c.UIDFetchPreviews(1, 1, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(previews) != 1 || previews[0].BodyPreview != "plain ascii body" {
+		t.Fatalf("got %+v", previews)
+	}
+}
+
+// TestUIDFetchPreviewsTruncatedISO2022JPBody covers the
+// BODY.PEEK[TEXT]<0.32768> truncation case: the ISO-2022-JP byte stream
+// cut off mid-double-byte-sequence must still yield the intact prefix
+// (x/text decoders emit U+FFFD for the dangling tail rather than failing),
+// never an error or an empty preview.
+func TestUIDFetchPreviewsTruncatedISO2022JPBody(t *testing.T) {
+	server := imaptest.NewFakeServer()
+	const full = "ソニー銀行からのお知らせ"
+	encoded := encodeISO2022JP(t, full)
+	// Cut inside the double-byte JIS region: past the leading ESC $ B (3
+	// bytes) plus an odd number of content bytes, so the last character is
+	// split and there is no trailing ESC ( B either.
+	truncated := encoded[:3+5]
+	server.AddMessage(1, imaptest.FakeMessage{
+		HeaderFields: headerFields("a@example.test", "s", "", "", "text/plain; charset=ISO-2022-JP", "7bit"),
+		Text:         truncated,
+	})
+	c := connectToFake(t, server)
+	if err := c.Login("u", "p"); err != nil {
+		t.Fatal(err)
+	}
+	previews, err := c.UIDFetchPreviews(1, 1, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(previews) != 1 {
+		t.Fatalf("got %+v", previews)
+	}
+	got := previews[0].BodyPreview
+	if !utf8.ValidString(got) {
+		t.Fatalf("body is not valid UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(got, "ソニ") {
+		t.Fatalf("got body %q, want intact %q prefix", got, "ソニ")
 	}
 }
 
