@@ -108,8 +108,17 @@ public enum MessageRemoval {
     /// used to be a second, narrower silent-rollback path: re-inserting a
     /// still-present row trips its primary-key uniqueness the same way the
     /// thread-ordering bug trips the `threadId` foreign key).
+    /// - Parameter markSeenOnArchive: 設定「アーカイブ時に既読にする」
+    ///   (`ArchiveActionSettingsStore`) — `kind == .archive` のときだけ意味を
+    ///   持つ (`.delete`/`.junk`/`.unarchive`には影響しない)。`true` の場合、
+    ///   各 target message を `OpQueue.enqueueArchive` する**前**に
+    ///   `MessageReadMarker.markSeen(messageId:accountId:db:)` を呼ぶ —
+    ///   `OpQueueProcessor` は opQueue を id 順に実行するため、flag STORE
+    ///   op が archive (move) op より後に積まれると、移動済み UID への
+    ///   STORE になり失敗する。デフォルト `false` (既存呼び出しは全て
+    ///   従来どおり既読状態を変えない)。
     @discardableResult
-    public static func commit(_ kind: Kind, summary: ThreadSummary, accountId: String, db: Database) throws -> Snapshot? {
+    public static func commit(_ kind: Kind, summary: ThreadSummary, accountId: String, db: Database, markSeenOnArchive: Bool = false) throws -> Snapshot? {
         guard let threadId = summary.thread.id else { return nil }
         // Task #163: `summary.thread.isPinned` is the exact same OR-
         // aggregate `ThreadRecord` column every list/detail screen already
@@ -146,9 +155,30 @@ public enum MessageRemoval {
         for message in targets {
             guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
             guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+            // 設定「アーカイブ時に既読にする」で `markSeen` した場合、
+            // relocation (下の`if let destinationId ...`分岐) にはループ
+            // 変数 `message` (markSeen 前の stale コピー) ではなく DB から
+            // 取り直した最新コピーを使う — さもないと relocation の
+            // `update` が既読フラグを巻き戻してしまう。一方 `removedMessages`
+            // (undo 用スナップショット) には意図的に markSeen **前**の
+            // 元コピー (`message`) を積む: undo は未読状態まで含めて元通り
+            // 復元し、`opQueueIds` の捕捉範囲 (`beforeMaxOpId` より後) には
+            // markSeen が積んだ flag op も含まれるので undo で一緒に
+            // キャンセルされる、という一貫した設計にするため。
+            var messageForRelocation = message
             switch kind {
             case .archive:
                 guard mailbox.role != .archive else { continue }
+                if markSeenOnArchive {
+                    // OpQueueProcessor は opQueue を id 順に実行するため、
+                    // この flag STORE op は直後の archive (move) op より
+                    // 必ず先に enqueue する — 逆順だと移動済み UID への
+                    // STORE になり失敗する。
+                    if try MessageReadMarker.markSeen(messageId: messageId, accountId: accountId, db: db),
+                       let refetched = try MessageRecord.fetchOne(db, key: messageId) {
+                        messageForRelocation = refetched
+                    }
+                }
                 try OpQueue.enqueueArchive(
                     accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
                     uids: [uid], db: db
@@ -187,7 +217,7 @@ public enum MessageRemoval {
                 // relocating changes *where* the message lives, never its
                 // content, so there's nothing to delete or reindex here
                 // (contrast the `else` branch below, a true removal).
-                var relocated = message
+                var relocated = messageForRelocation
                 relocated.mailboxId = destinationId
                 relocated.uid = -messageId
                 relocated.updatedAt = Date()

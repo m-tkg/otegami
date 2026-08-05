@@ -138,7 +138,10 @@ extension MessageListView {
     func commitArchive(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
         do {
             guard let snapshot = try await environment.database.dbWriter.write({ db in
-                try MessageRemoval.commit(.archive, summary: summary, accountId: summary.thread.accountId, db: db)
+                try MessageRemoval.commit(
+                    .archive, summary: summary, accountId: summary.thread.accountId, db: db,
+                    markSeenOnArchive: ArchiveActionSettingsStore.markAsReadOnArchive
+                )
             }) else { return nil }
             if isSearchActive {
                 searchResults.removeAll { $0.id == summary.id }

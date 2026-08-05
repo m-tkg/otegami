@@ -143,7 +143,10 @@ extension ThreadDetailView {
                 guard let summary = try Self.threadSummary(threadId: threadId, singleMessageId: singleMessageId, accountId: accountId, db: db) else {
                     return false
                 }
-                return try MessageRemoval.commit(kind, summary: summary, accountId: accountId, db: db) != nil
+                return try MessageRemoval.commit(
+                    kind, summary: summary, accountId: accountId, db: db,
+                    markSeenOnArchive: ArchiveActionSettingsStore.markAsReadOnArchive
+                ) != nil
             }
             guard removed else { return }
             // 実機報告 (数秒「メッセージが見つかりません」が見えてから一覧に

@@ -1020,7 +1020,10 @@ struct RootView: View {
                     // doc comment covers the same OR-aggregate/per-message-
                     // guard reasoning this reuses) — no second query needed.
                     let kind: MessageRemoval.Kind = summary.isArchived ? .unarchive : .archive
-                    let removed = try MessageRemoval.commit(kind, summary: summary, accountId: thread.accountId, db: db) != nil
+                    let removed = try MessageRemoval.commit(
+                        kind, summary: summary, accountId: thread.accountId, db: db,
+                        markSeenOnArchive: ArchiveActionSettingsStore.markAsReadOnArchive
+                    ) != nil
                     return (removed, thread.accountId)
                 }
                 guard let outcome, outcome.removed else { return }

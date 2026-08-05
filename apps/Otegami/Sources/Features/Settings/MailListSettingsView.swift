@@ -40,6 +40,10 @@ struct MailListSettingsView: View {
     // 下の`swipeSection`(D8 スワイプ割り当て) のすぐ下に置く、この設定と
     // 同じ「一括操作の挙動」を扱うため。
     @AppStorage(ListDisplaySettingsStore.confirmBulkActionKey) private var confirmBulkAction = ListDisplaySettingsStore.defaultConfirmBulkAction
+    // 実機フィードバック「アーカイブ時に既読にする」— スワイプ/一括操作/
+    // push 通知アクションいずれのアーカイブ経路にも効くため、
+    // `confirmBulkAction`と同じく`#if os(iOS)`では囲まない。
+    @AppStorage(ArchiveActionSettingsStore.markAsReadOnArchiveKey) private var markAsReadOnArchive = ArchiveActionSettingsStore.defaultMarkAsReadOnArchive
 
     #if os(iOS)
     @AppStorage(SwipeActionSettingsStore.leadingShortActionKey) private var leadingShortRaw = SwipeActionSettingsStore.defaultLeadingShort.rawValue
@@ -130,6 +134,19 @@ struct MailListSettingsView: View {
         #if os(iOS)
         swipeSection
         #endif
+
+        // 実機フィードバック「アーカイブ時に既読にする」: スワイプ・
+        // 一括操作 (アカウントでグループ化表示/macOS ⌘E)・push 通知の
+        // アクションボタン、アーカイブを実行する経路すべてに効く
+        // (`MessageRemoval.commit(_:...:markSeenOnArchive:)`のドキュメント
+        // コメント参照)。`swipeSection`のすぐ下、`confirmBulkAction`と
+        // 同じ「アーカイブ・一括操作の挙動」を扱うセクション群に置いた。
+        Section {
+            Toggle("アーカイブ時に既読にする", isOn: $markAsReadOnArchive)
+                .accessibilityIdentifier("settings.list.markAsReadOnArchiveToggle")
+        } footer: {
+            Text("オンにすると、アーカイブしたメールの未読状態を既読に変えます。")
+        }
 
         // Task #190 (実機フィードバック「グループのスワイプで出てくる
         // 確認画面は設定でオフにできるようにして」): 「アカウントで

@@ -262,6 +262,140 @@ struct MessageRemovalTests {
         #expect(messageAfterUndo != nil)
     }
 
+    // MARK: markSeenOnArchive (実機フィードバック「アーカイブ時に既読にする」)
+
+    @Test("commit(.archive, markSeenOnArchive: true) marks the relocated row \\Seen and enqueues the flag op before the archive op")
+    func archiveWithMarkSeenOnArchiveMarksRelocatedRowSeenInOpOrder() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        // Task #120 の relocation を発火させるため、Archive-role mailbox を
+        // あらかじめ用意しておく（`archiveSkipsAlreadyArchivedMessageAndUndoStaysConsistent`
+        // と同じセットアップ）。
+        let archiveId = try database.dbWriter.write { db -> Int64 in
+            var archive = MailboxRecord(accountId: accountId, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1)
+            try archive.insert(db)
+            return archive.id!
+        }
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db in
+            try insertSingleMessageThread(accountId: accountId, mailboxId: inboxId, uid: 11, date: date, db: db)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+        #expect(summary.latestMessage?.flags.contains(.seen) == false, "insertSingleMessageThread's messages start unread")
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.archive, summary: summary, accountId: accountId, db: db, markSeenOnArchive: true)
+        }
+        let snapshot2 = try #require(snapshot)
+
+        // Relocated (not deleted, since `archiveId` is known locally) and
+        // now \Seen.
+        let (messageAfterArchive, opsAfterArchive) = try database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: messageId),
+                try OpQueueRecord.order(Column("id")).fetchAll(db)
+            )
+        }
+        #expect(messageAfterArchive?.mailboxId == archiveId)
+        #expect(messageAfterArchive?.isPendingRelocation == true)
+        #expect(messageAfterArchive?.flags.contains(.seen) == true)
+
+        // Ordering matters: `OpQueueProcessor` replays by id order, so the
+        // flag STORE op must precede the archive (move) op — a flag STORE
+        // against a UID that's already been moved by an earlier archive op
+        // would fail.
+        #expect(opsAfterArchive.map(\.kind) == [OpQueueKind.setFlags.rawValue, OpQueueKind.archive.rawValue])
+
+        // The undo snapshot keeps the *pre-markSeen* copy — see `commit`'s
+        // doc comment on why (undo restores the unread state too, and the
+        // flag op is captured in `opQueueIds` alongside the archive op so
+        // undo cancels both together).
+        #expect(snapshot2.messages.first?.flags.contains(.seen) == false)
+        #expect(snapshot2.opQueueIds.count == 2)
+    }
+
+    @Test("commit(.archive) defaults to markSeenOnArchive: false — no flag op, seen state untouched")
+    func archiveDefaultsToNotMarkingSeen() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let archiveId = try database.dbWriter.write { db -> Int64 in
+            var archive = MailboxRecord(accountId: accountId, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1)
+            try archive.insert(db)
+            return archive.id!
+        }
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db in
+            try insertSingleMessageThread(accountId: accountId, mailboxId: inboxId, uid: 12, date: date, db: db)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+
+        // No `markSeenOnArchive` argument — must match every pre-existing
+        // call site's behavior exactly.
+        try database.dbWriter.write { db in
+            try MessageRemoval.commit(.archive, summary: summary, accountId: accountId, db: db)
+        }
+
+        let (messageAfterArchive, opKindsAfterArchive) = try database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: messageId),
+                try OpQueueRecord.fetchAll(db).map(\.kind)
+            )
+        }
+        #expect(messageAfterArchive?.mailboxId == archiveId)
+        #expect(messageAfterArchive?.flags.contains(.seen) == false)
+        #expect(opKindsAfterArchive == [OpQueueKind.archive.rawValue])
+    }
+
+    /// Deliberately *without* a locally-known Archive-role mailbox (unlike
+    /// the two tests above) — no relocation happens, so `commit` takes the
+    /// "no destination known" branch (`else` in its own loop: `FTSIndexer
+    /// .delete` + `MessageRecord.deleteOne`) and `undo` fully re-inserts
+    /// `original` (`undoRestoresSingleMessageThreadAfterArchive`'s same
+    /// setup). This is the branch where the "markSeen 前の元コピーを
+    /// `removedMessages` に積む" design actually pays off: a full row
+    /// re-insert restores *every* field from that pre-markSeen snapshot,
+    /// including `flags` — unlike the relocated-row branch tested above,
+    /// which (by existing, documented design — `undo`'s doc comment) only
+    /// restores `mailboxId`/`uid` and deliberately leaves every other field
+    /// (including a since-changed read state) alone.
+    @Test("undo after markSeenOnArchive archive (no known Archive mailbox → delete+reinsert) restores the unread state and cancels both the flag and archive ops")
+    func undoAfterMarkSeenOnArchiveRestoresUnreadStateWhenReinserted() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db in
+            try insertSingleMessageThread(accountId: accountId, mailboxId: inboxId, uid: 13, date: date, db: db)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.archive, summary: summary, accountId: accountId, db: db, markSeenOnArchive: true)
+        }
+        let snapshot2 = try #require(snapshot)
+        #expect(try database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: messageId) } == nil, "no Archive mailbox known locally → deleted, not relocated")
+
+        try database.dbWriter.write { db in try MessageRemoval.undo(snapshot2, db: db) }
+
+        let (messageAfterUndo, opCountAfterUndo) = try database.dbWriter.read { db in
+            (try MessageRecord.fetchOne(db, key: messageId), try OpQueueRecord.fetchCount(db))
+        }
+        #expect(messageAfterUndo?.mailboxId == inboxId)
+        #expect(messageAfterUndo?.uid == 13)
+        #expect(messageAfterUndo?.flags.contains(.seen) == false, "undo restores the unread state, not just the location")
+        #expect(opCountAfterUndo == 0, "both the flag op and the archive op are cancelled together")
+    }
+
     // MARK: unarchive (Task #87, 1)
 
     @Test("unarchive → undo restores a single-message thread the same way archive does, and enqueues an unarchive op")

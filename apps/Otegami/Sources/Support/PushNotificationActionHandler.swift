@@ -41,6 +41,7 @@ enum PushNotificationActionHandler {
             accountId: accountId,
             uidNext: uidNext,
             database: database,
+            markSeenOnArchive: ArchiveActionSettingsStore.markAsReadOnArchive,
             auth: { account in await resolveAuth(for: account) },
             sessionFactory: { config in MailCoreIMAPSession(config: config) }
         )

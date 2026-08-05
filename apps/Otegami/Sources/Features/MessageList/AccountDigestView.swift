@@ -286,7 +286,10 @@ struct AccountDigestView: View {
         for summary in summaries {
             do {
                 if let snapshot = try await environment.database.dbWriter.write({ db in
-                    try MessageRemoval.commit(kind, summary: summary, accountId: accountId, db: db)
+                    try MessageRemoval.commit(
+                        kind, summary: summary, accountId: accountId, db: db,
+                        markSeenOnArchive: ArchiveActionSettingsStore.markAsReadOnArchive
+                    )
                 }) {
                     snapshots.append(snapshot)
                 }

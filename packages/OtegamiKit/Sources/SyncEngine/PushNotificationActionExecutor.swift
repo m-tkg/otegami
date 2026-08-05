@@ -77,11 +77,18 @@ public enum PushNotificationActionExecutor {
     /// there is no UI to report an error to, and the local DB write (when
     /// it succeeds) is durable, so a normal sync later reconciles anything
     /// this best-effort replay didn't manage to push through.
+    /// - Parameter markSeenOnArchive: 設定「アーカイブ時に既読にする」
+    ///   (app 層の`ArchiveActionSettingsStore`) — `action == .archive`の
+    ///   ときだけ意味を持つ。`SyncEngine`は package 層で`UserDefaults`を
+    ///   直接読まない方針のため、呼び出し元 (`PushNotificationActionHandler
+    ///   .handle`) が app 層の設定値をここに渡す形にしている。デフォルト
+    ///   `false`。
     public static func execute(
         action: PushNotificationAction,
         accountId: String,
         uidNext: Int,
         database: AppDatabase,
+        markSeenOnArchive: Bool = false,
         auth: @Sendable (AccountRecord) async -> MailAuth?,
         sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     ) async {
@@ -101,7 +108,10 @@ public enum PushNotificationActionExecutor {
         let applied: Bool
         do {
             applied = try await database.dbWriter.write { db in
-                try Self.apply(action: action, accountId: accountId, mailbox: mailbox, uid: uid, db: db)
+                try Self.apply(
+                    action: action, accountId: accountId, mailbox: mailbox, uid: uid,
+                    markSeenOnArchive: markSeenOnArchive, db: db
+                )
             }
         } catch {
             return
@@ -260,6 +270,7 @@ public enum PushNotificationActionExecutor {
         accountId: String,
         mailbox: MailboxRecord,
         uid: UInt32,
+        markSeenOnArchive: Bool,
         db: Database
     ) throws -> Bool {
         guard let mailboxId = mailbox.id else { return false }
@@ -277,7 +288,9 @@ public enum PushNotificationActionExecutor {
                 let summary = try ThreadQuery.summaries(forThreads: [thread], db: db).first
                 guard let summary else { return false }
                 do {
-                    let snapshot = try MessageRemoval.commit(.archive, summary: summary, accountId: accountId, db: db)
+                    let snapshot = try MessageRemoval.commit(
+                        .archive, summary: summary, accountId: accountId, db: db, markSeenOnArchive: markSeenOnArchive
+                    )
                     return snapshot != nil
                 } catch is MessageRemoval.ArchiveGuardError {
                     // Pinned — silently do nothing (`MessageRemoval
@@ -303,6 +316,17 @@ public enum PushNotificationActionExecutor {
                 uids: [uid], flags: .seen, op: .add, db: db
             )
         case .archive:
+            // 設定「アーカイブ時に既読にする」: ローカル行が無い場合も
+            // `MessageRemoval.commit`と同じ順序 (flag STORE op を archive
+            // (move) op より先に enqueue) を守る — `OpQueueProcessor`は
+            // opQueue を id 順に実行するため、逆順だと移動済み UID への
+            // STORE になり失敗する。
+            if markSeenOnArchive {
+                try OpQueue.enqueueSetFlags(
+                    accountId: accountId, mailboxId: mailboxId, uidValidity: mailbox.uidValidity,
+                    uids: [uid], flags: .seen, op: .add, db: db
+                )
+            }
             try OpQueue.enqueueArchive(
                 accountId: accountId, sourceMailboxId: mailboxId, uidValidity: mailbox.uidValidity,
                 uids: [uid], db: db
