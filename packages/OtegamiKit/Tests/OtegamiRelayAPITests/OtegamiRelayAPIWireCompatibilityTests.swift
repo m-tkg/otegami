@@ -149,6 +149,33 @@ struct OtegamiRelayAPIWireCompatibilityTests {
         #expect(decoded[1].from.name == "")
     }
 
+    @Test("MessagePreview decodes a null date (Go's WireTime.MarshalJSON zero-value) as nil, other fields intact")
+    func messagePreviewNullDate() throws {
+        // Go's `WireTime.MarshalJSON` (`dto.go`) writes `null` for a
+        // message whose `Date` header the relay couldn't parse — this must
+        // decode without throwing, with every other field still present.
+        let json = #"""
+        {"uid":11,"from":{"name":"Bob","address":"bob@example.test"},"subject":"Yo","date":null,"messageId":"m11","bodyPreview":"body 11"}
+        """#.data(using: .utf8)!
+
+        let decoded = try decoder().decode(MessagePreview.self, from: json)
+        #expect(decoded.uid == 11)
+        #expect(decoded.date == nil)
+        #expect(decoded.bodyPreview == "body 11")
+    }
+
+    @Test("MessagePreview decodes a missing date key as nil, for leniency beyond Go's current null-writing behavior")
+    func messagePreviewMissingDateKey() throws {
+        let json = #"""
+        {"uid":11,"from":{"name":"Bob","address":"bob@example.test"},"subject":"Yo","messageId":"m11","bodyPreview":"body 11"}
+        """#.data(using: .utf8)!
+
+        let decoded = try decoder().decode(MessagePreview.self, from: json)
+        #expect(decoded.uid == 11)
+        #expect(decoded.date == nil)
+        #expect(decoded.bodyPreview == "body 11")
+    }
+
     @Test("WatchSummary keys, enum values, and ISO 8601 dates match Go")
     func watchSummary() throws {
         try assertWireCompatibility(

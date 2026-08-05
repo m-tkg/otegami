@@ -167,7 +167,7 @@ public actor PushRelayClient {
         accountId: String,
         sinceUid: Int
     ) async throws -> [MessagePreview] {
-        try await send(
+        let (data, _) = try await performRequest(
             baseURL: baseURL,
             path: "v1/messages",
             method: "GET",
@@ -180,9 +180,42 @@ public actor PushRelayClient {
             ],
             timeout: Self.messagePreviewFetchTimeout
         )
+        // Deliberately not routed through the generic `send<Response>` (which
+        // decodes the whole array as one `Decodable` and throws away the
+        // entire response the moment any single element fails). This route
+        // is the one that turned a single relay-side quirk into every
+        // notification's body-preview enrichment failing outright: one
+        // preview with an unparseable `Date` header used to encode as a Go
+        // struct this decoder rejected, and `JSONDecoder.decode([MessagePreview]
+        // .self)` fails the *whole array* the instant one element doesn't
+        // match — see `MessagePreview.date`'s own doc comment for that half
+        // of the fix. `date` becoming `Date?` closes that particular
+        // failure mode, but this per-element decode is the general fix:
+        // whatever shape a future relay/element mismatch takes (a new field,
+        // a value this build doesn't know how to parse, ...), one bad
+        // preview should never cost the NSE every other, perfectly good,
+        // preview in the same response.
+        guard let elements = try? Self.jsonDecoder.decode([FailableElement<MessagePreview>].self, from: data) else {
+            throw PushRelayClientError.invalidResponse
+        }
+        return elements.compactMap(\.value)
     }
 
     // MARK: - Plumbing
+
+    /// Decodes one array element as `nil` (instead of throwing) when it
+    /// doesn't match `T`'s shape, so decoding `[FailableElement<T>]` never
+    /// fails outright just because one element in the array is malformed —
+    /// only `fetchMessagePreviews` uses this; every other call here still
+    /// goes through `send`'s all-or-nothing `Response: Decodable` decode,
+    /// which is the right behavior for a single-object response.
+    private struct FailableElement<T: Decodable>: Decodable {
+        let value: T?
+
+        init(from decoder: Decoder) throws {
+            value = try? T(from: decoder)
+        }
+    }
 
     private static var jsonDecoder: JSONDecoder {
         let decoder = JSONDecoder()

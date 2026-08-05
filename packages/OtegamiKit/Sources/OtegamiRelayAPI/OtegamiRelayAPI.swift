@@ -397,10 +397,14 @@ public struct ListWatchesResponse: Codable, Equatable, Sendable {
 /// decrypted, best-effort content preview per recently-seen message on the
 /// requested watch (`RELAY_CONTENT_PREVIEW`, opt-in). Mirrors Go's
 /// `api.MessagePreviewSummary` field-for-field (same file/package as
-/// `PushNotificationPayload`'s doc comment). Every field is required
-/// (non-`omitempty` on the Go side) — a preview the server includes at all
-/// always has all of these, even if some are empty strings (e.g. a message
-/// with no display name in its `From` header).
+/// `PushNotificationPayload`'s doc comment). Every field other than `date`
+/// is required (non-`omitempty` on the Go side) — a preview the server
+/// includes at all always has all of those, even if some are empty strings
+/// (e.g. a message with no display name in its `From` header). `date` is
+/// the one exception: Go's `WireTime.MarshalJSON` (`dto.go`) writes `null`
+/// for a message whose `Date` header the server couldn't parse, so this
+/// type must accept `null`/a missing key there too — see `date`'s own doc
+/// comment.
 public struct MessagePreview: Codable, Equatable, Sendable, Identifiable {
     /// Mirrors Go's `api.MessagePreviewFrom` — deliberately its own small
     /// type rather than reusing `OtegamiCore.EmailAddress` (whose `name` is
@@ -421,13 +425,25 @@ public struct MessagePreview: Codable, Equatable, Sendable, Identifiable {
     public var uid: Int64
     public var from: From
     public var subject: String
-    public var date: Date
+    /// `nil` when the relay couldn't parse this message's `Date` header
+    /// (Go's `WireTime.MarshalJSON` writes `null` for its zero value in
+    /// that case) — also decodes a missing `date` key the same way, for
+    /// leniency against any future Go change that starts omitting it
+    /// outright instead of writing `null`. No current caller reads this
+    /// field (`NotificationService.fetchRelayBodyPreview` only uses `uid`/
+    /// `bodyPreview`), but it must stay decodable rather than optional-only
+    /// in name: before this was `Date?`, a single preview with a null date
+    /// failed `JSONDecoder.decode([MessagePreview].self)` for the *entire*
+    /// array, taking every other (perfectly good) preview down with it —
+    /// see `PushRelayClient.fetchMessagePreviews`'s per-element decoding
+    /// for the other half of that fix.
+    public var date: Date?
     public var messageId: String
     public var bodyPreview: String
 
     public var id: Int64 { uid }
 
-    public init(uid: Int64, from: From, subject: String, date: Date, messageId: String, bodyPreview: String) {
+    public init(uid: Int64, from: From, subject: String, date: Date?, messageId: String, bodyPreview: String) {
         self.uid = uid
         self.from = from
         self.subject = subject

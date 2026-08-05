@@ -313,6 +313,58 @@ struct PushRelayClientTests {
         #expect(previews[0].bodyPreview == "hello")
     }
 
+    @Test("fetchMessagePreviews decodes a null-date element (Go's WireTime.MarshalJSON zero value) instead of failing the whole array")
+    func fetchMessagePreviewsToleratesNullDate() async throws {
+        let client = makeClient()
+        StubURLProtocol.handler = { request in
+            let json = #"""
+            [{"uid":41,"from":{"name":"Alice","address":"alice@example.test"},"subject":"Hi","date":null,"messageId":"m41","bodyPreview":"hello"}]
+            """#.data(using: .utf8)!
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!, json)
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let previews = try await client.fetchMessagePreviews(
+            baseURL: URL(string: "https://relay.example.com")!,
+            deviceSecret: "s1",
+            accountId: "account-1",
+            sinceUid: 40
+        )
+        #expect(previews.count == 1)
+        #expect(previews[0].uid == 41)
+        #expect(previews[0].date == nil)
+        #expect(previews[0].bodyPreview == "hello")
+    }
+
+    @Test("fetchMessagePreviews drops one malformed element instead of failing the whole array (Task: relay content preview NSE crash fix)")
+    func fetchMessagePreviewsDropsMalformedElement() async throws {
+        // Before this fix, `PushRelayClient.fetchMessagePreviews` decoded
+        // the response as a single `[MessagePreview]` — one element that
+        // doesn't match the shape (here, `uid` sent as a string instead of
+        // a number) fails the whole array, and the NSE's body-preview
+        // enrichment fails outright for every message in the payload, not
+        // just the malformed one.
+        let client = makeClient()
+        StubURLProtocol.handler = { request in
+            let json = #"""
+            [{"uid":"not-a-number","from":{"name":"Bad","address":"bad@example.test"},"subject":"Broken","date":"2023-11-14T22:13:20Z","messageId":"m-bad","bodyPreview":"broken"},
+             {"uid":40,"from":{"name":"Alice","address":"alice@example.test"},"subject":"Hi","date":"2023-11-14T22:13:20Z","messageId":"m40","bodyPreview":"hello"}]
+            """#.data(using: .utf8)!
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!, json)
+        }
+        defer { StubURLProtocol.handler = nil }
+
+        let previews = try await client.fetchMessagePreviews(
+            baseURL: URL(string: "https://relay.example.com")!,
+            deviceSecret: "s1",
+            accountId: "account-1",
+            sinceUid: 39
+        )
+        #expect(previews.count == 1)
+        #expect(previews[0].uid == 40)
+        #expect(previews[0].bodyPreview == "hello")
+    }
+
     @Test("fetchMessagePreviews surfaces a 404 as .http(status: 404, _), distinguishable by callers as \"feature off / no watch\"")
     func fetchMessagePreviewsNotFound() async throws {
         let client = makeClient()
