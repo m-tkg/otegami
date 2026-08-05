@@ -200,7 +200,12 @@ struct HTMLMessageView: View {
         let plaintextHTTPImagePolicyRaw = UserDefaults.standard.string(forKey: ImageSettingsStore.plaintextHTTPImagePolicyKey)
         let plaintextHTTPImagePolicy = plaintextHTTPImagePolicyRaw.flatMap(PlaintextHTTPImagePolicy.init(rawValue:)) ?? ImageSettingsStore.defaultPlaintextHTTPImagePolicy
         _plaintextHTTPImagePolicy = State(initialValue: plaintextHTTPImagePolicy)
-        _allowsPlaintextHTTPImages = State(initialValue: plaintextHTTPImagePolicy == .alwaysAllow)
+        // 送信者別許可は平文 http の確認 (Task #207) もスキップする —
+        // 「この送信者の画像を常に表示」は送信者への信頼の意思表示なので、
+        // 同じ送信者に毎回 http 確認を出し続けるのは意図に反する
+        // (ユーザー要望「『保護されていない画像を確認』の場合も同じような
+        // 挙動にして欲しい」)。
+        _allowsPlaintextHTTPImages = State(initialValue: senderAllowed || plaintextHTTPImagePolicy == .alwaysAllow)
         _autoAdjustColorsInDarkMode = State(initialValue: UserDefaults.standard.bool(forKey: HTMLDisplaySettingsStore.autoAdjustColorsInDarkModeKey))
         _forceLightBackground = State(initialValue: UserDefaults.standard.bool(forKey: HTMLDisplaySettingsStore.forceLightBackgroundKey))
     }
@@ -480,6 +485,20 @@ struct HTMLMessageView: View {
         ) {
             Button("読み込む") { allowsPlaintextHTTPImages = true }
                 .accessibilityIdentifier("messageDetail.plaintextHTTPImagesAlert.load")
+            // 画像バナーの `allowSenderAlwaysMenuItem` と同じ送信者別許可
+            // への入口 (ユーザー要望「『保護されていない画像を確認』の
+            // 場合も同じような挙動に」)。登録すると以降このアドレスからの
+            // メールは画像全般が自動表示になり、この http 確認自体も
+            // スキップされる (`init` の `senderAllowed` 参照)。
+            if let senderAddress {
+                Button("この送信者の画像を常に表示") {
+                    SenderImageAllowlistStore.add(senderAddress)
+                    allowsPlaintextHTTPImages = true
+                    allowsExternalContent = true
+                    allowsEmbeddedImages = true
+                }
+                .accessibilityIdentifier("messageDetail.plaintextHTTPImagesAlert.allowSenderAlways")
+            }
             Button("キャンセル", role: .cancel) {}
                 .accessibilityIdentifier("messageDetail.plaintextHTTPImagesAlert.cancel")
         } message: {

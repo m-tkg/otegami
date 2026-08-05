@@ -694,8 +694,8 @@ translations = {
     "この送信者の画像を常に表示": "Always Show Images from This Sender",
     "画像を常に表示する送信者": "Senders Whose Images Always Show",
     "登録された送信者はありません": "No senders registered",
-    "ここに登録された送信者からのメールは、画像の自動表示設定にかかわらず、埋め込み画像・リモート画像を最初から表示します。登録はメール本文画面の「画像を表示」ボタンから行えます。":
-        "Messages from senders listed here always show embedded and remote images, regardless of the automatic image display settings. You can register a sender from the \"Show Images\" button in the message view.",
+    "ここに登録された送信者からのメールは、画像の自動表示設定にかかわらず、埋め込み画像・リモート画像を最初から表示します。暗号化されていない接続 (http) の画像も確認なしで読み込みます。登録はメール本文画面の「画像を表示」ボタンや保護されていない画像の確認ダイアログから行えます。":
+        "Messages from senders listed here always show embedded and remote images, regardless of the automatic image display settings. Images over unencrypted connections (http) are also loaded without confirmation. You can register a sender from the \"Show Images\" button in the message view or the unprotected-images confirmation dialog.",
     "ログインID": "Login ID",
     "不参加": "Declined",
     "予定への招待": "Invitation",
