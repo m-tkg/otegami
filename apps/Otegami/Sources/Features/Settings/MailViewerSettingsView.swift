@@ -179,6 +179,15 @@ struct MailViewerSettingsView: View {
                 .pickerStyle(.menu)
                 .disabled(!autoShowRemoteImages)
                 .accessibilityIdentifier("settings.images.plaintextHTTPImagePolicyPicker")
+                // ユーザー要望「『この送信者の画像は必ず開く』みたいな選択」:
+                // 本文画面の「画像を表示」バナーで登録した送信者別許可の
+                // 一覧・解除画面への入口。
+                NavigationLink {
+                    SenderImageAllowlistSettingsView()
+                } label: {
+                    Label("画像を常に表示する送信者", systemImage: "person.crop.circle.badge.checkmark")
+                }
+                .accessibilityIdentifier("settings.images.senderAllowlist")
             } header: {
                 Text("画像")
             } footer: {

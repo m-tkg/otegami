@@ -161,7 +161,13 @@ struct AppSettingsCloudDirectory: LocalSettingsDirectory, @unchecked Sendable {
         DefaultAccountSettingsStore.defaultAccountIdKey: "",
         // Task #186: 「削除・アーカイブ時の挙動」— a UI preference exactly
         // like the ones already synced above, no cross-device wrinkle.
-        MessagePostActionSettingsStore.afterDeleteArchiveKey: MessagePostActionSettingsStore.defaultAfterDeleteArchive.rawValue
+        MessagePostActionSettingsStore.afterDeleteArchiveKey: MessagePostActionSettingsStore.defaultAfterDeleteArchive.rawValue,
+        // 「この送信者の画像を常に表示」の送信者別許可リスト — カンマ結合の
+        // 単一文字列 (`FolderCategoryOrderStore.key` と同じ前例)。端末固有の
+        // 秘密でも巨大キャッシュでもないコンテンツ表示の好みなので、
+        // 「迷ったら同期する側に倒す」方針 (docs/icloud-sync.md の Task #186
+        // 節) どおり同期する。既定は空 (未登録)。
+        SenderImageAllowlistStore.allowlistKey: ""
     ]
 
     /// Task #186: `SendCancelSettingsStore.windowKey` (`SendCancelWindow

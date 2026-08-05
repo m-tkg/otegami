@@ -688,6 +688,14 @@ translations = {
     "メールのソース": "Message Source",
     "メールの背景を常に白（ライト表示）": "Always Show Message Background in White (Light Mode)",
     "リモート画像も読み込む": "Also Load Remote Images",
+    # 送信者別のリモート画像許可 (SenderImageAllowlistStore /
+    # HTMLMessageView.allowSenderAlwaysMenuItem / SenderImageAllowlistSettingsView):
+    "このメールの画像を表示": "Show Images in This Message",
+    "この送信者の画像を常に表示": "Always Show Images from This Sender",
+    "画像を常に表示する送信者": "Senders Whose Images Always Show",
+    "登録された送信者はありません": "No senders registered",
+    "ここに登録された送信者からのメールは、「リモート画像を自動で読み込む」の設定にかかわらず、リモート画像を最初から表示します。登録はメール本文画面の「画像を表示」ボタンから行えます。":
+        "Messages from senders listed here always show remote images, regardless of the \"Automatically Load Remote Images\" setting. You can register a sender from the \"Show Images\" button in the message view.",
     "ログインID": "Login ID",
     "不参加": "Declined",
     "予定への招待": "Invitation",

@@ -844,6 +844,10 @@ struct MessageView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HTMLMessageView(
                         html: htmlQuoteHistorySplit?.newHTML ?? html, accountId: accountId, messageId: messageId, mailboxPath: mailboxPath,
+                        // 送信者別のリモート画像許可 (`SenderImageAllowlistStore`)
+                        // の判定キー。`message` 未ロードなら `nil` — その場合は
+                        // 送信者別機能が出ないだけで従来挙動。
+                        senderAddress: message?.fromAddresses.first?.address,
                         // Task #59 (「本文下の空白が過剰」): this used to pass
                         // `floatingButtonsReservedBottomInset` here so the
                         // *loaded document itself* reserved room for the

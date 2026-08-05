@@ -45,6 +45,11 @@ struct HTMLMessageView: View {
     let accountId: String
     let messageId: Int64
     let mailboxPath: String?
+    /// 送信者別のリモート画像許可 (`SenderImageAllowlistStore`) の判定キー。
+    /// `MessageRecord.fromAddresses` の先頭アドレス。`nil` (メッセージ
+    /// レコード未ロード等) なら送信者別の許可・「常に表示」メニュー項目とも
+    /// 無効になるだけで、従来のバナー挙動はそのまま。
+    let senderAddress: String?
     /// Task #56 (実機フィードバック: 要約/翻訳フローティングボタンがHTML本文
     /// に被る): `MessageView.floatingButtonsReservedBottomInset`と同じ値を
     /// 渡してもらい、`HTMLDocumentBuilder.wrap(bodyHTML:...:bottomContentInset:)`
@@ -168,6 +173,7 @@ struct HTMLMessageView: View {
 
     init(
         html: String, accountId: String, messageId: Int64, mailboxPath: String?,
+        senderAddress: String? = nil,
         bottomContentInset: CGFloat = 0,
         translatedTexts: [String]? = nil, showOriginalText: Bool = false,
         onTranslationControllerReady: @escaping (HTMLTranslationController?) -> Void = { _ in },
@@ -177,12 +183,17 @@ struct HTMLMessageView: View {
         self.accountId = accountId
         self.messageId = messageId
         self.mailboxPath = mailboxPath
+        self.senderAddress = senderAddress
         self.bottomContentInset = bottomContentInset
         self.translatedTexts = translatedTexts
         self.showOriginalText = showOriginalText
         self.onTranslationControllerReady = onTranslationControllerReady
         self.onHeightChange = onHeightChange
-        _allowsExternalContent = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowRemoteImagesKey))
+        // 送信者別許可 (`SenderImageAllowlistStore`) は B6 設定より優先 —
+        // 「この送信者の画像は常に表示」を選んだ相手からのメールは、
+        // グローバル設定がオフでも最初からリモート画像を表示する。
+        let senderAllowed = senderAddress.map { SenderImageAllowlistStore.contains($0) } ?? false
+        _allowsExternalContent = State(initialValue: senderAllowed || UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowRemoteImagesKey))
         _allowsEmbeddedImages = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowEmbeddedImagesKey))
         let plaintextHTTPImagePolicyRaw = UserDefaults.standard.string(forKey: ImageSettingsStore.plaintextHTTPImagePolicyKey)
         let plaintextHTTPImagePolicy = plaintextHTTPImagePolicyRaw.flatMap(PlaintextHTTPImagePolicy.init(rawValue:)) ?? ImageSettingsStore.defaultPlaintextHTTPImagePolicy
@@ -282,6 +293,7 @@ struct HTMLMessageView: View {
                     Label("リモート画像も読み込む", systemImage: "photo.on.rectangle")
                 }
                 .accessibilityIdentifier("messageDetail.imagesBanner.showRemote")
+                allowSenderAlwaysMenuItem
             } label: {
                 Label("画像を表示", systemImage: "photo.on.rectangle")
             }
@@ -300,15 +312,58 @@ struct HTMLMessageView: View {
             .padding(.top, 4)
             .accessibilityIdentifier("messageDetail.showEmbeddedImagesBanner")
         } else if isExternalImagesBlocked {
+            // ユーザー要望「『この送信者の画像は必ず開く』みたいな選択が
+            // できるように」: 送信者アドレスが分かるメールでは、従来の
+            // 即時表示ボタンを Menu に置き換えて「このメールだけ」と
+            // 「この送信者は常に」の2択にする。識別子は従来のボタンと同じ
+            // `messageDetail.showImagesBanner` を維持 (XCUITest は
+            // `exists` 確認のみ — `OtegamiM8CIDImageUITests`)。
+            // `senderAddress` が取れないメールでは従来どおり即時表示
+            // ボタンのまま。
+            if senderAddress != nil {
+                Menu {
+                    Button {
+                        allowsExternalContent = true
+                    } label: {
+                        Label("このメールの画像を表示", systemImage: "photo.on.rectangle")
+                    }
+                    .accessibilityIdentifier("messageDetail.imagesBanner.showRemoteOnce")
+                    allowSenderAlwaysMenuItem
+                } label: {
+                    Label("画像を表示", systemImage: "photo.on.rectangle")
+                }
+                .buttonStyle(.bordered)
+                .padding(.horizontal)
+                .padding(.top, 4)
+                .accessibilityIdentifier("messageDetail.showImagesBanner")
+            } else {
+                Button {
+                    allowsExternalContent = true
+                } label: {
+                    Label("画像を表示", systemImage: "photo.on.rectangle")
+                }
+                .buttonStyle(.bordered)
+                .padding(.horizontal)
+                .padding(.top, 4)
+                .accessibilityIdentifier("messageDetail.showImagesBanner")
+            }
+        }
+    }
+
+    /// 「この送信者の画像を常に表示」— `SenderImageAllowlistStore` に登録
+    /// して以降このアドレスからのメールはリモート画像を自動表示する。
+    /// 解除は設定 →「メールビューア」→「画像」の許可リストから
+    /// (`MailViewerSettingsView`)。`senderAddress` が無ければ項目ごと出さない。
+    @ViewBuilder
+    private var allowSenderAlwaysMenuItem: some View {
+        if let senderAddress {
             Button {
+                SenderImageAllowlistStore.add(senderAddress)
                 allowsExternalContent = true
             } label: {
-                Label("画像を表示", systemImage: "photo.on.rectangle")
+                Label("この送信者の画像を常に表示", systemImage: "person.crop.circle.badge.checkmark")
             }
-            .buttonStyle(.bordered)
-            .padding(.horizontal)
-            .padding(.top, 4)
-            .accessibilityIdentifier("messageDetail.showImagesBanner")
+            .accessibilityIdentifier("messageDetail.imagesBanner.allowSenderAlways")
         }
     }
 
