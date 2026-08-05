@@ -263,7 +263,38 @@ extension MessageListView {
     /// SwiftUI `Button` action can't reach into the middle of an already-
     /// running `async` call on this same `View` and cancel just that call
     /// without a `Task` handle to call `.cancel()` on.
+    ///
+    /// Pull-to-refresh の再入ガード: このメソッドは複数の経路から並行して
+    /// 呼ばれうる — `syncSelectedMailboxOnAppear()`の5分ループ (:447-452,
+    /// silent, `surfaceErrors: false`)、macOS の ⌘R/更新ボタン
+    /// (`MessageListView.startManualRefresh()`)、そして pull-to-refresh
+    /// (`.refreshable { await refresh() }`)。以前はガードが無く、後から
+    /// 始まった呼び出しの`defer`が先に完了した呼び出しの`isSyncing`/
+    /// `activeSyncTask`を上書きしてしまい、バナーが (本来は消えるべき
+    /// タイミングで) 残り続けたり、(まだ同期中なのに) 早く消えたりする
+    /// バグがあった。既にどれかの`refresh()`呼び出しが進行中なら
+    /// (`activeSyncTask`が非`nil`)、新たに`isSyncing`/`activeSyncTask`を
+    /// 触らずその完了を待つだけにして相乗りする — 二重に同期を走らせない。
+    ///
+    /// race-free な理由: `@MainActor`上のこの`View`で、下の
+    /// `isSyncing = true`から`activeSyncTask = task`までの間に
+    /// `await`(suspension point)が一切無い — つまり「`activeSyncTask`が
+    /// まだ`nil`なのに別の`refresh()`呼び出しが既に走り始めている」瞬間は
+    /// 存在せず、上のガードの`if let running = activeSyncTask`チェックと
+    /// 下のセットアップの間に他の`refresh()`呼び出しが割り込む余地が無い。
+    ///
+    /// 相乗りした場合の既知のトレードオフ: pull-to-refresh がたまたま
+    /// silent な5分ループ (`surfaceErrors: false`) に相乗りすると、その
+    /// パスが失敗してもユーザーの pull 操作に対して`syncErrorMessage`が
+    /// 表示されない。ユーザー操作起点の同期が失敗を確実に表示できなく
+    /// なるより、二重同期による`isSyncing`/`activeSyncTask`の破壊を防ぐ
+    /// 方を優先する許容範囲のトレードオフとして明記しておく。
     func refresh(surfaceErrors: Bool = true, autoRetry: Bool = false) async {
+        if let running = activeSyncTask {
+            await running.value
+            return
+        }
+
         isSyncing = true
         syncProgress = nil
         defer {
@@ -364,21 +395,39 @@ extension MessageListView {
             if surfaceErrors, !failures.isEmpty {
                 syncErrorMessage = failures.joined(separator: "\n")
             }
-        case .unifiedRole:
+        case .unifiedRole(let role):
             // 画面構造改修バッチ (Task #33, 3): 「横断ビュー」の pull-to-
-            // refresh — `.unifiedInbox`の`.inboxOnly`スコープに相当する role
-            // 専用の同期スコープが`SyncCoordinator`側に無い (`SyncScope`は
-            // `.inboxOnly`/`.mailbox(path:)`/`.all`の3種のみ) ため、`.all`
-            // (全メールボックスのフル差分同期、既存の「手動全体更新」と同じ
-            // スコープ)にフォールバックする — 「送信済み」や「アーカイブ」
-            // だけを狙って同期する最適化は無いが、正しさ (最新の状態が見える)
-            // は保たれる。
+            // refresh。`.unifiedInbox`と同じく`unifiedInboxAccountFilter`
+            // を適用する — 表示クエリの`observeThreads()`は既に
+            // `.unifiedRole`ケースで`unifiedInboxAccountFilter`を適用済み
+            // (このファイル冒頭のdoc comment参照) なのに、同期側だけ常に
+            // 全アカウントを回るのは非対称だった (アカウントダイジェスト
+            // からの絞り込み遷移中に pull-to-refresh すると、フィルタ対象
+            // 外のアカウントまで同期される)。
+            let accountsToRefresh = unifiedInboxAccountFilter
+                .flatMap { filterId in environment.accounts.first { $0.id == filterId } }
+                .map { [$0] } ?? environment.accounts
             var failures: [String] = []
-            for account in environment.accounts {
+            for account in accountsToRefresh {
                 do {
                     let auth = try await environment.auth(for: account)
                     _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
-                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: .all, autoRetry: autoRetry, forceReconcileVanishedUIDs: true, onProgress: syncProgressCallback)
+                    // scope 縮小: `.unifiedInbox`の`.inboxOnly`に相当する
+                    // role 専用の同期スコープが`SyncCoordinator`側に無い
+                    // (`SyncScope`は`.inboxOnly`/`.mailbox(path:)`/
+                    // `.mailboxes(paths:)`/`.all`の4種) ため、この role の
+                    // メールボックスを実際に引いて`.mailboxes(paths:)`に
+                    // 絞る — Task #152 で`.mailboxes(paths:)`が入った際は
+                    // opQueue replay 後のターゲット再同期用だったが、ここでも
+                    // 「特定のメールボックス集合だけ同期したい」という同じ
+                    // 形にちょうど当てはまる。該当 role のメールボックスが
+                    // 見つからない (まだ一度も`listMailboxes`していない等)
+                    // 場合だけ従来どおり`.all`にフォールバックする —
+                    // role mailbox 未発見アカウントの自己修復経路として
+                    // 維持する。
+                    let paths = try await roleMailboxPaths(accountId: account.id, role: role)
+                    let scope: SyncScope = paths.isEmpty ? .all : .mailboxes(paths: paths)
+                    _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: scope, autoRetry: autoRetry, forceReconcileVanishedUIDs: true, onProgress: syncProgressCallback)
                 } catch is CancellationError {
                     // Task #194: same reasoning as the `.unifiedInbox` case's
                     // identical `break`.
@@ -390,6 +439,27 @@ extension MessageListView {
             if surfaceErrors, !failures.isEmpty {
                 syncErrorMessage = failures.joined(separator: "\n")
             }
+        }
+    }
+
+    /// 画面構造改修バッチ (Task #33, 3): `.unifiedRole`の pull-to-refresh
+    /// scope 縮小用 — 指定アカウント内、指定`role`かつ`isHidden == false`
+    /// (メールボックス単位の非表示、`MailboxRecord.isHidden`のdoc comment
+    /// 参照) の`MailboxRecord`を引いてその`path`集合を返す。同一role・同一
+    /// アカウントに複数マッチがありうる (Task #119 の名前推測フォールバック
+    /// の誤検出) ため単一`path`ではなく`Set`で返し、呼び出し側はそのまま
+    /// `SyncScope.mailboxes(paths:)`に渡す — CI の SwiftUI 型チェック
+    /// タイムアウト対策 (CLAUDE.md参照) で DB 読みを独立した named helper
+    /// に切り出している。
+    private func roleMailboxPaths(accountId: String, role: MailboxRoleRecord) async throws -> Set<String> {
+        try await environment.database.dbWriter.read { db in
+            let paths = try MailboxRecord
+                .filter(Column("accountId") == accountId)
+                .filter(Column("role") == role.rawValue)
+                .filter(Column("isHidden") == false)
+                .fetchAll(db)
+                .map(\.path)
+            return Set(paths)
         }
     }
 
