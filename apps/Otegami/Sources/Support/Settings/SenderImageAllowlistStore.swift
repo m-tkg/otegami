@@ -1,10 +1,11 @@
 import Foundation
 
-/// 「この送信者の画像は常に表示」(リモート画像バナーの Menu 項目 —
+/// 「この送信者の画像を常に表示」(画像バナーの Menu 項目 —
 /// `HTMLMessageView.imagesBanner`) の送信者別許可リスト。ここに載っている
-/// アドレスからのメールは、「リモート画像を自動で読み込む」(B6) がオフ
-/// でもリモート画像を最初から表示する (`HTMLMessageView.init` が
-/// `allowsExternalContent` の初期値に反映)。
+/// アドレスからのメールは、画像の自動表示設定 (B5/B6) がオフでも埋め込み
+/// (cid:)・リモートの両方の画像を最初から表示する (`HTMLMessageView.init`
+/// が `allowsEmbeddedImages`/`allowsExternalContent` の初期値に反映。
+/// 埋め込みも含める理由は `allowSenderAlwaysMenuItem` の doc comment)。
 ///
 /// 保存形式はカンマ結合の単一文字列 — `UserDefaults` の配列でなくこの形に
 /// したのは、`AppSettingsCloudDirectory.stringDefaults` (iCloud 同期) が

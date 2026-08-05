@@ -189,12 +189,14 @@ struct HTMLMessageView: View {
         self.showOriginalText = showOriginalText
         self.onTranslationControllerReady = onTranslationControllerReady
         self.onHeightChange = onHeightChange
-        // 送信者別許可 (`SenderImageAllowlistStore`) は B6 設定より優先 —
-        // 「この送信者の画像は常に表示」を選んだ相手からのメールは、
-        // グローバル設定がオフでも最初からリモート画像を表示する。
+        // 送信者別許可 (`SenderImageAllowlistStore`) は B5/B6 設定より優先 —
+        // 「この送信者の画像を常に表示」を選んだ相手からのメールは、
+        // グローバル設定がオフでも最初から画像 (埋め込み・リモートとも) を
+        // 表示する (両方に効く理由は `allowSenderAlwaysMenuItem` の
+        // doc comment 参照)。
         let senderAllowed = senderAddress.map { SenderImageAllowlistStore.contains($0) } ?? false
         _allowsExternalContent = State(initialValue: senderAllowed || UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowRemoteImagesKey))
-        _allowsEmbeddedImages = State(initialValue: UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowEmbeddedImagesKey))
+        _allowsEmbeddedImages = State(initialValue: senderAllowed || UserDefaults.standard.bool(forKey: ImageSettingsStore.autoShowEmbeddedImagesKey))
         let plaintextHTTPImagePolicyRaw = UserDefaults.standard.string(forKey: ImageSettingsStore.plaintextHTTPImagePolicyKey)
         let plaintextHTTPImagePolicy = plaintextHTTPImagePolicyRaw.flatMap(PlaintextHTTPImagePolicy.init(rawValue:)) ?? ImageSettingsStore.defaultPlaintextHTTPImagePolicy
         _plaintextHTTPImagePolicy = State(initialValue: plaintextHTTPImagePolicy)
@@ -280,28 +282,65 @@ struct HTMLMessageView: View {
     @ViewBuilder
     private var imagesBanner: some View {
         if isEmbeddedImagesBlocked && isExternalImagesBlocked {
+            bothImagesBlockedBanner
+        } else if isEmbeddedImagesBlocked {
+            embeddedImagesBlockedBanner
+        } else if isExternalImagesBlocked {
+            externalImagesBlockedBanner
+        }
+    }
+
+    private var bothImagesBlockedBanner: some View {
+        Menu {
+            Button {
+                allowsEmbeddedImages = true
+            } label: {
+                Label("埋め込み画像を表示", systemImage: "photo")
+            }
+            .accessibilityIdentifier("messageDetail.imagesBanner.showEmbedded")
+            Button {
+                allowsExternalContent = true
+            } label: {
+                Label("リモート画像も読み込む", systemImage: "photo.on.rectangle")
+            }
+            .accessibilityIdentifier("messageDetail.imagesBanner.showRemote")
+            allowSenderAlwaysMenuItem
+        } label: {
+            Label("画像を表示", systemImage: "photo.on.rectangle")
+        }
+        .buttonStyle(.bordered)
+        .padding(.horizontal)
+        .padding(.top, 4)
+        .accessibilityIdentifier("messageDetail.showImagesBanner")
+    }
+
+    /// 実機報告「『この送信者の画像を常に表示』が見当たらない」対応: 既定
+    /// 設定 (埋め込み=オフ / リモート=自動読み込みオン) では実機で普段
+    /// 出るバナーはこちら (埋め込みのみブロック) なのに、初版は
+    /// リモート側の分岐だけを Menu 化していて、この分岐は従来の即時表示
+    /// ボタンのままだった。送信者別許可は埋め込み・リモートの区別なく
+    /// 「この送信者の画像」全般に効く仕様 (`allowSenderAlwaysMenuItem`)
+    /// なので、この分岐も同じ2択 Menu にする。`senderAddress` が取れない
+    /// メールは従来どおり即時表示ボタン。
+    @ViewBuilder
+    private var embeddedImagesBlockedBanner: some View {
+        if senderAddress != nil {
             Menu {
                 Button {
                     allowsEmbeddedImages = true
                 } label: {
-                    Label("埋め込み画像を表示", systemImage: "photo")
+                    Label("このメールの画像を表示", systemImage: "photo")
                 }
-                .accessibilityIdentifier("messageDetail.imagesBanner.showEmbedded")
-                Button {
-                    allowsExternalContent = true
-                } label: {
-                    Label("リモート画像も読み込む", systemImage: "photo.on.rectangle")
-                }
-                .accessibilityIdentifier("messageDetail.imagesBanner.showRemote")
+                .accessibilityIdentifier("messageDetail.imagesBanner.showEmbeddedOnce")
                 allowSenderAlwaysMenuItem
             } label: {
-                Label("画像を表示", systemImage: "photo.on.rectangle")
+                Label("埋め込み画像を表示", systemImage: "photo")
             }
             .buttonStyle(.bordered)
             .padding(.horizontal)
             .padding(.top, 4)
-            .accessibilityIdentifier("messageDetail.showImagesBanner")
-        } else if isEmbeddedImagesBlocked {
+            .accessibilityIdentifier("messageDetail.showEmbeddedImagesBanner")
+        } else {
             Button {
                 allowsEmbeddedImages = true
             } label: {
@@ -311,47 +350,51 @@ struct HTMLMessageView: View {
             .padding(.horizontal)
             .padding(.top, 4)
             .accessibilityIdentifier("messageDetail.showEmbeddedImagesBanner")
-        } else if isExternalImagesBlocked {
-            // ユーザー要望「『この送信者の画像は必ず開く』みたいな選択が
-            // できるように」: 送信者アドレスが分かるメールでは、従来の
-            // 即時表示ボタンを Menu に置き換えて「このメールだけ」と
-            // 「この送信者は常に」の2択にする。識別子は従来のボタンと同じ
-            // `messageDetail.showImagesBanner` を維持 (XCUITest は
-            // `exists` 確認のみ — `OtegamiM8CIDImageUITests`)。
-            // `senderAddress` が取れないメールでは従来どおり即時表示
-            // ボタンのまま。
-            if senderAddress != nil {
-                Menu {
-                    Button {
-                        allowsExternalContent = true
-                    } label: {
-                        Label("このメールの画像を表示", systemImage: "photo.on.rectangle")
-                    }
-                    .accessibilityIdentifier("messageDetail.imagesBanner.showRemoteOnce")
-                    allowSenderAlwaysMenuItem
-                } label: {
-                    Label("画像を表示", systemImage: "photo.on.rectangle")
-                }
-                .buttonStyle(.bordered)
-                .padding(.horizontal)
-                .padding(.top, 4)
-                .accessibilityIdentifier("messageDetail.showImagesBanner")
-            } else {
+        }
+    }
+
+    /// ユーザー要望「『この送信者の画像は必ず開く』みたいな選択ができる
+    /// ように」: 送信者アドレスが分かるメールでは、従来の即時表示ボタンを
+    /// Menu に置き換えて「このメールだけ」と「この送信者は常に」の2択に
+    /// する。識別子は従来のボタンと同じ `messageDetail.showImagesBanner`
+    /// を維持 (XCUITest は `exists` 確認のみ — `OtegamiM8CIDImageUITests`)。
+    /// `senderAddress` が取れないメールでは従来どおり即時表示ボタンのまま。
+    @ViewBuilder
+    private var externalImagesBlockedBanner: some View {
+        if senderAddress != nil {
+            Menu {
                 Button {
                     allowsExternalContent = true
                 } label: {
-                    Label("画像を表示", systemImage: "photo.on.rectangle")
+                    Label("このメールの画像を表示", systemImage: "photo.on.rectangle")
                 }
-                .buttonStyle(.bordered)
-                .padding(.horizontal)
-                .padding(.top, 4)
-                .accessibilityIdentifier("messageDetail.showImagesBanner")
+                .accessibilityIdentifier("messageDetail.imagesBanner.showRemoteOnce")
+                allowSenderAlwaysMenuItem
+            } label: {
+                Label("画像を表示", systemImage: "photo.on.rectangle")
             }
+            .buttonStyle(.bordered)
+            .padding(.horizontal)
+            .padding(.top, 4)
+            .accessibilityIdentifier("messageDetail.showImagesBanner")
+        } else {
+            Button {
+                allowsExternalContent = true
+            } label: {
+                Label("画像を表示", systemImage: "photo.on.rectangle")
+            }
+            .buttonStyle(.bordered)
+            .padding(.horizontal)
+            .padding(.top, 4)
+            .accessibilityIdentifier("messageDetail.showImagesBanner")
         }
     }
 
     /// 「この送信者の画像を常に表示」— `SenderImageAllowlistStore` に登録
-    /// して以降このアドレスからのメールはリモート画像を自動表示する。
+    /// して以降このアドレスからのメールは画像 (埋め込み・リモートとも) を
+    /// 自動表示する。埋め込みも含めるのは、許可の単位が「この送信者」で
+    /// あって画像の取得経路ではないため — ユーザーが送信者を信頼する意思
+    /// 表示をしたのに cid: 添付だけ毎回ブロックされ続けるのは意図に反する。
     /// 解除は設定 →「メールビューア」→「画像」の許可リストから
     /// (`MailViewerSettingsView`)。`senderAddress` が無ければ項目ごと出さない。
     @ViewBuilder
@@ -360,6 +403,7 @@ struct HTMLMessageView: View {
             Button {
                 SenderImageAllowlistStore.add(senderAddress)
                 allowsExternalContent = true
+                allowsEmbeddedImages = true
             } label: {
                 Label("この送信者の画像を常に表示", systemImage: "person.crop.circle.badge.checkmark")
             }
