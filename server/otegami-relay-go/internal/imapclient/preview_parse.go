@@ -2,13 +2,13 @@
 // BODY.PEEK[HEADER.FIELDS (...)] and BODY.PEEK[TEXT]<0.32768> — into a
 // MessagePreview, for RELAY_CONTENT_PREVIEW (opt-in new-mail content
 // preview, Phase 2). Deliberately narrow in scope, mirroring
-// UIDFetchPreviews's own doc comment: no ENVELOPE/BODYSTRUCTURE grammar, no
-// charset transcoding for the *body* beyond what's already UTF-8 (see
-// truncateUTF8). Header encoded-words (RFC 2047, `=?charset?B/Q?...?=`) are
-// decoded via mimeCharsetReader below, which covers utf-8/iso-8859-1/
-// us-ascii (the stdlib's own built-ins), everything golang.org/x/text/
+// UIDFetchPreviews's own doc comment: no ENVELOPE/BODYSTRUCTURE grammar.
+// Header encoded-words (RFC 2047, `=?charset?B/Q?...?=`) are decoded via
+// mimeCharsetReader below, and body text is transcoded to UTF-8 from its
+// Content-Type charset parameter via transcodeBody; both resolve charset
+// labels through resolveCharset, which covers everything golang.org/x/text/
 // encoding/ianaindex resolves to an implemented encoding.Encoding (in
-// particular ISO-2022-JP and EUC-JP), and a small manual alias table for
+// particular ISO-2022-JP and EUC-JP) plus a small manual alias table for
 // common Japanese-mail charset labels ianaindex doesn't wire up or doesn't
 // recognize as an IANA name at all (Shift_JIS/CP932/Windows-31J spellings —
 // see japaneseCharsetAliases). A charset this can't resolve at all is left
@@ -190,15 +190,53 @@ func (e unsupportedCharsetError) Error() string {
 // rather than this function silently emitting bytes in the wrong charset
 // as if they were already UTF-8.
 func mimeCharsetReader(charset string, input io.Reader) (io.Reader, error) {
-	name := strings.ToLower(strings.TrimSpace(charset))
-	if enc, ok := japaneseCharsetAliases[name]; ok {
-		return enc.NewDecoder().Reader(input), nil
-	}
-	enc, err := ianaindex.MIME.Encoding(charset)
-	if err != nil || enc == nil {
+	enc := resolveCharset(charset)
+	if enc == nil {
 		return nil, unsupportedCharsetError{charset: charset}
 	}
 	return enc.NewDecoder().Reader(input), nil
+}
+
+// resolveCharset maps a MIME charset label (from an RFC 2047 encoded-word
+// or a Content-Type charset parameter) to an encoding.Encoding, or nil if
+// it can't: japaneseCharsetAliases first, then ianaindex.MIME. Shared by
+// mimeCharsetReader (headers) and transcodeBody (body text) so both
+// resolve exactly the same set of labels.
+func resolveCharset(charset string) encoding.Encoding {
+	name := strings.ToLower(strings.TrimSpace(charset))
+	if enc, ok := japaneseCharsetAliases[name]; ok {
+		return enc
+	}
+	enc, err := ianaindex.MIME.Encoding(name)
+	if err != nil || enc == nil {
+		return nil
+	}
+	return enc
+}
+
+// transcodeBody converts s (already CTE-decoded body text) from the given
+// Content-Type charset label to UTF-8. A charset that is empty (RFC 2046
+// §4.1.2's default is us-ascii), already UTF-8/ASCII, or unresolvable
+// returns s unchanged — un-decoded beats mis-decoded, same posture as
+// mimeCharsetReader. x/text decoders replace invalid input bytes with
+// U+FFFD rather than failing, so a body BODY.PEEK[TEXT]<0.32768> cut off
+// mid-sequence (mid-escape for ISO-2022-JP, mid-double-byte for
+// Shift_JIS/EUC-JP) degrades to a mangled tail, never an empty preview.
+func transcodeBody(s, charset string) string {
+	name := strings.ToLower(strings.TrimSpace(charset))
+	switch name {
+	case "", "utf-8", "utf8", "us-ascii", "ascii":
+		return s
+	}
+	enc := resolveCharset(name)
+	if enc == nil {
+		return s
+	}
+	decoded, err := enc.NewDecoder().String(s)
+	if err != nil {
+		return s
+	}
+	return decoded
 }
 
 // extractTextPreview turns the raw BODY.PEEK[TEXT] bytes into a plain-text
@@ -227,7 +265,7 @@ func extractTextPreview(contentType, topLevelCTE string, textBytes []byte) strin
 		// preview.
 		return stripHTMLTags(string(textBytes))
 	}
-	decoded := decodeBodyBytes(textBytes, topLevelCTE)
+	decoded := transcodeBody(decodeBodyBytes(textBytes, topLevelCTE), params["charset"])
 	if mediaType == "text/html" {
 		return stripHTMLTags(decoded)
 	}
@@ -265,7 +303,7 @@ func extractFromMultipart(textBytes []byte, boundary string) (string, bool) {
 			continue
 		}
 		data, _ := io.ReadAll(io.LimitReader(part, maxDecodedPartBytes))
-		decoded := decodeBodyBytes(data, part.Header.Get("Content-Transfer-Encoding"))
+		decoded := transcodeBody(decodeBodyBytes(data, part.Header.Get("Content-Transfer-Encoding")), params["charset"])
 		switch mediaType {
 		case "text/plain":
 			return decoded, true
@@ -355,10 +393,10 @@ func stripHTMLTags(s string) string {
 }
 
 // truncateUTF8 cuts s to at most maxBytes without splitting a multi-byte
-// rune, then replaces any remaining invalid UTF-8 (e.g. a body whose
-// actual charset wasn't UTF-8 — charset transcoding beyond RFC 2047
-// header encoded-words is out of scope here, see this file's doc comment)
-// so the result is always safe to embed in a JSON string.
+// rune, then strips any remaining invalid UTF-8 (e.g. a body whose
+// Content-Type charset transcodeBody couldn't resolve, or raw 8-bit bytes
+// with no charset declared at all) so the result is always safe to embed
+// in a JSON string.
 func truncateUTF8(s string, maxBytes int) string {
 	if len(s) > maxBytes {
 		s = s[:maxBytes]
