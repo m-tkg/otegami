@@ -153,6 +153,16 @@ extension MessageView {
                 loadCalendarInviteIfNeeded(messageUID: loadedMessage.uid)
             } else {
                 errorMessage = await missingCredentialAwareErrorMessage(prefix: "本文の取得に失敗しました", underlyingError: error)
+                // 2026-08-05 (実機フィードバック「要約ボタンがグレーアウトして
+                // 押せないことがある」続報): Task #138 は「取得失敗
+                // (`errorMessage != nil`) も settled として要約ボタンを出し、
+                // タップ時の再取得 (`retryBodyFetchForSummary`) に賭ける」
+                // 方針にしたが、まさにその失敗分岐だけが
+                // `syncAIFeaturesState()` を呼んでおらず、`load()` 冒頭の
+                // リセット時に計算した「非表示」のままボタンが灰色固定に
+                // なっていた。ここで再同期して初めて #138 の設計どおり
+                // 「押して再試行できる」状態になる。
+                syncAIFeaturesState()
             }
         }
     }
