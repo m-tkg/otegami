@@ -109,14 +109,25 @@ public enum TranslationUnavailableReason: Sendable, Equatable {
     /// menu path — iOS has moved this menu across versions before
     /// (2026-07-30 correction), so any hardcoded path would eventually go
     /// stale.
+    ///
+    /// 2026-08-05 (実機フィードバック「要約ボタンなのに『翻訳モデルの準備が
+    /// まだ完了していません』と出た」): この enum は翻訳と要約が共用する
+    /// (`FoundationModelsTranslationService` は両機能のエンジンで、要約側の
+    /// 失敗表示 `MessageView+Summary` / `ThreadDetailView+ThreadSummary` も
+    /// `TranslationServiceError.userFacingMessage` 経由でここへ来る) ため、
+    /// Foundation Models 由来のケース (`deviceNotEligible` /
+    /// `appleIntelligenceNotEnabled` / `modelNotReady`) の文言は「翻訳」に
+    /// 限定しない機能中立な表現にする。`languagePairUnsupported` /
+    /// `languagePackNotDownloaded` は Apple Translation (翻訳のみ) 由来の
+    /// 理由なので「翻訳」のままでよい。
     public var userFacingMessage: String {
         switch self {
         case .deviceNotEligible:
-            "この端末は翻訳機能に対応していません"
+            "この端末はAI機能(翻訳・要約)に対応していません"
         case .appleIntelligenceNotEnabled:
             "Apple Intelligenceが無効です。設定アプリで有効にしてください"
         case .modelNotReady:
-            "翻訳モデルの準備がまだ完了していません。しばらくしてからお試しください"
+            "AIモデルの準備がまだ完了していません。しばらくしてからお試しください"
         case .languagePairUnsupported:
             "この言語の組み合わせは翻訳に対応していません"
         case .languagePackNotDownloaded:
