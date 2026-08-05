@@ -15,6 +15,45 @@ public enum TranslationAvailability: Sendable, Equatable {
         if case .available = self { return true }
         return false
     }
+
+    /// Whether a user-initiated action (e.g. tapping "要約") should be
+    /// allowed to try, even when `isAvailable` is false.
+    ///
+    /// `SystemLanguageModel` (backing `FoundationModelsTranslationService
+    /// .availability`) does not conform to `Observable` — confirmed against
+    /// the SDK's swiftinterface, which declares only
+    /// `final public class SystemLanguageModel: Swift.Sendable`. Call sites
+    /// that snapshot `.availability` into SwiftUI state (see
+    /// `MessageView.syncAIFeaturesState()`) therefore never get notified
+    /// when the model transitions out of `.unavailable(.modelNotReady)` —
+    /// the on-device model can finish loading moments after app launch, but
+    /// a view that snapshotted the stale `.modelNotReady` value has no
+    /// signal to re-check and stays disabled until something unrelated
+    /// (switching messages, backgrounding/foregrounding) forces a
+    /// re-snapshot. That produced the real-device report of the summarize
+    /// button staying greyed out indefinitely right after launch.
+    ///
+    /// Per this repo's established stance (Task #128/#138: "let the user
+    /// tap and surface a real error, rather than hide the button and risk a
+    /// wrong diagnosis"), `modelNotReady` is treated as a transient state
+    /// worth letting the user try through: if the model genuinely isn't
+    /// ready yet, the summarize sheet's `requireAvailable()` call fails
+    /// immediately and surfaces as an error with a retry button — a much
+    /// better failure mode than a button that silently never becomes
+    /// enabled. Every other unavailable reason (device ineligible, Apple
+    /// Intelligence disabled, unsupported/undownloaded language) reflects a
+    /// state that won't resolve itself without the user leaving the app, so
+    /// those still report false here.
+    public var allowsUserInitiatedAttempt: Bool {
+        switch self {
+        case .available:
+            true
+        case .unavailable(reason: .modelNotReady):
+            true
+        case .unavailable:
+            false
+        }
+    }
 }
 
 /// Why a `TranslationService` reports `.unavailable`. Named to line up with

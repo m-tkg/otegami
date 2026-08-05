@@ -343,6 +343,32 @@ final class AppEnvironment {
     /// one instead.
     var isSummarizationAvailable: Bool { summarizationService.availability.isAvailable }
 
+    /// 2026-08-05 (実機フィードバック「要約ボタンがグレーアウトして押せない
+    /// ことがある」): `isSummarizationAvailable` の値は
+    /// `MessageView.syncAIFeaturesState()` が SwiftUI state へ**その場限りの
+    /// スナップショット**としてコピーする。ところが `SystemLanguageModel`
+    /// (`FoundationModelsTranslationService.availability` の裏側) は
+    /// `Observable` に準拠していない (SDK の swiftinterface で確認済み:
+    /// `final public class SystemLanguageModel : Swift.Sendable` のみ) ため、
+    /// 起動直後などモデル資産の読み込み中 (`.unavailable(.modelNotReady)`)
+    /// にスナップショットされると、その後モデルが ready になっても SwiftUI
+    /// 側に変化を知らせる手段が無く、メッセージを切り替える・アプリを
+    /// バックグラウンドから復帰させるといった無関係な再評価が起きるまで
+    /// ボタンが灰色のまま固まってしまう。
+    ///
+    /// 本リポジトリの既定方針 (Task #128/#138: 「隠して誤診断させるより、
+    /// 押せるようにしてその場で失敗を見せる」) に沿い、`modelNotReady` は
+    /// 一時的な状態とみなしてユーザー起点の試行を許可する —
+    /// `TranslationAvailability.allowsUserInitiatedAttempt` のdoc comment
+    /// 参照。もし本当にまだ準備中であれば、要約シート側の
+    /// `requireAvailable()` がタップ直後に失敗し、エラー + 再生成ボタンと
+    /// して自然に見える。それ以外の unavailable 理由 (端末非対応/Apple
+    /// Intelligence 無効/言語未対応) はユーザーがアプリを離れない限り解消
+    /// しない状態なので、引き続き無効のまま扱う。
+    var isSummarizationActionable: Bool {
+        summarizationService.availability.allowsUserInitiatedAttempt
+    }
+
     init() {
         // Task #105 (実機報告「スレッド表示はオフのまま (設定画面も含め)
         // なのに、再起動直後の一覧だけがスレッド表示になる」): forces

@@ -25,6 +25,16 @@ import os
 /// in at selection time.
 struct MessageView: View {
     @Environment(AppEnvironment.self) var environment
+    /// 2026-08-05 (実機フィードバック「要約ボタンがグレーアウトして押せない
+    /// ことがある」): `syncAIFeaturesState()`がスナップショットする
+    /// `aiState.isSummarizationAvailable`は、`SystemLanguageModel`が
+    /// `Observable`非準拠のため一度スナップショットされたら`SystemLanguageModel
+    /// .default.availability`自体が変化してもSwiftUIには伝わらない —
+    /// `AppEnvironment.isSummarizationActionable`のdoc comment参照。この
+    /// 環境値でアプリのフォアグラウンド復帰 (Apple Intelligenceを設定で
+    /// 有効化してアプリに戻ってきた場合など) を検知し、`body`の
+    /// `.onChange(of: scenePhase)`で明示的に再同期する。
+    @Environment(\.scenePhase) private var scenePhase
     /// Which account to authenticate against for a lazy body fetch —
     /// derived from `message.mailboxId` for everything else (M4: a message
     /// embedded in `ThreadDetailView` doesn't necessarily belong to
@@ -447,6 +457,12 @@ struct MessageView: View {
         // I「AI 機能の on/off」while this message is open — see
         // `syncAIFeaturesState()`'s doc comment.
         .onChange(of: aiFeaturesEnabled) { _, _ in syncAIFeaturesState() }
+        // 2026-08-05 (実機フィードバック「要約ボタンがグレーアウトして押せ
+        // ないことがある」): アプリがフォアグラウンドへ復帰するたびに
+        // 明示的に再同期する — `scenePhase`のdoc comment参照。名前付き
+        // メソッド参照にしているのは`docs/ci.md`のSwiftUI型チェック対策
+        // (インラインクロージャを増やさない)方針に合わせるため。
+        .onChange(of: scenePhase, handleScenePhaseChange)
         // 表示・操作改善バッチ「ヘッダにメール件名を表示しない」: this view is
         // always embedded inside `ThreadDetailView` (never pushed on its
         // own) — a `.navigationTitle` here would repeat the subject in the
@@ -528,6 +544,20 @@ struct MessageView: View {
     /// `aiFeaturesEnabled` directly on every body evaluation; this keeps
     /// that same live behavior now that `aiState`, not this view's own
     /// body, is what the footer toolbar actually renders from.
+    /// 2026-08-05 (実機フィードバック「要約ボタンがグレーアウトして押せない
+    /// ことがある」): `scenePhase`の`onChange`から呼ばれる — `.active`へ
+    /// 戻った(バックグラウンドからの復帰、またはApple Intelligenceを設定
+    /// アプリで有効化してこのアプリに戻ってきた場合など)瞬間に
+    /// `syncAIFeaturesState()`を再実行し、`aiState.isSummarizationAvailable`
+    /// のスナップショットを最新の`SystemLanguageModel.default.availability`
+    /// で撮り直す。`isToolbarTarget`が`false`のインスタンスは
+    /// `syncAIFeaturesState()`自身が早期returnするので、ここでの追加ガードは
+    /// 不要(呼んでも無害)。
+    private func handleScenePhaseChange(_ oldPhase: ScenePhase, _ newPhase: ScenePhase) {
+        guard newPhase == .active else { return }
+        syncAIFeaturesState()
+    }
+
     func syncAIFeaturesState() {
         // Task #149 (3): a non-target instance (`isToolbarTarget`'s doc
         // comment) never mutates `aiState` at all here — not just "mutates
@@ -581,7 +611,9 @@ struct MessageView: View {
         syncAIFeaturesState: messageId=\(messageId, privacy: .public) isToolbarTarget=\(isToolbarTarget, privacy: .public) \
         hasBody=\(bodyRecord != nil, privacy: .public) hasError=\(errorMessage != nil, privacy: .public) \
         aiFeaturesEnabled=\(aiFeaturesEnabled, privacy: .public) \
-        showsSummaryButton=\(aiState.showsSummaryButton, privacy: .public)
+        showsSummaryButton=\(aiState.showsSummaryButton, privacy: .public) \
+        isSummarizationActionable=\(environment.isSummarizationActionable, privacy: .public) \
+        isSummarizationAvailableRaw=\(environment.isSummarizationAvailable, privacy: .public)
         """)
         // Task #64 (根治の一環、「ボタンが出ている＝翻訳可能を保証」) had this
         // also require `htmlTranslationController != nil` for an HTML
@@ -611,7 +643,14 @@ struct MessageView: View {
         // (`FoundationModelsTranslationService`) are two different engines
         // with two different availability stories — see
         // `AppEnvironment.isSummarizationAvailable`'s doc comment.
-        aiState.isSummarizationAvailable = environment.isSummarizationAvailable
+        // 2026-08-05 (実機フィードバック「要約ボタンがグレーアウトして押せ
+        // ないことがある」): raw `isSummarizationAvailable` ではなく
+        // `isSummarizationActionable` を使う — `SystemLanguageModel`が
+        // `Observable`非準拠のため、この`aiState`スナップショットが
+        // `.modelNotReady`(起動直後などの一時状態)のタイミングで取られると
+        // モデルが後で ready になっても再評価されずボタンが固まる実機バグの
+        // 修正。`isSummarizationActionable`のdoc comment参照。
+        aiState.isSummarizationAvailable = environment.isSummarizationActionable
         // Task #128 (a): the three conditions the old `showsTranslationButton`
         // gate combined, logged individually — see `translationGateLogger`'s
         // doc comment for why every call logs, not just failures. Task #134:
