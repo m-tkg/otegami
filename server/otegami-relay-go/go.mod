@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	golang.org/x/text v0.40.0
 	modernc.org/sqlite v1.55.0
 )
 

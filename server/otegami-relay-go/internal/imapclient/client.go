@@ -736,9 +736,37 @@ func (c *Client) UIDFetchPreviews(start, end uint32, timeout time.Duration) ([]M
 		if len(rec.Literals) < 2 {
 			continue
 		}
-		previews = append(previews, parsePreview(uint32(uid), rec.Literals[0], rec.Literals[1]))
+		header, body := pairFetchLiterals(rec.Text, rec.Literals)
+		previews = append(previews, parsePreview(uint32(uid), header, body))
 	}
 	return previews, nil
+}
+
+// pairFetchLiterals decides which of rec.Literals[0]/[1] is the
+// HEADER.FIELDS literal and which is the TEXT literal, based on which data
+// item name appears first in rec.Text — not on the order this client itself
+// requested them in the UID FETCH command above. RFC 3501 never promises a
+// server answers a multi-item FETCH in request order, and imap.gmail.com is
+// observed doing exactly that for this exact request shape: it answers
+// BODY[TEXT] before BODY[HEADER.FIELDS]. Blindly assuming
+// literals[0]=header/literals[1]=text against such a response silently
+// swaps header and body — every parsed field (from/subject/date/message-id)
+// comes out empty and bodyPreview ends up holding raw header text, which is
+// exactly the corruption this function exists to prevent (confirmed against
+// production Gmail watches). Matching is case-insensitive: Gmail answers in
+// upper-case, but nothing in RFC 3501 requires that of every server.
+func pairFetchLiterals(text string, literals [][]byte) (header, body []byte) {
+	upper := strings.ToUpper(text)
+	headerIdx := strings.Index(upper, "BODY[HEADER.FIELDS")
+	textIdx := strings.Index(upper, "BODY[TEXT")
+	if headerIdx >= 0 && textIdx >= 0 && headerIdx > textIdx {
+		return literals[1], literals[0]
+	}
+	// Fallback for the case either item name wasn't found (shouldn't happen
+	// for a well-formed response to this client's own request) or header
+	// legitimately precedes text: assume request order, same as before this
+	// function existed.
+	return literals[0], literals[1]
 }
 
 // quoted mirrors MinimalIMAPClient.quoted(_:) — RFC 3501 §9 quoted-string

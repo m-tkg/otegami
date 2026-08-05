@@ -2,20 +2,26 @@
 // BODY.PEEK[HEADER.FIELDS (...)] and BODY.PEEK[TEXT]<0.32768> — into a
 // MessagePreview, for RELAY_CONTENT_PREVIEW (opt-in new-mail content
 // preview, Phase 2). Deliberately narrow in scope, mirroring
-// UIDFetchPreviews's own doc comment: no ENVELOPE/BODYSTRUCTURE grammar,
-// no charset transcoding beyond RFC 2047 encoded-words in headers (the
-// stdlib's mime.WordDecoder only decodes "us-ascii"/"iso-8859-1"/"utf-8"
-// without a CharsetReader this package doesn't register — an encoded-word
-// in another charset, e.g. legacy ISO-2022-JP mail, is left un-decoded
-// rather than mis-decoded). Every decode step here is best-effort: a
-// malformed or truncated header/body degrades to empty/partial fields,
-// never an error — see parsePreview's doc comment for why the whole batch
-// must not fail over one bad message.
+// UIDFetchPreviews's own doc comment: no ENVELOPE/BODYSTRUCTURE grammar, no
+// charset transcoding for the *body* beyond what's already UTF-8 (see
+// truncateUTF8). Header encoded-words (RFC 2047, `=?charset?B/Q?...?=`) are
+// decoded via mimeCharsetReader below, which covers utf-8/iso-8859-1/
+// us-ascii (the stdlib's own built-ins), everything golang.org/x/text/
+// encoding/ianaindex resolves to an implemented encoding.Encoding (in
+// particular ISO-2022-JP and EUC-JP), and a small manual alias table for
+// common Japanese-mail charset labels ianaindex doesn't wire up or doesn't
+// recognize as an IANA name at all (Shift_JIS/CP932/Windows-31J spellings —
+// see japaneseCharsetAliases). A charset this can't resolve at all is left
+// un-decoded rather than mis-decoded. Every decode step here is
+// best-effort: a malformed or truncated header/body degrades to empty/
+// partial fields, never an error — see parsePreview's doc comment for why
+// the whole batch must not fail over one bad message.
 package imapclient
 
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"html"
 	"io"
 	"mime"
@@ -26,6 +32,10 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/ianaindex"
+	"golang.org/x/text/encoding/japanese"
 )
 
 // maxPreviewBytes caps MessagePreview.BodyPreview after every decode step
@@ -82,18 +92,30 @@ func parsePreview(uid uint32, headerBytes, textBytes []byte) MessagePreview {
 		header = msg.Header
 	}
 
-	decoder := new(mime.WordDecoder)
+	decoder := &mime.WordDecoder{CharsetReader: mimeCharsetReader}
 	if subject := header.Get("Subject"); subject != "" {
 		preview.Subject = decodeMIMEWords(decoder, subject)
 	}
 	if from := header.Get("From"); from != "" {
-		if addrs, err := header.AddressList("From"); err == nil && len(addrs) > 0 {
+		// mail.Header.AddressList (equivalently mail.ParseAddressList) always
+		// parses with its own zero-value internal decoder, which has no way
+		// to accept the CharsetReader above — there's no parameter for it.
+		// An encoded-word charset it doesn't itself know (anything other
+		// than utf-8/iso-8859-1/us-ascii) makes RFC 5322 phrase-parsing fail
+		// outright for that word, not just leave it un-decoded, which would
+		// otherwise make an ISO-2022-JP (or other non-UTF-8) display name
+		// fall all the way through to the "else" branch below even though
+		// mimeCharsetReader can decode it just fine. mail.AddressParser is
+		// the one entry point that accepts a WordDecoder, so route through
+		// it instead with the same decoder Subject/etc. use.
+		addrParser := &mail.AddressParser{WordDecoder: decoder}
+		if addrs, err := addrParser.ParseList(from); err == nil && len(addrs) > 0 {
 			preview.FromName = decodeMIMEWords(decoder, addrs[0].Name)
 			preview.FromAddress = addrs[0].Address
 		} else {
 			// Unparseable From (malformed, or a display name with syntax
-			// mail.ParseAddressList rejects) — still surface something
-			// rather than nothing.
+			// mail.AddressParser rejects) — still surface something rather
+			// than nothing.
 			preview.FromName = decodeMIMEWords(decoder, from)
 		}
 	}
@@ -121,6 +143,62 @@ func decodeMIMEWords(decoder *mime.WordDecoder, s string) string {
 		return s
 	}
 	return decoded
+}
+
+// japaneseCharsetAliases covers encoded-word charset labels real-world
+// Japanese mail clients use that golang.org/x/text/encoding/ianaindex
+// either doesn't recognize as an IANA name at all (shift-jis with a hyphen,
+// sjis, cp932, ms932 — none of these are registered IANA aliases) or
+// recognizes but doesn't wire up to an implemented encoding.Encoding
+// (windows-31j is IANA-registered, but ianaindex.MIME.Encoding("windows-31j")
+// returns (nil, nil) — "registered but unsupported" per that method's own
+// doc comment). All of these are the same Shift_JIS-family charset in
+// practice, so they're mapped directly rather than round-tripped through
+// ianaindex. Checked before ianaindex below.
+var japaneseCharsetAliases = map[string]encoding.Encoding{
+	"shift-jis":   japanese.ShiftJIS,
+	"sjis":        japanese.ShiftJIS,
+	"cp932":       japanese.ShiftJIS,
+	"ms932":       japanese.ShiftJIS,
+	"windows-31j": japanese.ShiftJIS,
+}
+
+// unsupportedCharsetError is mimeCharsetReader's error for a charset label
+// it couldn't resolve to any encoding.Encoding — distinct from a nil error
+// only in that it carries the charset name for anyone logging it; never
+// itself logged today (decodeMIMEWords just falls back to the raw
+// un-decoded string), kept as a real error type rather than fmt.Errorf so a
+// future caller can errors.As it without string-matching.
+type unsupportedCharsetError struct{ charset string }
+
+func (e unsupportedCharsetError) Error() string {
+	return fmt.Sprintf("imapclient: unsupported encoded-word charset %q", e.charset)
+}
+
+// mimeCharsetReader is mime.WordDecoder.CharsetReader for parsePreview's
+// decoder: given an RFC 2047 encoded-word's charset label (already
+// lower-cased by the stdlib caller — see mime/encodedword.go's
+// WordDecoder.convert) and a reader over that encoded-word's raw decoded
+// bytes, returns a reader that transcodes them to UTF-8. The stdlib's
+// mime.WordDecoder never calls this for "utf-8"/"iso-8859-1"/"us-ascii" (it
+// handles those three itself), so in practice this only ever sees other
+// charsets — overwhelmingly ISO-2022-JP, Shift_JIS, or EUC-JP from Japanese
+// mail. Returns an error (never a reader over untranscoded bytes) for a
+// charset it can't resolve at all, so an unrecognized charset degrades
+// exactly like it did before this reader existed: DecodeHeader fails and
+// decodeMIMEWords falls back to the original un-decoded encoded-word text,
+// rather than this function silently emitting bytes in the wrong charset
+// as if they were already UTF-8.
+func mimeCharsetReader(charset string, input io.Reader) (io.Reader, error) {
+	name := strings.ToLower(strings.TrimSpace(charset))
+	if enc, ok := japaneseCharsetAliases[name]; ok {
+		return enc.NewDecoder().Reader(input), nil
+	}
+	enc, err := ianaindex.MIME.Encoding(charset)
+	if err != nil || enc == nil {
+		return nil, unsupportedCharsetError{charset: charset}
+	}
+	return enc.NewDecoder().Reader(input), nil
 }
 
 // extractTextPreview turns the raw BODY.PEEK[TEXT] bytes into a plain-text

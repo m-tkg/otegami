@@ -925,6 +925,8 @@ func (p *Pool) fireForNewMail(ctx context.Context, client *imapclient.Client, re
 		return
 	}
 	if len(previews) == 0 {
+		p.logger.Warn("content preview fetch returned zero previews for a non-empty UID range, falling back to content-free push",
+			"watchId", record.ID, "uidRangeStart", rangeStart, "uidRangeEnd", rangeEnd)
 		p.fire(ctx, record, newUIDNext, nil)
 		return
 	}
@@ -944,6 +946,19 @@ func (p *Pool) fireForNewMail(ctx context.Context, client *imapclient.Client, re
 		if preview.UID > latest.UID {
 			latest = preview
 		}
+	}
+	if latest.FromName == "" && latest.FromAddress == "" && latest.Subject == "" {
+		// Every envelope field parsePreview would have filled in from a
+		// well-formed header is empty at once — a single message legitimately
+		// missing From/Subject is plausible, but this exact all-empty
+		// combination is also the fingerprint of a header/body literal
+		// pairing bug (see pairFetchLiterals in imapclient/client.go) sending
+		// parsePreview the wrong bytes. Log so that regression is visible in
+		// production instead of just silently showing a blank sender/subject
+		// in the push notification. Never logs message content (uid/watchId
+		// only).
+		p.logger.Warn("content preview envelope fields are all empty; header parse likely failed",
+			"watchId", record.ID, "uid", latest.UID)
 	}
 	if err := p.store.UpsertMessagePreviews(ctx, record.ID, stored); err != nil {
 		p.logger.Warn("could not persist message previews", "watchId", record.ID, "error", err.Error())

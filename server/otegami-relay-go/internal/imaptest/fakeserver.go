@@ -82,6 +82,20 @@ type FakeServer struct {
 	// see AddMessage.
 	Messages map[uint32]FakeMessage
 
+	// ReverseFetchItemOrder, when true, answers a UID FETCH's two data
+	// items in BODY[TEXT], then BODY[HEADER.FIELDS] order — the reverse of
+	// this client's own request order (imapclient.Client.UIDFetchPreviews
+	// always asks for HEADER.FIELDS first) — instead of the default
+	// request-matching order. This reproduces the exact response shape
+	// observed from imap.gmail.com in production: real servers are free to
+	// answer a multi-item FETCH in whatever order they choose (RFC 3501
+	// never promises request order), and Gmail is the confirmed case that
+	// does so for this exact request. Used by the imapclient test that
+	// confirms pairFetchLiterals (client.go) recovers the correct
+	// header/body pairing from response order rather than trusting request
+	// order.
+	ReverseFetchItemOrder bool
+
 	mu              sync.Mutex
 	listener        net.Listener
 	clientConn      net.Conn
@@ -479,10 +493,22 @@ func (s *FakeServer) handleUIDFetch(conn net.Conn, tag, fetchArgs string) {
 	s.mu.Unlock()
 	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
 
+	s.mu.Lock()
+	reversed := s.ReverseFetchItemOrder
+	s.mu.Unlock()
+
 	for seq, uid := range uids {
 		msg := messages[uid]
 		header := []byte(msg.HeaderFields)
 		text := []byte(msg.Text)
+		if reversed {
+			fmt.Fprintf(conn, "* %d FETCH (UID %d BODY[TEXT]<0.32768> {%d}\r\n", seq+1, uid, len(text))
+			conn.Write(text)
+			fmt.Fprintf(conn, " BODY[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] {%d}\r\n", len(header))
+			conn.Write(header)
+			fmt.Fprintf(conn, ")\r\n")
+			continue
+		}
 		fmt.Fprintf(conn, "* %d FETCH (UID %d BODY[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID CONTENT-TYPE CONTENT-TRANSFER-ENCODING)] {%d}\r\n", seq+1, uid, len(header))
 		conn.Write(header)
 		fmt.Fprintf(conn, " BODY[TEXT]<0.32768> {%d}\r\n", len(text))
