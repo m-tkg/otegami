@@ -269,7 +269,7 @@ public actor MailboxSyncer {
         Self.logger.notice(
             "flagSync: \(mailboxPath, privacy: .public) condstore=\(capabilities.contains(.condstore), privacy: .public)"
         )
-        if capabilities.contains(.condstore) {
+        if capabilities.contains(.condstore), mailboxRecord.highestModSeq > 0, status.highestModSeq > 0 {
             var vanishedAlreadyHandled = false
             if status.highestModSeq > UInt64(mailboxRecord.highestModSeq) {
                 let (flagChanges, deletedMessages) = try await condstoreFlagChangeSync(
@@ -278,7 +278,8 @@ public actor MailboxSyncer {
                     accountId: accountId,
                     session: session,
                     status: status,
-                    sinceModSeq: UInt64(mailboxRecord.highestModSeq)
+                    sinceModSeq: UInt64(mailboxRecord.highestModSeq),
+                    onProgress: onProgress
                 )
                 progress.flagChanges = flagChanges
                 progress.deletedMessages = deletedMessages
@@ -292,6 +293,7 @@ public actor MailboxSyncer {
                 Self.logger.notice(
                     "reconcile: forcing UID SEARCH for \(mailboxPath, privacy: .public) despite unchanged highestModSeq=\(mailboxRecord.highestModSeq, privacy: .public)"
                 )
+                onProgress?(SyncProgressUpdate(mailboxPath: mailboxPath, phase: .reconcile, completed: 0, total: nil))
                 progress.deletedMessages = try await detectAndRemoveVanishedByUIDSearch(
                     mailboxId: mailboxId,
                     mailboxPath: mailboxPath,
@@ -299,6 +301,40 @@ public actor MailboxSyncer {
                     status: status
                 )
             }
+        } else if capabilities.contains(.condstore) {
+            // Baseline pass: either this mailbox has never actually
+            // received a CHANGEDSINCE-based sync before (`mailboxRecord
+            // .highestModSeq == 0` — every mailbox's stored modSeq starts at
+            // 0 straight out of `performWindowedResync`/initial sync), or
+            // this particular `SELECT` came back NOMODSEQ (`status
+            // .highestModSeq == 0` — a server can advertise CONDSTORE
+            // generally yet still report this for a specific mailbox, RFC
+            // 7162 §3.1.2). Either way, `sinceModSeq` would be `0`, and
+            // mailcore2's `MCIMAPSession::syncMessages` (the pinned
+            // mailcore2 revision's `MCIMAPSession.cpp`) omits `CHANGEDSINCE`
+            // from the wire command entirely whenever `modseq == 0` — the
+            // resulting `UID FETCH 1:* (FLAGS)` is a single unchunked
+            // request covering the whole mailbox, with no batching, no
+            // progress, and no cancellation checkpoint, which is exactly
+            // the multi-minute pull-to-refresh stall this guard exists to
+            // avoid. Falling back to the same chunked, progress-reporting
+            // `refetchAndDiffFlags` the non-CONDSTORE path already uses
+            // sidesteps that mailcore2 behavior entirely — it also already
+            // does its own vanished-UID detection by diffing the UIDs each
+            // chunk actually returns, so no separate `UID SEARCH` pass is
+            // needed here the way the modSeq-advanced branch above needs
+            // one.
+            Self.logger.notice(
+                "flagSync: baseline pass for \(mailboxPath, privacy: .public) (stored highestModSeq=\(mailboxRecord.highestModSeq, privacy: .public), server highestModSeq=\(status.highestModSeq, privacy: .public))"
+            )
+            progress.deletedMessages = try await refetchAndDiffFlags(
+                mailboxId: mailboxId,
+                mailboxPath: mailboxPath,
+                accountId: accountId,
+                session: session,
+                status: status,
+                onProgress: onProgress
+            )
         } else {
             progress.deletedMessages = try await refetchAndDiffFlags(
                 mailboxId: mailboxId,
@@ -429,7 +465,8 @@ public actor MailboxSyncer {
         accountId: String,
         session: any IMAPSessionProtocol,
         status: MailboxStatus,
-        sinceModSeq: UInt64
+        sinceModSeq: UInt64,
+        onProgress: (@Sendable (SyncProgressUpdate) -> Void)? = nil
     ) async throws -> (flagChanges: Int, deletedMessages: Int) {
         // Task #120: same reasoning as `refetchAndDiffFlags`'s identical
         // check — see that method's `hasPendingRelocations` doc comment.
@@ -486,6 +523,7 @@ public actor MailboxSyncer {
         if let vanishedUIDs {
             deletedMessages = try await deleteMessages(mailboxId: mailboxId, uids: Set(vanishedUIDs.map(Int64.init)))
         } else {
+            onProgress?(SyncProgressUpdate(mailboxPath: mailboxPath, phase: .reconcile, completed: 0, total: nil))
             deletedMessages = try await detectAndRemoveVanishedByUIDSearch(
                 mailboxId: mailboxId,
                 mailboxPath: mailboxPath,
@@ -767,15 +805,40 @@ public actor MailboxSyncer {
             Self.logger.notice(
                 "\(logContext, privacy: .public): \(mailboxPath, privacy: .public) reconciling \(unknownUIDs.count, privacy: .public) UID(s) unknown to this pass's local snapshot (pending-relocation confirmation or a gap in an earlier step)"
             )
-            let unknownRange = UIDRange(lowerBound: unknownUIDs.min()!, upperBound: unknownUIDs.max()!)
-            let unknownEnvelopes = try await session.fetchEnvelopes(
-                mailboxPath: mailboxPath,
-                uids: unknownRange,
-                batchSize: AccountSyncer.fetchBatchSize
-            )
+            if unknownUIDs.count > 1000 {
+                Self.logger.notice(
+                    "\(logContext, privacy: .public): \(mailboxPath, privacy: .public) unusually large unknown-UID reconciliation (\(unknownUIDs.count, privacy: .public) UIDs) — possible local/server drift"
+                )
+            }
+            // Chunked `UIDSet` fetches, not a single `min...max` `UIDRange`
+            // (this used to build one): a sparse, scattered handful of
+            // unknown UIDs (Gmail-shaped mailboxes especially, where
+            // archived/expunged messages leave large numeric gaps between
+            // surviving UIDs) could turn `unknownUIDs.min()!...max()!` into
+            // a range spanning nearly the entire mailbox, fetching
+            // thousands of already-known envelopes just to reconcile a
+            // handful of genuinely unknown ones — the same unbounded-fetch
+            // shape Task #194 already fixed for `refetchAndDiffFlags`'s own
+            // flags-only window. `fetchEnvelopes(mailboxPath:uids: UIDSet)`
+            // addresses exactly `unknownUIDs`; `Self.chunkUIDs` (shared with
+            // `refetchAndDiffFlags`) keeps each chunk's cost bounded and
+            // gives a very large reconciliation the same per-chunk
+            // cancellation checkpoint `refetchAndDiffFlags` already has.
+            let chunks = Self.chunkUIDs(unknownUIDs.sorted(), size: AccountSyncer.fetchBatchSize)
+            var unknownEnvelopes: [FetchedEnvelope] = []
+            for chunk in chunks {
+                try Task.checkCancellation()
+                let batch = try await session.fetchEnvelopes(mailboxPath: mailboxPath, uids: UIDSet(chunk))
+                unknownEnvelopes.append(contentsOf: batch)
+            }
             let unknownSet = Set(unknownUIDs)
+            // `let` snapshot for the same reason `changedUIDsSnapshot` above
+            // needs one: `DatabaseWriter.write`'s closure is `@Sendable`,
+            // and capturing the `var` this loop built directly is rejected
+            // under Swift 6 strict concurrency.
+            let unknownEnvelopesSnapshot = unknownEnvelopes
             try await database.dbWriter.write { db in
-                for envelope in unknownEnvelopes where unknownSet.contains(envelope.uid) {
+                for envelope in unknownEnvelopesSnapshot where unknownSet.contains(envelope.uid) {
                     try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
                 }
             }

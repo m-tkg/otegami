@@ -144,7 +144,14 @@ struct MessageRelocationReconciliationTests {
         let (inboxId, archiveId) = try await database.dbWriter.write { db -> (Int64, Int64) in
             var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox, uidValidity: 1, uidNext: 1)
             try inbox.insert(db)
-            var archive = MailboxRecord(accountId: account.id, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1, uidNext: 43, highestModSeq: 0)
+            // `highestModSeq: 3` (not 0): stored `highestModSeq == 0` now
+            // routes `incrementalSync` through `MailboxSyncer`'s baseline
+            // guard (a flags-only `refetchAndDiffFlags` refetch) rather
+            // than `condstoreFlagChangeSync`'s CHANGEDSINCE-based path —
+            // this test specifically exercises the latter's pending-
+            // relocation collision handling, so it needs a stored modSeq
+            // that's non-zero but still below the server's reported `5`.
+            var archive = MailboxRecord(accountId: account.id, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1, uidNext: 43, highestModSeq: 3)
             try archive.insert(db)
             return (inbox.id!, archive.id!)
         }

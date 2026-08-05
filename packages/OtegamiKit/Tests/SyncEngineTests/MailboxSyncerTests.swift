@@ -75,15 +75,22 @@ struct MailboxSyncerTests {
             )
         )
 
-        // CONDSTORE reported with an unchanged highestModSeq: the flag-sync
-        // step (2) short-circuits to a no-op, isolating this test to just
-        // the new-mail step (1) — a script that omits uid 1–3 from its
-        // `envelopesByPath` would otherwise also be a valid *non*-CONDSTORE
-        // "everything except uid 1–3 is gone" server response, which isn't
-        // what this test means to exercise.
+        // Stored `highestModSeq` is still 0 after the initial sync above,
+        // so `MailboxSyncer`'s baseline guard runs step 2's flags-only
+        // refetch-and-diff unconditionally (never skipped — see
+        // `incrementalSync`'s baseline-branch doc comment) even though this
+        // test's focus is step 1's new-mail fetch. uid 1–3 must therefore
+        // still come back from `envelopesByPath` unchanged, or step 2 would
+        // read their absence as "vanished" and delete them — not what this
+        // test means to exercise.
         let incrementalScript = FakeIMAPSession.Script(
             mailboxes: [inbox],
-            envelopesByPath: ["INBOX": [makeEnvelope(uid: 4, subject: "新着4通目")]],
+            envelopesByPath: ["INBOX": [
+                makeEnvelope(uid: 1, subject: "1通目"),
+                makeEnvelope(uid: 2, subject: "2通目"),
+                makeEnvelope(uid: 3, subject: "3通目"),
+                makeEnvelope(uid: 4, subject: "新着4通目"),
+            ]],
             statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 5, highestModSeq: 0, messageCount: 4)],
             capabilitiesToReport: [.condstore]
         )
@@ -949,5 +956,329 @@ struct MailboxSyncerTests {
         // discovered it missing) never ran, and a partial result must never
         // be trusted as "confirmed vanished".
         #expect(messages.contains { $0.uid == 150 })
+    }
+
+    // MARK: (d) CONDSTORE baseline guard — mailcore2's `syncMessages`
+    // (`MCIMAPSession.cpp`) omits `CHANGEDSINCE` entirely whenever
+    // `modseq == 0`, turning into a single unchunked `UID FETCH 1:*
+    // (FLAGS)` that can block pull-to-refresh for minutes on a large
+    // mailbox — see `MailboxSyncer.incrementalSync` step 2's doc comment
+    // on the baseline branch.
+
+    @Test("CONDSTORE incremental sync with stored highestModSeq 0 uses the chunked baseline refetch instead of CHANGEDSINCE, and still applies flags/deletions correctly")
+    func condstoreBaselinePassWhenStoredModSeqIsZero() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [
+                    makeEnvelope(uid: 1, subject: "1通目"),
+                    makeEnvelope(uid: 2, subject: "2通目（後で消える）"),
+                ]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 0, messageCount: 2)]
+            )
+        )
+
+        // uid 1 gains \Seen; uid 2 no longer comes back (expunged
+        // elsewhere). The server *does* advertise CONDSTORE and reports a
+        // non-zero highestModSeq this pass, but the locally-stored
+        // highestModSeq is still 0 (this mailbox has never actually
+        // received a CHANGEDSINCE-based sync) — exactly the condition that
+        // used to make mailcore2's `syncMessages` omit CHANGEDSINCE
+        // entirely. This must instead fall back to the same chunked
+        // `fetchFlags(uids: UIDSet)` refetch-and-diff the non-CONDSTORE
+        // path uses, never touching CHANGEDSINCE at all.
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "1通目", flags: .seen)]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 9, messageCount: 1)],
+            capabilitiesToReport: [.condstore]
+        )
+        let sessionBox = SessionBox()
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            let session = FakeIMAPSession(config: config, script: incrementalScript)
+            sessionBox.session = session
+            return session
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.deletedMessages == 1)
+
+        let changedSinceCalls = await sessionBox.session?.changedSinceCalls ?? []
+        #expect(changedSinceCalls.isEmpty, "baseline pass must never call CHANGEDSINCE")
+
+        let fetchFlagsSetCalls = await sessionBox.session?.fetchFlagsSetCalls ?? []
+        #expect(!fetchFlagsSetCalls.isEmpty, "must use the chunked UIDSet flags fetch, not an unbounded UID FETCH 1:*")
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db).sorted { $0.uid < $1.uid } }
+        #expect(messages.map(\.uid) == [1])
+        #expect(messages[0].flags.contains(.seen))
+
+        let mailbox = try #require(try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db) })
+        #expect(mailbox.highestModSeq == 9)
+    }
+
+    @Test("CONDSTORE incremental sync with a non-zero stored highestModSeq calls CHANGEDSINCE exactly once, with the stored modSeq")
+    func condstoreCallsChangedSinceOnceWithStoredModSeq() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "既読フラグ変更前")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 5, messageCount: 1)]
+            )
+        )
+
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 9, messageCount: 1)],
+            capabilitiesToReport: [.condstore],
+            changedSinceEnvelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "既読フラグ変更前", flags: .seen)]]
+        )
+        let sessionBox = SessionBox()
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            let session = FakeIMAPSession(config: config, script: incrementalScript)
+            sessionBox.session = session
+            return session
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let changedSinceCalls = await sessionBox.session?.changedSinceCalls ?? []
+        #expect(changedSinceCalls.count == 1)
+        #expect(changedSinceCalls[0].path == "INBOX")
+        #expect(changedSinceCalls[0].modSeq == 5)
+    }
+
+    @Test("CONDSTORE incremental sync with a server-reported NOMODSEQ (status.highestModSeq == 0) falls back to the baseline refetch instead of skipping flag sync entirely")
+    func condstoreNoModSeqFallsBackToBaseline() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "既読フラグ変更前")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 5, messageCount: 1)]
+            )
+        )
+
+        // The server still advertises CONDSTORE, but this particular
+        // SELECT response comes back NOMODSEQ (highestModSeq == 0). Before
+        // this fix, `status.highestModSeq > mailboxRecord.highestModSeq`
+        // (0 > 5) is false, so the old code skipped flag sync entirely and
+        // any flag change made in between was silently lost until the next
+        // pass happened to see a real modSeq advance.
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "既読フラグ変更前", flags: .seen)]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)],
+            capabilitiesToReport: [.condstore]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let message = try #require(try await database.dbWriter.read { db in try MessageRecord.fetchOne(db) })
+        #expect(message.flags.contains(.seen))
+    }
+
+    @Test("cancelling mid-baseline-pass (CONDSTORE, stored highestModSeq 0) leaves already-applied chunks committed and highestModSeq unadvanced")
+    func condstoreBaselinePassCancellationIsSafe() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let seedEnvelopes = (1...150).map { makeEnvelope(uid: UInt32($0), subject: "msg \($0)") }
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": seedEnvelopes],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 151, highestModSeq: 0, messageCount: 150)]
+            )
+        )
+
+        // uid 25 (first chunk) gains \Seen; uid 150 (second chunk) vanishes
+        // server-side. The server advertises CONDSTORE with a non-zero
+        // highestModSeq this pass, but the locally-stored highestModSeq is
+        // still 0, so this must take the same baseline (chunked) path as
+        // `nonCondstoreFlagSyncCancellationIsSafe` and be exactly as safe
+        // to cancel mid-way through.
+        var serverEnvelopes = seedEnvelopes.filter { $0.uid != 150 }
+        let changedIndex = serverEnvelopes.firstIndex { $0.uid == 25 }!
+        serverEnvelopes[changedIndex].flags = .seen
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": serverEnvelopes],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 151, highestModSeq: 9, messageCount: 149)],
+            capabilitiesToReport: [.condstore]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+
+        final class CancelTrigger: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _cancel: (() -> Void)?
+            func arm(_ cancel: @escaping () -> Void) { lock.withLock { _cancel = cancel } }
+            func fire() { lock.withLock { _cancel }?() }
+        }
+        let trigger = CancelTrigger()
+
+        let task = Task {
+            try await syncer.performIncrementalSync(
+                auth: .password(username: "test1@otegami.test", password: "test1234"),
+                onProgress: { update in
+                    if update.phase == .flagSync, update.completed == 1 {
+                        trigger.fire()
+                    }
+                }
+            )
+        }
+        trigger.arm { task.cancel() }
+
+        do {
+            _ = try await task.value
+            Issue.record("expected the cancelled sync to throw")
+        } catch is CancellationError {
+            // Expected — same cooperative cancellation as the non-CONDSTORE
+            // path this baseline branch shares its implementation with.
+        } catch {
+            Issue.record("expected CancellationError, got \(error)")
+        }
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.count == 150, "cancellation must not delete anything — the full window was never confirmed")
+        #expect(messages.first { $0.uid == 25 }?.flags.contains(.seen) == true)
+        #expect(messages.contains { $0.uid == 150 })
+
+        let mailbox = try #require(try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db) })
+        #expect(mailbox.highestModSeq == 0, "step 3's metadata write never ran — incrementalSync threw before reaching it")
+    }
+
+    // MARK: (e) unknown-UID reconciliation — a chunked UIDSet fetch, not a
+    // min...max UIDRange spanning the whole mailbox.
+
+    @Test("CONDSTORE flag sync reconciling an unknown UID fetches only that UID, not a min...max range spanning the whole mailbox")
+    func condstoreUnknownUIDReconciliationFetchesOnlyThatUID() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        // uid 99999 (not 90000) is the locally-known max UID, so step 1's
+        // "new mail" fetch (`newMailLowerBound...status.uidNext - 1`) never
+        // overlaps uid 90000 below it — that UID must only ever be
+        // discovered via step 2's unknown-UID reconciliation, the thing
+        // this test actually means to exercise.
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [
+                    makeEnvelope(uid: 100, subject: "既知100"),
+                    makeEnvelope(uid: 99999, subject: "既知99999"),
+                ]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 100000, highestModSeq: 5, messageCount: 2)]
+            )
+        )
+
+        // uid 90000 is unknown to this pass's local snapshot (Task #120's
+        // pending-relocation confirmation, or a gap in an earlier step) —
+        // but already within the synced window (below the locally-known max
+        // UID 99999), so step 1 never touches it. A `min...max` range built
+        // from {100, 99999, 90000} would re-fetch nearly the entire
+        // mailbox; the fix must ask for exactly {90000}.
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [
+                makeEnvelope(uid: 100, subject: "既知100"),
+                makeEnvelope(uid: 99999, subject: "既知99999"),
+                makeEnvelope(uid: 90000, subject: "未知90000"),
+            ]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 100000, highestModSeq: 9, messageCount: 3)],
+            capabilitiesToReport: [.condstore],
+            changedSinceEnvelopesByPath: ["INBOX": [
+                makeEnvelope(uid: 100, subject: "既知100"),
+                makeEnvelope(uid: 99999, subject: "既知99999"),
+                makeEnvelope(uid: 90000, subject: "未知90000"),
+            ]]
+        )
+        let sessionBox = SessionBox()
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            let session = FakeIMAPSession(config: config, script: incrementalScript)
+            sessionBox.session = session
+            return session
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let fetchEnvelopesSetCalls = await sessionBox.session?.fetchEnvelopesSetCalls ?? []
+        #expect(fetchEnvelopesSetCalls.count == 1)
+        #expect(fetchEnvelopesSetCalls[0].uids.uids == [90000])
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db).sorted { $0.uid < $1.uid } }
+        #expect(messages.map(\.uid) == [100, 90000, 99999])
+    }
+
+    @Test("CONDSTORE flag sync chunks unknown-UID reconciliation by count when there are more than fetchBatchSize of them")
+    func condstoreUnknownUIDReconciliationChunks() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        // uid 2,000,000 is the locally-known max UID, well above the
+        // 1001...1150 "unknown" band below — same reasoning as
+        // `condstoreUnknownUIDReconciliationFetchesOnlyThatUID`: this keeps
+        // step 1's "new mail" fetch from ever touching those UIDs, so they
+        // can only be discovered via step 2's reconciliation.
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [
+                    makeEnvelope(uid: 1, subject: "既知1"),
+                    makeEnvelope(uid: 2_000_000, subject: "既知2000000"),
+                ]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2_000_001, highestModSeq: 5, messageCount: 2)]
+            )
+        )
+
+        // 150 UIDs unknown to this pass's local snapshot — more than
+        // `AccountSyncer.fetchBatchSize` (100), so the reconciliation fetch
+        // must chunk into 2 calls (100 + 50) rather than one unbounded
+        // fetch.
+        let unknownUIDs: [UInt32] = (1001...1150).map { UInt32($0) }
+        var changedSinceEnvelopes = [
+            makeEnvelope(uid: 1, subject: "既知1"),
+            makeEnvelope(uid: 2_000_000, subject: "既知2000000"),
+        ]
+        changedSinceEnvelopes.append(contentsOf: unknownUIDs.map { makeEnvelope(uid: $0, subject: "未知-\($0)") })
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": changedSinceEnvelopes],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2_000_001, highestModSeq: 9, messageCount: 152)],
+            capabilitiesToReport: [.condstore],
+            changedSinceEnvelopesByPath: ["INBOX": changedSinceEnvelopes]
+        )
+        let sessionBox = SessionBox()
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            let session = FakeIMAPSession(config: config, script: incrementalScript)
+            sessionBox.session = session
+            return session
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let fetchEnvelopesSetCalls = await sessionBox.session?.fetchEnvelopesSetCalls ?? []
+        #expect(fetchEnvelopesSetCalls.count == 2)
+        #expect(fetchEnvelopesSetCalls[0].uids.uids.count == 100)
+        #expect(fetchEnvelopesSetCalls[1].uids.uids.count == 50)
+        #expect(Set(fetchEnvelopesSetCalls[0].uids.uids + fetchEnvelopesSetCalls[1].uids.uids) == Set(unknownUIDs))
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.count == 152)
     }
 }

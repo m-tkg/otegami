@@ -232,6 +232,9 @@ final actor PoolFakeSession: IMAPSessionProtocol {
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope] {
         throw MailTransportError.notImplemented("fetchEnvelopes")
     }
+    func fetchEnvelopes(mailboxPath: String, uids: UIDSet) async throws -> [FetchedEnvelope] {
+        throw MailTransportError.notImplemented("fetchEnvelopes(uids: UIDSet)")
+    }
     func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int, status: MailboxStatus) async throws -> [FetchedEnvelope] {
         throw MailTransportError.notImplemented("fetchRecentEnvelopes")
     }

@@ -454,6 +454,17 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     /// possibly-sparse set so a test can assert *which* UIDs were actually
     /// requested per chunk, not just the span they fall within.
     public private(set) var fetchFlagsSetCalls: [(path: String, uids: [UInt32])] = []
+    /// Every `fetchEnvelopes(mailboxPath:uids: UIDSet)` call, in call order
+    /// — lets a test assert the unknown-UID reconciliation fetch actually
+    /// addressed the exact (possibly sparse) UID set it needed, not a
+    /// `min...max` range spanning far more of the mailbox than necessary.
+    public private(set) var fetchEnvelopesSetCalls: [(path: String, uids: UIDSet)] = []
+    /// Every `fetchEnvelopes(mailboxPath:changedSince:)`/`fetchFlags
+    /// (mailboxPath:changedSince:)` call, in call order — lets a test
+    /// assert whether `MailboxSyncer`'s CONDSTORE baseline guard actually
+    /// avoided CHANGEDSINCE (stored `highestModSeq == 0`) or used it with
+    /// the expected stored modSeq.
+    public private(set) var changedSinceCalls: [(path: String, modSeq: UInt64)] = []
     /// Task #221: every `fetchBody(mailboxPath:uid:)` call, in call order —
     /// lets a test assert `BodyFetcher.prefetchRecent`'s fresh
     /// already-fetched recheck actually skipped a network fetch for a
@@ -544,6 +555,23 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             .sorted { $0.uid < $1.uid }
     }
 
+    /// `UIDSet` overload — see `IMAPSessionProtocol.fetchEnvelopes
+    /// (mailboxPath:uids: UIDSet)`'s doc comment. Derives its answer from
+    /// the same `script.envelopesByPath` the `UIDRange` overload above
+    /// reads, filtered to exactly the requested (possibly sparse) set —
+    /// `fetchEnvelopesSetCalls` records the exact UIDs asked for, so a test
+    /// can assert `MailboxSyncer.applyFlagsDiffAndReconcileUnknown` never
+    /// widens an unknown-UID reconciliation into a `min...max` range.
+    public func fetchEnvelopes(mailboxPath: String, uids: UIDSet) async throws -> [FetchedEnvelope] {
+        if let failFetchEnvelopes = script.failFetchEnvelopes {
+            throw failFetchEnvelopes
+        }
+        fetchEnvelopesSetCalls.append((mailboxPath, uids))
+        let uidSet = Set(uids.uids)
+        let all = script.envelopesByPath[mailboxPath] ?? []
+        return all.filter { uidSet.contains($0.uid) }.sorted { $0.uid < $1.uid }
+    }
+
     /// Sequence-number counterpart of `fetchEnvelopes(mailboxPath:uids:
     /// batchSize:)` above: `script.envelopesByPath[mailboxPath]` already
     /// models "every message currently in this mailbox" (like a real
@@ -563,6 +591,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     }
 
     public func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceResult {
+        changedSinceCalls.append((mailboxPath, modSeq))
         if let failChangedSince = script.failChangedSince {
             throw failChangedSince
         }
@@ -584,6 +613,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
     /// batchSize:)` actually reads from — the same way it already does for
     /// `refetchAndDiffFlags`'s non-CONDSTORE equivalent.
     public func fetchFlags(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceFlagsResult {
+        changedSinceCalls.append((mailboxPath, modSeq))
         if let failChangedSince = script.failChangedSince {
             throw failChangedSince
         }

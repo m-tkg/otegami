@@ -198,6 +198,7 @@ private actor FailingStoreSession: IMAPSessionProtocol {
     func status(_ mailboxPath: String) async throws -> MailboxStatus { MailboxStatus(uidValidity: 0, uidNext: 0, highestModSeq: 0, messageCount: 0) }
     func createMailbox(path: String) async throws {}
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope] { [] }
+    func fetchEnvelopes(mailboxPath: String, uids: UIDSet) async throws -> [FetchedEnvelope] { [] }
     func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int, status: MailboxStatus) async throws -> [FetchedEnvelope] { [] }
     func fetchEnvelopes(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceResult { ChangedSinceResult(envelopes: []) }
     func fetchFlags(mailboxPath: String, changedSince modSeq: UInt64) async throws -> ChangedSinceFlagsResult { ChangedSinceFlagsResult(flagsByUID: [:]) }
@@ -251,6 +252,9 @@ private actor SuspendingStoreSession: IMAPSessionProtocol {
     func createMailbox(path: String) async throws { try await underlying.createMailbox(path: path) }
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope] {
         try await underlying.fetchEnvelopes(mailboxPath: mailboxPath, uids: uids, batchSize: batchSize)
+    }
+    func fetchEnvelopes(mailboxPath: String, uids: UIDSet) async throws -> [FetchedEnvelope] {
+        try await underlying.fetchEnvelopes(mailboxPath: mailboxPath, uids: uids)
     }
     func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int, status: MailboxStatus) async throws -> [FetchedEnvelope] {
         try await underlying.fetchRecentEnvelopes(mailboxPath: mailboxPath, count: count, batchSize: batchSize, status: status)

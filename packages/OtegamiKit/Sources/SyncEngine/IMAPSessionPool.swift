@@ -317,6 +317,10 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
         try await perform { try await $0.fetchEnvelopes(mailboxPath: mailboxPath, uids: uids, batchSize: batchSize) }
     }
 
+    public func fetchEnvelopes(mailboxPath: String, uids: UIDSet) async throws -> [FetchedEnvelope] {
+        try await perform { try await $0.fetchEnvelopes(mailboxPath: mailboxPath, uids: uids) }
+    }
+
     public func fetchRecentEnvelopes(mailboxPath: String, count: Int, batchSize: Int, status: MailboxStatus) async throws -> [FetchedEnvelope] {
         try await perform { try await $0.fetchRecentEnvelopes(mailboxPath: mailboxPath, count: count, batchSize: batchSize, status: status) }
     }

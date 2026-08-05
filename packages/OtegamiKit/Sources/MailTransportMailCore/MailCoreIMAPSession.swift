@@ -244,11 +244,38 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     }
 
     private func fetchEnvelopesBatch(mailboxPath: String, uids: UIDRange) async throws -> [FetchedEnvelope] {
+        try await fetchEnvelopesBatch(mailboxPath: mailboxPath, indexSet: Self.indexSet(for: uids))
+    }
+
+    /// Task #194 follow-up (unknown-UID reconciliation): the `UIDSet`
+    /// counterpart of `fetchEnvelopes(mailboxPath:uids: UIDRange:
+    /// batchSize:)` — see `IMAPSessionProtocol.fetchEnvelopes(mailboxPath:
+    /// uids: UIDSet)`'s doc comment. One underlying `FETCH` per call, no
+    /// internal chunking (same contract as `fetchFlags(mailboxPath:uids:
+    /// UIDSet)`); the caller (`MailboxSyncer
+    /// .applyFlagsDiffAndReconcileUnknown`) is expected to have already
+    /// chunked a larger unknown-UID set into caller-sized pieces.
+    public func fetchEnvelopes(mailboxPath: String, uids: UIDSet) async throws -> [FetchedEnvelope] {
+        guard !uids.uids.isEmpty else { return [] }
+        let startedAt = Date()
+        let result = try await fetchEnvelopesBatch(mailboxPath: mailboxPath, indexSet: Self.indexSet(for: uids))
+        Self.logger.notice(
+            "fetchEnvelopes: \(mailboxPath, privacy: .public) uids=\(uids.uids.count, privacy: .public) (set) fetched=\(result.count, privacy: .public) elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
+        )
+        return result
+    }
+
+    /// Shared by both `fetchEnvelopesBatch(mailboxPath:uids: UIDRange)`
+    /// (dense-range chunks, the initial-sync/new-mail paths) and
+    /// `fetchEnvelopes(mailboxPath:uids: UIDSet)` (a possibly sparse,
+    /// caller-chunked set) — `MCOIndexSet` already represents both shapes
+    /// uniformly (see `Self.indexSet(for:)`'s two overloads), so the actual
+    /// `fetchMessagesByUid` call only needs to be written once.
+    private func fetchEnvelopesBatch(mailboxPath: String, indexSet: MCOIndexSet) async throws -> [FetchedEnvelope] {
         var kind: MCOIMAPMessagesRequestKind = [.headers, .flags, .structure, .internalDate, .size]
         if gmailExtensionsSupported {
             kind.formUnion([.gmailThreadID, .gmailMessageID])
         }
-        let indexSet = Self.indexSet(for: uids)
         // Captured once for the whole batch (not per-message inside the
         // completion block): `EnvelopeDateSentinel`'s reference moment for
         // Task #193's sentinel-date detection — see

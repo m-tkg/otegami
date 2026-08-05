@@ -64,6 +64,22 @@ public protocol IMAPSessionProtocol: Sendable {
     /// The mailbox must be selected via `select(_:)` first.
     func fetchEnvelopes(mailboxPath: String, uids: UIDRange, batchSize: Int) async throws -> [FetchedEnvelope]
 
+    /// Like `fetchEnvelopes(mailboxPath:uids: UIDRange:batchSize:)` above,
+    /// but scoped to an explicit, possibly non-contiguous set of UIDs
+    /// rather than a closed numeric range — the `UIDSet` counterpart of
+    /// `fetchFlags(mailboxPath:uids: UIDSet)` (see that method's doc
+    /// comment for the identical reasoning). `MailboxSyncer
+    /// .applyFlagsDiffAndReconcileUnknown` uses this to re-fetch a handful
+    /// of UIDs unknown to a flags-only pass's local snapshot: those UIDs
+    /// can be scattered across a huge numeric span on a Gmail-shaped
+    /// mailbox (large gaps from archived/expunged messages), so deriving a
+    /// single `min...max` `UIDRange` from them — this used to do exactly
+    /// that — could fetch thousands of already-known envelopes just to
+    /// reconcile a few genuinely unknown ones. Chunking is the caller's
+    /// responsibility, same as the `UIDSet` overload above: no internal
+    /// `batchSize` chunking, one underlying `FETCH` per call.
+    func fetchEnvelopes(mailboxPath: String, uids: UIDSet) async throws -> [FetchedEnvelope]
+
     /// Fetches `ENVELOPE` + `FLAGS` + a `BODYSTRUCTURE` summary for the most
     /// recent `count` messages in `mailboxPath`, addressed by IMAP
     /// *sequence* number (RFC 3501 §2.3.1.2: 1 is the oldest message
