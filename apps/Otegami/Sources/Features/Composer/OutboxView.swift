@@ -128,14 +128,17 @@ private struct OutboxRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(item.message.subject.isEmpty ? "(件名なし)" : item.message.subject)
+            // Text(verbatim:) for every dynamic string here — via
+            // LocalizedStringKey, Markdown interpretation turns the email
+            // addresses into mailto: links (AccountFilterChip.swift の教訓).
+            Text(verbatim: item.message.subject.isEmpty ? "(件名なし)" : item.message.subject)
                 .font(.headline)
-            Text(item.message.toAddresses.map(\.description).joined(separator: ", "))
+            Text(verbatim: item.message.toAddresses.map(\.description).joined(separator: ", "))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             statusLabel
             if isFailed, let lastError = item.lastError, !lastError.isEmpty {
-                Text(lastError)
+                Text(verbatim: lastError)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
