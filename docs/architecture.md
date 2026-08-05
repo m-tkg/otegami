@@ -1150,3 +1150,33 @@ NotificationServiceKeychainQuery.swift`) に切り出し、
    iCloud・Yahoo! 双方の直近の実行が `Resolving Credential` を含む全段階
    で成功していること、万一まだ失敗する場合はその `category` (今回追加
    した詳細な文字列) を確認する。
+
+### k. mailcore2 の `syncMessages` は modseq==0 で CHANGEDSINCE を丸ごと省略する
+
+mailcore2 (`MCIMAPSession.cpp` の `syncMessages`) は、渡された modseq が
+`0` のとき `CHANGEDSINCE` 句を**付けずに**素の `UID FETCH` を発行する。
+`UIDRange.all` (`1:*`) と組み合わさると、大きなメールボックスでは
+**全メッセージの FLAGS を 1 本のコマンドで取得**することになり、応答が
+返り切るまで数分単位でブロックする (上記 d. 節と同じく、open-ended
+range なのでチャンク化もキャンセルの checkpoint も効かない)。
+
+これが厄介なのは自己再現ループになる点: ローカルの
+`MailboxRecord.highestModSeq` は同期パスの**最後** (step 3、メタデータ
+コミット) でしか保存されないため、この巨大 FETCH が途中でキャンセル・
+タイムアウトすると modseq は `0` のまま残り、**次のパスも同じ全件 FETCH
+から始まる**。「pull-to-refresh が何分も終わらず、忘れた頃 (たまたま
+1 回完走したとき) にだけ反映される」という形で顕在化した。
+
+対策として `MailboxSyncer.incrementalSync` のフラグ同期は、CONDSTORE
+対応サーバーでも **stored `highestModSeq == 0` (未確立) または
+`status.highestModSeq == 0` (NOMODSEQ) のときは CONDSTORE 経路に入らず
+`refetchAndDiffFlags` にフォールバック**する (既知 UID 窓に有界化した
+チャンク付き FLAGS 再取得。進捗・キャンセル・削除検出込み)。この
+ベースラインパスが完走すると step 3 が SELECT 時点の `HIGHESTMODSEQ` を
+保存し、次回から本来の `CHANGEDSINCE` 差分同期になる。
+
+**`sinceModSeq: 0` で `condstoreFlagChangeSync` (ひいては mailcore2 の
+`syncMessages`) を呼ぶコードを新しく書かないこと** — 「0 = 最初から
+全部」ではなく「0 = CHANGEDSINCE 無しの全件 FETCH」になる。modseq が
+未確立ならフラグ同期は必ず有界化された経路 (`refetchAndDiffFlags`) を
+使う。
