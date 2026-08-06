@@ -1,4 +1,4 @@
-// swift-tools-version:6.0
+// swift-tools-version:6.2
 import PackageDescription
 
 // A standalone SwiftPM package for visually verifying `DesignSystem`
@@ -17,7 +17,7 @@ import PackageDescription
 // files as the app does, with no duplication to drift out of sync.
 let package = Package(
     name: "DesignSystemCatalog",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v26)],
     targets: [
         .target(name: "DesignSystem", path: "Sources/DesignSystem"),
         .executableTarget(
