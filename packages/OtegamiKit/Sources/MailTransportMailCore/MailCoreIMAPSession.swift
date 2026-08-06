@@ -490,6 +490,38 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
     }
 
+    /// `SEARCH (OR SUBJECT <query> OR FROM <query> BODY <query>)` —
+    /// `IMAPSessionProtocol.searchMessages`'s doc comment. `MCOIMAPSearchExpression`
+    /// has no native 3-way `OR`, so this nests two 2-way `searchOr`s the
+    /// same way `MCOIMAPSearchExpression`'s own header doc example chains
+    /// them. `searchBody` (not `searchContent`) deliberately excludes
+    /// headers — `searchSubject`/`searchFrom` already cover those, and
+    /// including headers in the body term too would just make `SUBJECT`/
+    /// `FROM` redundant without adding coverage.
+    public func searchMessages(mailboxPath: String, query: String) async throws -> Set<UInt32> {
+        let subjectOrFrom = MCOIMAPSearchExpression.searchOr(
+            MCOIMAPSearchExpression.searchSubject(query),
+            other: MCOIMAPSearchExpression.searchFrom(query)
+        )
+        let expression = MCOIMAPSearchExpression.searchOr(
+            subjectOrFrom,
+            other: MCOIMAPSearchExpression.searchBody(query)
+        )
+        return try await withCheckedThrowingContinuation { continuation in
+            session.searchExpressionOperation(folder: mailboxPath, expression: expression).start { error, result in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                do {
+                    continuation.resume(returning: try Self.uidSet(from: result))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Body (M2)
 
     /// Downloads the message's full RFC 822 content and parses it with
