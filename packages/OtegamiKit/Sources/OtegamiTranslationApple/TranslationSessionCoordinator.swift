@@ -173,6 +173,13 @@ public final class TranslationSessionCoordinator {
     public private(set) var lastConfigurationRequestAt: Date?
     public private(set) var attachCallCount = 0
     public private(set) var lastAttachAt: Date?
+    /// 2026-08-06 (実機フィードバック — Task #202 修正後の再発調査): 供給は
+    /// 起きているのに ticket 不一致で**捨てられた**回数。`attachCallCount`
+    /// だけでは「N回供給されて全部受理された」と「N回供給されて全部
+    /// 捨てられた」が区別できず、今回の切り分けはコード読解が必要だった —
+    /// 次からはこのカウンタ (と診断画面の表示) で1枚のスクリーンショット
+    /// から即断できる。
+    public private(set) var attachDiscardedCount = 0
 
     /// 2026-07-30 (実機フィードバック — 退行): 設定内の「翻訳の診断」画面
     /// (`TranslationSessionHostView`がマウントされていない画面ツリー)
@@ -226,10 +233,11 @@ public final class TranslationSessionCoordinator {
             // 参照)。`.sessionUnavailable`は固定の短い定型文を返す。
             let requestCount = self?.configurationRequestCount ?? -1
             let attachCount = self?.attachCallCount ?? -1
+            let discardedCount = self?.attachDiscardedCount ?? -1
             if attachCount == 0 {
                 return TranslationServiceError.sessionUnavailable(detail: "翻訳セッションを取得できませんでした（供給元が一度も応答していません: 設定要求\(requestCount)回 / セッション供給0回）")
             }
-            return TranslationServiceError.sessionUnavailable(detail: "翻訳セッションを取得できませんでした（設定要求\(requestCount)回 / セッション供給\(attachCount)回、いずれも今回のリクエストには届きませんでした）")
+            return TranslationServiceError.sessionUnavailable(detail: "翻訳セッションを取得できませんでした（設定要求\(requestCount)回 / セッション供給\(attachCount)回・うち不一致破棄\(discardedCount)回、いずれも今回のリクエストには届きませんでした）")
         },
         requestSupply: { [weak self] target, ticket in
             self?.requestNewConfiguration(target: target)
@@ -342,6 +350,9 @@ public final class TranslationSessionCoordinator {
     public func attach(_ session: TranslationSession, ticket: RequestTicket) async {
         attachCallCount += 1
         lastAttachAt = Date()
-        await requestQueue.supply(session, for: ticket)
+        let accepted = await requestQueue.supply(session, for: ticket)
+        if !accepted {
+            attachDiscardedCount += 1
+        }
     }
 }

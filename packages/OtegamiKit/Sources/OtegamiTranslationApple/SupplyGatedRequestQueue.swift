@@ -81,18 +81,23 @@ public final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> 
 
     /// `armTimeout` starts the item's own timeout clock — see
     /// `drainIfNeeded()`'s doc comment (2026-07-30 追記) for why this has
-    /// to happen there, not in `perform(target:operation:)`.
+    /// to happen there, not in `perform(target:operation:)`. Receives the
+    /// item's own `Ticket` so the timeout can later tell "still waiting
+    /// for supply" (may advance the queue) apart from "already supplied,
+    /// operation running" (must not — see `perform`'s 2026-08-06 追記).
     private struct QueueItem {
         let target: Target
         let operation: @MainActor (Session) async -> Void
-        let armTimeout: @MainActor () -> Void
+        let armTimeout: @MainActor (Ticket) -> Void
     }
 
     private var queue: [QueueItem] = []
     /// `true` from the moment `requestSupply` is called for the item
     /// currently at the front of the queue until `supply(_:for:)` finishes
-    /// running that item's `operation` (or the matching `perform` call's
-    /// own timeout gives up first) — i.e. "a supply is currently owed to
+    /// running that item's `operation` (or, **only while the supply has not
+    /// arrived yet**, the matching `perform` call's own timeout gives up
+    /// first — a supplied item's timeout is inert, see `perform`'s
+    /// 2026-08-06 追記) — i.e. "a supply is currently owed to
     /// us and hasn't arrived yet, or is being processed". While `true`,
     /// `drainIfNeeded()` must not call `requestSupply` again — a second
     /// call before the first's answer arrives could make the external
@@ -165,6 +170,32 @@ public final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> 
     /// (`armTimeout`) 責務は`drainIfNeeded()`へ移した — 「このリクエスト
     /// に実際に`requestSupply`を呼んだ瞬間」を起点にすることで、キューで
     /// 待たされた時間は一切タイムアウト予算を消費しない。
+    ///
+    /// 2026-08-06 追記 (実機フィードバック — Task #202 修正後もなお
+    /// 「設定要求N回/セッション供給N回、いずれも今回のリクエストには
+    /// 届きませんでした」が再発): タイムアウトが計るのは**供給待ちの
+    /// 時間だけ**で、供給後の`operation`実行時間は含まない。以前は
+    /// `operation`実行中 (=`supply(_:for:)`が ticket 照合を通過して実行を
+    /// 始めた後) にもこの項目自身のタイムアウトが発火でき、その掃除コードが
+    /// `isDraining=false`+`drainIfNeeded()`で次項目 B を drain した直後に、
+    /// `supply`側の後始末 (`await operation`の後の同じ2行) が B の drain
+    /// 状態を無条件に踏み潰して更に C を drain する — 以降 B は「要求済み
+    /// なのに受け手のいない」孤児になり、B のタイムアウト掃除がまた C を
+    /// 潰して D を drain…と、**供給と要求が恒久的に1つずつズレ続ける**
+    /// (要求数と供給数は一致したまま全リクエストがタイムアウトする、
+    /// Task #202 と同じ見た目の別バグ)。引き金は「supply 到着〜operation
+    /// 完了」が`timeoutSeconds`を跨ぐこと — 長文のバッチ翻訳や
+    /// `prepareTranslation()`の言語パックダウンロード確認はこれを普通に
+    /// 満たす。今は供給が済んだ項目のタイムアウトは何もせず戻り
+    /// (`pendingTicket`照合)、drain スロットの解放は`supply`側の後始末に
+    /// 一本化されているため、このズレは構造的に起きない。トレードオフ:
+    /// `operation`自体が返らない場合の有限時間保証はなくなったが、
+    /// `operation`は呼び出し元自身のコード (実際には
+    /// `TranslationSession.translate`等、自前のエラーで返る Apple API) で
+    /// あり、「供給元がどんな理由であれ現れなかった場合に無限待機しない」
+    /// というこの型本来の保証 (供給待ちフェーズ) は変わらず有効。
+    /// `SupplyGatedRequestQueueTests
+    /// .operationOutlivingItsOwnTimeoutDoesNotDesyncLaterItems`が退行を固定。
     func perform<T: Sendable>(target: Target, operation: @escaping @MainActor (Session) async throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
             let box = ResumeBox(continuation)
@@ -180,24 +211,32 @@ public final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> 
                         box.resume(throwing: error)
                     }
                 },
-                armTimeout: { [weak self] in
+                armTimeout: { [weak self] ticket in
                     Task { @MainActor [weak self] in
                         try? await Task.sleep(nanoseconds: timeoutSeconds * 1_000_000_000)
+                        guard let self else {
+                            // The queue itself is gone — no supply can ever
+                            // arrive, so the caller must not be left hanging.
+                            box.resume(throwing: timeoutError())
+                            return
+                        }
+                        // 2026-08-06 追記 (`perform`のdoc comment参照):
+                        // タイムアウトが効くのは**この項目がまだ供給待ちの
+                        // 間だけ**。`supply(_:for:)`が ticket 照合を通過した
+                        // 瞬間に`pendingTicket`はこの ticket ではなくなる
+                        // ので、この guard を抜けられない = 実行中の
+                        // `operation`は完走まで待たれ、drain スロットの
+                        // 解放も`supply`側の後始末だけが行う。以前ここが
+                        // `operation`実行中にも掃除+drainを行えたことが、
+                        // `supply`側の後始末との二重解放 → 供給と要求が
+                        // 恒久的に1つずつズレるバグの正体だった。
+                        guard self.pendingTicket == ticket else { return }
                         // `box.resume` reports whether *this* call actually
-                        // resolved the continuation (`operation` hadn't
-                        // already done so first) — only then may this
-                        // timeout also advance the queue. Doing so
-                        // unconditionally would, on the common "operation
-                        // already finished normally, well before the
-                        // timeout" path, blow away *a completely
-                        // different, later* request's `pendingOperation`
-                        // out from under it (this queue only ever tracks
-                        // one at a time) — reintroducing the exact
-                        // "request never completes" bug this type exists
-                        // to prevent, just via the fix's own cleanup code
-                        // instead of the original missing-supplier bug.
+                        // resolved the continuation — while still waiting
+                        // for supply it always should (nothing else can
+                        // have resumed it yet), but keep the guard: queue
+                        // state must never advance on a lost race.
                         guard box.resume(throwing: timeoutError()) else { return }
-                        guard let self else { return }
                         self.isDraining = false
                         self.pendingOperation = nil
                         // Task #202: also clear `pendingTicket` — if
@@ -233,16 +272,32 @@ public final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> 
     ///   the ticket check this would silently run the *newer* item's
     ///   `operation` with the *wrong* `session` and steal its slot — see
     ///   this file's top-level doc comment for the full real-device trace.
-    func supply(_ session: Session, for ticket: Ticket) async {
-        guard ticket == pendingTicket, let operation = pendingOperation else { return }
+    ///
+    /// Returns whether this call was actually accepted (`true`) or dropped
+    /// as stale (`false`) — purely diagnostic, so
+    /// `TranslationSessionCoordinator` can count accepted vs. discarded
+    /// supplies separately (a screenshot of the diagnostics screen then
+    /// distinguishes "supplies arrive but every one is stale" from
+    /// "supplies arrive and are consumed" at a glance).
+    ///
+    /// 2026-08-06 追記: ticket 照合を通過したら、`pendingTicket`が nil に
+    /// なった時点でこの項目のタイムアウトはもう何もしない (`perform`の
+    /// `armTimeout`の guard 参照) — つまり`await operation(session)`が
+    /// どれだけ長く走っても、drain スロットを解放して次項目へ進めるのは
+    /// 下の2行**だけ**。この一本化が「タイムアウト掃除と supply 後始末の
+    /// 二重解放で供給が恒久的に1つズレる」バグ (同 doc comment) の修正。
+    @discardableResult
+    func supply(_ session: Session, for ticket: Ticket) async -> Bool {
+        guard ticket == pendingTicket, let operation = pendingOperation else { return false }
         pendingOperation = nil
         pendingTicket = nil
         await operation(session)
         isDraining = false
         drainIfNeeded()
+        return true
     }
 
-    private func enqueue(target: Target, operation: @escaping @MainActor (Session) async -> Void, armTimeout: @escaping @MainActor () -> Void) {
+    private func enqueue(target: Target, operation: @escaping @MainActor (Session) async -> Void, armTimeout: @escaping @MainActor (Ticket) -> Void) {
         queue.append(QueueItem(target: target, operation: operation, armTimeout: armTimeout))
         drainIfNeeded()
     }
@@ -274,7 +329,7 @@ public final class SupplyGatedRequestQueue<Target: Sendable, Session: Sendable> 
         pendingOperation = item.operation
         pendingTicket = ticket
         requestSupply(item.target, ticket)
-        item.armTimeout()
+        item.armTimeout(ticket)
     }
 }
 

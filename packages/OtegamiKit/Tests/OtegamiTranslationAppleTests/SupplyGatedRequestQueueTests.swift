@@ -486,6 +486,99 @@ struct SupplyGatedRequestQueueTests {
             #expect(result == index + 1)
         }
     }
+
+    /// 2026-08-06 (実機フィードバック — Task #202 修正後もなお「設定要求
+    /// N回/セッション供給N回、いずれも今回のリクエストには届きません
+    /// でした」が再発): タイムアウトは**供給待ちの時間だけ**を計る —
+    /// 供給が届いて`operation`が走り始めた後は、その実行が
+    /// `timeoutSeconds`を跨いでも呼び出し元へタイムアウトを投げない
+    /// (長文のバッチ翻訳・`prepareTranslation()`の言語パックダウンロード
+    /// 確認は普通に10秒を跨ぐ)。修正前はこのテストは`TimeoutMarker`で
+    /// 失敗する。
+    @Test("an operation that outlives the item's own timeout still returns its result — the timeout only covers the waiting-for-supply phase")
+    func suppliedOperationOutlivingTimeoutStillReturnsItsResult() async throws {
+        let queueRef = Box<SupplyGatedRequestQueue<Int, Int>>()
+        let queue = SupplyGatedRequestQueue<Int, Int>(
+            timeoutSeconds: 1,
+            timeoutError: { TimeoutMarker() },
+            requestSupply: { [weak queueRef] target, ticket in
+                Task { @MainActor in
+                    await queueRef?.value?.supply(target, for: ticket)
+                }
+            }
+        )
+        queueRef.value = queue
+
+        let result = try await queue.perform(target: 7) { session in
+            // 供給は即座に届くが、operation 自体がタイムアウト予算 (1秒)
+            // を跨いで走る — 実機の長文バッチ翻訳と同じ形。
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            return session * 10
+        }
+        #expect(result == 70)
+    }
+
+    /// 2026-08-06 (同上 — 供給ズレ退行の核心): 「supply 到着〜operation
+    /// 完了」がその項目自身の`timeoutSeconds`を跨ぐと、修正前は (1) 項目
+    /// A のタイムアウト掃除が次項目 B を drain した後に (2) A の
+    /// `operation`完了後の`supply`後始末が B の drain 状態を無条件に
+    /// 踏み潰して C を drain し、以降「要求済みなのに受け手のいない」
+    /// 項目が数珠つなぎに発生 — 供給と要求が恒久的に1つずつズレ、
+    /// 後続リクエストが**全滅**する (要求数と供給数は一致したまま、
+    /// Task #202 と同じ診断カウンタの見た目になる別バグ)。
+    ///
+    /// タイムライン (timeout 1秒 / 供給遅延 0.3秒 / A の operation 1.2秒):
+    /// A 供給 t=0.3 → A のタイムアウト発火 t=1.0 (修正前: B を drain) →
+    /// B 供給 t=1.3・即完了 → C を drain (供給予定 t=1.6) → A の
+    /// operation 完了 t=1.5 (修正前: C の drain 状態を踏み潰して D を
+    /// drain → C の供給 t=1.6 は不一致破棄 → C タイムアウト掃除が D の
+    /// 状態を消す → D の供給も宛先を失う…)。修正後は A のタイムアウトが
+    /// 供給済み項目に対して何もしないため、この連鎖の起点自体が存在
+    /// しない — 4件全部が自分のセッションで完了する。
+    @Test("an operation outliving its own timeout does not desync supply from later queued items")
+    func operationOutlivingItsOwnTimeoutDoesNotDesyncLaterItems() async throws {
+        let queueRef = Box<SupplyGatedRequestQueue<Int, Int>>()
+        let queue = SupplyGatedRequestQueue<Int, Int>(
+            timeoutSeconds: 1,
+            timeoutError: { TimeoutMarker() },
+            requestSupply: { [weak queueRef] target, ticket in
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    await queueRef?.value?.supply(target, for: ticket)
+                }
+            }
+        )
+        queueRef.value = queue
+
+        func attempt(_ index: Int) async -> Result<Int, Error> {
+            do {
+                return .success(try await queue.perform(target: index) { session in
+                    if index == 0 {
+                        // 先頭の項目だけ、自分のタイムアウト予算を跨ぐ
+                        // 長い operation — 修正前はこれが後続全滅の引き金。
+                        try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    }
+                    return session * 10
+                })
+            } catch {
+                return .failure(error)
+            }
+        }
+        async let r0 = attempt(0)
+        async let r1 = attempt(1)
+        async let r2 = attempt(2)
+        async let r3 = attempt(3)
+        let (v0, v1, v2, v3) = await (r0, r1, r2, r3)
+
+        for (index, result) in [v0, v1, v2, v3].enumerated() {
+            switch result {
+            case .success(let value):
+                #expect(value == index * 10, "item \(index) resolved with the wrong session")
+            case .failure(let error):
+                Issue.record("item \(index) failed instead of completing: \(error)")
+            }
+        }
+    }
 }
 
 /// Plain mutable reference box — `manyQueuedRequestsAllCompleteDespiteCumulativeQueueingDelay`/

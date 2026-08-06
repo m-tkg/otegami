@@ -400,6 +400,39 @@ Appleのセッション確立に実機で数秒かかることは珍しくなく
 約1/15の頻度で失敗を確認) があったため、実際の到達順を動的に検出して
 検証する形に書き直した。
 
+**2026-08-06 (実機フィードバック — Task #202 修正後もなお同じ診断文言で
+再発)** は 5 件目のバグだった。macOS 実機で「設定要求N回/セッション供給
+N回、いずれも今回のリクエストには届きませんでした」が再発 (`translate` /
+`translateParagraphs` とも全滅)。今回の原因は Ticket 照合ではなく、
+**タイムアウトの掃除コードと `supply` の後始末が drain スロットを二重
+解放する**こと: 「supply 到着〜operation 完了」がその項目自身の
+`timeoutSeconds` (10秒) を跨ぐと、(1) 項目 A のタイムアウトが発火して
+次項目 B を drain し、(2) その後 A の operation が完了した時点で
+`supply` 側の後始末 (`isDraining = false` + `drainIfNeeded()`) が B の
+drain 状態を無条件に踏み潰して C を drain する。以降 B は「要求済みなのに
+受け手のいない」孤児になり、B のタイムアウト掃除がまた C を潰して D を
+drain … と供給と要求が恒久的に 1 つずつズレ続ける (要求数と供給数は
+一致したまま全リクエストがタイムアウトする、Task #202 と同じ見た目)。
+引き金の「10秒跨ぎ」は、長文メールのバッチ翻訳 (実機記録: 48要素/3685
+文字) や `prepareTranslation()` の言語パックダウンロード確認で普通に
+起きる。
+
+修正: タイムアウトが計るのは**供給待ちの時間だけ**とし、供給が届いて
+operation が走り始めた項目のタイムアウトは何もしない (`armTimeout` が
+自分の `Ticket` を受け取り、発火時に `pendingTicket` と照合して supersede
+済みなら即 return)。drain スロットの解放は `supply` の後始末に一本化。
+副次効果として、長時間の operation (長文バッチ翻訳) が 10 秒で不当に
+タイムアウトすることもなくなった。トレードオフ: operation 自体が返らない
+場合の有限時間保証は失われたが、operation は実際には Apple の
+`TranslationSession` API (自前のエラーで返る) であり、この型本来の保証
+「供給元が現れない場合に無限待機しない」は変わらず有効。診断画面には
+「供給の不一致破棄」行 (`attachDiscardedCount`) を追加 — 「供給は来て
+いるのに全部捨てられている」症状をスクリーンショット 1 枚で切り分け
+られる。`SupplyGatedRequestQueueTests` の
+`suppliedOperationOutlivingTimeoutStillReturnsItsResult` (単発) と
+`operationOutlivingItsOwnTimeoutDoesNotDesyncLaterItems` (連鎖の再現) が
+退行を固定 — 修正前のコードではどちらも失敗することを確認済み。
+
 **エラー表示**: このタイムアウトが投げていたエラーメッセージ (`設定要求
 N回/セッション供給N回…`という診断向けカウンタ入りの文字列) は
 `TranslationServiceError.failed(message:)`経由で**そのまま利用者向けの
