@@ -41,6 +41,11 @@ public actor SyncCoordinator {
     /// coordinator schedules, same "one instance per coordinator, not per
     /// call" shape as `bodyFetcher`/`attachmentFetcher` above.
     private let backfillSyncer: BackfillSyncer
+    /// 検索の IMAP サーバーサイド SEARCH フォールバック: shared across every
+    /// `serverSearch(query:accounts:authProvider:timeout:)` call, same
+    /// "one instance per coordinator, not per call" shape as
+    /// `bodyFetcher`/`backfillSyncer` above.
+    private let serverSearchService: ServerSearchService
     /// Task #103: no `AppDatabase` dependency (unlike `bodyFetcher`/
     /// `attachmentFetcher`) — see `MessageSourceFetcher`'s own doc comment
     /// for why. Constructed directly here rather than in `init` alongside
@@ -92,6 +97,7 @@ public actor SyncCoordinator {
         self.bodyFetcher = BodyFetcher(database: database)
         self.attachmentFetcher = AttachmentFetcher(database: database)
         self.backfillSyncer = BackfillSyncer(database: database)
+        self.serverSearchService = ServerSearchService(database: database)
         self.opQueueProcessor = OpQueueProcessor(
             database: database,
             sessionFactory: sessionFactory,
@@ -1119,6 +1125,92 @@ public actor SyncCoordinator {
         await targetedResyncLoopTask?.value
     }
 
+    // MARK: - Server search fallback (検索の IMAP サーバーサイド SEARCH フォールバック)
+
+    /// Default overall budget for `serverSearch(query:accounts:authProvider:
+    /// timeout:)` — a "サーバーで検索" tap is user-initiated and blocking (the
+    /// screen shows a spinner), so this needs to be short enough that a
+    /// slow/unreachable account doesn't leave the user staring at a spinner
+    /// indefinitely, while still leaving enough headroom for a handful of
+    /// sequential per-mailbox `SEARCH`+`FETCH` round trips on a normal
+    /// connection.
+    public static let defaultServerSearchTimeout: Duration = .seconds(20)
+
+    /// Runs `ServerSearchService.search(account:query:session:)` for every
+    /// account in `accounts`, concurrently (each account opens and manages
+    /// its own connection independently — no shared IMAP connection, no
+    /// per-account serialization needed since `IMAPSessionProtocol`
+    /// conformers are already actors), and merges the results — the
+    /// `SyncCoordinator`-level entry point `SearchScreenView`'s「サーバーで
+    /// 検索」button calls, never auto-triggered.
+    ///
+    /// **Per-account failure tolerance**: one account's connect/auth/search
+    /// failure never blocks the others — its id lands in
+    /// `ServerSearchOutcome.failedAccountIds` instead of throwing.
+    ///
+    /// **Overall timeout**: implemented as a race against `Task.sleep`
+    /// rather than structured `TaskGroup` cancellation. Putting each
+    /// account's work in a `TaskGroup` and calling `cancelAll()` on timeout
+    /// wouldn't actually bound this method's wall-clock time — MailCore2's
+    /// callback-based API means an in-flight `SEARCH`/`FETCH`'s
+    /// `withCheckedThrowingContinuation` can't be interrupted, only waited
+    /// out, and Swift's structured concurrency requires `withTaskGroup` to
+    /// await every child before returning even after `cancelAll()`. Instead,
+    /// each account's search runs as an independent unstructured `Task`
+    /// that reports into a shared `ServerSearchCollector`; this method waits
+    /// for either "every account reported in" or `timeout` to elapse,
+    /// whichever comes first, and returns whatever the collector has
+    /// gathered at that point. A still-running account's `Task` is simply
+    /// abandoned (not cancelled/awaited) — its eventual result, if any,
+    /// only ever reaches a `ServerSearchCollector` nothing still references,
+    /// so it's harmless, just wasted work.
+    public func serverSearch(
+        query: String,
+        accounts: [AccountRecord],
+        authProvider: @escaping @Sendable (AccountRecord) async throws -> MailAuth,
+        timeout: Duration = SyncCoordinator.defaultServerSearchTimeout
+    ) async -> ServerSearchOutcome {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !accounts.isEmpty else { return ServerSearchOutcome() }
+
+        let collector = ServerSearchCollector(accountCount: accounts.count)
+        let service = serverSearchService
+        let sessionFactory = self.sessionFactory
+
+        for account in accounts {
+            Task {
+                do {
+                    let auth = try await authProvider(account)
+                    let session = sessionFactory(account.imapConfig)
+                    try await session.connect(auth: auth)
+                    defer {
+                        let session = session
+                        Task { await session.disconnect() }
+                    }
+                    let summaries = try await service.search(account: account, query: trimmed, session: session)
+                    await collector.recordSuccess(summaries)
+                } catch {
+                    await collector.recordFailure(accountId: account.id)
+                }
+            }
+        }
+
+        let timeoutTask = Task {
+            try? await Task.sleep(for: timeout)
+            await collector.markTimedOut()
+        }
+        let timedOut = await collector.waitForCompletionOrTimeout()
+        timeoutTask.cancel()
+
+        let (summaries, failedAccountIds) = await collector.snapshot()
+        let sorted = summaries.sorted { lhs, rhs in
+            let lhsDate = lhs.latestMessage?.date ?? lhs.latestMessage?.internalDate ?? .distantPast
+            let rhsDate = rhs.latestMessage?.date ?? rhs.latestMessage?.internalDate ?? .distantPast
+            return lhsDate > rhsDate
+        }
+        return ServerSearchOutcome(summaries: sorted, failedAccountIds: failedAccountIds, timedOut: timedOut)
+    }
+
     private func syncer(for account: AccountRecord) -> AccountSyncer {
         if let existing = syncers[account.id] {
             return existing
@@ -1137,5 +1229,92 @@ public actor SyncCoordinator {
         )
         syncers[account.id] = syncer
         return syncer
+    }
+}
+
+/// `SyncCoordinator.serverSearch(query:accounts:authProvider:timeout:)`'s
+/// result: every hit's `ThreadSummary` (existing local rows and freshly-
+/// ingested ones alike, newest first — see `ServerSearchService.search`'s
+/// doc comment on why no further local re-filtering happens on top of what
+/// the server itself matched), which accounts (if any) failed to connect/
+/// search, and whether the overall budget ran out before every account
+/// finished reporting in.
+public struct ServerSearchOutcome: Sendable, Equatable {
+    public var summaries: [ThreadSummary]
+    public var failedAccountIds: [String]
+    public var timedOut: Bool
+
+    public init(summaries: [ThreadSummary] = [], failedAccountIds: [String] = [], timedOut: Bool = false) {
+        self.summaries = summaries
+        self.failedAccountIds = failedAccountIds
+        self.timedOut = timedOut
+    }
+}
+
+/// The shared accumulator `SyncCoordinator.serverSearch` hands one
+/// unstructured `Task` per account — see that method's doc comment for why
+/// this isn't a `TaskGroup`. Collects results as they land and lets the
+/// caller wait for either "every account has reported in" or an external
+/// `markTimedOut()` call, whichever happens first.
+actor ServerSearchCollector {
+    private var summaries: [ThreadSummary] = []
+    private var failedAccountIds: [String] = []
+    /// Dedupes by `ThreadSummary.id` (== the underlying message id for the
+    /// flat-mode summaries `ServerSearchService.search` always builds) —
+    /// two accounts can't share a message, but the same account could in
+    /// principle report the same message twice if a future caller ever
+    /// passed overlapping account lists; deduping here rather than trusting
+    /// every future caller to pre-dedupe its own `accounts` is the cheaper
+    /// invariant to maintain.
+    private var seenIds = Set<Int64>()
+    private var remaining: Int
+    private var resolved = false
+    private var didTimeOut = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(accountCount: Int) {
+        remaining = accountCount
+    }
+
+    func recordSuccess(_ result: [ThreadSummary]) {
+        for summary in result where seenIds.insert(summary.id).inserted {
+            summaries.append(summary)
+        }
+        remaining -= 1
+        if remaining <= 0 { resolve(timedOut: false) }
+    }
+
+    func recordFailure(accountId: String) {
+        failedAccountIds.append(accountId)
+        remaining -= 1
+        if remaining <= 0 { resolve(timedOut: false) }
+    }
+
+    func markTimedOut() {
+        resolve(timedOut: true)
+    }
+
+    /// Suspends until every account has reported in (`recordSuccess`/
+    /// `recordFailure` reaching `remaining <= 0`) or `markTimedOut()` is
+    /// called, whichever comes first — a no-op returning immediately if
+    /// that already happened before this was called (covers the case where
+    /// every account finishes before the caller even starts waiting).
+    /// Returns whether the timeout is what ended the wait.
+    func waitForCompletionOrTimeout() async -> Bool {
+        guard !resolved else { return didTimeOut }
+        await withCheckedContinuation { self.continuation = $0 }
+        return didTimeOut
+    }
+
+    func snapshot() -> (summaries: [ThreadSummary], failedAccountIds: [String]) {
+        (summaries, failedAccountIds)
+    }
+
+    private func resolve(timedOut: Bool) {
+        guard !resolved else { return }
+        resolved = true
+        didTimeOut = timedOut
+        continuation?.resume()
+        continuation = nil
     }
 }
