@@ -85,7 +85,15 @@ jobs:
             OTHER_SWIFT_FLAGS="-Xfrontend -warn-long-expression-type-checking=300 -Xfrontend -warn-long-function-bodies=300" \
             build
 
+      # 2026-08-06: known infra flake — `swift test` occasionally hangs with
+      # zero output partway through the suite (not a specific test: two
+      # consecutive hangs on the same commit stopped at different test
+      # names). Locally this suite finishes in well under a minute, so a
+      # generous 10-minute cap turns a silent 6-hour (GitHub's default job
+      # timeout) runner-minute burn into a fast, visible failure instead —
+      # see docs/ci.md's "Test OtegamiKit ステップが無出力でハングする" note.
       - name: Test OtegamiKit
+        timeout-minutes: 10
         run: cd packages/OtegamiKit && swift test
 
       # Task #170: apps/Otegami/Sources string literals that never got a
