@@ -172,6 +172,16 @@ translations = {
     "検索範囲": "Search Scope",
     "検索文字列をクリア": "Clear Search Text",
 
+    # 検索の IMAP サーバーサイド SEARCH フォールバック
+    # (`ServerSearchTriggerRow`): ローカル検索結果の末尾に常に表示する
+    # 「サーバーで検索」行と、その結果セクション/エラー文言。
+    "サーバーで検索": "Search Server",
+    "ローカルに無い古いメールもサーバー上で検索します": "Also searches the server for older mail not stored locally",
+    "サーバー検索結果": "Server Search Results",
+    "一部のアカウントで検索がタイムアウトしました": "The search timed out for some accounts",
+    "一部のアカウントで検索に失敗しました": "The search failed for some accounts",
+    "検索がタイムアウトしました": "The search timed out",
+
     # --- 検索画面再構成 (Task #86, Sparkハンドオフ): トップバー (角丸
     # フィールド+星+丸い閉じるボタン)、「履歴」/「保存済み」タブ、保存済み
     # 検索。「英語」フィルタチップはユーザー要望で廃止したため上の節から

@@ -109,26 +109,25 @@ final class OtegamiM7SearchUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 7)
     }
 
-    /// Scenario (e): a query with no possible match shows the zero-results
-    /// state (`ContentUnavailableView.search`, `search.emptyState`) rather
-    /// than an empty-looking list with no explanation.
-    func testNoMatchesShowsEmptyState() throws {
+    /// Scenario (e): a query with no possible local match shows the
+    /// 「サーバーで検索」トリガー行 (`ServerSearchTriggerRow`,
+    /// `search.serverSearch.trigger`) rather than an empty-looking list
+    /// with no explanation. This replaced the plain `ContentUnavailableView
+    /// .search`/`search.emptyState` overlay when 検索の IMAP サーバーサイド
+    /// SEARCH フォールバック shipped — that overlay would otherwise sit on
+    /// top of (and block taps on) the trigger row `resultsSections` now
+    /// always renders at the end of the local results, zero local hits or
+    /// not.
+    func testNoMatchesShowsServerSearchTrigger() throws {
         let app = launchOnSearchTab()
         typeSearchQuery("zzzznotfound", in: app)
 
-        // `ContentUnavailableView.search(text:)`'s system-provided
-        // description includes the query text itself (e.g. "No results for
-        // \u{201c}zzzznotfound\u{201d}") — matching on that text directly is
-        // more robust than an exact `accessibilityIdentifier` lookup on the
-        // view's own container, which this simulator/toolchain doesn't
-        // always resolve for a "plainly visible" element (the same
-        // exact-identifier pitfall `docs/verify.md`'s M2/M4 sections
-        // document for other controls).
-        let emptyState = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "zzzznotfound")).firstMatch
-        XCTAssertTrue(emptyState.waitForExistence(timeout: 15), "Expected the zero-results empty state to appear")
+        let trigger = app.buttons["search.serverSearch.trigger"]
+        XCTAssertTrue(trigger.waitForExistence(timeout: 15), "Expected the サーバーで検索 trigger row to appear even with zero local hits")
 
-        // The search list itself should have nothing in it.
-        XCTAssertEqual(app.collectionViews["search.list"].cells.count, 0, "Expected zero result rows")
+        // The search list should have exactly the trigger row in it — no
+        // local result rows for this query.
+        XCTAssertEqual(app.collectionViews["search.list"].cells.count, 1, "Expected zero result rows plus the server-search trigger row")
 
         Thread.sleep(forTimeInterval: 7)
     }

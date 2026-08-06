@@ -78,4 +78,22 @@ extension AppEnvironment {
             }
         }
     }
+
+    /// 検索の IMAP サーバーサイド SEARCH フォールバック
+    /// (`SearchScreenView`の「サーバーで検索」トリガー行): 実際のロジックは
+    /// すべて`SyncCoordinator.serverSearch(query:accounts:authProvider:
+    /// timeout:)`にあり、これは`auth(for:)`を注入するだけの薄い配線 —
+    /// `prefetchMessageBodiesIfNeeded(messageIds:)`と同じ役割分担
+    /// (`PushNotificationCoordinator.swift`参照)。
+    ///
+    /// - Parameter accountIds: 空なら`accounts`全件 (全アカウント横断) —
+    ///   `SearchScreenView.accountFilter == nil`のとき (`SearchScope
+    ///   .allAccounts`と同じ「全部」の意味)。
+    func serverSearch(query: String, accountIds: [String]) async -> ServerSearchOutcome {
+        let targetAccounts = accountIds.isEmpty ? accounts : accounts.filter { accountIds.contains($0.id) }
+        return await syncCoordinator.serverSearch(query: query, accounts: targetAccounts) { [weak self] account in
+            guard let self else { throw AuthResolutionError.missingCredential }
+            return try await self.auth(for: account)
+        }
+    }
 }
