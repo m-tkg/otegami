@@ -1,4 +1,4 @@
-// swift-tools-version:6.0
+// swift-tools-version:6.2
 import PackageDescription
 
 // A standalone SwiftPM package for visually verifying `DesignSystem`
@@ -17,9 +17,17 @@ import PackageDescription
 // files as the app does, with no duplication to drift out of sync.
 let package = Package(
     name: "DesignSystemCatalog",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v26)],
     targets: [
-        .target(name: "DesignSystem", path: "Sources/DesignSystem"),
+        // `SyncProgressBanner.swift` は `import SyncEngine` (OtegamiKit) を
+        // 持つため除外する。Catalog に OtegamiKit を依存として足すと
+        // 軽量パッケージでなくなるし、このバナーはアプリ結合が強く
+        // Catalog での視覚確認対象でもない。
+        .target(
+            name: "DesignSystem",
+            path: "Sources/DesignSystem",
+            exclude: ["Components/SyncProgressBanner.swift"]
+        ),
         .executableTarget(
             name: "DesignSystemCatalogRenderer",
             dependencies: ["DesignSystem"]

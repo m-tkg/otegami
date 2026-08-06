@@ -409,13 +409,42 @@ Task #205 で `NSAllowsArbitraryLoadsInWebContent` を追加し、平文 `http`
 アカウント色 (ラベル色・`AccountColorRail`)・destructive など意味を持つ
 色は macOS でも従来どおりトークンを使う。
 
+### Liquid Glass 方針 (2026-08-07 採用)
+
+iOS も、上記の macOS ネイティブ化方針 (2026-08-07) と同じ考え方で
+Liquid Glass へ全面移行する。骨子:
+
+- **色: システム標準へ委譲**。iOS 独自の背景/surface 塗り
+  (`OtegamiColor.background`/`surface`/`paleBase` 系) は段階的に廃止し、
+  アクセントの tint だけを残す。macOS がすでに `.background`/`tint`/
+  カード塗りをやめて AppKit 標準に任せているのと同じ方向。
+- **クローム層** (ツールバー・フローティングボタン・チップ・検索欄・
+  トースト・バナー) は不透明なトークン塗りを禁止し、システム標準の
+  Liquid Glass (`glassEffect` / `.buttonStyle(.glass)`) に任せる。tint 付き
+  Glass (`.glassProminent` 等) を使うのは compose 系の最重要アクションに
+  限る。
+- **コンテンツ層** (一覧行・本文・カード) にはガラスを使わない — HIG の
+  「コンテンツの上に敷き詰めない」指針に従う。
+- Glass を使うコンポーネントは DesignSystemCatalog のレンダラには登録
+  しない。Catalog は `ImageRenderer` によるオフスクリーン描画 (詳細は
+  `Sources/DesignSystemCatalogRenderer/main.swift`) で、Glass は正しく
+  描画されないため。Glass 部品の見た目確認は `scripts/verify-screen.sh`
+  による実機シミュレータのスクリーンショットで行う。
+
+このドキュメント内の「iOS はトークン主導のスタイル」という記述は
+移行が進むにつれて段階的に置き換わっていく途中の状態を指す。実装は
+Phase 単位で進める (Phase 0: 基盤整備、視覚変化なし)。
+
 - フラットデザイン。角丸は `OtegamiRadius.none` (0) が既定で、カードの
   角丸は `OtegamiRadius.card` (8pt) — **iOS の一覧行はフルブリード化の
   ため角丸なし、macOS の一覧行カードは 2026-08-07 に廃止済み** (上記)。
-  ボタン・チップ・バッジは常に角丸なし。検索画面のトップバー (カプセル
-  型テキストフィールド・丸い閉じるボタン) だけは `Capsule()`/`Circle()`
-  を直接使う、閉じたスコープの例外 (iOS のみ — macOS の検索欄は上記の
-  とおり標準寄りの角丸)。
+  **コンテンツ層** (一覧行・本文・カード) は従来どおり角丸なし基調。
+  **クローム層** (ツールバー・フローティングボタン・チップ・検索欄など)
+  は上記 Liquid Glass 方針によりシステム標準の Glass カプセル/円形に
+  従う — 従来「検索画面のトップバー (カプセル型テキストフィールド・
+  丸い閉じるボタン) だけが `Capsule()`/`Circle()` を直接使う例外」だった
+  ものを、クローム層全体の原則として一般化したもの (iOS のみ — macOS の
+  検索欄は上記のとおり標準寄りの角丸)。
 - 罫線は2段階: 主要区切り線は2pt実線 (`OtegamiStroke.primary`、
   `OtegamiColor.divider`)、行間の区切りは1pt破線/ハイライン
   (`OtegamiStroke.secondary`、`OtegamiColor.dividerSubtle`)。
@@ -435,7 +464,11 @@ Task #205 で `NSAllowsArbitraryLoadsInWebContent` を追加し、平文 `http`
   `Color(light:dark:)` (`DynamicColor.swift`) が全トークンの基礎で、
   `UIColor`/`NSColor` の dynamic provider により実機・Simulator・
   Preview・`ImageRenderer` オフスクリーン描画のいずれでも正しく解決さ
-  れる。
+  れる。**上記の Liquid Glass 方針によりシステム標準委譲へ移行中**
+  — この淡水色パレットのうち `background`/`surface`/`paleBase` 系トー
+  クンは iOS では段階的に廃止予定 (macOS は 2026-08-07 のネイティブ化で
+  廃止済み)。トークン一覧の全面書き換えはここでは行わず、廃止が完了する
+  後続フェーズでまとめて行う。
 
 ### トークン一覧
 
