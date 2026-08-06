@@ -4,7 +4,7 @@
 
 SWIFT_VERSION = 6.0
 SWIFT_STRICT_CONCURRENCY = complete
-MARKETING_VERSION = 1.7.1
+MARKETING_VERSION = 1.7.2
 CURRENT_PROJECT_VERSION = 1
 
 // Home-screen / Dock display name. Debug (Xcode Run / `make ios` /
