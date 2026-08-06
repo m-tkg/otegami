@@ -204,30 +204,52 @@ PushOAuthAccessTokenResolution.swift` の `resolve(timeout:tokenFetch:)`)
   +大量の並行タスクで CI の並行負荷を模して再現を試みると、
   「実装のバグ」と「テストの計測方法の問題」を高い確度で切り分けられる。
 
-## 既知の落とし穴: 「Test OtegamiKit」ステップが無出力のままハングする (2026-08-06)
+## 既知の落とし穴: 「Test OtegamiKit」ステップが無出力のままハングする (2026-08-06、根本原因特定・修正済み)
 
 `ci-app` の「Test OtegamiKit」(`swift test`) が、XCTest 系のテスト完了後・
 Swift Testing の全テストが「started」を出した直後に一切の出力が止まり、
-ジョブタイムアウト (既定 360 分) まで進まなくなることがある。
+ジョブタイムアウト (既定 360 分) まで進まなくなることがあった。
 
-- コード起因ではない: 2026-08-06 に、`Shared.xcconfig` の 1 行だけを変えた
-  ブランチ (`chore/bump-1.7.0`) と通常の機能ブランチの双方で発生し、
-  その 3 秒後に走った同内容の main の run は成功していた。同じテスト
-  スイートはローカルでは数十秒で全緑。
-- 症状の見分け方: ジョブのログ末尾が `◇ Test "..." started.` の羅列で
-  止まり、`✔ passed` / `✘ failed` が 1 件も出ないまま数十分経過している。
-  テストの失敗ならステップ自体は数分で赤く終わるので、区別できる。
-- 対処: run をキャンセルして再実行する。ハングした run を放置すると
-  macOS ランナーの課金枠を 6 時間分消費するので、気づいたら止めること。
-  リリース判断は従来どおりローカルの `make test` + `make mac`/`make ios`
-  緑を根拠にしてよい (`docs/verify.md` の出荷基準)。
-- **同日 (v1.7.1 リリース時) に同一コミットで 2 回連続再現**: 1 回目は
-  「plain ASCII subject becomes a plain filename」、2 回目は「strips a
-  Japanese '送信者:' header line」で停止 — **特定のテストが原因ではなく**、
-  Swift Testing ランタイム側 (もしくは macOS ランナーの並行実行環境) の
-  フレークだと確度が上がった。手動キャンセル頼みだと気づくまで長時間
-  課金枠を消費し続けるため、`ci-app.yml`の「Test OtegamiKit」ステップに
-  `timeout-minutes: 10` を追加 (ローカルは数十秒で完走するので十分な
-  余裕) — ハングしても 10 分で自動的に赤く終わるようにした。赤くなった
-  場合、再実行して緑になれば「フレーク」、同じ箇所で毎回失敗するなら
-  「本物の退行」と機械的に切り分けられる。
+**根本原因 (特定済み)**: `OtegamiKitTestSupport` の
+`DatabaseSuspensionTestLock.withLock` が、同期ブロッキング syscall の
+`flock(fd, LOCK_EX)` を `async` 関数内で直接呼んでいたことによる
+**協調スレッドプールの枯渇デッドロック**。
+
+- このロックを取り合うテストは 4 件 (`DatabaseSuspensionTests` /
+  `AppDatabaseTests` / `AccountSyncerTests+Suspension` /
+  `OpQueueProcessorTests+Retry`)。Swift Testing の既定並行実行で同時に
+  走り出すと「保持 1 + `flock` 待ち 3」となり、待機側がワーカースレッドを
+  3 本まるごと塞ぐ。
+- Swift Concurrency の協調プール幅はコア数程度 — CI の macOS ランナー
+  (3-4 vCPU) では全ワーカーが `flock` 待ちで埋まり、**ロック保持側の
+  `body()` 内 continuation を再開するスレッドが永遠に無くなる** =
+  プロセス全体の恒久デッドロック。ローカル開発機はコア数が多く
+  プールに余裕があるため再現しなかった。
+- 時系列も一致: 4 件目のロック使用 (`AppDatabaseTests`) が 8/4 17:12
+  (`ea9609c`) に入り、6 時間ハングの初出は 8/5 朝。3 件以下だった間は
+  「待機 2 本 + 保持 1 本」で 3 スレッドプールでもギリギリ回っていた。
+- 実証: `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` (プール幅 1) を付けて
+  該当 4 テストをローカル実行すると決定的に再現し、`sample` のスタックで
+  唯一のワーカーが `DatabaseSuspensionTestLock.swift` の `flock` で停止
+  していることを確認。停止位置がハングごとに違って見えたのは、プールが
+  死んだ瞬間に走りかけていた無関係なテストが「started」のまま残るため。
+
+**修正**: `flock` を `LOCK_EX | LOCK_NB` (非ブロッキング) + 取れなければ
+`Task.sleep` リトライに変更 — 排他の意味論はそのまま、待機中に協調
+プールのスレッドを占有しない。修正後は `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1`
+でも全テストが完走する。
+
+**保険**: `ci-app.yml` の「Test OtegamiKit」ステップには
+`timeout-minutes: 10` を残してある (ローカルは数十秒で完走するので十分な
+余裕)。今後この種のハングが再発しても 6 時間の課金消費ではなく 10 分で
+赤く終わる。赤くなった場合、再実行して緑なら一過性、同じ箇所で毎回
+失敗するなら本物の退行、と切り分ける。
+
+**教訓**: `async` 関数の中で同期ブロッキング syscall (`flock`、
+`DispatchSemaphore.wait`、`pthread_mutex` の長時間保持等) を直接呼ばない。
+協調プールのスレッドは「await で必ず手放す」前提で本数が絞られており、
+ブロックした本数がプール幅に達した瞬間、そのプロセスの async 世界全体が
+止まる。競合本数がコア数未満のうちは動いてしまうため、**ローカルでは
+一切再現せず、コア数の少ない CI でだけ確率的に死ぬ**という最悪の形で
+現れる。疑わしいときは `LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` で
+プール幅を 1 に絞ると決定的に炙り出せる。
