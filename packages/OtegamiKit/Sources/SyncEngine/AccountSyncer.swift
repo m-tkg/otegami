@@ -481,6 +481,10 @@ public actor AccountSyncer {
                         updated.messageCount = status.messageCount
                         updated.lastSyncedAt = Date()
                         try updated.update(db)
+                        // 古いメールのバックフィル同期: this is the moment the
+                        // mailbox's "most recent window" is (re)established —
+                        // see `BackfillSyncer.resetCursor`'s doc comment.
+                        try BackfillSyncer.resetCursor(mailboxId: mailboxId, db: db)
                     }
 
                     if info.role == .inbox {
@@ -588,6 +592,14 @@ public actor AccountSyncer {
                         // un-hide it again. See `MailboxRecord.isHidden`'s
                         // doc comment.
                         Column("isHidden").noOverwrite,
+                        // 古いメールのバックフィル同期: same reasoning as
+                        // `isHidden` above — a re-`LIST` must never reset a
+                        // mailbox's backfill progress back to the
+                        // freshly-constructed `record`'s default (`1`). Only
+                        // `BackfillSyncer.resetCursor`/`backfillOneBatch`
+                        // (both explicit, targeted `UPDATE`s) are allowed to
+                        // change this column.
+                        Column("backfillLowerBound").noOverwrite,
                     ]
                 }
                 records[info.path] = record
