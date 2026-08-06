@@ -4,15 +4,25 @@ otegami の設定項目の全一覧。実装は `apps/Otegami/Sources/Support/` 
 各 `*SettingsStore` (プレーンな `UserDefaults` キーの集まり、`@AppStorage`
 で各 View から直接参照する) と、`AccountsListContent`
 (`apps/Otegami/Sources/Features/Settings/AccountsSettingsView.swift`) の
-UI。iOS はハンバーガーメニュー →「設定」シート、macOS は Settings シーン
-の「設定」タブから開く。両プラットフォームとも同じ`AccountsListContent`
-を共有するため、カテゴリ構造は自動的に揃う。
+UI。iOS はハンバーガーメニュー →「設定」シート、macOS は ⌘,/アプリ
+メニュー「設定…」またはサイドバーの歯車ボタンから開くネイティブ設定
+ウィンドウ (`OtegamiSettingsView` — 左にカテゴリのサイドバー、右に選択
+カテゴリを表示する `NavigationSplitView`)。カテゴリの一覧・並び順は
+iOS の `AccountsListContent` と揃えてある。
+
+macOS の設定ウィンドウは標準の `Settings` シーンではなく通常の
+`Window(id: "settings")` (2026-08-07 のネイティブ化 — `Settings` シーンは
+ツールバーをタイトルバーへマージしないため、detail 上部の巨大な空白・
+push 画面の浮いた自前戻るボタンという「iOS 移植風」の見た目の原因に
+なっていた。経緯は `OtegamiSettingsView` の doc comment)。⌘, の
+メニュー項目は `OtegamiCommands` の `CommandGroup(replacing:
+.appSettings)` が提供する。
 
 ## 画面構成
 
-設定のルートは5カテゴリ + ルート直下の「このアプリについて」
-(`AboutView`、iOS のみ — macOS は Settings シーンの独立した「情報」タブ
-に既にあるため重複させない):
+設定のルートは5カテゴリ + iOS のみルート直下の「このアプリについて」
+(`AboutView` — macOS はメニューバーの「Otegamiについて」ウィンドウが
+同内容のため重複させない):
 
 | カテゴリ | 実装 | 内容 |
 | --- | --- | --- |
@@ -24,9 +34,10 @@ UI。iOS はハンバーガーメニュー →「設定」シート、macOS は 
 
 (表の並びは実際の設定画面のカテゴリ順と同じ。)
 
-macOS は `OtegamiSettingsView` の「設定」タブが同じ `AccountsListContent`
-をそのまま埋め込むため、iOS と全く同じカテゴリ構造になる (「このアプリ
-について」は例外 — 上記参照)。
+macOS は `OtegamiSettingsView` のサイドバーが同じ5カテゴリ (サイドバー
+上のラベルのみ「アカウントの設定」→「アカウント」と短縮) を並べ、detail
+に各カテゴリの同じ View を表示するため、iOS とカテゴリ構造が揃う
+(「このアプリについて」は例外 — 上記参照)。
 
 - **iCloud 同期トグル**: アカウントの接続設定に加えて、表示・翻訳・通知
   内容・署名・テンプレートなど設定全般を同期する ([docs/icloud-sync.md](icloud-sync.md))。
@@ -134,6 +145,14 @@ HTML メールの詳細画面には件名の隣に控えめな "HTML" バッジ�
   そのまま使われる。
 - **反映範囲**: 一覧のアカウント色罫線、送信者アイコン背景の両方。
 - iCloud 経由で端末間に同期される ([docs/icloud-sync.md](icloud-sync.md))。
+
+## アカウントの削除
+
+設定 → アカウント一覧の各行から: iOS はスワイプ削除、macOS は行の
+右クリックメニュー。加えて 2026-08-07 から、各アカウントの編集画面
+(`AccountEditView`) の最下部にも「アカウントを削除…」ボタンがある
+(確認アラート付き) — macOS でマウスから辿れる可視の削除経路が右クリック
+しか無かったための追加で、iOS でも表示される。
 
 ## アカウントの並び替え
 

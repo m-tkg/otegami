@@ -30,17 +30,12 @@ struct FolderCategoryOrderSettingsView: View {
         .navigationTitle("カテゴリの並び替え")
         .accessibilityIdentifier("folderCategoryOrderSettings.list")
         .onChange(of: order) { _, newValue in FolderCategoryOrderStore.saveOrder(newValue) }
-        #if os(macOS)
         // Task #155: see `MessageToolbarSettingsView`'s identical doc
         // comment — この画面もドラッグ並び替え (`.onMove`) が主目的なので
-        // `List`のまま (`Form`には切り替えない)。
-        // Task #155 follow-up: `.macSettingsBackButton()` (see its doc
-        // comment) also serves as this branch's required non-empty
-        // modifier (`#if`/`#else`のどちらかが空だと型推論に失敗する問題を
-        // 避ける、という元の`.modifier(EmptyModifier())`の役目もこれで
-        // 兼ねる) — this screen is pushed from `MailListSettingsView`.
-        .macSettingsBackButton()
-        #else
+        // `List`のまま (`Form`には切り替えない)。macOS 側の独自スタイルは
+        // 無し (2026-08-07 設定ウィンドウのネイティブ化で、push 画面の
+        // 戻るボタンは`NavigationStack`の標準ボタンに戻った)。
+        #if os(iOS)
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)

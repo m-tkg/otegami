@@ -40,13 +40,6 @@ struct DefaultMailAppSettingsView: View {
     var body: some View {
         settingsContainer
             .navigationTitle("既定のメールアプリ")
-            #if os(macOS)
-            // Task #155 follow-up: see `MacSettingsBackButton`'s doc
-            // comment — this screen is pushed from
-            // `GeneralSettingsView` (moved here 2026-08-02, previously
-            // `AccountSettingsCategoryView`).
-            .macSettingsBackButton()
-            #endif
     }
 
     /// Task #155: see `MailListSettingsView`'s identical doc comment on

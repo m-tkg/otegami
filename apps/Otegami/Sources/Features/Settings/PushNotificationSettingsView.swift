@@ -149,12 +149,6 @@ struct PushNotificationSettingsView: View {
         .tint(OtegamiColor.accent)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        #if os(macOS)
-        // Task #155 follow-up: see `MacSettingsBackButton`'s doc comment —
-        // this screen is pushed from `GeneralSettingsView` (moved there
-        // from `AccountSettingsCategoryView` by Task #212).
-        .macSettingsBackButton()
-        #endif
         .task(id: environment.isPushEnabled) { await refreshWatchRows() }
         .alert("資格情報の送信について", isPresented: $showingConsent) {
             Button("キャンセル", role: .cancel) {}

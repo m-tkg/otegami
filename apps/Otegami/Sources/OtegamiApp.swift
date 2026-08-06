@@ -116,10 +116,22 @@ struct OtegamiApp: App {
         .windowResizability(.contentSize)
         #endif
         #if os(macOS)
-        // M10: the native Settings scene (⌘,/App menu → Settings…) —
-        // `OtegamiSettingsView`'s doc comment explains why it wraps rather
-        // than replaces the existing gear-icon sheet.
-        Settings {
+        // M10 → macOS ネイティブ化 (2026-08-07 実機フィードバック「いかにも
+        // iOS 版から移植した感じ」): 以前は標準の `Settings` シーンだったが、
+        // `Settings` シーンは `.toolbar` の内容をウィンドウの実タイトルバーへ
+        // マージしない (旧 `MacSettingsBackButton` の doc comment に実測記録) —
+        // その結果、detail 上部に巨大な空白 + 中央浮きタイトルが出続け、
+        // プッシュ画面の戻るボタンも自前の丸ボタンで代替するしかなかった。
+        // 通常の `Window` シーンならツールバーが正しくタイトルバーへ
+        // マージされ、`NavigationStack` の自動生成の戻るボタンもタイトル
+        // バー内の標準位置に出る。⌘,/「設定…」メニューは `Settings`
+        // シーンを外すと消えるため、`OtegamiCommands` の
+        // `CommandGroup(replacing: .appSettings)` が同じ見た目・同じ
+        // ショートカットで `openWindow(id: "settings")` を呼んで代替する。
+        // `Window` (not `WindowGroup`) なのでシングルトン — 再度 ⌘, しても
+        // 既存ウィンドウが前面に来るだけ、という標準の設定ウィンドウの
+        // 挙動そのまま。
+        Window("設定", id: "settings") {
             OtegamiSettingsView()
                 .environment(environment)
                 // アバター強化バッチ: `SenderAvatar` (in `DesignSystem`, which
@@ -129,6 +141,11 @@ struct OtegamiApp: App {
                 .environment(\.avatarImageResolver, environment.avatarImageResolver)
                 .environment(\.avatarImageRevision, environment.avatarImageRevision)
         }
+        // `OtegamiSettingsView` 側の `.frame(minWidth:minHeight:)` が最小
+        // サイズを担い、ここは初回起動時の既定サイズだけを与える (主
+        // ウィンドウの `.defaultSize` と同じ理屈 — 2回目以降は AppKit の
+        // フレーム自動復元が優先される)。
+        .defaultSize(width: 780, height: 560)
         #endif
     }
 }

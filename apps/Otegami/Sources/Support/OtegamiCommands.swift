@@ -52,6 +52,17 @@ struct OtegamiCommands: Commands {
             }
         }
 
+        // 2026-08-07 (macOS 設定画面ネイティブ化): `OtegamiApp` が標準の
+        // `Settings` シーンをやめ通常の `Window(id: "settings")` にしたため
+        // (そちらの doc comment 参照)、自動で付いていた「設定… ⌘,」メニュー
+        // 項目をここで同じ位置・同じショートカットのまま自前で提供する。
+        CommandGroup(replacing: .appSettings) {
+            Button("設定…") {
+                openWindow(id: "settings")
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
+
         CommandGroup(replacing: .newItem) {
             Button("新規メッセージ") { newMessageAction?() }
                 .keyboardShortcut("n", modifiers: .command)

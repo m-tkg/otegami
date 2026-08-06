@@ -69,6 +69,9 @@ struct AccountEditView: View {
 
     @State private var isSaving = false
     @State private var saveErrorMessage: String?
+    /// 2026-08-07: 末尾の「アカウントを削除…」ボタン用 — body 末尾の
+    /// `.alert` の doc comment 参照。
+    @State private var showingDeleteConfirmation = false
 
     @State private var isReauthenticating = false
     @State private var reauthErrorMessage: String?
@@ -203,6 +206,38 @@ struct AccountEditView: View {
                 .accessibilityIdentifier("accountEdit.saveButton")
                 .disabled(!isFormValid || isSaving)
             }
+
+            // 2026-08-07 (macOS 設定画面ネイティブ化): それまで削除の入口は
+            // 一覧行のスワイプ (iOS) と右クリック (macOS) だけで、マウスで
+            // 辿れる可視のボタンが無かった。システム設定の「インターネット
+            // アカウント」がアカウント詳細の末尾に置くのと同じ形で、この
+            // 編集画面の最下部に destructive ボタンを置く (確認アラートは
+            // 一覧側 `AccountSettingsCategoryView` と同文言)。
+            Section {
+                Button("アカウントを削除…", role: .destructive) {
+                    showingDeleteConfirmation = true
+                }
+                // macOS 26 の `Form` 内ボタンは `role: .destructive` だけ
+                // ではラベルが赤くならない (実機スクリーンショットで確認)
+                // ため、破壊的操作の慣例色を明示する。
+                .foregroundStyle(OtegamiColor.destructive)
+                .accessibilityIdentifier("accountEdit.deleteButton")
+            }
+        }
+        .alert(
+            "アカウントを削除しますか？",
+            isPresented: $showingDeleteConfirmation
+        ) {
+            Button("削除", role: .destructive) {
+                Task {
+                    await environment.deleteAccount(account)
+                    dismiss()
+                }
+            }
+            .accessibilityIdentifier("accountEdit.confirmDeleteButton")
+            Button("キャンセル", role: .cancel) {}
+        } message: {
+            Text("\(account.displayName) (\(account.email)) を削除すると、ローカルに保存されたメールもすべて削除されます。")
         }
         .navigationTitle("アカウントを編集")
         #if os(macOS)
@@ -225,12 +260,6 @@ struct AccountEditView: View {
         .tint(OtegamiColor.accent)
         #endif
         .accessibilityIdentifier("accountEdit.screen")
-        #if os(macOS)
-        // Task #155 follow-up: `MacSettingsBackButton`'s doc comment —
-        // this screen is what the 2026-07-29 実機報告 ("戻るボタンが
-        // タイトルの真下・中央に浮いている") was filed against.
-        .macSettingsBackButton()
-        #endif
         .task { await loadAvailableSignatures() }
         .task { await refreshScopeDiagnosis() }
     }

@@ -19,12 +19,6 @@ struct TemplatesSettingsView: View {
     var body: some View {
         settingsContainer
             .navigationTitle("テンプレート")
-            #if os(macOS)
-            // Task #155 follow-up: see `MacSettingsBackButton`'s doc
-            // comment — this screen is pushed from
-            // `MailComposeSettingsView`.
-            .macSettingsBackButton()
-            #endif
             .task { await loadTemplates() }
             .sheet(isPresented: $isAddingNew, onDismiss: { Task { await loadTemplates() } }) {
                 TemplateEditView(template: nil)
