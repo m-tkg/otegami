@@ -221,3 +221,13 @@ Swift Testing の全テストが「started」を出した直後に一切の出�
   macOS ランナーの課金枠を 6 時間分消費するので、気づいたら止めること。
   リリース判断は従来どおりローカルの `make test` + `make mac`/`make ios`
   緑を根拠にしてよい (`docs/verify.md` の出荷基準)。
+- **同日 (v1.7.1 リリース時) に同一コミットで 2 回連続再現**: 1 回目は
+  「plain ASCII subject becomes a plain filename」、2 回目は「strips a
+  Japanese '送信者:' header line」で停止 — **特定のテストが原因ではなく**、
+  Swift Testing ランタイム側 (もしくは macOS ランナーの並行実行環境) の
+  フレークだと確度が上がった。手動キャンセル頼みだと気づくまで長時間
+  課金枠を消費し続けるため、`ci-app.yml`の「Test OtegamiKit」ステップに
+  `timeout-minutes: 10` を追加 (ローカルは数十秒で完走するので十分な
+  余裕) — ハングしても 10 分で自動的に赤く終わるようにした。赤くなった
+  場合、再実行して緑になれば「フレーク」、同じ箇所で毎回失敗するなら
+  「本物の退行」と機械的に切り分けられる。
