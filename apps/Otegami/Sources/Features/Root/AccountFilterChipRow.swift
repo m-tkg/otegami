@@ -43,7 +43,11 @@ struct AccountFilterChipRow: View {
             .padding(.horizontal, OtegamiSpacing.md)
             .padding(.vertical, OtegamiSpacing.xs)
         }
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗りは
+        // iOS のみ — macOS は一覧ペインの標準背景の上にそのまま載せる。
+        #if os(iOS)
         .background(OtegamiColor.background)
+        #endif
         .accessibilityIdentifier("mail.chipRow")
     }
 
@@ -119,6 +123,24 @@ private struct AllModeFilterChip: View {
         // 固定ラベル同士の連結 (アカウント表示名のような動的な値は含まない)
         // だが、`Text(LocalizedStringKey:)`のMarkdown解釈を確実に避ける
         // ため`AccountFilterChip`の教訓 (`Text(verbatim:)`) に倣う。
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): `AccountFilterChip`
+        // と同じく、macOS は scope bar 風の「選択中だけ控えめな角丸塗り」。
+        #if os(macOS)
+        HStack(spacing: OtegamiSpacing.xs) {
+            Text(verbatim: "\(String(localized: "すべて")) ▸ \(modeTitle)")
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+        }
+        .font(OtegamiFont.caption())
+        .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+        .padding(.horizontal, OtegamiSpacing.sm)
+        .padding(.vertical, OtegamiSpacing.xs)
+        .background(
+            isSelected ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
+            in: RoundedRectangle(cornerRadius: 5)
+        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        #else
         HStack(spacing: OtegamiSpacing.xs) {
             Text(verbatim: "\(String(localized: "すべて")) ▸ \(modeTitle)")
             Image(systemName: "chevron.down")
@@ -137,6 +159,7 @@ private struct AllModeFilterChip: View {
         )
         .otegamiMinimumTappable()
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        #endif
     }
 
     private var modeTitle: String {

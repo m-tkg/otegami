@@ -116,20 +116,21 @@ struct ThreadRowView: View {
         // iOS only to keep rows visually distinct. See
         // `docs/design-system.md`'s list layout section for the full
         // decision record.
-        .otegamiCardBackground(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface, cornerRadius: rowCornerRadius)
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): macOS の角丸カード
+        // (`OtegamiRadius.card` + `surface` 塗り) を廃止し、Mail.app と同じ
+        // フラットな全幅行にした — 非選択行は背景を塗らず、選択行だけ
+        // `paleBaseStrong` の全幅ハイライト。行間の区切りは iOS と同じ
+        // `.otegamiRowDivider()` ヘアラインが担う (カード時代はカード間の
+        // マージンが区切りを兼ねていた — `MessageListRow` の
+        // `.listRowInsets` 側も同時にゼロへ変更)。iOS は Task #67 の
+        // フラット全幅カードのまま無変更。
         #if os(iOS)
-        .otegamiRowDivider()
-        #endif
-        .contentShape(Rectangle())
-    }
-
-    /// See the `Task #67` doc comment on `body` above.
-    private var rowCornerRadius: CGFloat {
-        #if os(iOS)
-        OtegamiRadius.none
+        .otegamiCardBackground(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface, cornerRadius: OtegamiRadius.none)
         #else
-        OtegamiRadius.card
+        .otegamiCardBackground(isSelected ? OtegamiColor.paleBaseStrong : .clear, cornerRadius: OtegamiRadius.none)
         #endif
+        .otegamiRowDivider()
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder

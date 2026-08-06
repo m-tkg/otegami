@@ -322,7 +322,11 @@ struct ThreadDetailView: View {
                 // them.
             }
             .accessibilityIdentifier("threadDetail.scrollView")
+            // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗り
+            // は iOS のみ — macOS は標準のウィンドウ背景に任せる。
+            #if os(iOS)
             .background(OtegamiColor.background)
+            #endif
             .overlay {
                 if messages.isEmpty, accountId != nil {
                     ContentUnavailableView("メッセージが見つかりません", systemImage: "envelope.open")

@@ -742,8 +742,13 @@ struct MessageListView: View {
         .listStyle(.plain)
         #endif
         .accessibilityIdentifier("messageList.list")
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗りは
+        // iOS のみ — macOS は標準のリスト背景に任せる (`SidebarView.
+        // sidebarList` と同じ判断)。
+        #if os(iOS)
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
+        #endif
         // design-phase-3: a `List` with no explicit `Section`s still gets
         // treated as one implicit section, and iOS 17+'s default
         // inter-section spacing (`ListSectionSpacing.default`, a fixed
