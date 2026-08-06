@@ -119,8 +119,11 @@ public enum PushTriggeredInboxSync {
         // comment on `SyncCoordinator.syncAccountIncrementally`: a detached
         // prefetch `Task` started from inside a Notification Service
         // Extension has no guarantee it survives past this call returning.
+        // `schedulesBackfill: false` — same reasoning, for the 古いメールの
+        // バックフィル同期 background pass.
         guard (try? await coordinator.syncAccountIncrementally(
-            account, auth: auth, scope: .inboxOnly, autoRetry: false, schedulesPostSyncPrefetch: false
+            account, auth: auth, scope: .inboxOnly, autoRetry: false,
+            schedulesPostSyncPrefetch: false, schedulesBackfill: false
         )) != nil else {
             return .empty
         }

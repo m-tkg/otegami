@@ -421,6 +421,12 @@ public actor MailboxSyncer {
             record.messageCount = status.messageCount
             record.lastSyncedAt = Date()
             try record.update(db)
+            // 古いメールのバックフィル同期: a uidValidity-changed/never-synced
+            // resync just re-established this mailbox's "most recent
+            // window" from scratch (the caller already deleted every
+            // previously-stored message for a real uidValidity change) —
+            // see `BackfillSyncer.resetCursor`'s doc comment.
+            try BackfillSyncer.resetCursor(mailboxId: mailboxId, db: db)
             return record
         }
     }

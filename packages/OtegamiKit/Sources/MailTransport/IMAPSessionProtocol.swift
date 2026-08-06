@@ -143,6 +143,24 @@ public protocol IMAPSessionProtocol: Sendable {
     /// full picture).
     func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32>
 
+    /// Server-side `SEARCH` (RFC 3501 §6.4.4) for `query` against
+    /// `mailboxPath` (already `select`ed) — the IMAP `SEARCH` fallback for
+    /// otegami's normally-entirely-local search (`docs/architecture.md`:
+    /// "検索は完全ローカル DB"). Matches messages whose `SUBJECT`, `FROM`,
+    /// or unencoded body text contains `query` (an `OR` of the three, case-
+    /// insensitive per RFC 3501's `SEARCH` semantics) — no envelope data
+    /// fetched, only UIDs, same shape as `searchExistingUIDs`. Used by
+    /// `SyncEngine.ServerSearchService` when the user explicitly taps
+    /// 「サーバーで検索」 (never auto-triggered) to find mail older than the
+    /// locally-synced window, or whose body hasn't been downloaded yet —
+    /// both invisible to the local FTS index. The caller is responsible for
+    /// bounding how many of the returned UIDs it actually ingests (this
+    /// method itself applies no result-count cap, mirroring
+    /// `searchExistingUIDs`'s own contract — see `docs/architecture.md`'s
+    /// pitfall (d) on why a caller must never materialize an IMAP `SEARCH`
+    /// result without an upper bound).
+    func searchMessages(mailboxPath: String, query: String) async throws -> Set<UInt32>
+
     /// `UID FETCH ... (FLAGS)` for `uids` in `mailboxPath` (already
     /// `select`ed) — just the flags, none of `fetchEnvelopes`'s headers/
     /// `BODYSTRUCTURE`/size. Task #194 (「Pull to refresh が長すぎて終わらない」):

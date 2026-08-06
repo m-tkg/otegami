@@ -247,6 +247,9 @@ final actor PoolFakeSession: IMAPSessionProtocol {
     func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32> {
         throw MailTransportError.notImplemented("searchExistingUIDs")
     }
+    func searchMessages(mailboxPath: String, query: String) async throws -> Set<UInt32> {
+        throw MailTransportError.notImplemented("searchMessages")
+    }
     func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags] {
         throw MailTransportError.notImplemented("fetchFlags(uids: UIDRange)")
     }

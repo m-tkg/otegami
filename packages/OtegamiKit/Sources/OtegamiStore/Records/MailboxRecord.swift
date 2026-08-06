@@ -155,6 +155,36 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     /// 保護しているため、通常の再一覧化でユーザーの選択が消えることはない。
     public var isHidden: Bool
 
+    /// 古いメールのバックフィル同期 (migration v39): the persisted "how far
+    /// back has this mailbox been scanned for older mail" cursor —
+    /// `BackfillSyncer`'s whole reason for existing. Semantics: every UID
+    /// `< backfillLowerBound` in this mailbox has *not* been fetched yet;
+    /// `1` means backfill is complete (UID 1 is the oldest a mailbox can
+    /// have, so there's nothing left below it). A plain "derive from the
+    /// local minimum UID on every pass" would work for a single pass, but
+    /// can't tell "already scanned this range, found nothing" apart from
+    /// "never looked" once the oldest surviving local message in a range
+    /// gets deleted/expunged — without a persisted cursor, the next
+    /// backfill pass would re-request the exact same now-empty range
+    /// forever instead of continuing past it (see this column's own
+    /// migration for the one-time derivation existing installs need, and
+    /// `BackfillSyncer.resetCursor(mailboxId:db:)` for where a fresh
+    /// value gets (re)computed after `AccountSyncer.performInitialSync`/
+    /// `MailboxSyncer.performWindowedResync`'s own "most recent N
+    /// messages" window fetch). An ordinary incremental sync
+    /// (`MailboxSyncer.incrementalSync`'s new-mail/flag-sync steps) never
+    /// touches this column — only a full-window fetch (initial sync, or a
+    /// uidValidity-changed resync) establishes a new "most recent window"
+    /// boundary worth resetting the cursor to; `BackfillSyncer
+    /// .backfillOneBatch` is the only thing that ever *decreases* it.
+    /// Defaults to `1` (matching `AccountSyncer.upsertMailboxes`'s
+    /// `.noOverwrite` protection for this column — see that method's doc
+    /// comment for why a freshly-upserted `MailboxRecord` must never
+    /// clobber a previous sync pass's stored progress) so a brand new
+    /// mailbox with nothing synced yet reads as "nothing to backfill"
+    /// until its first real sync gives it a meaningful value.
+    public var backfillLowerBound: Int64
+
     public init(
         id: Int64? = nil,
         accountId: String,
@@ -171,7 +201,8 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         lastSyncedAt: Date? = nil,
         lastSyncError: String? = nil,
         lastSyncErrorAt: Date? = nil,
-        isHidden: Bool = false
+        isHidden: Bool = false,
+        backfillLowerBound: Int64 = 1
     ) {
         self.id = id
         self.accountId = accountId
@@ -189,6 +220,7 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.lastSyncError = lastSyncError
         self.lastSyncErrorAt = lastSyncErrorAt
         self.isHidden = isHidden
+        self.backfillLowerBound = backfillLowerBound
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

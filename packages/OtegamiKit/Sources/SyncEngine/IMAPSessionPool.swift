@@ -337,6 +337,10 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
         try await perform { try await $0.searchExistingUIDs(mailboxPath: mailboxPath, uids: uids) }
     }
 
+    public func searchMessages(mailboxPath: String, query: String) async throws -> Set<UInt32> {
+        try await perform { try await $0.searchMessages(mailboxPath: mailboxPath, query: query) }
+    }
+
     public func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags] {
         try await perform { try await $0.fetchFlags(mailboxPath: mailboxPath, uids: uids) }
     }

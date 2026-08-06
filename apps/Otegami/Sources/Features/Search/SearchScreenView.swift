@@ -37,6 +37,18 @@ import SyncEngine
 /// selection, no pagination beyond `SearchQuery`'s own built-in result cap
 /// (`SearchQuery.defaultResultLimit`) — a search results screen's job is
 /// "find the thread, open it," not full list-management chrome.
+///
+/// **検索の IMAP サーバーサイド SEARCH フォールバック**: 検索はローカル DB
+/// (`SearchQuery`) だけを見るため、まだ同期されていない古いメール・本文
+/// 未ダウンロードのメールはヒットしない。`resultsSections`の末尾に常に
+/// (結果 0 件のときも) `ServerSearchTriggerRow`「サーバーで検索」行を表示し
+/// — 自動発動しない、タップが唯一のトリガー — `runServerSearch()`が
+/// `AppEnvironment.serverSearch(query:accountIds:)`
+/// (`SyncCoordinator.serverSearch`への薄い配線) を呼ぶ。返ってきた
+/// `ThreadSummary`はローカル FTS で再フィルタせずそのまま「サーバー検索
+/// 結果」セクションに表示する — サーバーが返した ID 集合が正 (本文マッチは
+/// ローカル索引に無いことがあるため)。クエリ/アカウント絞りが変わるたびに
+/// `resetServerSearchState()`が前回の結果を破棄する。
 struct SearchScreenView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.dismiss) private var dismiss
@@ -50,6 +62,15 @@ struct SearchScreenView: View {
     @State private var results: [ThreadSummary] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
+    /// 検索の IMAP サーバーサイド SEARCH フォールバック (`ServerSearchTriggerRow`):
+    /// `nil` = まだこのクエリでサーバー検索を実行していない — 自動発動しない
+    /// ので、ユーザーがタップするまでこのまま。ローカル FTS で再フィルタ
+    /// しない (`performServerSearch`のドキュメントコメント参照) — サーバーが
+    /// 返した`ThreadSummary`をそのまま表示する。
+    @State private var serverSearchResults: [ThreadSummary]?
+    @State private var isServerSearching = false
+    @State private var serverSearchErrorMessage: String?
+    @State private var serverSearchTask: Task<Void, Never>?
     @State private var selectedThreadId: Int64?
     /// 実機バグ報告「スレッド表示をオフにしてるのに、スレッドで表示される
     /// ことがある」対策 — `MessageListView.selectedMessageId`と同じ役割:
@@ -247,6 +268,32 @@ struct SearchScreenView: View {
                     }
                 }
             }
+            serverSearchSection
+        }
+    }
+
+    /// 検索の IMAP サーバーサイド SEARCH フォールバック: ローカル検索結果の
+    /// 末尾に常に表示する (結果 0 件のときも) — `ServerSearchTriggerRow`
+    /// (未実行/実行中/エラーの見た目) + 実行済みならヒットのセクション。
+    /// ヒットは`ThreadRowView`をそのまま使う既存の`searchRow(for:)`を再利用
+    /// し、ローカル FTS で再フィルタしない (`filteredResults`/`peopleResults`/
+    /// `mailResults`のようなクライアント側フィルタを一切通さず、サーバーが
+    /// 返した`ThreadSummary`をそのまま並べる)。
+    @ViewBuilder
+    private var serverSearchSection: some View {
+        Section {
+            ServerSearchTriggerRow(
+                isSearching: isServerSearching,
+                errorMessage: serverSearchErrorMessage,
+                onTap: runServerSearch
+            )
+        }
+        if let serverSearchResults, !serverSearchResults.isEmpty {
+            Section("サーバー検索結果") {
+                ForEach(serverSearchResults) { summary in
+                    searchRow(for: summary)
+                }
+            }
         }
     }
 
@@ -286,10 +333,15 @@ struct SearchScreenView: View {
             if isSearching {
                 ProgressView("検索中…")
                     .accessibilityIdentifier("search.loading")
-            } else if filteredResults.isEmpty {
-                ContentUnavailableView.search(text: searchText)
-                    .accessibilityIdentifier("search.emptyState")
             }
+            // 検索の IMAP サーバーサイド SEARCH フォールバック: ローカル結果が
+            // 0件でも`resultsSections`末尾の`ServerSearchTriggerRow`
+            // (「サーバーで検索」行) を必ず表示するようになったため、ここでは
+            // もう`ContentUnavailableView.search`を overlay として出さない —
+            // overlay はその行の上に重なって隠してしまい、タップできなく
+            // なる。ローカルに一致が無いことは、そのトリガー行のサブタイトル
+            // (「ローカルに無い古いメールもサーバー上で検索します」) 自体が
+            // 説明する。
         } else if selectedTab == .history {
             if historyEntries.isEmpty {
                 ContentUnavailableView(
@@ -383,6 +435,11 @@ struct SearchScreenView: View {
     /// threaded through for no real duplication savings.
     private func scheduleSearch() {
         searchTask?.cancel()
+        // 検索の IMAP サーバーサイド SEARCH フォールバック: クエリ/アカウント
+        // 絞りが変わるたびに前回のサーバー検索結果は無効 — 古いクエリの
+        // ヒットを新しいクエリの画面に残さない (`resetServerSearchState`の
+        // doc comment参照)。
+        resetServerSearchState()
         guard isActive else {
             isSearching = false
             results = []
@@ -394,6 +451,48 @@ struct SearchScreenView: View {
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await performSearch(query: query)
+        }
+    }
+
+    // MARK: - 検索の IMAP サーバーサイド SEARCH フォールバック
+
+    /// クエリ/アカウント絞りが変わるたびに呼ぶ — 進行中のサーバー検索が
+    /// あれば取り消し、前回のクエリの結果/エラー表示を一掃する。自動発動
+    /// しない機能なので、ここでは新しいサーバー検索を*始めない* — 次に
+    /// `ServerSearchTriggerRow`がタップされるまで`serverSearchResults`は
+    /// `nil`のまま (トリガー行だけが常に表示される)。
+    private func resetServerSearchState() {
+        serverSearchTask?.cancel()
+        serverSearchTask = nil
+        isServerSearching = false
+        serverSearchResults = nil
+        serverSearchErrorMessage = nil
+    }
+
+    /// `ServerSearchTriggerRow`のタップハンドラ — ローカル検索結果に無い
+    /// ヒットを探すため、現在のクエリ/アカウント絞りで IMAP `SEARCH`を
+    /// 実行する。`SyncCoordinator.serverSearch`が返す`ThreadSummary`を
+    /// ローカル FTS で再フィルタせずそのまま`serverSearchResults`に置く
+    /// (本文マッチはローカル索引に無いことがあるため — このファイル冒頭の
+    /// doc comment参照)。
+    private func runServerSearch() {
+        guard isActive, !isServerSearching else { return }
+        let query = searchText
+        let accountIds = accountFilter.map { [$0] } ?? []
+        isServerSearching = true
+        serverSearchErrorMessage = nil
+        serverSearchTask = Task {
+            let outcome = await environment.serverSearch(query: query, accountIds: accountIds)
+            guard !Task.isCancelled else { return }
+            serverSearchResults = outcome.summaries
+            if !outcome.failedAccountIds.isEmpty {
+                serverSearchErrorMessage = outcome.timedOut
+                    ? "一部のアカウントで検索がタイムアウトしました"
+                    : "一部のアカウントで検索に失敗しました"
+            } else if outcome.timedOut {
+                serverSearchErrorMessage = "検索がタイムアウトしました"
+            }
+            isServerSearching = false
         }
     }
 

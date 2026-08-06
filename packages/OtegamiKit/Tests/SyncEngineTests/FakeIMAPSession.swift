@@ -102,6 +102,24 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// confirm the CONDSTORE-path fallback stays as non-destructive as
         /// the non-CONDSTORE path's own thrown-error case.
         public var failSearchExistingUIDs: MailTransportError?
+        /// `searchMessages(mailboxPath:query:)`'s scripted result, per
+        /// mailbox path — `ServerSearchService`'s IMAP `SEARCH` fallback
+        /// (「サーバーで検索」). The query text itself isn't consulted (a test
+        /// only ever needs one "what the server found" answer per mailbox,
+        /// same simplification `changedSinceEnvelopesByPath` makes).
+        public var searchMessagesByPath: [String: Set<UInt32>]
+        /// When set, `searchMessages(mailboxPath:query:)` throws this
+        /// instead — scripts a dropped/timed-out `SEARCH`, so
+        /// `ServerSearchService`/`SyncCoordinator.serverSearch`'s per-account
+        /// failure tolerance can be exercised without a real server.
+        public var failSearchMessages: MailTransportError?
+        /// A one-shot async gate (see `AsyncCallGate`'s doc comment) that,
+        /// when set, `searchMessages(mailboxPath:query:)` awaits *before*
+        /// returning its scripted result — models a `SEARCH` that never
+        /// completes (a hung/unreachable server), for
+        /// `SyncCoordinator.serverSearch`'s overall-timeout tests. Left
+        /// ungated (`nil`, the default) for every other test.
+        public var searchMessagesGate: AsyncCallGate?
         /// Scripted `idle(mailboxPath:)` events (M3), yielded in order and
         /// then the stream finishes; empty means the stream finishes
         /// immediately with no events.
@@ -172,6 +190,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             qresyncVanishedUIDsByPath: [String: Set<UInt32>] = [:],
             existingUIDsByPath: [String: Set<UInt32>] = [:],
             failSearchExistingUIDs: MailTransportError? = nil,
+            searchMessagesByPath: [String: Set<UInt32>] = [:],
+            failSearchMessages: MailTransportError? = nil,
+            searchMessagesGate: AsyncCallGate? = nil,
             idleEvents: [IdleEvent] = [],
             failIdle: MailTransportError? = nil,
             failCreateMailbox: MailTransportError? = nil,
@@ -197,6 +218,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.qresyncVanishedUIDsByPath = qresyncVanishedUIDsByPath
             self.existingUIDsByPath = existingUIDsByPath
             self.failSearchExistingUIDs = failSearchExistingUIDs
+            self.searchMessagesByPath = searchMessagesByPath
+            self.failSearchMessages = failSearchMessages
+            self.searchMessagesGate = searchMessagesGate
             self.idleEvents = idleEvents
             self.failIdle = failIdle
             self.failCreateMailbox = failCreateMailbox
@@ -633,6 +657,22 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         }
         let scripted = script.existingUIDsByPath[mailboxPath] ?? []
         return scripted.filter { uids.contains($0) }
+    }
+
+    /// Every `searchMessages(mailboxPath:query:)` call, in call order —
+    /// `ServerSearchService` tests assert exactly which mailboxes actually
+    /// got searched (e.g. a Gmail account's All-Mail-only targeting).
+    public private(set) var searchMessagesCalls: [(path: String, query: String)] = []
+
+    public func searchMessages(mailboxPath: String, query: String) async throws -> Set<UInt32> {
+        searchMessagesCalls.append((mailboxPath, query))
+        if let gate = script.searchMessagesGate {
+            await gate.wait()
+        }
+        if let failSearchMessages = script.failSearchMessages {
+            throw failSearchMessages
+        }
+        return script.searchMessagesByPath[mailboxPath] ?? []
     }
 
     /// Task #194: derives its answer from `script.envelopesByPath` (the

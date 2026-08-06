@@ -193,6 +193,7 @@ extension AppDatabase {
         migrator.registerAppDatabaseMigrationsV11ToV20()
         migrator.registerAppDatabaseMigrationsV21ToV30()
         migrator.registerAppDatabaseMigrationsV31ToV38()
+        migrator.registerAppDatabaseMigrationsV39ToV46()
         return migrator
     }()
 }
