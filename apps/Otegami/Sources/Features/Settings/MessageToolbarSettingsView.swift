@@ -24,6 +24,15 @@ import SwiftUI
 /// 抑制するのは`onDelete`/`onMove`のための行の先頭/末尾アクセサリだけで、
 /// 行本体のコンテンツはそのまま反応する)。
 struct MessageToolbarSettingsView: View {
+    /// mac 版シート経路のバグ修正: この画面は「設定ウィンドウで push」と
+    /// 「本文画面の『…』メニューからシート表示」の 2 経路で開かれるが、
+    /// `.macSettingsBackButton()` は push 専用の回避策 (同 modifier の
+    /// doc comment 参照) で、シートに適用すると押し込まれた覚えのない
+    /// 丸い「<」ボタンが浮く。シート時はこれを外し、代わりに
+    /// `MessageSourceView` と同じ「閉じる」ボタンを出す。
+    var presentedAsSheet = false
+
+    @Environment(\.dismiss) private var dismiss
     @State private var items: [MessageToolbarItemSetting] = MessageToolbarSettingsStore.loadItems()
 
     /// Task #113 (2) (実機フィードバック「ボタンのラベルを表示」トグル):
@@ -96,9 +105,18 @@ struct MessageToolbarSettingsView: View {
         #endif
         #if os(macOS)
         // Task #155 follow-up: see `MacSettingsBackButton`'s doc comment —
-        // this screen is pushed from `MailViewerSettingsView`.
-        .macSettingsBackButton()
+        // this screen is pushed from `MailViewerSettingsView`. シート表示時
+        // (`presentedAsSheet`) は push 由来の戻るボタンが存在しないので
+        // 適用しない (`presentedAsSheet` の doc comment 参照)。
+        .modifier(MacSettingsBackButtonWhenPushed(isActive: !presentedAsSheet))
         #endif
+        .toolbar {
+            if presentedAsSheet {
+                ToolbarItem(placement: .cancellationAction) {
+                    MessageToolbarSettingsCloseButton(dismiss: dismiss)
+                }
+            }
+        }
         .accessibilityIdentifier("messageToolbarSettings.list")
     }
 
@@ -124,6 +142,36 @@ struct MessageToolbarSettingsView: View {
         let pinnedTrailing = MessageToolbarItemSetting(action: .more, isVisible: true)
         items = updatedReorderableItems + [pinnedTrailing]
         MessageToolbarSettingsStore.saveItems(items)
+    }
+}
+
+#if os(macOS)
+/// `macSettingsBackButton()`を「設定ウィンドウから push された時のみ」適用
+/// する分岐 — `.modifier(...)`の引数式に`if`を書けないため、条件を
+/// modifier 側に持たせる (`MessageToolbarSettingsView.presentedAsSheet`の
+/// doc comment 参照)。
+private struct MacSettingsBackButtonWhenPushed: ViewModifier {
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        if isActive {
+            content.macSettingsBackButton()
+        } else {
+            content
+        }
+    }
+}
+#endif
+
+/// シート表示時の「閉じる」ボタン — `MessageSourceView`の閉じるボタンと
+/// 同じ`.cancellationAction`配置。`docs/ci.md`の方針どおり`ToolbarItem`の
+/// 中身を独立した`View`型に切り出す。
+private struct MessageToolbarSettingsCloseButton: View {
+    let dismiss: DismissAction
+
+    var body: some View {
+        Button("閉じる") { dismiss() }
+            .accessibilityIdentifier("messageToolbarSettings.closeButton")
     }
 }
 

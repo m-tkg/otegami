@@ -377,8 +377,17 @@ struct ThreadDetailView: View {
         .sheet(isPresented: $showingInfo) { infoSheet }
         .sheet(isPresented: $showingSource) { sourceSheet }
         .sheet(isPresented: $showingToolbarSettings) {
-            NavigationStack { MessageToolbarSettingsView() }
+            NavigationStack { MessageToolbarSettingsView(presentedAsSheet: true) }
                 .tint(OtegamiColor.accent)
+                #if os(macOS)
+                // Task #205 と同じ既知パターン: macOS は `.sheet` の高さを
+                // `NavigationStack { List }` の内在サイズから算出できず、
+                // この 1 行が無いとタイトルバーだけのほぼ空のシートになる
+                // (`MessageSourceView` / `AccountTypeSelectionView` の
+                // doc comment 参照)。設定シート標準の 480x420 より縦に余裕を
+                // 持たせ、トグル 7 行 + フッター 3 つが収まる高さにする。
+                .frame(minWidth: 480, minHeight: 520)
+                #endif
         }
         // Task #103 (シミュレータ検証基盤): 同じ「タップ不要の直接遷移」
         // パターン (`MailScreenView.body`の`.task`が読む各`-uitestsOpen...
