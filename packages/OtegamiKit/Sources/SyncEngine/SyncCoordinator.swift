@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import MailTransport
 import OtegamiStore
 import os
@@ -36,6 +37,10 @@ public actor SyncCoordinator {
     private var syncers: [String: AccountSyncer] = [:]
     private let bodyFetcher: BodyFetcher
     private let attachmentFetcher: AttachmentFetcher
+    /// 古いメールのバックフィル同期: shared across every backfill batch this
+    /// coordinator schedules, same "one instance per coordinator, not per
+    /// call" shape as `bodyFetcher`/`attachmentFetcher` above.
+    private let backfillSyncer: BackfillSyncer
     /// Task #103: no `AppDatabase` dependency (unlike `bodyFetcher`/
     /// `attachmentFetcher`) — see `MessageSourceFetcher`'s own doc comment
     /// for why. Constructed directly here rather than in `init` alongside
@@ -86,6 +91,7 @@ public actor SyncCoordinator {
         self.messageBuilder = messageBuilder
         self.bodyFetcher = BodyFetcher(database: database)
         self.attachmentFetcher = AttachmentFetcher(database: database)
+        self.backfillSyncer = BackfillSyncer(database: database)
         self.opQueueProcessor = OpQueueProcessor(
             database: database,
             sessionFactory: sessionFactory,
@@ -326,6 +332,13 @@ public actor SyncCoordinator {
     /// caller (pull-to-refresh, IDLE wake, foreground/launch sync) runs
     /// inside the long-lived app process the detached `Task` safely
     /// outlives this call in, so they all keep the default.
+    ///
+    /// `schedulesBackfill` (古いメールのバックフィル同期, default `true`):
+    /// whether a successful sync schedules `scheduleBackfillIfNeeded(for:
+    /// auth:)` below — same "detached background `Task` a short-lived
+    /// Notification Service Extension process can't rely on surviving"
+    /// reasoning as `schedulesPostSyncPrefetch` above, and the same one
+    /// caller (`PushTriggeredInboxSync`) opts out for it.
     @discardableResult
     public func syncAccountIncrementally(
         _ account: AccountRecord,
@@ -334,6 +347,7 @@ public actor SyncCoordinator {
         autoRetry: Bool = true,
         forceReconcileVanishedUIDs: Bool = false,
         schedulesPostSyncPrefetch: Bool = true,
+        schedulesBackfill: Bool = true,
         onProgress: (@Sendable (MailboxSyncer.SyncProgressUpdate) -> Void)? = nil
     ) async throws -> MailboxSyncer.Progress {
         let syncer = syncer(for: account)
@@ -352,6 +366,13 @@ public actor SyncCoordinator {
         // doc comment above).
         if schedulesPostSyncPrefetch {
             schedulePostSyncPrefetchIfNeeded(for: account, auth: auth)
+        }
+        // 古いメールのバックフィル同期: same "only after a successful sync,
+        // only when the caller didn't opt out" shape as the post-sync
+        // prefetch trigger just above — see `scheduleBackfillIfNeeded(for:
+        // auth:)`'s doc comment for the debounce/cap policy.
+        if schedulesBackfill {
+            scheduleBackfillIfNeeded(for: account, auth: auth)
         }
         return progress
     }
@@ -692,6 +713,157 @@ public actor SyncCoordinator {
             }
         }
         return fetchedCount
+    }
+
+    // MARK: - 古いメールのバックフィル同期
+
+    /// How many `BackfillSyncer.backfillOneBatch` calls one background pass
+    /// makes for a single mailbox before moving on to the next candidate —
+    /// keeps one mailbox's backfill from monopolizing an entire pass's
+    /// budget (`backfillMaxBatchesPerCycle` below) even when it has far
+    /// more still-unscanned history than every other candidate combined.
+    public static let backfillBatchesPerMailboxPerCycle = 2
+
+    /// Overall cap on `BackfillSyncer.backfillOneBatch` calls across every
+    /// mailbox one background pass (`runBackfill(account:auth:)`) touches —
+    /// bounds one pass's worst case (a freshly-migrated account with many
+    /// mailboxes all needing backfill) rather than opening an unbounded
+    /// number of `FETCH` batches on one connection. Deliberately modest:
+    /// this is a low-priority background feature ("数セッションで全履歴が
+    /// ローカル化される設計" — the plan explicitly trades speed for staying
+    /// out of the way of real, user-visible sync work), not a bulk import.
+    public static let backfillMaxBatchesPerCycle = 4
+
+    /// Debounce for `scheduleBackfillIfNeeded` — same rationale as
+    /// `postSyncPrefetchInterval`'s doc comment (a busy account's frequent
+    /// IDLE wake-ups shouldn't each open their own backfill connection),
+    /// but a longer window: unlike a body prefetch, one backfill pass can
+    /// issue up to `backfillMaxBatchesPerCycle` full `FETCH` batches, so
+    /// this needs to stay out of the way of `IDLE`-wake-frequency sync far
+    /// more conservatively.
+    private static let backfillInterval: TimeInterval = 5 * 60
+
+    /// In-memory only, same rationale as `lastPostSyncPrefetchDateByAccount`.
+    private var lastBackfillDateByAccount: [String: Date] = [:]
+
+    /// The `Task` `scheduleBackfillIfNeeded` most recently created — same
+    /// "test-only synchronization handle, production never reads it" shape
+    /// as `lastPostSyncPrefetchTask`.
+    private var lastBackfillTask: Task<Void, Never>?
+
+    /// Records a backfill attempt for `account` (debounced — see
+    /// `backfillInterval`'s doc comment) and fires it as a detached,
+    /// low-priority `Task`, never awaited inline — same "must not delay
+    /// `syncAccountIncrementally`'s own caller" rule as
+    /// `schedulePostSyncPrefetchIfNeeded`'s identical shape, since this
+    /// runs right after every successful `syncAccountIncrementally` call
+    /// that didn't opt out via `schedulesBackfill: false`.
+    private func scheduleBackfillIfNeeded(for account: AccountRecord, auth: MailAuth) {
+        let now = Date()
+        if let last = lastBackfillDateByAccount[account.id], now.timeIntervalSince(last) < Self.backfillInterval {
+            return
+        }
+        lastBackfillDateByAccount[account.id] = now
+        lastBackfillTask = Task(priority: .background) { [weak self] in
+            await self?.runBackfill(account: account, auth: auth)
+        }
+    }
+
+    /// The actual background pass: finds every non-hidden mailbox of
+    /// `account` still needing backfill (`mailbox.backfillLowerBound > 1`
+    /// — the same "同期も止める"/"メールボックス単位の非表示" judgment
+    /// `SyncScope.all`'s own filter already applies, since a hidden
+    /// mailbox's whole point is paying no further sync cost), INBOX first
+    /// (見出しの「まずはINBOX優先」— everything else keeps whatever order
+    /// the query returns it in, since the plan calls a stricter ordering
+    /// "複雑になるなら順不同で可"), then opens one connection and runs up
+    /// to `backfillBatchesPerMailboxPerCycle` batches per mailbox until
+    /// either that mailbox completes, the per-mailbox cap is reached, or
+    /// this whole pass's `backfillMaxBatchesPerCycle` budget runs out.
+    ///
+    /// Entirely best-effort and silent, matching every other background
+    /// prefetch entry point in this file: a connection failure, a `select`
+    /// failure on one candidate mailbox, or one batch throwing just skips
+    /// that piece and moves on (or, for a thrown batch, stops that
+    /// mailbox and moves to the next candidate) — this is a low-priority
+    /// feature that gets another chance next cycle, not a user-visible
+    /// sync whose failure should surface anywhere.
+    private func runBackfill(account: AccountRecord, auth: MailAuth) async {
+        struct Candidate { var mailboxId: Int64; var path: String }
+
+        let pendingMailboxes: [MailboxRecord]
+        do {
+            pendingMailboxes = try await database.dbWriter.read { db in
+                let request = MailboxRecord
+                    .filter(Column("accountId") == account.id)
+                    .filter(Column("isHidden") == false)
+                    .filter(Column("backfillLowerBound") > 1)
+                return try request.fetchAll(db)
+            }
+        } catch {
+            return
+        }
+        let sortedMailboxes = pendingMailboxes.sorted { lhs, rhs in
+            (lhs.role == .inbox ? 0 : 1) < (rhs.role == .inbox ? 0 : 1)
+        }
+        let candidates: [Candidate] = sortedMailboxes.compactMap { record in
+            guard let mailboxId = record.id else { return nil }
+            return Candidate(mailboxId: mailboxId, path: record.path)
+        }
+        guard !candidates.isEmpty else { return }
+
+        let session = sessionFactory(account.imapConfig)
+        do {
+            try await session.connect(auth: auth)
+        } catch {
+            return
+        }
+        defer {
+            let session = session
+            Task { await session.disconnect() }
+        }
+
+        var totalBatches = 0
+        for candidate in candidates {
+            guard totalBatches < Self.backfillMaxBatchesPerCycle else { break }
+            guard (try? await session.select(candidate.path)) != nil else { continue }
+
+            for _ in 0..<Self.backfillBatchesPerMailboxPerCycle {
+                guard totalBatches < Self.backfillMaxBatchesPerCycle else { break }
+                let mailboxRecord: MailboxRecord
+                do {
+                    guard let record = try await database.dbWriter.read({ db in
+                        try MailboxRecord.fetchOne(db, key: candidate.mailboxId)
+                    }) else { break }
+                    mailboxRecord = record
+                } catch {
+                    break
+                }
+                guard mailboxRecord.backfillLowerBound > 1 else { break }
+
+                guard let result = try? await backfillSyncer.backfillOneBatch(
+                    mailboxRecord: mailboxRecord,
+                    mailboxPath: candidate.path,
+                    accountId: account.id,
+                    session: session
+                ) else { break }
+                totalBatches += 1
+                if result.isComplete { break }
+            }
+        }
+    }
+
+    /// Test-only synchronization hook (not `public` — reachable only via
+    /// `@testable import SyncEngine`), same pattern as
+    /// `waitForPendingPostSyncPrefetchForTesting()`: awaits the backfill
+    /// `Task` scheduled by the most recent `syncAccountIncrementally` call,
+    /// if any, so a test can assert on its effects deterministically
+    /// instead of racing a detached background `Task` production code
+    /// deliberately never awaits inline. A no-op (returns immediately) if
+    /// no backfill was scheduled (e.g. the call was debounced, or every
+    /// mailbox was already complete).
+    func waitForPendingBackfillForTesting() async {
+        await lastBackfillTask?.value
     }
 
     // MARK: - Task #80: list/search-update-triggered background prefetch
