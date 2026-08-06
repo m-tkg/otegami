@@ -153,6 +153,8 @@ translations = {
     "送信を取り消す": "Cancel Send",
     "新規作成": "New Message",
     "宛先を入力してください。": "Please enter a recipient.",
+    "再送": "Resend",
+    "送信失敗": "Send Failed",
 
     # --- 検索 (SearchScreenView) ---
     "人": "People",
@@ -301,6 +303,9 @@ translations = {
         "Choose whether to return to the list or automatically open the next message after deleting, archiving, or marking a message as junk from the message view.",
     "メール一覧に戻る": "Return to Mail List",
     "次のメールを開く": "Open Next Message",
+    "アーカイブ時に既読にする": "Mark as Read When Archiving",
+    "オンにすると、アーカイブしたメールの未読状態を既読に変えます。":
+        "When enabled, archiving a message also marks it as read.",
     "AI 機能 (翻訳・要約)": "AI Features (Translation & Summary)",
     "AI 機能": "AI Features",
     "翻訳・要約は Apple Intelligence により端末内で行われ、外部に送信されません。オフにすると、メール本文画面の翻訳バー・AI要約ボタンの両方が表示されなくなります。":
