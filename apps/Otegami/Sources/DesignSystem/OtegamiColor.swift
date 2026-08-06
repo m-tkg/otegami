@@ -79,11 +79,11 @@ public enum OtegamiColor {
     /// ため) — 白アイコンを乗せる塗りつぶしの円には逆効果 (`accent`の
     /// ダーク値`0x7FC7E3`はただでさえ薄い水色で、白アイコンとのコントラ
     /// ストが低かった)。ダーク値は`accent`のライト値をそのまま「一段深い
-    /// ステップ」として再利用しているが、ライト値は`accentText`
-    /// (`OtegamiFloatingButtonTone.active`が今も使う色) とは別の、さらに
-    /// 一段深い値にしてある — でないと`neutral`と`active`がライトモードで
-    /// 同色になり、Task #78の「オン状態だけ色で見分けられる」という設計が
-    /// 壊れる。
+    /// ステップ」として再利用しているが、ライト値は`accentText`とは別の、
+    /// さらに一段深い値にしてある。Liquid Glass Phase 0 で
+    /// `OtegamiFloatingButtonTone`(旧`active`ケース含む) 自体は削除した
+    /// が、`accentFloating`の値そのものはフローティングボタンの塗りとして
+    /// 今も使うため変更していない。
     public static let accentFloating = Color(light: 0x235A73, dark: 0x3D7F9E)
 
     /// Task #108 続報 (実機フィードバック「undo トーストの『元に戻す』の色が
