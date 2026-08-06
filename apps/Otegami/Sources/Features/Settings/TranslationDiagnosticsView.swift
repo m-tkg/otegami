@@ -250,6 +250,14 @@ private struct SessionSupplyObservabilityView: View {
             Text(verbatim: "\(coordinator.attachCallCount)回" + lastTimeSuffix(coordinator.lastAttachAt))
         }
         .accessibilityIdentifier("translationDiagnostics.attachCallCount")
+        // 2026-08-06: 供給のうち ticket 不一致で捨てられた回数 — 「供給は
+        // 来ているのに全部捨てられている」(今回の供給ズレ退行の症状) を
+        // この画面のスクリーンショット1枚で切り分けるための行
+        // (`TranslationSessionCoordinator.attachDiscardedCount`参照)。
+        LabeledContent("供給の不一致破棄") {
+            Text(verbatim: "\(coordinator.attachDiscardedCount)回")
+        }
+        .accessibilityIdentifier("translationDiagnostics.attachDiscardedCount")
     }
 
     private func lastTimeSuffix(_ date: Date?) -> String {
