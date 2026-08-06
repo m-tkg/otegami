@@ -420,14 +420,15 @@ struct AppDatabaseTests {
         // migrate the rest of the way" shape as `v21RepairsDisplayPath` —
         // exercises the migration's backfill, not just `ThreadAssigner
         // .recomputeAllAggregates(db:)` called directly (already covered
-        // unit-level by `ThreadAggregateBackfillTests`). Record-based
-        // inserts (not raw SQL) are safe here specifically because v35
-        // itself adds no columns — `AccountRecord`/`MailboxRecord`
-        // /`MessageRecord`/`ThreadRecord`'s Swift shape already matches the
-        // schema exactly as it stood at v34 (the last migration to alter
-        // any of those tables' columns), unlike `v21RepairsDisplayPath`'s
-        // hand-inserted `mailbox` row, which predates `mailbox.isHidden`
-        // (added in v26).
+        // unit-level by `ThreadAggregateBackfillTests`). `AccountRecord`/
+        // `MessageRecord`/`ThreadRecord`'s Swift shape still matches the
+        // schema exactly as it stood at v34 (the last migration before v39
+        // to alter any of those tables' columns), so those three stay
+        // Record-based inserts; `mailbox` itself gets raw SQL now (v39 added
+        // `backfillLowerBound`, which doesn't exist yet at this frozen v34
+        // checkpoint — same "frozen schema → raw SQL" reasoning as
+        // `v21RepairsDisplayPath`'s hand-inserted `mailbox` row, which
+        // predates `mailbox.isHidden` (added in v26) for the same reason).
         let dbQueue = try DatabaseQueue()
         let migrator = AppDatabase.migrator
         try migrator.migrate(dbQueue, upTo: "v34")
@@ -439,10 +440,16 @@ struct AppDatabaseTests {
         let base = Date(timeIntervalSince1970: 1_700_000_000)
         let threadId = try dbQueue.write { db -> Int64 in
             try account.insert(db)
-            var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
-            inbox = try inbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
-            var allMail = MailboxRecord(accountId: account.id, path: "[Gmail]/All Mail", displayPath: "All Mail", role: .all)
-            allMail = try allMail.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            try db.execute(
+                sql: "INSERT INTO mailbox (accountId, path, displayPath, role) VALUES (?, ?, ?, ?)",
+                arguments: [account.id, "INBOX", "INBOX", "inbox"]
+            )
+            let inboxId = db.lastInsertedRowID
+            try db.execute(
+                sql: "INSERT INTO mailbox (accountId, path, displayPath, role) VALUES (?, ?, ?, ?)",
+                arguments: [account.id, "[Gmail]/All Mail", "All Mail", "all"]
+            )
+            let allMailId = db.lastInsertedRowID
 
             // `messageCount: 3`/`unreadCount: 3` — a pre-a54f585 raw
             // row-count write for what's actually one physical, unread
@@ -451,12 +458,12 @@ struct AppDatabaseTests {
             var thread = ThreadRecord(accountId: account.id, lastMessageDate: base, messageCount: 3, unreadCount: 3)
             try thread.insert(db)
             var allMailMessage = MessageRecord(
-                mailboxId: allMail.id!, uid: 1, date: base, internalDate: base,
+                mailboxId: allMailId, uid: 1, date: base, internalDate: base,
                 flagsRaw: 0, gmailMessageId: 42, threadId: thread.id
             )
             try allMailMessage.insert(db)
             var inboxMessage = MessageRecord(
-                mailboxId: inbox.id!, uid: 1, date: base, internalDate: base,
+                mailboxId: inboxId, uid: 1, date: base, internalDate: base,
                 flagsRaw: 0, gmailMessageId: 42, threadId: thread.id
             )
             try inboxMessage.insert(db)
@@ -486,7 +493,9 @@ struct AppDatabaseTests {
         // v35までは`MessageBodyRecord`の現行Swiftシェイプ(renderVersion
         // 込み)ではまだ書けない — v36で列自体が生まれる前なので、その
         // 行だけは生SQLで直接挿入する (`v21RepairsDisplayPath`と同じ
-        // 「凍結されたスキーマに対しては生SQL」の教訓)。
+        // 「凍結されたスキーマに対しては生SQL」の教訓)。`mailbox`も同じ理由で
+        // 生SQL — v39で追加された`backfillLowerBound`列がこのv35時点の
+        // スキーマにはまだ存在しない。
         let dbQueue = try DatabaseQueue()
         let migrator = AppDatabase.migrator
         try migrator.migrate(dbQueue, upTo: "v35")
@@ -497,9 +506,12 @@ struct AppDatabaseTests {
         )
         let messageId = try dbQueue.write { db -> Int64 in
             try account.insert(db)
-            var mailbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox)
-            mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
-            var message = MessageRecord(mailboxId: mailbox.id!, uid: 1, internalDate: Date())
+            try db.execute(
+                sql: "INSERT INTO mailbox (accountId, path, displayPath, role) VALUES (?, ?, ?, ?)",
+                arguments: [account.id, "INBOX", "INBOX", "inbox"]
+            )
+            let mailboxId = db.lastInsertedRowID
+            var message = MessageRecord(mailboxId: mailboxId, uid: 1, internalDate: Date())
             try message.insert(db)
             let messageId = message.id!
             try db.execute(
