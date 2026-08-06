@@ -19,7 +19,15 @@ let package = Package(
     name: "DesignSystemCatalog",
     platforms: [.macOS(.v26)],
     targets: [
-        .target(name: "DesignSystem", path: "Sources/DesignSystem"),
+        // `SyncProgressBanner.swift` は `import SyncEngine` (OtegamiKit) を
+        // 持つため除外する。Catalog に OtegamiKit を依存として足すと
+        // 軽量パッケージでなくなるし、このバナーはアプリ結合が強く
+        // Catalog での視覚確認対象でもない。
+        .target(
+            name: "DesignSystem",
+            path: "Sources/DesignSystem",
+            exclude: ["Components/SyncProgressBanner.swift"]
+        ),
         .executableTarget(
             name: "DesignSystemCatalogRenderer",
             dependencies: ["DesignSystem"]
