@@ -901,6 +901,26 @@
         }
       }
     },
+    "再送": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resend"
+          }
+        }
+      }
+    },
+    "送信失敗": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Send Failed"
+          }
+        }
+      }
+    },
     "人": {
       "localizations": {
         "en": {
@@ -1837,6 +1857,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Open Next Message"
+          }
+        }
+      }
+    },
+    "アーカイブ時に既読にする": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mark as Read When Archiving"
+          }
+        }
+      }
+    },
+    "オンにすると、アーカイブしたメールの未読状態を既読に変えます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When enabled, archiving a message also marks it as read."
           }
         }
       }
