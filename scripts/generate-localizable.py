@@ -274,6 +274,12 @@ translations = {
         "Translation happens on-device via Apple Intelligence and is never sent anywhere else.",
     "このアプリについて": "About This App",
     "アカウントを削除しますか？": "Delete this account?",
+    # 2026-08-07 macOS 設定画面ネイティブ化: AccountEditView 末尾の
+    # destructive ボタン (確認アラート付きなので省略記号)。
+    "アカウントを削除…": "Delete Account…",
+    # 2026-08-07: `Settings`シーン廃止 (`OtegamiApp`の`Window(id:
+    # "settings")`) に伴い、OtegamiCommands が自前で出すアプリメニュー項目。
+    "設定…": "Settings…",
     "再認証が必要です": "Reauthentication Required",
     "再認証": "Reauthenticate",
     "資格情報を待っています": "Waiting for Credentials",

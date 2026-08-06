@@ -2,10 +2,21 @@ import SwiftUI
 
 #if os(macOS)
 /// M10 (plan: "Settings ウィンドウ (macOS 標準 Settings scene) にアカウント/プッシュ
-/// 設定を整理"). Backs `OtegamiApp`'s `Settings { }` scene (⌘,/App menu →
-/// Settings…) — the platform-conventional place a macOS user expects an
-/// app's preferences, distinct from (and in addition to, not replacing) the
-/// gear-icon sheet `SidebarView` already opens on both platforms.
+/// 設定を整理"). Backs `OtegamiApp`'s settings window (⌘,/App menu →
+/// 設定…) — the platform-conventional place a macOS user expects an
+/// app's preferences.
+///
+/// **2026-08-07 (実機フィードバック「いかにも iOS 版から移植した感じ」)**:
+/// ホストを標準の`Settings`シーンから通常の`Window(id: "settings")`へ
+/// 変更した (`OtegamiApp`側の doc comment 参照)。`Settings`シーンは
+/// `.toolbar`をウィンドウの実タイトルバーへマージしないため、(1) detail
+/// 上部にタイトルバー1個分を超える巨大な空白 + 中央浮きのタイトルが出る、
+/// (2) push 画面の自動生成の戻るボタンがコンテンツ内に浮いて描画される、
+/// という2つの「iOS 移植感」の源泉になっていた。(2) を自前の丸い戻る
+/// ボタン (`MacSettingsBackButton`、削除済み) で塗り隠していたのも
+/// このため。`Window`シーンではツールバーのマージが通常どおり働くので、
+/// push 画面の戻るボタンはタイトルバー先頭の標準位置に自動で出る —
+/// 自前の戻るボタンはもう存在しない。
 ///
 /// Task #155 (2026-07-29, 実機報告「v1.1.0-beta の設定画面が使い物に
 /// ならないくらい崩れている」): 直近の「設定画面の5カテゴリ化」(iOS向け、
@@ -53,6 +64,10 @@ struct OtegamiSettingsView: View {
             // 画面幅を想定した行レイアウトで、480ptだと窮屈だった
             // (Task #155で実機スクリーンショットにより確認)。
             .frame(minWidth: 720, minHeight: 480)
+            // 設定ウィンドウはフルスクリーン化しないのが macOS の標準的な
+            // 挙動 (`Settings`シーンが自動でそうしていたのを、`Window`
+            // シーンでは明示する)。リサイズ自体は許す。
+            .windowFullScreenBehavior(.disabled)
     }
 }
 
@@ -72,10 +87,15 @@ private enum MacSettingsCategory: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// サイドバー行の短いラベル。「アカウント」だけ iOS のカテゴリ名
+    /// (「アカウントの設定」) より短い — 200pt 幅のサイドバーで英語表示
+    /// ("Account Settings") が切れて "Account Se…" になっていたため、
+    /// システム設定と同じ体言の1語に詰めた (detail 側の
+    /// `.navigationTitle`は従来のまま)。
     var title: LocalizedStringKey {
         switch self {
         case .general: "一般"
-        case .accounts: "アカウントの設定"
+        case .accounts: "アカウント"
         case .mailList: "メール一覧"
         case .mailViewer: "メールビューア"
         case .mailCompose: "メール作成"
@@ -115,6 +135,11 @@ private struct MacSettingsSplitView: View {
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
+            // 2026-08-07 (macOS ネイティブ化): システム設定はサイドバーを
+            // 畳めない — 5カテゴリ固定のこの画面でトグルを出す意味も無く、
+            // 以前の `Settings` シーンではこのボタンがタイトルバーへマージ
+            // されずサイドバー内に浮いて描画される実害もあった。
+            .toolbar(removing: .sidebarToggle)
         } detail: {
             // `.id(selection)`: サイドバーでカテゴリを切り替えるたびに
             // detailの`NavigationStack`を作り直し、前のカテゴリで奥まで

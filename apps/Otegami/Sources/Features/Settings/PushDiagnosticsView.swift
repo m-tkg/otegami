@@ -25,9 +25,6 @@ struct PushDiagnosticsView: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            #if os(macOS)
-            .macSettingsBackButton()
-            #endif
             .task { environment.pushDiagnostics.refresh() }
     }
 

@@ -102,11 +102,6 @@ struct GoogleAvatarDiagnosticsView: View {
         .tint(OtegamiColor.accent)
         #endif
         .accessibilityIdentifier("googleAvatarDiagnostics.screen")
-        #if os(macOS)
-        // Task #155 follow-up: see `MacSettingsBackButton`'s doc comment —
-        // this screen is pushed from `AccountEditView`.
-        .macSettingsBackButton()
-        #endif
         .task { await refresh() }
     }
 

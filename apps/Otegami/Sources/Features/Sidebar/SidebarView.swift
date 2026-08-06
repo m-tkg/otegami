@@ -25,6 +25,11 @@ import SyncEngine
 /// 保証する。
 struct SidebarView: View {
     @Environment(AppEnvironment.self) private var environment
+    #if os(macOS)
+    /// 2026-08-07: 歯車ボタン → ネイティブ設定ウィンドウ (`openSettings()`
+    /// の doc comment 参照)。
+    @Environment(\.openWindow) private var openWindow
+    #endif
     @Binding var selection: SidebarSelection?
     /// Called whenever a row's own `Button` action is tapped (unified inbox
     /// or a specific mailbox) — *in addition to* writing `selection`
@@ -242,7 +247,16 @@ struct SidebarView: View {
     }
 
     private func openSettings() {
+        #if os(macOS)
+        // 2026-08-07 (macOS 設定画面ネイティブ化): 歯車ボタンからも ⌘, と
+        // 同じネイティブ設定ウィンドウ (`OtegamiApp`の`Window(id:
+        // "settings")`) を開く — 以前はここだけ iOS 由来の
+        // `AccountsSettingsView`シートを開いていて、⌘, の設定ウィンドウと
+        // 見た目も構成も違う「もう1つの設定画面」が存在していた。
+        openWindow(id: "settings")
+        #else
         showingSettings = true
+        #endif
     }
 
     private func openOutbox() {

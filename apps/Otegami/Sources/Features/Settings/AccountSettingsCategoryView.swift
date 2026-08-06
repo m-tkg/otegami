@@ -118,19 +118,22 @@ struct AccountSettingsCategoryView: View {
             }
     }
 
-    /// Task #155 (macOS 設定画面フィードバック 2026-07-29): 他の設定画面
-    /// (`Form`+`.formStyle(.grouped)`) と違い、この画面は意図的に`List`の
-    /// まま残している — アカウントの並び替え (`.onMove`) は
-    /// `MessageToolbarSettingsView`の doc comment が説明するmacOSの`List`
-    /// 固有のホバードラッグハンドルに依存しており、`Form`に切り替えると
-    /// この並び替えが失われる懸念があるため。`.toggleStyle(.switch)`は
-    /// 他画面と揃え、独自の背景色/アクセント塗りは外して標準の外観に任せる。
+    /// Task #155 (macOS 設定画面フィードバック 2026-07-29) では「`Form`に
+    /// 切り替えると`.onMove`のホバードラッグ並び替えが失われる懸念」から
+    /// この画面だけ意図的に素の`List`のまま残していたが、2026-08-07 の
+    /// macOS ネイティブ化でこの画面も`Form`+`.formStyle(.grouped)`へ揃えた
+    /// — 素の`List`は区切り線が全幅のフラットな表で、`.grouped`のカード
+    /// 状のセクションを使う他カテゴリと並ぶと 1 画面だけ iOS 風に見えて
+    /// いた。並び替えは実機での動作確認ポイント (`.formStyle(.grouped)`の
+    /// `Form`は`List`ベースの描画なので`.onMove`は保たれる想定だが、
+    /// ドラッグハンドルの出方はスタイル依存)。
     @ViewBuilder
     private var settingsContainer: some View {
         #if os(macOS)
-        List {
+        Form {
             sections
         }
+        .formStyle(.grouped)
         .toggleStyle(.switch)
         #else
         List {
