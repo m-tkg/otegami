@@ -13,10 +13,10 @@ import SwiftUI
 /// 側の`VStack`で直接`List`の上に積むことで、ペイン幅に関わらず必ず
 /// 一覧の真上に描画されることを保証する。
 ///
-/// **`OtegamiRadius`からの意図的な例外**: 検索フィールド本体だけ`Capsule()`
-/// を使う — iOS の`SearchTopBar`(Task #86) が同じ理由で同じ例外を取って
-/// いる既存の先例に倣った (`SearchTopBar`のdoc comment参照)。他のボタン/
-/// バッジには波及させない。
+/// 2026-08-07 (メイン UI の macOS ネイティブ化): 検索フィールド本体は
+/// 以前 iOS の`SearchTopBar`に倣った`Capsule()`+`surface`塗りだったが、
+/// NSSearchField に近い控えめな角丸 + システム階層素材 (`.quinary`) へ
+/// 変更した — カプセルの検索欄は macOS では iOS 移植に見える。
 struct MacListSearchBar: View {
     @Binding var searchText: String
     @Binding var searchScope: SearchScopeOption
@@ -72,9 +72,13 @@ struct MacListSearchBar: View {
                 .accessibilityLabel("検索文字列をクリア")
             }
         }
-        .padding(.horizontal, OtegamiSpacing.md)
+        .padding(.horizontal, OtegamiSpacing.sm)
         .padding(.vertical, OtegamiSpacing.xs)
-        .background(OtegamiColor.surface, in: Capsule())
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): iOS 由来の
+        // `surface` カプセルをやめ、NSSearchField に近い控えめな角丸 +
+        // システム階層素材へ (独自色トークンではなくシステム素材を使う —
+        // 旧 `MacSettingsBackButton` の `.quaternary` と同じ判断)。
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 6))
     }
 
     /// `.searchScopes`が出していたスコープ切替 (すべて/このメールボックス)

@@ -433,8 +433,10 @@ struct ComposerView: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗りを
+        // やめ、System Settings と同じ標準の grouped スタイルに任せる
+        // (設定画面の各カテゴリと同じ判断)。
+        .formStyle(.grouped)
         #endif
     }
 

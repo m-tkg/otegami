@@ -150,9 +150,16 @@ struct SidebarView: View {
         }
         .accessibilityIdentifier("sidebar.list")
         .navigationTitle("Otegami")
+        // 2026-08-07 (メイン UI の macOS ネイティブ化、実機フィードバック
+        // 「設定画面以外の UI も mac ネイティブに」): macOS は独自の背景
+        // 塗り・アクセント tint を外し、標準のサイドバー素材 (vibrancy
+        // ベースの半透明) に任せる — 不透明なネイビー一色のサイドバーが
+        // 「iOS アプリの移植」に見える最大の要因だった。iOS は従来どおり。
+        #if os(iOS)
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
+        #endif
         .toolbar {
             SidebarToolbarContent(
                 isComposeDisabled: environment.accounts.isEmpty,

@@ -250,11 +250,11 @@ struct MessageListRow: View {
             // the inter-row separator now that there's no margin gap to read
             // as one. macOS is unchanged: it keeps the real margin (and the
             // rounded card it was introduced for).
-            #if os(iOS)
+            // 2026-08-07 (メイン UI の macOS ネイティブ化): macOS もゼロ
+            // インセットに揃えた — 角丸カード + カード間マージンをやめ、
+            // iOS (Task #67) と同じフラット全幅行 + ヘアライン区切りへ
+            // (`ThreadRowView` の同日 doc comment 参照)。
             .listRowInsets(EdgeInsets())
-            #else
-            .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: OtegamiSpacing.sm, bottom: OtegamiSpacing.xs, trailing: OtegamiSpacing.sm))
-            #endif
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
             #if os(macOS)

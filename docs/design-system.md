@@ -396,12 +396,26 @@ Task #205 で `NSAllowsArbitraryLoadsInWebContent` を追加し、平文 `http`
 
 ## ビジュアルスタイル
 
-- フラットデザイン。角丸は `OtegamiRadius.none` (0) が既定で、**カード
-  のみ** `OtegamiRadius.card` (8pt) の角丸を許容する (macOS の一覧行カー
-  ド、iOS では一覧行はフルブリード化のため角丸なし)。ボタン・チップ・
-  バッジは常に角丸なし。検索画面のトップバー (カプセル型テキストフィー
-  ルド・丸い閉じるボタン) だけは `Capsule()`/`Circle()` を直接使う、閉じ
-  たスコープの例外。
+**2026-08-07 (macOS ネイティブ化)**: 以下のトークン主導のスタイルは
+**iOS の意匠**。macOS は実機フィードバック「いかにも iOS 版から移植した
+感じ」を受けて方針を転換し、**独自の背景塗り (`OtegamiColor.background`)
+・`tint`・カード・カプセル・塗りバッジ・塗り+枠線チップを使わず、AppKit
+標準の外観に任せる**: サイドバーは vibrancy 素材 + 素の数字未読カウント、
+一覧はフラット全幅行 + ヘアライン区切り、チップは scope bar 風 (選択中
+だけ `.quaternary` の控えめな角丸塗り)、検索欄は `.quinary` + 小さな
+角丸、設定/Composer は `Form` + `.formStyle(.grouped)`。システム階層素材
+(`.quaternary`/`.quinary`) は「新しい色トークンをその場で追加しない」
+ルールの例外ではなく、OS 標準側の描画に任せるための手段として使う。
+アカウント色 (ラベル色・`AccountColorRail`)・destructive など意味を持つ
+色は macOS でも従来どおりトークンを使う。
+
+- フラットデザイン。角丸は `OtegamiRadius.none` (0) が既定で、カードの
+  角丸は `OtegamiRadius.card` (8pt) — **iOS の一覧行はフルブリード化の
+  ため角丸なし、macOS の一覧行カードは 2026-08-07 に廃止済み** (上記)。
+  ボタン・チップ・バッジは常に角丸なし。検索画面のトップバー (カプセル
+  型テキストフィールド・丸い閉じるボタン) だけは `Capsule()`/`Circle()`
+  を直接使う、閉じたスコープの例外 (iOS のみ — macOS の検索欄は上記の
+  とおり標準寄りの角丸)。
 - 罫線は2段階: 主要区切り線は2pt実線 (`OtegamiStroke.primary`、
   `OtegamiColor.divider`)、行間の区切りは1pt破線/ハイライン
   (`OtegamiStroke.secondary`、`OtegamiColor.dividerSubtle`)。

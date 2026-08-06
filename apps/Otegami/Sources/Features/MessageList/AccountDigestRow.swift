@@ -104,7 +104,14 @@ struct AccountDigestRow: View {
         // 完全に地続き) — 上下だけ`OtegamiSpacing.xs`(4pt、既存トークンの
         // 中で最小) の余白を入れてカード間に隙間を作る。左右は`0`のまま
         // (iOSの全幅カード表示は維持)。
+        // 2026-08-07 macOS ネイティブ化: カード廃止に伴い macOS は上下
+        // マージンもゼロ (区切りはヘアラインが担う)。iOS はカード間の
+        // 隙間 (Task #130, 2) を維持。
+        #if os(iOS)
         .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: 0, bottom: OtegamiSpacing.xs, trailing: 0))
+        #else
+        .listRowInsets(EdgeInsets())
+        #endif
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
         #if os(iOS)
@@ -176,21 +183,14 @@ struct AccountDigestRow: View {
             .padding(.vertical, OtegamiSpacing.sm)
             .padding(.trailing, OtegamiSpacing.md)
         }
-        .otegamiCardBackground(OtegamiColor.surface, cornerRadius: rowCornerRadius)
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): macOS の角丸カード
+        // を廃止しフラットな全幅行 + ヘアライン区切りへ (`ThreadRowView` の
+        // 同日 doc comment 参照)。iOS は従来のフラット全幅カードのまま。
         #if os(iOS)
+        .otegamiCardBackground(OtegamiColor.surface, cornerRadius: OtegamiRadius.none)
+        #endif
         .otegamiRowDivider()
-        #endif
         .contentShape(Rectangle())
-    }
-
-    /// `ThreadRowView.rowCornerRadius`と同じ判断 (iOSは画面幅いっぱいの
-    /// 角丸0、macOSは既存の丸角カード) — 詳細はそちらのdoc comment参照。
-    private var rowCornerRadius: CGFloat {
-        #if os(iOS)
-        OtegamiRadius.none
-        #else
-        OtegamiRadius.card
-        #endif
     }
 
     private var header: some View {
@@ -204,6 +204,15 @@ struct AccountDigestRow: View {
             // 未読のみ表示して」): 右端の総件数バッジを廃止し、未読バッジ
             // だけを右端に出す (0 件なら何も出さない)。
             if digest.unreadCount > 0 {
+                // 2026-08-07 (メイン UI の macOS ネイティブ化): macOS は
+                // サイドバーの `UnreadCountBadge` と同じ素の数字テキスト —
+                // 青い塗りのバッジは iOS だけに残す。
+                #if os(macOS)
+                Text("\(digest.unreadCount)")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("accountDigest.row.\(digest.accountId).unreadBadge")
+                #else
                 Text("\(digest.unreadCount)")
                     .font(OtegamiFont.badge())
                     .foregroundStyle(OtegamiColor.surface)
@@ -211,6 +220,7 @@ struct AccountDigestRow: View {
                     .padding(.vertical, 2)
                     .background(OtegamiColor.accent)
                     .accessibilityIdentifier("accountDigest.row.\(digest.accountId).unreadBadge")
+                #endif
             }
         }
     }

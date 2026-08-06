@@ -31,9 +31,12 @@ struct AccountDigestSearchBar: View {
                 .focused(isFieldFocused)
                 .accessibilityIdentifier("accountDigest.search.field")
         }
-        .padding(.horizontal, OtegamiSpacing.md)
+        .padding(.horizontal, OtegamiSpacing.sm)
         .padding(.vertical, OtegamiSpacing.xs)
-        .background(OtegamiColor.surface, in: Capsule())
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): `MacListSearchBar`
+        // と同じく、カプセル+`surface`塗りをやめ NSSearchField に近い
+        // 控えめな角丸 + システム階層素材へ。
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 6))
         .padding(.horizontal, OtegamiSpacing.md)
         .padding(.vertical, OtegamiSpacing.sm)
     }

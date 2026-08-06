@@ -178,7 +178,11 @@ struct MailboxRow: View {
     }
 }
 
-/// M10 unread-count pill for sidebar rows.
+/// M10 unread-count badge for sidebar rows.
+///
+/// 2026-08-07 (メイン UI の macOS ネイティブ化): macOS は Mail.app /
+/// Finder のサイドバーと同じ「素の数字テキスト (セカンダリ色)」— 青い
+/// カプセルは iOS のハンバーガーメニュー用の意匠として iOS だけに残す。
 struct UnreadCountBadge: View {
     let count: Int
 
@@ -187,11 +191,17 @@ struct UnreadCountBadge: View {
     }
 
     var body: some View {
+        #if os(macOS)
+        Text(displayText)
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .foregroundStyle(.secondary)
+        #else
         Text(displayText)
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.white)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(Capsule().fill(OtegamiColor.accent))
+        #endif
     }
 }

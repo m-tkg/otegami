@@ -111,8 +111,12 @@ struct AccountDigestView: View {
         .listStyle(.plain)
         #endif
         .accessibilityIdentifier("accountDigest.list")
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗りは
+        // iOS のみ (`MessageListView.messageListCore` と同じ判断)。
+        #if os(iOS)
         .scrollContentBackground(.hidden)
         .background(OtegamiColor.background)
+        #endif
         .overlay {
             if digests.isEmpty {
                 ContentUnavailableView("アカウントがありません", systemImage: "envelope.badge")

@@ -24,12 +24,25 @@ public struct AccountFilterChip: View {
     }
 
     public var body: some View {
+        // 2026-08-07 (メイン UI の macOS ネイティブ化): macOS は Finder/
+        // Mail の scope bar と同じ「選択中だけ控えめな角丸塗り、枠線なし」
+        // — 四角い塗り+枠線のチップは iOS の意匠として iOS だけに残す。
+        // 44pt の最小タップ領域 (`otegamiMinimumTappable`) もタッチ前提の
+        // 話なので macOS では適用しない。
+        #if os(macOS)
+        Button(action: action) {
+            label
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        #else
         Button(action: action) {
             label
         }
         .buttonStyle(.plain)
         .otegamiMinimumTappable()
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        #endif
     }
 
     private var label: some View {
@@ -41,6 +54,26 @@ public struct AccountFilterChip: View {
         // タップすると `mailto:` が開いてメール作成画面に飛ぶ、という
         // 実機バグが発生した (該当チップだけリンク色で描画されるのが
         // 目印だった)。動的テキストは `Text(verbatim:)` で素通しする。
+        #if os(macOS)
+        Group {
+            if isTitleLocalizable {
+                Text(LocalizedStringKey(title))
+            } else {
+                Text(verbatim: title)
+            }
+        }
+            .font(OtegamiFont.caption())
+            .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+            .padding(.horizontal, OtegamiSpacing.sm)
+            .padding(.vertical, OtegamiSpacing.xs)
+            // scope bar の選択表現: システム階層素材の控えめな角丸塗り
+            // (独自色トークンではなくシステム素材 — `MacListSearchBar` と
+            // 同じ判断)。
+            .background(
+                isSelected ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
+                in: RoundedRectangle(cornerRadius: 5)
+            )
+        #else
         Group {
             if isTitleLocalizable {
                 Text(LocalizedStringKey(title))
@@ -54,6 +87,7 @@ public struct AccountFilterChip: View {
             .padding(.vertical, OtegamiSpacing.xs)
             .background(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface)
             .overlay(border)
+        #endif
     }
 
     private var border: some View {
