@@ -42,6 +42,24 @@ public enum MessageQuery {
         return UInt32(value)
     }
 
+    /// 古いメールのバックフィル同期: the lowest UID currently stored locally
+    /// for this mailbox — `nil` for an empty mailbox (or one with only
+    /// `MessageRecord.isPendingRelocation` placeholder rows, same `uid > 0`
+    /// exclusion `maxUID` above uses and for the same reason). This is
+    /// exactly the boundary `BackfillSyncer.resetCursor(mailboxId:db:)`
+    /// (re)derives `mailbox.backfillLowerBound` from after a full-window
+    /// fetch (initial sync, or a uidValidity-changed resync) — "everything
+    /// below the oldest message we currently have locally is unscanned".
+    public static func minUID(mailboxId: Int64, db: Database) throws -> UInt32? {
+        let value = try Int64.fetchOne(
+            db,
+            sql: "SELECT MIN(uid) FROM message WHERE mailboxId = ? AND uid > 0",
+            arguments: [mailboxId]
+        )
+        guard let value else { return nil }
+        return UInt32(value)
+    }
+
     // MARK: - Unread counts (M10: sidebar badges)
 
     /// `\Seen` bit of `MessageFlags`, inlined as a raw SQL literal — matches
