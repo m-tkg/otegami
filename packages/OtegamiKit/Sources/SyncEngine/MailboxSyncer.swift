@@ -232,8 +232,13 @@ public actor MailboxSyncer {
             )
             if !newEnvelopes.isEmpty {
                 try await database.dbWriter.write { db in
+                    // 未送信のローカル変更がある UID は取り込まない
+                    // (`PendingOpTargets`の doc comment) — この`write`
+                    // ブロックにつき1回だけ組み立てて、エンベロープ数ぶん
+                    // `opQueue`を読み直さないようにする。
+                    let pendingTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: accountId, db: db)
                     for envelope in newEnvelopes {
-                        try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                        try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, pendingTargets: pendingTargets, db: db)
                     }
                 }
                 progress.newMessages = newEnvelopes.count
@@ -399,8 +404,9 @@ public actor MailboxSyncer {
                 status: status
             )
             try await database.dbWriter.write { db in
+                let pendingTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: accountId, db: db)
                 for envelope in envelopes {
-                    try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                    try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, pendingTargets: pendingTargets, db: db)
                 }
             }
         }
@@ -490,8 +496,9 @@ public actor MailboxSyncer {
             let result = try await session.fetchEnvelopes(mailboxPath: mailboxPath, changedSince: sinceModSeq)
             if !result.envelopes.isEmpty {
                 try await database.dbWriter.write { db in
+                    let pendingTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: accountId, db: db)
                     for envelope in result.envelopes {
-                        try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                        try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, pendingTargets: pendingTargets, db: db)
                     }
                 }
                 flagChanges = result.envelopes.count
@@ -780,10 +787,24 @@ public actor MailboxSyncer {
         localFlagsByUID: [Int64: Int],
         logContext: String
     ) async throws -> Int {
+        // 実機報告「一括アーカイブ後、再読み込みすると復活する」/「既読に
+        // したのに未読へ戻る」: 未送信のローカル変更がある UID は、サーバー
+        // 側の状態がまだ古いと分かっているので、フラグ上書き
+        // (`changedUIDs`) にも取りこぼし再取得 (`unknownUIDs` — 復活の
+        // 直接の経路だった) にも入れない。判断理由は`PendingOpTargets`の
+        // doc comment 参照。
+        let pendingTargets = try await database.dbWriter.read { db in
+            try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: accountId, db: db)
+        }
         var changedUIDs: [(uid: Int64, flags: MessageFlags)] = []
         var unknownUIDs: [UInt32] = []
+        var skippedPendingCount = 0
         for (uid, flags) in fetchedFlags {
             let uid64 = Int64(uid)
+            if pendingTargets.blocks(uid: uid64) {
+                skippedPendingCount += 1
+                continue
+            }
             if let existingFlags = localFlagsByUID[uid64] {
                 if existingFlags != flags.rawValue {
                     changedUIDs.append((uid64, flags))
@@ -791,6 +812,11 @@ public actor MailboxSyncer {
             } else {
                 unknownUIDs.append(uid)
             }
+        }
+        if skippedPendingCount > 0 {
+            Self.logger.notice(
+                "\(logContext, privacy: .public): \(mailboxPath, privacy: .public) skipped \(skippedPendingCount, privacy: .public) UID(s) with unsent local changes still in opQueue"
+            )
         }
 
         if !changedUIDs.isEmpty {
@@ -843,9 +869,14 @@ public actor MailboxSyncer {
             // and capturing the `var` this loop built directly is rejected
             // under Swift 6 strict concurrency.
             let unknownEnvelopesSnapshot = unknownEnvelopes
+            // `unknownUIDs`は上で`pendingTargets`済みのものを除いてある
+            // が、フェッチ往復の間に新しい op が積まれている可能性がある
+            // ので、書き込み時点の`opQueue`でもう一度見る (この`write`
+            // ブロック内で1回だけ組み立てる)。
             try await database.dbWriter.write { db in
+                let writeTimeTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: accountId, db: db)
                 for envelope in unknownEnvelopesSnapshot where unknownSet.contains(envelope.uid) {
-                    try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                    try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, pendingTargets: writeTimeTargets, db: db)
                 }
             }
         }
@@ -879,8 +910,9 @@ public actor MailboxSyncer {
         guard !(refetched.isEmpty && status.messageCount > 0) else { return 0 }
 
         try await database.dbWriter.write { db in
+            let pendingTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: accountId, db: db)
             for envelope in refetched {
-                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, pendingTargets: pendingTargets, db: db)
             }
         }
 

@@ -100,8 +100,13 @@ public actor ServerSearchService {
             let envelopes = try await session.fetchEnvelopes(mailboxPath: mailbox.path, uids: UIDSet(Array(missingUIDs)))
             guard !envelopes.isEmpty else { continue }
             try await database.dbWriter.write { db in
+                // 未送信のローカル変更がある UID は取り込まない
+                // (`PendingOpTargets`の doc comment) — アーカイブしたばかりで
+                // まだサーバーへ送れていないメールが、サーバー検索の結果
+                // として一覧に戻ってこないようにする。
+                let pendingTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: account.id, db: db)
                 for envelope in envelopes {
-                    try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: account.id, db: db)
+                    try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: account.id, pendingTargets: pendingTargets, db: db)
                 }
             }
             let missingUIDsAsInt64 = missingUIDs.map { Int64($0) }

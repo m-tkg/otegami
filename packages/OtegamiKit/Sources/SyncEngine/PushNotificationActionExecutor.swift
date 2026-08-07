@@ -222,7 +222,11 @@ public enum PushNotificationActionExecutor {
         let accountId = account.id
         do {
             try await database.dbWriter.write { db in
-                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                // 通知で届いた新着メールなので通常この集合とは重ならない
+                // が、他の同期経路と同じガードを通す
+                // (`PendingOpTargets`の doc comment)。
+                let pendingTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: accountId, db: db)
+                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, pendingTargets: pendingTargets, db: db)
             }
         } catch {
             return false
