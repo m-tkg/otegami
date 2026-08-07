@@ -279,6 +279,42 @@ public enum MailboxQuery {
         }
     }
 
+    /// The mailbox paths a `.unifiedRole(role)` view's pull-to-refresh should
+    /// sync for one account — the sync-side mirror of the display-side scope
+    /// `ThreadQuery.unifiedInboxRequest` defines, and it must be changed
+    /// together with it:
+    /// - Gmail: `role.gmailArchiveQueryRole` — `.archive` → All Mail
+    ///   (`.all`), every other role unchanged. Without this mapping a Gmail
+    ///   account matched nothing for `.archive` (its All Mail mailbox has
+    ///   role `.all`, not `.archive`), so `MessageListView`'s caller fell
+    ///   back to syncing *every* mailbox on the account — dozens of labels
+    ///   on a typical Gmail account — while the list on screen was reading
+    ///   from All Mail all along.
+    /// - Non-Gmail with `role == .all`: every non-hidden mailbox, matching
+    ///   Task #141's definition of 「すべてのメール」for providers that have
+    ///   no `\All` folder at all.
+    /// - Otherwise: an exact `role` match.
+    ///
+    /// Hidden mailboxes (`MailboxRecord.isHidden`) are excluded throughout,
+    /// as they are in the display query. A `Set` rather than a single path
+    /// because one account can have several mailboxes matching a role (Task
+    /// #119's name-inference fallback mis-detecting one); an empty result
+    /// means "nothing known for this role yet", which the caller treats as
+    /// its own self-healing fallback.
+    public static func roleScopedMailboxPaths(
+        accountId: String, accountKind: AccountKind, role: MailboxRoleRecord, db: Database
+    ) throws -> Set<String> {
+        var request = MailboxRecord
+            .filter(Column("accountId") == accountId)
+            .filter(Column("isHidden") == false)
+        if accountKind == .gmail {
+            request = request.filter(Column("role") == role.gmailArchiveQueryRole.rawValue)
+        } else if role != .all {
+            request = request.filter(Column("role") == role.rawValue)
+        }
+        return Set(try request.fetchAll(db).map(\.path))
+    }
+
     /// Flips `MailboxRecord.isHidden` — `MailboxVisibilityView`'s Toggle
     /// action. A targeted `UPDATE` (not a fetch-mutate-`update()` round
     /// trip) since the caller only ever has a mailbox id and the new value

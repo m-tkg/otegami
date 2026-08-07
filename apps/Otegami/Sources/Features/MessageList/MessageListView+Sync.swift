@@ -425,7 +425,7 @@ extension MessageListView {
                     // 場合だけ従来どおり`.all`にフォールバックする —
                     // role mailbox 未発見アカウントの自己修復経路として
                     // 維持する。
-                    let paths = try await roleMailboxPaths(accountId: account.id, role: role)
+                    let paths = try await roleMailboxPaths(account: account, role: role)
                     let scope: SyncScope = paths.isEmpty ? .all : .mailboxes(paths: paths)
                     _ = try await environment.syncCoordinator.syncAccountIncrementally(account, auth: auth, scope: scope, autoRetry: autoRetry, forceReconcileVanishedUIDs: true, onProgress: syncProgressCallback)
                 } catch is CancellationError {
@@ -443,23 +443,24 @@ extension MessageListView {
     }
 
     /// 画面構造改修バッチ (Task #33, 3): `.unifiedRole`の pull-to-refresh
-    /// scope 縮小用 — 指定アカウント内、指定`role`かつ`isHidden == false`
-    /// (メールボックス単位の非表示、`MailboxRecord.isHidden`のdoc comment
-    /// 参照) の`MailboxRecord`を引いてその`path`集合を返す。同一role・同一
-    /// アカウントに複数マッチがありうる (Task #119 の名前推測フォールバック
-    /// の誤検出) ため単一`path`ではなく`Set`で返し、呼び出し側はそのまま
-    /// `SyncScope.mailboxes(paths:)`に渡す — CI の SwiftUI 型チェック
-    /// タイムアウト対策 (CLAUDE.md参照) で DB 読みを独立した named helper
-    /// に切り出している。
-    private func roleMailboxPaths(accountId: String, role: MailboxRoleRecord) async throws -> Set<String> {
+    /// scope 縮小用 — 該当メールボックスの`path`集合を返し、呼び出し側は
+    /// そのまま`SyncScope.mailboxes(paths:)`に渡す。scope の定義そのものは
+    /// `MailboxQuery.roleScopedMailboxPaths`側 (表示クエリ
+    /// `ThreadQuery.unifiedInboxRequest`と揃える必要があり、`make test`だけ
+    /// で回帰を押さえられる場所) にあり、ここは DB 読みの薄いラッパ —
+    /// CI の SwiftUI 型チェックタイムアウト対策 (CLAUDE.md参照) で判定を
+    /// ビューに持ち込まない。
+    ///
+    /// 特に Gmail の「アーカイブ」は All Mail (role `.all`) が実体なので
+    /// `role`をそのまま引くと 0 件になり、呼び出し側が`.all`(そのアカウント
+    /// の全メールボックス同期) にフォールバックしていた — 表示側は
+    /// `MailboxRoleRecord.gmailArchiveQueryRole`で読み替えていたのに同期側
+    /// だけ読み替えておらず非対称だった。
+    private func roleMailboxPaths(account: AccountRecord, role: MailboxRoleRecord) async throws -> Set<String> {
         try await environment.database.dbWriter.read { db in
-            let paths = try MailboxRecord
-                .filter(Column("accountId") == accountId)
-                .filter(Column("role") == role.rawValue)
-                .filter(Column("isHidden") == false)
-                .fetchAll(db)
-                .map(\.path)
-            return Set(paths)
+            try MailboxQuery.roleScopedMailboxPaths(
+                accountId: account.id, accountKind: account.kind, role: role, db: db
+            )
         }
     }
 

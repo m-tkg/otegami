@@ -24,7 +24,7 @@ extension MailboxRoleRecord {
     /// 系がこれを使い、`account.kind == .gmail`かどうかで実際に見る
     /// `mailbox.role`をSQL側で出し分ける (`account.kind != .gmail`のアカウント
     /// は引き続き`self`のまま、つまり`.archive`を見る)。
-    var gmailArchiveQueryRole: MailboxRoleRecord {
+    public var gmailArchiveQueryRole: MailboxRoleRecord {
         self == .archive ? .all : self
     }
 }
