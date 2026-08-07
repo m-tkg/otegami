@@ -8,8 +8,43 @@ struct AccountDigestPresentationTests {
     func digestSwipeActionsUseAbsoluteBulkOperations() {
         #expect(AccountDigestBulkAction(.toggleRead) == .markRead)
         #expect(AccountDigestBulkAction(.archive) == .archive)
-        #expect(AccountDigestBulkAction(.toggleRead).title == String(localized: "既読にする"))
-        #expect(AccountDigestBulkAction(.archive).title == String(localized: "アーカイブ"))
+        #expect(AccountDigestBulkAction(.toggleRead)?.title == String(localized: "既読にする"))
+        #expect(AccountDigestBulkAction(.archive)?.title == String(localized: "アーカイブ"))
+    }
+
+    /// ユーザー要望 (2026-08-07「グループに対してのピン留め・ピン解除は
+    /// できないようにしてほしい」) — `AccountDigestBulkAction`の doc comment
+    /// 参照。スワイプ設定が`.pin`のスロットは、グループ行ではボタン自体が
+    /// 出ない。
+    @Test("pin has no group-level counterpart")
+    func pinIsNotOfferedAsBulkAction() {
+        #expect(AccountDigestBulkAction(.pin) == nil)
+        #expect(SwipeAction.allCases.compactMap(AccountDigestBulkAction.init).count == SwipeAction.allCases.count - 1)
+    }
+
+    /// ユーザー要望 (2026-08-07「グループに対してのアーカイブは、アーカイブ
+    /// されてないものだけを対象にしたい。すべてを既読、も同じく」)。
+    @Test("bulk archive skips already-archived threads, mark-read skips already-read ones")
+    func bulkActionTargetsSkipNoOps() {
+        let unreadUnarchived = makeSummary(id: 1, unreadCount: 2, isArchived: false)
+        let readUnarchived = makeSummary(id: 2, unreadCount: 0, isArchived: false)
+        let unreadArchived = makeSummary(id: 3, unreadCount: 1, isArchived: true)
+        let all = [unreadUnarchived, readUnarchived, unreadArchived]
+
+        #expect(AccountDigestPresentation.bulkActionTargets(for: .archive, in: all).map(\.thread.id) == [1, 2])
+        #expect(AccountDigestPresentation.bulkActionTargets(for: .markRead, in: all).map(\.thread.id) == [1, 3])
+        // `.delete`/`.junk`は「もう対象外」と言えるローカル状態が無いので
+        // 表示中のスレッドをすべて対象にする。
+        #expect(AccountDigestPresentation.bulkActionTargets(for: .delete, in: all).count == 3)
+        #expect(AccountDigestPresentation.bulkActionTargets(for: .junk, in: all).count == 3)
+    }
+
+    private func makeSummary(id: Int64, unreadCount: Int, isArchived: Bool) -> ThreadSummary {
+        var thread = ThreadRecord(accountId: "account-1", messageCount: 1, unreadCount: unreadCount)
+        thread.id = id
+        var summary = ThreadSummary(thread: thread, latestMessage: nil)
+        summary.isArchived = isArchived
+        return summary
     }
 
     @Test("grouped All shows the digest for cross-account selections")

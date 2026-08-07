@@ -4,20 +4,29 @@ import OtegamiStore
 /// A digest row always applies one absolute operation to the whole account.
 /// The configurable single-row swipe action remains a toggle, but its digest
 /// counterpart cannot represent "mark unread" or "unarchive".
+///
+/// ユーザー要望 (2026-08-07「グループに対してのピン留め・ピン解除は
+/// できないようにしてほしい」): `.pin` は**意図的に持たない** — ピン留めは
+/// 「この1通を後で見る」という個別のメールに対する意思表示で、アカウントの
+/// 全メールにまとめて付ける操作としては意味を成さないうえ、ピン留めした
+/// メールはアーカイブから保護される (`MessageRemoval.ArchiveGuardError
+/// .pinned`) ので、誤爆すると以降の一括アーカイブが丸ごと効かなくなる。
+/// `init?(_:)` がスワイプ設定の `.pin` に対して `nil` を返し、呼び出し側
+/// (スワイプボタン/コンテキストメニュー) がその項目自体を出さない。
 enum AccountDigestBulkAction: String, Identifiable {
     case markRead
     case archive
     case junk
-    case pin
     case delete
 
-    init(_ swipeAction: SwipeAction) {
+    /// `nil` = このスワイプ設定はグループ操作として提供しない (`.pin`)。
+    init?(_ swipeAction: SwipeAction) {
         switch swipeAction {
         case .toggleRead: self = .markRead
         case .archive: self = .archive
         case .junk: self = .junk
-        case .pin: self = .pin
         case .delete: self = .delete
+        case .pin: return nil
         }
     }
 
@@ -28,7 +37,6 @@ enum AccountDigestBulkAction: String, Identifiable {
         case .markRead: String(localized: "既読にする")
         case .archive: String(localized: "アーカイブ")
         case .junk: String(localized: "迷惑メールにする")
-        case .pin: String(localized: "ピン留め")
         case .delete: String(localized: "削除")
         }
     }
@@ -38,7 +46,6 @@ enum AccountDigestBulkAction: String, Identifiable {
         case .markRead: "envelope.open"
         case .archive: "archivebox"
         case .junk: "exclamationmark.octagon"
-        case .pin: "pin"
         case .delete: "trash"
         }
     }
@@ -123,8 +130,10 @@ struct AccountDigestRow: View {
         }
         #else
         .contextMenu {
-            ForEach(SwipeAction.allCases) { swipeAction in
-                let action = AccountDigestBulkAction(swipeAction)
+            // `.pin`はグループ操作として提供しない (`AccountDigestBulkAction`
+            // の doc comment) ので、`compactMap`で落ちた分は項目自体が
+            // 出ない。
+            ForEach(SwipeAction.allCases.compactMap(AccountDigestBulkAction.init)) { action in
                 Button {
                     onRequestBulkAction(action)
                 } label: {
@@ -149,15 +158,19 @@ struct AccountDigestRow: View {
         return short == long ? [short] : [short, long]
     }
 
+    /// `.pin`に割り当てられているスロットはボタンごと出さない
+    /// (`AccountDigestBulkAction`の doc comment) — `MessageListRow`の
+    /// 個別行スワイプでは今までどおりピン留めできる。
     @ViewBuilder
     private func swipeButton(for swipeAction: SwipeAction) -> some View {
-        let action = AccountDigestBulkAction(swipeAction)
-        Button(role: action.isDestructive ? .destructive : nil) {
-            onRequestBulkAction(action)
-        } label: {
-            Label(action.title, systemImage: action.systemImage)
+        if let action = AccountDigestBulkAction(swipeAction) {
+            Button(role: action.isDestructive ? .destructive : nil) {
+                onRequestBulkAction(action)
+            } label: {
+                Label(action.title, systemImage: action.systemImage)
+            }
+            .tint(action == .delete || action == .junk ? OtegamiColor.destructive : OtegamiColor.accent)
         }
-        .tint(action == .delete || action == .junk ? OtegamiColor.destructive : OtegamiColor.accent)
     }
     #endif
 

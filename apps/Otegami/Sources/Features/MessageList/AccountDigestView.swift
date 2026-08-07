@@ -252,13 +252,19 @@ struct AccountDigestView: View {
                 try AccountDigestQuery.allSummaries(accountId: accountId, role: role, db: db)
             }
             guard !summaries.isEmpty else { return }
+            // 既にアーカイブ済み/既読のものは対象から外す
+            // (`AccountDigestPresentation.bulkActionTargets`の doc comment)。
+            let targets = AccountDigestPresentation.bulkActionTargets(for: action, in: summaries)
+            guard !targets.isEmpty else {
+                let name = accountDisplayNames[accountId] ?? accountId
+                scheduleUndo(accountId: accountId, message: "\(name)に\(action.title)できるメールはありません", undo: nil)
+                return
+            }
             switch action {
             case .archive, .delete, .junk:
-                await performRemoval(action, summaries: summaries, accountId: accountId)
+                await performRemoval(action, summaries: targets, accountId: accountId)
             case .markRead:
-                for summary in summaries { await applyReadState(summary, markingRead: true, accountId: accountId) }
-            case .pin:
-                for summary in summaries { await applyPinState(summary, pinning: true, accountId: accountId) }
+                for summary in targets { await applyReadState(summary, markingRead: true, accountId: accountId) }
             }
         } catch {
             // Best-effort, matching every other opQueue-enqueuing path in
@@ -282,7 +288,7 @@ struct AccountDigestView: View {
         case .archive: kind = .archive
         case .delete: kind = .delete
         case .junk: kind = .junk
-        case .markRead, .pin: return
+        case .markRead: return
         }
         var snapshots: [MessageRemoval.Snapshot] = []
         var pinnedSkipCount = 0
@@ -346,25 +352,6 @@ struct AccountDigestView: View {
             await replayOpQueueSoon(accountId: accountId)
         } catch {
             // Best-effort, matching `MessageListView.applyReadState`.
-        }
-    }
-
-    /// `.pin`の一括版 — 同じ理由で常に「ピン留めする」側へ揃える。
-    /// `applyReadState(_:markingRead:accountId:)`と同じく中核は
-    /// `SyncEngine.MessagePinReadState.applyPinState`共有、ここは対象解決 +
-    /// `replayOpQueueSoon`だけの薄いラッパー。
-    private func applyPinState(_ summary: ThreadSummary, pinning: Bool, accountId: String) async {
-        guard let threadId = summary.thread.id else { return }
-        do {
-            try await environment.database.dbWriter.write { db in
-                let messages = try ThreadQuery.actionTargets(for: summary, db: db)
-                try MessagePinReadState.applyPinState(
-                    pinning: pinning, messages: messages, threadId: threadId, accountId: accountId, db: db
-                )
-            }
-            await replayOpQueueSoon(accountId: accountId)
-        } catch {
-            // Best-effort, matching `MessageListView.applyPinState`.
         }
     }
 
