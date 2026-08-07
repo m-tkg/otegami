@@ -96,39 +96,19 @@ struct ThreadRowView: View {
             .padding(.vertical, OtegamiSpacing.sm)
         }
         // 表示・操作改善バッチ「カード状表示」→ 実機フィードバック第2弾「C カード
-        // デザインの変更」: each row reads as its own "面" (card) — no
-        // outline, just `OtegamiColor.surface`/`.paleBaseStrong`
-        // (`otegamiCardBackground(_:cornerRadius:)`'s doc comment covers the
-        // removed-stroke decision). macOS keeps the original rounded corner
-        // (`rowCornerRadius`) with the gap between cards coming from
-        // `MessageListRow`'s `.listRowInsets` margin, unchanged.
+        // デザインの変更」で導入した`OtegamiColor.surface`塗りのカード表現
+        // は 2026-08-07 のmacOS ネイティブ化 (下記) で macOS から先に廃止 —
+        // Mail.app と同じフラットな全幅行にし、非選択行は背景を塗らず選択
+        // 行だけ`paleBaseStrong`の全幅ハイライトにした。行間の区切りは
+        // `.otegamiRowDivider()`(1pt `dividerSubtle`ヘアライン) が担う。
         //
-        // Task #67: iOS went full-width ("メール一覧のカードの幅を画面幅に
-        // 広げて欲しい") — `MessageListRow`/`SearchScreenView` now zero out
-        // `.listRowInsets` on iOS so the card (and `AccountColorRail`) reach
-        // the screen's true left/right edges. A rounded corner sitting
-        // flush against the screen edge reads as clipped/broken rather than
-        // as a corner, so `rowCornerRadius` drops to `OtegamiRadius.none`
-        // there — and since the inter-row *margin* that used to double as
-        // the visual separator is gone too, `.otegamiRowDivider()` (a 1pt
-        // `dividerSubtle` hairline, previously unused since the card layout
-        // replaced it — see that function's own doc comment) comes back for
-        // iOS only to keep rows visually distinct. See
-        // `docs/design-system.md`'s list layout section for the full
-        // decision record.
-        // 2026-08-07 (メイン UI の macOS ネイティブ化): macOS の角丸カード
-        // (`OtegamiRadius.card` + `surface` 塗り) を廃止し、Mail.app と同じ
-        // フラットな全幅行にした — 非選択行は背景を塗らず、選択行だけ
-        // `paleBaseStrong` の全幅ハイライト。行間の区切りは iOS と同じ
-        // `.otegamiRowDivider()` ヘアラインが担う (カード時代はカード間の
-        // マージンが区切りを兼ねていた — `MessageListRow` の
-        // `.listRowInsets` 側も同時にゼロへ変更)。iOS は Task #67 の
-        // フラット全幅カードのまま無変更。
-        #if os(iOS)
-        .otegamiCardBackground(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface, cornerRadius: OtegamiRadius.none)
-        #else
+        // Liquid Glass Phase 1 (同じ2026-08-07 のうちにこの移行で iOS 側にも
+        // 波及、docs/design-system.md「Liquid Glass 方針」): iOS 独自の
+        // `surface`塗り (上記の「非選択行は背景を塗らず」を iOS だけ免れて
+        // いた分岐) を廃止し、macOS と同じ「選択行のみ`paleBaseStrong`」に
+        // 統一した — `#if os`分岐はもう不要なので畳んだ。角丸は両OSとも
+        // Task #67以来の`OtegamiRadius.none`(全幅フラット) のまま変更なし。
         .otegamiCardBackground(isSelected ? OtegamiColor.paleBaseStrong : .clear, cornerRadius: OtegamiRadius.none)
-        #endif
         .otegamiRowDivider()
         .contentShape(Rectangle())
     }

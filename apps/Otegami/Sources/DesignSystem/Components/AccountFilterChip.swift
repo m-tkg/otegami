@@ -26,9 +26,17 @@ public struct AccountFilterChip: View {
     public var body: some View {
         // 2026-08-07 (メイン UI の macOS ネイティブ化): macOS は Finder/
         // Mail の scope bar と同じ「選択中だけ控えめな角丸塗り、枠線なし」
-        // — 四角い塗り+枠線のチップは iOS の意匠として iOS だけに残す。
-        // 44pt の最小タップ領域 (`otegamiMinimumTappable`) もタッチ前提の
+        // — 44pt の最小タップ領域 (`otegamiMinimumTappable`) もタッチ前提の
         // 話なので macOS では適用しない。
+        //
+        // Liquid Glass Phase 1 (同日、docs/design-system.md「Liquid Glass
+        // 方針」): iOS 側は「角丸0+枠線塗り」の独自チップ意匠をやめ、
+        // システム標準の Liquid Glass カプセルへ委譲した。選択状態は
+        // `.glassProminent` + `.tint(OtegamiColor.accent)`(塗り+文字色が
+        // システムのコントラスト計算に任せられる)、非選択は素の`.glass`。
+        // 2つの`ButtonStyle`は型が異なり三項演算子で切り替えられないため
+        // (`ButtonStyle`用の型消去が標準に無い)、`if`分岐で`Button`自体を
+        // 2通り用意している。
         #if os(macOS)
         Button(action: action) {
             label
@@ -36,10 +44,16 @@ public struct AccountFilterChip: View {
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         #else
-        Button(action: action) {
-            label
+        Group {
+            if isSelected {
+                Button(action: action) { label }
+                    .buttonStyle(.glassProminent)
+                    .tint(OtegamiColor.accent)
+            } else {
+                Button(action: action) { label }
+                    .buttonStyle(.glass)
+            }
         }
-        .buttonStyle(.plain)
         .otegamiMinimumTappable()
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         #endif
@@ -74,6 +88,9 @@ public struct AccountFilterChip: View {
                 in: RoundedRectangle(cornerRadius: 5)
             )
         #else
+        // Liquid Glass 化 (2026-08-07): 塗り・枠線・パディングは
+        // `.buttonStyle(.glass)`/`.glassProminent`自身が描くので、ここは
+        // テキストと最小限のフォント指定だけ持つ。
         Group {
             if isTitleLocalizable {
                 Text(LocalizedStringKey(title))
@@ -81,20 +98,7 @@ public struct AccountFilterChip: View {
                 Text(verbatim: title)
             }
         }
-            .font(OtegamiFont.caption())
-            .foregroundStyle(isSelected ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
-            .padding(.horizontal, OtegamiSpacing.md)
-            .padding(.vertical, OtegamiSpacing.xs)
-            .background(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface)
-            .overlay(border)
+        .font(OtegamiFont.caption())
         #endif
-    }
-
-    private var border: some View {
-        Rectangle()
-            .strokeBorder(
-                isSelected ? OtegamiColor.accent : OtegamiColor.dividerSubtle,
-                lineWidth: OtegamiStroke.secondary
-            )
     }
 }

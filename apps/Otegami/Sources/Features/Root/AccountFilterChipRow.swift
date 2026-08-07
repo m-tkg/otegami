@@ -43,11 +43,10 @@ struct AccountFilterChipRow: View {
             .padding(.horizontal, OtegamiSpacing.md)
             .padding(.vertical, OtegamiSpacing.xs)
         }
-        // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗りは
-        // iOS のみ — macOS は一覧ペインの標準背景の上にそのまま載せる。
-        #if os(iOS)
-        .background(OtegamiColor.background)
-        #endif
+        // Liquid Glass Phase 1 (2026-08-07、docs/design-system.md「Liquid
+        // Glass 方針」): iOS 独自の背景塗りを廃止し、macOS と同じく一覧
+        // ペインの標準背景の上にそのまま載せる (元は「独自の背景塗りは
+        // iOS のみ」の判断だったが、この移行で iOS 側からも消えた)。
         .accessibilityIdentifier("mail.chipRow")
     }
 
@@ -88,19 +87,19 @@ private struct AllModeFilterChip: View {
         // 場合は、メニューを挟まず即「すべて」(保存済みモードのまま) へ
         // 戻る — 絞り込み解除のワンタップ動線にメニューが割り込むと邪魔、
         // という指摘への対応。
+        //
+        // Liquid Glass Phase 1 (2026-08-07、docs/design-system.md「Liquid
+        // Glass 方針」): iOS 側は`AccountFilterChip`と同じ Glass カプセルへ
+        // 統一 — 選択中 (=プルダウンが開く`Menu`分岐) は`.menuStyle(.button)`
+        // で`Menu`のラベル描画を`ButtonStyle`パイプラインに乗せた上で
+        // `.glassProminent` + `.tint(accent)`、非選択 (`Button`分岐) は
+        // 素の`.glass`。macOS 分岐 (`.quaternary`塗りの scope bar 風) は
+        // 無変更。
+        #if os(macOS)
         Group {
             if isSelected {
                 Menu {
-                    Button {
-                        selectMode(groupByAccount: false)
-                    } label: {
-                        Label("時系列", systemImage: "clock")
-                    }
-                    Button {
-                        selectMode(groupByAccount: true)
-                    } label: {
-                        Label("アカウント別", systemImage: "person.2")
-                    }
+                    menuItems
                 } label: {
                     label
                 }
@@ -112,6 +111,41 @@ private struct AllModeFilterChip: View {
             }
         }
         .accessibilityIdentifier("mail.chip.all")
+        #else
+        Group {
+            if isSelected {
+                Menu {
+                    menuItems
+                } label: {
+                    label
+                }
+                .menuStyle(.button)
+                .buttonStyle(.glassProminent)
+                .tint(OtegamiColor.accent)
+            } else {
+                Button(action: onSelectMode) {
+                    label
+                }
+                .buttonStyle(.glass)
+            }
+        }
+        .otegamiMinimumTappable()
+        .accessibilityIdentifier("mail.chip.all")
+        #endif
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
+        Button {
+            selectMode(groupByAccount: false)
+        } label: {
+            Label("時系列", systemImage: "clock")
+        }
+        Button {
+            selectMode(groupByAccount: true)
+        } label: {
+            Label("アカウント別", systemImage: "person.2")
+        }
     }
 
     private func selectMode(groupByAccount: Bool) {
@@ -141,23 +175,16 @@ private struct AllModeFilterChip: View {
         )
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         #else
+        // Liquid Glass 化 (2026-08-07): 塗り・枠線・パディングは
+        // `.buttonStyle(.glass)`/`.glassProminent`自身が描くので、ここは
+        // テキスト+シェブロンとフォント指定だけ持つ (`AccountFilterChip
+        // .label`の同日コメント参照)。
         HStack(spacing: OtegamiSpacing.xs) {
             Text(verbatim: "\(String(localized: "すべて")) ▸ \(modeTitle)")
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .semibold))
         }
         .font(OtegamiFont.caption())
-        .foregroundStyle(isSelected ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
-        .padding(.horizontal, OtegamiSpacing.md)
-        .padding(.vertical, OtegamiSpacing.xs)
-        .background(isSelected ? OtegamiColor.paleBaseStrong : OtegamiColor.surface)
-        .overlay(
-            Rectangle().strokeBorder(
-                isSelected ? OtegamiColor.accent : OtegamiColor.dividerSubtle,
-                lineWidth: OtegamiStroke.secondary
-            )
-        )
-        .otegamiMinimumTappable()
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         #endif
     }

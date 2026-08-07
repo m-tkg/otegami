@@ -742,13 +742,13 @@ struct MessageListView: View {
         .listStyle(.plain)
         #endif
         .accessibilityIdentifier("messageList.list")
-        // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗りは
-        // iOS のみ — macOS は標準のリスト背景に任せる (`SidebarView.
-        // sidebarList` と同じ判断)。
-        #if os(iOS)
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
-        #endif
+        // Liquid Glass Phase 1 (2026-08-07、docs/design-system.md「Liquid
+        // Glass 方針」): iOS 独自の`.scrollContentBackground(.hidden)` +
+        // `OtegamiColor.background`塗りをやめ、macOS (`SidebarView
+        // .sidebarList`と同じ判断) と同様に標準のリスト背景へ委譲した —
+        // 以前ここにあった「2026-08-07 (メイン UI の macOS ネイティブ化):
+        // 独自の背景塗りは iOS のみ」というコメントは、まさにその日のうち
+        // にこの Liquid Glass 移行で iOS 側にも波及した。
         // design-phase-3: a `List` with no explicit `Section`s still gets
         // treated as one implicit section, and iOS 17+'s default
         // inter-section spacing (`ListSectionSpacing.default`, a fixed

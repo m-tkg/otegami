@@ -36,13 +36,28 @@ import SwiftUI
 /// 参照) の一環で `OtegamiFloatingButtonTone`(`active`/`attention`/
 /// `disabled`) を削除した — 状態を持つフローティングボタンが将来また
 /// 増えたら、その時点で必要なトーンを設計し直す。
+///
+/// Liquid Glass Phase 1 (2026-08-07): iOS 側は円塗り
+/// (`OtegamiColor.accentFloating`) + 手動`shadow`をやめ、Liquid Glass の
+/// 円形チロムへ移行した — `MailScreenView`の speed-dial FAB (`SpeedDialFAB`)
+/// が`GlassEffectContainer` + 各ボタンの`glassEffect(_:in: .circle)` +
+/// `glassEffectID(_:in:)`でモーフィング展開する構造そのものを持つため、
+/// この`View`拡張はもう円の塗り自体は描かない — アイコンのサイズ/余白
+/// だけを担う`otegamiFloatingButtonIcon()`に縮小し、`Circle()`塗り +
+/// `.background`は呼び出し側の`glassEffect`に譲った。
 public extension View {
-    func otegamiFloatingButtonChrome() -> some View {
-        modifier(OtegamiFloatingButtonChromeModifier())
+    /// フローティングボタンのアイコン1個ぶんのサイズ/余白 — 円のGlass塗り
+    /// 自体は呼び出し側 (`glassEffect(_:in: .circle)`) が担うので、ここは
+    /// アイコンのフォント/フレーム/パディングだけ (`OtegamiGlass.swift`の
+    /// doc comment: 「ボタンには原則ラッパーを作らず glassEffect/
+    /// buttonStyle(.glass) を直接使う」の実践 — この拡張自体はGlassその
+    /// ものを描かないので、その規約と矛盾しない)。
+    func otegamiFloatingButtonIcon() -> some View {
+        modifier(OtegamiFloatingButtonIconModifier())
     }
 }
 
-private struct OtegamiFloatingButtonChromeModifier: ViewModifier {
+private struct OtegamiFloatingButtonIconModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             // Task #85 (実機フィードバック「アイコンをもう少し大きく」):
@@ -54,12 +69,7 @@ private struct OtegamiFloatingButtonChromeModifier: ViewModifier {
             // `frame`もアイコンの拡大に合わせて24→28に広げてある(circleの
             // 外径は`padding`が変わらない分だけ大きくなる)。
             .font(.system(size: 19, weight: .semibold))
-            .foregroundStyle(.white)
             .frame(width: OtegamiSpacing.xl + OtegamiSpacing.xs, height: OtegamiSpacing.xl + OtegamiSpacing.xs)
             .padding(OtegamiSpacing.md + OtegamiSpacing.xs)
-            // Task #85 (「青をもう少し濃く」): `.accent` → `.accentFloating`
-            // (`OtegamiColor.accentFloating`のdoc comment参照)。
-            .background(OtegamiColor.accentFloating, in: Circle())
-            .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
     }
 }
