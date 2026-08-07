@@ -486,12 +486,6 @@ public enum ThreadQuery {
             }
         }
 
-        func identityKey(_ message: MessageRecord) -> String? {
-            if let gmailMessageId = message.gmailMessageId { return "gmail:\(gmailMessageId)" }
-            if let messageId = message.messageId { return "msgid:\(messageId)" }
-            return nil
-        }
-
         // Pass 1: decide, per identity key, which row's `id` survives.
         var winnerIdForKey: [String: Int64] = [:]
         for message in messages {
@@ -535,6 +529,49 @@ public enum ThreadQuery {
 
     public static func messagesObservation(threadId: Int64) -> ValueObservation<ValueReducers.Fetch<[MessageRecord]>> {
         ValueObservation.tracking { db in try messages(threadId: threadId, db: db) }
+    }
+
+    /// `deduplicate(_:db:)` が「同じ物理メッセージ」として畳んだ**残りの
+    /// 行**を返す (`message` 自身は含まない)。
+    ///
+    /// 実機報告 (2026-08-07)「メールの unpin が反映されない」の修正で
+    /// 追加した。Gmail の二重ラベルでは同じメールが INBOX と All Mail の
+    /// 2行として同期される。`actionTargets(for:db:)` は `messages
+    /// (threadId:db:)` 経由で **dedup 済みの代表行しか返さない**ので、
+    /// ローカル状態 (`isPinnedLocal`/`\Seen`) をそこだけ書き換えると、
+    /// 破棄された側の行は古い値のまま残る。ところが `ThreadRecord
+    /// .isPinned` の集約は dedup 前の全行の OR (`ThreadAssigner
+    /// .recomputeAggregates`、SQL 側も `MAX(message.isPinnedLocal)`) なので、
+    /// **ピン留めは効くのに解除だけ効かない**という非対称が生まれていた
+    /// (OR は片方が残っていれば `true` のまま)。
+    ///
+    /// 探索は `message` の `threadId` 内に限定する — `deduplicate` が
+    /// 見ている集合と正確に同じにするため (RFC 822 `Message-ID` は転送等で
+    /// 別スレッドの行と一致しうるので、スレッドを跨いで畳むのは危険)。
+    /// 同一性の判定 (`identityKey`) は `deduplicate` とそのまま共有する。
+    ///
+    /// サーバーへ送る op は代表行のぶんだけでよい — Gmail のフラグ
+    /// (`\Flagged`/`\Seen`) はラベルではなくメッセージに付くので、どちらの
+    /// ラベル経由で STORE しても両方に反映される。ここで揃えるのは
+    /// あくまでローカル DB の整合性。
+    public static func duplicateSiblings(of message: MessageRecord, db: Database) throws -> [MessageRecord] {
+        guard let threadId = message.threadId, let messageId = message.id,
+              let key = identityKey(message)
+        else { return [] }
+        return try MessageRecord
+            .filter(Column("threadId") == threadId)
+            .fetchAll(db)
+            .filter { $0.id != messageId && identityKey($0) == key }
+    }
+
+    /// `deduplicate(_:db:)`/`duplicateSiblings(of:db:)`が共有する同一性の
+    /// キー — `gmailMessageId` (Gmail 発行の per-account 一意な
+    /// `X-GM-MSGID`) を優先し、無ければ RFC 822 `Message-ID`。どちらも
+    /// `nil` の行は何とも重複扱いしない (安全な手がかりが無いため)。
+    private static func identityKey(_ message: MessageRecord) -> String? {
+        if let gmailMessageId = message.gmailMessageId { return "gmail:\(gmailMessageId)" }
+        if let messageId = message.messageId { return "msgid:\(messageId)" }
+        return nil
     }
 
     /// 実機フィードバック第3弾 (A): what a row/swipe action's mutation should

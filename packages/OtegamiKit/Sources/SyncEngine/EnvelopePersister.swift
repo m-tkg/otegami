@@ -20,7 +20,16 @@ enum EnvelopePersister {
     /// already-threaded message (a flag-only resync) just gets its
     /// thread's aggregates recomputed, since the resync could have changed
     /// its `\Seen` flag.
-    static func upsert(envelope: FetchedEnvelope, mailboxId: Int64, accountId: String, db: Database) throws {
+    ///
+    /// `pendingTargets` (実機報告「一括アーカイブ後、再読み込みすると復活
+    /// する」): この UID にまだサーバーへ送れていないローカル変更がある
+    /// なら、サーバー由来のこのエンベロープは**まるごと無視する** —
+    /// 判断理由と、なぜ行の一部だけ更新しないのかは
+    /// `PendingOpTargets` の doc comment 参照。同期パスは必ず
+    /// `PendingOpTargets.forMailbox(mailboxId:accountId:db:)` の結果を
+    /// 渡すこと (`.none` はガード不要な経路とテスト用)。
+    static func upsert(envelope: FetchedEnvelope, mailboxId: Int64, accountId: String, pendingTargets: PendingOpTargets = .none, db: Database) throws {
+        guard !pendingTargets.blocks(uid: Int64(envelope.uid)) else { return }
         // Task #120: before the normal upsert-by-`(mailboxId, uid)` below,
         // check whether this envelope is the real, server-confirmed arrival
         // of a message `MessageRemoval` already relocated to this mailbox

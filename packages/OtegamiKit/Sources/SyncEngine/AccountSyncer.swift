@@ -446,8 +446,11 @@ public actor AccountSyncer {
                         )
 
                         try await database.dbWriter.write { [account] db in
+                            // 未送信のローカル変更がある UID は取り込まない
+                            // (`PendingOpTargets`の doc comment)。
+                            let pendingTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: account.id, db: db)
                             for envelope in envelopes {
-                                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: account.id, db: db)
+                                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: account.id, pendingTargets: pendingTargets, db: db)
                             }
                         }
 

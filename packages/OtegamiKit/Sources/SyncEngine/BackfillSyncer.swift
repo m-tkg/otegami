@@ -124,8 +124,14 @@ public actor BackfillSyncer {
 
         let newLowerBound = Int64(lowerBound)
         try await database.dbWriter.write { db in
+            // 未送信のローカル変更がある UID は取り込まない
+            // (`PendingOpTargets`の doc comment) — バックフィルは古い UID
+            // 範囲を扱うので普段この集合とは重ならないが、アーカイブした
+            // メールがたまたまその範囲に入る (古いメールを操作した直後に
+            // バックフィルが走る) ことはありうる。
+            let pendingTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: accountId, db: db)
             for envelope in envelopes {
-                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, db: db)
+                try EnvelopePersister.upsert(envelope: envelope, mailboxId: mailboxId, accountId: accountId, pendingTargets: pendingTargets, db: db)
             }
             guard var mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return }
             mailbox.backfillLowerBound = newLowerBound
