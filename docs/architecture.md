@@ -1226,9 +1226,9 @@ op が対象にしている `(mailboxId, uid)` はサーバー由来のエンベ
 成立していた:
 
 1. アーカイブすると `MessageRemoval.commit` が op を積み、ローカルの
-   `message` 行を消す (Gmail は仮配置 (pending relocation) を使わない —
-   `\Archive` 相当の実体フォルダが無いため、`MessageRemoval
-   .destinationMailbox` の doc comment 参照)。
+   `message` 行を移動先へ仮配置 (pending relocation) するか、移動先が
+   分からなければ消す (`MessageRemoval.destinationMailbox` の doc comment
+   参照。Gmail は All Mail が移動先 — 下の「p.」節)。
 2. その op がまだ replay されていない間、サーバーの受信トレイには
    そのメールがまだ居る。
 3. 次の同期の `MailboxSyncer.applyFlagsDiffAndReconcileUnknown` が、
@@ -1336,3 +1336,63 @@ op は代表行のぶんだけでよい (Gmail のフラグはラベルではな
 パスの両方を dedup 済みへ揃え、既存 DB の値は v49 マイグレーション
 (`recomputeAllAggregates`) で計算し直した (v35 が `messageCount`/
 `unreadCount` に対して行ったのと同じ手順)。
+
+### p. Gmail のアーカイブは「消す」のではなく All Mail へ仮配置する
+
+実機報告 (2026-08-07)「iOS で Gmail のさっき受信したメールをアーカイブ
+したらどこにも表示されなくなった」の修正で確立した規則。macOS では同じ
+メールが正常に見えていた — サーバー側は正しくアーカイブされており、
+**iOS のローカル DB からだけメールが消えていた**。
+
+Gmail には `\Archive` 相当のフォルダが無く、「アーカイブ済み」の表示は
+All Mail (role `.all`) 側の行が `GmailArchiveFilter.excludeUnarchivedSQL`
+を通過することで成立している。そのため以前は INBOX の行を物理削除するだけ
+だった。**この前提は「All Mail 側の行がローカルに存在する」ことに依存して
+おり、それは保証されていない**:
+
+- All Mail は `SyncScope.inboxOnly` の対象外。起動・フォアグラウンド復帰・
+  push・IDLE ループはすべて `.inboxOnly` なので All Mail を触らない。
+- All Mail が同期されるのは (a) その画面を開いている間の 5 分ループ
+  (`MessageListView.syncSelectedMailboxOnAppear`)、(b) pull-to-refresh、
+  (c) 低優先度の `BackfillSyncer` の 3 つだけ。
+- 初回同期の窓は 500 通 (`AccountSyncer.initialSyncWindow`) なので、
+  **アカウント追加後に届いた新着の All Mail 行は普通ローカルに無い**。
+
+結果、受信トレイの行を消した時点でそのメールの最後の 1 行が消え、受信
+トレイからもアーカイブの両ビューからも見えなくなっていた (古いメール、
+つまり初回同期の窓に入っているものでは再現しないという非対称もこれで
+説明がつく)。
+
+現在は非 Gmail のアーカイブと同じ**擬似 UID 行への移送**
+(`MessageRecord.isPendingRelocation`) を Gmail にも使う。ただし重複を
+避けるため、移送するかどうかは `MessageRemoval.relocationDestinationId`
+が**行ごとに**判断する:
+
+- All Mail に同一メッセージの行が既にあるなら移送しない (物理削除)。
+  グループ表示・スレッド詳細・スレッド集計はメッセージ同一性で重複排除
+  するが、**フラット表示 (`ThreadQuery.flatSummaries` /
+  `unifiedInboxFlatSummaries`) はしない**ので、実在行の隣に擬似行を置くと
+  見た目の重複になる。同一性の判定は `ThreadQuery.identityKey` と同じく
+  `gmailMessageId` (`X-GM-MSGID`) 優先、無ければ RFC 822 `Message-ID`。
+- RFC 822 `Message-ID` を持たない行も移送しない。
+  `EnvelopePersister.reconcilePendingRelocation` はこのヘッダでしか擬似行を
+  引き当てられず、無いと本物の UID に昇格できないまま残り続けるため。
+  Gmail 経由のメールでは極めて稀 (既知の制限)。
+
+あわせて、Gmail のアーカイブ op は `ReplayResult.affectedMailboxIds` に
+All Mail を含める。移動を伴わない (source を unlabel するだけ) op なので
+以前は空だったが、擬似 UID 行を本物の UID に昇格させられるのは All Mail の
+同期だけで、アーカイブ後に走る経路はどれも `.inboxOnly` だった。source
+(INBOX) は従来どおり含めない。
+
+**表示クエリに `uid > 0` を足さないこと。** `uid > 0` を要求してよいのは
+同期カーソル (`MessageQuery.maxUID`/`minUID`) だけで、表示側に足すと擬似
+UID 行が見えなくなりこのバグが即座に再発する。`GmailArchiveFilterTests`
+に固定してある。
+
+**同期スコープの role 読み替えを忘れないこと。** `.unifiedRole(role)` の
+pull-to-refresh は `MailboxQuery.roleScopedMailboxPaths` を通す — Gmail の
+「アーカイブ」の実体は All Mail なので `mailbox.role` を直接引くと 0 件に
+なり、全メールボックス同期へフォールバックする。表示クエリ
+(`ThreadQuery.unifiedInboxRequest`) と同じ規則を写しているので、**片方を
+変えるときはもう片方も変えること**。

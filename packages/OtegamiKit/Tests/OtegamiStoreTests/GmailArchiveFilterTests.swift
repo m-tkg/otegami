@@ -158,6 +158,79 @@ struct GmailArchiveFilterTests {
         #expect(flat.count == 1, "Expected only the genuinely-archived All Mail message, not the still-in-INBOX one")
     }
 
+    /// 実機報告「iOS で Gmail のさっき受信したメールをアーカイブしたらどこにも
+    /// 表示されなくなった」の表示側の担保: `MessageRemoval` は All Mail 行が
+    /// まだ同期されていない Gmail メールをアーカイブするとき、その行を All
+    /// Mail へ擬似 UID (`MessageRecord.isPendingRelocation`、`uid <= 0`) で
+    /// 移送する。表示クエリは同期カーソル (`MessageQuery.maxUID`/`minUID`)
+    /// と違って `uid > 0` を要求しないので、その行はそのままアーカイブとして
+    /// 見える — これが「アーカイブした瞬間から見える」の根拠であり、うっかり
+    /// 表示側に `uid > 0` を足すと即座に退行する。
+    @Test("a pending-relocation All Mail row (uid <= 0) counts as archived in both grouped and flat mode")
+    func pendingRelocationRowCountsAsArchived() throws {
+        let (database, accountId, allMailId, _, _, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let threadId = try database.dbWriter.write { db -> Int64 in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 1)
+            try thread.insert(db)
+            var message = MessageRecord(
+                mailboxId: allMailId, uid: 1, date: base, internalDate: base,
+                gmailMessageId: 7, threadId: thread.id
+            )
+            try message.insert(db)
+            // What `MessageRemoval` writes: same row, moved into All Mail with
+            // a placeholder UID derived from its own id.
+            message.uid = -message.id!
+            try message.update(db)
+            return thread.id!
+        }
+
+        let (grouped, flat, isArchived) = try database.dbWriter.read { db in
+            (
+                try ThreadQuery.unifiedInboxRequest(accountIds: [accountId], role: .archive).fetchAll(db).map(\.id),
+                try ThreadQuery.unifiedInboxFlatSummaries(accountIds: [accountId], role: .archive, db: db),
+                try ThreadQuery.isThreadArchived(threadId: threadId, db: db)
+            )
+        }
+        #expect(grouped == [threadId])
+        #expect(flat.count == 1)
+        #expect(isArchived == true)
+    }
+
+    @Test("a pending-relocation All Mail row is excluded again once the same message reappears in INBOX (undo)")
+    func pendingRelocationRowIsExcludedAfterUndo() throws {
+        let (database, accountId, allMailId, inboxId, _, _) = try makeDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let threadId = try database.dbWriter.write { db -> Int64 in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 1)
+            try thread.insert(db)
+            var message = MessageRecord(
+                mailboxId: allMailId, uid: 1, date: base, internalDate: base,
+                gmailMessageId: 8, threadId: thread.id
+            )
+            try message.insert(db)
+            message.uid = -message.id!
+            try message.update(db)
+            // An INBOX row for the same message appears again — either undo
+            // restored it, or アーカイブ解除's COPY got synced back.
+            var restored = MessageRecord(
+                mailboxId: inboxId, uid: 5, date: base, internalDate: base,
+                gmailMessageId: 8, threadId: thread.id
+            )
+            try restored.insert(db)
+            return thread.id!
+        }
+
+        let (grouped, isArchived) = try database.dbWriter.read { db in
+            (
+                try ThreadQuery.unifiedInboxRequest(accountIds: [accountId], role: .archive).fetchAll(db).map(\.id),
+                try ThreadQuery.isThreadArchived(threadId: threadId, db: db)
+            )
+        }
+        #expect(grouped.isEmpty)
+        #expect(isArchived == false)
+    }
+
     @Test("unreadCounts(accountId:) excludes All Mail's not-yet-archived unread messages from the badge")
     func unreadCountsExcludesUnarchivedAllMailMessages() throws {
         let (database, accountId, allMailId, inboxId, _, _) = try makeDatabase()
