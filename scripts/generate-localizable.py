@@ -999,6 +999,36 @@ translations = {
     "メールボックス選択": "Selecting Mailbox",
     "見出し取得": "Fetching Envelope",
     "本文取得": "Fetching Body",
+
+    # --- opQueue observability (実機報告「Gmail で既読化/アーカイブしても
+    # サーバに反映されず、再読込でサーバ状態に巻き戻る」の調査可能化):
+    # OpQueueDiagnosticsView (設定→「一般」→「操作同期の診断」) and
+    # FailedOperationsView's new stale-discard section. ---
+    "操作同期の診断": "Sync Operation Diagnostics",
+    "既読化・アーカイブなどの操作がサーバーへ反映されない場合の調査に使います。":
+        "Use this to investigate when actions like marking as read or archiving aren't reaching the server.",
+    "最後に replay が起動した時刻": "Last Time Replay Ran",
+    "まだ記録がありません。オフライン操作(既読化・アーカイブなど)の後、しばらくしても記録が現れない場合は再送の起動自体が行われていない可能性があります。":
+        "No records yet. If none appear a while after an offline action (marking as read, archiving, etc.), replay itself may not be running.",
+    "この端末でメールの既読化・アーカイブなどを行うたびに、サーバーへの再送処理 (replay) が呼ばれます。この時刻が更新され続けているなら再送処理自体は起動できています。":
+        "Every time you mark mail as read, archive it, etc. on this device, a server replay is triggered. If this time keeps updating, replay itself is running.",
+    "未送信の操作はありません。": "No unsent operations.",
+    "未送信の操作 (アカウント別)": "Unsent Operations (by Account)",
+    "サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。":
+        "The number of operations not yet sent to the server, broken down by pending-retry and permanently-failed. Permanently-failed operations can be retried or discarded individually from the \"Sync Error\" screen.",
+    "再送処理 (replay) の直近実行履歴": "Recent Replay Runs",
+    "まだ記録がありません。": "No records yet.",
+    "直近の実行履歴を一定件数まで保持します。「未完了」のまま残っている行は、その回だけアプリが途中で終了した可能性を示します。":
+        "Keeps a bounded number of recent runs. A row still marked \"Incomplete\" suggests the app was terminated mid-run that one time.",
+    "未完了 (アプリが途中で終了した可能性があります)": "Incomplete (the app may have been terminated mid-run)",
+    "他の再送処理と統合されました (何もしていません)": "Merged into another replay run (did nothing)",
+    "完了": "Completed",
+    "中断 (接続エラーなど)": "Aborted (e.g. connection error)",
+    "不明": "Unknown",
+    "送信できなかった操作": "Operations That Couldn't Be Sent",
+    "メールボックスの構成が変わったため、サーバーへ送信できずに取り消された操作です。再試行はできません。":
+        "These operations were cancelled because the mailbox configuration changed before they could be sent to the server. They can't be retried.",
+    "消去": "Clear",
 }
 
 # Disambiguation comments for a handful of short/reused source strings —

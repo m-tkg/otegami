@@ -1,0 +1,250 @@
+import SwiftUI
+import GRDB
+import OtegamiStore
+import SyncEngine
+
+/// 実機報告「Gmail で既読化/アーカイブしてもサーバに反映されず、再読込で
+/// サーバ状態に巻き戻る」の調査可能化: `TranslationDiagnosticsView`/
+/// `PushDiagnosticsView`と同じ発想 — Mac に接続して `log stream`/
+/// Console.app を操作しなくても、この端末上でスクリーンショット1枚を
+/// 撮れば「`OpQueueProcessor.replay`がそもそも呼ばれていないのか」「呼ば
+/// れてはいるが送信できていないのか」「未送信の操作がどれだけ溜まって
+/// いるのか」を切り分けられるようにするための画面。設定の「一般」に入口
+/// を置く (`GeneralSettingsView`) — プッシュ通知/デフォルトのメールアプリ
+/// と同様、特定のアカウントに紐づかずアプリ全体に横断的に効く同期の
+/// 診断のため。
+///
+/// 表示内容:
+/// - 未送信の`opQueue`行数をアカウント別に (件数・最古 enqueue 時刻・
+///   attempts の内訳) — `OpQueueDiagnosticsQuery.pendingSummaryByAccount`。
+/// - `OpQueueProcessor.replay`の直近実行履歴 (最大`OpQueueProcessor
+///   .replayLogCap`件) — いつ呼ばれ、何件送れて何件失敗/破棄したか。
+///   一覧の先頭が「最後に replay が起動した時刻」そのもの (invokedAt降順)
+///   — この画面を開いた時点で一番上の行が無い/古すぎるなら、replay が
+///   そもそも呼ばれていないことを意味する。
+///
+/// stale discard (uidValidity 失効による自動破棄) の個別一覧は、既存の
+/// 「同期エラー」画面 (`FailedOperationsView`) 側に出す — こちらでは
+/// replay ログの`discardedStale`件数として集計だけ見える。
+struct OpQueueDiagnosticsView: View {
+    @Environment(AppEnvironment.self) private var environment
+
+    @State private var pendingSummaries: [OpQueueDiagnosticsQuery.PendingSummary] = []
+    @State private var replayLog: [OpQueueReplayLogRecord] = []
+
+    var body: some View {
+        settingsContainer
+            .navigationTitle("操作同期の診断")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .task(id: environment.accounts.map(\.id)) { await observe() }
+    }
+
+    @ViewBuilder
+    private var settingsContainer: some View {
+        #if os(macOS)
+        Form {
+            sections
+        }
+        .formStyle(.grouped)
+        #else
+        List {
+            sections
+        }
+        .tint(OtegamiColor.accent)
+        #endif
+    }
+
+    @ViewBuilder
+    private var sections: some View {
+        Section {
+            if let lastInvokedAt = replayLog.first?.invokedAt {
+                LabeledContent("最後に replay が起動した時刻") {
+                    Text(Self.dateFormatter.string(from: lastInvokedAt))
+                }
+                .accessibilityIdentifier("opQueueDiagnostics.lastInvokedAt")
+            } else {
+                Text("まだ記録がありません。オフライン操作(既読化・アーカイブなど)の後、しばらくしても記録が現れない場合は再送の起動自体が行われていない可能性があります。")
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                    .accessibilityIdentifier("opQueueDiagnostics.replayLog.empty")
+            }
+        } footer: {
+            Text("この端末でメールの既読化・アーカイブなどを行うたびに、サーバーへの再送処理 (replay) が呼ばれます。この時刻が更新され続けているなら再送処理自体は起動できています。")
+        }
+
+        Section {
+            if pendingSummaries.isEmpty {
+                Text("未送信の操作はありません。")
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                    .accessibilityIdentifier("opQueueDiagnostics.pending.empty")
+            } else {
+                ForEach(pendingSummaries, id: \.accountId) { summary in
+                    PendingSummaryRow(summary: summary, accountDisplayName: accountDisplayName(for: summary.accountId))
+                }
+            }
+        } header: {
+            Text("未送信の操作 (アカウント別)")
+        } footer: {
+            Text("サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。")
+        }
+
+        Section {
+            if replayLog.isEmpty {
+                Text("まだ記録がありません。")
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                    .accessibilityIdentifier("opQueueDiagnostics.replayLogList.empty")
+            } else {
+                ForEach(replayLog) { entry in
+                    ReplayLogRow(entry: entry, accountDisplayName: accountDisplayName(for: entry.accountId))
+                }
+            }
+        } header: {
+            Text("再送処理 (replay) の直近実行履歴")
+        } footer: {
+            Text("直近の実行履歴を一定件数まで保持します。「未完了」のまま残っている行は、その回だけアプリが途中で終了した可能性を示します。")
+        }
+    }
+
+    private func accountDisplayName(for accountId: String) -> String {
+        environment.accounts.first(where: { $0.id == accountId })?.displayName ?? accountId
+    }
+
+    private func observe() async {
+        let accountIds = environment.accounts.map(\.id)
+        async let pendingTask: Void = observePendingSummaries(accountIds: accountIds)
+        async let replayLogTask: Void = observeReplayLog()
+        _ = await (pendingTask, replayLogTask)
+    }
+
+    private func observePendingSummaries(accountIds: [String]) async {
+        let observation = OpQueueDiagnosticsQuery.pendingSummaryByAccountObservation(accountIds: accountIds, maxAttempts: OpQueueProcessor.maxAttempts)
+        do {
+            for try await fetched in observation.values(in: environment.database.dbWriter) {
+                pendingSummaries = fetched
+            }
+        } catch {
+            // A failing observation just stops the list from updating further.
+        }
+    }
+
+    private func observeReplayLog() async {
+        do {
+            for try await fetched in replayLogObservation.values(in: environment.database.dbWriter) {
+                replayLog = fetched
+            }
+        } catch {
+            // A failing observation just stops the list from updating further.
+        }
+    }
+
+    private var replayLogObservation: ValueObservation<ValueReducers.Fetch<[OpQueueReplayLogRecord]>> {
+        ValueObservation.tracking { db in try OpQueueDiagnosticsQuery.recentReplayLog(limit: OpQueueProcessor.replayLogCap, db: db) }
+    }
+
+    fileprivate static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .medium
+        return formatter
+    }()
+}
+
+/// アカウント1件分の未送信サマリ表示 — `CLAUDE.md`の「1つの`body`を長く
+/// 書かない」方針に沿って独立させた。
+private struct PendingSummaryRow: View {
+    let summary: OpQueueDiagnosticsQuery.PendingSummary
+    let accountDisplayName: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
+            HStack {
+                // `accountDisplayName`はアカウントの表示名という実行時の値
+                // のため`Text(verbatim:)` (`AccountFilterChip.swift`の教訓)。
+                Text(verbatim: accountDisplayName)
+                    .font(.caption.bold())
+                Spacer()
+                Text(verbatim: "\(summary.count)件")
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+            }
+            Text(verbatim: "最古の enqueue: \(OpQueueDiagnosticsView.dateFormatter.string(from: summary.oldestCreatedAt))")
+                .font(.caption2)
+                .foregroundStyle(OtegamiColor.inkSecondary)
+            Text(verbatim: "未試行 \(summary.neverAttemptedCount) / 再試行待ち \(summary.retryingCount) / 恒久失敗 \(summary.permanentlyFailedCount)")
+                .font(.caption2)
+                .foregroundStyle(OtegamiColor.inkSecondary)
+        }
+        .padding(.vertical, OtegamiSpacing.xs)
+        .accessibilityIdentifier("opQueueDiagnostics.pending.row")
+    }
+}
+
+/// replay実行履歴1件分の表示 — `PendingSummaryRow`と同じ理由で独立させた。
+private struct ReplayLogRow: View {
+    let entry: OpQueueReplayLogRecord
+    let accountDisplayName: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
+            HStack {
+                Text(verbatim: accountDisplayName)
+                    .font(.caption.bold())
+                Spacer()
+                Text(OpQueueDiagnosticsView.dateFormatter.string(from: entry.invokedAt))
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+            }
+            outcomeView
+            if entry.parsedOutcome == .completed || entry.parsedOutcome == .aborted {
+                Text(verbatim: "成功 \(entry.succeeded) / 破棄 \(entry.discardedStale) / 再試行待ち \(entry.retrying) / 恒久失敗 \(entry.permanentlyFailed)")
+                    .font(.caption2)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+            }
+            if let errorDescription = entry.errorDescription {
+                Text(verbatim: errorDescription)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(OtegamiColor.destructive)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.vertical, OtegamiSpacing.xs)
+        .accessibilityIdentifier("opQueueDiagnostics.replayLog.row")
+    }
+
+    @ViewBuilder
+    private var outcomeView: some View {
+        switch entry.parsedOutcome {
+        case .inProgress:
+            Label("未完了 (アプリが途中で終了した可能性があります)", systemImage: "exclamationmark.triangle")
+                .font(.caption2)
+                .foregroundStyle(OtegamiColor.destructive)
+        case .coalesced:
+            Label("他の再送処理と統合されました (何もしていません)", systemImage: "arrow.triangle.merge")
+                .font(.caption2)
+                .foregroundStyle(OtegamiColor.inkSecondary)
+        case .completed:
+            Label("完了", systemImage: "checkmark.circle")
+                .font(.caption2)
+                .foregroundStyle(OtegamiColor.accent)
+        case .aborted:
+            Label("中断 (接続エラーなど)", systemImage: "xmark.octagon")
+                .font(.caption2)
+                .foregroundStyle(OtegamiColor.destructive)
+        case nil:
+            Label("不明", systemImage: "questionmark.circle")
+                .font(.caption2)
+                .foregroundStyle(OtegamiColor.inkSecondary)
+        }
+    }
+}
+
+#Preview {
+    NavigationStack {
+        OpQueueDiagnosticsView()
+    }
+    .environment(AppEnvironment())
+}
