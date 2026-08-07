@@ -290,6 +290,16 @@ SCENARIO_ARGS[push-diagnostics-populated]="-uitestsOpenSettingsDirectly -uitests
 SCENARIO_OUT[opqueue-diagnostics]="opqueue-diagnostics.png"
 SCENARIO_ARGS[opqueue-diagnostics]="-uitestsOpenSettingsDirectly -uitestsOpenGeneralSettingsDirectly -uitestsOpenOpQueueDiagnosticsDirectly"
 
+# 同じ画面を、未送信の操作 3件 (種類2種) とメール取得が途中のメール
+# ボックス1件を注入した状態で開く (`UITestSeeder
+# .seedOpQueueDiagnosticsIfRequested`) — ユーザー要望で足した「未送信の
+# 操作を破棄」ボタンと、実機報告「『すべてのメール』の未読件数が iOS と
+# macOS で違う」を受けて足した「メール取得の進捗」セクションは、上の空
+# 状態シナリオでは1行も描画されないため。
+SCENARIO_OUT[opqueue-diagnostics-populated]="opqueue-diagnostics-populated.png"
+SCENARIO_ENV[opqueue-diagnostics-populated]="OTEGAMI_UITEST_SEED_OPQUEUE_DIAGNOSTICS=1"
+SCENARIO_ARGS[opqueue-diagnostics-populated]="-uitestsOpenSettingsDirectly -uitestsOpenGeneralSettingsDirectly -uitestsOpenOpQueueDiagnosticsDirectly"
+
 # Task #100: 設定 → メールビューア → 「ツールバーのカスタマイズ」を
 # タップ無しで直接開く (`AccountsListContent`/`MailViewerSettingsView`
 # それぞれの`-uitestsOpen*Directly`フックを積み重ねる、`account-edit`

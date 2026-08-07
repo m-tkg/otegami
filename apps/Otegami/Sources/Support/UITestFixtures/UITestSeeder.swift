@@ -689,6 +689,89 @@ enum UITestSeeder {
             }
         }
 
+        seedOpQueueDiagnosticsIfRequested(db: db)
+
         return directOpenThreadId
+    }
+
+    /// 「操作同期の診断」画面 (`OpQueueDiagnosticsView`) の**中身が入った**
+    /// 見た目を確認するためのフィクスチャ — `scripts/verify-screen.sh
+    /// opqueue-diagnostics-populated`が使う。シミュレータでは実際の
+    /// `OpQueueProcessor.replay`も IMAP 同期も走らないため、既存の
+    /// `opqueue-diagnostics`シナリオは全セクションが空状態にしかならず、
+    /// 「未送信の操作を破棄」ボタンとメール取得の進捗行をレンダリングして
+    /// 確認できなかった。
+    ///
+    /// 入れるもの:
+    /// - 未送信の`opQueue`行 3件 (`setFlags`2 + `archive`1) — アカウント別
+    ///   サマリと種類別内訳、そして破棄ボタンが出る状態。
+    /// - メールボックス3件のうち1件だけ`backfillLowerBound > 1` (取得途中)
+    ///   — 「取得中 1 / 3 メールボックス」と割合つきの行が出る状態。
+    ///
+    /// 他のフィクスチャブロックと同じく、同一インストール内で
+    /// `app.launch()`を繰り返しても行が増えないようメール重複ガードを置く。
+    private static func seedOpQueueDiagnosticsIfRequested(db: any DatabaseWriter) {
+        guard ProcessInfo.processInfo.environment["OTEGAMI_UITEST_SEED_OPQUEUE_DIAGNOSTICS"] == "1" else { return }
+        let fakeAccountEmail = "uitest-opqueue@otegami.test"
+        let fakeAccount = AccountRecord(
+            displayName: "OpQueue 診断 (UITest)",
+            email: fakeAccountEmail,
+            authType: .password,
+            imapHost: "127.0.0.1",
+            imapPort: 1,
+            imapSecurity: .plain,
+            imapUsername: fakeAccountEmail,
+            sortOrder: 1_002
+        )
+        try? db.write { db in
+            guard try AccountRecord.filter(Column("email") == fakeAccountEmail).fetchOne(db) == nil else { return }
+            try fakeAccount.insert(db)
+
+            var inbox = MailboxRecord(
+                accountId: fakeAccount.id, path: "INBOX", displayPath: "INBOX", role: .inbox,
+                uidValidity: 1, uidNext: 121
+            )
+            try inbox.insert(db)
+            // 取得途中のメールボックス: UID 1..1000 のうち 401 未満が未取得
+            // = 60% 走査済みとして表示される。
+            var allMail = MailboxRecord(
+                accountId: fakeAccount.id, path: "Archive", displayPath: "Archive", role: .archive,
+                uidValidity: 1, uidNext: 1_001, backfillLowerBound: 401
+            )
+            try allMail.insert(db)
+            var sent = MailboxRecord(
+                accountId: fakeAccount.id, path: "Sent", displayPath: "Sent", role: .sent,
+                uidValidity: 1, uidNext: 31
+            )
+            try sent.insert(db)
+
+            let now = Date()
+            for (index, mailbox) in [inbox, allMail, sent].enumerated() {
+                var message = MessageRecord(
+                    mailboxId: mailbox.id!, uid: Int64(index + 1),
+                    messageId: "<uitest-opqueue-\(index)@otegami.test>",
+                    subject: "診断フィクスチャ \(index + 1) (UITest)",
+                    normalizedSubject: "診断フィクスチャ \(index + 1) (UITest)",
+                    fromAddresses: [EmailAddress(name: "Otegami QA", address: "qa@example.com")],
+                    toAddresses: [EmailAddress(address: fakeAccountEmail)],
+                    fromText: "Otegami QA <qa@example.com>",
+                    internalDate: now.addingTimeInterval(-Double(index) * 60)
+                )
+                try message.insert(db)
+            }
+
+            try OpQueue.enqueueSetFlags(
+                accountId: fakeAccount.id, mailboxId: inbox.id!, uidValidity: 1,
+                uids: [1], flags: .seen, db: db
+            )
+            try OpQueue.enqueueSetFlags(
+                accountId: fakeAccount.id, mailboxId: inbox.id!, uidValidity: 1,
+                uids: [2], flags: .seen, db: db
+            )
+            try OpQueue.enqueueArchive(
+                accountId: fakeAccount.id, sourceMailboxId: inbox.id!, uidValidity: 1,
+                uids: [3], db: db
+            )
+        }
     }
 }
