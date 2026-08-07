@@ -603,6 +603,12 @@ public actor AccountSyncer {
                         // (both explicit, targeted `UPDATE`s) are allowed to
                         // change this column.
                         Column("backfillLowerBound").noOverwrite,
+                        // 未読スイープ: same reasoning again — only
+                        // `UnseenSweeper` (an explicit, targeted `UPDATE`)
+                        // may change these, never a re-`LIST` that has no
+                        // idea what the last sweep found.
+                        Column("unseenNotFetchedCount").noOverwrite,
+                        Column("lastUnseenSweepAt").noOverwrite,
                     ]
                 }
                 records[info.path] = record

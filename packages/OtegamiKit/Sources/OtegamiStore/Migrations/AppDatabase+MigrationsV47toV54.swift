@@ -75,5 +75,25 @@ extension DatabaseMigrator {
         registerMigration("v49") { db in
             try ThreadAssigner.recomputeAllAggregates(db: db)
         }
+
+        // v50 (実機報告「まだローカルにない未読メールが検出できない」):
+        // 未読件数はローカルに取り込み済みの行の `COUNT(*)` なので
+        // (`MessageQuery.unreadCounts`)、バックフィルが追いついていない
+        // メールボックスでは構造的に実際より少なく出る (この文書の落とし穴
+        // (l) — 大きいアカウントでは追いつくことが事実上ない)。
+        // `UnseenSweeper` が `UID SEARCH UNSEEN` の結果と突き合わせて
+        // 「サーバーは未読と言っているがローカルに行が無い」件数を
+        // `unseenNotFetchedCount` に持ち、バッジはローカル集計にこれを足す。
+        // `lastUnseenSweepAt` はその SEARCH の実行間隔を絞るためだけの列。
+        //
+        // どちらも既存行のバックフィル (`UPDATE` で初期値を計算し直す処理)
+        // は不要 — 0 / NULL がそれぞれ「まだ調べていない」を正しく表し、
+        // 最初のスイープが実測値で埋める。
+        registerMigration("v50") { db in
+            try db.alter(table: "mailbox") { t in
+                t.add(column: "unseenNotFetchedCount", .integer).notNull().defaults(to: 0)
+                t.add(column: "lastUnseenSweepAt", .datetime)
+            }
+        }
     }
 }

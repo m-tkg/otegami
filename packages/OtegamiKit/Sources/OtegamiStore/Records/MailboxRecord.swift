@@ -185,6 +185,35 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
     /// until its first real sync gives it a meaningful value.
     public var backfillLowerBound: Int64
 
+    /// 実機報告「まだローカルにない未読メールが検出できない」(migration v50):
+    /// how many messages the server reports as unread in this mailbox that
+    /// this device has **no local row for at all** — the part of the unread
+    /// count `MessageQuery.unreadCounts`' `COUNT(*)` over local rows
+    /// structurally cannot see. Maintained by `UnseenSweeper` from a
+    /// `UID SEARCH UNSEEN` (see `IMAPSessionProtocol.searchUnseenUIDs`), and
+    /// decremented as that same sweep fetches the missing UIDs, so it
+    /// converges to `0` for a mailbox that has fully caught up.
+    ///
+    /// Deliberately *not* "the server's unread count": that would
+    /// double-count everything already stored locally, and would stop
+    /// reflecting a message the user reads locally (a badge that won't go
+    /// down as you read is worse than one that reads low). Adding only the
+    /// not-yet-fetched remainder keeps local reads decrementing the badge
+    /// exactly as they do today.
+    ///
+    /// `.noOverwrite`-protected in `AccountSyncer.upsertMailboxes` for the
+    /// same reason `backfillLowerBound` and `isHidden` are — a mailbox
+    /// re-listing must not clobber sweep progress.
+    public var unseenNotFetchedCount: Int
+
+    /// When `UnseenSweeper` last completed a `UID SEARCH UNSEEN` for this
+    /// mailbox. `nil` = never swept. Used purely to rate-limit the sweep
+    /// (`UnseenSweeper.sweepInterval`): `SEARCH UNSEEN` scans the whole
+    /// mailbox server-side, which is far too expensive to issue on every
+    /// incremental sync of a large mailbox. `.noOverwrite` for the same
+    /// reason as `unseenNotFetchedCount`.
+    public var lastUnseenSweepAt: Date?
+
     public init(
         id: Int64? = nil,
         accountId: String,
@@ -202,7 +231,9 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         lastSyncError: String? = nil,
         lastSyncErrorAt: Date? = nil,
         isHidden: Bool = false,
-        backfillLowerBound: Int64 = 1
+        backfillLowerBound: Int64 = 1,
+        unseenNotFetchedCount: Int = 0,
+        lastUnseenSweepAt: Date? = nil
     ) {
         self.id = id
         self.accountId = accountId
@@ -221,6 +252,8 @@ public struct MailboxRecord: Codable, Equatable, Sendable, FetchableRecord, Muta
         self.lastSyncErrorAt = lastSyncErrorAt
         self.isHidden = isHidden
         self.backfillLowerBound = backfillLowerBound
+        self.unseenNotFetchedCount = unseenNotFetchedCount
+        self.lastUnseenSweepAt = lastUnseenSweepAt
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

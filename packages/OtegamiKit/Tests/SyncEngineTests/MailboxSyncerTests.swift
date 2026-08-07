@@ -107,6 +107,90 @@ struct MailboxSyncerTests {
         #expect(messages.contains { $0.subject == "新着4通目" })
     }
 
+    /// 実機報告「まだローカルにない未読メールが検出できない」: `incrementalSync`
+    /// ends with a `UnseenSweeper` pass, so an unread message *below* the
+    /// locally-synced window — the one an ordinary "new mail since our max UID"
+    /// step structurally cannot see, and that backfill would take many sessions
+    /// to reach — is pulled in and stops being missing from the badge.
+    @Test("incremental sync sweeps for unread mail below the synced window and counts it")
+    func incrementalSyncSweepsForUnseenBelowTheWindow() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        // Initial sync only ever stores its own window; uid 1 stays unknown to
+        // this device even though the server has had it all along.
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 2, subject: "2通目", flags: [.seen])]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 0, messageCount: 2)]
+            )
+        )
+
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [
+                makeEnvelope(uid: 1, subject: "古い未読"),
+                makeEnvelope(uid: 2, subject: "2通目", flags: [.seen]),
+            ]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 0, messageCount: 2)],
+            capabilitiesToReport: [.condstore]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let (subjects, unread, mailbox) = try await database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchAll(db).compactMap(\.subject),
+                try MessageQuery.unifiedInboxUnreadCount(accountIds: [account.id], role: .inbox, db: db),
+                try MailboxRecord.filter(Column("accountId") == account.id).fetchOne(db)
+            )
+        }
+        #expect(subjects.contains("古い未読"), "the sweep pulled in an unread message below the synced window")
+        #expect(unread == 1)
+        #expect(mailbox?.unseenNotFetchedCount == 0)
+        #expect(mailbox?.lastUnseenSweepAt != nil, "the sweep recorded its own rate-limit timestamp")
+    }
+
+    @Test("a failing SEARCH UNSEEN does not fail the sync around it")
+    func failedSweepDoesNotFailTheSync() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "1通目")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+            )
+        )
+
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [
+                makeEnvelope(uid: 1, subject: "1通目"),
+                makeEnvelope(uid: 2, subject: "新着2通目"),
+            ]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 3, highestModSeq: 0, messageCount: 2)],
+            capabilitiesToReport: [.condstore],
+            failSearchUnseenUIDs: .notImplemented("SEARCH")
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        // The sweep is a count correction, not the sync itself — a server that
+        // refuses `SEARCH` must not cost the user their new mail.
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.newMessages == 1)
+        let subjects = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db).compactMap(\.subject) }
+        #expect(subjects.contains("新着2通目"))
+    }
+
     /// docs/architecture.md's Known pitfalls (d): an open-ended `UIDRange`
     /// (`upperBound == nil`) is never chunked by `MailCoreIMAPSession
     /// .chunk`, so a naive "new mail since `newMailLowerBound`" fetch that
