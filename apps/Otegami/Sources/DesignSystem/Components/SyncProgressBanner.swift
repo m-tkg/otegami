@@ -48,12 +48,28 @@ public struct SyncProgressBanner: View {
         }
         .padding(.horizontal, OtegamiSpacing.md)
         .padding(.vertical, OtegamiSpacing.sm)
+        // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass 方針」):
+        // iOS はこのバナーが持っていた不透明な`surface`塗り+下罫線を、
+        // `MessageDetailFooterToolbar`と同じ「バー全体1枚の Glass カプセル」
+        // へ置き換えた — 罫線での区切りではなく、画面端から浮かせた
+        // フローティングなピルとして本文の上に乗る形にする。macOS は
+        // このバナーにこれまで独自分岐が無かった (Phase 1-3・2026-08-07
+        // のネイティブ化はサイドバー/一覧/チップ/検索欄が対象で、この
+        // トップバナーは含まれていなかった) — 新規に`#if os(macOS)`を切り、
+        // CLAUDE.md の「macOS は現状維持」どおり旧来の`surface`塗り+
+        // 下罫線をそのまま残す。
+        #if os(iOS)
+        .otegamiGlassChrome(shape: Capsule())
+        .padding(.horizontal, OtegamiSpacing.md)
+        .padding(.top, OtegamiSpacing.xs)
+        #else
         .background(OtegamiColor.surface)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(OtegamiColor.dividerSubtle)
                 .frame(height: OtegamiStroke.secondary)
         }
+        #endif
         .accessibilityIdentifier("syncProgressBanner")
         .accessibilityElement(children: .combine)
         .transition(.move(edge: .top).combined(with: .opacity))
