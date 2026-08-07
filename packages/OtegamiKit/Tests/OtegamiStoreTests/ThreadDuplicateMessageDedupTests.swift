@@ -196,4 +196,122 @@ struct ThreadDuplicateMessageDedupTests {
         #expect(threads.first?.messageCount == 1)
         #expect(threads.first?.unreadCount == 1, "the surviving INBOX row is unread")
     }
+
+    // MARK: - isPinned (実機報告 2026-08-07「メールの unpin が反映されない」)
+
+    /// `isPinned`は元々「MAXベースで重複に対して安全」という判断で dedup
+    /// 前の全行の OR だったが、行アクションが触るのは dedup 済みの代表行
+    /// だけなので、All Mail 側の行が1つ`true`のまま残るとピンが永久に
+    /// 落ちなかった。`messageCount`/`unreadCount`と同じ dedup 済みの定義へ
+    /// 揃えた — その2つと同じく、**Swift パスと一括 SQL パスの両方**を
+    /// 同じ入力で突き合わせる (`aggregateUpdateSQL`の doc comment が
+    /// 警戒している「定義が散らばって食い違う」リスクが、2実装を同時に
+    /// 直すことで顕在化するため)。
+    @Test("recomputeAggregates(threadId:db:) の isPinned は dedup 後の代表行だけを見る")
+    func recomputeAggregatesUsesDeduplicatedIsPinned() throws {
+        let (database, accountId, inboxId, allMailId) = try makeGmailDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let threadId = try database.dbWriter.write { db -> Int64 in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 0)
+            try thread.insert(db)
+            // 実機で起きていた状態そのもの: 代表行 (INBOX) は解除済みなのに、
+            // 同期が戻した All Mail 側の重複行だけピンが残っている。
+            var inboxMessage = MessageRecord(
+                mailboxId: inboxId, uid: 1, date: base, internalDate: base,
+                flagsRaw: 0, gmailMessageId: 7, threadId: thread.id, isPinnedLocal: false
+            )
+            try inboxMessage.insert(db)
+            var allMailMessage = MessageRecord(
+                mailboxId: allMailId, uid: 1, date: base, internalDate: base,
+                flagsRaw: MessageFlags.flagged.rawValue, gmailMessageId: 7, threadId: thread.id, isPinnedLocal: true
+            )
+            try allMailMessage.insert(db)
+            return thread.id!
+        }
+
+        try database.dbWriter.write { db in try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db) }
+
+        let thread = try database.dbWriter.read { db in try ThreadRecord.fetchOne(db, key: threadId) }
+        #expect(thread?.isPinned == false, "生き残った INBOX 行が解除済みなら、All Mail の重複行が残っていてもピンは落ちる")
+    }
+
+    @Test("一括 SQL パスの isPinned も dedup 後の代表行だけを見る")
+    func bulkAggregatePathUsesDeduplicatedIsPinned() throws {
+        let (database, accountId, inboxId, allMailId) = try makeGmailDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        try database.dbWriter.write { db in
+            var inboxMessage = MessageRecord(
+                mailboxId: inboxId, uid: 1, date: base, internalDate: base,
+                flagsRaw: 0, gmailThreadId: 5, gmailMessageId: 5, threadId: nil, isPinnedLocal: false
+            )
+            try inboxMessage.insert(db)
+            var allMailMessage = MessageRecord(
+                mailboxId: allMailId, uid: 1, date: base, internalDate: base,
+                flagsRaw: MessageFlags.flagged.rawValue, gmailThreadId: 5, gmailMessageId: 5, threadId: nil, isPinnedLocal: true
+            )
+            try allMailMessage.insert(db)
+        }
+
+        try database.dbWriter.write { db in try ThreadAssigner.assignAllUnthreaded(accountId: accountId, db: db) }
+
+        let threads = try database.dbWriter.read { db in try ThreadRecord.fetchAll(db) }
+        #expect(threads.count == 1)
+        #expect(threads.first?.isPinned == false, "Swift パスと同じ結果になること")
+    }
+
+    /// 逆向き — 代表行にピンが立っていれば、重複行が解除済みでもピンは立つ。
+    @Test("代表行にピンが立っていれば isPinned は true")
+    func survivingRowPinnedYieldsPinnedThread() throws {
+        let (database, accountId, inboxId, allMailId) = try makeGmailDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let threadId = try database.dbWriter.write { db -> Int64 in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 0)
+            try thread.insert(db)
+            var inboxMessage = MessageRecord(
+                mailboxId: inboxId, uid: 1, date: base, internalDate: base,
+                flagsRaw: MessageFlags.flagged.rawValue, gmailMessageId: 7, threadId: thread.id, isPinnedLocal: true
+            )
+            try inboxMessage.insert(db)
+            var allMailMessage = MessageRecord(
+                mailboxId: allMailId, uid: 1, date: base, internalDate: base,
+                flagsRaw: 0, gmailMessageId: 7, threadId: thread.id, isPinnedLocal: false
+            )
+            try allMailMessage.insert(db)
+            return thread.id!
+        }
+
+        try database.dbWriter.write { db in try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db) }
+
+        let thread = try database.dbWriter.read { db in try ThreadRecord.fetchOne(db, key: threadId) }
+        #expect(thread?.isPinned == true)
+    }
+
+    /// 重複が無いスレッドでは、どの行がピン留めされていてもスレッドは
+    /// ピン留め扱い (dedup 化の前後で挙動が変わらないこと)。
+    @Test("重複が無いスレッドでは1通でもピン留めされていれば isPinned は true")
+    func nonDuplicateThreadKeepsOrSemantics() throws {
+        let (database, accountId, inboxId, _) = try makeGmailDatabase()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let threadId = try database.dbWriter.write { db -> Int64 in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 0)
+            try thread.insert(db)
+            for (index, pinned) in [false, true].enumerated() {
+                var message = MessageRecord(
+                    mailboxId: inboxId, uid: Int64(index + 1),
+                    messageId: "<distinct-\(index)@otegami.test>",
+                    date: base, internalDate: base,
+                    flagsRaw: pinned ? MessageFlags.flagged.rawValue : 0,
+                    threadId: thread.id, isPinnedLocal: pinned
+                )
+                try message.insert(db)
+            }
+            return thread.id!
+        }
+
+        try database.dbWriter.write { db in try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db) }
+
+        let thread = try database.dbWriter.read { db in try ThreadRecord.fetchOne(db, key: threadId) }
+        #expect(thread?.messageCount == 2)
+        #expect(thread?.isPinned == true)
+    }
 }

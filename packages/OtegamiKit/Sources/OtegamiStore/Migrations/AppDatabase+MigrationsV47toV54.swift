@@ -58,5 +58,22 @@ extension DatabaseMigrator {
             }
             try db.create(index: "opQueueStaleDiscard_on_discardedAt", on: "opQueueStaleDiscard", columns: ["discardedAt"])
         }
+
+        // v49 (実機報告 2026-08-07「メールの unpin が反映されない」):
+        // `thread.isPinned` を「dedup 前の全行の OR」から「dedup 後の代表行
+        // だけを見る」定義へ変えた (`ThreadAssigner.aggregateUpdateSQL`/
+        // `recomputeAggregates(threadId:db:)` — 判断理由はそちらのコメント)。
+        // 定義を変えただけでは、既に古い定義で書き込まれた値は**そのスレッド
+        // に次の変更が起きるまで残る** — 実機で「ピンが外れないスレッド」が
+        // まさにその状態なので、そのままでは修正版を入れても直らない。
+        //
+        // v35 が `messageCount`/`unreadCount` を dedup 済みの定義へ変えた
+        // ときと全く同じ理由・同じ手段 (`recomputeAllAggregates`が
+        // `aggregateUpdateSQL`をそのまま流用するので、定義は1箇所のまま)。
+        // このマイグレーション自体はスキーマを変えない — 既存行の値を新しい
+        // 定義で計算し直すだけ。
+        registerMigration("v49") { db in
+            try ThreadAssigner.recomputeAllAggregates(db: db)
+        }
     }
 }
