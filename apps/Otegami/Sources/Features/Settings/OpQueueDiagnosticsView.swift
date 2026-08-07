@@ -31,6 +31,11 @@ struct OpQueueDiagnosticsView: View {
 
     @State private var pendingSummaries: [OpQueueDiagnosticsQuery.PendingSummary] = []
     @State private var replayLog: [OpQueueReplayLogRecord] = []
+    /// Task (opqueue スタック修正、診断画面強化): 「今すぐ再送を実行」
+    /// ボタンの実行中フラグと直近の結果 — `isRunningManualReplay`は二重
+    /// タップ防止とプログレス表示の両方に使う。
+    @State private var isRunningManualReplay = false
+    @State private var manualReplayOutcomes: [ManualReplayOutcome] = []
 
     var body: some View {
         settingsContainer
@@ -88,7 +93,20 @@ struct OpQueueDiagnosticsView: View {
         } header: {
             Text("未送信の操作 (アカウント別)")
         } footer: {
-            Text("サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。")
+            Text("サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳、操作の種類別の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。")
+        }
+
+        Section {
+            ManualReplayControl(
+                isRunning: isRunningManualReplay,
+                outcomes: manualReplayOutcomes,
+                accountDisplayName: accountDisplayName(for:),
+                onRun: { Task { await runManualReplay() } }
+            )
+        } header: {
+            Text("手動再送")
+        } footer: {
+            Text("この端末にある全アカウントの未送信操作を、今すぐこの場でサーバーへ再送してみます。実機での挙動確認用のボタンです。")
         }
 
         Section {
@@ -129,6 +147,17 @@ struct OpQueueDiagnosticsView: View {
         } catch {
             // A failing observation just stops the list from updating further.
         }
+    }
+
+    /// Task (opqueue スタック修正、診断画面強化): 「今すぐ再送を実行」の
+    /// タップハンドラ本体。`isRunningManualReplay`の二重タップガードは
+    /// `guard`一発 (実行中に連打されても2本目以降は即 return) — `defer`で
+    /// 確実にフラグを戻す。
+    private func runManualReplay() async {
+        guard !isRunningManualReplay else { return }
+        isRunningManualReplay = true
+        defer { isRunningManualReplay = false }
+        manualReplayOutcomes = await environment.replayOpQueueNowForDiagnostics(accountIds: environment.accounts.map(\.id))
     }
 
     private func observeReplayLog() async {
@@ -177,9 +206,109 @@ private struct PendingSummaryRow: View {
             Text(verbatim: "未試行 \(summary.neverAttemptedCount) / 再試行待ち \(summary.retryingCount) / 恒久失敗 \(summary.permanentlyFailedCount)")
                 .font(.caption2)
                 .foregroundStyle(OtegamiColor.inkSecondary)
+            // Task (opqueue スタック修正、診断画面強化): 種類別の内訳 —
+            // 「1055件がどの操作で積み上がったか」を切り分けるための行。
+            if !summary.countByKind.isEmpty {
+                Text(verbatim: OpQueueKindDisplay.breakdownText(summary.countByKind))
+                    .font(.caption2)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                    .accessibilityIdentifier("opQueueDiagnostics.pending.kindBreakdown")
+            }
         }
         .padding(.vertical, OtegamiSpacing.xs)
         .accessibilityIdentifier("opQueueDiagnostics.pending.row")
+    }
+}
+
+/// Task (opqueue スタック修正、診断画面強化): `OpQueueRecord.kind`の生の
+/// 文字列 (`SyncEngine.OpQueueKind`のrawValue) を、この画面用の日本語
+/// ラベルへ変換する。`OpQueueDiagnosticsQuery.PendingSummary.countByKind`
+/// が`OtegamiStore`側で文字列キーのまま持つ理由 (`SyncEngine`への依存を
+/// 増やさないため) は同型のdoc comment参照 — ここ (アプリ側、既に
+/// `SyncEngine`をimport済み) で初めて型付きの`OpQueueKind`に戻して表示名を
+/// 決める。
+enum OpQueueKindDisplay {
+    static func displayName(for raw: String) -> String {
+        switch OpQueueKind(rawValue: raw) {
+        case .setFlags: "既読/フラグ変更"
+        case .move: "移動"
+        case .delete: "ゴミ箱へ移動"
+        case .junk: "迷惑メールへ移動"
+        case .archive: "アーカイブ"
+        case .unarchive: "アーカイブ解除"
+        case .send: "送信"
+        case .saveDraft: "下書き保存"
+        case .deleteDraft: "下書き削除"
+        case nil: raw
+        }
+    }
+
+    /// 件数の多い順に「表示名 件数」を` / `区切りで並べる。
+    static func breakdownText(_ countByKind: [String: Int]) -> String {
+        countByKind
+            .sorted { $0.value > $1.value }
+            .map { "\(displayName(for: $0.key)) \($0.value)" }
+            .joined(separator: " / ")
+    }
+}
+
+/// Task (opqueue スタック修正、診断画面強化): 「今すぐ再送を実行」ボタン
+/// と、実行後の結果一覧。`OpQueueDiagnosticsView.sections`の`body`を長く
+/// しないための独立ビュー (`CLAUDE.md`の「SwiftUIビューは小さく保つ」方針)。
+private struct ManualReplayControl: View {
+    let isRunning: Bool
+    let outcomes: [ManualReplayOutcome]
+    let accountDisplayName: (String) -> String
+    let onRun: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.sm) {
+            Button(action: onRun) {
+                if isRunning {
+                    HStack(spacing: OtegamiSpacing.xs) {
+                        ProgressView()
+                        Text("実行中…")
+                    }
+                } else {
+                    Text("今すぐ再送を実行")
+                }
+            }
+            .disabled(isRunning)
+            .accessibilityIdentifier("opQueueDiagnostics.manualReplay.button")
+
+            if !isRunning && !outcomes.isEmpty {
+                ForEach(outcomes) { outcome in
+                    ManualReplayOutcomeRow(outcome: outcome, accountDisplayName: accountDisplayName(outcome.accountId))
+                }
+            }
+        }
+        .padding(.vertical, OtegamiSpacing.xs)
+    }
+}
+
+/// `ManualReplayControl`の実行結果1件 (1アカウント分) の表示 — 成功時は
+/// `OpQueueProcessor.ReplayResult`の内訳、失敗時はエラー文言を出す。
+private struct ManualReplayOutcomeRow: View {
+    let outcome: ManualReplayOutcome
+    let accountDisplayName: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
+            Text(verbatim: accountDisplayName)
+                .font(.caption.bold())
+            if let result = outcome.result {
+                Text(verbatim: "成功 \(result.succeeded) / 破棄 \(result.discardedStale) / 再試行待ち \(result.retrying) / 恒久失敗 \(result.permanentlyFailed)")
+                    .font(.caption2)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+            }
+            if let errorDescription = outcome.errorDescription {
+                Text(verbatim: errorDescription)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(OtegamiColor.destructive)
+                    .textSelection(.enabled)
+            }
+        }
+        .accessibilityIdentifier("opQueueDiagnostics.manualReplay.outcomeRow")
     }
 }
 

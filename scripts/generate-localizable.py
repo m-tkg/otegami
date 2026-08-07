@@ -1016,6 +1016,13 @@ translations = {
     "未送信の操作 (アカウント別)": "Unsent Operations (by Account)",
     "サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。":
         "The number of operations not yet sent to the server, broken down by pending-retry and permanently-failed. Permanently-failed operations can be retried or discarded individually from the \"Sync Error\" screen.",
+    "サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳、操作の種類別の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。":
+        "The number of operations not yet sent to the server, broken down by pending-retry, permanently-failed, and operation kind. Permanently-failed operations can be retried or discarded individually from the \"Sync Error\" screen.",
+    "手動再送": "Manual Replay",
+    "この端末にある全アカウントの未送信操作を、今すぐこの場でサーバーへ再送してみます。実機での挙動確認用のボタンです。":
+        "Immediately attempts to resend every unsent operation across all accounts on this device. Intended for checking behavior on a real device.",
+    "実行中…": "Running…",
+    "今すぐ再送を実行": "Replay Now",
     "再送処理 (replay) の直近実行履歴": "Recent Replay Runs",
     "まだ記録がありません。": "No records yet.",
     "直近の実行履歴を一定件数まで保持します。「未完了」のまま残っている行は、その回だけアプリが途中で終了した可能性を示します。":
