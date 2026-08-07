@@ -172,6 +172,14 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// exactly the race `prefetchRecent`'s fresh already-fetched
         /// recheck guards against.
         public var fetchBodyGate: AsyncCallGate?
+        /// Task (opqueue スタック修正): same idea as `storeGate`, for
+        /// `connect(auth:)` — a gate that's never `open()`ed models a
+        /// permanently-hung `connect()` call (the exact real-device failure
+        /// mode `OpQueueProcessor.replayPass`'s `connectTimeout` now guards
+        /// against), letting `OpQueueProcessorTests`'s timeout/stale-in-
+        /// flight-takeover tests reproduce it deterministically instead of
+        /// needing a real dead socket.
+        public var connectGate: AsyncCallGate?
 
         public init(
             mailboxes: [MailboxInfo] = [],
@@ -200,7 +208,8 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             appendReturnsUID: UInt32? = nil,
             flakyFetchRecentEnvelopes: FlakyCallController? = nil,
             storeGate: AsyncCallGate? = nil,
-            fetchBodyGate: AsyncCallGate? = nil
+            fetchBodyGate: AsyncCallGate? = nil,
+            connectGate: AsyncCallGate? = nil
         ) {
             self.mailboxes = mailboxes
             self.envelopesByPath = envelopesByPath
@@ -229,6 +238,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.flakyFetchRecentEnvelopes = flakyFetchRecentEnvelopes
             self.storeGate = storeGate
             self.fetchBodyGate = fetchBodyGate
+            self.connectGate = connectGate
         }
     }
 
@@ -523,6 +533,9 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         case .xoauth2(let value, _): username = value
         }
         recorder?.recordConnect(username: username)
+        if let connectGate = script.connectGate {
+            await connectGate.wait()
+        }
         if let failConnection = script.failConnection {
             throw failConnection
         }
