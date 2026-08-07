@@ -27,7 +27,9 @@ struct SearchAccountFilterChipRow: View {
             .padding(.horizontal, OtegamiSpacing.md)
             .padding(.vertical, OtegamiSpacing.xs)
         }
-        .background(OtegamiColor.background)
+        // Liquid Glass Phase 4: 独自`background`塗りを廃止 — 各チップは
+        // `AccountFilterChip`経由で既に Glass 化済みなので、この行自体は
+        // 標準の透明な背景に委ねる。
         .accessibilityIdentifier("search.accountChipRow")
     }
 }

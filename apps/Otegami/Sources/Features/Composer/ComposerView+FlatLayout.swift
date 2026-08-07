@@ -41,7 +41,6 @@ extension ComposerView {
             .padding(.horizontal, OtegamiSpacing.lg)
             .padding(.vertical, OtegamiSpacing.md)
         }
-        .background(OtegamiColor.background)
         .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom) { flatBottomActionBar }
     }
@@ -79,7 +78,15 @@ extension ComposerView {
                 .padding(.vertical, OtegamiSpacing.xs)
             }
         }
-        .background(OtegamiColor.surface)
+        // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass 方針」):
+        // `MessageDetailFooterToolbar.toolbarBar`と同型 — 独自の不透明
+        // `surface`塗りをやめ、バー全体 (書式バー行＋下部アクション行の
+        // 両方) を1枚の Glass カプセルにまとめる。画面端に接したままだと
+        // カプセルの丸い端が画面外で切れるため、外側にマージンを足して
+        // 画面内に収める (同ファイルの doc comment 参照)。
+        .otegamiGlassChrome(shape: Capsule())
+        .padding(.horizontal, OtegamiSpacing.md)
+        .padding(.bottom, OtegamiSpacing.xs)
     }
 
     /// 「差出人 (From アカウント) 行は現行機能を維持しつつ同トーンの控えめな

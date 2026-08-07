@@ -98,7 +98,19 @@ struct RichTextFormattingBar: View {
             .padding(.horizontal, OtegamiSpacing.sm)
             .padding(.vertical, OtegamiSpacing.xs)
         }
+        // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass 方針」):
+        // iOS のこの唯一の呼び出し元 (`ComposerView+FlatLayout
+        // .flatBottomActionBar`) は既にバー全体を1枚の Glass カプセルに
+        // している — ここでさらに独自の Glass/塗りを重ねると、
+        // `MessageDetailFooterToolbar`が「アイコンごとに`.glass`を配ると
+        // 密集時にカプセルが重なり合う」ため個別ではなくバー単位でまとめた
+        // のと同じ問題 (二重ガラス) になる。iOS は塗りを持たず透明にして
+        // 親のガラスをそのまま見せる。macOS (`ComposerView+MacForm
+        // .bodySection`、`Form`内に直接置かれ親はガラスを持たない) は
+        // 従来どおり`surface`塗りを維持 (CLAUDE.md「macOS は現状維持」)。
+        #if os(macOS)
         .background(OtegamiColor.surface)
+        #endif
         .accessibilityIdentifier("composer.formattingBar")
         .sheet(isPresented: $isShowingLinkSheet) {
             LinkInputSheet(

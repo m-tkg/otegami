@@ -41,11 +41,11 @@ struct DraftsView: View {
         NavigationStack {
             listBody
             .navigationTitle("下書き")
-            // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景
-            // 塗り・tint は iOS のみ (`SidebarView.sidebarList` と同じ判断)。
+            // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass
+            // 方針」): 独自`background`塗りは廃止し標準の`List`背景へ委譲
+            // — tint (意味を持つ色) だけは iOS 限定で維持する
+            // (`SidebarView.sidebarList`と同じ判断)。
             #if os(iOS)
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
             .tint(OtegamiColor.accent)
             #endif
             .toolbar {

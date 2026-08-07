@@ -27,7 +27,7 @@ public struct UndoToast: View {
         HStack(spacing: OtegamiSpacing.md) {
             Text(message)
                 .font(OtegamiFont.subheadline())
-                .foregroundStyle(OtegamiColor.surface)
+                .foregroundStyle(messageForegroundStyle)
                 .lineLimit(2)
             Spacer(minLength: OtegamiSpacing.sm)
             if let onUndo {
@@ -35,10 +35,7 @@ public struct UndoToast: View {
                     Text("元に戻す")
                         .font(OtegamiFont.subheadline())
                         .fontWeight(.semibold)
-                        // Task #108 続報: `ink` 背景上では `accentText` が沈む —
-                        // 反転面専用の `accentTextOnInk` を使う (トークン側の
-                        // doc comment 参照)。
-                        .foregroundStyle(OtegamiColor.accentTextOnInk)
+                        .foregroundStyle(undoForegroundStyle)
                 }
                 // Task #108 (c): 「元に戻す」のタップ領域を44pt以上に拡大 —
                 // `AccountFilterChip`と同じ`otegamiMinimumTappable()`を使い、
@@ -51,12 +48,47 @@ public struct UndoToast: View {
         // Task #108 (c): 実機報告「トーストが薄くて元に戻すが押しにくい」—
         // `.md`(12)→`.lg`(16)に増やし、トースト全体の高さも底上げする。
         .padding(.vertical, OtegamiSpacing.lg)
+        // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass 方針」):
+        // iOS はこのトーストが唯一持っていた不透明な反転面塗り (`ink`
+        // 背景 + `surface`/`accentTextOnInk`の反転前景色) をやめ、
+        // `MessageDetailFooterToolbar`と同じ「クローム層はバー全体1枚の
+        // Glass カプセル」に揃えた。macOS はこのトーストにこれまで独自
+        // 分岐が無かった (Phase 1-3・2026-08-07 のネイティブ化はサイド
+        // バー/一覧/チップ/検索欄が対象で、この浮遊トーストは含まれて
+        // いなかった) — 新規に`#if os(macOS)`を切り、CLAUDE.md の
+        // 「macOS は現状維持」どおり旧来の`ink`反転面をそのまま残す。
+        #if os(iOS)
+        .otegamiGlassChrome(shape: Capsule())
+        #else
         .background(OtegamiColor.ink)
         .overlay(Rectangle().strokeBorder(OtegamiColor.divider, lineWidth: OtegamiStroke.secondary))
+        #endif
         .padding(.horizontal, OtegamiSpacing.lg)
         .padding(.bottom, OtegamiSpacing.md)
         .accessibilityIdentifier("undoToast")
         .accessibilityElement(children: .combine)
         .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    /// iOS: Glass の上は標準の`.primary`に委譲。macOS: 従来どおり`ink`の
+    /// 濃い背景上で読める`surface`(明色)を反転面前景色として使う。
+    private var messageForegroundStyle: AnyShapeStyle {
+        #if os(iOS)
+        AnyShapeStyle(.primary)
+        #else
+        AnyShapeStyle(OtegamiColor.surface)
+        #endif
+    }
+
+    /// iOS: Glass 上のアクションは他のクローム部品 (`AccountFilterChip`の
+    /// 選択時など) と同じ`accent`。macOS: 従来どおり`ink`背景専用の
+    /// `accentTextOnInk` (`accentText`だと沈むための反転面専用トークン、
+    /// Task #108 続報のコメント参照)。
+    private var undoForegroundStyle: AnyShapeStyle {
+        #if os(iOS)
+        AnyShapeStyle(OtegamiColor.accent)
+        #else
+        AnyShapeStyle(OtegamiColor.accentTextOnInk)
+        #endif
     }
 }

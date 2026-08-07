@@ -55,7 +55,8 @@ struct PushNotificationOpenView: View {
                 .foregroundStyle(OtegamiColor.inkSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(OtegamiColor.background)
+        // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass 方針」):
+        // 独自`background`塗りペアを廃止し標準背景へ委譲。
         .accessibilityIdentifier("pushOpen.loading")
     }
 
@@ -66,9 +67,17 @@ struct PushNotificationOpenView: View {
             Text("通信できないか、サーバー上でメールが移動・削除された可能性があります。")
         } actions: {
             Button("再試行", action: retry)
+                // Liquid Glass Phase 4: compose 系に限らないが、この画面
+                // 唯一の主要アクションという重み付けはそのまま —
+                // `.borderedProminent`から tint 付き Glass 相当の
+                // `.glassProminent`へ。macOS は現状維持
+                // (`AccountFilterChip`と同じ判断)。
+                #if os(iOS)
+                .buttonStyle(.glassProminent)
+                #else
                 .buttonStyle(.borderedProminent)
+                #endif
         }
-        .background(OtegamiColor.background)
         .accessibilityIdentifier("pushOpen.failed")
     }
 

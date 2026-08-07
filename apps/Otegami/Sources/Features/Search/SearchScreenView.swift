@@ -173,7 +173,6 @@ struct SearchScreenView: View {
                 }
                 listArea
             }
-            .background(OtegamiColor.background)
             // Task #86: システム検索バー/ナビゲーションタイトルの代わりに
             // `SearchTopBar`を使うので、この画面のナビゲーションバー自体は
             // 隠す — 押し先の`ThreadEntryView`はこの画面と別のスコープなので
@@ -223,10 +222,12 @@ struct SearchScreenView: View {
     /// `List`自体は消さない、旧`resultsList`/`overlayContent`と同じ流儀)。
     /// Split out of `body` (`docs/ci.md`'s type-check-timeout discipline)。
     private var listArea: some View {
+        // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass 方針」):
+        // 独自の`OtegamiColor.background`塗り (VStack/Listペア) を廃止し、
+        // `List`標準の背景 (`.scrollContentBackground(.hidden)`も外す)へ
+        // 委譲した。
         List { listContent }
             .accessibilityIdentifier("search.list")
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
             .overlay { listOverlayContent }
     }
 
