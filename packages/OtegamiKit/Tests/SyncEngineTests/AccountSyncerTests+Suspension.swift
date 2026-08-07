@@ -196,6 +196,9 @@ private actor SuspendingEnvelopeFetchSession: IMAPSessionProtocol {
     func searchMessages(mailboxPath: String, query: String) async throws -> Set<UInt32> {
         try await underlying.searchMessages(mailboxPath: mailboxPath, query: query)
     }
+    func searchUnseenUIDs(mailboxPath: String) async throws -> Set<UInt32> {
+        try await underlying.searchUnseenUIDs(mailboxPath: mailboxPath)
+    }
     func fetchFlags(mailboxPath: String, uids: UIDRange) async throws -> [UInt32: MessageFlags] {
         try await underlying.fetchFlags(mailboxPath: mailboxPath, uids: uids)
     }

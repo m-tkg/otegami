@@ -70,6 +70,23 @@ public enum MessageQuery {
     /// the real `MessageFlags.seen.rawValue` so the two can't silently drift.
     static let seenFlagBit = 1
 
+    /// 実機報告「まだローカルにない未読メールが検出できない」: whether a mailbox's
+    /// `unseenNotFetchedCount` (`UnseenSweeper`'s "the server says unread, we have
+    /// no row at all" remainder) may be added to that mailbox's displayed unread
+    /// count.
+    ///
+    /// True everywhere except Gmail's All Mail. There, the displayed count is not
+    /// "All Mail's unread" but "**archived** unread" — `GmailArchiveFilter
+    /// .excludeUnarchivedSQL` subtracts everything also filed under INBOX/Sent/
+    /// Drafts. A raw `SEARCH UNSEEN` against All Mail can't make that distinction
+    /// (it counts unread INBOX mail too), so adding its remainder there would
+    /// inflate the archive badge by the inbox's own unread count. The sweep still
+    /// *runs* on All Mail — fetching those messages is what eventually lets the
+    /// local, correctly-filtered count become right — only the pre-fetch estimate
+    /// is withheld. Same unaliased `mailbox`/`account` JOIN precondition as
+    /// `GmailArchiveFilter`'s own fragments.
+    static let unseenNotFetchedIsCountableSQL = "NOT (mailbox.role = 'all' AND account.kind = 'gmail')"
+
     /// Unread message counts per mailbox, for every mailbox belonging to
     /// `accountId` — one grouped query instead of one `COUNT(*)` per mailbox
     /// row, backed by `message_on_mailboxId_flagsRaw` (v9). Mailboxes with
@@ -99,6 +116,28 @@ public enum MessageQuery {
         var counts: [Int64: Int] = [:]
         for row in rows {
             counts[row["mailboxId"] as Int64] = row["unreadCount"] as Int
+        }
+        // 実機報告「まだローカルにない未読メールが検出できない」: the `COUNT(*)`
+        // above can only see rows this device has actually stored, so add what
+        // `UnseenSweeper` measured as missing (`MailboxRecord
+        // .unseenNotFetchedCount`'s doc comment for why it's a remainder rather
+        // than the server's total). A separate query rather than a JOIN onto the
+        // one above: a mailbox with *zero* local unread messages but a non-zero
+        // remainder is absent from that `GROUP BY` result entirely, and it's
+        // exactly the mailbox this fix is about.
+        let remainders = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT mailbox.id AS mailboxId, mailbox.unseenNotFetchedCount AS remainder
+                FROM mailbox
+                JOIN account ON account.id = mailbox.accountId
+                WHERE mailbox.accountId = ? AND mailbox.unseenNotFetchedCount > 0
+                      AND \(unseenNotFetchedIsCountableSQL)
+                """,
+            arguments: [accountId]
+        )
+        for row in remainders {
+            counts[row["mailboxId"] as Int64, default: 0] += row["remainder"] as Int
         }
         return counts
     }
@@ -147,7 +186,7 @@ public enum MessageQuery {
             arguments.append(role.rawValue)
         }
         arguments.append(contentsOf: accountIds)
-        return try Int.fetchOne(
+        let localCount = try Int.fetchOne(
             db,
             sql: """
                 SELECT COUNT(*) FROM message
@@ -163,6 +202,29 @@ public enum MessageQuery {
                 """,
             arguments: StatementArguments(arguments)
         ) ?? 0
+        // 実機報告「まだローカルにない未読メールが検出できない」: same remainder
+        // `unreadCounts(accountId:db:)` adds, summed over exactly the mailboxes
+        // this role's scope selects — the `WHERE` below is the one above with the
+        // `message` JOIN dropped (nothing here looks at rows) and `mailbox
+        // .unseenNotFetchedCount > 0` added. `arguments` is reused verbatim, so
+        // the two scopes can't drift.
+        let remainder = try Int.fetchOne(
+            db,
+            sql: """
+                SELECT COALESCE(SUM(mailbox.unseenNotFetchedCount), 0) FROM mailbox
+                JOIN account ON account.id = mailbox.accountId
+                WHERE (
+                          (account.kind = ? AND mailbox.role = ?)
+                          OR \(nonGmailCondition)
+                      )
+                      AND mailbox.accountId IN (\(placeholders))
+                      AND mailbox.isHidden = 0
+                      AND mailbox.unseenNotFetchedCount > 0
+                      AND \(unseenNotFetchedIsCountableSQL)
+                """,
+            arguments: StatementArguments(arguments)
+        ) ?? 0
+        return localCount + remainder
     }
 
     public static func unifiedInboxUnreadCountObservation(accountIds: [String], role: MailboxRoleRecord = .inbox) -> ValueObservation<ValueReducers.Fetch<Int>> {

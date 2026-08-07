@@ -120,6 +120,12 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
         /// `SyncCoordinator.serverSearch`'s overall-timeout tests. Left
         /// ungated (`nil`, the default) for every other test.
         public var searchMessagesGate: AsyncCallGate?
+        /// When set, `searchUnseenUIDs(mailboxPath:)` throws this instead —
+        /// scripts a server whose `SEARCH UNSEEN` fails, so `UnseenSweeper`'s
+        /// "a failed sweep must not fail the whole sync" tolerance can be
+        /// exercised. The success path needs no script field: the result is
+        /// derived from `envelopesByPath` (see `searchUnseenUIDs`).
+        public var failSearchUnseenUIDs: MailTransportError?
         /// Scripted `idle(mailboxPath:)` events (M3), yielded in order and
         /// then the stream finishes; empty means the stream finishes
         /// immediately with no events.
@@ -201,6 +207,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             searchMessagesByPath: [String: Set<UInt32>] = [:],
             failSearchMessages: MailTransportError? = nil,
             searchMessagesGate: AsyncCallGate? = nil,
+            failSearchUnseenUIDs: MailTransportError? = nil,
             idleEvents: [IdleEvent] = [],
             failIdle: MailTransportError? = nil,
             failCreateMailbox: MailTransportError? = nil,
@@ -230,6 +237,7 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             self.searchMessagesByPath = searchMessagesByPath
             self.failSearchMessages = failSearchMessages
             self.searchMessagesGate = searchMessagesGate
+            self.failSearchUnseenUIDs = failSearchUnseenUIDs
             self.idleEvents = idleEvents
             self.failIdle = failIdle
             self.failCreateMailbox = failCreateMailbox
@@ -686,6 +694,23 @@ public actor FakeIMAPSession: IMAPSessionProtocol {
             throw failSearchMessages
         }
         return script.searchMessagesByPath[mailboxPath] ?? []
+    }
+
+    public private(set) var searchUnseenUIDsCalls: [String] = []
+
+    /// Derived from `script.envelopesByPath` — the same "what the server
+    /// currently has" data `fetchEnvelopes` reads — rather than a separate
+    /// fixture, for the same reason `fetchFlags(uids:)` derives its own
+    /// answer (see its doc comment): two hand-maintained copies of the same
+    /// mailbox contents drift, and this method's whole point is that the
+    /// UIDs it reports are fetchable afterwards.
+    public func searchUnseenUIDs(mailboxPath: String) async throws -> Set<UInt32> {
+        searchUnseenUIDsCalls.append(mailboxPath)
+        if let failSearchUnseenUIDs = script.failSearchUnseenUIDs {
+            throw failSearchUnseenUIDs
+        }
+        let envelopes = script.envelopesByPath[mailboxPath] ?? []
+        return Set(envelopes.filter { !$0.flags.contains(.seen) }.map(\.uid))
     }
 
     /// Task #194: derives its answer from `script.envelopesByPath` (the

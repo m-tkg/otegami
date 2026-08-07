@@ -1214,6 +1214,46 @@ range なのでチャンク化もキャンセルの checkpoint も効かない)�
 この集計も同じ条件で除外する — 対象外のものを「未完了」として並べると
 永久に減らない残件に見えてしまう。
 
+**追記 (2026-08-08): 未読件数だけはこの依存から外した。** 実機報告「まだ
+ローカルにない未読メールが検出できない」— 会社の Gmail アカウントで未読
+件数が実際より少ない、という報告への対処。バックフィルは 1 パス 2 バッチ・
+500 UID・5 分間隔なので、大きいアカウントでは事実上いつまでも追いつかず、
+「いつか合う」に任せられる話ではなかった。
+
+`UnseenSweeper` が `UID SEARCH UNSEEN`
+(`IMAPSessionProtocol.searchUnseenUIDs`) の結果とローカルの行を突き合わせ、
+
+1. ローカルに行が無い未読を**新しい順に**取り込む (1 回 500 件まで)
+2. 取り切れなかった残りを `MailboxRecord.unseenNotFetchedCount` に残し、
+   未読バッジはローカル集計にこれを足す (`MessageQuery.unreadCounts` /
+   `unifiedInboxUnreadCount`)
+
+`MailboxSyncer.incrementalSync` の最後で 15 分間隔 (`UnseenSweeper
+.sweepInterval`) を上限に走る。`SEARCH UNSEEN` はサーバー側でメールボックス
+全体を走査させるので毎回は投げられない。
+
+設計上の注意点:
+
+- **`STATUS` では代替できない。** MailCore2 の `folderInfoOperation`
+  (`IMAPSession.status(_:)` の実体) が返すのは
+  `UIDVALIDITY`/`UIDNEXT`/`HIGHESTMODSEQ`/メッセージ数だけで、`UNSEEN` は
+  含まれない。`SEARCH` なら件数と「取るべき UID」が同時に得られる。
+- **保存するのは「サーバーの未読総数」ではなく「未取得の残り」。** 総数を
+  持つとローカルにある分を二重に数え、しかもユーザーが既読にしても減らない
+  (減らないバッジは、少なく出るバッジより体験が悪い)。残りだけを足せば、
+  ローカルでの既読は今までどおりそのままバッジを減らす。
+- **Gmail の All Mail には足さない** (`MessageQuery
+  .unseenNotFetchedIsCountableSQL`)。そこのバッジは「All Mail の未読」では
+  なく「**アーカイブ済みの**未読」(`GmailArchiveFilter.excludeUnarchivedSQL`
+  が受信トレイ等との重複を引く) なのに、`SEARCH UNSEEN` はその区別ができず
+  受信トレイの未読まで数えてしまう。スイープ自体は All Mail でも走る —
+  取り込めばローカル側の正しいフィルタが効くようになるので、抑えるのは
+  取り込み前の推定値だけ。
+- **スイープの失敗は握り潰す。** 件数表示の補正であって同期そのものでは
+  ないので、`SEARCH` を拒否する/未対応のサーバーで通常の同期まで落とさない。
+- 検索結果が端末ごとに違う点 (この節の本文) は**変わっていない**。直したのは
+  未読件数だけ。
+
 ### m. ローカルの変更は `opQueue` から消えるまでサーバー状態より優先する
 
 実機報告 (2026-08-07)「受信箱のグループの画面で一括で Gmail をアーカイブ

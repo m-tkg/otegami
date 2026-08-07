@@ -374,7 +374,37 @@ public actor MailboxSyncer {
             return record
         }
 
-        return (updatedRecord, progress)
+        // 4. 未読スイープ (実機報告「まだローカルにない未読メールが検出できない」)。
+        // ステップ3の**後**に置くのが必須 — ステップ3の `record.update(db)` は
+        // 全列を書くので、先にスイープすると `mailboxRecord` が持っている古い
+        // `unseenNotFetchedCount`/`lastUnseenSweepAt` でその結果を上書きしてしまう。
+        //
+        // `UnseenSweeper.sweepInterval` で間隔を絞る (`SEARCH UNSEEN` はサーバー側で
+        // メールボックス全体を走査させるので毎回は投げられない)。失敗は握り潰す —
+        // これは件数表示を補正するための処理であって、同期そのものではない。
+        // `SEARCH` を拒否する/未対応のサーバーで通常の同期まで落ちる方がずっと悪い。
+        var recordAfterSweep = updatedRecord
+        if UnseenSweeper.isDue(updatedRecord) {
+            do {
+                try Task.checkCancellation()
+                if try await UnseenSweeper(database: database).sweep(
+                    mailboxRecord: updatedRecord, mailboxPath: mailboxPath,
+                    accountId: accountId, session: session
+                ) != nil {
+                    recordAfterSweep = try await database.dbWriter.read { db in
+                        try MailboxRecord.fetchOne(db, key: mailboxId)
+                    } ?? updatedRecord
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                Self.logger.notice(
+                    "unseen sweep: \(mailboxPath, privacy: .public) failed (ignored) error=\(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+
+        return (recordAfterSweep, progress)
     }
 
     /// The uidValidity-changed/never-synced path: re-fetches the same
