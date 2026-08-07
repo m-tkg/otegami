@@ -126,10 +126,28 @@ struct MessageDetailFooterToolbar: View {
         // `scrollableRow`にフォールバックする。最後の候補は「収まるか」の
         // 判定自体をスキップされる (無条件フォールバック) ので、
         // `ScrollView`の理想サイズが何であっても問題にならない。
+        toolbarBar
+            .accessibilityIdentifier("messageDetail.footerToolbar")
+    }
+
+    /// Liquid Glass Phase 2 準備リファクタリング (見た目は変えない):
+    /// 旧`body`が1つの式の中に持っていた「行の組み立て
+    /// (`ViewThatFits`)」と「クローム側の修飾子チェーン (ボタン
+    /// スタイル・パディング・背景)」を、それぞれ独立した computed
+    /// property (`toolbarRow`/`toolbarBar`) に分割した。Glass化
+    /// (プラットフォーム分岐の追加) はこの2つのうち`toolbarBar`だけを
+    /// 触れば済むようにするための準備 — CI の型チェックタイムアウト
+    /// 前例 (`docs/ci.md`) を踏まえ、長い modifier チェーンを`body`
+    /// 直下の1つの式に積み上げ続けないための切り出し。
+    private var toolbarRow: some View {
         ViewThatFits(in: .horizontal) {
             fixedRow
             scrollableRow
         }
+    }
+
+    private var toolbarBar: some View {
+        toolbarRow
         // Task #198 (実機フィードバック「メールビューでのアイコンが大きすぎる
         // しバランスがおかしい。もっとコンパクトなアイコンにして」):
         // 大きさの出どころは明示サイズでもパディングでもなく**ボタン
@@ -154,7 +172,6 @@ struct MessageDetailFooterToolbar: View {
         .padding(.horizontal, OtegamiSpacing.sm)
         .padding(.vertical, OtegamiSpacing.sm)
         .background(OtegamiColor.surface)
-        .accessibilityIdentifier("messageDetail.footerToolbar")
     }
 
     /// 全項目が画面幅に収まる場合の既存レイアウト — 変更前と1文字も違わない
