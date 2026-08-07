@@ -141,7 +141,17 @@ struct MessageSourceView: View {
                     .foregroundStyle(OtegamiColor.inkSecondary)
                     .padding(OtegamiSpacing.sm)
                     .frame(maxWidth: .infinity)
+                    // Liquid Glass Phase 4 (`docs/design-system.md`
+                    // 「Liquid Glass 方針」): 独自`surface`塗りの安全域
+                    // バーを、他の`safeAreaInset`バー (`SyncProgressBanner`
+                    // 等) と同じ浮遊 Glass カプセルへ。macOS は現状維持。
+                    #if os(iOS)
+                    .otegamiGlassChrome(shape: Capsule())
+                    .padding(.horizontal, OtegamiSpacing.md)
+                    .padding(.bottom, OtegamiSpacing.xs)
+                    #else
                     .background(OtegamiColor.surface)
+                    #endif
                     .accessibilityIdentifier("messageSource.truncatedNote")
             }
         }
