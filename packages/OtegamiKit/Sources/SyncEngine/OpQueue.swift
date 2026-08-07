@@ -396,4 +396,68 @@ public enum OpQueue {
         try record.insert(db)
         opReflectLogger.notice("op enqueued kind=\(kind.rawValue, privacy: .public) accountId=\(accountId, privacy: .private) opId=\(record.id ?? -1)")
     }
+
+    // MARK: - Discard (ユーザーによる取り消し)
+
+    /// 未送信の操作を1件、ユーザーの意思で取り消す — `opQueue`行を削除し、
+    /// `send`op の場合はそれが指す`outboxMessage`行も一緒に消す。
+    ///
+    /// 第2の削除が要る理由は`FailedOperationsView`が元々インラインで持って
+    /// いた説明と同じ: これが無いと、恒久失敗した送信は一覧から消えるのに
+    /// `outboxMessage`行 (とそれを読むサイドバーの「送信待ち」件数) だけが
+    /// 永久に残り、再送する`opQueue`行はもう存在しない — 何をしても解消
+    /// できない「送信中のまま」状態になる。他の kind (`setFlags`/`move`/
+    /// `delete`/`archive`…) は既に変更済みのローカル状態へ適用する内容を
+    /// 記述しているだけで、後始末すべき副テーブルの行を持たない。
+    /// `saveDraft`が指す`draftMessage`行も**消さない** — サーバー保存に
+    /// 失敗しただけで下書き本体はローカルに残しておくべきものだから
+    /// (元の`FailedOperationsView.discard(_:)`の挙動をそのまま維持)。
+    ///
+    /// 取り消しは「サーバーへの反映を諦める」だけで、ローカル側の状態
+    /// (既読フラグ・移動済みの配置) は元に戻さない — 巻き戻すと、ユーザーが
+    /// 見ている一覧が操作前の状態へ勝手に戻ってしまう。次回サーバーと
+    /// 同期した時点でサーバー側の状態に収束する。
+    @discardableResult
+    public static func discard(opId: Int64, db: Database) throws -> Bool {
+        guard let op = try OpQueueRecord.fetchOne(db, key: opId) else { return false }
+        try deleteSideEffects(of: op, db: db)
+        let deleted = try OpQueueRecord.deleteOne(db, key: opId)
+        if deleted {
+            opReflectLogger.notice("op discarded by user kind=\(op.kind, privacy: .public) accountId=\(op.accountId, privacy: .private) opId=\(opId)")
+        }
+        return deleted
+    }
+
+    /// `accountId`の未送信操作をまとめて取り消す (診断画面の「未送信の操作を
+    /// すべて破棄」) — 1件ずつの`discard(opId:db:)`と全く同じ副作用処理を、
+    /// 呼び出し側の1トランザクション内で全行に適用する。戻り値は削除した
+    /// `opQueue`行数。
+    ///
+    /// `kind`を指定するとその種類だけに絞る (種類別内訳から「`setFlags`の
+    /// 暴走分だけ捨てて送信は残す」ような選択的な取り消しができるように
+    /// するため)。
+    @discardableResult
+    public static func discardAll(accountId: String, kind: OpQueueKind? = nil, db: Database) throws -> Int {
+        var request = OpQueueRecord.filter(Column("accountId") == accountId)
+        if let kind {
+            request = request.filter(Column("kind") == kind.rawValue)
+        }
+        let ops = try request.fetchAll(db)
+        guard !ops.isEmpty else { return 0 }
+        for op in ops {
+            try deleteSideEffects(of: op, db: db)
+        }
+        let deleted = try request.deleteAll(db)
+        opReflectLogger.notice("ops discarded by user count=\(deleted) kind=\(kind?.rawValue ?? "all", privacy: .public) accountId=\(accountId, privacy: .private)")
+        return deleted
+    }
+
+    /// `discard(opId:db:)`/`discardAll(accountId:kind:db:)`が共有する副テーブル
+    /// の後始末 — 現状`send`op の`outboxMessage`だけ (理由は`discard(opId:db:)`
+    /// のdoc comment)。
+    private static func deleteSideEffects(of op: OpQueueRecord, db: Database) throws {
+        guard op.kind == OpQueueKind.send.rawValue,
+              let payload = try? JSONDecoder().decode(SendOpPayload.self, from: op.payload) else { return }
+        _ = try OutboxMessageRecord.deleteOne(db, key: payload.outboxMessageId)
+    }
 }

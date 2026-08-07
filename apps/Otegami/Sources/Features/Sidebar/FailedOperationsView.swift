@@ -165,24 +165,15 @@ struct FailedOperationsView: View {
         _ = try? await environment.syncCoordinator.replayOpQueue(for: account, auth: auth)
     }
 
-    /// Gives up on this op entirely: deletes the `opQueue` row so it stops
-    /// showing here, and — for a `.send` op specifically — also deletes the
-    /// `outboxMessage` row it references (`SendOpPayload.outboxMessageId`).
-    /// Without that second delete, a permanently-failed send would vanish
-    /// from this list but its `outboxMessage` row (and the sidebar's "送信待ち"
-    /// count reading it) would linger forever with no `opQueue` row left to
-    /// ever retry it — an orphaned "still sending" state nothing could
-    /// clear. Every other op kind (`setFlags`/`move`/`delete`) has no such
-    /// side-table row to clean up: they only ever describe a change to
-    /// apply to already-mutated local state.
+    /// Gives up on this op entirely — `OpQueue.discard(opId:db:)`が
+    /// `opQueue`行の削除と`.send`op の`outboxMessage`後始末をまとめて行う
+    /// (この画面がインラインで持っていた処理を、診断画面の「未送信の操作を
+    /// 破棄」と共有するため`SyncEngine`側へ移した。副作用の判断理由は
+    /// そちらのdoc comment参照)。
     private func discard(_ op: OpQueueRecord) async {
         guard let opId = op.id else { return }
         try? await environment.database.dbWriter.write { db in
-            if op.kind == OpQueueKind.send.rawValue,
-               let payload = try? JSONDecoder().decode(SendOpPayload.self, from: op.payload) {
-                _ = try OutboxMessageRecord.deleteOne(db, key: payload.outboxMessageId)
-            }
-            _ = try OpQueueRecord.deleteOne(db, key: opId)
+            try OpQueue.discard(opId: opId, db: db)
         }
     }
 
