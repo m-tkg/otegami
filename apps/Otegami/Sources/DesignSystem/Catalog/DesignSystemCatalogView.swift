@@ -69,7 +69,15 @@ public struct DesignSystemCatalogView: View {
         ScrollView {
             DesignSystemCatalogContent()
         }
-        .background(OtegamiColor.background)
+        // Liquid Glass Phase 5 (docs/design-system.md「Liquid Glass 方針」):
+        // the `OtegamiColor.background` token this used to paint the
+        // catalog's own scroll background was removed once every real call
+        // site migrated away — `.background(.background)` keeps this view
+        // opaque (needed for the light/dark comparison screenshots this
+        // catalog exists to produce) while delegating the actual color to
+        // the system's standard background style instead of a bespoke
+        // token, same direction as the rest of the app.
+        .background(.background)
         .task { OtegamiFont.registerCustomFontsIfNeeded() }
     }
 }
