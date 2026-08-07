@@ -188,8 +188,6 @@ struct AccountsListContent: View {
                 uitestShowGeneralSettingsDirectly = true
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
     }
 }

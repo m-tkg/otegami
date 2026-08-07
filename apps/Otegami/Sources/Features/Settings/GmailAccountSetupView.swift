@@ -68,8 +68,6 @@ struct GmailAccountSetupView: View {
                 }
             }
             .navigationTitle("Gmail アカウントを追加")
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
             .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

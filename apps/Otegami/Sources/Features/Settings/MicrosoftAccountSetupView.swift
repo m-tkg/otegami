@@ -103,8 +103,6 @@ struct MicrosoftAccountSetupView: View {
                 }
             }
             .navigationTitle(provider.navigationTitle)
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
             .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

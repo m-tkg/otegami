@@ -93,8 +93,6 @@ struct GeneralSettingsView: View {
         List {
             sections
         }
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         #endif
     }

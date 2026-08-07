@@ -156,8 +156,6 @@ struct SidebarView: View {
         // ベースの半透明) に任せる — 不透明なネイビー一色のサイドバーが
         // 「iOS アプリの移植」に見える最大の要因だった。iOS は従来どおり。
         #if os(iOS)
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         #endif
         .toolbar {

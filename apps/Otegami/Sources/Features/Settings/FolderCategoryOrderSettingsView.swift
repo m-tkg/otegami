@@ -36,8 +36,6 @@ struct FolderCategoryOrderSettingsView: View {
         // 無し (2026-08-07 設定ウィンドウのネイティブ化で、push 画面の
         // 戻るボタンは`NavigationStack`の標準ボタンに戻った)。
         #if os(iOS)
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         #endif
     }

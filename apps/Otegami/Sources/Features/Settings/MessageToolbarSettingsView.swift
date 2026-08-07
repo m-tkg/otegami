@@ -96,8 +96,6 @@ struct MessageToolbarSettingsView: View {
         // 揃え、独自の背景色/アクセント塗りは外して標準の外観に任せる。
         .toggleStyle(.switch)
         #else
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         #endif
         .toolbar {
