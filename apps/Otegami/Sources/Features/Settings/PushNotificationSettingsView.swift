@@ -144,8 +144,6 @@ struct PushNotificationSettingsView: View {
         .formStyle(.grouped)
         .toggleStyle(.switch)
         #else
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         .navigationBarTitleDisplayMode(.inline)
         #endif

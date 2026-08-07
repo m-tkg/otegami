@@ -115,8 +115,6 @@ struct YahooAccountSetupView: View {
                 }
             }
             .navigationTitle("Yahoo アカウントを追加")
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
             .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

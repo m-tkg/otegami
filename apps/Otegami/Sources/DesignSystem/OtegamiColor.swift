@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Otegami's semantic color tokens — light/dark pairs, named by *purpose*
-/// (background / surface / ink / accent / destructive / divider), never by
+/// (surface / ink / accent / destructive / divider), never by
 /// the raw hex value. UI code should only ever reach for a name from this
 /// list; if you find yourself wanting a color that isn't here, add a token
 /// here first rather than writing `Color(hex:)` at the call site — see
@@ -20,19 +20,21 @@ import SwiftUI
 /// internally-consistent first pass that a future design pass can revise
 /// token-by-token without touching call sites.
 public enum OtegamiColor {
-    // MARK: 背景・面 (background / surface)
+    // MARK: 面 (surface)
 
-    /// The app's base "paper" color — screens' outermost background.
-    public static let background = Color(light: 0xEEF3F6, dark: 0x10191E)
-
-    /// Cards, rows, sheets, and anything else that sits visually "on top
-    /// of" `background`. The dark value is deliberately several steps
-    /// lighter than `background` (not just a subtle tint) — an early pass
-    /// used a much closer pair and the two were nearly indistinguishable
-    /// in the design-system catalog screenshot (`docs/design-system.md`),
+    /// Cards, rows, sheets, and anything else that sits visually "on top"
+    /// of the screen. Liquid Glass Phase 5 (docs/design-system.md「Liquid
+    /// Glass 方針」): the old page-level `background` token (the app's
+    /// outermost "paper" color) was removed here once its last call site
+    /// migrated to the system's standard screen background — iOS via the
+    /// Liquid Glass policy, macOS via the 2026-08-07 native-look pass.
+    /// `surface` itself stays: it's still the deliberately several-steps-
+    /// lighter-in-dark-mode elevation fill for cards/rows/sheets on macOS
+    /// (an early pass used a much closer light/dark pair and the two were
+    /// nearly indistinguishable in the design-system catalog screenshot,
     /// which defeats the point of a separate surface token in a dark UI
     /// where elevation has to read from lightness since there's no
-    /// drop-shadow convention here.
+    /// drop-shadow convention here).
     public static let surface = Color(light: 0xFFFFFF, dark: 0x1F2E36)
 
     // MARK: インク (text/icon ink)
@@ -49,9 +51,10 @@ public enum OtegamiColor {
     // MARK: 水色ベース (pale-blue base — selection/emphasis fills)
 
     /// Faintest emphasis fill (e.g. a lightly-highlighted row). Sits
-    /// between `background` and `surface` in lightness in both modes,
-    /// same as the handoff's light values do (`F4F9FC` between `EEF3F6`
-    /// and `FFFFFF`).
+    /// between the old page-level background and `surface` in lightness in
+    /// both modes, same as the handoff's light values do (`F4F9FC` between
+    /// `EEF3F6` and `FFFFFF`) — see `surface`'s doc comment for why that
+    /// background token itself was removed.
     public static let paleBase = Color(light: 0xF4F9FC, dark: 0x18262D)
 
     /// Mid emphasis fill (e.g. selected-row background, active chip fill).
@@ -71,21 +74,14 @@ public enum OtegamiColor {
     /// in dark mode for the equivalent contrast reason.
     public static let accentText = Color(light: 0x2A6B88, dark: 0x9AD6EC)
 
-    /// Task #85 (実機フィードバック「フローティングボタンの青をもう少し
-    /// 濃く」): `accent`より一段深い、常に同じ向き (どちらのモードでも
-    /// 「より濃い」) に振れる青 — `OtegamiFloatingButton`の塗りつぶし専用。
-    /// `accentText`を丸ごと流用しなかった理由: `accentText`はダークモードで
-    /// **より明るい**方向に振れる (本文上の文字コントラスト用トークンの
-    /// ため) — 白アイコンを乗せる塗りつぶしの円には逆効果 (`accent`の
-    /// ダーク値`0x7FC7E3`はただでさえ薄い水色で、白アイコンとのコントラ
-    /// ストが低かった)。ダーク値は`accent`のライト値をそのまま「一段深い
-    /// ステップ」として再利用しているが、ライト値は`accentText`とは別の、
-    /// さらに一段深い値にしてある。Liquid Glass Phase 0 で
-    /// `OtegamiFloatingButtonTone`(旧`active`ケース含む) 自体は削除した
-    /// が、`accentFloating`の値そのものはフローティングボタンの塗りとして
-    /// 今も使うため変更していない。
-    public static let accentFloating = Color(light: 0x235A73, dark: 0x3D7F9E)
-
+    /// Liquid Glass Phase 5 (docs/design-system.md「Liquid Glass 方針」):
+    /// the old `accentFloating` token (Task #85's deliberately-darker fill
+    /// for the floating action button's circle) was removed here — Liquid
+    /// Glass Phase 1 had already moved every floating button's circle to
+    /// `glassEffect(_:in: .circle)` (`OtegamiFloatingButton.swift`), so
+    /// nothing painted that circle with a flat color anymore; this token's
+    /// own doc comment had gone stale claiming otherwise.
+    ///
     /// Task #108 続報 (実機フィードバック「undo トーストの『元に戻す』の色が
     /// 薄くて見えづらい」): `ink` を背景にした要素 (トースト等、周囲の
     /// モードと明暗が反転した面) の上に載せるアクセント文字色。`accentText`
@@ -128,8 +124,8 @@ public enum OtegamiColor {
     /// into this design system's pale-blue family — since the whole point
     /// is a neutral backdrop that doesn't fight whatever color the logo
     /// itself actually is. The dark-mode value is a step *lighter* than
-    /// `surface`/`background` (not the same near-black) so the chip still
-    /// reads as its own distinct shape against the app's dark paper rather
-    /// than blending into it.
+    /// `surface` and the app's dark paper (not the same near-black) so the
+    /// chip still reads as its own distinct shape rather than blending into
+    /// its surroundings.
     public static let avatarImageBackdrop = Color(light: 0x4A4A4A, dark: 0x3A3F42)
 }

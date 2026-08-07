@@ -117,8 +117,6 @@ struct AccountSetupView: View {
                 actionsSection
             }
             .navigationTitle(preset.navigationTitle)
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
             .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

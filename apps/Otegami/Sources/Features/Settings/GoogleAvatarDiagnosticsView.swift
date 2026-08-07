@@ -97,8 +97,6 @@ struct GoogleAvatarDiagnosticsView: View {
         .formStyle(.grouped)
         .toggleStyle(.switch)
         #else
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         #endif
         .accessibilityIdentifier("googleAvatarDiagnostics.screen")

@@ -6,7 +6,6 @@ import SwiftUI
 /// section here is its own `View` type).
 struct CatalogColorSection: View {
     private let tokens: [(String, Color)] = [
-        ("background", OtegamiColor.background),
         ("surface", OtegamiColor.surface),
         ("ink", OtegamiColor.ink),
         ("inkSecondary", OtegamiColor.inkSecondary),

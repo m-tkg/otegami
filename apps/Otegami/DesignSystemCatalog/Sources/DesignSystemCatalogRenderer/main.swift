@@ -71,9 +71,16 @@ enum CatalogRenderer {
         // `ScrollView`'s interior correctly (see that type's doc
         // comment), so this applies the same background by hand instead
         // of going through the `ScrollView`-wrapping view.
+        // Liquid Glass Phase 5 (docs/design-system.md「Liquid Glass 方針」):
+        // `OtegamiColor.background` was removed once every real call site
+        // migrated away. `.background(.background)` replaces it here (same
+        // as `DesignSystemCatalogView`'s own change) — needed to keep this
+        // offscreen render opaque per color scheme; without it `ImageRenderer`
+        // exports a transparent PNG, which defeats the light-vs-dark
+        // comparison this renderer exists to produce.
         let view = DesignSystemCatalogContent()
             .frame(width: 420)
-            .background(OtegamiColor.background)
+            .background(.background)
             .environment(\.colorScheme, scheme)
         let renderer = ImageRenderer(content: view)
         renderer.proposedSize = .init(width: 420, height: nil)

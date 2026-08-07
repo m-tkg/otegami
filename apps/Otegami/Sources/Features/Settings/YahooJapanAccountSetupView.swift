@@ -153,8 +153,6 @@ struct YahooJapanAccountSetupView: View {
                 }
             }
             .navigationTitle("Yahoo! JAPAN アカウントを追加")
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
             .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

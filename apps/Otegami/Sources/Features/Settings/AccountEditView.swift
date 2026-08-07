@@ -255,8 +255,6 @@ struct AccountEditView: View {
         // macOS には適用せず、AppKit 標準の外観に任せる (iOS は従来どおり)。
         .toggleStyle(.switch)
         #else
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         #endif
         .accessibilityIdentifier("accountEdit.screen")

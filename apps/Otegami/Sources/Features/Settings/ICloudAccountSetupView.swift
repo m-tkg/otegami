@@ -121,8 +121,6 @@ struct ICloudAccountSetupView: View {
                 }
             }
             .navigationTitle("iCloud アカウントを追加")
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
             .tint(OtegamiColor.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

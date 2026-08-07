@@ -31,8 +31,6 @@ struct SenderImageAllowlistSettingsView: View {
         List {
             listSection
         }
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
         .tint(OtegamiColor.accent)
         #endif
     }

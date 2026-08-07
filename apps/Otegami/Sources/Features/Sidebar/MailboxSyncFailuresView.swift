@@ -64,8 +64,6 @@ struct MailboxSyncFailuresView: View {
             // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景
             // 塗り・tint は iOS のみ (`SidebarView.sidebarList` と同じ判断)。
             #if os(iOS)
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
             .tint(OtegamiColor.accent)
             #endif
             .toolbar {
