@@ -411,17 +411,35 @@ public actor SyncCoordinator {
         return result
     }
 
-    /// Starts `account`'s foreground `IDLE` loop: on each server push,
-    /// runs an incremental sync followed by an opQueue replay (a
-    /// newly-online connection is exactly when queued offline operations
+    /// Starts `account`'s foreground `IDLE` loop: on each server push, first
+    /// flushes any queued offline operations, then runs an incremental sync
+    /// (a newly-online connection is exactly when queued offline operations
     /// should get their chance to flush). Meant to be called once when the
     /// app becomes active per M3's "フォアグラウンド IDLE" requirement — see
     /// `AccountSyncer.startIdleLoop`'s doc comment for the reconnect/backoff
     /// behavior underneath.
+    ///
+    /// **Order: replay before sync, not after (実機報告「Gmail で既読化/
+    /// アーカイブしてもサーバに反映されず、再読込でサーバ状態に巻き戻る」の
+    /// 調査で判明)**: an incremental sync's envelope refresh overwrites a
+    /// message's local `flagsRaw` with whatever the server currently reports
+    /// (`MessageReadMarker.markSeen`'s doc comment — only `createdAt`/
+    /// `threadId`/`isPinnedLocal` survive a resync untouched, flags don't).
+    /// If `syncAccountIncrementally` ran *first*, an `IDLE` wake landing
+    /// while a flag/archive op was still sitting unsent in `opQueue` would
+    /// have the sync observe the server's still-old state and write it back
+    /// over the user's own optimistic local change — visibly undoing the
+    /// action that was, from the user's perspective, already done — and
+    /// only *then* would `replayOpQueue` send it, too late to prevent that
+    /// visible flicker/rollback. Flushing the user's own pending intent
+    /// first means any sync that follows already observes what the user
+    /// just did (once the server has processed it) instead of stomping on
+    /// it.
     public func startIdleLoop(for account: AccountRecord, auth: MailAuth) async {
         let syncer = syncer(for: account)
         await syncer.startIdleLoop(auth: auth) { [weak self] in
             guard let self else { return }
+            _ = try? await self.replayOpQueue(for: account, auth: auth)
             // `forceReconcileVanishedUIDs: true`: an `IDLE` wake *is* the
             // server saying "something changed in this mailbox" — and one of
             // the things that can have changed is another client expunging
@@ -432,7 +450,6 @@ public actor SyncCoordinator {
             // loop happens to catch them. One extra `UID SEARCH` per actual
             // server push is proportionate to that signal.
             _ = try? await self.syncAccountIncrementally(account, auth: auth, forceReconcileVanishedUIDs: true)
-            _ = try? await self.replayOpQueue(for: account, auth: auth)
         }
     }
 
