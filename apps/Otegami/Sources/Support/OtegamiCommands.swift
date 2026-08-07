@@ -26,6 +26,7 @@ struct OtegamiCommands: Commands {
     @FocusedValue(\.refreshMessageListAction) private var refreshMessageListAction
     @FocusedValue(\.nextMailboxAction) private var nextMailboxAction
     @FocusedValue(\.previousMailboxAction) private var previousMailboxAction
+    @FocusedValue(\.selectAllThreadsAction) private var selectAllThreadsAction
     // Task #182 (macOS アプリ内アップデート): unlike every other action
     // here, this one is independent of whatever window/view currently has
     // focus (`@FocusedValue`はここでは使わない) — it should always be
@@ -147,6 +148,17 @@ struct OtegamiCommands: Commands {
             Button("検索") { focusSearchAction?() }
                 .keyboardShortcut("f", modifiers: .command)
                 .disabled(focusSearchAction == nil)
+            // ユーザー要望 (2026-08-08「cmd+aで全選択もできるようにして」):
+            // 一覧の全スレッドを選択する。`FocusedValues
+            // .selectAllThreadsAction`のdoc comment参照 — SwiftUIの
+            // `List(selection:)`は⌘Aを自前では拾わないため、この項目が
+            // 実体になる。テキスト入力中 (検索欄・作成ウィンドウ) は
+            // そちらのフィールドがファーストレスポンダで、この
+            // `@FocusedValue`が届かない=項目が自動 disabled になるので、
+            // 通常の「テキストを全選択」を奪わない。
+            Button("すべてのメールを選択") { selectAllThreadsAction?() }
+                .keyboardShortcut("a", modifiers: .command)
+                .disabled(selectAllThreadsAction == nil)
         }
     }
 }
