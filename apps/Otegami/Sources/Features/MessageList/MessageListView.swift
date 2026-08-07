@@ -715,9 +715,7 @@ struct MessageListView: View {
     /// 更新ボタン行 (`macListSearchBar`) を`body`側の`VStack`に外出しした
     /// ため、この一覧単体をここへ切り出した。
     private var messageListCore: some View {
-        List {
-            listContent
-        }
+        selectableList
         // Task #87 (2): iOS 26's default `List` style renders the whole
         // scrollable content region as one implicit rounded "card" (visible
         // as a rounded top-left/top-right corner on the very first row and
@@ -807,6 +805,10 @@ struct MessageListView: View {
         // いる。
         .navigationTitle(title)
         .focusedSceneValue(\.focusSearchAction, { isSearchFieldFocused = true })
+        // ユーザー要望 (2026-08-08): カーソル/クリックでの選択とその後始末。
+        // `selectableList` の doc comment 参照。
+        .focusedSceneValue(\.selectAllThreadsAction, selectAllThreadsActionForMenu)
+        .onChange(of: selectedThreadIds) { _, _ in syncDetailWithSelection() }
         .onChange(of: searchText) { _, _ in scheduleSearch() }
         .onChange(of: searchScope) { _, _ in scheduleSearch() }
         // 実機バグ報告「スレッド表示をオフ/オンにした直後、検索結果だけ
@@ -1013,12 +1015,89 @@ struct MessageListView: View {
     /// 「`List`の中身は独立した式に切り出す」方針そのもの — この`List`には
     /// 既に長いモディファイアチェーンが積んであり、それと合わさって
     /// CI型チェックタイムアウトの典型的な引き金になりうるため。
+    /// ユーザー要望 (2026-08-08「mac版において、カーソルでのメール選択が
+    /// できるようにして欲しい。また、マウスなどで複数選択して、右クリックで
+    /// アーカイブや既読化、ピン留めできるようにして」): macOS だけ `List` に
+    /// `selection:` を与える。矢印キーでの移動・⇧/⌘クリックでの複数選択・
+    /// 選択のハイライトはこれだけで SwiftUI (AppKit の `NSTableView`) 側が
+    /// 面倒を見るので、このアプリが自前で持つのは「選択が1件になったら
+    /// その1件を詳細ペインに出す」(`syncDetailWithSelection`) と、選択集合
+    /// に対するコンテキストメニュー (`MessageListSelectionMenu`) だけ。
+    ///
+    /// iOS は無変更 — あちらの複数選択は長押しで入る独自の選択モード
+    /// (`isSelecting`、1h) で、`List(selection:)` の編集モードとは別物。
+    ///
+    /// `docs/ci.md` の型チェックタイムアウト対策で `List` 自体をここへ
+    /// 切り出してある (`messageListCore` の長いモディファイアチェーンに
+    /// `#if` 分岐付きの `List` 生成式を直接埋めない)。
+    @ViewBuilder
+    private var selectableList: some View {
+        #if os(macOS)
+        List(selection: $selectedThreadIds) {
+            listContent
+        }
+        .contextMenu(forSelectionType: Int64.self) { ids in
+            selectionContextMenu(for: ids)
+        }
+        #else
+        List {
+            listContent
+        }
+        #endif
+    }
+
     @ViewBuilder
     private var listContent: some View {
         ForEach(displayedSummaries) { summary in
             threadRow(for: summary)
         }
     }
+
+    #if os(macOS)
+    /// `.contextMenu(forSelectionType:)` の中身 — 中身自体は独立した
+    /// `View` (`MessageListSelectionMenu`) に持たせ、ここはコールバックを
+    /// 束ねるだけにしてある (`docs/ci.md`)。各操作は
+    /// `runBulkAction(on:_:)` を通す — 既存の一括操作はどれも
+    /// `selectedThreadIds` を読むため (そちらの doc comment 参照)。
+    @ViewBuilder
+    private func selectionContextMenu(for ids: Set<Int64>) -> some View {
+        MessageListSelectionMenu(
+            targets: summaries(for: ids),
+            isArchiveView: isArchiveView,
+            onReply: onReply,
+            onReplyAll: onReplyAll,
+            onForward: onForward,
+            onMarkRead: { runBulkAction(on: ids, markSelectedAsRead) },
+            onMarkUnread: { runBulkAction(on: ids, markSelectedAsUnread) },
+            onArchive: { runBulkAction(on: ids, archiveSelected) },
+            onUnarchive: { runBulkAction(on: ids, unarchiveSelected) },
+            onPin: { pinning in runBulkAction(on: ids) { applyPinToSelected(pinning: pinning) } },
+            onJunk: { runBulkAction(on: ids, junkSelected) },
+            onDelete: { runBulkAction(on: ids, deleteSelected) }
+        )
+    }
+
+    /// `List(selection:)` の選択が1件に定まったら、その1件を詳細ペインへ
+    /// 出す (Apple Mail.app と同じ「1クリックで本文が出る」挙動) —
+    /// 複数選択中は詳細を切り替えない (どれを出すべきか決まらないため、
+    /// 直前に開いていたスレッドをそのまま残す)。
+    private func syncDetailWithSelection() {
+        guard selectedThreadIds.count == 1, let threadId = selectedThreadIds.first else { return }
+        guard let summary = displayedSummaries.first(where: { $0.thread.id == threadId }) else { return }
+        handleThreadSelected(summary)
+    }
+
+    /// ⌘A (`OtegamiCommands`「すべてのメールを選択」) — 表示中の全行を
+    /// 選択する。行が1つも無いときは publish 自体をやめてメニュー項目を
+    /// 自動 disabled にする (`selectAllThreadsActionForMenu`)。
+    private func selectAllThreads() {
+        selectedThreadIds = Set(displayedSummaries.compactMap(\.thread.id))
+    }
+
+    private var selectAllThreadsActionForMenu: (() -> Void)? {
+        displayedSummaries.isEmpty ? nil : { selectAllThreads() }
+    }
+    #endif
 
     @ViewBuilder
     private func threadRow(for summary: ThreadSummary) -> some View {
@@ -1053,6 +1132,10 @@ struct MessageListView: View {
                 onReplyAll: onReplyAll,
                 onForward: onForward
             )
+            // macOS の `List(selection:)` が行を識別するためのタグ
+            // (`selectableList`)。iOS では `List` に `selection:` を渡して
+            // いないので効果を持たない。
+            .tag(threadId)
         }
     }
 

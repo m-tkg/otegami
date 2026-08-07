@@ -257,11 +257,14 @@ struct MessageListRow: View {
             .listRowInsets(EdgeInsets())
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
-            #if os(macOS)
-            .contextMenu {
-                contextMenuContent
-            }
-            #endif
+            // 2026-08-08 (ユーザー要望「マウスなどで複数選択して、右クリック
+            // でアーカイブや既読化、ピン留めできるようにして」): macOS の
+            // 行ごとの `.contextMenu` はここから削除した — 選択集合を知って
+            // いる `List` 側の `.contextMenu(forSelectionType:)`
+            // (`MessageListView.selectableList` →
+            // `MessageListSelectionMenu`) に一本化してある。行の`View`は
+            // 自分が選択集合の一部かどうかを知らないので、行側に残したまま
+            // だと複数選択して右クリックしても1行分のメニューしか出せない。
             #if os(iOS)
             // 1h: long-press enters bulk-selection mode. `.simultaneousGesture`
             // rather than `.onLongPressGesture`/`.gesture` deliberately — the
@@ -301,11 +304,41 @@ struct MessageListRow: View {
         #if os(iOS)
         swipeableRow
         #else
-        rowButton
+        macRow
         #endif
     }
 
-    private var rowButton: some View {
+    #if os(macOS)
+    /// 2026-08-08 (ユーザー要望「カーソルでのメール選択ができるように
+    /// して欲しい」): 以前はここが `Button(action: handleTap)` で、行の
+    /// クリックが即「このスレッドを開く」だった。`Button` はクリックを
+    /// 自分で消費してしまうため `List(selection:)` に選択が伝わらず、
+    /// 矢印キー移動も⇧/⌘クリックの複数選択も成立しない — 素の
+    /// `ThreadRowView` に戻し、選択は `List` に、詳細ペインへの反映は
+    /// 選択の変化を見る `MessageListView.syncDetailWithSelection()` に
+    /// 任せる。
+    ///
+    /// 選択中のハイライトも `List` 標準のものを使うので `isSelected` は
+    /// 渡さない (`ThreadRowView` の自前ハイライトと二重になる)。
+    /// `isSelecting` (iOS の長押し一括選択モード) は macOS では常に
+    /// `false`。
+    private var macRow: some View {
+        ThreadRowView(
+            summary: summary,
+            accountDisplayName: accountDisplayName,
+            accountLabelColorKey: accountLabelColorKey,
+            showsAccountAccent: showsAccountAccent
+        )
+        .contentShape(Rectangle())
+    }
+    #endif
+
+    #if os(iOS)
+    /// 1g のスワイプ行の中身 — 行そのものが `Button` である必要があるのは
+    /// iOS だけ (`swipeableRow` が `.offset` でドラッグ追従させる対象)。
+    /// macOS は `List(selection:)` に選択を任せるので `Button` を持たない
+    /// (`macRow` の doc comment 参照)。
+    var rowButton: some View {
         Button(action: handleTap) {
             ThreadRowView(
                 summary: summary,
@@ -326,42 +359,11 @@ struct MessageListRow: View {
             onSelect(summary)
         }
     }
-
-    @ViewBuilder
-    private var toggleReadLabel: some View {
-        if summary.thread.unreadCount > 0 {
-            Label("既読にする", systemImage: "envelope.open")
-        } else {
-            Label("未読にする", systemImage: "envelope.badge")
-        }
-    }
-
-    @ViewBuilder
-    private var pinLabel: some View {
-        if summary.thread.isPinned {
-            Label("ピン留めを解除", systemImage: "pin.slash")
-        } else {
-            Label("ピン留め", systemImage: "pin")
-        }
-    }
-
-    /// Task #87 (1): the archive slot's label/icon, state-dependent the
-    /// same way `pinLabel`/`toggleReadLabel` already are — "アーカイブ解除"
-    /// (a tray-with-upward-arrow icon, echoing "put it back") while
-    /// `isArchiveView`, the normal "アーカイブ" otherwise.
-    @ViewBuilder
-    private var archiveLabel: some View {
-        if isArchiveView {
-            Label("アーカイブ解除", systemImage: "tray.and.arrow.up")
-        } else {
-            Label(SwipeAction.archive.title, systemImage: SwipeAction.archive.systemImage)
-        }
-    }
+    #endif
 
     /// Executes one `SwipeAction` against this row's callbacks — the iOS
-    /// drag gesture's counterpart to `swipeButton(for:)` below (which
-    /// builds a macOS context-menu *row*, not an executor); kept separate
-    /// since the drag gesture has nothing to build a `View` for.
+    /// drag gesture's action dispatcher (kept separate from the gesture
+    /// itself since the gesture has nothing to build a `View` for).
     private func perform(_ action: SwipeAction) {
         switch action {
         case .toggleRead: onToggleRead(summary)
@@ -372,49 +374,13 @@ struct MessageListRow: View {
         }
     }
 
-    #if os(macOS)
-    /// D8: macOS has no swipe gesture, so every assignable action (not just
-    /// whatever's currently assigned to a swipe slot) is always available
-    /// here — `CLAUDE.md`'s "スワイプが無い macOS ではコンテキストメニューに反映する"
-    /// requirement.
-    @ViewBuilder
-    private var contextMenuContent: some View {
-        // Task #165: 返信系を先頭に置く — 実 Mail.app の行コンテキストメニュー
-        // も返信/全員に返信/転送を最上段にまとめている。`ThreadSummary
-        // .latestMessage`宛て (`onReply`/`onReplyAll`/`onForward`のdoc
-        // comment、`RootView.replySummary(_:replyAll:)`参照)。
-        Button { onReply(summary) } label: { Label("返信", systemImage: "arrowshape.turn.up.left") }
-        Button { onReplyAll(summary) } label: { Label("全員に返信", systemImage: "arrowshape.turn.up.left.2") }
-        Button { onForward(summary) } label: { Label("転送", systemImage: "arrowshape.turn.up.right") }
-        Divider()
-        ForEach(SwipeAction.allCases) { action in
-            swipeButton(for: action)
-        }
-    }
-
-    /// Dispatches one `SwipeAction` to its callback/label — macOS-only now
-    /// that iOS fires actions directly via `perform(_:)` instead of
-    /// building a tappable `Button` per action.
-    @ViewBuilder
-    private func swipeButton(for action: SwipeAction) -> some View {
-        switch action {
-        case .toggleRead:
-            Button { onToggleRead(summary) } label: { toggleReadLabel }
-        case .archive:
-            if isArchiveView {
-                Button { onUnarchive(summary) } label: { archiveLabel }
-            } else {
-                Button { onArchive(summary) } label: { archiveLabel }
-            }
-        case .junk:
-            Button { onJunk(summary) } label: { Label(action.title, systemImage: action.systemImage) }
-        case .pin:
-            Button { onPin(summary) } label: { pinLabel }
-        case .delete:
-            Button(role: .destructive) { onDelete(summary) } label: { Label(action.title, systemImage: action.systemImage) }
-        }
-    }
-    #endif
+    // 2026-08-08: macOS 専用だった `contextMenuContent`/`swipeButton(for:)`
+    // (D8「スワイプが無い macOS ではコンテキストメニューに反映する」の
+    // 実装、Task #165 で返信系を先頭に足したもの) はここから削除した —
+    // 同じ項目を、選択集合に対して動く `MessageListSelectionMenu` が
+    // `List` 側の `.contextMenu(forSelectionType:)` から提供する
+    // (`body` のコメント参照)。返信系を選択1件のときだけ出す点も含めて
+    // そちらへ引き継いである。
 }
 
 #if os(iOS)

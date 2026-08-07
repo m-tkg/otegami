@@ -81,6 +81,16 @@ extension FocusedValues {
         typealias Value = () -> Void
     }
 
+    /// ユーザー要望 (2026-08-08「cmd+aで全選択もできるようにして」):
+    /// `MessageListView` が macOS で常に publish する — SwiftUI の
+    /// `List(selection:)` は複数選択・矢印キー移動・⇧/⌘クリックまでは
+    /// 面倒を見るが、⌘A (selectAll) だけは自前でメニュー項目を用意しないと
+    /// 効かない (AppKit の `NSTableView` と違い、レスポンダチェーンに
+    /// `selectAll:` を実装していないため)。
+    private struct SelectAllThreadsActionKey: FocusedValueKey {
+        typealias Value = () -> Void
+    }
+
     /// Always published by `RootView` while at least one account exists
     /// (mirrors the sidebar's "作成" toolbar button's own `.disabled`
     /// condition) — ⌘N.
@@ -164,5 +174,12 @@ extension FocusedValues {
     var previousMailboxAction: (() -> Void)? {
         get { self[PreviousMailboxActionKey.self] }
         set { self[PreviousMailboxActionKey.self] = newValue }
+    }
+
+    /// See `SelectAllThreadsActionKey` — published by `MessageListView`
+    /// (macOS) while it has at least one row to select. ⌘A.
+    var selectAllThreadsAction: (() -> Void)? {
+        get { self[SelectAllThreadsActionKey.self] }
+        set { self[SelectAllThreadsActionKey.self] = newValue }
     }
 }

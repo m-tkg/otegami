@@ -55,7 +55,10 @@ extension MessageListView {
     /// No undo toast (unlike delete/archive) — pinning never removes a row
     /// from the list, it only reorders it, so the action is already
     /// trivially reversible with one more tap on the same button.
-    private func applyPinState(_ summary: ThreadSummary, pinning: Bool) async {
+    /// (`private`から internal へ — macOS の複数選択に対する一括ピン留め
+    /// `applyPinToSelected(pinning:)` が別ファイル
+    /// (`MessageListView+Selection.swift`) から呼ぶ。)
+    func applyPinState(_ summary: ThreadSummary, pinning: Bool) async {
         guard let threadId = summary.thread.id else { return }
         let accountId = summary.thread.accountId
         do {
@@ -98,7 +101,10 @@ extension MessageListView {
     }
 
     /// `commitArchive`'s `.junk` counterpart — see its doc comment.
-    private func commitJunk(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
+    /// (`private`から internal へ — macOS の複数選択に対する一括
+    /// 「迷惑メールにする」`junkSelected()` が別ファイル
+    /// (`MessageListView+Selection.swift`) から呼ぶ。)
+    func commitJunk(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
         do {
             guard let snapshot = try await environment.database.dbWriter.write({ db in
                 try MessageRemoval.commit(.junk, summary: summary, accountId: summary.thread.accountId, db: db)
@@ -184,7 +190,10 @@ extension MessageListView {
     }
 
     /// `commitArchive`'s `.unarchive` counterpart — see its doc comment.
-    private func commitUnarchive(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
+    /// (`private`から internal へ — macOS の複数選択に対する一括アーカイブ
+    /// 解除 `unarchiveSelected()` が別ファイル
+    /// (`MessageListView+Selection.swift`) から呼ぶ。)
+    func commitUnarchive(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
         do {
             guard let snapshot = try await environment.database.dbWriter.write({ db in
                 try MessageRemoval.commit(.unarchive, summary: summary, accountId: summary.thread.accountId, db: db)
