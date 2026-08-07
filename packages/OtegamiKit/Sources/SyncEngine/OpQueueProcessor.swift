@@ -97,10 +97,13 @@ public actor OpQueueProcessor {
         /// the UI has already applied the requested flag/removal locally,
         /// and an immediate source refresh can observe an eventually-
         /// consistent IMAP server's old state and visibly undo that update
-        /// until the next manual refresh. A pure `.setFlags` operation and
-        /// Gmail's source-only archive therefore leave this empty; moves and
-        /// relocations include only their destination. `SyncCoordinator
-        /// .replayOpQueue` feeds this into `scheduleTargetedResync`.
+        /// until the next manual refresh. A pure `.setFlags` operation
+        /// therefore leaves this empty; moves and relocations include only
+        /// their destination. A Gmail archive moves nothing (it just unlabels
+        /// the source) but still reports All Mail — the message's only
+        /// remaining location, and the one holding any placeholder row
+        /// `MessageRemoval` parked there. `SyncCoordinator.replayOpQueue`
+        /// feeds this into `scheduleTargetedResync`.
         /// Deliberately not populated for `.send`/`.saveDraft`/
         /// `.deleteDraft` — those aren't the "他の受信箱一覧への反映が遅い"
         /// complaint this task addresses, and `.send`'s own Task #124
@@ -644,7 +647,24 @@ public actor OpQueueProcessor {
                 )
                 try await session.store(mailboxPath: source.path, change: change)
                 try await session.expunge(mailboxPath: source.path)
-                return .applied(affectedMailboxIds: [])
+                // All Mail is where the message now exclusively lives, so it
+                // is this op's effective destination even though nothing was
+                // moved there — `MessageRemoval.relocationDestinationId` may
+                // have parked a placeholder-UID row in it, and only an All
+                // Mail sync can adopt that row onto its real UID
+                // (`EnvelopePersister.reconcilePendingRelocation`). Without
+                // this, All Mail is never resynced on any of the paths that
+                // run after an archive (launch/foreground/push/IDLE are all
+                // `SyncScope.inboxOnly`), so the placeholder lingered until
+                // the user happened to open that mailbox. Source (INBOX) is
+                // still deliberately absent — see `ReplayResult
+                // .affectedMailboxIds`. A lookup, never a `resolveOrCreate`:
+                // All Mail is Gmail's own folder and must never be created
+                // here. Not finding one isn't an error either — the unlabel
+                // itself already succeeded, and throwing would only retry it
+                // into a second `EXPUNGE`.
+                let allMail = try await MailboxRoleResolver.mailbox(role: .all, accountId: account.id, database: database)
+                return .applied(affectedMailboxIds: Set([allMail?.id].compactMap { $0 }))
             }
             guard let archive = try await MailboxRoleResolver.resolveOrCreate(role: .archive, accountId: account.id, session: session, database: database) else {
                 // Same "leave the op pending rather than silently dropping

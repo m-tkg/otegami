@@ -116,16 +116,54 @@ struct OpQueueProcessorAffectedMailboxIdsTests {
         #expect(result.affectedMailboxIds == [archiveId])
     }
 
-    @Test("Gmail archive schedules no source resync because it has no destination mailbox")
-    func replayResultAffectedMailboxIdsEmptyForGmailArchive() async throws {
-        let database = try AppDatabase.makeInMemory()
-        let gmail = AccountRecord(
+    private func makeGmailAccount() -> AccountRecord {
+        AccountRecord(
             displayName: "Gmail", email: "gmail@otegami.test", authType: .oauth2, kind: .gmail,
             imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls,
             imapUsername: "gmail@otegami.test"
         )
+    }
+
+    /// A Gmail archive moves nothing (it unlabels the source in place), but
+    /// All Mail is where the message now exclusively lives — and where
+    /// `MessageRemoval` may have parked a placeholder-UID row that only an
+    /// All Mail sync can adopt onto its real UID. Reporting it here is what
+    /// gets that sync scheduled; nothing else after an archive does
+    /// (launch/foreground/push/IDLE are all `SyncScope.inboxOnly`).
+    @Test("Gmail archive schedules a resync of All Mail, its effective destination, and never of its source")
+    func replayResultAffectedMailboxIdsForGmailArchiveReportsAllMail() async throws {
+        let database = try AppDatabase.makeInMemory()
         let (account, inbox, _, _) = try await makeAccountWithMailboxes(
-            database: database, account: gmail
+            database: database, account: makeGmailAccount()
+        )
+        let allMailId = try await database.dbWriter.write { db -> Int64 in
+            var record = MailboxRecord(
+                accountId: account.id, path: "[Gmail]/All Mail", displayPath: "[Gmail]/All Mail", role: .all
+            )
+            try record.insert(db)
+            try OpQueue.enqueueArchive(
+                accountId: account.id, sourceMailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [9], db: db
+            )
+            return record.id!
+        }
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script())
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(result.affectedMailboxIds == [allMailId])
+        #expect(!result.affectedMailboxIds.contains(inbox.id!))
+    }
+
+    /// The unlabel itself already succeeded, so a missing All Mail row must
+    /// not fail the op — that would only retry it into a second `EXPUNGE`.
+    @Test("Gmail archive with no local All Mail mailbox still succeeds and simply reports nothing")
+    func replayResultAffectedMailboxIdsEmptyForGmailArchiveWithoutAllMail() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(
+            database: database, account: makeGmailAccount()
         )
         try await database.dbWriter.write { db in
             try OpQueue.enqueueArchive(
