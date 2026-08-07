@@ -577,4 +577,107 @@ struct MessageRelocationReconciliationTests {
         let threadAfterSync = try await database.dbWriter.read { db in try ThreadRecord.fetchOne(db, key: threadId) }
         #expect(threadAfterSync?.messageCount == 1, "collapsing the duplicate must not leave the thread double-counting it")
     }
+
+    /// 実機報告「iOS で Gmail のさっき受信したメールをアーカイブしたらどこにも
+    /// 表示されなくなった」, end-to-end. A Gmail archive now relocates into All
+    /// Mail (`MessageRemoval.relocationDestinationId`) instead of deleting the
+    /// row, and the archive op reports All Mail so a targeted resync actually
+    /// runs (`OpQueueProcessor`'s `.archive` Gmail branch). This locks in that
+    /// the two halves meet: visible as archived at once, then adopted onto the
+    /// real UID by that All Mail sync — one row, never two, since フラット表示
+    /// wouldn't dedup a second one.
+    @Test("Gmail archive → visible in All Mail immediately, then the All Mail sync adopts the placeholder onto its real UID")
+    func gmailArchiveThenAllMailSyncReconcilesWithoutDuplicate() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Gmail", email: "gmail-archive@otegami.test", authType: .oauth2, kind: .gmail,
+            imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls,
+            imapUsername: "gmail-archive@otegami.test"
+        )
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let (inboxId, allMailId) = try await database.dbWriter.write { db -> (Int64, Int64) in
+            var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox, uidValidity: 1, uidNext: 6)
+            try inbox.insert(db)
+            var allMail = MailboxRecord(
+                accountId: account.id, path: "[Gmail]/All Mail", displayPath: "[Gmail]/All Mail",
+                role: .all, uidValidity: 1, uidNext: 1
+            )
+            try allMail.insert(db)
+            return (inbox.id!, allMail.id!)
+        }
+
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try await database.dbWriter.write { db -> (Int64, Int64) in
+            var thread = ThreadRecord(accountId: account.id, lastMessageDate: date, messageCount: 1)
+            try thread.insert(db)
+            var message = MessageRecord(
+                mailboxId: inboxId, uid: 5, messageId: "<gmail-archive-repro@otegami.test>",
+                subject: "Gmail アーカイブテスト", date: date, internalDate: date,
+                gmailMessageId: 555, threadId: thread.id
+            )
+            try message.insert(db)
+            return (thread.id!, message.id!)
+        }
+
+        let snapshot = try await database.dbWriter.write { db -> MessageRemoval.Snapshot? in
+            let message = try #require(try MessageRecord.fetchOne(db, key: messageId))
+            let summary = ThreadSummary(flatMessage: message, accountId: account.id)
+            return try MessageRemoval.commit(.archive, summary: summary, accountId: account.id, db: db)
+        }
+        #expect(snapshot != nil)
+
+        let (relocatedRow, archivedImmediately, inboxImmediately) = try await database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: messageId),
+                try ThreadQuery.unifiedInboxRequest(accountIds: [account.id], role: .archive).fetchAll(db).map(\.id),
+                try ThreadQuery.unifiedInboxRequest(accountIds: [account.id], role: .inbox).fetchAll(db).map(\.id)
+            )
+        }
+        #expect(relocatedRow?.mailboxId == allMailId, "relocated into All Mail immediately, before any network round trip")
+        #expect(relocatedRow?.isPendingRelocation == true)
+        #expect(archivedImmediately == [threadId], "the reported bug: this used to be empty because the row was deleted outright")
+        #expect(inboxImmediately.isEmpty)
+
+        // The server has now applied the unlabel, and the targeted resync the
+        // archive op schedules runs against All Mail.
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let allMailInfo = MailboxInfo(path: "[Gmail]/All Mail", displayPath: "[Gmail]/All Mail", role: .all, attributes: [])
+        let realEnvelope = FetchedEnvelope(
+            uid: 1, messageId: "<gmail-archive-repro@otegami.test>", inReplyTo: nil, references: [],
+            subject: "Gmail アーカイブテスト", from: [], to: [], cc: [], bcc: [], replyTo: [],
+            date: date, internalDate: date, flags: [], size: 100
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inboxInfo, allMailInfo],
+                envelopesByPath: ["[Gmail]/All Mail": [realEnvelope]],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 6, highestModSeq: 0, messageCount: 0),
+                    "[Gmail]/All Mail": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1),
+                ]
+            ))
+        }
+        _ = try await syncer.performIncrementalSync(
+            auth: .password(username: account.imapUsername, password: "test1234"),
+            scope: .mailbox(path: "[Gmail]/All Mail")
+        )
+
+        let allMailRows = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == allMailId).fetchAll(db)
+        }
+        #expect(allMailRows.count == 1, "must not duplicate — フラット表示 doesn't dedup by message identity")
+        #expect(allMailRows.first?.id == messageId, "the same row that was relocated, not a fresh insert")
+        #expect(allMailRows.first?.uid == 1)
+        #expect(allMailRows.first?.isPendingRelocation == false)
+
+        let (archivedAfterSync, flatAfterSync) = try await database.dbWriter.read { db in
+            (
+                try ThreadQuery.unifiedInboxRequest(accountIds: [account.id], role: .archive).fetchAll(db).map(\.id),
+                try ThreadQuery.unifiedInboxFlatSummaries(accountIds: [account.id], role: .archive, db: db)
+            )
+        }
+        #expect(archivedAfterSync == [threadId])
+        #expect(flatAfterSync.count == 1)
+    }
 }
