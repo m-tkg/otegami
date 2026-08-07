@@ -216,6 +216,44 @@ struct OpQueueProcessorSetFlagsTests {
         #expect(remaining.isEmpty)
     }
 
+    @Test("a stale-discarded op is recorded in opQueueStaleDiscard before being removed from opQueue")
+    func replayRecordsStaleDiscardBeforeRemoving() async throws {
+        // 実機報告「Gmail で既読化/アーカイブしてもサーバに反映されず、
+        // 再読込でサーバ状態に巻き戻る」の調査可能化: `.staleDiscarded`が
+        // opQueueから無言で消えるだけだった旧挙動を防ぐ回帰テスト —
+        // `replayDiscardsStaleGeneration`(直前のテスト)と同じセットアップで
+        // 発生させ、`opQueue`から消える*前*に`opQueueStaleDiscard`へ理由付き
+        // で記録されていることを確認する。
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database, inboxUidValidity: 5)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: inbox.id!, uidValidity: 1,
+                uids: [42], flags: .seen, db: db
+            )
+        }
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.discardedStale == 1)
+
+        let remainingOps = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
+        #expect(remainingOps.isEmpty)
+
+        let discards = try await database.dbWriter.read { db in try OpQueueStaleDiscardRecord.fetchAll(db) }
+        let discard = try #require(discards.first)
+        #expect(discards.count == 1)
+        #expect(discard.accountId == account.id)
+        #expect(discard.kind == OpQueueKind.setFlags.rawValue)
+        #expect(!discard.reason.isEmpty)
+    }
+
     // MARK: `op: FlagOp` (プッシュ通知からの既読化 — see `SetFlagsOpPayload`'s doc comment)
 
     @Test("SetFlagsOpPayload round-trips op through JSON, defaulting to .replace when the key is absent")

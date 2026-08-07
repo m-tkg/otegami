@@ -278,7 +278,7 @@ public actor OpQueueProcessor {
                     result.succeeded += 1
                     result.affectedMailboxIds.formUnion(affectedMailboxIds)
                 case .staleDiscarded:
-                    try await delete(op: op)
+                    try await recordStaleDiscardAndDelete(op: op)
                     result.discardedStale += 1
                 }
             } catch let error as MailTransportError where SyncFailureClass.classify(error) == .connectionLevel {
@@ -537,6 +537,37 @@ public actor OpQueueProcessor {
 
     private func delete(op: OpQueueRecord) async throws {
         _ = try await database.dbWriter.write { db in try op.delete(db) }
+    }
+
+    /// User-facing (Japanese) reason `recordStaleDiscardAndDelete` writes
+    /// to every `opQueueStaleDiscard` row — every `.staleDiscarded` case in
+    /// `apply(op:account:session:auth:)` shares the exact same root cause
+    /// (the target mailbox's `uidValidity` no longer matches what this op
+    /// was enqueued against), so one shared string is accurate for all of
+    /// them; see `SetFlagsOpPayload`'s doc comment for why that makes the
+    /// op unsendable rather than just stale.
+    private static let staleDiscardReason = "メールボックスの構成が変わったため、この操作をサーバーへ送信できませんでした（フォルダが再作成された可能性があります）。"
+
+    /// Records `op` into `opQueueStaleDiscard` and deletes it from
+    /// `opQueue`, atomically (same `db.write` transaction) — the fix for
+    /// the `.staleDiscarded` path silently dropping unsendable ops with no
+    /// trace at all (実機報告「Gmail で既読化/アーカイブしてもサーバに
+    /// 反映されず、再読込でサーバ状態に巻き戻る」の調査で見つかった容疑の
+    /// 一つ). Unlike a normal permanently-failed op (`recordFailure`, which
+    /// leaves the row in `opQueue` with `attempts >= maxAttempts` for
+    /// `FailedOperationsView`'s existing retry/discard UI), a stale op is
+    /// deleted outright — its `uidValidity` is gone for good, so "retry"
+    /// would just immediately hit the exact same `.staleDiscarded` check
+    /// again. `FailedOperationsView` shows `opQueueStaleDiscard` rows
+    /// alongside genuinely-retryable permanently-failed ops (read-only,
+    /// dismiss-only) so the user still has the same "同期エラー" screen to
+    /// notice this in.
+    private func recordStaleDiscardAndDelete(op: OpQueueRecord) async throws {
+        _ = try await database.dbWriter.write { db -> Bool in
+            var discard = OpQueueStaleDiscardRecord(accountId: op.accountId, kind: op.kind, reason: Self.staleDiscardReason)
+            try discard.insert(db)
+            return try op.delete(db)
+        }
     }
 
     /// Records a failed attempt and returns the new `attempts` count.

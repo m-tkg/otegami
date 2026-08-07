@@ -1,8 +1,8 @@
 import Foundation
 import GRDB
 
-/// Query helpers for `OpQueueReplayLogRecord`/the live `opQueue` backlog —
-/// 実機報告「Gmail で既読化/アーカイブしても
+/// Query helpers for `OpQueueReplayLogRecord`/`OpQueueStaleDiscardRecord`/
+/// the live `opQueue` backlog — 実機報告「Gmail で既読化/アーカイブしても
 /// サーバに反映されない」調査用の設定画面「操作同期の診断」
 /// (`OpQueueDiagnosticsView`) が使う。`OpQueueQuery`と分けたのは、あちらが
 /// 「今すぐユーザーが再試行/破棄できるop」というアクション対象のクエリ
@@ -14,6 +14,17 @@ public enum OpQueueDiagnosticsQuery {
             .order(Column("invokedAt").desc, Column("id").desc)
             .limit(limit)
             .fetchAll(db)
+    }
+
+    public static func recentStaleDiscards(limit: Int, db: Database) throws -> [OpQueueStaleDiscardRecord] {
+        try OpQueueStaleDiscardRecord
+            .order(Column("discardedAt").desc, Column("id").desc)
+            .limit(limit)
+            .fetchAll(db)
+    }
+
+    public static func recentStaleDiscardsObservation(limit: Int) -> ValueObservation<ValueReducers.Fetch<[OpQueueStaleDiscardRecord]>> {
+        ValueObservation.tracking { db in try recentStaleDiscards(limit: limit, db: db) }
     }
 
     /// アカウント別の未送信`opQueue`行数・最古 enqueue 時刻・attempts の
