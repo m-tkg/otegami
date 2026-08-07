@@ -171,7 +171,28 @@ struct MessageDetailFooterToolbar: View {
         #endif
         .padding(.horizontal, OtegamiSpacing.sm)
         .padding(.vertical, OtegamiSpacing.sm)
+        // Liquid Glass Phase 2 (`docs/design-system.md`「Liquid Glass 方針」):
+        // クローム層 (このツールバー自体) の不透明な`surface`塗りを、15個の
+        // アイコンが密集して並ぶ密度を踏まえてバー全体1枚の Glass カプセル
+        // へ置き換えた — アイコンごとに`.buttonStyle(.glass)`を配ると密集時
+        // に個々のカプセルが重なり合ってしまうため、`AccountFilterChip`
+        // (チップ単体) とは違いバー単位でまとめる方を選んだ。`GlassEffectContainer`
+        // は使っていない — あれは`SpeedDialFAB`のように複数の`glassEffect`
+        // シェイプを共有`Namespace`でモーフィングさせる用途で、このバーは
+        // 単一シェイプなので不要 (`otegamiGlassChrome`と同じ理屈)。
+        // `Capsule()`は端まで半円になるため、画面端に接したまま (旧`surface`
+        // 塗りと同じフルブリード) だと丸い端が画面外で切れて見える —
+        // それを避けるため外側に水平/下マージンを足し、フローティングする
+        // ピル型として画面内に収める。macOS はこの節すべて対象外 (`#if
+        // os(macOS)`で従来どおり`surface`塗りのまま、CLAUDE.md の「macOS
+        // は現状維持」)。
+        #if os(iOS)
+        .otegamiGlassChrome(shape: Capsule())
+        .padding(.horizontal, OtegamiSpacing.md)
+        .padding(.bottom, OtegamiSpacing.xs)
+        #else
         .background(OtegamiColor.surface)
+        #endif
     }
 
     /// 全項目が画面幅に収まる場合の既存レイアウト — 変更前と1文字も違わない
@@ -540,7 +561,18 @@ struct MessageDetailFooterToolbar: View {
             .lineLimit(4)
             .padding(.horizontal, OtegamiSpacing.sm)
             .padding(.vertical, OtegamiSpacing.xs)
+            // Liquid Glass Phase 2: この吹き出しはトースト/バナー相当の
+            // クローム要素なので、不透明な`translateFootnoteTone`塗りから
+            // 同じ色を`.tint`したガラス (`SpeedDialFAB`の compose ボタンが
+            // `.regular.tint(OtegamiColor.accent)`で強調色を乗せているのと
+            // 同じ手法) へ — 意味を持つ色 (失敗=destructive/通常=inkSecondary)
+            // 自体は変えず、塗りの質感だけガラスに揃える。macOS は対象外
+            // (`otegamiGlassChrome`と同じ理屈、CLAUDE.md「macOS は現状維持」)。
+            #if os(iOS)
+            .glassEffect(.regular.tint(translateFootnoteTone), in: Capsule())
+            #else
             .background(translateFootnoteTone, in: Capsule())
+            #endif
             .fixedSize(horizontal: false, vertical: true)
             .frame(minWidth: 140, maxWidth: 190, alignment: .center)
             .accessibilityIdentifier("messageDetail.toolbar.translate.footnote")
