@@ -125,7 +125,12 @@ struct RecipientInputField<Trailing: View>: View {
                     )
                 }
             }
-            .background(OtegamiColor.surface)
+            // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass 方針」):
+            // このドロップダウンは本文と同じコンテンツ層 (入力候補のカード)
+            // なのでガラスは使わない — 独自の不透明`surface`塗りを、
+            // `MacListSearchBar`/`AccountDigestSearchBar`と同じ系統の
+            // システム階層素材 (`.quinary`、控えめな塗り) へ委譲する。
+            .background(.quinary)
             .overlay(alignment: .top) {
                 Rectangle().fill(OtegamiColor.dividerSubtle).frame(height: 1)
             }

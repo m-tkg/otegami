@@ -34,7 +34,23 @@ struct SendCountdownBar: View {
             .foregroundStyle(.white)
             .padding(.horizontal, OtegamiSpacing.md)
             .frame(height: 44)
+            // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass 方針」):
+            // 送信取り消しはこのアプリで数少ない「compose 系の最重要
+            // アクション」— 方針が tint 付き Glass (`.glassProminent`相当)
+            // を許す唯一の分類なので、不透明な`accent`塗りを`accent`を
+            // tint した Glass に置き換える (`MessageDetailFooterToolbar
+            // .translateFootnoteCaption`と同じ`.regular.tint(_:)`手法)。
+            // ヘッダ直下に全幅で張り付く既存レイアウトはそのまま (他の
+            // 浮遊クロームと違いフローティングのカプセル化はしない —
+            // 下端の残り時間バーが角丸で欠けるのを避けるため)。macOS は
+            // このバーの唯一の呼び出し元 (`MailScreenView`→
+            // `OtegamiRootView`) が iOS 専用のため実質無変更だが、他の
+            // このバッチの部品と同じ理由で明示的に分岐しておく。
+            #if os(iOS)
+            .glassEffect(.regular.tint(OtegamiColor.accent), in: Rectangle())
+            #else
             .background(OtegamiColor.accent)
+            #endif
             .overlay(alignment: .bottom) {
                 GeometryReader { proxy in
                     HStack(spacing: 0) {
