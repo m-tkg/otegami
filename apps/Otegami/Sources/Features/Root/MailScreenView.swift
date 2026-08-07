@@ -3,10 +3,13 @@ import OtegamiStore
 
 /// iOS's sole always-visible screen (新画面構成 (1)): a plain title (「すべての
 /// 受信」等 — no longer tappable, see below) → `AccountFilterChipRow` (only
-/// meaningful while the unified inbox is selected) → `MessageListView`,
-/// wrapped in `HamburgerMenuContainer` so `FolderListSheet`'s folder-
-/// navigation content (統合受信トレイ／アカウント別ツリー／下書き等／設定) can
-/// slide in from the leading edge instead of presenting as a modal sheet.
+/// meaningful while the unified inbox is selected) → `MessageListView`.
+/// `FolderListSheet`'s folder-navigation content (統合受信トレイ／アカウント別
+/// ツリー／下書き等／設定) presents as a standard full-height `.sheet`
+/// (Liquid Glass Phase 3, 2026-08-07、`docs/design-system.md`「Liquid Glass
+/// 方針」節) — the custom leading-edge drawer (`HamburgerMenuContainer`) it
+/// used before this phase is gone, so system Liquid Glass sheet chrome
+/// (角丸・背景・ドラッグインジケータ) applies automatically.
 /// Owns the one piece of navigation state `MessageListView` itself no
 /// longer does on iOS (`navigationTitle`/`.searchable` moved out — see that
 /// view's doc comment): which mailbox is selected, which account the filter
@@ -127,13 +130,22 @@ struct MailScreenView: View {
     @State private var pendingUndoPayload: MessageListView.UndoToastPayload?
     @AppStorage(MessagePostActionSettingsStore.afterDeleteArchiveKey) private var postDeleteArchiveActionRaw = MessagePostActionSettingsStore.defaultAfterDeleteArchive.rawValue
 
-    /// ハンバーガーメニュー (フォルダ／設定) の開閉。
-    @State private var isMenuOpen = false
+    /// フォルダ／設定メニュー (`FolderListSheet`) の表示状態 — Liquid Glass
+    /// Phase 3 (2026-08-07) でカスタムドロワー (`HamburgerMenuContainer`) を
+    /// 廃止し標準`.sheet`提示に変更したのに合わせ、旧名`isMenuOpen`から他の
+    /// `showingX`系シート状態 (`showingOutbox`等) と揃えて改名した。
+    @State private var showingFolderMenu = false
     @State private var accountEntryRoute: AccountEntryRoute?
     @State private var showingOutbox = false
     @State private var showingDrafts = false
     @State private var showingFailedOps = false
     @State private var showingSettings = false
+    /// Liquid Glass Phase 3: `FolderListSheet`の行 (送信待ち/下書き/同期
+    /// エラー/アカウント追加/設定) がタップされてから、`showingFolderMenu`の
+    /// `.sheet(onDismiss:)`が実際に次のシートを開くまで一時的に保持する
+    /// クロージャ — `presentAfterClosingMenu(_:)`/`handleFolderMenuDismissed()`
+    /// 参照。
+    @State private var pendingPostFolderAction: (() -> Void)?
 
     /// Task #140 (実機報告「ツールバー検索の `from:` プリセットが不発になる
     /// ことがある」): 元は`showingSearch: Bool` + `searchPresetQuery:
@@ -191,11 +203,7 @@ struct MailScreenView: View {
     @AppStorage(ListDisplaySettingsStore.groupByAccountKey) private var isGroupByAccount = ListDisplaySettingsStore.defaultGroupByAccount
 
     var body: some View {
-        HamburgerMenuContainer(isOpen: $isMenuOpen) {
-            menuContent
-        } content: {
-            mailContent
-        }
+        mailContent
         // Task #56 — see `AppEnvironment.uitestDirectOpenThreadId`'s doc
         // comment. `.task` (not `.onAppear`) so this doesn't fight
         // `@Observable`'s own dispatch timing; runs once per this view's
@@ -231,7 +239,7 @@ struct MailScreenView: View {
             // 同様、実機/通常起動では`-uitestsOpenFolderMenuDirectly`引数が
             // 無いので常にno-op)。
             if ProcessInfo.processInfo.arguments.contains("-uitestsOpenFolderMenuDirectly") {
-                isMenuOpen = true
+                showingFolderMenu = true
             }
             // 検索画面再構成 (Task #86): 同じ「タップ不要の直接遷移」パターン
             // で`SearchScreenView`を`scripts/verify-screen.sh`から開けるように
@@ -311,13 +319,28 @@ struct MailScreenView: View {
         pushOpenRoute = nil
     }
 
-    /// Task #70: `HamburgerMenuContainer`の`content`にはこの一つだけを渡す
-    /// — 中身が`compactNavigationStack`/`regularSplitView`のどちらであって
-    /// も、共通の状態 (`accountEntryRoute`/`showingOutbox`等) が駆動する
-    /// シート群はここで一度だけ付ける (どちらの分岐でも同じ`.sheet`群が
-    /// 要る一方、分岐のたびに複製すると片方だけ直し忘れる不整合の元になる
-    /// ため)。`.tint`もここに一本化 (以前は`mailNavigationStack`自身に
-    /// 付いていたのを、両分岐の共通祖先であるこの階層に上げただけ)。
+    /// Task #70: 中身が`compactNavigationStack`/`regularSplitView`のどちら
+    /// であっても、共通の状態 (`accountEntryRoute`/`showingOutbox`等) が
+    /// 駆動するシート群はここで一度だけ付ける (どちらの分岐でも同じ
+    /// `.sheet`群が要る一方、分岐のたびに複製すると片方だけ直し忘れる
+    /// 不整合の元になるため)。`.tint`もここに一本化 (以前は
+    /// `mailNavigationStack`自身に付いていたのを、両分岐の共通祖先である
+    /// この階層に上げただけ)。
+    ///
+    /// Liquid Glass Phase 3 (2026-08-07): フォルダ／設定メニュー
+    /// (`FolderListSheet`、`showingFolderMenu`) も、カスタムドロワー
+    /// (`HamburgerMenuContainer`) をやめてこの並びに標準`.sheet`として
+    /// 加えた。`.large`固定 — フォルダ切替はナビゲーション頻度が高いため
+    /// フルハイトを基本にする。`FolderListSheet`の各行 (送信待ち/下書き/
+    /// 同期エラー/アカウント追加/設定) はこのシート自身からさらにもう1枚
+    /// シートを重ねられない (このアプリで確認済みの「シートからシートを
+    /// 開く」壊れ方 — `ComposerView.swift`の同じ既知不調のコメント参照)
+    /// ため、各行は`onOpen*`クロージャで`presentAfterClosingMenu(_:)`を
+    /// 呼ぶだけに留め、実際の次のシート提示は`onDismiss`
+    /// (`handleFolderMenuDismissed`) がこのシートの dismiss アニメーション
+    /// 完了後に行う — design-phase-2 で一度採用されていた
+    /// `pendingPostFolderAction` + `onDismiss`の構図を、ドロワー化で
+    /// 一時的に不要になっていたところへ再び戻した形。
     private var mailContent: some View {
         Group {
             if horizontalSizeClass == .regular {
@@ -327,6 +350,10 @@ struct MailScreenView: View {
             }
         }
         .tint(OtegamiColor.accent)
+        .sheet(isPresented: $showingFolderMenu, onDismiss: handleFolderMenuDismissed) {
+            menuContent
+                .presentationDetents([.large])
+        }
         .sheet(item: $accountEntryRoute) { route in
             accountEntryDestination(for: route, binding: $accountEntryRoute)
         }
@@ -401,11 +428,10 @@ struct MailScreenView: View {
     /// 左=`listColumn`(現行の一覧+ヘッダのトグル類+フローティング検索/作成、
     /// `content`/`toolbarContent`をそのまま流用)、右=`detailColumn`(選択中
     /// スレッドの本文、未選択時はプレースホルダ)。フォルダ切替は3カラム化
-    /// せず、`compactNavigationStack`と同じ`HamburgerMenuContainer`のドロワー
-    /// をそのまま流用する (`docs/design-system.md`のTask #70節に判断を記録)
-    /// — `mailContent`がこの`regularSplitView`ごと`HamburgerMenuContainer
-    /// .content`に渡っているので、ハンバーガーボタン (`listColumn`の
-    /// `toolbarContent`内) を押せば2ペインの上に同じドロワーが重なる。
+    /// せず、`compactNavigationStack`と同じ`showingFolderMenu`の`.sheet`
+    /// (`mailContent`参照) をそのまま流用する (`docs/design-system.md`の
+    /// Task #70節に判断を記録) — ハンバーガーボタン (`listColumn`の
+    /// `toolbarContent`内) を押せば2ペインの上に同じシートが重なる。
     private var regularSplitView: some View {
         NavigationSplitView(columnVisibility: .constant(.all)) {
             listColumn
@@ -892,7 +918,7 @@ struct MailScreenView: View {
     /// 開閉する。
     private var hamburgerButton: some View {
         Button {
-            isMenuOpen.toggle()
+            showingFolderMenu.toggle()
         } label: {
             Label("メニュー", systemImage: "line.3.horizontal")
         }
@@ -908,8 +934,7 @@ struct MailScreenView: View {
             onOpenFailedOps: { presentAfterClosingMenu { showingFailedOps = true } },
             onAddAccount: { presentAfterClosingMenu { accountEntryRoute = .typeSelection } },
             onOpenSettings: { presentAfterClosingMenu { showingSettings = true } },
-            isMenuOpen: isMenuOpen,
-            onClose: { isMenuOpen = false }
+            onClose: { showingFolderMenu = false }
         )
     }
 
@@ -929,14 +954,14 @@ struct MailScreenView: View {
         mailSelection = .unifiedInbox
         selectionTitle = String(localized: "すべての受信")
         accountFilter = nil
-        isMenuOpen = false
+        showingFolderMenu = false
     }
 
     private func selectMailbox(_ mailboxSelection: MailboxSelection, _ displayName: String) {
         mailSelection = .mailbox(mailboxSelection)
         selectionTitle = displayName
         accountFilter = nil
-        isMenuOpen = false
+        showingFolderMenu = false
     }
 
     /// 画面構造改修バッチ (Task #33, 3): カテゴリ優先メニューの「横断ビュー」行
@@ -953,7 +978,7 @@ struct MailScreenView: View {
         // 「すべてのすべてのメール」に二重化する。
         selectionTitle = role == .all ? role.categoryDisplayName : String(localized: "すべての\(role.categoryDisplayName)")
         accountFilter = nil
-        isMenuOpen = false
+        showingFolderMenu = false
     }
 
     private func presentAddAccount() {
@@ -1023,16 +1048,28 @@ struct MailScreenView: View {
         }
     }
 
-    /// `FolderListSheet`'s rows all present *another* sheet — since the
-    /// menu itself is now a drawer (not a `.sheet`), there's no "sheet from
-    /// a sheet" nesting problem here (`HamburgerMenuContainer`'s doc
-    /// comment), so this just closes the drawer and flips the target flag
-    /// in the same call, rather than the old `pendingPostFolderAction` +
-    /// `onDismiss` indirection design-phase-2's `.sheet`-based folder list
-    /// needed.
-    private func presentAfterClosingMenu(_ present: () -> Void) {
-        isMenuOpen = false
-        present()
+    /// `FolderListSheet`'s rows all present *another* sheet. Liquid Glass
+    /// Phase 3 (2026-08-07) made the folder menu itself a real `.sheet`
+    /// again (`HamburgerMenuContainer`, the leading-edge drawer that
+    /// sidestepped this, is gone) — so presenting the next sheet in the
+    /// same call that closes this one risks this app's confirmed-broken
+    /// "sheet from a sheet" nesting (see `ComposerView.swift`'s same-named
+    /// known-issue comment). This just records which sheet to open next and
+    /// closes the menu; `handleFolderMenuDismissed()` (invoked by this
+    /// view's `.sheet(isPresented: $showingFolderMenu, onDismiss:)`) fires
+    /// the closure only after the menu's dismiss animation has actually
+    /// finished — the same `pendingPostFolderAction` + `onDismiss` idiom
+    /// design-phase-2's original `.sheet`-based folder list needed, and
+    /// that the drawer design let this app drop for a while.
+    private func presentAfterClosingMenu(_ present: @escaping () -> Void) {
+        pendingPostFolderAction = present
+        showingFolderMenu = false
+    }
+
+    /// See `presentAfterClosingMenu(_:)`'s doc comment.
+    private func handleFolderMenuDismissed() {
+        pendingPostFolderAction?()
+        pendingPostFolderAction = nil
     }
 }
 

@@ -22,14 +22,13 @@ enum FolderCategoryOrderStore {
     }
 
     /// `loadOrder()`のロジック本体 — `raw`を明示的に受け取るオーバーロード。
-    /// `FolderListSheet`は`@AppStorage(FolderCategoryOrderStore.key)`で
-    /// 生の文字列を直接監視し (SwiftUIの`@AppStorage`は`[MailboxRoleRecord]`
-    /// のような配列型を直接は扱えないため)、これをそのつど渡すことで
-    /// 「設定画面で並び替えて戻ってくると、常設マウントされたままの
-    /// ドロワーにも即反映される」という反応性を得る — `FolderListSheet`
-    /// 自身は再生成されない (`HamburgerMenuContainer`のdoc comment参照)
-    /// ので、`loadOrder()`を`@State`の初期値として一度だけ読むだけでは
-    /// 設定変更後に古いままになってしまう。
+    /// `MailScreenView`(ヘッダタイトルのプルダウン)と`SidebarView`(macOS)は
+    /// それぞれ`@AppStorage(FolderCategoryOrderStore.key)`で生の文字列を
+    /// 直接監視し (SwiftUIの`@AppStorage`は`[MailboxRoleRecord]`のような
+    /// 配列型を直接は扱えないため)、これをそのつど渡すことで「設定画面で
+    /// 並び替えて戻ってくると常設ビューにも即反映される」という反応性を
+    /// 得ている — `loadOrder()`を`@State`の初期値として一度だけ読むだけ
+    /// では設定変更後に古いままになってしまうため。
     static func loadOrder(from raw: String?) -> [MailboxRoleRecord] {
         guard let raw, !raw.isEmpty else {
             return defaultOrder
