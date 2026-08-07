@@ -52,6 +52,7 @@ translations = {
     "キャンセル": "Cancel",
     "選択解除": "Deselect All",
     "全選択": "Select All",
+    "すべてのメールを選択": "Select All Messages",
     "再同期": "Refresh",
     # Task #194 (SyncProgressBanner — pull-to-refresh progress/cancel):
     "新着メールを確認中…": "Checking for new mail…",

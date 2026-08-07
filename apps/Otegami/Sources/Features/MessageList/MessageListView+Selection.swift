@@ -137,7 +137,12 @@ extension MessageListView {
                 if let snapshot = await commitArchive(summary) { snapshots.append(snapshot) }
             }
             guard !snapshots.isEmpty else { return }
-            scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドをアーカイブしました", accountIds: accountIds) {
+            // 件数は選択数 (`ids.count`) ではなく実際に処理できた数
+            // (`snapshots.count`) — ピン留めされたスレッドは
+            // `commitArchive` が `ArchiveGuardError` を握って `nil` を返す
+            // ので選択数とはズレる (macOS の⌘A→アーカイブで実際に踏んだ:
+            // 17件選択・16件アーカイブなのに「17件」と出ていた)。
+            scheduleUndo(threadIds: ids, message: "\(snapshots.count)件のスレッドをアーカイブしました", accountIds: accountIds) {
                 for snapshot in snapshots { await undoRemoval(snapshot) }
             }
         }
@@ -158,7 +163,7 @@ extension MessageListView {
                 if let snapshot = await commitUnarchive(summary) { snapshots.append(snapshot) }
             }
             guard !snapshots.isEmpty else { return }
-            scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドのアーカイブを解除しました", accountIds: accountIds) {
+            scheduleUndo(threadIds: ids, message: "\(snapshots.count)件のスレッドのアーカイブを解除しました", accountIds: accountIds) {
                 for snapshot in snapshots { await undoRemoval(snapshot) }
             }
         }
@@ -178,7 +183,7 @@ extension MessageListView {
                 if let snapshot = await commitJunk(summary) { snapshots.append(snapshot) }
             }
             guard !snapshots.isEmpty else { return }
-            scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドを迷惑メールにしました", accountIds: accountIds) {
+            scheduleUndo(threadIds: ids, message: "\(snapshots.count)件のスレッドを迷惑メールにしました", accountIds: accountIds) {
                 for snapshot in snapshots { await undoRemoval(snapshot) }
             }
         }
@@ -195,7 +200,7 @@ extension MessageListView {
                 if let snapshot = await commitDelete(summary) { snapshots.append(snapshot) }
             }
             guard !snapshots.isEmpty else { return }
-            scheduleUndo(threadIds: ids, message: "\(ids.count)件のスレッドを削除しました", accountIds: accountIds) {
+            scheduleUndo(threadIds: ids, message: "\(snapshots.count)件のスレッドを削除しました", accountIds: accountIds) {
                 for snapshot in snapshots { await undoRemoval(snapshot) }
             }
         }

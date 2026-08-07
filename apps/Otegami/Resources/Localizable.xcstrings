@@ -81,6 +81,16 @@
         }
       }
     },
+    "すべてのメールを選択": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select All Messages"
+          }
+        }
+      }
+    },
     "再同期": {
       "localizations": {
         "en": {
