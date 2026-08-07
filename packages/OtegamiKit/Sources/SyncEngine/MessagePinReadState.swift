@@ -54,6 +54,20 @@ public enum MessagePinReadState {
             }
             message.updatedAt = Date()
             try message.update(db)
+            // Gmail の二重ラベルで畳まれた兄弟行にも同じローカル状態を書く
+            // (`ThreadQuery.duplicateSiblings(of:db:)`の doc comment) —
+            // 呼び出し側が渡してくるのは dedup 済みの代表行だけなので、
+            // これが無いと片方の行だけ古い値のまま残る。
+            try applyToDuplicateSiblings(of: message, db: db) { sibling in
+                guard sibling.flags.contains(.seen) != markingRead else { return nil }
+                var updated = sibling
+                if markingRead {
+                    updated.flags.insert(.seen)
+                } else {
+                    updated.flags.remove(.seen)
+                }
+                return updated
+            }
             guard !message.isPendingRelocation,
                   let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
             else { continue }
@@ -89,6 +103,24 @@ public enum MessagePinReadState {
             }
             message.updatedAt = Date()
             try message.update(db)
+            // 実機報告 (2026-08-07)「メールの unpin が反映されない」の実体:
+            // `ThreadRecord.isPinned` は dedup 前の全行の OR なので、代表行
+            // だけ解除しても Gmail の All Mail 側の行が `isPinnedLocal ==
+            // true` のまま残り、スレッドのピンが落ちなかった (逆にピン留めは
+            // OR なので代表行だけで効いてしまい、非対称なバグに見えていた)。
+            // 兄弟行にも同じローカル状態を書いて揃える
+            // (`ThreadQuery.duplicateSiblings(of:db:)`の doc comment)。
+            try applyToDuplicateSiblings(of: message, db: db) { sibling in
+                guard sibling.isPinnedLocal != pinning else { return nil }
+                var updated = sibling
+                updated.isPinnedLocal = pinning
+                if pinning {
+                    updated.flags.insert(.flagged)
+                } else {
+                    updated.flags.remove(.flagged)
+                }
+                return updated
+            }
             guard !message.isPendingRelocation,
                   let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
             else { continue }
@@ -98,5 +130,24 @@ public enum MessagePinReadState {
             )
         }
         try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+    }
+
+    /// `message` の重複兄弟行 (`ThreadQuery.duplicateSiblings(of:db:)`) に
+    /// `transform` を適用して保存する。`transform` が `nil` を返した行は
+    /// 既に目的の状態なので触らない (`updatedAt` を無意味に動かさないため)。
+    ///
+    /// `opQueue` には積まない — Gmail のフラグはラベルではなくメッセージに
+    /// 付くので、代表行のぶんの op を送れば両方に反映される。ここで揃える
+    /// のはローカル DB の整合性だけ。
+    private static func applyToDuplicateSiblings(
+        of message: MessageRecord,
+        db: Database,
+        transform: (MessageRecord) -> MessageRecord?
+    ) throws {
+        for sibling in try ThreadQuery.duplicateSiblings(of: message, db: db) {
+            guard var updated = transform(sibling) else { continue }
+            updated.updatedAt = Date()
+            try updated.update(db)
+        }
     }
 }

@@ -1278,3 +1278,29 @@ Liquid Glass Phase 1 で `OtegamiFloatingButtonChromeModifier` の `Circle()`
 回帰テスト (`OtegamiSpeedDialFABUITests`) は**グリフに重ならない円の縁**
 (正規化座標 0.2, 0.2) を突く — 円の中心はバグのある実装でも当たって
 しまい、回帰を検出できない。
+
+### o. Gmail の重複行はローカル状態も両方揃える
+
+実機報告 (2026-08-07)「メールの unpin が反映されない」。**ピン留めは効く
+のに解除だけ効かない**という非対称なバグだった。
+
+Gmail の二重ラベルでは同じメールが INBOX と All Mail の2行として同期
+される (`ThreadQuery.deduplicate(_:db:)` の doc comment)。行アクションの
+対象解決 (`ThreadQuery.actionTargets(for:db:)` → `messages(threadId:db:)`)
+は **dedup 済みの代表行しか返さない**一方、`ThreadRecord.isPinned` の
+集約は **dedup 前の全行の OR** (`ThreadAssigner.recomputeAggregates`、
+SQL 側も `MAX(message.isPinnedLocal)`) — 代表行だけ解除しても All Mail
+側の行が `isPinnedLocal == true` のまま残り、OR が `true` を返し続けて
+いた。付ける側は OR なので代表行だけで `true` になり、ちゃんと効いて
+いるように見える。
+
+**ローカル状態 (`isPinnedLocal`/`\Seen`) は物理メッセージの属性なので、
+重複行にも同じ値を書くこと** — `MessagePinReadState` が
+`ThreadQuery.duplicateSiblings(of:db:)` を使って揃える。サーバーへ送る
+op は代表行のぶんだけでよい (Gmail のフラグはラベルではなくメッセージに
+付くので、どちらのラベル経由で STORE しても両方に反映される)。
+
+`messageCount`/`unreadCount` は既に dedup 済みの定義で計算しているので
+この問題を持たない (`ThreadAggregateBackfillTests`) — `isPinned` だけが
+raw の OR だった。同種の集約を新しく足すときは、どちらの定義に揃えるか
+を明示的に決めること。
