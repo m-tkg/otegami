@@ -96,4 +96,41 @@ extension AppEnvironment {
             return try await self.auth(for: account)
         }
     }
+
+    /// Task (opqueue スタック修正、診断画面強化): `OpQueueDiagnosticsView`の
+    /// 「今すぐ再送を実行」ボタンが呼ぶ、手動トリガー版の replay。
+    /// `syncAllAccountsOnce`の自動トリガー (フォアグラウンド復帰など) と
+    /// 違い、`syncAccountIncrementally`までは行わない — これは診断目的で
+    /// 「replay だけ」を今すぐ動かし、結果 (成功/破棄/再試行待ち/恒久失敗
+    /// 件数とエラー文言) をその場で確認するためのもの。アカウントを直列に
+    /// 処理する (`syncAllAccountsOnce`のような同時2並列はしない) — 手動で
+    /// 一度だけ押すボタンの結果表示用途では、並列化の複雑さより「どの
+    /// アカウントの結果か」が画面にそのまま出る単純さを優先した。
+    func replayOpQueueNowForDiagnostics(accountIds: [String]) async -> [ManualReplayOutcome] {
+        let targetAccounts = accounts.filter { accountIds.contains($0.id) }
+        var outcomes: [ManualReplayOutcome] = []
+        for account in targetAccounts {
+            do {
+                let resolvedAuth = try await auth(for: account)
+                let result = try await syncCoordinator.replayOpQueue(for: account, auth: resolvedAuth)
+                outcomes.append(ManualReplayOutcome(accountId: account.id, accountDisplayName: account.displayName, result: result, errorDescription: nil))
+            } catch {
+                outcomes.append(ManualReplayOutcome(accountId: account.id, accountDisplayName: account.displayName, result: nil, errorDescription: String(describing: error)))
+            }
+        }
+        return outcomes
+    }
+}
+
+/// `AppEnvironment.replayOpQueueNowForDiagnostics(accountIds:)`の結果1件分
+/// (1アカウント分)。`auth(for:)`自体が失敗するケース (Keychain/OAuthトークン
+/// 解決失敗) も、接続後の`OpQueueProcessor.replay`失敗と同じく`errorDescription`
+/// に収め、`OpQueueDiagnosticsView`側は「成功したか、失敗したなら何が
+/// 起きたか」だけを見ればよいようにする。
+struct ManualReplayOutcome: Sendable, Identifiable {
+    var id: String { accountId }
+    var accountId: String
+    var accountDisplayName: String
+    var result: OpQueueProcessor.ReplayResult?
+    var errorDescription: String?
 }

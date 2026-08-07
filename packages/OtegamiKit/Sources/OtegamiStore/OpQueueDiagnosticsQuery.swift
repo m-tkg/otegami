@@ -40,14 +40,23 @@ public enum OpQueueDiagnosticsQuery {
         public var neverAttemptedCount: Int
         public var retryingCount: Int
         public var permanentlyFailedCount: Int
+        /// Task (opqueue スタック修正、実機報告「Gmail の未送信 op が
+        /// 1055件」の原因切り分け): op の種類 (`OpQueueRecord.kind` の生の
+        /// 文字列 — `SyncEngine.OpQueueKind`の rawValue、`OtegamiStore`は
+        /// `SyncEngine`に依存できないため型ではなく文字列キーで持つ) 別の
+        /// 件数。これが無ければ「1055件がどの操作で積み上がったか
+        /// (`setFlags`の暴走なのか、`send`が詰まっているのか等)」を診断画面
+        /// だけから切り分けられなかった。
+        public var countByKind: [String: Int]
 
-        public init(accountId: String, count: Int, oldestCreatedAt: Date, neverAttemptedCount: Int, retryingCount: Int, permanentlyFailedCount: Int) {
+        public init(accountId: String, count: Int, oldestCreatedAt: Date, neverAttemptedCount: Int, retryingCount: Int, permanentlyFailedCount: Int, countByKind: [String: Int] = [:]) {
             self.accountId = accountId
             self.count = count
             self.oldestCreatedAt = oldestCreatedAt
             self.neverAttemptedCount = neverAttemptedCount
             self.retryingCount = retryingCount
             self.permanentlyFailedCount = permanentlyFailedCount
+            self.countByKind = countByKind
         }
     }
 
@@ -66,7 +75,8 @@ public enum OpQueueDiagnosticsQuery {
                 oldestCreatedAt: ops.map(\.createdAt).min() ?? Date(),
                 neverAttemptedCount: ops.filter { $0.attempts == 0 }.count,
                 retryingCount: ops.filter { $0.attempts > 0 && $0.attempts < maxAttempts }.count,
-                permanentlyFailedCount: ops.filter { $0.attempts >= maxAttempts }.count
+                permanentlyFailedCount: ops.filter { $0.attempts >= maxAttempts }.count,
+                countByKind: Dictionary(grouping: ops, by: \.kind).mapValues(\.count)
             )
         }.sorted { $0.accountId < $1.accountId }
     }
