@@ -398,7 +398,8 @@ Task #205 で `NSAllowsArbitraryLoadsInWebContent` を追加し、平文 `http`
 
 **2026-08-07 (macOS ネイティブ化)**: 以下のトークン主導のスタイルは
 **iOS の意匠**。macOS は実機フィードバック「いかにも iOS 版から移植した
-感じ」を受けて方針を転換し、**独自の背景塗り (`OtegamiColor.background`)
+感じ」を受けて方針を転換し、**独自の背景塗り (旧`OtegamiColor.background`
+トークン — 参照ゼロになったため Liquid Glass Phase 5 で削除済み、後述)
 ・`tint`・カード・カプセル・塗りバッジ・塗り+枠線チップを使わず、AppKit
 標準の外観に任せる**: サイドバーは vibrancy 素材 + 素の数字未読カウント、
 一覧はフラット全幅行 + ヘアライン区切り、チップは scope bar 風 (選択中
@@ -409,31 +410,41 @@ Task #205 で `NSAllowsArbitraryLoadsInWebContent` を追加し、平文 `http`
 アカウント色 (ラベル色・`AccountColorRail`)・destructive など意味を持つ
 色は macOS でも従来どおりトークンを使う。
 
-### Liquid Glass 方針 (2026-08-07 採用)
+### Liquid Glass 方針 (2026-08-07 採用、2026-08-07 移行完了)
 
 iOS も、上記の macOS ネイティブ化方針 (2026-08-07) と同じ考え方で
-Liquid Glass へ全面移行する。骨子:
+Liquid Glass へ全面移行した (Phase 0〜5、Phase 0: 基盤整備で視覚変化なし
+→ Phase 1〜4: 一覧・詳細・ドロワー→シート・検索・Composer・オーバー
+レイのクローム化 → Phase 5: 設定系画面群の残り棚卸しと未参照トークン
+削除)。骨子:
 
-- **色: システム標準へ委譲**。iOS 独自の背景/surface 塗り
-  (`OtegamiColor.background`/`surface`/`paleBase` 系) は段階的に廃止し、
-  アクセントの tint だけを残す。macOS がすでに `.background`/`tint`/
-  カード塗りをやめて AppKit 標準に任せているのと同じ方向。
+- **色: システム標準へ委譲**。iOS 独自の背景/surface 塗り (`OtegamiColor
+  .background`/`surface`/`paleBase` 系) のうち、ページ単位の背景塗りを
+  担っていた `background` トークンは廃止し、アクセントの tint だけを
+  残した。実コードから参照ゼロになったため Phase 5 でトークン自体も
+  削除済み — `surface`/`paleBase`系は**コンテンツ層**の強調塗り (選択
+  行・カード・トグルの active 状態など) として今も使う、後述の「トーク
+  ン一覧」参照。macOS がすでに `.background`/`tint`/カード塗りをやめて
+  AppKit 標準に任せているのと同じ方向。
 - **クローム層** (ツールバー・フローティングボタン・チップ・検索欄・
   トースト・バナー) は不透明なトークン塗りを禁止し、システム標準の
   Liquid Glass (`glassEffect` / `.buttonStyle(.glass)`) に任せる。tint 付き
   Glass (`.glassProminent` 等) を使うのは compose 系の最重要アクションに
   限る。
 - **コンテンツ層** (一覧行・本文・カード) にはガラスを使わない — HIG の
-  「コンテンツの上に敷き詰めない」指針に従う。
+  「コンテンツの上に敷き詰めない」指針に従う。`.buttonStyle(.plain)` の
+  多くはこのコンテンツ層 (リスト行のタップ領域、自前クロームのラベル)
+  で今も必要 — Glass 抑止のためだけに残っていたもの (旧
+  `unreadOnlyToggle`、旧`SearchTopBar`の閉じるボタン) は Phase 1/4 で
+  Glass へ転換済みで、Phase 5 の棚卸しでは新たな転換対象は見つからな
+  かった。`HTMLMessageView` の画像許可/セキュリティバナー群
+  (`.buttonStyle(.bordered)`) は本文 (WebView 隣接領域) 内のオーバー
+  レイという性質を優先し、コンテンツ層寄りの見た目のまま維持している。
 - Glass を使うコンポーネントは DesignSystemCatalog のレンダラには登録
   しない。Catalog は `ImageRenderer` によるオフスクリーン描画 (詳細は
   `Sources/DesignSystemCatalogRenderer/main.swift`) で、Glass は正しく
   描画されないため。Glass 部品の見た目確認は `scripts/verify-screen.sh`
   による実機シミュレータのスクリーンショットで行う。
-
-このドキュメント内の「iOS はトークン主導のスタイル」という記述は
-移行が進むにつれて段階的に置き換わっていく途中の状態を指す。実装は
-Phase 単位で進める (Phase 0: 基盤整備、視覚変化なし)。
 
 - フラットデザイン。角丸は `OtegamiRadius.none` (0) が既定で、カードの
   角丸は `OtegamiRadius.card` (8pt) — **iOS の一覧行はフルブリード化の
@@ -456,25 +467,26 @@ Phase 単位で進める (Phase 0: 基盤整備、視覚変化なし)。
   `Font.custom(_:size:relativeTo:)` 経由で Dynamic Type に対応する (固定
   pt 指定はしない)。ウェイトは Archivo 可変フォントの named instance
   (`ArchivoRoman-Regular`/`-Medium`/`-SemiBold`/`-Bold`)。
-- 淡い水色ベースのライトテーマ (背景 `#EEF3F6`、面 `#FFFFFF`、アクセン
-  ト `#3D7F9E` 系) と、それに対応するダークテーマ (背景 `#10191E`、面
-  `#1F2E36` — 単純な反転ではなく、暗い紙の上でも階調が読み取れるよう独
-  自に設計した値)。破壊的操作の色 (`destructive`、`#EC3013` 系) だけは
-  水色ファミリーから独立した既存のブランド色をそのまま使っている。
-  `Color(light:dark:)` (`DynamicColor.swift`) が全トークンの基礎で、
-  `UIColor`/`NSColor` の dynamic provider により実機・Simulator・
-  Preview・`ImageRenderer` オフスクリーン描画のいずれでも正しく解決さ
-  れる。**上記の Liquid Glass 方針によりシステム標準委譲へ移行中**
-  — この淡水色パレットのうち `background`/`surface`/`paleBase` 系トー
-  クンは iOS では段階的に廃止予定 (macOS は 2026-08-07 のネイティブ化で
-  廃止済み)。トークン一覧の全面書き換えはここでは行わず、廃止が完了する
-  後続フェーズでまとめて行う。
+- 淡い水色ベースのライトテーマ (面 `#FFFFFF`、アクセント `#3D7F9E` 系) と、
+  それに対応するダークテーマ (面 `#1F2E36` — 単純な反転ではなく、暗い紙
+  の上でも階調が読み取れるよう独自に設計した値)。破壊的操作の色
+  (`destructive`、`#EC3013` 系) だけは水色ファミリーから独立した既存の
+  ブランド色をそのまま使っている。`Color(light:dark:)`
+  (`DynamicColor.swift`) が全トークンの基礎で、`UIColor`/`NSColor` の
+  dynamic provider により実機・Simulator・Preview・`ImageRenderer` オフ
+  スクリーン描画のいずれでも正しく解決される。**上記の Liquid Glass
+  方針によりシステム標準委譲へ移行完了 (2026-08-07)** — この淡水色パ
+  レットのうちページ単位の背景塗りだった `background` トークン (旧
+  `#EEF3F6`/`#10191E`) は iOS・macOS どちらの実コードからも参照ゼロに
+  なったため Phase 5 で削除した。`surface`/`paleBase`系は**コンテンツ層**
+  の強調塗り (カード・選択行・トグルの active 状態など) として現役 — 詳細
+  は次の「トークン一覧」参照。
 
 ### トークン一覧
 
 | 種類 | ファイル | 内容 |
 | --- | --- | --- |
-| カラー | `OtegamiColor.swift` | 用途ベースの命名 (`background`/`surface`/`ink`/`accent`/`destructive`/`divider` 等)。生の色名を UI コードに露出させないレイヤー |
+| カラー | `OtegamiColor.swift` | 用途ベースの命名 (`surface`/`ink`/`accent`/`destructive`/`divider` 等)。生の色名を UI コードに露出させないレイヤー。ページ単位の背景塗りだった `background` と、フローティングボタンの塗りだった `accentFloating` は Liquid Glass 移行完了に伴い参照ゼロになったため Phase 5 で削除済み |
 | タイポグラフィ | `OtegamiFont.swift` | `largeTitle`/`title`/`headline`/`body`/`subheadline`/`caption`/`badge`/`monospaceBody` |
 | スペーシング | `OtegamiSpacing.swift` | 12pt を基本単位とするスケール: `xs=4/sm=8/md=12/lg=16/xl=24/xxl=32` |
 | 罫線・角丸 | `OtegamiBorder.swift` | `OtegamiStroke.primary/secondary`、`OtegamiRadius.none/card` |
