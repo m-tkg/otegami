@@ -54,7 +54,7 @@ struct CalendarInviteSectionView: View {
                 .foregroundStyle(OtegamiColor.inkSecondary)
         }
         .padding(OtegamiSpacing.md)
-        .otegamiCardBackground(OtegamiColor.surface)
+        .otegamiCardBackground(.quaternary)
         .accessibilityIdentifier("messageDetail.calendarInvite.loading")
     }
 
@@ -70,7 +70,7 @@ struct CalendarInviteSectionView: View {
                 .accessibilityIdentifier("messageDetail.calendarInvite.retry")
         }
         .padding(OtegamiSpacing.md)
-        .otegamiCardBackground(OtegamiColor.surface)
+        .otegamiCardBackground(.quaternary)
     }
 
     private func retry() {

@@ -72,7 +72,11 @@ struct QuoteHistorySectionView: View {
                     }
                 }
             }
-            .otegamiCardBackground(OtegamiColor.surface)
+            // Liquid Glass Phase 2: iOS の`surface`塗り (廃止予定) から
+            // システム階層素材へ — このカードは本文の一部 (コンテンツ層)
+            // なので Glass にはしない (`docs/design-system.md`「Liquid
+            // Glass 方針」のコンテンツ層の節参照)。
+            .otegamiCardBackground(.quaternary)
             .accessibilityIdentifier("messageDetail.quoteHistory.segments")
         case .unparsed(let raw):
             // Task #123's fallback contract: parsing that isn't confident
@@ -84,7 +88,7 @@ struct QuoteHistorySectionView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(OtegamiSpacing.md)
-                .otegamiCardBackground(OtegamiColor.surface)
+                .otegamiCardBackground(.quaternary)
                 .accessibilityIdentifier("messageDetail.quoteHistory.unparsed")
         }
     }
