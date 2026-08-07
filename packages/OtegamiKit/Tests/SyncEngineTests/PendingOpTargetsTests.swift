@@ -137,6 +137,114 @@ struct PendingOpTargetsTests {
         #expect(targets.isEmpty)
     }
 
+    // MARK: - Gmail の兄弟行 (2026-08-07 の2度目の unpin 修正)
+
+    /// INBOX と All Mail に同じ物理メッセージの2行を作る。戻り値は
+    /// (accountId, inboxId, allMailId)。
+    private func makeGmailDuplicate(db: Database) throws -> (accountId: String, inboxId: Int64, allMailId: Int64) {
+        let account = AccountRecord(
+            displayName: "Gmail", email: "dup@otegami.test", authType: .password, kind: .gmail,
+            imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls, imapUsername: "dup@otegami.test"
+        )
+        try account.insert(db)
+        var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox, uidValidity: 42)
+        try inbox.insert(db)
+        var allMail = MailboxRecord(accountId: account.id, path: "[Gmail]/All Mail", displayPath: "All Mail", role: .all, uidValidity: 42)
+        try allMail.insert(db)
+        var thread = ThreadRecord(accountId: account.id, normalizedSubject: "重複")
+        try thread.insert(db)
+        let threadId = try #require(thread.id)
+        for (mailboxId, uid) in [(try #require(inbox.id), Int64(10)), (try #require(allMail.id), Int64(20))] {
+            var message = MessageRecord(
+                mailboxId: mailboxId, uid: uid,
+                messageId: "<dup@otegami.test>",
+                internalDate: Date(timeIntervalSince1970: 1_700_000_000),
+                gmailMessageId: 4242,
+                threadId: threadId
+            )
+            try message.insert(db)
+        }
+        return (account.id, try #require(inbox.id), try #require(allMail.id))
+    }
+
+    /// これが無かったために、INBOX で unpin した直後の All Mail 同期が
+    /// サーバーの `\Flagged` で兄弟行を戻し、ピンが復活していた。
+    @Test("INBOX 対象の setFlags op は All Mail 側の兄弟 UID もガードする")
+    func setFlagsOpGuardsSiblingUID() throws {
+        let database = try AppDatabase.makeInMemory()
+        let targets = try database.dbWriter.write { db -> PendingOpTargets in
+            let (accountId, inboxId, allMailId) = try makeGmailDuplicate(db: db)
+            try OpQueue.enqueueSetFlags(
+                accountId: accountId, mailboxId: inboxId, uidValidity: 42, uids: [10], flags: .seen, db: db
+            )
+            return try PendingOpTargets.forMailbox(mailboxId: allMailId, accountId: accountId, db: db)
+        }
+        #expect(targets.flagChanged == [20])
+        #expect(targets.blocks(uid: 20))
+    }
+
+    @Test("逆方向 (All Mail 対象の op が INBOX 側をガードする) も成り立つ")
+    func setFlagsOpGuardsSiblingUIDInBothDirections() throws {
+        let database = try AppDatabase.makeInMemory()
+        let targets = try database.dbWriter.write { db -> PendingOpTargets in
+            let (accountId, inboxId, allMailId) = try makeGmailDuplicate(db: db)
+            try OpQueue.enqueueSetFlags(
+                accountId: accountId, mailboxId: allMailId, uidValidity: 42, uids: [20], flags: .seen, db: db
+            )
+            return try PendingOpTargets.forMailbox(mailboxId: inboxId, accountId: accountId, db: db)
+        }
+        #expect(targets.flagChanged == [10])
+    }
+
+    /// **意図的な非対称の固定** — 移動系は所属 (ラベル) の話なので広げない。
+    /// Gmail のアーカイブは INBOX ラベルを外すだけで、All Mail 側の行は
+    /// 残るのが正しい。ここまで広げると正しい行を消してしまう。
+    @Test("archive op は兄弟行までは広げない")
+    func relocationOpsDoNotSpreadToSiblings() throws {
+        let database = try AppDatabase.makeInMemory()
+        let targets = try database.dbWriter.write { db -> PendingOpTargets in
+            let (accountId, inboxId, allMailId) = try makeGmailDuplicate(db: db)
+            try OpQueue.enqueueArchive(
+                accountId: accountId, sourceMailboxId: inboxId, uidValidity: 42, uids: [10], db: db
+            )
+            return try PendingOpTargets.forMailbox(mailboxId: allMailId, accountId: accountId, db: db)
+        }
+        #expect(targets.isEmpty)
+    }
+
+    /// 別メールボックスを対象にした op の `uidValidity` は、**その
+    /// メールボックス自身の値**と突き合わせる (引数のメールボックスの値と
+    /// 比べても意味が無い)。
+    @Test("別メールボックスの op はそのメールボックス自身の uidValidity で判定する")
+    func foreignOpUsesItsOwnMailboxUIDValidity() throws {
+        let database = try AppDatabase.makeInMemory()
+        let targets = try database.dbWriter.write { db -> PendingOpTargets in
+            let (accountId, inboxId, allMailId) = try makeGmailDuplicate(db: db)
+            // INBOX の現在の uidValidity は 42。41 の op は stale。
+            try OpQueue.enqueueSetFlags(
+                accountId: accountId, mailboxId: inboxId, uidValidity: 41, uids: [10], flags: .seen, db: db
+            )
+            return try PendingOpTargets.forMailbox(mailboxId: allMailId, accountId: accountId, db: db)
+        }
+        #expect(targets.isEmpty)
+    }
+
+    @Test("重複行が無ければ別メールボックスの op は何もガードしない")
+    func foreignOpWithoutSiblingGuardsNothing() throws {
+        let database = try AppDatabase.makeInMemory()
+        let targets = try database.dbWriter.write { db -> PendingOpTargets in
+            let account = try makeAccount(db: db)
+            let inbox = try makeMailbox(accountId: account.id, db: db)
+            let archive = try makeMailbox(accountId: account.id, path: "Archive", role: .archive, db: db)
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: try #require(inbox.id), uidValidity: 42,
+                uids: [3], flags: .seen, db: db
+            )
+            return try PendingOpTargets.forMailbox(mailboxId: try #require(archive.id), accountId: account.id, db: db)
+        }
+        #expect(targets.isEmpty)
+    }
+
     // MARK: - upsert 側のガード (復活そのもの)
 
     /// 実機報告そのままの筋道: アーカイブでローカル行が消える → まだ

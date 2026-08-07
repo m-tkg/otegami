@@ -827,7 +827,14 @@ public actor MailboxSyncer {
             // sites' identical doc comments).
             let changedUIDsSnapshot = changedUIDs
             try await database.dbWriter.write { db in
-                for (uid64, flags) in changedUIDsSnapshot {
+                // フェッチ往復の間に積まれた op を見落とさないよう、書き込み
+                // 時点でガードを取り直す — `unknownUIDs`側 (下) は元から
+                // `writeTimeTargets`を再取得していて、同じメソッド内で扱いが
+                // 非対称なだけで理由が無かった。今回の実機報告 (ピンが同期で
+                // 戻る) でまさにこの`applyFlagsOnly`が兄弟行を書き戻して
+                // いたので、同じ関数を触るついでに揃える。
+                let writeTimeTargets = try PendingOpTargets.forMailbox(mailboxId: mailboxId, accountId: accountId, db: db)
+                for (uid64, flags) in changedUIDsSnapshot where !writeTimeTargets.blocks(uid: uid64) {
                     try Self.applyFlagsOnly(mailboxId: mailboxId, uid: uid64, flags: flags, db: db)
                 }
             }

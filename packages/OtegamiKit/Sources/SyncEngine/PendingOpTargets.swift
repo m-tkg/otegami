@@ -78,19 +78,58 @@ public struct PendingOpTargets: Sendable, Equatable {
     /// `opQueue` が数千行溜まっている実機の状態でも、この decode が
     /// メッセージ件数ぶん繰り返されないようにするため。
     public static func forMailbox(mailboxId: Int64, accountId: String, db: Database) throws -> PendingOpTargets {
-        guard let mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return .none }
         let ops = try OpQueueRecord.filter(Column("accountId") == accountId).fetchAll(db)
         guard !ops.isEmpty else { return .none }
+        // 1回だけ引く。アカウントのメールボックスは高々数十行で、
+        // 別メールボックスを対象にした op の `uidValidity` を**その
+        // メールボックス自身の値**と突き合わせるのに要る (引数の
+        // メールボックスの値と比べても意味が無い)。
+        let mailboxesById: [Int64: MailboxRecord] = try Dictionary(
+            uniqueKeysWithValues: MailboxRecord
+                .filter(Column("accountId") == accountId)
+                .fetchAll(db)
+                .compactMap { mailbox in mailbox.id.map { ($0, mailbox) } }
+        )
+        guard let mailbox = mailboxesById[mailboxId] else { return .none }
 
         let decoder = JSONDecoder()
         var relocated: Set<Int64> = []
         var flagChanged: Set<Int64> = []
+        // 別メールボックスを対象にした `setFlags` op — 下でまとめて
+        // 兄弟行を解決する (理由は`case .setFlags`のコメント)。
+        var foreignFlagTargets: [Int64: Set<Int64>] = [:]
         for op in ops {
             switch OpQueueKind(rawValue: op.kind) {
             case .setFlags:
-                guard let payload = try? decoder.decode(SetFlagsOpPayload.self, from: op.payload),
-                      payload.mailboxId == mailboxId, payload.uidValidity == mailbox.uidValidity else { continue }
-                flagChanged.formUnion(payload.uids.map(Int64.init))
+                // 実機報告 (2026-08-07)「メールの unpin が反映されない」の
+                // **1番目の層**: フラグ (`\Flagged`/`\Seen`) はラベルでは
+                // なく**メッセージ**に付くプロパティなので、ある行に未送信の
+                // フラグ変更があるなら、同じ物理メッセージを指す**すべての
+                // 行**についてサーバー報告のフラグが古い。
+                // `MessagePinReadState.applyToDuplicateSiblings` が
+                // 「op は代表行のぶんだけでよい」と判断している論理の裏返し
+                // であって、同じ前提から出てくる。
+                //
+                // これを見ていなかったため、INBOX の行を unpin した直後に
+                // All Mail 側の同期が走ると、サーバーがまだ返す `\Flagged`
+                // で兄弟行が `true` に戻され、`ThreadRecord.isPinned` 経由で
+                // ピンが復活していた (この関数が payload の `mailboxId`
+                // 一致でしか見ていなかったので、All Mail の UID は誰にも
+                // ブロックされなかった)。
+                //
+                // **移動系 (`archive`/`move`/`delete`/`junk`) は広げない** —
+                // 所属はラベルごとの性質で、Gmail のアーカイブは INBOX
+                // ラベルを外すだけ、All Mail 側の行は**残るのが正しい**。
+                // ここまで広げると正しい行を消してしまう。
+                guard let payload = try? decoder.decode(SetFlagsOpPayload.self, from: op.payload) else { continue }
+                if payload.mailboxId == mailboxId {
+                    guard payload.uidValidity == mailbox.uidValidity else { continue }
+                    flagChanged.formUnion(payload.uids.map(Int64.init))
+                } else {
+                    guard let origin = mailboxesById[payload.mailboxId],
+                          payload.uidValidity == origin.uidValidity else { continue }
+                    foreignFlagTargets[payload.mailboxId, default: []].formUnion(payload.uids.map(Int64.init))
+                }
             case .move:
                 guard let payload = try? decoder.decode(MoveOpPayload.self, from: op.payload),
                       payload.sourceMailboxId == mailboxId, payload.uidValidity == mailbox.uidValidity else { continue }
@@ -121,6 +160,26 @@ public struct PendingOpTargets: Sendable, Equatable {
                 // していない — ガードするものが無い。
                 continue
             }
+        }
+
+        // 別メールボックス対象の `setFlags` op から、このメールボックス側の
+        // 兄弟行の UID を引く。対象が無ければ (非 Gmail アカウントでは常に
+        // そう — `setFlags` は必ず自メールボックス対象) ここは1クエリも
+        // 走らないので、従来とコストが変わらない。
+        //
+        // 兄弟由来の UID を新しいフィールドに分けず `flagChanged` へ
+        // マージするのは、`blocks(uid:)`/`EnvelopePersister.upsert`/
+        // `MailboxSyncer.applyFlagsDiffAndReconcileUnknown` を無変更で
+        // 済ませるため。兄弟解決は**ローカル行が存在してはじめて成立する**
+        // ので、`flagChanged` と同じ「行は既にある、内容が古いだけ」という
+        // 性質を持つ (`upsert` を丸ごとスキップしても行が作られないまま
+        // 残る、という問題は起きない)。
+        for (originMailboxId, uids) in foreignFlagTargets {
+            flagChanged.formUnion(
+                try ThreadQuery.duplicateSiblingUIDs(
+                    ofUIDs: uids, in: originMailboxId, siblingMailboxId: mailboxId, db: db
+                )
+            )
         }
         return PendingOpTargets(relocated: relocated, flagChanged: flagChanged)
     }
