@@ -1213,3 +1213,68 @@ range なのでチャンク化もキャンセルの checkpoint も効かない)�
 で歯抜けになる)。バックフィルは非表示メールボックスを対象にしないため、
 この集計も同じ条件で除外する — 対象外のものを「未完了」として並べると
 永久に減らない残件に見えてしまう。
+
+### m. ローカルの変更は `opQueue` から消えるまでサーバー状態より優先する
+
+実機報告 (2026-08-07)「受信箱のグループの画面で一括で Gmail をアーカイブ
+した後、Gmail に移動して再読み込みするとまだ復活してしまう」の修正で
+確立した規則。同期パスは `PendingOpTargets` を通し、**未送信の `opQueue`
+op が対象にしている `(mailboxId, uid)` はサーバー由来のエンベロープ/
+フラグで上書きしない**。
+
+それまで同期は `opQueue` を一切見ていなかったため、次の順序で復活が
+成立していた:
+
+1. アーカイブすると `MessageRemoval.commit` が op を積み、ローカルの
+   `message` 行を消す (Gmail は仮配置 (pending relocation) を使わない —
+   `\Archive` 相当の実体フォルダが無いため、`MessageRemoval
+   .destinationMailbox` の doc comment 参照)。
+2. その op がまだ replay されていない間、サーバーの受信トレイには
+   そのメールがまだ居る。
+3. 次の同期の `MailboxSyncer.applyFlagsDiffAndReconcileUnknown` が、
+   サーバーにあってローカルに無い UID を「取りこぼし」とみなして
+   エンベロープを取り直し `EnvelopePersister.upsert` する → 復活。
+
+既読が未読へ巻き戻るのも同じ形 (`setFlags` op が未送信のうちはサーバーの
+`\Seen` がまだ古い)。
+
+**新しくサーバーからエンベロープを取り込むコードを書くときは
+`EnvelopePersister.upsert` に `PendingOpTargets` を渡すこと。** 既定値は
+`.none` (ガードしない) なので、渡し忘れるとこのバグが再発する。既存の
+同期パスはすべて `PendingOpTargets.forMailbox(mailboxId:accountId:db:)`
+の結果を、`write` ブロックごとに1回だけ組み立てて渡している (`opQueue`
+が数千行溜まっている実機の状態でも、decode がメッセージ件数ぶん繰り返さ
+れないようにするため)。
+
+`uidValidity` が一致しない op はガードしない — replay 時に stale として
+破棄される運命なので、ガードしてもサーバー状態の取り込みを無駄に遅らせる
+だけになる。
+
+恒久失敗した op が残っている間はその UID が復活しないままになるが、これは
+「アーカイブしたつもり」というユーザーの意図と一致する側の挙動。取り消す
+には設定 → 一般 →「操作同期の診断」の「未送信の操作を破棄」で `opQueue`
+行を消す (次の同期でサーバーの状態が改めて取り込まれる)。
+
+**関連: 一括操作は「もう対象外」のスレッドを外す。** グループ行の一括
+アーカイブ/既読は、既にアーカイブ済み/既読のスレッドを対象から外す
+(`AccountDigestPresentation.bulkActionTargets`) — サーバーへ送っても何も
+変わらない op を積むだけで、未送信 op が数千件まで膨らむ一因になっていた。
+
+### n. Liquid Glass のボタンは `contentShape` を明示する
+
+実機報告 (2026-08-07)「右下の … ボタンを押しても何も出なくなっている」。
+
+Liquid Glass Phase 1 で `OtegamiFloatingButtonChromeModifier` の `Circle()`
+塗りを廃止した結果、speed-dial FAB (`MailScreenView.SpeedDialFAB`) には
+不透明な背景が1つも無くなった。`.buttonStyle(.plain)` のヒットテストは
+**描画された内容の形にそのまま従う**ため、当たり判定が「…」の点3つだけに
+縮み、円の余白をタップしても何も起きなくなっていた。`glassEffect` が描く
+ガラスは装飾であって、ヒットテストには寄与しない。
+
+**`glassEffect(_:in:)` でボタンの見た目を作るときは、同じ形状を
+`contentShape` にも与えること。** 見えている範囲とタップできる範囲は
+自動では一致しない。
+
+回帰テスト (`OtegamiSpeedDialFABUITests`) は**グリフに重ならない円の縁**
+(正規化座標 0.2, 0.2) を突く — 円の中心はバグのある実装でも当たって
+しまい、回帰を検出できない。
