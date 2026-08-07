@@ -564,10 +564,75 @@ public enum ThreadQuery {
             .filter { $0.id != messageId && identityKey($0) == key }
     }
 
+    /// `duplicateSiblings(of:db:)`の「行ではなく UID だけ、しかもまとめて」
+    /// 版 — `originMailboxId` の `originUIDs` が指す物理メッセージと同じ
+    /// ものを指す、`siblingMailboxId` 側の行の UID を返す。
+    ///
+    /// 実機報告 (2026-08-07)「メールの unpin が反映されない」の**2度目の**
+    /// 修正で追加した。1度目 (`duplicateSiblings(of:db:)`) はローカル DB の
+    /// 整合だけを直したが、同期側のガード (`SyncEngine.PendingOpTargets`)
+    /// が兄弟行をカバーしていなかったため、サーバーの `\Flagged` が
+    /// All Mail 側の行をすぐ `true` に戻し、`ThreadRecord.isPinned` の
+    /// OR 集約でピンが残り続けていた。そのガードがこの関数を使って
+    /// 「未送信の `setFlags` op が守るべき UID」を兄弟行まで広げる。
+    ///
+    /// **`gmailMessageId` の有無で同一性キーが変わる非対称をそのまま SQL に
+    /// 写していることに注意** — `identityKey` は `gmailMessageId` を優先
+    /// するので、片方が `gmail:X`・もう片方が `msgid:Y` のときは**キーが
+    /// 違う**(重複ではない)。素直に `OR sibling.messageId = origin.messageId`
+    /// と書くと `deduplicate` と食い違うので、`messageId` での一致は
+    /// **両方の `gmailMessageId` が `NULL` のときだけ**に限定している。
+    ///
+    /// 探索を `threadId` 一致に絞る理由は `duplicateSiblings(of:db:)` と
+    /// 同じ (RFC 822 `Message-ID` は転送等で別スレッドの行と一致しうる)。
+    /// インデックスは `message`の`(mailboxId, uid)`一意制約と
+    /// `message_on_threadId_mailboxId` で足りるので、この関数のために
+    /// 新しいインデックスは要らない。
+    public static func duplicateSiblingUIDs(
+        ofUIDs originUIDs: Set<Int64>,
+        in originMailboxId: Int64,
+        siblingMailboxId: Int64,
+        db: Database
+    ) throws -> Set<Int64> {
+        guard !originUIDs.isEmpty, originMailboxId != siblingMailboxId else { return [] }
+        var result: Set<Int64> = []
+        // `ThreadAssigner.apply`のバッチ更新と同じ理由・同じ粒度のチャンク —
+        // SQLite の変数上限 (`SQLITE_MAX_VARIABLE_NUMBER`) に当たらないように
+        // するため。
+        for chunk in Array(originUIDs).chunked(into: 400) {
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            var arguments: [any DatabaseValueConvertible] = [siblingMailboxId, originMailboxId]
+            arguments.append(contentsOf: chunk)
+            let uids = try Int64.fetchAll(
+                db,
+                sql: """
+                    SELECT DISTINCT sibling.uid
+                    FROM message AS origin
+                    JOIN message AS sibling
+                      ON sibling.threadId = origin.threadId
+                     AND sibling.mailboxId = ?
+                     AND sibling.id <> origin.id
+                     AND (
+                             (origin.gmailMessageId IS NOT NULL AND sibling.gmailMessageId = origin.gmailMessageId)
+                          OR (origin.gmailMessageId IS NULL AND sibling.gmailMessageId IS NULL
+                              AND origin.messageId IS NOT NULL AND sibling.messageId = origin.messageId)
+                         )
+                    WHERE origin.mailboxId = ? AND origin.threadId IS NOT NULL
+                          AND origin.uid IN (\(placeholders))
+                    """,
+                arguments: StatementArguments(arguments)
+            )
+            result.formUnion(uids)
+        }
+        return result
+    }
+
     /// `deduplicate(_:db:)`/`duplicateSiblings(of:db:)`が共有する同一性の
     /// キー — `gmailMessageId` (Gmail 発行の per-account 一意な
     /// `X-GM-MSGID`) を優先し、無ければ RFC 822 `Message-ID`。どちらも
     /// `nil` の行は何とも重複扱いしない (安全な手がかりが無いため)。
+    /// `duplicateSiblingUIDs(ofUIDs:in:siblingMailboxId:db:)`はこの判定を
+    /// SQL へ写したもの — 変更するときは両方を揃えること。
     private static func identityKey(_ message: MessageRecord) -> String? {
         if let gmailMessageId = message.gmailMessageId { return "gmail:\(gmailMessageId)" }
         if let messageId = message.messageId { return "msgid:\(messageId)" }

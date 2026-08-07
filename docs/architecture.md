@@ -1260,6 +1260,18 @@ op が対象にしている `(mailboxId, uid)` はサーバー由来のエンベ
 (`AccountDigestPresentation.bulkActionTargets`) — サーバーへ送っても何も
 変わらない op を積むだけで、未送信 op が数千件まで膨らむ一因になっていた。
 
+**フラグ系の未送信 op は、同一物理メッセージの*すべての行*を守る。**
+Gmail の二重ラベルでは同じメールが INBOX と All Mail の2行として同期
+される。`\Flagged`/`\Seen` はラベルではなく**メッセージ**に付くので、
+片方の行に未送信の `setFlags` op があるなら、もう片方の行についても
+サーバー報告のフラグは古い。`PendingOpTargets.forMailbox` は
+`ThreadQuery.duplicateSiblingUIDs` で兄弟行を辿ってガードを広げる。
+
+**移動系 (`archive`/`move`/`delete`/`junk`) は広げない** — 所属はラベル
+ごとの性質で、Gmail のアーカイブは INBOX ラベルだけを外し All Mail 側の
+行は残るのが正しい。ここまで広げると正しい行を消してしまう。この非対称は
+`PendingOpTargetsTests` で明示的に固定してある。
+
 ### n. Liquid Glass のボタンは `contentShape` を明示する
 
 実機報告 (2026-08-07)「右下の … ボタンを押しても何も出なくなっている」。
@@ -1300,7 +1312,27 @@ SQL 側も `MAX(message.isPinnedLocal)`) — 代表行だけ解除しても All 
 op は代表行のぶんだけでよい (Gmail のフラグはラベルではなくメッセージに
 付くので、どちらのラベル経由で STORE しても両方に反映される)。
 
-`messageCount`/`unreadCount` は既に dedup 済みの定義で計算しているので
-この問題を持たない (`ThreadAggregateBackfillTests`) — `isPinned` だけが
-raw の OR だった。同種の集約を新しく足すときは、どちらの定義に揃えるか
-を明示的に決めること。
+**追記 (2026-08-07、2度目の修正)**: 上のローカル整合だけでは実機で
+直らなかった。同期側のガード (`PendingOpTargets`) が兄弟行をカバーして
+いなかったため、揃えた直後にサーバーの `\Flagged` が All Mail 側の行を
+`true` へ戻していたため。3つの層が同時に壊れていて、1つでも生きていると
+ピンが残る:
+
+1. **同期ガード** — All Mail の `(mailboxId, uid)` を守る op が存在しな
+   かった (兄弟行の更新は意図的に op を積まないので)。→ §m の「フラグ系
+   の未送信 op は同一物理メッセージのすべての行を守る」で解決。
+2. **書き込み側** — `MessagePinReadState` が代表行の状態だけを見て早期
+   `continue` していたため、「代表行は解除済み・兄弟行だけピンが残る」
+   状態になると解除タップが**完全に no-op** になっていた。打ち切りの
+   条件を「実際に DB を書いたか」へ変えた。
+3. **集約** — 下記。
+
+**スレッド集約 (`ThreadRecord`) の列は必ず dedup 後に計算する。**
+`messageCount`/`unreadCount` は元から dedup 済みだったが、`isPinned` だけ
+「MAX ベースなので重複に対して安全」という判断で生の OR だった。それは
+二重カウントしないという意味であって、「片方の行だけ古い」状態には安全
+ではない — 行アクションが触るのは dedup 済みの代表行だけなので、生の OR
+はユーザーの操作を無効化する。`ThreadAssigner` の Swift パスと一括 SQL
+パスの両方を dedup 済みへ揃え、既存 DB の値は v49 マイグレーション
+(`recomputeAllAggregates`) で計算し直した (v35 が `messageCount`/
+`unreadCount` に対して行ったのと同じ手順)。

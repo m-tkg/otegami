@@ -45,20 +45,25 @@ public enum MessagePinReadState {
         db: Database
     ) throws {
         for var message in messages {
-            if markingRead {
-                guard !message.flags.contains(.seen) else { continue }
-                message.flags.insert(.seen)
-            } else {
-                guard message.flags.contains(.seen) else { continue }
-                message.flags.remove(.seen)
+            // `didWrite`の判断理由は`applyPinState`の同じ箇所を参照 —
+            // 代表行が既に目的の状態でも、兄弟行がズレていれば処理を
+            // 続ける (早期 continue しない)。
+            var didWrite = false
+            if message.flags.contains(.seen) != markingRead {
+                if markingRead {
+                    message.flags.insert(.seen)
+                } else {
+                    message.flags.remove(.seen)
+                }
+                message.updatedAt = Date()
+                try message.update(db)
+                didWrite = true
             }
-            message.updatedAt = Date()
-            try message.update(db)
             // Gmail の二重ラベルで畳まれた兄弟行にも同じローカル状態を書く
             // (`ThreadQuery.duplicateSiblings(of:db:)`の doc comment) —
             // 呼び出し側が渡してくるのは dedup 済みの代表行だけなので、
             // これが無いと片方の行だけ古い値のまま残る。
-            try applyToDuplicateSiblings(of: message, db: db) { sibling in
+            if try applyToDuplicateSiblings(of: message, db: db, transform: { sibling in
                 guard sibling.flags.contains(.seen) != markingRead else { return nil }
                 var updated = sibling
                 if markingRead {
@@ -67,8 +72,11 @@ public enum MessagePinReadState {
                     updated.flags.remove(.seen)
                 }
                 return updated
+            }) {
+                didWrite = true
             }
-            guard !message.isPendingRelocation,
+            guard didWrite,
+                  !message.isPendingRelocation,
                   let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
             else { continue }
             try OpQueue.enqueueSetFlags(
@@ -94,23 +102,45 @@ public enum MessagePinReadState {
         db: Database
     ) throws {
         for var message in messages {
-            guard message.isPinnedLocal != pinning else { continue }
-            message.isPinnedLocal = pinning
-            if pinning {
-                message.flags.insert(.flagged)
-            } else {
-                message.flags.remove(.flagged)
+            // 実機報告 (2026-08-07)「メールの unpin が反映されない」の
+            // **2番目の層**: ここは元々`guard message.isPinnedLocal !=
+            // pinning else { continue }`で、代表行の状態だけを見て打ち切って
+            // いた。ところが「代表行は解除済み、同期が戻した All Mail 側の
+            // 兄弟行だけ`true`」という状態になると、`ThreadRecord.isPinned`
+            // (当時は dedup 前の OR) は`true`で UI にはピンが出ているのに、
+            // 解除タップは代表行が既に`false`なので即 continue — 下の兄弟行
+            // 同期にすら到達せず、**何度タップしても完全に何も起きない**
+            // 状態だった。
+            //
+            // 打ち切りの条件を「代表行の状態」から「実際に DB を書いたか
+            // (`didWrite`)」へ移す。全行が既に目的の状態なら従来どおり op を
+            // 積まないまま (グループ一括操作が無駄な op を積まないための
+            // `AccountDigestPresentation.bulkActionTargets` と同じ方針)、
+            // 兄弟行だけズレていたときは op を1件積む — その状態は
+            // 「サーバー側がユーザーの意図と食い違ったまま残っている」証拠
+            // なので、絶対値の`setFlags`(冪等) を積み直してサーバーへ改めて
+            // 表明するのが正しい。恒久失敗した古い op が残っていても、新しい
+            // op は`attempts = 0`から再試行されるので、ユーザーのタップが
+            // 実質リトライになるという副次的な効用もある。
+            //
+            // 同じ方向のタップを繰り返しても、1回目で全行が揃うので2回目
+            // 以降は op ゼロになる (`OpQueue.enqueue`は coalesce せず毎回
+            // INSERT するので、この上限が効くことが重要)。
+            var didWrite = false
+            if message.isPinnedLocal != pinning {
+                message.isPinnedLocal = pinning
+                if pinning {
+                    message.flags.insert(.flagged)
+                } else {
+                    message.flags.remove(.flagged)
+                }
+                message.updatedAt = Date()
+                try message.update(db)
+                didWrite = true
             }
-            message.updatedAt = Date()
-            try message.update(db)
-            // 実機報告 (2026-08-07)「メールの unpin が反映されない」の実体:
-            // `ThreadRecord.isPinned` は dedup 前の全行の OR なので、代表行
-            // だけ解除しても Gmail の All Mail 側の行が `isPinnedLocal ==
-            // true` のまま残り、スレッドのピンが落ちなかった (逆にピン留めは
-            // OR なので代表行だけで効いてしまい、非対称なバグに見えていた)。
-            // 兄弟行にも同じローカル状態を書いて揃える
+            // Gmail の二重ラベルで畳まれた兄弟行にも同じローカル状態を書く
             // (`ThreadQuery.duplicateSiblings(of:db:)`の doc comment)。
-            try applyToDuplicateSiblings(of: message, db: db) { sibling in
+            if try applyToDuplicateSiblings(of: message, db: db, transform: { sibling in
                 guard sibling.isPinnedLocal != pinning else { return nil }
                 var updated = sibling
                 updated.isPinnedLocal = pinning
@@ -120,8 +150,11 @@ public enum MessagePinReadState {
                     updated.flags.remove(.flagged)
                 }
                 return updated
+            }) {
+                didWrite = true
             }
-            guard !message.isPendingRelocation,
+            guard didWrite,
+                  !message.isPendingRelocation,
                   let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
             else { continue }
             try OpQueue.enqueueSetFlags(
@@ -135,19 +168,30 @@ public enum MessagePinReadState {
     /// `message` の重複兄弟行 (`ThreadQuery.duplicateSiblings(of:db:)`) に
     /// `transform` を適用して保存する。`transform` が `nil` を返した行は
     /// 既に目的の状態なので触らない (`updatedAt` を無意味に動かさないため)。
+    /// 戻り値は**1行でも実際に書いたか** — 呼び出し側はこれを見て
+    /// `setFlags` op を積むかどうかを決める (判断理由は`applyPinState`の
+    /// `didWrite`のコメント)。
     ///
     /// `opQueue` には積まない — Gmail のフラグはラベルではなくメッセージに
     /// 付くので、代表行のぶんの op を送れば両方に反映される。ここで揃える
-    /// のはローカル DB の整合性だけ。
+    /// のはローカル DB の整合性だけ。**その代わり、兄弟行の`(mailboxId,
+    /// uid)`を守る op が存在しない**ので、同期側のガード
+    /// (`PendingOpTargets.forMailbox`) が代表行の op から兄弟行の UID を
+    /// 辿ってガードを広げている — 片方だけ直すと、揃えた直後に同期が
+    /// 元へ戻す (実機報告 2026-08-07 の1度目の修正がまさにそれだった)。
+    @discardableResult
     private static func applyToDuplicateSiblings(
         of message: MessageRecord,
         db: Database,
         transform: (MessageRecord) -> MessageRecord?
-    ) throws {
+    ) throws -> Bool {
+        var didWrite = false
         for sibling in try ThreadQuery.duplicateSiblings(of: message, db: db) {
             guard var updated = transform(sibling) else { continue }
             updated.updatedAt = Date()
             try updated.update(db)
+            didWrite = true
         }
+        return didWrite
     }
 }

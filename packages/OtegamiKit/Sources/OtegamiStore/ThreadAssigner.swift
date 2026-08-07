@@ -379,8 +379,14 @@ public enum ThreadAssigner {
     // 各グループの「勝った」行の既読状態だけを見る必要があるため
     // (同じメールでもINBOX側とAll Mail側で`\Seen`フラグが食い違うことが
     // ありうる) `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)`で
-    // グループ内の代表行 (rn = 1) を選び出す。`lastMessageDate`/`isPinned`
-    // は元々MAXベースで重複に対して安全なため (指示どおり) 変更しない。
+    // グループ内の代表行 (rn = 1) を選び出す。`isPinned`も同じ理由で同じ
+    // 代表行だけを見る — 元は`MAX(isPinnedLocal)`(生の全行のOR) で
+    // 「MAXベースなので重複に対して安全」という判断だったが、それは
+    // 二重カウントしないという意味であって「片方の行だけ古い」状態には
+    // 安全ではなかった (実機報告 2026-08-07「メールの unpin が反映され
+    // ない」— 詳細は`recomputeAggregates(threadId:db:)`のコメント)。
+    // `lastMessageDate`だけはMAXのまま — 日時は重複行のどちらを見ても
+    // 同じ値なので、dedupしてもしなくても結果が変わらない。
     //
     // `whereClause`はどの`thread`行を更新するかを絞る節 (呼び出し側が
     // "WHERE thread.id IN (...)"を渡すか、`recomputeAllAggregates`のように
@@ -419,7 +425,19 @@ public enum ThreadAssigner {
                     WHERE rn = 1 AND (flagsRaw & \(MessageFlags.seen.rawValue)) = 0
                 ),
                 lastMessageDate = (SELECT MAX(COALESCE(message.date, message.internalDate)) FROM message WHERE message.threadId = thread.id),
-                isPinned = (SELECT COALESCE(MAX(message.isPinnedLocal), 0) FROM message WHERE message.threadId = thread.id)
+                isPinned = (
+                    SELECT COALESCE(MAX(isPinnedLocal), 0) FROM (
+                        SELECT message.isPinnedLocal AS isPinnedLocal,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY \(identityKeySQL)
+                                   ORDER BY \(roleBearingRankSQL) DESC, message.uid DESC
+                               ) AS rn
+                        FROM message
+                        JOIN mailbox ON mailbox.id = message.mailboxId
+                        WHERE message.threadId = thread.id
+                    )
+                    WHERE rn = 1
+                )
             \(whereClause)
             """
     }
@@ -459,16 +477,28 @@ public enum ThreadAssigner {
             return
         }
         guard var thread = try ThreadRecord.fetchOne(db, key: threadId) else { return }
-        // `messageCount`/`unreadCount`はGmail二重ラベル対策の重複排除後の件数
-        // (`ThreadQuery.deduplicate(_:db:)` — 一括パスの `apply` 内SQLと同じ
-        // 同一性定義/タイブレークを共有する、単一の実装)。`lastMessageDate`/
-        // `isPinned`はMAXベースで重複に対してそもそも安全なため、指示どおり
-        // 生の`rawMessages`のまま計算する。
+        // `messageCount`/`unreadCount`/`isPinned`はGmail二重ラベル対策の
+        // 重複排除後の行で計算する (`ThreadQuery.deduplicate(_:db:)` —
+        // 一括パスの `apply` 内SQLと同じ同一性定義/タイブレークを共有する、
+        // 単一の実装)。
+        //
+        // `isPinned`は元々「MAXベースで重複に対してそもそも安全」という判断で
+        // 生の`rawMessages`のORだったが、これが実機報告 (2026-08-07)
+        // 「メールの unpin が反映されない」の3番目の層だった: 行アクションの
+        // 対象解決 (`ThreadQuery.actionTargets`) は dedup 済みの代表行しか
+        // 触らないのに、集約だけが dedup 前の全行を見ていたため、All Mail
+        // 側の行が1つ`true`のまま残るだけでピンが永久に落ちなかった
+        // (逆にピン留めはORなので代表行だけで効き、非対称なバグに見えた)。
+        // 「重複に対して安全」なのは二重カウントしないという意味であって、
+        // 「片方の行だけ古い」状態には安全ではなかった。
+        //
+        // `lastMessageDate`だけは生の`rawMessages`のまま — 日時は重複行の
+        // どちらを見ても同じ値で、dedupしてもしなくてもMAXは変わらない。
         let messages = try ThreadQuery.deduplicate(rawMessages, db: db)
         thread.messageCount = messages.count
         thread.unreadCount = messages.filter { !$0.flags.contains(.seen) }.count
         thread.lastMessageDate = rawMessages.compactMap { $0.date ?? $0.internalDate }.max()
-        thread.isPinned = rawMessages.contains { $0.isPinnedLocal }
+        thread.isPinned = messages.contains { $0.isPinnedLocal }
         try thread.update(db)
     }
 

@@ -135,6 +135,104 @@ struct MessagePinReadStateDuplicateTests {
         #expect(seenFlags == [true, true])
     }
 
+    // MARK: - 代表行が既に目的の状態でも兄弟行を揃える (2度目の修正)
+
+    /// 実機報告の**直接の症状**: 「代表行 (INBOX) は解除済み、同期が戻した
+    /// All Mail 側の行だけピンが残っている」状態で解除をタップしても、
+    /// 代表行の early-continue で何も起きなかった。
+    private func makeDesyncedPinState(db: Database) throws -> (accountId: String, threadId: Int64, targets: [MessageRecord]) {
+        let (accountId, threadId, targets) = try makePinnedGmailDuplicate(db: db)
+        // 代表行だけ解除済みにする (同期が兄弟行を戻した後の状態を再現)。
+        var representative = try #require(targets.first)
+        representative.isPinnedLocal = false
+        representative.flags.remove(.flagged)
+        try representative.update(db)
+        try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+        // 再取得して呼び出し側に渡す (UI は毎回 DB から引き直すため)。
+        let storedThread = try #require(try ThreadRecord.fetchOne(db, key: threadId))
+        let summaries = try ThreadQuery.summaries(forThreads: [storedThread], db: db)
+        let summary = try #require(summaries.first)
+        return (accountId, threadId, try ThreadQuery.actionTargets(for: summary, db: db))
+    }
+
+    @Test("代表行が既に解除済みで兄弟行だけピンが残っていても解除タップが効く")
+    func desyncedStateStillClearsOnTap() throws {
+        let database = try AppDatabase.makeInMemory()
+        let pinnedFlags = try database.dbWriter.write { db -> [Bool] in
+            let (accountId, threadId, targets) = try makeDesyncedPinState(db: db)
+            try MessagePinReadState.applyPinState(
+                pinning: false, messages: targets, threadId: threadId, accountId: accountId, db: db
+            )
+            return try MessageRecord.filter(Column("threadId") == threadId).order(Column("uid")).fetchAll(db).map(\.isPinnedLocal)
+        }
+        #expect(pinnedFlags == [false, false], "代表行が既に false でも、兄弟行の解除まで到達しなければならない")
+    }
+
+    /// その状態は「サーバー側がユーザーの意図と食い違ったまま残っている」
+    /// 証拠なので、絶対値の `setFlags` を積み直してサーバーへ再表明する。
+    @Test("兄弟行だけズレていたときは setFlags op を1件積む")
+    func desyncedStateReassertsToServer() throws {
+        let database = try AppDatabase.makeInMemory()
+        let opCount = try database.dbWriter.write { db -> Int in
+            let (accountId, threadId, targets) = try makeDesyncedPinState(db: db)
+            try MessagePinReadState.applyPinState(
+                pinning: false, messages: targets, threadId: threadId, accountId: accountId, db: db
+            )
+            return try OpQueueRecord.fetchCount(db)
+        }
+        #expect(opCount == 1)
+    }
+
+    /// 逆に、全行が既に目的の状態なら op は積まない — 同じ方向のタップを
+    /// 繰り返しても `opQueue` が膨らまないこと (`OpQueue.enqueue` は
+    /// coalesce せず毎回 INSERT するので、この上限が要る)。
+    @Test("全行が既に目的の状態なら op を積まない")
+    func fullyAlignedStateEnqueuesNothing() throws {
+        let database = try AppDatabase.makeInMemory()
+        let opCount = try database.dbWriter.write { db -> Int in
+            let (accountId, threadId, targets) = try makePinnedGmailDuplicate(db: db)
+            try MessagePinReadState.applyPinState(
+                pinning: false, messages: targets, threadId: threadId, accountId: accountId, db: db
+            )
+            // 2回目 — この時点で全行 false。
+            let afterFirst = try OpQueueRecord.fetchCount(db)
+            let storedThread = try #require(try ThreadRecord.fetchOne(db, key: threadId))
+            let summaries = try ThreadQuery.summaries(forThreads: [storedThread], db: db)
+            let refreshed = try ThreadQuery.actionTargets(for: try #require(summaries.first), db: db)
+            try MessagePinReadState.applyPinState(
+                pinning: false, messages: refreshed, threadId: threadId, accountId: accountId, db: db
+            )
+            #expect(afterFirst == 1)
+            return try OpQueueRecord.fetchCount(db)
+        }
+        #expect(opCount == 1, "2回目のタップでは何も書いていないので op は増えない")
+    }
+
+    @Test("applyReadState も代表行が既読済みで兄弟行が未読なら揃える")
+    func desyncedReadStateIsAligned() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (seenFlags, opCount) = try database.dbWriter.write { db -> ([Bool], Int) in
+            let (accountId, threadId, targets) = try makePinnedGmailDuplicate(db: db, pinned: false, seen: false)
+            // 代表行だけ既読にしておく。
+            var representative = try #require(targets.first)
+            representative.flags.insert(.seen)
+            try representative.update(db)
+            try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+
+            let storedThread = try #require(try ThreadRecord.fetchOne(db, key: threadId))
+            let summaries = try ThreadQuery.summaries(forThreads: [storedThread], db: db)
+            let refreshed = try ThreadQuery.actionTargets(for: try #require(summaries.first), db: db)
+            try MessagePinReadState.applyReadState(
+                markingRead: true, messages: refreshed, threadId: threadId, accountId: accountId, db: db
+            )
+            let flags = try MessageRecord.filter(Column("threadId") == threadId).order(Column("uid")).fetchAll(db)
+                .map { $0.flags.contains(.seen) }
+            return (flags, try OpQueueRecord.fetchCount(db))
+        }
+        #expect(seenFlags == [true, true])
+        #expect(opCount == 1)
+    }
+
     /// 重複が無い (非 Gmail の) 普通のスレッドでは何も変わらないこと。
     @Test("重複が無いスレッドでは従来どおり1行だけ更新する")
     func nonDuplicateThreadIsUnaffected() throws {
