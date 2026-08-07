@@ -101,7 +101,8 @@ public enum MessageRemoval {
     /// queued op.
     ///
     /// An archive target already sitting in the account's Archive-role
-    /// mailbox (re-archiving an already-archived thread) is skipped rather
+    /// mailbox — or, on Gmail, in All Mail, which is where "archived" lives
+    /// there — (re-archiving an already-archived thread) is skipped rather
     /// than deleted — only messages this call actually removes end up in
     /// the returned `Snapshot.messages`, so `undo(_:db:)` never tries to
     /// re-insert a row that was never deleted in the first place (that
@@ -133,12 +134,13 @@ public enum MessageRemoval {
         guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
         let targets = try ThreadQuery.actionTargets(for: summary, db: db)
         let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
-        // Only `.unarchive`'s per-message guard needs this (Gmail's
-        // "archived" location is All Mail, not a dedicated Archive-role
-        // mailbox — see below) — fetched once rather than per-message
-        // since it's the same account for every target here.
+        // Both `.archive`'s and `.unarchive`'s per-message guards need this,
+        // and so does `relocationDestinationId` (Gmail's "archived" location
+        // is All Mail, not a dedicated Archive-role mailbox — see below) —
+        // fetched once rather than per-message since it's the same account
+        // for every target here.
         let account = try AccountRecord.fetchOne(db, key: accountId)
-        let accountKind = kind == .unarchive ? account?.kind : nil
+        let accountKind = account?.kind
         // Task #120 (実機報告「アーカイブ解除しても受信箱に pull-to-refresh まで
         // 現れない」): resolved once per commit call, not per-message — the
         // mailbox this `kind` relocates a removed message *into* locally,
@@ -168,7 +170,19 @@ public enum MessageRemoval {
             var messageForRelocation = message
             switch kind {
             case .archive:
-                guard mailbox.role != .archive else { continue }
+                // The exact mirror image of `.unarchive`'s own guard below:
+                // a message already sitting in an "archived" location has
+                // nothing left to archive. Gmail has no Archive-role mailbox
+                // at all, so All Mail is that location there — without this
+                // second half, archiving a row already in All Mail would
+                // enqueue `\Deleted`+`EXPUNGE` *against All Mail*, which on
+                // Gmail is a real delete (moves it to Trash), not an unlabel.
+                // Unreachable from a swipe (`MessageListView
+                // .refreshArchiveViewFlag` swaps it for アーカイブ解除 in that
+                // view) but reachable from bulk selection, the notification
+                // action and the thread-detail toolbar.
+                let isAlreadyArchived = mailbox.role == .archive || (mailbox.role == .all && accountKind == .gmail)
+                guard !isAlreadyArchived else { continue }
                 if markSeenOnArchive {
                     // OpQueueProcessor は opQueue を id 順に実行するため、
                     // この flag STORE op は直後の archive (move) op より
@@ -205,7 +219,11 @@ public enum MessageRemoval {
                     uids: [uid], db: db
                 )
             }
-            if let destinationId = destination?.id, destinationId != message.mailboxId {
+            let relocationTargetId = try Self.relocationDestinationId(
+                kind: kind, accountKind: accountKind, message: messageForRelocation,
+                destination: destination, db: db
+            )
+            if let destinationId = relocationTargetId, destinationId != message.mailboxId {
                 // Relocate in place rather than delete-then-wait-for-sync:
                 // same row `id` (so its thread assignment, cached body/
                 // attachments, and translation state all carry over
@@ -223,9 +241,10 @@ public enum MessageRemoval {
                 relocated.updatedAt = Date()
                 try relocated.update(db)
             } else {
-                // No destination known locally yet (or a Gmail archive,
-                // which never relocates — see `destinationMailbox`'s doc
-                // comment): the pre-#120 behavior. M7: `messageSearchIndex`
+                // No destination known locally yet (or a Gmail archive whose
+                // All Mail copy is already here / can't be reconciled later —
+                // see `relocationDestinationId`'s doc comment): the pre-#120
+                // behavior. M7: `messageSearchIndex`
                 // isn't a real foreign-keyed table, so this removal needs
                 // its own explicit index cleanup alongside the `message`
                 // row's.
@@ -255,15 +274,16 @@ public enum MessageRemoval {
     ///   `resolveOrCreateTrashMailbox` will still `CREATE` one server-side
     ///   on replay; this method just can't relocate into a mailbox this
     ///   database doesn't have a row for yet.
-    /// - `.archive` → this account's Archive-role mailbox, *except* for a
-    ///   Gmail account, which never gets one here: Gmail has no dedicated
-    ///   Archive folder at all (`OpQueueKind.archive`'s doc comment) —
-    ///   "archiving" just un-labels the source, and the message's All Mail
-    ///   copy (role `.all`) already independently represents it in the
-    ///   "アーカイブ" unified category whenever All Mail has been synced.
-    ///   Relocating a *second*, synthetic row into All Mail here would risk
-    ///   sitting alongside that already-real one as a visible duplicate
-    ///   instead.
+    /// - `.archive` → this account's Archive-role mailbox — *except* on
+    ///   Gmail, which has no dedicated Archive folder at all
+    ///   (`OpQueueKind.archive`'s doc comment): "archiving" there just
+    ///   un-labels the source, and the message's All Mail copy (role `.all`)
+    ///   is what represents it in the "アーカイブ" unified category, so All
+    ///   Mail is the destination. Whether a Gmail archive may actually
+    ///   relocate *into* it is decided per-message by
+    ///   `relocationDestinationId` — All Mail may already hold a real row for
+    ///   the same message, and a second synthetic one would sit beside it as
+    ///   a visible duplicate.
     private static func destinationMailbox(for kind: Kind, account: AccountRecord?, db: Database) throws -> MailboxRecord? {
         guard let account else { return nil }
         let role: MailboxRoleRecord
@@ -271,14 +291,66 @@ public enum MessageRemoval {
         case .unarchive: role = .inbox
         case .junk: role = .junk
         case .delete: role = .trash
-        case .archive:
-            guard account.kind != .gmail else { return nil }
-            role = .archive
+        case .archive: role = account.kind == .gmail ? .all : .archive
         }
         return try MailboxRecord
             .filter(Column("accountId") == account.id)
             .filter(Column("role") == role.rawValue)
             .fetchOne(db)
+    }
+
+    /// The per-message final say over `destinationMailbox`'s per-call answer,
+    /// and a no-op (`destination`'s own id, unchanged) for everything except
+    /// a Gmail `.archive`.
+    ///
+    /// 実機報告「iOS で Gmail のさっき受信したメールをアーカイブしたらどこにも
+    /// 表示されなくなった」: a Gmail archive used to always delete the source
+    /// row outright, on the assumption that All Mail already independently
+    /// held the same message. That assumption only holds for messages already
+    /// inside All Mail's locally-synced window — All Mail is never part of
+    /// `SyncScope.inboxOnly` (which is what launch/foreground/push/IDLE all
+    /// use), so a message that arrived *after* the account's initial sync has
+    /// no All Mail row at all yet. Deleting the INBOX row then removed the
+    /// last trace of it from the database: gone from 受信トレイ, absent from
+    /// both アーカイブ views, and — since Gmail's archive replay reports no
+    /// affected mailbox to resync — nothing scheduled to bring it back.
+    ///
+    /// So: relocate into All Mail (the same synthetic-placeholder-UID
+    /// mechanism every non-Gmail archive already uses) whenever doing so
+    /// can't produce a duplicate, and only fall back to the old delete when
+    /// it could:
+    /// - A row for this same message already sits in All Mail → delete. The
+    ///   grouped list, thread detail and thread aggregates all dedup by
+    ///   message identity, but `ThreadQuery.flatSummaries`/
+    ///   `unifiedInboxFlatSummaries` (フラット表示) deliberately don't, so a
+    ///   second row there would be visible. Identity is judged the same way
+    ///   `ThreadQuery.identityKey` judges it: `gmailMessageId` (`X-GM-MSGID`,
+    ///   account-unique and Gmail-issued) when present, else the RFC 822
+    ///   `Message-ID`.
+    /// - No RFC 822 `Message-ID` on the row → delete.
+    ///   `EnvelopePersister.reconcilePendingRelocation` matches placeholders
+    ///   by that header alone, so a placeholder without one would never be
+    ///   adopted onto its real UID and would instead linger forever beside
+    ///   the real row once All Mail syncs. Vanishingly rare for Gmail-hosted
+    ///   mail; `docs/design-system.md` records it as a known limitation.
+    private static func relocationDestinationId(
+        kind: Kind, accountKind: AccountKind?, message: MessageRecord,
+        destination: MailboxRecord?, db: Database
+    ) throws -> Int64? {
+        guard let destinationId = destination?.id else { return nil }
+        guard kind == .archive, accountKind == .gmail else { return destinationId }
+        guard let rfcMessageId = message.messageId, !rfcMessageId.isEmpty else { return nil }
+        let identityFilter: SQLExpression
+        if let gmailMessageId = message.gmailMessageId {
+            identityFilter = Column("gmailMessageId") == gmailMessageId
+        } else {
+            identityFilter = Column("messageId") == rfcMessageId
+        }
+        let alreadyInAllMail = try MessageRecord
+            .filter(Column("mailboxId") == destinationId)
+            .filter(identityFilter)
+            .fetchCount(db) > 0
+        return alreadyInAllMail ? nil : destinationId
     }
 
     /// Reverses one `commit(_:summary:accountId:db:)` call: deletes the
