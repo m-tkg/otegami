@@ -185,10 +185,11 @@ struct AccountDigestRow: View {
         }
         // 2026-08-07 (メイン UI の macOS ネイティブ化): macOS の角丸カード
         // を廃止しフラットな全幅行 + ヘアライン区切りへ (`ThreadRowView` の
-        // 同日 doc comment 参照)。iOS は従来のフラット全幅カードのまま。
-        #if os(iOS)
-        .otegamiCardBackground(OtegamiColor.surface, cornerRadius: OtegamiRadius.none)
-        #endif
+        // 同日 doc comment 参照)。
+        // Liquid Glass Phase 1 (同日、docs/design-system.md「Liquid Glass
+        // 方針」): iOS 側の`surface`塗りカード表現もこの移行で廃止し、
+        // macOS と同じ「塗りなし + ヘアライン区切り」に揃えた — `#if os`
+        // 分岐は不要になったので畳んだ。
         .otegamiRowDivider()
         .contentShape(Rectangle())
     }

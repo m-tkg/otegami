@@ -43,11 +43,10 @@ struct AccountFilterChipRow: View {
             .padding(.horizontal, OtegamiSpacing.md)
             .padding(.vertical, OtegamiSpacing.xs)
         }
-        // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗りは
-        // iOS のみ — macOS は一覧ペインの標準背景の上にそのまま載せる。
-        #if os(iOS)
-        .background(OtegamiColor.background)
-        #endif
+        // Liquid Glass Phase 1 (2026-08-07、docs/design-system.md「Liquid
+        // Glass 方針」): iOS 独自の背景塗りを廃止し、macOS と同じく一覧
+        // ペインの標準背景の上にそのまま載せる (元は「独自の背景塗りは
+        // iOS のみ」の判断だったが、この移行で iOS 側からも消えた)。
         .accessibilityIdentifier("mail.chipRow")
     }
 

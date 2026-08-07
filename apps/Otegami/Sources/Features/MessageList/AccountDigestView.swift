@@ -111,12 +111,11 @@ struct AccountDigestView: View {
         .listStyle(.plain)
         #endif
         .accessibilityIdentifier("accountDigest.list")
-        // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗りは
-        // iOS のみ (`MessageListView.messageListCore` と同じ判断)。
-        #if os(iOS)
-        .scrollContentBackground(.hidden)
-        .background(OtegamiColor.background)
-        #endif
+        // Liquid Glass Phase 1 (2026-08-07、docs/design-system.md「Liquid
+        // Glass 方針」): iOS 独自の背景塗りを廃止し標準のリスト背景へ委譲
+        // (`MessageListView.messageListCore`の同日コメント参照 — 元は
+        // 「独自の背景塗りは iOS のみ」の判断だったものが、この移行で iOS
+        // 側からも消えた)。
         .overlay {
             if digests.isEmpty {
                 ContentUnavailableView("アカウントがありません", systemImage: "envelope.badge")
