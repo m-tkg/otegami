@@ -99,6 +99,7 @@ struct AccountDigestView: View {
             ForEach(digests) { digest in
                 AccountDigestRow(
                     digest: digest,
+                    role: role,
                     accountDisplayName: accountDisplayNames[digest.accountId] ?? digest.accountId,
                     accountEmail: accountEmails[digest.accountId] ?? digest.accountId,
                     labelColorKey: accountLabelColorKeys[digest.accountId],
@@ -197,6 +198,10 @@ struct AccountDigestView: View {
     /// OFFのときは確認ダイアログを経由せず即座に実行する — ONのときは
     /// これまでどおり`pendingBulkAction`をセットして`.alert`を出す。
     private func requestBulkAction(accountId: String, action: AccountDigestBulkAction) {
+        // 受信箱以外での`.archive`は`AccountDigestRow`が項目自体を出さない
+        // が、実行経路にも同じガードを置く (このViewは`role`が変わっても
+        // 同じインスタンスが使い回されるため、UI 側だけの制限に頼らない)。
+        guard AccountDigestPresentation.isBulkActionAvailable(action, role: role) else { return }
         guard confirmBulkAction else {
             Task { await performBulkAction(accountId: accountId, action: action) }
             return
@@ -247,6 +252,7 @@ struct AccountDigestView: View {
     // MARK: - 一括処理の実行
 
     private func performBulkAction(accountId: String, action: AccountDigestBulkAction) async {
+        guard AccountDigestPresentation.isBulkActionAvailable(action, role: role) else { return }
         do {
             let summaries = try await environment.database.dbWriter.read { db in
                 try AccountDigestQuery.allSummaries(accountId: accountId, role: role, db: db)
