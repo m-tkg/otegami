@@ -352,6 +352,7 @@ struct ThreadDetailView: View {
         }
         .sheet(isPresented: $isShowingThreadSummarySheet) { threadSummarySheet }
         .task(id: threadId) { await load() }
+        .task(id: threadId) { await observeThreadPinState() }
         // Task #55/#59/#60/#85 had a top-level `.overlay(alignment:
         // .bottomTrailing)` here rendering `MessageDetailFloatingButtons` —
         // the whole history of *that* overlay's exact placement relative to
@@ -661,7 +662,8 @@ struct ThreadDetailView: View {
             return
         }
 
-        isThreadPinned = thread?.isPinned ?? false
+        // `isThreadPinned`はここでは読まない — `observeThreadPinState()`が
+        // ライブ購読する (そちらの doc comment 参照)。
         let observation = ThreadQuery.messagesObservation(threadId: threadId)
         do {
             for try await fetched in observation.values(in: environment.database.dbWriter) {
@@ -680,6 +682,32 @@ struct ThreadDetailView: View {
         } catch {
             // A failing observation just stops the view from updating
             // further; it doesn't clear what's already shown.
+        }
+    }
+
+    /// グループ表示のツールバーのピン状態を DB からライブ購読する。
+    ///
+    /// 実機報告 (2026-08-07)「メールの unpin が反映されない」の調査で、
+    /// この画面が `load()` 時の一発読み + `togglePin()` の楽観更新だけで
+    /// 動いていたことが分かった — DB 側で実際には解除されていない (同期が
+    /// Gmail の重複行を戻した) ときでも**ツールバーだけ解除済みに見え**、
+    /// 一覧へ戻るとピンが残っている、という食い違いになる。同期由来の
+    /// 変化も拾えるよう購読に変えた。
+    ///
+    /// `singleMessageId` のとき (フラット表示) は何もしない —
+    /// `loadSingleMessage(_:)` が既にその1通の `isPinnedLocal` を
+    /// 購読していて、そちらの方が「画面に出ているメールのピン」という
+    /// 意味に忠実 (そのメソッドの doc comment 参照)。
+    private func observeThreadPinState() async {
+        guard singleMessageId == nil else { return }
+        let observation = ValueObservation.tracking { db in try ThreadRecord.fetchOne(db, key: threadId) }
+        do {
+            for try await thread in observation.values(in: environment.database.dbWriter) {
+                isThreadPinned = thread?.isPinned ?? false
+            }
+        } catch {
+            // 購読が落ちてもツールバーの表示が更新されなくなるだけ —
+            // このファイルの他の observation ループと同じ扱い。
         }
     }
 

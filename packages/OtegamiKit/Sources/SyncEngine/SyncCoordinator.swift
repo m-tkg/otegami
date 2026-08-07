@@ -423,8 +423,10 @@ public actor SyncCoordinator {
     /// アーカイブしてもサーバに反映されず、再読込でサーバ状態に巻き戻る」の
     /// 調査で判明)**: an incremental sync's envelope refresh overwrites a
     /// message's local `flagsRaw` with whatever the server currently reports
-    /// (`MessageReadMarker.markSeen`'s doc comment — only `createdAt`/
-    /// `threadId`/`isPinnedLocal` survive a resync untouched, flags don't).
+    /// (`MessageReadMarker.markSeen`'s doc comment — `isPinnedLocal` も
+    /// フラグと同じく上書きされる。以前ここには「`isPinnedLocal`は resync を
+    /// 生き延びる」と書いてあったが誤りで、2026-08-07 に訂正した)。
+    /// 未送信 op がある UID をこの上書きから守るのは `PendingOpTargets`。
     /// If `syncAccountIncrementally` ran *first*, an `IDLE` wake landing
     /// while a flag/archive op was still sitting unsent in `opQueue` would
     /// have the sync observe the server's still-old state and write it back

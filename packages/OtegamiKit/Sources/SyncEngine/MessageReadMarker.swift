@@ -53,10 +53,17 @@ public enum MessageReadMarker {
         // Known, accepted limitation: if the pending window closes with the
         // server's own copy of this message *not* already \Seen, that
         // resync's envelope refresh overwrites `flagsRaw` back to the
-        // server's state (only `createdAt`/`threadId`/`isPinnedLocal` are
-        // protected from a resync overwrite — see `AccountSyncer.upsert`'s
-        // doc comment) and this optimistic mark-as-read can be silently
-        // lost. Narrow window in practice (the op queue usually replays,
+        // server's state and this optimistic mark-as-read can be silently
+        // lost.
+        //
+        // **訂正 (2026-08-07)**: ここには以前「`createdAt`/`threadId`/
+        // `isPinnedLocal`は resync の上書きから保護される」と書いてあったが
+        // **事実と逆**だった — `EnvelopePersister.upsert`の`noOverwrite`列は
+        // `createdAt`/`threadId`/`bodyState`/`snippet`/`detectedLanguage`で、
+        // `isPinnedLocal`は毎回サーバーの`\Flagged`で上書きされる。この誤記の
+        // せいで「メールの unpin が反映されない」の経路を一度見落とした。
+        // フラグ・ピンを resync から守っているのは`noOverwrite`ではなく
+        // `PendingOpTargets` (未送信 op がある UID は取り込まない) の方。 Narrow window in practice (the op queue usually replays,
         // and the destination syncs, within moments), not attempted here.
         if !record.isPendingRelocation, let mailbox = try MailboxRecord.fetchOne(db, key: record.mailboxId) {
             try OpQueue.enqueueSetFlags(
