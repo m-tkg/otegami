@@ -5844,6 +5844,76 @@
         }
       }
     },
+    "サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳、操作の種類別の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。「未送信の操作を破棄」はそのアカウントの未送信操作をまとめて取り消します (送信待ちのメールも破棄されます)。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The number of operations not yet sent to the server, broken down by pending-retry, permanently-failed, and operation kind. Permanently-failed operations can be retried or discarded individually from the \"Sync Error\" screen. \"Discard Unsent Operations\" cancels every unsent operation for that account at once (queued outgoing mail is discarded too)."
+          }
+        }
+      }
+    },
+    "未送信の操作を破棄": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard Unsent Operations"
+          }
+        }
+      }
+    },
+    "未送信の操作を破棄しますか?": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard unsent operations?"
+          }
+        }
+      }
+    },
+    "破棄する": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Discard"
+          }
+        }
+      }
+    },
+    "やめる": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        }
+      }
+    },
+    "メール取得の進捗 (操作同期とは別)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mail Download Progress (separate from operation sync)"
+          }
+        }
+      }
+    },
+    "古いメールをさかのぼって取り込む処理の進み具合です。上の「操作同期」とは別の処理で、こちらが完了していないと、検索や「すべてのメール」の件数がこの端末だけ少なく見えます。バックグラウンドで少しずつ進み、完了すると「取得完了」になります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "How far along this device is in downloading older mail. This is a different process from the operation sync above; until it finishes, search results and the \"All Mail\" count can look lower on this device than elsewhere. It advances gradually in the background and reads \"Download complete\" when finished."
+          }
+        }
+      }
+    },
     "手動再送": {
       "localizations": {
         "en": {

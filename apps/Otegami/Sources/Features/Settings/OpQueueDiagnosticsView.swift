@@ -26,6 +26,13 @@ import SyncEngine
 /// stale discard (uidValidity 失効による自動破棄) の個別一覧は、既存の
 /// 「同期エラー」画面 (`FailedOperationsView`) 側に出す — こちらでは
 /// replay ログの`discardedStale`件数として集計だけ見える。
+///
+/// 実機報告「『すべてのメール』の未読件数が iOS と macOS で違う」追記:
+/// この画面には**メール取得 (古いメールのバックフィル同期) の進捗**も出す
+/// (`MailboxBackfillProgressQuery`)。両者は全く別の系統 — こちらの
+/// 「操作同期」は*この端末で行った操作をサーバーへ送る*キューの話で、
+/// 「完了」と出ていてもメールの取り込みが終わったことは意味しない。実際
+/// その取り違えが起きたので、同じ画面に並べたうえで文言でも切り分ける。
 struct OpQueueDiagnosticsView: View {
     @Environment(AppEnvironment.self) private var environment
 
@@ -36,6 +43,15 @@ struct OpQueueDiagnosticsView: View {
     /// タップ防止とプログレス表示の両方に使う。
     @State private var isRunningManualReplay = false
     @State private var manualReplayOutcomes: [ManualReplayOutcome] = []
+    /// メール取得の進捗 (`MailboxBackfillProgressQuery`) — この型の doc
+    /// comment 参照。
+    @State private var backfillProgress: [MailboxBackfillProgressQuery.AccountProgress] = []
+    /// 「未送信の操作を破棄」の確認ダイアログ対象。`isPresented`を別に
+    /// 持つのは`confirmationDialog(_:isPresented:presenting:)`のため
+    /// (`Binding`をその場で組み立てると`docs/ci.md`の型チェックタイムアウト
+    /// 側に効いてくるので、素の`Bool`の`@State`にしている)。
+    @State private var discardTarget: OpQueueDiagnosticsQuery.PendingSummary?
+    @State private var isShowingDiscardConfirmation = false
 
     var body: some View {
         settingsContainer
@@ -44,6 +60,19 @@ struct OpQueueDiagnosticsView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .task(id: environment.accounts.map(\.id)) { await observe() }
+            .confirmationDialog(
+                "未送信の操作を破棄しますか?",
+                isPresented: $isShowingDiscardConfirmation,
+                presenting: discardTarget
+            ) { summary in
+                Button("破棄する", role: .destructive) { discardPending(for: summary) }
+                    .accessibilityIdentifier("opQueueDiagnostics.pending.discardConfirm")
+                Button("やめる", role: .cancel) {}
+            } message: { summary in
+                // 件数を差し込む実行時の文字列のため`Text(verbatim:)` — この
+                // 画面の他の動的行 (再送結果・種類別内訳) と同じ扱い。
+                Text(verbatim: "このアカウントの未送信の操作 \(summary.count) 件をサーバーへ送るのをやめ、キューから削除します。この端末で行った既読・移動などの表示はそのままで、次回サーバーと同期したときにサーバー側の状態に戻ります。")
+            }
     }
 
     @ViewBuilder
@@ -87,13 +116,17 @@ struct OpQueueDiagnosticsView: View {
                     .accessibilityIdentifier("opQueueDiagnostics.pending.empty")
             } else {
                 ForEach(pendingSummaries, id: \.accountId) { summary in
-                    PendingSummaryRow(summary: summary, accountDisplayName: accountDisplayName(for: summary.accountId))
+                    PendingSummaryRow(
+                        summary: summary,
+                        accountDisplayName: accountDisplayName(for: summary.accountId),
+                        onDiscard: { confirmDiscardPending(for: summary) }
+                    )
                 }
             }
         } header: {
             Text("未送信の操作 (アカウント別)")
         } footer: {
-            Text("サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳、操作の種類別の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。")
+            Text("サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳、操作の種類別の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。「未送信の操作を破棄」はそのアカウントの未送信操作をまとめて取り消します (送信待ちのメールも破棄されます)。")
         }
 
         Section {
@@ -125,6 +158,32 @@ struct OpQueueDiagnosticsView: View {
         } footer: {
             Text("直近の実行履歴を一定件数まで保持します。「未完了」のまま残っている行は、その回だけアプリが途中で終了した可能性を示します。")
         }
+
+        backfillSection
+    }
+
+    /// メール取得 (古いメールのバックフィル同期) の進捗 — この画面の
+    /// doc comment 参照。上の各セクションと同じ`sections`の中に書くと1つの
+    /// `body`式が長くなりすぎるため、独立した computed property にしている
+    /// (`docs/ci.md`の型チェックタイムアウト対策)。
+    @ViewBuilder
+    private var backfillSection: some View {
+        Section {
+            if backfillProgress.isEmpty {
+                Text("まだ記録がありません。")
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                    .accessibilityIdentifier("opQueueDiagnostics.backfill.empty")
+            } else {
+                ForEach(backfillProgress) { progress in
+                    BackfillProgressRow(progress: progress, accountDisplayName: accountDisplayName(for: progress.accountId))
+                }
+            }
+        } header: {
+            Text("メール取得の進捗 (操作同期とは別)")
+        } footer: {
+            Text("古いメールをさかのぼって取り込む処理の進み具合です。上の「操作同期」とは別の処理で、こちらが完了していないと、検索や「すべてのメール」の件数がこの端末だけ少なく見えます。バックグラウンドで少しずつ進み、完了すると「取得完了」になります。")
+        }
     }
 
     private func accountDisplayName(for accountId: String) -> String {
@@ -135,7 +194,8 @@ struct OpQueueDiagnosticsView: View {
         let accountIds = environment.accounts.map(\.id)
         async let pendingTask: Void = observePendingSummaries(accountIds: accountIds)
         async let replayLogTask: Void = observeReplayLog()
-        _ = await (pendingTask, replayLogTask)
+        async let backfillTask: Void = observeBackfillProgress(accountIds: accountIds)
+        _ = await (pendingTask, replayLogTask, backfillTask)
     }
 
     private func observePendingSummaries(accountIds: [String]) async {
@@ -146,6 +206,38 @@ struct OpQueueDiagnosticsView: View {
             }
         } catch {
             // A failing observation just stops the list from updating further.
+        }
+    }
+
+    private func observeBackfillProgress(accountIds: [String]) async {
+        let observation = MailboxBackfillProgressQuery.progressObservation(accountIds: accountIds)
+        do {
+            for try await fetched in observation.values(in: environment.database.dbWriter) {
+                backfillProgress = fetched
+            }
+        } catch {
+            // A failing observation just stops the list from updating further.
+        }
+    }
+
+    /// 「未送信の操作を破棄」のタップハンドラ — 破壊的な操作なので、ここ
+    /// では確認ダイアログを出すだけ (実行は`discardPending(for:)`)。
+    private func confirmDiscardPending(for summary: OpQueueDiagnosticsQuery.PendingSummary) {
+        discardTarget = summary
+        isShowingDiscardConfirmation = true
+    }
+
+    /// 確認後の実削除。`OpQueue.discardAll(accountId:kind:db:)`が`opQueue`
+    /// 行と`send`op の`outboxMessage`をまとめて消す (副作用の判断理由は
+    /// そちらのdoc comment)。一覧は`ValueObservation`が拾って自動更新される
+    /// ので、ここで再取得はしない。
+    private func discardPending(for summary: OpQueueDiagnosticsQuery.PendingSummary) {
+        let accountId = summary.accountId
+        Task {
+            try? await environment.database.dbWriter.write { db in
+                try OpQueue.discardAll(accountId: accountId, db: db)
+            }
+            discardTarget = nil
         }
     }
 
@@ -187,6 +279,7 @@ struct OpQueueDiagnosticsView: View {
 private struct PendingSummaryRow: View {
     let summary: OpQueueDiagnosticsQuery.PendingSummary
     let accountDisplayName: String
+    let onDiscard: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
@@ -214,9 +307,101 @@ private struct PendingSummaryRow: View {
                     .foregroundStyle(OtegamiColor.inkSecondary)
                     .accessibilityIdentifier("opQueueDiagnostics.pending.kindBreakdown")
             }
+            // ユーザー要望 (2026-08-07「未送信の操作はキャンセルして削除
+            // できるようにして」): 「同期エラー」画面の個別「破棄」は恒久
+            // 失敗した op しか対象にできず、再試行待ちのまま延々と積み上が
+            // った塊 (実機では1000件超) を片付ける手段が無かった。
+            Button("未送信の操作を破棄", role: .destructive, action: onDiscard)
+                .font(.caption)
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("opQueueDiagnostics.pending.discardButton")
         }
         .padding(.vertical, OtegamiSpacing.xs)
         .accessibilityIdentifier("opQueueDiagnostics.pending.row")
+    }
+}
+
+/// メール取得の進捗、アカウント1件分 — `PendingSummaryRow`と同じ理由で
+/// 独立したビューにしている。
+private struct BackfillProgressRow: View {
+    let progress: MailboxBackfillProgressQuery.AccountProgress
+    let accountDisplayName: String
+
+    /// 未完了メールボックスを何件まで並べるか — 診断画面とはいえ、ラベルを
+    /// 数十個持つ Gmail アカウントで全件出すと他のセクションが埋もれるため。
+    /// 残りは「ほか N 件」に畳む。
+    private static let visibleMailboxLimit = 5
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
+            HStack {
+                Text(verbatim: accountDisplayName)
+                    .font(.caption.bold())
+                Spacer()
+                Text(verbatim: "取り込み済み \(progress.syncedMessageCount.formatted()) 件")
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+            }
+            if progress.isComplete {
+                // 件数を差し込むため`Label(_:systemImage:)`(`LocalizedStringKey`)
+                // ではなく`Text(verbatim:)`を包む形にしている — この画面の
+                // 他の動的行と同じ扱い。
+                Label {
+                    Text(verbatim: "取得完了 (\(progress.mailboxCount) 個のメールボックス)")
+                } icon: {
+                    Image(systemName: "checkmark.circle")
+                }
+                .font(.caption2)
+                .foregroundStyle(OtegamiColor.accent)
+                .accessibilityIdentifier("opQueueDiagnostics.backfill.complete")
+            } else {
+                Text(verbatim: "取得中 \(progress.pendingMailboxes.count) / \(progress.mailboxCount) メールボックス")
+                    .font(.caption2)
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                    .accessibilityIdentifier("opQueueDiagnostics.backfill.pendingCount")
+                ForEach(progress.pendingMailboxes.prefix(Self.visibleMailboxLimit)) { mailbox in
+                    BackfillMailboxRow(mailbox: mailbox)
+                }
+                if progress.pendingMailboxes.count > Self.visibleMailboxLimit {
+                    Text(verbatim: "ほか \(progress.pendingMailboxes.count - Self.visibleMailboxLimit) 件")
+                        .font(.caption2)
+                        .foregroundStyle(OtegamiColor.inkSecondary)
+                }
+            }
+        }
+        .padding(.vertical, OtegamiSpacing.xs)
+        .accessibilityIdentifier("opQueueDiagnostics.backfill.row")
+    }
+}
+
+/// まだ遡り切れていないメールボックス1件分の行。割合はあくまで UID 範囲
+/// ベースの目安 (`MailboxBackfillProgressQuery.MailboxProgress
+/// .scannedFraction`のdoc comment参照) なので、実際の件数と併記する。
+private struct BackfillMailboxRow: View {
+    let mailbox: MailboxBackfillProgressQuery.MailboxProgress
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            // メールボックスの表示名はサーバー由来の実行時の値のため
+            // `Text(verbatim:)` (`AccountFilterChip.swift`の教訓)。
+            Text(verbatim: mailbox.displayPath)
+                .font(.caption2)
+                .foregroundStyle(OtegamiColor.inkSecondary)
+                .lineLimit(1)
+            Spacer()
+            Text(verbatim: detailText)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(OtegamiColor.inkSecondary)
+        }
+        .accessibilityIdentifier("opQueueDiagnostics.backfill.mailboxRow")
+    }
+
+    private var detailText: String {
+        guard let fraction = mailbox.scannedFraction else {
+            return "未同期"
+        }
+        let percent = Int((fraction * 100).rounded())
+        return "\(percent)% ・ \(mailbox.syncedMessageCount.formatted()) 件"
     }
 }
 
