@@ -322,11 +322,11 @@ struct ThreadDetailView: View {
                 // them.
             }
             .accessibilityIdentifier("threadDetail.scrollView")
-            // 2026-08-07 (メイン UI の macOS ネイティブ化): 独自の背景塗り
-            // は iOS のみ — macOS は標準のウィンドウ背景に任せる。
-            #if os(iOS)
-            .background(OtegamiColor.background)
-            #endif
+            // Liquid Glass Phase 2 (`docs/design-system.md`「Liquid Glass
+            // 方針」): iOS 側の独自`background`塗りも撤去し、システム標準の
+            // 背景へ委譲した — 2026-08-07 の macOS ネイティブ化で macOS が
+            // 先に同じ判断をしていた (このブロックはもともと macOS を除外
+            // する iOS 専用の`#if`だった) のに揃える形。
             .overlay {
                 if messages.isEmpty, accountId != nil {
                     ContentUnavailableView("メッセージが見つかりません", systemImage: "envelope.open")

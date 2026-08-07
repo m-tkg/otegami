@@ -55,8 +55,16 @@ public extension View {
     /// edges reads as a rendering glitch, not a corner. See
     /// `docs/design-system.md`'s list layout section for the full
     /// reasoning.
-    func otegamiCardBackground(_ color: Color, cornerRadius: CGFloat = OtegamiRadius.card) -> some View {
-        background(color)
+    ///
+    /// Liquid Glass Phase 2: generalized from `Color` to `some ShapeStyle`
+    /// so thread-detail content cards (quote history / calendar invite /
+    /// attachment — see those files) can pass a system hierarchical
+    /// material (`.quaternary`) instead of the iOS `OtegamiColor.surface`
+    /// token being phased out, while every existing `Color`-passing caller
+    /// (the message-list row cards) keeps compiling unchanged (`Color`
+    /// conforms to `ShapeStyle`).
+    func otegamiCardBackground(_ style: some ShapeStyle, cornerRadius: CGFloat = OtegamiRadius.card) -> some View {
+        background(style)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }

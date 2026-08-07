@@ -53,7 +53,10 @@ struct AttachmentCardRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .otegamiCardBackground(OtegamiColor.surface)
+        // Liquid Glass Phase 2: `QuoteHistorySectionView`と同じ判断 —
+        // 本文中のコンテンツ層カードなので Glass ではなくシステム階層
+        // 素材 (`.quaternary`) へ。
+        .otegamiCardBackground(.quaternary)
         .accessibilityIdentifier("messageDetail.attachment.\(attachmentId)")
     }
 
