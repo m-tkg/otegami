@@ -15,7 +15,7 @@ import OtegamiStore
 /// 旧「ナビタイトルのタップでフォルダシートを開く」動線はハンバーガーボタンに
 /// 置き換えた (`CLAUDE.md`) — タイトル自体は素の `Text` に戻り、フォルダ切替は
 /// 常に左上のハンバーガーアイコンから。検索・新規作成は一覧画面右下の
-/// speed-dial FAB (`speedDialFAB`、Task #131 — 「…」1個をタップすると
+/// speed-dial FAB (`SpeedDialFAB`、Task #131 — 「…」1個をタップすると
 /// その上に「新規作成」「検索」が縦に展開する) から呼ぶ — ヘッダの再読込
 /// ボタンは廃止 (pull-to-refresh に一本化、`MessageListView`側) し、空いた
 /// ヘッダには「未読のみ表示」トグル (`unreadOnlyToggleButton`) を追加した。
@@ -507,18 +507,33 @@ struct MailScreenView: View {
                 )
             }
         }
-        .background(OtegamiColor.background)
+        // Liquid Glass Phase 1 (2026-08-07、docs/design-system.md「Liquid
+        // Glass 方針」): iOS 独自の`OtegamiColor.background`塗りを廃止し、
+        // 標準の画面背景へ委譲 (`MessageListView.messageListCore`の同日
+        // コメント参照)。
         // Task #131 (一覧FABのspeed-dial化): 旧・左下`floatingSearchButton`
         // + 右下`floatingComposeButton`の2個独立配置を廃止し、右下1個の
-        // speed-dial FAB (`speedDialFAB`) に統合した — 一覧のスクロール
+        // speed-dial FAB (`SpeedDialFAB`) に統合した — 一覧のスクロール
         // 位置に関わらず常に同じ場所にある方が押しやすい、という元の判断
         // 自体は変えていない。選択モード中はヘッダ自体が丸ごとキャンセル/
         // 選択数/全選択に差し替わる (`toolbarContent`) が、FAB自体は
         // `content`側にあるため`isSelecting`と無関係に出続ける — ボタンが
         // 一括操作の邪魔にならないよう非表示にする。
+        //
+        // Liquid Glass Phase 1 (2026-08-07): `speedDialFAB`(このView自身の
+        // 薄いプロパティ) から、`GlassEffectContainer` + `Namespace`を own
+        // する独立`View`型`SpeedDialFAB`(このファイル下部) に切り出した —
+        // `docs/ci.md`の「`GlassEffectContainer`の中身は独立したView型に
+        // 切り出す」方針、および`@Namespace`は宣言したView自身が保持する
+        // 必要があるため。
         .overlay(alignment: .bottomTrailing) {
             if !isSelecting {
-                speedDialFAB
+                SpeedDialFAB(
+                    isExpanded: $isFabExpanded,
+                    accountsEmpty: environment.accounts.isEmpty,
+                    onSearch: { collapseAndPerform { openSearch() } },
+                    onCompose: { collapseAndPerform(onCompose) }
+                )
             }
         }
         // Task #108 (実機報告「元に戻すトーストが検索・新規作成 FAB の
@@ -581,13 +596,17 @@ struct MailScreenView: View {
     /// 自身の`.padding(.bottom, OtegamiSpacing.lg)`を、既存のトークンの
     /// 組み合わせだけで再現した値 — マジックナンバーを新設しない
     /// (`MessageListView`の旧実装のコメントと同じ方針)。円の直径は
-    /// `OtegamiFloatingButtonChromeModifier`の`frame`(`.xl + .xs`)と
+    /// `OtegamiFloatingButtonIconModifier`の`frame`(`.xl + .xs`)と
     /// `padding`(`.md + .xs`を両側)の合計、そこにボタン自身の下端余白
-    /// (`.lg`)と、トーストとの間に一呼吸ぶんの余白 (`.sm`)を足す。
+    /// (`.lg`)と、トーストとの間に一呼吸ぶんの余白 (`.sm`)を足す
+    /// (Liquid Glass Phase 1 でこの拡張は円の塗り自体は描かなくなった
+    /// — `OtegamiFloatingButton.swift`のdoc comment参照 — が、アイコンの
+    /// `frame`/`padding`のサイズ自体は変えていないので、ここでの円の直径
+    /// 計算は引き続き有効)。
     ///
     /// **実機報告 (2026-07-29) への追記**: Task #131 の speed-dial 化以降、
     /// この円1個ぶんの高さは「畳んだ状態」のFABにしか正しくない —
-    /// `isFabExpanded`が`true`の間は`speedDialFAB`の`VStack`が検索/新規作成
+    /// `isFabExpanded`が`true`の間は`SpeedDialFAB`の`VStack`が検索/新規作成
     /// の子ボタン2個ぶん (同じ円の直径 + `VStack(spacing: .md)`の間隔) を
     /// 追加で積み上げるため、畳んだ状態基準の固定値のままだとトーストが
     /// その分だけFABに重なる (`.overlay`のdoc comment参照)。展開中は子ボタン
@@ -812,88 +831,34 @@ struct MailScreenView: View {
     }
 
     /// 実装ルール: 「再読込ボタンは不要 (pull-to-refresh で足りる)、その代わり
-    /// 未読のみ表示のトグルをヘッダに」— アイコントグル (`AccountFilterChip`
-    /// の選択状態と同じ「塗り＋文字色」で ON/OFF を色だけでなく形でも示す
-    /// スタイル、CLAUDE.mdの「新しい色をその場で追加しない」に従い既存の
-    /// パレット・チップトークンを再利用)。真偽値そのものは`isUnreadOnly`
+    /// 未読のみ表示のトグルをヘッダに」。真偽値そのものは`isUnreadOnly`
     /// (`ListDisplaySettingsStore.unreadOnlyKey`の`@AppStorage`) — 実際の
     /// 絞り込みは`MessageListView.observeThreads()`側で行われる。
+    ///
+    /// **方針転換 (Liquid Glass Phase 1, 2026-08-07)**: 旧実装は
+    /// `.buttonStyle(.plain)`で iOS 26 系の Liquid Glass ツールバーボタンの
+    /// 自前ティント丸背景を意図的に抑止し、ON/OFF を`OtegamiColor
+    /// .accentText`/`.paleBaseStrong`という独自の塗り+文字色だけで表現して
+    /// いた (「新しい色をその場で追加しない」ため既存トークンを再利用した
+    /// 判断自体は妥当だったが、クローム層の独自塗りという点で Liquid Glass
+    /// 方針とは逆行していた)。`docs/design-system.md`の Liquid Glass 方針
+    /// 採用に伴い、まさにその「抑止していたシステム標準のティントガラス」
+    /// へ委譲する形へ転換した — `Toggle(isOn:)` + `.toggleStyle(.button)`
+    /// にすることで ON 時の塗りはシステムの Glass ボタンに任せ、
+    /// `.tint(OtegamiColor.accent)`でアクセント色だけ指定する。シンボルの
+    /// fill/outline 切替 (`envelope.badge.fill`/`envelope.badge`) は保険と
+    /// して維持 — Glass の塗り変化に加えて形でも ON/OFF が分かるように。
     private var unreadOnlyToggleButton: some View {
-        Button {
-            isUnreadOnly.toggle()
-        } label: {
+        Toggle(isOn: $isUnreadOnly) {
             Label("未読のみ表示", systemImage: isUnreadOnly ? "envelope.badge.fill" : "envelope.badge")
                 .labelStyle(.iconOnly)
-                .font(OtegamiFont.body())
-                .foregroundStyle(isUnreadOnly ? OtegamiColor.accentText : OtegamiColor.inkSecondary)
-                .padding(OtegamiSpacing.xs)
-                .background(isUnreadOnly ? OtegamiColor.paleBaseStrong : Color.clear, in: Circle())
         }
-        // `.buttonStyle(.plain)`必須: これが無いと iOS 26 系の Liquid Glass
-        // ツールバーボタンが自前のティント丸背景をこのラベルの上に被せて
-        // しまい、ON/OFF で変えているはずの塗り・文字色 (上の `.background`/
-        // `.foregroundStyle`) が画面上まったく見分けられなくなる — 実機
-        // シミュレータのスクリーンショットで実際に確認して気づいた
-        // (`floatingSearchButton`が同じ`.buttonStyle(.plain)`で正しく
-        // 自前スタイルのまま描画されているのとの比較で判明)。
-        .buttonStyle(.plain)
+        .toggleStyle(.button)
+        .tint(OtegamiColor.accent)
         .accessibilityIdentifier("mail.unreadOnlyToggle")
         .accessibilityAddTraits(isUnreadOnly ? .isSelected : [])
     }
 
-
-    /// Task #131 (一覧FABのspeed-dial化): 旧・左下`floatingSearchButton`+
-    /// 右下`floatingComposeButton`の2個独立配置を統合した、右下1個の
-    /// speed-dial FAB。畳んだ状態は「…」の丸ボタン1個だけ、タップすると
-    /// その真上に「新規作成」「検索」("…"に近い方から新規作成→検索の順) が
-    /// 縦に展開する —
-    /// 子ボタンをタップすると対応するアクションを実行しつつ自動で畳む
-    /// (`collapseAndPerform(_:)`)。展開中は「…」自身も×へ変化して活性を
-    /// 示す (`fabToggleButton`)。色は全ボタンとも既存の
-    /// `otegamiFloatingButtonChrome()`(`accentFloating`塗り+白アイコン、
-    /// `OtegamiFloatingButton.swift`) をそのまま使う — 新しい色トークンは
-    /// 増やしていない。展開状態 (`isFabExpanded`) 自体は永続化しない。
-    ///
-    /// `docs/ci.md`のSwiftUI body肥大化ルールに合わせ、子ボタン行は
-    /// `SpeedDialChildButton`という独立した`View`型に切り出している —
-    /// このプロパティ自体は`VStack`+条件分岐だけの薄い組み立てのまま。
-    private var speedDialFAB: some View {
-        VStack(alignment: .trailing, spacing: OtegamiSpacing.md) {
-            if isFabExpanded {
-                SpeedDialChildButton(title: "検索", systemImage: "magnifyingglass", accessibilityId: "mail.searchButton") {
-                    collapseAndPerform { openSearch() }
-                }
-                .transition(.scale(scale: 0.5).combined(with: .opacity))
-                SpeedDialChildButton(title: "新規作成", systemImage: "square.and.pencil", accessibilityId: "mail.composeButton") {
-                    collapseAndPerform(onCompose)
-                }
-                .disabled(environment.accounts.isEmpty)
-                .transition(.scale(scale: 0.5).combined(with: .opacity))
-            }
-            fabToggleButton
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isFabExpanded)
-        .padding(.trailing, OtegamiSpacing.lg)
-        .padding(.bottom, OtegamiSpacing.lg)
-    }
-
-    /// speed-dial FABの起点ボタン ("…" / 展開中は"×") — タップのたびに
-    /// `isFabExpanded`をトグルするだけ。`.contentTransition(.symbolEffect
-    /// (.replace))`でアイコン切り替え自体をアニメーションさせる
-    /// (仕様「展開中の「…」は活性表示 (×へ回転等)」)。
-    private var fabToggleButton: some View {
-        Button {
-            isFabExpanded.toggle()
-        } label: {
-            Image(systemName: isFabExpanded ? "xmark" : "ellipsis")
-                .contentTransition(.symbolEffect(.replace))
-                .otegamiFloatingButtonChrome()
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("mail.fabToggleButton")
-        .accessibilityLabel(isFabExpanded ? Text("閉じる") : Text("その他のアクション"))
-        .accessibilityAddTraits(isFabExpanded ? .isSelected : [])
-    }
 
     /// 子ボタン共通の「実行して畳む」— どちらの子ボタンも「タップで実行 +
     /// 自動で畳む」という同じ仕様なので、この1箇所にまとめてある。
@@ -1071,12 +1036,6 @@ struct MailScreenView: View {
     }
 }
 
-/// Task #131 (一覧FABのspeed-dial化): `MailScreenView.speedDialFAB`が展開中
-/// にだけ出す子ボタン1個ぶん — `docs/ci.md`の「`ForEach`/条件分岐の中身は
-/// 独立した`View`に切り出す」方針どおり、`speedDialFAB`自身の`body`を薄い
-/// ままに保つための切り出し。見た目は畳んだ状態の「…」ボタンと同じ
-/// `otegamiFloatingButtonChrome()`(`accentFloating`塗り+白アイコン) —
-/// 主/子で見た目のトーンを変える理由が無いため揃えている。
 /// `MailScreenView.headerTitleMenu`の`ForEach`中身 — `docs/ci.md`の
 /// SwiftUI body肥大化ルールどおり独立`View`に切り出す。選択中の行はアイコン
 /// を`checkmark`に差し替える (`FolderListSheet`のカテゴリ見出しが持つ選択
@@ -1097,19 +1056,112 @@ private struct HeaderCategoryMenuRow: View {
     }
 }
 
+/// Task #131 (一覧FABのspeed-dial化)、Liquid Glass Phase 1 (2026-08-07):
+/// 右下1個の speed-dial FAB — 畳んだ状態は「…」の丸ボタン1個だけ、タップ
+/// するとその真上に「新規作成」「検索」("…"に近い方から新規作成→検索の順)
+/// が縦に展開する。子ボタンをタップすると対応するアクションを実行しつつ
+/// 自動で畳む (呼び出し元の`onSearch`/`onCompose`クロージャが
+/// `MailScreenView.collapseAndPerform(_:)`で包んでいる)。展開状態
+/// (`isExpanded`) 自体は永続化しない — 呼び出し元 (`MailScreenView`) の
+/// `@State`をそのまま`@Binding`で受け取るだけ。
+///
+/// `GlassEffectContainer` + `@Namespace` + 各ボタンの
+/// `glassEffect(_:in: .circle)` + `glassEffectID(_:in:)`で「…」⇄「検索/
+/// 新規作成」間の展開/収納を Liquid Glass のモーフィングとして表現する —
+/// `docs/design-system.md`の Liquid Glass 方針、`docs/ci.md`の
+/// 「`GlassEffectContainer`の中身は独立したView型に切り出す」の両方に
+/// 従い、`MailScreenView.content`から独立したこの`View`型に切り出した
+/// (`@Namespace`はそれを宣言したView自身が保持する必要があるため、
+/// `MailScreenView`側に置くと元の`speedDialFAB`という薄いプロパティには
+/// 収まらなかった)。
+///
+/// compose (新規作成) ボタンだけ`.tint(OtegamiColor.accent)`付きの tinted
+/// glass (`.glassProminent`相当の強調) — 検索/「…」は素の`.regular`
+/// Glass。実機フィードバック第4弾以来「全部のフローティングボタンを
+/// アクセント塗りに統一」だった判断を、Liquid Glass 方針の「tint 付き
+/// Glass は compose 系の最重要アクションに限る」に合わせて絞り込んだ。
+private struct SpeedDialFAB: View {
+    @Binding var isExpanded: Bool
+    let accountsEmpty: Bool
+    let onSearch: () -> Void
+    let onCompose: () -> Void
+
+    @Namespace private var glassNamespace
+
+    var body: some View {
+        GlassEffectContainer(spacing: OtegamiSpacing.md) {
+            VStack(alignment: .trailing, spacing: OtegamiSpacing.md) {
+                if isExpanded {
+                    SpeedDialChildButton(
+                        title: "検索", systemImage: "magnifyingglass", accessibilityId: "mail.searchButton",
+                        namespace: glassNamespace, action: onSearch
+                    )
+                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+                    SpeedDialChildButton(
+                        title: "新規作成", systemImage: "square.and.pencil", accessibilityId: "mail.composeButton",
+                        namespace: glassNamespace, isProminent: true, action: onCompose
+                    )
+                    .disabled(accountsEmpty)
+                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+                }
+                fabToggleButton
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isExpanded)
+        .padding(.trailing, OtegamiSpacing.lg)
+        .padding(.bottom, OtegamiSpacing.lg)
+    }
+
+    /// speed-dial FABの起点ボタン ("…" / 展開中は"×") — タップのたびに
+    /// `isExpanded`をトグルするだけ。`.contentTransition(.symbolEffect
+    /// (.replace))`でアイコン切り替え自体をアニメーションさせる
+    /// (仕様「展開中の「…」は活性表示 (×へ回転等)」)。
+    private var fabToggleButton: some View {
+        Button {
+            isExpanded.toggle()
+        } label: {
+            Image(systemName: isExpanded ? "xmark" : "ellipsis")
+                .contentTransition(.symbolEffect(.replace))
+                .otegamiFloatingButtonIcon()
+                .foregroundStyle(OtegamiColor.accent)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
+        .glassEffectID("fabToggle", in: glassNamespace)
+        .accessibilityIdentifier("mail.fabToggleButton")
+        .accessibilityLabel(isExpanded ? Text("閉じる") : Text("その他のアクション"))
+        .accessibilityAddTraits(isExpanded ? .isSelected : [])
+    }
+}
+
+/// `SpeedDialFAB`の子ボタン1個ぶん — `docs/ci.md`の「`ForEach`/条件分岐の
+/// 中身は独立したView型に切り出す」方針どおり、`SpeedDialFAB.body`を薄い
+/// ままに保つための切り出し。`namespace`は`SpeedDialFAB`自身が持つ
+/// `@Namespace`を受け取り、「…」ボタンと同じ名前空間の`glassEffectID`で
+/// モーフィングに参加する。
 private struct SpeedDialChildButton: View {
     let title: String
     let systemImage: String
     let accessibilityId: String
+    let namespace: Namespace.ID
+    /// compose のみ`true` — tint 付き Glass で最重要アクションを目立たせる
+    /// (`SpeedDialFAB`の doc comment参照)。
+    var isProminent = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .labelStyle(.iconOnly)
-                .otegamiFloatingButtonChrome()
+                .otegamiFloatingButtonIcon()
+                .foregroundStyle(isProminent ? Color.white : OtegamiColor.accent)
         }
         .buttonStyle(.plain)
+        .glassEffect(
+            isProminent ? .regular.tint(OtegamiColor.accent).interactive() : .regular.interactive(),
+            in: .circle
+        )
+        .glassEffectID(accessibilityId, in: namespace)
         .accessibilityIdentifier(accessibilityId)
     }
 }
