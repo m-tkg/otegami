@@ -1161,6 +1161,19 @@ private struct SpeedDialFAB: View {
                 .contentTransition(.symbolEffect(.replace))
                 .otegamiFloatingButtonIcon()
                 .foregroundStyle(OtegamiColor.accent)
+                // 実機報告 (2026-08-07)「右下の … ボタンを押しても何も
+                // 出なくなっている」: Liquid Glass Phase 1 で
+                // `OtegamiFloatingButtonChromeModifier`の`Circle()`塗りを
+                // 廃止した (`OtegamiFloatingButton.swift`のdoc comment) 結果、
+                // このボタンには**不透明な背景が1つも無くなった** —
+                // `.buttonStyle(.plain)`のヒットテストは描画された内容の
+                // 形にそのまま従うので、当たり判定が「…」の点3つ (と
+                // `xmark`の線) だけに縮み、円の余白部分をタップしても何も
+                // 起きない状態になっていた。`glassEffect`が描くガラスは
+                // 装飾であってヒットテストには寄与しない。`glassEffect(in:)`
+                // と同じ円形を`contentShape`にも与えて、見えている円全体を
+                // タップ領域に戻す。
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .circle)
@@ -1192,6 +1205,11 @@ private struct SpeedDialChildButton: View {
                 .labelStyle(.iconOnly)
                 .otegamiFloatingButtonIcon()
                 .foregroundStyle(isProminent ? Color.white : OtegamiColor.accent)
+                // `SpeedDialFAB.fabToggleButton`と同じ理由 (実機報告
+                // 「… ボタンを押しても何も出ない」) — 円塗りを失った
+                // ボタンは、明示しないとアイコンの描画部分しかタップ
+                // できない。
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .glassEffect(
