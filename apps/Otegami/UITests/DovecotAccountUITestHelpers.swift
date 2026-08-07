@@ -371,9 +371,10 @@ extension XCTestCase {
     /// child) shows `MessageListView` directly, so there's no "switch back
     /// to the Mail tab" step anymore. The only thing that can keep the list
     /// out of the accessibility tree within an already-running process is
-    /// the hamburger drawer being open (`HamburgerMenuContainer` hides the
-    /// main content from the accessibility tree while `isOpen`) — closing
-    /// it via the drawer's own "閉じる" button covers that case; otherwise
+    /// the folder menu sheet (`FolderListSheet`) being presented — a
+    /// standard `.sheet` (Liquid Glass Phase 3, 2026-08-07) naturally hides
+    /// the content behind it from the accessibility tree while up — closing
+    /// it via the sheet's own "閉じる" button covers that case; otherwise
     /// this is a plain wait.
     @discardableResult
     func navigateToUnifiedInboxIfNeeded(in app: XCUIApplication, timeout: TimeInterval = 20) -> Bool {

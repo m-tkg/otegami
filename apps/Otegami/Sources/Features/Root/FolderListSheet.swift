@@ -3,10 +3,17 @@ import GRDB
 import OtegamiStore
 import SyncEngine
 
-/// iOS-only (新画面構成 (1)): the content of `MailScreenView`'s hamburger-
-/// menu drawer (`HamburgerMenuContainer`) — formerly a modal `.sheet`
-/// (design-phase-2's 1a), now permanently mounted inside the drawer and
-/// slid in/out instead of presented/dismissed. Content mirrors what
+/// iOS-only (新画面構成 (1)): the content of `MailScreenView`'s folder/
+/// settings menu, presented as a standard full-height `.sheet`
+/// (`showingFolderMenu`). Liquid Glass Phase 3 (2026-08-07、
+/// `docs/design-system.md`「Liquid Glass 方針」節) replaced the earlier
+/// custom leading-edge drawer (`HamburgerMenuContainer`, deleted in this
+/// phase) with this standard sheet so system Liquid Glass sheet chrome
+/// (角丸・背景・ドラッグインジケータ) applies automatically — meaning this
+/// view is now torn down and freshly re-instantiated every time the sheet
+/// presents, not permanently mounted the way the drawer kept it alive (see
+/// `resetCollapseStateToCurrentSelection()`'s doc comment for how that
+/// changed the "開いた時は全折りたたみ" reset trigger). Content mirrors what
 /// `SidebarView` (macOS's permanently-visible left column) shows — unified
 /// inbox row, outbox/drafts/sync-error banners, each account's mailbox
 /// tree — plus 設定 pinned at the bottom (`settingsSection`, 新画面構成 (1):
@@ -15,7 +22,7 @@ import SyncEngine
 /// `ValueObservation`s (mailboxes, unread counts, outbox/draft/error
 /// counts) with the same shape as `SidebarView`'s, but the two are
 /// presented completely differently (an always-visible `NavigationSplitView`
-/// column vs. a sliding drawer) and `SidebarView` is macOS-only from here
+/// column vs. a modal sheet) and `SidebarView` is macOS-only from here
 /// on — keeping them independent avoids coupling two screens that no longer
 /// share a rendering context, at the cost of the observation logic living
 /// in two places. See `docs/design-system.md` for the tradeoff this task
@@ -23,15 +30,15 @@ import SyncEngine
 ///
 /// Rows that need to present something (送信待ち/下書き/同期エラー/設定/
 /// アカウント追加) don't do so directly from here — they call an `onOpen*`
-/// closure that asks `MailScreenView` (the common ancestor) to close the
-/// drawer and present that sheet. Historically (design-phase-2) this
-/// indirection existed because this view itself used to be a `.sheet`, and
-/// a sheet-presented-from-a-sheet was a confirmed-broken nesting depth in
-/// this app; now that this view is a drawer rather than a sheet, that
-/// specific hazard is gone, but the `onOpen*` closures remain the simplest
-/// way for a common ancestor that already owns every target `@State` flag
-/// to coordinate "close the drawer, then open the next thing" in one place
-/// (`MailScreenView.presentAfterClosingMenu(_:)`).
+/// closure that asks `MailScreenView` (the common ancestor) to close this
+/// sheet and present the next one only after this one has actually finished
+/// dismissing. This view being a `.sheet` again (Phase 3) brings back a
+/// hazard this app has hit before: presenting a second sheet in the same
+/// call that closes the first one is confirmed-broken here (see
+/// `ComposerView.swift`'s "シートからシートを開く" known-issue comment) — so
+/// the `onOpen*` closures stay the indirection point, and
+/// `MailScreenView.presentAfterClosingMenu(_:)`/`handleFolderMenuDismissed()`
+/// defer the actual presentation to this sheet's `onDismiss`.
 struct FolderListSheet: View {
     @Environment(AppEnvironment.self) private var environment
 
@@ -43,18 +50,13 @@ struct FolderListSheet: View {
     var onAddAccount: () -> Void
     /// 新画面構成 (1): メニュー最下部の「設定」行。
     var onOpenSettings: () -> Void
-    /// Task #73: ドロワーの開閉状態そのもの — `MailScreenView.isMenuOpen`が
-    /// そのまま渡ってくる。このビューは`HamburgerMenuContainer`の doc
-    /// comment通り常設マウントされたまま`offset`でスライドするだけなので、
-    /// `.sheet`のような「開くたびに再生成される」ライフサイクルが無い。
-    /// 「開いた時は全折りたたみ＋選択中のみ展開」を実現するには、この値の
-    /// 変化 (`false`→`true`) を`.onChange`で拾って毎回明示的にリセットする
-    /// しかない — `resetCollapseStateToCurrentSelection()`参照。
-    let isMenuOpen: Bool
-    /// 新画面構成 (1): "閉じる" ツールバーボタン — このビューはもう `.sheet`
-    /// ではなくドロワーとして常設マウントされているため、`@Environment
-    /// (\.dismiss)` は使えない (呼び出しても何も起きない、提示コンテキストが
-    /// 無いため)。`MailScreenView` が `isMenuOpen` を渡してドロワーを閉じる。
+    /// 新画面構成 (1): "閉じる" ツールバーボタン — 他の行 (`onSelectMailbox`
+    /// 等) と同じく`MailScreenView`側の`showingFolderMenu`を直接`false`に
+    /// する経路に揃えている。Liquid Glass Phase 3 でこのビューは本物の
+    /// `.sheet`に戻ったため`@Environment(\.dismiss)`も技術的には使えるが、
+    /// 「閉じる」の意味がこのビュー内のどの遷移 (行タップ含む) でも単一の
+    /// 状態変数だけから生じるようにするため、あえてこの`onClose`クロージャ
+    /// に統一したまま維持している。
     var onClose: () -> Void
 
     /// The mailbox tree + badge counts this view shows — see
@@ -142,7 +144,7 @@ struct FolderListSheet: View {
             // `.plain`でも維持される — 変わるのはセクション*間*の強制マー
             // ジンだけ (`scripts/verify-screen.sh menu-expanded`で見た目を
             // 確認済み、後述)。`FolderListSheet`自体は iOS 専用
-            // (`HamburgerMenuContainer`のドロワーとしてのみ使われる — macOS
+            // (`MailScreenView`の`.sheet`としてのみ使われる — macOS
             // は別の `SidebarView` を持つ) だが、`.listStyle`自体は macOS で
             // 型が合わない/意味が異なるため `#if os(iOS)` で囲む
             // (`make mac`のビルドを壊さないため — Swift はプラットフォーム
@@ -176,8 +178,11 @@ struct FolderListSheet: View {
                 }
                 menuScrollTarget = nil
             }
-            .scrollContentBackground(.hidden)
-            .background(OtegamiColor.background)
+            // Liquid Glass Phase 3 (2026-08-07): 独自の`OtegamiColor
+            // .background`塗り (`.scrollContentBackground(.hidden)` +
+            // `.background(...)`のペア) を削除し、標準シート背景へ委譲した
+            // (`docs/design-system.md`「Liquid Glass 方針」の「色: システム
+            // 標準へ委譲」)。
             .navigationTitle("フォルダ")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -201,7 +206,7 @@ struct FolderListSheet: View {
                 }
                 // Task #126, 1: 設定ボタンをメニュー最下部の左下フローティング
                 // (旧`floatingSettingsButton`) から、ヘッダ右上 (歯車アイコン)
-                // へ移設した — `presentAfterClosingMenu`経由の「ドロワーを
+                // へ移設した — `presentAfterClosingMenu`経由の「このメニューを
                 // 閉じてから設定シートを開く」動線 (`onOpenSettings`) 自体は
                 // 変えていない、呼び出し元をこのツールバーボタンに変えただけ。
                 ToolbarItem(placement: .confirmationAction) {
@@ -231,19 +236,20 @@ struct FolderListSheet: View {
         // 全アカウントを横断して読むため。
         .task(id: environment.accounts.map(\.id)) { await observeAllMailboxes() }
         .task(id: environment.accounts.map(\.id)) { await observeAllUnreadCounts() }
-        // Task #73: 「開いた時は全折りたたみ＋選択中のみ展開」— ドロワーが
-        // 閉→開に切り替わるたびリセットする。開いている間の手動開閉
-        // (`toggleAccountCollapsed`) はここでは一切妨げない (このビューは
-        // 常設マウントのため、閉じている間の手動操作もそのまま次に活きて
-        // しまうが、次に開いた瞬間に必ずここで上書きされるので実害はない)。
-        .onChange(of: isMenuOpen) { _, newValue in
-            if newValue {
-                resetCollapseStateToCurrentSelection()
-            }
+        // Task #73: 「開いた時は全折りたたみ＋選択中のみ展開」。Liquid Glass
+        // Phase 3 (2026-08-07) 以降、このビューは`.sheet`の提示のたびに
+        // 新規インスタンスとして生成される (このファイル冒頭の doc comment
+        // 参照) ため、以前必要だった「`isMenuOpen`の`false`→`true`変化を
+        // `.onChange`で拾う」トリックはもう要らない — `.task`(このビュー
+        // 自身のライフタイムに1回) で毎回のシート提示ごとに同じ効果になる。
+        // 開いている間の手動開閉 (`toggleAccountCollapsed`) はここでは一切
+        // 妨げない。
+        .task {
+            resetCollapseStateToCurrentSelection()
         }
     }
 
-    /// Task #73: ドロワーが開かれた瞬間に呼ばれる — 現在の選択
+    /// Task #73: このメニューシートが提示された瞬間に呼ばれる — 現在の選択
     /// (`selectedMailboxId`) が属するアカウントセクションだけを展開状態に
     /// し、それ以外の全アカウントセクションを折りたたむ。`.unifiedInbox`/
     /// `.unifiedRole`選択中 (`selectedMailboxId`が`nil`) の場合は展開対象が
@@ -464,7 +470,7 @@ enum FolderSectionCollapseStore {
         UserDefaults.standard.set(Array(ids), forKey: collapsedAccountIdsKey)
     }
 
-    /// Task #73: ドロワーを開いた瞬間の一括リセット専用 — `setCollapsed(_:accountId:)`
+    /// Task #73: メニューシートが提示された瞬間の一括リセット専用 — `setCollapsed(_:accountId:)`
     /// を1件ずつ呼ぶ (読み直し→書き直しをアカウント数ぶん繰り返す) 代わりに、
     /// 計算済みの集合をまとめて書く。
     static func replaceAll(collapsedAccountIds: Set<String>) {
