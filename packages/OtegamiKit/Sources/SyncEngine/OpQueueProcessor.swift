@@ -17,6 +17,17 @@ public actor OpQueueProcessor {
     /// no separate status column needed) but never retried again.
     public static let maxAttempts = 5
 
+    /// Bound on `opQueueReplayLog`'s ring buffer (`OpQueueReplayLogRecord`'s
+    /// doc comment) — `replay(account:auth:)` is called from a couple dozen
+    /// independent trigger points across the app, so this keeps the table
+    /// from growing unbounded even on a device that stays online and busy
+    /// for a long time. 50 is generous for "diagnose what happened right
+    /// after the user just reproduced the bug" without needing a separate
+    /// retention/expiry job. `public` — `OpQueueDiagnosticsView` (app
+    /// target) reads it too, both to cap its own query and to describe the
+    /// retention policy in its footer text.
+    public static let replayLogCap = 50
+
     /// Exponential backoff between retries of the same op: 30s, 60s, 120s,
     /// 240s, capped at 30 minutes so a long-offline device doesn't end up
     /// waiting hours between attempts once it's back online.
@@ -140,9 +151,21 @@ public actor OpQueueProcessor {
     /// batch, so one bad op can't jam every op enqueued after it.
     @discardableResult
     public func replay(account: AccountRecord, auth: MailAuth) async throws -> ReplayResult {
+        // Task (opQueue observability, 実機報告「Gmail で既読化/アーカイブ
+        // してもサーバに反映されず、再読込でサーバ状態に巻き戻る」の調査
+        // 可能化): recorded *before* the coalescing guard below, on every
+        // single call — this is what lets the「操作同期の診断」画面
+        // distinguish "replay is never being invoked at all" from "it's
+        // invoked but keeps coalescing/finding an empty queue". See
+        // `OpQueueReplayLogRecord`'s doc comment for the full field
+        // rationale.
+        let invokedAt = Date()
+        let logId = await beginReplayLog(accountId: account.id, invokedAt: invokedAt)
+
         guard inFlightAccountIds.insert(account.id).inserted else {
             trailingReplayAccountIds.insert(account.id)
             Self.logger.notice("replay(accountId: \(account.id, privacy: .private)) coalesced — trailing pass requested")
+            await finishReplayLog(id: logId, outcome: .coalesced, result: ReplayResult(), error: nil)
             return ReplayResult()
         }
         trailingReplayAccountIds.remove(account.id)
@@ -152,15 +175,71 @@ public actor OpQueueProcessor {
         }
 
         var combined = ReplayResult()
-        repeat {
-            let pass = try await replayPass(account: account, auth: auth)
-            combined.succeeded += pass.succeeded
-            combined.discardedStale += pass.discardedStale
-            combined.retrying += pass.retrying
-            combined.permanentlyFailed += pass.permanentlyFailed
-            combined.affectedMailboxIds.formUnion(pass.affectedMailboxIds)
-        } while trailingReplayAccountIds.remove(account.id) != nil
+        do {
+            repeat {
+                let pass = try await replayPass(account: account, auth: auth)
+                combined.succeeded += pass.succeeded
+                combined.discardedStale += pass.discardedStale
+                combined.retrying += pass.retrying
+                combined.permanentlyFailed += pass.permanentlyFailed
+                combined.affectedMailboxIds.formUnion(pass.affectedMailboxIds)
+            } while trailingReplayAccountIds.remove(account.id) != nil
+        } catch {
+            // A connection-level failure (dead socket, bad credentials) or
+            // a suspended database aborted the batch mid-pass — see
+            // `replayPass`'s doc comment. `combined` still holds whatever
+            // prior passes (or ops earlier in the aborting pass) completed
+            // before the throw, so this isn't necessarily all-zero.
+            await finishReplayLog(id: logId, outcome: .aborted, result: combined, error: error)
+            throw error
+        }
+        await finishReplayLog(id: logId, outcome: .completed, result: combined, error: nil)
         return combined
+    }
+
+    /// Inserts an `opQueueReplayLog` row (`outcome: .inProgress`) and trims
+    /// the table to `replayLogCap` — trimming happens here (on every insert,
+    /// which always runs) rather than only in `finishReplayLog`, so the ring
+    /// buffer stays bounded even across a crash-loop that never reaches
+    /// `finishReplayLog`. Returns `nil` (best-effort, `try?`) if the write
+    /// itself fails — diagnostics must never be able to block or fail an
+    /// actual replay.
+    private func beginReplayLog(accountId: String, invokedAt: Date) async -> Int64? {
+        try? await database.dbWriter.write { db in
+            var record = OpQueueReplayLogRecord(accountId: accountId, invokedAt: invokedAt, outcome: .inProgress)
+            try record.insert(db)
+            try db.execute(
+                sql: """
+                DELETE FROM \(OpQueueReplayLogRecord.databaseTableName)
+                WHERE id NOT IN (
+                    SELECT id FROM \(OpQueueReplayLogRecord.databaseTableName)
+                    ORDER BY invokedAt DESC, id DESC LIMIT ?
+                )
+                """,
+                arguments: [OpQueueProcessor.replayLogCap]
+            )
+            return record.id
+        }
+    }
+
+    /// Updates the row `beginReplayLog` inserted with its final outcome —
+    /// a no-op if `id` is `nil` (the insert itself failed) or the row is
+    /// somehow already gone. Best-effort (`try?`), same rationale as
+    /// `beginReplayLog`.
+    private func finishReplayLog(id: Int64?, outcome: OpQueueReplayLogRecord.Outcome, result: ReplayResult, error: Error?) async {
+        guard let id else { return }
+        _ = try? await database.dbWriter.write { db in
+            guard var record = try OpQueueReplayLogRecord.fetchOne(db, key: id) else { return }
+            record.completedAt = Date()
+            record.outcome = outcome.rawValue
+            record.succeeded = result.succeeded
+            record.discardedStale = result.discardedStale
+            record.retrying = result.retrying
+            record.permanentlyFailed = result.permanentlyFailed
+            record.affectedMailboxCount = result.affectedMailboxIds.count
+            record.errorDescription = error.map { (($0 as? SyncEngineError)?.userFacingMessage) ?? String(describing: $0) }
+            try record.update(db)
+        }
     }
 
     /// One queue snapshot → connection → apply/delete cycle. Ownership and
@@ -199,7 +278,7 @@ public actor OpQueueProcessor {
                     result.succeeded += 1
                     result.affectedMailboxIds.formUnion(affectedMailboxIds)
                 case .staleDiscarded:
-                    try await delete(op: op)
+                    try await recordStaleDiscardAndDelete(op: op)
                     result.discardedStale += 1
                 }
             } catch let error as MailTransportError where SyncFailureClass.classify(error) == .connectionLevel {
@@ -458,6 +537,37 @@ public actor OpQueueProcessor {
 
     private func delete(op: OpQueueRecord) async throws {
         _ = try await database.dbWriter.write { db in try op.delete(db) }
+    }
+
+    /// User-facing (Japanese) reason `recordStaleDiscardAndDelete` writes
+    /// to every `opQueueStaleDiscard` row — every `.staleDiscarded` case in
+    /// `apply(op:account:session:auth:)` shares the exact same root cause
+    /// (the target mailbox's `uidValidity` no longer matches what this op
+    /// was enqueued against), so one shared string is accurate for all of
+    /// them; see `SetFlagsOpPayload`'s doc comment for why that makes the
+    /// op unsendable rather than just stale.
+    private static let staleDiscardReason = "メールボックスの構成が変わったため、この操作をサーバーへ送信できませんでした（フォルダが再作成された可能性があります）。"
+
+    /// Records `op` into `opQueueStaleDiscard` and deletes it from
+    /// `opQueue`, atomically (same `db.write` transaction) — the fix for
+    /// the `.staleDiscarded` path silently dropping unsendable ops with no
+    /// trace at all (実機報告「Gmail で既読化/アーカイブしてもサーバに
+    /// 反映されず、再読込でサーバ状態に巻き戻る」の調査で見つかった容疑の
+    /// 一つ). Unlike a normal permanently-failed op (`recordFailure`, which
+    /// leaves the row in `opQueue` with `attempts >= maxAttempts` for
+    /// `FailedOperationsView`'s existing retry/discard UI), a stale op is
+    /// deleted outright — its `uidValidity` is gone for good, so "retry"
+    /// would just immediately hit the exact same `.staleDiscarded` check
+    /// again. `FailedOperationsView` shows `opQueueStaleDiscard` rows
+    /// alongside genuinely-retryable permanently-failed ops (read-only,
+    /// dismiss-only) so the user still has the same "同期エラー" screen to
+    /// notice this in.
+    private func recordStaleDiscardAndDelete(op: OpQueueRecord) async throws {
+        _ = try await database.dbWriter.write { db -> Bool in
+            var discard = OpQueueStaleDiscardRecord(accountId: op.accountId, kind: op.kind, reason: Self.staleDiscardReason)
+            try discard.insert(db)
+            return try op.delete(db)
+        }
     }
 
     /// Records a failed attempt and returns the new `attempts` count.

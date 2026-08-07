@@ -337,6 +337,14 @@
 #                                       (成功1件・Yahooの[LIMIT]レート
 #                                       制限失敗1件) が populated な状態で
 #                                       開く。
+#   opqueue-diagnostics                  実機報告「Gmail で既読化/アーカイブ
+#                                       してもサーバに反映されず、再読込で
+#                                       サーバ状態に巻き戻る」の調査可能化:
+#                                       設定→「一般」→「操作同期の診断」
+#                                       (`OpQueueDiagnosticsView`) を直接開く
+#                                       — 記録が空の状態の表示確認用
+#                                       (シミュレータでは実際の replay 実行
+#                                       記録が無い)。
 #   toolbar-customize                   Task #100: 設定→メールビューア→
 #                                       「ツールバーのカスタマイズ」
 #                                       (`MessageToolbarSettingsView`) を

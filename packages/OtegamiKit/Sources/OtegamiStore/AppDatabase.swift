@@ -176,8 +176,8 @@ extension AppDatabase {
     /// migration just to add a table the plan already specified) but stay
     /// empty until M2+.
     ///
-    /// The v1〜v38 registrations themselves live in
-    /// `Migrations/AppDatabase+MigrationsV1toV10.swift` and its three
+    /// The v1〜v54 registrations themselves live in
+    /// `Migrations/AppDatabase+MigrationsV1toV10.swift` and its five
     /// siblings (split out purely for file size — Phase 4 OtegamiKit
     /// 内部整理); see that file's doc comment for the ordering/identifier
     /// rules that make the split safe. `static let`, not `static var`:
@@ -194,6 +194,7 @@ extension AppDatabase {
         migrator.registerAppDatabaseMigrationsV21ToV30()
         migrator.registerAppDatabaseMigrationsV31ToV38()
         migrator.registerAppDatabaseMigrationsV39ToV46()
+        migrator.registerAppDatabaseMigrationsV47ToV54()
         return migrator
     }()
 }

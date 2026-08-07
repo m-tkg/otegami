@@ -5753,6 +5753,196 @@
           }
         }
       }
+    },
+    "操作同期の診断": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sync Operation Diagnostics"
+          }
+        }
+      }
+    },
+    "既読化・アーカイブなどの操作がサーバーへ反映されない場合の調査に使います。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use this to investigate when actions like marking as read or archiving aren't reaching the server."
+          }
+        }
+      }
+    },
+    "最後に replay が起動した時刻": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last Time Replay Ran"
+          }
+        }
+      }
+    },
+    "まだ記録がありません。オフライン操作(既読化・アーカイブなど)の後、しばらくしても記録が現れない場合は再送の起動自体が行われていない可能性があります。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No records yet. If none appear a while after an offline action (marking as read, archiving, etc.), replay itself may not be running."
+          }
+        }
+      }
+    },
+    "この端末でメールの既読化・アーカイブなどを行うたびに、サーバーへの再送処理 (replay) が呼ばれます。この時刻が更新され続けているなら再送処理自体は起動できています。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Every time you mark mail as read, archive it, etc. on this device, a server replay is triggered. If this time keeps updating, replay itself is running."
+          }
+        }
+      }
+    },
+    "未送信の操作はありません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No unsent operations."
+          }
+        }
+      }
+    },
+    "未送信の操作 (アカウント別)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsent Operations (by Account)"
+          }
+        }
+      }
+    },
+    "サーバーへまだ送信できていない操作の件数です。再試行待ち・恒久失敗の内訳も確認できます。恒久失敗になった操作は「同期エラー」画面から個別に再試行・破棄できます。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The number of operations not yet sent to the server, broken down by pending-retry and permanently-failed. Permanently-failed operations can be retried or discarded individually from the \"Sync Error\" screen."
+          }
+        }
+      }
+    },
+    "再送処理 (replay) の直近実行履歴": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recent Replay Runs"
+          }
+        }
+      }
+    },
+    "まだ記録がありません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No records yet."
+          }
+        }
+      }
+    },
+    "直近の実行履歴を一定件数まで保持します。「未完了」のまま残っている行は、その回だけアプリが途中で終了した可能性を示します。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keeps a bounded number of recent runs. A row still marked \"Incomplete\" suggests the app was terminated mid-run that one time."
+          }
+        }
+      }
+    },
+    "未完了 (アプリが途中で終了した可能性があります)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Incomplete (the app may have been terminated mid-run)"
+          }
+        }
+      }
+    },
+    "他の再送処理と統合されました (何もしていません)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Merged into another replay run (did nothing)"
+          }
+        }
+      }
+    },
+    "完了": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completed"
+          }
+        }
+      }
+    },
+    "中断 (接続エラーなど)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aborted (e.g. connection error)"
+          }
+        }
+      }
+    },
+    "不明": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unknown"
+          }
+        }
+      }
+    },
+    "送信できなかった操作": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Operations That Couldn't Be Sent"
+          }
+        }
+      }
+    },
+    "メールボックスの構成が変わったため、サーバーへ送信できずに取り消された操作です。再試行はできません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These operations were cancelled because the mailbox configuration changed before they could be sent to the server. They can't be retried."
+          }
+        }
+      }
+    },
+    "消去": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

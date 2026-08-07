@@ -282,6 +282,14 @@ SCENARIO_OUT[push-diagnostics-populated]="push-diagnostics-populated.png"
 SCENARIO_ENV[push-diagnostics-populated]="OTEGAMI_UITEST_FIXED_PUSH_DIAGNOSTICS=1"
 SCENARIO_ARGS[push-diagnostics-populated]="-uitestsOpenSettingsDirectly -uitestsOpenGeneralSettingsDirectly -uitestsOpenPushNotificationsDirectly -uitestsOpenPushDiagnosticsDirectly"
 
+# 実機報告「Gmail で既読化/アーカイブしてもサーバに反映されず、再読込で
+# サーバ状態に巻き戻る」の調査可能化: 設定→「一般」→「操作同期の診断」を
+# 直接開く — `push-diagnostics`と同じ「1段深いところまで一気に」パターン。
+# シミュレータでは`OpQueueProcessor.replay`が実際に走った記録が無いため
+# 「まだ記録がありません」の空状態表示になる (レイアウト確認用)。
+SCENARIO_OUT[opqueue-diagnostics]="opqueue-diagnostics.png"
+SCENARIO_ARGS[opqueue-diagnostics]="-uitestsOpenSettingsDirectly -uitestsOpenGeneralSettingsDirectly -uitestsOpenOpQueueDiagnosticsDirectly"
+
 # Task #100: 設定 → メールビューア → 「ツールバーのカスタマイズ」を
 # タップ無しで直接開く (`AccountsListContent`/`MailViewerSettingsView`
 # それぞれの`-uitestsOpen*Directly`フックを積み重ねる、`account-edit`

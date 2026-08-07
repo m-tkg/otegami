@@ -62,20 +62,33 @@ struct GeneralSettingsView: View {
     /// A no-op (`false`, and the `.task` below never flips it) on every
     /// real launch.
     @State private var uitestShowPushNotificationsDirectly = false
+    /// 実機報告「Gmail で既読化/アーカイブしてもサーバに反映されず、
+    /// 再読込でサーバ状態に巻き戻る」の調査可能化: 同じパターンで
+    /// `OpQueueDiagnosticsView`(「操作同期の診断」)へタップ無しで直接
+    /// 遷移する。
+    @State private var uitestShowOpQueueDiagnosticsDirectly = false
 
     var body: some View {
         settingsContainer
             .navigationTitle("一般")
+            .navigationDestination(isPresented: $uitestShowOpQueueDiagnosticsDirectly) {
+                OpQueueDiagnosticsView()
+            }
             #if os(iOS)
             .navigationDestination(isPresented: $uitestShowPushNotificationsDirectly) {
                 PushNotificationSettingsView()
             }
+            #endif
             .task {
+                #if os(iOS)
                 if ProcessInfo.processInfo.arguments.contains("-uitestsOpenPushNotificationsDirectly") {
                     uitestShowPushNotificationsDirectly = true
                 }
+                #endif
+                if ProcessInfo.processInfo.arguments.contains("-uitestsOpenOpQueueDiagnosticsDirectly") {
+                    uitestShowOpQueueDiagnosticsDirectly = true
+                }
             }
-            #endif
     }
 
     /// Task #155: see `MailListSettingsView`'s identical doc comment on
@@ -139,6 +152,23 @@ struct GeneralSettingsView: View {
                 Label("デフォルトのメールアプリに設定", systemImage: "envelope.badge")
             }
             .accessibilityIdentifier("settings.defaultMailAppLink")
+        }
+
+        // 実機報告「Gmail で既読化/アーカイブしてもサーバに反映されず、
+        // 再読込でサーバ状態に巻き戻る」の調査可能化: `TranslationDiagnosticsView`/
+        // `PushDiagnosticsView`と同じ「診断画面への入口」だが、特定アカウント
+        // や特定機能に紐づかず同期全体に横断的に効くため、この画面自身に
+        // 置く (iCloud 同期/プッシュ通知/デフォルトのメールアプリと同じ
+        // 「アプリ全体に1つだけある」性質)。
+        Section {
+            NavigationLink {
+                OpQueueDiagnosticsView()
+            } label: {
+                Label("操作同期の診断", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .accessibilityIdentifier("settings.opQueueDiagnosticsLink")
+        } footer: {
+            Text("既読化・アーカイブなどの操作がサーバーへ反映されない場合の調査に使います。")
         }
     }
 }
