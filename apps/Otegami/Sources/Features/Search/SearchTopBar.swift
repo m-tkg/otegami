@@ -35,7 +35,6 @@ struct SearchTopBar: View {
             TextField("検索", text: $searchText)
                 .textFieldStyle(.plain)
                 .font(OtegamiFont.body())
-                .foregroundStyle(OtegamiColor.ink)
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -44,7 +43,14 @@ struct SearchTopBar: View {
         }
         .padding(.horizontal, OtegamiSpacing.md)
         .padding(.vertical, OtegamiSpacing.sm)
-        .background(OtegamiColor.surface, in: Capsule())
+        // Liquid Glass Phase 4 (`docs/design-system.md`「Liquid Glass 方針」):
+        // 独自の不透明`surface`塗りカプセルから、`AccountFilterChip`/
+        // `MessageDetailFooterToolbar`と同じ系統のシステム標準 Glass
+        // カプセルへ。テキスト色も独自`ink`トークンをやめ、Glass 上の
+        // 標準ラベル色 (`.primary`) に委ねる。macOS は対象外
+        // (`otegamiGlassChrome`自体が macOS では no-op — CLAUDE.md
+        // 「macOS は現状維持」)。
+        .otegamiGlassChrome(shape: Capsule())
     }
 
     /// 現在のクエリ+フィルタ+アカウント絞りを保存/解除するトグル。クエリが
@@ -63,14 +69,21 @@ struct SearchTopBar: View {
     }
 
     private var closeButton: some View {
+        // Liquid Glass Phase 4: 独自の`surface`塗り円 → システム標準の
+        // 丸い Glass ボタン (`.buttonStyle(.glass)`)。アイコン専用ボタンは
+        // `otegamiGlassChrome`でラップせず標準ボタンスタイルを直接使う
+        // (`OtegamiGlass.swift`のdoc comment「Buttons」節参照)。
         Button(action: onClose) {
             Image(systemName: "xmark")
                 .font(OtegamiFont.subheadline())
-                .foregroundStyle(OtegamiColor.ink)
                 .frame(width: OtegamiSpacing.xl, height: OtegamiSpacing.xl)
-                .background(OtegamiColor.surface, in: Circle())
         }
+        #if os(iOS)
+        .buttonStyle(.glass)
+        #else
         .buttonStyle(.plain)
+        .background(OtegamiColor.surface, in: Circle())
+        #endif
         .otegamiMinimumTappable()
         .accessibilityIdentifier("search.closeButton")
         .accessibilityLabel("閉じる")
