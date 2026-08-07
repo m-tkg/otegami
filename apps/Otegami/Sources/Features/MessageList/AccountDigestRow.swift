@@ -13,6 +13,10 @@ import OtegamiStore
 /// .pinned`) ので、誤爆すると以降の一括アーカイブが丸ごと効かなくなる。
 /// `init?(_:)` がスワイプ設定の `.pin` に対して `nil` を返し、呼び出し側
 /// (スワイプボタン/コンテキストメニュー) がその項目自体を出さない。
+///
+/// ユーザー要望 (2026-08-08「グループでのアーカイブ処理は、受信箱でのみ
+/// 使える機能にして」): `.archive` は表示中フォルダが受信トレイのときだけ
+/// — 判定は `AccountDigestPresentation.isBulkActionAvailable(_:role:)`。
 enum AccountDigestBulkAction: String, Identifiable {
     case markRead
     case archive
@@ -81,6 +85,9 @@ struct AccountDigestRow: View {
     @AppStorage(SwipeActionSettingsStore.trailingLongActionKey) private var trailingLongRaw = SwipeActionSettingsStore.defaultTrailingLong.rawValue
 
     let digest: AccountDigest
+    /// 表示中のフォルダ (`AccountDigestView.role`) — アーカイブを受信箱
+    /// でのみ出すため (`AccountDigestPresentation.isBulkActionAvailable`)。
+    let role: MailboxRoleRecord
     /// `AccountFilterChip.label`/`AccountGroupSectionHeader.accountDisplayName`
     /// (廃止済み) と同じ理由で`Text(verbatim:)`のみで扱う — 表示名がメール
     /// アドレスそのものの場合、`LocalizedStringKey`経由だとSwiftUIが自動
@@ -132,8 +139,9 @@ struct AccountDigestRow: View {
         .contextMenu {
             // `.pin`はグループ操作として提供しない (`AccountDigestBulkAction`
             // の doc comment) ので、`compactMap`で落ちた分は項目自体が
-            // 出ない。
-            ForEach(SwipeAction.allCases.compactMap(AccountDigestBulkAction.init)) { action in
+            // 出ない。受信箱以外の`.archive`も同様に落ちる
+            // (`AccountDigestPresentation.isBulkActionAvailable`)。
+            ForEach(availableBulkActions) { action in
                 Button {
                     onRequestBulkAction(action)
                 } label: {
@@ -143,6 +151,15 @@ struct AccountDigestRow: View {
         }
         #endif
         .accessibilityIdentifier("accountDigest.row.\(digest.accountId)")
+    }
+
+    /// このフォルダでグループ操作として提供する一括アクション —
+    /// `.pin` (グループ操作を持たない) と、受信箱以外での `.archive` が
+    /// ここで落ちる。
+    private var availableBulkActions: [AccountDigestBulkAction] {
+        SwipeAction.allCases
+            .compactMap(AccountDigestBulkAction.init)
+            .filter { AccountDigestPresentation.isBulkActionAvailable($0, role: role) }
     }
 
     #if os(iOS)
@@ -160,10 +177,12 @@ struct AccountDigestRow: View {
 
     /// `.pin`に割り当てられているスロットはボタンごと出さない
     /// (`AccountDigestBulkAction`の doc comment) — `MessageListRow`の
-    /// 個別行スワイプでは今までどおりピン留めできる。
+    /// 個別行スワイプでは今までどおりピン留めできる。受信箱以外での
+    /// `.archive` も同じ扱い (`availableBulkActions`)。
     @ViewBuilder
     private func swipeButton(for swipeAction: SwipeAction) -> some View {
-        if let action = AccountDigestBulkAction(swipeAction) {
+        if let action = AccountDigestBulkAction(swipeAction),
+           AccountDigestPresentation.isBulkActionAvailable(action, role: role) {
             Button(role: action.isDestructive ? .destructive : nil) {
                 onRequestBulkAction(action)
             } label: {

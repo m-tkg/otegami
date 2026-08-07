@@ -22,6 +22,23 @@ struct AccountDigestPresentationTests {
         #expect(SwipeAction.allCases.compactMap(AccountDigestBulkAction.init).count == SwipeAction.allCases.count - 1)
     }
 
+    /// ユーザー要望 (2026-08-08「グループでのアーカイブ処理は、受信箱でのみ
+    /// 使える機能にして」) — `AccountDigestPresentation.isBulkActionAvailable`
+    /// の doc comment 参照。
+    @Test("bulk archive is offered only in the inbox")
+    func archiveIsInboxOnly() {
+        #expect(AccountDigestPresentation.isBulkActionAvailable(.archive, role: .inbox))
+        #expect(!AccountDigestPresentation.isBulkActionAvailable(.archive, role: .archive))
+        #expect(!AccountDigestPresentation.isBulkActionAvailable(.archive, role: .sent))
+        #expect(!AccountDigestPresentation.isBulkActionAvailable(.archive, role: .all))
+        // 他の一括操作はフォルダで制限しない。
+        for role in [MailboxRoleRecord.inbox, .archive, .sent, .trash] {
+            #expect(AccountDigestPresentation.isBulkActionAvailable(.markRead, role: role))
+            #expect(AccountDigestPresentation.isBulkActionAvailable(.delete, role: role))
+            #expect(AccountDigestPresentation.isBulkActionAvailable(.junk, role: role))
+        }
+    }
+
     /// ユーザー要望 (2026-08-07「グループに対してのアーカイブは、アーカイブ
     /// されてないものだけを対象にしたい。すべてを既読、も同じく」)。
     @Test("bulk archive skips already-archived threads, mark-read skips already-read ones")
