@@ -99,7 +99,10 @@ struct AboutView: View {
         }
         .frame(width: 460)
         .frame(minHeight: 560, idealHeight: 620, maxHeight: 720)
-        .background(OtegamiColor.background)
+        // Liquid Glass Phase 5 (docs/design-system.md「Liquid Glass 方針」):
+        // 独自の`OtegamiColor.background`塗りを廃止し、標準のウィンドウ/
+        // スクロール背景へ委譲 (iOS は Liquid Glass 方針、macOS は
+        // 2026-08-07 ネイティブ化方針と同じ判断)。
         .accessibilityIdentifier("about.view")
     }
 
