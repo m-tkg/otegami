@@ -522,6 +522,28 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
     }
 
+    /// `IMAPSessionProtocol.searchUnseenUIDs`'s doc comment. `searchUnread`
+    /// is MailCore2's own name for RFC 3501's `UNSEEN` search key — the
+    /// same single-key expression, no `OR` nesting needed unlike
+    /// `searchMessages` above.
+    public func searchUnseenUIDs(mailboxPath: String) async throws -> Set<UInt32> {
+        try await withCheckedThrowingContinuation { continuation in
+            session.searchExpressionOperation(
+                folder: mailboxPath, expression: MCOIMAPSearchExpression.searchUnread()
+            ).start { error, result in
+                if let error {
+                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    return
+                }
+                do {
+                    continuation.resume(returning: try Self.uidSet(from: result))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Body (M2)
 
     /// Downloads the message's full RFC 822 content and parses it with

@@ -161,6 +161,28 @@ public protocol IMAPSessionProtocol: Sendable {
     /// result without an upper bound).
     func searchMessages(mailboxPath: String, query: String) async throws -> Set<UInt32>
 
+    /// Server-side `UID SEARCH UNSEEN` against `mailboxPath` (already
+    /// `select`ed) — every UID the server currently considers unread, no
+    /// envelope data, same numbers-only shape as `searchExistingUIDs`.
+    ///
+    /// 実機報告「まだローカルにない未読メールが検出できない」: otegami's unread
+    /// counts are a plain `COUNT(*)` over locally-stored rows
+    /// (`MessageQuery.unreadCounts`), so a mailbox whose backfill hasn't
+    /// caught up yet — the normal state for a large account, see
+    /// `docs/architecture.md`'s pitfall (l) — reports fewer unread messages
+    /// than the server actually has, with no way for the app to even know
+    /// it's short. `STATUS` can't fill that gap: MailCore2's
+    /// `folderInfoOperation` (what `status(_:)` wraps) exposes
+    /// `UIDVALIDITY`/`UIDNEXT`/`HIGHESTMODSEQ`/message count and no
+    /// `UNSEEN`. This `SEARCH` gives both halves at once — the true unread
+    /// count, and exactly which UIDs to fetch to make the list agree with
+    /// it.
+    ///
+    /// Like `searchMessages`, this applies no result-count cap: the caller
+    /// (`UnseenSweeper`) is responsible for bounding how many of the
+    /// returned UIDs it actually ingests.
+    func searchUnseenUIDs(mailboxPath: String) async throws -> Set<UInt32>
+
     /// `UID FETCH ... (FLAGS)` for `uids` in `mailboxPath` (already
     /// `select`ed) — just the flags, none of `fetchEnvelopes`'s headers/
     /// `BODYSTRUCTURE`/size. Task #194 (「Pull to refresh が長すぎて終わらない」):
