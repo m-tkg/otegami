@@ -1000,6 +1000,9 @@ translations = {
     "メールボックス選択": "Selecting Mailbox",
     "見出し取得": "Fetching Envelope",
     "本文取得": "Fetching Body",
+    # iOS Communication Notifications (送信者アバター付きプッシュ通知) で
+    # 追加した `PushDiagnosticsRun.Stage.communicationNotification`。
+    "送信者アバター通知": "Sender Avatar Notification",
 
     # --- opQueue observability (実機報告「Gmail で既読化/アーカイブしても
     # サーバに反映されず、再読込でサーバ状態に巻き戻る」の調査可能化):

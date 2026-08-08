@@ -183,6 +183,17 @@ targets:
         # 影響しない、意図的にスコープを絞った緩和。
         NSAppTransportSecurity:
           NSAllowsArbitraryLoadsInWebContent: true
+        # Communication Notifications (iOS-only, Task: 送信者アバター付き
+        # プッシュ通知): Apple's documentation requires the containing app
+        # itself (not just the NotificationService Extension that actually
+        # builds the `INSendMessageIntent`, `NSExtensionAttributes` below)
+        # to declare `INSendMessageIntent` as a supported `NSUserActivity`
+        # type — this is what makes the app a legitimate donor of that
+        # intent kind at all (Siri/Shortcuts/search surface it this way).
+        # See Config/Otegami-iOS.entitlements' doc comment for the actual
+        # entitlement this feature also needs.
+        NSUserActivityTypes:
+          - INSendMessageIntent
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -321,6 +332,18 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+          # Communication Notifications: some blog posts claim an app
+          # extension that donates an `INSendMessageIntent` needs to declare
+          # it here too, mirroring the app target's own `NSUserActivityTypes`
+          # above; Apple's own Communication Notifications documentation
+          # doesn't mention this key at all for the *extension* side (only
+          # for the containing app). Added anyway since it's harmless if
+          # unnecessary — **whether this actually affects anything is
+          # unverified**; don't treat its presence (or removal) as fixing or
+          # breaking the feature without a real-device test either way.
+          NSExtensionAttributes:
+            IntentsSupported:
+              - INSendMessageIntent
         OtegamiAppGroupIdentifier: $(OTEGAMI_APP_GROUP)
         OtegamiKeychainAccessGroup: $(OTEGAMI_KEYCHAIN_GROUP)
         # Task #177 (`.oauth2` account push enrichment): this Extension's
@@ -350,6 +373,17 @@ targets:
           - $(OTEGAMI_APP_GROUP)
         keychain-access-groups:
           - $(OTEGAMI_KEYCHAIN_GROUP)
+        # Communication Notifications (`com.apple.developer.usernotifications
+        # .communication`, Config/Otegami-iOS.entitlements' doc comment):
+        # deliberately *not* added here. Apple's Communication Notifications
+        # documentation lists this entitlement as something the containing
+        # *app* target requests, not an app extension — `NotificationService`
+        # is the target that actually builds/donates the `INSendMessageIntent`
+        # and applies `content.updating(from:)`, but the entitlement itself
+        # stays app-side. If sender avatars ever fail to appear on a real
+        # device with the app-side entitlement correctly granted, adding it
+        # here too is the first thing to try.
+
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
@@ -463,6 +497,13 @@ targets:
     sources:
       - path: Tests/NotificationServiceTests
       - path: NotificationService/NotificationService.swift
+      # Communication Notifications: `CommunicationNotificationDecisionTests`
+      # exercises `NotificationService.senderDecision(...)`/
+      # `.conversationIdentifier(accountId:senderAddress:)`, both defined in
+      # this file — same "add the new file explicitly, ファイル明示" reason
+      # this target's own doc comment above gives for
+      # `NotificationService.swift` itself.
+      - path: NotificationService/CommunicationNotification.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

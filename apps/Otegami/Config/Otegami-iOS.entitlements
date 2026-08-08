@@ -59,6 +59,30 @@
 	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
 	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
 	<!--
+	Communication Notifications (iOS-only, Task: 送信者アバター付きプッシュ
+	通知): lets the app donate an `INSendMessageIntent` (with a sender
+	`INPerson`/avatar image, see NotificationService/CommunicationNotification.swift)
+	so the OS renders an incoming mail's push notification as a large
+	circular sender avatar with this app's icon automatically composited
+	into its bottom-right corner, instead of the plain app-icon banner.
+	Without this key granted, `content.updating(from:)` (called from the
+	main app's own donation paths, and — the primary user of this — the
+	NotificationService Extension's `deliver()`) silently fails to apply the
+	decoration; the notification still delivers, just undecorated. Apple's
+	own docs are explicit that this capability must be requested and
+	enabled for this App ID in the Developer Portal *before* a build
+	carrying this key can even sign — if a signing failure ever appears
+	after adding this key, check that first. **Not added to
+	Otegami-macOS.entitlements**: Communication Notifications are an iOS/
+	iPadOS/watchOS feature (Apple's own `UNNotificationContent.updating(from:)`
+	docs), and NotificationService (the only place this repo builds an
+	`INSendMessageIntent`) is an iOS-only extension target to begin with
+	(this file's own doc comment on why App Group/Keychain Access Group stay
+	iOS-only says the same about NotificationService's platform scope).
+	-->
+	<key>com.apple.developer.usernotifications.communication</key>
+	<true/>
+	<!--
 	Task #48 (デフォルトメールアプリ対応): this file's `com.apple.developer
 	.mail-client`-carrying counterpart is Otegami-iOS-MailClient.entitlements,
 	swapped in via the `OTEGAMI_MAIL_CLIENT_ENTITLEMENT` xcconfig flag

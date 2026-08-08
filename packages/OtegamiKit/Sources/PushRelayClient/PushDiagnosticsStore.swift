@@ -104,6 +104,26 @@ public struct PushDiagnosticsRun: Sendable, Codable, Equatable, Identifiable {
     /// not something gone wrong. Either way, this stage's own outcome never
     /// blocks or changes `incrementalSync`/the rest of `enrich(payload:)` —
     /// it only affects how quickly a body preview can appear on screen.
+    ///
+    /// **`communicationNotification`** (iOS Communication Notifications,
+    /// Task: 送信者アバター付きプッシュ通知): recorded by
+    /// `NotificationService.attemptCommunicationNotificationIfNeeded(...)` —
+    /// called once this run's sender is as fully known as it will ever get
+    /// (right after the sync-first path resolves a message, or right after
+    /// the legacy IMAP fallback resolves an envelope; may also resolve
+    /// immediately from the push payload's own relay-prefetched envelope,
+    /// before either of those). This is the only diagnostic signal for this
+    /// feature — it can only be exercised on a real device (Communication
+    /// Notifications, `INInteraction.donate()`, and the resulting avatar
+    /// rendering all require real `UNUserNotificationCenter`/Intents runtime
+    /// state a simulator/unit test can't provide). `.skipped(reason:)`
+    /// distinguishes "showsSender off" / "showAvatar off" / "no sender
+    /// address" / "avatar cache miss" (`CommunicationNotificationDecision
+    /// .SkipReason`'s own raw values); `.failure` covers either
+    /// `INInteraction.donate()` or (recorded separately, from
+    /// `NotificationService.deliver()` itself, since donation and content
+    /// decoration are two different failure points) `UNNotificationContent
+    /// .updating(from:)` throwing.
     public enum Stage: String, Sendable, Codable, CaseIterable {
         case parsePayload
         case preferences
@@ -115,6 +135,7 @@ public struct PushDiagnosticsRun: Sendable, Codable, Equatable, Identifiable {
         case select
         case fetchEnvelope
         case fetchBody
+        case communicationNotification
     }
 
     /// Never carries subject/sender/body/credentials — `category`/
