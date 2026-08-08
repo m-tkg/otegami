@@ -101,6 +101,11 @@ struct MailListSettingsView: View {
                     showGoogleProfilePhoto = isOn
                     showGravatar = isOn
                     showCompanyLogo = isOn
+                    // Communication Notification 対応: NSE がこのトグルの
+                    // 値を App Group 経由で読む (`NotificationContentSettingsStore`
+                    // のドキュメントコメント参照)。この画面がこの設定を
+                    // 変更できる唯一の場所なので、ここから直接ミラーする。
+                    NotificationContentSettingsStore.mirrorToAppGroup()
                 }
             Picker("本文プレビューの行数", selection: $previewLineCountRaw) {
                 ForEach(PreviewLineCount.allCases) { count in

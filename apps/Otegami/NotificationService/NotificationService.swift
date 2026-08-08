@@ -2,6 +2,7 @@ import CoreFoundation
 import Foundation
 import GRDB
 import GoogleOAuth
+import Intents
 import MailTransport
 import MailTransportMailCore
 import MicrosoftOAuth
@@ -315,6 +316,37 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// and the `Task` it spawns.
     private var stageRecords: [PushDiagnosticsRun.StageRecord] = []
 
+    /// Communication Notifications (Task: 送信者アバター付きプッシュ通知):
+    /// guards `attemptCommunicationNotificationIfNeeded(...)` so a run only
+    /// ever tries once — that function's own doc comment explains exactly
+    /// when it's allowed to stay `false` (to retry once more information is
+    /// available) versus when it must flip to `true` (a terminal answer was
+    /// reached).
+    private var communicationNotificationAttempted = false
+
+    /// The already-*donated* intent `attemptCommunicationNotificationIfNeeded(...)`
+    /// prepared, if any — read back synchronously by `deliver()`'s
+    /// `applyCommunicationNotificationIfAvailable()`. `nil` whenever this
+    /// run never reached a `.decorate` decision, the donation itself
+    /// failed, or `deliver()` ran (5 second display budget /
+    /// `serviceExtensionTimeWillExpire()`) before `enrich(payload:)` got
+    /// this far — every one of those cases just delivers the notification
+    /// undecorated, never a broken one (this type's own doc comment on the
+    /// Phase 1 deadline `Task` already establishes the same "best-effort,
+    /// never blocks delivery" pattern for `enrichmentTask` generally).
+    private var communicationNotificationIntent: INSendMessageIntent?
+
+    /// The conversation identifier that intent was donated under —
+    /// `applyCommunicationNotificationIfAvailable()` also uses this for the
+    /// content's `threadIdentifier` so the OS groups repeated notifications
+    /// from the same correspondent together. Kept alongside
+    /// `communicationNotificationIntent` rather than re-derived from it:
+    /// `INSendMessageIntent.conversationIdentifier` is itself optional at
+    /// the type level (Objective-C `nullable`), and re-force-unwrapping it
+    /// at the use site would be redundant given this value is already on
+    /// hand from `CommunicationNotificationSender` at donation time.
+    private var communicationNotificationConversationIdentifier: String?
+
     /// Appends one stage result to `stageRecords` — no I/O here, just an
     /// array append (`deliver()` is the only place that ever touches
     /// `UserDefaults`, see this type's "端末内診断画面" doc comment on why
@@ -338,6 +370,9 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         deliveryGate = NotificationDeliveryGate()
         stageRecords = []
         startedAt = Date()
+        communicationNotificationAttempted = false
+        communicationNotificationIntent = nil
+        communicationNotificationConversationIdentifier = nil
         self.contentHandler = contentHandler
         let content = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
         content.title = "Otegami"
@@ -440,7 +475,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     }
 
     private func deliver() {
-        guard let contentHandler, let bestAttemptContent, deliveryGate.claimDelivery() else { return }
+        guard let contentHandler, let original = bestAttemptContent, deliveryGate.claimDelivery() else { return }
         deadlineTask?.cancel()
         deadlineTask = nil
         // Phase 1: `enrichmentTask` is deliberately left running here (not
@@ -450,6 +485,18 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // arrives at this same process instance before it finishes on its
         // own.
         self.contentHandler = nil
+        // Communication Notifications: applied here, after `claimDelivery()`
+        // has already succeeded — this is now the single remaining owner of
+        // `bestAttemptContent`, so no `deliveryGate.withPending` guard is
+        // needed for this mutation (unlike every earlier mutation of it in
+        // this file, which race against `deliver()` itself claiming
+        // delivery first).
+        //
+        // 装飾できなかった場合は `original` がそのまま配信される — この
+        // 関数から `return` する経路を作らないこと。ここまで来た時点で
+        // `claimDelivery()` は成立済みで、`contentHandler` を呼ばずに
+        // 戻ると通知そのものが二度と表示されない (もう誰も配信できない)。
+        let finalContent = decoratedContentIfAvailable(from: original) ?? original
         var totalElapsedMs: Int?
         if let startedAt {
             let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
@@ -458,7 +505,85 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         }
         let completedStages = stageRecords
         persistDiagnostics(stages: completedStages, totalElapsedMs: totalElapsedMs)
-        contentHandler(bestAttemptContent)
+        contentHandler(finalContent)
+    }
+
+    /// Communication Notifications (Task: 送信者アバター付きプッシュ通知):
+    /// applies the decoration `attemptCommunicationNotificationIfNeeded(...)`
+    /// already prepared (an `INSendMessageIntent` that already successfully
+    /// donated), if one is available by the time `deliver()` runs — a no-op
+    /// when `enrich(payload:)` hasn't gotten that far yet (5 second display
+    /// budget, or `serviceExtensionTimeWillExpire()` firing first): in that
+    /// case `bestAttemptContent` is delivered exactly as the rest of this
+    /// file already built it, no decoration, no error.
+    ///
+    /// **Why `userInfo`/`categoryIdentifier`/`badge`/`sound` are
+    /// unconditionally re-applied after `updating(from:)`, not merely
+    /// defensively.** Apple's documentation says `updating(from:)` returns
+    /// "a copy of the notification content, updated with the information
+    /// from the specified intent" — it makes no promise about which of the
+    /// *original* content's own unrelated properties survive that copy.
+    /// Without re-asserting them here, a decorated notification could
+    /// silently lose the `userInfo` payload `PushTokenCenter.swift`'s
+    /// tap-to-open routing depends on, and/or its `categoryIdentifier`
+    /// (`PushNotificationActionCategory.swift`'s `NEW_MAIL_ACTIONS`, which
+    /// is what makes the "既読にする"/"アーカイブ" actions show up at all) —
+    /// a Communication Notification would then look right but behave
+    /// subtly worse than an undecorated one.
+    ///
+    /// `threadIdentifier` is deliberately set to the *same* conversation
+    /// identifier `senderDecision`/`donate` used — see
+    /// `conversationIdentifier(accountId:senderAddress:)`'s doc comment for
+    /// why it's per-sender, not per-thread — so the OS groups repeated
+    /// notifications from one correspondent together in Notification
+    /// Center.
+    ///
+    /// Returns `nil` for every "deliver it undecorated" case (no donated
+    /// intent, or `updating(from:)` threw) — `deliver()` then falls back to
+    /// the content it already had. Deliberately a *return value* rather than
+    /// a mutation of `bestAttemptContent`: decoration is always best-effort,
+    /// and shaping it this way makes it structurally impossible for a
+    /// failure here to leave `deliver()` without a content to hand the
+    /// `contentHandler` (which would silently drop the notification
+    /// entirely, since `claimDelivery()` has already been claimed by then).
+    /// Recorded directly into `stageRecords`
+    /// (not via `recordStage(_:outcome:since:)`, whose `deliveryGate
+    /// .withPending` guard would silently drop this — `deliver()` has
+    /// already called `claimDelivery()` by the time this runs) so a
+    /// donation success followed by an `updating(from:)` failure still
+    /// shows up in the on-device diagnostics screen as this run's true
+    /// outcome.
+    private func decoratedContentIfAvailable(from original: UNMutableNotificationContent) -> UNMutableNotificationContent? {
+        guard let intent = communicationNotificationIntent,
+              let conversationIdentifier = communicationNotificationConversationIdentifier
+        else { return nil }
+        let start = Date()
+        let userInfo = original.userInfo
+        let categoryIdentifier = original.categoryIdentifier
+        let badge = original.badge
+        let sound = original.sound
+        do {
+            let updated = try original.updating(from: intent)
+            guard let mutable = updated.mutableCopy() as? UNMutableNotificationContent else { return nil }
+            mutable.userInfo = userInfo
+            mutable.categoryIdentifier = categoryIdentifier
+            mutable.badge = badge
+            mutable.sound = sound
+            mutable.threadIdentifier = conversationIdentifier
+            Self.logger.notice("deliver: communicationNotification: decoration applied")
+            return mutable
+        } catch {
+            Self.logger.notice("""
+            deliver: communicationNotification: updating(from:) threw — delivering undecorated: \
+            \(String(describing: error), privacy: .public)
+            """)
+            stageRecords.append(.init(
+                stage: .communicationNotification,
+                outcome: .failure(category: "updatingFailed", looksRateLimited: false, logDetail: String(describing: error)),
+                elapsedMs: Int(Date().timeIntervalSince(start) * 1000)
+            ))
+            return nil
+        }
     }
 
     /// Task #213 — the single `UserDefaults` write this whole feature does
@@ -539,6 +664,24 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             }
             Self.logger.notice("enrich: applied relay-prefetched envelope content immediately applied=\(applied, privacy: .public)")
         }
+
+        // Communication Notifications (Task: 送信者アバター付きプッシュ通知):
+        // attempted here first, immediately after the network-free relay
+        // envelope — if `payload.latestFromAddress` is present this is
+        // already this run's final sender (`senderDecision`'s own
+        // address-priority doc comment), so there's no reason to wait for
+        // the (slower, IMAP-based) sync/legacy paths below just to donate
+        // the exact same address. When the payload names no sender at all,
+        // this call's own guard leaves `communicationNotificationAttempted`
+        // `false` so the sync-first/legacy call sites further down get a
+        // chance to supply one instead.
+        await attemptCommunicationNotificationIfNeeded(
+            accountId: payload.accountId,
+            payload: payload,
+            syncSenderName: nil,
+            syncSenderAddress: nil,
+            preferences: preferences
+        )
 
         let accountLookupStart = Date()
         let account: AccountRecord
@@ -635,6 +778,22 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         }
         Self.logger.notice("enrich: incrementalSync: succeeded, message persisted to the shared database")
         recordStage(.incrementalSync, outcome: .success, since: incrementalSyncStart)
+
+        // Communication Notifications: the fallback opportunity for a
+        // payload that named no sender — `syncOutcome.message` is exactly
+        // the same just-synced message `decision.title`/`.body` below were
+        // built from, so its own resolved sender is the best information
+        // this run's sync-first path can offer. A no-op (per
+        // `communicationNotificationAttempted`'s guard) if the earlier,
+        // payload-only attempt already reached a terminal answer.
+        let syncSender = syncOutcome.message?.fromAddresses.first
+        await attemptCommunicationNotificationIfNeeded(
+            accountId: account.id,
+            payload: payload,
+            syncSenderName: syncSender?.name,
+            syncSenderAddress: syncSender?.address,
+            preferences: preferences
+        )
 
         if let title = decision.title, let body = decision.body {
             let applied = deliveryGate.withPending {
@@ -1088,6 +1247,19 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             )
         }
 
+        // Communication Notifications: reached only when the sync-first
+        // path above couldn't resolve the pushed message at all
+        // (`needsLegacyFallback`) — this envelope's own sender is the last
+        // opportunity this run gets. A no-op if the earlier, payload-only
+        // attempt in `enrich(payload:)` already reached a terminal answer.
+        await attemptCommunicationNotificationIfNeeded(
+            accountId: account.id,
+            payload: payload,
+            syncSenderName: sender?.name,
+            syncSenderAddress: sender?.address,
+            preferences: preferences
+        )
+
         // Only pay for the (meaningfully heavier) whole-message fetch when
         // `showsBodyPreview` is actually on — see this type's doc comment,
         // step 5. A body-fetch failure here only drops the preview line,
@@ -1214,6 +1386,125 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             showsSubject: (defaults.object(forKey: NotificationContentPreferences.showsSubjectKey) as? Bool) ?? true,
             showsBodyPreview: (defaults.object(forKey: NotificationContentPreferences.showsBodyPreviewKey) as? Bool) ?? true
         )
+    }
+
+    // MARK: - Communication Notifications (Task: 送信者アバター付きプッシュ通知)
+
+    /// Mirrors `ListDisplaySettingsStore.showAvatarKey`
+    /// ("listDisplay.showAvatar", `apps/Otegami/Sources/Support/Settings
+    /// /ListDisplaySettingsStore.swift`) — the "送信者のプロフィールアイコン
+    /// を表示" toggle in `MailListSettingsView` — into the same shared App
+    /// Group `UserDefaults` suite `notificationContentPreferences()` above
+    /// already reads. The app is responsible for mirroring it there (this
+    /// Extension only ever reads, same "app writes, Extension reads" shape
+    /// as everything else in this suite, `notificationContentPreferences()`'s
+    /// own doc comment).
+    ///
+    /// **Why this toggle gates a *notification* feature at all**:
+    /// `NotificationEnrichment`'s own doc comment states the underlying
+    /// design principle — a notification the user configured to hide
+    /// something must look identical to one that simply failed to enrich,
+    /// never a "we know but you said not to show it" half-measure. Showing
+    /// an avatar in a push notification when the user has explicitly turned
+    /// sender avatars off everywhere else in this app would be exactly that
+    /// kind of inconsistency.
+    ///
+    /// Defaults to `true` when the key is missing entirely — same reasoning
+    /// `notificationContentPreferences()`'s own `.allEnabled` fallback
+    /// gives: an existing install that upgraded but hasn't mirrored this
+    /// key yet (or whose app hasn't launched since this feature shipped)
+    /// must not silently lose a feature it never explicitly turned off.
+    ///
+    /// **Key name intentionally not a shared constant.** Unlike
+    /// `NotificationContentPreferences.showsSenderKey`/etc — a small value
+    /// type that already lives in the `PushRelayClient` package both
+    /// targets link — `ListDisplaySettingsStore` itself lives in the
+    /// `Otegami` app target, which this Extension can't import (the same
+    /// reasoning `pushRelayBaseURL`/`OAuthConfig` elsewhere in this file
+    /// already document for other app-target-only constants duplicated by
+    /// hand here). Changing `ListDisplaySettingsStore.showAvatarKey`'s raw
+    /// string requires updating this literal too.
+    private static func showsAvatarPreference() -> Bool {
+        guard let appGroupIdentifier, let defaults = UserDefaults(suiteName: appGroupIdentifier) else {
+            return true
+        }
+        return (defaults.object(forKey: "listDisplay.showAvatar") as? Bool) ?? true
+    }
+
+    /// Attempts to promote this notification into a Communication
+    /// Notification once this run's sender is as fully resolved as it's
+    /// going to get at this call site — see `CommunicationNotification.swift`'s
+    /// top doc comment for the overall feature design, and
+    /// `NotificationService.senderDecision(...)`'s own doc comment for the
+    /// payload-vs-sync address priority this defers to entirely.
+    ///
+    /// Called from up to three places in `enrich(payload:)`/`legacyEnrich`,
+    /// earliest-opportunity first: immediately after the network-free relay
+    /// envelope (payload-only, no sync info yet), after the sync-first path
+    /// resolves a message, and — only if sync-first didn't resolve one at
+    /// all — after the legacy IMAP fallback resolves an envelope. Guarded by
+    /// `communicationNotificationAttempted` so only the first call that
+    /// reaches a *terminal* answer actually does anything:
+    /// - `.decorate` and every `SkipReason` other than `.noSenderAddress`
+    ///   are terminal — none of preferences/cache state/a payload address
+    ///   already in hand can change for the rest of this run, so a later
+    ///   call would just repeat the same answer (and duplicate this run's
+    ///   `.communicationNotification` diagnostics stage record).
+    /// - `.noSenderAddress` from a call that itself passed no
+    ///   `syncSenderAddress` (i.e. the very first, payload-only call, when
+    ///   the payload named no sender) is **not** terminal — a later call
+    ///   with sync/legacy-resolved sender info deserves a real chance to
+    ///   still decorate. `.noSenderAddress` from a call that *did* pass a
+    ///   `syncSenderAddress` (meaning `senderDecision` still rejected it —
+    ///   only possible if that address was empty) is terminal: there is no
+    ///   further fallback source left.
+    private func attemptCommunicationNotificationIfNeeded(
+        accountId: String,
+        payload: PushNotificationPayload,
+        syncSenderName: String?,
+        syncSenderAddress: String?,
+        preferences: NotificationContentPreferences
+    ) async {
+        guard !communicationNotificationAttempted else { return }
+        let start = Date()
+        let showsAvatar = Self.showsAvatarPreference()
+        let avatarStore = SharedAvatarStore(appGroupIdentifier: Self.appGroupIdentifier)
+        let decision = Self.senderDecision(
+            accountId: accountId,
+            payloadSenderAddress: payload.latestFromAddress,
+            payloadSenderName: payload.latestFromName,
+            syncSenderAddress: syncSenderAddress,
+            syncSenderName: syncSenderName,
+            preferences: preferences,
+            showsAvatar: showsAvatar,
+            avatarStore: avatarStore
+        )
+        switch decision {
+        case .skip(let reason):
+            if reason != .noSenderAddress || syncSenderAddress != nil {
+                communicationNotificationAttempted = true
+            }
+            Self.logger.notice("enrich: communicationNotification: skipped reason=\(reason.rawValue, privacy: .public)")
+            recordStage(.communicationNotification, outcome: .skipped(reason: reason.rawValue), since: start)
+        case .decorate(let sender):
+            communicationNotificationAttempted = true
+            switch await CommunicationNotificationBuilder.donate(sender: sender) {
+            case .success(let intent):
+                let applied = deliveryGate.withPending {
+                    communicationNotificationIntent = intent
+                    communicationNotificationConversationIdentifier = sender.conversationIdentifier
+                }
+                Self.logger.notice("enrich: communicationNotification: donated, will decorate at deliver() applied=\(applied, privacy: .public)")
+                recordStage(.communicationNotification, outcome: .success, since: start)
+            case .failure(let error):
+                Self.logger.notice("enrich: communicationNotification: donate threw — delivering without decoration")
+                recordStage(
+                    .communicationNotification,
+                    outcome: .failure(category: "donateFailed", looksRateLimited: false, logDetail: String(describing: error)),
+                    since: start
+                )
+            }
+        }
     }
 
     // MARK: - Payload / account lookup

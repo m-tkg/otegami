@@ -246,7 +246,12 @@ TestFlight 内部テストを配る場合:
    → 「マイ App」→ 「+」→「新規 App」。Bundle ID は
    `com.mtkg.otegami` (`Config/Signing.xcconfig` の既定値。別の
    Bundle ID を使っている場合はそちらに合わせる) を、Apple Developer の
-   「識別子」に事前登録した上で選択する。
+   「識別子」に事前登録した上で選択する。**この識別子の編集画面で
+   Communication Notifications capability を有効化しておくこと** —
+   `com.apple.developer.usernotifications.communication` entitlement
+   (`docs/push-notification-actions.md`「送信者アバター通知」節) を含む
+   ビルドは、対応する App ID でこの capability が有効になっていないと
+   署名に失敗する。
 2. **Xcode で Xcode Cloud のワークフローを作成する** — ローカルで
    `apps/Otegami` を `xcodegen generate` して開いた `Otegami.xcodeproj`
    を Xcode で開き、Report Navigator (⌘9) →「Cloud」タブ →「Get Started」
@@ -268,7 +273,8 @@ TestFlight 内部テストを配る場合:
    自動管理してよいか」を確認するダイアログを出す。許可すると
    Distribution 証明書・App Store プロビジョニングプロファイルを
    Xcode Cloud が自動発行・管理する (Apple Developer Program の
-   Account Holder/Admin 権限が必要)。
+   Account Holder/Admin 権限が必要)。上記1の capability が有効になって
+   いれば、このプロビジョニングプロファイルにも自動的に反映される。
 6. **初回ビルドを確認する** — ワークフローを保存すると初回ビルドが
    自動的にキックされる (または Xcode の Cloud タブから手動トリガー)。
 

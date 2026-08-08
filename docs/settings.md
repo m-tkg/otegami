@@ -86,7 +86,7 @@ macOS は `OtegamiSettingsView` のサイドバーが同じ5カテゴリ (サイ
 | 項目 | キー | 既定値 | 説明 |
 | --- | --- | --- | --- |
 | スレッド表示 | `listDisplay.threading` | ON | ON で一覧を会話 (スレッド) 単位にまとめる。OFF にすると一覧がメール単位になる。検索結果には適用されない (常にスレッド単位)。スワイプ/コンテキストメニューの各操作は、フラット表示の行から実行した場合でもそのメールが属する**スレッド全体**に対して働く。 |
-| 送信者のプロフィールアイコンを表示 | `listDisplay.showAvatar` | ON | 一覧の各行に差出人のアバターを表示する。 |
+| 送信者のプロフィールアイコンを表示 | `listDisplay.showAvatar` | ON | 一覧の各行に差出人のアバターを表示する。**iOS ではプッシュ通知の送信者アバター表示 (Communication Notification) もこのトグルに従う** ([docs/push-notification-actions.md](push-notification-actions.md))。 |
 | 連絡先の写真を表示 | `avatarSource.showContactPhoto` | ON | 差出人アドレスを端末の連絡先 (Contacts framework、オンデバイス) と照合し、一致する連絡先に写真があれば優先表示する。初回照合時に OS の連絡先アクセス許可ダイアログが出る。拒否/未許可ならイニシャル表示にフォールバックする。外部通信は無い。 |
 | Gravatar の画像を表示 | `avatarSource.showGravatar` | ON | 連絡先の写真が見つからなかった場合、アドレスを正規化してハッシュ化し Gravatar から画像を取得する。**差出人アドレスのハッシュが gravatar.com に送信される** (設定画面に注記あり)。 |
 | 企業ロゴを表示 | `avatarSource.showCompanyLogo` | ON | 連絡先の写真・Gravatar のどちらも見つからなかった場合、まず送信元ドメインの BIMI ロゴ (DNS 経由) を試し、無ければ `apple-touch-icon.png`/`favicon.ico` にフォールバックする。主要フリーメールドメインは対象外 (ネットワークに問い合わせない)。ドメイン名が接続先サーバーに送信される旨を設定画面に注記。 |
@@ -355,6 +355,14 @@ comment参照)。詳細は [docs/relay-deployment.md](relay-deployment.md)。
 この3キーの現在値は共有 App Group の `UserDefaults` へミラーされ、
 Extension 側はそれだけを読む。iCloud 同期の対象にも含めている (見た目の
 好みであり、デバイス固有の設定とは性質が違うため)。
+
+**送信者アバターの表示 (iOS のみ)**: 「差出人を表示」が OFF のときは
+送信者アバター付きの通知 (Communication Notification) も出さない —
+差出人を隠す設定なのに写真だけ出るのは矛盾するため。合わせて上記の
+「送信者のプロフィールアイコンを表示」(`listDisplay.showAvatar`、一覧の
+設定) も OFF のときは出さない。両トグルの詳細な連動・アバターの入手経路
+は [docs/push-notification-actions.md](push-notification-actions.md)
+参照。
 
 ## メール本文フッターツールバーの表示/非表示・並び順
 

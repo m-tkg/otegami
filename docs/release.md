@@ -125,6 +125,17 @@ Apple のビルド設定リファレンスどおり)、`$(CFBundleIdentifier)` �
 — GitHub Actions には `Config/Local.xcconfig` が存在しないので必ず
 この既定値になる) に置換してから署名する。
 
+**Communication Notifications (送信者アバター付きプッシュ通知、
+[docs/push-notification-actions.md](push-notification-actions.md)) の
+entitlement はこの macOS 側の署名には無関係** —
+`com.apple.developer.usernotifications.communication` は
+`Config/Otegami-macOS.entitlements` には追加していない (iOS 限定の
+機能のため)。Developer Portal での Communication Notifications
+capability の有効化が必要なのは iOS 側 (Xcode Cloud、
+[docs/xcode-cloud.md](xcode-cloud.md)) の App ID だけで、この
+`release-macos.yml` パイプラインが対象とする証明書・App ID には影響
+しない。
+
 ## 検証状況
 
 実タグ push による `release-macos` の実行は複数回グリーンで完走しており

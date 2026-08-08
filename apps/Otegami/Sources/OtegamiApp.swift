@@ -350,6 +350,13 @@ struct RootView: View {
                     presentComposer(.new)
                 }
             }
+            // Communication Notification 見た目確認用の検証専用フック —
+            // `CommunicationNotificationVerify.swift`のdoc comment参照。
+            // `OTEGAMI_UITEST_VERIFY_COMMUNICATION_NOTIFICATION`が立って
+            // いない限り (=通常のあらゆる起動) 何もしない。
+            .task {
+                await CommunicationNotificationVerify.runIfRequested()
+            }
             #else
             // Task #200 (Composer 宛先サジェスト検証): macOS 版の同じ
             // tap-free 直接遷移 — 上の iOS 版 `.task`と同じ起動引数、macOS

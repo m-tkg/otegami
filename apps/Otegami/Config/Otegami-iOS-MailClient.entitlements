@@ -34,6 +34,13 @@
 	<key>com.apple.developer.ubiquity-kvstore-identifier</key>
 	<string>$(TeamIdentifierPrefix)$(CFBundleIdentifier)</string>
 	<!--
+	Communication Notifications — see Otegami-iOS.entitlements' doc comment
+	for what this enables and why it stays out of Otegami-macOS.entitlements.
+	Kept in sync with that file by hand, like every other shared key here.
+	-->
+	<key>com.apple.developer.usernotifications.communication</key>
+	<true/>
+	<!--
 	The capability this whole file exists for — lets this app become a
 	user-selectable default for `mailto:` links / the Mail role once Apple
 	has granted the request (Info.plist's OtegamiMailClientEntitlementEnabled

@@ -356,6 +356,40 @@ XCUITest ターゲットが無いため、`screencapture`/CGEvent ベースの
 | `verify-qa-sweep-offline.sh` | オフライン状態での冷起動・既読化・削除など、雑な操作の組み合わせによる QA スイープ。 |
 | `verify-macos-qa.sh` | macOS 実行時 QA (起動確認・sheet 表示・タブ切替など、CGEvent 駆動)。 |
 | `verify-relay.sh` | otegami-relay の IDLE watch パイプラインを実 Dovecot に対してエンドツーエンドで検証 (`go run` → `POST /v1/watches` → `doveadm save` → push ログ)。 |
+| `verify-ios-communication-notification.sh` | 送信者アバター通知 (Communication Notification) の**見た目**確認。下記の既知の壁により、この開発機では未達。 |
+
+### 送信者アバター通知の見た目は、この開発機では確認できていない
+
+送信者アバター通知 (Communication Notification、
+[docs/push-notification-actions.md](push-notification-actions.md)) の
+「丸いアバター + 右下にアプリアイコンが合成される」描画は、**2026-08-08
+時点でシミュレータでは一度も撮れていない**。経緯と、次に試すなら何が
+必要かを残す。
+
+- `verify-ios-push-simulated.sh` (`simctl push`) の経路は使えない —
+  この開発機では push を受けても `NotificationService` Extension が
+  spawn されない既知の不調 (このファイル冒頭「シミュレータ検証の既知の
+  不調」参照) があるため。
+- そこで `INInteraction.donate()`/`UNNotificationContent.updating(from:)`
+  が**本体アプリのプロセスでも動く**ことを使い、本体から同じ形の
+  Communication Notification をローカル通知として1本出す経路を用意した:
+  検証専用フラグ `OTEGAMI_UITEST_VERIFY_COMMUNICATION_NOTIFICATION=1`
+  (`apps/Otegami/Sources/Support/UITestFixtures/CommunicationNotificationVerify.swift`)
+  と `scripts/verify-ios-communication-notification.sh`。
+- **ここで詰まっている**: ローカル通知には通知許可が要るが、(1)
+  `xcrun simctl privacy` に notifications サービスが無く事前付与でき
+  ない、(2) この開発機のシミュレータには GUI ウィンドウが無く、
+  SpringBoard の許可ダイアログを外から押せない、(3) 既存の XCUITest
+  経由で許可を取る2経路 (プッシュ設定画面のトグル / Dovecot アカウント
+  追加) はそれぞれ `Config/Local.xcconfig` 未設定と
+  `MailCoreErrorDomain error 1` で塞がっている。結果、許可ダイアログの
+  スクリーンショットしか撮れていない。
+- **次に試すなら**: 一度だけ人手で「許可」を押す (許可は `simctl erase`
+  まで残るので、以降は `ERASE_SIMULATOR=0` で上記スクリプトを回すだけで
+  よい)、`Config/Local.xcconfig` を用意して既存のプッシュ設定経路を通す、
+  あるいは素直に実機で見る。
+- 現時点では**実機確認に委ねる** (`docs/push-notification-actions.md`
+  「実機での確認ポイント」参照)。
 
 ## 関連ドキュメント
 

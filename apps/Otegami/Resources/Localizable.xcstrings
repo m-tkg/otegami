@@ -5764,6 +5764,16 @@
         }
       }
     },
+    "送信者アバター通知": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sender Avatar Notification"
+          }
+        }
+      }
+    },
     "操作同期の診断": {
       "localizations": {
         "en": {
