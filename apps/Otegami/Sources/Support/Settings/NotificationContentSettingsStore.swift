@@ -25,7 +25,7 @@ import PushRelayClient
 /// compiled, per `OtegamiAppGroup.swift`'s doc comment) reader actually
 /// reads when a push arrives.
 ///
-/// **Every write path that can change these 3 keys calls `mirrorToAppGroup()`
+/// **Every write path that can change these keys calls `mirrorToAppGroup()`
 /// so the mirror is never stale by the time the next push arrives**:
 /// - `PushNotificationSettingsView`'s 3 toggles call it directly from their
 ///   own `onChange` (this device's own change).
@@ -37,6 +37,17 @@ import PushRelayClient
 ///   above two paths yet) still reaches the App Group copy before the next
 ///   push, rather than waiting on the user to open this settings screen or
 ///   for iCloud sync to fire.
+///
+/// **Communication Notification 対応で4つ目のキーを追加した**:
+/// `ListDisplaySettingsStore.showAvatarKey`(「送信者のプロフィールアイコン
+/// を表示」)— 他の3つと違い、この設定を実際に操作する画面は
+/// `PushNotificationSettingsView`ではなく`MailListSettingsView`(一覧の表示
+/// 設定)。しかし NSE 側の読み手は「この4キーをまとめて App Group から
+/// 読む」という1つの窓口 (`NotificationService`側の対になるリーダー)なので、
+/// ミラー先の器はこの型のまま共有し、書き込み経路だけ
+/// `MailListSettingsView`のトグルの`onChange`からも`mirrorToAppGroup()`を
+/// 呼ぶ形にした — NSE が「アバターを表示していいか」を`showsSender`等と
+/// 同じ App Group `UserDefaults`から一貫して読めるようにするため。
 enum NotificationContentSettingsStore {
     static let showsSenderKey = NotificationContentPreferences.showsSenderKey
     static let showsSubjectKey = NotificationContentPreferences.showsSubjectKey
@@ -64,7 +75,7 @@ enum NotificationContentSettingsStore {
         NotificationContentPreferences(showsSender: showsSender, showsSubject: showsSubject, showsBodyPreview: showsBodyPreview)
     }
 
-    /// Copies the current value of all 3 keys (whatever `UserDefaults
+    /// Copies the current value of all 4 keys (whatever `UserDefaults
     /// .standard` has, or each one's default) into the shared App Group
     /// suite — see this type's doc comment for every call site and why
     /// each one needs to. iOS only; a silent no-op on macOS/when the App
@@ -79,6 +90,14 @@ enum NotificationContentSettingsStore {
         sharedDefaults.set(showsSender, forKey: showsSenderKey)
         sharedDefaults.set(showsSubject, forKey: showsSubjectKey)
         sharedDefaults.set(showsBodyPreview, forKey: showsBodyPreviewKey)
+        // Communication Notification 対応: この型のドキュメントコメント
+        // 「4つ目のキーを追加した」参照。キー名/デフォルト値は
+        // `ListDisplaySettingsStore`のものをそのまま使う (この型では
+        // 変更しない)。
+        sharedDefaults.set(
+            (UserDefaults.standard.object(forKey: ListDisplaySettingsStore.showAvatarKey) as? Bool) ?? ListDisplaySettingsStore.defaultShowAvatar,
+            forKey: ListDisplaySettingsStore.showAvatarKey
+        )
         #endif
     }
 }

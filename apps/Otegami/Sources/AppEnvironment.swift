@@ -475,12 +475,34 @@ final class AppEnvironment {
         // コメント参照)。
         let googleProfilePhotoAvatarResolver = GoogleProfilePhotoAvatarResolver(tokenProvider: gmailAccessTokenBridge)
         self.googleProfilePhotoAvatarResolver = googleProfilePhotoAvatarResolver
-        self.avatarImageResolver = CompositeAvatarImageResolver(sources: [
-            ContactPhotoResolver(),
-            googleProfilePhotoAvatarResolver,
-            GravatarAvatarResolver(),
-            CompanyLogoAvatarResolver()
-        ])
+        // Communication Notification 対応: `CompositeAvatarImageResolver`
+        // が解決した画像を`MirroringAvatarImageResolver`で包み、App Group
+        // 共有ディレクトリ (`SharedAvatarStore`)へもミラーする —
+        // `SharedAvatarCacheWriter.swift`のドキュメントコメント参照。
+        // `SharedAvatarStore(appGroupIdentifier:)`は App Group が使えない
+        // 環境 (macOS 常時)で`nil`を返し、その場合このデコレータは`base`
+        // への単純な委譲になる。
+        let sharedAvatarStore = SharedAvatarStore(appGroupIdentifier: OtegamiAppGroup.identifier)
+        self.avatarImageResolver = MirroringAvatarImageResolver(
+            wrapping: CompositeAvatarImageResolver(sources: [
+                ContactPhotoResolver(),
+                googleProfilePhotoAvatarResolver,
+                GravatarAvatarResolver(),
+                CompanyLogoAvatarResolver()
+            ]),
+            store: sharedAvatarStore
+        )
+        // 起動のたびに一度、期限切れ/超過分のエントリをベストエフォートで
+        // 掃除する (`SharedAvatarStore.prune()`のドキュメントコメント
+        // 参照)。ディレクトリ列挙+削除という同期 I/O を起動をブロックする
+        // 場所で行いたくないので`Task.detached`へ逃がす — `.utility`は
+        // ユーザー操作に応答する他のタスクより優先度を落とす、という
+        // 「後回しでよいベストエフォート処理」の意図を表す。
+        if let sharedAvatarStore {
+            Task.detached(priority: .utility) {
+                sharedAvatarStore.prune()
+            }
+        }
 
         let database: AppDatabase
         do {
