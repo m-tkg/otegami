@@ -56,6 +56,74 @@
      ハンドラ自体はネットワーク到達性を気にする必要がない
      （オフラインファーストの設計、`docs/architecture.md` 参照）。
 
+## 送信者アバター通知（Communication Notification）
+
+新着メールの通知を、送信者のアバターがある場合に限り OS が丸い画像 +
+右下に小さくアプリアイコンを重ねて描く形（iOS の Communication
+Notification）に装飾する機能。この節では「装飾がどう実現されているか」と
+「装飾が上記のアクション・タップ遷移を壊さないための設計」だけを扱う —
+判定ロジック本体・アバターの正規化・共有キャッシュの実装コメントは
+`apps/Otegami/NotificationService/CommunicationNotification.swift` と
+`packages/OtegamiKit/Sources/PushRelayClient/SharedAvatarStore.swift` が
+より詳しい一次情報。
+
+1. **装飾の仕組み**: `NotificationService` が送信者を `INPerson` として
+   持つ `INSendMessageIntent` を組み立て、`INInteraction(direction:
+   .incoming).donate()` してから `deliver()` の中で
+   `content.updating(from:)` を適用する。donate が成功していない intent を
+   `updating(from:)` に渡すことはない。
+2. **アバターの入手経路**: NSE は自分でアバターを解決しない — アプリ本体が
+   一覧描画のために解決したアバター（`docs/design-system.md`「アカウント
+   色とアバター」参照）を `MirroringAvatarImageResolver` が 128×128 の
+   不透明 PNG に正規化し、App Group 共有ディレクトリ（`SharedAvatarStore`）
+   へ書き出す。NSE 側で解決し直す案（Contacts の権限ダイアログを出せない・
+   プッシュのたびに外部通信が発生する・5秒の表示バジェットを食う）は
+   採らなかった。共有キャッシュにエントリが無ければ intent を作らず、
+   従来どおりのアプリアイコン通知のまま配信する（アバターが無い場合に
+   イニシャル画像を描く案は採らなかった、明示的な決定）。
+3. **`INImage` はファイル URL で渡す**: `INImage(imageData:)` ではなく
+   `INImage(url:)` に共有ディレクトリ内のファイル URL を渡す — 前者は
+   Debug では動くが Release/TestFlight ビルドでは内部の
+   `intents-remote-image-proxy` の生成に失敗しアバターが出なくなる既知の
+   不具合があるため（詳細は `docs/architecture.md` の Known pitfalls
+   参照）。共有ファイルは `.completeFileProtectionUntilFirstUserAuthentication`
+   で書き込む — 既定の保護クラスのままだと端末ロック中に NSE がファイルを
+   読めず「ロック画面の通知にだけアバターが出ない」状態になるため。
+4. **既存のアクション・タップ遷移を壊さないための再代入**:
+   `content.updating(from:)` がどのプロパティを保持するかは Apple が保証
+   していないため、装飾後に `userInfo`（上記「対象メッセージの解決」が
+   読む）・`categoryIdentifier`（`NEW_MAIL_ACTIONS` — これが無いと「既読に
+   する」「アーカイブ」ボタン自体が表示されない）・`badge`・`sound` を
+   無条件で再代入する。これを怠ると、見た目は正しく装飾されているのに
+   通知アクションとタップ遷移だけが静かに壊れる、という発見しづらい不具合
+   になる。装飾は常にベストエフォートで、`updating(from:)` が throw した
+   場合は装飾前の内容（＝この節の対象外、通常のアクション/タップ遷移が
+   そのまま効く内容）がそのまま配信される。
+5. **グルーピング**: `threadIdentifier` に会話識別子
+   (`"<accountId>/正規化した差出人アドレス"`) を入れ、同じ差出人からの
+   連続した通知を OS が Notification Center 上でまとめて表示する。スレッド
+   単位にしていない理由は、push のエンベロープ時点では対象メッセージの
+   `threadId` がまだ分からず、Apple が要求する「会話識別子は不変」を
+   満たせないため。
+6. **設定との連動**: 「差出人を表示」(`notification.showsSender`、下記
+   「通知の内容」) と「送信者のプロフィールアイコンを表示」
+   (`listDisplay.showAvatar`、`docs/settings.md`「一覧・表示」節) の
+   どちらかが OFF ならアバターを出さない。後者は本来一覧の設定だが、
+   `MailListSettingsView` の変更時に `NotificationContentSettingsStore
+   .mirrorToAppGroup()` を呼んで App Group へミラーし、NSE がそれを読む。
+7. **entitlement**: `com.apple.developer.usernotifications.communication`
+   を `Config/Otegami-iOS.entitlements`/`Otegami-iOS-MailClient.entitlements`
+   に追加（macOS には追加していない — Communication Notifications は
+   iOS/iPadOS 限定の機能で、`NotificationService` 自体も iOS 限定の
+   Extension のため）。**Developer Portal で App ID の Communication
+   Notifications capability を有効化しないと署名が通らない**
+   (`docs/xcode-cloud.md`/`docs/release.md` 参照)。
+8. **診断**: `PushDiagnosticsRun.Stage.communicationNotification` が
+   端末内診断画面に「送信者アバター通知」として出る。`.skipped(reason:)`
+   は "showsSender off" / "showAvatar off" / "no sender address" /
+   "avatar cache miss" を区別する — 実機でしか検証できない機能のため、
+   これが唯一の手がかりになる。
+
 ## 通知本体タップ（アプリを開いて該当メールへ遷移）
 
 通知の「既読にする」「アーカイブ」ボタンではなく、通知本体（バナー／
@@ -127,6 +195,25 @@
   （push 到達から実際のメール到着までのタイムラグが大きい、対象メール
   ボックスが INBOX でない等）は遷移せず、通常どおり統合受信トレイが
   表示される。
+- **送信者アバター通知は実機未検証**: 特に「装飾後もアクションのボタンが
+  表示され動くか」（上記「送信者アバター通知」節4） が最大のリスク —
+  `content.updating(from:)` 適用後の再代入は実装上の対策であり、実機での
+  最終確認は行っていない。
+- **`RELAY_CONTENT_PREVIEW` が off のリレーではアバターが出にくい**:
+  NSE が差出人を知るのが IMAP 同期後になり、5秒の表示バジェットに間に
+  合わない可能性が高いため（`docs/relay-deployment.md`「アプリ側の挙動
+  (NSE のリレー先読み統合)」参照）。
+- **一度も一覧で解決していない差出人（コールドミス）はアバターが出ない**:
+  共有キャッシュはアプリ本体の一覧描画がトリガーなので、一覧で一度も
+  表示していない差出人からの初回メールにはエントリが無い。受信トレイ
+  最新 N 件の差出人を同期後に先読みするプリウォームは検討したが、この
+  機能の第一段階では見送った。
+- **「送信者のプロフィールアイコンを表示」は他デバイスへ同期されない**:
+  `AppSettingsCloudDirectory` の settings.v2 allowlist に含まれていない
+  ため（既存の仕様、今回の変更では対象にしていない）。
+- **`INPerson` の連絡先候補への露出**: `isContactSuggestion: false`/
+  `suggestionType: .none` で作っており Siri/共有シート/集中モードの
+  連絡先候補への露出を抑えているはずだが、数日運用しての確認が必要。
 
 ### v1.3.8 の実機クラッシュと修正（v1.3.9）
 
@@ -173,3 +260,23 @@ comment参照）。「既読にする」「アーカイブ」ボタン側（ア�
    ある）。優先同期後も対象メッセージが見つからない場合（例: push 到達
    から実際のメール到着までのタイムラグが極端に大きい）は、遷移せず
    統合受信トレイが表示されること。
+7. 送信者のアバターが解決済みの相手からの新着メール通知に、丸いアバター
+   画像が表示され、その右下に小さくアプリアイコンが重なっていること。
+8. 一度も一覧で表示していない差出人（コールドミス）からの新着メールは、
+   従来どおりのアプリアイコンだけの通知になること。
+9. アバター付きの通知でも「既読にする」「アーカイブ」ボタンが表示され、
+   タップすると通常どおり動作すること（上記「送信者アバター通知」節4の
+   最大のリスク）。
+10. アバター付きの通知本体をタップした場合も、該当メールのスレッド詳細
+    画面へ通常どおり遷移すること。
+11. アプリアイコンの未読バッジが正しく反映されること。
+12. 端末がロックされている状態でも、ロック画面の通知にアバターが表示
+    されること（表示されない場合はファイル保護クラスの設定を疑う）。
+13. 同じ差出人から連続して新着メールが届いた場合、通知が1つにグルー
+    ピングされること。
+14. 設定の「差出人を表示」または「送信者のプロフィールアイコンを表示」
+    をオフにすると、以後の通知にアバターが出なくなること。
+15. TestFlight (Release 署名) で配布したビルドでもアバターが表示される
+    こと — Debug ビルドだけで確認して満足しないこと（`INImage(imageData:)`
+    の既知の不具合が Release 限定で再現するため、上記「送信者アバター
+    通知」節3参照）。

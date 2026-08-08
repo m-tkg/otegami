@@ -241,6 +241,16 @@ Apple Foundation Models によるオンデバイス翻訳 (英語→日本語の
   から除外する。各ソースは個別に設定でオン/オフでき、それぞれどの情報
   が外部に送信されるか (メールアドレスのハッシュ、ドメイン名など) を
   フッターに明記している。
+- **通知でも同じ画像を使う (iOS のみ)**: 一覧描画のために解決したアバター
+  は `MirroringAvatarImageResolver`
+  (`apps/Otegami/Sources/Support/Avatar/SharedAvatarCacheWriter.swift`) が
+  128×128 の不透明 PNG へ正規化し、App Group 共有ディレクトリ
+  (`SharedAvatarStore`、`packages/OtegamiKit/Sources/PushRelayClient/`) へ
+  ミラーする。Notification Service Extension はこの共有キャッシュを読む
+  だけ (自分でアバターを解決し直すことはしない) で、プッシュ通知の
+  Communication Notification に一覧と同じ送信者アバターを表示する。詳細
+  は [`docs/push-notification-actions.md`](push-notification-actions.md)
+  参照。
 
 ## HTML メール表示
 

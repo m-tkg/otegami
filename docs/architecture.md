@@ -1436,3 +1436,34 @@ pull-to-refresh は `MailboxQuery.roleScopedMailboxPaths` を通す — Gmail �
 なり、全メールボックス同期へフォールバックする。表示クエリ
 (`ThreadQuery.unifiedInboxRequest`) と同じ規則を写しているので、**片方を
 変えるときはもう片方も変えること**。
+
+### q. `INImage` は `imageData:` ではなく `url:` で渡す — Release/TestFlight でだけ壊れる既知の不具合
+
+Communication Notification (送信者アバター付きプッシュ通知、
+`NotificationService/CommunicationNotification.swift`、
+`docs/push-notification-actions.md`) の送信者アバターに
+`INImage(imageData:)` を使うと、**Debug ビルドでは正常に動くが
+Release/TestFlight ビルドではアバターが出なくなる**既知の不具合がある
+(Apple Developer Forums thread 692707)。`INImage` が内部で生成する
+`intents-remote-image-proxy` という URL の生成が Release ビルドでは
+失敗する、という報告が広く一致している。回避策は `INImage(url:)` に
+実ファイルの URL を渡すこと。
+
+`SharedAvatarStore`
+(`packages/OtegamiKit/Sources/PushRelayClient/SharedAvatarStore.swift`)
+がアプリ本体の解決済みアバターを (`UserDefaults` に画像データを積む
+のではなく) わざわざファイルとして App Group 共有ディレクトリへ書き
+出しているのは、この既知の不具合を最初から踏まないため — `INImage` を
+新しく使うコードを書くときは、必ず `url:` イニシャライザを使うこと。
+**Debug ビルド/シミュレータでの動作確認だけではこの不具合を検出できない**
+(`imageData:` でも Debug では正常に見える) — 実害は Release 署名の
+ビルドでしか再現しない、という点が最も踏み抜きやすい落とし穴。
+
+あわせて、この共有ファイルは
+`.completeFileProtectionUntilFirstUserAuthentication` で書き込む。
+既定の保護クラス (`.none` 相当) のままだと、端末がロックされている間は
+`NotificationService` Extension がこのファイルを読めず、「ロック画面の
+通知にだけアバターが出ない」という気付きにくい欠落になる —
+`KeychainCredentialStore` が資格情報に `kSecAttrAccessibleAfterFirstUnlock`
+を使っているのと同じ理由 (Known pitfalls e. の `0xDEAD10CC` とは別の話で、
+こちらはファイルの読み取り可否そのものの問題)。

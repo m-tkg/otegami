@@ -357,6 +357,16 @@ XCUITest ターゲットが無いため、`screencapture`/CGEvent ベースの
 | `verify-macos-qa.sh` | macOS 実行時 QA (起動確認・sheet 表示・タブ切替など、CGEvent 駆動)。 |
 | `verify-relay.sh` | otegami-relay の IDLE watch パイプラインを実 Dovecot に対してエンドツーエンドで検証 (`go run` → `POST /v1/watches` → `doveadm save` → push ログ)。 |
 
+**送信者アバター通知 (Communication Notification、
+[docs/push-notification-actions.md](push-notification-actions.md)) は
+シミュレータでの見た目確認の対象外** — `verify-ios-push-simulated.sh` は
+`NotificationService` Extension 自体の実プロセス起動や通知内容の
+書き換え判定は確認できるが、`INSendMessageIntent` の donate から
+実際に丸いアバター + アプリアイコン合成のバナーが描画されるところまでは
+シミュレータの Notification Center 描画に依存しており確認できていない。
+この機能の見た目確認は実機に委ねる (`docs/push-notification-actions.md`
+「実機での確認ポイント」参照)。
+
 ## 関連ドキュメント
 
 - `.claude/skills/verify/SKILL.md` — このファイルの内容を踏まえた実務手順。
