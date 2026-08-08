@@ -252,6 +252,46 @@ TestFlight 内部テストを配る場合:
    (`docs/push-notification-actions.md`「送信者アバター通知」節) を含む
    ビルドは、対応する App ID でこの capability が有効になっていないと
    署名に失敗する。
+
+   > **実際に踏んだ (2026-08-08, v1.10.0)**: この capability を有効化
+   > せずに `v1.10.0` を push したところ、Xcode Cloud が Code Signing
+   > フェーズで `Exporting for App Store Distribution failed` で落ちた
+   > (`ci-app`/`release-macos` はどちらも成功していたので、tag を打った
+   > 時点では気づけない)。識別子の編集画面で Communication Notifications
+   > にチェックを入れて保存すれば直る — **tag の打ち直しは不要で、App
+   > Store Connect から同じコミットに対して Start Build で再実行すれば
+   > よい**。Portal 側の変更が Cloud Signing に伝わるまで数分かかること
+   > がある。なお同じ状況をローカルで再現しようとしても、Xcode に Apple
+   > ID を追加していない環境では `-allowProvisioningUpdates` が
+   > `No Accounts: Add a new account in Accounts settings.` で止まり、
+   > 古いキャッシュ profile を使った「capability が無い」という同じ
+   > エラーになるだけで、Portal 側の設定状況の判定材料にはならない。
+   >
+   > **さらにこの時、有効化する App ID を間違えて 2 回落とした。** この
+   > Team には紛らわしい識別子が 4 つ並んでいる —
+   > `com.m-tkg.otegami` / `com.m-tkg.otegami.NotificationService`
+   > (ハイフン**あり**) と `com.mtkg.otegami` /
+   > `com.mtkg.otegami.NotificationService` (ハイフン**なし**)。
+   > **実際にビルドで使うのはハイフン無しの `com.mtkg.otegami`**
+   > (`Config/Signing.xcconfig` の `OTEGAMI_BUNDLE_ID`)。ハイフンありの
+   > 方に capability を付けても当然何も変わらず、同じエラーが再発する。
+   >
+   > **確実な確認方法**: Xcode Cloud のビルド詳細 → Archive - iOS →
+   > Artifacts →「Logs for Otegami archive」をダウンロードし、
+   > `app-store-export-archive-logs/xcodebuild-export-archive.log` を見る。
+   > 失敗の直前に Portal が返した App ID の capability 一覧が JSON で
+   > そのまま載っているので、`USERNOTIFICATIONS_COMMUNICATION` が
+   > 含まれているかを目で確認できる (含まれていなければ
+   > `error: exportArchive Automatic signing cannot update bundle
+   > identifier "com.mtkg.otegami".` → `No profiles for
+   > 'com.mtkg.otegami' were found` → `** EXPORT FAILED **` となる)。
+   > ビルドのタスク一覧に出るのは `Command exited with non-zero
+   > exit-code: 70` だけで理由が分からないため、このログまで降りるのが
+   > 一番速い。
+   >
+   > なお **macOS の Archive アクションは成功したまま iOS だけが落ちる** —
+   > この entitlement を iOS 側にしか足していないため。「片側だけ失敗」は
+   > entitlement/capability 由来を疑う手がかりになる。
 2. **Xcode で Xcode Cloud のワークフローを作成する** — ローカルで
    `apps/Otegami` を `xcodegen generate` して開いた `Otegami.xcodeproj`
    を Xcode で開き、Report Navigator (⌘9) →「Cloud」タブ →「Get Started」
