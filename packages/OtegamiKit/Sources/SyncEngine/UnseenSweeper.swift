@@ -44,13 +44,18 @@ public struct UnseenSweeper: Sendable {
     public struct SweepResult: Sendable, Equatable {
         /// サーバーが未読だと報告した総数 = `SEARCH UNSEEN` の結果件数。
         public var serverUnseenCount: Int
-        /// うち、ローカルに行が無かった件数 (取り込み前)。
+        /// うち、ローカルに行が無かった件数 (取り込み前)。未送信 op に
+        /// 守られているぶんも含む生の数。
         public var missingCount: Int
         /// このスイープで実際に取り込んだ件数。
         public var fetchedCount: Int
         /// 取り込み後も残っている未取得の未読数 = 保存された
         /// `MailboxRecord.unseenNotFetchedCount`。
         public var remainingCount: Int
+        /// うち、未送信 op に守られているため残数から除いた件数
+        /// (`sweep` の doc comment 参照)。切り分け用にログへ出すだけで、
+        /// 保存はしない。
+        public var blockedByPendingOpsCount: Int
     }
 
     private let database: AppDatabase
@@ -77,6 +82,22 @@ public struct UnseenSweeper: Sendable {
     /// 取り込みは `BackfillSyncer.backfillOneBatch` と同じ作法 —
     /// `PendingOpTargets` を必ず渡す (未送信のローカル変更がある UID をサーバー
     /// 由来のエンベロープで上書きしない、`docs/architecture.md` の落とし穴 (m))。
+    ///
+    /// 残数の定義には同じガードが効く: **未送信 op に守られている UID は、
+    /// サーバーが未読だと報告していても数えない。** 実機報告
+    /// 「Gmail のメールを既読にしてアーカイブしたのにバッジが 1 のまま
+    /// 消えない」の修正。既読化 (`setFlags`) とアーカイブ (`archive`) の op が
+    /// まだ replay されていない間、サーバーの受信トレイにはそのメールが
+    /// まだ未読で居るので `SEARCH UNSEEN` が返す。ローカル行は
+    /// `MessageRemoval.commit` が消しており、`PendingOpTargets` が作り直しも
+    /// ブロックする — つまり「行が無い」状態が op の replay まで続く。
+    /// ここでその UID を残数に数えると `unseenNotFetchedCount` が 1 に
+    /// 張り付き、**対応するメッセージ行がどこにも無いのでユーザーには
+    /// 消しようがない**バッジが残る。op が恒久失敗すれば永久に残る。
+    ///
+    /// ガードの原則 (落とし穴 (m)) は「未送信のローカル変更がある UID に
+    /// ついては、サーバー側の状態はまだ古いと分かっているので取り込まない」
+    /// であり、件数の側だけサーバーを信じる理由は無い。
     @discardableResult
     public func sweep(
         mailboxRecord: MailboxRecord,
@@ -96,8 +117,21 @@ public struct UnseenSweeper: Sendable {
             try Self.uidsMissingLocally(serverUnseenUIDs, mailboxId: mailboxId, db: db)
         }
 
+        // 未送信 op に守られている UID は `EnvelopePersister.upsert` が
+        // 必ず弾く (下の `pendingTargets` 渡し) ので、`FETCH` するだけ往復の
+        // 無駄になる。取り込み対象から先に落としておく。
+        let blockedBeforeFetch = try await database.dbWriter.read { db -> Set<UInt32> in
+            let pendingTargets = try PendingOpTargets.forMailbox(
+                mailboxId: mailboxId, accountId: accountId, db: db
+            )
+            guard !pendingTargets.isEmpty else { return [] }
+            return missingUIDs.filter { pendingTargets.blocks(uid: Int64($0)) }
+        }
+
         // 新しい順 — ユーザーが最初に目にする側から埋める。
-        let toFetch = Array(missingUIDs.sorted(by: >).prefix(Self.maxFetchPerSweep))
+        let toFetch = Array(
+            missingUIDs.subtracting(blockedBeforeFetch).sorted(by: >).prefix(Self.maxFetchPerSweep)
+        )
 
         var fetchedCount = 0
         if !toFetch.isEmpty {
@@ -117,16 +151,26 @@ public struct UnseenSweeper: Sendable {
         }
 
         // 残りは「取り込み前に足りなかった数 − 実際に取り込めた数」ではなく、
-        // 取り込み後にもう一度ローカルと突き合わせて数え直す — `PendingOpTargets`
-        // で弾かれた UID や、サーバーが `SEARCH` の後で消したUID を、実測のまま
-        // 反映するため。
-        let remaining = try await database.dbWriter.write { db -> Int in
+        // 取り込み後にもう一度ローカルと突き合わせて数え直す — サーバーが
+        // `SEARCH` の後で消した UID を実測のまま反映するため。
+        //
+        // ガードは書き込み時点で取り直す (`MailboxSyncer` のフラグ適用と同じ
+        // 作法) — `FETCH` を待っている間に op が replay されて消えていれば、
+        // その UID はもう守られておらず、残数に数えるのが正しい。
+        let (remaining, blockedCount) = try await database.dbWriter.write { db -> (Int, Int) in
+            let pendingTargets = try PendingOpTargets.forMailbox(
+                mailboxId: mailboxId, accountId: accountId, db: db
+            )
             let stillMissing = try Self.uidsMissingLocally(serverUnseenUIDs, mailboxId: mailboxId, db: db)
-            guard var mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else { return stillMissing.count }
-            mailbox.unseenNotFetchedCount = stillMissing.count
+            let blocked = stillMissing.filter { pendingTargets.blocks(uid: Int64($0)) }
+            let remaining = stillMissing.count - blocked.count
+            guard var mailbox = try MailboxRecord.fetchOne(db, key: mailboxId) else {
+                return (remaining, blocked.count)
+            }
+            mailbox.unseenNotFetchedCount = remaining
             mailbox.lastUnseenSweepAt = Date()
             try mailbox.update(db, columns: [Column("unseenNotFetchedCount"), Column("lastUnseenSweepAt")])
-            return stillMissing.count
+            return (remaining, blocked.count)
         }
 
         Self.logger.info(
@@ -135,6 +179,7 @@ public struct UnseenSweeper: Sendable {
             serverUnseen=\(serverUnseenUIDs.count, privacy: .public) \
             missing=\(missingUIDs.count, privacy: .public) \
             fetched=\(fetchedCount, privacy: .public) \
+            blocked=\(blockedCount, privacy: .public) \
             remaining=\(remaining, privacy: .public)
             """
         )
@@ -143,7 +188,8 @@ public struct UnseenSweeper: Sendable {
             serverUnseenCount: serverUnseenUIDs.count,
             missingCount: missingUIDs.count,
             fetchedCount: fetchedCount,
-            remainingCount: remaining
+            remainingCount: remaining,
+            blockedByPendingOpsCount: blockedCount
         )
     }
 
