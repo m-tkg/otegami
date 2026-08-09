@@ -37,13 +37,21 @@ public enum MessagePinReadState {
     /// wrap the whole `dbWriter.write` block in their own `do`/`catch`,
     /// exactly like `MessageRemoval.commit` leaves error handling to its
     /// callers.
+    ///
+    /// Returns whether **any** row was actually written — the representative
+    /// row or one of its duplicate siblings. `MessageReadMarker.markSeen`
+    /// (this function's single-message wrapper) hands that answer to callers
+    /// deciding whether an op queue replay is worth attempting; "only a
+    /// sibling was out of step" still enqueues a `setFlags` op, so it counts.
+    @discardableResult
     public static func applyReadState(
         markingRead: Bool,
         messages: [MessageRecord],
         threadId: Int64,
         accountId: String,
         db: Database
-    ) throws {
+    ) throws -> Bool {
+        var didWriteAny = false
         for var message in messages {
             // `didWrite`の判断理由は`applyPinState`の同じ箇所を参照 —
             // 代表行が既に目的の状態でも、兄弟行がズレていれば処理を
@@ -75,6 +83,7 @@ public enum MessagePinReadState {
             }) {
                 didWrite = true
             }
+            if didWrite { didWriteAny = true }
             guard didWrite,
                   !message.isPendingRelocation,
                   let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
@@ -85,6 +94,7 @@ public enum MessagePinReadState {
             )
         }
         try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+        return didWriteAny
     }
 
     /// `applyReadState`'s pin counterpart — sets every message in `messages`

@@ -148,4 +148,119 @@ struct MessageReadMarkerTests {
         #expect(message?.flags.contains(.seen) == true)
         #expect(opCount == 1)
     }
+
+    // MARK: Gmail の二重ラベル行
+
+    /// 実機報告「Gmail のメールを既読にしてアーカイブしたのに、アーカイブ側の
+    /// スレッドに未読ドットが残る」の再発防止。`MessagePinReadStateDuplicateTests
+    /// .makePinnedGmailDuplicate` と同じ形の INBOX/All Mail 二重行を作る。
+    /// 戻り値は (accountId, threadId, INBOX 行の id, All Mail 行の id)。
+    private func makeUnreadGmailDuplicate(
+        db: Database
+    ) throws -> (accountId: String, threadId: Int64, inboxMessageId: Int64, allMailMessageId: Int64) {
+        let account = AccountRecord(
+            displayName: "Gmail", email: "dup@otegami.test", authType: .password, kind: .gmail,
+            imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls, imapUsername: "dup@otegami.test"
+        )
+        try account.insert(db)
+        var inbox = MailboxRecord(
+            accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox, uidValidity: 1
+        )
+        try inbox.insert(db)
+        var allMail = MailboxRecord(
+            accountId: account.id, path: "[Gmail]/All Mail", displayPath: "All Mail", role: .all, uidValidity: 1
+        )
+        try allMail.insert(db)
+
+        var thread = ThreadRecord(accountId: account.id, normalizedSubject: "重複スレッド")
+        try thread.insert(db)
+        let threadId = try #require(thread.id)
+
+        var messageIds: [Int64] = []
+        for (mailboxId, uid) in [(try #require(inbox.id), Int64(10)), (try #require(allMail.id), Int64(20))] {
+            var message = MessageRecord(
+                mailboxId: mailboxId, uid: uid,
+                messageId: "<dup@otegami.test>",
+                subject: "重複スレッド", normalizedSubject: "重複スレッド",
+                internalDate: Date(timeIntervalSince1970: 1_700_000_000),
+                gmailMessageId: 4242,
+                threadId: threadId
+            )
+            try message.insert(db)
+            messageIds.append(try #require(message.id))
+        }
+        try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+        return (account.id, threadId, messageIds[0], messageIds[1])
+    }
+
+    @Test("markSeen が Gmail の重複兄弟行にも \\Seen を伝播する")
+    func markSeenPropagatesToGmailDuplicateSibling() throws {
+        let database = try AppDatabase.makeInMemory()
+        try database.dbWriter.write { db in
+            let (accountId, threadId, inboxMessageId, allMailMessageId) = try makeUnreadGmailDuplicate(db: db)
+
+            let didMark = try MessageReadMarker.markSeen(
+                messageId: inboxMessageId, accountId: accountId, db: db
+            )
+            #expect(didMark)
+
+            let inboxRow = try #require(try MessageRecord.fetchOne(db, key: inboxMessageId))
+            let allMailRow = try #require(try MessageRecord.fetchOne(db, key: allMailMessageId))
+            #expect(inboxRow.flags.contains(.seen))
+            #expect(
+                allMailRow.flags.contains(.seen),
+                "これが無いと、アーカイブで INBOX 行が消えた瞬間に未読 1 件として顕在化する"
+            )
+            let thread = try #require(try ThreadRecord.fetchOne(db, key: threadId))
+            #expect(thread.unreadCount == 0)
+        }
+    }
+
+    @Test("兄弟行も直したときに積まれる setFlags op は代表行のぶん 1 件だけ")
+    func markSeenEnqueuesOneOpForTheRepresentativeRow() throws {
+        let database = try AppDatabase.makeInMemory()
+        try database.dbWriter.write { db in
+            let (accountId, _, inboxMessageId, _) = try makeUnreadGmailDuplicate(db: db)
+            try MessageReadMarker.markSeen(messageId: inboxMessageId, accountId: accountId, db: db)
+
+            // フラグはラベルではなくメッセージに付くので、サーバーへ送るのは
+            // 1 回でよい (`MessagePinReadState.applyToDuplicateSiblings` の前提)。
+            #expect(try OpQueueRecord.fetchCount(db) == 1)
+        }
+    }
+
+    @Test("代表行が既読で兄弟行だけ未読なら markSeen は true を返して op を積み直す")
+    func markSeenStillWritesWhenOnlyTheSiblingIsOutOfStep() throws {
+        let database = try AppDatabase.makeInMemory()
+        try database.dbWriter.write { db in
+            let (accountId, threadId, inboxMessageId, allMailMessageId) = try makeUnreadGmailDuplicate(db: db)
+            // 代表行だけ既読 — 旧実装の `markSeen` が作っていた中間状態そのもの。
+            try db.execute(sql: "UPDATE message SET flagsRaw = 1 WHERE id = ?", arguments: [inboxMessageId])
+            try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+
+            let didMark = try MessageReadMarker.markSeen(
+                messageId: inboxMessageId, accountId: accountId, db: db
+            )
+            #expect(didMark, "代表行だけ見て早期 return すると兄弟行が直らない")
+
+            let allMailRow = try #require(try MessageRecord.fetchOne(db, key: allMailMessageId))
+            #expect(allMailRow.flags.contains(.seen))
+            #expect(try OpQueueRecord.fetchCount(db) == 1)
+        }
+    }
+
+    @Test("両行とも既読なら no-op — 2 回目の markSeen は false を返し op も増えない")
+    func markSeenIsIdempotentAcrossSiblings() throws {
+        let database = try AppDatabase.makeInMemory()
+        try database.dbWriter.write { db in
+            let (accountId, _, inboxMessageId, _) = try makeUnreadGmailDuplicate(db: db)
+            try MessageReadMarker.markSeen(messageId: inboxMessageId, accountId: accountId, db: db)
+
+            let second = try MessageReadMarker.markSeen(
+                messageId: inboxMessageId, accountId: accountId, db: db
+            )
+            #expect(second == false)
+            #expect(try OpQueueRecord.fetchCount(db) == 1)
+        }
+    }
 }

@@ -1070,10 +1070,17 @@ struct RootView: View {
 
     /// Task #165: ⇧⌘U — mirrors `MessageListView.toggleRead(_:)`'s own
     /// direction rule (mark every targeted message read if any of them is
-    /// currently unread, mark them all unread otherwise) and its
-    /// `applyReadState(_:markingRead:)` write, reimplemented here for the
-    /// same reason `deleteSelectedThread()`'s doc comment already gives —
-    /// this view has no access to that sibling view's private method.
+    /// currently unread, mark them all unread otherwise). The direction and
+    /// target resolution live here for the same reason
+    /// `deleteSelectedThread()`'s doc comment already gives (this view has no
+    /// access to that sibling view's private method), but the write itself
+    /// goes through the shared `MessagePinReadState.applyReadState` every
+    /// other read/unread call site uses.
+    ///
+    /// The loop that used to be inlined here was a copy that had drifted:
+    /// it never propagated `\Seen` to a Gmail message's duplicate sibling
+    /// row, so ⇧⌘U left the All Mail copy unread exactly the way
+    /// `MessageReadMarker.markSeen` did before it was unified.
     private func toggleReadSelectedThread() {
         guard let selectedThreadId else { return }
         let targetMessageId = selectedMessageId
@@ -1086,25 +1093,10 @@ struct RootView: View {
                     ) else { return nil }
                     let markingRead = summary.thread.unreadCount > 0
                     let messages = try ThreadQuery.actionTargets(for: summary, db: db)
-                    for var message in messages {
-                        if markingRead {
-                            guard !message.flags.contains(.seen) else { continue }
-                            message.flags.insert(.seen)
-                        } else {
-                            guard message.flags.contains(.seen) else { continue }
-                            message.flags.remove(.seen)
-                        }
-                        message.updatedAt = Date()
-                        try message.update(db)
-                        guard !message.isPendingRelocation,
-                              let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
-                        else { continue }
-                        try OpQueue.enqueueSetFlags(
-                            accountId: thread.accountId, mailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                            uids: [UInt32(message.uid)], flags: message.flags, db: db
-                        )
-                    }
-                    try ThreadAssigner.recomputeAggregates(threadId: selectedThreadId, db: db)
+                    try MessagePinReadState.applyReadState(
+                        markingRead: markingRead, messages: messages, threadId: selectedThreadId,
+                        accountId: thread.accountId, db: db
+                    )
                     return thread.accountId
                 }
                 guard let accountId, let account = environment.accounts.first(where: { $0.id == accountId }) else { return }
