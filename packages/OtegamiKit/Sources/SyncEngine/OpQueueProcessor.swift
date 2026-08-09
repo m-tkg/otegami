@@ -793,7 +793,34 @@ public actor OpQueueProcessor {
     /// `OpQueueProcessor+Send.swift` — nothing else in this file called them.
 
     private func delete(op: OpQueueRecord) async throws {
-        _ = try await database.dbWriter.write { db in try op.delete(db) }
+        _ = try await database.dbWriter.write { db -> Bool in
+            try Self.reopenUnseenSweepGate(for: op, db: db)
+            return try op.delete(db)
+        }
+    }
+
+    /// この op が `PendingOpTargets` のガードを掛けていたメールボックスの
+    /// `lastUnseenSweepAt` を `nil` に戻す — op が消えた以上、その UID に
+    /// ついてサーバーの言い分はもう古くない。
+    ///
+    /// `UnseenSweeper` は未送信 op に守られた UID を残数に数えない
+    /// (`sweep` の doc comment) ので、op が消えた直後の残数は測り直す価値が
+    /// ある。ところが `ReplayResult.affectedMailboxIds` は移動系の**移動元**を
+    /// 意図的に外している (サーバーの結果整合性で楽観的更新が巻き戻るのを
+    /// 避けるため) ので、アーカイブ元の INBOX はこの後 targeted resync の
+    /// 対象にならない。スイープの 15 分ゲートだけが残り、実測の再開が
+    /// 最大 15 分遅れていた。
+    ///
+    /// ここでするのはゲートを外すことだけで、`unseenNotFetchedCount` には
+    /// 触らない — 実測は次の `incrementalSync` の仕事。ネットワークも叩か
+    /// ないので、上の設計判断を侵さない。恒久失敗した op は `opQueue` に
+    /// 残る (= ガードも残る) ため、この経路を通らないのが正しい。
+    private static func reopenUnseenSweepGate(for op: OpQueueRecord, db: Database) throws {
+        let mailboxIds = PendingOpTargets.targetMailboxIds(of: op)
+        guard !mailboxIds.isEmpty else { return }
+        try MailboxRecord
+            .filter(mailboxIds.contains(Column("id")))
+            .updateAll(db, Column("lastUnseenSweepAt").set(to: nil))
     }
 
     /// User-facing (Japanese) reason `recordStaleDiscardAndDelete` writes
@@ -823,6 +850,7 @@ public actor OpQueueProcessor {
         _ = try await database.dbWriter.write { db -> Bool in
             var discard = OpQueueStaleDiscardRecord(accountId: op.accountId, kind: op.kind, reason: Self.staleDiscardReason)
             try discard.insert(db)
+            try Self.reopenUnseenSweepGate(for: op, db: db)
             return try op.delete(db)
         }
     }
