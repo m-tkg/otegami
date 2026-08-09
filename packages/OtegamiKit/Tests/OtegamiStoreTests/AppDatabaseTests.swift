@@ -531,6 +531,41 @@ struct AppDatabaseTests {
         #expect(0 < MessageBodyRecord.currentRenderVersion, "the migration's DEFAULT must stay older than whatever the current code writes")
     }
 
+    /// 実機報告「Gmail のメールを既読にしてアーカイブしたのにバッジが 1 の
+    /// まま消えない」: `UnseenSweeper` が未送信 op に守られた UID を残数に
+    /// 数えていた頃の測定値は、対応するメッセージ行がどこにも無いので
+    /// ユーザーには消しようがない。定義を直しただけでは既存端末に張り付いた
+    /// 値は残るので、v51 が両列を捨てて測り直させる。
+    @Test("v51 migration throws away the unseen sweep's stale measurement so the next sync re-measures")
+    func v51ResetsStaleUnseenRemainder() throws {
+        let dbQueue = try DatabaseQueue()
+        let migrator = AppDatabase.migrator
+        try migrator.migrate(dbQueue, upTo: "v50")
+
+        let account = AccountRecord(
+            displayName: "Test", email: "sweep@example.test", authType: .password,
+            imapHost: "localhost", imapPort: 1143, imapSecurity: .plain, imapUsername: "sweep@example.test"
+        )
+        try dbQueue.write { db in
+            try account.insert(db)
+            try db.execute(
+                sql: """
+                INSERT INTO mailbox (accountId, path, displayPath, role, unseenNotFetchedCount, lastUnseenSweepAt)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [account.id, "INBOX", "INBOX", "inbox", 7, Date(timeIntervalSince1970: 1_700_000_000)]
+            )
+        }
+
+        try migrator.migrate(dbQueue)
+
+        let row = try dbQueue.read { db -> Row in
+            try Row.fetchOne(db, sql: "SELECT unseenNotFetchedCount, lastUnseenSweepAt FROM mailbox")!
+        }
+        #expect(row["unseenNotFetchedCount"] == 0)
+        #expect(row["lastUnseenSweepAt"] == nil, "NULL にすることで次の同期が即スイープする")
+    }
+
     @Test("a fresh MessageBodyRecord insert (as BodyFetcher writes) gets the current renderVersion, not the migration's stale default")
     func freshMessageBodyRecordGetsCurrentRenderVersion() throws {
         let database = try AppDatabase.makeInMemory()

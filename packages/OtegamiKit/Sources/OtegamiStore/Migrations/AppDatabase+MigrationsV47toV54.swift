@@ -95,5 +95,27 @@ extension DatabaseMigrator {
                 t.add(column: "lastUnseenSweepAt", .datetime)
             }
         }
+
+        // v51 (実機報告「Gmail のメールを既読にしてアーカイブしたのに
+        // アプリアイコンのバッジが 1 のまま消えない」): v50 で入れた
+        // `unseenNotFetchedCount` の**測り方**を直したので、古い定義で
+        // 書かれた値を捨てる。
+        //
+        // 旧 `UnseenSweeper` は、未送信 op に守られている UID (アーカイブ
+        // したがまだ replay されていないメール) を「ローカル行が無い」と
+        // 数えて残数に含めていた。ローカル行はどこにも無いので、ユーザーには
+        // そのバッジを消す手段が無い。v49 が `thread.isPinned` の定義変更で
+        // やったのと同じ話で、**定義を直しただけでは既に書かれた値は残る**。
+        //
+        // この 2 列は `UnseenSweeper` だけが書く純粋な測定キャッシュ (再 LIST
+        // でも `AccountSyncer.upsertMailboxes` の `.noOverwrite` に守られて
+        // 上書きされない) なので、唯一の生産者を直した以上、旧アルゴリズムの
+        // 測定値は捨てるのが正しい。`lastUnseenSweepAt` を NULL に戻すことで
+        // `UnseenSweeper.isDue` が即真になり、次の同期が新しい定義で実測し
+        // 直す。それまでの間は残数が 0 として扱われるが、それは v50 以前の
+        // 挙動そのものなので後退にはならない。
+        registerMigration("v51") { db in
+            try db.execute(sql: "UPDATE mailbox SET unseenNotFetchedCount = 0, lastUnseenSweepAt = NULL")
+        }
     }
 }

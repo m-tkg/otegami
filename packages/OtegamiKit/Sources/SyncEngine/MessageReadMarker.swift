@@ -31,16 +31,48 @@ import OtegamiStore
 /// harmless no-op on the common path) safely idempotent — only the first
 /// call to actually observe the message unread does any work.
 public enum MessageReadMarker {
-    /// Flips `\Seen` on `messageId`'s row and enqueues the resulting
-    /// absolute flag state for `OpQueueProcessor` to mirror to the server —
-    /// mirrors the swipe/bulk "mark as read" write `MessageListView`/
-    /// `ThreadDetailView` already do inline. Returns `false` (no-op) if the
-    /// message doesn't exist, is already `\Seen`, or its mailbox can't be
-    /// resolved — the caller decides whether a replay attempt is worth
-    /// making from that.
+    /// Flips `\Seen` on `messageId`'s row (and, for a Gmail message that is
+    /// stored under two labels, on its duplicate sibling row) and enqueues
+    /// the resulting absolute flag state for `OpQueueProcessor` to mirror to
+    /// the server. Returns `false` (no-op) if the message doesn't exist or
+    /// every row involved is already `\Seen` — the caller decides whether a
+    /// replay attempt is worth making from that.
+    ///
+    /// 実機報告「Gmail のメールを既読にしてアーカイブしたのに、アーカイブ
+    /// 側のスレッドに未読ドットが残る」の修正: この関数は以前、代表行 1 行
+    /// しか書いていなかった。Gmail は同じメールが INBOX 行と All Mail 行の
+    /// 2 行になるので、INBOX 行だけ既読にすると All Mail 行は未読のまま残る。
+    /// `GmailArchiveFilter.excludeUnarchivedSQL` が「INBOX にも居る All Mail
+    /// 行」を未読集計から外している間は見えないが、アーカイブで INBOX 行が
+    /// 消えた瞬間に除外条件が外れ、未読 1 件として顕在化していた。
+    /// 本文を開いたときの自動既読と、設定「アーカイブ時に既読にする」
+    /// (`MessageRemoval.commit`) がどちらもこの関数を通るので、まさに
+    /// 「開いてアーカイブする」操作で必ず踏む経路だった。
+    ///
+    /// 兄弟行への伝播をここに書き足すのではなく `MessagePinReadState
+    /// .applyReadState` へ委譲しているのは、兄弟解決・`didWrite` による op
+    /// 発行判断・`isPendingRelocation` スキップ・集約再計算の 4 点セットが
+    /// 既にあちらに揃っているため。複製すると `applyPinState` で一度踏んだ
+    /// 非対称バグ (代表行が目的の状態でも兄弟行がズレていれば処理を続ける、
+    /// という判断) を既読側で作り直す余地が残る。
     @discardableResult
     public static func markSeen(messageId: Int64, accountId: String, db: Database) throws -> Bool {
-        guard var record = try MessageRecord.fetchOne(db, key: messageId) else { return false }
+        guard let record = try MessageRecord.fetchOne(db, key: messageId) else { return false }
+        // `ThreadQuery.duplicateSiblings` はスレッド内を探すので、
+        // `threadId` が無い行に兄弟は原理的に存在しない — その場合だけ
+        // 単一行の従来経路を使う。
+        guard let threadId = record.threadId else {
+            return try markSeenWithoutThread(record: record, accountId: accountId, db: db)
+        }
+        return try MessagePinReadState.applyReadState(
+            markingRead: true, messages: [record], threadId: threadId, accountId: accountId, db: db
+        )
+    }
+
+    private static func markSeenWithoutThread(
+        record: MessageRecord, accountId: String, db: Database
+    ) throws -> Bool {
+        var record = record
         guard !record.flags.contains(.seen) else { return false }
         record.flags.insert(.seen)
         record.updatedAt = Date()
@@ -71,9 +103,8 @@ public enum MessageReadMarker {
                 uids: [UInt32(record.uid)], flags: record.flags, db: db
             )
         }
-        if let threadId = record.threadId {
-            try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
-        }
+        // `threadId` が無い行なので、再計算すべきスレッド集約も無い
+        // (呼び出し元の `markSeen` がその条件で分岐している)。
         return true
     }
 }

@@ -218,6 +218,147 @@ struct UnseenSweeperTests {
         #expect(count == 0)
     }
 
+    // MARK: unsent ops guard the remainder too
+
+    /// Queues an `archive` op for `uids`, the way `MessageRemoval.commit` does
+    /// — the state a message is in between "the user archived it" and "the op
+    /// queue replayed it to the server".
+    private func enqueueArchive(
+        database: AppDatabase, accountId: String, mailboxId: Int64, uids: [UInt32], uidValidity: Int64 = 1
+    ) async throws {
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueArchive(
+                accountId: accountId, sourceMailboxId: mailboxId, uidValidity: uidValidity, uids: uids, db: db
+            )
+        }
+    }
+
+    @Test("a UID an unsent archive op is holding is not counted in the remainder — the reported stuck badge")
+    func unsentArchiveOpKeepsUIDOutOfTheRemainder() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        let mailbox = try await makeMailbox(database: database, account: account)
+        // Read it, archived it: `MessageRemoval.commit` deleted the local row
+        // and queued the op. The server still has it, still unread, until the
+        // op replays — so SEARCH UNSEEN keeps returning it.
+        try await enqueueArchive(
+            database: database, accountId: account.id, mailboxId: mailbox.id!, uids: [7]
+        )
+
+        let script = FakeIMAPSession.Script(envelopesByPath: ["INBOX": [makeEnvelope(uid: 7)]])
+        let session = FakeIMAPSession(config: account.imapConfig, script: script)
+        let result = try await UnseenSweeper(database: database).sweep(
+            mailboxRecord: mailbox, mailboxPath: "INBOX", accountId: account.id, session: session
+        )
+
+        #expect(result?.serverUnseenCount == 1)
+        #expect(result?.missingCount == 1, "the raw diff still sees it as missing")
+        #expect(result?.blockedByPendingOpsCount == 1)
+        #expect(result?.remainingCount == 0, "but it must not be counted — the server's answer is stale")
+
+        let (stored, badge) = try await database.dbWriter.read { db in
+            (
+                try MailboxRecord.fetchOne(db, key: mailbox.id!),
+                try MessageQuery.unifiedInboxUnreadCount(accountIds: [account.id], role: .inbox, db: db)
+            )
+        }
+        #expect(stored?.unseenNotFetchedCount == 0)
+        #expect(badge == 0, "the app icon badge the user was stuck with")
+    }
+
+    @Test("a blocked UID isn't fetched either — EnvelopePersister would only throw the envelope away")
+    func blockedUIDIsNotFetched() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        let mailbox = try await makeMailbox(database: database, account: account)
+        try await enqueueArchive(
+            database: database, accountId: account.id, mailboxId: mailbox.id!, uids: [7]
+        )
+
+        let script = FakeIMAPSession.Script(envelopesByPath: ["INBOX": [makeEnvelope(uid: 7)]])
+        let session = FakeIMAPSession(config: account.imapConfig, script: script)
+        _ = try await UnseenSweeper(database: database).sweep(
+            mailboxRecord: mailbox, mailboxPath: "INBOX", accountId: account.id, session: session
+        )
+
+        let fetchCalls = await session.fetchEnvelopesSetCalls
+        #expect(fetchCalls.isEmpty, "nothing left to fetch, so no round trip")
+    }
+
+    @Test("an unsent setFlags op guards the remainder the same way")
+    func unsentSetFlagsOpKeepsUIDOutOfTheRemainder() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        let mailbox = try await makeMailbox(database: database, account: account)
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: mailbox.id!, uidValidity: 1, uids: [7], flags: [.seen], db: db
+            )
+        }
+
+        let script = FakeIMAPSession.Script(envelopesByPath: ["INBOX": [makeEnvelope(uid: 7)]])
+        let session = FakeIMAPSession(config: account.imapConfig, script: script)
+        let result = try await UnseenSweeper(database: database).sweep(
+            mailboxRecord: mailbox, mailboxPath: "INBOX", accountId: account.id, session: session
+        )
+
+        #expect(result?.blockedByPendingOpsCount == 1)
+        #expect(result?.remainingCount == 0)
+    }
+
+    @Test("an op whose uidValidity no longer matches doesn't block — it's destined to be discarded anyway")
+    func staleUIDValidityOpDoesNotBlock() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        let mailbox = try await makeMailbox(database: database, account: account)
+        try await enqueueArchive(
+            database: database, accountId: account.id, mailboxId: mailbox.id!, uids: [7], uidValidity: 999
+        )
+
+        let script = FakeIMAPSession.Script(envelopesByPath: ["INBOX": [makeEnvelope(uid: 7)]])
+        let session = FakeIMAPSession(config: account.imapConfig, script: script)
+        let result = try await UnseenSweeper(database: database).sweep(
+            mailboxRecord: mailbox, mailboxPath: "INBOX", accountId: account.id, session: session
+        )
+
+        #expect(result?.blockedByPendingOpsCount == 0)
+        // Not blocked, so it gets fetched and stored like any other missing
+        // unread message — the remainder lands at zero because it's local now.
+        #expect(result?.fetchedCount == 1)
+        #expect(result?.remainingCount == 0)
+    }
+
+    @Test("only the blocked UID is held back — its neighbours are fetched as usual")
+    func blockingIsScopedToTheOpsOwnUIDs() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        let mailbox = try await makeMailbox(database: database, account: account)
+        try await enqueueArchive(
+            database: database, accountId: account.id, mailboxId: mailbox.id!, uids: [3]
+        )
+
+        // The server calls both 1 and 3 unread; only 3 is held by the archive
+        // op. Over-blocking here would silently under-count real unread mail.
+        let script = FakeIMAPSession.Script(envelopesByPath: [
+            "INBOX": [makeEnvelope(uid: 1), makeEnvelope(uid: 3)],
+        ])
+        let session = FakeIMAPSession(config: account.imapConfig, script: script)
+        let result = try await UnseenSweeper(database: database).sweep(
+            mailboxRecord: mailbox, mailboxPath: "INBOX", accountId: account.id, session: session
+        )
+
+        #expect(result?.blockedByPendingOpsCount == 1, "uid 3")
+        #expect(result?.fetchedCount == 1, "uid 1 is fetched normally")
+        #expect(result?.remainingCount == 0)
+        let fetchCalls = await session.fetchEnvelopesSetCalls
+        #expect(fetchCalls.map(\.uids) == [UIDSet([1])], "uid 3 is never requested")
+
+        let badge = try await database.dbWriter.read { db in
+            try MessageQuery.unifiedInboxUnreadCount(accountIds: [account.id], role: .inbox, db: db)
+        }
+        #expect(badge == 1, "uid 1 is genuinely unread and still counts")
+    }
+
     // MARK: Gmail's All Mail
 
     @Test("Gmail's All Mail remainder is not added to the archive badge — SEARCH UNSEEN can't tell archived from inbox")

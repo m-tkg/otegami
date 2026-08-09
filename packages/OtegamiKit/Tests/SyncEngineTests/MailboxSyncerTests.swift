@@ -714,6 +714,49 @@ struct MailboxSyncerTests {
         #expect(mailbox.uidValidity == 2)
     }
 
+    @Test("a uidValidity change throws away the unseen sweep's measurement — those UIDs no longer exist")
+    func uidValidityChangeResetsTheUnseenRemainder() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "旧世代1")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+            )
+        )
+        // A sweep under the old epoch left a remainder behind, and closed the
+        // 15-minute gate. Both are measurements of UIDs that are about to stop
+        // existing.
+        try await database.dbWriter.write { db in
+            try db.execute(
+                sql: "UPDATE mailbox SET unseenNotFetchedCount = 5, lastUnseenSweepAt = ?",
+                arguments: [Date(timeIntervalSince1970: 1_700_000_000)]
+            )
+        }
+
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "新世代1")]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 2, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: incrementalScript)
+        }
+        _ = try await syncer.performIncrementalSync(
+            auth: .password(username: "test1@otegami.test", password: "test1234")
+        )
+
+        let mailbox = try #require(try await database.dbWriter.read { db in
+            try MailboxRecord.filter(Column("accountId") == account.id).fetchOne(db)
+        })
+        #expect(mailbox.unseenNotFetchedCount == 0, "a stale remainder would be added to the badge forever")
+        #expect(mailbox.lastUnseenSweepAt == nil, "and the next sync must be allowed to measure again")
+        #expect(UnseenSweeper.isDue(mailbox))
+    }
+
     /// Same shape as `AccountSyncerTests.fetchesSparseOldUIDBand`, but for
     /// `performWindowedResync` — the uidValidity-changed/never-synced path
     /// this method also drives, and which shares the exact "most recent

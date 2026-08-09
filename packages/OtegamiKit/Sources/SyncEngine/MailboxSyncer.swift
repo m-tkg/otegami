@@ -456,6 +456,17 @@ public actor MailboxSyncer {
             record.highestModSeq = Int64(clamping: status.highestModSeq)
             record.messageCount = status.messageCount
             record.lastSyncedAt = Date()
+            // `UnseenSweeper` の測定キャッシュは、UID が全部振り直された後の
+            // 世界では意味を持たない (`unseenNotFetchedCount` は「この UID の
+            // 未読がまだローカルに無い」件数)。ここで捨てないと、引数の
+            // `mailboxRecord` のコピーである `record` が古い値をそのまま書き
+            // 戻し、`needsFullResync` 分岐はスイープに到達せず `return` する
+            // ため、次のスイープまで (最大 15 分、`SEARCH UNSEEN` が恒常的に
+            // 失敗するアカウントでは永久に) 古い残数がバッジに足され続ける。
+            // `lastUnseenSweepAt` を `nil` に戻すことで `UnseenSweeper.isDue`
+            // が即真になり、次の `incrementalSync` が実測し直す。
+            record.unseenNotFetchedCount = 0
+            record.lastUnseenSweepAt = nil
             try record.update(db)
             // 古いメールのバックフィル同期: a uidValidity-changed/never-synced
             // resync just re-established this mailbox's "most recent

@@ -355,4 +355,61 @@ struct PendingOpTargetsTests {
         }
         #expect(uids == [6])
     }
+
+    // MARK: targetMailboxIds
+
+    /// `targetMailboxIds` は `forMailbox` の裏返し — 「この op はどの
+    /// メールボックスにガードを掛けるか」。両者の定義が食い違うと
+    /// `OpQueueProcessor` が op を消したときにゲートを外し損ねる (あるいは
+    /// 無関係なメールボックスの `lastUnseenSweepAt` を消す) ので、
+    /// 全 op 種別について対応を固定しておく。
+    @Test("targetMailboxIds が各 op 種別のガード対象メールボックスを返す")
+    func targetMailboxIdsCoversEveryKind() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, source, destination) = try await database.dbWriter.write { db -> (String, Int64, Int64) in
+            let account = try makeAccount(db: db)
+            let inbox = try makeMailbox(accountId: account.id, db: db)
+            var other = MailboxRecord(
+                accountId: account.id, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 42
+            )
+            try other.insert(db)
+            return (account.id, try #require(inbox.id), try #require(other.id))
+        }
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSetFlags(accountId: accountId, mailboxId: source, uidValidity: 42, uids: [1], flags: .seen, db: db)
+            try OpQueue.enqueueMove(accountId: accountId, sourceMailboxId: source, uidValidity: 42, uids: [2], destinationMailboxId: destination, db: db)
+            try OpQueue.enqueueDelete(accountId: accountId, sourceMailboxId: source, uidValidity: 42, uids: [3], db: db)
+            try OpQueue.enqueueJunk(accountId: accountId, sourceMailboxId: source, uidValidity: 42, uids: [4], db: db)
+            try OpQueue.enqueueArchive(accountId: accountId, sourceMailboxId: source, uidValidity: 42, uids: [5], db: db)
+            try OpQueue.enqueueUnarchive(accountId: accountId, sourceMailboxId: source, uidValidity: 42, uids: [6], db: db)
+        }
+
+        let ops = try await database.dbWriter.read { db in try OpQueueRecord.order(Column("id")).fetchAll(db) }
+        #expect(ops.count == 6)
+        for op in ops {
+            #expect(
+                PendingOpTargets.targetMailboxIds(of: op) == [source],
+                "\(op.kind) は移動元/自メールボックスにガードを掛ける"
+            )
+        }
+    }
+
+    @Test("送信・下書き保存はガード対象を持たない")
+    func targetMailboxIdsIsEmptyForOpsWithoutExistingUIDs() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let accountId = try await database.dbWriter.write { db -> String in
+            let account = try makeAccount(db: db)
+            _ = try makeMailbox(accountId: account.id, db: db)
+            return account.id
+        }
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSend(accountId: accountId, outboxMessageId: 1, db: db)
+        }
+
+        let ops = try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }
+        for op in ops {
+            #expect(PendingOpTargets.targetMailboxIds(of: op).isEmpty)
+        }
+    }
 }

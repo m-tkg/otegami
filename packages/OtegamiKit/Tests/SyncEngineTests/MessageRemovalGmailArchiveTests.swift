@@ -387,6 +387,74 @@ struct MessageRemovalGmailArchiveTests {
         #expect(opKinds == [OpQueueKind.setFlags.rawValue, OpQueueKind.archive.rawValue])
     }
 
+    /// 実機報告「Gmail のメールを既読にしてアーカイブしたのに、アーカイブ側の
+    /// スレッドに未読ドットが残る」そのものの回帰テスト。
+    ///
+    /// All Mail 行が既にある場合、アーカイブは INBOX 行を**削除**して All Mail
+    /// 行だけを残す。つまり生き残るのは既読化のときに書かれなかった側の行で、
+    /// `MessageReadMarker.markSeen` が代表行しか触っていなかった頃は、この行が
+    /// 未読のまま取り残されていた。`GmailArchiveFilter.excludeUnarchivedSQL` が
+    /// 「INBOX にも居る All Mail 行」を集計から外している間は見えず、INBOX 行が
+    /// 消えた瞬間に未読 1 件として顕在化する — 「アーカイブしたら未読が増えた」
+    /// ように見えていた正体。
+    @Test("markSeenOnArchive marks the surviving All Mail row too, not just the inbox row that gets deleted")
+    func markSeenOnArchiveMarksTheSurvivingAllMailRow() throws {
+        let (database, accountId, inboxId, allMailId) = try makeGmailDatabase()
+        let (threadId, messageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let ids = try insertMessage(accountId: accountId, mailboxId: inboxId, uid: 21, db: db)
+            try insertMessage(
+                accountId: accountId, mailboxId: allMailId!, uid: 2100,
+                threadId: ids.threadId, db: db
+            )
+            return ids
+        }
+        let summary = try summary(threadId: threadId, messageId: messageId, database: database)
+
+        try database.dbWriter.write { db in
+            _ = try MessageRemoval.commit(
+                .archive, summary: summary, accountId: accountId, db: db, markSeenOnArchive: true
+            )
+        }
+
+        let (inboxRow, allMailRows, thread) = try database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: messageId),
+                try MessageRecord.filter(Column("mailboxId") == allMailId!).fetchAll(db),
+                try ThreadRecord.fetchOne(db, key: threadId)
+            )
+        }
+        #expect(inboxRow == nil, "the inbox row is deleted — All Mail already had this message")
+        #expect(allMailRows.count == 1)
+        #expect(
+            allMailRows.first?.flags.contains(.seen) == true,
+            "the row the user is left looking at must be the one that got marked read"
+        )
+        #expect(thread?.unreadCount == 0, "the archived thread shows no unread dot")
+    }
+
+    @Test("without markSeenOnArchive the surviving row stays unread — archiving alone never marks anything read")
+    func archiveWithoutMarkSeenLeavesTheRowUnread() throws {
+        let (database, accountId, inboxId, allMailId) = try makeGmailDatabase()
+        let (threadId, messageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            let ids = try insertMessage(accountId: accountId, mailboxId: inboxId, uid: 22, db: db)
+            try insertMessage(
+                accountId: accountId, mailboxId: allMailId!, uid: 2200,
+                threadId: ids.threadId, db: db
+            )
+            return ids
+        }
+        let summary = try summary(threadId: threadId, messageId: messageId, database: database)
+
+        try database.dbWriter.write { db in
+            _ = try MessageRemoval.commit(.archive, summary: summary, accountId: accountId, db: db)
+        }
+
+        let allMailRows = try database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == allMailId!).fetchAll(db)
+        }
+        #expect(allMailRows.first?.flags.contains(.seen) == false)
+    }
+
     // MARK: undo
 
     @Test("undoing a relocating Gmail archive puts the row back in the inbox at its original UID")

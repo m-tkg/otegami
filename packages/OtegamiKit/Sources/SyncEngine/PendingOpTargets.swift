@@ -183,4 +183,45 @@ public struct PendingOpTargets: Sendable, Equatable {
         }
         return PendingOpTargets(relocated: relocated, flagChanged: flagChanged)
     }
+
+    /// `op` がガードしているメールボックス — `forMailbox` がこの op を見て
+    /// `relocated`/`flagChanged` に UID を入れることになる側の `mailboxId`
+    /// (移動系は**移動元**、`setFlags`/`deleteDraft` は payload 自身の
+    /// メールボックス、`send`/`saveDraft` は対象なし)。
+    ///
+    /// `OpQueueProcessor` が op を消したあと「このメールボックスのガードが
+    /// 1つ外れた」ことを知るために使う。DB を読まないので、replay の削除
+    /// トランザクションの中から安全に呼べる。
+    ///
+    /// `forMailbox` の各 `case` と定義が食い違うと、ガードが外れたのに
+    /// 気づけない (あるいは無関係なメールボックスを触る) ので、
+    /// `PendingOpTargetsTests` で両者の対応をテーブル駆動で固定してある。
+    public static func targetMailboxIds(of op: OpQueueRecord) -> Set<Int64> {
+        let decoder = JSONDecoder()
+        switch OpQueueKind(rawValue: op.kind) {
+        case .setFlags:
+            guard let payload = try? decoder.decode(SetFlagsOpPayload.self, from: op.payload) else { return [] }
+            return [payload.mailboxId]
+        case .move:
+            guard let payload = try? decoder.decode(MoveOpPayload.self, from: op.payload) else { return [] }
+            return [payload.sourceMailboxId]
+        case .delete:
+            guard let payload = try? decoder.decode(DeleteOpPayload.self, from: op.payload) else { return [] }
+            return [payload.sourceMailboxId]
+        case .junk:
+            guard let payload = try? decoder.decode(JunkOpPayload.self, from: op.payload) else { return [] }
+            return [payload.sourceMailboxId]
+        case .archive:
+            guard let payload = try? decoder.decode(ArchiveOpPayload.self, from: op.payload) else { return [] }
+            return [payload.sourceMailboxId]
+        case .unarchive:
+            guard let payload = try? decoder.decode(UnarchiveOpPayload.self, from: op.payload) else { return [] }
+            return [payload.sourceMailboxId]
+        case .deleteDraft:
+            guard let payload = try? decoder.decode(DeleteDraftOpPayload.self, from: op.payload) else { return [] }
+            return [payload.mailboxId]
+        case .send, .saveDraft, nil:
+            return []
+        }
+    }
 }
