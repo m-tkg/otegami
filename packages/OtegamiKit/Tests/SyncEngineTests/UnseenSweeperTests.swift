@@ -437,9 +437,45 @@ struct UnseenSweeperTests {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         var justSwept = never
         justSwept.lastUnseenSweepAt = now
-        #expect(UnseenSweeper.isDue(justSwept, now: now.addingTimeInterval(60)) == false)
+        #expect(UnseenSweeper.isDue(justSwept, now: now.addingTimeInterval(30)) == false)
         #expect(
             UnseenSweeper.isDue(justSwept, now: now.addingTimeInterval(UnseenSweeper.sweepInterval + 1)) == true
+        )
+    }
+
+    @Test("a user-initiated refresh gets past the 15-minute gate — otherwise nothing can re-measure")
+    func userInitiatedRefreshBypassesTheLongGate() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        var justSwept = try await makeMailbox(database: database, account: account)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        justSwept.lastUnseenSweepAt = now
+
+        // Well inside the automatic 15-minute gate…
+        let twoMinutesLater = now.addingTimeInterval(120)
+        #expect(UnseenSweeper.isDue(justSwept, now: twoMinutesLater) == false)
+        // …but a pull-to-refresh still measures again.
+        #expect(UnseenSweeper.isDue(justSwept, now: twoMinutesLater, userInitiated: true) == true)
+    }
+
+    @Test("even a user-initiated refresh keeps a short cooldown — SEARCH UNSEEN scans the whole mailbox")
+    func userInitiatedRefreshStillHasACooldown() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        var justSwept = try await makeMailbox(database: database, account: account)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        justSwept.lastUnseenSweepAt = now
+
+        #expect(
+            UnseenSweeper.isDue(justSwept, now: now.addingTimeInterval(5), userInitiated: true) == false,
+            "連打でサーバー全走査を撃ち続けない"
+        )
+        #expect(
+            UnseenSweeper.isDue(
+                justSwept,
+                now: now.addingTimeInterval(UnseenSweeper.userInitiatedSweepInterval + 1),
+                userInitiated: true
+            ) == true
         )
     }
 

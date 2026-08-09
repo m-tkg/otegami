@@ -383,8 +383,13 @@ public actor MailboxSyncer {
         // メールボックス全体を走査させるので毎回は投げられない)。失敗は握り潰す —
         // これは件数表示を補正するための処理であって、同期そのものではない。
         // `SEARCH` を拒否する/未対応のサーバーで通常の同期まで落ちる方がずっと悪い。
+        // ユーザーが明示的に更新を要求した同期 (pull-to-refresh / フル更新は
+        // どちらも `forceReconcileVanishedUIDs` を立てる) では 15 分ゲートを
+        // 短い方へ切り替える — そうしないと、残数が実態とずれたときに
+        // ユーザーが測り直す手段がアプリ内に 1 つも無い
+        // (`UnseenSweeper.userInitiatedSweepInterval` の doc comment)。
         var recordAfterSweep = updatedRecord
-        if UnseenSweeper.isDue(updatedRecord) {
+        if UnseenSweeper.isDue(updatedRecord, userInitiated: forceReconcileVanishedUIDs) {
             do {
                 try Task.checkCancellation()
                 if try await UnseenSweeper(database: database).sweep(

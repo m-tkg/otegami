@@ -40,6 +40,21 @@ public struct UnseenSweeper: Sendable {
     /// 補正であって、新着そのものは通常の incremental sync が拾うため。
     public static let sweepInterval: TimeInterval = 15 * 60
 
+    /// ユーザーが明示的に更新を要求したとき (pull-to-refresh / フル更新) の
+    /// 最短間隔。
+    ///
+    /// `sweepInterval` の 15 分は「`incrementalSync` のたびに投げるには
+    /// 重すぎる」という**自動同期向け**の歯止めであって、ユーザーが自分で
+    /// 更新した場合にまで効かせる理由は無い。実機報告「バッジの数字分の
+    /// メールが受信箱に見当たらない」で判明した実害: `unseenNotFetchedCount`
+    /// が実態とずれても、**ユーザーがそれを測り直す手段がアプリ内に 1 つも
+    /// 無かった** (pull-to-refresh もフル更新もこのゲートを迂回できず、
+    /// 残数を書き換える経路は他に存在しない)。
+    ///
+    /// 連打でサーバー全走査の `SEARCH UNSEEN` を撃ち続けないための最低限
+    /// だけ残す。
+    public static let userInitiatedSweepInterval: TimeInterval = 60
+
     /// スイープ 1 回の結果。呼び出し側 (`MailboxSyncer`) はログにしか使わない。
     public struct SweepResult: Sendable, Equatable {
         /// サーバーが未読だと報告した総数 = `SEARCH UNSEEN` の結果件数。
@@ -69,11 +84,15 @@ public struct UnseenSweeper: Sendable {
         self.database = database
     }
 
-    /// `lastUnseenSweepAt` から `sweepInterval` 経っていないメールボックスを弾く。
-    /// `now` はテスト用の注入点 (既定は現在時刻)。
-    public static func isDue(_ mailbox: MailboxRecord, now: Date = Date()) -> Bool {
+    /// `lastUnseenSweepAt` から所定の間隔が経っていないメールボックスを弾く。
+    /// `userInitiated` (pull-to-refresh / フル更新) なら短い
+    /// `userInitiatedSweepInterval` を使う。`now` はテスト用の注入点。
+    public static func isDue(
+        _ mailbox: MailboxRecord, now: Date = Date(), userInitiated: Bool = false
+    ) -> Bool {
         guard let last = mailbox.lastUnseenSweepAt else { return true }
-        return now.timeIntervalSince(last) >= sweepInterval
+        let interval = userInitiated ? userInitiatedSweepInterval : sweepInterval
+        return now.timeIntervalSince(last) >= interval
     }
 
     /// `mailboxRecord` (呼び出し側が `select` 済み) を 1 回スイープする。
@@ -173,12 +192,21 @@ public struct UnseenSweeper: Sendable {
             return (remaining, blocked.count)
         }
 
+        // `fetchedCount` は**サーバーが返した envelope の数**であって、
+        // ローカル行になった数ではない。`EnvelopePersister.upsert` は
+        // 未送信 op のガード以外にも、`reconcilePendingRelocation` の失敗で
+        // 書き込みごとロールバックされうる。「FETCH できているのに行が
+        // 増えない」= 残数が永久に減らない、という詰み方を切り分けられる
+        // ように、実際に埋まった数も出す。
+        let storedCount = missingUIDs.count - blockedCount - remaining
+
         Self.logger.info(
             """
             unseen sweep: \(mailboxPath, privacy: .public) \
             serverUnseen=\(serverUnseenUIDs.count, privacy: .public) \
             missing=\(missingUIDs.count, privacy: .public) \
             fetched=\(fetchedCount, privacy: .public) \
+            stored=\(storedCount, privacy: .public) \
             blocked=\(blockedCount, privacy: .public) \
             remaining=\(remaining, privacy: .public)
             """
