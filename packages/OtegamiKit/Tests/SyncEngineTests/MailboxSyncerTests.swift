@@ -714,6 +714,59 @@ struct MailboxSyncerTests {
         #expect(mailbox.uidValidity == 2)
     }
 
+    /// 実機報告「バッジの数字分のメールが受信箱に見当たらない」で判明した
+    /// 欠陥: `unseenNotFetchedCount` が実態とずれても、ユーザーがそれを
+    /// 測り直す手段がアプリ内に 1 つも無かった。pull-to-refresh は
+    /// `forceReconcileVanishedUIDs` を立てて来るので、それをスイープの
+    /// ゲート判定へ結線する。
+    @Test("a user-initiated refresh re-runs the unseen sweep inside the 15-minute gate")
+    func userInitiatedRefreshReRunsTheUnseenSweep() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "既存")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+            )
+        )
+        // Swept two minutes ago with a stale remainder: well inside the
+        // automatic 15-minute gate, well past the user-initiated cooldown.
+        try await database.dbWriter.write { db in
+            try db.execute(
+                sql: "UPDATE mailbox SET unseenNotFetchedCount = 3, lastUnseenSweepAt = ?",
+                arguments: [Date().addingTimeInterval(-120)]
+            )
+        }
+
+        // The server says nothing is unread anymore.
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "既存", flags: .seen)]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: script)
+        }
+        let auth = MailAuth.password(username: "test1@otegami.test", password: "test1234")
+
+        // 対照: 自動同期 (IDLE wake / 前面復帰) は 15 分ゲートに阻まれる。
+        _ = try await syncer.performIncrementalSync(auth: auth)
+        let afterAutomatic = try #require(try await database.dbWriter.read { db in
+            try MailboxRecord.filter(Column("accountId") == account.id).fetchOne(db)
+        })
+        #expect(afterAutomatic.unseenNotFetchedCount == 3, "自動同期のゲートは据え置き")
+
+        _ = try await syncer.performIncrementalSync(auth: auth, forceReconcileVanishedUIDs: true)
+
+        let mailbox = try #require(try await database.dbWriter.read { db in
+            try MailboxRecord.filter(Column("accountId") == account.id).fetchOne(db)
+        })
+        #expect(mailbox.unseenNotFetchedCount == 0, "pull-to-refresh で残数を測り直せる")
+    }
+
     @Test("a uidValidity change throws away the unseen sweep's measurement — those UIDs no longer exist")
     func uidValidityChangeResetsTheUnseenRemainder() async throws {
         let database = try AppDatabase.makeInMemory()
