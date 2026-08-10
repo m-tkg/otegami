@@ -115,8 +115,9 @@ public actor PooledIMAPSessionFactory {
     }
 
     /// `session` をプールへ返却し、`idleTTL` の失効タイマーを開始する。
-    /// `discard: true` (Task #206/#211 の pitfall i: `[LIMIT]` レート制限
-    /// 応答を受けたセッション) の場合はプールに載せず実切断する。
+    /// `discard: true` の場合はプールに載せず実切断する — 立つ条件は
+    /// `PooledIMAPSession.mustDiscardOnDisconnect` の doc comment 参照
+    /// (`[LIMIT]` レート制限応答、またはキャンセルで中断されたセッション)。
     func giveBack(key: AccountKey, session: any IMAPSessionProtocol, discard: Bool) async {
         guard !discard else {
             await session.disconnect()
@@ -181,10 +182,20 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
     /// `wasReused = false` に落として、以降の失敗は普通に呼び出し側へ伝える
     /// (無限リトライを避ける)。
     private var hasAttemptedOperationSinceConnect = false
-    /// pitfall i: このサイクル中に `[LIMIT]` を含む `serverError` を一度でも
-    /// 受け取ったか。受け取っていれば `disconnect()` はプールへ返却せず
-    /// 実切断する。
-    private var encounteredRateLimit = false
+    /// このセッションを `disconnect()` 時にプールへ返さず実切断すべきか。
+    /// 立つのは 2 つの場合:
+    ///
+    /// - pitfall i: このサイクル中に `[LIMIT]` を含む `serverError` を一度
+    ///   でも受け取った (Gmail のレート制限応答)。
+    /// - 実機バグ (キャンセルが効かない) の対応で入った
+    ///   `MailCoreIMAPSession.runCancellable` によるキャンセル: MailCore2 の
+    ///   `MCOperation::cancel()` はフラグを立てるだけで、実行中のソケット
+    ///   読み取りを中断しない (`MCOperation.cpp`)。つまりキャンセルで
+    ///   `await` を抜けた時点でも、下位セッションはまだサーバーとの
+    ///   コマンドの途中かもしれない — その状態のセッションを再利用すると、
+    ///   次の操作が前のコマンドの残りの応答を読んでしまう。返却せず切って
+    ///   捨てるのが唯一安全な扱い。
+    private var mustDiscardOnDisconnect = false
 
     /// `IMAPSessionProtocol` 準拠のために必要な初期化子。このコードベースの
     /// 実際の呼び出し元は常に `sessionFactory(config)` というクロージャ経由
@@ -219,7 +230,7 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
         accountKey = key
         lastAuth = auth
         hasAttemptedOperationSinceConnect = false
-        encounteredRateLimit = false
+        mustDiscardOnDisconnect = false
 
         if let reused = await pool.checkout(key: key) {
             underlying = reused
@@ -240,7 +251,7 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
             await underlying.disconnect()
             return
         }
-        await pool.giveBack(key: accountKey, session: underlying, discard: encounteredRateLimit)
+        await pool.giveBack(key: accountKey, session: underlying, discard: mustDiscardOnDisconnect)
     }
 
     private static func username(from auth: MailAuth) -> String {
@@ -250,13 +261,14 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
         }
     }
 
-    /// 通常のフォワーディングに加え、二つのプール固有の振る舞いを実装する:
+    /// 通常のフォワーディングに加え、プール固有の振る舞いを実装する:
     /// - 再利用セッションの最初の操作が `.connectionFailed` で失敗した場合、
     ///   1回だけ新規接続に張り替えて同じ操作を再発行する (返却〜再利用の
     ///   間にサーバー側で切断されていた場合の自然なリトライ)。
     /// - `.serverError` の説明文に `[LIMIT]` を含む場合 (pitfall i のレート
-    ///   制限応答) は `encounteredRateLimit` を立て、`disconnect()` に
-    ///   このセッションを破棄させる。
+    ///   制限応答)、または操作が `CancellationError` を投げた場合は
+    ///   `mustDiscardOnDisconnect` を立て、`disconnect()` にこのセッションを
+    ///   破棄させる (それぞれの理由はそのプロパティの doc comment 参照)。
     private func perform<T>(_ operation: (any IMAPSessionProtocol) async throws -> T) async throws -> T {
         guard let underlying else { throw MailTransportError.notConnected }
         do {
@@ -264,7 +276,7 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
             hasAttemptedOperationSinceConnect = true
             return result
         } catch {
-            markRateLimitedIfNeeded(error)
+            markMustDiscardIfNeeded(error)
             if wasReused, !hasAttemptedOperationSinceConnect, isConnectionFailed(error),
                let pool, let auth = lastAuth {
                 hasAttemptedOperationSinceConnect = true
@@ -279,10 +291,14 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
         }
     }
 
-    private func markRateLimitedIfNeeded(_ error: Error) {
+    private func markMustDiscardIfNeeded(_ error: Error) {
+        if error is CancellationError {
+            mustDiscardOnDisconnect = true
+            return
+        }
         guard let mailError = error as? MailTransportError, case .serverError(let description) = mailError else { return }
         if description.contains("[LIMIT]") {
-            encounteredRateLimit = true
+            mustDiscardOnDisconnect = true
         }
     }
 

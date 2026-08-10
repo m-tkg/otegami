@@ -128,6 +128,50 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         try? await runVoid(session.disconnectOperation())
     }
 
+    /// Bridges a MailCore2 operation to `async`/`await` **while honouring
+    /// Swift Concurrency cancellation** — every other method in this type
+    /// funnels its `operation.start { ... }` call through here.
+    ///
+    /// 実機バグ (pull-to-refresh のキャンセルボタンが効かない): every bridge
+    /// here used to be a bare `withCheckedThrowingContinuation`, which is
+    /// structurally uncancellable — once a `FETCH`/`SEARCH` was in flight,
+    /// `Task.cancel()` had no effect at all until that one round trip
+    /// returned on its own. `MailboxSyncer`'s `Task.checkCancellation()`
+    /// calls between steps/chunks were therefore the *only* cancellation
+    /// checkpoints in the whole sync, so a cancel pressed during a single
+    /// long operation appeared to do nothing.
+    ///
+    /// Two halves, mirroring the `IDLE` path's existing shape
+    /// (`performOneIdleRound`, the one place that already did this):
+    /// - `MCOOperation.cancel()` marks the operation cancelled so MailCore2
+    ///   skips it if it hasn't started yet, and skips its completion
+    ///   callback if it has (`MCOperation::cancel` only sets a flag — it
+    ///   deliberately does *not* abort an in-flight socket read).
+    /// - `ContinuationBox` resumes this `await` with `CancellationError`
+    ///   right away rather than waiting for a completion callback that may
+    ///   now never come, and swallows the completion if it lands anyway.
+    ///
+    /// Because MailCore2 may still be mid-command on the underlying socket
+    /// when this returns, a cancelled session must not go back into the
+    /// connection pool — `PooledIMAPSession.perform` discards any session
+    /// whose operation threw `CancellationError` for exactly this reason.
+    private func runCancellable<T: Sendable>(
+        _ operation: MCOOperation,
+        start: (@escaping @Sendable (Result<T, Error>) -> Void) -> Void
+    ) async throws -> T {
+        let operationBox = OperationBox(operation)
+        let continuationBox = ContinuationBox<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+                continuationBox.attach(continuation)
+                start { result in continuationBox.finish(result) }
+            }
+        } onCancel: {
+            operationBox.operation.cancel()
+            continuationBox.finish(.failure(CancellationError()))
+        }
+    }
+
     /// Bridges a `MCOIMAPOperation`-shaped (`(Error?) -> Void` completion)
     /// operation to `async`/`await`. An actor-isolated instance method
     /// (not `static`) on purpose: it's called with a live MailCore2
@@ -137,12 +181,12 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// `continuation.resume` does, once the operation's completion block
     /// fires on MailCore2's own thread.
     private func runVoid(_ operation: MCOIMAPOperation) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        let _: Void = try await runCancellable(operation) { (finish: @escaping @Sendable (Result<Void, Error>) -> Void) in
             operation.start { error in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error))
+                    finish(.failure(Self.mapError(error)))
                 } else {
-                    continuation.resume()
+                    finish(.success(()))
                 }
             }
         }
@@ -153,13 +197,14 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     }
 
     private func fetchCapabilities() async throws -> Set<IMAPCapability> {
-        try await withCheckedThrowingContinuation { continuation in
-            session.capabilityOperation().start { error, capabilities in
+        let operation = session.capabilityOperation()
+        return try await runCancellable(operation) { finish in
+            operation.start { error, capabilities in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error))
+                    finish(.failure(Self.mapError(error)))
                     return
                 }
-                continuation.resume(returning: Self.capabilities(from: capabilities))
+                finish(.success(Self.capabilities(from: capabilities)))
             }
         }
     }
@@ -167,13 +212,14 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     // MARK: - Mailboxes
 
     public func listMailboxes() async throws -> [MailboxInfo] {
-        try await withCheckedThrowingContinuation { continuation in
-            session.fetchAllFoldersOperation().start { error, folders in
+        let operation = session.fetchAllFoldersOperation()
+        return try await runCancellable(operation) { finish in
+            operation.start { error, folders in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error))
+                    finish(.failure(Self.mapError(error)))
                     return
                 }
-                continuation.resume(returning: (folders ?? []).map(Self.mailboxInfo(from:)))
+                finish(.success((folders ?? []).map(Self.mailboxInfo(from:))))
             }
         }
     }
@@ -198,26 +244,27 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         // method's doc comment — so this one log site covers both; the
         // message says "select/status" rather than picking one name.
         let startedAt = Date()
-        return try await withCheckedThrowingContinuation { continuation in
-            session.folderInfoOperation(folder: mailboxPath).start { error, info in
+        let operation = session.folderInfoOperation(folder: mailboxPath)
+        return try await runCancellable(operation) { finish in
+            operation.start { error, info in
                 if let error {
                     Self.logger.notice(
                         "select/status: \(mailboxPath, privacy: .public) failed elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
                     )
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
                 guard let info else {
-                    continuation.resume(throwing: MailTransportError.malformedResponse(
+                    finish(.failure(MailTransportError.malformedResponse(
                         underlyingDescription: "folderInfoOperation returned no info and no error"
-                    ))
+                    )))
                     return
                 }
                 let status = Self.mailboxStatus(from: info)
                 Self.logger.notice(
                     "select/status: \(mailboxPath, privacy: .public) messageCount=\(status.messageCount, privacy: .public) uidNext=\(status.uidNext, privacy: .public) elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
                 )
-                continuation.resume(returning: status)
+                finish(.success(status))
             }
         }
     }
@@ -234,6 +281,13 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         let chunks = Self.chunk(uids, size: max(1, batchSize))
         var result: [FetchedEnvelope] = []
         for chunk in chunks {
+            // 実機バグ (キャンセルが効かない): this loop can run to hundreds of
+            // chunks on a wide UID range, and each chunk is its own round
+            // trip — without a checkpoint here, cancelling mid-loop only
+            // took effect after every remaining chunk had been fetched.
+            // `runCancellable` covers the chunk currently in flight; this
+            // covers the ones not started yet.
+            try Task.checkCancellation()
             let batch = try await fetchEnvelopesBatch(mailboxPath: mailboxPath, uids: chunk)
             result.append(contentsOf: batch)
         }
@@ -282,13 +336,14 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         // `MailCoreIMAPSession+Mapping.envelope(from:fetchedAt:)`'s doc
         // comment.
         let fetchedAt = Date()
-        return try await withCheckedThrowingContinuation { continuation in
-            session.fetchMessagesByUid(folder: mailboxPath, kind: kind, uids: indexSet).start { error, messages, _ in
+        let operation = session.fetchMessagesByUid(folder: mailboxPath, kind: kind, uids: indexSet)
+        return try await runCancellable(operation) { finish in
+            operation.start { error, messages, _ in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
-                continuation.resume(returning: (messages ?? []).map { Self.envelope(from: $0, fetchedAt: fetchedAt) })
+                finish(.success((messages ?? []).map { Self.envelope(from: $0, fetchedAt: fetchedAt) }))
             }
         }
     }
@@ -319,6 +374,9 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
 
         var result: [FetchedEnvelope] = []
         for chunk in Self.chunk(sequenceRange, size: max(1, batchSize)) {
+            // Same reasoning as `fetchEnvelopes(mailboxPath:uids:batchSize:)`'s
+            // identical checkpoint.
+            try Task.checkCancellation()
             let batch = try await fetchEnvelopesByNumberBatch(mailboxPath: mailboxPath, numbers: chunk)
             result.append(contentsOf: batch)
         }
@@ -332,13 +390,14 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
         let indexSet = Self.indexSet(for: numbers)
         let fetchedAt = Date()
-        return try await withCheckedThrowingContinuation { continuation in
-            session.fetchMessagesByNumber(folder: mailboxPath, kind: kind, numbers: indexSet).start { error, messages, _ in
+        let operation = session.fetchMessagesByNumber(folder: mailboxPath, kind: kind, numbers: indexSet)
+        return try await runCancellable(operation) { finish in
+            operation.start { error, messages, _ in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
-                continuation.resume(returning: (messages ?? []).map { Self.envelope(from: $0, fetchedAt: fetchedAt) })
+                finish(.success((messages ?? []).map { Self.envelope(from: $0, fetchedAt: fetchedAt) }))
             }
         }
     }
@@ -372,13 +431,14 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     private func fetchFlagsBatch(mailboxPath: String, indexSet: MCOIndexSet) async throws -> [UInt32: MessageFlags] {
         let startedAt = Date()
         let requested = indexSet.count()
-        return try await withCheckedThrowingContinuation { continuation in
-            session.fetchMessagesByUid(folder: mailboxPath, kind: .flags, uids: indexSet).start { error, messages, _ in
+        let operation = session.fetchMessagesByUid(folder: mailboxPath, kind: .flags, uids: indexSet)
+        return try await runCancellable(operation) { finish in
+            operation.start { error, messages, _ in
                 if let error {
                     Self.logger.notice(
                         "fetchFlags: \(mailboxPath, privacy: .public) requested=\(requested, privacy: .public) failed elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
                     )
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
                 var result: [UInt32: MessageFlags] = [:]
@@ -388,7 +448,7 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
                 Self.logger.notice(
                     "fetchFlags: \(mailboxPath, privacy: .public) requested=\(requested, privacy: .public) fetched=\(result.count, privacy: .public) elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
                 )
-                continuation.resume(returning: result)
+                finish(.success(result))
             }
         }
     }
@@ -424,16 +484,17 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
         let indexSet = Self.indexSet(for: .all)
         let fetchedAt = Date()
-        return try await withCheckedThrowingContinuation { continuation in
-            session.syncMessages(folder: mailboxPath, kind: kind, uids: indexSet, modSeq: modSeq).start { error, messages, vanished in
+        let operation = session.syncMessages(folder: mailboxPath, kind: kind, uids: indexSet, modSeq: modSeq)
+        return try await runCancellable(operation) { finish in
+            operation.start { error, messages, vanished in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
-                continuation.resume(returning: ChangedSinceResult(
+                finish(.success(ChangedSinceResult(
                     envelopes: (messages ?? []).map { Self.envelope(from: $0, fetchedAt: fetchedAt) },
                     vanishedUIDs: Self.vanishedUIDs(from: vanished)
-                ))
+                )))
             }
         }
     }
@@ -449,20 +510,21 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
             throw MailTransportError.serverError(underlyingDescription: "Server does not support CONDSTORE")
         }
         let indexSet = Self.indexSet(for: .all)
-        return try await withCheckedThrowingContinuation { continuation in
-            session.syncMessages(folder: mailboxPath, kind: .flags, uids: indexSet, modSeq: modSeq).start { error, messages, vanished in
+        let operation = session.syncMessages(folder: mailboxPath, kind: .flags, uids: indexSet, modSeq: modSeq)
+        return try await runCancellable(operation) { finish in
+            operation.start { error, messages, vanished in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
                 var flagsByUID: [UInt32: MessageFlags] = [:]
                 for message in messages ?? [] {
                     flagsByUID[message.uid] = Self.messageFlags(from: message.flags)
                 }
-                continuation.resume(returning: ChangedSinceFlagsResult(
+                finish(.success(ChangedSinceFlagsResult(
                     flagsByUID: flagsByUID,
                     vanishedUIDs: Self.vanishedUIDs(from: vanished)
-                ))
+                )))
             }
         }
     }
@@ -474,18 +536,23 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// don't support `QRESYNC`'s `VANISHED` reporting; see
     /// `IMAPSessionProtocol.searchExistingUIDs`'s doc comment.
     public func searchExistingUIDs(mailboxPath: String, uids: UIDRange) async throws -> Set<UInt32> {
-        let expression = MCOIMAPSearchExpression.searchUIDs(Self.indexSet(for: uids))
-        return try await withCheckedThrowingContinuation { continuation in
-            session.searchExpressionOperation(folder: mailboxPath, expression: expression).start { error, result in
+        try await runSearch(mailboxPath: mailboxPath, expression: MCOIMAPSearchExpression.searchUIDs(Self.indexSet(for: uids)))
+    }
+
+    /// Shared by all three `SEARCH`-shaped methods below — they only differ
+    /// in the `MCOIMAPSearchExpression` they build, and every one of them
+    /// is a single unchunked server-side scan (`SEARCH UNSEEN` over a large
+    /// mailbox especially), so routing them through `runCancellable` is
+    /// what makes them interruptible at all.
+    private func runSearch(mailboxPath: String, expression: MCOIMAPSearchExpression) async throws -> Set<UInt32> {
+        let operation = session.searchExpressionOperation(folder: mailboxPath, expression: expression)
+        return try await runCancellable(operation) { finish in
+            operation.start { error, result in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
-                do {
-                    continuation.resume(returning: try Self.uidSet(from: result))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+                finish(Result { try Self.uidSet(from: result) })
             }
         }
     }
@@ -507,19 +574,7 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
             subjectOrFrom,
             other: MCOIMAPSearchExpression.searchBody(query)
         )
-        return try await withCheckedThrowingContinuation { continuation in
-            session.searchExpressionOperation(folder: mailboxPath, expression: expression).start { error, result in
-                if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
-                    return
-                }
-                do {
-                    continuation.resume(returning: try Self.uidSet(from: result))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        return try await runSearch(mailboxPath: mailboxPath, expression: expression)
     }
 
     /// `IMAPSessionProtocol.searchUnseenUIDs`'s doc comment. `searchUnread`
@@ -527,21 +582,7 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// same single-key expression, no `OR` nesting needed unlike
     /// `searchMessages` above.
     public func searchUnseenUIDs(mailboxPath: String) async throws -> Set<UInt32> {
-        try await withCheckedThrowingContinuation { continuation in
-            session.searchExpressionOperation(
-                folder: mailboxPath, expression: MCOIMAPSearchExpression.searchUnread()
-            ).start { error, result in
-                if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
-                    return
-                }
-                do {
-                    continuation.resume(returning: try Self.uidSet(from: result))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        try await runSearch(mailboxPath: mailboxPath, expression: MCOIMAPSearchExpression.searchUnread())
     }
 
     // MARK: - Body (M2)
@@ -557,22 +598,23 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// worse copy of what the library already does well.
     public func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent {
         let startedAt = Date()
-        let content: MessageBodyContent = try await withCheckedThrowingContinuation { continuation in
-            session.fetchParsedMessageOperation(folder: mailboxPath, uid: uid).start { error, parser in
+        let bodyOperation = session.fetchParsedMessageOperation(folder: mailboxPath, uid: uid)
+        let content: MessageBodyContent = try await runCancellable(bodyOperation) { finish in
+            bodyOperation.start { error, parser in
                 if let error {
                     Self.logger.notice(
                         "fetchBody: \(mailboxPath, privacy: .public) uid=\(uid, privacy: .public) failed elapsed=\(Self.elapsedMs(since: startedAt), privacy: .public)ms"
                     )
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
                 guard let parser else {
-                    continuation.resume(throwing: MailTransportError.malformedResponse(
+                    finish(.failure(MailTransportError.malformedResponse(
                         underlyingDescription: "fetchParsedMessageOperation returned no parser and no error"
-                    ))
+                    )))
                     return
                 }
-                continuation.resume(returning: Self.bodyContent(from: parser))
+                finish(.success(Self.bodyContent(from: parser)))
             }
         }
         // Byte counts, never the content itself: `plainText`/`html`
@@ -631,36 +673,38 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// own `Content-Transfer-Encoding` decoding rather than re-deriving it.
     public func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data {
         guard let partId else {
-            return try await withCheckedThrowingContinuation { continuation in
-                session.fetchMessageOperation(folder: mailboxPath, uid: uid).start { error, data in
+            let rawOperation = session.fetchMessageOperation(folder: mailboxPath, uid: uid)
+            return try await runCancellable(rawOperation) { finish in
+                rawOperation.start { error, data in
                     if let error {
-                        continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                        finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                         return
                     }
-                    continuation.resume(returning: data ?? Data())
+                    finish(.success(data ?? Data()))
                 }
             }
         }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            session.fetchParsedMessageOperation(folder: mailboxPath, uid: uid).start { error, parser in
+        let parsedOperation = session.fetchParsedMessageOperation(folder: mailboxPath, uid: uid)
+        return try await runCancellable(parsedOperation) { finish in
+            parsedOperation.start { error, parser in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
                 guard let parser else {
-                    continuation.resume(throwing: MailTransportError.malformedResponse(
+                    finish(.failure(MailTransportError.malformedResponse(
                         underlyingDescription: "fetchParsedMessageOperation returned no parser and no error"
-                    ))
+                    )))
                     return
                 }
                 guard let data = Self.partData(from: parser, uniqueID: partId) else {
-                    continuation.resume(throwing: MailTransportError.malformedResponse(
+                    finish(.failure(MailTransportError.malformedResponse(
                         underlyingDescription: "No MIME part with uniqueID \(partId) found in message uid \(uid)"
-                    ))
+                    )))
                     return
                 }
-                continuation.resume(returning: data)
+                finish(.success(data))
             }
         }
     }
@@ -673,13 +717,14 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// still pick the message up either way.
     public func append(mailboxPath: String, messageData: Data, flags: MessageFlags) async throws -> UInt32? {
         let mcoFlags = Self.mcoMessageFlag(from: flags)
-        return try await withCheckedThrowingContinuation { continuation in
-            session.appendMessageOperation(folder: mailboxPath, messageData: messageData, flags: mcoFlags).start { error, createdUID in
+        let operation = session.appendMessageOperation(folder: mailboxPath, messageData: messageData, flags: mcoFlags)
+        return try await runCancellable(operation) { finish in
+            operation.start { error, createdUID in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     return
                 }
-                continuation.resume(returning: createdUID == 0 ? nil : createdUID)
+                finish(.success(createdUID == 0 ? nil : createdUID))
             }
         }
     }
@@ -708,27 +753,20 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         let indexSet = Self.indexSet(for: uids)
 
         if cachedCapabilities.contains(.move) {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                session.moveMessagesOperation(folder: mailboxPath, uids: indexSet, destFolder: destinationPath).start { error, _ in
+            let operation = session.moveMessagesOperation(folder: mailboxPath, uids: indexSet, destFolder: destinationPath)
+            let _: Void = try await runCancellable(operation) { (finish: @escaping @Sendable (Result<Void, Error>) -> Void) in
+                operation.start { error, _ in
                     if let error {
-                        continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                        finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                     } else {
-                        continuation.resume()
+                        finish(.success(()))
                     }
                 }
             }
             return
         }
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            session.copyMessagesOperation(folder: mailboxPath, uids: indexSet, destFolder: destinationPath).start { error, _ in
-                if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
+        try await performCopy(mailboxPath: mailboxPath, indexSet: indexSet, destinationPath: destinationPath)
         try await store(
             mailboxPath: mailboxPath,
             change: FlagChange(uids: uids, op: .add, flags: .deleted, uidValidity: 0)
@@ -748,13 +786,20 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// follows it with the delete+expunge that turns it into a move).
     public func copy(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {
         guard !uids.uids.isEmpty else { return }
-        let indexSet = Self.indexSet(for: uids)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            session.copyMessagesOperation(folder: mailboxPath, uids: indexSet, destFolder: destinationPath).start { error, _ in
+        try await performCopy(mailboxPath: mailboxPath, indexSet: Self.indexSet(for: uids), destinationPath: destinationPath)
+    }
+
+    /// The `COPY` half shared by `copy(mailboxPath:uids:to:)` and
+    /// `move(mailboxPath:uids:to:)`'s non-`MOVE`-capability fallback — the
+    /// two only differ in what (if anything) follows the copy.
+    private func performCopy(mailboxPath: String, indexSet: MCOIndexSet, destinationPath: String) async throws {
+        let operation = session.copyMessagesOperation(folder: mailboxPath, uids: indexSet, destFolder: destinationPath)
+        let _: Void = try await runCancellable(operation) { (finish: @escaping @Sendable (Result<Void, Error>) -> Void) in
+            operation.start { error, _ in
                 if let error {
-                    continuation.resume(throwing: Self.mapError(error, mailboxPath: mailboxPath))
+                    finish(.failure(Self.mapError(error, mailboxPath: mailboxPath)))
                 } else {
-                    continuation.resume()
+                    finish(.success(()))
                 }
             }
         }
@@ -843,6 +888,65 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         }
 
         return interruptFlag.get() ? .interrupted : .newData
+    }
+
+    /// `IdleOperationBox`'s general-purpose counterpart, for
+    /// `runCancellable(_:start:)`'s `onCancel` closure — same
+    /// `@unchecked Sendable` reasoning (`MCOperation::cancel()` takes the
+    /// operation's own lock, so calling it from the cancelling thread while
+    /// MailCore2's internal thread runs the operation is safe in practice;
+    /// Swift's checker just can't see through the Objective-C-bridged
+    /// class).
+    private final class OperationBox: @unchecked Sendable {
+        let operation: MCOOperation
+        init(_ operation: MCOOperation) { self.operation = operation }
+    }
+
+    /// One-shot, thread-safe handoff between a MailCore2 completion block
+    /// (fired on MailCore2's own thread) and `withTaskCancellationHandler`'s
+    /// `onCancel` (fired on whichever thread cancelled) — whichever arrives
+    /// first resumes the `await`, the loser is silently dropped.
+    ///
+    /// `pending` covers the third ordering: cancellation arriving *before*
+    /// `withCheckedThrowingContinuation` handed us its continuation (the
+    /// `Task` was already cancelled when this call started). Resuming a
+    /// continuation that doesn't exist yet would trap, so the result is
+    /// parked until `attach(_:)` shows up to consume it.
+    private final class ContinuationBox<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T, Error>?
+        private var pending: Result<T, Error>?
+        private var finished = false
+
+        func attach(_ continuation: CheckedContinuation<T, Error>) {
+            lock.lock()
+            if let pending {
+                self.pending = nil
+                finished = true
+                lock.unlock()
+                continuation.resume(with: pending)
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
+
+        func finish(_ result: Result<T, Error>) {
+            lock.lock()
+            guard !finished else {
+                lock.unlock()
+                return
+            }
+            guard let continuation else {
+                pending = result
+                lock.unlock()
+                return
+            }
+            finished = true
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume(with: result)
+        }
     }
 
     /// Wraps a non-`Sendable` `MCOIMAPIdleOperation` so it can be captured

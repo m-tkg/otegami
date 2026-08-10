@@ -102,6 +102,38 @@ struct PooledIMAPSessionFactoryTests {
         #expect(recorder.connectCount == 2)
     }
 
+    /// 実機バグ (pull-to-refresh のキャンセルが効かない) の対応で
+    /// `MailCoreIMAPSession` の各操作が `withTaskCancellationHandler` 経由に
+    /// なった副作用: MailCore2 の `MCOperation::cancel()` はフラグを立てる
+    /// だけで実行中のソケット読み取りを止めないので、キャンセルで `await` を
+    /// 抜けた時点の下位セッションはまだコマンドの途中かもしれない。そのまま
+    /// プールへ戻すと、次の利用者が前のコマンドの残り応答を読んでしまう —
+    /// `[LIMIT]` を受けたセッションと同じく捨てる。
+    @Test("a session whose operation was cancelled is discarded, not returned to the pool")
+    func cancelledSessionIsDiscardedNotPooled() async throws {
+        let recorder = PoolFakeSession.Recorder()
+        let script = PoolFakeSession.Script(cancelsCapabilities: true)
+        let pool = PooledIMAPSessionFactory(sessionFactory: { config in
+            PoolFakeSession(config: config, script: script, recorder: recorder)
+        })
+
+        let first = pool.makeSession(config: config)
+        try await first.connect(auth: auth)
+        await #expect(throws: CancellationError.self) {
+            _ = try await first.capabilities()
+        }
+        await first.disconnect()
+
+        #expect(recorder.disconnectCount == 1)
+        #expect(await pool.idleSessionCountForTesting == 0)
+
+        let second = pool.makeSession(config: config)
+        try await second.connect(auth: auth)
+        await second.disconnect()
+
+        #expect(recorder.connectCount == 2, "the discarded session forced a fresh real connection")
+    }
+
     @Test("a reused session's first operation failing with connectionFailed retries once against a fresh connection")
     func reusedSessionRetriesOnceOnConnectionFailure() async throws {
         let recorder = PoolFakeSession.Recorder()
@@ -180,11 +212,21 @@ final actor PoolFakeSession: IMAPSessionProtocol {
     struct Script: Sendable {
         var failConnection: MailTransportError?
         var failCapabilities: MailTransportError?
+        /// `CancellationError` を投げさせる用の別フラグ — `failCapabilities`
+        /// は `MailTransportError?` (`Script` が `Sendable` である必要が
+        /// あり、`any Error` は入れられない) なので型で表現できない。
+        var cancelsCapabilities = false
         var capabilitiesToReport: Set<IMAPCapability> = []
 
-        init(failConnection: MailTransportError? = nil, failCapabilities: MailTransportError? = nil, capabilitiesToReport: Set<IMAPCapability> = []) {
+        init(
+            failConnection: MailTransportError? = nil,
+            failCapabilities: MailTransportError? = nil,
+            cancelsCapabilities: Bool = false,
+            capabilitiesToReport: Set<IMAPCapability> = []
+        ) {
             self.failConnection = failConnection
             self.failCapabilities = failCapabilities
+            self.cancelsCapabilities = cancelsCapabilities
             self.capabilitiesToReport = capabilitiesToReport
         }
     }
@@ -219,6 +261,9 @@ final actor PoolFakeSession: IMAPSessionProtocol {
     }
 
     func capabilities() async throws -> Set<IMAPCapability> {
+        if script.cancelsCapabilities {
+            throw CancellationError()
+        }
         if let failCapabilities = script.failCapabilities {
             throw failCapabilities
         }
