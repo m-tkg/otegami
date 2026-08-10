@@ -68,10 +68,19 @@ extension ComposerView {
             // C6/C7: the message is already durably queued at this point
             // (the transaction above committed) — everything from here on
             // only decides *when* it's allowed to actually leave, never
-            // whether it's lost. `dismiss()` happens unconditionally
-            // either way, matching the pre-C7 behavior of closing the
-            // Composer the instant the local write succeeds.
-            dismiss()
+            // whether it's lost. The close happens unconditionally either
+            // way, matching the pre-C7 behavior of closing the Composer the
+            // instant the local write succeeds.
+            //
+            // 実機バグ (macOS で送信直後に「このメッセージを保存しますか？」が
+            // 出る): this used to call `dismiss()` directly. On macOS that
+            // goes through `WindowCloseInterceptor` →
+            // `handleWindowShouldClose()`, which sees `hasUnsavedChanges`
+            // still `true` (the composed text is still in the `@State`
+            // fields — sending doesn't clear them) and blocks the close to
+            // ask whether to keep a draft, for a message that had already
+            // been enqueued and was on its way out.
+            closeWithoutPrompting()
             guard let outboxId else { return }
             Self.pendingSendLogger.notice("enqueued: outboxMessageId=\(outboxId, privacy: .public) accountId=\(accountId, privacy: .private)")
 

@@ -353,11 +353,11 @@ struct ComposerView: View {
             Button("下書きとして保存") {
                 Task {
                     await saveDraft()
-                    closeAfterConfirmation()
+                    closeWithoutPrompting()
                 }
             }
             .accessibilityIdentifier("composer.saveDraftButton")
-            Button("保存せずに破棄", role: .destructive) { closeAfterConfirmation() }
+            Button("保存せずに破棄", role: .destructive) { closeWithoutPrompting() }
                 .accessibilityIdentifier("composer.discardButton")
             Button("キャンセル", role: .cancel) {}
                 .accessibilityIdentifier("composer.keepEditingButton")
@@ -752,16 +752,25 @@ struct ComposerView: View {
     }
     #endif
 
-    /// Both confirmation-dialog actions that actually close the Composer
-    /// (save-then-close, discard-then-close) call this instead of
-    /// `dismiss()` directly. On iOS it's just `dismiss()`. On macOS,
-    /// `dismiss()` closes this scene's `NSWindow`, which re-invokes
-    /// `handleWindowShouldClose()` via the same delegate hook that opened
-    /// this dialog in the first place — without the one-shot
-    /// `allowNextWindowClose` flag set first, that second call would see
-    /// `hasUnsavedChanges` still `true` and re-block the close, reopening
-    /// the dialog in a loop instead of ever actually closing.
-    private func closeAfterConfirmation() {
+    /// Every path that closes the Composer **without** needing to ask
+    /// "save or discard?" calls this instead of `dismiss()` directly: the
+    /// two confirmation-dialog actions (save-then-close, discard-then-close)
+    /// — the user just answered — and `send()`, whose message is already
+    /// durably queued by the time it closes.
+    ///
+    /// On iOS it's just `dismiss()`. On macOS, `dismiss()` closes this
+    /// scene's `NSWindow`, which invokes `handleWindowShouldClose()` via
+    /// `WindowCloseInterceptor`'s `NSWindowDelegate` hook — and that method
+    /// only looks at `hasUnsavedChanges`, which is still `true` (the
+    /// composed text is still sitting in the `@State` fields; nothing
+    /// resets it). Without the one-shot `allowNextWindowClose` flag set
+    /// first, the close is blocked and the save-or-discard dialog opens.
+    ///
+    /// 実機バグ (macOS で送信直後に「このメッセージを保存しますか？」が出る):
+    /// `send()` used to call `dismiss()` directly, so it hit exactly that —
+    /// the message had already been enqueued and was on its way out, yet
+    /// the window refused to close and asked whether to keep it as a draft.
+    func closeWithoutPrompting() {
         #if os(macOS)
         allowNextWindowClose = true
         #endif
