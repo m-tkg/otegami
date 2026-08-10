@@ -265,6 +265,24 @@ struct ThreadDetailView: View {
                         }
                     }
                 }
+                // 実機フィードバック「Liquid Glass だと HTML メールで白背景の
+                // ときにツールバーが見づらい」: 原因はガラスそのものではなく、
+                // ガラスの下をスクロールしていく本文がぼけずに透けること —
+                // 白背景 + 濃い大見出しの HTML メールでは、その見出しが
+                // `MessageDetailFooterToolbar` のアイコン (`OtegamiColor
+                // .accent` の水色) と重なってコントラストを食い潰す。
+                // iOS 26 のスクロールエッジエフェクトはまさにこのための仕組み
+                // で、バー直前でコンテンツを減衰させてガラス越しの可読性を
+                // 確保する。既定の `.automatic` はバーの種類から強さを推測する
+                // ため、アイコンが 15 個並ぶこのバーには弱すぎた — 明示的に
+                // `.hard` (減衰しきる強い方) を指定する。実際にエフェクトを
+                // 出すのはこの修飾子ではなく下の `.safeAreaBar` (旧
+                // `.safeAreaInset` にはエッジエフェクトを起こす役割が無い) で、
+                // ここはその強さの指定だけを担う。macOS はガラス化していない
+                // ので対象外 (CLAUDE.md「macOS は現状維持」)。
+                #if os(iOS)
+                .scrollEdgeEffectStyle(.hard, for: .bottom)
+                #endif
                 // Bug fix: this view used to carry `.defaultScrollAnchor
                 // (.bottom)` here instead of a normal top-anchored
                 // `ScrollView` plus the one-shot `scrollProxy.scrollTo`
@@ -378,7 +396,18 @@ struct ThreadDetailView: View {
                     .animation(.default, value: pinnedArchiveNotice)
             }
         }
+        // 上の `.scrollEdgeEffectStyle` のコメント参照 — iOS だけ
+        // `.safeAreaInset` から iOS 26 の `.safeAreaBar` へ移した。両者とも
+        // セーフエリアを削って中身をそこへ置く点は同じだが、`.safeAreaBar` は
+        // 「これはバーである」ことをシステムに伝えるため、その手前を通る
+        // スクロールコンテンツにエッジエフェクトが適用される (`.safeAreaInset`
+        // は素の余白扱いなので何も起きない)。背景は従来どおり中身
+        // (`MessageDetailFooterToolbar` の `otegamiGlassChrome`) が持つ。
+        #if os(iOS)
+        .safeAreaBar(edge: .bottom) { footerToolbar }
+        #else
         .safeAreaInset(edge: .bottom) { footerToolbar }
+        #endif
         .sheet(isPresented: $showingInfo) { infoSheet }
         .sheet(isPresented: $showingSource) { sourceSheet }
         .sheet(isPresented: $showingToolbarSettings) {
