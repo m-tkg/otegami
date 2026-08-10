@@ -576,6 +576,17 @@ public actor MailboxSyncer {
         var flagChanges = 0
         let vanishedUIDs: Set<UInt32>?
 
+        // 実機バグ (「新着メールを確認中…」のまま何分も止まって見える):
+        // このメソッドは `onProgress` を `.reconcile` の一箇所でしか呼んで
+        // おらず、CONDSTORE 経路では直前のステップ1が出した `.newMail` が
+        // そのままバナーに残り続けていた — 実際にはとっくにフラグ同期に
+        // 進んでいるのに、ユーザーには「新着メールの確認が終わらない」と
+        // しか見えない。`total` は事前に分からない (CHANGEDSINCE の応答が
+        // 返るまで何件変わったのか分からない) ので不定形の表示になる
+        // — `SyncProgressBanner` の determinate/indeterminate の使い分けの
+        // 意図どおり。
+        onProgress?(SyncProgressUpdate(mailboxPath: mailboxPath, phase: .flagSync, completed: 0, total: nil))
+
         if hasPendingRelocations {
             Self.logger.notice(
                 "flagSync: \(mailboxPath, privacy: .public) has pending-relocation row(s) — using a full envelope changedSince fetch for this pass"
