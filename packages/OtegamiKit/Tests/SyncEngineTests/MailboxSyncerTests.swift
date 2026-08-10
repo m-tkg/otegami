@@ -238,6 +238,102 @@ struct MailboxSyncerTests {
         #expect(fetchedRanges[0].upperBound == 2, "must be bounded to status.uidNext - 1, never open-ended")
     }
 
+    /// 実機バグ (Gmail を受信トレイ空運用しているアカウントで pull-to-refresh
+    /// が毎回5分／通知が来てもアプリに新着が無い): ローカルにそのメールボックス
+    /// の行が1件も残っていないと、新着の下限 (`maxUID + 1`) が 1 に落ちて
+    /// 「UID 1 から `status.uidNext - 1` まで」= UID 空間全体の fetch になって
+    /// いた。実機ログは `INBOX uids=1-76316 chunks=764 fetched=0
+    /// elapsed=292476ms` — 764 往復・4.9分・収穫ゼロ。`maxUID` は `nil` の
+    /// ままなので次の同期でも同じことが起きる (自力で抜けられない)。
+    ///
+    /// サーバー側も空 (`messageCount == 0`) なら、この同期は `SELECT` だけで
+    /// 終わらなければならない — `fetchedRanges` が空であることがそれを示す。
+    @Test("a mailbox with no locally stored message never scans the whole UID space")
+    func emptyLocalMailboxDoesNotScanEntireUIDSpace() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "1通目")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+            )
+        )
+
+        // 受信トレイを空にする運用 (全部アーカイブ/移動した状態) を模す —
+        // `mailbox` 行はそのまま (`uidValidity` は一致し続けるので
+        // `needsFullResync` は false)、`message` 行だけが無くなる。
+        try await database.dbWriter.write { db in _ = try MessageRecord.deleteAll(db) }
+
+        // サーバー側も空のまま UID だけが大きく進んだ状態 (アーカイブ先の
+        // 操作で uidNext は進む) — 実機の `messageCount=0 uidNext=76317`。
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": []],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 76317, highestModSeq: 0, messageCount: 0)],
+            capabilitiesToReport: [.condstore]
+        )
+        let sessionBox = SessionBox()
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            let session = FakeIMAPSession(config: config, script: incrementalScript)
+            sessionBox.session = session
+            return session
+        }
+        _ = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        let fetchedRanges = await sessionBox.session?.fetchedRanges ?? []
+        #expect(fetchedRanges.isEmpty, "an empty mailbox must not be fetched by UID range at all, let alone across the whole UID space")
+
+        let mailbox = try await database.dbWriter.read { db in try MailboxRecord.fetchOne(db) }
+        #expect(mailbox?.uidNext == 76317)
+    }
+
+    /// 上のテストの対になるケース: ローカルが空でもサーバーには実際にメールが
+    /// ある (受信トレイを空にした後に新着が届いた) 場合。ここでも UID 空間
+    /// 全体のスキャンは起きてはならず、`uidValidity` 変更時と同じ「直近
+    /// `AccountSyncer.initialSyncWindow` 件のウィンドウ」で取り直す。
+    @Test("a mailbox with no locally stored message re-establishes its recent window instead")
+    func emptyLocalMailboxReestablishesRecentWindow() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+
+        let account = try await performInitialSync(
+            database: database,
+            initialScript: FakeIMAPSession.Script(
+                mailboxes: [inbox],
+                envelopesByPath: ["INBOX": [makeEnvelope(uid: 1, subject: "1通目")]],
+                statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1)]
+            )
+        )
+        try await database.dbWriter.write { db in _ = try MessageRecord.deleteAll(db) }
+
+        let arrivals = (76310...76316).map { uid in makeEnvelope(uid: UInt32(uid), subject: "新着\(uid)") }
+        let incrementalScript = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            envelopesByPath: ["INBOX": arrivals],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 76317, highestModSeq: 0, messageCount: arrivals.count)],
+            capabilitiesToReport: [.condstore]
+        )
+        let sessionBox = SessionBox()
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            let session = FakeIMAPSession(config: config, script: incrementalScript)
+            sessionBox.session = session
+            return session
+        }
+        let progress = try await syncer.performIncrementalSync(auth: .password(username: "test1@otegami.test", password: "test1234"))
+
+        #expect(progress.didFullResync)
+
+        let fetchedRanges = await sessionBox.session?.fetchedRanges ?? []
+        #expect(fetchedRanges.isEmpty, "the recent-window path must not fall back to a UID-range scan")
+
+        let messages = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(messages.count == arrivals.count)
+        #expect(messages.contains { $0.subject == "新着76316" })
+    }
+
     // MARK: (b) flag sync — CONDSTORE and non-CONDSTORE
 
     @Test("CONDSTORE flag sync applies a changedSince flag change without re-fetching everything")

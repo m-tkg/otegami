@@ -196,7 +196,48 @@ public actor MailboxSyncer {
         // 1. New mail: everything since the highest UID already stored.
         try Task.checkCancellation()
         let maxUID = try await database.dbWriter.read { db in try MessageQuery.maxUID(mailboxId: mailboxId, db: db) }
-        let newMailLowerBound = (maxUID ?? 0) + 1
+
+        // 実機バグ (Gmail を受信トレイ空運用しているアカウントで
+        // pull-to-refresh が毎回5分かかる／通知が来てもアプリに新着が無い):
+        // ローカルにこのメールボックスの行が1件も無いと、下の
+        // `newMailLowerBound` は 1 になり「UID 1 から `status.uidNext - 1`
+        // まで」= UID 空間全体の fetch になる。実機ログでは
+        // `fetchEnvelopes: INBOX uids=1-76316 chunks=764 fetched=0
+        // elapsed=292476ms` — 764 往復・4.9分・収穫ゼロ。受信トレイを空に
+        // する運用ではローカルが常に空なので、これが同期のたびに繰り返さ
+        // れる (`maxUID` が `nil` のままなので自力では絶対に抜けられない)。
+        // Notification Service Extension も同じ経路を通るため、約30秒の
+        // 実行予算を使い切って新着を共有DBへ書けず、「通知とバッジだけ来て
+        // アプリを開くとメールが無い」という症状になっていた。
+        //
+        // ここに来ている時点で `uidValidity` は一致している
+        // (`needsFullResync` は false) が、ローカルに1件も無い以上「前回の
+        // 続き」を差分で追うための起点そのものが存在しない — なので
+        // uidValidity 変更時と同じ「直近 `AccountSyncer.initialSyncWindow`
+        // 件のウィンドウを取り直す」経路へ寄せる。`performWindowedResync`
+        // は `status.messageCount == 0` (サーバー側も空) なら fetch を一切
+        // 発行しないので、受信トレイが空のままの同期は SELECT 1回で終わる。
+        // フラグ同期 (ステップ2) を飛ばすことになるが、ローカルに行が無い
+        // メールボックスには差分を当てる対象も、消えたと判定できる UID も
+        // 存在しないので失うものは無い。
+        guard let maxUID else {
+            let skippedUpperBound: UInt32 = status.uidNext > 0 ? status.uidNext - 1 : 0
+            Self.logger.notice(
+                "newMail: \(mailboxPath, privacy: .public) has no locally stored message — re-establishing the recent window instead of scanning UID 1-\(skippedUpperBound, privacy: .public)"
+            )
+            onProgress?(SyncProgressUpdate(mailboxPath: mailboxPath, phase: .fullResync, completed: 0, total: nil))
+            let updated = try await performWindowedResync(
+                mailboxId: mailboxId,
+                mailboxPath: mailboxPath,
+                accountId: accountId,
+                session: session,
+                status: status,
+                mailboxRecord: mailboxRecord
+            )
+            return (updated, Progress(didFullResync: true))
+        }
+
+        let newMailLowerBound = maxUID + 1
         if newMailLowerBound < status.uidNext {
             // The total (`status.uidNext - newMailLowerBound`) is known
             // ahead of time here, but `fetchEnvelopes(uids:batchSize:)`

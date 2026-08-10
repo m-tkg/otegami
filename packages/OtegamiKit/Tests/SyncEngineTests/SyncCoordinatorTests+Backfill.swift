@@ -142,15 +142,28 @@ struct SyncCoordinatorBackfillTests {
                 backfillLowerBound: 5000
             )
             try work.insert(db)
+            // `backfillLowerBound: 5000` means "everything from uid 5000 up
+            // is already stored locally" — so each window's lower edge has
+            // to actually exist as a row. Without it (`MessageQuery.maxUID`
+            // returning `nil`) `MailboxSyncer.incrementalSync` takes its
+            // "no locally stored message" branch instead of the ordinary
+            // incremental path, re-establishing the recent window and
+            // resetting these very cursors via `BackfillSyncer.resetCursor`
+            // — see that branch's doc comment (実機バグ: 受信トレイ空運用の
+            // Gmail で UID 空間全体をスキャンして5分かかっていた件).
+            for mailbox in [inbox, archive, work] {
+                var seed = MessageRecord(mailboxId: mailbox.id!, uid: 5000, subject: "window-edge", internalDate: Date())
+                try seed.insert(db)
+            }
         }
 
         let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
         let script = FakeIMAPSession.Script(
             mailboxes: [inboxInfo],
             statusByPath: [
-                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
-                "Archive": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
-                "Work": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 1),
+                "Archive": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 1),
+                "Work": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 1),
             ]
         )
         let sessionBox = SessionBox()
@@ -199,13 +212,24 @@ struct SyncCoordinatorBackfillTests {
                 uidValidity: 1, uidNext: 1, backfillLowerBound: 600
             )
             try inbox.insert(db)
+            // `backfillLowerBound: 600` means "everything from uid 600 up is
+            // already stored locally" — so the window's lower edge has to
+            // actually exist as a row. Without it (`MessageQuery.maxUID`
+            // returning `nil`) `MailboxSyncer.incrementalSync` takes its
+            // "no locally stored message" branch instead of the ordinary
+            // incremental path, re-establishing the recent window and
+            // resetting this very cursor via `BackfillSyncer.resetCursor` —
+            // see that branch's doc comment (実機バグ: 受信トレイ空運用の
+            // Gmail で UID 空間全体をスキャンして5分かかっていた件).
+            var seed = MessageRecord(mailboxId: inbox.id!, uid: 600, subject: "window-edge", internalDate: Date())
+            try seed.insert(db)
         }
 
         let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
         let recorder = FakeIMAPSession.CallRecorder()
         let script = FakeIMAPSession.Script(
             mailboxes: [inboxInfo],
-            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0)]
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 1)]
         )
         let coordinator = SyncCoordinator(database: database) { config in
             FakeIMAPSession(config: config, script: script, recorder: recorder)
