@@ -307,8 +307,43 @@ extension MessageListView {
             await performRefreshSync(surfaceErrors: surfaceErrors, autoRetry: autoRetry)
         }
         activeSyncTask = task
+        let timeoutTask = makeRefreshTimeoutTask(for: task, surfaceErrors: surfaceErrors)
         await task.value
+        timeoutTask.cancel()
     }
+
+    /// 実機バグ (pull-to-refresh が5分終わらない) の再発防止線: 同期そのものに
+    /// 上限が無く、遅い経路に当たると「待つ以外に何もできない」状態が続いて
+    /// いた。原因になっていた UID 空間全体スキャンは
+    /// `MailboxSyncer.incrementalSync` 側で塞いだが、IMAP サーバー/回線が
+    /// 単に遅い日は誰にも予測できないので、上限そのものをここに置く。
+    ///
+    /// キャンセルは `SyncProgressBanner` のキャンセルボタンとまったく同じ
+    /// 経路 (`activeSyncTask.cancel()`) — `MailCoreIMAPSession.runCancellable`
+    /// と `MailboxSyncer`/`AccountSyncer` の `Task.checkCancellation()` が
+    /// 実際に効くようになったので、押されたときと同じように途中で止まって
+    /// 「そこまでに取り込めた分」は残る (各ステップが自前のトランザクション
+    /// でコミットしているため — `MailboxSyncer` 冒頭の doc comment)。
+    ///
+    /// `surfaceErrors` が `false` の経路 (`syncSelectedMailboxOnAppear()` の
+    /// 5分ループ) では中断はするがアラートは出さない — ユーザーが頼んでいない
+    /// パスで割り込まない、という既存の使い分けをそのまま踏襲する。
+    private func makeRefreshTimeoutTask(for task: Task<Void, Never>, surfaceErrors: Bool) -> Task<Void, Never> {
+        Task { @MainActor in
+            try? await Task.sleep(for: Self.refreshTimeout)
+            guard !Task.isCancelled else { return }
+            task.cancel()
+            guard surfaceErrors else { return }
+            syncErrorMessage = "同期に時間がかかりすぎたため中断しました。通信状況を確認して、もう一度お試しください。"
+        }
+    }
+
+    /// 1回の pull-to-refresh / 手動再同期が走り続けてよい上限。初回同期
+    /// (`AccountSyncer.performInitialSync`、直近500件+本文プリフェッチ) は
+    /// この経路を通らないので、ここを通るのは差分同期だけ — 実機ログでは
+    /// 正常なアカウントで数秒、遅い日でも十数秒で終わっている。90秒は
+    /// 「明らかに何かおかしい」と言い切れる余裕を持たせた線。
+    private static let refreshTimeout: Duration = .seconds(90)
 
     /// Task #194: applies one `MailboxSyncer.SyncProgressUpdate` to
     /// `syncProgress`. `@MainActor` and called via `Task { @MainActor in
