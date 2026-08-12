@@ -108,10 +108,28 @@ struct AccountDigestRow: View {
     let onRequestBulkAction: (AccountDigestBulkAction) -> Void
 
     var body: some View {
-        Button(action: onSelect) {
-            content
-        }
-        .buttonStyle(.plain)
+        // 実機報告 (2026-08-12)「行をタップしても完全に無反応」の3手目。
+        // 元は `Button(action: onSelect) { content }.buttonStyle(.plain)`
+        // だったが、この行はアプリで唯一 SwiftUI 標準の `.swipeActions`
+        // (下記) を併用する行で、`MessageListRow` の iOS 行 (自前の
+        // `DragGesture` + `ZStack`、実機で問題なくタップできている) とは
+        // タップ経路が違う。`.swipeActions` が付いた `List` セルは UIKit の
+        // スワイプ認識器を持ち、指のタップに必ず伴うわずかな移動でその
+        // 認識器がタッチを掴むと、`Button` は「押下中に動いた」としてタップを
+        // キャンセルする — 実機だけで無反応になり、移動量ゼロで down→up
+        // する XCUITest の合成タップ (`OtegamiAccountDigestRowTapUITests`、
+        // DB を書き換え続ける状況を足しても緑) では再現しない、という
+        // 観測と噛み合う。`.onTapGesture` はこのキャンセル判定を持たない
+        // ため、スワイプ認識器と併存しても離した時点でタップとして成立する。
+        //
+        // `Button` を外すぶん、`app.buttons` で行を拾う既存 UITest と
+        // VoiceOver のために `.isButton` トレイトと既定アクションを明示する
+        // (`.buttonStyle(.plain)` は押下ハイライトを描かないので見た目は不変)。
+        content
+        .onTapGesture(perform: onSelect)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(.default, onSelect)
         // Task #130, 2「アカウント行(カード)の間に縦の隙間」: 元は
         // `EdgeInsets()`(ゼロ)で行が隙間なく連続し、`otegamiCardBackground`
         // の角丸/背景だけがカードの境目を示していた (特にiOS — 角丸0で
