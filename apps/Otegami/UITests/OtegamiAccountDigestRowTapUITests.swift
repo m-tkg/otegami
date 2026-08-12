@@ -134,6 +134,33 @@ final class OtegamiAccountDigestRowTapUITests: XCTestCase {
         )
     }
 
+    /// 実機報告 (2026-08-13)「アカウント絞り込みチップも、タップして反応は
+    /// するが切り替わらない」— 行タップと同じ `accountFilter` を書く経路
+    /// なので、同じ画面で並べて固定しておく (`AccountFilterChip` の
+    /// `.onTapGesture` 併設の回帰テスト)。
+    func testAccountChipTapOpensTheFilteredList() throws {
+        let app = makeApp()
+        app.launch()
+
+        let list = app.descendants(matching: .any)["accountDigest.list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 20), "account digest list should be on screen")
+
+        let chips = app.buttons.allElementsBoundByIndex.filter {
+            $0.identifier.hasPrefix("mail.chip.") && $0.identifier != "mail.chip.all"
+        }
+        let chip = try XCTUnwrap(chips.first, "an account filter chip should exist")
+        chip.tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["messageList.list"].waitForExistence(timeout: 10),
+            "tapping an account chip must switch to that account's filtered message list"
+        )
+        XCTAssertTrue(
+            list.waitForNonExistence(timeout: 5),
+            "the digest list must be replaced once an account is picked"
+        )
+    }
+
     /// スワイプ割り当てを両方 `.pin` にすると `AccountDigestBulkAction.init?`
     /// が nil を返し、そのエッジの `.swipeActions` ブロックが空になる —
     /// 空の `.swipeActions` が行のヒットテストを壊していないことを固定する。
