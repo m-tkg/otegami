@@ -701,6 +701,9 @@ final class AppEnvironment {
         Self.adoptOrphanedCredentialIfUnambiguous(database: database, credentialStore: credentialStore)
 
         self.uitestDirectOpenThreadId = UITestSeeder.seedIfRequested(db: database.dbWriter)
+        // 実機の同期による継続的な DB 書き込みを再現する検証専用フック —
+        // `UITestSeeder.startDatabaseChurnIfRequested` の doc comment 参照。
+        UITestSeeder.startDatabaseChurnIfRequested(db: database.dbWriter)
 
         // Phase 3: `sessionFactory` goes through `imapSessionPool` (every
         // short-lived sync/fetch pass reuses a recently-returned

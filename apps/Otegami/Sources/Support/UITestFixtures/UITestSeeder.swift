@@ -774,4 +774,49 @@ enum UITestSeeder {
             )
         }
     }
+
+    /// 実機報告 (2026-08-12)「アカウント別グループ表示の行をタップしても
+    /// 無反応」の再現用フック。実機では古いメールのバックフィル同期が数秒
+    /// おきに `message` テーブルへ数百件を書き込んでいる (実機ログ:
+    /// `fetchEnvelopes: … fetched=393` が連続) のに対し、シミュレータの
+    /// フィクスチャは一度書いたきり静止しているため、既存の
+    /// `OtegamiAccountDigestRowTapUITests` は緑のまま実機のバグを取り
+    /// 逃がしていた。`OTEGAMI_UITEST_DB_CHURN_MS` が立っているときだけ、
+    /// その間隔で `message` テーブルへ書き込み続けて実機の状況を再現する。
+    ///
+    /// 既定の書き込みは行の内容を一切変えない (`updatedAt = updatedAt`) —
+    /// GRDB の `ValueObservation` はテーブル単位で追跡するため、これでも
+    /// 受信トレイと無関係な書き込みと同じように observation は発火する。
+    /// つまり「中身は変わらないのに再取得だけが走る」という、
+    /// `AccountDigestQuery.digestsObservation` の `.removeDuplicates()`
+    /// が吸収するはずの状況を作る。
+    ///
+    /// `OTEGAMI_UITEST_DB_CHURN_MUTATES=1` を足すと、実際に
+    /// `AccountDigest` の中身が変わる書き込み (受信トレイに出ている
+    /// スレッドの `updatedAt` 更新) になり、`.removeDuplicates()` を
+    /// 素通りして `List` が更新され続ける — バックフィル同期が
+    /// `ThreadAssigner.recomputeAggregates` 経由で受信トレイのスレッド
+    /// 行そのものを書き換える実機の状況に対応する。
+    static func startDatabaseChurnIfRequested(db: any DatabaseWriter) {
+        guard let raw = ProcessInfo.processInfo.environment["OTEGAMI_UITEST_DB_CHURN_MS"],
+              let intervalMs = Int(raw), intervalMs > 0 else { return }
+        let mutates = ProcessInfo.processInfo.environment["OTEGAMI_UITEST_DB_CHURN_MUTATES"] == "1"
+        // `thread` 側を書き換えるのは、ダイジェスト行のプレビューが
+        // `AccountDigest.recentSummaries` (= `ThreadSummary`、`ThreadRecord`
+        // を丸ごと持つ) 由来で、そこが変われば `.removeDuplicates()` を
+        // 通過して `List` が実際に更新されるため。`unreadCount` の反転は
+        // 「毎回必ず値が変わる」を1文で書ける最小の手段 (実機で変わるのが
+        // この列そのものだという主張ではない)。
+        let sql = mutates
+            ? "UPDATE thread SET unreadCount = 1 - unreadCount"
+            : "UPDATE message SET updatedAt = updatedAt"
+        Task.detached {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(intervalMs))
+                try? await db.write { db in
+                    try db.execute(sql: sql)
+                }
+            }
+        }
+    }
 }
