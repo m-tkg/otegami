@@ -121,11 +121,14 @@ struct AccountDigestRow: View {
         // 2026-08-07 macOS ネイティブ化: カード廃止に伴い macOS は上下
         // マージンもゼロ (区切りはヘアラインが担う)。iOS はカード間の
         // 隙間 (Task #130, 2) を維持。
-        #if os(iOS)
-        .listRowInsets(EdgeInsets(top: OtegamiSpacing.xs, leading: 0, bottom: OtegamiSpacing.xs, trailing: 0))
-        #else
+        //
+        // 実機報告 (2026-08-12)「行をタップしても無反応」対策: iOS の上下
+        // 4pt は `listRowInsets` = **行の外側**なので、その帯はタップが
+        // どこにも届かない不感帯になっていた。隙間そのものは Task #130, 2
+        // の意図なので残し、行の外側ではなく行と行の *間* に出す
+        // `AccountDigestView` 側の `.listRowSpacing(OtegamiSpacing.xs)` へ
+        // 移した。
         .listRowInsets(EdgeInsets())
-        #endif
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
         #if os(iOS)
@@ -222,6 +225,20 @@ struct AccountDigestRow: View {
         // 方針」): iOS 側の`surface`塗りカード表現もこの移行で廃止し、
         // macOS と同じ「塗りなし + ヘアライン区切り」に揃えた — `#if os`
         // 分岐は不要になったので畳んだ。
+        //
+        // 実機報告 (2026-08-12)「行をタップしても無反応」対策の下2行。
+        // `dfed039` (上記 Phase 1) は `ThreadRowView` からは塗りの *色* を
+        // 抜いただけ (`.otegamiCardBackground(isSelected ? … : .clear, …)`
+        // が残り、透明でも `.background().clipShape()` のレイヤーは1枚ある)
+        // のに対し、この行からは `otegamiCardBackground` の呼び出しごと
+        // 消していた — アプリ内で背景レイヤーを1枚も持たない唯一の行行。
+        // `.buttonStyle(.plain)` のヒットテストは描画内容の形にそのまま
+        // 従うので (FAB で踏んだ `020ca83` / `docs/architecture.md`「n.」)、
+        // 下地となるフレームと背景レイヤーを明示して `ThreadRowView` と
+        // 同じ形に揃える。`Color.clear` なので見た目は一切変わらず、
+        // Liquid Glass 方針 (独自の塗りを持たない) にも反しない。
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .otegamiCardBackground(Color.clear, cornerRadius: OtegamiRadius.none)
         .otegamiRowDivider()
         .contentShape(Rectangle())
     }
