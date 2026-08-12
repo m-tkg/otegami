@@ -95,8 +95,28 @@ public enum AccountDigestQuery {
         }
     }
 
-    public static func digestsObservation(accountIds: [String], role: MailboxRoleRecord = .inbox, recentLimit: Int = defaultRecentLimit) -> ValueObservation<ValueReducers.Fetch<[AccountDigest]>> {
-        ValueObservation.tracking { db in try digests(accountIds: accountIds, role: role, recentLimit: recentLimit, db: db) }
+    /// 実機報告 (2026-08-12)「アカウント別グループ表示の行をタップしても
+    /// 無反応」対策の `.removeDuplicates()`: この observation の fetch は
+    /// `ThreadQuery.unifiedInboxRequest` / `MessageQuery
+    /// .unifiedInboxUnreadCount` / `ThreadQuery.summaries` を通じて
+    /// `message`/`thread` テーブルを丸ごと読むため、GRDB の追跡領域も
+    /// そのテーブル全体になる — **受信トレイと無関係な書き込みでも発火する**。
+    /// 実機では古いメールのバックフィル同期が数秒おきに数百件を書き込む
+    /// (実機ログ: `fetchEnvelopes: [Gmail]/…All Mail… fetched=393` が2秒
+    /// 間隔で連続) ので、受信トレイの中身が1件も変わっていないのに
+    /// `AccountDigestView` の `digests` が繰り返し再代入され、`List` が
+    /// そのたびに作り直されていた。行の `Button` はタップの down→up の
+    /// 間にビューが作り直されると発火しないため、「スワイプ (UIKit の
+    /// ジェスチャ認識器がセルに常駐する) は効くのにタップだけ効かない」
+    /// という形になる。シミュレータのフィクスチャは同期しないので
+    /// `OtegamiAccountDigestRowTapUITests` では再現しない。
+    ///
+    /// `AccountDigest`/`ThreadSummary` はどちらも `Equatable` なので、
+    /// 「実際に中身が変わったときだけ流す」に絞るのはこの1行で済む。
+    public static func digestsObservation(accountIds: [String], role: MailboxRoleRecord = .inbox, recentLimit: Int = defaultRecentLimit) -> ValueObservation<ValueReducers.RemoveDuplicates<ValueReducers.Fetch<[AccountDigest]>>> {
+        ValueObservation
+            .tracking { db in try digests(accountIds: accountIds, role: role, recentLimit: recentLimit, db: db) }
+            .removeDuplicates()
     }
 
     /// Every thread for one account in `role` scope, as `ThreadSummary`s —

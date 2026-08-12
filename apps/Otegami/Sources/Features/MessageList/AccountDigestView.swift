@@ -110,6 +110,11 @@ struct AccountDigestView: View {
         }
         #if os(iOS)
         .listStyle(.plain)
+        // 実機報告 (2026-08-12)「行をタップしても無反応」対策: 行間の隙間
+        // (Task #130, 2) を `AccountDigestRow` の `listRowInsets` (= 行の
+        // 外側、タップの届かない不感帯になる) から、行と行の間に出す
+        // `listRowSpacing` へ移した。見た目の隙間量は同じ 4pt。
+        .listRowSpacing(OtegamiSpacing.xs)
         #endif
         .accessibilityIdentifier("accountDigest.list")
         // Liquid Glass Phase 1 (2026-08-07、docs/design-system.md「Liquid
