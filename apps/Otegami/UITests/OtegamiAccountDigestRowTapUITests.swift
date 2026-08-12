@@ -91,6 +91,49 @@ final class OtegamiAccountDigestRowTapUITests: XCTestCase {
         )
     }
 
+    /// 実機報告 (2026-08-12) の再現条件そのもの — 同期による継続的な DB
+    /// 書き込みが走っている最中に行をタップする
+    /// (`UITestSeeder.startDatabaseChurnIfRequested` の doc comment 参照)。
+    /// 静止したフィクスチャで緑になる上の2本と違い、こちらが実機の
+    /// 「スワイプは効くのにタップだけ無反応」を再現する。
+    func testDigestRowTapWorksWhileTheDatabaseKeepsChurning() throws {
+        let app = makeApp()
+        app.launchEnvironment["OTEGAMI_UITEST_DB_CHURN_MS"] = "150"
+        app.launch()
+
+        let list = app.descendants(matching: .any)["accountDigest.list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 20), "account digest list should be on screen")
+
+        let row = try XCTUnwrap(digestRows(in: app.buttons).first, "digest row should exist")
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["messageList.list"].waitForExistence(timeout: 10),
+            "a digest row tap must still register while background writes keep the list refreshing"
+        )
+    }
+
+    /// 上と同じだが、書き込みが `AccountDigest` の中身そのものを変える —
+    /// `.removeDuplicates()` (`AccountDigestQuery.digestsObservation`) を
+    /// 素通りして `List` の行が更新され続ける状態でのタップ。
+    func testDigestRowTapWorksWhileTheListKeepsUpdating() throws {
+        let app = makeApp()
+        app.launchEnvironment["OTEGAMI_UITEST_DB_CHURN_MS"] = "150"
+        app.launchEnvironment["OTEGAMI_UITEST_DB_CHURN_MUTATES"] = "1"
+        app.launch()
+
+        let list = app.descendants(matching: .any)["accountDigest.list"]
+        XCTAssertTrue(list.waitForExistence(timeout: 20), "account digest list should be on screen")
+
+        let row = try XCTUnwrap(digestRows(in: app.buttons).first, "digest row should exist")
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).tap()
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["messageList.list"].waitForExistence(timeout: 10),
+            "a digest row tap must still register while the rows themselves keep being rebuilt"
+        )
+    }
+
     /// スワイプ割り当てを両方 `.pin` にすると `AccountDigestBulkAction.init?`
     /// が nil を返し、そのエッジの `.swipeActions` ブロックが空になる —
     /// 空の `.swipeActions` が行のヒットテストを壊していないことを固定する。
