@@ -127,6 +127,12 @@ private struct AllModeFilterChip: View {
                     label
                 }
                 .buttonStyle(.glass)
+                // 実機報告 (2026-08-13): `AccountFilterChip` の同日コメント
+                // 参照 — 横スクロールの認識器に `Button` のタップを奪われる
+                // ケースの受け皿。`Menu` 分岐 (選択中) には付けない
+                // (メニューの開閉を横取りしてしまうため)。`onSelectMode`
+                // (絞り込み解除) は冪等なので二重発火しても実害は無い。
+                .onTapGesture(perform: onSelectMode)
             }
         }
         .otegamiMinimumTappable()

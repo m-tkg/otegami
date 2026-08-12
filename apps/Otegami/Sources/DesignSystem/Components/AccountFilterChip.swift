@@ -55,6 +55,20 @@ public struct AccountFilterChip: View {
             }
         }
         .otegamiMinimumTappable()
+        // 実機報告 (2026-08-13)「チップをタップして反応はするが切り替わら
+        // ない」: `AccountDigestRow` が同日に踏んだのと同じ、`Button` が
+        // 押下中のわずかな指の移動でタップをキャンセルする問題。こちらは
+        // 親が `ScrollView(.horizontal)` (`AccountFilterChipRow`) なので、
+        // 横スクロールの認識器がタッチを奪うと `.glass` の押下ハイライト
+        // だけ出て `action` は呼ばれずに終わる。
+        //
+        // `AccountDigestRow` と違って `Button` 自体は残す — Liquid Glass の
+        // 押下フィードバックとカプセル意匠 (`.glass`/`.glassProminent`) が
+        // `Button` の描画に乗っているため。`Button` が拾えたときは
+        // `action` が、キャンセルされたときはこの `.onTapGesture` が拾う。
+        // 両方発火しても、このチップの `action` (絞り込み対象の代入) は
+        // 冪等なので実害は無い。
+        .onTapGesture(perform: action)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         #endif
     }
