@@ -76,6 +76,18 @@ struct MessageHeaderInfoView: View {
         }
         .tint(OtegamiColor.accent)
         .accessibilityIdentifier("messageInfo.navigationStack")
+        #if os(macOS)
+        // 実機報告「mac 版でメールの情報を開くと何も表示されない」:
+        // Task #205 (`MessageSourceView`) と同じ原因 — macOS は `.sheet` の
+        // サイズを `NavigationStack { List }` の内在サイズから算出できず、
+        // この 1 行が無いとタイトルバー＋「閉じる」ボタンだけのほぼ空の
+        // シートで開く (`ThreadDetailView` の `showingToolbarSettings`
+        // シートのコメント、`AccountTypeSelectionView` 等の doc comment
+        // 参照 — 同じ形のシート全部に適用済みの定番修正だが、この画面を
+        // 追加したときに付け忘れていた)。iOS は `.sheet` が画面いっぱいに
+        // 広がる既定の挙動なのでこの問題自体が起きない。
+        .frame(minWidth: 480, minHeight: 520)
+        #endif
     }
 
     @ViewBuilder
