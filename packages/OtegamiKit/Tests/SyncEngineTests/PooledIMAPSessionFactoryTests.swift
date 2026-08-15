@@ -166,6 +166,95 @@ struct PooledIMAPSessionFactoryTests {
         #expect(capabilities.isEmpty)
         #expect(recorder.connectCount == 2)
     }
+
+    // MARK: - 同時接続数の上限 (実機報告: Gmail の Too many simultaneous connections)
+
+    @Test("同時接続数が上限に達したら、実接続は上限を超えて張られない")
+    func concurrentConnectionsAreCappedPerAccount() async throws {
+        let recorder = PoolFakeSession.Recorder()
+        let pool = PooledIMAPSessionFactory(
+            sessionFactory: { config in PoolFakeSession(config: config, script: .init(), recorder: recorder) },
+            maxConcurrentConnections: 2
+        )
+
+        // 上限ぶんだけ同時に握る (どれも `disconnect` していない = 返却も
+        // していないので、プールから見て 2 本とも使用中)。
+        let first = pool.makeSession(config: config)
+        try await first.connect(auth: auth)
+        let second = pool.makeSession(config: config)
+        try await second.connect(auth: auth)
+        #expect(recorder.connectCount == 2)
+
+        // 3 本目は待たされる — この時点ではまだ実接続が増えていないこと。
+        let third = pool.makeSession(config: config)
+        let thirdConnect = Task { try await third.connect(auth: auth) }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(recorder.connectCount == 2)
+
+        // 1 本目を返却すると、待っていた 3 本目にその接続がそのまま渡る
+        // (アイドルに寝かせない — 寝かせるとスロットが空かず 3 本目が進めない)。
+        await first.disconnect()
+        try await thirdConnect.value
+        // 引き継いだので新しい実接続は増えていない。
+        #expect(recorder.connectCount == 2)
+        #expect(await pool.idleSessionCountForTesting == 0)
+
+        await second.disconnect()
+        await third.disconnect()
+    }
+
+    @Test("待っても空きが出なければ tooManyConnections で諦める")
+    func waitingForASlotTimesOut() async throws {
+        let recorder = PoolFakeSession.Recorder()
+        let pool = PooledIMAPSessionFactory(
+            sessionFactory: { config in PoolFakeSession(config: config, script: .init(), recorder: recorder) },
+            maxConcurrentConnections: 1,
+            acquireTimeout: 0.05,
+            // 待ち時間の経過は注入した sleep で即座に起こす (TTL テストと
+            // 同じ injected-sleeper パターン)。
+            sleep: { _ in }
+        )
+
+        let holder = pool.makeSession(config: config)
+        try await holder.connect(auth: auth)
+
+        let blocked = pool.makeSession(config: config)
+        await #expect(throws: MailTransportError.self) {
+            try await blocked.connect(auth: auth)
+        }
+        // 実接続は 1 本のまま — 待たされた側は接続を張らずに諦めた。
+        #expect(recorder.connectCount == 1)
+    }
+
+    @Test("スロットを掴んだまま接続に失敗しても、そのスロットは解放される")
+    func aFailedConnectReleasesItsSlot() async throws {
+        let recorder = PoolFakeSession.Recorder()
+        let counter = PoolFakeSession.CallCounter()
+        let pool = PooledIMAPSessionFactory(
+            sessionFactory: { config in
+                // 1 本目の `connect` だけ失敗させる。
+                let script = PoolFakeSession.Script(
+                    failConnection: counter.next() == 1
+                        ? .connectionFailed(underlyingDescription: "simulated")
+                        : nil
+                )
+                return PoolFakeSession(config: config, script: script, recorder: recorder)
+            },
+            maxConcurrentConnections: 1
+        )
+
+        let failing = pool.makeSession(config: config)
+        await #expect(throws: MailTransportError.self) {
+            try await failing.connect(auth: auth)
+        }
+
+        // スロットが返っていなければ、この 2 本目は上限待ちで進めない
+        // (`acquireTimeout` の既定 30 秒でテストがハングする)。
+        let next = pool.makeSession(config: config)
+        try await next.connect(auth: auth)
+        #expect(recorder.connectCount == 2)
+        await next.disconnect()
+    }
 }
 
 /// Minimal `IMAPSessionProtocol` double purpose-built for

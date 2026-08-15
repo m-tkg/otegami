@@ -61,9 +61,55 @@ public actor PooledIMAPSessionFactory {
     /// する (`init(sessionFactory:idleTTL:)`)。
     public static let defaultIdleTTL: TimeInterval = 8
 
+    /// 1 アカウントに対してこのプールが同時に張ってよい実接続の本数。
+    ///
+    /// 実機報告 (Gmail の `Too many simultaneous connections`、
+    /// `MailTransportError.tooManyConnections`) を受けて入れた上限。それ
+    /// までこのプールは「直近の 1 本を再利用する」だけで本数の制御を一切
+    /// 持たず、`checkout` が空振りするたびに無条件で新しい接続を張って
+    /// いた。フォアグラウンド復帰時には IDLE・全アカウント同期・opQueue
+    /// replay・本文取得・先読み・バックフィル・cid インライン画像の取得が
+    /// 同時に走るので、実際に上限へ届いていた。
+    ///
+    /// 4 という値の根拠: Gmail のアカウントあたりの上限は 15。そのうち
+    /// このプールを**通らない**接続がいくつかある — フォアグラウンドの
+    /// IDLE ループがアカウントあたり 1 本 (`idleSessionFactory` は非プール)、
+    /// 通知拡張が別プロセスでさらに 1 本、アカウント設定の接続テストが
+    /// 1 本。加えて他のメールクライアントや Gmail の Web UI が同じアカ
+    /// ウントを開いていることもある。プール経由をこの本数に抑えておけば、
+    /// それらを足しても上限に対して十分な余裕が残る。
+    public static let defaultMaxConcurrentConnections = 4
+
+    /// スロットが空くのを待てる上限時間。ここを無期限にすると、万一
+    /// スロットの解放漏れが起きたときに UI ごと固まってしまう。超えた
+    /// 場合は `.tooManyConnections` として扱い、呼び出し側の既存の
+    /// リトライ・エラー表示に乗せる。
+    public static let defaultAcquireTimeout: TimeInterval = 30
+
     private let idleTTL: TimeInterval
+    private let maxConcurrentConnections: Int
+    private let acquireTimeout: TimeInterval
     private let underlyingFactory: SessionFactory
     private var idleEntries: [AccountKey: IdleEntry] = [:]
+
+    /// このプールが `key` のアカウントに対していま握っている実接続の本数。
+    ///
+    /// `giveBack` でアイドルに戻っただけでは減らさない — サーバーから見れば
+    /// 接続はまだ生きており、同時接続数を消費し続けているため。実際に
+    /// `disconnect()` したとき (TTL 失効 / `discard` / `drainAll`) だけ減る。
+    private var openConnectionCounts: [AccountKey: Int] = [:]
+
+    /// 空きスロットを待っている取得要求の FIFO 待ち行列。
+    private var waiters: [AccountKey: [Waiter]] = [:]
+
+    /// 待ち手には「スロットが空いた」だけでなく、可能なら「そのまま使える
+    /// 接続済みセッション」も渡す。使用中のセッションが返却された瞬間に
+    /// 待ち手がいる場合、それを一旦アイドルに寝かせて相手に張り直させるのは
+    /// 純粋な無駄 (しかもスロットが空かないので相手は進めない)。
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<(any IMAPSessionProtocol)?, any Error>
+    }
     /// 失効タイマーの待機実装。`SyncRetryPolicy.sleep` と同じ「injected
     /// clock/sleeper」パターン — CI ランナーの負荷で `Task.sleep` ベースの
     /// タイマー発火が実時間から大きく遅れ、実時間待ちのテストが flaky に
@@ -75,12 +121,16 @@ public actor PooledIMAPSessionFactory {
     public init(
         sessionFactory: @escaping SessionFactory,
         idleTTL: TimeInterval = PooledIMAPSessionFactory.defaultIdleTTL,
+        maxConcurrentConnections: Int = PooledIMAPSessionFactory.defaultMaxConcurrentConnections,
+        acquireTimeout: TimeInterval = PooledIMAPSessionFactory.defaultAcquireTimeout,
         sleep: @escaping @Sendable (TimeInterval) async -> Void = { seconds in
             try? await Task.sleep(for: .seconds(seconds))
         }
     ) {
         self.underlyingFactory = sessionFactory
         self.idleTTL = idleTTL
+        self.maxConcurrentConnections = max(1, maxConcurrentConnections)
+        self.acquireTimeout = acquireTimeout
         self.sleep = sleep
     }
 
@@ -108,10 +158,93 @@ public actor PooledIMAPSessionFactory {
     /// `key` に対応する接続済みアイドルセッションがあれば取り出す (その
     /// タイマーもキャンセルする)。`nil` なら呼び出し側が新規に `connect`
     /// する必要がある。
+    ///
+    /// 再利用されたセッションはスロットを既に握っているので、ここでは
+    /// `openConnectionCounts` を触らない — アイドルの間もサーバー側では
+    /// 接続が生きており、その分は最初に張ったときから数え続けている。
     func checkout(key: AccountKey) -> (any IMAPSessionProtocol)? {
         guard let entry = idleEntries.removeValue(forKey: key) else { return nil }
         entry.expireTask?.cancel()
         return entry.session
+    }
+
+    // MARK: - 同時接続数のスロット
+
+    /// 新しい実接続を張ってよくなるまで待つ。空きがあれば即座に返る。
+    ///
+    /// 戻り値が非 `nil` なら「スロットに加えて、そのまま使える接続済み
+    /// セッションも引き継いだ」という意味 — 呼び出し側は新規に `connect`
+    /// せずそれを使う。`nil` なら自分で張る。
+    ///
+    /// スロットの総数は移譲のときに増減しない (`openConnectionCounts` を
+    /// 減らしてから増やし直すのではなく、そのまま次の待ち手へ渡す) ので、
+    /// 解放と取得の間に別のタスクが割り込んで上限を超えることがない。
+    func acquireConnectionSlot(key: AccountKey) async throws -> (any IMAPSessionProtocol)? {
+        if openConnectionCounts[key, default: 0] < maxConcurrentConnections {
+            openConnectionCounts[key, default: 0] += 1
+            return nil
+        }
+
+        // 同じアカウントのアイドル接続があるなら、待たずにそれを引き継ぐ
+        // — `checkout` が空振りしたあとでも、その後に別の借り手が返却した
+        // 直後ならここで拾える。
+        if let entry = idleEntries.removeValue(forKey: key) {
+            entry.expireTask?.cancel()
+            return entry.session
+        }
+
+        let id = UUID()
+        let timeout = acquireTimeout
+        let sleep = sleep
+        let timeoutTask = Task { [weak self] in
+            await sleep(timeout)
+            guard !Task.isCancelled else { return }
+            await self?.timeOutWaiter(key: key, id: id)
+        }
+        defer { timeoutTask.cancel() }
+
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<(any IMAPSessionProtocol)?, any Error>) in
+            waiters[key, default: []].append(Waiter(id: id, continuation: continuation))
+        }
+    }
+
+    /// 待ち手がいれば先頭の 1 人に `session` (スロットごと) を渡し、`true`
+    /// を返す。いなければ何もせず `false`。
+    private func handOffToWaiter(key: AccountKey, session: (any IMAPSessionProtocol)?) -> Bool {
+        guard var queue = waiters[key], !queue.isEmpty else { return false }
+        let waiter = queue.removeFirst()
+        waiters[key] = queue.isEmpty ? nil : queue
+        waiter.continuation.resume(returning: session)
+        return true
+    }
+
+    /// 実接続を 1 本閉じたときに呼ぶ。待っている取得要求があれば、空いた
+    /// スロットをそのまま先頭の待ち手へ渡す (接続自体はもう無いので、
+    /// 相手は自分で張り直す)。
+    func releaseConnectionSlot(key: AccountKey) {
+        guard !handOffToWaiter(key: key, session: nil) else { return }
+
+        let current = openConnectionCounts[key, default: 0]
+        if current <= 1 {
+            openConnectionCounts[key] = nil
+        } else {
+            openConnectionCounts[key] = current - 1
+        }
+    }
+
+    /// `acquireTimeout` を過ぎても順番が回ってこなかった取得要求を諦めさせる。
+    /// 既に `releaseConnectionSlot` に起こされていた場合は待ち行列から消えて
+    /// いるので、ここでは何もしない (二重 resume を避ける)。
+    private func timeOutWaiter(key: AccountKey, id: UUID) {
+        guard var queue = waiters[key], let index = queue.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = queue.remove(at: index)
+        waiters[key] = queue.isEmpty ? nil : queue
+        waiter.continuation.resume(
+            throwing: MailTransportError.tooManyConnections(
+                underlyingDescription: "IMAP connection slot unavailable after \(Int(acquireTimeout))s"
+            )
+        )
     }
 
     /// `session` をプールへ返却し、`idleTTL` の失効タイマーを開始する。
@@ -121,8 +254,15 @@ public actor PooledIMAPSessionFactory {
     func giveBack(key: AccountKey, session: any IMAPSessionProtocol, discard: Bool) async {
         guard !discard else {
             await session.disconnect()
+            releaseConnectionSlot(key: key)
             return
         }
+        // スロットの空きを待っている borrower がいるなら、アイドルに寝かせず
+        // そのまま引き渡す。ここで寝かせてしまうと、待ち手はスロットが空く
+        // まで進めない一方でこの接続は誰にも使われない、という取り違えが
+        // 起きる (使用中の本数は上限のままなので待ち行列も進まない)。
+        guard !handOffToWaiter(key: key, session: session) else { return }
+
         let entry = IdleEntry(session: session)
         idleEntries[key] = entry
         let ttl = idleTTL
@@ -141,6 +281,7 @@ public actor PooledIMAPSessionFactory {
         guard idleEntries[key] === entry else { return }
         idleEntries.removeValue(forKey: key)
         await entry.session.disconnect()
+        releaseConnectionSlot(key: key)
     }
 
     /// 保持しているアイドルセッションを全て実切断して破棄する —
@@ -151,14 +292,20 @@ public actor PooledIMAPSessionFactory {
     public func drainAll() async {
         let entries = idleEntries
         idleEntries.removeAll()
-        for entry in entries.values {
+        for (key, entry) in entries {
             entry.expireTask?.cancel()
             await entry.session.disconnect()
+            releaseConnectionSlot(key: key)
         }
     }
 
     /// テスト専用: 現在プールが保持しているアイドルセッション数。
     var idleSessionCountForTesting: Int { idleEntries.count }
+
+    /// テスト専用: `key` に対していま握っている実接続の本数。
+    func openConnectionCountForTesting(key: AccountKey) -> Int {
+        openConnectionCounts[key, default: 0]
+    }
 }
 
 /// `PooledIMAPSessionFactory` が貸し出すラッパー。`IMAPSessionProtocol` の
@@ -238,10 +385,32 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
             return
         }
 
+        // 新規の実接続はここでアカウント別の上限に従う。空きが無ければ
+        // 待つ (`PooledIMAPSessionFactory.defaultMaxConcurrentConnections`
+        // の doc comment 参照)。取得できたスロットは、このセッションが実
+        // 切断されるまで握り続ける。
+        let inherited = try await pool.acquireConnectionSlot(key: key)
+        if let inherited {
+            // 待っている間に誰かが接続を返してきた (または直前にアイドルへ
+            // 戻っていた) ので、張り直さずそれを使う。`checkout` 経由の
+            // 再利用と同じ扱いにして、最初の操作が失敗したときの1回だけの
+            // 張り替えも効くようにする。
+            underlying = inherited
+            wasReused = true
+            return
+        }
+
         wasReused = false
-        let fresh = await pool.makeUnderlyingSession(config: config)
-        try await fresh.connect(auth: auth)
-        underlying = fresh
+        do {
+            let fresh = await pool.makeUnderlyingSession(config: config)
+            try await fresh.connect(auth: auth)
+            underlying = fresh
+        } catch {
+            // 接続が張れなかったのでスロットは即返す。ここで返さないと、
+            // 接続不能なアカウントがスロットを食い潰したままになる。
+            await pool.releaseConnectionSlot(key: key)
+            throw error
+        }
     }
 
     public func disconnect() async {

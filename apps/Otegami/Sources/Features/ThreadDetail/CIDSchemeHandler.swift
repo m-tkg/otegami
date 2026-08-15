@@ -111,6 +111,10 @@ final class CIDSchemeHandler: NSObject, WKURLSchemeHandler {
         }
 
         let auth = try await context.environment.auth(for: account)
+        // インライン画像の枚数ぶん一斉に IMAP を叩かない — `CIDFetchGate` の
+        // doc comment 参照。
+        await CIDFetchGate.shared.acquire()
+        defer { Task { await CIDFetchGate.shared.release() } }
         let updated = try await context.environment.syncCoordinator.fetchAttachment(
             attachment, messageUID: message.uid, mailboxPath: mailboxPath, account: account, auth: auth
         )
@@ -142,5 +146,51 @@ final class CIDSchemeHandler: NSObject, WKURLSchemeHandler {
 
     private static func mimeTypeString(_ attachment: AttachmentRecord) -> String {
         "\(attachment.mimeType)/\(attachment.mimeSubtype)"
+    }
+}
+
+/// インライン画像 (`cid:`) を IMAP から取りに行くときの同時実行数を絞る
+/// FIFO ゲート。
+///
+/// 実機報告 (Gmail の `Too many simultaneous connections`,
+/// `MailTransportError.tooManyConnections`) を受けて入れた。
+/// `CIDSchemeHandler.webView(_:start:)` は `cid:` 1 件につき 1 つの `Task`
+/// を起動しており、並列数の制限が一切無かった — インライン画像が多い HTML
+/// メールを開くと、その枚数ぶんの `fetchAttachment` が一斉に走る。
+///
+/// `PooledIMAPSessionFactory` のスロット上限が入ったので実接続数そのものは
+/// もう守られるが、それだけだと画像がスロットを占領している間、本文取得や
+/// 同期が待たされる。入口でも絞って、画像より先に読みたいものが通るように
+/// する。すでにディスクにある画像は `resolve` がゲートに入る前に返すので、
+/// ここを通るのは本当にネットワークが要る分だけ。
+private actor CIDFetchGate {
+    static let shared = CIDFetchGate(limit: 2)
+
+    private let limit: Int
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = max(1, limit)
+    }
+
+    func acquire() async {
+        if active < limit {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waiters.append(continuation)
+        }
+    }
+
+    /// 待ち手がいれば枠をそのまま渡す (`active` は据え置き)。いなければ
+    /// 使用中の数を 1 つ減らす。
+    func release() {
+        if !waiters.isEmpty {
+            waiters.removeFirst().resume()
+            return
+        }
+        active = max(0, active - 1)
     }
 }
