@@ -41,7 +41,13 @@ enum SyncFailureClass: Equatable {
     /// narrow scope was an explicit requirement of this refactor.
     static func classify(_ error: MailTransportError) -> SyncFailureClass {
         switch error {
-        case .connectionFailed, .notConnected, .cancelled, .authenticationFailed:
+        // `.tooManyConnections` が connection-level 側にいるのは、これが
+        // 「この op が悪い」ではなく「このアプリが自分で接続を張りすぎた」
+        // 失敗だから。per-operation に置くと `attempts` が積まれ、5 回で
+        // 恒久失敗して**アーカイブや既読化が永久にサーバーへ届かなくなる**
+        // — 実際には少し待てば通る操作なので、バッチを中断して次の replay
+        // に回すのが正しい扱い。
+        case .connectionFailed, .notConnected, .cancelled, .authenticationFailed, .tooManyConnections:
             .connectionLevel
         case .serverError, .malformedResponse, .mailboxNotFound, .notImplemented, .invalidAddress:
             .perOperation

@@ -1327,6 +1327,13 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             case .serverError(let description):
                 category = "serverError"
                 underlyingDescription = description
+            case .tooManyConnections(let description):
+                // 通知拡張はアプリ本体とは別プロセスで自前の IMAP 接続を
+                // 張るので、アカウントの同時接続数を押し上げる側でもある。
+                // `serverError` に混ぜず独立したカテゴリで記録して、実機
+                // 診断のときに切り分けられるようにする。
+                category = "tooManyConnections"
+                underlyingDescription = description
             case .malformedResponse(let description):
                 category = "malformedResponse"
                 underlyingDescription = description

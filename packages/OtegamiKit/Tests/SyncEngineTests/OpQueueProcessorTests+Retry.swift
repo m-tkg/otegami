@@ -103,6 +103,47 @@ struct OpQueueProcessorRetryTests {
         #expect(finalResult.permanentlyFailed == 0)
     }
 
+    /// 実機報告 (Gmail の同時接続数上限、`MailCoreErrorDomain エラー 8`) の
+    /// 回帰テスト。このエラーは以前 `.serverError` に丸められており、
+    /// `SyncFailureClass` は per-operation と分類していた — つまり op が
+    /// `attempts` を消費し、5 回で恒久失敗して、**アーカイブや既読化が二度と
+    /// サーバーへ届かなくなっていた**。実際には少し待てば通る失敗なので、
+    /// `attempts` を積まずにバッチを中断し、次の replay 機会に回すのが正しい。
+    @Test("Gmail の同時接続数上限は op の attempts を消費しない (接続レベル扱い)")
+    func tooManyConnectionsDoesNotBurnAttempts() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueSetFlags(
+                accountId: account.id, mailboxId: inbox.id!, uidValidity: inbox.uidValidity,
+                uids: [1], flags: .seen, db: db
+            )
+        }
+
+        let script = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
+        let processor = OpQueueProcessor(database: database) { config in
+            FailingStoreSession(
+                config: config, script: script,
+                storeError: .tooManyConnections(underlyingDescription: "Too many simultaneous connections")
+            )
+        }
+
+        // connection-level に分類された失敗は、そのパスの残りを道連れに
+        // しないよう `replay` から投げ直される (`.serverError` の per-op
+        // 経路と違い、握り潰して次の op へ進みはしない)。
+        await #expect(throws: MailTransportError.self) {
+            _ = try await processor.replay(account: account, auth: auth)
+        }
+
+        let op = try #require(try await database.dbWriter.read { db in try OpQueueRecord.fetchAll(db) }.first)
+        // 肝心なのはここ — op はキューに残ったまま、`attempts` が 1 つも
+        // 減らない。対照として、同じ経路を `.serverError` で通すと attempts
+        // が積まれ 5 回で恒久失敗する (`opStopsRetryingAfterMaxAttempts`)。
+        #expect(op.attempts == 0)
+        #expect(op.nextRetryAt == nil)
+    }
+
     // MARK: Task #192 — database suspension (0xDEAD10CC)
 
     /// A suspended database (GRDB's 0xDEAD10CC-prevention mechanism — see
@@ -179,15 +220,28 @@ struct OpQueueProcessorRetryTests {
 private actor FailingStoreSession: IMAPSessionProtocol {
     private let config: IMAPConfig
     private let script: FakeIMAPSession.Script
+    /// 既定は per-op 拒否。`.tooManyConnections` のような connection-level の
+    /// 失敗を再現したいテストだけが差し替える。
+    private let storeError: MailTransportError
+
+    static let defaultStoreError = MailTransportError.serverError(
+        underlyingDescription: "NO (simulated per-op rejection)"
+    )
 
     init(config: IMAPConfig) {
         self.config = config
         self.script = FakeIMAPSession.Script()
+        self.storeError = Self.defaultStoreError
     }
 
-    init(config: IMAPConfig, script: FakeIMAPSession.Script) {
+    init(
+        config: IMAPConfig,
+        script: FakeIMAPSession.Script,
+        storeError: MailTransportError = FailingStoreSession.defaultStoreError
+    ) {
         self.config = config
         self.script = script
+        self.storeError = storeError
     }
 
     func connect(auth: MailAuth) async throws {}
@@ -210,7 +264,7 @@ private actor FailingStoreSession: IMAPSessionProtocol {
     func fetchBody(mailboxPath: String, uid: UInt32) async throws -> MessageBodyContent { MessageBodyContent() }
     func fetchMessageBody(mailboxPath: String, uid: UInt32, partId: String?) async throws -> Data { Data() }
     func store(mailboxPath: String, change: FlagChange) async throws {
-        throw MailTransportError.serverError(underlyingDescription: "NO (simulated per-op rejection)")
+        throw storeError
     }
     func append(mailboxPath: String, messageData: Data, flags: MessageFlags) async throws -> UInt32? { nil }
     func move(mailboxPath: String, uids: UIDSet, to destinationPath: String) async throws {}

@@ -56,6 +56,10 @@ extension MailTransportError {
             }
         case .connectionFailed:
             "サーバーに接続できません。ホスト名・ポート・接続方式を確認してください。(\(description))"
+        case .tooManyConnections:
+            // 設定の誤りではないので「確認してください」と言ってはいけない
+            // — このアプリが同時に張った接続が多すぎただけで、待てば通る。
+            String(localized: "サーバーへの同時接続数が上限に達しました。設定の誤りではありません。しばらく時間をおいてから再度お試しください。") + " (\(description))"
         case .mailboxNotFound(let path):
             "メールボックスが見つかりません: \(path)"
         case .notConnected, .cancelled, .malformedResponse, .serverError, .notImplemented, .invalidAddress:

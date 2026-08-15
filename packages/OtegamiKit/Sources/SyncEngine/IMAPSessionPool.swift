@@ -296,9 +296,20 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
             mustDiscardOnDisconnect = true
             return
         }
-        guard let mailError = error as? MailTransportError, case .serverError(let description) = mailError else { return }
-        if description.contains("[LIMIT]") {
+        guard let mailError = error as? MailTransportError else { return }
+        switch mailError {
+        case .serverError(let description):
+            if description.contains("[LIMIT]") {
+                mustDiscardOnDisconnect = true
+            }
+        case .tooManyConnections:
+            // Gmail の同時接続数上限。`[LIMIT]` 判定に引っかからない別文言
+            // ("Too many simultaneous connections") なので明示的に拾う —
+            // 上限に当たったセッションをプールへ戻すと、次の借り手が同じ
+            // 詰まった接続を掴んで同じ失敗を繰り返す。
             mustDiscardOnDisconnect = true
+        default:
+            break
         }
     }
 

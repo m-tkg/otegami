@@ -283,6 +283,16 @@ extension MessageView {
     /// error for every other failure (offline, server error, ...), where
     /// there's no single fix to point at.
     func missingCredentialAwareErrorMessage(prefix: String, underlyingError: Error) async -> String {
+        // 実機報告「本文の取得に失敗しました: serverError: … (MailCoreErrorDomain
+        // エラー 8)」。Gmail の同時接続数上限はこのアプリ自身が接続を張り
+        // すぎたことによる一時的な失敗で、生の英語エラーを見せても読み手に
+        // できることが何も伝わらない (しかも「サーバーエラー」に見えるので
+        // アカウント設定を疑わせてしまう)。ここだけ日本語に差し替える —
+        // 資格情報の確認より先に判定するのは、この失敗が認証とは無関係で、
+        // `needsReauth` が立っているアカウントでも起こりうるため。
+        if let transportError = underlyingError as? MailTransportError, case .tooManyConnections = transportError {
+            return "\(prefix): サーバーへの同時接続数が上限に達しました。しばらく待ってから開き直してください。"
+        }
         let refreshedAccount = try? await environment.database.dbWriter.read { db in
             try AccountRecord.fetchOne(db, key: accountId)
         }
