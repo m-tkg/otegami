@@ -975,6 +975,14 @@ translations = {
     "認証に失敗しました。ただし、この資格情報は過去に接続に成功しているため、パスワードの誤りではなく一時的な制限の可能性があります。しばらく時間をおいてから再度お試しください。":
         "Authentication failed. However, since these credentials have connected successfully before, this may be a temporary restriction rather than an incorrect password. Please wait a while and try again.",
 
+    # 実機報告 (Gmail の `Too many simultaneous connections` /
+    # `MailTransportError.tooManyConnections`)。上の認証エラーと同じく
+    # `(\(description))` は Swift 側で外から連結されるので、このキーは
+    # `%@` を含まない固定文になっている。設定を疑わせないよう「確認して
+    # ください」とは言わない — 待てば通る失敗のため。
+    "サーバーへの同時接続数が上限に達しました。設定の誤りではありません。しばらく時間をおいてから再度お試しください。":
+        "The server's limit on simultaneous connections has been reached. This is not a settings problem. Please wait a while and try again.",
+
     # --- Task #213 (実機フィードバック: Yahoo! JAPAN アカウントだけ通知の
     # 内容が出ない件の切り分けに Mac が必要だった問題): 「プッシュ通知の
     # 診断」画面 (`PushDiagnosticsView`) と、その入口

@@ -5604,6 +5604,16 @@
         }
       }
     },
+    "サーバーへの同時接続数が上限に達しました。設定の誤りではありません。しばらく時間をおいてから再度お試しください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The server's limit on simultaneous connections has been reached. This is not a settings problem. Please wait a while and try again."
+          }
+        }
+      }
+    },
     "プッシュ通知の診断": {
       "localizations": {
         "en": {
