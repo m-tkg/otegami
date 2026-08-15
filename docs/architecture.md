@@ -1503,3 +1503,81 @@ Release/TestFlight ビルドではアバターが出なくなる**既知の不�
 `KeychainCredentialStore` が資格情報に `kSecAttrAccessibleAfterFirstUnlock`
 を使っているのと同じ理由 (Known pitfalls e. の `0xDEAD10CC` とは別の話で、
 こちらはファイルの読み取り可否そのものの問題)。
+
+### r. IMAP の同時接続数はアプリ側で数えないと誰も数えていない
+
+Gmail は 1 アカウントあたりの IMAP 同時接続を 15 本に制限しており、
+超えると `LOGIN` の応答で `Too many simultaneous connections` を返す。
+MailCore2 はこれを `MCOErrorGmailTooManySimultaneousConnections`
+(`MailCoreErrorDomain` の code 8) にする。実機で
+「本文の取得に失敗しました: serverError: … (MailCoreErrorDomain エラー 8)」
+として現れた。
+
+踏み抜きやすいのは次の 3 点。
+
+**1. 独立にセッションを張る箇所が 12 ある。** IDLE ループ、初回同期、
+差分同期、opQueue replay、本文/添付/raw source の取得、統合受信トレイの
+先読み、古メールのバックフィル、一覧・検索時の先読み、サーバーサイド
+SEARCH、プッシュ通知アクション、接続テスト、通知拡張 (別プロセス)。
+これらは互いに直列化されていないので、フォアグラウンド復帰の 1 回で
+同時に走りうる。とくに `CIDSchemeHandler` は cid インライン画像 1 件
+ごとに `Task` を起動するため、画像の枚数がそのまま接続数になった。
+
+**2. `MCOIMAPSession` 1 個は物理接続 1 本ではない。** MailCore2 の
+`maximumConnections` の既定は 3 (`MCIMAPAsyncSession.cpp`) で、
+放っておくと論理セッション 1 本が物理接続 3 本まで広がる。本数を数える
+側から見ると 3 倍ずれる。`MailCoreIMAPSession.init` はこれを 1 に固定
+している。
+
+**3. `PooledIMAPSessionFactory` は本数を制限する仕組みではなかった。**
+名前に反して、当初の役割は「直近の 1 本を TTL 付きで再利用する」だけで、
+`checkout` が空振りすれば無条件に新しい接続を張っていた。現在は
+アカウント別のスロット (`defaultMaxConcurrentConnections`、既定 4) と
+FIFO の待ち行列を持つ。設計上の要点:
+
+- スロットは「プールが握っている実接続 1 本」。`giveBack` でアイドルに
+  戻っただけでは解放しない — サーバーから見れば接続はまだ生きている。
+- 使用中のセッションが返却されたとき待ち手がいれば、アイドルに寝かせず
+  接続ごと引き渡す。寝かせるとスロットが空かないまま接続が誰にも使われ
+  ない、という取り違えが起きる。
+- 上限を 4 にしているのは、プールを通らない接続 (IDLE、通知拡張、接続
+  テスト) と、ユーザーが他のメールクライアントや Gmail の Web UI で同じ
+  アカウントを開いている可能性の分を残すため。
+
+**エラーの分類も分けてある。** code 8 を `.serverError` に丸めると
+3 か所が誤った扱いをする — `SyncFailureClass` が per-operation と分類して
+op が `attempts` を使い切り恒久失敗する (アーカイブが永久に届かなくなる)、
+プールが `[LIMIT]` 文字列にマッチしないので詰まった接続を再利用する、
+`BodyFetcher.attemptSelfHeal` が UID の陳腐化と誤認してメッセージを
+ローカルから消しうる。`MailTransportError.tooManyConnections` として
+切り出してあるので、新しい「接続レベル」のエラーを足すときも
+`.serverError` に入れないこと。
+
+### s. スナップショットしたレコードを全列 UPDATE で書き戻さない
+
+`BodyFetcher.performFetch` は本文取得の前に撮った `MessageRecord` を
+握り続け、それを `update(db)` で書き戻していた。GRDB の
+`MutablePersistableRecord.update(db)` は**全列**を書くので、取得の最中に
+別の経路がその行を更新していると、その更新ごと巻き戻る。
+
+実際に起きたのがこれ。本文取得中にユーザーがアーカイブすると
+`MessageRemoval.commit` が `mailboxId`/`uid` を仮配置 (`uid = -messageId`、
+上記 b.) へ書き換えるが、直後の全列 UPDATE がそれを元に戻して INBOX の行を
+復活させていた。`PendingOpTargets` (上記 m.) は同期による復活を防ぐが、
+これは同期ではなく直接 UPDATE なのでガードを通らない。
+
+結果として All Mail の行と復活した INBOX の行が同居し、
+`ThreadQuery.isThreadArchived` (1 通でも archived なら true) は
+「アーカイブ済み」バッジを出す一方、一覧クエリ (1 通でも INBOX にあれば
+表示) は消さない。さらに詳細画面のアーカイブボタンは `isThreadArchived` を
+見て `.unarchive` に化けるため、押しても逆操作になり「アーカイブできない」
+状態が続いた。
+
+規約として:
+
+- 変えたい列が決まっているなら `update(db, columns: [...])` で絞る。
+- 複数列をまとめて更新するなら、書き込みトランザクションの**中で**
+  `fetchOne` して読み直した行に対して適用する (`BodyFetcher` の成功パスと
+  `attemptSelfHeal.repoint` がこの形)。
+- 読み直しで行が消えていた場合の後始末も書く — 親行のない本文が残ると、
+  同じ `messageId` が再利用されたときに他人の本文を表示しかねない。

@@ -695,7 +695,14 @@ public actor AccountSyncer {
             return .authentication
         case .connectionFailed:
             return .networkUnreachable
-        case .serverError, .malformedResponse, .mailboxNotFound, .notConnected, .cancelled, .notImplemented, .invalidAddress:
+        // `.tooManyConnections` (Gmail の同時接続数上限) は `.other`。
+        // `.networkUnreachable` はオフライン前提でスリープせず即諦める扱い
+        // だが、これは「少し待てば通る」失敗なので、`.other` の指数バック
+        // オフ付きリトライがそのまま正しい対処になる。リトライで接続本数が
+        // 増えるわけではない (`connectWithRetry` は毎回セッションを作り直す
+        // ので、前のセッションは捨てられる)。
+        case .serverError, .malformedResponse, .mailboxNotFound, .notConnected, .cancelled, .notImplemented,
+             .invalidAddress, .tooManyConnections:
             return .other
         }
     }

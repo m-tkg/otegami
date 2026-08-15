@@ -76,6 +76,19 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         // spd_checkin_socket via SocketStream::checkInVoIPSocket) the moment
         // such a socket connects; the simulator never exercises this path.
         session.isVoIPEnabled = false
+        // MailCore2 の `MCOIMAPSession` は内部で複数のソケットを開いて操作
+        // を並列化する (`MCIMAPAsyncSession.cpp` の `DEFAULT_MAX_CONNECTIONS
+        // = 3`)。このコードベースはセッション本数の側で同時接続数を管理して
+        // いる (`PooledIMAPSessionFactory` のアカウント別セマフォ) ので、
+        // 既定の 3 のままだと「論理セッション 1 本 = 物理接続 3 本」になり
+        // 実際の本数が上限の 3 倍まで膨らむ。Gmail はアカウントあたり 15
+        // 接続で `Too many simultaneous connections` を返すため、ここを 1 に
+        // 固定して論理と物理を 1:1 に揃える。
+        //
+        // このアプリは 1 セッションで複数コマンドを並列に流す使い方をして
+        // いない (`SyncCoordinator.withIMAPSession` も `OpQueueProcessor` も
+        // 1 セッションで直列に発行する) ので、性能上の損失はない。
+        session.maximumConnections = 1
         self.session = session
     }
 

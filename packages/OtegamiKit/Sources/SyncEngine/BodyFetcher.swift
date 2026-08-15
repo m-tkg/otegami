@@ -134,10 +134,20 @@ public actor BodyFetcher {
         session: any IMAPSessionProtocol,
         messageId: Int64
     ) async throws {
+        // 実機報告 (Gmail の同時接続数超過で本文取得が失敗した直後、アーカ
+        // イブしたメールが受信トレイから消えなくなる): `message` はネット
+        // ワーク呼び出しより前に撮ったスナップショットで、`update(db)` は
+        // 全列を書く。その間に `MessageRemoval.commit` が楽観的更新として
+        // `mailboxId`/`uid` を仮配置 (`uid = -messageId`) へ書き換えていた
+        // 場合、ここの全列 UPDATE がそれを丸ごと巻き戻して INBOX の行を
+        // 復活させてしまう。`PendingOpTargets` は同期からの復活を防ぐが、
+        // これは同期ではなく直接 UPDATE なのでそのガードを通らない。
+        // このメソッドが変えたい列は `bodyState` ただ 1 つなので、書き込み
+        // も 1 列に絞る (下の revert 側も同じ理由で絞ってある)。
         try await database.dbWriter.write { db in
             var record = message
             record.bodyState = .fetching
-            try record.update(db)
+            try record.update(db, columns: ["bodyState"])
         }
 
         do {
@@ -254,7 +264,25 @@ public actor BodyFetcher {
                     }
                 }
 
-                var record = message
+                // スナップショットの `message` ではなく、この書き込みトラン
+                // ザクションの中で読み直した最新の行を更新する。本文取得中
+                // にユーザーがアーカイブすると `MessageRemoval.commit` が
+                // `mailboxId`/`uid` を仮配置 (`uid = -messageId`) へ書き換え
+                // ており、`message` をそのまま全列 UPDATE するとそれを巻き
+                // 戻して INBOX の行を復活させてしまう (`performFetch` 冒頭の
+                // `.fetching` 書き込みの doc comment 参照)。読み直した行は
+                // stale ではないので全列 UPDATE のままでよい。
+                //
+                // 行そのものが既に消えている場合 (self-heal の
+                // `cleanUpVanishedMessage`、別経路の削除) は、いま挿入した
+                // 本文と添付も一緒に捨てる — 親行のない本文だけが残ると、
+                // 次に同じ `messageId` が再利用されたときに他人の本文を
+                // 表示しかねない。
+                guard var record = try MessageRecord.fetchOne(db, key: messageId) else {
+                    try MessageBodyRecord.deleteOne(db, key: messageId)
+                    try AttachmentRecord.filter(Column("messageId") == messageId).deleteAll(db)
+                    return
+                }
                 record.bodyState = .fetched
                 record.snippet = snippet
                 record.detectedLanguage = detectedLanguage
@@ -298,6 +326,11 @@ public actor BodyFetcher {
                 // not a regression. A message with no cached body at all
                 // (the on-open first-ever fetch failing) still reverts to
                 // `.notFetched` same as before.
+                //
+                // `columns:` で `bodyState` だけに絞るのは `performFetch`
+                // 冒頭の `.fetching` 書き込みと同じ理由 — スナップショット
+                // の全列 UPDATE が、その間に走った楽観的アーカイブ
+                // (`mailboxId`/`uid` の仮配置) を巻き戻すのを防ぐ。
                 try? await database.dbWriter.write { db in
                     var record = message
                     if let cachedBody = try MessageBodyRecord.fetchOne(db, key: messageId),
@@ -306,7 +339,7 @@ public actor BodyFetcher {
                     } else {
                         record.bodyState = .notFetched
                     }
-                    try record.update(db)
+                    try record.update(db, columns: ["bodyState"])
                 }
                 throw error
             }
@@ -327,6 +360,17 @@ public actor BodyFetcher {
     /// branch) — every other error kind (`connectionFailed`, `cancelled`,
     /// ...) is left to the caller's existing revert-and-rethrow handling
     /// unchanged.
+    ///
+    /// That narrowness is load-bearing, not incidental. Gmail's
+    /// "too many simultaneous connections" (`MailCoreErrorDomain error 8`)
+    /// used to land in `.serverError` too, which meant a failure this app
+    /// caused by opening too many connections could reach the branches
+    /// below and — if the existence check happened to succeed and come back
+    /// empty — delete the message locally via `cleanUpVanishedMessage`.
+    /// It now maps to `MailTransportError.tooManyConnections` and therefore
+    /// no longer matches the `case .serverError` guard at all. Keep any
+    /// future "connection-level" error out of `.serverError` for the same
+    /// reason.
     private func attemptSelfHeal(
         message: MessageRecord,
         mailboxPath: String,

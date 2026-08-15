@@ -755,4 +755,91 @@ struct BodyFetcherTests {
         fetchedRangeCount = await session.fetchedRanges.count
         #expect(fetchedRangeCount == 1)
     }
+
+    // MARK: - 実機報告: 本文取得がアーカイブを巻き戻す
+
+    /// 実機報告「本文取得が MailCoreErrorDomain エラー 8 で失敗したあと、
+    /// アーカイブしたメールが受信トレイから消えない」の回帰テスト。
+    ///
+    /// `performFetch` は `message` を引数で受け取ったまま握り続けており、
+    /// 以前はそれを `update(db)` で**全列**書き戻していた。本文取得が走って
+    /// いる間にユーザーがアーカイブすると `MessageRemoval.commit` が
+    /// `mailboxId`/`uid` を仮配置 (`uid = -messageId`) へ書き換えるので、
+    /// その全列 UPDATE が仮配置を丸ごと巻き戻して INBOX の行を復活させて
+    /// いた。ここでは「引数の `message` が既に古い」状態を直接作って、
+    /// 取得の失敗・成功どちらでも DB 側の仮配置が生き残ることを見る。
+    private func relocateToAllMail(
+        database: AppDatabase, message: MessageRecord, allMailId: Int64
+    ) async throws {
+        try await database.dbWriter.write { db in
+            guard var record = try MessageRecord.fetchOne(db, key: message.id) else { return }
+            record.mailboxId = allMailId
+            record.uid = -message.id!
+            try record.update(db)
+        }
+    }
+
+    @Test("本文取得の失敗は、その間に走ったアーカイブの mailboxId/uid を巻き戻さない")
+    func fetchFailureDoesNotRevertOptimisticArchive() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, inboxId, allMailId) = try await makeAccountWithTwoMailboxes(database: database)
+        let message = try await database.dbWriter.write { db in
+            try self.insertSingleMessageThread(
+                accountId: accountId, mailboxId: inboxId, uid: 7, messageId: "<archived@otegami.test>", db: db
+            )
+        }
+
+        // 本文取得が始まったあとにアーカイブされた、という状態を作る:
+        // DB 側だけ仮配置に進み、`fetchBody` に渡す `message` は取得開始時の
+        // まま (INBOX, uid 7) で古い。
+        try await relocateToAllMail(database: database, message: message, allMailId: allMailId)
+
+        let script = FakeIMAPSession.Script(
+            failFetchBody: ["INBOX": [7: .tooManyConnections(underlyingDescription: "Too many simultaneous connections")]]
+        )
+        let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: script)
+
+        await #expect(throws: MailTransportError.self) {
+            try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: session)
+        }
+
+        let updated = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: message.id) }
+        #expect(updated?.mailboxId == allMailId)
+        #expect(updated?.uid == -message.id!)
+        #expect(updated?.isPendingRelocation == true)
+        // 失敗の revert 自体は従来どおり効いている。
+        #expect(updated?.bodyState == .notFetched)
+    }
+
+    @Test("本文取得の成功も、その間に走ったアーカイブの mailboxId/uid を巻き戻さない")
+    func fetchSuccessDoesNotRevertOptimisticArchive() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, inboxId, allMailId) = try await makeAccountWithTwoMailboxes(database: database)
+        let message = try await database.dbWriter.write { db in
+            try self.insertSingleMessageThread(
+                accountId: accountId, mailboxId: inboxId, uid: 8, messageId: "<archived-ok@otegami.test>", db: db
+            )
+        }
+
+        try await relocateToAllMail(database: database, message: message, allMailId: allMailId)
+
+        let script = FakeIMAPSession.Script(
+            bodiesByPath: ["INBOX": [8: MessageBodyContent(plainText: "本文が間に合った")]]
+        )
+        let session = FakeIMAPSession(config: IMAPConfig(host: "localhost", port: 1143, security: .plain), script: script)
+
+        try await BodyFetcher(database: database).fetchBody(message: message, mailboxPath: "INBOX", session: session)
+
+        let (updated, body) = try await database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: message.id),
+                try MessageBodyRecord.fetchOne(db, key: message.id)
+            )
+        }
+        #expect(updated?.mailboxId == allMailId)
+        #expect(updated?.uid == -message.id!)
+        // 取得できた本文自体はちゃんと保存される。
+        #expect(updated?.bodyState == .fetched)
+        #expect(body?.plainText == "本文が間に合った")
+    }
 }

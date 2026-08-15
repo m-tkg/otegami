@@ -59,6 +59,16 @@ extension MailCoreIMAPSession {
             return .connectionFailed(underlyingDescription: nsError.localizedDescription)
         case .errorAuthentication, .errorAuthenticationRequired, .errorGmailApplicationSpecificPasswordRequired:
             return .authenticationFailed(underlyingDescription: nsError.localizedDescription)
+        case .errorGmailTooManySimultaneousConnections:
+            // 実機報告 (「本文の取得に失敗しました: serverError: … エラー 8」)。
+            // MailCore2 がこのコードを立てるのは `LOGIN` 応答の解析時だけ
+            // (`MCIMAPSession.cpp` の "Too many simultaneous connections" /
+            // "Maximum number of connections" 文字列マッチ) — つまり
+            // 「サーバーがコマンドを拒否した」ではなく「接続そのものが張れ
+            // なかった」。`.serverError` に丸めると `BodyFetcher
+            // .attemptSelfHeal` が UID の陳腐化と誤認しうるので分けてある
+            // (`MailTransportError.tooManyConnections` の doc comment 参照)。
+            return .tooManyConnections(underlyingDescription: nsError.localizedDescription)
         case .errorNonExistantFolder:
             return .mailboxNotFound(path: mailboxPath ?? "")
         case .errorCanceled:

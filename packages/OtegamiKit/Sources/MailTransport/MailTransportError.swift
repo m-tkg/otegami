@@ -16,6 +16,30 @@ public enum MailTransportError: Error, Sendable {
     /// (e.g. `NO`/`BAD` IMAP responses, an SMTP 5xx reply).
     case serverError(underlyingDescription: String)
 
+    /// The server refused the connection because this account already has
+    /// too many simultaneous connections open (Gmail allows 15 per account
+    /// and answers the `LOGIN` with "Too many simultaneous connections" /
+    /// "Maximum number of connections" — MailCore2 turns that into
+    /// `MCOErrorGmailTooManySimultaneousConnections`).
+    ///
+    /// Deliberately its own case rather than folded into `.serverError`:
+    /// this is a *self-inflicted, transient* condition — the credentials
+    /// are fine, the mailbox is fine, and the same request succeeds once
+    /// this app's own in-flight connections drop below the limit. Three
+    /// call sites behave differently because of that distinction:
+    ///
+    /// - `SyncFailureClass.classify` treats it as connection-level, so an
+    ///   `opQueue` op does not burn an attempt (and eventually fail
+    ///   permanently) over a limit this app caused.
+    /// - `PooledIMAPSession` discards rather than pools a session that hit
+    ///   it, instead of handing the same doomed connection to the next
+    ///   caller.
+    /// - `BodyFetcher.attemptSelfHeal` engages only for `.serverError`, so
+    ///   keeping this out of that case is what stops a connection-limit
+    ///   failure from being mistaken for a stale UID and deleting the
+    ///   message locally.
+    case tooManyConnections(underlyingDescription: String)
+
     /// A response could not be parsed into the expected shape.
     case malformedResponse(underlyingDescription: String)
 
@@ -53,6 +77,8 @@ extension MailTransportError: CustomStringConvertible {
             "authenticationFailed: \(message)"
         case .serverError(let message):
             "serverError: \(message)"
+        case .tooManyConnections(let message):
+            "tooManyConnections: \(message)"
         case .malformedResponse(let message):
             "malformedResponse: \(message)"
         case .mailboxNotFound(let path):
