@@ -274,6 +274,42 @@ public enum ThreadQuery {
         ) ?? false
     }
 
+    /// 「迷惑メール解除」: the `.junk` counterpart to `isThreadArchived
+    /// (threadId:db:)` — does at least one of this thread's messages
+    /// currently live in a Junk-role mailbox. Same OR-aggregate semantics
+    /// (and the same reason for them) as the archived check just above; the
+    /// predicate is a plain role match because "迷惑メール" is a real folder
+    /// on every provider, Gmail included (no `GmailArchiveFilter`-style
+    /// special case needed).
+    public static func isThreadJunk(threadId: Int64, db: Database) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+                SELECT EXISTS (
+                    SELECT 1 FROM message
+                    JOIN mailbox ON mailbox.id = message.mailboxId
+                    WHERE message.threadId = ? AND mailbox.role = 'junk'
+                )
+                """,
+            arguments: [threadId]
+        ) ?? false
+    }
+
+    /// The flat-mode (1 row = 1 message) counterpart to
+    /// `isThreadJunk(threadId:db:)` — evaluates the same role match against
+    /// just that one message's own current mailbox membership.
+    public static func isMessageJunk(messageId: Int64, db: Database) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+                SELECT mailbox.role = 'junk' FROM message
+                JOIN mailbox ON mailbox.id = message.mailboxId
+                WHERE message.id = ?
+                """,
+            arguments: [messageId]
+        ) ?? false
+    }
+
     /// `limit` (M10 pagination — `MessageListView`'s "load more on scroll",
     /// docs/performance.md): `nil` keeps the pre-M10 "fetch everything"
     /// behavior for any caller that still wants it.

@@ -421,6 +421,7 @@ enum OpQueueKindDisplay {
         case .junk: "迷惑メールへ移動"
         case .archive: "アーカイブ"
         case .unarchive: "アーカイブ解除"
+        case .unjunk: "迷惑メール解除"
         case .send: "送信"
         case .saveDraft: "下書き保存"
         case .deleteDraft: "下書き削除"

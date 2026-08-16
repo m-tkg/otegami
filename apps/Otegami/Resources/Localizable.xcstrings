@@ -421,6 +421,16 @@
         }
       }
     },
+    "迷惑メール解除": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not Junk"
+          }
+        }
+      }
+    },
     "英語で返信を下書き": {
       "localizations": {
         "en": {

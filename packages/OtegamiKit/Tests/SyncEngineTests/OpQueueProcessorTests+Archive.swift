@@ -287,4 +287,75 @@ struct OpQueueProcessorArchiveTests {
         #expect(recorder.storeCalls.isEmpty)
         #expect(recorder.expungeCalls.isEmpty)
     }
+
+    // MARK: unjunk → back to INBOX (a plain move for every provider)
+
+    @Test("replay resolves an unjunk op back to the account's INBOX mailbox and issues a move")
+    func replayResolvesUnjunkBackToInbox() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database)
+        let junkId = try await database.dbWriter.write { db -> Int64 in
+            var record = MailboxRecord(accountId: account.id, path: "Junk", displayPath: "Junk", role: .junk)
+            try record.insert(db)
+            return record.id!
+        }
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueUnjunk(
+                accountId: account.id, sourceMailboxId: junkId, uidValidity: 0,
+                uids: [9], db: db
+            )
+        }
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+
+        let call = try #require(recorder.moveCalls.first)
+        #expect(call.path == "Junk")
+        #expect(call.uids == [9])
+        #expect(call.destination == "INBOX")
+        #expect(recorder.copyCalls.isEmpty)
+    }
+
+    @Test("replay of an unjunk op on a Gmail account is a plain move too — Spam is a real folder there, unlike アーカイブ")
+    func replayUnjunkOnGmailUsesMove() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let gmailAccount = AccountRecord(
+            displayName: "Gmail Test", email: "test@gmail.com", authType: .oauth2, kind: .gmail,
+            imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls, imapUsername: "test@gmail.com"
+        )
+        let (account, _, _, _) = try await makeAccountWithMailboxes(database: database, withTrash: false, account: gmailAccount)
+        let spamId = try await database.dbWriter.write { db -> Int64 in
+            var record = MailboxRecord(accountId: account.id, path: "[Gmail]/Spam", displayPath: "Spam", role: .junk)
+            try record.insert(db)
+            return record.id!
+        }
+
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueUnjunk(
+                accountId: account.id, sourceMailboxId: spamId, uidValidity: 0,
+                uids: [3], db: db
+            )
+        }
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+
+        let call = try #require(recorder.moveCalls.first)
+        #expect(call.path == "[Gmail]/Spam")
+        #expect(call.destination == "INBOX")
+        #expect(recorder.copyCalls.isEmpty)
+    }
 }

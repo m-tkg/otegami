@@ -82,6 +82,13 @@ struct MessageListRow: View {
     /// message, so there is nothing else the archive slot could usefully
     /// do there.
     let isArchiveView: Bool
+    /// 「迷惑メール解除」: `isArchiveView`'s junk analogue — `true` while this
+    /// row is displayed inside a junk view (a mailbox whose role is `.junk`,
+    /// or the cross-account `.unifiedRole(.junk)` view). Swaps the junk
+    /// swipe slot over to "迷惑メール解除" (`onUnjunk` instead of `onJunk`):
+    /// every row visible there is already in 迷惑メール, so re-junking it is
+    /// the one thing the slot can't usefully do.
+    let isJunkView: Bool
     let isSelecting: Bool
     let isSelected: Bool
     /// Normal (not-selecting) tap: open the thread (or, 実機フィードバック
@@ -120,6 +127,10 @@ struct MessageListRow: View {
     /// healing to a freshly-created "Junk" mailbox the same way delete
     /// self-heals to Trash — see `OpQueueProcessor.resolveOrCreateJunkMailbox`).
     let onJunk: (ThreadSummary) -> Void
+    /// 「迷惑メール解除」— only ever invoked when `isJunkView` is `true`
+    /// (`perform(_:)` branches on it before calling either this or
+    /// `onJunk`). Moves the thread back to the account's INBOX.
+    let onUnjunk: (ThreadSummary) -> Void
     /// E9: ピン留め — see `MessageListView.togglePin(_:)`'s doc comment for
     /// why this toggles every message in the thread together rather than
     /// just the row's own `latestMessage`.
@@ -368,7 +379,7 @@ struct MessageListRow: View {
         switch action {
         case .toggleRead: onToggleRead(summary)
         case .archive: isArchiveView ? onUnarchive(summary) : onArchive(summary)
-        case .junk: onJunk(summary)
+        case .junk: isJunkView ? onUnjunk(summary) : onJunk(summary)
         case .pin: onPin(summary)
         case .delete: onDelete(summary)
         }
@@ -483,7 +494,11 @@ extension MessageListRow {
         // archived message, so the archive slot previews "put it back"
         // instead.
         case .archive: isArchiveView ? "tray.and.arrow.up" : action.systemImage
-        case .junk, .delete: action.systemImage
+        // 「迷惑メール解除」: same state-dependent swap as `.archive` right
+        // above — inside a junk view the slot previews "迷惑メールではない"
+        // (`checkmark.shield`) instead of the warning octagon.
+        case .junk: isJunkView ? "checkmark.shield" : action.systemImage
+        case .delete: action.systemImage
         }
     }
 
@@ -502,7 +517,9 @@ extension MessageListRow {
         switch action {
         case .toggleRead: OtegamiColor.accent
         case .archive: isArchiveView ? OtegamiColor.accentText : OtegamiColor.paleBaseStrongest
-        case .junk: OtegamiColor.destructive
+        // 「迷惑メール解除」は破壊的操作ではない (受信トレイに戻すだけ) ので、
+        // `.archive`の解除と同じ `accentText` トーンにする。
+        case .junk: isJunkView ? OtegamiColor.accentText : OtegamiColor.destructive
         case .pin: summary.thread.isPinned ? OtegamiColor.inkTertiary : OtegamiColor.accentText
         case .delete: OtegamiColor.destructive
         }

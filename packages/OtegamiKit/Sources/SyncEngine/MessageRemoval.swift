@@ -44,6 +44,13 @@ public enum MessageRemoval {
         /// `.delete` resolves Trash) rather than a pre-resolved local
         /// Archive mailbox id.
         case junk
+        /// 「迷惑メール解除」— the junk view's swipe/context-menu reverse
+        /// action, mirroring `.unarchive`'s shape exactly (see its doc
+        /// comment): only the enqueued `OpQueueKind` (`.unjunk`) and the
+        /// per-message "is this actually sitting in Junk?" guard differ.
+        /// The relocation destination is the account's INBOX-role mailbox,
+        /// the same one `.unarchive` restores into.
+        case unjunk
         /// Task #87 (1): "アーカイブ解除" — the archive view's swipe/context-
         /// menu reverse action. Mirrors `.archive`'s local-commit shape
         /// exactly (remove the message's row from wherever it currently
@@ -207,6 +214,19 @@ public enum MessageRemoval {
                     accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
                     uids: [uid], db: db
                 )
+            case .unjunk:
+                // The mirror image of `.junk`: only a message actually
+                // sitting in this account's Junk-role mailbox has anything
+                // to reverse. Unreachable from a junk-view swipe with a
+                // non-junk row (`MessageListView.refreshJunkViewFlag` only
+                // swaps the slot inside a junk view), but reachable from
+                // bulk selection and the thread-detail toolbar on a thread
+                // whose messages are only partly in Junk.
+                guard mailbox.role == .junk else { continue }
+                try OpQueue.enqueueUnjunk(
+                    accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                    uids: [uid], db: db
+                )
             case .unarchive:
                 // The mirror image of `.archive`'s own guard just above:
                 // only a message actually sitting in an "archived" location
@@ -263,7 +283,7 @@ public enum MessageRemoval {
     /// `nil` when there's nothing safe/known to relocate into yet (the
     /// caller then falls back to the pre-#120 remove-and-wait-for-sync
     /// behavior for that message):
-    /// - `.unarchive` → this account's INBOX-role mailbox. Always known
+    /// - `.unarchive`/`.unjunk` → this account's INBOX-role mailbox. Always known
     ///   locally once an account has completed even one sync (mirrors
     ///   `OpQueueProcessor.inboxMailbox`'s own "never `nil` in practice"
     ///   assumption).
@@ -288,7 +308,7 @@ public enum MessageRemoval {
         guard let account else { return nil }
         let role: MailboxRoleRecord
         switch kind {
-        case .unarchive: role = .inbox
+        case .unarchive, .unjunk: role = .inbox
         case .junk: role = .junk
         case .delete: role = .trash
         case .archive: role = account.kind == .gmail ? .all : .archive

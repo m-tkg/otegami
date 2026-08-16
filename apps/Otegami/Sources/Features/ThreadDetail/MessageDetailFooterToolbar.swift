@@ -74,6 +74,11 @@ struct MessageDetailFooterToolbar: View {
     /// `onTogglePin` already work.
     var isArchived: Bool
     var onJunk: () -> Void
+    /// 「迷惑メール解除」: `isArchived` の迷惑メール版 — `true` の間だけ
+    /// `junkButton` と「その他」メニューの対応項目が「迷惑メール解除」に
+    /// なる。`onJunk` はどちらでも同じ 1 コールバックのまま
+    /// (`ThreadDetailView.junkThread()` が `.junk`/`.unjunk` を決める)。
+    var isJunk: Bool
     var isPinned: Bool
     var onTogglePin: () -> Void
     var onDelete: () -> Void
@@ -323,10 +328,15 @@ struct MessageDetailFooterToolbar: View {
         .accessibilityIdentifier("messageDetail.toolbar.archive")
     }
 
+    /// 「迷惑メール解除」: `archiveButton` と同じ状態依存の差し替え — see
+    /// `isJunk`'s doc comment. アイコンは `checkmark.shield`(「迷惑メール
+    /// ではない」)、`MessageListRow` のスワイププレビューと同じもの。
     @ViewBuilder
     private var junkButton: some View {
-        Button(action: onJunk) { toolbarIcon(.junk) }
-            .accessibilityIdentifier("messageDetail.toolbar.junk")
+        Button(action: onJunk) {
+            toolbarIcon(.junk, title: isJunk ? "迷惑メール解除" : nil, systemImage: isJunk ? "checkmark.shield" : nil)
+        }
+        .accessibilityIdentifier("messageDetail.toolbar.junk")
     }
 
     /// 削除だけは`role: .destructive`＋`OtegamiColor.destructive`で赤く
@@ -638,8 +648,11 @@ struct MessageDetailFooterToolbar: View {
             }
             .accessibilityIdentifier("messageDetail.toolbar.more.hidden.archive")
         case .junk:
-            Button { onJunk() } label: { Label(action.title, systemImage: action.systemImage) }
-                .accessibilityIdentifier("messageDetail.toolbar.more.hidden.junk")
+            // 「迷惑メール解除」: same state-dependent swap as `.archive` above.
+            Button { onJunk() } label: {
+                Label(isJunk ? "迷惑メール解除" : action.title, systemImage: isJunk ? "checkmark.shield" : action.systemImage)
+            }
+            .accessibilityIdentifier("messageDetail.toolbar.more.hidden.junk")
         case .delete:
             // 実機フィードバック (Task #113 (1)):「ツールバーをカスタマイズ」
             // ショートカット (`moreMenuButton`末尾固定) が、状態によって

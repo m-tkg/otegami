@@ -189,6 +189,27 @@ extension MessageListView {
         }
     }
 
+    /// `junkSelected()`の「迷惑メール解除」版 — 一覧が迷惑メールビュー
+    /// (`isJunkView`) のとき、macOS の複数選択コンテキストメニューが
+    /// 「迷惑メールにする」の代わりにこちらを出す (`unarchiveSelected()` と
+    /// 同じ出し分け)。
+    func unjunkSelected() {
+        let targets = selectedTargets()
+        let ids = selectedThreadIds
+        let accountIds = Set(targets.map(\.thread.accountId))
+        exitSelectionMode()
+        Task {
+            var snapshots: [MessageRemoval.Snapshot] = []
+            for summary in targets {
+                if let snapshot = await commitUnjunk(summary) { snapshots.append(snapshot) }
+            }
+            guard !snapshots.isEmpty else { return }
+            scheduleUndo(threadIds: ids, message: "\(snapshots.count)件のスレッドの迷惑メール指定を解除しました", accountIds: accountIds) {
+                for snapshot in snapshots { await undoRemoval(snapshot) }
+            }
+        }
+    }
+
     func deleteSelected() {
         let targets = selectedTargets()
         let ids = selectedThreadIds

@@ -205,8 +205,13 @@ extension ThreadDetailView {
         Task { await commitRemoval(isThreadArchived ? .unarchive : .archive) }
     }
 
+    /// 「迷惑メール解除」: `archiveThread()` と同じ形で、`isThreadJunk` の
+    /// ときだけ `.junk` の代わりに `.unjunk` へ振り分ける — フッター
+    /// ツールバーの迷惑メールスロットも macOS の行コンテキストメニューも
+    /// この 1 箇所を呼ぶので、ラベル/アイコンを差し替える側は判断を
+    /// 持たなくてよい。
     func junkThread() {
-        Task { await commitRemoval(.junk) }
+        Task { await commitRemoval(isThreadJunk ? .unjunk : .junk) }
     }
 
     func deleteThread() {

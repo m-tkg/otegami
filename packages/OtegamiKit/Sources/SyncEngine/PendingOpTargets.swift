@@ -150,6 +150,10 @@ public struct PendingOpTargets: Sendable, Equatable {
                 guard let payload = try? decoder.decode(UnarchiveOpPayload.self, from: op.payload),
                       payload.sourceMailboxId == mailboxId, payload.uidValidity == mailbox.uidValidity else { continue }
                 relocated.formUnion(payload.uids.map(Int64.init))
+            case .unjunk:
+                guard let payload = try? decoder.decode(UnjunkOpPayload.self, from: op.payload),
+                      payload.sourceMailboxId == mailboxId, payload.uidValidity == mailbox.uidValidity else { continue }
+                relocated.formUnion(payload.uids.map(Int64.init))
             case .deleteDraft:
                 guard let payload = try? decoder.decode(DeleteDraftOpPayload.self, from: op.payload),
                       payload.mailboxId == mailboxId, payload.uidValidity == mailbox.uidValidity else { continue }
@@ -216,6 +220,9 @@ public struct PendingOpTargets: Sendable, Equatable {
             return [payload.sourceMailboxId]
         case .unarchive:
             guard let payload = try? decoder.decode(UnarchiveOpPayload.self, from: op.payload) else { return [] }
+            return [payload.sourceMailboxId]
+        case .unjunk:
+            guard let payload = try? decoder.decode(UnjunkOpPayload.self, from: op.payload) else { return [] }
             return [payload.sourceMailboxId]
         case .deleteDraft:
             guard let payload = try? decoder.decode(DeleteDraftOpPayload.self, from: op.payload) else { return [] }
