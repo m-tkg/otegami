@@ -1,6 +1,7 @@
 #if os(iOS)
 import UIKit
 import UserNotifications
+import GRDB
 import OtegamiRelayAPI
 import PushRelayClient
 import SyncEngine
@@ -121,14 +122,100 @@ actor PushTokenCenter {
 /// concurrency.
 @MainActor
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    /// 実クラッシュ調査 (TestFlight v1.14.1, iPad, `0xDEAD10CC`) 「穴3」:
+    /// see `beginLaunchBackgroundTaskIfNeeded(application:)`'s doc comment.
+    private var launchBackgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         PushNotificationActionCategory.registerPushNotificationCategories()
+        beginLaunchBackgroundTaskIfNeeded(application: application)
+        // 実クラッシュ調査 (0xDEAD10CC) 「穴5」: `scenePhase`-driven suspend
+        // (`OtegamiApp.handleScenePhaseChange`'s `.background`/`.inactive`
+        // case, and this file's own synchronous pre-post — see
+        // `OtegamiApp.swift`'s matching doc comment) depends on a `UIScene`
+        // actually existing to fire `onChange(of: scenePhase)` at all. A
+        // background-launched process (silent push, a notification action)
+        // isn't guaranteed to ever get one — falls back to the lower-level,
+        // `UIApplicationDelegate`-era `UIApplication
+        // .didEnterBackgroundNotification`, which UIKit posts independently
+        // of the SwiftUI scene lifecycle, as a second, redundant trigger for
+        // the exact same `Database.suspendNotification` post. Redundant
+        // with every other path that can post it is fine — GRDB's own
+        // suspend()/resume() are idempotent (`DatabaseSuspensionTracker`'s
+        // doc comment). Registered once for the process's lifetime (this
+        // `AppDelegate` singleton is never deallocated), so no matching
+        // `removeObserver` — same "lives forever" reasoning as
+        // `PushDatabaseChangeObserver`'s Darwin notification registration.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil
+        ) { _ in
+            NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+        }
         return true
     }
+
+    /// 実クラッシュ調査 (TestFlight v1.14.1, iPad, `0xDEAD10CC`) 「穴3」: a
+    /// notification action (`MARK_READ`/`ARCHIVE`, `options: []`) or silent
+    /// push can cold-launch this app **entirely in the background** — the
+    /// real crash happened 3.3 seconds into exactly such a launch, mid-write,
+    /// before this launch sequence (`OtegamiApp.init()`/`AppEnvironment
+    /// .init()`, which itself does several synchronous shared-database
+    /// writes — see `AppEnvironment.swift`'s doc comments — followed by the
+    /// first `scenePhase` handler) had secured any background execution
+    /// grace at all. `beginBackgroundTask` here covers that entire sequence,
+    /// not just `PushNotificationActionHandler.handle(...)`'s own work
+    /// (which additionally wraps itself the same way — see
+    /// `userNotificationCenter(_:didReceive:withCompletionHandler:)` below —
+    /// for the case where this launch-level task has already ended by the
+    /// time the action itself runs).
+    ///
+    /// Only begun when `applicationState == .background` — i.e. genuinely a
+    /// background launch. An ordinary user-initiated launch (tapping the
+    /// app icon) starts `.inactive`→`.active`, where foregrounding itself
+    /// already keeps the process alive; no extra grace needed there.
+    ///
+    /// Closed on a fixed timeout (`launchBackgroundTaskGraceSeconds`) rather
+    /// than tied to any specific `scenePhase` transition: gating the end on
+    /// "whichever phase happens to fire" risks never calling
+    /// `endBackgroundTask` at all if that particular transition doesn't
+    /// occur (an edge case on a future OS version, or this launch racing an
+    /// even earlier termination) — leaving a background task open
+    /// indefinitely is its own (lesser, but real) misbehavior, distinct from
+    /// `0xDEAD10CC`. The expiration handler (if the OS reclaims the grace
+    /// period before the timeout) posts GRDB's suspend notification first,
+    /// same reasoning as `OtegamiApp.swift`'s synchronous pre-post: better
+    /// to proactively fail any in-flight new lock acquisition with
+    /// `SQLITE_INTERRUPT`/`SQLITE_ABORT` than let the OS catch this process
+    /// mid-write.
+    private func beginLaunchBackgroundTaskIfNeeded(application: UIApplication) {
+        guard application.applicationState == .background else { return }
+        launchBackgroundTaskId = application.beginBackgroundTask(withName: "otegami.backgroundLaunch") { [weak self] in
+            NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+            self?.endLaunchBackgroundTaskIfNeeded()
+        }
+        guard launchBackgroundTaskId != .invalid else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.launchBackgroundTaskGraceSeconds) { [weak self] in
+            self?.endLaunchBackgroundTaskIfNeeded()
+        }
+    }
+
+    private func endLaunchBackgroundTaskIfNeeded() {
+        guard launchBackgroundTaskId != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(launchBackgroundTaskId)
+        launchBackgroundTaskId = .invalid
+    }
+
+    /// Generous relative to the ~3.3s the real crash's own write took, and
+    /// comfortably inside iOS's own background-launch execution budget —
+    /// just needs to outlast `AppEnvironment.init()` plus the first
+    /// `scenePhase` handler pass, not the whole ~30s a notification action's
+    /// own background task (`userNotificationCenter(_:didReceive:
+    /// withCompletionHandler:)`) can use.
+    private static let launchBackgroundTaskGraceSeconds: TimeInterval = 10
 
     func application(
         _ application: UIApplication,
@@ -224,9 +311,57 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             return
         }
         Task {
-            await PushNotificationActionHandler.handle(action: action, accountId: payload.accountId, uidNext: payload.uidNext)
+            // 実クラッシュ調査 (0xDEAD10CC) 「穴1」: see
+            // `withPushActionBackgroundTask(name:_:)`'s doc comment.
+            await Self.withPushActionBackgroundTask(name: "otegami.pushNotificationAction") {
+                await PushNotificationActionHandler.handle(action: action, accountId: payload.accountId, uidNext: payload.uidNext)
+            }
             boxedCompletionHandler.value()
         }
+    }
+
+    /// 実クラッシュ調査 (TestFlight v1.14.1, iPad, `0xDEAD10CC`) 「穴1」:
+    /// wraps `body` in `UIApplication.beginBackgroundTask`/`endBackgroundTask`,
+    /// giving `PushNotificationActionHandler.handle(...)`'s local DB write +
+    /// best-effort IMAP replay real execution time past the point iOS would
+    /// otherwise consider suspending this backgrounded process — mirrors
+    /// `PendingSendCoordinator.finalizeNow()`'s identical pattern (see that
+    /// method's doc comment) for the same underlying reason: a process
+    /// suspended (or killed) mid-write while still holding the shared App
+    /// Group database's SQLite lock is `0xDEAD10CC`
+    /// (`docs/architecture.md`'s Known pitfalls e.). The expiration handler
+    /// — called if the grace period itself runs out before `body` finishes
+    /// — posts GRDB's suspend notification (`Database.suspendNotification`)
+    /// first, same reasoning as `OtegamiApp.swift`'s synchronous pre-post
+    /// and `beginLaunchBackgroundTaskIfNeeded(application:)` above: better
+    /// to make any DB access still in flight fail fast with
+    /// `SQLITE_INTERRUPT`/`SQLITE_ABORT` (`PushNotificationActionExecutor`
+    /// retries its own durable write against exactly that — see its doc
+    /// comment) than let the OS catch this process mid-write.
+    ///
+    /// `@MainActor`: `UIApplication.shared.beginBackgroundTask`/
+    /// `endBackgroundTask` are main-actor-isolated APIs. `static` (not an
+    /// instance method) so the call site above doesn't need to carry `self`
+    /// across the isolation boundary.
+    @MainActor
+    private static func withPushActionBackgroundTask(name: String, _ body: @Sendable () async -> Void) async {
+        // `BackgroundTaskBox` (below), not a plain captured `var`: the
+        // expiration handler is an escaping `@Sendable` closure, and Swift 6
+        // strict concurrency flags mutating a captured local `var` from one
+        // ("mutated after capture by sendable closure") — a reference type
+        // sidesteps that by mutating a property through a `let`-captured
+        // reference instead.
+        let box = BackgroundTaskBox()
+        box.id = UIApplication.shared.beginBackgroundTask(withName: name) {
+            NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+            UIApplication.shared.endBackgroundTask(box.id)
+        }
+        defer {
+            if box.id != .invalid {
+                UIApplication.shared.endBackgroundTask(box.id)
+            }
+        }
+        await body()
     }
 
     /// Maps `UNNotificationResponse.actionIdentifier` to the
@@ -277,6 +412,18 @@ private struct NonSendableCompletionHandlerBox: @unchecked Sendable {
     init(_ value: @escaping () -> Void) {
         self.value = value
     }
+}
+
+/// A reference-type box for `UIBackgroundTaskIdentifier` — see
+/// `withPushActionBackgroundTask(name:_:)`'s doc comment on why this exists
+/// instead of a captured local `var`: its expiration-handler closure is
+/// `@escaping`, and mutating a plain captured `var` from there is flagged
+/// under Swift 6 strict concurrency ("mutated after capture by sendable
+/// closure"). `@unchecked Sendable`: `beginBackgroundTask`'s expiration
+/// handler and this function's own `defer` are the only two places that
+/// ever touch `id`, both scoped to the single call this box is created for.
+private final class BackgroundTaskBox: @unchecked Sendable {
+    var id: UIBackgroundTaskIdentifier = .invalid
 }
 
 /// The real-world implementation of `NotificationPermissionChecking`

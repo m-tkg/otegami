@@ -1,4 +1,5 @@
 import SwiftUI
+import GRDB
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
@@ -379,6 +380,31 @@ struct RootView: View {
             // — there is no IMAP connection to keep alive while the app
             // can't run code.
             .onChange(of: scenePhase, initial: true) { _, newPhase in
+                #if os(iOS)
+                // 実クラッシュ解析 (TestFlight v1.14.1, iPad, `0xDEAD10CC`)
+                // 「穴4」: posts GRDB's suspend notification synchronously,
+                // right here, before the `Task { }` below even starts —
+                // `Task { }` is a real scheduler hop (queued onto the
+                // cooperative thread pool, picked up on a later run-loop
+                // tick), which can lag behind a background cold launch
+                // (notification action, `options: []`) racing straight into
+                // a DB write. `NotificationCenter.post` itself is a plain
+                // synchronous, non-actor-isolated call, safe to fire
+                // directly from this closure with no `await`.
+                //
+                // Redundant with `AppEnvironment.suspendSharedDatabaseIfNeeded()`'s
+                // own post moments later inside `handleScenePhaseChange`
+                // below (still runs unchanged, deduped by
+                // `DatabaseSuspensionTracker` as before) — GRDB's
+                // suspend()/resume() are idempotent
+                // (`DatabaseSuspensionTracker`'s doc comment), so the extra
+                // post here is harmless, and every real suspend still goes
+                // through the exact same `Database.suspendNotification`
+                // GRDB itself defines.
+                if newPhase == .background || newPhase == .inactive {
+                    NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+                }
+                #endif
                 Task { await handleScenePhaseChange(newPhase) }
             }
             // A newly-added account (mid-session, via AccountSetupView)

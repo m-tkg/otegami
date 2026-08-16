@@ -641,11 +641,30 @@ final class AppEnvironment {
             // `!needsReauth` heuristic, same as before this parameter
             // existed — only the `.password` path (the one the real-device
             // report was actually about) gets the live check.
+            //
+            // 実クラッシュ調査 (TestFlight v1.14.1, iPad, `0xDEAD10CC`)
+            // 「穴1」: 以前は `credentialStore.password(forAccountId:)` を
+            // 下の `dbWriter.write` クロージャの**内側**から呼んでいた —
+            // Keychain デーモンとの実 IPC 往復ぶん、共有 App Group DB の
+            // SQLite 書き込みロックを保持したまま待つことになる。この
+            // 起動が実際の OS サスペンドと競合すれば `0xDEAD10CC`
+            // (`docs/architecture.md`のKnown pitfalls e.)そのもの。
+            // `AccountDuplicateMerger.mergeDuplicateAccounts`の
+            // `hasCredential`パラメータ自身のdoc commentも元々「write
+            // トランザクションの外で取ったスナップショットに対する同期
+            // クロージャであるべき (トランザクション中の live 再照会では
+            // ない)」と明記していた — 以下は書き込みトランザクションを
+            // 開く前に候補アカウント全員分の Keychain 照会を済ませ、
+            // write 内は辞書引きだけにする。
             let credentialStore = self.credentialStore
+            let candidateAccounts = (try? database.dbWriter.read { db in try AccountRecord.fetchAll(db) }) ?? []
+            let passwordAccountHasCredential = Dictionary(uniqueKeysWithValues: candidateAccounts
+                .filter { $0.authType == .password }
+                .map { ($0.id, ((try? credentialStore.password(forAccountId: $0.id)) ?? nil) != nil) })
             duplicateMerges = (try? database.dbWriter.write { db in
                 try AccountDuplicateMerger.mergeDuplicateAccounts(db: db) { account in
                     guard account.authType == .password else { return !account.needsReauth }
-                    return ((try? credentialStore.password(forAccountId: account.id)) ?? nil) != nil
+                    return passwordAccountHasCredential[account.id] ?? false
                 }
             }) ?? []
         }
@@ -980,6 +999,17 @@ final class AppEnvironment {
         // this app's Darwin notification observer (iOS only) right away, so
         // it's live for the entire session, not just while foregrounded.
         pushDatabaseChangeObserver.configure(environment: self)
+        // 実クラッシュ調査 (0xDEAD10CC) 「穴2」: same timing, same reasoning
+        // — see `SharedAppDatabaseCenter`'s doc comment. Lets
+        // `PushNotificationActionHandler.handle(...)` reuse this already-
+        // open `database` instead of opening a second `DatabasePool` onto
+        // the same shared file whenever a notification action arrives while
+        // this process is already alive. iOS-only (that handler only exists
+        // on iOS at all — `PushNotificationActionHandler.swift`'s `#if
+        // os(iOS)` gating).
+        #if os(iOS)
+        SharedAppDatabaseCenter.shared.configure(environment: self)
+        #endif
 
         startObservingAccounts()
 
