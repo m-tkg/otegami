@@ -219,6 +219,29 @@ struct MessageListView: View {
     /// same reason `isArchiveView` does.
     @State private var isJunkView = false
 
+    // MARK: - Trash view detection (「ゴミ箱を空にする」)
+
+    /// `true` while `selection` shows a trash view — the `isArchiveView`/
+    /// `isJunkView` analogue for ゴミ箱, decided by `refreshTrashViewFlag()`.
+    /// Gates the "空にする" toolbar button (`MessageListView+EmptyTrash.swift`)
+    /// — unlike アーカイブ/迷惑メール, there's no swipe-slot substitution to
+    /// drive, just this one button's visibility.
+    @State var isTrashView = false
+
+    // MARK: - Empty trash (「ゴミ箱を空にする」、MessageListView+EmptyTrash.swift)
+
+    /// 非`nil`の間、確認`.alert`を表示する — 対象件数 (「N件のメールを完全に
+    /// 削除します」の N)。`requestEmptyTrash()`がタップ時に対象メールボックス
+    /// の実件数を読んでからセットする (`displayedSummaries.count`のような
+    /// 近似値ではなく正確な件数を見せるため — スレッド表示 ON だと1スレッド
+    /// に複数メッセージが載ることがあり、スレッド数とメッセージ数は一致
+    /// しない)。
+    @State var pendingEmptyTrashCount: Int?
+    /// `pendingEmptyTrashCount`と対になる、実際に空にする対象
+    /// (アカウントID・メールボックスID の組) — 統合ゴミ箱ビューでは複数
+    /// アカウント分になりうる。
+    @State var pendingEmptyTrashTargets: [EmptyTrashTarget] = []
+
     // MARK: - Pagination (M10, docs/performance.md)
 
     /// How many threads `observeThreads()` currently requests — starts at
@@ -607,6 +630,29 @@ struct MessageListView: View {
         }
     }
 
+    /// 「ゴミ箱を空にする」: `refreshArchiveViewFlag()`/`refreshJunkViewFlag()`
+    /// のゴミ箱版 — `.unifiedRole(.trash)` (「すべてのゴミ箱」) は無条件に
+    /// trash、`.mailbox` はその role が `.trash` かどうかを読む、
+    /// `.unifiedInbox` は常に false。Gmail 特有の分岐は無い (ゴミ箱は
+    /// アーカイブと違って Gmail でも実フォルダ)。
+    func refreshTrashViewFlag() async {
+        switch selection {
+        case .unifiedRole(let role):
+            isTrashView = (role == .trash)
+        case .unifiedInbox:
+            isTrashView = false
+        case .mailbox(let mailboxSelection):
+            do {
+                let role = try await environment.database.dbWriter.read { db in
+                    try MailboxRecord.fetchOne(db, key: mailboxSelection.mailboxId)?.role
+                }
+                isTrashView = role == .trash
+            } catch {
+                isTrashView = false
+            }
+        }
+    }
+
     private var accountDisplayNames: [String: String] {
         Dictionary(uniqueKeysWithValues: environment.accounts.map { ($0.id, $0.displayName) })
     }
@@ -724,7 +770,9 @@ struct MessageListView: View {
             isFieldFocused: $isSearchFieldFocused,
             isUnreadOnly: $isUnreadOnly,
             isSyncing: isSyncing,
-            onRefresh: startManualRefresh
+            onRefresh: startManualRefresh,
+            isTrashView: isTrashView && !summaries.isEmpty,
+            onEmptyTrash: requestEmptyTrash
         )
     }
 
@@ -741,6 +789,33 @@ struct MessageListView: View {
         return { startManualRefresh() }
     }
     #endif
+
+    /// 「同期エラー」alert 用 Binding — `messageListCore`のチェーンに
+    /// インラインの`Binding(get:set:)`を書くと CI の型チェックタイムアウト
+    /// (`docs/ci.md`) を踏むため名前付きに分離 (alert 側のコメント参照)。
+    private var isSyncErrorAlertPresented: Binding<Bool> {
+        Binding(
+            get: { syncErrorMessage != nil },
+            set: { if !$0 { syncErrorMessage = nil } }
+        )
+    }
+
+    /// 「同期エラー」alert のボタン — 分離理由は`isSyncErrorAlertPresented`
+    /// と同じ。
+    @ViewBuilder
+    private func syncErrorAlertActions() -> some View {
+        Button("閉じる", action: dismissSyncErrorAlert)
+    }
+
+    /// 「同期エラー」alert の本文。
+    @ViewBuilder
+    private func syncErrorAlertMessage() -> some View {
+        Text(syncErrorMessage ?? "")
+    }
+
+    private func dismissSyncErrorAlert() {
+        syncErrorMessage = nil
+    }
 
     /// `body`本体 — 以前はこれが`body`そのものだった (`.searchable`/
     /// `refreshToolbarItem`を含む) が、Task #197 でmacOS専用の検索欄+
@@ -927,6 +1002,10 @@ struct MessageListView: View {
         .task(id: selection) {
             await refreshJunkViewFlag()
         }
+        // 「ゴミ箱を空にする」: 同じ形/keying。
+        .task(id: selection) {
+            await refreshTrashViewFlag()
+        }
         // Not required for correctness anymore (the local write already
         // happened by the time a `PendingUndo` exists — see `commitDelete`/
         // `commitArchive`'s doc comment), but backgrounding is also the
@@ -940,17 +1019,36 @@ struct MessageListView: View {
             notifyPendingUndoChanged()
             Task { await replayOpQueueSoon(accountIds: pendingUndo.accountIds) }
         }
+        // Binding/ボタン/メッセージを名前付きに分けているのは下の
+        // 「ゴミ箱を空にしますか？」alert と同じ CI 型チェックタイムアウト
+        // 対策 — cdf58d6 で隣の alert だけ分割したところ、式全体の圧力が
+        // こちらの残っていたインライン`Binding(get:set:)`へ移って CI が
+        // 再度落ちた (ci-app run 31948123900)。`messageListCore`の
+        // チェーンにはクロージャ式を一切残さない。
         .alert(
             "同期エラー",
-            isPresented: Binding(
-                get: { syncErrorMessage != nil },
-                set: { if !$0 { syncErrorMessage = nil } }
-            )
-        ) {
-            Button("閉じる") { syncErrorMessage = nil }
-        } message: {
-            Text(syncErrorMessage ?? "")
-        }
+            isPresented: isSyncErrorAlertPresented,
+            actions: syncErrorAlertActions,
+            message: syncErrorAlertMessage
+        )
+        // 「ゴミ箱を空にする」破壊的操作の確認 — `.confirmationDialog`ではなく
+        // `.alert`にしているのは、Task #190 が確立した既存の方針 (iPad/macOS
+        // では`.confirmationDialog`がソースに紐づく吹き出しになってしまう
+        // ため常に画面中央のモーダルが要る破壊的確認は`.alert`、
+        // `AccountDigestView`のdoc comment参照) に合わせたもの。
+        // Binding/ボタン/メッセージをインラインで書かず
+        // `MessageListView+EmptyTrash.swift`の名前付きプロパティに分けて
+        // いるのは CI の型チェックタイムアウト対策 (`docs/ci.md`) — 初版は
+        // インライン`Binding(get:set:)`クロージャがこの巨大な modifier
+        // チェーンに折り畳まれ、ローカルでは通るのに CI ランナーで
+        // 「unable to type-check this expression in reasonable time」で
+        // 落ちた (ci-app run 31947831733)。
+        .alert(
+            "ゴミ箱を空にしますか？",
+            isPresented: isEmptyTrashAlertPresented,
+            actions: emptyTrashAlertActions,
+            message: emptyTrashAlertMessage
+        )
     }
 
     /// The toolbar's whole content, split out of `body` — split for the same
@@ -977,6 +1075,13 @@ struct MessageListView: View {
             ToolbarItem(placement: .confirmationAction) {
                 Button(isAllVisibleSelected ? "選択解除" : "全選択") { toggleSelectAll() }
                     .accessibilityIdentifier("messageList.selection.selectAllButton")
+            }
+        } else if isTrashView && !isSearchActive && !summaries.isEmpty {
+            // 「ゴミ箱を空にする」— ゴミ箱ビューを見ている間だけ出す。
+            // 一括選択中/検索中/空のゴミ箱では出さない。
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("空にする", role: .destructive) { requestEmptyTrash() }
+                    .accessibilityIdentifier("messageList.emptyTrashButton")
             }
         }
         #else

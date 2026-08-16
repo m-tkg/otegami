@@ -158,6 +158,16 @@ public struct PendingOpTargets: Sendable, Equatable {
                 guard let payload = try? decoder.decode(DeleteDraftOpPayload.self, from: op.payload),
                       payload.mailboxId == mailboxId, payload.uidValidity == mailbox.uidValidity else { continue }
                 relocated.insert(Int64(payload.uid))
+            case .emptyTrash:
+                // 「ゴミ箱を空にする」も`deleteDraft`と同じ形: `payload
+                // .mailboxId`自身が対象 (移動元/移動先の区別が無い —
+                // `EmptyTrash.commit`がその場でローカル行を消しているため、
+                // このメールボックス自身の次回同期がまだ`EXPUNGE`されて
+                // いないサーバー側の同じ UID を「取りこぼし」と誤認して
+                // 復活させないようにブロックする。
+                guard let payload = try? decoder.decode(EmptyTrashOpPayload.self, from: op.payload),
+                      payload.mailboxId == mailboxId, payload.uidValidity == mailbox.uidValidity else { continue }
+                relocated.formUnion(payload.uids.map(Int64.init))
             case .send, .saveDraft, nil:
                 // 送信・下書き保存はどちらも「まだサーバーに存在しない
                 // メールを作る」op で、既存の `(mailboxId, uid)` を対象に
@@ -226,6 +236,9 @@ public struct PendingOpTargets: Sendable, Equatable {
             return [payload.sourceMailboxId]
         case .deleteDraft:
             guard let payload = try? decoder.decode(DeleteDraftOpPayload.self, from: op.payload) else { return [] }
+            return [payload.mailboxId]
+        case .emptyTrash:
+            guard let payload = try? decoder.decode(EmptyTrashOpPayload.self, from: op.payload) else { return [] }
             return [payload.mailboxId]
         case .send, .saveDraft, nil:
             return []
