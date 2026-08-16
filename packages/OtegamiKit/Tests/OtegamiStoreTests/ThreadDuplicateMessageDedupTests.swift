@@ -133,6 +133,51 @@ struct ThreadDuplicateMessageDedupTests {
         #expect(messages.first?.id == higherUidMessageId)
     }
 
+    /// 実機報告 (2026-08-16, Gmail アカウント)「特定の1通に対して削除・
+    /// アーカイブ解除・未読化が完全無反応」の再現＆修正確認。role の
+    /// 優先だけでタイブレークしていた頃は、role を持つ Trash に取り残された
+    /// `MessageRecord.isPendingRelocation` (`uid <= 0`) のゴースト行が、
+    /// role の無い All Mail の本物の行 (`uid >= 1`) より優先されてしまい、
+    /// ユーザーが実際に見て操作するのが決して昇格しないゴーストになって
+    /// いた。ゴーストは role に関わらず必ず負ける、という新しいタイブレーク
+    /// がこれを直すことを確認する。
+    @Test("A pending-relocation ghost row loses the tie-break to a real row even when the ghost sits in a role-bearing mailbox")
+    func ghostRowLosesTieBreakToRealRowEvenInRoleBearingMailbox() throws {
+        let (database, accountId, _, allMailId) = try makeGmailDatabase()
+        let trashId = try database.dbWriter.write { db -> Int64 in
+            var trash = MailboxRecord(accountId: accountId, path: "[Gmail]/Trash", displayPath: "Trash", role: .trash)
+            trash = try trash.upsertAndFetch(db, onConflict: ["accountId", "path"])
+            return trash.id!
+        }
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, realMessageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: base, messageCount: 2)
+            try thread.insert(db)
+            // The ghost: stuck in Trash (a role-bearing mailbox) with a
+            // synthetic placeholder UID, e.g. left behind by R3 or a
+            // staleDiscarded op.
+            var ghost = MessageRecord(
+                mailboxId: trashId, uid: -5, date: base, internalDate: base,
+                gmailMessageId: 4242, threadId: thread.id
+            )
+            try ghost.insert(db)
+            // The real, server-confirmed row — All Mail (no recognized
+            // role), but with a genuine UID.
+            var real = MessageRecord(
+                mailboxId: allMailId, uid: 1234, date: base, internalDate: base,
+                gmailMessageId: 4242, threadId: thread.id
+            )
+            try real.insert(db)
+            return (thread.id!, real.id!)
+        }
+
+        let messages = try database.dbWriter.read { db in try ThreadQuery.messages(threadId: threadId, db: db) }
+        #expect(messages.count == 1)
+        #expect(messages.first?.id == realMessageId, "the real row must win, not the role-bearing ghost")
+        #expect(messages.first?.mailboxId == allMailId)
+        #expect(messages.first?.isPendingRelocation == false)
+    }
+
     // MARK: - ThreadAssigner.recomputeAggregates(threadId:db:) singular path
 
     @Test("recomputeAggregates(threadId:db:) counts the deduplicated messageCount/unreadCount, not the raw row count")

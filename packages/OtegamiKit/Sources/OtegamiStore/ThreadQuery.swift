@@ -485,18 +485,33 @@ public enum ThreadQuery {
     /// them as duplicates risks silently dropping genuinely distinct mail.
     ///
     /// When two or more rows share a non-`nil` identity key, this keeps
-    /// exactly one: prefer a row sitting in a mailbox with a real role
-    /// (`inbox`/`sent`/`drafts`/`trash`/`junk`/`archive`) over one in
-    /// Gmail's catch-all All Mail (role `.all`, or the absence of any
-    /// recognized role) — a role-bearing folder is the more natural one to
-    /// display/act on, mirroring the "role over All Mail" preference
-    /// `GmailArchiveFilter` already applies elsewhere. If more than one
-    /// role-bearing (or more than one non-role-bearing) candidate remains —
-    /// not expected in practice, but handled defensively rather than
-    /// crashing — the tie-break is: greater `uid` wins; if `uid` also ties,
-    /// the row encountered first (in the input list's order) wins. This
-    /// tie-break has no meaning beyond "pick one deterministically" — don't
-    /// depend on it as behavior.
+    /// exactly one. **Before anything else**: a `MessageRecord
+    /// .isPendingRelocation` row (`uid <= 0`, a synthetic placeholder
+    /// `MessageRemoval.commit` created ahead of the server — see that
+    /// column's doc comment) always loses to a row with a real `uid >= 1`,
+    /// regardless of role. 実機報告 (2026-08-16, Gmail アカウント)「特定の
+    /// 1通に対して削除・アーカイブ解除・未読化が完全無反応」の根本原因:
+    /// role-preference だけで決めていたため、role を持つメールボックス
+    /// (例: Trash) に取り残された仮 UID 行が、role の無い All Mail の本物の
+    /// 行より優先されてしまい、ユーザーが実際に見て操作するのが決して
+    /// 昇格しない「ゴースト」行になっていた — その行への移送系操作は
+    /// `MessageRemoval.commit`内の `UInt32(exactly:)` ガードに常に弾かれ、
+    /// エラー表示も無いまま完全に無反応になる (詳しくはそのガードの doc
+    /// comment 参照)。ゴーストを最優先で負けさせることで、本物の行が代表と
+    /// して選ばれ操作可能になる。
+    ///
+    /// その次に、role の無いゴーストではない同士、あるいは role 付き同士が
+    /// 残った場合: 実在するメールボックスの role
+    /// (`inbox`/`sent`/`drafts`/`trash`/`junk`/`archive`) を持つ行を、
+    /// Gmail の catch-all All Mail (role `.all`、または未知の role) の行より
+    /// 優先する — role 付きフォルダの方が表示・操作対象として自然、という
+    /// `GmailArchiveFilter` が他所で既に採用している「role を All Mail より
+    /// 優先する」という判断をここでも踏襲している。それでも複数の
+    /// role 付き (または複数の role 無し) 候補が残る場合 — 実運用では
+    /// 想定していないが、クラッシュせず防御的に扱う — 最後のタイブレークは
+    /// 「`uid` が大きい方が勝つ」、それも同じなら「入力リストで先に出てきた
+    /// 方が勝つ」。このタイブレークに「決定的に1つ選ぶ」以上の意味は無い —
+    /// 挙動として依存しないこと。
     ///
     /// Preserves the input list's relative order: surviving rows keep the
     /// position of their first occurrence, so callers that already sorted
@@ -532,6 +547,15 @@ public enum ThreadQuery {
             }
             guard let existing = messages.first(where: { $0.id == existingId }) else {
                 winnerIdForKey[key] = id
+                continue
+            }
+            let existingIsGhost = existing.isPendingRelocation
+            let candidateIsGhost = message.isPendingRelocation
+            if candidateIsGhost != existingIsGhost {
+                // A real `uid >= 1` row always wins over a synthetic
+                // placeholder, regardless of role — see this function's
+                // doc comment for the real-device bug this fixes.
+                if !candidateIsGhost { winnerIdForKey[key] = id }
                 continue
             }
             let existingPreferred = isRoleBearing(existing.mailboxId)

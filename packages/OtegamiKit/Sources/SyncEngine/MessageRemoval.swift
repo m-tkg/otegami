@@ -162,8 +162,36 @@ public enum MessageRemoval {
         let destination = try Self.destinationMailbox(for: kind, account: account, db: db)
         var removedMessages: [MessageRecord] = []
         for message in targets {
-            guard let messageId = message.id, let uid = UInt32(exactly: message.uid) else { continue }
+            guard let messageId = message.id else { continue }
             guard let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId) else { continue }
+            // 実機報告 (2026-08-16, Gmail アカウント)「特定の1通に対して
+            // 削除・アーカイブ解除・未読化が完全無反応 (エラー表示も無し)」
+            // の根本原因の一つ: `message` 自身が既に
+            // `MessageRecord.isPendingRelocation` (`uid <= 0`) — 直前の
+            // 別操作がまだサーバー確認待ちで移送中の行 (`EnvelopePersister
+            // .reconcilePendingRelocation` が本物の UID に昇格させる前)、
+            // あるいは R3 (`messageId` が nil/空で永久に昇格できない) や
+            // staleDiscarded (元の op が破棄され二度と昇格しない) で恒久的に
+            // 取り残されたゴースト行のどちらか — には送る先の本物 UID が
+            // 無い。以前はこの行全体を `guard let uid = UInt32(exactly:
+            // message.uid) else { continue }` で丸ごと skip していたため、
+            // サーバー op は積まれない (これは正しい) が**ローカルの移送/
+            // 削除も一切実行されない**まま `removedMessages` に積まれず、
+            // `commit` は `nil` を返し、呼び出し元の UI は何のエラーも出さず
+            // 完全に無反応になっていた (`ThreadQuery.deduplicate` の tie-break
+            // 修正と合わせて読むこと — dedup がゴーストを本物より優先して
+            // 代表行に選んでいたことで、ユーザーが実際に操作するのが常に
+            // このゴースト行だった、というのがこの実機報告の実態)。
+            //
+            // 修正: `isGhostTarget` はサーバー op の enqueue だけを止める。
+            // 各 `Kind` ごとの位置ガード (`isAlreadyArchived`/`isArchived`/
+            // `mailbox.role == .junk`) はゴースト行にもそのまま適用する —
+            // ゴーストの `mailboxId` は直前の移送でどこに置かれたかを正しく
+            // 表しているため、実在行と同じ意味を持つ。ガードを通過したら、
+            // ループ末尾のローカル移送/ハード削除は無条件に実行する。サー
+            // バー側は元の移送 op (まだ `opQueue` に生きていれば) の通常の
+            // replay と、それに続く同期の自己修復に任せる。
+            let isGhostTarget = message.isPendingRelocation
             // 設定「アーカイブ時に既読にする」で `markSeen` した場合、
             // relocation (下の`if let destinationId ...`分岐) にはループ
             // 変数 `message` (markSeen 前の stale コピー) ではなく DB から
@@ -190,30 +218,39 @@ public enum MessageRemoval {
                 // action and the thread-detail toolbar.
                 let isAlreadyArchived = mailbox.role == .archive || (mailbox.role == .all && accountKind == .gmail)
                 guard !isAlreadyArchived else { continue }
-                if markSeenOnArchive {
-                    // OpQueueProcessor は opQueue を id 順に実行するため、
-                    // この flag STORE op は直後の archive (move) op より
-                    // 必ず先に enqueue する — 逆順だと移動済み UID への
-                    // STORE になり失敗する。
-                    if try MessageReadMarker.markSeen(messageId: messageId, accountId: accountId, db: db),
-                       let refetched = try MessageRecord.fetchOne(db, key: messageId) {
-                        messageForRelocation = refetched
+                if !isGhostTarget {
+                    guard let uid = UInt32(exactly: message.uid) else { continue }
+                    if markSeenOnArchive {
+                        // OpQueueProcessor は opQueue を id 順に実行するため、
+                        // この flag STORE op は直後の archive (move) op より
+                        // 必ず先に enqueue する — 逆順だと移動済み UID への
+                        // STORE になり失敗する。
+                        if try MessageReadMarker.markSeen(messageId: messageId, accountId: accountId, db: db),
+                           let refetched = try MessageRecord.fetchOne(db, key: messageId) {
+                            messageForRelocation = refetched
+                        }
                     }
+                    try OpQueue.enqueueArchive(
+                        accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [uid], relocatedMessageId: messageId, db: db
+                    )
                 }
-                try OpQueue.enqueueArchive(
-                    accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                    uids: [uid], db: db
-                )
             case .delete:
-                try OpQueue.enqueueDelete(
-                    accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                    uids: [uid], db: db
-                )
+                if !isGhostTarget {
+                    guard let uid = UInt32(exactly: message.uid) else { continue }
+                    try OpQueue.enqueueDelete(
+                        accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [uid], relocatedMessageId: messageId, db: db
+                    )
+                }
             case .junk:
-                try OpQueue.enqueueJunk(
-                    accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                    uids: [uid], db: db
-                )
+                if !isGhostTarget {
+                    guard let uid = UInt32(exactly: message.uid) else { continue }
+                    try OpQueue.enqueueJunk(
+                        accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [uid], relocatedMessageId: messageId, db: db
+                    )
+                }
             case .unjunk:
                 // The mirror image of `.junk`: only a message actually
                 // sitting in this account's Junk-role mailbox has anything
@@ -223,10 +260,13 @@ public enum MessageRemoval {
                 // bulk selection and the thread-detail toolbar on a thread
                 // whose messages are only partly in Junk.
                 guard mailbox.role == .junk else { continue }
-                try OpQueue.enqueueUnjunk(
-                    accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                    uids: [uid], db: db
-                )
+                if !isGhostTarget {
+                    guard let uid = UInt32(exactly: message.uid) else { continue }
+                    try OpQueue.enqueueUnjunk(
+                        accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [uid], relocatedMessageId: messageId, db: db
+                    )
+                }
             case .unarchive:
                 // The mirror image of `.archive`'s own guard just above:
                 // only a message actually sitting in an "archived" location
@@ -234,10 +274,13 @@ public enum MessageRemoval {
                 // no such role at all — All Mail) has anything to reverse.
                 let isArchived = mailbox.role == .archive || (mailbox.role == .all && accountKind == .gmail)
                 guard isArchived else { continue }
-                try OpQueue.enqueueUnarchive(
-                    accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
-                    uids: [uid], db: db
-                )
+                if !isGhostTarget {
+                    guard let uid = UInt32(exactly: message.uid) else { continue }
+                    try OpQueue.enqueueUnarchive(
+                        accountId: accountId, sourceMailboxId: message.mailboxId, uidValidity: mailbox.uidValidity,
+                        uids: [uid], relocatedMessageId: messageId, db: db
+                    )
+                }
             }
             let relocationTargetId = try Self.relocationDestinationId(
                 kind: kind, accountKind: accountKind, message: messageForRelocation,

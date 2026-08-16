@@ -358,4 +358,74 @@ struct OpQueueProcessorArchiveTests {
         #expect(call.destination == "INBOX")
         #expect(recorder.copyCalls.isEmpty)
     }
+
+    // MARK: staleDiscarded cleans up the leftover pending-relocation row
+
+    /// 実機報告 (2026-08-16, Gmail アカウント)「特定の1通に対して削除・
+    /// アーカイブ解除・未読化が完全無反応」の修正 (3)。この op が
+    /// `.staleDiscarded` (対象メールボックスの `uidValidity` がもう
+    /// 合わない — フォルダが再作成された) として破棄されるとき、
+    /// `MessageRemoval.commit`がこの op を積むのと同時に移送していた
+    /// `MessageRecord.isPendingRelocation`行 (`ArchiveOpPayload
+    /// .relocatedMessageId`が指す) が、まだ本物の UID へ昇格していなければ
+    /// ハード削除される — サーバーへ一度も送られなかった移送の残骸を
+    /// 永久にゴーストとして残さないため。
+    @Test("a staleDiscarded archive op hard-deletes the leftover pending-relocation row it created")
+    func staleDiscardedArchiveCleansUpLeftoverGhostRow() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox, _, _) = try await makeAccountWithMailboxes(database: database)
+        let archiveId = try await database.dbWriter.write { db -> Int64 in
+            var record = MailboxRecord(accountId: account.id, path: "Archive", displayPath: "Archive", role: .archive)
+            try record.insert(db)
+            return record.id!
+        }
+
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let messageId = try await database.dbWriter.write { db -> Int64 in
+            var thread = ThreadRecord(accountId: account.id, lastMessageDate: date, messageCount: 1)
+            try thread.insert(db)
+            // The ghost `MessageRemoval.commit(.archive, ...)` would have
+            // left behind: relocated into Archive with a synthetic
+            // placeholder UID, same `uid = -id` convention that method
+            // itself uses.
+            var message = MessageRecord(mailboxId: archiveId, uid: 0, date: date, internalDate: date, threadId: thread.id)
+            try message.insert(db)
+            message.uid = -(message.id!)
+            try message.update(db)
+            return message.id!
+        }
+
+        // Enqueued with a `uidValidity` that no longer matches `inbox`'s —
+        // the folder was recreated after this op was queued, so it's
+        // unsendable and will be discarded rather than retried.
+        try await database.dbWriter.write { db in
+            try OpQueue.enqueueArchive(
+                accountId: account.id, sourceMailboxId: inbox.id!, uidValidity: inbox.uidValidity + 1,
+                uids: [9], relocatedMessageId: messageId, db: db
+            )
+        }
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let script = FakeIMAPSession.Script(mailboxes: [], statusByPath: [:])
+        let processor = OpQueueProcessor(database: database) { config in
+            FakeIMAPSession(config: config, script: script, recorder: recorder)
+        }
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 0)
+        #expect(result.discardedStale == 1)
+        #expect(recorder.moveCalls.isEmpty)
+        #expect(recorder.storeCalls.isEmpty)
+
+        let (messageAfterDiscard, remainingOps, discardRecords) = try await database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: messageId),
+                try OpQueueRecord.fetchCount(db),
+                try OpQueueStaleDiscardRecord.fetchCount(db)
+            )
+        }
+        #expect(messageAfterDiscard == nil, "the leftover ghost row is hard-deleted rather than orphaned forever")
+        #expect(remainingOps == 0)
+        #expect(discardRecords == 1)
+    }
 }

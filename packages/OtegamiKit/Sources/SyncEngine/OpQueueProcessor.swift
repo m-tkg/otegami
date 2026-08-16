@@ -887,7 +887,67 @@ public actor OpQueueProcessor {
             var discard = OpQueueStaleDiscardRecord(accountId: op.accountId, kind: op.kind, reason: Self.staleDiscardReason)
             try discard.insert(db)
             try Self.reopenUnseenSweepGate(for: op, db: db)
+            try Self.cleanUpOrphanedRelocation(for: op, db: db)
             return try op.delete(db)
+        }
+    }
+
+    /// R3/staleDiscarded の後始末 — 実機報告 (2026-08-16, Gmail アカウント)
+    /// 「特定の1通に対して削除・アーカイブ解除・未読化が完全無反応」の
+    /// 修正 (3)。`op` が `ArchiveOpPayload`/`DeleteOpPayload`/`JunkOpPayload`/
+    /// `UnarchiveOpPayload`/`UnjunkOpPayload` のいずれかで、かつ
+    /// `relocatedMessageId` (その doc comment参照) を持っているなら、その
+    /// 主キーの行がまだ `MessageRecord.isPendingRelocation`
+    /// (`uid <= 0`) のまま残っていないか確認し、残っていればハード削除
+    /// する (FTS 込み)。
+    ///
+    /// なぜこれが必要か: `.staleDiscarded` になった時点で、この op が送る
+    /// はずだったサーバー変更はもう二度と送られない
+    /// (`recordStaleDiscardAndDelete`のdoc comment — `uidValidity`が
+    /// 変わってしまい、リトライしても同じ結果を繰り返すだけ)。サーバー上の
+    /// 実体は最初に居た場所 (`sourceMailboxId`) に残ったまま — `op`を
+    /// 消せば`PendingOpTargets`のガードがその場所について自然に外れるので
+    /// (`forMailbox`は残っている`opQueue`行だけを見て毎回組み立て直す)、
+    /// その場所の次回同期がサーバーの実体から本物の行を作り直す
+    /// (`ThreadQuery.deduplicate`のタイブレーク修正により、以後この本物の
+    /// 行が代表として選ばれ、操作可能になる)。ここで消す仮 UID 行は、その
+    /// 「本物の行」とは別の (row `id` が違う)、二度と昇格しない残骸 —
+    /// 昇格させる`EnvelopePersister.reconcilePendingRelocation`はサーバーが
+    /// 移送先へ実際にそのメッセージを届けたときだけ動くが、この op が
+    /// 表していた移送はサーバーへ一度も送られていないので、その到着は
+    /// 永久に来ない。
+    ///
+    /// `relocatedMessageId`が`nil` (この変更より前に積まれた古い op、または
+    /// そもそもローカル移送を伴わない op) なら何もしない。対象行が既に
+    /// 無い、あるいは既に本物の UID へ昇格済み (`isPendingRelocation ==
+    /// false`) なら、それも何もしない — どちらも「掃除するものが無い」
+    /// というだけで、エラーではない。
+    private static func cleanUpOrphanedRelocation(for op: OpQueueRecord, db: Database) throws {
+        let decoder = JSONDecoder()
+        let relocatedMessageId: Int64?
+        switch OpQueueKind(rawValue: op.kind) {
+        case .archive:
+            relocatedMessageId = (try? decoder.decode(ArchiveOpPayload.self, from: op.payload))?.relocatedMessageId
+        case .delete:
+            relocatedMessageId = (try? decoder.decode(DeleteOpPayload.self, from: op.payload))?.relocatedMessageId
+        case .junk:
+            relocatedMessageId = (try? decoder.decode(JunkOpPayload.self, from: op.payload))?.relocatedMessageId
+        case .unarchive:
+            relocatedMessageId = (try? decoder.decode(UnarchiveOpPayload.self, from: op.payload))?.relocatedMessageId
+        case .unjunk:
+            relocatedMessageId = (try? decoder.decode(UnjunkOpPayload.self, from: op.payload))?.relocatedMessageId
+        case .move, .setFlags, .send, .saveDraft, .deleteDraft, .emptyTrash, nil:
+            relocatedMessageId = nil
+        }
+        guard let messageId = relocatedMessageId,
+              let record = try MessageRecord.fetchOne(db, key: messageId),
+              record.isPendingRelocation
+        else { return }
+        let threadId = record.threadId
+        try FTSIndexer.delete(messageId: messageId, db: db)
+        try MessageRecord.deleteOne(db, key: messageId)
+        if let threadId {
+            try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
         }
     }
 
