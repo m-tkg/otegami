@@ -790,6 +790,33 @@ struct MessageListView: View {
     }
     #endif
 
+    /// 「同期エラー」alert 用 Binding — `messageListCore`のチェーンに
+    /// インラインの`Binding(get:set:)`を書くと CI の型チェックタイムアウト
+    /// (`docs/ci.md`) を踏むため名前付きに分離 (alert 側のコメント参照)。
+    private var isSyncErrorAlertPresented: Binding<Bool> {
+        Binding(
+            get: { syncErrorMessage != nil },
+            set: { if !$0 { syncErrorMessage = nil } }
+        )
+    }
+
+    /// 「同期エラー」alert のボタン — 分離理由は`isSyncErrorAlertPresented`
+    /// と同じ。
+    @ViewBuilder
+    private func syncErrorAlertActions() -> some View {
+        Button("閉じる", action: dismissSyncErrorAlert)
+    }
+
+    /// 「同期エラー」alert の本文。
+    @ViewBuilder
+    private func syncErrorAlertMessage() -> some View {
+        Text(syncErrorMessage ?? "")
+    }
+
+    private func dismissSyncErrorAlert() {
+        syncErrorMessage = nil
+    }
+
     /// `body`本体 — 以前はこれが`body`そのものだった (`.searchable`/
     /// `refreshToolbarItem`を含む) が、Task #197 でmacOS専用の検索欄+
     /// 更新ボタン行 (`macListSearchBar`) を`body`側の`VStack`に外出しした
@@ -992,17 +1019,18 @@ struct MessageListView: View {
             notifyPendingUndoChanged()
             Task { await replayOpQueueSoon(accountIds: pendingUndo.accountIds) }
         }
+        // Binding/ボタン/メッセージを名前付きに分けているのは下の
+        // 「ゴミ箱を空にしますか？」alert と同じ CI 型チェックタイムアウト
+        // 対策 — cdf58d6 で隣の alert だけ分割したところ、式全体の圧力が
+        // こちらの残っていたインライン`Binding(get:set:)`へ移って CI が
+        // 再度落ちた (ci-app run 31948123900)。`messageListCore`の
+        // チェーンにはクロージャ式を一切残さない。
         .alert(
             "同期エラー",
-            isPresented: Binding(
-                get: { syncErrorMessage != nil },
-                set: { if !$0 { syncErrorMessage = nil } }
-            )
-        ) {
-            Button("閉じる") { syncErrorMessage = nil }
-        } message: {
-            Text(syncErrorMessage ?? "")
-        }
+            isPresented: isSyncErrorAlertPresented,
+            actions: syncErrorAlertActions,
+            message: syncErrorAlertMessage
+        )
         // 「ゴミ箱を空にする」破壊的操作の確認 — `.confirmationDialog`ではなく
         // `.alert`にしているのは、Task #190 が確立した既存の方針 (iPad/macOS
         // では`.confirmationDialog`がソースに紐づく吹き出しになってしまう
