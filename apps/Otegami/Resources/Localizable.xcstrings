@@ -5064,6 +5064,36 @@
         }
       }
     },
+    "ゴミ箱を空にする": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empty Trash"
+          }
+        }
+      }
+    },
+    "空にする": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empty"
+          }
+        }
+      }
+    },
+    "ゴミ箱を空にしますか？": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empty the trash?"
+          }
+        }
+      }
+    },
     "新規メッセージ": {
       "localizations": {
         "en": {

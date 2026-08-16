@@ -827,6 +827,11 @@ translations = {
     "送信済み": "Sent",
     "迷惑メール": "Junk",
     "ゴミ箱": "Trash",
+    # 「ゴミ箱を空にする」: ゴミ箱ビューのツールバーボタン (iOS)/macOS の
+    # `MacListSearchBar`ボタン + 確認 `.alert`。
+    "ゴミ箱を空にする": "Empty Trash",
+    "空にする": "Empty",
+    "ゴミ箱を空にしますか？": "Empty the trash?",
     "新規メッセージ": "New Message",
     "メッセージ": "Message",
     "既読/未読を切り替え": "Toggle Read/Unread",
