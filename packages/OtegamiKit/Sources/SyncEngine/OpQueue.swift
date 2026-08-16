@@ -79,6 +79,18 @@ public enum OpQueueKind: String, Sendable {
     /// which would incorrectly pull it *out* of All Mail too. Payload is
     /// `UnarchiveOpPayload`, structurally identical to `ArchiveOpPayload`.
     case unarchive
+    /// 「迷惑メール解除」— the reverse of `.junk`: a `move` from wherever the
+    /// message currently sits (its Junk-role mailbox) back to the account's
+    /// INBOX-role mailbox, resolved at *replay* time exactly like every
+    /// other kind here. No `account.kind` branch (unlike `.unarchive`):
+    /// Gmail's Spam **is** a real folder on IMAP, so moving out of it is a
+    /// plain `MOVE` for every provider — Gmail re-applies the INBOX label
+    /// and drops the Spam one as a side effect of the move itself. INBOX is
+    /// a lookup, never a `resolveOrCreate` (`MailboxRoleResolver` never
+    /// self-heals `.inbox`), matching `.unarchive`'s own INBOX resolution.
+    /// Payload is `UnjunkOpPayload`, structurally identical to
+    /// `JunkOpPayload`.
+    case unjunk
 }
 
 /// `setFlags`'s payload carries the **absolute** desired `MessageFlags`
@@ -175,6 +187,22 @@ public struct DeleteOpPayload: Codable, Sendable, Equatable {
 /// `junk`'s payload — see `OpQueueKind.junk`'s doc comment; shape is
 /// identical to `DeleteOpPayload`.
 public struct JunkOpPayload: Codable, Sendable, Equatable {
+    public var sourceMailboxId: Int64
+    public var uidValidity: Int64
+    public var uids: [UInt32]
+
+    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+        self.sourceMailboxId = sourceMailboxId
+        self.uidValidity = uidValidity
+        self.uids = uids
+    }
+}
+
+/// `unjunk`'s payload — see `OpQueueKind.unjunk`'s doc comment; shape is
+/// identical to `JunkOpPayload`. `sourceMailboxId` is wherever the message
+/// currently sits (the account's Junk-role mailbox), the same "where it is
+/// now, not where it's going" convention every other payload here uses.
+public struct UnjunkOpPayload: Codable, Sendable, Equatable {
     public var sourceMailboxId: Int64
     public var uidValidity: Int64
     public var uids: [UInt32]
@@ -327,6 +355,18 @@ public enum OpQueue {
         guard !uids.isEmpty else { return }
         let payload = JunkOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
         try enqueue(kind: .junk, accountId: accountId, payload: payload, db: db)
+    }
+
+    public static func enqueueUnjunk(
+        accountId: String,
+        sourceMailboxId: Int64,
+        uidValidity: Int64,
+        uids: [UInt32],
+        db: Database
+    ) throws {
+        guard !uids.isEmpty else { return }
+        let payload = UnjunkOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
+        try enqueue(kind: .unjunk, accountId: accountId, payload: payload, db: db)
     }
 
     public static func enqueueArchive(

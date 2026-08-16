@@ -636,6 +636,88 @@ struct MessageRemovalTests {
         #expect(opCount == 0)
     }
 
+    // MARK: unjunk (「迷惑メール解除」)
+
+    @Test("unjunk → undo restores a single-message thread the same way unarchive does, and enqueues an unjunk op")
+    func undoRestoresSingleMessageThreadAfterUnjunk() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let junkId = try database.dbWriter.write { db -> Int64 in
+            var junk = MailboxRecord(accountId: accountId, path: "Junk", displayPath: "Junk", role: .junk, uidValidity: 1)
+            try junk.insert(db)
+            return junk.id!
+        }
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db in
+            try insertSingleMessageThread(accountId: accountId, mailboxId: junkId, uid: 11, date: date, db: db)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.unjunk, summary: summary, accountId: accountId, db: db)
+        }
+        let snapshot2 = try #require(snapshot)
+
+        let (messageAfterUnjunk, threadAfterUnjunk, opCountAfterUnjunk, opKindAfterUnjunk) = try database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: messageId),
+                try ThreadRecord.fetchOne(db, key: threadId),
+                try OpQueueRecord.fetchCount(db),
+                try OpQueueRecord.fetchOne(db)?.kind
+            )
+        }
+        #expect(messageAfterUnjunk?.mailboxId == inboxId)
+        #expect(messageAfterUnjunk?.isPendingRelocation == true)
+        #expect(threadAfterUnjunk?.messageCount == 1)
+        #expect(opCountAfterUnjunk == 1)
+        #expect(opKindAfterUnjunk == OpQueueKind.unjunk.rawValue)
+
+        try database.dbWriter.write { db in try MessageRemoval.undo(snapshot2, db: db) }
+
+        let (threadAfterUndo, messageAfterUndo, opCountAfterUndo) = try database.dbWriter.read { db in
+            (
+                try ThreadRecord.fetchOne(db, key: threadId),
+                try MessageRecord.fetchOne(db, key: messageId),
+                try OpQueueRecord.fetchCount(db)
+            )
+        }
+        #expect(threadAfterUndo != nil)
+        #expect(messageAfterUndo?.mailboxId == junkId)
+        #expect(messageAfterUndo?.uid == 11)
+        #expect(messageAfterUndo?.isPendingRelocation == false)
+        #expect(opCountAfterUndo == 0)
+    }
+
+    @Test("unjunking a message that isn't actually in Junk (still in INBOX) is a no-op — nothing to reverse")
+    func unjunkSkipsAMessageNotActuallyInJunk() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db in
+            try insertSingleMessageThread(accountId: accountId, mailboxId: inboxId, uid: 12, date: date, db: db)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.unjunk, summary: summary, accountId: accountId, db: db)
+        }
+        #expect(snapshot == nil)
+
+        let (messageStillThere, opCount) = try database.dbWriter.read { db in
+            (try MessageRecord.fetchOne(db, key: messageId), try OpQueueRecord.fetchCount(db))
+        }
+        #expect(messageStillThere != nil)
+        #expect(opCount == 0)
+    }
+
     // MARK: undo vs. a reoccupied original slot (Task #183)
 
     /// Task #183 (実機報告「iCloud の Archive メールボックスの同期が毎回

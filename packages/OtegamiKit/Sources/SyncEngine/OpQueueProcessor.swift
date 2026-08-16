@@ -628,6 +628,23 @@ public actor OpQueueProcessor {
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: junk.path)
             return .applied(affectedMailboxIds: Set([junk.id].compactMap { $0 }))
 
+        case .unjunk:
+            let payload = try JSONDecoder().decode(UnjunkOpPayload.self, from: op.payload)
+            guard let source = try await mailbox(id: payload.sourceMailboxId), source.uidValidity == payload.uidValidity else {
+                return .staleDiscarded
+            }
+            guard let inbox = try await MailboxRoleResolver.mailbox(role: .inbox, accountId: account.id, database: database) else {
+                // Same "leave the op pending rather than silently dropping a
+                // user-intended action" shape as `.unarchive`'s identical
+                // INBOX lookup failure below.
+                throw SyncEngineError.noRoleMailbox(role: .inbox)
+            }
+            // A plain move for every provider, Gmail included — see
+            // `OpQueueKind.unjunk`'s doc comment for why this needs no
+            // `account.kind` branch even though `.unarchive` does.
+            try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: inbox.path)
+            return .applied(affectedMailboxIds: Set([inbox.id].compactMap { $0 }))
+
         case .archive:
             let payload = try JSONDecoder().decode(ArchiveOpPayload.self, from: op.payload)
             guard let source = try await mailbox(id: payload.sourceMailboxId), source.uidValidity == payload.uidValidity else {
