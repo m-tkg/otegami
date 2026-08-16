@@ -213,6 +213,10 @@ struct MessageHeaderCompactView: View {
                     .foregroundStyle(OtegamiColor.inkTertiary)
                     .accessibilityHidden(true)
             }
+            // テキストとchevronの間の隙間もタップに含める — これが無いと
+            // ヒット領域が文字とアイコンの描画範囲だけになり、caption
+            // サイズのこの行では指で狙うには細すぎる。
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("messageDetail.toSummary")
@@ -220,8 +224,13 @@ struct MessageHeaderCompactView: View {
 
     /// タップハンドラはインラインクロージャでなく名前付きメソッド参照に —
     /// `docs/ci.md`のSwiftUI型チェックタイムアウト対策の実践ルール。
+    ///
+    /// `withAnimation`で包むのは、展開すると本文全体が下に押し下げられる
+    /// ため — 瞬間的に切り替わると「何が起きたか」が読み取りにくい。
     private func toggleAddressesExpanded() {
-        isAddressesExpanded.toggle()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            isAddressesExpanded.toggle()
+        }
     }
 
     /// Spark 式「宛先: 名前」程度 — フルアドレスリストではなく先頭の宛先1名
