@@ -189,11 +189,15 @@ public struct DeleteOpPayload: Codable, Sendable, Equatable {
     public var sourceMailboxId: Int64
     public var uidValidity: Int64
     public var uids: [UInt32]
+    /// See `ArchiveOpPayload.relocatedMessageId`'s doc comment — identical
+    /// role, just for `.delete`.
+    public var relocatedMessageId: Int64?
 
-    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32], relocatedMessageId: Int64? = nil) {
         self.sourceMailboxId = sourceMailboxId
         self.uidValidity = uidValidity
         self.uids = uids
+        self.relocatedMessageId = relocatedMessageId
     }
 }
 
@@ -203,11 +207,15 @@ public struct JunkOpPayload: Codable, Sendable, Equatable {
     public var sourceMailboxId: Int64
     public var uidValidity: Int64
     public var uids: [UInt32]
+    /// See `ArchiveOpPayload.relocatedMessageId`'s doc comment — identical
+    /// role, just for `.junk`.
+    public var relocatedMessageId: Int64?
 
-    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32], relocatedMessageId: Int64? = nil) {
         self.sourceMailboxId = sourceMailboxId
         self.uidValidity = uidValidity
         self.uids = uids
+        self.relocatedMessageId = relocatedMessageId
     }
 }
 
@@ -219,11 +227,15 @@ public struct UnjunkOpPayload: Codable, Sendable, Equatable {
     public var sourceMailboxId: Int64
     public var uidValidity: Int64
     public var uids: [UInt32]
+    /// See `ArchiveOpPayload.relocatedMessageId`'s doc comment — identical
+    /// role, just for `.unjunk`.
+    public var relocatedMessageId: Int64?
 
-    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32], relocatedMessageId: Int64? = nil) {
         self.sourceMailboxId = sourceMailboxId
         self.uidValidity = uidValidity
         self.uids = uids
+        self.relocatedMessageId = relocatedMessageId
     }
 }
 
@@ -236,11 +248,35 @@ public struct ArchiveOpPayload: Codable, Sendable, Equatable {
     public var sourceMailboxId: Int64
     public var uidValidity: Int64
     public var uids: [UInt32]
+    /// 実機報告 (2026-08-16, Gmail アカウント)「特定の1通に対して削除・
+    /// アーカイブ解除・未読化が完全無反応」の修正 (3): `MessageRemoval
+    /// .commit`がこの op を積むのと同じ呼吸で、その `message` 行の主キー
+    /// (`MessageRecord.id`) をここへ写しておく — `commit`はこの直後に
+    /// 同じ行を仮 UID (`uid = -messageId`) へ移送することが多い
+    /// (`relocationDestinationId`が `nil` を返した場合は直接ハード削除する
+    /// ので移送しないこともある。どちらのケースでも埋めておいて無害)。
+    ///
+    /// `OpQueueProcessor`がこの op を `.staleDiscarded` (対象メールボックス
+    /// の `uidValidity` がもう合わない) として破棄するとき、この主キーが
+    /// あることで「移送先に取り残された仮 UID 行」を正確に一意特定して
+    /// ハード削除できる — `uids`（移送**前**の実 UID）はその時点でもう
+    /// どの行も指していない（行はとっくに `mailboxId`/`uid` を書き換えられ
+    /// ている）ので、`sourceMailboxId`/`uids` だけでは逆引きできない。
+    /// 詳細は `OpQueueProcessor.cleanUpOrphanedRelocation(for:db:)` 参照。
+    ///
+    /// 既存 (この変更前) にキューへ積まれた op の JSON にはこのキーが
+    /// 無いので `nil` にデコードされる — `Optional` の自動 Codable 準拠が
+    /// 欠損キーを `nil` として扱うため、マイグレーション無しで後方互換。
+    /// `nil` のときは単に「掃除できるものが無い」として何もしない
+    /// (旧 op のゴーストはこの経路では拾えないが、`ThreadQuery.deduplicate`
+    /// のタイブレーク修正で表示・操作は妨げられない — DB に残るだけ)。
+    public var relocatedMessageId: Int64?
 
-    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32], relocatedMessageId: Int64? = nil) {
         self.sourceMailboxId = sourceMailboxId
         self.uidValidity = uidValidity
         self.uids = uids
+        self.relocatedMessageId = relocatedMessageId
     }
 }
 
@@ -253,11 +289,15 @@ public struct UnarchiveOpPayload: Codable, Sendable, Equatable {
     public var sourceMailboxId: Int64
     public var uidValidity: Int64
     public var uids: [UInt32]
+    /// See `ArchiveOpPayload.relocatedMessageId`'s doc comment — identical
+    /// role, just for `.unarchive`.
+    public var relocatedMessageId: Int64?
 
-    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+    public init(sourceMailboxId: Int64, uidValidity: Int64, uids: [UInt32], relocatedMessageId: Int64? = nil) {
         self.sourceMailboxId = sourceMailboxId
         self.uidValidity = uidValidity
         self.uids = uids
+        self.relocatedMessageId = relocatedMessageId
     }
 }
 
@@ -375,10 +415,11 @@ public enum OpQueue {
         sourceMailboxId: Int64,
         uidValidity: Int64,
         uids: [UInt32],
+        relocatedMessageId: Int64? = nil,
         db: Database
     ) throws {
         guard !uids.isEmpty else { return }
-        let payload = DeleteOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
+        let payload = DeleteOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids, relocatedMessageId: relocatedMessageId)
         try enqueue(kind: .delete, accountId: accountId, payload: payload, db: db)
     }
 
@@ -387,10 +428,11 @@ public enum OpQueue {
         sourceMailboxId: Int64,
         uidValidity: Int64,
         uids: [UInt32],
+        relocatedMessageId: Int64? = nil,
         db: Database
     ) throws {
         guard !uids.isEmpty else { return }
-        let payload = JunkOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
+        let payload = JunkOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids, relocatedMessageId: relocatedMessageId)
         try enqueue(kind: .junk, accountId: accountId, payload: payload, db: db)
     }
 
@@ -399,10 +441,11 @@ public enum OpQueue {
         sourceMailboxId: Int64,
         uidValidity: Int64,
         uids: [UInt32],
+        relocatedMessageId: Int64? = nil,
         db: Database
     ) throws {
         guard !uids.isEmpty else { return }
-        let payload = UnjunkOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
+        let payload = UnjunkOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids, relocatedMessageId: relocatedMessageId)
         try enqueue(kind: .unjunk, accountId: accountId, payload: payload, db: db)
     }
 
@@ -411,10 +454,11 @@ public enum OpQueue {
         sourceMailboxId: Int64,
         uidValidity: Int64,
         uids: [UInt32],
+        relocatedMessageId: Int64? = nil,
         db: Database
     ) throws {
         guard !uids.isEmpty else { return }
-        let payload = ArchiveOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
+        let payload = ArchiveOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids, relocatedMessageId: relocatedMessageId)
         try enqueue(kind: .archive, accountId: accountId, payload: payload, db: db)
     }
 
@@ -423,10 +467,11 @@ public enum OpQueue {
         sourceMailboxId: Int64,
         uidValidity: Int64,
         uids: [UInt32],
+        relocatedMessageId: Int64? = nil,
         db: Database
     ) throws {
         guard !uids.isEmpty else { return }
-        let payload = UnarchiveOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids)
+        let payload = UnarchiveOpPayload(sourceMailboxId: sourceMailboxId, uidValidity: uidValidity, uids: uids, relocatedMessageId: relocatedMessageId)
         try enqueue(kind: .unarchive, accountId: accountId, payload: payload, db: db)
     }
 

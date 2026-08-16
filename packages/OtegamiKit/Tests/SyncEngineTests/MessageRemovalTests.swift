@@ -856,4 +856,53 @@ struct MessageRemovalTests {
         #expect(occupantAfterUndo?.isPinnedLocal == true, "the discarded row's local-only pin state is merged forward onto the survivor")
         #expect(occupantThreadAfterUndo?.messageCount == 1)
     }
+
+    /// 実機報告 (2026-08-16, Gmail アカウント)「特定の1通に対して削除・
+    /// アーカイブ解除・未読化が完全無反応 (エラー表示も無し)」の修正 (2):
+    /// `commit`の target がそれ自身 `MessageRecord.isPendingRelocation`
+    /// (`uid <= 0`) — 直前の別操作がまだサーバー確認待ちで移送中の行、
+    /// あるいは R3/staleDiscarded で永久に取り残されたゴースト行のどちら
+    /// か — のとき、修正前は `guard let uid = UInt32(exactly: message.uid)
+    /// else { continue }` で行全体が丸ごと skip され、ローカルの削除も
+    /// 一切実行されないまま `commit` は `nil` を返していた (エラー表示も
+    /// 無い完全な無反応 — 呼び出し元の UI の各 guard がそのまま抜けて
+    /// 終わる)。
+    @Test("commit(.delete) on a MessageRecord.isPendingRelocation row deletes it locally and returns a non-nil snapshot, without enqueuing a server op")
+    func commitDeleteOnGhostRowDeletesLocallyWithoutEnqueuingOp() throws {
+        let (database, accountId, _) = try makeDatabase()
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        // No Trash-role mailbox exists locally, so `destinationMailbox`
+        // resolves to `nil` and the local effect is a hard delete — the
+        // same "no destination known yet" fallback a real (non-ghost) row
+        // already uses. `uid: -1` mirrors `MessageRemoval.commit`'s own
+        // `uid = -messageId` convention for an already-relocated row —
+        // this one simulates a leftover ghost sitting in some other
+        // mailbox (Archive here; the exact mailbox doesn't matter).
+        let (threadId, messageId) = try database.dbWriter.write { db -> (Int64, Int64) in
+            var archive = MailboxRecord(accountId: accountId, path: "Archive", displayPath: "Archive", role: .archive, uidValidity: 1)
+            try archive.insert(db)
+            var thread = ThreadRecord(accountId: accountId, lastMessageDate: date, messageCount: 1)
+            try thread.insert(db)
+            var message = MessageRecord(
+                mailboxId: archive.id!, uid: -1, date: date, internalDate: date, threadId: thread.id
+            )
+            try message.insert(db)
+            return (thread.id!, message.id!)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(thread: try ThreadRecord.fetchOne(db, key: threadId)!, latestMessage: try MessageRecord.fetchOne(db, key: messageId))
+        }
+
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.delete, summary: summary, accountId: accountId, db: db)
+        }
+        #expect(snapshot != nil, "before the fix, the ghost row was silently skipped and commit returned nil — exactly the 'no error, nothing happens' bug the real-device report described")
+        #expect(snapshot?.messages.count == 1)
+
+        let (messageAfterDelete, opCount) = try database.dbWriter.read { db in
+            (try MessageRecord.fetchOne(db, key: messageId), try OpQueueRecord.fetchCount(db))
+        }
+        #expect(messageAfterDelete == nil, "the ghost row is hard-deleted locally")
+        #expect(opCount == 0, "no server op is enqueued for a row with no real UID to reference")
+    }
 }
