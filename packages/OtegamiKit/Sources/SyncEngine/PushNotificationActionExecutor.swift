@@ -107,7 +107,7 @@ public enum PushNotificationActionExecutor {
 
         let applied: Bool
         do {
-            applied = try await database.dbWriter.write { db in
+            applied = try await Self.applyWithSuspensionRetry(database: database) { db in
                 try Self.apply(
                     action: action, accountId: accountId, mailbox: mailbox, uid: uid,
                     markSeenOnArchive: markSeenOnArchive, db: db
@@ -121,6 +121,73 @@ public enum PushNotificationActionExecutor {
         guard let resolvedAuth = await auth(account) else { return }
         let processor = OpQueueProcessor(database: database, sessionFactory: sessionFactory)
         _ = try? await processor.replay(account: account, auth: resolvedAuth)
+    }
+
+    /// 実クラッシュ調査 (TestFlight v1.14.1, 0xDEAD10CC 対策の副作用): unlike
+    /// the best-effort IMAP replay a few lines above `execute` (already
+    /// tolerant of any failure — a later normal sync reconciles it), the
+    /// local-DB write above is this whole flow's *only* durable record that
+    /// the button tap happened at all. The app now posts GRDB's suspend
+    /// notification eagerly and synchronously as soon as it observes
+    /// `.background`/`.inactive` (`OtegamiApp.swift`'s doc comment on its
+    /// `onChange(of: scenePhase)` handler) — including right at the start of
+    /// a notification-action-triggered background cold launch, which is
+    /// exactly the launch this write itself runs during. If that suspend
+    /// post wins the race against this write, the write throws
+    /// `SQLITE_INTERRUPT`/`SQLITE_ABORT` (`DatabaseSuspensionSupport
+    /// .isSuspensionError(_:)`) and, before this retry existed, `execute`
+    /// simply gave up — silently dropping the user's tap with no future
+    /// correction (unlike a *replay* failure, there's no already-durable
+    /// `opQueue` row left behind for anything to pick up later).
+    ///
+    /// Retries a bounded few times with a short delay rather than giving up
+    /// on the first suspension error: `PushTokenCenter`'s
+    /// `beginBackgroundTask` wrapping around this whole call
+    /// (`withPushActionBackgroundTask(name:_:)`'s doc comment) means this
+    /// process very likely isn't actually about to be OS-suspended, so a
+    /// premature/overlapping suspend flag has a real chance of clearing
+    /// (`Database.resumeNotification`) again shortly after — worth a few
+    /// quick retries at effectively no cost (a suspended `dbWriter.write`
+    /// fails fast, it doesn't block).
+    ///
+    /// **Known residual limitation** (documented in
+    /// `docs/push-notification-actions.md`「既知の制限」): a purely
+    /// background-launched process whose `scenePhase` never becomes
+    /// `.active` during this launch (the ordinary case for a notification
+    /// action — the app was never brought to the foreground) has no future
+    /// `resumeNotification` coming *during this same launch* either, so a
+    /// suspension that's still in effect after every retry here genuinely
+    /// can't be recovered from this side — this app has no durable
+    /// side-channel other than this same (suspended) database to record
+    /// "retry this action later" in.
+    ///
+    /// `private` → package-internal (no modifier), mirroring
+    /// `NotificationService.parsePayload(_:)`'s own "private → internal for
+    /// tests" precedent — `PushNotificationActionExecutorTests
+    /// +Suspension.swift` exercises this directly (real
+    /// `Database.suspendNotification`/`.resumeNotification`, a suspendable
+    /// file-backed database) rather than only through `execute(...)`'s full
+    /// account/mailbox-resolution path, which would itself also observe an
+    /// already-suspended database and never reach this call at all.
+    static func applyWithSuspensionRetry<T: Sendable>(
+        database: AppDatabase,
+        maxAttempts: Int = 3,
+        retryDelayNanoseconds: UInt64 = 200_000_000,
+        _ updates: @escaping @Sendable (Database) throws -> T
+    ) async throws -> T {
+        var lastError: Error = CancellationError()
+        for attempt in 0..<maxAttempts {
+            do {
+                return try await database.dbWriter.write(updates)
+            } catch {
+                lastError = error
+                guard DatabaseSuspensionSupport.isSuspensionError(error), attempt < maxAttempts - 1 else {
+                    throw error
+                }
+                try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
+            }
+        }
+        throw lastError
     }
 
     /// `resolveOpenTarget`のローカル読み取りが `nil`(対象メッセージが

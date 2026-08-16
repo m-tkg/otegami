@@ -32,10 +32,23 @@ enum PushNotificationActionHandler {
     /// no-op if this build has no App Group configured or the shared
     /// database can't be opened — mirrors every other failure mode in this
     /// flow (no UI in scope to report to, see this type's doc comment).
+    ///
+    /// 実クラッシュ調査 (0xDEAD10CC) 「穴2」: reuses `AppEnvironment`'s
+    /// already-open `database` handle when one exists in this process
+    /// (`SharedAppDatabaseCenter`'s doc comment) instead of always opening a
+    /// second `DatabasePool` onto the same shared file — only falls back to
+    /// opening its own when this notification action is itself what
+    /// cold-launches the process (no `AppEnvironment` yet).
     static func handle(action: PushNotificationAction, accountId: String, uidNext: Int) async {
-        guard let appGroupIdentifier = OtegamiAppGroup.identifier,
-              let database = try? AppDatabase.makeShared(appGroupIdentifier: appGroupIdentifier)
-        else { return }
+        guard let appGroupIdentifier = OtegamiAppGroup.identifier else { return }
+        let database: AppDatabase
+        if let shared = await SharedAppDatabaseCenter.shared.database {
+            database = shared
+        } else if let opened = try? AppDatabase.makeShared(appGroupIdentifier: appGroupIdentifier) {
+            database = opened
+        } else {
+            return
+        }
         await PushNotificationActionExecutor.execute(
             action: action,
             accountId: accountId,

@@ -56,9 +56,16 @@ final class NotificationDeliveryGate: @unchecked Sendable {
 ///    Keychain read, no IMAP connection at all (Task #176's own "無駄な
 ///    通信を避ける" ask) — the notification is left exactly as `didReceive`
 ///    already set it (`NotificationEnrichment.genericTitle`/`genericBody`).
-/// 3. Otherwise, open the shared `AppDatabase` (App Group container,
-///    read-only in practice — see `AppDatabase.makeShared(appGroupIdentifier:)`'s
-///    doc comment) and look up that account's `AccountRecord`.
+/// 3. Otherwise, open the shared `AppDatabase` (App Group container — same
+///    file the main app's `AppEnvironment.database` opens, see
+///    `AppDatabase.makeShared(appGroupIdentifier:)`'s doc comment) and look
+///    up that account's `AccountRecord`. **Not** read-only overall (a stale
+///    claim this doc comment used to make): `lookupAccount(id:)` itself only
+///    ever reads, but Phase 1/Phase 3 below (`runIncrementalSync`/
+///    `writeBackRelaySnippetIfNeeded`) do write — see
+///    `lookupAccount(id:)`'s own doc comment for the up-to-date reasoning on
+///    why this Extension still doesn't need to post GRDB's suspend
+///    notification itself.
 /// 4. Resolve credentials for `account.authType`:
 ///    - `.password`: read the IMAP password from the shared Keychain
 ///      Access Group, same as always.
@@ -461,6 +468,14 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     }
 
     override func serviceExtensionTimeWillExpire() {
+        // 実クラッシュ調査 (0xDEAD10CC) での検討結果: this deliberately does
+        // *not* also post `Database.suspendNotification` here — see
+        // `lookupAccount(id:)`'s doc comment (Task #192) for the full
+        // reasoning on why this Extension's own kill-by-timeout doesn't need
+        // it (in short: this process is force-terminated, not suspended-
+        // then-possibly-resumed-later, so there's no indefinite lock-holding
+        // window for the suspend/resume API to protect against here).
+        //
         // Called by the OS shortly before the ~30 second budget for this
         // extension process runs out — deliver whatever's on hand (the
         // generic fallback body set in didReceive, if enrich(payload:)
@@ -1550,23 +1565,52 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         )
     }
 
-    /// Task #192 (0xDEAD10CC 対策の調査): this `DatabasePool` shares the same
-    /// App Group container/file the main app's `AppDatabase.makeShared`
-    /// opens, and `AppDatabase.makeConfiguration
-    /// (observesSuspensionNotifications:)` now enables GRDB's suspension
-    /// observing for *any* caller that resolves to that shared container —
-    /// including this Extension — so it would react correctly to a
-    /// `Database.suspendNotification` if one were ever posted here. In
-    /// practice none is needed: confirmed this Extension only ever reads
-    /// (`dbWriter.read` below — never `.write`), so it never holds a lock
-    /// capable of triggering `0xDEAD10CC` in the first place, and `database`
-    /// is a local variable that goes out of scope (closing the connection
-    /// via GRDB's own `deinit`, matching `DatabaseReader.close()`'s doc
-    /// comment — "you do not have to call this method... automatically
-    /// closed when they are deinitialized") the moment this function
-    /// returns, well before the OS could ever suspend this short-lived
-    /// Extension process. See `docs/architecture.md`'s Known pitfalls
-    /// (Task #192) for the full writeup.
+    /// Task #192 (0xDEAD10CC 対策の調査、実クラッシュ調査 TestFlight v1.14.1
+    /// で記述を更新): this `DatabasePool` shares the same App Group
+    /// container/file the main app's `AppDatabase.makeShared` opens, and
+    /// `AppDatabase.makeConfiguration(observesSuspensionNotifications:)` now
+    /// enables GRDB's suspension observing for *any* caller that resolves to
+    /// that shared container — including this Extension — so it would react
+    /// correctly to a `Database.suspendNotification` if one were ever posted
+    /// here.
+    ///
+    /// **`lookupAccount(id:)` itself** only ever reads (`dbWriter.read`
+    /// below), and `database` is a local variable that goes out of scope
+    /// (closing the connection via GRDB's own `deinit`, matching
+    /// `DatabaseReader.close()`'s doc comment — "you do not have to call
+    /// this method... automatically closed when they are deinitialized") the
+    /// moment this function returns, well before the OS could ever suspend
+    /// this short-lived Extension process.
+    ///
+    /// **This Extension as a whole is *not* read-only, though** — a stale
+    /// claim an earlier version of this comment made. `runIncrementalSync`
+    /// (Phase 1, `PushTriggeredInboxSync.run`) and
+    /// `writeBackRelaySnippetIfNeeded` (Phase 3) both do write, durably
+    /// syncing the pushed message into the shared database. This app still
+    /// doesn't post `Database.suspendNotification` from inside this
+    /// Extension itself, for a reason specific to *why* `0xDEAD10CC` fires,
+    /// not to "this Extension never writes": that termination code is about
+    /// a process **suspended (frozen, not killed) while holding a lock**,
+    /// so a second, later attempt can deadlock against it — the scenario
+    /// `OtegamiApp.handleScenePhaseChange`'s eager suspend-on-`.background`
+    /// exists to pre-empt for the long-lived main app process. This
+    /// Extension has no such "frozen indefinitely, still holding a lock"
+    /// window: the OS gives it a hard ~30 second execution budget and kills
+    /// it outright (not suspends-then-maybe-resumes-later) if
+    /// `serviceExtensionTimeWillExpire()`'s own best-effort `deliver()` (this
+    /// file's `serviceExtensionTimeWillExpire()`) doesn't get ahead of that.
+    /// A write already committed (or never started) by the time this
+    /// process is killed leaves the WAL file in a valid, recoverable state
+    /// either way (ordinary SQLite crash-safety, not something GRDB's
+    /// suspend/resume API is needed for) — posting suspend from
+    /// `serviceExtensionTimeWillExpire()` wouldn't interrupt a
+    /// `dbWriter.write` call already in flight on GRDB's own serial writer
+    /// queue at that instant anyway, only pre-empt a *new* one, so it
+    /// wouldn't change this process's own risk profile; its only effect
+    /// would be on other processes (the main app / a concurrently-running
+    /// second Extension instance) sharing this file, which already observe
+    /// the main app's own suspend/resume posts. See `docs/architecture.md`'s
+    /// Known pitfalls (Task #192) for the full writeup.
     private static func lookupAccount(id: String) async throws -> AccountRecord? {
         let database = try AppDatabase.makeShared(appGroupIdentifier: appGroupIdentifier)
         return try await database.dbWriter.read { db in
