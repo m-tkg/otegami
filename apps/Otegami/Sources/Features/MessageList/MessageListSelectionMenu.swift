@@ -25,6 +25,9 @@ struct MessageListSelectionMenu: View {
     /// 「アーカイブ」を「アーカイブ解除」に差し替えるか —
     /// `MessageListRow.archiveLabel` の単一行版と同じ出し分け。
     let isArchiveView: Bool
+    /// 「迷惑メールにする」を「迷惑メール解除」に差し替えるか —
+    /// `MessageListRow.isJunkView` の複数選択版。
+    let isJunkView: Bool
     let onReply: (ThreadSummary) -> Void
     let onReplyAll: (ThreadSummary) -> Void
     let onForward: (ThreadSummary) -> Void
@@ -35,6 +38,7 @@ struct MessageListSelectionMenu: View {
     /// `true` でピン留め、`false` で解除 — 下の `isAllPinned` が決める。
     let onPin: (Bool) -> Void
     let onJunk: () -> Void
+    let onUnjunk: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
@@ -89,7 +93,11 @@ struct MessageListSelectionMenu: View {
 
     @ViewBuilder
     private var junkButton: some View {
-        Button(action: onJunk) { Label(SwipeAction.junk.title, systemImage: SwipeAction.junk.systemImage) }
+        if isJunkView {
+            Button(action: onUnjunk) { Label("迷惑メール解除", systemImage: "checkmark.shield") }
+        } else {
+            Button(action: onJunk) { Label(SwipeAction.junk.title, systemImage: SwipeAction.junk.systemImage) }
+        }
     }
 
     @ViewBuilder

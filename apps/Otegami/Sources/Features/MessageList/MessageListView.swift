@@ -210,6 +210,15 @@ struct MessageListView: View {
     /// `refreshArchiveViewFlag()`'s first read completes.
     @State private var isArchiveView = false
 
+    // MARK: - Junk view detection (「迷惑メール解除」)
+
+    /// `true` while `selection` shows a junk view — the exact `isArchiveView`
+    /// analogue for 迷惑メール, decided by `refreshJunkViewFlag()`. Forwarded
+    /// to every `MessageListRow` as `isJunkView`, which swaps the junk swipe
+    /// slot/context-menu row over to "迷惑メール解除". Starts `false` for the
+    /// same reason `isArchiveView` does.
+    @State private var isJunkView = false
+
     // MARK: - Pagination (M10, docs/performance.md)
 
     /// How many threads `observeThreads()` currently requests — starts at
@@ -575,6 +584,29 @@ struct MessageListView: View {
         }
     }
 
+    /// 「迷惑メール解除」: `refreshArchiveViewFlag()`'s junk counterpart —
+    /// `.unifiedRole(.junk)` (カテゴリ「迷惑メール」, i.e. "すべての迷惑メール")
+    /// is junk unconditionally, a `.mailbox` counts as junk when its own
+    /// role is `.junk` (no Gmail special case — Spam is a real folder there,
+    /// unlike アーカイブ), and `.unifiedInbox` never is.
+    private func refreshJunkViewFlag() async {
+        switch selection {
+        case .unifiedRole(let role):
+            isJunkView = (role == .junk)
+        case .unifiedInbox:
+            isJunkView = false
+        case .mailbox(let mailboxSelection):
+            do {
+                let role = try await environment.database.dbWriter.read { db in
+                    try MailboxRecord.fetchOne(db, key: mailboxSelection.mailboxId)?.role
+                }
+                isJunkView = role == .junk
+            } catch {
+                isJunkView = false
+            }
+        }
+    }
+
     private var accountDisplayNames: [String: String] {
         Dictionary(uniqueKeysWithValues: environment.accounts.map { ($0.id, $0.displayName) })
     }
@@ -890,6 +922,11 @@ struct MessageListView: View {
         .task(id: selection) {
             await refreshArchiveViewFlag()
         }
+        // 「迷惑メール解除」: same shape/keying as the archive flag right
+        // above — see `refreshJunkViewFlag()`'s doc comment.
+        .task(id: selection) {
+            await refreshJunkViewFlag()
+        }
         // Not required for correctness anymore (the local write already
         // happened by the time a `PendingUndo` exists — see `commitDelete`/
         // `commitArchive`'s doc comment), but backgrounding is also the
@@ -1064,6 +1101,7 @@ struct MessageListView: View {
         MessageListSelectionMenu(
             targets: summaries(for: ids),
             isArchiveView: isArchiveView,
+            isJunkView: isJunkView,
             onReply: onReply,
             onReplyAll: onReplyAll,
             onForward: onForward,
@@ -1073,6 +1111,7 @@ struct MessageListView: View {
             onUnarchive: { runBulkAction(on: ids, unarchiveSelected) },
             onPin: { pinning in runBulkAction(on: ids) { applyPinToSelected(pinning: pinning) } },
             onJunk: { runBulkAction(on: ids, junkSelected) },
+            onUnjunk: { runBulkAction(on: ids, unjunkSelected) },
             onDelete: { runBulkAction(on: ids, deleteSelected) }
         )
     }
@@ -1115,6 +1154,7 @@ struct MessageListView: View {
                 accountLabelColorKey: accountLabelColorKeys[summary.thread.accountId],
                 showsAccountAccent: showsAccountAccent,
                 isArchiveView: isArchiveView,
+                isJunkView: isJunkView,
                 isSelecting: isSelecting,
                 isSelected: selectedThreadIds.contains(threadId),
                 onSelect: handleThreadSelected,
@@ -1126,6 +1166,7 @@ struct MessageListView: View {
                 onUnarchive: unarchiveThread,
                 onDelete: deleteThread,
                 onJunk: junkThread,
+                onUnjunk: unjunkThread,
                 onPin: togglePin,
                 onAppear: loadMoreIfNeeded,
                 onReply: onReply,

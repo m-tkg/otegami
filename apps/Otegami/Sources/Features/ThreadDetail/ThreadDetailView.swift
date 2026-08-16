@@ -190,6 +190,14 @@ struct ThreadDetailView: View {
     /// acceptable rather than adding a second, AND-based "is this thread
     /// *fully* archived" rule that would disagree with the list's own badge.
     @State var isThreadArchived = false
+    /// 「迷惑メール解除」: `isThreadArchived` の迷惑メール版 — フッター
+    /// ツールバーの迷惑メールスロットを「迷惑メール解除」として振る舞わせるか。
+    /// グループ表示は `ThreadQuery.isThreadJunk` (OR 集約)、フラット表示は
+    /// `ThreadQuery.isMessageJunk` を読む。OR 集約の根拠・部分的に迷惑メール
+    /// なスレッドの扱いは `isThreadArchived` の doc comment と同じ
+    /// (`MessageRemoval.commit(.unjunk, ...)` も Junk にある行だけを対象に
+    /// して他は黙って飛ばす)。
+    @State var isThreadJunk = false
     @State private var showingInfo = false
     @State private var showingSource = false
     @State private var showingToolbarSettings = false
@@ -554,7 +562,9 @@ struct ThreadDetailView: View {
                 onMarkUnread: markUnread,
                 // Task #184: same thread-scoped state `footerToolbar` reads —
                 // see `isThreadArchived`'s doc comment.
-                isArchived: isThreadArchived
+                isArchived: isThreadArchived,
+                // 「迷惑メール解除」: 同上 — `isThreadJunk` の doc comment 参照。
+                isJunk: isThreadJunk
             )
             // Task #146: `accordionScrollTarget`のスクロール先ターゲット —
             // ヘッダを含むこの行全体に付けておけば、`showsHeader`が`true`
@@ -679,6 +689,7 @@ struct ThreadDetailView: View {
         isThreadPinned = false
         isThreadMuted = false
         isThreadArchived = false
+        isThreadJunk = false
 
         let thread = try? await environment.database.dbWriter.read { db in
             try ThreadRecord.fetchOne(db, key: threadId)
@@ -707,6 +718,7 @@ struct ThreadDetailView: View {
                     hasPinnedInitialExpansion = true
                 }
                 await refreshIsThreadArchived(messageId: nil)
+                await refreshIsThreadJunk(messageId: nil)
             }
         } catch {
             // A failing observation just stops the view from updating
@@ -767,6 +779,7 @@ struct ThreadDetailView: View {
                     hasPinnedInitialExpansion = true
                 }
                 await refreshIsThreadArchived(messageId: messageId)
+                await refreshIsThreadJunk(messageId: messageId)
             }
         } catch {
             // Same as the grouped-mode path: a failing observation just
@@ -792,6 +805,18 @@ struct ThreadDetailView: View {
         onArchivedStateChanged?(archived)
     }
 
+    /// 「迷惑メール解除」: `refreshIsThreadArchived(messageId:)` の迷惑メール版
+    /// — 同じ2つのループから同じ粒度で呼ばれる (`isThreadJunk` の doc
+    /// comment 参照)。同じくベストエフォートで、読めなければ直前の値を保つ。
+    private func refreshIsThreadJunk(messageId: Int64?) async {
+        isThreadJunk = (try? await environment.database.dbWriter.read { db -> Bool in
+            if let messageId {
+                return try ThreadQuery.isMessageJunk(messageId: messageId, db: db)
+            }
+            return try ThreadQuery.isThreadJunk(threadId: threadId, db: db)
+        }) ?? isThreadJunk
+    }
+
     // MARK: - 新画面構成 (3): フッターツールバー
 
     private var footerToolbar: some View {
@@ -812,6 +837,9 @@ struct ThreadDetailView: View {
             // doc comment.
             isArchived: isThreadArchived,
             onJunk: junkThread,
+            // 「迷惑メール解除」: state-dependent label/icon — see
+            // `isThreadJunk`'s doc comment.
+            isJunk: isThreadJunk,
             isPinned: isThreadPinned,
             onTogglePin: togglePin,
             onDelete: deleteThread,
@@ -973,6 +1001,10 @@ private struct ThreadMessageRow: View {
     /// `contextMenuContent`'s archive row's label/icon the same way
     /// `isPinned` already swaps the pin row's.
     let isArchived: Bool
+    /// 「迷惑メール解除」: whether `onJunk` currently means「迷惑メール解除」—
+    /// `ThreadDetailView.isThreadJunk` の doc comment 参照。`isArchived` が
+    /// アーカイブ行のラベル/アイコンを差し替えるのと同じ仕組み。
+    let isJunk: Bool
 
     /// Task #58 (根治): the real content height an HTML message's
     /// `WKWebView` measured — see `HTMLWebViewCoordinator.onHeightChange`'s
@@ -1075,7 +1107,14 @@ private struct ThreadMessageRow: View {
                 Label("ピン留め", systemImage: "pin")
             }
         }
-        Button { onJunk() } label: { Label("迷惑メールにする", systemImage: "exclamationmark.octagon") }
+        // 「迷惑メール解除」: `isArchived` と同じ状態依存の差し替え。
+        Button { onJunk() } label: {
+            if isJunk {
+                Label("迷惑メール解除", systemImage: "checkmark.shield")
+            } else {
+                Label("迷惑メールにする", systemImage: "exclamationmark.octagon")
+            }
+        }
         // Task #184: mirrors `pinLabel`'s state-dependent swap just above —
         // "アーカイブ解除" (`tray.and.arrow.up`, echoing "put it back", the
         // same icon `MessageListRow.archiveLabel` already uses for the same

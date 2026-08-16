@@ -118,6 +118,43 @@ extension MessageListView {
         }
     }
 
+    /// 「迷惑メール解除」— the junk view's swipe/context-menu row action.
+    /// Mirrors `unarchiveThread(_:)` exactly (see its doc comment); only
+    /// reached when `MessageListRow.isJunkView` is `true`, so every
+    /// `summary` this is called with already sits in Junk. Undo
+    /// (`undoRemoval`) reverses it the same way it reverses a junk/archive/
+    /// delete.
+    func unjunkThread(_ summary: ThreadSummary) {
+        guard let threadId = summary.thread.id else { return }
+        let accountId = summary.thread.accountId
+        Task {
+            guard let snapshot = await commitUnjunk(summary) else { return }
+            scheduleUndo(threadIds: [threadId], message: "\(undoNoun(for: summary))の迷惑メール指定を解除しました", accountIds: [accountId]) {
+                await undoRemoval(snapshot)
+            }
+        }
+    }
+
+    /// `commitJunk`'s `.unjunk` counterpart — see its doc comment.
+    /// (`private`ではなく internal — macOS の複数選択に対する一括
+    /// 「迷惑メール解除」`unjunkSelected()` が別ファイル
+    /// (`MessageListView+Selection.swift`) から呼ぶ。)
+    func commitUnjunk(_ summary: ThreadSummary) async -> MessageRemoval.Snapshot? {
+        do {
+            guard let snapshot = try await environment.database.dbWriter.write({ db in
+                try MessageRemoval.commit(.unjunk, summary: summary, accountId: summary.thread.accountId, db: db)
+            }) else { return nil }
+            if isSearchActive {
+                searchResults.removeAll { $0.id == summary.id }
+            }
+            return snapshot
+        } catch {
+            // Best-effort, matching every other opQueue-enqueuing path in
+            // this file.
+            return nil
+        }
+    }
+
     /// The swipe row's single-thread archive action — commits immediately
     /// (see `MessageRemoval.commit(_:summary:accountId:db:)`'s doc comment
     /// in `SyncEngine`), then hands the resulting snapshot to

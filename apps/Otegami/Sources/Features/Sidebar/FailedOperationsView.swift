@@ -104,6 +104,7 @@ struct FailedOperationsView: View {
         case .archive: "アーカイブに失敗しました"
         // Task #87 (1): "アーカイブ解除" の失敗表示 — 他の kind と同じ文言パターン。
         case .unarchive: "アーカイブの解除に失敗しました"
+        case .unjunk: "迷惑メール指定の解除に失敗しました"
         case .send: "メールの送信に失敗しました"
         case .saveDraft: "下書きの保存に失敗しました"
         case .deleteDraft: "下書きの削除に失敗しました"
