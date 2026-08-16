@@ -425,6 +425,7 @@ enum OpQueueKindDisplay {
         case .send: "送信"
         case .saveDraft: "下書き保存"
         case .deleteDraft: "下書き削除"
+        case .emptyTrash: "ゴミ箱を空にする"
         case nil: raw
         }
     }

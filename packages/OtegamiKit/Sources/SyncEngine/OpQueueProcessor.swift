@@ -721,6 +721,25 @@ public actor OpQueueProcessor {
             try await session.move(mailboxPath: source.path, uids: UIDSet(payload.uids), to: inbox.path)
             return .applied(affectedMailboxIds: Set([inbox.id].compactMap { $0 }))
 
+        case .emptyTrash:
+            let payload = try JSONDecoder().decode(EmptyTrashOpPayload.self, from: op.payload)
+            guard let mailbox = try await mailboxIfCurrent(id: payload.mailboxId, expectedUidValidity: payload.uidValidity) else {
+                return .staleDiscarded
+            }
+            guard !payload.uids.isEmpty else { return .applied(affectedMailboxIds: []) }
+            // No move, no destination — the Trash mailbox this batch
+            // targets *is* the mailbox being purged. `EmptyTrash.commit`
+            // already hard-deleted these rows locally, so there's nothing
+            // to resync here (`ReplayResult.affectedMailboxIds`'s doc
+            // comment: only relocation destinations are ever reported).
+            let change = FlagChange(
+                uids: UIDSet(payload.uids), op: .add, flags: .deleted,
+                uidValidity: UInt32(truncatingIfNeeded: payload.uidValidity)
+            )
+            try await session.store(mailboxPath: mailbox.path, change: change)
+            try await session.expunge(mailboxPath: mailbox.path)
+            return .applied(affectedMailboxIds: [])
+
         case .send:
             // Moved to `OpQueueProcessor+Send.swift` (`applySend`) —
             // Task #124's `claimSendStart`/`releaseSendClaim` idempotency

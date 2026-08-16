@@ -108,6 +108,7 @@ struct FailedOperationsView: View {
         case .send: "メールの送信に失敗しました"
         case .saveDraft: "下書きの保存に失敗しました"
         case .deleteDraft: "下書きの削除に失敗しました"
+        case .emptyTrash: "ゴミ箱を空にする操作に失敗しました"
         case nil: "操作に失敗しました (\(kind))"
         }
     }

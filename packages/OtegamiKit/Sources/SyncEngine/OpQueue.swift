@@ -91,6 +91,19 @@ public enum OpQueueKind: String, Sendable {
     /// Payload is `UnjunkOpPayload`, structurally identical to
     /// `JunkOpPayload`.
     case unjunk
+    /// 「ゴミ箱を空にする」— purges every message `EmptyTrash.commit` already
+    /// hard-deleted locally from the server's Trash mailbox too: `STORE
+    /// +FLAGS \Deleted` + `EXPUNGE` against the Trash mailbox itself, never
+    /// a `move` — there's nowhere left for these messages to go, unlike
+    /// every other kind here. One op per "ゴミ箱を空にする" action, carrying
+    /// every UID it removed (`EmptyTrashOpPayload`), rather than one op per
+    /// message the way `MessageRemoval.commit`'s callers enqueue — see that
+    /// payload's doc comment for why batching matters here specifically. No
+    /// `account.kind == .gmail` branch needed (unlike `.archive`): Gmail
+    /// already treats `\Deleted`+`EXPUNGE` on its own Trash label as a real
+    /// permanent delete, the same semantics every other provider has for
+    /// its own Trash folder.
+    case emptyTrash
 }
 
 /// `setFlags`'s payload carries the **absolute** desired `MessageFlags`
@@ -293,6 +306,30 @@ public struct DeleteDraftOpPayload: Codable, Sendable, Equatable {
     }
 }
 
+/// `emptyTrash`'s payload — every UID `EmptyTrash.commit` removed locally
+/// from `mailboxId` in one "ゴミ箱を空にする" action, applied as a single
+/// `STORE`+`EXPUNGE` pair rather than the "one op per message" shape
+/// `MessageRemoval.commit`'s callers use: an empty-trash action can remove
+/// hundreds of messages at once, and one IMAP round trip per message (even
+/// over the single connection `OpQueueProcessor.replayPass` already keeps
+/// open for the whole batch) would make that painfully slow. Same
+/// `uidValidity` staleness-check contract as every other payload here
+/// (`SetFlagsOpPayload`'s doc comment): discarded
+/// (`OpQueueProcessor.ApplyOutcome.staleDiscarded`) if `mailboxId`'s
+/// current `uidValidity` no longer matches — the folder was recreated since
+/// `EmptyTrash.commit` ran, so these UIDs may now name unrelated messages.
+public struct EmptyTrashOpPayload: Codable, Sendable, Equatable {
+    public var mailboxId: Int64
+    public var uidValidity: Int64
+    public var uids: [UInt32]
+
+    public init(mailboxId: Int64, uidValidity: Int64, uids: [UInt32]) {
+        self.mailboxId = mailboxId
+        self.uidValidity = uidValidity
+        self.uids = uids
+    }
+}
+
 /// Encoding/decoding + insertion helpers for `opQueue` rows. Kept as plain
 /// functions (not a type UI code needs to instantiate) so a view's
 /// `db.write { ... }` block can enqueue an op in the same transaction as
@@ -420,6 +457,18 @@ public enum OpQueue {
     ) throws {
         let payload = DeleteDraftOpPayload(mailboxId: mailboxId, uidValidity: uidValidity, uid: uid)
         try enqueue(kind: .deleteDraft, accountId: accountId, payload: payload, db: db)
+    }
+
+    public static func enqueueEmptyTrash(
+        accountId: String,
+        mailboxId: Int64,
+        uidValidity: Int64,
+        uids: [UInt32],
+        db: Database
+    ) throws {
+        guard !uids.isEmpty else { return }
+        let payload = EmptyTrashOpPayload(mailboxId: mailboxId, uidValidity: uidValidity, uids: uids)
+        try enqueue(kind: .emptyTrash, accountId: accountId, payload: payload, db: db)
     }
 
     /// Task #152 (実機報告「フラグ/アーカイブ操作後、他の受信箱一覧への反映が
