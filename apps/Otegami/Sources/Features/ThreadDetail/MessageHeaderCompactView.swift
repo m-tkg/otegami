@@ -45,10 +45,22 @@ struct MessageHeaderCompactView: View {
     /// not-yet-archived messages across mailboxes.
     var isArchived: Bool = false
 
+    /// 「『宛先: 田中 他2名』行をタップしてフルアドレスをその場で展開する」
+    /// 要望 (ユーザー確認済み: シートではなくインライン展開)。`opens`をまた
+    /// いで永続しない — `QuoteHistorySectionView.isExpanded`と同じ理由で
+    /// plain `@State`のままにしてあり、この View の再生成 (`MessageView
+    /// .load()`の`.task(id: messageId)`) ごとに必ず`false`へ戻る。
+    @State private var isAddressesExpanded = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: OtegamiSpacing.xs) {
             subjectView
             senderRow
+            // 展開中のみ、差出人/宛先/Cc/Bccのフルアドレスをここに差し込む
+            // — `senderRow`の`toSummaryButton`がこのフラグをトグルする。
+            if isAddressesExpanded {
+                MessageAddressDetailView(message: message)
+            }
         }
     }
 
@@ -132,11 +144,7 @@ struct MessageHeaderCompactView: View {
                         .accessibilityIdentifier("messageDetail.time")
                 }
                 HStack(spacing: OtegamiSpacing.xs) {
-                    Text(toSummaryText)
-                        .font(OtegamiFont.caption())
-                        .foregroundStyle(OtegamiColor.inkSecondary)
-                        .lineLimit(1)
-                        .accessibilityIdentifier("messageDetail.toSummary")
+                    toSummaryButton
                     Spacer(minLength: OtegamiSpacing.sm)
                     // A9-2: only offered for messages that actually have an
                     // HTML body to switch away from/back to — see
@@ -178,6 +186,51 @@ struct MessageHeaderCompactView: View {
     private var senderText: String {
         guard let from = message.fromAddresses.first else { return "(unknown)" }
         return from.name?.isEmpty == false ? from.name! : from.address
+    }
+
+    /// 「宛先: 田中 他2名」行をタップ可能にするボタン — 中身は従来通り
+    /// `toSummaryText`だが、右にchevronを添えて「タップで展開できる」こと
+    /// を示し、`isAddressesExpanded`をトグルする。同じ`HStack`にある
+    /// HTML/テキスト切替ボタンとタップ領域が競合しないよう、`Button`の中身
+    /// はこのテキスト+chevron部分だけに限定してある。`senderRow`本体に
+    /// インラインで書かず独立した`@ViewBuilder`にしているのは、この行が
+    /// タップハンドラ+条件付きアイコン+複数modifierを抱えるため —
+    /// `docs/ci.md`のSwiftUI型チェックタイムアウト対策としてこのファイルが
+    /// 既に`subjectView`/`senderRow`で採っている分割方針に倣った。
+    @ViewBuilder
+    private var toSummaryButton: some View {
+        Button(action: toggleAddressesExpanded) {
+            HStack(spacing: 2) {
+                Text(toSummaryText)
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkSecondary)
+                    .lineLimit(1)
+                // chevron自体はタップ先の状態を示す装飾— VoiceOverでは
+                // ボタン全体のラベルに`toSummaryText`が使われれば十分なので
+                // 個別には読み上げない。
+                Image(systemName: isAddressesExpanded ? "chevron.up" : "chevron.down")
+                    .font(OtegamiFont.caption())
+                    .foregroundStyle(OtegamiColor.inkTertiary)
+                    .accessibilityHidden(true)
+            }
+            // テキストとchevronの間の隙間もタップに含める — これが無いと
+            // ヒット領域が文字とアイコンの描画範囲だけになり、caption
+            // サイズのこの行では指で狙うには細すぎる。
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("messageDetail.toSummary")
+    }
+
+    /// タップハンドラはインラインクロージャでなく名前付きメソッド参照に —
+    /// `docs/ci.md`のSwiftUI型チェックタイムアウト対策の実践ルール。
+    ///
+    /// `withAnimation`で包むのは、展開すると本文全体が下に押し下げられる
+    /// ため — 瞬間的に切り替わると「何が起きたか」が読み取りにくい。
+    private func toggleAddressesExpanded() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            isAddressesExpanded.toggle()
+        }
     }
 
     /// Spark 式「宛先: 名前」程度 — フルアドレスリストではなく先頭の宛先1名
