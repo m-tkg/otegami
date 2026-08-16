@@ -136,6 +136,61 @@ struct MessageRemovalTests {
         #expect(messageAfterUndo != nil)
     }
 
+    // 実機報告「メールを削除しても検索で出てくるし中身が見える」: `.delete`
+    // は (Task #120 以降) ローカルではゴミ箱メールボックスへ「移送」するだけで
+    // `message`/`messageBody`/`messageSearchIndex` 行は残る (意図された即時
+    // 反映、この型の doc comment 参照)。以前は `makeDatabase()` が INBOX しか
+    // 作らないため `.delete` のテストが「ローカルにゴミ箱が無い＝ハード削除」
+    // ブランチしか通っておらず、この移送ブランチ (かつ検索から除外される
+    // べきという要件) は自動テストで一切確認されていなかった。
+    @Test("delete relocates the message into a local Trash mailbox rather than hard-deleting it, and the trashed message is excluded from cross-account search but still findable inside Trash itself")
+    func deleteRelocatesToTrashAndIsExcludedFromSearch() throws {
+        let (database, accountId, inboxId) = try makeDatabase()
+        let trashId = try database.dbWriter.write { db -> Int64 in
+            var trash = MailboxRecord(accountId: accountId, path: "Trash", displayPath: "Trash", role: .trash, uidValidity: 1)
+            try trash.insert(db)
+            return trash.id!
+        }
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let (threadId, messageId) = try database.dbWriter.write { db in
+            let (threadId, messageId) = try insertSingleMessageThread(accountId: accountId, mailboxId: inboxId, uid: 9, date: date, db: db)
+            var message = try MessageRecord.fetchOne(db, key: messageId)!
+            message.subject = "削除済みメールの本文が検索で見える"
+            try message.update(db)
+            try FTSIndexer.reindex(messageId: messageId, db: db)
+            return (threadId, messageId)
+        }
+        let summary = try database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+
+        _ = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.delete, summary: summary, accountId: accountId, db: db)
+        }
+
+        // Relocated, not hard-deleted: the row still exists, now filed
+        // under the local Trash mailbox.
+        let messageAfterDelete = try database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: messageId) }
+        #expect(messageAfterDelete?.mailboxId == trashId)
+
+        // Cross-account search must not surface it (the reported bug).
+        let acrossAllMailboxes = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "削除済みメール", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(!acrossAllMailboxes.contains { $0.latestMessage?.id == messageId })
+
+        // Explicitly opening the Trash mailbox and searching inside it
+        // still finds the message — search only excludes trash/junk from
+        // the *cross-account* scope, not from an explicit mailbox scope.
+        let insideTrashItself = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "削除済みメール", scope: .mailbox(mailboxId: trashId), db: db)
+        }
+        #expect(insideTrashItself.contains { $0.latestMessage?.id == messageId })
+    }
+
     @Test("commit returns nil (no-op) once nothing is left to remove — e.g. undo already ran, or the thread vanished")
     func commitIsNilWhenThreadAlreadyGone() throws {
         let (database, accountId, inboxId) = try makeDatabase()

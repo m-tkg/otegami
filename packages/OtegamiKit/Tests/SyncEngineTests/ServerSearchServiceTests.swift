@@ -178,12 +178,59 @@ struct ServerSearchServiceTests {
         #expect(Set(targets.map(\.path)) == ["INBOX", "[Gmail]/Sent Mail"])
     }
 
-    @Test("a non-Gmail account is always searched across every mailbox, All Mail role or not")
+    @Test("a non-Gmail account is searched across every non-trash/junk mailbox, All Mail role or not")
     func nonGmailAccountSearchesEveryMailbox() async throws {
         let inbox = MailboxRecord(accountId: "a", path: "INBOX", displayPath: "INBOX", role: .inbox)
         let archive = MailboxRecord(accountId: "a", path: "Archive", displayPath: "Archive", role: .archive)
         let targets = ServerSearchService.searchTargets(mailboxes: [inbox, archive], isGmail: false)
         #expect(Set(targets.map(\.path)) == ["INBOX", "Archive"])
+    }
+
+    // 実機報告「削除したメールが検索に出てくる」: 非Gmailアカウントの
+    // 「サーバーで検索」がゴミ箱・迷惑メールの中身までヒットさせ、ローカルへ
+    // 取り込んでしまっていたバグの再発防止テスト。Gmail はそもそも All Mail
+    // だけを対象にするため元から対象外 (上の(e)節参照)。
+
+    @Test("a non-Gmail account's trash-role mailbox is excluded from server search targets")
+    func nonGmailAccountExcludesTrashMailbox() async throws {
+        let inbox = MailboxRecord(accountId: "a", path: "INBOX", displayPath: "INBOX", role: .inbox)
+        let trash = MailboxRecord(accountId: "a", path: "Trash", displayPath: "Trash", role: .trash)
+        let targets = ServerSearchService.searchTargets(mailboxes: [inbox, trash], isGmail: false)
+        #expect(targets.map(\.path) == ["INBOX"])
+    }
+
+    @Test("a non-Gmail account's junk-role mailbox is excluded from server search targets")
+    func nonGmailAccountExcludesJunkMailbox() async throws {
+        let inbox = MailboxRecord(accountId: "a", path: "INBOX", displayPath: "INBOX", role: .inbox)
+        let junk = MailboxRecord(accountId: "a", path: "Junk", displayPath: "Junk", role: .junk)
+        let targets = ServerSearchService.searchTargets(mailboxes: [inbox, junk], isGmail: false)
+        #expect(targets.map(\.path) == ["INBOX"])
+    }
+
+    @Test("a non-Gmail account's trash-role mailbox is never actually SEARCHed")
+    func nonGmailTrashMailboxNeverSearched() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        try await makeMailbox(database: database, account: account, path: "INBOX", role: .inbox)
+        try await makeMailbox(database: database, account: account, path: "Trash", role: .trash)
+
+        // Trash *is* scripted to return a hit if it were ever SEARCHed —
+        // proving the absence of a Trash call isn't just an artifact of an
+        // empty scripted result.
+        let session = FakeIMAPSession(config: account.imapConfig, script: FakeIMAPSession.Script(
+            statusByPath: [
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0),
+                "Trash": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 0, messageCount: 1),
+            ],
+            searchMessagesByPath: ["INBOX": [], "Trash": [1]]
+        ))
+        let service = ServerSearchService(database: database)
+
+        _ = try await service.search(account: account, query: "何か", session: session)
+
+        let calls = await session.searchMessagesCalls
+        #expect(calls.map(\.path) == ["INBOX"], "only INBOX should have been SEARCHed, never Trash")
     }
 
     // MARK: (f) hidden mailboxes are excluded

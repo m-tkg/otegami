@@ -17,6 +17,18 @@ struct SearchQueryTests {
         return (account.id, mailbox.id!)
     }
 
+    /// Adds another mailbox (role/`isHidden` given by the caller) to an
+    /// existing account created by `makeAccountAndMailbox` — used by the
+    /// trash/junk/hidden exclusion tests below, which need a second
+    /// mailbox alongside the plain INBOX one.
+    private func makeMailbox(
+        db: Database, accountId: String, path: String, role: MailboxRoleRecord, isHidden: Bool = false
+    ) throws -> Int64 {
+        var mailbox = MailboxRecord(accountId: accountId, path: path, displayPath: path, role: role, isHidden: isHidden)
+        mailbox = try mailbox.upsertAndFetch(db, onConflict: ["accountId", "path"])
+        return mailbox.id!
+    }
+
     /// Inserts a message, its own single-member thread (threading itself is
     /// `ThreadAssigner`'s job, already covered by `ThreadAssignerTests` —
     /// this just needs *some* thread for `SearchQuery.threadSummaries` to
@@ -291,6 +303,78 @@ struct SearchQueryTests {
             try SearchQuery.threadSummaries(query: "共通キーワード", scope: .allAccounts(accountIds: [account1, account2]), db: db)
         }
         #expect(Set(acrossBothAccounts.compactMap { $0.latestMessage?.id }) == [message1, message2])
+    }
+
+    // 実機報告「削除したメールが検索に出てくる」: `MessageRemoval.commit(.delete)`
+    // はローカルではゴミ箱メールボックスへ移送するだけ (message/messageBody/
+    // messageSearchIndex 行は残る、意図された挙動) なので、除外は SearchQuery
+    // 側の責務 — `scopeClause`のdoc comment参照。
+
+    @Test("allAccounts scope excludes messages filed in a trash-role mailbox")
+    func allAccountsScopeExcludesTrashMailbox() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, inboxId) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "1") }
+        let trashId = try database.dbWriter.write { db in
+            try makeMailbox(db: db, accountId: accountId, path: "Trash", role: .trash)
+        }
+        _ = try database.dbWriter.write { db in
+            try insertMessage(db: db, accountId: accountId, mailboxId: inboxId, uid: 1, subject: "受信トレイのメール")
+        }
+        let (trashedId, _) = try database.dbWriter.write { db in
+            try insertMessage(db: db, accountId: accountId, mailboxId: trashId, uid: 2, subject: "削除済みのメール本文が丸見え")
+        }
+
+        let acrossAllMailboxes = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "メール", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(!acrossAllMailboxes.contains { $0.latestMessage?.id == trashedId })
+
+        // 明示的にゴミ箱メールボックスを開いて検索するスコープは除外しない
+        // (指定したメールボックス自体は引き続き検索できる)。
+        let insideTrashItself = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "メール", scope: .mailbox(mailboxId: trashId), db: db)
+        }
+        #expect(insideTrashItself.contains { $0.latestMessage?.id == trashedId })
+    }
+
+    @Test("allAccounts scope excludes messages filed in a junk-role mailbox")
+    func allAccountsScopeExcludesJunkMailbox() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, inboxId) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "1") }
+        let junkId = try database.dbWriter.write { db in
+            try makeMailbox(db: db, accountId: accountId, path: "Junk", role: .junk)
+        }
+        _ = try database.dbWriter.write { db in
+            try insertMessage(db: db, accountId: accountId, mailboxId: inboxId, uid: 1, subject: "普通のメール")
+        }
+        let (junkedId, _) = try database.dbWriter.write { db in
+            try insertMessage(db: db, accountId: accountId, mailboxId: junkId, uid: 2, subject: "迷惑メールの本文")
+        }
+
+        let results = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "メール", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(!results.contains { $0.latestMessage?.id == junkedId })
+    }
+
+    @Test("allAccounts scope excludes messages filed in a hidden mailbox")
+    func allAccountsScopeExcludesHiddenMailbox() throws {
+        let database = try AppDatabase.makeInMemory()
+        let (accountId, inboxId) = try database.dbWriter.write { db in try makeAccountAndMailbox(db: db, suffix: "1") }
+        let hiddenId = try database.dbWriter.write { db in
+            try makeMailbox(db: db, accountId: accountId, path: "Hidden", role: .none, isHidden: true)
+        }
+        _ = try database.dbWriter.write { db in
+            try insertMessage(db: db, accountId: accountId, mailboxId: inboxId, uid: 1, subject: "普通のメール")
+        }
+        let (hiddenMessageId, _) = try database.dbWriter.write { db in
+            try insertMessage(db: db, accountId: accountId, mailboxId: hiddenId, uid: 2, subject: "非表示メールボックスのメール")
+        }
+
+        let results = try database.dbWriter.read { db in
+            try SearchQuery.threadSummaries(query: "メール", scope: .allAccounts(accountIds: [accountId]), db: db)
+        }
+        #expect(!results.contains { $0.latestMessage?.id == hiddenMessageId })
     }
 
     @Test("an empty or whitespace-only query returns no results")

@@ -138,9 +138,17 @@ public actor ServerSearchService {
     /// `SEARCH` against — split out as a pure function so the Gmail
     /// All-Mail-only optimization (this type's own doc comment) is
     /// unit-testable without a `FakeIMAPSession`/`AppDatabase` at all.
+    ///
+    /// 実機報告「削除したメールが検索に出てくる」: Gmail は All Mail が
+    /// Spam/Trash を含まないため既に対象外 (この型の doc comment 参照)。
+    /// 非Gmailは素朴に全メールボックスを対象にしていたため、ゴミ箱・迷惑
+    /// メールの中身までサーバー検索でヒット→ローカルに取り込まれてしまって
+    /// いた — `SearchQuery`のローカル検索 (`scopeClause`) と同じ理由で
+    /// role trash/junk のメールボックスを除外する (`isHidden`はこの時点で
+    /// 既に`MailboxQuery.request(includeHidden: false)`が除外済み)。
     static func searchTargets(mailboxes: [MailboxRecord], isGmail: Bool) -> [MailboxRecord] {
         guard isGmail, let allMail = mailboxes.first(where: { $0.role == .all }) else {
-            return mailboxes
+            return mailboxes.filter { $0.role != .trash && $0.role != .junk }
         }
         return [allMail]
     }
