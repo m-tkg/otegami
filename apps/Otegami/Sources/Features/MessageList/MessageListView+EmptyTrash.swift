@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import OtegamiStore
+import SwiftUI
 import SyncEngine
 
 /// 「ゴミ箱を空にする」— `requestEmptyTrash()`(トースト付き Undo が無い、
@@ -12,6 +13,39 @@ struct EmptyTrashTarget: Hashable {
 }
 
 extension MessageListView {
+    /// `body`の確認`.alert`用 Binding — インラインの`Binding(get:set:)`
+    /// クロージャを`body`の modifier チェーンに直接書くと式が巨大化して
+    /// CI の型チェックタイムアウト (`docs/ci.md`) を踏むため、名前付き
+    /// プロパティに分離してある (`body`側のコメント参照)。
+    var isEmptyTrashAlertPresented: Binding<Bool> {
+        Binding(
+            get: { pendingEmptyTrashCount != nil },
+            set: { if !$0 { pendingEmptyTrashCount = nil } }
+        )
+    }
+
+    /// 確認`.alert`のボタン列 — `body`から分離している理由は
+    /// `isEmptyTrashAlertPresented`と同じ。
+    @ViewBuilder
+    func emptyTrashAlertActions() -> some View {
+        Button("空にする", role: .destructive, action: confirmEmptyTrash)
+            .accessibilityIdentifier("messageList.emptyTrash.confirmButton")
+        Button("キャンセル", role: .cancel, action: dismissEmptyTrashPrompt)
+            .accessibilityIdentifier("messageList.emptyTrash.cancelButton")
+    }
+
+    /// 確認`.alert`の本文。
+    @ViewBuilder
+    func emptyTrashAlertMessage() -> some View {
+        Text("\(pendingEmptyTrashCount ?? 0)件のメールを完全に削除します。この操作は取り消せません。")
+    }
+
+    /// 「キャンセル」— named method (インラインクロージャを避ける
+    /// `docs/ci.md`の実践ルール)。
+    func dismissEmptyTrashPrompt() {
+        pendingEmptyTrashCount = nil
+    }
+
     /// トースト付き Undo を持つ他の一括操作 (`deleteSelected()`等) と違い、
     /// これは不可逆 — 実行前に必ず`.alert`(`body`) を経由させる。ここでは
     /// 対象メールボックスを解決し、正確な対象件数を読んでから

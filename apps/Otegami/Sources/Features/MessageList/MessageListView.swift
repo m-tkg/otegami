@@ -1008,20 +1008,19 @@ struct MessageListView: View {
         // では`.confirmationDialog`がソースに紐づく吹き出しになってしまう
         // ため常に画面中央のモーダルが要る破壊的確認は`.alert`、
         // `AccountDigestView`のdoc comment参照) に合わせたもの。
+        // Binding/ボタン/メッセージをインラインで書かず
+        // `MessageListView+EmptyTrash.swift`の名前付きプロパティに分けて
+        // いるのは CI の型チェックタイムアウト対策 (`docs/ci.md`) — 初版は
+        // インライン`Binding(get:set:)`クロージャがこの巨大な modifier
+        // チェーンに折り畳まれ、ローカルでは通るのに CI ランナーで
+        // 「unable to type-check this expression in reasonable time」で
+        // 落ちた (ci-app run 31947831733)。
         .alert(
             "ゴミ箱を空にしますか？",
-            isPresented: Binding(
-                get: { pendingEmptyTrashCount != nil },
-                set: { if !$0 { pendingEmptyTrashCount = nil } }
-            )
-        ) {
-            Button("空にする", role: .destructive) { confirmEmptyTrash() }
-                .accessibilityIdentifier("messageList.emptyTrash.confirmButton")
-            Button("キャンセル", role: .cancel) { pendingEmptyTrashCount = nil }
-                .accessibilityIdentifier("messageList.emptyTrash.cancelButton")
-        } message: {
-            Text("\(pendingEmptyTrashCount ?? 0)件のメールを完全に削除します。この操作は取り消せません。")
-        }
+            isPresented: isEmptyTrashAlertPresented,
+            actions: emptyTrashAlertActions,
+            message: emptyTrashAlertMessage
+        )
     }
 
     /// The toolbar's whole content, split out of `body` — split for the same
