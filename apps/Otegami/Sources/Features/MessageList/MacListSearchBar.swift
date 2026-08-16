@@ -31,6 +31,11 @@ struct MacListSearchBar: View {
     @Binding var isUnreadOnly: Bool
     let isSyncing: Bool
     let onRefresh: () -> Void
+    /// 「ゴミ箱を空にする」— ゴミ箱ビューを見ている間だけ`emptyTrashButton`を
+    /// 出す (iOS 版のツールバーボタンと同じ出し分け、
+    /// `MessageListView.listToolbarContent`参照)。
+    var isTrashView: Bool = false
+    var onEmptyTrash: () -> Void = {}
 
     var body: some View {
         HStack(spacing: OtegamiSpacing.sm) {
@@ -39,6 +44,9 @@ struct MacListSearchBar: View {
                 scopePicker
             }
             Spacer(minLength: OtegamiSpacing.sm)
+            if isTrashView {
+                emptyTrashButton
+            }
             unreadOnlyToggleButton
             refreshButton
         }
@@ -116,6 +124,19 @@ struct MacListSearchBar: View {
         .accessibilityLabel("未読のみ表示")
         .accessibilityAddTraits(isUnreadOnly ? .isSelected : [])
         .help("未読のみ表示")
+    }
+
+    /// 「ゴミ箱を空にする」— タップで確認`.alert`(`MessageListView.body`側)
+    /// を開くだけ、実際の実行はそちら。
+    private var emptyTrashButton: some View {
+        Button(action: onEmptyTrash) {
+            Image(systemName: "trash")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(OtegamiColor.destructive)
+        .accessibilityIdentifier("messageList.emptyTrashButton")
+        .accessibilityLabel("ゴミ箱を空にする")
+        .help("ゴミ箱を空にする")
     }
 
     private var refreshButton: some View {
