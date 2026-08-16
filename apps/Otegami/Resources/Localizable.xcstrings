@@ -411,22 +411,22 @@
         }
       }
     },
-    "迷惑メール解除": {
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Not Junk"
-          }
-        }
-      }
-    },
     "迷惑メールにする": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Mark as Junk"
+          }
+        }
+      }
+    },
+    "迷惑メール解除": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not Junk"
           }
         }
       }

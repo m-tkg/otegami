@@ -95,6 +95,7 @@ translations = {
     "スレッドをミュート": "Mute Thread",
     "アーカイブ": "Archive",
     "迷惑メールにする": "Mark as Junk",
+    "迷惑メール解除": "Not Junk",
     "英語で返信を下書き": "Draft Reply in English",
     "ツールバーをカスタマイズ": "Customize Toolbar",
     # Task #188: 「その他」メニュー内、表示オフのアクションをまとめる
