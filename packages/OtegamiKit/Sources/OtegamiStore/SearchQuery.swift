@@ -389,6 +389,18 @@ public enum SearchQuery {
 
     // MARK: - Scope
 
+    /// 実機報告「削除したメールが検索に出てくる」: `MessageRemoval.commit(.delete)`
+    /// は削除を「ローカルではゴミ箱メールボックスへ移送」として実装しており
+    /// (`message`/`messageBody`/`messageSearchIndex` の行はそのまま残る、意図
+    /// された即時反映)、迷惑メール移送も同様にメッセージ行を残す。そのため
+    /// `.allAccounts` (横断検索) は他の一覧系クエリ (`ThreadQuery
+    /// .unifiedInboxRequest`, `MessageQuery.unifiedInboxUnreadCount` 等) と
+    /// 同じ条件 — ゴミ箱・迷惑メール (`mailbox.role`) と非表示メールボックス
+    /// (`mailbox.isHidden`、`MailboxRecord.isHidden`のdoc comment参照) を除外
+    /// — を横断検索にも合わせる。`.mailbox` (現在のメールボックス内検索) は
+    /// ユーザーが明示的にそのメールボックス (ゴミ箱そのものを含む) を開いて
+    /// 検索している状態なので除外しない — 指定したメールボックス自体は
+    /// 引き続き検索できる。
     private static func scopeClause(
         _ scope: SearchScope,
         messageAlias: String
@@ -397,7 +409,17 @@ public enum SearchQuery {
         case .allAccounts(let accountIds):
             guard !accountIds.isEmpty else { return ("AND 0", []) }
             let placeholders = accountIds.map { _ in "?" }.joined(separator: ",")
-            return ("AND mailbox.accountId IN (\(placeholders))", accountIds)
+            var args: [(any DatabaseValueConvertible)?] = accountIds
+            args.append(MailboxRoleRecord.trash.rawValue)
+            args.append(MailboxRoleRecord.junk.rawValue)
+            return (
+                """
+                AND mailbox.accountId IN (\(placeholders))
+                AND mailbox.role NOT IN (?, ?)
+                AND mailbox.isHidden = 0
+                """,
+                args
+            )
         case .mailbox(let mailboxId):
             return ("AND \(messageAlias).mailboxId = ?", [mailboxId])
         }
