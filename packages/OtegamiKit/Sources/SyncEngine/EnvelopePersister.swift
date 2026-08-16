@@ -168,14 +168,24 @@ enum EnvelopePersister {
     /// `id` (and everything keyed by it: thread assignment, cached body/
     /// attachments, translation state, FTS index) never changes.
     ///
-    /// A no-op when `envelope.messageId` is `nil`/empty (can't reliably
-    /// match) — a message without a `Message-ID` header is rare, and this
-    /// app has no other cross-mailbox identity to match on. That pending
-    /// row is left as-is: still visible to the user (it was never lost),
-    /// just permanently a placeholder UID (see `MessageRecord
-    /// .isPendingRelocation`'s doc comment for the accepted-limitation call
-    /// sites that already treat a placeholder gracefully rather than
-    /// crashing on it).
+    /// Matches primarily on the RFC 822 `Message-ID` header. When
+    /// `envelope.messageId` is `nil`/empty, falls back to `gmailMessageId`
+    /// (`X-GM-MSGID`) — 実機報告 (2026-08-16, Gmail アカウント)「特定の1通に
+    /// 対して削除・アーカイブ解除・未読化が完全無反応」の R3: this method
+    /// used to just `return` whenever the RFC header was missing, so a
+    /// Gmail message without one (rarer than on other providers, but not
+    /// impossible) could never be adopted onto its real UID — its
+    /// placeholder row sat in `mailboxId` forever while the genuinely
+    /// synced copy landed as a brand-new second row elsewhere, a permanent
+    /// duplicate/ghost pair. Every Gmail-hosted message has an
+    /// `X-GM-MSGID` (Gmail assigns it server-side, independent of headers),
+    /// so this fallback closes the gap for exactly the accounts where the
+    /// RFC-header gap was previously an unrecoverable dead end (see
+    /// `docs/architecture.md`'s Gmail-archive section, "p.", for the
+    /// broader design this was already a documented known limitation of —
+    /// non-Gmail providers have no such fallback identity to use, so the
+    /// gap remains there). Still a no-op when *neither* identity is
+    /// available.
     ///
     /// Task #183 (実機報告「iCloud の Archive メールボックスの同期が毎回
     /// `UNIQUE constraint failed: message.mailboxId, message.uid` で失敗する」):
@@ -199,11 +209,18 @@ enum EnvelopePersister {
     ///   device) matching pending rows, the most recently updated one wins
     ///   the real `uid`; any others are merged into it and discarded first.
     private static func reconcilePendingRelocation(envelope: FetchedEnvelope, mailboxId: Int64, db: Database) throws {
-        guard let messageId = envelope.messageId, !messageId.isEmpty else { return }
+        let identityFilter: SQLExpression
+        if let messageId = envelope.messageId, !messageId.isEmpty {
+            identityFilter = Column("messageId") == messageId
+        } else if let gmailMessageId = envelope.gmailMessageId {
+            identityFilter = Column("gmailMessageId") == Int64(bitPattern: gmailMessageId)
+        } else {
+            return
+        }
         let pendingRows = try MessageRecord
             .filter(Column("mailboxId") == mailboxId)
             .filter(Column("uid") <= 0)
-            .filter(Column("messageId") == messageId)
+            .filter(identityFilter)
             .fetchAll(db)
         guard !pendingRows.isEmpty else { return }
 

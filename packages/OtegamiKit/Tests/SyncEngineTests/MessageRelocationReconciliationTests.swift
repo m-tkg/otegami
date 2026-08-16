@@ -680,4 +680,99 @@ struct MessageRelocationReconciliationTests {
         #expect(archivedAfterSync == [threadId])
         #expect(flatAfterSync.count == 1)
     }
+
+    /// 実機報告 (2026-08-16, Gmail アカウント)「特定の1通に対して削除・
+    /// アーカイブ解除・未読化が完全無反応」の R3 修正。`.unarchive`は
+    /// (Gmail の`.archive`と違い) 移送に RFC 822 `Message-ID` を要求しない
+    /// `relocationDestinationId`の分岐を通る (`kind == .archive`の条件に
+    /// 一致しないため無条件に移送する) ので、`messageId`が`nil`の Gmail
+    /// メッセージでも仮 UID 行が普通に作られる。`EnvelopePersister
+    /// .reconcilePendingRelocation`はこれまで`messageId`が`nil`/空だと
+    /// 即 `return`していたため、この仮 UID 行は本物の UID へ二度と昇格
+    /// できず永久にゴーストとして残っていた (サーバー確認された実体は
+    /// 代わりに新規の別行として insert される)。`gmailMessageId`
+    /// (`X-GM-MSGID`) へのフォールバックで、同じ主キーの行が本物の UID
+    /// を得ることを確認する。
+    @Test("Gmail unarchive without an RFC 822 Message-ID still reconciles onto its real UID via the gmailMessageId fallback")
+    func gmailUnarchiveWithoutRFCMessageIdReconcilesViaGmailMessageIdFallback() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = AccountRecord(
+            displayName: "Gmail", email: "gmail-no-msgid@otegami.test", authType: .oauth2, kind: .gmail,
+            imapHost: "imap.gmail.com", imapPort: 993, imapSecurity: .tls,
+            imapUsername: "gmail-no-msgid@otegami.test"
+        )
+        try await database.dbWriter.write { db in try account.insert(db) }
+
+        let (inboxId, allMailId) = try await database.dbWriter.write { db -> (Int64, Int64) in
+            var inbox = MailboxRecord(accountId: account.id, path: "INBOX", displayPath: "INBOX", role: .inbox, uidValidity: 1, uidNext: 1)
+            try inbox.insert(db)
+            var allMail = MailboxRecord(
+                accountId: account.id, path: "[Gmail]/All Mail", displayPath: "[Gmail]/All Mail",
+                role: .all, uidValidity: 1, uidNext: 6
+            )
+            try allMail.insert(db)
+            return (inbox.id!, allMail.id!)
+        }
+
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        // Deliberately no RFC 822 `Message-ID` (`messageId: nil`) — only
+        // `gmailMessageId` identifies this message across mailboxes.
+        let (threadId, messageId) = try await database.dbWriter.write { db -> (Int64, Int64) in
+            var thread = ThreadRecord(accountId: account.id, lastMessageDate: date, messageCount: 1)
+            try thread.insert(db)
+            var message = MessageRecord(
+                mailboxId: allMailId, uid: 5, messageId: nil,
+                subject: "Message-ID 無しテスト", date: date, internalDate: date,
+                gmailMessageId: 777, threadId: thread.id
+            )
+            try message.insert(db)
+            return (thread.id!, message.id!)
+        }
+
+        let summary = try await database.dbWriter.read { db in
+            ThreadSummary(
+                thread: try ThreadRecord.fetchOne(db, key: threadId)!,
+                latestMessage: try MessageRecord.fetchOne(db, key: messageId)
+            )
+        }
+        let snapshot = try await database.dbWriter.write { db in
+            try MessageRemoval.commit(.unarchive, summary: summary, accountId: account.id, db: db)
+        }
+        #expect(snapshot != nil)
+
+        let relocatedRow = try await database.dbWriter.read { db in try MessageRecord.fetchOne(db, key: messageId) }
+        #expect(relocatedRow?.mailboxId == inboxId, "unarchive relocates into INBOX even without an RFC 822 Message-ID — only Gmail's own `.archive` guard requires one")
+        #expect(relocatedRow?.isPendingRelocation == true)
+
+        // The server confirms the message in INBOX — still no `Message-ID`
+        // header, but the same `gmailMessageId`.
+        let inboxInfo = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let allMailInfo = MailboxInfo(path: "[Gmail]/All Mail", displayPath: "[Gmail]/All Mail", role: .all, attributes: [])
+        let realEnvelope = FetchedEnvelope(
+            uid: 42, messageId: nil, inReplyTo: nil, references: [],
+            subject: "Message-ID 無しテスト", from: [], to: [], cc: [], bcc: [], replyTo: [],
+            date: date, internalDate: date, flags: [], size: 100, gmailMessageId: 777
+        )
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: FakeIMAPSession.Script(
+                mailboxes: [inboxInfo, allMailInfo],
+                envelopesByPath: ["INBOX": [realEnvelope]],
+                statusByPath: [
+                    "INBOX": MailboxStatus(uidValidity: 1, uidNext: 43, highestModSeq: 0, messageCount: 1),
+                    "[Gmail]/All Mail": MailboxStatus(uidValidity: 1, uidNext: 6, highestModSeq: 0, messageCount: 0),
+                ]
+            ))
+        }
+        _ = try await syncer.performIncrementalSync(
+            auth: .password(username: account.imapUsername, password: "test1234")
+        )
+
+        let inboxRows = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("mailboxId") == inboxId).fetchAll(db)
+        }
+        #expect(inboxRows.count == 1, "must not duplicate — before the gmailMessageId fallback, this would be 2 (the ghost plus a fresh insert)")
+        #expect(inboxRows.first?.id == messageId, "the same row that was relocated, not a fresh insert")
+        #expect(inboxRows.first?.uid == 42)
+        #expect(inboxRows.first?.isPendingRelocation == false)
+    }
 }
