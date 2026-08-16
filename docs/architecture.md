@@ -458,6 +458,76 @@ MailCoreIMAPSession+Mapping.swift`) の doc comment が明示している通り:
 バックエンド) だけがこれを行う。中断挙動をユニットテストで確認する
 場合は、一時ファイルバックエンドの `DatabaseQueue` を使うこと。
 
+**追記 (実クラッシュ調査、TestFlight v1.14.1、iPad): 通知アクション背景
+起動での再発と追加対策。** 上記の scenePhase 駆動の対策 (Task #192) は
+入っていたが、実クラッシュログでは通知アクション (`MARK_READ`/
+`ARCHIVE`、`options: []` なので背景起動) がアプリをバックグラウンド
+冷間起動し、起動 3.3 秒後にメインスレッド発の同期 DB write
+(`AppEnvironment.init()`) のままサスペンドされて `0xDEAD10CC` に至って
+いた。根本原因は以下の穴の組み合わせ:
+
+1. `OtegamiApp.swift`の`@State private var environment = AppEnvironment()`
+   は scenePhase ハンドラより**前に**メインスレッドで同期実行される —
+   `AppEnvironment.init()`自体が DatabasePool 生成・マイグレーション・
+   `mergeDuplicateAccounts`の同期 write を含む。
+2. `PushNotificationActionHandler`が通知アクションのたびに**2本目の
+   `DatabasePool`**を毎回開いていた — 同じ共有ファイルへの重複コスト。
+3. AppDelegate の `didFinishLaunchingWithOptions`に背景起動時の保護
+   (`beginBackgroundTask`) が無かった。
+4. suspend の post が `Task { await ... }` 経由で非同期 — scenePhase の
+   `.background`遷移からpostまでにスケジューラのラグがあった。
+5. scenePhase が一度も張られない背景起動パスでは、suspend が一度も
+   post されないままだった。
+
+対策 (いずれも既存の suspend/resume の仕組みを壊さず追加):
+
+- **通知アクションの背景実行保護**: `PushTokenCenter.swift`の
+  `AppDelegate.userNotificationCenter(_:didReceive:withCompletionHandler:)`
+  が `PushNotificationActionHandler.handle(...)` の呼び出しを
+  `withPushActionBackgroundTask(name:_:)`(`UIApplication
+  .beginBackgroundTask`/`endBackgroundTask`)で包む。expiration handler は
+  `Database.suspendNotification`を post してから安全に打ち切る。
+  `didFinishLaunchingWithOptions`自体も`beginLaunchBackgroundTaskIfNeeded
+  (application:)`で背景起動時 (`applicationState == .background`)に固定
+  タイムアウト付きの背景タスクを張り、`AppEnvironment.init()`から最初の
+  scenePhase ハンドラまでの区間を保護する。
+- **2本目の`DatabasePool`を廃止**: `SharedAppDatabaseCenter`
+  (`apps/Otegami/Sources/Support/SharedAppDatabaseCenter.swift`) が
+  `AppEnvironment.database`への`weak`参照を保持し (`PushDatabaseChangeObserver`
+  と同じ二段階wiringパターン)、`PushNotificationActionHandler.handle(...)`
+  はプロセス内に既に`AppEnvironment`があればその`database`を再利用、
+  無ければ (通知アクション単独でのコールド背景起動) 従来どおり自前で開く。
+- **suspend post の即時化**: `OtegamiApp.swift`の
+  `.onChange(of: scenePhase, initial: true)`が、`.background`/`.inactive`
+  を観測した瞬間に`Task { }`を挟まず`NotificationCenter.default.post(name:
+  Database.suspendNotification, object: nil)`を同期的に呼ぶ。
+  `AppEnvironment.suspendSharedDatabaseIfNeeded()`(dedup付き) 自身のpostは
+  従来どおり`handleScenePhaseChange`内でも走る — 二重postはGRDBの
+  suspend()/resume()が冪等なので無害。
+- **`didEnterBackground`フォールバック**: `AppDelegate`が
+  `UIApplication.didEnterBackgroundNotification`を購読し、scenePhase 経由
+  で suspend が飛ばなかったケースでも同じ post が飛ぶようにする。
+- **通知アクション自身の書き込みの再試行**:
+  `PushNotificationActionExecutor.execute`のローカル DB write (通知
+  アクションが実際に起きたことを示す唯一の永続記録) は、上記の積極的な
+  suspend post と自分自身が同じ背景起動レース条件に巻き込まれうる —
+  `applyWithSuspensionRetry`が`DatabaseSuspensionSupport
+  .isSuspensionError(_:)`を検知した場合に数回だけ短い間隔で再試行する
+  (`PushNotificationActionExecutor.swift`のdoc comment参照)。**既知の
+  残存制限**: このリトライは、この起動中に一度も`.active`にならない
+  純粋な背景起動 (通知アクションの通常ケース) では resume が来ないため
+  救えない — `docs/push-notification-actions.md`「既知の制限」参照。
+- **`NotificationService` Extension は suspend post しない (意図的な
+  据え置き)**: この Extension は Phase 1/Phase 3 で実際に write する
+  (以前のこの節の記述は「read-only」としていたが誤り — 今は
+  `apps/Otegami/NotificationService/NotificationService.swift`の
+  `lookupAccount(id:)`のdoc commentが最新の判断根拠を持つ)。それでも
+  suspend post が不要なのは、この Extension が「凍結されたまま長時間
+  ロックを握り続ける」リスクを持たないため — OS はハードな約30秒の
+  実行予算超過で**強制終了**する (サスペンドして後で再開、ではない) の
+  で、GRDB の suspend/resume が守ろうとしている「凍結中のロック保持」の
+  シナリオがそもそも成立しない。
+
 ### f. `OpQueueProcessor.replay` はアカウント単位の直列化と DB 側の冪等ガードの両方が要る
 
 `replay(account:auth:)` はアプリのほぼ全ての操作 (スワイプ、フォア
@@ -777,14 +847,18 @@ Task #211 のログは Mac に有線接続して Console.app/`log stream` を操
 (`packages/OtegamiKit/Sources/PushRelayClient/PushDiagnosticsStore.swift`)。
 
 **共有領域に `UserDefaults` を選んだ理由 (共有 `AppDatabase` への書き込み
-は選ばなかった理由)**: `NotificationService.lookupAccount(id:)` の doc
-comment (Task #192) が明記するとおり、この Extension は現状
-`dbWriter.read` のみで一切 `.write` しないことが前提で「0xDEAD10CC を
-起こすロックを一度も持たない」という安全性を担保している。診断記録の
-ためだけに新しい `.write` 経路を追加すると、その前提を壊しかねない —
-記録する内容 (各段階の分類文字列・bool・整数、最大20件) はスキーマ管理の
-要る RDB を持ち出すには小さすぎることもあり、`BadgeCenter.setBadge
-(count:)`と同じ`UserDefaults(suiteName:)`前例に倣った。
+は選ばなかった理由)**: この機能を追加した当時、この Extension は
+`dbWriter.read` のみで一切 `.write` しないという前提があった (現在は
+Phase 1/Phase 3 の実装で `runIncrementalSync`/`writeBackRelaySnippetIfNeeded`
+が実際に write する — `NotificationService.lookupAccount(id:)` の doc
+comment (Task #192) 参照、上の Known pitfalls e. の追記も参照。「診断記録
+のためだけに新しい `.write` 経路を追加すると 0xDEAD10CC を起こすロックを
+持つ前提を壊しかねない」という当時の懸念自体は前提が変わった今でも別の
+理由で妥当なままなので、この節の結論 (`UserDefaults`のまま) は変えて
+いない) — 記録する内容 (各段階の分類文字列・bool・整数、最大20件) は
+スキーマ管理の要る RDB を持ち出すには小さすぎることもあり、
+`BadgeCenter.setBadge(count:)`と同じ`UserDefaults(suiteName:)`前例に
+倣った。
 
 **保持件数は20件** (`TranslationDiagnosticsStore`の5件より多い) —
 複数アカウントがこの1つの履歴を共有するため、Yahoo! JAPAN 以外の
