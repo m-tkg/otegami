@@ -25,7 +25,25 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     // concurrently) but still needs to read it from a nonisolated
     // context to hand it to `SessionLingerBox`.
     private nonisolated(unsafe) let session: MCOIMAPSession
+
+    /// Per-session serial dispatch queue, set on `session` at `init` time
+    /// (before any connection is made) and reused by `SessionLingerBox` to
+    /// schedule this session's deferred deallocation — see this type's
+    /// `deinit` and `init` doc comments for why both matter.
+    ///
+    /// `DispatchQueue` is `Sendable`, so — unlike `session` above — this
+    /// `let` needs no `nonisolated(unsafe)` to be readable from `deinit`.
+    private let dispatchQueue: DispatchQueue
+
+    /// Set to `true` the moment `connect(auth:)` is called, regardless of
+    /// whether it goes on to succeed — see `disconnect()`'s doc comment for
+    /// why this (not `connected`) is what gates issuing a `disconnectOperation`.
+    private var connectAttempted = false
     private var connected = false
+    /// Idempotency guard for `disconnect()` — separate from `connected` so
+    /// that a `connect(auth:)` that threw can still be disconnected exactly
+    /// once (see `disconnect()`'s doc comment).
+    private var disconnected = false
 
     /// Whether the server advertised `X-GM-EXT-1` at connect time.
     /// `fetchEnvelopesBatch` only requests the `X-GM-THRID`/`X-GM-MSGID`
@@ -89,26 +107,57 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         // いない (`SyncCoordinator.withIMAPSession` も `OpQueueProcessor` も
         // 1 セッションで直列に発行する) ので、性能上の損失はない。
         session.maximumConnections = 1
+        // Per-session serial queue (fix 1 of the v1.14.2 UAF crash — see
+        // `docs/architecture.md`'s "MailCore2 use-after-free" section for
+        // the full incident writeup). MailCore2 defaults `dispatchQueue` to
+        // the main queue (see `MCOIMAPSession.dispatchQueue`'s doc comment
+        // in the vendored header), which is exactly the process-wide,
+        // frequently-congested queue that let `SessionLingerBox`'s old
+        // `DispatchQueue.main.asyncAfter` release race ahead of MailCore2's
+        // own `stoppedOnMainThread` teardown `dispatch_sync`. Routing both
+        // this session's completion callbacks *and* its linger release
+        // through one private serial queue makes that race structurally
+        // impossible: whatever `stoppedOnMainThread`/`queueStartRunning`
+        // work MailCore2 still has in flight for this session is already
+        // queued (or running) on `dispatchQueue` by the time `deinit` runs,
+        // so the linger release enqueued below can only ever land *after*
+        // it, never before.
+        //
+        // Must happen here, at `init`, before the first `connect(auth:)` —
+        // `IMAPAsyncSession::session()` (`MCIMAPAsyncSession.cpp`) copies
+        // `mDispatchQueue` onto each new `IMAPAsyncConnection` only at the
+        // moment that connection is created (i.e. on first use), so setting
+        // this any later than `init` risks losing the race against that
+        // copy for a session that connects immediately.
+        let dispatchQueue = DispatchQueue(label: "com.mtkg.otegami.mailcore-imap-session")
+        session.dispatchQueue = dispatchQueue
+        self.dispatchQueue = dispatchQueue
         self.session = session
     }
 
     /// MailCore2 finishes tearing down a session's internal
     /// `OperationQueue` asynchronously — `OperationQueue
-    /// ::stoppedOnMainThread` is a `dispatch_async` back to the main
-    /// queue, not something `disconnectOperation()`'s completion handler
-    /// waits on. Every call site here connects a throwaway session and
-    /// disconnects it in a fire-and-forget `Task` (e.g. `SyncCoordinator
-    /// .withIMAPSession`'s `defer { Task { await session.disconnect() } }`),
-    /// so this actor — and the `MCOIMAPSession` it owns — can be
-    /// deallocated the instant that `Task` finishes, before MailCore2's
-    /// own teardown callback lands. When that happens, MailCore2 touches
-    /// freed memory from `queueStartRunning`/`stoppedOnMainThread` and
-    /// crashes with SIGSEGV (seen in production TestFlight crash
-    /// reports). Keeping a strong reference to `session` alive for a few
-    /// seconds past this actor's own deinit gives that callback somewhere
-    /// live to land instead of a freed C++ object.
+    /// ::stoppedOnMainThread` is a `dispatch_async`/`dispatch_sync` back to
+    /// `session.dispatchQueue` (the per-session queue set in `init` above,
+    /// not the main queue — see that comment), not something
+    /// `disconnectOperation()`'s completion handler waits on. Every call
+    /// site here connects a throwaway session and disconnects it in a
+    /// fire-and-forget `Task` (e.g. `SyncCoordinator.withIMAPSession`'s
+    /// `defer { Task { await session.disconnect() } }`), so this actor —
+    /// and the `MCOIMAPSession` it owns — can be deallocated the instant
+    /// that `Task` finishes, before MailCore2's own teardown callback
+    /// lands. When that happens, MailCore2 touches freed memory from
+    /// `queueStartRunning`/`stoppedOnMainThread` and crashes with SIGSEGV
+    /// (seen in production TestFlight crash reports). Keeping a strong
+    /// reference to `session` alive past this actor's own deinit gives
+    /// that callback somewhere live to land instead of a freed C++ object;
+    /// scheduling the release on `dispatchQueue` (fix 1, see `init`) rather
+    /// than the main queue (the old `SessionLingerBox` behavior) removes
+    /// the cross-queue race entirely, and polling `isOperationQueueRunning`
+    /// before actually releasing (fix 2) is a belt-and-suspenders check for
+    /// the case where the queue itself is unusually backed up.
     deinit {
-        Self.lingerBox.linger(session)
+        Self.lingerBox.linger(session, queue: dispatchQueue)
     }
 
     private static let lingerBox = SessionLingerBox()
@@ -117,6 +166,10 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
 
     public func connect(auth: MailAuth) async throws {
         let startedAt = Date()
+        // Set before the operation even starts (not just on success) — see
+        // `disconnect()`'s doc comment for why an attempted-but-failed
+        // connect must still allow a subsequent `disconnect()` through.
+        connectAttempted = true
         Self.apply(auth, to: session)
         do {
             try await runVoid(session.checkAccountOperation())
@@ -135,8 +188,24 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         )
     }
 
+    /// Fix 3 of the v1.14.2 UAF crash (`docs/architecture.md`): previously
+    /// gated on `connected` (only ever `true` after a *successful*
+    /// `connect(auth:)`), so a session whose connect attempt began but
+    /// failed partway through (e.g. TCP/TLS established, `LOGIN` rejected
+    /// or timed out) never got a `disconnectOperation()` at all — the
+    /// underlying `MCOIMAPSession` relied entirely on `deinit`/
+    /// `SessionLingerBox` to eventually tear down whatever socket state
+    /// MailCore2 had already set up, instead of an orderly close. Gating on
+    /// `connectAttempted` instead means every session that ever attempted
+    /// to connect gets an explicit close attempt; a session on which
+    /// `connect(auth:)` was never called at all (e.g. `PooledIMAPSession
+    /// (config:)`'s protocol-conformance stub, `IMAPSessionPool`
+    /// (`FakeIMAPSession`) test doubles that never connect) still no-ops,
+    /// and `disconnected` keeps a second `disconnect()` call from issuing a
+    /// redundant `disconnectOperation()`.
     public func disconnect() async {
-        guard connected else { return }
+        guard connectAttempted, !disconnected else { return }
+        disconnected = true
         connected = false
         try? await runVoid(session.disconnectOperation())
     }
@@ -999,17 +1068,87 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
 /// Thread-safe holder for `MCOIMAPSession`s kept alive briefly after their
 /// owning `MailCoreIMAPSession` actor deinits — see that `deinit`'s doc
 /// comment for why.
+///
+/// v1.3.4 shipped this with `DispatchQueue.main.asyncAfter(deadline: .now()
+/// + 5)`. That was a bet, not a real quiesce wait: MailCore2's
+/// `OperationQueue::stoppedOnMainThread` reaches the session's queue via
+/// `dispatch_sync`, so under main-queue congestion the release block queued
+/// by `asyncAfter` could — and per a v1.14.2 production crash, did — run
+/// *before* `stoppedOnMainThread`'s own `dispatch_sync` landed, freeing the
+/// `MCOIMAPSession` out from under a teardown callback still headed for it
+/// (SIGSEGV in `queueStartRunning`). Two independent fixes, both applied
+/// here:
+///
+/// 1. (primary fix) `linger(_:queue:)` now schedules the release on the
+///    *same per-session serial queue* MailCore2 itself delivers that
+///    session's callbacks/teardown on (`MailCoreIMAPSession.init` sets
+///    `session.dispatchQueue` to this queue before ever connecting). A
+///    serial queue runs its blocks in submission order, so the release
+///    block enqueued at `deinit` can only ever run after whatever teardown
+///    work MailCore2 had already queued on it — the race is gone by
+///    construction, not by outrunning it with a longer delay.
+/// 2. (belt-and-suspenders) before actually releasing, poll
+///    `session.isOperationQueueRunning` (`MCOIMAPSession`'s own liveness
+///    flag) and push the release back a further `quiesceRecheckDelay` if
+///    it's still `true`, up to `maxQuiesceAttempts` times. Once fix 1 is in
+///    place this should essentially never fire — it exists for the case
+///    where the per-session queue itself is unusually backed up and the
+///    scheduled release lands while MailCore2 still has work outstanding.
 private final class SessionLingerBox: @unchecked Sendable {
+    /// Initial delay before the first quiesce check. Longer than v1.3.4's
+    /// flat 5s (belt-and-suspenders margin for fix 2's poll) but well short
+    /// of `IMAPSessionPool`'s 8s idle-connection TTL, so a session that's
+    /// about to be reused isn't held onto needlessly — see the task
+    /// description for why 45s (aligned with nothing in particular) was
+    /// considered and rejected in favor of this.
+    private static let initialDelay: TimeInterval = 15
+    private static let quiesceRecheckDelay: TimeInterval = 5
+    private static let maxQuiesceAttempts = 3
+
+    /// `@Sendable`-closure-safe wrapper — `scheduleQuiesceCheck` below hands
+    /// a live `MCOIMAPSession` to a `queue.asyncAfter` closure, which (like
+    /// `OperationBox`/`IdleOperationBox` elsewhere in this file) requires
+    /// `@Sendable`. Reading `isOperationQueueRunning` from the box on
+    /// `queue` — the session's own per-session queue — is exactly the
+    /// thread MailCore2 already delivers that session's own callbacks on,
+    /// so this is safe in practice the same way those two boxes' doc
+    /// comments explain.
+    private final class SessionBox: @unchecked Sendable {
+        let session: MCOIMAPSession
+        init(_ session: MCOIMAPSession) { self.session = session }
+    }
+
     private let lock = NSLock()
     private var sessions: [ObjectIdentifier: MCOIMAPSession] = [:]
 
-    func linger(_ session: MCOIMAPSession) {
+    func linger(_ session: MCOIMAPSession, queue: DispatchQueue) {
         let key = ObjectIdentifier(session)
         lock.lock()
         sessions[key] = session
         lock.unlock()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-            self?.release(key)
+        scheduleQuiesceCheck(box: SessionBox(session), key: key, queue: queue, delay: Self.initialDelay, attempt: 0)
+    }
+
+    private func scheduleQuiesceCheck(
+        box: SessionBox,
+        key: ObjectIdentifier,
+        queue: DispatchQueue,
+        delay: TimeInterval,
+        attempt: Int
+    ) {
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            if box.session.isOperationQueueRunning, attempt < Self.maxQuiesceAttempts {
+                self.scheduleQuiesceCheck(
+                    box: box,
+                    key: key,
+                    queue: queue,
+                    delay: Self.quiesceRecheckDelay,
+                    attempt: attempt + 1
+                )
+                return
+            }
+            self.release(key)
         }
     }
 
