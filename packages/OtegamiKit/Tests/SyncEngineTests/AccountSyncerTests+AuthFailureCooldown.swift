@@ -104,7 +104,61 @@ struct AccountSyncerAuthFailureCooldownTests {
         #expect(connectCount.value <= 1, "must not retry a LOGIN within the auth-failure cooldown window")
     }
 
+    /// v1.14.2 UAF 修正 (3): `runIdleLoop`'s success path already called
+    /// `session.disconnect()` before this fix, but a failure *after* a
+    /// successful `connect()` — here, the `IDLE` stream itself throwing —
+    /// used to fall straight into the `catch` block and drop `session`
+    /// without ever disconnecting it (relying entirely on `deinit`/
+    /// `SessionLingerBox` teardown instead of an orderly `LOGOUT`). Scripts
+    /// a session that connects and selects INBOX fine but whose `idle`
+    /// stream immediately throws, and asserts `disconnect()` still gets
+    /// called exactly once for that connection.
+    @Test("startIdleLoop disconnects the session even when the IDLE stream itself fails after a successful connect")
+    func idleLoopDisconnectsAfterMidLoopFailure() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        let auth = MailAuth.password(username: "test1@otegami.test", password: "test1234")
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inbox],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 1, highestModSeq: 0, messageCount: 0)],
+            // No `idleEvents`, so the stream fails immediately on the first
+            // `IDLE` round — models a dropped connection right after LOGIN.
+            failIdle: .connectionFailed(underlyingDescription: "idle dropped")
+        )
+        let syncer = AccountSyncer(
+            account: account,
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: script, recorder: recorder) }
+        )
+
+        await syncer.startIdleLoop(auth: auth, onWake: {})
+        try await waitUntil(timeout: .seconds(5)) { recorder.disconnectCount >= 1 }
+        await syncer.stopIdleLoop()
+        #expect(recorder.disconnectCount == 1, "the mid-loop failure must not be disconnected twice")
+    }
+
 }
+
+/// Same idea as `PooledIMAPSessionFactoryTests`'/`SyncCoordinatorTests
+/// +SessionPooling.swift`'s identically-named, identically `private`
+/// helper — condition-poll rather than a fixed sleep, since exactly when
+/// the `Task.detached` disconnect (or the loop's own iteration) actually
+/// runs isn't otherwise deterministic from the test's perspective.
+private func waitUntil(timeout: Duration, _ condition: () async -> Bool) async throws {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while !(await condition()) {
+        guard ContinuousClock.now < deadline else {
+            throw WaitUntilTimeoutError()
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+}
+
+private struct WaitUntilTimeoutError: Error {}
 
 /// Minimal `Sendable` mutable counter for the closure-captured assertion in
 /// `idleLoopDoesNotImmediatelyRetryAfterAuthFailure` above (a plain `var`

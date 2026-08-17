@@ -1064,6 +1064,12 @@ public actor AccountSyncer {
                 try? await Task.sleep(for: .seconds(min(remaining, 60)))
                 continue
             }
+            // v1.14.2 UAF 修正 (3): 取りこぼし対策として `catch` からも見える
+            // 位置で宣言する。成功パス (下の `do` の末尾、および「INBOX が
+            // 無い」ケース) は自前で `disconnect()` してから `nil` に戻す —
+            // `catch` 側は「まだ non-nil ならまだ切断されていない」を見て
+            // 後始末する。
+            var session: (any IMAPSessionProtocol)?
             do {
                 // Task #69: `autoRetry: false` here on purpose — this loop
                 // already implements its *own* infinite reconnect-with-
@@ -1079,7 +1085,8 @@ public actor AccountSyncer {
                 // see that property's doc comment for why a long-lived
                 // `IDLE` connection must not go through
                 // `PooledIMAPSessionFactory`'s checkout/TTL bookkeeping.
-                let session = try await connectWithRetry(auth: auth, autoRetry: false, sessionFactory: idleSessionFactory)
+                let connected = try await connectWithRetry(auth: auth, autoRetry: false, sessionFactory: idleSessionFactory)
+                session = connected
                 // Task #187: LOGIN just succeeded — proof the credential
                 // itself is fine, whatever caused an earlier `.authentication`
                 // failure (if any) has cleared.
@@ -1087,21 +1094,23 @@ public actor AccountSyncer {
                 // A frequent, best-effort reconnect (exactly the case
                 // `listMailboxesCached` exists for) — never forces a real
                 // LIST, and only needs to know INBOX's path anyway.
-                let mailboxInfos = try await listMailboxesCached(session: session, bypassCache: false)
+                let mailboxInfos = try await listMailboxesCached(session: connected, bypassCache: false)
                 guard let inboxInfo = Self.inbox(among: mailboxInfos) else {
-                    await session.disconnect()
+                    await connected.disconnect()
+                    session = nil
                     return
                 }
-                _ = try await session.select(inboxInfo.path)
+                _ = try await connected.select(inboxInfo.path)
                 backoffSeconds = 5 // a clean connect resets the backoff
 
-                for try await event in session.idle(mailboxPath: inboxInfo.path) {
+                for try await event in connected.idle(mailboxPath: inboxInfo.path) {
                     guard !Task.isCancelled else { break }
                     if case .newData = event {
                         await onWake()
                     }
                 }
-                await session.disconnect()
+                await connected.disconnect()
+                session = nil
             } catch {
                 // Task #187: an `.authentication` failure gets the long
                 // cooldown above instead of the short backoff below — see
@@ -1114,6 +1123,22 @@ public actor AccountSyncer {
                 // Connection/auth error, or the idle stream itself threw —
                 // fall through to the backoff-and-retry below rather than
                 // giving up on IDLE for the rest of the foreground session.
+                //
+                // v1.14.2 UAF 修正 (3): `connectWithRetry` の成功後、
+                // `listMailboxesCached`/`select`/IDLE ストリーム自体のどこか
+                // で例外が飛ぶと、上の成功パスの `disconnect()` を一度も
+                // 通らないまま `connected`/`session` がスコープを抜けていた
+                // (deinit 経由の `SessionLingerBox` 任せになっていた実質的な
+                // 接続リーク)。`session` がまだ non-nil ならここで明示的に
+                // 切断する。この `runIdleLoop` 自身の `Task` が
+                // `stopIdleLoop()` で既にキャンセルされている経路もあり得る
+                // ので、disconnect オペレーション自体がキャンセルに巻き込ま
+                // れて送信されないよう (`IMAPSessionPool.swift`
+                // `connect(auth:)` の catch と同じ理由) `Task.detached` で
+                // 呼ぶ。
+                if let leaked = session {
+                    Task.detached { await leaked.disconnect() }
+                }
             }
 
             guard !Task.isCancelled else { return }

@@ -165,6 +165,13 @@ struct PooledIMAPSessionFactoryTests {
         let capabilities = try await second.capabilities()
         #expect(capabilities.isEmpty)
         #expect(recorder.connectCount == 2)
+
+        // v1.14.2 UAF 修正 (3): 張り替え前の (死んでいた) セッションも
+        // `Task.detached` 経由で明示的に disconnect() されるはず — `deinit`/
+        // `SessionLingerBox` 任せの取りこぼしにしない。`Task.detached` は
+        // `capabilities()` の `return` と非同期なので、固定待ちではなく
+        // ポーリングで確認する。
+        try await waitUntil(timeout: .seconds(5)) { recorder.disconnectCount >= 1 }
     }
 
     // MARK: - 同時接続数の上限 (実機報告: Gmail の Too many simultaneous connections)
@@ -247,6 +254,12 @@ struct PooledIMAPSessionFactoryTests {
         await #expect(throws: MailTransportError.self) {
             try await failing.connect(auth: auth)
         }
+
+        // v1.14.2 UAF 修正 (3): `connect` に失敗した下位セッションも明示的に
+        // disconnect() されるはず (`Task.detached` 経由の非同期呼び出しなので
+        // ポーリングで確認する) — 取りこぼして `deinit`/`SessionLingerBox`
+        // 任せにしない。
+        try await waitUntil(timeout: .seconds(5)) { recorder.disconnectCount >= 1 }
 
         // スロットが返っていなければ、この 2 本目は上限待ちで進めない
         // (`acquireTimeout` の既定 30 秒でテストがハングする)。
