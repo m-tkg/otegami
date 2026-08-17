@@ -401,11 +401,24 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
         }
 
         wasReused = false
+        let fresh = await pool.makeUnderlyingSession(config: config)
         do {
-            let fresh = await pool.makeUnderlyingSession(config: config)
             try await fresh.connect(auth: auth)
             underlying = fresh
         } catch {
+            // v1.14.2 UAF 修正 (3): `fresh.connect` が例外を投げても、下位
+            // 実装 (`MailCoreIMAPSession`) は TCP/TLS ハンドシェイクまで
+            // 進んでから LOGIN で失敗しているかもしれない — その場合ソケット
+            // は開いたままで、明示的に `disconnect()` を投げない限り deinit
+            // 経由の `SessionLingerBox` 任せになる。`Task.detached` から呼ぶ
+            // のは、このメソッド自身を呼んでいる Task がここで再送出する
+            // `error` によりキャンセルされた経路である場合、ここに素直に
+            // `await fresh.disconnect()` と書くと disconnect オペレーション
+            // 自体もキャンセルされて何も送信されないため (`MailCoreIMAPSession
+            // .runVoid` は `Task` のキャンセルを継承する) — 呼び出し元の
+            // キャンセル状態を継承しない `Task.detached` にすることで、この
+            // disconnect だけは最後まで実行させる。
+            Task.detached { await fresh.disconnect() }
             // 接続が張れなかったのでスロットは即返す。ここで返さないと、
             // 接続不能なアカウントがスロットを食い潰したままになる。
             await pool.releaseConnectionSlot(key: key)
@@ -450,6 +463,18 @@ public actor PooledIMAPSession: IMAPSessionProtocol {
                let pool, let auth = lastAuth {
                 hasAttemptedOperationSinceConnect = true
                 wasReused = false
+                // v1.14.2 UAF 修正 (3): 張り替え前の `underlying` (この操作が
+                // `.connectionFailed` で失敗した、死んでいたはずの再利用
+                // セッション) を捨てる前に明示的に disconnect() する。すでに
+                // 死んでいる接続への LOGOUT は失敗するだけだろうが、
+                // `MailCoreIMAPSession.disconnect()` 側は `connectAttempted`
+                // さえ立っていれば安全に no-op 的に振る舞う (fix 3 参照) の
+                // で、ここで呼んでおけば少なくとも MailCore2 側の内部状態が
+                // 正規の切断経路を一度は通る。`Task.detached` にするのは
+                // `IMAPSessionPool.swift`'s `connect(auth:)` の catch と同じ
+                // 理由 (呼び出し元 Task のキャンセルを継承させない)。
+                let stale = underlying
+                Task.detached { await stale.disconnect() }
                 let fresh = await pool.makeUnderlyingSession(config: config)
                 try await fresh.connect(auth: auth)
                 self.underlying = fresh

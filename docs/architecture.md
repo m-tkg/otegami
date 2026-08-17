@@ -1655,3 +1655,84 @@ op が `attempts` を使い切り恒久失敗する (アーカイブが永久に
   `attemptSelfHeal.repoint` がこの形)。
 - 読み直しで行が消えていた場合の後始末も書く — 親行のない本文が残ると、
   同じ `messageId` が再利用されたときに他人の本文を表示しかねない。
+
+### t. MailCore2 セッション破棄のレース (v1.14.2 UAF クラッシュ)
+
+v1.14.2 の実機 TestFlight クラッシュログ (メインスレッドで SIGSEGV、他
+3 スレッドが `performMethodOnDispatchQueue` でメイン待ち) から特定した
+use-after-free。`MailCoreIMAPSession.swift` の `deinit`/`SessionLingerBox`
+にある。
+
+**根本原因**: `~IMAPAsyncConnection` (mailcore2) は `mQueue
+->setCallback(NULL)` を呼ばずに自身の callback オブジェクトを解放する。
+一方 op queue (`OperationQueue`) は参照カウントで接続本体より長生きし、
+`stoppedOnMainThread` で残 op があれば `startThread` →
+`queueStartRunning()` を経由してその**解放済み callback** を呼び出す。
+このアプリの `MailCoreIMAPSession` は使い捨て接続を毎回
+`connect` → 数コマンド → `disconnect` (`Task` 内、fire-and-forget) する
+運用なので、`disconnect()` から `Task` が終わった直後に `deinit` が走り
+うる — mailcore2 自身の非同期な teardown コールバックが届く前に、
+それを受け止める `MCOIMAPSession` が消えてしまう。
+
+**v1.3.4 の対策 (`SessionLingerBox`) がなぜ不十分だったか**: deinit で
+`MCOIMAPSession` への強参照を握り続け、`DispatchQueue.main.asyncAfter
+(deadline: .now() + 5)` で 5 秒後にメインキューから解放する、という「賭け」
+だった。`OperationQueue::stoppedOnMainThread` は `dispatch_sync` で
+メインキューへ来るため、メインスレッドが輻輳しているとキューに積まれた
+順序が保証されない — `asyncAfter` で予約された解放ブロックが、先に積まれた
+はずの `stoppedOnMainThread` の `dispatch_sync` を**追い越して**実行され
+うる。v1.14.2 の実クラッシュはまさにこの追い越しが起きたケース (メイン
+スレッドが混雑、解放が先に走って `MCOIMAPSession` が消えた後に
+`stoppedOnMainThread` が届いた)。
+
+**v1.14.2 で入れた対策 (3点、`MailCoreIMAPSession.swift`/
+`IMAPSessionPool.swift`/`AccountSyncer.swift`)**:
+
+1. **セッション専用 serial dispatch queue が本命の修正。**
+   `MailCoreIMAPSession.init` で per-session の serial `DispatchQueue` を
+   作り、`session.dispatchQueue` に設定する (`MCOIMAPSession` は既定で
+   メインキューに全コールバックを流す — ここを空けるだけで v1.3.4 の
+   バグの土台ごと無くなる)。**必ず init 内・最初の接続前に**セットする
+   必要がある — `IMAPAsyncSession::session()`
+   (`MCIMAPAsyncSession.cpp`) が接続オブジェクト生成時に
+   `mDispatchQueue` を**その時点の値をコピー**するため、後から差し替えても
+   間に合わない。`SessionLingerBox` の解放も同じキューの `asyncAfter` に
+   乗せる — serial queue は投入順に実行されるので、`deinit` で積む解放
+   ブロックは、その時点までにキューに積まれていた mailcore2 自身の
+   teardown 処理より**構造的に必ず後**に実行される。メインキューを経由
+   しなくなる副作用として、`MCOIMAPOperation` の completion callback が
+   メインスレッド以外から呼ばれるようになるが、`runCancellable`/`runVoid`
+   はスレッド非依存の `withCheckedThrowingContinuation` を使っているので
+   影響しない。
+2. **quiesce ポーリング + linger 延長 (保険)。** 解放前に
+   `MCOIMAPSession.isOperationQueueRunning` を確認し、`true` ならさらに
+   5 秒後に再確認 (最大 3 回) してから解放する。初回待ちも 5 秒 → 15 秒に
+   延長した。対策 1 が入っていればこの分岐はほぼ発火しない想定 — per-
+   session queue 自体が異常に詰まっている場合のみの保険。
+3. **`disconnect()` の取りこぼしを塞ぐ。** `MailCoreIMAPSession
+   .disconnect()` は以前「成功した接続」(`connected == true`) だけを
+   `disconnectOperation()` にかけていたため、`connect(auth:)` が
+   TCP/TLS まで進んで `LOGIN` で失敗したケースは一度も明示的な
+   `disconnectOperation()` を通らず `deinit` 任せになっていた。
+   `connectAttempted` (接続を試みたかどうか、成否を問わない) をゲートに
+   変更し、接続試行が一度でもあれば必ず切断を試みるようにした。加えて
+   `IMAPSessionPool.swift` (`fresh.connect` 失敗時、再利用セッションの
+   張り替え時) と `AccountSyncer.swift` (IDLE ループが `connectWithRetry`
+   成功後に `listMailboxesCached`/`select`/IDLE ストリームのどこかで
+   失敗する経路) それぞれで、それまで `disconnect()` を一度も呼ばずに
+   セッション参照を手放していた箇所に明示的な `disconnect()` 呼び出しを
+   足した。呼び出し元の `Task` が既にキャンセルされている経路
+   (`stopIdleLoop()` など) から呼ばれると、素直に `await
+   session.disconnect()` と書いても内部の `runVoid` がキャンセルを継承
+   して disconnect オペレーション自体が送信されずに終わる
+   (`MCOperation::cancel()` はフラグを立てるだけで送信済みでない
+   オペレーションを握り潰す) — これを避けるため、これらの追加
+   disconnect 呼び出しはすべて `Task.detached` から行っている。
+
+**実機 UAF はユニットテストでは再現できない** (mailcore2 の C++ 側の
+参照カウント/スレッドタイミングに依存するため)。ユニットで検証したのは
+挙動の周辺 (`PooledIMAPSessionFactoryTests`: 接続失敗時・張り替え時に
+`disconnect()` が呼ばれること、`AccountSyncerAuthFailureCooldownTests`:
+IDLE ループが `connect` 後の失敗でもセッションを disconnect すること) —
+per-session queue と quiesce ポーリングそのものは実機での長期運用でしか
+確認できない、既知の限界として残る。
