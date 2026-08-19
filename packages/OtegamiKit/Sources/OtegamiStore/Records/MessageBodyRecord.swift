@@ -27,7 +27,11 @@ public struct MessageBodyRecord: Codable, Equatable, Sendable, FetchableRecord, 
     /// — `AppDatabase.swift`のv36マイグレーション参照)。`0`は
     /// `currentRenderVersion`より必ず古い値であり続けるよう、この定数を
     /// 上げるときは`0`を再利用しない。
-    public static let currentRenderVersion = 1
+    /// v2 (2026-08): `MailCoreBodyExtraction.decodedText(from:)` 導入 —
+    /// charset=UTF-8 パートの不正バイトを lossy デコードで救う (修正前の
+    /// 転送メールが持つ QP エンコード破壊由来の不正 UTF-8 で、本文全体が
+    /// Latin-1 文字化けしてキャッシュされている行を開いた時に再取得させる)。
+    public static let currentRenderVersion = 2
 
     /// Shares its primary key with `MessageRecord.id` (one body per
     /// message).
