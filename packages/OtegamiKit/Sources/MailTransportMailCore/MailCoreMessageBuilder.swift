@@ -52,7 +52,17 @@ public enum MailCoreMessageBuilder {
         // so every pre-#129 plain-text-only draft keeps producing the exact
         // same single-part message it always has.
         if let htmlBody = draft.htmlBody {
+            // 裸の CR (`\r` 単独) を `\n` に正規化してから渡す — この pinned
+            // mailcore2/libetpan の quoted-printable エンコーダは、`\n` を
+            // 伴わない CR の直後で出力を壊す実バグがある (直後の `<` を落とし、
+            // 後続のマルチバイト先頭バイトを複製して不正 UTF-8 を出力。実例:
+            // `\r</p><p>高` → `=0D/p><p>\xE9=E9=AB=98`)。受信側では HTML
+            // パート全体が UTF-8 として読めず Latin-1 フォールバックで文字化け
+            // する。Composer 側も CR を出さないよう直してあるが、送信境界で
+            // 保証するのはここ (`MessageBuilderTests` がピン留め)。
             builder.htmlBody = htmlBody
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
         }
 
         // M8: plain (non-inline) attachments only — a reply never carries
