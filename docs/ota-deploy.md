@@ -103,6 +103,7 @@ iPhone で「インストールできません」/ アプリが起動しない�
 | `manifest.plist` の取得でエラー | `software-package` の URL のドメイン/パスが実際にアップロードした場所とずれている。`curl -k <OTA_BASE_URL>/manifest.plist` で内容を確認する |
 | `scripts/deploy-ota.sh` が `ssh` で落ちる | Mac 側からアップロード先へ到達できていない、またはホスト名/ユーザー名が変わった (`scripts/deploy-ota.local.sh` を更新) |
 | `xcodebuild archive`/`-exportArchive` が署名エラーで落ちる | `Config/Local.xcconfig` の `DEVELOPMENT_TEAM` が未設定、または Apple Developer 側で証明書/プロファイルが失効している |
+| `archive` 段階で `No Accounts` + `Provisioning profile "iOS Team Provisioning Profile: com.mtkg.otegami" doesn't include the Communication Notifications capability` | ローカルにキャッシュされた Team プロファイルが `com.apple.developer.usernotifications.communication` entitlement 追加 (2026-08-08, v1.10.0) より古く、かつ Xcode に Apple ID が入っていないため `-allowProvisioningUpdates` がプロファイルを再生成できない。**development 署名フォールバックは export 段階の仕組みなので、archive 段階のこの失敗には効かない。** 直し方: Xcode → Settings → Accounts に Apple ID を追加してから再実行 (Portal 側の App ID には capability 有効化済み — `docs/xcode-cloud.md` の v1.10.0 の顛末参照)。追加後の再実行でプロファイルが再生成されれば、以降はアカウントを外してもキャッシュで通る |
 
 `scripts/deploy-ota.sh` は Xcode のバージョンによって `-exportArchive` の
 `method` が `ad-hoc` と `release-testing` のどちらを要求するか変わりうる
