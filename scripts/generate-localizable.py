@@ -1092,6 +1092,39 @@ comments = {
 }
 
 
+# Swift コードに現れないキーのエントリ (辞書の値をそのまま catalog へ出力
+# する)。通常の `translations` と違いキー自体が ja の文言ではないため、ja の
+# stringUnit も明示する。`check-localizable-coverage.py` は Swift リテラル
+# しか見ないのでここのキーは対象外。
+manual_entries = {
+    # otegami-relay の APNs ペイロード (aps.alert.loc-key = "NEW_MAIL",
+    # server/otegami-relay-go/internal/push/apns.go) が参照する。
+    # NotificationService Extension が実行されなかった場合 (メモリ上限 kill・
+    # 起動前クラッシュ・低電力時の実行スキップ等) は OS が元ペイロードを
+    # そのまま表示するため、このキーが未定義だと生の "NEW_MAIL" が通知本文に
+    # 露出する。文言は NotificationService.swift の generic fallback
+    # ("新着メールがあります") と揃えること。
+    "NEW_MAIL": {
+        "comment": 'otegami-relay の APNs ペイロード (aps.alert.loc-key) が参照する。NotificationService Extension が実行されなかった場合に OS がこのキーを直接表示するため、未定義だと生の "NEW_MAIL" が通知に露出する。文言は NotificationService.swift の generic fallback と揃えること。',
+        "extractionState": "manual",
+        "localizations": {
+            "en": {
+                "stringUnit": {
+                    "state": "translated",
+                    "value": "You have new mail",
+                }
+            },
+            "ja": {
+                "stringUnit": {
+                    "state": "translated",
+                    "value": "新着メールがあります",
+                }
+            },
+        },
+    },
+}
+
+
 def build():
     strings = {}
     for ja, en in translations.items():
@@ -1108,6 +1141,7 @@ def build():
             }
         }
         strings[ja] = entry
+    strings.update(manual_entries)
     catalog = {
         "sourceLanguage": "ja",
         "strings": strings,
