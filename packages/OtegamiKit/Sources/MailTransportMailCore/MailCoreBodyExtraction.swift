@@ -126,11 +126,37 @@ extension MailCoreIMAPSession {
     private static func html(from parser: MCOMessageParser) -> String? {
         if let mainPart = parser.mainPart(),
            let htmlPart = firstHTMLPart(mainPart),
-           let decoded = htmlPart.decodedString(),
+           let decoded = decodedText(from: htmlPart),
            !decoded.isEmpty {
             return decoded
         }
         return nonEmpty(parser.htmlBodyRendering())
+    }
+
+    /// `decodedString()` の代替: charset が UTF-8 と宣言されたテキスト
+    /// パートは自前で UTF-8 デコードし、不正バイトがあっても **lossy
+    /// デコード** (不正バイトのみ U+FFFD 置換) で残り全体を救う。
+    ///
+    /// 背景 (2026-08 の転送文字化け、docs/architecture.md 落とし穴 u.):
+    /// 修正前の Otegami が送った転送メールは、mailcore2 の QP エンコーダの
+    /// 裸 CR バグで HTML パートに不正 UTF-8 バイトが 1 個だけ混入している
+    /// ことがある。mailcore2 の `decodedString()` (charset 変換) は UTF-8
+    /// デコードに失敗すると Latin-1 系へフォールバックし、**1 バイトの
+    /// 破損が本文全体の文字化けに波及する**。ここで lossy UTF-8 に倒せば
+    /// 破損箇所が「�」1 文字になるだけで残りは正しく読める。
+    ///
+    /// charset が UTF-8 以外・未宣言のパートは従来通り `decodedString()`
+    /// に委ねる — 未宣言時の mailcore2 の charset 推定 (ISO-2022-JP 等) を
+    /// 壊さないため。
+    private static func decodedText(from part: MCOAttachment) -> String? {
+        if let charset = part.charset?.lowercased(), charset == "utf-8" || charset == "utf8",
+           let data = part.data {
+            if let strict = String(data: data, encoding: .utf8) {
+                return strict
+            }
+            return String(decoding: data, as: UTF8.self)
+        }
+        return part.decodedString()
     }
 
     /// Depth-first search for the first non-attachment `text/html` leaf
@@ -169,7 +195,7 @@ extension MailCoreIMAPSession {
     private static func plainText(from parser: MCOMessageParser) -> String? {
         if let mainPart = parser.mainPart(),
            let plainTextPart = firstPlainTextPart(mainPart),
-           let decoded = plainTextPart.decodedString(),
+           let decoded = decodedText(from: plainTextPart),
            !decoded.isEmpty {
             return decoded
         }
