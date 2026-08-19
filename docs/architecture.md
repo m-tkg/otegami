@@ -1736,3 +1736,37 @@ use-after-free。`MailCoreIMAPSession.swift` の `deinit`/`SessionLingerBox`
 IDLE ループが `connect` 後の失敗でもセッションを disconnect すること) —
 per-session queue と quiesce ポーリングそのものは実機での長期運用でしか
 確認できない、既知の限界として残る。
+
+### u. mailcore2 の quoted-printable エンコーダは裸 CR で出力を壊す
+
+pin している mailcore2/libetpan の quoted-printable エンコーダは、LF を
+伴わない裸 CR (`\r` 単独) の直後で出力を壊す。実測 (2026-08、CR 改行の
+本文を転送した実メールで発覚・ローカル再現も確認済み):
+
+```
+入力:  ...\r</p><p>高木...          (高 = E9 AB 98)
+期待:  ...=0D</p><p>=E9=AB=98...
+実際:  ...=0D/p><p>\xE9=E9=AB=98... (直後の '<' を落とし、
+                                     マルチバイト先頭バイト \xE9 を
+                                     生のまま複製挿入)
+```
+
+生の `\xE9` の次のバイトは UTF-8 の継続バイトにならないため、HTML パート
+全体が不正 UTF-8 になる。受信側 (このアプリ自身を含む多くのクライアント)
+は charset=utf-8 のデコードに失敗して Latin-1 にフォールバックし、**本文
+全体が文字化けする** (1 バイトの破損が全文に波及する)。
+
+防御は 3 層 (すべて 2026-08 の同じ修正で導入):
+
+- `MailCoreMessageBuilder` — 送信境界で `htmlBody` の CRLF/CR を LF に
+  正規化してから mailcore2 に渡す (最終防衛線。`MessageBuilderTests
+  .bareCarriageReturnsInHtmlBodyStayValidUTF8` がピン留め)。
+- `ReplyQuoter` (OtegamiCore) — 返信・転送の `> ` 引用組み立てで、行分割
+  前に改行を LF に正規化 (CR 改行の本文だと引用が先頭行にしか付かない
+  バグの修正を兼ねる)。
+- `RichTextAttributedString.makeDocument` — `paragraphRange(for:)` は
+  LF 以外に CR / CRLF / U+2029 でも段落を区切る (U+0085 / U+2028 は
+  区切らない — 実測) のに終端除去が LF のみだったのを修正。
+
+メール本文以外で mailcore2 に文字列を渡す経路を新設するときは、裸 CR が
+混入しないことを送信境界で保証すること。
