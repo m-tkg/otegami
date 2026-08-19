@@ -66,10 +66,11 @@ extension ComposerView {
         } else {
             return ""
         }
-        return source
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { "> \($0)" }
-            .joined(separator: "\n")
+        // `ReplyQuoter` が改行を正規化してから引用する — `\r` 改行の本文を
+        // そのまま split すると `> ` が先頭にしか付かず、残った生 `\r` が
+        // 送信 HTML パートで MailCore2 の QP エンコーダを壊す (詳細は
+        // `ReplyQuoter` の doc comment)。
+        return ReplyQuoter.quote(source)
     }
 
     /// 新画面構成 (3): メール本文画面フッターツールバーの「転送」。件名に `Fwd: `

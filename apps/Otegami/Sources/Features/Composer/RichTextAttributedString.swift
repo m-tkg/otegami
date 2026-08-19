@@ -149,7 +149,14 @@ enum RichTextAttributedString {
 
         var paragraphs: [RichTextParagraph] = []
         var searchLocation = 0
-        while searchLocation <= string.length {
+        // `< string.length` (not `<=`): with `<=`, a text NOT ending in a
+        // paragraph terminator made the final iteration ask for the
+        // paragraph at `location == length`, which is the *same* last
+        // paragraph again — duplicating the last line of every sent HTML
+        // body (実測で確認した既存バグ)。The trailing empty paragraph a
+        // terminator-final text used to pick up from that extra iteration
+        // is appended explicitly below instead.
+        while searchLocation < string.length {
             let paragraphRange = string.paragraphRange(for: NSRange(location: searchLocation, length: 0))
             paragraphs.append(makeParagraph(from: attributedString, paragraphRange: paragraphRange, string: string))
             let nextLocation = paragraphRange.location + paragraphRange.length
@@ -159,17 +166,40 @@ enum RichTextAttributedString {
                 break // Defensive: `paragraphRange` didn't advance — avoid looping forever.
             }
         }
+        // A text ending in a paragraph terminator ("abc\n") has a final
+        // empty line the loop above never visits — represent it explicitly,
+        // matching what the editor shows (a trailing blank line).
+        if isParagraphTerminator(string.character(at: string.length - 1)) {
+            paragraphs.append(RichTextParagraph(runs: []))
+        }
         return RichTextDocument(paragraphs: paragraphs)
     }
 
+    /// `NSString.paragraphRange(for:)` が段落区切りとして扱う UTF-16 コード
+    /// ユニット (実測: `\n` / `\r` / U+2029。U+0085 / U+2028 は区切られない)。
+    private static func isParagraphTerminator(_ unit: unichar) -> Bool {
+        unit == 0x0A || unit == 0x0D || unit == 0x2029
+    }
+
     private static func makeParagraph(from attributedString: NSAttributedString, paragraphRange: NSRange, string: NSString) -> RichTextParagraph {
-        // `paragraphRange(for:)` includes the trailing "\n" — excluded here
-        // so run text never carries a literal newline (paragraphs already
-        // encode the line break structurally, both in `RichTextDocument`
-        // and in `RichTextHTMLCoder`'s output).
+        // `paragraphRange(for:)` includes the trailing paragraph terminator —
+        // excluded here so run text never carries a literal newline
+        // (paragraphs already encode the line break structurally, both in
+        // `RichTextDocument` and in `RichTextHTMLCoder`'s output).
+        // The terminator is not always "\n": `paragraphRange(for:)` also
+        // splits on "\r" / "\r\n" / U+2029 (実測), and a "\r" left in
+        // paragraph text ends up as a raw CR inside the sent HTML part,
+        // where MailCore2 (libetpan) の quoted-printable エンコーダが CR
+        // 直後のバイトを壊して不正 UTF-8 を出力する (受信側で本文全体が
+        // Latin-1 フォールバックで文字化けした実バグ)。
         var contentLength = paragraphRange.length
-        if contentLength > 0, string.character(at: paragraphRange.location + contentLength - 1) == 0x0A {
+        if contentLength > 0, isParagraphTerminator(string.character(at: paragraphRange.location + contentLength - 1)) {
             contentLength -= 1
+            let last = string.character(at: paragraphRange.location + contentLength)
+            if last == 0x0A, contentLength > 0,
+               string.character(at: paragraphRange.location + contentLength - 1) == 0x0D {
+                contentLength -= 1 // "\r\n" — CR と LF が対で終端のケース
+            }
         }
         let contentRange = NSRange(location: paragraphRange.location, length: contentLength)
 

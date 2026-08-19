@@ -259,6 +259,30 @@ extension MailCoreLocalSuite {
             #expect(htmlRendering.localizedCaseInsensitiveContains("<b>"))
         }
 
+        @Test("bare CRs in htmlBody are normalized so the QP-encoded HTML part stays valid UTF-8")
+        func bareCarriageReturnsInHtmlBodyStayValidUTF8() throws {
+            // 実バグ (2026-08 の転送文字化け): この pinned mailcore2/libetpan
+            // の quoted-printable エンコーダは、`\n` を伴わない裸 CR の直後で
+            // 出力を壊す — 直後の `<` を落とし、後続のマルチバイト先頭バイト
+            // を複製して不正 UTF-8 を出力する (`\r</p><p>高` →
+            // `=0D/p><p>\xE9=E9=AB=98`)。受信側では HTML パート全体が UTF-8
+            // として読めず Latin-1 フォールバックで本文全体が文字化けする。
+            // `MailCoreMessageBuilder` が CR を `\n` に正規化してから渡す
+            // ことをここでピン留めする。
+            let draft = ComposeDraft(
+                from: sender, to: [recipient],
+                subject: "CR repro", plainTextBody: "plain",
+                htmlBody: "<p>&gt;  \r</p><p>高木　将樹　さま\r</p><p>会員番号：127159722\r</p>"
+            )
+            let built = MailCoreMessageBuilder.build(draft)
+            let rawMessage = try #require(String(data: built.data, encoding: .utf8))
+            #expect(!rawMessage.contains("=0D"))
+
+            let parser = MCOMessageParser(data: built.data)
+            let htmlRendering = try #require(parser.htmlBodyRendering())
+            #expect(htmlRendering.contains("高木"))
+        }
+
         @Test("a draft with no htmlBody stays a single text/plain part, unchanged from before Task #129")
         func noHtmlBodyStaysPlainTextOnly() throws {
             let draft = ComposeDraft(from: sender, to: [recipient], subject: "Plain only", plainTextBody: "just text")
