@@ -114,14 +114,20 @@ extension ThreadDetailView {
             guard let message = try MessageRecord.fetchOne(db, key: singleMessageId) else { return nil }
             var summary = ThreadSummary(flatMessage: message, accountId: accountId)
             // Task #151: not read by `MessageRemoval.commit`/`actionTargets`
-            // today, but computed anyway so this adapter summary doesn't
-            // silently carry a stale `false` if a future caller starts
-            // reading it.
+            // itself, but read by `RootView.archiveSelectedThread()` (macOS
+            // ⌘E) to pick `.archive` vs `.unarchive`, so it has to carry the
+            // same answer this screen's own footer slot shows.
             summary.isArchived = try ThreadQuery.isMessageArchived(messageId: singleMessageId, db: db)
             return summary
         }
         var summary = ThreadSummary(thread: thread, latestMessage: nil)
-        summary.isArchived = try ThreadQuery.isThreadArchived(threadId: threadId, db: db)
+        // 実機報告 (2026-08-27): `isThreadArchived` (OR 集約) ではなく AND
+        // 集約を使う — 理由は `ThreadDetailView.isThreadArchived` の doc
+        // comment。この summary の `isArchived` は
+        // `RootView.archiveSelectedThread()` が `.archive`/`.unarchive` の
+        // 選択にそのまま使うので、OR のままだと ⌘E だけが古い判定で
+        // 「アーカイブ解除」に化け、フッターのスロットと食い違う。
+        summary.isArchived = try ThreadQuery.isThreadFullyArchived(threadId: threadId, db: db)
         return summary
     }
 
@@ -135,7 +141,9 @@ extension ThreadDetailView {
     /// case, matching `archiveThread()`'s pre-existing `didArchiveAny`
     /// guard (junk/delete previously had no such guard; unifying on
     /// `commit`'s own nil-check gives them the same, arguably more correct,
-    /// behavior for free).
+    /// behavior for free). 実機報告 (2026-08-27) 以降、その `nil` は黙って
+    /// 捨てずに `showActionNotice(_:)` へ回す — 画面に何も起きないまま
+    /// 終わるのがこの報告の実態だったため (`actionNotice` の doc comment)。
     private func commitRemoval(_ kind: MessageRemoval.Kind) async {
         guard let accountId else { return }
         do {
@@ -148,7 +156,10 @@ extension ThreadDetailView {
                     markSeenOnArchive: ArchiveActionSettingsStore.markAsReadOnArchive
                 ) != nil
             }
-            guard removed else { return }
+            guard removed else {
+                showActionNotice(noOpNoticeMessage(for: kind))
+                return
+            }
             // 実機報告 (数秒「メッセージが見つかりません」が見えてから一覧に
             // 戻る): ここが元は `await replaySoon()` の**後**に
             // `notifyThreadRemoved()` を呼んでいた。ローカル DB からの削除
@@ -176,22 +187,35 @@ extension ThreadDetailView {
             // Task #163: pinned — refused by `MessageRemoval.commit` itself
             // (the shared guard every archive path routes through), so
             // nothing was removed and there's nothing to notify/replay for.
-            showPinnedArchiveNotice()
+            showActionNotice("ピン留め中のためアーカイブできません")
         } catch {
             // Best-effort — the thread just stays if this fails.
         }
     }
 
-    /// Task #163: auto-dismissing, undo-less notice — see
-    /// `pinnedArchiveNotice`'s doc comment for why this screen needs one at
-    /// all when every other action here has none.
-    private func showPinnedArchiveNotice() {
-        pinnedArchiveNoticeTask?.cancel()
-        pinnedArchiveNotice = "ピン留め中のためアーカイブできません"
-        pinnedArchiveNoticeTask = Task {
-            try? await Task.sleep(for: Self.pinnedArchiveNoticeWindow)
+    /// Task #163: auto-dismissing, undo-less notice — see `actionNotice`'s
+    /// doc comment for why this screen needs one at all when every other
+    /// action here has none.
+    private func showActionNotice(_ message: String) {
+        actionNoticeTask?.cancel()
+        actionNotice = message
+        actionNoticeTask = Task {
+            try? await Task.sleep(for: Self.actionNoticeWindow)
             guard !Task.isCancelled else { return }
-            pinnedArchiveNotice = nil
+            actionNotice = nil
+        }
+    }
+
+    /// 実機報告 (2026-08-27): `MessageRemoval.commit` が `nil` を返した
+    /// (対象が全てスキップされた) ときの文言。`actionNotice` の doc comment
+    /// 参照 — 無音で終わらせないためだけのもので、正常な操作では出ない。
+    private func noOpNoticeMessage(for kind: MessageRemoval.Kind) -> String {
+        switch kind {
+        case .archive: "アーカイブできるメールがありません"
+        case .unarchive: "アーカイブ解除できるメールがありません"
+        case .junk: "迷惑メールにできるメールがありません"
+        case .unjunk: "迷惑メールを解除できるメールがありません"
+        case .delete: "削除できるメールがありません"
         }
     }
 

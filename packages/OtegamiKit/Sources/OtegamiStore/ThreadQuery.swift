@@ -241,6 +241,11 @@ public enum ThreadQuery {
     /// probe per thread — same "fine at M4's scale" reasoning as the
     /// per-thread `latestMessage` lookup in `summaries(forThreads:db:)`
     /// just above, which already pays an equivalent per-thread query cost.
+    ///
+    /// **これは「アーカイブ済みの可視化」バッジ専用の OR 集約** — アーカイブ/
+    /// アーカイブ解除の**スロット切り替えには使わないこと**。使うと
+    /// `isThreadFullyArchived(threadId:db:)` の doc comment にある実機報告
+    /// (親がアーカイブ済みのスレッドで新着をアーカイブできない) が再発する。
     public static func isThreadArchived(threadId: Int64, db: Database) throws -> Bool {
         try Bool.fetchOne(
             db,
@@ -253,6 +258,56 @@ public enum ThreadQuery {
                 )
                 """,
             arguments: [threadId]
+        ) ?? false
+    }
+
+    /// 実機報告 (2026-08-27)「スレッドの親がアーカイブ済みだと、新しく来た
+    /// メールをアーカイブできない」: `isThreadArchived(threadId:db:)` の
+    /// **AND 集約**版 — 「このスレッドにまだアーカイブできる行が1つも
+    /// 残っていない」。アーカイブ/アーカイブ解除**スロットの切り替え**は
+    /// こちらを使う (バッジの「一部アーカイブ済みの可視化」= Task #151 の
+    /// OR 集約は上の `isThreadArchived` のまま — 状態表示と「押したら何が
+    /// 起きるか」は役割が違うので、食い違ってよい)。
+    ///
+    /// **なぜ OR ではだめだったか**: Task #184 は詳細画面のスロット切替に
+    /// OR 集約を使い、「一部だけアーカイブ済みのスレッドは、その1通を解除
+    /// するまで残りをアーカイブできなくなる」を narrow edge case として
+    /// 受け入れていた。実際には「読み終えてアーカイブ → 返信が届く」という
+    /// 日常動作で必ず踏む: スロットが「アーカイブ解除」に化け、
+    /// `MessageRemoval.commit(.unarchive)` はアーカイブ場所にある行しか
+    /// 触らないので新着は素通り、押しても何も起きない (しかも `commit` の
+    /// `nil` は呼び出し側が握り潰すので無音) という報告になった。
+    ///
+    /// 述語は「アーカイブ済みでない行の非存在」であって「アーカイブ済みの
+    /// 行の全称」ではない — `MessageRemoval.commit(.archive)` の
+    /// `isAlreadyArchived` ガード (同じ `messageIsArchivedSQL`) を通過する
+    /// 行の有無とちょうど一致させるため。これでスロットの表示と `commit`
+    /// が実際に処理する対象が構造的にずれなくなり、「アーカイブ」を押して
+    /// 無音で終わる経路が消える。空スレッド (行が1つも無い) は `false` —
+    /// アーカイブできる行が無いことを「全部アーカイブ済み」とは呼ばない。
+    ///
+    /// 内側の条件が `NOT (...)` ではなく `(...) IS NOT 1` なのは、判定不能を
+    /// 安全側へ倒すため。`mailbox.role`/`account.kind` は現在のスキーマでは
+    /// NOT NULL の enum なので `messageIsArchivedSQL` が NULL になる経路は
+    /// 無く、今は両者同値。ただし `NOT NULL_value` は NULL (= WHERE で偽) に
+    /// なるので、万一 NULL が混じると素の `NOT` はその行を「アーカイブできる
+    /// 行」として数え損ね、`true` = 「アーカイブ解除」スロットへ倒れて元の
+    /// 無反応バグが再発する。`IS NOT 1` なら NULL も 0 と同じく「まだ
+    /// アーカイブされていない」側に落ち、より安全なスロット (「アーカイブ」)
+    /// が選ばれる。
+    public static func isThreadFullyArchived(threadId: Int64, db: Database) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+                SELECT EXISTS (SELECT 1 FROM message WHERE message.threadId = ?)
+                   AND NOT EXISTS (
+                    SELECT 1 FROM message
+                    JOIN mailbox ON mailbox.id = message.mailboxId
+                    JOIN account ON account.id = mailbox.accountId
+                    WHERE message.threadId = ? AND \(GmailArchiveFilter.messageIsArchivedSQL) IS NOT 1
+                )
+                """,
+            arguments: [threadId, threadId]
         ) ?? false
     }
 
@@ -280,7 +335,9 @@ public enum ThreadQuery {
     /// (and the same reason for them) as the archived check just above; the
     /// predicate is a plain role match because "迷惑メール" is a real folder
     /// on every provider, Gmail included (no `GmailArchiveFilter`-style
-    /// special case needed).
+    /// special case needed). `isThreadArchived(threadId:db:)` と同じく
+    /// **表示用の OR 集約** — スロットの切り替えには
+    /// `isThreadFullyJunk(threadId:db:)` を使うこと。
     public static func isThreadJunk(threadId: Int64, db: Database) throws -> Bool {
         try Bool.fetchOne(
             db,
@@ -292,6 +349,28 @@ public enum ThreadQuery {
                 )
                 """,
             arguments: [threadId]
+        ) ?? false
+    }
+
+    /// 「迷惑メール解除」: `isThreadFullyArchived(threadId:db:)` の迷惑メール
+    /// 版 — スロットの切り替えに使う AND 集約。同じ理由 (そちらの doc
+    /// comment 参照): OR 集約だと「一部だけ迷惑メールのスレッド」で
+    /// 「迷惑メール解除」に化け、`MessageRemoval.commit(.unjunk)` が Junk に
+    /// いる行しか触らないため、残りを迷惑メールにする操作が無音で失敗する。
+    /// 迷惑メール判定はメール単位なので、この混在はアーカイブと同じくらい
+    /// 普通に起きる。
+    public static func isThreadFullyJunk(threadId: Int64, db: Database) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+                SELECT EXISTS (SELECT 1 FROM message WHERE message.threadId = ?)
+                   AND NOT EXISTS (
+                    SELECT 1 FROM message
+                    JOIN mailbox ON mailbox.id = message.mailboxId
+                    WHERE message.threadId = ? AND mailbox.role IS NOT 'junk'
+                )
+                """,
+            arguments: [threadId, threadId]
         ) ?? false
     }
 
