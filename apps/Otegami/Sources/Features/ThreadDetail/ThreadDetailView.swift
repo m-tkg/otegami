@@ -158,60 +158,70 @@ struct ThreadDetailView: View {
     @State var isThreadMuted = false
     /// Task #184 (「アーカイブ済みのメールの操作」): whether the footer
     /// toolbar's archive slot should act as "アーカイブ解除" instead of
-    /// "アーカイブ" — grouped mode reads `ThreadQuery.isThreadArchived`
-    /// (Task #151's OR-aggregate: *at least one* message in the thread
-    /// already lives in an archived-counting mailbox), flat mode reads
-    /// `ThreadQuery.isMessageArchived` for just `singleMessageId`. Computed
-    /// at the same granularity `commitRemoval(_:)` actually acts on (the
-    /// whole thread for grouped mode, one message for flat mode — see
+    /// "アーカイブ" — grouped mode reads `ThreadQuery.isThreadFullyArchived`
+    /// (**AND 集約**: no message in the thread is still archivable), flat
+    /// mode reads `ThreadQuery.isMessageArchived` for just `singleMessageId`.
+    /// Computed at the same granularity `commitRemoval(_:)` actually acts on
+    /// (the whole thread for grouped mode, one message for flat mode — see
     /// `threadSummary(threadId:singleMessageId:accountId:db:)`), and refreshed
     /// on every live delivery from `load()`/`loadSingleMessage(_:)`'s
     /// observations, not just once at open — an in-place edit elsewhere
     /// (e.g. another client archiving/unarchiving this same thread) should
-    /// flip this screen's button the same way it already flips the list's
-    /// `ThreadRowView` badge (`summary.isArchived`).
+    /// flip this screen's button.
     ///
-    /// **一部だけアーカイブ済みの判定 (根拠)**: intentionally an OR, not an
-    /// AND, over the thread's messages — matching `ThreadSummary.isArchived`
-    /// /`ThreadRowView`'s existing "アーカイブ済みの可視化" badge (Task #151)
-    /// so this screen's button never disagrees with what the list already
-    /// showed for the same thread before it was opened. This is also exactly
-    /// the granularity `MessageRemoval.commit(.unarchive, ...)` itself
-    /// tolerates: its per-message loop only unarchives messages that are
-    /// actually sitting in an archived location and silently skips ones that
-    /// aren't (`MessageRemoval.Kind.unarchive`'s doc comment), so tapping
-    /// "アーカイブ解除" on a thread with, say, 1 archived + 2 still-active
-    /// messages correctly restores only the archived one and leaves the
-    /// other two exactly where they are — never a destructive "undo
-    /// everything" op. The accepted tradeoff: for that same mixed thread,
-    /// the two still-active messages can no longer be archived via this
-    /// screen's single archive slot until the already-archived one is
-    /// unarchived (or the thread splits) — a narrow edge case judged
-    /// acceptable rather than adding a second, AND-based "is this thread
-    /// *fully* archived" rule that would disagree with the list's own badge.
+    /// **一部だけアーカイブ済みの判定 (根拠)**: an AND, not an OR, over the
+    /// thread's messages — deliberately *not* the same predicate as
+    /// `ThreadSummary.isArchived`/`ThreadRowView`'s "アーカイブ済みの可視化"
+    /// badge (Task #151), which stays an OR. 状態表示 (「このスレッドには
+    /// アーカイブ済みのメールが含まれる」) と操作スロット (「押したら何が
+    /// 起きるか」) は役割が違うので、食い違ってよい。
+    ///
+    /// Task #184 は当初ここも OR にしていて、「一部だけアーカイブ済みの
+    /// スレッドは、その1通を解除するまで残りをアーカイブできなくなる」を
+    /// narrow edge case として受け入れていた。実機報告 (2026-08-27
+    /// 「スレッドの親がアーカイブ済みだと、新しく来たメールのアーカイブが
+    /// できない」) のとおり、実際には「読み終えてアーカイブ → 返信が届く」
+    /// という日常動作で必ず踏む: スロットが「アーカイブ解除」に化け、
+    /// `MessageRemoval.commit(.unarchive, ...)` はアーカイブ場所にいる行しか
+    /// 触らないので新着は素通りし、しかも `commit` の `nil` は
+    /// `commitRemoval(_:)` が握り潰すため完全に無反応に見える。
+    /// `isThreadFullyArchived` の述語は `commit(.archive)` の
+    /// `isAlreadyArchived` ガードと同じ条件の裏返し (= まだアーカイブできる
+    /// 行があるか) なので、スロットの表示と `commit` が実際に処理する対象が
+    /// 構造的にずれない。混在スレッドで「アーカイブ」を押すと未アーカイブの
+    /// 行だけがアーカイブされ、既にアーカイブ済みの行は `commit` 側の
+    /// ガードがそのまま素通りさせる。
     @State var isThreadArchived = false
     /// 「迷惑メール解除」: `isThreadArchived` の迷惑メール版 — フッター
     /// ツールバーの迷惑メールスロットを「迷惑メール解除」として振る舞わせるか。
-    /// グループ表示は `ThreadQuery.isThreadJunk` (OR 集約)、フラット表示は
-    /// `ThreadQuery.isMessageJunk` を読む。OR 集約の根拠・部分的に迷惑メール
-    /// なスレッドの扱いは `isThreadArchived` の doc comment と同じ
+    /// グループ表示は `ThreadQuery.isThreadFullyJunk` (AND 集約)、フラット
+    /// 表示は `ThreadQuery.isMessageJunk` を読む。AND 集約の根拠・部分的に
+    /// 迷惑メールなスレッドの扱いは `isThreadArchived` の doc comment と同じ
     /// (`MessageRemoval.commit(.unjunk, ...)` も Junk にある行だけを対象に
-    /// して他は黙って飛ばす)。
+    /// して他は黙って飛ばすので、OR だと同じ無反応が起きる)。
     @State var isThreadJunk = false
     @State private var showingInfo = false
     @State private var showingSource = false
     @State private var showingToolbarSettings = false
     /// Task #163 (実機フィードバック「ピン留めされたメールはアーカイブできない
-    /// ようにしてほしい」): shown when `commitRemoval(.archive)` catches
-    /// `MessageRemoval.ArchiveGuardError.pinned` — this screen otherwise has
-    /// no toast/notice of any kind (`MARK: 新画面構成 (3): スレッド操作`'s doc
-    /// comment: every other action just pops back to the list on success,
-    /// which is its own confirmation), so a blocked archive needs one added
-    /// specifically for this "nothing happened, and that's not obvious"
-    /// case — see `showPinnedArchiveNotice()`.
-    @State var pinnedArchiveNotice: String?
-    @State var pinnedArchiveNoticeTask: Task<Void, Never>?
-    static let pinnedArchiveNoticeWindow: Duration = .seconds(3)
+    /// ようにしてほしい」): shown when `commitRemoval(_:)` couldn't do
+    /// anything — either `MessageRemoval.ArchiveGuardError.pinned`, or
+    /// `commit` returning `nil` because every target was skipped. This screen
+    /// otherwise has no toast/notice of any kind (`MARK: 新画面構成 (3):
+    /// スレッド操作`'s doc comment: every other action just pops back to the
+    /// list on success, which is its own confirmation), so those two need one
+    /// added specifically for this "nothing happened, and that's not obvious"
+    /// case — see `showActionNotice(_:)`.
+    ///
+    /// 実機報告 (2026-08-27) で `nil` 側も拾うようになった: 主因 (スロットが
+    /// OR 集約で「アーカイブ解除」に化けていた) は
+    /// `isThreadArchived` の doc comment のとおり述語側で直したが、
+    /// `ThreadQuery.deduplicate` が同一メッセージの重複行からアーカイブ済みの
+    /// 行を代表に選ぶ経路など、`commit` が `nil` を返しうる道は他にも残る。
+    /// そこを無音のままにすると同じ「押しても無反応」の報告に戻るため。
+    @State var actionNotice: String?
+    @State var actionNoticeTask: Task<Void, Never>?
+    static let actionNoticeWindow: Duration = .seconds(3)
     /// Task #59 (実機フィードバック「要約/翻訳のフローティングアイコンを
     /// 常に左下固定にしてほしい」), Task #88 (フッターツールバーへ移設):
     /// whatever `MessageDetailAIFeaturesState` the currently-expanded row's
@@ -399,9 +409,9 @@ struct ThreadDetailView: View {
         // inset carves out, i.e. right above `footerToolbar`, never
         // overlapping its buttons.
         .overlay(alignment: .bottom) {
-            if let pinnedArchiveNotice {
-                UndoToast(message: pinnedArchiveNotice)
-                    .animation(.default, value: pinnedArchiveNotice)
+            if let actionNotice {
+                UndoToast(message: actionNotice)
+                    .animation(.default, value: actionNotice)
             }
         }
         // 上の `.scrollEdgeEffectStyle` のコメント参照 — iOS だけ
@@ -799,7 +809,7 @@ struct ThreadDetailView: View {
             if let messageId {
                 return try ThreadQuery.isMessageArchived(messageId: messageId, db: db)
             }
-            return try ThreadQuery.isThreadArchived(threadId: threadId, db: db)
+            return try ThreadQuery.isThreadFullyArchived(threadId: threadId, db: db)
         }) ?? isThreadArchived
         isThreadArchived = archived
         onArchivedStateChanged?(archived)
@@ -813,7 +823,7 @@ struct ThreadDetailView: View {
             if let messageId {
                 return try ThreadQuery.isMessageJunk(messageId: messageId, db: db)
             }
-            return try ThreadQuery.isThreadJunk(threadId: threadId, db: db)
+            return try ThreadQuery.isThreadFullyJunk(threadId: threadId, db: db)
         }) ?? isThreadJunk
     }
 
