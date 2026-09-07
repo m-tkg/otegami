@@ -21,15 +21,13 @@ public enum PushNotificationAction: Sendable {
 /// to degrade to "leave it for the next normal sync" rather than surface a
 /// failure anywhere.
 ///
-/// The push payload only carries `accountId`/`uidNext`
-/// (`OtegamiRelayAPI.PushNotificationPayload`), not a message id — the
-/// target message is inferred the same way
-/// `NotificationService.enrich(...)` (`apps/Otegami/NotificationService/
-/// NotificationService.swift:480`) already infers "the new message" for
-/// rich-notification enrichment: `uid = max(uidNext - 1, 1)`, mailbox
-/// INBOX. That's a heuristic (the newest UID a `uidNext` observation
-/// implies), not a guarantee — good enough for a notification action, which
-/// has no stronger signal available either.
+/// The push payload carries no message id
+/// (`OtegamiRelayAPI.PushNotificationPayload`) — the target message is
+/// identified by `(INBOX, targetUID(uidNext:latestUid:))`: the relay's
+/// `latestUid` when the push carried one, otherwise the
+/// `uid = max(uidNext - 1, 1)` heuristic. See `targetUID(uidNext:latestUid:)`'s
+/// own doc comment for why the heuristic alone was not enough (実機バグ:
+/// Gmail で通知タップからメールが開けない).
 ///
 /// Deliberately has no dependency on `MailTransportMailCore`, Keychain, or
 /// any OAuth client: IMAP session construction (`sessionFactory`) and
@@ -39,19 +37,50 @@ public enum PushNotificationAction: Sendable {
 /// specific transport/credential backend, letting the app wire the real
 /// ones while tests inject fakes.
 public enum PushNotificationActionExecutor {
-    /// The "uidNext → target uid" heuristic this type's own doc comment
-    /// describes (`uid = max(uidNext - 1, 1)`), factored out so `execute`/
-    /// `resolveOpenTarget` and `PushTriggeredInboxSync` (push 通知起点
-    /// バックグラウンド受信 Phase 1 — same `accountId`/`uidNext` payload
-    /// shape, same "the newest UID a `uidNext` observation implies" target)
-    /// don't each carry their own copy of the exact same expression.
-    static func inferredTargetUID(uidNext: Int) -> UInt32 {
-        UInt32(max(uidNext - 1, 1))
+    /// push ペイロードが指す対象メッセージの UID — `execute`/
+    /// `resolveOpenTarget` と `PushTriggeredInboxSync` (push 通知起点
+    /// バックグラウンド受信 Phase 1 — 同じペイロード、同じ「この push が
+    /// 指す1通」) が同じ判断を各々複製しないよう1箇所に集約したもの。
+    ///
+    /// `latestUid` (`OtegamiRelayAPI.PushNotificationPayload.latestUid` —
+    /// リレーの `RELAY_CONTENT_PREVIEW` が実際に UID FETCH して**返ってきた**
+    /// UID の最大値) があればそれを使い、無い場合だけ
+    /// `uid = max(uidNext - 1, 1)` という従来の推測に落ちる。
+    ///
+    /// **実機バグ (Gmail アカウントで「通知をタップしてもメールが開けない」)**:
+    /// 以前はこの関数が `uidNext` しか見ておらず、常に推測していた。IMAP の
+    /// UIDNEXT は「次に割り当てる UID」であって「現存する最大 UID + 1」では
+    /// ない — UIDNEXT が飛ぶサーバー (実機報告は Gmail) では `uidNext - 1` に
+    /// 該当するメッセージがそもそも存在せず、ローカル DB にも当然その行は
+    /// 無い。結果、通知タップの解決 (`fetchAndResolveOpenTarget`) が何度
+    /// 再試行しても `nil` を返して「メールを読み込めませんでした」で固定
+    /// される一方、そのメール自体は一覧に普通に並ぶ (通常の差分同期は UID を
+    /// 推測せず範囲で取り込むため) という症状になっていた。リレー側は
+    /// `latestUid` を `previousUIDNext ... newUIDNext - 1` の UID FETCH が
+    /// **実際に返した** UID の最大値として送っている
+    /// (`server/otegami-relay-go/internal/watcher/pool.go` の
+    /// `fireForNewMail`) ので、こちらは実在が保証されている。
+    ///
+    /// `latestUid` が `UInt32` に収まらない値だった場合も推測へ落ちる —
+    /// IMAP の UID は 32bit だが、ペイロード上の型は `Int64` (JSON 由来の
+    /// 想定外の値をそのまま `UInt32(_:)` に渡すとクラッシュする)。
+    /// `RELAY_CONTENT_PREVIEW` が off のリレー・旧リレーからの push には
+    /// このフィールド自体が無く、その場合も従来どおり推測で動く。
+    ///
+    /// `public`: `NotificationService` Extension の `legacyEnrich` も同じ
+    /// 判断で対象1通を `FETCH` するため — 今回のバグは「同じ判断の複製の
+    /// 片側だけが更新された」ことそのものなので (`PushTokenCenter
+    /// .parsePayload` の doc comment 参照)、式を複製せずここを共有する。
+    public static func targetUID(uidNext: Int, latestUid: Int64?) -> UInt32 {
+        if let latestUid, latestUid >= 1, latestUid <= Int64(UInt32.max) {
+            return UInt32(latestUid)
+        }
+        return UInt32(max(uidNext - 1, 1))
     }
 
     /// The local `(mailboxId, uid)` lookup `apply`/`resolveOpenTarget` below
-    /// both do, factored out for the same reason as `inferredTargetUID(
-    /// uidNext:)` above — also reused by `PushTriggeredInboxSync`, which
+    /// both do, factored out for the same reason as `targetUID(uidNext:
+    /// latestUid:)` above — also reused by `PushTriggeredInboxSync`, which
     /// needs the full `MessageRecord` (not just its `threadId`/`id`, the way
     /// `resolveOpenTarget` narrows it) to report back to its caller.
     static func fetchMessage(mailboxId: Int64, uid: UInt32, db: Database) throws -> MessageRecord? {
@@ -83,10 +112,17 @@ public enum PushNotificationActionExecutor {
     ///   直接読まない方針のため、呼び出し元 (`PushNotificationActionHandler
     ///   .handle`) が app 層の設定値をここに渡す形にしている。デフォルト
     ///   `false`。
+    /// - Parameter latestUid: push ペイロードの `latestUid` — 対象 UID の
+    ///   決定に使う (`targetUID(uidNext:latestUid:)` の doc comment 参照)。
+    ///   デフォルト `nil` は「ペイロードにこのフィールドが無かった」場合と
+    ///   同じ従来の推測に落ちる扱いだが、**実 push を処理する呼び出し元は
+    ///   必ず渡すこと** — 渡し忘れると UIDNEXT が飛ぶサーバー (Gmail) で
+    ///   存在しない UID を操作対象にしてしまう。
     public static func execute(
         action: PushNotificationAction,
         accountId: String,
         uidNext: Int,
+        latestUid: Int64? = nil,
         database: AppDatabase,
         markSeenOnArchive: Bool = false,
         auth: @Sendable (AccountRecord) async -> MailAuth?,
@@ -100,10 +136,7 @@ public enum PushNotificationActionExecutor {
             return
         }
 
-        // Mirrors `NotificationService.enrich(...)`'s identical heuristic
-        // (`NotificationService.swift:480`) for inferring the target
-        // message from a bare `uidNext` observation.
-        let uid = inferredTargetUID(uidNext: uidNext)
+        let uid = targetUID(uidNext: uidNext, latestUid: latestUid)
 
         let applied: Bool
         do {
@@ -210,14 +243,21 @@ public enum PushNotificationActionExecutor {
     /// 見つからない、のいずれも `nil` — 呼び出し側は通常どおり遷移を諦め、
     /// 統合受信トレイへフォールバックする（`resolveOpenTarget`と同じ
     /// 「表示できるものだけ表示する」設計）。
+    /// - Parameter latestUid: push ペイロードの `latestUid`。
+    ///   `targetUID(uidNext:latestUid:)`の doc comment 参照 — これを渡さない
+    ///   と、UIDNEXT が飛ぶサーバー (実機報告は Gmail) では存在しない UID を
+    ///   探し続け、何度再試行しても `nil` になる。
     public static func fetchAndResolveOpenTarget(
         accountId: String,
         uidNext: Int,
+        latestUid: Int64? = nil,
         database: AppDatabase,
         auth: @Sendable (AccountRecord) async -> MailAuth?,
         sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol
     ) async -> (threadId: Int64, messageId: Int64)? {
-        if let target = await resolveOpenTarget(accountId: accountId, uidNext: uidNext, database: database) {
+        if let target = await resolveOpenTarget(
+            accountId: accountId, uidNext: uidNext, latestUid: latestUid, database: database
+        ) {
             return target
         }
 
@@ -226,9 +266,11 @@ public enum PushNotificationActionExecutor {
         }), let resolvedAuth = await auth(account) else { return nil }
 
         if await fetchTargetEnvelopeDirectly(
-            account: account, uidNext: uidNext, database: database,
+            account: account, uidNext: uidNext, latestUid: latestUid, database: database,
             auth: resolvedAuth, sessionFactory: sessionFactory
-        ), let target = await resolveOpenTarget(accountId: accountId, uidNext: uidNext, database: database) {
+        ), let target = await resolveOpenTarget(
+            accountId: accountId, uidNext: uidNext, latestUid: latestUid, database: database
+        ) {
             return target
         }
 
@@ -237,7 +279,9 @@ public enum PushNotificationActionExecutor {
             account, auth: resolvedAuth, scope: .inboxOnly, autoRetry: false
         )
 
-        return await resolveOpenTarget(accountId: accountId, uidNext: uidNext, database: database)
+        return await resolveOpenTarget(
+            accountId: accountId, uidNext: uidNext, latestUid: latestUid, database: database
+        )
     }
 
     /// 高速経路: ローカル既知のINBOXに対して `connect → select → 対象UID
@@ -253,11 +297,13 @@ public enum PushNotificationActionExecutor {
     ///   メールを上書きしうるため、uidValidity 変化を正しく処理する
     ///   `MailboxSyncer.incrementalSync` に任せる。
     /// - 対象UIDの envelope がサーバーに無い (既に移動/削除、または
-    ///   `uidNext - 1` 推測が外れた) — 全体同期後の再照合に望みを残す。
+    ///   `latestUid` の無い push で `uidNext - 1` 推測が外れた) — 全体同期後
+    ///   の再照合に望みを残す。
     /// - 接続・fetch・DB書き込みのいずれかが失敗。
     private static func fetchTargetEnvelopeDirectly(
         account: AccountRecord,
         uidNext: Int,
+        latestUid: Int64?,
         database: AppDatabase,
         auth: MailAuth,
         sessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
@@ -266,7 +312,7 @@ public enum PushNotificationActionExecutor {
               let mailboxId = mailbox.id
         else { return false }
 
-        let uid = UInt32(max(uidNext - 1, 1))
+        let uid = targetUID(uidNext: uidNext, latestUid: latestUid)
         let session = sessionFactory(account.imapConfig)
         do {
             try await session.connect(auth: auth)
@@ -301,8 +347,8 @@ public enum PushNotificationActionExecutor {
         return true
     }
 
-    /// 通知の default action (本体タップ) 向け: `execute`と同じ `uidNext →
-    /// uid = max(uidNext - 1, 1)` の推測でINBOXの対象メッセージを特定し、
+    /// 通知の default action (本体タップ) 向け: `execute`と同じ
+    /// `targetUID(uidNext:latestUid:)` でINBOXの対象メッセージを特定し、
     /// 既にローカル同期済みならその `threadId`/`id` を返す (書き込みなし、
     /// `OpQueue`への enqueue もしない)。未同期の場合は `nil` — 呼び出し側は
     /// `fetchAndResolveOpenTarget`経由なら優先同期後に再試行、そうでなけ
@@ -310,13 +356,14 @@ public enum PushNotificationActionExecutor {
     public static func resolveOpenTarget(
         accountId: String,
         uidNext: Int,
+        latestUid: Int64? = nil,
         database: AppDatabase
     ) async -> (threadId: Int64, messageId: Int64)? {
         guard let mailbox = try? await MailboxRoleResolver.mailbox(role: .inbox, accountId: accountId, database: database),
               let mailboxId = mailbox.id
         else { return nil }
 
-        let uid = inferredTargetUID(uidNext: uidNext)
+        let uid = targetUID(uidNext: uidNext, latestUid: latestUid)
         return try? await database.dbWriter.read { db in
             guard let message = try Self.fetchMessage(mailboxId: mailboxId, uid: uid, db: db),
                 let threadId = message.threadId,

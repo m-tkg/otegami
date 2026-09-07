@@ -97,4 +97,45 @@ struct AppDelegatePushNotificationActionTests {
     func parsePayloadFailsWithoutUidNext() {
         #expect(AppDelegate.parsePayload(["accountId": "account-1"]) == nil)
     }
+
+    /// 実機バグの回帰テスト (Gmail で通知をタップしてもメールが開けない):
+    /// この `parsePayload` は `NotificationService.parsePayload(_:)` と
+    /// 「byte-for-byte 同じ」という約束のもと複製されているのに、Phase 3 が
+    /// envelope フィールドを足したとき Extension 側だけが更新され、こちらは
+    /// `accountId`/`uidNext` しか読まないままだった。その結果、本体タップの
+    /// 解決だけが `uidNext - 1` の推測に取り残されていた。この期待値は
+    /// `NotificationServiceParsePayloadTests.parsesEnvelopeFieldsWhenAllPresent`
+    /// と同じ `userInfo`・同じ結果 — 片側だけ増えたら両方が落ちる。
+    @Test
+    func parsePayloadCarriesEveryEnvelopeFieldTheExtensionSideParses() {
+        let userInfo: [AnyHashable: Any] = [
+            "accountId": "account-1",
+            "uidNext": 42,
+            "latestUid": 41,
+            "latestFromName": "Alice",
+            "latestFromAddress": "alice@example.test",
+            "latestSubject": "Hello",
+            "previewCount": 3,
+        ]
+
+        let payload = AppDelegate.parsePayload(userInfo)
+
+        #expect(payload == PushNotificationPayload(
+            accountId: "account-1",
+            uidNext: 42,
+            latestUid: 41,
+            latestFromName: "Alice",
+            latestFromAddress: "alice@example.test",
+            latestSubject: "Hello",
+            previewCount: 3
+        ))
+    }
+
+    @Test
+    func parsePayloadLeavesEnvelopeFieldsNilForALegacyRelayPush() {
+        // 旧リレー / RELAY_CONTENT_PREVIEW off — 従来どおり accountId/uidNext
+        // だけで解決でき、対象 UID は `uidNext - 1` の推測に落ちる。
+        let payload = AppDelegate.parsePayload(["accountId": "account-1", "uidNext": 42])
+        #expect(payload?.latestUid == nil)
+    }
 }

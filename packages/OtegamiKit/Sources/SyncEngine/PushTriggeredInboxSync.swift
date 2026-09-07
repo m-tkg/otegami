@@ -35,14 +35,15 @@ public enum PushTriggeredInboxSync {
     /// What one push-triggered sync pass managed to produce — both fields
     /// `nil` on any failure (see this type's own doc comment), or when the
     /// sync succeeded but the target message still isn't known locally
-    /// (e.g. the `uidNext - 1` heuristic missed, or the server hadn't
-    /// actually made the new message visible yet).
+    /// (e.g. a push with no `latestUid` whose `uidNext - 1` heuristic
+    /// missed, or the server hadn't actually made the new message visible
+    /// yet).
     public struct Outcome: Sendable {
-        /// The locally-stored row for `uid = max(uidNext - 1, 1)` in the
-        /// account's INBOX, if the sync found one — the same heuristic
-        /// `PushNotificationActionExecutor`'s doc comment describes,
-        /// factored into `PushNotificationActionExecutor.inferredTargetUID(
-        /// uidNext:)`.
+        /// The locally-stored row for this push's target UID
+        /// (`PushNotificationActionExecutor.targetUID(uidNext:latestUid:)` —
+        /// the relay's `latestUid` when the push carried one, otherwise the
+        /// `max(uidNext - 1, 1)` heuristic) in the account's INBOX, if the
+        /// sync found one.
         public let message: MessageRecord?
         /// The account's INBOX unread count as of right after this sync, if
         /// it could be computed (i.e. the INBOX mailbox itself was
@@ -67,11 +68,15 @@ public enum PushTriggeredInboxSync {
     ///   プレビューを載せる" case. `false` skips this (and its extra network
     ///   round trip) for callers that only need the envelope/unread count,
     ///   e.g. a plain badge-count refresh.
+    /// - Parameter latestUid: push ペイロードの `latestUid` — 対象メッセージ
+    ///   の特定に使う (`PushNotificationActionExecutor
+    ///   .targetUID(uidNext:latestUid:)` の doc comment 参照)。
     /// - Parameter sessionFactory: injected IMAP session factory — see this
     ///   type's own doc comment for why (mirrors `PushNotificationActionExecutor`).
     public static func run(
         accountId: String,
         uidNext: Int,
+        latestUid: Int64? = nil,
         fetchBodyPreview: Bool,
         database: AppDatabase,
         auth: MailAuth,
@@ -80,6 +85,7 @@ public enum PushTriggeredInboxSync {
         await run(
             accountId: accountId,
             uidNext: uidNext,
+            latestUid: latestUid,
             fetchBodyPreview: fetchBodyPreview,
             database: database,
             auth: auth,
@@ -99,6 +105,7 @@ public enum PushTriggeredInboxSync {
     static func run(
         accountId: String,
         uidNext: Int,
+        latestUid: Int64? = nil,
         fetchBodyPreview: Bool,
         database: AppDatabase,
         auth: MailAuth,
@@ -132,7 +139,7 @@ public enum PushTriggeredInboxSync {
               let mailboxId = mailbox.id
         else { return .empty }
 
-        let uid = PushNotificationActionExecutor.inferredTargetUID(uidNext: uidNext)
+        let uid = PushNotificationActionExecutor.targetUID(uidNext: uidNext, latestUid: latestUid)
         var message = try? await database.dbWriter.read { db in
             try PushNotificationActionExecutor.fetchMessage(mailboxId: mailboxId, uid: uid, db: db)
         }

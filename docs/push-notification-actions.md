@@ -172,13 +172,28 @@ Notification）に装飾する機能。この節では「装飾がどう実現�
 
 ## 既知の制限
 
-- **操作対象は「push が届いた時点での INBOX 最新1通」の推測**:
-  push ペイロードはプライバシー設計上 `accountId`/`uidNext` のみを運び、
-  メッセージを一意に特定する情報（UID そのものや message-id）を持たない
-  （`docs/relay-deployment.md` 参照）。`NotificationService` Extension が
-  通知本文を書き換える際と同じ `uid = uidNext - 1` という推測で対象を
-  特定する。1回の push に複数の新着メールがまとまって届いた場合、
-  通知アクションは最新の1通のみに作用する。
+- **操作対象は「push が届いた時点での INBOX 最新1通」**:
+  対象 UID の決定は
+  `PushNotificationActionExecutor.targetUID(uidNext:latestUid:)` に集約されて
+  いる。リレーの `RELAY_CONTENT_PREVIEW` が有効なら、ペイロードの
+  `latestUid`（リレーが実際に UID FETCH して**返ってきた** UID の最大値 —
+  `server/otegami-relay-go/internal/watcher/pool.go` の `fireForNewMail`）を
+  使うので実在が保証される。無効・旧リレーの場合だけ
+  `uid = max(uidNext - 1, 1)` という推測に落ちる。いずれにせよ 1回の push に
+  複数の新着メールがまとまって届いた場合、通知アクションは最新の1通のみに
+  作用する（ペイロードはプライバシー設計上 message-id を運ばない —
+  `docs/relay-deployment.md` 参照）。
+
+  **`uidNext - 1` の推測は当てにならない（実機バグ, 2026-09-07）**: IMAP の
+  UIDNEXT は「次に割り当てる UID」であって「現存する最大 UID + 1」ではなく、
+  Gmail のように UIDNEXT が飛ぶサーバーでは推測 UID に該当するメッセージが
+  そもそも存在しない。実機では、通知の文言（Extension 側は `latestUid` を
+  読んでいた）は正しいのに本体タップの解決だけが推測に取り残されており
+  （`AppDelegate.parsePayload` が `latestUid` を読まないまま複製されていた）、
+  「メールを読み込めませんでした」から何度再試行しても抜けられない一方で、
+  そのメール自体は一覧に普通に並ぶ（通常の差分同期は UID を推測せず範囲で
+  取り込むため）という症状になっていた。`latestUid` を運ぶようになった今も、
+  リレー側で `RELAY_CONTENT_PREVIEW` が無効なら推測に落ちる点は変わらない。
 - **監視対象は INBOX のみ**: push watch はメールボックスを INBOX に
   固定して作成される（`CreateWatchRequest(..., mailbox: "INBOX")`）ため、
   他フォルダの新着メールに対する通知アクションはそもそも発生しない。

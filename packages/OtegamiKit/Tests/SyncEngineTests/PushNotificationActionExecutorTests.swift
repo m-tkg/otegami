@@ -9,11 +9,10 @@ import OtegamiStore
 
 /// Coverage for `PushNotificationActionExecutor.execute(...)` — the entry
 /// point `AppDelegate` calls when a push notification's "既読にする"/
-/// "アーカイブ" action button is tapped. The push payload only carries
-/// `accountId`/`uidNext`, so the target message is inferred as
-/// `uid = max(uidNext - 1, 1)` in the account's INBOX (see the type's own
-/// doc comment for why, and `NotificationService.swift:480`'s identical
-/// heuristic).
+/// "アーカイブ" action button is tapped. The target message is
+/// `(INBOX, targetUID(uidNext:latestUid:))`: the relay's `latestUid` when
+/// the push carried one, otherwise the `uid = max(uidNext - 1, 1)`
+/// heuristic (see `targetUID(uidNext:latestUid:)`'s own doc comment).
 @Suite("PushNotificationActionExecutor")
 struct PushNotificationActionExecutorTests {
     private func makeAccount() -> AccountRecord {
@@ -413,5 +412,104 @@ struct PushNotificationActionExecutorTests {
             sessionFactory: { config in FakeIMAPSession(config: config, script: script) }
         )
         #expect(target == nil)
+    }
+
+    // MARK: targetUID — latestUid 優先 (実機バグ: Gmail で通知タップからメールが開けない)
+
+    @Test("targetUID prefers the relay's latestUid over the uidNext - 1 heuristic")
+    func targetUIDPrefersLatestUid() {
+        // UIDNEXT が「現存する最大 UID + 1」でないサーバー (実機報告は Gmail)
+        // — 推測なら 99 を探してしまうが、リレーが実際に FETCH できた UID は
+        // 42 なので、そちらが対象。
+        #expect(PushNotificationActionExecutor.targetUID(uidNext: 100, latestUid: 42) == 42)
+    }
+
+    @Test("targetUID falls back to the heuristic when the push carried no latestUid")
+    func targetUIDFallsBackWithoutLatestUid() {
+        // 旧リレー/`RELAY_CONTENT_PREVIEW` off — 従来どおりの推測。
+        #expect(PushNotificationActionExecutor.targetUID(uidNext: 100, latestUid: nil) == 99)
+        #expect(PushNotificationActionExecutor.targetUID(uidNext: 1, latestUid: nil) == 1)
+        #expect(PushNotificationActionExecutor.targetUID(uidNext: 0, latestUid: nil) == 1)
+    }
+
+    @Test("targetUID ignores a latestUid outside the 32-bit IMAP UID range")
+    func targetUIDIgnoresOutOfRangeLatestUid() {
+        // ペイロード上の型は `Int64` — 想定外の値をそのまま `UInt32(_:)` に
+        // 渡すとクラッシュするので、範囲外は推測に落ちる。
+        #expect(PushNotificationActionExecutor.targetUID(uidNext: 100, latestUid: 0) == 99)
+        #expect(PushNotificationActionExecutor.targetUID(uidNext: 100, latestUid: -1) == 99)
+        #expect(PushNotificationActionExecutor.targetUID(uidNext: 100, latestUid: Int64(UInt32.max) + 1) == 99)
+        #expect(PushNotificationActionExecutor.targetUID(uidNext: 100, latestUid: Int64(UInt32.max)) == UInt32.max)
+    }
+
+    /// 実機バグの回帰テスト: Gmail のように UIDNEXT が飛ぶサーバーでは
+    /// `uidNext - 1` に該当するメッセージが存在しない。ローカル DB には
+    /// (通常の差分同期が取り込んだ) 正しい行があるのに、解決だけが推測 UID を
+    /// 探していたため何度再試行しても `nil` になり「メールを読み込めません
+    /// でした」で固定されていた。
+    @Test("resolveOpenTarget finds the locally-synced message when UIDNEXT skipped ahead")
+    func resolveOpenTargetUsesLatestUidWhenUidNextSkippedAhead() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox) = try await makeAccountWithInbox(database: database)
+        let (threadId, messageId) = try await insertSingleMessageThread(
+            accountId: account.id, mailboxId: inbox.id!, uid: 42, database: database
+        )
+
+        // uidNext=100 → 推測は uid 99 (ローカルにもサーバーにも無い)。
+        let target = await PushNotificationActionExecutor.resolveOpenTarget(
+            accountId: account.id, uidNext: 100, latestUid: 42, database: database
+        )
+        #expect(target?.threadId == threadId)
+        #expect(target?.messageId == messageId)
+
+        let withoutLatestUid = await PushNotificationActionExecutor.resolveOpenTarget(
+            accountId: account.id, uidNext: 100, database: database
+        )
+        #expect(withoutLatestUid == nil, "推測だけでは見つからない状況であることの確認 (テスト自体の妥当性)")
+    }
+
+    @Test("fetchAndResolveOpenTarget resolves without any network when latestUid names a locally-synced message")
+    func fetchAndResolveOpenTargetUsesLatestUidWithoutSyncing() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox) = try await makeAccountWithInbox(database: database)
+        let (threadId, _) = try await insertSingleMessageThread(
+            accountId: account.id, mailboxId: inbox.id!, uid: 42, database: database
+        )
+
+        let recorder = FakeIMAPSession.CallRecorder()
+        let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
+            accountId: account.id, uidNext: 100, latestUid: 42, database: database,
+            auth: { _ in self.auth },
+            sessionFactory: { config in FakeIMAPSession(config: config, script: .init(mailboxes: [], statusByPath: [:]), recorder: recorder) }
+        )
+        #expect(target?.threadId == threadId)
+        #expect(recorder.storeCalls.isEmpty, "already-synced target must not trigger a sync connection")
+    }
+
+    @Test("execute acts on the latestUid message, not the uidNext - 1 guess")
+    func executeUsesLatestUid() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, inbox) = try await makeAccountWithInbox(database: database)
+        let (_, targetMessageId) = try await insertSingleMessageThread(
+            accountId: account.id, mailboxId: inbox.id!, uid: 42, database: database
+        )
+        let (_, bystanderMessageId) = try await insertSingleMessageThread(
+            accountId: account.id, mailboxId: inbox.id!, uid: 99, database: database
+        )
+
+        await PushNotificationActionExecutor.execute(
+            action: .markRead, accountId: account.id, uidNext: 100, latestUid: 42, database: database,
+            auth: { _ in nil },
+            sessionFactory: { config in FakeIMAPSession(config: config, script: .init(mailboxes: [], statusByPath: [:])) }
+        )
+
+        let (target, bystander) = try await database.dbWriter.read { db in
+            (
+                try MessageRecord.fetchOne(db, key: targetMessageId),
+                try MessageRecord.fetchOne(db, key: bystanderMessageId)
+            )
+        }
+        #expect(target?.flags.contains(.seen) == true)
+        #expect(bystander?.flags.contains(.seen) == false, "推測 UID (99) の無関係なメールを既読にしてはいけない")
     }
 }

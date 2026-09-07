@@ -30,8 +30,8 @@ final class PushNotificationOpenCoordinator {
 
     private init() {}
 
-    func setPendingRequest(accountId: String, uidNext: Int) {
-        pendingRequest = PushNotificationOpenRequest(accountId: accountId, uidNext: uidNext)
+    func setPendingRequest(accountId: String, uidNext: Int, latestUid: Int64? = nil) {
+        pendingRequest = PushNotificationOpenRequest(accountId: accountId, uidNext: uidNext, latestUid: latestUid)
         NotificationCenter.default.post(name: Self.didUpdateNotification, object: nil)
     }
 
@@ -43,11 +43,17 @@ final class PushNotificationOpenCoordinator {
 }
 
 /// 通知タップが指す「開くべきメール」の未解決の識別子 — プッシュペイロード
-/// (`accountId`/`uidNext`) そのまま。ローカル DB 上の `threadId`/`messageId`
-/// への解決は `AppEnvironment.resolvePushNotificationOpenTarget` が行う。
+/// (`accountId`/`uidNext`/`latestUid`) そのまま。ローカル DB 上の
+/// `threadId`/`messageId` への解決は
+/// `AppEnvironment.resolvePushNotificationOpenTarget` が行う。
 struct PushNotificationOpenRequest: Equatable {
     let accountId: String
     let uidNext: Int
+    /// リレーが実際に見た新着メールの UID (`OtegamiRelayAPI
+    /// .PushNotificationPayload.latestUid`)。`nil` はこのフィールドを送らない
+    /// リレーからの push — その場合だけ `uidNext - 1` の推測に落ちる
+    /// (`PushNotificationActionExecutor.targetUID(uidNext:latestUid:)`)。
+    let latestUid: Int64?
 }
 
 /// `AppEnvironment.resolvePushNotificationOpenTarget` の解決結果 —

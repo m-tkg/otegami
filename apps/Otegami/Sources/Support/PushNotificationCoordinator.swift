@@ -512,10 +512,13 @@ extension AppEnvironment {
     /// 終わるまで画面遷移が起きず・失敗すると何も表示されなかった —
     /// ビュー側へ移したことでローディング表示と再試行が可能になった。
     /// 優先同期後も見つからない・資格情報が解決できない等はすべて `nil`。
-    func resolvePushNotificationOpenTarget(accountId: String, uidNext: Int) async -> PushNotificationOpenTarget? {
+    func resolvePushNotificationOpenTarget(
+        accountId: String, uidNext: Int, latestUid: Int64? = nil
+    ) async -> PushNotificationOpenTarget? {
         guard let target = await PushNotificationActionExecutor.fetchAndResolveOpenTarget(
             accountId: accountId,
             uidNext: uidNext,
+            latestUid: latestUid,
             database: database,
             auth: { [weak self] account in
                 guard let self else { return nil }
