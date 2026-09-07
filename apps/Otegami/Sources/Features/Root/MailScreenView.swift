@@ -299,7 +299,7 @@ struct MailScreenView: View {
     /// どちらが先に走ってもどちらか一方で確実に消費される。
     private func applyPendingPushOpenTargetIfNeeded() {
         guard let request = PushNotificationOpenCoordinator.shared.consumePendingRequest() else { return }
-        pushOpenRoute = PushOpenRoute(accountId: request.accountId, uidNext: request.uidNext)
+        pushOpenRoute = PushOpenRoute(accountId: request.accountId, uidNext: request.uidNext, latestUid: request.latestUid)
     }
 
     /// `PushNotificationOpenView`内の`ThreadEntryView`から届く
@@ -402,7 +402,8 @@ struct MailScreenView: View {
                     // (item差し替えのin-place再描画) に、前のメールの解決
                     // 済み`phase`(`@State`)を持ち越さず作り直すため。
                     PushNotificationOpenView(
-                        accountId: route.accountId, uidNext: route.uidNext, onReply: onReply, onForward: onForward,
+                        accountId: route.accountId, uidNext: route.uidNext, latestUid: route.latestUid,
+                        onReply: onReply, onForward: onForward,
                         onSearchFromSender: { query in openSearch(presetQuery: query) },
                         onThreadRemoved: handlePushOpenThreadRemoved
                     )
@@ -461,7 +462,8 @@ struct MailScreenView: View {
                     // 右ペインに出す。一覧タップ (`selectedRoute`変化) で
                     // 閉じる (`handleSelectedRouteChanged`)。
                     PushNotificationOpenView(
-                        accountId: pushOpenRoute.accountId, uidNext: pushOpenRoute.uidNext, onReply: onReply, onForward: onForward,
+                        accountId: pushOpenRoute.accountId, uidNext: pushOpenRoute.uidNext, latestUid: pushOpenRoute.latestUid,
+                        onReply: onReply, onForward: onForward,
                         onSearchFromSender: { query in openSearch(presetQuery: query) },
                         onThreadRemoved: handlePushOpenThreadRemoved
                     )
@@ -1236,13 +1238,18 @@ private struct ThreadRoute: Hashable, Identifiable {
 
 /// `MailScreenView.pushOpenRoute`の navigation item — 通知の本体タップが
 /// 運ぶ**未解決**の対象 (`PushNotificationOpenRequest`と同じ accountId/
-/// uidNext)。`ThreadRoute`と同じ「destination が必要な値はすべて item 自身
-/// が運ぶ」idiom。`id`は内容から導出 — 同じ通知を (一度閉じてから) もう一度
-/// タップしたケースは binding が一旦 nil に戻っているので、同値でも再push
-/// される。
+/// uidNext/latestUid)。`ThreadRoute`と同じ「destination が必要な値はすべて
+/// item 自身が運ぶ」idiom。`id`は内容から導出 — 同じ通知を (一度閉じてから)
+/// もう一度タップしたケースは binding が一旦 nil に戻っているので、同値でも
+/// 再push される。
 private struct PushOpenRoute: Hashable, Identifiable {
     let accountId: String
     let uidNext: Int
+    /// `PushNotificationOpenRequest.latestUid` — 対象 UID の決定に使う
+    /// (`PushNotificationActionExecutor.targetUID(uidNext:latestUid:)`)。
+    /// `id`には含めない: 同じ通知は `accountId`/`uidNext` の組で一意であり、
+    /// `latestUid` はそこから導かれる補助情報でしかないため。
+    var latestUid: Int64?
     var id: String { "\(accountId)#\(uidNext)" }
 }
 

@@ -15,6 +15,11 @@ import SwiftUI
 struct PushNotificationOpenView: View {
     let accountId: String
     let uidNext: Int
+    /// push ペイロードの `latestUid` — 対象メールの UID の決定に使う
+    /// (`PushNotificationActionExecutor.targetUID(uidNext:latestUid:)` の
+    /// doc comment: これが無いと UIDNEXT が飛ぶサーバー (Gmail) で存在
+    /// しない UID を探し続け、`.failed` から永久に抜けられない)。
+    var latestUid: Int64?
     var onReply: (Int64, Bool) -> Void = { _, _ in }
     var onForward: (Int64) -> Void = { _ in }
     var onSearchFromSender: ((String) -> Void)?
@@ -88,7 +93,9 @@ struct PushNotificationOpenView: View {
     private func resolve() async {
         if case .resolved = phase { return }
         phase = .loading
-        if let target = await environment.resolvePushNotificationOpenTarget(accountId: accountId, uidNext: uidNext) {
+        if let target = await environment.resolvePushNotificationOpenTarget(
+            accountId: accountId, uidNext: uidNext, latestUid: latestUid
+        ) {
             phase = .resolved(threadId: target.threadId, messageId: target.messageId)
         } else {
             phase = .failed

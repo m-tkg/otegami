@@ -39,7 +39,11 @@ enum PushNotificationActionHandler {
     /// second `DatabasePool` onto the same shared file — only falls back to
     /// opening its own when this notification action is itself what
     /// cold-launches the process (no `AppEnvironment` yet).
-    static func handle(action: PushNotificationAction, accountId: String, uidNext: Int) async {
+    /// - Parameter latestUid: push ペイロードの `latestUid` — 操作対象の
+    ///   UID を決めるのに使う (`PushNotificationActionExecutor
+    ///   .targetUID(uidNext:latestUid:)` の doc comment 参照)。渡さないと
+    ///   UIDNEXT が飛ぶサーバー (Gmail) で存在しない UID を対象にしてしまう。
+    static func handle(action: PushNotificationAction, accountId: String, uidNext: Int, latestUid: Int64? = nil) async {
         guard let appGroupIdentifier = OtegamiAppGroup.identifier else { return }
         let database: AppDatabase
         if let shared = await SharedAppDatabaseCenter.shared.database {
@@ -53,6 +57,7 @@ enum PushNotificationActionHandler {
             action: action,
             accountId: accountId,
             uidNext: uidNext,
+            latestUid: latestUid,
             database: database,
             markSeenOnArchive: ArchiveActionSettingsStore.markAsReadOnArchive,
             auth: { account in await resolveAuth(for: account) },

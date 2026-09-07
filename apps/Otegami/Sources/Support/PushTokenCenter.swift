@@ -292,7 +292,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             // target resolution lives in `PushNotificationOpenView` now.
             completionHandler()
             Task { @MainActor in
-                PushNotificationOpenCoordinator.shared.setPendingRequest(accountId: payload.accountId, uidNext: payload.uidNext)
+                PushNotificationOpenCoordinator.shared.setPendingRequest(
+                    accountId: payload.accountId, uidNext: payload.uidNext, latestUid: payload.latestUid
+                )
             }
             return
         }
@@ -314,7 +316,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             // 実クラッシュ調査 (0xDEAD10CC) 「穴1」: see
             // `withPushActionBackgroundTask(name:_:)`'s doc comment.
             await Self.withPushActionBackgroundTask(name: "otegami.pushNotificationAction") {
-                await PushNotificationActionHandler.handle(action: action, accountId: payload.accountId, uidNext: payload.uidNext)
+                await PushNotificationActionHandler.handle(
+                    action: action, accountId: payload.accountId, uidNext: payload.uidNext, latestUid: payload.latestUid
+                )
             }
             boxedCompletionHandler.value()
         }
@@ -389,11 +393,32 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// aren't importable from the app target (that file's own doc comment on
     /// its `private` → `internal` relaxation makes the same point).
     /// `nonisolated` for the same reason as `action(for:)` above.
+    ///
+    /// **実機バグ (Gmail で通知をタップしてもメールが開けない)**: この
+    /// 「byte-for-byte 同じ」という約束は、Phase 3 がリレー由来の envelope
+    /// フィールドを追加したときに**片側だけ**破られていた — Extension 側は
+    /// `latestUid` を読むようになったのに、こちらは `accountId`/`uidNext`
+    /// しか読まないままだった。その結果、通知の文言 (Extension 側) は正しい
+    /// メールを指しているのに、本体タップの解決 (`PushNotificationOpenView`
+    /// → `PushNotificationActionExecutor.targetUID(uidNext:latestUid:)`) だけ
+    /// が `uidNext - 1` の推測に取り残され、UIDNEXT が飛ぶサーバー (Gmail)
+    /// では存在しない UID を探し続けて「メールを読み込めませんでした」で
+    /// 固定されていた。教訓として、**このアプリが今は読まないフィールドも
+    /// 含めて全フィールドを写す** — 片側だけ増えるのを構造的に防ぐため
+    /// (`PushTokenCenterPayloadParsingTests` が両者の一致を固定している)。
     nonisolated static func parsePayload(_ userInfo: [AnyHashable: Any]) -> PushNotificationPayload? {
         guard let accountId = userInfo["accountId"] as? String,
               let uidNext = userInfo["uidNext"] as? Int
         else { return nil }
-        return PushNotificationPayload(accountId: accountId, uidNext: uidNext)
+        return PushNotificationPayload(
+            accountId: accountId,
+            uidNext: uidNext,
+            latestUid: (userInfo["latestUid"] as? NSNumber)?.int64Value,
+            latestFromName: userInfo["latestFromName"] as? String,
+            latestFromAddress: userInfo["latestFromAddress"] as? String,
+            latestSubject: userInfo["latestSubject"] as? String,
+            previewCount: userInfo["previewCount"] as? Int
+        )
     }
 }
 

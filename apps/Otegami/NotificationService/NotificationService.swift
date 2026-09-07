@@ -781,7 +781,8 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         // ("プッシュ通知起点バックグラウンド受信 Phase 1") for the full design.
         let incrementalSyncStart = Date()
         let syncOutcome = await Self.runIncrementalSync(
-            accountId: account.id, uidNext: payload.uidNext, fetchBodyPreview: preferences.showsBodyPreview, auth: auth
+            accountId: account.id, uidNext: payload.uidNext, latestUid: payload.latestUid,
+            fetchBodyPreview: preferences.showsBodyPreview, auth: auth
         )
         let decision = Self.syncFirstDecision(outcome: syncOutcome, preferences: preferences)
 
@@ -910,6 +911,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     private static func runIncrementalSync(
         accountId: String,
         uidNext: Int,
+        latestUid: Int64?,
         fetchBodyPreview: Bool,
         auth: MailAuth
     ) async -> PushTriggeredInboxSync.Outcome {
@@ -919,6 +921,7 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
         return await PushTriggeredInboxSync.run(
             accountId: accountId,
             uidNext: uidNext,
+            latestUid: latestUid,
             fetchBodyPreview: fetchBodyPreview,
             database: database,
             auth: auth,
@@ -1223,7 +1226,13 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
             return
         }
 
-        let latestUID = UInt32(max(payload.uidNext - 1, 1))
+        // 対象1通の UID は `PushNotificationActionExecutor.targetUID(
+        // uidNext:latestUid:)` に集約されている (リレーが実際に見た
+        // `latestUid` を優先し、それが無い push でだけ `uidNext - 1` の推測
+        // に落ちる) — 同じ式をここに複製しないこと。今回の実機バグ
+        // (Gmail で通知タップからメールが開けない) は、まさに「同じ判断が
+        // 複製されていて片側だけ更新された」ことが原因だった。
+        let latestUID = PushNotificationActionExecutor.targetUID(uidNext: payload.uidNext, latestUid: payload.latestUid)
         let fetchEnvelopeStart = Date()
         let envelopes: [FetchedEnvelope]
         do {
