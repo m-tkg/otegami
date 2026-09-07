@@ -155,10 +155,13 @@ git commit --only -- path/to/file.swift
 
 - **機能・修正の完了ごとに OTA 配信する** (小出しリリース)。手順:
   scratchpad の配信用 worktree で `git fetch && git reset --hard
-  origin/main && git clean -fd` → `Local.xcconfig` をメイン作業ツリー
-  からコピー → `./scripts/deploy-ota.sh` → 配信された manifest の
-  `bundle-version` が push 済み SHA と一致することを確認。
-  (`git clean` は Local.xcconfig を消すのでコピーを忘れない。)
+  origin/main && git clean -fd` → **git 管理外の設定ファイル2つ**を
+  メイン作業ツリーからコピー → `./scripts/deploy-ota.sh` → 配信された
+  manifest の `bundle-version` が push 済み SHA と一致することを確認。
+  コピーが要るのは `apps/Otegami/Config/Local.xcconfig` (署名) と
+  `scripts/deploy-ota.local.sh` (配信先ホスト) の2つ — どちらも
+  git 管理外なので、`git clean` 後や worktree の新規作成直後には
+  存在しない。後者が無いと `OTA_PI_HOST が未設定です` で即座に落ちる。
 - deploy-ota.sh は Distribution 署名が使えない環境では development 署名
   へ自動フォールバックする (配布先実機は開発デバイス登録済み)。
 - **TestFlight リリースは git tag → Xcode Cloud** (`docs/xcode-cloud.md`)。
