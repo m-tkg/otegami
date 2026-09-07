@@ -148,6 +148,59 @@ struct PushTriggeredInboxSyncTests {
         #expect(count == 1)
     }
 
+    // MARK: (c-2) latestUid が UIDNEXT の推測より優先される
+
+    /// 実機バグの回帰テスト (Gmail で通知タップからメールが開けない):
+    /// UIDNEXT が「現存する最大 UID + 1」でないサーバーでは `uidNext - 1` に
+    /// 該当するメッセージが存在しない。同期自体は UID を推測せず範囲で
+    /// 取り込むので行はできるのに、対象1通の特定だけが外れて
+    /// `Outcome.message == nil` (= NSE は `legacyEnrich` へフォールバック) に
+    /// なっていた。
+    @Test("run resolves the message named by latestUid even when uidNext skipped ahead")
+    func usesLatestUidWhenUidNextSkippedAhead() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _) = try await makeAccountWithInbox(database: database)
+
+        // サーバーの UIDNEXT は 100 だが、実在する最新メールは uid 42。
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inboxInfo],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 42)]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 100, highestModSeq: 0, messageCount: 1)]
+        )
+
+        let outcome = await PushTriggeredInboxSync.run(
+            accountId: account.id, uidNext: 100, latestUid: 42, fetchBodyPreview: false,
+            database: database, auth: auth,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: script) }
+        )
+
+        #expect(outcome.message?.uid == 42)
+    }
+
+    @Test("run without latestUid can't resolve the message when uidNext skipped ahead")
+    func withoutLatestUidTheHeuristicMissesWhenUidNextSkippedAhead() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let (account, _) = try await makeAccountWithInbox(database: database)
+
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inboxInfo],
+            envelopesByPath: ["INBOX": [makeEnvelope(uid: 42)]],
+            statusByPath: ["INBOX": MailboxStatus(uidValidity: 1, uidNext: 100, highestModSeq: 0, messageCount: 1)]
+        )
+
+        let outcome = await PushTriggeredInboxSync.run(
+            accountId: account.id, uidNext: 100, fetchBodyPreview: false,
+            database: database, auth: auth,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: script) }
+        )
+
+        // 上のテストが「latestUid のおかげで解決できた」ことを本当に示して
+        // いる、という対照 — 同期自体は成功して行はできている。
+        #expect(outcome.message == nil)
+        let stored = try await database.dbWriter.read { db in try MessageRecord.fetchAll(db) }
+        #expect(stored.map(\.uid) == [42])
+    }
+
     // MARK: (d) auth/sync failure yields Outcome(nil, nil)
 
     @Test("a connect failure yields an empty Outcome instead of throwing")
