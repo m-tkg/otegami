@@ -237,19 +237,55 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     /// when this returns, a cancelled session must not go back into the
     /// connection pool — `PooledIMAPSession.perform` discards any session
     /// whose operation threw `CancellationError` for exactly this reason.
+    ///
+    /// v1.14.8 UAF crash (`docs/architecture.md`'s "MailCore2 use-after-
+    /// free" section, follow-up subsection): `start(...)` here used to run
+    /// wherever the calling `Task` happened to be — this actor's own
+    /// executor thread — while `onCancel` above ran on whatever thread
+    /// cancelled that `Task`. MailCore2 itself is non-ARC Objective-C/C++
+    /// that assumes every call into a given session happens on that
+    /// session's own dispatch queue (historically the main thread); calling
+    /// `operation.start`/`operation.cancel` from two different threads at
+    /// once races `MCOOperation`'s unlocked, non-atomic `-cancel`/
+    /// `-_operationCompleted` (`src/objc/utils/MCOOperation.mm`), which both
+    /// do `_started = NO; ...; [self release]` with no lock. A `cancel()`
+    /// landing on the calling thread at the same moment `_operationCompleted`
+    /// runs on the session's own callback thread double-releases the
+    /// `MCOOperation`, and the freed memory gets reused by the *next*
+    /// operation issued on the same session — corrupting *that* operation's
+    /// `_session` pointer and crashing later, arbitrarily far from the
+    /// actual race (seen in production as a jump into a non-executable page
+    /// inside `SessionLingerBox.scheduleQuiesceCheck`, nothing to do with
+    /// that method itself). Routing both `start(...)` and `cancel()` through
+    /// `dispatchQueue` — the same per-session serial queue `init` already
+    /// hands to `session.dispatchQueue` for fix 1 of the v1.14.2 crash —
+    /// makes this race structurally impossible the same way that fix did:
+    /// a `cancel()` enqueued after `start(...)` on a serial queue can only
+    /// ever run after it, never concurrently with it. `continuationBox
+    /// .finish(.failure(CancellationError()))` in `onCancel` stays
+    /// immediate (not routed through the queue) — only the effect on the
+    /// underlying MailCore2 object needs serializing; resuming the Swift
+    /// `await` promptly is exactly the behavior the 実機バグ fix above
+    /// depends on.
     private func runCancellable<T: Sendable>(
         _ operation: MCOOperation,
-        start: (@escaping @Sendable (Result<T, Error>) -> Void) -> Void
+        start: @escaping (@escaping @Sendable (Result<T, Error>) -> Void) -> Void
     ) async throws -> T {
         let operationBox = OperationBox(operation)
         let continuationBox = ContinuationBox<T>()
+        let startBox = StartBox(start)
+        let queue = dispatchQueue
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
                 continuationBox.attach(continuation)
-                start { result in continuationBox.finish(result) }
+                queue.async {
+                    startBox.start { result in continuationBox.finish(result) }
+                }
             }
         } onCancel: {
-            operationBox.operation.cancel()
+            queue.async {
+                operationBox.operation.cancel()
+            }
             continuationBox.finish(.failure(CancellationError()))
         }
     }
@@ -942,31 +978,44 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
         continuation.finish()
     }
 
+    /// v1.14.8 fix (see `runCancellable`'s doc comment for the full root
+    /// cause): `operationBox.operation.start` and both `interruptIdle()`
+    /// call sites below now run on `dispatchQueue` — this method predates
+    /// `runCancellable` sharing the same fix, so it needs the same
+    /// `queue.async` treatment applied by hand rather than getting it for
+    /// free through that helper.
     private func performOneIdleRound(mailboxPath: String) async throws -> IdleEvent {
         let operationBox = IdleOperationBox(session.idleOperation(folder: mailboxPath, lastKnownUID: 0))
         let interruptFlag = InterruptFlag()
+        let queue = dispatchQueue
 
         let timeoutTask = Task {
             try? await Task.sleep(for: Self.idleReissueInterval)
             guard !Task.isCancelled else { return }
             interruptFlag.set()
-            operationBox.operation.interruptIdle()
+            queue.async {
+                operationBox.operation.interruptIdle()
+            }
         }
         defer { timeoutTask.cancel() }
 
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                operationBox.operation.start { error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume()
+                queue.async {
+                    operationBox.operation.start { error in
+                        if let error {
+                            continuation.resume(throwing: error)
+                        } else {
+                            continuation.resume()
+                        }
                     }
                 }
             }
         } onCancel: {
             interruptFlag.set()
-            operationBox.operation.interruptIdle()
+            queue.async {
+                operationBox.operation.interruptIdle()
+            }
         }
 
         return interruptFlag.get() ? .interrupted : .newData
@@ -982,6 +1031,22 @@ public actor MailCoreIMAPSession: IMAPSessionProtocol {
     private final class OperationBox: @unchecked Sendable {
         let operation: MCOOperation
         init(_ operation: MCOOperation) { self.operation = operation }
+    }
+
+    /// `@Sendable`-closure-safe wrapper for `runCancellable`'s `start`
+    /// parameter, so it can be captured by the `dispatchQueue.async` closure
+    /// that now invokes it (v1.14.8 fix, see `runCancellable`'s doc
+    /// comment). `start` itself isn't `@Sendable` — it closes over a live
+    /// MailCore2 operation object (non-`Sendable`, non-ARC Objective-C) —
+    /// but by construction it only ever runs once, from the one
+    /// `dispatchQueue.async` block `runCancellable` schedules it in, so
+    /// boxing it is exactly as safe as `OperationBox`/`IdleOperationBox`
+    /// boxing the operation objects themselves.
+    private final class StartBox<T: Sendable>: @unchecked Sendable {
+        let start: (@escaping @Sendable (Result<T, Error>) -> Void) -> Void
+        init(_ start: @escaping (@escaping @Sendable (Result<T, Error>) -> Void) -> Void) {
+            self.start = start
+        }
     }
 
     /// One-shot, thread-safe handoff between a MailCore2 completion block
