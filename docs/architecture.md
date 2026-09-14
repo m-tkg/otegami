@@ -1737,6 +1737,59 @@ IDLE ループが `connect` 後の失敗でもセッションを disconnect す�
 per-session queue と quiesce ポーリングそのものは実機での長期運用でしか
 確認できない、既知の限界として残る。
 
+**follow-up: v1.14.8 の実機 TestFlight クラッシュ (build 105)**。
+symbolicate 済みクラッシュログは `com.mtkg.otegami.mailcore-imap-session`
+キュー上、`SessionLingerBox.scheduleQuiesceCheck` のクロージャ内
+(`box.session.isOperationQueueRunning` の Objective-C メッセージ送信) で
+`EXC_BAD_ACCESS` (実行不可能ページへのジャンプ) — つまり
+`SessionBox` が強参照している `MCOIMAPSession` 自体が、どこか別の場所で
+over-release され、既に解放済みのメモリを指していた。
+
+**根本原因 (この節の対策 1 とは別系統のレース)**: mailcore2 は非 ARC の
+Objective-C/C++ で、「あるセッションへの呼び出しはすべてそのセッションの
+dispatch queue 上で行われる」ことを前提にしている。ところが
+`MailCoreIMAPSession` は actor であり、`runCancellable`/`performOneIdleRound`
+の `operation.start(...)`/`operation.cancel()`/`interruptIdle()` 呼び出しは
+actor の executor スレッド (呼び出し元の `Task` がキャンセルされたスレッド
+を含む、任意のスレッド) から発行されていた。具体的に踏んだのは 2 箇所:
+
+1. `src/objc/utils/MCOOperation.mm`: `-cancel` は
+   `if (_started) { _started = NO; ...; [self release]; }`、完了コールバック
+   である `-_operationCompleted` (セッションの dispatch queue 上で走る) も
+   `_started = NO; ...; [self release];` と、どちらもロックなしで同じ
+   `_started`/参照カウントを触る。`runCancellable` の `onCancel` が呼ぶ
+   `operationBox.operation.cancel()` が別スレッドから走り、ちょうど
+   `_operationCompleted` と競合すると `MCOOperation` が二重解放され、解放
+   済みメモリが同じセッションの**次の**オペレーションに再利用されて、
+   その `MCOIMAPBaseOperation._session` (＝ `MCOIMAPSession` 本体) を
+   壊す — 結果としてクラッシュ地点は原因箇所から離れた、一見無関係な
+   `SessionLingerBox` のコードになる。
+2. `src/async/imap/MCIMAPAsyncConnection.cpp`: `runOperation`
+   (`operation.start` から呼び出し元スレッドで同期的に呼ばれる) は 30 秒
+   自動切断タイマーをキャンセルして `mOwner->release()` する一方、
+   `tryAutomaticDisconnectAfterDelay` はセッションの dispatch queue 上で
+   発火して同じ `mOwner` を `release()` する — 同種のクロススレッド
+   レース。
+
+**修正 (`MailCoreIMAPSession.swift`)**: `runCancellable(_:start:)` と
+`performOneIdleRound` から mailcore2 を駆動する呼び出し
+(`operation.start`/`operation.cancel`/`operation.interruptIdle`) を、
+すべて対策 1 で作った per-session serial `dispatchQueue` 上の
+`queue.async { ... }` に統一した。serial queue は投入順に実行されるため、
+`start` の後に積まれた `cancel` は必ず `start` の後に走り、`start` の
+完了コールバックと競合しない。Swift 側の `await` を即座に
+`CancellationError` で解決する `continuationBox.finish(...)` はキュー越し
+にせず即時のまま (実機バグ「pull-to-refresh のキャンセルが効かない」の
+修正を壊さないため)。`start` クロージャ自体は非 `Sendable` な mailcore2
+オブジェクトを閉じ込めているため、`dispatchQueue.async` に渡せるよう
+既存の `OperationBox`/`IdleOperationBox` と同じパターンで `StartBox`
+(`@unchecked Sendable`) にラップした。
+
+**これもユニットテストでは再現できない** (レースの成立に mailcore2 内部の
+参照カウント・スレッドタイミングが絡むため、対策 1 と同じ既知の限界) —
+実機での長期運用 (IDLE を継続しながら pull-to-refresh キャンセル・
+バックグラウンド遷移を繰り返す) でのみ確認できる。
+
 ### u. mailcore2 の quoted-printable エンコーダは裸 CR で出力を壊す
 
 pin している mailcore2/libetpan の quoted-printable エンコーダは、LF を
