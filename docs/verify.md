@@ -48,7 +48,7 @@ APPEARANCE=dark scripts/verify-screen.sh html-1   # ダークモードで開く
 ダイアログの両方を経路から除けば両方とも自動的に回避できる。IMAP 接続不能
 (不調 1) の対象外でもある — フェイクフィクスチャの DB 直接注入のみで、
 実 IMAP 接続を一切経由しない。実際の同期挙動を確認したいときは、後述の
-Dovecot 統合テストか、`make deploy-ota`/deploy-worktree 経由の実機確認に
+Dovecot 統合テストか、`make ota`/deploy-worktree 経由の実機確認に
 頼ること。
 
 ## シミュレータの既知の不調 (4種)
