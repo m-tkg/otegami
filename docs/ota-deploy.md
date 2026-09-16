@@ -11,14 +11,18 @@ OTA (Over-The-Air) でインストールするための仕組み。自分で管�
 1. Mac で `xcodebuild archive` → `xcodebuild -exportArchive` (Ad Hoc 配布、
    `apps/Otegami/Config/Local.xcconfig` の `DEVELOPMENT_TEAM` で署名) して
    `.ipa` を書き出す。
-2. `manifest.plist` (iOS の itms-services が読む形式) を生成する。
-   `software-package` の URL は `OTA_BASE_URL` (下記) 配下の
+2. `manifest.plist` (iOS の itms-services が読む形式) は自分で書かず、
+   `-exportArchive` の `ExportOptions.plist` に `manifest`
+   (`appURL`/`displayImageURL`/`fullSizeImageURL`) を渡して xcodebuild
+   自身に生成させる。`appURL` は `OTA_BASE_URL` (下記) 配下の
    `otegami.ipa` — itms-services はこの URL が **https であることを
-   要求する** (http だとインストールが始まらない)。
-3. `.ipa` + `manifest.plist` + 簡単な日本語インストールページ
-   (`index.html`) を `ssh`/`scp` で `OTA_PI_HOST`/`OTA_PI_DIR`
-   (下記) にアップロードする。アップロード先は `OTA_BASE_URL` で
-   HTTPS 公開されている必要がある (nginx 等でこのディレクトリを配信
+   要求する** (http だとインストールが始まらない)。インストール画面の
+   アイコンは App Store アイコン (1024x1024) から `sips` で 57/512 を
+   切り出したもの (`icon57.png`/`icon512.png`)。
+3. `.ipa` + `manifest.plist` + `icon57.png`/`icon512.png` + 簡単な
+   日本語インストールページ (`index.html`) を `rsync` で `OTA_PI_HOST`/
+   `OTA_PI_DIR` (下記) にアップロードする。アップロード先は `OTA_BASE_URL`
+   で HTTPS 公開されている必要がある (nginx 等でこのディレクトリを配信
    するようリバースプロキシ設定しておく — 具体的な web サーバー設定は
    このリポジトリの対象外)。
 4. iPhone の Safari で `OTA_BASE_URL` を開き「インストール」リンク
@@ -53,13 +57,25 @@ make deploy-ota
 ```
 
 内部で `scripts/deploy-ota.sh` を実行する。手順:
-`xcodegen generate` → Release 構成で `xcodebuild archive` → `-exportArchive`
-(Ad Hoc) → `manifest.plist`/`index.html` 生成 → 設定した配信先へ `scp`。
+`xcodegen generate` → Release 構成で `xcodebuild archive` → アイコン書き出し
+→ `-exportArchive` (Ad Hoc、`manifest.plist` も xcodebuild に生成させる) →
+`index.html` 生成 → 設定した配信先へ `rsync`。
 
 完了したら iPhone の Safari で `OTA_BASE_URL` を開き、「インストール」を
 タップする。ホーム画面に追加されたら、設定 → 一般 → VPN とデバイス管理で
 開発元 (`DEVELOPMENT_TEAM`) を信頼していることを確認してから起動する
 (初回インストール時に案内される)。
+
+**バージョンの確認方法が変わった点に注意**: 以前は `manifest.plist` の
+`bundle-version` に git commit SHA を埋め込み、配信後にそれを見て
+「push した SHA が配信されたか」を確認していた。xcodebuild に
+`manifest.plist` を生成させるようにしたため、`bundle-version` は
+実際の `CFBundleVersion` (`Config/Shared.xcconfig` の
+`CURRENT_PROJECT_VERSION`、通常は固定値で更新のたびには増えない) になり、
+この確認方法は使えなくなった。代わりに `scripts/deploy-ota.sh` は完了時に
+`git rev-parse --short HEAD` の commit SHA をターミナルへログ出力し、
+`index.html` にも埋め込む — 配信後の確認は `curl -sk <OTA_BASE_URL>/`
+でこの表示を見るか、デプロイを実行したターミナルのログを見て行う。
 
 ## 前提
 
@@ -101,7 +117,8 @@ iPhone で「インストールできません」/ アプリが起動しない�
 | 「"Otegami"を検証できません」等の署名エラー | プライベート CA が iPhone で信頼されていない、または Provisioning Profile の期限切れ |
 | インストールは終わるが起動時に落ちる/開けない | 対象端末の UDID が Ad Hoc プロファイルに含まれていない (登録漏れ) |
 | `manifest.plist` の取得でエラー | `software-package` の URL のドメイン/パスが実際にアップロードした場所とずれている。`curl -k <OTA_BASE_URL>/manifest.plist` で内容を確認する |
-| `scripts/deploy-ota.sh` が `ssh` で落ちる | Mac 側からアップロード先へ到達できていない、またはホスト名/ユーザー名が変わった (`scripts/deploy-ota.local.sh` を更新) |
+| `scripts/deploy-ota.sh` が `ssh`/`rsync` で落ちる | Mac 側からアップロード先へ到達できていない、またはホスト名/ユーザー名が変わった (`scripts/deploy-ota.local.sh` を更新) |
+| export 後に `manifest.plist が見つかりません` で失敗する | 使用中の Xcode バージョンが `ExportOptions.plist` の `manifest` キーからの自動生成に対応していない (development 署名フォールバック時など)。`dist/ota/export.log` を確認し、必要なら Distribution 署名を使える環境で実行し直す |
 | `xcodebuild archive`/`-exportArchive` が署名エラーで落ちる | `Config/Local.xcconfig` の `DEVELOPMENT_TEAM` が未設定、または Apple Developer 側で証明書/プロファイルが失効している |
 | `archive` 段階で `No Accounts` + `Provisioning profile "iOS Team Provisioning Profile: com.mtkg.otegami" doesn't include the Communication Notifications capability` | ローカルにキャッシュされた Team プロファイルが `com.apple.developer.usernotifications.communication` entitlement 追加 (2026-08-08, v1.10.0) より古く、かつ Xcode に Apple ID が入っていないため `-allowProvisioningUpdates` がプロファイルを再生成できない。**development 署名フォールバックは export 段階の仕組みなので、archive 段階のこの失敗には効かない。** 直し方: Xcode → Settings → Accounts に Apple ID を追加してから再実行 (Portal 側の App ID には capability 有効化済み — `docs/xcode-cloud.md` の v1.10.0 の顛末参照)。追加後の再実行でプロファイルが再生成されれば、以降はアカウントを外してもキャッシュで通る |
 
@@ -114,6 +131,7 @@ method) へフォールバックする — 配布先の実機はいずれも開�
 インストールできるという割り切り。3段階すべて失敗した場合はログ
 (`dist/ota/export.log`) にその時点のエラーがそのまま残る。
 
-アップロード時は、アップロード先に既にある `otegami.ipa` を
-`otegami-prev.ipa` へ1世代だけ退避してから新しい IPA を置く — 配信直後に
-問題が見つかったとき、直前のビルドへ手動で戻せるようにするため。
+アップロードは `rsync` で `otegami.ipa`/`manifest.plist`/`index.html`/
+`icon57.png`/`icon512.png` を丸ごと上書きする (旧 IPA の世代退避はしない
+— 直前のビルドに戻したい場合は、そのコミットに `git checkout` してから
+`make deploy-ota` を再実行する)。

@@ -156,8 +156,11 @@ git commit --only -- path/to/file.swift
 - **機能・修正の完了ごとに OTA 配信する** (小出しリリース)。手順:
   scratchpad の配信用 worktree で `git fetch && git reset --hard
   origin/main && git clean -fd` → **git 管理外の設定ファイル2つ**を
-  メイン作業ツリーからコピー → `./scripts/deploy-ota.sh` → 配信された
-  manifest の `bundle-version` が push 済み SHA と一致することを確認。
+  メイン作業ツリーからコピー → `./scripts/deploy-ota.sh` →
+  スクリプトが最後にログ出力する commit SHA が push 済み SHA と
+  一致することを確認 (`manifest.plist` の `bundle-version` は
+  xcodebuild が生成する実際の `CFBundleVersion` であって git SHA では
+  ないため、確認には使えない — `docs/ota-deploy.md` 参照)。
   コピーが要るのは `apps/Otegami/Config/Local.xcconfig` (署名) と
   `scripts/deploy-ota.local.sh` (配信先ホスト) の2つ — どちらも
   git 管理外なので、`git clean` 後や worktree の新規作成直後には
