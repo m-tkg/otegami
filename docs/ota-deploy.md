@@ -53,7 +53,7 @@ cp scripts/deploy-ota.local.sh.sample scripts/deploy-ota.local.sh
 ## 使い方
 
 ```sh
-make deploy-ota
+make ota
 ```
 
 内部で `scripts/deploy-ota.sh` を実行する。手順:
@@ -100,7 +100,7 @@ make deploy-ota
 - Apple Developer Program の年間契約ごとに登録できる端末数の上限がある
   (通常 100 台/デバイス種別)。
 - Provisioning Profile には有効期限があり (通常 1 年)、切れると
-  インストール済みのアプリも起動できなくなる。定期的な `make deploy-ota`
+  インストール済みのアプリも起動できなくなる。定期的な `make ota`
   の再実行 (＝プロファイルの更新) が実質的な対策になる。
 - App Store 配布と違い、審査もサンドボックスの緩和もない。**個人・家族
   内利用の想定** であり、不特定多数に配る用途には向かない
@@ -134,4 +134,4 @@ method) へフォールバックする — 配布先の実機はいずれも開�
 アップロードは `rsync` で `otegami.ipa`/`manifest.plist`/`index.html`/
 `icon57.png`/`icon512.png` を丸ごと上書きする (旧 IPA の世代退避はしない
 — 直前のビルドに戻したい場合は、そのコミットに `git checkout` してから
-`make deploy-ota` を再実行する)。
+`make ota` を再実行する)。

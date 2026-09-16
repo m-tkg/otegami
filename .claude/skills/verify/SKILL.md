@@ -74,7 +74,7 @@ hand-off procedure instead of continuing to dig:
 1. **Ship anyway, gated only on unit tests + build, not on simulator
    screenshots.** `make test` and `make ios`/`make mac` green is the
    release bar; a failed/flaky simulator screenshot is not a release
-   blocker. Proceed with `make deploy-ota`/the `deploy-worktree` skill as
+   blocker. Proceed with `make ota`/the `deploy-worktree` skill as
    normal.
 2. **State "unverified" explicitly in the report to the user.** Don't
    describe a screen as confirmed when it wasn't — name exactly which
