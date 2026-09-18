@@ -4,6 +4,12 @@ import GRDB
 import OtegamiCore
 import OtegamiStore
 import SyncEngine
+import os
+
+// TEMP DEBUG (iCloud アーカイブ無反応バグ調査用、後で削除): 画面上の
+// トースト (actionNotice) だと長い文字列が途中で切れて読めなかったため、
+// 実機のシステムログ (Console.app / `log stream`) に出す方式へ切替。
+private let archiveNoopDebugLogger = Logger(subsystem: "com.mtkg.otegami", category: "ArchiveNoopDebug")
 
 // MARK: - 新画面構成 (3): スレッド操作 ("…" メニュー)
 //
@@ -158,22 +164,28 @@ extension ThreadDetailView {
             }
             guard removed else {
                 // TEMP DEBUG (iCloud アーカイブ無反応バグ調査用、後で削除):
-                // 前回の調査で「removed == false」までは特定できたので、
-                // 今度は `MessageRemoval.commit` が対象を `isAlreadyArchived`
-                // ガードでスキップしているかを直接見る — 各 target の
-                // 実際の mailboxId/role/path/uid/isPendingRelocation を出す。
+                // 前回のログで isAlreadyArchived らしき mbId=1/role=archive
+                // まで判明。今回は (1) その mailbox の全カラムと、(2) この
+                // アカウントの全メールボックス一覧 (INBOX 自体が誤って
+                // role=archive になっていないか) を、画面ではなくシステム
+                // ログ (Console.app / `log stream`) に出す。
                 let debugInfo: String = (try? await environment.database.dbWriter.read { db -> String in
                     guard let summary = try Self.threadSummary(threadId: threadId, singleMessageId: singleMessageId, accountId: accountId, db: db) else {
                         return "summary=nil"
                     }
                     let targets = try ThreadQuery.actionTargets(for: summary, db: db)
-                    let parts = try targets.map { message -> String in
+                    let targetParts = try targets.map { message -> String in
                         let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
-                        return "msgId=\(message.id ?? -1) uid=\(message.uid) ghost=\(message.isPendingRelocation) mbId=\(message.mailboxId) role=\(mailbox?.role.rawValue ?? "?") path=\(mailbox?.path ?? "?")"
+                        return "msgId=\(message.id ?? -1) uid=\(message.uid) ghost=\(message.isPendingRelocation) mbId=\(message.mailboxId) role=\(mailbox?.role.rawValue ?? "?") roleAuth=\(mailbox.map { String($0.roleIsAuthoritative) } ?? "?") path=\(mailbox?.path ?? "?") displayPath=\(mailbox?.displayPath ?? "?")"
                     }
-                    return "targets=\(targets.count) [\(parts.joined(separator: " | "))]"
+                    let allMailboxes = try MailboxRecord.filter(Column("accountId") == accountId).fetchAll(db)
+                    let mailboxParts = allMailboxes.map { mb in
+                        "id=\(mb.id ?? -1) role=\(mb.role.rawValue) roleAuth=\(mb.roleIsAuthoritative) path=\(mb.path) displayPath=\(mb.displayPath)"
+                    }
+                    return "targets=[\(targetParts.joined(separator: " || "))] allMailboxes=[\(mailboxParts.joined(separator: " || "))]"
                 }) ?? "read-failed"
-                showActionNotice("\(noOpNoticeMessage(for: kind)) [DEBUG \(debugInfo)]")
+                archiveNoopDebugLogger.error("\(debugInfo, privacy: .public)")
+                showActionNotice(noOpNoticeMessage(for: kind))
                 return
             }
             // 実機報告 (数秒「メッセージが見つかりません」が見えてから一覧に
