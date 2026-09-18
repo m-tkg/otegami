@@ -182,7 +182,32 @@ extension ThreadDetailView {
                     let mailboxParts = allMailboxes.map { mb in
                         "id=\(mb.id ?? -1) role=\(mb.role.rawValue) roleAuth=\(mb.roleIsAuthoritative) path=\(mb.path) displayPath=\(mb.displayPath)"
                     }
-                    return "targets=[\(targetParts.joined(separator: " || "))] allMailboxes=[\(mailboxParts.joined(separator: " || "))]"
+                    // TEMP DEBUG 追加分: `actionTargets`(dedup後)は1件しか
+                    // 見えなかったので、dedup **前**の生 MessageRecord を
+                    // 直接見る — 同じメールが INBOX と Archive の両方に
+                    // 実在行として残っている(半端な MOVE)可能性の切り分け。
+                    let rawMessages = try MessageRecord.filter(Column("threadId") == threadId).fetchAll(db)
+                    let rawParts = try rawMessages.map { message -> String in
+                        let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
+                        return "msgId=\(message.id ?? -1) uid=\(message.uid) ghost=\(message.isPendingRelocation) mbId=\(message.mailboxId) role=\(mailbox?.role.rawValue ?? "?") messageId=\(message.messageId ?? "nil")"
+                    }
+                    // TEMP DEBUG 追加分: このスレッドが Inbox 一覧の SQL
+                    // (`unifiedInboxRequest`) に実際にヒットするかどうかも
+                    // 直接確認する。
+                    let inboxHit = try Bool.fetchOne(db, sql: """
+                        SELECT EXISTS (
+                            SELECT 1 FROM thread
+                            WHERE thread.id = ?
+                              AND EXISTS (
+                                  SELECT 1 FROM message
+                                  JOIN mailbox ON mailbox.id = message.mailboxId
+                                  WHERE message.threadId = thread.id
+                                        AND mailbox.isHidden = 0
+                                        AND mailbox.role = 'inbox'
+                              )
+                        )
+                        """, arguments: [threadId]) ?? false
+                    return "targets=[\(targetParts.joined(separator: " || "))] rawMessages=[\(rawParts.joined(separator: " || "))] inboxSQLHit=\(inboxHit) allMailboxes=[\(mailboxParts.joined(separator: " || "))]"
                 }) ?? "read-failed"
                 archiveNoopDebugLogger.error("\(debugInfo, privacy: .public)")
                 showActionNotice(noOpNoticeMessage(for: kind))
