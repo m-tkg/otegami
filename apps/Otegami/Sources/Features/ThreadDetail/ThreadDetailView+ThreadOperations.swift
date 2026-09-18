@@ -210,6 +210,44 @@ extension ThreadDetailView {
                     return "targets=[\(targetParts.joined(separator: " || "))] rawMessages=[\(rawParts.joined(separator: " || "))] inboxSQLHit=\(inboxHit) allMailboxes=[\(mailboxParts.joined(separator: " || "))]"
                 }) ?? "read-failed"
                 archiveNoopDebugLogger.error("\(debugInfo, privacy: .public)")
+                // TEMP DEBUG (iCloud アーカイブ無反応バグ調査用、後で削除):
+                // 根本原因は Archive メールボックスの差分同期が過去に
+                // vanished-UID 検知を取りこぼし、サーバーには存在しない
+                // ゴースト行がローカル DB に残ったこと (ユーザーが iCloud.com
+                // で実際に確認: サーバー上は INBOX にしか無い)。恒久修正
+                // (差分同期側) は別途行う前提で、まずはこの1件を直す
+                // 対症療法として、同じ messageId を持つ行が
+                // role=inbox とそれ以外 (今回は role=archive) の両方に
+                // 実在 UID (ghost=false) で存在する場合、inbox 以外の側を
+                // ゴーストとみなしローカルから削除する。
+                let repaired: String = (try? await environment.database.dbWriter.write { db -> String in
+                    let rawMessages = try MessageRecord.filter(Column("threadId") == threadId).fetchAll(db)
+                    guard rawMessages.count > 1 else { return "skip: only \(rawMessages.count) row(s)" }
+                    let mailboxById = try MailboxRecord.filter(Column("accountId") == accountId).fetchAll(db)
+                        .reduce(into: [Int64: MailboxRecord]()) { dict, mb in if let id = mb.id { dict[id] = mb } }
+                    var byMessageId: [String: [MessageRecord]] = [:]
+                    for message in rawMessages where !message.isPendingRelocation {
+                        guard let key = message.messageId else { continue }
+                        byMessageId[key, default: []].append(message)
+                    }
+                    var deletedIds: [Int64] = []
+                    for (_, group) in byMessageId {
+                        guard group.count > 1 else { continue }
+                        let inboxRows = group.filter { mailboxById[$0.mailboxId]?.role == .inbox }
+                        let nonInboxRows = group.filter { mailboxById[$0.mailboxId]?.role != .inbox }
+                        guard !inboxRows.isEmpty, !nonInboxRows.isEmpty else { continue }
+                        for ghost in nonInboxRows {
+                            guard let ghostId = ghost.id else { continue }
+                            try FTSIndexer.delete(messageId: ghostId, db: db)
+                            try MessageRecord.deleteOne(db, key: ghostId)
+                            deletedIds.append(ghostId)
+                        }
+                    }
+                    guard !deletedIds.isEmpty else { return "skip: no inbox+non-inbox duplicate pair found" }
+                    try ThreadAssigner.recomputeAggregates(threadId: threadId, db: db)
+                    return "deleted ghost msgIds=\(deletedIds)"
+                }) ?? "repair read/write failed"
+                archiveNoopDebugLogger.error("repair result: \(repaired, privacy: .public)")
                 showActionNotice(noOpNoticeMessage(for: kind))
                 return
             }
