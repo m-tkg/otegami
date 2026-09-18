@@ -40,6 +40,7 @@ extension AppEnvironment {
         let authByAccountId = resolvedAuthByAccountId
 
         let syncCoordinator = self.syncCoordinator
+        let database = self.database
         await withTaskGroup(of: Void.self) { taskGroup in
             var pendingGroups = groups.makeIterator()
 
@@ -60,6 +61,21 @@ extension AppEnvironment {
                         // INBOX スコープなので、追加コストはアカウントあたり
                         // `UID SEARCH` 1回で済む。
                         _ = try? await syncCoordinator.syncAccountIncrementally(account, auth: auth, forceReconcileVanishedUIDs: true)
+                        // 実機報告「iCloud のメールをアーカイブしたのに受信箱に
+                        // 残る」の根本原因対応: Archive/Trash/Junk は上の INBOX
+                        // 同期の対象外で、そのメールボックスへの操作直後の
+                        // targeted resync 以外に同期の機会が無い場合がある
+                        // (`StaleNonInboxMailboxQuery`のdoc comment参照) —
+                        // 低頻度 (既定24時間ごと) にここで選び出し、
+                        // vanished-UID 検知込みの通常の差分同期を1回走らせる
+                        // ことで、ローカルに残ったゴースト行を自己修復させる。
+                        if let stalePaths = try? await database.dbWriter.read({ db in
+                            try StaleNonInboxMailboxQuery.stalePaths(accountId: account.id, db: db)
+                        }), !stalePaths.isEmpty {
+                            _ = try? await syncCoordinator.syncAccountIncrementally(
+                                account, auth: auth, scope: .mailboxes(paths: Set(stalePaths)), forceReconcileVanishedUIDs: true
+                            )
+                        }
                     }
                 }
             }
