@@ -158,10 +158,22 @@ extension ThreadDetailView {
             }
             guard removed else {
                 // TEMP DEBUG (iCloud アーカイブ無反応バグ調査用、後で削除):
-                // どの分岐で `removed == false` になったか (accountId 欠落/
-                // summary 取得失敗/`commit` が nil) を実機で確認するため、
-                // 通常の noOp 文言に内部状態を混ぜて表示する。
-                showActionNotice("\(noOpNoticeMessage(for: kind)) [DEBUG isThreadArchived=\(isThreadArchived) singleMessageId=\(singleMessageId?.description ?? "nil") threadId=\(threadId)]")
+                // 前回の調査で「removed == false」までは特定できたので、
+                // 今度は `MessageRemoval.commit` が対象を `isAlreadyArchived`
+                // ガードでスキップしているかを直接見る — 各 target の
+                // 実際の mailboxId/role/path/uid/isPendingRelocation を出す。
+                let debugInfo: String = (try? await environment.database.dbWriter.read { db -> String in
+                    guard let summary = try Self.threadSummary(threadId: threadId, singleMessageId: singleMessageId, accountId: accountId, db: db) else {
+                        return "summary=nil"
+                    }
+                    let targets = try ThreadQuery.actionTargets(for: summary, db: db)
+                    let parts = try targets.map { message -> String in
+                        let mailbox = try MailboxRecord.fetchOne(db, key: message.mailboxId)
+                        return "msgId=\(message.id ?? -1) uid=\(message.uid) ghost=\(message.isPendingRelocation) mbId=\(message.mailboxId) role=\(mailbox?.role.rawValue ?? "?") path=\(mailbox?.path ?? "?")"
+                    }
+                    return "targets=\(targets.count) [\(parts.joined(separator: " | "))]"
+                }) ?? "read-failed"
+                showActionNotice("\(noOpNoticeMessage(for: kind)) [DEBUG \(debugInfo)]")
                 return
             }
             // 実機報告 (数秒「メッセージが見つかりません」が見えてから一覧に
