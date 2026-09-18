@@ -206,20 +206,17 @@ struct MessageListRow: View {
     /// Task #114: unchanged (ユーザー指示は長いスワイプのしきい値のみ対象)。
     private let shortSwipeThreshold: CGFloat = 72
     /// Task #114 (実機フィードバック「長いスワイプの判定をもっと長くして
-    /// ほしい」、ユーザー指示「行幅の約75%」): 旧実装は端末幅に関わらず
-    /// 固定 152pt だった — 狭い端末では長いスワイプに届きやすすぎ、広い
-    /// 端末 (iPad 等) では逆に届きにくかった。`rowWidth`(このロー自身の
-    /// 実測幅、`swipeableRow`の`GeometryReader`背景が書き込む) に対する
-    /// 相対値に変えることで、どの端末幅でも「行幅の約75%」を一貫して
-    /// 満たす。75% という比率自体を`longSwipeThresholdFraction`として
-    /// 定数化してあるのは、この値の由来 (Task #114 のユーザー指示) を
-    /// 一箇所のdoc commentに集約するため。`rowWidth`の既定プレースホルダ
-    /// (400pt、初回レイアウト前用) だと 300pt — 旧固定値 152pt より
-    /// 確実に長く、「現状より長く」という指示とも整合する。
+    /// ほしい」): 旧実装は端末幅に関わらず固定 152pt だった — 狭い端末では
+    /// 長いスワイプに届きやすすぎ、広い端末 (iPad 等) では逆に届きにくかった。
+    /// `rowWidth`(このロー自身の実測幅、`swipeableRow`の`GeometryReader`
+    /// 背景が書き込む) に対する相対値に変えることで、どの端末幅でも
+    /// 「行幅の約50%」を一貫して満たす。比率自体を
+    /// `longSwipeThresholdFraction`として定数化してあるのは、この値の由来
+    /// (Task #114) を一箇所のdoc commentに集約するため。
     private var longSwipeThreshold: CGFloat { rowWidth * Self.longSwipeThresholdFraction }
     /// Task #114 で導入した、`longSwipeThreshold`が`rowWidth`の何%かを表す
-    /// 比率定数 — ユーザー指示どおり 0.75 (約75%)。
-    private static let longSwipeThresholdFraction: CGFloat = 0.75
+    /// 比率定数 — ユーザー指示どおり 0.5 (約50%)。
+    private static let longSwipeThresholdFraction: CGFloat = 0.5
     /// How far past `longSwipeThreshold` the drag may still visually
     /// rubber-band before being clamped — keeps a very fast/long drag from
     /// sliding the row content off the far edge of the screen.
