@@ -157,7 +157,11 @@ extension ThreadDetailView {
                 ) != nil
             }
             guard removed else {
-                showActionNotice(noOpNoticeMessage(for: kind))
+                // TEMP DEBUG (iCloud アーカイブ無反応バグ調査用、後で削除):
+                // どの分岐で `removed == false` になったか (accountId 欠落/
+                // summary 取得失敗/`commit` が nil) を実機で確認するため、
+                // 通常の noOp 文言に内部状態を混ぜて表示する。
+                showActionNotice("\(noOpNoticeMessage(for: kind)) [DEBUG isThreadArchived=\(isThreadArchived) singleMessageId=\(singleMessageId?.description ?? "nil") threadId=\(threadId)]")
                 return
             }
             // 実機報告 (数秒「メッセージが見つかりません」が見えてから一覧に
@@ -189,7 +193,11 @@ extension ThreadDetailView {
             // nothing was removed and there's nothing to notify/replay for.
             showActionNotice("ピン留め中のためアーカイブできません")
         } catch {
-            // Best-effort — the thread just stays if this fails.
+            // TEMP DEBUG (iCloud アーカイブ無反応バグ調査用、後で削除):
+            // 通常は "Best-effort — the thread just stays if this fails."
+            // として無音で握りつぶしていたが、無音失敗そのものが今回の
+            // 調査対象なので、原因特定までの間だけ画面に出す。
+            showActionNotice("[DEBUG] commitRemoval error: \(error)")
         }
     }
 
