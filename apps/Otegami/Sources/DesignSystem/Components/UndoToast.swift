@@ -14,13 +14,19 @@ import SwiftUI
 /// and this renders the exact same toast shell with no "元に戻す" button,
 /// rather than introducing a second, visually-diverging component for what
 /// is otherwise identical presentation.
+///
+/// トースト本体のタップは`onDismiss`を呼ぶ — タイマー満了と同じ扱い (元に
+/// 戻すのを諦めて操作を確定する) で、Undo ではない。「元に戻す」ボタン上の
+/// タップは子のジェスチャが優先されるのでこれまでどおり`onUndo`になる。
 public struct UndoToast: View {
     private let message: String
     private let onUndo: (() -> Void)?
+    private let onDismiss: (() -> Void)?
 
-    public init(message: String, onUndo: (() -> Void)? = nil) {
+    public init(message: String, onUndo: (() -> Void)? = nil, onDismiss: (() -> Void)? = nil) {
         self.message = message
         self.onUndo = onUndo
+        self.onDismiss = onDismiss
     }
 
     public var body: some View {
@@ -59,15 +65,23 @@ public struct UndoToast: View {
         // 「macOS は現状維持」どおり旧来の`ink`反転面をそのまま残す。
         #if os(iOS)
         .otegamiGlassChrome(shape: Capsule())
+        .contentShape(Capsule())
         #else
         .background(OtegamiColor.ink)
         .overlay(Rectangle().strokeBorder(OtegamiColor.divider, lineWidth: OtegamiStroke.secondary))
+        .contentShape(Rectangle())
         #endif
+        .onTapGesture(perform: dismiss)
         .padding(.horizontal, OtegamiSpacing.lg)
         .padding(.bottom, OtegamiSpacing.md)
         .accessibilityIdentifier("undoToast")
         .accessibilityElement(children: .combine)
+        .accessibilityAction(named: Text("閉じる"), dismiss)
         .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func dismiss() {
+        onDismiss?()
     }
 
     /// iOS: Glass の上は標準の`.primary`に委譲。macOS: 従来どおり`ink`の

@@ -133,7 +133,7 @@ struct AccountDigestView: View {
             // `MailScreenView` 配下では親が FAB より手前に描くのでここでは
             // 描画しない。
             if !suppressInternalUndoToast, let pendingUndo {
-                UndoToast(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo))
+                UndoToast(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo), onDismiss: dismissPending)
                     .animation(.default, value: pendingUndo.message)
             }
         }
@@ -373,7 +373,7 @@ struct AccountDigestView: View {
         }
         let pending = PendingUndo(accountId: accountId, message: message, undo: undo)
         pendingUndo = pending
-        onPendingUndoChanged(MessageListView.UndoToastPayload(message: message, onUndo: undoButtonAction(for: pending)))
+        onPendingUndoChanged(MessageListView.UndoToastPayload(message: message, onUndo: undoButtonAction(for: pending), onDismiss: dismissPending))
         pendingUndoTask = Task {
             try? await Task.sleep(for: Self.undoWindow)
             guard !Task.isCancelled else { return }
@@ -381,6 +381,16 @@ struct AccountDigestView: View {
             onPendingUndoChanged(nil)
             await replayOpQueueSoon(accountId: accountId)
         }
+    }
+
+    /// トースト本体のタップ — `scheduleUndo`のタイマー満了と同じ扱い
+    /// (Undo はせず、キュー済みの opQueue を即座にリプレイ)。
+    private func dismissPending() {
+        guard let pending = pendingUndo else { return }
+        pendingUndoTask?.cancel()
+        pendingUndo = nil
+        onPendingUndoChanged(nil)
+        Task { await replayOpQueueSoon(accountId: pending.accountId) }
     }
 
     private func undoPending() {

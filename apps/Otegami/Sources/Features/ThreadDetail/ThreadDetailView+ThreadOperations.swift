@@ -254,6 +254,12 @@ extension ThreadDetailView {
         }
     }
 
+    /// トーストのタップで閉じる — タイマー満了と同じ扱い。
+    func dismissActionNotice() {
+        actionNoticeTask?.cancel()
+        actionNotice = nil
+    }
+
     /// 実機報告 (2026-08-27): `MessageRemoval.commit` が `nil` を返した
     /// (対象が全てスキップされた) ときの文言。`actionNotice` の doc comment
     /// 参照 — 無音で終わらせないためだけのもので、正常な操作では出ない。

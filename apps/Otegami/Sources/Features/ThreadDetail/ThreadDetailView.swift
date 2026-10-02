@@ -410,7 +410,7 @@ struct ThreadDetailView: View {
         // overlapping its buttons.
         .overlay(alignment: .bottom) {
             if let actionNotice {
-                UndoToast(message: actionNotice)
+                UndoToast(message: actionNotice, onDismiss: dismissActionNotice)
                     .animation(.default, value: actionNotice)
             }
         }

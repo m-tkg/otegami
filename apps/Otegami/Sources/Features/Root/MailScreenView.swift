@@ -595,7 +595,7 @@ struct MailScreenView: View {
         // そのまま、縦方向のクレランス計算だけを両状態に対応させた。
         .overlay(alignment: .bottom) {
             if let pendingUndoPayload {
-                UndoToast(message: pendingUndoPayload.message, onUndo: pendingUndoPayload.onUndo)
+                UndoToast(message: pendingUndoPayload.message, onUndo: pendingUndoPayload.onUndo, onDismiss: pendingUndoPayload.onDismiss)
                     .animation(.default, value: pendingUndoPayload.message)
                     #if os(iOS)
                     .padding(.bottom, floatingButtonClearance)
