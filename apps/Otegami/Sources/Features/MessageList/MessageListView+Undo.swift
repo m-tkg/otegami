@@ -51,8 +51,8 @@ extension MessageListView {
 
     /// Task #108: reports the current `pendingUndo` (or its absence) to
     /// `onPendingUndoChanged` — called from every site that mutates
-    /// `pendingUndo` (`scheduleUndo`'s two writes, `undoPending()`, and the
-    /// `scenePhase` backstop below) so a parent rendering the toast
+    /// `pendingUndo` (`scheduleUndo`'s two writes, `undoPending()`, and
+    /// `dismissPendingUndo()`) so a parent rendering the toast
     /// externally (`suppressInternalUndoToast`'s doc comment) never sees a
     /// stale value.
     func notifyPendingUndoChanged() {
@@ -60,7 +60,18 @@ extension MessageListView {
             onPendingUndoChanged(nil)
             return
         }
-        onPendingUndoChanged(UndoToastPayload(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo)))
+        onPendingUndoChanged(UndoToastPayload(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo), onDismiss: dismissPendingUndo))
+    }
+
+    /// Undo を諦めて操作を確定する — タイマー満了と同じ扱い (キュー済みの
+    /// opQueue を即座にリプレイ)。トースト本体のタップと、
+    /// `.onChange(of: scenePhase)` のバックストップの両方から呼ばれる。
+    func dismissPendingUndo() {
+        guard let pendingUndo else { return }
+        pendingUndoTask?.cancel()
+        self.pendingUndo = nil
+        notifyPendingUndoChanged()
+        Task { await replayOpQueueSoon(accountIds: pendingUndo.accountIds) }
     }
 
     private func undoPending() {

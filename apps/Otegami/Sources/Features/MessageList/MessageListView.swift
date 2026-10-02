@@ -167,6 +167,9 @@ struct MessageListView: View {
         /// Task #163: `nil` for a blocked-action notice — see
         /// `PendingUndo.undo`'s doc comment.
         let onUndo: (() -> Void)?
+        /// トースト本体のタップで閉じる — タイマー満了と同じ扱い
+        /// (`dismissPendingUndo()`)。Undo はしない。
+        let onDismiss: () -> Void
     }
 
     /// Backstop for `scheduleUndo`'s delayed commit — see that method's doc
@@ -968,7 +971,7 @@ struct MessageListView: View {
             // (`RootView`)はこのパラメータを渡さないので、これまでどおり
             // ここで描画する。
             if !suppressInternalUndoToast, let pendingUndo {
-                UndoToast(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo))
+                UndoToast(message: pendingUndo.message, onUndo: undoButtonAction(for: pendingUndo), onDismiss: dismissPendingUndo)
                     .animation(.default, value: pendingUndo.threadIds)
                     #if os(iOS)
                     .padding(.bottom, OtegamiSpacing.xxl + OtegamiSpacing.lg)
@@ -1013,11 +1016,8 @@ struct MessageListView: View {
         // opQueue rows replay right away instead of waiting out the rest of
         // the window for no one to see.
         .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase != .active, let pendingUndo else { return }
-            pendingUndoTask?.cancel()
-            self.pendingUndo = nil
-            notifyPendingUndoChanged()
-            Task { await replayOpQueueSoon(accountIds: pendingUndo.accountIds) }
+            guard newPhase != .active else { return }
+            dismissPendingUndo()
         }
         // Binding/ボタン/メッセージを名前付きに分けているのは下の
         // 「ゴミ箱を空にしますか？」alert と同じ CI 型チェックタイムアウト
