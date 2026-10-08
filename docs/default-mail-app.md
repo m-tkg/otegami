@@ -126,7 +126,24 @@ provisioning profile の生成に失敗してビルド/署名が壊れる**
    で宣言していること (対応済み)、任意の宛先へ送信できること (対応済み)、
    任意の送信者からのメールを受信できること (対応済み — ユーザー制御の
    迷惑メールフィルタは許可されている)。
-3. 承認を待つ (Apple 側のリードタイムは案件による)。**既知の制限**:
+   **申請にはバイナリを試せる導線を必ず含める** — 公開 TestFlight の
+   招待 URL (外部テスターグループの「パブリックリンク」) か、App Store の
+   掲載ページへのリンク。これが無い申請は要件を満たしていても「テスト
+   できるバイナリが無い」という理由で却下される (実際に 1 回却下された)。
+   審査用のビルドは `OTEGAMI_MAIL_CLIENT_ENTITLEMENT = NO` (既定) のままで
+   よい — 審査で見られるのは上記の要件であり、entitlement 自体は承認後に
+   初めて付けられるものなので。審査担当者がメールアカウント無しでも
+   試せるよう、テスト用アカウントや確認手順を備考欄に書いておくとよい。
+   公開 TestFlight リンクの用意は [`docs/xcode-cloud.md`](xcode-cloud.md)
+   の tag トリガー配布 → App Store Connect で外部テスターグループを作成
+   → Beta App Review 通過 → パブリックリンクを有効化、の順。
+3. 承認を待つ (Apple 側のリードタイムは案件による)。**承認されたか
+   どうかは Apple からのメール本文で必ず確認する** — 未承認のまま
+   フラグを `YES` にして実機向けにビルドすると、署名時に
+   `Entitlement com.apple.developer.mail-client not found and could not
+   be included in profile` で archive が失敗する (App ID に該当
+   capability が存在しないため。`asc bundle-ids capabilities list` で
+   App ID の capability 一覧を見ても確認できる)。**既知の制限**:
    この entitlement は Apple の個別承認制であり、承認されるまで
    `OTEGAMI_MAIL_CLIENT_ENTITLEMENT = YES` にした実機ビルドを配布する
    ことはできない (Simulator ではフラグを立てるだけでローカルに動作
