@@ -74,6 +74,10 @@ echo "==> ci_post_clone: writing $LOCAL_XCCONFIG"
   [ -n "${OTEGAMI_DEVELOPMENT_TEAM:-}" ] && echo "DEVELOPMENT_TEAM = ${OTEGAMI_DEVELOPMENT_TEAM}"
   [ -n "${OTEGAMI_BUNDLE_ID:-}" ] && echo "OTEGAMI_BUNDLE_ID = ${OTEGAMI_BUNDLE_ID}"
   [ -n "${OTEGAMI_GOOGLE_CLIENT_ID:-}" ] && echo "GOOGLE_OAUTH_CLIENT_ID = ${OTEGAMI_GOOGLE_CLIENT_ID}"
+  # Outlook.com/Office 365 OAuth Client ID (Config/Shared.xcconfig's doc
+  # comment on OTEGAMI_MICROSOFT_CLIENT_ID). Unset leaves the Outlook and
+  # Office365 buttons disabled in the build, same as Gmail just above.
+  [ -n "${OTEGAMI_MICROSOFT_CLIENT_ID:-}" ] && echo "OTEGAMI_MICROSOFT_CLIENT_ID = ${OTEGAMI_MICROSOFT_CLIENT_ID}"
   # Task #171 follow-up (build-time relay registration secret — see
   # Config/Shared.xcconfig's doc comment on
   # OTEGAMI_RELAY_REGISTRATION_SECRET). Registering this as an Xcode Cloud

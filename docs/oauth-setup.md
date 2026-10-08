@@ -260,6 +260,8 @@ Azure Portal で発行し、`Config/Local.xcconfig`(git 管理外)に設定す�
 には**、GitHub Secrets に `OTEGAMI_MICROSOFT_CLIENT_ID` を登録する必要が
 ある。Gmail 側と同じ仕組み・同じ「未登録でも失敗しない」挙動 —
 [docs/release.md](release.md#必要な-github-secrets) 参照。
+TestFlight (Xcode Cloud) のビルドでは、同じ名前のワークフロー環境変数を
+登録する — [docs/xcode-cloud.md](xcode-cloud.md) 参照。
 
 ## 1. Azure AD アプリを登録する
 
