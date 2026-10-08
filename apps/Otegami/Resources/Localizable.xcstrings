@@ -2781,6 +2781,106 @@
         }
       }
     },
+    "この配布ビルドにはプッシュ中継サーバーが設定されていません。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This distribution build has no push relay server configured."
+          }
+        }
+      }
+    },
+    "通知が許可されていません。設定アプリから許可してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notifications are not allowed. Please allow them in the Settings app."
+          }
+        }
+      }
+    },
+    "この環境では有効化できません。シミュレータは APNs デバイストークンを取得できないため、実機で通知の許可を確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't be enabled in this environment. The simulator can't obtain an APNs device token, so check the notification permission on a real device."
+          }
+        }
+      }
+    },
+    "この OS では未対応です（iOS のみ対応）。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not supported on this OS (iOS only)."
+          }
+        }
+      }
+    },
+    "リレーの登録シークレットが一致しません。運用者に確認してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The relay's registration secret does not match. Please check with the operator."
+          }
+        }
+      }
+    },
+    "このリレーは登録シークレットを要求していますが、このビルドには設定されていません。運用者に確認するか docs/relay-deployment.md を参照してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This relay requires a registration secret, but this build has none configured. Check with the operator or see docs/relay-deployment.md."
+          }
+        }
+      }
+    },
+    "有効化に失敗しました: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed to enable: %@"
+          }
+        }
+      }
+    },
+    "このアカウントのパスワードが見つかりません。アカウント設定でパスワードを再入力してください。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The password for this account was not found. Re-enter it in the account settings."
+          }
+        }
+      }
+    },
+    "再登録に失敗しました。リレーに接続できないか、資格情報が拒否されました。": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-registration failed. The relay is unreachable or the credentials were rejected."
+          }
+        }
+      }
+    },
+    "再登録に失敗しました: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-registration failed: %@"
+          }
+        }
+      }
+    },
     "アカウント別の状態": {
       "localizations": {
         "en": {

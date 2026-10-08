@@ -455,6 +455,27 @@ translations = {
         "Turning this on sends each password-authenticated account's IMAP connection info (server, username, password) to the push relay server, where it's stored encrypted. For Gmail/Outlook (OAuth) accounts, an access refresh token is sent and stored encrypted the same way instead of a password. Only enable this if you trust the relay's operator.",
     "この配布ビルドにはプッシュ中継サーバーが設定されていません。自分のリレーを使う場合は docs/relay-deployment.md を参照して Config/Local.xcconfig に設定してください。":
         "This distribution build has no push relay server configured. If you're running your own relay, see docs/relay-deployment.md and set it in Config/Local.xcconfig.",
+    # Push settings error messages (`PushNotificationSettingsView`): the
+    # `errorMessage: String?` state is shown via `Text(String)` (verbatim),
+    # so the assignments go through `String(localized:)` and need these keys.
+    "この配布ビルドにはプッシュ中継サーバーが設定されていません。":
+        "This distribution build has no push relay server configured.",
+    "通知が許可されていません。設定アプリから許可してください。":
+        "Notifications are not allowed. Please allow them in the Settings app.",
+    "この環境では有効化できません。シミュレータは APNs デバイストークンを取得できないため、実機で通知の許可を確認してください。":
+        "Can't be enabled in this environment. The simulator can't obtain an APNs device token, so check the notification permission on a real device.",
+    "この OS では未対応です（iOS のみ対応）。":
+        "Not supported on this OS (iOS only).",
+    "リレーの登録シークレットが一致しません。運用者に確認してください。":
+        "The relay's registration secret does not match. Please check with the operator.",
+    "このリレーは登録シークレットを要求していますが、このビルドには設定されていません。運用者に確認するか docs/relay-deployment.md を参照してください。":
+        "This relay requires a registration secret, but this build has none configured. Check with the operator or see docs/relay-deployment.md.",
+    "有効化に失敗しました: %@": "Failed to enable: %@",
+    "このアカウントのパスワードが見つかりません。アカウント設定でパスワードを再入力してください。":
+        "The password for this account was not found. Re-enter it in the account settings.",
+    "再登録に失敗しました。リレーに接続できないか、資格情報が拒否されました。":
+        "Re-registration failed. The relay is unreachable or the credentials were rejected.",
+    "再登録に失敗しました: %@": "Re-registration failed: %@",
     # Task #173: per-account watch status list (`PushWatchStatusSection`).
     "アカウント別の状態": "Status by Account",
     # Task #210: widened from "停止しているアカウントは再登録できます。" —
