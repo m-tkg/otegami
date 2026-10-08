@@ -298,15 +298,17 @@ struct PushNotificationSettingsView: View {
             try await environment.enablePushNotifications()
             await refreshWatchRows()
         } catch AppEnvironment.PushError.relayNotConfigured {
-            errorMessage = "この配布ビルドにはプッシュ中継サーバーが設定されていません。"
+            errorMessage = String(localized: "この配布ビルドにはプッシュ中継サーバーが設定されていません。")
         } catch AppEnvironment.PushError.notificationPermissionDenied {
-            errorMessage = "通知が許可されていません。設定アプリから許可してください。"
+            errorMessage = String(localized: "通知が許可されていません。設定アプリから許可してください。")
             showsOpenSettingsButton = true
         } catch AppEnvironment.PushError.noDeviceToken {
-            errorMessage = "この環境では有効化できません。シミュレータは APNs デバイストークンを取得できないため、" +
-                "実機で通知の許可を確認してください。"
+            errorMessage = String(localized: """
+                この環境では有効化できません。シミュレータは APNs デバイストークンを取得できないため、\
+                実機で通知の許可を確認してください。
+                """)
         } catch AppEnvironment.PushError.unsupportedPlatform {
-            errorMessage = "この OS では未対応です（iOS のみ対応）。"
+            errorMessage = String(localized: "この OS では未対応です（iOS のみ対応）。")
         } catch AppEnvironment.PushError.registrationSecretRejected {
             // Task #171 follow-up: the registration secret is a build-time
             // value (`RelayRegistrationSecretConfig`) — see
@@ -314,13 +316,15 @@ struct PushNotificationSettingsView: View {
             // the message differs depending on whether this build has one
             // baked in at all.
             if environment.isRelayRegistrationSecretConfigured {
-                errorMessage = "リレーの登録シークレットが一致しません。運用者に確認してください。"
+                errorMessage = String(localized: "リレーの登録シークレットが一致しません。運用者に確認してください。")
             } else {
-                errorMessage = "このリレーは登録シークレットを要求していますが、このビルドには設定されていません。" +
-                    "運用者に確認するか docs/relay-deployment.md を参照してください。"
+                errorMessage = String(localized: """
+                    このリレーは登録シークレットを要求していますが、このビルドには設定されていません。\
+                    運用者に確認するか docs/relay-deployment.md を参照してください。
+                    """)
             }
         } catch {
-            errorMessage = "有効化に失敗しました: \(error)"
+            errorMessage = String(localized: "有効化に失敗しました: \(String(describing: error))")
         }
     }
 
@@ -359,11 +363,11 @@ struct PushNotificationSettingsView: View {
                 try await environment.reregisterWatch(for: account)
                 errorMessage = nil
             } catch AppEnvironment.ReregisterWatchError.credentialUnavailable {
-                errorMessage = "このアカウントのパスワードが見つかりません。アカウント設定でパスワードを再入力してください。"
+                errorMessage = String(localized: "このアカウントのパスワードが見つかりません。アカウント設定でパスワードを再入力してください。")
             } catch AppEnvironment.ReregisterWatchError.relayRejectedWatch {
-                errorMessage = "再登録に失敗しました。リレーに接続できないか、資格情報が拒否されました。"
+                errorMessage = String(localized: "再登録に失敗しました。リレーに接続できないか、資格情報が拒否されました。")
             } catch {
-                errorMessage = "再登録に失敗しました: \(error)"
+                errorMessage = String(localized: "再登録に失敗しました: \(String(describing: error))")
             }
             await refreshWatchRows()
         }
