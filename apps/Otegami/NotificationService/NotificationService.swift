@@ -1119,6 +1119,11 @@ final class NotificationService: UNNotificationServiceExtension, @unchecked Send
     /// without pulling `SyncEngine`/`OtegamiStore`-shaped app dependencies
     /// into this Extension.
     private static var pushRelayBaseURL: URL? {
+        // `RelayURLConfig.isFeatureHidden` の複製: プッシュ通知機能を含まない
+        // ビルド (`OTEGAMI_PUSH_FEATURE_HIDDEN = YES`) ではリレーに問い合わせない。
+        guard (Bundle.main.object(forInfoDictionaryKey: "OTEGAMI_PUSH_FEATURE_HIDDEN") as? String) != "YES" else {
+            return nil
+        }
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "OTEGAMI_PUSH_RELAY_URL") as? String,
               !raw.isEmpty,
               !raw.hasPrefix("$(")

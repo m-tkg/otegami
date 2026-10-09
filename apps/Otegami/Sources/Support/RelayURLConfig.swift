@@ -22,7 +22,13 @@ enum RelayURLConfig {
     /// disables its enable toggle and explains why when this is `nil`, the
     /// same way `GoogleOAuthConfig.isConfigured == false` disables the
     /// Gmail add-account button.
+    ///
+    /// Always `nil` for a build with `OTEGAMI_PUSH_FEATURE_HIDDEN = YES`
+    /// (see `isFeatureHidden`), regardless of what URL is configured — every
+    /// relay-bound call site already early-returns on a `nil` here, so this
+    /// one check closes all of them at once.
     static var value: URL? {
+        guard !isFeatureHidden else { return nil }
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "OTEGAMI_PUSH_RELAY_URL") as? String,
               !raw.isEmpty,
               // Same xcodegen edge case `GoogleOAuthConfig.clientId` guards
@@ -47,4 +53,24 @@ enum RelayURLConfig {
     }
 
     static var isConfigured: Bool { value != nil }
+
+    /// `true` for a build made with `OTEGAMI_PUSH_FEATURE_HIDDEN = YES`
+    /// (`Config/Shared.xcconfig`): a build that ships without the push
+    /// notification feature at all. Unlike `isConfigured == false` (the
+    /// OSS-default "no relay in this build" state, which keeps the
+    /// disabled toggle plus an explanation for self-builders), the settings
+    /// UI for the feature is not shown at all. The relay URL setting itself
+    /// is left untouched; `value` just reports `nil`.
+    static var isFeatureHidden: Bool {
+        isFeatureHidden(infoValue: Bundle.main.object(forInfoDictionaryKey: "OTEGAMI_PUSH_FEATURE_HIDDEN"))
+    }
+
+    /// Pure core of `isFeatureHidden`, split out for testing. The Info.plist
+    /// value is the literal string "YES"/"NO" (xcconfig substitution into a
+    /// `<string>` entry — see project.yml's `OtegamiMailClientEntitlementEnabled`
+    /// comment), so only the exact string "YES" counts; unset, empty or an
+    /// unexpanded `$(...)` placeholder all mean "not hidden".
+    nonisolated static func isFeatureHidden(infoValue: Any?) -> Bool {
+        (infoValue as? String) == "YES"
+    }
 }

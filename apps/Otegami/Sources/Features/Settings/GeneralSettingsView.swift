@@ -110,6 +110,40 @@ struct GeneralSettingsView: View {
         #endif
     }
 
+    /// iCloud 同期トグルの説明文。プッシュ通知機能を含まないビルド
+    /// (`RelayURLConfig.isFeatureHidden`) では、画面に存在しない機能の
+    /// 名前が出ないよう「プッシュ通知の設定」への言及を外した文言にする。
+    @ViewBuilder
+    private var cloudSyncFooter: some View {
+        if RelayURLConfig.isFeatureHidden {
+            Text(
+                "同じ Apple ID の他の iOS/Mac デバイスと、アカウントの接続設定に加えて表示・翻訳・通知内容・署名・テンプレートなどの設定を同期します。パスワードは iCloud キーチェーンが別途同期し、メール本文などのキャッシュなど端末固有の項目は同期しません。"
+            )
+        } else {
+            Text(
+                "同じ Apple ID の他の iOS/Mac デバイスと、アカウントの接続設定に加えて表示・翻訳・通知内容・署名・テンプレートなどの設定を同期します。パスワードは iCloud キーチェーンが別途同期し、メール本文などのキャッシュやプッシュ通知の設定など端末固有の項目は同期しません。"
+            )
+        }
+    }
+
+    #if os(iOS)
+    /// 「プッシュ通知」画面への入口。プッシュ通知機能を含まないビルド
+    /// (`RelayURLConfig.isFeatureHidden`) ではセクションごと出さない。
+    @ViewBuilder
+    private var pushNotificationsSection: some View {
+        if !RelayURLConfig.isFeatureHidden {
+            Section {
+                NavigationLink {
+                    PushNotificationSettingsView()
+                } label: {
+                    Label("プッシュ通知", systemImage: "bell.badge")
+                }
+                .accessibilityIdentifier("settings.pushNotificationsLink")
+            }
+        }
+    }
+    #endif
+
     @ViewBuilder
     private var sections: some View {
         Section {
@@ -122,9 +156,7 @@ struct GeneralSettingsView: View {
             )
             .accessibilityIdentifier("settings.cloudSyncToggle")
         } footer: {
-            Text(
-                "同じ Apple ID の他の iOS/Mac デバイスと、アカウントの接続設定に加えて表示・翻訳・通知内容・署名・テンプレートなどの設定を同期します。パスワードは iCloud キーチェーンが別途同期し、メール本文などのキャッシュやプッシュ通知の設定など端末固有の項目は同期しません。"
-            )
+            cloudSyncFooter
         }
 
         // Task #212: `AccountSettingsCategoryView`から移設 — 元の
@@ -133,14 +165,7 @@ struct GeneralSettingsView: View {
         // `.unsupportedPlatform`を投げる、`PushNotificationSettingsView`の
         // doc comment参照)。
         #if os(iOS)
-        Section {
-            NavigationLink {
-                PushNotificationSettingsView()
-            } label: {
-                Label("プッシュ通知", systemImage: "bell.badge")
-            }
-            .accessibilityIdentifier("settings.pushNotificationsLink")
-        }
+        pushNotificationsSection
         #endif
 
         // 2026-08-02: `AccountSettingsCategoryView`から移設 — see this

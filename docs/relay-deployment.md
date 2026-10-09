@@ -179,6 +179,29 @@ CLIENT_ID` で GitHub secret/Xcode Cloud 側は `OTEGAMI_GOOGLE_CLIENT_ID`
 でビルドする開発者がリレーを持っていなくても困らないようにする意図的な
 設計であり、エラーではない。
 
+## プッシュ通知機能を含まないビルド (`OTEGAMI_PUSH_FEATURE_HIDDEN`)
+
+配布形態によっては、リレー URL がビルド設定に入っていても、プッシュ通知
+機能を画面ごと出さないビルドを作りたい場合がある。ビルド設定
+`OTEGAMI_PUSH_FEATURE_HIDDEN = YES` (既定 `NO`) がそのためのスイッチで、
+`OTEGAMI_PUSH_RELAY_URL` の値を消さずに切り替えられる。
+
+- 設定画面から「プッシュ通知」画面への入口が消える。「未設定時の挙動」の
+  無効化したトグル + 説明文は出ない (あれは自分でビルドする開発者向けの
+  表示で、別物として残してある)。
+- アプリ本体では `RelayURLConfig.value` が常に `nil` になり、リレーへの
+  通信 (登録・watch 作成・状態取得など) が全て止まる。NotificationService
+  も同じスイッチを読み、リレーへ本文プレビューを問い合わせない。
+- 既にプッシュ通知を有効化していた端末がこのビルドに更新された場合も、
+  保存済みの設定 (`PushSettingsStore`) は消さず書き換えない。画面が消え、
+  アプリからリレーへの通信が止まるだけ。リレー側に残った watch は、この
+  ビルドからは削除できない (無効化の操作が存在しないため) ので、必要なら
+  リレー側で別途整理する。
+- 設定方法: ローカルは `Config/Local.xcconfig` (`Local.xcconfig.sample`
+  参照)、Xcode Cloud は環境変数 `OTEGAMI_PUSH_FEATURE_HIDDEN`
+  ([`docs/xcode-cloud.md`](xcode-cloud.md))。`YES` 以外の値は有効扱いに
+  ならない。
+
 ## 反映の順序 (シークレットのローテーション/初回設定)
 
 `RELAY_DEVICE_REGISTRATION_SECRET`/`OTEGAMI_RELAY_REGISTRATION_SECRET`
