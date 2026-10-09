@@ -69,3 +69,9 @@
 // 既定 (このファイルが存在しない、またはこの行がコメントのまま) は NO
 // で、これまで通りビルドできる。
 // OTEGAMI_MAIL_CLIENT_ENTITLEMENT = YES
+
+// プッシュ通知機能を含まないビルドを作るスイッチ
+// (docs/relay-deployment.md)。YES にすると設定画面からプッシュ通知の
+// 項目が消え、OTEGAMI_PUSH_RELAY_URL が設定されていてもリレーとは一切
+// 通信しない。既定 (この行がコメントのまま) は NO。
+// OTEGAMI_PUSH_FEATURE_HIDDEN = YES

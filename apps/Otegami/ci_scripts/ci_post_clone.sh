@@ -103,6 +103,7 @@ echo "==> ci_post_clone: writing $LOCAL_XCCONFIG"
     echo "OTEGAMI_PUSH_RELAY_URL = ${RELAY_URL_SCHEME}:\$(OTEGAMI_URL_SLASHES)${RELAY_URL_REST}"
   fi
   [ -n "${OTEGAMI_MAIL_CLIENT_ENTITLEMENT:-}" ] && echo "OTEGAMI_MAIL_CLIENT_ENTITLEMENT = ${OTEGAMI_MAIL_CLIENT_ENTITLEMENT}"
+  [ -n "${OTEGAMI_PUSH_FEATURE_HIDDEN:-}" ] && echo "OTEGAMI_PUSH_FEATURE_HIDDEN = ${OTEGAMI_PUSH_FEATURE_HIDDEN}"
   # CI_BUILD_NUMBER is an Xcode Cloud built-in (monotonically increasing
   # per workflow) — feeding it into CURRENT_PROJECT_VERSION here is what
   # project.yml's `CFBundleVersion: $(CURRENT_PROJECT_VERSION)` (both the

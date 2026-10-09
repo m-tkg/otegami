@@ -118,6 +118,11 @@ targets:
         # as "no relay configured in this build", disabling
         # PushNotificationSettingsView's enable button.
         OTEGAMI_PUSH_RELAY_URL: $(OTEGAMI_PUSH_RELAY_URL)
+        # Build-time switch for a build without the push notification
+        # feature: read by `RelayURLConfig.isFeatureHidden`. String "YES"/
+        # "NO", not a Boolean — same mechanism as
+        # `OtegamiMailClientEntitlementEnabled` below.
+        OTEGAMI_PUSH_FEATURE_HIDDEN: $(OTEGAMI_PUSH_FEATURE_HIDDEN)
         # M9: read by AppEnvironment/KeychainCredentialStore/AppDatabase at
         # runtime — see Config/Shared.xcconfig's doc comment on why these
         # are composed from xcconfig variables instead of hardcoded.
@@ -366,6 +371,9 @@ targets:
         # — see `RelayURLConfig.swift`'s doc comment), so a self-hoster's
         # single xcconfig value covers both targets.
         OTEGAMI_PUSH_RELAY_URL: $(OTEGAMI_PUSH_RELAY_URL)
+        # Same switch as the `Otegami` target's key of the same name;
+        # `pushRelayBaseURL` returns nil when it is "YES".
+        OTEGAMI_PUSH_FEATURE_HIDDEN: $(OTEGAMI_PUSH_FEATURE_HIDDEN)
     entitlements:
       path: Generated/NotificationService.entitlements
       properties:

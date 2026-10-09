@@ -117,3 +117,15 @@ OTEGAMI_RELAY_REGISTRATION_SECRET =
 OTEGAMI_URL_SLASH = /
 OTEGAMI_URL_SLASHES = $(OTEGAMI_URL_SLASH)$(OTEGAMI_URL_SLASH)
 OTEGAMI_PUSH_RELAY_URL =
+
+// プッシュ通知機能を含まないビルドを作るためのスイッチ。`YES` にすると、
+// 設定画面からプッシュ通知に関する項目 (「プッシュ通知」画面への入口)
+// が一切表示されなくなり、アプリ本体と NotificationService の両方で
+// `OTEGAMI_PUSH_RELAY_URL` が設定されていても無いものとして扱う
+// (リレーへの通信が起きない)。`OTEGAMI_PUSH_RELAY_URL` の値自体は
+// 消さずに切り替えられる。Default `NO` (従来どおり)。`NO`/`YES` 以外の
+// 値は `YES` 扱いにならない (`RelayURLConfig.isFeatureHidden`)。
+// 「リレー URL 未設定」状態 (無効化したトグル + 開発者向けの説明を出す、
+// OSS を自分でビルドする人向けの挙動) とは別物。docs/relay-deployment.md
+// 参照。
+OTEGAMI_PUSH_FEATURE_HIDDEN = NO
