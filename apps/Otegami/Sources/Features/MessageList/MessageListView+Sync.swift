@@ -283,27 +283,56 @@ extension MessageListView {
     /// 存在せず、上のガードの`if let running = activeSyncTask`チェックと
     /// 下のセットアップの間に他の`refresh()`呼び出しが割り込む余地が無い。
     ///
-    /// 相乗りした場合の既知のトレードオフ: pull-to-refresh がたまたま
-    /// silent な5分ループ (`surfaceErrors: false`) に相乗りすると、その
-    /// パスが失敗してもユーザーの pull 操作に対して`syncErrorMessage`が
-    /// 表示されない。ユーザー操作起点の同期が失敗を確実に表示できなく
-    /// なるより、二重同期による`isSyncing`/`activeSyncTask`の破壊を防ぐ
-    /// 方を優先する許容範囲のトレードオフとして明記しておく。
+    /// 相乗りと奪取: どちらにするかは `RefreshReentryPolicy.decide` が決める。
+    /// - ユーザー操作起点 (`surfaceErrors: true`) がサイレントな自動パス
+    ///   (`surfaceErrors: false`) の走行中に来た場合は相乗りしない。自動パスは
+    ///   (1) アカウント絞り込み変更前に始まった別アカウントのパスかもしれず、
+    ///   (2) `AccountSyncer.isAutoRetrying` のガードで黙って no-op かもしれず、
+    ///   (3) 失敗しても何も表示しない — つまり「画面に出ているものを同期した」
+    ///   保証が無い。そこで自動パスを cancel (`SyncProgressBanner` のキャンセル
+    ///   ボタンと同じ `activeSyncTask.cancel()` 経路) し、その完了を待って
+    ///   から自分のパスを必ず1回実行する。
+    /// - ユーザー操作同士、および自動パスが来た場合は従来どおり相乗り。
+    ///
+    /// 奪取時の `defer` 競合対策: 世代トークン (`syncGeneration`) で「自分が
+    /// セットした状態だけを片付ける」。奪取側は cancel の前に世代を進めて
+    /// `activeSyncTask` を自分の `Task` に差し替えるので、cancel された先行
+    /// 呼び出しの `defer` が後から (どの順で) 再開しても世代が一致せず、
+    /// `isSyncing`/`syncProgress`/`activeSyncTask` に触れない。差し替えは
+    /// `await` を挟まず同期的に行うため `isSyncing` は false に落ちず、
+    /// バナーもちらつかない。奪取側の `Task` は先行 `Task` の終了を待って
+    /// から同期を始める (先行の `performRefreshSync` と並行しない)。
     func refresh(surfaceErrors: Bool = true, autoRetry: Bool = false) async {
+        var previous: Task<Void, Never>?
         if let running = activeSyncTask {
-            await running.value
-            return
+            let decision = RefreshReentryPolicy.decide(
+                incomingSurfacesErrors: surfaceErrors,
+                runningSurfacesErrors: activeSyncSurfacesErrors
+            )
+            if decision == .joinRunning {
+                await running.value
+                return
+            }
+            running.cancel()
+            previous = running
         }
 
+        syncGeneration &+= 1
+        let generation = syncGeneration
         isSyncing = true
         syncProgress = nil
+        activeSyncSurfacesErrors = surfaceErrors
         defer {
-            isSyncing = false
-            syncProgress = nil
-            activeSyncTask = nil
+            if syncGeneration == generation {
+                isSyncing = false
+                syncProgress = nil
+                activeSyncTask = nil
+            }
         }
 
         let task = Task {
+            await previous?.value
+            guard !Task.isCancelled else { return }
             await performRefreshSync(surfaceErrors: surfaceErrors, autoRetry: autoRetry)
         }
         activeSyncTask = task
