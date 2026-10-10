@@ -104,7 +104,9 @@ public actor OpQueueProcessor {
         /// remaining location, and the one holding any placeholder row
         /// `MessageRemoval` parked there. `SyncCoordinator.replayOpQueue`
         /// feeds this into `scheduleTargetedResync`.
-        /// Deliberately not populated for `.send`/`.saveDraft`/
+        /// `.send` は Sent ロールのメールボックスを載せる (送信メールを
+        /// スレッドに出すため。`.inboxOnly` は Sent を同期しない)。
+        /// Deliberately not populated for `.saveDraft`/
         /// `.deleteDraft` — those aren't the "他の受信箱一覧への反映が遅い"
         /// complaint this task addresses, and `.send`'s own Task #124
         /// idempotency guard is unrelated to mailbox-list reflection.

@@ -250,4 +250,34 @@ struct OpQueueProcessorAffectedMailboxIdsTests {
         #expect(result.succeeded == 1)
         #expect(result.affectedMailboxIds.isEmpty, "send/saveDraft/deleteDraft are outside Task #152's targeted-resync scope — see ReplayResult.affectedMailboxIds's doc comment")
     }
+
+    /// 送信メールをスレッドに出すため、`.send` は Sent メールボックスを
+    /// targeted resync の対象として返す (`.inboxOnly` は Sent を同期しない)。
+    @Test("ReplayResult.affectedMailboxIds includes the Sent mailbox for a .send op (non-Gmail and Gmail)", arguments: [AccountKind.generic, AccountKind.gmail])
+    func replayResultAffectedMailboxIdsIncludesSentForSend(kind: AccountKind) async throws {
+        let database = try AppDatabase.makeInMemory()
+        var base = makeAccountWithSMTP()
+        base.kind = kind
+        let (account, _, _, sent) = try await makeAccountWithMailboxes(database: database, account: base, withSent: true)
+        try await database.dbWriter.write { db in
+            var outbox = OutboxMessageRecord(
+                accountId: account.id, toAddresses: [EmailAddress(address: "recipient@otegami.test")],
+                subject: "件名", plainTextBody: "本文"
+            )
+            try outbox.insert(db)
+            try OpQueue.enqueueSend(accountId: account.id, outboxMessageId: outbox.id!, db: db)
+        }
+
+        let processor = OpQueueProcessor(
+            database: database,
+            sessionFactory: { config in FakeIMAPSession(config: config, script: FakeIMAPSession.Script()) },
+            smtpSessionFactory: { config in FakeSMTPSession(config: config, script: FakeSMTPSession.Script(), recorder: nil) },
+            messageBuilder: fakeMessageBuilder
+        )
+
+        let result = try await processor.replay(account: account, auth: auth)
+        #expect(result.succeeded == 1)
+        #expect(result.affectedMailboxIds == Set([sent?.id].compactMap { $0 }))
+        #expect(!result.affectedMailboxIds.isEmpty)
+    }
 }
