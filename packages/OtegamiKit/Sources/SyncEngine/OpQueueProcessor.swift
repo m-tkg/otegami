@@ -108,8 +108,7 @@ public actor OpQueueProcessor {
         /// スレッドに出すため。`.inboxOnly` は Sent を同期しない)。
         /// Deliberately not populated for `.saveDraft`/
         /// `.deleteDraft` — those aren't the "他の受信箱一覧への反映が遅い"
-        /// complaint this task addresses, and `.send`'s own Task #124
-        /// idempotency guard is unrelated to mailbox-list reflection.
+        /// complaint this task addresses.
         public var affectedMailboxIds: Set<Int64> = []
     }
 
