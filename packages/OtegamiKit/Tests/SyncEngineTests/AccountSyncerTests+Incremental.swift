@@ -478,6 +478,61 @@ struct AccountSyncerIncrementalTests {
         #expect(inboxMessages.count == 1, "INBOX must be untouched by a .mailbox(path:) scope targeting a different mailbox")
     }
 
+    /// 横断ビュー「すべての送信済み」の pull-to-refresh
+    /// (`MessageListView.performRefreshSync` の `.unifiedRole` 分岐) が
+    /// 使うスコープ: 一度も同期されていない Sent メールボックスを
+    /// `.mailboxes(paths:)` + `forceReconcileVanishedUIDs: true` で同期して
+    /// 送信メールがローカル DB に入り、スレッドに紐付くこと。
+    @Test(".mailboxes(paths:) scope pulls a never-synced Sent mailbox in and threads it with the INBOX original")
+    func mailboxesScopeSyncsNeverSyncedSentMailbox() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let account = makeAccount()
+        try await database.dbWriter.write { db in try account.insert(db) }
+        let inbox = MailboxInfo(path: "INBOX", displayPath: "INBOX", role: .inbox, attributes: [])
+        let sent = MailboxInfo(path: "Sent", displayPath: "Sent", role: .sent, attributes: [])
+        let script = FakeIMAPSession.Script(
+            mailboxes: [inbox, sent],
+            envelopesByPath: [
+                "INBOX": [makeInbox(uid: 1, subject: "相談")],
+                "Sent": [makeInbox(uid: 1, subject: "Re: 相談", references: ["<seed-1@otegami.test>"])],
+            ],
+            statusByPath: [
+                "INBOX": MailboxStatus(uidValidity: 1, uidNext: 2, highestModSeq: 5, messageCount: 1),
+                "Sent": MailboxStatus(uidValidity: 7, uidNext: 2, highestModSeq: 5, messageCount: 1),
+            ],
+            capabilitiesToReport: [.condstore]
+        )
+        let auth = MailAuth.password(username: "test1@otegami.test", password: "test1234")
+        let syncer = AccountSyncer(account: account, database: database) { config in
+            FakeIMAPSession(config: config, script: script)
+        }
+        // INBOX is synced first (the normal `.inboxOnly` pass), Sent never.
+        _ = try await syncer.performIncrementalSync(auth: auth, scope: .inboxOnly)
+
+        _ = try await syncer.performIncrementalSync(
+            auth: auth, scope: .mailboxes(paths: ["Sent"]), autoRetry: false, forceReconcileVanishedUIDs: true
+        )
+
+        let sentMessages = try await database.dbWriter.read { db in
+            try MessageRecord
+                .filter(sql: "mailboxId IN (SELECT id FROM mailbox WHERE accountId = ? AND path = 'Sent')", arguments: [account.id])
+                .fetchAll(db)
+        }
+        #expect(sentMessages.count == 1)
+        #expect(sentMessages.first?.threadId != nil)
+        let inboxThreadId = try await database.dbWriter.read { db in
+            try MessageRecord.filter(Column("subject") == "相談").fetchOne(db)?.threadId
+        }
+        #expect(sentMessages.first?.threadId == inboxThreadId)
+
+        // 表示側 (「すべての送信済み」の横断ビュー) もこのスレッドを拾うこと。
+        let accountId = account.id
+        let sentThreads = try await database.dbWriter.read { db in
+            try ThreadQuery.unifiedInboxRequest(accountIds: [accountId], role: .sent).fetchAll(db)
+        }
+        #expect(sentThreads.count == 1)
+    }
+
     // MARK: - listMailboxes() TTL cache
 
     /// `AccountSyncer.listMailboxesCached(session:bypassCache:)`: a fresh

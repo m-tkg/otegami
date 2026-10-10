@@ -116,13 +116,28 @@ extension OpQueueProcessor {
         // means the local Sent mailbox doesn't show a copy until the
         // next differential sync notices it — not a reason to fail
         // this op.
-        if account.kind != .gmail, let sent = try await MailboxRoleResolver.mailbox(role: .sent, accountId: account.id, database: database) {
-            do {
-                _ = try await session.append(mailboxPath: sent.path, messageData: built.data, flags: .seen)
-                Self.logger.info("Sent APPEND succeeded for outboxMessageId \(payload.outboxMessageId)")
-            } catch {
-                Self.logger.error("Sent APPEND failed (best-effort, not retried) for outboxMessageId \(payload.outboxMessageId): \(String(describing: error))")
+        //
+        // 送信メールをスレッドに出すため、Sent メールボックスは targeted
+        // resync の対象として `affectedMailboxIds` に載せる。通常の同期
+        // スコープ (`.inboxOnly`) は INBOX/Drafts だけで、Sent はユーザーが
+        // そのフォルダを開くまで同期されず、スレッド表示 (threadId による
+        // フォルダ横断) に自分の返信が出ないため。Gmail は APPEND しない
+        // が、サーバが保存した Sent コピーを同じ経路で取り込む。resync の
+        // 失敗はここ (送信 op) には波及しない: 呼び出し側
+        // (`SyncCoordinator.replayOpQueue`) が best-effort で実行する。
+        // ここでの lookup も `try?` — 送信済みの op を throw で再試行
+        // させてはならない。
+        var affectedMailboxIds: Set<Int64> = []
+        if let sent = try? await MailboxRoleResolver.mailbox(role: .sent, accountId: account.id, database: database) {
+            if account.kind != .gmail {
+                do {
+                    _ = try await session.append(mailboxPath: sent.path, messageData: built.data, flags: .seen)
+                    Self.logger.info("Sent APPEND succeeded for outboxMessageId \(payload.outboxMessageId)")
+                } catch {
+                    Self.logger.error("Sent APPEND failed (best-effort, not retried) for outboxMessageId \(payload.outboxMessageId): \(String(describing: error))")
+                }
             }
+            if let sentId = sent.id { affectedMailboxIds.insert(sentId) }
         }
 
         // Drafts IMAP sync: if this send was composed by resuming a
@@ -146,7 +161,7 @@ extension OpQueueProcessor {
 
         try await deleteOutboxMessage(id: payload.outboxMessageId)
         Self.logger.info("outbox row deleted (send complete) for outboxMessageId \(payload.outboxMessageId)")
-        return .applied(affectedMailboxIds: [])
+        return .applied(affectedMailboxIds: affectedMailboxIds)
     }
 
     private func outboxMessage(id: Int64) async throws -> OutboxMessageRecord? {
