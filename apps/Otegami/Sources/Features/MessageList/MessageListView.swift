@@ -201,6 +201,12 @@ struct MessageListView: View {
     /// キャンセル button has something concrete to cancel. `nil` whenever
     /// no sync is in flight.
     @State var activeSyncTask: Task<Void, Never>?
+    /// `activeSyncTask` を走らせている `refresh()` の `surfaceErrors`
+    /// (ユーザー操作起点か、サイレントな自動パスか)。再入時の相乗り/奪取判定用。
+    @State var activeSyncSurfacesErrors = false
+    /// `refresh()` ごとに進める世代トークン。`defer` が自分の世代の状態だけを
+    /// 片付けるために使う (奪取された先行呼び出しが後発の状態を壊さない)。
+    @State var syncGeneration = 0
 
     // MARK: - Archive view detection (Task #87, 1)
 
