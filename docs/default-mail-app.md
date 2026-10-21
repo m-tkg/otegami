@@ -155,10 +155,29 @@ provisioning profile の生成に失敗してビルド/署名が壊れる**
    developer.apple.com の Certificates, Identifiers & Profiles →
    Identifiers → 該当の App ID (`OTEGAMI_BUNDLE_ID`、既定
    `com.mtkg.otegami` — 実機ビルド用に独自の Bundle ID を使っている場合は
-   そちら) → Capabilities で "Mail" (または同等の表記) を有効化する。
+   そちら) → 「Additional Capabilities」タブで "Default Mail App" に
+   チェックを入れて保存する (承認メールが来た時点では App ID に割り当て
+   られているだけで、オンにはなっていない)。`asc bundle-ids capabilities
+   list` に `DEFAULT_MAIL_APP` が出れば反映済み。
    自動署名 (`CODE_SIGN_STYLE: Automatic`) の場合、この操作をしておけば
    次の Xcode ビルドで provisioning profile が自動的に更新される。
-2. **`Config/Local.xcconfig` にフラグを立てる** (無ければ
+
+   **既知の制限: 付与された entitlement は App Store 配布 (TestFlight を
+   含む) でしか使えない。** capability を有効化した後でも、ad-hoc /
+   development 署名のエクスポートは
+   `Entitlement com.apple.developer.mail-client not found and could not be
+   included in profile` で失敗する (同じ archive を `app-store-connect`
+   でエクスポートすると成功し、署名に `com.apple.developer.mail-client`
+   が入る)。そのため:
+   - OTA 配信 (`docs/ota-deploy.md`、ad-hoc 署名) に使う
+     `Config/Local.xcconfig` ではフラグを立てない (`NO` のまま)。立てると
+     OTA 配信が毎回失敗する。OTA 版ではデフォルトメール設定は使えない。
+   - 実機で使えるのは TestFlight 版のみ。Xcode Cloud のワークフロー環境
+     変数に `OTEGAMI_MAIL_CLIENT_ENTITLEMENT = YES` を登録する
+     (`ci_scripts/ci_post_clone.sh` が `Local.xcconfig` に書き出す。
+     `docs/xcode-cloud.md` 参照)。
+2. **`Config/Local.xcconfig` にフラグを立てる** (App Store 配布用に手元で
+   archive する場合のみ。上の既知の制限参照。無ければ
    `Config/Local.xcconfig.sample` からコピーして作成):
    ```
    OTEGAMI_MAIL_CLIENT_ENTITLEMENT = YES
