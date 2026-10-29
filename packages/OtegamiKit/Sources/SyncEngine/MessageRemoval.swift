@@ -84,6 +84,36 @@ public enum MessageRemoval {
         }
     }
 
+    /// Display deduplication can choose All Mail or Sent while the same message
+    /// still belongs to INBOX. Gmail archive must remove the INBOX membership.
+    /// Resolve only siblings of each selected message, preserving flat selection
+    /// scope and the existing identity rules within its thread.
+    private static func gmailArchiveTargets(
+        _ targets: [MessageRecord], accountId: String, db: Database
+    ) throws -> [MessageRecord] {
+        let inboxIds = Set(try MailboxRecord
+            .filter(Column("accountId") == accountId)
+            .filter(Column("role") == MailboxRoleRecord.inbox.rawValue)
+            .fetchAll(db).compactMap(\.id))
+        var resolved: [MessageRecord] = []
+        var seenIds = Set<Int64>()
+        for target in targets {
+            var selected = target
+            // Empty Message-ID is not evidence of physical message identity.
+            if !inboxIds.contains(target.mailboxId),
+               target.gmailMessageId != nil || !(target.messageId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+                let siblings = try ThreadQuery.duplicateSiblings(of: target, db: db)
+                let inboxCopies = siblings.filter { inboxIds.contains($0.mailboxId) }
+                if let inbox = inboxCopies.first(where: { !$0.isPendingRelocation }) ?? inboxCopies.first {
+                    selected = inbox
+                }
+            }
+            guard let id = selected.id, seenIds.insert(id).inserted else { continue }
+            resolved.append(selected)
+        }
+        return resolved
+    }
+
     /// Removes every message `ThreadQuery.actionTargets(for:db:)` returns
     /// for `summary` from its current mailbox and enqueues one archive/
     /// delete op per message — the destination (or, for a Gmail archive,
@@ -139,7 +169,7 @@ public enum MessageRemoval {
             throw ArchiveGuardError.pinned
         }
         guard let thread = try ThreadRecord.fetchOne(db, key: threadId) else { return nil }
-        let targets = try ThreadQuery.actionTargets(for: summary, db: db)
+        var targets = try ThreadQuery.actionTargets(for: summary, db: db)
         let beforeMaxOpId = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(id), 0) FROM opQueue") ?? 0
         // Both `.archive`'s and `.unarchive`'s per-message guards need this,
         // and so does `relocationDestinationId` (Gmail's "archived" location
@@ -148,6 +178,9 @@ public enum MessageRemoval {
         // for every target here.
         let account = try AccountRecord.fetchOne(db, key: accountId)
         let accountKind = account?.kind
+        if kind == .archive, accountKind == .gmail {
+            targets = try gmailArchiveTargets(targets, accountId: accountId, db: db)
+        }
         // Task #120 (実機報告「アーカイブ解除しても受信箱に pull-to-refresh まで
         // 現れない」): resolved once per commit call, not per-message — the
         // mailbox this `kind` relocates a removed message *into* locally,
