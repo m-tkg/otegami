@@ -144,6 +144,66 @@ struct MessageRemovalGmailArchiveTests {
         #expect(isArchived == true)
     }
 
+    @Test("archiving an All Mail selection uses its inbox copy and leaves other messages untouched")
+    func archiveAllMailSelectionUsesInboxCopy() throws {
+        let (database, accountId, inboxId, allMailId) = try makeGmailDatabase()
+        let (inboxMessageId, allMessageId, otherMessageId) = try database.dbWriter.write { db in
+            let original = try insertMessage(accountId: accountId, mailboxId: inboxId, uid: 31, db: db)
+            let copy = try insertMessage(accountId: accountId, mailboxId: allMailId!, uid: 310,
+                                         threadId: original.threadId, db: db)
+            let other = try insertMessage(accountId: accountId, mailboxId: inboxId, uid: 32,
+                                          messageId: "<other@test>", gmailMessageId: 43,
+                                          threadId: original.threadId, db: db)
+            return (original.messageId, copy.messageId, other.messageId)
+        }
+        let selected = try database.dbWriter.read { db in
+            ThreadSummary(flatMessage: try MessageRecord.fetchOne(db, key: allMessageId)!, accountId: accountId)
+        }
+        let snapshot = try database.dbWriter.write { db in
+            try MessageRemoval.commit(.archive, summary: selected, accountId: accountId, db: db)
+        }
+        #expect(snapshot?.messages.map(\.id) == [inboxMessageId])
+        try database.dbWriter.read { db in
+            #expect(try MessageRecord.fetchOne(db, key: inboxMessageId) == nil)
+            #expect(try MessageRecord.fetchOne(db, key: allMessageId)?.uid == 310)
+            #expect(try MessageRecord.fetchOne(db, key: otherMessageId)?.mailboxId == inboxId)
+            let op = try #require(try OpQueueRecord.fetchOne(db))
+            #expect(op.kind == OpQueueKind.archive.rawValue)
+            let payload = try JSONDecoder().decode(ArchiveOpPayload.self, from: op.payload)
+            #expect(payload.sourceMailboxId == inboxId)
+            #expect(payload.uids == [31])
+        }
+        if let snapshot {
+            try database.dbWriter.write { db in try MessageRemoval.undo(snapshot, db: db) }
+            try database.dbWriter.read { db throws -> Void in
+                #expect(try MessageRecord.fetchOne(db, key: inboxMessageId)?.uid == 31)
+                #expect(try MessageRecord.fetchOne(db, key: allMessageId)?.uid == 310)
+                #expect(try OpQueueRecord.fetchCount(db) == 0)
+            }
+        }
+    }
+
+    @Test("grouped archive uses inbox membership even when deduplication prefers Sent")
+    func groupedArchiveUsesInboxInsteadOfSent() throws {
+        let (database, accountId, inboxId, _) = try makeGmailDatabase()
+        try database.dbWriter.write { db in
+            var sent = MailboxRecord(accountId: accountId, path: "[Gmail]/Sent Mail", displayPath: "Sent", role: .sent, uidValidity: 1)
+            try sent.insert(db)
+            let inbox = try insertMessage(accountId: accountId, mailboxId: inboxId, uid: 40, db: db)
+            let sentCopy = try insertMessage(accountId: accountId, mailboxId: sent.id!, uid: 400,
+                                             threadId: inbox.threadId, db: db)
+            let thread = try #require(try ThreadRecord.fetchOne(db, key: inbox.threadId))
+            let selected = ThreadSummary(thread: thread, latestMessage: nil)
+            let snapshot = try MessageRemoval.commit(.archive, summary: selected, accountId: accountId, db: db)
+            #expect(snapshot?.messages.map(\.id) == [inbox.messageId])
+            #expect(try MessageRecord.fetchOne(db, key: sentCopy.messageId)?.uid == 400)
+            let op = try #require(try OpQueueRecord.fetchOne(db))
+            let payload = try JSONDecoder().decode(ArchiveOpPayload.self, from: op.payload)
+            #expect(payload.sourceMailboxId == inboxId)
+            #expect(payload.uids == [40])
+        }
+    }
+
     // MARK: duplicate avoidance
 
     @Test("archiving a Gmail message that already has a real All Mail row still deletes the inbox row")
