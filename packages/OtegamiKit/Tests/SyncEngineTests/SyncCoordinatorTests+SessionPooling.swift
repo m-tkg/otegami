@@ -20,6 +20,23 @@ import OtegamiStore
 /// なことで確認する。
 @Suite("SyncCoordinator + PooledIMAPSessionFactory")
 struct SyncCoordinatorSessionPoolingTests {
+    @Test("on-demand body fetch bypasses the busy background factory")
+    func bodyFetchUsesDedicatedFactory() async throws {
+        let database = try AppDatabase.makeInMemory()
+        let background = FakeIMAPSession.CallRecorder()
+        let foreground = FakeIMAPSession.CallRecorder()
+        let coordinator = SyncCoordinator(
+            database: database,
+            sessionFactory: { FakeIMAPSession(config: $0, script: .init(), recorder: background) },
+            bodySessionFactory: { FakeIMAPSession(config: $0, script: .init(), recorder: foreground) }
+        )
+        let message = MessageRecord(id: 999, mailboxId: 1, uid: 1, internalDate: Date())
+        try? await coordinator.fetchBody(for: message, mailboxPath: "INBOX", account: makeAccount(),
+                                        auth: .password(username: "test", password: "test"))
+        #expect(background.connectCount == 0)
+        #expect(foreground.connectCount == 1)
+    }
+
     private func makeAccount() -> AccountRecord {
         AccountRecord(
             id: "account-1",
