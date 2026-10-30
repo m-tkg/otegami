@@ -37,6 +37,7 @@ final class AppEnvironment {
     /// 保持しておく (`OtegamiApp.handleScenePhaseChange` の
     /// `.background`/`.inactive` ケースから呼ばれる `drainIMAPSessionPool()`
     /// 参照)。
+    let bodySessionPool: PooledIMAPSessionFactory
     let imapSessionPool: PooledIMAPSessionFactory
     let syncCoordinator: SyncCoordinator
     let credentialStore: KeychainCredentialStore
@@ -731,11 +732,14 @@ final class AppEnvironment {
         // `IDLE` loop holds its own long-lived connection and must never
         // be checked into/out of the pool's TTL bookkeeping (see
         // `AccountSyncer.idleSessionFactory`'s doc comment).
-        let imapSessionPool = PooledIMAPSessionFactory(sessionFactory: { config in MailCoreIMAPSession(config: config) })
+        let imapSessionPool = PooledIMAPSessionFactory(sessionFactory: { config in MailCoreIMAPSession(config: config) }, maxConcurrentConnections: 3)
+        let bodySessionPool = PooledIMAPSessionFactory(sessionFactory: { config in MailCoreIMAPSession(config: config) }, maxConcurrentConnections: 1)
+        self.bodySessionPool = bodySessionPool
         self.imapSessionPool = imapSessionPool
         self.syncCoordinator = SyncCoordinator(
             database: database,
             sessionFactory: imapSessionPool.makeSessionFactory(),
+            bodySessionFactory: bodySessionPool.makeSessionFactory(),
             idleSessionFactory: { config in MailCoreIMAPSession(config: config) },
             smtpSessionFactory: { config in MailCoreSMTPSession(config: config) },
             messageBuilder: { draft in MailCoreMessageBuilder.build(draft) }

@@ -79,9 +79,13 @@ public actor SyncCoordinator {
     /// this is the last leg of.
     private static let opReflectLogger = Logger(subsystem: "com.mtkg.otegami", category: "OpReflect")
 
+    private let bodySessionFactory: @Sendable (IMAPConfig) -> any IMAPSessionProtocol
+    private var foregroundBodyTasks: [Int64: Task<Void, Error>] = [:]
+
     public init(
         database: AppDatabase,
         sessionFactory: @escaping @Sendable (IMAPConfig) -> any IMAPSessionProtocol,
+        bodySessionFactory: (@Sendable (IMAPConfig) -> any IMAPSessionProtocol)? = nil,
         idleSessionFactory: (@Sendable (IMAPConfig) -> any IMAPSessionProtocol)? = nil,
         smtpSessionFactory: @escaping @Sendable (SMTPConfig) -> any SMTPSessionProtocol = { config in NotImplementedSMTPSession(config: config) },
         messageBuilder: @escaping @Sendable (ComposeDraft) -> BuiltMessage = { _ in
@@ -91,6 +95,7 @@ public actor SyncCoordinator {
     ) {
         self.database = database
         self.sessionFactory = sessionFactory
+        self.bodySessionFactory = bodySessionFactory ?? sessionFactory
         self.idleSessionFactory = idleSessionFactory ?? sessionFactory
         self.smtpSessionFactory = smtpSessionFactory
         self.messageBuilder = messageBuilder
@@ -151,9 +156,26 @@ public actor SyncCoordinator {
         guard !message.isPendingRelocation else {
             throw SyncEngineError.pendingRelocation(messageId: message.id)
         }
-        try await withIMAPSession(account: account, auth: auth, selecting: mailboxPath) { session in
-            try await bodyFetcher.fetchBody(message: message, mailboxPath: mailboxPath, session: session)
+        guard let id = message.id else { return }
+        if let task = foregroundBodyTasks[id] {
+            try await task.value
+            return
         }
+        let task = Task<Void, Error> {
+            let session = self.bodySessionFactory(account.imapConfig)
+            try await session.connect(auth: auth)
+            do {
+                _ = try await session.select(mailboxPath)
+                try await self.bodyFetcher.fetchBody(message: message, mailboxPath: mailboxPath, session: session)
+                await session.disconnect()
+            } catch {
+                await session.disconnect()
+                throw error
+            }
+        }
+        foregroundBodyTasks[id] = task
+        defer { foregroundBodyTasks[id] = nil }
+        try await task.value
     }
 
     /// Fetches (and persists) one attachment's data on demand (M8) — the

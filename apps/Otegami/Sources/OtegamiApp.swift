@@ -872,6 +872,7 @@ struct RootView: View {
             // 持ったまま入らない、という既存の IDLE ループの方針をプール
             // 側にも揃える。
             await environment.imapSessionPool.drainAll()
+            await environment.bodySessionPool.drainAll()
             // C7 「アプリを離脱したら即座に送信を確定」— cuts short whatever's
             // left of the countdown the instant the app leaves the
             // foreground, rather than letting it keep counting down
